@@ -73,13 +73,14 @@ func ExecOperator(o *Operator,
 		fieldsAB = append(fieldsAB, o.ParentA.Fields...)
 		fieldsAB = append(fieldsAB, o.ParentB.Fields...)
 
-		types := make(Types, len(fieldsAB)) // TODO.
-		outTypes := Types{""}               // TODO.
+		typesAB := make(Types, len(fieldsAB)) // TODO.
+
+		outTypes := Types{""} // Not actually used.
 
 		var lazyExprFunc LazyExprFunc
 
 		lazyExprFunc =
-			MakeExprFunc(fieldsAB, types, o.Params, outTypes, 0) // <== inlineOk
+			MakeExprFunc(fieldsAB, typesAB, o.Params, outTypes, 0) // <== inlineOk
 
 		var lazyVals LazyVals
 
