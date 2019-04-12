@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"reflect"
 )
 
 var ErrMissing = errors.New("missing")
@@ -29,9 +28,11 @@ var JsonTypes = map[byte]string{ // TODO: Use array instead of map?
 	'9': "number",
 }
 
-type LazyVal []byte
+// -----------------------------------------------------
 
 type LazyVals []LazyVal
+
+type LazyVal []byte
 
 var LazyValMissing = LazyVal(nil)
 
@@ -44,8 +45,6 @@ var LazyValFalse = LazyVal([]byte("false"))
 func (a LazyVal) String() string {
 	return fmt.Sprintf("%q", []byte(a))
 }
-
-// -----------------------------------------------------
 
 func LazyValEqualTrue(lazyVal LazyVal) bool {
 	return len(lazyVal) > 0 && lazyVal[0] == 't'
@@ -94,10 +93,4 @@ func TakeLastType(a Types) (t string) {
 	}
 
 	return t
-}
-
-// -----------------------------------------------------
-
-func DeepEqual(a, b interface{}) bool {
-	return reflect.DeepEqual(a, b)
 }
