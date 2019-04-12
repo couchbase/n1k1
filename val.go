@@ -5,7 +5,7 @@ import (
 	"fmt"
 )
 
-// JsonTypes allows 1st byte of a json []byte to tell us the type.
+// JsonTypes allows 0'th byte of a json []byte to tell us the type.
 var JsonTypes = map[byte]string{ // TODO: Use array instead of map?
 	'"': "string",
 	'{': "object",

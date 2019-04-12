@@ -2,9 +2,8 @@ package n1k1
 
 type LazyProjectFunc func(lazyVals, lazyValsPre LazyVals) LazyVals
 
-func MakeProjectFunc(fields Fields, types Types,
-	projections []interface{}, outTypes Types) (
-	lazyProjectFunc LazyProjectFunc) {
+func MakeProjectFunc(fields Fields, types Types, projections []interface{},
+	outTypes Types) (lazyProjectFunc LazyProjectFunc) {
 	var lazyExprFuncs []LazyExprFunc
 
 	for _, projection := range projections {
@@ -31,7 +30,7 @@ func MakeProjectFunc(fields Fields, types Types,
 				lazyExprFunc(lazyVals) // <== inlineOk
 
 			// NOTE: The lazyVals is stable while we are building up
-			// the lazyValsOut, so no need to deep copy items yet.
+			// the lazyValsOut, so no need to deep copy lazyVal yet.
 			lazyValsOut = append(lazyValsOut, lazyVal)
 		}
 
