@@ -82,12 +82,17 @@ func StringsToLazyVals(a []string, lazyValsPre LazyVals) LazyVals {
 type Types []string
 
 func SetLastType(a Types, t string) {
-	a[len(a)-1] = t
+	if len(a) > 0 {
+		a[len(a)-1] = t
+	}
 }
 
-func TakeLastType(a Types) string {
-	t := a[len(a)-1]
-	a[len(a)-1] = ""
+func TakeLastType(a Types) (t string) {
+	if len(a) > 0 {
+		t = a[len(a)-1]
+		a[len(a)-1] = ""
+	}
+
 	return t
 }
 
