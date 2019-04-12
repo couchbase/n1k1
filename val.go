@@ -2,12 +2,10 @@ package n1k1
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
 )
 
-var ErrMissing = errors.New("missing")
-
+// JsonTypes allows 1st byte of a json []byte to tell us the type.
 var JsonTypes = map[byte]string{ // TODO: Use array instead of map?
 	'"': "string",
 	'{': "object",
