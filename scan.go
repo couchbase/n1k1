@@ -17,13 +17,13 @@ func Scan(params []interface{},
 	case "filePath":
 		filePath := params[1].(string)
 		lazyFilePath := filePath
-		ScanFile(lazyFilePath, lazyYield, lazyYieldErr) // <== inline-ok.
+		ScanFile(lazyFilePath, lazyYield, lazyYieldErr) // <== inlineOk
 
 	case "csvData":
 		csvData := params[1].(string)
 		lazyCsvData := csvData
 		lazyReader := strings.NewReader(lazyCsvData)
-		ScanReaderAsCsv(lazyReader, lazyYield, lazyYieldErr) // <== inline-ok.
+		ScanReaderAsCsv(lazyReader, lazyYield, lazyYieldErr) // <== inlineOk
 
 	case "repeat": // Useful for testing to yield repeated data.
 		n, err := strconv.Atoi(params[1].(string))
@@ -58,7 +58,7 @@ func ScanFile(lazyFilePath string,
 
 	defer lazyReader.Close()
 
-	ScanReaderAsCsv(lazyReader, lazyYield, lazyYieldErr) // <== inline-ok.
+	ScanReaderAsCsv(lazyReader, lazyYield, lazyYieldErr) // <== inlineOk
 }
 
 func ScanReaderAsCsv(lazyReader io.Reader,

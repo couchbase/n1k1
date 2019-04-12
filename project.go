@@ -15,7 +15,7 @@ func MakeProjectFunc(fields Fields, types Types,
 		var lazyExprFunc LazyExprFunc
 
 		lazyExprFunc =
-			MakeExprFunc(fields, types, expr, outTypes) // <== inline-ok.
+			MakeExprFunc(fields, types, expr, outTypes) // <== inlineOk
 
 		lazyExprFuncs = append(lazyExprFuncs, lazyExprFunc)
 	}
@@ -28,7 +28,7 @@ func MakeProjectFunc(fields Fields, types Types,
 			var lazyVal LazyVal
 
 			lazyVal =
-				lazyExprFunc(lazyVals) // <== inline-ok.
+				lazyExprFunc(lazyVals) // <== inlineOk
 
 			// NOTE: The lazyVals is stable while we are building up
 			// the lazyValsOut, so no need to deep copy items yet.

@@ -4,7 +4,7 @@ func MakeExprFunc(fields Fields, types Types, expr []interface{},
 	outTypes Types) (lazyExprFunc LazyExprFunc) {
 	f := ExprCatalog[expr[0].(string)]
 	lazyExprFunc =
-		f(fields, types, expr[1:], outTypes) // <== inline-ok.
+		f(fields, types, expr[1:], outTypes) // <== inlineOk
 	return lazyExprFunc
 }
 
@@ -73,13 +73,13 @@ func ExprEq(fields Fields, types Types, params []interface{},
 	outTypes Types) (lazyExprFunc LazyExprFunc) {
 	exprA := params[0].([]interface{})
 	lazyExprFunc =
-		MakeExprFunc(fields, types, exprA, outTypes) // <== inline-ok.
+		MakeExprFunc(fields, types, exprA, outTypes) // <== inlineOk
 	lazyA := lazyExprFunc
 	TakeLastType(outTypes)
 
 	exprB := params[1].([]interface{})
 	lazyExprFunc =
-		MakeExprFunc(fields, types, exprB, outTypes) // <== inline-ok.
+		MakeExprFunc(fields, types, exprB, outTypes) // <== inlineOk
 	lazyB := lazyExprFunc
 	TakeLastType(outTypes)
 
@@ -87,15 +87,15 @@ func ExprEq(fields Fields, types Types, params []interface{},
 
 	lazyExprFunc = func(lazyVals LazyVals) (lazyVal LazyVal) {
 		lazyVal =
-			lazyA(lazyVals) // <== inline-ok.
+			lazyA(lazyVals) // <== inlineOk
 		lazyValA := lazyVal
 
 		lazyVal =
-			lazyB(lazyVals) // <== inline-ok.
+			lazyB(lazyVals) // <== inlineOk
 		lazyValB := lazyVal
 
 		lazyVal =
-			LazyValEqual(lazyValA, lazyValB) // <== inline-ok.
+			LazyValEqual(lazyValA, lazyValB) // <== inlineOk
 
 		return lazyVal
 	}
