@@ -1,9 +1,5 @@
 package n1k1
 
-import (
-	"encoding/json"
-)
-
 func MakeExprFunc(fields Fields, types Types, expr []interface{},
 	outTypes Types) (lazyExprFunc LazyExprFunc) {
 	f := ExprCatalog[expr[0].(string)]
@@ -14,7 +10,7 @@ func MakeExprFunc(fields Fields, types Types, expr []interface{},
 
 // -----------------------------------------------------
 
-type LazyExprFunc func(lazyVals LazyVals) (lazyAny interface{})
+type LazyExprFunc func(lazyVals LazyVals) LazyVal
 
 type ExprCatalogFunc func(fields Fields, types Types, params []interface{},
 	outTypes Types) (lazyExprFunc LazyExprFunc)
@@ -22,70 +18,42 @@ type ExprCatalogFunc func(fields Fields, types Types, params []interface{},
 var ExprCatalog = map[string]ExprCatalogFunc{}
 
 func init() {
-	ExprCatalog["bool"] = ExprConstant("bool")
-	ExprCatalog["null"] = ExprConstant("null")
-	ExprCatalog["number"] = ExprConstant("number")
-	ExprCatalog["string"] = ExprConstant("string")
-	ExprCatalog["array"] = ExprConstant("array")
-	ExprCatalog["object"] = ExprConstant("object")
-
 	ExprCatalog["eq"] = ExprEq
-
+	ExprCatalog["json"] = ExprJson
 	ExprCatalog["field"] = ExprField
 }
 
 // -----------------------------------------------------
 
-func ExprConstant(t string) ExprCatalogFunc {
-	return func(fields Fields, types Types, params []interface{},
-		outTypes Types) (lazyExprFunc LazyExprFunc) {
-		SetLastType(outTypes, t)
-
-		lazyExprFunc = func(lazyVals LazyVals) (lazyAny interface{}) {
-			if len(params) > 0 {
-				lazyAny = params[0]
-			}
-			return lazyAny
-		}
-
-		return lazyExprFunc
-	}
+var JsonTypes = map[byte]string{ // TODO: Use byte array instead?
+	'"': "string",
+	'{': "object",
+	'[': "array",
+	'n': "null",
+	't': "bool", // From "true".
+	'f': "bool", // From "false".
+	'-': "number",
+	'0': "number",
+	'1': "number",
+	'2': "number",
+	'3': "number",
+	'4': "number",
+	'5': "number",
+	'6': "number",
+	'7': "number",
+	'8': "number",
+	'9': "number",
 }
 
-// -----------------------------------------------------
-
-func ExprEq(fields Fields, types Types, params []interface{},
+func ExprJson(fields Fields, types Types, params []interface{},
 	outTypes Types) (lazyExprFunc LazyExprFunc) {
-	exprA := params[0].([]interface{})
-	lazyExprFunc =
-		MakeExprFunc(fields, types, exprA, outTypes) // <== inline-ok.
-	lazyA := lazyExprFunc
-	typeA := TakeLastType(outTypes)
+	json := params[0].(string) // TODO: Use []byte one day.
+	jsonType := JsonTypes[json[0]] // Might be "".
 
-	exprB := params[1].([]interface{})
-	lazyExprFunc =
-		MakeExprFunc(fields, types, exprB, outTypes) // <== inline-ok.
-	lazyB := lazyExprFunc
-	typeB := TakeLastType(outTypes)
+	SetLastType(outTypes, jsonType)
 
-	SetLastType(outTypes, "bool")
-
-	lazyExprFunc = func(lazyVals LazyVals) (lazyAny interface{}) {
-		lazyAny =
-			lazyA(lazyVals) // <== inline-ok.
-		lazyAnyA := lazyAny
-
-		lazyAny =
-			lazyB(lazyVals) // <== inline-ok.
-		lazyAnyB := lazyAny
-
-		if typeA == typeB && TypeCatalog[typeA] == "scalar" {
-			lazyAny = lazyAnyA == lazyAnyB
-		} else {
-			lazyAny = DeepEqual(lazyAnyA, lazyAnyB)
-		}
-
-		return lazyAny
+	lazyExprFunc = func(lazyVals LazyVals) (lazyVal LazyVal) {
+		return LazyVal(json)
 	}
 
 	return lazyExprFunc
@@ -102,18 +70,57 @@ func ExprField(fields Fields, types Types, params []interface{},
 		SetLastType(outTypes, types[idx])
 	}
 
-	lazyExprFunc = func(lazyVals LazyVals) (lazyAny interface{}) {
+	lazyExprFunc = func(lazyVals LazyVals) (lazyVal LazyVal) {
 		if idx < 0 {
-			lazyAny = ErrMissing
+			lazyVal = LazyValMissing
 		} else {
-			lazyValBytes := []byte(lazyVals[idx])
-			lazyErr := json.Unmarshal(lazyValBytes, &lazyAny)
-			if lazyErr != nil {
-				lazyAny = lazyErr
-			}
+			lazyVal = lazyVals[idx]
 		}
 
-		return lazyAny
+		return lazyVal
+	}
+
+	return lazyExprFunc
+}
+
+// -----------------------------------------------------
+
+func ExprEq(fields Fields, types Types, params []interface{},
+	outTypes Types) (lazyExprFunc LazyExprFunc) {
+	exprA := params[0].([]interface{})
+	lazyExprFunc =
+		MakeExprFunc(fields, types, exprA, outTypes) // <== inline-ok.
+	lazyA := lazyExprFunc
+	TakeLastType(outTypes)
+
+	exprB := params[1].([]interface{})
+	lazyExprFunc =
+		MakeExprFunc(fields, types, exprB, outTypes) // <== inline-ok.
+	lazyB := lazyExprFunc
+	TakeLastType(outTypes)
+
+	SetLastType(outTypes, "bool")
+
+	lazyExprFunc = func(lazyVals LazyVals) (lazyVal LazyVal) {
+		lazyVal =
+			lazyA(lazyVals) // <== inline-ok.
+		lazyValA := lazyVal
+
+		lazyVal =
+			lazyB(lazyVals) // <== inline-ok.
+		lazyValB := lazyVal
+
+		if lazyValA == LazyValMissing || lazyValB == LazyValMissing {
+			lazyVal = LazyValMissing
+		} else if lazyValA == LazyValNull || lazyValB == LazyValNull {
+			lazyVal = LazyValNull
+		} else if lazyValA == lazyValB {
+			lazyVal = LazyValTrue
+		} else {
+			lazyVal = LazyValFalse
+		}
+
+		return lazyVal
 	}
 
 	return lazyExprFunc

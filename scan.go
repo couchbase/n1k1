@@ -1,7 +1,7 @@
 package n1k1
 
 import (
-	"encoding/csv"
+	"bufio"
 	"fmt"
 	"io"
 	"os"
@@ -63,29 +63,22 @@ func ScanFile(lazyFilePath string,
 
 func ScanReaderAsCsv(lazyReader io.Reader,
 	lazyYield LazyYield, lazyYieldErr LazyYieldErr) {
-	var lazyReaderCsv = csv.NewReader(lazyReader)
-
-	lazyReaderCsv.ReuseRecord = true
+	lazyScanner := bufio.NewScanner(lazyReader)
 
 	var lazyVals LazyVals
 
-	for LazyTrue {
-		lazyRecord, lazyErr := lazyReaderCsv.Read()
-		if lazyErr != nil {
-			if lazyErr != io.EOF {
-				lazyYieldErr(lazyErr)
+	for lazyScanner.Scan() {
+		lazyLine := lazyScanner.Text()
+		if len(lazyLine) > 0 {
+			lazyRecord := strings.Split(lazyLine, ",")
+			if len(lazyRecord) > 0 {
+				lazyVals = lazyVals[:0]
+				for _, v := range lazyRecord {
+					lazyVals = append(lazyVals, LazyVal(v))
+				}
+
+				lazyYield(lazyVals)
 			}
-
-			return
-		}
-
-		if len(lazyRecord) > 0 {
-			lazyVals = lazyVals[:0]
-			for _, v := range lazyRecord {
-				lazyVals = append(lazyVals, LazyVal(v))
-			}
-
-			lazyYield(lazyVals)
 		}
 	}
 }

@@ -38,14 +38,8 @@ func ExecOperator(o *Operator,
 		lazyYieldOrig := lazyYield
 
 		lazyYield = func(lazyVals LazyVals) {
-			lazyAny := lazyExprFunc(lazyVals)
-			lazyBool := false
-			if lazyAny != nil {
-				if b, ok := lazyAny.(bool); ok && b { // TODO.
-					lazyBool = true
-				}
-			}
-			if lazyBool {
+			lazyVal := lazyExprFunc(lazyVals)
+			if lazyVal == LazyValTrue {
 				lazyYieldOrig(lazyVals)
 			}
 		}
@@ -104,14 +98,8 @@ func ExecOperator(o *Operator,
 				lazyVals = lazyVals[0:len(lazyValsA)]
 				lazyVals = append(lazyVals, lazyValsB...)
 
-				lazyAny := lazyExprFunc(lazyVals)
-				lazyBool := false
-				if lazyAny != nil {
-					if b, ok := lazyAny.(bool); ok && b { // TODO.
-						lazyBool = true
-					}
-				}
-				if lazyBool {
+				lazyVal := lazyExprFunc(lazyVals)
+				if lazyVal == LazyValTrue {
 					lazyYieldOrig(lazyVals)
 				}
 			}

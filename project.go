@@ -1,10 +1,5 @@
 package n1k1
 
-import (
-	"encoding/json"
-	"fmt"
-)
-
 type LazyProjectFunc func(lazyVals, lazyValsPre LazyVals) LazyVals
 
 func MakeProjectFunc(fields Fields, types Types,
@@ -30,19 +25,13 @@ func MakeProjectFunc(fields Fields, types Types,
 		lazyValsOut = lazyValsPre // Optional pre-alloc'ed slice.
 
 		for _, lazyExprFunc := range lazyExprFuncs {
-			var lazyAny interface{}
+			var lazyVal LazyVal
 
-			lazyAny =
+			lazyVal =
 				lazyExprFunc(lazyVals) // <== inline-ok.
 
-			lazyJsonBytes, lazyErr := json.Marshal(lazyAny)
-			if lazyErr != nil { // TODO TODO TODO TODO TODO TODO.
-				lazyJsonBytes, _ = json.Marshal(fmt.Sprintf("%v", lazyErr))
-			}
-
-			lazyJson := string(lazyJsonBytes)
-
-			lazyValsOut = append(lazyValsOut, LazyVal(lazyJson))
+			// TODO: One day need to copy bytes?
+			lazyValsOut = append(lazyValsOut, lazyVal)
 		}
 
 		return lazyValsOut

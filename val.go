@@ -8,22 +8,16 @@ var ErrMissing = errors.New("missing")
 
 // -----------------------------------------------------
 
-const LazyValEmpty = LazyVal("")
+const LazyValMissing = LazyVal("")
+
+const LazyValNull = LazyVal("null")
+
+const LazyValTrue = LazyVal("true")
+
+const LazyValFalse = LazyVal("false")
+
+// -----------------------------------------------------
 
 type LazyVal string
 
 type LazyVals []LazyVal
-
-func LazyValsEqual(a, b LazyVals) bool {
-	if len(a) != len(b) {
-		return false
-	}
-
-	for i, v := range a {
-		if v != b[i] {
-			return false
-		}
-	}
-
-	return true
-}

@@ -92,7 +92,11 @@ func TestExecOperator(t *testing.T) {
 			o: Operator{
 				Kind:   "filter",
 				Fields: Fields{"a", "b", "c"},
-				Params: []interface{}{"eq", "sJuly", "sJuly"},
+				Params: []interface{}{
+					"eq",
+					[]interface{}{"json", `"July"`},
+					[]interface{}{"json", `"July"`},
+				},
 				ParentA: &Operator{
 					Kind:   "scan",
 					Fields: Fields{"a", "b", "c"},
@@ -115,7 +119,11 @@ func TestExecOperator(t *testing.T) {
 			o: Operator{
 				Kind:   "filter",
 				Fields: Fields{"a", "b", "c"},
-				Params: []interface{}{"eq", "sJuly", "sJune"},
+				Params: []interface{}{
+					"eq",
+					[]interface{}{"json", `"July"`},
+					[]interface{}{"json", `"June"`},
+				},
 				ParentA: &Operator{
 					Kind:   "scan",
 					Fields: Fields{"a", "b", "c"},
@@ -135,7 +143,11 @@ func TestExecOperator(t *testing.T) {
 			o: Operator{
 				Kind:   "filter",
 				Fields: Fields{"a", "b", "c"},
-				Params: []interface{}{"eq", "fb", "fb"},
+				Params: []interface{}{
+					"eq",
+					[]interface{}{"field", "b"},
+					[]interface{}{"field", "b"},
+				},
 				ParentA: &Operator{
 					Kind:   "scan",
 					Fields: Fields{"a", "b", "c"},
@@ -158,7 +170,11 @@ func TestExecOperator(t *testing.T) {
 			o: Operator{
 				Kind:   "filter",
 				Fields: Fields{"a", "b", "c"},
-				Params: []interface{}{"eq", "fa", "fb"},
+				Params: []interface{}{
+					"eq",
+					[]interface{}{"field", "a"},
+					[]interface{}{"field", "b"},
+				},
 				ParentA: &Operator{
 					Kind:   "scan",
 					Fields: Fields{"a", "b", "c"},
@@ -174,11 +190,15 @@ func TestExecOperator(t *testing.T) {
 			expectYields: []LazyVals(nil),
 		},
 		{
-			about: "test csv-data scan->filter with fieldB = '66'",
+			about: "test csv-data scan->filter with fieldB = 66",
 			o: Operator{
 				Kind:   "filter",
 				Fields: Fields{"a", "b", "c"},
-				Params: []interface{}{"eq", "fb", "s66"},
+				Params: []interface{}{
+					"eq",
+					[]interface{}{"field", "b"},
+					[]interface{}{"json", `66`},
+				},
 				ParentA: &Operator{
 					Kind:   "scan",
 					Fields: Fields{"a", "b", "c"},
@@ -194,11 +214,15 @@ func TestExecOperator(t *testing.T) {
 			expectYields: []LazyVals(nil),
 		},
 		{
-			about: "test csv-data scan->filter with fieldB == '21'",
+			about: "test csv-data scan->filter with fieldB == 21",
 			o: Operator{
 				Kind:   "filter",
 				Fields: Fields{"a", "b", "c"},
-				Params: []interface{}{"eq", "fb", "s21"},
+				Params: []interface{}{
+					"eq",
+					[]interface{}{"field", "b"},
+					[]interface{}{"json", `21`},
+				},
 				ParentA: &Operator{
 					Kind:   "scan",
 					Fields: Fields{"a", "b", "c"},
@@ -220,7 +244,11 @@ func TestExecOperator(t *testing.T) {
 			o: Operator{
 				Kind:   "filter",
 				Fields: Fields{"a", "b", "c"},
-				Params: []interface{}{"eq", "fc", "s3000"},
+				Params: []interface{}{
+					"eq",
+					[]interface{}{"field", "c"},
+					[]interface{}{"json", `3000`},
+				},
 				ParentA: &Operator{
 					Kind:   "scan",
 					Fields: Fields{"a", "b", "c"},
@@ -245,11 +273,18 @@ func TestExecOperator(t *testing.T) {
 			o: Operator{
 				Kind:   "project",
 				Fields: Fields{"a", "c"},
-				Params: []interface{}{"a", "c"},
+				Params: []interface{}{
+					[]interface{}{"field", "a"},
+					[]interface{}{"field", "c"},
+				},
 				ParentA: &Operator{
 					Kind:   "filter",
 					Fields: Fields{"a", "b", "c"},
-					Params: []interface{}{"eq", "fc", "s3000"},
+					Params: []interface{}{
+						"eq",
+						[]interface{}{"field", "c"},
+						[]interface{}{"json", `3000`},
+					},
 					ParentA: &Operator{
 						Kind:   "scan",
 						Fields: Fields{"a", "b", "c"},
@@ -279,7 +314,11 @@ func TestExecOperator(t *testing.T) {
 				ParentA: &Operator{
 					Kind:   "filter",
 					Fields: Fields{"a", "b", "c"},
-					Params: []interface{}{"eq", "fc", "s3000"},
+					Params: []interface{}{
+						"eq",
+						[]interface{}{"field", "c"},
+						[]interface{}{"json", `3000`},
+					},
 					ParentA: &Operator{
 						Kind:   "scan",
 						Fields: Fields{"a", "b", "c"},
@@ -305,11 +344,18 @@ func TestExecOperator(t *testing.T) {
 			o: Operator{
 				Kind:   "project",
 				Fields: Fields{"a", "xxx"},
-				Params: []interface{}{"a", "xxx"},
+				Params: []interface{}{
+					[]interface{}{"field", "a"},
+					[]interface{}{"field", "xxx"},
+				},
 				ParentA: &Operator{
 					Kind:   "filter",
 					Fields: Fields{"a", "b", "c"},
-					Params: []interface{}{"eq", "fc", "s3000"},
+					Params: []interface{}{
+						"eq",
+						[]interface{}{"field", "c"},
+						[]interface{}{"json", `3000`},
+					},
 					ParentA: &Operator{
 						Kind:   "scan",
 						Fields: Fields{"a", "b", "c"},
@@ -335,15 +381,19 @@ func TestExecOperator(t *testing.T) {
 			o: Operator{
 				Kind:   "join-nl",
 				Fields: Fields{"dept", "city", "emp", "empDept"},
-				Params: []interface{}{"eq", "fdept", "fempDept"},
+				Params: []interface{}{
+					"eq",
+					[]interface{}{"field", "dept"},
+					[]interface{}{"field", "empDept"},
+				},
 				ParentA: &Operator{
 					Kind:   "scan",
 					Fields: Fields{"dept", "city"},
 					Params: []interface{}{
 						"csvData",
 						`
-dev,paris
-finance,london
+"dev","paris"
+"finance","london"
 `,
 					},
 				},
@@ -353,35 +403,39 @@ finance,london
 					Params: []interface{}{
 						"csvData",
 						`
-dan,dev
-doug,dev
-frank,finance
-fred,finance
+"dan","dev"
+"doug","dev"
+"frank","finance"
+"fred","finance"
 `,
 					},
 				},
 			},
 			expectYields: []LazyVals{
-				LazyVals{"dev", "paris", "dan", "dev"},
-				LazyVals{"dev", "paris", "doug", "dev"},
-				LazyVals{"finance", "london", "frank", "finance"},
-				LazyVals{"finance", "london", "fred", "finance"},
+				LazyVals{`"dev"`, `"paris"`, `"dan"`, `"dev"`},
+				LazyVals{`"dev"`, `"paris"`, `"doug"`, `"dev"`},
+				LazyVals{`"finance"`, `"london"`, `"frank"`, `"finance"`},
+				LazyVals{`"finance"`, `"london"`, `"fred"`, `"finance"`},
 			},
 		},
 		{
-			about: "test csv-data scan->join-nl but never-matching join condition",
+			about: "test csv-data scan->join-nl but false join condition",
 			o: Operator{
 				Kind:   "join-nl",
 				Fields: Fields{"dept", "city", "emp", "empDept"},
-				Params: []interface{}{"eq", "fdept", "sNOT-MATCHING"},
+				Params: []interface{}{
+					"eq",
+					[]interface{}{"field", "dept"},
+					[]interface{}{"json", `"NOT-MATCHING"`},
+				},
 				ParentA: &Operator{
 					Kind:   "scan",
 					Fields: Fields{"dept", "city"},
 					Params: []interface{}{
 						"csvData",
 						`
-dev,paris
-finance,london
+"dev","paris"
+"finance","london"
 `,
 					},
 				},
@@ -391,10 +445,10 @@ finance,london
 					Params: []interface{}{
 						"csvData",
 						`
-dan,dev
-doug,dev
-frank,finance
-fred,finance
+"dan","dev"
+"doug","dev"
+"frank","finance"
+"fred","finance"
 `,
 					},
 				},
@@ -402,19 +456,19 @@ fred,finance
 			expectYields: []LazyVals(nil),
 		},
 		{
-			about: "test full join via always-matching join condition",
+			about: "test full join via always-true join condition",
 			o: Operator{
 				Kind:   "join-nl",
 				Fields: Fields{"dept", "city", "emp", "empDept"},
-				Params: []interface{}{"eq", "sHello", "sHello"},
+				Params: []interface{}{"json", `true`},
 				ParentA: &Operator{
 					Kind:   "scan",
 					Fields: Fields{"dept", "city"},
 					Params: []interface{}{
 						"csvData",
 						`
-dev,paris
-finance,london
+"dev","paris"
+"finance","london"
 `,
 					},
 				},
@@ -424,23 +478,69 @@ finance,london
 					Params: []interface{}{
 						"csvData",
 						`
-dan,dev
-doug,dev
-frank,finance
-fred,finance
+"dan","dev"
+"doug","dev"
+"frank","finance"
+"fred","finance"
 `,
 					},
 				},
 			},
 			expectYields: []LazyVals{
-				LazyVals{"dev", "paris", "dan", "dev"},
-				LazyVals{"dev", "paris", "doug", "dev"},
-				LazyVals{"dev", "paris", "frank", "finance"},
-				LazyVals{"dev", "paris", "fred", "finance"},
-				LazyVals{"finance", "london", "dan", "dev"},
-				LazyVals{"finance", "london", "doug", "dev"},
-				LazyVals{"finance", "london", "frank", "finance"},
-				LazyVals{"finance", "london", "fred", "finance"},
+				LazyVals{`"dev"`, `"paris"`, `"dan"`, `"dev"`},
+				LazyVals{`"dev"`, `"paris"`, `"doug"`, `"dev"`},
+				LazyVals{`"dev"`, `"paris"`, `"frank"`, `"finance"`},
+				LazyVals{`"dev"`, `"paris"`, `"fred"`, `"finance"`},
+				LazyVals{`"finance"`, `"london"`, `"dan"`, `"dev"`},
+				LazyVals{`"finance"`, `"london"`, `"doug"`, `"dev"`},
+				LazyVals{`"finance"`, `"london"`, `"frank"`, `"finance"`},
+				LazyVals{`"finance"`, `"london"`, `"fred"`, `"finance"`},
+			},
+		},
+		{
+			about: "test full join via always-matching join condition",
+			o: Operator{
+				Kind:   "join-nl",
+				Fields: Fields{"dept", "city", "emp", "empDept"},
+				Params: []interface{}{
+					"eq",
+					[]interface{}{"json", `"Hello"`},
+					[]interface{}{"json", `"Hello"`},
+				},
+				ParentA: &Operator{
+					Kind:   "scan",
+					Fields: Fields{"dept", "city"},
+					Params: []interface{}{
+						"csvData",
+						`
+"dev","paris"
+"finance","london"
+`,
+					},
+				},
+				ParentB: &Operator{
+					Kind:   "scan",
+					Fields: Fields{"emp", "empDept"},
+					Params: []interface{}{
+						"csvData",
+						`
+"dan","dev"
+"doug","dev"
+"frank","finance"
+"fred","finance"
+`,
+					},
+				},
+			},
+			expectYields: []LazyVals{
+				LazyVals{`"dev"`, `"paris"`, `"dan"`, `"dev"`},
+				LazyVals{`"dev"`, `"paris"`, `"doug"`, `"dev"`},
+				LazyVals{`"dev"`, `"paris"`, `"frank"`, `"finance"`},
+				LazyVals{`"dev"`, `"paris"`, `"fred"`, `"finance"`},
+				LazyVals{`"finance"`, `"london"`, `"dan"`, `"dev"`},
+				LazyVals{`"finance"`, `"london"`, `"doug"`, `"dev"`},
+				LazyVals{`"finance"`, `"london"`, `"frank"`, `"finance"`},
+				LazyVals{`"finance"`, `"london"`, `"fred"`, `"finance"`},
 			},
 		},
 	}
