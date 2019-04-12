@@ -66,7 +66,7 @@ func TestExecOperator(t *testing.T) {
 				},
 			},
 			expectYields: []LazyVals{
-				LazyVals{"1", "2", "3"},
+				LazyVals{[]byte("1"), []byte("2"), []byte("3")},
 			},
 		},
 		{
@@ -83,8 +83,8 @@ func TestExecOperator(t *testing.T) {
 				},
 			},
 			expectYields: []LazyVals{
-				LazyVals{"10", "20", "30"},
-				LazyVals{"11", "21", "31"},
+				LazyVals{[]byte("10"), []byte("20"), []byte("30")},
+				LazyVals{[]byte("11"), []byte("21"), []byte("31")},
 			},
 		},
 		{
@@ -110,8 +110,8 @@ func TestExecOperator(t *testing.T) {
 				},
 			},
 			expectYields: []LazyVals{
-				LazyVals{"10", "20", "30"},
-				LazyVals{"11", "21", "31"},
+				LazyVals{[]byte("10"), []byte("20"), []byte("30")},
+				LazyVals{[]byte("11"), []byte("21"), []byte("31")},
 			},
 		},
 		{
@@ -161,8 +161,8 @@ func TestExecOperator(t *testing.T) {
 				},
 			},
 			expectYields: []LazyVals{
-				LazyVals{"10", "20", "30"},
-				LazyVals{"11", "21", "31"},
+				LazyVals{[]byte("10"), []byte("20"), []byte("30")},
+				LazyVals{[]byte("11"), []byte("21"), []byte("31")},
 			},
 		},
 		{
@@ -236,7 +236,7 @@ func TestExecOperator(t *testing.T) {
 				},
 			},
 			expectYields: []LazyVals{
-				LazyVals{"11", "21", "31"},
+				LazyVals{[]byte("11"), []byte("21"), []byte("31")},
 			},
 		},
 		{
@@ -264,8 +264,8 @@ func TestExecOperator(t *testing.T) {
 				},
 			},
 			expectYields: []LazyVals{
-				LazyVals{"10", "20", "3000"},
-				LazyVals{"11", "21", "3000"},
+				LazyVals{[]byte("10"), []byte("20"), []byte("3000")},
+				LazyVals{[]byte("11"), []byte("21"), []byte("3000")},
 			},
 		},
 		{
@@ -301,8 +301,8 @@ func TestExecOperator(t *testing.T) {
 				},
 			},
 			expectYields: []LazyVals{
-				LazyVals{"10", "3000"},
-				LazyVals{"11", "3000"},
+				LazyVals{[]byte("10"), []byte("3000")},
+				LazyVals{[]byte("11"), []byte("3000")},
 			},
 		},
 		{
@@ -372,8 +372,8 @@ func TestExecOperator(t *testing.T) {
 				},
 			},
 			expectYields: []LazyVals{
-				LazyVals{"10", ""},
-				LazyVals{"11", ""},
+				LazyVals{[]byte("10"), nil},
+				LazyVals{[]byte("11"), nil},
 			},
 		},
 		{
@@ -412,10 +412,10 @@ func TestExecOperator(t *testing.T) {
 				},
 			},
 			expectYields: []LazyVals{
-				LazyVals{`"dev"`, `"paris"`, `"dan"`, `"dev"`},
-				LazyVals{`"dev"`, `"paris"`, `"doug"`, `"dev"`},
-				LazyVals{`"finance"`, `"london"`, `"frank"`, `"finance"`},
-				LazyVals{`"finance"`, `"london"`, `"fred"`, `"finance"`},
+				StringsToLazyVals([]string{`"dev"`, `"paris"`, `"dan"`, `"dev"`}, nil),
+				StringsToLazyVals([]string{`"dev"`, `"paris"`, `"doug"`, `"dev"`}, nil),
+				StringsToLazyVals([]string{`"finance"`, `"london"`, `"frank"`, `"finance"`}, nil),
+				StringsToLazyVals([]string{`"finance"`, `"london"`, `"fred"`, `"finance"`}, nil),
 			},
 		},
 		{
@@ -487,14 +487,14 @@ func TestExecOperator(t *testing.T) {
 				},
 			},
 			expectYields: []LazyVals{
-				LazyVals{`"dev"`, `"paris"`, `"dan"`, `"dev"`},
-				LazyVals{`"dev"`, `"paris"`, `"doug"`, `"dev"`},
-				LazyVals{`"dev"`, `"paris"`, `"frank"`, `"finance"`},
-				LazyVals{`"dev"`, `"paris"`, `"fred"`, `"finance"`},
-				LazyVals{`"finance"`, `"london"`, `"dan"`, `"dev"`},
-				LazyVals{`"finance"`, `"london"`, `"doug"`, `"dev"`},
-				LazyVals{`"finance"`, `"london"`, `"frank"`, `"finance"`},
-				LazyVals{`"finance"`, `"london"`, `"fred"`, `"finance"`},
+				StringsToLazyVals([]string{`"dev"`, `"paris"`, `"dan"`, `"dev"`}, nil),
+				StringsToLazyVals([]string{`"dev"`, `"paris"`, `"doug"`, `"dev"`}, nil),
+				StringsToLazyVals([]string{`"dev"`, `"paris"`, `"frank"`, `"finance"`}, nil),
+				StringsToLazyVals([]string{`"dev"`, `"paris"`, `"fred"`, `"finance"`}, nil),
+				StringsToLazyVals([]string{`"finance"`, `"london"`, `"dan"`, `"dev"`}, nil),
+				StringsToLazyVals([]string{`"finance"`, `"london"`, `"doug"`, `"dev"`}, nil),
+				StringsToLazyVals([]string{`"finance"`, `"london"`, `"frank"`, `"finance"`}, nil),
+				StringsToLazyVals([]string{`"finance"`, `"london"`, `"fred"`, `"finance"`}, nil),
 			},
 		},
 		{
@@ -533,14 +533,14 @@ func TestExecOperator(t *testing.T) {
 				},
 			},
 			expectYields: []LazyVals{
-				LazyVals{`"dev"`, `"paris"`, `"dan"`, `"dev"`},
-				LazyVals{`"dev"`, `"paris"`, `"doug"`, `"dev"`},
-				LazyVals{`"dev"`, `"paris"`, `"frank"`, `"finance"`},
-				LazyVals{`"dev"`, `"paris"`, `"fred"`, `"finance"`},
-				LazyVals{`"finance"`, `"london"`, `"dan"`, `"dev"`},
-				LazyVals{`"finance"`, `"london"`, `"doug"`, `"dev"`},
-				LazyVals{`"finance"`, `"london"`, `"frank"`, `"finance"`},
-				LazyVals{`"finance"`, `"london"`, `"fred"`, `"finance"`},
+				StringsToLazyVals([]string{`"dev"`, `"paris"`, `"dan"`, `"dev"`}, nil),
+				StringsToLazyVals([]string{`"dev"`, `"paris"`, `"doug"`, `"dev"`}, nil),
+				StringsToLazyVals([]string{`"dev"`, `"paris"`, `"frank"`, `"finance"`}, nil),
+				StringsToLazyVals([]string{`"dev"`, `"paris"`, `"fred"`, `"finance"`}, nil),
+				StringsToLazyVals([]string{`"finance"`, `"london"`, `"dan"`, `"dev"`}, nil),
+				StringsToLazyVals([]string{`"finance"`, `"london"`, `"doug"`, `"dev"`}, nil),
+				StringsToLazyVals([]string{`"finance"`, `"london"`, `"frank"`, `"finance"`}, nil),
+				StringsToLazyVals([]string{`"finance"`, `"london"`, `"fred"`, `"finance"`}, nil),
 			},
 		},
 	}
@@ -549,8 +549,12 @@ func TestExecOperator(t *testing.T) {
 		var yields []LazyVals
 
 		lazyYield := func(lazyVals LazyVals) {
-			yields = append(yields,
-				append(LazyVals(nil), lazyVals...))
+			var lazyValsCopy LazyVals
+			for _, v := range lazyVals {
+				lazyValsCopy = append(lazyValsCopy, append(LazyVal(nil), v...))
+			}
+
+			yields = append(yields, lazyValsCopy)
 		}
 
 		lazyYieldErr := func(err error) {
@@ -568,9 +572,10 @@ func TestExecOperator(t *testing.T) {
 			t.Fatalf("testi: %d, test: %+v,\n"+
 				" len(yields): %d,\n"+
 				" len(test.expectYields): %d,\n"+
+				" expectYields: %+v,\n"+
 				" got yields: %+v",
 				testi, test,
-				len(yields), len(test.expectYields), yields)
+				len(yields), len(test.expectYields), test.expectYields, yields)
 		}
 	}
 }

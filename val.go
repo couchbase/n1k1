@@ -1,13 +1,15 @@
 package n1k1
 
 import (
+	"bytes"
 	"errors"
+	"fmt"
 	"reflect"
 )
 
 var ErrMissing = errors.New("missing")
 
-var JsonTypes = map[byte]string{ // TODO: Use byte array?
+var JsonTypes = map[byte]string{ // TODO: Use array instead of map?
 	'"': "string",
 	'{': "object",
 	'[': "array",
@@ -27,32 +29,52 @@ var JsonTypes = map[byte]string{ // TODO: Use byte array?
 	'9': "number",
 }
 
-type LazyVal string
+type LazyVal []byte
 
 type LazyVals []LazyVal
 
-const LazyValMissing = LazyVal("")
+var LazyValMissing = LazyVal(nil)
 
-const LazyValNull = LazyVal("null")
+var LazyValNull = LazyVal([]byte("null"))
 
-const LazyValTrue = LazyVal("true")
+var LazyValTrue = LazyVal([]byte("true"))
 
-const LazyValFalse = LazyVal("false")
+var LazyValFalse = LazyVal([]byte("false"))
+
+func (a LazyVal) String() string {
+	return fmt.Sprintf("%q", []byte(a))
+}
 
 // -----------------------------------------------------
 
-func LazyValEquals(lazyValA, lazyValB LazyVal) (lazyVal LazyVal) {
-	if lazyValA == LazyValMissing || lazyValB == LazyValMissing {
+func LazyValEqualTrue(lazyVal LazyVal) bool {
+	return len(lazyVal) > 0 && lazyVal[0] == 't'
+}
+
+func LazyValEqual(lazyValA, lazyValB LazyVal) (lazyVal LazyVal) {
+	if bytes.Equal(lazyValA, LazyValMissing) {
 		lazyVal = LazyValMissing
-	} else if lazyValA == LazyValNull || lazyValB == LazyValNull {
+	} else if bytes.Equal(lazyValB, LazyValMissing) {
+		lazyVal = LazyValMissing
+	} else if bytes.Equal(lazyValA, LazyValNull) {
 		lazyVal = LazyValNull
-	} else if lazyValA == lazyValB {
+	} else if bytes.Equal(lazyValB, LazyValNull) {
+		lazyVal = LazyValNull
+	} else if bytes.Equal(lazyValA, lazyValB) {
 		lazyVal = LazyValTrue
 	} else {
 		lazyVal = LazyValFalse
 	}
 
 	return lazyVal
+}
+
+func StringsToLazyVals(a []string, lazyValsPre LazyVals) LazyVals {
+	lazyVals := lazyValsPre
+	for _, v := range a {
+		lazyVals = append(lazyVals, LazyVal([]byte(v)))
+	}
+	return lazyVals
 }
 
 // -----------------------------------------------------

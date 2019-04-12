@@ -27,13 +27,17 @@ func init() {
 
 func ExprJson(fields Fields, types Types, params []interface{},
 	outTypes Types) (lazyExprFunc LazyExprFunc) {
-	json := params[0].(string)     // TODO: Use []byte one day.
+	json := []byte(params[0].(string))
 	jsonType := JsonTypes[json[0]] // Might be "".
 
 	SetLastType(outTypes, jsonType)
 
+	lazyValJson := LazyVal(json)
+
 	lazyExprFunc = func(lazyVals LazyVals) (lazyVal LazyVal) {
-		return LazyVal(json)
+		lazyVal = lazyValJson
+
+		return lazyVal
 	}
 
 	return lazyExprFunc
@@ -91,7 +95,7 @@ func ExprEq(fields Fields, types Types, params []interface{},
 		lazyValB := lazyVal
 
 		lazyVal =
-			LazyValEquals(lazyValA, lazyValB) // <== inline-ok.
+			LazyValEqual(lazyValA, lazyValB) // <== inline-ok.
 
 		return lazyVal
 	}

@@ -30,7 +30,8 @@ func MakeProjectFunc(fields Fields, types Types,
 			lazyVal =
 				lazyExprFunc(lazyVals) // <== inline-ok.
 
-			// TODO: One day need to copy bytes?
+			// NOTE: The lazyVals is stable while we are building up
+			// the lazyValsOut, so no need to deep copy items yet.
 			lazyValsOut = append(lazyValsOut, lazyVal)
 		}
 

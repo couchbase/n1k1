@@ -25,7 +25,7 @@ func Scan(params []interface{},
 		lazyReader := strings.NewReader(lazyCsvData)
 		ScanReaderAsCsv(lazyReader, lazyYield, lazyYieldErr) // <== inline-ok.
 
-	case "repeat":
+	case "repeat": // Useful for testing to yield repeated data.
 		n, err := strconv.Atoi(params[1].(string))
 		if err != nil {
 			lazyYieldErr(err)
@@ -74,10 +74,7 @@ func ScanReaderAsCsv(lazyReader io.Reader,
 		if len(lazyLine) > 0 {
 			lazyRecord := strings.Split(lazyLine, ",")
 			if len(lazyRecord) > 0 {
-				lazyVals = lazyVals[:0]
-				for _, v := range lazyRecord {
-					lazyVals = append(lazyVals, LazyVal(v))
-				}
+				lazyVals = StringsToLazyVals(lazyRecord, lazyVals[:0])
 
 				lazyYield(lazyVals)
 			}

@@ -39,7 +39,7 @@ func ExecOperator(o *Operator,
 
 		lazyYield = func(lazyVals LazyVals) {
 			lazyVal := lazyExprFunc(lazyVals)
-			if lazyVal == LazyValTrue {
+			if LazyValEqualTrue(lazyVal) {
 				lazyYieldOrig(lazyVals)
 			}
 		}
@@ -47,11 +47,6 @@ func ExecOperator(o *Operator,
 		ExecOperator(o.ParentA, lazyYield, lazyYieldErr) // <== inlineOk
 
 	case "project":
-		// TODO.
-		// if len(o.Types) <= 0 && len(o.Fields) > 0 {
-		//    o.Types = make(Types, len(o.Fields))
-		// }
-
 		types := make(Types, len(o.ParentA.Fields)) // TODO.
 		outTypes := Types{""}                       // TODO.
 
@@ -99,7 +94,7 @@ func ExecOperator(o *Operator,
 				lazyVals = append(lazyVals, lazyValsB...)
 
 				lazyVal := lazyExprFunc(lazyVals)
-				if lazyVal == LazyValTrue {
+				if LazyValEqualTrue(lazyVal) {
 					lazyYieldOrig(lazyVals)
 				}
 			}
