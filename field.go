@@ -11,4 +11,3 @@ func (a Fields) IndexOf(s string) int {
 
 	return -1
 }
-

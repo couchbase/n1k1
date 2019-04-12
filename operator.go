@@ -30,7 +30,7 @@ func ExecOperator(o *Operator,
 		var lazyExprFunc LazyExprFunc
 
 		types := make(Types, len(o.ParentA.Fields)) // TODO.
-		outTypes := Types{""} // TODO.
+		outTypes := Types{""}                       // TODO.
 
 		lazyExprFunc =
 			MakeExprFunc(o.ParentA.Fields, types, o.Params, outTypes) // <== inline-ok.
@@ -53,7 +53,7 @@ func ExecOperator(o *Operator,
 		// }
 
 		types := make(Types, len(o.ParentA.Fields)) // TODO.
-		outTypes := Types{""} // TODO.
+		outTypes := Types{""}                       // TODO.
 
 		var lazyProjectFunc LazyProjectFunc
 
@@ -79,7 +79,7 @@ func ExecOperator(o *Operator,
 		fieldsAB = append(fieldsAB, o.ParentB.Fields...)
 
 		types := make(Types, len(fieldsAB)) // TODO.
-		outTypes := Types{""} // TODO.
+		outTypes := Types{""}               // TODO.
 
 		var lazyExprFunc LazyExprFunc
 

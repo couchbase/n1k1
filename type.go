@@ -5,13 +5,13 @@ import (
 )
 
 var TypeCatalog = map[string]string{
-	"bool": "scalar",
-	"null": "scalar",
+	"bool":   "scalar",
+	"null":   "scalar",
 	"number": "scalar",
 	"string": "scalar",
-	"array": "composite",
+	"array":  "composite",
 	"object": "composite",
-	"": "composite", // The unknown or any type.
+	"":       "composite", // The unknown or any type.
 }
 
 // -----------------------------------------------------

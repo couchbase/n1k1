@@ -63,6 +63,8 @@ func ScanFile(lazyFilePath string,
 
 func ScanReaderAsCsv(lazyReader io.Reader,
 	lazyYield LazyYield, lazyYieldErr LazyYieldErr) {
+	// NOTE: Can't use encoding/csv, due to handling of double-quotes.
+	// TODO: Scanner does not reuse slices, creating garbage.
 	lazyScanner := bufio.NewScanner(lazyReader)
 
 	var lazyVals LazyVals

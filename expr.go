@@ -47,7 +47,7 @@ var JsonTypes = map[byte]string{ // TODO: Use byte array instead?
 
 func ExprJson(fields Fields, types Types, params []interface{},
 	outTypes Types) (lazyExprFunc LazyExprFunc) {
-	json := params[0].(string) // TODO: Use []byte one day.
+	json := params[0].(string)     // TODO: Use []byte one day.
 	jsonType := JsonTypes[json[0]] // Might be "".
 
 	SetLastType(outTypes, jsonType)
