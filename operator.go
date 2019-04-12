@@ -24,7 +24,7 @@ func ExecOperator(o *Operator,
 
 	switch o.Kind {
 	case "scan":
-		Scan(o.Params, lazyYield, lazyYieldErr) // <== inlineOk
+		Scan(o.Params, o.Fields, lazyYield, lazyYieldErr) // <== inlineOk
 
 	case "filter":
 		var lazyExprFunc LazyExprFunc

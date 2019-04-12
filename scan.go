@@ -9,7 +9,7 @@ import (
 	"strings"
 )
 
-func Scan(params []interface{},
+func Scan(params []interface{}, fields Fields,
 	lazyYield LazyYield, lazyYieldErr LazyYieldErr) {
 	kind := params[0].(string)
 
@@ -17,13 +17,13 @@ func Scan(params []interface{},
 	case "filePath":
 		filePath := params[1].(string)
 		lazyFilePath := filePath
-		ScanFile(lazyFilePath, lazyYield, lazyYieldErr) // <== inlineOk
+		ScanFile(lazyFilePath, fields, lazyYield, lazyYieldErr) // <== inlineOk
 
 	case "csvData":
 		csvData := params[1].(string)
 		lazyCsvData := csvData
 		lazyReader := strings.NewReader(lazyCsvData)
-		ScanReaderAsCsv(lazyReader, lazyYield, lazyYieldErr) // <== inlineOk
+		ScanReaderAsCsv(lazyReader, fields, lazyYield, lazyYieldErr) // <== inlineOk
 
 	case "repeat": // Useful for testing to yield repeated data.
 		n, err := strconv.Atoi(params[1].(string))
@@ -35,7 +35,7 @@ func Scan(params []interface{},
 		lazyN := n
 		lazyParams := params[2:]
 		for lazyI := 0; lazyI < lazyN; lazyI++ {
-			Scan(lazyParams, lazyYield, lazyYieldErr) // Do not inline.
+			Scan(lazyParams, fields, lazyYield, lazyYieldErr) // Do not inline.
 		}
 
 	default:
@@ -43,7 +43,7 @@ func Scan(params []interface{},
 	}
 }
 
-func ScanFile(lazyFilePath string,
+func ScanFile(lazyFilePath string, fields Fields,
 	lazyYield LazyYield, lazyYieldErr LazyYieldErr) {
 	if !strings.HasSuffix(lazyFilePath, ".csv") {
 		lazyYieldErr(fmt.Errorf("not csv, lazyFilePath: %s", lazyFilePath))
@@ -58,10 +58,10 @@ func ScanFile(lazyFilePath string,
 
 	defer lazyReader.Close()
 
-	ScanReaderAsCsv(lazyReader, lazyYield, lazyYieldErr) // <== inlineOk
+	ScanReaderAsCsv(lazyReader, fields, lazyYield, lazyYieldErr) // <== inlineOk
 }
 
-func ScanReaderAsCsv(lazyReader io.Reader,
+func ScanReaderAsCsv(lazyReader io.Reader, fields Fields,
 	lazyYield LazyYield, lazyYieldErr LazyYieldErr) {
 	// NOTE: Can't use encoding/csv, due to handling of double-quotes.
 	// TODO: Scanner does not reuse slices, creating garbage.
