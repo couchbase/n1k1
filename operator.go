@@ -33,7 +33,7 @@ func ExecOperator(o *Operator,
 		outTypes := Types{""}                       // TODO.
 
 		lazyExprFunc =
-			MakeExprFunc(o.ParentA.Fields, types, o.Params, outTypes) // <== inlineOk
+			MakeExprFunc(o.ParentA.Fields, types, o.Params, outTypes, 0) // <== inlineOk
 
 		lazyYieldOrig := lazyYield
 
@@ -79,7 +79,7 @@ func ExecOperator(o *Operator,
 		var lazyExprFunc LazyExprFunc
 
 		lazyExprFunc =
-			MakeExprFunc(fieldsAB, types, o.Params, outTypes) // <== inlineOk
+			MakeExprFunc(fieldsAB, types, o.Params, outTypes, 0) // <== inlineOk
 
 		var lazyVals LazyVals
 

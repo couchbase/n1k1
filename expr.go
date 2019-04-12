@@ -1,10 +1,10 @@
 package n1k1
 
 func MakeExprFunc(fields Fields, types Types, expr []interface{},
-	outTypes Types) (lazyExprFunc LazyExprFunc) {
+	outTypes Types, depth int) (lazyExprFunc LazyExprFunc) {
 	f := ExprCatalog[expr[0].(string)]
 	lazyExprFunc =
-		f(fields, types, expr[1:], outTypes) // <== inlineOk
+		f(fields, types, expr[1:], outTypes, depth) // <== inlineOk
 	return lazyExprFunc
 }
 
@@ -13,7 +13,7 @@ func MakeExprFunc(fields Fields, types Types, expr []interface{},
 type LazyExprFunc func(lazyVals LazyVals) LazyVal
 
 type ExprCatalogFunc func(fields Fields, types Types, params []interface{},
-	outTypes Types) (lazyExprFunc LazyExprFunc)
+	outTypes Types, depth int) (lazyExprFunc LazyExprFunc)
 
 var ExprCatalog = map[string]ExprCatalogFunc{}
 
@@ -26,7 +26,7 @@ func init() {
 // -----------------------------------------------------
 
 func ExprJson(fields Fields, types Types, params []interface{},
-	outTypes Types) (lazyExprFunc LazyExprFunc) {
+	outTypes Types, depth int) (lazyExprFunc LazyExprFunc) {
 	json := []byte(params[0].(string))
 	jsonType := JsonTypes[json[0]] // Might be "".
 
@@ -46,7 +46,7 @@ func ExprJson(fields Fields, types Types, params []interface{},
 // -----------------------------------------------------
 
 func ExprField(fields Fields, types Types, params []interface{},
-	outTypes Types) (lazyExprFunc LazyExprFunc) {
+	outTypes Types, depth int) (lazyExprFunc LazyExprFunc) {
 	idx := fields.IndexOf(params[0].(string))
 	if idx < 0 {
 		SetLastType(outTypes, "")
@@ -70,16 +70,16 @@ func ExprField(fields Fields, types Types, params []interface{},
 // -----------------------------------------------------
 
 func ExprEq(fields Fields, types Types, params []interface{},
-	outTypes Types) (lazyExprFunc LazyExprFunc) {
+	outTypes Types, depth int) (lazyExprFunc LazyExprFunc) {
 	exprA := params[0].([]interface{})
 	lazyExprFunc =
-		MakeExprFunc(fields, types, exprA, outTypes) // <== inlineOk
+		MakeExprFunc(fields, types, exprA, outTypes, depth + 1) // <== inlineOk
 	lazyA := lazyExprFunc
 	TakeLastType(outTypes)
 
 	exprB := params[1].([]interface{})
 	lazyExprFunc =
-		MakeExprFunc(fields, types, exprB, outTypes) // <== inlineOk
+		MakeExprFunc(fields, types, exprB, outTypes, depth + 1) // <== inlineOk
 	lazyB := lazyExprFunc
 	TakeLastType(outTypes)
 
