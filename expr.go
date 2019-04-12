@@ -25,26 +25,6 @@ func init() {
 
 // -----------------------------------------------------
 
-var JsonTypes = map[byte]string{ // TODO: Use byte array instead?
-	'"': "string",
-	'{': "object",
-	'[': "array",
-	'n': "null",
-	't': "bool", // From "true".
-	'f': "bool", // From "false".
-	'-': "number",
-	'0': "number",
-	'1': "number",
-	'2': "number",
-	'3': "number",
-	'4': "number",
-	'5': "number",
-	'6': "number",
-	'7': "number",
-	'8': "number",
-	'9': "number",
-}
-
 func ExprJson(fields Fields, types Types, params []interface{},
 	outTypes Types) (lazyExprFunc LazyExprFunc) {
 	json := params[0].(string)     // TODO: Use []byte one day.
@@ -110,15 +90,8 @@ func ExprEq(fields Fields, types Types, params []interface{},
 			lazyB(lazyVals) // <== inline-ok.
 		lazyValB := lazyVal
 
-		if lazyValA == LazyValMissing || lazyValB == LazyValMissing {
-			lazyVal = LazyValMissing
-		} else if lazyValA == LazyValNull || lazyValB == LazyValNull {
-			lazyVal = LazyValNull
-		} else if lazyValA == lazyValB {
-			lazyVal = LazyValTrue
-		} else {
-			lazyVal = LazyValFalse
-		}
+		lazyVal =
+			LazyValEquals(lazyValA, lazyValB) // <== inline-ok.
 
 		return lazyVal
 	}
