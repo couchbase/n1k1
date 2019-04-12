@@ -1,4 +1,4 @@
-package n1ko
+package n1k1
 
 import (
 	"encoding/csv"
@@ -9,24 +9,24 @@ import (
 	"strings"
 )
 
-func Scan(params []string,
+func Scan(params []interface{},
 	lazyYield LazyYield, lazyYieldErr LazyYieldErr) {
-	kind := params[0]
+	kind := params[0].(string)
 
 	switch kind {
 	case "filePath":
-		filePath := params[1]
+		filePath := params[1].(string)
 		lazyFilePath := filePath
 		ScanFile(lazyFilePath, lazyYield, lazyYieldErr) // <== inline-ok.
 
 	case "csvData":
-		csvData := params[1]
+		csvData := params[1].(string)
 		lazyCsvData := csvData
 		lazyReader := strings.NewReader(lazyCsvData)
 		ScanReaderAsCsv(lazyReader, lazyYield, lazyYieldErr) // <== inline-ok.
 
 	case "repeat":
-		n, err := strconv.Atoi(params[1])
+		n, err := strconv.Atoi(params[1].(string))
 		if err != nil {
 			lazyYieldErr(err)
 			return

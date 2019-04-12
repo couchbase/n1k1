@@ -1,4 +1,4 @@
-package n1ko
+package n1k1
 
 import (
 	"reflect"
@@ -38,7 +38,7 @@ func TestExecOperator(t *testing.T) {
 			o: Operator{
 				Kind:   "scan",
 				Fields: Fields(nil),
-				Params: []string{
+				Params: []interface{}{
 					"csvData",
 					"",
 				},
@@ -49,7 +49,7 @@ func TestExecOperator(t *testing.T) {
 			o: Operator{
 				Kind:   "scan",
 				Fields: Fields{"a", "b", "c"},
-				Params: []string{
+				Params: []interface{}{
 					"csvData",
 					"",
 				},
@@ -60,7 +60,7 @@ func TestExecOperator(t *testing.T) {
 			o: Operator{
 				Kind:   "scan",
 				Fields: Fields{"a", "b", "c"},
-				Params: []string{
+				Params: []interface{}{
 					"csvData",
 					"1,2,3",
 				},
@@ -74,7 +74,7 @@ func TestExecOperator(t *testing.T) {
 			o: Operator{
 				Kind:   "scan",
 				Fields: Fields{"a", "b", "c"},
-				Params: []string{
+				Params: []interface{}{
 					"csvData",
 					`
 10,20,30
@@ -92,11 +92,11 @@ func TestExecOperator(t *testing.T) {
 			o: Operator{
 				Kind:   "filter",
 				Fields: Fields{"a", "b", "c"},
-				Params: []string{"eq", "sJuly", "sJuly"},
+				Params: []interface{}{"eq", "sJuly", "sJuly"},
 				ParentA: &Operator{
 					Kind:   "scan",
 					Fields: Fields{"a", "b", "c"},
-					Params: []string{
+					Params: []interface{}{
 						"csvData",
 						`
 10,20,30
@@ -115,11 +115,11 @@ func TestExecOperator(t *testing.T) {
 			o: Operator{
 				Kind:   "filter",
 				Fields: Fields{"a", "b", "c"},
-				Params: []string{"eq", "sJuly", "sJune"},
+				Params: []interface{}{"eq", "sJuly", "sJune"},
 				ParentA: &Operator{
 					Kind:   "scan",
 					Fields: Fields{"a", "b", "c"},
-					Params: []string{
+					Params: []interface{}{
 						"csvData",
 						`
 10,20,30
@@ -135,11 +135,11 @@ func TestExecOperator(t *testing.T) {
 			o: Operator{
 				Kind:   "filter",
 				Fields: Fields{"a", "b", "c"},
-				Params: []string{"eq", "fb", "fb"},
+				Params: []interface{}{"eq", "fb", "fb"},
 				ParentA: &Operator{
 					Kind:   "scan",
 					Fields: Fields{"a", "b", "c"},
-					Params: []string{
+					Params: []interface{}{
 						"csvData",
 						`
 10,20,30
@@ -158,11 +158,11 @@ func TestExecOperator(t *testing.T) {
 			o: Operator{
 				Kind:   "filter",
 				Fields: Fields{"a", "b", "c"},
-				Params: []string{"eq", "fa", "fb"},
+				Params: []interface{}{"eq", "fa", "fb"},
 				ParentA: &Operator{
 					Kind:   "scan",
 					Fields: Fields{"a", "b", "c"},
-					Params: []string{
+					Params: []interface{}{
 						"csvData",
 						`
 10,20,30
@@ -178,11 +178,11 @@ func TestExecOperator(t *testing.T) {
 			o: Operator{
 				Kind:   "filter",
 				Fields: Fields{"a", "b", "c"},
-				Params: []string{"eq", "fb", "s66"},
+				Params: []interface{}{"eq", "fb", "s66"},
 				ParentA: &Operator{
 					Kind:   "scan",
 					Fields: Fields{"a", "b", "c"},
-					Params: []string{
+					Params: []interface{}{
 						"csvData",
 						`
 10,20,30
@@ -198,11 +198,11 @@ func TestExecOperator(t *testing.T) {
 			o: Operator{
 				Kind:   "filter",
 				Fields: Fields{"a", "b", "c"},
-				Params: []string{"eq", "fb", "s21"},
+				Params: []interface{}{"eq", "fb", "s21"},
 				ParentA: &Operator{
 					Kind:   "scan",
 					Fields: Fields{"a", "b", "c"},
-					Params: []string{
+					Params: []interface{}{
 						"csvData",
 						`
 10,20,30
@@ -220,11 +220,11 @@ func TestExecOperator(t *testing.T) {
 			o: Operator{
 				Kind:   "filter",
 				Fields: Fields{"a", "b", "c"},
-				Params: []string{"eq", "fc", "s3000"},
+				Params: []interface{}{"eq", "fc", "s3000"},
 				ParentA: &Operator{
 					Kind:   "scan",
 					Fields: Fields{"a", "b", "c"},
-					Params: []string{
+					Params: []interface{}{
 						"csvData",
 						`
 00,00,0000
@@ -245,15 +245,15 @@ func TestExecOperator(t *testing.T) {
 			o: Operator{
 				Kind:   "project",
 				Fields: Fields{"a", "c"},
-				Params: []string{"a", "c"},
+				Params: []interface{}{"a", "c"},
 				ParentA: &Operator{
 					Kind:   "filter",
 					Fields: Fields{"a", "b", "c"},
-					Params: []string{"eq", "fc", "s3000"},
+					Params: []interface{}{"eq", "fc", "s3000"},
 					ParentA: &Operator{
 						Kind:   "scan",
 						Fields: Fields{"a", "b", "c"},
-						Params: []string{
+						Params: []interface{}{
 							"csvData",
 							`
 00,00,0000
@@ -275,15 +275,15 @@ func TestExecOperator(t *testing.T) {
 			o: Operator{
 				Kind:   "project",
 				Fields: Fields{},
-				Params: []string{},
+				Params: []interface{}{},
 				ParentA: &Operator{
 					Kind:   "filter",
 					Fields: Fields{"a", "b", "c"},
-					Params: []string{"eq", "fc", "s3000"},
+					Params: []interface{}{"eq", "fc", "s3000"},
 					ParentA: &Operator{
 						Kind:   "scan",
 						Fields: Fields{"a", "b", "c"},
-						Params: []string{
+						Params: []interface{}{
 							"csvData",
 							`
 00,00,0000
@@ -305,15 +305,15 @@ func TestExecOperator(t *testing.T) {
 			o: Operator{
 				Kind:   "project",
 				Fields: Fields{"a", "xxx"},
-				Params: []string{"a", "xxx"},
+				Params: []interface{}{"a", "xxx"},
 				ParentA: &Operator{
 					Kind:   "filter",
 					Fields: Fields{"a", "b", "c"},
-					Params: []string{"eq", "fc", "s3000"},
+					Params: []interface{}{"eq", "fc", "s3000"},
 					ParentA: &Operator{
 						Kind:   "scan",
 						Fields: Fields{"a", "b", "c"},
-						Params: []string{
+						Params: []interface{}{
 							"csvData",
 							`
 00,00,0000
@@ -335,11 +335,11 @@ func TestExecOperator(t *testing.T) {
 			o: Operator{
 				Kind:   "join-nl",
 				Fields: Fields{"dept", "city", "emp", "empDept"},
-				Params: []string{"eq", "fdept", "fempDept"},
+				Params: []interface{}{"eq", "fdept", "fempDept"},
 				ParentA: &Operator{
 					Kind:   "scan",
 					Fields: Fields{"dept", "city"},
-					Params: []string{
+					Params: []interface{}{
 						"csvData",
 						`
 dev,paris
@@ -350,7 +350,7 @@ finance,london
 				ParentB: &Operator{
 					Kind:   "scan",
 					Fields: Fields{"emp", "empDept"},
-					Params: []string{
+					Params: []interface{}{
 						"csvData",
 						`
 dan,dev
@@ -373,11 +373,11 @@ fred,finance
 			o: Operator{
 				Kind:   "join-nl",
 				Fields: Fields{"dept", "city", "emp", "empDept"},
-				Params: []string{"eq", "fdept", "sNOT-MATCHING"},
+				Params: []interface{}{"eq", "fdept", "sNOT-MATCHING"},
 				ParentA: &Operator{
 					Kind:   "scan",
 					Fields: Fields{"dept", "city"},
-					Params: []string{
+					Params: []interface{}{
 						"csvData",
 						`
 dev,paris
@@ -388,7 +388,7 @@ finance,london
 				ParentB: &Operator{
 					Kind:   "scan",
 					Fields: Fields{"emp", "empDept"},
-					Params: []string{
+					Params: []interface{}{
 						"csvData",
 						`
 dan,dev
@@ -406,11 +406,11 @@ fred,finance
 			o: Operator{
 				Kind:   "join-nl",
 				Fields: Fields{"dept", "city", "emp", "empDept"},
-				Params: []string{"eq", "sHello", "sHello"},
+				Params: []interface{}{"eq", "sHello", "sHello"},
 				ParentA: &Operator{
 					Kind:   "scan",
 					Fields: Fields{"dept", "city"},
-					Params: []string{
+					Params: []interface{}{
 						"csvData",
 						`
 dev,paris
@@ -421,7 +421,7 @@ finance,london
 				ParentB: &Operator{
 					Kind:   "scan",
 					Fields: Fields{"emp", "empDept"},
-					Params: []string{
+					Params: []interface{}{
 						"csvData",
 						`
 dan,dev

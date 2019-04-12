@@ -1,4 +1,4 @@
-package n1ko
+package n1k1
 
 // The LazyYield memory ownership rule: the receiver func should copy
 // any inputs that it wants to keep, because the provided slices might
@@ -8,9 +8,9 @@ type LazyYield func(LazyVals)
 type LazyYieldErr func(error)
 
 type Operator struct {
-	Kind   string   // Ex: "scan", "filter", "project", etc.
-	Fields Fields   // Resulting fields of this operator.
-	Params []string // Params specific to this operator.
+	Kind   string        // Ex: "scan", "filter", "project", etc.
+	Fields Fields        // Output fields of this operator.
+	Params []interface{} // Params based on the kind.
 
 	ParentA *Operator
 	ParentB *Operator
@@ -27,15 +27,25 @@ func ExecOperator(o *Operator,
 		Scan(o.Params, lazyYield, lazyYieldErr) // <== inline-ok.
 
 	case "filter":
-		var lazyPredicateFunc LazyPredicateFunc
+		var lazyExprFunc LazyExprFunc
 
-		lazyPredicateFunc =
-			MakePredicateFunc(o.ParentA.Fields, o.Params) // <== inline-ok.
+		types := make(Types, len(o.ParentA.Fields)) // TODO.
+		outTypes := Types{""} // TODO.
+
+		lazyExprFunc =
+			MakeExprFunc(o.ParentA.Fields, types, o.Params, outTypes) // <== inline-ok.
 
 		lazyYieldOrig := lazyYield
 
 		lazyYield = func(lazyVals LazyVals) {
-			if lazyPredicateFunc(lazyVals) {
+			lazyAny := lazyExprFunc(lazyVals)
+			lazyBool := false
+			if lazyAny != nil {
+				if b, ok := lazyAny.(bool); ok && b { // TODO.
+					lazyBool = true
+				}
+			}
+			if lazyBool {
 				lazyYieldOrig(lazyVals)
 			}
 		}
@@ -43,10 +53,18 @@ func ExecOperator(o *Operator,
 		ExecOperator(o.ParentA, lazyYield, lazyYieldErr) // <== inlineOk
 
 	case "project":
+		// TODO.
+		// if len(o.Types) <= 0 && len(o.Fields) > 0 {
+		//    o.Types = make(Types, len(o.Fields))
+		// }
+
+		types := make(Types, len(o.ParentA.Fields)) // TODO.
+		outTypes := Types{""} // TODO.
+
 		var lazyProjectFunc LazyProjectFunc
 
 		lazyProjectFunc =
-			MakeProjectFunc(o.ParentA.Fields, o.Params) // <== inlineOk
+			MakeProjectFunc(o.ParentA.Fields, types, o.Params, outTypes) // <== inlineOk
 
 		var lazyVals LazyVals
 
@@ -66,10 +84,13 @@ func ExecOperator(o *Operator,
 		fieldsAB = append(fieldsAB, o.ParentA.Fields...)
 		fieldsAB = append(fieldsAB, o.ParentB.Fields...)
 
-		var lazyPredicateFunc LazyPredicateFunc
+		types := make(Types, len(fieldsAB)) // TODO.
+		outTypes := Types{""} // TODO.
 
-		lazyPredicateFunc =
-			MakePredicateFunc(fieldsAB, o.Params) // <== inline-ok.
+		var lazyExprFunc LazyExprFunc
+
+		lazyExprFunc =
+			MakeExprFunc(fieldsAB, types, o.Params, outTypes) // <== inline-ok.
 
 		var lazyVals LazyVals
 
@@ -83,7 +104,14 @@ func ExecOperator(o *Operator,
 				lazyVals = lazyVals[0:len(lazyValsA)]
 				lazyVals = append(lazyVals, lazyValsB...)
 
-				if lazyPredicateFunc(lazyVals) {
+				lazyAny := lazyExprFunc(lazyVals)
+				lazyBool := false
+				if lazyAny != nil {
+					if b, ok := lazyAny.(bool); ok && b { // TODO.
+						lazyBool = true
+					}
+				}
+				if lazyBool {
 					lazyYieldOrig(lazyVals)
 				}
 			}
