@@ -1,10 +1,14 @@
 package n1k1
 
 func MakeExprFunc(fields Fields, types Types, expr []interface{},
-	outTypes Types, depth int) (lazyExprFunc LazyExprFunc) {
-	f := ExprCatalog[expr[0].(string)]
+	outTypes Types, path string) (lazyExprFunc LazyExprFunc) {
+	// <== varLiftTop: when path == ""
+
+	ecf := ExprCatalog[expr[0].(string)]
+
 	lazyExprFunc =
-		f(fields, types, expr[1:], outTypes, depth) // <== inlineOk
+		ecf(fields, types, expr[1:], outTypes, path) // <== inlineOk
+
 	return lazyExprFunc
 }
 
@@ -13,7 +17,7 @@ func MakeExprFunc(fields Fields, types Types, expr []interface{},
 type LazyExprFunc func(lazyVals LazyVals) LazyVal
 
 type ExprCatalogFunc func(fields Fields, types Types, params []interface{},
-	outTypes Types, depth int) (lazyExprFunc LazyExprFunc)
+	outTypes Types, path string) (lazyExprFunc LazyExprFunc)
 
 var ExprCatalog = map[string]ExprCatalogFunc{}
 
@@ -26,16 +30,18 @@ func init() {
 // -----------------------------------------------------
 
 func ExprJson(fields Fields, types Types, params []interface{},
-	outTypes Types, depth int) (lazyExprFunc LazyExprFunc) {
+	outTypes Types, path string) (lazyExprFunc LazyExprFunc) {
 	json := []byte(params[0].(string))
 	jsonType := JsonTypes[json[0]] // Might be "".
 
 	SetLastType(outTypes, jsonType)
 
-	lazyValJson := LazyVal(json)
+	var lazyValJson LazyVal // <== varLift: lazyValJson by path
+
+	lazyValJson = LazyVal(json) // <== varLift: lazyValJson by path
 
 	lazyExprFunc = func(lazyVals LazyVals) (lazyVal LazyVal) {
-		lazyVal = lazyValJson
+		lazyVal = lazyValJson // <== varLift: lazyValJson by path
 
 		return lazyVal
 	}
@@ -46,7 +52,7 @@ func ExprJson(fields Fields, types Types, params []interface{},
 // -----------------------------------------------------
 
 func ExprField(fields Fields, types Types, params []interface{},
-	outTypes Types, depth int) (lazyExprFunc LazyExprFunc) {
+	outTypes Types, path string) (lazyExprFunc LazyExprFunc) {
 	idx := fields.IndexOf(params[0].(string))
 	if idx < 0 {
 		SetLastType(outTypes, "")
@@ -70,16 +76,16 @@ func ExprField(fields Fields, types Types, params []interface{},
 // -----------------------------------------------------
 
 func ExprEq(fields Fields, types Types, params []interface{},
-	outTypes Types, depth int) (lazyExprFunc LazyExprFunc) {
+	outTypes Types, path string) (lazyExprFunc LazyExprFunc) {
 	exprA := params[0].([]interface{})
 	lazyExprFunc =
-		MakeExprFunc(fields, types, exprA, outTypes, depth+1) // <== inlineOk
+		MakeExprFunc(fields, types, exprA, outTypes, path+"_1") // <== inlineOk
 	lazyA := lazyExprFunc
 	TakeLastType(outTypes)
 
 	exprB := params[1].([]interface{})
 	lazyExprFunc =
-		MakeExprFunc(fields, types, exprB, outTypes, depth+1) // <== inlineOk
+		MakeExprFunc(fields, types, exprB, outTypes, path+"_2") // <== inlineOk
 	lazyB := lazyExprFunc
 	TakeLastType(outTypes)
 
