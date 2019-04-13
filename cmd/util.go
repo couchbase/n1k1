@@ -7,14 +7,21 @@ import (
 	"strings"
 )
 
-func VisitFiles(dir, fileSuffix string,
+func VisitFiles(dir, fileSuffix string, skipSuffixes []string,
 	cb func(kind, data string) error) error {
 	fileNames, err := FileNames(dir, fileSuffix)
 	if err != nil {
 		return err
 	}
 
+OUTER:
 	for _, fileName := range fileNames {
+		for _, skipSuffix := range skipSuffixes {
+			if strings.HasSuffix(fileName, skipSuffix) {
+				continue OUTER
+			}
+		}
+
 		err = cb("fileStart", fileName)
 		if err != nil {
 			return err

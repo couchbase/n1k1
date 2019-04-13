@@ -16,11 +16,13 @@ func LazyPrefixREFunc(lazyX string) string {
 func GenInterp(sourceDir, outDir string) error {
 	log.Printf(" GenInterp, outDir: %s\n", outDir)
 
-	return GenInterpMain(sourceDir, outDir, nil)
+	return GenInterpMain(sourceDir, outDir, nil, true, true)
 }
 
 func GenInterpMain(sourceDir, outDir string,
-	cbOuter func(out []string, line string) ([]string, string)) error {
+	cbOuter func(out []string, line string) ([]string, string),
+	filterLazyText bool,
+	allowTests bool) error {
 	sourcePackage := "package n1k1"
 
 	outDirParts := strings.Split(outDir, "/")
@@ -48,12 +50,14 @@ func GenInterpMain(sourceDir, outDir string,
 				out, line = cbOuter(out, line)
 			}
 
-			// Converts "LazyFooBar" into "FooBar".
-			line = strings.Replace(line, "Lazy", "", -1)
+			if filterLazyText {
+				// Converts "LazyFooBar" into "FooBar".
+				line = strings.Replace(line, "Lazy", "", -1)
 
-			// Converts "lazyFooBar" into "fooBar".
-			line = LazyPrefixRE.ReplaceAllStringFunc(line,
-				LazyPrefixREFunc)
+				// Converts "lazyFooBar" into "fooBar".
+				line = LazyPrefixRE.ReplaceAllStringFunc(line,
+					LazyPrefixREFunc)
+			}
 
 			out = append(out, line)
 
@@ -70,5 +74,10 @@ func GenInterpMain(sourceDir, outDir string,
 		return nil
 	}
 
-	return VisitFiles(sourceDir, ".go", cb)
+	var skipSuffixes []string
+	if !allowTests {
+		skipSuffixes = append(skipSuffixes, "_test.go")
+	}
+
+	return VisitFiles(sourceDir, ".go", skipSuffixes, cb)
 }
