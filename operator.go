@@ -24,7 +24,7 @@ func ExecOperator(o *Operator,
 
 	switch o.Kind {
 	case "scan":
-		Scan(o.Params, o.Fields, lazyYield, lazyYieldErr) // <== inlineOk
+		Scan(o.Params, o.Fields, lazyYield, lazyYieldErr)
 
 	case "filter":
 		var lazyExprFunc LazyExprFunc
@@ -32,7 +32,7 @@ func ExecOperator(o *Operator,
 		types := make(Types, len(o.ParentA.Fields)) // TODO.
 
 		lazyExprFunc =
-			MakeExprFunc(o.ParentA.Fields, types, o.Params, nil, "") // <== inlineOk
+			MakeExprFunc(o.ParentA.Fields, types, o.Params, nil, "")
 
 		lazyYieldOrig := lazyYield
 
@@ -52,7 +52,7 @@ func ExecOperator(o *Operator,
 		var lazyProjectFunc LazyProjectFunc
 
 		lazyProjectFunc =
-			MakeProjectFunc(o.ParentA.Fields, types, o.Params, outTypes) // <== inlineOk
+			MakeProjectFunc(o.ParentA.Fields, types, o.Params, outTypes)
 
 		var lazyVals LazyVals
 
@@ -77,7 +77,7 @@ func ExecOperator(o *Operator,
 		var lazyExprFunc LazyExprFunc
 
 		lazyExprFunc =
-			MakeExprFunc(fieldsAB, typesAB, o.Params, nil, "") // <== inlineOk
+			MakeExprFunc(fieldsAB, typesAB, o.Params, nil, "")
 
 		var lazyVals LazyVals
 

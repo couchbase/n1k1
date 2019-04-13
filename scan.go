@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os" // <== genCompiler:hide
-	"strconv"
 	"strings" // <== genCompiler:hide
 )
 
@@ -18,26 +17,15 @@ func Scan(params []interface{}, fields Fields,
 	case "filePath":
 		paramsFilePath := params[1].(string)
 		lazyFilePath := paramsFilePath
+
 		ScanFile(lazyFilePath, fields, lazyYield, lazyYieldErr) // <== inlineOk
 
 	case "csvData":
 		paramsCsvData := params[1].(string)
 		lazyCsvData := paramsCsvData
 		lazyReader := strings.NewReader(lazyCsvData)
+
 		ScanReaderAsCsv(lazyReader, fields, lazyYield, lazyYieldErr) // <== inlineOk
-
-	case "repeat": // Useful for testing to yield repeated data.
-		n, err := strconv.Atoi(params[1].(string))
-		if err != nil {
-			lazyYieldErr(err)
-			return
-		}
-
-		lazyLoops := n
-		lazyParams := params[2:]
-		for lazyI := 0; lazyI < lazyLoops; lazyI++ {
-			Scan(lazyParams, fields, lazyYield, lazyYieldErr) // Do not inline.
-		}
 
 	default:
 		lazyYieldErr(fmt.Errorf("unknown scan kind"))
