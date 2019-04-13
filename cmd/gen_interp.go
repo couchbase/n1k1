@@ -16,13 +16,19 @@ func LazyPrefixREFunc(lazyX string) string {
 func GenInterp(sourceDir, outDir string) error {
 	log.Printf(" GenInterp, outDir: %s\n", outDir)
 
-	return GenInterpMain(sourceDir, outDir, nil, true, true)
+	return GenInterpMain(sourceDir, outDir, nil, nil,
+		func(fileName string, out []string) error {
+			return ioutil.WriteFile(outDir+"/"+fileName,
+				[]byte(strings.Join(out, "\n")), 0644)
+		},
+		true, true)
 }
 
 func GenInterpMain(sourceDir, outDir string,
-	cbOuter func(out []string, line string) ([]string, string),
-	filterLazyText bool,
-	allowTests bool) error {
+	cbFileStart func(fileName string) error,
+	cbFileLine func(out []string, line string) ([]string, string, error),
+	cbFileEnd func(fileName string, out []string) error,
+	filterLazyText bool, allowTests bool) error {
 	sourcePackage := "package n1k1"
 
 	outDirParts := strings.Split(outDir, "/")
@@ -30,24 +36,28 @@ func GenInterpMain(sourceDir, outDir string,
 
 	var out []string // Collected output or resulting lines.
 
-	cb := func(kind, data string) error {
+	cb := func(kind, data string) (err error) {
 		switch kind {
 		case "fileStart":
-			out = nil
-
 			fileName := data
 
 			log.Printf("  fileName: %s\n", fileName)
+
+			out = nil
+
+			if cbFileStart != nil {
+				err = cbFileStart(fileName)
+			}
 
 		case "fileLine":
 			line := data
 
 			line = strings.Replace(line, sourcePackage, outPackage, -1)
 
-			// An optional callback can examine and modify the
-			// previous output and examine the incoming line.
-			if cbOuter != nil {
-				out, line = cbOuter(out, line)
+			// Optional callback that can examine the incoming line,
+			// and modify the line and/or the out state.
+			if cbFileLine != nil {
+				out, line, err = cbFileLine(out, line)
 			}
 
 			if filterLazyText {
@@ -64,14 +74,10 @@ func GenInterpMain(sourceDir, outDir string,
 		case "fileEnd":
 			fileName := data
 
-			err := ioutil.WriteFile(outDir+"/"+fileName,
-				[]byte(strings.Join(out, "\n")), 0644)
-			if err != nil {
-				return err
-			}
+			err = cbFileEnd(fileName, out)
 		}
 
-		return nil
+		return err
 	}
 
 	var skipSuffixes []string

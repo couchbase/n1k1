@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"io/ioutil"
 	"log"
 	"regexp"
 	"strings"
@@ -47,14 +48,36 @@ func GenCompiler(sourceDir, outDir string) error {
 		},
 	}
 
-	return GenInterpMain(sourceDir, outDir,
-		func(out []string, line string) ([]string, string) {
+	outAll := []string{
+		"package n1k1_compiler",
+	}
+
+	err := GenInterpMain(sourceDir, outDir, nil,
+		func(out []string, line string) ([]string, string, error) {
+			if strings.HasPrefix(line, "package ") {
+				return out, "", nil
+			}
+
 			if strings.Index(line, "// <== genCompiler:hide") > 0 {
 				line = "// " + line
 			}
 
-			return state.Process(out, line)
-		}, false, false)
+			out, line = state.Process(out, line)
+
+			return out, line, nil
+		},
+		func(fileName string, out []string) error {
+			outAll = append(outAll, out...)
+
+			return nil
+		},
+		false, false)
+	if err != nil {
+		return err
+	}
+
+	return ioutil.WriteFile(outDir+"/generated_by_n1k1_build.go",
+		[]byte(strings.Join(outAll, "\n")), 0644)
 }
 
 // --------------------------------------------------------
