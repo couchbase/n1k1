@@ -1,8 +1,11 @@
 package cmd
 
 import (
+	"bufio"
+	"bytes"
 	"io/ioutil"
 	"log"
+	"strings"
 )
 
 func GenInterp(sourceDir, outDir string) error {
@@ -11,15 +14,28 @@ func GenInterp(sourceDir, outDir string) error {
 		return err
 	}
 
-	log.Printf("fileNames: %v\n", fileNames)
-
 	for _, fileName := range fileNames {
+		log.Printf("  fileName: %s\n", fileName)
+
 		fileBytes, err := ioutil.ReadFile(sourceDir + "/" + fileName)
 		if err != nil {
 			return err
 		}
 
-		log.Printf("  fileName: %s, len: %d\n", fileName, len(fileBytes))
+		var out []string
+
+		s := bufio.NewScanner(bytes.NewBuffer(fileBytes))
+		for s.Scan() {
+			line := s.Text()
+
+			out = append(out, line)
+		}
+
+		err = ioutil.WriteFile(outDir + "/" + fileName,
+			[]byte(strings.Join(out, "\n")), 0644)
+		if err != nil {
+			return err
+		}
 	}
 
 	return nil
