@@ -4,6 +4,7 @@ import (
 	"io/ioutil"
 	"log"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -12,6 +13,8 @@ import (
 type State struct {
 	// Stack of line handlers with associated callback data.
 	Handlers []HandlerEntry
+
+	ImportLines map[string]bool
 }
 
 func (s *State) Push(handler Handler, data string) {
@@ -44,13 +47,12 @@ func GenCompiler(sourceDir, outDir string) error {
 
 	state := &State{
 		Handlers: []HandlerEntry{
-			HandlerEntry{HandlerScanForTopLevelFuncDeclStart, ""},
+			HandlerEntry{HandlerScanFile, ""},
 		},
+		ImportLines: map[string]bool{},
 	}
 
-	outAll := []string{
-		"package n1k1_compiler",
-	}
+	var outAll []string
 
 	err := GenInterpMain(sourceDir, outDir, nil,
 		func(out []string, line string) ([]string, string, error) {
@@ -76,24 +78,58 @@ func GenCompiler(sourceDir, outDir string) error {
 		return err
 	}
 
+	contents := []string{
+		"package n1k1_compiler\n",
+	}
+
+	var importLines []string
+	for importLine := range state.ImportLines {
+		importLines = append(importLines, importLine)
+	}
+
+	sort.Strings(importLines)
+
+	contents = append(contents, "import (")
+	contents = append(contents, importLines...)
+	contents = append(contents, ")")
+
+	contents = append(contents, outAll...)
+
 	return ioutil.WriteFile(outDir+"/generated_by_n1k1_build.go",
-		[]byte(strings.Join(outAll, "\n")), 0644)
+		[]byte(strings.Join(contents, "\n")), 0644)
 }
 
 // --------------------------------------------------------
 
-func HandlerScanForTopLevelFuncDeclStart(state *State, data string,
+func HandlerScanFile(state *State, data string,
 	out []string, line string) ([]string, string) {
-	if !strings.HasPrefix(line, "func ") {
-		return out, line
+	if line == "import (" {
+		state.Push(HandlerScanImports, "")
+
+		return out, ""
 	}
 
-	state.Push(HandlerScanForTopLevelFuncDeclEnd, "")
+	if strings.HasPrefix(line, "func ") {
+		state.Push(HandlerScanTopLevelFuncSignature, "")
 
-	return state.Process(out, line)
+		return state.Process(out, line)
+	}
+
+	return out, line
 }
 
-func HandlerScanForTopLevelFuncDeclEnd(state *State, data string,
+func HandlerScanImports(state *State, data string,
+	out []string, line string) ([]string, string) {
+	if line == ")" {
+		state.Pop()
+	} else {
+		state.ImportLines[line] = true
+	}
+
+	return out, ""
+}
+
+func HandlerScanTopLevelFuncSignature(state *State, data string,
 	out []string, line string) ([]string, string) {
 	if !strings.HasSuffix(line, " {") {
 		return out, line
@@ -101,14 +137,14 @@ func HandlerScanForTopLevelFuncDeclEnd(state *State, data string,
 
 	state.Pop()
 
-	state.Push(HandlerForTopLevelFuncBody, "")
+	state.Push(HandlerScanTopLevelFuncBody, "")
 
 	return out, line
 }
 
 var LazyRE = regexp.MustCompile(`[Ll]azy`)
 
-func HandlerForTopLevelFuncBody(state *State, data string,
+func HandlerScanTopLevelFuncBody(state *State, data string,
 	out []string, line string) ([]string, string) {
 	if len(line) > 0 && line[0] == '}' {
 		state.Pop()
@@ -136,7 +172,7 @@ func EmitBlock(state *State, isLazyBlock bool,
 			strings.Index(line, "switch ") > 0 ||
 			strings.Index(line, "for ") > 0 ||
 			strings.Index(line, "if ") > 0 {
-			state.Push(HandlerForLazyBlock, SpacePrefix(line)+"}")
+			state.Push(HandlerScanLazyBlock, SpacePrefix(line)+"}")
 		}
 	}
 
@@ -165,7 +201,7 @@ func SpacePrefix(line string) (prefix string) {
 	return prefix
 }
 
-func HandlerForLazyBlock(state *State, data string,
+func HandlerScanLazyBlock(state *State, data string,
 	out []string, line string) ([]string, string) {
 	lineToEndBlock := data
 	if lineToEndBlock == line {

@@ -5,7 +5,7 @@ import (
 	"bytes" // <== genCompiler:hide
 	"fmt"
 	"io"
-	"os" // <== genCompiler:hide
+	"os"      // <== genCompiler:hide
 	"strings" // <== genCompiler:hide
 )
 
