@@ -17,6 +17,11 @@ func GenInterp(sourceDir, outDir string) error {
 		return err
 	}
 
+	sourcePackage := "package n1k1"
+
+	outDirParts := strings.Split(outDir, "/")
+	outPackage := "package " + outDirParts[len(outDirParts)-1]
+
 	log.Printf(" GenInterp\n")
 
 	for _, fileName := range fileNames {
@@ -33,6 +38,9 @@ func GenInterp(sourceDir, outDir string) error {
 		for s.Scan() {
 			line := s.Text()
 
+			line = strings.Replace(line, sourcePackage, outPackage, -1)
+
+			// Converts "LazyFooBar" into "FooBar".
 			line = strings.Replace(line, "Lazy", "", -1)
 
 			// Converts "lazyFooBar" into "fooBar".
