@@ -16,13 +16,13 @@ func Scan(params []interface{}, fields Fields,
 
 	switch kind {
 	case "filePath":
-		filePath := params[1].(string)
-		lazyFilePath := filePath
+		paramsFilePath := params[1].(string)
+		lazyFilePath := paramsFilePath
 		ScanFile(lazyFilePath, fields, lazyYield, lazyYieldErr) // <== inlineOk
 
 	case "csvData":
-		csvData := params[1].(string)
-		lazyCsvData := csvData
+		paramsCsvData := params[1].(string)
+		lazyCsvData := paramsCsvData
 		lazyReader := strings.NewReader(lazyCsvData)
 		ScanReaderAsCsv(lazyReader, fields, lazyYield, lazyYieldErr) // <== inlineOk
 
@@ -33,9 +33,9 @@ func Scan(params []interface{}, fields Fields,
 			return
 		}
 
-		lazyN := n
+		lazyLoops := n
 		lazyParams := params[2:]
-		for lazyI := 0; lazyI < lazyN; lazyI++ {
+		for lazyI := 0; lazyI < lazyLoops; lazyI++ {
 			Scan(lazyParams, fields, lazyYield, lazyYieldErr) // Do not inline.
 		}
 

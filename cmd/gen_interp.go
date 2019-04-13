@@ -5,8 +5,11 @@ import (
 	"bytes"
 	"io/ioutil"
 	"log"
+	"regexp"
 	"strings"
 )
+
+var lazyPrefixRE = regexp.MustCompile(`lazy[A-Z]`)
 
 func GenInterp(sourceDir, outDir string) error {
 	fileNames, err := FileNames(sourceDir, ".go")
@@ -27,6 +30,14 @@ func GenInterp(sourceDir, outDir string) error {
 		s := bufio.NewScanner(bytes.NewBuffer(fileBytes))
 		for s.Scan() {
 			line := s.Text()
+
+			line = strings.Replace(line, "Lazy", "", -1)
+
+			// Converts "lazyFooBar" into "fooBar".
+			line = lazyPrefixRE.ReplaceAllStringFunc(line,
+				func(lazyX string) string {
+					return strings.ToLower(lazyX[len(lazyX)-1:])
+				})
 
 			out = append(out, line)
 		}
