@@ -16,7 +16,7 @@ func main() {
 
 	log.Printf("%s\n", os.Args[0])
 	flag.VisitAll(func(f *flag.Flag) {
-		log.Printf("  -%s=%s\n", f.Name, f.Value)
+		log.Printf(" -%s=%s\n", f.Name, f.Value)
 	})
 
 	err := cmd.GenInterp(*sourceDir, *sourceDir+"/n1k1_interp")

@@ -17,6 +17,8 @@ func GenInterp(sourceDir, outDir string) error {
 		return err
 	}
 
+	log.Printf(" GenInterp\n")
+
 	for _, fileName := range fileNames {
 		log.Printf("  fileName: %s\n", fileName)
 
