@@ -2,6 +2,7 @@ package n1k1
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"io"
 	"os"
@@ -63,21 +64,27 @@ func ScanFile(lazyFilePath string, fields Fields,
 
 func ScanReaderAsCsv(lazyReader io.Reader, fields Fields,
 	lazyYield LazyYield, lazyYieldErr LazyYieldErr) {
-	// NOTE: Can't use encoding/csv, due to handling of double-quotes.
-	// TODO: Scanner does not reuse slices, creating garbage.
-	lazyScanner := bufio.NewScanner(lazyReader)
-
 	var lazyVals LazyVals
 
+	lazyScanner := bufio.NewScanner(lazyReader)
 	for lazyScanner.Scan() {
-		lazyLine := lazyScanner.Text()
-		if len(lazyLine) > 0 {
-			lazyRecord := strings.Split(lazyLine, ",")
-			if len(lazyRecord) > 0 {
-				lazyVals = StringsToLazyVals(lazyRecord, lazyVals[:0])
+		lazyVals = lazyVals[:0]
 
-				lazyYield(lazyVals)
+		lazyLine := lazyScanner.Bytes()
+		for len(lazyLine) > 0 {
+			lazyCommaAt := bytes.IndexByte(lazyLine, ',')
+			if lazyCommaAt < 0 {
+				lazyVals = append(lazyVals, LazyVal(lazyLine))
+				break
 			}
+
+			lazyPart := lazyLine[:lazyCommaAt]
+			lazyVals = append(lazyVals, LazyVal(lazyPart))
+			lazyLine = lazyLine[lazyCommaAt+1:]
+		}
+
+		if len(lazyVals) > 0 {
+			lazyYield(lazyVals)
 		}
 	}
 }

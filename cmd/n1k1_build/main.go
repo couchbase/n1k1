@@ -19,12 +19,12 @@ func main() {
 		log.Printf("  -%s=%s\n", f.Name, f.Value)
 	})
 
-	err := cmd.GenInterp(*sourceDir, *sourceDir + "/n1k1_interp")
+	err := cmd.GenInterp(*sourceDir, *sourceDir+"/n1k1_interp")
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	err = cmd.GenCompiler(*sourceDir, *sourceDir + "/n1k1_compiler")
+	err = cmd.GenCompiler(*sourceDir, *sourceDir+"/n1k1_compiler")
 	if err != nil {
 		log.Fatal(err)
 	}

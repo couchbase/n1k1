@@ -66,14 +66,6 @@ func LazyValEqual(lazyValA, lazyValB LazyVal) (lazyVal LazyVal) {
 	return lazyVal
 }
 
-func StringsToLazyVals(a []string, lazyValsPre LazyVals) LazyVals {
-	lazyVals := lazyValsPre
-	for _, v := range a {
-		lazyVals = append(lazyVals, LazyVal([]byte(v)))
-	}
-	return lazyVals
-}
-
 // -----------------------------------------------------
 
 type Types []string

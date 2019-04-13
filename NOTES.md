@@ -13,4 +13,6 @@ ISSUES...
 - col versus row optimizations?
 - multi-threading optimizations?
 - multiple types?
-- avoiding mem allocations in Scan().
+
+DEV...
+- go test ./... && go build ./cmd/n1k1_build/ && ./n1k1_build

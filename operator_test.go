@@ -5,6 +5,14 @@ import (
 	"testing"
 )
 
+func StringsToLazyVals(a []string, lazyValsPre LazyVals) LazyVals {
+	lazyVals := lazyValsPre
+	for _, v := range a {
+		lazyVals = append(lazyVals, LazyVal([]byte(v)))
+	}
+	return lazyVals
+}
+
 func TestFieldsIndexOf(t *testing.T) {
 	fs := Fields{"a", "b"}
 	if fs.IndexOf("a") != 0 {
