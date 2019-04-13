@@ -1,16 +1,16 @@
-First, preprocess the engine.go file by translating any lazy lines
-that are inside a func body into a printf's.  Non-lazy vars are turned
-into printf'ed placeholder vars.
+To generate a compiler...
 
-Then, execute the translated file with a query, capturing output
-which is the compiled result.
+First, preprocess the *.go files by translating any lazy lines that
+are inside a func body into a printf's.  Non-lazy vars are turned into
+printf'ed placeholder vars.
+
+The compiler is then executed with a query, where the captured output
+the query compiled to code.
 
 ISSUES...
 - SIMD optimizations possible?
 - batching optimizations?
 - col versus row optimizations?
 - multi-threading optimizations?
-- Val becomes []byte instead of string
 - multiple types?
-- JSON support?
-- avoiding memcpy's
+- avoiding mem allocations in Scan().
