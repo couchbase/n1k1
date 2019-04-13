@@ -1,42 +1,32 @@
 package cmd
 
 import (
-	"bufio"
-	"bytes"
 	"io/ioutil"
 	"log"
 	"regexp"
 	"strings"
 )
 
-var lazyPrefixRE = regexp.MustCompile(`lazy[A-Z]`)
+var LazyPrefixRE = regexp.MustCompile(`lazy[A-Z]`)
+
+func LazyPrefixREFunc(lazyX string) string {
+	return strings.ToLower(lazyX[len(lazyX)-1:])
+}
 
 func GenInterp(sourceDir, outDir string) error {
-	fileNames, err := FileNames(sourceDir, ".go")
-	if err != nil {
-		return err
-	}
+	log.Printf(" GenInterp\n")
 
 	sourcePackage := "package n1k1"
 
 	outDirParts := strings.Split(outDir, "/")
 	outPackage := "package " + outDirParts[len(outDirParts)-1]
 
-	log.Printf(" GenInterp\n")
+	var out []string
 
-	for _, fileName := range fileNames {
-		log.Printf("  fileName: %s\n", fileName)
-
-		fileBytes, err := ioutil.ReadFile(sourceDir + "/" + fileName)
-		if err != nil {
-			return err
-		}
-
-		var out []string
-
-		s := bufio.NewScanner(bytes.NewBuffer(fileBytes))
-		for s.Scan() {
-			line := s.Text()
+	cb := func(kind, data string) error {
+		switch kind {
+		case "fileLine":
+			line := data
 
 			line = strings.Replace(line, sourcePackage, outPackage, -1)
 
@@ -44,20 +34,30 @@ func GenInterp(sourceDir, outDir string) error {
 			line = strings.Replace(line, "Lazy", "", -1)
 
 			// Converts "lazyFooBar" into "fooBar".
-			line = lazyPrefixRE.ReplaceAllStringFunc(line,
-				func(lazyX string) string {
-					return strings.ToLower(lazyX[len(lazyX)-1:])
-				})
+			line = LazyPrefixRE.ReplaceAllStringFunc(line,
+				LazyPrefixREFunc)
 
 			out = append(out, line)
+
+		case "fileStart":
+			out = nil
+
+			fileName := data
+
+			log.Printf("  fileName: %s\n", fileName)
+
+		case "fileEnd":
+			fileName := data
+
+			err := ioutil.WriteFile(outDir + "/" + fileName,
+				[]byte(strings.Join(out, "\n")), 0644)
+			if err != nil {
+				return err
+			}
 		}
 
-		err = ioutil.WriteFile(outDir + "/" + fileName,
-			[]byte(strings.Join(out, "\n")), 0644)
-		if err != nil {
-			return err
-		}
+		return nil
 	}
 
-	return nil
+	return VisitFiles(sourceDir, ".go", cb)
 }
