@@ -13,6 +13,7 @@ ISSUES...
 - col versus row optimizations?
 - multi-threading optimizations?
 - multiple types?
+- leverage types learned during expression processing?
 
 DEV...
 - go test ./... && go build ./cmd/n1k1_build/ && ./n1k1_build
