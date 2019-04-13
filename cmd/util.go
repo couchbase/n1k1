@@ -13,7 +13,7 @@ func SourceFiles(dir string) (fileNames []string, err error) {
 
 	for _, fileInfo := range fileInfos {
 		if !fileInfo.IsDir() &&
-			strings.HasSuffix(fileInfo.Name(), ".go"){
+			strings.HasSuffix(fileInfo.Name(), ".go") {
 			fileNames = append(fileNames, fileInfo.Name())
 		}
 	}
