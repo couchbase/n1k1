@@ -33,7 +33,7 @@ func VisitFiles(dir, fileSuffix string,
 			}
 		}
 
-		err = cb("fileDone", fileName)
+		err = cb("fileEnd", fileName)
 		if err != nil {
 			return err
 		}

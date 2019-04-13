@@ -5,7 +5,11 @@ import (
 )
 
 func GenCompiler(sourceDir, outDir string) error {
-	log.Printf(" GenCompiler\n")
+	log.Printf(" GenCompiler, outDir: %s\n", outDir)
 
-	return GenInterpMain(sourceDir, outDir, nil)
+	cbOuter := func(out []string, line string) ([]string, string) {
+		return out, line
+	}
+
+	return GenInterpMain(sourceDir, outDir, cbOuter)
 }

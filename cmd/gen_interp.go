@@ -14,7 +14,7 @@ func LazyPrefixREFunc(lazyX string) string {
 }
 
 func GenInterp(sourceDir, outDir string) error {
-	log.Printf(" GenInterp\n")
+	log.Printf(" GenInterp, outDir: %s\n", outDir)
 
 	return GenInterpMain(sourceDir, outDir, nil)
 }
