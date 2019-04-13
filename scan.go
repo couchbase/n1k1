@@ -1,13 +1,13 @@
 package n1k1
 
 import (
-	"bufio" // <== lazy
-	"bytes" // <== lazy
+	"bufio" // <== genCompiler:hide
+	"bytes" // <== genCompiler:hide
 	"fmt"
 	"io"
-	"os" // <== lazy
+	"os" // <== genCompiler:hide
 	"strconv"
-	"strings" // <== lazy
+	"strings" // <== genCompiler:hide
 )
 
 func Scan(params []interface{}, fields Fields,

@@ -49,6 +49,10 @@ func GenCompiler(sourceDir, outDir string) error {
 
 	return GenInterpMain(sourceDir, outDir,
 		func(out []string, line string) ([]string, string) {
+			if strings.Index(line, "// <== genCompiler:hide") > 0 {
+				line = "// " + line
+			}
+
 			return state.Process(out, line)
 		}, false, false)
 }
