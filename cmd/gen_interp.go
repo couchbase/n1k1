@@ -16,19 +16,37 @@ func LazyPrefixREFunc(lazyX string) string {
 func GenInterp(sourceDir, outDir string) error {
 	log.Printf(" GenInterp\n")
 
+	return GenInterpMain(sourceDir, outDir, nil)
+}
+
+func GenInterpMain(sourceDir, outDir string,
+	cbOuter func(out []string, line string) ([]string, string)) error {
 	sourcePackage := "package n1k1"
 
 	outDirParts := strings.Split(outDir, "/")
 	outPackage := "package " + outDirParts[len(outDirParts)-1]
 
-	var out []string
+	var out []string // Collected output or resulting lines.
 
 	cb := func(kind, data string) error {
 		switch kind {
+		case "fileStart":
+			out = nil
+
+			fileName := data
+
+			log.Printf("  fileName: %s\n", fileName)
+
 		case "fileLine":
 			line := data
 
 			line = strings.Replace(line, sourcePackage, outPackage, -1)
+
+			// An optional callback can examine and modify the
+			// previous output and examine the incoming line.
+			if cbOuter != nil {
+				out, line = cbOuter(out, line)
+			}
 
 			// Converts "LazyFooBar" into "FooBar".
 			line = strings.Replace(line, "Lazy", "", -1)
@@ -38,13 +56,6 @@ func GenInterp(sourceDir, outDir string) error {
 				LazyPrefixREFunc)
 
 			out = append(out, line)
-
-		case "fileStart":
-			out = nil
-
-			fileName := data
-
-			log.Printf("  fileName: %s\n", fileName)
 
 		case "fileEnd":
 			fileName := data
