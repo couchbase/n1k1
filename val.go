@@ -1,7 +1,7 @@
 package n1k1
 
 import (
-	"bytes"
+	"bytes" // <== genCompiler:hide
 	"fmt"
 )
 
