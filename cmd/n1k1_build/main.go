@@ -19,7 +19,7 @@ func main() {
 		log.Printf("  -%s=%s\n", f.Name, f.Value)
 	})
 
-	cmd.GenInterp(*sourceDir)
+	cmd.GenInterp(*sourceDir, *sourceDir + "/n1k1_interp")
 
-	cmd.GenCompiler(*sourceDir)
+	cmd.GenCompiler(*sourceDir, *sourceDir + "/n1k1_compiler")
 }

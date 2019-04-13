@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-func SourceFiles(dir string) (fileNames []string, err error) {
+func FileNames(dir string, suffix string) (fileNames []string, err error) {
 	fileInfos, err := ioutil.ReadDir(dir)
 	if err != nil {
 		return nil, err
@@ -13,7 +13,7 @@ func SourceFiles(dir string) (fileNames []string, err error) {
 
 	for _, fileInfo := range fileInfos {
 		if !fileInfo.IsDir() &&
-			strings.HasSuffix(fileInfo.Name(), ".go") {
+			strings.HasSuffix(fileInfo.Name(), suffix) {
 			fileNames = append(fileNames, fileInfo.Name())
 		}
 	}

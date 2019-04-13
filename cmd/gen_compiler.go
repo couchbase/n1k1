@@ -1,4 +1,4 @@
 package cmd
 
-func GenCompiler(dir string) {
+func GenCompiler(sourceDir, outDir string) {
 }
