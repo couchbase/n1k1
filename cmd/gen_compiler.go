@@ -18,7 +18,7 @@ func (s *State) Push(handler Handler, data string) {
 }
 
 func (s *State) Pop() {
-	s.Handlers = s.Handlers[0:len(s.Handlers)-1]
+	s.Handlers = s.Handlers[0 : len(s.Handlers)-1]
 }
 
 func (s *State) Process(out []string, line string) ([]string, string) {
@@ -113,7 +113,7 @@ func EmitBlock(state *State, isLazyBlock bool,
 			strings.Index(line, "switch ") > 0 ||
 			strings.Index(line, "for ") > 0 ||
 			strings.Index(line, "if ") > 0 {
-			state.Push(HandlerForLazyBlock, SpacePrefix(line) + "}")
+			state.Push(HandlerForLazyBlock, SpacePrefix(line)+"}")
 		}
 	}
 
@@ -144,7 +144,8 @@ func SpacePrefix(line string) (prefix string) {
 
 func HandlerForLazyBlock(state *State, data string,
 	out []string, line string) ([]string, string) {
-	if strings.HasPrefix(line, data) {
+	lineToEndBlock := data
+	if lineToEndBlock == line {
 		state.Pop()
 	}
 

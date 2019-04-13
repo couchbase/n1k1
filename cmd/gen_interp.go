@@ -64,7 +64,7 @@ func GenInterpMain(sourceDir, outDir string,
 		case "fileEnd":
 			fileName := data
 
-			err := ioutil.WriteFile(outDir + "/" + fileName,
+			err := ioutil.WriteFile(outDir+"/"+fileName,
 				[]byte(strings.Join(out, "\n")), 0644)
 			if err != nil {
 				return err
