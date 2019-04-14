@@ -162,7 +162,7 @@ func EmitBlock(state *State, isLazyBlock bool,
 		return out, line
 	}
 
-	isLazyLine := LazyRE.Match([]byte(line))
+	isLazyLine := LazyRE.MatchString(line)
 	if !isLazyLine && !isLazyBlock {
 		return out, line
 	}
@@ -181,10 +181,55 @@ func EmitBlock(state *State, isLazyBlock bool,
 		return out, ""
 	}
 
-	line = "fmt.Printf(`" + line + "\n`)"
+	line = strings.Split(line, "//")[0]
+
+	var liveExprs []string
+
+	line = SimpleExprRE.ReplaceAllStringFunc(line,
+		func(simpleExpr string) string {
+			if Keywords[simpleExpr] {
+				return simpleExpr
+			}
+
+			if LazyRE.MatchString(simpleExpr) {
+				// It's a lazy expression, so it's not an alive
+				// expression at compile-time.
+				return simpleExpr
+			}
+
+			liveExprs = append(liveExprs, simpleExpr)
+
+			return "%#v"
+		})
+
+	line = "fmt.Printf(`" + line + "\n`"
+
+    if len(liveExprs) > 0 {
+		line = line + ", " + strings.Join(liveExprs, ", ")
+	}
+
+    line = line + ")"
 
 	return out, line
 }
+
+var Keywords = map[string]bool{
+	"var": true,
+	"func": true,
+	"return": true,
+	"if": true,
+	"else": true,
+	"for": true,
+	"range": true,
+	"break": true,
+	"defer": true,
+	"switch": true,
+	"case": true,
+	"append": true,
+	"len": true,
+}
+
+var SimpleExprRE = regexp.MustCompile(`[a-zA-Z][a-zA-Z0-9\._\[\]]+`)
 
 // SpacePrefix returns the whitespace prefix of the given line.
 func SpacePrefix(line string) (prefix string) {

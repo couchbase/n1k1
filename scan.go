@@ -9,6 +9,8 @@ import (
 	"strings" // <== genCompiler:hide
 )
 
+var ErrScanKindUnknown = fmt.Errorf("unknown scan kind")
+
 func Scan(params []interface{}, fields Fields,
 	lazyYield LazyYield, lazyYieldErr LazyYieldErr) {
 	kind := params[0].(string)
@@ -28,7 +30,7 @@ func Scan(params []interface{}, fields Fields,
 		ScanReaderAsCsv(lazyReader, fields, lazyYield, lazyYieldErr) // <== inlineOk
 
 	default:
-		lazyYieldErr(fmt.Errorf("unknown scan kind"))
+		lazyYieldErr(ErrScanKindUnknown)
 	}
 }
 
