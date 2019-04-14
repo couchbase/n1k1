@@ -14,7 +14,7 @@ type State struct {
 	// Stack of line handlers with associated callback data.
 	Handlers []HandlerEntry
 
-	Imports map[string]bool
+	Imports     map[string]bool
 	ImportLines map[string]bool
 }
 
@@ -50,7 +50,7 @@ func GenCompiler(sourceDir, outDir string) error {
 		Handlers: []HandlerEntry{
 			HandlerEntry{HandlerScanFile, ""},
 		},
-		Imports: map[string]bool{},
+		Imports:     map[string]bool{},
 		ImportLines: map[string]bool{},
 	}
 
@@ -187,7 +187,13 @@ func EmitBlock(state *State, isLazyBlock bool,
 		return out, ""
 	}
 
-	line = strings.Split(line, "//")[0]
+	lineLeftRight := strings.Split(line, "// ")
+	if len(lineLeftRight) > 1 &&
+		lineLeftRight[1] == "<== inlineOk" {
+		return out, line
+	}
+
+	line = lineLeftRight[0] // Strips off line comment.
 
 	var liveExprs []string
 
@@ -216,29 +222,29 @@ func EmitBlock(state *State, isLazyBlock bool,
 
 	line = "fmt.Printf(`" + line + "\n`"
 
-    if len(liveExprs) > 0 {
+	if len(liveExprs) > 0 {
 		line = line + ", " + strings.Join(liveExprs, ", ")
 	}
 
-    line = line + ")"
+	line = line + ")"
 
 	return out, line
 }
 
 var Keywords = map[string]bool{
-	"var": true,
-	"func": true,
+	"var":    true,
+	"func":   true,
 	"return": true,
-	"if": true,
-	"else": true,
-	"for": true,
-	"range": true,
-	"break": true,
-	"defer": true,
+	"if":     true,
+	"else":   true,
+	"for":    true,
+	"range":  true,
+	"break":  true,
+	"defer":  true,
 	"switch": true,
-	"case": true,
+	"case":   true,
 	"append": true,
-	"len": true,
+	"len":    true,
 }
 
 var SimpleExprRE = regexp.MustCompile(`[a-zA-Z][a-zA-Z0-9\._\[\]]+`)
