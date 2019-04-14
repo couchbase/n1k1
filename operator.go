@@ -54,14 +54,16 @@ func ExecOperator(o *Operator,
 		lazyProjectFunc =
 			MakeProjectFunc(o.ParentA.Fields, types, o.Params, outTypes)
 
-		var lazyVals LazyVals
+		var lazyValsProject LazyVals
 
 		lazyYieldOrig := lazyYield
 
 		lazyYield = func(lazyValsIn LazyVals) {
-			lazyVals = lazyProjectFunc(lazyValsIn, lazyVals[:0])
+			lazyValsProject = lazyValsProject[:0]
 
-			lazyYieldOrig(lazyVals)
+			lazyValsProject = lazyProjectFunc(lazyValsIn, lazyValsProject)
+
+			lazyYieldOrig(lazyValsProject)
 		}
 
 		ExecOperator(o.ParentA, lazyYield, lazyYieldErr) // <== inlineOk
