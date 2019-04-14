@@ -3,14 +3,18 @@ package test
 import (
 	"encoding/json"
 	"fmt"
-	"log"
-
-	"reflect"
+	"io/ioutil"
 	"strings"
 	"testing"
 
 	n1k1 "github.com/couchbase/n1k1/n1k1_compiler"
 )
+
+var NeedScopeQualifiers = []string{
+	"LazyVal",
+	"LazyExprFunc",
+	"LazyProjectFunc",
+}
 
 func StringsToLazyVals(a []string, lazyValsPre n1k1.LazyVals) n1k1.LazyVals {
 	lazyVals := lazyValsPre
@@ -542,6 +546,8 @@ func TestIt(t *testing.T) {
 		},
 	}
 
+	var testOuts [][]string
+
 	for testi, test := range tests {
 		var yields []n1k1.LazyVals
 
@@ -569,31 +575,48 @@ func TestIt(t *testing.T) {
 
 		n1k1.Emit = func(format string, a ...interface{}) (n int, err error) {
 			s := fmt.Sprintf(format, a...)
+
+			s = strings.Replace(s, "LazyScope", "true", -1)
+
+			for _, nsq := range NeedScopeQualifiers {
+				s = strings.Replace(s, " "+nsq, " n1k1."+nsq, -1)
+				s = strings.Replace(s, "]"+nsq, "]n1k1."+nsq, -1)
+			}
+
 			out = append(out, s)
+
 			return len(s), nil
 		}
 
 		n1k1.ExecOperator(&test.o, nil, nil)
 
+		testOuts = append(testOuts, out)
+	}
+
+	c := []string{
+		"package tmp",
+		`import "bufio"`,
+		`import "bytes"`,
+		`import "strings"`,
+		`import "testing"`,
+		`import n1k1 "github.com/couchbase/n1k1/n1k1_compiler"`,
+	}
+
+	for testi, test := range tests {
 		oj, _ := json.Marshal(test.o)
 
-		log.Printf("-------------\n")
-		log.Printf("testi: %d", testi)
-		log.Printf("test.about: %s", test.about)
-		log.Printf("test.o: %s", oj)
-		log.Printf("\n%s", strings.Join(out, ""))
+		c = append(c, "// ------------------------------------------")
+		c = append(c, "// "+test.about)
+		c = append(c, "// "+string(oj))
+		c = append(c, fmt.Sprintf("func Test%d(t *testing.T) {", testi))
+		c = append(c, "  lazyYield := func(lazyVals n1k1.LazyVals) {}")
+		c = append(c, testOuts[testi]...)
+		c = append(c, "}\n")
+	}
 
-		continue
-
-		if len(yields) != len(test.expectYields) ||
-			!reflect.DeepEqual(yields, test.expectYields) {
-			t.Fatalf("testi: %d, test: %+v,\n"+
-				" len(yields): %d,\n"+
-				" len(test.expectYields): %d,\n"+
-				" expectYields: %+v,\n"+
-				" got yields: %+v",
-				testi, test,
-				len(yields), len(test.expectYields), test.expectYields, yields)
-		}
+	err := ioutil.WriteFile("./tmp/generated_by_n1k1_compiler_test.go",
+		[]byte(strings.Join(c, "\n")), 0644)
+	if err != nil {
+		t.Fatal(err)
 	}
 }
