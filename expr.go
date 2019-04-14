@@ -50,14 +50,16 @@ func ExprJson(fields Fields, types Types, params []interface{},
 
 	SetLastType(outTypes, jsonType)
 
-	var lazyValJson LazyVal // <== varLift: lazyValJson by path
+	if LazyTrue {
+		var lazyValJson LazyVal // <== varLift: lazyValJson by path
 
-	lazyValJson = LazyVal(json) // <== varLift: lazyValJson by path
+		lazyValJson = LazyVal(json) // <== varLift: lazyValJson by path
 
-	lazyExprFunc = func(lazyVals LazyVals) (lazyVal LazyVal) {
-		lazyVal = lazyValJson // <== varLift: lazyValJson by path
+		lazyExprFunc = func(lazyVals LazyVals) (lazyVal LazyVal) {
+			lazyVal = lazyValJson // <== varLift: lazyValJson by path
 
-		return lazyVal
+			return lazyVal
+		}
 	}
 
 	return lazyExprFunc

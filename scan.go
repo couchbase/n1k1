@@ -14,10 +14,10 @@ func Scan(params []interface{}, fields Fields,
 	kind := params[0].(string)
 
 	var lazyFilePath string // <== inlineOk
-	_ = lazyFilePath // <== inlineOk
+	_ = lazyFilePath        // <== inlineOk
 
 	var lazyReader io.Reader // <== inlineOk
-	_ = lazyReader // <== inlineOk
+	_ = lazyReader           // <== inlineOk
 
 	switch kind {
 	case "filePath":
@@ -50,7 +50,7 @@ func ScanFile(lazyFilePath string, fields Fields,
 	}
 
 	var lazyReader io.ReadWriteCloser // <== inlineOk
-	_ = lazyReader // <== inlineOk
+	_ = lazyReader                    // <== inlineOk
 
 	if LazyTrue {
 		lazyReader, lazyErr := os.Open(lazyFilePath)
