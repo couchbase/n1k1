@@ -49,10 +49,10 @@ func ScanFile(lazyFilePath string, fields Fields,
 		return
 	}
 
-	var lazyReader io.ReadWriteCloser // <== inlineOk
-	_ = lazyReader                    // <== inlineOk
+	if LazyScope {
+		var lazyReader io.ReadWriteCloser // <== inlineOk
+		_ = lazyReader                    // <== inlineOk
 
-	if LazyTrue {
 		lazyReader, lazyErr := os.Open(lazyFilePath)
 		if lazyErr != nil {
 			lazyYieldErr(lazyErr)

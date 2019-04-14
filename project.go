@@ -11,7 +11,7 @@ func MakeProjectFunc(fields Fields, types Types, projections []interface{},
 
 		outTypes = append(outTypes, "")
 
-		if LazyTrue {
+		if LazyScope {
 			var lazyExprFunc LazyExprFunc
 
 			lazyExprFunc =

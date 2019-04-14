@@ -1,5 +1,7 @@
 package n1k1
 
+const LazyScope = true // For marking varible scopes (ex: IF statement).
+
 // The LazyYield memory ownership rule: the receiver func should copy
 // any inputs that it wants to keep, because the provided slices might
 // be reused by future invocations.
@@ -29,7 +31,7 @@ func ExecOperator(o *Operator,
 	case "filter":
 		types := make(Types, len(o.ParentA.Fields)) // TODO.
 
-		if LazyTrue {
+		if LazyScope {
 			var lazyExprFunc LazyExprFunc
 
 			lazyExprFunc =
@@ -51,7 +53,7 @@ func ExecOperator(o *Operator,
 		types := make(Types, len(o.ParentA.Fields)) // TODO.
 		outTypes := Types{""}                       // TODO.
 
-		if LazyTrue {
+		if LazyScope {
 			var lazyProjectFunc LazyProjectFunc
 
 			lazyProjectFunc =
@@ -80,7 +82,7 @@ func ExecOperator(o *Operator,
 
 		typesAB := make(Types, len(fieldsAB)) // TODO.
 
-		if LazyTrue {
+		if LazyScope {
 			var lazyExprFunc LazyExprFunc
 
 			lazyExprFunc =

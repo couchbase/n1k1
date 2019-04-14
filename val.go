@@ -28,8 +28,6 @@ var JsonTypes = map[byte]string{ // TODO: Use array instead of map?
 
 // -----------------------------------------------------
 
-var LazyTrue = true
-
 type LazyVals []LazyVal
 
 type LazyVal []byte
