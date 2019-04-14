@@ -94,29 +94,32 @@ func ExprField(fields Fields, types Types, params []interface{},
 func ExprEq(fields Fields, types Types, params []interface{},
 	outTypes Types, path string) (lazyExprFunc LazyExprFunc) {
 	exprA := params[0].([]interface{})
-	lazyExprFunc =
-		MakeExprFunc(fields, types, exprA, outTypes, path+"_1")
-	lazyA := lazyExprFunc
-	TakeLastType(outTypes)
-
 	exprB := params[1].([]interface{})
-	lazyExprFunc =
-		MakeExprFunc(fields, types, exprB, outTypes, path+"_2")
-	lazyB := lazyExprFunc
-	TakeLastType(outTypes)
+
+	if LazyTrue {
+		lazyExprFunc =
+			MakeExprFunc(fields, types, exprA, outTypes, path+"_1") // <== inlineOk
+		lazyA := lazyExprFunc
+		TakeLastType(outTypes) // <== inlineOk
+
+		lazyExprFunc =
+			MakeExprFunc(fields, types, exprB, outTypes, path+"_2") // <== inlineOk
+		lazyB := lazyExprFunc
+		TakeLastType(outTypes) // <== inlineOk
+
+		// TODO: consider inlining this one day...
+
+		lazyExprFunc = func(lazyVals LazyVals) (lazyVal LazyVal) {
+			lazyValA := lazyA(lazyVals)
+			lazyValB := lazyB(lazyVals)
+
+			lazyVal = LazyValEqual(lazyValA, lazyValB)
+
+			return lazyVal
+		}
+	}
 
 	SetLastType(outTypes, "bool")
-
-	// TODO: consider inlining this one day...
-
-	lazyExprFunc = func(lazyVals LazyVals) (lazyVal LazyVal) {
-		lazyValA := lazyA(lazyVals)
-		lazyValB := lazyB(lazyVals)
-
-		lazyVal = LazyValEqual(lazyValA, lazyValB)
-
-		return lazyVal
-	}
 
 	return lazyExprFunc
 }
