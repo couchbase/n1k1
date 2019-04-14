@@ -50,6 +50,8 @@ TODO...
 - conversion of real N1QL query-plan into n1k1 query-plan
 - SIMD optimizations possible?
 - batching optimizations?
+- the yield callback might return slice that next yield
+  can place data into, to avoid append-copying items?
 - col versus row optimizations?
 - multi-threading optimizations?
 - multiple types?
