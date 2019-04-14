@@ -93,7 +93,9 @@ func GenCompiler(sourceDir, outDir string) error {
 
 	contents = append(contents, "import (")
 	contents = append(contents, importLines...)
-	contents = append(contents, ")")
+	contents = append(contents, ")\n")
+
+	contents = append(contents, `var Emit = fmt.Printf`)
 
 	contents = append(contents, outAll...)
 
@@ -220,7 +222,7 @@ func EmitBlock(state *State, isLazyBlock bool,
 			return "%#v"
 		})
 
-	line = "fmt.Printf(`" + line + "\n`"
+	line = "Emit(`" + line + "\n`"
 
 	if len(liveExprs) > 0 {
 		line = line + ", " + strings.Join(liveExprs, ", ")
