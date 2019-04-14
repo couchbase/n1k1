@@ -38,10 +38,12 @@ printf's.  Non-lazy expressions are turned into printf'ed placeholder
 vars.  Non-lazy lines are emitted as-is, as they are "early bound".
 
 - 3: Finally, the n1k1 compiler, which uses that generated
-n1k1/n1k1_compiler package, will takes user input of a N1QL query-plan
-(the same query-plan used by the interpreter in step #1 above).  And,
-the n1k1 compiler can emit *.go code that can efficiently execute that
-query-plan.
+n1k1/n1k1_compiler package, will take the user's input of a N1QL
+query-plan and will emit *.go code (or possibly other languages) that
+can efficiently execute that query-plan.  The user's input query-plan
+is the same query-plan tree that's used by the interpreter from step
+#1 above, as all this stuff was "born" originally from that
+interpreter.
 
 ------------------------------------------
 TODO...
@@ -54,3 +56,4 @@ TODO...
 - types learned during expression processing?
 - positional fields versus access to the full record?
 - perhaps the 0'th field might represent the full record?
+- emit other languages?
