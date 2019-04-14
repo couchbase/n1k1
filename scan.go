@@ -9,8 +9,6 @@ import (
 	"strings" // <== genCompiler:hide
 )
 
-var ErrScanKindUnknown = fmt.Errorf("unknown scan kind")
-
 func Scan(params []interface{}, fields Fields,
 	lazyYield LazyYield, lazyYieldErr LazyYieldErr) {
 	kind := params[0].(string)
@@ -36,18 +34,18 @@ func Scan(params []interface{}, fields Fields,
 		ScanReaderAsCsv(lazyReader, fields, lazyYield, lazyYieldErr) // <== inlineOk
 
 	default:
-		lazyYieldErr(ErrScanKindUnknown)
+		errMsg := "unknown scan kind" // TODO: Weak string/double-quote handling.
+		lazyYieldErr(fmt.Errorf(errMsg))
 	}
 }
 
-var FileSuffixCsv = ".csv"
-
-var ErrFileNotCsv = fmt.Errorf("file not csv")
-
 func ScanFile(lazyFilePath string, fields Fields,
 	lazyYield LazyYield, lazyYieldErr LazyYieldErr) {
-	if !strings.HasSuffix(lazyFilePath, FileSuffixCsv) {
-		lazyYieldErr(ErrFileNotCsv)
+	errMsg := "file not csv" // TODO: Weak string/double-quote handling.
+
+	fileSuffixCsv := ".csv"
+	if !strings.HasSuffix(lazyFilePath, fileSuffixCsv) {
+		lazyYieldErr(fmt.Errorf(errMsg))
 		return
 	}
 
