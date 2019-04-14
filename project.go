@@ -11,12 +11,14 @@ func MakeProjectFunc(fields Fields, types Types, projections []interface{},
 
 		outTypes = append(outTypes, "")
 
-		var lazyExprFunc LazyExprFunc
+		if LazyTrue {
+			var lazyExprFunc LazyExprFunc
 
-		lazyExprFunc =
-			MakeExprFunc(fields, types, expr, outTypes, "")
+			lazyExprFunc =
+				MakeExprFunc(fields, types, expr, outTypes, "") // <== inlineOk
 
-		lazyExprFuncs = append(lazyExprFuncs, lazyExprFunc)
+			lazyExprFuncs = append(lazyExprFuncs, lazyExprFunc)
+		}
 	}
 
 	lazyProjectFunc = func(lazyVals, lazyValsPre LazyVals) (
@@ -24,13 +26,13 @@ func MakeProjectFunc(fields Fields, types Types, projections []interface{},
 		lazyValsOut = lazyValsPre // Optional pre-alloc'ed slice.
 
 		for _, lazyExprFunc := range lazyExprFuncs {
-			var lazyVal LazyVal
+			var lazyValProjected LazyVal
 
-			lazyVal = lazyExprFunc(lazyVals)
+			lazyValProjected = lazyExprFunc(lazyVals)
 
 			// NOTE: The lazyVals is stable while we are building up
 			// the lazyValsOut, so no need to deep copy lazyVal yet.
-			lazyValsOut = append(lazyValsOut, lazyVal)
+			lazyValsOut = append(lazyValsOut, lazyValProjected)
 		}
 
 		return lazyValsOut
