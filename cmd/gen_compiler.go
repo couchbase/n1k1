@@ -168,6 +168,12 @@ func EmitBlock(state *State, isLazyBlock bool,
 		return out, line
 	}
 
+	lineLeftRight := strings.Split(line, "// ")
+	if len(lineLeftRight) > 1 &&
+		lineLeftRight[1] == "<== inlineOk" {
+		return out, line
+	}
+
 	isLazyLine := LazyRE.MatchString(line)
 	if !isLazyLine && !isLazyBlock {
 		return out, line
@@ -185,12 +191,6 @@ func EmitBlock(state *State, isLazyBlock bool,
 	if strings.HasSuffix(line, " =") {
 		// Eat 1st line of multi-line variable assignment.
 		return out, ""
-	}
-
-	lineLeftRight := strings.Split(line, "// ")
-	if len(lineLeftRight) > 1 &&
-		lineLeftRight[1] == "<== inlineOk" {
-		return out, line
 	}
 
 	line = lineLeftRight[0] // Strips off line comment.

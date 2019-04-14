@@ -15,6 +15,12 @@ func Scan(params []interface{}, fields Fields,
 	lazyYield LazyYield, lazyYieldErr LazyYieldErr) {
 	kind := params[0].(string)
 
+	var lazyFilePath string // <== inlineOk
+	_ = lazyFilePath // <== inlineOk
+
+	var lazyReader io.Reader // <== inlineOk
+	_ = lazyReader // <== inlineOk
+
 	switch kind {
 	case "filePath":
 		paramsFilePath := params[1].(string)
@@ -45,15 +51,20 @@ func ScanFile(lazyFilePath string, fields Fields,
 		return
 	}
 
-	lazyReader, lazyErr := os.Open(lazyFilePath)
-	if lazyErr != nil {
-		lazyYieldErr(lazyErr)
-		return
+	var lazyReader io.ReadWriteCloser // <== inlineOk
+	_ = lazyReader // <== inlineOk
+
+	if LazyTrue {
+		lazyReader, lazyErr := os.Open(lazyFilePath)
+		if lazyErr != nil {
+			lazyYieldErr(lazyErr)
+			return
+		}
+
+		defer lazyReader.Close()
+
+		ScanReaderAsCsv(lazyReader, fields, lazyYield, lazyYieldErr) // <== inlineOk
 	}
-
-	defer lazyReader.Close()
-
-	ScanReaderAsCsv(lazyReader, fields, lazyYield, lazyYieldErr) // <== inlineOk
 }
 
 func ScanReaderAsCsv(lazyReader io.Reader, fields Fields,
