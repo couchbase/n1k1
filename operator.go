@@ -27,46 +27,50 @@ func ExecOperator(o *Operator,
 		Scan(o.Params, o.Fields, lazyYield, lazyYieldErr) // <== inlineOk
 
 	case "filter":
-		var lazyExprFunc LazyExprFunc
-
 		types := make(Types, len(o.ParentA.Fields)) // TODO.
 
-		lazyExprFunc =
-			MakeExprFunc(o.ParentA.Fields, types, o.Params, nil, "")
+		if LazyTrue {
+			var lazyExprFunc LazyExprFunc
 
-		lazyYieldOrig := lazyYield
+			lazyExprFunc =
+				MakeExprFunc(o.ParentA.Fields, types, o.Params, nil, "") // <== inlineOk
 
-		lazyYield = func(lazyVals LazyVals) {
-			lazyVal := lazyExprFunc(lazyVals)
-			if LazyValEqualTrue(lazyVal) {
-				lazyYieldOrig(lazyVals)
+			lazyYieldOrig := lazyYield
+
+			lazyYield = func(lazyVals LazyVals) {
+				lazyVal := lazyExprFunc(lazyVals)
+				if LazyValEqualTrue(lazyVal) {
+					lazyYieldOrig(lazyVals)
+				}
 			}
-		}
 
-		ExecOperator(o.ParentA, lazyYield, lazyYieldErr) // <== inlineOk
+			ExecOperator(o.ParentA, lazyYield, lazyYieldErr) // <== inlineOk
+		}
 
 	case "project":
 		types := make(Types, len(o.ParentA.Fields)) // TODO.
 		outTypes := Types{""}                       // TODO.
 
-		var lazyProjectFunc LazyProjectFunc
+		if LazyTrue {
+			var lazyProjectFunc LazyProjectFunc
 
-		lazyProjectFunc =
-			MakeProjectFunc(o.ParentA.Fields, types, o.Params, outTypes)
+			lazyProjectFunc =
+				MakeProjectFunc(o.ParentA.Fields, types, o.Params, outTypes) // <== inlineOk
 
-		var lazyValsProjected LazyVals
+			var lazyValsProjected LazyVals
 
-		lazyYieldOrig := lazyYield
+			lazyYieldOrig := lazyYield
 
-		lazyYield = func(lazyValsIn LazyVals) {
-			lazyValsProjected = lazyValsProjected[:0]
+			lazyYield = func(lazyValsIn LazyVals) {
+				lazyValsProjected = lazyValsProjected[:0]
 
-			lazyValsProjected = lazyProjectFunc(lazyValsIn, lazyValsProjected)
+				lazyValsProjected = lazyProjectFunc(lazyValsIn, lazyValsProjected)
 
-			lazyYieldOrig(lazyValsProjected)
+				lazyYieldOrig(lazyValsProjected)
+			}
+
+			ExecOperator(o.ParentA, lazyYield, lazyYieldErr) // <== inlineOk
 		}
-
-		ExecOperator(o.ParentA, lazyYield, lazyYieldErr) // <== inlineOk
 
 	case "join-nl": // Nested loop join.
 		var fieldsAB Fields
@@ -76,34 +80,36 @@ func ExecOperator(o *Operator,
 
 		typesAB := make(Types, len(fieldsAB)) // TODO.
 
-		var lazyExprFunc LazyExprFunc
+		if LazyTrue {
+			var lazyExprFunc LazyExprFunc
 
-		lazyExprFunc =
-			MakeExprFunc(fieldsAB, typesAB, o.Params, nil, "")
+			lazyExprFunc =
+				MakeExprFunc(fieldsAB, typesAB, o.Params, nil, "") // <== inlineOk
 
-		var lazyValsJoin LazyVals
+			var lazyValsJoin LazyVals
 
-		lazyYieldOrig := lazyYield
+			lazyYieldOrig := lazyYield
 
-		lazyYield = func(lazyValsA LazyVals) {
-			lazyValsJoin = lazyValsJoin[:0]
-			lazyValsJoin = append(lazyValsJoin, lazyValsA...)
+			lazyYield = func(lazyValsA LazyVals) {
+				lazyValsJoin = lazyValsJoin[:0]
+				lazyValsJoin = append(lazyValsJoin, lazyValsA...)
 
-			lazyYield = func(lazyValsB LazyVals) {
-				lazyValsJoin = lazyValsJoin[0:len(lazyValsA)]
-				lazyValsJoin = append(lazyValsJoin, lazyValsB...)
+				lazyYield = func(lazyValsB LazyVals) {
+					lazyValsJoin = lazyValsJoin[0:len(lazyValsA)]
+					lazyValsJoin = append(lazyValsJoin, lazyValsB...)
 
-				lazyVal := lazyExprFunc(lazyValsJoin)
-				if LazyValEqualTrue(lazyVal) {
-					lazyYieldOrig(lazyValsJoin)
+					lazyVal := lazyExprFunc(lazyValsJoin)
+					if LazyValEqualTrue(lazyVal) {
+						lazyYieldOrig(lazyValsJoin)
+					}
 				}
+
+				// Inner...
+				ExecOperator(o.ParentB, lazyYield, lazyYieldErr) // <== inlineOk
 			}
 
-			// Inner...
-			ExecOperator(o.ParentB, lazyYield, lazyYieldErr) // <== inlineOk
+			// Outer...
+			ExecOperator(o.ParentA, lazyYield, lazyYieldErr) // <== inlineOk
 		}
-
-		// Outer...
-		ExecOperator(o.ParentA, lazyYield, lazyYieldErr) // <== inlineOk
 	}
 }
