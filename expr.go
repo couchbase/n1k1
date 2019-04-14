@@ -77,11 +77,11 @@ func ExprField(fields Fields, types Types, params []interface{},
 	}
 
 	lazyExprFunc = func(lazyVals LazyVals) (lazyVal LazyVal) {
-		if idx >= 0 {
+		if idx >= 0 { // <== inlineOk
 			lazyVal = lazyVals[idx]
-		} else {
+		} else { // <== inlineOk
 			lazyVal = LazyValMissing
-		}
+		} // <== inlineOk
 
 		return lazyVal
 	}
