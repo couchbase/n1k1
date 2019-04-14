@@ -79,21 +79,21 @@ func ExecOperator(o *Operator,
 		lazyExprFunc =
 			MakeExprFunc(fieldsAB, typesAB, o.Params, nil, "")
 
-		var lazyVals LazyVals
+		var lazyValsJoin LazyVals
 
 		lazyYieldOrig := lazyYield
 
 		lazyYield = func(lazyValsA LazyVals) {
-			lazyVals = lazyVals[:0]
-			lazyVals = append(lazyVals, lazyValsA...)
+			lazyValsJoin = lazyValsJoin[:0]
+			lazyValsJoin = append(lazyValsJoin, lazyValsA...)
 
 			lazyYield = func(lazyValsB LazyVals) {
-				lazyVals = lazyVals[0:len(lazyValsA)]
-				lazyVals = append(lazyVals, lazyValsB...)
+				lazyValsJoin = lazyValsJoin[0:len(lazyValsA)]
+				lazyValsJoin = append(lazyValsJoin, lazyValsB...)
 
-				lazyVal := lazyExprFunc(lazyVals)
+				lazyVal := lazyExprFunc(lazyValsJoin)
 				if LazyValEqualTrue(lazyVal) {
-					lazyYieldOrig(lazyVals)
+					lazyYieldOrig(lazyValsJoin)
 				}
 			}
 
