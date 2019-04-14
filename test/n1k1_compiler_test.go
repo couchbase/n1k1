@@ -608,9 +608,9 @@ func TestIt(t *testing.T) {
 		c = append(c, "// ------------------------------------------")
 		c = append(c, "// "+test.about)
 		c = append(c, "// "+string(oj))
-		c = append(c, fmt.Sprintf("func Test%d(t *testing.T) {", testi))
+		c = append(c, fmt.Sprintf("func TestGenerated%d(t *testing.T) {", testi))
 		c = append(c, "  lazyYield := func(lazyVals n1k1.LazyVals) {}")
-		c = append(c, "  _ = lazyYield")
+		c = append(c, "  _ = lazyYield\n")
 		c = append(c, testOuts[testi]...)
 		c = append(c, "}\n")
 	}
