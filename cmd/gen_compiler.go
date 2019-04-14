@@ -16,6 +16,8 @@ type State struct {
 
 	Imports     map[string]bool
 	ImportLines map[string]bool
+
+	Indent string
 }
 
 func (s *State) Push(handler Handler, data string) {
@@ -222,13 +224,24 @@ func EmitBlock(state *State, isLazyBlock bool,
 			return "%#v"
 		})
 
-	line = "Emit(`" + line + "\n`"
+	if strings.HasSuffix(line, "}") &&
+		len(state.Indent) > 0 {
+		state.Indent = state.Indent[:len(state.Indent)-1]
+	}
+
+	lineOrig := line
+
+	line = "Emit(`" + state.Indent + strings.TrimSpace(line) + "\n`"
 
 	if len(liveExprs) > 0 {
 		line = line + ", " + strings.Join(liveExprs, ", ")
 	}
 
 	line = line + ")"
+
+	if strings.HasSuffix(lineOrig, "{") {
+		state.Indent = state.Indent + " "
+	}
 
 	return out, line
 }
@@ -249,7 +262,7 @@ var Keywords = map[string]bool{
 	"len":    true,
 }
 
-var SimpleExprRE = regexp.MustCompile(`[a-zA-Z][a-zA-Z0-9\._\[\]]+`)
+var SimpleExprRE = regexp.MustCompile(`[a-zA-Z][a-zA-Z0-9\._]+`)
 
 // SpacePrefix returns the whitespace prefix of the given line.
 func SpacePrefix(line string) (prefix string) {

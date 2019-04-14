@@ -1,7 +1,12 @@
 package test
 
 import (
+	"encoding/json"
+	"fmt"
+	"log"
+
 	"reflect"
+	"strings"
 	"testing"
 
 	n1k1 "github.com/couchbase/n1k1/n1k1_compiler"
@@ -557,7 +562,26 @@ func TestIt(t *testing.T) {
 			}
 		}
 
-		n1k1.ExecOperator(&test.o, lazyYield, lazyYieldErr)
+		_ = lazyYield
+		_ = lazyYieldErr
+
+		var out []string
+
+		n1k1.Emit = func(format string, a ...interface{}) (n int, err error) {
+			s := fmt.Sprintf(format, a...)
+			out = append(out, s)
+			return len(s), nil
+		}
+
+		n1k1.ExecOperator(&test.o, nil, nil)
+
+		oj, _ := json.Marshal(test.o)
+
+		log.Printf("-------------\n")
+		log.Printf("testi: %d", testi)
+		log.Printf("test.about: %s", test.about)
+		log.Printf("test.o: %s", oj)
+		log.Printf("\n%s", strings.Join(out, ""))
 
 		continue
 
