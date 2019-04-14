@@ -67,27 +67,27 @@ func ScanFile(lazyFilePath string, fields Fields,
 
 func ScanReaderAsCsv(lazyReader io.Reader, fields Fields,
 	lazyYield LazyYield, lazyYieldErr LazyYieldErr) {
-	var lazyVals LazyVals
+	var lazyValsScan LazyVals
 
 	lazyScanner := bufio.NewScanner(lazyReader)
 	for lazyScanner.Scan() {
-		lazyVals = lazyVals[:0]
+		lazyValsScan = lazyValsScan[:0]
 
 		lazyLine := lazyScanner.Bytes()
 		for len(lazyLine) > 0 {
 			lazyCommaAt := bytes.IndexByte(lazyLine, ',')
 			if lazyCommaAt < 0 {
-				lazyVals = append(lazyVals, LazyVal(lazyLine))
+				lazyValsScan = append(lazyValsScan, LazyVal(lazyLine))
 				break
 			}
 
 			lazyPart := lazyLine[:lazyCommaAt]
-			lazyVals = append(lazyVals, LazyVal(lazyPart))
+			lazyValsScan = append(lazyValsScan, LazyVal(lazyPart))
 			lazyLine = lazyLine[lazyCommaAt+1:]
 		}
 
-		if len(lazyVals) > 0 {
-			lazyYield(lazyVals)
+		if len(lazyValsScan) > 0 {
+			lazyYield(lazyValsScan)
 		}
 	}
 }
