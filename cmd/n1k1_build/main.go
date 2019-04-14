@@ -5,7 +5,7 @@ import (
 	"log"
 	"os"
 
-	"github.com/couchbaselabs/n1k1/cmd"
+	"github.com/couchbase/n1k1/cmd"
 )
 
 var sourceDir = flag.String("sourceDir", ".",

@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"testing"
 
-	n1k1 "github.com/couchbaselabs/n1k1/n1k1_compiler"
+	n1k1 "github.com/couchbase/n1k1/n1k1_compiler"
 )
 
 func StringsToLazyVals(a []string, lazyValsPre n1k1.LazyVals) n1k1.LazyVals {
