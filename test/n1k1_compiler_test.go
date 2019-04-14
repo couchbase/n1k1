@@ -599,7 +599,7 @@ func TestIt(t *testing.T) {
 		`import "bytes"`,
 		`import "strings"`,
 		`import "testing"`,
-		`import n1k1 "github.com/couchbase/n1k1/n1k1_compiler"`,
+		`import "github.com/couchbase/n1k1"`,
 	}
 
 	for testi, test := range tests {
