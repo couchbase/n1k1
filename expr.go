@@ -105,17 +105,13 @@ func ExprEq(fields Fields, types Types, params []interface{},
 
 	SetLastType(outTypes, "bool")
 
+	// TODO: consider inlining this one day...
+
 	lazyExprFunc = func(lazyVals LazyVals) (lazyVal LazyVal) {
-		lazyVal =
-			lazyA(lazyVals)
-		lazyValA := lazyVal
+		lazyValA := lazyA(lazyVals)
+		lazyValB := lazyB(lazyVals)
 
-		lazyVal =
-			lazyB(lazyVals)
-		lazyValB := lazyVal
-
-		lazyVal =
-			LazyValEqual(lazyValA, lazyValB)
+		lazyVal = LazyValEqual(lazyValA, lazyValB)
 
 		return lazyVal
 	}
