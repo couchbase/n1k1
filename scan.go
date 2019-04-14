@@ -34,10 +34,14 @@ func Scan(params []interface{}, fields Fields,
 	}
 }
 
+var FileSuffixCsv = ".csv"
+
+var ErrFileNotCsv = fmt.Errorf("file not csv")
+
 func ScanFile(lazyFilePath string, fields Fields,
 	lazyYield LazyYield, lazyYieldErr LazyYieldErr) {
-	if !strings.HasSuffix(lazyFilePath, ".csv") {
-		lazyYieldErr(fmt.Errorf("not csv, lazyFilePath: %s", lazyFilePath))
+	if !strings.HasSuffix(lazyFilePath, FileSuffixCsv) {
+		lazyYieldErr(ErrFileNotCsv)
 		return
 	}
 

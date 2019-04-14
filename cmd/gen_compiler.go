@@ -14,6 +14,7 @@ type State struct {
 	// Stack of line handlers with associated callback data.
 	Handlers []HandlerEntry
 
+	Imports map[string]bool
 	ImportLines map[string]bool
 }
 
@@ -49,6 +50,7 @@ func GenCompiler(sourceDir, outDir string) error {
 		Handlers: []HandlerEntry{
 			HandlerEntry{HandlerScanFile, ""},
 		},
+		Imports: map[string]bool{},
 		ImportLines: map[string]bool{},
 	}
 
@@ -123,6 +125,10 @@ func HandlerScanImports(state *State, data string,
 	if line == ")" {
 		state.Pop()
 	} else {
+		parts := strings.Split(strings.Split(line, `"`)[1], ".")
+
+		state.Imports[parts[len(parts)-1]] = true
+
 		state.ImportLines[line] = true
 	}
 
@@ -188,6 +194,12 @@ func EmitBlock(state *State, isLazyBlock bool,
 	line = SimpleExprRE.ReplaceAllStringFunc(line,
 		func(simpleExpr string) string {
 			if Keywords[simpleExpr] {
+				// A go-lang keyword.
+				return simpleExpr
+			}
+
+			if state.Imports[strings.Split(simpleExpr, ".")[0]] {
+				// Reference of an imported identfier.
 				return simpleExpr
 			}
 
