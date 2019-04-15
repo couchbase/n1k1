@@ -20,6 +20,7 @@ var Keywords = map[string]bool{
 	"defer":  true,
 	"switch": true,
 	"case":   true,
+	"make":   true,
 	"append": true,
 	"len":    true,
 }

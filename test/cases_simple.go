@@ -37,7 +37,11 @@ func MakeYieldCaptureFuncs(t *testing.T, testi int, expectErr string) (
 func StringsToLazyVals(a []string, lazyValsPre base.Vals) base.Vals {
 	lazyVals := lazyValsPre
 	for _, v := range a {
-		lazyVals = append(lazyVals, base.Val([]byte(v)))
+		if v != "" {
+			lazyVals = append(lazyVals, base.Val([]byte(v)))
+		} else {
+			lazyVals = append(lazyVals, base.ValMissing)
+		}
 	}
 	return lazyVals
 }
@@ -476,7 +480,7 @@ var TestCasesSimple = []TestCaseSimple{
 		expectYields: []base.Vals(nil),
 	},
 	{
-		about: "test full join via always-true join condition",
+		about: "test inner join via always-true join condition",
 		o: base.Operator{
 			Kind:   "join-inner-nl",
 			Fields: base.Fields{"dept", "city", "emp", "empDept"},
@@ -518,7 +522,7 @@ var TestCasesSimple = []TestCaseSimple{
 		},
 	},
 	{
-		about: "test full join via always-matching join condition",
+		about: "test inner join via always-matching join condition",
 		o: base.Operator{
 			Kind:   "join-inner-nl",
 			Fields: base.Fields{"dept", "city", "emp", "empDept"},
@@ -561,6 +565,282 @@ var TestCasesSimple = []TestCaseSimple{
 			StringsToLazyVals([]string{`"finance"`, `"london"`, `"doug"`, `"dev"`}, nil),
 			StringsToLazyVals([]string{`"finance"`, `"london"`, `"frank"`, `"finance"`}, nil),
 			StringsToLazyVals([]string{`"finance"`, `"london"`, `"fred"`, `"finance"`}, nil),
+		},
+	},
+	{
+		about: "test full outer join via never-matching join condition",
+		o: base.Operator{
+			Kind:   "join-outerFull-nl",
+			Fields: base.Fields{"dept", "city", "emp", "empDept"},
+			Params: []interface{}{
+				"eq",
+				[]interface{}{"json", `"Hello"`},
+				[]interface{}{"json", `"Goodbye"`},
+			},
+			ParentA: &base.Operator{
+				Kind:   "scan",
+				Fields: base.Fields{"dept", "city"},
+				Params: []interface{}{
+					"csvData",
+					`
+"dev","paris"
+"finance","london"
+`,
+				},
+			},
+			ParentB: &base.Operator{
+				Kind:   "scan",
+				Fields: base.Fields{"emp", "empDept"},
+				Params: []interface{}{
+					"csvData",
+					`
+"dan","dev"
+"doug","dev"
+"frank","finance"
+"fred","finance"
+`,
+				},
+			},
+		},
+		expectYields: []base.Vals{
+			StringsToLazyVals([]string{`"dev"`, `"paris"`, `"dan"`, `"dev"`}, nil),
+			StringsToLazyVals([]string{`"dev"`, `"paris"`, `"doug"`, `"dev"`}, nil),
+			StringsToLazyVals([]string{`"dev"`, `"paris"`, `"frank"`, `"finance"`}, nil),
+			StringsToLazyVals([]string{`"dev"`, `"paris"`, `"fred"`, `"finance"`}, nil),
+			StringsToLazyVals([]string{`"finance"`, `"london"`, `"dan"`, `"dev"`}, nil),
+			StringsToLazyVals([]string{`"finance"`, `"london"`, `"doug"`, `"dev"`}, nil),
+			StringsToLazyVals([]string{`"finance"`, `"london"`, `"frank"`, `"finance"`}, nil),
+			StringsToLazyVals([]string{`"finance"`, `"london"`, `"fred"`, `"finance"`}, nil),
+		},
+	},
+	{
+		about: "test full outer join via sometimes-matching join condition",
+		o: base.Operator{
+			Kind:   "join-outerFull-nl",
+			Fields: base.Fields{"dept", "city", "emp", "empDept"},
+			Params: []interface{}{
+				"eq",
+				[]interface{}{"field", `dept`},
+				[]interface{}{"field", `empDept`},
+			},
+			ParentA: &base.Operator{
+				Kind:   "scan",
+				Fields: base.Fields{"dept", "city"},
+				Params: []interface{}{
+					"csvData",
+					`
+"dev","paris"
+"finance","london"
+`,
+				},
+			},
+			ParentB: &base.Operator{
+				Kind:   "scan",
+				Fields: base.Fields{"emp", "empDept"},
+				Params: []interface{}{
+					"csvData",
+					`
+"dan","dev"
+"doug","dev"
+"frank","finance"
+"fred","finance"
+`,
+				},
+			},
+		},
+		expectYields: []base.Vals{
+			StringsToLazyVals([]string{`"dev"`, `"paris"`, `"dan"`, `"dev"`}, nil),
+			StringsToLazyVals([]string{`"dev"`, `"paris"`, `"doug"`, `"dev"`}, nil),
+			StringsToLazyVals([]string{`"dev"`, `"paris"`, `"frank"`, `"finance"`}, nil),
+			StringsToLazyVals([]string{`"dev"`, `"paris"`, `"fred"`, `"finance"`}, nil),
+			StringsToLazyVals([]string{`"finance"`, `"london"`, `"dan"`, `"dev"`}, nil),
+			StringsToLazyVals([]string{`"finance"`, `"london"`, `"doug"`, `"dev"`}, nil),
+			StringsToLazyVals([]string{`"finance"`, `"london"`, `"frank"`, `"finance"`}, nil),
+			StringsToLazyVals([]string{`"finance"`, `"london"`, `"fred"`, `"finance"`}, nil),
+		},
+	},
+	{
+		about: "test left outer join on dept",
+		o: base.Operator{
+			Kind:   "join-outerLeft-nl",
+			Fields: base.Fields{"dept", "city", "emp", "empDept"},
+			Params: []interface{}{
+				"eq",
+				[]interface{}{"field", `dept`},
+				[]interface{}{"field", `empDept`},
+			},
+			ParentA: &base.Operator{
+				Kind:   "scan",
+				Fields: base.Fields{"dept", "city"},
+				Params: []interface{}{
+					"csvData",
+					`
+"dev","paris"
+"finance","london"
+`,
+				},
+			},
+			ParentB: &base.Operator{
+				Kind:   "scan",
+				Fields: base.Fields{"emp", "empDept"},
+				Params: []interface{}{
+					"csvData",
+					`
+"dan","dev"
+"doug","dev"
+"frank","finance"
+"fred","finance"
+`,
+				},
+			},
+		},
+		expectYields: []base.Vals{
+			StringsToLazyVals([]string{`"dev"`, `"paris"`, `"dan"`, `"dev"`}, nil),
+			StringsToLazyVals([]string{`"dev"`, `"paris"`, `"doug"`, `"dev"`}, nil),
+			StringsToLazyVals([]string{`"dev"`, `"paris"`, ``, ``}, nil),
+			StringsToLazyVals([]string{`"dev"`, `"paris"`, ``, ``}, nil),
+			StringsToLazyVals([]string{`"finance"`, `"london"`, ``, ``}, nil),
+			StringsToLazyVals([]string{`"finance"`, `"london"`, ``, ``}, nil),
+			StringsToLazyVals([]string{`"finance"`, `"london"`, `"frank"`, `"finance"`}, nil),
+			StringsToLazyVals([]string{`"finance"`, `"london"`, `"fred"`, `"finance"`}, nil),
+		},
+	},
+	{
+		about: "test left outer join on never matching condition",
+		o: base.Operator{
+			Kind:   "join-outerLeft-nl",
+			Fields: base.Fields{"dept", "city", "emp", "empDept"},
+			Params: []interface{}{
+				"eq",
+				[]interface{}{"field", `dept`},
+				[]interface{}{"field", `someFakeField`},
+			},
+			ParentA: &base.Operator{
+				Kind:   "scan",
+				Fields: base.Fields{"dept", "city"},
+				Params: []interface{}{
+					"csvData",
+					`
+"dev","paris"
+"finance","london"
+`,
+				},
+			},
+			ParentB: &base.Operator{
+				Kind:   "scan",
+				Fields: base.Fields{"emp", "empDept"},
+				Params: []interface{}{
+					"csvData",
+					`
+"dan","dev"
+"doug","dev"
+"frank","finance"
+"fred","finance"
+`,
+				},
+			},
+		},
+		expectYields: []base.Vals{
+			StringsToLazyVals([]string{`"dev"`, `"paris"`, ``, ``}, nil),
+			StringsToLazyVals([]string{`"dev"`, `"paris"`, ``, ``}, nil),
+			StringsToLazyVals([]string{`"dev"`, `"paris"`, ``, ``}, nil),
+			StringsToLazyVals([]string{`"dev"`, `"paris"`, ``, ``}, nil),
+			StringsToLazyVals([]string{`"finance"`, `"london"`, ``, ``}, nil),
+			StringsToLazyVals([]string{`"finance"`, `"london"`, ``, ``}, nil),
+			StringsToLazyVals([]string{`"finance"`, `"london"`, ``, ``}, nil),
+			StringsToLazyVals([]string{`"finance"`, `"london"`, ``, ``}, nil),
+		},
+	},
+	{
+		about: "test right outer join on dept",
+		o: base.Operator{
+			Kind:   "join-outerRight-nl",
+			Fields: base.Fields{"dept", "city", "emp", "empDept"},
+			Params: []interface{}{
+				"eq",
+				[]interface{}{"field", `dept`},
+				[]interface{}{"field", `empDept`},
+			},
+			ParentA: &base.Operator{
+				Kind:   "scan",
+				Fields: base.Fields{"dept", "city"},
+				Params: []interface{}{
+					"csvData",
+					`
+"dev","paris"
+"finance","london"
+`,
+				},
+			},
+			ParentB: &base.Operator{
+				Kind:   "scan",
+				Fields: base.Fields{"emp", "empDept"},
+				Params: []interface{}{
+					"csvData",
+					`
+"dan","dev"
+"doug","dev"
+"frank","finance"
+"fred","finance"
+`,
+				},
+			},
+		},
+		expectYields: []base.Vals{
+			StringsToLazyVals([]string{`"dev"`, `"paris"`, `"dan"`, `"dev"`}, nil),
+			StringsToLazyVals([]string{`"dev"`, `"paris"`, `"doug"`, `"dev"`}, nil),
+			StringsToLazyVals([]string{``, ``, `"frank"`, `"finance"`}, nil),
+			StringsToLazyVals([]string{``, ``, `"fred"`, `"finance"`}, nil),
+			StringsToLazyVals([]string{``, ``, `"dan"`, `"dev"`}, nil),
+			StringsToLazyVals([]string{``, ``, `"doug"`, `"dev"`}, nil),
+			StringsToLazyVals([]string{`"finance"`, `"london"`, `"frank"`, `"finance"`}, nil),
+			StringsToLazyVals([]string{`"finance"`, `"london"`, `"fred"`, `"finance"`}, nil),
+		},
+	},
+	{
+		about: "test right outer join on never-matching condition",
+		o: base.Operator{
+			Kind:   "join-outerRight-nl",
+			Fields: base.Fields{"dept", "city", "emp", "empDept"},
+			Params: []interface{}{
+				"eq",
+				[]interface{}{"field", `someFakeField`},
+				[]interface{}{"field", `empDept`},
+			},
+			ParentA: &base.Operator{
+				Kind:   "scan",
+				Fields: base.Fields{"dept", "city"},
+				Params: []interface{}{
+					"csvData",
+					`
+"dev","paris"
+"finance","london"
+`,
+				},
+			},
+			ParentB: &base.Operator{
+				Kind:   "scan",
+				Fields: base.Fields{"emp", "empDept"},
+				Params: []interface{}{
+					"csvData",
+					`
+"dan","dev"
+"doug","dev"
+"frank","finance"
+"fred","finance"
+`,
+				},
+			},
+		},
+		expectYields: []base.Vals{
+			StringsToLazyVals([]string{``, ``, `"dan"`, `"dev"`}, nil),
+			StringsToLazyVals([]string{``, ``, `"doug"`, `"dev"`}, nil),
+			StringsToLazyVals([]string{``, ``, `"frank"`, `"finance"`}, nil),
+			StringsToLazyVals([]string{``, ``, `"fred"`, `"finance"`}, nil),
+			StringsToLazyVals([]string{``, ``, `"dan"`, `"dev"`}, nil),
+			StringsToLazyVals([]string{``, ``, `"doug"`, `"dev"`}, nil),
+			StringsToLazyVals([]string{``, ``, `"frank"`, `"finance"`}, nil),
+			StringsToLazyVals([]string{``, ``, `"fred"`, `"finance"`}, nil),
 		},
 	},
 }

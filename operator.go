@@ -1,6 +1,8 @@
 package n1k1
 
 import (
+	"strings"
+
 	"github.com/couchbase/n1k1/base"
 )
 
@@ -60,46 +62,92 @@ func ExecOperator(o *base.Operator,
 			ExecOperator(o.ParentA, lazyYieldVals, lazyYieldErr) // <== inlineOk
 		}
 
-	case "join-inner-nl": // Nested loop join.
-		var fieldsAB base.Fields
+	case "join-inner-nl":
+		ExecJoinNestedLoop(o, lazyYieldVals, lazyYieldErr) // <== inlineOk
 
-		fieldsAB = append(fieldsAB, o.ParentA.Fields...)
-		fieldsAB = append(fieldsAB, o.ParentB.Fields...)
+	case "join-outerLeft-nl":
+		ExecJoinNestedLoop(o, lazyYieldVals, lazyYieldErr) // <== inlineOk
 
-		typesAB := make(base.Types, len(fieldsAB)) // TODO.
+	case "join-outerRight-nl":
+		ExecJoinNestedLoop(o, lazyYieldVals, lazyYieldErr) // <== inlineOk
 
-		if LazyScope {
-			var lazyExprFunc base.ExprFunc
+	case "join-outerFull-nl":
+		ExecJoinNestedLoop(o, lazyYieldVals, lazyYieldErr) // <== inlineOk
+	}
+}
 
-			lazyExprFunc =
-				MakeExprFunc(fieldsAB, typesAB, o.Params, nil, "") // <== inlineOk
+func ExecJoinNestedLoop(o *base.Operator,
+	lazyYieldVals base.YieldVals, lazyYieldErr base.YieldErr) {
+	joinKind := strings.Split(o.Kind, "-")[1] // Ex: "inner", "outerLeft".
 
-			var lazyValsJoin base.Vals
+	lenFieldsA := len(o.ParentA.Fields)
+	lenFieldsB := len(o.ParentB.Fields)
+	lenFieldsAB := lenFieldsA + lenFieldsB
 
-			lazyYieldValsOrig := lazyYieldVals
+	fieldsAB := make(base.Fields, 0, lenFieldsAB)
+	fieldsAB = append(fieldsAB, o.ParentA.Fields...)
+	fieldsAB = append(fieldsAB, o.ParentB.Fields...)
 
-			lazyYieldVals = func(lazyValsA base.Vals) {
-				lazyValsJoin = lazyValsJoin[:0]
-				lazyValsJoin = append(lazyValsJoin, lazyValsA...)
+	typesAB := make(base.Types, lenFieldsAB) // TODO.
 
-				if LazyScope {
-					lazyYieldVals := func(lazyValsB base.Vals) {
-						lazyValsJoin = lazyValsJoin[0:len(lazyValsA)]
-						lazyValsJoin = append(lazyValsJoin, lazyValsB...)
+	if LazyScope {
+		var lazyExprFunc base.ExprFunc
 
+		lazyExprFunc =
+			MakeExprFunc(fieldsAB, typesAB, o.Params, nil, "") // <== inlineOk
+
+		var lazyValsJoinOuterRight base.Vals
+		_ = lazyValsJoinOuterRight
+
+		if joinKind == "outerRight" { // <== inlineOk
+			lazyValsJoinOuterRight = make(base.Vals, lenFieldsAB)
+		} // <== inlineOk
+
+		lazyValsJoin := make(base.Vals, lenFieldsAB)
+
+		lazyYieldValsOrig := lazyYieldVals
+
+		lazyYieldVals = func(lazyValsA base.Vals) {
+			lazyValsJoin = lazyValsJoin[:0]
+			lazyValsJoin = append(lazyValsJoin, lazyValsA...)
+
+			if LazyScope {
+				lazyYieldVals := func(lazyValsB base.Vals) {
+					lazyValsJoin = lazyValsJoin[0:lenFieldsA]
+					lazyValsJoin = append(lazyValsJoin, lazyValsB...)
+
+					if joinKind == "outerFull" { // <== inlineOk
+						lazyYieldValsOrig(lazyValsJoin)
+					} else { // <== inlineOk
 						lazyVal := lazyExprFunc(lazyValsJoin)
 						if base.ValEqualTrue(lazyVal) {
 							lazyYieldValsOrig(lazyValsJoin)
+						} else {
+							if joinKind == "outerLeft" { // <== inlineOk
+								lazyValsJoin = lazyValsJoin[0:lenFieldsA]
+								for i := 0; i < lenFieldsB; i++ { // <== inlineOk
+									lazyValsJoin = append(lazyValsJoin, base.ValMissing)
+								} // <== inlineOk
+
+								lazyYieldValsOrig(lazyValsJoin)
+							} // <== inlineOk
+
+							if joinKind == "outerRight" { // <== inlineOk
+								lazyValsJoinOuterRight = lazyValsJoinOuterRight[0:lenFieldsA]
+								lazyValsJoinOuterRight = append(lazyValsJoinOuterRight, lazyValsB...)
+
+								lazyYieldValsOrig(lazyValsJoinOuterRight)
+							} // <== inlineOk
 						}
-					}
-
-					// Inner...
-					ExecOperator(o.ParentB, lazyYieldVals, lazyYieldErr) // <== inlineOk
+					} // <== inlineOk
 				}
-			}
 
-			// Outer...
-			ExecOperator(o.ParentA, lazyYieldVals, lazyYieldErr) // <== inlineOk
+				// Inner...
+				ExecOperator(o.ParentB, lazyYieldVals, lazyYieldErr) // <== inlineOk
+			}
 		}
+
+		// Outer...
+		ExecOperator(o.ParentA, lazyYieldVals, lazyYieldErr) // <== inlineOk
 	}
 }
