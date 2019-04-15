@@ -82,18 +82,20 @@ func ExecOperator(o *base.Operator,
 				lazyValsJoin = lazyValsJoin[:0]
 				lazyValsJoin = append(lazyValsJoin, lazyValsA...)
 
-				lazyYieldVals = func(lazyValsB base.Vals) {
-					lazyValsJoin = lazyValsJoin[0:len(lazyValsA)]
-					lazyValsJoin = append(lazyValsJoin, lazyValsB...)
+				if LazyScope {
+					lazyYieldVals := func(lazyValsB base.Vals) {
+						lazyValsJoin = lazyValsJoin[0:len(lazyValsA)]
+						lazyValsJoin = append(lazyValsJoin, lazyValsB...)
 
-					lazyVal := lazyExprFunc(lazyValsJoin)
-					if base.ValEqualTrue(lazyVal) {
-						lazyYieldValsOrig(lazyValsJoin)
+						lazyVal := lazyExprFunc(lazyValsJoin)
+						if base.ValEqualTrue(lazyVal) {
+							lazyYieldValsOrig(lazyValsJoin)
+						}
 					}
-				}
 
-				// Inner...
-				ExecOperator(o.ParentB, lazyYieldVals, lazyYieldErr) // <== inlineOk
+					// Inner...
+					ExecOperator(o.ParentB, lazyYieldVals, lazyYieldErr) // <== inlineOk
+				}
 			}
 
 			// Outer...
