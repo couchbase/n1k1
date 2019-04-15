@@ -1,25 +1,11 @@
 package n1k1
 
-const LazyScope = true // For marking varible scopes (ex: IF statement).
+import (
+	"github.com/couchbase/n1k1/base"
+)
 
-// The LazyYield memory ownership rule: the receiver func should copy
-// any inputs that it wants to keep, because the provided slices might
-// be reused by future invocations.
-type LazyYield func(LazyVals)
-
-type LazyYieldErr func(error)
-
-type Operator struct {
-	Kind   string        // Ex: "scan", "filter", "project", etc.
-	Fields Fields        // Output fields of this operator.
-	Params []interface{} // Params based on the kind.
-
-	ParentA *Operator
-	ParentB *Operator
-}
-
-func ExecOperator(o *Operator,
-	lazyYield LazyYield, lazyYieldErr LazyYieldErr) {
+func ExecOperator(o *base.Operator,
+	lazyYield base.LazyYield, lazyYieldErr base.LazyYieldErr) {
 	if o == nil {
 		return
 	}
@@ -29,19 +15,19 @@ func ExecOperator(o *Operator,
 		Scan(o.Params, o.Fields, lazyYield, lazyYieldErr) // <== inlineOk
 
 	case "filter":
-		types := make(Types, len(o.ParentA.Fields)) // TODO.
+		types := make(base.Types, len(o.ParentA.Fields)) // TODO.
 
-		if LazyScope {
-			var lazyExprFunc LazyExprFunc
+		if base.LazyScope {
+			var lazyExprFunc base.LazyExprFunc
 
 			lazyExprFunc =
 				MakeExprFunc(o.ParentA.Fields, types, o.Params, nil, "") // <== inlineOk
 
 			lazyYieldOrig := lazyYield
 
-			lazyYield = func(lazyVals LazyVals) {
+			lazyYield = func(lazyVals base.LazyVals) {
 				lazyVal := lazyExprFunc(lazyVals)
-				if LazyValEqualTrue(lazyVal) {
+				if base.LazyValEqualTrue(lazyVal) {
 					lazyYieldOrig(lazyVals)
 				}
 			}
@@ -50,20 +36,20 @@ func ExecOperator(o *Operator,
 		}
 
 	case "project":
-		types := make(Types, len(o.ParentA.Fields)) // TODO.
-		outTypes := Types{""}                       // TODO.
+		types := make(base.Types, len(o.ParentA.Fields)) // TODO.
+		outTypes := base.Types{""}                       // TODO.
 
-		if LazyScope {
+		if base.LazyScope {
 			var lazyProjectFunc LazyProjectFunc
 
 			lazyProjectFunc =
 				MakeProjectFunc(o.ParentA.Fields, types, o.Params, outTypes) // <== inlineOk
 
-			var lazyValsProjected LazyVals
+			var lazyValsProjected base.LazyVals
 
 			lazyYieldOrig := lazyYield
 
-			lazyYield = func(lazyValsIn LazyVals) {
+			lazyYield = func(lazyValsIn base.LazyVals) {
 				lazyValsProjected = lazyValsProjected[:0]
 
 				lazyValsProjected = lazyProjectFunc(lazyValsIn, lazyValsProjected)
@@ -75,33 +61,33 @@ func ExecOperator(o *Operator,
 		}
 
 	case "join-nl": // Nested loop join.
-		var fieldsAB Fields
+		var fieldsAB base.Fields
 
 		fieldsAB = append(fieldsAB, o.ParentA.Fields...)
 		fieldsAB = append(fieldsAB, o.ParentB.Fields...)
 
-		typesAB := make(Types, len(fieldsAB)) // TODO.
+		typesAB := make(base.Types, len(fieldsAB)) // TODO.
 
-		if LazyScope {
-			var lazyExprFunc LazyExprFunc
+		if base.LazyScope {
+			var lazyExprFunc base.LazyExprFunc
 
 			lazyExprFunc =
 				MakeExprFunc(fieldsAB, typesAB, o.Params, nil, "") // <== inlineOk
 
-			var lazyValsJoin LazyVals
+			var lazyValsJoin base.LazyVals
 
 			lazyYieldOrig := lazyYield
 
-			lazyYield = func(lazyValsA LazyVals) {
+			lazyYield = func(lazyValsA base.LazyVals) {
 				lazyValsJoin = lazyValsJoin[:0]
 				lazyValsJoin = append(lazyValsJoin, lazyValsA...)
 
-				lazyYield = func(lazyValsB LazyVals) {
+				lazyYield = func(lazyValsB base.LazyVals) {
 					lazyValsJoin = lazyValsJoin[0:len(lazyValsA)]
 					lazyValsJoin = append(lazyValsJoin, lazyValsB...)
 
 					lazyVal := lazyExprFunc(lazyValsJoin)
-					if LazyValEqualTrue(lazyVal) {
+					if base.LazyValEqualTrue(lazyVal) {
 						lazyYieldOrig(lazyValsJoin)
 					}
 				}

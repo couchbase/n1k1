@@ -3,18 +3,20 @@ package n1k1
 import (
 	"reflect"
 	"testing"
+
+	"github.com/couchbase/n1k1/base"
 )
 
-func StringsToLazyVals(a []string, lazyValsPre LazyVals) LazyVals {
+func StringsToLazyVals(a []string, lazyValsPre base.LazyVals) base.LazyVals {
 	lazyVals := lazyValsPre
 	for _, v := range a {
-		lazyVals = append(lazyVals, LazyVal([]byte(v)))
+		lazyVals = append(lazyVals, base.LazyVal([]byte(v)))
 	}
 	return lazyVals
 }
 
 func TestFieldsIndexOf(t *testing.T) {
-	fs := Fields{"a", "b"}
+	fs := base.Fields{"a", "b"}
 	if fs.IndexOf("a") != 0 {
 		t.Fatal("should have worked")
 	}
@@ -25,7 +27,7 @@ func TestFieldsIndexOf(t *testing.T) {
 		t.Fatal("should have worked")
 	}
 
-	fs = Fields{}
+	fs = base.Fields{}
 	if fs.IndexOf("c") != -1 {
 		t.Fatal("should have worked")
 	}
@@ -34,8 +36,8 @@ func TestFieldsIndexOf(t *testing.T) {
 func TestExecOperator(t *testing.T) {
 	tests := []struct {
 		about        string
-		o            Operator
-		expectYields []LazyVals
+		o            base.Operator
+		expectYields []base.LazyVals
 		expectErr    string
 	}{
 		{
@@ -43,9 +45,9 @@ func TestExecOperator(t *testing.T) {
 		},
 		{
 			about: "test empty csv-data scan",
-			o: Operator{
+			o: base.Operator{
 				Kind:   "scan",
-				Fields: Fields(nil),
+				Fields: base.Fields(nil),
 				Params: []interface{}{
 					"csvData",
 					"",
@@ -54,9 +56,9 @@ func TestExecOperator(t *testing.T) {
 		},
 		{
 			about: "test empty csv-data scan with some fields",
-			o: Operator{
+			o: base.Operator{
 				Kind:   "scan",
-				Fields: Fields{"a", "b", "c"},
+				Fields: base.Fields{"a", "b", "c"},
 				Params: []interface{}{
 					"csvData",
 					"",
@@ -65,23 +67,23 @@ func TestExecOperator(t *testing.T) {
 		},
 		{
 			about: "test csv-data scan with 1 record",
-			o: Operator{
+			o: base.Operator{
 				Kind:   "scan",
-				Fields: Fields{"a", "b", "c"},
+				Fields: base.Fields{"a", "b", "c"},
 				Params: []interface{}{
 					"csvData",
 					"1,2,3",
 				},
 			},
-			expectYields: []LazyVals{
-				LazyVals{[]byte("1"), []byte("2"), []byte("3")},
+			expectYields: []base.LazyVals{
+				base.LazyVals{[]byte("1"), []byte("2"), []byte("3")},
 			},
 		},
 		{
 			about: "test csv-data scan with 2 records",
-			o: Operator{
+			o: base.Operator{
 				Kind:   "scan",
-				Fields: Fields{"a", "b", "c"},
+				Fields: base.Fields{"a", "b", "c"},
 				Params: []interface{}{
 					"csvData",
 					`
@@ -90,24 +92,24 @@ func TestExecOperator(t *testing.T) {
 `,
 				},
 			},
-			expectYields: []LazyVals{
-				LazyVals{[]byte("10"), []byte("20"), []byte("30")},
-				LazyVals{[]byte("11"), []byte("21"), []byte("31")},
+			expectYields: []base.LazyVals{
+				base.LazyVals{[]byte("10"), []byte("20"), []byte("30")},
+				base.LazyVals{[]byte("11"), []byte("21"), []byte("31")},
 			},
 		},
 		{
 			about: "test csv-data scan->filter on const == const",
-			o: Operator{
+			o: base.Operator{
 				Kind:   "filter",
-				Fields: Fields{"a", "b", "c"},
+				Fields: base.Fields{"a", "b", "c"},
 				Params: []interface{}{
 					"eq",
 					[]interface{}{"json", `"July"`},
 					[]interface{}{"json", `"July"`},
 				},
-				ParentA: &Operator{
+				ParentA: &base.Operator{
 					Kind:   "scan",
-					Fields: Fields{"a", "b", "c"},
+					Fields: base.Fields{"a", "b", "c"},
 					Params: []interface{}{
 						"csvData",
 						`
@@ -117,24 +119,24 @@ func TestExecOperator(t *testing.T) {
 					},
 				},
 			},
-			expectYields: []LazyVals{
-				LazyVals{[]byte("10"), []byte("20"), []byte("30")},
-				LazyVals{[]byte("11"), []byte("21"), []byte("31")},
+			expectYields: []base.LazyVals{
+				base.LazyVals{[]byte("10"), []byte("20"), []byte("30")},
+				base.LazyVals{[]byte("11"), []byte("21"), []byte("31")},
 			},
 		},
 		{
 			about: "test csv-data scan->filter on constX == constY",
-			o: Operator{
+			o: base.Operator{
 				Kind:   "filter",
-				Fields: Fields{"a", "b", "c"},
+				Fields: base.Fields{"a", "b", "c"},
 				Params: []interface{}{
 					"eq",
 					[]interface{}{"json", `"July"`},
 					[]interface{}{"json", `"June"`},
 				},
-				ParentA: &Operator{
+				ParentA: &base.Operator{
 					Kind:   "scan",
-					Fields: Fields{"a", "b", "c"},
+					Fields: base.Fields{"a", "b", "c"},
 					Params: []interface{}{
 						"csvData",
 						`
@@ -144,21 +146,21 @@ func TestExecOperator(t *testing.T) {
 					},
 				},
 			},
-			expectYields: []LazyVals(nil),
+			expectYields: []base.LazyVals(nil),
 		},
 		{
 			about: "test csv-data scan->filter with fieldB == fieldB",
-			o: Operator{
+			o: base.Operator{
 				Kind:   "filter",
-				Fields: Fields{"a", "b", "c"},
+				Fields: base.Fields{"a", "b", "c"},
 				Params: []interface{}{
 					"eq",
 					[]interface{}{"field", "b"},
 					[]interface{}{"field", "b"},
 				},
-				ParentA: &Operator{
+				ParentA: &base.Operator{
 					Kind:   "scan",
-					Fields: Fields{"a", "b", "c"},
+					Fields: base.Fields{"a", "b", "c"},
 					Params: []interface{}{
 						"csvData",
 						`
@@ -168,24 +170,24 @@ func TestExecOperator(t *testing.T) {
 					},
 				},
 			},
-			expectYields: []LazyVals{
-				LazyVals{[]byte("10"), []byte("20"), []byte("30")},
-				LazyVals{[]byte("11"), []byte("21"), []byte("31")},
+			expectYields: []base.LazyVals{
+				base.LazyVals{[]byte("10"), []byte("20"), []byte("30")},
+				base.LazyVals{[]byte("11"), []byte("21"), []byte("31")},
 			},
 		},
 		{
 			about: "test csv-data scan->filter with fieldA == fieldB",
-			o: Operator{
+			o: base.Operator{
 				Kind:   "filter",
-				Fields: Fields{"a", "b", "c"},
+				Fields: base.Fields{"a", "b", "c"},
 				Params: []interface{}{
 					"eq",
 					[]interface{}{"field", "a"},
 					[]interface{}{"field", "b"},
 				},
-				ParentA: &Operator{
+				ParentA: &base.Operator{
 					Kind:   "scan",
-					Fields: Fields{"a", "b", "c"},
+					Fields: base.Fields{"a", "b", "c"},
 					Params: []interface{}{
 						"csvData",
 						`
@@ -195,21 +197,21 @@ func TestExecOperator(t *testing.T) {
 					},
 				},
 			},
-			expectYields: []LazyVals(nil),
+			expectYields: []base.LazyVals(nil),
 		},
 		{
 			about: "test csv-data scan->filter with fieldB = 66",
-			o: Operator{
+			o: base.Operator{
 				Kind:   "filter",
-				Fields: Fields{"a", "b", "c"},
+				Fields: base.Fields{"a", "b", "c"},
 				Params: []interface{}{
 					"eq",
 					[]interface{}{"field", "b"},
 					[]interface{}{"json", `66`},
 				},
-				ParentA: &Operator{
+				ParentA: &base.Operator{
 					Kind:   "scan",
-					Fields: Fields{"a", "b", "c"},
+					Fields: base.Fields{"a", "b", "c"},
 					Params: []interface{}{
 						"csvData",
 						`
@@ -219,21 +221,21 @@ func TestExecOperator(t *testing.T) {
 					},
 				},
 			},
-			expectYields: []LazyVals(nil),
+			expectYields: []base.LazyVals(nil),
 		},
 		{
 			about: "test csv-data scan->filter with fieldB == 21",
-			o: Operator{
+			o: base.Operator{
 				Kind:   "filter",
-				Fields: Fields{"a", "b", "c"},
+				Fields: base.Fields{"a", "b", "c"},
 				Params: []interface{}{
 					"eq",
 					[]interface{}{"field", "b"},
 					[]interface{}{"json", `21`},
 				},
-				ParentA: &Operator{
+				ParentA: &base.Operator{
 					Kind:   "scan",
-					Fields: Fields{"a", "b", "c"},
+					Fields: base.Fields{"a", "b", "c"},
 					Params: []interface{}{
 						"csvData",
 						`
@@ -243,23 +245,23 @@ func TestExecOperator(t *testing.T) {
 					},
 				},
 			},
-			expectYields: []LazyVals{
-				LazyVals{[]byte("11"), []byte("21"), []byte("31")},
+			expectYields: []base.LazyVals{
+				base.LazyVals{[]byte("11"), []byte("21"), []byte("31")},
 			},
 		},
 		{
 			about: "test csv-data scan->filter more than 1 match",
-			o: Operator{
+			o: base.Operator{
 				Kind:   "filter",
-				Fields: Fields{"a", "b", "c"},
+				Fields: base.Fields{"a", "b", "c"},
 				Params: []interface{}{
 					"eq",
 					[]interface{}{"field", "c"},
 					[]interface{}{"json", `3000`},
 				},
-				ParentA: &Operator{
+				ParentA: &base.Operator{
 					Kind:   "scan",
-					Fields: Fields{"a", "b", "c"},
+					Fields: base.Fields{"a", "b", "c"},
 					Params: []interface{}{
 						"csvData",
 						`
@@ -271,31 +273,31 @@ func TestExecOperator(t *testing.T) {
 					},
 				},
 			},
-			expectYields: []LazyVals{
-				LazyVals{[]byte("10"), []byte("20"), []byte("3000")},
-				LazyVals{[]byte("11"), []byte("21"), []byte("3000")},
+			expectYields: []base.LazyVals{
+				base.LazyVals{[]byte("10"), []byte("20"), []byte("3000")},
+				base.LazyVals{[]byte("11"), []byte("21"), []byte("3000")},
 			},
 		},
 		{
 			about: "test csv-data scan->filter->project",
-			o: Operator{
+			o: base.Operator{
 				Kind:   "project",
-				Fields: Fields{"a", "c"},
+				Fields: base.Fields{"a", "c"},
 				Params: []interface{}{
 					[]interface{}{"field", "a"},
 					[]interface{}{"field", "c"},
 				},
-				ParentA: &Operator{
+				ParentA: &base.Operator{
 					Kind:   "filter",
-					Fields: Fields{"a", "b", "c"},
+					Fields: base.Fields{"a", "b", "c"},
 					Params: []interface{}{
 						"eq",
 						[]interface{}{"field", "c"},
 						[]interface{}{"json", `3000`},
 					},
-					ParentA: &Operator{
+					ParentA: &base.Operator{
 						Kind:   "scan",
-						Fields: Fields{"a", "b", "c"},
+						Fields: base.Fields{"a", "b", "c"},
 						Params: []interface{}{
 							"csvData",
 							`
@@ -308,28 +310,28 @@ func TestExecOperator(t *testing.T) {
 					},
 				},
 			},
-			expectYields: []LazyVals{
-				LazyVals{[]byte("10"), []byte("3000")},
-				LazyVals{[]byte("11"), []byte("3000")},
+			expectYields: []base.LazyVals{
+				base.LazyVals{[]byte("10"), []byte("3000")},
+				base.LazyVals{[]byte("11"), []byte("3000")},
 			},
 		},
 		{
 			about: "test csv-data scan->filter->project nothing",
-			o: Operator{
+			o: base.Operator{
 				Kind:   "project",
-				Fields: Fields{},
+				Fields: base.Fields{},
 				Params: []interface{}{},
-				ParentA: &Operator{
+				ParentA: &base.Operator{
 					Kind:   "filter",
-					Fields: Fields{"a", "b", "c"},
+					Fields: base.Fields{"a", "b", "c"},
 					Params: []interface{}{
 						"eq",
 						[]interface{}{"field", "c"},
 						[]interface{}{"json", `3000`},
 					},
-					ParentA: &Operator{
+					ParentA: &base.Operator{
 						Kind:   "scan",
-						Fields: Fields{"a", "b", "c"},
+						Fields: base.Fields{"a", "b", "c"},
 						Params: []interface{}{
 							"csvData",
 							`
@@ -342,31 +344,31 @@ func TestExecOperator(t *testing.T) {
 					},
 				},
 			},
-			expectYields: []LazyVals{
-				LazyVals(nil),
-				LazyVals(nil),
+			expectYields: []base.LazyVals{
+				base.LazyVals(nil),
+				base.LazyVals(nil),
 			},
 		},
 		{
 			about: "test csv-data scan->filter->project unknown field",
-			o: Operator{
+			o: base.Operator{
 				Kind:   "project",
-				Fields: Fields{"a", "xxx"},
+				Fields: base.Fields{"a", "xxx"},
 				Params: []interface{}{
 					[]interface{}{"field", "a"},
 					[]interface{}{"field", "xxx"},
 				},
-				ParentA: &Operator{
+				ParentA: &base.Operator{
 					Kind:   "filter",
-					Fields: Fields{"a", "b", "c"},
+					Fields: base.Fields{"a", "b", "c"},
 					Params: []interface{}{
 						"eq",
 						[]interface{}{"field", "c"},
 						[]interface{}{"json", `3000`},
 					},
-					ParentA: &Operator{
+					ParentA: &base.Operator{
 						Kind:   "scan",
-						Fields: Fields{"a", "b", "c"},
+						Fields: base.Fields{"a", "b", "c"},
 						Params: []interface{}{
 							"csvData",
 							`
@@ -379,24 +381,24 @@ func TestExecOperator(t *testing.T) {
 					},
 				},
 			},
-			expectYields: []LazyVals{
-				LazyVals{[]byte("10"), nil},
-				LazyVals{[]byte("11"), nil},
+			expectYields: []base.LazyVals{
+				base.LazyVals{[]byte("10"), nil},
+				base.LazyVals{[]byte("11"), nil},
 			},
 		},
 		{
 			about: "test csv-data scan->join-nl",
-			o: Operator{
+			o: base.Operator{
 				Kind:   "join-nl",
-				Fields: Fields{"dept", "city", "emp", "empDept"},
+				Fields: base.Fields{"dept", "city", "emp", "empDept"},
 				Params: []interface{}{
 					"eq",
 					[]interface{}{"field", "dept"},
 					[]interface{}{"field", "empDept"},
 				},
-				ParentA: &Operator{
+				ParentA: &base.Operator{
 					Kind:   "scan",
-					Fields: Fields{"dept", "city"},
+					Fields: base.Fields{"dept", "city"},
 					Params: []interface{}{
 						"csvData",
 						`
@@ -405,9 +407,9 @@ func TestExecOperator(t *testing.T) {
 `,
 					},
 				},
-				ParentB: &Operator{
+				ParentB: &base.Operator{
 					Kind:   "scan",
-					Fields: Fields{"emp", "empDept"},
+					Fields: base.Fields{"emp", "empDept"},
 					Params: []interface{}{
 						"csvData",
 						`
@@ -419,7 +421,7 @@ func TestExecOperator(t *testing.T) {
 					},
 				},
 			},
-			expectYields: []LazyVals{
+			expectYields: []base.LazyVals{
 				StringsToLazyVals([]string{`"dev"`, `"paris"`, `"dan"`, `"dev"`}, nil),
 				StringsToLazyVals([]string{`"dev"`, `"paris"`, `"doug"`, `"dev"`}, nil),
 				StringsToLazyVals([]string{`"finance"`, `"london"`, `"frank"`, `"finance"`}, nil),
@@ -428,17 +430,17 @@ func TestExecOperator(t *testing.T) {
 		},
 		{
 			about: "test csv-data scan->join-nl but false join condition",
-			o: Operator{
+			o: base.Operator{
 				Kind:   "join-nl",
-				Fields: Fields{"dept", "city", "emp", "empDept"},
+				Fields: base.Fields{"dept", "city", "emp", "empDept"},
 				Params: []interface{}{
 					"eq",
 					[]interface{}{"field", "dept"},
 					[]interface{}{"json", `"NOT-MATCHING"`},
 				},
-				ParentA: &Operator{
+				ParentA: &base.Operator{
 					Kind:   "scan",
-					Fields: Fields{"dept", "city"},
+					Fields: base.Fields{"dept", "city"},
 					Params: []interface{}{
 						"csvData",
 						`
@@ -447,9 +449,9 @@ func TestExecOperator(t *testing.T) {
 `,
 					},
 				},
-				ParentB: &Operator{
+				ParentB: &base.Operator{
 					Kind:   "scan",
-					Fields: Fields{"emp", "empDept"},
+					Fields: base.Fields{"emp", "empDept"},
 					Params: []interface{}{
 						"csvData",
 						`
@@ -461,17 +463,17 @@ func TestExecOperator(t *testing.T) {
 					},
 				},
 			},
-			expectYields: []LazyVals(nil),
+			expectYields: []base.LazyVals(nil),
 		},
 		{
 			about: "test full join via always-true join condition",
-			o: Operator{
+			o: base.Operator{
 				Kind:   "join-nl",
-				Fields: Fields{"dept", "city", "emp", "empDept"},
+				Fields: base.Fields{"dept", "city", "emp", "empDept"},
 				Params: []interface{}{"json", `true`},
-				ParentA: &Operator{
+				ParentA: &base.Operator{
 					Kind:   "scan",
-					Fields: Fields{"dept", "city"},
+					Fields: base.Fields{"dept", "city"},
 					Params: []interface{}{
 						"csvData",
 						`
@@ -480,9 +482,9 @@ func TestExecOperator(t *testing.T) {
 `,
 					},
 				},
-				ParentB: &Operator{
+				ParentB: &base.Operator{
 					Kind:   "scan",
-					Fields: Fields{"emp", "empDept"},
+					Fields: base.Fields{"emp", "empDept"},
 					Params: []interface{}{
 						"csvData",
 						`
@@ -494,7 +496,7 @@ func TestExecOperator(t *testing.T) {
 					},
 				},
 			},
-			expectYields: []LazyVals{
+			expectYields: []base.LazyVals{
 				StringsToLazyVals([]string{`"dev"`, `"paris"`, `"dan"`, `"dev"`}, nil),
 				StringsToLazyVals([]string{`"dev"`, `"paris"`, `"doug"`, `"dev"`}, nil),
 				StringsToLazyVals([]string{`"dev"`, `"paris"`, `"frank"`, `"finance"`}, nil),
@@ -507,17 +509,17 @@ func TestExecOperator(t *testing.T) {
 		},
 		{
 			about: "test full join via always-matching join condition",
-			o: Operator{
+			o: base.Operator{
 				Kind:   "join-nl",
-				Fields: Fields{"dept", "city", "emp", "empDept"},
+				Fields: base.Fields{"dept", "city", "emp", "empDept"},
 				Params: []interface{}{
 					"eq",
 					[]interface{}{"json", `"Hello"`},
 					[]interface{}{"json", `"Hello"`},
 				},
-				ParentA: &Operator{
+				ParentA: &base.Operator{
 					Kind:   "scan",
-					Fields: Fields{"dept", "city"},
+					Fields: base.Fields{"dept", "city"},
 					Params: []interface{}{
 						"csvData",
 						`
@@ -526,9 +528,9 @@ func TestExecOperator(t *testing.T) {
 `,
 					},
 				},
-				ParentB: &Operator{
+				ParentB: &base.Operator{
 					Kind:   "scan",
-					Fields: Fields{"emp", "empDept"},
+					Fields: base.Fields{"emp", "empDept"},
 					Params: []interface{}{
 						"csvData",
 						`
@@ -540,7 +542,7 @@ func TestExecOperator(t *testing.T) {
 					},
 				},
 			},
-			expectYields: []LazyVals{
+			expectYields: []base.LazyVals{
 				StringsToLazyVals([]string{`"dev"`, `"paris"`, `"dan"`, `"dev"`}, nil),
 				StringsToLazyVals([]string{`"dev"`, `"paris"`, `"doug"`, `"dev"`}, nil),
 				StringsToLazyVals([]string{`"dev"`, `"paris"`, `"frank"`, `"finance"`}, nil),
@@ -554,12 +556,13 @@ func TestExecOperator(t *testing.T) {
 	}
 
 	for testi, test := range tests {
-		var yields []LazyVals
+		var yields []base.LazyVals
 
-		lazyYield := func(lazyVals LazyVals) {
-			var lazyValsCopy LazyVals
+		lazyYield := func(lazyVals base.LazyVals) {
+			var lazyValsCopy base.LazyVals
 			for _, v := range lazyVals {
-				lazyValsCopy = append(lazyValsCopy, append(LazyVal(nil), v...))
+				lazyValsCopy = append(lazyValsCopy,
+					append(base.LazyVal(nil), v...))
 			}
 
 			yields = append(yields, lazyValsCopy)

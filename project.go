@@ -1,18 +1,23 @@
 package n1k1
 
-type LazyProjectFunc func(lazyVals, lazyValsPre LazyVals) LazyVals
+import (
+	"github.com/couchbase/n1k1/base"
+)
 
-func MakeProjectFunc(fields Fields, types Types, projections []interface{},
-	outTypes Types) (lazyProjectFunc LazyProjectFunc) {
-	var lazyExprFuncs []LazyExprFunc
+type LazyProjectFunc func(lazyVals, lazyValsPre base.LazyVals) base.LazyVals
+
+func MakeProjectFunc(fields base.Fields, types base.Types,
+	projections []interface{}, outTypes base.Types) (
+	lazyProjectFunc LazyProjectFunc) {
+	var lazyExprFuncs []base.LazyExprFunc
 
 	for _, projection := range projections {
 		expr := projection.([]interface{})
 
 		outTypes = append(outTypes, "")
 
-		if LazyScope {
-			var lazyExprFunc LazyExprFunc
+		if base.LazyScope {
+			var lazyExprFunc base.LazyExprFunc
 
 			lazyExprFunc =
 				MakeExprFunc(fields, types, expr, outTypes, "") // <== inlineOk
@@ -21,12 +26,12 @@ func MakeProjectFunc(fields Fields, types Types, projections []interface{},
 		}
 	}
 
-	lazyProjectFunc = func(lazyVals, lazyValsPre LazyVals) (
-		lazyValsOut LazyVals) {
+	lazyProjectFunc = func(lazyVals, lazyValsPre base.LazyVals) (
+		lazyValsOut base.LazyVals) {
 		lazyValsOut = lazyValsPre // Optional pre-alloc'ed slice.
 
 		for _, lazyExprFunc := range lazyExprFuncs {
-			var lazyValProjected LazyVal
+			var lazyValProjected base.LazyVal
 
 			lazyValProjected = lazyExprFunc(lazyVals)
 
