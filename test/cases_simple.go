@@ -1,8 +1,38 @@
 package test
 
 import (
+	"testing"
+
 	"github.com/couchbase/n1k1/base"
 )
+
+func MakeYieldFuncs(t *testing.T, testi int, expectErr string) (
+	base.YieldVals, base.YieldErr, func() []base.Vals) {
+	var yields []base.Vals
+
+	yieldVals := func(lazyVals base.Vals) {
+		var lazyValsCopy base.Vals
+		for _, v := range lazyVals {
+			lazyValsCopy = append(lazyValsCopy,
+				append(base.Val(nil), v...))
+		}
+
+		yields = append(yields, lazyValsCopy)
+	}
+
+	yieldErr := func(err error) {
+		if (expectErr != "") != (err != nil) {
+			t.Fatalf("testi: %d, mismatched err: %+v, expectErr: %s",
+				testi, err, expectErr)
+		}
+	}
+
+	returnYields := func() []base.Vals {
+		return yields
+	}
+
+	return yieldVals, yieldErr, returnYields
+}
 
 func StringsToLazyVals(a []string, lazyValsPre base.Vals) base.Vals {
 	lazyVals := lazyValsPre
