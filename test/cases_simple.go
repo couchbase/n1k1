@@ -6,7 +6,7 @@ import (
 	"github.com/couchbase/n1k1/base"
 )
 
-func MakeYieldFuncs(t *testing.T, testi int, expectErr string) (
+func MakeYieldCaptureFuncs(t *testing.T, testi int, expectErr string) (
 	base.YieldVals, base.YieldErr, func() []base.Vals) {
 	var yields []base.Vals
 

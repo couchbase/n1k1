@@ -82,7 +82,7 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 		c = append(c, fmt.Sprintf("func TestGenerated%d(t *testing.T) {", testi))
 
 		c = append(c, `  lazyYieldVals, lazyYieldErr, returnYields :=`)
-		c = append(c, fmt.Sprintf(`    test.MakeYieldFuncs(nil, %d, %q)`,
+		c = append(c, fmt.Sprintf(`    test.MakeYieldCaptureFuncs(nil, %d, %q)`,
 			testi, test.expectErr))
 		c = append(c, "  _ = lazyYieldVals")
 		c = append(c, "  _ = lazyYieldErr")
