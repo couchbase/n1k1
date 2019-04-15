@@ -13,9 +13,11 @@ import (
 )
 
 func TestCasesSimpleWithCompiler(t *testing.T) {
+	tests := TestCasesSimple
+
 	var testOuts [][]string
 
-	for testi, test := range TestCasesSimple {
+	for testi, test := range tests {
 		var yields []base.LazyVals
 
 		lazyYield := func(lazyVals base.LazyVals) {
@@ -61,7 +63,7 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 		`import "bytes"`,
 		`import "strings"`,
 		`import "testing"`,
-		`import "github.com/couchbase/n1k1"`,
+		`import "github.com/couchbase/n1k1/base"`,
 	}
 
 	for testi, test := range tests {
@@ -72,7 +74,7 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 		c = append(c, "// "+string(oj))
 		c = append(c, "//")
 		c = append(c, fmt.Sprintf("func TestGenerated%d(t *testing.T) {", testi))
-		c = append(c, "  lazyYield := func(lazyVals n1k1.LazyVals) {}")
+		c = append(c, "  lazyYield := func(lazyVals base.LazyVals) {}")
 		c = append(c, "  _ = lazyYield\n")
 		c = append(c, testOuts[testi]...)
 		c = append(c, "}\n")

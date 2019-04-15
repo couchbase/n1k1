@@ -40,7 +40,7 @@ func ExecOperator(o *base.Operator,
 		outTypes := base.Types{""}                       // TODO.
 
 		if base.LazyScope {
-			var lazyProjectFunc LazyProjectFunc
+			var lazyProjectFunc base.LazyProjectFunc
 
 			lazyProjectFunc =
 				MakeProjectFunc(o.ParentA.Fields, types, o.Params, outTypes) // <== inlineOk

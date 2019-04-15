@@ -72,9 +72,9 @@ type LazyExprFunc func(lazyVals LazyVals) LazyVal
 
 // -----------------------------------------------------
 
-// The LazyYield memory ownership rule: the receiver func should copy
-// any inputs that it wants to keep, because the provided slices might
-// be reused by future invocations.
+// LazyYield memory ownership: the receiver func should copy any
+// inputs that it wants to keep, because the provided slices might be
+// reused by future invocations.
 type LazyYield func(LazyVals)
 
 type LazyYieldErr func(error)
@@ -89,6 +89,10 @@ type Operator struct {
 	ParentA *Operator
 	ParentB *Operator
 }
+
+// -----------------------------------------------------
+
+type LazyProjectFunc func(lazyVals, lazyValsPre LazyVals) LazyVals
 
 // -----------------------------------------------------
 

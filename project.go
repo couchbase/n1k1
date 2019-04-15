@@ -4,11 +4,9 @@ import (
 	"github.com/couchbase/n1k1/base"
 )
 
-type LazyProjectFunc func(lazyVals, lazyValsPre base.LazyVals) base.LazyVals
-
 func MakeProjectFunc(fields base.Fields, types base.Types,
 	projections []interface{}, outTypes base.Types) (
-	lazyProjectFunc LazyProjectFunc) {
+	lazyProjectFunc base.LazyProjectFunc) {
 	var lazyExprFuncs []base.LazyExprFunc
 
 	for _, projection := range projections {
