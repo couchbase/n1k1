@@ -3,10 +3,10 @@ n1k1 is an experimental query compiler and execution engine for N1QL.
 -------------------------------------------------------
 DEV SHORTCUT...
 
-    go test . && go build ./cmd/n1k1_build/ && ./n1k1_build && go test ./...
+    go test . && go build ./cmd/intermed_build/ && ./intermed_build && go test ./... && go fmt ./... && go test -v ./...
 
 -------------------------------------------------------
-The way n1k1 works and how n1k1_build generates a N1QL compiler...
+The way n1k1 works and how intermed_build generates a N1QL compiler...
 
 - 1: First, take a look at the n1k1/*.go files.  You'll see a simple,
 bare-bones "N1QL" query-plan interpreter.  It basically recursively
@@ -18,32 +18,32 @@ nodes in the query-plan tree.
 that follow a naming convention with "lazy" in their names.  That's a
 marker that tells us whether some variables are late-bound (they need
 actual data records), versus other variables that are not late-bound
-(they need "early" information from a query-plan).
+(they only need "early" information from the query-plan).
 
 - 1.2: Of note, the n1k1/*.go files are written in a careful subset of
 golang.  It's legal golang code, but it follows more rules and
-conventions (like the "lazy" names) to make parsing by the n1k1_build
-tool easy.
+conventions (like the "lazy" names) to make parsing by n1k1's
+intermed_build tool easy.
 
-- 2: The n1k1_build tool uses the "lazy" conventions and other markers
-(e.g., special code comments) in order to translate the code of the
-basic n1k1/*.go interpreter into a "n1k1_build" program.
+- 2: The intermed_build tool parses the "lazy" conventions and other
+markers (e.g., special code comments) from the n1k1/*.go source code
+in order to translate that interpreter code into a intermediary,
+helper package, called n1k1/intermed.
 
-- 2.1: The n1k1_build program, when run, generates a golang package
-(n1k1/n1k1_compiler) that'll be used later by the final n1k1 compiler.
+- 2.1: The n1k1/intermed package will be used later by the final n1k1
+compiler.
 
-- 2.2: The way n1k1_build works is that it processes the n1k1/*.go
+- 2.2: The way intermed_build works is that it processes the n1k1/*.go
 source files line-by-line, and translates any "lazy" lines into a
 printf's.  Non-lazy expressions are turned into printf'ed placeholder
 vars.  Non-lazy lines are emitted as-is, as they are "early bound".
 
 - 3: Finally, the n1k1 compiler, which uses that generated
-n1k1/n1k1_compiler package, will take the user's input of a N1QL
-query-plan and will emit *.go code (or possibly other languages) that
-can efficiently execute that query-plan.  The user's input query-plan
-is the same query-plan tree that's used by the interpreter from step
-#1 above, as all this stuff was "born" originally from that
-interpreter.
+n1k1/intermed package, will take the user's input of a N1QL query-plan
+and will emit *.go code (or possibly other languages) that can
+efficiently execute that query-plan.  The user's input query-plan is
+the same query-plan tree that's used by the interpreter from step #1
+above, as all this was "born" originally from that interpreter.
 
 ------------------------------------------
 TODO...
@@ -60,3 +60,4 @@ TODO...
 - positional fields versus access to the full record?
 - perhaps the 0'th field might represent the full record?
 - emit other languages?
+- early stop when an error or LIMIT is reached?

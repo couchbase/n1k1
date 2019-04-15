@@ -1,4 +1,4 @@
-package cmd
+package main
 
 import (
 	"io/ioutil"
@@ -7,6 +7,24 @@ import (
 	"sort"
 	"strings"
 )
+
+var Keywords = map[string]bool{
+	"var":    true,
+	"func":   true,
+	"return": true,
+	"if":     true,
+	"else":   true,
+	"for":    true,
+	"range":  true,
+	"break":  true,
+	"defer":  true,
+	"switch": true,
+	"case":   true,
+	"append": true,
+	"len":    true,
+}
+
+// ---------------------------------------------------------------
 
 // State represents the gen-compiler process as it walks through the
 // lines of n1k1 source code to generate a query compiler.
@@ -45,8 +63,8 @@ type Handler func(state *State, data string,
 
 // --------------------------------------------------------
 
-func GenCompiler(sourceDir, outDir string) error {
-	log.Printf(" GenCompiler, outDir: %s\n", outDir)
+func IntermedBuild(sourceDir, outDir string) error {
+	log.Printf(" BuildCompiler, outDir: %s\n", outDir)
 
 	state := &State{
 		Handlers: []HandlerEntry{
@@ -58,7 +76,7 @@ func GenCompiler(sourceDir, outDir string) error {
 
 	var outAll []string
 
-	err := GenInterpMain(sourceDir, outDir, nil,
+	err := VisitSourceLines(sourceDir, outDir, nil,
 		func(out []string, line string) ([]string, string, error) {
 			if strings.HasPrefix(line, "package ") {
 				return out, "", nil
@@ -82,7 +100,7 @@ func GenCompiler(sourceDir, outDir string) error {
 	}
 
 	contents := []string{
-		"package n1k1_compiler\n",
+		"package intermed\n",
 	}
 
 	var importLines []string
@@ -100,7 +118,7 @@ func GenCompiler(sourceDir, outDir string) error {
 
 	contents = append(contents, outAll...)
 
-	return ioutil.WriteFile(outDir+"/generated_by_n1k1_build.go",
+	return ioutil.WriteFile(outDir+"/generated_by_intermed_build.go",
 		[]byte(strings.Join(contents, "\n")), 0644)
 }
 
@@ -151,8 +169,6 @@ func HandlerScanTopLevelFuncSignature(state *State, data string,
 	return out, line
 }
 
-var LazyRE = regexp.MustCompile(`[Ll]azy`)
-
 func HandlerScanTopLevelFuncBody(state *State, data string,
 	out []string, line string) ([]string, string) {
 	if len(line) > 0 && line[0] == '}' {
@@ -163,6 +179,24 @@ func HandlerScanTopLevelFuncBody(state *State, data string,
 
 	return EmitBlock(state, false, out, line)
 }
+
+// ---------------------------------------------------------------
+
+func HandlerScanLazyBlock(state *State, data string,
+	out []string, line string) ([]string, string) {
+	lineToEndBlock := data
+	if lineToEndBlock == line {
+		state.Pop()
+	}
+
+	return EmitBlock(state, true, out, line)
+}
+
+// ---------------------------------------------------------------
+
+var LazyRE = regexp.MustCompile(`[Ll]azy`)
+
+var SimpleExprRE = regexp.MustCompile(`[a-zA-Z][a-zA-Z0-9\._]+`)
 
 func EmitBlock(state *State, isLazyBlock bool,
 	out []string, line string) ([]string, string) {
@@ -245,23 +279,7 @@ func EmitBlock(state *State, isLazyBlock bool,
 	return out, line
 }
 
-var Keywords = map[string]bool{
-	"var":    true,
-	"func":   true,
-	"return": true,
-	"if":     true,
-	"else":   true,
-	"for":    true,
-	"range":  true,
-	"break":  true,
-	"defer":  true,
-	"switch": true,
-	"case":   true,
-	"append": true,
-	"len":    true,
-}
-
-var SimpleExprRE = regexp.MustCompile(`[a-zA-Z][a-zA-Z0-9\._]+`)
+// ---------------------------------------------------------------
 
 // SpacePrefix returns the whitespace prefix of the given line.
 func SpacePrefix(line string) (prefix string) {
@@ -278,12 +296,61 @@ func SpacePrefix(line string) (prefix string) {
 	return prefix
 }
 
-func HandlerScanLazyBlock(state *State, data string,
-	out []string, line string) ([]string, string) {
-	lineToEndBlock := data
-	if lineToEndBlock == line {
-		state.Pop()
+// ---------------------------------------------------------------
+
+var LazyPrefixRE = regexp.MustCompile(`lazy[A-Z]`)
+
+func LazyPrefixREFunc(lazyX string) string {
+	return strings.ToLower(lazyX[len(lazyX)-1:])
+}
+
+// ---------------------------------------------------------------
+
+func VisitSourceLines(sourceDir, outDir string,
+	cbFileStart func(fileName string) error,
+	cbFileLine func(out []string, line string) ([]string, string, error),
+	cbFileEnd func(fileName string, out []string) error) error {
+	sourcePackage := "package n1k1"
+
+	outDirParts := strings.Split(outDir, "/")
+	outPackage := "package " + outDirParts[len(outDirParts)-1]
+
+	var out []string // Collected output or resulting lines.
+
+	cb := func(kind, data string) (err error) {
+		switch kind {
+		case "fileStart":
+			fileName := data
+
+			log.Printf("  fileName: %s\n", fileName)
+
+			out = nil
+
+			if cbFileStart != nil {
+				err = cbFileStart(fileName)
+			}
+
+		case "fileLine":
+			line := data
+
+			line = strings.Replace(line, sourcePackage, outPackage, -1)
+
+			// Optional callback that can examine the incoming line,
+			// and modify the line and/or the out state.
+			if cbFileLine != nil {
+				out, line, err = cbFileLine(out, line)
+			}
+
+			out = append(out, line)
+
+		case "fileEnd":
+			fileName := data
+
+			err = cbFileEnd(fileName, out)
+		}
+
+		return err
 	}
 
-	return EmitBlock(state, true, out, line)
+	return VisitFiles(sourceDir, ".go", cb)
 }

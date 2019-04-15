@@ -4,8 +4,6 @@ import (
 	"flag"
 	"log"
 	"os"
-
-	"github.com/couchbase/n1k1/cmd"
 )
 
 var sourceDir = flag.String("sourceDir", ".",
@@ -19,12 +17,7 @@ func main() {
 		log.Printf(" -%s=%s\n", f.Name, f.Value)
 	})
 
-	err := cmd.GenInterp(*sourceDir, *sourceDir+"/n1k1_interp")
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	err = cmd.GenCompiler(*sourceDir, *sourceDir+"/n1k1_compiler")
+	err := IntermedBuild(*sourceDir, *sourceDir+"/intermed")
 	if err != nil {
 		log.Fatal(err)
 	}

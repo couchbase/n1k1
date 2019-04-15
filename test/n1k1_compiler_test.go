@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	n1k1 "github.com/couchbase/n1k1/n1k1_compiler"
-
 	"github.com/couchbase/n1k1/base"
+
+	"github.com/couchbase/n1k1/intermed"
 )
 
 func TestCasesSimpleWithCompiler(t *testing.T) {
@@ -42,7 +42,8 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 
 		var out []string
 
-		n1k1.Emit = func(format string, a ...interface{}) (n int, err error) {
+		intermed.Emit = func(format string, a ...interface{}) (
+			n int, err error) {
 			s := fmt.Sprintf(format, a...)
 
 			s = strings.Replace(s, "LazyScope", "true", -1)
@@ -52,7 +53,7 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 			return len(s), nil
 		}
 
-		n1k1.ExecOperator(&test.o, nil, nil)
+		intermed.ExecOperator(&test.o, nil, nil)
 
 		testOuts = append(testOuts, out)
 	}

@@ -1,5 +1,5 @@
 *~
-/n1k1_build
-/n1k1_compiler/*.go
-/n1k1_interp/*.go
+/intermed_build
+/intermed/*.go
+/test/tmp/*.go
 tmp
