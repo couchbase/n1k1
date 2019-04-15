@@ -20,15 +20,13 @@ func GenInterp(sourceDir, outDir string) error {
 		func(fileName string, out []string) error {
 			return ioutil.WriteFile(outDir+"/"+fileName,
 				[]byte(strings.Join(out, "\n")), 0644)
-		},
-		true, true)
+		})
 }
 
 func GenInterpMain(sourceDir, outDir string,
 	cbFileStart func(fileName string) error,
 	cbFileLine func(out []string, line string) ([]string, string, error),
-	cbFileEnd func(fileName string, out []string) error,
-	filterLazyText bool, allowTests bool) error {
+	cbFileEnd func(fileName string, out []string) error) error {
 	sourcePackage := "package n1k1"
 
 	outDirParts := strings.Split(outDir, "/")
@@ -60,15 +58,6 @@ func GenInterpMain(sourceDir, outDir string,
 				out, line, err = cbFileLine(out, line)
 			}
 
-			if filterLazyText {
-				// Converts "LazyFooBar" into "FooBar".
-				line = strings.Replace(line, "Lazy", "", -1)
-
-				// Converts "lazyFooBar" into "fooBar".
-				line = LazyPrefixRE.ReplaceAllStringFunc(line,
-					LazyPrefixREFunc)
-			}
-
 			out = append(out, line)
 
 		case "fileEnd":
@@ -80,10 +69,5 @@ func GenInterpMain(sourceDir, outDir string,
 		return err
 	}
 
-	var skipSuffixes []string
-	if !allowTests {
-		skipSuffixes = append(skipSuffixes, "_test.go")
-	}
-
-	return VisitFiles(sourceDir, ".go", skipSuffixes, cb)
+	return VisitFiles(sourceDir, ".go", cb)
 }

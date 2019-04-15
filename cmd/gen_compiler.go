@@ -76,8 +76,7 @@ func GenCompiler(sourceDir, outDir string) error {
 			outAll = append(outAll, out...)
 
 			return nil
-		},
-		false, false)
+		})
 	if err != nil {
 		return err
 	}
@@ -128,8 +127,8 @@ func HandlerScanImports(state *State, data string,
 	out []string, line string) ([]string, string) {
 	if line == ")" {
 		state.Pop()
-	} else {
-		parts := strings.Split(strings.Split(line, `"`)[1], ".")
+	} else if len(line) > 0 {
+		parts := strings.Split(strings.Split(line, `"`)[1], "/")
 
 		state.Imports[parts[len(parts)-1]] = true
 
