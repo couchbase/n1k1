@@ -5,14 +5,14 @@ import (
 )
 
 func ExecOperator(o *base.Operator,
-	lazyYield base.YieldVals, lazyYieldErr base.YieldErr) {
+	lazyYieldVals base.YieldVals, lazyYieldErr base.YieldErr) {
 	if o == nil {
 		return
 	}
 
 	switch o.Kind {
 	case "scan":
-		Scan(o.Params, o.Fields, lazyYield, lazyYieldErr) // <== inlineOk
+		Scan(o.Params, o.Fields, lazyYieldVals, lazyYieldErr) // <== inlineOk
 
 	case "filter":
 		types := make(base.Types, len(o.ParentA.Fields)) // TODO.
@@ -23,16 +23,16 @@ func ExecOperator(o *base.Operator,
 			lazyExprFunc =
 				MakeExprFunc(o.ParentA.Fields, types, o.Params, nil, "") // <== inlineOk
 
-			lazyYieldOrig := lazyYield
+			lazyYieldValsOrig := lazyYieldVals
 
-			lazyYield = func(lazyVals base.Vals) {
+			lazyYieldVals = func(lazyVals base.Vals) {
 				lazyVal := lazyExprFunc(lazyVals)
 				if base.ValEqualTrue(lazyVal) {
-					lazyYieldOrig(lazyVals)
+					lazyYieldValsOrig(lazyVals)
 				}
 			}
 
-			ExecOperator(o.ParentA, lazyYield, lazyYieldErr) // <== inlineOk
+			ExecOperator(o.ParentA, lazyYieldVals, lazyYieldErr) // <== inlineOk
 		}
 
 	case "project":
@@ -47,17 +47,17 @@ func ExecOperator(o *base.Operator,
 
 			var lazyValsProjected base.Vals
 
-			lazyYieldOrig := lazyYield
+			lazyYieldValsOrig := lazyYieldVals
 
-			lazyYield = func(lazyValsIn base.Vals) {
+			lazyYieldVals = func(lazyValsIn base.Vals) {
 				lazyValsProjected = lazyValsProjected[:0]
 
 				lazyValsProjected = lazyProjectFunc(lazyValsIn, lazyValsProjected)
 
-				lazyYieldOrig(lazyValsProjected)
+				lazyYieldValsOrig(lazyValsProjected)
 			}
 
-			ExecOperator(o.ParentA, lazyYield, lazyYieldErr) // <== inlineOk
+			ExecOperator(o.ParentA, lazyYieldVals, lazyYieldErr) // <== inlineOk
 		}
 
 	case "join-nl": // Nested loop join.
@@ -76,28 +76,28 @@ func ExecOperator(o *base.Operator,
 
 			var lazyValsJoin base.Vals
 
-			lazyYieldOrig := lazyYield
+			lazyYieldValsOrig := lazyYieldVals
 
-			lazyYield = func(lazyValsA base.Vals) {
+			lazyYieldVals = func(lazyValsA base.Vals) {
 				lazyValsJoin = lazyValsJoin[:0]
 				lazyValsJoin = append(lazyValsJoin, lazyValsA...)
 
-				lazyYield = func(lazyValsB base.Vals) {
+				lazyYieldVals = func(lazyValsB base.Vals) {
 					lazyValsJoin = lazyValsJoin[0:len(lazyValsA)]
 					lazyValsJoin = append(lazyValsJoin, lazyValsB...)
 
 					lazyVal := lazyExprFunc(lazyValsJoin)
 					if base.ValEqualTrue(lazyVal) {
-						lazyYieldOrig(lazyValsJoin)
+						lazyYieldValsOrig(lazyValsJoin)
 					}
 				}
 
 				// Inner...
-				ExecOperator(o.ParentB, lazyYield, lazyYieldErr) // <== inlineOk
+				ExecOperator(o.ParentB, lazyYieldVals, lazyYieldErr) // <== inlineOk
 			}
 
 			// Outer...
-			ExecOperator(o.ParentA, lazyYield, lazyYieldErr) // <== inlineOk
+			ExecOperator(o.ParentA, lazyYieldVals, lazyYieldErr) // <== inlineOk
 		}
 	}
 }

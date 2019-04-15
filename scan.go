@@ -12,7 +12,7 @@ import (
 )
 
 func Scan(params []interface{}, fields base.Fields,
-	lazyYield base.YieldVals, lazyYieldErr base.YieldErr) {
+	lazyYieldVals base.YieldVals, lazyYieldErr base.YieldErr) {
 	kind := params[0].(string)
 
 	var lazyFilePath string // <== inlineOk
@@ -26,14 +26,14 @@ func Scan(params []interface{}, fields base.Fields,
 		paramsFilePath := params[1].(string)
 		lazyFilePath := paramsFilePath
 
-		ScanFile(lazyFilePath, fields, lazyYield, lazyYieldErr) // <== inlineOk
+		ScanFile(lazyFilePath, fields, lazyYieldVals, lazyYieldErr) // <== inlineOk
 
 	case "csvData":
 		paramsCsvData := params[1].(string)
 		lazyCsvData := paramsCsvData
 		lazyReader := strings.NewReader(lazyCsvData)
 
-		ScanReaderAsCsv(lazyReader, fields, lazyYield, lazyYieldErr) // <== inlineOk
+		ScanReaderAsCsv(lazyReader, fields, lazyYieldVals, lazyYieldErr) // <== inlineOk
 
 	default:
 		errMsg := "unknown scan kind" // TODO: Weak string/double-quote handling.
@@ -42,7 +42,7 @@ func Scan(params []interface{}, fields base.Fields,
 }
 
 func ScanFile(lazyFilePath string, fields base.Fields,
-	lazyYield base.YieldVals, lazyYieldErr base.YieldErr) {
+	lazyYieldVals base.YieldVals, lazyYieldErr base.YieldErr) {
 	errMsg := "file not csv" // TODO: Weak string/double-quote handling.
 
 	fileSuffixCsv := ".csv"
@@ -63,12 +63,12 @@ func ScanFile(lazyFilePath string, fields base.Fields,
 
 		defer lazyReader.Close()
 
-		ScanReaderAsCsv(lazyReader, fields, lazyYield, lazyYieldErr) // <== inlineOk
+		ScanReaderAsCsv(lazyReader, fields, lazyYieldVals, lazyYieldErr) // <== inlineOk
 	}
 }
 
 func ScanReaderAsCsv(lazyReader io.Reader, fields base.Fields,
-	lazyYield base.YieldVals, lazyYieldErr base.YieldErr) {
+	lazyYieldVals base.YieldVals, lazyYieldErr base.YieldErr) {
 	var lazyValsScan base.Vals
 
 	lazyScanner := bufio.NewScanner(lazyReader)
@@ -89,7 +89,7 @@ func ScanReaderAsCsv(lazyReader io.Reader, fields base.Fields,
 		}
 
 		if len(lazyValsScan) > 0 {
-			lazyYield(lazyValsScan)
+			lazyYieldVals(lazyValsScan)
 		}
 	}
 }

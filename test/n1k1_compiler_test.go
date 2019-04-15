@@ -74,8 +74,8 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 		c = append(c, "// "+string(oj))
 		c = append(c, "//")
 		c = append(c, fmt.Sprintf("func TestGenerated%d(t *testing.T) {", testi))
-		c = append(c, "  lazyYield := func(lazyVals base.Vals) {}")
-		c = append(c, "  _ = lazyYield\n")
+		c = append(c, "  lazyYieldVals := func(lazyVals base.Vals) {}")
+		c = append(c, "  _ = lazyYieldVals\n")
 		c = append(c, testOuts[testi]...)
 		c = append(c, "}\n")
 	}
