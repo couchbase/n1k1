@@ -603,11 +603,12 @@ func TestIt(t *testing.T) {
 	}
 
 	for testi, test := range tests {
-		oj, _ := json.Marshal(test.o)
+		oj, _ := json.MarshalIndent(test.o, "// ", " ")
 
 		c = append(c, "// ------------------------------------------")
 		c = append(c, "// "+test.about)
 		c = append(c, "// "+string(oj))
+		c = append(c, "//")
 		c = append(c, fmt.Sprintf("func TestGenerated%d(t *testing.T) {", testi))
 		c = append(c, "  lazyYield := func(lazyVals n1k1.LazyVals) {}")
 		c = append(c, "  _ = lazyYield\n")
