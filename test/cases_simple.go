@@ -397,9 +397,9 @@ var TestCasesSimple = []TestCaseSimple{
 		},
 	},
 	{
-		about: "test csv-data scan->join-nl",
+		about: "test csv-data scan->join-inner-nl",
 		o: base.Operator{
-			Kind:   "join-nl",
+			Kind:   "join-inner-nl",
 			Fields: base.Fields{"dept", "city", "emp", "empDept"},
 			Params: []interface{}{
 				"eq",
@@ -439,9 +439,9 @@ var TestCasesSimple = []TestCaseSimple{
 		},
 	},
 	{
-		about: "test csv-data scan->join-nl but false join condition",
+		about: "test csv-data scan->join-inner-nl but false join condition",
 		o: base.Operator{
-			Kind:   "join-nl",
+			Kind:   "join-inner-nl",
 			Fields: base.Fields{"dept", "city", "emp", "empDept"},
 			Params: []interface{}{
 				"eq",
@@ -478,7 +478,7 @@ var TestCasesSimple = []TestCaseSimple{
 	{
 		about: "test full join via always-true join condition",
 		o: base.Operator{
-			Kind:   "join-nl",
+			Kind:   "join-inner-nl",
 			Fields: base.Fields{"dept", "city", "emp", "empDept"},
 			Params: []interface{}{"json", `true`},
 			ParentA: &base.Operator{
@@ -520,7 +520,7 @@ var TestCasesSimple = []TestCaseSimple{
 	{
 		about: "test full join via always-matching join condition",
 		o: base.Operator{
-			Kind:   "join-nl",
+			Kind:   "join-inner-nl",
 			Fields: base.Fields{"dept", "city", "emp", "empDept"},
 			Params: []interface{}{
 				"eq",

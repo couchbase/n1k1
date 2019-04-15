@@ -60,7 +60,7 @@ func ExecOperator(o *base.Operator,
 			ExecOperator(o.ParentA, lazyYieldVals, lazyYieldErr) // <== inlineOk
 		}
 
-	case "join-nl": // Nested loop join.
+	case "join-inner-nl": // Nested loop join.
 		var fieldsAB base.Fields
 
 		fieldsAB = append(fieldsAB, o.ParentA.Fields...)
