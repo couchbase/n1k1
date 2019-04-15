@@ -4,9 +4,24 @@ import (
 	"github.com/couchbase/n1k1/base"
 )
 
-const LazyScope = true // Marks varible scopes as lazy (ex: IF block).
+// LazyScope is used to mark variable scopes as lazy (ex: IF block).
+const LazyScope = true
 
 var LazyErrNil error
+
+// -----------------------------------------------------
+
+var ExprCatalog = map[string]ExprCatalogFunc{}
+
+func init() {
+	ExprCatalog["eq"] = ExprEq
+	ExprCatalog["json"] = ExprJson
+	ExprCatalog["field"] = ExprField
+}
+
+type ExprCatalogFunc func(fields base.Fields, types base.Types,
+	params []interface{}, outTypes base.Types, path string) (
+	lazyExprFunc base.ExprFunc)
 
 // -----------------------------------------------------
 
@@ -21,20 +36,6 @@ func MakeExprFunc(fields base.Fields, types base.Types,
 		ecf(fields, types, expr[1:], outTypes, path) // <== inlineOk
 
 	return lazyExprFunc
-}
-
-// -----------------------------------------------------
-
-type ExprCatalogFunc func(fields base.Fields, types base.Types,
-	params []interface{}, outTypes base.Types, path string) (
-	lazyExprFunc base.ExprFunc)
-
-var ExprCatalog = map[string]ExprCatalogFunc{}
-
-func init() {
-	ExprCatalog["eq"] = ExprEq
-	ExprCatalog["json"] = ExprJson
-	ExprCatalog["field"] = ExprField
 }
 
 // -----------------------------------------------------

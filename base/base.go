@@ -1,4 +1,5 @@
-// Base has type definitions shared by interpreter and compiler.
+// The base package holds types and definitions shared by n1k1's
+// interpreter and compiler.
 
 package base
 
@@ -7,7 +8,7 @@ import (
 	"fmt"
 )
 
-type Fields []string
+type Fields []string // Ex: "description", "address.city".
 
 func (a Fields) IndexOf(s string) int {
 	for i, v := range a {
@@ -25,6 +26,10 @@ type Vals []Val
 
 type Val []byte // JSON encoded.
 
+func (a Val) String() string {
+	return fmt.Sprintf("%q", []byte(a))
+}
+
 var ValMissing = Val(nil)
 
 var ValNull = Val([]byte("null"))
@@ -32,10 +37,6 @@ var ValNull = Val([]byte("null"))
 var ValTrue = Val([]byte("true"))
 
 var ValFalse = Val([]byte("false"))
-
-func (a Val) String() string {
-	return fmt.Sprintf("%q", []byte(a))
-}
 
 // -----------------------------------------------------
 
@@ -64,15 +65,16 @@ func ValEqual(valA, valB Val) (val Val) {
 
 // -----------------------------------------------------
 
-// YieldVals memory ownership: the receiver func should generally copy
-// any inputs that it wants to keep, because the provided slices might
-// be reused by future invocations.
+// YieldVals memory ownership: the receiver implementation should
+// generally copy any inputs that it wants to keep, because the
+// provided slices might be reused by future invocations.
 type YieldVals func(Vals)
 
 type YieldErr func(error)
 
 // -----------------------------------------------------
 
+// An Operator represents a node in a hierarchical query-plan tree.
 type Operator struct {
 	Kind   string        // Ex: "scan", "filter", "project", etc.
 	Fields Fields        // Output fields of this operator.
@@ -82,8 +84,11 @@ type Operator struct {
 	ParentB *Operator
 }
 
+// An ExprFunc evaluates an expression against the given vals.
 type ExprFunc func(vals Vals) Val
 
+// A ProjectFunc projects (in relational parlance) the given vals into
+// resulting vals, reusing the pre-allocated valsPre if neeeded.
 type ProjectFunc func(vals, valsPre Vals) Vals
 
 // -----------------------------------------------------
