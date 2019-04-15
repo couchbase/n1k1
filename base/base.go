@@ -76,12 +76,17 @@ type YieldErr func(error)
 
 // An Operator represents a node in a hierarchical query-plan tree.
 type Operator struct {
-	Kind   string        // Ex: "scan", "filter", "project", etc.
-	Fields Fields        // Output fields of this operator.
-	Params []interface{} // Params based on the kind.
+	// Ex: "scan", "filter", "project", etc.
+	Kind string `json:"Kind,omitempty"`
 
-	ParentA *Operator
-	ParentB *Operator
+	// Output fields of this operator.
+	Fields Fields `json:"Fields,omitempty"`
+
+	// Params based on the kind.
+	Params []interface{} `json:"Params,omitempty"`
+
+	ParentA *Operator `json:"ParentA,omitempty"`
+	ParentB *Operator `json:"ParentB,omitempty"`
 }
 
 // An ExprFunc evaluates an expression against the given vals.
