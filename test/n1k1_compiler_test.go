@@ -64,8 +64,10 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 		`import "bufio"`,
 		`import "bytes"`,
 		`import "strings"`,
+		`import "reflect"`,
 		`import "testing"`,
 		`import "github.com/couchbase/n1k1/base"`,
+		`import "github.com/couchbase/n1k1/test"`,
 		``,
 		`var LazyErrNil error`,
 	}
@@ -78,11 +80,33 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 		c = append(c, "// "+string(oj))
 		c = append(c, "//")
 		c = append(c, fmt.Sprintf("func TestGenerated%d(t *testing.T) {", testi))
-		c = append(c, "  lazyYieldVals := func(lazyVals base.Vals) {}")
-		c = append(c, "  _ = lazyYieldVals\n")
-		c = append(c, "  lazyYieldErr := func(err error) {}")
-		c = append(c, "  _ = lazyYieldErr\n")
+
+		c = append(c, `  lazyYieldVals, lazyYieldErr, returnYields :=`)
+		c = append(c, fmt.Sprintf(`    test.MakeYieldFuncs(nil, %d, %q)`,
+			testi, test.expectErr))
+		c = append(c, "  _ = lazyYieldVals")
+		c = append(c, "  _ = lazyYieldErr")
+		c = append(c, "")
+
 		c = append(c, testOuts[testi]...)
+		c = append(c, "")
+
+		c = append(c, `  yields := returnYields()`)
+
+		c = append(c, fmt.Sprintf(`  expectYields := %#v`,
+			test.expectYields))
+
+		c = append(c, `
+  if len(yields) != len(expectYields) ||
+    !reflect.DeepEqual(yields, expectYields) {
+    t.Fatalf("len(yields): %d, len(expectYields): %d,\n"+
+             " yields: %+v, expectYields: %+v,\n"+
+             " about: %s",
+             len(yields), len(expectYields),
+             yields, expectYields, `+
+			fmt.Sprintf("%q", test.about)+`)
+  }`)
+
 		c = append(c, "}\n")
 	}
 

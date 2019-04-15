@@ -24,7 +24,8 @@ func TestCasesSimpleWithInterp(t *testing.T) {
 				" expectYields: %+v,\n"+
 				" got yields: %+v",
 				testi, test,
-				len(yields), len(test.expectYields), test.expectYields, yields)
+				len(yields), len(test.expectYields),
+				test.expectYields, yields)
 		}
 	}
 }
