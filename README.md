@@ -62,3 +62,9 @@ TODO...
 - emit other languages?
 - early stop when an error or LIMIT is reached?
 - early stop when processing is canceled?
+- compiled accessor(s) to a given JSON-path in a raw []byte value?
+- learnings from SIMD-json tricks?
+
+ISSUES...
+- outer joins when one of the tables is empty incorrectly
+  does not produce results from the non-empty table.
