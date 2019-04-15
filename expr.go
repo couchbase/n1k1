@@ -6,6 +6,8 @@ import (
 
 const LazyScope = true // Marks varible scopes as lazy (ex: IF block).
 
+var LazyErrNil error
+
 // -----------------------------------------------------
 
 func MakeExprFunc(fields base.Fields, types base.Types,

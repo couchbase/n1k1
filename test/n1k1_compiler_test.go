@@ -59,11 +59,14 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 
 	c := []string{
 		"package tmp",
+		``,
 		`import "bufio"`,
 		`import "bytes"`,
 		`import "strings"`,
 		`import "testing"`,
 		`import "github.com/couchbase/n1k1/base"`,
+		``,
+		`var LazyErrNil error`,
 	}
 
 	for testi, test := range tests {
@@ -76,6 +79,8 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 		c = append(c, fmt.Sprintf("func TestGenerated%d(t *testing.T) {", testi))
 		c = append(c, "  lazyYieldVals := func(lazyVals base.Vals) {}")
 		c = append(c, "  _ = lazyYieldVals\n")
+		c = append(c, "  lazyYieldErr := func(err error) {}")
+		c = append(c, "  _ = lazyYieldErr\n")
 		c = append(c, testOuts[testi]...)
 		c = append(c, "}\n")
 	}

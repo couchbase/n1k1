@@ -92,4 +92,8 @@ func ScanReaderAsCsv(lazyReader io.Reader, fields base.Fields,
 			lazyYieldVals(lazyValsScan)
 		}
 	}
+
+	if lazyScanner.Err() != LazyErrNil {
+		lazyYieldErr(lazyScanner.Err())
+	}
 }
