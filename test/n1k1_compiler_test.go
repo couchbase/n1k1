@@ -67,7 +67,7 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 	}
 
 	for testi, test := range tests {
-		oj, _ := json.MarshalIndent(test.o, "// ", " ")
+		oj, _ := json.MarshalIndent(test.o, "// ", "  ")
 
 		c = append(c, "// ------------------------------------------")
 		c = append(c, "// "+test.about)
