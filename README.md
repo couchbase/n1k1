@@ -61,3 +61,4 @@ TODO...
 - perhaps the 0'th field might represent the full record?
 - emit other languages?
 - early stop when an error or LIMIT is reached?
+- early stop when processing is canceled?
