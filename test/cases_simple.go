@@ -4,10 +4,10 @@ import (
 	"github.com/couchbase/n1k1/base"
 )
 
-func StringsToLazyVals(a []string, lazyValsPre base.LazyVals) base.LazyVals {
+func StringsToLazyVals(a []string, lazyValsPre base.Vals) base.Vals {
 	lazyVals := lazyValsPre
 	for _, v := range a {
-		lazyVals = append(lazyVals, base.LazyVal([]byte(v)))
+		lazyVals = append(lazyVals, base.Val([]byte(v)))
 	}
 	return lazyVals
 }
@@ -15,7 +15,7 @@ func StringsToLazyVals(a []string, lazyValsPre base.LazyVals) base.LazyVals {
 type TestCaseSimple struct {
 	about        string
 	o            base.Operator
-	expectYields []base.LazyVals
+	expectYields []base.Vals
 	expectErr    string
 }
 
@@ -55,8 +55,8 @@ var TestCasesSimple = []TestCaseSimple{
 				"1,2,3",
 			},
 		},
-		expectYields: []base.LazyVals{
-			base.LazyVals{[]byte("1"), []byte("2"), []byte("3")},
+		expectYields: []base.Vals{
+			base.Vals{[]byte("1"), []byte("2"), []byte("3")},
 		},
 	},
 	{
@@ -72,9 +72,9 @@ var TestCasesSimple = []TestCaseSimple{
 `,
 			},
 		},
-		expectYields: []base.LazyVals{
-			base.LazyVals{[]byte("10"), []byte("20"), []byte("30")},
-			base.LazyVals{[]byte("11"), []byte("21"), []byte("31")},
+		expectYields: []base.Vals{
+			base.Vals{[]byte("10"), []byte("20"), []byte("30")},
+			base.Vals{[]byte("11"), []byte("21"), []byte("31")},
 		},
 	},
 	{
@@ -99,9 +99,9 @@ var TestCasesSimple = []TestCaseSimple{
 				},
 			},
 		},
-		expectYields: []base.LazyVals{
-			base.LazyVals{[]byte("10"), []byte("20"), []byte("30")},
-			base.LazyVals{[]byte("11"), []byte("21"), []byte("31")},
+		expectYields: []base.Vals{
+			base.Vals{[]byte("10"), []byte("20"), []byte("30")},
+			base.Vals{[]byte("11"), []byte("21"), []byte("31")},
 		},
 	},
 	{
@@ -126,7 +126,7 @@ var TestCasesSimple = []TestCaseSimple{
 				},
 			},
 		},
-		expectYields: []base.LazyVals(nil),
+		expectYields: []base.Vals(nil),
 	},
 	{
 		about: "test csv-data scan->filter with fieldB == fieldB",
@@ -150,9 +150,9 @@ var TestCasesSimple = []TestCaseSimple{
 				},
 			},
 		},
-		expectYields: []base.LazyVals{
-			base.LazyVals{[]byte("10"), []byte("20"), []byte("30")},
-			base.LazyVals{[]byte("11"), []byte("21"), []byte("31")},
+		expectYields: []base.Vals{
+			base.Vals{[]byte("10"), []byte("20"), []byte("30")},
+			base.Vals{[]byte("11"), []byte("21"), []byte("31")},
 		},
 	},
 	{
@@ -177,7 +177,7 @@ var TestCasesSimple = []TestCaseSimple{
 				},
 			},
 		},
-		expectYields: []base.LazyVals(nil),
+		expectYields: []base.Vals(nil),
 	},
 	{
 		about: "test csv-data scan->filter with fieldB = 66",
@@ -201,7 +201,7 @@ var TestCasesSimple = []TestCaseSimple{
 				},
 			},
 		},
-		expectYields: []base.LazyVals(nil),
+		expectYields: []base.Vals(nil),
 	},
 	{
 		about: "test csv-data scan->filter with fieldB == 21",
@@ -225,8 +225,8 @@ var TestCasesSimple = []TestCaseSimple{
 				},
 			},
 		},
-		expectYields: []base.LazyVals{
-			base.LazyVals{[]byte("11"), []byte("21"), []byte("31")},
+		expectYields: []base.Vals{
+			base.Vals{[]byte("11"), []byte("21"), []byte("31")},
 		},
 	},
 	{
@@ -253,9 +253,9 @@ var TestCasesSimple = []TestCaseSimple{
 				},
 			},
 		},
-		expectYields: []base.LazyVals{
-			base.LazyVals{[]byte("10"), []byte("20"), []byte("3000")},
-			base.LazyVals{[]byte("11"), []byte("21"), []byte("3000")},
+		expectYields: []base.Vals{
+			base.Vals{[]byte("10"), []byte("20"), []byte("3000")},
+			base.Vals{[]byte("11"), []byte("21"), []byte("3000")},
 		},
 	},
 	{
@@ -290,9 +290,9 @@ var TestCasesSimple = []TestCaseSimple{
 				},
 			},
 		},
-		expectYields: []base.LazyVals{
-			base.LazyVals{[]byte("10"), []byte("3000")},
-			base.LazyVals{[]byte("11"), []byte("3000")},
+		expectYields: []base.Vals{
+			base.Vals{[]byte("10"), []byte("3000")},
+			base.Vals{[]byte("11"), []byte("3000")},
 		},
 	},
 	{
@@ -324,9 +324,9 @@ var TestCasesSimple = []TestCaseSimple{
 				},
 			},
 		},
-		expectYields: []base.LazyVals{
-			base.LazyVals(nil),
-			base.LazyVals(nil),
+		expectYields: []base.Vals{
+			base.Vals(nil),
+			base.Vals(nil),
 		},
 	},
 	{
@@ -361,9 +361,9 @@ var TestCasesSimple = []TestCaseSimple{
 				},
 			},
 		},
-		expectYields: []base.LazyVals{
-			base.LazyVals{[]byte("10"), nil},
-			base.LazyVals{[]byte("11"), nil},
+		expectYields: []base.Vals{
+			base.Vals{[]byte("10"), nil},
+			base.Vals{[]byte("11"), nil},
 		},
 	},
 	{
@@ -401,7 +401,7 @@ var TestCasesSimple = []TestCaseSimple{
 				},
 			},
 		},
-		expectYields: []base.LazyVals{
+		expectYields: []base.Vals{
 			StringsToLazyVals([]string{`"dev"`, `"paris"`, `"dan"`, `"dev"`}, nil),
 			StringsToLazyVals([]string{`"dev"`, `"paris"`, `"doug"`, `"dev"`}, nil),
 			StringsToLazyVals([]string{`"finance"`, `"london"`, `"frank"`, `"finance"`}, nil),
@@ -443,7 +443,7 @@ var TestCasesSimple = []TestCaseSimple{
 				},
 			},
 		},
-		expectYields: []base.LazyVals(nil),
+		expectYields: []base.Vals(nil),
 	},
 	{
 		about: "test full join via always-true join condition",
@@ -476,7 +476,7 @@ var TestCasesSimple = []TestCaseSimple{
 				},
 			},
 		},
-		expectYields: []base.LazyVals{
+		expectYields: []base.Vals{
 			StringsToLazyVals([]string{`"dev"`, `"paris"`, `"dan"`, `"dev"`}, nil),
 			StringsToLazyVals([]string{`"dev"`, `"paris"`, `"doug"`, `"dev"`}, nil),
 			StringsToLazyVals([]string{`"dev"`, `"paris"`, `"frank"`, `"finance"`}, nil),
@@ -522,7 +522,7 @@ var TestCasesSimple = []TestCaseSimple{
 				},
 			},
 		},
-		expectYields: []base.LazyVals{
+		expectYields: []base.Vals{
 			StringsToLazyVals([]string{`"dev"`, `"paris"`, `"dan"`, `"dev"`}, nil),
 			StringsToLazyVals([]string{`"dev"`, `"paris"`, `"doug"`, `"dev"`}, nil),
 			StringsToLazyVals([]string{`"dev"`, `"paris"`, `"frank"`, `"finance"`}, nil),

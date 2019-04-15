@@ -6,16 +6,16 @@ import (
 
 func MakeProjectFunc(fields base.Fields, types base.Types,
 	projections []interface{}, outTypes base.Types) (
-	lazyProjectFunc base.LazyProjectFunc) {
-	var lazyExprFuncs []base.LazyExprFunc
+	lazyProjectFunc base.ProjectFunc) {
+	var lazyExprFuncs []base.ExprFunc
 
 	for _, projection := range projections {
 		expr := projection.([]interface{})
 
 		outTypes = append(outTypes, "")
 
-		if base.LazyScope {
-			var lazyExprFunc base.LazyExprFunc
+		if LazyScope {
+			var lazyExprFunc base.ExprFunc
 
 			lazyExprFunc =
 				MakeExprFunc(fields, types, expr, outTypes, "") // <== inlineOk
@@ -24,12 +24,12 @@ func MakeProjectFunc(fields base.Fields, types base.Types,
 		}
 	}
 
-	lazyProjectFunc = func(lazyVals, lazyValsPre base.LazyVals) (
-		lazyValsOut base.LazyVals) {
+	lazyProjectFunc = func(lazyVals, lazyValsPre base.Vals) (
+		lazyValsOut base.Vals) {
 		lazyValsOut = lazyValsPre // Optional pre-alloc'ed slice.
 
 		for _, lazyExprFunc := range lazyExprFuncs {
-			var lazyValProjected base.LazyVal
+			var lazyValProjected base.Val
 
 			lazyValProjected = lazyExprFunc(lazyVals)
 

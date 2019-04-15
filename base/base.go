@@ -21,63 +21,55 @@ func (a Fields) IndexOf(s string) int {
 
 // -----------------------------------------------------
 
-const LazyScope = true // For marking varible scopes (ex: IF statement).
+type Vals []Val
 
-// -----------------------------------------------------
+type Val []byte // JSON encoded.
 
-type LazyVals []LazyVal
+var ValMissing = Val(nil)
 
-type LazyVal []byte
+var ValNull = Val([]byte("null"))
 
-var LazyValMissing = LazyVal(nil)
+var ValTrue = Val([]byte("true"))
 
-var LazyValNull = LazyVal([]byte("null"))
+var ValFalse = Val([]byte("false"))
 
-var LazyValTrue = LazyVal([]byte("true"))
-
-var LazyValFalse = LazyVal([]byte("false"))
-
-func (a LazyVal) String() string {
+func (a Val) String() string {
 	return fmt.Sprintf("%q", []byte(a))
 }
 
 // -----------------------------------------------------
 
-func LazyValEqualTrue(lazyVal LazyVal) bool {
-	return len(lazyVal) > 0 && lazyVal[0] == 't'
+func ValEqualTrue(val Val) bool {
+	return len(val) > 0 && val[0] == 't'
 }
 
-// LazyValEqual follows N1QL's rules for missing & null's.
-func LazyValEqual(lazyValA, lazyValB LazyVal) (lazyVal LazyVal) {
-	if bytes.Equal(lazyValA, LazyValMissing) {
-		lazyVal = LazyValMissing
-	} else if bytes.Equal(lazyValB, LazyValMissing) {
-		lazyVal = LazyValMissing
-	} else if bytes.Equal(lazyValA, LazyValNull) {
-		lazyVal = LazyValNull
-	} else if bytes.Equal(lazyValB, LazyValNull) {
-		lazyVal = LazyValNull
-	} else if bytes.Equal(lazyValA, lazyValB) {
-		lazyVal = LazyValTrue
+// ValEqual follows N1QL's rules for missing & null's.
+func ValEqual(valA, valB Val) (val Val) {
+	if bytes.Equal(valA, ValMissing) {
+		val = ValMissing
+	} else if bytes.Equal(valB, ValMissing) {
+		val = ValMissing
+	} else if bytes.Equal(valA, ValNull) {
+		val = ValNull
+	} else if bytes.Equal(valB, ValNull) {
+		val = ValNull
+	} else if bytes.Equal(valA, valB) {
+		val = ValTrue
 	} else {
-		lazyVal = LazyValFalse
+		val = ValFalse
 	}
 
-	return lazyVal
+	return val
 }
 
 // -----------------------------------------------------
 
-type LazyExprFunc func(lazyVals LazyVals) LazyVal
+// YieldVals memory ownership: the receiver func should generally copy
+// any inputs that it wants to keep, because the provided slices might
+// be reused by future invocations.
+type YieldVals func(Vals)
 
-// -----------------------------------------------------
-
-// LazyYield memory ownership: the receiver func should copy any
-// inputs that it wants to keep, because the provided slices might be
-// reused by future invocations.
-type LazyYield func(LazyVals)
-
-type LazyYieldErr func(error)
+type YieldErr func(error)
 
 // -----------------------------------------------------
 
@@ -90,9 +82,9 @@ type Operator struct {
 	ParentB *Operator
 }
 
-// -----------------------------------------------------
+type ExprFunc func(vals Vals) Val
 
-type LazyProjectFunc func(lazyVals, lazyValsPre LazyVals) LazyVals
+type ProjectFunc func(vals, valsPre Vals) Vals
 
 // -----------------------------------------------------
 

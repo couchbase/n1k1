@@ -10,13 +10,13 @@ import (
 
 func TestCasesSimpleWithInterp(t *testing.T) {
 	for testi, test := range TestCasesSimple {
-		var yields []base.LazyVals
+		var yields []base.Vals
 
-		lazyYield := func(lazyVals base.LazyVals) {
-			var lazyValsCopy base.LazyVals
+		lazyYield := func(lazyVals base.Vals) {
+			var lazyValsCopy base.Vals
 			for _, v := range lazyVals {
 				lazyValsCopy = append(lazyValsCopy,
-					append(base.LazyVal(nil), v...))
+					append(base.Val(nil), v...))
 			}
 
 			yields = append(yields, lazyValsCopy)

@@ -12,7 +12,7 @@ import (
 )
 
 func Scan(params []interface{}, fields base.Fields,
-	lazyYield base.LazyYield, lazyYieldErr base.LazyYieldErr) {
+	lazyYield base.YieldVals, lazyYieldErr base.YieldErr) {
 	kind := params[0].(string)
 
 	var lazyFilePath string // <== inlineOk
@@ -42,7 +42,7 @@ func Scan(params []interface{}, fields base.Fields,
 }
 
 func ScanFile(lazyFilePath string, fields base.Fields,
-	lazyYield base.LazyYield, lazyYieldErr base.LazyYieldErr) {
+	lazyYield base.YieldVals, lazyYieldErr base.YieldErr) {
 	errMsg := "file not csv" // TODO: Weak string/double-quote handling.
 
 	fileSuffixCsv := ".csv"
@@ -51,7 +51,7 @@ func ScanFile(lazyFilePath string, fields base.Fields,
 		return
 	}
 
-	if base.LazyScope {
+	if LazyScope {
 		var lazyReader io.ReadWriteCloser // <== inlineOk
 		_ = lazyReader                    // <== inlineOk
 
@@ -68,8 +68,8 @@ func ScanFile(lazyFilePath string, fields base.Fields,
 }
 
 func ScanReaderAsCsv(lazyReader io.Reader, fields base.Fields,
-	lazyYield base.LazyYield, lazyYieldErr base.LazyYieldErr) {
-	var lazyValsScan base.LazyVals
+	lazyYield base.YieldVals, lazyYieldErr base.YieldErr) {
+	var lazyValsScan base.Vals
 
 	lazyScanner := bufio.NewScanner(lazyReader)
 	for lazyScanner.Scan() {
@@ -79,12 +79,12 @@ func ScanReaderAsCsv(lazyReader io.Reader, fields base.Fields,
 		for len(lazyLine) > 0 {
 			lazyCommaAt := bytes.IndexByte(lazyLine, ',')
 			if lazyCommaAt < 0 {
-				lazyValsScan = append(lazyValsScan, base.LazyVal(lazyLine))
+				lazyValsScan = append(lazyValsScan, base.Val(lazyLine))
 				break
 			}
 
 			lazyPart := lazyLine[:lazyCommaAt]
-			lazyValsScan = append(lazyValsScan, base.LazyVal(lazyPart))
+			lazyValsScan = append(lazyValsScan, base.Val(lazyPart))
 			lazyLine = lazyLine[lazyCommaAt+1:]
 		}
 

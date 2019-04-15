@@ -18,12 +18,12 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 	var testOuts [][]string
 
 	for testi, test := range tests {
-		var yields []base.LazyVals
+		var yields []base.Vals
 
-		lazyYield := func(lazyVals base.LazyVals) {
-			var lazyValsCopy base.LazyVals
+		lazyYield := func(lazyVals base.Vals) {
+			var lazyValsCopy base.Vals
 			for _, v := range lazyVals {
-				lazyValsCopy = append(lazyValsCopy, append(base.LazyVal(nil), v...))
+				lazyValsCopy = append(lazyValsCopy, append(base.Val(nil), v...))
 			}
 
 			yields = append(yields, lazyValsCopy)
@@ -45,7 +45,7 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 		n1k1.Emit = func(format string, a ...interface{}) (n int, err error) {
 			s := fmt.Sprintf(format, a...)
 
-			s = strings.Replace(s, "base.LazyScope", "true", -1)
+			s = strings.Replace(s, "LazyScope", "true", -1)
 
 			out = append(out, s)
 
@@ -74,7 +74,7 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 		c = append(c, "// "+string(oj))
 		c = append(c, "//")
 		c = append(c, fmt.Sprintf("func TestGenerated%d(t *testing.T) {", testi))
-		c = append(c, "  lazyYield := func(lazyVals base.LazyVals) {}")
+		c = append(c, "  lazyYield := func(lazyVals base.Vals) {}")
 		c = append(c, "  _ = lazyYield\n")
 		c = append(c, testOuts[testi]...)
 		c = append(c, "}\n")

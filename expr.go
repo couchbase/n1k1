@@ -4,9 +4,13 @@ import (
 	"github.com/couchbase/n1k1/base"
 )
 
+const LazyScope = true // Marks varible scopes as lazy (ex: IF block).
+
+// -----------------------------------------------------
+
 func MakeExprFunc(fields base.Fields, types base.Types,
 	expr []interface{}, outTypes base.Types, path string) (
-	lazyExprFunc base.LazyExprFunc) {
+	lazyExprFunc base.ExprFunc) {
 	// <== varLiftTop: when path == ""
 
 	ecf := ExprCatalog[expr[0].(string)]
@@ -21,7 +25,7 @@ func MakeExprFunc(fields base.Fields, types base.Types,
 
 type ExprCatalogFunc func(fields base.Fields, types base.Types,
 	params []interface{}, outTypes base.Types, path string) (
-	lazyExprFunc base.LazyExprFunc)
+	lazyExprFunc base.ExprFunc)
 
 var ExprCatalog = map[string]ExprCatalogFunc{}
 
@@ -34,18 +38,18 @@ func init() {
 // -----------------------------------------------------
 
 func ExprJson(fields base.Fields, types base.Types, params []interface{},
-	outTypes base.Types, path string) (lazyExprFunc base.LazyExprFunc) {
+	outTypes base.Types, path string) (lazyExprFunc base.ExprFunc) {
 	json := []byte(params[0].(string))
 	jsonType := base.JsonTypes[json[0]] // Might be "".
 
 	base.SetLastType(outTypes, jsonType)
 
-	if base.LazyScope {
-		var lazyValJson base.LazyVal // <== varLift: lazyValJson by path
+	if LazyScope {
+		var lazyValJson base.Val // <== varLift: lazyValJson by path
 
-		lazyValJson = base.LazyVal(json) // <== varLift: lazyValJson by path
+		lazyValJson = base.Val(json) // <== varLift: lazyValJson by path
 
-		lazyExprFunc = func(lazyVals base.LazyVals) (lazyVal base.LazyVal) {
+		lazyExprFunc = func(lazyVals base.Vals) (lazyVal base.Val) {
 			lazyVal = lazyValJson // <== varLift: lazyValJson by path
 
 			return lazyVal
@@ -58,7 +62,7 @@ func ExprJson(fields base.Fields, types base.Types, params []interface{},
 // -----------------------------------------------------
 
 func ExprField(fields base.Fields, types base.Types, params []interface{},
-	outTypes base.Types, path string) (lazyExprFunc base.LazyExprFunc) {
+	outTypes base.Types, path string) (lazyExprFunc base.ExprFunc) {
 	idx := fields.IndexOf(params[0].(string))
 	if idx < 0 {
 		base.SetLastType(outTypes, "")
@@ -66,11 +70,11 @@ func ExprField(fields base.Fields, types base.Types, params []interface{},
 		base.SetLastType(outTypes, types[idx])
 	}
 
-	lazyExprFunc = func(lazyVals base.LazyVals) (lazyVal base.LazyVal) {
+	lazyExprFunc = func(lazyVals base.Vals) (lazyVal base.Val) {
 		if idx >= 0 { // <== inlineOk
 			lazyVal = lazyVals[idx]
 		} else { // <== inlineOk
-			lazyVal = base.LazyValMissing
+			lazyVal = base.ValMissing
 		} // <== inlineOk
 
 		return lazyVal
@@ -82,11 +86,11 @@ func ExprField(fields base.Fields, types base.Types, params []interface{},
 // -----------------------------------------------------
 
 func ExprEq(fields base.Fields, types base.Types, params []interface{},
-	outTypes base.Types, path string) (lazyExprFunc base.LazyExprFunc) {
+	outTypes base.Types, path string) (lazyExprFunc base.ExprFunc) {
 	exprA := params[0].([]interface{})
 	exprB := params[1].([]interface{})
 
-	if base.LazyScope {
+	if LazyScope {
 		lazyExprFunc =
 			MakeExprFunc(fields, types, exprA, outTypes, path+"_1") // <== inlineOk
 		lazyA := lazyExprFunc
@@ -99,11 +103,11 @@ func ExprEq(fields base.Fields, types base.Types, params []interface{},
 
 		// TODO: consider inlining this one day...
 
-		lazyExprFunc = func(lazyVals base.LazyVals) (lazyVal base.LazyVal) {
+		lazyExprFunc = func(lazyVals base.Vals) (lazyVal base.Val) {
 			lazyValA := lazyA(lazyVals)
 			lazyValB := lazyB(lazyVals)
 
-			lazyVal = base.LazyValEqual(lazyValA, lazyValB)
+			lazyVal = base.ValEqual(lazyValA, lazyValB)
 
 			return lazyVal
 		}
