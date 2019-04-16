@@ -13,7 +13,7 @@ func init() {
 // MakeBiExprFunc is for two-argument or "binary" expressions.
 func MakeBiExprFunc(fields base.Fields, types base.Types,
 	params []interface{}, outTypes base.Types, path string,
-	binaryExprFunc base.BinaryExprFunc) (
+	biExprFunc base.BiExprFunc) (
 	lazyExprFunc base.ExprFunc) {
 	exprA := params[0].([]interface{})
 	exprB := params[1].([]interface{})
@@ -45,7 +45,7 @@ func MakeBiExprFunc(fields base.Fields, types base.Types,
 
 		lazyExprFunc = func(lazyVals base.Vals) (lazyVal base.Val) {
 			lazyVal =
-				binaryExprFunc(lazyA, lazyB, lazyVals) // <== notLazy
+				biExprFunc(lazyA, lazyB, lazyVals) // <== notLazy
 
 			return lazyVal
 		}
@@ -60,9 +60,9 @@ func MakeBiExprFunc(fields base.Fields, types base.Types,
 
 func ExprEq(fields base.Fields, types base.Types, params []interface{},
 	outTypes base.Types, path string) (lazyExprFunc base.ExprFunc) {
-	var binaryExprFunc base.BinaryExprFunc
+	var biExprFunc base.BiExprFunc
 
-	binaryExprFunc = func(lazyA, lazyB base.ExprFunc, lazyVals base.Vals) (lazyVal base.Val) { // <== notLazy
+	biExprFunc = func(lazyA, lazyB base.ExprFunc, lazyVals base.Vals) (lazyVal base.Val) { // <== notLazy
 		if LazyScope {
 			lazyVal =
 				lazyA(lazyVals) // <== emitCaptured: path lazyA
@@ -79,7 +79,7 @@ func ExprEq(fields base.Fields, types base.Types, params []interface{},
 	} // <== notLazy
 
 	lazyExprFunc =
-		MakeBiExprFunc(fields, types, params, outTypes, path, binaryExprFunc) // <== notLazy
+		MakeBiExprFunc(fields, types, params, outTypes, path, biExprFunc) // <== notLazy
 
 	base.SetLastType(outTypes, "bool")
 
@@ -90,9 +90,9 @@ func ExprEq(fields base.Fields, types base.Types, params []interface{},
 
 func ExprOr(fields base.Fields, types base.Types, params []interface{},
 	outTypes base.Types, path string) (lazyExprFunc base.ExprFunc) {
-	var binaryExprFunc base.BinaryExprFunc
+	var biExprFunc base.BiExprFunc
 
-	binaryExprFunc = func(lazyA, lazyB base.ExprFunc, lazyVals base.Vals) (lazyVal base.Val) { // <== notLazy
+	biExprFunc = func(lazyA, lazyB base.ExprFunc, lazyVals base.Vals) (lazyVal base.Val) { // <== notLazy
 		// Implemented this way since compiler only allows return on last line.
 		// TODO: This might not match N1QL logical OR semantics.
 		lazyVal =
@@ -106,7 +106,7 @@ func ExprOr(fields base.Fields, types base.Types, params []interface{},
 	} // <== notLazy
 
 	lazyExprFunc =
-		MakeBiExprFunc(fields, types, params, outTypes, path, binaryExprFunc) // <== notLazy
+		MakeBiExprFunc(fields, types, params, outTypes, path, biExprFunc) // <== notLazy
 
 	base.SetLastType(outTypes, "bool")
 
@@ -117,9 +117,9 @@ func ExprOr(fields base.Fields, types base.Types, params []interface{},
 
 func ExprAnd(fields base.Fields, types base.Types, params []interface{},
 	outTypes base.Types, path string) (lazyExprFunc base.ExprFunc) {
-	var binaryExprFunc base.BinaryExprFunc
+	var biExprFunc base.BiExprFunc
 
-	binaryExprFunc = func(lazyA, lazyB base.ExprFunc, lazyVals base.Vals) (lazyVal base.Val) { // <== notLazy
+	biExprFunc = func(lazyA, lazyB base.ExprFunc, lazyVals base.Vals) (lazyVal base.Val) { // <== notLazy
 		// Implemented this way since compiler only allows return on last line.
 		// TODO: This might not match N1QL logical AND semantics.
 		lazyVal =
@@ -133,7 +133,7 @@ func ExprAnd(fields base.Fields, types base.Types, params []interface{},
 	} // <== notLazy
 
 	lazyExprFunc =
-		MakeBiExprFunc(fields, types, params, outTypes, path, binaryExprFunc) // <== notLazy
+		MakeBiExprFunc(fields, types, params, outTypes, path, biExprFunc) // <== notLazy
 
 	base.SetLastType(outTypes, "bool")
 
