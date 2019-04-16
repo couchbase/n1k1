@@ -121,11 +121,11 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 					continue
 				}
 
-				if strings.Index(trimmed, "return ") >= 0 { // Ignore return lines.
+				if strings.HasPrefix(trimmed, "return ") { // Ignore return lines.
 					continue
 				}
 
-				if trimmed == "if true {" {
+				if strings.HasPrefix(trimmed, "if ") {
 					scopes += 1
 				}
 

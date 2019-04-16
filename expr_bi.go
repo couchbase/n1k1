@@ -95,17 +95,14 @@ func ExprOr(fields base.Fields, types base.Types, params []interface{},
 	binaryExprFunc = func(lazyA, lazyB base.ExprFunc, lazyVals base.Vals) (lazyVal base.Val) { // <== notLazy
 		lazyVal =
 			lazyA(lazyVals) // <== expandEmitCaptured: path lazyA
-		if base.ValEqualTrue(lazyVal) {
-			return lazyVal
+		if !base.ValEqualTrue(lazyVal) {
+			lazyVal =
+				lazyB(lazyVals) // <== expandEmitCaptured: path lazyB
+			if !base.ValEqualTrue(lazyVal) {
+				lazyVal = base.ValFalse
+			}
 		}
 
-		lazyVal =
-			lazyB(lazyVals) // <== expandEmitCaptured: path lazyB
-		if base.ValEqualTrue(lazyVal) {
-			return lazyVal
-		}
-
-		lazyVal = base.ValFalse
 		return lazyVal
 	} // <== notLazy
 
@@ -126,19 +123,14 @@ func ExprAnd(fields base.Fields, types base.Types, params []interface{},
 	binaryExprFunc = func(lazyA, lazyB base.ExprFunc, lazyVals base.Vals) (lazyVal base.Val) { // <== notLazy
 		lazyVal =
 			lazyA(lazyVals) // <== expandEmitCaptured: path lazyA
-		if !base.ValEqualTrue(lazyVal) {
-			lazyVal = base.ValFalse
-			return lazyVal
+		if base.ValEqualTrue(lazyVal) {
+			lazyVal =
+				lazyB(lazyVals) // <== expandEmitCaptured: path lazyB
+			if !base.ValEqualTrue(lazyVal) {
+				lazyVal = base.ValFalse
+			}
 		}
 
-		lazyVal =
-			lazyB(lazyVals) // <== expandEmitCaptured: path lazyB
-		if !base.ValEqualTrue(lazyVal) {
-			lazyVal = base.ValFalse
-			return lazyVal
-		}
-
-		lazyVal = base.ValTrue
 		return lazyVal
 	} // <== notLazy
 
