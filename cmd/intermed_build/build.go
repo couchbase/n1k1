@@ -116,6 +116,7 @@ func IntermedBuild(sourceDir, outDir string) error {
 	contents = append(contents, ")\n")
 
 	contents = append(contents, `var Emit = fmt.Printf`)
+	contents = append(contents, `var EmitLift = fmt.Printf`)
 
 	contents = append(contents, outAll...)
 
@@ -206,10 +207,44 @@ func EmitBlock(state *State, isLazyBlock bool,
 		return out, line
 	}
 
+	var emit = "Emit"
+
+	var liveExprs []string
+
+	liveExprsIgnore := map[string]bool{}
+
 	lineLeftRight := strings.Split(line, "// ")
-	if len(lineLeftRight) > 1 &&
-		lineLeftRight[1] == "<== inlineOk" {
-		return out, line
+	if len(lineLeftRight) > 1 {
+		if lineLeftRight[1] == "<== inlineOk" {
+			return out, line
+		}
+
+		// Marker that allows variables to be lifted or hoisted
+		// to the top of an EmitPush() scope.
+		//
+		// Ex: var lazyFoo MyType // <== varLift: lazyFoo by path
+		// Ex: lazyFoo = something // <== varLift: lazyFoo by path
+		// Ex: lazyBar = lazyFoo // <== varLift: lazyFoo by path
+		if strings.HasPrefix(lineLeftRight[1], "<== varLift: ") {
+			rightParts := strings.Split(lineLeftRight[1], " ")
+
+			varName := rightParts[2]
+			suffix := rightParts[4]
+
+			lineLeftRight[0] = strings.Replace(lineLeftRight[0],
+				varName, varName+"%s", -1)
+
+			liveExprs = append(liveExprs, suffix)
+
+			liveExprsIgnore[suffix] = true
+
+			if strings.Index(lineLeftRight[0], "var ") > 0 {
+				// Hoist the var declaration via EmitLift().
+				emit = "EmitLift"
+			}
+
+			// Fall-through for usual processing of lazy vars.
+		}
 	}
 
 	isLazyLine := LazyRE.MatchString(line)
@@ -231,13 +266,12 @@ func EmitBlock(state *State, isLazyBlock bool,
 		return out, ""
 	}
 
-	line = lineLeftRight[0] // Strips off line comment.
+	line = lineLeftRight[0] // Strips off line suffix comment.
 
-	var liveExprs []string
-
+	// Convert non-lazy expressions into fmt placeholder.
 	line = SimpleExprRE.ReplaceAllStringFunc(line,
 		func(simpleExpr string) string {
-			if Keywords[simpleExpr] {
+			if Keywords[simpleExpr] || liveExprsIgnore[simpleExpr] {
 				// A go-lang keyword.
 				return simpleExpr
 			}
@@ -265,7 +299,7 @@ func EmitBlock(state *State, isLazyBlock bool,
 
 	lineOrig := line
 
-	line = "Emit(`" + state.Indent + strings.TrimSpace(line) + "\n`"
+	line = emit + "(`" + state.Indent + strings.TrimSpace(line) + "\n`"
 
 	if len(liveExprs) > 0 {
 		line = line + ", " + strings.Join(liveExprs, ", ")

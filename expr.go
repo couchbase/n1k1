@@ -28,7 +28,10 @@ type ExprCatalogFunc func(fields base.Fields, types base.Types,
 func MakeExprFunc(fields base.Fields, types base.Types,
 	expr []interface{}, outTypes base.Types, path string) (
 	lazyExprFunc base.ExprFunc) {
-	// <== varLiftTop: when path == ""
+	if path == "" {
+		EmitPush()
+		defer EmitPop()
+	}
 
 	ecf := ExprCatalog[expr[0].(string)]
 
@@ -37,6 +40,9 @@ func MakeExprFunc(fields base.Fields, types base.Types,
 
 	return lazyExprFunc
 }
+
+var EmitPush = func() {}
+var EmitPop = func() {}
 
 // -----------------------------------------------------
 

@@ -53,6 +53,8 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 			return len(s), nil
 		}
 
+		intermed.EmitLift = intermed.Emit
+
 		intermed.ExecOperator(&test.o, nil, nil)
 
 		testOuts = append(testOuts, out)
