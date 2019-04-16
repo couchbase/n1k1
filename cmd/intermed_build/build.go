@@ -224,8 +224,8 @@ func EmitBlock(state *State, isLazyBlock bool,
 		// Marker that allows expansion from a previously captured
 		// output from EmitPop().
 		//
-		// Ex: lazyFoo(lazyVals) // <== expandEmitCaptured: path lazyFoo
-		if strings.HasPrefix(lineLeftRight[1], "<== expandEmitCaptured: ") {
+		// Ex: lazyFoo(lazyVals) // <== emitCaptured: path lazyFoo
+		if strings.HasPrefix(lineLeftRight[1], "<== emitCaptured: ") {
 			rightParts := strings.Split(lineLeftRight[1], " ")
 
 			pathVar := rightParts[2]

@@ -65,11 +65,11 @@ func ExprEq(fields base.Fields, types base.Types, params []interface{},
 	binaryExprFunc = func(lazyA, lazyB base.ExprFunc, lazyVals base.Vals) (lazyVal base.Val) { // <== notLazy
 		if LazyScope {
 			lazyVal =
-				lazyA(lazyVals) // <== expandEmitCaptured: path lazyA
+				lazyA(lazyVals) // <== emitCaptured: path lazyA
 			lazyValA := lazyVal
 
 			lazyVal =
-				lazyB(lazyVals) // <== expandEmitCaptured: path lazyB
+				lazyB(lazyVals) // <== emitCaptured: path lazyB
 			lazyValB := lazyVal
 
 			lazyVal = base.ValEqual(lazyValA, lazyValB)
@@ -94,10 +94,10 @@ func ExprOr(fields base.Fields, types base.Types, params []interface{},
 
 	binaryExprFunc = func(lazyA, lazyB base.ExprFunc, lazyVals base.Vals) (lazyVal base.Val) { // <== notLazy
 		lazyVal =
-			lazyA(lazyVals) // <== expandEmitCaptured: path lazyA
+			lazyA(lazyVals) // <== emitCaptured: path lazyA
 		if !base.ValEqualTrue(lazyVal) {
 			lazyVal =
-				lazyB(lazyVals) // <== expandEmitCaptured: path lazyB
+				lazyB(lazyVals) // <== emitCaptured: path lazyB
 			if !base.ValEqualTrue(lazyVal) {
 				lazyVal = base.ValFalse
 			}
@@ -122,10 +122,10 @@ func ExprAnd(fields base.Fields, types base.Types, params []interface{},
 
 	binaryExprFunc = func(lazyA, lazyB base.ExprFunc, lazyVals base.Vals) (lazyVal base.Val) { // <== notLazy
 		lazyVal =
-			lazyA(lazyVals) // <== expandEmitCaptured: path lazyA
+			lazyA(lazyVals) // <== emitCaptured: path lazyA
 		if base.ValEqualTrue(lazyVal) {
 			lazyVal =
-				lazyB(lazyVals) // <== expandEmitCaptured: path lazyB
+				lazyB(lazyVals) // <== emitCaptured: path lazyB
 			if !base.ValEqualTrue(lazyVal) {
 				lazyVal = base.ValFalse
 			}
