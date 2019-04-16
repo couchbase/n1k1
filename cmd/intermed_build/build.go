@@ -238,7 +238,7 @@ func EmitBlock(state *State, isLazyBlock bool,
 		}
 
 		// Marker that allows variables to be lifted or hoisted
-		// to the top of an EmitPush() scope.
+		// to the top of an EmitPush() stack.
 		//
 		// Ex: var lazyFoo MyType // <== varLift: lazyFoo by path
 		// Ex: lazyFoo = something // <== varLift: lazyFoo by path
