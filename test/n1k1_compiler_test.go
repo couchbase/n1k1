@@ -40,53 +40,55 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 		_ = lazyYield
 		_ = lazyYieldErr
 
-		liftAt := 0
+		outStack := [][]string{nil}
 
-		var out []string
+		appendOut := func(pos int, s string) {
+			out := outStack[pos]
+			out = append(out, s)
+			outStack[pos] = out
+		}
 
 		intermed.Emit = func(format string, a ...interface{}) (
 			n int, err error) {
 			s := fmt.Sprintf(format, a...)
 			s = strings.Replace(s, "LazyScope", "true", -1)
 
-			out = append(out, s)
+			appendOut(len(outStack)-1, s)
 
 			return len(s), nil
 		}
 
 		intermed.EmitLift = func(format string, a ...interface{}) (
 			n int, err error) {
-			if liftAt <= 0 {
-				panic("EmitLift without a liftAt")
-			}
-
 			s := fmt.Sprintf(format, a...)
 			s = strings.Replace(s, "LazyScope", "true", -1)
 
-			out = append(out, "")
-			copy(out[liftAt+1:], out[liftAt:])
-			out[liftAt] = s
+			appendOut(0, s)
 
 			return len(s), nil
 		}
 
-		intermed.EmitPush = func(path, name string) {
-			if liftAt > 0 {
-				panic("double EmitPush")
-			}
-
-			liftAt = len(out)
+		intermed.EmitPush = func(path, pathItem string) {
+			outStack = append(outStack, nil)
 		}
 
-		intermed.EmitPop = func(path, name string) {
-			if liftAt <= 0 {
-				panic("EmitPop without a push")
-			}
+		intermed.EmitPop = func(path, pathItem string) {
+			out := outStack[len(outStack)-1]
 
-			liftAt = 0
+			outStack = outStack[0 : len(outStack)-1]
+
+			outTop := outStack[len(outStack)-1]
+			outTop = append(outTop, out...)
+			outStack[len(outStack)-1] = outTop
 		}
 
 		intermed.ExecOperator(&test.o, nil, nil)
+
+		if len(outStack) != 1 {
+			panic("len(outStack) should be height 1")
+		}
+
+		out := outStack[len(outStack)-1]
 
 		testOuts = append(testOuts, out)
 	}

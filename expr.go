@@ -26,11 +26,14 @@ type ExprCatalogFunc func(fields base.Fields, types base.Types,
 // -----------------------------------------------------
 
 func MakeExprFunc(fields base.Fields, types base.Types,
-	expr []interface{}, outTypes base.Types, path, name string) (
+	expr []interface{}, outTypes base.Types, path, pathItem string) (
 	lazyExprFunc base.ExprFunc) {
-	if path == "" {
-		EmitPush(path, name)
-		defer EmitPop(path, name)
+	EmitPush(path, pathItem)
+
+	defer EmitPop(path, pathItem)
+
+	if len(pathItem) > 0 {
+		path = path + "_" + pathItem
 	}
 
 	ecf := ExprCatalog[expr[0].(string)]
@@ -41,8 +44,8 @@ func MakeExprFunc(fields base.Fields, types base.Types,
 	return lazyExprFunc
 }
 
-var EmitPush = func(path, name string) {}
-var EmitPop = func(path, name string) {}
+var EmitPush = func(path, pathItem string) {}
+var EmitPop = func(path, pathItem string) {}
 
 // -----------------------------------------------------
 
@@ -101,12 +104,12 @@ func ExprEq(fields base.Fields, types base.Types, params []interface{},
 
 	if LazyScope {
 		lazyExprFunc =
-			MakeExprFunc(fields, types, exprA, outTypes, path+"_1", "lazyA") // <== inlineOk
+			MakeExprFunc(fields, types, exprA, outTypes, path, "lazyA") // <== inlineOk
 		lazyA := lazyExprFunc
 		base.TakeLastType(outTypes) // <== inlineOk
 
 		lazyExprFunc =
-			MakeExprFunc(fields, types, exprB, outTypes, path+"_2", "lazyB") // <== inlineOk
+			MakeExprFunc(fields, types, exprB, outTypes, path, "lazyB") // <== inlineOk
 		lazyB := lazyExprFunc
 		base.TakeLastType(outTypes) // <== inlineOk
 
