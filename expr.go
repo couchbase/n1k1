@@ -14,11 +14,8 @@ var LazyErrNil error
 var ExprCatalog = map[string]ExprCatalogFunc{}
 
 func init() {
-	ExprCatalog["eq"] = ExprEq
 	ExprCatalog["json"] = ExprJson
 	ExprCatalog["field"] = ExprField
-
-	ExprCatalog["or"] = ExprOr
 }
 
 type ExprCatalogFunc func(fields base.Fields, types base.Types,
@@ -91,115 +88,6 @@ func ExprField(fields base.Fields, types base.Types, params []interface{},
 
 		return lazyVal
 	}
-
-	return lazyExprFunc
-}
-
-// -----------------------------------------------------
-
-func MakeBinaryExprFunc(fields base.Fields, types base.Types,
-	params []interface{}, outTypes base.Types, path string,
-	binaryExprFunc base.BinaryExprFunc) (
-	lazyExprFunc base.ExprFunc) {
-	exprA := params[0].([]interface{})
-	exprB := params[1].([]interface{})
-
-	var lazyA base.ExprFunc // <== notLazy
-	_ = lazyA               // <== notLazy
-	var lazyB base.ExprFunc // <== notLazy
-	_ = lazyB               // <== notLazy
-	var lazyVals base.Vals  // <== notLazy
-	_ = lazyVals            // <== notLazy
-
-	if LazyScope {
-		var lazyA base.ExprFunc
-		_ = lazyA
-		var lazyB base.ExprFunc
-		_ = lazyB
-
-		lazyExprFunc =
-			MakeExprFunc(fields, types, exprA, outTypes, path, "lazyA") // <== notLazy
-		lazyA = lazyExprFunc
-		base.TakeLastType(outTypes) // <== notLazy
-
-		lazyExprFunc =
-			MakeExprFunc(fields, types, exprB, outTypes, path, "lazyB") // <== notLazy
-		lazyB = lazyExprFunc
-		base.TakeLastType(outTypes) // <== notLazy
-
-		// TODO: consider inlining this one day...
-
-		lazyExprFunc = func(lazyVals base.Vals) (lazyVal base.Val) {
-			lazyVal =
-				binaryExprFunc(lazyA, lazyB, lazyVals) // <== notLazy
-
-			return lazyVal
-		}
-	}
-
-	base.SetLastType(outTypes, "bool")
-
-	return lazyExprFunc
-}
-
-// -----------------------------------------------------
-
-func ExprEq(fields base.Fields, types base.Types, params []interface{},
-	outTypes base.Types, path string) (lazyExprFunc base.ExprFunc) {
-	var binaryExprFunc base.BinaryExprFunc
-
-	binaryExprFunc = func(lazyA, lazyB base.ExprFunc, lazyVals base.Vals) (lazyVal base.Val) { // <== notLazy
-		if LazyScope {
-			lazyVal =
-				lazyA(lazyVals) // <== expandEmitCaptured: path lazyA
-			lazyValA := lazyVal
-
-			lazyVal =
-				lazyB(lazyVals) // <== expandEmitCaptured: path lazyB
-			lazyValB := lazyVal
-
-			lazyVal = base.ValEqual(lazyValA, lazyValB)
-		}
-
-		return lazyVal
-	} // <== notLazy
-
-	lazyExprFunc =
-		MakeBinaryExprFunc(fields, types, params, outTypes, path, binaryExprFunc) // <== notLazy
-
-	base.SetLastType(outTypes, "bool")
-
-	return lazyExprFunc
-}
-
-// -----------------------------------------------------
-
-func ExprOr(fields base.Fields, types base.Types, params []interface{},
-	outTypes base.Types, path string) (lazyExprFunc base.ExprFunc) {
-	var binaryExprFunc base.BinaryExprFunc
-
-	binaryExprFunc = func(lazyA, lazyB base.ExprFunc, lazyVals base.Vals) (lazyVal base.Val) { // <== notLazy
-		lazyVal =
-			lazyA(lazyVals) // <== expandEmitCaptured: path lazyA
-		if base.ValEqualTrue(lazyVal) {
-			return lazyVal
-		}
-
-		lazyVal =
-			lazyB(lazyVals) // <== expandEmitCaptured: path lazyB
-		if base.ValEqualTrue(lazyVal) {
-			return lazyVal
-		}
-
-		lazyVal = base.ValFalse
-
-		return lazyVal
-	} // <== notLazy
-
-	lazyExprFunc =
-		MakeBinaryExprFunc(fields, types, params, outTypes, path, binaryExprFunc) // <== notLazy
-
-	base.SetLastType(outTypes, "bool")
 
 	return lazyExprFunc
 }

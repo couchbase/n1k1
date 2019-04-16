@@ -957,4 +957,74 @@ var TestCasesSimple = []TestCaseSimple{
 			base.Vals{[]byte("11"), []byte("21"), []byte("31")},
 		},
 	},
+	{
+		about: "test csv-data scan->filter on a=10 AND c=30",
+		o: base.Operator{
+			Kind:   "filter",
+			Fields: base.Fields{"a", "b", "c"},
+			Params: []interface{}{
+				"and",
+				[]interface{}{
+					"eq",
+					[]interface{}{"field", `a`},
+					[]interface{}{"json", `10`},
+				},
+				[]interface{}{
+					"eq",
+					[]interface{}{"field", `c`},
+					[]interface{}{"json", `30`},
+				},
+			},
+			ParentA: &base.Operator{
+				Kind:   "scan",
+				Fields: base.Fields{"a", "b", "c"},
+				Params: []interface{}{
+					"csvData",
+					`
+10,20,30
+11,21,31
+12,22,32
+`,
+				},
+			},
+		},
+		expectYields: []base.Vals{
+			base.Vals{[]byte("10"), []byte("20"), []byte("30")},
+		},
+	},
+	{
+		about: "test csv-data scan->filter on a=11 AND c=31",
+		o: base.Operator{
+			Kind:   "filter",
+			Fields: base.Fields{"a", "b", "c"},
+			Params: []interface{}{
+				"and",
+				[]interface{}{
+					"eq",
+					[]interface{}{"field", `a`},
+					[]interface{}{"json", `11`},
+				},
+				[]interface{}{
+					"eq",
+					[]interface{}{"field", `c`},
+					[]interface{}{"json", `31`},
+				},
+			},
+			ParentA: &base.Operator{
+				Kind:   "scan",
+				Fields: base.Fields{"a", "b", "c"},
+				Params: []interface{}{
+					"csvData",
+					`
+10,20,30
+11,21,31
+12,22,32
+`,
+				},
+			},
+		},
+		expectYields: []base.Vals{
+			base.Vals{[]byte("11"), []byte("21"), []byte("31")},
+		},
+	},
 }
