@@ -93,6 +93,7 @@ func ExprOr(fields base.Fields, types base.Types, params []interface{},
 	var binaryExprFunc base.BinaryExprFunc
 
 	binaryExprFunc = func(lazyA, lazyB base.ExprFunc, lazyVals base.Vals) (lazyVal base.Val) { // <== notLazy
+		// Implemented this way since compiler only allows return on last line.
 		lazyVal =
 			lazyA(lazyVals) // <== emitCaptured: path lazyA
 		if !base.ValEqualTrue(lazyVal) {
@@ -121,6 +122,7 @@ func ExprAnd(fields base.Fields, types base.Types, params []interface{},
 	var binaryExprFunc base.BinaryExprFunc
 
 	binaryExprFunc = func(lazyA, lazyB base.ExprFunc, lazyVals base.Vals) (lazyVal base.Val) { // <== notLazy
+		// Implemented this way since compiler only allows return on last line.
 		lazyVal =
 			lazyA(lazyVals) // <== emitCaptured: path lazyA
 		if base.ValEqualTrue(lazyVal) {
@@ -129,6 +131,8 @@ func ExprAnd(fields base.Fields, types base.Types, params []interface{},
 			if !base.ValEqualTrue(lazyVal) {
 				lazyVal = base.ValFalse
 			}
+		} else {
+			lazyVal = base.ValFalse
 		}
 
 		return lazyVal

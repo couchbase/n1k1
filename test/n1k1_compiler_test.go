@@ -129,7 +129,7 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 					scopes += 1
 				}
 
-				if strings.HasPrefix(trimmed, "}") { // Maybe ignore close braces.
+				if strings.HasSuffix(trimmed, "}") { // Maybe ignore close braces.
 					if scopes > 0 {
 						scopes -= 1
 					} else {
