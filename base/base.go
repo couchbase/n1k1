@@ -92,6 +92,8 @@ type Operator struct {
 // An ExprFunc evaluates an expression against the given vals.
 type ExprFunc func(vals Vals) Val
 
+type BinaryExprFunc func(a, b ExprFunc, vals Vals) Val
+
 // A ProjectFunc projects (in relational parlance) the given vals into
 // resulting vals, reusing the pre-allocated valsPre if neeeded.
 type ProjectFunc func(vals, valsPre Vals) Vals
