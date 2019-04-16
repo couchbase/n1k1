@@ -17,6 +17,8 @@ func init() {
 	ExprCatalog["eq"] = ExprEq
 	ExprCatalog["json"] = ExprJson
 	ExprCatalog["field"] = ExprField
+
+	ExprCatalog["or"] = ExprOr
 }
 
 type ExprCatalogFunc func(fields base.Fields, types base.Types,
@@ -124,6 +126,47 @@ func ExprEq(fields base.Fields, types base.Types, params []interface{},
 
 			lazyVal = base.ValEqual(lazyValA, lazyValB)
 
+			return lazyVal
+		}
+	}
+
+	base.SetLastType(outTypes, "bool")
+
+	return lazyExprFunc
+}
+
+// -----------------------------------------------------
+
+func ExprOr(fields base.Fields, types base.Types, params []interface{},
+	outTypes base.Types, path string) (lazyExprFunc base.ExprFunc) {
+	exprA := params[0].([]interface{})
+	exprB := params[1].([]interface{})
+
+	if LazyScope {
+		lazyExprFunc =
+			MakeExprFunc(fields, types, exprA, outTypes, path, "lazyA") // <== inlineOk
+		lazyA := lazyExprFunc
+		base.TakeLastType(outTypes) // <== inlineOk
+
+		lazyExprFunc =
+			MakeExprFunc(fields, types, exprB, outTypes, path, "lazyB") // <== inlineOk
+		lazyB := lazyExprFunc
+		base.TakeLastType(outTypes) // <== inlineOk
+
+		// TODO: consider inlining this one day...
+
+		lazyExprFunc = func(lazyVals base.Vals) (lazyVal base.Val) {
+			lazyVal = lazyA(lazyVals)
+			if base.ValEqualTrue(lazyVal) {
+				return lazyVal
+			}
+
+			lazyVal = lazyB(lazyVals)
+			if base.ValEqualTrue(lazyVal) {
+				return lazyVal
+			}
+
+			lazyVal = base.ValFalse
 			return lazyVal
 		}
 	}

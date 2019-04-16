@@ -843,4 +843,82 @@ var TestCasesSimple = []TestCaseSimple{
 			StringsToLazyVals([]string{``, ``, `"fred"`, `"finance"`}, nil),
 		},
 	},
+	{
+		about: "test csv-data scan->filter on false OR true",
+		o: base.Operator{
+			Kind:   "filter",
+			Fields: base.Fields{"a", "b", "c"},
+			Params: []interface{}{
+				"or",
+				[]interface{}{"json", `false`},
+				[]interface{}{"json", `true`},
+			},
+			ParentA: &base.Operator{
+				Kind:   "scan",
+				Fields: base.Fields{"a", "b", "c"},
+				Params: []interface{}{
+					"csvData",
+					`
+10,20,30
+11,21,31
+`,
+				},
+			},
+		},
+		expectYields: []base.Vals{
+			base.Vals{[]byte("10"), []byte("20"), []byte("30")},
+			base.Vals{[]byte("11"), []byte("21"), []byte("31")},
+		},
+	},
+	{
+		about: "test csv-data scan->filter on true OR false",
+		o: base.Operator{
+			Kind:   "filter",
+			Fields: base.Fields{"a", "b", "c"},
+			Params: []interface{}{
+				"or",
+				[]interface{}{"json", `true`},
+				[]interface{}{"json", `false`},
+			},
+			ParentA: &base.Operator{
+				Kind:   "scan",
+				Fields: base.Fields{"a", "b", "c"},
+				Params: []interface{}{
+					"csvData",
+					`
+10,20,30
+11,21,31
+`,
+				},
+			},
+		},
+		expectYields: []base.Vals{
+			base.Vals{[]byte("10"), []byte("20"), []byte("30")},
+			base.Vals{[]byte("11"), []byte("21"), []byte("31")},
+		},
+	},
+	{
+		about: "test csv-data scan->filter on false OR false",
+		o: base.Operator{
+			Kind:   "filter",
+			Fields: base.Fields{"a", "b", "c"},
+			Params: []interface{}{
+				"or",
+				[]interface{}{"json", `false`},
+				[]interface{}{"json", `false`},
+			},
+			ParentA: &base.Operator{
+				Kind:   "scan",
+				Fields: base.Fields{"a", "b", "c"},
+				Params: []interface{}{
+					"csvData",
+					`
+10,20,30
+11,21,31
+`,
+				},
+			},
+		},
+		expectYields: []base.Vals(nil),
+	},
 }
