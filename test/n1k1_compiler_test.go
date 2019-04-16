@@ -40,12 +40,13 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 		_ = lazyYield
 		_ = lazyYieldErr
 
+		liftAt := 0
+
 		var out []string
 
 		intermed.Emit = func(format string, a ...interface{}) (
 			n int, err error) {
 			s := fmt.Sprintf(format, a...)
-
 			s = strings.Replace(s, "LazyScope", "true", -1)
 
 			out = append(out, s)
@@ -53,7 +54,37 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 			return len(s), nil
 		}
 
-		intermed.EmitLift = intermed.Emit
+		intermed.EmitLift = func(format string, a ...interface{}) (
+			n int, err error) {
+			if liftAt <= 0 {
+				panic("EmitLift without a liftAt")
+			}
+
+			s := fmt.Sprintf(format, a...)
+			s = strings.Replace(s, "LazyScope", "true", -1)
+
+			out = append(out, "")
+			copy(out[liftAt+1:], out[liftAt:])
+			out[liftAt] = s
+
+			return len(s), nil
+		}
+
+		intermed.EmitPush = func() {
+			if liftAt > 0 {
+				panic("double EmitPush")
+			}
+
+			liftAt = len(out)
+		}
+
+		intermed.EmitPop = func() {
+			if liftAt <= 0 {
+				panic("EmitPop without a push")
+			}
+
+			liftAt = 0
+		}
 
 		intermed.ExecOperator(&test.o, nil, nil)
 
