@@ -72,6 +72,8 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 			outStack = append(outStack, nil)
 		}
 
+		lastEmitPops := map[string][]string{}
+
 		intermed.EmitPop = func(path, pathItem string) {
 			out := outStack[len(outStack)-1]
 
@@ -80,6 +82,8 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 			outTop := outStack[len(outStack)-1]
 			outTop = append(outTop, out...)
 			outStack[len(outStack)-1] = outTop
+
+			lastEmitPops[path+"_"+pathItem] = out
 		}
 
 		intermed.ExecOperator(&test.o, nil, nil)

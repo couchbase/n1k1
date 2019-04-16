@@ -44,8 +44,8 @@ func MakeExprFunc(fields base.Fields, types base.Types,
 	return lazyExprFunc
 }
 
-var EmitPush = func(path, pathItem string) {}
-var EmitPop = func(path, pathItem string) {}
+var EmitPush = func(path, pathItem string) {} // Placeholder for compiler.
+var EmitPop = func(path, pathItem string) {}  // Placeholder for compiler.
 
 // -----------------------------------------------------
 
