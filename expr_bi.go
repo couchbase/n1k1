@@ -67,8 +67,7 @@ func ExprEq(fields base.Fields, types base.Types, params []interface{},
 			lazyVal = lazyA(lazyVals) // <== emitCaptured: path lazyA
 			lazyValA := lazyVal
 
-			lazyVal =
-				lazyB(lazyVals) // <== emitCaptured: path lazyB
+			lazyVal = lazyB(lazyVals) // <== emitCaptured: path lazyB
 			lazyValB := lazyVal
 
 			lazyVal = base.ValEqual(lazyValA, lazyValB)
