@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"io/ioutil"
 	"log"
 	"regexp"
@@ -117,6 +118,7 @@ func IntermedBuild(sourceDir, outDir string) error {
 
 	contents = append(contents, `var Emit = fmt.Printf`)
 	contents = append(contents, `var EmitLift = fmt.Printf`)
+	contents = append(contents, `var EmitCaptured = func(path, pathItem string) {}`)
 
 	contents = append(contents, outAll...)
 
@@ -216,6 +218,22 @@ func EmitBlock(state *State, isLazyBlock bool,
 	lineLeftRight := strings.Split(line, "// ")
 	if len(lineLeftRight) > 1 {
 		if lineLeftRight[1] == "<== notLazy" {
+			return out, line
+		}
+
+		// Marker that allows expansion from a previously captured
+		// output from EmitPop().
+		//
+		// Ex: lazyFoo(lazyVals) // <== expandEmitCaptured: path lazyFoo
+		if strings.HasPrefix(lineLeftRight[1], "<== expandEmitCaptured: ") {
+			rightParts := strings.Split(lineLeftRight[1], " ")
+
+			pathVar := rightParts[2]
+			pathItem := rightParts[3]
+
+			line = `EmitCaptured(fmt.Sprintf("%s", ` + pathVar + `), ` +
+				fmt.Sprintf("%q", pathItem) + `)`
+
 			return out, line
 		}
 

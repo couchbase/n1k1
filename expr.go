@@ -114,14 +114,19 @@ func MakeBinaryExprFunc(fields base.Fields, types base.Types,
 	_ = lazyVals            // <== notLazy
 
 	if LazyScope {
+		var lazyA base.ExprFunc
+		_ = lazyA
+		var lazyB base.ExprFunc
+		_ = lazyB
+
 		lazyExprFunc =
 			MakeExprFunc(fields, types, exprA, outTypes, path, "lazyA") // <== notLazy
-		lazyA := lazyExprFunc
+		lazyA = lazyExprFunc
 		base.TakeLastType(outTypes) // <== notLazy
 
 		lazyExprFunc =
 			MakeExprFunc(fields, types, exprB, outTypes, path, "lazyB") // <== notLazy
-		lazyB := lazyExprFunc
+		lazyB = lazyExprFunc
 		base.TakeLastType(outTypes) // <== notLazy
 
 		// TODO: consider inlining this one day...
@@ -146,13 +151,18 @@ func ExprEq(fields base.Fields, types base.Types, params []interface{},
 	var binaryExprFunc base.BinaryExprFunc
 
 	binaryExprFunc = func(lazyA, lazyB base.ExprFunc, lazyVals base.Vals) (lazyVal base.Val) { // <== notLazy
-		lazyVal = lazyA(lazyVals)
-		lazyValA := lazyVal
+		if LazyScope {
+			lazyVal =
+				lazyA(lazyVals) // <== expandEmitCaptured: path lazyA
+			lazyValA := lazyVal
 
-		lazyVal = lazyB(lazyVals)
-		lazyValB := lazyVal
+			lazyVal =
+				lazyB(lazyVals) // <== expandEmitCaptured: path lazyB
+			lazyValB := lazyVal
 
-		lazyVal = base.ValEqual(lazyValA, lazyValB)
+			lazyVal = base.ValEqual(lazyValA, lazyValB)
+		}
+
 		return lazyVal
 	} // <== notLazy
 
@@ -171,17 +181,20 @@ func ExprOr(fields base.Fields, types base.Types, params []interface{},
 	var binaryExprFunc base.BinaryExprFunc
 
 	binaryExprFunc = func(lazyA, lazyB base.ExprFunc, lazyVals base.Vals) (lazyVal base.Val) { // <== notLazy
-		lazyVal = lazyA(lazyVals)
+		lazyVal =
+			lazyA(lazyVals) // <== expandEmitCaptured: path lazyA
 		if base.ValEqualTrue(lazyVal) {
 			return lazyVal
 		}
 
-		lazyVal = lazyB(lazyVals)
+		lazyVal =
+			lazyB(lazyVals) // <== expandEmitCaptured: path lazyB
 		if base.ValEqualTrue(lazyVal) {
 			return lazyVal
 		}
 
 		lazyVal = base.ValFalse
+
 		return lazyVal
 	} // <== notLazy
 

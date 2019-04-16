@@ -922,7 +922,7 @@ var TestCasesSimple = []TestCaseSimple{
 		expectYields: []base.Vals(nil),
 	},
 	{
-		about: "test csv-data scan->filter on true OR false",
+		about: "test csv-data scan->filter on a=10 OR c=31",
 		o: base.Operator{
 			Kind:   "filter",
 			Fields: base.Fields{"a", "b", "c"},

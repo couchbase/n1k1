@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/couchbase/n1k1/base"
-
 	"github.com/couchbase/n1k1/intermed"
 )
 
@@ -48,6 +47,12 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 			outStack[pos] = out
 		}
 
+		appendOuts := func(pos int, ss []string) {
+			outTop := outStack[pos]
+			outTop = append(outTop, ss...)
+			outStack[pos] = outTop
+		}
+
 		intermed.Emit = func(format string, a ...interface{}) (
 			n int, err error) {
 			s := fmt.Sprintf(format, a...)
@@ -72,18 +77,70 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 			outStack = append(outStack, nil)
 		}
 
-		lastEmitPops := map[string][]string{}
+		emitPopsCaptured := map[string][]string{}
 
 		intermed.EmitPop = func(path, pathItem string) {
 			out := outStack[len(outStack)-1]
 
+			outStack[len(outStack)-1] = nil
 			outStack = outStack[0 : len(outStack)-1]
 
-			outTop := outStack[len(outStack)-1]
-			outTop = append(outTop, out...)
-			outStack[len(outStack)-1] = outTop
+			appendOuts(len(outStack)-1, out)
 
-			lastEmitPops[path+"_"+pathItem] = out
+			emitPopsCaptured[path+"_"+pathItem] = out
+		}
+
+		intermed.EmitCaptured = func(path, pathItem string) {
+			captured, ok := emitPopsCaptured[path+"_"+pathItem]
+			if !ok {
+				panic(fmt.Sprintf("EmitCaptured does not exist,"+
+					" path: %q, pathItem: %q,\n"+
+					" emitPopsCaptured: %+v",
+					path, pathItem, emitPopsCaptured))
+			}
+
+			// Scan backwards until a func/closure, also counting
+			// simple scope'ing blocks.
+			start := len(captured) - 1
+			for start >= 0 {
+				if strings.Index(captured[start], " func(") > 0 {
+					break
+				}
+
+				start = start - 1
+			}
+
+			// Emit that section, which represents the body of the last func/closure.
+			var out []string
+
+			scopes := 0 // Count scope / brace sections.
+
+			for i := start + 1; i < len(captured); i++ {
+				trimmed := strings.TrimSpace(captured[i])
+				if len(trimmed) <= 0 {
+					continue
+				}
+
+				if strings.Index(trimmed, "return ") >= 0 { // Ignore return lines.
+					continue
+				}
+
+				if trimmed == "if true {" {
+					scopes += 1
+				}
+
+				if strings.HasPrefix(trimmed, "}") { // Maybe ignore close braces.
+					if scopes > 0 {
+						scopes -= 1
+					} else {
+						continue
+					}
+				}
+
+				out = append(out, captured[i])
+			}
+
+			appendOuts(len(outStack)-1, out)
 		}
 
 		intermed.ExecOperator(&test.o, nil, nil)
