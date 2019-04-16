@@ -61,7 +61,6 @@ func ExprJson(fields base.Fields, types base.Types, params []interface{},
 
 	lazyExprFunc = func(lazyVals base.Vals) (lazyVal base.Val) {
 		lazyVal = lazyValJson // <== varLift: lazyValJson by path
-
 		return lazyVal
 	}
 
@@ -79,14 +78,16 @@ func ExprField(fields base.Fields, types base.Types, params []interface{},
 		base.SetLastType(outTypes, types[idx])
 	}
 
-	lazyExprFunc = func(lazyVals base.Vals) (lazyVal base.Val) {
-		if idx >= 0 { // <== notLazy
+	if idx >= 0 {
+		lazyExprFunc = func(lazyVals base.Vals) (lazyVal base.Val) {
 			lazyVal = lazyVals[idx]
-		} else { // <== notLazy
+			return lazyVal
+		}
+	} else {
+		lazyExprFunc = func(lazyVals base.Vals) (lazyVal base.Val) {
 			lazyVal = base.ValMissing
-		} // <== notLazy
-
-		return lazyVal
+			return lazyVal
+		}
 	}
 
 	return lazyExprFunc
