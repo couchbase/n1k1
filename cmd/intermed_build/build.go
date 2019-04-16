@@ -215,7 +215,7 @@ func EmitBlock(state *State, isLazyBlock bool,
 
 	lineLeftRight := strings.Split(line, "// ")
 	if len(lineLeftRight) > 1 {
-		if lineLeftRight[1] == "<== inlineOk" {
+		if lineLeftRight[1] == "<== notLazy" {
 			return out, line
 		}
 

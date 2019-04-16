@@ -15,25 +15,25 @@ func Scan(params []interface{}, fields base.Fields,
 	lazyYieldVals base.YieldVals, lazyYieldErr base.YieldErr) {
 	kind := params[0].(string)
 
-	var lazyFilePath string // <== inlineOk
-	_ = lazyFilePath        // <== inlineOk
+	var lazyFilePath string // <== notLazy
+	_ = lazyFilePath        // <== notLazy
 
-	var lazyReader io.Reader // <== inlineOk
-	_ = lazyReader           // <== inlineOk
+	var lazyReader io.Reader // <== notLazy
+	_ = lazyReader           // <== notLazy
 
 	switch kind {
 	case "filePath":
 		paramsFilePath := params[1].(string)
 		lazyFilePath := paramsFilePath
 
-		ScanFile(lazyFilePath, fields, lazyYieldVals, lazyYieldErr) // <== inlineOk
+		ScanFile(lazyFilePath, fields, lazyYieldVals, lazyYieldErr) // <== notLazy
 
 	case "csvData":
 		paramsCsvData := params[1].(string)
 		lazyCsvData := paramsCsvData
 		lazyReader := strings.NewReader(lazyCsvData)
 
-		ScanReaderAsCsv(lazyReader, fields, lazyYieldVals, lazyYieldErr) // <== inlineOk
+		ScanReaderAsCsv(lazyReader, fields, lazyYieldVals, lazyYieldErr) // <== notLazy
 
 	default:
 		errMsg := "unknown scan kind" // TODO: Weak string/double-quote handling.
@@ -52,8 +52,8 @@ func ScanFile(lazyFilePath string, fields base.Fields,
 	}
 
 	if LazyScope {
-		var lazyReader io.ReadWriteCloser // <== inlineOk
-		_ = lazyReader                    // <== inlineOk
+		var lazyReader io.ReadWriteCloser // <== notLazy
+		_ = lazyReader                    // <== notLazy
 
 		lazyReader, lazyErr := os.Open(lazyFilePath)
 		if lazyErr != nil {
@@ -63,7 +63,7 @@ func ScanFile(lazyFilePath string, fields base.Fields,
 
 		defer lazyReader.Close()
 
-		ScanReaderAsCsv(lazyReader, fields, lazyYieldVals, lazyYieldErr) // <== inlineOk
+		ScanReaderAsCsv(lazyReader, fields, lazyYieldVals, lazyYieldErr) // <== notLazy
 	}
 }
 

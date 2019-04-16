@@ -14,7 +14,7 @@ func ExecOperator(o *base.Operator,
 
 	switch o.Kind {
 	case "scan":
-		Scan(o.Params, o.Fields, lazyYieldVals, lazyYieldErr) // <== inlineOk
+		Scan(o.Params, o.Fields, lazyYieldVals, lazyYieldErr) // <== notLazy
 
 	case "filter":
 		types := make(base.Types, len(o.ParentA.Fields)) // TODO.
@@ -23,7 +23,7 @@ func ExecOperator(o *base.Operator,
 			var lazyExprFunc base.ExprFunc
 
 			lazyExprFunc =
-				MakeExprFunc(o.ParentA.Fields, types, o.Params, nil, "", "") // <== inlineOk
+				MakeExprFunc(o.ParentA.Fields, types, o.Params, nil, "", "") // <== notLazy
 
 			lazyYieldValsOrig := lazyYieldVals
 
@@ -34,7 +34,7 @@ func ExecOperator(o *base.Operator,
 				}
 			}
 
-			ExecOperator(o.ParentA, lazyYieldVals, lazyYieldErr) // <== inlineOk
+			ExecOperator(o.ParentA, lazyYieldVals, lazyYieldErr) // <== notLazy
 		}
 
 	case "project":
@@ -45,7 +45,7 @@ func ExecOperator(o *base.Operator,
 			var lazyProjectFunc base.ProjectFunc
 
 			lazyProjectFunc =
-				MakeProjectFunc(o.ParentA.Fields, types, o.Params, outTypes) // <== inlineOk
+				MakeProjectFunc(o.ParentA.Fields, types, o.Params, outTypes) // <== notLazy
 
 			var lazyValsProjected base.Vals
 
@@ -59,20 +59,20 @@ func ExecOperator(o *base.Operator,
 				lazyYieldValsOrig(lazyValsProjected)
 			}
 
-			ExecOperator(o.ParentA, lazyYieldVals, lazyYieldErr) // <== inlineOk
+			ExecOperator(o.ParentA, lazyYieldVals, lazyYieldErr) // <== notLazy
 		}
 
 	case "join-inner-nl":
-		ExecJoinNestedLoop(o, lazyYieldVals, lazyYieldErr) // <== inlineOk
+		ExecJoinNestedLoop(o, lazyYieldVals, lazyYieldErr) // <== notLazy
 
 	case "join-outerLeft-nl":
-		ExecJoinNestedLoop(o, lazyYieldVals, lazyYieldErr) // <== inlineOk
+		ExecJoinNestedLoop(o, lazyYieldVals, lazyYieldErr) // <== notLazy
 
 	case "join-outerRight-nl":
-		ExecJoinNestedLoop(o, lazyYieldVals, lazyYieldErr) // <== inlineOk
+		ExecJoinNestedLoop(o, lazyYieldVals, lazyYieldErr) // <== notLazy
 
 	case "join-outerFull-nl":
-		ExecJoinNestedLoop(o, lazyYieldVals, lazyYieldErr) // <== inlineOk
+		ExecJoinNestedLoop(o, lazyYieldVals, lazyYieldErr) // <== notLazy
 	}
 }
 
@@ -94,14 +94,14 @@ func ExecJoinNestedLoop(o *base.Operator,
 		var lazyExprFunc base.ExprFunc
 
 		lazyExprFunc =
-			MakeExprFunc(fieldsAB, typesAB, o.Params, nil, "", "") // <== inlineOk
+			MakeExprFunc(fieldsAB, typesAB, o.Params, nil, "", "") // <== notLazy
 
 		var lazyValsJoinOuterRight base.Vals
 		_ = lazyValsJoinOuterRight
 
-		if joinKind == "outerRight" { // <== inlineOk
+		if joinKind == "outerRight" { // <== notLazy
 			lazyValsJoinOuterRight = make(base.Vals, lenFieldsAB)
-		} // <== inlineOk
+		} // <== notLazy
 
 		lazyValsJoin := make(base.Vals, lenFieldsAB)
 
@@ -116,38 +116,38 @@ func ExecJoinNestedLoop(o *base.Operator,
 					lazyValsJoin = lazyValsJoin[0:lenFieldsA]
 					lazyValsJoin = append(lazyValsJoin, lazyValsB...)
 
-					if joinKind == "outerFull" { // <== inlineOk
+					if joinKind == "outerFull" { // <== notLazy
 						lazyYieldValsOrig(lazyValsJoin)
-					} else { // <== inlineOk
+					} else { // <== notLazy
 						lazyVal := lazyExprFunc(lazyValsJoin)
 						if base.ValEqualTrue(lazyVal) {
 							lazyYieldValsOrig(lazyValsJoin)
 						} else {
-							if joinKind == "outerLeft" { // <== inlineOk
+							if joinKind == "outerLeft" { // <== notLazy
 								lazyValsJoin = lazyValsJoin[0:lenFieldsA]
-								for i := 0; i < lenFieldsB; i++ { // <== inlineOk
+								for i := 0; i < lenFieldsB; i++ { // <== notLazy
 									lazyValsJoin = append(lazyValsJoin, base.ValMissing)
-								} // <== inlineOk
+								} // <== notLazy
 
 								lazyYieldValsOrig(lazyValsJoin)
-							} // <== inlineOk
+							} // <== notLazy
 
-							if joinKind == "outerRight" { // <== inlineOk
+							if joinKind == "outerRight" { // <== notLazy
 								lazyValsJoinOuterRight = lazyValsJoinOuterRight[0:lenFieldsA]
 								lazyValsJoinOuterRight = append(lazyValsJoinOuterRight, lazyValsB...)
 
 								lazyYieldValsOrig(lazyValsJoinOuterRight)
-							} // <== inlineOk
+							} // <== notLazy
 						}
-					} // <== inlineOk
+					} // <== notLazy
 				}
 
 				// Inner...
-				ExecOperator(o.ParentB, lazyYieldVals, lazyYieldErr) // <== inlineOk
+				ExecOperator(o.ParentB, lazyYieldVals, lazyYieldErr) // <== notLazy
 			}
 		}
 
 		// Outer...
-		ExecOperator(o.ParentA, lazyYieldVals, lazyYieldErr) // <== inlineOk
+		ExecOperator(o.ParentA, lazyYieldVals, lazyYieldErr) // <== notLazy
 	}
 }

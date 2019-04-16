@@ -18,7 +18,7 @@ func MakeProjectFunc(fields base.Fields, types base.Types,
 			var lazyExprFunc base.ExprFunc
 
 			lazyExprFunc =
-				MakeExprFunc(fields, types, expr, outTypes, "", "") // <== inlineOk
+				MakeExprFunc(fields, types, expr, outTypes, "", "") // <== notLazy
 
 			lazyExprFuncs = append(lazyExprFuncs, lazyExprFunc)
 		}
