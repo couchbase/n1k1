@@ -70,7 +70,7 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 			return len(s), nil
 		}
 
-		intermed.EmitPush = func() {
+		intermed.EmitPush = func(path, name string) {
 			if liftAt > 0 {
 				panic("double EmitPush")
 			}
@@ -78,7 +78,7 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 			liftAt = len(out)
 		}
 
-		intermed.EmitPop = func() {
+		intermed.EmitPop = func(path, name string) {
 			if liftAt <= 0 {
 				panic("EmitPop without a push")
 			}

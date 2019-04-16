@@ -23,7 +23,7 @@ func ExecOperator(o *base.Operator,
 			var lazyExprFunc base.ExprFunc
 
 			lazyExprFunc =
-				MakeExprFunc(o.ParentA.Fields, types, o.Params, nil, "") // <== inlineOk
+				MakeExprFunc(o.ParentA.Fields, types, o.Params, nil, "", "") // <== inlineOk
 
 			lazyYieldValsOrig := lazyYieldVals
 
@@ -94,7 +94,7 @@ func ExecJoinNestedLoop(o *base.Operator,
 		var lazyExprFunc base.ExprFunc
 
 		lazyExprFunc =
-			MakeExprFunc(fieldsAB, typesAB, o.Params, nil, "") // <== inlineOk
+			MakeExprFunc(fieldsAB, typesAB, o.Params, nil, "", "") // <== inlineOk
 
 		var lazyValsJoinOuterRight base.Vals
 		_ = lazyValsJoinOuterRight

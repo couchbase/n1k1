@@ -26,11 +26,11 @@ type ExprCatalogFunc func(fields base.Fields, types base.Types,
 // -----------------------------------------------------
 
 func MakeExprFunc(fields base.Fields, types base.Types,
-	expr []interface{}, outTypes base.Types, path string) (
+	expr []interface{}, outTypes base.Types, path, name string) (
 	lazyExprFunc base.ExprFunc) {
 	if path == "" {
-		EmitPush()
-		defer EmitPop()
+		EmitPush(path, name)
+		defer EmitPop(path, name)
 	}
 
 	ecf := ExprCatalog[expr[0].(string)]
@@ -41,8 +41,8 @@ func MakeExprFunc(fields base.Fields, types base.Types,
 	return lazyExprFunc
 }
 
-var EmitPush = func() {}
-var EmitPop = func() {}
+var EmitPush = func(path, name string) {}
+var EmitPop = func(path, name string) {}
 
 // -----------------------------------------------------
 
@@ -101,20 +101,23 @@ func ExprEq(fields base.Fields, types base.Types, params []interface{},
 
 	if LazyScope {
 		lazyExprFunc =
-			MakeExprFunc(fields, types, exprA, outTypes, path+"_1") // <== inlineOk
+			MakeExprFunc(fields, types, exprA, outTypes, path+"_1", "lazyA") // <== inlineOk
 		lazyA := lazyExprFunc
 		base.TakeLastType(outTypes) // <== inlineOk
 
 		lazyExprFunc =
-			MakeExprFunc(fields, types, exprB, outTypes, path+"_2") // <== inlineOk
+			MakeExprFunc(fields, types, exprB, outTypes, path+"_2", "lazyB") // <== inlineOk
 		lazyB := lazyExprFunc
 		base.TakeLastType(outTypes) // <== inlineOk
 
 		// TODO: consider inlining this one day...
 
 		lazyExprFunc = func(lazyVals base.Vals) (lazyVal base.Val) {
-			lazyValA := lazyA(lazyVals)
-			lazyValB := lazyB(lazyVals)
+			lazyVal = lazyA(lazyVals)
+			lazyValA := lazyVal
+
+			lazyVal = lazyB(lazyVals)
+			lazyValB := lazyVal
 
 			lazyVal = base.ValEqual(lazyValA, lazyValB)
 
