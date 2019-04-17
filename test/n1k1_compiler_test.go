@@ -11,8 +11,8 @@ import (
 )
 
 type Captured struct {
-	Position int
-	Out      []string
+	Pos int
+	Out []string
 }
 
 func TestCasesSimpleWithCompiler(t *testing.T) {
@@ -74,8 +74,8 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 			pos := appendOuts(len(outStack)-1, out)
 
 			emitPopsCaptured[path+"_"+pathItem] = Captured{
-				Position: pos,
-				Out:      out,
+				Pos: pos,
+				Out: out,
 			}
 		}
 
@@ -150,6 +150,8 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 			}
 
 			appendOuts(len(outStack)-1, out)
+
+			clearFuncLines(outStack[len(outStack)-1][captured.Pos : captured.Pos+len(captured.Out)])
 		}
 
 		intermed.ExecOperator(&test.o, nil, nil)
@@ -219,5 +221,37 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 		[]byte(strings.Join(c, "\n")), 0644)
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+func clearFuncLines(lines []string) {
+	var stack []string // Tracks nesting of lines.
+
+	for i := 0; i < len(lines); i++ {
+		trimmed := strings.TrimSpace(lines[i])
+
+		clear := false
+
+		// NOTE: Assumes func() and its start brace are on same line.
+		if strings.Index(trimmed, " func(") > 0 {
+			stack = append(stack, "func")
+		} else if strings.HasSuffix(trimmed, "{") {
+			stack = append(stack, "{")
+		}
+
+		for _, v := range stack {
+			if v == "func" {
+				clear = true
+				break
+			}
+		}
+
+		if strings.HasSuffix(trimmed, "}") {
+			stack = stack[0 : len(stack)-1]
+		}
+
+		if clear {
+			lines[i] = ""
+		}
 	}
 }
