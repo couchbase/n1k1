@@ -7,7 +7,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/couchbase/n1k1/base"
 	"github.com/couchbase/n1k1/intermed"
 )
 
@@ -16,29 +15,7 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 
 	var testOuts [][]string
 
-	for testi, test := range tests {
-		var yields []base.Vals
-
-		lazyYield := func(lazyVals base.Vals) {
-			var lazyValsCopy base.Vals
-			for _, v := range lazyVals {
-				lazyValsCopy = append(lazyValsCopy, append(base.Val(nil), v...))
-			}
-
-			yields = append(yields, lazyValsCopy)
-		}
-
-		lazyYieldErr := func(err error) {
-			if (test.expectErr != "") != (err != nil) {
-				t.Fatalf("testi: %d, test: %+v,\n"+
-					" got err: %v",
-					testi, test, err)
-			}
-		}
-
-		_ = lazyYield
-		_ = lazyYieldErr
-
+	for _, test := range tests {
 		outStack := [][]string{nil}
 
 		appendOut := func(pos int, s string) {
