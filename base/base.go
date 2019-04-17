@@ -40,19 +40,27 @@ var ValFalse = Val([]byte("false"))
 
 // -----------------------------------------------------
 
+func ValEqualMissing(val Val) bool {
+	return len(val) == 0
+}
+
+func ValEqualNull(val Val) bool {
+	return len(val) != 0 && val[0] == 'n'
+}
+
 func ValEqualTrue(val Val) bool {
-	return len(val) > 0 && val[0] == 't'
+	return len(val) != 0 && val[0] == 't'
 }
 
 // ValEqual follows N1QL's rules for missing & null's.
 func ValEqual(valA, valB Val) (val Val) {
-	if bytes.Equal(valA, ValMissing) {
+	if ValEqualMissing(valA) {
 		val = ValMissing
-	} else if bytes.Equal(valB, ValMissing) {
+	} else if ValEqualMissing(valB) {
 		val = ValMissing
-	} else if bytes.Equal(valA, ValNull) {
+	} else if ValEqualNull(valA) {
 		val = ValNull
-	} else if bytes.Equal(valB, ValNull) {
+	} else if ValEqualNull(valB) {
 		val = ValNull
 	} else if bytes.Equal(valA, valB) {
 		val = ValTrue
