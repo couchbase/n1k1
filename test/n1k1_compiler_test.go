@@ -139,6 +139,25 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 				out = append(out, captured[i])
 			}
 
+			// Collapse sibling lines that look like...
+			//    a = foo
+			//    bar := a
+			// Into...
+			//    bar := foo
+			for i := 1; i < len(out); i++ {
+				if len(out[i-1]) > 0 {
+					prev := strings.Split(strings.TrimSpace(out[i-1]), " = ")
+					if len(prev) == 2 {
+						curr := strings.Split(strings.TrimSpace(out[i]), " := ")
+						if len(curr) == 2 &&
+							prev[0] == curr[1] {
+							out[i-1] = curr[0] + " := " + prev[1]
+							out[i] = ""
+						}
+					}
+				}
+			}
+
 			appendOuts(len(outStack)-1, out)
 		}
 
