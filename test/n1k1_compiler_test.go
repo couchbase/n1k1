@@ -10,6 +10,11 @@ import (
 	"github.com/couchbase/n1k1/intermed"
 )
 
+type Captured struct {
+	Position int
+	Out      []string
+}
+
 func TestCasesSimpleWithCompiler(t *testing.T) {
 	tests := TestCasesSimple
 
@@ -18,16 +23,20 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 	for _, test := range tests {
 		outStack := [][]string{nil}
 
-		appendOut := func(pos int, s string) {
-			out := outStack[pos]
+		appendOut := func(at int, s string) int {
+			out := outStack[at]
+			pos := len(out)
 			out = append(out, s)
-			outStack[pos] = out
+			outStack[at] = out
+			return pos
 		}
 
-		appendOuts := func(pos int, ss []string) {
-			outTop := outStack[pos]
-			outTop = append(outTop, ss...)
-			outStack[pos] = outTop
+		appendOuts := func(at int, ss []string) int {
+			out := outStack[at]
+			pos := len(out)
+			out = append(out, ss...)
+			outStack[at] = out
+			return pos
 		}
 
 		intermed.Emit = func(format string, a ...interface{}) (
@@ -54,7 +63,7 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 			outStack = append(outStack, nil)
 		}
 
-		emitPopsCaptured := map[string][]string{}
+		emitPopsCaptured := map[string]Captured{}
 
 		intermed.EmitPop = func(path, pathItem string) {
 			out := outStack[len(outStack)-1]
@@ -62,9 +71,12 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 			outStack[len(outStack)-1] = nil
 			outStack = outStack[0 : len(outStack)-1]
 
-			appendOuts(len(outStack)-1, out)
+			pos := appendOuts(len(outStack)-1, out)
 
-			emitPopsCaptured[path+"_"+pathItem] = out
+			emitPopsCaptured[path+"_"+pathItem] = Captured{
+				Position: pos,
+				Out:      out,
+			}
 		}
 
 		intermed.EmitCaptured = func(path, pathItem string) {
@@ -76,10 +88,12 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 					path, pathItem, emitPopsCaptured))
 			}
 
+			capturedOut := captured.Out
+
 			// Scan backwards until a func/closure.
-			start := len(captured) - 1
+			start := len(capturedOut) - 1
 			for start >= 0 {
-				if strings.Index(captured[start], " func(") > 0 {
+				if strings.Index(capturedOut[start], " func(") > 0 {
 					break
 				}
 
@@ -91,8 +105,8 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 
 			scopes := 0 // Count scope / braces of IF statements.
 
-			for i := start + 1; i < len(captured); i++ {
-				trimmed := strings.TrimSpace(captured[i])
+			for i := start + 1; i < len(capturedOut); i++ {
+				trimmed := strings.TrimSpace(capturedOut[i])
 				if len(trimmed) <= 0 {
 					continue
 				}
@@ -113,7 +127,7 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 					}
 				}
 
-				out = append(out, captured[i])
+				out = append(out, capturedOut[i])
 			}
 
 			// Collapse sibling lines that look like...
