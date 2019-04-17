@@ -13,7 +13,7 @@ func init() {
 // MakeBiExprFunc is for two-argument or "binary" expressions.
 func MakeBiExprFunc(fields base.Fields, types base.Types,
 	params []interface{}, outTypes base.Types, path string,
-	biExprFunc base.BiExprFunc) (
+	biExprFunc base.BiExprFunc, outType string) (
 	lazyExprFunc base.ExprFunc) {
 	exprA := params[0].([]interface{})
 	exprB := params[1].([]interface{})
@@ -51,7 +51,7 @@ func MakeBiExprFunc(fields base.Fields, types base.Types,
 		}
 	}
 
-	base.SetLastType(outTypes, "bool")
+	base.SetLastType(outTypes, outType)
 
 	return lazyExprFunc
 }
@@ -77,9 +77,7 @@ func ExprEq(fields base.Fields, types base.Types, params []interface{},
 	} // <== notLazy
 
 	lazyExprFunc =
-		MakeBiExprFunc(fields, types, params, outTypes, path, biExprFunc) // <== notLazy
-
-	base.SetLastType(outTypes, "bool")
+		MakeBiExprFunc(fields, types, params, outTypes, path, biExprFunc, "") // <== notLazy
 
 	return lazyExprFunc
 }
@@ -102,9 +100,7 @@ func ExprOr(fields base.Fields, types base.Types, params []interface{},
 	} // <== notLazy
 
 	lazyExprFunc =
-		MakeBiExprFunc(fields, types, params, outTypes, path, biExprFunc) // <== notLazy
-
-	base.SetLastType(outTypes, "bool")
+		MakeBiExprFunc(fields, types, params, outTypes, path, biExprFunc, "") // <== notLazy
 
 	return lazyExprFunc
 }
@@ -127,9 +123,7 @@ func ExprAnd(fields base.Fields, types base.Types, params []interface{},
 	} // <== notLazy
 
 	lazyExprFunc =
-		MakeBiExprFunc(fields, types, params, outTypes, path, biExprFunc) // <== notLazy
-
-	base.SetLastType(outTypes, "bool")
+		MakeBiExprFunc(fields, types, params, outTypes, path, biExprFunc, "") // <== notLazy
 
 	return lazyExprFunc
 }
