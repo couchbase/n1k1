@@ -7,10 +7,12 @@ import (
 // LazyScope is used to mark variable scopes as lazy (ex: IF block).
 const LazyScope = true
 
+// LazyErrNil is always the nil error.
 var LazyErrNil error
 
 // -----------------------------------------------------
 
+// ExprCatalog is a registry of all the known expression functions.
 var ExprCatalog = map[string]ExprCatalogFunc{}
 
 func init() {
