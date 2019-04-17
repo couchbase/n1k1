@@ -99,8 +99,7 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 					path, pathItem, emitPopsCaptured))
 			}
 
-			// Scan backwards until a func/closure, also counting
-			// simple scope'ing blocks.
+			// Scan backwards until a func/closure.
 			start := len(captured) - 1
 			for start >= 0 {
 				if strings.Index(captured[start], " func(") > 0 {
@@ -110,10 +109,10 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 				start = start - 1
 			}
 
-			// Emit that section, which represents the body of the last func/closure.
+			// Emit the body of the last func/closure.
 			var out []string
 
-			scopes := 0 // Count scope / brace sections.
+			scopes := 0 // Count scope / braces of IF statements.
 
 			for i := start + 1; i < len(captured); i++ {
 				trimmed := strings.TrimSpace(captured[i])
@@ -121,7 +120,7 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 					continue
 				}
 
-				if strings.HasPrefix(trimmed, "return ") { // Ignore return lines.
+				if strings.HasPrefix(trimmed, "return ") { // Filter away return lines.
 					continue
 				}
 
@@ -129,7 +128,7 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 					scopes += 1
 				}
 
-				if strings.HasSuffix(trimmed, "}") { // Maybe ignore close braces.
+				if strings.HasSuffix(trimmed, "}") { // Ignore IF close braces.
 					if scopes > 0 {
 						scopes -= 1
 					} else {
