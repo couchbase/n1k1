@@ -37,10 +37,8 @@ func MakeExprFunc(fields base.Fields, types base.Types,
 		path = path + "_" + pathItem
 	}
 
-	ecf := ExprCatalog[expr[0].(string)]
-
 	lazyExprFunc =
-		ecf(fields, types, expr[1:], outTypes, path) // <== notLazy
+		ExprCatalog[expr[0].(string)](fields, types, expr[1:], outTypes, path)
 
 	return lazyExprFunc
 }
