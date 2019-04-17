@@ -95,8 +95,7 @@ func ExprOr(fields base.Fields, types base.Types, params []interface{},
 		// TODO: This might not match N1QL logical OR semantics.
 		lazyVal = lazyA(lazyVals) // <== emitCaptured: path lazyA
 		if !base.ValEqualTrue(lazyVal) {
-			lazyVal =
-				lazyB(lazyVals) // <== emitCaptured: path lazyB
+			lazyVal = lazyB(lazyVals) // <== emitCaptured: path lazyB
 		}
 
 		return lazyVal
