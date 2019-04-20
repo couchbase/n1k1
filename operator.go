@@ -20,21 +20,18 @@ func ExecOperator(o *base.Operator,
 		types := make(base.Types, len(o.ParentA.Fields)) // TODO.
 
 		if LazyScope {
-			var lazyFilterFunc base.ExprFunc
-			_ = lazyFilterFunc
-
 			var lazyExprFunc base.ExprFunc
+			_ = lazyExprFunc
 
 			lazyExprFunc =
 				MakeExprFunc(o.ParentA.Fields, types, o.Params, nil, o.Kind, "FF") // <== notLazy
-			lazyFilterFunc = lazyExprFunc
 
 			lazyYieldValsOrig := lazyYieldVals
 
 			lazyYieldVals = func(lazyVals base.Vals) {
 				var lazyVal base.Val
 
-				lazyVal = lazyFilterFunc(lazyVals) // <== emitCaptured: o.Kind FF
+				lazyVal = lazyExprFunc(lazyVals) // <== emitCaptured: o.Kind FF
 
 				if base.ValEqualTrue(lazyVal) {
 					lazyYieldValsOrig(lazyVals)
