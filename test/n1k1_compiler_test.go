@@ -250,6 +250,15 @@ func clearFuncLines(lines []string) {
 			stack = stack[0 : len(stack)-1]
 		}
 
+		// Only keep "var foo = initializer" idioms of the lifted /
+		// hosted variables.
+		hasVar := strings.HasPrefix(trimmed, "var ")
+		hasAssign := strings.Index(trimmed, " = ") > 0
+
+		if !(hasVar && hasAssign) {
+			clear = true
+		}
+
 		if clear {
 			lines[i] = ""
 		}
