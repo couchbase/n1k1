@@ -58,9 +58,9 @@ func ValEqual(valA, valB Val) (val Val) {
 		val = ValMissing
 	} else if ValEqualMissing(valB) {
 		val = ValMissing
-	} else if ValEqualNull(valA) {
+	} else if valA[0] == 'n' { // Avoid ValEqualNull's len() check.
 		val = ValNull
-	} else if ValEqualNull(valB) {
+	} else if valB[0] == 'n' {
 		val = ValNull
 	} else if bytes.Equal(valA, valB) {
 		val = ValTrue
