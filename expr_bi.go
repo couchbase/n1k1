@@ -64,10 +64,10 @@ func ExprEq(fields base.Fields, types base.Types, params []interface{},
 
 	biExprFunc = func(lazyA, lazyB base.ExprFunc, lazyVals base.Vals) (lazyVal base.Val) { // <== notLazy
 		if LazyScope {
-			lazyVal = lazyA(lazyVals) // <== emitCaptured: path A
+			lazyVal = lazyA(lazyVals) // <== emitCaptured: path "A"
 			lazyValA := lazyVal
 
-			lazyVal = lazyB(lazyVals) // <== emitCaptured: path B
+			lazyVal = lazyB(lazyVals) // <== emitCaptured: path "B"
 			lazyValB := lazyVal
 
 			lazyVal = base.ValEqual(lazyValA, lazyValB)
@@ -91,9 +91,9 @@ func ExprOr(fields base.Fields, types base.Types, params []interface{},
 	biExprFunc = func(lazyA, lazyB base.ExprFunc, lazyVals base.Vals) (lazyVal base.Val) { // <== notLazy
 		// Implemented this way since compiler only allows return on last line.
 		// TODO: This might not match N1QL logical OR semantics.
-		lazyVal = lazyA(lazyVals) // <== emitCaptured: path A
+		lazyVal = lazyA(lazyVals) // <== emitCaptured: path "A"
 		if !base.ValEqualTrue(lazyVal) {
-			lazyVal = lazyB(lazyVals) // <== emitCaptured: path B
+			lazyVal = lazyB(lazyVals) // <== emitCaptured: path "B"
 		}
 
 		return lazyVal
@@ -114,9 +114,9 @@ func ExprAnd(fields base.Fields, types base.Types, params []interface{},
 	biExprFunc = func(lazyA, lazyB base.ExprFunc, lazyVals base.Vals) (lazyVal base.Val) { // <== notLazy
 		// Implemented this way since compiler only allows return on last line.
 		// TODO: This might not match N1QL logical AND semantics.
-		lazyVal = lazyA(lazyVals) // <== emitCaptured: path A
+		lazyVal = lazyA(lazyVals) // <== emitCaptured: path "A"
 		if base.ValEqualTrue(lazyVal) {
-			lazyVal = lazyB(lazyVals) // <== emitCaptured: path B
+			lazyVal = lazyB(lazyVals) // <== emitCaptured: path "B"
 		}
 
 		return lazyVal

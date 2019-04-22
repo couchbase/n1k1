@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"io/ioutil"
 	"log"
 	"regexp"
@@ -224,15 +223,15 @@ func EmitBlock(state *State, isLazyBlock bool,
 		// Marker that allows expansion from a previously captured
 		// output from EmitPop().
 		//
-		// Ex: lazyFoo(lazyVals) // <== emitCaptured: path lazyFoo
+		// Ex: lazyFoo(lazyVals) // <== emitCaptured: path pathItem
 		if strings.HasPrefix(lineLeftRight[1], "<== emitCaptured: ") {
 			rightParts := strings.Split(lineLeftRight[1], " ")
 
 			pathVar := rightParts[2]
 			pathItem := rightParts[3]
 
-			line = `EmitCaptured(fmt.Sprintf("%s", ` + pathVar + `), ` +
-				fmt.Sprintf("%q", pathItem) + `)`
+			line = `EmitCaptured(` +
+				`fmt.Sprintf("%s", ` + pathVar + `), ` + pathItem + `)`
 
 			return out, line
 		}

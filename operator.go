@@ -31,7 +31,7 @@ func ExecOperator(o *base.Operator,
 			lazyYieldVals = func(lazyVals base.Vals) {
 				var lazyVal base.Val
 
-				lazyVal = lazyExprFunc(lazyVals) // <== emitCaptured: o.Kind FF
+				lazyVal = lazyExprFunc(lazyVals) // <== emitCaptured: o.Kind "FF"
 
 				if base.ValEqualTrue(lazyVal) {
 					lazyYieldValsOrig(lazyVals)
@@ -47,20 +47,21 @@ func ExecOperator(o *base.Operator,
 
 		if LazyScope {
 			var lazyProjectFunc base.ProjectFunc
+			_ = lazyProjectFunc
 
 			lazyProjectFunc =
-				MakeProjectFunc(o.ParentA.Fields, types, o.Params, outTypes) // <== notLazy
+				MakeProjectFunc(o.ParentA.Fields, types, o.Params, outTypes, o.Kind, "PF") // <== notLazy
 
-			var lazyValsProjected base.Vals
+			var lazyValsOut base.Vals
 
 			lazyYieldValsOrig := lazyYieldVals
 
-			lazyYieldVals = func(lazyValsIn base.Vals) {
-				lazyValsProjected = lazyValsProjected[:0]
+			lazyYieldVals = func(lazyVals base.Vals) {
+				lazyValsOut = lazyValsOut[:0]
 
-				lazyValsProjected = lazyProjectFunc(lazyValsIn, lazyValsProjected)
+				lazyValsOut = lazyProjectFunc(lazyVals, lazyValsOut) // <== emitCaptured: o.Kind "PF"
 
-				lazyYieldValsOrig(lazyValsProjected)
+				lazyYieldValsOrig(lazyValsOut)
 			}
 
 			ExecOperator(o.ParentA, lazyYieldVals, lazyYieldErr) // <== notLazy
