@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"io/ioutil"
 	"log"
 	"regexp"
@@ -117,7 +118,7 @@ func IntermedBuild(sourceDir, outDir string) error {
 
 	contents = append(contents, `var Emit = fmt.Printf`)
 	contents = append(contents, `var EmitLift = fmt.Printf`)
-	contents = append(contents, `var EmitCaptured = func(path, pathItem string) {}`)
+	contents = append(contents, `var EmitCaptured = func(path, pathItem, orig string) {}`)
 
 	contents = append(contents, outAll...)
 
@@ -231,7 +232,9 @@ func EmitBlock(state *State, isLazyBlock bool,
 			pathItem := rightParts[3]
 
 			line = `EmitCaptured(` +
-				`fmt.Sprintf("%s", ` + pathVar + `), ` + pathItem + `)`
+				`fmt.Sprintf("%s", ` + pathVar + `), ` +
+				pathItem + `, ` +
+				fmt.Sprintf("%q", lineLeftRight[0]) + `)`
 
 			return out, line
 		}

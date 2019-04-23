@@ -81,8 +81,13 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 			}
 		}
 
-		intermed.EmitCaptured = func(path, pathItem string) {
-			captured, ok := emitPopsCaptured[path+"_"+pathItem]
+		intermed.EmitCaptured = func(path, pathItem, orig string) {
+			key := path
+			if pathItem != "" {
+				key = key + "_" + pathItem
+			}
+
+			captured, ok := emitPopsCaptured[key]
 			if !ok {
 				panic(fmt.Sprintf("EmitCaptured does not exist,"+
 					" path: %q, pathItem: %q,\n"+
