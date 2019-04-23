@@ -12,7 +12,7 @@ func TestCasesSimpleWithInterp(t *testing.T) {
 		yieldVals, yieldErr, returnYields :=
 			MakeYieldCaptureFuncs(t, testi, test.expectErr)
 
-		n1k1.ExecOperator(&test.o, yieldVals, yieldErr)
+		n1k1.ExecOperator(&test.o, yieldVals, yieldErr, "", "")
 
 		yields := returnYields()
 

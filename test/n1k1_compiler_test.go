@@ -156,7 +156,7 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 			clearFuncLines(outStack[len(outStack)-1][captured.Pos : captured.Pos+len(captured.Out)])
 		}
 
-		intermed.ExecOperator(&test.o, nil, nil)
+		intermed.ExecOperator(&test.o, nil, nil, "", "")
 
 		if len(outStack) != 1 {
 			panic("len(outStack) should be height 1")

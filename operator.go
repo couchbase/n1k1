@@ -7,7 +7,12 @@ import (
 )
 
 func ExecOperator(o *base.Operator,
-	lazyYieldVals base.YieldVals, lazyYieldErr base.YieldErr) {
+	lazyYieldVals base.YieldVals, lazyYieldErr base.YieldErr,
+	path, pathItem string) {
+	pathNext := EmitPush(path, pathItem)
+
+	defer EmitPop(path, pathItem)
+
 	if o == nil {
 		return
 	}
@@ -38,7 +43,7 @@ func ExecOperator(o *base.Operator,
 				}
 			}
 
-			ExecOperator(o.ParentA, lazyYieldVals, lazyYieldErr) // <== notLazy
+			ExecOperator(o.ParentA, lazyYieldVals, lazyYieldErr, pathNext, "OF") // <== notLazy
 		}
 
 	case "project":
@@ -64,25 +69,25 @@ func ExecOperator(o *base.Operator,
 				lazyYieldValsOrig(lazyValsOut)
 			}
 
-			ExecOperator(o.ParentA, lazyYieldVals, lazyYieldErr) // <== notLazy
+			ExecOperator(o.ParentA, lazyYieldVals, lazyYieldErr, pathNext, "OP") // <== notLazy
 		}
 
 	case "join-inner-nl":
-		ExecJoinNestedLoop(o, lazyYieldVals, lazyYieldErr) // <== notLazy
+		ExecJoinNestedLoop(o, lazyYieldVals, lazyYieldErr, pathNext) // <== notLazy
 
 	case "join-outerLeft-nl":
-		ExecJoinNestedLoop(o, lazyYieldVals, lazyYieldErr) // <== notLazy
+		ExecJoinNestedLoop(o, lazyYieldVals, lazyYieldErr, pathNext) // <== notLazy
 
 	case "join-outerRight-nl":
-		ExecJoinNestedLoop(o, lazyYieldVals, lazyYieldErr) // <== notLazy
+		ExecJoinNestedLoop(o, lazyYieldVals, lazyYieldErr, pathNext) // <== notLazy
 
 	case "join-outerFull-nl":
-		ExecJoinNestedLoop(o, lazyYieldVals, lazyYieldErr) // <== notLazy
+		ExecJoinNestedLoop(o, lazyYieldVals, lazyYieldErr, pathNext) // <== notLazy
 	}
 }
 
 func ExecJoinNestedLoop(o *base.Operator,
-	lazyYieldVals base.YieldVals, lazyYieldErr base.YieldErr) {
+	lazyYieldVals base.YieldVals, lazyYieldErr base.YieldErr, pathNext string) {
 	joinKind := strings.Split(o.Kind, "-")[1] // Ex: "inner", "outerLeft".
 
 	lenFieldsA := len(o.ParentA.Fields)
@@ -148,11 +153,11 @@ func ExecJoinNestedLoop(o *base.Operator,
 				}
 
 				// Inner...
-				ExecOperator(o.ParentB, lazyYieldVals, lazyYieldErr) // <== notLazy
+				ExecOperator(o.ParentB, lazyYieldVals, lazyYieldErr, pathNext, "JNLI") // <== notLazy
 			}
 		}
 
 		// Outer...
-		ExecOperator(o.ParentA, lazyYieldVals, lazyYieldErr) // <== notLazy
+		ExecOperator(o.ParentA, lazyYieldVals, lazyYieldErr, pathNext, "JNLO") // <== notLazy
 	}
 }
