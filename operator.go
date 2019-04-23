@@ -29,14 +29,14 @@ func ExecOperator(o *base.Operator,
 			_ = lazyExprFunc
 
 			lazyExprFunc =
-				MakeExprFunc(o.ParentA.Fields, types, o.Params, nil, o.Kind, "FF") // <== notLazy
+				MakeExprFunc(o.ParentA.Fields, types, o.Params, nil, pathNext, "FF") // <== notLazy
 
 			lazyYieldValsOrig := lazyYieldVals
 
 			lazyYieldVals = func(lazyVals base.Vals) {
 				var lazyVal base.Val
 
-				lazyVal = lazyExprFunc(lazyVals) // <== emitCaptured: o.Kind "FF"
+				lazyVal = lazyExprFunc(lazyVals) // <== emitCaptured: pathNext "FF"
 
 				if base.ValEqualTrue(lazyVal) {
 					lazyYieldValsOrig(lazyVals)
@@ -55,7 +55,7 @@ func ExecOperator(o *base.Operator,
 			_ = lazyProjectFunc
 
 			lazyProjectFunc =
-				MakeProjectFunc(o.ParentA.Fields, types, o.Params, outTypes, o.Kind, "PF") // <== notLazy
+				MakeProjectFunc(o.ParentA.Fields, types, o.Params, outTypes, pathNext, "PF") // <== notLazy
 
 			var lazyValsOut base.Vals
 
@@ -64,7 +64,7 @@ func ExecOperator(o *base.Operator,
 			lazyYieldVals = func(lazyVals base.Vals) {
 				lazyValsOut = lazyValsOut[:0]
 
-				lazyValsOut = lazyProjectFunc(lazyVals, lazyValsOut) // <== emitCaptured: o.Kind "PF"
+				lazyValsOut = lazyProjectFunc(lazyVals, lazyValsOut) // <== emitCaptured: pathNext "PF"
 
 				lazyYieldValsOrig(lazyValsOut)
 			}

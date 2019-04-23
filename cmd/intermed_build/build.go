@@ -249,7 +249,7 @@ func EmitBlock(state *State, isLazyBlock bool,
 			suffix := rightParts[4]
 
 			lineLeftRight[0] = strings.Replace(lineLeftRight[0],
-				varName, varName+"_%s", -1)
+				varName, varName+"%s", -1)
 
 			liveExprs = append(liveExprs, suffix)
 
