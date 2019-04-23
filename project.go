@@ -9,13 +9,9 @@ import (
 func MakeProjectFunc(fields base.Fields, types base.Types,
 	projections []interface{}, outTypes base.Types, path, pathItem string) (
 	lazyProjectFunc base.ProjectFunc) {
-	EmitPush(path, pathItem)
+	pathNext := EmitPush(path, pathItem)
 
 	defer EmitPop(path, pathItem)
-
-	if len(pathItem) > 0 {
-		path = path + "_" + pathItem
-	}
 
 	for range projections {
 		outTypes = append(outTypes, "") // TODO: projected out type.
@@ -32,11 +28,11 @@ func MakeProjectFunc(fields base.Fields, types base.Types,
 				_ = lazyExprFunc
 
 				lazyExprFunc =
-					MakeExprFunc(fields, types, expr, outTypes, path, iStr) // <== notLazy
+					MakeExprFunc(fields, types, expr, outTypes, pathNext, iStr) // <== notLazy
 
 				var lazyVal base.Val
 
-				lazyVal = lazyExprFunc(lazyVals) // <== emitCaptured: path iStr
+				lazyVal = lazyExprFunc(lazyVals) // <== emitCaptured: pathNext iStr
 
 				// NOTE: lazyVals are stable while we are building up
 				// lazyValsOut, so no need to deep copy lazyVal yet.

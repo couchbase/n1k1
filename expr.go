@@ -29,22 +29,22 @@ type ExprCatalogFunc func(fields base.Fields, types base.Types,
 func MakeExprFunc(fields base.Fields, types base.Types,
 	expr []interface{}, outTypes base.Types, path, pathItem string) (
 	lazyExprFunc base.ExprFunc) {
-	EmitPush(path, pathItem)
+	pathNext := EmitPush(path, pathItem)
 
 	defer EmitPop(path, pathItem)
 
-	if len(pathItem) > 0 {
-		path = path + "_" + pathItem
-	}
-
 	lazyExprFunc =
-		ExprCatalog[expr[0].(string)](fields, types, expr[1:], outTypes, path)
+		ExprCatalog[expr[0].(string)](fields, types, expr[1:], outTypes, pathNext)
 
 	return lazyExprFunc
 }
 
-var EmitPush = func(path, pathItem string) {} // Placeholder for compiler.
-var EmitPop = func(path, pathItem string) {}  // Placeholder for compiler.
+var EmitPush = func(path, pathItem string) string {
+	return path + "_" + pathItem
+}
+
+// Placeholder for compiler.
+var EmitPop = func(path, pathItem string) {} // Placeholder for compiler.
 
 // -----------------------------------------------------
 

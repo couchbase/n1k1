@@ -59,8 +59,10 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 			return len(s), nil
 		}
 
-		intermed.EmitPush = func(path, pathItem string) {
+		intermed.EmitPush = func(path, pathItem string) string {
 			outStack = append(outStack, nil)
+
+			return path + "_" + pathItem
 		}
 
 		emitPopsCaptured := map[string]Captured{}
