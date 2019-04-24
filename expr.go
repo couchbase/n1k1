@@ -40,7 +40,7 @@ func MakeExprFunc(fields base.Fields, types base.Types,
 }
 
 var EmitPush = func(path, pathItem string) string {
-	return path + "_" + pathItem
+	return path + "_" + pathItem // Placeholder for compiler.
 }
 
 // Placeholder for compiler.
