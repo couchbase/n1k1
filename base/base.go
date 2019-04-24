@@ -24,7 +24,7 @@ func (a Fields) IndexOf(s string) int {
 
 type Vals []Val
 
-type Val []byte // JSON encoded.
+type Val []byte // JSON encoded, usually treated as immutable.
 
 func (a Val) String() string {
 	return fmt.Sprintf("%q", []byte(a))
