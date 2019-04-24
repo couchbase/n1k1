@@ -43,7 +43,7 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 		intermed.Emit = func(format string, a ...interface{}) (
 			n int, err error) {
 			s := fmt.Sprintf(format, a...)
-			s = strings.Replace(s, "LazyScope", "true", -1)
+			s = strings.Replace(s, "LzScope", "true", -1)
 
 			appendOut(len(outStack)-1, s)
 
@@ -53,7 +53,7 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 		intermed.EmitLift = func(format string, a ...interface{}) (
 			n int, err error) {
 			s := fmt.Sprintf(format, a...)
-			s = strings.Replace(s, "LazyScope", "true", -1)
+			s = strings.Replace(s, "LzScope", "true", -1)
 
 			appendOut(0, s)
 
@@ -199,7 +199,7 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 		`import "github.com/couchbase/n1k1/base"`,
 		`import "github.com/couchbase/n1k1/test"`,
 		``,
-		`var LazyErrNil error`,
+		`var LzErrNil error`,
 	}
 
 	for testi, test := range tests {
@@ -211,11 +211,11 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 		c = append(c, "//")
 		c = append(c, fmt.Sprintf("func TestGenerated%d(t *testing.T) {", testi))
 
-		c = append(c, `  lazyYieldVals, lazyYieldErr, returnYields :=`)
+		c = append(c, `  lzYieldVals, lzYieldErr, returnYields :=`)
 		c = append(c, fmt.Sprintf(`    test.MakeYieldCaptureFuncs(nil, %d, %q)`,
 			testi, test.expectErr))
-		c = append(c, "  _ = lazyYieldVals")
-		c = append(c, "  _ = lazyYieldErr")
+		c = append(c, "  _ = lzYieldVals")
+		c = append(c, "  _ = lzYieldErr")
 		c = append(c, "")
 
 		c = append(c, testOuts[testi]...)

@@ -186,7 +186,7 @@ func HandlerScanTopLevelFuncBody(state *State, data string,
 
 // ---------------------------------------------------------------
 
-func HandlerScanLazyBlock(state *State, data string,
+func HandlerScanLzBlock(state *State, data string,
 	out []string, line string) ([]string, string) {
 	lineToEndBlock := data
 	if lineToEndBlock == line {
@@ -198,14 +198,14 @@ func HandlerScanLazyBlock(state *State, data string,
 
 // ---------------------------------------------------------------
 
-var LazyRE = regexp.MustCompile(`[Ll]azy`)
+var LzRE = regexp.MustCompile(`[Ll]z`)
 
 var SimpleExprRE = regexp.MustCompile(`[a-zA-Z][a-zA-Z0-9\._]+`)
 
-func EmitBlock(state *State, isLazyBlock bool,
+func EmitBlock(state *State, isLzBlock bool,
 	out []string, line string) ([]string, string) {
-	if !isLazyBlock && strings.Index(line, "return ") > 0 {
-		// Emit non-lazy (e.g., top-level) return line as-is.
+	if !isLzBlock && strings.Index(line, "return ") > 0 {
+		// Emit non-lz (e.g., top-level) return line as-is.
 		return out, line
 	}
 
@@ -217,14 +217,14 @@ func EmitBlock(state *State, isLazyBlock bool,
 
 	lineLeftRight := strings.Split(line, "// ")
 	if len(lineLeftRight) > 1 {
-		if lineLeftRight[1] == "<== notLazy" {
+		if lineLeftRight[1] == "<== notLz" {
 			return out, line
 		}
 
 		// Marker that allows expansion from a previously captured
 		// output from EmitPop().
 		//
-		// Ex: lazyFoo(lazyVals) // <== emitCaptured: path pathItem
+		// Ex: lzFoo(lzVals) // <== emitCaptured: path pathItem
 		if strings.HasPrefix(lineLeftRight[1], "<== emitCaptured: ") {
 			rightParts := strings.Split(lineLeftRight[1], " ")
 
@@ -242,9 +242,9 @@ func EmitBlock(state *State, isLazyBlock bool,
 		// Marker that allows variables to be lifted or hoisted
 		// to the top of an EmitPush() stack.
 		//
-		// Ex: var lazyFoo MyType // <== varLift: lazyFoo by path
-		// Ex: lazyFoo = something // <== varLift: lazyFoo by path
-		// Ex: lazyBar = lazyFoo // <== varLift: lazyFoo by path
+		// Ex: var lzFoo MyType // <== varLift: lzFoo by path
+		// Ex: lzFoo = something // <== varLift: lzFoo by path
+		// Ex: lzBar = lzFoo // <== varLift: lzFoo by path
 		if strings.HasPrefix(lineLeftRight[1], "<== varLift: ") {
 			rightParts := strings.Split(lineLeftRight[1], " ")
 
@@ -263,21 +263,21 @@ func EmitBlock(state *State, isLazyBlock bool,
 				emit = "EmitLift"
 			}
 
-			// Fall-through for usual processing of lazy vars.
+			// Fall-through for usual processing of lz vars.
 		}
 	}
 
-	isLazyLine := LazyRE.MatchString(line)
-	if !isLazyLine && !isLazyBlock {
+	isLzLine := LzRE.MatchString(line)
+	if !isLzLine && !isLzBlock {
 		return out, line
 	}
 
-	if !isLazyBlock {
+	if !isLzBlock {
 		if strings.Index(line, " = func(") > 0 ||
 			strings.Index(line, "switch ") > 0 ||
 			strings.Index(line, "for ") > 0 ||
 			strings.Index(line, "if ") > 0 {
-			state.Push(HandlerScanLazyBlock, SpacePrefix(line)+"}")
+			state.Push(HandlerScanLzBlock, SpacePrefix(line)+"}")
 		}
 	}
 
@@ -288,7 +288,7 @@ func EmitBlock(state *State, isLazyBlock bool,
 
 	line = lineLeftRight[0] // Strips off line suffix comment.
 
-	// Convert non-lazy expressions into fmt placeholder.
+	// Convert non-lz expressions into fmt placeholder.
 	line = SimpleExprRE.ReplaceAllStringFunc(line,
 		func(simpleExpr string) string {
 			if Keywords[simpleExpr] || liveExprsIgnore[simpleExpr] {
@@ -301,8 +301,8 @@ func EmitBlock(state *State, isLazyBlock bool,
 				return simpleExpr
 			}
 
-			if LazyRE.MatchString(simpleExpr) {
-				// It's a lazy expression, so it's not an alive
+			if LzRE.MatchString(simpleExpr) {
+				// It's a lz expression, so it's not an alive
 				// expression at compile-time.
 				return simpleExpr
 			}
@@ -353,10 +353,10 @@ func SpacePrefix(line string) (prefix string) {
 
 // ---------------------------------------------------------------
 
-var LazyPrefixRE = regexp.MustCompile(`lazy[A-Z]`)
+var LzPrefixRE = regexp.MustCompile(`lz[A-Z]`)
 
-func LazyPrefixREFunc(lazyX string) string {
-	return strings.ToLower(lazyX[len(lazyX)-1:])
+func LzPrefixREFunc(lzX string) string {
+	return strings.ToLower(lzX[len(lzX)-1:])
 }
 
 // ---------------------------------------------------------------

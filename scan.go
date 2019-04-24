@@ -12,88 +12,88 @@ import (
 )
 
 func Scan(params []interface{}, fields base.Fields,
-	lazyYieldVals base.YieldVals, lazyYieldErr base.YieldErr) {
+	lzYieldVals base.YieldVals, lzYieldErr base.YieldErr) {
 	kind := params[0].(string)
 
-	var lazyFilePath string // <== notLazy
-	_ = lazyFilePath        // <== notLazy
+	var lzFilePath string // <== notLz
+	_ = lzFilePath        // <== notLz
 
-	var lazyReader io.Reader // <== notLazy
-	_ = lazyReader           // <== notLazy
+	var lzReader io.Reader // <== notLz
+	_ = lzReader           // <== notLz
 
 	switch kind {
 	case "filePath":
 		paramsFilePath := params[1].(string)
-		lazyFilePath := paramsFilePath
+		lzFilePath := paramsFilePath
 
-		ScanFile(lazyFilePath, fields, lazyYieldVals, lazyYieldErr) // <== notLazy
+		ScanFile(lzFilePath, fields, lzYieldVals, lzYieldErr) // <== notLz
 
 	case "csvData":
 		paramsCsvData := params[1].(string)
-		lazyCsvData := paramsCsvData
-		lazyReader := strings.NewReader(lazyCsvData)
+		lzCsvData := paramsCsvData
+		lzReader := strings.NewReader(lzCsvData)
 
-		ScanReaderAsCsv(lazyReader, fields, lazyYieldVals, lazyYieldErr) // <== notLazy
+		ScanReaderAsCsv(lzReader, fields, lzYieldVals, lzYieldErr) // <== notLz
 
 	default:
 		errMsg := "unknown scan kind" // TODO: Weak string/double-quote handling.
-		lazyYieldErr(fmt.Errorf(errMsg))
+		lzYieldErr(fmt.Errorf(errMsg))
 	}
 }
 
-func ScanFile(lazyFilePath string, fields base.Fields,
-	lazyYieldVals base.YieldVals, lazyYieldErr base.YieldErr) {
+func ScanFile(lzFilePath string, fields base.Fields,
+	lzYieldVals base.YieldVals, lzYieldErr base.YieldErr) {
 	errMsg := "file not csv" // TODO: Weak string/double-quote handling.
 
 	fileSuffixCsv := ".csv"
-	if !strings.HasSuffix(lazyFilePath, fileSuffixCsv) {
-		lazyYieldErr(fmt.Errorf(errMsg))
+	if !strings.HasSuffix(lzFilePath, fileSuffixCsv) {
+		lzYieldErr(fmt.Errorf(errMsg))
 		return
 	}
 
-	if LazyScope {
-		var lazyReader io.ReadWriteCloser // <== notLazy
-		_ = lazyReader                    // <== notLazy
+	if LzScope {
+		var lzReader io.ReadWriteCloser // <== notLz
+		_ = lzReader                    // <== notLz
 
-		lazyReader, lazyErr := os.Open(lazyFilePath)
-		if lazyErr != nil {
-			lazyYieldErr(lazyErr)
+		lzReader, lzErr := os.Open(lzFilePath)
+		if lzErr != nil {
+			lzYieldErr(lzErr)
 			return
 		}
 
-		defer lazyReader.Close()
+		defer lzReader.Close()
 
-		ScanReaderAsCsv(lazyReader, fields, lazyYieldVals, lazyYieldErr) // <== notLazy
+		ScanReaderAsCsv(lzReader, fields, lzYieldVals, lzYieldErr) // <== notLz
 	}
 }
 
-func ScanReaderAsCsv(lazyReader io.Reader, fields base.Fields,
-	lazyYieldVals base.YieldVals, lazyYieldErr base.YieldErr) {
-	var lazyValsScan base.Vals
+func ScanReaderAsCsv(lzReader io.Reader, fields base.Fields,
+	lzYieldVals base.YieldVals, lzYieldErr base.YieldErr) {
+	var lzValsScan base.Vals
 
-	lazyScanner := bufio.NewScanner(lazyReader)
-	for lazyScanner.Scan() {
-		lazyValsScan = lazyValsScan[:0]
+	lzScanner := bufio.NewScanner(lzReader)
+	for lzScanner.Scan() {
+		lzValsScan = lzValsScan[:0]
 
-		lazyLine := lazyScanner.Bytes()
-		for len(lazyLine) > 0 {
-			lazyCommaAt := bytes.IndexByte(lazyLine, ',')
-			if lazyCommaAt < 0 {
-				lazyValsScan = append(lazyValsScan, base.Val(lazyLine))
+		lzLine := lzScanner.Bytes()
+		for len(lzLine) > 0 {
+			lzCommaAt := bytes.IndexByte(lzLine, ',')
+			if lzCommaAt < 0 {
+				lzValsScan = append(lzValsScan, base.Val(lzLine))
 				break
 			}
 
-			lazyPart := lazyLine[:lazyCommaAt]
-			lazyValsScan = append(lazyValsScan, base.Val(lazyPart))
-			lazyLine = lazyLine[lazyCommaAt+1:]
+			lzPart := lzLine[:lzCommaAt]
+			lzValsScan = append(lzValsScan, base.Val(lzPart))
+			lzLine = lzLine[lzCommaAt+1:]
 		}
 
-		if len(lazyValsScan) > 0 {
-			lazyYieldVals(lazyValsScan)
+		if len(lzValsScan) > 0 {
+			lzYieldVals(lzValsScan)
 		}
 	}
 
-	if lazyScanner.Err() != LazyErrNil {
-		lazyYieldErr(lazyScanner.Err())
+	if lzScanner.Err() != LzErrNil {
+		lzYieldErr(lzScanner.Err())
 	}
 }

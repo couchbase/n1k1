@@ -8,15 +8,15 @@ import (
 
 func MakeProjectFunc(fields base.Fields, types base.Types,
 	projections []interface{}, outTypes base.Types, path, pathItem string) (
-	lazyProjectFunc base.ProjectFunc) {
+	lzProjectFunc base.ProjectFunc) {
 	pathNext := EmitPush(path, pathItem)
 
 	defer EmitPop(path, pathItem)
 
 	var exprFuncs []base.ExprFunc
 
-	var lazyExprFunc base.ExprFunc // <== notLazy
-	_ = lazyExprFunc               // <== notLazy
+	var lzExprFunc base.ExprFunc // <== notLz
+	_ = lzExprFunc               // <== notLz
 
 	for i, projection := range projections {
 		iStr := strconv.Itoa(i)
@@ -25,37 +25,37 @@ func MakeProjectFunc(fields base.Fields, types base.Types,
 
 		expr := projection.([]interface{})
 
-		if LazyScope {
-			var lazyExprFunc base.ExprFunc
-			_ = lazyExprFunc
+		if LzScope {
+			var lzExprFunc base.ExprFunc
+			_ = lzExprFunc
 
-			lazyExprFunc =
-				MakeExprFunc(fields, types, expr, outTypes, pathNext, iStr) // <== notLazy
+			lzExprFunc =
+				MakeExprFunc(fields, types, expr, outTypes, pathNext, iStr) // <== notLz
 
-			exprFuncs = append(exprFuncs, lazyExprFunc) // <== notLazy
+			exprFuncs = append(exprFuncs, lzExprFunc) // <== notLz
 		}
 	}
 
-	lazyProjectFunc = func(lazyVals, lazyValsPre base.Vals) (lazyValsOut base.Vals) {
-		for i, lazyExprFunc := range exprFuncs { // <== notLazy
-			_ = lazyExprFunc // <== notLazy
+	lzProjectFunc = func(lzVals, lzValsPre base.Vals) (lzValsOut base.Vals) {
+		for i, lzExprFunc := range exprFuncs { // <== notLz
+			_ = lzExprFunc // <== notLz
 
-			iStr := strconv.Itoa(i) // <== notLazy
-			_ = iStr                // <== notLazy
+			iStr := strconv.Itoa(i) // <== notLz
+			_ = iStr                // <== notLz
 
-			if LazyScope {
-				var lazyVal base.Val
+			if LzScope {
+				var lzVal base.Val
 
-				lazyVal = lazyExprFunc(lazyVals) // <== emitCaptured: pathNext iStr
+				lzVal = lzExprFunc(lzVals) // <== emitCaptured: pathNext iStr
 
-				// NOTE: lazyVals are stable while we are building up
-				// lazyValsOut, so no need to deep copy lazyVal yet.
-				lazyValsOut = append(lazyValsOut, lazyVal)
+				// NOTE: lzVals are stable while we are building up
+				// lzValsOut, so no need to deep copy lzVal yet.
+				lzValsOut = append(lzValsOut, lzVal)
 			}
-		} // <== notLazy
+		} // <== notLz
 
-		return lazyValsOut
+		return lzValsOut
 	}
 
-	return lazyProjectFunc
+	return lzProjectFunc
 }

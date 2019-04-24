@@ -14,114 +14,114 @@ func init() {
 func MakeBiExprFunc(fields base.Fields, types base.Types,
 	params []interface{}, outTypes base.Types, path string,
 	biExprFunc base.BiExprFunc, outType string) (
-	lazyExprFunc base.ExprFunc) {
+	lzExprFunc base.ExprFunc) {
 	exprA := params[0].([]interface{})
 	exprB := params[1].([]interface{})
 
-	var lazyA base.ExprFunc // <== notLazy
-	_ = lazyA               // <== notLazy
-	var lazyB base.ExprFunc // <== notLazy
-	_ = lazyB               // <== notLazy
-	var lazyVals base.Vals  // <== notLazy
-	_ = lazyVals            // <== notLazy
+	var lzA base.ExprFunc // <== notLz
+	_ = lzA               // <== notLz
+	var lzB base.ExprFunc // <== notLz
+	_ = lzB               // <== notLz
+	var lzVals base.Vals  // <== notLz
+	_ = lzVals            // <== notLz
 
-	if LazyScope {
-		var lazyA base.ExprFunc
-		_ = lazyA
-		var lazyB base.ExprFunc
-		_ = lazyB
+	if LzScope {
+		var lzA base.ExprFunc
+		_ = lzA
+		var lzB base.ExprFunc
+		_ = lzB
 
-		lazyExprFunc =
-			MakeExprFunc(fields, types, exprA, outTypes, path, "A") // <== notLazy
-		lazyA = lazyExprFunc
-		base.TakeLastType(outTypes) // <== notLazy
+		lzExprFunc =
+			MakeExprFunc(fields, types, exprA, outTypes, path, "A") // <== notLz
+		lzA = lzExprFunc
+		base.TakeLastType(outTypes) // <== notLz
 
-		lazyExprFunc =
-			MakeExprFunc(fields, types, exprB, outTypes, path, "B") // <== notLazy
-		lazyB = lazyExprFunc
-		base.TakeLastType(outTypes) // <== notLazy
+		lzExprFunc =
+			MakeExprFunc(fields, types, exprB, outTypes, path, "B") // <== notLz
+		lzB = lzExprFunc
+		base.TakeLastType(outTypes) // <== notLz
 
-		lazyExprFunc = func(lazyVals base.Vals) (lazyVal base.Val) {
-			lazyVal =
-				biExprFunc(lazyA, lazyB, lazyVals) // <== notLazy
+		lzExprFunc = func(lzVals base.Vals) (lzVal base.Val) {
+			lzVal =
+				biExprFunc(lzA, lzB, lzVals) // <== notLz
 
-			return lazyVal
+			return lzVal
 		}
 	}
 
 	base.SetLastType(outTypes, outType)
 
-	return lazyExprFunc
+	return lzExprFunc
 }
 
 // -----------------------------------------------------
 
 func ExprEq(fields base.Fields, types base.Types, params []interface{},
-	outTypes base.Types, path string) (lazyExprFunc base.ExprFunc) {
+	outTypes base.Types, path string) (lzExprFunc base.ExprFunc) {
 	var biExprFunc base.BiExprFunc
 
-	biExprFunc = func(lazyA, lazyB base.ExprFunc, lazyVals base.Vals) (lazyVal base.Val) { // <== notLazy
-		if LazyScope {
-			lazyVal = lazyA(lazyVals) // <== emitCaptured: path "A"
-			lazyValA := lazyVal
+	biExprFunc = func(lzA, lzB base.ExprFunc, lzVals base.Vals) (lzVal base.Val) { // <== notLz
+		if LzScope {
+			lzVal = lzA(lzVals) // <== emitCaptured: path "A"
+			lzValA := lzVal
 
-			lazyVal = lazyB(lazyVals) // <== emitCaptured: path "B"
-			lazyValB := lazyVal
+			lzVal = lzB(lzVals) // <== emitCaptured: path "B"
+			lzValB := lzVal
 
-			lazyVal = base.ValEqual(lazyValA, lazyValB)
+			lzVal = base.ValEqual(lzValA, lzValB)
 		}
 
-		return lazyVal
-	} // <== notLazy
+		return lzVal
+	} // <== notLz
 
-	lazyExprFunc =
-		MakeBiExprFunc(fields, types, params, outTypes, path, biExprFunc, "") // <== notLazy
+	lzExprFunc =
+		MakeBiExprFunc(fields, types, params, outTypes, path, biExprFunc, "") // <== notLz
 
-	return lazyExprFunc
+	return lzExprFunc
 }
 
 // -----------------------------------------------------
 
 func ExprOr(fields base.Fields, types base.Types, params []interface{},
-	outTypes base.Types, path string) (lazyExprFunc base.ExprFunc) {
+	outTypes base.Types, path string) (lzExprFunc base.ExprFunc) {
 	var biExprFunc base.BiExprFunc
 
-	biExprFunc = func(lazyA, lazyB base.ExprFunc, lazyVals base.Vals) (lazyVal base.Val) { // <== notLazy
+	biExprFunc = func(lzA, lzB base.ExprFunc, lzVals base.Vals) (lzVal base.Val) { // <== notLz
 		// Implemented this way since compiler only allows return on last line.
 		// TODO: This might not match N1QL logical OR semantics.
-		lazyVal = lazyA(lazyVals) // <== emitCaptured: path "A"
-		if !base.ValEqualTrue(lazyVal) {
-			lazyVal = lazyB(lazyVals) // <== emitCaptured: path "B"
+		lzVal = lzA(lzVals) // <== emitCaptured: path "A"
+		if !base.ValEqualTrue(lzVal) {
+			lzVal = lzB(lzVals) // <== emitCaptured: path "B"
 		}
 
-		return lazyVal
-	} // <== notLazy
+		return lzVal
+	} // <== notLz
 
-	lazyExprFunc =
-		MakeBiExprFunc(fields, types, params, outTypes, path, biExprFunc, "") // <== notLazy
+	lzExprFunc =
+		MakeBiExprFunc(fields, types, params, outTypes, path, biExprFunc, "") // <== notLz
 
-	return lazyExprFunc
+	return lzExprFunc
 }
 
 // -----------------------------------------------------
 
 func ExprAnd(fields base.Fields, types base.Types, params []interface{},
-	outTypes base.Types, path string) (lazyExprFunc base.ExprFunc) {
+	outTypes base.Types, path string) (lzExprFunc base.ExprFunc) {
 	var biExprFunc base.BiExprFunc
 
-	biExprFunc = func(lazyA, lazyB base.ExprFunc, lazyVals base.Vals) (lazyVal base.Val) { // <== notLazy
+	biExprFunc = func(lzA, lzB base.ExprFunc, lzVals base.Vals) (lzVal base.Val) { // <== notLz
 		// Implemented this way since compiler only allows return on last line.
 		// TODO: This might not match N1QL logical AND semantics.
-		lazyVal = lazyA(lazyVals) // <== emitCaptured: path "A"
-		if base.ValEqualTrue(lazyVal) {
-			lazyVal = lazyB(lazyVals) // <== emitCaptured: path "B"
+		lzVal = lzA(lzVals) // <== emitCaptured: path "A"
+		if base.ValEqualTrue(lzVal) {
+			lzVal = lzB(lzVals) // <== emitCaptured: path "B"
 		}
 
-		return lazyVal
-	} // <== notLazy
+		return lzVal
+	} // <== notLz
 
-	lazyExprFunc =
-		MakeBiExprFunc(fields, types, params, outTypes, path, biExprFunc, "") // <== notLazy
+	lzExprFunc =
+		MakeBiExprFunc(fields, types, params, outTypes, path, biExprFunc, "") // <== notLz
 
-	return lazyExprFunc
+	return lzExprFunc
 }

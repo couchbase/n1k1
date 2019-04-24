@@ -4,11 +4,11 @@ import (
 	"github.com/couchbase/n1k1/base"
 )
 
-// LazyScope is used to mark variable scopes as lazy (ex: IF block).
-const LazyScope = true
+// LzScope is used to mark variable scopes as lz (ex: IF block).
+const LzScope = true
 
-// LazyErrNil is always the nil error.
-var LazyErrNil error
+// LzErrNil is always the nil error.
+var LzErrNil error
 
 // -----------------------------------------------------
 
@@ -22,21 +22,21 @@ func init() {
 
 type ExprCatalogFunc func(fields base.Fields, types base.Types,
 	params []interface{}, outTypes base.Types, path string) (
-	lazyExprFunc base.ExprFunc)
+	lzExprFunc base.ExprFunc)
 
 // -----------------------------------------------------
 
 func MakeExprFunc(fields base.Fields, types base.Types,
 	expr []interface{}, outTypes base.Types, path, pathItem string) (
-	lazyExprFunc base.ExprFunc) {
+	lzExprFunc base.ExprFunc) {
 	pathNext := EmitPush(path, pathItem)
 
 	defer EmitPop(path, pathItem)
 
-	lazyExprFunc =
+	lzExprFunc =
 		ExprCatalog[expr[0].(string)](fields, types, expr[1:], outTypes, pathNext)
 
-	return lazyExprFunc
+	return lzExprFunc
 }
 
 var EmitPush = func(path, pathItem string) string {
@@ -49,26 +49,26 @@ var EmitPop = func(path, pathItem string) {} // Placeholder for compiler.
 // -----------------------------------------------------
 
 func ExprJson(fields base.Fields, types base.Types, params []interface{},
-	outTypes base.Types, path string) (lazyExprFunc base.ExprFunc) {
+	outTypes base.Types, path string) (lzExprFunc base.ExprFunc) {
 	json := []byte(params[0].(string))
 	jsonType := base.JsonTypes[json[0]] // Might be "".
 
 	base.SetLastType(outTypes, jsonType)
 
-	var lazyValJson base.Val = base.Val(json) // <== varLift: lazyValJson by path
+	var lzValJson base.Val = base.Val(json) // <== varLift: lzValJson by path
 
-	lazyExprFunc = func(lazyVals base.Vals) (lazyVal base.Val) {
-		lazyVal = lazyValJson // <== varLift: lazyValJson by path
-		return lazyVal
+	lzExprFunc = func(lzVals base.Vals) (lzVal base.Val) {
+		lzVal = lzValJson // <== varLift: lzValJson by path
+		return lzVal
 	}
 
-	return lazyExprFunc
+	return lzExprFunc
 }
 
 // -----------------------------------------------------
 
 func ExprField(fields base.Fields, types base.Types, params []interface{},
-	outTypes base.Types, path string) (lazyExprFunc base.ExprFunc) {
+	outTypes base.Types, path string) (lzExprFunc base.ExprFunc) {
 	idx := fields.IndexOf(params[0].(string))
 	if idx < 0 {
 		base.SetLastType(outTypes, "")
@@ -77,16 +77,16 @@ func ExprField(fields base.Fields, types base.Types, params []interface{},
 	}
 
 	if idx >= 0 {
-		lazyExprFunc = func(lazyVals base.Vals) (lazyVal base.Val) {
-			lazyVal = lazyVals[idx]
-			return lazyVal
+		lzExprFunc = func(lzVals base.Vals) (lzVal base.Val) {
+			lzVal = lzVals[idx]
+			return lzVal
 		}
 	} else {
-		lazyExprFunc = func(lazyVals base.Vals) (lazyVal base.Val) {
-			lazyVal = base.ValMissing
-			return lazyVal
+		lzExprFunc = func(lzVals base.Vals) (lzVal base.Val) {
+			lzVal = base.ValMissing
+			return lzVal
 		}
 	}
 
-	return lazyExprFunc
+	return lzExprFunc
 }

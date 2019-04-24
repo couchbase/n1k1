@@ -15,10 +15,11 @@ yield()'ing) data records from leaf nodes (e.g., a scan) up to higher
 nodes in the query-plan tree.
 
 - 1.1: As part of that, you'll also see some variables and functions
-that follow a naming convention with "lazy" in their names.  That's a
-marker that tells us whether some variables are late-bound (they need
-actual data records), versus other variables that are not late-bound
-(they only need "early" information from the query-plan).
+that follow a naming convention with "lz" (e.g., "lazy") in their
+names.  The "lz" naming convention is a marker that tells us whether
+some variables are late-bound (they need actual data records), versus
+other variables that are not late-bound (they only need "early"-bound
+information from the query-plan).
 
 - 1.2: Of note, the n1k1/*.go files are written in a careful subset of
 golang.  It's legal golang code, but it follows more rules and
