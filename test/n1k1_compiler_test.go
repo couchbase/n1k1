@@ -92,11 +92,13 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 
 			captured, ok := emitPopsCaptured[key]
 			if !ok {
-				fmt.Printf("====================================================\n")
-				fmt.Printf("UNKNOWN CAPTURED - testi: %d, test.about: %s\n",
-					testi, test.about)
-				fmt.Printf("  key: %s, ok: %t\n", key, ok)
-				fmt.Printf("  emitPopsCaptured: %+v\n", emitPopsCaptured)
+				if false {
+					fmt.Printf("====================================================\n")
+					fmt.Printf("UNKNOWN CAPTURED - testi: %d, test.about: %s\n",
+						testi, test.about)
+					fmt.Printf("  key: %s, ok: %t\n", key, ok)
+					fmt.Printf("  emitPopsCaptured: %+v\n", emitPopsCaptured)
+				}
 
 				intermed.Emit(orig)
 

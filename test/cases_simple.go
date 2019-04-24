@@ -1157,4 +1157,114 @@ var TestCasesSimple = []TestCaseSimple{
 			base.Vals{[]byte("10"), []byte("20"), []byte("30")},
 		},
 	},
+	{
+		about: "test csv-data scan->join-inner-nl->project",
+		o: base.Operator{
+			Kind:   "project",
+			Fields: base.Fields{"city", "emp", "empDept"},
+			Params: []interface{}{
+				[]interface{}{"field", "city"},
+				[]interface{}{"field", "emp"},
+				[]interface{}{"field", "empDept"},
+			},
+			ParentA: &base.Operator{
+				Kind:   "join-inner-nl",
+				Fields: base.Fields{"dept", "city", "emp", "empDept"},
+				Params: []interface{}{
+					"eq",
+					[]interface{}{"field", "dept"},
+					[]interface{}{"field", "empDept"},
+				},
+				ParentA: &base.Operator{
+					Kind:   "scan",
+					Fields: base.Fields{"dept", "city"},
+					Params: []interface{}{
+						"csvData",
+						`
+"dev","paris"
+"finance","london"
+`,
+					},
+				},
+				ParentB: &base.Operator{
+					Kind:   "scan",
+					Fields: base.Fields{"emp", "empDept"},
+					Params: []interface{}{
+						"csvData",
+						`
+"dan","dev"
+"doug","dev"
+"frank","finance"
+"fred","finance"
+`,
+					},
+				},
+			},
+		},
+		expectYields: []base.Vals{
+			StringsToLazyVals([]string{`"paris"`, `"dan"`, `"dev"`}, nil),
+			StringsToLazyVals([]string{`"paris"`, `"doug"`, `"dev"`}, nil),
+			StringsToLazyVals([]string{`"london"`, `"frank"`, `"finance"`}, nil),
+			StringsToLazyVals([]string{`"london"`, `"fred"`, `"finance"`}, nil),
+		},
+	},
+
+	{
+		about: "test csv-data scan->join-inner-nl->filter->project",
+		o: base.Operator{
+			Kind:   "project",
+			Fields: base.Fields{"city", "emp", "empDept"},
+			Params: []interface{}{
+				[]interface{}{"field", "city"},
+				[]interface{}{"field", "emp"},
+				[]interface{}{"field", "empDept"},
+			},
+			ParentA: &base.Operator{
+				Kind:   "filter",
+				Fields: base.Fields{"dept", "city", "emp", "empDept"},
+				Params: []interface{}{
+					"eq",
+					[]interface{}{"json", `"london"`},
+					[]interface{}{"field", `city`},
+				},
+				ParentA: &base.Operator{
+					Kind:   "join-inner-nl",
+					Fields: base.Fields{"dept", "city", "emp", "empDept"},
+					Params: []interface{}{
+						"eq",
+						[]interface{}{"field", "dept"},
+						[]interface{}{"field", "empDept"},
+					},
+					ParentA: &base.Operator{
+						Kind:   "scan",
+						Fields: base.Fields{"dept", "city"},
+						Params: []interface{}{
+							"csvData",
+							`
+"dev","paris"
+"finance","london"
+`,
+						},
+					},
+					ParentB: &base.Operator{
+						Kind:   "scan",
+						Fields: base.Fields{"emp", "empDept"},
+						Params: []interface{}{
+							"csvData",
+							`
+"dan","dev"
+"doug","dev"
+"frank","finance"
+"fred","finance"
+`,
+						},
+					},
+				},
+			},
+		},
+		expectYields: []base.Vals{
+			StringsToLazyVals([]string{`"london"`, `"frank"`, `"finance"`}, nil),
+			StringsToLazyVals([]string{`"london"`, `"fred"`, `"finance"`}, nil),
+		},
+	},
 }

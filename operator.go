@@ -56,11 +56,11 @@ func ExecOperator(o *base.Operator,
 			var lazyProjectFunc base.ProjectFunc
 			_ = lazyProjectFunc
 
-			var lazyValsReuse base.Vals // <== varLift: lazyValsReuse by path
-			_ = lazyValsReuse           // <== varLift: lazyValsReuse by path
-
 			lazyProjectFunc =
 				MakeProjectFunc(o.ParentA.Fields, types, o.Params, outTypes, pathNextProject, "PF") // <== notLazy
+
+			var lazyValsReuse base.Vals // <== varLift: lazyValsReuse by path
+			_ = lazyValsReuse           // <== varLift: lazyValsReuse by path
 
 			lazyYieldValsOrig := lazyYieldVals
 
@@ -109,9 +109,10 @@ func ExecJoinNestedLoop(o *base.Operator,
 
 	if LazyScope {
 		var lazyExprFunc base.ExprFunc
+		_ = lazyExprFunc
 
 		lazyExprFunc =
-			MakeExprFunc(fieldsAB, typesAB, o.Params, nil, "", "") // <== notLazy
+			MakeExprFunc(fieldsAB, typesAB, o.Params, nil, pathNext, "JF") // <== notLazy
 
 		var lazyValsJoinOuterRight base.Vals
 		_ = lazyValsJoinOuterRight
@@ -136,7 +137,12 @@ func ExecJoinNestedLoop(o *base.Operator,
 					if joinKind == "outerFull" { // <== notLazy
 						lazyYieldValsOrig(lazyValsJoin)
 					} else { // <== notLazy
-						lazyVal := lazyExprFunc(lazyValsJoin)
+						lazyVals := lazyValsJoin
+						_ = lazyVals
+
+						var lazyVal base.Val
+
+						lazyVal = lazyExprFunc(lazyVals) // <== emitCaptured: pathNext, "JF"
 						if base.ValEqualTrue(lazyVal) {
 							lazyYieldValsOrig(lazyValsJoin)
 						} else {
