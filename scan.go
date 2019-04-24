@@ -11,32 +11,37 @@ import (
 	"github.com/couchbase/n1k1/base"
 )
 
+var ScanYieldStatsEvery = 1024 // Yield stats after this many tuple yields.
+
 func Scan(params []interface{}, fields base.Fields,
 	lzYieldVals base.YieldVals, lzYieldStats base.YieldStats, lzYieldErr base.YieldErr) {
 	kind := params[0].(string)
 
-	var lzFilePath string // !lz
-	_ = lzFilePath        // !lz
-
+	var lzFilePath string  // !lz
 	var lzReader io.Reader // !lz
-	_ = lzReader           // !lz
+
+	_, _ = lzFilePath, lzReader // !lz
 
 	switch kind {
 	case "filePath":
 		paramsFilePath := params[1].(string)
+
 		lzFilePath := paramsFilePath
 
 		ScanFile(lzFilePath, fields, lzYieldVals, lzYieldStats, lzYieldErr) // !lz
 
 	case "csvData":
 		paramsCsvData := params[1].(string)
+
 		lzCsvData := paramsCsvData
+
 		lzReader := strings.NewReader(lzCsvData)
 
 		ScanReaderAsCsv(lzReader, fields, lzYieldVals, lzYieldStats, lzYieldErr) // !lz
 
 	default:
 		errMsg := "unknown scan kind" // TODO: Weak string/double-quote handling.
+
 		lzYieldErr(fmt.Errorf(errMsg))
 	}
 }
@@ -71,7 +76,10 @@ func ScanReaderAsCsv(lzReader io.Reader, fields base.Fields,
 	lzYieldVals base.YieldVals, lzYieldStats base.YieldStats, lzYieldErr base.YieldErr) {
 	var lzValsScan base.Vals
 
+	lzYielded := 0
+
 	lzScanner := bufio.NewScanner(lzReader)
+
 	for lzScanner.Scan() {
 		lzValsScan = lzValsScan[:0]
 
@@ -90,6 +98,19 @@ func ScanReaderAsCsv(lzReader io.Reader, fields base.Fields,
 
 		if len(lzValsScan) > 0 {
 			lzYieldVals(lzValsScan)
+		}
+
+		lzYielded++
+		if lzYielded >= ScanYieldStatsEvery {
+			lzYielded = 0
+
+			var lzStats base.Stats // TODO.
+
+			lzErr := lzYieldStats(&lzStats)
+			if lzErr != LzErrNil { // Also used for early exit (e.g., LIMIT).
+				lzYieldErr(lzErr)
+				return
+			}
 		}
 	}
 
