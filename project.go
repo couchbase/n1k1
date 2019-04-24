@@ -18,15 +18,13 @@ func MakeProjectFunc(fields base.Fields, types base.Types,
 	var lzExprFunc base.ExprFunc // !lz
 
 	for i, projection := range projections {
-		iStr := strconv.Itoa(i)
-
 		outTypes = append(outTypes, "") // TODO: projected out type.
 
 		expr := projection.([]interface{})
 
 		if LzScope {
 			lzExprFunc =
-				MakeExprFunc(fields, types, expr, outTypes, pathNext, iStr) // !lz
+				MakeExprFunc(fields, types, expr, outTypes, pathNext, strconv.Itoa(i)) // !lz
 
 			exprFuncs = append(exprFuncs, lzExprFunc) // !lz
 		}
@@ -34,13 +32,10 @@ func MakeProjectFunc(fields base.Fields, types base.Types,
 
 	lzProjectFunc = func(lzVals, lzValsPre base.Vals) (lzValsOut base.Vals) {
 		for i := range exprFuncs { // !lz
-			iStr := strconv.Itoa(i) // !lz
-			_ = iStr                // !lz
-
 			if LzScope {
 				var lzVal base.Val
 
-				lzVal = exprFuncs[i](lzVals) // <== emitCaptured: pathNext iStr
+				lzVal = exprFuncs[i](lzVals) // <== emitCaptured: pathNext strconv.Itoa(i)
 
 				// NOTE: lzVals are stable while we are building up
 				// lzValsOut, so no need to deep copy lzVal yet.

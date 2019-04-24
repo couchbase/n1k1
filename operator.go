@@ -28,13 +28,13 @@ func ExecOperator(o *base.Operator,
 			pathNextF := EmitPush(pathNext, "F") // !lz
 
 			var lzExprFunc base.ExprFunc
-			_ = lzExprFunc
 
 			lzExprFunc =
 				MakeExprFunc(o.ParentA.Fields, types, o.Params, nil, pathNextF, "FF") // !lz
 
 			lzYieldValsOrig := lzYieldVals
-			_ = lzYieldValsOrig
+
+			_, _ = lzExprFunc, lzYieldValsOrig
 
 			lzYieldVals = func(lzVals base.Vals) {
 				var lzVal base.Val
@@ -58,16 +58,16 @@ func ExecOperator(o *base.Operator,
 		if LzScope {
 			pathNextP := EmitPush(pathNext, "P") // !lz
 
+			var lzValsReuse base.Vals // <== varLift: lzValsReuse by path
+
 			var lzProjectFunc base.ProjectFunc
-			_ = lzProjectFunc
 
 			lzProjectFunc =
 				MakeProjectFunc(o.ParentA.Fields, types, o.Params, outTypes, pathNextP, "PF") // !lz
 
-			var lzValsReuse base.Vals // <== varLift: lzValsReuse by path
-
 			lzYieldValsOrig := lzYieldVals
-			_ = lzYieldValsOrig
+
+			_, _ = lzProjectFunc, lzYieldValsOrig
 
 			lzYieldVals = func(lzVals base.Vals) {
 				lzValsOut := lzValsReuse[:0]
@@ -115,17 +115,17 @@ func ExecJoinNestedLoop(o *base.Operator,
 
 	if LzScope {
 		var lzExprFunc base.ExprFunc
-		_ = lzExprFunc
 
 		lzExprFunc =
 			MakeExprFunc(fieldsAB, typesAB, o.Params, nil, pathNext, "JF") // !lz
 
 		var lzValsJoinOuterRight base.Vals
-		_ = lzValsJoinOuterRight
 
 		if joinKind == "outerRight" { // !lz
 			lzValsJoinOuterRight = make(base.Vals, lenFieldsAB)
 		} // !lz
+
+		_, _ = lzExprFunc, lzValsJoinOuterRight
 
 		lzValsJoin := make(base.Vals, lenFieldsAB)
 
@@ -144,6 +144,7 @@ func ExecJoinNestedLoop(o *base.Operator,
 						lzYieldValsOrig(lzValsJoin)
 					} else { // !lz
 						lzVals := lzValsJoin
+
 						_ = lzVals
 
 						var lzVal base.Val
