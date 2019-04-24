@@ -40,8 +40,8 @@ type State struct {
 	Indent string
 }
 
-func (s *State) Push(handler Handler, data string) {
-	s.Handlers = append(s.Handlers, HandlerEntry{handler, data})
+func (s *State) Push(he HandlerEntry) {
+	s.Handlers = append(s.Handlers, he)
 }
 
 func (s *State) Pop() {
@@ -51,16 +51,18 @@ func (s *State) Pop() {
 func (s *State) Process(out []string, line string) ([]string, string) {
 	curr := s.Handlers[len(s.Handlers)-1]
 
-	return curr.Handler(s, curr.Data, out, line)
+	return curr.Handler(s, curr, out, line)
 }
 
 type HandlerEntry struct {
 	Handler Handler
 	Data    string
+
+	Replacements map[string]string
 }
 
 // Handler represents a callback to process an incoming line.
-type Handler func(state *State, data string,
+type Handler func(state *State, he HandlerEntry,
 	out []string, line string) ([]string, string)
 
 // --------------------------------------------------------
@@ -70,7 +72,7 @@ func IntermedBuild(sourceDir, outDir string) error {
 
 	state := &State{
 		Handlers: []HandlerEntry{
-			HandlerEntry{HandlerScanFile, ""},
+			HandlerEntry{Handler: HandlerScanFile},
 		},
 		Imports:     map[string]bool{},
 		ImportLines: map[string]bool{},
@@ -128,16 +130,16 @@ func IntermedBuild(sourceDir, outDir string) error {
 
 // --------------------------------------------------------
 
-func HandlerScanFile(state *State, data string,
+func HandlerScanFile(state *State, he HandlerEntry,
 	out []string, line string) ([]string, string) {
 	if line == "import (" {
-		state.Push(HandlerScanImports, "")
+		state.Push(HandlerEntry{Handler: HandlerScanImports})
 
 		return out, ""
 	}
 
 	if strings.HasPrefix(line, "func ") {
-		state.Push(HandlerScanTopLevelFuncSignature, "")
+		state.Push(HandlerEntry{Handler: HandlerScanTopLevelFuncSignature})
 
 		return state.Process(out, line)
 	}
@@ -145,7 +147,7 @@ func HandlerScanFile(state *State, data string,
 	return out, line
 }
 
-func HandlerScanImports(state *State, data string,
+func HandlerScanImports(state *State, he HandlerEntry,
 	out []string, line string) ([]string, string) {
 	if line == ")" {
 		state.Pop()
@@ -160,7 +162,7 @@ func HandlerScanImports(state *State, data string,
 	return out, ""
 }
 
-func HandlerScanTopLevelFuncSignature(state *State, data string,
+func HandlerScanTopLevelFuncSignature(state *State, he HandlerEntry,
 	out []string, line string) ([]string, string) {
 	if !strings.HasSuffix(line, " {") {
 		return out, line
@@ -168,12 +170,12 @@ func HandlerScanTopLevelFuncSignature(state *State, data string,
 
 	state.Pop()
 
-	state.Push(HandlerScanTopLevelFuncBody, "")
+	state.Push(HandlerEntry{Handler: HandlerScanTopLevelFuncBody})
 
 	return out, line
 }
 
-func HandlerScanTopLevelFuncBody(state *State, data string,
+func HandlerScanTopLevelFuncBody(state *State, he HandlerEntry,
 	out []string, line string) ([]string, string) {
 	if len(line) > 0 && line[0] == '}' {
 		state.Pop()
@@ -181,19 +183,19 @@ func HandlerScanTopLevelFuncBody(state *State, data string,
 		return out, line
 	}
 
-	return EmitBlock(state, false, out, line)
+	return EmitBlock(state, he, false, out, line)
 }
 
 // ---------------------------------------------------------------
 
-func HandlerScanLzBlock(state *State, data string,
+func HandlerScanLzBlock(state *State, he HandlerEntry,
 	out []string, line string) ([]string, string) {
-	lineToEndBlock := data
+	lineToEndBlock := he.Data
 	if lineToEndBlock == line {
 		state.Pop()
 	}
 
-	return EmitBlock(state, true, out, line)
+	return EmitBlock(state, he, true, out, line)
 }
 
 // ---------------------------------------------------------------
@@ -202,7 +204,7 @@ var LzRE = regexp.MustCompile(`[Ll]z`)
 
 var SimpleExprRE = regexp.MustCompile(`[a-zA-Z][a-zA-Z0-9\._]+`)
 
-func EmitBlock(state *State, isLzBlock bool,
+func EmitBlock(state *State, he HandlerEntry, isLzBlock bool,
 	out []string, line string) ([]string, string) {
 	if !isLzBlock && strings.Index(line, "return ") > 0 {
 		// Emit non-lz (e.g., top-level) return line as-is.
@@ -277,7 +279,10 @@ func EmitBlock(state *State, isLzBlock bool,
 			strings.Index(line, "switch ") > 0 ||
 			strings.Index(line, "for ") > 0 ||
 			strings.Index(line, "if ") > 0 {
-			state.Push(HandlerScanLzBlock, SpacePrefix(line)+"}")
+			state.Push(HandlerEntry{
+				Handler: HandlerScanLzBlock,
+				Data:    SpacePrefix(line) + "}",
+			})
 		}
 	}
 
