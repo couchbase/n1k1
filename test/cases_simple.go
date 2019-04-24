@@ -7,7 +7,7 @@ import (
 )
 
 func MakeYieldCaptureFuncs(t *testing.T, testi int, expectErr string) (
-	base.YieldVals, base.YieldErr, func() []base.Vals) {
+	base.YieldVals, base.YieldStats, base.YieldErr, func() []base.Vals) {
 	var yields []base.Vals
 
 	yieldVals := func(lzVals base.Vals) {
@@ -18,6 +18,10 @@ func MakeYieldCaptureFuncs(t *testing.T, testi int, expectErr string) (
 		}
 
 		yields = append(yields, lzValsCopy)
+	}
+
+	yieldStats := func(stats *base.Stats) error {
+		return nil
 	}
 
 	yieldErr := func(err error) {
@@ -31,7 +35,7 @@ func MakeYieldCaptureFuncs(t *testing.T, testi int, expectErr string) (
 		return yields
 	}
 
-	return yieldVals, yieldErr, returnYields
+	return yieldVals, yieldStats, yieldErr, returnYields
 }
 
 func StringsToLzVals(a []string, lzValsPre base.Vals) base.Vals {

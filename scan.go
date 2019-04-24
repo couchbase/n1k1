@@ -12,7 +12,7 @@ import (
 )
 
 func Scan(params []interface{}, fields base.Fields,
-	lzYieldVals base.YieldVals, lzYieldErr base.YieldErr) {
+	lzYieldVals base.YieldVals, lzYieldStats base.YieldStats, lzYieldErr base.YieldErr) {
 	kind := params[0].(string)
 
 	var lzFilePath string // !lz
@@ -26,14 +26,14 @@ func Scan(params []interface{}, fields base.Fields,
 		paramsFilePath := params[1].(string)
 		lzFilePath := paramsFilePath
 
-		ScanFile(lzFilePath, fields, lzYieldVals, lzYieldErr) // !lz
+		ScanFile(lzFilePath, fields, lzYieldVals, lzYieldStats, lzYieldErr) // !lz
 
 	case "csvData":
 		paramsCsvData := params[1].(string)
 		lzCsvData := paramsCsvData
 		lzReader := strings.NewReader(lzCsvData)
 
-		ScanReaderAsCsv(lzReader, fields, lzYieldVals, lzYieldErr) // !lz
+		ScanReaderAsCsv(lzReader, fields, lzYieldVals, lzYieldStats, lzYieldErr) // !lz
 
 	default:
 		errMsg := "unknown scan kind" // TODO: Weak string/double-quote handling.
@@ -42,7 +42,7 @@ func Scan(params []interface{}, fields base.Fields,
 }
 
 func ScanFile(lzFilePath string, fields base.Fields,
-	lzYieldVals base.YieldVals, lzYieldErr base.YieldErr) {
+	lzYieldVals base.YieldVals, lzYieldStats base.YieldStats, lzYieldErr base.YieldErr) {
 	errMsg := "file not csv" // TODO: Weak string/double-quote handling.
 
 	fileSuffixCsv := ".csv"
@@ -63,12 +63,12 @@ func ScanFile(lzFilePath string, fields base.Fields,
 
 		defer lzReader.Close()
 
-		ScanReaderAsCsv(lzReader, fields, lzYieldVals, lzYieldErr) // !lz
+		ScanReaderAsCsv(lzReader, fields, lzYieldVals, lzYieldStats, lzYieldErr) // !lz
 	}
 }
 
 func ScanReaderAsCsv(lzReader io.Reader, fields base.Fields,
-	lzYieldVals base.YieldVals, lzYieldErr base.YieldErr) {
+	lzYieldVals base.YieldVals, lzYieldStats base.YieldStats, lzYieldErr base.YieldErr) {
 	var lzValsScan base.Vals
 
 	lzScanner := bufio.NewScanner(lzReader)

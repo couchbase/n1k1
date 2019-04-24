@@ -6,8 +6,8 @@ import (
 	"github.com/couchbase/n1k1/base"
 )
 
-func ExecOperator(o *base.Operator,
-	lzYieldVals base.YieldVals, lzYieldErr base.YieldErr,
+func ExecOperator(o *base.Operator, lzYieldVals base.YieldVals,
+	lzYieldStats base.YieldStats, lzYieldErr base.YieldErr,
 	path, pathItem string) {
 	pathNext := EmitPush(path, pathItem)
 
@@ -19,7 +19,7 @@ func ExecOperator(o *base.Operator,
 
 	switch o.Kind {
 	case "scan":
-		Scan(o.Params, o.Fields, lzYieldVals, lzYieldErr) // !lz
+		Scan(o.Params, o.Fields, lzYieldVals, lzYieldStats, lzYieldErr) // !lz
 
 	case "filter":
 		types := make(base.Types, len(o.ParentA.Fields)) // TODO.
@@ -48,7 +48,7 @@ func ExecOperator(o *base.Operator,
 
 			EmitPop(pathNext, "F") // !lz
 
-			ExecOperator(o.ParentA, lzYieldVals, lzYieldErr, pathNextF, "") // !lz
+			ExecOperator(o.ParentA, lzYieldVals, lzYieldStats, lzYieldErr, pathNextF, "") // !lz
 		}
 
 	case "project":
@@ -81,25 +81,25 @@ func ExecOperator(o *base.Operator,
 
 			EmitPop(pathNext, "P") // !lz
 
-			ExecOperator(o.ParentA, lzYieldVals, lzYieldErr, pathNextP, "") // !lz
+			ExecOperator(o.ParentA, lzYieldVals, lzYieldStats, lzYieldErr, pathNextP, "") // !lz
 		}
 
 	case "join-inner-nl":
-		ExecJoinNestedLoop(o, lzYieldVals, lzYieldErr, path, pathNext) // !lz
+		ExecJoinNestedLoop(o, lzYieldVals, lzYieldStats, lzYieldErr, path, pathNext) // !lz
 
 	case "join-outerLeft-nl":
-		ExecJoinNestedLoop(o, lzYieldVals, lzYieldErr, path, pathNext) // !lz
+		ExecJoinNestedLoop(o, lzYieldVals, lzYieldStats, lzYieldErr, path, pathNext) // !lz
 
 	case "join-outerRight-nl":
-		ExecJoinNestedLoop(o, lzYieldVals, lzYieldErr, path, pathNext) // !lz
+		ExecJoinNestedLoop(o, lzYieldVals, lzYieldStats, lzYieldErr, path, pathNext) // !lz
 
 	case "join-outerFull-nl":
-		ExecJoinNestedLoop(o, lzYieldVals, lzYieldErr, path, pathNext) // !lz
+		ExecJoinNestedLoop(o, lzYieldVals, lzYieldStats, lzYieldErr, path, pathNext) // !lz
 	}
 }
 
-func ExecJoinNestedLoop(o *base.Operator,
-	lzYieldVals base.YieldVals, lzYieldErr base.YieldErr,
+func ExecJoinNestedLoop(o *base.Operator, lzYieldVals base.YieldVals,
+	lzYieldStats base.YieldStats, lzYieldErr base.YieldErr,
 	path, pathNext string) {
 	joinKind := strings.Split(o.Kind, "-")[1] // Ex: "inner", "outerLeft".
 
@@ -173,11 +173,11 @@ func ExecJoinNestedLoop(o *base.Operator,
 				}
 
 				// Inner...
-				ExecOperator(o.ParentB, lzYieldVals, lzYieldErr, pathNext, "JNLI") // !lz
+				ExecOperator(o.ParentB, lzYieldVals, lzYieldStats, lzYieldErr, pathNext, "JNLI") // !lz
 			}
 		}
 
 		// Outer...
-		ExecOperator(o.ParentA, lzYieldVals, lzYieldErr, pathNext, "JNLO") // !lz
+		ExecOperator(o.ParentA, lzYieldVals, lzYieldStats, lzYieldErr, pathNext, "JNLO") // !lz
 	}
 }

@@ -9,10 +9,10 @@ import (
 
 func TestCasesSimpleWithInterp(t *testing.T) {
 	for testi, test := range TestCasesSimple {
-		yieldVals, yieldErr, returnYields :=
+		yieldVals, yieldStats, yieldErr, returnYields :=
 			MakeYieldCaptureFuncs(t, testi, test.expectErr)
 
-		n1k1.ExecOperator(&test.o, yieldVals, yieldErr, "", "")
+		n1k1.ExecOperator(&test.o, yieldVals, yieldStats, yieldErr, "", "")
 
 		yields := returnYields()
 

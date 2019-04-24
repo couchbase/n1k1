@@ -78,7 +78,15 @@ func ValEqual(valA, valB Val) (val Val) {
 // provided slices might be reused by future invocations.
 type YieldVals func(Vals)
 
+// Operators can occasionally yield stats and progress information,
+// and the receiver can return an error to abort further processing.
+type YieldStats func(*Stats) error
+
 type YieldErr func(error)
+
+// -----------------------------------------------------
+
+type Stats struct{} // TODO.
 
 // -----------------------------------------------------
 

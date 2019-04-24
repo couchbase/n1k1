@@ -175,7 +175,7 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 			}
 		}
 
-		intermed.ExecOperator(&test.o, nil, nil, "Top", "EO")
+		intermed.ExecOperator(&test.o, nil, nil, nil, "Top", "EO")
 
 		if len(outStack) != 1 {
 			panic(fmt.Sprintf("len(outStack) should be height 1, got: %d,\n"+
@@ -211,10 +211,11 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 		c = append(c, "//")
 		c = append(c, fmt.Sprintf("func TestGenerated%d(t *testing.T) {", testi))
 
-		c = append(c, `  lzYieldVals, lzYieldErr, returnYields :=`)
+		c = append(c, `  lzYieldVals, lzYieldStats, lzYieldErr, returnYields :=`)
 		c = append(c, fmt.Sprintf(`    test.MakeYieldCaptureFuncs(nil, %d, %q)`,
 			testi, test.expectErr))
 		c = append(c, "  _ = lzYieldVals")
+		c = append(c, "  _ = lzYieldStats")
 		c = append(c, "  _ = lzYieldErr")
 		c = append(c, "")
 
