@@ -66,6 +66,8 @@ TODO...
 - early stop when processing is canceled?
 - compiled accessor(s) to a given JSON-path in a raw []byte value?
 - learnings from SIMD-json tricks?
+- pipeline breakers
+- or data staging nodes
 
 ISSUES...
 - outer joins when one of the tables is empty incorrectly
