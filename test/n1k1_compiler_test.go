@@ -11,6 +11,7 @@ import (
 )
 
 type Captured struct {
+	At  int
 	Pos int
 	Out []string
 }
@@ -20,7 +21,7 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 
 	var testOuts [][]string
 
-	for _, test := range tests {
+	for testi, test := range tests {
 		outStack := [][]string{nil}
 
 		appendOut := func(at int, s string) int {
@@ -73,9 +74,11 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 			outStack[len(outStack)-1] = nil
 			outStack = outStack[0 : len(outStack)-1]
 
-			pos := appendOuts(len(outStack)-1, out)
+			at := len(outStack) - 1
+			pos := appendOuts(at, out)
 
 			emitPopsCaptured[path+"_"+pathItem] = Captured{
+				At:  at,
 				Pos: pos,
 				Out: out,
 			}
@@ -89,10 +92,15 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 
 			captured, ok := emitPopsCaptured[key]
 			if !ok {
-				panic(fmt.Sprintf("EmitCaptured does not exist,"+
-					" path: %q, pathItem: %q,\n"+
-					" emitPopsCaptured: %+v",
-					path, pathItem, emitPopsCaptured))
+				fmt.Printf("====================================================\n")
+				fmt.Printf("UNKNOWN CAPTURED - testi: %d, test.about: %s\n",
+					testi, test.about)
+				fmt.Printf("  key: %s, ok: %t\n", key, ok)
+				fmt.Printf("  emitPopsCaptured: %+v\n", emitPopsCaptured)
+
+				intermed.Emit(orig)
+
+				return
 			}
 
 			capturedOut := captured.Out
@@ -158,10 +166,14 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 
 			appendOuts(len(outStack)-1, out)
 
-			clearFuncLines(outStack[len(outStack)-1][captured.Pos : captured.Pos+len(captured.Out)])
+			if captured.At >= 0 {
+				clearFuncLines(outStack[captured.At][captured.Pos : captured.Pos+len(captured.Out)])
+
+				captured.At = -1
+			}
 		}
 
-		intermed.ExecOperator(&test.o, nil, nil, "", "")
+		intermed.ExecOperator(&test.o, nil, nil, "Top", "EO")
 
 		if len(outStack) != 1 {
 			panic("len(outStack) should be height 1")

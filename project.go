@@ -13,23 +13,37 @@ func MakeProjectFunc(fields base.Fields, types base.Types,
 
 	defer EmitPop(path, pathItem)
 
-	for range projections {
+	var exprFuncs []base.ExprFunc
+
+	var lazyExprFunc base.ExprFunc // <== notLazy
+	_ = lazyExprFunc               // <== notLazy
+
+	for i, projection := range projections {
+		iStr := strconv.Itoa(i)
+
 		outTypes = append(outTypes, "") // TODO: projected out type.
+
+		expr := projection.([]interface{})
+
+		if LazyScope {
+			var lazyExprFunc base.ExprFunc
+			_ = lazyExprFunc
+
+			lazyExprFunc =
+				MakeExprFunc(fields, types, expr, outTypes, pathNext, iStr) // <== notLazy
+
+			exprFuncs = append(exprFuncs, lazyExprFunc) // <== notLazy
+		}
 	}
 
-	lazyProjectFunc = func(lazyVals, lazyValsOut base.Vals) base.Vals {
-		for i, projection := range projections { // <== notLazy
-			iStr := strconv.Itoa(i) // <== notLazy
+	lazyProjectFunc = func(lazyVals, lazyValsPre base.Vals) (lazyValsOut base.Vals) {
+		for i, lazyExprFunc := range exprFuncs { // <== notLazy
+			_ = lazyExprFunc // <== notLazy
 
-			expr := projection.([]interface{}) // <== notLazy
+			iStr := strconv.Itoa(i) // <== notLazy
+			_ = iStr                // <== notLazy
 
 			if LazyScope {
-				var lazyExprFunc base.ExprFunc
-				_ = lazyExprFunc
-
-				lazyExprFunc =
-					MakeExprFunc(fields, types, expr, outTypes, pathNext, iStr) // <== notLazy
-
 				var lazyVal base.Val
 
 				lazyVal = lazyExprFunc(lazyVals) // <== emitCaptured: pathNext iStr
