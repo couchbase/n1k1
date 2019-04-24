@@ -70,11 +70,11 @@ func ExecOperator(o *base.Operator,
 			_ = lzYieldValsOrig
 
 			lzYieldVals = func(lzVals base.Vals) {
-				lzValsOut := lzValsReuse[:0] // <== varLift: lzValsReuse by path
+				lzValsOut := lzValsReuse[:0]
 
 				lzValsOut = lzProjectFunc(lzVals, lzValsOut) // <== emitCaptured: pathNextP "PF"
 
-				lzValsReuse = lzValsOut // <== varLift: lzValsReuse by path
+				lzValsReuse = lzValsOut
 
 				lzYieldValsOrig(lzValsOut)
 			}

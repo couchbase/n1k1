@@ -62,7 +62,7 @@ func ExprJson(fields base.Fields, types base.Types, params []interface{},
 	var lzValJson base.Val = base.Val(json) // <== varLift: lzValJson by path
 
 	lzExprFunc = func(lzVals base.Vals) (lzVal base.Val) {
-		lzVal = lzValJson // <== varLift: lzValJson by path
+		lzVal = lzValJson
 		return lzVal
 	}
 
