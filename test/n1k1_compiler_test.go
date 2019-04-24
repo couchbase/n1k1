@@ -178,7 +178,9 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 		intermed.ExecOperator(&test.o, nil, nil, "Top", "EO")
 
 		if len(outStack) != 1 {
-			panic("len(outStack) should be height 1")
+			panic(fmt.Sprintf("len(outStack) should be height 1, got: %d,\n"+
+				" test: %+v\n outStack: %+v",
+				len(outStack), test, outStack))
 		}
 
 		out := outStack[len(outStack)-1]

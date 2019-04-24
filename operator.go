@@ -25,25 +25,29 @@ func ExecOperator(o *base.Operator,
 		types := make(base.Types, len(o.ParentA.Fields)) // TODO.
 
 		if LazyScope {
+			pathNextF := EmitPush(pathNext, "F") // <== notLazy
+
 			var lazyExprFunc base.ExprFunc
 			_ = lazyExprFunc
 
 			lazyExprFunc =
-				MakeExprFunc(o.ParentA.Fields, types, o.Params, nil, pathNext, "FF") // <== notLazy
+				MakeExprFunc(o.ParentA.Fields, types, o.Params, nil, pathNextF, "FF") // <== notLazy
 
 			lazyYieldValsOrig := lazyYieldVals
 
 			lazyYieldVals = func(lazyVals base.Vals) {
 				var lazyVal base.Val
 
-				lazyVal = lazyExprFunc(lazyVals) // <== emitCaptured: pathNext "FF"
+				lazyVal = lazyExprFunc(lazyVals) // <== emitCaptured: pathNextF "FF"
 
 				if base.ValEqualTrue(lazyVal) {
 					lazyYieldValsOrig(lazyVals) // <== emitCaptured: path ""
 				}
 			}
 
-			ExecOperator(o.ParentA, lazyYieldVals, lazyYieldErr, pathNext, "OF") // <== notLazy
+			EmitPop(pathNext, "F") // <== notLazy
+
+			ExecOperator(o.ParentA, lazyYieldVals, lazyYieldErr, pathNextF, "") // <== notLazy
 		}
 
 	case "project":
@@ -51,13 +55,13 @@ func ExecOperator(o *base.Operator,
 		outTypes := base.Types{""}                       // TODO.
 
 		if LazyScope {
-			pathNextProject := EmitPush(pathNext, "P") // <== notLazy
+			pathNextP := EmitPush(pathNext, "P") // <== notLazy
 
 			var lazyProjectFunc base.ProjectFunc
 			_ = lazyProjectFunc
 
 			lazyProjectFunc =
-				MakeProjectFunc(o.ParentA.Fields, types, o.Params, outTypes, pathNextProject, "PF") // <== notLazy
+				MakeProjectFunc(o.ParentA.Fields, types, o.Params, outTypes, pathNextP, "PF") // <== notLazy
 
 			var lazyValsReuse base.Vals // <== varLift: lazyValsReuse by path
 			_ = lazyValsReuse           // <== varLift: lazyValsReuse by path
@@ -67,7 +71,7 @@ func ExecOperator(o *base.Operator,
 			lazyYieldVals = func(lazyVals base.Vals) {
 				lazyValsOut := lazyValsReuse[:0] // <== varLift: lazyValsReuse by path
 
-				lazyValsOut = lazyProjectFunc(lazyVals, lazyValsOut) // <== emitCaptured: pathNextProject "PF"
+				lazyValsOut = lazyProjectFunc(lazyVals, lazyValsOut) // <== emitCaptured: pathNextP "PF"
 
 				lazyValsReuse = lazyValsOut // <== varLift: lazyValsReuse by path
 
@@ -76,25 +80,26 @@ func ExecOperator(o *base.Operator,
 
 			EmitPop(pathNext, "P") // <== notLazy
 
-			ExecOperator(o.ParentA, lazyYieldVals, lazyYieldErr, pathNextProject, "") // <== notLazy
+			ExecOperator(o.ParentA, lazyYieldVals, lazyYieldErr, pathNextP, "") // <== notLazy
 		}
 
 	case "join-inner-nl":
-		ExecJoinNestedLoop(o, lazyYieldVals, lazyYieldErr, pathNext) // <== notLazy
+		ExecJoinNestedLoop(o, lazyYieldVals, lazyYieldErr, path, pathNext) // <== notLazy
 
 	case "join-outerLeft-nl":
-		ExecJoinNestedLoop(o, lazyYieldVals, lazyYieldErr, pathNext) // <== notLazy
+		ExecJoinNestedLoop(o, lazyYieldVals, lazyYieldErr, path, pathNext) // <== notLazy
 
 	case "join-outerRight-nl":
-		ExecJoinNestedLoop(o, lazyYieldVals, lazyYieldErr, pathNext) // <== notLazy
+		ExecJoinNestedLoop(o, lazyYieldVals, lazyYieldErr, path, pathNext) // <== notLazy
 
 	case "join-outerFull-nl":
-		ExecJoinNestedLoop(o, lazyYieldVals, lazyYieldErr, pathNext) // <== notLazy
+		ExecJoinNestedLoop(o, lazyYieldVals, lazyYieldErr, path, pathNext) // <== notLazy
 	}
 }
 
 func ExecJoinNestedLoop(o *base.Operator,
-	lazyYieldVals base.YieldVals, lazyYieldErr base.YieldErr, pathNext string) {
+	lazyYieldVals base.YieldVals, lazyYieldErr base.YieldErr,
+	path, pathNext string) {
 	joinKind := strings.Split(o.Kind, "-")[1] // Ex: "inner", "outerLeft".
 
 	lenFieldsA := len(o.ParentA.Fields)
@@ -144,7 +149,7 @@ func ExecJoinNestedLoop(o *base.Operator,
 
 						lazyVal = lazyExprFunc(lazyVals) // <== emitCaptured: pathNext, "JF"
 						if base.ValEqualTrue(lazyVal) {
-							lazyYieldValsOrig(lazyValsJoin)
+							lazyYieldValsOrig(lazyValsJoin) // <== emitCaptured: path ""
 						} else {
 							if joinKind == "outerLeft" { // <== notLazy
 								lazyValsJoin = lazyValsJoin[0:lenFieldsA]
