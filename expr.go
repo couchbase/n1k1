@@ -12,6 +12,16 @@ var LzErrNil error
 
 // -----------------------------------------------------
 
+// Marks the start of a nested "emit capture" area.
+var EmitPush = func(path, pathItem string) string {
+	return path + "_" + pathItem // Placeholder for compiler.
+}
+
+// Marks the end of a nested "emit capture" area.
+var EmitPop = func(path, pathItem string) {} // Placeholder for compiler.
+
+// -----------------------------------------------------
+
 // ExprCatalog is a registry of all the known expression functions.
 var ExprCatalog = map[string]ExprCatalogFunc{}
 
@@ -39,18 +49,12 @@ func MakeExprFunc(fields base.Fields, types base.Types,
 	return lzExprFunc
 }
 
-var EmitPush = func(path, pathItem string) string {
-	return path + "_" + pathItem // Placeholder for compiler.
-}
-
-// Placeholder for compiler.
-var EmitPop = func(path, pathItem string) {} // Placeholder for compiler.
-
 // -----------------------------------------------------
 
 func ExprJson(fields base.Fields, types base.Types, params []interface{},
 	outTypes base.Types, path string) (lzExprFunc base.ExprFunc) {
 	json := []byte(params[0].(string))
+
 	jsonType := base.JsonTypes[json[0]] // Might be "".
 
 	base.SetLastType(outTypes, jsonType)

@@ -19,17 +19,16 @@ func MakeBiExprFunc(fields base.Fields, types base.Types,
 	exprB := params[1].([]interface{})
 
 	var lzA base.ExprFunc // <== notLz
-	_ = lzA               // <== notLz
 	var lzB base.ExprFunc // <== notLz
-	_ = lzB               // <== notLz
 	var lzVals base.Vals  // <== notLz
-	_ = lzVals            // <== notLz
+
+	_, _, _ = lzA, lzB, lzVals // <== notLz
 
 	if LzScope {
 		var lzA base.ExprFunc
-		_ = lzA
 		var lzB base.ExprFunc
-		_ = lzB
+
+		_, _ = lzA, lzB
 
 		lzExprFunc =
 			MakeExprFunc(fields, types, exprA, outTypes, path, "A") // <== notLz
