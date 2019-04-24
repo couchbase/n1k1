@@ -54,8 +54,6 @@ Some features...
 
 ------------------------------------------
 TODO...
-- conversion of real N1QL query-plan into n1k1 query-plan
-
 - pipeline breakers / data staging nodes
 - batching (or staging) optimizations?
 
@@ -66,6 +64,8 @@ TODO...
 
 - early stop when an error or LIMIT is reached?
 - early stop when processing is canceled?
+
+- conversion of real N1QL query-plan into n1k1 query-plan
 
 - SIMD optimizations possible?  see: SIMD-json articles?
 
