@@ -65,7 +65,6 @@ func ExecOperator(o *base.Operator,
 				MakeProjectFunc(o.ParentA.Fields, types, o.Params, outTypes, pathNextP, "PF") // !lz
 
 			var lzValsReuse base.Vals // <== varLift: lzValsReuse by path
-			_ = lzValsReuse           // <== varLift: lzValsReuse by path
 
 			lzYieldValsOrig := lzYieldVals
 			_ = lzYieldValsOrig

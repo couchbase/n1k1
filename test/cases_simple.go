@@ -330,6 +330,36 @@ var TestCasesSimple = []TestCaseSimple{
 		},
 	},
 	{
+		about: "test csv-data scan->project",
+		o: base.Operator{
+			Kind:   "project",
+			Fields: base.Fields{"a", "c"},
+			Params: []interface{}{
+				[]interface{}{"field", "a"},
+				[]interface{}{"field", "c"},
+			},
+			ParentA: &base.Operator{
+				Kind:   "scan",
+				Fields: base.Fields{"a", "b", "c"},
+				Params: []interface{}{
+					"csvData",
+					`
+00,00,0000
+10,20,3000
+11,21,3000
+12,22,1000
+`,
+				},
+			},
+		},
+		expectYields: []base.Vals{
+			base.Vals{[]byte("00"), []byte("0000")},
+			base.Vals{[]byte("10"), []byte("3000")},
+			base.Vals{[]byte("11"), []byte("3000")},
+			base.Vals{[]byte("12"), []byte("1000")},
+		},
+	},
+	{
 		about: "test csv-data scan->filter->project nothing",
 		o: base.Operator{
 			Kind:   "project",
