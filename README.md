@@ -47,27 +47,46 @@ the same query-plan tree that's used by the interpreter from step #1
 above, as all this was "born" originally from that interpreter.
 
 ------------------------------------------
+Some features...
+
+- lifting vars to avoid local closures
+- capturing emitted code to avoid local closures
+
+------------------------------------------
 TODO...
 - conversion of real N1QL query-plan into n1k1 query-plan
-- SIMD optimizations possible?
+
+- pipeline breakers / data staging nodes
 - batching (or staging) optimizations?
-- prefetching optimizations?
-- lifting vars to avoid local func calls
-- the yield callback might return slice that next yield
-  can place data into, to avoid append-copying items?
-- col versus row optimizations?
-- multi-threading optimizations?
-- multiple types?
-- types learned during expression processing?
-- positional fields versus access to the full record?
-- perhaps the 0'th field might represent the full record?
-- emit other languages?
+
+- GROUP BY / aggregates
+- HAVING
+- ORDER BY
+- OFFSET / LIMIT
+
 - early stop when an error or LIMIT is reached?
 - early stop when processing is canceled?
+
+- SIMD optimizations possible?  see: SIMD-json articles?
+
+- prefetching optimizations?
+
 - compiled accessor(s) to a given JSON-path in a raw []byte value?
-- learnings from SIMD-json tricks?
-- pipeline breakers
-- or data staging nodes
+
+- the yield callback might return slice that the next yield
+  can place data into, to avoid append-copying items?
+
+- col versus row optimizations?
+- need base.Vals that allows for col based representation?
+
+- multi-threading / multi-core optimizations?
+
+- types learned during expression processing?
+
+- positional fields versus access to the full record?
+- perhaps the 0'th field might represent the full record?
+
+- emit other languages?
 
 ISSUES...
 - outer joins when one of the tables is empty incorrectly
