@@ -740,6 +740,261 @@ var TestCasesSimple = []TestCaseSimple{
 		},
 	},
 	{
+		about: "test left outer join on dept with empty RHS",
+		o: base.Operator{
+			Kind:   "join-outerLeft-nl",
+			Fields: base.Fields{"dept", "city", "emp", "empDept"},
+			Params: []interface{}{
+				"eq",
+				[]interface{}{"field", `dept`},
+				[]interface{}{"field", `empDept`},
+			},
+			ParentA: &base.Operator{
+				Kind:   "scan",
+				Fields: base.Fields{"dept", "city"},
+				Params: []interface{}{
+					"csvData",
+					`
+"dev","paris"
+"finance","london"
+`,
+				},
+			},
+			ParentB: &base.Operator{
+				Kind:   "scan",
+				Fields: base.Fields{"emp", "empDept"},
+				Params: []interface{}{
+					"csvData",
+					`
+`,
+				},
+			},
+		},
+		expectYields: []base.Vals{
+			StringsToLzVals([]string{`"dev"`, `"paris"`, ``, ``}, nil),
+			StringsToLzVals([]string{`"finance"`, `"london"`, ``, ``}, nil),
+		},
+	},
+	{
+		about: "test full outer join on dept with empty RHS",
+		o: base.Operator{
+			Kind:   "join-outerFull-nl",
+			Fields: base.Fields{"dept", "city", "emp", "empDept"},
+			Params: []interface{}{
+				"eq",
+				[]interface{}{"field", `dept`},
+				[]interface{}{"field", `empDept`},
+			},
+			ParentA: &base.Operator{
+				Kind:   "scan",
+				Fields: base.Fields{"dept", "city"},
+				Params: []interface{}{
+					"csvData",
+					`
+"dev","paris"
+"finance","london"
+`,
+				},
+			},
+			ParentB: &base.Operator{
+				Kind:   "scan",
+				Fields: base.Fields{"emp", "empDept"},
+				Params: []interface{}{
+					"csvData",
+					`
+`,
+				},
+			},
+		},
+		expectYields: []base.Vals{
+			StringsToLzVals([]string{`"dev"`, `"paris"`, ``, ``}, nil),
+			StringsToLzVals([]string{`"finance"`, `"london"`, ``, ``}, nil),
+		},
+	},
+	{
+		about: "test inner join on dept with empty LHS",
+		o: base.Operator{
+			Kind:   "join-inner-nl",
+			Fields: base.Fields{"dept", "city", "emp", "empDept"},
+			Params: []interface{}{
+				"eq",
+				[]interface{}{"field", `dept`},
+				[]interface{}{"field", `empDept`},
+			},
+			ParentA: &base.Operator{
+				Kind:   "scan",
+				Fields: base.Fields{"dept", "city"},
+				Params: []interface{}{
+					"csvData",
+					`
+`,
+				},
+			},
+			ParentB: &base.Operator{
+				Kind:   "scan",
+				Fields: base.Fields{"emp", "empDept"},
+				Params: []interface{}{
+					"csvData",
+					`
+"dan","dev"
+"doug","dev"
+"frank","finance"
+"fred","finance"
+`,
+				},
+			},
+		},
+		expectYields: []base.Vals(nil),
+	},
+	{
+		about: "test right outer join on dept with empty RHS",
+		o: base.Operator{
+			Kind:   "join-outerRight-nl",
+			Fields: base.Fields{"dept", "city", "emp", "empDept"},
+			Params: []interface{}{
+				"eq",
+				[]interface{}{"field", `dept`},
+				[]interface{}{"field", `empDept`},
+			},
+			ParentA: &base.Operator{
+				Kind:   "scan",
+				Fields: base.Fields{"dept", "city"},
+				Params: []interface{}{
+					"csvData",
+					`
+"dev","paris"
+"finance","london"
+`,
+				},
+			},
+			ParentB: &base.Operator{
+				Kind:   "scan",
+				Fields: base.Fields{"emp", "empDept"},
+				Params: []interface{}{
+					"csvData",
+					`
+`,
+				},
+			},
+		},
+		expectYields: []base.Vals(nil),
+	},
+	{
+		about: "test full outer join on dept with empty LHS",
+		o: base.Operator{
+			Kind:   "join-outerFull-nl",
+			Fields: base.Fields{"dept", "city", "emp", "empDept"},
+			Params: []interface{}{
+				"eq",
+				[]interface{}{"field", `dept`},
+				[]interface{}{"field", `empDept`},
+			},
+			ParentA: &base.Operator{
+				Kind:   "scan",
+				Fields: base.Fields{"dept", "city"},
+				Params: []interface{}{
+					"csvData",
+					`
+`,
+				},
+			},
+			ParentB: &base.Operator{
+				Kind:   "scan",
+				Fields: base.Fields{"emp", "empDept"},
+				Params: []interface{}{
+					"csvData",
+					`
+"dan","dev"
+"doug","dev"
+"frank","finance"
+"fred","finance"
+`,
+				},
+			},
+		},
+		expectYields: []base.Vals{
+			StringsToLzVals([]string{``, ``, `"dan"`, `"dev"`}, nil),
+			StringsToLzVals([]string{``, ``, `"doug"`, `"dev"`}, nil),
+			StringsToLzVals([]string{``, ``, `"frank"`, `"finance"`}, nil),
+			StringsToLzVals([]string{``, ``, `"fred"`, `"finance"`}, nil),
+		},
+	},
+	{
+		about: "test right outer join on dept with empty LHS",
+		o: base.Operator{
+			Kind:   "join-outerRight-nl",
+			Fields: base.Fields{"dept", "city", "emp", "empDept"},
+			Params: []interface{}{
+				"eq",
+				[]interface{}{"field", `dept`},
+				[]interface{}{"field", `empDept`},
+			},
+			ParentA: &base.Operator{
+				Kind:   "scan",
+				Fields: base.Fields{"dept", "city"},
+				Params: []interface{}{
+					"csvData",
+					`
+`,
+				},
+			},
+			ParentB: &base.Operator{
+				Kind:   "scan",
+				Fields: base.Fields{"emp", "empDept"},
+				Params: []interface{}{
+					"csvData",
+					`
+"dan","dev"
+"doug","dev"
+"frank","finance"
+"fred","finance"
+`,
+				},
+			},
+		},
+		expectYields: []base.Vals{
+			StringsToLzVals([]string{``, ``, `"dan"`, `"dev"`}, nil),
+			StringsToLzVals([]string{``, ``, `"doug"`, `"dev"`}, nil),
+			StringsToLzVals([]string{``, ``, `"frank"`, `"finance"`}, nil),
+			StringsToLzVals([]string{``, ``, `"fred"`, `"finance"`}, nil),
+		},
+	},
+	{
+		about: "test left outer join on dept with empty LHS",
+		o: base.Operator{
+			Kind:   "join-outerLeft-nl",
+			Fields: base.Fields{"dept", "city", "emp", "empDept"},
+			Params: []interface{}{
+				"eq",
+				[]interface{}{"field", `dept`},
+				[]interface{}{"field", `empDept`},
+			},
+			ParentA: &base.Operator{
+				Kind:   "scan",
+				Fields: base.Fields{"dept", "city"},
+				Params: []interface{}{
+					"csvData",
+					`
+`,
+				},
+			},
+			ParentB: &base.Operator{
+				Kind:   "scan",
+				Fields: base.Fields{"emp", "empDept"},
+				Params: []interface{}{
+					"csvData",
+					`
+"dan","dev"
+"doug","dev"
+"frank","finance"
+"fred","finance"
+`,
+				},
+			},
+		},
+		expectYields: []base.Vals(nil),
+	},
+	{
 		about: "test left outer join on never matching condition",
 		o: base.Operator{
 			Kind:   "join-outerLeft-nl",

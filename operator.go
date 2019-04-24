@@ -121,11 +121,13 @@ func ExecJoinNestedLoop(o *base.Operator, lzYieldVals base.YieldVals,
 
 		var lzValsJoinOuterRight base.Vals
 
-		if joinKind == "outerRight" { // !lz
+		if joinKind == "outerFull" || joinKind == "outerRight" { // !lz
 			lzValsJoinOuterRight = make(base.Vals, lenFieldsAB)
 		} // !lz
 
-		_, _ = lzExprFunc, lzValsJoinOuterRight
+		var lzHadOuter bool
+
+		_, _, _ = lzExprFunc, lzValsJoinOuterRight, lzHadOuter
 
 		lzValsJoin := make(base.Vals, lenFieldsAB)
 
@@ -135,10 +137,21 @@ func ExecJoinNestedLoop(o *base.Operator, lzYieldVals base.YieldVals,
 			lzValsJoin = lzValsJoin[:0]
 			lzValsJoin = append(lzValsJoin, lzValsA...)
 
+			if joinKind == "outerFull" || joinKind == "outerRight" { // !lz
+				lzHadOuter = true
+			} // !lz
+
+			var lzHadInner bool
+			_ = lzHadInner
+
 			if LzScope {
 				lzYieldVals := func(lzValsB base.Vals) {
 					lzValsJoin = lzValsJoin[0:lenFieldsA]
 					lzValsJoin = append(lzValsJoin, lzValsB...)
+
+					if joinKind == "outerFull" || joinKind == "outerLeft" { // !lz
+						lzHadInner = true
+					} // !lz
 
 					if joinKind == "outerFull" { // !lz
 						lzYieldValsOrig(lzValsJoin)
@@ -172,12 +185,38 @@ func ExecJoinNestedLoop(o *base.Operator, lzYieldVals base.YieldVals,
 					} // !lz
 				}
 
-				// Inner...
+				// Inner (right)...
 				ExecOperator(o.ParentB, lzYieldVals, lzYieldStats, lzYieldErr, pathNext, "JNLI") // !lz
+
+				// Case of outer join when inner (right) was empty.
+				if joinKind == "outerFull" || joinKind == "outerLeft" { // !lz
+					if !lzHadInner {
+						lzValsJoin = lzValsJoin[0:lenFieldsA]
+						for i := 0; i < lenFieldsB; i++ { // !lz
+							lzValsJoin = append(lzValsJoin, base.ValMissing)
+						} // !lz
+
+						lzYieldValsOrig(lzValsJoin)
+					}
+				} // !lz
 			}
 		}
 
-		// Outer...
+		// Outer (left)...
 		ExecOperator(o.ParentA, lzYieldVals, lzYieldStats, lzYieldErr, pathNext, "JNLO") // !lz
+
+		// Case of outer join when outer (left) was empty.
+		if joinKind == "outerFull" || joinKind == "outerRight" { // !lz
+			if !lzHadOuter {
+				lzYieldVals := func(lzValsB base.Vals) {
+					lzValsJoinOuterRight = lzValsJoinOuterRight[0:lenFieldsA]
+					lzValsJoinOuterRight = append(lzValsJoinOuterRight, lzValsB...)
+
+					lzYieldValsOrig(lzValsJoinOuterRight)
+				}
+
+				ExecOperator(o.ParentB, lzYieldVals, lzYieldStats, lzYieldErr, pathNext, "JNLIO") // !lz
+			}
+		} // !lz
 	}
 }
