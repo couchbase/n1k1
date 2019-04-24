@@ -15,8 +15,8 @@ func MakeProjectFunc(fields base.Fields, types base.Types,
 
 	var exprFuncs []base.ExprFunc
 
-	var lzExprFunc base.ExprFunc // <== notLz
-	_ = lzExprFunc               // <== notLz
+	var lzExprFunc base.ExprFunc // !lz
+	_ = lzExprFunc               // !lz
 
 	for i, projection := range projections {
 		iStr := strconv.Itoa(i)
@@ -30,18 +30,18 @@ func MakeProjectFunc(fields base.Fields, types base.Types,
 			_ = lzExprFunc
 
 			lzExprFunc =
-				MakeExprFunc(fields, types, expr, outTypes, pathNext, iStr) // <== notLz
+				MakeExprFunc(fields, types, expr, outTypes, pathNext, iStr) // !lz
 
-			exprFuncs = append(exprFuncs, lzExprFunc) // <== notLz
+			exprFuncs = append(exprFuncs, lzExprFunc) // !lz
 		}
 	}
 
 	lzProjectFunc = func(lzVals, lzValsPre base.Vals) (lzValsOut base.Vals) {
-		for i, lzExprFunc := range exprFuncs { // <== notLz
-			_ = lzExprFunc // <== notLz
+		for i, lzExprFunc := range exprFuncs { // !lz
+			_ = lzExprFunc // !lz
 
-			iStr := strconv.Itoa(i) // <== notLz
-			_ = iStr                // <== notLz
+			iStr := strconv.Itoa(i) // !lz
+			_ = iStr                // !lz
 
 			if LzScope {
 				var lzVal base.Val
@@ -52,7 +52,7 @@ func MakeProjectFunc(fields base.Fields, types base.Types,
 				// lzValsOut, so no need to deep copy lzVal yet.
 				lzValsOut = append(lzValsOut, lzVal)
 			}
-		} // <== notLz
+		} // !lz
 
 		return lzValsOut
 	}

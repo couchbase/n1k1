@@ -19,19 +19,19 @@ func ExecOperator(o *base.Operator,
 
 	switch o.Kind {
 	case "scan":
-		Scan(o.Params, o.Fields, lzYieldVals, lzYieldErr) // <== notLz
+		Scan(o.Params, o.Fields, lzYieldVals, lzYieldErr) // !lz
 
 	case "filter":
 		types := make(base.Types, len(o.ParentA.Fields)) // TODO.
 
 		if LzScope {
-			pathNextF := EmitPush(pathNext, "F") // <== notLz
+			pathNextF := EmitPush(pathNext, "F") // !lz
 
 			var lzExprFunc base.ExprFunc
 			_ = lzExprFunc
 
 			lzExprFunc =
-				MakeExprFunc(o.ParentA.Fields, types, o.Params, nil, pathNextF, "FF") // <== notLz
+				MakeExprFunc(o.ParentA.Fields, types, o.Params, nil, pathNextF, "FF") // !lz
 
 			lzYieldValsOrig := lzYieldVals
 			_ = lzYieldValsOrig
@@ -46,9 +46,9 @@ func ExecOperator(o *base.Operator,
 				}
 			}
 
-			EmitPop(pathNext, "F") // <== notLz
+			EmitPop(pathNext, "F") // !lz
 
-			ExecOperator(o.ParentA, lzYieldVals, lzYieldErr, pathNextF, "") // <== notLz
+			ExecOperator(o.ParentA, lzYieldVals, lzYieldErr, pathNextF, "") // !lz
 		}
 
 	case "project":
@@ -56,13 +56,13 @@ func ExecOperator(o *base.Operator,
 		outTypes := base.Types{""}                       // TODO.
 
 		if LzScope {
-			pathNextP := EmitPush(pathNext, "P") // <== notLz
+			pathNextP := EmitPush(pathNext, "P") // !lz
 
 			var lzProjectFunc base.ProjectFunc
 			_ = lzProjectFunc
 
 			lzProjectFunc =
-				MakeProjectFunc(o.ParentA.Fields, types, o.Params, outTypes, pathNextP, "PF") // <== notLz
+				MakeProjectFunc(o.ParentA.Fields, types, o.Params, outTypes, pathNextP, "PF") // !lz
 
 			var lzValsReuse base.Vals // <== varLift: lzValsReuse by path
 			_ = lzValsReuse           // <== varLift: lzValsReuse by path
@@ -80,22 +80,22 @@ func ExecOperator(o *base.Operator,
 				lzYieldValsOrig(lzValsOut)
 			}
 
-			EmitPop(pathNext, "P") // <== notLz
+			EmitPop(pathNext, "P") // !lz
 
-			ExecOperator(o.ParentA, lzYieldVals, lzYieldErr, pathNextP, "") // <== notLz
+			ExecOperator(o.ParentA, lzYieldVals, lzYieldErr, pathNextP, "") // !lz
 		}
 
 	case "join-inner-nl":
-		ExecJoinNestedLoop(o, lzYieldVals, lzYieldErr, path, pathNext) // <== notLz
+		ExecJoinNestedLoop(o, lzYieldVals, lzYieldErr, path, pathNext) // !lz
 
 	case "join-outerLeft-nl":
-		ExecJoinNestedLoop(o, lzYieldVals, lzYieldErr, path, pathNext) // <== notLz
+		ExecJoinNestedLoop(o, lzYieldVals, lzYieldErr, path, pathNext) // !lz
 
 	case "join-outerRight-nl":
-		ExecJoinNestedLoop(o, lzYieldVals, lzYieldErr, path, pathNext) // <== notLz
+		ExecJoinNestedLoop(o, lzYieldVals, lzYieldErr, path, pathNext) // !lz
 
 	case "join-outerFull-nl":
-		ExecJoinNestedLoop(o, lzYieldVals, lzYieldErr, path, pathNext) // <== notLz
+		ExecJoinNestedLoop(o, lzYieldVals, lzYieldErr, path, pathNext) // !lz
 	}
 }
 
@@ -119,14 +119,14 @@ func ExecJoinNestedLoop(o *base.Operator,
 		_ = lzExprFunc
 
 		lzExprFunc =
-			MakeExprFunc(fieldsAB, typesAB, o.Params, nil, pathNext, "JF") // <== notLz
+			MakeExprFunc(fieldsAB, typesAB, o.Params, nil, pathNext, "JF") // !lz
 
 		var lzValsJoinOuterRight base.Vals
 		_ = lzValsJoinOuterRight
 
-		if joinKind == "outerRight" { // <== notLz
+		if joinKind == "outerRight" { // !lz
 			lzValsJoinOuterRight = make(base.Vals, lenFieldsAB)
-		} // <== notLz
+		} // !lz
 
 		lzValsJoin := make(base.Vals, lenFieldsAB)
 
@@ -141,9 +141,9 @@ func ExecJoinNestedLoop(o *base.Operator,
 					lzValsJoin = lzValsJoin[0:lenFieldsA]
 					lzValsJoin = append(lzValsJoin, lzValsB...)
 
-					if joinKind == "outerFull" { // <== notLz
+					if joinKind == "outerFull" { // !lz
 						lzYieldValsOrig(lzValsJoin)
-					} else { // <== notLz
+					} else { // !lz
 						lzVals := lzValsJoin
 						_ = lzVals
 
@@ -153,31 +153,31 @@ func ExecJoinNestedLoop(o *base.Operator,
 						if base.ValEqualTrue(lzVal) {
 							lzYieldValsOrig(lzVals) // <== emitCaptured: path ""
 						} else {
-							if joinKind == "outerLeft" { // <== notLz
+							if joinKind == "outerLeft" { // !lz
 								lzValsJoin = lzValsJoin[0:lenFieldsA]
-								for i := 0; i < lenFieldsB; i++ { // <== notLz
+								for i := 0; i < lenFieldsB; i++ { // !lz
 									lzValsJoin = append(lzValsJoin, base.ValMissing)
-								} // <== notLz
+								} // !lz
 
 								lzYieldValsOrig(lzValsJoin)
-							} // <== notLz
+							} // !lz
 
-							if joinKind == "outerRight" { // <== notLz
+							if joinKind == "outerRight" { // !lz
 								lzValsJoinOuterRight = lzValsJoinOuterRight[0:lenFieldsA]
 								lzValsJoinOuterRight = append(lzValsJoinOuterRight, lzValsB...)
 
 								lzYieldValsOrig(lzValsJoinOuterRight)
-							} // <== notLz
+							} // !lz
 						}
-					} // <== notLz
+					} // !lz
 				}
 
 				// Inner...
-				ExecOperator(o.ParentB, lzYieldVals, lzYieldErr, pathNext, "JNLI") // <== notLz
+				ExecOperator(o.ParentB, lzYieldVals, lzYieldErr, pathNext, "JNLI") // !lz
 			}
 		}
 
 		// Outer...
-		ExecOperator(o.ParentA, lzYieldVals, lzYieldErr, pathNext, "JNLO") // <== notLz
+		ExecOperator(o.ParentA, lzYieldVals, lzYieldErr, pathNext, "JNLO") // !lz
 	}
 }

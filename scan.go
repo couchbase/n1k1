@@ -15,25 +15,25 @@ func Scan(params []interface{}, fields base.Fields,
 	lzYieldVals base.YieldVals, lzYieldErr base.YieldErr) {
 	kind := params[0].(string)
 
-	var lzFilePath string // <== notLz
-	_ = lzFilePath        // <== notLz
+	var lzFilePath string // !lz
+	_ = lzFilePath        // !lz
 
-	var lzReader io.Reader // <== notLz
-	_ = lzReader           // <== notLz
+	var lzReader io.Reader // !lz
+	_ = lzReader           // !lz
 
 	switch kind {
 	case "filePath":
 		paramsFilePath := params[1].(string)
 		lzFilePath := paramsFilePath
 
-		ScanFile(lzFilePath, fields, lzYieldVals, lzYieldErr) // <== notLz
+		ScanFile(lzFilePath, fields, lzYieldVals, lzYieldErr) // !lz
 
 	case "csvData":
 		paramsCsvData := params[1].(string)
 		lzCsvData := paramsCsvData
 		lzReader := strings.NewReader(lzCsvData)
 
-		ScanReaderAsCsv(lzReader, fields, lzYieldVals, lzYieldErr) // <== notLz
+		ScanReaderAsCsv(lzReader, fields, lzYieldVals, lzYieldErr) // !lz
 
 	default:
 		errMsg := "unknown scan kind" // TODO: Weak string/double-quote handling.
@@ -52,8 +52,8 @@ func ScanFile(lzFilePath string, fields base.Fields,
 	}
 
 	if LzScope {
-		var lzReader io.ReadWriteCloser // <== notLz
-		_ = lzReader                    // <== notLz
+		var lzReader io.ReadWriteCloser // !lz
+		_ = lzReader                    // !lz
 
 		lzReader, lzErr := os.Open(lzFilePath)
 		if lzErr != nil {
@@ -63,7 +63,7 @@ func ScanFile(lzFilePath string, fields base.Fields,
 
 		defer lzReader.Close()
 
-		ScanReaderAsCsv(lzReader, fields, lzYieldVals, lzYieldErr) // <== notLz
+		ScanReaderAsCsv(lzReader, fields, lzYieldVals, lzYieldErr) // !lz
 	}
 }
 

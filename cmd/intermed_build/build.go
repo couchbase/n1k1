@@ -217,7 +217,7 @@ func EmitBlock(state *State, isLzBlock bool,
 
 	lineLeftRight := strings.Split(line, "// ")
 	if len(lineLeftRight) > 1 {
-		if lineLeftRight[1] == "<== notLz" {
+		if lineLeftRight[1] == "!lz" {
 			return out, line
 		}
 
