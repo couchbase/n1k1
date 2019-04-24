@@ -151,7 +151,7 @@ func ExecJoinNestedLoop(o *base.Operator,
 
 						lzVal = lzExprFunc(lzVals) // <== emitCaptured: pathNext, "JF"
 						if base.ValEqualTrue(lzVal) {
-							lzYieldValsOrig(lzValsJoin) // <== emitCaptured: path ""
+							lzYieldValsOrig(lzVals) // <== emitCaptured: path ""
 						} else {
 							if joinKind == "outerLeft" { // <== notLz
 								lzValsJoin = lzValsJoin[0:lenFieldsA]
