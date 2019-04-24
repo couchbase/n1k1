@@ -41,8 +41,6 @@ func MakeBiExprFunc(fields base.Fields, types base.Types,
 		lazyB = lazyExprFunc
 		base.TakeLastType(outTypes) // <== notLazy
 
-		// TODO: consider inlining this one day...
-
 		lazyExprFunc = func(lazyVals base.Vals) (lazyVal base.Val) {
 			lazyVal =
 				biExprFunc(lazyA, lazyB, lazyVals) // <== notLazy
