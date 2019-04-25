@@ -61,9 +61,12 @@ TODO...
 - GROUP BY / aggregates
 - HAVING
 - ORDER BY
+  - operator can optionally declare which fields are sorted asc/desc?
+
 - OFFSET / LIMIT
 
 - integration with scorch TermFieldReaders as a Scan source or operator?
+  - merge join by docNum / docId field?
 
 - early stop when an error or LIMIT is reached?
   - YieldStats() can return an non-nil error, like ErrLimitReached
