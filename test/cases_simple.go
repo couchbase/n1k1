@@ -452,6 +452,7 @@ var TestCasesSimple = []TestCaseSimple{
 					`
 "dev","paris"
 "finance","london"
+"sales","san diego"
 `,
 				},
 			},
@@ -465,6 +466,7 @@ var TestCasesSimple = []TestCaseSimple{
 "doug","dev"
 "frank","finance"
 "fred","finance"
+"mary","marketing"
 `,
 				},
 			},
@@ -665,6 +667,7 @@ var TestCasesSimple = []TestCaseSimple{
 					`
 "dev","paris"
 "finance","london"
+"sales","san diego"
 `,
 				},
 			},
@@ -678,6 +681,7 @@ var TestCasesSimple = []TestCaseSimple{
 "doug","dev"
 "frank","finance"
 "fred","finance"
+"mary","marketing"
 `,
 				},
 			},
@@ -687,10 +691,19 @@ var TestCasesSimple = []TestCaseSimple{
 			StringsToLzVals([]string{`"dev"`, `"paris"`, `"doug"`, `"dev"`}, nil),
 			StringsToLzVals([]string{`"dev"`, `"paris"`, `"frank"`, `"finance"`}, nil),
 			StringsToLzVals([]string{`"dev"`, `"paris"`, `"fred"`, `"finance"`}, nil),
+			StringsToLzVals([]string{`"dev"`, `"paris"`, `"mary"`, `"marketing"`}, nil),
+
 			StringsToLzVals([]string{`"finance"`, `"london"`, `"dan"`, `"dev"`}, nil),
 			StringsToLzVals([]string{`"finance"`, `"london"`, `"doug"`, `"dev"`}, nil),
 			StringsToLzVals([]string{`"finance"`, `"london"`, `"frank"`, `"finance"`}, nil),
 			StringsToLzVals([]string{`"finance"`, `"london"`, `"fred"`, `"finance"`}, nil),
+			StringsToLzVals([]string{`"finance"`, `"london"`, `"mary"`, `"marketing"`}, nil),
+
+			StringsToLzVals([]string{`"sales"`, `"san diego"`, `"dan"`, `"dev"`}, nil),
+			StringsToLzVals([]string{`"sales"`, `"san diego"`, `"doug"`, `"dev"`}, nil),
+			StringsToLzVals([]string{`"sales"`, `"san diego"`, `"frank"`, `"finance"`}, nil),
+			StringsToLzVals([]string{`"sales"`, `"san diego"`, `"fred"`, `"finance"`}, nil),
+			StringsToLzVals([]string{`"sales"`, `"san diego"`, `"mary"`, `"marketing"`}, nil),
 		},
 	},
 	{
@@ -711,6 +724,7 @@ var TestCasesSimple = []TestCaseSimple{
 					`
 "dev","paris"
 "finance","london"
+"sales","san diego"
 `,
 				},
 			},
@@ -724,6 +738,7 @@ var TestCasesSimple = []TestCaseSimple{
 "doug","dev"
 "frank","finance"
 "fred","finance"
+"mary","marketing"
 `,
 				},
 			},
@@ -733,10 +748,19 @@ var TestCasesSimple = []TestCaseSimple{
 			StringsToLzVals([]string{`"dev"`, `"paris"`, `"doug"`, `"dev"`}, nil),
 			StringsToLzVals([]string{`"dev"`, `"paris"`, ``, ``}, nil),
 			StringsToLzVals([]string{`"dev"`, `"paris"`, ``, ``}, nil),
+			StringsToLzVals([]string{`"dev"`, `"paris"`, ``, ``}, nil),
+
 			StringsToLzVals([]string{`"finance"`, `"london"`, ``, ``}, nil),
 			StringsToLzVals([]string{`"finance"`, `"london"`, ``, ``}, nil),
 			StringsToLzVals([]string{`"finance"`, `"london"`, `"frank"`, `"finance"`}, nil),
 			StringsToLzVals([]string{`"finance"`, `"london"`, `"fred"`, `"finance"`}, nil),
+			StringsToLzVals([]string{`"finance"`, `"london"`, ``, ``}, nil),
+
+			StringsToLzVals([]string{`"sales"`, `"san diego"`, ``, ``}, nil),
+			StringsToLzVals([]string{`"sales"`, `"san diego"`, ``, ``}, nil),
+			StringsToLzVals([]string{`"sales"`, `"san diego"`, ``, ``}, nil),
+			StringsToLzVals([]string{`"sales"`, `"san diego"`, ``, ``}, nil),
+			StringsToLzVals([]string{`"sales"`, `"san diego"`, ``, ``}, nil),
 		},
 	},
 	{
@@ -1058,6 +1082,7 @@ var TestCasesSimple = []TestCaseSimple{
 					`
 "dev","paris"
 "finance","london"
+"sales","san diego"
 `,
 				},
 			},
@@ -1071,6 +1096,7 @@ var TestCasesSimple = []TestCaseSimple{
 "doug","dev"
 "frank","finance"
 "fred","finance"
+"mary","marketing"
 `,
 				},
 			},
@@ -1080,10 +1106,19 @@ var TestCasesSimple = []TestCaseSimple{
 			StringsToLzVals([]string{`"dev"`, `"paris"`, `"doug"`, `"dev"`}, nil),
 			StringsToLzVals([]string{``, ``, `"frank"`, `"finance"`}, nil),
 			StringsToLzVals([]string{``, ``, `"fred"`, `"finance"`}, nil),
+			StringsToLzVals([]string{``, ``, `"mary"`, `"marketing"`}, nil),
+
 			StringsToLzVals([]string{``, ``, `"dan"`, `"dev"`}, nil),
 			StringsToLzVals([]string{``, ``, `"doug"`, `"dev"`}, nil),
 			StringsToLzVals([]string{`"finance"`, `"london"`, `"frank"`, `"finance"`}, nil),
 			StringsToLzVals([]string{`"finance"`, `"london"`, `"fred"`, `"finance"`}, nil),
+			StringsToLzVals([]string{``, ``, `"mary"`, `"marketing"`}, nil),
+
+			StringsToLzVals([]string{``, ``, `"dan"`, `"dev"`}, nil),
+			StringsToLzVals([]string{``, ``, `"doug"`, `"dev"`}, nil),
+			StringsToLzVals([]string{``, ``, `"frank"`, `"finance"`}, nil),
+			StringsToLzVals([]string{``, ``, `"fred"`, `"finance"`}, nil),
+			StringsToLzVals([]string{``, ``, `"mary"`, `"marketing"`}, nil),
 		},
 	},
 	{
