@@ -69,12 +69,6 @@ TODO...
 
 - OFFSET / LIMIT
 
-- merge join needs a skip-ahead ability?
-  - idea: can introduce an optional lazy "SkipToHints" object or Vals
-    that's passed down to operator parents?
-    - an lzYieldVals callback can optionally add hints via
-      something like lzSkipToHints[2] = lzSkipToVal which operator #2 can check?
-
 - early stop when an error or LIMIT is reached?
   - YieldStats() can return an non-nil error, like ErrLimitReached
 
@@ -115,5 +109,15 @@ TODO...
     are not known at compile time, unlike N1QL which has a compile-time
     bounded expr tree
     - so, it might be more similar to ANY x IN y ... END -- hardcoded codepath.
+
+- merge join - COMPLEX / UNWORKABLE with push-based engine
+  - merge join needs threading / locking / coroutines
+    so that both parents can feed the merge-joiner?
+
+- merge join needs a skip-ahead ability?
+  - idea: can introduce an optional lazy "SkipToHints" object or Vals
+    that's passed down to operator parents?
+    - an lzYieldVals callback can optionally add hints via
+      something like lzSkipToHints[2] = lzSkipToVal which operator #2 can check?
 
 - emit other languages?
