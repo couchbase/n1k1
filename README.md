@@ -59,7 +59,10 @@ TODO...
 - batching (or staging) optimizations?
 
 - GROUP BY / aggregates
+  - SELECT country, SUM(population) FROM ... GROUP BY country
+
 - HAVING
+
 - ORDER BY
   - operator can optionally declare which fields are sorted asc/desc?
 
