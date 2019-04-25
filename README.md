@@ -69,9 +69,11 @@ TODO...
 
 - OFFSET / LIMIT
 
-- integration with scorch TermFieldReaders as a Scan source or operator?
-  - merge join by docNum / docId field?
-  - need a skip-ahead ability?
+- merge join needs a skip-ahead ability?
+  - idea: can introduce an optional lazy "SkipToHints" object or Vals
+    that's passed down to operator parents?
+    - an lzYieldVals callback can optionally add hints via
+      something like lzSkipToHints[2] = lzSkipToVal which operator #2 can check?
 
 - early stop when an error or LIMIT is reached?
   - YieldStats() can return an non-nil error, like ErrLimitReached
@@ -105,5 +107,13 @@ TODO...
 
 - positional fields versus access to the full record?
 - perhaps the 0'th field might represent the full record?
+
+- integration with scorch TermFieldReaders as a Scan source or operator?
+  - merge join by docNum / docId field?
+  - UNFORNUTATELY, probably cannot compile a FTS conjunction/disjunction
+    as the children of an FTS conjunction/disjunction
+    are not known at compile time, unlike N1QL which has a compile-time
+    bounded expr tree
+    - so, it might be more similar to ANY x IN y ... END -- hardcoded codepath.
 
 - emit other languages?
