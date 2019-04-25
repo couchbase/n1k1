@@ -126,8 +126,9 @@ func ExecJoinNestedLoop(o *base.Operator, lzYieldVals base.YieldVals,
 		} // !lz
 
 		var lzHadOuter bool
+		var lzHadInner bool
 
-		_, _, _ = lzExprFunc, lzValsJoinOuterRight, lzHadOuter
+		_, _, _, _ = lzExprFunc, lzValsJoinOuterRight, lzHadOuter, lzHadInner
 
 		lzValsJoin := make(base.Vals, lenFieldsAB)
 
@@ -141,8 +142,9 @@ func ExecJoinNestedLoop(o *base.Operator, lzYieldVals base.YieldVals,
 				lzHadOuter = true
 			} // !lz
 
-			var lzHadInner bool
-			_ = lzHadInner
+			if joinKind == "outerFull" || joinKind == "outerLeft" { // !lz
+				lzHadInner = false
+			} // !lz
 
 			if LzScope {
 				lzYieldVals := func(lzValsB base.Vals) {
