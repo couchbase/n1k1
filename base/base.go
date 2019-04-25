@@ -98,12 +98,22 @@ type Operator struct {
 	// Output fields of this operator.
 	Fields Fields `json:"Fields,omitempty"`
 
+	// Output orders of this operator.
+	Orders []Order `json:"Orders,omitempty"`
+
 	// Params based on the kind.
 	Params []interface{} `json:"Params,omitempty"`
 
 	ParentA *Operator `json:"ParentA,omitempty"`
 	ParentB *Operator `json:"ParentB,omitempty"`
 }
+
+type Order struct {
+	Expr []interface{} // Ex: ["field", "country"].
+	Desc bool          // True for descending.
+}
+
+// -----------------------------------------------------
 
 // An ExprFunc evaluates an expression against the given vals.
 type ExprFunc func(vals Vals) Val
