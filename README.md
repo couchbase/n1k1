@@ -63,7 +63,11 @@ TODO...
 - ORDER BY
 - OFFSET / LIMIT
 
+- integration with scorch TermFieldReaders as a Scan source or operator?
+
 - early stop when an error or LIMIT is reached?
+  - YieldStats() can return an non-nil error, like ErrLimitReached
+
 - early stop when processing is canceled?
 
 - hash join?
@@ -80,7 +84,10 @@ TODO...
   can place data into, to avoid append-copying items?
 
 - col versus row optimizations?
-- need base.Vals that allows for col based representation?
+  - need base.Vals that allows for optional col based representation?
+  - YieldVals() might take []Vals instead of Vals?
+    - that would allow an []Records interpretation?
+    - or, an []Columns interpretation, using same signature?
 
 - multi-threading / multi-core optimizations?
 
