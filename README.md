@@ -71,6 +71,7 @@ TODO...
 
 - integration with scorch TermFieldReaders as a Scan source or operator?
   - merge join by docNum / docId field?
+  - need a skip-ahead ability?
 
 - early stop when an error or LIMIT is reached?
   - YieldStats() can return an non-nil error, like ErrLimitReached
@@ -92,6 +93,8 @@ TODO...
 
 - col versus row optimizations?
   - need base.Vals that allows for optional col based representation?
+    - a single col is easy -- same as Vals?
+    - need a merge-join & skip-ahead optimization?
   - YieldVals() might take []Vals instead of Vals?
     - that would allow an []Records interpretation?
     - or, an []Columns interpretation, using same signature?
