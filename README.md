@@ -90,7 +90,3 @@ TODO...
 - perhaps the 0'th field might represent the full record?
 
 - emit other languages?
-
-ISSUES...
-- outer joins when one of the tables is empty incorrectly
-  does not produce results from the non-empty table.
