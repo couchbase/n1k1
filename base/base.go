@@ -78,7 +78,7 @@ func ValEqual(valA, valB Val) (val Val) {
 // provided slices might be reused by future invocations.
 type YieldVals func(Vals)
 
-// Operators can occasionally yield stats and progress information,
+// Ops can occasionally yield stats and progress information,
 // and the receiver can return an error to abort further processing.
 type YieldStats func(*Stats) error
 
@@ -90,8 +90,8 @@ type Stats struct{} // TODO.
 
 // -----------------------------------------------------
 
-// An Operator represents a node in a hierarchical query-plan tree.
-type Operator struct {
+// An Op represents a node or operation in a query-plan tree.
+type Op struct {
 	// Ex: "scan", "filter", "project", etc.
 	Kind string `json:"Kind,omitempty"`
 
@@ -104,8 +104,8 @@ type Operator struct {
 	// Params based on the kind.
 	Params []interface{} `json:"Params,omitempty"`
 
-	ParentA *Operator `json:"ParentA,omitempty"`
-	ParentB *Operator `json:"ParentB,omitempty"`
+	ParentA *Op `json:"ParentA,omitempty"`
+	ParentB *Op `json:"ParentB,omitempty"`
 }
 
 type Order struct {

@@ -4,7 +4,7 @@ import (
 	"github.com/couchbase/n1k1/base"
 )
 
-func OperatorFilter(o *base.Operator, lzYieldVals base.YieldVals,
+func OpFilter(o *base.Op, lzYieldVals base.YieldVals,
 	lzYieldStats base.YieldStats, lzYieldErr base.YieldErr, path, pathNext string) {
 	if LzScope {
 		pathNextF := EmitPush(pathNext, "F") // !lz
@@ -30,6 +30,6 @@ func OperatorFilter(o *base.Operator, lzYieldVals base.YieldVals,
 
 		EmitPop(pathNext, "F") // !lz
 
-		ExecOperator(o.ParentA, lzYieldVals, lzYieldStats, lzYieldErr, pathNextF, "") // !lz
+		ExecOp(o.ParentA, lzYieldVals, lzYieldStats, lzYieldErr, pathNextF, "") // !lz
 	}
 }

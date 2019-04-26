@@ -52,7 +52,7 @@ func StringsToLzVals(a []string, lzValsPre base.Vals) base.Vals {
 
 type TestCaseSimple struct {
 	about        string
-	o            base.Operator
+	o            base.Op
 	expectYields []base.Vals
 	expectErr    string
 }
@@ -63,7 +63,7 @@ var TestCasesSimple = []TestCaseSimple{
 	},
 	{
 		about: "test empty csv-data scan",
-		o: base.Operator{
+		o: base.Op{
 			Kind:   "scan",
 			Fields: base.Fields(nil),
 			Params: []interface{}{
@@ -74,7 +74,7 @@ var TestCasesSimple = []TestCaseSimple{
 	},
 	{
 		about: "test empty csv-data scan with some fields",
-		o: base.Operator{
+		o: base.Op{
 			Kind:   "scan",
 			Fields: base.Fields{"a", "b", "c"},
 			Params: []interface{}{
@@ -85,7 +85,7 @@ var TestCasesSimple = []TestCaseSimple{
 	},
 	{
 		about: "test csv-data scan with 1 record",
-		o: base.Operator{
+		o: base.Op{
 			Kind:   "scan",
 			Fields: base.Fields{"a", "b", "c"},
 			Params: []interface{}{
@@ -99,7 +99,7 @@ var TestCasesSimple = []TestCaseSimple{
 	},
 	{
 		about: "test csv-data scan with 2 records",
-		o: base.Operator{
+		o: base.Op{
 			Kind:   "scan",
 			Fields: base.Fields{"a", "b", "c"},
 			Params: []interface{}{
@@ -117,7 +117,7 @@ var TestCasesSimple = []TestCaseSimple{
 	},
 	{
 		about: "test csv-data scan->filter on const == const",
-		o: base.Operator{
+		o: base.Op{
 			Kind:   "filter",
 			Fields: base.Fields{"a", "b", "c"},
 			Params: []interface{}{
@@ -125,7 +125,7 @@ var TestCasesSimple = []TestCaseSimple{
 				[]interface{}{"json", `"July"`},
 				[]interface{}{"json", `"July"`},
 			},
-			ParentA: &base.Operator{
+			ParentA: &base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"a", "b", "c"},
 				Params: []interface{}{
@@ -144,7 +144,7 @@ var TestCasesSimple = []TestCaseSimple{
 	},
 	{
 		about: "test csv-data scan->filter on constX == constY",
-		o: base.Operator{
+		o: base.Op{
 			Kind:   "filter",
 			Fields: base.Fields{"a", "b", "c"},
 			Params: []interface{}{
@@ -152,7 +152,7 @@ var TestCasesSimple = []TestCaseSimple{
 				[]interface{}{"json", `"July"`},
 				[]interface{}{"json", `"June"`},
 			},
-			ParentA: &base.Operator{
+			ParentA: &base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"a", "b", "c"},
 				Params: []interface{}{
@@ -168,7 +168,7 @@ var TestCasesSimple = []TestCaseSimple{
 	},
 	{
 		about: "test csv-data scan->filter with fieldB == fieldB",
-		o: base.Operator{
+		o: base.Op{
 			Kind:   "filter",
 			Fields: base.Fields{"a", "b", "c"},
 			Params: []interface{}{
@@ -176,7 +176,7 @@ var TestCasesSimple = []TestCaseSimple{
 				[]interface{}{"field", "b"},
 				[]interface{}{"field", "b"},
 			},
-			ParentA: &base.Operator{
+			ParentA: &base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"a", "b", "c"},
 				Params: []interface{}{
@@ -195,7 +195,7 @@ var TestCasesSimple = []TestCaseSimple{
 	},
 	{
 		about: "test csv-data scan->filter with fieldA == fieldB",
-		o: base.Operator{
+		o: base.Op{
 			Kind:   "filter",
 			Fields: base.Fields{"a", "b", "c"},
 			Params: []interface{}{
@@ -203,7 +203,7 @@ var TestCasesSimple = []TestCaseSimple{
 				[]interface{}{"field", "a"},
 				[]interface{}{"field", "b"},
 			},
-			ParentA: &base.Operator{
+			ParentA: &base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"a", "b", "c"},
 				Params: []interface{}{
@@ -219,7 +219,7 @@ var TestCasesSimple = []TestCaseSimple{
 	},
 	{
 		about: "test csv-data scan->filter with fieldB = 66",
-		o: base.Operator{
+		o: base.Op{
 			Kind:   "filter",
 			Fields: base.Fields{"a", "b", "c"},
 			Params: []interface{}{
@@ -227,7 +227,7 @@ var TestCasesSimple = []TestCaseSimple{
 				[]interface{}{"field", "b"},
 				[]interface{}{"json", `66`},
 			},
-			ParentA: &base.Operator{
+			ParentA: &base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"a", "b", "c"},
 				Params: []interface{}{
@@ -243,7 +243,7 @@ var TestCasesSimple = []TestCaseSimple{
 	},
 	{
 		about: "test csv-data scan->filter with fieldB == 21",
-		o: base.Operator{
+		o: base.Op{
 			Kind:   "filter",
 			Fields: base.Fields{"a", "b", "c"},
 			Params: []interface{}{
@@ -251,7 +251,7 @@ var TestCasesSimple = []TestCaseSimple{
 				[]interface{}{"field", "b"},
 				[]interface{}{"json", `21`},
 			},
-			ParentA: &base.Operator{
+			ParentA: &base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"a", "b", "c"},
 				Params: []interface{}{
@@ -269,7 +269,7 @@ var TestCasesSimple = []TestCaseSimple{
 	},
 	{
 		about: "test csv-data scan->filter more than 1 match",
-		o: base.Operator{
+		o: base.Op{
 			Kind:   "filter",
 			Fields: base.Fields{"a", "b", "c"},
 			Params: []interface{}{
@@ -277,7 +277,7 @@ var TestCasesSimple = []TestCaseSimple{
 				[]interface{}{"field", "c"},
 				[]interface{}{"json", `3000`},
 			},
-			ParentA: &base.Operator{
+			ParentA: &base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"a", "b", "c"},
 				Params: []interface{}{
@@ -298,14 +298,14 @@ var TestCasesSimple = []TestCaseSimple{
 	},
 	{
 		about: "test csv-data scan->filter->project",
-		o: base.Operator{
+		o: base.Op{
 			Kind:   "project",
 			Fields: base.Fields{"a", "c"},
 			Params: []interface{}{
 				[]interface{}{"field", "a"},
 				[]interface{}{"field", "c"},
 			},
-			ParentA: &base.Operator{
+			ParentA: &base.Op{
 				Kind:   "filter",
 				Fields: base.Fields{"a", "b", "c"},
 				Params: []interface{}{
@@ -313,7 +313,7 @@ var TestCasesSimple = []TestCaseSimple{
 					[]interface{}{"field", "c"},
 					[]interface{}{"json", `3000`},
 				},
-				ParentA: &base.Operator{
+				ParentA: &base.Op{
 					Kind:   "scan",
 					Fields: base.Fields{"a", "b", "c"},
 					Params: []interface{}{
@@ -335,14 +335,14 @@ var TestCasesSimple = []TestCaseSimple{
 	},
 	{
 		about: "test csv-data scan->project",
-		o: base.Operator{
+		o: base.Op{
 			Kind:   "project",
 			Fields: base.Fields{"a", "c"},
 			Params: []interface{}{
 				[]interface{}{"field", "a"},
 				[]interface{}{"field", "c"},
 			},
-			ParentA: &base.Operator{
+			ParentA: &base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"a", "b", "c"},
 				Params: []interface{}{
@@ -365,11 +365,11 @@ var TestCasesSimple = []TestCaseSimple{
 	},
 	{
 		about: "test csv-data scan->filter->project nothing",
-		o: base.Operator{
+		o: base.Op{
 			Kind:   "project",
 			Fields: base.Fields{},
 			Params: []interface{}{},
-			ParentA: &base.Operator{
+			ParentA: &base.Op{
 				Kind:   "filter",
 				Fields: base.Fields{"a", "b", "c"},
 				Params: []interface{}{
@@ -377,7 +377,7 @@ var TestCasesSimple = []TestCaseSimple{
 					[]interface{}{"field", "c"},
 					[]interface{}{"json", `3000`},
 				},
-				ParentA: &base.Operator{
+				ParentA: &base.Op{
 					Kind:   "scan",
 					Fields: base.Fields{"a", "b", "c"},
 					Params: []interface{}{
@@ -399,14 +399,14 @@ var TestCasesSimple = []TestCaseSimple{
 	},
 	{
 		about: "test csv-data scan->filter->project unknown field",
-		o: base.Operator{
+		o: base.Op{
 			Kind:   "project",
 			Fields: base.Fields{"a", "xxx"},
 			Params: []interface{}{
 				[]interface{}{"field", "a"},
 				[]interface{}{"field", "xxx"},
 			},
-			ParentA: &base.Operator{
+			ParentA: &base.Op{
 				Kind:   "filter",
 				Fields: base.Fields{"a", "b", "c"},
 				Params: []interface{}{
@@ -414,7 +414,7 @@ var TestCasesSimple = []TestCaseSimple{
 					[]interface{}{"field", "c"},
 					[]interface{}{"json", `3000`},
 				},
-				ParentA: &base.Operator{
+				ParentA: &base.Op{
 					Kind:   "scan",
 					Fields: base.Fields{"a", "b", "c"},
 					Params: []interface{}{
@@ -436,7 +436,7 @@ var TestCasesSimple = []TestCaseSimple{
 	},
 	{
 		about: "test csv-data scan->join-nl-inner",
-		o: base.Operator{
+		o: base.Op{
 			Kind:   "join-nl-inner",
 			Fields: base.Fields{"dept", "city", "emp", "empDept"},
 			Params: []interface{}{
@@ -444,7 +444,7 @@ var TestCasesSimple = []TestCaseSimple{
 				[]interface{}{"field", "dept"},
 				[]interface{}{"field", "empDept"},
 			},
-			ParentA: &base.Operator{
+			ParentA: &base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"dept", "city"},
 				Params: []interface{}{
@@ -456,7 +456,7 @@ var TestCasesSimple = []TestCaseSimple{
 `,
 				},
 			},
-			ParentB: &base.Operator{
+			ParentB: &base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"emp", "empDept"},
 				Params: []interface{}{
@@ -480,7 +480,7 @@ var TestCasesSimple = []TestCaseSimple{
 	},
 	{
 		about: "test csv-data scan->join-nl-inner but false join condition",
-		o: base.Operator{
+		o: base.Op{
 			Kind:   "join-nl-inner",
 			Fields: base.Fields{"dept", "city", "emp", "empDept"},
 			Params: []interface{}{
@@ -488,7 +488,7 @@ var TestCasesSimple = []TestCaseSimple{
 				[]interface{}{"field", "dept"},
 				[]interface{}{"json", `"NOT-MATCHING"`},
 			},
-			ParentA: &base.Operator{
+			ParentA: &base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"dept", "city"},
 				Params: []interface{}{
@@ -499,7 +499,7 @@ var TestCasesSimple = []TestCaseSimple{
 `,
 				},
 			},
-			ParentB: &base.Operator{
+			ParentB: &base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"emp", "empDept"},
 				Params: []interface{}{
@@ -517,11 +517,11 @@ var TestCasesSimple = []TestCaseSimple{
 	},
 	{
 		about: "test inner join via always-true join condition",
-		o: base.Operator{
+		o: base.Op{
 			Kind:   "join-nl-inner",
 			Fields: base.Fields{"dept", "city", "emp", "empDept"},
 			Params: []interface{}{"json", `true`},
-			ParentA: &base.Operator{
+			ParentA: &base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"dept", "city"},
 				Params: []interface{}{
@@ -532,7 +532,7 @@ var TestCasesSimple = []TestCaseSimple{
 `,
 				},
 			},
-			ParentB: &base.Operator{
+			ParentB: &base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"emp", "empDept"},
 				Params: []interface{}{
@@ -559,7 +559,7 @@ var TestCasesSimple = []TestCaseSimple{
 	},
 	{
 		about: "test inner join via always-matching join condition",
-		o: base.Operator{
+		o: base.Op{
 			Kind:   "join-nl-inner",
 			Fields: base.Fields{"dept", "city", "emp", "empDept"},
 			Params: []interface{}{
@@ -567,7 +567,7 @@ var TestCasesSimple = []TestCaseSimple{
 				[]interface{}{"json", `"Hello"`},
 				[]interface{}{"json", `"Hello"`},
 			},
-			ParentA: &base.Operator{
+			ParentA: &base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"dept", "city"},
 				Params: []interface{}{
@@ -578,7 +578,7 @@ var TestCasesSimple = []TestCaseSimple{
 `,
 				},
 			},
-			ParentB: &base.Operator{
+			ParentB: &base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"emp", "empDept"},
 				Params: []interface{}{
@@ -605,7 +605,7 @@ var TestCasesSimple = []TestCaseSimple{
 	},
 	{
 		about: "test left outer join on dept",
-		o: base.Operator{
+		o: base.Op{
 			Kind:   "join-nl-outerLeft",
 			Fields: base.Fields{"dept", "city", "emp", "empDept"},
 			Params: []interface{}{
@@ -613,7 +613,7 @@ var TestCasesSimple = []TestCaseSimple{
 				[]interface{}{"field", `dept`},
 				[]interface{}{"field", `empDept`},
 			},
-			ParentA: &base.Operator{
+			ParentA: &base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"dept", "city"},
 				Params: []interface{}{
@@ -625,7 +625,7 @@ var TestCasesSimple = []TestCaseSimple{
 `,
 				},
 			},
-			ParentB: &base.Operator{
+			ParentB: &base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"emp", "empDept"},
 				Params: []interface{}{
@@ -662,7 +662,7 @@ var TestCasesSimple = []TestCaseSimple{
 	},
 	{
 		about: "test left outer join on dept with empty RHS",
-		o: base.Operator{
+		o: base.Op{
 			Kind:   "join-nl-outerLeft",
 			Fields: base.Fields{"dept", "city", "emp", "empDept"},
 			Params: []interface{}{
@@ -670,7 +670,7 @@ var TestCasesSimple = []TestCaseSimple{
 				[]interface{}{"field", `dept`},
 				[]interface{}{"field", `empDept`},
 			},
-			ParentA: &base.Operator{
+			ParentA: &base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"dept", "city"},
 				Params: []interface{}{
@@ -681,7 +681,7 @@ var TestCasesSimple = []TestCaseSimple{
 `,
 				},
 			},
-			ParentB: &base.Operator{
+			ParentB: &base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"emp", "empDept"},
 				Params: []interface{}{
@@ -698,7 +698,7 @@ var TestCasesSimple = []TestCaseSimple{
 	},
 	{
 		about: "test inner join on dept with empty LHS",
-		o: base.Operator{
+		o: base.Op{
 			Kind:   "join-nl-inner",
 			Fields: base.Fields{"dept", "city", "emp", "empDept"},
 			Params: []interface{}{
@@ -706,7 +706,7 @@ var TestCasesSimple = []TestCaseSimple{
 				[]interface{}{"field", `dept`},
 				[]interface{}{"field", `empDept`},
 			},
-			ParentA: &base.Operator{
+			ParentA: &base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"dept", "city"},
 				Params: []interface{}{
@@ -715,7 +715,7 @@ var TestCasesSimple = []TestCaseSimple{
 `,
 				},
 			},
-			ParentB: &base.Operator{
+			ParentB: &base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"emp", "empDept"},
 				Params: []interface{}{
@@ -733,7 +733,7 @@ var TestCasesSimple = []TestCaseSimple{
 	},
 	{
 		about: "test left outer join on dept with empty LHS",
-		o: base.Operator{
+		o: base.Op{
 			Kind:   "join-nl-outerLeft",
 			Fields: base.Fields{"dept", "city", "emp", "empDept"},
 			Params: []interface{}{
@@ -741,7 +741,7 @@ var TestCasesSimple = []TestCaseSimple{
 				[]interface{}{"field", `dept`},
 				[]interface{}{"field", `empDept`},
 			},
-			ParentA: &base.Operator{
+			ParentA: &base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"dept", "city"},
 				Params: []interface{}{
@@ -750,7 +750,7 @@ var TestCasesSimple = []TestCaseSimple{
 `,
 				},
 			},
-			ParentB: &base.Operator{
+			ParentB: &base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"emp", "empDept"},
 				Params: []interface{}{
@@ -768,7 +768,7 @@ var TestCasesSimple = []TestCaseSimple{
 	},
 	{
 		about: "test left outer join on never matching condition",
-		o: base.Operator{
+		o: base.Op{
 			Kind:   "join-nl-outerLeft",
 			Fields: base.Fields{"dept", "city", "emp", "empDept"},
 			Params: []interface{}{
@@ -776,7 +776,7 @@ var TestCasesSimple = []TestCaseSimple{
 				[]interface{}{"field", `dept`},
 				[]interface{}{"field", `someFakeField`},
 			},
-			ParentA: &base.Operator{
+			ParentA: &base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"dept", "city"},
 				Params: []interface{}{
@@ -787,7 +787,7 @@ var TestCasesSimple = []TestCaseSimple{
 `,
 				},
 			},
-			ParentB: &base.Operator{
+			ParentB: &base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"emp", "empDept"},
 				Params: []interface{}{
@@ -814,7 +814,7 @@ var TestCasesSimple = []TestCaseSimple{
 	},
 	{
 		about: "test csv-data scan->filter on false OR true",
-		o: base.Operator{
+		o: base.Op{
 			Kind:   "filter",
 			Fields: base.Fields{"a", "b", "c"},
 			Params: []interface{}{
@@ -822,7 +822,7 @@ var TestCasesSimple = []TestCaseSimple{
 				[]interface{}{"json", `false`},
 				[]interface{}{"json", `true`},
 			},
-			ParentA: &base.Operator{
+			ParentA: &base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"a", "b", "c"},
 				Params: []interface{}{
@@ -841,7 +841,7 @@ var TestCasesSimple = []TestCaseSimple{
 	},
 	{
 		about: "test csv-data scan->filter on true OR false",
-		o: base.Operator{
+		o: base.Op{
 			Kind:   "filter",
 			Fields: base.Fields{"a", "b", "c"},
 			Params: []interface{}{
@@ -849,7 +849,7 @@ var TestCasesSimple = []TestCaseSimple{
 				[]interface{}{"json", `true`},
 				[]interface{}{"json", `false`},
 			},
-			ParentA: &base.Operator{
+			ParentA: &base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"a", "b", "c"},
 				Params: []interface{}{
@@ -868,7 +868,7 @@ var TestCasesSimple = []TestCaseSimple{
 	},
 	{
 		about: "test csv-data scan->filter on false OR false",
-		o: base.Operator{
+		o: base.Op{
 			Kind:   "filter",
 			Fields: base.Fields{"a", "b", "c"},
 			Params: []interface{}{
@@ -876,7 +876,7 @@ var TestCasesSimple = []TestCaseSimple{
 				[]interface{}{"json", `false`},
 				[]interface{}{"json", `false`},
 			},
-			ParentA: &base.Operator{
+			ParentA: &base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"a", "b", "c"},
 				Params: []interface{}{
@@ -892,7 +892,7 @@ var TestCasesSimple = []TestCaseSimple{
 	},
 	{
 		about: "test csv-data scan->filter on a=10 OR c=31",
-		o: base.Operator{
+		o: base.Op{
 			Kind:   "filter",
 			Fields: base.Fields{"a", "b", "c"},
 			Params: []interface{}{
@@ -908,7 +908,7 @@ var TestCasesSimple = []TestCaseSimple{
 					[]interface{}{"json", `31`},
 				},
 			},
-			ParentA: &base.Operator{
+			ParentA: &base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"a", "b", "c"},
 				Params: []interface{}{
@@ -928,7 +928,7 @@ var TestCasesSimple = []TestCaseSimple{
 	},
 	{
 		about: "test csv-data scan->filter on a=10 AND c=30",
-		o: base.Operator{
+		o: base.Op{
 			Kind:   "filter",
 			Fields: base.Fields{"a", "b", "c"},
 			Params: []interface{}{
@@ -944,7 +944,7 @@ var TestCasesSimple = []TestCaseSimple{
 					[]interface{}{"json", `30`},
 				},
 			},
-			ParentA: &base.Operator{
+			ParentA: &base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"a", "b", "c"},
 				Params: []interface{}{
@@ -963,7 +963,7 @@ var TestCasesSimple = []TestCaseSimple{
 	},
 	{
 		about: "test csv-data scan->filter on a=11 AND c=31",
-		o: base.Operator{
+		o: base.Op{
 			Kind:   "filter",
 			Fields: base.Fields{"a", "b", "c"},
 			Params: []interface{}{
@@ -979,7 +979,7 @@ var TestCasesSimple = []TestCaseSimple{
 					[]interface{}{"json", `31`},
 				},
 			},
-			ParentA: &base.Operator{
+			ParentA: &base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"a", "b", "c"},
 				Params: []interface{}{
@@ -998,7 +998,7 @@ var TestCasesSimple = []TestCaseSimple{
 	},
 	{
 		about: "test csv-data scan->filter on a=10 AND (c=30 AND b=20)",
-		o: base.Operator{
+		o: base.Op{
 			Kind:   "filter",
 			Fields: base.Fields{"a", "b", "c"},
 			Params: []interface{}{
@@ -1022,7 +1022,7 @@ var TestCasesSimple = []TestCaseSimple{
 					},
 				},
 			},
-			ParentA: &base.Operator{
+			ParentA: &base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"a", "b", "c"},
 				Params: []interface{}{
@@ -1041,7 +1041,7 @@ var TestCasesSimple = []TestCaseSimple{
 	},
 	{
 		about: "test csv-data scan->filter on a=10 OR (c=31 AND b=21)",
-		o: base.Operator{
+		o: base.Op{
 			Kind:   "filter",
 			Fields: base.Fields{"a", "b", "c"},
 			Params: []interface{}{
@@ -1065,7 +1065,7 @@ var TestCasesSimple = []TestCaseSimple{
 					},
 				},
 			},
-			ParentA: &base.Operator{
+			ParentA: &base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"a", "b", "c"},
 				Params: []interface{}{
@@ -1085,7 +1085,7 @@ var TestCasesSimple = []TestCaseSimple{
 	},
 	{
 		about: "test csv-data scan->filter on a=10 AND (c=4444 OR b=20)",
-		o: base.Operator{
+		o: base.Op{
 			Kind:   "filter",
 			Fields: base.Fields{"a", "b", "c"},
 			Params: []interface{}{
@@ -1109,7 +1109,7 @@ var TestCasesSimple = []TestCaseSimple{
 					},
 				},
 			},
-			ParentA: &base.Operator{
+			ParentA: &base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"a", "b", "c"},
 				Params: []interface{}{
@@ -1128,7 +1128,7 @@ var TestCasesSimple = []TestCaseSimple{
 	},
 	{
 		about: "test csv-data scan->join-nl-inner->project",
-		o: base.Operator{
+		o: base.Op{
 			Kind:   "project",
 			Fields: base.Fields{"city", "emp", "empDept"},
 			Params: []interface{}{
@@ -1136,7 +1136,7 @@ var TestCasesSimple = []TestCaseSimple{
 				[]interface{}{"field", "emp"},
 				[]interface{}{"field", "empDept"},
 			},
-			ParentA: &base.Operator{
+			ParentA: &base.Op{
 				Kind:   "join-nl-inner",
 				Fields: base.Fields{"dept", "city", "emp", "empDept"},
 				Params: []interface{}{
@@ -1144,7 +1144,7 @@ var TestCasesSimple = []TestCaseSimple{
 					[]interface{}{"field", "dept"},
 					[]interface{}{"field", "empDept"},
 				},
-				ParentA: &base.Operator{
+				ParentA: &base.Op{
 					Kind:   "scan",
 					Fields: base.Fields{"dept", "city"},
 					Params: []interface{}{
@@ -1155,7 +1155,7 @@ var TestCasesSimple = []TestCaseSimple{
 `,
 					},
 				},
-				ParentB: &base.Operator{
+				ParentB: &base.Op{
 					Kind:   "scan",
 					Fields: base.Fields{"emp", "empDept"},
 					Params: []interface{}{
@@ -1180,7 +1180,7 @@ var TestCasesSimple = []TestCaseSimple{
 
 	{
 		about: "test csv-data scan->join-nl-inner->filter->project",
-		o: base.Operator{
+		o: base.Op{
 			Kind:   "project",
 			Fields: base.Fields{"city", "emp", "empDept"},
 			Params: []interface{}{
@@ -1188,7 +1188,7 @@ var TestCasesSimple = []TestCaseSimple{
 				[]interface{}{"field", "emp"},
 				[]interface{}{"field", "empDept"},
 			},
-			ParentA: &base.Operator{
+			ParentA: &base.Op{
 				Kind:   "filter",
 				Fields: base.Fields{"dept", "city", "emp", "empDept"},
 				Params: []interface{}{
@@ -1196,7 +1196,7 @@ var TestCasesSimple = []TestCaseSimple{
 					[]interface{}{"json", `"london"`},
 					[]interface{}{"field", `city`},
 				},
-				ParentA: &base.Operator{
+				ParentA: &base.Op{
 					Kind:   "join-nl-inner",
 					Fields: base.Fields{"dept", "city", "emp", "empDept"},
 					Params: []interface{}{
@@ -1204,7 +1204,7 @@ var TestCasesSimple = []TestCaseSimple{
 						[]interface{}{"field", "dept"},
 						[]interface{}{"field", "empDept"},
 					},
-					ParentA: &base.Operator{
+					ParentA: &base.Op{
 						Kind:   "scan",
 						Fields: base.Fields{"dept", "city"},
 						Params: []interface{}{
@@ -1215,7 +1215,7 @@ var TestCasesSimple = []TestCaseSimple{
 `,
 						},
 					},
-					ParentB: &base.Operator{
+					ParentB: &base.Op{
 						Kind:   "scan",
 						Fields: base.Fields{"emp", "empDept"},
 						Params: []interface{}{

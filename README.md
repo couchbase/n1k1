@@ -11,10 +11,10 @@ The way n1k1 works...
 Or, how intermed_build generates a N1QL compiler...
 
 - 1: First, take a look at the n1k1/*.go files.  You'll see a simple,
-bare-bones interpreter for a "N1QL" query-plan.  In ExecOperator(), it
-basically recursively walks down through a query-plan tree, and
-processes it by pushing (or yield()'ing) data records from leaf nodes
-(e.g., a scan) up to higher nodes in the query-plan tree.
+bare-bones interpreter for a "N1QL" query-plan.  In ExecOp(), it
+recursively walks down through a query-plan tree, and processes it by
+pushing (or yield()'ing) data records from leaf nodes (e.g., a scan)
+up to higher nodes in the query-plan tree.
 
 - 1.1: As part of that, you'll also see some variables and functions
 that follow a naming convention with "lz" (e.g., "lazy") in their

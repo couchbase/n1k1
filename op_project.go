@@ -6,7 +6,7 @@ import (
 	"github.com/couchbase/n1k1/base"
 )
 
-func OperatorProject(o *base.Operator, lzYieldVals base.YieldVals,
+func OpProject(o *base.Op, lzYieldVals base.YieldVals,
 	lzYieldStats base.YieldStats, lzYieldErr base.YieldErr, path, pathNext string) {
 	if LzScope {
 		pathNextP := EmitPush(pathNext, "P") // !lz
@@ -34,7 +34,7 @@ func OperatorProject(o *base.Operator, lzYieldVals base.YieldVals,
 
 		EmitPop(pathNext, "P") // !lz
 
-		ExecOperator(o.ParentA, lzYieldVals, lzYieldStats, lzYieldErr, pathNextP, "") // !lz
+		ExecOp(o.ParentA, lzYieldVals, lzYieldStats, lzYieldErr, pathNextP, "") // !lz
 	}
 }
 

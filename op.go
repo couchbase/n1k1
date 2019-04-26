@@ -6,7 +6,7 @@ import (
 	"github.com/couchbase/n1k1/base"
 )
 
-func ExecOperator(o *base.Operator, lzYieldVals base.YieldVals,
+func ExecOp(o *base.Op, lzYieldVals base.YieldVals,
 	lzYieldStats base.YieldStats, lzYieldErr base.YieldErr,
 	path, pathItem string) {
 	pathNext := EmitPush(path, pathItem)
@@ -22,20 +22,20 @@ func ExecOperator(o *base.Operator, lzYieldVals base.YieldVals,
 		Scan(o.Params, o.Fields, lzYieldVals, lzYieldStats, lzYieldErr) // !lz
 
 	case "filter":
-		OperatorFilter(o, lzYieldVals, lzYieldStats, lzYieldErr, path, pathNext) // !lz
+		OpFilter(o, lzYieldVals, lzYieldStats, lzYieldErr, path, pathNext) // !lz
 
 	case "project":
-		OperatorProject(o, lzYieldVals, lzYieldStats, lzYieldErr, path, pathNext) // !lz
+		OpProject(o, lzYieldVals, lzYieldStats, lzYieldErr, path, pathNext) // !lz
 
 	case "join-nl-inner":
-		OperatorJoinNestedLoop(o, lzYieldVals, lzYieldStats, lzYieldErr, path, pathNext) // !lz
+		OpJoinNestedLoop(o, lzYieldVals, lzYieldStats, lzYieldErr, path, pathNext) // !lz
 
 	case "join-nl-outerLeft":
-		OperatorJoinNestedLoop(o, lzYieldVals, lzYieldStats, lzYieldErr, path, pathNext) // !lz
+		OpJoinNestedLoop(o, lzYieldVals, lzYieldStats, lzYieldErr, path, pathNext) // !lz
 	}
 }
 
-func OperatorJoinNestedLoop(o *base.Operator, lzYieldVals base.YieldVals,
+func OpJoinNestedLoop(o *base.Op, lzYieldVals base.YieldVals,
 	lzYieldStats base.YieldStats, lzYieldErr base.YieldErr,
 	path, pathNext string) {
 	joinKind := strings.Split(o.Kind, "-")[2] // Ex: "inner", "outerLeft".
@@ -101,7 +101,7 @@ func OperatorJoinNestedLoop(o *base.Operator, lzYieldVals base.YieldVals,
 				}
 
 				// Inner (right)...
-				ExecOperator(o.ParentB, lzYieldVals, lzYieldStats, lzYieldErr, pathNext, "JNLI") // !lz
+				ExecOp(o.ParentB, lzYieldVals, lzYieldStats, lzYieldErr, pathNext, "JNLI") // !lz
 
 				// Case of outerLeft join when inner (right) was empty.
 				if joinKind == "outerLeft" { // !lz
@@ -118,6 +118,6 @@ func OperatorJoinNestedLoop(o *base.Operator, lzYieldVals base.YieldVals,
 		}
 
 		// Outer (left)...
-		ExecOperator(o.ParentA, lzYieldVals, lzYieldStats, lzYieldErr, pathNext, "JNLO") // !lz
+		ExecOp(o.ParentA, lzYieldVals, lzYieldStats, lzYieldErr, pathNext, "JNLO") // !lz
 	}
 }
