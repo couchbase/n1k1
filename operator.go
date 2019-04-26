@@ -22,75 +22,23 @@ func ExecOperator(o *base.Operator, lzYieldVals base.YieldVals,
 		Scan(o.Params, o.Fields, lzYieldVals, lzYieldStats, lzYieldErr) // !lz
 
 	case "filter":
-		if LzScope {
-			pathNextF := EmitPush(pathNext, "F") // !lz
-
-			var lzExprFunc base.ExprFunc
-
-			lzExprFunc =
-				MakeExprFunc(o.ParentA.Fields, nil, o.Params, pathNextF, "FF") // !lz
-
-			lzYieldValsOrig := lzYieldVals
-
-			_, _ = lzExprFunc, lzYieldValsOrig
-
-			lzYieldVals = func(lzVals base.Vals) {
-				var lzVal base.Val
-
-				lzVal = lzExprFunc(lzVals) // <== emitCaptured: pathNextF "FF"
-
-				if base.ValEqualTrue(lzVal) {
-					lzYieldValsOrig(lzVals) // <== emitCaptured: path ""
-				}
-			}
-
-			EmitPop(pathNext, "F") // !lz
-
-			ExecOperator(o.ParentA, lzYieldVals, lzYieldStats, lzYieldErr, pathNextF, "") // !lz
-		}
+		OperatorFilter(o, lzYieldVals, lzYieldStats, lzYieldErr, path, pathNext) // !lz
 
 	case "project":
-		if LzScope {
-			pathNextP := EmitPush(pathNext, "P") // !lz
+		OperatorProject(o, lzYieldVals, lzYieldStats, lzYieldErr, path, pathNext) // !lz
 
-			var lzValsReuse base.Vals // <== varLift: lzValsReuse by path
+	case "join-nl-inner":
+		OperatorJoinNestedLoop(o, lzYieldVals, lzYieldStats, lzYieldErr, path, pathNext) // !lz
 
-			var lzProjectFunc base.ProjectFunc
-
-			lzProjectFunc =
-				MakeProjectFunc(o.ParentA.Fields, nil, o.Params, pathNextP, "PF") // !lz
-
-			lzYieldValsOrig := lzYieldVals
-
-			_, _ = lzProjectFunc, lzYieldValsOrig
-
-			lzYieldVals = func(lzVals base.Vals) {
-				lzValsOut := lzValsReuse[:0]
-
-				lzValsOut = lzProjectFunc(lzVals, lzValsOut) // <== emitCaptured: pathNextP "PF"
-
-				lzValsReuse = lzValsOut
-
-				lzYieldValsOrig(lzValsOut)
-			}
-
-			EmitPop(pathNext, "P") // !lz
-
-			ExecOperator(o.ParentA, lzYieldVals, lzYieldStats, lzYieldErr, pathNextP, "") // !lz
-		}
-
-	case "join-inner-nl":
-		ExecJoinNestedLoop(o, lzYieldVals, lzYieldStats, lzYieldErr, path, pathNext) // !lz
-
-	case "join-outerLeft-nl":
-		ExecJoinNestedLoop(o, lzYieldVals, lzYieldStats, lzYieldErr, path, pathNext) // !lz
+	case "join-nl-outerLeft":
+		OperatorJoinNestedLoop(o, lzYieldVals, lzYieldStats, lzYieldErr, path, pathNext) // !lz
 	}
 }
 
-func ExecJoinNestedLoop(o *base.Operator, lzYieldVals base.YieldVals,
+func OperatorJoinNestedLoop(o *base.Operator, lzYieldVals base.YieldVals,
 	lzYieldStats base.YieldStats, lzYieldErr base.YieldErr,
 	path, pathNext string) {
-	joinKind := strings.Split(o.Kind, "-")[1] // Ex: "inner", "outerLeft".
+	joinKind := strings.Split(o.Kind, "-")[2] // Ex: "inner", "outerLeft".
 
 	lenFieldsA := len(o.ParentA.Fields)
 	lenFieldsB := len(o.ParentB.Fields)

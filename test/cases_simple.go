@@ -435,9 +435,9 @@ var TestCasesSimple = []TestCaseSimple{
 		},
 	},
 	{
-		about: "test csv-data scan->join-inner-nl",
+		about: "test csv-data scan->join-nl-inner",
 		o: base.Operator{
-			Kind:   "join-inner-nl",
+			Kind:   "join-nl-inner",
 			Fields: base.Fields{"dept", "city", "emp", "empDept"},
 			Params: []interface{}{
 				"eq",
@@ -479,9 +479,9 @@ var TestCasesSimple = []TestCaseSimple{
 		},
 	},
 	{
-		about: "test csv-data scan->join-inner-nl but false join condition",
+		about: "test csv-data scan->join-nl-inner but false join condition",
 		o: base.Operator{
-			Kind:   "join-inner-nl",
+			Kind:   "join-nl-inner",
 			Fields: base.Fields{"dept", "city", "emp", "empDept"},
 			Params: []interface{}{
 				"eq",
@@ -518,7 +518,7 @@ var TestCasesSimple = []TestCaseSimple{
 	{
 		about: "test inner join via always-true join condition",
 		o: base.Operator{
-			Kind:   "join-inner-nl",
+			Kind:   "join-nl-inner",
 			Fields: base.Fields{"dept", "city", "emp", "empDept"},
 			Params: []interface{}{"json", `true`},
 			ParentA: &base.Operator{
@@ -560,7 +560,7 @@ var TestCasesSimple = []TestCaseSimple{
 	{
 		about: "test inner join via always-matching join condition",
 		o: base.Operator{
-			Kind:   "join-inner-nl",
+			Kind:   "join-nl-inner",
 			Fields: base.Fields{"dept", "city", "emp", "empDept"},
 			Params: []interface{}{
 				"eq",
@@ -606,7 +606,7 @@ var TestCasesSimple = []TestCaseSimple{
 	{
 		about: "test left outer join on dept",
 		o: base.Operator{
-			Kind:   "join-outerLeft-nl",
+			Kind:   "join-nl-outerLeft",
 			Fields: base.Fields{"dept", "city", "emp", "empDept"},
 			Params: []interface{}{
 				"eq",
@@ -663,7 +663,7 @@ var TestCasesSimple = []TestCaseSimple{
 	{
 		about: "test left outer join on dept with empty RHS",
 		o: base.Operator{
-			Kind:   "join-outerLeft-nl",
+			Kind:   "join-nl-outerLeft",
 			Fields: base.Fields{"dept", "city", "emp", "empDept"},
 			Params: []interface{}{
 				"eq",
@@ -699,7 +699,7 @@ var TestCasesSimple = []TestCaseSimple{
 	{
 		about: "test inner join on dept with empty LHS",
 		o: base.Operator{
-			Kind:   "join-inner-nl",
+			Kind:   "join-nl-inner",
 			Fields: base.Fields{"dept", "city", "emp", "empDept"},
 			Params: []interface{}{
 				"eq",
@@ -734,7 +734,7 @@ var TestCasesSimple = []TestCaseSimple{
 	{
 		about: "test left outer join on dept with empty LHS",
 		o: base.Operator{
-			Kind:   "join-outerLeft-nl",
+			Kind:   "join-nl-outerLeft",
 			Fields: base.Fields{"dept", "city", "emp", "empDept"},
 			Params: []interface{}{
 				"eq",
@@ -769,7 +769,7 @@ var TestCasesSimple = []TestCaseSimple{
 	{
 		about: "test left outer join on never matching condition",
 		o: base.Operator{
-			Kind:   "join-outerLeft-nl",
+			Kind:   "join-nl-outerLeft",
 			Fields: base.Fields{"dept", "city", "emp", "empDept"},
 			Params: []interface{}{
 				"eq",
@@ -1127,7 +1127,7 @@ var TestCasesSimple = []TestCaseSimple{
 		},
 	},
 	{
-		about: "test csv-data scan->join-inner-nl->project",
+		about: "test csv-data scan->join-nl-inner->project",
 		o: base.Operator{
 			Kind:   "project",
 			Fields: base.Fields{"city", "emp", "empDept"},
@@ -1137,7 +1137,7 @@ var TestCasesSimple = []TestCaseSimple{
 				[]interface{}{"field", "empDept"},
 			},
 			ParentA: &base.Operator{
-				Kind:   "join-inner-nl",
+				Kind:   "join-nl-inner",
 				Fields: base.Fields{"dept", "city", "emp", "empDept"},
 				Params: []interface{}{
 					"eq",
@@ -1179,7 +1179,7 @@ var TestCasesSimple = []TestCaseSimple{
 	},
 
 	{
-		about: "test csv-data scan->join-inner-nl->filter->project",
+		about: "test csv-data scan->join-nl-inner->filter->project",
 		o: base.Operator{
 			Kind:   "project",
 			Fields: base.Fields{"city", "emp", "empDept"},
@@ -1197,7 +1197,7 @@ var TestCasesSimple = []TestCaseSimple{
 					[]interface{}{"field", `city`},
 				},
 				ParentA: &base.Operator{
-					Kind:   "join-inner-nl",
+					Kind:   "join-nl-inner",
 					Fields: base.Fields{"dept", "city", "emp", "empDept"},
 					Params: []interface{}{
 						"eq",

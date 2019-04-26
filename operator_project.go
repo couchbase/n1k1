@@ -6,6 +6,38 @@ import (
 	"github.com/couchbase/n1k1/base"
 )
 
+func OperatorProject(o *base.Operator, lzYieldVals base.YieldVals,
+	lzYieldStats base.YieldStats, lzYieldErr base.YieldErr, path, pathNext string) {
+	if LzScope {
+		pathNextP := EmitPush(pathNext, "P") // !lz
+
+		var lzValsReuse base.Vals // <== varLift: lzValsReuse by path
+
+		var lzProjectFunc base.ProjectFunc
+
+		lzProjectFunc =
+			MakeProjectFunc(o.ParentA.Fields, nil, o.Params, pathNextP, "PF") // !lz
+
+		lzYieldValsOrig := lzYieldVals
+
+		_, _ = lzProjectFunc, lzYieldValsOrig
+
+		lzYieldVals = func(lzVals base.Vals) {
+			lzValsOut := lzValsReuse[:0]
+
+			lzValsOut = lzProjectFunc(lzVals, lzValsOut) // <== emitCaptured: pathNextP "PF"
+
+			lzValsReuse = lzValsOut
+
+			lzYieldValsOrig(lzValsOut)
+		}
+
+		EmitPop(pathNext, "P") // !lz
+
+		ExecOperator(o.ParentA, lzYieldVals, lzYieldStats, lzYieldErr, pathNextP, "") // !lz
+	}
+}
+
 func MakeProjectFunc(fields base.Fields, types base.Types,
 	projections []interface{}, path, pathItem string) (
 	lzProjectFunc base.ProjectFunc) {
