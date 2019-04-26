@@ -127,42 +127,4 @@ type ProjectFunc func(vals, valsPre Vals) Vals
 
 // -----------------------------------------------------
 
-type Types []string
-
-func SetLastType(a Types, t string) {
-	if len(a) > 0 {
-		a[len(a)-1] = t
-	}
-}
-
-func TakeLastType(a Types) (t string) {
-	if len(a) > 0 {
-		t = a[len(a)-1]
-		a[len(a)-1] = ""
-	}
-
-	return t
-}
-
-// -----------------------------------------------------
-
-// JsonTypes allows 0'th byte of a json []byte to tell us the type.
-var JsonTypes = map[byte]string{ // TODO: Use array instead of map?
-	'"': "string",
-	'{': "object",
-	'[': "array",
-	'n': "null",
-	't': "bool", // From "true".
-	'f': "bool", // From "false".
-	'-': "number",
-	'0': "number",
-	'1': "number",
-	'2': "number",
-	'3': "number",
-	'4': "number",
-	'5': "number",
-	'6': "number",
-	'7': "number",
-	'8': "number",
-	'9': "number",
-}
+type Types []string // TODO.

@@ -12,8 +12,7 @@ func init() {
 
 // MakeBiExprFunc is for two-argument or "binary" expressions.
 func MakeBiExprFunc(fields base.Fields, types base.Types,
-	params []interface{}, outTypes base.Types, path string,
-	biExprFunc base.BiExprFunc, outType string) (
+	params []interface{}, path string, biExprFunc base.BiExprFunc) (
 	lzExprFunc base.ExprFunc) {
 	exprA := params[0].([]interface{})
 	exprB := params[1].([]interface{})
@@ -31,14 +30,12 @@ func MakeBiExprFunc(fields base.Fields, types base.Types,
 		_, _ = lzA, lzB
 
 		lzExprFunc =
-			MakeExprFunc(fields, types, exprA, outTypes, path, "A") // !lz
+			MakeExprFunc(fields, types, exprA, path, "A") // !lz
 		lzA = lzExprFunc
-		base.TakeLastType(outTypes) // !lz
 
 		lzExprFunc =
-			MakeExprFunc(fields, types, exprB, outTypes, path, "B") // !lz
+			MakeExprFunc(fields, types, exprB, path, "B") // !lz
 		lzB = lzExprFunc
-		base.TakeLastType(outTypes) // !lz
 
 		lzExprFunc = func(lzVals base.Vals) (lzVal base.Val) {
 			lzVal =
@@ -48,15 +45,13 @@ func MakeBiExprFunc(fields base.Fields, types base.Types,
 		}
 	}
 
-	base.SetLastType(outTypes, outType)
-
 	return lzExprFunc
 }
 
 // -----------------------------------------------------
 
-func ExprEq(fields base.Fields, types base.Types, params []interface{},
-	outTypes base.Types, path string) (lzExprFunc base.ExprFunc) {
+func ExprEq(fields base.Fields, types base.Types,
+	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
 	biExprFunc := func(lzA, lzB base.ExprFunc, lzVals base.Vals) (lzVal base.Val) { // !lz
 		if LzScope {
 			lzVal = lzA(lzVals) // <== emitCaptured: path "A"
@@ -72,15 +67,15 @@ func ExprEq(fields base.Fields, types base.Types, params []interface{},
 	} // !lz
 
 	lzExprFunc =
-		MakeBiExprFunc(fields, types, params, outTypes, path, biExprFunc, "") // !lz
+		MakeBiExprFunc(fields, types, params, path, biExprFunc) // !lz
 
 	return lzExprFunc
 }
 
 // -----------------------------------------------------
 
-func ExprOr(fields base.Fields, types base.Types, params []interface{},
-	outTypes base.Types, path string) (lzExprFunc base.ExprFunc) {
+func ExprOr(fields base.Fields, types base.Types,
+	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
 	biExprFunc := func(lzA, lzB base.ExprFunc, lzVals base.Vals) (lzVal base.Val) { // !lz
 		// Implemented this way since compiler only allows return on last line.
 		// TODO: This might not match N1QL logical OR semantics.
@@ -93,15 +88,15 @@ func ExprOr(fields base.Fields, types base.Types, params []interface{},
 	} // !lz
 
 	lzExprFunc =
-		MakeBiExprFunc(fields, types, params, outTypes, path, biExprFunc, "") // !lz
+		MakeBiExprFunc(fields, types, params, path, biExprFunc) // !lz
 
 	return lzExprFunc
 }
 
 // -----------------------------------------------------
 
-func ExprAnd(fields base.Fields, types base.Types, params []interface{},
-	outTypes base.Types, path string) (lzExprFunc base.ExprFunc) {
+func ExprAnd(fields base.Fields, types base.Types,
+	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
 	biExprFunc := func(lzA, lzB base.ExprFunc, lzVals base.Vals) (lzVal base.Val) { // !lz
 		// Implemented this way since compiler only allows return on last line.
 		// TODO: This might not match N1QL logical AND semantics.
@@ -114,7 +109,7 @@ func ExprAnd(fields base.Fields, types base.Types, params []interface{},
 	} // !lz
 
 	lzExprFunc =
-		MakeBiExprFunc(fields, types, params, outTypes, path, biExprFunc, "") // !lz
+		MakeBiExprFunc(fields, types, params, path, biExprFunc) // !lz
 
 	return lzExprFunc
 }

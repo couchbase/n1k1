@@ -7,7 +7,7 @@ import (
 )
 
 func MakeProjectFunc(fields base.Fields, types base.Types,
-	projections []interface{}, outTypes base.Types, path, pathItem string) (
+	projections []interface{}, path, pathItem string) (
 	lzProjectFunc base.ProjectFunc) {
 	pathNext := EmitPush(path, pathItem)
 
@@ -18,13 +18,11 @@ func MakeProjectFunc(fields base.Fields, types base.Types,
 	var lzExprFunc base.ExprFunc // !lz
 
 	for i, projection := range projections {
-		outTypes = append(outTypes, "") // TODO: projected out type.
-
 		expr := projection.([]interface{})
 
 		if LzScope {
 			lzExprFunc =
-				MakeExprFunc(fields, types, expr, outTypes, pathNext, strconv.Itoa(i)) // !lz
+				MakeExprFunc(fields, types, expr, pathNext, strconv.Itoa(i)) // !lz
 
 			exprFuncs = append(exprFuncs, lzExprFunc) // !lz
 		}

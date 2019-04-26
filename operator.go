@@ -22,15 +22,13 @@ func ExecOperator(o *base.Operator, lzYieldVals base.YieldVals,
 		Scan(o.Params, o.Fields, lzYieldVals, lzYieldStats, lzYieldErr) // !lz
 
 	case "filter":
-		types := make(base.Types, len(o.ParentA.Fields)) // TODO.
-
 		if LzScope {
 			pathNextF := EmitPush(pathNext, "F") // !lz
 
 			var lzExprFunc base.ExprFunc
 
 			lzExprFunc =
-				MakeExprFunc(o.ParentA.Fields, types, o.Params, nil, pathNextF, "FF") // !lz
+				MakeExprFunc(o.ParentA.Fields, nil, o.Params, pathNextF, "FF") // !lz
 
 			lzYieldValsOrig := lzYieldVals
 
@@ -52,9 +50,6 @@ func ExecOperator(o *base.Operator, lzYieldVals base.YieldVals,
 		}
 
 	case "project":
-		types := make(base.Types, len(o.ParentA.Fields)) // TODO.
-		outTypes := base.Types{""}                       // TODO.
-
 		if LzScope {
 			pathNextP := EmitPush(pathNext, "P") // !lz
 
@@ -63,7 +58,7 @@ func ExecOperator(o *base.Operator, lzYieldVals base.YieldVals,
 			var lzProjectFunc base.ProjectFunc
 
 			lzProjectFunc =
-				MakeProjectFunc(o.ParentA.Fields, types, o.Params, outTypes, pathNextP, "PF") // !lz
+				MakeProjectFunc(o.ParentA.Fields, nil, o.Params, pathNextP, "PF") // !lz
 
 			lzYieldValsOrig := lzYieldVals
 
@@ -105,13 +100,11 @@ func ExecJoinNestedLoop(o *base.Operator, lzYieldVals base.YieldVals,
 	fieldsAB = append(fieldsAB, o.ParentA.Fields...)
 	fieldsAB = append(fieldsAB, o.ParentB.Fields...)
 
-	typesAB := make(base.Types, lenFieldsAB) // TODO.
-
 	if LzScope {
 		var lzExprFunc base.ExprFunc
 
 		lzExprFunc =
-			MakeExprFunc(fieldsAB, typesAB, o.Params, nil, pathNext, "JF") // !lz
+			MakeExprFunc(fieldsAB, nil, o.Params, pathNext, "JF") // !lz
 
 		var lzHadInner bool
 

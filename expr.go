@@ -31,33 +31,28 @@ func init() {
 }
 
 type ExprCatalogFunc func(fields base.Fields, types base.Types,
-	params []interface{}, outTypes base.Types, path string) (
-	lzExprFunc base.ExprFunc)
+	params []interface{}, path string) (lzExprFunc base.ExprFunc)
 
 // -----------------------------------------------------
 
 func MakeExprFunc(fields base.Fields, types base.Types,
-	expr []interface{}, outTypes base.Types, path, pathItem string) (
+	expr []interface{}, path, pathItem string) (
 	lzExprFunc base.ExprFunc) {
 	pathNext := EmitPush(path, pathItem)
 
 	defer EmitPop(path, pathItem)
 
 	lzExprFunc =
-		ExprCatalog[expr[0].(string)](fields, types, expr[1:], outTypes, pathNext)
+		ExprCatalog[expr[0].(string)](fields, types, expr[1:], pathNext)
 
 	return lzExprFunc
 }
 
 // -----------------------------------------------------
 
-func ExprJson(fields base.Fields, types base.Types, params []interface{},
-	outTypes base.Types, path string) (lzExprFunc base.ExprFunc) {
+func ExprJson(fields base.Fields, types base.Types,
+	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
 	json := []byte(params[0].(string))
-
-	jsonType := base.JsonTypes[json[0]] // Might be "".
-
-	base.SetLastType(outTypes, jsonType)
 
 	var lzValJson base.Val = base.Val(json) // <== varLift: lzValJson by path
 
@@ -71,15 +66,9 @@ func ExprJson(fields base.Fields, types base.Types, params []interface{},
 
 // -----------------------------------------------------
 
-func ExprField(fields base.Fields, types base.Types, params []interface{},
-	outTypes base.Types, path string) (lzExprFunc base.ExprFunc) {
+func ExprField(fields base.Fields, types base.Types,
+	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
 	idx := fields.IndexOf(params[0].(string))
-	if idx < 0 {
-		base.SetLastType(outTypes, "")
-	} else {
-		base.SetLastType(outTypes, types[idx])
-	}
-
 	if idx >= 0 {
 		lzExprFunc = func(lzVals base.Vals) (lzVal base.Val) {
 			lzVal = lzVals[idx]
