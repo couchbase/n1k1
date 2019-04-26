@@ -19,7 +19,7 @@ func ExecOp(o *base.Op, lzYieldVals base.YieldVals,
 
 	switch o.Kind {
 	case "scan":
-		Scan(o.Params, o.Fields, lzYieldVals, lzYieldStats, lzYieldErr) // !lz
+		OpScan(o.Params, o.Fields, lzYieldVals, lzYieldStats, lzYieldErr) // !lz
 
 	case "filter":
 		OpFilter(o, lzYieldVals, lzYieldStats, lzYieldErr, path, pathNext) // !lz

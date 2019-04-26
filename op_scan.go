@@ -13,7 +13,7 @@ import (
 
 var ScanYieldStatsEvery = 1024 // Yield stats after this many tuple yields.
 
-func Scan(params []interface{}, fields base.Fields,
+func OpScan(params []interface{}, fields base.Fields,
 	lzYieldVals base.YieldVals, lzYieldStats base.YieldStats, lzYieldErr base.YieldErr) {
 	kind := params[0].(string)
 
