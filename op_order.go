@@ -14,15 +14,15 @@ func OpOrderByOffsetLimit(o *base.Op, lzYieldVals base.YieldVals,
 	// Then directions has same len as projections, ex: ["asc", "desc", "asc"].
 	directions := o.Params[1].([]interface{})
 
-	offset := int64(0)
+	offset := 0
 
-	limit := int64(math.MaxInt64)
+	limit := math.MaxInt64
 
 	if len(o.Params) >= 3 {
-		offset = o.Params[2].(int64)
+		offset = o.Params[2].(int)
 
 		if len(o.Params) >= 4 {
-			limit = o.Params[3].(int64)
+			limit = o.Params[3].(int)
 		}
 	}
 
@@ -71,9 +71,9 @@ func OpOrderByOffsetLimit(o *base.Op, lzYieldVals base.YieldVals,
 				sort.Sort(base.NewOrderBySorter(lzItems, lzProjected, lzInterfaces, lzLessFunc))
 
 				lzI := offset
-				lzN := int64(0)
+				lzN := 0
 
-				for lzN < limit {
+				for lzI < len(lzItems) && lzN < limit {
 					lzVals := lzItems[lzI]
 
 					lzYieldValsOrig(lzVals)
