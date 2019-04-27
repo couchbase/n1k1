@@ -220,23 +220,20 @@ func InterfaceToType(val interface{}) int {
 type LessFunc func(
 	valsA, valsB Vals, iA, iB []interface{}) bool
 
+// ---------------------------------------------
+
 func NewOrderBySorter(
 	items []Vals,
 	projected []Vals, // Same len() as items.
 	interfaces [][]interface{}, // Same len() as items.
 	lessFunc LessFunc) *OrderBySorter {
-	return &OrderBySorter{
-		Items:      items,
-		Projected:  projected,
-		Interfaces: interfaces,
-		LessFunc:   lessFunc,
-	}
+	return &OrderBySorter{items, projected, interfaces, lessFunc}
 }
 
 type OrderBySorter struct {
 	Items      []Vals
-	Projected  []Vals // Same len() as Items.
-	Interfaces [][]interface{}
+	Projected  []Vals          // Same len() as Items.
+	Interfaces [][]interface{} // Same len() as Items.
 	LessFunc   LessFunc
 }
 
