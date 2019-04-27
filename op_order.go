@@ -52,7 +52,8 @@ func OpOrderByOffsetLimit(o *base.Op, lzYieldVals base.YieldVals,
 
 		lzYieldErr = func(lzErrIn error) {
 			if lzErrIn == nil { // If no error, yield our sorted items.
-				var lzProjected []base.Vals
+				var lzProjected = make([]base.Vals, 0, len(lzItems))
+
 				for _, lzVals := range lzItems {
 					var lzValsOut base.Vals
 
