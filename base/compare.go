@@ -39,11 +39,16 @@ func (c *ValComparer) Alloc(depth, size int) []string {
 
 // ---------------------------------------------
 
-func (c *ValComparer) Compare(a, b Val) int {
-	var av, bv interface{}
+func (c *ValComparer) Compare(a, b Val, av, bv *interface{}) int {
+	var errA, errB error
 
-	errA := json.Unmarshal(a, &av)
-	errB := json.Unmarshal(b, &bv)
+	if *av == nil {
+		errA = json.Unmarshal(a, av)
+	}
+
+	if *bv == nil {
+		errB = json.Unmarshal(b, bv)
+	}
 
 	if errA != nil || errB != nil {
 		if errA != nil && errB != nil {
@@ -212,27 +217,27 @@ func InterfaceToType(val interface{}) int {
 
 // ---------------------------------------------
 
-type ProjectedLessFunc func(
-	projectedA, projectedB Vals, iA, iB []interface{}) bool
+type LessFunc func(
+	valsA, valsB Vals, iA, iB []interface{}) bool
 
 func NewOrderBySorter(
 	items []Vals,
 	projected []Vals, // Same len() as items.
 	interfaces [][]interface{}, // Same len() as items.
-	projectedLess ProjectedLessFunc) *OrderBySorter {
+	lessFunc LessFunc) *OrderBySorter {
 	return &OrderBySorter{
-		Items:         items,
-		Projected:     projected,
-		Interfaces:    interfaces,
-		ProjectedLess: projectedLess,
+		Items:      items,
+		Projected:  projected,
+		Interfaces: interfaces,
+		LessFunc:   lessFunc,
 	}
 }
 
 type OrderBySorter struct {
-	Items         []Vals
-	Projected     []Vals // Same len() as Items.
-	Interfaces    [][]interface{}
-	ProjectedLess ProjectedLessFunc
+	Items      []Vals
+	Projected  []Vals // Same len() as Items.
+	Interfaces [][]interface{}
+	LessFunc   LessFunc
 }
 
 func (a *OrderBySorter) Len() int {
@@ -246,6 +251,6 @@ func (a *OrderBySorter) Swap(i, j int) {
 }
 
 func (a *OrderBySorter) Less(i, j int) bool {
-	return a.ProjectedLess(
+	return a.LessFunc(
 		a.Projected[i], a.Projected[j], a.Interfaces[i], a.Interfaces[j])
 }
