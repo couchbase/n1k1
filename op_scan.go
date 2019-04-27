@@ -114,7 +114,5 @@ func ScanReaderAsCsv(lzReader io.Reader, fields base.Fields,
 		}
 	}
 
-	if lzScanner.Err() != LzErrNil {
-		lzYieldErr(lzScanner.Err())
-	}
+	lzYieldErr(lzScanner.Err()) // Might be nil.
 }
