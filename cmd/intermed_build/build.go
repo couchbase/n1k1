@@ -24,6 +24,7 @@ var Keywords = map[string]bool{
 	"make":   true,
 	"append": true,
 	"len":    true,
+	"nil":    true,
 	"error":  true,
 	"bool":   true,
 }

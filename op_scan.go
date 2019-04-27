@@ -107,7 +107,7 @@ func ScanReaderAsCsv(lzReader io.Reader, fields base.Fields,
 			var lzStats base.Stats // TODO.
 
 			lzErr := lzYieldStats(&lzStats)
-			if lzErr != LzErrNil { // Also used for early exit (e.g., LIMIT).
+			if lzErr != nil { // Also used for early exit (e.g., LIMIT).
 				lzYieldErr(lzErr)
 				return
 			}

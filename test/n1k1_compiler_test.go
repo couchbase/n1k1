@@ -199,7 +199,6 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 		`import "github.com/couchbase/n1k1/base"`,
 		`import "github.com/couchbase/n1k1/test"`,
 		``,
-		`var LzErrNil error`,
 	}
 
 	for testi, test := range tests {

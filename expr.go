@@ -7,9 +7,6 @@ import (
 // LzScope is used to mark variable scopes as lz (ex: IF block).
 const LzScope = true
 
-// LzErrNil is always the nil error.
-var LzErrNil error
-
 // -----------------------------------------------------
 
 // Marks the start of a nested "emit capture" area.
