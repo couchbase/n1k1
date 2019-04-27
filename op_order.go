@@ -68,7 +68,7 @@ func OpOrderByOffsetLimit(o *base.Op, lzYieldVals base.YieldVals,
 					lzInterfaces = append(lzInterfaces, lzInterfacesAll[lzI*nProjections:(lzI+1)*nProjections])
 				}
 
-				sort.Sort(base.NewOrderBySorter(lzItems, lzProjected, lzInterfaces, lzLessFunc))
+				sort.Sort(&base.OrderBySorter{lzItems, lzProjected, lzInterfaces, lzLessFunc})
 
 				lzI := offset
 				lzN := 0

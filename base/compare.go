@@ -222,14 +222,6 @@ type LessFunc func(
 
 // ---------------------------------------------
 
-func NewOrderBySorter(
-	items []Vals,
-	projected []Vals, // Same len() as items.
-	interfaces [][]interface{}, // Same len() as items.
-	lessFunc LessFunc) *OrderBySorter {
-	return &OrderBySorter{items, projected, interfaces, lessFunc}
-}
-
 type OrderBySorter struct {
 	Items      []Vals
 	Projected  []Vals          // Same len() as Items.
