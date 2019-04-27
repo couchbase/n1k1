@@ -102,6 +102,8 @@ func MakeLessFunc(types base.Types, directions []interface{}) (
 	lzValComparer := &base.ValComparer{}
 
 	lzLessFunc = func(lzValsA, lzValsB base.Vals, lzIA, lzIB []interface{}) bool {
+		var lzCmp int
+
 		for idx := range directions { // !lz
 			direction := directions[idx] // !lz
 
@@ -110,7 +112,7 @@ func MakeLessFunc(types base.Types, directions []interface{}) (
 				lt, gt = false, true // !lz
 			} // !lz
 
-			lzCmp := lzValComparer.Compare(lzValsA[idx], lzValsB[idx], &lzIA[idx], &lzIB[idx])
+			lzCmp = lzValComparer.Compare(lzValsA[idx], lzValsB[idx], &lzIA[idx], &lzIB[idx])
 			if lzCmp < 0 {
 				return lt
 			}

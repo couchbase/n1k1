@@ -29,7 +29,7 @@ var Keywords = map[string]bool{
 
 	"interface": true,
 	"bool":      true,
-	"int64":     true,
+	"int":       true,
 }
 
 // ---------------------------------------------------------------
