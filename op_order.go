@@ -2,94 +2,113 @@ package n1k1
 
 import (
 	"math"
-	"strconv"
+	"sort" // <== genCompiler:hide
 
 	"github.com/couchbase/n1k1/base"
 )
 
 func OpOrderByOffsetLimit(o *base.Op, lzYieldVals base.YieldVals,
 	lzYieldStats base.YieldStats, lzYieldErr base.YieldErr, path, pathNext string) {
-	orderBy := o.Params[0].([]interface{})
+	projections := o.Params[0].([]interface{}) // ORDER BY expressions.
 
-	offset := uint64(0)
+	// Then directions has same len as projections, ex: ["asc", "desc", "asc"].
+	directions := o.Params[1].([]interface{})
 
-	limit := math.MaxUint64
+	offset := int64(0)
 
-	if len(o.Params) >= 2 {
-		offset = o.Params[1].(uint64)
+	limit := int64(math.MaxInt64)
 
-		if len(o.Params) >= 3 {
-			limit = o.Params[2].(uint64)
+	if len(o.Params) >= 3 {
+		offset = o.Params[2].(int64)
+
+		if len(o.Params) >= 4 {
+			limit = o.Params[3].(int64)
 		}
 	}
 
 	if LzScope {
-		pathNextP := EmitPush(pathNext, "OOL") // !lz
+		pathNextOOL := EmitPush(pathNext, "OOL") // !lz
 
-		var lzValsReuse base.Vals // <== varLift: lzValsReuse by path
+		lzProjectFunc :=
+			MakeProjectFunc(o.ParentA.Fields, nil, projections, pathNextOOL, "PF") // !lz
 
-		var lzProjectFunc base.ProjectFunc
+		lzLessFunc :=
+			MakeLessFunc(nil, directions) // !lz
 
-		lzProjectFunc, ascendings =
-			MakeOrderByFunc(o.ParentA.Fields, nil, o.Params, pathNextP, "PF") // !lz
+		var lzItems []base.Vals // Items collected to be sorted.
 
 		lzYieldValsOrig := lzYieldVals
 
-		_, _ = lzProjectFunc, lzYieldValsOrig
-
 		lzYieldVals = func(lzVals base.Vals) {
-			lzValsOut := lzValsReuse[:0]
+			var lzItem base.Vals // Deep copy.
+			for _, lzVal := range lzVals {
+				lzItem = append(lzItem, append(base.Val(nil), lzVal...))
+			}
 
-			lzValsOut = lzProjectFunc(lzVals, lzValsOut) // <== emitCaptured: pathNextP "PF"
+			lzItems = append(lzItems, lzItem)
+		}
 
-			lzValsReuse = lzValsOut
+		lzYieldErrOrig := lzYieldErr
 
-			lzYieldValsOrig(lzValsOut)
+		lzYieldErr = func(lzErrIn error) {
+			if lzErrIn == nil { // If no error, yield our sorted items.
+				var lzProjected []base.Vals
+				for _, lzVals := range lzItems {
+					var lzValsOut base.Vals
+
+					lzValsOut = lzProjectFunc(lzVals, lzValsOut)
+
+					lzProjected = append(lzProjected, lzValsOut)
+				}
+
+				sort.Sort(&base.OrderBySorter{lzItems, lzProjected, lzLessFunc})
+
+				lzI := offset
+				lzN := int64(0)
+
+				for lzN < limit {
+					lzVals := lzItems[lzI]
+
+					lzYieldValsOrig(lzVals)
+
+					lzI++
+					lzN++
+				}
+			}
+
+			lzYieldErrOrig(lzErrIn)
 		}
 
 		EmitPop(pathNext, "OOL") // !lz
 
-		ExecOp(o.ParentA, lzYieldVals, lzYieldStats, lzYieldErr, pathNextP, "") // !lz
+		ExecOp(o.ParentA, lzYieldVals, lzYieldStats, lzYieldErr, pathNextOOL, "") // !lz
 	}
 }
 
-func MakeOrderByFunc(fields base.Fields, types base.Types,
-	projections []interface{}, path, pathItem string) (
-	lzProjectFunc base.ProjectFunc, ascendings []bool) {
-	pathNext := EmitPush(path, pathItem)
+func MakeLessFunc(types base.Types, directions []interface{}) (
+	lessFunc func(base.Vals, base.Vals) bool) {
+	// TODO: One day use types to optimize.
+	lessFunc = func(lzValsA, lzValsB base.Vals) bool {
+		for i := range directions { // !lz
+			direction := directions[i] // !lz
 
-	defer EmitPop(path, pathItem)
+			lt, gt := true, false                               // !lz
+			if s, ok := direction.(string); ok && s == "desc" { // !lz
+				lt, gt = false, true // !lz
+			} // !lz
 
-	var exprFuncs []base.ExprFunc
+			lzCmp := base.ValCompare(lzValsA[i], lzValsB[i])
+			if lzCmp < 0 {
+				return lt
+			}
 
-	var lzExprFunc base.ExprFunc // !lz
-
-	for i, projection := range projections {
-		expr := projection.([]interface{})
-
-		if LzScope {
-			lzExprFunc =
-				MakeExprFunc(fields, types, expr, pathNext, strconv.Itoa(i)) // !lz
-
-			exprFuncs = append(exprFuncs, lzExprFunc) // !lz
-		}
-	}
-
-	lzProjectFunc = func(lzVals, lzValsPre base.Vals) (lzValsOut base.Vals) {
-		for i := range exprFuncs { // !lz
-			if LzScope {
-				var lzVal base.Val
-
-				lzVal = exprFuncs[i](lzVals) // <== emitCaptured: pathNext strconv.Itoa(i)
-
-				// NOTE: lzVals are stable while we are building up
-				// lzValsOut, so no need to deep copy lzVal yet.
-				lzValsOut = append(lzValsOut, lzVal)
+			if lzCmp > 0 {
+				return gt
 			}
 		} // !lz
 
-		return lzValsOut
+		return false
 	}
 
-	return lzProjectFunc
+	return lessFunc
 }

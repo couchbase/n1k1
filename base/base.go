@@ -128,3 +128,24 @@ type ProjectFunc func(vals, valsPre Vals) Vals
 // -----------------------------------------------------
 
 type Types []string // TODO.
+
+// -----------------------------------------------------
+
+type OrderBySorter struct {
+	Items         []Vals
+	Projected     []Vals // Same len() as Items.
+	ProjectedLess func(projectedA, projectedB Vals) bool
+}
+
+func (a *OrderBySorter) Len() int {
+	return len(a.Items)
+}
+
+func (a *OrderBySorter) Swap(i, j int) {
+	a.Items[i], a.Items[j] = a.Items[j], a.Items[i]
+	a.Projected[i], a.Projected[j] = a.Projected[j], a.Projected[i]
+}
+
+func (a *OrderBySorter) Less(i, j int) bool {
+	return a.ProjectedLess(a.Projected[i], a.Projected[j])
+}

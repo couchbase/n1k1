@@ -27,6 +27,7 @@ var Keywords = map[string]bool{
 	"nil":    true,
 	"error":  true,
 	"bool":   true,
+	"int64":  true,
 }
 
 // ---------------------------------------------------------------
