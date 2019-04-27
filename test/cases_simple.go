@@ -1714,4 +1714,64 @@ var TestCasesSimple = []TestCaseSimple{
 			base.Vals{[]byte("11"), []byte("21")},
 		},
 	},
+	{
+		about: "test csv-data scan->join-nl-inner->order-by",
+		o: base.Op{
+			Kind:   "order-by-offset-limit",
+			Fields: base.Fields{"dept", "city", "emp", "empDept"},
+			Params: []interface{}{
+				[]interface{}{
+					[]interface{}{"field", "dept"},
+					[]interface{}{"field", "emp"},
+				},
+				[]interface{}{
+					"asc",
+					"desc",
+				},
+				0,
+				10,
+			},
+			ParentA: &base.Op{
+				Kind:   "join-nl-inner",
+				Fields: base.Fields{"dept", "city", "emp", "empDept"},
+				Params: []interface{}{
+					"eq",
+					[]interface{}{"field", "dept"},
+					[]interface{}{"field", "empDept"},
+				},
+				ParentA: &base.Op{
+					Kind:   "scan",
+					Fields: base.Fields{"dept", "city"},
+					Params: []interface{}{
+						"csvData",
+						`
+"dev","paris"
+"finance","london"
+"sales","san diego"
+`,
+					},
+				},
+				ParentB: &base.Op{
+					Kind:   "scan",
+					Fields: base.Fields{"emp", "empDept"},
+					Params: []interface{}{
+						"csvData",
+						`
+"dan","dev"
+"doug","dev"
+"frank","finance"
+"fred","finance"
+"mary","marketing"
+`,
+					},
+				},
+			},
+		},
+		expectYields: []base.Vals{
+			StringsToLzVals([]string{`"dev"`, `"paris"`, `"doug"`, `"dev"`}, nil),
+			StringsToLzVals([]string{`"dev"`, `"paris"`, `"dan"`, `"dev"`}, nil),
+			StringsToLzVals([]string{`"finance"`, `"london"`, `"fred"`, `"finance"`}, nil),
+			StringsToLzVals([]string{`"finance"`, `"london"`, `"frank"`, `"finance"`}, nil),
+		},
+	},
 }

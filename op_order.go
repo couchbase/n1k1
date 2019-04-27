@@ -45,13 +45,15 @@ func OpOrderByOffsetLimit(o *base.Op, lzYieldVals base.YieldVals,
 		lzYieldValsOrig := lzYieldVals
 
 		lzYieldVals = func(lzVals base.Vals) {
-			lzItem := make(base.Vals, 0, len(lzVals))
+			lzItem := make(base.Vals, 0, len(lzVals)) // TODO: Prealloc here?
 
 			for _, lzVal := range lzVals { // Deep copy.
 				lzItem = append(lzItem, append(base.Val(nil), lzVal...))
 			}
 
 			lzItems = append(lzItems, lzItem)
+
+			// TODO: If no order-by, but OFFSET+LIMIT reached, early exit?
 		}
 
 		lzYieldErrOrig := lzYieldErr
@@ -95,7 +97,9 @@ func OpOrderByOffsetLimit(o *base.Op, lzYieldVals base.YieldVals,
 
 		EmitPop(pathNext, "OOL") // !lz
 
-		ExecOp(o.ParentA, lzYieldVals, lzYieldStats, lzYieldErr, pathNextOOL, "") // !lz
+		if LzScope {
+			ExecOp(o.ParentA, lzYieldVals, lzYieldStats, lzYieldErr, path, pathNext) // !lz
+		}
 	}
 }
 
