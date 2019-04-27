@@ -35,6 +35,8 @@ func ExecOp(o *base.Op, lzYieldVals base.YieldVals,
 	}
 }
 
+// 	---------------------------------------------------------
+
 func OpJoinNestedLoop(o *base.Op, lzYieldVals base.YieldVals,
 	lzYieldStats base.YieldStats, lzYieldErr base.YieldErr,
 	path, pathNext string) {
@@ -49,6 +51,16 @@ func OpJoinNestedLoop(o *base.Op, lzYieldVals base.YieldVals,
 	fieldsAB = append(fieldsAB, o.ParentB.Fields...)
 
 	if LzScope {
+		var lzErr error
+
+		lzYieldErrOrig := lzYieldErr
+
+		lzYieldErr = func(lzErrIn error) {
+			if lzErr == LzErrNil {
+				lzErr = lzErrIn
+			}
+		}
+
 		var lzExprFunc base.ExprFunc
 
 		lzExprFunc =
@@ -70,7 +82,7 @@ func OpJoinNestedLoop(o *base.Op, lzYieldVals base.YieldVals,
 				lzHadInner = false
 			} // !lz
 
-			if LzScope {
+			if lzErr == LzErrNil {
 				lzYieldVals := func(lzValsB base.Vals) {
 					lzValsJoin = lzValsJoin[0:lenFieldsA]
 					lzValsJoin = append(lzValsJoin, lzValsB...)
@@ -105,7 +117,7 @@ func OpJoinNestedLoop(o *base.Op, lzYieldVals base.YieldVals,
 
 				// Case of outerLeft join when inner (right) was empty.
 				if joinKind == "outerLeft" { // !lz
-					if !lzHadInner {
+					if !lzHadInner && lzErr == LzErrNil {
 						lzValsJoin = lzValsJoin[0:lenFieldsA]
 						for i := 0; i < lenFieldsB; i++ { // !lz
 							lzValsJoin = append(lzValsJoin, base.ValMissing)
@@ -119,5 +131,7 @@ func OpJoinNestedLoop(o *base.Op, lzYieldVals base.YieldVals,
 
 		// Outer (left)...
 		ExecOp(o.ParentA, lzYieldVals, lzYieldStats, lzYieldErr, pathNext, "JNLO") // !lz
+
+		lzYieldErrOrig(lzErr)
 	}
 }
