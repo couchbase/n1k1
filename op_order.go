@@ -88,6 +88,9 @@ func OpOrderByOffsetLimit(o *base.Op, lzYieldVals base.YieldVals,
 func MakeLessFunc(types base.Types, directions []interface{}) (
 	lessFunc func(base.Vals, base.Vals) bool) {
 	// TODO: One day use types to optimize.
+
+	lzValComparer := &base.ValComparer{}
+
 	lessFunc = func(lzValsA, lzValsB base.Vals) bool {
 		for i := range directions { // !lz
 			direction := directions[i] // !lz
@@ -97,7 +100,7 @@ func MakeLessFunc(types base.Types, directions []interface{}) (
 				lt, gt = false, true // !lz
 			} // !lz
 
-			lzCmp := base.ValCompare(lzValsA[i], lzValsB[i])
+			lzCmp := lzValComparer.Compare(lzValsA[i], lzValsB[i])
 			if lzCmp < 0 {
 				return lt
 			}

@@ -7,7 +7,7 @@ import (
 )
 
 const (
-	TYPE_MISSING = int(iota)
+	TYPE_UNKNOWN = int(iota)
 	TYPE_NULL
 	TYPE_BOOL
 	TYPE_NUMBER
@@ -39,51 +39,76 @@ var JsonByteToType = []int{
 
 // ---------------------------------------------
 
-var SameTypeCompareFuncs = []func(a, b Val) int{
-	TYPE_MISSING: CompareUnmarshalJson,
-	TYPE_NULL:    func(a, b Val) int { return 0 },
+type ValComparer struct {
+	Preallocs [][]byte
+}
+
+func (c *ValComparer) Compare(a, b Val) int {
+	if len(a) == 0 || len(b) == 0 {
+		return CompareUnmarshal(c, a, b)
+	}
+
+	// Guess types as optimization to avoid CompareUnmarshal.
+	ta := JsonByteToType[a[0]]
+	tb := JsonByteToType[b[0]]
+
+	if ta != tb && ta != TYPE_UNKNOWN && tb != TYPE_UNKNOWN {
+		return ta - tb
+	}
+
+	return SameTypeCompareFuncs[ta](c, a, b)
+}
+
+// ---------------------------------------------
+
+var SameTypeCompareFuncs = []func(*ValComparer, Val, Val) int{
+	TYPE_UNKNOWN: CompareUnmarshal,
+	TYPE_NULL:    func(c *ValComparer, a, b Val) int { return 0 },
 	TYPE_BOOL:    CompareBothBool,
-	TYPE_NUMBER:  CompareUnmarshalJson,
+	TYPE_NUMBER:  CompareUnmarshal,
 	TYPE_STRING:  CompareBothString,
-	TYPE_ARRAY:   CompareUnmarshalJson,
-	TYPE_OBJECT:  CompareUnmarshalJson,
+	TYPE_ARRAY:   CompareUnmarshal,
+	TYPE_OBJECT:  CompareUnmarshal,
 }
 
 // ---------------------------------------------
 
 // Both a & b are JSON encoded bool's.
-func CompareBothBool(a, b Val) int {
+func CompareBothBool(c *ValComparer, a, b Val) int {
 	return int(a[0]) - int(b[0]) // Ex: 't' - 'f'.
 }
 
 // Both a & b are JSON encoded strings.
-func CompareBothString(a, b Val) int {
+func CompareBothString(c *ValComparer, a, b Val) int {
 	return bytes.Compare(a[1:], b[1:]) // Skip '"' prefix.
 }
 
 // ---------------------------------------------
 
-// Compares a & b via UnmarshalJSON().
-func CompareUnmarshalJson(a, b Val) int {
+// Compares a & b by first invoking json.Unmarshal().
+func CompareUnmarshal(c *ValComparer, a, b Val) int {
 	var av, bv interface{}
 
-	err := json.Unmarshal(a, &av)
-	if err != nil {
-		return -1
-	}
+	errA := json.Unmarshal(a, &av)
+	errB := json.Unmarshal(b, &bv)
 
-	err = json.Unmarshal(b, &bv)
-	if err != nil {
+	if errA != nil || errB != nil {
+		if errA != nil && errB != nil {
+			return 0
+		}
+		if errA != nil {
+			return -1
+		}
 		return 1
 	}
 
-	return CompareInterfaces(av, bv)
+	return c.CompareInterfaces(av, bv, 0)
 }
 
 // ---------------------------------------------
 
-// Compares the interface{} output's of UnmarshalJSON().
-func CompareInterfaces(a, b interface{}) int {
+// Compares the interface{} output of json.Unmarshal().
+func (c *ValComparer) CompareInterfaces(a, b interface{}, depth int) int {
 	ta := InterfaceToType(a)
 	tb := InterfaceToType(b)
 
@@ -155,7 +180,7 @@ func CompareInterfaces(a, b interface{}) int {
 				return -1
 			}
 
-			cmp := CompareInterfaces(va, vb)
+			cmp := c.CompareInterfaces(va, vb, depth+1)
 			if cmp != 0 {
 				return cmp
 			}
@@ -172,7 +197,7 @@ func CompareInterfaces(a, b interface{}) int {
 				return 1
 			}
 
-			cmp := CompareInterfaces(x, sb[i])
+			cmp := c.CompareInterfaces(x, sb[i], depth+1)
 			if cmp != 0 {
 				return cmp
 			}
@@ -194,7 +219,7 @@ func CompareInterfaces(a, b interface{}) int {
 	case TYPE_NULL:
 		return 0
 
-	case TYPE_MISSING:
+	case TYPE_UNKNOWN:
 		return 0
 
 	default:
@@ -206,6 +231,7 @@ func CompareInterfaces(a, b interface{}) int {
 
 // ---------------------------------------------
 
+// InterfaceToType takes as input the result of json.Unmarshal().
 func InterfaceToType(val interface{}) int {
 	if val == nil {
 		return TYPE_NULL
@@ -225,25 +251,8 @@ func InterfaceToType(val interface{}) int {
 	case bool:
 		return TYPE_BOOL
 	default:
-		return TYPE_MISSING
+		return TYPE_UNKNOWN
 	}
 
-	return TYPE_MISSING
-}
-
-// ---------------------------------------------
-
-func ValCompare(a, b Val) int {
-	if len(a) == 0 || len(b) == 0 {
-		return CompareUnmarshalJson(a, b)
-	}
-
-	ta := JsonByteToType[a[0]]
-	tb := JsonByteToType[b[0]]
-
-	if ta != tb {
-		return ta - tb
-	}
-
-	return SameTypeCompareFuncs[ta](a, b)
+	return TYPE_UNKNOWN
 }
