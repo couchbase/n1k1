@@ -50,6 +50,12 @@ efficiently execute that query-plan.
 ------------------------------------------
 Some features...
 
+- join nested-loop inner
+- join nested-loop outer-left
+- filtering
+- projections
+- scans of simple files (CSV's)
+- ORDER BY
 - lifting vars to avoid local closures
 - capturing emitted code to avoid local closures
 
@@ -63,9 +69,6 @@ TODO...
   - SELECT country, SUM(population) FROM ... GROUP BY country
 
 - HAVING
-
-- ORDER BY
-  - operator can optionally declare which fields are sorted asc/desc?
 
 - OFFSET / LIMIT
 
@@ -81,6 +84,8 @@ TODO...
 - SIMD optimizations possible?  see: SIMD-json articles?
 
 - prefetching optimizations?
+
+- optimize json.Unmarshal more systemically, a'la during ORDER-BY
 
 - compiled accessor(s) to a given JSON-path in a raw []byte value?
 
@@ -98,6 +103,8 @@ TODO...
 - multi-threading / multi-core optimizations?
 
 - types learned during expression processing?
+
+- operator can optionally declare which fields are sorted asc/desc?
 
 - positional fields versus access to the full record?
 - perhaps the 0'th field might represent the full record?
