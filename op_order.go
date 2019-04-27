@@ -57,22 +57,23 @@ func OpOrderByOffsetLimit(o *base.Op, lzYieldVals base.YieldVals,
 		lzYieldErr = func(lzErrIn error) {
 			if lzErrIn == nil { // If no error, yield our sorted items.
 				nProjections := len(projections) // !lz
+				if nProjections > 0 {            // !lz
+					lzProjected := make([]base.Vals, 0, len(lzItems))
+					lzInterfaces := make([][]interface{}, 0, len(lzItems))
+					lzInterfacesAll := make([]interface{}, len(lzItems)*nProjections)
 
-				lzProjected := make([]base.Vals, 0, len(lzItems))
-				lzInterfaces := make([][]interface{}, 0, len(lzItems))
-				lzInterfacesAll := make([]interface{}, len(lzItems)*nProjections)
+					for lzI, lzVals := range lzItems {
+						var lzValsOut base.Vals
 
-				for lzI, lzVals := range lzItems {
-					var lzValsOut base.Vals
+						lzValsOut = lzProjectFunc(lzVals, lzValsOut)
 
-					lzValsOut = lzProjectFunc(lzVals, lzValsOut)
+						lzProjected = append(lzProjected, lzValsOut)
 
-					lzProjected = append(lzProjected, lzValsOut)
+						lzInterfaces = append(lzInterfaces, lzInterfacesAll[lzI*nProjections:(lzI+1)*nProjections])
+					}
 
-					lzInterfaces = append(lzInterfaces, lzInterfacesAll[lzI*nProjections:(lzI+1)*nProjections])
-				}
-
-				base.OrderByItems(lzItems, lzProjected, lzInterfaces, lzLessFunc)
+					base.OrderByItems(lzItems, lzProjected, lzInterfaces, lzLessFunc)
+				} // !lz
 
 				lzI := offset
 				lzN := 0

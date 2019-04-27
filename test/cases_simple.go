@@ -1528,4 +1528,162 @@ var TestCasesSimple = []TestCaseSimple{
 			base.Vals{[]byte("12"), []byte(`"a22"`)},
 		},
 	},
+	{
+		about: "test csv-data scan->order-by OFFSET 0 LIMIT 1",
+		o: base.Op{
+			Kind:   "order-by-offset-limit",
+			Fields: base.Fields{"a", "b"},
+			Params: []interface{}{
+				[]interface{}{
+					[]interface{}{"field", "a"},
+				},
+				[]interface{}{
+					"asc",
+				},
+				0,
+				1,
+			},
+			ParentA: &base.Op{
+				Kind:   "scan",
+				Fields: base.Fields{"a", "b"},
+				Params: []interface{}{
+					"csvData",
+					`
+10,20
+11,21
+12,22
+`,
+				},
+			},
+		},
+		expectYields: []base.Vals{
+			base.Vals{[]byte("10"), []byte("20")},
+		},
+	},
+	{
+		about: "test csv-data scan->order-by OFFSET 0 LIMIT 100",
+		o: base.Op{
+			Kind:   "order-by-offset-limit",
+			Fields: base.Fields{"a", "b"},
+			Params: []interface{}{
+				[]interface{}{
+					[]interface{}{"field", "a"},
+				},
+				[]interface{}{
+					"asc",
+				},
+				0,
+				100,
+			},
+			ParentA: &base.Op{
+				Kind:   "scan",
+				Fields: base.Fields{"a", "b"},
+				Params: []interface{}{
+					"csvData",
+					`
+10,20
+11,21
+12,22
+`,
+				},
+			},
+		},
+		expectYields: []base.Vals{
+			base.Vals{[]byte("10"), []byte("20")},
+			base.Vals{[]byte("11"), []byte("21")},
+			base.Vals{[]byte("12"), []byte("22")},
+		},
+	},
+	{
+		about: "test csv-data scan->order-by OFFSET 100 LIMIT 100",
+		o: base.Op{
+			Kind:   "order-by-offset-limit",
+			Fields: base.Fields{"a", "b"},
+			Params: []interface{}{
+				[]interface{}{
+					[]interface{}{"field", "a"},
+				},
+				[]interface{}{
+					"asc",
+				},
+				100,
+				100,
+			},
+			ParentA: &base.Op{
+				Kind:   "scan",
+				Fields: base.Fields{"a", "b"},
+				Params: []interface{}{
+					"csvData",
+					`
+10,20
+11,21
+12,22
+`,
+				},
+			},
+		},
+		expectYields: []base.Vals(nil),
+	},
+	{
+		about: "test csv-data scan->order-by OFFSET 1 LIMIT 0",
+		o: base.Op{
+			Kind:   "order-by-offset-limit",
+			Fields: base.Fields{"a", "b"},
+			Params: []interface{}{
+				[]interface{}{
+					[]interface{}{"field", "a"},
+				},
+				[]interface{}{
+					"asc",
+				},
+				1,
+				0,
+			},
+			ParentA: &base.Op{
+				Kind:   "scan",
+				Fields: base.Fields{"a", "b"},
+				Params: []interface{}{
+					"csvData",
+					`
+10,20
+11,21
+12,22
+`,
+				},
+			},
+		},
+		expectYields: []base.Vals(nil),
+	},
+	{
+		about: "test csv-data scan->order-by OFFSET 1 LIMIT 1",
+		o: base.Op{
+			Kind:   "order-by-offset-limit",
+			Fields: base.Fields{"a", "b"},
+			Params: []interface{}{
+				[]interface{}{
+					[]interface{}{"field", "a"},
+				},
+				[]interface{}{
+					"asc",
+				},
+				1,
+				1,
+			},
+			ParentA: &base.Op{
+				Kind:   "scan",
+				Fields: base.Fields{"a", "b"},
+				Params: []interface{}{
+					"csvData",
+					`
+10,20
+11,21
+12,22
+`,
+				},
+			},
+		},
+		expectYields: []base.Vals{
+			base.Vals{[]byte("11"), []byte("21")},
+		},
+	},
 }
