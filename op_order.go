@@ -52,17 +52,23 @@ func OpOrderByOffsetLimit(o *base.Op, lzYieldVals base.YieldVals,
 
 		lzYieldErr = func(lzErrIn error) {
 			if lzErrIn == nil { // If no error, yield our sorted items.
-				var lzProjected = make([]base.Vals, 0, len(lzItems))
+				nProjections := len(projections) // !lz
 
-				for _, lzVals := range lzItems {
+				lzProjected := make([]base.Vals, 0, len(lzItems))
+				lzInterfaces := make([][]interface{}, 0, len(lzItems))
+				lzInterfacesAll := make([]interface{}, len(lzItems)*nProjections)
+
+				for lzI, lzVals := range lzItems {
 					var lzValsOut base.Vals
 
 					lzValsOut = lzProjectFunc(lzVals, lzValsOut)
 
 					lzProjected = append(lzProjected, lzValsOut)
+
+					lzInterfaces = append(lzInterfaces, lzInterfacesAll[lzI*nProjections:(lzI+1)*nProjections])
 				}
 
-				sort.Sort(&base.OrderBySorter{lzItems, lzProjected, lzLessFunc})
+				sort.Sort(base.NewOrderBySorter(lzItems, lzProjected, lzInterfaces, lzLessFunc))
 
 				lzI := offset
 				lzN := int64(0)
@@ -87,12 +93,12 @@ func OpOrderByOffsetLimit(o *base.Op, lzYieldVals base.YieldVals,
 }
 
 func MakeLessFunc(types base.Types, directions []interface{}) (
-	lessFunc func(base.Vals, base.Vals) bool) {
+	lzLessFunc base.ProjectedLessFunc) {
 	// TODO: One day use types to optimize.
 
 	lzValComparer := &base.ValComparer{}
 
-	lessFunc = func(lzValsA, lzValsB base.Vals) bool {
+	lzLessFunc = func(lzValsA, lzValsB base.Vals, lzIA, lzIB []interface{}) bool {
 		for i := range directions { // !lz
 			direction := directions[i] // !lz
 
@@ -114,5 +120,5 @@ func MakeLessFunc(types base.Types, directions []interface{}) (
 		return false
 	}
 
-	return lessFunc
+	return lzLessFunc
 }

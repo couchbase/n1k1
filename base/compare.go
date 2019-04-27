@@ -212,10 +212,27 @@ func InterfaceToType(val interface{}) int {
 
 // ---------------------------------------------
 
+type ProjectedLessFunc func(
+	projectedA, projectedB Vals, iA, iB []interface{}) bool
+
+func NewOrderBySorter(
+	items []Vals,
+	projected []Vals, // Same len() as items.
+	interfaces [][]interface{}, // Same len() as items.
+	projectedLess ProjectedLessFunc) *OrderBySorter {
+	return &OrderBySorter{
+		Items:         items,
+		Projected:     projected,
+		Interfaces:    interfaces,
+		ProjectedLess: projectedLess,
+	}
+}
+
 type OrderBySorter struct {
 	Items         []Vals
 	Projected     []Vals // Same len() as Items.
-	ProjectedLess func(projectedA, projectedB Vals) bool
+	Interfaces    [][]interface{}
+	ProjectedLess ProjectedLessFunc
 }
 
 func (a *OrderBySorter) Len() int {
@@ -225,8 +242,10 @@ func (a *OrderBySorter) Len() int {
 func (a *OrderBySorter) Swap(i, j int) {
 	a.Items[i], a.Items[j] = a.Items[j], a.Items[i]
 	a.Projected[i], a.Projected[j] = a.Projected[j], a.Projected[i]
+	a.Interfaces[i], a.Interfaces[j] = a.Interfaces[j], a.Interfaces[i]
 }
 
 func (a *OrderBySorter) Less(i, j int) bool {
-	return a.ProjectedLess(a.Projected[i], a.Projected[j])
+	return a.ProjectedLess(
+		a.Projected[i], a.Projected[j], a.Interfaces[i], a.Interfaces[j])
 }
