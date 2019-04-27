@@ -55,7 +55,8 @@ Some features...
 - filtering (WHERE, HAVING)
 - projections
 - scans of simple files (CSV's)
-- ORDER BY
+- ORDER BY of multiple expressions & ASC/DESC
+- OFFSET / LIMIT
 - lifting vars to avoid local closures
 - capturing emitted code to avoid local closures
 
@@ -67,8 +68,6 @@ TODO...
 
 - GROUP BY / aggregates
   - SELECT country, SUM(population) FROM ... GROUP BY country
-
-- OFFSET / LIMIT
 
 - early stop when an error or LIMIT is reached?
   - YieldStats() can return an non-nil error, like ErrLimitReached
@@ -103,6 +102,11 @@ TODO...
 - types learned during expression processing?
 
 - operator can optionally declare which fields are sorted asc/desc?
+
+- ORDER BY optimization to not project everything up-front,
+  but have on-deman projections with reusable bufs to keep memory usage lower?
+
+- need optimized replacement for json.Unmarshal()
 
 - positional fields versus access to the full record?
 - perhaps the 0'th field might represent the full record?
