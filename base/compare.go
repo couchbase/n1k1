@@ -60,7 +60,7 @@ func (c *ValComparer) Compare(a, b Val, av, bv *interface{}) int {
 		return 1
 	}
 
-	return c.CompareInterfaces(av, bv, 0)
+	return c.CompareInterfaces(*av, *bv, 0)
 }
 
 // ---------------------------------------------
@@ -221,6 +221,11 @@ type LessFunc func(
 	valsA, valsB Vals, iA, iB []interface{}) bool
 
 // ---------------------------------------------
+
+func OrderByItems(items, projected []Vals, interfaces [][]interface{},
+	lessFunc LessFunc) {
+	sort.Sort(&OrderBySorter{items, projected, interfaces, lessFunc})
+}
 
 type OrderBySorter struct {
 	Items      []Vals

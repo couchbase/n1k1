@@ -1236,4 +1236,66 @@ var TestCasesSimple = []TestCaseSimple{
 			StringsToLzVals([]string{`"london"`, `"fred"`, `"finance"`}, nil),
 		},
 	},
+	{
+		about: "test csv-data scan->order-by",
+		o: base.Op{
+			Kind:   "order-by-offset-limit",
+			Fields: base.Fields{"a", "b"},
+			Params: []interface{}{
+				[]interface{}{
+					[]interface{}{"field", "a"},
+				},
+				[]interface{}{
+					"asc",
+				},
+			},
+			ParentA: &base.Op{
+				Kind:   "scan",
+				Fields: base.Fields{"a", "b"},
+				Params: []interface{}{
+					"csvData",
+					`
+10,20
+11,21
+`,
+				},
+			},
+		},
+		expectYields: []base.Vals{
+			base.Vals{[]byte("10"), []byte("20")},
+			base.Vals{[]byte("11"), []byte("21")},
+		},
+	},
+	{
+		about: "test csv-data scan->order-by reverse-input",
+		o: base.Op{
+			Kind:   "order-by-offset-limit",
+			Fields: base.Fields{"a", "b"},
+			Params: []interface{}{
+				[]interface{}{
+					[]interface{}{"field", "a"},
+				},
+				[]interface{}{
+					"asc",
+				},
+			},
+			ParentA: &base.Op{
+				Kind:   "scan",
+				Fields: base.Fields{"a", "b"},
+				Params: []interface{}{
+					"csvData",
+					`
+12,22
+11,21
+10,20
+`,
+				},
+			},
+		},
+		expectYields: []base.Vals{
+			base.Vals{[]byte("10"), []byte("20")},
+			base.Vals{[]byte("11"), []byte("21")},
+			base.Vals{[]byte("12"), []byte("22")},
+		},
+	},
 }

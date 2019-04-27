@@ -2,7 +2,6 @@ package n1k1
 
 import (
 	"math"
-	"sort" // <== genCompiler:hide
 
 	"github.com/couchbase/n1k1/base"
 )
@@ -29,10 +28,14 @@ func OpOrderByOffsetLimit(o *base.Op, lzYieldVals base.YieldVals,
 	if LzScope {
 		pathNextOOL := EmitPush(pathNext, "OOL") // !lz
 
-		lzProjectFunc :=
+		var lzProjectFunc base.ProjectFunc
+
+		lzProjectFunc =
 			MakeProjectFunc(o.ParentA.Fields, nil, projections, pathNextOOL, "PF") // !lz
 
-		lzLessFunc :=
+		var lzLessFunc base.LessFunc
+
+		lzLessFunc =
 			MakeLessFunc(nil, directions) // !lz
 
 		var lzItems []base.Vals // Items collected to be sorted.
@@ -68,7 +71,7 @@ func OpOrderByOffsetLimit(o *base.Op, lzYieldVals base.YieldVals,
 					lzInterfaces = append(lzInterfaces, lzInterfacesAll[lzI*nProjections:(lzI+1)*nProjections])
 				}
 
-				sort.Sort(&base.OrderBySorter{lzItems, lzProjected, lzInterfaces, lzLessFunc})
+				base.OrderByItems(lzItems, lzProjected, lzInterfaces, lzLessFunc)
 
 				lzI := offset
 				lzN := 0
@@ -99,15 +102,15 @@ func MakeLessFunc(types base.Types, directions []interface{}) (
 	lzValComparer := &base.ValComparer{}
 
 	lzLessFunc = func(lzValsA, lzValsB base.Vals, lzIA, lzIB []interface{}) bool {
-		for i := range directions { // !lz
-			direction := directions[i] // !lz
+		for idx := range directions { // !lz
+			direction := directions[idx] // !lz
 
 			lt, gt := true, false                               // !lz
 			if s, ok := direction.(string); ok && s == "desc" { // !lz
 				lt, gt = false, true // !lz
 			} // !lz
 
-			lzCmp := lzValComparer.Compare(lzValsA[i], lzValsB[i], &lzIA[i], &lzIB[i])
+			lzCmp := lzValComparer.Compare(lzValsA[idx], lzValsB[idx], &lzIA[idx], &lzIB[idx])
 			if lzCmp < 0 {
 				return lt
 			}
