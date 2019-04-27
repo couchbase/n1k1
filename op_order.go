@@ -29,11 +29,13 @@ func OpOrderByOffsetLimit(o *base.Op, lzYieldVals base.YieldVals,
 		pathNextOOL := EmitPush(pathNext, "OOL") // !lz
 
 		var lzProjectFunc base.ProjectFunc
+		_ = lzProjectFunc
 
 		lzProjectFunc =
 			MakeProjectFunc(o.ParentA.Fields, nil, projections, pathNextOOL, "PF") // !lz
 
 		var lzLessFunc base.LessFunc
+		_ = lzLessFunc
 
 		lzLessFunc =
 			MakeLessFunc(nil, directions) // !lz
@@ -102,9 +104,14 @@ func MakeLessFunc(types base.Types, directions []interface{}) (
 	// TODO: One day use types to optimize.
 
 	lzValComparer := &base.ValComparer{}
+	_ = lzValComparer
 
 	lzLessFunc = func(lzValsA, lzValsB base.Vals, lzIA, lzIB []interface{}) bool {
 		var lzCmp int
+
+		if len(directions) <= 0 { // !lz
+			_ = lzCmp
+		} // !lz
 
 		for idx := range directions { // !lz
 			direction := directions[idx] // !lz

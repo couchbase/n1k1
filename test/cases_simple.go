@@ -1686,4 +1686,32 @@ var TestCasesSimple = []TestCaseSimple{
 			base.Vals{[]byte("11"), []byte("21")},
 		},
 	},
+	{
+		about: "test csv-data scan->NIL-order-by OFFSET 1 LIMIT 1",
+		o: base.Op{
+			Kind:   "order-by-offset-limit",
+			Fields: base.Fields{"a", "b"},
+			Params: []interface{}{
+				[]interface{}{},
+				[]interface{}{},
+				1,
+				1,
+			},
+			ParentA: &base.Op{
+				Kind:   "scan",
+				Fields: base.Fields{"a", "b"},
+				Params: []interface{}{
+					"csvData",
+					`
+10,20
+11,21
+12,22
+`,
+				},
+			},
+		},
+		expectYields: []base.Vals{
+			base.Vals{[]byte("11"), []byte("21")},
+		},
+	},
 }
