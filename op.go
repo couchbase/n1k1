@@ -113,7 +113,7 @@ func OpJoinNestedLoop(o *base.Op, lzYieldVals base.YieldVals,
 			}
 		}
 
-		// Inner (right)...
+		// Inner (right) driver.
 		ExecOp(o.ParentB, lzYieldVals, lzYieldStats, lzYieldErr, pathNext, "JNLI") // !lz
 
 		// Case of outerLeft join when inner (right) was empty.
@@ -129,7 +129,7 @@ func OpJoinNestedLoop(o *base.Op, lzYieldVals base.YieldVals,
 		} // !lz
 	}
 
-	// Outer (left)...
+	// Outer (left) driver.
 	ExecOp(o.ParentA, lzYieldVals, lzYieldStats, lzYieldErr, pathNext, "JNLO") // !lz
 
 	lzYieldErrOrig(lzErr)
