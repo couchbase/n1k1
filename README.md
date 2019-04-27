@@ -52,7 +52,7 @@ Some features...
 
 - join nested-loop inner
 - join nested-loop outer-left
-- filtering
+- filtering (WHERE, HAVING)
 - projections
 - scans of simple files (CSV's)
 - ORDER BY
@@ -67,8 +67,6 @@ TODO...
 
 - GROUP BY / aggregates
   - SELECT country, SUM(population) FROM ... GROUP BY country
-
-- HAVING
 
 - OFFSET / LIMIT
 

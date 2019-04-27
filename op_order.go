@@ -43,8 +43,9 @@ func OpOrderByOffsetLimit(o *base.Op, lzYieldVals base.YieldVals,
 		lzYieldValsOrig := lzYieldVals
 
 		lzYieldVals = func(lzVals base.Vals) {
-			var lzItem base.Vals // Deep copy.
-			for _, lzVal := range lzVals {
+			lzItem := make(base.Vals, 0, len(lzVals))
+
+			for _, lzVal := range lzVals { // Deep copy.
 				lzItem = append(lzItem, append(base.Val(nil), lzVal...))
 			}
 
