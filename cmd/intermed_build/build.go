@@ -303,7 +303,8 @@ func EmitBlock(state *State, he *HandlerEntry, isLzBlock bool,
 		}
 	}
 
-	if strings.HasSuffix(line, " =") {
+	if strings.HasSuffix(line, " =") ||
+		strings.HasSuffix(line, " :=") {
 		// Eat 1st line of multi-line variable assignment.
 		return out, ""
 	}

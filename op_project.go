@@ -13,19 +13,17 @@ func OpProject(o *base.Op, lzYieldVals base.YieldVals,
 
 		var lzValsReuse base.Vals // <== varLift: lzValsReuse by path
 
-		var lzProjectFunc base.ProjectFunc
-
-		lzProjectFunc =
+		projectFunc :=
 			MakeProjectFunc(o.ParentA.Fields, nil, o.Params, pathNextP, "PF") // !lz
 
 		lzYieldValsOrig := lzYieldVals
 
-		_, _ = lzProjectFunc, lzYieldValsOrig
+		_ = lzYieldValsOrig
 
 		lzYieldVals = func(lzVals base.Vals) {
 			lzValsOut := lzValsReuse[:0]
 
-			lzValsOut = lzProjectFunc(lzVals, lzValsOut) // <== emitCaptured: pathNextP "PF"
+			lzValsOut = projectFunc(lzVals, lzValsOut) // <== emitCaptured: pathNextP "PF"
 
 			lzValsReuse = lzValsOut
 

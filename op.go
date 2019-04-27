@@ -60,14 +60,12 @@ func OpJoinNestedLoop(o *base.Op, lzYieldVals base.YieldVals,
 	fieldsAB = append(fieldsAB, o.ParentA.Fields...)
 	fieldsAB = append(fieldsAB, o.ParentB.Fields...)
 
-	var lzExprFunc base.ExprFunc
-
-	lzExprFunc =
+	joinClauseFunc :=
 		MakeExprFunc(fieldsAB, nil, o.Params, pathNext, "JF") // !lz
 
 	var lzHadInner bool
 
-	_, _ = lzExprFunc, lzHadInner
+	_, _ = joinClauseFunc, lzHadInner
 
 	lzValsJoin := make(base.Vals, lenFieldsAB)
 
@@ -97,7 +95,7 @@ func OpJoinNestedLoop(o *base.Op, lzYieldVals base.YieldVals,
 
 			var lzVal base.Val
 
-			lzVal = lzExprFunc(lzVals) // <== emitCaptured: pathNext, "JF"
+			lzVal = joinClauseFunc(lzVals) // <== emitCaptured: pathNext, "JF"
 
 			if base.ValEqualTrue(lzVal) {
 				lzYieldValsOrig(lzVals) // <== emitCaptured: path ""
