@@ -40,6 +40,16 @@ func ExecOp(o *base.Op, lzYieldVals base.YieldVals,
 func OpJoinNestedLoop(o *base.Op, lzYieldVals base.YieldVals,
 	lzYieldStats base.YieldStats, lzYieldErr base.YieldErr,
 	path, pathNext string) {
+	var lzErr error
+
+	lzYieldErrOrig := lzYieldErr
+
+	lzYieldErr = func(lzErrIn error) {
+		if lzErr == nil {
+			lzErr = lzErrIn // Capture the incoming error.
+		}
+	}
+
 	joinKind := strings.Split(o.Kind, "-")[2] // Ex: "inner", "outerLeft".
 
 	lenFieldsA := len(o.ParentA.Fields)
@@ -49,16 +59,6 @@ func OpJoinNestedLoop(o *base.Op, lzYieldVals base.YieldVals,
 	fieldsAB := make(base.Fields, 0, lenFieldsAB)
 	fieldsAB = append(fieldsAB, o.ParentA.Fields...)
 	fieldsAB = append(fieldsAB, o.ParentB.Fields...)
-
-	var lzErr error
-
-	lzYieldErrOrig := lzYieldErr
-
-	lzYieldErr = func(lzErrIn error) {
-		if lzErr == nil {
-			lzErr = lzErrIn
-		}
-	}
 
 	var lzExprFunc base.ExprFunc
 
@@ -74,6 +74,10 @@ func OpJoinNestedLoop(o *base.Op, lzYieldVals base.YieldVals,
 	lzYieldValsOrig := lzYieldVals
 
 	lzYieldVals = func(lzValsA base.Vals) {
+		if lzErr != nil {
+			return
+		}
+
 		lzValsJoin = lzValsJoin[:0]
 		lzValsJoin = append(lzValsJoin, lzValsA...)
 
@@ -81,51 +85,48 @@ func OpJoinNestedLoop(o *base.Op, lzYieldVals base.YieldVals,
 			lzHadInner = false
 		} // !lz
 
-		if lzErr == nil {
-			lzYieldVals := func(lzValsB base.Vals) {
-				lzValsJoin = lzValsJoin[0:lenFieldsA]
-				lzValsJoin = append(lzValsJoin, lzValsB...)
-
-				if joinKind == "outerLeft" { // !lz
-					lzHadInner = true
-				} // !lz
-
-				lzVals := lzValsJoin
-
-				_ = lzVals
-
-				var lzVal base.Val
-
-				lzVal = lzExprFunc(lzVals) // <== emitCaptured: pathNext, "JF"
-				if base.ValEqualTrue(lzVal) {
-					lzYieldValsOrig(lzVals) // <== emitCaptured: path ""
-				} else {
-					if joinKind == "outerLeft" { // !lz
-						lzValsJoin = lzValsJoin[0:lenFieldsA]
-						for i := 0; i < lenFieldsB; i++ { // !lz
-							lzValsJoin = append(lzValsJoin, base.ValMissing)
-						} // !lz
-
-						lzYieldValsOrig(lzValsJoin)
-					} // !lz
-				}
-			}
-
-			// Inner (right)...
-			ExecOp(o.ParentB, lzYieldVals, lzYieldStats, lzYieldErr, pathNext, "JNLI") // !lz
-
-			// Case of outerLeft join when inner (right) was empty.
+		lzYieldVals := func(lzValsB base.Vals) {
 			if joinKind == "outerLeft" { // !lz
-				if !lzHadInner && lzErr == nil {
+				lzHadInner = true
+			} // !lz
+
+			lzValsJoin = lzValsJoin[0:lenFieldsA]
+			lzValsJoin = append(lzValsJoin, lzValsB...)
+
+			lzVals := lzValsJoin
+
+			var lzVal base.Val
+
+			lzVal = lzExprFunc(lzVals) // <== emitCaptured: pathNext, "JF"
+
+			if base.ValEqualTrue(lzVal) {
+				lzYieldValsOrig(lzVals) // <== emitCaptured: path ""
+			} else {
+				if joinKind == "outerLeft" { // !lz
 					lzValsJoin = lzValsJoin[0:lenFieldsA]
 					for i := 0; i < lenFieldsB; i++ { // !lz
 						lzValsJoin = append(lzValsJoin, base.ValMissing)
 					} // !lz
 
 					lzYieldValsOrig(lzValsJoin)
-				}
-			} // !lz
+				} // !lz
+			}
 		}
+
+		// Inner (right)...
+		ExecOp(o.ParentB, lzYieldVals, lzYieldStats, lzYieldErr, pathNext, "JNLI") // !lz
+
+		// Case of outerLeft join when inner (right) was empty.
+		if joinKind == "outerLeft" { // !lz
+			if !lzHadInner && lzErr == nil {
+				lzValsJoin = lzValsJoin[0:lenFieldsA]
+				for i := 0; i < lenFieldsB; i++ { // !lz
+					lzValsJoin = append(lzValsJoin, base.ValMissing)
+				} // !lz
+
+				lzYieldValsOrig(lzValsJoin)
+			}
+		} // !lz
 	}
 
 	// Outer (left)...
