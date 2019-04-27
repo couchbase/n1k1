@@ -40,7 +40,21 @@ var JsonByteToType = []int{
 // ---------------------------------------------
 
 type ValComparer struct {
-	Preallocs [][]byte
+	Preallocs [][]string
+}
+
+func (c *ValComparer) Alloc(depth, size int) []string {
+	for len(c.Preallocs) < depth+1 {
+		c.Preallocs = append(c.Preallocs, nil)
+	}
+
+	a := c.Preallocs[depth]
+	if len(a) < size {
+		a = make([]string, size)
+		c.Preallocs[depth] = a
+	}
+
+	return a[:0]
 }
 
 func (c *ValComparer) Compare(a, b Val) int {
@@ -149,7 +163,7 @@ func (c *ValComparer) CompareInterfaces(a, b interface{}, depth int) int {
 		}
 
 		// Sort keys.
-		keys := make([]string, 0, len(oa)+len(ob))
+		keys := c.Alloc(depth, len(oa)+len(ob))
 
 		for key := range oa {
 			keys = append(keys, key)
