@@ -107,28 +107,26 @@ func MakeLessFunc(types base.Types, directions []interface{}) (
 	_ = lzValComparer
 
 	lzLessFunc = func(lzValsA, lzValsB base.Vals, lzIA, lzIB []interface{}) bool {
-		var lzCmp int
+		if len(directions) > 0 { // !lz
+			var lzCmp int
 
-		if len(directions) <= 0 { // !lz
-			_ = lzCmp
-		} // !lz
+			for idx := range directions { // !lz
+				direction := directions[idx] // !lz
 
-		for idx := range directions { // !lz
-			direction := directions[idx] // !lz
+				lt, gt := true, false                               // !lz
+				if s, ok := direction.(string); ok && s == "desc" { // !lz
+					lt, gt = false, true // !lz
+				} // !lz
 
-			lt, gt := true, false                               // !lz
-			if s, ok := direction.(string); ok && s == "desc" { // !lz
-				lt, gt = false, true // !lz
+				lzCmp = lzValComparer.Compare(lzValsA[idx], lzValsB[idx], &lzIA[idx], &lzIB[idx])
+				if lzCmp < 0 {
+					return lt
+				}
+
+				if lzCmp > 0 {
+					return gt
+				}
 			} // !lz
-
-			lzCmp = lzValComparer.Compare(lzValsA[idx], lzValsB[idx], &lzIA[idx], &lzIB[idx])
-			if lzCmp < 0 {
-				return lt
-			}
-
-			if lzCmp > 0 {
-				return gt
-			}
 		} // !lz
 
 		return false
