@@ -1,7 +1,6 @@
 package base
 
 import (
-	"bytes"
 	"encoding/json"
 	"sort"
 )
@@ -16,32 +15,13 @@ const (
 	TYPE_OBJECT
 )
 
-// Determine type by the first (0'th) byte of a JSON value.
-var JsonByteToType = []int{
-	'"': TYPE_STRING,
-	'{': TYPE_OBJECT,
-	'[': TYPE_ARRAY,
-	'n': TYPE_NULL,
-	't': TYPE_BOOL,
-	'f': TYPE_BOOL,
-	'-': TYPE_NUMBER,
-	'0': TYPE_NUMBER,
-	'1': TYPE_NUMBER,
-	'2': TYPE_NUMBER,
-	'3': TYPE_NUMBER,
-	'4': TYPE_NUMBER,
-	'5': TYPE_NUMBER,
-	'6': TYPE_NUMBER,
-	'7': TYPE_NUMBER,
-	'8': TYPE_NUMBER,
-	'9': TYPE_NUMBER,
-}
-
 // ---------------------------------------------
 
 type ValComparer struct {
 	Preallocs [][]string
 }
+
+// ---------------------------------------------
 
 func (c *ValComparer) Alloc(depth, size int) []string {
 	for len(c.Preallocs) < depth+1 {
@@ -57,50 +37,9 @@ func (c *ValComparer) Alloc(depth, size int) []string {
 	return a[:0]
 }
 
+// ---------------------------------------------
+
 func (c *ValComparer) Compare(a, b Val) int {
-	if len(a) == 0 || len(b) == 0 {
-		return CompareUnmarshal(c, a, b)
-	}
-
-	// Guess types as optimization to avoid CompareUnmarshal.
-	ta := JsonByteToType[a[0]]
-	tb := JsonByteToType[b[0]]
-
-	if ta != tb && ta != TYPE_UNKNOWN && tb != TYPE_UNKNOWN {
-		return ta - tb
-	}
-
-	return SameTypeCompareFuncs[ta](c, a, b)
-}
-
-// ---------------------------------------------
-
-var SameTypeCompareFuncs = []func(*ValComparer, Val, Val) int{
-	TYPE_UNKNOWN: CompareUnmarshal,
-	TYPE_NULL:    func(c *ValComparer, a, b Val) int { return 0 },
-	TYPE_BOOL:    CompareBothBool,
-	TYPE_NUMBER:  CompareUnmarshal,
-	TYPE_STRING:  CompareBothString,
-	TYPE_ARRAY:   CompareUnmarshal,
-	TYPE_OBJECT:  CompareUnmarshal,
-}
-
-// ---------------------------------------------
-
-// Both a & b are JSON encoded bool's.
-func CompareBothBool(c *ValComparer, a, b Val) int {
-	return int(a[0]) - int(b[0]) // Ex: 't' - 'f'.
-}
-
-// Both a & b are JSON encoded strings.
-func CompareBothString(c *ValComparer, a, b Val) int {
-	return bytes.Compare(a[1:], b[1:]) // Skip '"' prefix.
-}
-
-// ---------------------------------------------
-
-// Compares a & b by first invoking json.Unmarshal().
-func CompareUnmarshal(c *ValComparer, a, b Val) int {
 	var av, bv interface{}
 
 	errA := json.Unmarshal(a, &av)
