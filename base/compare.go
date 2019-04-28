@@ -127,6 +127,10 @@ func (c *ValComparer) CompareDeep(a, b []byte, depth int) int {
 				i++
 			})
 
+		if i < len(bItems) {
+			return -1
+		}
+
 		if aErr != nil || bErr != nil {
 			return CompareErr(aErr, bErr)
 		}
@@ -145,7 +149,7 @@ func (c *ValComparer) CompareDeep(a, b []byte, depth int) int {
 			})
 
 		var bLen int
-		bErr := jsonparser.ObjectEach(aValue,
+		bErr := jsonparser.ObjectEach(bValue,
 			func(k []byte, v []byte, vT jsonparser.ValueType, offset int) error {
 				kvs = append(kvs, KeyVal{k, v, -1})
 				bLen++
@@ -156,9 +160,8 @@ func (c *ValComparer) CompareDeep(a, b []byte, depth int) int {
 			return CompareErr(aErr, bErr)
 		}
 
-		delta := aLen - bLen // Larger object wins.
-		if delta != 0 {
-			return delta
+		if aLen != bLen {
+			return aLen - bLen // Larger object wins.
 		}
 
 		sort.Sort(kvs)
