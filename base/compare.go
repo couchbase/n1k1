@@ -21,23 +21,28 @@ var ValueTypePriority = []int{
 // ---------------------------------------------
 
 type ValComparer struct {
-	Preallocs [][]string // Slices reused across Compare()'s.
+	Bytes [][][]byte // Reused across Compare()'s.
+}
+
+func NewValComparer() *ValComparer {
+	return &ValComparer{Bytes: make([][][]byte, 2)}
 }
 
 // ---------------------------------------------
 
-func (c *ValComparer) Alloc(depth, size int) []string {
-	for len(c.Preallocs) < depth+1 {
-		c.Preallocs = append(c.Preallocs, nil)
+func (c *ValComparer) BytesGet(pos, depth int) []byte {
+	byDepth := c.Bytes[pos]
+
+	for len(byDepth) < depth+1 {
+		byDepth = append(byDepth, nil)
+		c.Bytes[pos] = byDepth
 	}
 
-	a := c.Preallocs[depth]
-	if len(a) < size {
-		a = make([]string, size)
-		c.Preallocs[depth] = a
-	}
+	return byDepth[depth]
+}
 
-	return a[:0]
+func (c *ValComparer) BytesPut(pos, depth int, s []byte) {
+	c.Bytes[pos][depth] = s[0:cap(s)]
 }
 
 // ---------------------------------------------
@@ -61,22 +66,22 @@ func (c *ValComparer) CompareDeep(a, b []byte, depth int) int {
 	// Both types are the same, so need type-based cases...
 	switch aValueType {
 	case jsonparser.String:
-		av, aErr := jsonparser.ParseString(aValue) // TODO: Mem-management.
-		bv, bErr := jsonparser.ParseString(bValue)
+		aBuf := c.BytesGet(0, depth)
+		bBuf := c.BytesGet(1, depth)
+
+		av, aErr := jsonparser.Unescape(aValue, aBuf)
+		bv, bErr := jsonparser.Unescape(bValue, bBuf)
 
 		if aErr != nil || bErr != nil {
 			return CompareErr(aErr, bErr)
 		}
 
-		if av == bv {
-			return 0
-		}
+		cmp := bytes.Compare(av, bv)
 
-		if av < bv {
-			return -1
-		}
+		c.BytesPut(0, depth, av)
+		c.BytesPut(1, depth, bv)
 
-		return 1
+		return cmp
 
 	case jsonparser.Number:
 		av, aErr := jsonparser.ParseFloat(aValue)

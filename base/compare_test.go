@@ -138,7 +138,7 @@ func TestValComparer(t *testing.T) {
 }
 
 func TestValComparerReuse(t *testing.T) {
-	testValComparer(t, &ValComparer{})
+	testValComparer(t, NewValComparer())
 }
 
 func testValComparer(t *testing.T, vIn *ValComparer) {
@@ -257,7 +257,7 @@ func testValComparer(t *testing.T, vIn *ValComparer) {
 	for testi, test := range tests {
 		v := vIn
 		if v == nil {
-			v = &ValComparer{}
+			v = NewValComparer()
 		}
 
 		c := v.Compare([]byte(test.a), []byte(test.b))
