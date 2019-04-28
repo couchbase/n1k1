@@ -74,6 +74,8 @@ TODO...
 
 - early stop when processing is canceled?
 
+- ORDER-BY / OFFSET / LIMIT via a heap
+
 - hash join?
 
 - conversion of real N1QL query-plan into n1k1 query-plan
