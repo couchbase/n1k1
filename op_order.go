@@ -107,7 +107,7 @@ func MakeLessFunc(types base.Types, directions []interface{}) (
 	lzLessFunc base.LessFunc) {
 	// TODO: One day use types to optimize.
 
-	if len(directions) > 0 { // !lz
+	if len(directions) > 0 {
 		lzValComparer := &base.ValComparer{}
 
 		lzLessFunc = func(lzValsA, lzValsB base.Vals, lzIA, lzIB []interface{}) bool {
@@ -133,7 +133,7 @@ func MakeLessFunc(types base.Types, directions []interface{}) (
 
 			return false
 		}
-	} // !lz
+	}
 
 	return lzLessFunc
 }
