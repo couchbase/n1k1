@@ -69,20 +69,16 @@ func OpOrderByOffsetLimit(o *base.Op, lzYieldVals base.YieldVals,
 				nProjections := len(projections) // !lz
 				if nProjections > 0 {            // !lz
 					lzProjected := make([]base.Vals, 0, len(lzItems))
-					lzInterfaces := make([][]interface{}, 0, len(lzItems))
-					lzInterfacesAll := make([]interface{}, len(lzItems)*nProjections)
 
-					for lzI, lzVals := range lzItems {
+					for _, lzVals := range lzItems {
 						var lzValsOut base.Vals
 
 						lzValsOut = lzProjectFunc(lzVals, lzValsOut) // <== emitCaptured: pathNextOOL "PF"
 
 						lzProjected = append(lzProjected, lzValsOut)
-
-						lzInterfaces = append(lzInterfaces, lzInterfacesAll[lzI*nProjections:(lzI+1)*nProjections])
 					}
 
-					base.OrderByItems(lzItems, lzProjected, lzInterfaces, lzLessFunc)
+					base.OrderByItems(lzItems, lzProjected, lzLessFunc)
 				} // !lz
 
 				lzI := offset
@@ -116,7 +112,7 @@ func MakeLessFunc(types base.Types, directions []interface{}) (
 	if len(directions) > 0 {
 		lzValComparer := &base.ValComparer{}
 
-		lzLessFunc = func(lzValsA, lzValsB base.Vals, lzIA, lzIB []interface{}) bool {
+		lzLessFunc = func(lzValsA, lzValsB base.Vals) bool {
 			var lzCmp int
 
 			for idx := range directions { // !lz
@@ -127,7 +123,7 @@ func MakeLessFunc(types base.Types, directions []interface{}) (
 					lt, gt = false, true // !lz
 				} // !lz
 
-				lzCmp = lzValComparer.Compare(lzValsA[idx], lzValsB[idx], &lzIA[idx], &lzIB[idx])
+				lzCmp = lzValComparer.Compare(lzValsA[idx], lzValsB[idx])
 				if lzCmp < 0 {
 					return lt
 				}
