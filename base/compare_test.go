@@ -61,6 +61,28 @@ func TestJsonParser(t *testing.T) {
 			outOffset:    3,
 		},
 		{
+			json:         `   [ "hello", [] ]  `,
+			path:         []string{"[0]"},
+			outValue:     `hello`,
+			outValueType: jsonparser.String,
+			outOffset:    12,
+		},
+		{
+			json:         `   [ "hello", [] ]  `,
+			path:         []string{"[1]"},
+			outValue:     `[]`,
+			outValueType: jsonparser.Array,
+			outOffset:    16,
+		},
+		{
+			json:         `   [ "hello", [] ]  `,
+			path:         []string{"[2]"},
+			err:          "should have error as array is too short",
+			outValue:     ``,
+			outValueType: jsonparser.NotExist,
+			outOffset:    -1,
+		},
+		{
 			json:         `   "hello  `,
 			path:         []string{},
 			err:          "should detect a missing closing string",
@@ -68,6 +90,14 @@ func TestJsonParser(t *testing.T) {
 			outValueType: jsonparser.String,
 			outOffset:    3,
 		},
+		{
+			json:         `   " hello\"world "  `,
+			path:         []string{},
+			outValue:     " hello\\\"world ",
+			outValueType: jsonparser.String,
+			outOffset:    19,
+		},
+
 	}
 
 	for testi, test := range tests {
@@ -91,5 +121,15 @@ func TestJsonParser(t *testing.T) {
 			t.Fatalf("testi: %d, test: %+v, wrong offset: %d",
 				testi, test, offset)
 		}
+	}
+}
+
+func TestJsonParserUnescape(t *testing.T) {
+	v, err := jsonparser.Unescape([]byte(` hello\"world `), nil)
+	if err != nil {
+		t.Errorf("not expecting err")
+	}
+	if string(v) != ` hello"world ` {
+		t.Errorf("got: %s, %#v", v, v)
 	}
 }
