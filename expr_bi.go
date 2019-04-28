@@ -77,7 +77,6 @@ func ExprEq(fields base.Fields, types base.Types,
 func ExprOr(fields base.Fields, types base.Types,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
 	biExprFunc := func(lzA, lzB base.ExprFunc, lzVals base.Vals) (lzVal base.Val) { // !lz
-		// Implemented this way since compiler only allows return on last line.
 		// TODO: This might not match N1QL logical OR semantics.
 		lzVal = lzA(lzVals) // <== emitCaptured: path "A"
 		if !base.ValEqualTrue(lzVal) {
@@ -98,7 +97,6 @@ func ExprOr(fields base.Fields, types base.Types,
 func ExprAnd(fields base.Fields, types base.Types,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
 	biExprFunc := func(lzA, lzB base.ExprFunc, lzVals base.Vals) (lzVal base.Val) { // !lz
-		// Implemented this way since compiler only allows return on last line.
 		// TODO: This might not match N1QL logical AND semantics.
 		lzVal = lzA(lzVals) // <== emitCaptured: path "A"
 		if base.ValEqualTrue(lzVal) {

@@ -13,7 +13,7 @@ func OpOrderByOffsetLimit(o *base.Op, lzYieldVals base.YieldVals,
 	lzYieldStats base.YieldStats, lzYieldErr base.YieldErr, path, pathNext string) {
 	projections := o.Params[0].([]interface{}) // ORDER BY expressions.
 
-	// Then directions has same len as projections, ex: ["asc", "desc", "asc"].
+	// The directions has same len as projections, ex: ["asc", "desc", "asc"].
 	directions := o.Params[1].([]interface{})
 
 	offset := 0
