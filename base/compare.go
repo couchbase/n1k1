@@ -18,7 +18,7 @@ const (
 // ---------------------------------------------
 
 type ValComparer struct {
-	Preallocs [][]string
+	Preallocs [][]string // Slices reused across Compare()'s.
 }
 
 // ---------------------------------------------
