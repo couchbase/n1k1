@@ -69,7 +69,7 @@ func OpOrderByOffsetLimit(o *base.Op, lzYieldVals base.YieldVals,
 					for lzI, lzVals := range lzItems {
 						var lzValsOut base.Vals
 
-						lzValsOut = lzProjectFunc(lzVals, lzValsOut)
+						lzValsOut = lzProjectFunc(lzVals, lzValsOut) // <== emitCaptured: pathNextOOL "PF"
 
 						lzProjected = append(lzProjected, lzValsOut)
 
