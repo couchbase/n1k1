@@ -6,6 +6,9 @@ import (
 	"github.com/couchbase/n1k1/base"
 )
 
+var InitPreallocVals = 16
+var InitPreallocVal = 4096
+
 func OpOrderByOffsetLimit(o *base.Op, lzYieldVals base.YieldVals,
 	lzYieldStats base.YieldStats, lzYieldErr base.YieldErr, path, pathNext string) {
 	projections := o.Params[0].([]interface{}) // ORDER BY expressions.
@@ -42,16 +45,17 @@ func OpOrderByOffsetLimit(o *base.Op, lzYieldVals base.YieldVals,
 		lzLessFunc =
 			MakeLessFunc(nil, directions) // !lz
 
+		var lzPreallocVals base.Vals
+		var lzPreallocVal base.Val
+
 		var lzItems []base.Vals // Items collected to be sorted.
 
 		lzYieldValsOrig := lzYieldVals
 
 		lzYieldVals = func(lzVals base.Vals) {
-			lzItem := make(base.Vals, 0, len(lzVals)) // TODO: Prealloc here?
+			var lzItem base.Vals
 
-			for _, lzVal := range lzVals { // Deep copy.
-				lzItem = append(lzItem, append(base.Val(nil), lzVal...))
-			}
+			lzItem, lzPreallocVals, lzPreallocVal = base.ValsDeepCopy(lzVals, lzPreallocVals, lzPreallocVal, InitPreallocVals, InitPreallocVal)
 
 			lzItems = append(lzItems, lzItem)
 

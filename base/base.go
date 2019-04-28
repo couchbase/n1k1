@@ -73,6 +73,44 @@ func ValEqual(valA, valB Val) (val Val) {
 
 // -----------------------------------------------------
 
+func ValsDeepCopy(vals Vals, preallocVals Vals, preallocVal Val,
+	initValsSize, initValSize int) (Vals, Vals, Val) {
+	var bytesNeeded int
+	for _, val := range vals {
+		bytesNeeded += len(val)
+	}
+
+	if len(preallocVal) < bytesNeeded {
+		if initValSize < bytesNeeded {
+			initValSize = bytesNeeded
+		}
+		preallocVal = make(Val, initValSize)
+	}
+
+	copyVal := preallocVal[:0]
+	preallocVal = preallocVal[bytesNeeded:]
+
+	if len(preallocVals) < len(vals) {
+		if initValsSize < len(vals) {
+			initValsSize = len(vals)
+		}
+		preallocVals = make(Vals, initValsSize)
+	}
+
+	copyVals := preallocVals[:0]
+	preallocVals = preallocVals[len(vals):]
+
+	for _, val := range vals {
+		copyVal = append(copyVal, val...)
+		copyVals = append(copyVals, copyVal)
+		copyVal = copyVal[len(val):]
+	}
+
+	return copyVals, preallocVals, preallocVal
+}
+
+// -----------------------------------------------------
+
 // YieldVals memory ownership: the receiver implementation should
 // generally copy any inputs that it wants to keep, because the
 // provided slices might be reused by future invocations.
