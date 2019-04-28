@@ -134,6 +134,14 @@ func TestJsonParserUnescape(t *testing.T) {
 }
 
 func TestValComparer(t *testing.T) {
+	testValComparer(t, nil)
+}
+
+func TestValComparerReuse(t *testing.T) {
+	testValComparer(t, &ValComparer{})
+}
+
+func testValComparer(t *testing.T, vIn *ValComparer) {
 	tests := []struct {
 		a string
 		b string
@@ -247,7 +255,10 @@ func TestValComparer(t *testing.T) {
 	}
 
 	for testi, test := range tests {
-		v := &ValComparer{}
+		v := vIn
+		if v == nil {
+			v = &ValComparer{}
+		}
 
 		c := v.Compare([]byte(test.a), []byte(test.b))
 		if c != test.c {
