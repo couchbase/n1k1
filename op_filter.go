@@ -14,8 +14,6 @@ func OpFilter(o *base.Op, lzYieldVals base.YieldVals,
 
 		lzYieldValsOrig := lzYieldVals
 
-		_ = lzYieldValsOrig
-
 		lzYieldVals = func(lzVals base.Vals) {
 			var lzVal base.Val
 

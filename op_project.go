@@ -18,8 +18,6 @@ func OpProject(o *base.Op, lzYieldVals base.YieldVals,
 
 		lzYieldValsOrig := lzYieldVals
 
-		_ = lzYieldValsOrig
-
 		lzYieldVals = func(lzVals base.Vals) {
 			lzValsOut := lzValsReuse[:0]
 
@@ -50,12 +48,10 @@ func MakeProjectFunc(fields base.Fields, types base.Types,
 	for i, projection := range projections {
 		expr := projection.([]interface{})
 
-		if LzScope {
-			lzExprFunc =
-				MakeExprFunc(fields, types, expr, pathNext, strconv.Itoa(i)) // !lz
+		lzExprFunc =
+			MakeExprFunc(fields, types, expr, pathNext, strconv.Itoa(i)) // !lz
 
-			exprFuncs = append(exprFuncs, lzExprFunc) // !lz
-		}
+		exprFuncs = append(exprFuncs, lzExprFunc) // !lz
 	}
 
 	lzProjectFunc = func(lzVals, lzValsPre base.Vals) (lzValsOut base.Vals) {
