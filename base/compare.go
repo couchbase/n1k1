@@ -21,11 +21,14 @@ var ValueTypePriority = []int{
 // ---------------------------------------------
 
 type ValComparer struct {
-	// Reused across Compare()'s, key: pos, depth.
+	// Reused across Compare()'s, indexed by: pos, depth.
 	Bytes [][][]byte
 
-	// Reused across Compare()'s, key: depth.
+	// Reused across Compare()'s, indexed by: depth.
 	BytesSlice [][][]byte
+
+	// Reused across Compare()'s, indexed by: depth.
+	KeyVals []KeyVals
 }
 
 func NewValComparer() *ValComparer {
@@ -45,7 +48,7 @@ func (c *ValComparer) BytesGet(pos, depth int) []byte {
 	return byDepth[depth]
 }
 
-func (c *ValComparer) BytesPut(pos, depth int, s []byte) {
+func (c *ValComparer) BytesSet(pos, depth int, s []byte) {
 	c.Bytes[pos][depth] = s[0:cap(s)]
 }
 
@@ -59,8 +62,22 @@ func (c *ValComparer) BytesSliceGet(depth int) [][]byte {
 	return c.BytesSlice[depth]
 }
 
-func (c *ValComparer) BytesSlicePut(depth int, s [][]byte) {
+func (c *ValComparer) BytesSliceSet(depth int, s [][]byte) {
 	c.BytesSlice[depth] = s[:0]
+}
+
+// ---------------------------------------------
+
+func (c *ValComparer) KeyValsGet(depth int) KeyVals {
+	for len(c.KeyVals) < depth+1 {
+		c.KeyVals = append(c.KeyVals, nil)
+	}
+
+	return c.KeyVals[depth]
+}
+
+func (c *ValComparer) KeyValsSet(depth int, s KeyVals) {
+	c.KeyVals[depth] = s[:0]
 }
 
 // ---------------------------------------------
@@ -96,8 +113,8 @@ func (c *ValComparer) CompareDeep(a, b []byte, depth int) int {
 
 		cmp := bytes.Compare(av, bv)
 
-		c.BytesPut(0, depth, av)
-		c.BytesPut(1, depth, bv)
+		c.BytesSet(0, depth, av)
+		c.BytesSet(1, depth, bv)
 
 		return cmp
 
@@ -152,7 +169,7 @@ func (c *ValComparer) CompareDeep(a, b []byte, depth int) int {
 				i++
 			})
 
-		c.BytesSlicePut(depth, bItems)
+		c.BytesSliceSet(depth, bItems)
 
 		if i < bLen {
 			return -1
@@ -165,7 +182,7 @@ func (c *ValComparer) CompareDeep(a, b []byte, depth int) int {
 		return cmp
 
 	case jsonparser.Object:
-		var kvs KeyVals
+		kvs := c.KeyValsGet(depth)
 
 		var aLen int
 		aErr := jsonparser.ObjectEach(aValue,
@@ -186,6 +203,8 @@ func (c *ValComparer) CompareDeep(a, b []byte, depth int) int {
 		if aErr != nil || bErr != nil {
 			return CompareErr(aErr, bErr)
 		}
+
+		c.KeyValsSet(depth, kvs)
 
 		if aLen != bLen {
 			return aLen - bLen // Larger object wins.
