@@ -73,6 +73,7 @@ func ValEqual(valA, valB Val) (val Val) {
 
 // -----------------------------------------------------
 
+// ValsDeepCopy copies vals into the optional, preallocated slices.
 func ValsDeepCopy(vals Vals, preallocVals Vals, preallocVal Val,
 	initValsSize, initValSize int) (Vals, Vals, Val) {
 	var bytesNeeded int
