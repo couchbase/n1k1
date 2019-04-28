@@ -21,7 +21,11 @@ var ValueTypePriority = []int{
 // ---------------------------------------------
 
 type ValComparer struct {
-	Bytes [][][]byte // Reused across Compare()'s.
+	// Reused across Compare()'s, key: pos, depth.
+	Bytes [][][]byte
+
+	// Reused across Compare()'s, key: depth.
+	BytesSlice [][][]byte
 }
 
 func NewValComparer() *ValComparer {
@@ -43,6 +47,20 @@ func (c *ValComparer) BytesGet(pos, depth int) []byte {
 
 func (c *ValComparer) BytesPut(pos, depth int, s []byte) {
 	c.Bytes[pos][depth] = s[0:cap(s)]
+}
+
+// ---------------------------------------------
+
+func (c *ValComparer) BytesSliceGet(depth int) [][]byte {
+	for len(c.BytesSlice) < depth+1 {
+		c.BytesSlice = append(c.BytesSlice, nil)
+	}
+
+	return c.BytesSlice[depth]
+}
+
+func (c *ValComparer) BytesSlicePut(depth int, s [][]byte) {
+	c.BytesSlice[depth] = s[:0]
 }
 
 // ---------------------------------------------
@@ -105,11 +123,13 @@ func (c *ValComparer) CompareDeep(a, b []byte, depth int) int {
 		return int(aValue[0]) - int(bValue[0]) // Ex: 't' - 'f'.
 
 	case jsonparser.Array:
-		var bItems [][]byte
+		bItems := c.BytesSliceGet(depth)
 		_, bErr := jsonparser.ArrayEach(bValue,
 			func(v []byte, vT jsonparser.ValueType, vOffset int, vErr error) {
 				bItems = append(bItems, v)
 			})
+
+		bLen := len(bItems)
 
 		depthPlus1 := depth + 1
 
@@ -122,7 +142,7 @@ func (c *ValComparer) CompareDeep(a, b []byte, depth int) int {
 					return
 				}
 
-				if i >= len(bItems) {
+				if i >= bLen {
 					cmp = 1
 					return
 				}
@@ -132,7 +152,9 @@ func (c *ValComparer) CompareDeep(a, b []byte, depth int) int {
 				i++
 			})
 
-		if i < len(bItems) {
+		c.BytesSlicePut(depth, bItems)
+
+		if i < bLen {
 			return -1
 		}
 
