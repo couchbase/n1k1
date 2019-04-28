@@ -121,7 +121,7 @@ TODO...
     bounded expr tree
     - so, it might be more similar to ANY x IN y ... END -- hardcoded codepath.
 
-- merge join - COMPLEX / UNWORKABLE with push-based engine
+- merge join - COMPLEX with push-based engine...
   - merge join needs threading / locking / coroutines
     so that both parents can feed the merge-joiner?
 
