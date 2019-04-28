@@ -110,6 +110,8 @@ TODO...
 
 - need optimized replacement for json.Unmarshal()
 
+- scan should have a lookup table of file suffixes and handlers?
+
 - positional fields versus access to the full record?
 - perhaps the 0'th field might represent the full record?
 
