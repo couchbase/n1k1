@@ -97,7 +97,6 @@ func TestJsonParser(t *testing.T) {
 			outValueType: jsonparser.String,
 			outOffset:    19,
 		},
-
 	}
 
 	for testi, test := range tests {
