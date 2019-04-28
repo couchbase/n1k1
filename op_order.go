@@ -107,11 +107,10 @@ func MakeLessFunc(types base.Types, directions []interface{}) (
 	lzLessFunc base.LessFunc) {
 	// TODO: One day use types to optimize.
 
-	lzValComparer := &base.ValComparer{}
-	_ = lzValComparer
+	if len(directions) > 0 { // !lz
+		lzValComparer := &base.ValComparer{}
 
-	lzLessFunc = func(lzValsA, lzValsB base.Vals, lzIA, lzIB []interface{}) bool {
-		if len(directions) > 0 { // !lz
+		lzLessFunc = func(lzValsA, lzValsB base.Vals, lzIA, lzIB []interface{}) bool {
 			var lzCmp int
 
 			for idx := range directions { // !lz
@@ -131,10 +130,10 @@ func MakeLessFunc(types base.Types, directions []interface{}) (
 					return gt
 				}
 			} // !lz
-		} // !lz
 
-		return false
-	}
+			return false
+		}
+	} // !lz
 
 	return lzLessFunc
 }
