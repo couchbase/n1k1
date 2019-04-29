@@ -67,6 +67,9 @@ Some features...
 ------------------------------------------
 TODO...
 
+- scans with params (correlated subqueries / index scans)
+  or pushdown expressions
+
 - pipeline breakers / data staging nodes
 - batching (or staging) optimizations?
 
@@ -81,6 +84,8 @@ TODO...
 - UNION
 
 - NEST / UNNEST
+
+- concurrency / multithreading
 
 - early stop when processing is canceled?
 
