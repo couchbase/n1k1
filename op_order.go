@@ -22,7 +22,7 @@ func OpOrderByOffsetLimit(o *base.Op, lzYieldVals base.YieldVals,
 	limit := math.MaxInt64
 
 	offsetPlusLimit := offset + limit
-	if offsetPlusLimit <= 0 { // Overflow.
+	if offsetPlusLimit < 0 { // Overflow.
 		offsetPlusLimit = math.MaxInt64
 	}
 
@@ -40,8 +40,6 @@ func OpOrderByOffsetLimit(o *base.Op, lzYieldVals base.YieldVals,
 		var lzProjectFunc base.ProjectFunc
 		var lzLessFunc base.LessFunc
 
-		_, _ = lzProjectFunc, lzLessFunc
-
 		if len(projections) > 0 { // !lz
 			lzProjectFunc =
 				MakeProjectFunc(o.ParentA.Fields, nil, projections, pathNextOOL, "PF") // !lz
@@ -56,7 +54,7 @@ func OpOrderByOffsetLimit(o *base.Op, lzYieldVals base.YieldVals,
 		// Used when there are no ORDER-BY exprs.
 		var lzItems []base.Vals
 
-		_, _ = lzHeap, lzItems
+		_, _, _, _ = lzProjectFunc, lzLessFunc, lzHeap, lzItems
 
 		lzYieldValsOrig := lzYieldVals
 
@@ -77,9 +75,9 @@ func OpOrderByOffsetLimit(o *base.Op, lzYieldVals base.YieldVals,
 				}
 			} else { // !lz
 				lzItems = append(lzItems, lzValsCopy)
-			} // !lz
 
-			// TODO: If no order-by, but OFFSET+LIMIT reached, early exit?
+				// TODO: No ORDER-BY, but OFFSET+LIMIT reached, early exit via lzYieldStats?
+			} // !lz
 		}
 
 		lzYieldErrOrig := lzYieldErr
