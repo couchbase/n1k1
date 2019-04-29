@@ -58,6 +58,9 @@ func OpOrderByOffsetLimit(o *base.Op, lzYieldVals base.YieldVals,
 
 		var lzPreallocVals base.Vals
 		var lzPreallocVal base.Val
+		var lzPreallocProjected base.Vals
+
+		_, _, _ = lzPreallocVals, lzPreallocVal, lzPreallocProjected
 
 		lzYieldValsOrig := lzYieldVals
 
@@ -67,7 +70,9 @@ func OpOrderByOffsetLimit(o *base.Op, lzYieldVals base.YieldVals,
 			lzValsCopy, lzPreallocVals, lzPreallocVal = base.ValsDeepCopy(lzVals, lzPreallocVals, lzPreallocVal)
 
 			if len(projections) > 0 { // !lz
-				var lzValsOut base.Vals
+				lzValsOut := lzPreallocProjected
+
+				lzPreallocProjected = nil
 
 				lzVals = lzValsCopy
 
@@ -76,7 +81,14 @@ func OpOrderByOffsetLimit(o *base.Op, lzYieldVals base.YieldVals,
 				heap.Push(lzHeap, base.ValsProjected{lzValsCopy, lzValsOut})
 
 				if lzHeap.Len() > offsetPlusLimit {
-					heap.Pop(lzHeap)
+					lzOld := heap.Pop(lzHeap).(base.ValsProjected)
+
+					lzPreallocVals = lzOld.Vals[0:cap(lzOld.Vals)]
+
+					lzPreallocVal = lzOld.Vals[0]
+					lzPreallocVal = lzPreallocVal[0:cap(lzPreallocVal)]
+
+					lzPreallocProjected = lzOld.Projected[:0]
 				}
 			} else { // !lz
 				lzItems = append(lzItems, lzValsCopy)
