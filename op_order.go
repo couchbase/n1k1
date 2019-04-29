@@ -101,8 +101,8 @@ func OpOrderByOffsetLimit(o *base.Op, lzYieldVals base.YieldVals,
 
 		lzYieldErr = func(lzErrIn error) {
 			if lzErrIn == nil { // If no error, yield our sorted items.
-				lzI := offset
-				lzN := 0
+				var lzN int
+				_ = lzN
 
 				if len(projections) > 0 { // !lz
 					lzHeapLen := lzHeap.Len()
@@ -115,20 +115,28 @@ func OpOrderByOffsetLimit(o *base.Op, lzYieldVals base.YieldVals,
 
 					lzHeap.ValsProjected = lzValsProjected
 
-					for lzI < lzHeapLen && lzN < limit {
-						lzYieldValsOrig(lzHeap.GetVals(lzI))
+					for lzI := offset; lzI < lzHeapLen; lzI++ {
+						if limit < math.MaxInt64 { // !lz
+							if lzN >= limit {
+								break
+							}
+							lzN++
+						} // !lz
 
-						lzI++
-						lzN++
+						lzYieldValsOrig(lzHeap.GetVals(lzI))
 					}
 				} else { // !lz
 					lzItemsLen := len(lzItems)
 
-					for lzI < lzItemsLen && lzN < limit {
-						lzYieldValsOrig(lzItems[lzI])
+					for lzI := offset; lzI < lzItemsLen; lzI++ {
+						if limit < math.MaxInt64 { // !lz
+							if lzN >= limit {
+								break
+							}
+							lzN++
+						} // !lz
 
-						lzI++
-						lzN++
+						lzYieldValsOrig(lzItems[lzI])
 					}
 				} // !lz
 			}
