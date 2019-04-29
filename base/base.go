@@ -73,15 +73,27 @@ func ValEqual(valA, valB Val) (val Val) {
 
 // -----------------------------------------------------
 
-func ValsDeepCopy(vals Vals) Vals {
+// ValsDeepCopy copies vals into the optional, preallocated slices.
+func ValsDeepCopy(vals Vals, preallocVals Vals, preallocVal Val) (
+	Vals, Vals, Val) {
 	var bytesNeeded int
 	for _, val := range vals {
 		bytesNeeded += len(val)
 	}
 
-	copyVal := make(Val, 0, bytesNeeded)
+	if len(preallocVal) < bytesNeeded {
+		preallocVal = make(Val, bytesNeeded)
+	}
 
-	copyVals := make(Vals, 0, len(vals))
+	copyVal := preallocVal[:0]
+	preallocVal = preallocVal[bytesNeeded:]
+
+	if len(preallocVals) < len(vals) {
+		preallocVals = make(Vals, len(vals))
+	}
+
+	copyVals := preallocVals[:0]
+	preallocVals = preallocVals[len(vals):]
 
 	for _, val := range vals {
 		copyVal = append(copyVal, val...)
@@ -89,7 +101,7 @@ func ValsDeepCopy(vals Vals) Vals {
 		copyVal = copyVal[len(val):]
 	}
 
-	return copyVals
+	return copyVals, preallocVals, preallocVal
 }
 
 // -----------------------------------------------------

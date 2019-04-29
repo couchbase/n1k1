@@ -59,7 +59,7 @@ func OpOrderByOffsetLimit(o *base.Op, lzYieldVals base.YieldVals,
 		lzYieldValsOrig := lzYieldVals
 
 		lzYieldVals = func(lzVals base.Vals) {
-			lzValsCopy := base.ValsDeepCopy(lzVals)
+			lzValsCopy, _, _ := base.ValsDeepCopy(lzVals, nil, nil)
 
 			if len(projections) > 0 { // !lz
 				var lzValsOut base.Vals
