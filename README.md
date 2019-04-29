@@ -83,6 +83,10 @@ TODO...
 - early stop when an error or LIMIT is reached?
   - YieldStats() can return an non-nil error, like ErrLimitReached
 
+- jsonparser doesn't alloc memory, except for ObjectEach() on it's
+  `var stackbuf [unescapeStackBufSize]byte`, which inadvertently
+  escapes to the heap.
+
 - DISTINCT
 
 - NEST / UNNEST

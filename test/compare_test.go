@@ -11,11 +11,11 @@ func BenchmarkValCompareObjSmall(b *testing.B) {
 }
 
 func BenchmarkValCompareArraySmall(b *testing.B) {
-	benchmarkValCompare(b ,`[1,2,"3"]`, `[1,2,"4"]`)
+	benchmarkValCompare(b, `[1,2,"3"]`, `[1,2,"4"]`)
 }
 
 func BenchmarkValCompareNum(b *testing.B) {
-	benchmarkValCompare(b ,`10000`, `10001`)
+	benchmarkValCompare(b, `10000`, `10001`)
 }
 
 func benchmarkValCompare(b *testing.B, aStr, bStr string) {
