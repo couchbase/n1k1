@@ -65,10 +65,22 @@ func ExprJson(fields base.Fields, types base.Types,
 
 func ExprIdentifier(fields base.Fields, types base.Types,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	idx := fields.IndexOf(params[0].(string))
+	var parts []string
+	for _, param := range params {
+		parts = append(parts, param.(string))
+	}
+
+	partsRest := parts[1:]
+
+	idx := fields.IndexOf(parts[0])
 	if idx >= 0 {
 		lzExprFunc = func(lzVals base.Vals) (lzVal base.Val) {
 			lzVal = lzVals[idx]
+
+			if len(partsRest) > 0 {
+				lzVal = base.ValPathGet(lzVal, partsRest)
+			}
+
 			return lzVal
 		}
 	} else {

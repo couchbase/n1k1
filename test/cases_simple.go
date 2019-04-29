@@ -364,6 +364,55 @@ var TestCasesSimple = []TestCaseSimple{
 		},
 	},
 	{
+		about: "test csv-data scan->project deeper identifier",
+		o: base.Op{
+			Kind:   "project",
+			Fields: base.Fields{"city"},
+			Params: []interface{}{
+				[]interface{}{"identifier", "a", "addr", "city"},
+			},
+			ParentA: &base.Op{
+				Kind:   "scan",
+				Fields: base.Fields{"a"},
+				Params: []interface{}{
+					"csvData",
+					`
+{"addr": {"city": "sf"}}
+{"addr": {"city": "sj"}}
+`,
+				},
+			},
+		},
+		expectYields: []base.Vals{
+			base.Vals{[]byte("sf")},
+			base.Vals{[]byte("sj")},
+		},
+	}, {
+		about: "test csv-data scan->project deeper identifier",
+		o: base.Op{
+			Kind:   "project",
+			Fields: base.Fields{"city"},
+			Params: []interface{}{
+				[]interface{}{"identifier", "a", "addr"},
+			},
+			ParentA: &base.Op{
+				Kind:   "scan",
+				Fields: base.Fields{"a"},
+				Params: []interface{}{
+					"csvData",
+					`
+{"addr": {"city": "sf"}}
+{"addr": {"city": "sj"}}
+`,
+				},
+			},
+		},
+		expectYields: []base.Vals{
+			base.Vals{[]byte(`{"city": "sf"}`)},
+			base.Vals{[]byte(`{"city": "sj"}`)},
+		},
+	},
+	{
 		about: "test csv-data scan->filter->project nothing",
 		o: base.Op{
 			Kind:   "project",

@@ -6,6 +6,8 @@ package base
 import (
 	"bytes"
 	"fmt"
+
+	"github.com/buger/jsonparser"
 )
 
 type Fields []string // Ex: "description", "address.city".
@@ -102,6 +104,17 @@ func ValsDeepCopy(vals Vals, preallocVals Vals, preallocVal Val) (
 	}
 
 	return copyVals, preallocVals, preallocVal
+}
+
+// -----------------------------------------------------
+
+func ValPathGet(vIn Val, path []string) Val {
+	v, _, _, err := jsonparser.Get(vIn, path...)
+	if err != nil {
+		return ValMissing
+	}
+
+	return v
 }
 
 // -----------------------------------------------------
