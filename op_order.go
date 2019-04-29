@@ -21,17 +21,17 @@ func OpOrderByOffsetLimit(o *base.Op, lzYieldVals base.YieldVals,
 
 	limit := math.MaxInt64
 
-	offsetPlusLimit := offset + limit
-	if offsetPlusLimit < 0 { // Overflow.
-		offsetPlusLimit = math.MaxInt64
-	}
-
 	if len(o.Params) >= 3 {
 		offset = o.Params[2].(int)
 
 		if len(o.Params) >= 4 {
 			limit = o.Params[3].(int)
 		}
+	}
+
+	offsetPlusLimit := offset + limit
+	if offsetPlusLimit < 0 { // Overflow.
+		offsetPlusLimit = math.MaxInt64
 	}
 
 	if LzScope {
@@ -88,6 +88,7 @@ func OpOrderByOffsetLimit(o *base.Op, lzYieldVals base.YieldVals,
 				lzN := 0
 
 				if len(projections) > 0 { // !lz
+					// TODO: use heap to do better than generic sort.
 					lzHeap.Sort()
 
 					for lzI < lzHeap.Len() && lzN < limit {
