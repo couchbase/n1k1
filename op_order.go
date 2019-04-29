@@ -50,9 +50,6 @@ func OpOrderByOffsetLimit(o *base.Op, lzYieldVals base.YieldVals,
 				MakeLessFunc(nil, directions) // !lz
 		} // !lz
 
-		var lzPreallocVals base.Vals
-		var lzPreallocVal base.Val
-
 		// Used when there are ORDER-BY exprs.
 		lzHeap := &base.HeapValsProjected{base.SortValsProjected{nil, lzLessFunc}}
 
@@ -66,7 +63,7 @@ func OpOrderByOffsetLimit(o *base.Op, lzYieldVals base.YieldVals,
 		lzYieldVals = func(lzVals base.Vals) {
 			var lzValsCopy base.Vals
 
-			lzValsCopy, lzPreallocVals, lzPreallocVal = base.ValsDeepCopy(lzVals, lzPreallocVals, lzPreallocVal, InitPreallocVals, InitPreallocVal)
+			lzValsCopy, _, _ = base.ValsDeepCopy(lzVals, nil, nil, 0, 0)
 
 			if len(projections) > 0 { // !lz
 				var lzValsOut base.Vals
@@ -78,7 +75,6 @@ func OpOrderByOffsetLimit(o *base.Op, lzYieldVals base.YieldVals,
 				heap.Push(lzHeap, base.ValsProjected{lzValsCopy, lzValsOut})
 
 				if lzHeap.Len() > offsetPlusLimit {
-					// TODO: garbage remains in our prealloc'ed vals.
 					heap.Pop(lzHeap)
 				}
 			} else { // !lz
