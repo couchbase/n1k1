@@ -91,14 +91,18 @@ func OpOrderByOffsetLimit(o *base.Op, lzYieldVals base.YieldVals,
 					// TODO: use heap to do better than generic sort.
 					lzHeap.Sort()
 
-					for lzI < lzHeap.Len() && lzN < limit {
+					lzHeapLen := lzHeap.Len()
+
+					for lzI < lzHeapLen && lzN < limit {
 						lzYieldValsOrig(lzHeap.GetVals(lzI))
 
 						lzI++
 						lzN++
 					}
 				} else { // !lz
-					for lzI < len(lzItems) && lzN < limit {
+					lzItemsLen := len(lzItems)
+
+					for lzI < lzItemsLen && lzN < limit {
 						lzYieldValsOrig(lzItems[lzI])
 
 						lzI++
