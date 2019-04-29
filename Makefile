@@ -1,3 +1,14 @@
+default:
+	go test -v ./base
+	go test .
+	go build ./cmd/intermed_build/
+	./intermed_build
+	go fmt ./...
+	go test ./test/.
+	go fmt ./...
+	go test -v ./test/...
+	go fmt ./...
+
 # Convert the source files into easier-to-read versions...
 #
 easy-to-read:
@@ -6,3 +17,4 @@ easy-to-read:
 	for f in ./*.go; do \
        sed -e 's/[Ll]z//g' $$f | sed -e 's/ \/\/ !//g' | sed -e 's/ \/\/ <== .*//g' > ./tmp/easy-to-read/$$f; \
     done
+
