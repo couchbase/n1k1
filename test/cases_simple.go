@@ -1811,4 +1811,38 @@ var TestCasesSimple = []TestCaseSimple{
 			StringsToLzVals([]string{`"finance"`, `"london"`, `"frank"`, `"finance"`}, nil),
 		},
 	},
+	{
+		about: "test csv-data scan->union-all",
+		o: base.Op{
+			Kind:   "union-all",
+			Fields: base.Fields{"a", "b", "c"},
+			Children: []*base.Op{&base.Op{
+				Kind:   "scan",
+				Fields: base.Fields{"a", "b", "c"},
+				Params: []interface{}{
+					"csvData",
+					`
+10,20,30
+11,21,31
+`,
+				},
+			}, &base.Op{
+				Kind:   "scan",
+				Fields: base.Fields{"b"},
+				Params: []interface{}{
+					"csvData",
+					`
+44
+55
+`,
+				},
+			}},
+		},
+		expectYields: []base.Vals{
+			base.Vals{[]byte("10"), []byte("20"), []byte("30")},
+			base.Vals{[]byte("11"), []byte("21"), []byte("31")},
+			base.Vals{[]byte(nil), []byte("44"), []byte(nil)},
+			base.Vals{[]byte(nil), []byte("55"), []byte(nil)},
+		},
+	},
 }

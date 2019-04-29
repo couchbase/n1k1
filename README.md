@@ -62,6 +62,7 @@ Some features...
 - identifier paths (e.g. locations/address/city)
 - lifting vars to avoid local closures
 - capturing emitted code to avoid local closures
+- UNION ALL
 - avoid json.Unmarshal & map[string]interface{} allocations
 
 ------------------------------------------
@@ -82,6 +83,8 @@ TODO...
 - DISTINCT
 
 - UNION
+- INTERSECT / INTERSECT ALL
+- EXCEPT / EXCEPT ALL
 
 - NEST / UNNEST
 
