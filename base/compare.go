@@ -308,8 +308,6 @@ type ValsProjected struct {
 	Projected Vals
 }
 
-func ValsProjectedVals(x *ValsProjected) Vals { return x.Vals }
-
 // ---------------------------------------------
 
 type HeapValsProjected struct {
@@ -319,6 +317,10 @@ type HeapValsProjected struct {
 
 func (a *HeapValsProjected) GetVals(i int) Vals {
 	return a.ValsProjected[i].Vals
+}
+
+func (a *HeapValsProjected) GetProjected(i int) Vals {
+	return a.ValsProjected[i].Projected
 }
 
 func (a *HeapValsProjected) Len() int { return len(a.ValsProjected) }

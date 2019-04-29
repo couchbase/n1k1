@@ -75,17 +75,21 @@ func OpOrderByOffsetLimit(o *base.Op, lzYieldVals base.YieldVals,
 
 				lzValsOut = lzProjectFunc(lzVals, lzValsOut) // <== emitCaptured: pathNextOOL "PF"
 
-				heap.Push(lzHeap, base.ValsProjected{lzValsCopy, lzValsOut})
+				lzHeapLen := lzHeap.Len()
+				if lzHeapLen < offsetPlusLimit || lzHeapLen == 0 || lzLessFunc(lzValsOut, lzHeap.GetProjected(0)) {
+					// Push onto heap if heap is small or heap is empty or item < max-item.
+					heap.Push(lzHeap, base.ValsProjected{lzValsCopy, lzValsOut})
 
-				if lzHeap.Len() > offsetPlusLimit {
-					lzOld := heap.Pop(lzHeap).(base.ValsProjected)
+					if lzHeapLen+1 > offsetPlusLimit {
+						lzOld := heap.Pop(lzHeap).(base.ValsProjected)
 
-					lzPreallocVals = lzOld.Vals[0:cap(lzOld.Vals)]
+						lzPreallocVals = lzOld.Vals[0:cap(lzOld.Vals)]
 
-					lzPreallocVal = lzOld.Vals[0]
-					lzPreallocVal = lzPreallocVal[0:cap(lzPreallocVal)]
+						lzPreallocVal = lzOld.Vals[0]
+						lzPreallocVal = lzPreallocVal[0:cap(lzPreallocVal)]
 
-					lzPreallocProjected = lzOld.Projected[:0]
+						lzPreallocProjected = lzOld.Projected[:0]
+					}
 				}
 			} else { // !lz
 				lzItems = append(lzItems, lzValsCopy)
