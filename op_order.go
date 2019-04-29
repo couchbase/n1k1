@@ -48,16 +48,30 @@ func OpOrderByOffsetLimit(o *base.Op, lzYieldVals base.YieldVals,
 		var lzPreallocVals base.Vals
 		var lzPreallocVal base.Val
 
-		var lzItems []base.Vals // Items collected to be sorted.
+		var lzValsProjected []base.ValsProjected // Items to be sorted.
 
 		lzYieldValsOrig := lzYieldVals
 
 		lzYieldVals = func(lzVals base.Vals) {
-			var lzItem base.Vals
+			var lzValsCopy base.Vals
 
-			lzItem, lzPreallocVals, lzPreallocVal = base.ValsDeepCopy(lzVals, lzPreallocVals, lzPreallocVal, InitPreallocVals, InitPreallocVal)
+			lzValsCopy, lzPreallocVals, lzPreallocVal = base.ValsDeepCopy(lzVals, lzPreallocVals, lzPreallocVal, InitPreallocVals, InitPreallocVal)
 
-			lzItems = append(lzItems, lzItem)
+			lzVals = lzValsCopy
+
+			var lzProjected base.Vals
+
+			if len(projections) > 0 { // !lz
+				var lzValsOut base.Vals
+
+				lzValsOut = lzProjectFunc(lzVals, lzValsOut) // <== emitCaptured: pathNextOOL "PF"
+
+				lzProjected = lzValsOut
+			} else { // !lz
+				_ = lzProjected
+			} // !lz
+
+			lzValsProjected = append(lzValsProjected, base.ValsProjected{lzVals, lzProjected})
 
 			// TODO: If no order-by, but OFFSET+LIMIT reached, early exit?
 		}
@@ -66,26 +80,15 @@ func OpOrderByOffsetLimit(o *base.Op, lzYieldVals base.YieldVals,
 
 		lzYieldErr = func(lzErrIn error) {
 			if lzErrIn == nil { // If no error, yield our sorted items.
-				nProjections := len(projections) // !lz
-				if nProjections > 0 {            // !lz
-					lzProjected := make([]base.Vals, 0, len(lzItems))
-
-					for _, lzVals := range lzItems {
-						var lzValsOut base.Vals
-
-						lzValsOut = lzProjectFunc(lzVals, lzValsOut) // <== emitCaptured: pathNextOOL "PF"
-
-						lzProjected = append(lzProjected, lzValsOut)
-					}
-
-					base.OrderByItems(lzItems, lzProjected, lzLessFunc)
+				if len(projections) > 0 { // !lz
+					base.ValsProjectedSort(lzValsProjected, lzLessFunc)
 				} // !lz
 
 				lzI := offset
 				lzN := 0
 
-				for lzI < len(lzItems) && lzN < limit {
-					lzVals := lzItems[lzI]
+				for lzI < len(lzValsProjected) && lzN < limit {
+					lzVals := base.ValsProjectedVals(&lzValsProjected[lzI])
 
 					lzYieldValsOrig(lzVals)
 

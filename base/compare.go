@@ -111,12 +111,10 @@ func (c *ValComparer) CompareDeep(a, b []byte, depth int) int {
 			return CompareErr(aErr, bErr)
 		}
 
-		cmp := bytes.Compare(av, bv)
-
 		c.BytesSet(0, depth, av)
 		c.BytesSet(1, depth, bv)
 
-		return cmp
+		return bytes.Compare(av, bv)
 
 	case jsonparser.Number:
 		av, aErr := jsonparser.ParseFloat(aValue)
@@ -141,6 +139,7 @@ func (c *ValComparer) CompareDeep(a, b []byte, depth int) int {
 
 	case jsonparser.Array:
 		bItems := c.BytesSliceGet(depth)
+
 		_, bErr := jsonparser.ArrayEach(bValue,
 			func(v []byte, vT jsonparser.ValueType, vOffset int, vErr error) {
 				bItems = append(bItems, v)
@@ -304,25 +303,50 @@ type LessFunc func(valsA, valsB Vals) bool
 
 // ---------------------------------------------
 
-func OrderByItems(items, projected []Vals, lessFunc LessFunc) {
-	sort.Sort(&OrderBySorter{items, projected, lessFunc})
+type ValsProjected struct {
+	Vals      Vals
+	Projected Vals
 }
 
-type OrderBySorter struct {
-	Items     []Vals
-	Projected []Vals // Same len() as Items.
-	LessFunc  LessFunc
+func ValsProjectedVals(x *ValsProjected) Vals { return x.Vals }
+
+func ValsProjectedSort(a []ValsProjected, lessFunc LessFunc) {
+	sort.Sort(&SortValsProjected{a, lessFunc})
 }
 
-func (a *OrderBySorter) Len() int {
-	return len(a.Items)
+type SortValsProjected struct {
+	ValsProjected []ValsProjected
+	LessFunc      LessFunc
 }
 
-func (a *OrderBySorter) Swap(i, j int) {
-	a.Items[i], a.Items[j] = a.Items[j], a.Items[i]
-	a.Projected[i], a.Projected[j] = a.Projected[j], a.Projected[i]
+func (a *SortValsProjected) Len() int {
+	return len(a.ValsProjected)
 }
 
-func (a *OrderBySorter) Less(i, j int) bool {
-	return a.LessFunc(a.Projected[i], a.Projected[j])
+func (a *SortValsProjected) Swap(i, j int) {
+	a.ValsProjected[i], a.ValsProjected[j] = a.ValsProjected[j], a.ValsProjected[i]
+}
+
+func (a *SortValsProjected) Less(i, j int) bool {
+	return a.LessFunc(a.ValsProjected[i].Projected, a.ValsProjected[j].Projected)
+}
+
+type HeapValsProjected struct {
+	SortValsProjected
+}
+
+func (a *HeapValsProjected) Less(i, j int) bool {
+	// Reverse of SortValsProjected.Less() so that we have a max-heap.
+	return a.LessFunc(a.ValsProjected[j].Projected, a.ValsProjected[i].Projected)
+}
+
+func (a *HeapValsProjected) Push(x interface{}) {
+	a.ValsProjected = append(a.ValsProjected, x.(ValsProjected))
+}
+
+func (a *HeapValsProjected) Pop() interface{} {
+	end := len(a.ValsProjected) - 1
+	rv := a.ValsProjected[end]
+	a.ValsProjected = a.ValsProjected[0:end]
+	return rv
 }
