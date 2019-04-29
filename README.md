@@ -71,6 +71,8 @@ TODO...
 - subqueries?
 
 - correlated subqueries?
+  - same as vars -- need to pass vars environment / context
+    to ExecOp().
 
 - scans with params or pushdown expressions?
 
