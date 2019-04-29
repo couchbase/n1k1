@@ -68,8 +68,11 @@ Some features...
 ------------------------------------------
 TODO...
 
-- scans with params (correlated subqueries / index scans)
-  or pushdown expressions
+- subqueries?
+
+- correlated subqueries?
+
+- scans with params or pushdown expressions?
 
 - pipeline breakers / data staging nodes
 - batching (or staging) optimizations?
