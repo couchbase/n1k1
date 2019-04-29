@@ -39,7 +39,7 @@ func OpOrderByOffsetLimit(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldV
 
 		if len(projections) > 0 { // !lz
 			lzProjectFunc =
-				MakeProjectFunc(o.Children[0].Fields, nil, projections, pathNextOOL, "PF") // !lz
+				MakeProjectFunc(lzVars, o.Children[0].Fields, nil, projections, pathNextOOL, "PF") // !lz
 
 			lzLessFunc =
 				MakeLessFunc(nil, directions) // !lz

@@ -176,7 +176,7 @@ type Types []string // TODO.
 
 // -----------------------------------------------------
 
-// Vars are used for runtime variables, correlated subqueries, etc.
+// Vars are used for runtime variables, config, etc.
 type Vars struct {
 	Fields Fields
 	Vals   Vals  // Same len() as Fields.

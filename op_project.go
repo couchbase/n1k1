@@ -14,7 +14,7 @@ func OpProject(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 		var lzValsReuse base.Vals // <== varLift: lzValsReuse by path
 
 		projectFunc :=
-			MakeProjectFunc(o.Children[0].Fields, nil, o.Params, pathNextP, "PF") // !lz
+			MakeProjectFunc(lzVars, o.Children[0].Fields, nil, o.Params, pathNextP, "PF") // !lz
 
 		lzYieldValsOrig := lzYieldVals
 
@@ -34,7 +34,7 @@ func OpProject(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	}
 }
 
-func MakeProjectFunc(fields base.Fields, types base.Types,
+func MakeProjectFunc(lzVars *base.Vars, fields base.Fields, types base.Types,
 	projections []interface{}, path, pathItem string) (
 	lzProjectFunc base.ProjectFunc) {
 	pathNext := EmitPush(path, pathItem)
@@ -49,7 +49,7 @@ func MakeProjectFunc(fields base.Fields, types base.Types,
 		expr := projection.([]interface{})
 
 		lzExprFunc =
-			MakeExprFunc(fields, types, expr, pathNext, strconv.Itoa(i)) // !lz
+			MakeExprFunc(lzVars, fields, types, expr, pathNext, strconv.Itoa(i)) // !lz
 
 		exprFuncs = append(exprFuncs, lzExprFunc) // !lz
 	}

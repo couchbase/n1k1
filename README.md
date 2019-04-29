@@ -64,6 +64,7 @@ Some features...
 - capturing emitted code to avoid local closures
 - UNION ALL
 - avoid json.Unmarshal & map[string]interface{} allocations
+- variables / context passed down through ExecOp()
 
 ------------------------------------------
 TODO...
@@ -71,8 +72,8 @@ TODO...
 - subqueries?
 
 - correlated subqueries?
-  - same as vars -- need to pass vars environment / context
-    to ExecOp().
+
+- LET / LETTING?
 
 - scans with params or pushdown expressions?
 
@@ -81,6 +82,8 @@ TODO...
 
 - GROUP BY / aggregates
   - SELECT country, SUM(population) FROM ... GROUP BY country
+
+- HAVING
 
 - early stop when an error or LIMIT is reached?
   - YieldStats() can return an non-nil error, like ErrLimitReached

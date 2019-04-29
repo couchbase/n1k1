@@ -27,12 +27,12 @@ func init() {
 	ExprCatalog["identifier"] = ExprIdentifier
 }
 
-type ExprCatalogFunc func(fields base.Fields, types base.Types,
-	params []interface{}, path string) (lzExprFunc base.ExprFunc)
+type ExprCatalogFunc func(lzVars *base.Vars, fields base.Fields,
+	types base.Types, params []interface{}, path string) base.ExprFunc
 
 // -----------------------------------------------------
 
-func MakeExprFunc(fields base.Fields, types base.Types,
+func MakeExprFunc(lzVars *base.Vars, fields base.Fields, types base.Types,
 	expr []interface{}, path, pathItem string) (
 	lzExprFunc base.ExprFunc) {
 	pathNext := EmitPush(path, pathItem)
@@ -40,14 +40,14 @@ func MakeExprFunc(fields base.Fields, types base.Types,
 	defer EmitPop(path, pathItem)
 
 	lzExprFunc =
-		ExprCatalog[expr[0].(string)](fields, types, expr[1:], pathNext)
+		ExprCatalog[expr[0].(string)](lzVars, fields, types, expr[1:], pathNext) // !lz
 
 	return lzExprFunc
 }
 
 // -----------------------------------------------------
 
-func ExprJson(fields base.Fields, types base.Types,
+func ExprJson(lzVars *base.Vars, fields base.Fields, types base.Types,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
 	json := []byte(params[0].(string))
 
@@ -63,7 +63,7 @@ func ExprJson(fields base.Fields, types base.Types,
 
 // -----------------------------------------------------
 
-func ExprIdentifier(fields base.Fields, types base.Types,
+func ExprIdentifier(lzVars *base.Vars, fields base.Fields, types base.Types,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
 	var parts []string
 	for _, param := range params {
