@@ -24,7 +24,7 @@ var ExprCatalog = map[string]ExprCatalogFunc{}
 
 func init() {
 	ExprCatalog["json"] = ExprJson
-	ExprCatalog["field"] = ExprField
+	ExprCatalog["identifier"] = ExprIdentifier
 }
 
 type ExprCatalogFunc func(fields base.Fields, types base.Types,
@@ -63,7 +63,7 @@ func ExprJson(fields base.Fields, types base.Types,
 
 // -----------------------------------------------------
 
-func ExprField(fields base.Fields, types base.Types,
+func ExprIdentifier(fields base.Fields, types base.Types,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
 	idx := fields.IndexOf(params[0].(string))
 	if idx >= 0 {

@@ -173,8 +173,8 @@ var TestCasesSimple = []TestCaseSimple{
 			Fields: base.Fields{"a", "b", "c"},
 			Params: []interface{}{
 				"eq",
-				[]interface{}{"field", "b"},
-				[]interface{}{"field", "b"},
+				[]interface{}{"identifier", "b"},
+				[]interface{}{"identifier", "b"},
 			},
 			ParentA: &base.Op{
 				Kind:   "scan",
@@ -200,8 +200,8 @@ var TestCasesSimple = []TestCaseSimple{
 			Fields: base.Fields{"a", "b", "c"},
 			Params: []interface{}{
 				"eq",
-				[]interface{}{"field", "a"},
-				[]interface{}{"field", "b"},
+				[]interface{}{"identifier", "a"},
+				[]interface{}{"identifier", "b"},
 			},
 			ParentA: &base.Op{
 				Kind:   "scan",
@@ -224,7 +224,7 @@ var TestCasesSimple = []TestCaseSimple{
 			Fields: base.Fields{"a", "b", "c"},
 			Params: []interface{}{
 				"eq",
-				[]interface{}{"field", "b"},
+				[]interface{}{"identifier", "b"},
 				[]interface{}{"json", `66`},
 			},
 			ParentA: &base.Op{
@@ -248,7 +248,7 @@ var TestCasesSimple = []TestCaseSimple{
 			Fields: base.Fields{"a", "b", "c"},
 			Params: []interface{}{
 				"eq",
-				[]interface{}{"field", "b"},
+				[]interface{}{"identifier", "b"},
 				[]interface{}{"json", `21`},
 			},
 			ParentA: &base.Op{
@@ -274,7 +274,7 @@ var TestCasesSimple = []TestCaseSimple{
 			Fields: base.Fields{"a", "b", "c"},
 			Params: []interface{}{
 				"eq",
-				[]interface{}{"field", "c"},
+				[]interface{}{"identifier", "c"},
 				[]interface{}{"json", `3000`},
 			},
 			ParentA: &base.Op{
@@ -302,15 +302,15 @@ var TestCasesSimple = []TestCaseSimple{
 			Kind:   "project",
 			Fields: base.Fields{"a", "c"},
 			Params: []interface{}{
-				[]interface{}{"field", "a"},
-				[]interface{}{"field", "c"},
+				[]interface{}{"identifier", "a"},
+				[]interface{}{"identifier", "c"},
 			},
 			ParentA: &base.Op{
 				Kind:   "filter",
 				Fields: base.Fields{"a", "b", "c"},
 				Params: []interface{}{
 					"eq",
-					[]interface{}{"field", "c"},
+					[]interface{}{"identifier", "c"},
 					[]interface{}{"json", `3000`},
 				},
 				ParentA: &base.Op{
@@ -339,8 +339,8 @@ var TestCasesSimple = []TestCaseSimple{
 			Kind:   "project",
 			Fields: base.Fields{"a", "c"},
 			Params: []interface{}{
-				[]interface{}{"field", "a"},
-				[]interface{}{"field", "c"},
+				[]interface{}{"identifier", "a"},
+				[]interface{}{"identifier", "c"},
 			},
 			ParentA: &base.Op{
 				Kind:   "scan",
@@ -374,7 +374,7 @@ var TestCasesSimple = []TestCaseSimple{
 				Fields: base.Fields{"a", "b", "c"},
 				Params: []interface{}{
 					"eq",
-					[]interface{}{"field", "c"},
+					[]interface{}{"identifier", "c"},
 					[]interface{}{"json", `3000`},
 				},
 				ParentA: &base.Op{
@@ -403,15 +403,15 @@ var TestCasesSimple = []TestCaseSimple{
 			Kind:   "project",
 			Fields: base.Fields{"a", "xxx"},
 			Params: []interface{}{
-				[]interface{}{"field", "a"},
-				[]interface{}{"field", "xxx"},
+				[]interface{}{"identifier", "a"},
+				[]interface{}{"identifier", "xxx"},
 			},
 			ParentA: &base.Op{
 				Kind:   "filter",
 				Fields: base.Fields{"a", "b", "c"},
 				Params: []interface{}{
 					"eq",
-					[]interface{}{"field", "c"},
+					[]interface{}{"identifier", "c"},
 					[]interface{}{"json", `3000`},
 				},
 				ParentA: &base.Op{
@@ -441,8 +441,8 @@ var TestCasesSimple = []TestCaseSimple{
 			Fields: base.Fields{"dept", "city", "emp", "empDept"},
 			Params: []interface{}{
 				"eq",
-				[]interface{}{"field", "dept"},
-				[]interface{}{"field", "empDept"},
+				[]interface{}{"identifier", "dept"},
+				[]interface{}{"identifier", "empDept"},
 			},
 			ParentA: &base.Op{
 				Kind:   "scan",
@@ -485,7 +485,7 @@ var TestCasesSimple = []TestCaseSimple{
 			Fields: base.Fields{"dept", "city", "emp", "empDept"},
 			Params: []interface{}{
 				"eq",
-				[]interface{}{"field", "dept"},
+				[]interface{}{"identifier", "dept"},
 				[]interface{}{"json", `"NOT-MATCHING"`},
 			},
 			ParentA: &base.Op{
@@ -610,8 +610,8 @@ var TestCasesSimple = []TestCaseSimple{
 			Fields: base.Fields{"dept", "city", "emp", "empDept"},
 			Params: []interface{}{
 				"eq",
-				[]interface{}{"field", `dept`},
-				[]interface{}{"field", `empDept`},
+				[]interface{}{"identifier", `dept`},
+				[]interface{}{"identifier", `empDept`},
 			},
 			ParentA: &base.Op{
 				Kind:   "scan",
@@ -667,8 +667,8 @@ var TestCasesSimple = []TestCaseSimple{
 			Fields: base.Fields{"dept", "city", "emp", "empDept"},
 			Params: []interface{}{
 				"eq",
-				[]interface{}{"field", `dept`},
-				[]interface{}{"field", `empDept`},
+				[]interface{}{"identifier", `dept`},
+				[]interface{}{"identifier", `empDept`},
 			},
 			ParentA: &base.Op{
 				Kind:   "scan",
@@ -703,8 +703,8 @@ var TestCasesSimple = []TestCaseSimple{
 			Fields: base.Fields{"dept", "city", "emp", "empDept"},
 			Params: []interface{}{
 				"eq",
-				[]interface{}{"field", `dept`},
-				[]interface{}{"field", `empDept`},
+				[]interface{}{"identifier", `dept`},
+				[]interface{}{"identifier", `empDept`},
 			},
 			ParentA: &base.Op{
 				Kind:   "scan",
@@ -738,8 +738,8 @@ var TestCasesSimple = []TestCaseSimple{
 			Fields: base.Fields{"dept", "city", "emp", "empDept"},
 			Params: []interface{}{
 				"eq",
-				[]interface{}{"field", `dept`},
-				[]interface{}{"field", `empDept`},
+				[]interface{}{"identifier", `dept`},
+				[]interface{}{"identifier", `empDept`},
 			},
 			ParentA: &base.Op{
 				Kind:   "scan",
@@ -773,8 +773,8 @@ var TestCasesSimple = []TestCaseSimple{
 			Fields: base.Fields{"dept", "city", "emp", "empDept"},
 			Params: []interface{}{
 				"eq",
-				[]interface{}{"field", `dept`},
-				[]interface{}{"field", `someFakeField`},
+				[]interface{}{"identifier", `dept`},
+				[]interface{}{"identifier", `someFakeField`},
 			},
 			ParentA: &base.Op{
 				Kind:   "scan",
@@ -899,12 +899,12 @@ var TestCasesSimple = []TestCaseSimple{
 				"or",
 				[]interface{}{
 					"eq",
-					[]interface{}{"field", `a`},
+					[]interface{}{"identifier", `a`},
 					[]interface{}{"json", `10`},
 				},
 				[]interface{}{
 					"eq",
-					[]interface{}{"field", `c`},
+					[]interface{}{"identifier", `c`},
 					[]interface{}{"json", `31`},
 				},
 			},
@@ -935,12 +935,12 @@ var TestCasesSimple = []TestCaseSimple{
 				"and",
 				[]interface{}{
 					"eq",
-					[]interface{}{"field", `a`},
+					[]interface{}{"identifier", `a`},
 					[]interface{}{"json", `10`},
 				},
 				[]interface{}{
 					"eq",
-					[]interface{}{"field", `c`},
+					[]interface{}{"identifier", `c`},
 					[]interface{}{"json", `30`},
 				},
 			},
@@ -970,12 +970,12 @@ var TestCasesSimple = []TestCaseSimple{
 				"and",
 				[]interface{}{
 					"eq",
-					[]interface{}{"field", `a`},
+					[]interface{}{"identifier", `a`},
 					[]interface{}{"json", `11`},
 				},
 				[]interface{}{
 					"eq",
-					[]interface{}{"field", `c`},
+					[]interface{}{"identifier", `c`},
 					[]interface{}{"json", `31`},
 				},
 			},
@@ -1005,19 +1005,19 @@ var TestCasesSimple = []TestCaseSimple{
 				"and",
 				[]interface{}{
 					"eq",
-					[]interface{}{"field", `a`},
+					[]interface{}{"identifier", `a`},
 					[]interface{}{"json", `10`},
 				},
 				[]interface{}{
 					"and",
 					[]interface{}{
 						"eq",
-						[]interface{}{"field", `c`},
+						[]interface{}{"identifier", `c`},
 						[]interface{}{"json", `30`},
 					},
 					[]interface{}{
 						"eq",
-						[]interface{}{"field", `b`},
+						[]interface{}{"identifier", `b`},
 						[]interface{}{"json", `20`},
 					},
 				},
@@ -1048,19 +1048,19 @@ var TestCasesSimple = []TestCaseSimple{
 				"or",
 				[]interface{}{
 					"eq",
-					[]interface{}{"field", `a`},
+					[]interface{}{"identifier", `a`},
 					[]interface{}{"json", `10`},
 				},
 				[]interface{}{
 					"and",
 					[]interface{}{
 						"eq",
-						[]interface{}{"field", `c`},
+						[]interface{}{"identifier", `c`},
 						[]interface{}{"json", `31`},
 					},
 					[]interface{}{
 						"eq",
-						[]interface{}{"field", `b`},
+						[]interface{}{"identifier", `b`},
 						[]interface{}{"json", `21`},
 					},
 				},
@@ -1092,19 +1092,19 @@ var TestCasesSimple = []TestCaseSimple{
 				"and",
 				[]interface{}{
 					"eq",
-					[]interface{}{"field", `a`},
+					[]interface{}{"identifier", `a`},
 					[]interface{}{"json", `10`},
 				},
 				[]interface{}{
 					"or",
 					[]interface{}{
 						"eq",
-						[]interface{}{"field", `c`},
+						[]interface{}{"identifier", `c`},
 						[]interface{}{"json", `4444`},
 					},
 					[]interface{}{
 						"eq",
-						[]interface{}{"field", `b`},
+						[]interface{}{"identifier", `b`},
 						[]interface{}{"json", `20`},
 					},
 				},
@@ -1132,17 +1132,17 @@ var TestCasesSimple = []TestCaseSimple{
 			Kind:   "project",
 			Fields: base.Fields{"city", "emp", "empDept"},
 			Params: []interface{}{
-				[]interface{}{"field", "city"},
-				[]interface{}{"field", "emp"},
-				[]interface{}{"field", "empDept"},
+				[]interface{}{"identifier", "city"},
+				[]interface{}{"identifier", "emp"},
+				[]interface{}{"identifier", "empDept"},
 			},
 			ParentA: &base.Op{
 				Kind:   "join-nl-inner",
 				Fields: base.Fields{"dept", "city", "emp", "empDept"},
 				Params: []interface{}{
 					"eq",
-					[]interface{}{"field", "dept"},
-					[]interface{}{"field", "empDept"},
+					[]interface{}{"identifier", "dept"},
+					[]interface{}{"identifier", "empDept"},
 				},
 				ParentA: &base.Op{
 					Kind:   "scan",
@@ -1184,9 +1184,9 @@ var TestCasesSimple = []TestCaseSimple{
 			Kind:   "project",
 			Fields: base.Fields{"city", "emp", "empDept"},
 			Params: []interface{}{
-				[]interface{}{"field", "city"},
-				[]interface{}{"field", "emp"},
-				[]interface{}{"field", "empDept"},
+				[]interface{}{"identifier", "city"},
+				[]interface{}{"identifier", "emp"},
+				[]interface{}{"identifier", "empDept"},
 			},
 			ParentA: &base.Op{
 				Kind:   "filter",
@@ -1194,15 +1194,15 @@ var TestCasesSimple = []TestCaseSimple{
 				Params: []interface{}{
 					"eq",
 					[]interface{}{"json", `"london"`},
-					[]interface{}{"field", `city`},
+					[]interface{}{"identifier", `city`},
 				},
 				ParentA: &base.Op{
 					Kind:   "join-nl-inner",
 					Fields: base.Fields{"dept", "city", "emp", "empDept"},
 					Params: []interface{}{
 						"eq",
-						[]interface{}{"field", "dept"},
-						[]interface{}{"field", "empDept"},
+						[]interface{}{"identifier", "dept"},
+						[]interface{}{"identifier", "empDept"},
 					},
 					ParentA: &base.Op{
 						Kind:   "scan",
@@ -1243,7 +1243,7 @@ var TestCasesSimple = []TestCaseSimple{
 			Fields: base.Fields{"a", "b"},
 			Params: []interface{}{
 				[]interface{}{
-					[]interface{}{"field", "a"},
+					[]interface{}{"identifier", "a"},
 				},
 				[]interface{}{
 					"asc",
@@ -1273,7 +1273,7 @@ var TestCasesSimple = []TestCaseSimple{
 			Fields: base.Fields{"a", "b"},
 			Params: []interface{}{
 				[]interface{}{
-					[]interface{}{"field", "a"},
+					[]interface{}{"identifier", "a"},
 				},
 				[]interface{}{
 					"asc",
@@ -1305,7 +1305,7 @@ var TestCasesSimple = []TestCaseSimple{
 			Fields: base.Fields{"a", "b"},
 			Params: []interface{}{
 				[]interface{}{
-					[]interface{}{"field", "a"},
+					[]interface{}{"identifier", "a"},
 				},
 				[]interface{}{
 					"asc",
@@ -1333,7 +1333,7 @@ var TestCasesSimple = []TestCaseSimple{
 			Fields: base.Fields{"a", "b"},
 			Params: []interface{}{
 				[]interface{}{
-					[]interface{}{"field", "b"},
+					[]interface{}{"identifier", "b"},
 				},
 				[]interface{}{
 					"desc",
@@ -1365,8 +1365,8 @@ var TestCasesSimple = []TestCaseSimple{
 			Fields: base.Fields{"a", "b"},
 			Params: []interface{}{
 				[]interface{}{
-					[]interface{}{"field", "a"},
-					[]interface{}{"field", "b"},
+					[]interface{}{"identifier", "a"},
+					[]interface{}{"identifier", "b"},
 				},
 				[]interface{}{
 					"asc",
@@ -1399,8 +1399,8 @@ var TestCasesSimple = []TestCaseSimple{
 			Fields: base.Fields{"a", "b"},
 			Params: []interface{}{
 				[]interface{}{
-					[]interface{}{"field", "a"},
-					[]interface{}{"field", "b"},
+					[]interface{}{"identifier", "a"},
+					[]interface{}{"identifier", "b"},
 				},
 				[]interface{}{
 					"desc",
@@ -1433,8 +1433,8 @@ var TestCasesSimple = []TestCaseSimple{
 			Fields: base.Fields{"a", "b"},
 			Params: []interface{}{
 				[]interface{}{
-					[]interface{}{"field", "a"},
-					[]interface{}{"field", "b"},
+					[]interface{}{"identifier", "a"},
+					[]interface{}{"identifier", "b"},
 				},
 				[]interface{}{
 					"asc",
@@ -1467,8 +1467,8 @@ var TestCasesSimple = []TestCaseSimple{
 			Fields: base.Fields{"a", "b"},
 			Params: []interface{}{
 				[]interface{}{
-					[]interface{}{"field", "a"},
-					[]interface{}{"field", "b"},
+					[]interface{}{"identifier", "a"},
+					[]interface{}{"identifier", "b"},
 				},
 				[]interface{}{
 					"asc",
@@ -1501,8 +1501,8 @@ var TestCasesSimple = []TestCaseSimple{
 			Fields: base.Fields{"a", "b"},
 			Params: []interface{}{
 				[]interface{}{
-					[]interface{}{"field", "a"},
-					[]interface{}{"field", "b"},
+					[]interface{}{"identifier", "a"},
+					[]interface{}{"identifier", "b"},
 				},
 				[]interface{}{
 					"asc",
@@ -1535,7 +1535,7 @@ var TestCasesSimple = []TestCaseSimple{
 			Fields: base.Fields{"a", "b"},
 			Params: []interface{}{
 				[]interface{}{
-					[]interface{}{"field", "a"},
+					[]interface{}{"identifier", "a"},
 				},
 				[]interface{}{
 					"asc",
@@ -1567,7 +1567,7 @@ var TestCasesSimple = []TestCaseSimple{
 			Fields: base.Fields{"a", "b"},
 			Params: []interface{}{
 				[]interface{}{
-					[]interface{}{"field", "a"},
+					[]interface{}{"identifier", "a"},
 				},
 				[]interface{}{
 					"asc",
@@ -1601,7 +1601,7 @@ var TestCasesSimple = []TestCaseSimple{
 			Fields: base.Fields{"a", "b"},
 			Params: []interface{}{
 				[]interface{}{
-					[]interface{}{"field", "a"},
+					[]interface{}{"identifier", "a"},
 				},
 				[]interface{}{
 					"asc",
@@ -1631,7 +1631,7 @@ var TestCasesSimple = []TestCaseSimple{
 			Fields: base.Fields{"a", "b"},
 			Params: []interface{}{
 				[]interface{}{
-					[]interface{}{"field", "a"},
+					[]interface{}{"identifier", "a"},
 				},
 				[]interface{}{
 					"asc",
@@ -1661,7 +1661,7 @@ var TestCasesSimple = []TestCaseSimple{
 			Fields: base.Fields{"a", "b"},
 			Params: []interface{}{
 				[]interface{}{
-					[]interface{}{"field", "a"},
+					[]interface{}{"identifier", "a"},
 				},
 				[]interface{}{
 					"asc",
@@ -1721,8 +1721,8 @@ var TestCasesSimple = []TestCaseSimple{
 			Fields: base.Fields{"dept", "city", "emp", "empDept"},
 			Params: []interface{}{
 				[]interface{}{
-					[]interface{}{"field", "dept"},
-					[]interface{}{"field", "emp"},
+					[]interface{}{"identifier", "dept"},
+					[]interface{}{"identifier", "emp"},
 				},
 				[]interface{}{
 					"asc",
@@ -1736,8 +1736,8 @@ var TestCasesSimple = []TestCaseSimple{
 				Fields: base.Fields{"dept", "city", "emp", "empDept"},
 				Params: []interface{}{
 					"eq",
-					[]interface{}{"field", "dept"},
-					[]interface{}{"field", "empDept"},
+					[]interface{}{"identifier", "dept"},
+					[]interface{}{"identifier", "empDept"},
 				},
 				ParentA: &base.Op{
 					Kind:   "scan",
