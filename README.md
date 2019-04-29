@@ -82,13 +82,15 @@ TODO...
 
 - DISTINCT
 
+- NEST / UNNEST
+
 - UNION
 - INTERSECT / INTERSECT ALL
 - EXCEPT / EXCEPT ALL
 
-- NEST / UNNEST
+- UNION-ALL can be run concurrently / in-parallel?
 
-- concurrency / multithreading
+- concurrency / multithreading?
 
 - early stop when processing is canceled?
 
