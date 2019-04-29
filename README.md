@@ -56,6 +56,7 @@ Some features...
 - projections
 - scans of simple files (CSV's)
 - ORDER BY of multiple expressions & ASC/DESC
+- ORDER-BY / OFFSET / LIMIT via max-heap
 - OFFSET / LIMIT
 - lifting vars to avoid local closures
 - capturing emitted code to avoid local closures
@@ -72,9 +73,13 @@ TODO...
 - early stop when an error or LIMIT is reached?
   - YieldStats() can return an non-nil error, like ErrLimitReached
 
-- early stop when processing is canceled?
+- DISTINCT
 
-- ORDER-BY / OFFSET / LIMIT via a heap
+- UNION
+
+- NEST / UNNEST
+
+- early stop when processing is canceled?
 
 - hash join?
 
