@@ -150,8 +150,7 @@ type Op struct {
 	// Params based on the kind.
 	Params []interface{} `json:"Params,omitempty"`
 
-	ParentA *Op `json:"ParentA,omitempty"`
-	ParentB *Op `json:"ParentB,omitempty"`
+	Children []*Op `json:"Children,omitempty"`
 }
 
 type Order struct {

@@ -14,7 +14,7 @@ func OpProject(o *base.Op, lzYieldVals base.YieldVals,
 		var lzValsReuse base.Vals // <== varLift: lzValsReuse by path
 
 		projectFunc :=
-			MakeProjectFunc(o.ParentA.Fields, nil, o.Params, pathNextP, "PF") // !lz
+			MakeProjectFunc(o.Children[0].Fields, nil, o.Params, pathNextP, "PF") // !lz
 
 		lzYieldValsOrig := lzYieldVals
 
@@ -30,7 +30,7 @@ func OpProject(o *base.Op, lzYieldVals base.YieldVals,
 
 		EmitPop(pathNext, "P") // !lz
 
-		ExecOp(o.ParentA, lzYieldVals, lzYieldStats, lzYieldErr, pathNextP, "") // !lz
+		ExecOp(o.Children[0], lzYieldVals, lzYieldStats, lzYieldErr, pathNextP, "") // !lz
 	}
 }
 

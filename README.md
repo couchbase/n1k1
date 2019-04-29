@@ -13,8 +13,8 @@ Or, how intermed_build generates a N1QL compiler...
 - 1: First, take a look at the n1k1/*.go files.  You'll see a simple,
 bare-bones interpreter for a "N1QL" query-plan.  In ExecOp(), it
 recursively walks down through a query-plan tree, and processes it by
-pushing (or yield()'ing) data records from leaf nodes (e.g., a scan)
-up to higher nodes in the query-plan tree.
+pushing (or yield()'ing) data records from child nodes (e.g., a scan)
+up to parent nodes in the query-plan tree.
 
 - 1.1: As part of that, you'll also see some variables and functions
 that follow a naming convention with "lz" (e.g., "lazy") in their
@@ -130,11 +130,11 @@ TODO...
 
 - merge join - COMPLEX with push-based engine...
   - merge join needs threading / locking / coroutines
-    so that both parents can feed the merge-joiner?
+    so that both children can feed the merge-joiner?
 
 - merge join needs a skip-ahead ability?
   - idea: can introduce an optional lazy "SkipToHints" object or Vals
-    that's passed down to operator parents?
+    that's passed down to operator's children?
     - an lzYieldVals callback can optionally add hints via
       something like lzSkipToHints[2] = lzSkipToVal which operator #2 can check?
 

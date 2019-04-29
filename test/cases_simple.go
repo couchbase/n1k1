@@ -125,7 +125,7 @@ var TestCasesSimple = []TestCaseSimple{
 				[]interface{}{"json", `"July"`},
 				[]interface{}{"json", `"July"`},
 			},
-			ParentA: &base.Op{
+			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"a", "b", "c"},
 				Params: []interface{}{
@@ -135,7 +135,7 @@ var TestCasesSimple = []TestCaseSimple{
 11,21,31
 `,
 				},
-			},
+			}},
 		},
 		expectYields: []base.Vals{
 			base.Vals{[]byte("10"), []byte("20"), []byte("30")},
@@ -152,7 +152,7 @@ var TestCasesSimple = []TestCaseSimple{
 				[]interface{}{"json", `"July"`},
 				[]interface{}{"json", `"June"`},
 			},
-			ParentA: &base.Op{
+			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"a", "b", "c"},
 				Params: []interface{}{
@@ -162,7 +162,7 @@ var TestCasesSimple = []TestCaseSimple{
 11,21,31
 `,
 				},
-			},
+			}},
 		},
 		expectYields: []base.Vals(nil),
 	},
@@ -176,7 +176,7 @@ var TestCasesSimple = []TestCaseSimple{
 				[]interface{}{"identifier", "b"},
 				[]interface{}{"identifier", "b"},
 			},
-			ParentA: &base.Op{
+			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"a", "b", "c"},
 				Params: []interface{}{
@@ -186,7 +186,7 @@ var TestCasesSimple = []TestCaseSimple{
 11,21,31
 `,
 				},
-			},
+			}},
 		},
 		expectYields: []base.Vals{
 			base.Vals{[]byte("10"), []byte("20"), []byte("30")},
@@ -203,7 +203,7 @@ var TestCasesSimple = []TestCaseSimple{
 				[]interface{}{"identifier", "a"},
 				[]interface{}{"identifier", "b"},
 			},
-			ParentA: &base.Op{
+			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"a", "b", "c"},
 				Params: []interface{}{
@@ -213,7 +213,7 @@ var TestCasesSimple = []TestCaseSimple{
 11,21,31
 `,
 				},
-			},
+			}},
 		},
 		expectYields: []base.Vals(nil),
 	},
@@ -227,7 +227,7 @@ var TestCasesSimple = []TestCaseSimple{
 				[]interface{}{"identifier", "b"},
 				[]interface{}{"json", `66`},
 			},
-			ParentA: &base.Op{
+			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"a", "b", "c"},
 				Params: []interface{}{
@@ -237,7 +237,7 @@ var TestCasesSimple = []TestCaseSimple{
 11,21,31
 `,
 				},
-			},
+			}},
 		},
 		expectYields: []base.Vals(nil),
 	},
@@ -251,7 +251,7 @@ var TestCasesSimple = []TestCaseSimple{
 				[]interface{}{"identifier", "b"},
 				[]interface{}{"json", `21`},
 			},
-			ParentA: &base.Op{
+			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"a", "b", "c"},
 				Params: []interface{}{
@@ -261,7 +261,7 @@ var TestCasesSimple = []TestCaseSimple{
 11,21,31
 `,
 				},
-			},
+			}},
 		},
 		expectYields: []base.Vals{
 			base.Vals{[]byte("11"), []byte("21"), []byte("31")},
@@ -277,7 +277,7 @@ var TestCasesSimple = []TestCaseSimple{
 				[]interface{}{"identifier", "c"},
 				[]interface{}{"json", `3000`},
 			},
-			ParentA: &base.Op{
+			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"a", "b", "c"},
 				Params: []interface{}{
@@ -289,7 +289,7 @@ var TestCasesSimple = []TestCaseSimple{
 12,22,1000
 `,
 				},
-			},
+			}},
 		},
 		expectYields: []base.Vals{
 			base.Vals{[]byte("10"), []byte("20"), []byte("3000")},
@@ -305,7 +305,7 @@ var TestCasesSimple = []TestCaseSimple{
 				[]interface{}{"identifier", "a"},
 				[]interface{}{"identifier", "c"},
 			},
-			ParentA: &base.Op{
+			Children: []*base.Op{&base.Op{
 				Kind:   "filter",
 				Fields: base.Fields{"a", "b", "c"},
 				Params: []interface{}{
@@ -313,7 +313,7 @@ var TestCasesSimple = []TestCaseSimple{
 					[]interface{}{"identifier", "c"},
 					[]interface{}{"json", `3000`},
 				},
-				ParentA: &base.Op{
+				Children: []*base.Op{&base.Op{
 					Kind:   "scan",
 					Fields: base.Fields{"a", "b", "c"},
 					Params: []interface{}{
@@ -325,8 +325,8 @@ var TestCasesSimple = []TestCaseSimple{
 12,22,1000
 `,
 					},
-				},
-			},
+				}},
+			}},
 		},
 		expectYields: []base.Vals{
 			base.Vals{[]byte("10"), []byte("3000")},
@@ -342,7 +342,7 @@ var TestCasesSimple = []TestCaseSimple{
 				[]interface{}{"identifier", "a"},
 				[]interface{}{"identifier", "c"},
 			},
-			ParentA: &base.Op{
+			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"a", "b", "c"},
 				Params: []interface{}{
@@ -354,7 +354,7 @@ var TestCasesSimple = []TestCaseSimple{
 12,22,1000
 `,
 				},
-			},
+			}},
 		},
 		expectYields: []base.Vals{
 			base.Vals{[]byte("00"), []byte("0000")},
@@ -371,7 +371,7 @@ var TestCasesSimple = []TestCaseSimple{
 			Params: []interface{}{
 				[]interface{}{"identifier", "a", "addr", "city"},
 			},
-			ParentA: &base.Op{
+			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"a"},
 				Params: []interface{}{
@@ -381,7 +381,7 @@ var TestCasesSimple = []TestCaseSimple{
 {"addr": {"city": "sj"}}
 `,
 				},
-			},
+			}},
 		},
 		expectYields: []base.Vals{
 			base.Vals{[]byte("sf")},
@@ -395,7 +395,7 @@ var TestCasesSimple = []TestCaseSimple{
 			Params: []interface{}{
 				[]interface{}{"identifier", "a", "addr"},
 			},
-			ParentA: &base.Op{
+			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"a"},
 				Params: []interface{}{
@@ -405,7 +405,7 @@ var TestCasesSimple = []TestCaseSimple{
 {"addr": {"city": "sj"}}
 `,
 				},
-			},
+			}},
 		},
 		expectYields: []base.Vals{
 			base.Vals{[]byte(`{"city": "sf"}`)},
@@ -418,7 +418,7 @@ var TestCasesSimple = []TestCaseSimple{
 			Kind:   "project",
 			Fields: base.Fields{},
 			Params: []interface{}{},
-			ParentA: &base.Op{
+			Children: []*base.Op{&base.Op{
 				Kind:   "filter",
 				Fields: base.Fields{"a", "b", "c"},
 				Params: []interface{}{
@@ -426,7 +426,7 @@ var TestCasesSimple = []TestCaseSimple{
 					[]interface{}{"identifier", "c"},
 					[]interface{}{"json", `3000`},
 				},
-				ParentA: &base.Op{
+				Children: []*base.Op{&base.Op{
 					Kind:   "scan",
 					Fields: base.Fields{"a", "b", "c"},
 					Params: []interface{}{
@@ -438,8 +438,8 @@ var TestCasesSimple = []TestCaseSimple{
 12,22,1000
 `,
 					},
-				},
-			},
+				}},
+			}},
 		},
 		expectYields: []base.Vals{
 			base.Vals(nil),
@@ -455,7 +455,7 @@ var TestCasesSimple = []TestCaseSimple{
 				[]interface{}{"identifier", "a"},
 				[]interface{}{"identifier", "xxx"},
 			},
-			ParentA: &base.Op{
+			Children: []*base.Op{&base.Op{
 				Kind:   "filter",
 				Fields: base.Fields{"a", "b", "c"},
 				Params: []interface{}{
@@ -463,7 +463,7 @@ var TestCasesSimple = []TestCaseSimple{
 					[]interface{}{"identifier", "c"},
 					[]interface{}{"json", `3000`},
 				},
-				ParentA: &base.Op{
+				Children: []*base.Op{&base.Op{
 					Kind:   "scan",
 					Fields: base.Fields{"a", "b", "c"},
 					Params: []interface{}{
@@ -475,8 +475,8 @@ var TestCasesSimple = []TestCaseSimple{
 12,22,1000
 `,
 					},
-				},
-			},
+				}},
+			}},
 		},
 		expectYields: []base.Vals{
 			base.Vals{[]byte("10"), nil},
@@ -493,7 +493,7 @@ var TestCasesSimple = []TestCaseSimple{
 				[]interface{}{"identifier", "dept"},
 				[]interface{}{"identifier", "empDept"},
 			},
-			ParentA: &base.Op{
+			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"dept", "city"},
 				Params: []interface{}{
@@ -504,8 +504,7 @@ var TestCasesSimple = []TestCaseSimple{
 "sales","san diego"
 `,
 				},
-			},
-			ParentB: &base.Op{
+			}, &base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"emp", "empDept"},
 				Params: []interface{}{
@@ -518,7 +517,7 @@ var TestCasesSimple = []TestCaseSimple{
 "mary","marketing"
 `,
 				},
-			},
+			}},
 		},
 		expectYields: []base.Vals{
 			StringsToLzVals([]string{`"dev"`, `"paris"`, `"dan"`, `"dev"`}, nil),
@@ -537,7 +536,7 @@ var TestCasesSimple = []TestCaseSimple{
 				[]interface{}{"identifier", "dept"},
 				[]interface{}{"json", `"NOT-MATCHING"`},
 			},
-			ParentA: &base.Op{
+			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"dept", "city"},
 				Params: []interface{}{
@@ -547,8 +546,7 @@ var TestCasesSimple = []TestCaseSimple{
 "finance","london"
 `,
 				},
-			},
-			ParentB: &base.Op{
+			}, &base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"emp", "empDept"},
 				Params: []interface{}{
@@ -560,7 +558,7 @@ var TestCasesSimple = []TestCaseSimple{
 "fred","finance"
 `,
 				},
-			},
+			}},
 		},
 		expectYields: []base.Vals(nil),
 	},
@@ -570,7 +568,7 @@ var TestCasesSimple = []TestCaseSimple{
 			Kind:   "join-nl-inner",
 			Fields: base.Fields{"dept", "city", "emp", "empDept"},
 			Params: []interface{}{"json", `true`},
-			ParentA: &base.Op{
+			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"dept", "city"},
 				Params: []interface{}{
@@ -580,8 +578,7 @@ var TestCasesSimple = []TestCaseSimple{
 "finance","london"
 `,
 				},
-			},
-			ParentB: &base.Op{
+			}, &base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"emp", "empDept"},
 				Params: []interface{}{
@@ -593,7 +590,7 @@ var TestCasesSimple = []TestCaseSimple{
 "fred","finance"
 `,
 				},
-			},
+			}},
 		},
 		expectYields: []base.Vals{
 			StringsToLzVals([]string{`"dev"`, `"paris"`, `"dan"`, `"dev"`}, nil),
@@ -616,7 +613,7 @@ var TestCasesSimple = []TestCaseSimple{
 				[]interface{}{"json", `"Hello"`},
 				[]interface{}{"json", `"Hello"`},
 			},
-			ParentA: &base.Op{
+			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"dept", "city"},
 				Params: []interface{}{
@@ -626,8 +623,7 @@ var TestCasesSimple = []TestCaseSimple{
 "finance","london"
 `,
 				},
-			},
-			ParentB: &base.Op{
+			}, &base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"emp", "empDept"},
 				Params: []interface{}{
@@ -639,7 +635,7 @@ var TestCasesSimple = []TestCaseSimple{
 "fred","finance"
 `,
 				},
-			},
+			}},
 		},
 		expectYields: []base.Vals{
 			StringsToLzVals([]string{`"dev"`, `"paris"`, `"dan"`, `"dev"`}, nil),
@@ -662,7 +658,7 @@ var TestCasesSimple = []TestCaseSimple{
 				[]interface{}{"identifier", `dept`},
 				[]interface{}{"identifier", `empDept`},
 			},
-			ParentA: &base.Op{
+			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"dept", "city"},
 				Params: []interface{}{
@@ -673,8 +669,7 @@ var TestCasesSimple = []TestCaseSimple{
 "sales","san diego"
 `,
 				},
-			},
-			ParentB: &base.Op{
+			}, &base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"emp", "empDept"},
 				Params: []interface{}{
@@ -687,7 +682,7 @@ var TestCasesSimple = []TestCaseSimple{
 "mary","marketing"
 `,
 				},
-			},
+			}},
 		},
 		expectYields: []base.Vals{
 			StringsToLzVals([]string{`"dev"`, `"paris"`, `"dan"`, `"dev"`}, nil),
@@ -719,7 +714,7 @@ var TestCasesSimple = []TestCaseSimple{
 				[]interface{}{"identifier", `dept`},
 				[]interface{}{"identifier", `empDept`},
 			},
-			ParentA: &base.Op{
+			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"dept", "city"},
 				Params: []interface{}{
@@ -729,8 +724,7 @@ var TestCasesSimple = []TestCaseSimple{
 "finance","london"
 `,
 				},
-			},
-			ParentB: &base.Op{
+			}, &base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"emp", "empDept"},
 				Params: []interface{}{
@@ -738,7 +732,7 @@ var TestCasesSimple = []TestCaseSimple{
 					`
 `,
 				},
-			},
+			}},
 		},
 		expectYields: []base.Vals{
 			StringsToLzVals([]string{`"dev"`, `"paris"`, ``, ``}, nil),
@@ -755,7 +749,7 @@ var TestCasesSimple = []TestCaseSimple{
 				[]interface{}{"identifier", `dept`},
 				[]interface{}{"identifier", `empDept`},
 			},
-			ParentA: &base.Op{
+			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"dept", "city"},
 				Params: []interface{}{
@@ -763,8 +757,7 @@ var TestCasesSimple = []TestCaseSimple{
 					`
 `,
 				},
-			},
-			ParentB: &base.Op{
+			}, &base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"emp", "empDept"},
 				Params: []interface{}{
@@ -776,7 +769,7 @@ var TestCasesSimple = []TestCaseSimple{
 "fred","finance"
 `,
 				},
-			},
+			}},
 		},
 		expectYields: []base.Vals(nil),
 	},
@@ -790,7 +783,7 @@ var TestCasesSimple = []TestCaseSimple{
 				[]interface{}{"identifier", `dept`},
 				[]interface{}{"identifier", `empDept`},
 			},
-			ParentA: &base.Op{
+			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"dept", "city"},
 				Params: []interface{}{
@@ -798,8 +791,7 @@ var TestCasesSimple = []TestCaseSimple{
 					`
 `,
 				},
-			},
-			ParentB: &base.Op{
+			}, &base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"emp", "empDept"},
 				Params: []interface{}{
@@ -811,7 +803,7 @@ var TestCasesSimple = []TestCaseSimple{
 "fred","finance"
 `,
 				},
-			},
+			}},
 		},
 		expectYields: []base.Vals(nil),
 	},
@@ -825,7 +817,7 @@ var TestCasesSimple = []TestCaseSimple{
 				[]interface{}{"identifier", `dept`},
 				[]interface{}{"identifier", `someFakeField`},
 			},
-			ParentA: &base.Op{
+			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"dept", "city"},
 				Params: []interface{}{
@@ -835,8 +827,7 @@ var TestCasesSimple = []TestCaseSimple{
 "finance","london"
 `,
 				},
-			},
-			ParentB: &base.Op{
+			}, &base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"emp", "empDept"},
 				Params: []interface{}{
@@ -848,7 +839,7 @@ var TestCasesSimple = []TestCaseSimple{
 "fred","finance"
 `,
 				},
-			},
+			}},
 		},
 		expectYields: []base.Vals{
 			StringsToLzVals([]string{`"dev"`, `"paris"`, ``, ``}, nil),
@@ -871,7 +862,7 @@ var TestCasesSimple = []TestCaseSimple{
 				[]interface{}{"json", `false`},
 				[]interface{}{"json", `true`},
 			},
-			ParentA: &base.Op{
+			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"a", "b", "c"},
 				Params: []interface{}{
@@ -881,7 +872,7 @@ var TestCasesSimple = []TestCaseSimple{
 11,21,31
 `,
 				},
-			},
+			}},
 		},
 		expectYields: []base.Vals{
 			base.Vals{[]byte("10"), []byte("20"), []byte("30")},
@@ -898,7 +889,7 @@ var TestCasesSimple = []TestCaseSimple{
 				[]interface{}{"json", `true`},
 				[]interface{}{"json", `false`},
 			},
-			ParentA: &base.Op{
+			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"a", "b", "c"},
 				Params: []interface{}{
@@ -908,7 +899,7 @@ var TestCasesSimple = []TestCaseSimple{
 11,21,31
 `,
 				},
-			},
+			}},
 		},
 		expectYields: []base.Vals{
 			base.Vals{[]byte("10"), []byte("20"), []byte("30")},
@@ -925,7 +916,7 @@ var TestCasesSimple = []TestCaseSimple{
 				[]interface{}{"json", `false`},
 				[]interface{}{"json", `false`},
 			},
-			ParentA: &base.Op{
+			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"a", "b", "c"},
 				Params: []interface{}{
@@ -935,7 +926,7 @@ var TestCasesSimple = []TestCaseSimple{
 11,21,31
 `,
 				},
-			},
+			}},
 		},
 		expectYields: []base.Vals(nil),
 	},
@@ -957,7 +948,7 @@ var TestCasesSimple = []TestCaseSimple{
 					[]interface{}{"json", `31`},
 				},
 			},
-			ParentA: &base.Op{
+			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"a", "b", "c"},
 				Params: []interface{}{
@@ -968,7 +959,7 @@ var TestCasesSimple = []TestCaseSimple{
 12,22,32
 `,
 				},
-			},
+			}},
 		},
 		expectYields: []base.Vals{
 			base.Vals{[]byte("10"), []byte("20"), []byte("30")},
@@ -993,7 +984,7 @@ var TestCasesSimple = []TestCaseSimple{
 					[]interface{}{"json", `30`},
 				},
 			},
-			ParentA: &base.Op{
+			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"a", "b", "c"},
 				Params: []interface{}{
@@ -1004,7 +995,7 @@ var TestCasesSimple = []TestCaseSimple{
 12,22,32
 `,
 				},
-			},
+			}},
 		},
 		expectYields: []base.Vals{
 			base.Vals{[]byte("10"), []byte("20"), []byte("30")},
@@ -1028,7 +1019,7 @@ var TestCasesSimple = []TestCaseSimple{
 					[]interface{}{"json", `31`},
 				},
 			},
-			ParentA: &base.Op{
+			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"a", "b", "c"},
 				Params: []interface{}{
@@ -1039,7 +1030,7 @@ var TestCasesSimple = []TestCaseSimple{
 12,22,32
 `,
 				},
-			},
+			}},
 		},
 		expectYields: []base.Vals{
 			base.Vals{[]byte("11"), []byte("21"), []byte("31")},
@@ -1071,7 +1062,7 @@ var TestCasesSimple = []TestCaseSimple{
 					},
 				},
 			},
-			ParentA: &base.Op{
+			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"a", "b", "c"},
 				Params: []interface{}{
@@ -1082,7 +1073,7 @@ var TestCasesSimple = []TestCaseSimple{
 12,22,32
 `,
 				},
-			},
+			}},
 		},
 		expectYields: []base.Vals{
 			base.Vals{[]byte("10"), []byte("20"), []byte("30")},
@@ -1114,7 +1105,7 @@ var TestCasesSimple = []TestCaseSimple{
 					},
 				},
 			},
-			ParentA: &base.Op{
+			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"a", "b", "c"},
 				Params: []interface{}{
@@ -1125,7 +1116,7 @@ var TestCasesSimple = []TestCaseSimple{
 12,22,32
 `,
 				},
-			},
+			}},
 		},
 		expectYields: []base.Vals{
 			base.Vals{[]byte("10"), []byte("20"), []byte("30")},
@@ -1158,7 +1149,7 @@ var TestCasesSimple = []TestCaseSimple{
 					},
 				},
 			},
-			ParentA: &base.Op{
+			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"a", "b", "c"},
 				Params: []interface{}{
@@ -1169,7 +1160,7 @@ var TestCasesSimple = []TestCaseSimple{
 12,22,32
 `,
 				},
-			},
+			}},
 		},
 		expectYields: []base.Vals{
 			base.Vals{[]byte("10"), []byte("20"), []byte("30")},
@@ -1185,7 +1176,7 @@ var TestCasesSimple = []TestCaseSimple{
 				[]interface{}{"identifier", "emp"},
 				[]interface{}{"identifier", "empDept"},
 			},
-			ParentA: &base.Op{
+			Children: []*base.Op{&base.Op{
 				Kind:   "join-nl-inner",
 				Fields: base.Fields{"dept", "city", "emp", "empDept"},
 				Params: []interface{}{
@@ -1193,7 +1184,7 @@ var TestCasesSimple = []TestCaseSimple{
 					[]interface{}{"identifier", "dept"},
 					[]interface{}{"identifier", "empDept"},
 				},
-				ParentA: &base.Op{
+				Children: []*base.Op{&base.Op{
 					Kind:   "scan",
 					Fields: base.Fields{"dept", "city"},
 					Params: []interface{}{
@@ -1203,8 +1194,7 @@ var TestCasesSimple = []TestCaseSimple{
 "finance","london"
 `,
 					},
-				},
-				ParentB: &base.Op{
+				}, &base.Op{
 					Kind:   "scan",
 					Fields: base.Fields{"emp", "empDept"},
 					Params: []interface{}{
@@ -1216,8 +1206,8 @@ var TestCasesSimple = []TestCaseSimple{
 "fred","finance"
 `,
 					},
-				},
-			},
+				}},
+			}},
 		},
 		expectYields: []base.Vals{
 			StringsToLzVals([]string{`"paris"`, `"dan"`, `"dev"`}, nil),
@@ -1237,7 +1227,7 @@ var TestCasesSimple = []TestCaseSimple{
 				[]interface{}{"identifier", "emp"},
 				[]interface{}{"identifier", "empDept"},
 			},
-			ParentA: &base.Op{
+			Children: []*base.Op{&base.Op{
 				Kind:   "filter",
 				Fields: base.Fields{"dept", "city", "emp", "empDept"},
 				Params: []interface{}{
@@ -1245,7 +1235,7 @@ var TestCasesSimple = []TestCaseSimple{
 					[]interface{}{"json", `"london"`},
 					[]interface{}{"identifier", `city`},
 				},
-				ParentA: &base.Op{
+				Children: []*base.Op{&base.Op{
 					Kind:   "join-nl-inner",
 					Fields: base.Fields{"dept", "city", "emp", "empDept"},
 					Params: []interface{}{
@@ -1253,7 +1243,7 @@ var TestCasesSimple = []TestCaseSimple{
 						[]interface{}{"identifier", "dept"},
 						[]interface{}{"identifier", "empDept"},
 					},
-					ParentA: &base.Op{
+					Children: []*base.Op{&base.Op{
 						Kind:   "scan",
 						Fields: base.Fields{"dept", "city"},
 						Params: []interface{}{
@@ -1263,8 +1253,7 @@ var TestCasesSimple = []TestCaseSimple{
 "finance","london"
 `,
 						},
-					},
-					ParentB: &base.Op{
+					}, &base.Op{
 						Kind:   "scan",
 						Fields: base.Fields{"emp", "empDept"},
 						Params: []interface{}{
@@ -1276,9 +1265,9 @@ var TestCasesSimple = []TestCaseSimple{
 "fred","finance"
 `,
 						},
-					},
-				},
-			},
+					}},
+				}},
+			}},
 		},
 		expectYields: []base.Vals{
 			StringsToLzVals([]string{`"london"`, `"frank"`, `"finance"`}, nil),
@@ -1298,7 +1287,7 @@ var TestCasesSimple = []TestCaseSimple{
 					"asc",
 				},
 			},
-			ParentA: &base.Op{
+			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"a", "b"},
 				Params: []interface{}{
@@ -1308,7 +1297,7 @@ var TestCasesSimple = []TestCaseSimple{
 11,21
 `,
 				},
-			},
+			}},
 		},
 		expectYields: []base.Vals{
 			base.Vals{[]byte("10"), []byte("20")},
@@ -1328,7 +1317,7 @@ var TestCasesSimple = []TestCaseSimple{
 					"asc",
 				},
 			},
-			ParentA: &base.Op{
+			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"a", "b"},
 				Params: []interface{}{
@@ -1339,7 +1328,7 @@ var TestCasesSimple = []TestCaseSimple{
 10,20
 `,
 				},
-			},
+			}},
 		},
 		expectYields: []base.Vals{
 			base.Vals{[]byte("10"), []byte("20")},
@@ -1360,7 +1349,7 @@ var TestCasesSimple = []TestCaseSimple{
 					"asc",
 				},
 			},
-			ParentA: &base.Op{
+			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"a", "b"},
 				Params: []interface{}{
@@ -1369,7 +1358,7 @@ var TestCasesSimple = []TestCaseSimple{
 10,20
 `,
 				},
-			},
+			}},
 		},
 		expectYields: []base.Vals{
 			base.Vals{[]byte("10"), []byte("20")},
@@ -1388,7 +1377,7 @@ var TestCasesSimple = []TestCaseSimple{
 					"desc",
 				},
 			},
-			ParentA: &base.Op{
+			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"a", "b"},
 				Params: []interface{}{
@@ -1399,7 +1388,7 @@ var TestCasesSimple = []TestCaseSimple{
 12,22
 `,
 				},
-			},
+			}},
 		},
 		expectYields: []base.Vals{
 			base.Vals{[]byte("12"), []byte("22")},
@@ -1422,7 +1411,7 @@ var TestCasesSimple = []TestCaseSimple{
 					"asc",
 				},
 			},
-			ParentA: &base.Op{
+			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"a", "b"},
 				Params: []interface{}{
@@ -1433,7 +1422,7 @@ var TestCasesSimple = []TestCaseSimple{
 10,20
 `,
 				},
-			},
+			}},
 		},
 		expectYields: []base.Vals{
 			base.Vals{[]byte("10"), []byte("20")},
@@ -1456,7 +1445,7 @@ var TestCasesSimple = []TestCaseSimple{
 					"asc",
 				},
 			},
-			ParentA: &base.Op{
+			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"a", "b"},
 				Params: []interface{}{
@@ -1467,7 +1456,7 @@ var TestCasesSimple = []TestCaseSimple{
 10,20
 `,
 				},
-			},
+			}},
 		},
 		expectYields: []base.Vals{
 			base.Vals{[]byte("12"), []byte("22")},
@@ -1490,7 +1479,7 @@ var TestCasesSimple = []TestCaseSimple{
 					"desc",
 				},
 			},
-			ParentA: &base.Op{
+			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"a", "b"},
 				Params: []interface{}{
@@ -1501,7 +1490,7 @@ var TestCasesSimple = []TestCaseSimple{
 10,90
 `,
 				},
-			},
+			}},
 		},
 		expectYields: []base.Vals{
 			base.Vals{[]byte("10"), []byte("210")},
@@ -1524,7 +1513,7 @@ var TestCasesSimple = []TestCaseSimple{
 					"desc",
 				},
 			},
-			ParentA: &base.Op{
+			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"a", "b"},
 				Params: []interface{}{
@@ -1535,7 +1524,7 @@ var TestCasesSimple = []TestCaseSimple{
 10,20
 `,
 				},
-			},
+			}},
 		},
 		expectYields: []base.Vals{
 			base.Vals{[]byte("10"), []byte(`"a21"`)},
@@ -1558,7 +1547,7 @@ var TestCasesSimple = []TestCaseSimple{
 					"desc",
 				},
 			},
-			ParentA: &base.Op{
+			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"a", "b"},
 				Params: []interface{}{
@@ -1569,7 +1558,7 @@ var TestCasesSimple = []TestCaseSimple{
 10,20
 `,
 				},
-			},
+			}},
 		},
 		expectYields: []base.Vals{
 			base.Vals{[]byte("10"), []byte("20")},
@@ -1592,7 +1581,7 @@ var TestCasesSimple = []TestCaseSimple{
 				0,
 				1,
 			},
-			ParentA: &base.Op{
+			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"a", "b"},
 				Params: []interface{}{
@@ -1603,7 +1592,7 @@ var TestCasesSimple = []TestCaseSimple{
 12,22
 `,
 				},
-			},
+			}},
 		},
 		expectYields: []base.Vals{
 			base.Vals{[]byte("10"), []byte("20")},
@@ -1624,7 +1613,7 @@ var TestCasesSimple = []TestCaseSimple{
 				0,
 				100,
 			},
-			ParentA: &base.Op{
+			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"a", "b"},
 				Params: []interface{}{
@@ -1635,7 +1624,7 @@ var TestCasesSimple = []TestCaseSimple{
 12,22
 `,
 				},
-			},
+			}},
 		},
 		expectYields: []base.Vals{
 			base.Vals{[]byte("10"), []byte("20")},
@@ -1658,7 +1647,7 @@ var TestCasesSimple = []TestCaseSimple{
 				100,
 				100,
 			},
-			ParentA: &base.Op{
+			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"a", "b"},
 				Params: []interface{}{
@@ -1669,7 +1658,7 @@ var TestCasesSimple = []TestCaseSimple{
 12,22
 `,
 				},
-			},
+			}},
 		},
 		expectYields: []base.Vals(nil),
 	},
@@ -1688,7 +1677,7 @@ var TestCasesSimple = []TestCaseSimple{
 				1,
 				0,
 			},
-			ParentA: &base.Op{
+			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"a", "b"},
 				Params: []interface{}{
@@ -1699,7 +1688,7 @@ var TestCasesSimple = []TestCaseSimple{
 12,22
 `,
 				},
-			},
+			}},
 		},
 		expectYields: []base.Vals(nil),
 	},
@@ -1718,7 +1707,7 @@ var TestCasesSimple = []TestCaseSimple{
 				1,
 				1,
 			},
-			ParentA: &base.Op{
+			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"a", "b"},
 				Params: []interface{}{
@@ -1729,7 +1718,7 @@ var TestCasesSimple = []TestCaseSimple{
 12,22
 `,
 				},
-			},
+			}},
 		},
 		expectYields: []base.Vals{
 			base.Vals{[]byte("11"), []byte("21")},
@@ -1746,7 +1735,7 @@ var TestCasesSimple = []TestCaseSimple{
 				1,
 				1,
 			},
-			ParentA: &base.Op{
+			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
 				Fields: base.Fields{"a", "b"},
 				Params: []interface{}{
@@ -1757,7 +1746,7 @@ var TestCasesSimple = []TestCaseSimple{
 12,22
 `,
 				},
-			},
+			}},
 		},
 		expectYields: []base.Vals{
 			base.Vals{[]byte("11"), []byte("21")},
@@ -1780,7 +1769,7 @@ var TestCasesSimple = []TestCaseSimple{
 				0,
 				10,
 			},
-			ParentA: &base.Op{
+			Children: []*base.Op{&base.Op{
 				Kind:   "join-nl-inner",
 				Fields: base.Fields{"dept", "city", "emp", "empDept"},
 				Params: []interface{}{
@@ -1788,7 +1777,7 @@ var TestCasesSimple = []TestCaseSimple{
 					[]interface{}{"identifier", "dept"},
 					[]interface{}{"identifier", "empDept"},
 				},
-				ParentA: &base.Op{
+				Children: []*base.Op{&base.Op{
 					Kind:   "scan",
 					Fields: base.Fields{"dept", "city"},
 					Params: []interface{}{
@@ -1799,8 +1788,7 @@ var TestCasesSimple = []TestCaseSimple{
 "sales","san diego"
 `,
 					},
-				},
-				ParentB: &base.Op{
+				}, &base.Op{
 					Kind:   "scan",
 					Fields: base.Fields{"emp", "empDept"},
 					Params: []interface{}{
@@ -1813,8 +1801,8 @@ var TestCasesSimple = []TestCaseSimple{
 "mary","marketing"
 `,
 					},
-				},
-			},
+				}},
+			}},
 		},
 		expectYields: []base.Vals{
 			StringsToLzVals([]string{`"dev"`, `"paris"`, `"doug"`, `"dev"`}, nil),

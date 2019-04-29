@@ -55,13 +55,13 @@ func OpJoinNestedLoop(o *base.Op, lzYieldVals base.YieldVals,
 
 	joinKind := strings.Split(o.Kind, "-")[2] // Ex: "inner", "outerLeft".
 
-	lenFieldsA := len(o.ParentA.Fields)
-	lenFieldsB := len(o.ParentB.Fields)
+	lenFieldsA := len(o.Children[0].Fields)
+	lenFieldsB := len(o.Children[1].Fields)
 	lenFieldsAB := lenFieldsA + lenFieldsB
 
 	fieldsAB := make(base.Fields, 0, lenFieldsAB)
-	fieldsAB = append(fieldsAB, o.ParentA.Fields...)
-	fieldsAB = append(fieldsAB, o.ParentB.Fields...)
+	fieldsAB = append(fieldsAB, o.Children[0].Fields...)
+	fieldsAB = append(fieldsAB, o.Children[1].Fields...)
 
 	joinClauseFunc :=
 		MakeExprFunc(fieldsAB, nil, o.Params, pathNext, "JF") // !lz
@@ -115,7 +115,7 @@ func OpJoinNestedLoop(o *base.Op, lzYieldVals base.YieldVals,
 		}
 
 		// Inner (right) driver.
-		ExecOp(o.ParentB, lzYieldVals, lzYieldStats, lzYieldErr, pathNext, "JNLI") // !lz
+		ExecOp(o.Children[1], lzYieldVals, lzYieldStats, lzYieldErr, pathNext, "JNLI") // !lz
 
 		// Case of outerLeft join when inner (right) was empty.
 		if joinKind == "outerLeft" { // !lz
@@ -131,7 +131,7 @@ func OpJoinNestedLoop(o *base.Op, lzYieldVals base.YieldVals,
 	}
 
 	// Outer (left) driver.
-	ExecOp(o.ParentA, lzYieldVals, lzYieldStats, lzYieldErr, pathNext, "JNLO") // !lz
+	ExecOp(o.Children[0], lzYieldVals, lzYieldStats, lzYieldErr, pathNext, "JNLO") // !lz
 
 	lzYieldErrOrig(lzErr)
 }
