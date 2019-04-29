@@ -310,9 +310,7 @@ type ValsProjected struct {
 
 func ValsProjectedVals(x *ValsProjected) Vals { return x.Vals }
 
-func ValsProjectedSort(a []ValsProjected, lessFunc LessFunc) {
-	sort.Sort(&SortValsProjected{a, lessFunc})
-}
+// ---------------------------------------------
 
 type SortValsProjected struct {
 	ValsProjected []ValsProjected
@@ -331,8 +329,19 @@ func (a *SortValsProjected) Less(i, j int) bool {
 	return a.LessFunc(a.ValsProjected[i].Projected, a.ValsProjected[j].Projected)
 }
 
+// ---------------------------------------------
+
 type HeapValsProjected struct {
 	SortValsProjected
+}
+
+func (a *HeapValsProjected) GetVals(i int) Vals {
+	return a.ValsProjected[i].Vals
+}
+
+func (a *HeapValsProjected) Sort() {
+	// Sort using normal LessFunc(), which breaks the "max-heap" property.
+	sort.Sort(&a.SortValsProjected)
 }
 
 func (a *HeapValsProjected) Less(i, j int) bool {

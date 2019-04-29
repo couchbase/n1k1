@@ -1,6 +1,7 @@
 package n1k1
 
 import (
+	"container/heap" // <== genCompiler:hide
 	"math"
 
 	"github.com/couchbase/n1k1/base"
@@ -32,23 +33,28 @@ func OpOrderByOffsetLimit(o *base.Op, lzYieldVals base.YieldVals,
 		pathNextOOL := EmitPush(pathNext, "OOL") // !lz
 
 		var lzProjectFunc base.ProjectFunc
-		_ = lzProjectFunc
+		var lzLessFunc base.LessFunc
+
+		_, _ = lzProjectFunc, lzLessFunc
 
 		if len(projections) > 0 { // !lz
 			lzProjectFunc =
 				MakeProjectFunc(o.ParentA.Fields, nil, projections, pathNextOOL, "PF") // !lz
+
+			lzLessFunc =
+				MakeLessFunc(nil, directions) // !lz
 		} // !lz
-
-		var lzLessFunc base.LessFunc
-		_ = lzLessFunc
-
-		lzLessFunc =
-			MakeLessFunc(nil, directions) // !lz
 
 		var lzPreallocVals base.Vals
 		var lzPreallocVal base.Val
 
-		var lzValsProjected []base.ValsProjected // Items to be sorted.
+		// Used when there are ORDER-BY exprs.
+		lzHeap := &base.HeapValsProjected{base.SortValsProjected{nil, lzLessFunc}}
+
+		// Used when there are no ORDER-BY exprs.
+		var lzItems []base.Vals
+
+		_, _ = lzHeap, lzItems
 
 		lzYieldValsOrig := lzYieldVals
 
@@ -57,21 +63,17 @@ func OpOrderByOffsetLimit(o *base.Op, lzYieldVals base.YieldVals,
 
 			lzValsCopy, lzPreallocVals, lzPreallocVal = base.ValsDeepCopy(lzVals, lzPreallocVals, lzPreallocVal, InitPreallocVals, InitPreallocVal)
 
-			lzVals = lzValsCopy
-
-			var lzProjected base.Vals
-
 			if len(projections) > 0 { // !lz
 				var lzValsOut base.Vals
 
+				lzVals = lzValsCopy
+
 				lzValsOut = lzProjectFunc(lzVals, lzValsOut) // <== emitCaptured: pathNextOOL "PF"
 
-				lzProjected = lzValsOut
+				heap.Push(lzHeap, base.ValsProjected{lzValsCopy, lzValsOut})
 			} else { // !lz
-				_ = lzProjected
+				lzItems = append(lzItems, lzValsCopy)
 			} // !lz
-
-			lzValsProjected = append(lzValsProjected, base.ValsProjected{lzVals, lzProjected})
 
 			// TODO: If no order-by, but OFFSET+LIMIT reached, early exit?
 		}
@@ -80,21 +82,26 @@ func OpOrderByOffsetLimit(o *base.Op, lzYieldVals base.YieldVals,
 
 		lzYieldErr = func(lzErrIn error) {
 			if lzErrIn == nil { // If no error, yield our sorted items.
-				if len(projections) > 0 { // !lz
-					base.ValsProjectedSort(lzValsProjected, lzLessFunc)
-				} // !lz
-
 				lzI := offset
 				lzN := 0
 
-				for lzI < len(lzValsProjected) && lzN < limit {
-					lzVals := base.ValsProjectedVals(&lzValsProjected[lzI])
+				if len(projections) > 0 { // !lz
+					lzHeap.Sort()
 
-					lzYieldValsOrig(lzVals)
+					for lzI < lzHeap.Len() && lzN < limit {
+						lzYieldValsOrig(lzHeap.GetVals(lzI))
 
-					lzI++
-					lzN++
-				}
+						lzI++
+						lzN++
+					}
+				} else { // !lz
+					for lzI < len(lzItems) && lzN < limit {
+						lzYieldValsOrig(lzItems[lzI])
+
+						lzI++
+						lzN++
+					}
+				} // !lz
 			}
 
 			lzYieldErrOrig(lzErrIn)
