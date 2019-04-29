@@ -58,8 +58,11 @@ Some features...
 - ORDER BY of multiple expressions & ASC/DESC
 - ORDER-BY / OFFSET / LIMIT via max-heap
 - OFFSET / LIMIT
+- max-heap reuses memory slices from "too large" tuples
+- identifier paths (e.g. locations/address/city)
 - lifting vars to avoid local closures
 - capturing emitted code to avoid local closures
+- avoid json.Unmarshal & map[string]interface{} allocations
 
 ------------------------------------------
 TODO...
@@ -89,12 +92,7 @@ TODO...
 
 - prefetching optimizations?
 
-- optimize json.Unmarshal more systemically, a'la during ORDER-BY
-
 - compiled accessor(s) to a given JSON-path in a raw []byte value?
-
-- the yield callback might return slice that the next yield
-  can place data into, to avoid append-copying items?
 
 - col versus row optimizations?
   - need base.Vals that allows for optional col based representation?
@@ -109,9 +107,6 @@ TODO...
 - types learned during expression processing?
 
 - operator can optionally declare which fields are sorted asc/desc?
-
-- ORDER BY optimization to not project everything up-front,
-  but have on-deman projections with reusable bufs to keep memory usage lower?
 
 - need optimized replacement for json.Unmarshal()
 
