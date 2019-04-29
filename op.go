@@ -4,9 +4,8 @@ import (
 	"github.com/couchbase/n1k1/base"
 )
 
-func ExecOp(o *base.Op, lzYieldVals base.YieldVals,
-	lzYieldStats base.YieldStats, lzYieldErr base.YieldErr,
-	path, pathItem string) {
+func ExecOp(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
+	lzYieldStats base.YieldStats, lzYieldErr base.YieldErr, path, pathItem string) {
 	pathNext := EmitPush(path, pathItem)
 
 	defer EmitPop(path, pathItem)
@@ -17,24 +16,24 @@ func ExecOp(o *base.Op, lzYieldVals base.YieldVals,
 
 	switch o.Kind {
 	case "scan":
-		OpScan(o.Params, o.Fields, lzYieldVals, lzYieldStats, lzYieldErr) // !lz
+		OpScan(o.Params, o.Fields, lzVars, lzYieldVals, lzYieldStats, lzYieldErr) // !lz
 
 	case "filter":
-		OpFilter(o, lzYieldVals, lzYieldStats, lzYieldErr, path, pathNext) // !lz
+		OpFilter(o, lzVars, lzYieldVals, lzYieldStats, lzYieldErr, path, pathNext) // !lz
 
 	case "project":
-		OpProject(o, lzYieldVals, lzYieldStats, lzYieldErr, path, pathNext) // !lz
+		OpProject(o, lzVars, lzYieldVals, lzYieldStats, lzYieldErr, path, pathNext) // !lz
 
 	case "join-nl-inner":
-		OpJoinNestedLoop(o, lzYieldVals, lzYieldStats, lzYieldErr, path, pathNext) // !lz
+		OpJoinNestedLoop(o, lzVars, lzYieldVals, lzYieldStats, lzYieldErr, path, pathNext) // !lz
 
 	case "join-nl-outerLeft":
-		OpJoinNestedLoop(o, lzYieldVals, lzYieldStats, lzYieldErr, path, pathNext) // !lz
+		OpJoinNestedLoop(o, lzVars, lzYieldVals, lzYieldStats, lzYieldErr, path, pathNext) // !lz
 
 	case "order-by-offset-limit":
-		OpOrderByOffsetLimit(o, lzYieldVals, lzYieldStats, lzYieldErr, path, pathNext) // !lz
+		OpOrderByOffsetLimit(o, lzVars, lzYieldVals, lzYieldStats, lzYieldErr, path, pathNext) // !lz
 
 	case "union-all":
-		OpUnionAll(o, lzYieldVals, lzYieldStats, lzYieldErr, path, pathNext) // !lz
+		OpUnionAll(o, lzVars, lzYieldVals, lzYieldStats, lzYieldErr, path, pathNext) // !lz
 	}
 }

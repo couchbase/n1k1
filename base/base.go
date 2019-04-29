@@ -173,3 +173,12 @@ type ProjectFunc func(vals, valsPre Vals) Vals
 // -----------------------------------------------------
 
 type Types []string // TODO.
+
+// -----------------------------------------------------
+
+// Vars are used for runtime variables, correlated subqueries, etc.
+type Vars struct {
+	Fields Fields
+	Vals   Vals  // Same len() as Fields.
+	Next   *Vars // The root Vars has nil Next.
+}

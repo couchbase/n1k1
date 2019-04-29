@@ -4,7 +4,7 @@ import (
 	"github.com/couchbase/n1k1/base"
 )
 
-func OpUnionAll(o *base.Op, lzYieldVals base.YieldVals,
+func OpUnionAll(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	lzYieldStats base.YieldStats, lzYieldErr base.YieldErr,
 	path, pathNext string) {
 	var lzErr error
@@ -50,7 +50,7 @@ func OpUnionAll(o *base.Op, lzYieldVals base.YieldVals,
 				lzYieldValsOrig(lzValsUnion)
 			}
 
-			ExecOp(child, lzYieldVals, lzYieldStats, lzYieldErr, pathNext, "U") // !lz
+			ExecOp(child, lzVars, lzYieldVals, lzYieldStats, lzYieldErr, pathNext, "U") // !lz
 		}
 	}
 

@@ -7,7 +7,7 @@ import (
 	"github.com/couchbase/n1k1/base"
 )
 
-func OpOrderByOffsetLimit(o *base.Op, lzYieldVals base.YieldVals,
+func OpOrderByOffsetLimit(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	lzYieldStats base.YieldStats, lzYieldErr base.YieldErr, path, pathNext string) {
 	projections := o.Params[0].([]interface{}) // ORDER BY expressions.
 
@@ -148,7 +148,7 @@ func OpOrderByOffsetLimit(o *base.Op, lzYieldVals base.YieldVals,
 		EmitPop(pathNext, "OOL") // !lz
 
 		if LzScope {
-			ExecOp(o.Children[0], lzYieldVals, lzYieldStats, lzYieldErr, path, pathNext) // !lz
+			ExecOp(o.Children[0], lzVars, lzYieldVals, lzYieldStats, lzYieldErr, path, pathNext) // !lz
 		}
 	}
 }

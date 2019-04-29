@@ -6,9 +6,8 @@ import (
 	"github.com/couchbase/n1k1/base"
 )
 
-func OpJoinNestedLoop(o *base.Op, lzYieldVals base.YieldVals,
-	lzYieldStats base.YieldStats, lzYieldErr base.YieldErr,
-	path, pathNext string) {
+func OpJoinNestedLoop(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
+	lzYieldStats base.YieldStats, lzYieldErr base.YieldErr, path, pathNext string) {
 	var lzErr error
 
 	lzYieldErrOrig := lzYieldErr
@@ -81,7 +80,7 @@ func OpJoinNestedLoop(o *base.Op, lzYieldVals base.YieldVals,
 		}
 
 		// Inner (right) driver.
-		ExecOp(o.Children[1], lzYieldVals, lzYieldStats, lzYieldErr, pathNext, "JNLI") // !lz
+		ExecOp(o.Children[1], lzVars, lzYieldVals, lzYieldStats, lzYieldErr, pathNext, "JNLI") // !lz
 
 		// Case of outerLeft join when inner (right) was empty.
 		if joinKind == "outerLeft" { // !lz
@@ -97,7 +96,7 @@ func OpJoinNestedLoop(o *base.Op, lzYieldVals base.YieldVals,
 	}
 
 	// Outer (left) driver.
-	ExecOp(o.Children[0], lzYieldVals, lzYieldStats, lzYieldErr, pathNext, "JNLO") // !lz
+	ExecOp(o.Children[0], lzVars, lzYieldVals, lzYieldStats, lzYieldErr, pathNext, "JNLO") // !lz
 
 	lzYieldErrOrig(lzErr)
 }

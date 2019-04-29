@@ -6,7 +6,7 @@ import (
 	"github.com/couchbase/n1k1/base"
 )
 
-func OpProject(o *base.Op, lzYieldVals base.YieldVals,
+func OpProject(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	lzYieldStats base.YieldStats, lzYieldErr base.YieldErr, path, pathNext string) {
 	if LzScope {
 		pathNextP := EmitPush(pathNext, "P") // !lz
@@ -30,7 +30,7 @@ func OpProject(o *base.Op, lzYieldVals base.YieldVals,
 
 		EmitPop(pathNext, "P") // !lz
 
-		ExecOp(o.Children[0], lzYieldVals, lzYieldStats, lzYieldErr, pathNextP, "") // !lz
+		ExecOp(o.Children[0], lzVars, lzYieldVals, lzYieldStats, lzYieldErr, pathNextP, "") // !lz
 	}
 }
 
