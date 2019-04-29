@@ -3,3 +3,6 @@
 /intermed/*.go
 /test/tmp/*.go
 tmp
+*.pprof
+*.test
+
