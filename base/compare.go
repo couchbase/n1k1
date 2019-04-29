@@ -312,40 +312,23 @@ func ValsProjectedVals(x *ValsProjected) Vals { return x.Vals }
 
 // ---------------------------------------------
 
-type SortValsProjected struct {
+type HeapValsProjected struct {
 	ValsProjected []ValsProjected
 	LessFunc      LessFunc
-}
-
-func (a *SortValsProjected) Len() int {
-	return len(a.ValsProjected)
-}
-
-func (a *SortValsProjected) Swap(i, j int) {
-	a.ValsProjected[i], a.ValsProjected[j] = a.ValsProjected[j], a.ValsProjected[i]
-}
-
-func (a *SortValsProjected) Less(i, j int) bool {
-	return a.LessFunc(a.ValsProjected[i].Projected, a.ValsProjected[j].Projected)
-}
-
-// ---------------------------------------------
-
-type HeapValsProjected struct {
-	SortValsProjected
 }
 
 func (a *HeapValsProjected) GetVals(i int) Vals {
 	return a.ValsProjected[i].Vals
 }
 
-func (a *HeapValsProjected) Sort() {
-	// Sort using normal LessFunc(), which breaks the "max-heap" property.
-	sort.Sort(&a.SortValsProjected)
+func (a *HeapValsProjected) Len() int { return len(a.ValsProjected) }
+
+func (a *HeapValsProjected) Swap(i, j int) {
+	a.ValsProjected[i], a.ValsProjected[j] = a.ValsProjected[j], a.ValsProjected[i]
 }
 
 func (a *HeapValsProjected) Less(i, j int) bool {
-	// Reverse of SortValsProjected.Less() so that we have a max-heap.
+	// Reverse of normal LessFunc() so that we have a max-heap.
 	return a.LessFunc(a.ValsProjected[j].Projected, a.ValsProjected[i].Projected)
 }
 

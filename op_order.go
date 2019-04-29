@@ -49,7 +49,7 @@ func OpOrderByOffsetLimit(o *base.Op, lzYieldVals base.YieldVals,
 		} // !lz
 
 		// Used when there are ORDER-BY exprs.
-		lzHeap := &base.HeapValsProjected{base.SortValsProjected{nil, lzLessFunc}}
+		lzHeap := &base.HeapValsProjected{nil, lzLessFunc}
 
 		// Used when there are no ORDER-BY exprs.
 		var lzItems []base.Vals
@@ -88,10 +88,15 @@ func OpOrderByOffsetLimit(o *base.Op, lzYieldVals base.YieldVals,
 				lzN := 0
 
 				if len(projections) > 0 { // !lz
-					// TODO: use heap to do better than generic sort.
-					lzHeap.Sort()
-
 					lzHeapLen := lzHeap.Len()
+
+					lzValsProjected := lzHeap.ValsProjected
+
+					for lzJ := lzHeapLen - 1; lzJ >= offset; lzJ-- {
+						lzValsProjected[lzJ] = heap.Pop(lzHeap).(base.ValsProjected)
+					}
+
+					lzHeap.ValsProjected = lzValsProjected
 
 					for lzI < lzHeapLen && lzN < limit {
 						lzYieldValsOrig(lzHeap.GetVals(lzI))
