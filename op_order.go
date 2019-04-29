@@ -21,6 +21,11 @@ func OpOrderByOffsetLimit(o *base.Op, lzYieldVals base.YieldVals,
 
 	limit := math.MaxInt64
 
+	offsetPlusLimit := offset + limit
+	if offsetPlusLimit <= 0 { // Overflow.
+		offsetPlusLimit = math.MaxInt64
+	}
+
 	if len(o.Params) >= 3 {
 		offset = o.Params[2].(int)
 
@@ -71,6 +76,11 @@ func OpOrderByOffsetLimit(o *base.Op, lzYieldVals base.YieldVals,
 				lzValsOut = lzProjectFunc(lzVals, lzValsOut) // <== emitCaptured: pathNextOOL "PF"
 
 				heap.Push(lzHeap, base.ValsProjected{lzValsCopy, lzValsOut})
+
+				if lzHeap.Len() > offsetPlusLimit {
+					// TODO: garbage remains in our prealloc'ed vals.
+					heap.Pop(lzHeap)
+				}
 			} else { // !lz
 				lzItems = append(lzItems, lzValsCopy)
 			} // !lz
