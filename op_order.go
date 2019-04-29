@@ -7,9 +7,6 @@ import (
 	"github.com/couchbase/n1k1/base"
 )
 
-var InitPreallocVals = 16
-var InitPreallocVal = 4096
-
 func OpOrderByOffsetLimit(o *base.Op, lzYieldVals base.YieldVals,
 	lzYieldStats base.YieldStats, lzYieldErr base.YieldErr, path, pathNext string) {
 	projections := o.Params[0].([]interface{}) // ORDER BY expressions.
