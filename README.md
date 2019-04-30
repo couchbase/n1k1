@@ -64,31 +64,36 @@ Some features...
 - capturing emitted code to avoid local closures
 - UNION ALL
 - avoid json.Unmarshal & map[string]interface{} allocations
-- variables / context passed down through ExecOp()
+- runtime variables / context passed down through ExecOp()
 
 ------------------------------------------
 TODO...
 
-- subqueries?
-
-- correlated subqueries?
-
 - scans with params or pushdown expressions?
+  - RangeScanIndex
+  - FlexScanIndex
+  - covering / non-covering
 
 - pipeline breakers / data staging nodes
 - batching (or staging) optimizations?
 
+- concurrency / multithreading?
+  - threads can build up batches and send batch on channels
+  - but, no longer fits with existing yieldVals API,
+    and would be more like yieldBatchVals?
+
 - GROUP BY / aggregates
   - SELECT country, SUM(population) FROM ... GROUP BY country
 
-- HAVING
-
-- early stop when an error or LIMIT is reached?
-  - YieldStats() can return an non-nil error, like ErrLimitReached
+- subqueries & correlated subqueries?
+  - these should just be yet another expression
+  - choice between non-correlated vs correlated subqueries should be
+    decided at a higher level than at query-plan execution
 
 - jsonparser doesn't alloc memory, except for ObjectEach() on it's
   `var stackbuf [unescapeStackBufSize]byte`, which inadvertently
   escapes to the heap.
+  - need upstream fix / patch?
 
 - DISTINCT
 
@@ -100,13 +105,16 @@ TODO...
 
 - UNION-ALL can be run concurrently / in-parallel?
 
-- concurrency / multithreading?
+- early stop when an error or LIMIT is reached?
+  - YieldStats() can return an non-nil error, like ErrLimitReached
 
 - early stop when processing is canceled?
 
 - hash join?
 
 - conversion of real N1QL query-plan into n1k1 query-plan
+
+- HAVING (it's just another filter)
 
 - SIMD optimizations possible?  see: SIMD-json articles?
 
