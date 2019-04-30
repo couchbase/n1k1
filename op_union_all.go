@@ -1,12 +1,18 @@
 package n1k1
 
 import (
+	"strconv"
+
 	"github.com/couchbase/n1k1/base"
 )
 
 func OpUnionAll(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	lzYieldStats base.YieldStats, lzYieldErr base.YieldErr,
 	path, pathNext string) {
+	pathNextU := EmitPush(pathNext, "U") // !lz
+
+	EmitPop(pathNext, "U") // !lz
+
 	numFields := len(o.Fields)
 
 	// Implemented via data-staging concurrent actors, with one actor
@@ -21,14 +27,17 @@ func OpUnionAll(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	if LzScope {
 		lzStage := base.NewStage(0, lzVars, lzYieldVals, lzYieldStats, lzYieldErr)
 
-		for _, child := range o.Children { // !lz
-			if LzScope {
-				lzActorData = child // !lz
+		for childi := range o.Children { // !lz
+			pathNextU := EmitPush(pathNextU, strconv.Itoa(childi)) // !lz
 
-				var lzActorData interface{} = child
+			if LzScope {
+				lzActorData = childi // !lz
+
+				var lzActorData interface{} = childi
 
 				lzActorFunc := func(lzVars *base.Vars, lzYieldVals base.YieldVals, lzYieldStats base.YieldStats, lzYieldErr base.YieldErr, lzActorData interface{}) {
-					child := lzActorData.(*base.Op) // !lz
+					childi := lzActorData.(int) // !lz
+					child := o.Children[childi] // !lz
 
 					lzValsUnion := make(base.Vals, numFields)
 
@@ -55,11 +64,13 @@ func OpUnionAll(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 						lzYieldValsOrig(lzValsUnion)
 					}
 
-					ExecOp(child, lzVars, lzYieldVals, lzYieldStats, lzYieldErr, pathNext, "U") // !lz
+					ExecOp(child, lzVars, lzYieldVals, lzYieldStats, lzYieldErr, pathNextU, "UO") // !lz
 				}
 
 				base.StageStartActor(lzStage, lzActorFunc, lzActorData, 0)
 			}
+
+			EmitPop(pathNextU, strconv.Itoa(childi)) // !lz
 		} // !lz
 
 		base.StageWaitForActors(lzStage)

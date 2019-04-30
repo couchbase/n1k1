@@ -1891,4 +1891,88 @@ var TestCasesSimple = []TestCaseSimple{
 			base.Vals{[]byte("11"), []byte("21"), []byte("31")},
 		},
 	},
+	{
+		about: "test csv-data scan->union-all->order-by more complex",
+		o: base.Op{
+			Kind:   "order-by-offset-limit",
+			Fields: base.Fields{"a", "b", "c"},
+			Params: []interface{}{
+				[]interface{}{
+					[]interface{}{"identifier", "b"},
+				},
+				[]interface{}{
+					"asc",
+				},
+			},
+			Children: []*base.Op{&base.Op{
+				Kind:   "union-all",
+				Fields: base.Fields{"a", "b", "c"},
+				Children: []*base.Op{&base.Op{
+					Kind:   "project",
+					Fields: base.Fields{"b", "c"},
+					Params: []interface{}{
+						[]interface{}{"identifier", "b"},
+						[]interface{}{"identifier", "c"},
+					},
+					Children: []*base.Op{&base.Op{
+						Kind:   "filter",
+						Fields: base.Fields{"a", "b", "c"},
+						Params: []interface{}{
+							"eq",
+							[]interface{}{"identifier", "c"},
+							[]interface{}{"json", `3000`},
+						},
+						Children: []*base.Op{&base.Op{
+							Kind:   "scan",
+							Fields: base.Fields{"a", "b", "c"},
+							Params: []interface{}{
+								"csvData",
+								`
+00,00,0000
+10,20,3000
+11,21,3000
+12,22,1000
+`,
+							},
+						}},
+					}},
+				}, &base.Op{
+					Kind:   "project",
+					Fields: base.Fields{"b", "a"},
+					Params: []interface{}{
+						[]interface{}{"identifier", "b"},
+						[]interface{}{"identifier", "a"},
+					},
+					Children: []*base.Op{&base.Op{
+						Kind:   "filter",
+						Fields: base.Fields{"a", "b", "c"},
+						Params: []interface{}{
+							"eq",
+							[]interface{}{"identifier", "a"},
+							[]interface{}{"json", `10`},
+						},
+						Children: []*base.Op{&base.Op{
+							Kind:   "scan",
+							Fields: base.Fields{"a", "b", "c"},
+							Params: []interface{}{
+								"csvData",
+								`
+00,00,0000
+10,80,3000
+10,81,3000
+12,20,1000
+`,
+							},
+						}},
+					}},
+				}},
+			}},
+		},
+		expectYields: []base.Vals{
+			base.Vals{[]byte(nil), []byte("20"), []byte("3000")},
+			base.Vals{[]byte(nil), []byte("21"), []byte("3000")},
+			base.Vals{[]byte("10"), []byte("80"), []byte(nil)},
+			base.Vals{[]byte("10"), []byte("81"), []byte(nil)},
+		},
+	},
 }

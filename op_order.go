@@ -149,7 +149,7 @@ func OpOrderByOffsetLimit(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldV
 		EmitPop(pathNext, "OOL") // !lz
 
 		if LzScope {
-			ExecOp(o.Children[0], lzVars, lzYieldVals, lzYieldStats, lzYieldErr, path, pathNext) // !lz
+			ExecOp(o.Children[0], lzVars, lzYieldVals, lzYieldStats, lzYieldErr, pathNext, "OOLO") // !lz
 		}
 	}
 }
