@@ -74,6 +74,10 @@ TODO...
   - FlexScanIndex
   - covering / non-covering
 
+- UNNEST - a kind of self-join
+
+- NEST - a kind of join
+
 - pipeline breakers / data staging nodes
 - batching (or staging) optimizations?
 
@@ -81,6 +85,8 @@ TODO...
   - threads can build up batches and send batch on channels
   - but, no longer fits with existing yieldVals API,
     and would be more like yieldBatchVals?
+
+- UNION-ALL can be run concurrently / in-parallel?
 
 - GROUP BY / aggregates
   - SELECT country, SUM(population) FROM ... GROUP BY country
@@ -90,12 +96,10 @@ TODO...
   - choice between non-correlated vs correlated subqueries should be
     decided at a higher level than at query-plan execution
 
-- jsonparser doesn't alloc memory, except for ObjectEach() on it's
-  `var stackbuf [unescapeStackBufSize]byte`, which inadvertently
-  escapes to the heap.
-  - need upstream fix / patch?
-
-- NEST / UNNEST
+- need the JSON for objects to be canonicalized before they can be
+  used as a DISTINCT map[] key, as {a:1,b:2} and {b:2,a:1} are
+  logically the same?
+  - numbers might also need to be canonicalized (0 vs 0.0 vs -0)?
 
 - DISTINCT
 
@@ -103,12 +107,10 @@ TODO...
 - INTERSECT / INTERSECT ALL
 - EXCEPT / EXCEPT ALL
 
-- need the JSON for objects to be canonicalized before they can be
-  used as a DISTINCT map[] key, as {a:1,b:2} and {b:2,a:1} are
-  logically the same?
-  - numbers might also need to be canonicalized (0 vs 0.0 vs -0)?
-
-- UNION-ALL can be run concurrently / in-parallel?
+- jsonparser doesn't alloc memory, except for ObjectEach() on it's
+  `var stackbuf [unescapeStackBufSize]byte`, which inadvertently
+  escapes to the heap.
+  - need upstream fix / patch?
 
 - early stop when an error or LIMIT is reached?
   - YieldStats() can return an non-nil error, like ErrLimitReached
