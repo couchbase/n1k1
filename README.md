@@ -84,7 +84,7 @@ TODO...
 
 - standalone Op for data-staging / pipeline breaking
 
-- batch exchange between stages?
+- batch exchange between stage actors and consumer?
 
 - GROUP BY / aggregates
   - SELECT country, SUM(population) FROM ... GROUP BY country
