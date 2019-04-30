@@ -182,3 +182,20 @@ type Vars struct {
 	Vals   Vals  // Same len() as Fields.
 	Next   *Vars // The root Vars has nil Next.
 }
+
+// -----------------------------------------------------
+
+// Stage represents a data-staging "pipeline breaker".
+type Stage struct {
+	Vars *Vars
+
+	YieldVals  YieldVals
+	YieldStats YieldStats
+	YieldErr   YieldErr
+
+	NumActors int
+
+	Data interface{}
+}
+
+type StageActorFunc func(*Vars, YieldVals, YieldStats, YieldErr, interface{})

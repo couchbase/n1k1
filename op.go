@@ -4,6 +4,16 @@ import (
 	"github.com/couchbase/n1k1/base"
 )
 
+// Placeholder for compiler for data-staging "pipeline breaker".
+var StageStartActor = func(s *base.Stage, a base.StageActorFunc, aData interface{}) {
+	a(s.Vars, s.YieldVals, s.YieldStats, s.YieldErr, aData)
+}
+
+// Placeholder for compiler.
+var StageWaitForActors = func(s *base.Stage) {}
+
+// -----------------------------------------------------------
+
 func ExecOp(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	lzYieldStats base.YieldStats, lzYieldErr base.YieldErr, path, pathItem string) {
 	pathNext := EmitPush(path, pathItem)

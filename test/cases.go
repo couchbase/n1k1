@@ -1814,28 +1814,42 @@ var TestCasesSimple = []TestCaseSimple{
 	{
 		about: "test csv-data scan->union-all",
 		o: base.Op{
-			Kind:   "union-all",
+			Kind:   "order-by-offset-limit",
 			Fields: base.Fields{"a", "b", "c"},
+			Params: []interface{}{
+				[]interface{}{
+					[]interface{}{"identifier", "b"},
+				},
+				[]interface{}{
+					"asc",
+				},
+				0,
+				10,
+			},
 			Children: []*base.Op{&base.Op{
-				Kind:   "scan",
+				Kind:   "union-all",
 				Fields: base.Fields{"a", "b", "c"},
-				Params: []interface{}{
-					"csvData",
-					`
+				Children: []*base.Op{&base.Op{
+					Kind:   "scan",
+					Fields: base.Fields{"a", "b", "c"},
+					Params: []interface{}{
+						"csvData",
+						`
 10,20,30
 11,21,31
 `,
-				},
-			}, &base.Op{
-				Kind:   "scan",
-				Fields: base.Fields{"b"},
-				Params: []interface{}{
-					"csvData",
-					`
+					},
+				}, &base.Op{
+					Kind:   "scan",
+					Fields: base.Fields{"b"},
+					Params: []interface{}{
+						"csvData",
+						`
 44
 55
 `,
-				},
+					},
+				}},
 			}},
 		},
 		expectYields: []base.Vals{

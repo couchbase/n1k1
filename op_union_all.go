@@ -7,52 +7,47 @@ import (
 func OpUnionAll(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	lzYieldStats base.YieldStats, lzYieldErr base.YieldErr,
 	path, pathNext string) {
-	var lzErr error
-
-	lzYieldErrOrig := lzYieldErr
-
-	lzYieldErr = func(lzErrIn error) {
-		if lzErr == nil {
-			lzErr = lzErrIn // Capture the incoming error.
-		}
-	}
-
 	numUnionFields := len(o.Fields)
 
-	lzValsUnion := make(base.Vals, numUnionFields)
-
-	lzYieldValsOrig := lzYieldVals
+	// UNION via concurrent stage actors.
+	stage := &base.Stage{lzVars, lzYieldVals, lzYieldStats, lzYieldErr, len(o.Children)} // !lz
 
 	for _, child := range o.Children {
-		if lzErr == nil {
-			lzYieldVals = func(lzVals base.Vals) {
-				if lzErr != nil {
-					return
-				}
+		actorFunc := func(lzVars *base.Vars, lzYieldVals base.YieldVals, lzYieldStats base.YieldStats, lzYieldErr base.YieldErr, data interface{}) { // !lz
+			child := data.(*base.Op)
 
-				// Remap incoming vals to the union's field positions.
-				for unionIdx, unionField := range o.Fields { // !lz
-					found := false // !lz
+			if LzScope {
+				lzValsUnion := make(base.Vals, numUnionFields)
 
-					for childIdx, childField := range child.Fields { // !lz
-						if childField == unionField { // !lz
-							lzValsUnion[unionIdx] = lzVals[childIdx]
-							found = true // !lz
-							break        // !lz
+				lzYieldValsOrig := lzYieldVals
+
+				lzYieldVals := func(lzVals base.Vals) {
+					// Remap incoming vals to the union's field positions.
+					for unionIdx, unionField := range o.Fields { // !lz
+						found := false // !lz
+
+						for childIdx, childField := range child.Fields { // !lz
+							if childField == unionField { // !lz
+								lzValsUnion[unionIdx] = lzVals[childIdx]
+								found = true // !lz
+								break        // !lz
+							} // !lz
+						} // !lz
+
+						if !found { // !lz
+							lzValsUnion[unionIdx] = base.ValMissing
 						} // !lz
 					} // !lz
 
-					if !found { // !lz
-						lzValsUnion[unionIdx] = base.ValMissing
-					} // !lz
-				} // !lz
+					lzYieldValsOrig(lzValsUnion)
+				}
 
-				lzYieldValsOrig(lzValsUnion)
+				ExecOp(child, lzVars, lzYieldVals, lzYieldStats, lzYieldErr, pathNext, "U") // !lz
 			}
+		} // !lz
 
-			ExecOp(child, lzVars, lzYieldVals, lzYieldStats, lzYieldErr, pathNext, "U") // !lz
-		}
+		StageStartActor(stage, actorFunc, child)
 	}
 
-	lzYieldErrOrig(lzErr)
+	StageWaitForActors(stage)
 }
