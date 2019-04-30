@@ -107,6 +107,10 @@ TODO...
 - INTERSECT / INTERSECT ALL
 - EXCEPT / EXCEPT ALL
 
+- expression evaluation might need temporary, reusable []byte slices?
+  - perhaps the base.Vars chain can be reused to hold
+    stuff like this?
+
 - jsonparser doesn't alloc memory, except for ObjectEach() on it's
   `var stackbuf [unescapeStackBufSize]byte`, which inadvertently
   escapes to the heap.
