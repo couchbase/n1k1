@@ -4,45 +4,84 @@ import (
 	"github.com/couchbase/n1k1/base"
 )
 
+// StageStartActor is used for data-staging and "pipeline breaking"
+// and spawns a concurrent actor (goroutine) related to the given
+// stage.  A batchSize > 0 means there will be batching of results.  A
+// batchSize of 1, for example, means send each incoming result as its
+// own batch-of-1.  A batchSize of <= 0 means an actor will send a
+// single, giant batch at the end.
 func StageStartActor(lzStage *base.Stage,
-	lzActorFunc base.ActorFunc, lzActorData interface{}) {
-	lzStage.WaitGroup.Add(1)
+	lzActorFunc base.ActorFunc, lzActorData interface{}, batchSize int) {
+	lzStage.M.Lock()
+	lzStage.NumActors++
+	lzStopCh := lzStage.StopCh // Own copy for reading.
+	lzStage.M.Unlock()
 
-	if LzScope {
+	if lzStopCh != nil {
 		var lzErr error
 
-		var lzValsMine []base.Vals
+		var lzBatchVals []base.Vals
+
+		lzBatchSend := func() {
+			if len(lzBatchVals) > 0 {
+				select {
+				case <-lzStopCh: // Sibling actor had an error.
+					lzStage.M.Lock()
+					if lzErr == nil {
+						lzErr = lzStage.Err
+					}
+					lzStage.M.Unlock()
+
+				case lzStage.BatchValsCh <- lzBatchVals:
+					// NO-OP.
+				}
+
+				lzBatchVals = nil
+			}
+		}
 
 		lzYieldVals := func(lzVals base.Vals) {
 			if lzErr == nil {
 				lzValsCopy, _, _ := base.ValsDeepCopy(lzVals, nil, nil)
 
-				lzValsMine = append(lzValsMine, lzValsCopy)
+				lzBatchVals = append(lzBatchVals, lzValsCopy)
+
+				if batchSize > 0 { // !lz
+					if len(lzBatchVals) >= batchSize {
+						lzBatchSend()
+					}
+				} // !lz
 			}
 		}
 
 		lzYieldErr := func(lzErrIn error) {
-			lzErr = lzErrIn
+			if lzErrIn != nil {
+				lzErr = lzErrIn
 
-			lzStage.M.Lock()
+				lzStage.M.Lock()
 
-			if lzErrIn == nil {
-				lzStage.Vals = append(lzStage.Vals, lzValsMine)
+				if lzStage.Err == nil {
+					lzStage.Err = lzErrIn // First error by any actor.
 
-				lzValsMine = nil
+					// Closed & nil'ed under lock to have single close().
+					if lzStage.StopCh != nil {
+						close(lzStage.StopCh)
+						lzStage.StopCh = nil
+					}
+				}
+
+				lzStage.M.Unlock()
 			}
 
-			if lzStage.Err == nil {
-				lzStage.Err = lzErrIn
+			if lzErr == nil {
+				lzBatchSend() // Send the last, in-flight batch.
 			}
-
-			lzStage.M.Unlock()
 		}
 
 		lzActorFuncWrap := func() {
 			lzActorFunc(lzStage.Vars, lzYieldVals, lzStage.YieldStats, lzYieldErr, lzActorData)
 
-			lzStage.WaitGroup.Done()
+			lzStage.BatchValsCh <- nil // A nil means actor is done.
 		}
 
 		go lzActorFuncWrap()
@@ -50,17 +89,24 @@ func StageStartActor(lzStage *base.Stage,
 }
 
 func StageWaitForActors(lzStage *base.Stage) {
-	lzStage.WaitGroup.Wait()
-
 	lzStage.M.Lock()
+	lzNumActors := lzStage.NumActors
+	lzStage.M.Unlock()
 
-	if lzStage.Err == nil {
-		for _, lzValsBatched := range lzStage.Vals {
-			for _, lzVals := range lzValsBatched {
+	var lzNumActorsDone int
+
+	for lzNumActorsDone < lzNumActors {
+		lzBatchVals := <-lzStage.BatchValsCh
+		if lzBatchVals == nil {
+			lzNumActorsDone++
+		} else {
+			for _, lzVals := range lzBatchVals {
 				lzStage.YieldVals(lzVals)
 			}
 		}
 	}
+
+	lzStage.M.Lock()
 
 	lzStage.YieldErr(lzStage.Err)
 

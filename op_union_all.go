@@ -58,7 +58,7 @@ func OpUnionAll(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 					ExecOp(child, lzVars, lzYieldVals, lzYieldStats, lzYieldErr, pathNext, "U") // !lz
 				}
 
-				StageStartActor(lzStage, lzActorFunc, lzActorData) // !lz
+				StageStartActor(lzStage, lzActorFunc, lzActorData, 0) // !lz
 			}
 		} // !lz
 

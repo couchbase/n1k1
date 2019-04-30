@@ -19,6 +19,7 @@ var Keywords = map[string]bool{
 	"range":  true,
 	"break":  true,
 	"defer":  true,
+	"select": true,
 	"switch": true,
 	"case":   true,
 	"make":   true,
@@ -28,6 +29,7 @@ var Keywords = map[string]bool{
 	"nil":    true,
 	"error":  true,
 	"go":     true,
+	"close":  true,
 
 	"interface": true,
 	"bool":      true,

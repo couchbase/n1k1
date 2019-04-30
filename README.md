@@ -62,7 +62,8 @@ Some features...
 - identifier paths (e.g. locations/address/city)
 - lifting vars to avoid local closures
 - capturing emitted code to avoid local closures
-- UNION ALL
+- data-staging / pipeline-breaker facilities along with concurrency
+- UNION ALL is concurrent (one goroutine per contributor).
 - avoid json.Unmarshal & map[string]interface{} allocations
 - runtime variables / context passed down through ExecOp()
 
@@ -78,15 +79,11 @@ TODO...
 
 - NEST - a kind of join
 
-- pipeline breakers / data staging nodes
-- batching (or staging) optimizations?
+- UNION-ALL data-staging batchSize should be configurable via vars
 
-- concurrency / multithreading?
-  - threads can build up batches and send batch on channels
-  - but, no longer fits with existing yieldVals API,
-    and would be more like yieldBatchVals?
+- standalone Op for data-staging / pipeline breaking
 
-- UNION-ALL can be run concurrently / in-parallel?
+- batch exchange between stages?
 
 - GROUP BY / aggregates
   - SELECT country, SUM(population) FROM ... GROUP BY country

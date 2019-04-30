@@ -195,11 +195,13 @@ type Stage struct {
 	YieldStats YieldStats
 	YieldErr   YieldErr
 
-	WaitGroup sync.WaitGroup
+	BatchValsCh chan []Vals
 
 	M sync.Mutex // Protects the fields that follow.
 
-	Vals [][]Vals
+	NumActors int
+
+	StopCh chan struct{}
 
 	Err error
 }
@@ -211,6 +213,10 @@ func NewStage(vars *Vars,
 		YieldVals:  yieldVals,
 		YieldStats: yieldStats,
 		YieldErr:   yieldErr,
+
+		BatchValsCh: make(chan []Vals, 16),
+
+		StopCh: make(chan struct{}),
 	}
 }
 
