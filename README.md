@@ -73,8 +73,6 @@ TODO...
 
 - correlated subqueries?
 
-- LET / LETTING?
-
 - scans with params or pushdown expressions?
 
 - pipeline breakers / data staging nodes
@@ -156,3 +154,10 @@ TODO...
       something like lzSkipToHints[2] = lzSkipToVal which operator #2 can check?
 
 - emit other languages?
+
+------------------------------------------
+Other notes...
+
+- LET / LETTING are parser-time expression expansions (like macros) so
+  are not part of query-plan execution.
+
