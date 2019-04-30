@@ -17,9 +17,9 @@ type Stage struct {
 
 	M sync.Mutex // Protects the fields that follow.
 
-	NumActors int
+	NumActors int // Inc'ed during StageStartActor().
 
-	StopCh chan struct{}
+	StopCh chan struct{} // When error, close()'ed and nil'ed.
 
 	Err error
 }
