@@ -13,9 +13,9 @@ import (
 
 var ScanYieldStatsEvery = 1024 // Yield stats after this many tuple yields.
 
-func OpScan(params []interface{}, fields base.Fields, lzVars *base.Vars,
-	lzYieldVals base.YieldVals, lzYieldStats base.YieldStats, lzYieldErr base.YieldErr) {
-	kind := params[0].(string)
+func OpScan(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
+	lzYieldStats base.YieldStats, lzYieldErr base.YieldErr) {
+	kind := o.Params[0].(string)
 
 	var lzFilePath string  // !lz
 	var lzReader io.Reader // !lz
@@ -24,20 +24,20 @@ func OpScan(params []interface{}, fields base.Fields, lzVars *base.Vars,
 
 	switch kind {
 	case "filePath":
-		paramsFilePath := params[1].(string)
+		paramsFilePath := o.Params[1].(string)
 
 		lzFilePath := paramsFilePath
 
-		ScanFile(lzFilePath, fields, lzYieldVals, lzYieldStats, lzYieldErr) // !lz
+		ScanFile(lzFilePath, o.Fields, lzYieldVals, lzYieldStats, lzYieldErr) // !lz
 
 	case "csvData":
-		paramsCsvData := params[1].(string)
+		paramsCsvData := o.Params[1].(string)
 
 		lzCsvData := paramsCsvData
 
 		lzReader := strings.NewReader(lzCsvData)
 
-		ScanReaderAsCsv(lzReader, fields, lzYieldVals, lzYieldStats, lzYieldErr) // !lz
+		ScanReaderAsCsv(lzReader, o.Fields, lzYieldVals, lzYieldStats, lzYieldErr) // !lz
 
 	default:
 		errMsg := "unknown scan kind" // TODO: Weak string/double-quote handling.
