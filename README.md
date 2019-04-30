@@ -95,13 +95,18 @@ TODO...
   escapes to the heap.
   - need upstream fix / patch?
 
-- DISTINCT
-
 - NEST / UNNEST
+
+- DISTINCT
 
 - UNION
 - INTERSECT / INTERSECT ALL
 - EXCEPT / EXCEPT ALL
+
+- need the JSON for objects to be canonicalized before they can be
+  used as a DISTINCT map[] key, as {a:1,b:2} and {b:2,a:1} are
+  logically the same?
+  - numbers might also need to be canonicalized (0 vs 0.0 vs -0)?
 
 - UNION-ALL can be run concurrently / in-parallel?
 
