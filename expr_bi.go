@@ -24,18 +24,13 @@ func MakeBiExprFunc(lzVars *base.Vars, fields base.Fields, types base.Types,
 	_, _, _ = lzA, lzB, lzVals // !lz
 
 	if LzScope {
-		var lzA base.ExprFunc
-		var lzB base.ExprFunc
-
-		_, _ = lzA, lzB
-
 		lzExprFunc =
 			MakeExprFunc(lzVars, fields, types, exprA, path, "A") // !lz
-		lzA = lzExprFunc
+		lzA := lzExprFunc
 
 		lzExprFunc =
 			MakeExprFunc(lzVars, fields, types, exprB, path, "B") // !lz
-		lzB = lzExprFunc
+		lzB := lzExprFunc
 
 		lzExprFunc = func(lzVals base.Vals) (lzVal base.Val) {
 			lzVal =
