@@ -20,11 +20,9 @@ var EmitPop = func(path, pathItem string) {} // Placeholder for compiler.
 // -----------------------------------------------------
 
 // ExprCatalog is a registry of all the known expression functions.
-var ExprCatalog = map[string]ExprCatalogFunc{}
-
-func init() {
-	ExprCatalog["json"] = ExprJson
-	ExprCatalog["identifier"] = ExprIdentifier
+var ExprCatalog = map[string]ExprCatalogFunc{
+	"json":       ExprJson,
+	"identifier": ExprIdentifier,
 }
 
 type ExprCatalogFunc func(lzVars *base.Vars, fields base.Fields,
