@@ -6,6 +6,7 @@ package base
 import (
 	"bytes"
 	"fmt"
+	"sync"
 
 	"github.com/buger/jsonparser"
 )
@@ -185,17 +186,35 @@ type Vars struct {
 
 // -----------------------------------------------------
 
-// Stage represents a data-staging "pipeline breaker".
+// Stage represents a data-staging "pipeline breaker", that's
+// processed by one or more concurrent actors.
 type Stage struct {
+	NumActors int
+
 	Vars *Vars
 
 	YieldVals  YieldVals
 	YieldStats YieldStats
 	YieldErr   YieldErr
 
-	NumActors int
+	WaitGroup sync.WaitGroup
 
-	Data interface{}
+	M sync.Mutex // Protects the fields that follow.
+
+	Vals [][]Vals
+
+	Err error
 }
 
-type StageActorFunc func(*Vars, YieldVals, YieldStats, YieldErr, interface{})
+func NewStage(numActors int, vars *Vars,
+	yieldVals YieldVals, yieldStats YieldStats, yieldErr YieldErr) *Stage {
+	return &Stage{
+		Vars:       vars,
+		YieldVals:  yieldVals,
+		YieldStats: yieldStats,
+		YieldErr:   yieldErr,
+		NumActors:  numActors,
+	}
+}
+
+type ActorFunc func(*Vars, YieldVals, YieldStats, YieldErr, interface{})

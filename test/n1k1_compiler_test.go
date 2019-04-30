@@ -218,6 +218,9 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 		c = append(c, "  _ = lzYieldStats")
 		c = append(c, "  _ = lzYieldErr")
 		c = append(c, "")
+		c = append(c, "  var lzVars *base.Vars")
+		c = append(c, "  _ = lzVars")
+		c = append(c, "")
 
 		c = append(c, testOuts[testi]...)
 		c = append(c, "")

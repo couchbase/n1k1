@@ -1812,7 +1812,7 @@ var TestCasesSimple = []TestCaseSimple{
 		},
 	},
 	{
-		about: "test csv-data scan->union-all",
+		about: "test csv-data scan->union-all->order-by",
 		o: base.Op{
 			Kind:   "order-by-offset-limit",
 			Fields: base.Fields{"a", "b", "c"},
@@ -1823,8 +1823,6 @@ var TestCasesSimple = []TestCaseSimple{
 				[]interface{}{
 					"asc",
 				},
-				0,
-				10,
 			},
 			Children: []*base.Op{&base.Op{
 				Kind:   "union-all",
@@ -1845,8 +1843,44 @@ var TestCasesSimple = []TestCaseSimple{
 					Params: []interface{}{
 						"csvData",
 						`
-44
+9
 55
+`,
+					},
+				}},
+			}},
+		},
+		expectYields: []base.Vals{
+			base.Vals{[]byte(nil), []byte("9"), []byte(nil)},
+			base.Vals{[]byte("10"), []byte("20"), []byte("30")},
+			base.Vals{[]byte("11"), []byte("21"), []byte("31")},
+			base.Vals{[]byte(nil), []byte("55"), []byte(nil)},
+		},
+	},
+	{
+		about: "test csv-data scan->union-all->order-by just 1 scan",
+		o: base.Op{
+			Kind:   "order-by-offset-limit",
+			Fields: base.Fields{"a", "b", "c"},
+			Params: []interface{}{
+				[]interface{}{
+					[]interface{}{"identifier", "b"},
+				},
+				[]interface{}{
+					"asc",
+				},
+			},
+			Children: []*base.Op{&base.Op{
+				Kind:   "union-all",
+				Fields: base.Fields{"a", "b", "c"},
+				Children: []*base.Op{&base.Op{
+					Kind:   "scan",
+					Fields: base.Fields{"a", "b", "c"},
+					Params: []interface{}{
+						"csvData",
+						`
+11,21,31
+10,20,30
 `,
 					},
 				}},
@@ -1855,8 +1889,6 @@ var TestCasesSimple = []TestCaseSimple{
 		expectYields: []base.Vals{
 			base.Vals{[]byte("10"), []byte("20"), []byte("30")},
 			base.Vals{[]byte("11"), []byte("21"), []byte("31")},
-			base.Vals{[]byte(nil), []byte("44"), []byte(nil)},
-			base.Vals{[]byte(nil), []byte("55"), []byte(nil)},
 		},
 	},
 }

@@ -74,9 +74,10 @@ func ExprIdentifier(lzVars *base.Vars, fields base.Fields, types base.Types,
 		lzExprFunc = func(lzVals base.Vals) (lzVal base.Val) {
 			lzVal = lzVals[idx]
 
-			if len(partsRest) > 0 {
+			partsRestLen := len(partsRest) // !lz
+			if partsRestLen > 0 {          // !lz
 				lzVal = base.ValPathGet(lzVal, partsRest)
-			}
+			} // !lz
 
 			return lzVal
 		}
