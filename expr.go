@@ -31,8 +31,7 @@ type ExprCatalogFunc func(lzVars *base.Vars, fields base.Fields,
 // -----------------------------------------------------
 
 func MakeExprFunc(lzVars *base.Vars, fields base.Fields, types base.Types,
-	expr []interface{}, path, pathItem string) (
-	lzExprFunc base.ExprFunc) {
+	expr []interface{}, path, pathItem string) (lzExprFunc base.ExprFunc) {
 	pathNext := EmitPush(path, pathItem)
 
 	defer EmitPop(path, pathItem)
