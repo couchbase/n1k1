@@ -22,6 +22,8 @@ type Stage struct {
 	StopCh chan struct{} // When error, close()'ed and nil'ed.
 
 	Err error
+
+	Recycled [][]Vals
 }
 
 func NewStage(batchChSize int, vars *Vars,
@@ -79,7 +81,27 @@ func (stage *Stage) StartActor(aFunc ActorFunc, aData interface{}, batchSize int
 
 	yieldVals := func(vals Vals) {
 		if err == nil {
-			valsCopy, _, _ := ValsDeepCopy(vals, nil, nil)
+			// Need to materialize or deep-copy the incoming vals into
+			// the batch, so reuse slices from previously recycled
+			// batch, if any.
+			if batch == nil {
+				batch = stage.AcquireBatch()[:0]
+			}
+
+			var preallocVals Vals
+			var preallocVal Val
+
+			if cap(batch) > len(batch) {
+				preallocVals := batch[0 : len(batch)+1][len(batch)]
+				preallocVals = preallocVals[0:cap(preallocVals)]
+
+				if len(preallocVals) > 0 {
+					preallocVal = preallocVals[0]
+					preallocVal = preallocVal[0:cap(preallocVal)]
+				}
+			}
+
+			valsCopy, _, _ := ValsDeepCopy(vals, preallocVals, preallocVal)
 
 			batch = append(batch, valsCopy)
 
@@ -124,6 +146,8 @@ func (stage *Stage) StartActor(aFunc ActorFunc, aData interface{}, batchSize int
 	}()
 }
 
+// --------------------------------------------------------
+
 func (stage *Stage) WaitForActors() {
 	stage.M.Lock()
 	numActors := stage.NumActors
@@ -139,6 +163,8 @@ func (stage *Stage) WaitForActors() {
 			for _, vals := range batch {
 				stage.YieldVals(vals)
 			}
+
+			stage.RecycleBatch(batch)
 		}
 	}
 
@@ -147,4 +173,28 @@ func (stage *Stage) WaitForActors() {
 	stage.YieldErr(stage.Err)
 
 	stage.M.Unlock()
+}
+
+// --------------------------------------------------------
+
+// RecycleBatch holds onto a batch for a future AcquireBatch().
+func (stage *Stage) RecycleBatch(batch []Vals) {
+	stage.M.Lock()
+	stage.Recycled = append(stage.Recycled, batch)
+	stage.M.Unlock()
+}
+
+// AcquireBatch returns either a previously recycled batch or nil if
+// there aren't any.
+func (stage *Stage) AcquireBatch() (rv []Vals) {
+	stage.M.Lock()
+	n := len(stage.Recycled)
+	if n > 0 {
+		rv = stage.Recycled[n-1]
+		stage.Recycled[n-1] = nil
+		stage.Recycled = stage.Recycled[0 : n-1]
+	}
+	stage.M.Unlock()
+
+	return rv
 }

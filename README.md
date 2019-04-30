@@ -63,6 +63,8 @@ Some features...
 - lifting vars to avoid local closures
 - capturing emitted code to avoid local closures
 - data-staging / pipeline-breaker facilities along with concurrency
+- recycled batch exchange between data-staging actors and consumer for
+  fewer memory allocations
 - UNION ALL is concurrent (one goroutine per contributor).
 - avoid json.Unmarshal & map[string]interface{} allocations
 - runtime variables / context passed down through ExecOp()
@@ -83,8 +85,6 @@ TODO...
 - UNION-ALL data-staging batchChSize should be configurable
 
 - standalone Op for data-staging / pipeline breaking
-
-- batch exchange between stage actors and consumer?
 
 - GROUP BY / aggregates
   - SELECT country, SUM(population) FROM ... GROUP BY country
