@@ -67,12 +67,12 @@ func OpUnionAll(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 					ExecOp(child, lzVars, lzYieldVals, lzYieldStats, lzYieldErr, pathNextU, "UO") // !lz
 				}
 
-				base.StageStartActor(lzStage, lzActorFunc, lzActorData, 0)
+				lzStage.StartActor(lzActorFunc, lzActorData, 0)
 			}
 
 			EmitPop(pathNextU, strconv.Itoa(childi)) // !lz
 		} // !lz
 
-		base.StageWaitForActors(lzStage)
+		lzStage.WaitForActors()
 	}
 }

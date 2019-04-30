@@ -46,8 +46,7 @@ type ActorFunc func(*Vars, YieldVals, YieldStats, YieldErr, interface{})
 // batchSize of 1, for example, means send each incoming result as its
 // own batch-of-1.  A batchSize of <= 0 means an actor will send a
 // single, giant batch at the end.
-func StageStartActor(stage *Stage,
-	actorFunc ActorFunc, actorData interface{}, batchSize int) {
+func (stage *Stage) StartActor(aFunc ActorFunc, aData interface{}, batchSize int) {
 	stage.M.Lock()
 
 	stage.NumActors++
@@ -118,14 +117,14 @@ func StageStartActor(stage *Stage,
 
 	go func() {
 		if stopCh != nil {
-			actorFunc(stage.Vars, yieldVals, stage.YieldStats, yieldErr, actorData)
+			aFunc(stage.Vars, yieldVals, stage.YieldStats, yieldErr, aData)
 		}
 
 		stage.BatchCh <- nil // Must send last nil, meaning this actor is done.
 	}()
 }
 
-func StageWaitForActors(stage *Stage) {
+func (stage *Stage) WaitForActors() {
 	stage.M.Lock()
 	numActors := stage.NumActors
 	stage.M.Unlock()
