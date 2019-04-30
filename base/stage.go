@@ -56,10 +56,6 @@ func StageStartActor(stage *Stage,
 
 	stage.M.Unlock()
 
-	if stopCh == nil {
-		return
-	}
-
 	var err error
 
 	var batch []Vals
@@ -121,9 +117,11 @@ func StageStartActor(stage *Stage,
 	}
 
 	go func() {
-		actorFunc(stage.Vars, yieldVals, stage.YieldStats, yieldErr, actorData)
+		if stopCh != nil {
+			actorFunc(stage.Vars, yieldVals, stage.YieldStats, yieldErr, actorData)
+		}
 
-		stage.BatchCh <- nil // A nil means actor is done.
+		stage.BatchCh <- nil // Must send last nil, meaning this actor is done.
 	}()
 }
 
