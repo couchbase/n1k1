@@ -80,6 +80,7 @@ TODO...
 - NEST - a kind of join
 
 - UNION-ALL data-staging batchSize should be configurable via vars
+- UNION-ALL data-staging batchChSize should be configurable via vars
 
 - standalone Op for data-staging / pipeline breaking
 

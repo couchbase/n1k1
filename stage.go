@@ -20,10 +20,10 @@ func StageStartActor(lzStage *base.Stage,
 	if lzStopCh != nil {
 		var lzErr error
 
-		var lzBatchVals []base.Vals
+		var lzBatch []base.Vals
 
 		lzBatchSend := func() {
-			if len(lzBatchVals) > 0 {
+			if len(lzBatch) > 0 {
 				select {
 				case <-lzStopCh: // Sibling actor had an error.
 					lzStage.M.Lock()
@@ -32,11 +32,11 @@ func StageStartActor(lzStage *base.Stage,
 					}
 					lzStage.M.Unlock()
 
-				case lzStage.BatchValsCh <- lzBatchVals:
+				case lzStage.BatchCh <- lzBatch:
 					// NO-OP.
 				}
 
-				lzBatchVals = nil
+				lzBatch = nil
 			}
 		}
 
@@ -44,10 +44,10 @@ func StageStartActor(lzStage *base.Stage,
 			if lzErr == nil {
 				lzValsCopy, _, _ := base.ValsDeepCopy(lzVals, nil, nil)
 
-				lzBatchVals = append(lzBatchVals, lzValsCopy)
+				lzBatch = append(lzBatch, lzValsCopy)
 
 				if batchSize > 0 { // !lz
-					if len(lzBatchVals) >= batchSize {
+					if len(lzBatch) >= batchSize {
 						lzBatchSend()
 					}
 				} // !lz
@@ -81,7 +81,7 @@ func StageStartActor(lzStage *base.Stage,
 		lzActorFuncWrap := func() {
 			lzActorFunc(lzStage.Vars, lzYieldVals, lzStage.YieldStats, lzYieldErr, lzActorData)
 
-			lzStage.BatchValsCh <- nil // A nil means actor is done.
+			lzStage.BatchCh <- nil // A nil means actor is done.
 		}
 
 		go lzActorFuncWrap()
@@ -96,11 +96,11 @@ func StageWaitForActors(lzStage *base.Stage) {
 	var lzNumActorsDone int
 
 	for lzNumActorsDone < lzNumActors {
-		lzBatchVals := <-lzStage.BatchValsCh
-		if lzBatchVals == nil {
+		lzBatch := <-lzStage.BatchCh
+		if lzBatch == nil {
 			lzNumActorsDone++
 		} else {
-			for _, lzVals := range lzBatchVals {
+			for _, lzVals := range lzBatch {
 				lzStage.YieldVals(lzVals)
 			}
 		}

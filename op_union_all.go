@@ -19,7 +19,7 @@ func OpUnionAll(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	_, _, _ = lzStage, lzActorFunc, lzActorData // !lz
 
 	if LzScope {
-		lzStage := base.NewStage(lzVars, lzYieldVals, lzYieldStats, lzYieldErr)
+		lzStage := base.NewStage(0, lzVars, lzYieldVals, lzYieldStats, lzYieldErr)
 
 		for _, child := range o.Children { // !lz
 			if LzScope {
