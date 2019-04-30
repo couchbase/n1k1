@@ -189,8 +189,6 @@ type Vars struct {
 // Stage represents a data-staging "pipeline breaker", that's
 // processed by one or more concurrent actors.
 type Stage struct {
-	NumActors int
-
 	Vars *Vars
 
 	YieldVals  YieldVals
@@ -206,14 +204,13 @@ type Stage struct {
 	Err error
 }
 
-func NewStage(numActors int, vars *Vars,
+func NewStage(vars *Vars,
 	yieldVals YieldVals, yieldStats YieldStats, yieldErr YieldErr) *Stage {
 	return &Stage{
 		Vars:       vars,
 		YieldVals:  yieldVals,
 		YieldStats: yieldStats,
 		YieldErr:   yieldErr,
-		NumActors:  numActors,
 	}
 }
 

@@ -7,10 +7,10 @@ import (
 func OpUnionAll(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	lzYieldStats base.YieldStats, lzYieldErr base.YieldErr,
 	path, pathNext string) {
-	numChildren := len(o.Children)
 	numFields := len(o.Fields)
 
-	// Implemented via data-staging concurrent actors.
+	// Implemented via data-staging concurrent actors, with one actor
+	// per union contributor.
 	//
 	var lzStage *base.Stage        // !lz
 	var lzActorFunc base.ActorFunc // !lz
@@ -19,16 +19,15 @@ func OpUnionAll(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	_, _, _ = lzStage, lzActorFunc, lzActorData // !lz
 
 	if LzScope {
-		lzStage := base.NewStage(numChildren, lzVars, lzYieldVals, lzYieldStats, lzYieldErr)
+		lzStage := base.NewStage(lzVars, lzYieldVals, lzYieldStats, lzYieldErr)
 
 		for _, child := range o.Children { // !lz
 			lzActorData = child // !lz
 
 			if LzScope {
-				var lzActorFunc base.ActorFunc
 				var lzActorData interface{} = child
 
-				lzActorFunc = func(lzVars *base.Vars, lzYieldVals base.YieldVals, lzYieldStats base.YieldStats, lzYieldErr base.YieldErr, lzActorData interface{}) {
+				lzActorFunc := func(lzVars *base.Vars, lzYieldVals base.YieldVals, lzYieldStats base.YieldStats, lzYieldErr base.YieldErr, lzActorData interface{}) {
 					child := lzActorData.(*base.Op) // !lz
 
 					lzValsUnion := make(base.Vals, numFields)
