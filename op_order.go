@@ -83,6 +83,7 @@ func OpOrderByOffsetLimit(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldV
 					if lzHeapLen+1 > offsetPlusLimit {
 						lzOld := heap.Pop(lzHeap).(base.ValsProjected)
 
+						// Reuse the slices from lzOld.
 						lzPreallocVals = lzOld.Vals[0:cap(lzOld.Vals)]
 
 						lzPreallocVal = lzOld.Vals[0]
