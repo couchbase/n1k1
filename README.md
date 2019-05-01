@@ -72,6 +72,15 @@ Some features...
 ------------------------------------------
 TODO...
 
+- recyclable hash table - robinhood / open-addressing?
+  - should be easily reset'able for recycling?
+  - should also be mmap()'able?
+
+- how to handle when fields aren't known?
+  - such as immediate output of a scan?
+  - use "" or "*" for field name?
+    - ISSUE: what if they use "*" or "" as a object key in their data?
+
 - scans with params or pushdown expressions?
   - RangeScanIndex
   - FlexScanIndex
