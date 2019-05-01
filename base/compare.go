@@ -37,51 +37,6 @@ func NewValComparer() *ValComparer {
 
 // ---------------------------------------------
 
-func (c *ValComparer) BytesGet(pos, depth int) []byte {
-	byDepth := c.Bytes[pos]
-
-	for len(byDepth) < depth+1 {
-		byDepth = append(byDepth, nil)
-		c.Bytes[pos] = byDepth
-	}
-
-	return byDepth[depth]
-}
-
-func (c *ValComparer) BytesSet(pos, depth int, s []byte) {
-	c.Bytes[pos][depth] = s[0:cap(s)]
-}
-
-// ---------------------------------------------
-
-func (c *ValComparer) BytesSliceGet(depth int) [][]byte {
-	for len(c.BytesSlice) < depth+1 {
-		c.BytesSlice = append(c.BytesSlice, nil)
-	}
-
-	return c.BytesSlice[depth]
-}
-
-func (c *ValComparer) BytesSliceSet(depth int, s [][]byte) {
-	c.BytesSlice[depth] = s[:0]
-}
-
-// ---------------------------------------------
-
-func (c *ValComparer) KeyValsGet(depth int) KeyVals {
-	for len(c.KeyVals) < depth+1 {
-		c.KeyVals = append(c.KeyVals, nil)
-	}
-
-	return c.KeyVals[depth]
-}
-
-func (c *ValComparer) KeyValsSet(depth int, s KeyVals) {
-	c.KeyVals[depth] = s[:0]
-}
-
-// ---------------------------------------------
-
 func (c *ValComparer) Compare(a, b Val) int {
 	return c.CompareDeep(a, b, 0)
 }
@@ -254,6 +209,51 @@ func (c *ValComparer) CompareDeep(a, b []byte, depth int) int {
 	default: // Null, NotExist, Unknown.
 		return 0
 	}
+}
+
+// ---------------------------------------------
+
+func (c *ValComparer) BytesGet(pos, depth int) []byte {
+	byDepth := c.Bytes[pos]
+
+	for len(byDepth) < depth+1 {
+		byDepth = append(byDepth, nil)
+		c.Bytes[pos] = byDepth
+	}
+
+	return byDepth[depth]
+}
+
+func (c *ValComparer) BytesSet(pos, depth int, s []byte) {
+	c.Bytes[pos][depth] = s[0:cap(s)]
+}
+
+// ---------------------------------------------
+
+func (c *ValComparer) BytesSliceGet(depth int) [][]byte {
+	for len(c.BytesSlice) < depth+1 {
+		c.BytesSlice = append(c.BytesSlice, nil)
+	}
+
+	return c.BytesSlice[depth]
+}
+
+func (c *ValComparer) BytesSliceSet(depth int, s [][]byte) {
+	c.BytesSlice[depth] = s[:0]
+}
+
+// ---------------------------------------------
+
+func (c *ValComparer) KeyValsGet(depth int) KeyVals {
+	for len(c.KeyVals) < depth+1 {
+		c.KeyVals = append(c.KeyVals, nil)
+	}
+
+	return c.KeyVals[depth]
+}
+
+func (c *ValComparer) KeyValsSet(depth int, s KeyVals) {
+	c.KeyVals[depth] = s[:0]
 }
 
 // ---------------------------------------------
