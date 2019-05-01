@@ -80,6 +80,8 @@ TODO...
   - such as immediate output of a scan?
   - use "" or "*" for field name?
     - ISSUE: what if they use "*" or "" as a object key in their data?
+  - need some rules on field string encoding that allows for
+    representing "this 'field' is actually the entire value".
 
 - scans with params or pushdown expressions?
   - RangeScanIndex

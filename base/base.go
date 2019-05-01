@@ -10,7 +10,7 @@ import (
 	"github.com/buger/jsonparser"
 )
 
-type Fields []string // Ex: "description", "address.city".
+type Fields []string // Ex: ".description", ".address.city".
 
 func (a Fields) IndexOf(s string) int {
 	for i, v := range a {
