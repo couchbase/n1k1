@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/couchbase/n1k1/cmd"
 )
 
 var Keywords = map[string]bool{
@@ -438,5 +440,5 @@ func VisitSourceLines(sourceDir, outDir string,
 		return err
 	}
 
-	return VisitFiles(sourceDir, ".go", cb)
+	return cmd.VisitFiles(sourceDir, ".go", cb)
 }
