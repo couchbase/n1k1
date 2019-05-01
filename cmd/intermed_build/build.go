@@ -82,7 +82,7 @@ type Handler func(state *State, he *HandlerEntry,
 // --------------------------------------------------------
 
 func IntermedBuild(sourceDir, outDir string) error {
-	log.Printf(" BuildCompiler, outDir: %s\n", outDir)
+	log.Printf(" IntermedBuild, outDir: %s\n", outDir)
 
 	state := &State{
 		Handlers: []*HandlerEntry{
