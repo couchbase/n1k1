@@ -9,6 +9,30 @@ import (
 	"github.com/couchbase/n1k1/cmd"
 )
 
+// ISSUES...
+//
+// - bindings?
+//
+// - annotated values?
+//
+// - META / META SELF?
+//
+// - a function often knows its domain of output types,
+//   which can be leveraged by the next applied function?
+//
+// - if a function is done with its output,
+//   it can let the next function take ownership (mutate/append)?
+//   But, perhaps this already happens -- see ArrayAppend / ArrayConcat?
+//
+// - if there's a sub-tree of functions doing math on numbers
+//   then don't need to convert back/forth to Val
+//   between each step?
+//   And, don't need to check MISSING / NULL on every step?
+//
+// - can we tell if for-range loops are working over big arrays
+//   or over just small, bounded (compile-time) args?
+//   The answer helps choose which recycled pool to use?
+
 // ---------------------------------------------------------------
 
 // State represents the gen-compiler process as it walks through the
