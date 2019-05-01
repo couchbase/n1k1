@@ -21,8 +21,8 @@ var EmitPop = func(path, pathItem string) {} // Placeholder for compiler.
 
 // ExprCatalog is a registry of all the known expression functions.
 var ExprCatalog = map[string]ExprCatalogFunc{
-	"json":       ExprJson,
-	"identifier": ExprIdentifier,
+	"json":      ExprJson,
+	"fieldPath": ExprFieldPath,
 }
 
 type ExprCatalogFunc func(lzVars *base.Vars, fields base.Fields,
@@ -60,7 +60,7 @@ func ExprJson(lzVars *base.Vars, fields base.Fields, types base.Types,
 
 // -----------------------------------------------------
 
-func ExprIdentifier(lzVars *base.Vars, fields base.Fields, types base.Types,
+func ExprFieldPath(lzVars *base.Vars, fields base.Fields, types base.Types,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
 	idx := fields.IndexOf(params[0].(string))
 	if idx >= 0 {
