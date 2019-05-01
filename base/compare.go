@@ -141,7 +141,8 @@ func (c *ValComparer) CompareDeep(a, b []byte, depth int) int {
 		var aLen int
 		aErr := jsonparser.ObjectEach(aValue,
 			func(k []byte, v []byte, vT jsonparser.ValueType, offset int) error {
-				kvs = append(kvs, KeyVal{k, v, 1})
+				kCopy := append(ReuseNextKey(kvs), k...)
+				kvs = append(kvs, KeyVal{kCopy, v, 1})
 				aLen++
 				return nil
 			})
@@ -149,7 +150,8 @@ func (c *ValComparer) CompareDeep(a, b []byte, depth int) int {
 		var bLen int
 		bErr := jsonparser.ObjectEach(bValue,
 			func(k []byte, v []byte, vT jsonparser.ValueType, offset int) error {
-				kvs = append(kvs, KeyVal{k, v, -1})
+				kCopy := append(ReuseNextKey(kvs), k...)
+				kvs = append(kvs, KeyVal{kCopy, v, -1})
 				bLen++
 				return nil
 			})
@@ -295,6 +297,16 @@ func (a KeyVals) Less(i, j int) bool {
 	}
 
 	return a[i].Pos > a[j].Pos // Reverse ordering on Pos.
+}
+
+// When append()'ing to the kvs, the entry that we're going to
+// overwrite might have a Key []byte that we can reuse.
+func ReuseNextKey(kvs KeyVals) []byte {
+	if cap(kvs) > len(kvs) {
+		return kvs[0 : len(kvs)+1][len(kvs)].Key[:0]
+	}
+
+	return nil
 }
 
 // ---------------------------------------------

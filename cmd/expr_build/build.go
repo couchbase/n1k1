@@ -101,12 +101,16 @@ func ExprBuild(sourceDir, outDir string) error {
 
 	sort.Strings(names)
 
+	contents = append(contents, "/*")
+
 	for _, name := range names {
 		aliases := state.Funcs[name]
 
 		contents = append(contents,
 			name+": ("+aliases[0]+") "+strings.Join(aliases[1:], ", "))
 	}
+
+	contents = append(contents, "*/")
 
 	return ioutil.WriteFile(outDir+"/generated_by_expr_build.go",
 		[]byte(strings.Join(contents, "\n")), 0644)
@@ -125,6 +129,15 @@ func HandlerScanFile(state *State, he *HandlerEntry,
 	if strings.HasPrefix(line, "func (this *") &&
 		strings.Index(line, " Apply(") > 0 {
 		state.Push(&HandlerEntry{Handler: HandlerScanTopLevelFuncSignature})
+
+		return state.Process(out, line)
+	}
+
+	if strings.HasPrefix(line, "func (this *") &&
+		strings.Index(line, " Evaluate(") > 0 {
+		state.Push(&HandlerEntry{Handler: HandlerScanTopLevelFuncSignature})
+
+		line = "\n// -----------------------------------------------------------------\n" + line
 
 		return state.Process(out, line)
 	}
