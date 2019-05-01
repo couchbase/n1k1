@@ -125,6 +125,8 @@ TODO...
 
 - HAVING (it's just another filter)
 
+- handle BINARY data type?
+
 - SIMD optimizations possible?  see: SIMD-json articles?
 
 - prefetching optimizations?
