@@ -18,3 +18,6 @@ easy-to-read:
        sed -e 's/[Ll]z//g' $$f | sed -e 's/ \/\/ !//g' | sed -e 's/ \/\/ <== .*//g' > ./tmp/easy-to-read/$$f; \
     done
 
+cloc:
+	find . | grep go | grep -v test | grep -v generated | grep -v tmp | \
+       xargs cloc --by-file
