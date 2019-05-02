@@ -82,6 +82,7 @@ TODO...
     - ISSUE: what if they use "*" or "" as a object key in their data?
   - need some rules on field string encoding that allows for
     representing "this 'field' is actually the entire value".
+    - e.g., "" vs ".city" vs ".zipcode".
 
 - scans with params or pushdown expressions?
   - RangeScanIndex
