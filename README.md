@@ -13,10 +13,10 @@ The way n1k1 works...
 Or, how intermed_build generates a N1QL compiler...
 
 - 1: First, take a look at the n1k1/*.go files.  You'll see a simple,
-bare-bones interpreter for a "N1QL" query-plan.  In ExecOp(), it
-recursively walks down through a query-plan tree, and processes it by
+interpreter for a "N1QL" query-plan.  In ExecOp(), it recursively
+walks through a query-plan tree, and processes the query-plan by
 pushing (or yield()'ing) data records from child nodes (e.g., a scan)
-up to parent nodes in the query-plan tree.
+up to parent nodes (e.g., filters) from the query-plan tree.
 
 - 1.1: As part of that, you'll also see some variables and functions
 that follow a naming convention with "lz" (e.g., "lazy") in their
@@ -26,17 +26,17 @@ versus other variables that are early-bound (they use information
 that's already available at query-plan compilation time).
 
 - 1.2: Of note, the n1k1/*.go files are written in a careful subset of
-golang.  It's all legal golang code, but it follows more rules and
-conventions (like the "lz" conventions) to make parsing by n1k1's
-intermed_build tool easy.
+golang.  It's all legal golang code, but it follows additional rules
+and conventions (like the "lz" conventions and directives in code
+comments) to make parsing by n1k1's intermed_build tool easy.
 
 - 2: The intermed_build tool parses the "lz" conventions and other
-markers (e.g., special code comments) from the n1k1/*.go source files
-in order to translate that interpreter code into a intermediary,
-helper package, called n1k1/intermed.
+markers (e.g., code comment directives) from the n1k1/*.go source
+files to translate that interpreter code into a intermediary, helper
+package, called n1k1/intermed.
 
 - 2.1: The n1k1/intermed package will be used later by the final n1k1
-compiler.
+query compiler.
 
 - 2.2: The way the intermed_build tool works is that it processes the
 n1k1/*.go source files line-by-line, and translates any "lz" lines
@@ -44,7 +44,7 @@ into printf's.  Non-lazy expressions are turned into printf'ed
 placeholder vars.  Non-lazy lines are emitted entirely as-is, as they
 are early-bound.
 
-- 3: Finally, the n1k1 compiler, which uses that generated
+- 3: Finally, the n1k1 compiler, which imports and uses the generated
 n1k1/intermed package, will take the user's input of a N1QL query-plan
 and will emit *.go code (or possibly other languages) that can
 efficiently execute that query-plan.
@@ -54,26 +54,33 @@ Performance approaches...
 
 What are some design approach that help with n1k1's performance...
 
-- garbage avoidance as a major theme.
+- garbage creation avoidance as a major theme.
 - avoidance of sync.Pool.
 - avoidance of locking and channels as much as possible.
 - avoidance of map[string]interface{} and []interface{}.
-- []byte and [][]byte instead are used heavily.
-- []byte and [][]byte are easily and heavily recycled.
-- jsonparser used instead of json.Unmarshal(), to avoid garbage.
-- jsonparser provides []byte slices into the document's []byte's.
+- []byte and [][]byte instead are used heavily,
+  as they are easy to completely recycle and reuse.
+- jsonparser is used instead of json.Unmarshal(), to avoid garbage.
+  - jsonparser returns []byte values that point into the parsed
+    document's []byte's.
 - commonly accessed JSON object fields can be promoted
   to quickly accessible "registers" at compile time...
-  - object field access of map lookups (e.g., obj["city"]) can be
-    instead replaced by positional slice access (e.g., vals[5]),
-    similar to an analogy of RAM access versus CPU register access.
+  - object field access or map lookups (e.g., obj["city"]) can be
+    instead replaced by positional slice access (e.g., vals[5])
+  - this is similar to an analogy of RAM access versus faster CPU
+    register access.
   - the vals "register" is passed from operator to operator.
-- data-staging, pipeline breakers (batching)...
-  - with optional concurrency (one or more goroutine actors).
-  - recycled batch exchange between data-staging actors and consumer
-    goroutine for fewer memory allocations.
 - push-based paradigm for shorter codepaths (in contrast to
-  volcano-style, pull-based, iterator paradigm).
+  pull-based, iterator-style paradigm).
+- data-staging, pipeline breakers (batching)...
+  - batching results between operators may be more friendly to the CPU
+    data instruction cache.
+  - batch sizes and queue sizes between producers and cosunmer are
+    designed to be configurable.
+  - data-staging also supports optional concurrency -- one or more
+    goroutine actors can be producers in a pipeline.
+  - recycled batch exchange between producer goroutine and consumer
+    goroutine for less garbage creation.
 - query compilation to golang...
   - supports operator fusion, for fewer function calls.
 - for hashmaps...
