@@ -73,8 +73,7 @@ What are some design ideas that help with n1k1's performance...
 - push-based paradigm for shorter codepaths (in contrast to
   pull-based, iterator-style paradigm).
 - data-staging, pipeline breakers (batching)...
-  - batching results between operators may be more friendly to the CPU
-    data instruction cache.
+  - batching results between op's may be more friendly to CPU caches.
   - batch sizes and queue sizes between producers and cosunmer are
     designed to be configurable.
   - data-staging also supports optional concurrency -- one or more
@@ -177,63 +176,65 @@ TODO...
 
 - subqueries & correlated subqueries?
   - these should just be yet another expression
-  - choice between non-correlated vs correlated subqueries should be
+  - analysis of non-correlated vs correlated subqueries should be
     decided at a higher level than at query-plan execution
 
 - need the JSON for objects to be canonicalized before they can be
-  used as a DISTINCT map[] key, as {a:1,b:2} and {b:2,a:1} are
+  used as a map[] key, as {a:1,b:2} and {b:2,a:1} are
   logically the same?
-  - numbers might also need to be canonicalized (0 vs 0.0 vs -0)?
+
+- numbers might also need to be canonicalized?
+  - e.g., 0 vs 0.0 vs -0 are logically the same?
 
 - DISTINCT
 
-- UNION
+- UNION (which has an implicit DISTINCT)
+
 - INTERSECT / INTERSECT ALL
+
 - EXCEPT / EXCEPT ALL
 
-- jsonparser doesn't alloc memory, except for ObjectEach() on it's
-  `var stackbuf [unescapeStackBufSize]byte`, which inadvertently
-  escapes to the heap.
+- jsonparser doesn't alloc memory, except for ObjectEach()...
+  - its `var stackbuf [unescapeStackBufSize]byte` approach
+    inadvertently escapes to the heap.
   - need upstream fix / patch?
 
 - early stop when an error or LIMIT is reached?
-  - YieldStats() can return an non-nil error, like ErrLimitReached
+  - YieldStats() can return a non-nil error, like ErrLimitReached?
+  - YieldStats() should be locked for concurrency safety.
 
 - early stop when processing is canceled?
 
-- hash join?
+- hash eq join?
 
 - conversion of real N1QL query-plan into n1k1 query-plan
 
 - LET / LETTING are parser-time expression expansions (like macros) so
   are not part of query-plan execution?
+  - needs more research.
 
 - SIMD optimizations possible?  see: SIMD-json articles?
 
 - prefetching optimizations?
+  - this is an issue internal to scan operators?
+  - data-staging / pipeline-breaking should be helpful here?
 
 - compiled accessor(s) to a given JSON-path in a raw []byte value?
 
 - col versus row optimizations?
-  - need base.Vals that allows for optional col based representation?
-    - a single col is easy -- same as Vals?
-    - need a merge-join & skip-ahead optimization?
-  - YieldVals() might take []Vals instead of Vals?
-    - that would allow an []Records interpretation?
-    - or, an []Columns interpretation, using same signature?
+  - if columns are fixed size or fixed width, then
+    a Val in the Vals can be interpreted as having multiple
+    values in contiguous sequence.
+    - e.g, prices := vals[7]
+           numPrices := len(prices) / sizeOfUint64.
 
-- multi-threading / multi-core optimizations?
-
-- types learned during expression processing?
+- types learned during expression compilation / analysis?
 
 - operator can optionally declare how the Vals are sorted?
 
-- scan should have a lookup table of file suffixes and handlers?
+- scan should have a lookup table of file suffix handlers?
 
-- positional fields versus access to the full record?
-- perhaps the 0'th field might represent the full record?
-
-- hashmap should be able to spill out to disk via mmap()?
+- couchbase/rhmap should be able to spill out to disk via mmap()?
 
 - integration with scorch TermFieldReaders as a Scan source or operator?
   - merge join by docNum / docId field?
