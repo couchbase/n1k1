@@ -82,6 +82,15 @@ TODO...
       to efficiently as fieldPath [".city"] from then on
       directly from the Vals slice?
 
+- some encodings of field name can mean "attachment"?
+  - example: "^meta", "^smeta"?
+  - these mean these attachments are not really in the final output,
+    and functions like META() project an "^meta" field to a ".meta"
+    field that's visible to final output?
+    - META().id might be implemented by projecting fieldPath ["^meta", "id"]?
+
+- a raw working []bytes might be associated to the Vals via field "^workingBuf"?
+
 - scan should take an optional params of pushdown fieldPath's
   as optimization?
   - so that scan can return a subset of fields available for fast
