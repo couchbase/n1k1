@@ -82,14 +82,25 @@ TODO...
       to efficiently as fieldPath [".city"] from then on
       directly from the Vals slice?
 
-- some encodings of field name can mean "attachment"?
+- some encodings of field name can mean hidden "attachment"?
   - example: "^meta", "^smeta"?
-  - these mean these attachments are not really in the final output,
-    and functions like META() project an "^meta" field to a ".meta"
-    field that's visible to final output?
-    - META().id might be implemented by projecting fieldPath ["^meta", "id"]?
+  - these mean these fields are not really in the final output?
+  - functions like META() AS myMeta would project an "^meta" field
+    to a ".myMeta" field that's visible to final output?
+    - META().id might be implemented by projecting
+      the fieldPath ["^meta", "id"]?
 
-- a raw working []bytes might be associated to the Vals via field "^workingBuf"?
+- a temporary, but reused (recyclable) raw []bytes
+  as a per-tuple working area might be associated with...
+  - the base.Vals as a hidden field "^tmp"?
+    - but, unlike other Val's, it would be mutated!
+    - and, need to be careful to carry it along during processing.
+  - or to the base.Vars as another struct property?
+    - but, multiple parts of the query-plan tree
+      might be concurrently messing around with it,
+      so need to be careful as it's mutable.
+      - any spawned child thread/goroutine can push another Vars
+        that shadows the ancestor Var chain to handle this.
 
 - scan should take an optional params of pushdown fieldPath's
   as optimization?
