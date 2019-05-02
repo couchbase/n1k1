@@ -48,6 +48,37 @@ and will emit *.go code (or possibly other languages) that can
 efficiently execute that query-plan.
 
 ------------------------------------------
+Performance approaches...
+
+What are some design approach that help with n1k1's performance...
+
+- garbage avoidance as a major theme.
+- avoidance of sync.Pool.
+- avoidance of locking and channels as much as possible.
+- avoidance of map[string]interface{} and []interface{}.
+- []byte and [][]byte instead are used heavily.
+- []byte and [][]byte are easily and heavily recycled.
+- jsonparser used instead of json.Unmarshal(), to avoid garbage.
+- jsonparser provides []byte slices into the document's []byte's.
+- commonly accessed JSON object fields can be promoted
+  to quickly accessible "registers" at compile time...
+  - object field access of map lookups (e.g., obj["city"]) can be
+    instead replaced by positional slice access (e.g., vals[5]),
+    similar to an analogy of RAM access versus CPU register access.
+  - the vals "register" is passed from operator to operator.
+- data-staging, pipeline breakers (batching)...
+  - with optional concurrency (one or more goroutine actors).
+  - recycled batch exchange between data-staging actors and consumer
+    goroutine for fewer memory allocations.
+- push-based paradigm for shorter codepaths (in contrast to
+  volcano-style, pull-based, iterator paradigm).
+- query compilation to golang...
+  - supports operator fusion, for fewer function calls.
+- for hashmaps...
+  - couchbase/rhmap supports a fully recyclable hashmap that supports
+    []byte as a key, like "map[[]byte][]byte".
+
+------------------------------------------
 Some features...
 
 - join nested-loop inner
@@ -63,8 +94,6 @@ Some features...
 - lifting vars to avoid local closures
 - capturing emitted code to avoid local closures
 - data-staging / pipeline-breaker facilities along with concurrency
-- recycled batch exchange between data-staging actors and consumer for
-  fewer memory allocations
 - UNION ALL is concurrent (one goroutine per contributor).
 - avoid json.Unmarshal & map[string]interface{} allocations
 - runtime variables / context passed down through ExecOp()
@@ -72,41 +101,53 @@ Some features...
 ------------------------------------------
 TODO...
 
+- expr support
+  - easy: convert Val to query/value.Value and run the existing
+    query/expression.
+  - hard: compiled expr's
+
 - how to handle when fields aren't known?
   - such as immediate output of a scan?
-  - use "" for field name and fieldPath of [""]
+  - use "." for field name and fieldPath of ["."]
     to hold the entire document?
-  - 'real' fields need a field name prefix, like "."?
-    - example: if fieldPath ["", "city"] is projected
-      into field ".city", then it can be referred
-      to efficiently as fieldPath [".city"] from then on
+  - 'real' fields need a field name prefix char, like '.'?
+    - example: if fieldPath [".", "city"] is projected
+      into field ".city", then it can be referred to
+      efficiently later as fieldPath [".city"] from then on
       directly from the Vals slice?
 
-- some encodings of field name can mean hidden "attachment"?
-  - example: "^meta", "^smeta"?
-  - these mean these fields are not really in the final output?
-  - functions like META() AS myMeta would project an "^meta" field
-    to a ".myMeta" field that's visible to final output?
-    - META().id might be implemented by projecting
-      the fieldPath ["^meta", "id"]?
+- attachments
+  - some encodings of field name can mean hidden "attachment"?
+    - with the '^' prefix char?
+    - example: "^meta", "^smeta"?
+    - these mean these fields are not really in the final output?
+    - functions like 'META() AS myMeta' can project the hidden
+      "^meta" field to a visible ".myMeta" in final output?
+      - META().id might be implemented by projecting
+        the fieldPath ["^meta", "id"]?
 
-- a temporary, but reused (recyclable) raw []bytes
+- handling of BINARY data type?
+  - use a field name prefix char?  Perhaps '='?
+
+- temporary, but reused (recyclable) raw []bytes buf
   as a per-tuple working area might be associated with...
   - the base.Vals as a hidden field "^tmp"?
     - but, unlike other Val's, it would be mutated!
-    - and, need to be careful to carry it along during processing.
-  - or to the base.Vars as another struct property?
-    - but, multiple parts of the query-plan tree
-      might be concurrently messing around with it,
-      so need to be careful as it's mutable.
-      - any spawned child thread/goroutine can push another Vars
-        that shadows the ancestor Var chain to handle this.
+      so, this is not highly favored.
+    - and, also need to be careful to carrying the ^tmp
+      and propagating it during processing.
+  - better: add another struct property to the base.Vars?
+    - it's copied as more base.Vars are chained,
+      so that you don't need to talk the chain to the root
+      every time?
+    - any spawned child thread/goroutines can push another Vars
+      that shadows the ancestor Var chain to avoid concurrent mutations?
 
 - scan should take an optional params of pushdown fieldPath's
   as optimization?
   - so that scan can return a subset of fields available for fast
     base.Vals access?
-  - or, just use a project operator right after the scan?
+  - alternatively, use a project operator right after the scan?
 
 - scans with params or pushdown expressions?
   - RangeScanIndex
@@ -141,10 +182,6 @@ TODO...
 - INTERSECT / INTERSECT ALL
 - EXCEPT / EXCEPT ALL
 
-- expression evaluation might need temporary, reusable []byte slices?
-  - perhaps the base.Vars chain can be reused to hold
-    stuff like this?
-
 - jsonparser doesn't alloc memory, except for ObjectEach() on it's
   `var stackbuf [unescapeStackBufSize]byte`, which inadvertently
   escapes to the heap.
@@ -159,9 +196,8 @@ TODO...
 
 - conversion of real N1QL query-plan into n1k1 query-plan
 
-- HAVING (it's just another filter)
-
-- handle BINARY data type?
+- LET / LETTING are parser-time expression expansions (like macros) so
+  are not part of query-plan execution?
 
 - SIMD optimizations possible?  see: SIMD-json articles?
 
@@ -181,9 +217,7 @@ TODO...
 
 - types learned during expression processing?
 
-- operator can optionally declare which fields are sorted asc/desc?
-
-- need optimized replacement for json.Unmarshal()
+- operator can optionally declare how the Vals are sorted?
 
 - scan should have a lookup table of file suffixes and handlers?
 
@@ -211,10 +245,4 @@ TODO...
       something like lzSkipToHints[2] = lzSkipToVal which operator #2 can check?
 
 - emit other languages?
-
-------------------------------------------
-Other notes...
-
-- LET / LETTING are parser-time expression expansions (like macros) so
-  are not part of query-plan execution.
 
