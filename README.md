@@ -74,11 +74,19 @@ TODO...
 
 - how to handle when fields aren't known?
   - such as immediate output of a scan?
-  - use "" or "*" for field name?
-    - ISSUE: what if they use "*" or "" as a object key in their data?
-  - need some rules on field string encoding that allows for
-    representing "this 'field' is actually the entire value".
-    - e.g., "" vs ".city" vs ".zipcode".
+  - use "" for field name and fieldPath of [""]
+    to hold the entire document?
+  - 'real' fields need a field name prefix, like "."?
+    - example: if fieldPath ["", "city"] is projected
+      into field ".city", then it can be referred
+      to efficiently as fieldPath [".city"] from then on
+      directly from the Vals slice?
+
+- scan should take an optional params of pushdown fieldPath's
+  as optimization?
+  - so that scan can return a subset of fields available for fast
+    base.Vals access?
+  - or, just use a project operator right after the scan?
 
 - scans with params or pushdown expressions?
   - RangeScanIndex
