@@ -72,10 +72,6 @@ Some features...
 ------------------------------------------
 TODO...
 
-- recyclable hash table - robinhood / open-addressing?
-  - should be easily reset'able for recycling?
-  - should also be mmap()'able?
-
 - how to handle when fields aren't known?
   - such as immediate output of a scan?
   - use "" or "*" for field name?
@@ -165,6 +161,8 @@ TODO...
 
 - positional fields versus access to the full record?
 - perhaps the 0'th field might represent the full record?
+
+- hashmap should be able to spill out to disk via mmap()?
 
 - integration with scorch TermFieldReaders as a Scan source or operator?
   - merge join by docNum / docId field?
