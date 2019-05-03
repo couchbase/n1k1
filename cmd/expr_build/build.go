@@ -180,6 +180,8 @@ func ExprBuild(sourceDir, outDir string) error {
 	for _, name := range names {
 		aliases := state.FuncsByRegistry[name]
 
+		sort.Strings(aliases[1:])
+
 		contents = append(contents,
 			name+": ("+aliases[0]+") "+strings.Join(aliases[1:], ", "))
 	}
@@ -207,10 +209,13 @@ func ExprBuild(sourceDir, outDir string) error {
 			contents = append(contents, "")
 		}
 
-		contents = append(contents, evaluateKind+": "+
-			strconv.Itoa(len(state.FuncsByEvaluateKind[evaluateKind])))
+		names := state.FuncsByEvaluateKind[evaluateKind]
+		sort.Strings(names)
 
-		for _, name := range state.FuncsByEvaluateKind[evaluateKind] {
+		contents = append(contents, evaluateKind+": "+
+			strconv.Itoa(len(names)))
+
+		for _, name := range names {
 			contents = append(contents, "  "+name)
 		}
 	}
@@ -238,10 +243,13 @@ func ExprBuild(sourceDir, outDir string) error {
 			contents = append(contents, "")
 		}
 
-		contents = append(contents, applyKind+": "+
-			strconv.Itoa(len(state.FuncsByApplyKind[applyKind])))
+		names := state.FuncsByApplyKind[applyKind]
+		sort.Strings(names)
 
-		for _, name := range state.FuncsByApplyKind[applyKind] {
+		contents = append(contents, applyKind+": "+
+			strconv.Itoa(len(names)))
+
+		for _, name := range names {
 			contents = append(contents, "  "+name)
 		}
 	}
@@ -266,9 +274,13 @@ func ExprBuild(sourceDir, outDir string) error {
 			contents = append(contents, "")
 		}
 
-		contents = append(contents, applyReturn+":")
+		names := state.FuncsByApplyReturn[applyReturn]
+		sort.Strings(names)
 
-		for _, name := range state.FuncsByApplyReturn[applyReturn] {
+		contents = append(contents, applyReturn+":"+
+			strconv.Itoa(len(names)))
+
+		for _, name := range names {
 			contents = append(contents, "  "+name)
 		}
 	}
