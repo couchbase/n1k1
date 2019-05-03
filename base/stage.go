@@ -7,16 +7,18 @@ import (
 // Stage represents a data-staging "pipeline breaker", that's
 // processed by one or more concurrent actors.
 type Stage struct {
+	NumActors int
+
 	Vars *Vars
 
 	YieldVals YieldVals
 	YieldErr  YieldErr
 
+	ActorReadyCh chan struct{}
+
 	BatchCh chan []Vals
 
 	M sync.Mutex // Protects the fields that follow.
-
-	NumActors int // Inc'ed during StageStartActor().
 
 	StopCh chan struct{} // When error, close()'ed and nil'ed.
 
@@ -25,34 +27,31 @@ type Stage struct {
 	Recycled [][]Vals
 }
 
-func NewStage(batchChSize int,
+func NewStage(numActors int, batchChSize int,
 	vars *Vars, yieldVals YieldVals, yieldErr YieldErr) *Stage {
 	return &Stage{
+		NumActors: numActors,
+
 		Vars:      vars,
 		YieldVals: yieldVals,
 		YieldErr:  yieldErr,
 
-		BatchCh: make(chan []Vals, batchChSize),
-
-		StopCh: make(chan struct{}),
+		ActorReadyCh: make(chan struct{}),
+		BatchCh:      make(chan []Vals, batchChSize),
+		StopCh:       make(chan struct{}),
 	}
 }
 
 type ActorFunc func(*Vars, YieldVals, YieldErr, interface{})
 
-// StageStartActor is used for data-staging and "pipeline breaking"
-// and spawns a concurrent actor (goroutine) related to the given
-// stage.  A batchSize > 0 means there will be batching of results.  A
-// batchSize of 1, for example, means send each incoming result as its
-// own batch-of-1.  A batchSize of <= 0 means an actor will send a
-// single, giant batch at the end.
+// StartActor is used for data-staging and "pipeline breaking" and
+// spawns a concurrent actor (goroutine). A batchSize > 0 means there
+// will be batching of results.  A batchSize of 1, for example, means
+// send each incoming result as its own batch-of-1.  A batchSize of <=
+// 0 means an actor will send a single, giant batch at the end.
 func (stage *Stage) StartActor(aFunc ActorFunc, aData interface{}, batchSize int) {
 	stage.M.Lock()
-
-	stage.NumActors++
-
 	stopCh := stage.StopCh // Own copy for reading.
-
 	stage.M.Unlock()
 
 	var err error
@@ -63,11 +62,11 @@ func (stage *Stage) StartActor(aFunc ActorFunc, aData interface{}, batchSize int
 		if len(batch) > 0 {
 			select {
 			case <-stopCh: // Sibling actor had an error.
-				stage.M.Lock()
 				if err == nil {
+					stage.M.Lock()
 					err = stage.Err
+					stage.M.Unlock()
 				}
-				stage.M.Unlock()
 
 			case stage.BatchCh <- batch:
 				// NO-OP.
@@ -136,6 +135,8 @@ func (stage *Stage) StartActor(aFunc ActorFunc, aData interface{}, batchSize int
 	}
 
 	go func() {
+		stage.ActorReadyCh <- struct{}{}
+
 		if stopCh != nil {
 			aFunc(stage.Vars, yieldVals, yieldErr, aData)
 		}
@@ -147,13 +148,14 @@ func (stage *Stage) StartActor(aFunc ActorFunc, aData interface{}, batchSize int
 // --------------------------------------------------------
 
 func (stage *Stage) WaitForActors() {
-	stage.M.Lock()
-	numActors := stage.NumActors
-	stage.M.Unlock()
+	var numActorsReady int
+	for numActorsReady < stage.NumActors {
+		<-stage.ActorReadyCh
+		numActorsReady++
+	}
 
 	var numActorsDone int
-
-	for numActorsDone < numActors {
+	for numActorsDone < stage.NumActors {
 		batch := <-stage.BatchCh
 		if batch == nil {
 			numActorsDone++

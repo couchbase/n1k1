@@ -12,6 +12,7 @@ func OpUnionAll(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 	EmitPop(pathNext, "U") // !lz
 
+	numChildren := len(o.Children)
 	numFields := len(o.Fields)
 
 	// Implemented via data-staging concurrent actors, with one actor
@@ -24,7 +25,7 @@ func OpUnionAll(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	_, _, _ = lzStage, lzActorFunc, lzActorData // !lz
 
 	if LzScope {
-		lzStage := base.NewStage(0, lzVars, lzYieldVals, lzYieldErr)
+		lzStage := base.NewStage(numChildren, 0, lzVars, lzYieldVals, lzYieldErr)
 
 		for childi := range o.Children { // !lz
 			pathNextU := EmitPush(pathNextU, strconv.Itoa(childi)) // !lz
