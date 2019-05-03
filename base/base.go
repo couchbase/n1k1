@@ -65,6 +65,8 @@ func ValEqual(valA, valB Val) (val Val) {
 	} else if valB[0] == 'n' {
 		val = ValNull
 	} else if bytes.Equal(valA, valB) {
+		// TODO: BUG: valA and valB, if they are objects or numbers,
+		// may need to be canonicalized?
 		val = ValTrue
 	} else {
 		val = ValFalse
