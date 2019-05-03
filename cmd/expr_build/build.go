@@ -13,21 +13,24 @@ import (
 //
 // - bindings?
 //
-// - annotated values?
-//
-// - META / META SELF?
-//
 // - a function often knows its domain of output types,
 //   which can be leveraged by the next applied function?
 //
 // - if a function is done with its output,
 //   it can let the next function take ownership (mutate/append)?
-//   But, perhaps this already happens -- see ArrayAppend / ArrayConcat?
 //
 // - if there's a sub-tree of functions doing math on numbers
 //   then don't need to convert back/forth to Val
 //   between each step?
-//   And, don't need to check MISSING / NULL on every step?
+//
+// - don't need to check MISSING / NULL on every step?
+//   Can jump or goto to the first thing that handles MISSING/NULL?
+//
+// - annotated values?
+//   - handled by field name prefix, like '^'.
+//
+// - META / META SELF?
+//   - handled by field name like '^beers.meta', '^brewery.meta'.
 //
 // - can we tell if for-range loops are working over big arrays
 //   or over just small, bounded (compile-time) args?
@@ -50,6 +53,9 @@ type State struct {
 	//     ]
 	Funcs map[string][]string
 
+	// Keyed by kind of Evaluate()'s, value is function names.
+	FuncsByEvaluateKind map[string][]string
+
 	LastFuncCategory string
 }
 
@@ -69,11 +75,18 @@ func (s *State) Process(out []string, line string) ([]string, string) {
 
 type HandlerEntry struct {
 	Handler Handler
+
+	Kind string // Ex: "Evaluate", "Apply", etc.
+	Name string // Ex: name of function "ArrayAppend", etc.
+
+	Lines []string
 }
 
 // Handler represents a callback to process an incoming line.
 type Handler func(state *State, he *HandlerEntry,
 	out []string, line string) ([]string, string)
+
+var Dashes = "// ----------------------------------------------------"
 
 // --------------------------------------------------------
 
@@ -84,8 +97,9 @@ func ExprBuild(sourceDir, outDir string) error {
 		Handlers: []*HandlerEntry{
 			&HandlerEntry{Handler: HandlerScanFile},
 		},
-		Imports: map[string]bool{},
-		Funcs:   map[string][]string{},
+		Imports:             map[string]bool{},
+		Funcs:               map[string][]string{},
+		FuncsByEvaluateKind: map[string][]string{},
 	}
 
 	var outAll []string
@@ -118,11 +132,12 @@ func ExprBuild(sourceDir, outDir string) error {
 
 	contents = append(contents, outAll...)
 
+	// ------------------------------------------------
+
 	var names []string
 	for name := range state.Funcs {
 		names = append(names, name)
 	}
-
 	sort.Strings(names)
 
 	contents = append(contents, "/*")
@@ -132,6 +147,28 @@ func ExprBuild(sourceDir, outDir string) error {
 
 		contents = append(contents,
 			name+": ("+aliases[0]+") "+strings.Join(aliases[1:], ", "))
+	}
+
+	contents = append(contents, "*/")
+
+	// ------------------------------------------------
+
+	contents = append(contents, "\n"+Dashes)
+
+	var evaluateKinds []string
+	for evaluateKind := range state.FuncsByEvaluateKind {
+		evaluateKinds = append(evaluateKinds, evaluateKind)
+	}
+	sort.Strings(evaluateKinds)
+
+	contents = append(contents, "/*")
+
+	for _, evaluateKind := range evaluateKinds {
+		contents = append(contents, evaluateKind+":")
+
+		for _, name := range state.FuncsByEvaluateKind[evaluateKind] {
+			contents = append(contents, "  "+name)
+		}
 	}
 
 	contents = append(contents, "*/")
@@ -150,18 +187,36 @@ func HandlerScanFile(state *State, he *HandlerEntry,
 		return out, ""
 	}
 
+	// Ex: `func (this *ArrayAppend) Evaluate(item value.Value, context Context) (value.Value, error) {`
 	if strings.HasPrefix(line, "func (this *") &&
-		strings.Index(line, " Apply(") > 0 {
-		state.Push(&HandlerEntry{Handler: HandlerScanTopLevelFuncSignature})
+		strings.Index(line, " Evaluate(") > 0 {
+		name := strings.TrimSpace(line)
+		name = name[len("func (this *"):]
+		name = strings.Split(name, ")")[0]
+
+		state.Push(&HandlerEntry{
+			Handler: HandlerScanTopLevelFuncSignature,
+			Kind:    "Evaluate",
+			Name:    name,
+		})
+
+		line = "\n" + Dashes + "\n" + line
 
 		return state.Process(out, line)
 	}
 
+	// Ex: `func (this *ArrayAppend) Apply(context Context, args ...value.Value) (value.Value, error) {`
 	if strings.HasPrefix(line, "func (this *") &&
-		strings.Index(line, " Evaluate(") > 0 {
-		state.Push(&HandlerEntry{Handler: HandlerScanTopLevelFuncSignature})
+		strings.Index(line, " Apply(") > 0 {
+		name := strings.TrimSpace(line)
+		name = name[len("func (this *"):]
+		name = strings.Split(name, ")")[0]
 
-		line = "\n// -----------------------------------------------------------------\n" + line
+		state.Push(&HandlerEntry{
+			Handler: HandlerScanTopLevelFuncSignature,
+			Kind:    "Apply",
+			Name:    name,
+		})
 
 		return state.Process(out, line)
 	}
@@ -241,7 +296,11 @@ func HandlerScanTopLevelFuncSignature(state *State, he *HandlerEntry,
 
 	state.Pop()
 
-	state.Push(&HandlerEntry{Handler: HandlerScanTopLevelFuncBody})
+	state.Push(&HandlerEntry{
+		Handler: HandlerScanTopLevelFuncBody,
+		Kind:    he.Kind,
+		Name:    he.Name,
+	})
 
 	return out, line
 }
@@ -251,16 +310,25 @@ func HandlerScanTopLevelFuncBody(state *State, he *HandlerEntry,
 	if len(line) > 0 && line[0] == '}' {
 		state.Pop()
 
+		if he.Kind == "Evaluate" {
+			evaluateKind := "MULTILINE"
+
+			if len(he.Lines) == 1 {
+				// Ex: "return this.BinaryEval(this, item, context)"
+				evaluateKind = strings.TrimSpace(he.Lines[0])
+				evaluateKind = strings.Replace(evaluateKind,
+					"return ", "", -1)
+			}
+
+			state.FuncsByEvaluateKind[evaluateKind] =
+				append(state.FuncsByEvaluateKind[evaluateKind], he.Name)
+		}
+
 		return out, line
 	}
 
-	return EmitBlock(state, he, out, line)
-}
+	he.Lines = append(he.Lines, line)
 
-// ---------------------------------------------------------------
-
-func EmitBlock(state *State, he *HandlerEntry, out []string,
-	line string) ([]string, string) {
 	return out, line
 }
 
