@@ -18,8 +18,6 @@ func OpJoinNestedLoop(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 		}
 	}
 
-	joinKind := strings.Split(o.Kind, "-")[2] // Ex: "inner", "outerLeft".
-
 	lenFieldsA := len(o.Children[0].Fields)
 	lenFieldsB := len(o.Children[1].Fields)
 	lenFieldsAB := lenFieldsA + lenFieldsB
@@ -27,6 +25,10 @@ func OpJoinNestedLoop(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	fieldsAB := make(base.Fields, 0, lenFieldsAB)
 	fieldsAB = append(fieldsAB, o.Children[0].Fields...)
 	fieldsAB = append(fieldsAB, o.Children[1].Fields...)
+
+	joinKind := strings.Split(o.Kind, "-")[2] // Ex: "inner", "outerLeft".
+
+	isOuterLeft := joinKind == "outerLeft"
 
 	joinClauseFunc :=
 		MakeExprFunc(lzVars, fieldsAB, nil, o.Params, pathNext, "JF") // !lz
@@ -47,12 +49,12 @@ func OpJoinNestedLoop(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 		lzValsJoin = lzValsJoin[:0]
 		lzValsJoin = append(lzValsJoin, lzValsA...)
 
-		if joinKind == "outerLeft" { // !lz
+		if isOuterLeft { // !lz
 			lzHadInner = false
 		} // !lz
 
 		lzYieldVals := func(lzValsB base.Vals) {
-			if joinKind == "outerLeft" { // !lz
+			if isOuterLeft { // !lz
 				lzHadInner = true
 			} // !lz
 
@@ -68,7 +70,7 @@ func OpJoinNestedLoop(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 			if base.ValEqualTrue(lzVal) {
 				lzYieldValsOrig(lzVals) // <== emitCaptured: path ""
 			} else {
-				if joinKind == "outerLeft" { // !lz
+				if isOuterLeft { // !lz
 					lzValsJoin = lzValsJoin[0:lenFieldsA]
 					for i := 0; i < lenFieldsB; i++ { // !lz
 						lzValsJoin = append(lzValsJoin, base.ValMissing)
@@ -83,7 +85,7 @@ func OpJoinNestedLoop(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 		ExecOp(o.Children[1], lzVars, lzYieldVals, lzYieldStats, lzYieldErr, pathNext, "JNLI") // !lz
 
 		// Case of outerLeft join when inner (right) was empty.
-		if joinKind == "outerLeft" { // !lz
+		if isOuterLeft { // !lz
 			if !lzHadInner && lzErr == nil {
 				lzValsJoin = lzValsJoin[0:lenFieldsA]
 				for i := 0; i < lenFieldsB; i++ { // !lz
