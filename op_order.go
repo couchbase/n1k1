@@ -8,7 +8,7 @@ import (
 )
 
 func OpOrderByOffsetLimit(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
-	lzYieldStats base.YieldStats, lzYieldErr base.YieldErr, path, pathNext string) {
+	lzYieldErr base.YieldErr, path, pathNext string) {
 	projections := o.Params[0].([]interface{}) // ORDER BY expressions.
 
 	// The directions has same len as projections, ex: ["asc", "desc", "asc"].
@@ -95,7 +95,8 @@ func OpOrderByOffsetLimit(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldV
 			} else { // !lz
 				lzItems = append(lzItems, lzValsCopy)
 
-				// TODO: No ORDER-BY, but OFFSET+LIMIT reached, early exit via lzYieldStats?
+				// TODO: No ORDER-BY, but OFFSET+LIMIT reached, so
+				// need to early exit via lzVars.Ctx.YieldStats?
 			} // !lz
 		}
 
@@ -149,7 +150,7 @@ func OpOrderByOffsetLimit(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldV
 		EmitPop(pathNext, "OOL") // !lz
 
 		if LzScope {
-			ExecOp(o.Children[0], lzVars, lzYieldVals, lzYieldStats, lzYieldErr, pathNext, "OOLO") // !lz
+			ExecOp(o.Children[0], lzVars, lzYieldVals, lzYieldErr, pathNext, "OOLO") // !lz
 		}
 	}
 }

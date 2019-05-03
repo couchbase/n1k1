@@ -13,8 +13,8 @@ import (
 
 var ScanYieldStatsEvery = 1024 // Yield stats after this many tuple yields.
 
-func OpScan(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
-	lzYieldStats base.YieldStats, lzYieldErr base.YieldErr) {
+func OpScan(o *base.Op, lzVars *base.Vars,
+	lzYieldVals base.YieldVals, lzYieldErr base.YieldErr) {
 	kind := o.Params[0].(string)
 
 	var lzFilePath string  // !lz
@@ -28,7 +28,7 @@ func OpScan(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 		lzFilePath := paramsFilePath
 
-		ScanFile(lzFilePath, o.Fields, lzYieldVals, lzYieldStats, lzYieldErr) // !lz
+		ScanFile(lzFilePath, o.Fields, lzVars, lzYieldVals, lzYieldErr) // !lz
 
 	case "csvData":
 		paramsCsvData := o.Params[1].(string)
@@ -37,7 +37,7 @@ func OpScan(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 		lzReader := strings.NewReader(lzCsvData)
 
-		ScanReaderAsCsv(lzReader, o.Fields, lzYieldVals, lzYieldStats, lzYieldErr) // !lz
+		ScanReaderAsCsv(lzReader, o.Fields, lzVars, lzYieldVals, lzYieldErr) // !lz
 
 	default:
 		errMsg := "unknown scan kind" // TODO: Weak string/double-quote handling.
@@ -46,8 +46,8 @@ func OpScan(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	}
 }
 
-func ScanFile(lzFilePath string, fields base.Fields,
-	lzYieldVals base.YieldVals, lzYieldStats base.YieldStats, lzYieldErr base.YieldErr) {
+func ScanFile(lzFilePath string, fields base.Fields, lzVars *base.Vars,
+	lzYieldVals base.YieldVals, lzYieldErr base.YieldErr) {
 	errMsg := "file not csv" // TODO: Weak string/double-quote handling.
 
 	fileSuffixCsv := ".csv"
@@ -68,12 +68,12 @@ func ScanFile(lzFilePath string, fields base.Fields,
 
 		defer lzReader.Close()
 
-		ScanReaderAsCsv(lzReader, fields, lzYieldVals, lzYieldStats, lzYieldErr) // !lz
+		ScanReaderAsCsv(lzReader, fields, lzVars, lzYieldVals, lzYieldErr) // !lz
 	}
 }
 
-func ScanReaderAsCsv(lzReader io.Reader, fields base.Fields,
-	lzYieldVals base.YieldVals, lzYieldStats base.YieldStats, lzYieldErr base.YieldErr) {
+func ScanReaderAsCsv(lzReader io.Reader, fields base.Fields, lzVars *base.Vars,
+	lzYieldVals base.YieldVals, lzYieldErr base.YieldErr) {
 	var lzValsScan base.Vals
 
 	lzYielded := 0
@@ -104,12 +104,14 @@ func ScanReaderAsCsv(lzReader io.Reader, fields base.Fields,
 		if lzYielded >= ScanYieldStatsEvery {
 			lzYielded = 0
 
-			var lzStats base.Stats // TODO.
+			if lzVars != nil && lzVars.Ctx != nil && lzVars.Ctx.YieldStats != nil {
+				var lzStats base.Stats // TODO.
 
-			lzErr := lzYieldStats(&lzStats)
-			if lzErr != nil { // Also used for early exit (e.g., LIMIT).
-				lzYieldErr(lzErr)
-				return
+				lzErr := lzVars.Ctx.YieldStats(&lzStats)
+				if lzErr != nil { // Also used for early exit (e.g., LIMIT).
+					lzYieldErr(lzErr)
+					return
+				}
 			}
 		}
 	}

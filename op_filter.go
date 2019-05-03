@@ -5,7 +5,7 @@ import (
 )
 
 func OpFilter(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
-	lzYieldStats base.YieldStats, lzYieldErr base.YieldErr, path, pathNext string) {
+	lzYieldErr base.YieldErr, path, pathNext string) {
 	if LzScope {
 		pathNextF := EmitPush(pathNext, "F") // !lz
 
@@ -26,6 +26,6 @@ func OpFilter(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 		EmitPop(pathNext, "F") // !lz
 
-		ExecOp(o.Children[0], lzVars, lzYieldVals, lzYieldStats, lzYieldErr, pathNextF, "") // !lz
+		ExecOp(o.Children[0], lzVars, lzYieldVals, lzYieldErr, pathNextF, "") // !lz
 	}
 }

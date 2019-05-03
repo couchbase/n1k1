@@ -7,8 +7,7 @@ import (
 )
 
 func OpUnionAll(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
-	lzYieldStats base.YieldStats, lzYieldErr base.YieldErr,
-	path, pathNext string) {
+	lzYieldErr base.YieldErr, path, pathNext string) {
 	pathNextU := EmitPush(pathNext, "U") // !lz
 
 	EmitPop(pathNext, "U") // !lz
@@ -25,7 +24,7 @@ func OpUnionAll(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	_, _, _ = lzStage, lzActorFunc, lzActorData // !lz
 
 	if LzScope {
-		lzStage := base.NewStage(0, lzVars, lzYieldVals, lzYieldStats, lzYieldErr)
+		lzStage := base.NewStage(0, lzVars, lzYieldVals, lzYieldErr)
 
 		for childi := range o.Children { // !lz
 			pathNextU := EmitPush(pathNextU, strconv.Itoa(childi)) // !lz
@@ -35,7 +34,7 @@ func OpUnionAll(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 				var lzActorData interface{} = childi
 
-				lzActorFunc := func(lzVars *base.Vars, lzYieldVals base.YieldVals, lzYieldStats base.YieldStats, lzYieldErr base.YieldErr, lzActorData interface{}) {
+				lzActorFunc := func(lzVars *base.Vars, lzYieldVals base.YieldVals, lzYieldErr base.YieldErr, lzActorData interface{}) {
 					childi := lzActorData.(int) // !lz
 					child := o.Children[childi] // !lz
 
@@ -64,7 +63,7 @@ func OpUnionAll(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 						lzYieldValsOrig(lzValsUnion)
 					}
 
-					ExecOp(child, lzVars, lzYieldVals, lzYieldStats, lzYieldErr, pathNextU, "UO") // !lz
+					ExecOp(child, lzVars, lzYieldVals, lzYieldErr, pathNextU, "UO") // !lz
 				}
 
 				lzStage.StartActor(lzActorFunc, lzActorData, 0)

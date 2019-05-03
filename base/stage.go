@@ -9,9 +9,8 @@ import (
 type Stage struct {
 	Vars *Vars
 
-	YieldVals  YieldVals
-	YieldStats YieldStats
-	YieldErr   YieldErr
+	YieldVals YieldVals
+	YieldErr  YieldErr
 
 	BatchCh chan []Vals
 
@@ -26,13 +25,12 @@ type Stage struct {
 	Recycled [][]Vals
 }
 
-func NewStage(batchChSize int, vars *Vars,
-	yieldVals YieldVals, yieldStats YieldStats, yieldErr YieldErr) *Stage {
+func NewStage(batchChSize int,
+	vars *Vars, yieldVals YieldVals, yieldErr YieldErr) *Stage {
 	return &Stage{
-		Vars:       vars,
-		YieldVals:  yieldVals,
-		YieldStats: yieldStats,
-		YieldErr:   yieldErr,
+		Vars:      vars,
+		YieldVals: yieldVals,
+		YieldErr:  yieldErr,
 
 		BatchCh: make(chan []Vals, batchChSize),
 
@@ -40,7 +38,7 @@ func NewStage(batchChSize int, vars *Vars,
 	}
 }
 
-type ActorFunc func(*Vars, YieldVals, YieldStats, YieldErr, interface{})
+type ActorFunc func(*Vars, YieldVals, YieldErr, interface{})
 
 // StageStartActor is used for data-staging and "pipeline breaking"
 // and spawns a concurrent actor (goroutine) related to the given
@@ -139,7 +137,7 @@ func (stage *Stage) StartActor(aFunc ActorFunc, aData interface{}, batchSize int
 
 	go func() {
 		if stopCh != nil {
-			aFunc(stage.Vars, yieldVals, stage.YieldStats, yieldErr, aData)
+			aFunc(stage.Vars, yieldVals, yieldErr, aData)
 		}
 
 		stage.BatchCh <- nil // Must send last nil, meaning this actor is done.

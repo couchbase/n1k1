@@ -181,4 +181,15 @@ type Vars struct {
 	Fields Fields
 	Vals   Vals  // Same len() as Fields.
 	Next   *Vars // The root Vars has nil Next.
+	Ctx    *Ctx
+}
+
+// -----------------------------------------------------
+
+// Ctx represents the runtime context for a request.
+type Ctx struct {
+	YieldStats YieldStats
+
+	// TODO: Other things that might appear here might be request ID,
+	// request-specific allocators or resources, etc.
 }

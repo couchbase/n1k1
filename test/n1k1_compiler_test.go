@@ -175,7 +175,7 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 			}
 		}
 
-		intermed.ExecOp(&test.o, nil, nil, nil, nil, "Top", "EO")
+		intermed.ExecOp(&test.o, nil, nil, nil, "Top", "EO")
 
 		if len(outStack) != 1 {
 			panic(fmt.Sprintf("len(outStack) should be height 1, got: %d,\n"+

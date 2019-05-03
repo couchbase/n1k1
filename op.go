@@ -7,7 +7,7 @@ import (
 // -----------------------------------------------------------
 
 func ExecOp(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
-	lzYieldStats base.YieldStats, lzYieldErr base.YieldErr, path, pathItem string) {
+	lzYieldErr base.YieldErr, path, pathItem string) {
 	pathNext := EmitPush(path, pathItem)
 
 	defer EmitPop(path, pathItem)
@@ -18,24 +18,24 @@ func ExecOp(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 	switch o.Kind {
 	case "scan":
-		OpScan(o, lzVars, lzYieldVals, lzYieldStats, lzYieldErr) // !lz
+		OpScan(o, lzVars, lzYieldVals, lzYieldErr) // !lz
 
 	case "filter":
-		OpFilter(o, lzVars, lzYieldVals, lzYieldStats, lzYieldErr, path, pathNext) // !lz
+		OpFilter(o, lzVars, lzYieldVals, lzYieldErr, path, pathNext) // !lz
 
 	case "project":
-		OpProject(o, lzVars, lzYieldVals, lzYieldStats, lzYieldErr, path, pathNext) // !lz
+		OpProject(o, lzVars, lzYieldVals, lzYieldErr, path, pathNext) // !lz
 
 	case "join-nl-inner":
-		OpJoinNestedLoop(o, lzVars, lzYieldVals, lzYieldStats, lzYieldErr, path, pathNext) // !lz
+		OpJoinNestedLoop(o, lzVars, lzYieldVals, lzYieldErr, path, pathNext) // !lz
 
 	case "join-nl-outerLeft":
-		OpJoinNestedLoop(o, lzVars, lzYieldVals, lzYieldStats, lzYieldErr, path, pathNext) // !lz
+		OpJoinNestedLoop(o, lzVars, lzYieldVals, lzYieldErr, path, pathNext) // !lz
 
 	case "order-by-offset-limit":
-		OpOrderByOffsetLimit(o, lzVars, lzYieldVals, lzYieldStats, lzYieldErr, path, pathNext) // !lz
+		OpOrderByOffsetLimit(o, lzVars, lzYieldVals, lzYieldErr, path, pathNext) // !lz
 
 	case "union-all":
-		OpUnionAll(o, lzVars, lzYieldVals, lzYieldStats, lzYieldErr, path, pathNext) // !lz
+		OpUnionAll(o, lzVars, lzYieldVals, lzYieldErr, path, pathNext) // !lz
 	}
 }
