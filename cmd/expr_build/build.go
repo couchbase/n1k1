@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"log"
@@ -47,6 +48,14 @@ type FuncInfo struct {
 	ApplyParams  string
 	ApplyLines   []string
 	ApplyReturns []string
+}
+
+func (fi *FuncInfo) Cleanse() {
+	sort.Strings(fi.Registry)
+
+	for i, line := range fi.ApplyLines {
+		fi.ApplyLines[i] = strings.Replace(line, "\t", " ", -1)
+	}
 }
 
 // ---------------------------------------------------------------
@@ -101,6 +110,8 @@ func (s *State) Process(out []string, line string) ([]string, string) {
 	return curr.Handler(s, curr, out, line)
 }
 
+// --------------------------------------------------------
+
 type HandlerEntry struct {
 	Handler Handler
 
@@ -118,7 +129,11 @@ type HandlerEntry struct {
 type Handler func(state *State, he *HandlerEntry,
 	out []string, line string) ([]string, string)
 
-var Dashes = "// ----------------------------------------------------"
+// --------------------------------------------------------
+
+var Dashes = "// -----------------------------------------"
+
+// --------------------------------------------------------
 
 func (s *State) FuncInfo(name string) *FuncInfo {
 	rv := s.FuncsByName[name]
@@ -189,14 +204,37 @@ func ExprBuild(sourceDir, outDir string) error {
 	contents = append(contents,
 		fmt.Sprintf("// TotFuncsApply: %d", state.TotFuncsApply))
 
-	contents = append(contents, "")
+	// ------------------------------------------------
+
+	contents = append(contents, "\n"+Dashes)
+	contents = append(contents, "// FuncsByName...\n")
+
+	var names []string
+	for name := range state.FuncsByName {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	contents = append(contents, "/* ("+
+		strconv.Itoa(len(state.FuncsByName))+")")
+
+	for _, name := range names {
+		fi := state.FuncsByName[name]
+		fi.Cleanse()
+
+		jsonBytes, _ := json.MarshalIndent(fi, "", "  ")
+
+		contents = append(contents, string(jsonBytes))
+	}
+
+	contents = append(contents, "*/")
 
 	// ------------------------------------------------
 
 	contents = append(contents, "\n"+Dashes)
 	contents = append(contents, "// FuncsByRegistry...\n")
 
-	var names []string
+	names = names[:0]
 	for name := range state.FuncsByRegistry {
 		names = append(names, name)
 	}
