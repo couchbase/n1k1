@@ -26,11 +26,12 @@ Some design ideas meant to help with n1k1's performance...
   pull-based, iterator-style paradigm).
 - data-staging, pipeline breakers (batching)...
   - batching results between op's may be more friendly to CPU caches.
-  - batch sizes and queue sizes between producers and cosunmer are
-    designed to be configurable.
   - data-staging also supports optional concurrency -- one or more
-    goroutine actors can be producers in a pipeline.
-  - recycled batch exchange between producer goroutine and consumer
+    goroutine actors can be producers that feed a channel to a consumer.
+  - a channel send is for a batch of items, not for an individual tuple.
+  - max-batch-size and channel buffer size between producers and
+    consumer are designed to be configurable.
+  - recycled batch exchange between producer goroutines and consumer
     goroutine for less garbage creation.
 - query compilation to golang...
   - based on Futamura projections / LMS (Rompf, Odersky) inspirations.
@@ -119,6 +120,12 @@ efficiently execute that query-plan.
   - easy: convert Val to query/value.Value
     and then leverage the existing query/expression codepaths?
   - not as easy: compiled expr's?
+
+- expr MISSING or NULL patterns
+  - many expressions check for MISSING or NULL and propagate those,
+    so, the first discovering of MISSING or NULL should
+    be able to short-circuit and directly break or goto
+    some outer codepath
 
 - DISTINCT
 
