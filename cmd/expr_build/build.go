@@ -53,8 +53,11 @@ type State struct {
 	//     ]
 	Funcs map[string][]string
 
-	// Keyed by kind of Evaluate()'s, value is function names.
+	// Keyed by kind of Evaluate(), value is function names.
 	FuncsByEvaluateKind map[string][]string
+
+	// Keyed by kind of Apply(), value is function names.
+	FuncsByApplyKind map[string][]string
 
 	LastFuncCategory string
 }
@@ -100,6 +103,7 @@ func ExprBuild(sourceDir, outDir string) error {
 		Imports:             map[string]bool{},
 		Funcs:               map[string][]string{},
 		FuncsByEvaluateKind: map[string][]string{},
+		FuncsByApplyKind:    map[string][]string{},
 	}
 
 	var outAll []string
@@ -163,7 +167,11 @@ func ExprBuild(sourceDir, outDir string) error {
 
 	contents = append(contents, "/*")
 
-	for _, evaluateKind := range evaluateKinds {
+	for i, evaluateKind := range evaluateKinds {
+		if i != 0 {
+			contents = append(contents, "")
+		}
+
 		contents = append(contents, evaluateKind+":")
 
 		for _, name := range state.FuncsByEvaluateKind[evaluateKind] {
