@@ -66,7 +66,7 @@ func ValEqual(valA, valB Val) (val Val) {
 		val = ValNull
 	} else if bytes.Equal(valA, valB) {
 		// TODO: BUG: valA and valB, if they are objects or numbers,
-		// may need to be canonicalized?
+		// may need to be canonicalized, or use ValComparer.Compare().
 		val = ValTrue
 	} else {
 		val = ValFalse
