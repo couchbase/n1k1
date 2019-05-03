@@ -24,8 +24,12 @@ Some design ideas meant to help with n1k1's performance...
   - the vals "register" is passed from operator to operator.
 - push-based paradigm for shorter codepaths (in contrast to
   pull-based, iterator-style paradigm).
+  - data transfer between operators (e.g., from scan -> filter ->
+    project) is a function call (which can sometimes be removed
+    by compilation), instead of a channel send/recv between goroutines.
 - data-staging, pipeline breakers (batching)...
-  - batching results between op's may be more friendly to CPU caches.
+  - batching results between operator may be more friendly to CPU
+    instruction & data caches.
   - data-staging also supports optional concurrency -- one or more
     goroutine actors can be producers that feed a channel to a consumer.
   - a channel send is for a batch of items, not for an individual tuple.
