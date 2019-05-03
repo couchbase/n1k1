@@ -4,7 +4,6 @@
 package base
 
 import (
-	"bytes"
 	"fmt"
 
 	"github.com/buger/jsonparser"
@@ -55,24 +54,24 @@ func ValEqualTrue(val Val) bool {
 }
 
 // ValEqual follows N1QL's rules for missing & null's.
-func ValEqual(valA, valB Val) (val Val) {
+func ValEqual(valA, valB Val) Val {
 	if ValEqualMissing(valA) {
-		val = ValMissing
+		return ValMissing
 	} else if ValEqualMissing(valB) {
-		val = ValMissing
+		return ValMissing
 	} else if valA[0] == 'n' { // Avoid ValEqualNull's len() check.
-		val = ValNull
+		return ValNull
 	} else if valB[0] == 'n' {
-		val = ValNull
-	} else if bytes.Equal(valA, valB) {
-		// TODO: BUG: valA and valB, if they are objects or numbers,
-		// may need to be canonicalized, or use ValComparer.Compare().
-		val = ValTrue
-	} else {
-		val = ValFalse
+		return ValNull
 	}
 
-	return val
+	valComparer := NewValComparer() // TODO: Reuse valComparer.
+
+	if valComparer.Compare(valA, valB) == 0 {
+		return ValTrue
+	}
+
+	return ValFalse
 }
 
 // -----------------------------------------------------
