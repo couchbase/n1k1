@@ -40,6 +40,17 @@ import (
 
 // ---------------------------------------------------------------
 
+type FuncInfo struct {
+	Name         string
+	Registry     []string
+	EvaluateKind string
+	ApplyParams  string
+	ApplyLines   []string
+	ApplyReturns []string
+}
+
+// ---------------------------------------------------------------
+
 // State represents the gen-compiler process as it walks through the
 // lines of n1k1 source code to generate a query compiler.
 type State struct {
@@ -48,23 +59,29 @@ type State struct {
 
 	Imports map[string]bool
 
-	// Keyed by struct name, values are [category, funcAlias0, ...].
+	// Keyed by func name.
+	FuncsByName map[string]*FuncInfo
+
+	// Keyed by func name, values are [category, funcAlias0, ...].
 	// Ex: "Add" => ["Arithmetic", "add"]
 	// Ex: "RegexpContains" => [
 	//       "Regular expressions", "contains_regex", "contains_regexp"
 	//     ]
 	FuncsByRegistry map[string][]string
 
-	FuncsEvaluate int
-	FuncsApply    int
+	TotFuncsEvaluate int
+	TotFuncsApply    int
 
-	// Keyed by kind of Evaluate(), value is function names.
+	// Keyed by kind of Evaluate(), value is func names.
+	// Ex key: "this.UnaryEval(this, item, context)", "MULTILINE".
 	FuncsByEvaluateKind map[string][]string
 
-	// Keyed by kind of Apply(), value is function names.
-	FuncsByApplyKind map[string][]string
+	// Keyed by params of Apply(), value is func names.
+	// Ex key: "context Context, first, second value.Value".
+	FuncsByApplyParams map[string][]string
 
-	// Keyed by return lines, value is function names.
+	// Keyed by return snippets, value is func names.
+	// Ex key: "value.NULL_VALUE, nil".
 	FuncsByApplyReturn map[string][]string
 
 	LastFuncCategory string
@@ -103,6 +120,16 @@ type Handler func(state *State, he *HandlerEntry,
 
 var Dashes = "// ----------------------------------------------------"
 
+func (s *State) FuncInfo(name string) *FuncInfo {
+	rv := s.FuncsByName[name]
+	if rv == nil {
+		rv = &FuncInfo{Name: name}
+		s.FuncsByName[name] = rv
+	}
+
+	return rv
+}
+
 // --------------------------------------------------------
 
 func ExprBuild(sourceDir, outDir string) error {
@@ -113,9 +140,10 @@ func ExprBuild(sourceDir, outDir string) error {
 			&HandlerEntry{Handler: HandlerScanFile},
 		},
 		Imports:             map[string]bool{},
+		FuncsByName:         map[string]*FuncInfo{},
 		FuncsByRegistry:     map[string][]string{},
 		FuncsByEvaluateKind: map[string][]string{},
-		FuncsByApplyKind:    map[string][]string{},
+		FuncsByApplyParams:  map[string][]string{},
 		FuncsByApplyReturn:  map[string][]string{},
 	}
 
@@ -156,10 +184,10 @@ func ExprBuild(sourceDir, outDir string) error {
 	contents = append(contents, "\n"+Dashes)
 
 	contents = append(contents,
-		fmt.Sprintf("// FuncsEvaluate: %d", state.FuncsEvaluate))
+		fmt.Sprintf("// TotFuncsEvaluate: %d", state.TotFuncsEvaluate))
 
 	contents = append(contents,
-		fmt.Sprintf("// FuncsApply: %d", state.FuncsApply))
+		fmt.Sprintf("// TotFuncsApply: %d", state.TotFuncsApply))
 
 	contents = append(contents, "")
 
@@ -225,28 +253,28 @@ func ExprBuild(sourceDir, outDir string) error {
 	// ------------------------------------------------
 
 	contents = append(contents, "\n"+Dashes)
-	contents = append(contents, "// FuncsByApplyKind...\n")
+	contents = append(contents, "// FuncsByApplyParams...\n")
 
 	n = 0
 
-	var applyKinds []string
-	for applyKind, names := range state.FuncsByApplyKind {
-		applyKinds = append(applyKinds, applyKind)
+	var applyParamsAll []string
+	for applyParams, names := range state.FuncsByApplyParams {
+		applyParamsAll = append(applyParamsAll, applyParams)
 		n += len(names)
 	}
-	sort.Strings(applyKinds)
+	sort.Strings(applyParamsAll)
 
 	contents = append(contents, "/* ("+strconv.Itoa(n)+")")
 
-	for i, applyKind := range applyKinds {
+	for i, applyParams := range applyParamsAll {
 		if i != 0 {
 			contents = append(contents, "")
 		}
 
-		names := state.FuncsByApplyKind[applyKind]
+		names := state.FuncsByApplyParams[applyParams]
 		sort.Strings(names)
 
-		contents = append(contents, applyKind+": "+
+		contents = append(contents, applyParams+": "+
 			strconv.Itoa(len(names)))
 
 		for _, name := range names {
@@ -303,10 +331,10 @@ func HandlerScanFile(state *State, he *HandlerEntry,
 		return out, ""
 	}
 
-	// Ex: `func (this *ArrayAppend) Evaluate(item value.Value, context Context) (value.Value, error) {`
+	// Ex: `func (gthis *ArrayAppend) Evaluate(item value.Value, context Context) (value.Value, error) {`
 	if strings.HasPrefix(line, "func (this *") &&
 		strings.Index(line, " Evaluate(") > 0 {
-		state.FuncsEvaluate++
+		state.TotFuncsEvaluate++
 
 		if strings.Index(line, `(item value.Value, context Context) (`) < 0 {
 			panic("Evaluate() has unexpected signature: " + line)
@@ -330,7 +358,7 @@ func HandlerScanFile(state *State, he *HandlerEntry,
 	// Ex: `func (this *ArrayAppend) Apply(context Context, args ...value.Value) (value.Value, error) {`
 	if strings.HasPrefix(line, "func (this *") &&
 		strings.Index(line, " Apply(") > 0 {
-		state.FuncsApply++
+		state.TotFuncsApply++
 
 		name := strings.TrimSpace(line)
 		name = name[len("func (this *"):]
@@ -340,12 +368,16 @@ func HandlerScanFile(state *State, he *HandlerEntry,
 			panic("Apply() params are not single line: " + name)
 		}
 
-		params := strings.TrimSpace(line)
-		params = params[strings.Index(params, "Apply(")+len("Apply("):]
-		params = strings.Split(params, ") (")[0]
+		applyParams := strings.TrimSpace(line)
+		applyParams =
+			applyParams[strings.Index(applyParams, "Apply(")+len("Apply("):]
 
-		state.FuncsByApplyKind[params] =
-			append(state.FuncsByApplyKind[params], name)
+		applyParams = strings.Split(applyParams, ") (")[0]
+
+		state.FuncInfo(name).ApplyParams = applyParams
+
+		state.FuncsByApplyParams[applyParams] =
+			append(state.FuncsByApplyParams[applyParams], name)
 
 		state.Push(&HandlerEntry{
 			Handler: HandlerScanTopLevelFuncSignature,
@@ -418,6 +450,9 @@ func HandlerScanTopLevelFuncRegistry(state *State, he *HandlerEntry,
 		aliases = append(aliases, alias)
 
 		state.FuncsByRegistry[name] = aliases
+
+		state.FuncInfo(name).Registry =
+			append(state.FuncInfo(name).Registry, alias)
 	}
 
 	return out, ""
@@ -455,6 +490,8 @@ func HandlerScanTopLevelFuncBody(state *State, he *HandlerEntry,
 					"return ", "", -1)
 			}
 
+			state.FuncInfo(he.Name).EvaluateKind = evaluateKind
+
 			state.FuncsByEvaluateKind[evaluateKind] =
 				append(state.FuncsByEvaluateKind[evaluateKind], he.Name)
 		}
@@ -462,13 +499,19 @@ func HandlerScanTopLevelFuncBody(state *State, he *HandlerEntry,
 		return out, line
 	}
 
-	if he.Kind == "Apply" {
+	if he.Kind == "Apply" && len(line) > 0 {
+		state.FuncInfo(he.Name).ApplyLines =
+			append(state.FuncInfo(he.Name).ApplyLines, line)
+
 		lineBody := strings.Split(line, "//")[0]
 
 		r := strings.Index(lineBody, "return ")
 		if r >= 0 {
 			returnKind := lineBody[r+len("return "):]
 			if strings.Index(returnKind, ", ") > 0 {
+				state.FuncInfo(he.Name).ApplyReturns =
+					append(state.FuncInfo(he.Name).ApplyReturns, returnKind)
+
 				state.FuncsByApplyReturn[returnKind] =
 					append(state.FuncsByApplyReturn[returnKind], he.Name)
 			}
