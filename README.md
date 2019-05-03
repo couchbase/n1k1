@@ -1,14 +1,14 @@
 n1k1 is an experimental query compiler and execution engine for N1QL.
 
 -------------------------------------------------------
-DEV SHORTCUTS...
+## DEV SHORTCUTS...
 
     go test . && go build ./cmd/intermed_build/ && ./intermed_build && go test ./... && go fmt ./... && go test -v ./...
 
     go build ./cmd/expr_build/ && ./expr_build && go fmt ./...
 
 -------------------------------------------------------
-The way n1k1 works...
+## The way n1k1 works...
 
 Or, how intermed_build generates a N1QL compiler...
 
@@ -50,7 +50,7 @@ and will emit *.go code (or possibly other languages) that can
 efficiently execute that query-plan.
 
 ------------------------------------------
-Performance approaches...
+## Performance approaches...
 
 What are some design ideas that help with n1k1's performance...
 
@@ -60,6 +60,7 @@ What are some design ideas that help with n1k1's performance...
 - avoidance of map[string]interface{} and []interface{}.
 - []byte and [][]byte instead are used heavily,
   as they are easy to completely recycle and reuse.
+- []byte is faster for GC scanning/marking than interface{}.
 - jsonparser is used instead of json.Unmarshal(), to avoid garbage.
   - jsonparser returns []byte values that point into the parsed
     document's []byte's.
@@ -83,15 +84,20 @@ What are some design ideas that help with n1k1's performance...
 - query compilation to golang...
   - supports operator fusion, for fewer function calls.
 - for hashmaps...
-  - couchbase/rhmap supports a fully recyclable hashmap that supports
-    []byte as a key, like "map[[]byte][]byte".
+  - couchbase/rhmap supports a hashmap that supports
+    []byte as a key, like `map[[]byte][]byte`.
+  - couchbase/rhmap is also more efficient to fully recycle
+    and reuse in contrast to map[string]interface{}.
+  - couchbase/rhmap is also intended to easily spill out to disk
+    via mmap(), allowing hash-joins and DISTINCT processing
+    on larger datasets.
 
 ------------------------------------------
-Some features...
+## Some features...
 
 - join nested-loop inner
 - join nested-loop outer-left
-- filtering (WHERE, HAVING)
+- filtering (WHERE)
 - projections
 - scans of simple files (CSV's)
 - ORDER BY of multiple expressions & ASC/DESC
@@ -103,11 +109,10 @@ Some features...
 - capturing emitted code to avoid local closures
 - data-staging / pipeline-breaker facilities along with concurrency
 - UNION ALL is concurrent (one goroutine per contributor).
-- avoid json.Unmarshal & map[string]interface{} allocations
 - runtime variables / context passed down through ExecOp()
 
 ------------------------------------------
-TODO...
+## TODO...
 
 - expr support
   - easy: convert Val to query/value.Value and run the existing
@@ -173,6 +178,8 @@ TODO...
 
 - GROUP BY / aggregates
   - SELECT country, SUM(population) FROM ... GROUP BY country
+
+- HAVING (should be able to reuse existing filter operator).
 
 - subqueries & correlated subqueries?
   - these should just be yet another expression
