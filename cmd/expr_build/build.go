@@ -190,6 +190,10 @@ func HandlerScanFile(state *State, he *HandlerEntry,
 	// Ex: `func (this *ArrayAppend) Evaluate(item value.Value, context Context) (value.Value, error) {`
 	if strings.HasPrefix(line, "func (this *") &&
 		strings.Index(line, " Evaluate(") > 0 {
+		if strings.Index(line, `(item value.Value, context Context) (`) < 0 {
+			panic("Evaluate() has unexpected signature: " + line)
+		}
+
 		name := strings.TrimSpace(line)
 		name = name[len("func (this *"):]
 		name = strings.Split(name, ")")[0]
