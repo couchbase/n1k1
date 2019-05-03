@@ -59,6 +59,9 @@ type State struct {
 	// Keyed by kind of Apply(), value is function names.
 	FuncsByApplyKind map[string][]string
 
+	// Keyed by return lines, value is function names.
+	FuncsByApplyReturn map[string][]string
+
 	LastFuncCategory string
 }
 
@@ -108,6 +111,7 @@ func ExprBuild(sourceDir, outDir string) error {
 		Funcs:               map[string][]string{},
 		FuncsByEvaluateKind: map[string][]string{},
 		FuncsByApplyKind:    map[string][]string{},
+		FuncsByApplyReturn:  map[string][]string{},
 	}
 
 	var outAll []string
@@ -212,6 +216,33 @@ func ExprBuild(sourceDir, outDir string) error {
 		contents = append(contents, applyKind+":")
 
 		for _, name := range state.FuncsByApplyKind[applyKind] {
+			contents = append(contents, "  "+name)
+		}
+	}
+
+	contents = append(contents, "*/")
+
+	// ------------------------------------------------
+
+	contents = append(contents, "\n"+Dashes)
+	contents = append(contents, "// FuncsByApplyReturn...\n")
+
+	var applyReturns []string
+	for applyReturn := range state.FuncsByApplyReturn {
+		applyReturns = append(applyReturns, applyReturn)
+	}
+	sort.Strings(applyReturns)
+
+	contents = append(contents, "/*")
+
+	for i, applyReturn := range applyReturns {
+		if i != 0 {
+			contents = append(contents, "")
+		}
+
+		contents = append(contents, applyReturn+":")
+
+		for _, name := range state.FuncsByApplyReturn[applyReturn] {
 			contents = append(contents, "  "+name)
 		}
 	}
@@ -387,6 +418,19 @@ func HandlerScanTopLevelFuncBody(state *State, he *HandlerEntry,
 		}
 
 		return out, line
+	}
+
+	if he.Kind == "Apply" {
+		lineBody := strings.Split(line, "//")[0]
+
+		r := strings.Index(lineBody, "return ")
+		if r >= 0 {
+			returnKind := lineBody[r+len("return "):]
+			if strings.Index(returnKind, ", ") > 0 {
+				state.FuncsByApplyReturn[returnKind] =
+					append(state.FuncsByApplyReturn[returnKind], he.Name)
+			}
+		}
 	}
 
 	he.Lines = append(he.Lines, line)
