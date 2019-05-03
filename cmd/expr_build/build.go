@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"io/ioutil"
 	"log"
 	"sort"
@@ -52,7 +53,10 @@ type State struct {
 	// Ex: "RegexpContains" => [
 	//       "Regular expressions", "contains_regex", "contains_regexp"
 	//     ]
-	Funcs map[string][]string
+	FuncsByRegistry map[string][]string
+
+	FuncsEvaluate int
+	FuncsApply    int
 
 	// Keyed by kind of Evaluate(), value is function names.
 	FuncsByEvaluateKind map[string][]string
@@ -109,7 +113,7 @@ func ExprBuild(sourceDir, outDir string) error {
 			&HandlerEntry{Handler: HandlerScanFile},
 		},
 		Imports:             map[string]bool{},
-		Funcs:               map[string][]string{},
+		FuncsByRegistry:     map[string][]string{},
 		FuncsByEvaluateKind: map[string][]string{},
 		FuncsByApplyKind:    map[string][]string{},
 		FuncsByApplyReturn:  map[string][]string{},
@@ -150,18 +154,31 @@ func ExprBuild(sourceDir, outDir string) error {
 	// ------------------------------------------------
 
 	contents = append(contents, "\n"+Dashes)
-	contents = append(contents, "// Funcs...\n")
+
+	contents = append(contents,
+		fmt.Sprintf("// FuncsEvaluate: %d", state.FuncsEvaluate))
+
+	contents = append(contents,
+		fmt.Sprintf("// FuncsApply: %d", state.FuncsApply))
+
+	contents = append(contents, "")
+
+	// ------------------------------------------------
+
+	contents = append(contents, "\n"+Dashes)
+	contents = append(contents, "// FuncsByRegistry...\n")
 
 	var names []string
-	for name := range state.Funcs {
+	for name := range state.FuncsByRegistry {
 		names = append(names, name)
 	}
 	sort.Strings(names)
 
-	contents = append(contents, "/* ("+strconv.Itoa(len(state.Funcs))+")")
+	contents = append(contents, "/* ("+
+		strconv.Itoa(len(state.FuncsByRegistry))+")")
 
 	for _, name := range names {
-		aliases := state.Funcs[name]
+		aliases := state.FuncsByRegistry[name]
 
 		contents = append(contents,
 			name+": ("+aliases[0]+") "+strings.Join(aliases[1:], ", "))
@@ -277,6 +294,8 @@ func HandlerScanFile(state *State, he *HandlerEntry,
 	// Ex: `func (this *ArrayAppend) Evaluate(item value.Value, context Context) (value.Value, error) {`
 	if strings.HasPrefix(line, "func (this *") &&
 		strings.Index(line, " Evaluate(") > 0 {
+		state.FuncsEvaluate++
+
 		if strings.Index(line, `(item value.Value, context Context) (`) < 0 {
 			panic("Evaluate() has unexpected signature: " + line)
 		}
@@ -299,6 +318,8 @@ func HandlerScanFile(state *State, he *HandlerEntry,
 	// Ex: `func (this *ArrayAppend) Apply(context Context, args ...value.Value) (value.Value, error) {`
 	if strings.HasPrefix(line, "func (this *") &&
 		strings.Index(line, " Apply(") > 0 {
+		state.FuncsApply++
+
 		name := strings.TrimSpace(line)
 		name = name[len("func (this *"):]
 		name = strings.Split(name, ")")[0]
@@ -376,7 +397,7 @@ func HandlerScanTopLevelFuncRegistry(state *State, he *HandlerEntry,
 		name = name[1:]              // Ex: `Between{},`
 		name = name[0 : len(name)-3] // Ex: `Between`
 
-		aliases := state.Funcs[name]
+		aliases := state.FuncsByRegistry[name]
 
 		if len(aliases) <= 0 {
 			aliases = []string{state.LastFuncCategory}
@@ -384,7 +405,7 @@ func HandlerScanTopLevelFuncRegistry(state *State, he *HandlerEntry,
 
 		aliases = append(aliases, alias)
 
-		state.Funcs[name] = aliases
+		state.FuncsByRegistry[name] = aliases
 	}
 
 	return out, ""
