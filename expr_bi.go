@@ -55,7 +55,7 @@ func ExprEq(lzVars *base.Vars, fields base.Fields, types base.Types,
 			lzVal = lzB(lzVals) // <== emitCaptured: path "B"
 			lzValB := lzVal
 
-			lzVal = base.ValEqual(lzValA, lzValB)
+			lzVal = base.ValEqual(lzValA, lzValB, lzVars.Ctx.ValComparer)
 		}
 
 		return lzVal

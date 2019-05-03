@@ -211,15 +211,12 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 		c = append(c, "//")
 		c = append(c, fmt.Sprintf("func TestGenerated%d(t *testing.T) {", testi))
 
-		c = append(c, `  lzYieldVals, lzYieldStats, lzYieldErr, returnYields :=`)
+		c = append(c, `  lzVars, lzYieldVals, lzYieldErr, returnYields :=`)
 		c = append(c, fmt.Sprintf(`    test.MakeYieldCaptureFuncs(nil, %d, %q)`,
 			testi, test.expectErr))
-		c = append(c, "  _ = lzYieldVals")
-		c = append(c, "  _ = lzYieldStats")
-		c = append(c, "  _ = lzYieldErr")
-		c = append(c, "")
-		c = append(c, "  var lzVars *base.Vars")
 		c = append(c, "  _ = lzVars")
+		c = append(c, "  _ = lzYieldVals")
+		c = append(c, "  _ = lzYieldErr")
 		c = append(c, "")
 
 		c = append(c, testOuts[testi]...)

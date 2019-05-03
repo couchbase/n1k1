@@ -54,7 +54,7 @@ func ValEqualTrue(val Val) bool {
 }
 
 // ValEqual follows N1QL's rules for missing & null's.
-func ValEqual(valA, valB Val) Val {
+func ValEqual(valA, valB Val, valComparer *ValComparer) Val {
 	if ValEqualMissing(valA) {
 		return ValMissing
 	} else if ValEqualMissing(valB) {
@@ -63,11 +63,7 @@ func ValEqual(valA, valB Val) Val {
 		return ValNull
 	} else if valB[0] == 'n' {
 		return ValNull
-	}
-
-	valComparer := NewValComparer() // TODO: Reuse valComparer.
-
-	if valComparer.Compare(valA, valB) == 0 {
+	} else if valComparer.Compare(valA, valB) == 0 {
 		return ValTrue
 	}
 
@@ -189,6 +185,8 @@ type Vars struct {
 
 // Ctx represents the runtime context for a request.
 type Ctx struct {
+	ValComparer *ValComparer
+
 	YieldStats YieldStats
 
 	// TODO: Other things that might appear here might be request ID,

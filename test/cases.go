@@ -7,21 +7,24 @@ import (
 )
 
 func MakeYieldCaptureFuncs(t *testing.T, testi int, expectErr string) (
-	base.YieldVals, base.YieldStats, base.YieldErr, func() []base.Vals) {
+	*base.Vars, base.YieldVals, base.YieldErr,
+	func() []base.Vals) {
+	vars := &base.Vars{
+		Ctx: &base.Ctx{
+			ValComparer: base.NewValComparer(),
+			YieldStats:  func(stats *base.Stats) error { return nil },
+		},
+	}
+
 	var yields []base.Vals
 
 	yieldVals := func(lzVals base.Vals) {
 		var lzValsCopy base.Vals
 		for _, v := range lzVals {
-			lzValsCopy = append(lzValsCopy,
-				append(base.Val(nil), v...))
+			lzValsCopy = append(lzValsCopy, append(base.Val(nil), v...))
 		}
 
 		yields = append(yields, lzValsCopy)
-	}
-
-	yieldStats := func(stats *base.Stats) error {
-		return nil
 	}
 
 	yieldErr := func(err error) {
@@ -35,19 +38,19 @@ func MakeYieldCaptureFuncs(t *testing.T, testi int, expectErr string) (
 		return yields
 	}
 
-	return yieldVals, yieldStats, yieldErr, returnYields
+	return vars, yieldVals, yieldErr, returnYields
 }
 
-func StringsToLzVals(a []string, lzValsPre base.Vals) base.Vals {
-	lzVals := lzValsPre
+func StringsToVals(a []string, valsPre base.Vals) base.Vals {
+	vals := valsPre
 	for _, v := range a {
 		if v != "" {
-			lzVals = append(lzVals, base.Val([]byte(v)))
+			vals = append(vals, base.Val([]byte(v)))
 		} else {
-			lzVals = append(lzVals, base.ValMissing)
+			vals = append(vals, base.ValMissing)
 		}
 	}
-	return lzVals
+	return vals
 }
 
 type TestCaseSimple struct {
@@ -520,10 +523,10 @@ var TestCasesSimple = []TestCaseSimple{
 			}},
 		},
 		expectYields: []base.Vals{
-			StringsToLzVals([]string{`"dev"`, `"paris"`, `"dan"`, `"dev"`}, nil),
-			StringsToLzVals([]string{`"dev"`, `"paris"`, `"doug"`, `"dev"`}, nil),
-			StringsToLzVals([]string{`"finance"`, `"london"`, `"frank"`, `"finance"`}, nil),
-			StringsToLzVals([]string{`"finance"`, `"london"`, `"fred"`, `"finance"`}, nil),
+			StringsToVals([]string{`"dev"`, `"paris"`, `"dan"`, `"dev"`}, nil),
+			StringsToVals([]string{`"dev"`, `"paris"`, `"doug"`, `"dev"`}, nil),
+			StringsToVals([]string{`"finance"`, `"london"`, `"frank"`, `"finance"`}, nil),
+			StringsToVals([]string{`"finance"`, `"london"`, `"fred"`, `"finance"`}, nil),
 		},
 	},
 	{
@@ -593,14 +596,14 @@ var TestCasesSimple = []TestCaseSimple{
 			}},
 		},
 		expectYields: []base.Vals{
-			StringsToLzVals([]string{`"dev"`, `"paris"`, `"dan"`, `"dev"`}, nil),
-			StringsToLzVals([]string{`"dev"`, `"paris"`, `"doug"`, `"dev"`}, nil),
-			StringsToLzVals([]string{`"dev"`, `"paris"`, `"frank"`, `"finance"`}, nil),
-			StringsToLzVals([]string{`"dev"`, `"paris"`, `"fred"`, `"finance"`}, nil),
-			StringsToLzVals([]string{`"finance"`, `"london"`, `"dan"`, `"dev"`}, nil),
-			StringsToLzVals([]string{`"finance"`, `"london"`, `"doug"`, `"dev"`}, nil),
-			StringsToLzVals([]string{`"finance"`, `"london"`, `"frank"`, `"finance"`}, nil),
-			StringsToLzVals([]string{`"finance"`, `"london"`, `"fred"`, `"finance"`}, nil),
+			StringsToVals([]string{`"dev"`, `"paris"`, `"dan"`, `"dev"`}, nil),
+			StringsToVals([]string{`"dev"`, `"paris"`, `"doug"`, `"dev"`}, nil),
+			StringsToVals([]string{`"dev"`, `"paris"`, `"frank"`, `"finance"`}, nil),
+			StringsToVals([]string{`"dev"`, `"paris"`, `"fred"`, `"finance"`}, nil),
+			StringsToVals([]string{`"finance"`, `"london"`, `"dan"`, `"dev"`}, nil),
+			StringsToVals([]string{`"finance"`, `"london"`, `"doug"`, `"dev"`}, nil),
+			StringsToVals([]string{`"finance"`, `"london"`, `"frank"`, `"finance"`}, nil),
+			StringsToVals([]string{`"finance"`, `"london"`, `"fred"`, `"finance"`}, nil),
 		},
 	},
 	{
@@ -638,14 +641,14 @@ var TestCasesSimple = []TestCaseSimple{
 			}},
 		},
 		expectYields: []base.Vals{
-			StringsToLzVals([]string{`"dev"`, `"paris"`, `"dan"`, `"dev"`}, nil),
-			StringsToLzVals([]string{`"dev"`, `"paris"`, `"doug"`, `"dev"`}, nil),
-			StringsToLzVals([]string{`"dev"`, `"paris"`, `"frank"`, `"finance"`}, nil),
-			StringsToLzVals([]string{`"dev"`, `"paris"`, `"fred"`, `"finance"`}, nil),
-			StringsToLzVals([]string{`"finance"`, `"london"`, `"dan"`, `"dev"`}, nil),
-			StringsToLzVals([]string{`"finance"`, `"london"`, `"doug"`, `"dev"`}, nil),
-			StringsToLzVals([]string{`"finance"`, `"london"`, `"frank"`, `"finance"`}, nil),
-			StringsToLzVals([]string{`"finance"`, `"london"`, `"fred"`, `"finance"`}, nil),
+			StringsToVals([]string{`"dev"`, `"paris"`, `"dan"`, `"dev"`}, nil),
+			StringsToVals([]string{`"dev"`, `"paris"`, `"doug"`, `"dev"`}, nil),
+			StringsToVals([]string{`"dev"`, `"paris"`, `"frank"`, `"finance"`}, nil),
+			StringsToVals([]string{`"dev"`, `"paris"`, `"fred"`, `"finance"`}, nil),
+			StringsToVals([]string{`"finance"`, `"london"`, `"dan"`, `"dev"`}, nil),
+			StringsToVals([]string{`"finance"`, `"london"`, `"doug"`, `"dev"`}, nil),
+			StringsToVals([]string{`"finance"`, `"london"`, `"frank"`, `"finance"`}, nil),
+			StringsToVals([]string{`"finance"`, `"london"`, `"fred"`, `"finance"`}, nil),
 		},
 	},
 	{
@@ -685,23 +688,23 @@ var TestCasesSimple = []TestCaseSimple{
 			}},
 		},
 		expectYields: []base.Vals{
-			StringsToLzVals([]string{`"dev"`, `"paris"`, `"dan"`, `"dev"`}, nil),
-			StringsToLzVals([]string{`"dev"`, `"paris"`, `"doug"`, `"dev"`}, nil),
-			StringsToLzVals([]string{`"dev"`, `"paris"`, ``, ``}, nil),
-			StringsToLzVals([]string{`"dev"`, `"paris"`, ``, ``}, nil),
-			StringsToLzVals([]string{`"dev"`, `"paris"`, ``, ``}, nil),
+			StringsToVals([]string{`"dev"`, `"paris"`, `"dan"`, `"dev"`}, nil),
+			StringsToVals([]string{`"dev"`, `"paris"`, `"doug"`, `"dev"`}, nil),
+			StringsToVals([]string{`"dev"`, `"paris"`, ``, ``}, nil),
+			StringsToVals([]string{`"dev"`, `"paris"`, ``, ``}, nil),
+			StringsToVals([]string{`"dev"`, `"paris"`, ``, ``}, nil),
 
-			StringsToLzVals([]string{`"finance"`, `"london"`, ``, ``}, nil),
-			StringsToLzVals([]string{`"finance"`, `"london"`, ``, ``}, nil),
-			StringsToLzVals([]string{`"finance"`, `"london"`, `"frank"`, `"finance"`}, nil),
-			StringsToLzVals([]string{`"finance"`, `"london"`, `"fred"`, `"finance"`}, nil),
-			StringsToLzVals([]string{`"finance"`, `"london"`, ``, ``}, nil),
+			StringsToVals([]string{`"finance"`, `"london"`, ``, ``}, nil),
+			StringsToVals([]string{`"finance"`, `"london"`, ``, ``}, nil),
+			StringsToVals([]string{`"finance"`, `"london"`, `"frank"`, `"finance"`}, nil),
+			StringsToVals([]string{`"finance"`, `"london"`, `"fred"`, `"finance"`}, nil),
+			StringsToVals([]string{`"finance"`, `"london"`, ``, ``}, nil),
 
-			StringsToLzVals([]string{`"sales"`, `"san diego"`, ``, ``}, nil),
-			StringsToLzVals([]string{`"sales"`, `"san diego"`, ``, ``}, nil),
-			StringsToLzVals([]string{`"sales"`, `"san diego"`, ``, ``}, nil),
-			StringsToLzVals([]string{`"sales"`, `"san diego"`, ``, ``}, nil),
-			StringsToLzVals([]string{`"sales"`, `"san diego"`, ``, ``}, nil),
+			StringsToVals([]string{`"sales"`, `"san diego"`, ``, ``}, nil),
+			StringsToVals([]string{`"sales"`, `"san diego"`, ``, ``}, nil),
+			StringsToVals([]string{`"sales"`, `"san diego"`, ``, ``}, nil),
+			StringsToVals([]string{`"sales"`, `"san diego"`, ``, ``}, nil),
+			StringsToVals([]string{`"sales"`, `"san diego"`, ``, ``}, nil),
 		},
 	},
 	{
@@ -735,8 +738,8 @@ var TestCasesSimple = []TestCaseSimple{
 			}},
 		},
 		expectYields: []base.Vals{
-			StringsToLzVals([]string{`"dev"`, `"paris"`, ``, ``}, nil),
-			StringsToLzVals([]string{`"finance"`, `"london"`, ``, ``}, nil),
+			StringsToVals([]string{`"dev"`, `"paris"`, ``, ``}, nil),
+			StringsToVals([]string{`"finance"`, `"london"`, ``, ``}, nil),
 		},
 	},
 	{
@@ -842,14 +845,14 @@ var TestCasesSimple = []TestCaseSimple{
 			}},
 		},
 		expectYields: []base.Vals{
-			StringsToLzVals([]string{`"dev"`, `"paris"`, ``, ``}, nil),
-			StringsToLzVals([]string{`"dev"`, `"paris"`, ``, ``}, nil),
-			StringsToLzVals([]string{`"dev"`, `"paris"`, ``, ``}, nil),
-			StringsToLzVals([]string{`"dev"`, `"paris"`, ``, ``}, nil),
-			StringsToLzVals([]string{`"finance"`, `"london"`, ``, ``}, nil),
-			StringsToLzVals([]string{`"finance"`, `"london"`, ``, ``}, nil),
-			StringsToLzVals([]string{`"finance"`, `"london"`, ``, ``}, nil),
-			StringsToLzVals([]string{`"finance"`, `"london"`, ``, ``}, nil),
+			StringsToVals([]string{`"dev"`, `"paris"`, ``, ``}, nil),
+			StringsToVals([]string{`"dev"`, `"paris"`, ``, ``}, nil),
+			StringsToVals([]string{`"dev"`, `"paris"`, ``, ``}, nil),
+			StringsToVals([]string{`"dev"`, `"paris"`, ``, ``}, nil),
+			StringsToVals([]string{`"finance"`, `"london"`, ``, ``}, nil),
+			StringsToVals([]string{`"finance"`, `"london"`, ``, ``}, nil),
+			StringsToVals([]string{`"finance"`, `"london"`, ``, ``}, nil),
+			StringsToVals([]string{`"finance"`, `"london"`, ``, ``}, nil),
 		},
 	},
 	{
@@ -1210,10 +1213,10 @@ var TestCasesSimple = []TestCaseSimple{
 			}},
 		},
 		expectYields: []base.Vals{
-			StringsToLzVals([]string{`"paris"`, `"dan"`, `"dev"`}, nil),
-			StringsToLzVals([]string{`"paris"`, `"doug"`, `"dev"`}, nil),
-			StringsToLzVals([]string{`"london"`, `"frank"`, `"finance"`}, nil),
-			StringsToLzVals([]string{`"london"`, `"fred"`, `"finance"`}, nil),
+			StringsToVals([]string{`"paris"`, `"dan"`, `"dev"`}, nil),
+			StringsToVals([]string{`"paris"`, `"doug"`, `"dev"`}, nil),
+			StringsToVals([]string{`"london"`, `"frank"`, `"finance"`}, nil),
+			StringsToVals([]string{`"london"`, `"fred"`, `"finance"`}, nil),
 		},
 	},
 
@@ -1270,8 +1273,8 @@ var TestCasesSimple = []TestCaseSimple{
 			}},
 		},
 		expectYields: []base.Vals{
-			StringsToLzVals([]string{`"london"`, `"frank"`, `"finance"`}, nil),
-			StringsToLzVals([]string{`"london"`, `"fred"`, `"finance"`}, nil),
+			StringsToVals([]string{`"london"`, `"frank"`, `"finance"`}, nil),
+			StringsToVals([]string{`"london"`, `"fred"`, `"finance"`}, nil),
 		},
 	},
 	{
@@ -1805,10 +1808,10 @@ var TestCasesSimple = []TestCaseSimple{
 			}},
 		},
 		expectYields: []base.Vals{
-			StringsToLzVals([]string{`"dev"`, `"paris"`, `"doug"`, `"dev"`}, nil),
-			StringsToLzVals([]string{`"dev"`, `"paris"`, `"dan"`, `"dev"`}, nil),
-			StringsToLzVals([]string{`"finance"`, `"london"`, `"fred"`, `"finance"`}, nil),
-			StringsToLzVals([]string{`"finance"`, `"london"`, `"frank"`, `"finance"`}, nil),
+			StringsToVals([]string{`"dev"`, `"paris"`, `"doug"`, `"dev"`}, nil),
+			StringsToVals([]string{`"dev"`, `"paris"`, `"dan"`, `"dev"`}, nil),
+			StringsToVals([]string{`"finance"`, `"london"`, `"fred"`, `"finance"`}, nil),
+			StringsToVals([]string{`"finance"`, `"london"`, `"frank"`, `"finance"`}, nil),
 		},
 	},
 	{
