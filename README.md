@@ -1,58 +1,9 @@
 n1k1 is an experimental query compiler and execution engine for N1QL.
 
--------------------------------------------------------
-## DEV SHORTCUTS...
-
-    go test . && go build ./cmd/intermed_build/ && ./intermed_build && go test ./... && go fmt ./... && go test -v ./...
-
-    go build ./cmd/expr_build/ && ./expr_build && go fmt ./...
-
--------------------------------------------------------
-## The way n1k1 works...
-
-Or, how intermed_build generates a N1QL compiler...
-
-- 1: First, take a look at the n1k1/*.go files.  You'll see a simple,
-interpreter for a "N1QL" query-plan.  In ExecOp(), it recursively
-walks through a query-plan tree, and processes the query-plan by
-pushing (or yield()'ing) data records from child nodes (e.g., a scan)
-up to parent nodes (e.g., filters) from the query-plan tree.
-
-- 1.1: As part of that, you'll also see some variables and functions
-that follow a naming convention with "lz" (e.g., "lazy") in their
-names.  The "lz" naming convention is a marker that tells us whether
-some variables are lazy or late-bound (they need actual data records),
-versus other variables that are early-bound (they use information
-that's already available at query-plan compilation time).
-
-- 1.2: Of note, the n1k1/*.go files are written in a careful subset of
-golang.  It's all legal golang code, but it follows additional rules
-and conventions (like the "lz" conventions and directives in code
-comments) to make parsing by n1k1's intermed_build tool easy.
-
-- 2: The intermed_build tool parses the "lz" conventions and other
-markers (e.g., code comment directives) from the n1k1/*.go source
-files to translate that interpreter code into a intermediary, helper
-package, called n1k1/intermed.
-
-- 2.1: The n1k1/intermed package will be used later by the final n1k1
-query compiler.
-
-- 2.2: The way the intermed_build tool works is that it processes the
-n1k1/*.go source files line-by-line, and translates any "lz" lines
-into printf's.  Non-lazy expressions are turned into printf'ed
-placeholder vars.  Non-lazy lines are emitted entirely as-is, as they
-are early-bound.
-
-- 3: Finally, the n1k1 compiler, which imports and uses the generated
-n1k1/intermed package, will take the user's input of a N1QL query-plan
-and will emit *.go code (or possibly other languages) that can
-efficiently execute that query-plan.
-
 ------------------------------------------
 ## Performance approaches...
 
-What are some design ideas that help with n1k1's performance...
+Some design ideas meant to help with n1k1's performance...
 
 - garbage creation avoidance as a major theme.
 - avoidance of sync.Pool.
@@ -111,13 +62,84 @@ What are some design ideas that help with n1k1's performance...
 - UNION ALL is concurrent (one goroutine per contributor).
 - runtime variables / context passed down through ExecOp()
 
+-------------------------------------------------------
+## The way n1k1 works...
+
+Or, how intermed_build generates a N1QL compiler...
+
+- 1: First, take a look at the n1k1/*.go files.  You'll see a simple,
+interpreter for a "N1QL" query-plan.  In ExecOp(), it recursively
+walks through a query-plan tree, and processes the query-plan by
+pushing (or yield()'ing) data records from child nodes (e.g., a scan)
+up to parent nodes (e.g., filters) from the query-plan tree.
+
+- 1.1: As part of that, you'll also see some variables and functions
+that follow a naming convention with "lz" (e.g., "lazy") in their
+names.  The "lz" naming convention is a marker that tells us whether
+some variables are lazy or late-bound (they need actual data records),
+versus other variables that are early-bound (they use information
+that's already available at query-plan compilation time).
+
+- 1.2: Of note, the n1k1/*.go files are written in a careful subset of
+golang.  It's all legal golang code, but it follows additional rules
+and conventions (like the "lz" conventions and directives in code
+comments) to make parsing by n1k1's intermed_build tool easy.
+
+- 2: The intermed_build tool parses the "lz" conventions and other
+markers (e.g., code comment directives) from the n1k1/*.go source
+files to translate that interpreter code into a intermediary, helper
+package, called n1k1/intermed.
+
+- 2.1: The n1k1/intermed package will be used later by the final n1k1
+query compiler.
+
+- 2.2: The way the intermed_build tool works is that it processes the
+n1k1/*.go source files line-by-line, and translates any "lz" lines
+into printf's.  Non-lazy expressions are turned into printf'ed
+placeholder vars.  Non-lazy lines are emitted entirely as-is, as they
+are early-bound.
+
+- 3: Finally, the n1k1 compiler, which imports and uses the generated
+n1k1/intermed package, will take the user's input of a N1QL query-plan
+and will emit *.go code (or possibly other languages) that can
+efficiently execute that query-plan.
+
+-------------------------------------------------------
+## DEV SHORTCUTS...
+
+    go test . && go build ./cmd/intermed_build/ && ./intermed_build && go test ./... && go fmt ./... && go test -v ./...
+
+    go build ./cmd/expr_build/ && ./expr_build && go fmt ./...
+
 ------------------------------------------
 ## TODO...
 
 - expr support
-  - easy: convert Val to query/value.Value and run the existing
-    query/expression.
-  - hard: compiled expr's
+  - easy: convert Val to query/value.Value
+    and then leverage the existing query/expression codepaths?
+  - not as easy: compiled expr's?
+
+- DISTINCT
+
+- UNION (which has an implicit DISTINCT)
+
+- INTERSECT / INTERSECT ALL
+
+- EXCEPT / EXCEPT ALL
+
+- UNION-ALL data-staging batchSize should be configurable
+- UNION-ALL data-staging batchChSize should be configurable
+
+- standalone Op for data-staging / pipeline breaking
+
+- GROUP BY / aggregates
+  - SELECT country, SUM(population) FROM ... GROUP BY country
+
+- HAVING (should be able to reuse existing filter operator).
+
+- UNNEST - a kind of self-join
+
+- NEST - a kind of join
 
 - how to handle when fields aren't known?
   - such as immediate output of a scan?
@@ -167,20 +189,6 @@ What are some design ideas that help with n1k1's performance...
   - FlexScanIndex
   - covering / non-covering
 
-- UNNEST - a kind of self-join
-
-- NEST - a kind of join
-
-- UNION-ALL data-staging batchSize should be configurable
-- UNION-ALL data-staging batchChSize should be configurable
-
-- standalone Op for data-staging / pipeline breaking
-
-- GROUP BY / aggregates
-  - SELECT country, SUM(population) FROM ... GROUP BY country
-
-- HAVING (should be able to reuse existing filter operator).
-
 - subqueries & correlated subqueries?
   - these should just be yet another expression
   - analysis of non-correlated vs correlated subqueries should be
@@ -192,14 +200,6 @@ What are some design ideas that help with n1k1's performance...
 
 - numbers might also need to be canonicalized?
   - e.g., 0 vs 0.0 vs -0 are logically the same?
-
-- DISTINCT
-
-- UNION (which has an implicit DISTINCT)
-
-- INTERSECT / INTERSECT ALL
-
-- EXCEPT / EXCEPT ALL
 
 - jsonparser doesn't alloc memory, except for ObjectEach()...
   - its `var stackbuf [unescapeStackBufSize]byte` approach
