@@ -79,9 +79,13 @@ func (s *State) Process(out []string, line string) ([]string, string) {
 type HandlerEntry struct {
 	Handler Handler
 
-	Kind string // Ex: "Evaluate", "Apply", etc.
-	Name string // Ex: name of function "ArrayAppend", etc.
+	// Ex: "Evaluate", "Apply", etc.
+	Kind string
 
+	// Ex: "ArrayAppend", name of function, etc.
+	Name string
+
+	// Ex: function body lines, etc.
 	Lines []string
 }
 
@@ -140,6 +144,9 @@ func ExprBuild(sourceDir, outDir string) error {
 
 	// ------------------------------------------------
 
+	contents = append(contents, "\n"+Dashes)
+	contents = append(contents, "// Funcs...\n")
+
 	var names []string
 	for name := range state.Funcs {
 		names = append(names, name)
@@ -160,6 +167,7 @@ func ExprBuild(sourceDir, outDir string) error {
 	// ------------------------------------------------
 
 	contents = append(contents, "\n"+Dashes)
+	contents = append(contents, "// FuncsByEvaluateKind...\n")
 
 	var evaluateKinds []string
 	for evaluateKind := range state.FuncsByEvaluateKind {
@@ -177,6 +185,33 @@ func ExprBuild(sourceDir, outDir string) error {
 		contents = append(contents, evaluateKind+":")
 
 		for _, name := range state.FuncsByEvaluateKind[evaluateKind] {
+			contents = append(contents, "  "+name)
+		}
+	}
+
+	contents = append(contents, "*/")
+
+	// ------------------------------------------------
+
+	contents = append(contents, "\n"+Dashes)
+	contents = append(contents, "// FuncsByApplyKind...\n")
+
+	var applyKinds []string
+	for applyKind := range state.FuncsByApplyKind {
+		applyKinds = append(applyKinds, applyKind)
+	}
+	sort.Strings(applyKinds)
+
+	contents = append(contents, "/*")
+
+	for i, applyKind := range applyKinds {
+		if i != 0 {
+			contents = append(contents, "")
+		}
+
+		contents = append(contents, applyKind+":")
+
+		for _, name := range state.FuncsByApplyKind[applyKind] {
 			contents = append(contents, "  "+name)
 		}
 	}
@@ -228,10 +263,16 @@ func HandlerScanFile(state *State, he *HandlerEntry,
 		name = name[len("func (this *"):]
 		name = strings.Split(name, ")")[0]
 
-		if !strings.HasSuffix(line, "{") &&
-			!strings.HasSuffix(line, ") (") {
+		if strings.Index(line, ") (") < 0 {
 			panic("Apply() params are not single line: " + name)
 		}
+
+		params := strings.TrimSpace(line)
+		params = params[strings.Index(params, "Apply(")+len("Apply("):]
+		params = strings.Split(params, ") (")[0]
+
+		state.FuncsByApplyKind[params] =
+			append(state.FuncsByApplyKind[params], name)
 
 		state.Push(&HandlerEntry{
 			Handler: HandlerScanTopLevelFuncSignature,
