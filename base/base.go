@@ -181,14 +181,29 @@ type Vars struct {
 	Ctx    *Ctx
 }
 
+// Push returns another Vars pushed onto the Vars chain, which is
+// safely usable by another concurrent goroutine.
+func (v *Vars) PushForConcurrency() *Vars {
+	return &Vars{Next: v, Ctx: v.Ctx.PushForConcurrency()}
+}
+
 // -----------------------------------------------------
 
 // Ctx represents the runtime context for a request.
 type Ctx struct {
-	ValComparer *ValComparer
+	ValComparer *ValComparer // Not concurrent safe.
 
 	YieldStats YieldStats
 
 	// TODO: Other things that might appear here might be request ID,
 	// request-specific allocators or resources, etc.
+}
+
+// Push returns a copy of Ctx, which another goroutine can use safely.
+func (ctx *Ctx) PushForConcurrency() (ctxCopy *Ctx) {
+	ctxCopy = &Ctx{}
+	*ctxCopy = *ctx
+	ctxCopy.ValComparer = NewValComparer()
+
+	return ctxCopy
 }

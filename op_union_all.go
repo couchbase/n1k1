@@ -64,6 +64,8 @@ func OpUnionAll(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 						lzYieldValsOrig(lzValsUnion)
 					}
 
+					lzVars = lzVars.PushForConcurrency()
+
 					ExecOp(child, lzVars, lzYieldVals, lzYieldErr, pathNextU, "UO") // !lz
 				}
 
