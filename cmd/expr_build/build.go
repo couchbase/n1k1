@@ -189,7 +189,7 @@ func ExprBuild(sourceDir, outDir string) error {
 	// ------------------------------------------------
 
 	contents := []string{
-		"package expr\n",
+		"package expr",
 	}
 
 	contents = append(contents, outAll...)
@@ -411,6 +411,12 @@ func HandlerScanFile(state *State, he *HandlerEntry,
 			applyParams[strings.Index(applyParams, "Apply(")+len("Apply("):]
 
 		applyParams = strings.Split(applyParams, ") (")[0]
+
+		if !strings.HasPrefix(applyParams, "context Context, ") {
+			panic("Apply() params does not take context: " + name)
+		}
+
+		applyParams = applyParams[len("context Context, "):]
 
 		state.FuncInfo(name).ApplyParams = applyParams
 
