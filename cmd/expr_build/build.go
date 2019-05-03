@@ -130,6 +130,8 @@ func ExprBuild(sourceDir, outDir string) error {
 		return err
 	}
 
+	// ------------------------------------------------
+
 	contents := []string{
 		"package expr\n",
 	}
@@ -181,6 +183,8 @@ func ExprBuild(sourceDir, outDir string) error {
 
 	contents = append(contents, "*/")
 
+	// ------------------------------------------------
+
 	return ioutil.WriteFile(outDir+"/generated_by_expr_build.go",
 		[]byte(strings.Join(contents, "\n")), 0644)
 }
@@ -223,6 +227,11 @@ func HandlerScanFile(state *State, he *HandlerEntry,
 		name := strings.TrimSpace(line)
 		name = name[len("func (this *"):]
 		name = strings.Split(name, ")")[0]
+
+		if !strings.HasSuffix(line, "{") &&
+			!strings.HasSuffix(line, ") (") {
+			panic("Apply() params are not single line: " + name)
+		}
 
 		state.Push(&HandlerEntry{
 			Handler: HandlerScanTopLevelFuncSignature,
