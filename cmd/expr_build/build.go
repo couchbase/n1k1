@@ -38,14 +38,19 @@ import (
 // - can we tell if for-range loops are working over big arrays
 //   or over just small, bounded (compile-time) args?
 //   The answer helps choose which recycled pool to use?
+//
+// - some functions never return an error, always returning nil for error.
 
 // ---------------------------------------------------------------
 
 type FuncInfo struct {
-	Name         string
-	Registry     []string
+	Name     string   // Ex: "ArrayPosition".
+	Registry []string // Ex: ["array_pos", "array_position"].
+
+	// Ex: "this.UnaryEval(this, item, context)", "MULTILINE".
 	EvaluateKind string
-	ApplyParams  string
+
+	ApplyParams  string // Ex: "arg value.Value".
 	ApplyLines   []string
 	ApplyReturns []string
 }
