@@ -4,6 +4,7 @@ import (
 	"io/ioutil"
 	"log"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/couchbase/n1k1/cmd"
@@ -157,7 +158,7 @@ func ExprBuild(sourceDir, outDir string) error {
 	}
 	sort.Strings(names)
 
-	contents = append(contents, "/*")
+	contents = append(contents, "/* ("+strconv.Itoa(len(state.Funcs))+")")
 
 	for _, name := range names {
 		aliases := state.Funcs[name]
@@ -173,20 +174,24 @@ func ExprBuild(sourceDir, outDir string) error {
 	contents = append(contents, "\n"+Dashes)
 	contents = append(contents, "// FuncsByEvaluateKind...\n")
 
+	n := 0
+
 	var evaluateKinds []string
-	for evaluateKind := range state.FuncsByEvaluateKind {
+	for evaluateKind, names := range state.FuncsByEvaluateKind {
 		evaluateKinds = append(evaluateKinds, evaluateKind)
+		n += len(names)
 	}
 	sort.Strings(evaluateKinds)
 
-	contents = append(contents, "/*")
+	contents = append(contents, "/* ("+strconv.Itoa(n)+")")
 
 	for i, evaluateKind := range evaluateKinds {
 		if i != 0 {
 			contents = append(contents, "")
 		}
 
-		contents = append(contents, evaluateKind+":")
+		contents = append(contents, evaluateKind+": "+
+			strconv.Itoa(len(state.FuncsByEvaluateKind[evaluateKind])))
 
 		for _, name := range state.FuncsByEvaluateKind[evaluateKind] {
 			contents = append(contents, "  "+name)
@@ -200,20 +205,24 @@ func ExprBuild(sourceDir, outDir string) error {
 	contents = append(contents, "\n"+Dashes)
 	contents = append(contents, "// FuncsByApplyKind...\n")
 
+	n = 0
+
 	var applyKinds []string
-	for applyKind := range state.FuncsByApplyKind {
+	for applyKind, names := range state.FuncsByApplyKind {
 		applyKinds = append(applyKinds, applyKind)
+		n += len(names)
 	}
 	sort.Strings(applyKinds)
 
-	contents = append(contents, "/*")
+	contents = append(contents, "/* ("+strconv.Itoa(n)+")")
 
 	for i, applyKind := range applyKinds {
 		if i != 0 {
 			contents = append(contents, "")
 		}
 
-		contents = append(contents, applyKind+":")
+		contents = append(contents, applyKind+": "+
+			strconv.Itoa(len(state.FuncsByApplyKind[applyKind])))
 
 		for _, name := range state.FuncsByApplyKind[applyKind] {
 			contents = append(contents, "  "+name)
