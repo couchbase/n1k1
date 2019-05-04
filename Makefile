@@ -19,6 +19,7 @@ easy-to-read:
        sed -e 's/ \/\/ !//g' | \
        sed -e 's/ \/\/ <== .*//g' > ./tmp/easy-to-read/$$f; \
     done
+	go fmt ./tmp/easy-to-read
 
 cloc:
 	find . | grep go | grep -v test | grep -v generated | grep -v tmp | \
