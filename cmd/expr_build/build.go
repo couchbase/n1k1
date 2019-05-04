@@ -14,6 +14,9 @@ import (
 
 // ISSUES...
 //
+// - function Evaluate() returns error?
+//   need the lzYieldErr as a param in base.ExprFunc?
+//
 // - bindings?
 //
 // - a function often knows its domain of output types,
@@ -53,15 +56,61 @@ type FuncInfo struct {
 	ApplyParams  string // Ex: "arg value.Value".
 	ApplyLines   []string
 	ApplyReturns []string
+
+	Tags map[string]bool
 }
 
 func (fi *FuncInfo) Classify() {
 	sort.Strings(fi.Registry)
 
+	body := strings.Join(fi.ApplyLines, "\n")
+
+	fi.Tags = map[string]bool{}
+
+	if strings.HasPrefix(body, MissingNullOnArgs) {
+		fi.Tags["shortCircuits:missing"] = true
+	}
+
+	if strings.HasPrefix(body, MissingNullOnArg) {
+		fi.Tags["shortCircuits:missing"] = true
+		fi.Tags["shortCircuits:null"] = true
+	}
+
+	if strings.HasPrefix(body, MissingOnFirstSecond) {
+		fi.Tags["shortCircuits:missing"] = true
+	}
+
+	if strings.HasPrefix(body, MissingOnFirstSecondThird) {
+		fi.Tags["shortCircuits:missing"] = true
+	}
+
+	// ---------------------------------
+
+	if len(fi.ApplyReturns) == 3 {
+		if fi.ApplyReturns[0] == "value.MISSING_VALUE, nil" &&
+			fi.ApplyReturns[1] == "value.NULL_VALUE, nil" &&
+			strings.HasPrefix(fi.ApplyReturns[2], "value.NewValue(math.") &&
+			strings.HasSuffix(fi.ApplyReturns[2], "(arg.Actual().(float64))), nil") {
+			fi.Tags["returns:missing,null,number"] = true
+		}
+	}
+
+	// ---------------------------------
+
 	for i, line := range fi.ApplyLines {
 		fi.ApplyLines[i] = strings.Replace(line, "\t", " ", -1)
 	}
 }
+
+// ---------------------------------------------------------------
+
+const MissingNullOnArgs = "\tfor _, arg := range args {\n\t\tif arg.Type() == value.MISSING {\n\t\t\treturn value.MISSING_VALUE, nil\n\t\t}\n\t}\n"
+
+const MissingNullOnArg = "\tif arg.Type() == value.MISSING || arg.Type() == value.NULL {\n\t\treturn arg, nil\n\t}"
+
+const MissingOnFirstSecond = "\tif first.Type() == value.MISSING || second.Type() == value.MISSING {\n\t\treturn value.MISSING_VALUE, nil\n\t}"
+
+const MissingOnFirstSecondThird = "\tif first.Type() == value.MISSING || second.Type() == value.MISSING || third.Type() == value.MISSING {\n\t\treturn value.MISSING_VALUE, nil\n\t}"
 
 // ---------------------------------------------------------------
 
