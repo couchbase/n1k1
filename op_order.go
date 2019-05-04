@@ -9,9 +9,9 @@ import (
 
 func OpOrderByOffsetLimit(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	lzYieldErr base.YieldErr, path, pathNext string) {
-	projections := o.Params[0].([]interface{}) // ORDER BY expressions.
+	orderBys := o.Params[0].([]interface{}) // ORDER BY expressions.
 
-	// The directions has same len as projections, ex: ["asc", "desc", "asc"].
+	// The directions has same len as orderBys, ex: ["asc", "desc", "asc"].
 	directions := o.Params[1].([]interface{})
 
 	offset := 0
@@ -37,9 +37,9 @@ func OpOrderByOffsetLimit(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldV
 		var lzProjectFunc base.ProjectFunc
 		var lzLessFunc base.LessFunc
 
-		if len(projections) > 0 { // !lz
+		if len(orderBys) > 0 { // !lz
 			lzProjectFunc =
-				MakeProjectFunc(lzVars, o.Children[0].Fields, nil, projections, pathNextOOL, "PF") // !lz
+				MakeProjectFunc(lzVars, o.Children[0].Fields, nil, orderBys, pathNextOOL, "PF") // !lz
 
 			lzLessFunc =
 				MakeLessFunc(lzVars, nil, directions) // !lz
@@ -66,7 +66,7 @@ func OpOrderByOffsetLimit(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldV
 
 			lzValsCopy, lzPreallocVals, lzPreallocVal = base.ValsDeepCopy(lzVals, lzPreallocVals, lzPreallocVal)
 
-			if len(projections) > 0 { // !lz
+			if len(orderBys) > 0 { // !lz
 				lzValsOut := lzPreallocProjected
 
 				lzPreallocProjected = nil
@@ -107,7 +107,7 @@ func OpOrderByOffsetLimit(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldV
 				var lzN int
 				_ = lzN
 
-				if len(projections) > 0 { // !lz
+				if len(orderBys) > 0 { // !lz
 					lzHeapLen := lzHeap.Len()
 
 					lzValsProjected := lzHeap.ValsProjected
