@@ -10,8 +10,6 @@ func OpUnionAll(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	lzYieldErr base.YieldErr, path, pathNext string) {
 	pathNextU := EmitPush(pathNext, "U") // !lz
 
-	EmitPop(pathNext, "U") // !lz
-
 	numChildren := len(o.Children)
 	numFields := len(o.Fields)
 
@@ -79,4 +77,6 @@ func OpUnionAll(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 		// TODO: Recycle children's lzVars.Ctx into my lzVars.Ctx?
 	}
+
+	EmitPop(pathNext, "U") // !lz
 }
