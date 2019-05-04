@@ -117,8 +117,9 @@ func ValPathGet(vIn Val, path []string) Val {
 // -----------------------------------------------------
 
 // YieldVals memory ownership: the receiver implementation should
-// generally copy any inputs that it wants to keep, because the
-// provided slices might be reused by future invocations.
+// generally copy any inputs that it wants to keep if it's in a
+// different "pipeline", because the provided slices might be reused
+// by future invocations.
 type YieldVals func(Vals)
 
 type YieldErr func(error)
@@ -201,4 +202,3 @@ func (ctx *Ctx) PushForConcurrency() (ctxCopy *Ctx) {
 type YieldStats func(*Stats) error
 
 type Stats struct{} // TODO.
-
