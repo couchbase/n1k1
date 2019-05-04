@@ -85,6 +85,9 @@ func (stage *Stage) StartActor(aFunc ActorFunc, aData interface{}, batchSize int
 				batch = stage.AcquireBatch()[:0]
 			}
 
+			// Grab preallocVals/preallocVal from next slot in the
+			// batch, as we're going to overwrite / append() over that
+			// slot anyways, so it's good as a recycled source.
 			var preallocVals Vals
 			var preallocVal Val
 
