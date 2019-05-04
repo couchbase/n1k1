@@ -141,18 +141,10 @@ type Op struct {
 	// Output fields of this operator.
 	Fields Fields `json:"Fields,omitempty"`
 
-	// Output orders of this operator.
-	Orders []Order `json:"Orders,omitempty"`
-
 	// Params based on the kind.
 	Params []interface{} `json:"Params,omitempty"`
 
 	Children []*Op `json:"Children,omitempty"`
-}
-
-type Order struct {
-	Expr []interface{} // Ex: ["field", "country"].
-	Desc bool          // True for descending.
 }
 
 // -----------------------------------------------------
