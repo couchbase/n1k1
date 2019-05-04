@@ -4,8 +4,6 @@ import (
 	"github.com/couchbase/n1k1/base"
 )
 
-// -----------------------------------------------------------
-
 func ExecOp(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	lzYieldErr base.YieldErr, path, pathItem string) {
 	if o == nil {
