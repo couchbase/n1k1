@@ -80,16 +80,19 @@ func OpOrderByOffsetLimit(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldV
 					// Push onto heap if heap is small or heap is empty or item < max-heap-item.
 					heap.Push(lzHeap, base.ValsProjected{lzValsCopy, lzValsOut})
 
+					// If heap is too big (> offset+limit), then recycle max-heap-item.
 					if lzHeapLen+1 > offsetPlusLimit {
-						lzOld := heap.Pop(lzHeap).(base.ValsProjected)
+						lzFormerMax := heap.Pop(lzHeap).(base.ValsProjected)
 
-						// Reuse the slices from lzOld.
-						lzPreallocVals = lzOld.Vals[0:cap(lzOld.Vals)]
+						// Reuse the slices from lzFormerMax.
+						lzPreallocVals = lzFormerMax.Vals[0:cap(lzFormerMax.Vals)]
 
-						lzPreallocVal = lzOld.Vals[0]
+						lzPreallocVal = lzFormerMax.Vals[0]
 						lzPreallocVal = lzPreallocVal[0:cap(lzPreallocVal)]
 
-						lzPreallocProjected = lzOld.Projected[:0]
+						// TODO: Recycling of each val in lzFormerMax.Projected into lzVars?
+
+						lzPreallocProjected = lzFormerMax.Projected[:0]
 					}
 				}
 			} else { // !lz
