@@ -89,7 +89,7 @@ func OpOrderByOffsetLimit(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldV
 						lzPreallocVal = lzFormerMax.Vals[0]
 						lzPreallocVal = lzPreallocVal[0:cap(lzPreallocVal)]
 
-						// TODO: Recycle each val in lzFormerMax.Projected into lzVars?
+						// TODO: Recycle each val in lzFormerMax.Projected into lzVars.Ctx?
 
 						lzPreallocProjected = lzFormerMax.Projected[:0]
 					}
@@ -131,7 +131,7 @@ func OpOrderByOffsetLimit(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldV
 						lzYieldValsOrig(lzHeap.GetVals(lzI))
 					}
 
-					// TODO: Recycle lzHeap?
+					// TODO: Recycle lzHeap into lzVars.Ctx?
 				} else { // !lz
 					lzItemsLen := len(lzItems)
 
@@ -146,7 +146,7 @@ func OpOrderByOffsetLimit(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldV
 						lzYieldValsOrig(lzItems[lzI])
 					}
 
-					// TODO: Recycle lzItems?
+					// TODO: Recycle lzItems into lzVars.Ctx?
 				} // !lz
 			}
 
