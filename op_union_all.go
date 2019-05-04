@@ -26,7 +26,7 @@ func OpUnionAll(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 		lzStage := base.NewStage(numChildren, 0, lzVars, lzYieldVals, lzYieldErr)
 
 		for childi := range o.Children { // !lz
-			pathNextU := EmitPush(pathNextU, strconv.Itoa(childi)) // !lz
+			pathNextUC := EmitPush(pathNextU, strconv.Itoa(childi)) // !lz
 
 			if LzScope {
 				lzActorData = childi // !lz
@@ -64,7 +64,7 @@ func OpUnionAll(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 						lzYieldValsOrig(lzValsUnion)
 					}
 
-					ExecOp(child, lzVars, lzYieldVals, lzYieldErr, pathNextU, "UO") // !lz
+					ExecOp(child, lzVars, lzYieldVals, lzYieldErr, pathNextUC, "UO") // !lz
 				}
 
 				lzStage.StartActor(lzActorFunc, lzActorData, 0)
