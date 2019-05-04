@@ -121,15 +121,7 @@ func ValPathGet(vIn Val, path []string) Val {
 // provided slices might be reused by future invocations.
 type YieldVals func(Vals)
 
-// Ops can occasionally yield stats and progress information,
-// and the receiver can return an error to abort further processing.
-type YieldStats func(*Stats) error
-
 type YieldErr func(error)
-
-// -----------------------------------------------------
-
-type Stats struct{} // TODO.
 
 // -----------------------------------------------------
 
@@ -199,3 +191,14 @@ func (ctx *Ctx) PushForConcurrency() (ctxCopy *Ctx) {
 
 	return ctxCopy
 }
+
+// -----------------------------------------------------
+
+// An Op can occasionally yield stats and progress information,
+// where the call can return an error to abort further processing.
+//
+// The receiver must copy any incoming stats that it wants to keep.
+type YieldStats func(*Stats) error
+
+type Stats struct{} // TODO.
+
