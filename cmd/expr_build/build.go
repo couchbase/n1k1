@@ -83,6 +83,17 @@ func (fi *FuncInfo) Classify() {
 
 	// ---------------------------------
 
+	sort.Strings(fi.ApplyReturns)
+
+	var dedupe []string
+	for _, ar := range fi.ApplyReturns {
+		if len(dedupe) == 0 || dedupe[len(dedupe)-1] != ar {
+			dedupe = append(dedupe, ar)
+		}
+	}
+
+	fi.ApplyReturns = dedupe
+
 	if len(fi.ApplyReturns) == 3 {
 		if fi.ApplyReturns[0] == "value.MISSING_VALUE, nil" &&
 			fi.ApplyReturns[1] == "value.NULL_VALUE, nil" &&
