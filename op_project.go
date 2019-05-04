@@ -54,7 +54,7 @@ func MakeProjectFunc(lzVars *base.Vars, fields base.Fields, types base.Types,
 		exprFuncs = append(exprFuncs, lzExprFunc) // !lz
 	}
 
-	lzProjectFunc = func(lzVals, lzValsPre base.Vals) (lzValsOut base.Vals) {
+	lzProjectFunc = func(lzVals, lzValsOut base.Vals) base.Vals {
 		for i := range exprFuncs { // !lz
 			if LzScope {
 				var lzVal base.Val
