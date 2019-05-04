@@ -140,9 +140,7 @@ func (stage *Stage) StartActor(aFunc ActorFunc, aData interface{}, batchSize int
 	go func() {
 		stage.ActorReadyCh <- struct{}{}
 
-		if stopCh != nil {
-			aFunc(stage.Vars, yieldVals, yieldErr, aData)
-		}
+		aFunc(stage.Vars, yieldVals, yieldErr, aData)
 
 		stage.BatchCh <- nil // Must send last nil, meaning this actor is done.
 	}()
