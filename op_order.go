@@ -42,7 +42,7 @@ func OpOrderByOffsetLimit(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldV
 				MakeProjectFunc(lzVars, o.Children[0].Fields, nil, projections, pathNextOOL, "PF") // !lz
 
 			lzLessFunc =
-				MakeLessFunc(nil, directions) // !lz
+				MakeLessFunc(lzVars, nil, directions) // !lz
 		} // !lz
 
 		// Used when there are ORDER-BY exprs.
@@ -155,13 +155,11 @@ func OpOrderByOffsetLimit(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldV
 	}
 }
 
-func MakeLessFunc(types base.Types, directions []interface{}) (
-	lzLessFunc base.LessFunc) {
+func MakeLessFunc(lzVars *base.Vars, types base.Types,
+	directions []interface{}) (lzLessFunc base.LessFunc) {
 	// TODO: One day use types to optimize.
 
 	if len(directions) > 0 {
-		lzValComparer := base.NewValComparer()
-
 		lzLessFunc = func(lzValsA, lzValsB base.Vals) bool {
 			var lzCmp int
 
@@ -173,7 +171,7 @@ func MakeLessFunc(types base.Types, directions []interface{}) (
 					lt, gt = false, true // !lz
 				} // !lz
 
-				lzCmp = lzValComparer.Compare(lzValsA[idx], lzValsB[idx])
+				lzCmp = lzVars.Ctx.ValComparer.Compare(lzValsA[idx], lzValsB[idx])
 				if lzCmp < 0 {
 					return lt
 				}
