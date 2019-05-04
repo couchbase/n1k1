@@ -110,7 +110,8 @@ func (fi *FuncInfo) Classify() {
 		} else if strings.HasPrefix(ar, "value.NewValue(math.") &&
 			strings.HasSuffix(ar, "(arg.Actual().(float64))), nil") {
 			fi.Tags["returns:number"] = true
-		} else if strings.HasSuffix(ar, "_NUMBER, nil") {
+		} else if strings.HasPrefix(ar, "value.") &&
+			strings.HasSuffix(ar, "_NUMBER, nil") {
 			fi.Tags["returns:number"] = true
 		} else {
 			fi.Tags["returns:other"] = true
