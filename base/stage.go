@@ -148,7 +148,9 @@ func (stage *Stage) StartActor(aFunc ActorFunc, aData interface{}, batchSize int
 
 // --------------------------------------------------------
 
-func (stage *Stage) WaitForActors() {
+// YieldResultsFromActors receives all batches from the actors and
+// yields them onwards, until all the actors are done.
+func (stage *Stage) YieldResultsFromActors() {
 	var numActorsReady int
 	for numActorsReady < stage.NumActors {
 		<-stage.ActorReadyCh

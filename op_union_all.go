@@ -75,7 +75,7 @@ func OpUnionAll(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 			EmitPop(pathNextU, strconv.Itoa(childi)) // !lz
 		} // !lz
 
-		lzStage.WaitForActors()
+		lzStage.YieldResultsFromActors()
 
 		// TODO: Recycle children's lzVars.Ctx into my lzVars.Ctx?
 	}
