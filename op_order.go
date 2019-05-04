@@ -77,7 +77,7 @@ func OpOrderByOffsetLimit(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldV
 
 				lzHeapLen := lzHeap.Len()
 				if lzHeapLen < offsetPlusLimit || lzHeapLen == 0 || lzLessFunc(lzValsOut, lzHeap.GetProjected(0)) {
-					// Push onto heap if heap is small or heap is empty or item < max-item.
+					// Push onto heap if heap is small or heap is empty or item < max-heap-item.
 					heap.Push(lzHeap, base.ValsProjected{lzValsCopy, lzValsOut})
 
 					if lzHeapLen+1 > offsetPlusLimit {
