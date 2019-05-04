@@ -130,6 +130,8 @@ func OpOrderByOffsetLimit(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldV
 
 						lzYieldValsOrig(lzHeap.GetVals(lzI))
 					}
+
+					// TODO: Recycle lzHeap?
 				} else { // !lz
 					lzItemsLen := len(lzItems)
 
@@ -143,6 +145,8 @@ func OpOrderByOffsetLimit(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldV
 
 						lzYieldValsOrig(lzItems[lzI])
 					}
+
+					// TODO: Recycle lzItems?
 				} // !lz
 			}
 
