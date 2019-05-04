@@ -9,20 +9,6 @@ import (
 	"github.com/buger/jsonparser"
 )
 
-type Fields []string // Ex: ".description", ".address.city".
-
-func (a Fields) IndexOf(s string) int {
-	for i, v := range a {
-		if v == s {
-			return i
-		}
-	}
-
-	return -1
-}
-
-// -----------------------------------------------------
-
 type Vals []Val
 
 type Val []byte // JSON encoded, usually treated as immutable.
@@ -126,13 +112,27 @@ type YieldErr func(error)
 
 // -----------------------------------------------------
 
+type Labels []string // Ex: ".description", ".address.city".
+
+func (a Labels) IndexOf(s string) int {
+	for i, v := range a {
+		if v == s {
+			return i
+		}
+	}
+
+	return -1
+}
+
+// -----------------------------------------------------
+
 // An Op represents a node or operation in a query-plan tree.
 type Op struct {
 	// Ex: "scan", "filter", "project", etc.
 	Kind string `json:"Kind,omitempty"`
 
-	// Output fields of this operator.
-	Fields Fields `json:"Fields,omitempty"`
+	// Labels for the vals yielded by this operator.
+	Labels Labels `json:"Labels,omitempty"`
 
 	// Params based on the kind.
 	Params []interface{} `json:"Params,omitempty"`
@@ -160,8 +160,8 @@ type Types []string // TODO.
 
 // Vars are used for runtime variables, config, etc.
 type Vars struct {
-	Fields Fields
-	Vals   Vals  // Same len() as Fields.
+	Labels Labels
+	Vals   Vals  // Same len() as Labels.
 	Next   *Vars // The root Vars has nil Next.
 	Ctx    *Ctx
 }

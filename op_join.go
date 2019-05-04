@@ -18,26 +18,26 @@ func OpJoinNestedLoop(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 		}
 	}
 
-	lenFieldsA := len(o.Children[0].Fields)
-	lenFieldsB := len(o.Children[1].Fields)
-	lenFieldsAB := lenFieldsA + lenFieldsB
+	lenLabelsA := len(o.Children[0].Labels)
+	lenLabelsB := len(o.Children[1].Labels)
+	lenLabelsAB := lenLabelsA + lenLabelsB
 
-	fieldsAB := make(base.Fields, 0, lenFieldsAB)
-	fieldsAB = append(fieldsAB, o.Children[0].Fields...)
-	fieldsAB = append(fieldsAB, o.Children[1].Fields...)
+	labelsAB := make(base.Labels, 0, lenLabelsAB)
+	labelsAB = append(labelsAB, o.Children[0].Labels...)
+	labelsAB = append(labelsAB, o.Children[1].Labels...)
 
 	joinKind := strings.Split(o.Kind, "-")[2] // Ex: "inner", "outerLeft".
 
 	isOuterLeft := joinKind == "outerLeft"
 
 	joinClauseFunc :=
-		MakeExprFunc(lzVars, fieldsAB, nil, o.Params, pathNext, "JF") // !lz
+		MakeExprFunc(lzVars, labelsAB, nil, o.Params, pathNext, "JF") // !lz
 
 	var lzHadInner bool
 
 	_, _ = joinClauseFunc, lzHadInner
 
-	lzValsJoin := make(base.Vals, lenFieldsAB)
+	lzValsJoin := make(base.Vals, lenLabelsAB)
 
 	lzYieldValsOrig := lzYieldVals
 
@@ -58,7 +58,7 @@ func OpJoinNestedLoop(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 				lzHadInner = true
 			} // !lz
 
-			lzValsJoin = lzValsJoin[0:lenFieldsA]
+			lzValsJoin = lzValsJoin[0:lenLabelsA]
 			lzValsJoin = append(lzValsJoin, lzValsB...)
 
 			lzVals := lzValsJoin
@@ -71,8 +71,8 @@ func OpJoinNestedLoop(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 				lzYieldValsOrig(lzVals) // <== emitCaptured: path ""
 			} else {
 				if isOuterLeft { // !lz
-					lzValsJoin = lzValsJoin[0:lenFieldsA]
-					for i := 0; i < lenFieldsB; i++ { // !lz
+					lzValsJoin = lzValsJoin[0:lenLabelsA]
+					for i := 0; i < lenLabelsB; i++ { // !lz
 						lzValsJoin = append(lzValsJoin, base.ValMissing)
 					} // !lz
 
@@ -87,8 +87,8 @@ func OpJoinNestedLoop(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 		// Case of outerLeft join when inner (right) was empty.
 		if isOuterLeft { // !lz
 			if !lzHadInner && lzErr == nil {
-				lzValsJoin = lzValsJoin[0:lenFieldsA]
-				for i := 0; i < lenFieldsB; i++ { // !lz
+				lzValsJoin = lzValsJoin[0:lenLabelsA]
+				for i := 0; i < lenLabelsB; i++ { // !lz
 					lzValsJoin = append(lzValsJoin, base.ValMissing)
 				} // !lz
 

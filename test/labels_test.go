@@ -6,8 +6,8 @@ import (
 	"github.com/couchbase/n1k1/base"
 )
 
-func TestFieldsIndexOf(t *testing.T) {
-	fs := base.Fields{"a", "b"}
+func TestLabelsIndexOf(t *testing.T) {
+	fs := base.Labels{"a", "b"}
 	if fs.IndexOf("a") != 0 {
 		t.Fatal("should have worked")
 	}
@@ -18,7 +18,7 @@ func TestFieldsIndexOf(t *testing.T) {
 		t.Fatal("should have worked")
 	}
 
-	fs = base.Fields{}
+	fs = base.Labels{}
 	if fs.IndexOf("c") != -1 {
 		t.Fatal("should have worked")
 	}

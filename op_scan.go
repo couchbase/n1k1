@@ -28,7 +28,7 @@ func OpScan(o *base.Op, lzVars *base.Vars,
 
 		lzFilePath := paramsFilePath
 
-		ScanFile(lzFilePath, o.Fields, lzVars, lzYieldVals, lzYieldErr) // !lz
+		ScanFile(lzFilePath, o.Labels, lzVars, lzYieldVals, lzYieldErr) // !lz
 
 	case "csvData":
 		paramsCsvData := o.Params[1].(string)
@@ -37,7 +37,7 @@ func OpScan(o *base.Op, lzVars *base.Vars,
 
 		lzReader := strings.NewReader(lzCsvData)
 
-		ScanReaderAsCsv(lzReader, o.Fields, lzVars, lzYieldVals, lzYieldErr) // !lz
+		ScanReaderAsCsv(lzReader, o.Labels, lzVars, lzYieldVals, lzYieldErr) // !lz
 
 	default:
 		errMsg := "unknown scan kind" // TODO: Weak string/double-quote handling.
@@ -46,7 +46,7 @@ func OpScan(o *base.Op, lzVars *base.Vars,
 	}
 }
 
-func ScanFile(lzFilePath string, fields base.Fields, lzVars *base.Vars,
+func ScanFile(lzFilePath string, labels base.Labels, lzVars *base.Vars,
 	lzYieldVals base.YieldVals, lzYieldErr base.YieldErr) {
 	errMsg := "file not csv" // TODO: Weak string/double-quote handling.
 
@@ -68,11 +68,11 @@ func ScanFile(lzFilePath string, fields base.Fields, lzVars *base.Vars,
 
 		defer lzReader.Close()
 
-		ScanReaderAsCsv(lzReader, fields, lzVars, lzYieldVals, lzYieldErr) // !lz
+		ScanReaderAsCsv(lzReader, labels, lzVars, lzYieldVals, lzYieldErr) // !lz
 	}
 }
 
-func ScanReaderAsCsv(lzReader io.Reader, fields base.Fields, lzVars *base.Vars,
+func ScanReaderAsCsv(lzReader io.Reader, labels base.Labels, lzVars *base.Vars,
 	lzYieldVals base.YieldVals, lzYieldErr base.YieldErr) {
 	var lzValsScan base.Vals
 

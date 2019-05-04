@@ -68,7 +68,7 @@ var TestCasesSimple = []TestCaseSimple{
 		about: "test empty csv-data scan",
 		o: base.Op{
 			Kind:   "scan",
-			Fields: base.Fields(nil),
+			Labels: base.Labels(nil),
 			Params: []interface{}{
 				"csvData",
 				"",
@@ -76,10 +76,10 @@ var TestCasesSimple = []TestCaseSimple{
 		},
 	},
 	{
-		about: "test empty csv-data scan with some fields",
+		about: "test empty csv-data scan with some labels",
 		o: base.Op{
 			Kind:   "scan",
-			Fields: base.Fields{"a", "b", "c"},
+			Labels: base.Labels{"a", "b", "c"},
 			Params: []interface{}{
 				"csvData",
 				"",
@@ -90,7 +90,7 @@ var TestCasesSimple = []TestCaseSimple{
 		about: "test csv-data scan with 1 record",
 		o: base.Op{
 			Kind:   "scan",
-			Fields: base.Fields{"a", "b", "c"},
+			Labels: base.Labels{"a", "b", "c"},
 			Params: []interface{}{
 				"csvData",
 				"1,2,3",
@@ -104,7 +104,7 @@ var TestCasesSimple = []TestCaseSimple{
 		about: "test csv-data scan with 2 records",
 		o: base.Op{
 			Kind:   "scan",
-			Fields: base.Fields{"a", "b", "c"},
+			Labels: base.Labels{"a", "b", "c"},
 			Params: []interface{}{
 				"csvData",
 				`
@@ -122,7 +122,7 @@ var TestCasesSimple = []TestCaseSimple{
 		about: "test csv-data scan->filter on const == const",
 		o: base.Op{
 			Kind:   "filter",
-			Fields: base.Fields{"a", "b", "c"},
+			Labels: base.Labels{"a", "b", "c"},
 			Params: []interface{}{
 				"eq",
 				[]interface{}{"json", `"July"`},
@@ -130,7 +130,7 @@ var TestCasesSimple = []TestCaseSimple{
 			},
 			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
-				Fields: base.Fields{"a", "b", "c"},
+				Labels: base.Labels{"a", "b", "c"},
 				Params: []interface{}{
 					"csvData",
 					`
@@ -149,7 +149,7 @@ var TestCasesSimple = []TestCaseSimple{
 		about: "test csv-data scan->filter on constX == constY",
 		o: base.Op{
 			Kind:   "filter",
-			Fields: base.Fields{"a", "b", "c"},
+			Labels: base.Labels{"a", "b", "c"},
 			Params: []interface{}{
 				"eq",
 				[]interface{}{"json", `"July"`},
@@ -157,7 +157,7 @@ var TestCasesSimple = []TestCaseSimple{
 			},
 			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
-				Fields: base.Fields{"a", "b", "c"},
+				Labels: base.Labels{"a", "b", "c"},
 				Params: []interface{}{
 					"csvData",
 					`
@@ -170,18 +170,18 @@ var TestCasesSimple = []TestCaseSimple{
 		expectYields: []base.Vals(nil),
 	},
 	{
-		about: "test csv-data scan->filter with fieldB == fieldB",
+		about: "test csv-data scan->filter with labelB == labelB",
 		o: base.Op{
 			Kind:   "filter",
-			Fields: base.Fields{"a", "b", "c"},
+			Labels: base.Labels{"a", "b", "c"},
 			Params: []interface{}{
 				"eq",
-				[]interface{}{"fieldPath", "b"},
-				[]interface{}{"fieldPath", "b"},
+				[]interface{}{"labelPath", "b"},
+				[]interface{}{"labelPath", "b"},
 			},
 			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
-				Fields: base.Fields{"a", "b", "c"},
+				Labels: base.Labels{"a", "b", "c"},
 				Params: []interface{}{
 					"csvData",
 					`
@@ -197,18 +197,18 @@ var TestCasesSimple = []TestCaseSimple{
 		},
 	},
 	{
-		about: "test csv-data scan->filter with fieldA == fieldB",
+		about: "test csv-data scan->filter with labelA == labelB",
 		o: base.Op{
 			Kind:   "filter",
-			Fields: base.Fields{"a", "b", "c"},
+			Labels: base.Labels{"a", "b", "c"},
 			Params: []interface{}{
 				"eq",
-				[]interface{}{"fieldPath", "a"},
-				[]interface{}{"fieldPath", "b"},
+				[]interface{}{"labelPath", "a"},
+				[]interface{}{"labelPath", "b"},
 			},
 			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
-				Fields: base.Fields{"a", "b", "c"},
+				Labels: base.Labels{"a", "b", "c"},
 				Params: []interface{}{
 					"csvData",
 					`
@@ -221,18 +221,18 @@ var TestCasesSimple = []TestCaseSimple{
 		expectYields: []base.Vals(nil),
 	},
 	{
-		about: "test csv-data scan->filter with fieldB = 66",
+		about: "test csv-data scan->filter with labelB = 66",
 		o: base.Op{
 			Kind:   "filter",
-			Fields: base.Fields{"a", "b", "c"},
+			Labels: base.Labels{"a", "b", "c"},
 			Params: []interface{}{
 				"eq",
-				[]interface{}{"fieldPath", "b"},
+				[]interface{}{"labelPath", "b"},
 				[]interface{}{"json", `66`},
 			},
 			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
-				Fields: base.Fields{"a", "b", "c"},
+				Labels: base.Labels{"a", "b", "c"},
 				Params: []interface{}{
 					"csvData",
 					`
@@ -245,18 +245,18 @@ var TestCasesSimple = []TestCaseSimple{
 		expectYields: []base.Vals(nil),
 	},
 	{
-		about: "test csv-data scan->filter with fieldB == 21",
+		about: "test csv-data scan->filter with labelB == 21",
 		o: base.Op{
 			Kind:   "filter",
-			Fields: base.Fields{"a", "b", "c"},
+			Labels: base.Labels{"a", "b", "c"},
 			Params: []interface{}{
 				"eq",
-				[]interface{}{"fieldPath", "b"},
+				[]interface{}{"labelPath", "b"},
 				[]interface{}{"json", `21`},
 			},
 			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
-				Fields: base.Fields{"a", "b", "c"},
+				Labels: base.Labels{"a", "b", "c"},
 				Params: []interface{}{
 					"csvData",
 					`
@@ -274,15 +274,15 @@ var TestCasesSimple = []TestCaseSimple{
 		about: "test csv-data scan->filter more than 1 match",
 		o: base.Op{
 			Kind:   "filter",
-			Fields: base.Fields{"a", "b", "c"},
+			Labels: base.Labels{"a", "b", "c"},
 			Params: []interface{}{
 				"eq",
-				[]interface{}{"fieldPath", "c"},
+				[]interface{}{"labelPath", "c"},
 				[]interface{}{"json", `3000`},
 			},
 			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
-				Fields: base.Fields{"a", "b", "c"},
+				Labels: base.Labels{"a", "b", "c"},
 				Params: []interface{}{
 					"csvData",
 					`
@@ -303,22 +303,22 @@ var TestCasesSimple = []TestCaseSimple{
 		about: "test csv-data scan->filter->project",
 		o: base.Op{
 			Kind:   "project",
-			Fields: base.Fields{"a", "c"},
+			Labels: base.Labels{"a", "c"},
 			Params: []interface{}{
-				[]interface{}{"fieldPath", "a"},
-				[]interface{}{"fieldPath", "c"},
+				[]interface{}{"labelPath", "a"},
+				[]interface{}{"labelPath", "c"},
 			},
 			Children: []*base.Op{&base.Op{
 				Kind:   "filter",
-				Fields: base.Fields{"a", "b", "c"},
+				Labels: base.Labels{"a", "b", "c"},
 				Params: []interface{}{
 					"eq",
-					[]interface{}{"fieldPath", "c"},
+					[]interface{}{"labelPath", "c"},
 					[]interface{}{"json", `3000`},
 				},
 				Children: []*base.Op{&base.Op{
 					Kind:   "scan",
-					Fields: base.Fields{"a", "b", "c"},
+					Labels: base.Labels{"a", "b", "c"},
 					Params: []interface{}{
 						"csvData",
 						`
@@ -340,14 +340,14 @@ var TestCasesSimple = []TestCaseSimple{
 		about: "test csv-data scan->project",
 		o: base.Op{
 			Kind:   "project",
-			Fields: base.Fields{"a", "c"},
+			Labels: base.Labels{"a", "c"},
 			Params: []interface{}{
-				[]interface{}{"fieldPath", "a"},
-				[]interface{}{"fieldPath", "c"},
+				[]interface{}{"labelPath", "a"},
+				[]interface{}{"labelPath", "c"},
 			},
 			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
-				Fields: base.Fields{"a", "b", "c"},
+				Labels: base.Labels{"a", "b", "c"},
 				Params: []interface{}{
 					"csvData",
 					`
@@ -367,16 +367,16 @@ var TestCasesSimple = []TestCaseSimple{
 		},
 	},
 	{
-		about: "test csv-data scan->project deeper fieldPath",
+		about: "test csv-data scan->project deeper labelPath",
 		o: base.Op{
 			Kind:   "project",
-			Fields: base.Fields{"city"},
+			Labels: base.Labels{"city"},
 			Params: []interface{}{
-				[]interface{}{"fieldPath", "a", "addr", "city"},
+				[]interface{}{"labelPath", "a", "addr", "city"},
 			},
 			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
-				Fields: base.Fields{"a"},
+				Labels: base.Labels{"a"},
 				Params: []interface{}{
 					"csvData",
 					`
@@ -391,16 +391,16 @@ var TestCasesSimple = []TestCaseSimple{
 			base.Vals{[]byte("sj")},
 		},
 	}, {
-		about: "test csv-data scan->project deeper fieldPath",
+		about: "test csv-data scan->project deeper labelPath",
 		o: base.Op{
 			Kind:   "project",
-			Fields: base.Fields{"city"},
+			Labels: base.Labels{"city"},
 			Params: []interface{}{
-				[]interface{}{"fieldPath", "a", "addr"},
+				[]interface{}{"labelPath", "a", "addr"},
 			},
 			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
-				Fields: base.Fields{"a"},
+				Labels: base.Labels{"a"},
 				Params: []interface{}{
 					"csvData",
 					`
@@ -419,19 +419,19 @@ var TestCasesSimple = []TestCaseSimple{
 		about: "test csv-data scan->filter->project nothing",
 		o: base.Op{
 			Kind:   "project",
-			Fields: base.Fields{},
+			Labels: base.Labels{},
 			Params: []interface{}{},
 			Children: []*base.Op{&base.Op{
 				Kind:   "filter",
-				Fields: base.Fields{"a", "b", "c"},
+				Labels: base.Labels{"a", "b", "c"},
 				Params: []interface{}{
 					"eq",
-					[]interface{}{"fieldPath", "c"},
+					[]interface{}{"labelPath", "c"},
 					[]interface{}{"json", `3000`},
 				},
 				Children: []*base.Op{&base.Op{
 					Kind:   "scan",
-					Fields: base.Fields{"a", "b", "c"},
+					Labels: base.Labels{"a", "b", "c"},
 					Params: []interface{}{
 						"csvData",
 						`
@@ -450,25 +450,25 @@ var TestCasesSimple = []TestCaseSimple{
 		},
 	},
 	{
-		about: "test csv-data scan->filter->project unknown field",
+		about: "test csv-data scan->filter->project unknown label",
 		o: base.Op{
 			Kind:   "project",
-			Fields: base.Fields{"a", "xxx"},
+			Labels: base.Labels{"a", "xxx"},
 			Params: []interface{}{
-				[]interface{}{"fieldPath", "a"},
-				[]interface{}{"fieldPath", "xxx"},
+				[]interface{}{"labelPath", "a"},
+				[]interface{}{"labelPath", "xxx"},
 			},
 			Children: []*base.Op{&base.Op{
 				Kind:   "filter",
-				Fields: base.Fields{"a", "b", "c"},
+				Labels: base.Labels{"a", "b", "c"},
 				Params: []interface{}{
 					"eq",
-					[]interface{}{"fieldPath", "c"},
+					[]interface{}{"labelPath", "c"},
 					[]interface{}{"json", `3000`},
 				},
 				Children: []*base.Op{&base.Op{
 					Kind:   "scan",
-					Fields: base.Fields{"a", "b", "c"},
+					Labels: base.Labels{"a", "b", "c"},
 					Params: []interface{}{
 						"csvData",
 						`
@@ -490,15 +490,15 @@ var TestCasesSimple = []TestCaseSimple{
 		about: "test csv-data scan->join-nl-inner",
 		o: base.Op{
 			Kind:   "join-nl-inner",
-			Fields: base.Fields{"dept", "city", "emp", "empDept"},
+			Labels: base.Labels{"dept", "city", "emp", "empDept"},
 			Params: []interface{}{
 				"eq",
-				[]interface{}{"fieldPath", "dept"},
-				[]interface{}{"fieldPath", "empDept"},
+				[]interface{}{"labelPath", "dept"},
+				[]interface{}{"labelPath", "empDept"},
 			},
 			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
-				Fields: base.Fields{"dept", "city"},
+				Labels: base.Labels{"dept", "city"},
 				Params: []interface{}{
 					"csvData",
 					`
@@ -509,7 +509,7 @@ var TestCasesSimple = []TestCaseSimple{
 				},
 			}, &base.Op{
 				Kind:   "scan",
-				Fields: base.Fields{"emp", "empDept"},
+				Labels: base.Labels{"emp", "empDept"},
 				Params: []interface{}{
 					"csvData",
 					`
@@ -533,15 +533,15 @@ var TestCasesSimple = []TestCaseSimple{
 		about: "test csv-data scan->join-nl-inner but false join condition",
 		o: base.Op{
 			Kind:   "join-nl-inner",
-			Fields: base.Fields{"dept", "city", "emp", "empDept"},
+			Labels: base.Labels{"dept", "city", "emp", "empDept"},
 			Params: []interface{}{
 				"eq",
-				[]interface{}{"fieldPath", "dept"},
+				[]interface{}{"labelPath", "dept"},
 				[]interface{}{"json", `"NOT-MATCHING"`},
 			},
 			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
-				Fields: base.Fields{"dept", "city"},
+				Labels: base.Labels{"dept", "city"},
 				Params: []interface{}{
 					"csvData",
 					`
@@ -551,7 +551,7 @@ var TestCasesSimple = []TestCaseSimple{
 				},
 			}, &base.Op{
 				Kind:   "scan",
-				Fields: base.Fields{"emp", "empDept"},
+				Labels: base.Labels{"emp", "empDept"},
 				Params: []interface{}{
 					"csvData",
 					`
@@ -569,11 +569,11 @@ var TestCasesSimple = []TestCaseSimple{
 		about: "test inner join via always-true join condition",
 		o: base.Op{
 			Kind:   "join-nl-inner",
-			Fields: base.Fields{"dept", "city", "emp", "empDept"},
+			Labels: base.Labels{"dept", "city", "emp", "empDept"},
 			Params: []interface{}{"json", `true`},
 			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
-				Fields: base.Fields{"dept", "city"},
+				Labels: base.Labels{"dept", "city"},
 				Params: []interface{}{
 					"csvData",
 					`
@@ -583,7 +583,7 @@ var TestCasesSimple = []TestCaseSimple{
 				},
 			}, &base.Op{
 				Kind:   "scan",
-				Fields: base.Fields{"emp", "empDept"},
+				Labels: base.Labels{"emp", "empDept"},
 				Params: []interface{}{
 					"csvData",
 					`
@@ -610,7 +610,7 @@ var TestCasesSimple = []TestCaseSimple{
 		about: "test inner join via always-matching join condition",
 		o: base.Op{
 			Kind:   "join-nl-inner",
-			Fields: base.Fields{"dept", "city", "emp", "empDept"},
+			Labels: base.Labels{"dept", "city", "emp", "empDept"},
 			Params: []interface{}{
 				"eq",
 				[]interface{}{"json", `"Hello"`},
@@ -618,7 +618,7 @@ var TestCasesSimple = []TestCaseSimple{
 			},
 			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
-				Fields: base.Fields{"dept", "city"},
+				Labels: base.Labels{"dept", "city"},
 				Params: []interface{}{
 					"csvData",
 					`
@@ -628,7 +628,7 @@ var TestCasesSimple = []TestCaseSimple{
 				},
 			}, &base.Op{
 				Kind:   "scan",
-				Fields: base.Fields{"emp", "empDept"},
+				Labels: base.Labels{"emp", "empDept"},
 				Params: []interface{}{
 					"csvData",
 					`
@@ -655,15 +655,15 @@ var TestCasesSimple = []TestCaseSimple{
 		about: "test left outer join on dept",
 		o: base.Op{
 			Kind:   "join-nl-outerLeft",
-			Fields: base.Fields{"dept", "city", "emp", "empDept"},
+			Labels: base.Labels{"dept", "city", "emp", "empDept"},
 			Params: []interface{}{
 				"eq",
-				[]interface{}{"fieldPath", `dept`},
-				[]interface{}{"fieldPath", `empDept`},
+				[]interface{}{"labelPath", `dept`},
+				[]interface{}{"labelPath", `empDept`},
 			},
 			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
-				Fields: base.Fields{"dept", "city"},
+				Labels: base.Labels{"dept", "city"},
 				Params: []interface{}{
 					"csvData",
 					`
@@ -674,7 +674,7 @@ var TestCasesSimple = []TestCaseSimple{
 				},
 			}, &base.Op{
 				Kind:   "scan",
-				Fields: base.Fields{"emp", "empDept"},
+				Labels: base.Labels{"emp", "empDept"},
 				Params: []interface{}{
 					"csvData",
 					`
@@ -711,15 +711,15 @@ var TestCasesSimple = []TestCaseSimple{
 		about: "test left outer join on dept with empty RHS",
 		o: base.Op{
 			Kind:   "join-nl-outerLeft",
-			Fields: base.Fields{"dept", "city", "emp", "empDept"},
+			Labels: base.Labels{"dept", "city", "emp", "empDept"},
 			Params: []interface{}{
 				"eq",
-				[]interface{}{"fieldPath", `dept`},
-				[]interface{}{"fieldPath", `empDept`},
+				[]interface{}{"labelPath", `dept`},
+				[]interface{}{"labelPath", `empDept`},
 			},
 			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
-				Fields: base.Fields{"dept", "city"},
+				Labels: base.Labels{"dept", "city"},
 				Params: []interface{}{
 					"csvData",
 					`
@@ -729,7 +729,7 @@ var TestCasesSimple = []TestCaseSimple{
 				},
 			}, &base.Op{
 				Kind:   "scan",
-				Fields: base.Fields{"emp", "empDept"},
+				Labels: base.Labels{"emp", "empDept"},
 				Params: []interface{}{
 					"csvData",
 					`
@@ -746,15 +746,15 @@ var TestCasesSimple = []TestCaseSimple{
 		about: "test inner join on dept with empty LHS",
 		o: base.Op{
 			Kind:   "join-nl-inner",
-			Fields: base.Fields{"dept", "city", "emp", "empDept"},
+			Labels: base.Labels{"dept", "city", "emp", "empDept"},
 			Params: []interface{}{
 				"eq",
-				[]interface{}{"fieldPath", `dept`},
-				[]interface{}{"fieldPath", `empDept`},
+				[]interface{}{"labelPath", `dept`},
+				[]interface{}{"labelPath", `empDept`},
 			},
 			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
-				Fields: base.Fields{"dept", "city"},
+				Labels: base.Labels{"dept", "city"},
 				Params: []interface{}{
 					"csvData",
 					`
@@ -762,7 +762,7 @@ var TestCasesSimple = []TestCaseSimple{
 				},
 			}, &base.Op{
 				Kind:   "scan",
-				Fields: base.Fields{"emp", "empDept"},
+				Labels: base.Labels{"emp", "empDept"},
 				Params: []interface{}{
 					"csvData",
 					`
@@ -780,15 +780,15 @@ var TestCasesSimple = []TestCaseSimple{
 		about: "test left outer join on dept with empty LHS",
 		o: base.Op{
 			Kind:   "join-nl-outerLeft",
-			Fields: base.Fields{"dept", "city", "emp", "empDept"},
+			Labels: base.Labels{"dept", "city", "emp", "empDept"},
 			Params: []interface{}{
 				"eq",
-				[]interface{}{"fieldPath", `dept`},
-				[]interface{}{"fieldPath", `empDept`},
+				[]interface{}{"labelPath", `dept`},
+				[]interface{}{"labelPath", `empDept`},
 			},
 			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
-				Fields: base.Fields{"dept", "city"},
+				Labels: base.Labels{"dept", "city"},
 				Params: []interface{}{
 					"csvData",
 					`
@@ -796,7 +796,7 @@ var TestCasesSimple = []TestCaseSimple{
 				},
 			}, &base.Op{
 				Kind:   "scan",
-				Fields: base.Fields{"emp", "empDept"},
+				Labels: base.Labels{"emp", "empDept"},
 				Params: []interface{}{
 					"csvData",
 					`
@@ -814,15 +814,15 @@ var TestCasesSimple = []TestCaseSimple{
 		about: "test left outer join on never matching condition",
 		o: base.Op{
 			Kind:   "join-nl-outerLeft",
-			Fields: base.Fields{"dept", "city", "emp", "empDept"},
+			Labels: base.Labels{"dept", "city", "emp", "empDept"},
 			Params: []interface{}{
 				"eq",
-				[]interface{}{"fieldPath", `dept`},
-				[]interface{}{"fieldPath", `someFakeField`},
+				[]interface{}{"labelPath", `dept`},
+				[]interface{}{"labelPath", `someFakeLabel`},
 			},
 			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
-				Fields: base.Fields{"dept", "city"},
+				Labels: base.Labels{"dept", "city"},
 				Params: []interface{}{
 					"csvData",
 					`
@@ -832,7 +832,7 @@ var TestCasesSimple = []TestCaseSimple{
 				},
 			}, &base.Op{
 				Kind:   "scan",
-				Fields: base.Fields{"emp", "empDept"},
+				Labels: base.Labels{"emp", "empDept"},
 				Params: []interface{}{
 					"csvData",
 					`
@@ -859,7 +859,7 @@ var TestCasesSimple = []TestCaseSimple{
 		about: "test csv-data scan->filter on false OR true",
 		o: base.Op{
 			Kind:   "filter",
-			Fields: base.Fields{"a", "b", "c"},
+			Labels: base.Labels{"a", "b", "c"},
 			Params: []interface{}{
 				"or",
 				[]interface{}{"json", `false`},
@@ -867,7 +867,7 @@ var TestCasesSimple = []TestCaseSimple{
 			},
 			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
-				Fields: base.Fields{"a", "b", "c"},
+				Labels: base.Labels{"a", "b", "c"},
 				Params: []interface{}{
 					"csvData",
 					`
@@ -886,7 +886,7 @@ var TestCasesSimple = []TestCaseSimple{
 		about: "test csv-data scan->filter on true OR false",
 		o: base.Op{
 			Kind:   "filter",
-			Fields: base.Fields{"a", "b", "c"},
+			Labels: base.Labels{"a", "b", "c"},
 			Params: []interface{}{
 				"or",
 				[]interface{}{"json", `true`},
@@ -894,7 +894,7 @@ var TestCasesSimple = []TestCaseSimple{
 			},
 			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
-				Fields: base.Fields{"a", "b", "c"},
+				Labels: base.Labels{"a", "b", "c"},
 				Params: []interface{}{
 					"csvData",
 					`
@@ -913,7 +913,7 @@ var TestCasesSimple = []TestCaseSimple{
 		about: "test csv-data scan->filter on false OR false",
 		o: base.Op{
 			Kind:   "filter",
-			Fields: base.Fields{"a", "b", "c"},
+			Labels: base.Labels{"a", "b", "c"},
 			Params: []interface{}{
 				"or",
 				[]interface{}{"json", `false`},
@@ -921,7 +921,7 @@ var TestCasesSimple = []TestCaseSimple{
 			},
 			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
-				Fields: base.Fields{"a", "b", "c"},
+				Labels: base.Labels{"a", "b", "c"},
 				Params: []interface{}{
 					"csvData",
 					`
@@ -937,23 +937,23 @@ var TestCasesSimple = []TestCaseSimple{
 		about: "test csv-data scan->filter on a=10 OR c=31",
 		o: base.Op{
 			Kind:   "filter",
-			Fields: base.Fields{"a", "b", "c"},
+			Labels: base.Labels{"a", "b", "c"},
 			Params: []interface{}{
 				"or",
 				[]interface{}{
 					"eq",
-					[]interface{}{"fieldPath", `a`},
+					[]interface{}{"labelPath", `a`},
 					[]interface{}{"json", `10`},
 				},
 				[]interface{}{
 					"eq",
-					[]interface{}{"fieldPath", `c`},
+					[]interface{}{"labelPath", `c`},
 					[]interface{}{"json", `31`},
 				},
 			},
 			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
-				Fields: base.Fields{"a", "b", "c"},
+				Labels: base.Labels{"a", "b", "c"},
 				Params: []interface{}{
 					"csvData",
 					`
@@ -973,23 +973,23 @@ var TestCasesSimple = []TestCaseSimple{
 		about: "test csv-data scan->filter on a=10 AND c=30",
 		o: base.Op{
 			Kind:   "filter",
-			Fields: base.Fields{"a", "b", "c"},
+			Labels: base.Labels{"a", "b", "c"},
 			Params: []interface{}{
 				"and",
 				[]interface{}{
 					"eq",
-					[]interface{}{"fieldPath", `a`},
+					[]interface{}{"labelPath", `a`},
 					[]interface{}{"json", `10`},
 				},
 				[]interface{}{
 					"eq",
-					[]interface{}{"fieldPath", `c`},
+					[]interface{}{"labelPath", `c`},
 					[]interface{}{"json", `30`},
 				},
 			},
 			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
-				Fields: base.Fields{"a", "b", "c"},
+				Labels: base.Labels{"a", "b", "c"},
 				Params: []interface{}{
 					"csvData",
 					`
@@ -1008,23 +1008,23 @@ var TestCasesSimple = []TestCaseSimple{
 		about: "test csv-data scan->filter on a=11 AND c=31",
 		o: base.Op{
 			Kind:   "filter",
-			Fields: base.Fields{"a", "b", "c"},
+			Labels: base.Labels{"a", "b", "c"},
 			Params: []interface{}{
 				"and",
 				[]interface{}{
 					"eq",
-					[]interface{}{"fieldPath", `a`},
+					[]interface{}{"labelPath", `a`},
 					[]interface{}{"json", `11`},
 				},
 				[]interface{}{
 					"eq",
-					[]interface{}{"fieldPath", `c`},
+					[]interface{}{"labelPath", `c`},
 					[]interface{}{"json", `31`},
 				},
 			},
 			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
-				Fields: base.Fields{"a", "b", "c"},
+				Labels: base.Labels{"a", "b", "c"},
 				Params: []interface{}{
 					"csvData",
 					`
@@ -1043,31 +1043,31 @@ var TestCasesSimple = []TestCaseSimple{
 		about: "test csv-data scan->filter on a=10 AND (c=30 AND b=20)",
 		o: base.Op{
 			Kind:   "filter",
-			Fields: base.Fields{"a", "b", "c"},
+			Labels: base.Labels{"a", "b", "c"},
 			Params: []interface{}{
 				"and",
 				[]interface{}{
 					"eq",
-					[]interface{}{"fieldPath", `a`},
+					[]interface{}{"labelPath", `a`},
 					[]interface{}{"json", `10`},
 				},
 				[]interface{}{
 					"and",
 					[]interface{}{
 						"eq",
-						[]interface{}{"fieldPath", `c`},
+						[]interface{}{"labelPath", `c`},
 						[]interface{}{"json", `30`},
 					},
 					[]interface{}{
 						"eq",
-						[]interface{}{"fieldPath", `b`},
+						[]interface{}{"labelPath", `b`},
 						[]interface{}{"json", `20`},
 					},
 				},
 			},
 			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
-				Fields: base.Fields{"a", "b", "c"},
+				Labels: base.Labels{"a", "b", "c"},
 				Params: []interface{}{
 					"csvData",
 					`
@@ -1086,31 +1086,31 @@ var TestCasesSimple = []TestCaseSimple{
 		about: "test csv-data scan->filter on a=10 OR (c=31 AND b=21)",
 		o: base.Op{
 			Kind:   "filter",
-			Fields: base.Fields{"a", "b", "c"},
+			Labels: base.Labels{"a", "b", "c"},
 			Params: []interface{}{
 				"or",
 				[]interface{}{
 					"eq",
-					[]interface{}{"fieldPath", `a`},
+					[]interface{}{"labelPath", `a`},
 					[]interface{}{"json", `10`},
 				},
 				[]interface{}{
 					"and",
 					[]interface{}{
 						"eq",
-						[]interface{}{"fieldPath", `c`},
+						[]interface{}{"labelPath", `c`},
 						[]interface{}{"json", `31`},
 					},
 					[]interface{}{
 						"eq",
-						[]interface{}{"fieldPath", `b`},
+						[]interface{}{"labelPath", `b`},
 						[]interface{}{"json", `21`},
 					},
 				},
 			},
 			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
-				Fields: base.Fields{"a", "b", "c"},
+				Labels: base.Labels{"a", "b", "c"},
 				Params: []interface{}{
 					"csvData",
 					`
@@ -1130,31 +1130,31 @@ var TestCasesSimple = []TestCaseSimple{
 		about: "test csv-data scan->filter on a=10 AND (c=4444 OR b=20)",
 		o: base.Op{
 			Kind:   "filter",
-			Fields: base.Fields{"a", "b", "c"},
+			Labels: base.Labels{"a", "b", "c"},
 			Params: []interface{}{
 				"and",
 				[]interface{}{
 					"eq",
-					[]interface{}{"fieldPath", `a`},
+					[]interface{}{"labelPath", `a`},
 					[]interface{}{"json", `10`},
 				},
 				[]interface{}{
 					"or",
 					[]interface{}{
 						"eq",
-						[]interface{}{"fieldPath", `c`},
+						[]interface{}{"labelPath", `c`},
 						[]interface{}{"json", `4444`},
 					},
 					[]interface{}{
 						"eq",
-						[]interface{}{"fieldPath", `b`},
+						[]interface{}{"labelPath", `b`},
 						[]interface{}{"json", `20`},
 					},
 				},
 			},
 			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
-				Fields: base.Fields{"a", "b", "c"},
+				Labels: base.Labels{"a", "b", "c"},
 				Params: []interface{}{
 					"csvData",
 					`
@@ -1173,23 +1173,23 @@ var TestCasesSimple = []TestCaseSimple{
 		about: "test csv-data scan->join-nl-inner->project",
 		o: base.Op{
 			Kind:   "project",
-			Fields: base.Fields{"city", "emp", "empDept"},
+			Labels: base.Labels{"city", "emp", "empDept"},
 			Params: []interface{}{
-				[]interface{}{"fieldPath", "city"},
-				[]interface{}{"fieldPath", "emp"},
-				[]interface{}{"fieldPath", "empDept"},
+				[]interface{}{"labelPath", "city"},
+				[]interface{}{"labelPath", "emp"},
+				[]interface{}{"labelPath", "empDept"},
 			},
 			Children: []*base.Op{&base.Op{
 				Kind:   "join-nl-inner",
-				Fields: base.Fields{"dept", "city", "emp", "empDept"},
+				Labels: base.Labels{"dept", "city", "emp", "empDept"},
 				Params: []interface{}{
 					"eq",
-					[]interface{}{"fieldPath", "dept"},
-					[]interface{}{"fieldPath", "empDept"},
+					[]interface{}{"labelPath", "dept"},
+					[]interface{}{"labelPath", "empDept"},
 				},
 				Children: []*base.Op{&base.Op{
 					Kind:   "scan",
-					Fields: base.Fields{"dept", "city"},
+					Labels: base.Labels{"dept", "city"},
 					Params: []interface{}{
 						"csvData",
 						`
@@ -1199,7 +1199,7 @@ var TestCasesSimple = []TestCaseSimple{
 					},
 				}, &base.Op{
 					Kind:   "scan",
-					Fields: base.Fields{"emp", "empDept"},
+					Labels: base.Labels{"emp", "empDept"},
 					Params: []interface{}{
 						"csvData",
 						`
@@ -1224,31 +1224,31 @@ var TestCasesSimple = []TestCaseSimple{
 		about: "test csv-data scan->join-nl-inner->filter->project",
 		o: base.Op{
 			Kind:   "project",
-			Fields: base.Fields{"city", "emp", "empDept"},
+			Labels: base.Labels{"city", "emp", "empDept"},
 			Params: []interface{}{
-				[]interface{}{"fieldPath", "city"},
-				[]interface{}{"fieldPath", "emp"},
-				[]interface{}{"fieldPath", "empDept"},
+				[]interface{}{"labelPath", "city"},
+				[]interface{}{"labelPath", "emp"},
+				[]interface{}{"labelPath", "empDept"},
 			},
 			Children: []*base.Op{&base.Op{
 				Kind:   "filter",
-				Fields: base.Fields{"dept", "city", "emp", "empDept"},
+				Labels: base.Labels{"dept", "city", "emp", "empDept"},
 				Params: []interface{}{
 					"eq",
 					[]interface{}{"json", `"london"`},
-					[]interface{}{"fieldPath", `city`},
+					[]interface{}{"labelPath", `city`},
 				},
 				Children: []*base.Op{&base.Op{
 					Kind:   "join-nl-inner",
-					Fields: base.Fields{"dept", "city", "emp", "empDept"},
+					Labels: base.Labels{"dept", "city", "emp", "empDept"},
 					Params: []interface{}{
 						"eq",
-						[]interface{}{"fieldPath", "dept"},
-						[]interface{}{"fieldPath", "empDept"},
+						[]interface{}{"labelPath", "dept"},
+						[]interface{}{"labelPath", "empDept"},
 					},
 					Children: []*base.Op{&base.Op{
 						Kind:   "scan",
-						Fields: base.Fields{"dept", "city"},
+						Labels: base.Labels{"dept", "city"},
 						Params: []interface{}{
 							"csvData",
 							`
@@ -1258,7 +1258,7 @@ var TestCasesSimple = []TestCaseSimple{
 						},
 					}, &base.Op{
 						Kind:   "scan",
-						Fields: base.Fields{"emp", "empDept"},
+						Labels: base.Labels{"emp", "empDept"},
 						Params: []interface{}{
 							"csvData",
 							`
@@ -1281,10 +1281,10 @@ var TestCasesSimple = []TestCaseSimple{
 		about: "test csv-data scan->order-by",
 		o: base.Op{
 			Kind:   "order-by-offset-limit",
-			Fields: base.Fields{"a", "b"},
+			Labels: base.Labels{"a", "b"},
 			Params: []interface{}{
 				[]interface{}{
-					[]interface{}{"fieldPath", "a"},
+					[]interface{}{"labelPath", "a"},
 				},
 				[]interface{}{
 					"asc",
@@ -1292,7 +1292,7 @@ var TestCasesSimple = []TestCaseSimple{
 			},
 			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
-				Fields: base.Fields{"a", "b"},
+				Labels: base.Labels{"a", "b"},
 				Params: []interface{}{
 					"csvData",
 					`
@@ -1311,10 +1311,10 @@ var TestCasesSimple = []TestCaseSimple{
 		about: "test csv-data scan->order-by reverse-input",
 		o: base.Op{
 			Kind:   "order-by-offset-limit",
-			Fields: base.Fields{"a", "b"},
+			Labels: base.Labels{"a", "b"},
 			Params: []interface{}{
 				[]interface{}{
-					[]interface{}{"fieldPath", "a"},
+					[]interface{}{"labelPath", "a"},
 				},
 				[]interface{}{
 					"asc",
@@ -1322,7 +1322,7 @@ var TestCasesSimple = []TestCaseSimple{
 			},
 			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
-				Fields: base.Fields{"a", "b"},
+				Labels: base.Labels{"a", "b"},
 				Params: []interface{}{
 					"csvData",
 					`
@@ -1343,10 +1343,10 @@ var TestCasesSimple = []TestCaseSimple{
 		about: "test csv-data scan->order-by 1 record",
 		o: base.Op{
 			Kind:   "order-by-offset-limit",
-			Fields: base.Fields{"a", "b"},
+			Labels: base.Labels{"a", "b"},
 			Params: []interface{}{
 				[]interface{}{
-					[]interface{}{"fieldPath", "a"},
+					[]interface{}{"labelPath", "a"},
 				},
 				[]interface{}{
 					"asc",
@@ -1354,7 +1354,7 @@ var TestCasesSimple = []TestCaseSimple{
 			},
 			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
-				Fields: base.Fields{"a", "b"},
+				Labels: base.Labels{"a", "b"},
 				Params: []interface{}{
 					"csvData",
 					`
@@ -1371,10 +1371,10 @@ var TestCasesSimple = []TestCaseSimple{
 		about: "test csv-data scan->order-by DESC",
 		o: base.Op{
 			Kind:   "order-by-offset-limit",
-			Fields: base.Fields{"a", "b"},
+			Labels: base.Labels{"a", "b"},
 			Params: []interface{}{
 				[]interface{}{
-					[]interface{}{"fieldPath", "b"},
+					[]interface{}{"labelPath", "b"},
 				},
 				[]interface{}{
 					"desc",
@@ -1382,7 +1382,7 @@ var TestCasesSimple = []TestCaseSimple{
 			},
 			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
-				Fields: base.Fields{"a", "b"},
+				Labels: base.Labels{"a", "b"},
 				Params: []interface{}{
 					"csvData",
 					`
@@ -1400,14 +1400,14 @@ var TestCasesSimple = []TestCaseSimple{
 		},
 	},
 	{
-		about: "test csv-data scan->order-by two-field",
+		about: "test csv-data scan->order-by two-label",
 		o: base.Op{
 			Kind:   "order-by-offset-limit",
-			Fields: base.Fields{"a", "b"},
+			Labels: base.Labels{"a", "b"},
 			Params: []interface{}{
 				[]interface{}{
-					[]interface{}{"fieldPath", "a"},
-					[]interface{}{"fieldPath", "b"},
+					[]interface{}{"labelPath", "a"},
+					[]interface{}{"labelPath", "b"},
 				},
 				[]interface{}{
 					"asc",
@@ -1416,7 +1416,7 @@ var TestCasesSimple = []TestCaseSimple{
 			},
 			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
-				Fields: base.Fields{"a", "b"},
+				Labels: base.Labels{"a", "b"},
 				Params: []interface{}{
 					"csvData",
 					`
@@ -1434,14 +1434,14 @@ var TestCasesSimple = []TestCaseSimple{
 		},
 	},
 	{
-		about: "test csv-data scan->order-by two-field, DESC, ASC",
+		about: "test csv-data scan->order-by two-label, DESC, ASC",
 		o: base.Op{
 			Kind:   "order-by-offset-limit",
-			Fields: base.Fields{"a", "b"},
+			Labels: base.Labels{"a", "b"},
 			Params: []interface{}{
 				[]interface{}{
-					[]interface{}{"fieldPath", "a"},
-					[]interface{}{"fieldPath", "b"},
+					[]interface{}{"labelPath", "a"},
+					[]interface{}{"labelPath", "b"},
 				},
 				[]interface{}{
 					"desc",
@@ -1450,7 +1450,7 @@ var TestCasesSimple = []TestCaseSimple{
 			},
 			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
-				Fields: base.Fields{"a", "b"},
+				Labels: base.Labels{"a", "b"},
 				Params: []interface{}{
 					"csvData",
 					`
@@ -1468,14 +1468,14 @@ var TestCasesSimple = []TestCaseSimple{
 		},
 	},
 	{
-		about: "test csv-data scan->order-by two-field, ASC, DESC",
+		about: "test csv-data scan->order-by two-label, ASC, DESC",
 		o: base.Op{
 			Kind:   "order-by-offset-limit",
-			Fields: base.Fields{"a", "b"},
+			Labels: base.Labels{"a", "b"},
 			Params: []interface{}{
 				[]interface{}{
-					[]interface{}{"fieldPath", "a"},
-					[]interface{}{"fieldPath", "b"},
+					[]interface{}{"labelPath", "a"},
+					[]interface{}{"labelPath", "b"},
 				},
 				[]interface{}{
 					"asc",
@@ -1484,7 +1484,7 @@ var TestCasesSimple = []TestCaseSimple{
 			},
 			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
-				Fields: base.Fields{"a", "b"},
+				Labels: base.Labels{"a", "b"},
 				Params: []interface{}{
 					"csvData",
 					`
@@ -1502,14 +1502,14 @@ var TestCasesSimple = []TestCaseSimple{
 		},
 	},
 	{
-		about: "test csv-data scan->order-by two-field, ASC, DESC, str+int",
+		about: "test csv-data scan->order-by two-label, ASC, DESC, str+int",
 		o: base.Op{
 			Kind:   "order-by-offset-limit",
-			Fields: base.Fields{"a", "b"},
+			Labels: base.Labels{"a", "b"},
 			Params: []interface{}{
 				[]interface{}{
-					[]interface{}{"fieldPath", "a"},
-					[]interface{}{"fieldPath", "b"},
+					[]interface{}{"labelPath", "a"},
+					[]interface{}{"labelPath", "b"},
 				},
 				[]interface{}{
 					"asc",
@@ -1518,7 +1518,7 @@ var TestCasesSimple = []TestCaseSimple{
 			},
 			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
-				Fields: base.Fields{"a", "b"},
+				Labels: base.Labels{"a", "b"},
 				Params: []interface{}{
 					"csvData",
 					`
@@ -1536,14 +1536,14 @@ var TestCasesSimple = []TestCaseSimple{
 		},
 	},
 	{
-		about: "test csv-data scan->order-by two-field, ASC, DESC, bool+int",
+		about: "test csv-data scan->order-by two-label, ASC, DESC, bool+int",
 		o: base.Op{
 			Kind:   "order-by-offset-limit",
-			Fields: base.Fields{"a", "b"},
+			Labels: base.Labels{"a", "b"},
 			Params: []interface{}{
 				[]interface{}{
-					[]interface{}{"fieldPath", "a"},
-					[]interface{}{"fieldPath", "b"},
+					[]interface{}{"labelPath", "a"},
+					[]interface{}{"labelPath", "b"},
 				},
 				[]interface{}{
 					"asc",
@@ -1552,7 +1552,7 @@ var TestCasesSimple = []TestCaseSimple{
 			},
 			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
-				Fields: base.Fields{"a", "b"},
+				Labels: base.Labels{"a", "b"},
 				Params: []interface{}{
 					"csvData",
 					`
@@ -1573,10 +1573,10 @@ var TestCasesSimple = []TestCaseSimple{
 		about: "test csv-data scan->order-by OFFSET 0 LIMIT 1",
 		o: base.Op{
 			Kind:   "order-by-offset-limit",
-			Fields: base.Fields{"a", "b"},
+			Labels: base.Labels{"a", "b"},
 			Params: []interface{}{
 				[]interface{}{
-					[]interface{}{"fieldPath", "a"},
+					[]interface{}{"labelPath", "a"},
 				},
 				[]interface{}{
 					"asc",
@@ -1586,7 +1586,7 @@ var TestCasesSimple = []TestCaseSimple{
 			},
 			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
-				Fields: base.Fields{"a", "b"},
+				Labels: base.Labels{"a", "b"},
 				Params: []interface{}{
 					"csvData",
 					`
@@ -1605,10 +1605,10 @@ var TestCasesSimple = []TestCaseSimple{
 		about: "test csv-data scan->order-by OFFSET 0 LIMIT 100",
 		o: base.Op{
 			Kind:   "order-by-offset-limit",
-			Fields: base.Fields{"a", "b"},
+			Labels: base.Labels{"a", "b"},
 			Params: []interface{}{
 				[]interface{}{
-					[]interface{}{"fieldPath", "a"},
+					[]interface{}{"labelPath", "a"},
 				},
 				[]interface{}{
 					"asc",
@@ -1618,7 +1618,7 @@ var TestCasesSimple = []TestCaseSimple{
 			},
 			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
-				Fields: base.Fields{"a", "b"},
+				Labels: base.Labels{"a", "b"},
 				Params: []interface{}{
 					"csvData",
 					`
@@ -1639,10 +1639,10 @@ var TestCasesSimple = []TestCaseSimple{
 		about: "test csv-data scan->order-by OFFSET 100 LIMIT 100",
 		o: base.Op{
 			Kind:   "order-by-offset-limit",
-			Fields: base.Fields{"a", "b"},
+			Labels: base.Labels{"a", "b"},
 			Params: []interface{}{
 				[]interface{}{
-					[]interface{}{"fieldPath", "a"},
+					[]interface{}{"labelPath", "a"},
 				},
 				[]interface{}{
 					"asc",
@@ -1652,7 +1652,7 @@ var TestCasesSimple = []TestCaseSimple{
 			},
 			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
-				Fields: base.Fields{"a", "b"},
+				Labels: base.Labels{"a", "b"},
 				Params: []interface{}{
 					"csvData",
 					`
@@ -1669,10 +1669,10 @@ var TestCasesSimple = []TestCaseSimple{
 		about: "test csv-data scan->order-by OFFSET 1 LIMIT 0",
 		o: base.Op{
 			Kind:   "order-by-offset-limit",
-			Fields: base.Fields{"a", "b"},
+			Labels: base.Labels{"a", "b"},
 			Params: []interface{}{
 				[]interface{}{
-					[]interface{}{"fieldPath", "a"},
+					[]interface{}{"labelPath", "a"},
 				},
 				[]interface{}{
 					"asc",
@@ -1682,7 +1682,7 @@ var TestCasesSimple = []TestCaseSimple{
 			},
 			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
-				Fields: base.Fields{"a", "b"},
+				Labels: base.Labels{"a", "b"},
 				Params: []interface{}{
 					"csvData",
 					`
@@ -1699,10 +1699,10 @@ var TestCasesSimple = []TestCaseSimple{
 		about: "test csv-data scan->order-by OFFSET 1 LIMIT 1",
 		o: base.Op{
 			Kind:   "order-by-offset-limit",
-			Fields: base.Fields{"a", "b"},
+			Labels: base.Labels{"a", "b"},
 			Params: []interface{}{
 				[]interface{}{
-					[]interface{}{"fieldPath", "a"},
+					[]interface{}{"labelPath", "a"},
 				},
 				[]interface{}{
 					"asc",
@@ -1712,7 +1712,7 @@ var TestCasesSimple = []TestCaseSimple{
 			},
 			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
-				Fields: base.Fields{"a", "b"},
+				Labels: base.Labels{"a", "b"},
 				Params: []interface{}{
 					"csvData",
 					`
@@ -1731,7 +1731,7 @@ var TestCasesSimple = []TestCaseSimple{
 		about: "test csv-data scan->NIL-order-by OFFSET 1 LIMIT 1",
 		o: base.Op{
 			Kind:   "order-by-offset-limit",
-			Fields: base.Fields{"a", "b"},
+			Labels: base.Labels{"a", "b"},
 			Params: []interface{}{
 				[]interface{}{},
 				[]interface{}{},
@@ -1740,7 +1740,7 @@ var TestCasesSimple = []TestCaseSimple{
 			},
 			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
-				Fields: base.Fields{"a", "b"},
+				Labels: base.Labels{"a", "b"},
 				Params: []interface{}{
 					"csvData",
 					`
@@ -1759,11 +1759,11 @@ var TestCasesSimple = []TestCaseSimple{
 		about: "test csv-data scan->join-nl-inner->order-by",
 		o: base.Op{
 			Kind:   "order-by-offset-limit",
-			Fields: base.Fields{"dept", "city", "emp", "empDept"},
+			Labels: base.Labels{"dept", "city", "emp", "empDept"},
 			Params: []interface{}{
 				[]interface{}{
-					[]interface{}{"fieldPath", "dept"},
-					[]interface{}{"fieldPath", "emp"},
+					[]interface{}{"labelPath", "dept"},
+					[]interface{}{"labelPath", "emp"},
 				},
 				[]interface{}{
 					"asc",
@@ -1774,15 +1774,15 @@ var TestCasesSimple = []TestCaseSimple{
 			},
 			Children: []*base.Op{&base.Op{
 				Kind:   "join-nl-inner",
-				Fields: base.Fields{"dept", "city", "emp", "empDept"},
+				Labels: base.Labels{"dept", "city", "emp", "empDept"},
 				Params: []interface{}{
 					"eq",
-					[]interface{}{"fieldPath", "dept"},
-					[]interface{}{"fieldPath", "empDept"},
+					[]interface{}{"labelPath", "dept"},
+					[]interface{}{"labelPath", "empDept"},
 				},
 				Children: []*base.Op{&base.Op{
 					Kind:   "scan",
-					Fields: base.Fields{"dept", "city"},
+					Labels: base.Labels{"dept", "city"},
 					Params: []interface{}{
 						"csvData",
 						`
@@ -1793,7 +1793,7 @@ var TestCasesSimple = []TestCaseSimple{
 					},
 				}, &base.Op{
 					Kind:   "scan",
-					Fields: base.Fields{"emp", "empDept"},
+					Labels: base.Labels{"emp", "empDept"},
 					Params: []interface{}{
 						"csvData",
 						`
@@ -1818,10 +1818,10 @@ var TestCasesSimple = []TestCaseSimple{
 		about: "test csv-data scan->union-all->order-by",
 		o: base.Op{
 			Kind:   "order-by-offset-limit",
-			Fields: base.Fields{"a", "b", "c"},
+			Labels: base.Labels{"a", "b", "c"},
 			Params: []interface{}{
 				[]interface{}{
-					[]interface{}{"fieldPath", "b"},
+					[]interface{}{"labelPath", "b"},
 				},
 				[]interface{}{
 					"asc",
@@ -1829,10 +1829,10 @@ var TestCasesSimple = []TestCaseSimple{
 			},
 			Children: []*base.Op{&base.Op{
 				Kind:   "union-all",
-				Fields: base.Fields{"a", "b", "c"},
+				Labels: base.Labels{"a", "b", "c"},
 				Children: []*base.Op{&base.Op{
 					Kind:   "scan",
-					Fields: base.Fields{"a", "b", "c"},
+					Labels: base.Labels{"a", "b", "c"},
 					Params: []interface{}{
 						"csvData",
 						`
@@ -1842,7 +1842,7 @@ var TestCasesSimple = []TestCaseSimple{
 					},
 				}, &base.Op{
 					Kind:   "scan",
-					Fields: base.Fields{"b"},
+					Labels: base.Labels{"b"},
 					Params: []interface{}{
 						"csvData",
 						`
@@ -1864,10 +1864,10 @@ var TestCasesSimple = []TestCaseSimple{
 		about: "test csv-data scan->union-all->order-by just 1 scan",
 		o: base.Op{
 			Kind:   "order-by-offset-limit",
-			Fields: base.Fields{"a", "b", "c"},
+			Labels: base.Labels{"a", "b", "c"},
 			Params: []interface{}{
 				[]interface{}{
-					[]interface{}{"fieldPath", "b"},
+					[]interface{}{"labelPath", "b"},
 				},
 				[]interface{}{
 					"asc",
@@ -1875,10 +1875,10 @@ var TestCasesSimple = []TestCaseSimple{
 			},
 			Children: []*base.Op{&base.Op{
 				Kind:   "union-all",
-				Fields: base.Fields{"a", "b", "c"},
+				Labels: base.Labels{"a", "b", "c"},
 				Children: []*base.Op{&base.Op{
 					Kind:   "scan",
-					Fields: base.Fields{"a", "b", "c"},
+					Labels: base.Labels{"a", "b", "c"},
 					Params: []interface{}{
 						"csvData",
 						`
@@ -1898,10 +1898,10 @@ var TestCasesSimple = []TestCaseSimple{
 		about: "test csv-data scan->union-all->order-by more complex",
 		o: base.Op{
 			Kind:   "order-by-offset-limit",
-			Fields: base.Fields{"a", "b", "c"},
+			Labels: base.Labels{"a", "b", "c"},
 			Params: []interface{}{
 				[]interface{}{
-					[]interface{}{"fieldPath", "b"},
+					[]interface{}{"labelPath", "b"},
 				},
 				[]interface{}{
 					"asc",
@@ -1909,25 +1909,25 @@ var TestCasesSimple = []TestCaseSimple{
 			},
 			Children: []*base.Op{&base.Op{
 				Kind:   "union-all",
-				Fields: base.Fields{"a", "b", "c"},
+				Labels: base.Labels{"a", "b", "c"},
 				Children: []*base.Op{&base.Op{
 					Kind:   "project",
-					Fields: base.Fields{"b", "c"},
+					Labels: base.Labels{"b", "c"},
 					Params: []interface{}{
-						[]interface{}{"fieldPath", "b"},
-						[]interface{}{"fieldPath", "c"},
+						[]interface{}{"labelPath", "b"},
+						[]interface{}{"labelPath", "c"},
 					},
 					Children: []*base.Op{&base.Op{
 						Kind:   "filter",
-						Fields: base.Fields{"a", "b", "c"},
+						Labels: base.Labels{"a", "b", "c"},
 						Params: []interface{}{
 							"eq",
-							[]interface{}{"fieldPath", "c"},
+							[]interface{}{"labelPath", "c"},
 							[]interface{}{"json", `3000`},
 						},
 						Children: []*base.Op{&base.Op{
 							Kind:   "scan",
-							Fields: base.Fields{"a", "b", "c"},
+							Labels: base.Labels{"a", "b", "c"},
 							Params: []interface{}{
 								"csvData",
 								`
@@ -1941,22 +1941,22 @@ var TestCasesSimple = []TestCaseSimple{
 					}},
 				}, &base.Op{
 					Kind:   "project",
-					Fields: base.Fields{"b", "a"},
+					Labels: base.Labels{"b", "a"},
 					Params: []interface{}{
-						[]interface{}{"fieldPath", "b"},
-						[]interface{}{"fieldPath", "a"},
+						[]interface{}{"labelPath", "b"},
+						[]interface{}{"labelPath", "a"},
 					},
 					Children: []*base.Op{&base.Op{
 						Kind:   "filter",
-						Fields: base.Fields{"a", "b", "c"},
+						Labels: base.Labels{"a", "b", "c"},
 						Params: []interface{}{
 							"eq",
-							[]interface{}{"fieldPath", "a"},
+							[]interface{}{"labelPath", "a"},
 							[]interface{}{"json", `10`},
 						},
 						Children: []*base.Op{&base.Op{
 							Kind:   "scan",
-							Fields: base.Fields{"a", "b", "c"},
+							Labels: base.Labels{"a", "b", "c"},
 							Params: []interface{}{
 								"csvData",
 								`

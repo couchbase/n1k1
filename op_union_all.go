@@ -11,7 +11,7 @@ func OpUnionAll(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	pathNextU := EmitPush(pathNext, "U") // !lz
 
 	numChildren := len(o.Children)
-	numFields := len(o.Fields)
+	numLabels := len(o.Labels)
 
 	// Implemented via data-staging concurrent actors, with one actor
 	// per union contributor.
@@ -39,17 +39,17 @@ func OpUnionAll(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 					lzVars = lzVars.PushForConcurrency()
 
-					lzValsUnion := make(base.Vals, numFields)
+					lzValsUnion := make(base.Vals, numLabels)
 
 					lzYieldValsOrig := lzYieldVals
 
 					lzYieldVals = func(lzVals base.Vals) {
-						// Remap incoming vals to the union's field positions.
-						for unionIdx, unionField := range o.Fields { // !lz
+						// Remap incoming vals to the union's label positions.
+						for unionIdx, unionLabel := range o.Labels { // !lz
 							found := false // !lz
 
-							for childIdx, childField := range child.Fields { // !lz
-								if childField == unionField { // !lz
+							for childIdx, childLabel := range child.Labels { // !lz
+								if childLabel == unionLabel { // !lz
 									lzValsUnion[unionIdx] = lzVals[childIdx]
 									found = true // !lz
 									break        // !lz

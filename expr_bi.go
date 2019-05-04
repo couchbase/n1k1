@@ -11,7 +11,7 @@ func init() {
 }
 
 // MakeBiExprFunc is for two-argument or "binary" expressions.
-func MakeBiExprFunc(lzVars *base.Vars, fields base.Fields, types base.Types,
+func MakeBiExprFunc(lzVars *base.Vars, labels base.Labels, types base.Types,
 	params []interface{}, path string, biExprFunc base.BiExprFunc) (
 	lzExprFunc base.ExprFunc) {
 	exprA := params[0].([]interface{})
@@ -26,11 +26,11 @@ func MakeBiExprFunc(lzVars *base.Vars, fields base.Fields, types base.Types,
 
 	if LzScope {
 		lzExprFunc =
-			MakeExprFunc(lzVars, fields, types, exprA, path, "A") // !lz
+			MakeExprFunc(lzVars, labels, types, exprA, path, "A") // !lz
 		lzA := lzExprFunc
 
 		lzExprFunc =
-			MakeExprFunc(lzVars, fields, types, exprB, path, "B") // !lz
+			MakeExprFunc(lzVars, labels, types, exprB, path, "B") // !lz
 		lzB := lzExprFunc
 
 		lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
@@ -46,7 +46,7 @@ func MakeBiExprFunc(lzVars *base.Vars, fields base.Fields, types base.Types,
 
 // -----------------------------------------------------
 
-func ExprEq(lzVars *base.Vars, fields base.Fields, types base.Types,
+func ExprEq(lzVars *base.Vars, labels base.Labels, types base.Types,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
 	biExprFunc := func(lzA, lzB base.ExprFunc, lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) { // !lz
 		if LzScope {
@@ -63,14 +63,14 @@ func ExprEq(lzVars *base.Vars, fields base.Fields, types base.Types,
 	} // !lz
 
 	lzExprFunc =
-		MakeBiExprFunc(lzVars, fields, types, params, path, biExprFunc) // !lz
+		MakeBiExprFunc(lzVars, labels, types, params, path, biExprFunc) // !lz
 
 	return lzExprFunc
 }
 
 // -----------------------------------------------------
 
-func ExprOr(lzVars *base.Vars, fields base.Fields, types base.Types,
+func ExprOr(lzVars *base.Vars, labels base.Labels, types base.Types,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
 	biExprFunc := func(lzA, lzB base.ExprFunc, lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) { // !lz
 		// TODO: This might not match N1QL logical OR semantics.
@@ -83,14 +83,14 @@ func ExprOr(lzVars *base.Vars, fields base.Fields, types base.Types,
 	} // !lz
 
 	lzExprFunc =
-		MakeBiExprFunc(lzVars, fields, types, params, path, biExprFunc) // !lz
+		MakeBiExprFunc(lzVars, labels, types, params, path, biExprFunc) // !lz
 
 	return lzExprFunc
 }
 
 // -----------------------------------------------------
 
-func ExprAnd(lzVars *base.Vars, fields base.Fields, types base.Types,
+func ExprAnd(lzVars *base.Vars, labels base.Labels, types base.Types,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
 	biExprFunc := func(lzA, lzB base.ExprFunc, lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) { // !lz
 		// TODO: This might not match N1QL logical AND semantics.
@@ -103,7 +103,7 @@ func ExprAnd(lzVars *base.Vars, fields base.Fields, types base.Types,
 	} // !lz
 
 	lzExprFunc =
-		MakeBiExprFunc(lzVars, fields, types, params, path, biExprFunc) // !lz
+		MakeBiExprFunc(lzVars, labels, types, params, path, biExprFunc) // !lz
 
 	return lzExprFunc
 }
