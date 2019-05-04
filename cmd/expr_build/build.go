@@ -73,6 +73,10 @@ func (fi *FuncInfo) Classify() {
 		fi.Tags["shortCircuits:null"] = true
 	}
 
+	if strings.HasPrefix(body, MissingOnArg) {
+		fi.Tags["shortCircuits:missing"] = true
+	}
+
 	if strings.HasPrefix(body, MissingOnFirstSecond) {
 		fi.Tags["shortCircuits:missing"] = true
 	}
@@ -85,10 +89,31 @@ func (fi *FuncInfo) Classify() {
 
 	sort.Strings(fi.ApplyReturns)
 
+	sawMissing := false
+	sawNull := false
+
 	var dedupe []string
 	for _, ar := range fi.ApplyReturns {
 		if len(dedupe) == 0 || dedupe[len(dedupe)-1] != ar {
 			dedupe = append(dedupe, ar)
+		}
+
+		if strings.Index(ar, "value.MISSING_VALUE") >= 0 {
+			sawMissing = true
+		}
+
+		if strings.Index(ar, "value.NULL_VALUE") >= 0 {
+			sawNull = true
+		}
+	}
+
+	if fi.EvaluateKind != "MULTILINE" {
+		if !sawMissing {
+			fi.Tags["notReturn:missing"] = true
+		}
+
+		if !sawNull {
+			fi.Tags["notReturn:null"] = true
 		}
 	}
 
@@ -115,6 +140,8 @@ func (fi *FuncInfo) Classify() {
 const MissingNullOnArgs = "\tfor _, arg := range args {\n\t\tif arg.Type() == value.MISSING {\n\t\t\treturn value.MISSING_VALUE, nil\n\t\t}\n\t}\n"
 
 const MissingNullOnArg = "\tif arg.Type() == value.MISSING || arg.Type() == value.NULL {\n\t\treturn arg, nil\n\t}"
+
+const MissingOnArg = "\tif arg.Type() == value.MISSING {\n\t\treturn value.MISSING_VALUE, nil\n\t}"
 
 const MissingOnFirstSecond = "\tif first.Type() == value.MISSING || second.Type() == value.MISSING {\n\t\treturn value.MISSING_VALUE, nil\n\t}"
 
