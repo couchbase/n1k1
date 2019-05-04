@@ -99,15 +99,25 @@ func (fi *FuncInfo) Classify() {
 		}
 
 		if strings.Index(ar, "value.MISSING_VALUE") >= 0 {
+			fi.Tags["returns:missing"] = true
 			sawMissing = true
-		}
-
-		if strings.Index(ar, "value.NULL_VALUE") >= 0 {
+		} else if strings.Index(ar, "value.NULL_VALUE") >= 0 {
+			fi.Tags["returns:null"] = true
 			sawNull = true
+		} else if strings.Index(ar, "value.FALSE_VALUE") >= 0 ||
+			strings.Index(ar, "value.TRUE_VALUE") >= 0 {
+			fi.Tags["returns:bool"] = true
+		} else if strings.HasPrefix(ar, "value.NewValue(math.") &&
+			strings.HasSuffix(ar, "(arg.Actual().(float64))), nil") {
+			fi.Tags["returns:number"] = true
+		} else if strings.HasSuffix(ar, "_NUMBER, nil") {
+			fi.Tags["returns:number"] = true
+		} else {
+			fi.Tags["returns:other"] = true
 		}
 	}
 
-	if fi.EvaluateKind != "MULTILINE" {
+	if len(fi.ApplyLines) > 0 {
 		if !sawMissing {
 			fi.Tags["notReturn:missing"] = true
 		}
