@@ -89,9 +89,6 @@ func (fi *FuncInfo) Classify() {
 
 	sort.Strings(fi.ApplyReturns)
 
-	sawMissing := false
-	sawNull := false
-
 	var dedupe []string
 	for _, ar := range fi.ApplyReturns {
 		if len(dedupe) == 0 || dedupe[len(dedupe)-1] != ar {
@@ -100,10 +97,8 @@ func (fi *FuncInfo) Classify() {
 
 		if strings.Index(ar, "value.MISSING_VALUE") >= 0 {
 			fi.Tags["returns:missing"] = true
-			sawMissing = true
 		} else if strings.Index(ar, "value.NULL_VALUE") >= 0 {
 			fi.Tags["returns:null"] = true
-			sawNull = true
 		} else if strings.Index(ar, "value.FALSE_VALUE") >= 0 ||
 			strings.Index(ar, "value.TRUE_VALUE") >= 0 {
 			fi.Tags["returns:bool"] = true
@@ -115,16 +110,6 @@ func (fi *FuncInfo) Classify() {
 			fi.Tags["returns:number"] = true
 		} else {
 			fi.Tags["returns:other"] = true
-		}
-	}
-
-	if len(fi.ApplyLines) > 0 {
-		if !sawMissing {
-			fi.Tags["notReturn:missing"] = true
-		}
-
-		if !sawNull {
-			fi.Tags["notReturn:null"] = true
 		}
 	}
 
