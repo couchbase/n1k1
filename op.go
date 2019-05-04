@@ -8,13 +8,11 @@ import (
 
 func ExecOp(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	lzYieldErr base.YieldErr, path, pathItem string) {
-	pathNext := EmitPush(path, pathItem)
-
-	defer EmitPop(path, pathItem)
-
 	if o == nil {
 		return
 	}
+
+	pathNext := EmitPush(path, pathItem)
 
 	switch o.Kind {
 	case "scan":
@@ -38,4 +36,6 @@ func ExecOp(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	case "union-all":
 		OpUnionAll(o, lzVars, lzYieldVals, lzYieldErr, path, pathNext) // !lz
 	}
+
+	EmitPop(path, pathItem)
 }
