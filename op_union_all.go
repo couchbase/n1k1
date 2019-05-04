@@ -39,6 +39,8 @@ func OpUnionAll(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 					childi := lzActorData.(int) // !lz
 					child := o.Children[childi] // !lz
 
+					lzVars = lzVars.PushForConcurrency()
+
 					lzValsUnion := make(base.Vals, numFields)
 
 					lzYieldValsOrig := lzYieldVals
@@ -63,8 +65,6 @@ func OpUnionAll(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 						lzYieldValsOrig(lzValsUnion)
 					}
-
-					lzVars = lzVars.PushForConcurrency()
 
 					ExecOp(child, lzVars, lzYieldVals, lzYieldErr, pathNextU, "UO") // !lz
 				}
