@@ -56,18 +56,18 @@ func (c *ValComparer) CompareDeep(a, b []byte, depth int) int {
 	// Both types are the same, so need type-based cases...
 	switch aValueType {
 	case jsonparser.String:
-		aBuf := c.BytesGet(0, depth)
-		bBuf := c.BytesGet(1, depth)
+		aBuf := c.BytesAcquire(0, depth)
+		bBuf := c.BytesAcquire(1, depth)
 
 		av, aErr := jsonparser.Unescape(aValue, aBuf)
 		bv, bErr := jsonparser.Unescape(bValue, bBuf)
 
+		c.BytesRelease(0, depth, av)
+		c.BytesRelease(1, depth, bv)
+
 		if aErr != nil || bErr != nil {
 			return CompareErr(aErr, bErr)
 		}
-
-		c.BytesSet(0, depth, av)
-		c.BytesSet(1, depth, bv)
 
 		return bytes.Compare(av, bv)
 
@@ -93,7 +93,7 @@ func (c *ValComparer) CompareDeep(a, b []byte, depth int) int {
 		return int(aValue[0]) - int(bValue[0]) // Ex: 't' - 'f'.
 
 	case jsonparser.Array:
-		bItems := c.BytesSliceGet(depth)
+		bItems := c.BytesSliceAcquire(depth)
 
 		_, bErr := jsonparser.ArrayEach(bValue,
 			func(v []byte, vT jsonparser.ValueType, vOffset int, vErr error) {
@@ -123,7 +123,7 @@ func (c *ValComparer) CompareDeep(a, b []byte, depth int) int {
 				i++
 			})
 
-		c.BytesSliceSet(depth, bItems)
+		c.BytesSliceRelease(depth, bItems)
 
 		if i < bLen {
 			return -1
@@ -136,7 +136,7 @@ func (c *ValComparer) CompareDeep(a, b []byte, depth int) int {
 		return cmp
 
 	case jsonparser.Object:
-		kvs := c.KeyValsGet(depth)
+		kvs := c.KeyValsAcquire(depth)
 
 		var aLen int
 		aErr := jsonparser.ObjectEach(aValue,
@@ -156,11 +156,11 @@ func (c *ValComparer) CompareDeep(a, b []byte, depth int) int {
 				return nil
 			})
 
+		c.KeyValsRelease(depth, kvs)
+
 		if aErr != nil || bErr != nil {
 			return CompareErr(aErr, bErr)
 		}
-
-		c.KeyValsSet(depth, kvs)
 
 		if aLen != bLen {
 			return aLen - bLen // Larger object wins.
@@ -215,7 +215,7 @@ func (c *ValComparer) CompareDeep(a, b []byte, depth int) int {
 
 // ---------------------------------------------
 
-func (c *ValComparer) BytesGet(pos, depth int) []byte {
+func (c *ValComparer) BytesAcquire(pos, depth int) []byte {
 	byDepth := c.Bytes[pos]
 
 	for len(byDepth) < depth+1 {
@@ -226,13 +226,13 @@ func (c *ValComparer) BytesGet(pos, depth int) []byte {
 	return byDepth[depth]
 }
 
-func (c *ValComparer) BytesSet(pos, depth int, s []byte) {
+func (c *ValComparer) BytesRelease(pos, depth int, s []byte) {
 	c.Bytes[pos][depth] = s[0:cap(s)]
 }
 
 // ---------------------------------------------
 
-func (c *ValComparer) BytesSliceGet(depth int) [][]byte {
+func (c *ValComparer) BytesSliceAcquire(depth int) [][]byte {
 	for len(c.BytesSlice) < depth+1 {
 		c.BytesSlice = append(c.BytesSlice, nil)
 	}
@@ -240,13 +240,13 @@ func (c *ValComparer) BytesSliceGet(depth int) [][]byte {
 	return c.BytesSlice[depth]
 }
 
-func (c *ValComparer) BytesSliceSet(depth int, s [][]byte) {
+func (c *ValComparer) BytesSliceRelease(depth int, s [][]byte) {
 	c.BytesSlice[depth] = s[:0]
 }
 
 // ---------------------------------------------
 
-func (c *ValComparer) KeyValsGet(depth int) KeyVals {
+func (c *ValComparer) KeyValsAcquire(depth int) KeyVals {
 	for len(c.KeyVals) < depth+1 {
 		c.KeyVals = append(c.KeyVals, nil)
 	}
@@ -254,7 +254,7 @@ func (c *ValComparer) KeyValsGet(depth int) KeyVals {
 	return c.KeyVals[depth]
 }
 
-func (c *ValComparer) KeyValsSet(depth int, s KeyVals) {
+func (c *ValComparer) KeyValsRelease(depth int, s KeyVals) {
 	c.KeyVals[depth] = s[:0]
 }
 
@@ -299,6 +299,8 @@ func (a KeyVals) Less(i, j int) bool {
 	return a[i].Pos > a[j].Pos // Reverse ordering on Pos.
 }
 
+// ---------------------------------------------
+
 // When append()'ing to the kvs, the entry that we're going to
 // overwrite might have a Key []byte that we can reuse.
 func ReuseNextKey(kvs KeyVals) []byte {
@@ -338,12 +340,14 @@ func (a *HeapValsProjected) GetProjected(i int) Vals {
 func (a *HeapValsProjected) Len() int { return len(a.ValsProjected) }
 
 func (a *HeapValsProjected) Swap(i, j int) {
-	a.ValsProjected[i], a.ValsProjected[j] = a.ValsProjected[j], a.ValsProjected[i]
+	a.ValsProjected[i], a.ValsProjected[j] =
+		a.ValsProjected[j], a.ValsProjected[i]
 }
 
 func (a *HeapValsProjected) Less(i, j int) bool {
 	// Reverse of normal LessFunc() so that we have a max-heap.
-	return a.LessFunc(a.ValsProjected[j].Projected, a.ValsProjected[i].Projected)
+	return a.LessFunc(
+		a.ValsProjected[j].Projected, a.ValsProjected[i].Projected)
 }
 
 func (a *HeapValsProjected) Push(x interface{}) {
