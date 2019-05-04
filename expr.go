@@ -9,16 +9,6 @@ const LzScope = true
 
 // -----------------------------------------------------
 
-// Marks the start of a nested "emit capture" area.
-var EmitPush = func(path, pathItem string) string {
-	return path + "_" + pathItem // Placeholder for compiler.
-}
-
-// Marks the end of a nested "emit capture" area.
-var EmitPop = func(path, pathItem string) {} // Placeholder for compiler.
-
-// -----------------------------------------------------
-
 // ExprCatalog is a registry of all the known expression functions.
 var ExprCatalog = map[string]ExprCatalogFunc{
 	"json":      ExprJson,
