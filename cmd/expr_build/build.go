@@ -14,9 +14,6 @@ import (
 
 // ISSUES...
 //
-// - function Evaluate() returns error?
-//   need the lzYieldErr as a param in base.ExprFunc?
-//
 // - bindings?
 //
 // - a function often knows its domain of output types,

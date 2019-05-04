@@ -50,7 +50,7 @@ func ExprJson(lzVars *base.Vars, fields base.Fields, types base.Types,
 
 	var lzValJson base.Val = base.Val(json) // <== varLift: lzValJson by path
 
-	lzExprFunc = func(lzVals base.Vals) (lzVal base.Val) {
+	lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
 		lzVal = lzValJson
 		return lzVal
 	}
@@ -64,7 +64,7 @@ func ExprFieldPath(lzVars *base.Vars, fields base.Fields, types base.Types,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
 	idx := fields.IndexOf(params[0].(string))
 	if idx >= 0 {
-		lzExprFunc = func(lzVals base.Vals) (lzVal base.Val) {
+		lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
 			lzVal = lzVals[idx]
 
 			if len(params) > 1 { // !lz
@@ -79,7 +79,7 @@ func ExprFieldPath(lzVars *base.Vars, fields base.Fields, types base.Types,
 			return lzVal
 		}
 	} else {
-		lzExprFunc = func(lzVals base.Vals) (lzVal base.Val) {
+		lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
 			lzVal = base.ValMissing
 			return lzVal
 		}

@@ -65,7 +65,7 @@ func OpJoinNestedLoop(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 			var lzVal base.Val
 
-			lzVal = joinClauseFunc(lzVals) // <== emitCaptured: pathNext, "JF"
+			lzVal = joinClauseFunc(lzVals, lzYieldErr) // <== emitCaptured: pathNext, "JF"
 
 			if base.ValEqualTrue(lzVal) {
 				lzYieldValsOrig(lzVals) // <== emitCaptured: path ""

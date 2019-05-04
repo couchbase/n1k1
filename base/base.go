@@ -158,14 +158,14 @@ type Order struct {
 // -----------------------------------------------------
 
 // An ExprFunc evaluates an expression against the given vals.
-type ExprFunc func(vals Vals) Val
+type ExprFunc func(vals Vals, yieldErr YieldErr) Val
 
 // A BiExprFunc represents a two-parameter expression.
-type BiExprFunc func(a, b ExprFunc, vals Vals) Val
+type BiExprFunc func(a, b ExprFunc, vals Vals, yieldErr YieldErr) Val
 
 // A ProjectFunc projects (in relational parlance) the given vals into
 // resulting vals, reusing the pre-allocated valsPre if neeeded.
-type ProjectFunc func(vals, valsPre Vals) Vals
+type ProjectFunc func(vals, valsPre Vals, yieldErr YieldErr) Vals
 
 // -----------------------------------------------------
 

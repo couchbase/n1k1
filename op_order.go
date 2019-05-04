@@ -73,7 +73,7 @@ func OpOrderByOffsetLimit(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldV
 
 				lzVals = lzValsCopy
 
-				lzValsOut = lzProjectFunc(lzVals, lzValsOut) // <== emitCaptured: pathNextOOL "PF"
+				lzValsOut = lzProjectFunc(lzVals, lzValsOut, lzYieldErr) // <== emitCaptured: pathNextOOL "PF"
 
 				lzHeapLen := lzHeap.Len()
 				if lzHeapLen < offsetPlusLimit || lzHeapLen == 0 || lzLessFunc(lzValsOut, lzHeap.GetProjected(0)) {

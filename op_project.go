@@ -21,7 +21,7 @@ func OpProject(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 		lzYieldVals = func(lzVals base.Vals) {
 			lzValsOut := lzValsReuse[:0]
 
-			lzValsOut = projectFunc(lzVals, lzValsOut) // <== emitCaptured: pathNextP "PF"
+			lzValsOut = projectFunc(lzVals, lzValsOut, lzYieldErr) // <== emitCaptured: pathNextP "PF"
 
 			lzValsReuse = lzValsOut
 
@@ -54,12 +54,12 @@ func MakeProjectFunc(lzVars *base.Vars, fields base.Fields, types base.Types,
 		exprFuncs = append(exprFuncs, lzExprFunc) // !lz
 	}
 
-	lzProjectFunc = func(lzVals, lzValsOut base.Vals) base.Vals {
+	lzProjectFunc = func(lzVals, lzValsOut base.Vals, lzYieldErr base.YieldErr) base.Vals {
 		for i := range exprFuncs { // !lz
 			if LzScope {
 				var lzVal base.Val
 
-				lzVal = exprFuncs[i](lzVals) // <== emitCaptured: pathNext strconv.Itoa(i)
+				lzVal = exprFuncs[i](lzVals, lzYieldErr) // <== emitCaptured: pathNext strconv.Itoa(i)
 
 				// NOTE: lzVals are stable while we are building up
 				// lzValsOut, so no need to deep copy lzVal yet.
