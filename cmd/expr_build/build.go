@@ -16,6 +16,9 @@ import (
 //
 // - bindings?
 //
+// - ("add" 7 10 price) should be converted to
+//   ("add" 17 price)?
+//
 // - a function often knows its domain of output types,
 //   which can be leveraged by the next applied function?
 //
