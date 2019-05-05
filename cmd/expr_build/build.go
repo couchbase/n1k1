@@ -110,6 +110,10 @@ OUTER:
 			dedupe = append(dedupe, ar)
 		}
 
+		if !strings.HasSuffix(ar, ", nil") {
+			fi.Tags["canError"] = true
+		}
+
 		if strings.Index(ar, "value.MISSING_VALUE") >= 0 {
 			fi.Tags["returns:missing"] = true
 		} else if strings.Index(ar, "value.NULL_VALUE") >= 0 {
