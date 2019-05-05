@@ -16,9 +16,6 @@ import (
 //
 // - bindings?
 //
-// - ("add" 7 10 price) should be converted to
-//   ("add" 17 price)?
-//
 // - a function often knows its domain of output types,
 //   which can be leveraged by the next applied function?
 //
@@ -43,6 +40,10 @@ import (
 //   The answer helps choose which recycled pool to use?
 //
 // - some functions never return an error, always returning nil for error.
+//
+// - ("add" 7 10 price) should be simplified to ("add" 17 price)?
+//   ("concat" "a" "b") should be simplified to "ab"?
+//   BUT, these are uncommon situations?
 
 // ---------------------------------------------------------------
 
