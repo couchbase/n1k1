@@ -112,7 +112,9 @@ OUTER:
 		} else if strings.HasPrefix(ar, "value.") &&
 			strings.HasSuffix(ar, "NUMBER, nil") {
 			fi.Tags["returns:number"] = true
-		} else if ar == "value.NewValue(str), nil" {
+		} else if ar == "value.NewValue(str), nil" ||
+			ar == "value.NewValue(string(bytes)), nil" ||
+			ar == "value.EMPTY_STRING_VALUE, nil" {
 			fi.Tags["returns:string"] = true
 		} else {
 			if strings.HasPrefix(ar, "value.NewValue(") &&
@@ -144,6 +146,7 @@ OUTER:
 							fi.Tags["returns:number"] = true
 							continue OUTER
 						} else if strings.HasPrefix(vInit, "strings.Trim(") ||
+							strings.HasPrefix(vInit, "strings.Repeat(") ||
 							strings.HasPrefix(vInit, "strings.Replace(") ||
 							strings.HasPrefix(vInit, "strings.ToUpper(") ||
 							strings.HasPrefix(vInit, "strings.ToLower(") {
