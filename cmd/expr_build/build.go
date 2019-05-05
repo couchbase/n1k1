@@ -90,6 +90,8 @@ func (fi *FuncInfo) Classify() {
 	sort.Strings(fi.ApplyReturns)
 
 	var dedupe []string
+
+OUTER:
 	for _, ar := range fi.ApplyReturns {
 		if len(dedupe) == 0 || dedupe[len(dedupe)-1] != ar {
 			dedupe = append(dedupe, ar)
@@ -108,7 +110,51 @@ func (fi *FuncInfo) Classify() {
 		} else if strings.HasPrefix(ar, "value.") &&
 			strings.HasSuffix(ar, "_NUMBER, nil") {
 			fi.Tags["returns:number"] = true
+		} else if ar == "value.NewValue(str), nil" {
+			fi.Tags["returns:string"] = true
 		} else {
+			if strings.HasPrefix(ar, "value.NewValue(") &&
+				strings.HasSuffix(ar, "), nil") {
+				// Ex: "value.NewValue(ra), nil".
+				v := ar[len("value.NewValue("):]
+				v = v[0 : len(v)-len("), nil")] // Ex: "ra".
+
+				if strings.HasSuffix(v, ".String()") ||
+					strings.HasPrefix(v, "timeToStr(") {
+					fi.Tags["returns:string"] = true
+					continue OUTER
+				}
+
+				vVar := "\t" + v + " := " // Ex: "ra := ".
+				for _, line := range fi.ApplyLines {
+					if strings.HasPrefix(line, vVar) {
+						vInit := line[len(vVar):]
+						fmt.Printf("vInit: %s\n", vInit)
+						if strings.HasPrefix(vInit, ArrayMake) {
+							fi.Tags["returns:array"] = true
+							continue OUTER
+						} else if strings.HasSuffix(vInit, ".String()") {
+							fi.Tags["returns:string"] = true
+							continue OUTER
+						} else if vInit == "value.NULL_VALUE" {
+							fi.Tags["returns:null"] = true
+							continue OUTER
+						} else if strings.HasPrefix(vInit, "strings.Trim(") ||
+							strings.HasPrefix(vInit, "strings.ToUpper(") ||
+							strings.HasPrefix(vInit, "strings.ToLower(") {
+							fi.Tags["returns:string"] = true
+							continue OUTER
+						} else if strings.HasPrefix(vInit, "strings.Contains(") ||
+							strings.HasPrefix(vInit, "source.Contains") {
+							fi.Tags["returns:bool"] = true
+							continue OUTER
+						}
+
+						break
+					}
+				}
+			}
+
 			fi.Tags["returns:other"] = true
 		}
 	}
@@ -130,6 +176,10 @@ func (fi *FuncInfo) Classify() {
 		fi.ApplyLines[i] = strings.Replace(line, "\t", " ", -1)
 	}
 }
+
+// ---------------------------------------------------------------
+
+const ArrayMake = "make([]interface{}, "
 
 // ---------------------------------------------------------------
 
