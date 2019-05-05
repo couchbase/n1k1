@@ -9,13 +9,13 @@ import (
 
 var ValueTypePriority = []int{
 	jsonparser.NotExist: 0,
-	jsonparser.Unknown:  1,
-	jsonparser.Null:     2,
-	jsonparser.Boolean:  3,
-	jsonparser.Number:   4,
-	jsonparser.String:   5,
-	jsonparser.Array:    6,
-	jsonparser.Object:   7,
+	jsonparser.Null:     1,
+	jsonparser.Boolean:  2,
+	jsonparser.Number:   3,
+	jsonparser.String:   4,
+	jsonparser.Array:    5,
+	jsonparser.Object:   6,
+	jsonparser.Unknown:  7, // Ex: BINARY.
 }
 
 // ---------------------------------------------

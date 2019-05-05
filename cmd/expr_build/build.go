@@ -14,6 +14,18 @@ import (
 
 // ISSUES...
 //
+// - convert return x into... lvVal = x; goto NEXT's
+//
+// - convert value.NULL|NUMBER|ARRAY|Whatever into... ?
+//
+// - convert arg.Type() into... ?
+//
+// - convert arg, first, etc into... lzArg, lzFirst, etc?
+//
+// - convert foo.Actual().(float64) into... ?
+//
+// - convert value.NewValue(foo) into... ?
+//
 // - bindings?
 //
 // - a function often knows its domain of output types,
