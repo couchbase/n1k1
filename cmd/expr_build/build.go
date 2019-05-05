@@ -144,6 +144,7 @@ OUTER:
 							fi.Tags["returns:number"] = true
 							continue OUTER
 						} else if strings.HasPrefix(vInit, "strings.Trim(") ||
+							strings.HasPrefix(vInit, "strings.Replace(") ||
 							strings.HasPrefix(vInit, "strings.ToUpper(") ||
 							strings.HasPrefix(vInit, "strings.ToLower(") {
 							fi.Tags["returns:string"] = true
