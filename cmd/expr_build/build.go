@@ -107,8 +107,10 @@ OUTER:
 		} else if strings.HasPrefix(ar, "value.NewValue(math.") &&
 			strings.HasSuffix(ar, "(arg.Actual().(float64))), nil") {
 			fi.Tags["returns:number"] = true
+		} else if strings.HasPrefix(ar, "value.AsNumberValue(") {
+			fi.Tags["returns:number"] = true
 		} else if strings.HasPrefix(ar, "value.") &&
-			strings.HasSuffix(ar, "_NUMBER, nil") {
+			strings.HasSuffix(ar, "NUMBER, nil") {
 			fi.Tags["returns:number"] = true
 		} else if ar == "value.NewValue(str), nil" {
 			fi.Tags["returns:string"] = true
@@ -129,7 +131,6 @@ OUTER:
 				for _, line := range fi.ApplyLines {
 					if strings.HasPrefix(line, vVar) {
 						vInit := line[len(vVar):]
-						fmt.Printf("vInit: %s\n", vInit)
 						if strings.HasPrefix(vInit, ArrayMake) {
 							fi.Tags["returns:array"] = true
 							continue OUTER
