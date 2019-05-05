@@ -57,6 +57,8 @@ type FuncInfo struct {
 	Tags map[string]bool
 }
 
+// ---------------------------------------------------------------
+
 func (fi *FuncInfo) Classify() {
 	sort.Strings(fi.Registry)
 
@@ -369,7 +371,11 @@ func ExprBuild(sourceDir, outDir string) error {
 
 		jsonBytes, _ := json.MarshalIndent(fi, "", "  ")
 
-		contents = append(contents, string(jsonBytes))
+		json := string(jsonBytes)
+		json = strings.Replace(json, "/*", "{*", -1)
+		json = strings.Replace(json, "*/", "*}", -1)
+
+		contents = append(contents, json)
 	}
 
 	contents = append(contents, "*/")
