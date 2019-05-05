@@ -130,10 +130,12 @@ OUTER:
 			ar == "value.EMPTY_STRING_VALUE, nil" {
 			fi.Tags["returns:string"] = true
 		} else {
+			var v string
+
 			if strings.HasPrefix(ar, "value.NewValue(") &&
 				strings.HasSuffix(ar, "), nil") {
 				// Ex: "value.NewValue(ra), nil".
-				v := ar[len("value.NewValue("):]
+				v = ar[len("value.NewValue("):]
 				v = v[0 : len(v)-len("), nil")] // Ex: "ra".
 
 				if strings.HasSuffix(v, ".String()") ||
@@ -141,23 +143,40 @@ OUTER:
 					fi.Tags["returns:string"] = true
 					continue OUTER
 				}
+			} else if strings.HasSuffix(ar, ", nil") { // Ex: "sum, nil".
+				v = ar[0 : len(ar)-len(", nil")] // Ex: "sum".
+			}
 
+			if v != "" {
 				vVar := "\t" + v + " := " // Ex: "ra := ".
 				for _, line := range fi.ApplyLines {
 					if strings.HasPrefix(line, vVar) {
 						vInit := line[len(vVar):]
+
 						if strings.HasPrefix(vInit, ArrayMake) {
+							fi.Tags["returns:array"] = true
+							continue OUTER
+						} else if strings.HasSuffix(vInit, ".([]interface{})") {
 							fi.Tags["returns:array"] = true
 							continue OUTER
 						} else if strings.HasSuffix(vInit, ".String()") {
 							fi.Tags["returns:string"] = true
 							continue OUTER
-						} else if vInit == "value.NULL_VALUE" {
-							fi.Tags["returns:null"] = true
+						} else if vInit == "0" {
+							fi.Tags["returns:number"] = true
 							continue OUTER
 						} else if vInit == "0.0" {
 							fi.Tags["returns:number"] = true
 							continue OUTER
+						} else if vInit == "value.ZERO_NUMBER" {
+							fi.Tags["returns:number"] = true
+							continue OUTER
+						} else if vInit == "value.ONE_NUMBER" {
+							fi.Tags["returns:number"] = true
+							continue OUTER
+						} else if vInit == "value.NULL_VALUE" {
+							fi.Tags["returns:null"] = true
+							// continue OUTER // See anti-case: ArrayMin.
 						} else if strings.HasPrefix(vInit, "strings.Trim(") ||
 							strings.HasPrefix(vInit, "strings.Repeat(") ||
 							strings.HasPrefix(vInit, "strings.Replace(") ||
