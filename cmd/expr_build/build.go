@@ -140,6 +140,9 @@ OUTER:
 						} else if vInit == "value.NULL_VALUE" {
 							fi.Tags["returns:null"] = true
 							continue OUTER
+						} else if vInit == "0.0" {
+							fi.Tags["returns:number"] = true
+							continue OUTER
 						} else if strings.HasPrefix(vInit, "strings.Trim(") ||
 							strings.HasPrefix(vInit, "strings.ToUpper(") ||
 							strings.HasPrefix(vInit, "strings.ToLower(") {
