@@ -72,23 +72,30 @@ func (fi *FuncInfo) Classify() {
 
 	if strings.HasPrefix(body, MissingNullOnArgs) {
 		fi.Tags["shortCircuits:missing"] = true
+		fi.Tags["returns:missing"] = true
 	}
 
 	if strings.HasPrefix(body, MissingNullOnArg) {
 		fi.Tags["shortCircuits:missing"] = true
+		fi.Tags["returns:missing"] = true
+
 		fi.Tags["shortCircuits:null"] = true
+		fi.Tags["returns:null"] = true
 	}
 
 	if strings.HasPrefix(body, MissingOnArg) {
 		fi.Tags["shortCircuits:missing"] = true
+		fi.Tags["returns:missing"] = true
 	}
 
 	if strings.HasPrefix(body, MissingOnFirstSecond) {
 		fi.Tags["shortCircuits:missing"] = true
+		fi.Tags["returns:missing"] = true
 	}
 
 	if strings.HasPrefix(body, MissingOnFirstSecondThird) {
 		fi.Tags["shortCircuits:missing"] = true
+		fi.Tags["returns:missing"] = true
 	}
 
 	// ---------------------------------
@@ -174,15 +181,6 @@ OUTER:
 	}
 
 	fi.ApplyReturns = dedupe
-
-	if len(fi.ApplyReturns) == 3 {
-		if fi.ApplyReturns[0] == "value.MISSING_VALUE, nil" &&
-			fi.ApplyReturns[1] == "value.NULL_VALUE, nil" &&
-			strings.HasPrefix(fi.ApplyReturns[2], "value.NewValue(math.") &&
-			strings.HasSuffix(fi.ApplyReturns[2], "(arg.Actual().(float64))), nil") {
-			fi.Tags["returns:missing,null,number"] = true
-		}
-	}
 
 	// ---------------------------------
 
