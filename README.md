@@ -50,6 +50,9 @@ Some design ideas meant to help with n1k1's performance...
   - couchbase/rhmap is also intended to easily spill out to disk
     via mmap(), allowing hash-joins and DISTINCT processing
     on larger datasets.
+- error handling is push-based via a YieldErr callback...
+  - the YieldErr callback allows n1k1 to avoid continual, conservative
+    error handling instructions ("if err != nil { return nil, err }").
 
 ------------------------------------------
 ## Some features...
