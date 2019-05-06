@@ -172,8 +172,8 @@ func MakeLessFunc(lzVars *base.Vars, directions []interface{}) (
 			for idx := range directions { // !lz
 				direction := directions[idx] // !lz
 
-				lt, gt := true, false                               // !lz
-				if s, ok := direction.(string); ok && s == "desc" { // !lz
+				lt, gt := true, false             // !lz
+				if direction.(string) == "desc" { // !lz
 					lt, gt = false, true // !lz
 				} // !lz
 
