@@ -9,6 +9,7 @@ Some design ideas meant to help with n1k1's performance...
 - avoidance of sync.Pool.
 - avoidance of locking and channels as much as possible.
 - avoidance of map[string]interface{} and []interface{}.
+- avoidance of interface{} and boxed-value allocations.
 - []byte and [][]byte instead are used heavily,
   as they are easy to completely recycle and reuse.
 - []byte is faster for GC scanning/marking than interface{}.
@@ -27,6 +28,7 @@ Some design ideas meant to help with n1k1's performance...
   - data transfer between operators (e.g., from scan -> filter ->
     project) is a function call (which can sometimes be removed
     by compilation), instead of a channel send/recv between goroutines.
+  - iterator checks for HasNext() are avoided via push-based approach.
 - data-staging, pipeline breakers (batching)...
   - batching results between operator may be more friendly to CPU
     instruction & data caches.
@@ -119,6 +121,11 @@ efficiently execute that query-plan.
 
 ------------------------------------------
 ## TODO...
+
+- precompute data based on early constant detection.
+  - e.g., ARRAY_POSITION(hobbies, 0) might detect early that args[1]
+    is a constant number, rather than rechecking that args[1] is a
+    value.NUMBER during every Evaluate(item).
 
 - expr support
   - easy: convert Val to query/value.Value
