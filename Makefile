@@ -10,7 +10,7 @@ default:
 	go fmt ./...
 
 # Classify and convert query/expression.
-expr_convert:
+expr_build_run:
 	go build ./cmd/expr_build/
 	./expr_build
 	go fmt ./...
