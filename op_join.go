@@ -31,7 +31,7 @@ func OpJoinNestedLoop(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	isOuterLeft := joinKind == "outerLeft"
 
 	joinClauseFunc :=
-		MakeExprFunc(lzVars, labelsAB, nil, o.Params, pathNext, "JF") // !lz
+		MakeExprFunc(lzVars, labelsAB, o.Params, pathNext, "JF") // !lz
 
 	var lzHadInner bool
 

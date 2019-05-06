@@ -154,10 +154,6 @@ type ProjectFunc func(vals, valsPre Vals, yieldErr YieldErr) Vals
 
 // -----------------------------------------------------
 
-type Types []string // TODO.
-
-// -----------------------------------------------------
-
 // Vars are used for runtime variables, config, etc.
 type Vars struct {
 	Labels Labels

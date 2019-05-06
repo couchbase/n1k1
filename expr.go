@@ -16,16 +16,16 @@ var ExprCatalog = map[string]ExprCatalogFunc{
 }
 
 type ExprCatalogFunc func(lzVars *base.Vars, labels base.Labels,
-	types base.Types, params []interface{}, path string) base.ExprFunc
+	params []interface{}, path string) base.ExprFunc
 
 // -----------------------------------------------------
 
-func MakeExprFunc(lzVars *base.Vars, labels base.Labels, types base.Types,
+func MakeExprFunc(lzVars *base.Vars, labels base.Labels,
 	expr []interface{}, path, pathItem string) (lzExprFunc base.ExprFunc) {
 	pathNext := EmitPush(path, pathItem)
 
 	lzExprFunc =
-		ExprCatalog[expr[0].(string)](lzVars, labels, types, expr[1:], pathNext) // !lz
+		ExprCatalog[expr[0].(string)](lzVars, labels, expr[1:], pathNext) // !lz
 
 	EmitPop(path, pathItem)
 
@@ -34,7 +34,7 @@ func MakeExprFunc(lzVars *base.Vars, labels base.Labels, types base.Types,
 
 // -----------------------------------------------------
 
-func ExprJson(lzVars *base.Vars, labels base.Labels, types base.Types,
+func ExprJson(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
 	json := []byte(params[0].(string))
 
@@ -50,7 +50,7 @@ func ExprJson(lzVars *base.Vars, labels base.Labels, types base.Types,
 
 // -----------------------------------------------------
 
-func ExprLabelPath(lzVars *base.Vars, labels base.Labels, types base.Types,
+func ExprLabelPath(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
 	idx := labels.IndexOf(params[0].(string))
 	if idx >= 0 {

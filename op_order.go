@@ -39,10 +39,10 @@ func OpOrderByOffsetLimit(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldV
 
 		if len(orderBys) > 0 { // !lz
 			lzProjectFunc =
-				MakeProjectFunc(lzVars, o.Children[0].Labels, nil, orderBys, pathNextOOL, "PF") // !lz
+				MakeProjectFunc(lzVars, o.Children[0].Labels, orderBys, pathNextOOL, "PF") // !lz
 
 			lzLessFunc =
-				MakeLessFunc(lzVars, nil, directions) // !lz
+				MakeLessFunc(lzVars, directions) // !lz
 		} // !lz
 
 		// Used when there are ORDER-BY exprs.
@@ -161,9 +161,9 @@ func OpOrderByOffsetLimit(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldV
 	}
 }
 
-func MakeLessFunc(lzVars *base.Vars, types base.Types,
-	directions []interface{}) (lzLessFunc base.LessFunc) {
-	// TODO: One day use types to optimize.
+func MakeLessFunc(lzVars *base.Vars, directions []interface{}) (
+	lzLessFunc base.LessFunc) {
+	// TODO: One day use eagerly discovered types to optimize?
 
 	if len(directions) > 0 {
 		lzLessFunc = func(lzValsA, lzValsB base.Vals) bool {

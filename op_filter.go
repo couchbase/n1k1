@@ -10,7 +10,7 @@ func OpFilter(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 		pathNextF := EmitPush(pathNext, "F") // !lz
 
 		exprFunc :=
-			MakeExprFunc(lzVars, o.Children[0].Labels, nil, o.Params, pathNextF, "FF") // !lz
+			MakeExprFunc(lzVars, o.Children[0].Labels, o.Params, pathNextF, "FF") // !lz
 
 		lzYieldValsOrig := lzYieldVals
 
