@@ -264,21 +264,28 @@ efficiently execute that query-plan.
 
 - integration with scorch TermFieldReaders as a Scan source or operator?
   - merge join by docNum / docId field?
-  - UNFORNUTATELY, probably cannot compile a FTS conjunction/disjunction
-    as the children of an FTS conjunction/disjunction
+  - in the general case, cannot compile a FTS conjunction/disjunction
+    if the children of an FTS conjunction/disjunction
     are not known at compile time, unlike N1QL which has a compile-time
-    bounded expr tree
+    bounded expr tree...
     - so, it might be more similar to ANY x IN y ... END -- hardcoded codepath.
+  - some narrow edge cases (like, an explicit end-user term-search)
+    have a bounded expression tree, though?
+    - this might be ok for keyword type indexed fields?
 
 - merge join - COMPLEX with push-based engine...
   - merge join needs threading / locking / coroutines
     so that both children can feed the merge-joiner?
 
-- merge join needs a skip-ahead ability?
+- merge join needs a skip-ahead ability as an optimization?
   - idea: can introduce an optional lazy "SkipToHints" object or Vals
-    that's passed down to operator's children?
-    - an lzYieldVals callback can optionally add hints via
-      something like lzSkipToHints[2] = lzSkipToVal which operator #2 can check?
+    that's available to operator's children?
+    - an lzYieldVals callback can optionally provid skip hints via
+      something like lzVars.SkipToHints[2] = lzSkipToVal which
+      operator #0 and/or operator #1 can check?
+    - BUT, this will involve multiple goroutines across a merge join?
+      - configuring batchChSize to 0 might help with "interlock"
+        so that sibling goroutines don't progress too far ahead?
+      - and, SkipToHints might be traded during recycled batch exchange?
 
 - emit other languages?
-
