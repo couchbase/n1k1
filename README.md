@@ -162,26 +162,26 @@ efficiently execute that query-plan.
 
 - how to handle when fields aren't known?
   - such as immediate output of a scan?
-  - use "." for field name and fieldPath of ["."]
+  - use "." as the label and labelPath of ["."]
     to hold the entire document?
-  - 'real' fields need a field name prefix char, like '.'?
-    - example: if fieldPath [".", "city"] is projected
-      into field ".city", then it can be referred to
-      efficiently later as fieldPath [".city"] from then on
+  - 'real' fields need a label prefix char, like '.'?
+    - example: if labelPath [".", "city"] is projected
+      into label ".city", then it can be referred to
+      efficiently later as labelPath [".city"] from then on
       directly from the Vals slice?
 
 - attachments
-  - some encodings of field name can mean hidden "attachment"?
+  - some encodings of label can mean hidden "attachment"?
     - with the '^' prefix char?
     - example: "^meta", "^smeta"?
-    - these mean these fields are not really in the final output?
+    - these mean these labels are not really in the final output?
     - functions like 'META() AS myMeta' can project the hidden
-      "^meta" field to a visible ".myMeta" in final output?
-      - META().id might be implemented by projecting
-        the fieldPath ["^meta", "id"]?
+      "^meta" label to a visible ".myMeta" in final output?
+      - Ex: META().id might be implemented by projecting
+        the labelPath ["^meta", "id"]?
 
 - handling of BINARY data type?
-  - use a field name prefix char?  Perhaps '='?
+  - use a label prefix char?  Perhaps '='?
 
 - temporary, but reused (recyclable) raw []bytes buf
   as a per-tuple working area might be associated with...
