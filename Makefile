@@ -1,4 +1,6 @@
-default:
+default: run_intermed_build
+
+run_intermed_build:
 	go test -v ./base
 	go test .
 	go build ./cmd/intermed_build/
@@ -10,7 +12,7 @@ default:
 	go fmt ./...
 
 # Classify and convert query/expression.
-expr_build_run:
+run_expr_build:
 	go build ./cmd/expr_build/
 	./expr_build
 	go fmt ./...
