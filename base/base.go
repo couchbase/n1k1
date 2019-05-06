@@ -5,6 +5,7 @@ package base
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/buger/jsonparser"
 )
@@ -172,6 +173,8 @@ func (v *Vars) PushForConcurrency() *Vars {
 
 // Ctx represents the runtime context for a request.
 type Ctx struct {
+	Now time.Time
+
 	ValComparer *ValComparer // Not concurrent safe.
 
 	YieldStats YieldStats
