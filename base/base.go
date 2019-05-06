@@ -10,8 +10,6 @@ import (
 	"github.com/buger/jsonparser"
 )
 
-type Vals []Val
-
 type Val []byte // JSON encoded, usually treated as immutable.
 
 func (a Val) String() string {
@@ -59,6 +57,21 @@ func ValEqual(valA, valB Val, valComparer *ValComparer) Val {
 
 // -----------------------------------------------------
 
+func ValPathGet(vIn Val, path []string) Val {
+	v, _, _, err := jsonparser.Get(vIn, path...)
+	if err != nil {
+		return ValMissing
+	}
+
+	return v
+}
+
+// -----------------------------------------------------
+
+type Vals []Val
+
+// -----------------------------------------------------
+
 // ValsDeepCopy copies vals into the optional, preallocated slices.
 func ValsDeepCopy(vals Vals, preallocVals Vals, preallocVal Val) (
 	Vals, Vals, Val) {
@@ -92,17 +105,6 @@ func ValsDeepCopy(vals Vals, preallocVals Vals, preallocVal Val) (
 
 // -----------------------------------------------------
 
-func ValPathGet(vIn Val, path []string) Val {
-	v, _, _, err := jsonparser.Get(vIn, path...)
-	if err != nil {
-		return ValMissing
-	}
-
-	return v
-}
-
-// -----------------------------------------------------
-
 // YieldVals memory ownership: the receiver implementation should
 // generally copy any inputs that it wants to keep if it's in a
 // different "pipeline", because the provided slices might be reused
@@ -113,6 +115,9 @@ type YieldErr func(error)
 
 // -----------------------------------------------------
 
+// Labels represent names for a related instance of Vals.  Usually,
+// the related Vals has the same size: len(vals) == len(labels), which
+// enables optimizations based on slice positional lookups.
 type Labels []string // Ex: ".description", ".address.city".
 
 func (a Labels) IndexOf(s string) int {
