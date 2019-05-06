@@ -9,8 +9,13 @@ default:
 	go test -v ./test/...
 	go fmt ./...
 
-# Convert the source files into easier-to-read versions...
-#
+# Classify and convert query/expression.
+expr_convert:
+	go build ./cmd/expr_build/
+	./expr_build
+	go fmt ./...
+
+# Convert the source files into easier-to-read versions.
 easy-to-read:
 	mkdir -p ./tmp/easy-to-read
 	rm -f ./tmp/easy-to-read/*.go
