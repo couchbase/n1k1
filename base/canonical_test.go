@@ -10,6 +10,18 @@ func TestCanonicalJSON(t *testing.T) {
 	testCanonicalJSON(t, nil, false)
 }
 
+func TestCanonicalJSONRecycleOut(t *testing.T) {
+	testCanonicalJSON(t, nil, true)
+}
+
+func TestCanonicalJSONReuseValComparer(t *testing.T) {
+	testCanonicalJSON(t, NewValComparer(), false)
+}
+
+func TestCanonicalJSONReuseValComparerRecycleOut(t *testing.T) {
+	testCanonicalJSON(t, NewValComparer(), true)
+}
+
 func testCanonicalJSON(t *testing.T, vIn *ValComparer, reuseOut bool) {
 	tests := []string{
 		"",

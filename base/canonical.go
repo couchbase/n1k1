@@ -7,7 +7,10 @@ import (
 	"github.com/buger/jsonparser"
 )
 
-func (c *ValComparer) CanonicalJSON(a, out []byte) ([]byte, error) {
+// CanonicalJSON returns a JSON encoded representation of the Val,
+// e.g., sorting object field names, etc. The optional out slice is
+// reused and extended via append().
+func (c *ValComparer) CanonicalJSON(a Val, out []byte) ([]byte, error) {
 	return c.CanonicalJSONDeep(a, out, 0)
 }
 
