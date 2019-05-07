@@ -5,11 +5,14 @@ import (
 
 	"github.com/couchbase/n1k1"
 	"github.com/couchbase/n1k1/base"
+	"github.com/couchbase/n1k1/expr_glue"
 )
 
 func MakeYieldCaptureFuncs(t *testing.T, testi int, expectErr string) (
 	*base.Vars, base.YieldVals, base.YieldErr,
 	func() []base.Vals) {
+	n1k1.ExprCatalog["exprStr"] = expr_glue.ExprStr
+
 	vars := &base.Vars{
 		Ctx: &base.Ctx{
 			ValComparer: base.NewValComparer(),

@@ -15,10 +15,10 @@ import (
 	"github.com/couchbase/query/value"
 )
 
-// ExprGlue parses and evaluates a N1QL expression string using the
+// ExprStr parses and evaluates a N1QL expression string using the
 // query/expression package, for full backwards compatibility at the
 // cost of performance.
-func ExprGlue(vars *base.Vars, labels base.Labels,
+func ExprStr(vars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (exprFunc base.ExprFunc) {
 	exprStr := params[0].(string)
 
