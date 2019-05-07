@@ -176,6 +176,18 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 			}
 		}
 
+		intermed.ExprCatalog["exprStr"] = func(
+			lzVars *base.Vars, labels base.Labels,
+			params []interface{}, path string) (lzExprFunc base.ExprFunc) {
+			intermed.EmitLift(
+				"var lzExprStrFunc%s = expr_glue.ExprStr(lzVars, %#v, %#v, %#v)\n",
+				path, labels, params, path)
+
+			intermed.Emit("lzVal = lzExprStrFunc%s(lzVals, lzYieldErr)", path)
+
+			return lzExprFunc
+		}
+
 		intermed.ExecOp(&test.o,
 			&base.Vars{Ctx: &base.Ctx{ExprCatalog: intermed.ExprCatalog}},
 			nil, nil, "Top", "EO")
@@ -201,6 +213,7 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 		`import "reflect"`,
 		`import "testing"`,
 		`import "github.com/couchbase/n1k1/base"`,
+		`import "github.com/couchbase/n1k1/expr_glue"`,
 		`import "github.com/couchbase/n1k1/test"`,
 		``,
 	}

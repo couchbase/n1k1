@@ -11,7 +11,9 @@ import (
 func MakeYieldCaptureFuncs(t *testing.T, testi int, expectErr string) (
 	*base.Vars, base.YieldVals, base.YieldErr,
 	func() []base.Vals) {
-	n1k1.ExprCatalog["exprStr"] = expr_glue.ExprStr
+	if n1k1.ExprCatalog["exprStr"] == nil {
+		n1k1.ExprCatalog["exprStr"] = expr_glue.ExprStr
+	}
 
 	vars := &base.Vars{
 		Ctx: &base.Ctx{
@@ -1981,6 +1983,32 @@ var TestCasesSimple = []TestCaseSimple{
 			base.Vals{[]byte(nil), []byte("21"), []byte("3000")},
 			base.Vals{[]byte("10"), []byte("80"), []byte(nil)},
 			base.Vals{[]byte("10"), []byte("81"), []byte(nil)},
+		},
+	},
+	{
+		about: "test csv-data scan->filter exprStr TRUE",
+		o: base.Op{
+			Kind:   "filter",
+			Labels: base.Labels{"."},
+			Params: []interface{}{
+				"exprStr",
+				"TRUE",
+			},
+			Children: []*base.Op{&base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"."},
+				Params: []interface{}{
+					"jsonsData",
+					`
+{"a":1,"b":10,"c":[1,2],"d":{"x":"a","y":"b"}}
+{"a":2,"b":20,"c":[2,3],"d":{"x":"a","y":"B"}}
+`,
+				},
+			}},
+		},
+		expectYields: []base.Vals{
+			base.Vals{[]byte(`{"a":1,"b":10,"c":[1,2],"d":{"x":"a","y":"b"}}`)},
+			base.Vals{[]byte(`{"a":2,"b":20,"c":[2,3],"d":{"x":"a","y":"B"}}`)},
 		},
 	},
 }

@@ -6,7 +6,7 @@ package expr_glue
 
 import (
 	"encoding/json"
-	"errors"
+	"fmt"
 	"time"
 
 	"github.com/couchbase/n1k1/base"
@@ -40,7 +40,7 @@ func ExprStr(vars *base.Vars, labels base.Labels,
 
 	return func(vals base.Vals, yieldErr base.YieldErr) (val base.Val) {
 		v, err := cv.Convert(vals)
-		if err == nil {
+		if err != nil {
 			yieldErr(err)
 			return base.ValMissing
 		}
@@ -94,7 +94,8 @@ func NewConvertVals(labels base.Labels) (*ConvertVals, error) {
 // directives provided in ValsToValue.Labels.
 func (s *ConvertVals) Convert(vals base.Vals) (value.Value, error) {
 	if len(s.Labels) != len(vals) {
-		return nil, errors.New("ConvertVals, Labels.len != vals.len")
+		return nil, fmt.Errorf("ConvertVals, Labels.len(%+v) != vals.len(%+v)",
+			s.Labels, vals)
 	}
 
 	var v value.Value // The result of the merged vals.
@@ -104,7 +105,7 @@ OUTER:
 		switch label[0] {
 		case '=': // The label denotes that vals[i] is a BINARY value.
 			if v != nil {
-				return nil, errors.New("ConvertVals, v non-nil on '='")
+				return nil, fmt.Errorf("ConvertVals, v non-nil on '='")
 			}
 
 			v = value.NewBinaryValue(vals[i])
@@ -114,7 +115,7 @@ OUTER:
 		case '.': // Label is a path into v of where to set vals[i].
 			if label == "." {
 				if v != nil {
-					return nil, errors.New("ConvertVals, v non-nil on '.'")
+					return nil, fmt.Errorf("ConvertVals, v non-nil on '.'")
 				}
 
 				v = value.NewParsedValue(vals[i], false)
@@ -180,7 +181,7 @@ OUTER:
 			v = av
 
 		default:
-			return nil, errors.New("ConvertVals, unknown label kind")
+			return nil, fmt.Errorf("ConvertVals, unknown label[0]: %s", label)
 		}
 	}
 
@@ -206,4 +207,11 @@ func (e *ExprGlueContext) AuthenticatedUsers() []string {
 
 func (e *ExprGlueContext) DatastoreVersion() string {
 	return e.MyDatastoreVersion
+}
+
+func (e *ExprGlueContext) EvaluateStatement(statement string,
+	namedArgs map[string]value.Value,
+	positionalArgs value.Values,
+	subquery, readonly bool) (value.Value, uint64, error) {
+	return nil, 0, nil // TODO.
 }

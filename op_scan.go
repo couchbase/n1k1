@@ -25,19 +25,25 @@ func OpScan(o *base.Op, lzVars *base.Vars,
 	switch kind {
 	case "filePath":
 		paramsFilePath := o.Params[1].(string)
-
 		lzFilePath := paramsFilePath
 
 		ScanFile(lzFilePath, o.Labels, lzVars, lzYieldVals, lzYieldErr) // !lz
 
 	case "csvData":
 		paramsCsvData := o.Params[1].(string)
-
 		lzCsvData := paramsCsvData
 
 		lzReader := strings.NewReader(lzCsvData)
 
 		ScanReaderAsCsv(lzReader, o.Labels, lzVars, lzYieldVals, lzYieldErr) // !lz
+
+	case "jsonsData": // Multiple JSON documents, one per line.
+		paramsJsonsData := o.Params[1].(string)
+		lzJsonsData := paramsJsonsData
+
+		lzReader := strings.NewReader(lzJsonsData)
+
+		ScanReaderAsJsons(lzReader, o.Labels, lzVars, lzYieldVals, lzYieldErr) // !lz
 
 	default:
 		errMsg := "unknown scan kind" // TODO: Weak string/double-quote handling.
@@ -46,15 +52,14 @@ func OpScan(o *base.Op, lzVars *base.Vars,
 	}
 }
 
+// ---------------------------------------------------------------
+
 func ScanFile(lzFilePath string, labels base.Labels, lzVars *base.Vars,
 	lzYieldVals base.YieldVals, lzYieldErr base.YieldErr) {
-	errMsg := "file not csv" // TODO: Weak string/double-quote handling.
+	errMsg := "unknown file format" // TODO: Weak string/double-quote handling.
 
 	fileSuffixCsv := ".csv"
-	if !strings.HasSuffix(lzFilePath, fileSuffixCsv) {
-		lzYieldErr(fmt.Errorf(errMsg))
-		return
-	}
+	fileSuffixJsons := ".jsons"
 
 	if LzScope {
 		var lzReader io.ReadWriteCloser // !lz
@@ -68,9 +73,21 @@ func ScanFile(lzFilePath string, labels base.Labels, lzVars *base.Vars,
 
 		defer lzReader.Close()
 
-		ScanReaderAsCsv(lzReader, labels, lzVars, lzYieldVals, lzYieldErr) // !lz
+		if strings.HasSuffix(lzFilePath, fileSuffixCsv) {
+			ScanReaderAsCsv(lzReader, labels, lzVars, lzYieldVals, lzYieldErr) // !lz
+			return
+		}
+
+		if strings.HasSuffix(lzFilePath, fileSuffixJsons) {
+			ScanReaderAsJsons(lzReader, labels, lzVars, lzYieldVals, lzYieldErr) // !lz
+			return
+		}
+
+		lzYieldErr(fmt.Errorf(errMsg))
 	}
 }
+
+// ---------------------------------------------------------------
 
 func ScanReaderAsCsv(lzReader io.Reader, labels base.Labels, lzVars *base.Vars,
 	lzYieldVals base.YieldVals, lzYieldErr base.YieldErr) {
@@ -97,6 +114,45 @@ func ScanReaderAsCsv(lzReader io.Reader, labels base.Labels, lzVars *base.Vars,
 		}
 
 		if len(lzValsScan) > 0 {
+			lzYieldVals(lzValsScan)
+		}
+
+		lzYielded++
+		if lzYielded >= ScanYieldStatsEvery {
+			lzYielded = 0
+
+			if lzVars != nil && lzVars.Ctx != nil && lzVars.Ctx.YieldStats != nil {
+				var lzStats base.Stats // TODO.
+
+				lzErr := lzVars.Ctx.YieldStats(&lzStats)
+				if lzErr != nil { // Also used for early exit (e.g., LIMIT).
+					lzYieldErr(lzErr)
+					return
+				}
+			}
+		}
+	}
+
+	lzYieldErr(lzScanner.Err()) // Might be nil.
+}
+
+// ---------------------------------------------------------------
+
+func ScanReaderAsJsons(lzReader io.Reader, labels base.Labels, lzVars *base.Vars,
+	lzYieldVals base.YieldVals, lzYieldErr base.YieldErr) {
+	var lzValsScan base.Vals
+
+	lzYielded := 0
+
+	lzScanner := bufio.NewScanner(lzReader)
+
+	for lzScanner.Scan() {
+		lzLine := lzScanner.Bytes()
+		if len(lzLine) > 0 {
+			lzValsScan = lzValsScan[:0]
+
+			lzValsScan = append(lzValsScan, base.Val(lzLine))
+
 			lzYieldVals(lzValsScan)
 		}
 
