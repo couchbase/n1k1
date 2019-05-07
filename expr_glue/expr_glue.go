@@ -133,19 +133,12 @@ OUTER:
 			v = value.NewBinaryValue(vals[i])
 
 		case '.': // Label is a path into v of where to set vals[i].
-			var iv interface{}
-
-			err := json.Unmarshal(vals[i], &iv)
-			if err != nil {
-				return nil, err
-			}
-
 			if label == "." {
 				if v != nil {
 					return nil, errors.New("Conv, v non-nil on '.'")
 				}
 
-				v = value.NewValue(iv)
+				v = value.NewParsedValue(vals[i], false)
 
 				continue OUTER
 			}
@@ -172,6 +165,13 @@ OUTER:
 
 					subObj = value.NewValue(m)
 				}
+			}
+
+			var iv interface{}
+
+			err := json.Unmarshal(vals[i], &iv)
+			if err != nil {
+				return nil, err
 			}
 
 			err = subObj.SetField(path[len(path)-1], iv)
