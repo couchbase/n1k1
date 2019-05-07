@@ -15,6 +15,10 @@ func MakeYieldCaptureFuncs(t *testing.T, testi int, expectErr string) (
 		n1k1.ExprCatalog["exprStr"] = expr_glue.ExprStr
 	}
 
+	if n1k1.ExprCatalog["exprTree"] == nil {
+		n1k1.ExprCatalog["exprTree"] = expr_glue.ExprTree
+	}
+
 	vars := &base.Vars{
 		Ctx: &base.Ctx{
 			ValComparer: base.NewValComparer(),

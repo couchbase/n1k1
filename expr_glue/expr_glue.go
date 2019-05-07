@@ -11,6 +11,7 @@ import (
 
 	"github.com/couchbase/n1k1/base"
 
+	"github.com/couchbase/query/expression"
 	"github.com/couchbase/query/expression/parser"
 	"github.com/couchbase/query/value"
 )
@@ -22,19 +23,28 @@ func ExprStr(vars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (exprFunc base.ExprFunc) {
 	exprStr := params[0].(string)
 
-	var cv *ConvertVals
-
 	expr, err := parser.Parse(exprStr)
-	if err == nil {
-		cv, err = NewConvertVals(labels)
-	}
-
 	if err != nil {
-		return func(vals base.Vals, yieldErr base.YieldErr) (val base.Val) {
+		return func(vals base.Vals, yieldErr base.YieldErr) base.Val {
 			yieldErr(err)
 			return base.ValMissing
 		}
 	}
+
+	return ExprTree(vars, labels, []interface{}{expr}, path)
+}
+
+func ExprTree(vars *base.Vars, labels base.Labels,
+	params []interface{}, path string) (exprFunc base.ExprFunc) {
+	cv, err := NewConvertVals(labels)
+	if err != nil {
+		return func(vals base.Vals, yieldErr base.YieldErr) base.Val {
+			yieldErr(err)
+			return base.ValMissing
+		}
+	}
+
+	expr := params[0].(expression.Expression)
 
 	exprGlueContext := &ExprGlueContext{MyNow: vars.Ctx.Now}
 
