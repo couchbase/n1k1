@@ -49,6 +49,11 @@ func (c *ValComparer) CompareDeep(a, b []byte, depth int) int {
 		return CompareErr(aErr, bErr)
 	}
 
+	return c.CompareDeepType(aValue, bValue, aValueType, bValueType, depth)
+}
+
+func (c *ValComparer) CompareDeepType(aValue, bValue []byte,
+	aValueType, bValueType jsonparser.ValueType, depth int) int {
 	if aValueType != bValueType {
 		return ValueTypePriority[aValueType] - ValueTypePriority[bValueType]
 	}
@@ -93,14 +98,14 @@ func (c *ValComparer) CompareDeep(a, b []byte, depth int) int {
 		return int(aValue[0]) - int(bValue[0]) // Ex: 't' - 'f'.
 
 	case jsonparser.Array:
-		bItems := c.BytesSliceAcquire(depth)
+		kvs := c.KeyValsAcquire(depth)
 
 		_, bErr := jsonparser.ArrayEach(bValue,
 			func(v []byte, vT jsonparser.ValueType, o int, vErr error) {
-				bItems = append(bItems, v)
+				kvs = append(kvs, KeyVal{ReuseNextKey(kvs), v, vT, 0})
 			})
 
-		bLen := len(bItems)
+		bLen := len(kvs)
 
 		depthPlus1 := depth + 1
 
@@ -118,12 +123,13 @@ func (c *ValComparer) CompareDeep(a, b []byte, depth int) int {
 					return
 				}
 
-				cmp = c.CompareDeep(v, bItems[i], depthPlus1)
+				cmp = c.CompareDeepType(
+					v, kvs[i].Val, vT, kvs[i].ValType, depthPlus1)
 
 				i++
 			})
 
-		c.BytesSliceRelease(depth, bItems)
+		c.KeyValsRelease(depth, kvs)
 
 		if i < bLen {
 			return -1
@@ -200,7 +206,8 @@ func (c *ValComparer) CompareDeep(a, b []byte, depth int) int {
 				return kvX.Pos
 			}
 
-			cmp := c.CompareDeep(kvX.Val, kvY.Val, depthPlus1)
+			cmp := c.CompareDeepType(kvX.Val, kvY.Val,
+				kvX.ValType, kvY.ValType, depthPlus1)
 			if cmp != 0 {
 				return cmp
 			}
