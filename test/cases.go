@@ -3,6 +3,7 @@ package test
 import (
 	"testing"
 
+	"github.com/couchbase/n1k1"
 	"github.com/couchbase/n1k1/base"
 )
 
@@ -12,6 +13,7 @@ func MakeYieldCaptureFuncs(t *testing.T, testi int, expectErr string) (
 	vars := &base.Vars{
 		Ctx: &base.Ctx{
 			ValComparer: base.NewValComparer(),
+			ExprCatalog: n1k1.ExprCatalog,
 			YieldStats:  func(stats *base.Stats) error { return nil },
 		},
 	}

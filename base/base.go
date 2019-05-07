@@ -180,6 +180,8 @@ func (v *Vars) PushForConcurrency() *Vars {
 type Ctx struct {
 	Now time.Time
 
+	ExprCatalog map[string]ExprCatalogFunc
+
 	ValComparer *ValComparer // Not concurrent safe.
 
 	YieldStats YieldStats
@@ -196,6 +198,11 @@ func (ctx *Ctx) PushForConcurrency() (ctxCopy *Ctx) {
 
 	return ctxCopy
 }
+
+// -----------------------------------------------------
+
+type ExprCatalogFunc func(vars *Vars, labels Labels,
+	params []interface{}, path string) ExprFunc
 
 // -----------------------------------------------------
 

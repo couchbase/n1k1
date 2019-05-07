@@ -9,14 +9,11 @@ const LzScope = true
 
 // -----------------------------------------------------
 
-// ExprCatalog is a registry of all the known expression functions.
-var ExprCatalog = map[string]ExprCatalogFunc{
+// ExprCatalog is the default registry of known expression functions.
+var ExprCatalog = map[string]base.ExprCatalogFunc{
 	"json":      ExprJson,
 	"labelPath": ExprLabelPath,
 }
-
-type ExprCatalogFunc func(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string) base.ExprFunc
 
 // -----------------------------------------------------
 
@@ -25,7 +22,7 @@ func MakeExprFunc(lzVars *base.Vars, labels base.Labels,
 	pathNext := EmitPush(path, pathItem)
 
 	lzExprFunc =
-		ExprCatalog[expr[0].(string)](lzVars, labels, expr[1:], pathNext) // !lz
+		lzVars.Ctx.ExprCatalog[expr[0].(string)](lzVars, labels, expr[1:], pathNext) // !lz
 
 	EmitPop(path, pathItem)
 
