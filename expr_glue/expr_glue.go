@@ -58,12 +58,12 @@ func ExprGlue(vars *base.Vars, labels base.Labels,
 			return base.ValNull // TODO: Is this right?
 		}
 
-		b, err := json.Marshal(vResult) // Use Encode()?
+		jResult, err := json.Marshal(vResult) // Use json.Encoder()?
 		if err != nil {
 			return base.ValNull // TODO: Is this right?
 		}
 
-		return base.Val(b)
+		return base.Val(jResult)
 	}
 }
 
@@ -91,7 +91,7 @@ func (e *ExprGlueContext) DatastoreVersion() string {
 // Conv represents reusable state to convert base.Vals to value.Value.
 type Conv struct {
 	Labels base.Labels
-	Paths  [][]string
+	Paths  [][]string // The len(Paths) == len(Labels).
 }
 
 func NewConv(labels base.Labels, size int) (*Conv, error) {
@@ -179,7 +179,7 @@ OUTER:
 				return nil, err
 			}
 
-		case '^': // The label represents an attachment.
+		case '^': // The label is an attachment name for vals[i].
 			var iv interface{}
 
 			err := json.Unmarshal(vals[i], &iv)
@@ -192,7 +192,11 @@ OUTER:
 				av = value.NewAnnotatedValue(v)
 			}
 
-			av.SetAttachment(label[1:], iv)
+			if label[1:] == "id" {
+				av.SetId(iv)
+			} else {
+				av.SetAttachment(label[1:], iv)
+			}
 
 			v = av
 
