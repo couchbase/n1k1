@@ -11,7 +11,6 @@ import (
 
 	"github.com/couchbase/n1k1/base"
 
-	"github.com/couchbase/query/expression"
 	"github.com/couchbase/query/expression/parser"
 	"github.com/couchbase/query/value"
 )
@@ -25,42 +24,39 @@ func ExprGlue(vars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (exprFunc base.ExprFunc) {
 	exprStr := params[0].(string)
 
-	var expr expression.Expression
 	var conv *Conv
-	var err error
-	var errSent error
 
-	expr, err = parser.Parse(exprStr)
+	expr, err := parser.Parse(exprStr)
 	if err == nil {
 		conv, err = NewConv(labels, RHMapSizeSmall)
+	}
+
+	if err != nil {
+		return func(vals base.Vals, yieldErr base.YieldErr) (val base.Val) {
+			yieldErr(err)
+			return base.ValMissing
+		}
 	}
 
 	exprGlueContext := &ExprGlueContext{NowTime: vars.Ctx.Now}
 
 	return func(vals base.Vals, yieldErr base.YieldErr) (val base.Val) {
-		if err != nil {
-			if errSent == nil {
-				errSent = err
-
-				yieldErr(err)
-			}
-
-			return nil
-		}
-
 		v, err := conv.Convert(vals)
-		if err != nil {
-			return base.ValNull // TODO: Is this right?
+		if err == nil {
+			yieldErr(err)
+			return base.ValMissing
 		}
 
 		vResult, err := expr.Evaluate(v, exprGlueContext)
 		if err != nil {
-			return base.ValNull // TODO: Is this right?
+			yieldErr(err)
+			return base.ValMissing
 		}
 
 		jResult, err := vResult.MarshalJSON()
 		if err != nil {
-			return base.ValNull // TODO: Is this right?
+			yieldErr(err)
+			return base.ValMissing
 		}
 
 		return base.Val(jResult)
