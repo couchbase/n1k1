@@ -15,8 +15,6 @@ import (
 	"github.com/couchbase/query/value"
 )
 
-var RHMapSizeSmall = 97
-
 // ExprGlue parses and evaluates a N1QL expression string using the
 // query/expression package, for full backwards compatibility at the
 // cost of performance.
@@ -24,11 +22,11 @@ func ExprGlue(vars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (exprFunc base.ExprFunc) {
 	exprStr := params[0].(string)
 
-	var conv *Conv
+	var cv *ConvertVals
 
 	expr, err := parser.Parse(exprStr)
 	if err == nil {
-		conv, err = NewConv(labels, RHMapSizeSmall)
+		cv, err = NewConvertVals(labels)
 	}
 
 	if err != nil {
@@ -41,7 +39,7 @@ func ExprGlue(vars *base.Vars, labels base.Labels,
 	exprGlueContext := &ExprGlueContext{NowTime: vars.Ctx.Now}
 
 	return func(vals base.Vals, yieldErr base.YieldErr) (val base.Val) {
-		v, err := conv.Convert(vals)
+		v, err := cv.Convert(vals)
 		if err == nil {
 			yieldErr(err)
 			return base.ValMissing
@@ -65,37 +63,20 @@ func ExprGlue(vars *base.Vars, labels base.Labels,
 
 // --------------------------------------------------------
 
-// ExprGlueContext implements query/expression.Context interface.
-type ExprGlueContext struct {
-	NowTime time.Time
+// ConvertVals is able to convert base.Vals to value.Value based on
+// the directives provided by the Labels.
+type ConvertVals struct {
+	Labels     base.Labels
+	LabelPaths [][]string // The len(LabelPaths) == len(Labels).
 }
 
-func (e *ExprGlueContext) Now() time.Time {
-	return e.NowTime
-}
-
-func (e *ExprGlueContext) AuthenticatedUsers() []string {
-	return nil // TODO.
-}
-
-func (e *ExprGlueContext) DatastoreVersion() string {
-	return "" // TODO.
-}
-
-// --------------------------------------------------------
-
-// Conv represents reusable state to convert base.Vals to value.Value.
-type Conv struct {
-	Labels base.Labels
-	Paths  [][]string // The len(Paths) == len(Labels).
-}
-
-func NewConv(labels base.Labels, size int) (*Conv, error) {
+func NewConvertVals(labels base.Labels) (*ConvertVals, error) {
 	var paths [][]string
 
 	for _, label := range labels {
 		var path []string
 
+		// Ex label: `.["address","city"]`.
 		if len(label) > 0 && label[0] == '.' {
 			err := json.Unmarshal([]byte(label[1:]), &path)
 			if err != nil {
@@ -106,32 +87,34 @@ func NewConv(labels base.Labels, size int) (*Conv, error) {
 		paths = append(paths, path)
 	}
 
-	return &Conv{Labels: labels, Paths: paths}, nil
+	return &ConvertVals{Labels: labels, LabelPaths: paths}, nil
 }
 
 // Convert merges the vals into a single value.Value, based on the
 // directives provided in ValsToValue.Labels.
-func (s *Conv) Convert(vals base.Vals) (value.Value, error) {
+func (s *ConvertVals) Convert(vals base.Vals) (value.Value, error) {
 	if len(s.Labels) != len(vals) {
-		return nil, errors.New("Conv, Labels.len != vals.len")
+		return nil, errors.New("ConvertVals, Labels.len != vals.len")
 	}
 
-	var v value.Value // The result of vals flattened or merged.
+	var v value.Value // The result of the merged vals.
 
 OUTER:
 	for i, label := range s.Labels {
 		switch label[0] {
 		case '=': // The label denotes that vals[i] is a BINARY value.
 			if v != nil {
-				return nil, errors.New("Conv, v non-nil on '='")
+				return nil, errors.New("ConvertVals, v non-nil on '='")
 			}
 
 			v = value.NewBinaryValue(vals[i])
 
+			// Continue loop as remaining labels might be annotations.
+
 		case '.': // Label is a path into v of where to set vals[i].
 			if label == "." {
 				if v != nil {
-					return nil, errors.New("Conv, v non-nil on '.'")
+					return nil, errors.New("ConvertVals, v non-nil on '.'")
 				}
 
 				v = value.NewParsedValue(vals[i], false)
@@ -145,7 +128,7 @@ OUTER:
 
 			subObj := v
 
-			path := s.Paths[i]
+			path := s.LabelPaths[i]
 
 			for j := 0; j < len(path)-1; j++ {
 				subObjNext, ok := subObj.Field(path[j])
@@ -197,9 +180,28 @@ OUTER:
 			v = av
 
 		default:
-			return nil, errors.New("Conv, unknown label kind")
+			return nil, errors.New("ConvertVals, unknown label kind")
 		}
 	}
 
 	return v, nil
+}
+
+// --------------------------------------------------------
+
+// ExprGlueContext implements query/expression.Context interface.
+type ExprGlueContext struct {
+	NowTime time.Time
+}
+
+func (e *ExprGlueContext) Now() time.Time {
+	return e.NowTime
+}
+
+func (e *ExprGlueContext) AuthenticatedUsers() []string {
+	return nil // TODO.
+}
+
+func (e *ExprGlueContext) DatastoreVersion() string {
+	return "" // TODO.
 }
