@@ -15,7 +15,7 @@ func (c *ValComparer) CanonicalJSONDeep(a, out []byte, depth int) (
 	[]byte, error) {
 	v, vType, _, err := jsonparser.Get(a)
 	if err != nil {
-		return nil, err
+		return out, err
 	}
 
 	// Both types are the same, so need type-based cases...
@@ -27,7 +27,7 @@ func (c *ValComparer) CanonicalJSONDeep(a, out []byte, depth int) (
 		// Ex: canonicalize 0, 0.0, -0.0 into 0.
 		fv, err := jsonparser.ParseFloat(v)
 		if err != nil {
-			return nil, err
+			return out, err
 		}
 
 		return strconv.AppendFloat(out, fv, 'f', -1, 64), nil
@@ -61,7 +61,7 @@ func (c *ValComparer) CanonicalJSONDeep(a, out []byte, depth int) (
 		})
 
 		if iterErr != nil {
-			return nil, iterErr
+			return out, iterErr
 		}
 
 		return append(out, ']'), err
@@ -101,14 +101,13 @@ func (c *ValComparer) CanonicalJSONDeep(a, out []byte, depth int) (
 
 			out, err = c.CanonicalJSONDeep(kv.Val, out, depthPlus1)
 			if err != nil {
-				return nil, err
+				return out, err
 			}
 		}
 
 		return append(out, '}'), nil
-	}
 
-	// jsonparser.NotExist and jsonparser.Unknown cases...
-	//
-	return append(out, v...), nil
+	default: // jsonparser.NotExist & jsonparser.Unknown cases...
+		return append(out, v...), nil
+	}
 }
