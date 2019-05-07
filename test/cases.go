@@ -2109,4 +2109,36 @@ var TestCasesSimple = []TestCaseSimple{
 			base.Vals{[]byte(`{"a":1,"b":10,"c":[1,2],"d":{"x":"a","y":"b"}}`)},
 		},
 	},
+	{
+		about: `test csv-data scan->filter->project exprStr d.y = "b"`,
+		o: base.Op{
+			Kind:   "project",
+			Labels: base.Labels{"a"},
+			Params: []interface{}{
+				[]interface{}{"exprStr", "a * 1000"},
+			},
+			Children: []*base.Op{&base.Op{
+				Kind:   "filter",
+				Labels: base.Labels{"."},
+				Params: []interface{}{
+					"exprStr",
+					`d.y = "B"`,
+				},
+				Children: []*base.Op{&base.Op{
+					Kind:   "scan",
+					Labels: base.Labels{"."},
+					Params: []interface{}{
+						"jsonsData",
+						`
+{"a":1,"b":10,"c":[1,2],"d":{"x":"a","y":"b"}}
+{"a":2,"b":20,"c":[2,3],"d":{"x":"a","y":"B"}}
+`,
+					},
+				}},
+			}},
+		},
+		expectYields: []base.Vals{
+			base.Vals{[]byte(`2000`)},
+		},
+	},
 }
