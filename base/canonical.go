@@ -18,9 +18,22 @@ func (c *ValComparer) CanonicalJSONDeep(a, out []byte, depth int) (
 		return out, err
 	}
 
+	return c.CanonicalJSONDeepType(v, vType, out, depth)
+}
+
+func (c *ValComparer) CanonicalJSONDeepType(
+	v []byte, vType jsonparser.ValueType, out []byte, depth int) (
+	rv []byte, err error) {
 	// Both types are the same, so need type-based cases...
 	switch vType {
-	case jsonparser.String, jsonparser.Boolean, jsonparser.Null:
+	case jsonparser.String:
+		out = append(out, '"')
+		out = append(out, v...)
+		out = append(out, '"')
+
+		return out, nil
+
+	case jsonparser.Boolean, jsonparser.Null:
 		return append(out, v...), nil
 
 	case jsonparser.Number:
@@ -51,11 +64,12 @@ func (c *ValComparer) CanonicalJSONDeep(a, out []byte, depth int) (
 				return
 			}
 
-			if i <= 0 {
+			if i > 0 {
 				out = append(out, ',')
 			}
 
-			out, err = c.CanonicalJSONDeep(item, out, depthPlus1)
+			out, err = c.CanonicalJSONDeepType(
+				item, itemType, out, depthPlus1)
 
 			i++
 		})
@@ -69,13 +83,10 @@ func (c *ValComparer) CanonicalJSONDeep(a, out []byte, depth int) (
 	case jsonparser.Object:
 		kvs := c.KeyValsAcquire(depth)
 
-		var vLen int
-
 		err := jsonparser.ObjectEach(v,
-			func(k []byte, v []byte, vT jsonparser.ValueType, offset int) error {
+			func(k []byte, v []byte, vT jsonparser.ValueType, o int) error {
 				kCopy := append(ReuseNextKey(kvs), k...)
-				kvs = append(kvs, KeyVal{kCopy, v, 0})
-				vLen++
+				kvs = append(kvs, KeyVal{kCopy, v, vT, 0})
 				return nil
 			})
 
@@ -87,19 +98,19 @@ func (c *ValComparer) CanonicalJSONDeep(a, out []byte, depth int) (
 
 		depthPlus1 := depth + 1
 
-		i := 0
-		for i < len(kvs) {
+		for i := 0; i < len(kvs); i++ {
 			kv := kvs[i]
 
-			if i <= 0 {
+			if i > 0 {
 				out = append(out, ',')
 			}
 
+			out = append(out, '"')
 			out = append(out, kv.Key...)
+			out = append(out, '"', ':')
 
-			out = append(out, ':')
-
-			out, err = c.CanonicalJSONDeep(kv.Val, out, depthPlus1)
+			out, err = c.CanonicalJSONDeepType(kv.Val, kv.ValType,
+				out, depthPlus1)
 			if err != nil {
 				return out, err
 			}
