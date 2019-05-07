@@ -96,7 +96,7 @@ func (c *ValComparer) CompareDeep(a, b []byte, depth int) int {
 		bItems := c.BytesSliceAcquire(depth)
 
 		_, bErr := jsonparser.ArrayEach(bValue,
-			func(v []byte, vT jsonparser.ValueType, vOffset int, vErr error) {
+			func(v []byte, vT jsonparser.ValueType, vOff int, vErr error) {
 				bItems = append(bItems, v)
 			})
 
@@ -108,7 +108,7 @@ func (c *ValComparer) CompareDeep(a, b []byte, depth int) int {
 		var cmp int
 
 		_, aErr := jsonparser.ArrayEach(aValue,
-			func(v []byte, vT jsonparser.ValueType, vOffset int, vErr error) {
+			func(v []byte, vT jsonparser.ValueType, vOff int, vErr error) {
 				if cmp != 0 {
 					return
 				}
