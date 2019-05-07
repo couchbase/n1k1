@@ -168,10 +168,10 @@ efficiently execute that query-plan.
   - use "." as the label and labelPath of ["."]
     to hold the entire document?
   - 'real' fields need a label prefix char, like '.'?
-    - example: if labelPath [".", "city"] is projected
-      into label ".city", then it can be referred to
-      efficiently later as labelPath [".city"] from then on
-      directly from the Vals slice?
+    - example: if labelPath [".", "city"] is projected into label
+      `.["city"]`, then it can be referred to efficiently later as
+      labelPath [`.["city"]`] from then on directly as a numeric index
+      intoa Vals slice?
 
 - attachments
   - some encodings of label can mean hidden "attachment"?

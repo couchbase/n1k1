@@ -118,7 +118,7 @@ type YieldErr func(error)
 // Labels represent names for a related instance of Vals.  Usually,
 // the related Vals has the same size: len(vals) == len(labels), which
 // enables optimizations based on slice positional lookups.
-type Labels []string // Ex: ".description", ".address.city".
+type Labels []string // Ex: `.["description"]`, `.["address","city"]`.
 
 func (a Labels) IndexOf(s string) int {
 	for i, v := range a {
