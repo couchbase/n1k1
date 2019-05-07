@@ -25,9 +25,6 @@ type ValComparer struct {
 	Bytes [][][]byte
 
 	// Reused across Compare()'s, indexed by: depth.
-	BytesSlice [][][]byte
-
-	// Reused across Compare()'s, indexed by: depth.
 	KeyVals []KeyVals
 }
 
@@ -235,20 +232,6 @@ func (c *ValComparer) BytesAcquire(pos, depth int) []byte {
 
 func (c *ValComparer) BytesRelease(pos, depth int, s []byte) {
 	c.Bytes[pos][depth] = s[0:cap(s)]
-}
-
-// ---------------------------------------------
-
-func (c *ValComparer) BytesSliceAcquire(depth int) [][]byte {
-	for len(c.BytesSlice) < depth+1 {
-		c.BytesSlice = append(c.BytesSlice, nil)
-	}
-
-	return c.BytesSlice[depth]
-}
-
-func (c *ValComparer) BytesSliceRelease(depth int, s [][]byte) {
-	c.BytesSlice[depth] = s[:0]
 }
 
 // ---------------------------------------------
