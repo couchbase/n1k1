@@ -77,7 +77,7 @@ func NewConvertVals(labels base.Labels) (*ConvertVals, error) {
 		var path []string
 
 		// Ex label: `.["address","city"]`.
-		if len(label) > 0 && label[0] == '.' {
+		if len(label) > 1 && label[0] == '.' {
 			err := json.Unmarshal([]byte(label[1:]), &path)
 			if err != nil {
 				return nil, err
