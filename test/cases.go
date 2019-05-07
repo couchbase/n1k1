@@ -2011,4 +2011,102 @@ var TestCasesSimple = []TestCaseSimple{
 			base.Vals{[]byte(`{"a":2,"b":20,"c":[2,3],"d":{"x":"a","y":"B"}}`)},
 		},
 	},
+	{
+		about: "test csv-data scan->filter exprStr FALSE",
+		o: base.Op{
+			Kind:   "filter",
+			Labels: base.Labels{"."},
+			Params: []interface{}{
+				"exprStr",
+				"FALSE",
+			},
+			Children: []*base.Op{&base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"."},
+				Params: []interface{}{
+					"jsonsData",
+					`
+{"a":1,"b":10,"c":[1,2],"d":{"x":"a","y":"b"}}
+{"a":2,"b":20,"c":[2,3],"d":{"x":"a","y":"B"}}
+`,
+				},
+			}},
+		},
+		expectYields: []base.Vals(nil),
+	},
+	{
+		about: "test csv-data scan->filter exprStr a=2",
+		o: base.Op{
+			Kind:   "filter",
+			Labels: base.Labels{"."},
+			Params: []interface{}{
+				"exprStr",
+				"a = 2",
+			},
+			Children: []*base.Op{&base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"."},
+				Params: []interface{}{
+					"jsonsData",
+					`
+{"a":1,"b":10,"c":[1,2],"d":{"x":"a","y":"b"}}
+{"a":2,"b":20,"c":[2,3],"d":{"x":"a","y":"B"}}
+`,
+				},
+			}},
+		},
+		expectYields: []base.Vals{
+			base.Vals{[]byte(`{"a":2,"b":20,"c":[2,3],"d":{"x":"a","y":"B"}}`)},
+		},
+	},
+	{
+		about: `test csv-data scan->filter exprStr a = 999 or b = 10`,
+		o: base.Op{
+			Kind:   "filter",
+			Labels: base.Labels{"."},
+			Params: []interface{}{
+				"exprStr",
+				`a = 999 or b = 10`,
+			},
+			Children: []*base.Op{&base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"."},
+				Params: []interface{}{
+					"jsonsData",
+					`
+{"a":1,"b":10,"c":[1,2],"d":{"x":"a","y":"b"}}
+{"a":2,"b":20,"c":[2,3],"d":{"x":"a","y":"B"}}
+`,
+				},
+			}},
+		},
+		expectYields: []base.Vals{
+			base.Vals{[]byte(`{"a":1,"b":10,"c":[1,2],"d":{"x":"a","y":"b"}}`)},
+		},
+	},
+	{
+		about: `test csv-data scan->filter exprStr d.y = "b"`,
+		o: base.Op{
+			Kind:   "filter",
+			Labels: base.Labels{"."},
+			Params: []interface{}{
+				"exprStr",
+				`d.y = "b"`,
+			},
+			Children: []*base.Op{&base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"."},
+				Params: []interface{}{
+					"jsonsData",
+					`
+{"a":1,"b":10,"c":[1,2],"d":{"x":"a","y":"b"}}
+{"a":2,"b":20,"c":[2,3],"d":{"x":"a","y":"B"}}
+`,
+				},
+			}},
+		},
+		expectYields: []base.Vals{
+			base.Vals{[]byte(`{"a":1,"b":10,"c":[1,2],"d":{"x":"a","y":"b"}}`)},
+		},
+	},
 }
