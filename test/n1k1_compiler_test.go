@@ -188,18 +188,6 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 			return lzExprFunc
 		}
 
-		intermed.ExprCatalog["exprTree"] = func(
-			lzVars *base.Vars, labels base.Labels,
-			params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-			intermed.EmitLift(
-				"var lzExprTreeFunc%s = expr_glue.ExprTree(lzVars, %#v, %#v, %#v)\n",
-				path, labels, params, path)
-
-			intermed.Emit("lzVal = lzExprTreeFunc%s(lzVals, lzYieldErr)\n", path)
-
-			return lzExprFunc
-		}
-
 		intermed.ExecOp(&test.o,
 			&base.Vars{Ctx: &base.Ctx{ExprCatalog: intermed.ExprCatalog}},
 			nil, nil, "Top", "EO")
