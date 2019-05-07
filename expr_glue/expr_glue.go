@@ -36,7 +36,7 @@ func ExprGlue(vars *base.Vars, labels base.Labels,
 		}
 	}
 
-	exprGlueContext := &ExprGlueContext{NowTime: vars.Ctx.Now}
+	exprGlueContext := &ExprGlueContext{MyNow: vars.Ctx.Now}
 
 	return func(vals base.Vals, yieldErr base.YieldErr) (val base.Val) {
 		v, err := cv.Convert(vals)
@@ -191,17 +191,19 @@ OUTER:
 
 // ExprGlueContext implements query/expression.Context interface.
 type ExprGlueContext struct {
-	NowTime time.Time
+	MyNow                time.Time
+	MyAuthenticatedUsers []string
+	MyDatastoreVersion   string
 }
 
 func (e *ExprGlueContext) Now() time.Time {
-	return e.NowTime
+	return e.MyNow
 }
 
 func (e *ExprGlueContext) AuthenticatedUsers() []string {
-	return nil // TODO.
+	return e.MyAuthenticatedUsers
 }
 
 func (e *ExprGlueContext) DatastoreVersion() string {
-	return "" // TODO.
+	return e.MyDatastoreVersion
 }
