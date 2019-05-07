@@ -58,7 +58,7 @@ func ExprGlue(vars *base.Vars, labels base.Labels,
 			return base.ValNull // TODO: Is this right?
 		}
 
-		jResult, err := json.Marshal(vResult) // Use json.Encoder()?
+		jResult, err := vResult.MarshalJSON()
 		if err != nil {
 			return base.ValNull // TODO: Is this right?
 		}
