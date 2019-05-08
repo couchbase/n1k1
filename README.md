@@ -20,7 +20,7 @@ Some design ideas meant to help with n1k1's performance...
   to quickly accessible, labeled "registers" at compile time...
   - object field access or map lookups (e.g., obj["city"]) can be
     instead replaced by positional slice access (e.g., vals[5])
-  - the vals or "registers" are passed from operator to operator.
+  - the labeled vals or "registers" are passed amongst operators.
 - push-based paradigm for shorter codepaths
   - data transfer between operators (e.g., from scan -> filter ->
     project) is a function call (which can sometimes be removed by
@@ -188,7 +188,7 @@ efficiently execute that query-plan.
 
 - temporary, but reused (recyclable) raw []bytes buf
   as a per-tuple working area might be associated with...
-  - the base.Vals as a hidden field "^tmp"?
+  - perhaps the base.Vals could have a hidden labeled "^tmp"?
     - but, unlike other Val's, it would be mutated!
       so, this is not highly favored.
     - and, also need to be careful to carrying the ^tmp
@@ -200,7 +200,7 @@ efficiently execute that query-plan.
     - any spawned child thread/goroutines can push another Vars
       that shadows the ancestor Var chain to avoid concurrent mutations?
 
-- scan should take an optional params of pushdown fieldPath's
+- scan should take an optional params of pushdown field path's
   as optimization?
   - so that scan can return a subset of fields available for fast
     base.Vals access?
