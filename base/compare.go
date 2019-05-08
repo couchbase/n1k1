@@ -2,7 +2,7 @@ package base
 
 import (
 	"bytes"
-	"fmt"
+	"encoding/json"
 	"sort"
 
 	"github.com/buger/jsonparser"
@@ -25,10 +25,16 @@ type ValComparer struct {
 	// Reused across Compare()'s, indexed by: depth.
 	KeyVals []KeyVals
 
-	Buffer bytes.Buffer // Recycled io.Writer.
+	Buffer bytes.Buffer
+
+	Encoder *json.Encoder
 }
 
-func NewValComparer() *ValComparer { return &ValComparer{} }
+func NewValComparer() *ValComparer {
+	rv := &ValComparer{}
+	rv.Encoder = json.NewEncoder(&rv.Buffer)
+	return rv
+}
 
 // ---------------------------------------------
 
@@ -229,9 +235,9 @@ func (c *ValComparer) CompareDeepType(aValue, bValue []byte,
 func (c *ValComparer) EncodeAsString(s []byte, out []byte) ([]byte, error) {
 	c.Buffer.Reset()
 
-	fmt.Fprintf(&c.Buffer, "%q", s)
+	c.Encoder.Encode(BytesTextMarshaller(s))
 
-	written := c.Buffer.Len()
+	written := c.Buffer.Len() - 1 // Strip off newline from encoder.
 
 	lenOld := len(out)
 	needed := lenOld + written
@@ -246,6 +252,14 @@ func (c *ValComparer) EncodeAsString(s []byte, out []byte) ([]byte, error) {
 
 	return out, nil
 }
+
+// ---------------------------------------------
+
+// BytesTextMarshaller is intended to reduce garbage from []byte to
+// string conversions in json.Encoder's default []byte handling.
+type BytesTextMarshaller []byte
+
+func (s BytesTextMarshaller) MarshalText() ([]byte, error) { return s, nil }
 
 // ---------------------------------------------
 
