@@ -22,18 +22,13 @@ var ValueTypePriority = []int{
 // ---------------------------------------------
 
 type ValComparer struct {
-	// Reused across Compare()'s, indexed by: pos, depth.
-	Bytes [][][]byte
-
 	// Reused across Compare()'s, indexed by: depth.
 	KeyVals []KeyVals
 
-	Buffer bytes.Buffer
+	Buffer bytes.Buffer // Recycled io.Writer.
 }
 
-func NewValComparer() *ValComparer {
-	return &ValComparer{Bytes: make([][][]byte, 2)}
-}
+func NewValComparer() *ValComparer { return &ValComparer{} }
 
 // ---------------------------------------------
 
@@ -61,14 +56,20 @@ func (c *ValComparer) CompareDeepType(aValue, bValue []byte,
 	// Both types are the same, so need type-based cases...
 	switch aValueType {
 	case jsonparser.String:
-		aBuf := c.BytesAcquire(0, depth)
-		bBuf := c.BytesAcquire(1, depth)
+		kvs := c.KeyValsAcquire(depth)
+
+		kvs = append(kvs, KeyVal{ReuseNextKey(kvs), nil, 0, 0})
+		aBuf := kvs[len(kvs)-1].Key
+		aBuf = aBuf[:cap(aBuf)]
+
+		kvs = append(kvs, KeyVal{ReuseNextKey(kvs), nil, 0, 0})
+		bBuf := kvs[len(kvs)-1].Key
+		bBuf = bBuf[:cap(bBuf)]
 
 		av, aErr := jsonparser.Unescape(aValue, aBuf)
 		bv, bErr := jsonparser.Unescape(bValue, bBuf)
 
-		c.BytesRelease(0, depth, av)
-		c.BytesRelease(1, depth, bv)
+		c.KeyValsRelease(depth, kvs)
 
 		if aErr != nil || bErr != nil {
 			return CompareErr(aErr, bErr)
@@ -222,37 +223,8 @@ func (c *ValComparer) CompareDeepType(aValue, bValue []byte,
 
 // ---------------------------------------------
 
-func (c *ValComparer) BytesAcquire(pos, depth int) []byte {
-	byDepth := c.Bytes[pos]
-
-	for len(byDepth) < depth+1 {
-		byDepth = append(byDepth, nil)
-		c.Bytes[pos] = byDepth
-	}
-
-	return byDepth[depth]
-}
-
-func (c *ValComparer) BytesRelease(pos, depth int, s []byte) {
-	c.Bytes[pos][depth] = s[0:cap(s)]
-}
-
-// ---------------------------------------------
-
-func (c *ValComparer) KeyValsAcquire(depth int) KeyVals {
-	for len(c.KeyVals) < depth+1 {
-		c.KeyVals = append(c.KeyVals, nil)
-	}
-
-	return c.KeyVals[depth]
-}
-
-func (c *ValComparer) KeyValsRelease(depth int, s KeyVals) {
-	c.KeyVals[depth] = s[:0]
-}
-
-// ---------------------------------------------
-
+// EncodeAsString appends the JSON encoded string to the optional out
+// slice and returns the extended out.
 func (c *ValComparer) EncodeAsString(s []byte, out []byte) ([]byte, error) {
 	c.Buffer.Reset()
 
@@ -272,6 +244,20 @@ func (c *ValComparer) EncodeAsString(s []byte, out []byte) ([]byte, error) {
 	c.Buffer.Read(out[lenOld:])
 
 	return out, nil
+}
+
+// ---------------------------------------------
+
+func (c *ValComparer) KeyValsAcquire(depth int) KeyVals {
+	for len(c.KeyVals) < depth+1 {
+		c.KeyVals = append(c.KeyVals, nil)
+	}
+
+	return c.KeyVals[depth]
+}
+
+func (c *ValComparer) KeyValsRelease(depth int, s KeyVals) {
+	c.KeyVals[depth] = s[:0]
 }
 
 // ---------------------------------------------
