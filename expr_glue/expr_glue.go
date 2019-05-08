@@ -17,7 +17,7 @@ import (
 )
 
 // ExprStr parses and evaluates a N1QL expression string using the
-// query/expression package, for full backwards compatibility at the
+// query/expression/parser package, for backwards compatibility at the
 // cost of performance.
 func ExprStr(vars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (exprFunc base.ExprFunc) {
@@ -31,9 +31,13 @@ func ExprStr(vars *base.Vars, labels base.Labels,
 		}
 	}
 
-	return ExprTree(vars, labels, []interface{}{expr}, path)
+	paramsTree := append([]interface{}{expr}, params[1:]...)
+
+	return ExprTree(vars, labels, paramsTree, path)
 }
 
+// ExprStr evaluates a N1QL expression tree, for backwards
+// compatibility at the cost of performance from data conversions.
 func ExprTree(vars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (exprFunc base.ExprFunc) {
 	cv, err := NewConvertVals(labels)
@@ -67,8 +71,9 @@ func ExprTree(vars *base.Vars, labels base.Labels,
 			return base.ValMissing
 		}
 
-		// TODO: What about any annotations or attachments that
-		// associated with the vResult?
+		// TODO: Need to convert back any annotations or attachments
+		// that are associated with the vResult?  The params[1], for
+		// example, might hold the wanted output labels, if any.
 
 		return base.Val(jResult)
 	}
@@ -84,7 +89,7 @@ type ConvertVals struct {
 }
 
 func NewConvertVals(labels base.Labels) (*ConvertVals, error) {
-	// Analyze the labels into paths.
+	// Analyze the labels to associated paths, if any.
 	var paths [][]string
 
 	for _, label := range labels {
@@ -106,8 +111,8 @@ func NewConvertVals(labels base.Labels) (*ConvertVals, error) {
 
 // --------------------------------------------------------
 
-// Convert merges the vals into a single value.Value, based on the
-// directives provided in ValsToValue.Labels.
+// Convert merges the base.Vals into a single value.Value, according
+// to the directives provided in ConvertVals.Labels.
 func (s *ConvertVals) Convert(vals base.Vals) (value.Value, error) {
 	if len(s.Labels) != len(vals) {
 		return nil, fmt.Errorf("Convert, Labels.len(%+v) != vals.len(%+v)",
@@ -143,7 +148,7 @@ OUTER:
 				v = value.NewValue(map[string]interface{}{})
 			}
 
-			subObj := v
+			subObj := v // Navigate down to the right subObj.
 
 			path := s.LabelPaths[i]
 
