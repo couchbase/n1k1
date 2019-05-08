@@ -67,6 +67,9 @@ func ExprTree(vars *base.Vars, labels base.Labels,
 			return base.ValMissing
 		}
 
+		// TODO: What about any annotations or attachments that
+		// associated with the vResult?
+
 		return base.Val(jResult)
 	}
 }

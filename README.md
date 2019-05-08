@@ -1,4 +1,4 @@
-n1k1 is an experimental query compiler and execution engine for N1QL.
+n1k1 is a prototype query-plan interpreter and compiler for N1QL.
 
 ------------------------------------------
 ## Performance approaches...
@@ -11,42 +11,43 @@ Some design ideas meant to help with n1k1's performance...
 - avoidance of map[string]interface{} and []interface{}.
 - avoidance of interface{} and boxed-value allocations.
 - []byte and [][]byte instead are used heavily,
-  as they are easy to completely recycle and reuse.
+  as they are easy to fully recycle and reuse.
 - []byte is faster for GC scanning/marking than interface{}.
 - jsonparser is used instead of json.Unmarshal(), to avoid garbage.
   - jsonparser returns []byte values that point into the parsed
     document's []byte's.
 - commonly accessed JSON object fields can be promoted
-  to quickly accessible "registers" at compile time...
+  to quickly accessible, labeled "registers" at compile time...
   - object field access or map lookups (e.g., obj["city"]) can be
     instead replaced by positional slice access (e.g., vals[5])
-  - this is similar to an analogy of RAM access versus faster CPU
-    register access.
-  - the vals "register" is passed from operator to operator.
-- push-based paradigm for shorter codepaths (in contrast to
-  pull-based, iterator-style paradigm).
+  - the vals or "registers" are passed from operator to operator.
+- push-based paradigm for shorter codepaths
   - data transfer between operators (e.g., from scan -> filter ->
-    project) is a function call (which can sometimes be removed
-    by compilation), instead of a channel send/recv between goroutines.
-  - iterator checks for HasNext() are avoided via push-based approach.
+    project) is a function call (which can sometimes be removed by
+    compilation), instead of a send/recv on channels between
+    goroutines.
+  - the pull-based paradigm, or the iterator approach, in contrast,
+    involves additional checks for HasNext() across the operators
+    in a query-plan.
 - data-staging, pipeline breakers (batching)...
   - batching results between operator may be more friendly to CPU
     instruction & data caches.
   - data-staging also supports optional concurrency -- one or more
     goroutine actors can be producers that feed a channel to a consumer.
-  - a channel send is for a batch of items, not for an individual tuple.
-  - max-batch-size and channel buffer size between producers and
-    consumer are designed to be configurable.
+  - a channel send is for a batch of items, instead of a separate send
+    for each each individual item.
+  - max-batch-size and channel buffer size between producer goroutines
+    and consumer goroutine are designed to be configurable.
   - recycled batch exchange between producer goroutines and consumer
     goroutine for less garbage creation.
 - query compilation to golang...
   - based on Futamura projections / LMS (Rompf, Odersky) inspirations.
   - supports operator fusion, for fewer function calls.
 - for hashmaps...
-  - couchbase/rhmap supports a hashmap that supports
-    []byte as a key, like `map[[]byte][]byte`.
-  - couchbase/rhmap is also more efficient to fully recycle
-    and reuse in contrast to map[string]interface{}.
+  - couchbase/rhmap is a hashmap that supports []byte as a key,
+    a'la `map[[]byte][]byte`.
+  - couchbase/rhmap is efficiently, fully recyclable in contrast
+    to map[string]interface{}.
   - couchbase/rhmap is also intended to easily spill out to disk
     via mmap(), allowing hash-joins and DISTINCT processing
     on larger datasets.
@@ -57,24 +58,32 @@ Some design ideas meant to help with n1k1's performance...
 ------------------------------------------
 ## Some features...
 
-- join nested-loop inner
-- join nested-loop outer-left
-- filtering (WHERE)
-- projections
-- scans of simple files (CSV's)
-- ORDER BY of multiple expressions & ASC/DESC
-- ORDER-BY / OFFSET / LIMIT via max-heap
-- OFFSET / LIMIT
-- max-heap reuses memory slices from "too large" tuples
-- identifier paths (e.g. locations/address/city)
-- lifting vars to avoid local closures
-- capturing emitted code to avoid local closures
-- data-staging / pipeline-breaker facilities along with concurrency
+- join nested-loop inner.
+- join nested-loop outer-left.
+- filtering (WHERE).
+- projections.
+- scans of simple files (CSV's and newline delimited JSON).
+- ORDER BY of multiple expressions & ASC/DESC.
+- ORDER-BY / OFFSET / LIMIT via max-heap.
+- OFFSET / LIMIT.
+- max-heap reuses memory slices from "too large" tuples.
+- identifier paths (e.g. locations/address/city).
+- lifting vars to avoid local closures.
+- capturing emitted code to avoid local closures.
+- data-staging / pipeline-breaker facilities along with concurrency.
 - UNION ALL is concurrent (one goroutine per contributor).
-- runtime variables / context passed down through ExecOp()
+- runtime variables / context passed down through ExecOp().
+- glue integration with existing couchbase/query/expression's.
 
 -------------------------------------------------------
-## The way n1k1 works...
+## DEV SHORTCUTS...
+
+    go test . && go build ./cmd/intermed_build/ && ./intermed_build && go test ./... && go fmt ./... && go test -v ./...
+
+    go build ./cmd/expr_build/ && ./expr_build && go fmt ./...
+
+-------------------------------------------------------
+## The way the n1k1 compiler works...
 
 Or, how intermed_build generates a N1QL compiler...
 
@@ -115,42 +124,33 @@ n1k1/intermed package, will take the user's input of a N1QL query-plan
 and will emit *.go code (or possibly other languages) that can
 efficiently execute that query-plan.
 
--------------------------------------------------------
-## DEV SHORTCUTS...
-
-    go test . && go build ./cmd/intermed_build/ && ./intermed_build && go test ./... && go fmt ./... && go test -v ./...
-
-    go build ./cmd/expr_build/ && ./expr_build && go fmt ./...
-
 ------------------------------------------
 ## TODO...
 
-- precompute data based on early constant detection.
+- precompute data based on early constant detection?
   - e.g., ARRAY_POSITION(hobbies, 0) might detect early that args[1]
     is a constant number, rather than rechecking that args[1] is a
-    value.NUMBER during every Evaluate(item).
+    value.NUMBER during every Evaluate()?
 
-- expr support
-  - easy: convert Val to query/value.Value
-    and then leverage the existing query/expression codepaths?
-  - not as easy: compiled expr's?
+- compiled expr support?
 
-- expr MISSING or NULL patterns
+- expr MISSING or NULL patterns?
   - many expressions check for MISSING or NULL and propagate those,
-    so, the first discovering of MISSING or NULL should
+    so, the first discovery of MISSING or NULL should
     be able to short-circuit and directly break or goto
-    some outer codepath
+    some outer handler codepath?
 
-- DISTINCT
+- DISTINCT?
+  - use couchbase/rhmap?
 
-- UNION (which has an implicit DISTINCT)
+- UNION (which has an implicit DISTINCT)?
 
-- INTERSECT / INTERSECT ALL
+- INTERSECT / INTERSECT ALL?
 
-- EXCEPT / EXCEPT ALL
+- EXCEPT / EXCEPT ALL?
 
-- UNION-ALL data-staging batchSize should be configurable
-- UNION-ALL data-staging batchChSize should be configurable
+- UNION-ALL data-staging batchSize should be configurable?
+- UNION-ALL data-staging batchChSize should be configurable?
 
 - standalone Op for data-staging / pipeline breaking
 
