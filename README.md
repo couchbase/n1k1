@@ -216,12 +216,12 @@ efficiently execute that query-plan.
   - analysis of non-correlated vs correlated subqueries should be
     decided at a higher level than at query-plan execution
 
-- need the JSON for objects to be canonicalized before they can be
-  used as a map[] key, as {a:1,b:2} and {b:2,a:1} are
-  logically the same?
-
-- numbers might also need to be canonicalized?
-  - e.g., 0 vs 0.0 vs -0 are logically the same?
+- base.ValComparer.CanonicalJSON()
+  - need the JSON for objects to be canonicalized before they can be
+    used as a map[] key, as {a:1,b:2} and {b:2,a:1} are
+    logically the same?
+  - numbers might also need to be canonicalized?
+    - e.g., 0 vs 0.0 vs -0 are logically the same?
 
 - jsonparser doesn't alloc memory, except for ObjectEach()...
   - its `var stackbuf [unescapeStackBufSize]byte` approach
