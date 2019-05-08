@@ -238,6 +238,16 @@ func testValComparer(t *testing.T, vIn *ValComparer) {
 			c: 1,
 		},
 		{
+			a: `{"a\"X":"y"}`,
+			b: `{"a\"X":"x"}`,
+			c: 1,
+		},
+		{
+			a: `{"a\"X":"y\"Y\"Y"}`,
+			b: `{"a\"X":"x\"X\"X"}`,
+			c: 1,
+		},
+		{
 			a: `{"a":1,"b":2}`,
 			b: `{"b":2,"a":1}`,
 			c: 0,
@@ -260,6 +270,11 @@ func testValComparer(t *testing.T, vIn *ValComparer) {
 		{
 			a: `{"a":1,"b":2}`,
 			b: `{"b":2,"c":1}`,
+			c: 1,
+		},
+		{
+			a: `{"a":1,"b\"B":2}`,
+			b: `{"b\"B":2,"c":1}`,
 			c: 1,
 		},
 	}
