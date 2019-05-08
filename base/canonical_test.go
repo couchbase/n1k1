@@ -92,3 +92,19 @@ func testCanonicalJSON(t *testing.T, vIn *ValComparer, reuseOut bool) {
 		}
 	}
 }
+
+func BenchmarkCanonicalJSON(b *testing.B) {
+	v := NewValComparer()
+
+	x := []byte(`[1, "2", []]`)
+
+	o := make([]byte, 0, 1000)
+
+	v.CanonicalJSON(x, o)
+
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		v.CanonicalJSON(x, o)
+	}
+}
