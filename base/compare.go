@@ -262,20 +262,6 @@ func (c *ValComparer) KeyValsRelease(depth int, s KeyVals) {
 
 // ---------------------------------------------
 
-func CompareErr(aErr, bErr error) int {
-	if aErr != nil && bErr != nil {
-		return 0
-	}
-
-	if aErr != nil {
-		return -1
-	}
-
-	return 1
-}
-
-// ---------------------------------------------
-
 type KeyVal struct {
 	Key     []byte
 	Val     []byte
@@ -312,6 +298,20 @@ func ReuseNextKey(kvs KeyVals) []byte {
 	}
 
 	return nil
+}
+
+// ---------------------------------------------
+
+func CompareErr(aErr, bErr error) int {
+	if aErr != nil && bErr != nil {
+		return 0
+	}
+
+	if aErr != nil {
+		return -1
+	}
+
+	return 1
 }
 
 // ---------------------------------------------
