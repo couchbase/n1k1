@@ -161,6 +161,8 @@ func OpOrderByOffsetLimit(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldV
 	}
 }
 
+// -----------------------------------------------------
+
 func MakeLessFunc(lzVars *base.Vars, directions []interface{}) (
 	lzLessFunc base.LessFunc) {
 	// TODO: One day use eagerly discovered types to optimize?

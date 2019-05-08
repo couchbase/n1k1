@@ -34,6 +34,8 @@ func OpProject(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	}
 }
 
+// -----------------------------------------------------
+
 func MakeProjectFunc(lzVars *base.Vars, labels base.Labels,
 	projections []interface{}, path, pathItem string) (
 	lzProjectFunc base.ProjectFunc) {
