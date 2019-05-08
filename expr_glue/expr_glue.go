@@ -17,8 +17,8 @@ import (
 )
 
 // ExprStr parses and evaluates a N1QL expression string using the
-// query/expression/parser package, for backwards compatibility at the
-// cost of performance.
+// query/expression/parser package, providing backwards compatibility
+// at the cost of performance from data conversions.
 func ExprStr(vars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (exprFunc base.ExprFunc) {
 	exprStr := params[0].(string)
@@ -36,8 +36,9 @@ func ExprStr(vars *base.Vars, labels base.Labels,
 	return ExprTree(vars, labels, paramsTree, path)
 }
 
-// ExprStr evaluates a N1QL expression tree, for backwards
-// compatibility at the cost of performance from data conversions.
+// ExprStr evaluates a N1QL query/expression.Expression tree, for
+// backwards compatibility at the cost of performance from data
+// conversions.
 func ExprTree(vars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (exprFunc base.ExprFunc) {
 	cv, err := NewConvertVals(labels)
@@ -51,6 +52,9 @@ func ExprTree(vars *base.Vars, labels base.Labels,
 	expr := params[0].(expression.Expression)
 
 	exprGlueContext := &ExprGlueContext{MyNow: vars.Ctx.Now}
+
+	// TODO: Need to propagate the vars to the expression, too,
+	// perhaps related to bindings?
 
 	return func(vals base.Vals, yieldErr base.YieldErr) (val base.Val) {
 		v, err := cv.Convert(vals)
