@@ -1,6 +1,7 @@
 package base
 
 import (
+	"bytes"
 	"testing"
 
 	"github.com/buger/jsonparser"
@@ -289,6 +290,27 @@ func testValComparer(t *testing.T, vIn *ValComparer) {
 		if c != test.c {
 			t.Fatalf("testi: %d, test: %+v, c: %d",
 				testi, test, c)
+		}
+	}
+}
+
+func BenchmarkEncodeAsString(b *testing.B) {
+	v := NewValComparer()
+	o := make([]byte, 0, 1000)
+
+	s := []byte("hello\"world")
+	j := []byte(`"hello\"world"`)
+
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		out, err := v.EncodeAsString(s, o)
+		if err != nil {
+			b.Fatalf("err: %v", err)
+		}
+
+		if !bytes.Equal(j, out) {
+			b.Fatalf("not equal")
 		}
 	}
 }

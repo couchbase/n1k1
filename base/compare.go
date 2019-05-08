@@ -27,6 +27,8 @@ type ValComparer struct {
 
 	Buffer bytes.Buffer
 
+	Bytes []byte
+
 	Encoder *json.Encoder
 }
 
@@ -235,7 +237,9 @@ func (c *ValComparer) CompareDeepType(aValue, bValue []byte,
 func (c *ValComparer) EncodeAsString(s []byte, out []byte) ([]byte, error) {
 	c.Buffer.Reset()
 
-	c.Encoder.Encode(BytesTextMarshaller(s))
+	c.Bytes = s
+
+	c.Encoder.Encode(c)
 
 	written := c.Buffer.Len() - 1 // Strip off newline from encoder.
 
@@ -253,13 +257,9 @@ func (c *ValComparer) EncodeAsString(s []byte, out []byte) ([]byte, error) {
 	return out, nil
 }
 
-// ---------------------------------------------
-
-// BytesTextMarshaller is intended to reduce garbage from []byte to
-// string conversions in json.Encoder's default []byte handling.
-type BytesTextMarshaller []byte
-
-func (s BytesTextMarshaller) MarshalText() ([]byte, error) { return s, nil }
+// MarshalText() allows the ValComparer to implements the
+// encoding.TextMarshaler interface with no extra allocations.
+func (c *ValComparer) MarshalText() ([]byte, error) { return c.Bytes, nil }
 
 // ---------------------------------------------
 
