@@ -81,6 +81,7 @@ type ConvertVals struct {
 }
 
 func NewConvertVals(labels base.Labels) (*ConvertVals, error) {
+	// Analyze the labels into paths.
 	var paths [][]string
 
 	for _, label := range labels {
@@ -100,11 +101,13 @@ func NewConvertVals(labels base.Labels) (*ConvertVals, error) {
 	return &ConvertVals{Labels: labels, LabelPaths: paths}, nil
 }
 
+// --------------------------------------------------------
+
 // Convert merges the vals into a single value.Value, based on the
 // directives provided in ValsToValue.Labels.
 func (s *ConvertVals) Convert(vals base.Vals) (value.Value, error) {
 	if len(s.Labels) != len(vals) {
-		return nil, fmt.Errorf("ConvertVals, Labels.len(%+v) != vals.len(%+v)",
+		return nil, fmt.Errorf("Convert, Labels.len(%+v) != vals.len(%+v)",
 			s.Labels, vals)
 	}
 
@@ -115,7 +118,7 @@ OUTER:
 		switch label[0] {
 		case '=': // The label denotes that vals[i] is a BINARY value.
 			if v != nil {
-				return nil, fmt.Errorf("ConvertVals, v non-nil on '='")
+				return nil, fmt.Errorf("Convert, v non-nil on '='")
 			}
 
 			v = value.NewBinaryValue(vals[i])
@@ -125,7 +128,7 @@ OUTER:
 		case '.': // Label is a path into v of where to set vals[i].
 			if label == "." {
 				if v != nil {
-					return nil, fmt.Errorf("ConvertVals, v non-nil on '.'")
+					return nil, fmt.Errorf("Convert, v non-nil on '.'")
 				}
 
 				v = value.NewParsedValue(vals[i], false)
@@ -191,7 +194,7 @@ OUTER:
 			v = av
 
 		default:
-			return nil, fmt.Errorf("ConvertVals, unknown label[0]: %s", label)
+			return nil, fmt.Errorf("Convert, unknown label[0]: %s", label)
 		}
 	}
 
