@@ -58,10 +58,10 @@ func (c *ValComparer) CompareDeepType(aValue, bValue []byte,
 	case jsonparser.String:
 		kvs := c.KeyValsAcquire(depth)
 
-		kvs = append(kvs, KeyVal{ReuseNextKey(kvs), nil, 0, 0})
+		kvs = append(kvs, KeyVal{Key: ReuseNextKey(kvs)})
 		aBuf := kvs[len(kvs)-1].Key
 
-		kvs = append(kvs, KeyVal{ReuseNextKey(kvs), nil, 0, 0})
+		kvs = append(kvs, KeyVal{Key: ReuseNextKey(kvs)})
 		bBuf := kvs[len(kvs)-1].Key
 
 		av, aErr := jsonparser.Unescape(aValue, aBuf[:cap(aBuf)])
