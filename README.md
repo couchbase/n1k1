@@ -227,6 +227,9 @@ efficiently execute that query-plan.
   - its `var stackbuf [unescapeStackBufSize]byte` approach
     inadvertently escapes to the heap.
   - need upstream fix / patch?
+  - jsonparser might already unescape strings
+    during ArrayEach/ObjectEach callbacks, so recursion into
+    CompareDeepType() for strings might incorrectly double-unescape?
 
 - early stop when an error or LIMIT is reached?
   - YieldStats() can return a non-nil error, like ErrLimitReached?
