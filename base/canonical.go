@@ -108,9 +108,12 @@ func (c *ValComparer) CanonicalJSONDeepType(
 				out = append(out, ',')
 			}
 
-			out = append(out, '"')
-			out = append(out, kv.Key...)
-			out = append(out, '"', ':')
+			out, err = c.EncodeAsString(kv.Key, out)
+			if err != nil {
+				return out, err
+			}
+
+			out = append(out, ':')
 
 			out, err = c.CanonicalJSONDeepType(kv.Val, kv.ValType,
 				out, depthPlus1)

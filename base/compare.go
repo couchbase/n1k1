@@ -2,6 +2,7 @@ package base
 
 import (
 	"bytes"
+	"fmt"
 	"sort"
 
 	"github.com/buger/jsonparser"
@@ -26,6 +27,8 @@ type ValComparer struct {
 
 	// Reused across Compare()'s, indexed by: depth.
 	KeyVals []KeyVals
+
+	Buffer bytes.Buffer
 }
 
 func NewValComparer() *ValComparer {
@@ -246,6 +249,29 @@ func (c *ValComparer) KeyValsAcquire(depth int) KeyVals {
 
 func (c *ValComparer) KeyValsRelease(depth int, s KeyVals) {
 	c.KeyVals[depth] = s[:0]
+}
+
+// ---------------------------------------------
+
+func (c *ValComparer) EncodeAsString(s []byte, out []byte) ([]byte, error) {
+	c.Buffer.Reset()
+
+	fmt.Fprintf(&c.Buffer, "%q", s)
+
+	written := c.Buffer.Len()
+
+	lenOld := len(out)
+	needed := lenOld + written
+
+	if cap(out) >= needed {
+		out = out[:needed]
+	} else {
+		out = append(make([]byte, 0, needed), out...)[:needed]
+	}
+
+	c.Buffer.Read(out[lenOld:])
+
+	return out, nil
 }
 
 // ---------------------------------------------

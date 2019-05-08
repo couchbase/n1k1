@@ -50,6 +50,7 @@ func testCanonicalJSON(t *testing.T, vIn *ValComparer, reuseOut bool) {
 		`{"a":1}`,
 		`{"b":1,"a":1}`,
 		`{"b":{"y":10,"x":"hi"},"a":1}`,
+		`{"b\"x":1,"a\"x":1}`,
 	}
 
 	var out []byte
