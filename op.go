@@ -40,6 +40,11 @@ func ExecOp(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 // -----------------------------------------------------
 
+// LzScope is used to mark block scope (ex: IF block) as lazy.
+const LzScope = true
+
+// -----------------------------------------------------
+
 // Marks the start of a nested "emit capture" area.
 var EmitPush = func(path, pathItem string) string {
 	return path + "_" + pathItem // Placeholder for compiler.

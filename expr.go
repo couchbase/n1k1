@@ -4,11 +4,6 @@ import (
 	"github.com/couchbase/n1k1/base"
 )
 
-// LzScope is used to mark variable scopes as lz (ex: IF block).
-const LzScope = true
-
-// -----------------------------------------------------
-
 // ExprCatalog is the default registry of known expression functions.
 var ExprCatalog = map[string]base.ExprCatalogFunc{
 	"json":      ExprJson,
