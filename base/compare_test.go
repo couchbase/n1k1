@@ -294,6 +294,21 @@ func testValComparer(t *testing.T, vIn *ValComparer) {
 	}
 }
 
+func BenchmarkValCompare(b *testing.B) {
+	v := NewValComparer()
+
+	x := []byte(`[1,"2",[]]`)
+	y := []byte(`[1,"2",[]]`)
+
+	v.Compare(x, y)
+
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		v.Compare(x, y)
+	}
+}
+
 func BenchmarkEncodeAsString(b *testing.B) {
 	v := NewValComparer()
 	o := make([]byte, 0, 1000)
