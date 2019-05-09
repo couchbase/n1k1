@@ -21,14 +21,13 @@ func (c *ValComparer) CanonicalJSONDeep(a, out []byte, depth int) (
 		return out, err
 	}
 
-	return c.CanonicalJSONDeepType(v, vType, out, depth)
+	return c.CanonicalJSONDeepType(v, int(vType), out, depth)
 }
 
-func (c *ValComparer) CanonicalJSONDeepType(
-	v []byte, vType jsonparser.ValueType, out []byte, depth int) (
-	rv []byte, err error) {
+func (c *ValComparer) CanonicalJSONDeepType(v []byte, vType int,
+	out []byte, depth int) (rv []byte, err error) {
 	// Both types are the same, so need type-based cases...
-	switch vType {
+	switch jsonparser.ValueType(vType) {
 	case jsonparser.String:
 		out = append(out, '"')
 		out = append(out, v...)
@@ -72,7 +71,7 @@ func (c *ValComparer) CanonicalJSONDeepType(
 			}
 
 			out, err = c.CanonicalJSONDeepType(
-				item, itemType, out, depthPlus1)
+				item, int(itemType), out, depthPlus1)
 
 			i++
 		})
@@ -89,7 +88,7 @@ func (c *ValComparer) CanonicalJSONDeepType(
 		err := jsonparser.ObjectEach(v,
 			func(k []byte, v []byte, vT jsonparser.ValueType, o int) error {
 				kCopy := append(ReuseNextKey(kvs), k...)
-				kvs = append(kvs, KeyVal{kCopy, v, vT, 0})
+				kvs = append(kvs, KeyVal{kCopy, v, int(vT), 0})
 				return nil
 			})
 

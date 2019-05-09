@@ -32,21 +32,21 @@ var ValueTypeToValType = []int{
 
 // ---------------------------------------------
 
-func Parse(b []byte) ([]byte, jsonparser.ValueType) {
+func Parse(b []byte) ([]byte, int) {
 	if len(b) == 0 {
-		return nil, jsonparser.NotExist // ValTypeMissing.
+		return nil, int(jsonparser.NotExist) // ValTypeMissing.
 	}
 
 	v, vt, _, err := jsonparser.Get(b)
 	if err != nil {
-		return b, jsonparser.Unknown
+		return b, int(jsonparser.Unknown)
 	}
 
-	return v, vt
+	return v, int(vt)
 }
 
-func ParseTypeHasValue(x jsonparser.ValueType) bool {
-	return ValueTypeToValType[x] > ValTypeNull
+func ParseTypeHasValue(valueType int) bool {
+	return ValueTypeToValType[valueType] > ValTypeNull
 }
 
 // ---------------------------------------------
@@ -82,17 +82,17 @@ func (c *ValComparer) CompareDeep(a, b []byte, depth int) int {
 		return CompareErr(aErr, bErr)
 	}
 
-	return c.CompareDeepType(aValue, bValue, aValueType, bValueType, depth)
+	return c.CompareDeepType(aValue, bValue, int(aValueType), int(bValueType), depth)
 }
 
 func (c *ValComparer) CompareDeepType(aValue, bValue []byte,
-	aValueType, bValueType jsonparser.ValueType, depth int) int {
+	aValueType, bValueType int, depth int) int {
 	if aValueType != bValueType {
 		return ValueTypeToValType[aValueType] - ValueTypeToValType[bValueType]
 	}
 
 	// Both types are the same, so need type-based cases...
-	switch aValueType {
+	switch jsonparser.ValueType(aValueType) {
 	case jsonparser.String:
 		kvs := c.KeyValsAcquire(depth)
 
@@ -142,7 +142,7 @@ func (c *ValComparer) CompareDeepType(aValue, bValue []byte,
 
 		_, bErr := jsonparser.ArrayEach(bValue,
 			func(v []byte, vT jsonparser.ValueType, o int, vErr error) {
-				kvs = append(kvs, KeyVal{ReuseNextKey(kvs), v, vT, 0})
+				kvs = append(kvs, KeyVal{ReuseNextKey(kvs), v, int(vT), 0})
 			})
 
 		bLen := len(kvs)
@@ -164,7 +164,7 @@ func (c *ValComparer) CompareDeepType(aValue, bValue []byte,
 				}
 
 				cmp = c.CompareDeepType(
-					v, kvs[i].Val, vT, kvs[i].ValType, depthPlus1)
+					v, kvs[i].Val, int(vT), kvs[i].ValType, depthPlus1)
 
 				i++
 			})
@@ -188,7 +188,7 @@ func (c *ValComparer) CompareDeepType(aValue, bValue []byte,
 		aErr := jsonparser.ObjectEach(aValue,
 			func(k []byte, v []byte, vT jsonparser.ValueType, o int) error {
 				kCopy := append(ReuseNextKey(kvs), k...)
-				kvs = append(kvs, KeyVal{kCopy, v, vT, 1})
+				kvs = append(kvs, KeyVal{kCopy, v, int(vT), 1})
 				aLen++
 				return nil
 			})
@@ -197,7 +197,7 @@ func (c *ValComparer) CompareDeepType(aValue, bValue []byte,
 		bErr := jsonparser.ObjectEach(bValue,
 			func(k []byte, v []byte, vT jsonparser.ValueType, o int) error {
 				kCopy := append(ReuseNextKey(kvs), k...)
-				kvs = append(kvs, KeyVal{kCopy, v, vT, -1})
+				kvs = append(kvs, KeyVal{kCopy, v, int(vT), -1})
 				bLen++
 				return nil
 			})
@@ -247,7 +247,7 @@ func (c *ValComparer) CompareDeepType(aValue, bValue []byte,
 			}
 
 			cmp := c.CompareDeepType(kvX.Val, kvY.Val,
-				kvX.ValType, kvY.ValType, depthPlus1)
+				int(kvX.ValType), int(kvY.ValType), depthPlus1)
 			if cmp != 0 {
 				return cmp
 			}
@@ -310,7 +310,7 @@ func (c *ValComparer) KeyValsRelease(depth int, s KeyVals) {
 type KeyVal struct {
 	Key     []byte
 	Val     []byte
-	ValType jsonparser.ValueType
+	ValType int
 	Pos     int
 }
 
