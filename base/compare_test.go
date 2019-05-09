@@ -330,7 +330,7 @@ func BenchmarkEncodeAsString(b *testing.B) {
 	}
 }
 
-func BenchmarkParseString(b *testing.B) {
+func BenchmarkParse(b *testing.B) {
 	x := []byte(`"hello\"world"`)
 
 	b.ResetTimer()
