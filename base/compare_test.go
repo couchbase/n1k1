@@ -329,3 +329,14 @@ func BenchmarkEncodeAsString(b *testing.B) {
 		}
 	}
 }
+
+func BenchmarkParseString(b *testing.B) {
+	x := []byte(`"hello\"world"`)
+
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		Parse(x)
+	}
+}
+
