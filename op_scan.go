@@ -17,6 +17,11 @@ func OpScan(o *base.Op, lzVars *base.Vars,
 	lzYieldVals base.YieldVals, lzYieldErr base.YieldErr) {
 	kind := o.Params[0].(string)
 
+	reps := 1 // Optional repetition count, useful for perf testing.
+	if len(o.Params) >= 3 {
+		reps = o.Params[2].(int)
+	}
+
 	var lzFilePath string  // !lz
 	var lzReader io.Reader // !lz
 
@@ -27,7 +32,7 @@ func OpScan(o *base.Op, lzVars *base.Vars,
 		paramsFilePath := o.Params[1].(string)
 		lzFilePath := paramsFilePath
 
-		ScanFile(lzFilePath, o.Labels, lzVars, lzYieldVals, lzYieldErr) // !lz
+		ScanFile(lzFilePath, o.Labels, lzVars, lzYieldVals, lzYieldErr, reps) // !lz
 
 	case "csvData":
 		paramsCsvData := o.Params[1].(string)
@@ -35,7 +40,7 @@ func OpScan(o *base.Op, lzVars *base.Vars,
 
 		lzReader := strings.NewReader(lzCsvData)
 
-		ScanReaderAsCsv(lzReader, o.Labels, lzVars, lzYieldVals, lzYieldErr) // !lz
+		ScanReaderAsCsv(lzReader, o.Labels, lzVars, lzYieldVals, lzYieldErr, reps) // !lz
 
 	case "jsonsData": // Multiple JSON documents, one per line.
 		paramsJsonsData := o.Params[1].(string)
@@ -43,7 +48,7 @@ func OpScan(o *base.Op, lzVars *base.Vars,
 
 		lzReader := strings.NewReader(lzJsonsData)
 
-		ScanReaderAsJsons(lzReader, o.Labels, lzVars, lzYieldVals, lzYieldErr) // !lz
+		ScanReaderAsJsons(lzReader, o.Labels, lzVars, lzYieldVals, lzYieldErr, reps) // !lz
 
 	default:
 		errMsg := "unknown scan kind" // TODO: Weak string/double-quote handling.
@@ -55,7 +60,7 @@ func OpScan(o *base.Op, lzVars *base.Vars,
 // ---------------------------------------------------------------
 
 func ScanFile(lzFilePath string, labels base.Labels, lzVars *base.Vars,
-	lzYieldVals base.YieldVals, lzYieldErr base.YieldErr) {
+	lzYieldVals base.YieldVals, lzYieldErr base.YieldErr, reps int) {
 	errMsg := "unknown file format" // TODO: Weak string/double-quote handling.
 
 	fileSuffixCsv := ".csv"
@@ -74,12 +79,12 @@ func ScanFile(lzFilePath string, labels base.Labels, lzVars *base.Vars,
 		defer lzReader.Close()
 
 		if strings.HasSuffix(lzFilePath, fileSuffixCsv) {
-			ScanReaderAsCsv(lzReader, labels, lzVars, lzYieldVals, lzYieldErr) // !lz
+			ScanReaderAsCsv(lzReader, labels, lzVars, lzYieldVals, lzYieldErr, reps) // !lz
 			return
 		}
 
 		if strings.HasSuffix(lzFilePath, fileSuffixJsons) {
-			ScanReaderAsJsons(lzReader, labels, lzVars, lzYieldVals, lzYieldErr) // !lz
+			ScanReaderAsJsons(lzReader, labels, lzVars, lzYieldVals, lzYieldErr, reps) // !lz
 			return
 		}
 
@@ -90,7 +95,7 @@ func ScanFile(lzFilePath string, labels base.Labels, lzVars *base.Vars,
 // ---------------------------------------------------------------
 
 func ScanReaderAsCsv(lzReader io.Reader, labels base.Labels, lzVars *base.Vars,
-	lzYieldVals base.YieldVals, lzYieldErr base.YieldErr) {
+	lzYieldVals base.YieldVals, lzYieldErr base.YieldErr, reps int) {
 	var lzValsScan base.Vals
 
 	lzYielded := 0
@@ -114,7 +119,9 @@ func ScanReaderAsCsv(lzReader io.Reader, labels base.Labels, lzVars *base.Vars,
 		}
 
 		if len(lzValsScan) > 0 {
-			lzYieldVals(lzValsScan)
+			for lzI := 0; lzI < reps; lzI++ {
+				lzYieldVals(lzValsScan)
+			}
 		}
 
 		lzYielded++
@@ -139,7 +146,7 @@ func ScanReaderAsCsv(lzReader io.Reader, labels base.Labels, lzVars *base.Vars,
 // ---------------------------------------------------------------
 
 func ScanReaderAsJsons(lzReader io.Reader, labels base.Labels, lzVars *base.Vars,
-	lzYieldVals base.YieldVals, lzYieldErr base.YieldErr) {
+	lzYieldVals base.YieldVals, lzYieldErr base.YieldErr, reps int) {
 	var lzValsScan base.Vals
 
 	lzYielded := 0
@@ -153,7 +160,9 @@ func ScanReaderAsJsons(lzReader io.Reader, labels base.Labels, lzVars *base.Vars
 
 			lzValsScan = append(lzValsScan, base.Val(lzLine))
 
-			lzYieldVals(lzValsScan)
+			for lzI := 0; lzI < reps; lzI++ {
+				lzYieldVals(lzValsScan)
+			}
 		}
 
 		lzYielded++
