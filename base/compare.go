@@ -8,6 +8,7 @@ import (
 	"github.com/buger/jsonparser"
 )
 
+// The ordering of ValType's here matches N1QL value type ordering.
 const (
 	ValTypeMissing = iota
 	ValTypeNull

@@ -39,7 +39,7 @@ func ExprCmp(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string, eq bool) (lzExprFunc base.ExprFunc) {
 	for parami, param := range params {
 		expr := param.([]interface{})
-		if expr[0].(string) == "json" {	// Optimize when param is static JSON.
+		if expr[0].(string) == "json" { // Optimize when param is static JSON.
 			return ExprCmpStatic(lzVars, labels, params, path, parami, eq)
 		}
 	}
