@@ -6,8 +6,12 @@ import (
 
 func init() {
 	ExprCatalog["eq"] = ExprEq
+
 	ExprCatalog["or"] = ExprOr
 	ExprCatalog["and"] = ExprAnd
+
+	ExprCatalog["lt"] = ExprLT
+	ExprCatalog["gt"] = ExprGT
 }
 
 // MakeBiExprFunc is for two-argument or "binary" expressions.
@@ -106,4 +110,45 @@ func ExprAnd(lzVars *base.Vars, labels base.Labels,
 		MakeBiExprFunc(lzVars, labels, params, path, biExprFunc) // !lz
 
 	return lzExprFunc
+}
+
+// -----------------------------------------------------
+
+func ExprLT(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
+	biExprFunc := func(lzA, lzB base.ExprFunc, lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) { // !lz
+		if LzScope {
+			lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
+
+			lzValA, lzTypeA := base.Parse(lzVal)
+			if base.ParseTypeHasValue(lzTypeA) {
+				lzVal = lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B"
+
+				lzValB, lzTypeB := base.Parse(lzVal)
+				if base.ParseTypeHasValue(lzTypeB) {
+					lzCmp := lzVars.Ctx.ValComparer.CompareDeepType(lzValA, lzValB, lzTypeA, lzTypeB, 0)
+					if lzCmp < 0 {
+						lzVal = base.ValTrue
+					} else {
+						lzVal = base.ValFalse
+					}
+				}
+			}
+		}
+
+		return lzVal
+	} // !lz
+
+	lzExprFunc =
+		MakeBiExprFunc(lzVars, labels, params, path, biExprFunc) // !lz
+
+	return lzExprFunc
+}
+
+// -----------------------------------------------------
+
+func ExprGT(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
+	paramsNext := []interface{}{params[1], params[0]}
+	return ExprLT(lzVars, labels, paramsNext, path) // !lz
 }

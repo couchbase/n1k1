@@ -8,15 +8,47 @@ import (
 	"github.com/buger/jsonparser"
 )
 
-var ValueTypePriority = []int{
-	jsonparser.NotExist: 0,
-	jsonparser.Null:     1,
-	jsonparser.Boolean:  2,
-	jsonparser.Number:   3,
-	jsonparser.String:   4,
-	jsonparser.Array:    5,
-	jsonparser.Object:   6,
-	jsonparser.Unknown:  7, // Ex: BINARY.
+const (
+	ValTypeMissing = iota
+	ValTypeNull
+	ValTypeBoolean
+	ValTypeNumber
+	ValTypeString
+	ValTypeArray
+	ValTypeObject
+	ValTypeUnknown // Ex: BINARY.
+)
+
+var ValueTypeToValType = []int{
+	jsonparser.NotExist: ValTypeMissing,
+	jsonparser.Null:     ValTypeNull,
+	jsonparser.Boolean:  ValTypeBoolean,
+	jsonparser.Number:   ValTypeNumber,
+	jsonparser.String:   ValTypeString,
+	jsonparser.Array:    ValTypeArray,
+	jsonparser.Object:   ValTypeObject,
+	jsonparser.Unknown:  ValTypeUnknown, // Ex: BINARY.
+}
+
+func ValType(v Val) int { // TODO: Optimize ValType().
+	_, vt, _, _ := jsonparser.Get(v)
+
+	return ValueTypeToValType[vt]
+}
+
+// ---------------------------------------------
+
+func Parse(b []byte) ([]byte, jsonparser.ValueType) {
+	v, vt, _, err := jsonparser.Get(b)
+	if err != nil {
+		return b, jsonparser.Unknown
+	}
+
+	return v, vt
+}
+
+func ParseTypeHasValue(x jsonparser.ValueType) bool {
+	return ValueTypeToValType[x] > ValTypeNull
 }
 
 // ---------------------------------------------
@@ -58,7 +90,7 @@ func (c *ValComparer) CompareDeep(a, b []byte, depth int) int {
 func (c *ValComparer) CompareDeepType(aValue, bValue []byte,
 	aValueType, bValueType jsonparser.ValueType, depth int) int {
 	if aValueType != bValueType {
-		return ValueTypePriority[aValueType] - ValueTypePriority[bValueType]
+		return ValueTypeToValType[aValueType] - ValueTypeToValType[bValueType]
 	}
 
 	// Both types are the same, so need type-based cases...

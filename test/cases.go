@@ -2141,4 +2141,56 @@ var TestCasesSimple = []TestCaseSimple{
 			base.Vals{[]byte(`2000`)},
 		},
 	},
+	{
+		about: "test csv-data scan->filter with b < 21",
+		o: base.Op{
+			Kind:   "filter",
+			Labels: base.Labels{"a", "b", "c"},
+			Params: []interface{}{
+				"lt",
+				[]interface{}{"labelPath", "b"},
+				[]interface{}{"json", `21`},
+			},
+			Children: []*base.Op{&base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"a", "b", "c"},
+				Params: []interface{}{
+					"csvData",
+					`
+10,20,30
+11,21,31
+`,
+				},
+			}},
+		},
+		expectYields: []base.Vals{
+			base.Vals{[]byte("10"), []byte("20"), []byte("30")},
+		},
+	},
+	{
+		about: "test csv-data scan->filter with b > 20",
+		o: base.Op{
+			Kind:   "filter",
+			Labels: base.Labels{"a", "b", "c"},
+			Params: []interface{}{
+				"gt",
+				[]interface{}{"labelPath", "b"},
+				[]interface{}{"json", `20`},
+			},
+			Children: []*base.Op{&base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"a", "b", "c"},
+				Params: []interface{}{
+					"csvData",
+					`
+10,20,30
+11,21,31
+`,
+				},
+			}},
+		},
+		expectYields: []base.Vals{
+			base.Vals{[]byte("11"), []byte("21"), []byte("31")},
+		},
+	},
 }
