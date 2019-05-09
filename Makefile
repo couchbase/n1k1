@@ -11,12 +11,6 @@ run_intermed_build:
 	go test -v ./test/...
 	go fmt ./...
 
-# Classify and convert query/expression.
-run_expr_build:
-	go build ./cmd/expr_build/
-	./expr_build
-	go fmt ./...
-
 # Convert the source files into easier-to-read versions.
 easy-to-read:
 	mkdir -p ./tmp/easy-to-read
