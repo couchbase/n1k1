@@ -7,6 +7,7 @@ import (
 
 	"github.com/couchbase/n1k1"
 	"github.com/couchbase/n1k1/base"
+	"github.com/couchbase/n1k1/expr_glue"
 )
 
 func TestCasesSimpleWithInterp(t *testing.T) {
@@ -32,11 +33,31 @@ func TestCasesSimpleWithInterp(t *testing.T) {
 	}
 }
 
-func BenchmarkInterp100000Docs(b *testing.B) {
-	benchmarkInterpNDocs(b, 100000)
+func BenchmarkInterpExprEq_100000Docs(b *testing.B) {
+	benchmarkInterpNDocs(b,
+		[]interface{}{
+			"eq",
+			[]interface{}{"labelPath", ".", "b"},
+			[]interface{}{"json", `10`},
+		},
+		100000)
 }
 
-func benchmarkInterpNDocs(b *testing.B, nDocs int) {
+func BenchmarkInterpExprStr_100000Docs(b *testing.B) {
+	if n1k1.ExprCatalog["exprStr"] == nil {
+		n1k1.ExprCatalog["exprStr"] = expr_glue.ExprStr
+	}
+
+	benchmarkInterpNDocs(b,
+		[]interface{}{
+			"exprStr",
+			"b = 10",
+		},
+		100000)
+}
+
+func benchmarkInterpNDocs(b *testing.B,
+	filterParams []interface{}, nDocs int) {
 	vars := &base.Vars{
 		Ctx: &base.Ctx{
 			ValComparer: base.NewValComparer(),
@@ -67,11 +88,7 @@ func benchmarkInterpNDocs(b *testing.B, nDocs int) {
 	o := base.Op{
 		Kind:   "filter",
 		Labels: base.Labels{"."},
-		Params: []interface{}{
-			"eq",
-			[]interface{}{"labelPath", ".", "b"},
-			[]interface{}{"json", `10`},
-		},
+		Params: filterParams,
 		Children: []*base.Op{&base.Op{
 			Kind:   "scan",
 			Labels: base.Labels{"."},
