@@ -2193,4 +2193,81 @@ var TestCasesSimple = []TestCaseSimple{
 			base.Vals{[]byte("11"), []byte("21"), []byte("31")},
 		},
 	},
+	{
+		about: "test csv-data scan->filter with 20 < b",
+		o: base.Op{
+			Kind:   "filter",
+			Labels: base.Labels{"a", "b", "c"},
+			Params: []interface{}{
+				"lt",
+				[]interface{}{"json", `20`},
+				[]interface{}{"labelPath", "b"},
+			},
+			Children: []*base.Op{&base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"a", "b", "c"},
+				Params: []interface{}{
+					"csvData",
+					`
+10,20,30
+11,21,31
+`,
+				},
+			}},
+		},
+		expectYields: []base.Vals{
+			base.Vals{[]byte("11"), []byte("21"), []byte("31")},
+		},
+	},
+	{
+		about: `test csv-data scan->filter with b > "hello"`,
+		o: base.Op{
+			Kind:   "filter",
+			Labels: base.Labels{"a", "b", "c"},
+			Params: []interface{}{
+				"gt",
+				[]interface{}{"labelPath", "b"},
+				[]interface{}{"json", `"hello"`},
+			},
+			Children: []*base.Op{&base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"a", "b", "c"},
+				Params: []interface{}{
+					"csvData",
+					`
+10,20,30
+11,21,31
+`,
+				},
+			}},
+		},
+		expectYields: []base.Vals(nil),
+	},
+	{
+		about: `test csv-data scan->filter with b < "hello"`,
+		o: base.Op{
+			Kind:   "filter",
+			Labels: base.Labels{"a", "b", "c"},
+			Params: []interface{}{
+				"lt",
+				[]interface{}{"labelPath", "b"},
+				[]interface{}{"json", `"hello"`},
+			},
+			Children: []*base.Op{&base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"a", "b", "c"},
+				Params: []interface{}{
+					"csvData",
+					`
+10,20,30
+11,21,31
+`,
+				},
+			}},
+		},
+		expectYields: []base.Vals{
+			base.Vals{[]byte("10"), []byte("20"), []byte("30")},
+			base.Vals{[]byte("11"), []byte("21"), []byte("31")},
+		},
+	},
 }
