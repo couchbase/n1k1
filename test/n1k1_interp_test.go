@@ -33,6 +33,58 @@ func TestCasesSimpleWithInterp(t *testing.T) {
 	}
 }
 
+// --------------------------------------------------------
+
+func BenchmarkInterpExprEq_1Docs(b *testing.B) {
+	benchmarkInterpNDocs(b,
+		[]interface{}{
+			"eq",
+			[]interface{}{"labelPath", ".", "b"},
+			[]interface{}{"json", `10`},
+		},
+		1)
+}
+
+func BenchmarkInterpExprStr_1Docs(b *testing.B) {
+	if n1k1.ExprCatalog["exprStr"] == nil {
+		n1k1.ExprCatalog["exprStr"] = expr_glue.ExprStr
+	}
+
+	benchmarkInterpNDocs(b,
+		[]interface{}{
+			"exprStr",
+			"b = 10",
+		},
+		1)
+}
+
+// --------------------------------------------------------
+
+func BenchmarkInterpExprEq_1000Docs(b *testing.B) {
+	benchmarkInterpNDocs(b,
+		[]interface{}{
+			"eq",
+			[]interface{}{"labelPath", ".", "b"},
+			[]interface{}{"json", `10`},
+		},
+		1000)
+}
+
+func BenchmarkInterpExprStr_1000Docs(b *testing.B) {
+	if n1k1.ExprCatalog["exprStr"] == nil {
+		n1k1.ExprCatalog["exprStr"] = expr_glue.ExprStr
+	}
+
+	benchmarkInterpNDocs(b,
+		[]interface{}{
+			"exprStr",
+			"b = 10",
+		},
+		1000)
+}
+
+// --------------------------------------------------------
+
 func BenchmarkInterpExprEq_100000Docs(b *testing.B) {
 	benchmarkInterpNDocs(b,
 		[]interface{}{
@@ -55,6 +107,8 @@ func BenchmarkInterpExprStr_100000Docs(b *testing.B) {
 		},
 		100000)
 }
+
+// --------------------------------------------------------
 
 func benchmarkInterpNDocs(b *testing.B,
 	filterParams []interface{}, nDocs int) {
