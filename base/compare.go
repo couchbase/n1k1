@@ -19,7 +19,7 @@ const (
 	ValTypeUnknown // Ex: BINARY.
 )
 
-var ValueTypeToValType = []int{
+var ParseTypeToValType = []int{
 	jsonparser.NotExist: ValTypeMissing,
 	jsonparser.Null:     ValTypeNull,
 	jsonparser.Boolean:  ValTypeBoolean,
@@ -46,7 +46,7 @@ func Parse(b []byte) ([]byte, int) {
 }
 
 func ParseTypeHasValue(valueType int) bool {
-	return ValueTypeToValType[valueType] > ValTypeNull
+	return ParseTypeToValType[valueType] > ValTypeNull
 }
 
 // ---------------------------------------------
@@ -88,7 +88,7 @@ func (c *ValComparer) CompareDeep(a, b []byte, depth int) int {
 func (c *ValComparer) CompareDeepType(aValue, bValue []byte,
 	aValueType, bValueType int, depth int) int {
 	if aValueType != bValueType {
-		return ValueTypeToValType[aValueType] - ValueTypeToValType[bValueType]
+		return ParseTypeToValType[aValueType] - ParseTypeToValType[bValueType]
 	}
 
 	// Both types are the same, so need type-based cases...
