@@ -30,15 +30,13 @@ var ValueTypeToValType = []int{
 	jsonparser.Unknown:  ValTypeUnknown, // Ex: BINARY.
 }
 
-func ValType(v Val) int { // TODO: Optimize ValType().
-	_, vt, _, _ := jsonparser.Get(v)
-
-	return ValueTypeToValType[vt]
-}
-
 // ---------------------------------------------
 
 func Parse(b []byte) ([]byte, jsonparser.ValueType) {
+	if len(b) == 0 {
+		return nil, jsonparser.NotExist // ValTypeMissing.
+	}
+
 	v, vt, _, err := jsonparser.Get(b)
 	if err != nil {
 		return b, jsonparser.Unknown
