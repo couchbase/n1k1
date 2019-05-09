@@ -16,17 +16,17 @@ func init() {
 
 func ExprEQ(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	return ExprCmp(lzVars, labels, params, path, EQCmps, true)
+	return ExprCmp(lzVars, labels, params, path, EQCmps, base.ValTrue)
 }
 
 func ExprLT(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	return ExprCmp(lzVars, labels, params, path, LTCmps, false)
+	return ExprCmp(lzVars, labels, params, path, LTCmps, base.ValFalse)
 }
 
 func ExprLE(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	return ExprCmp(lzVars, labels, params, path, LTCmps, true)
+	return ExprCmp(lzVars, labels, params, path, LTCmps, base.ValTrue)
 }
 
 func ExprGT(lzVars *base.Vars, labels base.Labels,
@@ -48,23 +48,23 @@ var EQCmps = []base.Val{base.ValFalse, base.ValFalse, base.ValFalse, base.ValFal
 // -----------------------------------------------------
 
 func ExprCmp(lzVars *base.Vars, labels base.Labels, params []interface{},
-	path string, cmps []base.Val, eq bool) (lzExprFunc base.ExprFunc) {
+	path string, cmps []base.Val, cmpEQ base.Val) (lzExprFunc base.ExprFunc) {
 	for parami, param := range params {
 		expr := param.([]interface{})
 		if expr[0].(string) == "json" { // Optimize when param is static JSON.
-			return ExprCmpStatic(lzVars, labels, params, path, cmps, parami, eq)
+			return ExprCmpStatic(lzVars, labels, params, path, cmps, cmpEQ, parami)
 		}
 	}
 
-	return ExprCmpDynamic(lzVars, labels, params, path, cmps, eq)
+	return ExprCmpDynamic(lzVars, labels, params, path, cmps, cmpEQ)
 }
 
 // -----------------------------------------------------
 
 // ExprCmpStatic optimizes when params[parami] is static.
 func ExprCmpStatic(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string, cmps []base.Val,
-	parami int, eq bool) (lzExprFunc base.ExprFunc) {
+	params []interface{}, path string, cmps []base.Val, cmpEQ base.Val,
+	parami int) (lzExprFunc base.ExprFunc) {
 	json := params[parami].([]interface{})[1].(string)
 
 	staticVal, staticType := base.Parse([]byte(json))
@@ -88,11 +88,6 @@ func ExprCmpStatic(lzVars *base.Vars, labels base.Labels,
 	cmpLT, cmpGT := cmps[0], cmps[1] // Ex: static < expr.
 	if parami == 1 {
 		cmpLT, cmpGT = cmps[2], cmps[3] // Ex: expr < static.
-	}
-
-	cmpEQ := base.ValFalse
-	if eq {
-		cmpEQ = base.ValTrue
 	}
 
 	if LzScope {
@@ -159,14 +154,9 @@ func ExprCmpStatic(lzVars *base.Vars, labels base.Labels,
 
 // Expressions A & B need to be runtime evaluated.
 func ExprCmpDynamic(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string, cmps []base.Val,
-	eq bool) (lzExprFunc base.ExprFunc) {
+	params []interface{}, path string, cmps []base.Val, cmpEQ base.Val) (
+	lzExprFunc base.ExprFunc) {
 	cmpLT, cmpGT := cmps[0], cmps[1]
-
-	cmpEQ := base.ValFalse
-	if eq {
-		cmpEQ = base.ValTrue
-	}
 
 	var lzCmpLT base.Val = cmpLT // <== varLift: lzCmpLT by path
 	var lzCmpEQ base.Val = cmpEQ // <== varLift: lzCmpEQ by path
