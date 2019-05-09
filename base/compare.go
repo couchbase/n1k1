@@ -32,7 +32,7 @@ var ParseTypeToValType = []int{
 
 // ---------------------------------------------
 
-func Parse(b []byte) ([]byte, int) {
+func Parse(b []byte) (parseVal []byte, parseType int) {
 	if len(b) == 0 {
 		return nil, int(jsonparser.NotExist) // ValTypeMissing.
 	}
@@ -45,8 +45,8 @@ func Parse(b []byte) ([]byte, int) {
 	return v, int(vt)
 }
 
-func ParseTypeHasValue(valueType int) bool {
-	return ParseTypeToValType[valueType] > ValTypeNull
+func ParseTypeHasValue(parseType int) bool {
+	return ParseTypeToValType[parseType] > ValTypeNull
 }
 
 func ParseFloat64(v []byte) (float64, error) {

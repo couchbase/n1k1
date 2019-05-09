@@ -339,4 +339,3 @@ func BenchmarkParseString(b *testing.B) {
 		Parse(x)
 	}
 }
-
