@@ -116,6 +116,73 @@ func ExprAnd(lzVars *base.Vars, labels base.Labels,
 
 func ExprLT(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
+	// Optimize if either param expression is a JSON static.
+	for parami, param := range params {
+		expr := param.([]interface{})
+		if expr[0].(string) == "json" {
+			return ExprLTStatic(lzVars, labels, params, path, parami)
+		}
+	}
+
+	return ExprLTDynamic(lzVars, labels, params, path)
+}
+
+func ExprLTStatic(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string, parami int) (lzExprFunc base.ExprFunc) {
+	json := params[parami].([]interface{})[1].(string)
+
+	staticVal, staticType := base.Parse([]byte(json))
+
+	staticTypeHasValue := base.ParseTypeHasValue(staticType)
+
+	exprX := params[(parami+1)%2].([]interface{})
+
+	cmpLT, cmpGT := base.ValTrue, base.ValFalse
+	if parami == 1 {
+		cmpLT, cmpGT = base.ValFalse, base.ValTrue
+	}
+
+	if LzScope {
+		var lzCmpLT base.Val = cmpLT // <== varLift: lzCmpLT by path
+		var lzCmpGT base.Val = cmpGT // <== varLift: lzCmpGT by path
+
+		lzExprFunc =
+			MakeExprFunc(lzVars, labels, exprX, path, "X") // !lz
+		lzX := lzExprFunc
+
+		var lzValStatic base.Val = base.Val(staticVal) // <== varLift: lzValStatic by path
+
+		lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
+			if LzScope {
+				if !staticTypeHasValue { // !lz
+					lzVal = lzValStatic
+				} else { // !lz
+					lzVal = lzX(lzVals, lzYieldErr) // <== emitCaptured: path "X"
+
+					lzValX, lzTypeX := base.Parse(lzVal)
+					if base.ParseTypeHasValue(lzTypeX) {
+						lzCmp := lzVars.Ctx.ValComparer.CompareDeepType(lzValStatic, lzValX, staticType, lzTypeX, 0)
+						if lzCmp < 0 {
+							lzVal = lzCmpLT
+						} else if lzCmp > 0 {
+							lzVal = lzCmpGT
+						} else {
+							lzVal = base.ValFalse
+						}
+					}
+				} // !lz
+			}
+
+			return lzVal
+		}
+	}
+
+	return lzExprFunc
+}
+
+// Expressions A & B need to be runtime evaluated.
+func ExprLTDynamic(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
 	biExprFunc := func(lzA, lzB base.ExprFunc, lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) { // !lz
 		if LzScope {
 			lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
@@ -149,6 +216,5 @@ func ExprLT(lzVars *base.Vars, labels base.Labels,
 
 func ExprGT(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	paramsNext := []interface{}{params[1], params[0]}
-	return ExprLT(lzVars, labels, paramsNext, path) // !lz
+	return ExprLT(lzVars, labels, []interface{}{params[1], params[0]}, path) // !lz
 }
