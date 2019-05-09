@@ -75,10 +75,6 @@ func NewValComparer() *ValComparer {
 // ---------------------------------------------
 
 func (c *ValComparer) Compare(a, b Val) int {
-	return c.CompareDeep(a, b, 0)
-}
-
-func (c *ValComparer) CompareDeep(a, b []byte, depth int) int {
 	aValue, aValueType, _, aErr := jsonparser.Get(a)
 	bValue, bValueType, _, bErr := jsonparser.Get(b)
 
@@ -86,10 +82,10 @@ func (c *ValComparer) CompareDeep(a, b []byte, depth int) int {
 		return CompareErr(aErr, bErr)
 	}
 
-	return c.CompareDeepType(aValue, bValue, int(aValueType), int(bValueType), depth)
+	return c.CompareWithType(aValue, bValue, int(aValueType), int(bValueType), 0)
 }
 
-func (c *ValComparer) CompareDeepType(aValue, bValue []byte,
+func (c *ValComparer) CompareWithType(aValue, bValue []byte,
 	aValueType, bValueType int, depth int) int {
 	if aValueType != bValueType {
 		return ParseTypeToValType[aValueType] - ParseTypeToValType[bValueType]
@@ -167,7 +163,7 @@ func (c *ValComparer) CompareDeepType(aValue, bValue []byte,
 					return
 				}
 
-				cmp = c.CompareDeepType(
+				cmp = c.CompareWithType(
 					v, kvs[i].Val, int(vT), kvs[i].ValType, depthPlus1)
 
 				i++
@@ -250,7 +246,7 @@ func (c *ValComparer) CompareDeepType(aValue, bValue []byte,
 				return kvX.Pos
 			}
 
-			cmp := c.CompareDeepType(kvX.Val, kvY.Val,
+			cmp := c.CompareWithType(kvX.Val, kvY.Val,
 				int(kvX.ValType), int(kvY.ValType), depthPlus1)
 			if cmp != 0 {
 				return cmp

@@ -11,20 +11,15 @@ import (
 // e.g., sorting object field names, etc. The optional out slice is
 // reused and extended via append().
 func (c *ValComparer) CanonicalJSON(a Val, out []byte) ([]byte, error) {
-	return c.CanonicalJSONDeep(a, out, 0)
-}
-
-func (c *ValComparer) CanonicalJSONDeep(a, out []byte, depth int) (
-	[]byte, error) {
 	v, vType, _, err := jsonparser.Get(a)
 	if err != nil {
 		return out, err
 	}
 
-	return c.CanonicalJSONDeepType(v, int(vType), out, depth)
+	return c.CanonicalJSONWithType(v, int(vType), out, 0)
 }
 
-func (c *ValComparer) CanonicalJSONDeepType(v []byte, vType int,
+func (c *ValComparer) CanonicalJSONWithType(v []byte, vType int,
 	out []byte, depth int) (rv []byte, err error) {
 	// Both types are the same, so need type-based cases...
 	switch jsonparser.ValueType(vType) {
@@ -70,7 +65,7 @@ func (c *ValComparer) CanonicalJSONDeepType(v []byte, vType int,
 				out = append(out, ',')
 			}
 
-			out, err = c.CanonicalJSONDeepType(
+			out, err = c.CanonicalJSONWithType(
 				item, int(itemType), out, depthPlus1)
 
 			i++
@@ -114,7 +109,7 @@ func (c *ValComparer) CanonicalJSONDeepType(v []byte, vType int,
 
 			out = append(out, ':')
 
-			out, err = c.CanonicalJSONDeepType(kv.Val, kv.ValType,
+			out, err = c.CanonicalJSONWithType(kv.Val, kv.ValType,
 				out, depthPlus1)
 			if err != nil {
 				return out, err
