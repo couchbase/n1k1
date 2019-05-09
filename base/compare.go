@@ -49,6 +49,10 @@ func ParseTypeHasValue(valueType int) bool {
 	return ParseTypeToValType[valueType] > ValTypeNull
 }
 
+func ParseFloat64(v []byte) (float64, error) {
+	return jsonparser.ParseFloat(v)
+}
+
 // ---------------------------------------------
 
 type ValComparer struct {

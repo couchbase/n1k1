@@ -135,11 +135,23 @@ func ExprLTStatic(lzVars *base.Vars, labels base.Labels,
 
 	staticTypeHasValue := base.ParseTypeHasValue(staticType)
 
+	var staticF64 float64 // Optimize when static is number.
+	var staticF64Ok bool
+
+	if base.ParseTypeToValType[staticType] == base.ValTypeNumber {
+		var err error
+
+		staticF64, err = base.ParseFloat64(staticVal)
+		if err == nil {
+			staticF64Ok = true
+		}
+	}
+
 	exprX := params[(parami+1)%2].([]interface{})
 
-	cmpLT, cmpGT := base.ValTrue, base.ValFalse
+	cmpLT, cmpGT := base.ValTrue, base.ValFalse // Ex: static < expr.
 	if parami == 1 {
-		cmpLT, cmpGT = base.ValFalse, base.ValTrue
+		cmpLT, cmpGT = base.ValFalse, base.ValTrue // Ex: expr < static.
 	}
 
 	if LzScope {
@@ -161,13 +173,34 @@ func ExprLTStatic(lzVars *base.Vars, labels base.Labels,
 
 					lzValX, lzTypeX := base.Parse(lzVal)
 					if base.ParseTypeHasValue(lzTypeX) {
-						lzCmp := lzVars.Ctx.ValComparer.CompareDeepType(lzValStatic, lzValX, staticType, lzTypeX, 0)
-						if lzCmp < 0 {
-							lzVal = lzCmpLT
-						} else if lzCmp > 0 {
-							lzVal = lzCmpGT
-						} else {
-							lzVal = base.ValFalse
+						lzCmpNeeded := true
+
+						if staticF64Ok { // !lz
+							if base.ParseTypeToValType[lzTypeX] == base.ValTypeNumber {
+								lzF64, lzErr := base.ParseFloat64(lzValX)
+								if lzErr == nil {
+									lzCmpNeeded = false
+
+									if staticF64 < lzF64 {
+										lzVal = lzCmpLT
+									} else if staticF64 > lzF64 {
+										lzVal = lzCmpGT
+									} else {
+										lzVal = base.ValFalse
+									}
+								}
+							}
+						} // !lz
+
+						if lzCmpNeeded {
+							lzCmp := lzVars.Ctx.ValComparer.CompareDeepType(lzValStatic, lzValX, staticType, lzTypeX, 0)
+							if lzCmp < 0 {
+								lzVal = lzCmpLT
+							} else if lzCmp > 0 {
+								lzVal = lzCmpGT
+							} else {
+								lzVal = base.ValFalse
+							}
 						}
 					}
 				} // !lz
