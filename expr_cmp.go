@@ -16,7 +16,6 @@ func init() {
 func ExprLT(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
 	return ExprCmp(lzVars, labels, params, path, false)
-
 }
 
 func ExprLE(lzVars *base.Vars, labels base.Labels,
@@ -38,10 +37,9 @@ func ExprGE(lzVars *base.Vars, labels base.Labels,
 
 func ExprCmp(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string, eq bool) (lzExprFunc base.ExprFunc) {
-	// Optimize if either param expression is a JSON static.
 	for parami, param := range params {
 		expr := param.([]interface{})
-		if expr[0].(string) == "json" {
+		if expr[0].(string) == "json" {	// Optimize when param is static JSON.
 			return ExprCmpStatic(lzVars, labels, params, path, parami, eq)
 		}
 	}
@@ -61,7 +59,7 @@ func ExprCmpStatic(lzVars *base.Vars, labels base.Labels,
 
 	staticTypeHasValue := base.ParseTypeHasValue(staticType)
 
-	var staticF64 float64 // Optimize more when static is number.
+	var staticF64 float64 // Optimize further when static is number.
 	var staticF64Ok bool
 
 	if base.ParseTypeToValType[staticType] == base.ValTypeNumber {
