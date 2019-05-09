@@ -5,7 +5,6 @@ import (
 )
 
 func init() {
-	ExprCatalog["eq"] = ExprEq
 	ExprCatalog["or"] = ExprOr
 	ExprCatalog["and"] = ExprAnd
 }
@@ -40,30 +39,6 @@ func MakeBiExprFunc(lzVars *base.Vars, labels base.Labels,
 			return lzVal
 		}
 	}
-
-	return lzExprFunc
-}
-
-// -----------------------------------------------------
-
-func ExprEq(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	biExprFunc := func(lzA, lzB base.ExprFunc, lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) { // !lz
-		if LzScope {
-			lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
-			lzValA := lzVal
-
-			lzVal = lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B"
-			lzValB := lzVal
-
-			lzVal = base.ValEqual(lzValA, lzValB, lzVars.Ctx.ValComparer)
-		}
-
-		return lzVal
-	} // !lz
-
-	lzExprFunc =
-		MakeBiExprFunc(lzVars, labels, params, path, biExprFunc) // !lz
 
 	return lzExprFunc
 }

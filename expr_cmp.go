@@ -5,6 +5,7 @@ import (
 )
 
 func init() {
+	ExprCatalog["eq"] = ExprEQ
 	ExprCatalog["lt"] = ExprLT
 	ExprCatalog["le"] = ExprLE
 	ExprCatalog["gt"] = ExprGT
@@ -13,14 +14,19 @@ func init() {
 
 // -----------------------------------------------------
 
+func ExprEQ(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
+	return ExprCmp(lzVars, labels, params, path, EQCmps, true)
+}
+
 func ExprLT(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	return ExprCmp(lzVars, labels, params, path, false)
+	return ExprCmp(lzVars, labels, params, path, LTCmps, false)
 }
 
 func ExprLE(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	return ExprCmp(lzVars, labels, params, path, true)
+	return ExprCmp(lzVars, labels, params, path, LTCmps, true)
 }
 
 func ExprGT(lzVars *base.Vars, labels base.Labels,
@@ -35,24 +41,30 @@ func ExprGE(lzVars *base.Vars, labels base.Labels,
 
 // -----------------------------------------------------
 
-func ExprCmp(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string, eq bool) (lzExprFunc base.ExprFunc) {
+var LTCmps = []base.Val{base.ValTrue, base.ValFalse, base.ValFalse, base.ValTrue}
+
+var EQCmps = []base.Val{base.ValFalse, base.ValFalse, base.ValFalse, base.ValFalse}
+
+// -----------------------------------------------------
+
+func ExprCmp(lzVars *base.Vars, labels base.Labels, params []interface{},
+	path string, cmps []base.Val, eq bool) (lzExprFunc base.ExprFunc) {
 	for parami, param := range params {
 		expr := param.([]interface{})
 		if expr[0].(string) == "json" { // Optimize when param is static JSON.
-			return ExprCmpStatic(lzVars, labels, params, path, parami, eq)
+			return ExprCmpStatic(lzVars, labels, params, path, cmps, parami, eq)
 		}
 	}
 
-	return ExprCmpDynamic(lzVars, labels, params, path, eq)
+	return ExprCmpDynamic(lzVars, labels, params, path, cmps, eq)
 }
 
 // -----------------------------------------------------
 
 // ExprCmpStatic optimizes when params[parami] is static.
 func ExprCmpStatic(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string, parami int, eq bool) (
-	lzExprFunc base.ExprFunc) {
+	params []interface{}, path string, cmps []base.Val,
+	parami int, eq bool) (lzExprFunc base.ExprFunc) {
 	json := params[parami].([]interface{})[1].(string)
 
 	staticVal, staticType := base.Parse([]byte(json))
@@ -73,9 +85,9 @@ func ExprCmpStatic(lzVars *base.Vars, labels base.Labels,
 
 	exprX := params[(parami+1)%2].([]interface{})
 
-	cmpLT, cmpGT := base.ValTrue, base.ValFalse // Ex: static < expr.
+	cmpLT, cmpGT := cmps[0], cmps[1] // Ex: static < expr.
 	if parami == 1 {
-		cmpLT, cmpGT = base.ValFalse, base.ValTrue // Ex: expr < static.
+		cmpLT, cmpGT = cmps[2], cmps[3] // Ex: expr < static.
 	}
 
 	cmpEQ := base.ValFalse
@@ -147,7 +159,19 @@ func ExprCmpStatic(lzVars *base.Vars, labels base.Labels,
 
 // Expressions A & B need to be runtime evaluated.
 func ExprCmpDynamic(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string, eq bool) (lzExprFunc base.ExprFunc) {
+	params []interface{}, path string, cmps []base.Val,
+	eq bool) (lzExprFunc base.ExprFunc) {
+	cmpLT, cmpGT := cmps[0], cmps[1]
+
+	cmpEQ := base.ValFalse
+	if eq {
+		cmpEQ = base.ValTrue
+	}
+
+	var lzCmpLT base.Val = cmpLT // <== varLift: lzCmpLT by path
+	var lzCmpEQ base.Val = cmpEQ // <== varLift: lzCmpEQ by path
+	var lzCmpGT base.Val = cmpGT // <== varLift: lzCmpGT by path
+
 	biExprFunc := func(lzA, lzB base.ExprFunc, lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) { // !lz
 		if LzScope {
 			lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
@@ -160,15 +184,11 @@ func ExprCmpDynamic(lzVars *base.Vars, labels base.Labels,
 				if base.ParseTypeHasValue(lzTypeB) {
 					lzCmp := lzVars.Ctx.ValComparer.CompareWithType(lzValA, lzValB, lzTypeA, lzTypeB, 0)
 					if lzCmp < 0 {
-						lzVal = base.ValTrue
+						lzVal = lzCmpLT
 					} else if lzCmp == 0 {
-						if eq { // !lz
-							lzVal = base.ValTrue
-						} else { // !lz
-							lzVal = base.ValFalse
-						} // !lz
+						lzVal = lzCmpEQ
 					} else {
-						lzVal = base.ValFalse
+						lzVal = lzCmpGT
 					}
 				}
 			}
