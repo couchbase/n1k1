@@ -36,6 +36,7 @@ var Keywords = map[string]bool{
 	"interface": true,
 	"string":    true,
 	"bool":      true,
+	"byte":      true,
 	"int":       true,
 }
 
