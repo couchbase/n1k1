@@ -22,10 +22,7 @@ func ExecOp(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	case "project":
 		OpProject(o, lzVars, lzYieldVals, lzYieldErr, path, pathNext) // !lz
 
-	case "join-nl-inner":
-		OpJoinNestedLoop(o, lzVars, lzYieldVals, lzYieldErr, path, pathNext) // !lz
-
-	case "join-nl-outerLeft":
+	case "join-nl-inner", "join-nl-outerLeft":
 		OpJoinNestedLoop(o, lzVars, lzYieldVals, lzYieldErr, path, pathNext) // !lz
 
 	case "order-by-offset-limit":
@@ -33,6 +30,9 @@ func ExecOp(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 	case "union-all":
 		OpUnionAll(o, lzVars, lzYieldVals, lzYieldErr, path, pathNext) // !lz
+
+	case "distinct":
+		OpGroup(o, lzVars, lzYieldVals, lzYieldErr, path, pathNext) // !lz
 	}
 
 	EmitPop(path, pathItem)

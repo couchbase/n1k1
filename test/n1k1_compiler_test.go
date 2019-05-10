@@ -212,6 +212,7 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 		`import "strings"`,
 		`import "reflect"`,
 		`import "testing"`,
+		`import "github.com/couchbase/rhmap"`,
 		`import "github.com/couchbase/n1k1/base"`,
 		`import "github.com/couchbase/n1k1/expr_glue"`,
 		`import "github.com/couchbase/n1k1/test"`,

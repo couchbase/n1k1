@@ -2324,4 +2324,158 @@ var TestCasesSimple = []TestCaseSimple{
 			base.Vals{[]byte("11"), []byte("21"), []byte("31")},
 		},
 	},
+	{
+		about: "test csv-data scan->distinct",
+		o: base.Op{
+			Kind:   "distinct",
+			Labels: base.Labels{"a"},
+			Params: []interface{}{
+				[]interface{}{
+					[]interface{}{"labelPath", "a"},
+				},
+			},
+			Children: []*base.Op{&base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"a"},
+				Params: []interface{}{
+					"csvData",
+					`
+10
+11
+12
+`,
+				},
+			}},
+		},
+		expectYields: []base.Vals{
+			base.Vals{[]byte("10")},
+			base.Vals{[]byte("11")},
+			base.Vals{[]byte("12")},
+		},
+	},
+	{
+		about: "test csv-data scan->distinct",
+		o: base.Op{
+			Kind:   "distinct",
+			Labels: base.Labels{"a"},
+			Params: []interface{}{
+				[]interface{}{
+					[]interface{}{"labelPath", "a"},
+				},
+			},
+			Children: []*base.Op{&base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"a"},
+				Params: []interface{}{
+					"csvData",
+					`
+10
+11
+12
+10
+11
+12
+`,
+				},
+			}},
+		},
+		expectYields: []base.Vals{
+			base.Vals{[]byte("10")},
+			base.Vals{[]byte("11")},
+			base.Vals{[]byte("12")},
+		},
+	},
+	{
+		about: "test csv-data scan->distinct empty",
+		o: base.Op{
+			Kind:   "distinct",
+			Labels: base.Labels{"a"},
+			Params: []interface{}{
+				[]interface{}{
+					[]interface{}{"labelPath", "a"},
+				},
+			},
+			Children: []*base.Op{&base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"a"},
+				Params: []interface{}{
+					"csvData",
+					``,
+				},
+			}},
+		},
+		expectYields: []base.Vals(nil),
+	},
+	{
+		about: "test csv-data scan->distinct",
+		o: base.Op{
+			Kind:   "distinct",
+			Labels: base.Labels{"a"},
+			Params: []interface{}{
+				[]interface{}{
+					[]interface{}{"labelPath", "a"},
+				},
+			},
+			Children: []*base.Op{&base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"a", "b"},
+				Params: []interface{}{
+					"csvData",
+					`
+10,11
+10,12
+20,20
+`,
+				},
+			}},
+		},
+		expectYields: []base.Vals{
+			base.Vals{[]byte("10")},
+			base.Vals{[]byte("20")},
+		},
+	},
+	{
+		about: "test csv-data scan->distinct->order-by",
+		o: base.Op{
+			Kind:   "order-by-offset-limit",
+			Labels: base.Labels{"a", "b"},
+			Params: []interface{}{
+				[]interface{}{
+					[]interface{}{"labelPath", "a"},
+					[]interface{}{"labelPath", "b"},
+				},
+				[]interface{}{
+					"asc",
+					"asc",
+				},
+			},
+			Children: []*base.Op{&base.Op{
+				Kind:   "distinct",
+				Labels: base.Labels{"a", "b"},
+				Params: []interface{}{
+					[]interface{}{
+						[]interface{}{"labelPath", "a"},
+						[]interface{}{"labelPath", "b"},
+					},
+				},
+				Children: []*base.Op{&base.Op{
+					Kind:   "scan",
+					Labels: base.Labels{"a", "b"},
+					Params: []interface{}{
+						"csvData",
+						`
+10,11
+10,12
+20,20
+`,
+					},
+				}},
+			}},
+		},
+		expectYields: []base.Vals{
+			base.Vals{[]byte("10"), []byte("11")},
+			base.Vals{[]byte("10"), []byte("12")},
+			base.Vals{[]byte("20"), []byte("20")},
+		},
+	},
 }
