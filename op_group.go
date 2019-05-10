@@ -79,7 +79,8 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 				lzValsOut = lzGroupProjectFunc(lzVals, lzValsOut, lzYieldErr) // <== emitCaptured: pathNextG "GP"
 
-				lzGroupKey = lzGroupKey[:0] // The group key is newline delimited.
+				// Construct the newline-delimited group key.
+				lzGroupKey = lzGroupKey[:0]
 
 				var lzErr error
 
