@@ -2354,7 +2354,7 @@ var TestCasesSimple = []TestCaseSimple{
 		},
 	},
 	{
-		about: "test csv-data scan->distinct",
+		about: "test csv-data scan->distinct with duplicate tuples",
 		o: base.Op{
 			Kind:   "distinct",
 			Labels: base.Labels{"a"},
@@ -2386,7 +2386,7 @@ var TestCasesSimple = []TestCaseSimple{
 		},
 	},
 	{
-		about: "test csv-data scan->distinct empty",
+		about: "test csv-data scan->distinct with empty tuples",
 		o: base.Op{
 			Kind:   "distinct",
 			Labels: base.Labels{"a"},
@@ -2407,7 +2407,7 @@ var TestCasesSimple = []TestCaseSimple{
 		expectYields: []base.Vals(nil),
 	},
 	{
-		about: "test csv-data scan->distinct",
+		about: "test csv-data scan->distinct on 1 label of 2",
 		o: base.Op{
 			Kind:   "distinct",
 			Labels: base.Labels{"a"},
