@@ -81,6 +81,9 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 				lzValsOut = lzGroupProjectFunc(lzVals, lzValsOut, lzYieldErr) // <== emitCaptured: pathNextG "GP"
 
 				// Construct the newline-delimited group key.
+				//
+				// Ex: `GROUP BY state, city` would lead to a group
+				// key such as '"CA"\n"San Francisco"'.
 				lzGroupKey = lzGroupKey[:0]
 
 				var lzErr error
