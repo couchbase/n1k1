@@ -31,7 +31,7 @@ func ExecOp(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	case "union-all":
 		OpUnionAll(o, lzVars, lzYieldVals, lzYieldErr, path, pathNext) // !lz
 
-	case "distinct":
+	case "group", "distinct":
 		OpGroup(o, lzVars, lzYieldVals, lzYieldErr, path, pathNext) // !lz
 	}
 

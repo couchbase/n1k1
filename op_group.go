@@ -64,7 +64,7 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 		// TODO: Allow spill out to disk.
 		var lzSetBytes []byte
 
-		_, _, _ = lzAggCalcs, lzGroupProjectFunc, lzAggProjectFunc
+		_, _, _, _, _ = lzAggCalcs, lzGroupProjectFunc, lzAggProjectFunc, lzSet, lzSetBytes
 
 		var lzValsOut base.Vals
 
@@ -78,7 +78,9 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 		var lzGroupValReuse []byte
 
-		_, _, _, _, _, _ = lzValsOut, lzValOut, lzGroupKey, lzGroupVal, lzGroupValNew, lzGroupValReuse
+		var lzGroupKeyFound bool
+
+		_, _, _, _, _, _, _ = lzValsOut, lzValOut, lzGroupKey, lzGroupVal, lzGroupValNew, lzGroupValReuse, lzGroupKeyFound
 
 		lzYieldValsOrig := lzYieldVals
 
@@ -107,7 +109,7 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 				}
 
 				if lzErr == nil {
-					lzGroupVal, lzGroupKeyFound := lzSet.Get(lzGroupKey)
+					lzGroupVal, lzGroupKeyFound = lzSet.Get(lzGroupKey)
 
 					if len(aggExprs) > 0 { // !lz
 						if !lzGroupKeyFound {
@@ -137,7 +139,7 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 						}
 
 						if lzGroupKeyFound {
-							if len(lzGroupValNew) <= len(lzGroupVal) {
+							if len(lzGroupVal) >= len(lzGroupValNew) {
 								copy(lzGroupVal, lzGroupValNew)
 							} else {
 								// Copy lzGroupValNew into lzSetBytes.
@@ -147,6 +149,8 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 								lzSet.Set(lzGroupKey, lzGroupValNewCopy)
 							}
+						} else {
+							lzGroupVal = lzGroupValNew
 						}
 					} // !lz
 
