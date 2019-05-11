@@ -110,8 +110,8 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 							for _, aggCalc := range aggCalcs { // !lz
 								for _, aggName := range aggCalc.([]interface{}) { // !lz
-									aggNameStr := aggName.(string) // !lz
-									lzAgg = base.AggCatalog[aggNameStr]
+									aggIdx := base.AggCatalog[aggName.(string)] // !lz
+									lzAgg = base.Aggs[aggIdx]
 									lzGroupVal = lzAgg.Init(lzGroupVal)
 								} // !lz
 							} // !lz
@@ -127,8 +127,8 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 						for aggCalcI, aggCalc := range aggCalcs { // !lz
 							for _, aggName := range aggCalc.([]interface{}) { // !lz
-								aggNameStr := aggName.(string) // !lz
-								lzAgg = base.AggCatalog[aggNameStr]
+								aggIdx := base.AggCatalog[aggName.(string)] // !lz
+								lzAgg = base.Aggs[aggIdx]
 								lzGroupValNew, lzGroupVal = lzAgg.Update(lzValsOut[aggCalcI], lzGroupValNew, lzGroupVal)
 							} // !lz
 						} // !lz
@@ -197,8 +197,8 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 							for _, aggName := range aggCalc.([]interface{}) { // !lz
 								var lzVal base.Val
 
-								aggNameStr := aggName.(string) // !lz
-								lzAgg = base.AggCatalog[aggNameStr]
+								aggIdx := base.AggCatalog[aggName.(string)] // !lz
+								lzAgg = base.Aggs[aggIdx]
 								lzVal, lzGroupVal, lzValBuf = lzAgg.Result(lzGroupVal, lzValBuf)
 
 								lzValsOut = append(lzValsOut, lzVal)
