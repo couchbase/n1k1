@@ -26,6 +26,7 @@ var Keywords = map[string]bool{
 	"case":   true,
 	"make":   true,
 	"append": true,
+	"copy":   true,
 	"cap":    true,
 	"len":    true,
 	"nil":    true,
