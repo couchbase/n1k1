@@ -105,6 +105,21 @@ func ValsDeepCopy(vals Vals, preallocVals Vals, preallocVal Val) (
 
 // -----------------------------------------------------
 
+// ValsJoin appends the vals to out, with newline delimiters.
+func ValsJoin(vals Vals, out []byte) []byte {
+	for i, v := range vals {
+		if i > 0 {
+			out = append(out, '\n')
+		}
+
+		out = append(out, v...)
+	}
+
+	return out
+}
+
+// -----------------------------------------------------
+
 // YieldVals memory ownership: the receiver implementation should
 // generally copy any inputs that it wants to keep if it's in a
 // different "pipeline", because the provided slices might be reused
