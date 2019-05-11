@@ -72,6 +72,8 @@ Some design ideas meant to help with n1k1's performance...
 - capturing emitted code to avoid local closures.
 - data-staging / pipeline-breaker facilities along with concurrency.
 - UNION ALL is concurrent (one goroutine per contributor).
+- DISTINCT.
+- GROUP BY expressions and COUNT.
 - runtime variables / context passed down through ExecOp().
 - glue integration with existing couchbase/query/expression's.
 
@@ -140,9 +142,6 @@ efficiently execute that query-plan.
     be able to short-circuit and directly break or goto
     some outer handler codepath?
 
-- DISTINCT?
-  - use couchbase/rhmap?
-
 - UNION (which has an implicit DISTINCT)?
 
 - INTERSECT / INTERSECT ALL?
@@ -154,8 +153,7 @@ efficiently execute that query-plan.
 
 - standalone Op for data-staging / pipeline breaking
 
-- GROUP BY / aggregates
-  - SELECT country, SUM(population) FROM ... GROUP BY country
+- more GROUP BY aggregates: sum, min, max, average?
 
 - HAVING (should be able to reuse existing filter operator).
 
