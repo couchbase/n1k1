@@ -26,7 +26,7 @@ func OpJoinNestedLoop(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	labelsAB = append(labelsAB, o.Children[0].Labels...)
 	labelsAB = append(labelsAB, o.Children[1].Labels...)
 
-	joinKind := strings.Split(o.Kind, "-")[2] // Ex: "inner", "outerLeft".
+	joinKind := strings.Split(o.Kind, "-")[1] // Ex: "inner", "outerLeft".
 
 	isOuterLeft := joinKind == "outerLeft"
 

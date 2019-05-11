@@ -494,9 +494,9 @@ var TestCasesSimple = []TestCaseSimple{
 		},
 	},
 	{
-		about: "test csv-data scan->join-nl-inner",
+		about: "test csv-data scan->joinNL-inner",
 		o: base.Op{
-			Kind:   "join-nl-inner",
+			Kind:   "joinNL-inner",
 			Labels: base.Labels{"dept", "city", "emp", "empDept"},
 			Params: []interface{}{
 				"eq",
@@ -537,9 +537,9 @@ var TestCasesSimple = []TestCaseSimple{
 		},
 	},
 	{
-		about: "test csv-data scan->join-nl-inner but false join condition",
+		about: "test csv-data scan->joinNL-inner but false join condition",
 		o: base.Op{
-			Kind:   "join-nl-inner",
+			Kind:   "joinNL-inner",
 			Labels: base.Labels{"dept", "city", "emp", "empDept"},
 			Params: []interface{}{
 				"eq",
@@ -575,7 +575,7 @@ var TestCasesSimple = []TestCaseSimple{
 	{
 		about: "test inner join via always-true join condition",
 		o: base.Op{
-			Kind:   "join-nl-inner",
+			Kind:   "joinNL-inner",
 			Labels: base.Labels{"dept", "city", "emp", "empDept"},
 			Params: []interface{}{"json", `true`},
 			Children: []*base.Op{&base.Op{
@@ -616,7 +616,7 @@ var TestCasesSimple = []TestCaseSimple{
 	{
 		about: "test inner join via always-matching join condition",
 		o: base.Op{
-			Kind:   "join-nl-inner",
+			Kind:   "joinNL-inner",
 			Labels: base.Labels{"dept", "city", "emp", "empDept"},
 			Params: []interface{}{
 				"eq",
@@ -661,7 +661,7 @@ var TestCasesSimple = []TestCaseSimple{
 	{
 		about: "test left outer join on dept",
 		o: base.Op{
-			Kind:   "join-nl-outerLeft",
+			Kind:   "joinNL-outerLeft",
 			Labels: base.Labels{"dept", "city", "emp", "empDept"},
 			Params: []interface{}{
 				"eq",
@@ -717,7 +717,7 @@ var TestCasesSimple = []TestCaseSimple{
 	{
 		about: "test left outer join on dept with empty RHS",
 		o: base.Op{
-			Kind:   "join-nl-outerLeft",
+			Kind:   "joinNL-outerLeft",
 			Labels: base.Labels{"dept", "city", "emp", "empDept"},
 			Params: []interface{}{
 				"eq",
@@ -752,7 +752,7 @@ var TestCasesSimple = []TestCaseSimple{
 	{
 		about: "test inner join on dept with empty LHS",
 		o: base.Op{
-			Kind:   "join-nl-inner",
+			Kind:   "joinNL-inner",
 			Labels: base.Labels{"dept", "city", "emp", "empDept"},
 			Params: []interface{}{
 				"eq",
@@ -786,7 +786,7 @@ var TestCasesSimple = []TestCaseSimple{
 	{
 		about: "test left outer join on dept with empty LHS",
 		o: base.Op{
-			Kind:   "join-nl-outerLeft",
+			Kind:   "joinNL-outerLeft",
 			Labels: base.Labels{"dept", "city", "emp", "empDept"},
 			Params: []interface{}{
 				"eq",
@@ -820,7 +820,7 @@ var TestCasesSimple = []TestCaseSimple{
 	{
 		about: "test left outer join on never matching condition",
 		o: base.Op{
-			Kind:   "join-nl-outerLeft",
+			Kind:   "joinNL-outerLeft",
 			Labels: base.Labels{"dept", "city", "emp", "empDept"},
 			Params: []interface{}{
 				"eq",
@@ -1177,7 +1177,7 @@ var TestCasesSimple = []TestCaseSimple{
 		},
 	},
 	{
-		about: "test csv-data scan->join-nl-inner->project",
+		about: "test csv-data scan->joinNL-inner->project",
 		o: base.Op{
 			Kind:   "project",
 			Labels: base.Labels{"city", "emp", "empDept"},
@@ -1187,7 +1187,7 @@ var TestCasesSimple = []TestCaseSimple{
 				[]interface{}{"labelPath", "empDept"},
 			},
 			Children: []*base.Op{&base.Op{
-				Kind:   "join-nl-inner",
+				Kind:   "joinNL-inner",
 				Labels: base.Labels{"dept", "city", "emp", "empDept"},
 				Params: []interface{}{
 					"eq",
@@ -1228,7 +1228,7 @@ var TestCasesSimple = []TestCaseSimple{
 	},
 
 	{
-		about: "test csv-data scan->join-nl-inner->filter->project",
+		about: "test csv-data scan->joinNL-inner->filter->project",
 		o: base.Op{
 			Kind:   "project",
 			Labels: base.Labels{"city", "emp", "empDept"},
@@ -1246,7 +1246,7 @@ var TestCasesSimple = []TestCaseSimple{
 					[]interface{}{"labelPath", `city`},
 				},
 				Children: []*base.Op{&base.Op{
-					Kind:   "join-nl-inner",
+					Kind:   "joinNL-inner",
 					Labels: base.Labels{"dept", "city", "emp", "empDept"},
 					Params: []interface{}{
 						"eq",
@@ -1763,7 +1763,7 @@ var TestCasesSimple = []TestCaseSimple{
 		},
 	},
 	{
-		about: "test csv-data scan->join-nl-inner->order-by",
+		about: "test csv-data scan->joinNL-inner->order-by",
 		o: base.Op{
 			Kind:   "order-by-offset-limit",
 			Labels: base.Labels{"dept", "city", "emp", "empDept"},
@@ -1780,7 +1780,7 @@ var TestCasesSimple = []TestCaseSimple{
 				10,
 			},
 			Children: []*base.Op{&base.Op{
-				Kind:   "join-nl-inner",
+				Kind:   "joinNL-inner",
 				Labels: base.Labels{"dept", "city", "emp", "empDept"},
 				Params: []interface{}{
 					"eq",
