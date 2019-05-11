@@ -37,19 +37,17 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	if LzScope {
 		pathNextG := EmitPush(pathNext, "G") // !lz
 
-		var lzGroupProjectFunc, lzAggProjectFunc, lzProjectFunc base.ProjectFunc
+		var groupProjectFunc, aggProjectFunc base.ProjectFunc // !lz
 
-		lzProjectFunc =
+		groupProjectFunc =
 			MakeProjectFunc(lzVars, o.Children[0].Labels, groupExprs, pathNextG, "GP") // !lz
 
-		lzGroupProjectFunc = lzProjectFunc
-
 		if len(aggExprs) > 0 { // !lz
-			lzProjectFunc =
+			aggProjectFunc =
 				MakeProjectFunc(lzVars, o.Children[0].Labels, aggExprs, pathNextG, "AP") // !lz
-
-			lzAggProjectFunc = lzProjectFunc
 		} // !lz
+
+		_, _ = groupProjectFunc, aggProjectFunc
 
 		// TODO: Configurable initial size for rhmap, and reusable rhmap.
 		lzSet := rhmap.NewRHMap(97)
@@ -57,10 +55,6 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 		// TODO: Reuse backing bytes for lzSet.
 		// TODO: Allow spill out to disk.
 		var lzSetBytes []byte
-
-		var lzAgg *base.Agg
-
-		_, _, _, _, _ = lzGroupProjectFunc, lzAggProjectFunc, lzSet, lzSetBytes, lzAgg
 
 		var lzValOut base.Val
 
@@ -70,7 +64,9 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 		var lzGroupKeyFound bool
 
-		_, _, _, _, _, _, _ = lzValOut, lzValsOut, lzGroupKey, lzGroupVal, lzGroupValNew, lzGroupValReuse, lzGroupKeyFound
+		var lzAgg *base.Agg
+
+		_, _, _ = lzGroupValNew, lzGroupValReuse, lzAgg
 
 		lzYieldValsOrig := lzYieldVals
 
@@ -78,7 +74,7 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 			if len(groupExprs) > 0 { // !lz
 				lzValsOut = lzValsOut[:0]
 
-				lzValsOut = lzGroupProjectFunc(lzVals, lzValsOut, lzYieldErr) // <== emitCaptured: pathNextG "GP"
+				lzValsOut = groupProjectFunc(lzVals, lzValsOut, lzYieldErr) // <== emitCaptured: pathNextG "GP"
 
 				// Construct the newline-delimited group key.
 				//
@@ -121,7 +117,7 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 						lzValsOut = lzValsOut[:0]
 
-						lzValsOut = lzAggProjectFunc(lzVals, lzValsOut, lzYieldErr) // <== emitCaptured: pathNextG "AP"
+						lzValsOut = aggProjectFunc(lzVals, lzValsOut, lzYieldErr) // <== emitCaptured: pathNextG "AP"
 
 						lzGroupValNew = lzGroupValNew[:0]
 
