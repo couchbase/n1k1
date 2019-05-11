@@ -40,7 +40,7 @@ var AggCount = &Agg{
 		return append(agg, b[:8]...) // For uint64 count.
 	},
 
-	Update: func(val Val, aggNew, agg []byte) (
+	Update: func(v Val, aggNew, agg []byte) (
 		aggNewOut, aggRest []byte) {
 		c := binary.LittleEndian.Uint64(agg[:8])
 		var b [8]byte
