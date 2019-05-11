@@ -2479,7 +2479,7 @@ var TestCasesSimple = []TestCaseSimple{
 		},
 	},
 	{
-		about: "test csv-data scan->distinct->order-by",
+		about: "test csv-data scan->group-by count",
 		o: base.Op{
 			Kind:   "group",
 			Labels: base.Labels{"a", "count-a"},
