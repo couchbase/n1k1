@@ -4,6 +4,7 @@
 package base
 
 import (
+	"bytes"
 	"fmt"
 	"time"
 
@@ -38,13 +39,13 @@ func ValEqualTrue(val Val) bool {
 	return len(val) != 0 && val[0] == 't'
 }
 
-// ValEqual follows N1QL's rules for missing & null's.
+// ValEqual is based on N1QL's rules for missing & null's.
 func ValEqual(valA, valB Val, valComparer *ValComparer) Val {
 	if ValEqualMissing(valA) {
 		return ValMissing
 	} else if ValEqualMissing(valB) {
 		return ValMissing
-	} else if valA[0] == 'n' { // Avoid ValEqualNull's len() check.
+	} else if valA[0] == 'n' { // Avoid another ValEqualNull's len() check.
 		return ValNull
 	} else if valB[0] == 'n' {
 		return ValNull
@@ -53,6 +54,10 @@ func ValEqual(valA, valB Val, valComparer *ValComparer) Val {
 	}
 
 	return ValFalse
+}
+
+func ValHasValue(val Val) bool {
+	return len(val) != 0 && val[0] != 'n'
 }
 
 // -----------------------------------------------------
@@ -116,6 +121,26 @@ func ValsJoin(vals Vals, out []byte) []byte {
 	}
 
 	return out
+}
+
+// ValsSplit splits b by newline, appending each val to valsOut.
+func ValsSplit(b []byte, valsOut Vals) Vals {
+	for {
+		idx := bytes.IndexByte(b, '\n')
+		if idx < 0 {
+			idx = len(b)
+		}
+
+		valsOut = append(valsOut, Val(b[:idx]))
+
+		if idx >= len(b) {
+			break
+		}
+
+		b = b[idx+1:]
+	}
+
+	return valsOut
 }
 
 // -----------------------------------------------------

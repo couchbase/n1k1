@@ -1,8 +1,6 @@
 package n1k1
 
 import (
-	"bytes" // <== genCompiler:hide
-
 	"github.com/couchbase/rhmap" // <== genCompiler:hide
 
 	"github.com/couchbase/n1k1/base"
@@ -167,22 +165,7 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 		lzYieldErr = func(lzErrIn error) {
 			if lzErrIn == nil { // If no error, yield our group items.
 				lzSetVisitor := func(lzGroupKey rhmap.Key, lzGroupVal rhmap.Val) bool {
-					lzValsOut = lzValsOut[:0]
-
-					for {
-						lzIdx := bytes.IndexByte(lzGroupKey, '\n')
-						if lzIdx < 0 {
-							lzIdx = len(lzGroupKey)
-						}
-
-						lzValsOut = append(lzValsOut, base.Val(lzGroupKey[:lzIdx]))
-
-						if lzIdx >= len(lzGroupKey) {
-							break
-						}
-
-						lzGroupKey = lzGroupKey[lzIdx+1:]
-					}
+					lzValsOut = base.ValsSplit(lzGroupKey, lzValsOut[:0])
 
 					if len(aggExprs) > 0 { // !lz
 						lzValBuf := lzValOut[:cap(lzValOut)]
