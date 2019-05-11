@@ -37,7 +37,7 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	if LzScope {
 		pathNextG := EmitPush(pathNext, "G") // !lz
 
-		lzAggCalcs := aggCalcs
+		var lzAgg *base.Agg
 
 		var lzGroupProjectFunc base.ProjectFunc
 
@@ -64,7 +64,7 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 		// TODO: Allow spill out to disk.
 		var lzSetBytes []byte
 
-		_, _, _, _, _ = lzAggCalcs, lzGroupProjectFunc, lzAggProjectFunc, lzSet, lzSetBytes
+		_, _, _, _, _ = lzAgg, lzGroupProjectFunc, lzAggProjectFunc, lzSet, lzSetBytes
 
 		var lzValsOut base.Vals
 
@@ -115,12 +115,13 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 						if !lzGroupKeyFound {
 							lzGroupVal = lzGroupValReuse[:0]
 
-							for _, lzAggCalc := range lzAggCalcs {
-								for _, lzAggName := range lzAggCalc.([]interface{}) {
-									lzAgg := base.AggCatalog[lzAggName.(string)]
+							for _, aggCalc := range aggCalcs { // !lz
+								for _, aggName := range aggCalc.([]interface{}) { // !lz
+									aggNameStr := aggName.(string) // !lz
+									lzAgg = base.AggCatalog[aggNameStr]
 									lzGroupVal = lzAgg.Init(lzGroupVal)
-								}
-							}
+								} // !lz
+							} // !lz
 
 							lzGroupValReuse = lzGroupVal[:0]
 						}
@@ -131,12 +132,13 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 						lzGroupValNew = lzGroupValNew[:0]
 
-						for lzAggCalcI, lzAggCalc := range lzAggCalcs {
-							for _, lzAggName := range lzAggCalc.([]interface{}) {
-								lzAgg := base.AggCatalog[lzAggName.(string)]
-								lzGroupValNew, lzGroupVal = lzAgg.Update(lzValsOut[lzAggCalcI], lzGroupValNew, lzGroupVal)
-							}
-						}
+						for aggCalcI, aggCalc := range aggCalcs { // !lz
+							for _, aggName := range aggCalc.([]interface{}) { // !lz
+								aggNameStr := aggName.(string) // !lz
+								lzAgg = base.AggCatalog[aggNameStr]
+								lzGroupValNew, lzGroupVal = lzAgg.Update(lzValsOut[aggCalcI], lzGroupValNew, lzGroupVal)
+							} // !lz
+						} // !lz
 
 						if lzGroupKeyFound {
 							if len(lzGroupVal) >= len(lzGroupValNew) {
@@ -198,18 +200,19 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 						lzValBytes := 0
 
-						for _, lzAggCalc := range lzAggCalcs {
-							for _, lzAggName := range lzAggCalc.([]interface{}) {
+						for _, aggCalc := range aggCalcs { // !lz
+							for _, aggName := range aggCalc.([]interface{}) { // !lz
 								var lzVal base.Val
 
-								lzAgg := base.AggCatalog[lzAggName.(string)]
+								aggNameStr := aggName.(string) // !lz
+								lzAgg = base.AggCatalog[aggNameStr]
 								lzVal, lzGroupVal, lzValBuf = lzAgg.Result(lzGroupVal, lzValBuf)
 
 								lzValsOut = append(lzValsOut, lzVal)
 
 								lzValBytes += len(lzVal)
-							}
-						}
+							} // !lz
+						} // !lz
 
 						if cap(lzValOut) < lzValBytes {
 							lzValOut = make(base.Val, lzValBytes)
