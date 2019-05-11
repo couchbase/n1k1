@@ -1287,7 +1287,7 @@ var TestCasesSimple = []TestCaseSimple{
 	{
 		about: "test csv-data scan->order-by",
 		o: base.Op{
-			Kind:   "orderBy-offset-limit",
+			Kind:   "order-offset-limit",
 			Labels: base.Labels{"a", "b"},
 			Params: []interface{}{
 				[]interface{}{
@@ -1317,7 +1317,7 @@ var TestCasesSimple = []TestCaseSimple{
 	{
 		about: "test csv-data scan->order-by reverse-input",
 		o: base.Op{
-			Kind:   "orderBy-offset-limit",
+			Kind:   "order-offset-limit",
 			Labels: base.Labels{"a", "b"},
 			Params: []interface{}{
 				[]interface{}{
@@ -1349,7 +1349,7 @@ var TestCasesSimple = []TestCaseSimple{
 	{
 		about: "test csv-data scan->order-by 1 record",
 		o: base.Op{
-			Kind:   "orderBy-offset-limit",
+			Kind:   "order-offset-limit",
 			Labels: base.Labels{"a", "b"},
 			Params: []interface{}{
 				[]interface{}{
@@ -1377,7 +1377,7 @@ var TestCasesSimple = []TestCaseSimple{
 	{
 		about: "test csv-data scan->order-by DESC",
 		o: base.Op{
-			Kind:   "orderBy-offset-limit",
+			Kind:   "order-offset-limit",
 			Labels: base.Labels{"a", "b"},
 			Params: []interface{}{
 				[]interface{}{
@@ -1409,7 +1409,7 @@ var TestCasesSimple = []TestCaseSimple{
 	{
 		about: "test csv-data scan->order-by two-label",
 		o: base.Op{
-			Kind:   "orderBy-offset-limit",
+			Kind:   "order-offset-limit",
 			Labels: base.Labels{"a", "b"},
 			Params: []interface{}{
 				[]interface{}{
@@ -1443,7 +1443,7 @@ var TestCasesSimple = []TestCaseSimple{
 	{
 		about: "test csv-data scan->order-by two-label, DESC, ASC",
 		o: base.Op{
-			Kind:   "orderBy-offset-limit",
+			Kind:   "order-offset-limit",
 			Labels: base.Labels{"a", "b"},
 			Params: []interface{}{
 				[]interface{}{
@@ -1477,7 +1477,7 @@ var TestCasesSimple = []TestCaseSimple{
 	{
 		about: "test csv-data scan->order-by two-label, ASC, DESC",
 		o: base.Op{
-			Kind:   "orderBy-offset-limit",
+			Kind:   "order-offset-limit",
 			Labels: base.Labels{"a", "b"},
 			Params: []interface{}{
 				[]interface{}{
@@ -1511,7 +1511,7 @@ var TestCasesSimple = []TestCaseSimple{
 	{
 		about: "test csv-data scan->order-by two-label, ASC, DESC, str+int",
 		o: base.Op{
-			Kind:   "orderBy-offset-limit",
+			Kind:   "order-offset-limit",
 			Labels: base.Labels{"a", "b"},
 			Params: []interface{}{
 				[]interface{}{
@@ -1545,7 +1545,7 @@ var TestCasesSimple = []TestCaseSimple{
 	{
 		about: "test csv-data scan->order-by two-label, ASC, DESC, bool+int",
 		o: base.Op{
-			Kind:   "orderBy-offset-limit",
+			Kind:   "order-offset-limit",
 			Labels: base.Labels{"a", "b"},
 			Params: []interface{}{
 				[]interface{}{
@@ -1579,7 +1579,7 @@ var TestCasesSimple = []TestCaseSimple{
 	{
 		about: "test csv-data scan->order-by OFFSET 0 LIMIT 1",
 		o: base.Op{
-			Kind:   "orderBy-offset-limit",
+			Kind:   "order-offset-limit",
 			Labels: base.Labels{"a", "b"},
 			Params: []interface{}{
 				[]interface{}{
@@ -1611,7 +1611,7 @@ var TestCasesSimple = []TestCaseSimple{
 	{
 		about: "test csv-data scan->order-by OFFSET 0 LIMIT 100",
 		o: base.Op{
-			Kind:   "orderBy-offset-limit",
+			Kind:   "order-offset-limit",
 			Labels: base.Labels{"a", "b"},
 			Params: []interface{}{
 				[]interface{}{
@@ -1645,7 +1645,7 @@ var TestCasesSimple = []TestCaseSimple{
 	{
 		about: "test csv-data scan->order-by OFFSET 100 LIMIT 100",
 		o: base.Op{
-			Kind:   "orderBy-offset-limit",
+			Kind:   "order-offset-limit",
 			Labels: base.Labels{"a", "b"},
 			Params: []interface{}{
 				[]interface{}{
@@ -1675,7 +1675,7 @@ var TestCasesSimple = []TestCaseSimple{
 	{
 		about: "test csv-data scan->order-by OFFSET 1 LIMIT 0",
 		o: base.Op{
-			Kind:   "orderBy-offset-limit",
+			Kind:   "order-offset-limit",
 			Labels: base.Labels{"a", "b"},
 			Params: []interface{}{
 				[]interface{}{
@@ -1705,7 +1705,7 @@ var TestCasesSimple = []TestCaseSimple{
 	{
 		about: "test csv-data scan->order-by OFFSET 1 LIMIT 1",
 		o: base.Op{
-			Kind:   "orderBy-offset-limit",
+			Kind:   "order-offset-limit",
 			Labels: base.Labels{"a", "b"},
 			Params: []interface{}{
 				[]interface{}{
@@ -1737,7 +1737,7 @@ var TestCasesSimple = []TestCaseSimple{
 	{
 		about: "test csv-data scan->NIL-order-by OFFSET 1 LIMIT 1",
 		o: base.Op{
-			Kind:   "orderBy-offset-limit",
+			Kind:   "order-offset-limit",
 			Labels: base.Labels{"a", "b"},
 			Params: []interface{}{
 				[]interface{}{},
@@ -1765,7 +1765,7 @@ var TestCasesSimple = []TestCaseSimple{
 	{
 		about: "test csv-data scan->joinNL-inner->order-by",
 		o: base.Op{
-			Kind:   "orderBy-offset-limit",
+			Kind:   "order-offset-limit",
 			Labels: base.Labels{"dept", "city", "emp", "empDept"},
 			Params: []interface{}{
 				[]interface{}{
@@ -1824,7 +1824,7 @@ var TestCasesSimple = []TestCaseSimple{
 	{
 		about: "test csv-data scan->union-all->order-by",
 		o: base.Op{
-			Kind:   "orderBy-offset-limit",
+			Kind:   "order-offset-limit",
 			Labels: base.Labels{"a", "b", "c"},
 			Params: []interface{}{
 				[]interface{}{
@@ -1870,7 +1870,7 @@ var TestCasesSimple = []TestCaseSimple{
 	{
 		about: "test csv-data scan->union-all->order-by just 1 scan",
 		o: base.Op{
-			Kind:   "orderBy-offset-limit",
+			Kind:   "order-offset-limit",
 			Labels: base.Labels{"a", "b", "c"},
 			Params: []interface{}{
 				[]interface{}{
@@ -1904,7 +1904,7 @@ var TestCasesSimple = []TestCaseSimple{
 	{
 		about: "test csv-data scan->union-all->order-by more complex",
 		o: base.Op{
-			Kind:   "orderBy-offset-limit",
+			Kind:   "order-offset-limit",
 			Labels: base.Labels{"a", "b", "c"},
 			Params: []interface{}{
 				[]interface{}{
@@ -2437,7 +2437,7 @@ var TestCasesSimple = []TestCaseSimple{
 	{
 		about: "test csv-data scan->distinct->order-by",
 		o: base.Op{
-			Kind:   "orderBy-offset-limit",
+			Kind:   "order-offset-limit",
 			Labels: base.Labels{"a", "b"},
 			Params: []interface{}{
 				[]interface{}{

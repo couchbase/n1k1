@@ -7,11 +7,11 @@ import (
 	"github.com/couchbase/n1k1/base"
 )
 
-func OpOrderByOffsetLimit(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
+func OpOrderOffsetLimit(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	lzYieldErr base.YieldErr, path, pathNext string) {
-	orderBys := o.Params[0].([]interface{}) // ORDER BY expressions.
+	orders := o.Params[0].([]interface{}) // ORDER BY expressions.
 
-	// The directions has same len as orderBys, ex: ["asc", "desc", "asc"].
+	// The directions has same len as orders, ex: ["asc", "desc", "asc"].
 	directions := o.Params[1].([]interface{})
 
 	offset := 0
@@ -37,9 +37,9 @@ func OpOrderByOffsetLimit(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldV
 		var lzProjectFunc base.ProjectFunc
 		var lzLessFunc base.LessFunc
 
-		if len(orderBys) > 0 { // !lz
+		if len(orders) > 0 { // !lz
 			lzProjectFunc =
-				MakeProjectFunc(lzVars, o.Children[0].Labels, orderBys, pathNextOOL, "PF") // !lz
+				MakeProjectFunc(lzVars, o.Children[0].Labels, orders, pathNextOOL, "PF") // !lz
 
 			lzLessFunc =
 				MakeLessFunc(lzVars, directions) // !lz
@@ -66,7 +66,7 @@ func OpOrderByOffsetLimit(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldV
 
 			lzValsCopy, lzPreallocVals, lzPreallocVal = base.ValsDeepCopy(lzVals, lzPreallocVals, lzPreallocVal)
 
-			if len(orderBys) > 0 { // !lz
+			if len(orders) > 0 { // !lz
 				lzValsOut := lzPreallocProjected[:0]
 
 				lzPreallocProjected = nil
@@ -109,7 +109,7 @@ func OpOrderByOffsetLimit(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldV
 				var lzN int
 				_ = lzN
 
-				if len(orderBys) > 0 { // !lz
+				if len(orders) > 0 { // !lz
 					lzHeapLen := lzHeap.Len()
 
 					lzValsProjected := lzHeap.ValsProjected

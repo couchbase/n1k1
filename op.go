@@ -25,8 +25,8 @@ func ExecOp(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	case "joinNL-inner", "joinNL-outerLeft":
 		OpJoinNestedLoop(o, lzVars, lzYieldVals, lzYieldErr, path, pathNext) // !lz
 
-	case "orderBy-offset-limit":
-		OpOrderByOffsetLimit(o, lzVars, lzYieldVals, lzYieldErr, path, pathNext) // !lz
+	case "order-offset-limit":
+		OpOrderOffsetLimit(o, lzVars, lzYieldVals, lzYieldErr, path, pathNext) // !lz
 
 	case "union-all":
 		OpUnionAll(o, lzVars, lzYieldVals, lzYieldErr, path, pathNext) // !lz
