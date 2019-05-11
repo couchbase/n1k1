@@ -37,13 +37,7 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	if LzScope {
 		pathNextG := EmitPush(pathNext, "G") // !lz
 
-		var lzAgg *base.Agg
-
-		var lzGroupProjectFunc base.ProjectFunc
-
-		var lzAggProjectFunc base.ProjectFunc
-
-		var lzProjectFunc base.ProjectFunc
+		var lzGroupProjectFunc, lzAggProjectFunc, lzProjectFunc base.ProjectFunc
 
 		lzProjectFunc =
 			MakeProjectFunc(lzVars, o.Children[0].Labels, groupExprs, pathNextG, "GP") // !lz
@@ -64,23 +58,19 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 		// TODO: Allow spill out to disk.
 		var lzSetBytes []byte
 
-		_, _, _, _, _ = lzAgg, lzGroupProjectFunc, lzAggProjectFunc, lzSet, lzSetBytes
+		var lzAgg *base.Agg
 
-		var lzValsOut base.Vals
+		_, _, _, _, _ = lzGroupProjectFunc, lzAggProjectFunc, lzSet, lzSetBytes, lzAgg
 
 		var lzValOut base.Val
 
-		var lzGroupKey []byte
+		var lzValsOut base.Vals
 
-		var lzGroupVal []byte
-
-		var lzGroupValNew []byte
-
-		var lzGroupValReuse []byte
+		var lzGroupKey, lzGroupVal, lzGroupValNew, lzGroupValReuse []byte
 
 		var lzGroupKeyFound bool
 
-		_, _, _, _, _, _, _ = lzValsOut, lzValOut, lzGroupKey, lzGroupVal, lzGroupValNew, lzGroupValReuse, lzGroupKeyFound
+		_, _, _, _, _, _, _ = lzValOut, lzValsOut, lzGroupKey, lzGroupVal, lzGroupValNew, lzGroupValReuse, lzGroupKeyFound
 
 		lzYieldValsOrig := lzYieldVals
 
