@@ -41,9 +41,9 @@ func ExprGE(lzVars *base.Vars, labels base.Labels,
 
 // -----------------------------------------------------
 
-var LTCmps = []base.Val{base.ValTrue, base.ValFalse, base.ValFalse, base.ValTrue}
+var EQCmps = []base.Val{base.ValFalse, base.ValFalse}
 
-var EQCmps = []base.Val{base.ValFalse, base.ValFalse, base.ValFalse, base.ValFalse}
+var LTCmps = []base.Val{base.ValTrue, base.ValFalse}
 
 // -----------------------------------------------------
 
@@ -87,7 +87,7 @@ func ExprCmpStatic(lzVars *base.Vars, labels base.Labels,
 
 	cmpLT, cmpGT := cmps[0], cmps[1] // Ex: static < expr.
 	if parami == 1 {
-		cmpLT, cmpGT = cmps[2], cmps[3] // Ex: expr < static.
+		cmpLT, cmpGT = cmps[1], cmps[0] // Ex: expr < static.
 	}
 
 	if LzScope {
