@@ -2554,4 +2554,192 @@ var TestCasesSimple = []TestCaseSimple{
 			StringsToVals([]string{`"finance"`, `"london"`, `"fred"`, `"finance"`}, nil),
 		},
 	},
+	{
+		about: "test csv-data scan->joinHash-inner but false join condition",
+		o: base.Op{
+			Kind:   "joinHash-inner",
+			Labels: base.Labels{"dept", "city", "emp", "empDept"},
+			Params: []interface{}{
+				[]interface{}{"labelPath", "dept"},
+				[]interface{}{"json", `"NOT-MATCHING"`},
+			},
+			Children: []*base.Op{&base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"dept", "city"},
+				Params: []interface{}{
+					"csvData",
+					`
+"dev","paris"
+"finance","london"
+`,
+				},
+			}, &base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"emp", "empDept"},
+				Params: []interface{}{
+					"csvData",
+					`
+"dan","dev"
+"doug","dev"
+"frank","finance"
+"fred","finance"
+`,
+				},
+			}},
+		},
+		expectYields: []base.Vals(nil),
+	},
+	{
+		about: "test inner joinHash via always true=true join condition",
+		o: base.Op{
+			Kind:   "order-offset-limit",
+			Labels: base.Labels{"dept", "city", "emp", "empDept"},
+			Params: []interface{}{
+				[]interface{}{
+					[]interface{}{"labelPath", "dept"},
+					[]interface{}{"labelPath", "city"},
+					[]interface{}{"labelPath", "emp"},
+					[]interface{}{"labelPath", "empDept"},
+				},
+				[]interface{}{
+					"asc",
+					"asc",
+					"asc",
+					"asc",
+				},
+			},
+			Children: []*base.Op{&base.Op{
+				Kind:   "joinHash-inner",
+				Labels: base.Labels{"dept", "city", "emp", "empDept"},
+				Params: []interface{}{
+					[]interface{}{"json", `true`},
+					[]interface{}{"json", `true`},
+				},
+				Children: []*base.Op{&base.Op{
+					Kind:   "scan",
+					Labels: base.Labels{"dept", "city"},
+					Params: []interface{}{
+						"csvData",
+						`
+"dev","paris"
+"finance","london"
+`,
+					},
+				}, &base.Op{
+					Kind:   "scan",
+					Labels: base.Labels{"emp", "empDept"},
+					Params: []interface{}{
+						"csvData",
+						`
+"dan","dev"
+"doug","dev"
+"frank","finance"
+"fred","finance"
+`,
+					},
+				}},
+			}},
+		},
+		expectYields: []base.Vals{
+			StringsToVals([]string{`"dev"`, `"paris"`, `"dan"`, `"dev"`}, nil),
+			StringsToVals([]string{`"dev"`, `"paris"`, `"doug"`, `"dev"`}, nil),
+			StringsToVals([]string{`"dev"`, `"paris"`, `"frank"`, `"finance"`}, nil),
+			StringsToVals([]string{`"dev"`, `"paris"`, `"fred"`, `"finance"`}, nil),
+			StringsToVals([]string{`"finance"`, `"london"`, `"dan"`, `"dev"`}, nil),
+			StringsToVals([]string{`"finance"`, `"london"`, `"doug"`, `"dev"`}, nil),
+			StringsToVals([]string{`"finance"`, `"london"`, `"frank"`, `"finance"`}, nil),
+			StringsToVals([]string{`"finance"`, `"london"`, `"fred"`, `"finance"`}, nil),
+		},
+	},
+	{
+		about: "test inner joinHash on dept with empty LHS",
+		o: base.Op{
+			Kind:   "joinHash-inner",
+			Labels: base.Labels{"dept", "city", "emp", "empDept"},
+			Params: []interface{}{
+				[]interface{}{"labelPath", `dept`},
+				[]interface{}{"labelPath", `empDept`},
+			},
+			Children: []*base.Op{&base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"dept", "city"},
+				Params: []interface{}{
+					"csvData",
+					`
+`,
+				},
+			}, &base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"emp", "empDept"},
+				Params: []interface{}{
+					"csvData",
+					`
+"dan","dev"
+"doug","dev"
+"frank","finance"
+"fred","finance"
+`,
+				},
+			}},
+		},
+		expectYields: []base.Vals(nil),
+	},
+	{
+		about: "test csv-data scan->joinHash-inner->order-by",
+		o: base.Op{
+			Kind:   "order-offset-limit",
+			Labels: base.Labels{"dept", "city", "emp", "empDept"},
+			Params: []interface{}{
+				[]interface{}{
+					[]interface{}{"labelPath", "dept"},
+					[]interface{}{"labelPath", "emp"},
+				},
+				[]interface{}{
+					"asc",
+					"desc",
+				},
+				0,
+				10,
+			},
+			Children: []*base.Op{&base.Op{
+				Kind:   "joinHash-inner",
+				Labels: base.Labels{"dept", "city", "emp", "empDept"},
+				Params: []interface{}{
+					[]interface{}{"labelPath", "dept"},
+					[]interface{}{"labelPath", "empDept"},
+				},
+				Children: []*base.Op{&base.Op{
+					Kind:   "scan",
+					Labels: base.Labels{"dept", "city"},
+					Params: []interface{}{
+						"csvData",
+						`
+"dev","paris"
+"finance","london"
+"sales","san diego"
+`,
+					},
+				}, &base.Op{
+					Kind:   "scan",
+					Labels: base.Labels{"emp", "empDept"},
+					Params: []interface{}{
+						"csvData",
+						`
+"dan","dev"
+"doug","dev"
+"frank","finance"
+"fred","finance"
+"mary","marketing"
+`,
+					},
+				}},
+			}},
+		},
+		expectYields: []base.Vals{
+			StringsToVals([]string{`"dev"`, `"paris"`, `"doug"`, `"dev"`}, nil),
+			StringsToVals([]string{`"dev"`, `"paris"`, `"dan"`, `"dev"`}, nil),
+			StringsToVals([]string{`"finance"`, `"london"`, `"fred"`, `"finance"`}, nil),
+			StringsToVals([]string{`"finance"`, `"london"`, `"frank"`, `"finance"`}, nil),
+		},
+	},
 }

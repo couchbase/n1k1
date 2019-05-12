@@ -11,13 +11,12 @@ import (
 )
 
 // OpJoinHash implements...
-//  feature:            info tracked in probe map values:      yieldsUnprobed:
-//   joinHash-inner      [                          leftVals ]  f
-//   joinHash-outerLeft  [ tracksProbing,           leftVals ]  t
-//   intersect-all       [                leftCount          ]  f
-//   intersect-distinct  [ tracksProbing                     ]  f
-//   except-all          [ tracksProbing, leftCount          ]  t
-//   except-distinct     [ tracksProbing                     ]  t
+//  feature:            info tracked in probe map values:     yieldsUnprobed:
+//   joinHash-inner      [                         leftVals ]  f
+//   intersect-all       [               leftCount          ]  f
+//   intersect-distinct  [ tracksProbing                    ]  f
+//   except-all          [ tracksProbing leftCount          ]  t
+//   except-distinct     [ tracksProbing                    ]  t
 func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	lzYieldErr base.YieldErr, path, pathNext string) {
 	kindParts := strings.Split(o.Kind, "-")
@@ -33,10 +32,6 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 		exprRight = o.Params[1].([]interface{})
 
 		canonical = false
-
-		if kindParts[1] == "outerLeft" {
-			tracksProbing, yieldsUnprobed = true, true
-		}
 
 		leftVals = true
 	} else {
@@ -248,7 +243,7 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 						} // !lz
 
 						if leftVals { // !lz
-							// Ex: joinHash-inner, joinHash-outerLeft.
+							// Ex: joinHash-inner.
 							lzValsOut = base.YieldChainedVals(lzYieldValsOrig, lzVals, lzLeftBytes, lzProbeVal, lzValsOut)
 						} // !lz
 					}
@@ -274,11 +269,6 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 									}
 
 									lzProbeVal = lzProbeVal[8:]
-								} // !lz
-
-								if leftVals { // !lz
-									// Ex: joinHash-outerLeft.
-									lzValsOut = base.YieldChainedVals(lzYieldValsOrig, nil, lzLeftBytes, lzProbeVal, lzValsOut)
 								} // !lz
 
 								if !leftCount && !leftVals { // !lz
