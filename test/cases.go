@@ -2902,7 +2902,7 @@ var TestCasesSimple = []TestCaseSimple{
 		},
 	},
 	{
-		about: "test csv-data scan->intersect-distinct->order-by",
+		about: "test csv-data scan->intersect-distinct",
 		o: base.Op{
 			Kind:   "intersect-distinct",
 			Labels: base.Labels{"a", "b"},
@@ -2922,6 +2922,153 @@ var TestCasesSimple = []TestCaseSimple{
 				Params: []interface{}{
 					"csvData",
 					`
+20,21
+30,31
+`,
+				},
+			}},
+		},
+		expectYields: []base.Vals{
+			StringsToVals([]string{`20`, `21`}, nil),
+		},
+	},
+	{
+		about: "test csv-data scan->intersect-distinct of empty left",
+		o: base.Op{
+			Kind:   "intersect-distinct",
+			Labels: base.Labels{"a", "b"},
+			Children: []*base.Op{&base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"dept", "city"},
+				Params: []interface{}{
+					"csvData",
+					`
+`,
+				},
+			}, &base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"a", "b"},
+				Params: []interface{}{
+					"csvData",
+					`
+20,21
+30,31
+`,
+				},
+			}},
+		},
+		expectYields: []base.Vals(nil),
+	},
+	{
+		about: "test csv-data scan->intersect-distinct of empty right",
+		o: base.Op{
+			Kind:   "intersect-distinct",
+			Labels: base.Labels{"a", "b"},
+			Children: []*base.Op{&base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"dept", "city"},
+				Params: []interface{}{
+					"csvData",
+					`
+10,11
+20,21
+`,
+				},
+			}, &base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"a", "b"},
+				Params: []interface{}{
+					"csvData",
+					`
+`,
+				},
+			}},
+		},
+		expectYields: []base.Vals(nil),
+	},
+	{
+		about: "test csv-data scan->intersect-distinct of repeating left",
+		o: base.Op{
+			Kind:   "intersect-distinct",
+			Labels: base.Labels{"a", "b"},
+			Children: []*base.Op{&base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"dept", "city"},
+				Params: []interface{}{
+					"csvData",
+					`
+20,21
+10,11
+20,21
+30,31
+`,
+				},
+			}, &base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"a", "b"},
+				Params: []interface{}{
+					"csvData",
+					`
+`,
+				},
+			}},
+		},
+		expectYields: []base.Vals(nil),
+	},
+	{
+		about: "test csv-data scan->intersect-distinct of repeating right",
+		o: base.Op{
+			Kind:   "intersect-distinct",
+			Labels: base.Labels{"a", "b"},
+			Children: []*base.Op{&base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"dept", "city"},
+				Params: []interface{}{
+					"csvData",
+					`
+`,
+				},
+			}, &base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"a", "b"},
+				Params: []interface{}{
+					"csvData",
+					`
+20,21
+30,11
+20,21
+30,31
+`,
+				},
+			}},
+		},
+		expectYields: []base.Vals(nil),
+	},
+	{
+		about: "test csv-data scan->intersect-distinct of repeating",
+		o: base.Op{
+			Kind:   "intersect-distinct",
+			Labels: base.Labels{"a", "b"},
+			Children: []*base.Op{&base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"dept", "city"},
+				Params: []interface{}{
+					"csvData",
+					`
+20,21
+10,11
+20,21
+10,11
+`,
+				},
+			}, &base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"a", "b"},
+				Params: []interface{}{
+					"csvData",
+					`
+20,21
+30,11
 20,21
 30,31
 `,
