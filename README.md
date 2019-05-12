@@ -43,6 +43,12 @@ Some design ideas meant to help with n1k1's performance...
 - query compilation to golang...
   - based on Futamura projections / LMS (Rompf, Odersky) inspirations.
   - supports operator fusion, for fewer function calls.
+  - lifting vars for resource reusability.
+- expression optimizations for static parameters.
+  - for example, with a `sales < 1000` expression, the `1000` can be
+    evaluated once up-front, instead of being re-evaluated for every
+    single tuple that's processed.
+  - and, the `1000` can lead to a more direct numeric comparison.
 - for hashmaps...
   - couchbase/rhmap is a hashmap that supports []byte as a key,
     a'la `map[[]byte][]byte`.
@@ -54,31 +60,36 @@ Some design ideas meant to help with n1k1's performance...
 - error handling is push-based via a YieldErr callback...
   - the YieldErr callback allows n1k1 to avoid continual, conservative
     error handling instructions ("if err != nil { return nil, err }").
+- max-heap in ORDER-BY / OFFSET / LIMIT reuses memory from "too large" tuples.
+- INTERSECT DISTINCT / ALL and EXCEPT DISTINCT / ALL
+  are optimized by reusing hash-join machinery.
 
 ------------------------------------------
 ## Some features...
 
+- types: MISSING, NULL, boolean, number, string, array, object, UNKNOWN (BINARY).
+- collation follows N1QL type comparison rules.
+- glue integration with existing couchbase/query/expression's.
 - join nested-loop inner.
 - join nested-loop outer-left.
-- filtering (WHERE).
-- projections.
-- scans of simple files (CSV's and newline delimited JSON).
-- ORDER BY of multiple expressions & ASC/DESC.
+- join hash-eq inner
+- join hash-eq outer-left
+- join ON expressions.
+- filtering (WHERE expressions).
+- projection expressions.
+- ORDER BY multiple expressions & ASC/DESC.
 - ORDER-BY / OFFSET / LIMIT via max-heap.
-- OFFSET / LIMIT.
-- max-heap reuses memory slices from "too large" tuples.
-- identifier paths (e.g. locations/address/city).
-- lifting vars to avoid local closures.
-- capturing emitted code to avoid local closures.
-- data-staging / pipeline-breaker facilities along with concurrency.
 - DISTINCT.
-- GROUP BY expressions and COUNT.
+- GROUP BY on multiple expressions and COUNT().
+- HAVING.
 - UNION ALL is concurrent (one goroutine per contributor).
-- UNION DISTINCT can be supported by sequencing UNION ALL with DISTINCT.
+- UNION DISTINCT is supported by sequencing UNION ALL with DISTINCT.
 - INTERSECT DISTINCT / INTERSECT ALL.
 - EXCEPT DISTINCT / EXCEPT ALL.
+- data-staging / pipeline-breaker facilities along with concurrency.
+- nested object paths (e.g. locations/address/city).
+- scans of simple files (CSV's and newline delimited JSON).
 - runtime variables / context passed down through ExecOp().
-- glue integration with existing couchbase/query/expression's.
 
 -------------------------------------------------------
 ## DEV SHORTCUTS...
@@ -231,8 +242,6 @@ efficiently execute that query-plan.
   - YieldStats() should be locked for concurrency safety.
 
 - early stop when processing is canceled?
-
-- hash eq join?
 
 - conversion of real N1QL query-plan into n1k1 query-plan
 
