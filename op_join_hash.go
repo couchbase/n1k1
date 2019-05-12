@@ -57,8 +57,6 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	}
 
 	if LzScope {
-		pathNextJH := EmitPush(pathNext, "JH") // !lz
-
 		var lzBytes8 [8]byte
 
 		var lzZero8 = make([]byte, 8) // Slice of 8 zero's, for uint64's, etc.
@@ -67,12 +65,6 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 		lzLeftBytes = append(lzLeftBytes, lzZero8...) // Chain ends at offset 0.
 		lzLeftBytes = append(lzLeftBytes, lzZero8...) // Chain ends at size 0.
-
-		exprLeftFunc :=
-			MakeExprFunc(lzVars, o.Children[0].Labels, exprLeft, pathNextJH, "L") // !lz
-
-		exprRightFunc :=
-			MakeExprFunc(lzVars, o.Children[1].Labels, exprRight, pathNextJH, "R") // !lz
 
 		// TODO: Configurable initial size for rhmap, and reusable rhmap.
 		lzMap := rhmap.NewRHMap(97)
@@ -87,13 +79,23 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 		var lzProbeValNew []byte
 
+		_, _ = lzBytes8, lzValOut
+
+		exprLeftFunc :=
+			MakeExprFunc(lzVars, o.Children[0].Labels, exprLeft, pathNext, "JHL") // !lz
+
+		exprRightFunc :=
+			MakeExprFunc(lzVars, o.Children[1].Labels, exprRight, pathNext, "JHR") // !lz
+
+		EmitPush(pathNext, "JHF") // !lz
+
 		lzYieldValsOrig := lzYieldVals
 
 		// Callback for left side, to fill the probe map.
 		lzYieldVals = func(lzVals base.Vals) {
 			var lzVal base.Val
 
-			lzVal = exprLeftFunc(lzVals, lzYieldErr) // <== emitCaptured: pathNextJH "L"
+			lzVal = exprLeftFunc(lzVals, lzYieldErr) // <== emitCaptured: pathNext "JHL"
 			lzProbeKey := lzVal
 
 			var lzErr error
@@ -190,6 +192,8 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 			}
 		}
 
+		EmitPop(pathNext, "JHF") // !lz
+
 		if LzScope {
 			// Run the left side to fill the probe map.
 			ExecOp(o.Children[0], lzVars, lzYieldVals, lzYieldErr, pathNext, "JHL") // !lz
@@ -198,11 +202,13 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 		// -----------------------------------------------------------
 
 		if lzErrLeft == nil {
+			EmitPush(pathNext, "JHP") // !lz
+
 			// Callback for right side, to probe the probe map.
 			lzYieldVals = func(lzVals base.Vals) {
 				var lzVal base.Val
 
-				lzVal = exprRightFunc(lzVals, lzYieldErr) // <== emitCaptured: pathNextJH "R"
+				lzVal = exprRightFunc(lzVals, lzYieldErr) // <== emitCaptured: pathNext "JHR"
 				lzProbeKey := lzVal
 
 				var lzErr error
@@ -304,12 +310,12 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 				lzYieldErrOrig(lzErrIn)
 			}
 
+			EmitPop(pathNext, "JHP") // !lz
+
 			if LzScope {
 				// Run the right side to probe the probe map.
 				ExecOp(o.Children[1], lzVars, lzYieldVals, lzYieldErr, pathNext, "JHR") // !lz
 			}
 		}
-
-		EmitPop(pathNext, "JH") // !lz
 	}
 }

@@ -2876,4 +2876,60 @@ var TestCasesSimple = []TestCaseSimple{
 			StringsToVals([]string{`"dev"`, `"paris"`, ``, ``}, nil),
 		},
 	},
+	{
+		about: "test csv-data scan->project",
+		o: base.Op{
+			Kind:   "project",
+			Labels: base.Labels{"x"},
+			Params: []interface{}{
+				[]interface{}{"valsCanonical", "a"},
+			},
+			Children: []*base.Op{&base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"a", "b", "c"},
+				Params: []interface{}{
+					"csvData",
+					`
+00,00,0.000
+1.200,-22,-0.0
+`,
+				},
+			}},
+		},
+		expectYields: []base.Vals{
+			base.Vals{[]byte("0\n0\n0")},
+			base.Vals{[]byte("1.2\n-22\n-0")},
+		},
+	},
+	{
+		about: "test csv-data scan->intersect-distinct->order-by",
+		o: base.Op{
+			Kind:   "intersect-distinct",
+			Labels: base.Labels{"a", "b"},
+			Children: []*base.Op{&base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"dept", "city"},
+				Params: []interface{}{
+					"csvData",
+					`
+10,11
+20,21
+`,
+				},
+			}, &base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"a", "b"},
+				Params: []interface{}{
+					"csvData",
+					`
+20,21
+30,31
+`,
+				},
+			}},
+		},
+		expectYields: []base.Vals{
+			StringsToVals([]string{`20`, `21`}, nil),
+		},
+	},
 }

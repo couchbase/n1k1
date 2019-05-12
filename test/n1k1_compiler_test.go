@@ -133,7 +133,8 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 					continue
 				}
 
-				if strings.HasPrefix(trimmed, "if ") {
+				if strings.HasPrefix(trimmed, "if ") ||
+					strings.HasPrefix(trimmed, "for ") {
 					scopes += 1
 				}
 
