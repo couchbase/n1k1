@@ -71,9 +71,12 @@ Some design ideas meant to help with n1k1's performance...
 - lifting vars to avoid local closures.
 - capturing emitted code to avoid local closures.
 - data-staging / pipeline-breaker facilities along with concurrency.
-- UNION ALL is concurrent (one goroutine per contributor).
 - DISTINCT.
 - GROUP BY expressions and COUNT.
+- UNION ALL is concurrent (one goroutine per contributor).
+- UNION DISTINCT can be supported by sequencing UNION ALL with DISTINCT.
+- INTERSECT DISTINCT / INTERSECT ALL.
+- EXCEPT DISTINCT / EXCEPT ALL.
 - runtime variables / context passed down through ExecOp().
 - glue integration with existing couchbase/query/expression's.
 
@@ -142,16 +145,8 @@ efficiently execute that query-plan.
     be able to short-circuit and directly break or goto
     some outer handler codepath?
 
-- UNION (which has an implicit DISTINCT)?
-
-- INTERSECT / INTERSECT ALL?
-
-- EXCEPT / EXCEPT ALL?
-
 - UNION-ALL data-staging batchSize should be configurable?
 - UNION-ALL data-staging batchChSize should be configurable?
-
-- standalone Op for data-staging / pipeline breaking
 
 - more GROUP BY aggregates: sum, min, max, average?
 
@@ -197,6 +192,8 @@ efficiently execute that query-plan.
       every time?
     - any spawned child thread/goroutines can push another Vars
       that shadows the ancestor Var chain to avoid concurrent mutations?
+
+- standalone Op for data-staging / pipeline breaking?
 
 - scan should take an optional params of pushdown field path's
   as optimization?
