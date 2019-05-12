@@ -56,19 +56,17 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 		yieldsUnprobed = kindParts[0] == "except"
 	}
 
+	// ---------------------------------------------------------------
+
 	if LzScope {
-		var lzBytes8 [8]byte
+		var lzBytes8, lzOne8, lzZero8 [8]byte
 
-		var lzZero8 = make([]byte, 8) // Slice of 8 zero's, for uint64's, etc.
-
-		var lzOne8 = make([]byte, 8)
-
-		binary.LittleEndian.PutUint64(lzOne8, uint64(1))
+		binary.LittleEndian.PutUint64(lzOne8[:], uint64(1))
 
 		var lzLeftBytes []byte
 
-		lzLeftBytes = append(lzLeftBytes, lzZero8...) // Chain ends at offset 0.
-		lzLeftBytes = append(lzLeftBytes, lzZero8...) // Chain ends at size 0.
+		lzLeftBytes = append(lzLeftBytes, lzZero8[:]...) // Chain ends at offset 0.
+		lzLeftBytes = append(lzLeftBytes, lzZero8[:]...) // Chain ends at size 0.
 
 		// TODO: Configurable initial size for rhmap, and reusable rhmap.
 		lzMap := rhmap.NewRHMap(97)
@@ -126,15 +124,15 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 					} // !lz
 
 					if leftCount { // !lz
-						lzMapBytes = append(lzMapBytes, lzOne8...)
+						lzMapBytes = append(lzMapBytes, lzOne8[:]...)
 					} // !lz
 
 					if leftVals { // !lz
 						lzLeftBytesLen := len(lzLeftBytes)
 
 						// End or tail of the chain has offset/size of 0.
-						lzLeftBytes = append(lzLeftBytes, lzZero8...)
-						lzLeftBytes = append(lzLeftBytes, lzZero8...)
+						lzLeftBytes = append(lzLeftBytes, lzZero8[:]...)
+						lzLeftBytes = append(lzLeftBytes, lzZero8[:]...)
 
 						lzLeftBytes = base.ValsJoin(lzVals, lzLeftBytes)
 
@@ -160,8 +158,8 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 					if leftCount { // !lz
 						lzLeftCount := binary.LittleEndian.Uint64(lzProbeValOld[:8])
-						binary.LittleEndian.PutUint64(lzBytes8[:8], lzLeftCount+1)
-						lzProbeValNew = append(lzProbeValNew, lzBytes8[:8]...)
+						binary.LittleEndian.PutUint64(lzBytes8[:], lzLeftCount+1)
+						lzProbeValNew = append(lzProbeValNew, lzBytes8[:]...)
 						lzProbeValOld = lzProbeValOld[8:]
 					} // !lz
 
