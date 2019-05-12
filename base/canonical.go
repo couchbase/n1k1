@@ -24,9 +24,7 @@ func (c *ValComparer) CanonicalJSONWithType(v []byte, vType int,
 	// Both types are the same, so need type-based cases...
 	switch jsonparser.ValueType(vType) {
 	case jsonparser.String:
-		out = append(out, '"')
-		out = append(out, v...)
-		out = append(out, '"')
+		out = append(append(append(out, '"'), v...), '"')
 
 		return out, nil
 
