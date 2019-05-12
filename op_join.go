@@ -54,10 +54,6 @@ func OpJoinNestedLoop(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 		} // !lz
 
 		lzYieldVals := func(lzValsB base.Vals) {
-			if isOuterLeft { // !lz
-				lzHadInner = true
-			} // !lz
-
 			lzValsJoin = lzValsJoin[0:lenLabelsA]
 			lzValsJoin = append(lzValsJoin, lzValsB...)
 
@@ -68,16 +64,11 @@ func OpJoinNestedLoop(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 			lzVal = joinClauseFunc(lzVals, lzYieldErr) // <== emitCaptured: pathNext, "JF"
 
 			if base.ValEqualTrue(lzVal) {
-				lzYieldValsOrig(lzVals) // <== emitCaptured: path ""
-			} else {
 				if isOuterLeft { // !lz
-					lzValsJoin = lzValsJoin[0:lenLabelsA]
-					for i := 0; i < lenLabelsB; i++ { // !lz
-						lzValsJoin = append(lzValsJoin, base.ValMissing)
-					} // !lz
-
-					lzYieldValsOrig(lzValsJoin)
+					lzHadInner = true
 				} // !lz
+
+				lzYieldValsOrig(lzVals) // <== emitCaptured: path ""
 			}
 		}
 

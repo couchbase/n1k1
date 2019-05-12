@@ -697,20 +697,10 @@ var TestCasesSimple = []TestCaseSimple{
 		expectYields: []base.Vals{
 			StringsToVals([]string{`"dev"`, `"paris"`, `"dan"`, `"dev"`}, nil),
 			StringsToVals([]string{`"dev"`, `"paris"`, `"doug"`, `"dev"`}, nil),
-			StringsToVals([]string{`"dev"`, `"paris"`, ``, ``}, nil),
-			StringsToVals([]string{`"dev"`, `"paris"`, ``, ``}, nil),
-			StringsToVals([]string{`"dev"`, `"paris"`, ``, ``}, nil),
 
-			StringsToVals([]string{`"finance"`, `"london"`, ``, ``}, nil),
-			StringsToVals([]string{`"finance"`, `"london"`, ``, ``}, nil),
 			StringsToVals([]string{`"finance"`, `"london"`, `"frank"`, `"finance"`}, nil),
 			StringsToVals([]string{`"finance"`, `"london"`, `"fred"`, `"finance"`}, nil),
-			StringsToVals([]string{`"finance"`, `"london"`, ``, ``}, nil),
 
-			StringsToVals([]string{`"sales"`, `"san diego"`, ``, ``}, nil),
-			StringsToVals([]string{`"sales"`, `"san diego"`, ``, ``}, nil),
-			StringsToVals([]string{`"sales"`, `"san diego"`, ``, ``}, nil),
-			StringsToVals([]string{`"sales"`, `"san diego"`, ``, ``}, nil),
 			StringsToVals([]string{`"sales"`, `"san diego"`, ``, ``}, nil),
 		},
 	},
@@ -853,12 +843,6 @@ var TestCasesSimple = []TestCaseSimple{
 		},
 		expectYields: []base.Vals{
 			StringsToVals([]string{`"dev"`, `"paris"`, ``, ``}, nil),
-			StringsToVals([]string{`"dev"`, `"paris"`, ``, ``}, nil),
-			StringsToVals([]string{`"dev"`, `"paris"`, ``, ``}, nil),
-			StringsToVals([]string{`"dev"`, `"paris"`, ``, ``}, nil),
-			StringsToVals([]string{`"finance"`, `"london"`, ``, ``}, nil),
-			StringsToVals([]string{`"finance"`, `"london"`, ``, ``}, nil),
-			StringsToVals([]string{`"finance"`, `"london"`, ``, ``}, nil),
 			StringsToVals([]string{`"finance"`, `"london"`, ``, ``}, nil),
 		},
 	},
