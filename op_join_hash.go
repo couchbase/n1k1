@@ -75,11 +75,13 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 		// TODO: Allow spill out to disk.
 		var lzMapBytes []byte
 
-		var lzValOut base.Val
+		var lzVal, lzValOut base.Val
 
 		var lzValsOut base.Vals
 
 		var lzProbeValNew []byte
+
+		var lzErr error
 
 		_, _ = lzBytes8, lzValOut
 
@@ -95,13 +97,9 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 		// Callback for left side, to fill the probe map.
 		lzYieldVals = func(lzVals base.Vals) {
-			var lzVal base.Val
-
 			lzVal = exprLeftFunc(lzVals, lzYieldErr) // <== emitCaptured: pathNext "JHL"
+
 			lzProbeKey := lzVal
-
-			var lzErr error
-
 			if !canonical { // !lz
 				lzProbeKey, lzErr = lzVars.Ctx.ValComparer.CanonicalJSON(lzProbeKey, lzValOut[:0])
 
@@ -208,13 +206,9 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 			// Callback for right side, to probe the probe map.
 			lzYieldVals = func(lzVals base.Vals) {
-				var lzVal base.Val
-
 				lzVal = exprRightFunc(lzVals, lzYieldErr) // <== emitCaptured: pathNext "JHR"
+
 				lzProbeKey := lzVal
-
-				var lzErr error
-
 				if !canonical { // !lz
 					lzProbeKey, lzErr = lzVars.Ctx.ValComparer.CanonicalJSON(lzProbeKey, lzValOut[:0])
 
