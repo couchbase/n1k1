@@ -273,6 +273,7 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 						_ = rightLabelsLen                          // !lz
 
 						lzRightSuffix := make(base.Vals, rightLabelsLen)
+						_ = lzRightSuffix
 
 						lzMapVisitor := func(lzProbeKey rhmap.Key, lzProbeVal rhmap.Val) bool {
 							if lzProbeVal[0] == byte(0) { // Unprobed.

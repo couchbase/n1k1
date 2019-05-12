@@ -3260,4 +3260,189 @@ var TestCasesSimple = []TestCaseSimple{
 			StringsToVals([]string{`20`, `21`}, nil),
 		},
 	},
+	{
+		about: "test csv-data scan->except-distinct",
+		o: base.Op{
+			Kind:   "except-distinct",
+			Labels: base.Labels{"a", "b"},
+			Children: []*base.Op{&base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"a", "b"},
+				Params: []interface{}{
+					"csvData",
+					`
+10,11
+20,21
+`,
+				},
+			}, &base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"a", "b"},
+				Params: []interface{}{
+					"csvData",
+					`
+20,21
+30,31
+`,
+				},
+			}},
+		},
+		expectYields: []base.Vals{
+			StringsToVals([]string{`10`, `11`}, nil),
+		},
+	},
+	{
+		about: "test csv-data scan->except-distinct of empty left",
+		o: base.Op{
+			Kind:   "except-distinct",
+			Labels: base.Labels{"a", "b"},
+			Children: []*base.Op{&base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"a", "b"},
+				Params: []interface{}{
+					"csvData",
+					`
+`,
+				},
+			}, &base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"a", "b"},
+				Params: []interface{}{
+					"csvData",
+					`
+20,21
+30,31
+`,
+				},
+			}},
+		},
+		expectYields: []base.Vals(nil),
+	},
+	{
+		about: "test csv-data scan->except-distinct of empty right",
+		o: base.Op{
+			Kind:   "except-distinct",
+			Labels: base.Labels{"a", "b"},
+			Children: []*base.Op{&base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"a", "b"},
+				Params: []interface{}{
+					"csvData",
+					`
+10,11
+20,21
+`,
+				},
+			}, &base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"a", "b"},
+				Params: []interface{}{
+					"csvData",
+					`
+`,
+				},
+			}},
+		},
+		expectYields: []base.Vals{
+			StringsToVals([]string{`10`, `11`}, nil),
+			StringsToVals([]string{`20`, `21`}, nil),
+		},
+	},
+	{
+		about: "test csv-data scan->except-distinct of repeating left",
+		o: base.Op{
+			Kind:   "except-distinct",
+			Labels: base.Labels{"a", "b"},
+			Children: []*base.Op{&base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"a", "b"},
+				Params: []interface{}{
+					"csvData",
+					`
+20,21
+10,11
+20,21
+30,31
+`,
+				},
+			}, &base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"a", "b"},
+				Params: []interface{}{
+					"csvData",
+					`
+`,
+				},
+			}},
+		},
+		expectYields: []base.Vals{
+			StringsToVals([]string{`10`, `11`}, nil),
+			StringsToVals([]string{`20`, `21`}, nil),
+			StringsToVals([]string{`30`, `31`}, nil),
+		},
+	},
+	{
+		about: "test csv-data scan->except-distinct of repeating right",
+		o: base.Op{
+			Kind:   "except-distinct",
+			Labels: base.Labels{"a", "b"},
+			Children: []*base.Op{&base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"a", "b"},
+				Params: []interface{}{
+					"csvData",
+					`
+`,
+				},
+			}, &base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"a", "b"},
+				Params: []interface{}{
+					"csvData",
+					`
+20,21
+30,11
+20,21
+30,31
+`,
+				},
+			}},
+		},
+		expectYields: []base.Vals(nil),
+	},
+	{
+		about: "test csv-data scan->except-distinct of repeating",
+		o: base.Op{
+			Kind:   "except-distinct",
+			Labels: base.Labels{"a", "b"},
+			Children: []*base.Op{&base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"dept", "city"},
+				Params: []interface{}{
+					"csvData",
+					`
+20,21
+10,11
+20,21
+10,11
+`,
+				},
+			}, &base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"a", "b"},
+				Params: []interface{}{
+					"csvData",
+					`
+20,21
+30,11
+20,21
+30,31
+`,
+				},
+			}},
+		},
+		expectYields: []base.Vals{
+			StringsToVals([]string{`10`, `11`}, nil),
+		},
+	},
 }
