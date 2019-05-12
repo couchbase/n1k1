@@ -3632,4 +3632,106 @@ var TestCasesSimple = []TestCaseSimple{
 			StringsToVals([]string{`10`, `11`}, nil),
 		},
 	},
+	{
+		about: "test csv-data scan->group-by a then sum(b)",
+		o: base.Op{
+			Kind:   "group",
+			Labels: base.Labels{"a", "sum-b"},
+			Params: []interface{}{
+				[]interface{}{
+					[]interface{}{"labelPath", "a"},
+				},
+				[]interface{}{
+					[]interface{}{"labelPath", "b"},
+				},
+				[]interface{}{
+					[]interface{}{"sum"},
+				},
+			},
+			Children: []*base.Op{&base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"a", "b"},
+				Params: []interface{}{
+					"csvData",
+					`
+10,11
+10,12
+20,20
+`,
+				},
+			}},
+		},
+		expectYields: []base.Vals{
+			base.Vals{[]byte("10"), []byte("23")},
+			base.Vals{[]byte("20"), []byte("20")},
+		},
+	},
+	{
+		about: "test csv-data scan->group-by a then sum(a)",
+		o: base.Op{
+			Kind:   "group",
+			Labels: base.Labels{"a", "sum-b"},
+			Params: []interface{}{
+				[]interface{}{
+					[]interface{}{"labelPath", "a"},
+				},
+				[]interface{}{
+					[]interface{}{"labelPath", "a"},
+				},
+				[]interface{}{
+					[]interface{}{"sum"},
+				},
+			},
+			Children: []*base.Op{&base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"a", "b"},
+				Params: []interface{}{
+					"csvData",
+					`
+10,11
+10,12
+20,20
+`,
+				},
+			}},
+		},
+		expectYields: []base.Vals{
+			base.Vals{[]byte("10"), []byte("20")},
+			base.Vals{[]byte("20"), []byte("20")},
+		},
+	},
+	{
+		about: "test csv-data scan->group-by a then sum(b), count(b)",
+		o: base.Op{
+			Kind:   "group",
+			Labels: base.Labels{"a", "sum-b", "count-b"},
+			Params: []interface{}{
+				[]interface{}{
+					[]interface{}{"labelPath", "a"},
+				},
+				[]interface{}{
+					[]interface{}{"labelPath", "b"},
+				},
+				[]interface{}{
+					[]interface{}{"sum", "count"},
+				},
+			},
+			Children: []*base.Op{&base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"a", "b"},
+				Params: []interface{}{
+					"csvData",
+					`
+10,11
+10,12
+20,20
+`,
+				},
+			}},
+		},
+		expectYields: []base.Vals{
+			base.Vals{[]byte("10"), []byte("23"), []byte("2")},
+			base.Vals{[]byte("20"), []byte("20"), []byte("1")},
+		},
+	},
 }

@@ -172,10 +172,10 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 						lzValBytes := 0
 
+						var lzVal base.Val
+
 						for _, aggCalc := range aggCalcs { // !lz
 							for _, aggName := range aggCalc.([]interface{}) { // !lz
-								var lzVal base.Val
-
 								aggIdx := base.AggCatalog[aggName.(string)] // !lz
 								lzAgg = base.Aggs[aggIdx]
 								lzVal, lzGroupVal, lzValBuf = lzAgg.Result(lzGroupVal, lzValBuf)

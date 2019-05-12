@@ -80,7 +80,9 @@ Some design ideas meant to help with n1k1's performance...
 - ORDER BY multiple expressions & ASC/DESC.
 - ORDER-BY / OFFSET / LIMIT via max-heap.
 - DISTINCT.
-- GROUP BY on multiple expressions and COUNT().
+- GROUP BY on multiple expressions
+- COUNT().
+- SUM().
 - HAVING.
 - UNION ALL is concurrent (one goroutine per contributor).
 - UNION DISTINCT is supported by sequencing UNION ALL with DISTINCT.
@@ -159,7 +161,7 @@ efficiently execute that query-plan.
 - UNION-ALL data-staging batchSize should be configurable?
 - UNION-ALL data-staging batchChSize should be configurable?
 
-- more GROUP BY aggregates: sum, min, max, average?
+- more GROUP BY aggregates: min, max, average?
 
 - HAVING (should be able to reuse existing filter operator).
 
