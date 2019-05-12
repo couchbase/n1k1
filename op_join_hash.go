@@ -249,10 +249,7 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 						if leftVals { // !lz
 							// Ex: joinHash-inner, joinHash-outerLeft.
-							lzBegOffset := binary.LittleEndian.Uint64(lzProbeVal[:8])
-							lzBegSize := binary.LittleEndian.Uint64(lzProbeVal[8:16])
-
-							lzValsOut = base.YieldChainedVals(lzYieldValsOrig, lzVals, lzLeftBytes, lzBegOffset, lzBegSize, lzValsOut)
+							lzValsOut = base.YieldChainedVals(lzYieldValsOrig, lzVals, lzLeftBytes, lzProbeVal, lzValsOut)
 						} // !lz
 					}
 				}
@@ -281,10 +278,7 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 								if leftVals { // !lz
 									// Ex: joinHash-outerLeft.
-									lzBegOffset := binary.LittleEndian.Uint64(lzProbeVal[:8])
-									lzBegSize := binary.LittleEndian.Uint64(lzProbeVal[8:16])
-
-									lzValsOut = base.YieldChainedVals(lzYieldValsOrig, nil, lzLeftBytes, lzBegOffset, lzBegSize, lzValsOut)
+									lzValsOut = base.YieldChainedVals(lzYieldValsOrig, nil, lzLeftBytes, lzProbeVal, lzValsOut)
 								} // !lz
 
 								if !leftCount && !leftVals { // !lz

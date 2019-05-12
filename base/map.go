@@ -5,24 +5,26 @@ import (
 )
 
 // YieldChainedVals invokes the yield callback on all the vals found
-// by chasing the offset/size references in the chain starting at the
-// given offset/size. The optional valsSufix is appended to each
-// emitted vals. The optional valsOut is allows for the caller to
-// provide a pre-allocated slice.
-func YieldChainedVals(yieldVals YieldVals, valsSuffix Vals, chainBytes []byte,
-	offset, size uint64, valsOut Vals) (valsOutRV Vals) {
-	for offset > 0 {
-		chainItem := chainBytes[offset : offset+size]
+// by chasing the references in the chain, given with the starting
+// chain item ref. The optional valsSuffix is appended to each
+// emitted vals. The optional valsOut allows for the caller to provide
+// a pre-allocated slice.
+func YieldChainedVals(yieldVals YieldVals, valsSuffix Vals, chain []byte,
+	ref []byte, valsOut Vals) (valsOutRV Vals) {
+	for {
+		offset := binary.LittleEndian.Uint64(ref[:8])
+		if offset <= 0 {
+			break
+		}
 
-		valsOut = ValsSplit(chainItem[16:], valsOut[:0])
+		ref = chain[offset : offset+binary.LittleEndian.Uint64(ref[8:16])]
+
+		valsOut = ValsSplit(ref[16:], valsOut[:0])
 
 		valsOut = append(valsOut, valsSuffix...)
 
 		yieldVals(valsOut)
-
-		offset = binary.LittleEndian.Uint64(chainItem[:8])
-		size = binary.LittleEndian.Uint64(chainItem[8:16])
 	}
 
-	return valsOut
+	return valsOut // Return extended valsOut for caller reusability.
 }
