@@ -28,7 +28,7 @@ func ExecOp(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	case "joinNL-inner", "joinNL-outerLeft":
 		OpJoinNestedLoop(o, lzVars, lzYieldVals, lzYieldErr, path, pathNext) // !lz
 
-	case "joinHash-inner", "joinHash-outerLeft", "intersect-distinct", "intersect-all", "except-distinct":
+	case "joinHash-inner", "joinHash-outerLeft", "intersect-distinct", "intersect-all", "except-distinct", "except-all":
 		OpJoinHash(o, lzVars, lzYieldVals, lzYieldErr, path, pathNext) // !lz
 
 	case "union-all":
