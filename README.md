@@ -274,6 +274,10 @@ efficiently execute that query-plan.
 
 - couchbase/rhmap should be able to spill out to disk via mmap()?
 
+- SUM() and COUNT() handling of MISSING / NULL?
+
+- SUM() handling of non-number types (especially, boolean)?
+
 - integration with scorch TermFieldReaders as a Scan source or operator?
   - merge join by docNum / docId field?
   - in the general case, cannot compile a FTS conjunction/disjunction

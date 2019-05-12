@@ -6,6 +6,10 @@ import (
 	"strconv"
 )
 
+var Zero8 [8]byte // 64-bits of zeros.
+
+// -----------------------------------------------------
+
 // AggCatalog is a registry of named aggregation handlers, which
 // supports GROUP BY "count", etc.
 var AggCatalog = map[string]int{}
@@ -39,13 +43,9 @@ func init() {
 // -----------------------------------------------------
 
 var AggCount = &Agg{
-	Init: func(agg []byte) []byte {
-		var b [8]byte
-		return append(agg, b[:8]...) // For uint64 count.
-	},
+	Init: func(agg []byte) []byte { return append(agg, Zero8[:8]...) },
 
-	Update: func(v Val, aggNew, agg []byte) (
-		aggNewOut, aggRest []byte) {
+	Update: func(v Val, aggNew, agg []byte) (aggNewOut, aggRest []byte) {
 		c := binary.LittleEndian.Uint64(agg[:8])
 		var b [8]byte
 		binary.LittleEndian.PutUint64(b[:8], c+1)
@@ -62,13 +62,9 @@ var AggCount = &Agg{
 // -----------------------------------------------------
 
 var AggSum = &Agg{
-	Init: func(agg []byte) []byte {
-		var b [8]byte
-		return append(agg, b[:8]...) // For float64 sum.
-	},
+	Init: func(agg []byte) []byte { return append(agg, Zero8[:8]...) },
 
-	Update: func(v Val, aggNew, agg []byte) (
-		aggNewOut, aggRest []byte) {
+	Update: func(v Val, aggNew, agg []byte) (aggNewOut, aggRest []byte) {
 		parsedVal, parsedType := Parse(v)
 		if ParseTypeToValType[parsedType] == ValTypeNumber {
 			f, err := ParseFloat64(parsedVal)
