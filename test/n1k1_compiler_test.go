@@ -209,6 +209,7 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 		`import "bufio"`,
 		`import "bytes"`,
 		`import "container/heap"`,
+		`import "encoding/binary"`,
 		`import "strings"`,
 		`import "reflect"`,
 		`import "testing"`,

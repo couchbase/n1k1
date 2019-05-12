@@ -2512,4 +2512,46 @@ var TestCasesSimple = []TestCaseSimple{
 			base.Vals{[]byte("20"), []byte("1")},
 		},
 	},
+	{
+		about: "test csv-data scan->joinHash-inner",
+		o: base.Op{
+			Kind:   "joinHash-inner",
+			Labels: base.Labels{"dept", "city", "emp", "empDept"},
+			Params: []interface{}{
+				[]interface{}{"labelPath", "dept"},
+				[]interface{}{"labelPath", "empDept"},
+			},
+			Children: []*base.Op{&base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"dept", "city"},
+				Params: []interface{}{
+					"csvData",
+					`
+"dev","paris"
+"finance","london"
+"sales","san diego"
+`,
+				},
+			}, &base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"emp", "empDept"},
+				Params: []interface{}{
+					"csvData",
+					`
+"dan","dev"
+"doug","dev"
+"frank","finance"
+"fred","finance"
+"mary","marketing"
+`,
+				},
+			}},
+		},
+		expectYields: []base.Vals{
+			StringsToVals([]string{`"dev"`, `"paris"`, `"dan"`, `"dev"`}, nil),
+			StringsToVals([]string{`"dev"`, `"paris"`, `"doug"`, `"dev"`}, nil),
+			StringsToVals([]string{`"finance"`, `"london"`, `"frank"`, `"finance"`}, nil),
+			StringsToVals([]string{`"finance"`, `"london"`, `"fred"`, `"finance"`}, nil),
+		},
+	},
 }

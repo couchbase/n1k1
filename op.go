@@ -25,6 +25,9 @@ func ExecOp(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	case "joinNL-inner", "joinNL-outerLeft":
 		OpJoinNestedLoop(o, lzVars, lzYieldVals, lzYieldErr, path, pathNext) // !lz
 
+	case "joinHash-inner":
+		OpJoinHash(o, lzVars, lzYieldVals, lzYieldErr, path, pathNext) // !lz
+
 	case "order-offset-limit":
 		OpOrderOffsetLimit(o, lzVars, lzYieldVals, lzYieldErr, path, pathNext) // !lz
 
