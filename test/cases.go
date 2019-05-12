@@ -659,7 +659,7 @@ var TestCasesSimple = []TestCaseSimple{
 		},
 	},
 	{
-		about: "test left outer join on dept",
+		about: "test left outer joinNL on dept",
 		o: base.Op{
 			Kind:   "joinNL-outerLeft",
 			Labels: base.Labels{"dept", "city", "emp", "empDept"},
@@ -2724,6 +2724,156 @@ var TestCasesSimple = []TestCaseSimple{
 			StringsToVals([]string{`"dev"`, `"paris"`, `"dan"`, `"dev"`}, nil),
 			StringsToVals([]string{`"finance"`, `"london"`, `"fred"`, `"finance"`}, nil),
 			StringsToVals([]string{`"finance"`, `"london"`, `"frank"`, `"finance"`}, nil),
+		},
+	},
+	{
+		about: "test left outer joinHash on dept",
+		o: base.Op{
+			Kind:   "joinHash-outerLeft",
+			Labels: base.Labels{"dept", "city", "emp", "empDept"},
+			Params: []interface{}{
+				[]interface{}{"labelPath", `dept`},
+				[]interface{}{"labelPath", `empDept`},
+			},
+			Children: []*base.Op{&base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"dept", "city"},
+				Params: []interface{}{
+					"csvData",
+					`
+"dev","paris"
+"finance","london"
+"sales","san diego"
+`,
+				},
+			}, &base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"emp", "empDept"},
+				Params: []interface{}{
+					"csvData",
+					`
+"dan","dev"
+"doug","dev"
+"frank","finance"
+"fred","finance"
+"mary","marketing"
+`,
+				},
+			}},
+		},
+		expectYields: []base.Vals{
+			StringsToVals([]string{`"dev"`, `"paris"`, `"dan"`, `"dev"`}, nil),
+			StringsToVals([]string{`"dev"`, `"paris"`, `"doug"`, `"dev"`}, nil),
+
+			StringsToVals([]string{`"finance"`, `"london"`, `"frank"`, `"finance"`}, nil),
+			StringsToVals([]string{`"finance"`, `"london"`, `"fred"`, `"finance"`}, nil),
+
+			StringsToVals([]string{`"sales"`, `"san diego"`, ``, ``}, nil),
+		},
+	},
+	{
+		about: "test left outer joinHash on dept with empty RHS",
+		o: base.Op{
+			Kind:   "joinHash-outerLeft",
+			Labels: base.Labels{"dept", "city", "emp", "empDept"},
+			Params: []interface{}{
+				[]interface{}{"labelPath", `dept`},
+				[]interface{}{"labelPath", `empDept`},
+			},
+			Children: []*base.Op{&base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"dept", "city"},
+				Params: []interface{}{
+					"csvData",
+					`
+"dev","paris"
+"finance","london"
+`,
+				},
+			}, &base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"emp", "empDept"},
+				Params: []interface{}{
+					"csvData",
+					`
+`,
+				},
+			}},
+		},
+		expectYields: []base.Vals{
+			StringsToVals([]string{`"finance"`, `"london"`, ``, ``}, nil),
+			StringsToVals([]string{`"dev"`, `"paris"`, ``, ``}, nil),
+		},
+	},
+	{
+		about: "test left outer joinHash on dept with empty LHS",
+		o: base.Op{
+			Kind:   "joinHash-outerLeft",
+			Labels: base.Labels{"dept", "city", "emp", "empDept"},
+			Params: []interface{}{
+				[]interface{}{"labelPath", `dept`},
+				[]interface{}{"labelPath", `empDept`},
+			},
+			Children: []*base.Op{&base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"dept", "city"},
+				Params: []interface{}{
+					"csvData",
+					`
+`,
+				},
+			}, &base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"emp", "empDept"},
+				Params: []interface{}{
+					"csvData",
+					`
+"dan","dev"
+"doug","dev"
+"frank","finance"
+"fred","finance"
+`,
+				},
+			}},
+		},
+		expectYields: []base.Vals(nil),
+	},
+	{
+		about: "test left outer joinHash on never matching condition",
+		o: base.Op{
+			Kind:   "joinHash-outerLeft",
+			Labels: base.Labels{"dept", "city", "emp", "empDept"},
+			Params: []interface{}{
+				[]interface{}{"labelPath", `dept`},
+				[]interface{}{"labelPath", `someFakeLabel`},
+			},
+			Children: []*base.Op{&base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"dept", "city"},
+				Params: []interface{}{
+					"csvData",
+					`
+"dev","paris"
+"finance","london"
+`,
+				},
+			}, &base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"emp", "empDept"},
+				Params: []interface{}{
+					"csvData",
+					`
+"dan","dev"
+"doug","dev"
+"frank","finance"
+"fred","finance"
+`,
+				},
+			}},
+		},
+		expectYields: []base.Vals{
+			StringsToVals([]string{`"finance"`, `"london"`, ``, ``}, nil),
+			StringsToVals([]string{`"dev"`, `"paris"`, ``, ``}, nil),
 		},
 	},
 }

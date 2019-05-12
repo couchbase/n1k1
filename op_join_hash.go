@@ -217,8 +217,7 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 					lzProbeVal, lzProbeKeyFound := lzMap.Get([]byte(lzProbeKey))
 					if lzProbeKeyFound {
 						if tracksProbing { // !lz
-							lzProbedBefore := lzProbeVal[0] == byte(0)
-							if !lzProbedBefore {
+							if lzProbeVal[0] == byte(0) {
 								lzProbeVal[0] = byte(1) // Mark as probed.
 
 								if opIntersect { // !lz
@@ -258,7 +257,13 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 			lzYieldErr = func(lzErrIn error) {
 				if lzErrIn == nil {
 					// If no error, yield unprobed items if needed (ex: outerLeft, except).
+
 					if tracksProbing && yieldsUnprobed { // !lz
+						rightLabelsLen := len(o.Children[1].Labels) // !lz
+						_ = rightLabelsLen                          // !lz
+
+						lzRightSuffix := make(base.Vals, rightLabelsLen)
+
 						lzMapVisitor := func(lzProbeKey rhmap.Key, lzProbeVal rhmap.Val) bool {
 							if lzProbeVal[0] == byte(0) { // Unprobed.
 								lzProbeVal = lzProbeVal[1:]
@@ -278,7 +283,7 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 								if leftVals { // !lz
 									// Ex: joinHash-outerLeft.
-									lzValsOut = base.YieldChainedVals(lzYieldValsOrig, nil, lzLeftBytes, lzProbeVal, lzValsOut)
+									lzValsOut = base.YieldChainedVals(lzYieldValsOrig, lzRightSuffix, lzLeftBytes, lzProbeVal, lzValsOut)
 								} // !lz
 
 								if !leftCount && !leftVals { // !lz
