@@ -61,6 +61,10 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 		var lzZero8 = make([]byte, 8) // Slice of 8 zero's, for uint64's, etc.
 
+		var lzOne8 = make([]byte, 8)
+
+		binary.LittleEndian.PutUint64(lzOne8, uint64(1))
+
 		var lzLeftBytes []byte
 
 		lzLeftBytes = append(lzLeftBytes, lzZero8...) // Chain ends at offset 0.
@@ -122,7 +126,7 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 					} // !lz
 
 					if leftCount { // !lz
-						lzMapBytes = append(lzMapBytes, lzZero8...)
+						lzMapBytes = append(lzMapBytes, lzOne8...)
 					} // !lz
 
 					if leftVals { // !lz

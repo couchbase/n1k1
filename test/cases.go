@@ -2908,7 +2908,7 @@ var TestCasesSimple = []TestCaseSimple{
 			Labels: base.Labels{"a", "b"},
 			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
-				Labels: base.Labels{"dept", "city"},
+				Labels: base.Labels{"a", "b"},
 				Params: []interface{}{
 					"csvData",
 					`
@@ -2939,7 +2939,7 @@ var TestCasesSimple = []TestCaseSimple{
 			Labels: base.Labels{"a", "b"},
 			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
-				Labels: base.Labels{"dept", "city"},
+				Labels: base.Labels{"a", "b"},
 				Params: []interface{}{
 					"csvData",
 					`
@@ -2966,7 +2966,7 @@ var TestCasesSimple = []TestCaseSimple{
 			Labels: base.Labels{"a", "b"},
 			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
-				Labels: base.Labels{"dept", "city"},
+				Labels: base.Labels{"a", "b"},
 				Params: []interface{}{
 					"csvData",
 					`
@@ -2993,7 +2993,7 @@ var TestCasesSimple = []TestCaseSimple{
 			Labels: base.Labels{"a", "b"},
 			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
-				Labels: base.Labels{"dept", "city"},
+				Labels: base.Labels{"a", "b"},
 				Params: []interface{}{
 					"csvData",
 					`
@@ -3022,7 +3022,7 @@ var TestCasesSimple = []TestCaseSimple{
 			Labels: base.Labels{"a", "b"},
 			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
-				Labels: base.Labels{"dept", "city"},
+				Labels: base.Labels{"a", "b"},
 				Params: []interface{}{
 					"csvData",
 					`
@@ -3051,6 +3051,184 @@ var TestCasesSimple = []TestCaseSimple{
 			Labels: base.Labels{"a", "b"},
 			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
+				Labels: base.Labels{"a", "b"},
+				Params: []interface{}{
+					"csvData",
+					`
+20,21
+10,11
+20,21
+10,11
+`,
+				},
+			}, &base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"a", "b"},
+				Params: []interface{}{
+					"csvData",
+					`
+20,21
+30,11
+20,21
+30,31
+`,
+				},
+			}},
+		},
+		expectYields: []base.Vals{
+			StringsToVals([]string{`20`, `21`}, nil),
+		},
+	},
+	{
+		about: "test csv-data scan->intersect-all",
+		o: base.Op{
+			Kind:   "intersect-all",
+			Labels: base.Labels{"a", "b"},
+			Children: []*base.Op{&base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"a", "b"},
+				Params: []interface{}{
+					"csvData",
+					`
+10,11
+20,21
+`,
+				},
+			}, &base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"a", "b"},
+				Params: []interface{}{
+					"csvData",
+					`
+20,21
+30,31
+`,
+				},
+			}},
+		},
+		expectYields: []base.Vals{
+			StringsToVals([]string{`20`, `21`}, nil),
+		},
+	},
+	{
+		about: "test csv-data scan->intersect-all of empty left",
+		o: base.Op{
+			Kind:   "intersect-all",
+			Labels: base.Labels{"a", "b"},
+			Children: []*base.Op{&base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"a", "b"},
+				Params: []interface{}{
+					"csvData",
+					`
+`,
+				},
+			}, &base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"a", "b"},
+				Params: []interface{}{
+					"csvData",
+					`
+20,21
+30,31
+`,
+				},
+			}},
+		},
+		expectYields: []base.Vals(nil),
+	},
+	{
+		about: "test csv-data scan->intersect-all of empty right",
+		o: base.Op{
+			Kind:   "intersect-all",
+			Labels: base.Labels{"a", "b"},
+			Children: []*base.Op{&base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"a", "b"},
+				Params: []interface{}{
+					"csvData",
+					`
+10,11
+20,21
+`,
+				},
+			}, &base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"a", "b"},
+				Params: []interface{}{
+					"csvData",
+					`
+`,
+				},
+			}},
+		},
+		expectYields: []base.Vals(nil),
+	},
+	{
+		about: "test csv-data scan->intersect-all of repeating left",
+		o: base.Op{
+			Kind:   "intersect-all",
+			Labels: base.Labels{"a", "b"},
+			Children: []*base.Op{&base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"a", "b"},
+				Params: []interface{}{
+					"csvData",
+					`
+20,21
+10,11
+20,21
+30,31
+`,
+				},
+			}, &base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"a", "b"},
+				Params: []interface{}{
+					"csvData",
+					`
+`,
+				},
+			}},
+		},
+		expectYields: []base.Vals(nil),
+	},
+	{
+		about: "test csv-data scan->intersect-all of repeating right",
+		o: base.Op{
+			Kind:   "intersect-all",
+			Labels: base.Labels{"a", "b"},
+			Children: []*base.Op{&base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"a", "b"},
+				Params: []interface{}{
+					"csvData",
+					`
+`,
+				},
+			}, &base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"a", "b"},
+				Params: []interface{}{
+					"csvData",
+					`
+20,21
+30,11
+20,21
+30,31
+`,
+				},
+			}},
+		},
+		expectYields: []base.Vals(nil),
+	},
+	{
+		about: "test csv-data scan->intersect-all of repeating",
+		o: base.Op{
+			Kind:   "intersect-all",
+			Labels: base.Labels{"a", "b"},
+			Children: []*base.Op{&base.Op{
+				Kind:   "scan",
 				Labels: base.Labels{"dept", "city"},
 				Params: []interface{}{
 					"csvData",
@@ -3076,6 +3254,9 @@ var TestCasesSimple = []TestCaseSimple{
 			}},
 		},
 		expectYields: []base.Vals{
+			StringsToVals([]string{`20`, `21`}, nil),
+			StringsToVals([]string{`20`, `21`}, nil),
+			StringsToVals([]string{`20`, `21`}, nil),
 			StringsToVals([]string{`20`, `21`}, nil),
 		},
 	},
