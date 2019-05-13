@@ -5,7 +5,7 @@ import (
 
 	"strings"
 
-	"github.com/couchbase/rhmap" // <== genCompiler:hide
+	"github.com/couchbase/rhmap/store" // <== genCompiler:hide
 
 	"github.com/couchbase/n1k1/base"
 )
@@ -68,12 +68,10 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 		lzLeftBytes = append(lzLeftBytes, lzZero8[:]...) // Chain ends at offset 0.
 		lzLeftBytes = append(lzLeftBytes, lzZero8[:]...) // Chain ends at size 0.
 
-		// TODO: Configurable initial size for rhmap, and reusable rhmap.
-		lzMap := rhmap.NewRHMap(97)
-
+		// TODO: Configurable initial size for RHStore, and reusable RHStore.
 		// TODO: Reuse backing bytes for lzMap.
 		// TODO: Allow spill out to disk.
-		var lzMapBytes []byte
+		lzMap := store.NewRHStore(97)
 
 		var lzVal, lzValOut base.Val
 
@@ -109,20 +107,15 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 			if lzErr == nil && base.ValHasValue(lzProbeKey) {
 				lzProbeVal, lzProbeKeyFound := lzMap.Get([]byte(lzProbeKey))
 				if !lzProbeKeyFound {
-					// Copy lzProbeKey into lzMapBytes.
-					lzMapBytesLen := len(lzMapBytes)
-					lzMapBytes = append(lzMapBytes, lzProbeKey...)
-					lzProbeKeyCopy := lzMapBytes[lzMapBytesLen:]
-
-					// Append first-time probe value to lzMapBytes to set into map.
-					lzMapBytesLen = len(lzMapBytes)
+					// Set first-time probe value into map.
+					lzProbeValNew = lzProbeValNew[:0]
 
 					if tracksProbing { // !lz
-						lzMapBytes = append(lzMapBytes, byte(0))
+						lzProbeValNew = append(lzProbeValNew, byte(0))
 					} // !lz
 
 					if leftCount { // !lz
-						lzMapBytes = append(lzMapBytes, lzOne8[:]...)
+						lzProbeValNew = append(lzProbeValNew, lzOne8[:]...)
 					} // !lz
 
 					if leftVals { // !lz
@@ -135,12 +128,12 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 						lzLeftBytes = base.ValsJoin(lzVals, lzLeftBytes)
 
 						binary.LittleEndian.PutUint64(lzBytes8[:], uint64(lzLeftBytesLen))
-						lzMapBytes = append(lzMapBytes, lzBytes8[:]...) // The offset into lzLeftBytes.
+						lzProbeValNew = append(lzProbeValNew, lzBytes8[:]...) // The offset into lzLeftBytes.
 						binary.LittleEndian.PutUint64(lzBytes8[:], uint64(len(lzLeftBytes)-lzLeftBytesLen))
-						lzMapBytes = append(lzMapBytes, lzBytes8[:]...) // The size.
+						lzProbeValNew = append(lzProbeValNew, lzBytes8[:]...) // The size.
 					} // !lz
 
-					lzMap.Set(lzProbeKeyCopy, lzMapBytes[lzMapBytesLen:])
+					lzMap.Set(store.Key(lzProbeKey), lzProbeValNew)
 				} else {
 					// Not the first time that we're seeing this probe
 					// key, so increment its leftCount, append to its
@@ -267,7 +260,7 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 						lzRightSuffix := make(base.Vals, rightLabelsLen)
 						_ = lzRightSuffix
 
-						lzMapVisitor := func(lzProbeKey rhmap.Key, lzProbeVal rhmap.Val) bool {
+						lzMapVisitor := func(lzProbeKey store.Key, lzProbeVal store.Val) bool {
 							if lzProbeVal[0] == byte(0) { // Unprobed.
 								lzProbeVal = lzProbeVal[1:]
 

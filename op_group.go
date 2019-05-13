@@ -1,7 +1,7 @@
 package n1k1
 
 import (
-	"github.com/couchbase/rhmap" // <== genCompiler:hide
+	"github.com/couchbase/rhmap/store" // <== genCompiler:hide
 
 	"github.com/couchbase/n1k1/base"
 )
@@ -47,12 +47,10 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 		_, _ = groupProjectFunc, aggProjectFunc
 
-		// TODO: Configurable initial size for rhmap, and reusable rhmap.
-		lzSet := rhmap.NewRHMap(97)
-
+		// TODO: Configurable initial size for rhstore, and reusable rhstore.
 		// TODO: Reuse backing bytes for lzSet.
 		// TODO: Allow spill out to disk.
-		var lzSetBytes []byte
+		lzSet := store.NewRHStore(97)
 
 		var lzValOut base.Val
 
@@ -131,12 +129,7 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 							if len(lzGroupVal) >= len(lzGroupValNew) {
 								copy(lzGroupVal, lzGroupValNew)
 							} else {
-								// Copy lzGroupValNew into lzSetBytes.
-								lzSetBytesLen := len(lzSetBytes)
-								lzSetBytes = append(lzSetBytes, lzGroupValNew...)
-								lzGroupValNewCopy := lzSetBytes[lzSetBytesLen:]
-
-								lzSet.Set(lzGroupKey, lzGroupValNewCopy)
+								lzSet.Set(lzGroupKey, lzGroupValNew)
 							}
 						} else {
 							lzGroupVal = lzGroupValNew
@@ -144,17 +137,7 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 					} // !lz
 
 					if !lzGroupKeyFound {
-						// Copy lzGroupKey into lzSetBytes.
-						lzSetBytesLen := len(lzSetBytes)
-						lzSetBytes = append(lzSetBytes, lzGroupKey...)
-						lzGroupKeyCopy := lzSetBytes[lzSetBytesLen:]
-
-						// Copy lzGroupVal into lzSetBytes.
-						lzSetBytesLen = len(lzSetBytes)
-						lzSetBytes = append(lzSetBytes, lzGroupVal...)
-						lzGroupValCopy := lzSetBytes[lzSetBytesLen:]
-
-						lzSet.Set(lzGroupKeyCopy, lzGroupValCopy)
+						lzSet.Set(lzGroupKey, lzGroupVal)
 					}
 				}
 			} // !lz
@@ -164,7 +147,7 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 		lzYieldErr = func(lzErrIn error) {
 			if lzErrIn == nil { // If no error, yield our group items.
-				lzSetVisitor := func(lzGroupKey rhmap.Key, lzGroupVal rhmap.Val) bool {
+				lzSetVisitor := func(lzGroupKey store.Key, lzGroupVal store.Val) bool {
 					lzValsOut = base.ValsSplit(lzGroupKey, lzValsOut[:0])
 
 					if len(aggExprs) > 0 { // !lz
