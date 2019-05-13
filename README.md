@@ -26,28 +26,30 @@ Some design ideas meant to help with n1k1's performance...
     project) is a function call (which can sometimes be removed by
     compilation), instead of a send/recv on channels between
     goroutines.
-  - the pull-based paradigm, or the iterator approach, in contrast,
-    involves additional checks for HasNext() across the operators
-    in a query-plan.
+  - the pull-based paradigm, a.k.a. the iterator approach, in
+    contrast, involves additional checks for HasNext() across the
+    operators in a query-plan.
 - data-staging, pipeline breakers (batching)...
-  - batching results between operator may be more friendly to CPU
+  - batching results between operators may be more friendly to CPU
     instruction & data caches.
   - data-staging also supports optional concurrency -- one or more
-    goroutine actors can be producers that feed a channel to a consumer.
-  - a channel send is for a batch of items, instead of a separate send
-    for each each individual item.
+    goroutine actors can be producers that feed a channel to a
+    consumer goroutine.
+  - a channel send is for a batch of multiple items, instead of a
+    channel send for each individual item.
   - max-batch-size and channel buffer size between producer goroutines
     and consumer goroutine are designed to be configurable.
-  - recycled batch exchange between producer goroutines and consumer
-    goroutine for less garbage creation.
+  - batches exchanged between producer goroutines and consumer
+    goroutine are recycled back to the producer goroutines for less
+    garbage creation.
 - query compilation to golang...
   - based on Futamura projections / LMS (Rompf, Odersky) inspirations.
-  - supports operator fusion, for fewer function calls.
+  - implements operator fusion, for fewer function calls.
   - lifting vars for resource reusability.
 - expression optimizations for static parameters.
-  - for example, with a `sales < 1000` expression, the `1000` can be
-    evaluated once up-front, instead of being re-evaluated for every
-    single tuple that's processed.
+  - for example, with an expression on `sales < 1000`, the `1000` can
+    be evaluated up-front a single time, instead of being re-evaluated
+    for every single tuple that's processed.
   - and, the `1000` can lead to a more direct numeric comparison.
 - for hashmaps...
   - couchbase/rhmap is a hashmap that supports []byte as a key,
@@ -59,36 +61,53 @@ Some design ideas meant to help with n1k1's performance...
     on larger datasets.
 - error handling is push-based via a YieldErr callback...
   - the YieldErr callback allows n1k1 to avoid continual, conservative
-    error handling instructions ("if err != nil { return nil, err }").
-- max-heap in ORDER-BY / OFFSET / LIMIT reuses memory from "too large" tuples.
+    error handling checks ("if err != nil { return nil, err }").
+- max-heap in ORDER-BY / OFFSET / LIMIT
+  - reverse popping of the max-heap to produce the final result avoids
+    a final sort.
+  - candidate vals that are for "too large" the max-heap are recycled.
 - INTERSECT DISTINCT / ALL and EXCEPT DISTINCT / ALL
   are optimized by reusing hash-join machinery.
+  - hash-join's probe map can optionally track information like...
+    - all the left-side values (for hash-join).
+    - a count of the left-side values (for INTERSECT ALL, EXCEPT ALL).
+    - and/or a 'was-probed' boolean flag (for multiple use cases).
+  - so, INTERSECT DISTINCT and EXCEPT DISTINCT does not need an
+    additional, chained DISTINCT operator.
+- base.ValComparer.CanonicalJSON()
+  - provides JSON canonicalization with no memory allocations.
+  - some JSON, such as for objects, need to be canonicalized before
+    they can be used as a map[] key.
+    - Ex: {a:1,b:2} and {b:2,a:1} are logically the same.
+  - numbers also need to be canonicalized.
+    - e.g., 0 vs 0.0 vs -0 are logically the same?
 
 ------------------------------------------
 ## Some features...
 
 - types: MISSING, NULL, boolean, number, string, array, object, UNKNOWN (BINARY).
 - collation follows N1QL type comparison rules.
-- glue integration with existing couchbase/query/expression's.
+- glue integration with existing couchbase/query/expression package.
 - join nested-loop inner.
 - join nested-loop outer-left.
 - join hash-eq inner
 - join hash-eq outer-left
 - join ON expressions.
-- filtering (WHERE expressions).
+- WHERE expressions.
 - projection expressions.
 - ORDER BY multiple expressions & ASC/DESC.
-- ORDER-BY / OFFSET / LIMIT via max-heap.
+- ORDER-BY / OFFSET / LIMIT.
 - DISTINCT.
 - GROUP BY on multiple expressions
-- COUNT().
-- SUM().
-- HAVING.
-- UNION ALL is concurrent (one goroutine per contributor).
+- aggregate functions: COUNT, SUM.
+- HAVING, by reusing the same filter operator as WHERE.
+- UNION ALL is concurrent, with the contributing child operators
+  having their own goroutines.
 - UNION DISTINCT is supported by sequencing UNION ALL with DISTINCT.
 - INTERSECT DISTINCT / INTERSECT ALL.
 - EXCEPT DISTINCT / EXCEPT ALL.
-- data-staging / pipeline-breaker facilities along with concurrency.
+- data-staging / pipeline-breaker machinery with concurrent child
+  pipelines.
 - nested object paths (e.g. locations/address/city).
 - scans of simple files (CSV's and newline delimited JSON).
 - runtime variables / context passed down through ExecOp().
@@ -145,10 +164,35 @@ efficiently execute that query-plan.
 ------------------------------------------
 ## TODO...
 
-- precompute data based on early constant detection?
-  - e.g., ARRAY_POSITION(hobbies, 0) might detect early that args[1]
-    is a constant number, rather than rechecking that args[1] is a
-    value.NUMBER during every Evaluate()?
+- speed mismatch between producers and consumers?
+  - e.g., scan racing ahead and filling memory with candidate tuples
+    when the fetch / filter is way behind?
+  - less of a problem with push-based design?
+  - data-staging batch sizes & queue sizes need careful configuration?
+  - racing too far ahead is a waste if there's a small OFFSET+LIMIT?
+  - racing too far ahead might be ok if there's lots of memory?
+    - decision on "too far ahead" might be situational and depend on
+      global, process-wide workload?
+
+- conversion of N1QL query-plan into n1k1 query-plan?
+
+- UNNEST - a kind of self-join
+
+- NEST - a kind of join
+
+- subqueries & correlated subqueries?
+  - these should just be yet another expression
+  - analysis of non-correlated vs correlated subqueries should be
+    decided at a higher level than at query-plan execution
+  - what about subqueries that return huge results?
+    - the arrays might get huge?
+    - perhaps an attachment or label can be for a named cursor, such
+      as "&cursor-2341", that's registered into the Ctx?
+      - the cursor might to a pipeline-breaking batch provider?
+
+- couchbase/rhmap/store should be able to spill out to disk?
+  - perhaps via mmap()?
+  - metadata spilling is different than key/val spilling?
 
 - compiled expr support?
 
@@ -157,40 +201,6 @@ efficiently execute that query-plan.
     so, the first discovery of MISSING or NULL should
     be able to short-circuit and directly break or goto
     some outer handler codepath?
-
-- UNION-ALL data-staging batchSize should be configurable?
-- UNION-ALL data-staging batchChSize should be configurable?
-
-- more GROUP BY aggregates: min, max, average?
-
-- HAVING (should be able to reuse existing filter operator).
-
-- UNNEST - a kind of self-join
-
-- NEST - a kind of join
-
-- how to handle when fields aren't known?
-  - such as immediate output of a scan?
-  - use "." as the label and labelPath of ["."]
-    to hold the entire document?
-  - 'real' fields need a label prefix char, like '.'?
-    - example: if labelPath [".", "city"] is projected into label
-      `.["city"]`, then it can be referred to efficiently later as
-      labelPath [`.["city"]`] from then on directly as a numeric index
-      intoa Vals slice?
-
-- attachments
-  - some encodings of label can mean hidden "attachment"?
-    - with the '^' prefix char?
-    - example: "^meta", "^smeta"?
-    - these mean these labels are not really in the final output?
-    - functions like 'META() AS myMeta' can project the hidden
-      "^meta" label to a visible ".myMeta" in final output?
-      - Ex: META().id might be implemented by projecting
-        the labelPath ["^meta", "id"]?
-
-- handling of BINARY data type?
-  - use a label prefix char?  Perhaps '='?
 
 - temporary, but reused (recyclable) raw []bytes buf
   as a per-tuple working area might be associated with...
@@ -206,6 +216,45 @@ efficiently execute that query-plan.
     - any spawned child thread/goroutines can push another Vars
       that shadows the ancestor Var chain to avoid concurrent mutations?
 
+- precompute data based on early constant detection?
+  - e.g., ARRAY_POSITION(hobbies, 0) might detect early that args[1]
+    is a constant number, rather than rechecking that args[1] is a
+    value.NUMBER during every Evaluate()?
+    - see the ExprCmp() implementation to see how this works.
+
+- UNION-ALL data-staging batchSize should be configurable?
+- UNION-ALL data-staging batchChSize should be configurable?
+
+- more GROUP BY aggregates: min, max, average?
+
+- how to handle when fields aren't known?
+  - such as the immediate output of a scan?
+  - use "." as the label and labelPath of ["."]
+    to hold the entire document?
+  - 'real' fields need a label prefix char, like '.'?
+    - example: if labelPath [".", "city"] is projected into label
+      `.["city"]`, then it can be referred to efficiently later as
+      labelPath [`.["city"]`] from then on directly as a numeric index
+      into a Vals slice?
+
+- attachments
+  - some encodings of label can mean hidden "attachment"?
+    - with the '^' prefix char?
+    - example: "^meta", "^smeta", "^id"?
+    - these mean these labels are not really in the final output?
+    - functions like 'META() AS myMeta' can project the hidden
+      "^meta" label to a visible ".myMeta" in final output?
+      - Ex: META().id might be implemented by projecting
+        the labelPath ["^meta", "id"]?
+    - need to check that full-round trip works on attachments?
+
+- handling of BINARY data type?
+  - use a label prefix char?  Perhaps '='?
+  - PROBLEM: the operator doesn't know a val is BINARY until runtime,
+    so it can't assign a '=' label prefix at query-plan time?
+  - the '.' label can still have an UNKNOWN type, though,
+    so it might be ok.
+
 - standalone Op for data-staging / pipeline breaking?
 
 - scan should take an optional params of pushdown field path's
@@ -219,45 +268,33 @@ efficiently execute that query-plan.
   - FlexScanIndex
   - covering / non-covering
 
-- subqueries & correlated subqueries?
-  - these should just be yet another expression
-  - analysis of non-correlated vs correlated subqueries should be
-    decided at a higher level than at query-plan execution
-
-- base.ValComparer.CanonicalJSON()
-  - need the JSON for objects to be canonicalized before they can be
-    used as a map[] key, as {a:1,b:2} and {b:2,a:1} are
-    logically the same?
-  - numbers might also need to be canonicalized?
-    - e.g., 0 vs 0.0 vs -0 are logically the same?
-
 - jsonparser doesn't alloc memory, except for ObjectEach()...
   - its `var stackbuf [unescapeStackBufSize]byte` approach
     inadvertently escapes to the heap.
   - need upstream fix / patch?
-  - jsonparser might already unescape strings
-    during ArrayEach/ObjectEach callbacks, so recursion into
+  - jsonparser might already unescape strings during
+    ArrayEach/ObjectEach callbacks, so recursion into
     CompareDeepType() for strings might incorrectly double-unescape?
 
-- early stop when an error or LIMIT is reached?
-  - YieldStats() can return a non-nil error, like ErrLimitReached?
-  - YieldStats() should be locked for concurrency safety.
+- early stop handling?
+  - when an error or LIMIT is reached?
+    - YieldStats() can return a non-nil error, like ErrLimitReached?
+    - YieldStats() should be locked for concurrency safety.
+  - early stop when processing is canceled?
 
-- early stop when processing is canceled?
-
-- conversion of real N1QL query-plan into n1k1 query-plan
-
-- LET / LETTING are parser-time expression expansions (like macros) so
-  are not part of query-plan execution?
+- LET / LETTING are parser-time expression expansions (like macros?)
+  so are not part of query-plan execution?
   - needs more research.
 
-- SIMD optimizations possible?  see: SIMD-json articles?
+- compiled accessor(s) to a given JSON-path in a raw []byte value?
+  - compiled accessor code versus generic jsonparser.Get() navigation?
 
 - prefetching optimizations?
   - this is an issue internal to scan operators?
   - data-staging / pipeline-breaking should be helpful here?
+    - but, we don't want to race too far ahead?
 
-- compiled accessor(s) to a given JSON-path in a raw []byte value?
+- SIMD optimizations possible?  see: SIMD-json articles?
 
 - col versus row optimizations?
   - if columns are fixed size or fixed width, then
@@ -267,16 +304,17 @@ efficiently execute that query-plan.
            numPrices := len(prices) / sizeOfUint64.
 
 - types learned during expression compilation / analysis?
+  - example: `sales < 1000`?
+    we already have an optimization to evaluate 1000 up-front only
+    once, but if we can also tell that `sales` expression
+    only produces numbers, or only ever produces missing|null|numbers,
+    then we can optimize further?
 
-- operator can optionally declare how the Vals are sorted?
+- operator might optionally declare how its output Vals are sorted?
 
 - scan should have a lookup table of file suffix handlers?
 
-- couchbase/rhmap should be able to spill out to disk via mmap()?
-
-- SUM() and COUNT() handling of MISSING / NULL?
-
-- SUM() handling of non-number types (especially, boolean)?
+- scans of indexes?
 
 - integration with scorch TermFieldReaders as a Scan source or operator?
   - merge join by docNum / docId field?
@@ -292,6 +330,8 @@ efficiently execute that query-plan.
 - merge join - COMPLEX with push-based engine...
   - merge join needs threading / locking / coroutines
     so that both children can feed the merge-joiner?
+  - a variation on the concurrent data-staging that interweaves or
+    zippers together batches from children might work?
 
 - merge join needs a skip-ahead ability as an optimization?
   - idea: can introduce an optional lazy "SkipToHints" object or Vals
