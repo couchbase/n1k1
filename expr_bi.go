@@ -9,7 +9,8 @@ func init() {
 	ExprCatalog["and"] = ExprAnd
 }
 
-// MakeBiExprFunc is for two-argument or "binary" expressions.
+// MakeBiExprFunc is for constructing handlers for two-argument or
+// "binary" expressions.
 func MakeBiExprFunc(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string, biExprFunc base.BiExprFunc) (
 	lzExprFunc base.ExprFunc) {
