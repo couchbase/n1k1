@@ -4,8 +4,8 @@ import (
 	"sync"
 )
 
-// Stage represents a data-staging "pipeline breaker", that's
-// processed by one or more concurrent actors.
+// Stage represents a data-staging "pipeline breaker" that's processed
+// by one or more concurrent actor goroutines.
 type Stage struct {
 	NumActors int
 
@@ -27,6 +27,7 @@ type Stage struct {
 	Recycled [][]Vals
 }
 
+// NewStage returns a ready-to-use Stage instance.
 func NewStage(numActors int, batchChSize int,
 	vars *Vars, yieldVals YieldVals, yieldErr YieldErr) *Stage {
 	return &Stage{
@@ -42,12 +43,13 @@ func NewStage(numActors int, batchChSize int,
 	}
 }
 
+// ActorFunc is the signature for the actor callback.
 type ActorFunc func(*Vars, YieldVals, YieldErr, interface{})
 
 // StartActor is used for data-staging and "pipeline breaking" and
 // spawns a concurrent actor (goroutine). A batchSize > 0 means there
-// will be batching of results.  A batchSize of 1, for example, means
-// send each incoming result as its own batch-of-1.  A batchSize of <=
+// will be batching of results. A batchSize of 1, for example, means
+// send each incoming result as its own batch-of-1. A batchSize of <=
 // 0 means an actor will send a single, giant batch at the end.
 func (stage *Stage) StartActor(aFunc ActorFunc, aData interface{}, batchSize int) {
 	stage.M.Lock()
