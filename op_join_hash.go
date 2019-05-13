@@ -40,6 +40,8 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 		leftVals = true
 	} else {
+		// INTERSECT & EXCEPT canonicalize their incoming vals so
+		// they're usable as map lookup keys.
 		exprLeft = []interface{}{"valsCanonical"}
 		exprRight = []interface{}{"valsCanonical"}
 
@@ -93,7 +95,7 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 		lzYieldValsOrig := lzYieldVals
 
-		// Callback for left side, to fill the probe map.
+		// Callback for left side, which fills the probe map.
 		lzYieldVals = func(lzVals base.Vals) {
 			lzVal = exprLeftFunc(lzVals, lzYieldErr) // <== emitCaptured: pathNext "JHL"
 
@@ -105,9 +107,11 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 			} // !lz
 
 			if lzErr == nil && base.ValHasValue(lzProbeKey) {
+				// Check if we have an entry for the probe key.
 				lzProbeVal, lzProbeKeyFound := lzMap.Get([]byte(lzProbeKey))
 				if !lzProbeKeyFound {
-					// Set first-time probe value into map.
+					// Initialze a brand new probe val to insert into
+					// the probe map.
 					lzProbeValNew = lzProbeValNew[:0]
 
 					if tracksProbing { // !lz
@@ -168,6 +172,9 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 						lzProbeValNew = append(lzProbeValNew, lzBytes8[:]...) // The size.
 					} // !lz
 
+					// The updated probe val has the same size as the
+					// existing probe val, so we can optimize by
+					// in-place overwriting the existing probe val.
 					copy(lzProbeVal, lzProbeValNew)
 				}
 			}
@@ -195,9 +202,13 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 		// -----------------------------------------------------------
 
 		if lzErrLeft == nil {
+			// No error, so at this point the probe map has been
+			// filled with left-hand-side probe entries, and next we
+			// will visit the right-hand-side.
+
 			EmitPush(pathNext, "JHP") // !lz
 
-			// Callback for right side, to probe the probe map.
+			// Callback for right side, which probes the probe map.
 			lzYieldVals = func(lzVals base.Vals) {
 				lzVal = exprRightFunc(lzVals, lzYieldErr) // <== emitCaptured: pathNext "JHR"
 
@@ -251,8 +262,8 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 			lzYieldErr = func(lzErrIn error) {
 				if lzErrIn == nil {
-					// If no error, yield unprobed items if needed (ex: outerLeft, except).
-
+					// No error, so yield unprobed items if needed.
+					// Ex: joinHash-outerLeft, except.
 					if tracksProbing && yieldsUnprobed { // !lz
 						rightLabelsLen := len(o.Children[1].Labels) // !lz
 						_ = rightLabelsLen                          // !lz

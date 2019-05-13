@@ -4,11 +4,11 @@ import (
 	"encoding/binary"
 )
 
-// YieldChainedVals invokes the yield callback on all the vals found
-// by chasing the references in the chain, given with the starting
-// chain item ref. The optional valsSuffix is appended to each
-// emitted vals. The optional valsOut allows for the caller to provide
-// a pre-allocated slice.
+// YieldChainedVals invokes the yieldVals callback on all the vals
+// found by chasing the references in the chain, given a starting
+// chain item ref. The optional valsSuffix is appended to each emitted
+// vals. The optional valsOut allows for the caller to provide
+// resuable, pre-allocated slice memory.
 func YieldChainedVals(yieldVals YieldVals, valsSuffix Vals, chain []byte,
 	ref []byte, valsOut Vals) (valsOutRV Vals) {
 	for {

@@ -56,9 +56,11 @@ func ParseFloat64(v []byte) (float64, error) {
 
 // ---------------------------------------------
 
+// ValComparer holds data structures needed to compare JSON, so that a
+// single, reused ValComparer can avoid repeated memory allocations. A
+// ValComparer is not concurrent safe.
 type ValComparer struct {
-	// Reused across Compare()'s, indexed by: depth.
-	KeyVals []KeyVals
+	KeyVals []KeyVals // Indexed by depth.
 
 	Buffer bytes.Buffer
 
@@ -67,6 +69,7 @@ type ValComparer struct {
 	Encoder *json.Encoder
 }
 
+// NewValComparer returns a ready-to-use ValComparer.
 func NewValComparer() *ValComparer {
 	rv := &ValComparer{}
 	rv.Encoder = json.NewEncoder(&rv.Buffer)
@@ -75,6 +78,7 @@ func NewValComparer() *ValComparer {
 
 // ---------------------------------------------
 
+// Compare returns < 0 if a < b, 0 if a == b, and > 0 if a > b.
 func (c *ValComparer) Compare(a, b Val) int {
 	aValue, aValueType, _, aErr := jsonparser.Get(a)
 	bValue, bValueType, _, bErr := jsonparser.Get(b)
@@ -264,7 +268,7 @@ func (c *ValComparer) CompareWithType(aValue, bValue []byte,
 // ---------------------------------------------
 
 // EncodeAsString appends the JSON encoded string to the optional out
-// slice and returns the extended out.
+// slice and returns the append()'ed out.
 func (c *ValComparer) EncodeAsString(s []byte, out []byte) ([]byte, error) {
 	c.Buffer.Reset()
 
@@ -288,7 +292,7 @@ func (c *ValComparer) EncodeAsString(s []byte, out []byte) ([]byte, error) {
 	return out, nil
 }
 
-// MarshalText() allows the ValComparer to implements the
+// MarshalText() allows a ValComparer instance to implement the
 // encoding.TextMarshaler interface with no extra allocations.
 func (c *ValComparer) MarshalText() ([]byte, error) { return c.Bytes, nil }
 
@@ -308,6 +312,9 @@ func (c *ValComparer) KeyValsRelease(depth int, s KeyVals) {
 
 // ---------------------------------------------
 
+// KeyVal is used while sorting multiple keys (and their associated
+// vals), such as when comparing objects when field name sorting is
+// needed.
 type KeyVal struct {
 	Key     []byte
 	Val     []byte
@@ -362,10 +369,15 @@ func CompareErr(aErr, bErr error) int {
 
 // ---------------------------------------------
 
+// LessFunc is the signature for comparing two vals.
 type LessFunc func(valsA, valsB Vals) bool
 
 // ---------------------------------------------
 
+// ValsProjected associates vals with some Projected vals. The vals,
+// for example, might represent some customer JSON document. The
+// Projected vals might represent the projections from an "ORDER BY
+// country, state".
 type ValsProjected struct {
 	Vals      Vals
 	Projected Vals
@@ -373,6 +385,8 @@ type ValsProjected struct {
 
 // ---------------------------------------------
 
+// HeapValsProjected provides a max-heap data structure for
+// ValsProjected and an associated LessFunc.
 type HeapValsProjected struct {
 	ValsProjected []ValsProjected
 	LessFunc      LessFunc

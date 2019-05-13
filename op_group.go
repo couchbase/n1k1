@@ -94,16 +94,21 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 				}
 
 				if lzErr == nil {
+					// Check if we've seen the group key before or not.
 					lzGroupVal, lzGroupKeyFound = lzSet.Get(lzGroupKey)
 
 					if len(aggExprs) > 0 { // !lz
 						if !lzGroupKeyFound {
+							// We have aggregate exprs on a newly seen
+							// group key, so initialize the agg data
+							// structures for this new group key.
 							lzGroupVal = lzGroupValReuse[:0]
 
 							for _, aggCalc := range aggCalcs { // !lz
 								for _, aggName := range aggCalc.([]interface{}) { // !lz
 									aggIdx := base.AggCatalog[aggName.(string)] // !lz
 									lzAgg = base.Aggs[aggIdx]
+
 									lzGroupVal = lzAgg.Init(lzGroupVal)
 								} // !lz
 							} // !lz
@@ -111,27 +116,36 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 							lzGroupValReuse = lzGroupVal[:0]
 						}
 
+						// Project the aggregate exprs from the tuple.
 						lzValsOut = lzValsOut[:0]
 
 						lzValsOut = aggProjectFunc(lzVals, lzValsOut, lzYieldErr) // <== emitCaptured: pathNextG "AP"
 
 						lzGroupValNew = lzGroupValNew[:0]
 
+						// Use the projected aggregate exprs to update
+						// the agg data structures.
 						for aggCalcI, aggCalc := range aggCalcs { // !lz
 							for _, aggName := range aggCalc.([]interface{}) { // !lz
 								aggIdx := base.AggCatalog[aggName.(string)] // !lz
 								lzAgg = base.Aggs[aggIdx]
+
 								lzGroupValNew, lzGroupVal = lzAgg.Update(lzValsOut[aggCalcI], lzGroupValNew, lzGroupVal)
 							} // !lz
 						} // !lz
 
 						if lzGroupKeyFound {
+							// With a previously seen group key, the
+							// previous agg data structure might be
+							// in-place overwritable if its size is >=
+							// the new agg data structure's size.
 							if len(lzGroupVal) >= len(lzGroupValNew) {
 								copy(lzGroupVal, lzGroupValNew)
 							} else {
 								lzSet.Set(lzGroupKey, lzGroupValNew)
 							}
 						} else {
+							// We fall thru to the below lzSet.Set().
 							lzGroupVal = lzGroupValNew
 						}
 					} // !lz
@@ -151,6 +165,8 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 					lzValsOut = base.ValsSplit(lzGroupKey, lzValsOut[:0])
 
 					if len(aggExprs) > 0 { // !lz
+						// If we have aggregate exprs, append their
+						// accummulated results to the yielded vals.
 						lzValBuf := lzValOut[:cap(lzValOut)]
 
 						lzValBytes := 0
@@ -161,6 +177,7 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 							for _, aggName := range aggCalc.([]interface{}) { // !lz
 								aggIdx := base.AggCatalog[aggName.(string)] // !lz
 								lzAgg = base.Aggs[aggIdx]
+
 								lzVal, lzGroupVal, lzValBuf = lzAgg.Result(lzGroupVal, lzValBuf)
 
 								lzValsOut = append(lzValsOut, lzVal)

@@ -38,6 +38,7 @@ func OpOrderOffsetLimit(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVal
 		var lzLessFunc base.LessFunc
 
 		if len(orders) > 0 { // !lz
+			// The ORDER BY exprs are treated as a projection.
 			lzProjectFunc =
 				MakeProjectFunc(lzVars, o.Children[0].Labels, orders, pathNextOOL, "PF") // !lz
 
@@ -51,22 +52,24 @@ func OpOrderOffsetLimit(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVal
 		// Used when there are no ORDER-BY exprs.
 		var lzItems []base.Vals
 
-		_, _, _, _ = lzProjectFunc, lzLessFunc, lzHeap, lzItems
-
 		var lzPreallocVals base.Vals
 		var lzPreallocVal base.Val
 		var lzPreallocProjected base.Vals
 
-		_, _, _ = lzPreallocVals, lzPreallocVal, lzPreallocProjected
+		_, _, _, _ = lzProjectFunc, lzHeap, lzItems, lzPreallocProjected
 
 		lzYieldValsOrig := lzYieldVals
 
 		lzYieldVals = func(lzVals base.Vals) {
+			// Deep copy the incoming lzVals, because unlike other
+			// "stateless" operators, we hold onto the vals in the
+			// lzHeap/lzItems for sorting.
 			var lzValsCopy base.Vals
 
 			lzValsCopy, lzPreallocVals, lzPreallocVal = base.ValsDeepCopy(lzVals, lzPreallocVals, lzPreallocVal)
 
 			if len(orders) > 0 { // !lz
+				// If there were ORDER BY exprs, we use the lzHeap.
 				lzValsOut := lzPreallocProjected[:0]
 
 				lzPreallocProjected = nil

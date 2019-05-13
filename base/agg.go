@@ -10,23 +10,23 @@ var Zero8 [8]byte // 64-bits of zeros.
 
 // -----------------------------------------------------
 
-// AggCatalog is a registry of named aggregation handlers, which
-// supports GROUP BY "count", etc.
+// AggCatalog is a registry of named aggregation handlers related to
+// GROUP BY, such as "count", "sum", etc.
 var AggCatalog = map[string]int{}
 
 var Aggs []*Agg
 
 type Agg struct {
-	// Init extends the agg bytes with space for the aggregation.
+	// Init extends agg bytes with initial data for the aggregation.
 	Init func(agg []byte) (aggOut []byte)
 
 	// Update incorporates the incoming val with the existing agg
-	// bytes, by extending and returning the given aggNew.
-	// Also returns agg sliced to the bytes that remain unread.
+	// data, by extending and returning the given aggNew.  Also
+	// returns aggRest which is the agg bytes that were unread.
 	Update func(val Val, aggNew, agg []byte) (aggNewOut, aggRest []byte)
 
 	// Result returns the final result of the aggregation.
-	// Also returns agg sliced to the bytes that remain unread.
+	// Also returns aggRest or the agg bytes that were unread.
 	Result func(agg, buf []byte) (v Val, aggRest, bufOut []byte)
 }
 
