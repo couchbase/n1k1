@@ -310,6 +310,9 @@ efficiently execute that query-plan.
     only produces numbers, or only ever produces missing|null|numbers,
     then we can optimize further?
 
+- divide by zero should be checked instead of panic/recover
+  that can leave unclosed, unreclaimable unresources.
+
 - operator might optionally declare how its output Vals are sorted?
 
 - scan should have a lookup table of file suffix handlers?
