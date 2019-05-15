@@ -65,7 +65,7 @@ Some design ideas meant to help with n1k1's performance...
 - max-heap in ORDER-BY / OFFSET / LIMIT
   - reverse popping of the max-heap to produce the final result avoids
     a final sort.
-  - candidate vals that are for "too large" the max-heap are recycled.
+  - candidate vals that are "too large" foo the max-heap are recycled.
 - INTERSECT DISTINCT / ALL and EXCEPT DISTINCT / ALL
   are optimized by reusing hash-join machinery.
   - hash-join's probe map can optionally track information like...
