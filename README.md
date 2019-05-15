@@ -180,6 +180,10 @@ efficiently execute that query-plan.
 
 - NEST - a kind of join
 
+- INTERSECT ALL behavior different than postgres, which has "X
+  INTERSECT ALL Y" produce a number of duplicates which is MIN(X, Y),
+  and n1k1 instead behavior produces MAX(X, Y).
+
 - subqueries & correlated subqueries?
   - these should just be yet another expression
   - analysis of non-correlated vs correlated subqueries should be
