@@ -244,6 +244,8 @@ type Ctx struct {
 
 	AllocMap func() (*store.RHStore, error)
 
+	AllocChunks func() (*store.Chunks, error)
+
 	// TODO: Other things that might appear here might be request ID,
 	// request-specific allocators or resources, etc.
 }

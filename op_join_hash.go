@@ -61,29 +61,39 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	// ---------------------------------------------------------------
 
 	if LzScope {
-		var lzBytes8, lzOne8, lzZero8 [8]byte
+		var lzBytes8, lzOne8 [8]byte
+		var lzZero16 [16]byte
 
 		binary.LittleEndian.PutUint64(lzOne8[:], uint64(1))
 
-		var lzLeftBytes []byte
-
-		lzLeftBytes = append(lzLeftBytes, lzZero8[:]...) // Chain ends at offset 0.
-		lzLeftBytes = append(lzLeftBytes, lzZero8[:]...) // Chain ends at size 0.
-
-		// TODO: Configurable initial size for RHStore, and reusable RHStore.
-		// TODO: Reuse backing bytes for lzMap.
-		lzMap, lzErr := lzVars.Ctx.AllocMap()
+		// TODO: Configurable initial size for chunks, and reusable chunks.
+		// TODO: Reuse backing bytes for chunks.
+		lzLeftChunks, lzErr := lzVars.Ctx.AllocChunks()
 		if lzErr != nil {
 			lzYieldErr(lzErr)
+		}
+
+		var lzMap *store.RHStore
+
+		if lzErr == nil {
+			// Chain ends at offset 0, size 0.
+			lzLeftChunks.BytesAppend(lzZero16[:])
+
+			// TODO: Configurable initial size for RHStore, and reusable RHStore.
+			// TODO: Reuse backing bytes for lzMap.
+			lzMap, lzErr = lzVars.Ctx.AllocMap()
+			if lzErr != nil {
+				lzYieldErr(lzErr)
+			}
 		}
 
 		var lzVal, lzValOut base.Val
 
 		var lzValsOut base.Vals
 
-		var lzProbeValNew []byte
+		var lzProbeValNew, lzLeftBytes []byte
 
-		_, _ = lzBytes8, lzValOut
+		_, _, _ = lzBytes8, lzValOut, lzLeftBytes
 
 		exprLeftFunc :=
 			MakeExprFunc(lzVars, o.Children[0].Labels, exprLeft, pathNext, "JHL") // !lz
@@ -125,18 +135,19 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 					} // !lz
 
 					if leftVals { // !lz
-						lzLeftBytesLen := len(lzLeftBytes)
-
-						// End or tail of the chain has offset/size of 0.
-						lzLeftBytes = append(lzLeftBytes, lzZero8[:]...)
-						lzLeftBytes = append(lzLeftBytes, lzZero8[:]...)
-
+						// End chain has offset/size of 0/0.
+						lzLeftBytes = append(lzLeftBytes[:0], lzZero16[:16]...)
 						lzLeftBytes = base.ValsJoin(lzVals, lzLeftBytes)
 
-						binary.LittleEndian.PutUint64(lzBytes8[:], uint64(lzLeftBytesLen))
-						lzProbeValNew = append(lzProbeValNew, lzBytes8[:]...) // The offset into lzLeftBytes.
-						binary.LittleEndian.PutUint64(lzBytes8[:], uint64(len(lzLeftBytes)-lzLeftBytesLen))
-						lzProbeValNew = append(lzProbeValNew, lzBytes8[:]...) // The size.
+						lzOffset, lzSize, lzErr := lzLeftChunks.BytesAppend(lzLeftBytes)
+						if lzErr != nil {
+							lzYieldErr(lzErr)
+						}
+
+						binary.LittleEndian.PutUint64(lzBytes8[:], lzOffset)
+						lzProbeValNew = append(lzProbeValNew, lzBytes8[:]...)
+						binary.LittleEndian.PutUint64(lzBytes8[:], lzSize)
+						lzProbeValNew = append(lzProbeValNew, lzBytes8[:]...)
 					} // !lz
 
 					lzMap.Set(store.Key(lzProbeKey), lzProbeValNew)
@@ -161,17 +172,19 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 					} // !lz
 
 					if leftVals { // !lz
-						lzLeftBytesLen := len(lzLeftBytes)
-
-						// Copy previous 'offset/size into lzLeftBytes' into lzLeftBytes.
-						lzLeftBytes = append(lzLeftBytes, lzProbeValOld...)
-
+						// Copy previous offset/size to extend the chain.
+						lzLeftBytes = append(lzLeftBytes[:0], lzProbeValOld[:16]...)
 						lzLeftBytes = base.ValsJoin(lzVals, lzLeftBytes)
 
-						binary.LittleEndian.PutUint64(lzBytes8[:], uint64(lzLeftBytesLen))
-						lzProbeValNew = append(lzProbeValNew, lzBytes8[:]...) // The offset into lzLeftBytes.
-						binary.LittleEndian.PutUint64(lzBytes8[:], uint64(len(lzLeftBytes)-lzLeftBytesLen))
-						lzProbeValNew = append(lzProbeValNew, lzBytes8[:]...) // The size.
+						lzOffset, lzSize, lzErr := lzLeftChunks.BytesAppend(lzLeftBytes)
+						if lzErr != nil {
+							lzYieldErr(lzErr)
+						}
+
+						binary.LittleEndian.PutUint64(lzBytes8[:], lzOffset)
+						lzProbeValNew = append(lzProbeValNew, lzBytes8[:]...)
+						binary.LittleEndian.PutUint64(lzBytes8[:], lzSize)
+						lzProbeValNew = append(lzProbeValNew, lzBytes8[:]...)
 					} // !lz
 
 					// The updated probe val has the same size as the
@@ -256,7 +269,10 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 						if leftVals { // !lz
 							// Ex: joinHash-inner, joinHash-outerLeft.
-							lzValsOut = base.YieldChainedVals(lzYieldValsOrig, lzVals, lzLeftBytes, lzProbeVal, lzValsOut)
+							lzValsOut, lzErr = base.YieldChainedVals(lzYieldValsOrig, lzVals, lzLeftChunks, lzProbeVal, lzValsOut)
+							if lzErr != nil {
+								lzYieldErr(lzErr)
+							}
 						} // !lz
 					}
 				}
@@ -292,7 +308,10 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 								if leftVals { // !lz
 									// Ex: joinHash-outerLeft.
-									lzValsOut = base.YieldChainedVals(lzYieldValsOrig, lzRightSuffix, lzLeftBytes, lzProbeVal, lzValsOut)
+									lzValsOut, lzErr = base.YieldChainedVals(lzYieldValsOrig, lzRightSuffix, lzLeftChunks, lzProbeVal, lzValsOut)
+									if lzErr != nil {
+										lzYieldErrOrig(lzErr)
+									}
 								} // !lz
 
 								if !leftCount && !leftVals { // !lz

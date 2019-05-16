@@ -2,6 +2,9 @@ package base
 
 import (
 	"encoding/binary"
+	"fmt"
+
+	"github.com/couchbase/rhmap/store"
 )
 
 // YieldChainedVals invokes the yieldVals callback on all the vals
@@ -9,15 +12,18 @@ import (
 // chain item ref. The optional valsSuffix is appended to each emitted
 // vals. The optional valsOut allows for the caller to provide
 // resuable, pre-allocated slice memory.
-func YieldChainedVals(yieldVals YieldVals, valsSuffix Vals, chain []byte,
-	ref []byte, valsOut Vals) (valsOutRV Vals) {
+func YieldChainedVals(yieldVals YieldVals, valsSuffix Vals, chunks *store.Chunks,
+	ref []byte, valsOut Vals) (valsOutRV Vals, err error) {
 	for {
 		offset := binary.LittleEndian.Uint64(ref[:8])
 		if offset <= 0 {
 			break
 		}
 
-		ref = chain[offset : offset+binary.LittleEndian.Uint64(ref[8:16])]
+		ref, err = chunks.BytesRead(offset, binary.LittleEndian.Uint64(ref[8:16]))
+		if err != nil {
+			return valsOut, fmt.Errorf("YieldChainedVals: err: %v", err)
+		}
 
 		valsOut = ValsSplit(ref[16:], valsOut[:0])
 
@@ -26,5 +32,5 @@ func YieldChainedVals(yieldVals YieldVals, valsSuffix Vals, chain []byte,
 		yieldVals(valsOut)
 	}
 
-	return valsOut // Return extended valsOut for caller reusability.
+	return valsOut, nil // Return extended valsOut for caller reusability.
 }

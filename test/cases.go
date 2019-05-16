@@ -1,9 +1,10 @@
 package test
 
 import (
-	"testing"
-
+	"fmt"
 	"io/ioutil"
+	"sync/atomic"
+	"testing"
 
 	"github.com/couchbase/rhmap/store"
 
@@ -21,6 +22,8 @@ func MakeYieldCaptureFuncs(t *testing.T, testi int, expectErr string) (
 
 	tmpDir, _ := ioutil.TempDir("", "n1k1TmpDir")
 
+	var counter uint64
+
 	vars := &base.Vars{
 		Ctx: &base.Ctx{
 			ValComparer: base.NewValComparer(),
@@ -29,12 +32,29 @@ func MakeYieldCaptureFuncs(t *testing.T, testi int, expectErr string) (
 			AllocMap: func() (*store.RHStore, error) {
 				options := store.DefaultRHStoreFileOptions
 
-				sf, err := store.CreateRHStoreFile(tmpDir, options)
+				counterMine := atomic.AddUint64(&counter, 1)
+
+				pathPrefix := fmt.Sprintf("%s/%d", tmpDir, counterMine)
+
+				sf, err := store.CreateRHStoreFile(pathPrefix, options)
 				if err != nil {
 					return nil, err
 				}
 
 				return &sf.RHStore, nil
+			},
+			AllocChunks: func() (*store.Chunks, error) {
+				options := store.DefaultRHStoreFileOptions
+
+				counterMine := atomic.AddUint64(&counter, 1)
+
+				pathPrefix := fmt.Sprintf("%s/%d", tmpDir, counterMine)
+
+				return &store.Chunks{
+					PathPrefix:     pathPrefix,
+					FileSuffix:     ".rhchunk,",
+					ChunkSizeBytes: options.ChunkSizeBytes,
+				}, nil
 			},
 		},
 	}
