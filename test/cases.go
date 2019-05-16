@@ -3,6 +3,8 @@ package test
 import (
 	"testing"
 
+	"io/ioutil"
+
 	"github.com/couchbase/rhmap/store"
 
 	"github.com/couchbase/n1k1"
@@ -17,13 +19,22 @@ func MakeYieldCaptureFuncs(t *testing.T, testi int, expectErr string) (
 		n1k1.ExprCatalog["exprStr"] = expr_glue.ExprStr
 	}
 
+	tmpDir, _ := ioutil.TempDir("", "n1k1TmpDir")
+
 	vars := &base.Vars{
 		Ctx: &base.Ctx{
 			ValComparer: base.NewValComparer(),
 			ExprCatalog: n1k1.ExprCatalog,
 			YieldStats:  func(stats *base.Stats) error { return nil },
 			AllocMap: func() (*store.RHStore, error) {
-				return store.NewRHStore(97), nil
+				options := store.DefaultRHStoreFileOptions
+
+				sf, err := store.CreateRHStoreFile(tmpDir, options)
+				if err != nil {
+					return nil, err
+				}
+
+				return &sf.RHStore, nil
 			},
 		},
 	}
@@ -2316,24 +2327,36 @@ var TestCasesSimple = []TestCaseSimple{
 	{
 		about: "test csv-data scan->distinct",
 		o: base.Op{
-			Kind:   "distinct",
+			Kind:   "order-offset-limit",
 			Labels: base.Labels{"a"},
 			Params: []interface{}{
 				[]interface{}{
 					[]interface{}{"labelPath", "a"},
 				},
+				[]interface{}{
+					"asc",
+				},
 			},
 			Children: []*base.Op{&base.Op{
-				Kind:   "scan",
+				Kind:   "distinct",
 				Labels: base.Labels{"a"},
 				Params: []interface{}{
-					"csvData",
-					`
+					[]interface{}{
+						[]interface{}{"labelPath", "a"},
+					},
+				},
+				Children: []*base.Op{&base.Op{
+					Kind:   "scan",
+					Labels: base.Labels{"a"},
+					Params: []interface{}{
+						"csvData",
+						`
 10
 11
 12
 `,
-				},
+					},
+				}},
 			}},
 		},
 		expectYields: []base.Vals{
@@ -2345,19 +2368,30 @@ var TestCasesSimple = []TestCaseSimple{
 	{
 		about: "test csv-data scan->distinct with duplicate tuples",
 		o: base.Op{
-			Kind:   "distinct",
+			Kind:   "order-offset-limit",
 			Labels: base.Labels{"a"},
 			Params: []interface{}{
 				[]interface{}{
 					[]interface{}{"labelPath", "a"},
 				},
+				[]interface{}{
+					"asc",
+				},
 			},
 			Children: []*base.Op{&base.Op{
-				Kind:   "scan",
+				Kind:   "distinct",
 				Labels: base.Labels{"a"},
 				Params: []interface{}{
-					"csvData",
-					`
+					[]interface{}{
+						[]interface{}{"labelPath", "a"},
+					},
+				},
+				Children: []*base.Op{&base.Op{
+					Kind:   "scan",
+					Labels: base.Labels{"a"},
+					Params: []interface{}{
+						"csvData",
+						`
 10
 11
 12
@@ -2365,7 +2399,8 @@ var TestCasesSimple = []TestCaseSimple{
 11
 12
 `,
-				},
+					},
+				}},
 			}},
 		},
 		expectYields: []base.Vals{
@@ -2779,35 +2814,53 @@ var TestCasesSimple = []TestCaseSimple{
 	{
 		about: "test left outer joinHash on dept with empty RHS",
 		o: base.Op{
-			Kind:   "joinHash-outerLeft",
+			Kind:   "order-offset-limit",
 			Labels: base.Labels{"dept", "city", "emp", "empDept"},
 			Params: []interface{}{
-				[]interface{}{"labelPath", `dept`},
-				[]interface{}{"labelPath", `empDept`},
+				[]interface{}{
+					[]interface{}{"labelPath", "dept"},
+					[]interface{}{"labelPath", "city"},
+					[]interface{}{"labelPath", "emp"},
+					[]interface{}{"labelPath", "empDept"},
+				},
+				[]interface{}{
+					"asc",
+					"asc",
+					"asc",
+					"asc",
+				},
 			},
 			Children: []*base.Op{&base.Op{
-				Kind:   "scan",
-				Labels: base.Labels{"dept", "city"},
+				Kind:   "joinHash-outerLeft",
+				Labels: base.Labels{"dept", "city", "emp", "empDept"},
 				Params: []interface{}{
-					"csvData",
-					`
+					[]interface{}{"labelPath", `dept`},
+					[]interface{}{"labelPath", `empDept`},
+				},
+				Children: []*base.Op{&base.Op{
+					Kind:   "scan",
+					Labels: base.Labels{"dept", "city"},
+					Params: []interface{}{
+						"csvData",
+						`
 "dev","paris"
 "finance","london"
 `,
-				},
-			}, &base.Op{
-				Kind:   "scan",
-				Labels: base.Labels{"emp", "empDept"},
-				Params: []interface{}{
-					"csvData",
-					`
+					},
+				}, &base.Op{
+					Kind:   "scan",
+					Labels: base.Labels{"emp", "empDept"},
+					Params: []interface{}{
+						"csvData",
+						`
 `,
-				},
+					},
+				}},
 			}},
 		},
 		expectYields: []base.Vals{
-			StringsToVals([]string{`"finance"`, `"london"`, ``, ``}, nil),
 			StringsToVals([]string{`"dev"`, `"paris"`, ``, ``}, nil),
+			StringsToVals([]string{`"finance"`, `"london"`, ``, ``}, nil),
 		},
 	},
 	{
@@ -2846,39 +2899,57 @@ var TestCasesSimple = []TestCaseSimple{
 	{
 		about: "test left outer joinHash on never matching condition",
 		o: base.Op{
-			Kind:   "joinHash-outerLeft",
+			Kind:   "order-offset-limit",
 			Labels: base.Labels{"dept", "city", "emp", "empDept"},
 			Params: []interface{}{
-				[]interface{}{"labelPath", `dept`},
-				[]interface{}{"labelPath", `someFakeLabel`},
+				[]interface{}{
+					[]interface{}{"labelPath", "dept"},
+					[]interface{}{"labelPath", "city"},
+					[]interface{}{"labelPath", "emp"},
+					[]interface{}{"labelPath", "empDept"},
+				},
+				[]interface{}{
+					"asc",
+					"asc",
+					"asc",
+					"asc",
+				},
 			},
 			Children: []*base.Op{&base.Op{
-				Kind:   "scan",
-				Labels: base.Labels{"dept", "city"},
+				Kind:   "joinHash-outerLeft",
+				Labels: base.Labels{"dept", "city", "emp", "empDept"},
 				Params: []interface{}{
-					"csvData",
-					`
+					[]interface{}{"labelPath", `dept`},
+					[]interface{}{"labelPath", `someFakeLabel`},
+				},
+				Children: []*base.Op{&base.Op{
+					Kind:   "scan",
+					Labels: base.Labels{"dept", "city"},
+					Params: []interface{}{
+						"csvData",
+						`
 "dev","paris"
 "finance","london"
 `,
-				},
-			}, &base.Op{
-				Kind:   "scan",
-				Labels: base.Labels{"emp", "empDept"},
-				Params: []interface{}{
-					"csvData",
-					`
+					},
+				}, &base.Op{
+					Kind:   "scan",
+					Labels: base.Labels{"emp", "empDept"},
+					Params: []interface{}{
+						"csvData",
+						`
 "dan","dev"
 "doug","dev"
 "frank","finance"
 "fred","finance"
 `,
-				},
+					},
+				}},
 			}},
 		},
 		expectYields: []base.Vals{
-			StringsToVals([]string{`"finance"`, `"london"`, ``, ``}, nil),
 			StringsToVals([]string{`"dev"`, `"paris"`, ``, ``}, nil),
+			StringsToVals([]string{`"finance"`, `"london"`, ``, ``}, nil),
 		},
 	},
 	{
@@ -3356,28 +3427,42 @@ var TestCasesSimple = []TestCaseSimple{
 	{
 		about: "test csv-data scan->except-distinct of repeating left",
 		o: base.Op{
-			Kind:   "except-distinct",
+			Kind:   "order-offset-limit",
 			Labels: base.Labels{"a", "b"},
+			Params: []interface{}{
+				[]interface{}{
+					[]interface{}{"labelPath", "a"},
+					[]interface{}{"labelPath", "b"},
+				},
+				[]interface{}{
+					"asc",
+					"asc",
+				},
+			},
 			Children: []*base.Op{&base.Op{
-				Kind:   "scan",
+				Kind:   "except-distinct",
 				Labels: base.Labels{"a", "b"},
-				Params: []interface{}{
-					"csvData",
-					`
+				Children: []*base.Op{&base.Op{
+					Kind:   "scan",
+					Labels: base.Labels{"a", "b"},
+					Params: []interface{}{
+						"csvData",
+						`
 20,21
 10,11
 20,21
 30,31
 `,
-				},
-			}, &base.Op{
-				Kind:   "scan",
-				Labels: base.Labels{"a", "b"},
-				Params: []interface{}{
-					"csvData",
-					`
+					},
+				}, &base.Op{
+					Kind:   "scan",
+					Labels: base.Labels{"a", "b"},
+					Params: []interface{}{
+						"csvData",
+						`
 `,
-				},
+					},
+				}},
 			}},
 		},
 		expectYields: []base.Vals{
@@ -3541,28 +3626,42 @@ var TestCasesSimple = []TestCaseSimple{
 	{
 		about: "test csv-data scan->except-all of repeating left",
 		o: base.Op{
-			Kind:   "except-all",
+			Kind:   "order-offset-limit",
 			Labels: base.Labels{"a", "b"},
+			Params: []interface{}{
+				[]interface{}{
+					[]interface{}{"labelPath", "a"},
+					[]interface{}{"labelPath", "b"},
+				},
+				[]interface{}{
+					"asc",
+					"asc",
+				},
+			},
 			Children: []*base.Op{&base.Op{
-				Kind:   "scan",
+				Kind:   "except-all",
 				Labels: base.Labels{"a", "b"},
-				Params: []interface{}{
-					"csvData",
-					`
+				Children: []*base.Op{&base.Op{
+					Kind:   "scan",
+					Labels: base.Labels{"a", "b"},
+					Params: []interface{}{
+						"csvData",
+						`
 20,21
 10,11
 20,21
 30,31
 `,
-				},
-			}, &base.Op{
-				Kind:   "scan",
-				Labels: base.Labels{"a", "b"},
-				Params: []interface{}{
-					"csvData",
-					`
+					},
+				}, &base.Op{
+					Kind:   "scan",
+					Labels: base.Labels{"a", "b"},
+					Params: []interface{}{
+						"csvData",
+						`
 `,
-				},
+					},
+				}},
 			}},
 		},
 		expectYields: []base.Vals{
