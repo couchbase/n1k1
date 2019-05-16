@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/buger/jsonparser"
+
+	"github.com/couchbase/rhmap/store"
 )
 
 type Val []byte // JSON encoded, usually treated as immutable.
@@ -239,6 +241,8 @@ type Ctx struct {
 
 	// YieldStats may be invoked concurrently by multiple goroutines.
 	YieldStats YieldStats
+
+	AllocMap func() (*store.RHStore, error)
 
 	// TODO: Other things that might appear here might be request ID,
 	// request-specific allocators or resources, etc.

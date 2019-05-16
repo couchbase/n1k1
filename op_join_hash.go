@@ -72,16 +72,16 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 		// TODO: Configurable initial size for RHStore, and reusable RHStore.
 		// TODO: Reuse backing bytes for lzMap.
-		// TODO: Allow spill out to disk.
-		lzMap := store.NewRHStore(97)
+		lzMap, lzErr := lzVars.Ctx.AllocMap()
+		if lzErr != nil {
+			lzYieldErr(lzErr)
+		}
 
 		var lzVal, lzValOut base.Val
 
 		var lzValsOut base.Vals
 
 		var lzProbeValNew []byte
-
-		var lzErr error
 
 		_, _ = lzBytes8, lzValOut
 
@@ -97,6 +97,8 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 		// Callback for left side, which fills the probe map.
 		lzYieldVals = func(lzVals base.Vals) {
+			var lzErr error
+
 			lzVal = exprLeftFunc(lzVals, lzYieldErr) // <== emitCaptured: pathNext "JHL"
 
 			lzProbeKey := lzVal
@@ -180,13 +182,11 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 			}
 		}
 
-		var lzErrLeft error
-
 		lzYieldErrOrig := lzYieldErr
 
 		lzYieldErr = func(lzErrIn error) {
 			if lzErrIn != nil {
-				lzErrLeft = lzErrIn
+				lzErr = lzErrIn
 
 				lzYieldErrOrig(lzErrIn)
 			}
@@ -194,14 +194,14 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 		EmitPop(pathNext, "JHF") // !lz
 
-		if LzScope {
+		if lzErr == nil {
 			// Run the left side to fill the probe map.
 			ExecOp(o.Children[0], lzVars, lzYieldVals, lzYieldErr, pathNext, "JHL") // !lz
 		}
 
 		// -----------------------------------------------------------
 
-		if lzErrLeft == nil {
+		if lzErr == nil {
 			// No error, so at this point the probe map has been
 			// filled with left-hand-side probe entries, and next we
 			// will visit the right-hand-side.
@@ -210,6 +210,8 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 			// Callback for right side, which probes the probe map.
 			lzYieldVals = func(lzVals base.Vals) {
+				var lzErr error
+
 				lzVal = exprRightFunc(lzVals, lzYieldErr) // <== emitCaptured: pathNext "JHR"
 
 				lzProbeKey := lzVal
@@ -313,7 +315,7 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 			EmitPop(pathNext, "JHP") // !lz
 
-			if LzScope {
+			if lzErr == nil {
 				// Run the right side to probe the probe map.
 				ExecOp(o.Children[1], lzVars, lzYieldVals, lzYieldErr, pathNext, "JHR") // !lz
 			}

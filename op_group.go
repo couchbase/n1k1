@@ -49,8 +49,10 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 		// TODO: Configurable initial size for rhstore, and reusable rhstore.
 		// TODO: Reuse backing bytes for lzSet.
-		// TODO: Allow spill out to disk.
-		lzSet := store.NewRHStore(97)
+		lzSet, lzErr := lzVars.Ctx.AllocMap()
+		if lzErr != nil {
+			lzYieldErr(lzErr)
+		}
 
 		var lzValOut base.Val
 
@@ -77,8 +79,6 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 				// Ex: `GROUP BY state, city` would lead to a group
 				// key such as '"CA"\n"San Francisco"'.
 				lzGroupKey = lzGroupKey[:0]
-
-				var lzErr error
 
 				for lzI, lzVal := range lzValsOut {
 					lzValOut, lzErr = lzVars.Ctx.ValComparer.CanonicalJSON(lzVal, lzValOut[:0])
@@ -204,7 +204,7 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 		EmitPop(pathNext, "G") // !lz
 
-		if LzScope {
+		if lzErr == nil {
 			ExecOp(o.Children[0], lzVars, lzYieldVals, lzYieldErr, pathNext, "GO") // !lz
 		}
 	}

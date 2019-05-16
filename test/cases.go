@@ -3,6 +3,8 @@ package test
 import (
 	"testing"
 
+	"github.com/couchbase/rhmap/store"
+
 	"github.com/couchbase/n1k1"
 	"github.com/couchbase/n1k1/base"
 	"github.com/couchbase/n1k1/expr_glue"
@@ -20,6 +22,9 @@ func MakeYieldCaptureFuncs(t *testing.T, testi int, expectErr string) (
 			ValComparer: base.NewValComparer(),
 			ExprCatalog: n1k1.ExprCatalog,
 			YieldStats:  func(stats *base.Stats) error { return nil },
+			AllocMap: func() (*store.RHStore, error) {
+				return store.NewRHStore(97), nil
+			},
 		},
 	}
 
