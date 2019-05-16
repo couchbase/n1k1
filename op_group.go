@@ -208,8 +208,6 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 			ExecOp(o.Children[0], lzVars, lzYieldVals, lzYieldErr, pathNext, "GO") // !lz
 		}
 
-		if lzSet != nil {
-			lzSet.Close()
-		}
+		lzVars.Ctx.RecycleMap(lzSet)
 	}
 }

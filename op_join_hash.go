@@ -68,7 +68,7 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 		// TODO: Configurable initial size for chunks, and reusable chunks.
 		// TODO: Reuse backing bytes for chunks.
-		lzLeftChunks, lzErr := lzVars.Ctx.AllocChunks()
+		lzChunks, lzErr := lzVars.Ctx.AllocChunks()
 		if lzErr != nil {
 			lzYieldErr(lzErr)
 		}
@@ -77,7 +77,7 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 		if lzErr == nil {
 			// Chain ends at offset 0, size 0.
-			lzLeftChunks.BytesAppend(lzZero16[:])
+			lzChunks.BytesAppend(lzZero16[:])
 
 			// TODO: Configurable initial size for RHStore, and reusable RHStore.
 			// TODO: Reuse backing bytes for lzMap.
@@ -139,7 +139,7 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 						lzLeftBytes = append(lzLeftBytes[:0], lzZero16[:16]...)
 						lzLeftBytes = base.ValsJoin(lzVals, lzLeftBytes)
 
-						lzOffset, lzSize, lzErr := lzLeftChunks.BytesAppend(lzLeftBytes)
+						lzOffset, lzSize, lzErr := lzChunks.BytesAppend(lzLeftBytes)
 						if lzErr != nil {
 							lzYieldErr(lzErr)
 						}
@@ -176,7 +176,7 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 						lzLeftBytes = append(lzLeftBytes[:0], lzProbeValOld[:16]...)
 						lzLeftBytes = base.ValsJoin(lzVals, lzLeftBytes)
 
-						lzOffset, lzSize, lzErr := lzLeftChunks.BytesAppend(lzLeftBytes)
+						lzOffset, lzSize, lzErr := lzChunks.BytesAppend(lzLeftBytes)
 						if lzErr != nil {
 							lzYieldErr(lzErr)
 						}
@@ -269,7 +269,7 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 						if leftVals { // !lz
 							// Ex: joinHash-inner, joinHash-outerLeft.
-							lzValsOut, lzErr = base.YieldChainedVals(lzYieldValsOrig, lzVals, lzLeftChunks, lzProbeVal, lzValsOut)
+							lzValsOut, lzErr = base.YieldChainedVals(lzYieldValsOrig, lzVals, lzChunks, lzProbeVal, lzValsOut)
 							if lzErr != nil {
 								lzYieldErr(lzErr)
 							}
@@ -308,7 +308,7 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 								if leftVals { // !lz
 									// Ex: joinHash-outerLeft.
-									lzValsOut, lzErr = base.YieldChainedVals(lzYieldValsOrig, lzRightSuffix, lzLeftChunks, lzProbeVal, lzValsOut)
+									lzValsOut, lzErr = base.YieldChainedVals(lzYieldValsOrig, lzRightSuffix, lzChunks, lzProbeVal, lzValsOut)
 									if lzErr != nil {
 										lzYieldErrOrig(lzErr)
 									}
@@ -340,8 +340,7 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 			}
 		}
 
-		if lzMap != nil {
-			lzMap.Close()
-		}
+		lzVars.Ctx.RecycleMap(lzMap)
+		lzVars.Ctx.RecycleChunks(lzChunks)
 	}
 }

@@ -50,12 +50,21 @@ func MakeVars() *base.Vars {
 
 	var counter uint64
 
+	var recycledMap *store.RHStore
+	var recycledChunks *store.Chunks
+
 	return &base.Vars{
 		Ctx: &base.Ctx{
 			ValComparer: base.NewValComparer(),
 			ExprCatalog: n1k1.ExprCatalog,
 			YieldStats:  func(stats *base.Stats) error { return nil },
 			AllocMap: func() (*store.RHStore, error) {
+				if recycledMap != nil {
+					rv := recycledMap
+					recycledMap = nil
+					return rv, nil
+				}
+
 				options := store.DefaultRHStoreFileOptions
 
 				counterMine := atomic.AddUint64(&counter, 1)
@@ -69,7 +78,24 @@ func MakeVars() *base.Vars {
 
 				return &sf.RHStore, nil
 			},
+			RecycleMap: func(m *store.RHStore) {
+				if m != nil {
+					if recycledMap == nil {
+						recycledMap = m
+						recycledMap.Reset()
+						return
+					}
+
+					m.Close()
+				}
+			},
 			AllocChunks: func() (*store.Chunks, error) {
+				if recycledChunks != nil {
+					rv := recycledChunks
+					recycledChunks = nil
+					return rv, nil
+				}
+
 				options := store.DefaultRHStoreFileOptions
 
 				counterMine := atomic.AddUint64(&counter, 1)
@@ -81,6 +107,17 @@ func MakeVars() *base.Vars {
 					FileSuffix:     ".rhchunk,",
 					ChunkSizeBytes: options.ChunkSizeBytes,
 				}, nil
+			},
+			RecycleChunks: func(c *store.Chunks) {
+				if c != nil {
+					if recycledChunks == nil {
+						recycledChunks = c
+						recycledChunks.BytesTruncate(0)
+						return
+					}
+
+					c.Close()
+				}
 			},
 		},
 	}

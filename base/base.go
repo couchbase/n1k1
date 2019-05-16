@@ -242,9 +242,11 @@ type Ctx struct {
 	// YieldStats may be invoked concurrently by multiple goroutines.
 	YieldStats YieldStats
 
-	AllocMap func() (*store.RHStore, error)
+	AllocMap   func() (*store.RHStore, error)
+	RecycleMap func(*store.RHStore)
 
-	AllocChunks func() (*store.Chunks, error)
+	AllocChunks   func() (*store.Chunks, error)
+	RecycleChunks func(*store.Chunks)
 
 	// TODO: Other things that might appear here might be request ID,
 	// request-specific allocators or resources, etc.
