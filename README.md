@@ -56,9 +56,12 @@ Some design ideas meant to help with n1k1's performance...
     a'la `map[[]byte][]byte`.
   - couchbase/rhmap is efficiently, fully recyclable in contrast
     to map[string]interface{}.
-  - couchbase/rhmap is also intended to easily spill out to disk
-    via mmap(), allowing hash-joins and DISTINCT processing
-    on larger datasets.
+  - couchbase/rhmap/store will spill to temporary disk files when
+    hashmap becomes too large, via mmap(), allowing hash-joins,
+    INTERECT, EXCEPT, GROUP BY and DISTINCT processing on larger
+    datasets.
+  - couchbase/rhmap/store chunk file allows hash-join left-vals to be
+    spilled out to temporary disk files when it becomes too large.
 - error handling is push-based via a YieldErr callback...
   - the YieldErr callback allows n1k1 to avoid continual, conservative
     error handling checks ("if err != nil { return nil, err }").
@@ -193,10 +196,6 @@ efficiently execute that query-plan.
     - perhaps an attachment or label can be for a named cursor, such
       as "&cursor-2341", that's registered into the Ctx?
       - the cursor might to a pipeline-breaking batch provider?
-
-- couchbase/rhmap/store should be able to spill out to disk?
-  - perhaps via mmap()?
-  - metadata spilling is different than key/val spilling?
 
 - compiled expr support?
 

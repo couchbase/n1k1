@@ -207,5 +207,9 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 		if lzErr == nil {
 			ExecOp(o.Children[0], lzVars, lzYieldVals, lzYieldErr, pathNext, "GO") // !lz
 		}
+
+		if lzSet != nil {
+			lzSet.Close()
+		}
 	}
 }

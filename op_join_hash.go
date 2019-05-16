@@ -339,5 +339,9 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 				ExecOp(o.Children[1], lzVars, lzYieldVals, lzYieldErr, pathNext, "JHR") // !lz
 			}
 		}
+
+		if lzMap != nil {
+			lzMap.Close()
+		}
 	}
 }
