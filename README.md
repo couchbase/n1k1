@@ -11,85 +11,90 @@ Some design ideas meant to help with n1k1's performance...
 - avoidance of map[string]interface{} and []interface{}.
 - avoidance of interface{} and boxed-value allocations.
 - []byte and [][]byte instead are used heavily,
-  as they are easy to fully recycle and reuse.
-- []byte is faster for GC scanning/marking than interface{}.
+  as they are straightfoward to fully recycle and reuse,
+  by reslicing to buffer[:0].
+- []byte should be faster for GC scanning/marking than interface{}.
 - jsonparser is used instead of json.Unmarshal(), to avoid garbage.
   - jsonparser returns []byte values that point into the parsed
     document's []byte's.
-- commonly accessed JSON object fields can be promoted
-  to quickly accessible, labeled "registers" at compile time...
+- commonly accessed JSON object fields can be promoted to quickly
+  accessible, labeled "registers" at early preparation phases...
   - object field access or map lookups (e.g., obj["city"]) can be
     instead replaced by positional slice access (e.g., vals[5])
   - the labeled vals or "registers" are passed amongst operators.
 - push-based paradigm for shorter codepaths
   - data transfer between operators (e.g., from scan -> filter ->
-    project) is a function call (which can sometimes be removed by
-    compilation), instead of a send/recv on channels between
-    goroutines.
+    project) is a function call, instead of a send/recv on channels
+    between goroutines. These function calls can sometimes be inlined
+    by n1k1's code generator, removing function call overhead.
   - the pull-based paradigm, a.k.a. the iterator approach, in
     contrast, involves additional checks for HasNext() across the
     operators in a query-plan.
-- data-staging, pipeline breakers (batching)...
+- data-staging, pipeline breakers (record batching)...
   - batching results between operators may be more friendly to CPU
     instruction & data caches.
   - data-staging also supports optional concurrency -- one or more
     goroutine actors can be producers that feed a channel to a
     consumer goroutine.
-  - a channel send is for a batch of multiple items, instead of a
-    channel send for each individual item.
+  - a data-staging channel send is for a batch of multiple items,
+    instead of a channel send for each individual item.
   - max-batch-size and channel buffer size between producer goroutines
     and consumer goroutine are designed to be configurable.
-  - batches exchanged between producer goroutines and consumer
-    goroutine are recycled back to the producer goroutines for less
-    garbage creation.
+  - batches that are exchanged between producer goroutines and
+    consumer goroutine are recycled back to the producer goroutines
+    for less garbage creation.
 - query compilation to golang...
   - based on Futamura projections / LMS (Rompf, Odersky) inspirations.
   - implements operator fusion, for fewer function calls.
-  - lifting vars for resource reusability.
+  - lifting vars is implemented to support resource reusability.
 - expression optimizations for static parameters.
-  - for example, with an expression on `sales < 1000`, the `1000` can
-    be evaluated up-front a single time, instead of being re-evaluated
-    for every single tuple that's processed.
-  - and, the `1000` can lead to a more direct numeric comparison.
+  - for example, with an expression on `sales < 1000`, the `1000` is
+    evaluated early and a single time in preparation phases, instead
+    of being re-evaluated for every single tuple that's processed.
+  - the static type of the `1000` is also detected in up-front
+    preparation phases, which leads to more direct codepaths focused
+    on numeric comparison.
 - for hashmaps...
   - couchbase/rhmap is a hashmap that supports []byte as a key,
     a'la `map[[]byte][]byte`.
-  - couchbase/rhmap is efficiently, fully recyclable in contrast
+  - couchbase/rhmap is efficient to fully recycle in contrast
     to map[string]interface{}.
   - couchbase/rhmap/store will spill to temporary disk files when
-    hashmap becomes too large, via mmap(), allowing hash-joins,
-    INTERECT, EXCEPT, GROUP BY and DISTINCT processing on larger
-    datasets.
+    the hashmap becomes too large, via mmap(), allowing operators
+    to process larger datasets that don't fit into memory (hash-joins,
+    DISTINCT, GROUP BY, INTERECT, EXCEPT).
   - couchbase/rhmap/store chunk file allows hash-join left-vals to be
     spilled out to temporary disk files when it becomes too large.
-- error handling is push-based via a YieldErr callback...
+- error handling is push-based via an YieldErr callback...
   - the YieldErr callback allows n1k1 to avoid continual, conservative
     error handling checks ("if err != nil { return nil, err }").
 - max-heap in ORDER-BY / OFFSET / LIMIT
-  - reverse popping of the max-heap to produce the final result avoids
-    a final sort.
-  - candidate vals that are "too large" foo the max-heap are recycled.
+  - reverse popping of the max-heap produces the final result, which
+    avoids a final sort.
+  - candidate vals that are "too large" for the max-heap are recycled.
 - INTERSECT DISTINCT / ALL and EXCEPT DISTINCT / ALL
-  are optimized by reusing hash-join machinery.
+  are optimized by reusing hash-join's machinery.
   - hash-join's probe map can optionally track information like...
     - all the left-side values (for hash-join).
     - a count of the left-side values (for INTERSECT ALL, EXCEPT ALL).
     - and/or a 'was-probed' boolean flag (for multiple use cases).
-  - so, INTERSECT DISTINCT and EXCEPT DISTINCT does not need an
+  - so, INTERSECT DISTINCT and EXCEPT DISTINCT avoid using an
     additional, chained DISTINCT operator.
 - base.ValComparer.CanonicalJSON()
-  - provides JSON canonicalization with no memory allocations.
+  - provides JSON canonicalization into existing []byte buffers which
+    avoids memory allocations.
   - some JSON, such as for objects, need to be canonicalized before
-    they can be used as a map[] key.
+    they can be used as a map[] key (e.g., for GROUP BY, DISTINCT,
+    etc).
     - Ex: {a:1,b:2} and {b:2,a:1} are logically the same.
   - numbers also need to be canonicalized.
-    - e.g., 0 vs 0.0 vs -0 are logically the same?
+    - e.g., 0 vs 0.0 vs -0 are logically the same.
 
 ------------------------------------------
 ## Some features...
 
 - types: MISSING, NULL, boolean, number, string, array, object, UNKNOWN (BINARY).
-- collation follows N1QL type comparison rules.
+- comparisons follows N1QL type comparison rules.
 - glue integration with existing couchbase/query/expression package.
 - join nested-loop inner.
 - join nested-loop outer-left.
@@ -113,6 +118,8 @@ Some design ideas meant to help with n1k1's performance...
   pipelines.
 - nested object paths (e.g. locations/address/city).
 - scans of simple files (CSV's and newline delimited JSON).
+- automatic spilling of large hashmaps from memory to temporary disk
+  files.
 - runtime variables / context passed down through ExecOp().
 
 -------------------------------------------------------
@@ -127,21 +134,21 @@ Some design ideas meant to help with n1k1's performance...
 
 Or, how intermed_build generates a N1QL compiler...
 
-- 1: First, take a look at the n1k1/*.go files.  You'll see a simple,
-interpreter for a "N1QL" query-plan.  In ExecOp(), it recursively
-walks through a query-plan tree, and processes the query-plan by
-pushing (or yield()'ing) data records from child nodes (e.g., a scan)
-up to parent nodes (e.g., filters) from the query-plan tree.
+- 1: First, take a look at the n1k1/*.go files. You'll see a simple,
+interpreter for a "N1QL" query-plan. In ExecOp(), it recursively walks
+through a query-plan tree, and processes the query-plan by pushing (or
+yield()'ing) data records from child nodes (e.g., a scan) up to parent
+nodes (e.g., filters) from the query-plan tree.
 
 - 1.1: As part of that, you'll also see some variables and functions
 that follow a naming convention with "lz" (e.g., "lazy") in their
-names.  The "lz" naming convention is a marker that tells us whether
+names. The "lz" naming convention is a marker that tells us whether
 some variables are lazy or late-bound (they need actual data records),
 versus other variables that are early-bound (they use information
 that's already available at query-plan compilation time).
 
 - 1.2: Of note, the n1k1/*.go files are written in a careful subset of
-golang.  It's all legal golang code, but it follows additional rules
+golang. It's all legal golang code, but it follows additional rules
 and conventions (like the "lz" conventions and directives in code
 comments) to make parsing by n1k1's intermed_build tool easy.
 
@@ -155,8 +162,8 @@ query compiler.
 
 - 2.2: The way the intermed_build tool works is that it processes the
 n1k1/*.go source files line-by-line, and translates any "lz" lines
-into printf's.  Non-lazy expressions are turned into printf'ed
-placeholder vars.  Non-lazy lines are emitted entirely as-is, as they
+into printf's. Non-lazy expressions are turned into printf'ed
+placeholder vars. Non-lazy lines are emitted entirely as-is, as they
 are early-bound.
 
 - 3: Finally, the n1k1 compiler, which imports and uses the generated
@@ -178,6 +185,9 @@ efficiently execute that query-plan.
       global, process-wide workload?
 
 - conversion of N1QL query-plan into n1k1 query-plan?
+
+- ORDER BY / OFFSET / LIMIT's max-heap should optionally spill out to
+  disk when it gets too large?
 
 - UNNEST - a kind of self-join
 
