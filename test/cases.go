@@ -20,11 +20,37 @@ func MakeYieldCaptureFuncs(t *testing.T, testi int, expectErr string) (
 		n1k1.ExprCatalog["exprStr"] = expr_glue.ExprStr
 	}
 
+	var yields []base.Vals
+
+	yieldVals := func(lzVals base.Vals) {
+		var lzValsCopy base.Vals
+		for _, v := range lzVals {
+			lzValsCopy = append(lzValsCopy, append(base.Val(nil), v...))
+		}
+
+		yields = append(yields, lzValsCopy)
+	}
+
+	yieldErr := func(err error) {
+		if (expectErr != "") != (err != nil) {
+			t.Fatalf("testi: %d, mismatched err: %+v, expectErr: %s",
+				testi, err, expectErr)
+		}
+	}
+
+	returnYields := func() []base.Vals {
+		return yields
+	}
+
+	return MakeVars(), yieldVals, yieldErr, returnYields
+}
+
+func MakeVars() *base.Vars {
 	tmpDir, _ := ioutil.TempDir("", "n1k1TmpDir")
 
 	var counter uint64
 
-	vars := &base.Vars{
+	return &base.Vars{
 		Ctx: &base.Ctx{
 			ValComparer: base.NewValComparer(),
 			ExprCatalog: n1k1.ExprCatalog,
@@ -58,30 +84,6 @@ func MakeYieldCaptureFuncs(t *testing.T, testi int, expectErr string) (
 			},
 		},
 	}
-
-	var yields []base.Vals
-
-	yieldVals := func(lzVals base.Vals) {
-		var lzValsCopy base.Vals
-		for _, v := range lzVals {
-			lzValsCopy = append(lzValsCopy, append(base.Val(nil), v...))
-		}
-
-		yields = append(yields, lzValsCopy)
-	}
-
-	yieldErr := func(err error) {
-		if (expectErr != "") != (err != nil) {
-			t.Fatalf("testi: %d, mismatched err: %+v, expectErr: %s",
-				testi, err, expectErr)
-		}
-	}
-
-	returnYields := func() []base.Vals {
-		return yields
-	}
-
-	return vars, yieldVals, yieldErr, returnYields
 }
 
 func StringsToVals(a []string, valsPre base.Vals) base.Vals {

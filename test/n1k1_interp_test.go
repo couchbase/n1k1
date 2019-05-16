@@ -167,3 +167,78 @@ func benchmarkInterpNDocs(b *testing.B,
 		}
 	}
 }
+
+// --------------------------------------------------------
+
+func BenchmarkInterpGroupBy_1Docs(b *testing.B) {
+	benchmarkInterpGroupBy(b, 1)
+}
+
+func BenchmarkInterpGroupBy_100Docs(b *testing.B) {
+	benchmarkInterpGroupBy(b, 100)
+}
+
+func BenchmarkInterpGroupBy_10000Docs(b *testing.B) {
+	benchmarkInterpGroupBy(b, 10000)
+}
+
+func benchmarkInterpGroupBy(b *testing.B, nDocs int) {
+	vars := MakeVars()
+
+	// TODO: Try object JSON once jsonparser.ObjectEach memory
+	// allocations is fixed.
+	json := `1234`
+
+	yieldValsCount := 0
+
+	yieldVals := func(vals base.Vals) {
+		yieldValsCount++
+
+		if len(vals) != 2 {
+			b.Fatalf("yieldVals: %+v", vals)
+		}
+	}
+
+	yieldErr := func(err error) {
+		if err != nil {
+			b.Fatalf("yieldErr: %v", err)
+		}
+	}
+
+	o := base.Op{
+		Kind:   "group",
+		Labels: base.Labels{".", "count-."},
+		Params: []interface{}{
+			[]interface{}{
+				[]interface{}{"labelPath", "."},
+			},
+			[]interface{}{
+				[]interface{}{"labelPath", "."},
+			},
+			[]interface{}{
+				[]interface{}{"count"},
+			},
+		},
+		Children: []*base.Op{&base.Op{
+			Kind:   "scan",
+			Labels: base.Labels{"."},
+			Params: []interface{}{
+				"jsonsData",
+				json,
+				nDocs,
+			},
+		}},
+	}
+
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		yieldValsCount = 0
+
+		n1k1.ExecOp(&o, vars, yieldVals, yieldErr, "", "")
+
+		if yieldValsCount != 1 {
+			b.Fatalf("yieldValsCount: %d != 1", yieldValsCount)
+		}
+	}
+}
