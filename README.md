@@ -184,6 +184,13 @@ efficiently execute that query-plan.
     - decision on "too far ahead" might be situational and depend on
       global, process-wide workload?
 
+- base.ValsJoin/ValsSplit() won't work if a val is non-JSON / BINARY,
+  especially with embedded newlines?
+  - need to replace embedded newlines?
+  - need type detection to see if it's BINARY first,
+    and safely encode somehow?
+  - rename ValsJoin/ValsSplit to ValsEncode/ValsDecode?
+
 - conversion of N1QL query-plan into n1k1 query-plan?
 
 - ORDER BY / OFFSET / LIMIT's max-heap should optionally spill out to
