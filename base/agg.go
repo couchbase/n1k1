@@ -55,7 +55,12 @@ var AggCount = &Agg{
 	Result: func(agg, buf []byte) (v Val, aggRest, bufOut []byte) {
 		c := binary.LittleEndian.Uint64(agg[:8])
 		vBuf := strconv.AppendUint(buf[:0], c, 10)
-		return Val(vBuf), agg[8:], buf[len(vBuf):]
+		if len(buf) >= len(vBuf) {
+			buf = buf[len(vBuf):]
+		} else {
+			buf = nil
+		}
+		return Val(vBuf), agg[8:], buf
 	},
 }
 
@@ -82,6 +87,11 @@ var AggSum = &Agg{
 	Result: func(agg, buf []byte) (v Val, aggRest, bufOut []byte) {
 		s := math.Float64frombits(binary.LittleEndian.Uint64(agg[:8]))
 		vBuf := strconv.AppendFloat(buf[:0], s, 'f', -1, 64)
-		return Val(vBuf), agg[8:], buf[len(vBuf):]
+		if len(buf) >= len(vBuf) {
+			buf = buf[len(vBuf):]
+		} else {
+			buf = nil
+		}
+		return Val(vBuf), agg[8:], buf
 	},
 }

@@ -1,8 +1,6 @@
 package n1k1
 
 import (
-	"encoding/binary" // <== genCompiler:hide
-
 	"github.com/couchbase/rhmap/store" // <== genCompiler:hide
 
 	"github.com/couchbase/n1k1/base"
@@ -68,7 +66,7 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 		var lzAgg *base.Agg
 
-		_, _, _, _ = lzBuf8, lzGroupValNew, lzGroupValReuse, lzAgg
+		_, _, _, _, _ = lzBuf8, lzValOut, lzGroupValNew, lzGroupValReuse, lzAgg
 
 		lzYieldValsOrig := lzYieldVals
 
@@ -82,22 +80,7 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 				//
 				// Ex: `GROUP BY state, city` would lead to a group
 				// key such as '"CA"\n"San Francisco"'.
-				lzGroupKey = lzGroupKey[:0]
-
-				binary.LittleEndian.PutUint64(lzBuf8[:], uint64(len(lzValsOut)))
-				lzGroupKey = append(lzGroupKey, lzBuf8[:]...)
-
-				for _, lzVal := range lzValsOut {
-					lzValOut, lzErr = lzVars.Ctx.ValComparer.CanonicalJSON(lzVal, lzValOut[:0])
-					if lzErr != nil {
-						break
-					}
-
-					binary.LittleEndian.PutUint64(lzBuf8[:], uint64(len(lzValOut)))
-					lzGroupKey = append(lzGroupKey, lzBuf8[:]...)
-					lzGroupKey = append(lzGroupKey, lzValOut...)
-				}
-
+				lzGroupKey, lzErr = base.ValsEncodeCanonical(lzValsOut, lzGroupKey[:0], lzVars.Ctx.ValComparer)
 				if lzErr == nil {
 					// Check if we've seen the group key before or not.
 					lzGroupVal, lzGroupKeyFound = lzSet.Get(lzGroupKey)

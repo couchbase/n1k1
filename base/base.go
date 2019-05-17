@@ -135,6 +135,32 @@ func ValsEncode(vals Vals, out []byte) []byte {
 	return out
 }
 
+// ValsEncodeCanonical appends the canonical encoded vals to the out
+// slice, so its usable as a map key.
+func ValsEncodeCanonical(vals Vals, out []byte,
+	valComparer *ValComparer) (rv []byte, err error) {
+	var buf8 [8]byte
+
+	binary.LittleEndian.PutUint64(buf8[:], uint64(len(vals)))
+	out = append(out, buf8[:]...)
+
+	for _, v := range vals {
+		beg := len(out)
+		out = append(out, buf8[:]...) // Prepare space for val len.
+
+		out, err = valComparer.CanonicalJSON(v, out)
+		if err != nil {
+			return out, err
+		}
+
+		// Write the canonical val len in the earlier prepared space.
+		binary.LittleEndian.PutUint64(out[beg:beg+8],
+			uint64(len(out)-8-beg))
+	}
+
+	return out, nil
+}
+
 // ValsDecode appending each decoded val to the valsOut slice.
 func ValsDecode(b []byte, valsOut Vals) Vals {
 	n := binary.LittleEndian.Uint64(b[:8])
