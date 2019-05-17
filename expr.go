@@ -78,8 +78,8 @@ func ExprLabelPath(lzVars *base.Vars, labels base.Labels,
 // -----------------------------------------------------
 
 // ExprValsCanonical canonicalizes the vals and joins their bytes
-// together using newlines, similar to base.ValsJoin(). The result is
-// non-JSON / BINARY and can be parsed using base.ValsSplit().
+// together using base.ValsEncodeCanonical(). The result is non-JSON /
+// BINARY and can be parsed using base.ValsSplit().
 func ExprValsCanonical(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
 	var lzJoined []byte // <== varLift: lzJoined by path
