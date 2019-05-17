@@ -2,6 +2,7 @@ package test
 
 import (
 	"bytes"
+	"os"
 	"reflect"
 	"testing"
 
@@ -12,7 +13,7 @@ import (
 
 func TestCasesSimpleWithInterp(t *testing.T) {
 	for testi, test := range TestCasesSimple {
-		vars, yieldVals, yieldErr, returnYields :=
+		tmpDir, vars, yieldVals, yieldErr, returnYields :=
 			MakeYieldCaptureFuncs(t, testi, test.expectErr)
 
 		n1k1.ExecOp(&test.o, vars, yieldVals, yieldErr, "", "")
@@ -30,6 +31,8 @@ func TestCasesSimpleWithInterp(t *testing.T) {
 				len(yields), len(test.expectYields),
 				test.expectYields, yields)
 		}
+
+		os.RemoveAll(tmpDir)
 	}
 }
 
@@ -183,7 +186,8 @@ func BenchmarkInterpGroupBy_10000Docs(b *testing.B) {
 }
 
 func benchmarkInterpGroupBy(b *testing.B, nDocs int) {
-	vars := MakeVars()
+	tmpDir, vars := MakeVars()
+	defer os.RemoveAll(tmpDir)
 
 	// TODO: Try object JSON once jsonparser.ObjectEach memory
 	// allocations is fixed.

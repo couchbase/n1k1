@@ -14,7 +14,7 @@ import (
 )
 
 func MakeYieldCaptureFuncs(t *testing.T, testi int, expectErr string) (
-	*base.Vars, base.YieldVals, base.YieldErr,
+	string, *base.Vars, base.YieldVals, base.YieldErr,
 	func() []base.Vals) {
 	if n1k1.ExprCatalog["exprStr"] == nil {
 		n1k1.ExprCatalog["exprStr"] = expr_glue.ExprStr
@@ -42,10 +42,12 @@ func MakeYieldCaptureFuncs(t *testing.T, testi int, expectErr string) (
 		return yields
 	}
 
-	return MakeVars(), yieldVals, yieldErr, returnYields
+	tmpDir, vars := MakeVars()
+
+	return tmpDir, vars, yieldVals, yieldErr, returnYields
 }
 
-func MakeVars() *base.Vars {
+func MakeVars() (string, *base.Vars) {
 	tmpDir, _ := ioutil.TempDir("", "n1k1TmpDir")
 
 	var counter uint64
@@ -53,7 +55,7 @@ func MakeVars() *base.Vars {
 	var recycledMap *store.RHStore
 	var recycledChunks *store.Chunks
 
-	return &base.Vars{
+	return tmpDir, &base.Vars{
 		Ctx: &base.Ctx{
 			ValComparer: base.NewValComparer(),
 			ExprCatalog: n1k1.ExprCatalog,

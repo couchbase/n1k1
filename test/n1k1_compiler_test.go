@@ -211,6 +211,7 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 		`import "bytes"`,
 		`import "container/heap"`,
 		`import "encoding/binary"`,
+		`import "os"`,
 		`import "strings"`,
 		`import "reflect"`,
 		`import "testing"`,
@@ -230,9 +231,10 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 		c = append(c, "//")
 		c = append(c, fmt.Sprintf("func TestGenerated%d(t *testing.T) {", testi))
 
-		c = append(c, `  lzVars, lzYieldVals, lzYieldErr, returnYields :=`)
+		c = append(c, `  lzTmpDir, lzVars, lzYieldVals, lzYieldErr, returnYields :=`)
 		c = append(c, fmt.Sprintf(`    test.MakeYieldCaptureFuncs(nil, %d, %q)`,
 			testi, test.expectErr))
+		c = append(c, "  os.RemoveAll(lzTmpDir)")
 		c = append(c, "  _ = lzVars")
 		c = append(c, "  _ = lzYieldVals")
 		c = append(c, "  _ = lzYieldErr")
