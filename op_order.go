@@ -35,19 +35,19 @@ func OpOrderOffsetLimit(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVal
 		pathNextOOL := EmitPush(pathNext, "OOL") // !lz
 
 		var lzProjectFunc base.ProjectFunc
-		var lzLessFunc base.LessFunc
+		var lzValsLessFunc base.ValsLessFunc
 
 		if len(orders) > 0 { // !lz
 			// The ORDER BY exprs are treated as a projection.
 			lzProjectFunc =
 				MakeProjectFunc(lzVars, o.Children[0].Labels, orders, pathNextOOL, "PF") // !lz
 
-			lzLessFunc =
-				MakeLessFunc(lzVars, directions) // !lz
+			lzValsLessFunc =
+				MakeValsLessFunc(lzVars, directions) // !lz
 		} // !lz
 
 		// Used when there are ORDER-BY exprs.
-		lzHeap := &base.HeapValsProjected{nil, lzLessFunc}
+		lzHeap := &base.HeapValsProjected{nil, lzValsLessFunc}
 
 		// Used when there are no ORDER-BY exprs.
 		var lzExamined int
@@ -81,7 +81,7 @@ func OpOrderOffsetLimit(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVal
 				lzValsOut = lzProjectFunc(lzVals, lzValsOut, lzYieldErr) // <== emitCaptured: pathNextOOL "PF"
 
 				lzHeapLen := lzHeap.Len()
-				if lzHeapLen < offsetPlusLimit || lzHeapLen == 0 || lzLessFunc(lzValsOut, lzHeap.GetProjected(0)) {
+				if lzHeapLen < offsetPlusLimit || lzHeapLen == 0 || lzValsLessFunc(lzValsOut, lzHeap.GetProjected(0)) {
 					// Push onto heap if heap is small or heap is empty or item < max-heap-item.
 					heap.Push(lzHeap, base.ValsProjected{lzValsCopy, lzValsOut})
 
@@ -157,12 +157,12 @@ func OpOrderOffsetLimit(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVal
 
 // -----------------------------------------------------
 
-func MakeLessFunc(lzVars *base.Vars, directions []interface{}) (
-	lzLessFunc base.LessFunc) {
+func MakeValsLessFunc(lzVars *base.Vars, directions []interface{}) (
+	lzValsLessFunc base.ValsLessFunc) {
 	// TODO: One day use eagerly discovered types to optimize?
 
 	if len(directions) > 0 {
-		lzLessFunc = func(lzValsA, lzValsB base.Vals) bool {
+		lzValsLessFunc = func(lzValsA, lzValsB base.Vals) bool {
 			var lzCmp int
 
 			for idx := range directions { // !lz
@@ -187,5 +187,5 @@ func MakeLessFunc(lzVars *base.Vars, directions []interface{}) (
 		}
 	}
 
-	return lzLessFunc
+	return lzValsLessFunc
 }

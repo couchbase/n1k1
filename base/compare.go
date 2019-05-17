@@ -369,8 +369,8 @@ func CompareErr(aErr, bErr error) int {
 
 // ---------------------------------------------
 
-// LessFunc is the signature for comparing two vals.
-type LessFunc func(valsA, valsB Vals) bool
+// ValsLessFunc is the signature for comparing two vals.
+type ValsLessFunc func(valsA, valsB Vals) bool
 
 // ---------------------------------------------
 
@@ -389,7 +389,7 @@ type ValsProjected struct {
 // ValsProjected and an associated LessFunc.
 type HeapValsProjected struct {
 	ValsProjected []ValsProjected
-	LessFunc      LessFunc
+	ValsLessFunc  ValsLessFunc
 }
 
 func (a *HeapValsProjected) GetVals(i int) Vals {
@@ -409,7 +409,7 @@ func (a *HeapValsProjected) Swap(i, j int) {
 
 func (a *HeapValsProjected) Less(i, j int) bool {
 	// Reverse of normal LessFunc() so that we have a max-heap.
-	return a.LessFunc(
+	return a.ValsLessFunc(
 		a.ValsProjected[j].Projected, a.ValsProjected[i].Projected)
 }
 
