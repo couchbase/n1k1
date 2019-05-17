@@ -1,6 +1,8 @@
 package n1k1
 
 import (
+	"encoding/binary" // <== genCompiler:hide
+
 	"github.com/couchbase/rhmap/store" // <== genCompiler:hide
 
 	"github.com/couchbase/n1k1/base"
@@ -54,6 +56,8 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 			lzYieldErr(lzErr)
 		}
 
+		var lzBuf8 [8]byte
+
 		var lzValOut base.Val
 
 		var lzValsOut base.Vals
@@ -64,7 +68,7 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 		var lzAgg *base.Agg
 
-		_, _, _ = lzGroupValNew, lzGroupValReuse, lzAgg
+		_, _, _, _ = lzBuf8, lzGroupValNew, lzGroupValReuse, lzAgg
 
 		lzYieldValsOrig := lzYieldVals
 
@@ -80,16 +84,17 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 				// key such as '"CA"\n"San Francisco"'.
 				lzGroupKey = lzGroupKey[:0]
 
-				for lzI, lzVal := range lzValsOut {
+				binary.LittleEndian.PutUint64(lzBuf8[:], uint64(len(lzValsOut)))
+				lzGroupKey = append(lzGroupKey, lzBuf8[:]...)
+
+				for _, lzVal := range lzValsOut {
 					lzValOut, lzErr = lzVars.Ctx.ValComparer.CanonicalJSON(lzVal, lzValOut[:0])
 					if lzErr != nil {
 						break
 					}
 
-					if lzI > 0 {
-						lzGroupKey = append(lzGroupKey, '\n')
-					}
-
+					binary.LittleEndian.PutUint64(lzBuf8[:], uint64(len(lzValOut)))
+					lzGroupKey = append(lzGroupKey, lzBuf8[:]...)
 					lzGroupKey = append(lzGroupKey, lzValOut...)
 				}
 
@@ -162,7 +167,7 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 		lzYieldErr = func(lzErrIn error) {
 			if lzErrIn == nil { // If no error, yield our group items.
 				lzSetVisitor := func(lzGroupKey store.Key, lzGroupVal store.Val) bool {
-					lzValsOut = base.ValsSplit(lzGroupKey, lzValsOut[:0])
+					lzValsOut = base.ValsDecode(lzGroupKey, lzValsOut[:0])
 
 					if len(aggExprs) > 0 { // !lz
 						// If we have aggregate exprs, append their

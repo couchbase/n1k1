@@ -1,6 +1,8 @@
 package n1k1
 
 import (
+	"encoding/binary" // <== genCompiler:hide
+
 	"github.com/couchbase/n1k1/base"
 )
 
@@ -82,13 +84,15 @@ func ExprLabelPath(lzVars *base.Vars, labels base.Labels,
 // non-JSON / BINARY and can be parsed using base.ValsSplit().
 func ExprValsCanonical(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	var lzBytes []byte // <== varLift: lzBytes by path
+	var lzBuf8 [8]byte  // <== varLift: lzBuf8 by path
+	var lzBytes []byte  // <== varLift: lzBytes by path
+	var lzCBytes []byte // <== varLift: lzCBytes by path
 
 	lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
 		if LzScope {
-			lzLen := 0
+			lzLen := 8
 			for _, lzValX := range lzVals {
-				lzLen += len(lzValX) + 1 // Extra 1 for newline separators.
+				lzLen += len(lzValX) + 8
 			}
 
 			if cap(lzBytes) < lzLen {
@@ -99,15 +103,22 @@ func ExprValsCanonical(lzVars *base.Vars, labels base.Labels,
 
 			lzJoined := lzBytes[:0]
 
-			for lzValI, lzValX := range lzVals {
-				if lzValI > 0 {
-					lzJoined = append(lzJoined, '\n')
-				}
+			binary.LittleEndian.PutUint64(lzBuf8[:], uint64(len(lzVals)))
+			lzJoined = append(lzJoined, lzBuf8[:]...)
 
-				lzJoined, lzErr = lzVars.Ctx.ValComparer.CanonicalJSON(lzValX, lzJoined)
+			for _, lzValX := range lzVals {
+				lzCanonical := lzCBytes[:0]
+
+				lzCanonical, lzErr = lzVars.Ctx.ValComparer.CanonicalJSON(lzValX, lzCanonical)
 				if lzErr != nil {
 					break
 				}
+
+				binary.LittleEndian.PutUint64(lzBuf8[:], uint64(len(lzCanonical)))
+				lzJoined = append(lzJoined, lzBuf8[:]...)
+				lzJoined = append(lzJoined, lzCanonical[:]...)
+
+				lzCBytes = lzCanonical[:0]
 			}
 
 			if lzErr == nil {

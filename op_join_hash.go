@@ -137,7 +137,7 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 					if leftVals { // !lz
 						// End chain has offset/size of 0/0.
 						lzLeftBytes = append(lzLeftBytes[:0], lzZero16[:16]...)
-						lzLeftBytes = base.ValsJoin(lzVals, lzLeftBytes)
+						lzLeftBytes = base.ValsEncode(lzVals, lzLeftBytes)
 
 						lzOffset, lzSize, lzErr := lzChunks.BytesAppend(lzLeftBytes)
 						if lzErr != nil {
@@ -174,7 +174,7 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 					if leftVals { // !lz
 						// Copy previous offset/size to extend the chain.
 						lzLeftBytes = append(lzLeftBytes[:0], lzProbeValOld[:16]...)
-						lzLeftBytes = base.ValsJoin(lzVals, lzLeftBytes)
+						lzLeftBytes = base.ValsEncode(lzVals, lzLeftBytes)
 
 						lzOffset, lzSize, lzErr := lzChunks.BytesAppend(lzLeftBytes)
 						if lzErr != nil {
@@ -243,7 +243,7 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 								if opIntersect { // !lz
 									// Ex: intersect-distinct.
-									lzValsOut = base.ValsSplit(lzProbeKey, lzValsOut[:0])
+									lzValsOut = base.ValsDecode(lzProbeKey, lzValsOut[:0])
 
 									lzYieldValsOrig(lzValsOut)
 								} // !lz
@@ -255,7 +255,7 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 						if leftCount { // !lz
 							if opIntersect { // !lz
 								// Ex: intersect-all.
-								lzValsOut = base.ValsSplit(lzProbeKey, lzValsOut[:0])
+								lzValsOut = base.ValsDecode(lzProbeKey, lzValsOut[:0])
 
 								lzLeftCount := binary.LittleEndian.Uint64(lzProbeVal[:8])
 
@@ -297,7 +297,7 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 									// Ex: except-all.
 									lzLeftCount := binary.LittleEndian.Uint64(lzProbeVal[:8])
 
-									lzValsOut = base.ValsSplit(lzProbeKey, lzValsOut[:0])
+									lzValsOut = base.ValsDecode(lzProbeKey, lzValsOut[:0])
 
 									for lzI := uint64(0); lzI < lzLeftCount; lzI++ {
 										lzYieldValsOrig(lzValsOut)
@@ -316,7 +316,7 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 								if !leftCount && !leftVals { // !lz
 									// Ex: except-distinct.
-									lzValsOut = base.ValsSplit(lzProbeKey, lzValsOut[:0])
+									lzValsOut = base.ValsDecode(lzProbeKey, lzValsOut[:0])
 
 									lzYieldValsOrig(lzValsOut)
 								} // !lz

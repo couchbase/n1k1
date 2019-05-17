@@ -4,7 +4,7 @@
 package base
 
 import (
-	"bytes"
+	"encoding/binary"
 	"fmt"
 	"time"
 
@@ -119,34 +119,33 @@ func ValsDeepCopy(vals Vals, preallocVals Vals, preallocVal Val) (
 
 // -----------------------------------------------------
 
-// ValsJoin appends the vals to out, with newline separators.
-func ValsJoin(vals Vals, out []byte) []byte {
-	for i, v := range vals {
-		if i > 0 {
-			out = append(out, '\n')
-		}
+// ValsEncode appends the encoded vals to the out slice.
+func ValsEncode(vals Vals, out []byte) []byte {
+	var buf8 [8]byte
 
+	binary.LittleEndian.PutUint64(buf8[:], uint64(len(vals)))
+	out = append(out, buf8[:]...)
+
+	for _, v := range vals {
+		binary.LittleEndian.PutUint64(buf8[:], uint64(len(v)))
+		out = append(out, buf8[:]...)
 		out = append(out, v...)
 	}
 
 	return out
 }
 
-// ValsSplit splits b by newline, appending each val to valsOut.
-func ValsSplit(b []byte, valsOut Vals) Vals {
-	for {
-		idx := bytes.IndexByte(b, '\n')
-		if idx < 0 {
-			idx = len(b)
-		}
+// ValsDecode appending each decoded val to the valsOut slice.
+func ValsDecode(b []byte, valsOut Vals) Vals {
+	n := binary.LittleEndian.Uint64(b[:8])
+	b = b[8:]
 
-		valsOut = append(valsOut, Val(b[:idx]))
+	for i := uint64(0); i < n; i++ {
+		vLen := binary.LittleEndian.Uint64(b[:8])
+		b = b[8:]
 
-		if idx >= len(b) {
-			break
-		}
-
-		b = b[idx+1:]
+		valsOut = append(valsOut, Val(b[0:vLen]))
+		b = b[vLen:]
 	}
 
 	return valsOut

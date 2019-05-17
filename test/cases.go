@@ -2492,24 +2492,36 @@ var TestCasesSimple = []TestCaseSimple{
 	{
 		about: "test csv-data scan->distinct on 1 label of 2",
 		o: base.Op{
-			Kind:   "distinct",
+			Kind:   "order-offset-limit",
 			Labels: base.Labels{"a"},
 			Params: []interface{}{
 				[]interface{}{
 					[]interface{}{"labelPath", "a"},
 				},
+				[]interface{}{
+					"asc",
+				},
 			},
 			Children: []*base.Op{&base.Op{
-				Kind:   "scan",
-				Labels: base.Labels{"a", "b"},
+				Kind:   "distinct",
+				Labels: base.Labels{"a"},
 				Params: []interface{}{
-					"csvData",
-					`
+					[]interface{}{
+						[]interface{}{"labelPath", "a"},
+					},
+				},
+				Children: []*base.Op{&base.Op{
+					Kind:   "scan",
+					Labels: base.Labels{"a", "b"},
+					Params: []interface{}{
+						"csvData",
+						`
 10,11
 10,12
 20,20
 `,
-				},
+					},
+				}},
 			}},
 		},
 		expectYields: []base.Vals{
@@ -2564,30 +2576,44 @@ var TestCasesSimple = []TestCaseSimple{
 	{
 		about: "test csv-data scan->group-by count",
 		o: base.Op{
-			Kind:   "group",
+			Kind:   "order-offset-limit",
 			Labels: base.Labels{"a", "count-a"},
 			Params: []interface{}{
 				[]interface{}{
 					[]interface{}{"labelPath", "a"},
+					[]interface{}{"labelPath", "count-a"},
 				},
 				[]interface{}{
-					[]interface{}{"labelPath", "a"},
-				},
-				[]interface{}{
-					[]interface{}{"count"},
+					"asc",
+					"asc",
 				},
 			},
 			Children: []*base.Op{&base.Op{
-				Kind:   "scan",
-				Labels: base.Labels{"a", "b"},
+				Kind:   "group",
+				Labels: base.Labels{"a", "count-a"},
 				Params: []interface{}{
-					"csvData",
-					`
+					[]interface{}{
+						[]interface{}{"labelPath", "a"},
+					},
+					[]interface{}{
+						[]interface{}{"labelPath", "a"},
+					},
+					[]interface{}{
+						[]interface{}{"count"},
+					},
+				},
+				Children: []*base.Op{&base.Op{
+					Kind:   "scan",
+					Labels: base.Labels{"a", "b"},
+					Params: []interface{}{
+						"csvData",
+						`
 10,11
 10,12
 20,20
 `,
-				},
+					},
+				}},
 			}},
 		},
 		expectYields: []base.Vals{
@@ -3032,8 +3058,8 @@ var TestCasesSimple = []TestCaseSimple{
 			}},
 		},
 		expectYields: []base.Vals{
-			base.Vals{[]byte("0\n0\n0")},
-			base.Vals{[]byte("1.2\n-22\n-0")},
+			base.Vals{[]byte("\x03\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x000\x01\x00\x00\x00\x00\x00\x00\x000\x01\x00\x00\x00\x00\x00\x00\x000")},
+			base.Vals{[]byte("\x03\x00\x00\x00\x00\x00\x00\x00\x03\x00\x00\x00\x00\x00\x00\x001.2\x03\x00\x00\x00\x00\x00\x00\x00-22\x02\x00\x00\x00\x00\x00\x00\x00-0")},
 		},
 	},
 	{
@@ -3479,8 +3505,8 @@ var TestCasesSimple = []TestCaseSimple{
 			}},
 		},
 		expectYields: []base.Vals{
-			StringsToVals([]string{`10`, `11`}, nil),
 			StringsToVals([]string{`20`, `21`}, nil),
+			StringsToVals([]string{`10`, `11`}, nil),
 		},
 	},
 	{
@@ -3678,8 +3704,8 @@ var TestCasesSimple = []TestCaseSimple{
 			}},
 		},
 		expectYields: []base.Vals{
-			StringsToVals([]string{`10`, `11`}, nil),
 			StringsToVals([]string{`20`, `21`}, nil),
+			StringsToVals([]string{`10`, `11`}, nil),
 		},
 	},
 	{
@@ -3825,8 +3851,8 @@ var TestCasesSimple = []TestCaseSimple{
 			}},
 		},
 		expectYields: []base.Vals{
-			base.Vals{[]byte("10"), []byte("23")},
 			base.Vals{[]byte("20"), []byte("20")},
+			base.Vals{[]byte("10"), []byte("23")},
 		},
 	},
 	{
@@ -3859,8 +3885,8 @@ var TestCasesSimple = []TestCaseSimple{
 			}},
 		},
 		expectYields: []base.Vals{
-			base.Vals{[]byte("10"), []byte("20")},
 			base.Vals{[]byte("20"), []byte("20")},
+			base.Vals{[]byte("10"), []byte("20")},
 		},
 	},
 	{
@@ -3893,8 +3919,8 @@ var TestCasesSimple = []TestCaseSimple{
 			}},
 		},
 		expectYields: []base.Vals{
-			base.Vals{[]byte("10"), []byte("23"), []byte("2")},
 			base.Vals{[]byte("20"), []byte("20"), []byte("1")},
+			base.Vals{[]byte("10"), []byte("23"), []byte("2")},
 		},
 	},
 }

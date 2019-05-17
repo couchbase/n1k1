@@ -25,7 +25,7 @@ func YieldChainedVals(yieldVals YieldVals, valsSuffix Vals, chunks *store.Chunks
 			return valsOut, fmt.Errorf("YieldChainedVals: err: %v", err)
 		}
 
-		valsOut = ValsSplit(ref[16:], valsOut[:0])
+		valsOut = ValsDecode(ref[16:], valsOut[:0])
 
 		valsOut = append(valsOut, valsSuffix...)
 
