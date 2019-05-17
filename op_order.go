@@ -50,25 +50,27 @@ func OpOrderOffsetLimit(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVal
 		lzHeap := &base.HeapValsProjected{nil, lzLessFunc}
 
 		// Used when there are no ORDER-BY exprs.
-		var lzItems []base.Vals
+		var lzExamined int
 
 		var lzPreallocVals base.Vals
 		var lzPreallocVal base.Val
 		var lzPreallocProjected base.Vals
 
-		_, _, _, _ = lzProjectFunc, lzHeap, lzItems, lzPreallocProjected
+		_, _, _ = lzProjectFunc, lzHeap, lzExamined
+
+		_, _, _ = lzPreallocVals, lzPreallocVal, lzPreallocProjected
 
 		lzYieldValsOrig := lzYieldVals
 
 		lzYieldVals = func(lzVals base.Vals) {
-			// Deep copy the incoming lzVals, because unlike other
-			// "stateless" operators, we hold onto the vals in the
-			// lzHeap/lzItems for sorting.
-			var lzValsCopy base.Vals
-
-			lzValsCopy, lzPreallocVals, lzPreallocVal = base.ValsDeepCopy(lzVals, lzPreallocVals, lzPreallocVal)
-
 			if len(orders) > 0 { // !lz
+				// Deep copy the incoming lzVals, because unlike other
+				// "stateless" operators, we hold onto the vals in the
+				// lzHeap for sorting.
+				var lzValsCopy base.Vals
+
+				lzValsCopy, lzPreallocVals, lzPreallocVal = base.ValsDeepCopy(lzVals, lzPreallocVals, lzPreallocVal)
+
 				// If there were ORDER BY exprs, we use the lzHeap.
 				lzValsOut := lzPreallocProjected[:0]
 
@@ -98,7 +100,11 @@ func OpOrderOffsetLimit(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVal
 					}
 				}
 			} else { // !lz
-				lzItems = append(lzItems, lzValsCopy)
+				if lzExamined >= offset && lzExamined < offsetPlusLimit {
+					lzYieldValsOrig(lzVals)
+				}
+
+				lzExamined++
 
 				// TODO: No ORDER-BY, but OFFSET+LIMIT reached, so
 				// need to early exit via lzVars.Ctx.YieldStats?
@@ -135,21 +141,6 @@ func OpOrderOffsetLimit(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVal
 					}
 
 					// TODO: Recycle lzHeap into lzVars.Ctx?
-				} else { // !lz
-					lzItemsLen := len(lzItems)
-
-					for lzI := offset; lzI < lzItemsLen; lzI++ {
-						if limit < math.MaxInt64 { // !lz
-							if lzN >= limit {
-								break
-							}
-							lzN++
-						} // !lz
-
-						lzYieldValsOrig(lzItems[lzI])
-					}
-
-					// TODO: Recycle lzItems into lzVars.Ctx?
 				} // !lz
 			}
 
