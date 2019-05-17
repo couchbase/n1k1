@@ -360,4 +360,14 @@ efficiently execute that query-plan.
         so that sibling goroutines don't progress too far ahead?
       - and, SkipToHints might be traded during recycled batch exchange?
 
+- GROUP-JOIN operator?
+  - useful for decorrelating subqueries?
+
+- NUMA?
+  - pinning threads to specific cores?
+  - lock free data structures?
+  - per-thread data structures?
+  - optimize data structure layout to avoid false sharing
+    and accessing non-local memory?
+
 - emit other languages?
