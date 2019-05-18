@@ -2,6 +2,7 @@ package base
 
 import (
 	"encoding/binary"
+	"fmt"
 
 	"github.com/couchbase/rhmap/heap"
 	"github.com/couchbase/rhmap/store"
@@ -13,12 +14,18 @@ type ValsLessFunc func(valsA, valsB Vals) bool
 // ---------------------------------------------
 
 // ValsProjectedEncode encodes a vals-projected item.
-func ValsProjectedEncode(vals, projected Vals, out []byte) []byte {
+func ValsProjectedEncode(vals, projected Vals, out []byte,
+	valComparer *ValComparer) (rv []byte, err error) {
 	var buf8 [8]byte
 	out = append(out, buf8[:]...) // Prepend space for projected len.
 
 	// Encode projected before vals as it's accessed more often.
-	out = ValsEncode(projected, out)
+	out, err = ValsEncodeCanonical(projected, out, valComparer)
+	if err != nil {
+		return out, fmt.Errorf(
+			"ValsProjectedEncode, projected: %v, err: %v\n",
+			projected, err)
+	}
 
 	// Write projected len into the earlier prepended space.
 	binary.LittleEndian.PutUint64(buf8[:], uint64(len(out)-8))
@@ -27,7 +34,7 @@ func ValsProjectedEncode(vals, projected Vals, out []byte) []byte {
 	// Encode vals.
 	out = ValsEncode(vals, out)
 
-	return out
+	return out, nil
 }
 
 // ValsProjectedDecode decodes a vals-projected item.

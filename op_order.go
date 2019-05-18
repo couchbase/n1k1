@@ -91,13 +91,20 @@ func OpOrderOffsetLimit(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVal
 				}
 
 				if lzErr == nil && lzNeedPush {
-					lzEncoded = base.ValsProjectedEncode(lzVals, lzValsOut, lzEncoded[:0])
+					lzEncoded, lzErr = base.ValsProjectedEncode(lzVals, lzValsOut, lzEncoded[:0], lzVars.Ctx.ValComparer)
+					if lzErr != nil {
+						lzYieldErr(lzErr)
+					} else {
+						heap.Push(lzHeap, lzEncoded)
 
-					heap.Push(lzHeap, lzEncoded)
+						// If heap too big, pop max-heap-item.
+						if lzHeapLen+1 > offsetPlusLimit {
+							heap.Pop(lzHeap)
+						}
 
-					// If heap too big, pop max-heap-item.
-					if lzHeapLen+1 > offsetPlusLimit {
-						heap.Pop(lzHeap)
+						if lzHeap.Err != nil {
+							lzYieldErr(lzHeap.Err)
+						}
 					}
 				}
 			} else { // !lz

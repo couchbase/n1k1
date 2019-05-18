@@ -259,11 +259,20 @@ efficiently execute that query-plan.
       - Ex: META().id might be implemented by projecting
         the labelPath ["^meta", "id"]?
     - need to check that full-round trip works on attachments?
-  - GROUP BY and DISTINCT and sorting and set operations and joins,
-    etc, for example, should ignore attachments?
-    - related to base.ValsEncode()?
-    - need to pass labels into base.ValsEncode()?
-    - if so, how would labels work with base.ValsDecode()?
+  - INTERSECT/EXCEPT might incorrectly compare with attachments
+    based on exprValsCanonical?
+    - need to optionally strip out attachments from exprVarsCanonical?
+    - attachments should not be propagated in INTERSECT/EXCEPT?
+  - correctly done...?
+    - JOIN can ignore attachments based on ON clause expression,
+      and correctly propagate attachments.
+    - ORDER BY can ignore attachments based on projected exprs,
+      and correctly propagate attachments.  Based on HeapValsProjected.
+    - GROUP BY can ignore attachments based on group by exprs,
+      and does not propagate attachments based on aggregate exprs.
+    - DISTINCT might correctly ignore attachments,
+      depending on how it's called with the group-by expression,
+      and does not propagate attachments?
 
 - handling of BINARY data type?
   - use a label prefix char?  Perhaps '='?

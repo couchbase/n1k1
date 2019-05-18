@@ -148,9 +148,11 @@ func ValsEncodeCanonical(vals Vals, out []byte,
 		beg := len(out)
 		out = append(out, buf8[:]...) // Prepare space for val len.
 
-		out, err = valComparer.CanonicalJSON(v, out)
-		if err != nil {
-			return out, err
+		if len(v) > 0 {
+			out, err = valComparer.CanonicalJSON(v, out)
+			if err != nil {
+				return out, err
+			}
 		}
 
 		// Write the canonical val len in the earlier prepared space.
