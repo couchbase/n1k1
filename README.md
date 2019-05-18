@@ -72,6 +72,7 @@ Some design ideas meant to help with n1k1's performance...
   - reverse popping of the max-heap produces the final result, which
     avoids a final sort.
   - candidate vals that are "too large" for the max-heap are recycled.
+  - max-heap that becomes too large will spill to temporary files.
 - INTERSECT DISTINCT / ALL and EXCEPT DISTINCT / ALL
   are optimized by reusing hash-join's machinery.
   - hash-join's probe map can optionally track information like...
@@ -118,8 +119,9 @@ Some design ideas meant to help with n1k1's performance...
   pipelines.
 - nested object paths (e.g. locations/address/city).
 - scans of simple files (CSV's and newline delimited JSON).
-- automatic spilling of large hashmaps from memory to temporary disk
-  files.
+- automatic spilling from memory to temporary files...
+  - hashmaps (for joins, distinct, group-by, etc).
+  - max-heap's (for sorting).
 - runtime variables / context passed down through ExecOp().
 
 -------------------------------------------------------
@@ -185,9 +187,6 @@ efficiently execute that query-plan.
       global, process-wide workload?
 
 - conversion of N1QL query-plan into n1k1 query-plan?
-
-- ORDER BY / OFFSET / LIMIT's max-heap should optionally spill out to
-  disk when it gets too large?
 
 - UNNEST - a kind of self-join
 
