@@ -259,6 +259,11 @@ efficiently execute that query-plan.
       - Ex: META().id might be implemented by projecting
         the labelPath ["^meta", "id"]?
     - need to check that full-round trip works on attachments?
+  - GROUP BY and DISTINCT and sorting and set operations and joins,
+    etc, for example, should ignore attachments?
+    - related to base.ValsEncode()?
+    - need to pass labels into base.ValsEncode()?
+    - if so, how would labels work with base.ValsDecode()?
 
 - handling of BINARY data type?
   - use a label prefix char?  Perhaps '='?
