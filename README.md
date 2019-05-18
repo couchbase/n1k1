@@ -359,6 +359,11 @@ efficiently execute that query-plan.
         so that sibling goroutines don't progress too far ahead?
       - and, SkipToHints might be traded during recycled batch exchange?
 
+- if compilation is concurrent and becomes ready-to-use while
+  an inflight query is halfway through, can we switch gears
+  to the compiled codepaths?
+  - perhaps at the point of yield-stats?
+
 - GROUP-JOIN operator?
   - useful for decorrelating subqueries?
 
