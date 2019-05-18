@@ -267,6 +267,8 @@ type Ctx struct {
 	// YieldStats may be invoked concurrently by multiple goroutines.
 	YieldStats YieldStats
 
+	TempDir string
+
 	AllocMap   func() (*store.RHStore, error)
 	RecycleMap func(*store.RHStore)
 

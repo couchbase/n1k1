@@ -60,6 +60,7 @@ func MakeVars() (string, *base.Vars) {
 			ValComparer: base.NewValComparer(),
 			ExprCatalog: n1k1.ExprCatalog,
 			YieldStats:  func(stats *base.Stats) error { return nil },
+			TempDir:     tmpDir,
 			AllocMap: func() (*store.RHStore, error) {
 				if recycledMap != nil {
 					rv := recycledMap

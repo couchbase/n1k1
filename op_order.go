@@ -35,7 +35,10 @@ func OpOrderOffsetLimit(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVal
 		pathNextOOL := EmitPush(pathNext, "OOL") // !lz
 
 		var lzProjectFunc base.ProjectFunc
+
 		var lzValsLessFunc base.ValsLessFunc
+
+		var lzHeap *base.HeapValsProjected
 
 		if len(orders) > 0 { // !lz
 			// The ORDER BY exprs are treated as a projection.
@@ -44,59 +47,57 @@ func OpOrderOffsetLimit(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVal
 
 			lzValsLessFunc =
 				MakeValsLessFunc(lzVars, directions) // !lz
+
+			lzHeap = base.CreateHeapValsProjected(lzVars.Ctx, lzValsLessFunc)
 		} // !lz
 
-		// Used when there are ORDER-BY exprs.
-		lzHeap := &base.HeapValsProjected{nil, lzValsLessFunc}
+		_, _, _ = lzProjectFunc, lzValsLessFunc, lzHeap
 
-		// Used when there are no ORDER-BY exprs.
+		var lzEncoded []byte
 		var lzExamined int
+		var lzValsPre, lzValsMax base.Vals
 
-		var lzPreallocVals base.Vals
-		var lzPreallocVal base.Val
-		var lzPreallocProjected base.Vals
-
-		_, _, _ = lzProjectFunc, lzHeap, lzExamined
-
-		_, _, _ = lzPreallocVals, lzPreallocVal, lzPreallocProjected
+		_, _, _, _ = lzEncoded, lzExamined, lzValsPre, lzValsMax
 
 		lzYieldValsOrig := lzYieldVals
 
 		lzYieldVals = func(lzVals base.Vals) {
 			if len(orders) > 0 { // !lz
-				// Deep copy the incoming lzVals, because unlike other
-				// "stateless" operators, we hold onto the vals in the
-				// lzHeap for sorting.
-				var lzValsCopy base.Vals
-
-				lzValsCopy, lzPreallocVals, lzPreallocVal = base.ValsDeepCopy(lzVals, lzPreallocVals, lzPreallocVal)
-
 				// If there were ORDER BY exprs, we use the lzHeap.
-				lzValsOut := lzPreallocProjected[:0]
-
-				lzPreallocProjected = nil
-
-				lzVals = lzValsCopy
+				lzValsOut := lzValsPre[:0]
 
 				lzValsOut = lzProjectFunc(lzVals, lzValsOut, lzYieldErr) // <== emitCaptured: pathNextOOL "PF"
 
+				lzValsPre = lzValsOut
+
+				// Push onto heap if heap is small or heap is empty or
+				// item < max-heap-item.
 				lzHeapLen := lzHeap.Len()
-				if lzHeapLen < offsetPlusLimit || lzHeapLen == 0 || lzValsLessFunc(lzValsOut, lzHeap.GetProjected(0)) {
-					// Push onto heap if heap is small or heap is empty or item < max-heap-item.
-					heap.Push(lzHeap, base.ValsProjected{lzValsCopy, lzValsOut})
 
-					// If heap is too big (> offset+limit), then recycle max-heap-item.
+				var lzErr error
+
+				lzNeedPush := lzHeapLen < offsetPlusLimit || lzHeapLen == 0
+				if !lzNeedPush {
+					var lzMax []byte
+
+					lzMax, lzErr = lzHeap.Get(0)
+					if lzErr != nil {
+						lzYieldErr(lzErr)
+					} else {
+						lzValsMax = base.ValsProjectedDecodeProjected(lzMax, lzValsMax[:0])
+
+						lzNeedPush = lzValsLessFunc(lzValsOut, lzValsMax)
+					}
+				}
+
+				if lzErr == nil && lzNeedPush {
+					lzEncoded = base.ValsProjectedEncode(lzVals, lzValsOut, lzEncoded[:0])
+
+					heap.Push(lzHeap, lzEncoded)
+
+					// If heap too big, pop max-heap-item.
 					if lzHeapLen+1 > offsetPlusLimit {
-						lzFormerMax := heap.Pop(lzHeap).(base.ValsProjected)
-
-						lzPreallocVals = lzFormerMax.Vals[0:cap(lzFormerMax.Vals)]
-
-						lzPreallocVal = lzFormerMax.Vals[0]
-						lzPreallocVal = lzPreallocVal[0:cap(lzPreallocVal)]
-
-						// TODO: Recycle each val in lzFormerMax.Projected into lzVars.Ctx?
-
-						lzPreallocProjected = lzFormerMax.Projected[:0]
+						heap.Pop(lzHeap)
 					}
 				}
 			} else { // !lz
@@ -119,15 +120,26 @@ func OpOrderOffsetLimit(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVal
 				_ = lzN
 
 				if len(orders) > 0 { // !lz
+
+					// Pop off items from the heap, placing them in
+					// reverse at end of the heap slots, which leads
+					// to the end of the heap slots having the needed
+					// items items correctly sorted in-place.
 					lzHeapLen := lzHeap.Len()
 
-					lzValsProjected := lzHeap.ValsProjected
-
 					for lzJ := lzHeapLen - 1; lzJ >= offset; lzJ-- {
-						lzValsProjected[lzJ] = heap.Pop(lzHeap).(base.ValsProjected)
-					}
+						_, lzOffset, lzSize, lzErr := lzHeap.GetOffsetSize(0)
+						if lzErr != nil {
+							lzYieldErrOrig(lzErr)
+							break
+						}
 
-					lzHeap.ValsProjected = lzValsProjected
+						heap.Pop(lzHeap)
+
+						lzHeap.Free = lzHeap.Free[:0]
+
+						lzHeap.SetOffsetSize(lzJ, lzOffset, lzSize)
+					}
 
 					for lzI := offset; lzI < lzHeapLen; lzI++ {
 						if limit < math.MaxInt64 { // !lz
@@ -137,7 +149,15 @@ func OpOrderOffsetLimit(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVal
 							lzN++
 						} // !lz
 
-						lzYieldValsOrig(lzHeap.GetVals(lzI))
+						lzItem, lzErr := lzHeap.Get(lzI)
+						if lzErr != nil {
+							lzYieldErrOrig(lzErr)
+							break
+						}
+
+						lzValsPre = base.ValsProjectedDecodeVals(lzItem, lzValsPre[:0])
+
+						lzYieldValsOrig(lzValsPre)
 					}
 
 					// TODO: Recycle lzHeap into lzVars.Ctx?
@@ -151,6 +171,10 @@ func OpOrderOffsetLimit(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVal
 
 		if LzScope {
 			ExecOp(o.Children[0], lzVars, lzYieldVals, lzYieldErr, pathNext, "OOLO") // !lz
+
+			if lzHeap != nil {
+				lzHeap.Close()
+			}
 		}
 	}
 }
