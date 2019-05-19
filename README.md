@@ -71,15 +71,14 @@ Some design ideas meant to help with n1k1's performance...
 - max-heap in ORDER-BY / OFFSET / LIMIT
   - reverse popping of the max-heap produces the final result, which
     avoids a final sort.
-  - candidate vals that are "too large" for the max-heap are recycled.
   - max-heap that becomes too large will spill to temporary files.
 - INTERSECT DISTINCT / ALL and EXCEPT DISTINCT / ALL
   are optimized by reusing hash-join's machinery.
   - hash-join's probe map can optionally track information like...
     - all the left-side values (for hash-join).
     - a count of the left-side values (for INTERSECT ALL, EXCEPT ALL).
-    - and/or a 'was-probed' boolean flag (for multiple use cases).
-  - so, INTERSECT DISTINCT and EXCEPT DISTINCT avoid using an
+    - and/or a probe-count (for multiple use cases).
+  - INTERSECT DISTINCT and EXCEPT DISTINCT avoid using an
     additional, chained DISTINCT operator.
 - base.ValComparer.CanonicalJSON()
   - provides JSON canonicalization into existing []byte buffers which
@@ -191,6 +190,9 @@ efficiently execute that query-plan.
 - conversion of N1QL query-plan into n1k1 query-plan?
 
 - NEST - a kind of join
+
+- numbers
+  - need to treat float's different than int's?
 
 - subqueries & correlated subqueries?
   - these should just be yet another expression
