@@ -232,6 +232,7 @@ efficiently execute that query-plan.
     value.NUMBER during every Evaluate()?
     - see the ExprCmp() implementation to see how this works.
 
+- NEST should spill out to disk when it gets too big?
 - NEST via hash-join?
 
 - UNION-ALL data-staging batchSize should be configurable?
