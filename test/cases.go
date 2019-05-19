@@ -3926,4 +3926,68 @@ var TestCasesSimple = []TestCaseSimple{
 			base.Vals{[]byte("10"), []byte("23"), []byte("2")},
 		},
 	},
+	{
+		about: "test csv-data scan->unnest-inner",
+		o: base.Op{
+			Kind:   "unnest-inner",
+			Labels: base.Labels{"."},
+			Params: []interface{}{
+				"labelPath", ".", "a",
+			},
+			Children: []*base.Op{&base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"."},
+				Params: []interface{}{
+					"jsonsData",
+					`
+{"a":[1,2]}
+{"a":[3]}
+{"a":[]}
+{"a":123}
+`,
+				},
+			}, &base.Op{
+				Kind:   "noop",
+				Labels: base.Labels{"child"},
+			}},
+		},
+		expectYields: []base.Vals{
+			base.Vals{[]byte(`{"a":[1,2]}`), []byte("1")},
+			base.Vals{[]byte(`{"a":[1,2]}`), []byte("2")},
+			base.Vals{[]byte(`{"a":[3]}`), []byte("3")},
+		},
+	},
+	{
+		about: "test csv-data scan->unnest-outerLeft",
+		o: base.Op{
+			Kind:   "unnest-outerLeft",
+			Labels: base.Labels{"."},
+			Params: []interface{}{
+				"labelPath", ".", "a",
+			},
+			Children: []*base.Op{&base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"."},
+				Params: []interface{}{
+					"jsonsData",
+					`
+{"a":[1,2]}
+{"a":[3]}
+{"a":[]}
+{"a":123}
+`,
+				},
+			}, &base.Op{
+				Kind:   "noop",
+				Labels: base.Labels{"child"},
+			}},
+		},
+		expectYields: []base.Vals{
+			base.Vals{[]byte(`{"a":[1,2]}`), []byte("1")},
+			base.Vals{[]byte(`{"a":[1,2]}`), []byte("2")},
+			base.Vals{[]byte(`{"a":[3]}`), []byte("3")},
+			base.Vals{[]byte(`{"a":[]}`), []byte(nil)},
+			base.Vals{[]byte(`{"a":123}`), []byte(nil)},
+		},
+	},
 }

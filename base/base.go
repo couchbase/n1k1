@@ -308,3 +308,24 @@ type ExprCatalogFunc func(vars *Vars, labels Labels,
 type YieldStats func(*Stats) error
 
 type Stats struct{} // TODO.
+
+// -----------------------------------------------------
+
+func ArrayYield(val Val, yieldVals YieldVals, valsPre Vals) Vals {
+	parseVal, parseType := Parse(val)
+	if parseType == int(jsonparser.Array) {
+		jsonparser.ArrayEach(parseVal, func(v []byte,
+			vType jsonparser.ValueType, vOffset int, vErr error) {
+			if vErr != nil {
+				return
+			}
+
+			valsPre = valsPre[:0]
+			valsPre = append(valsPre, v)
+
+			yieldVals(valsPre)
+		})
+	}
+
+	return valsPre
+}

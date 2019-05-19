@@ -26,16 +26,20 @@ func OpJoinNestedLoop(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	labelsAB = append(labelsAB, o.Children[0].Labels...)
 	labelsAB = append(labelsAB, o.Children[1].Labels...)
 
-	joinKind := strings.Split(o.Kind, "-")[1] // Ex: "inner", "outerLeft".
+	joinKind := strings.Split(o.Kind, "-")
 
-	isOuterLeft := joinKind == "outerLeft"
+	isUnnest := joinKind[0] == "unnest"
+
+	isOuterLeft := joinKind[1] == "outerLeft"
 
 	joinClauseFunc :=
 		MakeExprFunc(lzVars, labelsAB, o.Params, pathNext, "JF") // !lz
 
 	var lzHadInner bool
 
-	_, _ = joinClauseFunc, lzHadInner
+	var lzValsPre base.Vals
+
+	_, _, _ = joinClauseFunc, lzHadInner, lzValsPre
 
 	lzValsJoin := make(base.Vals, lenLabelsAB)
 
@@ -53,15 +57,19 @@ func OpJoinNestedLoop(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 			lzHadInner = false
 		} // !lz
 
+		var lzVal base.Val
+
 		lzYieldVals := func(lzValsB base.Vals) {
 			lzValsJoin = lzValsJoin[0:lenLabelsA]
 			lzValsJoin = append(lzValsJoin, lzValsB...)
 
 			lzVals := lzValsJoin
 
-			var lzVal base.Val
-
-			lzVal = joinClauseFunc(lzVals, lzYieldErr) // <== emitCaptured: pathNext, "JF"
+			if isUnnest { // !lz
+				lzVal = base.ValTrue
+			} else { // !lz
+				lzVal = joinClauseFunc(lzVals, lzYieldErr) // <== emitCaptured: pathNext, "JF"
+			} // !lz
 
 			if base.ValEqualTrue(lzVal) {
 				if isOuterLeft { // !lz
@@ -73,7 +81,15 @@ func OpJoinNestedLoop(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 		}
 
 		// Inner (right) driver.
-		ExecOp(o.Children[1], lzVars, lzYieldVals, lzYieldErr, pathNext, "JNLI") // !lz
+		if isUnnest { // !lz
+			lzVals := lzValsA
+
+			lzVal = joinClauseFunc(lzVals, lzYieldErr) // <== emitCaptured: pathNext, "JF"
+
+			lzValsPre = base.ArrayYield(lzVal, lzYieldVals, lzValsPre[:0])
+		} else { // !lz
+			ExecOp(o.Children[1], lzVars, lzYieldVals, lzYieldErr, pathNext, "JNLI") // !lz
+		} // !lz
 
 		// Case of outerLeft join when inner (right) was empty.
 		if isOuterLeft { // !lz

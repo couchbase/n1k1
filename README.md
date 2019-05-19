@@ -98,10 +98,12 @@ Some design ideas meant to help with n1k1's performance...
 - comparisons follows N1QL type comparison rules.
 - glue integration with existing couchbase/query/expression package.
 - join nested-loop inner.
-- join nested-loop outer-left.
+- join nested-loop left outer.
 - join hash-eq inner
-- join hash-eq outer-left
+- join hash-eq left outer
 - join ON expressions.
+- UNNEST inner
+- UNNEST left outer.
 - WHERE expressions.
 - projection expressions.
 - ORDER BY multiple expressions & ASC/DESC.
@@ -187,8 +189,6 @@ efficiently execute that query-plan.
       global, process-wide workload?
 
 - conversion of N1QL query-plan into n1k1 query-plan?
-
-- UNNEST - a kind of self-join
 
 - NEST - a kind of join
 
