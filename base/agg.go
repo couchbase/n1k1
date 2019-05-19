@@ -23,7 +23,7 @@ type Agg struct {
 	// Update incorporates the incoming val with the existing agg
 	// data, by extending and returning the given aggNew.  Also
 	// returns aggRest which is the agg bytes that were unread.
-	Update func(val Val, aggNew, agg []byte) (aggNewOut, aggRest []byte)
+	Update func(val Val, aggNew, agg []byte, vc *ValComparer) (aggNewOut, aggRest []byte)
 
 	// Result returns the final result of the aggregation.
 	// Also returns aggRest or the agg bytes that were unread.
@@ -45,7 +45,8 @@ func init() {
 var AggCount = &Agg{
 	Init: func(agg []byte) []byte { return append(agg, Zero8[:8]...) },
 
-	Update: func(v Val, aggNew, agg []byte) (aggNewOut, aggRest []byte) {
+	Update: func(v Val, aggNew, agg []byte, vc *ValComparer) (
+		aggNewOut, aggRest []byte) {
 		c := binary.LittleEndian.Uint64(agg[:8])
 		var b [8]byte
 		binary.LittleEndian.PutUint64(b[:8], c+1)
@@ -69,7 +70,8 @@ var AggCount = &Agg{
 var AggSum = &Agg{
 	Init: func(agg []byte) []byte { return append(agg, Zero8[:8]...) },
 
-	Update: func(v Val, aggNew, agg []byte) (aggNewOut, aggRest []byte) {
+	Update: func(v Val, aggNew, agg []byte, vc *ValComparer) (
+		aggNewOut, aggRest []byte) {
 		parsedVal, parsedType := Parse(v)
 		if ParseTypeToValType[parsedType] == ValTypeNumber {
 			f, err := ParseFloat64(parsedVal)

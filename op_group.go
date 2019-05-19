@@ -118,7 +118,7 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 								aggIdx := base.AggCatalog[aggName.(string)] // !lz
 								lzAgg = base.Aggs[aggIdx]
 
-								lzGroupValNew, lzGroupVal = lzAgg.Update(lzValsOut[aggCalcI], lzGroupValNew, lzGroupVal)
+								lzGroupValNew, lzGroupVal = lzAgg.Update(lzValsOut[aggCalcI], lzGroupValNew, lzGroupVal, lzVars.Ctx.ValComparer)
 							} // !lz
 						} // !lz
 
