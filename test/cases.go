@@ -3435,8 +3435,6 @@ var TestCasesSimple = []TestCaseSimple{
 		expectYields: []base.Vals{
 			StringsToVals([]string{`20`, `21`}, nil),
 			StringsToVals([]string{`20`, `21`}, nil),
-			StringsToVals([]string{`20`, `21`}, nil),
-			StringsToVals([]string{`20`, `21`}, nil),
 		},
 	},
 	{

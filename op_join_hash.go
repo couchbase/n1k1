@@ -14,7 +14,7 @@ import (
 //  feature:            info tracked in probe map values:     yieldsUnprobed:
 //   joinHash-inner      [                         leftVals ]  f
 //   joinHash-outerLeft  [ tracksProbing           leftVals ]  t
-//   intersect-all       [               leftCount          ]  f
+//   intersect-all       [ tracksProbing leftCount          ]  f
 //   intersect-distinct  [ tracksProbing                    ]  f
 //   except-all          [ tracksProbing leftCount          ]  t
 //   except-distinct     [ tracksProbing                    ]  t
@@ -47,9 +47,7 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 		canonical = true
 
-		if o.Kind != "intersect-all" {
-			tracksProbing = true
-		}
+		tracksProbing = true
 
 		if kindParts[1] == "all" {
 			leftCount = true
@@ -93,7 +91,9 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 		var lzProbeValNew, lzLeftBytes []byte
 
-		_, _, _ = lzBytes8, lzValOut, lzLeftBytes
+		var lzProbeCount uint64
+
+		_, _, _, _ = lzBytes8, lzValOut, lzLeftBytes, lzProbeCount
 
 		exprLeftFunc :=
 			MakeExprFunc(lzVars, o.Children[0].Labels, exprLeft, pathNext, "JHL") // !lz
@@ -127,7 +127,7 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 					lzProbeValNew = lzProbeValNew[:0]
 
 					if tracksProbing { // !lz
-						lzProbeValNew = append(lzProbeValNew, byte(0))
+						lzProbeValNew = append(lzProbeValNew, lzZero16[:8]...)
 					} // !lz
 
 					if leftCount { // !lz
@@ -160,8 +160,8 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 					lzProbeValOld := lzProbeVal
 
 					if tracksProbing { // !lz
-						lzProbeValNew = append(lzProbeValNew, byte(0))
-						lzProbeValOld = lzProbeValOld[1:]
+						lzProbeValNew = append(lzProbeValNew, lzZero16[:8]...)
+						lzProbeValOld = lzProbeValOld[8:]
 					} // !lz
 
 					if leftCount { // !lz
@@ -238,10 +238,12 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 					lzProbeVal, lzProbeKeyFound := lzMap.Get([]byte(lzProbeKey))
 					if lzProbeKeyFound {
 						if tracksProbing { // !lz
-							if lzProbeVal[0] == byte(0) {
-								lzProbeVal[0] = byte(1) // Mark as probed.
+							// Increment probe count.
+							lzProbeCount = binary.LittleEndian.Uint64(lzProbeVal[:8]) + 1
+							binary.LittleEndian.PutUint64(lzProbeVal[:8], lzProbeCount)
 
-								if opIntersect { // !lz
+							if lzProbeCount == 1 {
+								if opIntersect && !leftCount { // !lz
 									// Ex: intersect-distinct.
 									lzValsOut = base.ValsDecode(lzProbeKey, lzValsOut[:0])
 
@@ -249,17 +251,16 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 								} // !lz
 							}
 
-							lzProbeVal = lzProbeVal[1:]
+							lzProbeVal = lzProbeVal[8:]
 						} // !lz
 
 						if leftCount { // !lz
 							if opIntersect { // !lz
 								// Ex: intersect-all.
-								lzValsOut = base.ValsDecode(lzProbeKey, lzValsOut[:0])
-
 								lzLeftCount := binary.LittleEndian.Uint64(lzProbeVal[:8])
+								if lzLeftCount >= lzProbeCount {
+									lzValsOut = base.ValsDecode(lzProbeKey, lzValsOut[:0])
 
-								for lzI := uint64(0); lzI < lzLeftCount; lzI++ {
 									lzYieldValsOrig(lzValsOut)
 								}
 							} // !lz
@@ -290,8 +291,9 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 						_ = lzRightSuffix
 
 						lzMapVisitor := func(lzProbeKey store.Key, lzProbeVal store.Val) bool {
-							if lzProbeVal[0] == byte(0) { // Unprobed.
-								lzProbeVal = lzProbeVal[1:]
+							lzProbeCount := binary.LittleEndian.Uint64(lzProbeVal[:8])
+							if lzProbeCount == 0 { // Unprobed.
+								lzProbeVal = lzProbeVal[8:]
 
 								if leftCount { // !lz
 									// Ex: except-all.
