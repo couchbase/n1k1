@@ -37,7 +37,7 @@ func OpUnionAll(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 					childi := lzActorData.(int) // !lz
 					child := o.Children[childi] // !lz
 
-					lzVars = lzVars.PushForConcurrency()
+					lzVars = lzVars.ChainExtend() // For concurrent usage.
 
 					lzValsUnion := make(base.Vals, numLabels)
 

@@ -249,10 +249,10 @@ type Vars struct {
 	Ctx    *Ctx
 }
 
-// PushForConcurrency returns another Vars pushed onto the Vars chain,
-// which is safely usable by another concurrent goroutine.
-func (v *Vars) PushForConcurrency() *Vars {
-	return &Vars{Next: v, Ctx: v.Ctx.PushForConcurrency()}
+// ChainExtend returns a new Vars linked to the Vars chain, which is
+// safely usable by a concurrent goroutine and useful for shadowing.
+func (v *Vars) ChainExtend() *Vars {
+	return &Vars{Next: v, Ctx: v.Ctx.Clone()}
 }
 
 // -----------------------------------------------------
@@ -263,7 +263,7 @@ type Ctx struct {
 
 	ExprCatalog map[string]ExprCatalogFunc
 
-	// ValComparer is not concurrent safe. See PushForConcurrency().
+	// ValComparer is not concurrent safe. See Clone().
 	ValComparer *ValComparer
 
 	// YieldStats may be invoked concurrently by multiple goroutines.
@@ -281,9 +281,9 @@ type Ctx struct {
 	// request-specific allocators or resources, etc.
 }
 
-// PushForConcurrency returns a copy of the given Ctx, which another
-// goroutine can then use safely.
-func (ctx *Ctx) PushForConcurrency() (ctxCopy *Ctx) {
+// Clone returns a copy of the given Ctx, which is safe for another
+// goroutine to use safely.
+func (ctx *Ctx) Clone() (ctxCopy *Ctx) {
 	ctxCopy = &Ctx{}
 	*ctxCopy = *ctx
 	ctxCopy.ValComparer = NewValComparer()

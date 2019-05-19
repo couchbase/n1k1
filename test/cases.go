@@ -3,6 +3,7 @@ package test
 import (
 	"fmt"
 	"io/ioutil"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -52,6 +53,8 @@ func MakeVars() (string, *base.Vars) {
 
 	var counter uint64
 
+	var mm sync.Mutex
+
 	var recycledMap *store.RHStore
 	var recycledChunks *store.Chunks
 
@@ -62,6 +65,9 @@ func MakeVars() (string, *base.Vars) {
 			YieldStats:  func(stats *base.Stats) error { return nil },
 			TempDir:     tmpDir,
 			AllocMap: func() (*store.RHStore, error) {
+				mm.Lock()
+				defer mm.Unlock()
+
 				if recycledMap != nil {
 					rv := recycledMap
 					recycledMap = nil
@@ -82,6 +88,9 @@ func MakeVars() (string, *base.Vars) {
 				return &sf.RHStore, nil
 			},
 			RecycleMap: func(m *store.RHStore) {
+				mm.Lock()
+				defer mm.Unlock()
+
 				if m != nil {
 					if recycledMap == nil {
 						recycledMap = m
@@ -93,6 +102,9 @@ func MakeVars() (string, *base.Vars) {
 				}
 			},
 			AllocChunks: func() (*store.Chunks, error) {
+				mm.Lock()
+				defer mm.Unlock()
+
 				if recycledChunks != nil {
 					rv := recycledChunks
 					recycledChunks = nil
@@ -112,6 +124,9 @@ func MakeVars() (string, *base.Vars) {
 				}, nil
 			},
 			RecycleChunks: func(c *store.Chunks) {
+				mm.Lock()
+				defer mm.Unlock()
+
 				if c != nil {
 					if recycledChunks == nil {
 						recycledChunks = c
