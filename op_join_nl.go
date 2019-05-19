@@ -28,8 +28,8 @@ func OpJoinNestedLoop(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 	joinKind := strings.Split(o.Kind, "-")
 
+	isNest := joinKind[0] == "nestNL"
 	isUnnest := joinKind[0] == "unnest"
-
 	isOuterLeft := joinKind[1] == "outerLeft"
 
 	joinClauseFunc :=
@@ -39,7 +39,9 @@ func OpJoinNestedLoop(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 	var lzValsPre base.Vals
 
-	_, _, _ = joinClauseFunc, lzHadInner, lzValsPre
+	var lzNestBytes []byte
+
+	_, _, _, _ = joinClauseFunc, lzHadInner, lzValsPre, lzNestBytes
 
 	lzValsJoin := make(base.Vals, lenLabelsAB)
 
@@ -52,6 +54,11 @@ func OpJoinNestedLoop(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 		lzValsJoin = lzValsJoin[:0]
 		lzValsJoin = append(lzValsJoin, lzValsA...)
+
+		if isNest { // !lz
+			lzNestBytes = lzNestBytes[:0]
+			lzNestBytes = append(lzNestBytes, '[')
+		} // !lz
 
 		if isOuterLeft { // !lz
 			lzHadInner = false
@@ -76,7 +83,22 @@ func OpJoinNestedLoop(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 					lzHadInner = true
 				} // !lz
 
-				lzYieldValsOrig(lzVals) // <== emitCaptured: path ""
+				if isNest { // !lz
+					// Append RHS val into lzNestBytes, comma separated.
+					//
+					// NOTE: Assume RHS nest val will be in lzValsB[-1].
+					//
+					// TODO: Double check that lzValsB[-1] assumption.
+					if len(lzValsB) > 0 && len(lzValsB[len(lzValsB)-1]) > 0 {
+						if len(lzNestBytes) > 1 {
+							lzNestBytes = append(lzNestBytes, ',')
+						}
+
+						lzNestBytes = append(lzNestBytes, lzValsB[len(lzValsB)-1]...)
+					}
+				} else { // !lz
+					lzYieldValsOrig(lzVals) // <== emitCaptured: path ""
+				} // !lz
 			}
 		}
 
@@ -91,12 +113,28 @@ func OpJoinNestedLoop(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 			ExecOp(o.Children[1], lzVars, lzYieldVals, lzYieldErr, pathNext, "JNLI") // !lz
 		} // !lz
 
+		if isNest { // !lz
+			if len(lzNestBytes) > 1 && lzErr == nil {
+				lzNestBytes = append(lzNestBytes, ']')
+
+				lzValsJoin = lzValsJoin[0:lenLabelsA]
+				lzValsJoin = append(lzValsJoin, base.Val(lzNestBytes))
+
+				lzYieldValsOrig(lzValsJoin)
+			}
+		} // !lz
+
 		// Case of outerLeft join when inner (right) was empty.
 		if isOuterLeft { // !lz
 			if !lzHadInner && lzErr == nil {
 				lzValsJoin = lzValsJoin[0:lenLabelsA]
-				for i := 0; i < lenLabelsB; i++ { // !lz
-					lzValsJoin = append(lzValsJoin, base.ValMissing)
+
+				if isNest { // !lz
+					lzValsJoin = append(lzValsJoin, base.ValArrayEmpty)
+				} else { // !lz
+					for i := 0; i < lenLabelsB; i++ { // !lz
+						lzValsJoin = append(lzValsJoin, base.ValMissing)
+					} // !lz
 				} // !lz
 
 				lzYieldValsOrig(lzValsJoin)

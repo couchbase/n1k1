@@ -27,6 +27,8 @@ var ValTrue = Val([]byte("true"))
 
 var ValFalse = Val([]byte("false"))
 
+var ValArrayEmpty = Val([]byte("[]"))
+
 // -----------------------------------------------------
 
 func ValEqualMissing(val Val) bool {

@@ -103,6 +103,8 @@ Some design ideas meant to help with n1k1's performance...
 - join ON expressions.
 - UNNEST inner
 - UNNEST left outer.
+- NEST nested-loop inner
+- NEST nested-loop left outer.
 - WHERE expressions.
 - projection expressions.
 - ORDER BY multiple expressions & ASC/DESC.
@@ -189,8 +191,6 @@ efficiently execute that query-plan.
 
 - conversion of N1QL query-plan into n1k1 query-plan?
 
-- NEST - a kind of join
-
 - numbers
   - need to treat float's different than int's?
 
@@ -231,6 +231,8 @@ efficiently execute that query-plan.
     is a constant number, rather than rechecking that args[1] is a
     value.NUMBER during every Evaluate()?
     - see the ExprCmp() implementation to see how this works.
+
+- NEST via hash-join?
 
 - UNION-ALL data-staging batchSize should be configurable?
 - UNION-ALL data-staging batchChSize should be configurable?

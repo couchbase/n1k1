@@ -4003,4 +4003,87 @@ var TestCasesSimple = []TestCaseSimple{
 			base.Vals{[]byte(`{"a":123}`), []byte(nil)},
 		},
 	},
+	{
+		about: "test csv-data scan->nestNL-inner",
+		o: base.Op{
+			Kind:   "nestNL-inner",
+			Labels: base.Labels{"dept", "city", "emp"},
+			Params: []interface{}{
+				"eq",
+				[]interface{}{"labelPath", "dept"},
+				[]interface{}{"labelPath", "empDept"},
+			},
+			Children: []*base.Op{&base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"dept", "city"},
+				Params: []interface{}{
+					"csvData",
+					`
+"dev","paris"
+"finance","london"
+"sales","san diego"
+`,
+				},
+			}, &base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"empDept", "emp"},
+				Params: []interface{}{
+					"csvData",
+					`
+"dev","dan"
+"dev","doug"
+"finance","frank"
+"finance","fred"
+"marketing","mary"
+`,
+				},
+			}},
+		},
+		expectYields: []base.Vals{
+			StringsToVals([]string{`"dev"`, `"paris"`, `["dan","doug"]`}, nil),
+			StringsToVals([]string{`"finance"`, `"london"`, `["frank","fred"]`}, nil),
+		},
+	},
+	{
+		about: "test csv-data scan->nestNL-outerLeft",
+		o: base.Op{
+			Kind:   "nestNL-outerLeft",
+			Labels: base.Labels{"dept", "city", "emp"},
+			Params: []interface{}{
+				"eq",
+				[]interface{}{"labelPath", "dept"},
+				[]interface{}{"labelPath", "empDept"},
+			},
+			Children: []*base.Op{&base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"dept", "city"},
+				Params: []interface{}{
+					"csvData",
+					`
+"dev","paris"
+"finance","london"
+"sales","san diego"
+`,
+				},
+			}, &base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"empDept", "emp"},
+				Params: []interface{}{
+					"csvData",
+					`
+"dev","dan"
+"dev","doug"
+"finance","frank"
+"finance","fred"
+"marketing","mary"
+`,
+				},
+			}},
+		},
+		expectYields: []base.Vals{
+			StringsToVals([]string{`"dev"`, `"paris"`, `["dan","doug"]`}, nil),
+			StringsToVals([]string{`"finance"`, `"london"`, `["frank","fred"]`}, nil),
+			StringsToVals([]string{`"sales"`, `"san diego"`, `[]`}, nil),
+		},
+	},
 }
