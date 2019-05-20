@@ -34,7 +34,8 @@ func (v *Vars) ChainExtend() *Vars {
 
 // -----------------------------------------------------
 
-// Ctx represents the runtime context for a request.
+// Ctx represents the runtime context for a request, where a Ctx is
+// immutable for the lifetime of the request and is concurrent safe.
 type Ctx struct {
 	Now time.Time
 
@@ -46,6 +47,9 @@ type Ctx struct {
 	// YieldStats may be invoked concurrently by multiple goroutines.
 	YieldStats YieldStats
 
+	// TempDir is the path to a temporary directory that can be used
+	// while processing the request, where the temporary directory
+	// might be shared amongst concurrent requests.
 	TempDir string
 
 	AllocMap   func() (*store.RHStore, error)
