@@ -54,8 +54,6 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 			lzYieldErr(lzErr)
 		}
 
-		var lzBuf8 [8]byte
-
 		var lzValOut base.Val
 
 		var lzValsOut base.Vals
@@ -66,7 +64,7 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 		var lzAgg *base.Agg
 
-		_, _, _, _, _ = lzBuf8, lzValOut, lzGroupValNew, lzGroupValReuse, lzAgg
+		_, _, _, _ = lzValOut, lzGroupValNew, lzGroupValReuse, lzAgg
 
 		lzYieldValsOrig := lzYieldVals
 
