@@ -93,7 +93,8 @@ Some design ideas meant to help with n1k1's performance...
 ------------------------------------------
 ## Some features...
 
-- types: MISSING, NULL, boolean, number, string, array, object, UNKNOWN (BINARY).
+- types: MISSING, NULL, boolean, number, string,
+         array, object, UNKNOWN (BINARY).
 - comparisons follows N1QL type comparison rules.
 - glue integration with existing couchbase/query/expression package.
 - join nested-loop inner.
@@ -131,9 +132,7 @@ Some design ideas meant to help with n1k1's performance...
 -------------------------------------------------------
 ## DEV SHORTCUTS...
 
-    go test . && go build ./cmd/intermed_build/ && ./intermed_build && go test ./... && go fmt ./... && go test -v ./...
-
-    go build ./cmd/expr_build/ && ./expr_build && go fmt ./...
+See Makefile
 
 -------------------------------------------------------
 ## The way the n1k1 compiler works...
@@ -193,7 +192,8 @@ efficiently execute that query-plan.
 - conversion of N1QL query-plan into n1k1 query-plan?
 
 - aggregate functions, advanced features?
-  - count(*) or COUNT_ALL is different than count(expr), w.r.t. missing/null handling?
+  - count(*) or COUNT_ALL is different than count(expr),
+    w.r.t. missing/null handling?
   - distinct?
   - filter-where clauses?
   - window functions?
@@ -361,7 +361,8 @@ efficiently execute that query-plan.
     if the children of an FTS conjunction/disjunction
     are not known at compile time, unlike N1QL which has a compile-time
     bounded expr tree...
-    - so, it might be more similar to ANY x IN y ... END -- hardcoded codepath.
+    - so, it might be more similar to ANY x IN y ... END
+      as a hardcoded codepath?
   - some narrow edge cases (like, an explicit end-user term-search)
     have a bounded expression tree, though?
     - this might be ok for keyword type indexed fields?
