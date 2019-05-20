@@ -210,6 +210,8 @@ efficiently execute that query-plan.
       as "&cursor-2341", that's registered into the Ctx?
       - the cursor might to a pipeline-breaking batch provider?
 
+- "temp tables"?
+
 - compiled expr support?
 
 - expr MISSING or NULL patterns?
