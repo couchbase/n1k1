@@ -91,7 +91,7 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 									aggIdx := base.AggCatalog[aggName.(string)] // !lz
 									lzAgg = base.Aggs[aggIdx]
 
-									lzGroupVal = lzAgg.Init(lzGroupVal)
+									lzGroupVal = lzAgg.Init(lzVars, lzGroupVal)
 								} // !lz
 							} // !lz
 
@@ -112,7 +112,7 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 								aggIdx := base.AggCatalog[aggName.(string)] // !lz
 								lzAgg = base.Aggs[aggIdx]
 
-								lzGroupValNew, lzGroupVal = lzAgg.Update(lzValsOut[aggCalcI], lzGroupValNew, lzGroupVal, lzVars.Ctx.ValComparer)
+								lzGroupValNew, lzGroupVal = lzAgg.Update(lzVars, lzValsOut[aggCalcI], lzGroupValNew, lzGroupVal, lzVars.Ctx.ValComparer)
 							} // !lz
 						} // !lz
 
@@ -160,7 +160,7 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 								aggIdx := base.AggCatalog[aggName.(string)] // !lz
 								lzAgg = base.Aggs[aggIdx]
 
-								lzVal, lzGroupVal, lzValBuf = lzAgg.Result(lzGroupVal, lzValBuf)
+								lzVal, lzGroupVal, lzValBuf = lzAgg.Result(lzVars, lzGroupVal, lzValBuf)
 
 								lzValsOut = append(lzValsOut, lzVal)
 

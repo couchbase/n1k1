@@ -18,16 +18,16 @@ var Aggs []*Agg
 
 type Agg struct {
 	// Init extends agg bytes with initial data for the aggregation.
-	Init func(agg []byte) (aggOut []byte)
+	Init func(vars *Vars, agg []byte) (aggOut []byte)
 
 	// Update incorporates the incoming val with the existing agg
 	// data, by extending and returning the given aggNew.  Also
 	// returns aggRest which is the agg bytes that were unread.
-	Update func(val Val, aggNew, agg []byte, vc *ValComparer) (aggNewOut, aggRest []byte)
+	Update func(vars *Vars, val Val, aggNew, agg []byte, vc *ValComparer) (aggNewOut, aggRest []byte)
 
 	// Result returns the final result of the aggregation.
 	// Also returns aggRest or the agg bytes that were unread.
-	Result func(agg, buf []byte) (v Val, aggRest, bufOut []byte)
+	Result func(vars *Vars, agg, buf []byte) (v Val, aggRest, bufOut []byte)
 }
 
 // -----------------------------------------------------
@@ -52,16 +52,16 @@ func init() {
 // -----------------------------------------------------
 
 var AggCount = &Agg{
-	Init: func(agg []byte) []byte { return append(agg, Zero8[:8]...) },
+	Init: func(vars *Vars, agg []byte) []byte { return append(agg, Zero8[:8]...) },
 
-	Update: func(v Val, aggNew, agg []byte, vc *ValComparer) ([]byte, []byte) {
+	Update: func(vars *Vars, v Val, aggNew, agg []byte, vc *ValComparer) ([]byte, []byte) {
 		c := binary.LittleEndian.Uint64(agg[:8])
 		var b [8]byte
 		binary.LittleEndian.PutUint64(b[:8], c+1)
 		return append(aggNew, b[:8]...), agg[8:]
 	},
 
-	Result: func(agg, buf []byte) (v Val, aggRest, bufOut []byte) {
+	Result: func(vars *Vars, agg, buf []byte) (v Val, aggRest, bufOut []byte) {
 		c := binary.LittleEndian.Uint64(agg[:8])
 		vBuf := strconv.AppendUint(buf[:0], c, 10)
 		if len(buf) >= len(vBuf) {
@@ -76,9 +76,9 @@ var AggCount = &Agg{
 // -----------------------------------------------------
 
 var AggSum = &Agg{
-	Init: func(agg []byte) []byte { return append(agg, Zero8[:8]...) },
+	Init: func(vars *Vars, agg []byte) []byte { return append(agg, Zero8[:8]...) },
 
-	Update: func(v Val, aggNew, agg []byte, vc *ValComparer) ([]byte, []byte) {
+	Update: func(vars *Vars, v Val, aggNew, agg []byte, vc *ValComparer) ([]byte, []byte) {
 		parsedVal, parsedType := Parse(v)
 		if ParseTypeToValType[parsedType] == ValTypeNumber {
 			f, err := ParseFloat64(parsedVal)
@@ -93,7 +93,7 @@ var AggSum = &Agg{
 		return append(aggNew, agg[:8]...), agg[8:]
 	},
 
-	Result: func(agg, buf []byte) (v Val, aggRest, bufOut []byte) {
+	Result: func(vars *Vars, agg, buf []byte) (v Val, aggRest, bufOut []byte) {
 		s := math.Float64frombits(binary.LittleEndian.Uint64(agg[:8]))
 		vBuf := strconv.AppendFloat(buf[:0], s, 'f', -1, 64)
 		if len(buf) >= len(vBuf) {
@@ -108,15 +108,17 @@ var AggSum = &Agg{
 // -----------------------------------------------------
 
 var AggAvg = &Agg{
-	Init: func(agg []byte) []byte { return AggSum.Init(AggCount.Init(agg)) },
+	Init: func(vars *Vars, agg []byte) []byte {
+		return AggSum.Init(vars, AggCount.Init(vars, agg))
+	},
 
-	Update: func(v Val, aggNew, agg []byte, vc *ValComparer) ([]byte, []byte) {
-		aggNew, agg = AggCount.Update(v, aggNew, agg, vc)
-		aggNew, agg = AggSum.Update(v, aggNew, agg, vc)
+	Update: func(vars *Vars, v Val, aggNew, agg []byte, vc *ValComparer) ([]byte, []byte) {
+		aggNew, agg = AggCount.Update(vars, v, aggNew, agg, vc)
+		aggNew, agg = AggSum.Update(vars, v, aggNew, agg, vc)
 		return aggNew, agg
 	},
 
-	Result: func(agg, buf []byte) (v Val, aggRest, bufOut []byte) {
+	Result: func(vars *Vars, agg, buf []byte) (v Val, aggRest, bufOut []byte) {
 		c := binary.LittleEndian.Uint64(agg[:8])
 		if c == 0 {
 			return Val(nil), agg[16:], buf
@@ -138,21 +140,22 @@ var AggAvg = &Agg{
 // -----------------------------------------------------
 
 var AggMin = &Agg{
-	Init:   func(agg []byte) []byte { return append(agg, Zero8[:8]...) },
+	Init:   func(vars *Vars, agg []byte) []byte { return append(agg, Zero8[:8]...) },
 	Update: AggCompareUpdate(func(cmp int) bool { return cmp < 0 }),
 	Result: AggCompareResult,
 }
 
 var AggMax = &Agg{
-	Init:   func(agg []byte) []byte { return append(agg, Zero8[:8]...) },
+	Init:   func(vars *Vars, agg []byte) []byte { return append(agg, Zero8[:8]...) },
 	Update: AggCompareUpdate(func(cmp int) bool { return cmp > 0 }),
 	Result: AggCompareResult,
 }
 
 // -----------------------------------------------------
 
-func AggCompareUpdate(comparer func(int) bool) func(v Val, aggNew, agg []byte, vc *ValComparer) (aggNewOut, aggRest []byte) {
-	return func(v Val, aggNew, agg []byte, vc *ValComparer) (aggNewOut, aggRest []byte) {
+func AggCompareUpdate(comparer func(int) bool) func(
+	vars *Vars, v Val, aggNew, agg []byte, vc *ValComparer) (aggNewOut, aggRest []byte) {
+	return func(vars *Vars, v Val, aggNew, agg []byte, vc *ValComparer) (aggNewOut, aggRest []byte) {
 		n := binary.LittleEndian.Uint64(agg[:8])
 		if n <= 0 || comparer(vc.Compare(v, agg[8:8+n])) {
 			var b [8]byte
@@ -166,7 +169,7 @@ func AggCompareUpdate(comparer func(int) bool) func(v Val, aggNew, agg []byte, v
 	}
 }
 
-func AggCompareResult(agg, buf []byte) (v Val, aggRest, bufOut []byte) {
+func AggCompareResult(vars *Vars, agg, buf []byte) (v Val, aggRest, bufOut []byte) {
 	n := binary.LittleEndian.Uint64(agg[:8])
 	vBuf := append(buf[:0], agg[8:8+n]...)
 	if len(buf) >= len(vBuf) {
