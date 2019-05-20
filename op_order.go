@@ -134,7 +134,10 @@ func OpOrderOffsetLimit(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVal
 					// items items correctly sorted in-place.
 					lzHeapLen := lzHeap.Len()
 
-					lzHeap.Sort(offset)
+					lzErr := lzHeap.Sort(offset)
+					if lzErr != nil {
+						lzYieldErrOrig(lzErr)
+					}
 
 					for lzI := offset; lzI < lzHeapLen; lzI++ {
 						if limit < math.MaxInt64 { // !lz
