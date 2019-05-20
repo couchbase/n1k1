@@ -74,10 +74,6 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 				lzValsOut = groupProjectFunc(lzVals, lzValsOut, lzYieldErr) // <== emitCaptured: pathNextG "GP"
 
-				// Construct the newline-delimited group key.
-				//
-				// Ex: `GROUP BY state, city` would lead to a group
-				// key such as '"CA"\n"San Francisco"'.
 				lzGroupKey, lzErr = base.ValsEncodeCanonical(lzValsOut, lzGroupKey[:0], lzVars.Ctx.ValComparer)
 				if lzErr == nil {
 					// Check if we've seen the group key before or not.

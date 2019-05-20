@@ -191,6 +191,12 @@ efficiently execute that query-plan.
 
 - conversion of N1QL query-plan into n1k1 query-plan?
 
+- aggregate functions, advanced features?
+  - count(*) or COUNT_ALL is different than count(expr), w.r.t. missing/null handling?
+  - distinct?
+  - filter-where clauses?
+  - window functions?
+
 - numbers
   - need to treat float's different than int's?
 
