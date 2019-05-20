@@ -41,6 +41,12 @@ func ExecOp(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 	case "sequence":
 		OpSequence(o, lzVars, lzYieldVals, lzYieldErr, path, pathNext) // !lz
+
+	case "temp-capture":
+		OpTempCapture(o, lzVars, lzYieldVals, lzYieldErr, path, pathNext) // !lz
+
+	case "temp-yield":
+		OpTempYield(o, lzVars, lzYieldVals, lzYieldErr, path, pathNext) // !lz
 	}
 
 	EmitPop(path, pathItem)
@@ -50,13 +56,26 @@ func ExecOp(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 func OpSequence(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	lzYieldErr base.YieldErr, path, pathNext string) {
-	for childi, child := range o.Children {
-		ExecOp(child, lzVars, lzYieldVals, lzYieldErr, pathNext, strconv.Itoa(childi)) // !lz
+	var lzErr error
+
+	lzYieldErrOrig := lzYieldErr
+
+	lzYieldErr = func(lzErrIn error) {
+		if lzErr == nil {
+			lzErr = lzErrIn // Capture the incoming error.
+		}
 	}
+
+	for childi, child := range o.Children {
+		if lzErr == nil {
+			ExecOp(child, lzVars, lzYieldVals, lzYieldErr, pathNext, strconv.Itoa(childi)) // !lz
+		}
+	}
+
+	lzYieldErrOrig(lzErr)
 }
 
 // -----------------------------------------------------
-
 // LzScope is used to mark block scope (ex: IF block) as lazy.
 const LzScope = true
 

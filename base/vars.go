@@ -12,24 +12,59 @@
 package base
 
 import (
+	"io"
 	"time"
 
+	"github.com/couchbase/rhmap/heap"
 	"github.com/couchbase/rhmap/store"
 )
 
-// Vars are used for runtime variables, config, etc.  Vars are
-// chainable using the Next field to allow for scoping.
+// Vars are used for runtime variables, config, etc. Vars are
+// chainable using the Next field to allow for scoping. Vars are not
+// concurrent safe -- see: ChainExtend().
 type Vars struct {
 	Labels Labels
-	Vals   Vals  // Same len() as Labels.
+	Vals   Vals // Same len() as Labels.
+	Temps  map[string]interface{}
 	Next   *Vars // The root Vars has nil Next.
 	Ctx    *Ctx
 }
+
+// -----------------------------------------------------
 
 // ChainExtend returns a new Vars linked to the Vars chain, which is
 // safely usable by a concurrent goroutine and useful for shadowing.
 func (v *Vars) ChainExtend() *Vars {
 	return &Vars{Next: v, Ctx: v.Ctx.Clone()}
+}
+
+// -----------------------------------------------------
+
+// TempSet associates a temp resource with a name, and also closes the
+// existing resource under that name if it already exists.
+func (v *Vars) TempSet(name string, resource interface{}) {
+	if v.Temps == nil {
+		v.Temps = map[string]interface{}{}
+	}
+
+	prev, ok := v.Temps[name]
+	if ok && prev != nil {
+		closer, ok := prev.(io.Closer)
+		if ok {
+			closer.Close()
+		}
+	}
+
+	v.Temps[name] = resource
+}
+
+// TempGet retrieves a temp resource with the given name.
+func (v *Vars) TempGet(name string) (rv interface{}, exists bool) {
+	if v.Temps != nil {
+		rv, exists = v.Temps[name]
+	}
+
+	return rv, exists
 }
 
 // -----------------------------------------------------
@@ -55,12 +90,17 @@ type Ctx struct {
 	AllocMap   func() (*store.RHStore, error)
 	RecycleMap func(*store.RHStore)
 
+	AllocHeap   func() (*heap.Heap, error)
+	RecycleHeap func(*heap.Heap)
+
 	AllocChunks   func() (*store.Chunks, error)
 	RecycleChunks func(*store.Chunks)
 
 	// TODO: Other things that might appear here might be request ID,
 	// request-specific allocators or resources, etc.
 }
+
+// -----------------------------------------------------
 
 // Clone returns a copy of the given Ctx, which is safe for another
 // goroutine to use safely.
