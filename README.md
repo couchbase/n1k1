@@ -125,6 +125,7 @@ Some design ideas meant to help with n1k1's performance...
 - automatic spilling from memory to temporary files...
   - hashmaps (for joins, distinct, group-by, etc).
   - max-heap's (for sorting).
+  - position addressable sequence of appended []byte entries.
 - runtime variables / context passed down through ExecOp().
 
 -------------------------------------------------------
@@ -211,6 +212,8 @@ efficiently execute that query-plan.
       - the cursor might to a pipeline-breaking batch provider?
 
 - "temp tables"?
+
+- sequence operator?
 
 - compiled expr support?
 
