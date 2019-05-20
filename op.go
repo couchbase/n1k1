@@ -1,6 +1,8 @@
 package n1k1
 
 import (
+	"strconv"
+
 	"github.com/couchbase/n1k1/base"
 )
 
@@ -36,9 +38,21 @@ func ExecOp(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 	case "group", "distinct":
 		OpGroup(o, lzVars, lzYieldVals, lzYieldErr, path, pathNext) // !lz
+
+	case "sequence":
+		OpSequence(o, lzVars, lzYieldVals, lzYieldErr, path, pathNext) // !lz
 	}
 
 	EmitPop(path, pathItem)
+}
+
+// -----------------------------------------------------
+
+func OpSequence(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
+	lzYieldErr base.YieldErr, path, pathNext string) {
+	for childi, child := range o.Children {
+		ExecOp(child, lzVars, lzYieldVals, lzYieldErr, pathNext, strconv.Itoa(childi)) // !lz
+	}
 }
 
 // -----------------------------------------------------
