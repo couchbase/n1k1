@@ -1,12 +1,14 @@
 package test
 
 import (
+	"bytes"
 	"fmt"
 	"io/ioutil"
 	"sync"
 	"sync/atomic"
 	"testing"
 
+	"github.com/couchbase/rhmap/heap"
 	"github.com/couchbase/rhmap/store"
 
 	"github.com/couchbase/n1k1"
@@ -56,6 +58,7 @@ func MakeVars() (string, *base.Vars) {
 	var mm sync.Mutex
 
 	var recycledMap *store.RHStore
+	var recycledHeap *heap.Heap
 	var recycledChunks *store.Chunks
 
 	return tmpDir, &base.Vars{
@@ -95,6 +98,54 @@ func MakeVars() (string, *base.Vars) {
 					if recycledMap == nil {
 						recycledMap = m
 						recycledMap.Reset()
+						return
+					}
+
+					m.Close()
+				}
+			},
+			AllocHeap: func() (*heap.Heap, error) {
+				mm.Lock()
+				defer mm.Unlock()
+
+				if recycledHeap != nil {
+					rv := recycledHeap
+					recycledHeap = nil
+					return rv, nil
+				}
+
+				counterMine := atomic.AddUint64(&counter, 1)
+
+				pathPrefix := fmt.Sprintf("%s/%d", tmpDir, counterMine)
+
+				heapChunkSizeBytes := 1024 * 1024      // TODO: Config.
+				dataChunkSizeBytes := 16 * 1024 * 1024 // TODO: Config.
+
+				return &heap.Heap{
+					LessFunc: func(a, b []byte) bool {
+						// TODO: Is this the right default heap less-func?
+						return bytes.Compare(a, b) < 0
+					},
+					Heap: &store.Chunks{
+						PathPrefix:     pathPrefix,
+						FileSuffix:     ".heap",
+						ChunkSizeBytes: heapChunkSizeBytes,
+					},
+					Data: &store.Chunks{
+						PathPrefix:     pathPrefix,
+						FileSuffix:     ".data",
+						ChunkSizeBytes: dataChunkSizeBytes,
+					},
+				}, nil
+			},
+			RecycleHeap: func(m *heap.Heap) {
+				mm.Lock()
+				defer mm.Unlock()
+
+				if m != nil {
+					if recycledHeap == nil {
+						recycledHeap = m
+						recycledHeap.Reset()
 						return
 					}
 
@@ -219,6 +270,56 @@ var TestCasesSimple = []TestCaseSimple{
 		},
 	},
 	{
+		about: "test csv-data scan->filter with labelB == 21",
+		o: base.Op{
+			Kind:   "filter",
+			Labels: base.Labels{"a", "b", "c"},
+			Params: []interface{}{
+				"eq",
+				[]interface{}{"labelPath", "b"},
+				[]interface{}{"json", `21`},
+			},
+			Children: []*base.Op{&base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"a", "b", "c"},
+				Params: []interface{}{
+					"csvData",
+					`
+10,20,30
+11,21,31
+`,
+				},
+			}},
+		},
+		expectYields: []base.Vals{
+			base.Vals{[]byte("11"), []byte("21"), []byte("31")},
+		},
+	},
+	{
+		about: "test csv-data scan->filter with labelB = 66",
+		o: base.Op{
+			Kind:   "filter",
+			Labels: base.Labels{"a", "b", "c"},
+			Params: []interface{}{
+				"eq",
+				[]interface{}{"labelPath", "b"},
+				[]interface{}{"json", `66`},
+			},
+			Children: []*base.Op{&base.Op{
+				Kind:   "scan",
+				Labels: base.Labels{"a", "b", "c"},
+				Params: []interface{}{
+					"csvData",
+					`
+10,20,30
+11,21,31
+`,
+				},
+			}},
+		},
+		expectYields: []base.Vals(nil),
+	},
+	{
 		about: "test csv-data scan->filter on const == const",
 		o: base.Op{
 			Kind:   "filter",
@@ -319,56 +420,6 @@ var TestCasesSimple = []TestCaseSimple{
 			}},
 		},
 		expectYields: []base.Vals(nil),
-	},
-	{
-		about: "test csv-data scan->filter with labelB = 66",
-		o: base.Op{
-			Kind:   "filter",
-			Labels: base.Labels{"a", "b", "c"},
-			Params: []interface{}{
-				"eq",
-				[]interface{}{"labelPath", "b"},
-				[]interface{}{"json", `66`},
-			},
-			Children: []*base.Op{&base.Op{
-				Kind:   "scan",
-				Labels: base.Labels{"a", "b", "c"},
-				Params: []interface{}{
-					"csvData",
-					`
-10,20,30
-11,21,31
-`,
-				},
-			}},
-		},
-		expectYields: []base.Vals(nil),
-	},
-	{
-		about: "test csv-data scan->filter with labelB == 21",
-		o: base.Op{
-			Kind:   "filter",
-			Labels: base.Labels{"a", "b", "c"},
-			Params: []interface{}{
-				"eq",
-				[]interface{}{"labelPath", "b"},
-				[]interface{}{"json", `21`},
-			},
-			Children: []*base.Op{&base.Op{
-				Kind:   "scan",
-				Labels: base.Labels{"a", "b", "c"},
-				Params: []interface{}{
-					"csvData",
-					`
-10,20,30
-11,21,31
-`,
-				},
-			}},
-		},
-		expectYields: []base.Vals{
-			base.Vals{[]byte("11"), []byte("21"), []byte("31")},
-		},
 	},
 	{
 		about: "test csv-data scan->filter more than 1 match",
@@ -4228,6 +4279,99 @@ var TestCasesSimple = []TestCaseSimple{
 			StringsToVals([]string{`"dev"`, `"paris"`, `["dan","doug"]`}, nil),
 			StringsToVals([]string{`"finance"`, `"london"`, `["frank","fred"]`}, nil),
 			StringsToVals([]string{`"sales"`, `"san diego"`, `[]`}, nil),
+		},
+	},
+	{
+		about: "test csv-data sequence->[scan->filter->project->temp-capture]",
+		o: base.Op{
+			Kind:   "sequence",
+			Labels: base.Labels{"a", "c"},
+			Children: []*base.Op{&base.Op{
+				Kind:   "temp-capture",
+				Labels: base.Labels{"a", "c"},
+				Params: []interface{}{"myTemp"},
+				Children: []*base.Op{&base.Op{
+					Kind:   "project",
+					Labels: base.Labels{"a", "c"},
+					Params: []interface{}{
+						[]interface{}{"labelPath", "a"},
+						[]interface{}{"labelPath", "c"},
+					},
+					Children: []*base.Op{&base.Op{
+						Kind:   "filter",
+						Labels: base.Labels{"a", "b", "c"},
+						Params: []interface{}{
+							"eq",
+							[]interface{}{"labelPath", "c"},
+							[]interface{}{"json", `3000`},
+						},
+						Children: []*base.Op{&base.Op{
+							Kind:   "scan",
+							Labels: base.Labels{"a", "b", "c"},
+							Params: []interface{}{
+								"csvData",
+								`
+00,00,0000
+10,20,3000
+11,21,3000
+12,22,1000
+`,
+							},
+						}},
+					}},
+				}},
+			}},
+		},
+		expectYields: []base.Vals(nil),
+	},
+	{
+		about: "test csv-data sequence->[scan->filter->project->temp-capture, temp-yield]",
+		o: base.Op{
+			Kind:   "sequence",
+			Labels: base.Labels{"a", "c"},
+			Children: []*base.Op{&base.Op{
+				Kind:   "temp-capture",
+				Labels: base.Labels{"a", "c"},
+				Params: []interface{}{"myTemp"},
+				Children: []*base.Op{&base.Op{
+					Kind:   "project",
+					Labels: base.Labels{"a", "c"},
+					Params: []interface{}{
+						[]interface{}{"labelPath", "a"},
+						[]interface{}{"labelPath", "c"},
+					},
+					Children: []*base.Op{&base.Op{
+						Kind:   "filter",
+						Labels: base.Labels{"a", "b", "c"},
+						Params: []interface{}{
+							"eq",
+							[]interface{}{"labelPath", "c"},
+							[]interface{}{"json", `3000`},
+						},
+						Children: []*base.Op{&base.Op{
+							Kind:   "scan",
+							Labels: base.Labels{"a", "b", "c"},
+							Params: []interface{}{
+								"csvData",
+								`
+00,00,0000
+10,20,3000
+11,21,3000
+12,22,1000
+`,
+							},
+						}},
+					}},
+				}},
+			}, &base.Op{
+				Kind:   "temp-yield",
+				Labels: base.Labels{"a", "c"},
+				Params: []interface{}{"myTemp"},
+			}},
+		},
+		expectYields: []base.Vals{
+			base.Vals{[]byte("10"), []byte("3000")},
+			base.Vals{[]byte("11"), []byte("3000")},
 		},
 	},
 }

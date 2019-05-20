@@ -1,8 +1,6 @@
 package n1k1
 
 import (
-	"github.com/couchbase/rhmap/heap" // <== genCompiler:hide
-
 	"github.com/couchbase/n1k1/base"
 )
 
@@ -16,7 +14,7 @@ func OpTempCapture(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	} else {
 		var lzBytes []byte
 
-		lzYieldVals = func(lzVals base.Vals) {
+		lzYieldVals := func(lzVals base.Vals) {
 			lzErr = lzHeap.PushBytes(base.ValsEncode(lzVals, lzBytes[:0]))
 			if lzErr != nil {
 				lzYieldErr(lzErr)
@@ -38,21 +36,18 @@ func OpTempYield(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	lzYieldErr base.YieldErr, path, pathNext string) {
 	var lzErr error
 
-	lzResource, lzOk := lzVars.TempGet(o.Params[0].(string))
-	if lzOk && lzResource != nil {
-		lzHeap, lzOk := lzResource.(*heap.Heap)
-		if lzOk {
-			var lzBytes []byte
-			var lzVals base.Vals
+	lzHeap, lzOk := lzVars.TempGetHeap(o.Params[0].(string))
+	if lzOk {
+		var lzBytes []byte
+		var lzVals base.Vals
 
-			for lzI := 0; lzI < lzHeap.Len() && lzErr == nil; lzI++ {
-				lzBytes, lzErr = lzHeap.Get(lzI)
-				if lzErr != nil {
-					lzYieldErr(lzErr)
-				}
-
-				lzYieldVals(base.ValsDecode(lzBytes, lzVals[:0]))
+		for lzI := 0; lzI < lzHeap.Len() && lzErr == nil; lzI++ {
+			lzBytes, lzErr = lzHeap.Get(lzI)
+			if lzErr != nil {
+				lzYieldErr(lzErr)
 			}
+
+			lzYieldVals(base.ValsDecode(lzBytes, lzVals[:0]))
 		}
 	}
 

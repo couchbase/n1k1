@@ -58,10 +58,26 @@ func (v *Vars) TempSet(name string, resource interface{}) {
 	v.Temps[name] = resource
 }
 
+// -----------------------------------------------------
+
 // TempGet retrieves a temp resource with the given name.
 func (v *Vars) TempGet(name string) (rv interface{}, exists bool) {
 	if v.Temps != nil {
 		rv, exists = v.Temps[name]
+	}
+
+	return rv, exists
+}
+
+// -----------------------------------------------------
+
+// TempGetHeap casts the retrieved temp resource into a heap.
+func (v *Vars) TempGetHeap(name string) (rv *heap.Heap, exists bool) {
+	var r interface{}
+
+	r, exists = v.TempGet(name)
+	if exists && r != nil {
+		rv, exists = r.(*heap.Heap)
 	}
 
 	return rv, exists
