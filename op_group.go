@@ -105,6 +105,8 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 						lzGroupValNew = lzGroupValNew[:0]
 
+						var lzGroupValChanged, lzChanged bool
+
 						// Use the projected aggregate exprs to update
 						// the agg data structures.
 						for aggCalcI, aggCalc := range aggCalcs { // !lz
@@ -112,19 +114,23 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 								aggIdx := base.AggCatalog[aggName.(string)] // !lz
 								lzAgg = base.Aggs[aggIdx]
 
-								lzGroupValNew, lzGroupVal = lzAgg.Update(lzVars, lzValsOut[aggCalcI], lzGroupValNew, lzGroupVal, lzVars.Ctx.ValComparer)
+								lzGroupValNew, lzGroupVal, lzChanged = lzAgg.Update(lzVars, lzValsOut[aggCalcI], lzGroupValNew, lzGroupVal, lzVars.Ctx.ValComparer)
+
+								lzGroupValChanged = lzGroupValChanged || lzChanged
 							} // !lz
 						} // !lz
 
 						if lzGroupKeyFound {
-							// With a previously seen group key, the
-							// previous agg data structure might be
-							// in-place overwritable if its size is >=
-							// the new agg data structure's size.
-							if len(lzGroupVal) >= len(lzGroupValNew) {
-								copy(lzGroupVal, lzGroupValNew)
-							} else {
-								lzSet.Set(lzGroupKey, lzGroupValNew)
+							if lzGroupValChanged {
+								// With a previously seen group key, the
+								// previous agg data structure might be
+								// in-place overwritable if its size is >=
+								// the new agg data structure's size.
+								if len(lzGroupVal) >= len(lzGroupValNew) {
+									copy(lzGroupVal, lzGroupValNew)
+								} else {
+									lzSet.Set(lzGroupKey, lzGroupValNew)
+								}
 							}
 						} else {
 							// We fall thru to the below lzSet.Set().
