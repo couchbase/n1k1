@@ -119,6 +119,8 @@ Some design ideas meant to help with n1k1's performance...
 - UNION DISTINCT is supported by sequencing UNION ALL with DISTINCT.
 - INTERSECT DISTINCT / INTERSECT ALL.
 - EXCEPT DISTINCT / EXCEPT ALL.
+- temp tables operator.
+- sequence operator.
 - data-staging / pipeline-breaker machinery with concurrent child
   pipelines.
 - nested object paths (e.g. locations/address/city).
@@ -210,10 +212,6 @@ efficiently execute that query-plan.
     - perhaps an attachment or label can be for a named cursor, such
       as "&cursor-2341", that's registered into the Ctx?
       - the cursor might to a pipeline-breaking batch provider?
-
-- "temp tables"?
-
-- sequence operator?
 
 - compiled expr support?
 
