@@ -4036,6 +4036,54 @@ var TestCasesSimple = []TestCaseSimple{
 		},
 	},
 	{
+		about: "test csv-data scan->group-by avg(b)",
+		o: base.Op{
+			Kind:   "order-offset-limit",
+			Labels: base.Labels{"a", "avg-b"},
+			Params: []interface{}{
+				[]interface{}{
+					[]interface{}{"labelPath", "a"},
+					[]interface{}{"labelPath", "avg-b"},
+				},
+				[]interface{}{
+					"asc",
+					"asc",
+				},
+			},
+			Children: []*base.Op{&base.Op{
+				Kind:   "group",
+				Labels: base.Labels{"a", "avg-b"},
+				Params: []interface{}{
+					[]interface{}{
+						[]interface{}{"labelPath", "a"},
+					},
+					[]interface{}{
+						[]interface{}{"labelPath", "b"},
+					},
+					[]interface{}{
+						[]interface{}{"avg"},
+					},
+				},
+				Children: []*base.Op{&base.Op{
+					Kind:   "scan",
+					Labels: base.Labels{"a", "b"},
+					Params: []interface{}{
+						"csvData",
+						`
+10,11
+10,12
+20,20
+`,
+					},
+				}},
+			}},
+		},
+		expectYields: []base.Vals{
+			base.Vals{[]byte("10"), []byte("11.5")},
+			base.Vals{[]byte("20"), []byte("20")},
+		},
+	},
+	{
 		about: "test csv-data scan->unnest-inner",
 		o: base.Op{
 			Kind:   "unnest-inner",

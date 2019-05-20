@@ -39,6 +39,9 @@ func init() {
 	AggCatalog["sum"] = len(Aggs)
 	Aggs = append(Aggs, AggSum)
 
+	AggCatalog["avg"] = len(Aggs)
+	Aggs = append(Aggs, AggAvg)
+
 	AggCatalog["min"] = len(Aggs)
 	Aggs = append(Aggs, AggMin)
 
@@ -51,8 +54,7 @@ func init() {
 var AggCount = &Agg{
 	Init: func(agg []byte) []byte { return append(agg, Zero8[:8]...) },
 
-	Update: func(v Val, aggNew, agg []byte, vc *ValComparer) (
-		aggNewOut, aggRest []byte) {
+	Update: func(v Val, aggNew, agg []byte, vc *ValComparer) ([]byte, []byte) {
 		c := binary.LittleEndian.Uint64(agg[:8])
 		var b [8]byte
 		binary.LittleEndian.PutUint64(b[:8], c+1)
@@ -76,8 +78,7 @@ var AggCount = &Agg{
 var AggSum = &Agg{
 	Init: func(agg []byte) []byte { return append(agg, Zero8[:8]...) },
 
-	Update: func(v Val, aggNew, agg []byte, vc *ValComparer) (
-		aggNewOut, aggRest []byte) {
+	Update: func(v Val, aggNew, agg []byte, vc *ValComparer) ([]byte, []byte) {
 		parsedVal, parsedType := Parse(v)
 		if ParseTypeToValType[parsedType] == ValTypeNumber {
 			f, err := ParseFloat64(parsedVal)
@@ -101,6 +102,36 @@ var AggSum = &Agg{
 			buf = nil
 		}
 		return Val(vBuf), agg[8:], buf
+	},
+}
+
+// -----------------------------------------------------
+
+var AggAvg = &Agg{
+	Init: func(agg []byte) []byte { return AggSum.Init(AggCount.Init(agg)) },
+
+	Update: func(v Val, aggNew, agg []byte, vc *ValComparer) ([]byte, []byte) {
+		aggNew, agg = AggCount.Update(v, aggNew, agg, vc)
+		aggNew, agg = AggSum.Update(v, aggNew, agg, vc)
+		return aggNew, agg
+	},
+
+	Result: func(agg, buf []byte) (v Val, aggRest, bufOut []byte) {
+		c := binary.LittleEndian.Uint64(agg[:8])
+		if c == 0 {
+			return Val(nil), agg[16:], buf
+		}
+
+		s := math.Float64frombits(binary.LittleEndian.Uint64(agg[8:16]))
+
+		vBuf := strconv.AppendFloat(buf[:0], s/float64(c), 'f', -1, 64)
+		if len(buf) >= len(vBuf) {
+			buf = buf[len(vBuf):]
+		} else {
+			buf = nil
+		}
+
+		return Val(vBuf), agg[16:], buf
 	},
 }
 

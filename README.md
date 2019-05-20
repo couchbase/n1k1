@@ -111,7 +111,7 @@ Some design ideas meant to help with n1k1's performance...
 - ORDER-BY / OFFSET / LIMIT.
 - DISTINCT.
 - GROUP BY on multiple expressions
-- aggregate functions: COUNT, SUM, MIN, MAX
+- aggregate functions: COUNT, SUM, MIN, MAX, AVG
 - HAVING, by reusing the same filter operator as WHERE.
 - UNION ALL is concurrent, with the contributing child operators
   having their own goroutines.
@@ -237,8 +237,6 @@ efficiently execute that query-plan.
 
 - UNION-ALL data-staging batchSize should be configurable?
 - UNION-ALL data-staging batchChSize should be configurable?
-
-- more GROUP BY aggregates: average?
 
 - how to handle when fields aren't known?
   - such as the immediate output of a scan?
