@@ -38,6 +38,12 @@ func init() {
 
 	AggCatalog["sum"] = len(Aggs)
 	Aggs = append(Aggs, AggSum)
+
+	AggCatalog["min"] = len(Aggs)
+	Aggs = append(Aggs, AggMin)
+
+	AggCatalog["max"] = len(Aggs)
+	Aggs = append(Aggs, AggMax)
 }
 
 // -----------------------------------------------------
@@ -96,4 +102,46 @@ var AggSum = &Agg{
 		}
 		return Val(vBuf), agg[8:], buf
 	},
+}
+
+// -----------------------------------------------------
+
+var AggMin = &Agg{
+	Init:   func(agg []byte) []byte { return append(agg, Zero8[:8]...) },
+	Update: AggCompareUpdate(func(cmp int) bool { return cmp < 0 }),
+	Result: AggCompareResult,
+}
+
+var AggMax = &Agg{
+	Init:   func(agg []byte) []byte { return append(agg, Zero8[:8]...) },
+	Update: AggCompareUpdate(func(cmp int) bool { return cmp > 0 }),
+	Result: AggCompareResult,
+}
+
+// -----------------------------------------------------
+
+func AggCompareUpdate(comparer func(int) bool) func(v Val, aggNew, agg []byte, vc *ValComparer) (aggNewOut, aggRest []byte) {
+	return func(v Val, aggNew, agg []byte, vc *ValComparer) (aggNewOut, aggRest []byte) {
+		n := binary.LittleEndian.Uint64(agg[:8])
+		if n <= 0 || comparer(vc.Compare(v, agg[8:8+n])) {
+			var b [8]byte
+			binary.LittleEndian.PutUint64(b[:8], uint64(len(v)))
+			aggNew = append(aggNew, b[:8]...)
+			aggNew = append(aggNew, v...)
+		} else {
+			aggNew = append(aggNew, agg[:8+n]...)
+		}
+		return aggNew, agg[8+n:]
+	}
+}
+
+func AggCompareResult(agg, buf []byte) (v Val, aggRest, bufOut []byte) {
+	n := binary.LittleEndian.Uint64(agg[:8])
+	vBuf := append(buf[:0], agg[8:8+n]...)
+	if len(buf) >= len(vBuf) {
+		buf = buf[len(vBuf):]
+	} else {
+		buf = nil
+	}
+	return Val(vBuf), agg[8+n:], buf
 }
