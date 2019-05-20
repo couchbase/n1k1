@@ -98,20 +98,20 @@ Some design ideas meant to help with n1k1's performance...
 - glue integration with existing couchbase/query/expression package.
 - join nested-loop inner.
 - join nested-loop left outer.
-- join hash-eq inner
-- join hash-eq left outer
+- join hash-eq inner.
+- join hash-eq left outer.
 - join ON expressions.
-- UNNEST inner
+- UNNEST inner.
 - UNNEST left outer.
-- NEST nested-loop inner
+- NEST nested-loop inner.
 - NEST nested-loop left outer.
 - WHERE expressions.
 - projection expressions.
 - ORDER BY multiple expressions & ASC/DESC.
 - ORDER-BY / OFFSET / LIMIT.
 - DISTINCT.
-- GROUP BY on multiple expressions
-- aggregate functions: COUNT, SUM, MIN, MAX, AVG
+- GROUP BY on multiple expressions.
+- aggregate functions: COUNT, SUM, MIN, MAX, AVG.
 - HAVING, by reusing the same filter operator as WHERE.
 - UNION ALL is concurrent, with the contributing child operators
   having their own goroutines.
