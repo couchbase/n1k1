@@ -12,6 +12,8 @@ func OpTempCapture(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	// the heap invariant -- we're not using the container/heap's
 	// Push(). Instead, we're using the data structure as an
 	// appendable sequence of []byte entries.
+	tempIdx := o.Params[0].(int)
+
 	lzHeap, lzErr := lzVars.Ctx.AllocHeap()
 	if lzErr != nil {
 		lzYieldErr(lzErr)
@@ -28,7 +30,7 @@ func OpTempCapture(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 		ExecOp(o.Children[0], lzVars, lzYieldVals, lzYieldErr, pathNext, "TC") // !lz
 
 		if lzErr == nil {
-			lzVars.TempsSet(o.Params[0].(int), lzHeap)
+			lzVars.TempsSet(tempIdx, lzHeap)
 		}
 	}
 }
@@ -38,9 +40,11 @@ func OpTempCapture(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 // OpTempYield yields vals previously captured by OpTempCapture.
 func OpTempYield(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	lzYieldErr base.YieldErr, path, pathNext string) {
+	tempIdx := o.Params[0].(int)
+
 	var lzErr error
 
-	lzHeap := lzVars.TempsGetHeap(o.Params[0].(int))
+	lzHeap := lzVars.TempsGetHeap(tempIdx)
 	if lzHeap != nil {
 		var lzBytes []byte
 		var lzVals base.Vals
