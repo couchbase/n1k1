@@ -350,8 +350,12 @@ efficiently execute that query-plan.
     only produces numbers, or only ever produces missing|null|numbers,
     then we can optimize further?
 
-- divide by zero should be checked instead of panic/recover
-  that can leave unclosed, unreclaimable unresources.
+- divide by 0 at compile time should be checked instead of
+  panic/recover that can leave unclosed, unreclaimable unresources?
+
+- divide by 0 at runtime leads to +Inf, with strconv.AppendFloat()
+  converts to "+Inf", which is not JSON -- should be converted into
+  JSON null. Also, need to handle -Inf and NaN.
 
 - operator might optionally declare how its output Vals are sorted?
 
