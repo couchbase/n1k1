@@ -11,13 +11,13 @@ import (
 )
 
 // OpJoinHash implements...
-//  feature:            info tracked in probe map values:     yieldsUnprobed:
-//   joinHash-inner      [                         leftVals ]  f
-//   joinHash-outerLeft  [ tracksProbing           leftVals ]  t
-//   intersect-all       [ tracksProbing leftCount          ]  f
-//   intersect-distinct  [ tracksProbing                    ]  f
-//   except-all          [ tracksProbing leftCount          ]  t
-//   except-distinct     [ tracksProbing                    ]  t
+//  feature:            info tracked in probe map values:  yieldsUnprobed:
+//   joinHash-inner      [                      leftVals ]  f
+//   joinHash-leftOuter  [ probeCount           leftVals ]  t
+//   intersect-all       [ probeCount leftCount          ]  f
+//   intersect-distinct  [ probeCount                    ]  f
+//   except-all          [ probeCount leftCount          ]  t
+//   except-distinct     [ probeCount                    ]  t
 func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	lzYieldErr base.YieldErr, path, pathNext string) {
 	kindParts := strings.Split(o.Kind, "-")
@@ -26,7 +26,7 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 	var exprLeft, exprRight []interface{}
 
-	var canonical, tracksProbing, leftCount, leftVals, yieldsUnprobed bool
+	var canonical, probeCount, leftCount, leftVals, yieldsUnprobed bool
 
 	if kindParts[0] == "joinHash" {
 		exprLeft = o.Params[0].([]interface{})
@@ -34,8 +34,8 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 		canonical = false
 
-		if kindParts[1] == "outerLeft" {
-			tracksProbing, yieldsUnprobed = true, true
+		if kindParts[1] == "leftOuter" {
+			probeCount, yieldsUnprobed = true, true
 		}
 
 		leftVals = true
@@ -47,7 +47,7 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 		canonical = true
 
-		tracksProbing = true
+		probeCount = true
 
 		if kindParts[1] == "all" {
 			leftCount = true
@@ -126,7 +126,7 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 					// the probe map.
 					lzProbeValNew = lzProbeValNew[:0]
 
-					if tracksProbing { // !lz
+					if probeCount { // !lz
 						lzProbeValNew = append(lzProbeValNew, lzZero16[:8]...)
 					} // !lz
 
@@ -159,7 +159,7 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 					lzProbeValOld := lzProbeVal
 
-					if tracksProbing { // !lz
+					if probeCount { // !lz
 						lzProbeValNew = append(lzProbeValNew, lzZero16[:8]...)
 						lzProbeValOld = lzProbeValOld[8:]
 					} // !lz
@@ -237,7 +237,7 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 				if lzErr == nil && base.ValHasValue(lzProbeKey) {
 					lzProbeVal, lzProbeKeyFound := lzMap.Get([]byte(lzProbeKey))
 					if lzProbeKeyFound {
-						if tracksProbing { // !lz
+						if probeCount { // !lz
 							// Increment probe count.
 							lzProbeCount = binary.LittleEndian.Uint64(lzProbeVal[:8]) + 1
 							binary.LittleEndian.PutUint64(lzProbeVal[:8], lzProbeCount)
@@ -269,7 +269,7 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 						} // !lz
 
 						if leftVals { // !lz
-							// Ex: joinHash-inner, joinHash-outerLeft.
+							// Ex: joinHash-inner, joinHash-leftOuter.
 							lzValsOut, lzErr = base.YieldChainedVals(lzYieldValsOrig, lzVals, lzChunks, lzProbeVal, lzValsOut)
 							if lzErr != nil {
 								lzYieldErr(lzErr)
@@ -282,8 +282,8 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 			lzYieldErr = func(lzErrIn error) {
 				if lzErrIn == nil {
 					// No error, so yield unprobed items if needed.
-					// Ex: joinHash-outerLeft, except.
-					if tracksProbing && yieldsUnprobed { // !lz
+					// Ex: joinHash-leftOuter, except.
+					if probeCount && yieldsUnprobed { // !lz
 						rightLabelsLen := len(o.Children[1].Labels) // !lz
 						_ = rightLabelsLen                          // !lz
 
@@ -309,7 +309,7 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 								} // !lz
 
 								if leftVals { // !lz
-									// Ex: joinHash-outerLeft.
+									// Ex: joinHash-leftOuter.
 									lzValsOut, lzErr = base.YieldChainedVals(lzYieldValsOrig, lzRightSuffix, lzChunks, lzProbeVal, lzValsOut)
 									if lzErr != nil {
 										lzYieldErrOrig(lzErr)

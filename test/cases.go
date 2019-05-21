@@ -806,7 +806,7 @@ var TestCasesSimple = []TestCaseSimple{
 	{
 		about: "test left outer joinNL on dept",
 		o: base.Op{
-			Kind:   "joinNL-outerLeft",
+			Kind:   "joinNL-leftOuter",
 			Labels: base.Labels{"dept", "city", "emp", "empDept"},
 			Params: []interface{}{
 				"eq",
@@ -852,7 +852,7 @@ var TestCasesSimple = []TestCaseSimple{
 	{
 		about: "test left outer join on dept with empty RHS",
 		o: base.Op{
-			Kind:   "joinNL-outerLeft",
+			Kind:   "joinNL-leftOuter",
 			Labels: base.Labels{"dept", "city", "emp", "empDept"},
 			Params: []interface{}{
 				"eq",
@@ -921,7 +921,7 @@ var TestCasesSimple = []TestCaseSimple{
 	{
 		about: "test left outer join on dept with empty LHS",
 		o: base.Op{
-			Kind:   "joinNL-outerLeft",
+			Kind:   "joinNL-leftOuter",
 			Labels: base.Labels{"dept", "city", "emp", "empDept"},
 			Params: []interface{}{
 				"eq",
@@ -955,7 +955,7 @@ var TestCasesSimple = []TestCaseSimple{
 	{
 		about: "test left outer join on never matching condition",
 		o: base.Op{
-			Kind:   "joinNL-outerLeft",
+			Kind:   "joinNL-leftOuter",
 			Labels: base.Labels{"dept", "city", "emp", "empDept"},
 			Params: []interface{}{
 				"eq",
@@ -2924,7 +2924,7 @@ var TestCasesSimple = []TestCaseSimple{
 	{
 		about: "test left outer joinHash on dept",
 		o: base.Op{
-			Kind:   "joinHash-outerLeft",
+			Kind:   "joinHash-leftOuter",
 			Labels: base.Labels{"dept", "city", "emp", "empDept"},
 			Params: []interface{}{
 				[]interface{}{"labelPath", `dept`},
@@ -2986,7 +2986,7 @@ var TestCasesSimple = []TestCaseSimple{
 				},
 			},
 			Children: []*base.Op{&base.Op{
-				Kind:   "joinHash-outerLeft",
+				Kind:   "joinHash-leftOuter",
 				Labels: base.Labels{"dept", "city", "emp", "empDept"},
 				Params: []interface{}{
 					[]interface{}{"labelPath", `dept`},
@@ -3021,7 +3021,7 @@ var TestCasesSimple = []TestCaseSimple{
 	{
 		about: "test left outer joinHash on dept with empty LHS",
 		o: base.Op{
-			Kind:   "joinHash-outerLeft",
+			Kind:   "joinHash-leftOuter",
 			Labels: base.Labels{"dept", "city", "emp", "empDept"},
 			Params: []interface{}{
 				[]interface{}{"labelPath", `dept`},
@@ -3071,7 +3071,7 @@ var TestCasesSimple = []TestCaseSimple{
 				},
 			},
 			Children: []*base.Op{&base.Op{
-				Kind:   "joinHash-outerLeft",
+				Kind:   "joinHash-leftOuter",
 				Labels: base.Labels{"dept", "city", "emp", "empDept"},
 				Params: []interface{}{
 					[]interface{}{"labelPath", `dept`},
@@ -4167,9 +4167,9 @@ var TestCasesSimple = []TestCaseSimple{
 		},
 	},
 	{
-		about: "test csv-data scan->unnest-outerLeft",
+		about: "test csv-data scan->unnest-leftOuter",
 		o: base.Op{
-			Kind:   "unnest-outerLeft",
+			Kind:   "unnest-leftOuter",
 			Labels: base.Labels{"."},
 			Params: []interface{}{
 				"labelPath", ".", "a",
@@ -4241,9 +4241,9 @@ var TestCasesSimple = []TestCaseSimple{
 		},
 	},
 	{
-		about: "test csv-data scan->nestNL-outerLeft",
+		about: "test csv-data scan->nestNL-leftOuter",
 		o: base.Op{
-			Kind:   "nestNL-outerLeft",
+			Kind:   "nestNL-leftOuter",
 			Labels: base.Labels{"dept", "city", "emp"},
 			Params: []interface{}{
 				"eq",

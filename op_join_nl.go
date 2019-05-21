@@ -30,7 +30,7 @@ func OpJoinNestedLoop(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 	isNest := joinKind[0] == "nestNL"
 	isUnnest := joinKind[0] == "unnest"
-	isOuterLeft := joinKind[1] == "outerLeft"
+	isLeftOuter := joinKind[1] == "leftOuter"
 
 	joinClauseFunc :=
 		MakeExprFunc(lzVars, labelsAB, o.Params, pathNext, "JF") // !lz
@@ -60,7 +60,7 @@ func OpJoinNestedLoop(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 			lzNestBytes = append(lzNestBytes, '[')
 		} // !lz
 
-		if isOuterLeft { // !lz
+		if isLeftOuter { // !lz
 			lzHadInner = false
 		} // !lz
 
@@ -79,7 +79,7 @@ func OpJoinNestedLoop(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 			} // !lz
 
 			if base.ValEqualTrue(lzVal) {
-				if isOuterLeft { // !lz
+				if isLeftOuter { // !lz
 					lzHadInner = true
 				} // !lz
 
@@ -124,8 +124,8 @@ func OpJoinNestedLoop(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 			}
 		} // !lz
 
-		// Case of outerLeft join when inner (right) was empty.
-		if isOuterLeft { // !lz
+		// Case of leftOuter join when inner (right) was empty.
+		if isLeftOuter { // !lz
 			if !lzHadInner && lzErr == nil {
 				lzValsJoin = lzValsJoin[0:lenLabelsA]
 
