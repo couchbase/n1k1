@@ -25,3 +25,7 @@ easy-to-read:
 cloc:
 	find . | grep go | grep -v test | grep -v generated | grep -v tmp | \
        xargs cloc --by-file
+
+benchmark-expr-eq:
+	go test -bench=InterpExprStr -benchmem ./test
+	go test -bench=InterpExprEq -benchmem ./test
