@@ -53,9 +53,9 @@ func OpTempYield(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 			lzBytes, lzErr = lzHeap.Get(lzI)
 			if lzErr != nil {
 				lzYieldErr(lzErr)
+			} else {
+				lzYieldVals(base.ValsDecode(lzBytes, lzVals[:0]))
 			}
-
-			lzYieldVals(base.ValsDecode(lzBytes, lzVals[:0]))
 		}
 	}
 
