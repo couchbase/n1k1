@@ -63,6 +63,17 @@ func init() {
 
 // -----------------------------------------------------
 
+// BufUnused returns buf[n:] if there's enough length or returns nil.
+func BufUnused(buf []byte, n int) []byte {
+	if len(buf) >= n {
+		return buf[n:]
+	}
+
+	return nil
+}
+
+// -----------------------------------------------------
+
 var AggCount = &Agg{
 	Init: func(vars *Vars, agg []byte) []byte { return append(agg, Zero8[:8]...) },
 
@@ -76,13 +87,10 @@ var AggCount = &Agg{
 
 	Result: func(vars *Vars, agg, buf []byte) (v Val, aggRest, bufOut []byte) {
 		c := binary.LittleEndian.Uint64(agg[:8])
+
 		vBuf := strconv.AppendUint(buf[:0], c, 10)
-		if len(buf) >= len(vBuf) {
-			buf = buf[len(vBuf):]
-		} else {
-			buf = nil
-		}
-		return Val(vBuf), agg[8:], buf
+
+		return Val(vBuf), agg[8:], BufUnused(buf, len(vBuf))
 	},
 }
 
@@ -109,13 +117,10 @@ var AggSum = &Agg{
 
 	Result: func(vars *Vars, agg, buf []byte) (v Val, aggRest, bufOut []byte) {
 		s := math.Float64frombits(binary.LittleEndian.Uint64(agg[:8]))
+
 		vBuf := strconv.AppendFloat(buf[:0], s, 'f', -1, 64)
-		if len(buf) >= len(vBuf) {
-			buf = buf[len(vBuf):]
-		} else {
-			buf = nil
-		}
-		return Val(vBuf), agg[8:], buf
+
+		return Val(vBuf), agg[8:], BufUnused(buf, len(vBuf))
 	},
 }
 
@@ -142,13 +147,8 @@ var AggAvg = &Agg{
 		s := math.Float64frombits(binary.LittleEndian.Uint64(agg[8:16]))
 
 		vBuf := strconv.AppendFloat(buf[:0], s/float64(c), 'f', -1, 64)
-		if len(buf) >= len(vBuf) {
-			buf = buf[len(vBuf):]
-		} else {
-			buf = nil
-		}
 
-		return Val(vBuf), agg[16:], buf
+		return Val(vBuf), agg[16:], BufUnused(buf, len(vBuf))
 	},
 }
 
@@ -186,11 +186,8 @@ func AggCompareUpdate(comparer func(int) bool) func(
 
 func AggCompareResult(vars *Vars, agg, buf []byte) (v Val, aggRest, bufOut []byte) {
 	n := binary.LittleEndian.Uint64(agg[:8])
+
 	vBuf := append(buf[:0], agg[8:8+n]...)
-	if len(buf) >= len(vBuf) {
-		buf = buf[len(vBuf):]
-	} else {
-		buf = nil
-	}
-	return Val(vBuf), agg[8+n:], buf
+
+	return Val(vBuf), agg[8+n:], BufUnused(buf, len(vBuf))
 }
