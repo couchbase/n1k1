@@ -44,9 +44,9 @@ func (v *Vars) ChainExtend() *Vars {
 
 // -----------------------------------------------------
 
-// TempsSet associates a resource with a temp slot and also closes any
+// TempSet associates a resource with a temp slot and also closes any
 // resource that was previously in that slot.
-func (v *Vars) TempsSet(idx int, resource interface{}) {
+func (v *Vars) TempSet(idx int, resource interface{}) {
 	prev := v.Temps[idx]
 	if prev != nil {
 		closer, ok := prev.(io.Closer)
@@ -60,8 +60,8 @@ func (v *Vars) TempsSet(idx int, resource interface{}) {
 
 // -----------------------------------------------------
 
-// TempsGetHeap casts the retrieved temp resource into a heap.
-func (v *Vars) TempsGetHeap(idx int) (rv *heap.Heap) {
+// TempGetHeap casts the retrieved temp resource into a heap.
+func (v *Vars) TempGetHeap(idx int) (rv *heap.Heap) {
 	r := v.Temps[idx]
 	if r != nil {
 		rv, _ = r.(*heap.Heap)

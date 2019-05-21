@@ -4,8 +4,8 @@ import (
 	"github.com/couchbase/n1k1/base"
 )
 
-// OpTempCapture runs the child op, and captures any yielded vals
-// into the vars as a named temp entry.
+// OpTempCapture runs the child op, and appends any yielded vals as an
+// entry into a vars.Temps slot.
 func OpTempCapture(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	lzYieldErr base.YieldErr, path, pathNext string) {
 	// A heap data structure is allocated but is used without keeping
@@ -30,7 +30,7 @@ func OpTempCapture(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 		ExecOp(o.Children[0], lzVars, lzYieldVals, lzYieldErr, pathNext, "TC") // !lz
 
 		if lzErr == nil {
-			lzVars.TempsSet(tempIdx, lzHeap)
+			lzVars.TempSet(tempIdx, lzHeap)
 		}
 	}
 }
@@ -44,7 +44,7 @@ func OpTempYield(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 	var lzErr error
 
-	lzHeap := lzVars.TempsGetHeap(tempIdx)
+	lzHeap := lzVars.TempGetHeap(tempIdx)
 	if lzHeap != nil {
 		var lzBytes []byte
 		var lzVals base.Vals
