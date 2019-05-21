@@ -11,7 +11,7 @@ import (
 )
 
 // OpJoinHash implements...
-//  feature:            info tracked in probe map values:  yieldsUnprobed:
+//  o.Kind:             info tracked in probe map values:  yieldsUnprobed:
 //   joinHash-inner      [                      leftVals ]  f
 //   joinHash-leftOuter  [ probeCount           leftVals ]  t
 //   intersect-all       [ probeCount leftCount          ]  f
@@ -26,7 +26,7 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 	var exprLeft, exprRight []interface{}
 
-	// Analyze the operator's configuration to fill in these flags.
+	// Analyze the Op's config according to the above table of flags.
 	var canonical, probeCount, leftCount, leftVals, yieldsUnprobed bool
 
 	if kindParts[0] == "joinHash" {
