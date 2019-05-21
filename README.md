@@ -121,8 +121,7 @@ Some design ideas meant to help with n1k1's performance...
 - EXCEPT DISTINCT / EXCEPT ALL.
 - temp tables operator.
 - sequence operator.
-- data-staging / pipeline-breaker machinery with concurrent child
-  pipelines.
+- data-staging / pipeline-breakers with concurrent children.
 - nested object paths (e.g. locations/address/city).
 - scans of simple files (CSV's and newline delimited JSON).
 - automatic spilling from memory to temporary files...
