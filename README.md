@@ -234,7 +234,9 @@ efficiently execute that query-plan.
     value.NUMBER during every Evaluate()?
     - see the ExprCmp() implementation to see how this works.
 
+- NEST on keys?
 - NEST via hash-join?
+- NEST via index scan?
 
 - NEST should spill out to disk when it gets too big?
   - or, perhaps not -- as it ultimately puts array into result,
