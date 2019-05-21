@@ -25,7 +25,7 @@ import (
 type Vars struct {
 	Labels Labels
 	Vals   Vals // Same len() as Labels.
-	Temps  map[string]interface{}
+	Temps  []interface{}
 	Next   *Vars // The root Vars has nil Next.
 	Ctx    *Ctx
 }
@@ -35,52 +35,39 @@ type Vars struct {
 // ChainExtend returns a new Vars linked to the Vars chain, which is
 // safely usable by a concurrent goroutine and useful for shadowing.
 func (v *Vars) ChainExtend() *Vars {
-	return &Vars{Next: v, Ctx: v.Ctx.Clone()}
+	return &Vars{
+		Temps: make([]interface{}, len(v.Temps)),
+		Next:  v,
+		Ctx:   v.Ctx.Clone(),
+	}
 }
 
 // -----------------------------------------------------
 
-// TempSet associates a temp resource with a name, and also closes the
-// existing resource under that name if it already exists.
-func (v *Vars) TempSet(name string, resource interface{}) {
-	if v.Temps == nil {
-		v.Temps = map[string]interface{}{}
-	}
-
-	prev, ok := v.Temps[name]
-	if ok && prev != nil {
+// TempsSet associates a resource with a temp slot and also closes any
+// resource that was previously in that slot.
+func (v *Vars) TempsSet(idx int, resource interface{}) {
+	prev := v.Temps[idx]
+	if prev != nil {
 		closer, ok := prev.(io.Closer)
 		if ok {
 			closer.Close()
 		}
 	}
 
-	v.Temps[name] = resource
+	v.Temps[idx] = resource
 }
 
 // -----------------------------------------------------
 
-// TempGet retrieves a temp resource with the given name.
-func (v *Vars) TempGet(name string) (rv interface{}, exists bool) {
-	if v.Temps != nil {
-		rv, exists = v.Temps[name]
+// TempsGetHeap casts the retrieved temp resource into a heap.
+func (v *Vars) TempsGetHeap(idx int) (rv *heap.Heap) {
+	r := v.Temps[idx]
+	if r != nil {
+		rv, _ = r.(*heap.Heap)
 	}
 
-	return rv, exists
-}
-
-// -----------------------------------------------------
-
-// TempGetHeap casts the retrieved temp resource into a heap.
-func (v *Vars) TempGetHeap(name string) (rv *heap.Heap, exists bool) {
-	var r interface{}
-
-	r, exists = v.TempGet(name)
-	if exists && r != nil {
-		rv, exists = r.(*heap.Heap)
-	}
-
-	return rv, exists
+	return rv
 }
 
 // -----------------------------------------------------

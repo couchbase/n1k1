@@ -24,7 +24,7 @@ func OpTempCapture(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 		ExecOp(o.Children[0], lzVars, lzYieldVals, lzYieldErr, pathNext, "TC") // !lz
 
 		if lzErr == nil {
-			lzVars.TempSet(o.Params[0].(string), lzHeap)
+			lzVars.TempsSet(o.Params[0].(int), lzHeap)
 		}
 	}
 }
@@ -36,8 +36,8 @@ func OpTempYield(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	lzYieldErr base.YieldErr, path, pathNext string) {
 	var lzErr error
 
-	lzHeap, lzOk := lzVars.TempGetHeap(o.Params[0].(string))
-	if lzOk {
+	lzHeap := lzVars.TempsGetHeap(o.Params[0].(int))
+	if lzHeap != nil {
 		var lzBytes []byte
 		var lzVals base.Vals
 

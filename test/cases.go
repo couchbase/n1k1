@@ -62,6 +62,7 @@ func MakeVars() (string, *base.Vars) {
 	var recycledChunks *store.Chunks
 
 	return tmpDir, &base.Vars{
+		Temps: make([]interface{}, 16),
 		Ctx: &base.Ctx{
 			ValComparer: base.NewValComparer(),
 			ExprCatalog: n1k1.ExprCatalog,
@@ -4289,7 +4290,7 @@ var TestCasesSimple = []TestCaseSimple{
 			Children: []*base.Op{&base.Op{
 				Kind:   "temp-capture",
 				Labels: base.Labels{"a", "c"},
-				Params: []interface{}{"myTemp"},
+				Params: []interface{}{0},
 				Children: []*base.Op{&base.Op{
 					Kind:   "project",
 					Labels: base.Labels{"a", "c"},
@@ -4332,7 +4333,7 @@ var TestCasesSimple = []TestCaseSimple{
 			Children: []*base.Op{&base.Op{
 				Kind:   "temp-capture",
 				Labels: base.Labels{"a", "c"},
-				Params: []interface{}{"myTemp"},
+				Params: []interface{}{0},
 				Children: []*base.Op{&base.Op{
 					Kind:   "project",
 					Labels: base.Labels{"a", "c"},
@@ -4366,7 +4367,7 @@ var TestCasesSimple = []TestCaseSimple{
 			}, &base.Op{
 				Kind:   "temp-yield",
 				Labels: base.Labels{"a", "c"},
-				Params: []interface{}{"myTemp"},
+				Params: []interface{}{0},
 			}},
 		},
 		expectYields: []base.Vals{
