@@ -8,6 +8,10 @@ import (
 // into the vars as a named temp entry.
 func OpTempCapture(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	lzYieldErr base.YieldErr, path, pathNext string) {
+	// A heap data structure is allocated but is used without keeping
+	// the heap invariant -- we're not using the container/heap's
+	// Push(). Instead, we're using the data structure as an
+	// appendable sequence of []byte entries.
 	lzHeap, lzErr := lzVars.Ctx.AllocHeap()
 	if lzErr != nil {
 		lzYieldErr(lzErr)
