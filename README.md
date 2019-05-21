@@ -180,16 +180,6 @@ efficiently execute that query-plan.
 ------------------------------------------
 ## TODO...
 
-- speed mismatch between producers and consumers?
-  - e.g., scan racing ahead and filling memory with candidate tuples
-    when the fetch / filter is way behind?
-  - less of a problem with push-based design?
-  - data-staging batch sizes & queue sizes need careful configuration?
-  - racing too far ahead is a waste if there's a small OFFSET+LIMIT?
-  - racing too far ahead might be ok if there's lots of memory?
-    - decision on "too far ahead" might be situational and depend on
-      global, process-wide workload?
-
 - conversion of N1QL query-plan into n1k1 query-plan?
 
 - aggregate functions, advanced features?
@@ -198,6 +188,10 @@ efficiently execute that query-plan.
   - distinct?
   - filter-where clauses?
   - window functions?
+
+- command-line program?
+
+- UI / terminal and/or web-based?
 
 - numbers
   - need to treat float's different than int's?
@@ -240,11 +234,24 @@ efficiently execute that query-plan.
     value.NUMBER during every Evaluate()?
     - see the ExprCmp() implementation to see how this works.
 
-- NEST should spill out to disk when it gets too big?
 - NEST via hash-join?
+
+- NEST should spill out to disk when it gets too big?
+  - or, perhaps not -- as it ultimately puts array into result,
+    which has to fit into memory?
 
 - UNION-ALL data-staging batchSize should be configurable?
 - UNION-ALL data-staging batchChSize should be configurable?
+
+- speed mismatch between producers and consumers?
+  - e.g., scan racing ahead and filling memory with candidate tuples
+    when the fetch / filter is way behind?
+  - less of a problem with push-based design?
+  - data-staging batch sizes & queue sizes need careful configuration?
+  - racing too far ahead is a waste if there's a small OFFSET+LIMIT?
+  - racing too far ahead might be ok if there's lots of memory?
+    - decision on "too far ahead" might be situational and depend on
+      global, process-wide workload?
 
 - how to handle when fields aren't known?
   - such as the immediate output of a scan?
