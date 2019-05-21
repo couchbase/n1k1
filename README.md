@@ -119,8 +119,11 @@ Some design ideas meant to help with n1k1's performance...
 - UNION DISTINCT is supported by sequencing UNION ALL with DISTINCT.
 - INTERSECT DISTINCT / INTERSECT ALL.
 - EXCEPT DISTINCT / EXCEPT ALL.
-- temp tables operator.
+- temp table operators.
 - sequence operator.
+- subqueries (uncorrelated) by capturing the subquery
+  into a temp table, which a later operator can retrieve,
+  and by using a sequence operator to control these steps.
 - data-staging / pipeline-breakers with concurrent children.
 - nested object paths (e.g. locations/address/city).
 - scans of simple files (CSV's and newline delimited JSON).
@@ -196,15 +199,10 @@ efficiently execute that query-plan.
 - numbers
   - need to treat float's different than int's?
 
-- subqueries & correlated subqueries?
+- correlated subqueries?
   - these should just be yet another expression
   - analysis of non-correlated vs correlated subqueries should be
     decided at a higher level than at query-plan execution
-  - what about subqueries that return huge results?
-    - the arrays might get huge?
-    - perhaps an attachment or label can be for a named cursor, such
-      as "&cursor-2341", that's registered into the Ctx?
-      - the cursor might to a pipeline-breaking batch provider?
 
 - compiled expr support?
 
