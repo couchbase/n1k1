@@ -84,9 +84,9 @@ func OpJoinNestedLoop(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 				} // !lz
 
 				if isNest { // !lz
-					// Append RHS val into lzNestBytes, comma separated.
+					// Append right-side val into lzNestBytes, comma separated.
 					//
-					// NOTE: Assume RHS nest val will be in lzValsB[-1].
+					// NOTE: Assume right-side nest val will be in lzValsB[-1].
 					//
 					// TODO: Double check that lzValsB[-1] assumption.
 					if len(lzValsB) > 0 && len(lzValsB[len(lzValsB)-1]) > 0 {
@@ -113,6 +113,8 @@ func OpJoinNestedLoop(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 			ExecOp(o.Children[1], lzVars, lzYieldVals, lzYieldErr, pathNext, "JNLI") // !lz
 		} // !lz
 
+		// Case of NEST, we've been collecting a JSON encoded array of
+		// right-side values.
 		if isNest { // !lz
 			if len(lzNestBytes) > 1 && lzErr == nil {
 				lzNestBytes = append(lzNestBytes, ']')
