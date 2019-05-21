@@ -26,6 +26,7 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 	var exprLeft, exprRight []interface{}
 
+	// Analyze the operator's configuration to fill in these flags.
 	var canonical, probeCount, leftCount, leftVals, yieldsUnprobed bool
 
 	if kindParts[0] == "joinHash" {
@@ -64,6 +65,10 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 		binary.LittleEndian.PutUint64(lzOne8[:], uint64(1))
 
+		// As the left side is visited to fill or build the probe map,
+		// any left vals, if they are needed for a join, are stored as
+		// a chain of entries in the lzChunks.
+		//
 		// TODO: Configurable initial size for chunks, and reusable chunks.
 		// TODO: Reuse backing bytes for chunks.
 		lzChunks, lzErr := lzVars.Ctx.AllocChunks()
@@ -71,10 +76,10 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 			lzYieldErr(lzErr)
 		}
 
-		var lzMap *store.RHStore
+		var lzMap *store.RHStore // The probe map.
 
 		if lzErr == nil {
-			// Chain ends at offset 0, size 0.
+			// Every chain of left vals ends at offset 0, size 0.
 			lzChunks.BytesAppend(lzZero16[:])
 
 			// TODO: Configurable initial size for RHStore, and reusable RHStore.
@@ -109,6 +114,7 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 		lzYieldVals = func(lzVals base.Vals) {
 			var lzErr error
 
+			// Prepare the probe key.
 			lzVal = exprLeftFunc(lzVals, lzYieldErr) // <== emitCaptured: pathNext "JHL"
 
 			lzProbeKey := lzVal
@@ -118,6 +124,7 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 				lzValOut = lzProbeKey[:0]
 			} // !lz
 
+			// The probe key must be valued.
 			if lzErr == nil && base.ValHasValue(lzProbeKey) {
 				// Check if we have an entry for the probe key.
 				lzProbeVal, lzProbeKeyFound := lzMap.Get([]byte(lzProbeKey))
@@ -216,8 +223,8 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 		if lzErr == nil {
 			// No error, so at this point the probe map has been
-			// filled with left-hand-side probe entries, and next we
-			// will visit the right-hand-side.
+			// filled with left-side probe entries, and next we will
+			// visit the right-side.
 
 			EmitPush(pathNext, "JHP") // !lz
 
@@ -225,6 +232,7 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 			lzYieldVals = func(lzVals base.Vals) {
 				var lzErr error
 
+				// Prepare the probe key.
 				lzVal = exprRightFunc(lzVals, lzYieldErr) // <== emitCaptured: pathNext "JHR"
 
 				lzProbeKey := lzVal
@@ -234,6 +242,7 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 					lzValOut = lzProbeKey[:0]
 				} // !lz
 
+				// The probe key must be valued.
 				if lzErr == nil && base.ValHasValue(lzProbeKey) {
 					lzProbeVal, lzProbeKeyFound := lzMap.Get([]byte(lzProbeKey))
 					if lzProbeKeyFound {
@@ -290,9 +299,10 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 						lzRightSuffix := make(base.Vals, rightLabelsLen)
 						_ = lzRightSuffix
 
+						// Callback for entries in the probe map.
 						lzMapVisitor := func(lzProbeKey store.Key, lzProbeVal store.Val) bool {
 							lzProbeCount := binary.LittleEndian.Uint64(lzProbeVal[:8])
-							if lzProbeCount == 0 { // Unprobed.
+							if lzProbeCount == 0 { // Entry was unprobed.
 								lzProbeVal = lzProbeVal[8:]
 
 								if leftCount { // !lz
