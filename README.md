@@ -192,6 +192,8 @@ efficiently execute that query-plan.
   - filter-where clauses?
   - window functions?
 
+- GROUP BY ROLLUP?
+
 - command-line program?
 
 - UI / terminal and/or web-based?
