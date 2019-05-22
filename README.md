@@ -232,6 +232,8 @@ efficiently execute that query-plan.
     value.NUMBER during every Evaluate()?
     - see the ExprCmp() implementation to see how this works.
 
+- JOIN types: CROSS, FULL, RIGHT OUTER.
+
 - NEST on keys?
 - NEST via hash-join?
 - NEST via index scan?
