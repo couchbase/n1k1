@@ -292,6 +292,10 @@ efficiently execute that query-plan.
       depending on how it's called with the group-by expression,
       and does not propagate attachments?
 
+EXCEPT ALL - tuple should appear MAX(m - n, 0) times in the result,
+  given tuple appears m times in the left side
+  and n times in the right side, where m >= 0 and n >= 0.
+
 - handling of BINARY data type?
   - use a label prefix char?  Perhaps '='?
   - PROBLEM: the operator doesn't know a val is BINARY until runtime,
