@@ -201,13 +201,13 @@ efficiently execute that query-plan.
   - distinct?
   - filter-where clauses?
 
-- window functions, TODO: lead, lag, etc.
+- more window functions?
 
 - window partitions
-  - more types: range & group
-  - more exclude kinds: group, ties
-  - optimizations:
-    - inverse
+  - more types: range & group?
+  - more exclude kinds: group, ties?
+  - optimizations?
+    - inverse optimization on sliding window?
     - not materializing partition if possible?
       - for example, when only a count is needed?
       - non-materializing WindowPartition implementation
