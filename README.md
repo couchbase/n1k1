@@ -202,6 +202,7 @@ efficiently execute that query-plan.
   - filter-where clauses?
 
 - more window functions?
+  - IGNORE NULL's?
 
 - window partitions
   - more types: range & group?
@@ -428,6 +429,11 @@ EXCEPT ALL - tuple should appear MAX(m - n, 0) times in the result,
 
 - GROUP-JOIN operator?
   - useful for decorrelating subqueries?
+
+- CONNECT BY?
+  - hierarchical queries?
+  - [START WITH condition] CONNECT BY [LOOP | NOCYCLE] condition?
+  - PRIOR operator / CONNECT_BY_ROOT operator?
 
 - NUMA?
   - pinning threads to specific cores?
