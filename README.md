@@ -435,6 +435,9 @@ EXCEPT ALL - tuple should appear MAX(m - n, 0) times in the result,
   - [START WITH condition] CONNECT BY [LOOP | NOCYCLE] condition?
   - PRIOR operator / CONNECT_BY_ROOT operator?
 
+- PIVOT aggregate-funcs FOR expression IN expected-values?
+  - PIVOT count(*) FOR (time, category rating) IN ((1, "movie", 5), ...)?
+
 - NUMA?
   - pinning threads to specific cores?
   - lock free data structures?
