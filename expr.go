@@ -71,7 +71,10 @@ func ExprLabelPath(lzVars *base.Vars, labels base.Labels,
 			return lzVal
 		}
 	} else {
-		lzExprFunc = base.ExprFuncMissing
+		lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
+			lzVal = base.ValMissing
+			return lzVal
+		}
 	}
 
 	return lzExprFunc
@@ -99,7 +102,10 @@ func ExprLabelUint64(lzVars *base.Vars, labels base.Labels,
 			return lzVal
 		}
 	} else {
-		lzExprFunc = base.ExprFuncMissing
+		lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
+			lzVal = base.ValMissing
+			return lzVal
+		}
 	}
 
 	return lzExprFunc
