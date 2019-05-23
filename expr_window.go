@@ -8,6 +8,7 @@ import (
 
 func init() {
 	ExprCatalog["window-frame-count"] = ExprWindowFrameCount
+	ExprCatalog["window-frame-first-value"] = ExprWindowFrameFirstValue
 }
 
 /*
@@ -57,8 +58,7 @@ aggregate functions
 
 func ExprWindowFrameCount(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	windowFramesSlot := params[0].(int)
-	windowFrameIdx := params[1].(int)
+	windowFramesSlot, windowFrameIdx := params[0].(int), params[1].(int)
 
 	var lzBufPre []byte // <== varLift: lzBufPre by path
 
@@ -75,6 +75,41 @@ func ExprWindowFrameCount(lzVars *base.Vars, labels base.Labels,
 		lzBufPre = lzBuf
 
 		return lzVal
+	}
+
+	return lzExprFunc
+}
+
+// -----------------------------------------------------
+
+func ExprWindowFrameFirstValue(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
+	windowFramesSlot, windowFrameIdx := params[0].(int), params[1].(int)
+
+	expr := params[2].([]interface{})
+
+	if LzScope {
+		lzExprFunc =
+			MakeExprFunc(lzVars, labels, expr, path, "E") // !lz
+		lzExprFirstValue := lzExprFunc
+
+		var lzValsPre base.Vals // <== varLift: lzValsPre by path
+
+		lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
+			lzWindowFrames := lzVars.Temps[windowFramesSlot].([]base.WindowFrame)
+			lzWindowFrame := &lzWindowFrames[windowFrameIdx]
+
+			lzValsStep := lzValsPre[:0]
+
+			lzVals, _, lzOk, lzErr := lzWindowFrame.StepVals(true, int64(-1), lzValsStep)
+			if lzOk && lzErr == nil {
+				lzValsPre = lzVals
+
+				lzVal = lzExprFirstValue(lzVals, lzYieldErr) // <== emitCaptured: path "E"
+			}
+
+			return lzVal
+		}
 	}
 
 	return lzExprFunc

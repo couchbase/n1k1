@@ -39,6 +39,7 @@ var Keywords = map[string]bool{
 	"bool":      true,
 	"byte":      true,
 	"int":       true,
+	"int64":     true,
 	"uint64":    true,
 }
 
