@@ -114,16 +114,25 @@ Some design ideas meant to help with n1k1's performance...
 - GROUP BY on multiple expressions.
 - aggregate functions: COUNT, SUM, MIN, MAX, AVG.
 - HAVING, by reusing the same filter operator as WHERE.
+- WINDOW functions.
+  - aggregate functions: COUNT().
+  - numbering functions: ROW_NUMBER().
+  - navigation functions: FIRST_VALUE(expr).
+  - window partition types: ROW.
+  - window frame clause...
+    - preceding: unbounded, current-row, numeric offset.
+    - following: unbounded, current-row, numeric offset.
+    - exclude: no-others, current-row.
+  - window partitions spill to the disk if too large.
 - UNION ALL is concurrent, with the contributing child operators
   having their own goroutines.
-- UNION DISTINCT is supported by sequencing UNION ALL with DISTINCT.
+- UNION DISTINCT is supported by sequencing DISTINCT after UNION ALL.
 - INTERSECT DISTINCT / INTERSECT ALL.
 - EXCEPT DISTINCT / EXCEPT ALL.
 - temp table operators.
 - sequence operator.
 - subqueries (uncorrelated) by capturing the subquery
-  into a temp table, which a later operator can retrieve,
-  and by using a sequence operator to control these steps.
+  into a temp table, which a later sequence'd operator can retrieve.
 - data-staging / pipeline-breakers with concurrent children.
 - nested object paths (e.g. locations/address/city).
 - scans of simple files (CSV's and newline delimited JSON).
@@ -190,7 +199,18 @@ efficiently execute that query-plan.
     w.r.t. missing/null handling?
   - distinct?
   - filter-where clauses?
-  - window functions?
+
+- window functions, TODO: lead, lag, etc.
+
+- window partitions
+  - more types: range & group
+  - more exclude kinds: group, ties
+  - optimizations:
+    - inverse
+    - not materializing partition if possible?
+      - for example, when only a count is needed?
+      - non-materializing WindowPartition implementation
+        might just borrow the underlying ORDER-OFFSET-LIMIT's backing heap?
 
 - GROUP BY ROLLUP?
 
