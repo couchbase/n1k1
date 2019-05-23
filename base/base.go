@@ -257,6 +257,13 @@ type ExprCatalogFunc func(vars *Vars, labels Labels,
 
 // -----------------------------------------------------
 
+// ExprFuncMissing is an ExprFunc that always returns missing.
+func ExprFuncMissing(lzVals Vals, lzYieldErr YieldErr) Val {
+	return ValMissing
+}
+
+// -----------------------------------------------------
+
 // An Op can occasionally yield stats and progress information,
 // where the call can return an error to abort further processing.
 //

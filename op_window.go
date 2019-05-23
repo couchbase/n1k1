@@ -1,7 +1,11 @@
 package n1k1
 
 import (
+	"encoding/binary" // <== genCompiler:hide
+
 	"bytes" // <== genCompiler:hide
+
+	"strings"
 
 	"github.com/couchbase/n1k1/base"
 
@@ -11,16 +15,33 @@ import (
 // OpWindowPartition maintains a current window partition in a vars
 // temp slot as it processes incoming vals. This operator depends on
 // its child operator to produce vals that are sorted by the same
-// major sorting expressions as this operator's partitioning
+// sorting expressions as this operator's PARTITION-BY and ORDER-BY
 // expressions. When a vals from the next partition appears, all the
 // collected vals from the current partition are yielded before
 // reseting the current partition to reuse it as the next partition.
+// This operator can optionally track rank / numbering related info.
 func OpWindowPartition(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	lzYieldErr base.YieldErr, path, pathNext string) {
 	windowPartitionSlot := o.Params[0].(int) // Vars.Temps slot number.
 
-	// Partitioning expressions.
-	partitionings := o.Params[1].([]interface{}) // Can be 0 length.
+	// PARTITION-BY & ORDER-BY expressions.
+	partitionExprs := o.Params[1].([]interface{}) // Can be 0 length.
+
+	// The subset of the partitionExprs that are for PARTITION-BY.
+	// partitionExprs[:partitionPrefix] is the PARTITION-BY.
+	// partitionExprs[partitionPrefix:] is the ORDER-BY.
+	partitionPrefix := o.Params[2].(int)
+
+	// The track config is a comma-separated list of additional
+	// information to track for each partition entry, such as
+	// different kinds of ranks and numberings.
+	track := o.Params[3].(string)
+
+	trackOn := len(track) > 0
+
+	trackRank := strings.Index(track, "rank") >= 0
+
+	trackDenseRank := strings.Index(track, "dense-rank") >= 0
 
 	// A heap data structure is allocated but is used merely as an
 	// appendable sequence of []byte items, not as an actual heap.
@@ -38,28 +59,40 @@ func OpWindowPartition(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals
 		pathNextWP := EmitPush(pathNext, "WP") // !lz
 
 		// The partitioning exprs are treated as a projection.
-		var partitioningsFunc base.ProjectFunc // !lz
+		var partitionExprsFunc base.ProjectFunc // !lz
 
-		if len(partitionings) > 0 { // !lz
-			partitioningsFunc =
-				MakeProjectFunc(lzVars, o.Children[0].Labels, partitionings, pathNextWP, "PF") // !lz
+		if len(partitionExprs) > 0 { // !lz
+			partitionExprsFunc =
+				MakeProjectFunc(lzVars, o.Children[0].Labels, partitionExprs, pathNextWP, "PF") // !lz
 		} // !lz
 
-		_ = partitioningsFunc // !lz
+		_ = partitionExprsFunc // !lz
 
 		var lzValsOut base.Vals
 
-		var lzPartitionNext, lzPartitionCurr, lzHeapBytes, lzBytes []byte
+		var lzPartitionNext, lzPartitionCurr, lzOrderNext, lzOrderCurr, lzHeapBytes, lzBytes []byte
+
+		var lzRank, lzDenseRank uint64
+
+		var lzBuf8Rank, lzBuf8DenseRank [8]byte
+
+		_, _ = lzBuf8Rank, lzBuf8DenseRank
 
 		lzYieldValsOrig := lzYieldVals
 
 		lzYieldVals = func(lzVals base.Vals) {
-			if len(partitionings) > 0 { // !lz
+			lzPartitionNext = lzPartitionNext[:0]
+			lzOrderNext = lzOrderNext[:0]
+
+			if len(partitionExprs) > 0 { // !lz
 				lzValsOut = lzValsOut[:0]
 
-				lzValsOut = partitioningsFunc(lzVals, lzValsOut, lzYieldErr) // <== emitCaptured: pathNextWP "PF"
+				lzValsOut = partitionExprsFunc(lzVals, lzValsOut, lzYieldErr) // <== emitCaptured: pathNextWP "PF"
 
-				lzPartitionNext, lzErr = base.ValsEncodeCanonical(lzValsOut, lzPartitionNext[:0], lzVars.Ctx.ValComparer)
+				lzPartitionNext, lzErr = base.ValsEncodeCanonical(lzValsOut[:partitionPrefix], lzPartitionNext[:0], lzVars.Ctx.ValComparer)
+				if lzErr == nil {
+					lzOrderNext, lzErr = base.ValsEncodeCanonical(lzValsOut[partitionPrefix:], lzOrderNext[:0], lzVars.Ctx.ValComparer)
+				}
 			} // !lz
 
 			if lzErr == nil {
@@ -78,14 +111,46 @@ func OpWindowPartition(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals
 						}
 					}
 
-					lzPartitionCurr = append(lzPartitionCurr[:0], lzPartitionNext...)
-
 					lzHeap.Reset()
 
 					lzPartitionId++
 
 					lzHeap.Extra = lzPartitionId
+
+					lzPartitionCurr = append(lzPartitionCurr[:0], lzPartitionNext...)
+
+					// Also, when there's a new partition, reset the
+					// rank-related tracking info.
+					lzOrderCurr, lzRank, lzDenseRank = lzOrderCurr[:0], 0, 0
 				}
+
+				if trackOn { // !lz
+					if !bytes.Equal(lzOrderCurr, lzOrderNext) {
+						lzOrderCurr = append(lzOrderCurr[:0], lzOrderNext...)
+
+						if trackRank { // !lz
+							lzRank = uint64(lzHeap.Len()) + 1
+						} // !lz
+
+						if trackDenseRank { // !lz
+							lzDenseRank++
+						} // !lz
+					}
+
+					lzValsOut = append(lzValsOut[:0], lzVals...)
+
+					if trackRank { // !lz
+						binary.LittleEndian.PutUint64(lzBuf8Rank[:], lzRank)
+						lzValsOut = append(lzValsOut, base.Val(lzBuf8Rank[:]))
+					} // !lz
+
+					if trackDenseRank { // !lz
+						binary.LittleEndian.PutUint64(lzBuf8DenseRank[:], lzDenseRank)
+						lzValsOut = append(lzValsOut, base.Val(lzBuf8DenseRank[:]))
+					} // !lz
+
+					lzVals = lzValsOut
+				} // !lz
 
 				lzBytes = base.ValsEncode(lzVals, lzBytes[:0])
 

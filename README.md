@@ -116,9 +116,9 @@ Some design ideas meant to help with n1k1's performance...
 - HAVING, by reusing the same filter operator as WHERE.
 - WINDOW functions.
   - aggregate functions: COUNT().
-  - numbering functions: ROW_NUMBER().
+  - numbering functions: ROW_NUMBER, RANK, DENSE_RANK
   - navigation functions:
-    - FIRST_VALUE(), LAST_VALUE(), NTH_VALUE(), LEAD(), LAG().
+    - FIRST_VALUE, LAST_VALUE, NTH_VALUE, LEAD, LAG.
   - window partition OVER types: ROW.
   - window frame clause...
     - preceding: unbounded, current-row, numeric offset.

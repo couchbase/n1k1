@@ -1,6 +1,10 @@
 package n1k1
 
 import (
+	"encoding/binary" // <== genCompiler:hide
+
+	"strconv"
+
 	"github.com/couchbase/n1k1/base"
 )
 
@@ -8,6 +12,7 @@ import (
 var ExprCatalog = map[string]base.ExprCatalogFunc{
 	"json":          ExprJson,
 	"labelPath":     ExprLabelPath,
+	"labelUint64":   ExprLabelUint64,
 	"valsCanonical": ExprValsCanonical,
 }
 
@@ -66,10 +71,35 @@ func ExprLabelPath(lzVars *base.Vars, labels base.Labels,
 			return lzVal
 		}
 	} else {
+		lzExprFunc = base.ExprFuncMissing
+	}
+
+	return lzExprFunc
+}
+
+// -----------------------------------------------------
+
+// ExprLabelUint64 converts the binary encoded uint64 at the label
+// position to JSON integer representation.
+func ExprLabelUint64(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
+	idx := labels.IndexOf(params[0].(string))
+	if idx >= 0 {
+		var lzBufPre []byte // <== varLift: lzBufPre by path
+
 		lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
-			lzVal = base.ValMissing
+			lzN := binary.LittleEndian.Uint64(lzVals[idx])
+
+			lzBuf := strconv.AppendUint(lzBufPre[:0], lzN, 10)
+
+			lzVal = base.Val(lzBuf)
+
+			lzBufPre = lzBuf
+
 			return lzVal
 		}
+	} else {
+		lzExprFunc = base.ExprFuncMissing
 	}
 
 	return lzExprFunc
