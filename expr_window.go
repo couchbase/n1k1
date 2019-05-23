@@ -7,6 +7,7 @@ import (
 )
 
 func init() {
+	ExprCatalog["window-partition-row-number"] = ExprWindowPartitionRowNumber
 	ExprCatalog["window-frame-count"] = ExprWindowFrameCount
 	ExprCatalog["window-frame-first-value"] = ExprWindowFrameFirstValue
 }
@@ -53,6 +54,30 @@ aggregate functions
 
   optional' -- disallowed if DISTINCT is present.
 */
+
+// -----------------------------------------------------
+
+func ExprWindowPartitionRowNumber(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
+	windowFramesSlot, windowFrameIdx := params[0].(int), params[1].(int)
+
+	var lzBufPre []byte // <== varLift: lzBufPre by path
+
+	lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
+		lzWindowFrames := lzVars.Temps[windowFramesSlot].([]base.WindowFrame)
+		lzWindowFrame := &lzWindowFrames[windowFrameIdx]
+
+		lzBuf := strconv.AppendUint(lzBufPre[:0], uint64(lzWindowFrame.Pos+1), 10)
+
+		lzVal = base.Val(lzBuf)
+
+		lzBufPre = lzBuf
+
+		return lzVal
+	}
+
+	return lzExprFunc
+}
 
 // -----------------------------------------------------
 

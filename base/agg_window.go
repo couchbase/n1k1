@@ -67,7 +67,7 @@ type WindowFrame struct {
 // -------------------------------------------------------------------
 
 type WindowFrameCurr struct {
-	// Pos is mutated as the current pos is updated.
+	// Pos is mutated as the 0-based current pos is updated.
 	Pos int64
 
 	// Include is mutated as the current pos is updated.

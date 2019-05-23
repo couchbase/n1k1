@@ -4694,9 +4694,14 @@ var TestCasesSimple = []TestCaseSimple{
 		about: "test csv-data scan->order->window-partition->project window-frame-first-value",
 		o: base.Op{
 			Kind:   "project",
-			Labels: base.Labels{"a", "x"},
+			Labels: base.Labels{"a", "rowNumber", "firstValue"},
 			Params: []interface{}{
 				[]interface{}{"labelPath", "a"},
+				[]interface{}{
+					"window-partition-row-number",
+					1, // Slot for window frames.
+					0, // Idx for window frame.
+				},
 				[]interface{}{
 					"window-frame-first-value",
 					1, // Slot for window frames.
@@ -4762,12 +4767,12 @@ var TestCasesSimple = []TestCaseSimple{
 			}},
 		},
 		expectYields: []base.Vals{
-			base.Vals{[]byte("10"), []byte("11")},
-			base.Vals{[]byte("10"), []byte("11")},
-			base.Vals{[]byte("10"), []byte("12")},
-			base.Vals{[]byte("20"), []byte("20")},
-			base.Vals{[]byte("20"), []byte("20")},
-			base.Vals{[]byte("30"), []byte("30")},
+			base.Vals{[]byte("10"), []byte("1"), []byte("11")},
+			base.Vals{[]byte("10"), []byte("2"), []byte("11")},
+			base.Vals{[]byte("10"), []byte("3"), []byte("12")},
+			base.Vals{[]byte("20"), []byte("1"), []byte("20")},
+			base.Vals{[]byte("20"), []byte("2"), []byte("20")},
+			base.Vals{[]byte("30"), []byte("1"), []byte("30")},
 		},
 	},
 }
