@@ -15,7 +15,6 @@ import (
 	"io"
 	"time"
 
-	"github.com/couchbase/rhmap/heap"
 	"github.com/couchbase/rhmap/store"
 )
 
@@ -61,10 +60,10 @@ func (v *Vars) TempSet(idx int, resource interface{}) {
 // -----------------------------------------------------
 
 // TempGetHeap casts the retrieved temp resource into a heap.
-func (v *Vars) TempGetHeap(idx int) (rv *heap.Heap) {
+func (v *Vars) TempGetHeap(idx int) (rv *store.Heap) {
 	r := v.Temps[idx]
 	if r != nil {
-		rv, _ = r.(*heap.Heap)
+		rv, _ = r.(*store.Heap)
 	}
 
 	return rv
@@ -93,8 +92,8 @@ type Ctx struct {
 	AllocMap   func() (*store.RHStore, error)
 	RecycleMap func(*store.RHStore)
 
-	AllocHeap   func() (*heap.Heap, error)
-	RecycleHeap func(*heap.Heap)
+	AllocHeap   func() (*store.Heap, error)
+	RecycleHeap func(*store.Heap)
 
 	AllocChunks   func() (*store.Chunks, error)
 	RecycleChunks func(*store.Chunks)

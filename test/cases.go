@@ -8,7 +8,6 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/couchbase/rhmap/heap"
 	"github.com/couchbase/rhmap/store"
 
 	"github.com/couchbase/n1k1"
@@ -58,7 +57,7 @@ func MakeVars() (string, *base.Vars) {
 	var mm sync.Mutex
 
 	var recycledMap *store.RHStore
-	var recycledHeap *heap.Heap
+	var recycledHeap *store.Heap
 	var recycledChunks *store.Chunks
 
 	return tmpDir, &base.Vars{
@@ -105,7 +104,7 @@ func MakeVars() (string, *base.Vars) {
 					m.Close()
 				}
 			},
-			AllocHeap: func() (*heap.Heap, error) {
+			AllocHeap: func() (*store.Heap, error) {
 				mm.Lock()
 				defer mm.Unlock()
 
@@ -122,7 +121,7 @@ func MakeVars() (string, *base.Vars) {
 				heapChunkSizeBytes := 1024 * 1024      // TODO: Config.
 				dataChunkSizeBytes := 16 * 1024 * 1024 // TODO: Config.
 
-				return &heap.Heap{
+				return &store.Heap{
 					LessFunc: func(a, b []byte) bool {
 						// TODO: Is this the right default heap less-func?
 						return bytes.Compare(a, b) < 0
@@ -139,7 +138,7 @@ func MakeVars() (string, *base.Vars) {
 					},
 				}, nil
 			},
-			RecycleHeap: func(m *heap.Heap) {
+			RecycleHeap: func(m *store.Heap) {
 				mm.Lock()
 				defer mm.Unlock()
 
@@ -4373,6 +4372,164 @@ var TestCasesSimple = []TestCaseSimple{
 		expectYields: []base.Vals{
 			base.Vals{[]byte("10"), []byte("3000")},
 			base.Vals{[]byte("11"), []byte("3000")},
+		},
+	},
+	{
+		about: "test csv-data scan->order->window-partition->window-frame->project window-frame-count",
+		o: base.Op{
+			Kind:   "project",
+			Labels: base.Labels{"a", "count-a"},
+			Params: []interface{}{
+				[]interface{}{"labelPath", "a"},
+				[]interface{}{
+					"window-frame-count",
+					1, // Slot for window frames.
+					0, // Idx for window frame.
+				},
+			},
+			Children: []*base.Op{&base.Op{
+				Kind:   "window-frames",
+				Labels: base.Labels{"a", "b"},
+				Params: []interface{}{
+					0, // Slot for window partition.
+					1, // Slot for window frames.
+					[]interface{}{ // Window frames cfg.
+						[]interface{}{
+							"rows",
+							"num", -1, // Preceding.
+							"num", 1, // Following.
+							"no-others", // Exclude.
+						},
+					},
+				},
+				Children: []*base.Op{&base.Op{
+					Kind:   "window-partition",
+					Labels: base.Labels{"a", "b"},
+					Params: []interface{}{
+						0, // Slot for window partition.
+						[]interface{}{
+							// Partitioning exprs...
+							[]interface{}{"labelPath", "a"},
+						},
+					},
+					Children: []*base.Op{&base.Op{
+						Kind:   "order-offset-limit",
+						Labels: base.Labels{"a", "b"},
+						Params: []interface{}{
+							[]interface{}{
+								[]interface{}{"labelPath", "a"},
+								[]interface{}{"labelPath", "b"},
+							},
+							[]interface{}{
+								"asc",
+								"asc",
+							},
+						},
+						Children: []*base.Op{&base.Op{
+							Kind:   "scan",
+							Labels: base.Labels{"a", "b"},
+							Params: []interface{}{
+								"csvData",
+								`
+10,11
+10,12
+10,13
+20,20
+20,21
+30,30
+`,
+							},
+						}},
+					}},
+				}},
+			}},
+		},
+		expectYields: []base.Vals{
+			base.Vals{[]byte("10"), []byte("2")},
+			base.Vals{[]byte("10"), []byte("3")},
+			base.Vals{[]byte("10"), []byte("2")},
+			base.Vals{[]byte("20"), []byte("2")},
+			base.Vals{[]byte("20"), []byte("2")},
+			base.Vals{[]byte("30"), []byte("1")},
+		},
+	},
+	{
+		about: "test csv-data scan->order->window-partition->window-frame-exclude-current-row->project window-frame-count",
+		o: base.Op{
+			Kind:   "project",
+			Labels: base.Labels{"a", "count-a"},
+			Params: []interface{}{
+				[]interface{}{"labelPath", "a"},
+				[]interface{}{
+					"window-frame-count",
+					1, // Slot for window frames.
+					0, // Idx for window frame.
+				},
+			},
+			Children: []*base.Op{&base.Op{
+				Kind:   "window-frames",
+				Labels: base.Labels{"a", "b"},
+				Params: []interface{}{
+					0, // Slot for window partition.
+					1, // Slot for window frames.
+					[]interface{}{ // Window frames cfg.
+						[]interface{}{
+							"rows",
+							"num", -1, // Preceding.
+							"num", 1, // Following.
+							"current-row", // Exclude.
+						},
+					},
+				},
+				Children: []*base.Op{&base.Op{
+					Kind:   "window-partition",
+					Labels: base.Labels{"a", "b"},
+					Params: []interface{}{
+						0, // Slot for window partition.
+						[]interface{}{
+							// Partitioning exprs...
+							[]interface{}{"labelPath", "a"},
+						},
+					},
+					Children: []*base.Op{&base.Op{
+						Kind:   "order-offset-limit",
+						Labels: base.Labels{"a", "b"},
+						Params: []interface{}{
+							[]interface{}{
+								[]interface{}{"labelPath", "a"},
+								[]interface{}{"labelPath", "b"},
+							},
+							[]interface{}{
+								"asc",
+								"asc",
+							},
+						},
+						Children: []*base.Op{&base.Op{
+							Kind:   "scan",
+							Labels: base.Labels{"a", "b"},
+							Params: []interface{}{
+								"csvData",
+								`
+10,11
+10,12
+10,13
+20,20
+20,21
+30,30
+`,
+							},
+						}},
+					}},
+				}},
+			}},
+		},
+		expectYields: []base.Vals{
+			base.Vals{[]byte("10"), []byte("1")},
+			base.Vals{[]byte("10"), []byte("2")},
+			base.Vals{[]byte("10"), []byte("1")},
+			base.Vals{[]byte("20"), []byte("1")},
+			base.Vals{[]byte("20"), []byte("1")},
+			base.Vals{[]byte("30"), []byte("0")},
 		},
 	},
 }

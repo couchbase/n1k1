@@ -47,6 +47,12 @@ func ExecOp(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 	case "temp-yield":
 		OpTempYield(o, lzVars, lzYieldVals, lzYieldErr, path, pathNext) // !lz
+
+	case "window-partition":
+		OpWindowPartition(o, lzVars, lzYieldVals, lzYieldErr, path, pathNext) // !lz
+
+	case "window-frames":
+		OpWindowFrames(o, lzVars, lzYieldVals, lzYieldErr, path, pathNext) // !lz
 	}
 
 	EmitPop(path, pathItem)

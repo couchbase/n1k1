@@ -212,6 +212,7 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 		`import "container/heap"`,
 		`import "encoding/binary"`,
 		`import "os"`,
+		`import "strconv"`,
 		`import "strings"`,
 		`import "reflect"`,
 		`import "testing"`,

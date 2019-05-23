@@ -15,7 +15,6 @@ import (
 	"encoding/binary"
 	"fmt"
 
-	"github.com/couchbase/rhmap/heap"
 	"github.com/couchbase/rhmap/store"
 )
 
@@ -63,7 +62,7 @@ func ValsProjectedDecodeProjected(b []byte, out Vals) Vals {
 
 // ---------------------------------------------
 
-type HeapValsProjected struct{ heap.Heap }
+type HeapValsProjected struct{ store.Heap }
 
 // CreateHeapValsProjected creates a max-heap for ValsProjected items
 // with an associated ValsLessFunc for the projected data. When the
@@ -76,7 +75,7 @@ func CreateHeapValsProjected(ctx *Ctx,
 
 	var pa, pb Vals
 
-	return &HeapValsProjected{heap.Heap{
+	return &HeapValsProjected{store.Heap{
 		LessFunc: func(a, b []byte) bool {
 			pa = ValsProjectedDecodeProjected(a, pa[:0])
 			pb = ValsProjectedDecodeProjected(b, pb[:0])
