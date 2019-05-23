@@ -4691,7 +4691,7 @@ var TestCasesSimple = []TestCaseSimple{
 		},
 	},
 	{
-		about: "test csv-data window-partition->project window-frame-first-value",
+		about: "test csv-data window-partition->project window-frame FIRST_VALUE",
 		o: base.Op{
 			Kind:   "project",
 			Labels: base.Labels{"a", "rowNumber", "firstValue"},
@@ -4703,9 +4703,12 @@ var TestCasesSimple = []TestCaseSimple{
 					0, // Idx for window frame.
 				},
 				[]interface{}{
-					"window-frame-first-value",
-					1, // Slot for window frames.
-					0, // Idx for window frame.
+					"window-frame-step-value",
+					1,         // Slot for window frames.
+					0,         // Idx for window frame.
+					-1,        // Initial starting position is -1.
+					true,      // Step is ascending.
+					uint64(1), // Number of steps to take.
 					[]interface{}{"labelPath", "b"},
 				},
 			},
@@ -4776,7 +4779,7 @@ var TestCasesSimple = []TestCaseSimple{
 		},
 	},
 	{
-		about: "test csv-data window-partition->project window-frame-last-value",
+		about: "test csv-data window-partition->project window-frame LAST_VALUE",
 		o: base.Op{
 			Kind:   "project",
 			Labels: base.Labels{"a", "rowNumber", "lastValue"},
@@ -4788,9 +4791,12 @@ var TestCasesSimple = []TestCaseSimple{
 					0, // Idx for window frame.
 				},
 				[]interface{}{
-					"window-frame-last-value",
-					1, // Slot for window frames.
-					0, // Idx for window frame.
+					"window-frame-step-value",
+					1,         // Slot for window frames.
+					0,         // Idx for window frame.
+					1,         // Initial starting position is MaxInt64.
+					false,     // Step is descending.
+					uint64(1), // Number of steps to take.
 					[]interface{}{"labelPath", "b"},
 				},
 			},
@@ -4858,6 +4864,446 @@ var TestCasesSimple = []TestCaseSimple{
 			base.Vals{[]byte("20"), []byte("1"), []byte("21")},
 			base.Vals{[]byte("20"), []byte("2"), []byte("21")},
 			base.Vals{[]byte("30"), []byte("1"), []byte("30")},
+		},
+	},
+	{
+		about: "test csv-data window-partition->project window-frame NTH_VALUE(b, 2)",
+		o: base.Op{
+			Kind:   "project",
+			Labels: base.Labels{"a", "rowNumber", "firstValue"},
+			Params: []interface{}{
+				[]interface{}{"labelPath", "a"},
+				[]interface{}{
+					"window-partition-row-number",
+					1, // Slot for window frames.
+					0, // Idx for window frame.
+				},
+				[]interface{}{
+					"window-frame-step-value",
+					1,         // Slot for window frames.
+					0,         // Idx for window frame.
+					-1,        // Initial starting position is -1.
+					true,      // Step is ascending.
+					uint64(2), // Number of steps to take.
+					[]interface{}{"labelPath", "b"},
+				},
+			},
+			Children: []*base.Op{&base.Op{
+				Kind:   "window-frames",
+				Labels: base.Labels{"a", "b"},
+				Params: []interface{}{
+					0, // Slot for window partition.
+					1, // Slot for window frames.
+					[]interface{}{ // Window frames cfg.
+						[]interface{}{
+							"rows",
+							"unbounded", 0, // Preceding.
+							"unbounded", 0, // Following.
+							"no-others", // Exclude.
+						},
+					},
+				},
+				Children: []*base.Op{&base.Op{
+					Kind:   "window-partition",
+					Labels: base.Labels{"a", "b"},
+					Params: []interface{}{
+						0, // Slot for window partition.
+						[]interface{}{
+							// Partitioning exprs...
+							[]interface{}{"labelPath", "a"},
+						},
+					},
+					Children: []*base.Op{&base.Op{
+						Kind:   "order-offset-limit",
+						Labels: base.Labels{"a", "b"},
+						Params: []interface{}{
+							[]interface{}{
+								[]interface{}{"labelPath", "a"},
+								[]interface{}{"labelPath", "b"},
+							},
+							[]interface{}{
+								"asc",
+								"asc",
+							},
+						},
+						Children: []*base.Op{&base.Op{
+							Kind:   "scan",
+							Labels: base.Labels{"a", "b"},
+							Params: []interface{}{
+								"csvData",
+								`
+10,11
+10,12
+10,13
+20,20
+20,21
+30,30
+`,
+							},
+						}},
+					}},
+				}},
+			}},
+		},
+		expectYields: []base.Vals{
+			base.Vals{[]byte("10"), []byte("1"), []byte("12")},
+			base.Vals{[]byte("10"), []byte("2"), []byte("12")},
+			base.Vals{[]byte("10"), []byte("3"), []byte("12")},
+			base.Vals{[]byte("20"), []byte("1"), []byte("21")},
+			base.Vals{[]byte("20"), []byte("2"), []byte("21")},
+			base.Vals{[]byte("30"), []byte("1"), []byte(nil)},
+		},
+	},
+	{
+		about: "test csv-data window-partition->project window-frame LEAD(b, 1)",
+		o: base.Op{
+			Kind:   "project",
+			Labels: base.Labels{"a", "rowNumber", "firstValue"},
+			Params: []interface{}{
+				[]interface{}{"labelPath", "a"},
+				[]interface{}{
+					"window-partition-row-number",
+					1, // Slot for window frames.
+					0, // Idx for window frame.
+				},
+				[]interface{}{
+					"window-frame-step-value",
+					1,         // Slot for window frames.
+					0,         // Idx for window frame.
+					0,         // Initial starting position is current-row.
+					true,      // Step is ascending.
+					uint64(1), // Number of steps to take.
+					[]interface{}{"labelPath", "b"},
+				},
+			},
+			Children: []*base.Op{&base.Op{
+				Kind:   "window-frames",
+				Labels: base.Labels{"a", "b"},
+				Params: []interface{}{
+					0, // Slot for window partition.
+					1, // Slot for window frames.
+					[]interface{}{ // Window frames cfg.
+						[]interface{}{
+							"rows",
+							"unbounded", 0, // Preceding.
+							"unbounded", 0, // Following.
+							"no-others", // Exclude.
+						},
+					},
+				},
+				Children: []*base.Op{&base.Op{
+					Kind:   "window-partition",
+					Labels: base.Labels{"a", "b"},
+					Params: []interface{}{
+						0, // Slot for window partition.
+						[]interface{}{
+							// Partitioning exprs...
+							[]interface{}{"labelPath", "a"},
+						},
+					},
+					Children: []*base.Op{&base.Op{
+						Kind:   "order-offset-limit",
+						Labels: base.Labels{"a", "b"},
+						Params: []interface{}{
+							[]interface{}{
+								[]interface{}{"labelPath", "a"},
+								[]interface{}{"labelPath", "b"},
+							},
+							[]interface{}{
+								"asc",
+								"asc",
+							},
+						},
+						Children: []*base.Op{&base.Op{
+							Kind:   "scan",
+							Labels: base.Labels{"a", "b"},
+							Params: []interface{}{
+								"csvData",
+								`
+10,11
+10,12
+10,13
+20,20
+20,21
+30,30
+`,
+							},
+						}},
+					}},
+				}},
+			}},
+		},
+		expectYields: []base.Vals{
+			base.Vals{[]byte("10"), []byte("1"), []byte("12")},
+			base.Vals{[]byte("10"), []byte("2"), []byte("13")},
+			base.Vals{[]byte("10"), []byte("3"), []byte(nil)},
+			base.Vals{[]byte("20"), []byte("1"), []byte("21")},
+			base.Vals{[]byte("20"), []byte("2"), []byte(nil)},
+			base.Vals{[]byte("30"), []byte("1"), []byte(nil)},
+		},
+	},
+	{
+		about: "test csv-data window-partition->project window-frame LEAD(b, 2)",
+		o: base.Op{
+			Kind:   "project",
+			Labels: base.Labels{"a", "rowNumber", "firstValue"},
+			Params: []interface{}{
+				[]interface{}{"labelPath", "a"},
+				[]interface{}{
+					"window-partition-row-number",
+					1, // Slot for window frames.
+					0, // Idx for window frame.
+				},
+				[]interface{}{
+					"window-frame-step-value",
+					1,         // Slot for window frames.
+					0,         // Idx for window frame.
+					0,         // Initial starting position is current-row.
+					true,      // Step is ascending.
+					uint64(2), // Number of steps to take.
+					[]interface{}{"labelPath", "b"},
+				},
+			},
+			Children: []*base.Op{&base.Op{
+				Kind:   "window-frames",
+				Labels: base.Labels{"a", "b"},
+				Params: []interface{}{
+					0, // Slot for window partition.
+					1, // Slot for window frames.
+					[]interface{}{ // Window frames cfg.
+						[]interface{}{
+							"rows",
+							"unbounded", 0, // Preceding.
+							"unbounded", 0, // Following.
+							"no-others", // Exclude.
+						},
+					},
+				},
+				Children: []*base.Op{&base.Op{
+					Kind:   "window-partition",
+					Labels: base.Labels{"a", "b"},
+					Params: []interface{}{
+						0, // Slot for window partition.
+						[]interface{}{
+							// Partitioning exprs...
+							[]interface{}{"labelPath", "a"},
+						},
+					},
+					Children: []*base.Op{&base.Op{
+						Kind:   "order-offset-limit",
+						Labels: base.Labels{"a", "b"},
+						Params: []interface{}{
+							[]interface{}{
+								[]interface{}{"labelPath", "a"},
+								[]interface{}{"labelPath", "b"},
+							},
+							[]interface{}{
+								"asc",
+								"asc",
+							},
+						},
+						Children: []*base.Op{&base.Op{
+							Kind:   "scan",
+							Labels: base.Labels{"a", "b"},
+							Params: []interface{}{
+								"csvData",
+								`
+10,11
+10,12
+10,13
+20,20
+20,21
+30,30
+`,
+							},
+						}},
+					}},
+				}},
+			}},
+		},
+		expectYields: []base.Vals{
+			base.Vals{[]byte("10"), []byte("1"), []byte("13")},
+			base.Vals{[]byte("10"), []byte("2"), []byte(nil)},
+			base.Vals{[]byte("10"), []byte("3"), []byte(nil)},
+			base.Vals{[]byte("20"), []byte("1"), []byte(nil)},
+			base.Vals{[]byte("20"), []byte("2"), []byte(nil)},
+			base.Vals{[]byte("30"), []byte("1"), []byte(nil)},
+		},
+	},
+	{
+		about: "test csv-data window-partition->project window-frame LAG(b, 1)",
+		o: base.Op{
+			Kind:   "project",
+			Labels: base.Labels{"a", "rowNumber", "firstValue"},
+			Params: []interface{}{
+				[]interface{}{"labelPath", "a"},
+				[]interface{}{
+					"window-partition-row-number",
+					1, // Slot for window frames.
+					0, // Idx for window frame.
+				},
+				[]interface{}{
+					"window-frame-step-value",
+					1,         // Slot for window frames.
+					0,         // Idx for window frame.
+					0,         // Initial starting position is current-row.
+					false,     // Step is descending.
+					uint64(1), // Number of steps to take.
+					[]interface{}{"labelPath", "b"},
+				},
+			},
+			Children: []*base.Op{&base.Op{
+				Kind:   "window-frames",
+				Labels: base.Labels{"a", "b"},
+				Params: []interface{}{
+					0, // Slot for window partition.
+					1, // Slot for window frames.
+					[]interface{}{ // Window frames cfg.
+						[]interface{}{
+							"rows",
+							"unbounded", 0, // Preceding.
+							"unbounded", 0, // Following.
+							"no-others", // Exclude.
+						},
+					},
+				},
+				Children: []*base.Op{&base.Op{
+					Kind:   "window-partition",
+					Labels: base.Labels{"a", "b"},
+					Params: []interface{}{
+						0, // Slot for window partition.
+						[]interface{}{
+							// Partitioning exprs...
+							[]interface{}{"labelPath", "a"},
+						},
+					},
+					Children: []*base.Op{&base.Op{
+						Kind:   "order-offset-limit",
+						Labels: base.Labels{"a", "b"},
+						Params: []interface{}{
+							[]interface{}{
+								[]interface{}{"labelPath", "a"},
+								[]interface{}{"labelPath", "b"},
+							},
+							[]interface{}{
+								"asc",
+								"asc",
+							},
+						},
+						Children: []*base.Op{&base.Op{
+							Kind:   "scan",
+							Labels: base.Labels{"a", "b"},
+							Params: []interface{}{
+								"csvData",
+								`
+10,11
+10,12
+10,13
+20,20
+20,21
+30,30
+`,
+							},
+						}},
+					}},
+				}},
+			}},
+		},
+		expectYields: []base.Vals{
+			base.Vals{[]byte("10"), []byte("1"), []byte(nil)},
+			base.Vals{[]byte("10"), []byte("2"), []byte("11")},
+			base.Vals{[]byte("10"), []byte("3"), []byte("12")},
+			base.Vals{[]byte("20"), []byte("1"), []byte(nil)},
+			base.Vals{[]byte("20"), []byte("2"), []byte("20")},
+			base.Vals{[]byte("30"), []byte("1"), []byte(nil)},
+		},
+	},
+	{
+		about: "test csv-data window-partition->project window-frame LAG(b, 2)",
+		o: base.Op{
+			Kind:   "project",
+			Labels: base.Labels{"a", "rowNumber", "firstValue"},
+			Params: []interface{}{
+				[]interface{}{"labelPath", "a"},
+				[]interface{}{
+					"window-partition-row-number",
+					1, // Slot for window frames.
+					0, // Idx for window frame.
+				},
+				[]interface{}{
+					"window-frame-step-value",
+					1,         // Slot for window frames.
+					0,         // Idx for window frame.
+					0,         // Initial starting position is current-row.
+					false,     // Step is descending.
+					uint64(2), // Number of steps to take.
+					[]interface{}{"labelPath", "b"},
+				},
+			},
+			Children: []*base.Op{&base.Op{
+				Kind:   "window-frames",
+				Labels: base.Labels{"a", "b"},
+				Params: []interface{}{
+					0, // Slot for window partition.
+					1, // Slot for window frames.
+					[]interface{}{ // Window frames cfg.
+						[]interface{}{
+							"rows",
+							"unbounded", 0, // Preceding.
+							"unbounded", 0, // Following.
+							"no-others", // Exclude.
+						},
+					},
+				},
+				Children: []*base.Op{&base.Op{
+					Kind:   "window-partition",
+					Labels: base.Labels{"a", "b"},
+					Params: []interface{}{
+						0, // Slot for window partition.
+						[]interface{}{
+							// Partitioning exprs...
+							[]interface{}{"labelPath", "a"},
+						},
+					},
+					Children: []*base.Op{&base.Op{
+						Kind:   "order-offset-limit",
+						Labels: base.Labels{"a", "b"},
+						Params: []interface{}{
+							[]interface{}{
+								[]interface{}{"labelPath", "a"},
+								[]interface{}{"labelPath", "b"},
+							},
+							[]interface{}{
+								"asc",
+								"asc",
+							},
+						},
+						Children: []*base.Op{&base.Op{
+							Kind:   "scan",
+							Labels: base.Labels{"a", "b"},
+							Params: []interface{}{
+								"csvData",
+								`
+10,11
+10,12
+10,13
+20,20
+20,21
+30,30
+`,
+							},
+						}},
+					}},
+				}},
+			}},
+		},
+		expectYields: []base.Vals{
+			base.Vals{[]byte("10"), []byte("1"), []byte(nil)},
+			base.Vals{[]byte("10"), []byte("2"), []byte(nil)},
+			base.Vals{[]byte("10"), []byte("3"), []byte("11")},
+			base.Vals{[]byte("20"), []byte("1"), []byte(nil)},
+			base.Vals{[]byte("20"), []byte("2"), []byte(nil)},
+			base.Vals{[]byte("30"), []byte("1"), []byte(nil)},
 		},
 	},
 }

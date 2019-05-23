@@ -10,8 +10,7 @@ import (
 func init() {
 	ExprCatalog["window-partition-row-number"] = ExprWindowPartitionRowNumber
 	ExprCatalog["window-frame-count"] = ExprWindowFrameCount
-	ExprCatalog["window-frame-first-value"] = ExprWindowFrameFirstValue
-	ExprCatalog["window-frame-last-value"] = ExprWindowFrameLastValue
+	ExprCatalog["window-frame-step-value"] = ExprWindowFrameStepValue
 }
 
 /*
@@ -109,11 +108,31 @@ func ExprWindowFrameCount(lzVars *base.Vars, labels base.Labels,
 
 // -----------------------------------------------------
 
-func ExprWindowFrameFirstValue(lzVars *base.Vars, labels base.Labels,
+// ExprWindowFrameStepValue implements the navigation window
+// functions of FIRST_VALUE, LAST_VALUE, NTH_VALUE, LEAD and LAG for
+// window partitions of type ROWS.
+func ExprWindowFrameStepValue(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
 	windowFramesSlot, windowFrameIdx := params[0].(int), params[1].(int)
 
-	expr := params[2].([]interface{})
+	// The initial config defines the starting step position, with
+	// allowed values of...
+	// == -1. Ex: a related config of an ascending "num" of 1 means a
+	// single step will be taken, which results in the FIRST_VALUE
+	// ==  0. This means the starting step position is the current
+	// position, which is used for row-based LEAD & LAG.
+	// ==  1. This means the starting step position is MaxInt64,
+	// with a related descending "num" of 1 means the LAST_VALUE.
+	initial := params[2].(int)
+
+	// The asc defines whether the step should ascend or descend.
+	asc := params[3].(bool)
+
+	// The num defines the number of steps to take.
+	num := params[4].(uint64)
+
+	// The expr to evaluate at the final position.
+	expr := params[5].([]interface{})
 
 	if LzScope {
 		lzExprFunc =
@@ -126,44 +145,23 @@ func ExprWindowFrameFirstValue(lzVars *base.Vars, labels base.Labels,
 			lzWindowFrames := lzVars.Temps[windowFramesSlot].([]base.WindowFrame)
 			lzWindowFrame := &lzWindowFrames[windowFrameIdx]
 
-			lzValsStep := lzValsPre[:0]
+			lzOk := true
 
-			lzVals, _, lzOk, lzErr := lzWindowFrame.StepVals(true, int64(-1), lzValsStep)
-			if lzOk && lzErr == nil {
-				lzValsPre = lzVals
+			var lzErr error
 
-				lzVal = lzExprValFunc(lzVals, lzYieldErr) // <== emitCaptured: path "E"
+			lzPos := int64(-1)
+			if initial == 0 { // !lz
+				lzPos = lzWindowFrame.Pos
+			} else if initial == 1 { // !lz
+				lzPos = math.MaxInt64
+			} // !lz
+
+			for lzI := uint64(0); lzI < num && lzOk && lzErr == nil; lzI++ {
+				lzValsStep := lzValsPre[:0]
+
+				lzVals, lzPos, lzOk, lzErr = lzWindowFrame.StepVals(asc, lzPos, lzValsStep)
 			}
 
-			return lzVal
-		}
-	}
-
-	return lzExprFunc
-}
-
-// -----------------------------------------------------
-
-func ExprWindowFrameLastValue(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	windowFramesSlot, windowFrameIdx := params[0].(int), params[1].(int)
-
-	expr := params[2].([]interface{})
-
-	if LzScope {
-		lzExprFunc =
-			MakeExprFunc(lzVars, labels, expr, path, "E") // !lz
-		lzExprValFunc := lzExprFunc
-
-		var lzValsPre base.Vals // <== varLift: lzValsPre by path
-
-		lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
-			lzWindowFrames := lzVars.Temps[windowFramesSlot].([]base.WindowFrame)
-			lzWindowFrame := &lzWindowFrames[windowFrameIdx]
-
-			lzValsStep := lzValsPre[:0]
-
-			lzVals, _, lzOk, lzErr := lzWindowFrame.StepVals(false, math.MaxInt64, lzValsStep)
 			if lzOk && lzErr == nil {
 				lzValsPre = lzVals
 
