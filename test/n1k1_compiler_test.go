@@ -211,6 +211,7 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 		`import "bytes"`,
 		`import "container/heap"`,
 		`import "encoding/binary"`,
+		`import "math"`,
 		`import "os"`,
 		`import "strconv"`,
 		`import "strings"`,

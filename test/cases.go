@@ -4691,7 +4691,7 @@ var TestCasesSimple = []TestCaseSimple{
 		},
 	},
 	{
-		about: "test csv-data scan->order->window-partition->project window-frame-first-value",
+		about: "test csv-data window-partition->project window-frame-first-value",
 		o: base.Op{
 			Kind:   "project",
 			Labels: base.Labels{"a", "rowNumber", "firstValue"},
@@ -4772,6 +4772,91 @@ var TestCasesSimple = []TestCaseSimple{
 			base.Vals{[]byte("10"), []byte("3"), []byte("12")},
 			base.Vals{[]byte("20"), []byte("1"), []byte("20")},
 			base.Vals{[]byte("20"), []byte("2"), []byte("20")},
+			base.Vals{[]byte("30"), []byte("1"), []byte("30")},
+		},
+	},
+	{
+		about: "test csv-data window-partition->project window-frame-last-value",
+		o: base.Op{
+			Kind:   "project",
+			Labels: base.Labels{"a", "rowNumber", "lastValue"},
+			Params: []interface{}{
+				[]interface{}{"labelPath", "a"},
+				[]interface{}{
+					"window-partition-row-number",
+					1, // Slot for window frames.
+					0, // Idx for window frame.
+				},
+				[]interface{}{
+					"window-frame-last-value",
+					1, // Slot for window frames.
+					0, // Idx for window frame.
+					[]interface{}{"labelPath", "b"},
+				},
+			},
+			Children: []*base.Op{&base.Op{
+				Kind:   "window-frames",
+				Labels: base.Labels{"a", "b"},
+				Params: []interface{}{
+					0, // Slot for window partition.
+					1, // Slot for window frames.
+					[]interface{}{ // Window frames cfg.
+						[]interface{}{
+							"rows",
+							"num", -1, // Preceding.
+							"num", 1, // Following.
+							"no-others", // Exclude.
+						},
+					},
+				},
+				Children: []*base.Op{&base.Op{
+					Kind:   "window-partition",
+					Labels: base.Labels{"a", "b"},
+					Params: []interface{}{
+						0, // Slot for window partition.
+						[]interface{}{
+							// Partitioning exprs...
+							[]interface{}{"labelPath", "a"},
+						},
+					},
+					Children: []*base.Op{&base.Op{
+						Kind:   "order-offset-limit",
+						Labels: base.Labels{"a", "b"},
+						Params: []interface{}{
+							[]interface{}{
+								[]interface{}{"labelPath", "a"},
+								[]interface{}{"labelPath", "b"},
+							},
+							[]interface{}{
+								"asc",
+								"asc",
+							},
+						},
+						Children: []*base.Op{&base.Op{
+							Kind:   "scan",
+							Labels: base.Labels{"a", "b"},
+							Params: []interface{}{
+								"csvData",
+								`
+10,11
+10,12
+10,13
+20,20
+20,21
+30,30
+`,
+							},
+						}},
+					}},
+				}},
+			}},
+		},
+		expectYields: []base.Vals{
+			base.Vals{[]byte("10"), []byte("1"), []byte("12")},
+			base.Vals{[]byte("10"), []byte("2"), []byte("13")},
+			base.Vals{[]byte("10"), []byte("3"), []byte("13")},
+			base.Vals{[]byte("20"), []byte("1"), []byte("21")},
+			base.Vals{[]byte("20"), []byte("2"), []byte("21")},
 			base.Vals{[]byte("30"), []byte("1"), []byte("30")},
 		},
 	},

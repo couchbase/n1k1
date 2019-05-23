@@ -1,6 +1,7 @@
 package n1k1
 
 import (
+	"math"
 	"strconv"
 
 	"github.com/couchbase/n1k1/base"
@@ -10,6 +11,7 @@ func init() {
 	ExprCatalog["window-partition-row-number"] = ExprWindowPartitionRowNumber
 	ExprCatalog["window-frame-count"] = ExprWindowFrameCount
 	ExprCatalog["window-frame-first-value"] = ExprWindowFrameFirstValue
+	ExprCatalog["window-frame-last-value"] = ExprWindowFrameLastValue
 }
 
 /*
@@ -116,7 +118,7 @@ func ExprWindowFrameFirstValue(lzVars *base.Vars, labels base.Labels,
 	if LzScope {
 		lzExprFunc =
 			MakeExprFunc(lzVars, labels, expr, path, "E") // !lz
-		lzExprFirstValue := lzExprFunc
+		lzExprValFunc := lzExprFunc
 
 		var lzValsPre base.Vals // <== varLift: lzValsPre by path
 
@@ -130,7 +132,42 @@ func ExprWindowFrameFirstValue(lzVars *base.Vars, labels base.Labels,
 			if lzOk && lzErr == nil {
 				lzValsPre = lzVals
 
-				lzVal = lzExprFirstValue(lzVals, lzYieldErr) // <== emitCaptured: path "E"
+				lzVal = lzExprValFunc(lzVals, lzYieldErr) // <== emitCaptured: path "E"
+			}
+
+			return lzVal
+		}
+	}
+
+	return lzExprFunc
+}
+
+// -----------------------------------------------------
+
+func ExprWindowFrameLastValue(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
+	windowFramesSlot, windowFrameIdx := params[0].(int), params[1].(int)
+
+	expr := params[2].([]interface{})
+
+	if LzScope {
+		lzExprFunc =
+			MakeExprFunc(lzVars, labels, expr, path, "E") // !lz
+		lzExprValFunc := lzExprFunc
+
+		var lzValsPre base.Vals // <== varLift: lzValsPre by path
+
+		lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
+			lzWindowFrames := lzVars.Temps[windowFramesSlot].([]base.WindowFrame)
+			lzWindowFrame := &lzWindowFrames[windowFrameIdx]
+
+			lzValsStep := lzValsPre[:0]
+
+			lzVals, _, lzOk, lzErr := lzWindowFrame.StepVals(false, math.MaxInt64, lzValsStep)
+			if lzOk && lzErr == nil {
+				lzValsPre = lzVals
+
+				lzVal = lzExprValFunc(lzVals, lzYieldErr) // <== emitCaptured: path "E"
 			}
 
 			return lzVal
