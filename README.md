@@ -215,6 +215,7 @@ efficiently execute that query-plan.
         might just borrow the underlying ORDER-OFFSET-LIMIT's backing heap?
 
 - GROUP BY ROLLUP?
+- GROUP BY GROUPING SETS?
 
 - command-line program?
 
