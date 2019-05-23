@@ -4532,4 +4532,162 @@ var TestCasesSimple = []TestCaseSimple{
 			base.Vals{[]byte("30"), []byte("0")},
 		},
 	},
+	{
+		about: "test csv-data scan->order->window-partition->window-frame current-row to unbounded ->project window-frame-count",
+		o: base.Op{
+			Kind:   "project",
+			Labels: base.Labels{"a", "count-a"},
+			Params: []interface{}{
+				[]interface{}{"labelPath", "a"},
+				[]interface{}{
+					"window-frame-count",
+					1, // Slot for window frames.
+					0, // Idx for window frame.
+				},
+			},
+			Children: []*base.Op{&base.Op{
+				Kind:   "window-frames",
+				Labels: base.Labels{"a", "b"},
+				Params: []interface{}{
+					0, // Slot for window partition.
+					1, // Slot for window frames.
+					[]interface{}{ // Window frames cfg.
+						[]interface{}{
+							"rows",
+							"num", 0, // Preceding.
+							"unbounded", 1, // Following.
+							"no-others", // Exclude.
+						},
+					},
+				},
+				Children: []*base.Op{&base.Op{
+					Kind:   "window-partition",
+					Labels: base.Labels{"a", "b"},
+					Params: []interface{}{
+						0, // Slot for window partition.
+						[]interface{}{
+							// Partitioning exprs...
+							[]interface{}{"labelPath", "a"},
+						},
+					},
+					Children: []*base.Op{&base.Op{
+						Kind:   "order-offset-limit",
+						Labels: base.Labels{"a", "b"},
+						Params: []interface{}{
+							[]interface{}{
+								[]interface{}{"labelPath", "a"},
+								[]interface{}{"labelPath", "b"},
+							},
+							[]interface{}{
+								"asc",
+								"asc",
+							},
+						},
+						Children: []*base.Op{&base.Op{
+							Kind:   "scan",
+							Labels: base.Labels{"a", "b"},
+							Params: []interface{}{
+								"csvData",
+								`
+10,11
+10,12
+10,13
+20,20
+20,21
+30,30
+`,
+							},
+						}},
+					}},
+				}},
+			}},
+		},
+		expectYields: []base.Vals{
+			base.Vals{[]byte("10"), []byte("3")},
+			base.Vals{[]byte("10"), []byte("2")},
+			base.Vals{[]byte("10"), []byte("1")},
+			base.Vals{[]byte("20"), []byte("2")},
+			base.Vals{[]byte("20"), []byte("1")},
+			base.Vals{[]byte("30"), []byte("1")},
+		},
+	},
+	{
+		about: "test csv-data scan->order->window-partition->window-frame unbounded to current-row-minus-1 ->project window-frame-count",
+		o: base.Op{
+			Kind:   "project",
+			Labels: base.Labels{"a", "count-a"},
+			Params: []interface{}{
+				[]interface{}{"labelPath", "a"},
+				[]interface{}{
+					"window-frame-count",
+					1, // Slot for window frames.
+					0, // Idx for window frame.
+				},
+			},
+			Children: []*base.Op{&base.Op{
+				Kind:   "window-frames",
+				Labels: base.Labels{"a", "b"},
+				Params: []interface{}{
+					0, // Slot for window partition.
+					1, // Slot for window frames.
+					[]interface{}{ // Window frames cfg.
+						[]interface{}{
+							"rows",
+							"unbounded", 0, // Preceding.
+							"num", -1, // Following.
+							"no-others", // Exclude.
+						},
+					},
+				},
+				Children: []*base.Op{&base.Op{
+					Kind:   "window-partition",
+					Labels: base.Labels{"a", "b"},
+					Params: []interface{}{
+						0, // Slot for window partition.
+						[]interface{}{
+							// Partitioning exprs...
+							[]interface{}{"labelPath", "a"},
+						},
+					},
+					Children: []*base.Op{&base.Op{
+						Kind:   "order-offset-limit",
+						Labels: base.Labels{"a", "b"},
+						Params: []interface{}{
+							[]interface{}{
+								[]interface{}{"labelPath", "a"},
+								[]interface{}{"labelPath", "b"},
+							},
+							[]interface{}{
+								"asc",
+								"asc",
+							},
+						},
+						Children: []*base.Op{&base.Op{
+							Kind:   "scan",
+							Labels: base.Labels{"a", "b"},
+							Params: []interface{}{
+								"csvData",
+								`
+10,11
+10,12
+10,13
+20,20
+20,21
+30,30
+`,
+							},
+						}},
+					}},
+				}},
+			}},
+		},
+		expectYields: []base.Vals{
+			base.Vals{[]byte("10"), []byte("0")},
+			base.Vals{[]byte("10"), []byte("1")},
+			base.Vals{[]byte("10"), []byte("2")},
+			base.Vals{[]byte("20"), []byte("0")},
+			base.Vals{[]byte("20"), []byte("1")},
+			base.Vals{[]byte("30"), []byte("0")},
+		},
+	},
 }
