@@ -225,7 +225,7 @@ func (wf *WindowFrame) CurrentUpdate(currentPos uint64) (err error) {
 	if wf.Exclude != WTokNoOthers {
 		if wf.Exclude == WTokCurrentRow {
 			wf.Excludes = append(wf.Excludes, WindowSpan{wf.Pos, wf.Pos + 1})
-		} else if wf.Exclude == WTokGroup {
+		} else {
 			eBeg, err := wf.FindGroupEdge(wf.Pos, -1, false)
 			if err != nil {
 				return err
@@ -236,9 +236,12 @@ func (wf *WindowFrame) CurrentUpdate(currentPos uint64) (err error) {
 				return err
 			}
 
-			wf.Excludes = append(wf.Excludes, WindowSpan{eBeg, eEnd + 1})
-		} else {
-			panic("unsupported")
+			if wf.Exclude == WTokGroup {
+				wf.Excludes = append(wf.Excludes, WindowSpan{eBeg, eEnd + 1})
+			} else { // wf.Exclude == WTokTies.
+				wf.Excludes = append(wf.Excludes, WindowSpan{eBeg, wf.Pos})
+				wf.Excludes = append(wf.Excludes, WindowSpan{wf.Pos + 1, eEnd + 1})
+			}
 		}
 	}
 
