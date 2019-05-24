@@ -178,7 +178,7 @@ func (wf *WindowFrame) CurrentUpdate(currentPos uint64) (err error) {
 			}
 		} else { // wf.Type == WTokRange.
 			// TODO: Assumes ASC order-by.
-			wf.Include.Beg, err = wf.FindGroupEdge(wf.Pos, -1)
+			wf.Include.Beg, err = wf.FindGroupEdge(wf.Pos, -1, true)
 			if err != nil {
 				return err
 			}
@@ -205,7 +205,7 @@ func (wf *WindowFrame) CurrentUpdate(currentPos uint64) (err error) {
 			}
 		} else { // wf.Type == WTokRange.
 			// TODO: Assumes ASC order-by.
-			wf.Include.End, err = wf.FindGroupEdge(wf.Pos, 1)
+			wf.Include.End, err = wf.FindGroupEdge(wf.Pos, 1, true)
 			if err != nil {
 				return err
 			}
@@ -225,6 +225,18 @@ func (wf *WindowFrame) CurrentUpdate(currentPos uint64) (err error) {
 	if wf.Exclude != WTokNoOthers {
 		if wf.Exclude == WTokCurrentRow {
 			wf.Excludes = append(wf.Excludes, WindowSpan{wf.Pos, wf.Pos + 1})
+		} else if wf.Exclude == WTokGroup {
+			eBeg, err := wf.FindGroupEdge(wf.Pos, -1, false)
+			if err != nil {
+				return err
+			}
+
+			eEnd, err := wf.FindGroupEdge(wf.Pos, 1, false)
+			if err != nil {
+				return err
+			}
+
+			wf.Excludes = append(wf.Excludes, WindowSpan{eBeg, eEnd + 1})
 		} else {
 			panic("unsupported")
 		}
@@ -251,9 +263,11 @@ func (wf *WindowFrame) StepGroups(n int64) (int64, error) {
 		n, dir = -n, int64(-1)
 	}
 
+	isRange := wf.Type == WTokRange
+
 	end := int64(wf.Partition.Len())
 
-	curr, err := wf.FindGroupEdge(wf.Pos, dir)
+	curr, err := wf.FindGroupEdge(wf.Pos, dir, isRange)
 	if err != nil {
 		return 0, err
 	}
@@ -264,7 +278,7 @@ func (wf *WindowFrame) StepGroups(n int64) (int64, error) {
 			break
 		}
 
-		curr, err = wf.FindGroupEdge(next, dir)
+		curr, err = wf.FindGroupEdge(next, dir, isRange)
 		if err != nil {
 			return 0, err
 		}
@@ -281,7 +295,7 @@ func (wf *WindowFrame) StepGroups(n int64) (int64, error) {
 // of a group, depending on the direction dir parameter which should
 // be a 1 or -1. When 1, the ending member of the group is
 // returned. When -1, the starting member of the group is returned.
-func (wf *WindowFrame) FindGroupEdge(i, dir int64) (int64, error) {
+func (wf *WindowFrame) FindGroupEdge(i, dir int64, isRange bool) (int64, error) {
 	end := int64(wf.Partition.Len())
 
 	valCurr, err := wf.GetValsVal(i, wf.ValIdx)

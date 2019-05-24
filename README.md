@@ -123,7 +123,7 @@ Some design ideas meant to help with n1k1's performance...
   - window frame clause...
     - preceding: unbounded, current-row, numeric offset.
     - following: unbounded, current-row, numeric offset.
-    - exclude: no-others, current-row.
+    - exclude: NO OTHERS, CURRENT ROW, GROUP.
   - window partitions spill to the disk if too large.
 - UNION ALL is concurrent, with the contributing child operators
   having their own goroutines.
@@ -206,7 +206,7 @@ efficiently execute that query-plan.
 
 - window partitions
   - window frame RANGE only works now for ORDER BY ASC?
-  - more exclude kinds: group, ties?
+  - more exclude kinds: ties?
   - optimizations?
     - inverse optimization on sliding window?
     - not materializing partition if possible?
