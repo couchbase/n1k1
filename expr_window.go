@@ -60,15 +60,15 @@ aggregate functions
 
 func ExprWindowPartitionRowNumber(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	windowFramesSlot, windowFrameIdx := params[0].(int), params[1].(int)
+	framesSlot, frameIdx := params[0].(int), params[1].(int)
 
 	var lzBufPre []byte // <== varLift: lzBufPre by path
 
 	lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
-		lzWindowFrames := lzVars.Temps[windowFramesSlot].([]base.WindowFrame)
-		lzWindowFrame := &lzWindowFrames[windowFrameIdx]
+		lzFrames := lzVars.Temps[framesSlot].([]base.WindowFrame)
+		lzFrame := &lzFrames[frameIdx]
 
-		lzBuf := strconv.AppendUint(lzBufPre[:0], uint64(lzWindowFrame.Pos+1), 10)
+		lzBuf := strconv.AppendUint(lzBufPre[:0], uint64(lzFrame.Pos+1), 10)
 
 		lzVal = base.Val(lzBuf)
 
@@ -84,15 +84,15 @@ func ExprWindowPartitionRowNumber(lzVars *base.Vars, labels base.Labels,
 
 func ExprWindowFrameCount(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	windowFramesSlot, windowFrameIdx := params[0].(int), params[1].(int)
+	framesSlot, frameIdx := params[0].(int), params[1].(int)
 
 	var lzBufPre []byte // <== varLift: lzBufPre by path
 
 	lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
-		lzWindowFrames := lzVars.Temps[windowFramesSlot].([]base.WindowFrame)
-		lzWindowFrame := &lzWindowFrames[windowFrameIdx]
+		lzFrames := lzVars.Temps[framesSlot].([]base.WindowFrame)
+		lzFrame := &lzFrames[frameIdx]
 
-		c := lzWindowFrame.Count()
+		c := lzFrame.Count()
 
 		lzBuf := strconv.AppendUint(lzBufPre[:0], uint64(c), 10)
 
@@ -113,7 +113,7 @@ func ExprWindowFrameCount(lzVars *base.Vars, labels base.Labels,
 // window partitions of type ROWS.
 func ExprWindowFrameStepValue(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	windowFramesSlot, windowFrameIdx := params[0].(int), params[1].(int)
+	framesSlot, frameIdx := params[0].(int), params[1].(int)
 
 	// The initial config defines the starting step position, with
 	// allowed values of...
@@ -142,8 +142,8 @@ func ExprWindowFrameStepValue(lzVars *base.Vars, labels base.Labels,
 		var lzValsPre base.Vals // <== varLift: lzValsPre by path
 
 		lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
-			lzWindowFrames := lzVars.Temps[windowFramesSlot].([]base.WindowFrame)
-			lzWindowFrame := &lzWindowFrames[windowFrameIdx]
+			lzFrames := lzVars.Temps[framesSlot].([]base.WindowFrame)
+			lzFrame := &lzFrames[frameIdx]
 
 			lzOk := true
 
@@ -151,7 +151,7 @@ func ExprWindowFrameStepValue(lzVars *base.Vars, labels base.Labels,
 
 			lzPos := int64(-1)
 			if initial == 0 { // !lz
-				lzPos = lzWindowFrame.Pos
+				lzPos = lzFrame.Pos
 			} else if initial == 1 { // !lz
 				lzPos = math.MaxInt64
 			} // !lz
@@ -159,7 +159,7 @@ func ExprWindowFrameStepValue(lzVars *base.Vars, labels base.Labels,
 			for lzI := uint64(0); lzI < num && lzOk && lzErr == nil; lzI++ {
 				lzValsStep := lzValsPre[:0]
 
-				lzVals, lzPos, lzOk, lzErr = lzWindowFrame.StepVals(asc, lzPos, lzValsStep)
+				lzVals, lzPos, lzOk, lzErr = lzFrame.StepVals(asc, lzPos, lzValsStep)
 			}
 
 			if lzOk && lzErr == nil {

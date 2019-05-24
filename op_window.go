@@ -22,7 +22,7 @@ import (
 // This operator can optionally track rank / numbering related info.
 func OpWindowPartition(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	lzYieldErr base.YieldErr, path, pathNext string) {
-	windowPartitionSlot := o.Params[0].(int) // Vars.Temps slot number.
+	partitionSlot := o.Params[0].(int) // Vars.Temps slot number.
 
 	// PARTITION-BY & ORDER-BY expressions.
 	partitionExprs := o.Params[1].([]interface{}) // Can be 0 length.
@@ -54,7 +54,7 @@ func OpWindowPartition(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals
 
 		lzHeap.Extra = lzPartitionId
 
-		lzVars.TempSet(windowPartitionSlot, lzHeap)
+		lzVars.TempSet(partitionSlot, lzHeap)
 
 		pathNextWP := EmitPush(pathNext, "WP") // !lz
 
@@ -185,15 +185,15 @@ func OpWindowPartition(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals
 // child (or some descendent operator) to be an OpWindowPartition.
 func OpWindowFrames(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	lzYieldErr base.YieldErr, path, pathNext string) {
-	windowPartitionSlot := o.Params[0].(int) // Vars.Temps slot number.
-	windowFramesSlot := o.Params[1].(int)    // Vars.Temps slot number.
-	windowFramesCfg := o.Params[2].([]interface{})
-	windowFramesLen := len(windowFramesCfg)
+	partitionSlot := o.Params[0].(int) // Vars.Temps slot number.
+	framesSlot := o.Params[1].(int)    // Vars.Temps slot number.
+	framesCfg := o.Params[2].([]interface{})
+	framesLen := len(framesCfg)
 
 	if LzScope {
 		var lzHeap *store.Heap
 
-		var lzWindowFrames []base.WindowFrame
+		var lzFrames []base.WindowFrame
 
 		var lzPartitionId, lzCurrentPos uint64
 
@@ -201,24 +201,24 @@ func OpWindowFrames(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 		lzYieldVals = func(lzVals base.Vals) {
 			if lzHeap == nil {
-				lzHeap = lzVars.TempGetHeap(windowPartitionSlot)
+				lzHeap = lzVars.TempGetHeap(partitionSlot)
 
-				lzWindowFrames = make([]base.WindowFrame, windowFramesLen)
-				for lzI := range lzWindowFrames {
-					lzWindowFrame := &lzWindowFrames[lzI]
-					lzWindowFrame.Init(windowFramesCfg[lzI], lzHeap)
+				lzFrames = make([]base.WindowFrame, framesLen)
+				for lzI := range lzFrames {
+					lzFrame := &lzFrames[lzI]
+					lzFrame.Init(framesCfg[lzI], lzHeap)
 				}
 
-				lzVars.TempSet(windowFramesSlot, lzWindowFrames)
+				lzVars.TempSet(framesSlot, lzFrames)
 			}
 
 			if lzPartitionId != lzHeap.Extra.(uint64) {
 				// We've encountered a new partition.
 				lzPartitionId = lzHeap.Extra.(uint64)
 
-				for lzI := range lzWindowFrames {
-					lzWindowFrame := &lzWindowFrames[lzI]
-					lzWindowFrame.PartitionStart()
+				for lzI := range lzFrames {
+					lzFrame := &lzFrames[lzI]
+					lzFrame.PartitionStart()
 				}
 
 				lzCurrentPos = 0
@@ -226,9 +226,9 @@ func OpWindowFrames(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 				lzCurrentPos++
 			}
 
-			for lzI := range lzWindowFrames {
-				lzWindowFrame := &lzWindowFrames[lzI]
-				lzWindowFrame.CurrentUpdate(lzCurrentPos)
+			for lzI := range lzFrames {
+				lzFrame := &lzFrames[lzI]
+				lzFrame.CurrentUpdate(lzCurrentPos)
 			}
 
 			lzYieldValsOrig(lzVals)
