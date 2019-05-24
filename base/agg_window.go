@@ -12,6 +12,8 @@
 package base
 
 import (
+	"bytes"
+
 	"github.com/couchbase/rhmap/store"
 )
 
@@ -52,20 +54,28 @@ type WindowFrame struct {
 
 	Exclude int // Ex: "current-row", "no-others", "group", "ties".
 
+	// ValIdx is used when type is "range" or "groups" and is the
+	// index of the val that's used for comparisons. When type is
+	// "groups", the ValIdx should refer to a rank or dense-rank val.
+	ValIdx int
+
 	// --------------------------------------------------------
 
 	// Partition is the current window partition.
 	Partition *store.Heap
 
-	// --------------------------------------------------------
-
 	// WindowFrameCurr tracks the current window frame, which is
 	// updated as the caller steps through the window partition.
 	WindowFrameCurr
+
+	// TempVals helps avoid memory allocations.
+	TempVals Vals
 }
 
 // -------------------------------------------------------------------
 
+// WindowFrameCurr represents the current positions of entries of a
+// window frame in a window partition.
 type WindowFrameCurr struct {
 	// Pos is mutated as the 0-based current pos is updated.
 	Pos int64
@@ -104,6 +114,8 @@ func (wf *WindowFrame) Init(cfg interface{}, partition *store.Heap) {
 	wf.Exclude = WTok[parts[5].(string)]
 
 	wf.Partition = partition
+
+	wf.ValIdx = parts[6].(int)
 }
 
 // -------------------------------------------------------------------
@@ -120,19 +132,25 @@ func (wf *WindowFrameCurr) PartitionStart() {
 
 // CurrentUpdate is invoked whenever the current row is updated and
 // stepped to the next row, so we update the current window frame.
-func (wf *WindowFrame) CurrentUpdate(currentPos uint64) {
+func (wf *WindowFrame) CurrentUpdate(currentPos uint64) (err error) {
 	wf.Pos = int64(currentPos)
 
 	// Default to unbounded preceding.
 	wf.Include.Beg = 0
 
 	if wf.BegBoundary == WTokNum {
-		if wf.Type != WTokRows {
+		// Handle cases of current-row and expr preceding|following.
+		if wf.Type == WTokRows {
+			wf.Include.Beg = wf.Pos + wf.BegNum
+		} else if wf.Type == WTokGroups {
+			wf.Include.Beg, err = wf.StepGroups(wf.BegNum, wf.ValIdx)
+			if err != nil {
+				return err
+			}
+		} else {
 			panic("unsupported")
 		}
 
-		// Handle cases of current-row and expr preceding|following.
-		wf.Include.Beg = wf.Pos + wf.BegNum
 		if wf.Include.Beg < 0 {
 			wf.Include.Beg = 0
 		}
@@ -144,16 +162,23 @@ func (wf *WindowFrame) CurrentUpdate(currentPos uint64) {
 	wf.Include.End = n
 
 	if wf.EndBoundary == WTokNum {
-		if wf.Type != WTokRows {
+		// Handle cases of current-row and expr preceding|following.
+		if wf.Type == WTokRows {
+			wf.Include.End = wf.Pos + wf.EndNum + 1
+		} else if wf.Type == WTokGroups {
+			wf.Include.End, err = wf.StepGroups(wf.EndNum, wf.ValIdx)
+			if err != nil {
+				return err
+			}
+
+			wf.Include.End = wf.Include.End + 1
+		} else {
 			panic("unsupported")
 		}
 
-		// Handle cases of current-row and expr preceding|following.
-		wf.Include.End = wf.Pos + wf.EndNum + 1
 		if wf.Include.End > n {
 			wf.Include.End = n
 		}
-
 	}
 
 	// Default to excluded rows of no-others.
@@ -166,6 +191,100 @@ func (wf *WindowFrame) CurrentUpdate(currentPos uint64) {
 			panic("unsupported")
 		}
 	}
+
+	return nil
+}
+
+// -------------------------------------------------------------------
+
+// StepGroups returns the position of the edge of a group that's n
+// steps away from the current group. A negative n means stepping in a
+// descending direction, where the first member of the group's
+// position is returned. With a positive n, the last member of the
+// group's position is returned.
+func (wf *WindowFrame) StepGroups(n int64, valIdx int) (int64, error) {
+	if n == 0 {
+		return wf.Pos, nil
+	}
+
+	dir := int64(1)
+	if n < 0 {
+		n, dir = -n, int64(-1)
+	}
+
+	end := int64(wf.Partition.Len())
+
+	curr, err := wf.FindGroupEdge(wf.Pos, dir, valIdx)
+	if err != nil {
+		return 0, err
+	}
+
+	for n > 0 {
+		next := curr + dir
+		if next < 0 || next >= end {
+			break
+		}
+
+		curr, err = wf.FindGroupEdge(next, dir, valIdx)
+		if err != nil {
+			return 0, err
+		}
+
+		n--
+	}
+
+	return curr, nil
+}
+
+// -------------------------------------------------------------------
+
+// FindGroupEdge returns the position of the starting or ending member
+// of a group, depending on the direction dir parameter which should
+// be a 1 or -1. When 1, the ending member of the group is
+// returned. When -1, the starting member of the group is returned.
+func (wf *WindowFrame) FindGroupEdge(i, dir int64, valIdx int) (int64, error) {
+	end := int64(wf.Partition.Len())
+
+	valCurr, err := wf.GetValsVal(i, valIdx)
+	if err != nil {
+		return i, err
+	}
+
+	for {
+		next := i + dir
+		if next < 0 || next >= end {
+			return i, nil
+		}
+
+		valNext, err := wf.GetValsVal(next, valIdx)
+		if err != nil {
+			return i, err
+		}
+
+		if !bytes.Equal(valCurr, valNext) {
+			return i, nil
+		}
+
+		i = next
+	}
+}
+
+// -------------------------------------------------------------------
+
+// GetValsVal returns the valIdx'th val that's in the vals entry at
+// the given i position in the partition, both 0-based.
+func (wf *WindowFrame) GetValsVal(i int64, valIdx int) (Val, error) {
+	buf, err := wf.Partition.Get(int(i))
+	if err != nil {
+		return nil, err
+	}
+
+	wf.TempVals = ValsDecode(buf, wf.TempVals[:0])
+	if len(wf.TempVals) > 0 {
+		return wf.TempVals[valIdx], nil
+	}
+
+	return nil, nil
 }
 
 // -------------------------------------------------------------------

@@ -41,7 +41,7 @@ func OpWindowPartition(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals
 
 	trackRank := strings.Index(track, "rank") >= 0
 
-	trackDenseRank := strings.Index(track, "dense-rank") >= 0
+	trackDenseRank := strings.Index(track, "denseRank") >= 0
 
 	// A heap data structure is allocated but is used merely as an
 	// appendable sequence of []byte items, not as an actual heap.
@@ -228,7 +228,11 @@ func OpWindowFrames(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 			for lzI := range lzFrames {
 				lzFrame := &lzFrames[lzI]
-				lzFrame.CurrentUpdate(lzCurrentPos)
+
+				lzErr := lzFrame.CurrentUpdate(lzCurrentPos)
+				if lzErr != nil {
+					lzYieldErr(lzErr)
+				}
 			}
 
 			lzYieldValsOrig(lzVals)

@@ -4399,6 +4399,7 @@ var TestCasesSimple = []TestCaseSimple{
 							"num", -1, // Preceding.
 							"num", 1, // Following.
 							"no-others", // Exclude.
+							0,           // ValIdx, unused.
 						},
 					},
 				},
@@ -4480,6 +4481,7 @@ var TestCasesSimple = []TestCaseSimple{
 							"num", -1, // Preceding.
 							"num", 1, // Following.
 							"current-row", // Exclude.
+							0,             // ValIdx, unused.
 						},
 					},
 				},
@@ -4561,6 +4563,7 @@ var TestCasesSimple = []TestCaseSimple{
 							"num", 0, // Preceding.
 							"unbounded", 1, // Following.
 							"no-others", // Exclude.
+							0,           // ValIdx, unused.
 						},
 					},
 				},
@@ -4642,6 +4645,7 @@ var TestCasesSimple = []TestCaseSimple{
 							"unbounded", 0, // Preceding.
 							"num", -1, // Following.
 							"no-others", // Exclude.
+							0,           // ValIdx, unused.
 						},
 					},
 				},
@@ -4732,6 +4736,7 @@ var TestCasesSimple = []TestCaseSimple{
 							"num", -1, // Preceding.
 							"num", 0, // Following.
 							"no-others", // Exclude.
+							0,           // ValIdx, unused.
 						},
 					},
 				},
@@ -4822,6 +4827,7 @@ var TestCasesSimple = []TestCaseSimple{
 							"num", -1, // Preceding.
 							"num", 1, // Following.
 							"no-others", // Exclude.
+							0,           // ValIdx, unused.
 						},
 					},
 				},
@@ -4912,6 +4918,7 @@ var TestCasesSimple = []TestCaseSimple{
 							"unbounded", 0, // Preceding.
 							"unbounded", 0, // Following.
 							"no-others", // Exclude.
+							0,           // ValIdx, unused.
 						},
 					},
 				},
@@ -5002,6 +5009,7 @@ var TestCasesSimple = []TestCaseSimple{
 							"unbounded", 0, // Preceding.
 							"unbounded", 0, // Following.
 							"no-others", // Exclude.
+							0,           // ValIdx, unused.
 						},
 					},
 				},
@@ -5092,6 +5100,7 @@ var TestCasesSimple = []TestCaseSimple{
 							"unbounded", 0, // Preceding.
 							"unbounded", 0, // Following.
 							"no-others", // Exclude.
+							0,           // ValIdx, unused.
 						},
 					},
 				},
@@ -5182,6 +5191,7 @@ var TestCasesSimple = []TestCaseSimple{
 							"unbounded", 0, // Preceding.
 							"unbounded", 0, // Following.
 							"no-others", // Exclude.
+							0,           // ValIdx, unused.
 						},
 					},
 				},
@@ -5272,6 +5282,7 @@ var TestCasesSimple = []TestCaseSimple{
 							"unbounded", 0, // Preceding.
 							"unbounded", 0, // Following.
 							"no-others", // Exclude.
+							0,           // ValIdx, unused.
 						},
 					},
 				},
@@ -5356,6 +5367,7 @@ var TestCasesSimple = []TestCaseSimple{
 							"unbounded", 0, // Preceding.
 							"unbounded", 0, // Following.
 							"no-others", // Exclude.
+							0,           // ValIdx, unused.
 						},
 					},
 				},
@@ -5369,8 +5381,8 @@ var TestCasesSimple = []TestCaseSimple{
 							[]interface{}{"labelPath", "a"},
 							[]interface{}{"labelPath", "b"},
 						},
-						1,                 // # of the partitioning exprs for PARTITION-BY.
-						"rank,dense-rank", // Additional tracking info.
+						1,                // # of the partitioning exprs for PARTITION-BY.
+						"rank,denseRank", // Additional tracking info.
 					},
 					Children: []*base.Op{&base.Op{
 						Kind:   "order-offset-limit",
@@ -5423,6 +5435,223 @@ var TestCasesSimple = []TestCaseSimple{
 			base.Vals{[]byte("30"), []byte("30"), []byte("1"), []byte("1"), []byte("1")},
 			base.Vals{[]byte("30"), []byte("30"), []byte("2"), []byte("1"), []byte("1")},
 			base.Vals{[]byte("30"), []byte("31"), []byte("3"), []byte("3"), []byte("2")},
+		},
+	},
+	{
+		about: "test csv-data window-partition->ROWS window-frame [-1...1], project FIRST_VALUE, LAST_VALUE",
+		o: base.Op{
+			Kind:   "project",
+			Labels: base.Labels{"a", "denseRank", "firstValue", "lastValue"},
+			Params: []interface{}{
+				[]interface{}{"labelPath", "a"},
+				[]interface{}{"labelUint64", "myDenseRank"},
+				[]interface{}{
+					"window-frame-step-value",
+					1,         // Slot for window frames.
+					0,         // Idx for window frame.
+					-1,        // Initial starting position is -1.
+					true,      // Step is ascending.
+					uint64(1), // Number of steps to take.
+					[]interface{}{"labelPath", "b"},
+				},
+				[]interface{}{
+					"window-frame-step-value",
+					1,         // Slot for window frames.
+					0,         // Idx for window frame.
+					1,         // Initial starting position is end.
+					false,     // Step is descending.
+					uint64(1), // Number of steps to take.
+					[]interface{}{"labelPath", "b"},
+				},
+			},
+			Children: []*base.Op{&base.Op{
+				Kind:   "window-frames",
+				Labels: base.Labels{"a", "b", "myDenseRank"},
+				Params: []interface{}{
+					0, // Slot for window partition.
+					1, // Slot for window frames.
+					[]interface{}{ // Window frames cfg.
+						[]interface{}{
+							"rows",
+							"num", -1, // Preceding.
+							"num", 1, // Following.
+							"no-others", // Exclude.
+							0,           // ValIdx, unused with ROWS.
+						},
+					},
+				},
+				Children: []*base.Op{&base.Op{
+					Kind:   "window-partition",
+					Labels: base.Labels{"a", "b", "myDenseRank"},
+					Params: []interface{}{
+						0, // Slot for window partition.
+						[]interface{}{
+							// Partitioning exprs...
+							[]interface{}{"labelPath", "a"},
+							[]interface{}{"labelPath", "b"},
+						},
+						1,           // # of the partitioning exprs for PARTITION-BY.
+						"denseRank", // Additional tracking info.
+					},
+					Children: []*base.Op{&base.Op{
+						Kind:   "order-offset-limit",
+						Labels: base.Labels{"a", "b"},
+						Params: []interface{}{
+							[]interface{}{
+								[]interface{}{"labelPath", "a"},
+								[]interface{}{"labelPath", "b"},
+							},
+							[]interface{}{
+								"asc",
+								"asc",
+							},
+						},
+						Children: []*base.Op{&base.Op{
+							Kind:   "scan",
+							Labels: base.Labels{"a", "b"},
+							Params: []interface{}{
+								"csvData",
+								`
+10,11
+10,12
+10,12
+10,12
+10,13
+20,20
+20,20
+20,21
+30,30
+30,31
+30,31
+`,
+							},
+						}},
+					}},
+				}},
+			}},
+		},
+		expectYields: []base.Vals{
+			base.Vals{[]byte("10"), []byte("1"), []byte("11"), []byte("12")},
+			base.Vals{[]byte("10"), []byte("2"), []byte("11"), []byte("12")},
+			base.Vals{[]byte("10"), []byte("2"), []byte("12"), []byte("12")},
+			base.Vals{[]byte("10"), []byte("2"), []byte("12"), []byte("13")},
+			base.Vals{[]byte("10"), []byte("3"), []byte("12"), []byte("13")},
+			base.Vals{[]byte("20"), []byte("1"), []byte("20"), []byte("20")},
+			base.Vals{[]byte("20"), []byte("1"), []byte("20"), []byte("21")},
+			base.Vals{[]byte("20"), []byte("2"), []byte("20"), []byte("21")},
+			base.Vals{[]byte("30"), []byte("1"), []byte("30"), []byte("31")},
+			base.Vals{[]byte("30"), []byte("2"), []byte("30"), []byte("31")},
+			base.Vals{[]byte("30"), []byte("2"), []byte("31"), []byte("31")},
+		},
+	},
+	{
+		about: "test csv-data window-partition->GROUPS window-frame [-1...1], project FIRST_VALUE, LAST_VALUE",
+		o: base.Op{
+			Kind:   "project",
+			Labels: base.Labels{"a", "c", "denseRank", "firstValue", "lastValue"},
+			Params: []interface{}{
+				[]interface{}{"labelPath", "a"},
+				[]interface{}{"labelPath", "c"},
+				[]interface{}{"labelUint64", "myDenseRank"},
+				[]interface{}{
+					"window-frame-step-value",
+					1,         // Slot for window frames.
+					0,         // Idx for window frame.
+					-1,        // Initial starting position is -1.
+					true,      // Step is ascending.
+					uint64(1), // Number of steps to take.
+					[]interface{}{"labelPath", "c"},
+				},
+				[]interface{}{
+					"window-frame-step-value",
+					1,         // Slot for window frames.
+					0,         // Idx for window frame.
+					1,         // Initial starting position is end.
+					false,     // Step is descending.
+					uint64(1), // Number of steps to take.
+					[]interface{}{"labelPath", "c"},
+				},
+			},
+			Children: []*base.Op{&base.Op{
+				Kind:   "window-frames",
+				Labels: base.Labels{"a", "b", "c", "myDenseRank"},
+				Params: []interface{}{
+					0, // Slot for window partition.
+					1, // Slot for window frames.
+					[]interface{}{ // Window frames cfg.
+						[]interface{}{
+							"groups",
+							"num", -1, // Preceding.
+							"num", 1, // Following.
+							"no-others", // Exclude.
+							3,           // ValIdx to the denseRank val.
+						},
+					},
+				},
+				Children: []*base.Op{&base.Op{
+					Kind:   "window-partition",
+					Labels: base.Labels{"a", "b", "c", "myDenseRank"},
+					Params: []interface{}{
+						0, // Slot for window partition.
+						[]interface{}{
+							// Partitioning exprs...
+							[]interface{}{"labelPath", "a"},
+							[]interface{}{"labelPath", "b"},
+						},
+						1,           // # of the partitioning exprs for PARTITION-BY.
+						"denseRank", // Additional tracking info.
+					},
+					Children: []*base.Op{&base.Op{
+						Kind:   "order-offset-limit",
+						Labels: base.Labels{"a", "b", "c"},
+						Params: []interface{}{
+							[]interface{}{
+								[]interface{}{"labelPath", "a"},
+								[]interface{}{"labelPath", "b"},
+								[]interface{}{"labelPath", "c"},
+							},
+							[]interface{}{
+								"asc",
+								"asc",
+								"asc",
+							},
+						},
+						Children: []*base.Op{&base.Op{
+							Kind:   "scan",
+							Labels: base.Labels{"a", "b", "c"},
+							Params: []interface{}{
+								"csvData",
+								`
+10,11,100
+10,12,101
+10,12,102
+10,12,103
+10,13,104
+20,20,200
+20,20,201
+20,21,202
+30,30,300
+30,31,301
+30,31,302
+`,
+							},
+						}},
+					}},
+				}},
+			}},
+		},
+		expectYields: []base.Vals{
+			base.Vals{[]byte("10"), []byte("100"), []byte("1"), []byte("100"), []byte("103")},
+			base.Vals{[]byte("10"), []byte("101"), []byte("2"), []byte("100"), []byte("104")},
+			base.Vals{[]byte("10"), []byte("102"), []byte("2"), []byte("100"), []byte("104")},
+			base.Vals{[]byte("10"), []byte("103"), []byte("2"), []byte("100"), []byte("104")},
+			base.Vals{[]byte("10"), []byte("104"), []byte("3"), []byte("101"), []byte("104")},
+			base.Vals{[]byte("20"), []byte("200"), []byte("1"), []byte("200"), []byte("202")},
+			base.Vals{[]byte("20"), []byte("201"), []byte("1"), []byte("200"), []byte("202")},
+			base.Vals{[]byte("20"), []byte("202"), []byte("2"), []byte("200"), []byte("202")},
+			base.Vals{[]byte("30"), []byte("300"), []byte("1"), []byte("300"), []byte("302")},
+			base.Vals{[]byte("30"), []byte("301"), []byte("2"), []byte("300"), []byte("302")},
+			base.Vals{[]byte("30"), []byte("302"), []byte("2"), []byte("300"), []byte("302")},
 		},
 	},
 }
