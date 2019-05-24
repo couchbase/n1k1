@@ -46,18 +46,25 @@ func init() {
 type WindowFrame struct {
 	Type int // Ex: "rows", "range", "groups".
 
-	BegBoundary int   // Ex: "unbounded", "num".
-	BegNum      int64 // Used when beg boundary is "num".
+	BegBoundary int     // Ex: "unbounded", "num".
+	BegNum      int64   // Used when beg boundary is "num".
+	BegF64      float64 // Used when beg boundary is "num" for "range" type.
 
-	EndBoundary int   // Ex: "unbounded", "num".
-	EndNum      int64 // Used when end boundary is "num".
+	EndBoundary int     // Ex: "unbounded", "num".
+	EndNum      int64   // Used when end boundary is "num".
+	EndF64      float64 // Used when beg boundary is "num" for "range" type.
 
 	Exclude int // Ex: "current-row", "no-others", "group", "ties".
 
 	// ValIdx is used when type is "range" or "groups" and is the
 	// index of the val that's used for comparisons. When type is
-	// "groups", the ValIdx should refer to a rank or denseRank val.
+	// "groups", the ValIdx should refer to a rank or denseRank
+	// val. When type is "range", the ValIdx refers to the val that
+	// helps defines the range from val-BegF64 to val+EndF64.
 	ValIdx int
+
+	// ValComparer is used when the type is "range".
+	ValComparer *ValComparer
 
 	// --------------------------------------------------------
 
@@ -108,8 +115,30 @@ func (wf *WindowFrame) Init(cfg interface{}, partition *store.Heap) {
 
 	wf.Type = WTok[parts[0].(string)]
 
-	wf.BegBoundary, wf.BegNum = WTok[parts[1].(string)], int64(parts[2].(int))
-	wf.EndBoundary, wf.EndNum = WTok[parts[3].(string)], int64(parts[4].(int))
+	wf.BegBoundary = WTok[parts[1].(string)]
+	wf.EndBoundary = WTok[parts[3].(string)]
+
+	begNum, ok := parts[2].(int)
+	if ok {
+		wf.BegNum = int64(begNum)
+		wf.BegF64 = float64(begNum)
+	} else {
+		wf.BegF64, ok = parts[2].(float64)
+		if ok {
+			wf.BegNum = int64(wf.BegF64)
+		}
+	}
+
+	endNum, ok := parts[4].(int)
+	if ok {
+		wf.EndNum = int64(endNum)
+		wf.EndF64 = float64(endNum)
+	} else {
+		wf.EndF64, ok = parts[4].(float64)
+		if ok {
+			wf.EndNum = int64(wf.EndF64)
+		}
+	}
 
 	wf.Exclude = WTok[parts[5].(string)]
 
@@ -143,12 +172,16 @@ func (wf *WindowFrame) CurrentUpdate(currentPos uint64) (err error) {
 		if wf.Type == WTokRows {
 			wf.Include.Beg = wf.Pos + wf.BegNum
 		} else if wf.Type == WTokGroups {
-			wf.Include.Beg, err = wf.StepGroups(wf.BegNum, wf.ValIdx)
+			wf.Include.Beg, err = wf.StepGroups(wf.BegNum)
 			if err != nil {
 				return err
 			}
-		} else {
-			panic("unsupported")
+		} else { // wf.Type == WTokRange.
+			// TODO: Assumes ASC order-by.
+			wf.Include.Beg, err = wf.FindGroupEdge(wf.Pos, -1)
+			if err != nil {
+				return err
+			}
 		}
 
 		if wf.Include.Beg < 0 {
@@ -164,17 +197,22 @@ func (wf *WindowFrame) CurrentUpdate(currentPos uint64) (err error) {
 	if wf.EndBoundary == WTokNum {
 		// Handle cases of current-row and expr preceding|following.
 		if wf.Type == WTokRows {
-			wf.Include.End = wf.Pos + wf.EndNum + 1
+			wf.Include.End = wf.Pos + wf.EndNum
 		} else if wf.Type == WTokGroups {
-			wf.Include.End, err = wf.StepGroups(wf.EndNum, wf.ValIdx)
+			wf.Include.End, err = wf.StepGroups(wf.EndNum)
 			if err != nil {
 				return err
 			}
-
-			wf.Include.End = wf.Include.End + 1 // Since [Beg, End).
-		} else {
-			panic("unsupported")
+		} else { // wf.Type == WTokRange.
+			// TODO: Assumes ASC order-by.
+			wf.Include.End, err = wf.FindGroupEdge(wf.Pos, 1)
+			if err != nil {
+				return err
+			}
 		}
+
+		// Since the range is [Beg, End), bump the end by 1.
+		wf.Include.End = wf.Include.End + 1
 
 		if wf.Include.End > n {
 			wf.Include.End = n
@@ -203,7 +241,7 @@ func (wf *WindowFrame) CurrentUpdate(currentPos uint64) (err error) {
 // in the target group. A negative n means stepping in a descending
 // direction, and returns the position of the first entry in the
 // target group.
-func (wf *WindowFrame) StepGroups(n int64, valIdx int) (int64, error) {
+func (wf *WindowFrame) StepGroups(n int64) (int64, error) {
 	if n == 0 {
 		return wf.Pos, nil
 	}
@@ -215,7 +253,7 @@ func (wf *WindowFrame) StepGroups(n int64, valIdx int) (int64, error) {
 
 	end := int64(wf.Partition.Len())
 
-	curr, err := wf.FindGroupEdge(wf.Pos, dir, valIdx)
+	curr, err := wf.FindGroupEdge(wf.Pos, dir)
 	if err != nil {
 		return 0, err
 	}
@@ -226,7 +264,7 @@ func (wf *WindowFrame) StepGroups(n int64, valIdx int) (int64, error) {
 			break
 		}
 
-		curr, err = wf.FindGroupEdge(next, dir, valIdx)
+		curr, err = wf.FindGroupEdge(next, dir)
 		if err != nil {
 			return 0, err
 		}
@@ -243,12 +281,26 @@ func (wf *WindowFrame) StepGroups(n int64, valIdx int) (int64, error) {
 // of a group, depending on the direction dir parameter which should
 // be a 1 or -1. When 1, the ending member of the group is
 // returned. When -1, the starting member of the group is returned.
-func (wf *WindowFrame) FindGroupEdge(i, dir int64, valIdx int) (int64, error) {
+func (wf *WindowFrame) FindGroupEdge(i, dir int64) (int64, error) {
 	end := int64(wf.Partition.Len())
 
-	valCurr, err := wf.GetValsVal(i, valIdx)
+	valCurr, err := wf.GetValsVal(i, wf.ValIdx)
 	if err != nil {
 		return i, err
+	}
+
+	var f64Edge float64
+	if wf.Type == WTokRange {
+		f64Curr, err := ParseFloat64(valCurr)
+		if err != nil {
+			return i, err
+		}
+
+		if dir < 0 {
+			f64Edge = f64Curr + wf.BegF64
+		} else {
+			f64Edge = f64Curr + wf.EndF64
+		}
 	}
 
 	for {
@@ -257,13 +309,22 @@ func (wf *WindowFrame) FindGroupEdge(i, dir int64, valIdx int) (int64, error) {
 			return i, nil
 		}
 
-		valNext, err := wf.GetValsVal(next, valIdx)
+		valNext, err := wf.GetValsVal(next, wf.ValIdx)
 		if err != nil {
 			return i, err
 		}
 
-		if !bytes.Equal(valCurr, valNext) {
-			return i, nil
+		if wf.Type == WTokGroups {
+			if !bytes.Equal(valCurr, valNext) {
+				return i, nil
+			}
+		} else { // wf.Type == WTokRange.
+			f64Next, err := ParseFloat64(valNext)
+			if err != nil ||
+				((dir < 0) && (f64Next < f64Edge)) ||
+				((dir > 0) && (f64Next > f64Edge)) {
+				return i, err
+			}
 		}
 
 		i = next
@@ -368,8 +429,7 @@ func (wf *WindowFrameCurr) Count() int64 {
 	s := wf.Include.End - wf.Include.Beg
 
 	for _, exclude := range wf.Excludes {
-		if Overlaps(exclude.Beg, exclude.End,
-			wf.Include.Beg, wf.Include.End) {
+		if Overlaps(exclude.Beg, exclude.End, wf.Include.Beg, wf.Include.End) {
 			s = s - (Min(exclude.End, wf.Include.End) -
 				Max(exclude.Beg, wf.Include.Beg))
 		}

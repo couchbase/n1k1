@@ -5654,4 +5654,114 @@ var TestCasesSimple = []TestCaseSimple{
 			base.Vals{[]byte("30"), []byte("302"), []byte("2"), []byte("300"), []byte("302")},
 		},
 	},
+	{
+		about: "test csv-data window-partition->RANGE window-frame [-1...1], project FIRST_VALUE, LAST_VALUE",
+		o: base.Op{
+			Kind:   "project",
+			Labels: base.Labels{"a", "c", "denseRank", "firstValue", "lastValue"},
+			Params: []interface{}{
+				[]interface{}{"labelPath", "a"},
+				[]interface{}{"labelPath", "c"},
+				[]interface{}{"labelUint64", "myDenseRank"},
+				[]interface{}{
+					"window-frame-step-value",
+					1,         // Slot for window frames.
+					0,         // Idx for window frame.
+					-1,        // Initial starting position is -1.
+					true,      // Step is ascending.
+					uint64(1), // Number of steps to take.
+					[]interface{}{"labelPath", "c"},
+				},
+				[]interface{}{
+					"window-frame-step-value",
+					1,         // Slot for window frames.
+					0,         // Idx for window frame.
+					1,         // Initial starting position is end.
+					false,     // Step is descending.
+					uint64(1), // Number of steps to take.
+					[]interface{}{"labelPath", "c"},
+				},
+			},
+			Children: []*base.Op{&base.Op{
+				Kind:   "window-frames",
+				Labels: base.Labels{"a", "b", "c", "myDenseRank"},
+				Params: []interface{}{
+					0, // Slot for window partition.
+					1, // Slot for window frames.
+					[]interface{}{ // Window frames cfg.
+						[]interface{}{
+							"range",
+							"num", float64(-1.0), // Preceding.
+							"num", float64(1.0), // Following.
+							"no-others", // Exclude.
+							1,           // ValIdx, for RANGE type.
+						},
+					},
+				},
+				Children: []*base.Op{&base.Op{
+					Kind:   "window-partition",
+					Labels: base.Labels{"a", "b", "c", "myDenseRank"},
+					Params: []interface{}{
+						0, // Slot for window partition.
+						[]interface{}{
+							// Partitioning exprs...
+							[]interface{}{"labelPath", "a"},
+							[]interface{}{"labelPath", "b"},
+						},
+						1,           // # of the partitioning exprs for PARTITION-BY.
+						"denseRank", // Additional tracking info.
+					},
+					Children: []*base.Op{&base.Op{
+						Kind:   "order-offset-limit",
+						Labels: base.Labels{"a", "b", "c"},
+						Params: []interface{}{
+							[]interface{}{
+								[]interface{}{"labelPath", "a"},
+								[]interface{}{"labelPath", "b"},
+								[]interface{}{"labelPath", "c"},
+							},
+							[]interface{}{
+								"asc",
+								"asc",
+								"asc",
+							},
+						},
+						Children: []*base.Op{&base.Op{
+							Kind:   "scan",
+							Labels: base.Labels{"a", "b", "c"},
+							Params: []interface{}{
+								"csvData",
+								`
+10,11,100
+10,12,101
+10,12,102
+10,12,103
+10,13,104
+20,20,200
+20,20,201
+20,21,202
+30,30,300
+30,31,301
+30,31,302
+`,
+							},
+						}},
+					}},
+				}},
+			}},
+		},
+		expectYields: []base.Vals{
+			base.Vals{[]byte("10"), []byte("100"), []byte("1"), []byte("100"), []byte("103")},
+			base.Vals{[]byte("10"), []byte("101"), []byte("2"), []byte("100"), []byte("104")},
+			base.Vals{[]byte("10"), []byte("102"), []byte("2"), []byte("100"), []byte("104")},
+			base.Vals{[]byte("10"), []byte("103"), []byte("2"), []byte("100"), []byte("104")},
+			base.Vals{[]byte("10"), []byte("104"), []byte("3"), []byte("101"), []byte("104")},
+			base.Vals{[]byte("20"), []byte("200"), []byte("1"), []byte("200"), []byte("202")},
+			base.Vals{[]byte("20"), []byte("201"), []byte("1"), []byte("200"), []byte("202")},
+			base.Vals{[]byte("20"), []byte("202"), []byte("2"), []byte("200"), []byte("202")},
+			base.Vals{[]byte("30"), []byte("300"), []byte("1"), []byte("300"), []byte("302")},
+			base.Vals{[]byte("30"), []byte("301"), []byte("2"), []byte("300"), []byte("302")},
+			base.Vals{[]byte("30"), []byte("302"), []byte("2"), []byte("300"), []byte("302")},
+		},
+	},
 }

@@ -119,7 +119,7 @@ Some design ideas meant to help with n1k1's performance...
   - numbering functions: ROW_NUMBER, RANK, DENSE_RANK
   - navigation functions:
     - FIRST_VALUE, LAST_VALUE, NTH_VALUE, LEAD, LAG.
-  - window frame OVER types: ROWS, GROUPS.
+  - window frame OVER types: ROWS, GROUPS, RANGE (ASC).
   - window frame clause...
     - preceding: unbounded, current-row, numeric offset.
     - following: unbounded, current-row, numeric offset.
@@ -205,7 +205,7 @@ efficiently execute that query-plan.
   - IGNORE NULL's?
 
 - window partitions
-  - more types: range?
+  - window frame RANGE only works now for ORDER BY ASC?
   - more exclude kinds: group, ties?
   - optimizations?
     - inverse optimization on sliding window?
