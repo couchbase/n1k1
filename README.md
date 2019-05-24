@@ -213,6 +213,7 @@ efficiently execute that query-plan.
       - for example, when only a count is needed?
       - non-materializing WindowPartition implementation
         might just borrow the underlying ORDER-OFFSET-LIMIT's backing heap?
+  - FILTER (WHERE expr) clause?
 
 - GROUP BY ROLLUP?
 - GROUP BY GROUPING SETS?
