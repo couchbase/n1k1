@@ -56,7 +56,7 @@ type WindowFrame struct {
 
 	// ValIdx is used when type is "range" or "groups" and is the
 	// index of the val that's used for comparisons. When type is
-	// "groups", the ValIdx should refer to a rank or dense-rank val.
+	// "groups", the ValIdx should refer to a rank or denseRank val.
 	ValIdx int
 
 	// --------------------------------------------------------
