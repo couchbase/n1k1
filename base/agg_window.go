@@ -171,7 +171,7 @@ func (wf *WindowFrame) CurrentUpdate(currentPos uint64) (err error) {
 				return err
 			}
 
-			wf.Include.End = wf.Include.End + 1
+			wf.Include.End = wf.Include.End + 1 // Since [Beg, End).
 		} else {
 			panic("unsupported")
 		}
@@ -198,10 +198,11 @@ func (wf *WindowFrame) CurrentUpdate(currentPos uint64) (err error) {
 // -------------------------------------------------------------------
 
 // StepGroups returns the position of the edge of a group that's n
-// steps away from the current group. A negative n means stepping in a
-// descending direction, where the first member of the group's
-// position is returned. With a positive n, the last member of the
-// group's position is returned.
+// steps away from the current group. A positive n means stepping in
+// an ascending direction, and returns the position of the last entry
+// in the target group. A negative n means stepping in a descending
+// direction, and returns the position of the first entry in the
+// target group.
 func (wf *WindowFrame) StepGroups(n int64, valIdx int) (int64, error) {
 	if n == 0 {
 		return wf.Pos, nil
