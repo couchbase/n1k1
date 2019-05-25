@@ -8,7 +8,7 @@ import (
 
 	"github.com/couchbase/n1k1"
 	"github.com/couchbase/n1k1/base"
-	"github.com/couchbase/n1k1/expr_glue"
+	"github.com/couchbase/n1k1/glue"
 )
 
 func TestCasesSimpleWithInterp(t *testing.T) {
@@ -50,7 +50,7 @@ func BenchmarkInterpExprEq_1Docs(b *testing.B) {
 
 func BenchmarkInterpExprStr_1Docs(b *testing.B) {
 	if n1k1.ExprCatalog["exprStr"] == nil {
-		n1k1.ExprCatalog["exprStr"] = expr_glue.ExprStr
+		n1k1.ExprCatalog["exprStr"] = glue.ExprStr
 	}
 
 	benchmarkInterpNDocs(b,
@@ -75,7 +75,7 @@ func BenchmarkInterpExprEq_1000Docs(b *testing.B) {
 
 func BenchmarkInterpExprStr_1000Docs(b *testing.B) {
 	if n1k1.ExprCatalog["exprStr"] == nil {
-		n1k1.ExprCatalog["exprStr"] = expr_glue.ExprStr
+		n1k1.ExprCatalog["exprStr"] = glue.ExprStr
 	}
 
 	benchmarkInterpNDocs(b,
@@ -100,7 +100,7 @@ func BenchmarkInterpExprEq_100000Docs(b *testing.B) {
 
 func BenchmarkInterpExprStr_100000Docs(b *testing.B) {
 	if n1k1.ExprCatalog["exprStr"] == nil {
-		n1k1.ExprCatalog["exprStr"] = expr_glue.ExprStr
+		n1k1.ExprCatalog["exprStr"] = glue.ExprStr
 	}
 
 	benchmarkInterpNDocs(b,

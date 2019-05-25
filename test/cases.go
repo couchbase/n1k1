@@ -12,14 +12,14 @@ import (
 
 	"github.com/couchbase/n1k1"
 	"github.com/couchbase/n1k1/base"
-	"github.com/couchbase/n1k1/expr_glue"
+	"github.com/couchbase/n1k1/glue"
 )
 
 func MakeYieldCaptureFuncs(t *testing.T, testi int, expectErr string) (
 	string, *base.Vars, base.YieldVals, base.YieldErr,
 	func() []base.Vals) {
 	if n1k1.ExprCatalog["exprStr"] == nil {
-		n1k1.ExprCatalog["exprStr"] = expr_glue.ExprStr
+		n1k1.ExprCatalog["exprStr"] = glue.ExprStr
 	}
 
 	var yields []base.Vals

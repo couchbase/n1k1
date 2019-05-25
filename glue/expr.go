@@ -1,8 +1,8 @@
-// The expr_glue package leverages the existing
+// The glue package leverages the existing
 // couchbase.com/query/expression package to implement expressions for
 // backwards compatibility.
 
-package expr_glue
+package glue
 
 import (
 	"encoding/json"
