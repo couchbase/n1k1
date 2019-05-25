@@ -9,9 +9,8 @@
 //  express or implied. See the License for the specific language
 //  governing permissions and limitations under the License.
 
-// The glue package leverages the existing
-// couchbase.com/query/expression package to implement expressions for
-// backwards compatibility.
+// The glue package integrates the existing couchbase.com/query
+// package for parsing, expressions, etc. for backwards compatibility.
 package glue
 
 import (
