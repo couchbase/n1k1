@@ -222,26 +222,24 @@ func (wf *WindowFrame) CurrentUpdate(currentPos uint64) (err error) {
 	// Default to excluded rows of no-others.
 	wf.Excludes = wf.Excludes[:0]
 
-	if wf.Exclude != WTokNoOthers {
-		if wf.Exclude == WTokCurrentRow {
-			wf.Excludes = append(wf.Excludes, WindowSpan{wf.Pos, wf.Pos + 1})
-		} else {
-			eBeg, err := wf.FindGroupEdge(wf.Pos, -1, false)
-			if err != nil {
-				return err
-			}
+	if wf.Exclude == WTokCurrentRow {
+		wf.Excludes = append(wf.Excludes, WindowSpan{wf.Pos, wf.Pos + 1})
+	} else if wf.Exclude == WTokGroup || wf.Exclude == WTokTies {
+		eBeg, err := wf.FindGroupEdge(wf.Pos, -1, false)
+		if err != nil {
+			return err
+		}
 
-			eEnd, err := wf.FindGroupEdge(wf.Pos, 1, false)
-			if err != nil {
-				return err
-			}
+		eEnd, err := wf.FindGroupEdge(wf.Pos, 1, false)
+		if err != nil {
+			return err
+		}
 
-			if wf.Exclude == WTokGroup {
-				wf.Excludes = append(wf.Excludes, WindowSpan{eBeg, eEnd + 1})
-			} else { // wf.Exclude == WTokTies.
-				wf.Excludes = append(wf.Excludes, WindowSpan{eBeg, wf.Pos})
-				wf.Excludes = append(wf.Excludes, WindowSpan{wf.Pos + 1, eEnd + 1})
-			}
+		if wf.Exclude == WTokGroup {
+			wf.Excludes = append(wf.Excludes, WindowSpan{eBeg, eEnd + 1})
+		} else { // wf.Exclude == WTokTies.
+			wf.Excludes = append(wf.Excludes, WindowSpan{eBeg, wf.Pos})
+			wf.Excludes = append(wf.Excludes, WindowSpan{wf.Pos + 1, eEnd + 1})
 		}
 	}
 
@@ -257,10 +255,6 @@ func (wf *WindowFrame) CurrentUpdate(currentPos uint64) (err error) {
 // direction, and returns the position of the first entry in the
 // target group.
 func (wf *WindowFrame) StepGroups(n int64) (int64, error) {
-	if n == 0 {
-		return wf.Pos, nil
-	}
-
 	dir := int64(1)
 	if n < 0 {
 		n, dir = -n, int64(-1)
@@ -445,10 +439,9 @@ func (wf *WindowFrameCurr) Prev(i int64) (int64, bool) {
 func (wf *WindowFrameCurr) Count() int64 {
 	s := wf.Include.End - wf.Include.Beg
 
-	for _, exclude := range wf.Excludes {
-		if Overlaps(exclude.Beg, exclude.End, wf.Include.Beg, wf.Include.End) {
-			s = s - (Min(exclude.End, wf.Include.End) -
-				Max(exclude.Beg, wf.Include.Beg))
+	for _, e := range wf.Excludes {
+		if Int64RangesOverlap(e.Beg, e.End, wf.Include.Beg, wf.Include.End) {
+			s = s - (Int64Min(e.End, wf.Include.End) - Int64Max(e.Beg, wf.Include.Beg))
 		}
 	}
 
@@ -457,9 +450,9 @@ func (wf *WindowFrameCurr) Count() int64 {
 
 // -------------------------------------------------------------------
 
-// Overlaps returns true if the range [xBeg, xEnd) overlaps with the
-// range [yBeg, yEnd).
-func Overlaps(xBeg, xEnd, yBeg, yEnd int64) bool {
+// Int64RangesOverlap returns true if the range [xBeg, xEnd) overlaps
+// with the range [yBeg, yEnd).
+func Int64RangesOverlap(xBeg, xEnd, yBeg, yEnd int64) bool {
 	if xEnd <= yBeg || yEnd <= xBeg {
 		return false
 	}
@@ -468,16 +461,16 @@ func Overlaps(xBeg, xEnd, yBeg, yEnd int64) bool {
 
 // -------------------------------------------------------------------
 
-// Max returns the greater of a and b.
-func Max(a, b int64) int64 {
+// Int64Max returns the greater of a and b.
+func Int64Max(a, b int64) int64 {
 	if a > b {
 		return a
 	}
 	return b
 }
 
-// Min returns the lesser of a and b.
-func Min(a, b int64) int64 {
+// Int64Min returns the lesser of a and b.
+func Int64Min(a, b int64) int64 {
 	if a < b {
 		return a
 	}
