@@ -11,7 +11,6 @@
 
 // The base package holds types and definitions shared by n1k1's
 // interpreter and compiler.
-
 package base
 
 import (
