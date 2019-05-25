@@ -80,9 +80,7 @@ var AggCount = &Agg{
 	Update: func(vars *Vars, v Val, aggNew, agg []byte, vc *ValComparer) (
 		[]byte, []byte, bool) {
 		c := binary.LittleEndian.Uint64(agg[:8])
-		var b [8]byte
-		binary.LittleEndian.PutUint64(b[:8], c+1)
-		return append(aggNew, b[:8]...), agg[8:], true
+		return BinaryAppendUint64(aggNew, c+1), agg[8:], true
 	},
 
 	Result: func(vars *Vars, agg, buf []byte) (v Val, aggRest, bufOut []byte) {
@@ -105,10 +103,8 @@ var AggSum = &Agg{
 		if ParseTypeToValType[parsedType] == ValTypeNumber {
 			f, err := ParseFloat64(parsedVal)
 			if err == nil {
-				s := math.Float64frombits(binary.LittleEndian.Uint64(agg[:8]))
-				var b [8]byte
-				binary.LittleEndian.PutUint64(b[:8], math.Float64bits(s+f))
-				return append(aggNew, b[:8]...), agg[8:], true
+				s := math.Float64frombits(binary.LittleEndian.Uint64(agg[:8])) + f
+				return BinaryAppendUint64(aggNew, math.Float64bits(s)), agg[8:], true
 			}
 		}
 
@@ -173,9 +169,7 @@ func AggCompareUpdate(comparer func(int) bool) func(
 	return func(vars *Vars, v Val, aggNew, agg []byte, vc *ValComparer) ([]byte, []byte, bool) {
 		n := binary.LittleEndian.Uint64(agg[:8])
 		if n <= 0 || comparer(vc.Compare(v, agg[8:8+n])) {
-			var b [8]byte
-			binary.LittleEndian.PutUint64(b[:8], uint64(len(v)))
-			aggNew = append(aggNew, b[:8]...)
+			aggNew = BinaryAppendUint64(aggNew, uint64(len(v)))
 			aggNew = append(aggNew, v...)
 			return aggNew, agg[8+n:], true
 		}

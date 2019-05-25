@@ -131,15 +131,10 @@ func ValsDeepCopy(vals Vals, preallocVals Vals, preallocVal Val) (
 
 // ValsEncode appends the encoded vals to the out slice.
 func ValsEncode(vals Vals, out []byte) []byte {
-	var buf8 [8]byte
-
-	binary.LittleEndian.PutUint64(buf8[:], uint64(len(vals)))
-	out = append(out, buf8[:]...)
+	out = BinaryAppendUint64(out, uint64(len(vals)))
 
 	for _, v := range vals {
-		binary.LittleEndian.PutUint64(buf8[:], uint64(len(v)))
-		out = append(out, buf8[:]...)
-		out = append(out, v...)
+		out = append(BinaryAppendUint64(out, uint64(len(v))), v...)
 	}
 
 	return out
@@ -149,10 +144,9 @@ func ValsEncode(vals Vals, out []byte) []byte {
 // slice, so its usable as a map key.
 func ValsEncodeCanonical(vals Vals, out []byte,
 	valComparer *ValComparer) (rv []byte, err error) {
-	var buf8 [8]byte
+	out = BinaryAppendUint64(out, uint64(len(vals)))
 
-	binary.LittleEndian.PutUint64(buf8[:], uint64(len(vals)))
-	out = append(out, buf8[:]...)
+	var buf8 [8]byte
 
 	for _, v := range vals {
 		beg := len(out)
@@ -165,9 +159,8 @@ func ValsEncodeCanonical(vals Vals, out []byte,
 			}
 		}
 
-		// Write the canonical val len in the earlier prepared space.
-		binary.LittleEndian.PutUint64(out[beg:beg+8],
-			uint64(len(out)-8-beg))
+		// Write the canonical val len into the earlier prepared space.
+		binary.LittleEndian.PutUint64(out[beg:beg+8], uint64(len(out)-8-beg))
 	}
 
 	return out, nil
@@ -187,6 +180,15 @@ func ValsDecode(b []byte, valsOut Vals) Vals {
 	}
 
 	return valsOut
+}
+
+// -----------------------------------------------------
+
+// BinaryAppendUint64 appends a binary encoded uint64 to out.
+func BinaryAppendUint64(out []byte, v uint64) []byte {
+	var buf8 [8]byte
+	binary.LittleEndian.PutUint64(buf8[:], v)
+	return append(out, buf8[:]...)
 }
 
 // -----------------------------------------------------

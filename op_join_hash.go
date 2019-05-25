@@ -60,10 +60,7 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	// ---------------------------------------------------------------
 
 	if LzScope {
-		var lzBytes8, lzOne8 [8]byte
 		var lzZero16 [16]byte
-
-		binary.LittleEndian.PutUint64(lzOne8[:], uint64(1))
 
 		// As the left side is visited to fill or build the probe map,
 		// any left vals, if they are needed for a join, are stored as
@@ -98,7 +95,7 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 		var lzProbeCount uint64
 
-		_, _, _, _ = lzBytes8, lzValOut, lzLeftBytes, lzProbeCount
+		_, _, _ = lzValOut, lzLeftBytes, lzProbeCount
 
 		exprLeftFunc :=
 			MakeExprFunc(lzVars, o.Children[0].Labels, exprLeft, pathNext, "JHL") // !lz
@@ -138,7 +135,7 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 					} // !lz
 
 					if leftCount { // !lz
-						lzProbeValNew = append(lzProbeValNew, lzOne8[:]...)
+						lzProbeValNew = base.BinaryAppendUint64(lzProbeValNew, 1)
 					} // !lz
 
 					if leftVals { // !lz
@@ -151,10 +148,8 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 							lzYieldErr(lzErr)
 						}
 
-						binary.LittleEndian.PutUint64(lzBytes8[:], lzOffset)
-						lzProbeValNew = append(lzProbeValNew, lzBytes8[:]...)
-						binary.LittleEndian.PutUint64(lzBytes8[:], lzSize)
-						lzProbeValNew = append(lzProbeValNew, lzBytes8[:]...)
+						lzProbeValNew = base.BinaryAppendUint64(lzProbeValNew, lzOffset)
+						lzProbeValNew = base.BinaryAppendUint64(lzProbeValNew, lzSize)
 					} // !lz
 
 					lzMap.Set(store.Key(lzProbeKey), lzProbeValNew)
@@ -172,9 +167,8 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 					} // !lz
 
 					if leftCount { // !lz
-						lzLeftCount := binary.LittleEndian.Uint64(lzProbeValOld[:8])
-						binary.LittleEndian.PutUint64(lzBytes8[:], lzLeftCount+1)
-						lzProbeValNew = append(lzProbeValNew, lzBytes8[:]...)
+						lzLeftCount := binary.LittleEndian.Uint64(lzProbeValOld[:8]) + 1
+						lzProbeValNew = base.BinaryAppendUint64(lzProbeValNew, lzLeftCount)
 						lzProbeValOld = lzProbeValOld[8:]
 					} // !lz
 
@@ -188,10 +182,8 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 							lzYieldErr(lzErr)
 						}
 
-						binary.LittleEndian.PutUint64(lzBytes8[:], lzOffset)
-						lzProbeValNew = append(lzProbeValNew, lzBytes8[:]...)
-						binary.LittleEndian.PutUint64(lzBytes8[:], lzSize)
-						lzProbeValNew = append(lzProbeValNew, lzBytes8[:]...)
+						lzProbeValNew = base.BinaryAppendUint64(lzProbeValNew, lzOffset)
+						lzProbeValNew = base.BinaryAppendUint64(lzProbeValNew, lzSize)
 					} // !lz
 
 					// The updated probe val has the same size as the

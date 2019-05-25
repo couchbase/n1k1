@@ -27,7 +27,7 @@ type ValsLessFunc func(valsA, valsB Vals) bool
 func ValsProjectedEncode(vals, projected Vals, out []byte,
 	valComparer *ValComparer) (rv []byte, err error) {
 	var buf8 [8]byte
-	out = append(out, buf8[:]...) // Prepend space for projected len.
+	out = append(out, buf8[:]...) // Add space for projected len.
 
 	// Encode projected before vals as it's accessed more often.
 	out, err = ValsEncodeCanonical(projected, out, valComparer)
