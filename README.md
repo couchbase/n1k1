@@ -270,6 +270,9 @@ efficiently execute that query-plan.
 - UNION-ALL data-staging batchSize should be configurable?
 - UNION-ALL data-staging batchChSize should be configurable?
 
+- WITH?
+- WITH RECURSIVE?
+
 - speed mismatch between producers and consumers?
   - e.g., scan racing ahead and filling memory with candidate tuples
     when the fetch / filter is way behind?

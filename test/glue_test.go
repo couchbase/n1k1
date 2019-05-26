@@ -47,7 +47,11 @@ func TestFileStoreSelect(t *testing.T) {
                 AND t.z in myThree
                 AND t.foo in (SELECT e.item from data:empty AS e WHERE e.x == t.x)
               GROUP BY t.x, contact.name
-              HAVING t.x > 20`,
+              HAVING t.x > 20
+          EXCEPT
+            SELECT * FROM data:empty
+          INTERSECT
+            SELECT * FROM data:orders`,
 		"", true)
 	if err != nil {
 		t.Fatalf("parse did not expect err: %v", err)
