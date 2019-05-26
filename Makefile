@@ -2,6 +2,7 @@ default: run_intermed_build
 
 run_intermed_build:
 	go test -v ./base
+	go test -v ./glue
 	go test .
 	go build ./cmd/intermed_build/
 	./intermed_build

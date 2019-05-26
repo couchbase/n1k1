@@ -1,0 +1,1 @@
+This directory is meant to have no *.json files, for testing.
