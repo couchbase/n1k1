@@ -164,6 +164,22 @@ func (stage *Stage) StartActor(aFunc ActorFunc, aData interface{}, batchSize int
 // YieldResultsFromActors receives batches from the actors and yields
 // them onwards, until all the actors are done.
 func (stage *Stage) YieldResultsFromActors() {
+	stage.ProcessBatchesFromActors(func(batch []Vals) {
+		for _, vals := range batch {
+			stage.YieldVals(vals)
+		}
+	})
+
+	stage.M.Lock()
+	stage.YieldErr(stage.Err)
+	stage.M.Unlock()
+}
+
+// --------------------------------------------------------
+
+// ProcessBatchesFromActors receives batches from the actors and
+// invokes the given callback, until all the actors are done.
+func (stage *Stage) ProcessBatchesFromActors(cb func([]Vals)) {
 	var numActorsReady int
 	for numActorsReady < stage.NumActors {
 		<-stage.ActorReadyCh
@@ -176,19 +192,11 @@ func (stage *Stage) YieldResultsFromActors() {
 		if batch == nil {
 			numActorsDone++
 		} else {
-			for _, vals := range batch {
-				stage.YieldVals(vals)
-			}
+			cb(batch)
 
 			stage.RecycleBatch(batch)
 		}
 	}
-
-	stage.M.Lock()
-
-	stage.YieldErr(stage.Err)
-
-	stage.M.Unlock()
 }
 
 // --------------------------------------------------------
