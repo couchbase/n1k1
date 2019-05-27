@@ -22,7 +22,22 @@ import (
 	"github.com/couchbase/n1k1/glue"
 )
 
-func TestFileStoreSelect1(t *testing.T) {
+func TestFileStoreSelectId(t *testing.T) {
+	p, conv, op, err :=
+		testFileStoreSelect(t, `SELECT META().id FROM data:orders`, true)
+	if err != nil {
+		t.Fatalf("expected no nil err, got: %v", err)
+	}
+	if p == nil || conv == nil || op == nil {
+		t.Fatalf("expected p and conv an op, got nil")
+	}
+
+	jop, _ := json.MarshalIndent(op, " ", " ")
+
+	fmt.Printf("jop: %s\n", jop)
+}
+
+func TestFileStoreSelectSimple(t *testing.T) {
 	p, conv, op, err :=
 		testFileStoreSelect(t, `SELECT *, 123, name FROM data:orders`, true)
 	if err != nil {

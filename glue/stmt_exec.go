@@ -41,9 +41,13 @@ func (c *Conv) VisitPrimaryScan(o *plan.PrimaryScan) (interface{}, error) {
 	return &base.Op{Kind: "glue-primary-scan", Params: []interface{}{o}}, nil
 }
 
-func (c *Conv) VisitPrimaryScan3(o *plan.PrimaryScan3) (interface{}, error)     { return NA(o) }
-func (c *Conv) VisitParentScan(o *plan.ParentScan) (interface{}, error)         { return NA(o) }
-func (c *Conv) VisitIndexScan(o *plan.IndexScan) (interface{}, error)           { return NA(o) }
+func (c *Conv) VisitPrimaryScan3(o *plan.PrimaryScan3) (interface{}, error) { return NA(o) }
+func (c *Conv) VisitParentScan(o *plan.ParentScan) (interface{}, error)     { return NA(o) }
+
+func (c *Conv) VisitIndexScan(o *plan.IndexScan) (interface{}, error) {
+	return &base.Op{Kind: "glue-index-scan", Params: []interface{}{o}}, nil
+}
+
 func (c *Conv) VisitIndexScan2(o *plan.IndexScan2) (interface{}, error)         { return NA(o) }
 func (c *Conv) VisitIndexScan3(o *plan.IndexScan3) (interface{}, error)         { return NA(o) }
 func (c *Conv) VisitKeyScan(o *plan.KeyScan) (interface{}, error)               { return NA(o) }
