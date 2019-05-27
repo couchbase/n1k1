@@ -20,8 +20,8 @@ import (
 	"github.com/couchbase/n1k1/base"
 )
 
-// Conv holds data for the conversion and prepartion of a query-plan
-// for execution. It implements the plan.Visitor interface.
+// Conv implements the conversion of a couchbase/query/plan into a
+// n1k1 base.Op tree. It implements the plan.Visitor interface.
 type Conv struct {
 	Store   *Store
 	Aliases map[string]string
