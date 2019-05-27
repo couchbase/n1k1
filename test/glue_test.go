@@ -16,8 +16,26 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/couchbase/query/plan"
+
+	"github.com/couchbase/n1k1/base"
 	"github.com/couchbase/n1k1/glue"
 )
+
+func TestFileStoreSelect1(t *testing.T) {
+	p, conv, op, err :=
+		testFileStoreSelect(t, `SELECT *, 123, name FROM data:orders`, true)
+	if err != nil {
+		t.Fatalf("expected no nil err, got: %v", err)
+	}
+	if p == nil || conv == nil || op == nil {
+		t.Fatalf("expected p and conv an op, got nil")
+	}
+
+	jop, _ := json.MarshalIndent(op, " ", " ")
+
+	fmt.Printf("jop: %s\n", jop)
+}
 
 func TestFileStoreSelectComplex(t *testing.T) {
 	testFileStoreSelect(t,
@@ -45,10 +63,13 @@ func TestFileStoreSelectComplex(t *testing.T) {
             SELECT * FROM data:empty
           INTERSECT
             SELECT * FROM data:orders`,
-		true)
+		false)
 }
 
-func testFileStoreSelect(t *testing.T, stmt string, emit bool) {
+// ---------------------------------------------------------------
+
+func testFileStoreSelect(t *testing.T, stmt string, emit bool) (
+	plan.Operator, *glue.Conv, *base.Op, error) {
 	store, err := glue.FileStore("./")
 	if err != nil {
 		t.Fatalf("did not expect err: %v", err)
@@ -76,4 +97,12 @@ func testFileStoreSelect(t *testing.T, stmt string, emit bool) {
 
 		fmt.Printf("jp: %s\n", jp)
 	}
+
+	conv := &glue.Conv{Store: store, Aliases: map[string]string{}}
+
+	v, err := p.Accept(conv)
+
+	op, _ := v.(*base.Op)
+
+	return p, conv, op, err
 }

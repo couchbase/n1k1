@@ -12,167 +12,241 @@
 package glue
 
 import (
-	"errors"
+	"fmt"
 
+	"github.com/couchbase/query/algebra"
 	"github.com/couchbase/query/plan"
+
+	"github.com/couchbase/n1k1/base"
 )
 
-// ErrUnimpl represents an unimplemented API or feature.
-var ErrUnimpl = errors.New("unimpl")
+func NA(o interface{}) (interface{}, error) { return nil, fmt.Errorf("NA: %#v", o) }
 
-// Exec represents a conversion and execution of a query-plan. It
-// implements the plan.Visitor interface.
-type Exec struct {
+// -------------------------------------------------------------------
+
+// Conv holds data for the conversion and prepartion of a query-plan
+// for execution. It implements the plan.Visitor interface.
+type Conv struct {
+	Store   *Store
+	Aliases map[string]string
 }
 
-func (e *Exec) Unimpl(op interface{}) (interface{}, error) { return nil, ErrUnimpl }
+func (c *Conv) AddAlias(kt *algebra.KeyspaceTerm) {
+	if kt.Namespace() != "#system" {
+		c.Aliases[kt.Alias()] = kt.Path().ProtectedString()
+	}
+}
 
+// -------------------------------------------------------------------
 // Scan
-func (e *Exec) VisitPrimaryScan(op *plan.PrimaryScan) (interface{}, error)       { return e.Unimpl(op) }
-func (e *Exec) VisitPrimaryScan3(op *plan.PrimaryScan3) (interface{}, error)     { return e.Unimpl(op) }
-func (e *Exec) VisitParentScan(op *plan.ParentScan) (interface{}, error)         { return e.Unimpl(op) }
-func (e *Exec) VisitIndexScan(op *plan.IndexScan) (interface{}, error)           { return e.Unimpl(op) }
-func (e *Exec) VisitIndexScan2(op *plan.IndexScan2) (interface{}, error)         { return e.Unimpl(op) }
-func (e *Exec) VisitIndexScan3(op *plan.IndexScan3) (interface{}, error)         { return e.Unimpl(op) }
-func (e *Exec) VisitKeyScan(op *plan.KeyScan) (interface{}, error)               { return e.Unimpl(op) }
-func (e *Exec) VisitValueScan(op *plan.ValueScan) (interface{}, error)           { return e.Unimpl(op) }
-func (e *Exec) VisitDummyScan(op *plan.DummyScan) (interface{}, error)           { return e.Unimpl(op) }
-func (e *Exec) VisitCountScan(op *plan.CountScan) (interface{}, error)           { return e.Unimpl(op) }
-func (e *Exec) VisitIndexCountScan(op *plan.IndexCountScan) (interface{}, error) { return e.Unimpl(op) }
-func (e *Exec) VisitIndexCountScan2(op *plan.IndexCountScan2) (interface{}, error) {
-	return e.Unimpl(op)
+
+func (c *Conv) VisitPrimaryScan(o *plan.PrimaryScan) (interface{}, error) {
+	return &base.Op{Kind: "glue-primary-scan", Params: []interface{}{o}}, nil
 }
-func (e *Exec) VisitIndexCountDistinctScan2(op *plan.IndexCountDistinctScan2) (interface{}, error) {
-	return e.Unimpl(op)
+
+func (c *Conv) VisitPrimaryScan3(o *plan.PrimaryScan3) (interface{}, error)     { return NA(o) }
+func (c *Conv) VisitParentScan(o *plan.ParentScan) (interface{}, error)         { return NA(o) }
+func (c *Conv) VisitIndexScan(o *plan.IndexScan) (interface{}, error)           { return NA(o) }
+func (c *Conv) VisitIndexScan2(o *plan.IndexScan2) (interface{}, error)         { return NA(o) }
+func (c *Conv) VisitIndexScan3(o *plan.IndexScan3) (interface{}, error)         { return NA(o) }
+func (c *Conv) VisitKeyScan(o *plan.KeyScan) (interface{}, error)               { return NA(o) }
+func (c *Conv) VisitValueScan(o *plan.ValueScan) (interface{}, error)           { return NA(o) }
+func (c *Conv) VisitDummyScan(o *plan.DummyScan) (interface{}, error)           { return NA(o) }
+func (c *Conv) VisitCountScan(o *plan.CountScan) (interface{}, error)           { return NA(o) }
+func (c *Conv) VisitIndexCountScan(o *plan.IndexCountScan) (interface{}, error) { return NA(o) }
+func (c *Conv) VisitIndexCountScan2(o *plan.IndexCountScan2) (interface{}, error) {
+	return NA(o)
 }
-func (e *Exec) VisitDistinctScan(op *plan.DistinctScan) (interface{}, error)   { return e.Unimpl(op) }
-func (e *Exec) VisitUnionScan(op *plan.UnionScan) (interface{}, error)         { return e.Unimpl(op) }
-func (e *Exec) VisitIntersectScan(op *plan.IntersectScan) (interface{}, error) { return e.Unimpl(op) }
-func (e *Exec) VisitOrderedIntersectScan(op *plan.OrderedIntersectScan) (interface{}, error) {
-	return e.Unimpl(op)
+func (c *Conv) VisitIndexCountDistinctScan2(o *plan.IndexCountDistinctScan2) (interface{}, error) {
+	return NA(o)
 }
-func (e *Exec) VisitExpressionScan(op *plan.ExpressionScan) (interface{}, error) { return e.Unimpl(op) }
+func (c *Conv) VisitDistinctScan(o *plan.DistinctScan) (interface{}, error)   { return NA(o) }
+func (c *Conv) VisitUnionScan(o *plan.UnionScan) (interface{}, error)         { return NA(o) }
+func (c *Conv) VisitIntersectScan(o *plan.IntersectScan) (interface{}, error) { return NA(o) }
+func (c *Conv) VisitOrderedIntersectScan(o *plan.OrderedIntersectScan) (interface{}, error) {
+	return NA(o)
+}
+func (c *Conv) VisitExpressionScan(o *plan.ExpressionScan) (interface{}, error) { return NA(o) }
 
 // FTS Search
-func (e *Exec) VisitIndexFtsSearch(op *plan.IndexFtsSearch) (interface{}, error) { return e.Unimpl(op) }
+
+func (c *Conv) VisitIndexFtsSearch(o *plan.IndexFtsSearch) (interface{}, error) { return NA(o) }
 
 // Fetch
-func (e *Exec) VisitFetch(op *plan.Fetch) (interface{}, error)           { return e.Unimpl(op) }
-func (e *Exec) VisitDummyFetch(op *plan.DummyFetch) (interface{}, error) { return e.Unimpl(op) }
+
+func (c *Conv) VisitFetch(o *plan.Fetch) (interface{}, error) {
+	c.AddAlias(o.Term())
+	return &base.Op{Kind: "glue-fetch", Params: []interface{}{o}}, nil
+}
+
+func (c *Conv) VisitDummyFetch(o *plan.DummyFetch) (interface{}, error) { return NA(o) }
 
 // Join
-func (e *Exec) VisitJoin(op *plan.Join) (interface{}, error)           { return e.Unimpl(op) }
-func (e *Exec) VisitIndexJoin(op *plan.IndexJoin) (interface{}, error) { return e.Unimpl(op) }
-func (e *Exec) VisitNest(op *plan.Nest) (interface{}, error)           { return e.Unimpl(op) }
-func (e *Exec) VisitIndexNest(op *plan.IndexNest) (interface{}, error) { return e.Unimpl(op) }
-func (e *Exec) VisitUnnest(op *plan.Unnest) (interface{}, error)       { return e.Unimpl(op) }
-func (e *Exec) VisitNLJoin(op *plan.NLJoin) (interface{}, error)       { return e.Unimpl(op) }
-func (e *Exec) VisitNLNest(op *plan.NLNest) (interface{}, error)       { return e.Unimpl(op) }
-func (e *Exec) VisitHashJoin(op *plan.HashJoin) (interface{}, error)   { return e.Unimpl(op) }
-func (e *Exec) VisitHashNest(op *plan.HashNest) (interface{}, error)   { return e.Unimpl(op) }
+
+func (c *Conv) VisitJoin(o *plan.Join) (interface{}, error)           { return NA(o) }
+func (c *Conv) VisitIndexJoin(o *plan.IndexJoin) (interface{}, error) { return NA(o) }
+func (c *Conv) VisitNest(o *plan.Nest) (interface{}, error)           { return NA(o) }
+func (c *Conv) VisitIndexNest(o *plan.IndexNest) (interface{}, error) { return NA(o) }
+func (c *Conv) VisitUnnest(o *plan.Unnest) (interface{}, error)       { return NA(o) }
+func (c *Conv) VisitNLJoin(o *plan.NLJoin) (interface{}, error)       { return NA(o) }
+func (c *Conv) VisitNLNest(o *plan.NLNest) (interface{}, error)       { return NA(o) }
+func (c *Conv) VisitHashJoin(o *plan.HashJoin) (interface{}, error)   { return NA(o) }
+func (c *Conv) VisitHashNest(o *plan.HashNest) (interface{}, error)   { return NA(o) }
 
 // Let + Letting, With
-func (e *Exec) VisitLet(op *plan.Let) (interface{}, error)   { return e.Unimpl(op) }
-func (e *Exec) VisitWith(op *plan.With) (interface{}, error) { return e.Unimpl(op) }
+
+func (c *Conv) VisitLet(o *plan.Let) (interface{}, error)   { return NA(o) }
+func (c *Conv) VisitWith(o *plan.With) (interface{}, error) { return NA(o) }
 
 // Filter
-func (e *Exec) VisitFilter(op *plan.Filter) (interface{}, error) { return e.Unimpl(op) }
+
+func (c *Conv) VisitFilter(o *plan.Filter) (interface{}, error) { return NA(o) }
 
 // Group
-func (e *Exec) VisitInitialGroup(op *plan.InitialGroup) (interface{}, error) { return e.Unimpl(op) }
-func (e *Exec) VisitIntermediateGroup(op *plan.IntermediateGroup) (interface{}, error) {
-	return e.Unimpl(op)
+
+func (c *Conv) VisitInitialGroup(o *plan.InitialGroup) (interface{}, error) { return NA(o) }
+func (c *Conv) VisitIntermediateGroup(o *plan.IntermediateGroup) (interface{}, error) {
+	return NA(o)
 }
-func (e *Exec) VisitFinalGroup(op *plan.FinalGroup) (interface{}, error) { return e.Unimpl(op) }
+func (c *Conv) VisitFinalGroup(o *plan.FinalGroup) (interface{}, error) { return NA(o) }
 
 // Window functions
-func (e *Exec) VisitWindowAggregate(op *plan.WindowAggregate) (interface{}, error) {
-	return e.Unimpl(op)
+
+func (c *Conv) VisitWindowAggregate(o *plan.WindowAggregate) (interface{}, error) {
+	return NA(o)
 }
 
 // Project
-func (e *Exec) VisitInitialProject(op *plan.InitialProject) (interface{}, error) { return e.Unimpl(op) }
-func (e *Exec) VisitFinalProject(op *plan.FinalProject) (interface{}, error)     { return e.Unimpl(op) }
-func (e *Exec) VisitIndexCountProject(op *plan.IndexCountProject) (interface{}, error) {
-	return e.Unimpl(op)
+
+func (c *Conv) VisitInitialProject(o *plan.InitialProject) (interface{}, error) {
+	op := &base.Op{Kind: "project", Params: make([]interface{}, 0, len(o.Terms()))}
+
+	for _, term := range o.Terms() {
+		op.Params = append(op.Params,
+			[]interface{}{"exprStr", term.Result().Expression().String()})
+	}
+
+	return op, nil
+}
+
+func (c *Conv) VisitFinalProject(o *plan.FinalProject) (interface{}, error) {
+	// TODO: Need to convert projections back into a SELF'ish single object?
+	return nil, nil
+}
+
+func (c *Conv) VisitIndexCountProject(o *plan.IndexCountProject) (interface{}, error) {
+	return NA(o)
 }
 
 // Distinct
-func (e *Exec) VisitDistinct(op *plan.Distinct) (interface{}, error) { return e.Unimpl(op) }
+
+func (c *Conv) VisitDistinct(o *plan.Distinct) (interface{}, error) { return NA(o) }
 
 // Set operators
-func (e *Exec) VisitUnionAll(op *plan.UnionAll) (interface{}, error)         { return e.Unimpl(op) }
-func (e *Exec) VisitIntersectAll(op *plan.IntersectAll) (interface{}, error) { return e.Unimpl(op) }
-func (e *Exec) VisitExceptAll(op *plan.ExceptAll) (interface{}, error)       { return e.Unimpl(op) }
 
-// Order
-func (e *Exec) VisitOrder(op *plan.Order) (interface{}, error) { return e.Unimpl(op) }
+func (c *Conv) VisitUnionAll(o *plan.UnionAll) (interface{}, error)         { return NA(o) }
+func (c *Conv) VisitIntersectAll(o *plan.IntersectAll) (interface{}, error) { return NA(o) }
+func (c *Conv) VisitExceptAll(o *plan.ExceptAll) (interface{}, error)       { return NA(o) }
 
-// Paging
-func (e *Exec) VisitOffset(op *plan.Offset) (interface{}, error) { return e.Unimpl(op) }
-func (e *Exec) VisitLimit(op *plan.Limit) (interface{}, error)   { return e.Unimpl(op) }
+// Order, Paging
 
-// Insert
-func (e *Exec) VisitSendInsert(op *plan.SendInsert) (interface{}, error) { return e.Unimpl(op) }
+func (c *Conv) VisitOrder(o *plan.Order) (interface{}, error)   { return NA(o) }
+func (c *Conv) VisitOffset(o *plan.Offset) (interface{}, error) { return NA(o) }
+func (c *Conv) VisitLimit(o *plan.Limit) (interface{}, error)   { return NA(o) }
 
-// Upsert
-func (e *Exec) VisitSendUpsert(op *plan.SendUpsert) (interface{}, error) { return e.Unimpl(op) }
+// Mutations
 
-// Delete
-func (e *Exec) VisitSendDelete(op *plan.SendDelete) (interface{}, error) { return e.Unimpl(op) }
-
-// Update
-func (e *Exec) VisitClone(op *plan.Clone) (interface{}, error)           { return e.Unimpl(op) }
-func (e *Exec) VisitSet(op *plan.Set) (interface{}, error)               { return e.Unimpl(op) }
-func (e *Exec) VisitUnset(op *plan.Unset) (interface{}, error)           { return e.Unimpl(op) }
-func (e *Exec) VisitSendUpdate(op *plan.SendUpdate) (interface{}, error) { return e.Unimpl(op) }
-
-// Merge
-func (e *Exec) VisitMerge(op *plan.Merge) (interface{}, error) { return e.Unimpl(op) }
+func (c *Conv) VisitSendInsert(o *plan.SendInsert) (interface{}, error) { return NA(o) }
+func (c *Conv) VisitSendUpsert(o *plan.SendUpsert) (interface{}, error) { return NA(o) }
+func (c *Conv) VisitSendDelete(o *plan.SendDelete) (interface{}, error) { return NA(o) }
+func (c *Conv) VisitClone(o *plan.Clone) (interface{}, error)           { return NA(o) }
+func (c *Conv) VisitSet(o *plan.Set) (interface{}, error)               { return NA(o) }
+func (c *Conv) VisitUnset(o *plan.Unset) (interface{}, error)           { return NA(o) }
+func (c *Conv) VisitSendUpdate(o *plan.SendUpdate) (interface{}, error) { return NA(o) }
+func (c *Conv) VisitMerge(o *plan.Merge) (interface{}, error)           { return NA(o) }
 
 // Framework
-func (e *Exec) VisitAlias(op *plan.Alias) (interface{}, error)         { return e.Unimpl(op) }
-func (e *Exec) VisitAuthorize(op *plan.Authorize) (interface{}, error) { return e.Unimpl(op) }
-func (e *Exec) VisitParallel(op *plan.Parallel) (interface{}, error)   { return e.Unimpl(op) }
-func (e *Exec) VisitSequence(op *plan.Sequence) (interface{}, error)   { return e.Unimpl(op) }
-func (e *Exec) VisitDiscard(op *plan.Discard) (interface{}, error)     { return e.Unimpl(op) }
-func (e *Exec) VisitStream(op *plan.Stream) (interface{}, error)       { return e.Unimpl(op) }
-func (e *Exec) VisitCollect(op *plan.Collect) (interface{}, error)     { return e.Unimpl(op) }
+
+func (c *Conv) VisitAlias(o *plan.Alias) (interface{}, error) { return NA(o) }
+
+func (c *Conv) VisitAuthorize(o *plan.Authorize) (interface{}, error) {
+	// TODO: Need a real authorize operation here one day?
+	return o.Child().Accept(c)
+}
+
+func (c *Conv) VisitParallel(o *plan.Parallel) (interface{}, error) {
+	// TODO: One day implement parallel correctly, but stay serial for now.
+	return o.Child().Accept(c)
+}
+
+func (c *Conv) VisitSequence(o *plan.Sequence) (rv interface{}, err error) {
+	// Convert plan.Sequence's children into a branch of descendants.
+	for _, child := range o.Children() {
+		v, err := child.Accept(c)
+		if err != nil {
+			return nil, err
+		}
+
+		if v != nil {
+			if rv != nil {
+				// The first plan.Sequence child will become the deepest descendant.
+				v.(*base.Op).Children = append(v.(*base.Op).Children, rv.(*base.Op))
+			}
+
+			rv = v
+		}
+	}
+
+	return rv, nil
+}
+
+func (c *Conv) VisitDiscard(o *plan.Discard) (interface{}, error) { return NA(o) }
+func (c *Conv) VisitStream(o *plan.Stream) (interface{}, error)   { return NA(o) }
+func (c *Conv) VisitCollect(o *plan.Collect) (interface{}, error) { return NA(o) }
 
 // Index DDL
-func (e *Exec) VisitCreatePrimaryIndex(op *plan.CreatePrimaryIndex) (interface{}, error) {
-	return e.Unimpl(op)
+
+func (c *Conv) VisitCreatePrimaryIndex(o *plan.CreatePrimaryIndex) (interface{}, error) {
+	return NA(o)
 }
-func (e *Exec) VisitCreateIndex(op *plan.CreateIndex) (interface{}, error)   { return e.Unimpl(op) }
-func (e *Exec) VisitDropIndex(op *plan.DropIndex) (interface{}, error)       { return e.Unimpl(op) }
-func (e *Exec) VisitAlterIndex(op *plan.AlterIndex) (interface{}, error)     { return e.Unimpl(op) }
-func (e *Exec) VisitBuildIndexes(op *plan.BuildIndexes) (interface{}, error) { return e.Unimpl(op) }
+
+func (c *Conv) VisitCreateIndex(o *plan.CreateIndex) (interface{}, error)   { return NA(o) }
+func (c *Conv) VisitDropIndex(o *plan.DropIndex) (interface{}, error)       { return NA(o) }
+func (c *Conv) VisitAlterIndex(o *plan.AlterIndex) (interface{}, error)     { return NA(o) }
+func (c *Conv) VisitBuildIndexes(o *plan.BuildIndexes) (interface{}, error) { return NA(o) }
 
 // Roles
-func (e *Exec) VisitGrantRole(op *plan.GrantRole) (interface{}, error)   { return e.Unimpl(op) }
-func (e *Exec) VisitRevokeRole(op *plan.RevokeRole) (interface{}, error) { return e.Unimpl(op) }
+
+func (c *Conv) VisitGrantRole(o *plan.GrantRole) (interface{}, error)   { return NA(o) }
+func (c *Conv) VisitRevokeRole(o *plan.RevokeRole) (interface{}, error) { return NA(o) }
 
 // Explain
-func (e *Exec) VisitExplain(op *plan.Explain) (interface{}, error) { return e.Unimpl(op) }
+
+func (c *Conv) VisitExplain(o *plan.Explain) (interface{}, error) { return NA(o) }
 
 // Prepare
-func (e *Exec) VisitPrepare(op *plan.Prepare) (interface{}, error) { return e.Unimpl(op) }
+
+func (c *Conv) VisitPrepare(o *plan.Prepare) (interface{}, error) { return NA(o) }
 
 // Infer
-func (e *Exec) VisitInferKeyspace(op *plan.InferKeyspace) (interface{}, error) { return e.Unimpl(op) }
+
+func (c *Conv) VisitInferKeyspace(o *plan.InferKeyspace) (interface{}, error) { return NA(o) }
 
 // Function statements
-func (e *Exec) VisitCreateFunction(op *plan.CreateFunction) (interface{}, error) { return e.Unimpl(op) }
-func (e *Exec) VisitDropFunction(op *plan.DropFunction) (interface{}, error)     { return e.Unimpl(op) }
-func (e *Exec) VisitExecuteFunction(op *plan.ExecuteFunction) (interface{}, error) {
-	return e.Unimpl(op)
+
+func (c *Conv) VisitCreateFunction(o *plan.CreateFunction) (interface{}, error) { return NA(o) }
+func (c *Conv) VisitDropFunction(o *plan.DropFunction) (interface{}, error)     { return NA(o) }
+func (c *Conv) VisitExecuteFunction(o *plan.ExecuteFunction) (interface{}, error) {
+	return NA(o)
 }
 
 // Index Advisor
-func (e *Exec) VisitIndexAdvice(op *plan.IndexAdvice) (interface{}, error) { return e.Unimpl(op) }
-func (e *Exec) VisitAdvise(op *plan.Advise) (interface{}, error)           { return e.Unimpl(op) }
+
+func (c *Conv) VisitIndexAdvice(o *plan.IndexAdvice) (interface{}, error) { return NA(o) }
+func (c *Conv) VisitAdvise(o *plan.Advise) (interface{}, error)           { return NA(o) }
 
 // Update Statistics
-func (e *Exec) VisitUpdateStatistics(op *plan.UpdateStatistics) (interface{}, error) {
-	return e.Unimpl(op)
+
+func (c *Conv) VisitUpdateStatistics(o *plan.UpdateStatistics) (interface{}, error) {
+	return NA(o)
 }
