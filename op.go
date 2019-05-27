@@ -64,9 +64,19 @@ func ExecOp(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 	case "window-frames":
 		OpWindowFrames(o, lzVars, lzYieldVals, lzYieldErr, path, pathNext) // !lz
+
+	default:
+		ExecOpEx(o, lzVars, lzYieldVals, lzYieldErr, path, pathNext) // !lz
 	}
 
 	EmitPop(path, pathItem)
+}
+
+// -----------------------------------------------------
+
+// ExecOpEx is invoked to handle additional or extra operator kinds.
+var ExecOpEx = func(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
+	lzYieldErr base.YieldErr, path, pathItem string) {
 }
 
 // -----------------------------------------------------
