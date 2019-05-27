@@ -19,15 +19,8 @@ import (
 	"github.com/couchbase/n1k1/glue"
 )
 
-func TestFileStoreSelect(t *testing.T) {
-	store, err := glue.FileStore("./")
-	if err != nil {
-		t.Fatalf("did not expect err: %v", err)
-	}
-
-	store.InitParser()
-
-	s, err := glue.ParseStatement(
+func TestFileStoreSelectComplex(t *testing.T) {
+	testFileStoreSelect(t,
 		`WITH
            myCTE AS (
              SELECT * FROM data:orders
@@ -52,7 +45,18 @@ func TestFileStoreSelect(t *testing.T) {
             SELECT * FROM data:empty
           INTERSECT
             SELECT * FROM data:orders`,
-		"", true)
+		true)
+}
+
+func testFileStoreSelect(t *testing.T, stmt string, emit bool) {
+	store, err := glue.FileStore("./")
+	if err != nil {
+		t.Fatalf("did not expect err: %v", err)
+	}
+
+	store.InitParser()
+
+	s, err := glue.ParseStatement(stmt, "", true)
 	if err != nil {
 		t.Fatalf("parse did not expect err: %v", err)
 	}
@@ -65,9 +69,11 @@ func TestFileStoreSelect(t *testing.T) {
 		t.Fatalf("did not expect nil plan")
 	}
 
-	fmt.Printf("p: %+v\n", p)
+	if emit {
+		fmt.Printf("p: %+v\n", p)
 
-	jp, _ := json.MarshalIndent(p, " ", " ")
+		jp, _ := json.MarshalIndent(p, " ", " ")
 
-	fmt.Printf("jp: %s\n", jp)
+		fmt.Printf("jp: %s\n", jp)
+	}
 }
