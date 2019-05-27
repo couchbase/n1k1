@@ -20,10 +20,6 @@ import (
 	"github.com/couchbase/n1k1/base"
 )
 
-func NA(o interface{}) (interface{}, error) { return nil, fmt.Errorf("NA: %#v", o) }
-
-// -------------------------------------------------------------------
-
 // Conv holds data for the conversion and prepartion of a query-plan
 // for execution. It implements the plan.Visitor interface.
 type Conv struct {
@@ -38,6 +34,7 @@ func (c *Conv) AddAlias(kt *algebra.KeyspaceTerm) {
 }
 
 // -------------------------------------------------------------------
+
 // Scan
 
 func (c *Conv) VisitPrimaryScan(o *plan.PrimaryScan) (interface{}, error) {
@@ -250,3 +247,7 @@ func (c *Conv) VisitAdvise(o *plan.Advise) (interface{}, error)           { retu
 func (c *Conv) VisitUpdateStatistics(o *plan.UpdateStatistics) (interface{}, error) {
 	return NA(o)
 }
+
+// -------------------------------------------------------------------
+
+func NA(o interface{}) (interface{}, error) { return nil, fmt.Errorf("NA: %#v", o) }
