@@ -27,29 +27,70 @@ import (
 
 func DatastoreScanPrimary(o *base.Op, vars *base.Vars,
 	yieldVals base.YieldVals, yieldErr base.YieldErr) {
-	context := vars.Temps[0].(*execution.Context)
+	DatastoreScan(o, vars, yieldVals, yieldErr,
+		func(context *execution.Context, conn *datastore.IndexConnection) {
+			scan := o.Params[0].(*plan.PrimaryScan)
 
-	conn := datastore.NewIndexConnection(context)
+			nks := scan.Term()
+			vec := context.ScanVectorSource().ScanVector(nks.Namespace(), nks.Keyspace())
 
-	defer conn.Dispose()
-	defer conn.SendStop()
+			limit := EvalExprInt64(context, scan.Limit(), nil, math.MaxInt64)
 
-	scan := o.Params[0].(*plan.PrimaryScan)
-
-	limit := EvalExprInt64(context, scan.Limit(), nil, math.MaxInt64)
-
-	keyNS := scan.Term()
-
-	scanVector := context.ScanVectorSource().ScanVector(keyNS.Namespace(), keyNS.Keyspace())
-
-	go scan.Index().ScanEntries(context.RequestId(), limit,
-		context.ScanConsistency(), scanVector, conn)
-
-	YieldIndexEntries(o, vars, yieldVals, yieldErr, context, conn)
+			go scan.Index().ScanEntries(context.RequestId(), limit,
+				context.ScanConsistency(), vec, conn)
+		})
 }
 
 func DatastoreScanIndex(o *base.Op, vars *base.Vars,
 	yieldVals base.YieldVals, yieldErr base.YieldErr) {
+	DatastoreScan(o, vars, yieldVals, yieldErr,
+		func(context *execution.Context, conn *datastore.IndexConnection) {
+			scan := o.Params[0].(*plan.IndexScan)
+
+			covers := scan.Covers()
+			if len(covers) > 0 {
+				panic("covers unimplemented / TODO")
+			}
+
+			nks := scan.Term()
+			vec := context.ScanVectorSource().ScanVector(nks.Namespace(), nks.Keyspace())
+
+			limit := EvalExprInt64(context, scan.Limit(), nil, math.MaxInt64)
+
+			// TODO: for nested-loop join we need to pass in values from
+			// left-hand-side (outer) of the join for span evaluation?
+			// outerValue := parent
+			// if !scan.Term().IsUnderNL() {
+			//     outerValue = nil
+			// }
+
+			var outerValue value.Value
+
+			for _, span := range scan.Spans() {
+				go func(span *plan.Span) {
+					// TODO: defer context.Recover(nil) // Recover from any panic?
+
+					dspan, empty, err := EvalSpan(context, span, outerValue)
+					if err != nil || empty {
+						if err != nil {
+							context.Error(errors.NewEvaluationError(err, "span"))
+						}
+
+						conn.Sender().Close()
+
+						return
+					}
+
+					scan.Index().Scan(context.RequestId(), dspan, scan.Distinct(), limit,
+						context.ScanConsistency(), vec, conn)
+				}(span)
+			}
+		})
+}
+
+func DatastoreScan(o *base.Op, vars *base.Vars,
+	yieldVals base.YieldVals, yieldErr base.YieldErr,
+	cb func(*execution.Context, *datastore.IndexConnection)) {
 	context := vars.Temps[0].(*execution.Context)
 
 	conn := datastore.NewIndexConnection(context)
@@ -57,23 +98,8 @@ func DatastoreScanIndex(o *base.Op, vars *base.Vars,
 	defer conn.Dispose()
 	defer conn.SendStop()
 
-	scan := o.Params[0].(*plan.IndexScan)
+	cb(context, conn)
 
-	covers := scan.Covers()
-	if len(covers) > 0 {
-		panic("covers unimplemented / TODO")
-	}
-
-	for _, span := range scan.Spans() {
-		go DatastoreScanIndexSpan(context, conn, scan, span)
-	}
-
-	YieldIndexEntries(o, vars, yieldVals, yieldErr, context, conn)
-}
-
-func YieldIndexEntries(o *base.Op, vars *base.Vars,
-	yieldVals base.YieldVals, yieldErr base.YieldErr,
-	context *execution.Context, conn *datastore.IndexConnection) {
 	sender := conn.Sender()
 
 	var valId base.Val
@@ -85,12 +111,6 @@ func YieldIndexEntries(o *base.Op, vars *base.Vars,
 			break
 		}
 
-		// TODO: Handle NL case.
-		// scopeValue := parent
-		// if scan.Term().IsUnderNL() {
-		//     scopeValue = nil
-		// }
-
 		valId = append(valId[:0], '"')
 		valId = strconv.AppendQuote(valId, entry.PrimaryKey)
 		valId = append(valId, '"')
@@ -99,63 +119,37 @@ func YieldIndexEntries(o *base.Op, vars *base.Vars,
 
 		yieldVals(vals)
 
-		// av := this.newEmptyDocumentWithKey(entry.PrimaryKey, scopeValue, context)
+		/* TODO: Handle NL case.
+		// scopeValue := parent
+		// if scan.Term().IsUnderNL() {
+		//     scopeValue = nil
+		// }
 
-		/*		covers := scan.Covers()
-				if len(covers) > 0 {
-					for c, v := range scan.FilterCovers() {
-						av.SetCover(c.Text(), v)
-					}
+		av := this.newEmptyDocumentWithKey(entry.PrimaryKey, scopeValue, context)
 
-					// Matches planner.builder.buildCoveringScan()
-					for i, ek := range entry.EntryKey {
-						av.SetCover(covers[i].Text(), ek)
-					}
+		covers := scan.Covers()
+		if len(covers) > 0 {
+			for c, v := range scan.FilterCovers() {
+				av.SetCover(c.Text(), v)
+			}
 
-					// Matches planner.builder.buildCoveringScan()
-					av.SetCover(covers[len(covers)-1].Text(),
-						value.NewValue(entry.PrimaryKey))
+			// Matches planner.builder.buildCoveringScan()
+			for i, ek := range entry.EntryKey {
+				av.SetCover(covers[i].Text(), ek)
+			}
 
-					av.SetField(this.plan.Term().Alias(), av) // TODO?
-				} */
+			// Matches planner.builder.buildCoveringScan()
+			av.SetCover(covers[len(covers)-1].Text(),
+				value.NewValue(entry.PrimaryKey))
 
-		// TODO: Needed for intersect scan.
-		// av.SetBit(this.bit)
-
-		// ok = this.sendItem(av)
-	}
-}
-
-func DatastoreScanIndexSpan(context *execution.Context,
-	conn *datastore.IndexConnection, scan *plan.IndexScan, span *plan.Span) {
-	// TODO: defer context.Recover(nil) // Recover from any panic?
-
-	// TODO: for nested-loop join we need to pass in values from
-	// left-hand-side (outer) of the join for span evaluation?
-	// outerValue := parent
-	// if !scan.Term().IsUnderNL() {
-	//     outerValue = nil
-	// }
-
-	var outerValue value.Value
-
-	dspan, empty, err := EvalSpan(context, span, outerValue)
-	if err != nil || empty {
-		if err != nil {
-			context.Error(errors.NewEvaluationError(err, "span"))
+			av.SetField(this.plan.Term().Alias(), av) // TODO?
 		}
-		conn.Sender().Close()
-		return
+
+		av.SetBit(this.bit) // TODO: Needed for intersect scan.
+
+		ok = this.sendItem(av)
+		*/
 	}
-
-	limit := EvalExprInt64(context, scan.Limit(), nil, math.MaxInt64)
-
-	keyNS := scan.Term()
-
-	scanVector := context.ScanVectorSource().ScanVector(keyNS.Namespace(), keyNS.Keyspace())
-
-	scan.Index().Scan(context.RequestId(), dspan, scan.Distinct(), limit,
-		context.ScanConsistency(), scanVector, conn)
 }
 
 func EvalSpan(context *execution.Context, ps *plan.Span, parent value.Value) (
@@ -184,16 +178,14 @@ func EvalSpan(context *execution.Context, ps *plan.Span, parent value.Value) (
 
 func EvalExprs(context *execution.Context, cx expression.Expressions,
 	parent value.Value) (cv value.Values, empty bool, err error) {
-	if cx == nil {
-		return nil, false, nil
-	}
+	if len(cx) > 0 {
+		cv = make(value.Values, len(cx))
 
-	cv = make(value.Values, len(cx))
-
-	for i, expr := range cx {
-		cv[i], empty, err = EvalExpr(context, expr, parent)
-		if err != nil || empty {
-			return nil, empty, err
+		for i, expr := range cx {
+			cv[i], empty, err = EvalExpr(context, expr, parent)
+			if err != nil || empty {
+				return nil, empty, err
+			}
 		}
 	}
 
