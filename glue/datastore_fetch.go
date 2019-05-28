@@ -26,7 +26,7 @@ func DatastoreFetch(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 	yieldErr base.YieldErr, path, pathNext string) {
 	context := vars.Temps[0].(*execution.Context)
 
-	plan := o.Params[0].(*plan.Fetch)
+	plan := vars.Temps[o.Params[0].(int)].(*plan.Fetch)
 
 	keyspace := plan.Keyspace()
 	subPaths := plan.SubPaths()

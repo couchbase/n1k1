@@ -29,7 +29,7 @@ func DatastoreScanPrimary(o *base.Op, vars *base.Vars,
 	yieldVals base.YieldVals, yieldErr base.YieldErr) {
 	DatastoreScan(o, vars, yieldVals, yieldErr,
 		func(context *execution.Context, conn *datastore.IndexConnection) {
-			scan := o.Params[0].(*plan.PrimaryScan)
+			scan := vars.Temps[o.Params[0].(int)].(*plan.PrimaryScan)
 
 			nks := scan.Term()
 			vec := context.ScanVectorSource().ScanVector(nks.Namespace(), nks.Keyspace())
@@ -45,7 +45,7 @@ func DatastoreScanIndex(o *base.Op, vars *base.Vars,
 	yieldVals base.YieldVals, yieldErr base.YieldErr) {
 	DatastoreScan(o, vars, yieldVals, yieldErr,
 		func(context *execution.Context, conn *datastore.IndexConnection) {
-			scan := o.Params[0].(*plan.IndexScan)
+			scan := vars.Temps[o.Params[0].(int)].(*plan.IndexScan)
 
 			covers := scan.Covers()
 			if len(covers) > 0 {
