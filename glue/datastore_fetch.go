@@ -12,9 +12,89 @@
 package glue
 
 import (
+	"encoding/json"
+
+	"github.com/couchbase/query/execution"
+	"github.com/couchbase/query/plan"
+	"github.com/couchbase/query/value"
+
+	"github.com/couchbase/n1k1"
 	"github.com/couchbase/n1k1/base"
 )
 
-func DatastoreFetch(o *base.Op, vars *base.Vars,
-	yieldVals base.YieldVals, yieldErr base.YieldErr) {
+func DatastoreFetch(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
+	yieldErr base.YieldErr, path, pathNext string) {
+	context := vars.Temps[0].(*execution.Context)
+
+	plan := o.Params[0].(*plan.Fetch)
+
+	keyspace := plan.Keyspace()
+	subPaths := plan.SubPaths()
+
+	batchSize := 200 // TODO: Configurability.
+	batchChSize := 0 // TODO: Configurability.
+
+	stage := base.NewStage(1, batchChSize, vars, yieldVals, yieldErr)
+
+	stage.StartActor(func(vars *base.Vars, yieldVals base.YieldVals,
+		yieldErr base.YieldErr, actorData interface{}) {
+		n1k1.ExecOp(o.Children[0], vars, yieldVals, yieldErr, pathNext, "DF")
+	}, nil, batchSize)
+
+	var vals base.Vals
+
+	var keys []string // Same len() as batch.
+
+	fetchMap := map[string]value.AnnotatedValue{}
+
+	stage.ProcessBatchesFromActors(func(batch []base.Vals) {
+		keys = keys[:0]
+
+		// TODO: The datastore's Fetch API inherently allocates memory
+		// or creates garbage, so that needs a redesign.
+		for _, vals := range batch {
+			var key string
+
+			err := json.Unmarshal(vals[0], &key)
+			if err != nil {
+				key = string(vals[0]) // BINARY key.
+			}
+
+			keys = append(keys, key)
+		}
+
+		for k := range fetchMap {
+			// TODO: Will golang's fetchMap resize downwards, or keep
+			// the same buckets?
+			// TODO: Need a Fetch API that allows us to use rhmap.
+			delete(fetchMap, k)
+		}
+
+		errs := keyspace.Fetch(keys, fetchMap, context, subPaths)
+		for _, err := range errs {
+			yieldErr(err)
+		}
+
+		// Keep the same ordering as the batch.
+		for i, key := range keys {
+			if key != "" {
+				v, ok := fetchMap[key]
+				if ok && v != nil {
+					jv, err := json.Marshal(v)
+					if err != nil {
+						jv = v.Actual().([]byte) // TODO: BINARY?
+					}
+
+					vals = append(vals[:0], batch[i]...)
+					vals = append(vals, jv)
+
+					yieldVals(vals)
+				}
+			}
+		}
+	})
+
+	stage.M.Lock()
+	stage.YieldErr(stage.Err)
+	stage.M.Unlock()
 }

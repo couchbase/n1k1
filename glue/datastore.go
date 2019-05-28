@@ -16,13 +16,13 @@ import (
 )
 
 func DatastoreOp(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
-	yieldErr base.YieldErr, path, pathItem string) {
+	yieldErr base.YieldErr, path, pathNext string) {
 	switch o.Kind {
 	case "datastore-scan-primary":
 		DatastoreScanPrimary(o, vars, yieldVals, yieldErr)
 	case "datastore-scan-index":
 		DatastoreScanIndex(o, vars, yieldVals, yieldErr)
 	case "datastore-fetch":
-		DatastoreFetch(o, vars, yieldVals, yieldErr)
+		DatastoreFetch(o, vars, yieldVals, yieldErr, path, pathNext)
 	}
 }
