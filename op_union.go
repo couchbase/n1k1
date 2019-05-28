@@ -78,6 +78,7 @@ func OpUnionAll(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 					ExecOp(child, lzVars, lzYieldVals, lzYieldErr, pathNextUC, "UO") // !lz
 				}
 
+				// TODO: Configure actor batch size.
 				lzStage.StartActor(lzActorFunc, lzActorData, 0)
 			}
 
