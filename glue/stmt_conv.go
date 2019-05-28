@@ -45,14 +45,22 @@ func (c *Conv) AddTemp(t interface{}) int {
 // Scan
 
 func (c *Conv) VisitPrimaryScan(o *plan.PrimaryScan) (interface{}, error) {
-	return &base.Op{Kind: "datastore-scan-primary", Params: []interface{}{c.AddTemp(o)}}, nil
+	return &base.Op{
+		Kind:   "datastore-scan-primary",
+		Labels: base.Labels{"^id"},
+		Params: []interface{}{c.AddTemp(o)},
+	}, nil
 }
 
 func (c *Conv) VisitPrimaryScan3(o *plan.PrimaryScan3) (interface{}, error) { return NA(o) }
 func (c *Conv) VisitParentScan(o *plan.ParentScan) (interface{}, error)     { return NA(o) }
 
 func (c *Conv) VisitIndexScan(o *plan.IndexScan) (interface{}, error) {
-	return &base.Op{Kind: "datastore-scan-index", Params: []interface{}{c.AddTemp(o)}}, nil
+	return &base.Op{
+		Kind:   "datastore-scan-index",
+		Labels: base.Labels{"^id"},
+		Params: []interface{}{c.AddTemp(o)},
+	}, nil
 }
 
 func (c *Conv) VisitIndexScan2(o *plan.IndexScan2) (interface{}, error)         { return NA(o) }
@@ -84,7 +92,11 @@ func (c *Conv) VisitIndexFtsSearch(o *plan.IndexFtsSearch) (interface{}, error) 
 
 func (c *Conv) VisitFetch(o *plan.Fetch) (interface{}, error) {
 	c.AddAlias(o.Term())
-	return &base.Op{Kind: "datastore-fetch", Params: []interface{}{c.AddTemp(o)}}, nil
+	return &base.Op{
+		Kind:   "datastore-fetch",
+		Labels: base.Labels{".", "^id"},
+		Params: []interface{}{c.AddTemp(o)},
+	}, nil
 }
 
 func (c *Conv) VisitDummyFetch(o *plan.DummyFetch) (interface{}, error) { return NA(o) }
@@ -127,7 +139,10 @@ func (c *Conv) VisitWindowAggregate(o *plan.WindowAggregate) (interface{}, error
 // Project
 
 func (c *Conv) VisitInitialProject(o *plan.InitialProject) (interface{}, error) {
-	op := &base.Op{Kind: "project", Params: make([]interface{}, 0, len(o.Terms()))}
+	op := &base.Op{
+		Kind:   "project",
+		Params: make([]interface{}, 0, len(o.Terms())),
+	}
 
 	for _, term := range o.Terms() {
 		op.Params = append(op.Params,

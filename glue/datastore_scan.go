@@ -12,6 +12,7 @@
 package glue
 
 import (
+	"fmt"
 	"math"
 	"strconv"
 
@@ -27,8 +28,12 @@ import (
 
 func DatastoreScanPrimary(o *base.Op, vars *base.Vars,
 	yieldVals base.YieldVals, yieldErr base.YieldErr) {
+	fmt.Printf("DatastoreScanPrimary start\n")
+
 	DatastoreScan(o, vars, yieldVals, yieldErr,
 		func(context *execution.Context, conn *datastore.IndexConnection) {
+			fmt.Printf(" DatastoreScan cb start\n")
+
 			scan := vars.Temps[o.Params[0].(int)].(*plan.PrimaryScan)
 
 			nks := scan.Term()
@@ -38,7 +43,11 @@ func DatastoreScanPrimary(o *base.Op, vars *base.Vars,
 
 			go scan.Index().ScanEntries(context.RequestId(), limit,
 				context.ScanConsistency(), vec, conn)
+
+			fmt.Printf(" DatastoreScan cb end\n")
 		})
+
+	fmt.Printf("DatastoreScanPrimary end\n")
 }
 
 func DatastoreScanIndex(o *base.Op, vars *base.Vars,
@@ -47,10 +56,10 @@ func DatastoreScanIndex(o *base.Op, vars *base.Vars,
 		func(context *execution.Context, conn *datastore.IndexConnection) {
 			scan := vars.Temps[o.Params[0].(int)].(*plan.IndexScan)
 
-			covers := scan.Covers()
+			/* covers := scan.Covers() // TODO: Do we care about covers?
 			if len(covers) > 0 {
 				panic("covers unimplemented / TODO")
-			}
+			} */
 
 			nks := scan.Term()
 			vec := context.ScanVectorSource().ScanVector(nks.Namespace(), nks.Keyspace())
@@ -106,14 +115,15 @@ func DatastoreScan(o *base.Op, vars *base.Vars,
 	var vals base.Vals
 
 	for {
+		fmt.Printf("  ds get entry...\n")
 		entry, ok := sender.GetEntry()
+		fmt.Printf("  ds get entry: %v, ok: %v\n", entry, ok)
+
 		if !ok || entry == nil {
 			break
 		}
 
-		valId = append(valId[:0], '"')
-		valId = strconv.AppendQuote(valId, entry.PrimaryKey)
-		valId = append(valId, '"')
+		valId = strconv.AppendQuote(valId[:0], entry.PrimaryKey)
 
 		vals = append(vals[:0], valId)
 
@@ -150,6 +160,8 @@ func DatastoreScan(o *base.Op, vars *base.Vars,
 		ok = this.sendItem(av)
 		*/
 	}
+
+	yieldErr(nil)
 }
 
 func EvalSpan(context *execution.Context, ps *plan.Span, parent value.Value) (
@@ -197,7 +209,7 @@ func EvalExpr(context *execution.Context, expr expression.Expression,
 	if expr != nil {
 		v, err = expr.Evaluate(parent, context)
 		if err != nil {
-			return nil, false, err
+			return nil, false, fmt.Errorf("EvalExpr, err: %v", err)
 		}
 
 		if v != nil && (v.Type() == value.NULL || v.Type() == value.MISSING) &&

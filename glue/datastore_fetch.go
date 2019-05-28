@@ -13,6 +13,7 @@ package glue
 
 import (
 	"encoding/json"
+	"fmt"
 
 	"github.com/couchbase/query/execution"
 	"github.com/couchbase/query/plan"
@@ -38,7 +39,12 @@ func DatastoreFetch(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 
 	stage.StartActor(func(vars *base.Vars, yieldVals base.YieldVals,
 		yieldErr base.YieldErr, actorData interface{}) {
+		fmt.Printf("actor started\n")
+
+		// TODO: For compilation, this likely needs to be vars.ExecOp().
 		n1k1.ExecOp(o.Children[0], vars, yieldVals, yieldErr, pathNext, "DF")
+
+		fmt.Printf("actor ended\n")
 	}, nil, batchSize)
 
 	var vals base.Vals
@@ -47,8 +53,12 @@ func DatastoreFetch(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 
 	fetchMap := map[string]value.AnnotatedValue{}
 
+	fmt.Printf("process batches from actors\n")
+
 	stage.ProcessBatchesFromActors(func(batch []base.Vals) {
 		keys = keys[:0]
+
+		fmt.Printf("dsf, batch: %+v\n", batch)
 
 		// TODO: The datastore's Fetch API inherently allocates memory
 		// or creates garbage, so that needs a redesign.
@@ -63,6 +73,8 @@ func DatastoreFetch(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 			keys = append(keys, key)
 		}
 
+		fmt.Printf("dsf, keys: %v\n", keys)
+
 		for k := range fetchMap {
 			// TODO: Will golang's fetchMap resize downwards, or keep
 			// the same buckets?
@@ -75,6 +87,8 @@ func DatastoreFetch(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 			yieldErr(err)
 		}
 
+		fmt.Printf("dsf, fetchMap: %v, errs: %v\n", fetchMap, errs)
+
 		// Keep the same ordering as the batch.
 		for i, key := range keys {
 			if key != "" {
@@ -85,14 +99,18 @@ func DatastoreFetch(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 						jv = v.Actual().([]byte) // TODO: BINARY?
 					}
 
-					vals = append(vals[:0], batch[i]...)
-					vals = append(vals, jv)
+					vals = append(vals[:0], jv)      // Label ".".
+					vals = append(vals, batch[i]...) // Label "^id".
+
+					fmt.Printf("dsf, yielding vals: %+v\n", vals)
 
 					yieldVals(vals)
 				}
 			}
 		}
 	})
+
+	fmt.Printf("process batch done\n")
 
 	stage.M.Lock()
 	stage.YieldErr(stage.Err)
