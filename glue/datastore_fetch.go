@@ -15,26 +15,6 @@ import (
 	"github.com/couchbase/n1k1/base"
 )
 
-func GlueOp(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
-	yieldErr base.YieldErr, path, pathItem string) {
-	switch o.Kind {
-	case "glue-primary-scan":
-		GluePrimaryScan(o, vars, yieldVals, yieldErr)
-	case "glue-index-scan":
-		GlueIndexScan(o, vars, yieldVals, yieldErr)
-	case "glue-fetch":
-		GlueFetch(o, vars, yieldVals, yieldErr)
-	}
-}
-
-func GluePrimaryScan(o *base.Op, vars *base.Vars,
-	yieldVals base.YieldVals, yieldErr base.YieldErr) {
-}
-
-func GlueIndexScan(o *base.Op, vars *base.Vars,
-	yieldVals base.YieldVals, yieldErr base.YieldErr) {
-}
-
-func GlueFetch(o *base.Op, vars *base.Vars,
+func DatastoreFetch(o *base.Op, vars *base.Vars,
 	yieldVals base.YieldVals, yieldErr base.YieldErr) {
 }

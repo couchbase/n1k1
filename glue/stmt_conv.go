@@ -38,14 +38,14 @@ func (c *Conv) AddAlias(kt *algebra.KeyspaceTerm) {
 // Scan
 
 func (c *Conv) VisitPrimaryScan(o *plan.PrimaryScan) (interface{}, error) {
-	return &base.Op{Kind: "glue-primary-scan", Params: []interface{}{o}}, nil
+	return &base.Op{Kind: "datastore-scan-primary", Params: []interface{}{o}}, nil
 }
 
 func (c *Conv) VisitPrimaryScan3(o *plan.PrimaryScan3) (interface{}, error) { return NA(o) }
 func (c *Conv) VisitParentScan(o *plan.ParentScan) (interface{}, error)     { return NA(o) }
 
 func (c *Conv) VisitIndexScan(o *plan.IndexScan) (interface{}, error) {
-	return &base.Op{Kind: "glue-index-scan", Params: []interface{}{o}}, nil
+	return &base.Op{Kind: "datastore-scan-index", Params: []interface{}{o}}, nil
 }
 
 func (c *Conv) VisitIndexScan2(o *plan.IndexScan2) (interface{}, error)         { return NA(o) }
@@ -77,7 +77,7 @@ func (c *Conv) VisitIndexFtsSearch(o *plan.IndexFtsSearch) (interface{}, error) 
 
 func (c *Conv) VisitFetch(o *plan.Fetch) (interface{}, error) {
 	c.AddAlias(o.Term())
-	return &base.Op{Kind: "glue-fetch", Params: []interface{}{o}}, nil
+	return &base.Op{Kind: "datastore-fetch", Params: []interface{}{o}}, nil
 }
 
 func (c *Conv) VisitDummyFetch(o *plan.DummyFetch) (interface{}, error) { return NA(o) }
