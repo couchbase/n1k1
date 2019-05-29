@@ -32,7 +32,7 @@ func DatastoreScanKeys(o *base.Op, vars *base.Vars,
 
 	scan := vars.Temps[o.Params[0].(int)].(*plan.KeyScan)
 
-	var parent value.Value
+	var parent value.Value // TODO: handle parent?
 
 	keys, err := scan.Keys().Evaluate(parent, context)
 	if err != nil {
@@ -54,8 +54,8 @@ func DatastoreScanKeys(o *base.Op, vars *base.Vars,
 			yieldVals(vals)
 
 			return
-		} else if a, ok := k.(value.Value); ok {
-			yieldKey(a.Actual())
+		} else if v, ok := k.(value.Value); ok {
+			yieldKey(v.Actual())
 
 			return
 		}
