@@ -20,12 +20,17 @@ import (
 	"github.com/couchbase/n1k1/base"
 )
 
+type Termer interface {
+	Term() *algebra.KeyspaceTerm
+}
+
 // Conv implements the conversion of a couchbase/query/plan into a
 // n1k1 base.Op tree. It implements the plan.Visitor interface.
 type Conv struct {
 	Store   *Store
 	Aliases map[string]string
 	Temps   []interface{}
+	Prev    plan.Operator
 }
 
 func (c *Conv) AddAlias(kt *algebra.KeyspaceTerm) {
@@ -100,6 +105,7 @@ func (c *Conv) VisitIndexFtsSearch(o *plan.IndexFtsSearch) (interface{}, error) 
 
 func (c *Conv) VisitFetch(o *plan.Fetch) (interface{}, error) {
 	c.AddAlias(o.Term())
+	c.Prev = o
 
 	labelSuffix := ""
 	if o.Term().As() != "" {
@@ -126,9 +132,14 @@ func (c *Conv) VisitJoin(o *plan.Join) (interface{}, error) {
 		labelSuffix = `["` + o.Term().As() + `"]`
 	}
 
+	prevSuffix := ""
+	if termer, ok := c.Prev.(Termer); ok && termer != nil && termer.Term().As() != "" {
+		prevSuffix = `["` + termer.Term().As() + `"]`
+	}
+
 	return &base.Op{
 		Kind:   "joinKeys-inner",
-		Labels: base.Labels{`.`, "^id", "." + labelSuffix, "^id"}, // TODO.
+		Labels: base.Labels{"." + prevSuffix, "^id", "." + labelSuffix, "^id"}, // TODO.
 		Params: []interface{}{
 			// The vars.Temps slot that holds evaluated keys.
 			varsTempsSlot,
