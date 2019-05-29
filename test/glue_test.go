@@ -32,7 +32,7 @@ import (
 	"github.com/couchbase/n1k1/glue"
 )
 
-func TestFileStoreSelectId(t *testing.T) {
+func TestFileStoreSelectStar(t *testing.T) {
 	p, conv, op, err :=
 		testFileStoreSelect(t, `SELECT * FROM data:orders`, true)
 	if err != nil {
@@ -42,75 +42,21 @@ func TestFileStoreSelectId(t *testing.T) {
 		t.Fatalf("expected p and conv an op, got nil")
 	}
 
-	jop, _ := json.MarshalIndent(op, " ", " ")
-
-	fmt.Printf("jop: %s\n", jop)
-
-	testi := 0
-
-	testExpectErr := ""
-
-	tmpDir, vars, yieldVals, yieldErr, returnYields :=
-		MakeYieldCaptureFuncs(t, testi, testExpectErr)
-
-	defer os.RemoveAll(tmpDir)
-
-	namespace := ""
-	readonly := true
-	maxParallelism := 1
-
-	requestId := "test-request"
-	requestScanCap := int64(1000)
-	requestPipelineCap := int64(1000)
-	requestPipelineBatch := 100
-	requestNamedArgs := map[string]value.Value(nil)
-	requestPositionalArgs := value.Values(nil)
-	requestCredentials := auth.Credentials(nil)
-	requestScanConsistency := datastore.UNBOUNDED
-	requestScanVectorSource := &server_http.ZeroScanVectorSource{}
-	requestOutput := &Output{}
-
-	var requestOriginalHttpRequest *http.Request
-
-	var prepared *plan.Prepared
-
-	context := execution.NewContext(requestId,
-		conv.Store.Datastore, conv.Store.Systemstore, namespace,
-		readonly, maxParallelism,
-		requestScanCap, requestPipelineCap, requestPipelineBatch,
-		requestNamedArgs, requestPositionalArgs,
-		requestCredentials, requestScanConsistency, requestScanVectorSource,
-		requestOutput, requestOriginalHttpRequest,
-		prepared, conv.Store.IndexApiVersion, conv.Store.FeatureControls)
-
-	vars.Temps = vars.Temps[:0]
-
-	vars.Temps = append(vars.Temps, context)
-
-	vars.Temps = append(vars.Temps, conv.Temps[1:]...)
-
-	for i := 0; i < 16; i++ {
-		vars.Temps = append(vars.Temps, nil)
+	results := testGlueExecOp(t, false, conv, op)
+	if len(results) != 4 {
+		t.Fatalf("expected 4 results, got: %+v", results)
 	}
 
-	origExecOpEx := n1k1.ExecOpEx
-
-	defer func() { n1k1.ExecOpEx = origExecOpEx }()
-
-	n1k1.ExecOpEx = glue.DatastoreOp
-
-	n1k1.ExecOp(op, vars, yieldVals, yieldErr, "", "")
-
-	results := returnYields()
-
-	fmt.Printf("vars.Temps: %#v\n", vars.Temps)
-
-	fmt.Printf("results: %+v\n  output: %v\n", results, requestOutput)
+	for _, result := range results {
+		if len(result) != 1 {
+			t.Fatalf("expected result has 1 labels, got: %+v", result)
+		}
+	}
 }
 
-func TestFileStoreSelectSimple(t *testing.T) {
+func TestFileStoreSelectStar123(t *testing.T) {
 	p, conv, op, err :=
-		testFileStoreSelect(t, `SELECT *, 123, name FROM data:orders`, true)
+		testFileStoreSelect(t, `SELECT *, 100 + 23 FROM data:orders`, true)
 	if err != nil {
 		t.Fatalf("expected no nil err, got: %v", err)
 	}
@@ -118,9 +64,20 @@ func TestFileStoreSelectSimple(t *testing.T) {
 		t.Fatalf("expected p and conv an op, got nil")
 	}
 
-	jop, _ := json.MarshalIndent(op, " ", " ")
+	results := testGlueExecOp(t, false, conv, op)
+	if len(results) != 4 {
+		t.Fatalf("expected 4 results, got: %+v", results)
+	}
 
-	fmt.Printf("jop: %s\n", jop)
+	for _, result := range results {
+		if len(result) != 2 {
+			t.Fatalf("expected result has two labels, got: %+v", result)
+		}
+
+		if string(result[1]) != "123" {
+			t.Fatalf("expected result[1] == '123', got: %+v", result)
+		}
+	}
 }
 
 func TestFileStoreSelectComplex(t *testing.T) {
@@ -195,6 +152,81 @@ func testFileStoreSelect(t *testing.T, stmt string, emit bool) (
 	op, _ := v.(*base.Op)
 
 	return p, conv, op, err
+}
+
+// -------------------------------------------------------------
+
+func testGlueExecOp(t *testing.T, emit bool,
+	conv *glue.Conv, op *base.Op) []base.Vals {
+	if emit {
+		jop, _ := json.MarshalIndent(op, " ", " ")
+		fmt.Printf("jop: %s\n", jop)
+	}
+
+	testi := 0
+
+	testExpectErr := ""
+
+	tmpDir, vars, yieldVals, yieldErr, returnYields :=
+		MakeYieldCaptureFuncs(t, testi, testExpectErr)
+
+	defer os.RemoveAll(tmpDir)
+
+	namespace := ""
+	readonly := true
+	maxParallelism := 1
+
+	requestId := "test-request"
+	requestScanCap := int64(1000)
+	requestPipelineCap := int64(1000)
+	requestPipelineBatch := 100
+	requestNamedArgs := map[string]value.Value(nil)
+	requestPositionalArgs := value.Values(nil)
+	requestCredentials := auth.Credentials(nil)
+	requestScanConsistency := datastore.UNBOUNDED
+	requestScanVectorSource := &server_http.ZeroScanVectorSource{}
+	requestOutput := &Output{}
+
+	var requestOriginalHttpRequest *http.Request
+
+	var prepared *plan.Prepared
+
+	context := execution.NewContext(requestId,
+		conv.Store.Datastore, conv.Store.Systemstore, namespace,
+		readonly, maxParallelism,
+		requestScanCap, requestPipelineCap, requestPipelineBatch,
+		requestNamedArgs, requestPositionalArgs,
+		requestCredentials, requestScanConsistency, requestScanVectorSource,
+		requestOutput, requestOriginalHttpRequest,
+		prepared, conv.Store.IndexApiVersion, conv.Store.FeatureControls)
+
+	vars.Temps = vars.Temps[:0]
+
+	vars.Temps = append(vars.Temps, context)
+
+	vars.Temps = append(vars.Temps, conv.Temps[1:]...)
+
+	for i := 0; i < 16; i++ {
+		vars.Temps = append(vars.Temps, nil)
+	}
+
+	origExecOpEx := n1k1.ExecOpEx
+
+	defer func() { n1k1.ExecOpEx = origExecOpEx }()
+
+	n1k1.ExecOpEx = glue.DatastoreOp
+
+	n1k1.ExecOp(op, vars, yieldVals, yieldErr, "", "")
+
+	results := returnYields()
+
+	if emit {
+		fmt.Printf("vars.Temps: %#v\n", vars.Temps)
+
+		fmt.Printf("results: %+v\n  output: %v\n", results, requestOutput)
+	}
+
+	return results
 }
 
 // -------------------------------------------------------------
