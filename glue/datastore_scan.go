@@ -37,9 +37,7 @@ func DatastoreScanKeys(o *base.Op, vars *base.Vars,
 	keys, err := scan.Keys().Evaluate(parent, context)
 	if err != nil {
 		context.Error(errors.NewEvaluationError(err, "KEYS"))
-
 		yieldErr(err)
-
 		return
 	}
 
@@ -173,7 +171,6 @@ func DatastoreScan(o *base.Op, vars *base.Vars,
 		}
 
 		valId = strconv.AppendQuote(valId[:0], entry.PrimaryKey)
-
 		vals = append(vals[:0], valId)
 
 		yieldVals(vals)
