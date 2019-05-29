@@ -181,38 +181,44 @@ OUTER:
 				}
 			}
 
-			var iv interface{}
+			if len(vals[i]) > 0 {
+				var iv interface{}
 
-			err := json.Unmarshal(vals[i], &iv)
-			if err != nil {
-				return nil, err
-			}
+				err := json.Unmarshal(vals[i], &iv)
+				if err != nil {
+					return nil, err
+				}
 
-			err = subObj.SetField(path[len(path)-1], iv)
-			if err != nil {
-				return nil, err
+				err = subObj.SetField(path[len(path)-1], iv)
+				if err != nil {
+					return nil, err
+				}
+			} else {
+				subObj.UnsetField(path[len(path)-1])
 			}
 
 		case '^': // The label is an attachment name for vals[i].
-			var iv interface{}
+			if len(vals[i]) > 0 {
+				var iv interface{}
 
-			err := json.Unmarshal(vals[i], &iv)
-			if err != nil {
-				return nil, err
+				err := json.Unmarshal(vals[i], &iv)
+				if err != nil {
+					return nil, err
+				}
+
+				av, ok := v.(value.AnnotatedValue)
+				if !ok {
+					av = value.NewAnnotatedValue(v)
+				}
+
+				if label[1:] == "id" {
+					av.SetId(iv)
+				} else {
+					av.SetAttachment(label[1:], iv)
+				}
+
+				v = av
 			}
-
-			av, ok := v.(value.AnnotatedValue)
-			if !ok {
-				av = value.NewAnnotatedValue(v)
-			}
-
-			if label[1:] == "id" {
-				av.SetId(iv)
-			} else {
-				av.SetAttachment(label[1:], iv)
-			}
-
-			v = av
 
 		default:
 			return nil, fmt.Errorf("Convert, unknown label[0]: %s", label)

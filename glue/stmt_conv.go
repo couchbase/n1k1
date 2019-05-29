@@ -190,6 +190,10 @@ func (c *Conv) VisitJoin(o *plan.Join) (interface{}, error) {
 		}},
 	}
 
+	if o.Outer() {
+		rv.Kind = "joinKeys-leftOuter"
+	}
+
 	c.Prev = o // Allows for chainable joins.
 
 	return rv, nil
