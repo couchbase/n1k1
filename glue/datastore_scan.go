@@ -175,37 +175,37 @@ func DatastoreScan(o *base.Op, vars *base.Vars,
 		yieldVals(vals)
 
 		/* TODO: Handle NL case.
-		// scopeValue := parent
-		// if scan.Term().IsUnderNL() {
-		//     scopeValue = nil
-		// }
+				// scopeValue := parent
+				// if scan.Term().IsUnderNL() {
+				//     scopeValue = nil
+				// }
 
-		av := this.newEmptyDocumentWithKey(entry.PrimaryKey, scopeValue, context)
+				av := this.newEmptyDocumentWithKey(entry.PrimaryKey, scopeValue, context)
 
-        // TODO: The COVER() expression which accesses the SetCover()
-        // data appears in a GROUP BY & aggregate expr rewrite.
-        // Need to put this into the vals as meta-ish entries?
-		covers := scan.Covers()
-		if len(covers) > 0 {
-			for c, v := range scan.FilterCovers() {
-				av.SetCover(c.Text(), v)
-			}
+		        // TODO: The COVER() expression which accesses the SetCover()
+		        // data appears in a GROUP BY & aggregate expr rewrite.
+		        // Need to put this into the vals as meta-ish entries?
+				covers := scan.Covers()
+				if len(covers) > 0 {
+					for c, v := range scan.FilterCovers() {
+						av.SetCover(c.Text(), v)
+					}
 
-			// Matches planner.builder.buildCoveringScan()
-			for i, ek := range entry.EntryKey {
-				av.SetCover(covers[i].Text(), ek)
-			}
+					// Matches planner.builder.buildCoveringScan()
+					for i, ek := range entry.EntryKey {
+						av.SetCover(covers[i].Text(), ek)
+					}
 
-			// Matches planner.builder.buildCoveringScan()
-			av.SetCover(covers[len(covers)-1].Text(),
-				value.NewValue(entry.PrimaryKey))
+					// Matches planner.builder.buildCoveringScan()
+					av.SetCover(covers[len(covers)-1].Text(),
+						value.NewValue(entry.PrimaryKey))
 
-			av.SetField(this.plan.Term().Alias(), av) // TODO?
-		}
+					av.SetField(this.plan.Term().Alias(), av) // TODO?
+				}
 
-		av.SetBit(this.bit) // TODO: Needed for intersect scan.
+				av.SetBit(this.bit) // TODO: Needed for intersect scan.
 
-		ok = this.sendItem(av)
+				ok = this.sendItem(av)
 		*/
 	}
 

@@ -137,6 +137,8 @@ func (c *Conv) VisitJoin(o *plan.Join) (interface{}, error) {
 		prevSuffix = `["` + termer.Term().As() + `"]`
 	}
 
+	c.Prev = o // Allows for chainable joins.
+
 	return &base.Op{
 		Kind:   "joinKeys-inner",
 		Labels: base.Labels{"." + prevSuffix, "^id", "." + labelSuffix, "^id"}, // TODO.
