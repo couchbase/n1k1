@@ -63,9 +63,17 @@ func (c *Conv) VisitIndexScan(o *plan.IndexScan) (interface{}, error) {
 	}, nil
 }
 
-func (c *Conv) VisitIndexScan2(o *plan.IndexScan2) (interface{}, error)         { return NA(o) }
-func (c *Conv) VisitIndexScan3(o *plan.IndexScan3) (interface{}, error)         { return NA(o) }
-func (c *Conv) VisitKeyScan(o *plan.KeyScan) (interface{}, error)               { return NA(o) }
+func (c *Conv) VisitIndexScan2(o *plan.IndexScan2) (interface{}, error) { return NA(o) }
+func (c *Conv) VisitIndexScan3(o *plan.IndexScan3) (interface{}, error) { return NA(o) }
+
+func (c *Conv) VisitKeyScan(o *plan.KeyScan) (interface{}, error) {
+	return &base.Op{
+		Kind:   "datastore-scan-keys",
+		Labels: base.Labels{"^id"},
+		Params: []interface{}{c.AddTemp(o)},
+	}, nil
+}
+
 func (c *Conv) VisitValueScan(o *plan.ValueScan) (interface{}, error)           { return NA(o) }
 func (c *Conv) VisitDummyScan(o *plan.DummyScan) (interface{}, error)           { return NA(o) }
 func (c *Conv) VisitCountScan(o *plan.CountScan) (interface{}, error)           { return NA(o) }

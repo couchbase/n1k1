@@ -26,14 +26,66 @@ import (
 	"github.com/couchbase/query/value"
 )
 
+func DatastoreScanKeys(o *base.Op, vars *base.Vars,
+	yieldVals base.YieldVals, yieldErr base.YieldErr) {
+	context := vars.Temps[0].(*execution.Context)
+
+	scan := vars.Temps[o.Params[0].(int)].(*plan.KeyScan)
+
+	var parent value.Value
+
+	keys, err := scan.Keys().Evaluate(parent, context)
+	if err != nil {
+		context.Error(errors.NewEvaluationError(err, "KEYS"))
+
+		yieldErr(err)
+
+		return
+	}
+
+	var valId base.Val
+	var vals base.Vals
+
+	var yieldKey func(interface{})
+
+	yieldKey = func(k interface{}) {
+		if s, ok := k.(string); ok {
+			valId = strconv.AppendQuote(valId[:0], s)
+			vals = append(vals[:0], valId)
+
+			yieldVals(vals)
+
+			return
+		} else if a, ok := k.(value.Value); ok {
+			yieldKey(a.Actual())
+
+			return
+		}
+
+		context.Warning(errors.NewWarning(
+			fmt.Sprintf("Document key must be string: %v", k)))
+	}
+
+	act := keys.Actual()
+	switch act := act.(type) {
+	case []interface{}:
+		for _, key := range act {
+			yieldKey(key)
+		}
+
+	default:
+		yieldKey(act)
+	}
+
+	yieldErr(nil)
+}
+
+// -------------------------------------------------------------------
+
 func DatastoreScanPrimary(o *base.Op, vars *base.Vars,
 	yieldVals base.YieldVals, yieldErr base.YieldErr) {
-	fmt.Printf("DatastoreScanPrimary start\n")
-
 	DatastoreScan(o, vars, yieldVals, yieldErr,
 		func(context *execution.Context, conn *datastore.IndexConnection) {
-			fmt.Printf(" DatastoreScan cb start\n")
-
 			scan := vars.Temps[o.Params[0].(int)].(*plan.PrimaryScan)
 
 			nks := scan.Term()
@@ -43,12 +95,10 @@ func DatastoreScanPrimary(o *base.Op, vars *base.Vars,
 
 			go scan.Index().ScanEntries(context.RequestId(), limit,
 				context.ScanConsistency(), vec, conn)
-
-			fmt.Printf(" DatastoreScan cb end\n")
 		})
-
-	fmt.Printf("DatastoreScanPrimary end\n")
 }
+
+// -------------------------------------------------------------------
 
 func DatastoreScanIndex(o *base.Op, vars *base.Vars,
 	yieldVals base.YieldVals, yieldErr base.YieldErr) {
@@ -97,6 +147,8 @@ func DatastoreScanIndex(o *base.Op, vars *base.Vars,
 		})
 }
 
+// -------------------------------------------------------------------
+
 func DatastoreScan(o *base.Op, vars *base.Vars,
 	yieldVals base.YieldVals, yieldErr base.YieldErr,
 	cb func(*execution.Context, *datastore.IndexConnection)) {
@@ -115,10 +167,7 @@ func DatastoreScan(o *base.Op, vars *base.Vars,
 	var vals base.Vals
 
 	for {
-		fmt.Printf("  ds get entry...\n")
 		entry, ok := sender.GetEntry()
-		fmt.Printf("  ds get entry: %v, ok: %v\n", entry, ok)
-
 		if !ok || entry == nil {
 			break
 		}
@@ -164,6 +213,8 @@ func DatastoreScan(o *base.Op, vars *base.Vars,
 	yieldErr(nil)
 }
 
+// -------------------------------------------------------------------
+
 func EvalSpan(context *execution.Context, ps *plan.Span, parent value.Value) (
 	dspan *datastore.Span, empty bool, err error) {
 	dspan = &datastore.Span{}
@@ -188,6 +239,8 @@ func EvalSpan(context *execution.Context, ps *plan.Span, parent value.Value) (
 	return dspan, false, nil
 }
 
+// -------------------------------------------------------------------
+
 func EvalExprs(context *execution.Context, cx expression.Expressions,
 	parent value.Value) (cv value.Values, empty bool, err error) {
 	if len(cx) > 0 {
@@ -203,6 +256,8 @@ func EvalExprs(context *execution.Context, cx expression.Expressions,
 
 	return cv, false, nil
 }
+
+// -------------------------------------------------------------------
 
 func EvalExpr(context *execution.Context, expr expression.Expression,
 	parent value.Value) (v value.Value, empty bool, err error) {
@@ -220,6 +275,8 @@ func EvalExpr(context *execution.Context, expr expression.Expression,
 
 	return v, false, nil
 }
+
+// -------------------------------------------------------------------
 
 func EvalExprInt64(context *execution.Context, expr expression.Expression,
 	parent value.Value, defval int64) (val int64) {

@@ -33,9 +33,75 @@ import (
 	"github.com/couchbase/n1k1/glue"
 )
 
+func TestFileStoreSelectStarUseKeys1(t *testing.T) {
+	p, conv, op, err :=
+		testFileStoreSelect(t, `SELECT * FROM data:orders USE KEYS "1234"`, false)
+	if err != nil {
+		t.Fatalf("expected no nil err, got: %v", err)
+	}
+	if p == nil || conv == nil || op == nil {
+		t.Fatalf("expected p and conv an op, got nil")
+	}
+
+	results := testGlueExecOp(t, false, conv, op)
+	if len(results) != 1 {
+		t.Fatalf("expected 1 results, got: %+v", results)
+	}
+
+	for _, result := range results {
+		if len(result) != 1 {
+			t.Fatalf("expected result has 1 labels, got: %+v", result)
+		}
+
+		var m map[string]interface{}
+		err := json.Unmarshal(result[0], &m)
+		if err != nil {
+			t.Fatalf("expected no err, got: %v", err)
+		}
+
+		if strings.Index("1234",
+			m["id"].(string)) < 0 {
+			t.Fatalf("unexpected id: %+v, m: %+v", result, m)
+		}
+	}
+}
+
+func TestFileStoreSelectStarUseKeys2(t *testing.T) {
+	p, conv, op, err :=
+		testFileStoreSelect(t, `SELECT * FROM data:orders USE KEYS ["1234","9999","1200"]`, false)
+	if err != nil {
+		t.Fatalf("expected no nil err, got: %v", err)
+	}
+	if p == nil || conv == nil || op == nil {
+		t.Fatalf("expected p and conv an op, got nil")
+	}
+
+	results := testGlueExecOp(t, false, conv, op)
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got: %+v", results)
+	}
+
+	for _, result := range results {
+		if len(result) != 1 {
+			t.Fatalf("expected result has 1 labels, got: %+v", result)
+		}
+
+		var m map[string]interface{}
+		err := json.Unmarshal(result[0], &m)
+		if err != nil {
+			t.Fatalf("expected no err, got: %v", err)
+		}
+
+		if strings.Index("1200,1234",
+			m["id"].(string)) < 0 {
+			t.Fatalf("unexpected id: %+v, m: %+v", result, m)
+		}
+	}
+}
+
 func TestFileStoreSelectStar(t *testing.T) {
 	p, conv, op, err :=
-		testFileStoreSelect(t, `SELECT * FROM data:orders`, true)
+		testFileStoreSelect(t, `SELECT * FROM data:orders`, false)
 	if err != nil {
 		t.Fatalf("expected no nil err, got: %v", err)
 	}
@@ -68,7 +134,7 @@ func TestFileStoreSelectStar(t *testing.T) {
 
 func TestFileStoreSelectStar123(t *testing.T) {
 	p, conv, op, err :=
-		testFileStoreSelect(t, `SELECT *, 100 + 23 FROM data:orders`, true)
+		testFileStoreSelect(t, `SELECT *, 100 + 23 FROM data:orders`, false)
 	if err != nil {
 		t.Fatalf("expected no nil err, got: %v", err)
 	}

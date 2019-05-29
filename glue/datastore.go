@@ -22,6 +22,8 @@ func DatastoreOp(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 		DatastoreScanPrimary(o, vars, yieldVals, yieldErr)
 	case "datastore-scan-index":
 		DatastoreScanIndex(o, vars, yieldVals, yieldErr)
+	case "datastore-scan-keys":
+		DatastoreScanKeys(o, vars, yieldVals, yieldErr)
 	case "datastore-fetch":
 		DatastoreFetch(o, vars, yieldVals, yieldErr, path, pathNext)
 	}
