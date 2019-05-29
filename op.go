@@ -38,10 +38,14 @@ func ExecOp(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	case "order-offset-limit":
 		OpOrderOffsetLimit(o, lzVars, lzYieldVals, lzYieldErr, path, pathNext) // !lz
 
-	case "joinNL-inner", "joinNL-leftOuter", "unnest-inner", "unnest-leftOuter", "nestNL-inner", "nestNL-leftOuter", "joinKeys-inner", "joinKeys-leftOuter", "nestKeys-inner", "nestKeys-leftOuter":
+	case "joinNL-inner", "joinNL-leftOuter", "joinKeys-inner", "joinKeys-leftOuter",
+		"nestNL-inner", "nestNL-leftOuter", "nestKeys-inner", "nestKeys-leftOuter",
+		"unnest-inner", "unnest-leftOuter":
 		OpJoinNestedLoop(o, lzVars, lzYieldVals, lzYieldErr, path, pathNext) // !lz
 
-	case "joinHash-inner", "joinHash-leftOuter", "intersect-distinct", "intersect-all", "except-distinct", "except-all":
+	case "joinHash-inner", "joinHash-leftOuter",
+		"intersect-distinct", "intersect-all",
+		"except-distinct", "except-all":
 		OpJoinHash(o, lzVars, lzYieldVals, lzYieldErr, path, pathNext) // !lz
 
 	case "union-all":
