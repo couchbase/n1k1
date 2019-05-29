@@ -48,6 +48,13 @@ func (c *Conv) AddTemp(t interface{}) int {
 	return rv
 }
 
+func LabelSuffix(s string) string {
+	if s != "" {
+		return `["` + s + `"]`
+	}
+	return s
+}
+
 // -------------------------------------------------------------------
 
 // Scan
@@ -108,10 +115,7 @@ func (c *Conv) VisitExpressionScan(o *plan.ExpressionScan) (interface{}, error) 
 		return NA(o)
 	}
 
-	labelSuffix := ""
-	if o.Alias() != "" {
-		labelSuffix = `["` + o.Alias() + `"]`
-	}
+	c.Prev = o
 
 	// TODO: The nil parent & nil context does not support all
 	// expressions, such as CURL(), current datetime, etc. Should
@@ -131,7 +135,7 @@ func (c *Conv) VisitExpressionScan(o *plan.ExpressionScan) (interface{}, error) 
 
 	return &base.Op{
 		Kind:   "temp-yield-var",
-		Labels: base.Labels{"." + labelSuffix},
+		Labels: base.Labels{"." + LabelSuffix(o.Alias())},
 		Params: []interface{}{c.AddTemp(base.Val(jv))},
 	}, nil
 }
@@ -146,14 +150,9 @@ func (c *Conv) VisitFetch(o *plan.Fetch) (interface{}, error) {
 	c.AddAlias(o.Term())
 	c.Prev = o
 
-	labelSuffix := ""
-	if o.Term().As() != "" {
-		labelSuffix = `["` + o.Term().As() + `"]`
-	}
-
 	return &base.Op{
 		Kind:   "datastore-fetch",
-		Labels: base.Labels{"." + labelSuffix, "^id"},
+		Labels: base.Labels{"." + LabelSuffix(o.Term().As()), "^id"},
 		Params: []interface{}{c.AddTemp(o)},
 	}, nil
 }
@@ -166,21 +165,12 @@ func (c *Conv) VisitJoin(o *plan.Join) (interface{}, error) {
 	// Allocate a vars.Temps slot to hold evaluated keys.
 	varsTempsSlot := c.AddTemp(nil)
 
-	labelSuffix := ""
-	if o.Term().As() != "" {
-		labelSuffix = `["` + o.Term().As() + `"]`
-	}
-
-	prevSuffix := ""
-	if termer, ok := c.Prev.(Termer); ok && termer != nil && termer.Term().As() != "" {
-		prevSuffix = `["` + termer.Term().As() + `"]`
-	}
-
-	c.Prev = o // Allows for chainable joins.
-
-	return &base.Op{
-		Kind:   "joinKeys-inner",
-		Labels: base.Labels{"." + prevSuffix, "^id", "." + labelSuffix, "^id"}, // TODO.
+	rv := &base.Op{
+		Kind: "joinKeys-inner",
+		Labels: base.Labels{
+			"." + LabelSuffix(c.Prev.(Termer).Term().As()), "^id",
+			"." + LabelSuffix(o.Term().As()), "^id",
+		},
 		Params: []interface{}{
 			// The vars.Temps slot that holds evaluated keys.
 			varsTempsSlot,
@@ -189,7 +179,7 @@ func (c *Conv) VisitJoin(o *plan.Join) (interface{}, error) {
 		},
 		Children: []*base.Op{&base.Op{
 			Kind:   "datastore-fetch",
-			Labels: base.Labels{"." + labelSuffix, "^id"},
+			Labels: base.Labels{"." + LabelSuffix(o.Term().As()), "^id"},
 			Params: []interface{}{c.AddTemp(o)},
 			Children: []*base.Op{&base.Op{
 				Kind:   "temp-yield-var",
@@ -197,7 +187,11 @@ func (c *Conv) VisitJoin(o *plan.Join) (interface{}, error) {
 				Params: []interface{}{varsTempsSlot},
 			}},
 		}},
-	}, nil
+	}
+
+	c.Prev = o // Allows for chainable joins.
+
+	return rv, nil
 }
 
 func (c *Conv) VisitIndexJoin(o *plan.IndexJoin) (interface{}, error) { return NA(o) }
@@ -205,30 +199,25 @@ func (c *Conv) VisitNest(o *plan.Nest) (interface{}, error)           { return N
 func (c *Conv) VisitIndexNest(o *plan.IndexNest) (interface{}, error) { return NA(o) }
 
 func (c *Conv) VisitUnnest(o *plan.Unnest) (interface{}, error) {
-	labelSuffix := ""
-	if o.Term().As() != "" {
-		labelSuffix = `["` + o.Term().As() + `"]`
-	}
-
-	prevSuffix := ""
-	if termer, ok := c.Prev.(Termer); ok && termer != nil && termer.Term().As() != "" {
-		prevSuffix = `["` + termer.Term().As() + `"]`
-	}
-
-	c.Prev = o // Allows for chainable joins.
-
-	return &base.Op{
-		Kind:   "unnest-inner",
-		Labels: base.Labels{"." + prevSuffix, "^id", "." + labelSuffix}, // TODO.
+	rv := &base.Op{
+		Kind: "unnest-inner",
+		Labels: base.Labels{
+			"." + LabelSuffix(c.Prev.(Termer).Term().As()), "^id",
+			"." + LabelSuffix(o.Term().As()),
+		},
 		Params: []interface{}{
 			// The expression to unnest.
 			"exprStr", o.Term().Expression().String(),
 		},
 		Children: []*base.Op{&base.Op{
 			Kind:   "noop",
-			Labels: base.Labels{"." + labelSuffix},
+			Labels: base.Labels{"." + LabelSuffix(o.Term().As())},
 		}},
-	}, nil
+	}
+
+	c.Prev = o // Allows for chainable joins.
+
+	return rv, nil
 }
 
 func (c *Conv) VisitNLJoin(o *plan.NLJoin) (interface{}, error)     { return NA(o) }
