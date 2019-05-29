@@ -213,7 +213,6 @@ func TestFileStoreLeftOuterJoinOnKeys(t *testing.T) {
 		if strings.Index(`"1200","1234","1235","1236"`, string(result[0])) < 0 {
 			t.Fatalf("expected entry from array, got: %+v", result)
 		}
-
 	}
 }
 
