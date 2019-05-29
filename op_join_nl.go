@@ -39,12 +39,21 @@ func OpJoinNestedLoop(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 	joinKind := strings.Split(o.Kind, "-")
 
-	isNest := joinKind[0] == "nestNL"
+	isNest := strings.HasPrefix(joinKind[0], "nest") // Ex: "nestNL", "nestKeys".
+
 	isUnnest := joinKind[0] == "unnest"
+
 	isLeftOuter := joinKind[1] == "leftOuter"
 
+	exprParams := o.Params
+
+	isKeys := strings.HasSuffix(joinKind[0], "Keys") // Ex: "joinKeys", "nestKeys".
+	if isKeys {
+		exprParams = o.Params[1:]
+	}
+
 	joinClauseFunc :=
-		MakeExprFunc(lzVars, labelsAB, o.Params, pathNext, "JF") // !lz
+		MakeExprFunc(lzVars, labelsAB, exprParams, pathNext, "JF") // !lz
 
 	var lzHadInner bool
 
@@ -83,7 +92,7 @@ func OpJoinNestedLoop(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 			lzVals := lzValsJoin
 
-			if isUnnest { // !lz
+			if isUnnest || isKeys { // !lz
 				lzVal = base.ValTrue
 			} else { // !lz
 				lzVal = joinClauseFunc(lzVals, lzYieldErr) // <== emitCaptured: pathNext, "JF"
@@ -114,12 +123,23 @@ func OpJoinNestedLoop(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 		}
 
 		// Inner (right) driver.
-		if isUnnest { // !lz
+		if isUnnest || isKeys { // !lz
 			lzVals := lzValsA
 
 			lzVal = joinClauseFunc(lzVals, lzYieldErr) // <== emitCaptured: pathNext, "JF"
 
-			lzValsPre = base.ArrayYield(lzVal, lzYieldVals, lzValsPre[:0])
+			if isUnnest { // !lz
+				lzValsPre = base.ArrayYield(lzVal, lzYieldVals, lzValsPre[:0])
+			} else { // !lz
+				// Case isKeys, where the right driver should yield
+				// fetched items based on the key(s) that we're
+				// placing into the vars.Temps[].
+				lzVars.Temps[o.Params[0].(int)] = lzVal
+
+				ExecOp(o.Children[1], lzVars, lzYieldVals, lzYieldErr, pathNext, "JNLI") // !lz
+
+				lzVars.Temps[o.Params[0].(int)] = nil
+			} // !lz
 		} else { // !lz
 			ExecOp(o.Children[1], lzVars, lzYieldVals, lzYieldErr, pathNext, "JNLI") // !lz
 		} // !lz
