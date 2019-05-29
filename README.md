@@ -259,7 +259,9 @@ efficiently execute that query-plan.
 
 - JOIN types: CROSS, FULL, RIGHT OUTER.
 
-- NEST on keys?
+- JOIN ON KEYS?
+
+- NEST ON KEYS?
 - NEST via hash-join?
 - NEST via index scan?
 
