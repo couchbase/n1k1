@@ -33,7 +33,9 @@ type Conv struct {
 	Store   *Store
 	Aliases map[string]string
 	Temps   []interface{}
-	Prev    plan.Operator
+
+	PrevPlan plan.Operator
+	PrevOp   *base.Op
 }
 
 func (c *Conv) AddAlias(kt *algebra.KeyspaceTerm) {
@@ -48,6 +50,11 @@ func (c *Conv) AddTemp(t interface{}) int {
 	return rv
 }
 
+func (c *Conv) Op(p plan.Operator, op *base.Op) (*base.Op, error) {
+	c.PrevPlan, c.PrevOp = p, op
+	return op, nil
+}
+
 func LabelSuffix(s string) string {
 	if s != "" {
 		return `["` + s + `"]`
@@ -60,11 +67,11 @@ func LabelSuffix(s string) string {
 // Scan
 
 func (c *Conv) VisitPrimaryScan(o *plan.PrimaryScan) (interface{}, error) {
-	return &base.Op{
+	return c.Op(o, &base.Op{
 		Kind:   "datastore-scan-primary",
 		Labels: base.Labels{"^id"},
 		Params: []interface{}{c.AddTemp(o)},
-	}, nil
+	})
 }
 
 func (c *Conv) VisitPrimaryScan3(o *plan.PrimaryScan3) (interface{}, error) { return NA(o) }
@@ -72,28 +79,28 @@ func (c *Conv) VisitPrimaryScan3(o *plan.PrimaryScan3) (interface{}, error) { re
 func (c *Conv) VisitParentScan(o *plan.ParentScan) (interface{}, error) { return NA(o) } // TODO: ParentScan seems unused?
 
 func (c *Conv) VisitIndexScan(o *plan.IndexScan) (interface{}, error) {
-	return &base.Op{
+	return c.Op(o, &base.Op{
 		Kind:   "datastore-scan-index",
 		Labels: base.Labels{"^id"},
 		Params: []interface{}{c.AddTemp(o)},
-	}, nil
+	})
 }
 
 func (c *Conv) VisitIndexScan2(o *plan.IndexScan2) (interface{}, error) { return NA(o) }
 func (c *Conv) VisitIndexScan3(o *plan.IndexScan3) (interface{}, error) { return NA(o) }
 
 func (c *Conv) VisitKeyScan(o *plan.KeyScan) (interface{}, error) {
-	return &base.Op{
+	return c.Op(o, &base.Op{
 		Kind:   "datastore-scan-keys",
 		Labels: base.Labels{"^id"},
 		Params: []interface{}{c.AddTemp(o)},
-	}, nil
+	})
 }
 
 func (c *Conv) VisitValueScan(o *plan.ValueScan) (interface{}, error) { return NA(o) } // Used for mutations (VALUES clause).
 
 func (c *Conv) VisitDummyScan(o *plan.DummyScan) (interface{}, error) {
-	return &base.Op{Kind: "nil"}, nil
+	return c.Op(o, &base.Op{Kind: "nil"})
 }
 
 func (c *Conv) VisitCountScan(o *plan.CountScan) (interface{}, error)           { return NA(o) }
@@ -116,8 +123,6 @@ func (c *Conv) VisitExpressionScan(o *plan.ExpressionScan) (interface{}, error) 
 		return NA(o)
 	}
 
-	c.Prev = o
-
 	// TODO: The nil parent & nil context does not support all
 	// expressions, such as CURL(), current datetime, etc. Should
 	// check if the expr is constant or volatile?
@@ -134,11 +139,11 @@ func (c *Conv) VisitExpressionScan(o *plan.ExpressionScan) (interface{}, error) 
 		return nil, fmt.Errorf("VisitExpressionScan, json.Marshal, err: %v", err)
 	}
 
-	return &base.Op{
+	return c.Op(o, &base.Op{
 		Kind:   "temp-yield-var",
 		Labels: base.Labels{"." + LabelSuffix(o.Alias())},
 		Params: []interface{}{c.AddTemp(base.Val(jv))},
-	}, nil
+	})
 }
 
 // FTS Search
@@ -149,13 +154,12 @@ func (c *Conv) VisitIndexFtsSearch(o *plan.IndexFtsSearch) (interface{}, error) 
 
 func (c *Conv) VisitFetch(o *plan.Fetch) (interface{}, error) {
 	c.AddAlias(o.Term())
-	c.Prev = o
 
-	return &base.Op{
+	return c.Op(o, &base.Op{
 		Kind:   "datastore-fetch",
 		Labels: base.Labels{"." + LabelSuffix(o.Term().As()), "^id"},
 		Params: []interface{}{c.AddTemp(o)},
-	}, nil
+	})
 }
 
 func (c *Conv) VisitDummyFetch(o *plan.DummyFetch) (interface{}, error) { return NA(o) } // Used for mutations.
@@ -169,7 +173,7 @@ func (c *Conv) VisitJoin(o *plan.Join) (interface{}, error) {
 	rv := &base.Op{
 		Kind: "joinKeys-inner",
 		Labels: base.Labels{
-			"." + LabelSuffix(c.Prev.(Termer).Term().As()), "^id",
+			"." + LabelSuffix(c.PrevPlan.(Termer).Term().As()), "^id",
 			"." + LabelSuffix(o.Term().As()), "^id",
 		},
 		Params: []interface{}{
@@ -194,9 +198,7 @@ func (c *Conv) VisitJoin(o *plan.Join) (interface{}, error) {
 		rv.Kind = "joinKeys-leftOuter"
 	}
 
-	c.Prev = o // Allows for chainable joins.
-
-	return rv, nil
+	return c.Op(o, rv)
 }
 
 func (c *Conv) VisitIndexJoin(o *plan.IndexJoin) (interface{}, error) { return NA(o) }
@@ -207,7 +209,7 @@ func (c *Conv) VisitUnnest(o *plan.Unnest) (interface{}, error) {
 	rv := &base.Op{
 		Kind: "unnest-inner",
 		Labels: base.Labels{
-			"." + LabelSuffix(c.Prev.(Termer).Term().As()), "^id",
+			"." + LabelSuffix(c.PrevPlan.(Termer).Term().As()), "^id",
 			"." + LabelSuffix(o.Term().As()),
 		},
 		Params: []interface{}{
@@ -224,9 +226,7 @@ func (c *Conv) VisitUnnest(o *plan.Unnest) (interface{}, error) {
 		rv.Kind = "unnest-leftOuter"
 	}
 
-	c.Prev = o // Allows for chainable joins.
-
-	return rv, nil
+	return c.Op(o, rv)
 }
 
 func (c *Conv) VisitNLJoin(o *plan.NLJoin) (interface{}, error)     { return NA(o) }
@@ -270,7 +270,7 @@ func (c *Conv) VisitInitialProject(o *plan.InitialProject) (interface{}, error) 
 			[]interface{}{"exprStr", term.Result().Expression().String()})
 	}
 
-	return op, nil
+	return c.Op(o, op)
 }
 
 func (c *Conv) VisitFinalProject(o *plan.FinalProject) (interface{}, error) {
@@ -294,7 +294,30 @@ func (c *Conv) VisitExceptAll(o *plan.ExceptAll) (interface{}, error)       { re
 
 // Order, Paging
 
-func (c *Conv) VisitOrder(o *plan.Order) (interface{}, error)   { return NA(o) }
+func (c *Conv) VisitOrder(o *plan.Order) (interface{}, error) {
+	var exprs, dirs []interface{}
+
+	for _, term := range o.Terms() {
+		exprs = append(exprs, []interface{}{"exprStr", term.Expression().String()})
+
+		if term.Descending() {
+			dirs = append(dirs, "desc")
+		} else {
+			dirs = append(dirs, "asc")
+		}
+
+		if term.NullsPos() {
+			return NA(o) // TODO: One day non-natural nulls ordering.
+		}
+	}
+
+	return c.Op(o, &base.Op{
+		Kind:   "order-offset-limit",
+		Labels: base.Labels{"."},
+		Params: []interface{}{exprs, dirs},
+	})
+}
+
 func (c *Conv) VisitOffset(o *plan.Offset) (interface{}, error) { return NA(o) }
 func (c *Conv) VisitLimit(o *plan.Limit) (interface{}, error)   { return NA(o) }
 
@@ -343,7 +366,7 @@ func (c *Conv) VisitSequence(o *plan.Sequence) (rv interface{}, err error) {
 		}
 	}
 
-	return rv, nil
+	return c.Op(o, rv.(*base.Op))
 }
 
 func (c *Conv) VisitDiscard(o *plan.Discard) (interface{}, error) { return NA(o) }
