@@ -68,7 +68,8 @@ func (c *Conv) VisitPrimaryScan(o *plan.PrimaryScan) (interface{}, error) {
 }
 
 func (c *Conv) VisitPrimaryScan3(o *plan.PrimaryScan3) (interface{}, error) { return NA(o) }
-func (c *Conv) VisitParentScan(o *plan.ParentScan) (interface{}, error)     { return NA(o) }
+
+func (c *Conv) VisitParentScan(o *plan.ParentScan) (interface{}, error) { return NA(o) } // TODO: ParentScan seems unused?
 
 func (c *Conv) VisitIndexScan(o *plan.IndexScan) (interface{}, error) {
 	return &base.Op{
@@ -89,7 +90,7 @@ func (c *Conv) VisitKeyScan(o *plan.KeyScan) (interface{}, error) {
 	}, nil
 }
 
-func (c *Conv) VisitValueScan(o *plan.ValueScan) (interface{}, error) { return NA(o) }
+func (c *Conv) VisitValueScan(o *plan.ValueScan) (interface{}, error) { return NA(o) } // Used for mutations (VALUES clause).
 
 func (c *Conv) VisitDummyScan(o *plan.DummyScan) (interface{}, error) {
 	return &base.Op{Kind: "nil"}, nil
@@ -157,7 +158,7 @@ func (c *Conv) VisitFetch(o *plan.Fetch) (interface{}, error) {
 	}, nil
 }
 
-func (c *Conv) VisitDummyFetch(o *plan.DummyFetch) (interface{}, error) { return NA(o) }
+func (c *Conv) VisitDummyFetch(o *plan.DummyFetch) (interface{}, error) { return NA(o) } // Used for mutations.
 
 // Join
 
