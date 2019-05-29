@@ -65,13 +65,12 @@ func DatastoreScanKeys(o *base.Op, vars *base.Vars,
 	}
 
 	act := keys.Actual()
-	switch act := act.(type) {
-	case []interface{}:
-		for _, key := range act {
+
+	if acts, ok := act.([]interface{}); ok {
+		for _, key := range acts {
 			yieldKey(key)
 		}
-
-	default:
+	} else {
 		yieldKey(act)
 	}
 
