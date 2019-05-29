@@ -282,7 +282,8 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 						if leftVals { // !lz
 							// Ex: joinHash-inner, joinHash-leftOuter.
-							lzValsOut, lzErr = base.YieldChainedVals(lzYieldValsOrig, lzVals, lzChunks, lzProbeVal, lzValsOut)
+							lzValsOut, lzErr = base.YieldChainedVals(lzYieldValsOrig,
+								lzVals, lzChunks, lzProbeVal, lzValsOut)
 							if lzErr != nil {
 								lzYieldErr(lzErr)
 							}
@@ -323,7 +324,8 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 								if leftVals { // !lz
 									// Ex: joinHash-leftOuter.
-									lzValsOut, lzErr = base.YieldChainedVals(lzYieldValsOrig, lzRightSuffix, lzChunks, lzProbeVal, lzValsOut)
+									lzValsOut, lzErr = base.YieldChainedVals(lzYieldValsOrig,
+										lzRightSuffix, lzChunks, lzProbeVal, lzValsOut)
 									if lzErr != nil {
 										lzYieldErrOrig(lzErr)
 									}

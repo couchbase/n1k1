@@ -102,7 +102,8 @@ func OpOrderOffsetLimit(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVal
 				}
 
 				if lzErr == nil && lzNeedPush {
-					lzEncoded, lzErr = base.ValsProjectedEncode(lzVals, lzValsOut, lzEncoded[:0], lzVars.Ctx.ValComparer)
+					lzEncoded, lzErr = base.ValsProjectedEncode(lzVals, lzValsOut,
+						lzEncoded[:0], lzVars.Ctx.ValComparer)
 					if lzErr != nil {
 						lzYieldErr(lzErr)
 					} else {

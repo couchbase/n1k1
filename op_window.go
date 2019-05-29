@@ -100,9 +100,11 @@ func OpWindowPartition(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals
 
 				lzValsOut = partitionExprsFunc(lzVals, lzValsOut, lzYieldErr) // <== emitCaptured: pathNextWP "PF"
 
-				lzPartitionNext, lzErr = base.ValsEncodeCanonical(lzValsOut[:partitionPrefix], lzPartitionNext[:0], lzVars.Ctx.ValComparer)
+				lzPartitionNext, lzErr = base.ValsEncodeCanonical(
+					lzValsOut[:partitionPrefix], lzPartitionNext[:0], lzVars.Ctx.ValComparer)
 				if lzErr == nil {
-					lzOrderNext, lzErr = base.ValsEncodeCanonical(lzValsOut[partitionPrefix:], lzOrderNext[:0], lzVars.Ctx.ValComparer)
+					lzOrderNext, lzErr = base.ValsEncodeCanonical(
+						lzValsOut[partitionPrefix:], lzOrderNext[:0], lzVars.Ctx.ValComparer)
 				}
 			} // !lz
 

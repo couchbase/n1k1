@@ -85,7 +85,8 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 				lzValsOut = groupProjectFunc(lzVals, lzValsOut, lzYieldErr) // <== emitCaptured: pathNextG "GP"
 
-				lzGroupKey, lzErr = base.ValsEncodeCanonical(lzValsOut, lzGroupKey[:0], lzVars.Ctx.ValComparer)
+				lzGroupKey, lzErr = base.ValsEncodeCanonical(lzValsOut,
+					lzGroupKey[:0], lzVars.Ctx.ValComparer)
 				if lzErr == nil {
 					// Check if we've seen the group key before or not.
 					lzGroupVal, lzGroupKeyFound = lzSet.Get(lzGroupKey)
@@ -125,7 +126,8 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 								aggIdx := base.AggCatalog[aggName.(string)] // !lz
 								lzAgg = base.Aggs[aggIdx]
 
-								lzGroupValNew, lzGroupVal, lzChanged = lzAgg.Update(lzVars, lzValsOut[aggCalcI], lzGroupValNew, lzGroupVal, lzVars.Ctx.ValComparer)
+								lzGroupValNew, lzGroupVal, lzChanged = lzAgg.Update(lzVars,
+									lzValsOut[aggCalcI], lzGroupValNew, lzGroupVal, lzVars.Ctx.ValComparer)
 
 								lzGroupValChanged = lzGroupValChanged || lzChanged
 							} // !lz

@@ -147,7 +147,8 @@ func ExprCmpStatic(lzVars *base.Vars, labels base.Labels,
 						} // !lz
 
 						if lzCmpNeeded {
-							lzCmp := lzVars.Ctx.ValComparer.CompareWithType(lzValStatic, lzValX, staticType, lzTypeX, 0)
+							lzCmp := lzVars.Ctx.ValComparer.CompareWithType(
+								lzValStatic, lzValX, staticType, lzTypeX, 0)
 							if lzCmp == 0 {
 								lzVal = lzCmpEQ
 							} else {
@@ -194,7 +195,8 @@ func ExprCmpDynamic(lzVars *base.Vars, labels base.Labels,
 
 				lzValB, lzTypeB := base.Parse(lzVal)
 				if base.ParseTypeHasValue(lzTypeB) {
-					lzCmp := lzVars.Ctx.ValComparer.CompareWithType(lzValA, lzValB, lzTypeA, lzTypeB, 0)
+					lzCmp := lzVars.Ctx.ValComparer.CompareWithType(
+						lzValA, lzValB, lzTypeA, lzTypeB, 0)
 					if lzCmp == 0 {
 						lzVal = lzCmpEQ
 					} else {
