@@ -79,8 +79,12 @@ func (c *Conv) VisitKeyScan(o *plan.KeyScan) (interface{}, error) {
 	}, nil
 }
 
-func (c *Conv) VisitValueScan(o *plan.ValueScan) (interface{}, error)           { return NA(o) }
-func (c *Conv) VisitDummyScan(o *plan.DummyScan) (interface{}, error)           { return NA(o) }
+func (c *Conv) VisitValueScan(o *plan.ValueScan) (interface{}, error) { return NA(o) }
+
+func (c *Conv) VisitDummyScan(o *plan.DummyScan) (interface{}, error) {
+	return &base.Op{Kind: "nil"}, nil
+}
+
 func (c *Conv) VisitCountScan(o *plan.CountScan) (interface{}, error)           { return NA(o) }
 func (c *Conv) VisitIndexCountScan(o *plan.IndexCountScan) (interface{}, error) { return NA(o) }
 func (c *Conv) VisitIndexCountScan2(o *plan.IndexCountScan2) (interface{}, error) {
@@ -192,10 +196,10 @@ func (c *Conv) VisitUnnest(o *plan.Unnest) (interface{}, error) {
 	}, nil
 }
 
-func (c *Conv) VisitNLJoin(o *plan.NLJoin) (interface{}, error)       { return NA(o) }
-func (c *Conv) VisitNLNest(o *plan.NLNest) (interface{}, error)       { return NA(o) }
-func (c *Conv) VisitHashJoin(o *plan.HashJoin) (interface{}, error)   { return NA(o) }
-func (c *Conv) VisitHashNest(o *plan.HashNest) (interface{}, error)   { return NA(o) }
+func (c *Conv) VisitNLJoin(o *plan.NLJoin) (interface{}, error)     { return NA(o) }
+func (c *Conv) VisitNLNest(o *plan.NLNest) (interface{}, error)     { return NA(o) }
+func (c *Conv) VisitHashJoin(o *plan.HashJoin) (interface{}, error) { return NA(o) }
+func (c *Conv) VisitHashNest(o *plan.HashNest) (interface{}, error) { return NA(o) }
 
 // Let + Letting, With
 

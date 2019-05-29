@@ -213,6 +213,31 @@ func TestFileStoreUnnest(t *testing.T) {
 	}
 }
 
+func TestFileStoreConst(t *testing.T) {
+	p, conv, op, err :=
+		testFileStoreSelect(t, `SELECT 1+2`, false)
+	if err != nil {
+		t.Fatalf("expected no nil err, got: %v", err)
+	}
+	if p == nil || conv == nil || op == nil {
+		t.Fatalf("expected p and conv an op, got nil")
+	}
+
+	results := testGlueExecOp(t, false, conv, op)
+	if len(results) != 1 {
+		t.Fatalf("expected 1 results, got: %+v", results)
+	}
+
+	for _, result := range results {
+		if len(result) != 1 {
+			t.Fatalf("expected result has 1 labels, got: %+v", result)
+		}
+		if string(result[0]) != "3" {
+			t.Fatalf("expected result[0] == 3, got: %+v", result)
+		}
+	}
+}
+
 func TestFileStoreSelectComplex(t *testing.T) {
 	testFileStoreSelect(t,
 		`WITH

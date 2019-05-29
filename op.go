@@ -72,6 +72,10 @@ func ExecOp(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	case "window-frames":
 		OpWindowFrames(o, lzVars, lzYieldVals, lzYieldErr, path, pathNext) // !lz
 
+	case "nil":
+		lzYieldVals(nil)
+		lzYieldErr(nil)
+
 	default:
 		ExecOpEx(o, lzVars, lzYieldVals, lzYieldErr, path, pathNext) // !lz
 	}
