@@ -17,6 +17,18 @@ import (
 	"github.com/couchbase/n1k1/base"
 )
 
+// OpJoinNestedLoop implements...
+//  o.Kind:             via flags that control if-else codepaths:
+//   joinNL-inner
+//   joinNL-leftOuter                           isLeftOuter
+//   joinKeys-inner                      isKeys
+//   joinKeys-leftOuter                  isKeys isLeftOuter
+//   nestNL-inner        isNest
+//   nestNL-leftOuter    isNest                 isLeftOuter
+//   nestKeys-inner      isNest          isKeys
+//   nestKeys-leftOuter  isNest          isKeys isLeftOuter
+//   unnest-inner               isUnnest
+//   unnest-leftOuter           isUnnest        isLeftOuter
 func OpJoinNestedLoop(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	lzYieldErr base.YieldErr, path, pathNext string) {
 	var lzErr error
@@ -29,25 +41,23 @@ func OpJoinNestedLoop(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 		}
 	}
 
-	lenLabelsA := len(o.Children[0].Labels)
-	lenLabelsB := len(o.Children[1].Labels)
-	lenLabelsAB := lenLabelsA + lenLabelsB
+	joinKind := strings.Split(o.Kind, "-")
+
+	isNest := strings.HasPrefix(joinKind[0], "nest") // Ex: "nestNL", "nestKeys".
+	isKeys := strings.HasSuffix(joinKind[0], "Keys") // Ex: "joinKeys", "nestKeys".
+
+	isUnnest := joinKind[0] == "unnest"
+	isLeftOuter := joinKind[1] == "leftOuter"
+
+	lenLabelsA := len(o.Children[0].Labels) // "A" means left side.
+	lenLabelsB := len(o.Children[1].Labels) // "B" means right side.
+	lenLabelsAB := lenLabelsA + lenLabelsB  // "AB" means joined.
 
 	labelsAB := make(base.Labels, 0, lenLabelsAB)
 	labelsAB = append(labelsAB, o.Children[0].Labels...)
 	labelsAB = append(labelsAB, o.Children[1].Labels...)
 
-	joinKind := strings.Split(o.Kind, "-")
-
-	isNest := strings.HasPrefix(joinKind[0], "nest") // Ex: "nestNL", "nestKeys".
-
-	isUnnest := joinKind[0] == "unnest"
-
-	isLeftOuter := joinKind[1] == "leftOuter"
-
 	exprParams := o.Params
-
-	isKeys := strings.HasSuffix(joinKind[0], "Keys") // Ex: "joinKeys", "nestKeys".
 	if isKeys {
 		exprParams = o.Params[1].([]interface{})
 	}
@@ -55,18 +65,21 @@ func OpJoinNestedLoop(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	var exprFunc base.ExprFunc
 
 	if isUnnest || isKeys {
+		// UNNEST and ON KEYS evaluate the expr on the left-side vals only.
 		exprFunc =
 			MakeExprFunc(lzVars, o.Children[0].Labels, exprParams, pathNext, "JF") // !lz
 	} else {
+		// Other modes evaluate the expr on the fully joined left+right vals.
 		exprFunc =
 			MakeExprFunc(lzVars, labelsAB, exprParams, pathNext, "JF") // !lz
 	}
 
+	// The lzHadInner is used only during LEFT OUTER joins.
 	var lzHadInner bool
 
 	var lzValsPre base.Vals
 
-	var lzNestBytes []byte
+	var lzNestBytes []byte // Used only when isNest is true.
 
 	_, _, _, _ = exprFunc, lzHadInner, lzValsPre, lzNestBytes
 
@@ -100,6 +113,11 @@ func OpJoinNestedLoop(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 			lzVals := lzValsJoin
 
 			if isUnnest || isKeys { // !lz
+				// UNNEST is a self-join, so the join condition is always true.
+				//
+				// ON KEYS has the right-driver only providing items with keys
+				// that came from the left side, so the join condition is
+				// also always true.
 				lzVal = base.ValTrue
 			} else { // !lz
 				lzVal = exprFunc(lzVals, lzYieldErr) // <== emitCaptured: pathNext, "JF"
@@ -129,18 +147,23 @@ func OpJoinNestedLoop(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 			}
 		}
 
-		// Inner (right) driver.
+		// The right driver.
 		if isUnnest || isKeys { // !lz
+			// In UNNEST and ON KEYS case, we evaluate the expr only
+			// on the left-side vals.
 			lzVals := lzValsA
 
 			lzVal = exprFunc(lzVals, lzYieldErr) // <== emitCaptured: pathNext, "JF"
 
 			if isUnnest { // !lz
+				// Case of UNNEST, the evaluated expr's val is an
+				// array that we yield  as the right-side's items.
 				lzValsPre, _ = base.ArrayYield(lzVal, lzYieldVals, lzValsPre[:0])
 			} else { // !lz
-				// Case isKeys, where the right driver should yield
-				// fetched items based on the key(s) that we're
-				// placing into the vars.Temps[].
+				// Case of ON KEYS, the evaluated expr's val is
+				// treated as key(s) which we place into a
+				// vars.Temps[]. The right driver should fetch and
+				// yield based on those keys.
 				lzVars.Temps[o.Params[0].(int)] = lzVal
 
 				ExecOp(o.Children[1], lzVars, lzYieldVals, lzYieldErr, pathNext, "JNLI") // !lz
@@ -152,7 +175,8 @@ func OpJoinNestedLoop(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 		} // !lz
 
 		// Case of NEST, we've been collecting a JSON encoded array of
-		// right-side values.
+		// right-side values, which we finally join to the left-side
+		// and yield onwards.
 		if isNest { // !lz
 			if len(lzNestBytes) > 1 && lzErr == nil {
 				lzNestBytes = append(lzNestBytes, ']')
@@ -164,7 +188,7 @@ func OpJoinNestedLoop(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 			}
 		} // !lz
 
-		// Case of leftOuter join when inner (right) was empty.
+		// Case of leftOuter join when the right driver was empty.
 		if isLeftOuter { // !lz
 			if !lzHadInner && lzErr == nil {
 				lzValsJoin = lzValsJoin[0:lenLabelsA]
@@ -182,7 +206,7 @@ func OpJoinNestedLoop(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 		} // !lz
 	}
 
-	// Outer (left) driver.
+	// The left driver.
 	ExecOp(o.Children[0], lzVars, lzYieldVals, lzYieldErr, pathNext, "JNLO") // !lz
 
 	lzYieldErrOrig(lzErr)
