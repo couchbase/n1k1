@@ -164,7 +164,34 @@ func (c *Conv) VisitJoin(o *plan.Join) (interface{}, error) {
 func (c *Conv) VisitIndexJoin(o *plan.IndexJoin) (interface{}, error) { return NA(o) }
 func (c *Conv) VisitNest(o *plan.Nest) (interface{}, error)           { return NA(o) }
 func (c *Conv) VisitIndexNest(o *plan.IndexNest) (interface{}, error) { return NA(o) }
-func (c *Conv) VisitUnnest(o *plan.Unnest) (interface{}, error)       { return NA(o) }
+
+func (c *Conv) VisitUnnest(o *plan.Unnest) (interface{}, error) {
+	labelSuffix := ""
+	if o.Term().As() != "" {
+		labelSuffix = `["` + o.Term().As() + `"]`
+	}
+
+	prevSuffix := ""
+	if termer, ok := c.Prev.(Termer); ok && termer != nil && termer.Term().As() != "" {
+		prevSuffix = `["` + termer.Term().As() + `"]`
+	}
+
+	c.Prev = o // Allows for chainable joins.
+
+	return &base.Op{
+		Kind:   "unnest-inner",
+		Labels: base.Labels{"." + prevSuffix, "^id", "." + labelSuffix}, // TODO.
+		Params: []interface{}{
+			// The expression to unnest.
+			"exprStr", o.Term().Expression().String(),
+		},
+		Children: []*base.Op{&base.Op{
+			Kind:   "noop",
+			Labels: base.Labels{"." + labelSuffix},
+		}},
+	}, nil
+}
+
 func (c *Conv) VisitNLJoin(o *plan.NLJoin) (interface{}, error)       { return NA(o) }
 func (c *Conv) VisitNLNest(o *plan.NLNest) (interface{}, error)       { return NA(o) }
 func (c *Conv) VisitHashJoin(o *plan.HashJoin) (interface{}, error)   { return NA(o) }

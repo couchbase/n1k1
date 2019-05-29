@@ -191,6 +191,28 @@ func TestFileStoreInnerJoinOnKeys(t *testing.T) {
 	}
 }
 
+func TestFileStoreUnnest(t *testing.T) {
+	p, conv, op, err :=
+		testFileStoreSelect(t, `SELECT * FROM data:orders AS a UNNEST orderlines AS ol`, false)
+	if err != nil {
+		t.Fatalf("expected no nil err, got: %v", err)
+	}
+	if p == nil || conv == nil || op == nil {
+		t.Fatalf("expected p and conv an op, got nil")
+	}
+
+	results := testGlueExecOp(t, false, conv, op)
+	if len(results) != 8 {
+		t.Fatalf("expected 8 results, got: %+v", results)
+	}
+
+	for _, result := range results {
+		if len(result) != 1 {
+			t.Fatalf("expected result has 1 labels, got: %+v", result)
+		}
+	}
+}
+
 func TestFileStoreSelectComplex(t *testing.T) {
 	testFileStoreSelect(t,
 		`WITH
