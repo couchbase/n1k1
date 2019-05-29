@@ -238,6 +238,31 @@ func TestFileStoreConst(t *testing.T) {
 	}
 }
 
+func TestFileStoreFromConstArray(t *testing.T) {
+	p, conv, op, err :=
+		testFileStoreSelect(t, `SELECT * FROM [1,2,{"x":[3]}] AS a`, false)
+	if err != nil {
+		t.Fatalf("expected no nil err, got: %v", err)
+	}
+	if p == nil || conv == nil || op == nil {
+		t.Fatalf("expected p and conv an op, got nil")
+	}
+
+	results := testGlueExecOp(t, false, conv, op)
+	if len(results) != 3 {
+		t.Fatalf("expected 3 results, got: %+v", results)
+	}
+
+	for _, result := range results {
+		if len(result) != 1 {
+			t.Fatalf("expected result has 1 labels, got: %+v", result)
+		}
+		if strings.Index(`{"a":1},{"a":2},{"a":{"x":[3]}}`, string(result[0])) < 0 {
+			t.Fatalf("expected entry from array, got: %+v", result)
+		}
+	}
+}
+
 func TestFileStoreSelectComplex(t *testing.T) {
 	testFileStoreSelect(t,
 		`WITH

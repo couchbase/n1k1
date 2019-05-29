@@ -12,10 +12,13 @@
 package glue
 
 import (
+	"encoding/json"
 	"fmt"
 
 	"github.com/couchbase/query/algebra"
+	"github.com/couchbase/query/expression"
 	"github.com/couchbase/query/plan"
+	"github.com/couchbase/query/value"
 
 	"github.com/couchbase/n1k1/base"
 )
@@ -99,7 +102,39 @@ func (c *Conv) VisitIntersectScan(o *plan.IntersectScan) (interface{}, error) { 
 func (c *Conv) VisitOrderedIntersectScan(o *plan.OrderedIntersectScan) (interface{}, error) {
 	return NA(o)
 }
-func (c *Conv) VisitExpressionScan(o *plan.ExpressionScan) (interface{}, error) { return NA(o) }
+
+func (c *Conv) VisitExpressionScan(o *plan.ExpressionScan) (interface{}, error) {
+	if o.IsCorrelated() { // TODO: Handle correlated expression scan?
+		return NA(o)
+	}
+
+	labelSuffix := ""
+	if o.Alias() != "" {
+		labelSuffix = `["` + o.Alias() + `"]`
+	}
+
+	// TODO: The nil parent & nil context does not support all
+	// expressions, such as CURL(), current datetime, etc. Should
+	// check if the expr is constant or volatile?
+	var parent value.Value
+	var context expression.Context
+
+	v, err := o.FromExpr().Evaluate(parent, context)
+	if err != nil {
+		return nil, err
+	}
+
+	jv, err := json.Marshal(v)
+	if err != nil {
+		return nil, fmt.Errorf("VisitExpressionScan, json.Marshal, err: %v", err)
+	}
+
+	return &base.Op{
+		Kind:   "temp-yield-var",
+		Labels: base.Labels{"." + labelSuffix},
+		Params: []interface{}{c.AddTemp(base.Val(jv))},
+	}, nil
+}
 
 // FTS Search
 
