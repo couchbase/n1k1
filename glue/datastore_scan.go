@@ -182,6 +182,9 @@ func DatastoreScan(o *base.Op, vars *base.Vars,
 
 		av := this.newEmptyDocumentWithKey(entry.PrimaryKey, scopeValue, context)
 
+        // TODO: The COVER() expression which accesses the SetCover()
+        // data appears in a GROUP BY & aggregate expr rewrite.
+        // Need to put this into the vals as meta-ish entries?
 		covers := scan.Covers()
 		if len(covers) > 0 {
 			for c, v := range scan.FilterCovers() {
