@@ -72,3 +72,22 @@ func OpTempYield(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 	lzYieldErr(lzErr)
 }
+
+// -----------------------------------------------------
+
+// OpTempYieldVar yields an item or array entries from a vars slot.
+func OpTempYieldVar(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
+	lzYieldErr base.YieldErr, path, pathNext string) {
+	tempIdx := o.Params[0].(int)
+
+	lzVal := lzVars.Temps[tempIdx].(base.Val)
+
+	_, lzOk := base.ArrayYield(lzVal, lzYieldVals, nil)
+	if !lzOk {
+		lzVals := base.Vals{lzVal}
+
+		lzYieldVals(lzVals)
+	}
+
+	lzYieldErr(nil)
+}

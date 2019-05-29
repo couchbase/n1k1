@@ -88,6 +88,8 @@ func OpUnionAll(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 		lzStage.YieldResultsFromActors()
 
 		// TODO: Recycle children's lzVars.Ctx into my lzVars.Ctx?
+
+		// TODO: Recycle stage.
 	}
 
 	EmitPop(pathNext, "U") // !lz

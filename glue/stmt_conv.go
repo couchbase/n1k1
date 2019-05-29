@@ -100,9 +100,15 @@ func (c *Conv) VisitIndexFtsSearch(o *plan.IndexFtsSearch) (interface{}, error) 
 
 func (c *Conv) VisitFetch(o *plan.Fetch) (interface{}, error) {
 	c.AddAlias(o.Term())
+
+	labelSuffix := ""
+	if o.Term().As() != "" {
+		labelSuffix = `["` + o.Term().As() + `"]`
+	}
+
 	return &base.Op{
 		Kind:   "datastore-fetch",
-		Labels: base.Labels{".", "^id"},
+		Labels: base.Labels{"." + labelSuffix, "^id"},
 		Params: []interface{}{c.AddTemp(o)},
 	}, nil
 }
@@ -111,7 +117,37 @@ func (c *Conv) VisitDummyFetch(o *plan.DummyFetch) (interface{}, error) { return
 
 // Join
 
-func (c *Conv) VisitJoin(o *plan.Join) (interface{}, error)           { return NA(o) }
+func (c *Conv) VisitJoin(o *plan.Join) (interface{}, error) {
+	// Allocate a vars.Temps slot to hold evaluated keys.
+	varsTempsSlot := c.AddTemp(nil)
+
+	labelSuffix := ""
+	if o.Term().As() != "" {
+		labelSuffix = `["` + o.Term().As() + `"]`
+	}
+
+	return &base.Op{
+		Kind:   "joinKeys-inner",
+		Labels: base.Labels{`.`, "^id", "." + labelSuffix, "^id"}, // TODO.
+		Params: []interface{}{
+			// The vars.Temps slot that holds evaluated keys.
+			varsTempsSlot,
+			// The expression that will evaluate to the keys.
+			[]interface{}{"exprStr", o.Term().JoinKeys().String()},
+		},
+		Children: []*base.Op{&base.Op{
+			Kind:   "datastore-fetch",
+			Labels: base.Labels{"." + labelSuffix, "^id"},
+			Params: []interface{}{c.AddTemp(o)},
+			Children: []*base.Op{&base.Op{
+				Kind:   "temp-yield-var",
+				Labels: base.Labels{"^id"},
+				Params: []interface{}{varsTempsSlot},
+			}},
+		}},
+	}, nil
+}
+
 func (c *Conv) VisitIndexJoin(o *plan.IndexJoin) (interface{}, error) { return NA(o) }
 func (c *Conv) VisitNest(o *plan.Nest) (interface{}, error)           { return NA(o) }
 func (c *Conv) VisitIndexNest(o *plan.IndexNest) (interface{}, error) { return NA(o) }
@@ -221,7 +257,9 @@ func (c *Conv) VisitSequence(o *plan.Sequence) (rv interface{}, err error) {
 		if v != nil {
 			if rv != nil {
 				// The first plan.Sequence child will become the deepest descendant.
-				v.(*base.Op).Children = append(v.(*base.Op).Children, rv.(*base.Op))
+				v.(*base.Op).Children = append(
+					append([]*base.Op(nil), rv.(*base.Op)),
+					v.(*base.Op).Children...)
 			}
 
 			rv = v

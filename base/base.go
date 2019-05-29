@@ -269,7 +269,7 @@ type Stats struct{} // TODO.
 
 // -----------------------------------------------------
 
-func ArrayYield(val Val, yieldVals YieldVals, valsPre Vals) Vals {
+func ArrayYield(val Val, yieldVals YieldVals, valsPre Vals) (Vals, bool) {
 	parseVal, parseType := Parse(val)
 	if parseType == int(jsonparser.Array) {
 		jsonparser.ArrayEach(parseVal, func(v []byte,
@@ -283,7 +283,9 @@ func ArrayYield(val Val, yieldVals YieldVals, valsPre Vals) Vals {
 
 			yieldVals(valsPre)
 		})
+
+		return valsPre, true
 	}
 
-	return valsPre
+	return valsPre, false
 }

@@ -14,22 +14,34 @@ package glue
 import (
 	"encoding/json"
 
+	"github.com/couchbase/query/datastore"
 	"github.com/couchbase/query/execution"
-	"github.com/couchbase/query/plan"
 	"github.com/couchbase/query/value"
 
 	"github.com/couchbase/n1k1"
 	"github.com/couchbase/n1k1/base"
 )
 
+type Keyspacer interface {
+	Keyspace() datastore.Keyspace
+}
+
+type SubPathser interface {
+	SubPaths() []string
+}
+
 func DatastoreFetch(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 	yieldErr base.YieldErr, path, pathNext string) {
 	context := vars.Temps[0].(*execution.Context)
 
-	plan := vars.Temps[o.Params[0].(int)].(*plan.Fetch)
+	plan := vars.Temps[o.Params[0].(int)].(Keyspacer)
 
 	keyspace := plan.Keyspace()
-	subPaths := plan.SubPaths()
+
+	var subPaths []string
+	if subPathser, ok := plan.(SubPathser); ok {
+		subPaths = subPathser.SubPaths()
+	}
 
 	batchSize := 200 // TODO: Configurability.
 	batchChSize := 0 // TODO: Configurability.
@@ -99,4 +111,6 @@ func DatastoreFetch(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 	stage.M.Lock()
 	stage.YieldErr(stage.Err)
 	stage.M.Unlock()
+
+	// TODO: Recycle stage.
 }

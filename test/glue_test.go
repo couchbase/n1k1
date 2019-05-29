@@ -169,6 +169,28 @@ func TestFileStoreSelectStar123(t *testing.T) {
 	}
 }
 
+func TestFileStoreInnerJoinOnKeys(t *testing.T) {
+	p, conv, op, err :=
+		testFileStoreSelect(t, `SELECT b.id FROM data:orders AS a INNER JOIN data:orders AS b ON KEYS a.id`, true)
+	if err != nil {
+		t.Fatalf("expected no nil err, got: %v", err)
+	}
+	if p == nil || conv == nil || op == nil {
+		t.Fatalf("expected p and conv an op, got nil")
+	}
+
+	results := testGlueExecOp(t, true, conv, op)
+	if len(results) != 4 {
+		t.Fatalf("expected 4 results, got: %+v", results)
+	}
+
+	for _, result := range results {
+		if len(result) != 1 {
+			t.Fatalf("expected result has 1 labels, got: %+v", result)
+		}
+	}
+}
+
 func TestFileStoreSelectComplex(t *testing.T) {
 	testFileStoreSelect(t,
 		`WITH
