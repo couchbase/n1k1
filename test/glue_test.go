@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -51,6 +52,17 @@ func TestFileStoreSelectStar(t *testing.T) {
 		if len(result) != 1 {
 			t.Fatalf("expected result has 1 labels, got: %+v", result)
 		}
+
+		var m map[string]interface{}
+		err := json.Unmarshal(result[0], &m)
+		if err != nil {
+			t.Fatalf("expected no err, got: %v", err)
+		}
+
+		if strings.Index("1200,1234,1235,1236",
+			m["id"].(string)) < 0 {
+			t.Fatalf("unexpected id: %+v, m: %+v", result, m)
+		}
 	}
 }
 
@@ -72,6 +84,17 @@ func TestFileStoreSelectStar123(t *testing.T) {
 	for _, result := range results {
 		if len(result) != 2 {
 			t.Fatalf("expected result has two labels, got: %+v", result)
+		}
+
+		var m map[string]interface{}
+		err := json.Unmarshal(result[0], &m)
+		if err != nil {
+			t.Fatalf("expected no err, got: %v", err)
+		}
+
+		if strings.Index("1200,1234,1235,1236",
+			m["id"].(string)) < 0 {
+			t.Fatalf("unexpected id: %+v, m: %+v", result, m)
 		}
 
 		if string(result[1]) != "123" {
