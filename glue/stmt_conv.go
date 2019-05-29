@@ -220,6 +220,10 @@ func (c *Conv) VisitUnnest(o *plan.Unnest) (interface{}, error) {
 		}},
 	}
 
+	if o.Term().Outer() {
+		rv.Kind = "unnest-leftOuter"
+	}
+
 	c.Prev = o // Allows for chainable joins.
 
 	return rv, nil

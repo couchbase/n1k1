@@ -191,6 +191,22 @@ func TestFileStoreInnerJoinOnKeys(t *testing.T) {
 	}
 }
 
+func TestFileStoreInnerJoinOnKeysOnMissingField(t *testing.T) {
+	p, conv, op, err :=
+		testFileStoreSelect(t, `SELECT a.id FROM data:orders AS a INNER JOIN data:orders AS b ON KEYS a.notAField`, false)
+	if err != nil {
+		t.Fatalf("expected no nil err, got: %v", err)
+	}
+	if p == nil || conv == nil || op == nil {
+		t.Fatalf("expected p and conv an op, got nil")
+	}
+
+	results := testGlueExecOp(t, false, conv, op)
+	if len(results) != 0 {
+		t.Fatalf("expected 0 results, got: %+v", results)
+	}
+}
+
 func TestFileStoreLeftOuterJoinOnKeys(t *testing.T) {
 	p, conv, op, err :=
 		testFileStoreSelect(t, `SELECT a.id FROM data:orders AS a LEFT OUTER JOIN data:orders AS b ON KEYS a.notAField`, false)
@@ -229,6 +245,44 @@ func TestFileStoreUnnest(t *testing.T) {
 	results := testGlueExecOp(t, false, conv, op)
 	if len(results) != 8 {
 		t.Fatalf("expected 8 results, got: %+v", results)
+	}
+
+	for _, result := range results {
+		if len(result) != 1 {
+			t.Fatalf("expected result has 1 labels, got: %+v", result)
+		}
+	}
+}
+
+func TestFileStoreUnnestOnMissingField(t *testing.T) {
+	p, conv, op, err :=
+		testFileStoreSelect(t, `SELECT * FROM data:orders AS a  UNNEST notAField AS ol`, false)
+	if err != nil {
+		t.Fatalf("expected no nil err, got: %v", err)
+	}
+	if p == nil || conv == nil || op == nil {
+		t.Fatalf("expected p and conv an op, got nil")
+	}
+
+	results := testGlueExecOp(t, false, conv, op)
+	if len(results) != 0 {
+		t.Fatalf("expected 0 results, got: %+v", results)
+	}
+}
+
+func TestFileStoreLeftOuterUnnest(t *testing.T) {
+	p, conv, op, err :=
+		testFileStoreSelect(t, `SELECT * FROM data:orders AS a LEFT OUTER UNNEST notAField AS ol`, false)
+	if err != nil {
+		t.Fatalf("expected no nil err, got: %v", err)
+	}
+	if p == nil || conv == nil || op == nil {
+		t.Fatalf("expected p and conv an op, got nil")
+	}
+
+	results := testGlueExecOp(t, false, conv, op)
+	if len(results) != 4 {
+		t.Fatalf("expected 4 results, got: %+v", results)
 	}
 
 	for _, result := range results {
