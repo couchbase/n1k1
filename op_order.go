@@ -30,9 +30,11 @@ func OpOrderOffsetLimit(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVal
 	limit := int64(math.MaxInt64)
 
 	if len(o.Params) >= 3 {
-		offset = o.Params[2].(int64)
+		if o.Params[2] != nil {
+			offset = o.Params[2].(int64)
+		}
 
-		if len(o.Params) >= 4 {
+		if len(o.Params) >= 4 && o.Params[3] != nil {
 			limit = o.Params[3].(int64)
 		}
 	}

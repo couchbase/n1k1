@@ -14,6 +14,7 @@ package glue
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 
 	"github.com/couchbase/query/algebra"
 	"github.com/couchbase/query/expression"
@@ -327,7 +328,7 @@ func (c *Conv) VisitOffset(o *plan.Offset) (interface{}, error) {
 			c.PrevOp.Params = append(c.PrevOp.Params, nil)
 		}
 
-		c.PrevOp.Params[2] = offset
+		c.PrevOp.Params[2] = int64(offset)
 
 		return nil, nil
 	}
@@ -335,11 +336,29 @@ func (c *Conv) VisitOffset(o *plan.Offset) (interface{}, error) {
 	return c.Op(o, &base.Op{
 		Kind:   "order-offset-limit",
 		Labels: c.PrevOp.Labels,
-		Params: []interface{}{nil, nil, offset},
+		Params: []interface{}{nil, nil, int64(offset)},
 	})
 }
 
-func (c *Conv) VisitLimit(o *plan.Limit) (interface{}, error) { return NA(o) }
+func (c *Conv) VisitLimit(o *plan.Limit) (interface{}, error) {
+	limit := EvalExprInt64(nil, o.Expression(), nil, int64(math.MaxInt64))
+
+	if c.PrevOp != nil && c.PrevOp.Kind == "order-offset-limit" {
+		for len(c.PrevOp.Params) < 4 {
+			c.PrevOp.Params = append(c.PrevOp.Params, nil)
+		}
+
+		c.PrevOp.Params[3] = int64(limit)
+
+		return nil, nil
+	}
+
+	return c.Op(o, &base.Op{
+		Kind:   "order-offset-limit",
+		Labels: c.PrevOp.Labels,
+		Params: []interface{}{nil, nil, int64(0), int64(limit)},
+	})
+}
 
 // Mutations
 
