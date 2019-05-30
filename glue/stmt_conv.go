@@ -266,6 +266,7 @@ func (c *Conv) VisitInitialProject(o *plan.InitialProject) (interface{}, error) 
 	}
 
 	for _, term := range o.Terms() {
+		op.Labels = append(op.Labels, "." + LabelSuffix(term.Result().Alias()))
 		op.Params = append(op.Params,
 			[]interface{}{"exprStr", term.Result().Expression().String()})
 	}
@@ -313,7 +314,7 @@ func (c *Conv) VisitOrder(o *plan.Order) (interface{}, error) {
 
 	return c.Op(o, &base.Op{
 		Kind:   "order-offset-limit",
-		Labels: base.Labels{"."},
+		Labels: c.PrevOp.Labels,
 		Params: []interface{}{exprs, dirs},
 	})
 }

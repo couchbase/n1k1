@@ -342,6 +342,45 @@ func TestFileStoreFromConstArray(t *testing.T) {
 	}
 }
 
+func TestFileStoreOrderBy(t *testing.T) {
+	p, conv, op, err :=
+		testFileStoreSelect(t, `SELECT * FROM data:orders AS a ORDER BY a.id DESC`, false)
+	if err != nil {
+		t.Fatalf("expected no nil err, got: %v", err)
+	}
+	if p == nil || conv == nil || op == nil {
+		t.Fatalf("expected p and conv an op, got nil")
+	}
+
+	results := testGlueExecOp(t, false, conv, op)
+	if len(results) != 4 {
+		t.Fatalf("expected 4 results, got: %+v", results)
+	}
+
+	lastId := "9999999"
+
+	for _, result := range results {
+		if len(result) != 1 {
+			t.Fatalf("expected result has 1 labels, got: %+v", result)
+		}
+
+		var m map[string]interface{}
+		err := json.Unmarshal(result[0], &m)
+		if err != nil {
+			t.Fatalf("expected no err, got: %v", err)
+		}
+
+		currId := m["a"].(map[string]interface{})["id"].(string)
+		if currId >= lastId {
+			t.Fatalf("unexpected descending id: %+v, m: %+v", result, m)
+		}
+
+		lastId = currId
+	}
+}
+
+// ---------------------------------------------------------------
+
 func TestFileStoreSelectComplex(t *testing.T) {
 	testFileStoreSelect(t,
 		`WITH
