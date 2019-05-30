@@ -60,7 +60,7 @@ func OpTempYield(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 		var lzBytes []byte
 		var lzVals base.Vals
 
-		for lzI := 0; lzI < lzHeap.Len() && lzErr == nil; lzI++ {
+		for lzI := int64(0); lzI < lzHeap.CurItems && lzErr == nil; lzI++ {
 			lzBytes, lzErr = lzHeap.Get(lzI)
 			if lzErr != nil {
 				lzYieldErr(lzErr)

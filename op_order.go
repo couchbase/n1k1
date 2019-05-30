@@ -25,15 +25,15 @@ func OpOrderOffsetLimit(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVal
 	// The directions has same len as orders, ex: ["asc", "desc", "asc"].
 	directions := o.Params[1].([]interface{})
 
-	offset := 0
+	offset := int64(0)
 
-	limit := math.MaxInt64
+	limit := int64(math.MaxInt64)
 
 	if len(o.Params) >= 3 {
-		offset = o.Params[2].(int)
+		offset = o.Params[2].(int64)
 
 		if len(o.Params) >= 4 {
-			limit = o.Params[3].(int)
+			limit = o.Params[3].(int64)
 		}
 	}
 
@@ -65,7 +65,7 @@ func OpOrderOffsetLimit(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVal
 		_, _, _ = lzProjectFunc, lzValsLessFunc, lzHeap
 
 		var lzEncoded []byte
-		var lzExamined int
+		var lzExamined int64
 		var lzValsPre, lzValsMax base.Vals
 
 		_, _, _, _ = lzEncoded, lzExamined, lzValsPre, lzValsMax
@@ -83,7 +83,7 @@ func OpOrderOffsetLimit(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVal
 
 				// Push onto heap if heap is small or heap is empty or
 				// item < max-heap-item.
-				lzHeapLen := lzHeap.Len()
+				lzHeapLen := lzHeap.CurItems
 
 				var lzErr error
 
@@ -135,7 +135,7 @@ func OpOrderOffsetLimit(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVal
 
 		lzYieldErr = func(lzErrIn error) {
 			if lzErrIn == nil { // If no error, yield our sorted items.
-				var lzN int
+				var lzN int64
 				_ = lzN
 
 				if len(orders) > 0 { // !lz
@@ -144,14 +144,14 @@ func OpOrderOffsetLimit(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVal
 					// reverse at end of the heap slots, which leads
 					// to the end of the heap slots having the needed
 					// items items correctly sorted in-place.
-					lzHeapLen := lzHeap.Len()
+					lzHeapLen := lzHeap.CurItems
 
 					lzErr := lzHeap.Sort(offset)
 					if lzErr != nil {
 						lzYieldErrOrig(lzErr)
 					}
 
-					for lzI := offset; lzI < lzHeapLen; lzI++ {
+					for lzI := int64(offset); lzI < lzHeapLen; lzI++ {
 						if limit < math.MaxInt64 { // !lz
 							if lzN >= limit {
 								break

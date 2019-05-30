@@ -347,7 +347,7 @@ func (wf *WindowFrame) FindGroupEdge(i, dir int64, isRange bool) (int64, error) 
 // GetValsVal returns the valIdx'th val that's in the vals entry at
 // the given i position in the partition, both 0-based.
 func (wf *WindowFrame) GetValsVal(i int64, valIdx int) (Val, error) {
-	buf, err := wf.Partition.Get(int(i))
+	buf, err := wf.Partition.Get(i)
 	if err != nil {
 		return nil, err
 	}
@@ -372,7 +372,7 @@ func (wf *WindowFrame) StepVals(next bool, iLast int64, valsPre Vals) (
 		i, ok = wf.Prev(iLast)
 	}
 	if ok {
-		buf, err := wf.Partition.Get(int(i))
+		buf, err := wf.Partition.Get(i)
 		if err != nil {
 			return nil, -1, false, err
 		}

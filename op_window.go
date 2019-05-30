@@ -113,7 +113,7 @@ func OpWindowPartition(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals
 					// The incoming lzVals represents a new partition,
 					// so emit the current partition and reset the
 					// current partition before the next PushBytes().
-					for lzI := 0; lzI < lzHeap.Len() && lzErr == nil; lzI++ {
+					for lzI := int64(0); lzI < lzHeap.CurItems && lzErr == nil; lzI++ {
 						lzHeapBytes, lzErr = lzHeap.Get(lzI)
 						if lzErr != nil {
 							lzYieldErr(lzErr)
@@ -178,7 +178,7 @@ func OpWindowPartition(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals
 
 		ExecOp(o.Children[0], lzVars, lzYieldVals, lzYieldErr, pathNext, "WPC") // !lz
 
-		for lzI := 0; lzI < lzHeap.Len() && lzErr == nil; lzI++ {
+		for lzI := int64(0); lzI < lzHeap.CurItems && lzErr == nil; lzI++ {
 			lzHeapBytes, lzErr = lzHeap.Get(lzI)
 			if lzErr != nil {
 				lzYieldErr(lzErr)

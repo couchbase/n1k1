@@ -1716,8 +1716,8 @@ var TestCasesSimple = []TestCaseSimple{
 				[]interface{}{
 					"asc",
 				},
-				0,
-				1,
+				int64(0),
+				int64(1),
 			},
 			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
@@ -1748,8 +1748,8 @@ var TestCasesSimple = []TestCaseSimple{
 				[]interface{}{
 					"asc",
 				},
-				0,
-				100,
+				int64(0),
+				int64(100),
 			},
 			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
@@ -1782,8 +1782,8 @@ var TestCasesSimple = []TestCaseSimple{
 				[]interface{}{
 					"asc",
 				},
-				100,
-				100,
+				int64(100),
+				int64(100),
 			},
 			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
@@ -1812,8 +1812,8 @@ var TestCasesSimple = []TestCaseSimple{
 				[]interface{}{
 					"asc",
 				},
-				1,
-				0,
+				int64(1),
+				int64(0),
 			},
 			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
@@ -1842,8 +1842,8 @@ var TestCasesSimple = []TestCaseSimple{
 				[]interface{}{
 					"asc",
 				},
-				1,
-				1,
+				int64(1),
+				int64(1),
 			},
 			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
@@ -1870,8 +1870,8 @@ var TestCasesSimple = []TestCaseSimple{
 			Params: []interface{}{
 				[]interface{}{},
 				[]interface{}{},
-				1,
-				1,
+				int64(1),
+				int64(1),
 			},
 			Children: []*base.Op{&base.Op{
 				Kind:   "scan",
@@ -1904,8 +1904,8 @@ var TestCasesSimple = []TestCaseSimple{
 					"asc",
 					"desc",
 				},
-				0,
-				10,
+				int64(0),
+				int64(10),
 			},
 			Children: []*base.Op{&base.Op{
 				Kind:   "joinNL-inner",
@@ -2876,8 +2876,8 @@ var TestCasesSimple = []TestCaseSimple{
 					"asc",
 					"desc",
 				},
-				0,
-				10,
+				int64(0),
+				int64(10),
 			},
 			Children: []*base.Op{&base.Op{
 				Kind:   "joinHash-inner",

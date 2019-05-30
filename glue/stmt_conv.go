@@ -266,7 +266,7 @@ func (c *Conv) VisitInitialProject(o *plan.InitialProject) (interface{}, error) 
 	}
 
 	for _, term := range o.Terms() {
-		op.Labels = append(op.Labels, "." + LabelSuffix(term.Result().Alias()))
+		op.Labels = append(op.Labels, "."+LabelSuffix(term.Result().Alias()))
 		op.Params = append(op.Params,
 			[]interface{}{"exprStr", term.Result().Expression().String()})
 	}
@@ -308,7 +308,7 @@ func (c *Conv) VisitOrder(o *plan.Order) (interface{}, error) {
 		}
 
 		if term.NullsPos() {
-			return NA(o) // TODO: One day non-natural nulls ordering.
+			return NA(o) // TODO: One day handle non-natural nulls ordering.
 		}
 	}
 
@@ -319,8 +319,27 @@ func (c *Conv) VisitOrder(o *plan.Order) (interface{}, error) {
 	})
 }
 
-func (c *Conv) VisitOffset(o *plan.Offset) (interface{}, error) { return NA(o) }
-func (c *Conv) VisitLimit(o *plan.Limit) (interface{}, error)   { return NA(o) }
+func (c *Conv) VisitOffset(o *plan.Offset) (interface{}, error) {
+	offset := EvalExprInt64(nil, o.Expression(), nil, 0)
+
+	if c.PrevOp != nil && c.PrevOp.Kind == "order-offset-limit" {
+		for len(c.PrevOp.Params) < 3 {
+			c.PrevOp.Params = append(c.PrevOp.Params, nil)
+		}
+
+		c.PrevOp.Params[2] = offset
+
+		return nil, nil
+	}
+
+	return c.Op(o, &base.Op{
+		Kind:   "order-offset-limit",
+		Labels: c.PrevOp.Labels,
+		Params: []interface{}{nil, nil, offset},
+	})
+}
+
+func (c *Conv) VisitLimit(o *plan.Limit) (interface{}, error) { return NA(o) }
 
 // Mutations
 
