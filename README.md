@@ -194,6 +194,17 @@ efficiently execute that query-plan.
 ## TODO...
 
 - conversion of N1QL query-plan into n1k1 query-plan?
+  - glue doesn't code-gen to *.go yet.
+  - datastore Fetch() API's allocate garbage.
+  - gocb multi-get API's allocate garbage.
+  - datastore fetch stages should be recycled.
+  - what to do with parent value during expression evaluation?
+  - scan of COVERS needs support?
+  - scan tracks "setBit()" for intersect scan support?
+  - scan expression only handles non-correlated right now?
+  - implement parallel operator one day?
+    - stage already provides some concurrency between producer & consumer.
+  - classic N1QL engine uses recover() -- revisit this?
 
 - aggregate functions, advanced features?
   - count(*) or COUNT_ALL is different than count(expr),
@@ -203,6 +214,8 @@ efficiently execute that query-plan.
 
 - more window functions?
   - IGNORE NULL's?
+
+- ORDER BY ... NULLS FIRST vs NULLS LAST?
 
 - window partitions
   - window frame RANGE only works now for ORDER BY ASC?
