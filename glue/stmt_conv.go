@@ -286,7 +286,25 @@ func (c *Conv) VisitIndexCountProject(o *plan.IndexCountProject) (interface{}, e
 
 // Distinct
 
-func (c *Conv) VisitDistinct(o *plan.Distinct) (interface{}, error) { return NA(o) }
+func (c *Conv) VisitDistinct(o *plan.Distinct) (interface{}, error) {
+	if c.PrevOp.Kind == "distinct" {
+		// N1QL planner produces multiple, nested distinct's, so
+		// filter away the last one of them...
+		// Sequence[Scan, Parallel[Sequence[InitialProject, Distinct, FinalProject]], Distinct].
+		return nil, nil
+	}
+
+	return c.Op(o, &base.Op{
+		Kind:   "distinct",
+		Labels: c.PrevOp.Labels,
+		Params: []interface{}{
+			[]interface{}{
+				// TODO: This expression might not be enough for the DISTINCT?
+				[]interface{}{"labelPath", c.PrevOp.Labels[0]},
+			},
+		},
+	})
+}
 
 // Set operators
 

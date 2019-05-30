@@ -486,6 +486,22 @@ func TestFileStoreOrderByOffsetLimit(t *testing.T) {
 	}
 }
 
+func TestFileStoreDistinct(t *testing.T) {
+	p, conv, op, err :=
+		testFileStoreSelect(t, `SELECT DISTINCT a FROM [1,2,3,4,1,2,3,4] AS a`, false)
+	if err != nil {
+		t.Fatalf("expected no nil err, got: %v", err)
+	}
+	if p == nil || conv == nil || op == nil {
+		t.Fatalf("expected p and conv an op, got nil")
+	}
+
+	results := testGlueExecOp(t, false, conv, op)
+	if len(results) != 4 {
+		t.Fatalf("expected 4 results, got: %+v", results)
+	}
+}
+
 // ---------------------------------------------------------------
 
 func TestFileStoreSelectComplex(t *testing.T) {
