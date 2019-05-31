@@ -256,7 +256,7 @@ func TestFileStoreUnnest(t *testing.T) {
 
 func TestFileStoreUnnestOnMissingField(t *testing.T) {
 	p, conv, op, err :=
-		testFileStoreSelect(t, `SELECT * FROM data:orders AS a  UNNEST notAField AS ol`, false)
+		testFileStoreSelect(t, `SELECT * FROM data:orders AS a UNNEST notAField AS ol`, false)
 	if err != nil {
 		t.Fatalf("expected no nil err, got: %v", err)
 	}
