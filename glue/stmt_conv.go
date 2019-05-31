@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"strings"
 
 	"github.com/couchbase/query/algebra"
 	"github.com/couchbase/query/expression"
@@ -246,11 +247,33 @@ func (c *Conv) VisitFilter(o *plan.Filter) (interface{}, error) { return NA(o) }
 
 // Group
 
-func (c *Conv) VisitInitialGroup(o *plan.InitialGroup) (interface{}, error) { return NA(o) }
-func (c *Conv) VisitIntermediateGroup(o *plan.IntermediateGroup) (interface{}, error) {
-	return NA(o)
+func (c *Conv) VisitInitialGroup(o *plan.InitialGroup) (interface{}, error) {
+	return nil, nil // Skip as the final group will handle grouping.
 }
-func (c *Conv) VisitFinalGroup(o *plan.FinalGroup) (interface{}, error) { return NA(o) }
+
+func (c *Conv) VisitIntermediateGroup(o *plan.IntermediateGroup) (interface{}, error) {
+	return nil, nil // Skip as the final group will handle grouping.
+}
+
+func (c *Conv) VisitFinalGroup(o *plan.FinalGroup) (interface{}, error) {
+	var labels base.Labels
+	var groups []interface{}
+
+	for _, key := range o.Keys() {
+		// TODO: Only works for simple GROUP BY expressions on field names,
+		// not grouping on general expressions. The reason is the generated
+		// label here is only on field names, and a later projection
+		// is based on the full expression string.
+		labels = append(labels, "."+LabelSuffix(strings.Join(ExprFieldPath(key), `","`)))
+		groups = append(groups, []interface{}{"exprStr", key.String()})
+	}
+
+	return c.Op(o, &base.Op{
+		Kind:   "group",
+		Labels: labels,
+		Params: []interface{}{groups},
+	})
+}
 
 // Window functions
 
@@ -423,6 +446,10 @@ func (c *Conv) VisitSequence(o *plan.Sequence) (rv interface{}, err error) {
 		}
 	}
 
+	if rv == nil {
+		return nil, nil
+	}
+
 	return c.Op(o, rv.(*base.Op))
 }
 
@@ -480,3 +507,22 @@ func (c *Conv) VisitUpdateStatistics(o *plan.UpdateStatistics) (interface{}, err
 // -------------------------------------------------------------------
 
 func NA(o interface{}) (interface{}, error) { return nil, fmt.Errorf("NA: %#v", o) }
+
+// -------------------------------------------------------------------
+
+func ExprFieldPath(expr expression.Expression) (rv []string) {
+	var visit func(e expression.Expression) // Declare for recursion.
+
+	visit = func(e expression.Expression) {
+		if f, ok := e.(*expression.Field); ok {
+			visit(f.First())
+			rv = append(rv, f.Second().Alias())
+		} else if i, ok := e.(*expression.Identifier); ok {
+			rv = append(rv, i.Identifier())
+		}
+	}
+
+	visit(expr)
+
+	return rv
+}

@@ -502,6 +502,32 @@ func TestFileStoreDistinct(t *testing.T) {
 	}
 }
 
+func TestFileStoreGroupBy(t *testing.T) {
+	p, conv, op, err :=
+		testFileStoreSelect(t, `SELECT custId FROM data:orders AS a GROUP BY custId`, false)
+	if err != nil {
+		t.Fatalf("expected no nil err, got: %v", err)
+	}
+	if p == nil || conv == nil || op == nil {
+		t.Fatalf("expected p and conv an op, got nil")
+	}
+
+	results := testGlueExecOp(t, false, conv, op)
+	if len(results) != 3 {
+		t.Fatalf("expected 3 results, got: %+v", results)
+	}
+
+	for _, result := range results {
+		if len(result) != 1 {
+			t.Fatalf("expected result has one label, got: %+v", result)
+		}
+
+		if strings.Index(`"abc","bbb","ccc"`, string(result[0])) < 0 {
+			t.Fatalf("unexpected id: %+v", result)
+		}
+	}
+}
+
 // ---------------------------------------------------------------
 
 func TestFileStoreSelectComplex(t *testing.T) {

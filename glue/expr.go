@@ -174,7 +174,7 @@ OUTER:
 
 					err := subObj.SetField(path[j], m)
 					if err != nil {
-						return nil, err
+						return nil, fmt.Errorf("subObj: %+v, key: %s, err: %v", subObj, path[j], err)
 					}
 
 					subObj = value.NewValue(m)
