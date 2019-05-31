@@ -3112,7 +3112,7 @@ var TestCasesSimple = []TestCaseSimple{
 			Kind:   "project",
 			Labels: base.Labels{"x"},
 			Params: []interface{}{
-				[]interface{}{"valsCanonical", "a"},
+				[]interface{}{"valsEncodeCanonical", "a"},
 			},
 			Children: []*base.Op{&base.Op{
 				Kind:   "scan",

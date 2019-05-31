@@ -21,10 +21,12 @@ import (
 
 // ExprCatalog is the default registry of known expression functions.
 var ExprCatalog = map[string]base.ExprCatalogFunc{
-	"json":          ExprJson,
-	"labelPath":     ExprLabelPath,
-	"labelUint64":   ExprLabelUint64,
-	"valsCanonical": ExprValsCanonical,
+	"json":        ExprJson,
+	"labelPath":   ExprLabelPath,
+	"labelUint64": ExprLabelUint64,
+
+	"valsEncode":          ExprValsEncode,
+	"valsEncodeCanonical": ExprValsEncodeCanonical,
 }
 
 // -----------------------------------------------------
@@ -124,10 +126,36 @@ func ExprLabelUint64(lzVars *base.Vars, labels base.Labels,
 
 // -----------------------------------------------------
 
-// ExprValsCanonical canonicalizes the vals and joins their bytes
-// together using base.ValsEncodeCanonical(). The result is non-JSON /
-// BINARY and can be parsed using base.ValsSplit().
-func ExprValsCanonical(lzVars *base.Vars, labels base.Labels,
+// ExprValsEncode encodes vals using base.ValsEncode(). The result is
+// non-JSON / BINARY and can be parsed using base.ValsDecode().
+func ExprValsEncode(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
+	var lzJoined []byte // <== varLift: lzJoined by path
+
+	lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
+		if LzScope {
+			var lzErr error
+
+			lzBytes := lzJoined[:0]
+
+			lzJoined = base.ValsEncode(lzVals, lzBytes)
+			if lzErr == nil {
+				lzVal = base.Val(lzJoined)
+			}
+		}
+
+		return lzVal
+	}
+
+	return lzExprFunc
+}
+
+// -----------------------------------------------------
+
+// ExprValsEncodeCanonical encodes the vals using
+// base.ValsEncodeCanonical(). The result is non-JSON / BINARY and can
+// be parsed using base.ValsDecode().
+func ExprValsEncodeCanonical(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
 	var lzJoined []byte // <== varLift: lzJoined by path
 

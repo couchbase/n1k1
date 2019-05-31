@@ -54,8 +54,8 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	} else {
 		// INTERSECT & EXCEPT canonicalize their incoming vals so
 		// they're usable as map lookup keys.
-		exprLeft = []interface{}{"valsCanonical"}
-		exprRight = []interface{}{"valsCanonical"}
+		exprLeft = []interface{}{"valsEncodeCanonical"}
+		exprRight = []interface{}{"valsEncodeCanonical"}
 
 		canonical = true
 
