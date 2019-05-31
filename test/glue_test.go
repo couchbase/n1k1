@@ -558,6 +558,36 @@ func TestFileStoreGroupByCount(t *testing.T) {
 	}
 }
 
+func TestFileStoreGroupBySum(t *testing.T) {
+	p, conv, op, err :=
+		testFileStoreSelect(t, `SELECT o.custId, SUM(ol.qty) FROM data:orders AS o UNNEST o.orderlines AS ol GROUP BY o.custId`, true)
+	if err != nil {
+		t.Fatalf("expected no nil err, got: %v", err)
+	}
+	if p == nil || conv == nil || op == nil {
+		t.Fatalf("expected p and conv an op, got nil")
+	}
+
+	results := testGlueExecOp(t, true, conv, op)
+	if len(results) != 3 {
+		t.Fatalf("expected 3 results, got: %+v", results)
+	}
+
+	for _, result := range results {
+		if len(result) != 2 {
+			t.Fatalf("expected result has one label, got: %+v", result)
+		}
+
+		if strings.Index(`"abc","bbb","ccc"`, string(result[0])) < 0 {
+			t.Fatalf("unexpected id: %+v", result)
+		}
+
+		if strings.Index(`2,3,4`, string(result[1])) < 0 {
+			t.Fatalf("unexpected count: %+v", result)
+		}
+	}
+}
+
 // ---------------------------------------------------------------
 
 func TestFileStoreSelectComplex(t *testing.T) {
