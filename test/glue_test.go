@@ -545,7 +545,7 @@ func TestFileStoreGroupByCount(t *testing.T) {
 
 	for _, result := range results {
 		if len(result) != 2 {
-			t.Fatalf("expected result has one label, got: %+v", result)
+			t.Fatalf("expected result has 2 labels, got: %+v", result)
 		}
 
 		if strings.Index(`"abc","bbb","ccc"`, string(result[0])) < 0 {
@@ -560,7 +560,7 @@ func TestFileStoreGroupByCount(t *testing.T) {
 
 func TestFileStoreGroupBySum(t *testing.T) {
 	p, conv, op, err :=
-		testFileStoreSelect(t, `SELECT o.custId, SUM(ol.qty) FROM data:orders AS o UNNEST o.orderlines AS ol GROUP BY o.custId`, true)
+		testFileStoreSelect(t, `SELECT o.custId, SUM(ol.qty) FROM data:orders AS o UNNEST o.orderlines AS ol GROUP BY o.custId`, false)
 	if err != nil {
 		t.Fatalf("expected no nil err, got: %v", err)
 	}
@@ -568,7 +568,7 @@ func TestFileStoreGroupBySum(t *testing.T) {
 		t.Fatalf("expected p and conv an op, got nil")
 	}
 
-	results := testGlueExecOp(t, true, conv, op)
+	results := testGlueExecOp(t, false, conv, op)
 	if len(results) != 3 {
 		t.Fatalf("expected 3 results, got: %+v", results)
 	}
@@ -583,7 +583,41 @@ func TestFileStoreGroupBySum(t *testing.T) {
 		}
 
 		if strings.Index(`2,3,4`, string(result[1])) < 0 {
+			t.Fatalf("unexpected sum: %+v", result)
+		}
+	}
+}
+
+func TestFileStoreGroupByCountSum(t *testing.T) {
+	p, conv, op, err :=
+		testFileStoreSelect(t, `SELECT o.custId, COUNT(o.custId), SUM(ol.qty) FROM data:orders AS o UNNEST o.orderlines AS ol GROUP BY o.custId`, false)
+	if err != nil {
+		t.Fatalf("expected no nil err, got: %v", err)
+	}
+	if p == nil || conv == nil || op == nil {
+		t.Fatalf("expected p and conv an op, got nil")
+	}
+
+	results := testGlueExecOp(t, false, conv, op)
+	if len(results) != 3 {
+		t.Fatalf("expected 3 results, got: %+v", results)
+	}
+
+	for _, result := range results {
+		if len(result) != 3 {
+			t.Fatalf("expected result has 3 labels, got: %+v", result)
+		}
+
+		if strings.Index(`"abc","bbb","ccc"`, string(result[0])) < 0 {
+			t.Fatalf("unexpected id: %+v", result)
+		}
+
+		if strings.Index(`2,4`, string(result[1])) < 0 {
 			t.Fatalf("unexpected count: %+v", result)
+		}
+
+		if strings.Index(`2,3,4`, string(result[2])) < 0 {
+			t.Fatalf("unexpected sum: %+v", result)
 		}
 	}
 }
