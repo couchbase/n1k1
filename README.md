@@ -209,11 +209,10 @@ efficiently execute that query-plan.
 - aggregate functions, advanced features?
   - count(*) or COUNT_ALL is different than count(expr),
     w.r.t. missing/null handling?
-  - distinct?
+  - IGNORE NULL's? (RESPECT NULLS is default)
+  - FROM LAST? (FROM FIRST is default)
   - filter-where clauses?
-
-- more window functions?
-  - IGNORE NULL's?
+  - DISTINCT?
 
 - ORDER BY ... NULLS FIRST vs NULLS LAST?
 

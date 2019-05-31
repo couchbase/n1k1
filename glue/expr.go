@@ -16,6 +16,7 @@ package glue
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/couchbase/n1k1/base"
@@ -214,7 +215,24 @@ OUTER:
 				if label[1:] == "id" {
 					av.SetId(iv)
 				} else {
-					av.SetAttachment(label[1:], iv)
+					// Ex label:" ^aggregates|foo".
+					kk := strings.Split(label[1:], "|")
+					if len(kk) > 1 {
+						var att map[string]value.Value
+
+						v := av.GetAttachment(kk[0])
+						if v == nil {
+							att = map[string]value.Value{}
+
+							av.SetAttachment(kk[0], att)
+						} else {
+							att = v.(map[string]value.Value)
+						}
+
+						att[kk[1]] = value.NewValue(iv)
+					} else {
+						av.SetAttachment(label[1:], iv)
+					}
 				}
 
 				v = av

@@ -268,10 +268,21 @@ func (c *Conv) VisitFinalGroup(o *plan.FinalGroup) (interface{}, error) {
 		groups = append(groups, []interface{}{"exprStr", key.String()})
 	}
 
+	var aggExprs []interface{}
+	var aggCalcs []interface{}
+
+	for _, agg := range o.Aggregates() {
+		// TODO: Optimize as one aggExpr can support >=1 aggCalc.
+		aggExprs = append(aggExprs, []interface{}{"exprStr", agg.Operands()[0].String()})
+		aggCalcs = append(aggCalcs, []interface{}{strings.ToLower(agg.Name())})
+
+		labels = append(labels, "^aggregates|"+agg.String())
+	}
+
 	return c.Op(o, &base.Op{
 		Kind:   "group",
 		Labels: labels,
-		Params: []interface{}{groups},
+		Params: []interface{}{groups, aggExprs, aggCalcs},
 	})
 }
 
