@@ -22,11 +22,9 @@ import (
 // change during the request. Vars are chainable using the Next field
 // to allow for scoping. Vars are not concurrent safe.
 type Vars struct {
-	Labels Labels
-	Vals   Vals // Same len() as Labels.
-	Temps  []interface{}
-	Next   *Vars // The root Vars has nil Next.
-	Ctx    *Ctx
+	Temps []interface{}
+	Next  *Vars // The root Vars has nil Next.
+	Ctx   *Ctx
 }
 
 // -----------------------------------------------------
