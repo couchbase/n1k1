@@ -34,16 +34,16 @@ import (
 )
 
 func TestFileStoreSelectStarUseKeys1(t *testing.T) {
-	p, conv, op, err :=
+	store, p, conv, err :=
 		testFileStoreSelect(t, `SELECT * FROM data:orders USE KEYS "1234"`, false)
 	if err != nil {
 		t.Fatalf("expected no nil err, got: %v", err)
 	}
-	if p == nil || conv == nil || op == nil {
+	if p == nil || conv == nil || conv.TopOp == nil {
 		t.Fatalf("expected p and conv an op, got nil")
 	}
 
-	results := testGlueExecOp(t, false, conv, op)
+	results := testGlueExec(t, false, store, conv)
 	if len(results) != 1 {
 		t.Fatalf("expected 1 results, got: %+v", results)
 	}
@@ -67,16 +67,16 @@ func TestFileStoreSelectStarUseKeys1(t *testing.T) {
 }
 
 func TestFileStoreSelectStarUseKeys2(t *testing.T) {
-	p, conv, op, err :=
+	store, p, conv, err :=
 		testFileStoreSelect(t, `SELECT * FROM data:orders USE KEYS ["1234","9999","1200"]`, false)
 	if err != nil {
 		t.Fatalf("expected no nil err, got: %v", err)
 	}
-	if p == nil || conv == nil || op == nil {
+	if p == nil || conv == nil || conv.TopOp == nil {
 		t.Fatalf("expected p and conv an op, got nil")
 	}
 
-	results := testGlueExecOp(t, false, conv, op)
+	results := testGlueExec(t, false, store, conv)
 	if len(results) != 2 {
 		t.Fatalf("expected 2 results, got: %+v", results)
 	}
@@ -100,16 +100,16 @@ func TestFileStoreSelectStarUseKeys2(t *testing.T) {
 }
 
 func TestFileStoreSelectStar(t *testing.T) {
-	p, conv, op, err :=
+	store, p, conv, err :=
 		testFileStoreSelect(t, `SELECT * FROM data:orders`, false)
 	if err != nil {
 		t.Fatalf("expected no nil err, got: %v", err)
 	}
-	if p == nil || conv == nil || op == nil {
+	if p == nil || conv == nil || conv.TopOp == nil {
 		t.Fatalf("expected p and conv an op, got nil")
 	}
 
-	results := testGlueExecOp(t, false, conv, op)
+	results := testGlueExec(t, false, store, conv)
 	if len(results) != 4 {
 		t.Fatalf("expected 4 results, got: %+v", results)
 	}
@@ -133,16 +133,16 @@ func TestFileStoreSelectStar(t *testing.T) {
 }
 
 func TestFileStoreSelectStar123(t *testing.T) {
-	p, conv, op, err :=
+	store, p, conv, err :=
 		testFileStoreSelect(t, `SELECT *, 100 + 23 FROM data:orders`, false)
 	if err != nil {
 		t.Fatalf("expected no nil err, got: %v", err)
 	}
-	if p == nil || conv == nil || op == nil {
+	if p == nil || conv == nil || conv.TopOp == nil {
 		t.Fatalf("expected p and conv an op, got nil")
 	}
 
-	results := testGlueExecOp(t, false, conv, op)
+	results := testGlueExec(t, false, store, conv)
 	if len(results) != 4 {
 		t.Fatalf("expected 4 results, got: %+v", results)
 	}
@@ -170,16 +170,16 @@ func TestFileStoreSelectStar123(t *testing.T) {
 }
 
 func TestFileStoreInnerJoinOnKeys(t *testing.T) {
-	p, conv, op, err :=
+	store, p, conv, err :=
 		testFileStoreSelect(t, `SELECT a.id FROM data:orders AS a INNER JOIN data:orders AS b ON KEYS a.id`, false)
 	if err != nil {
 		t.Fatalf("expected no nil err, got: %v", err)
 	}
-	if p == nil || conv == nil || op == nil {
+	if p == nil || conv == nil || conv.TopOp == nil {
 		t.Fatalf("expected p and conv an op, got nil")
 	}
 
-	results := testGlueExecOp(t, false, conv, op)
+	results := testGlueExec(t, false, store, conv)
 	if len(results) != 4 {
 		t.Fatalf("expected 4 results, got: %+v", results)
 	}
@@ -192,32 +192,32 @@ func TestFileStoreInnerJoinOnKeys(t *testing.T) {
 }
 
 func TestFileStoreInnerJoinOnKeysOnMissingField(t *testing.T) {
-	p, conv, op, err :=
+	store, p, conv, err :=
 		testFileStoreSelect(t, `SELECT a.id FROM data:orders AS a INNER JOIN data:orders AS b ON KEYS a.notAField`, false)
 	if err != nil {
 		t.Fatalf("expected no nil err, got: %v", err)
 	}
-	if p == nil || conv == nil || op == nil {
+	if p == nil || conv == nil || conv.TopOp == nil {
 		t.Fatalf("expected p and conv an op, got nil")
 	}
 
-	results := testGlueExecOp(t, false, conv, op)
+	results := testGlueExec(t, false, store, conv)
 	if len(results) != 0 {
 		t.Fatalf("expected 0 results, got: %+v", results)
 	}
 }
 
 func TestFileStoreLeftOuterJoinOnKeys(t *testing.T) {
-	p, conv, op, err :=
+	store, p, conv, err :=
 		testFileStoreSelect(t, `SELECT a.id FROM data:orders AS a LEFT OUTER JOIN data:orders AS b ON KEYS a.notAField`, false)
 	if err != nil {
 		t.Fatalf("expected no nil err, got: %v", err)
 	}
-	if p == nil || conv == nil || op == nil {
+	if p == nil || conv == nil || conv.TopOp == nil {
 		t.Fatalf("expected p and conv an op, got nil")
 	}
 
-	results := testGlueExecOp(t, false, conv, op)
+	results := testGlueExec(t, false, store, conv)
 	if len(results) != 4 {
 		t.Fatalf("expected 4 results, got: %+v", results)
 	}
@@ -233,16 +233,16 @@ func TestFileStoreLeftOuterJoinOnKeys(t *testing.T) {
 }
 
 func TestFileStoreUnnest(t *testing.T) {
-	p, conv, op, err :=
+	store, p, conv, err :=
 		testFileStoreSelect(t, `SELECT * FROM data:orders AS a UNNEST orderlines AS ol`, false)
 	if err != nil {
 		t.Fatalf("expected no nil err, got: %v", err)
 	}
-	if p == nil || conv == nil || op == nil {
+	if p == nil || conv == nil || conv.TopOp == nil {
 		t.Fatalf("expected p and conv an op, got nil")
 	}
 
-	results := testGlueExecOp(t, false, conv, op)
+	results := testGlueExec(t, false, store, conv)
 	if len(results) != 8 {
 		t.Fatalf("expected 8 results, got: %+v", results)
 	}
@@ -255,32 +255,32 @@ func TestFileStoreUnnest(t *testing.T) {
 }
 
 func TestFileStoreUnnestOnMissingField(t *testing.T) {
-	p, conv, op, err :=
+	store, p, conv, err :=
 		testFileStoreSelect(t, `SELECT * FROM data:orders AS a UNNEST notAField AS ol`, false)
 	if err != nil {
 		t.Fatalf("expected no nil err, got: %v", err)
 	}
-	if p == nil || conv == nil || op == nil {
+	if p == nil || conv == nil || conv.TopOp == nil {
 		t.Fatalf("expected p and conv an op, got nil")
 	}
 
-	results := testGlueExecOp(t, false, conv, op)
+	results := testGlueExec(t, false, store, conv)
 	if len(results) != 0 {
 		t.Fatalf("expected 0 results, got: %+v", results)
 	}
 }
 
 func TestFileStoreLeftOuterUnnest(t *testing.T) {
-	p, conv, op, err :=
+	store, p, conv, err :=
 		testFileStoreSelect(t, `SELECT * FROM data:orders AS a LEFT OUTER UNNEST notAField AS ol`, false)
 	if err != nil {
 		t.Fatalf("expected no nil err, got: %v", err)
 	}
-	if p == nil || conv == nil || op == nil {
+	if p == nil || conv == nil || conv.TopOp == nil {
 		t.Fatalf("expected p and conv an op, got nil")
 	}
 
-	results := testGlueExecOp(t, false, conv, op)
+	results := testGlueExec(t, false, store, conv)
 	if len(results) != 4 {
 		t.Fatalf("expected 4 results, got: %+v", results)
 	}
@@ -293,16 +293,16 @@ func TestFileStoreLeftOuterUnnest(t *testing.T) {
 }
 
 func TestFileStoreConst(t *testing.T) {
-	p, conv, op, err :=
+	store, p, conv, err :=
 		testFileStoreSelect(t, `SELECT 1+2`, false)
 	if err != nil {
 		t.Fatalf("expected no nil err, got: %v", err)
 	}
-	if p == nil || conv == nil || op == nil {
+	if p == nil || conv == nil || conv.TopOp == nil {
 		t.Fatalf("expected p and conv an op, got nil")
 	}
 
-	results := testGlueExecOp(t, false, conv, op)
+	results := testGlueExec(t, false, store, conv)
 	if len(results) != 1 {
 		t.Fatalf("expected 1 results, got: %+v", results)
 	}
@@ -318,16 +318,16 @@ func TestFileStoreConst(t *testing.T) {
 }
 
 func TestFileStoreFromConstArray(t *testing.T) {
-	p, conv, op, err :=
+	store, p, conv, err :=
 		testFileStoreSelect(t, `SELECT * FROM [1,2,{"x":[3]}] AS a`, false)
 	if err != nil {
 		t.Fatalf("expected no nil err, got: %v", err)
 	}
-	if p == nil || conv == nil || op == nil {
+	if p == nil || conv == nil || conv.TopOp == nil {
 		t.Fatalf("expected p and conv an op, got nil")
 	}
 
-	results := testGlueExecOp(t, false, conv, op)
+	results := testGlueExec(t, false, store, conv)
 	if len(results) != 3 {
 		t.Fatalf("expected 3 results, got: %+v", results)
 	}
@@ -343,16 +343,16 @@ func TestFileStoreFromConstArray(t *testing.T) {
 }
 
 func TestFileStoreOrderBy(t *testing.T) {
-	p, conv, op, err :=
+	store, p, conv, err :=
 		testFileStoreSelect(t, `SELECT * FROM data:orders AS a ORDER BY a.id DESC`, false)
 	if err != nil {
 		t.Fatalf("expected no nil err, got: %v", err)
 	}
-	if p == nil || conv == nil || op == nil {
+	if p == nil || conv == nil || conv.TopOp == nil {
 		t.Fatalf("expected p and conv an op, got nil")
 	}
 
-	results := testGlueExecOp(t, false, conv, op)
+	results := testGlueExec(t, false, store, conv)
 	if len(results) != 4 {
 		t.Fatalf("expected 4 results, got: %+v", results)
 	}
@@ -380,16 +380,16 @@ func TestFileStoreOrderBy(t *testing.T) {
 }
 
 func TestFileStoreOrderByOffset(t *testing.T) {
-	p, conv, op, err :=
+	store, p, conv, err :=
 		testFileStoreSelect(t, `SELECT * FROM data:orders AS a ORDER BY a.id DESC OFFSET 2`, false)
 	if err != nil {
 		t.Fatalf("expected no nil err, got: %v", err)
 	}
-	if p == nil || conv == nil || op == nil {
+	if p == nil || conv == nil || conv.TopOp == nil {
 		t.Fatalf("expected p and conv an op, got nil")
 	}
 
-	results := testGlueExecOp(t, false, conv, op)
+	results := testGlueExec(t, false, store, conv)
 	if len(results) != 2 {
 		t.Fatalf("expected 2 results, got: %+v", results)
 	}
@@ -417,16 +417,16 @@ func TestFileStoreOrderByOffset(t *testing.T) {
 }
 
 func TestFileStoreOrderByLimit(t *testing.T) {
-	p, conv, op, err :=
+	store, p, conv, err :=
 		testFileStoreSelect(t, `SELECT * FROM data:orders AS a ORDER BY a.id DESC LIMIT 2`, false)
 	if err != nil {
 		t.Fatalf("expected no nil err, got: %v", err)
 	}
-	if p == nil || conv == nil || op == nil {
+	if p == nil || conv == nil || conv.TopOp == nil {
 		t.Fatalf("expected p and conv an op, got nil")
 	}
 
-	results := testGlueExecOp(t, false, conv, op)
+	results := testGlueExec(t, false, store, conv)
 	if len(results) != 2 {
 		t.Fatalf("expected 2 results, got: %+v", results)
 	}
@@ -454,16 +454,16 @@ func TestFileStoreOrderByLimit(t *testing.T) {
 }
 
 func TestFileStoreOrderByOffsetLimit(t *testing.T) {
-	p, conv, op, err :=
+	store, p, conv, err :=
 		testFileStoreSelect(t, `SELECT * FROM data:orders AS a ORDER BY a.id DESC OFFSET 2 LIMIT 1`, false)
 	if err != nil {
 		t.Fatalf("expected no nil err, got: %v", err)
 	}
-	if p == nil || conv == nil || op == nil {
+	if p == nil || conv == nil || conv.TopOp == nil {
 		t.Fatalf("expected p and conv an op, got nil")
 	}
 
-	results := testGlueExecOp(t, false, conv, op)
+	results := testGlueExec(t, false, store, conv)
 	if len(results) != 1 {
 		t.Fatalf("expected 1 results, got: %+v", results)
 	}
@@ -487,32 +487,32 @@ func TestFileStoreOrderByOffsetLimit(t *testing.T) {
 }
 
 func TestFileStoreDistinct(t *testing.T) {
-	p, conv, op, err :=
+	store, p, conv, err :=
 		testFileStoreSelect(t, `SELECT DISTINCT a FROM [1,2,3,4,1,2,3,4] AS a`, false)
 	if err != nil {
 		t.Fatalf("expected no nil err, got: %v", err)
 	}
-	if p == nil || conv == nil || op == nil {
+	if p == nil || conv == nil || conv.TopOp == nil {
 		t.Fatalf("expected p and conv an op, got nil")
 	}
 
-	results := testGlueExecOp(t, false, conv, op)
+	results := testGlueExec(t, false, store, conv)
 	if len(results) != 4 {
 		t.Fatalf("expected 4 results, got: %+v", results)
 	}
 }
 
 func TestFileStoreGroupBy(t *testing.T) {
-	p, conv, op, err :=
+	store, p, conv, err :=
 		testFileStoreSelect(t, `SELECT custId FROM data:orders AS a GROUP BY custId`, false)
 	if err != nil {
 		t.Fatalf("expected no nil err, got: %v", err)
 	}
-	if p == nil || conv == nil || op == nil {
+	if p == nil || conv == nil || conv.TopOp == nil {
 		t.Fatalf("expected p and conv an op, got nil")
 	}
 
-	results := testGlueExecOp(t, false, conv, op)
+	results := testGlueExec(t, false, store, conv)
 	if len(results) != 3 {
 		t.Fatalf("expected 3 results, got: %+v", results)
 	}
@@ -529,16 +529,16 @@ func TestFileStoreGroupBy(t *testing.T) {
 }
 
 func TestFileStoreGroupByCount(t *testing.T) {
-	p, conv, op, err :=
+	store, p, conv, err :=
 		testFileStoreSelect(t, `SELECT custId, COUNT(custId) FROM data:orders AS a GROUP BY custId`, false)
 	if err != nil {
 		t.Fatalf("expected no nil err, got: %v", err)
 	}
-	if p == nil || conv == nil || op == nil {
+	if p == nil || conv == nil || conv.TopOp == nil {
 		t.Fatalf("expected p and conv an op, got nil")
 	}
 
-	results := testGlueExecOp(t, false, conv, op)
+	results := testGlueExec(t, false, store, conv)
 	if len(results) != 3 {
 		t.Fatalf("expected 3 results, got: %+v", results)
 	}
@@ -559,16 +559,16 @@ func TestFileStoreGroupByCount(t *testing.T) {
 }
 
 func TestFileStoreGroupBySum(t *testing.T) {
-	p, conv, op, err :=
+	store, p, conv, err :=
 		testFileStoreSelect(t, `SELECT o.custId, SUM(ol.qty) FROM data:orders AS o UNNEST o.orderlines AS ol GROUP BY o.custId`, false)
 	if err != nil {
 		t.Fatalf("expected no nil err, got: %v", err)
 	}
-	if p == nil || conv == nil || op == nil {
+	if p == nil || conv == nil || conv.TopOp == nil {
 		t.Fatalf("expected p and conv an op, got nil")
 	}
 
-	results := testGlueExecOp(t, false, conv, op)
+	results := testGlueExec(t, false, store, conv)
 	if len(results) != 3 {
 		t.Fatalf("expected 3 results, got: %+v", results)
 	}
@@ -589,16 +589,16 @@ func TestFileStoreGroupBySum(t *testing.T) {
 }
 
 func TestFileStoreGroupByCountSum(t *testing.T) {
-	p, conv, op, err :=
+	store, p, conv, err :=
 		testFileStoreSelect(t, `SELECT o.custId, COUNT(o.custId), SUM(ol.qty) FROM data:orders AS o UNNEST o.orderlines AS ol GROUP BY o.custId`, false)
 	if err != nil {
 		t.Fatalf("expected no nil err, got: %v", err)
 	}
-	if p == nil || conv == nil || op == nil {
+	if p == nil || conv == nil || conv.TopOp == nil {
 		t.Fatalf("expected p and conv an op, got nil")
 	}
 
-	results := testGlueExecOp(t, false, conv, op)
+	results := testGlueExec(t, false, store, conv)
 	if len(results) != 3 {
 		t.Fatalf("expected 3 results, got: %+v", results)
 	}
@@ -627,7 +627,7 @@ func TestFileStoreGroupByCountSum(t *testing.T) {
 // into a n1k1 expr_window function like "window-frame-count".
 //
 func DISABLED_TestFileStoreWindowOver(t *testing.T) {
-	p, conv, op, err :=
+	store, p, conv, err :=
 		testFileStoreSelect(t, `
 SELECT
  COUNT(o.custId) OVER (PARTITION BY o.custId ORDER BY o.id ROWS UNBOUNDED PRECEDING)
@@ -636,11 +636,11 @@ FROM data:orders AS o`,
 	if err != nil {
 		t.Fatalf("expected no nil err, got: %v", err)
 	}
-	if p == nil || conv == nil || op == nil {
+	if p == nil || conv == nil || conv.TopOp == nil {
 		t.Fatalf("expected p and conv an op, got nil")
 	}
 
-	results := testGlueExecOp(t, true, conv, op)
+	results := testGlueExec(t, true, store, conv)
 	if len(results) != 3 {
 		t.Fatalf("expected 3 results, got: %+v", results)
 	}
@@ -698,7 +698,7 @@ func TestFileStoreSelectComplex(t *testing.T) {
 // ---------------------------------------------------------------
 
 func testFileStoreSelect(t *testing.T, stmt string, emit bool) (
-	plan.Operator, *glue.Conv, *base.Op, error) {
+	*glue.Store, plan.Operator, *glue.Conv, error) {
 	store, err := glue.FileStore("./")
 	if err != nil {
 		t.Fatalf("did not expect err: %v", err)
@@ -728,23 +728,20 @@ func testFileStoreSelect(t *testing.T, stmt string, emit bool) (
 	}
 
 	conv := &glue.Conv{
-		Store: store,
 		Temps: []interface{}{nil}, // Placeholder for execution.Context.
 	}
 
-	v, err := p.Accept(conv)
+	_, err = p.Accept(conv)
 
-	op, _ := v.(*base.Op)
-
-	return p, conv, op, err
+	return store, p, conv, err
 }
 
 // -------------------------------------------------------------
 
-func testGlueExecOp(t *testing.T, emit bool,
-	conv *glue.Conv, op *base.Op) []base.Vals {
+func testGlueExec(t *testing.T, emit bool,
+	store *glue.Store, conv *glue.Conv) []base.Vals {
 	if emit {
-		jop, _ := json.MarshalIndent(op, " ", " ")
+		jop, _ := json.MarshalIndent(conv.TopOp, " ", " ")
 		fmt.Printf("jop: %s\n", jop)
 	}
 
@@ -777,13 +774,13 @@ func testGlueExecOp(t *testing.T, emit bool,
 	var prepared *plan.Prepared
 
 	context := execution.NewContext(requestId,
-		conv.Store.Datastore, conv.Store.Systemstore, namespace,
+		store.Datastore, store.Systemstore, namespace,
 		readonly, maxParallelism,
 		requestScanCap, requestPipelineCap, requestPipelineBatch,
 		requestNamedArgs, requestPositionalArgs,
 		requestCredentials, requestScanConsistency, requestScanVectorSource,
 		requestOutput, requestOriginalHttpRequest,
-		prepared, conv.Store.IndexApiVersion, conv.Store.FeatureControls)
+		prepared, store.IndexApiVersion, store.FeatureControls)
 
 	vars.Temps = vars.Temps[:0]
 
@@ -801,7 +798,7 @@ func testGlueExecOp(t *testing.T, emit bool,
 
 	n1k1.ExecOpEx = glue.DatastoreOp
 
-	n1k1.ExecOp(op, vars, yieldVals, yieldErr, "", "")
+	n1k1.ExecOp(conv.TopOp, vars, yieldVals, yieldErr, "", "")
 
 	results := returnYields()
 

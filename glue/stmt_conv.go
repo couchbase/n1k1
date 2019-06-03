@@ -33,9 +33,6 @@ type Termer interface {
 // Conv implements the conversion of a couchbase/query/plan into a
 // n1k1 base.Op tree. It implements the plan.Visitor interface.
 type Conv struct {
-	// Store is the datastore that the conversion is targeting.
-	Store *Store
-
 	// Temps represents the slots of vars.Temps.
 	Temps []interface{}
 
