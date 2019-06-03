@@ -727,13 +727,9 @@ func testFileStoreSelect(t *testing.T, stmt string, emit bool) (
 		fmt.Printf("jp: %s\n", jp)
 	}
 
-	conv := &glue.Conv{
-		Temps: []interface{}{nil}, // Placeholder for execution.Context.
-	}
+	conv := glue.NewConv()
 
-	_, err = p.Accept(conv)
-
-	return store, p, conv, err
+	return store, p, conv, conv.Convert(p)
 }
 
 // -------------------------------------------------------------
