@@ -622,6 +622,48 @@ func TestFileStoreGroupByCountSum(t *testing.T) {
 	}
 }
 
+// TODO: Need to rewrite the projection expression of...
+//   "count((`o`.`custId`)) OVER (PARTITION BY (`o`.`custId`) ORDER BY (`o`.`id`) ROWS UNBOUNDED PRECEDING)"
+// into a n1k1 expr_window function like "window-frame-count".
+//
+func DISABLED_TestFileStoreWindowOver(t *testing.T) {
+	p, conv, op, err :=
+		testFileStoreSelect(t, `
+SELECT
+ COUNT(o.custId) OVER (PARTITION BY o.custId ORDER BY o.id ROWS UNBOUNDED PRECEDING)
+FROM data:orders AS o`,
+			true)
+	if err != nil {
+		t.Fatalf("expected no nil err, got: %v", err)
+	}
+	if p == nil || conv == nil || op == nil {
+		t.Fatalf("expected p and conv an op, got nil")
+	}
+
+	results := testGlueExecOp(t, true, conv, op)
+	if len(results) != 3 {
+		t.Fatalf("expected 3 results, got: %+v", results)
+	}
+
+	for _, result := range results {
+		if len(result) != 3 {
+			t.Fatalf("expected result has 3 labels, got: %+v", result)
+		}
+
+		if strings.Index(`"abc","bbb","ccc"`, string(result[0])) < 0 {
+			t.Fatalf("unexpected id: %+v", result)
+		}
+
+		if strings.Index(`2,4`, string(result[1])) < 0 {
+			t.Fatalf("unexpected count: %+v", result)
+		}
+
+		if strings.Index(`2,3,4`, string(result[2])) < 0 {
+			t.Fatalf("unexpected sum: %+v", result)
+		}
+	}
+}
+
 // ---------------------------------------------------------------
 
 func TestFileStoreSelectComplex(t *testing.T) {
@@ -686,9 +728,8 @@ func testFileStoreSelect(t *testing.T, stmt string, emit bool) (
 	}
 
 	conv := &glue.Conv{
-		Store:   store,
-		Aliases: map[string]string{},
-		Temps:   []interface{}{nil}, // Placeholder for execution.Context.
+		Store: store,
+		Temps: []interface{}{nil}, // Placeholder for execution.Context.
 	}
 
 	v, err := p.Accept(conv)

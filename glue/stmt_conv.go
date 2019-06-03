@@ -339,6 +339,7 @@ func (c *Conv) VisitWindowAggregate(o *plan.WindowAggregate) (interface{}, error
 				len(partitionBys), // # of the partitioning exprs for PARTITION-BY.
 				"",                // TODO: Additional tracking ("rank,denseRank").
 			},
+			Children: []*base.Op{c.TopOp},
 		}
 
 		// Chain the window-partition to the previous round.
@@ -428,7 +429,7 @@ func (c *Conv) VisitWindowAggregate(o *plan.WindowAggregate) (interface{}, error
 		rv = framesOp
 	}
 
-	return c.TopPush(o, rv)
+	return c.TopSet(o, rv)
 }
 
 // Project
