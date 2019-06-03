@@ -32,28 +32,37 @@ type Termer interface {
 // Conv implements the conversion of a couchbase/query/plan into a
 // n1k1 base.Op tree. It implements the plan.Visitor interface.
 type Conv struct {
-	Store   *Store
-	Aliases map[string]string
-	Temps   []interface{}
+	Store *Store
 
-	PrevPlan plan.Operator
-	PrevOp   *base.Op
+	// Temps represents the slots of vars.Temps.
+	Temps []interface{}
+
+	// TopPlan holds the last plan operator that was converted.
+	TopPlan plan.Operator
+
+	// TopOp holds top of the converted base.Op tree.
+	TopOp *base.Op
 }
 
-func (c *Conv) AddAlias(kt *algebra.KeyspaceTerm) {
-	if kt.Namespace() != "#system" {
-		c.Aliases[kt.Alias()] = kt.Path().ProtectedString()
-	}
-}
-
+// AddTemp appends an object to the Temps, returning its slot index.
 func (c *Conv) AddTemp(t interface{}) int {
 	rv := len(c.Temps)
 	c.Temps = append(c.Temps, t)
 	return rv
 }
 
-func (c *Conv) Op(p plan.Operator, op *base.Op) (*base.Op, error) {
-	c.PrevPlan, c.PrevOp = p, op
+// TopPush pushes an operator as the new top operator, chaining the
+// previous top operator as a child.
+func (c *Conv) TopPush(p plan.Operator, op *base.Op) (*base.Op, error) {
+	if c.TopOp != nil {
+		op.Children = append(op.Children, c.TopOp)
+	}
+	return c.TopSet(p, op)
+}
+
+// TopSet sets the operator as the top operator.
+func (c *Conv) TopSet(p plan.Operator, op *base.Op) (*base.Op, error) {
+	c.TopPlan, c.TopOp = p, op
 	return op, nil
 }
 
@@ -69,7 +78,7 @@ func LabelSuffix(s string) string {
 // Scan
 
 func (c *Conv) VisitPrimaryScan(o *plan.PrimaryScan) (interface{}, error) {
-	return c.Op(o, &base.Op{
+	return c.TopPush(o, &base.Op{
 		Kind:   "datastore-scan-primary",
 		Labels: base.Labels{"^id"},
 		Params: []interface{}{c.AddTemp(o)},
@@ -81,7 +90,7 @@ func (c *Conv) VisitPrimaryScan3(o *plan.PrimaryScan3) (interface{}, error) { re
 func (c *Conv) VisitParentScan(o *plan.ParentScan) (interface{}, error) { return NA(o) } // TODO: ParentScan seems unused?
 
 func (c *Conv) VisitIndexScan(o *plan.IndexScan) (interface{}, error) {
-	return c.Op(o, &base.Op{
+	return c.TopPush(o, &base.Op{
 		Kind:   "datastore-scan-index",
 		Labels: base.Labels{"^id"},
 		Params: []interface{}{c.AddTemp(o)},
@@ -92,7 +101,7 @@ func (c *Conv) VisitIndexScan2(o *plan.IndexScan2) (interface{}, error) { return
 func (c *Conv) VisitIndexScan3(o *plan.IndexScan3) (interface{}, error) { return NA(o) }
 
 func (c *Conv) VisitKeyScan(o *plan.KeyScan) (interface{}, error) {
-	return c.Op(o, &base.Op{
+	return c.TopPush(o, &base.Op{
 		Kind:   "datastore-scan-keys",
 		Labels: base.Labels{"^id"},
 		Params: []interface{}{c.AddTemp(o)},
@@ -102,7 +111,7 @@ func (c *Conv) VisitKeyScan(o *plan.KeyScan) (interface{}, error) {
 func (c *Conv) VisitValueScan(o *plan.ValueScan) (interface{}, error) { return NA(o) } // Used for mutations (VALUES clause).
 
 func (c *Conv) VisitDummyScan(o *plan.DummyScan) (interface{}, error) {
-	return c.Op(o, &base.Op{Kind: "nil"})
+	return c.TopPush(o, &base.Op{Kind: "nil"})
 }
 
 func (c *Conv) VisitCountScan(o *plan.CountScan) (interface{}, error)           { return NA(o) }
@@ -141,7 +150,7 @@ func (c *Conv) VisitExpressionScan(o *plan.ExpressionScan) (interface{}, error) 
 		return nil, fmt.Errorf("VisitExpressionScan, json.Marshal, err: %v", err)
 	}
 
-	return c.Op(o, &base.Op{
+	return c.TopPush(o, &base.Op{
 		Kind:   "temp-yield-var",
 		Labels: base.Labels{"." + LabelSuffix(o.Alias())},
 		Params: []interface{}{c.AddTemp(base.Val(jv))},
@@ -155,9 +164,7 @@ func (c *Conv) VisitIndexFtsSearch(o *plan.IndexFtsSearch) (interface{}, error) 
 // Fetch
 
 func (c *Conv) VisitFetch(o *plan.Fetch) (interface{}, error) {
-	c.AddAlias(o.Term())
-
-	return c.Op(o, &base.Op{
+	return c.TopPush(o, &base.Op{
 		Kind:   "datastore-fetch",
 		Labels: base.Labels{"." + LabelSuffix(o.Term().As()), "^id"},
 		Params: []interface{}{c.AddTemp(o)},
@@ -175,7 +182,7 @@ func (c *Conv) VisitJoin(o *plan.Join) (interface{}, error) {
 	rv := &base.Op{
 		Kind: "joinKeys-inner",
 		Labels: base.Labels{
-			"." + LabelSuffix(c.PrevPlan.(Termer).Term().As()), "^id",
+			"." + LabelSuffix(c.TopPlan.(Termer).Term().As()), "^id",
 			"." + LabelSuffix(o.Term().As()), "^id",
 		},
 		Params: []interface{}{
@@ -184,23 +191,25 @@ func (c *Conv) VisitJoin(o *plan.Join) (interface{}, error) {
 			// The expression that will evaluate to the keys.
 			[]interface{}{"exprStr", o.Term().JoinKeys().String()},
 		},
-		Children: []*base.Op{&base.Op{
-			Kind:   "datastore-fetch",
-			Labels: base.Labels{"." + LabelSuffix(o.Term().As()), "^id"},
-			Params: []interface{}{c.AddTemp(o)},
-			Children: []*base.Op{&base.Op{
-				Kind:   "temp-yield-var",
-				Labels: base.Labels{"^id"},
-				Params: []interface{}{varsTempsSlot},
+		Children: []*base.Op{
+			c.TopOp,
+			&base.Op{
+				Kind:   "datastore-fetch",
+				Labels: base.Labels{"." + LabelSuffix(o.Term().As()), "^id"},
+				Params: []interface{}{c.AddTemp(o)},
+				Children: []*base.Op{&base.Op{
+					Kind:   "temp-yield-var",
+					Labels: base.Labels{"^id"},
+					Params: []interface{}{varsTempsSlot},
+				}},
 			}},
-		}},
 	}
 
 	if o.Outer() {
 		rv.Kind = "joinKeys-leftOuter"
 	}
 
-	return c.Op(o, rv)
+	return c.TopSet(o, rv)
 }
 
 func (c *Conv) VisitIndexJoin(o *plan.IndexJoin) (interface{}, error) { return NA(o) }
@@ -211,24 +220,26 @@ func (c *Conv) VisitUnnest(o *plan.Unnest) (interface{}, error) {
 	rv := &base.Op{
 		Kind: "unnest-inner",
 		Labels: base.Labels{
-			"." + LabelSuffix(c.PrevPlan.(Termer).Term().As()), "^id",
+			"." + LabelSuffix(c.TopPlan.(Termer).Term().As()), "^id",
 			"." + LabelSuffix(o.Term().As()),
 		},
 		Params: []interface{}{
 			// The expression to unnest.
 			"exprStr", o.Term().Expression().String(),
 		},
-		Children: []*base.Op{&base.Op{
-			Kind:   "noop",
-			Labels: base.Labels{"." + LabelSuffix(o.Term().As())},
-		}},
+		Children: []*base.Op{
+			c.TopOp,
+			&base.Op{
+				Kind:   "noop",
+				Labels: base.Labels{"." + LabelSuffix(o.Term().As())},
+			}},
 	}
 
 	if o.Term().Outer() {
 		rv.Kind = "unnest-leftOuter"
 	}
 
-	return c.Op(o, rv)
+	return c.TopSet(o, rv)
 }
 
 func (c *Conv) VisitNLJoin(o *plan.NLJoin) (interface{}, error)     { return NA(o) }
@@ -248,11 +259,11 @@ func (c *Conv) VisitFilter(o *plan.Filter) (interface{}, error) { return NA(o) }
 // Group
 
 func (c *Conv) VisitInitialGroup(o *plan.InitialGroup) (interface{}, error) {
-	return nil, nil // Skip as the final group will handle grouping.
+	return c.TopOp, nil // Skip as the final group will handle grouping.
 }
 
 func (c *Conv) VisitIntermediateGroup(o *plan.IntermediateGroup) (interface{}, error) {
-	return nil, nil // Skip as the final group will handle grouping.
+	return c.TopOp, nil // Skip as the final group will handle grouping.
 }
 
 func (c *Conv) VisitFinalGroup(o *plan.FinalGroup) (interface{}, error) {
@@ -279,7 +290,7 @@ func (c *Conv) VisitFinalGroup(o *plan.FinalGroup) (interface{}, error) {
 		labels = append(labels, "^aggregates|"+agg.String())
 	}
 
-	return c.Op(o, &base.Op{
+	return c.TopPush(o, &base.Op{
 		Kind:   "group",
 		Labels: labels,
 		Params: []interface{}{groups, aggExprs, aggCalcs},
@@ -288,8 +299,136 @@ func (c *Conv) VisitFinalGroup(o *plan.FinalGroup) (interface{}, error) {
 
 // Window functions
 
+var DefaultWindowFrame = algebra.NewWindowFrame(algebra.WINDOW_FRAME_RANGE,
+	algebra.WindowFrameExtents{
+		algebra.NewWindowFrameExtent(nil, algebra.WINDOW_FRAME_UNBOUNDED_PRECEDING),
+		algebra.NewWindowFrameExtent(nil, algebra.WINDOW_FRAME_CURRENT_ROW),
+	})
+
 func (c *Conv) VisitWindowAggregate(o *plan.WindowAggregate) (interface{}, error) {
-	return NA(o)
+	if len(o.Aggregates()) <= 0 {
+		return c.TopOp, nil
+	}
+
+	var rv *base.Op
+
+	// All the o.Aggregates() have the same PARTITION BY.
+	var partitionBys []interface{}
+	for _, e := range o.Aggregates()[0].WindowTerm().PartitionBy() {
+		partitionBys = append(partitionBys, []interface{}{"exprStr", e.String()})
+	}
+
+	for _, agg := range o.Aggregates() {
+		// TODO: Perhaps only need to append order-by's when we have
+		// extra trackings, for rank, denseRank?
+		partitionings := append([]interface{}(nil), partitionBys...) // Clone.
+		for _, e := range agg.WindowTerm().OrderBy().Expressions() {
+			// The asc vs desc is ignored as equality of vals is all
+			// that we need to check.
+			partitionings = append(partitionings, []interface{}{"exprStr", e.String()})
+		}
+
+		partitionSlot := c.AddTemp(nil)
+
+		partitionOp := &base.Op{
+			Kind:   "window-partition",
+			Labels: c.TopOp.Labels,
+			Params: []interface{}{
+				partitionSlot,
+				partitionings,
+				len(partitionBys), // # of the partitioning exprs for PARTITION-BY.
+				"",                // TODO: Additional tracking ("rank,denseRank").
+			},
+		}
+
+		// Chain the window-partition to the previous round.
+		if rv != nil {
+			partitionOp.Children = append(partitionOp.Children, rv)
+		}
+
+		// TODO: Reuse of a window-partition by multiple
+		// aggregates and window-frame instances?
+
+		var wf *algebra.WindowFrame
+		if agg.WindowTerm() != nil {
+			wf = agg.WindowTerm().WindowFrame()
+		}
+		if wf == nil {
+			wf = DefaultWindowFrame
+		}
+
+		frameType := "rows"
+		if wf.HasModifier(algebra.WINDOW_FRAME_RANGE) {
+			frameType = "range"
+		} else if wf.HasModifier(algebra.WINDOW_FRAME_GROUPS) {
+			frameType = "groups"
+		}
+
+		frameCfg := []interface{}{frameType}
+
+		appendExtent := func(wfe *algebra.WindowFrameExtent) {
+			if wfe.HasModifier(algebra.WINDOW_FRAME_CURRENT_ROW) {
+				frameCfg = append(frameCfg, "num", 0)
+			} else if wfe.HasModifier(algebra.WINDOW_FRAME_VALUE_PRECEDING) {
+				// TODO: Handle non-int64 RANGE extent.
+				n := EvalExprInt64(nil, wfe.ValueExpression(), nil, 0)
+				frameCfg = append(frameCfg, "num", -n)
+			} else if wfe.HasModifier(algebra.WINDOW_FRAME_VALUE_FOLLOWING) {
+				// TODO: Handle non-int64 RANGE extent.
+				n := EvalExprInt64(nil, wfe.ValueExpression(), nil, 0)
+				frameCfg = append(frameCfg, "num", n)
+			} else {
+				// Unbounded preceding or following.
+				frameCfg = append(frameCfg, "unbounded", 0)
+			}
+		}
+
+		wfes := wf.WindowFrameExtents()
+
+		appendExtent(wfes[0])
+
+		if len(wfes) > 1 {
+			appendExtent(wfes[1])
+		} else {
+			// Default to CURRENT ROW for end.
+			frameCfg = append(frameCfg, "num", 0)
+		}
+
+		frameExclude := "no-others"
+		if wf.HasModifier(algebra.WINDOW_FRAME_EXCLUDE_CURRENT_ROW) {
+			frameExclude = "current-row"
+		} else if wf.HasModifier(algebra.WINDOW_FRAME_EXCLUDE_GROUP) {
+			frameExclude = "group"
+		} else if wf.HasModifier(algebra.WINDOW_FRAME_EXCLUDE_TIES) {
+			frameExclude = "ties"
+		}
+
+		frameCfg = append(frameCfg, frameExclude)
+
+		// TODO: Specify the val to compare for RANGE type.
+		valIdx := 0
+
+		frameCfg = append(frameCfg, valIdx)
+
+		framesSlot := c.AddTemp(nil)
+
+		framesOp := &base.Op{
+			Kind:   "window-frames",
+			Labels: c.TopOp.Labels, // TODO: Handle extra trackings.
+			Params: []interface{}{
+				partitionSlot,
+				framesSlot,
+				[]interface{}{frameCfg},
+			},
+			Children: []*base.Op{partitionOp},
+		}
+
+		// TODO: agg modifiers are DISTINCT, RESPECT|IGNORE NULLS, FROM FIRST|LAST.
+
+		rv = framesOp
+	}
+
+	return c.TopPush(o, rv)
 }
 
 // Project
@@ -306,12 +445,12 @@ func (c *Conv) VisitInitialProject(o *plan.InitialProject) (interface{}, error) 
 			[]interface{}{"exprStr", term.Result().Expression().String()})
 	}
 
-	return c.Op(o, op)
+	return c.TopPush(o, op)
 }
 
 func (c *Conv) VisitFinalProject(o *plan.FinalProject) (interface{}, error) {
 	// TODO: Need to convert projections back into a SELF'ish single object?
-	return nil, nil
+	return c.TopOp, nil
 }
 
 func (c *Conv) VisitIndexCountProject(o *plan.IndexCountProject) (interface{}, error) {
@@ -321,20 +460,20 @@ func (c *Conv) VisitIndexCountProject(o *plan.IndexCountProject) (interface{}, e
 // Distinct
 
 func (c *Conv) VisitDistinct(o *plan.Distinct) (interface{}, error) {
-	if c.PrevOp.Kind == "distinct" {
+	if c.TopOp.Kind == "distinct" {
 		// N1QL planner produces multiple, nested distinct's, so
 		// filter away the last one of them...
 		// Sequence[Scan, Parallel[Sequence[InitialProject, Distinct, FinalProject]], Distinct].
-		return nil, nil
+		return c.TopOp, nil
 	}
 
-	return c.Op(o, &base.Op{
+	return c.TopPush(o, &base.Op{
 		Kind:   "distinct",
-		Labels: c.PrevOp.Labels,
+		Labels: c.TopOp.Labels,
 		Params: []interface{}{
 			[]interface{}{
 				// TODO: This expression might not be enough for the DISTINCT?
-				[]interface{}{"labelPath", c.PrevOp.Labels[0]},
+				[]interface{}{"labelPath", c.TopOp.Labels[0]},
 			},
 		},
 	})
@@ -365,9 +504,9 @@ func (c *Conv) VisitOrder(o *plan.Order) (interface{}, error) {
 		}
 	}
 
-	return c.Op(o, &base.Op{
+	return c.TopPush(o, &base.Op{
 		Kind:   "order-offset-limit",
-		Labels: c.PrevOp.Labels,
+		Labels: c.TopOp.Labels,
 		Params: []interface{}{exprs, dirs},
 	})
 }
@@ -375,19 +514,19 @@ func (c *Conv) VisitOrder(o *plan.Order) (interface{}, error) {
 func (c *Conv) VisitOffset(o *plan.Offset) (interface{}, error) {
 	offset := EvalExprInt64(nil, o.Expression(), nil, 0)
 
-	if c.PrevOp != nil && c.PrevOp.Kind == "order-offset-limit" {
-		for len(c.PrevOp.Params) < 3 {
-			c.PrevOp.Params = append(c.PrevOp.Params, nil)
+	if c.TopOp != nil && c.TopOp.Kind == "order-offset-limit" {
+		for len(c.TopOp.Params) < 3 {
+			c.TopOp.Params = append(c.TopOp.Params, nil)
 		}
 
-		c.PrevOp.Params[2] = int64(offset)
+		c.TopOp.Params[2] = int64(offset)
 
-		return nil, nil
+		return c.TopOp, nil
 	}
 
-	return c.Op(o, &base.Op{
+	return c.TopPush(o, &base.Op{
 		Kind:   "order-offset-limit",
-		Labels: c.PrevOp.Labels,
+		Labels: c.TopOp.Labels,
 		Params: []interface{}{nil, nil, int64(offset)},
 	})
 }
@@ -395,19 +534,19 @@ func (c *Conv) VisitOffset(o *plan.Offset) (interface{}, error) {
 func (c *Conv) VisitLimit(o *plan.Limit) (interface{}, error) {
 	limit := EvalExprInt64(nil, o.Expression(), nil, int64(math.MaxInt64))
 
-	if c.PrevOp != nil && c.PrevOp.Kind == "order-offset-limit" {
-		for len(c.PrevOp.Params) < 4 {
-			c.PrevOp.Params = append(c.PrevOp.Params, nil)
+	if c.TopOp != nil && c.TopOp.Kind == "order-offset-limit" {
+		for len(c.TopOp.Params) < 4 {
+			c.TopOp.Params = append(c.TopOp.Params, nil)
 		}
 
-		c.PrevOp.Params[3] = int64(limit)
+		c.TopOp.Params[3] = int64(limit)
 
-		return nil, nil
+		return c.TopOp, nil
 	}
 
-	return c.Op(o, &base.Op{
+	return c.TopPush(o, &base.Op{
 		Kind:   "order-offset-limit",
-		Labels: c.PrevOp.Labels,
+		Labels: c.TopOp.Labels,
 		Params: []interface{}{nil, nil, int64(0), int64(limit)},
 	})
 }
@@ -440,28 +579,13 @@ func (c *Conv) VisitParallel(o *plan.Parallel) (interface{}, error) {
 func (c *Conv) VisitSequence(o *plan.Sequence) (rv interface{}, err error) {
 	// Convert plan.Sequence's children into a branch of descendants.
 	for _, child := range o.Children() {
-		v, err := child.Accept(c)
+		_, err := child.Accept(c)
 		if err != nil {
 			return nil, err
 		}
-
-		if v != nil {
-			if rv != nil {
-				// The first plan.Sequence child will become the deepest descendant.
-				v.(*base.Op).Children = append(
-					append([]*base.Op(nil), rv.(*base.Op)),
-					v.(*base.Op).Children...)
-			}
-
-			rv = v
-		}
 	}
 
-	if rv == nil {
-		return nil, nil
-	}
-
-	return c.Op(o, rv.(*base.Op))
+	return c.TopOp, nil
 }
 
 func (c *Conv) VisitDiscard(o *plan.Discard) (interface{}, error) { return NA(o) }
