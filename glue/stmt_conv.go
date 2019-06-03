@@ -25,6 +25,7 @@ import (
 	"github.com/couchbase/n1k1/base"
 )
 
+// Termer provides access to a keyspace term.
 type Termer interface {
 	Term() *algebra.KeyspaceTerm
 }
@@ -32,6 +33,7 @@ type Termer interface {
 // Conv implements the conversion of a couchbase/query/plan into a
 // n1k1 base.Op tree. It implements the plan.Visitor interface.
 type Conv struct {
+	// Store is the datastore that the conversion is targeting.
 	Store *Store
 
 	// Temps represents the slots of vars.Temps.
@@ -66,6 +68,7 @@ func (c *Conv) TopSet(p plan.Operator, op *base.Op) (*base.Op, error) {
 	return op, nil
 }
 
+// LabelSuffix converts a string into label syntax.
 func LabelSuffix(s string) string {
 	if s != "" {
 		return `["` + s + `"]`
