@@ -1,18 +1,12 @@
 package test
 
 import (
-	"bytes"
-	"fmt"
-	"io/ioutil"
-	"sync"
-	"sync/atomic"
 	"testing"
-
-	"github.com/couchbase/rhmap/store"
 
 	"github.com/couchbase/n1k1"
 	"github.com/couchbase/n1k1/base"
 	"github.com/couchbase/n1k1/glue"
+	"github.com/couchbase/n1k1/glue/exec"
 )
 
 func MakeYieldCaptureFuncs(t *testing.T, testi int, expectErr string) (
@@ -44,152 +38,9 @@ func MakeYieldCaptureFuncs(t *testing.T, testi int, expectErr string) (
 		return yields
 	}
 
-	tmpDir, vars := MakeVars()
+	tmpDir, vars := exec.MakeVars("", "n1k1TmpDir")
 
 	return tmpDir, vars, yieldVals, yieldErr, returnYields
-}
-
-func MakeVars() (string, *base.Vars) {
-	tmpDir, _ := ioutil.TempDir("", "n1k1TmpDir")
-
-	var counter uint64
-
-	var mm sync.Mutex
-
-	var recycledMap *store.RHStore
-	var recycledHeap *store.Heap
-	var recycledChunks *store.Chunks
-
-	return tmpDir, &base.Vars{
-		Temps: make([]interface{}, 16),
-		Ctx: &base.Ctx{
-			ValComparer: base.NewValComparer(),
-			ExprCatalog: n1k1.ExprCatalog,
-			YieldStats:  func(stats *base.Stats) error { return nil },
-			TempDir:     tmpDir,
-			AllocMap: func() (*store.RHStore, error) {
-				mm.Lock()
-				defer mm.Unlock()
-
-				if recycledMap != nil {
-					rv := recycledMap
-					recycledMap = nil
-					return rv, nil
-				}
-
-				options := store.DefaultRHStoreFileOptions
-
-				counterMine := atomic.AddUint64(&counter, 1)
-
-				pathPrefix := fmt.Sprintf("%s/%d", tmpDir, counterMine)
-
-				sf, err := store.CreateRHStoreFile(pathPrefix, options)
-				if err != nil {
-					return nil, err
-				}
-
-				return &sf.RHStore, nil
-			},
-			RecycleMap: func(m *store.RHStore) {
-				mm.Lock()
-				defer mm.Unlock()
-
-				if m != nil {
-					if recycledMap == nil {
-						recycledMap = m
-						recycledMap.Reset()
-						return
-					}
-
-					m.Close()
-				}
-			},
-			AllocHeap: func() (*store.Heap, error) {
-				mm.Lock()
-				defer mm.Unlock()
-
-				if recycledHeap != nil {
-					rv := recycledHeap
-					recycledHeap = nil
-					return rv, nil
-				}
-
-				counterMine := atomic.AddUint64(&counter, 1)
-
-				pathPrefix := fmt.Sprintf("%s/%d", tmpDir, counterMine)
-
-				heapChunkSizeBytes := 1024 * 1024      // TODO: Config.
-				dataChunkSizeBytes := 16 * 1024 * 1024 // TODO: Config.
-
-				return &store.Heap{
-					LessFunc: func(a, b []byte) bool {
-						// TODO: Is this the right default heap less-func?
-						return bytes.Compare(a, b) < 0
-					},
-					Heap: &store.Chunks{
-						PathPrefix:     pathPrefix,
-						FileSuffix:     ".heap",
-						ChunkSizeBytes: heapChunkSizeBytes,
-					},
-					Data: &store.Chunks{
-						PathPrefix:     pathPrefix,
-						FileSuffix:     ".data",
-						ChunkSizeBytes: dataChunkSizeBytes,
-					},
-				}, nil
-			},
-			RecycleHeap: func(m *store.Heap) {
-				mm.Lock()
-				defer mm.Unlock()
-
-				if m != nil {
-					if recycledHeap == nil {
-						recycledHeap = m
-						recycledHeap.Reset()
-						return
-					}
-
-					m.Close()
-				}
-			},
-			AllocChunks: func() (*store.Chunks, error) {
-				mm.Lock()
-				defer mm.Unlock()
-
-				if recycledChunks != nil {
-					rv := recycledChunks
-					recycledChunks = nil
-					return rv, nil
-				}
-
-				options := store.DefaultRHStoreFileOptions
-
-				counterMine := atomic.AddUint64(&counter, 1)
-
-				pathPrefix := fmt.Sprintf("%s/%d", tmpDir, counterMine)
-
-				return &store.Chunks{
-					PathPrefix:     pathPrefix,
-					FileSuffix:     ".rhchunk,",
-					ChunkSizeBytes: options.ChunkSizeBytes,
-				}, nil
-			},
-			RecycleChunks: func(c *store.Chunks) {
-				mm.Lock()
-				defer mm.Unlock()
-
-				if c != nil {
-					if recycledChunks == nil {
-						recycledChunks = c
-						recycledChunks.BytesTruncate(0)
-						return
-					}
-
-					c.Close()
-				}
-			},
-		},
-	}
 }
 
 func StringsToVals(a []string, valsPre base.Vals) base.Vals {

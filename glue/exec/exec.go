@@ -63,7 +63,7 @@ func ExecMaybe(context *execution.Context, request ExecRequest,
 		return false
 	}
 
-	tmpDir, vars := MakeVars()
+	tmpDir, vars := MakeVars("", "n1k1TmpDir")
 
 	defer os.RemoveAll(tmpDir)
 
@@ -82,8 +82,8 @@ func ExecMaybe(context *execution.Context, request ExecRequest,
 	return false // true
 }
 
-func MakeVars() (string, *base.Vars) {
-	tmpDir, _ := ioutil.TempDir("", "n1k1TmpDir")
+func MakeVars(dir, prefix string) (string, *base.Vars) {
+	tmpDir, _ := ioutil.TempDir(dir, prefix)
 
 	var counter uint64
 
