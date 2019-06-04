@@ -31,6 +31,7 @@ import (
 	"github.com/couchbase/n1k1"
 	"github.com/couchbase/n1k1/base"
 	"github.com/couchbase/n1k1/glue"
+	"github.com/couchbase/n1k1/glue/exec"
 )
 
 func TestFileStoreSelectStarUseKeys1(t *testing.T) {
@@ -698,7 +699,7 @@ func TestFileStoreSelectComplex(t *testing.T) {
 // ---------------------------------------------------------------
 
 func testFileStoreSelect(t *testing.T, stmt string, emit bool) (
-	*glue.Store, plan.Operator, *glue.Conv, error) {
+	*glue.Store, plan.Operator, *exec.Conv, error) {
 	store, err := glue.FileStore("./")
 	if err != nil {
 		t.Fatalf("did not expect err: %v", err)
@@ -727,15 +728,17 @@ func testFileStoreSelect(t *testing.T, stmt string, emit bool) (
 		fmt.Printf("jp: %s\n", jp)
 	}
 
-	conv := glue.NewConv()
+	conv := &exec.Conv{Temps: []interface{}{nil}}
 
-	return store, p, conv, conv.Convert(p)
+	_, err = p.Accept(conv)
+
+	return store, p, conv, err
 }
 
 // -------------------------------------------------------------
 
 func testGlueExec(t *testing.T, emit bool,
-	store *glue.Store, conv *glue.Conv) []base.Vals {
+	store *glue.Store, conv *exec.Conv) []base.Vals {
 	if emit {
 		jop, _ := json.MarshalIndent(conv.TopOp, " ", " ")
 		fmt.Printf("jop: %s\n", jop)

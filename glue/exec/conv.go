@@ -9,7 +9,7 @@
 //  express or implied. See the License for the specific language
 //  governing permissions and limitations under the License.
 
-package glue
+package exec
 
 import (
 	"encoding/json"
@@ -18,6 +18,7 @@ import (
 	"strings"
 
 	"github.com/couchbase/query/algebra"
+	"github.com/couchbase/query/execution"
 	"github.com/couchbase/query/expression"
 	"github.com/couchbase/query/plan"
 	"github.com/couchbase/query/value"
@@ -38,17 +39,16 @@ type Conv struct {
 	TopOp *base.Op
 }
 
-// Allocates a new Conv instance, where the 0'th Temps slot is
-// preallocated for an execution.Context instance.
-func NewConv() *Conv { return &Conv{Temps: []interface{}{nil}} }
-
 // -------------------------------------------------------------------
 
-// Convert converts a plan.Operator into a base.Op.
-func (c *Conv) Convert(p plan.Operator) error {
+// ExecConv converts a plan.Operator into a base.Op.
+func ExecConv(p plan.Operator) (*base.Op, []interface{}, error) {
+	// The 0'th temps slot is prealloc'ed for the execution context.
+	c := &Conv{Temps: []interface{}{nil}}
+
 	_, err := p.Accept(c)
 
-	return err
+	return c.TopOp, c.Temps, err
 }
 
 // -------------------------------------------------------------------
@@ -681,4 +681,18 @@ func ExprFieldPath(expr expression.Expression) (rv []string) {
 	visit(expr)
 
 	return rv
+}
+
+// -------------------------------------------------------------------
+
+func EvalExprInt64(context *execution.Context, expr expression.Expression,
+	parent value.Value, defval int64) (val int64) {
+	if expr != nil {
+		val, err := expr.Evaluate(parent, context)
+		if err == nil && val.Type() == value.NUMBER {
+			return val.(value.NumberValue).Int64()
+		}
+	}
+
+	return defval
 }
