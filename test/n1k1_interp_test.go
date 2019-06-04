@@ -9,7 +9,6 @@ import (
 	"github.com/couchbase/n1k1"
 	"github.com/couchbase/n1k1/base"
 	"github.com/couchbase/n1k1/glue"
-	"github.com/couchbase/n1k1/glue/exec"
 )
 
 func TestCasesSimpleWithInterp(t *testing.T) {
@@ -187,7 +186,7 @@ func BenchmarkInterpGroupBy_10000Docs(b *testing.B) {
 }
 
 func benchmarkInterpGroupBy(b *testing.B, nDocs int) {
-	tmpDir, vars := exec.MakeVars("", "n1k1TmpDir")
+	tmpDir, vars := glue.MakeVars("", "n1k1TmpDir")
 	defer os.RemoveAll(tmpDir)
 
 	// TODO: Try object JSON once jsonparser.ObjectEach memory

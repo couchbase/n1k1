@@ -31,7 +31,6 @@ import (
 	"github.com/couchbase/n1k1"
 	"github.com/couchbase/n1k1/base"
 	"github.com/couchbase/n1k1/glue"
-	"github.com/couchbase/n1k1/glue/exec"
 )
 
 func TestFileStoreSelectStarUseKeys1(t *testing.T) {
@@ -338,6 +337,31 @@ func TestFileStoreFromConstArray(t *testing.T) {
 			t.Fatalf("expected result has 1 labels, got: %+v", result)
 		}
 		if strings.Index(`{"a":1},{"a":2},{"a":{"x":[3]}}`, string(result[0])) < 0 {
+			t.Fatalf("expected entry from array, got: %+v", result)
+		}
+	}
+}
+
+func TestFileStoreFromConstArrayWhere(t *testing.T) {
+	store, p, conv, err :=
+		testFileStoreSelect(t, `SELECT * FROM [1,2,{"x":[3]}] AS a WHERE a > 2`, false)
+	if err != nil {
+		t.Fatalf("expected no nil err, got: %v", err)
+	}
+	if p == nil || conv == nil || conv.TopOp == nil {
+		t.Fatalf("expected p and conv an op, got nil")
+	}
+
+	results := testGlueExec(t, false, store, conv)
+	if len(results) != 1 {
+		t.Fatalf("expected 1 results, got: %+v", results)
+	}
+
+	for _, result := range results {
+		if len(result) != 1 {
+			t.Fatalf("expected result has 1 labels, got: %+v", result)
+		}
+		if strings.Index(`{"a":{"x":[3]}}`, string(result[0])) < 0 {
 			t.Fatalf("expected entry from array, got: %+v", result)
 		}
 	}
@@ -699,7 +723,7 @@ func TestFileStoreSelectComplex(t *testing.T) {
 // ---------------------------------------------------------------
 
 func testFileStoreSelect(t *testing.T, stmt string, emit bool) (
-	*glue.Store, plan.Operator, *exec.Conv, error) {
+	*glue.Store, plan.Operator, *glue.Conv, error) {
 	store, err := glue.FileStore("./")
 	if err != nil {
 		t.Fatalf("did not expect err: %v", err)
@@ -728,7 +752,7 @@ func testFileStoreSelect(t *testing.T, stmt string, emit bool) (
 		fmt.Printf("jp: %s\n", jp)
 	}
 
-	conv := &exec.Conv{Temps: []interface{}{nil}}
+	conv := &glue.Conv{Temps: []interface{}{nil}}
 
 	_, err = p.Accept(conv)
 
@@ -738,7 +762,7 @@ func testFileStoreSelect(t *testing.T, stmt string, emit bool) (
 // -------------------------------------------------------------
 
 func testGlueExec(t *testing.T, emit bool,
-	store *glue.Store, conv *exec.Conv) []base.Vals {
+	store *glue.Store, conv *glue.Conv) []base.Vals {
 	if emit {
 		jop, _ := json.MarshalIndent(conv.TopOp, " ", " ")
 		fmt.Printf("jop: %s\n", jop)
