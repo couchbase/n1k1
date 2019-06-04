@@ -287,7 +287,13 @@ func (c *Conv) VisitWith(o *plan.With) (interface{}, error) { return NA(o) }
 
 // Filter
 
-func (c *Conv) VisitFilter(o *plan.Filter) (interface{}, error) { return NA(o) }
+func (c *Conv) VisitFilter(o *plan.Filter) (interface{}, error) {
+	return c.TopPush(o, &base.Op{
+		Kind:   "filter",
+		Labels: c.TopOp.Labels,
+		Params: []interface{}{"exprStr", o.Condition().String()},
+	})
+}
 
 // Group
 
