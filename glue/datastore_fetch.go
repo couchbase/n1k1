@@ -12,7 +12,9 @@
 package glue
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
 
 	"github.com/couchbase/query/datastore"
 	"github.com/couchbase/query/execution"
@@ -86,23 +88,41 @@ func DatastoreFetch(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 
 		errs := keyspace.Fetch(keys, fetchMap, context, subPaths)
 		for _, err := range errs {
-			yieldErr(err)
+			yieldErr(fmt.Errorf("DatastoreFetch, err: %v", err))
 		}
+
+		var buf bytes.Buffer
 
 		// Keep the same ordering as the batch.
 		for i, key := range keys {
 			if key != "" {
 				v, ok := fetchMap[key]
 				if ok && v != nil {
-					jv, err := json.Marshal(v)
-					if err != nil {
-						jv = v.Actual().([]byte) // TODO: BINARY?
+					var err error
+					var jv []byte
+
+					if av, ok := v.(value.AnnotatedValue); ok {
+						buf.Reset()
+						err = av.GetValue().WriteJSON(&buf, "", "", true)
+						jv = buf.Bytes()
 					}
 
-					vals = append(vals[:0], jv)      // Label ".".
-					vals = append(vals, batch[i]...) // Label "^id".
+					if jv == nil {
+						jv, err = json.Marshal(v)
+						if err != nil {
+							jv = v.Actual().([]byte) // TODO: BINARY?
+						}
+					}
 
-					yieldVals(vals)
+					// TODO: Propagate other meta info like cas, type,
+					// flags, expiration if needed?
+
+					if err == nil {
+						vals = append(vals[:0], jv)      // Label ".".
+						vals = append(vals, batch[i]...) // Label "^id".
+
+						yieldVals(vals)
+					}
 				}
 			}
 		}

@@ -9,7 +9,7 @@
 //  express or implied. See the License for the specific language
 //  governing permissions and limitations under the License.
 
-package exec
+package glue
 
 import (
 	"encoding/json"
@@ -18,7 +18,6 @@ import (
 	"strings"
 
 	"github.com/couchbase/query/algebra"
-	"github.com/couchbase/query/execution"
 	"github.com/couchbase/query/expression"
 	"github.com/couchbase/query/plan"
 	"github.com/couchbase/query/value"
@@ -98,6 +97,10 @@ func LabelSuffix(s string) string {
 // Scan
 
 func (c *Conv) VisitPrimaryScan(o *plan.PrimaryScan) (interface{}, error) {
+	if o.Term().Namespace() == "#system" {
+		return NA(o)
+	}
+
 	return c.TopPush(o, &base.Op{
 		Kind:   "datastore-scan-primary",
 		Labels: base.Labels{"^id"},
@@ -105,7 +108,17 @@ func (c *Conv) VisitPrimaryScan(o *plan.PrimaryScan) (interface{}, error) {
 	})
 }
 
-func (c *Conv) VisitPrimaryScan3(o *plan.PrimaryScan3) (interface{}, error) { return NA(o) }
+func (c *Conv) VisitPrimaryScan3(o *plan.PrimaryScan3) (interface{}, error) {
+	if o.Term().Namespace() == "#system" {
+		return NA(o)
+	}
+
+	return c.TopPush(o, &base.Op{
+		Kind:   "datastore-scan-primary",
+		Labels: base.Labels{"^id"},
+		Params: []interface{}{c.AddTemp(o)},
+	})
+}
 
 func (c *Conv) VisitParentScan(o *plan.ParentScan) (interface{}, error) { return NA(o) } // TODO: ParentScan seems unused?
 
@@ -509,7 +522,7 @@ func (c *Conv) VisitExceptAll(o *plan.ExceptAll) (interface{}, error)       { re
 // Order, Paging
 
 func (c *Conv) VisitOrder(o *plan.Order) (interface{}, error) {
-	var exprs, dirs []interface{}
+	exprs, dirs := []interface{}{}, []interface{}{}
 
 	for _, term := range o.Terms() {
 		exprs = append(exprs, []interface{}{"exprStr", term.Expression().String()})
@@ -548,7 +561,7 @@ func (c *Conv) VisitOffset(o *plan.Offset) (interface{}, error) {
 	return c.TopPush(o, &base.Op{
 		Kind:   "order-offset-limit",
 		Labels: c.TopOp.Labels,
-		Params: []interface{}{nil, nil, int64(offset)},
+		Params: []interface{}{[]interface{}{}, []interface{}{}, int64(offset)},
 	})
 }
 
@@ -568,7 +581,7 @@ func (c *Conv) VisitLimit(o *plan.Limit) (interface{}, error) {
 	return c.TopPush(o, &base.Op{
 		Kind:   "order-offset-limit",
 		Labels: c.TopOp.Labels,
-		Params: []interface{}{nil, nil, int64(0), int64(limit)},
+		Params: []interface{}{[]interface{}{}, []interface{}{}, int64(0), int64(limit)},
 	})
 }
 
@@ -610,7 +623,11 @@ func (c *Conv) VisitSequence(o *plan.Sequence) (rv interface{}, err error) {
 }
 
 func (c *Conv) VisitDiscard(o *plan.Discard) (interface{}, error) { return NA(o) }
-func (c *Conv) VisitStream(o *plan.Stream) (interface{}, error)   { return NA(o) }
+
+func (c *Conv) VisitStream(o *plan.Stream) (interface{}, error) {
+	return c.TopOp, nil
+}
+
 func (c *Conv) VisitCollect(o *plan.Collect) (interface{}, error) { return NA(o) }
 
 // Index DDL
@@ -681,18 +698,4 @@ func ExprFieldPath(expr expression.Expression) (rv []string) {
 	visit(expr)
 
 	return rv
-}
-
-// -------------------------------------------------------------------
-
-func EvalExprInt64(context *execution.Context, expr expression.Expression,
-	parent value.Value, defval int64) (val int64) {
-	if expr != nil {
-		val, err := expr.Evaluate(parent, context)
-		if err == nil && val.Type() == value.NUMBER {
-			return val.(value.NumberValue).Int64()
-		}
-	}
-
-	return defval
 }

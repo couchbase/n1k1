@@ -83,15 +83,26 @@ func DatastoreScanPrimary(o *base.Op, vars *base.Vars,
 	yieldVals base.YieldVals, yieldErr base.YieldErr) {
 	DatastoreScan(o, vars, yieldVals, yieldErr,
 		func(context *execution.Context, conn *datastore.IndexConnection) {
-			scan := vars.Temps[o.Params[0].(int)].(*plan.PrimaryScan)
-
-			nks := scan.Term()
+			nks := vars.Temps[o.Params[0].(int)].(Termer).Term()
 			vec := context.ScanVectorSource().ScanVector(nks.Namespace(), nks.Keyspace())
 
-			limit := EvalExprInt64(context, scan.Limit(), nil, math.MaxInt64)
+			if scan, ok := vars.Temps[o.Params[0].(int)].(*plan.PrimaryScan); ok {
+				limit := EvalExprInt64(context, scan.Limit(), nil, math.MaxInt64)
 
-			go scan.Index().ScanEntries(context.RequestId(), limit,
-				context.ScanConsistency(), vec, conn)
+				go scan.Index().ScanEntries(context.RequestId(), limit,
+					context.ScanConsistency(), vec, conn)
+			} else if scan, ok := vars.Temps[o.Params[0].(int)].(*plan.PrimaryScan3); ok {
+				offset := EvalExprInt64(context, scan.Offset(), nil, int64(0))
+				limit := EvalExprInt64(context, scan.Limit(), nil, math.MaxInt64)
+
+				var indexProjection *datastore.IndexProjection
+				var indexOrder datastore.IndexKeyOrders
+				var indexGroupAggs *datastore.IndexGroupAggregates
+
+				go scan.Index().ScanEntries3(context.RequestId(),
+					indexProjection, offset, limit, indexGroupAggs, indexOrder,
+					context.ScanConsistency(), vec, conn)
+			}
 		})
 }
 

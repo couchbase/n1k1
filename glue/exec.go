@@ -9,10 +9,11 @@
 //  express or implied. See the License for the specific language
 //  governing permissions and limitations under the License.
 
-package exec
+package glue
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"os"
@@ -28,6 +29,8 @@ import (
 
 	"github.com/couchbase/query/execution"
 	"github.com/couchbase/query/plan"
+	"github.com/couchbase/query/server"
+	"github.com/couchbase/query/value"
 )
 
 var Debug = 0
@@ -42,44 +45,82 @@ func init() {
 	}
 }
 
-// ExecRequest represents the subset of query/server's Request
-// interface that's needed for execution.
-type ExecRequest interface {
-	Output() execution.Output
-}
-
-// ExecParams represents additional params that are not already
-// available from the context or the request.
-type ExecParams struct {
-	Timeout time.Duration
-}
-
-func ExecMaybe(context *execution.Context, request ExecRequest,
-	prepared plan.Operator, params ExecParams) bool {
-	fmt.Printf("ExecMaybe, prepared: %v\n", prepared)
-
-	op, temps, err := ExecConv(prepared)
+func ServiceRequestEx(r server.Request, p plan.Operator,
+	ctx *execution.Context, timeout time.Duration, asyncReadyCB func()) bool {
+	// Attempt to convert the plan.Operator to base.Op.
+	op, temps, err := ExecConv(p)
 	if err != nil || op == nil {
-		return false
+		fmt.Printf("ServiceRequestEx: op: %v,\n  err: %v\n", op, err)
+
+		return false // We saw an unsupported operator.
 	}
 
-	tmpDir, vars := MakeVars("", "n1k1TmpDir")
+	cv, err := NewConvertVals(op.Labels)
+	if err != nil {
+		fmt.Printf("ServiceRequestEx: NewConvertVals failed, op: %v,\n  err: %v\n", op, err)
+
+		return false // We couldn't create a convert-vals.
+	}
+
+	fmt.Printf("ServiceRequestEx, p: %v\n", p)
+
+	jop, _ := json.MarshalIndent(op, " ", " ")
+	fmt.Printf("  jop: %s\n", jop)
+
+	go asyncReadyCB()
+
+	tmpDir, vars := MakeVars("", "n1k1TmpDir") // TODO: Config.
 
 	defer os.RemoveAll(tmpDir)
 
+	fmt.Printf("  tmpDir: %s\n", tmpDir)
+
 	vars.Temps = vars.Temps[:0]
 
-	vars.Temps = append(vars.Temps, context)
+	vars.Temps = append(vars.Temps, ctx)
 
 	vars.Temps = append(vars.Temps, temps[1:]...)
 
-	for i := 0; i < 16; i++ {
+	for i := 0; i < 16; i++ { // TODO: Config.
 		vars.Temps = append(vars.Temps, nil)
 	}
 
-	// n1k1.ExecOp(op, vars, yieldVals, yieldErr, "", "")
+	err = nil
 
-	return false // true
+	yieldErr := func(errIn error) {
+		if errIn != nil && err == nil {
+			err = errIn // Keep first err.
+		}
+	}
+
+	yieldVals := func(vals base.Vals) {
+		v, err := cv.Convert(vals)
+		if err == nil {
+			item, ok := v.(value.AnnotatedValue)
+			if !ok {
+				item = value.NewAnnotatedValue(v)
+			}
+
+			ok = ctx.Result(item)
+
+			_ = ok // TODO: Do something with the ok?
+
+			// TODO: Handle non-nil err?
+		}
+	}
+
+	// TODO: YieldStats.
+	// TODO: Better allocators / recyclers.
+
+	ctx.SetUp()
+
+	n1k1.ExecOp(op, vars, yieldVals, yieldErr, "", "")
+
+	fmt.Printf("  n1k1 err: %v\n", err)
+
+	ctx.CloseResults()
+
+	return true
 }
 
 func MakeVars(dir, prefix string) (string, *base.Vars) {
