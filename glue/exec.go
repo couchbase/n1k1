@@ -18,6 +18,7 @@ import (
 	"io/ioutil"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -47,6 +48,11 @@ func init() {
 
 func ServiceRequestEx(r server.Request, p plan.Operator,
 	ctx *execution.Context, timeout time.Duration, asyncReadyCB func()) bool {
+	texter, ok := p.(interface{ Text() string })
+	if !ok || strings.Index(texter.Text(), "/* n1k1 */") < 0 {
+		return false
+	}
+
 	// Attempt to convert the plan.Operator to base.Op.
 	op, temps, err := ExecConv(p)
 	if err != nil || op == nil {
@@ -57,12 +63,12 @@ func ServiceRequestEx(r server.Request, p plan.Operator,
 
 	cv, err := NewConvertVals(op.Labels)
 	if err != nil {
-		fmt.Printf("ServiceRequestEx: NewConvertVals failed, op: %v,\n  err: %v\n", op, err)
+		fmt.Printf("ServiceRequestEx: NewConvertVals, op: %v, err: %v\n", op, err)
 
 		return false // We couldn't create a convert-vals.
 	}
 
-	fmt.Printf("ServiceRequestEx, p: %v\n", p)
+	fmt.Printf("ServiceRequestEx, p: %#v\n", p)
 
 	jop, _ := json.MarshalIndent(op, " ", " ")
 	fmt.Printf("  jop: %s\n", jop)
@@ -80,6 +86,8 @@ func ServiceRequestEx(r server.Request, p plan.Operator,
 	vars.Temps = append(vars.Temps, ctx)
 
 	vars.Temps = append(vars.Temps, temps[1:]...)
+
+	fmt.Printf("  vars.Temps: %#v\n", vars.Temps)
 
 	for i := 0; i < 16; i++ { // TODO: Config.
 		vars.Temps = append(vars.Temps, nil)
