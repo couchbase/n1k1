@@ -183,14 +183,9 @@ OUTER:
 			}
 
 			if len(vals[i]) > 0 {
-				var iv interface{}
+				vv := value.NewParsedValue(vals[i], false)
 
-				err := json.Unmarshal(vals[i], &iv)
-				if err != nil {
-					return nil, err
-				}
-
-				err = subObj.SetField(path[len(path)-1], iv)
+				err := subObj.SetField(path[len(path)-1], vv)
 				if err != nil {
 					return nil, err
 				}
@@ -200,12 +195,7 @@ OUTER:
 
 		case '^': // The label is an attachment name for vals[i].
 			if len(vals[i]) > 0 {
-				var iv interface{}
-
-				err := json.Unmarshal(vals[i], &iv)
-				if err != nil {
-					return nil, err
-				}
+				vv := value.NewParsedValue(vals[i], false)
 
 				av, ok := v.(value.AnnotatedValue)
 				if !ok {
@@ -213,7 +203,7 @@ OUTER:
 				}
 
 				if label[1:] == "id" {
-					av.SetId(iv)
+					av.SetId(vv)
 				} else {
 					// Ex label:" ^aggregates|foo".
 					kk := strings.Split(label[1:], "|")
@@ -229,9 +219,9 @@ OUTER:
 							att = v.(map[string]value.Value)
 						}
 
-						att[kk[1]] = value.NewValue(iv)
+						att[kk[1]] = value.NewValue(vv)
 					} else {
-						av.SetAttachment(label[1:], iv)
+						av.SetAttachment(label[1:], vv)
 					}
 				}
 
