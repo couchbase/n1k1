@@ -171,7 +171,7 @@ func TestFileStoreSelectStar123(t *testing.T) {
 
 func TestFileStoreInnerJoinOnKeys(t *testing.T) {
 	store, p, conv, err :=
-		testFileStoreSelect(t, `SELECT a.id FROM data:orders AS a INNER JOIN data:orders AS b ON KEYS a.id`, false)
+		testFileStoreSelect(t, `SELECT a.id FROM data:orders AS a INNER JOIN data:orders AS b ON KEYS a.id`, true)
 	if err != nil {
 		t.Fatalf("expected no nil err, got: %v", err)
 	}
@@ -179,7 +179,7 @@ func TestFileStoreInnerJoinOnKeys(t *testing.T) {
 		t.Fatalf("expected p and conv an op, got nil")
 	}
 
-	results := testGlueExec(t, false, store, conv)
+	results := testGlueExec(t, true, store, conv)
 	if len(results) != 4 {
 		t.Fatalf("expected 4 results, got: %+v", results)
 	}

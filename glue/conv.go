@@ -222,7 +222,7 @@ func (c *Conv) VisitJoin(o *plan.Join) (interface{}, error) {
 			// The vars.Temps slot that holds evaluated keys.
 			varsTempsSlot,
 			// The expression that will evaluate to the keys.
-			[]interface{}{"exprStr", o.Term().JoinKeys().String()},
+			[]interface{}{"exprTree", o.Term().JoinKeys()},
 		},
 		Children: []*base.Op{
 			c.TopOp,
@@ -258,7 +258,7 @@ func (c *Conv) VisitUnnest(o *plan.Unnest) (interface{}, error) {
 		},
 		Params: []interface{}{
 			// The expression to unnest.
-			"exprStr", o.Term().Expression().String(),
+			"exprTree", o.Term().Expression(),
 		},
 		Children: []*base.Op{
 			c.TopOp,
@@ -314,7 +314,12 @@ func (c *Conv) VisitFinalGroup(o *plan.FinalGroup) (interface{}, error) {
 		// not grouping on general expressions. The reason is the generated
 		// label here is only on field names, and a later projection
 		// is based on the full expression string.
-		labels = append(labels, "."+LabelSuffix(strings.Join(ExprFieldPath(key), `","`)))
+		fieldPath, ok := ExprFieldPath(key)
+		if !ok {
+			return nil, fmt.Errorf("VisitFinalGroup, ExprFieldPath, key: %v", key)
+		}
+
+		labels = append(labels, "."+LabelSuffix(strings.Join(fieldPath, `","`)))
 		groups = append(groups, []interface{}{"exprTree", key})
 	}
 
@@ -689,19 +694,27 @@ func NA(o interface{}) (interface{}, error) { return nil, fmt.Errorf("NA: %#v", 
 
 // -------------------------------------------------------------------
 
-func ExprFieldPath(expr expression.Expression) (rv []string) {
-	var visit func(e expression.Expression) // Declare for recursion.
+func ExprFieldPath(expr expression.Expression) (rv []string, ok bool) {
+	var visit func(e expression.Expression) bool // Declare for recursion.
 
-	visit = func(e expression.Expression) {
+	visit = func(e expression.Expression) bool {
 		if f, ok := e.(*expression.Field); ok {
-			visit(f.First())
+			ok = visit(f.First())
+			if !ok {
+				return false
+			}
+
 			rv = append(rv, f.Second().Alias())
 		} else if i, ok := e.(*expression.Identifier); ok {
 			rv = append(rv, i.Identifier())
+		} else {
+			return false
 		}
+
+		return true
 	}
 
-	visit(expr)
+	ok = visit(expr)
 
-	return rv
+	return rv, ok
 }

@@ -14,11 +14,13 @@
 package glue
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
 
+	"github.com/couchbase/n1k1"
 	"github.com/couchbase/n1k1/base"
 
 	"github.com/couchbase/query/expression"
@@ -46,12 +48,23 @@ func ExprStr(vars *base.Vars, labels base.Labels,
 	return ExprTree(vars, labels, paramsTree, path)
 }
 
-// ExprStr evaluates a N1QL query/expression.Expression tree, for
+// ExprTree evaluates a N1QL query/expression.Expression tree, for
 // backwards compatibility at the cost of performance from data
 // conversions.
 func ExprTree(vars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (exprFunc base.ExprFunc) {
 	expr := params[0].(expression.Expression)
+
+	var buf bytes.Buffer
+
+	paramsOut, ok := ExprTreeOptimize(expr, &buf)
+	if ok {
+		fmt.Printf("ExprTreeOptimize, expr: %v\n  paramsOut: %+v", expr, paramsOut)
+
+		// TODO: Compiled approach should probably invoke something
+		// like vars.MakeExprFunc().
+		return n1k1.MakeExprFunc(vars, labels, paramsOut, path, "")
+	}
 
 	context, ok := vars.Temps[0].(expression.Context)
 	if !ok {
