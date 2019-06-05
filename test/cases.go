@@ -15,6 +15,10 @@ func MakeYieldCaptureFuncs(t *testing.T, testi int, expectErr string) (
 		n1k1.ExprCatalog["exprStr"] = glue.ExprStr
 	}
 
+	if n1k1.ExprCatalog["exprTree"] == nil {
+		n1k1.ExprCatalog["exprTree"] = glue.ExprTree
+	}
+
 	var yields []base.Vals
 
 	yieldVals := func(lzVals base.Vals) {

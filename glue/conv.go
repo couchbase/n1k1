@@ -291,7 +291,7 @@ func (c *Conv) VisitFilter(o *plan.Filter) (interface{}, error) {
 	return c.TopPush(o, &base.Op{
 		Kind:   "filter",
 		Labels: c.TopOp.Labels,
-		Params: []interface{}{"exprStr", o.Condition().String()},
+		Params: []interface{}{"exprTree", o.Condition()},
 	})
 }
 
@@ -315,7 +315,7 @@ func (c *Conv) VisitFinalGroup(o *plan.FinalGroup) (interface{}, error) {
 		// label here is only on field names, and a later projection
 		// is based on the full expression string.
 		labels = append(labels, "."+LabelSuffix(strings.Join(ExprFieldPath(key), `","`)))
-		groups = append(groups, []interface{}{"exprStr", key.String()})
+		groups = append(groups, []interface{}{"exprTree", key})
 	}
 
 	var aggExprs []interface{}
@@ -323,7 +323,7 @@ func (c *Conv) VisitFinalGroup(o *plan.FinalGroup) (interface{}, error) {
 
 	for _, agg := range o.Aggregates() {
 		// TODO: Optimize as one aggExpr can support >=1 aggCalc.
-		aggExprs = append(aggExprs, []interface{}{"exprStr", agg.Operands()[0].String()})
+		aggExprs = append(aggExprs, []interface{}{"exprTree", agg.Operands()[0]})
 		aggCalcs = append(aggCalcs, []interface{}{strings.ToLower(agg.Name())})
 
 		labels = append(labels, "^aggregates|"+agg.String())
@@ -354,7 +354,7 @@ func (c *Conv) VisitWindowAggregate(o *plan.WindowAggregate) (interface{}, error
 	// All the o.Aggregates() have the same PARTITION BY.
 	var partitionBys []interface{}
 	for _, e := range o.Aggregates()[0].WindowTerm().PartitionBy() {
-		partitionBys = append(partitionBys, []interface{}{"exprStr", e.String()})
+		partitionBys = append(partitionBys, []interface{}{"exprTree", e})
 	}
 
 	for _, agg := range o.Aggregates() {
@@ -364,7 +364,7 @@ func (c *Conv) VisitWindowAggregate(o *plan.WindowAggregate) (interface{}, error
 		for _, e := range agg.WindowTerm().OrderBy().Expressions() {
 			// The asc vs desc is ignored as equality of vals is all
 			// that we need to check.
-			partitionings = append(partitionings, []interface{}{"exprStr", e.String()})
+			partitionings = append(partitionings, []interface{}{"exprTree", e})
 		}
 
 		partitionSlot := c.AddTemp(nil)
@@ -482,7 +482,7 @@ func (c *Conv) VisitInitialProject(o *plan.InitialProject) (interface{}, error) 
 	for _, term := range o.Terms() {
 		op.Labels = append(op.Labels, "."+LabelSuffix(term.Result().Alias()))
 		op.Params = append(op.Params,
-			[]interface{}{"exprStr", term.Result().Expression().String()})
+			[]interface{}{"exprTree", term.Result().Expression()})
 	}
 
 	return c.TopPush(o, op)
@@ -531,7 +531,7 @@ func (c *Conv) VisitOrder(o *plan.Order) (interface{}, error) {
 	exprs, dirs := []interface{}{}, []interface{}{}
 
 	for _, term := range o.Terms() {
-		exprs = append(exprs, []interface{}{"exprStr", term.Expression().String()})
+		exprs = append(exprs, []interface{}{"exprTree", term.Expression()})
 
 		if term.Descending() {
 			dirs = append(dirs, "desc")

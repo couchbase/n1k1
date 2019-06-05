@@ -189,6 +189,8 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 			return lzExprFunc
 		}
 
+		// TODO: Need to handle exprTree when in compiled mode?
+
 		intermed.ExecOp(&test.o,
 			&base.Vars{Ctx: &base.Ctx{ExprCatalog: intermed.ExprCatalog}},
 			nil, nil, "Top", "EO")
