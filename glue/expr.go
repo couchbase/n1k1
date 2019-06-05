@@ -138,15 +138,6 @@ func (s *ConvertVals) Convert(vals base.Vals) (value.Value, error) {
 OUTER:
 	for i, label := range s.Labels {
 		switch label[0] {
-		case '=': // The label denotes that vals[i] is a BINARY value.
-			if v != nil {
-				return nil, fmt.Errorf("Convert, v non-nil on '='")
-			}
-
-			v = value.NewBinaryValue(vals[i])
-
-			// Continue loop as remaining labels might be annotations.
-
 		case '.': // Label is a path into v of where to set vals[i].
 			if label == "." {
 				if v != nil {
@@ -230,6 +221,15 @@ OUTER:
 
 				v = av
 			}
+
+		case '=': // The label means vals[i] is a BINARY value.
+			if v != nil {
+				return nil, fmt.Errorf("Convert, v non-nil on '='")
+			}
+
+			v = value.NewBinaryValue(vals[i])
+
+			// Continue loop as remaining labels might be annotations.
 
 		default:
 			return nil, fmt.Errorf("Convert, unknown label[0]: %s", label)
