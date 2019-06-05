@@ -144,7 +144,8 @@ OUTER:
 					return nil, fmt.Errorf("Convert, v non-nil on '.'")
 				}
 
-				// TODO: Is vals[i] always JSON encoded?
+				// TODO: Is vals[i] always JSON encoded so the skip
+				// validation is safe here?
 				v = value.NewParsedValue(vals[i], true)
 
 				continue OUTER
@@ -175,7 +176,8 @@ OUTER:
 			}
 
 			if len(vals[i]) > 0 {
-				// TODO: Is vals[i] always JSON encoded?
+				// TODO: Is vals[i] always JSON encoded so the skip
+				// validation is safe here?
 				vv := value.NewParsedValue(vals[i], true)
 
 				err := subObj.SetField(path[len(path)-1], vv)
@@ -200,6 +202,7 @@ OUTER:
 					av.SetId(vv)
 				} else {
 					// Ex label:" ^aggregates|foo".
+					// TODO: strings.Split() creates garbage.
 					kk := strings.Split(label[1:], "|")
 					if len(kk) > 1 {
 						var att map[string]value.Value
