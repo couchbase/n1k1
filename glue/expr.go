@@ -51,6 +51,13 @@ func ExprStr(vars *base.Vars, labels base.Labels,
 // conversions.
 func ExprTree(vars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (exprFunc base.ExprFunc) {
+	expr := params[0].(expression.Expression)
+
+	context, ok := vars.Temps[0].(expression.Context)
+	if !ok {
+		context = &ExprGlueContext{MyNow: vars.Ctx.Now}
+	}
+
 	cv, err := NewConvertVals(labels)
 	if err != nil {
 		return func(vals base.Vals, yieldErr base.YieldErr) base.Val {
@@ -58,10 +65,6 @@ func ExprTree(vars *base.Vars, labels base.Labels,
 			return base.ValMissing
 		}
 	}
-
-	expr := params[0].(expression.Expression)
-
-	exprGlueContext := &ExprGlueContext{MyNow: vars.Ctx.Now}
 
 	// TODO: Need to propagate the vars to the expression, too,
 	// perhaps related to bindings?
@@ -73,7 +76,7 @@ func ExprTree(vars *base.Vars, labels base.Labels,
 			return base.ValMissing
 		}
 
-		vResult, err := expr.Evaluate(v, exprGlueContext)
+		vResult, err := expr.Evaluate(v, context)
 		if err != nil {
 			yieldErr(err)
 			return base.ValMissing
