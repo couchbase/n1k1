@@ -153,7 +153,8 @@ OUTER:
 					return nil, fmt.Errorf("Convert, v non-nil on '.'")
 				}
 
-				v = value.NewParsedValue(vals[i], false)
+				// TODO: Is vals[i] always JSON encoded?
+				v = value.NewParsedValue(vals[i], true)
 
 				continue OUTER
 			}
@@ -183,7 +184,8 @@ OUTER:
 			}
 
 			if len(vals[i]) > 0 {
-				vv := value.NewParsedValue(vals[i], false)
+				// TODO: Is vals[i] always JSON encoded?
+				vv := value.NewParsedValue(vals[i], true)
 
 				err := subObj.SetField(path[len(path)-1], vv)
 				if err != nil {
@@ -195,7 +197,8 @@ OUTER:
 
 		case '^': // The label is an attachment name for vals[i].
 			if len(vals[i]) > 0 {
-				vv := value.NewParsedValue(vals[i], false)
+				// TODO: Is vals[i] always JSON encoded?
+				vv := value.NewParsedValue(vals[i], true)
 
 				av, ok := v.(value.AnnotatedValue)
 				if !ok {

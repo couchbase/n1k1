@@ -98,26 +98,18 @@ func DatastoreFetch(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 			if key != "" {
 				v, ok := fetchMap[key]
 				if ok && v != nil {
-					var err error
-					var jv []byte
-
-					if av, ok := v.(value.AnnotatedValue); ok {
-						buf.Reset()
-						err = av.GetValue().WriteJSON(&buf, "", "", true)
-						jv = buf.Bytes()
-					}
-
-					if jv == nil {
-						jv, err = json.Marshal(v)
-						if err != nil {
-							jv = v.Actual().([]byte) // TODO: BINARY?
-						}
-					}
-
 					// TODO: Propagate other meta info like cas, type,
 					// flags, expiration if needed?
+					//
+					// TODO: Handle when v is BINARY?
 
-					if err == nil {
+					buf.Reset()
+
+					err := v.WriteJSON(&buf, "", "", true)
+
+					jv := buf.Bytes()
+
+					if err == nil && len(jv) > 0 {
 						vals = append(vals[:0], jv)      // Label ".".
 						vals = append(vals, batch[i]...) // Label "^id".
 
