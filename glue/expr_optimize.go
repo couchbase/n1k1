@@ -13,6 +13,9 @@ package glue
 
 import (
 	"bytes"
+	"strings"
+
+	"github.com/couchbase/n1k1/base"
 
 	"github.com/couchbase/query/expression"
 )
@@ -25,8 +28,8 @@ func init() {
 
 // ExprTreeOptimize attempts to optimize a N1QL
 // query/expression.Expression tree into a n1k1 expr params tree.
-func ExprTreeOptimize(e expression.Expression, buf *bytes.Buffer) (
-	params []interface{}, ok bool) {
+func ExprTreeOptimize(labels base.Labels, e expression.Expression,
+	buf *bytes.Buffer) (params []interface{}, ok bool) {
 	if c, ok := e.(*expression.Constant); ok {
 		buf.Reset()
 
@@ -43,8 +46,23 @@ func ExprTreeOptimize(e expression.Expression, buf *bytes.Buffer) (
 			return nil, false
 		}
 
-		params = []interface{}{"labelPath", "."}
-		for _, x := range fieldPath {
+		labelBest := "."
+		iBest := -1
+	OUTER:
+		for i := 0; i < len(fieldPath); i++ {
+			labelMaybe := "." + LabelSuffix(strings.Join(fieldPath[0:i+1], `","`))
+
+			for _, label := range labels {
+				if label == labelMaybe {
+					labelBest = label
+					iBest = i
+					continue OUTER
+				}
+			}
+		}
+
+		params = []interface{}{"labelPath", labelBest}
+		for _, x := range fieldPath[iBest+1:] {
 			params = append(params, x)
 		}
 
@@ -64,7 +82,7 @@ func ExprTreeOptimize(e expression.Expression, buf *bytes.Buffer) (
 	params = append(params, name)
 
 	for _, operand := range f.Operands() {
-		child, ok := ExprTreeOptimize(operand, buf)
+		child, ok := ExprTreeOptimize(labels, operand, buf)
 		if !ok {
 			return nil, false
 		}

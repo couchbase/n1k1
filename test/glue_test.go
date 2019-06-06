@@ -171,7 +171,7 @@ func TestFileStoreSelectStar123(t *testing.T) {
 
 func TestFileStoreInnerJoinOnKeys(t *testing.T) {
 	store, p, conv, err :=
-		testFileStoreSelect(t, `SELECT a.id FROM data:orders AS a INNER JOIN data:orders AS b ON KEYS a.id`, true)
+		testFileStoreSelect(t, `SELECT a.id FROM data:orders AS a INNER JOIN data:orders AS b ON KEYS a.id`, false)
 	if err != nil {
 		t.Fatalf("expected no nil err, got: %v", err)
 	}
@@ -179,7 +179,7 @@ func TestFileStoreInnerJoinOnKeys(t *testing.T) {
 		t.Fatalf("expected p and conv an op, got nil")
 	}
 
-	results := testGlueExec(t, true, store, conv)
+	results := testGlueExec(t, false, store, conv)
 	if len(results) != 4 {
 		t.Fatalf("expected 4 results, got: %+v", results)
 	}
@@ -506,7 +506,7 @@ func TestFileStoreOrderByOffsetLimit(t *testing.T) {
 
 		currId := m["a"].(map[string]interface{})["id"].(string)
 		if currId != "1234" {
-			t.Fatalf("unexpected descending id: %+v, m: %+v", result, m)
+			t.Fatalf("unexpected descending id: %+v, m: %+v, currId: %v", result, m, currId)
 		}
 	}
 }
@@ -615,7 +615,7 @@ func TestFileStoreGroupBySum(t *testing.T) {
 
 func TestFileStoreGroupByCountSum(t *testing.T) {
 	store, p, conv, err :=
-		testFileStoreSelect(t, `SELECT o.custId, COUNT(o.custId), SUM(ol.qty) FROM data:orders AS o UNNEST o.orderlines AS ol GROUP BY o.custId`, false)
+		testFileStoreSelect(t, `SELECT o.custId, COUNT(o.custId), SUM(ol.qty) FROM data:orders AS o UNNEST o.orderlines AS ol GROUP BY o.custId`, true)
 	if err != nil {
 		t.Fatalf("expected no nil err, got: %v", err)
 	}
@@ -623,7 +623,7 @@ func TestFileStoreGroupByCountSum(t *testing.T) {
 		t.Fatalf("expected p and conv an op, got nil")
 	}
 
-	results := testGlueExec(t, false, store, conv)
+	results := testGlueExec(t, true, store, conv)
 	if len(results) != 3 {
 		t.Fatalf("expected 3 results, got: %+v", results)
 	}

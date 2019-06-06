@@ -57,10 +57,8 @@ func ExprTree(vars *base.Vars, labels base.Labels,
 
 	var buf bytes.Buffer
 
-	paramsOut, ok := ExprTreeOptimize(expr, &buf)
+	paramsOut, ok := ExprTreeOptimize(labels, expr, &buf)
 	if ok {
-		fmt.Printf("ExprTreeOptimize, expr: %v\n  paramsOut: %+v", expr, paramsOut)
-
 		// TODO: Compiled approach should probably invoke something
 		// like vars.MakeExprFunc().
 		return n1k1.MakeExprFunc(vars, labels, paramsOut, path, "")
