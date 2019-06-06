@@ -80,7 +80,7 @@ func ExprTree(vars *base.Vars, labels base.Labels,
 	// TODO: Need to propagate the vars to the expression, too,
 	// perhaps related to bindings?
 
-	return func(vals base.Vals, yieldErr base.YieldErr) (val base.Val) {
+	return func(vals base.Vals, yieldErr base.YieldErr) base.Val {
 		v, err := cv.Convert(vals)
 		if err != nil {
 			yieldErr(err)
@@ -93,7 +93,9 @@ func ExprTree(vars *base.Vars, labels base.Labels,
 			return base.ValMissing
 		}
 
-		jResult, err := vResult.MarshalJSON()
+		buf.Reset()
+
+		err = vResult.WriteJSON(&buf, "", "", true)
 		if err != nil {
 			yieldErr(err)
 			return base.ValMissing
@@ -103,7 +105,7 @@ func ExprTree(vars *base.Vars, labels base.Labels,
 		// that are associated with the vResult?  The params[1], for
 		// example, might hold the wanted output labels, if any.
 
-		return base.Val(jResult)
+		return base.Val(buf.Bytes())
 	}
 }
 

@@ -77,13 +77,18 @@ func ValHasValue(val Val) bool {
 // ValPathGet navigates through the JSON val using the given path and
 // returns the JSON found there, or missing. Example path: [] or
 // ["addresses", "work", "city"].
-func ValPathGet(val Val, path []string) Val {
-	valOut, _, _, err := jsonparser.Get(val, path...)
+func ValPathGet(val Val, path []string, valOut Val) (Val, Val) {
+	v, vType, _, err := jsonparser.Get(val, path...)
 	if err != nil {
-		return ValMissing
+		return ValMissing, valOut
 	}
 
-	return valOut
+	if vType == jsonparser.String {
+		valOut = append(append(append(valOut[:0], '"'), v...), '"')
+		return valOut, valOut
+	}
+
+	return v, valOut
 }
 
 // -----------------------------------------------------
