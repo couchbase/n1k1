@@ -70,17 +70,21 @@ func ExprLabelPath(lzVars *base.Vars, labels base.Labels,
 			valPath = append(valPath, param.(string))
 		}
 
-		var lzValOut base.Val // <== varLift: lzValOut by path
-
 		var lzValPath []string = valPath // <== varLift: lzValPath by path
+
+		var lzValPre base.Val // <== varLift: lzValPre by path
 
 		lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
 			lzVal = lzVals[idx]
 
 			if len(params) > 1 { // !lz
-				lzVal, lzValOut = base.ValPathGet(lzVal, lzValPath, lzValOut)
+				var lzValOut base.Val
+
+				lzVal, lzValOut = base.ValPathGet(lzVal, lzValPath, lzValPre)
+
+				lzValPre = lzValOut
 			} else { // !lz
-				_ = lzValPath
+				_, _ = lzValPath, lzValPre
 			} // !lz
 
 			return lzVal

@@ -615,7 +615,7 @@ func TestFileStoreGroupBySum(t *testing.T) {
 
 func TestFileStoreGroupByCountSum(t *testing.T) {
 	store, p, conv, err :=
-		testFileStoreSelect(t, `SELECT o.custId, COUNT(o.custId), SUM(ol.qty) FROM data:orders AS o UNNEST o.orderlines AS ol GROUP BY o.custId`, true)
+		testFileStoreSelect(t, `SELECT o.custId, COUNT(o.custId), SUM(ol.qty) FROM data:orders AS o UNNEST o.orderlines AS ol GROUP BY o.custId`, false)
 	if err != nil {
 		t.Fatalf("expected no nil err, got: %v", err)
 	}
@@ -623,7 +623,7 @@ func TestFileStoreGroupByCountSum(t *testing.T) {
 		t.Fatalf("expected p and conv an op, got nil")
 	}
 
-	results := testGlueExec(t, true, store, conv)
+	results := testGlueExec(t, false, store, conv)
 	if len(results) != 3 {
 		t.Fatalf("expected 3 results, got: %+v", results)
 	}

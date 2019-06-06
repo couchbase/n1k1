@@ -392,8 +392,8 @@ var TestCasesSimple = []TestCaseSimple{
 			}},
 		},
 		expectYields: []base.Vals{
-			base.Vals{[]byte("sf")},
-			base.Vals{[]byte("sj")},
+			base.Vals{[]byte(`"sf"`)},
+			base.Vals{[]byte(`"sj"`)},
 		},
 	}, {
 		about: "test csv-data scan->project deeper labelPath",
