@@ -24,6 +24,10 @@ var OptimizableFuncs = map[string]string{}
 
 func init() {
 	OptimizableFuncs["eq"] = "eq"
+	OptimizableFuncs["lt"] = "lt"
+	OptimizableFuncs["le"] = "le"
+	OptimizableFuncs["gt"] = "gt"
+	OptimizableFuncs["ge"] = "ge"
 }
 
 // ExprTreeOptimize attempts to optimize a N1QL
