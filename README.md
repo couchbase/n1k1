@@ -102,10 +102,12 @@ Some design ideas meant to help with n1k1's performance...
 - join hash-eq inner.
 - join hash-eq left outer.
 - join ON expressions.
+- join ON KEYS.
 - UNNEST inner.
 - UNNEST left outer.
 - NEST nested-loop inner.
 - NEST nested-loop left outer.
+- NEST ON KEYS.
 - WHERE expressions.
 - projection expressions.
 - ORDER BY multiple expressions & ASC/DESC.
@@ -199,6 +201,10 @@ efficiently execute that query-plan.
   - gocb multi-get API's allocate garbage.
   - datastore fetch stages should be recycled.
   - what to do with parent value during expression evaluation?
+  - sometimes keyspace terms aren't converted to label names correctly,
+    like when there aren't keyspace aliases, which can lead to
+    projections to not being able to access expressions
+    like (`travel-sample`.`id`) correctly?
   - scan of COVERS needs support?
   - scan tracks "setBit()" for intersect scan support?
   - scan expression only handles non-correlated right now?
@@ -206,13 +212,17 @@ efficiently execute that query-plan.
     - stage already provides some concurrency between producer & consumer.
   - classic N1QL engine uses recover() -- revisit this?
 
+- staging / batchSize might be dynamic / computable?
+  - first batch might be "sent early" or ASAP,
+    so for example first fetch can be more concurrent?
+
 - aggregate functions, advanced features?
   - count(*) or COUNT_ALL is different than count(expr),
     w.r.t. missing/null handling?
   - IGNORE NULL's? (RESPECT NULLS is default)
   - FROM LAST? (FROM FIRST is default)
   - filter-where clauses?
-  - DISTINCT?
+  - DISTINCT? e.g., COUNT(DISTINCT productId)?
 
 - ORDER BY ... NULLS FIRST vs NULLS LAST?
 
@@ -271,9 +281,6 @@ efficiently execute that query-plan.
 
 - JOIN types: CROSS, FULL, RIGHT OUTER.
 
-- JOIN ON KEYS?
-
-- NEST ON KEYS?
 - NEST via hash-join?
 - NEST via index scan?
 
@@ -409,7 +416,11 @@ EXCEPT ALL - tuple should appear MAX(m - n, 0) times in the result,
 
 - scan should have a lookup table of file suffix handlers?
 
-- scans of indexes?
+- advanced scans of indexes?
+  - only basic Index.Scan glue works right now.
+
+- PrimaryScan3 Scan3 does not support advanced pushdown right now...
+  - indexProjection, indexOrder, indexGroupAggs?
 
 - integration with scorch TermFieldReaders as a Scan source or operator?
   - merge join by docNum / docId field?

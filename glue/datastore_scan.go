@@ -99,6 +99,8 @@ func DatastoreScanPrimary(o *base.Op, vars *base.Vars,
 				var indexOrder datastore.IndexKeyOrders
 				var indexGroupAggs *datastore.IndexGroupAggregates
 
+				// TODO: Handle advanced PrimaryScan3 params.
+
 				go scan.Index().ScanEntries3(context.RequestId(),
 					indexProjection, offset, limit, indexGroupAggs, indexOrder,
 					context.ScanConsistency(), vec, conn)
