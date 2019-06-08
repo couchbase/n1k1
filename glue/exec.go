@@ -49,7 +49,7 @@ func init() {
 func ServiceRequestEx(r server.Request, p plan.Operator,
 	ctx *execution.Context, timeout time.Duration, asyncReadyCB func()) bool {
 	texter, ok := p.(interface{ Text() string })
-	if !ok || strings.Index(texter.Text(), "/* n1k1 */") < 0 {
+	if !ok || !strings.HasSuffix(texter.Text(), " n1k1 */") {
 		return false
 	}
 
@@ -68,18 +68,11 @@ func ServiceRequestEx(r server.Request, p plan.Operator,
 		return false // We couldn't create a convert-vals.
 	}
 
-	fmt.Printf("ServiceRequestEx, p: %#v\n", p)
-
-	jop, _ := json.MarshalIndent(op, " ", " ")
-	fmt.Printf("  jop: %s\n", jop)
-
 	go asyncReadyCB()
 
 	tmpDir, vars := MakeVars("", "n1k1TmpDir") // TODO: Config.
 
 	defer os.RemoveAll(tmpDir)
-
-	fmt.Printf("  tmpDir: %s\n", tmpDir)
 
 	vars.Temps = vars.Temps[:0]
 
@@ -87,7 +80,16 @@ func ServiceRequestEx(r server.Request, p plan.Operator,
 
 	vars.Temps = append(vars.Temps, temps[1:]...)
 
-	fmt.Printf("  vars.Temps: %#v\n", vars.Temps)
+	debug := strings.HasSuffix(texter.Text(), " debug n1k1 */")
+	if debug {
+		fmt.Printf("ServiceRequestEx, p: %#v\n", p)
+
+		jop, _ := json.MarshalIndent(op, " ", " ")
+		fmt.Printf("  jop: %s\n", jop)
+
+		fmt.Printf("  tmpDir: %s\n", tmpDir)
+		fmt.Printf("  vars.Temps: %#v\n", vars.Temps)
+	}
 
 	for i := 0; i < 16; i++ { // TODO: Config.
 		vars.Temps = append(vars.Temps, nil)
@@ -124,7 +126,9 @@ func ServiceRequestEx(r server.Request, p plan.Operator,
 
 	n1k1.ExecOp(op, vars, yieldVals, yieldErr, "", "")
 
-	fmt.Printf("  n1k1 err: %v\n", err)
+	if debug {
+		fmt.Printf("  n1k1 err: %v\n", err)
+	}
 
 	ctx.CloseResults()
 
