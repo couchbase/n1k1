@@ -197,6 +197,10 @@ func (c *Conv) VisitIndexFtsSearch(o *plan.IndexFtsSearch) (interface{}, error) 
 // Fetch
 
 func (c *Conv) VisitFetch(o *plan.Fetch) (interface{}, error) {
+	if len(o.SubPaths()) > 0 {
+		return NA(o) // TODO.
+	}
+
 	return c.TopPush(o, &base.Op{
 		Kind:   "datastore-fetch",
 		Labels: base.Labels{"." + LabelSuffix(o.Term().As()), "^id"},
