@@ -370,10 +370,12 @@ func (c *Conv) VisitWindowAggregate(o *plan.WindowAggregate) (interface{}, error
 		// TODO: Perhaps only need to append order-by's when we have
 		// extra trackings, for rank, denseRank?
 		partitionings := append([]interface{}(nil), partitionBys...) // Clone.
-		for _, e := range agg.WindowTerm().OrderBy().Expressions() {
-			// The asc vs desc is ignored as equality of vals is all
-			// that we need to check.
-			partitionings = append(partitionings, []interface{}{"exprTree", e})
+		if agg.WindowTerm().OrderBy() != nil {
+			for _, e := range agg.WindowTerm().OrderBy().Expressions() {
+				// The asc vs desc is ignored as equality of vals is all
+				// that we need to check.
+				partitionings = append(partitionings, []interface{}{"exprTree", e})
+			}
 		}
 
 		partitionSlot := c.AddTemp(nil)
