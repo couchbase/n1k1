@@ -20,7 +20,6 @@ import (
 	"github.com/couchbase/query/execution"
 	"github.com/couchbase/query/value"
 
-	"github.com/couchbase/n1k1"
 	"github.com/couchbase/n1k1/base"
 )
 
@@ -53,8 +52,7 @@ func DatastoreFetch(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 	stage.StartActor(func(vars *base.Vars, yieldVals base.YieldVals,
 		yieldErr base.YieldErr, actorData interface{}) {
 
-		// TODO: For compilation, this likely needs to be vars.ExecOp().
-		n1k1.ExecOp(o.Children[0], vars, yieldVals, yieldErr, pathNext, "DF")
+		vars.Ctx.ExecOp(o.Children[0], vars, yieldVals, yieldErr, pathNext, "DF")
 	}, nil, batchSize)
 
 	var vals base.Vals

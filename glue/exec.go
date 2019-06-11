@@ -124,7 +124,7 @@ func ServiceRequestEx(r server.Request, p plan.Operator,
 
 	ctx.SetUp()
 
-	n1k1.ExecOp(op, vars, yieldVals, yieldErr, "", "")
+	vars.Ctx.ExecOp(op, vars, yieldVals, yieldErr, "", "")
 
 	if debug {
 		fmt.Printf("  n1k1 err: %v\n", err)
@@ -153,6 +153,7 @@ func MakeVars(dir, prefix string) (string, *base.Vars) {
 			ExprCatalog: n1k1.ExprCatalog,
 			YieldStats:  func(stats *base.Stats) error { return nil },
 			TempDir:     tmpDir,
+			ExecOp:      n1k1.ExecOp,
 			AllocMap: func() (*store.RHStore, error) {
 				mm.Lock()
 				defer mm.Unlock()

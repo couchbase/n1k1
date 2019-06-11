@@ -87,6 +87,8 @@ type Ctx struct {
 	// might be shared amongst concurrent requests.
 	TempDir string
 
+	ExecOp func(*Op, *Vars, YieldVals, YieldErr, string, string)
+
 	AllocMap   func() (*store.RHStore, error)
 	RecycleMap func(*store.RHStore)
 
