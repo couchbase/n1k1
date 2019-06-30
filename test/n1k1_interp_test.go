@@ -116,6 +116,7 @@ func BenchmarkInterpExprStr_100000Docs(b *testing.B) {
 func benchmarkInterpNDocs(b *testing.B,
 	filterParams []interface{}, nDocs int) {
 	vars := &base.Vars{
+		Temps: []interface{}{nil},
 		Ctx: &base.Ctx{
 			ValComparer: base.NewValComparer(),
 			ExprCatalog: n1k1.ExprCatalog,
