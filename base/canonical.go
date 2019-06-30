@@ -98,6 +98,8 @@ func (c *ValComparer) CanonicalJSONWithType(v []byte, vType int,
 
 		c.KeyValsRelease(depth, kvs)
 
+		c.PrepareEncoder()
+
 		sort.Sort(kvs)
 
 		out = append(out, '{')

@@ -139,7 +139,10 @@ func TestValComparer(t *testing.T) {
 }
 
 func TestValComparerReuse(t *testing.T) {
-	testValComparer(t, NewValComparer())
+	c := NewValComparer()
+	c.PrepareEncoder()
+
+	testValComparer(t, c)
 }
 
 func testValComparer(t *testing.T, vIn *ValComparer) {

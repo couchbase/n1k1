@@ -88,13 +88,14 @@ type ValComparer struct {
 }
 
 // NewValComparer returns a ready-to-use ValComparer.
-func NewValComparer() *ValComparer {
-	rv := &ValComparer{}
+func NewValComparer() *ValComparer { return &ValComparer{} }
 
-	// TODO: An encoder might not always be needed?
-	rv.Encoder = json.NewEncoder(&rv.Buffer)
-
-	return rv
+// PrepareEncoder initializes the json encoder of a ValComparer if not
+// already initialized.
+func (c *ValComparer) PrepareEncoder() {
+	if c.Encoder == nil {
+		c.Encoder = json.NewEncoder(&c.Buffer)
+	}
 }
 
 // ---------------------------------------------
