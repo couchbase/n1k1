@@ -9,8 +9,8 @@
 //  express or implied. See the License for the specific language
 //  governing permissions and limitations under the License.
 
-// The base package holds types and definitions shared by n1k1's
-// interpreter and compiler.
+// The base package holds basic, common types and definitions shared
+// by n1k1's interpreter and compiler.
 package base
 
 import (
@@ -76,7 +76,8 @@ func ValHasValue(val Val) bool {
 
 // ValPathGet navigates through the JSON val using the given path and
 // returns the JSON found there, or missing. Example path: [] or
-// ["addresses", "work", "city"].
+// ["addresses", "work", "city"]. The valOut is an optional
+// preallocated output val.
 func ValPathGet(val Val, path []string, valOut Val) (Val, Val) {
 	v, vType, _, err := jsonparser.Get(val, path...)
 	if err != nil {
@@ -170,7 +171,7 @@ func ValsEncodeCanonical(vals Vals, out []byte,
 	return out, nil
 }
 
-// ValsDecode appending each decoded val to the valsOut slice.
+// ValsDecode appends each decoded val to the valsOut slice.
 func ValsDecode(b []byte, valsOut Vals) Vals {
 	n := binary.LittleEndian.Uint64(b[:8])
 	b = b[8:]
@@ -203,14 +204,14 @@ func BinaryAppendUint64(out []byte, v uint64) []byte {
 // by future invocations.
 type YieldVals func(Vals)
 
-// YieldErr is the callback invoked when there's an error, or with a
-// final nil error when data processing is complete.
+// YieldErr is the callback invoked when there's an error, and is
+// invoked with a final nil error when data processing is complete.
 type YieldErr func(error)
 
 // -----------------------------------------------------
 
-// Labels represent names for a related instance of Vals.  Usually,
-// the related Vals has the same size: len(vals) == len(labels), which
+// Labels represent names for a related instance of Vals. Usually, the
+// related Vals has the same size: len(vals) == len(labels), which
 // enables optimizations through slice positional lookups.
 type Labels []string // Ex: [`.`, `.["address","city"]`].
 
@@ -234,7 +235,7 @@ type Op struct {
 	// Labels for the vals yielded by this operator.
 	Labels Labels `json:"Labels,omitempty"`
 
-	// Params based on the kind.
+	// Params are the input to the operator based on the kind.
 	Params []interface{} `json:"Params,omitempty"`
 
 	// Children are the data source operators that feed or yield data
@@ -251,7 +252,7 @@ type ExprFunc func(vals Vals, yieldErr YieldErr) Val
 type BiExprFunc func(a, b ExprFunc, vals Vals, yieldErr YieldErr) Val
 
 // A ProjectFunc projects (in relational parlance) the given vals into
-// resulting vals, reusing the pre-allocated valsPre if neeeded.
+// resulting vals, and can reuse the optional, pre-allocated valsPre.
 type ProjectFunc func(vals, valsPre Vals, yieldErr YieldErr) Vals
 
 // -----------------------------------------------------
@@ -264,7 +265,7 @@ type ExprCatalogFunc func(vars *Vars, labels Labels,
 // -----------------------------------------------------
 
 // An Op can occasionally yield stats and progress information,
-// where the call can return an error to abort further processing.
+// and can return an error to abort further processing.
 //
 // The YieldStats implementor must copy any incoming stats that it
 // wants to keep and should be implemented as concurrent safe.
@@ -274,6 +275,8 @@ type Stats struct{} // TODO.
 
 // -----------------------------------------------------
 
+// ArrayYield invokes the yieldVals callback on every item in the val
+// when the val is an array. It reuses the optional valsPre, if needed.
 func ArrayYield(val Val, yieldVals YieldVals, valsPre Vals) (Vals, bool) {
 	parseVal, parseType := Parse(val)
 	if parseType == int(jsonparser.Array) {

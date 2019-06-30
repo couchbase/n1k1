@@ -19,7 +19,8 @@ import (
 	"github.com/buger/jsonparser"
 )
 
-// The ordering of ValType's here matches N1QL value type ordering.
+// The ordering of ValType's here is intended to match N1QL's ordering
+// of value types.
 const (
 	ValTypeMissing = iota
 	ValTypeNull
@@ -31,6 +32,8 @@ const (
 	ValTypeUnknown // Ex: BINARY.
 )
 
+// ParseTypeToValType provides a mapping from jsonparser's type
+// numbers to ValType's numbers.
 var ParseTypeToValType = []int{
 	jsonparser.NotExist: ValTypeMissing,
 	jsonparser.Null:     ValTypeNull,
@@ -44,6 +47,7 @@ var ParseTypeToValType = []int{
 
 // ---------------------------------------------
 
+// Parse is a wrapper around jsonparser.Get().
 func Parse(b []byte) (parseVal []byte, parseType int) {
 	if len(b) == 0 {
 		return nil, int(jsonparser.NotExist) // ValTypeMissing.
@@ -57,10 +61,13 @@ func Parse(b []byte) (parseVal []byte, parseType int) {
 	return v, int(vt)
 }
 
+// ParseTypeHasValue returns true if the parseType is not missing and
+// is not null.
 func ParseTypeHasValue(parseType int) bool {
 	return ParseTypeToValType[parseType] > ValTypeNull
 }
 
+// ParseFloat64 is a wrapper around jsonparser.ParseFloat().
 func ParseFloat64(v []byte) (float64, error) {
 	return jsonparser.ParseFloat(v)
 }
@@ -68,8 +75,8 @@ func ParseFloat64(v []byte) (float64, error) {
 // ---------------------------------------------
 
 // ValComparer holds data structures needed to compare JSON, so that a
-// single, reused ValComparer can avoid repeated memory allocations. A
-// ValComparer is not concurrent safe.
+// single, reused ValComparer can avoid repeated memory
+// allocations. An instance of ValComparer is not concurrent safe.
 type ValComparer struct {
 	KeyVals []KeyVals // Indexed by depth.
 
@@ -83,7 +90,10 @@ type ValComparer struct {
 // NewValComparer returns a ready-to-use ValComparer.
 func NewValComparer() *ValComparer {
 	rv := &ValComparer{}
+
+	// TODO: An encoder might not always be needed?
 	rv.Encoder = json.NewEncoder(&rv.Buffer)
+
 	return rv
 }
 
@@ -366,6 +376,7 @@ func ReuseNextKey(kvs KeyVals) []byte {
 
 // ---------------------------------------------
 
+// CompareErr should be invoked with a or b or both as an error.
 func CompareErr(aErr, bErr error) int {
 	if aErr != nil && bErr != nil {
 		return 0

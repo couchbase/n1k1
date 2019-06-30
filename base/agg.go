@@ -19,14 +19,26 @@ import (
 
 var Zero8 [8]byte // 64-bits of zeros.
 
+// BufUnused returns buf[n:] if there's enough len() or returns nil.
+func BufUnused(buf []byte, n int) []byte {
+	if len(buf) >= n {
+		return buf[n:]
+	}
+
+	return nil
+}
+
 // -----------------------------------------------------
 
 // AggCatalog is a registry of named aggregation handlers related to
 // GROUP BY, such as "count", "sum", etc.
 var AggCatalog = map[string]int{}
 
+// Aggs provides for 0-index-based lookups of aggregation handlers
+// that were registered into the AggCatalog.
 var Aggs []*Agg
 
+// Agg defines the interface for an aggregation handler.
 type Agg struct {
 	// Init extends agg bytes with initial data for the aggregation.
 	Init func(vars *Vars, agg []byte) (aggOut []byte)
@@ -59,17 +71,6 @@ func init() {
 
 	AggCatalog["max"] = len(Aggs)
 	Aggs = append(Aggs, AggMax)
-}
-
-// -----------------------------------------------------
-
-// BufUnused returns buf[n:] if there's enough length or returns nil.
-func BufUnused(buf []byte, n int) []byte {
-	if len(buf) >= n {
-		return buf[n:]
-	}
-
-	return nil
 }
 
 // -----------------------------------------------------

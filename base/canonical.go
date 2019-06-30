@@ -18,9 +18,10 @@ import (
 	"github.com/buger/jsonparser"
 )
 
-// CanonicalJSON returns a JSON encoded representation of the Val,
-// e.g., sorting object field names, etc. The output can be used as a
-// map key. The optional out slice is reused & extended via append().
+// CanonicalJSON returns a canonical JSON encoded representation of
+// the Val -- e.g., the output can be used as a map key, as object
+// field names are sorted, etc. The optional out slice is reused &
+// extended via append().
 func (c *ValComparer) CanonicalJSON(a Val, out []byte) ([]byte, error) {
 	v, vType, _, err := jsonparser.Get(a)
 	if err != nil {
