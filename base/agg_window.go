@@ -27,7 +27,7 @@ var WTokCurrentRow, WTokNoOthers, WTokGroup, WTokTies int
 func init() {
 	for tokenNum, tokenStr := range []string{
 		"rows", "range", "groups", "unbounded", "num",
-		"no-others", "group", "ties"} {
+		"current-row", "no-others", "group", "ties"} {
 		WTok[tokenStr] = tokenNum
 	}
 
