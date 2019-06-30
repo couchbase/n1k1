@@ -17,6 +17,7 @@ import (
 	"github.com/couchbase/n1k1/base"
 )
 
+// ExecOp recursively executes a base.Op tree or plan.
 func ExecOp(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	lzYieldErr base.YieldErr, path, pathItem string) {
 	if o == nil {
@@ -44,8 +45,7 @@ func ExecOp(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 		OpJoinNestedLoop(o, lzVars, lzYieldVals, lzYieldErr, path, pathNext) // !lz
 
 	case "joinHash-inner", "joinHash-leftOuter",
-		"intersect-distinct", "intersect-all",
-		"except-distinct", "except-all":
+		"intersect-distinct", "intersect-all", "except-distinct", "except-all":
 		OpJoinHash(o, lzVars, lzYieldVals, lzYieldErr, path, pathNext) // !lz
 
 	case "union-all":
@@ -85,13 +85,15 @@ func ExecOp(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 // -----------------------------------------------------
 
-// ExecOpEx is invoked to handle additional or extra operator kinds.
+// ExecOpEx is overridable by apps and is invoked by ExecOp() to
+// handle additional or extra operator kinds.
 var ExecOpEx = func(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	lzYieldErr base.YieldErr, path, pathItem string) {
 }
 
 // -----------------------------------------------------
 
+// OpSequence executes its children in sequence.
 func OpSequence(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	lzYieldErr base.YieldErr, path, pathNext string) {
 	var lzErr error
@@ -114,6 +116,7 @@ func OpSequence(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 }
 
 // -----------------------------------------------------
+
 // LzScope is used to mark block scope (ex: IF block) as lazy.
 const LzScope = true
 

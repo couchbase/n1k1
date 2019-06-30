@@ -55,7 +55,8 @@ func OpWindowPartition(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals
 	trackDenseRank := strings.Index(track, "denseRank") >= 0
 
 	// A heap data structure is allocated but is used merely as an
-	// appendable sequence of []byte items, not as an actual heap.
+	// appendable sequence of []byte items, without keeping the actual
+	// heap invariant.
 	lzHeap, lzErr := lzVars.Ctx.AllocHeap()
 	if lzErr != nil {
 		lzYieldErr(lzErr)

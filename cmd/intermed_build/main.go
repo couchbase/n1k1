@@ -13,6 +13,7 @@ func main() {
 	flag.Parse()
 
 	log.Printf("%s\n", os.Args[0])
+
 	flag.VisitAll(func(f *flag.Flag) {
 		log.Printf(" -%s=%s\n", f.Name, f.Value)
 	})

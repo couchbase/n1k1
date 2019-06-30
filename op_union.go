@@ -17,6 +17,7 @@ import (
 	"github.com/couchbase/n1k1/base"
 )
 
+// OpUnionAll implements UNION ALL.
 func OpUnionAll(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	lzYieldErr base.YieldErr, path, pathNext string) {
 	pathNextU := EmitPush(pathNext, "U") // !lz

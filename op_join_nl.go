@@ -74,8 +74,7 @@ func OpJoinNestedLoop(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 			MakeExprFunc(lzVars, labelsAB, exprParams, pathNext, "JF") // !lz
 	}
 
-	// The lzHadInner is used only during LEFT OUTER joins.
-	var lzHadInner bool
+	var lzHadInner bool // Used only when isLeftOuter is true.
 
 	var lzValsPre base.Vals
 

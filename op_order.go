@@ -18,6 +18,7 @@ import (
 	"github.com/couchbase/n1k1/base"
 )
 
+// OpOrderOffsetLimit implements ORDER BY and OFFSET and LIMIT.
 func OpOrderOffsetLimit(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	lzYieldErr base.YieldErr, path, pathNext string) {
 	orders := o.Params[0].([]interface{}) // ORDER BY expressions.
@@ -111,7 +112,7 @@ func OpOrderOffsetLimit(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVal
 					} else {
 						heap.Push(lzHeap, lzEncoded)
 
-						// If heap too big, pop max-heap-item.
+						// If heap is too big, pop max-heap-item.
 						if lzHeapLen+1 > offsetPlusLimit {
 							heap.Pop(lzHeap)
 						}
@@ -141,11 +142,10 @@ func OpOrderOffsetLimit(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVal
 				_ = lzN
 
 				if len(orders) > 0 { // !lz
-
 					// Pop off items from the heap, placing them in
-					// reverse at end of the heap slots, which leads
-					// to the end of the heap slots having the needed
-					// items items correctly sorted in-place.
+					// reverse at end of the heap slots, which results
+					// in the end of the heap slots having the needed
+					// items correctly sorted in-place.
 					lzHeapLen := lzHeap.CurItems
 
 					lzErr := lzHeap.Sort(offset)
@@ -193,6 +193,8 @@ func OpOrderOffsetLimit(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVal
 
 // -----------------------------------------------------
 
+// MakeValsLessFunc returns a ValsLessFunc that compares based on the
+// given "asc" and "desc" directions.
 func MakeValsLessFunc(lzVars *base.Vars, directions []interface{}) (
 	lzValsLessFunc base.ValsLessFunc) {
 	// TODO: One day use eagerly discovered types to optimize?

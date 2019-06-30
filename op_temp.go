@@ -15,8 +15,9 @@ import (
 	"github.com/couchbase/n1k1/base"
 )
 
-// OpTempCapture runs the child op, and appends any yielded vals as an
-// entry into a vars.Temps slot.
+// OpTempCapture implements a "temp table" by running the child op and
+// by appending any yielded vals as a sequence of entries associated
+// with a vars.Temps slot. See the associated OpTempYield().
 func OpTempCapture(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	lzYieldErr base.YieldErr, path, pathNext string) {
 	// A heap data structure is allocated but is used without keeping
@@ -75,7 +76,11 @@ func OpTempYield(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 // -----------------------------------------------------
 
-// OpTempYieldVar yields an item or an array's items from a vars slot.
+// OpTempYieldVar yields an item or an array's items from a vars slot,
+// and is useful for passing data "out of band" amongst operators.
+// For example, a parent op might update a vars slot every time
+// through a loop, and on each loop invoke ExecOp() on a child op tree
+// which is driven by the latest data from a OpTempYieldVar().
 func OpTempYieldVar(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	lzYieldErr base.YieldErr, path, pathNext string) {
 	tempIdx := o.Params[0].(int)

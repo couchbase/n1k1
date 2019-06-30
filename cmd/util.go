@@ -7,6 +7,8 @@ import (
 	"strings"
 )
 
+// VisitFiles invokes a callback for each file (and its lines of text)
+// in a directory that has a matching file suffix.
 func VisitFiles(dir, fileSuffix string,
 	cb func(kind, data string) error) error {
 	fileNames, err := FileNames(dir, fileSuffix)

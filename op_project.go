@@ -17,6 +17,7 @@ import (
 	"github.com/couchbase/n1k1/base"
 )
 
+// OpProject implements the projection operation.
 func OpProject(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	lzYieldErr base.YieldErr, path, pathNext string) {
 	if LzScope {
@@ -47,6 +48,8 @@ func OpProject(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 // -----------------------------------------------------
 
+// MakeProjectFunc returns a ProjectFunc based on the given
+// expressions in the projections param.
 func MakeProjectFunc(lzVars *base.Vars, labels base.Labels,
 	projections []interface{}, path, pathItem string) (
 	lzProjectFunc base.ProjectFunc) {

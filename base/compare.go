@@ -241,8 +241,8 @@ func (c *ValComparer) CompareWithType(aValue, bValue []byte,
 
 		sort.Sort(kvs)
 
-		// With closely matching objects, the sorted kvs should will
-		// look like a sequence of pairs, like...
+		// With closely matching objects, the sorted kvs should look
+		// like a sequence of pairs, like...
 		//
 		// [{"city", "sf", 1}, {"city", "sf", -1}, {"state", ...} ...]
 		//

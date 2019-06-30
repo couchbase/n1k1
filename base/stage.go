@@ -25,6 +25,8 @@ type Stage struct {
 	YieldVals YieldVals
 	YieldErr  YieldErr
 
+	// Each actor goroutine writes to this blocking channel to signal
+	// its readiness, to prevent races with stage initiailization.
 	ActorReadyCh chan struct{}
 
 	BatchCh chan []Vals
@@ -182,7 +184,7 @@ func (stage *Stage) YieldResultsFromActors() {
 func (stage *Stage) ProcessBatchesFromActors(cb func([]Vals)) {
 	var numActorsReady int
 	for numActorsReady < stage.NumActors {
-		<-stage.ActorReadyCh
+		<-stage.ActorReadyCh // Avoid races with stage initialization.
 		numActorsReady++
 	}
 

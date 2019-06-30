@@ -22,14 +22,14 @@ Some design ideas meant to help with n1k1's performance...
   - object field access or map lookups (e.g., obj["city"]) can be
     instead replaced by positional slice access (e.g., vals[5])
   - the labeled vals or "registers" are passed amongst operators.
-- push-based paradigm for shorter codepaths
+- push-based paradigm for shorter codepaths...
   - data transfer between operators (e.g., from scan -> filter ->
     project) is a function call, instead of a send/recv on channels
     between goroutines. These function calls can sometimes be inlined
     by n1k1's code generator, removing function call overhead.
   - the pull-based paradigm, a.k.a. the iterator approach, in
-    contrast, involves additional checks for HasNext() across the
-    operators in a query-plan.
+    contrast, involves additional checks for HasNext() and for errors
+    across the operators in a query-plan.
 - data-staging, pipeline breakers (record batching)...
   - batching results between operators may be more friendly to CPU
     instruction & data caches.
@@ -44,12 +44,12 @@ Some design ideas meant to help with n1k1's performance...
     consumer goroutine are recycled back to the producer goroutines
     for less garbage creation.
 - query compilation to golang...
-  - based on Futamura projections / LMS (Rompf, Odersky) inspirations.
+  - based on Futamura projections / LMS (Rompf, Odersky) approaches.
   - implements operator fusion, for fewer function calls.
   - lifting vars is implemented to support resource reusability.
 - expression optimizations for static parameters.
   - for example, with an expression on `sales < 1000`, the `1000` is
-    evaluated early and a single time in preparation phases, instead
+    evaluated early and a single time in a preparation phase, instead
     of being re-evaluated for every single tuple that's processed.
   - the static type of the `1000` is also detected in up-front
     preparation phases, which leads to more direct codepaths focused
@@ -62,15 +62,15 @@ Some design ideas meant to help with n1k1's performance...
   - couchbase/rhmap/store will spill to temporary disk files when
     the hashmap becomes too large, via mmap(), allowing operators
     to process larger datasets that don't fit into memory (hash-joins,
-    DISTINCT, GROUP BY, INTERECT, EXCEPT).
-  - couchbase/rhmap/store chunk file allows hash-join left-vals to be
+    DISTINCT, GROUP BY, INTERECT, EXCEPT, etc).
+  - couchbase/rhmap/store chunk files allow hash-join left-vals to be
     spilled out to temporary disk files when it becomes too large.
 - error handling is push-based via an YieldErr callback...
   - the YieldErr callback allows n1k1 to avoid continual, conservative
     error handling checks ("if err != nil { return nil, err }").
 - max-heap in ORDER-BY / OFFSET / LIMIT
-  - reverse popping of the max-heap produces the final result, which
-    avoids a final sort.
+  - reverse popping of the max-heap produces the final, ordered
+    result, which avoids a final sort.
   - max-heap that becomes too large will spill to temporary files.
 - INTERSECT DISTINCT / ALL and EXCEPT DISTINCT / ALL
   are optimized by reusing hash-join's machinery.
@@ -78,7 +78,7 @@ Some design ideas meant to help with n1k1's performance...
     - all the left-side values (for hash-join).
     - a count of the left-side values (for INTERSECT ALL, EXCEPT ALL).
     - and/or a probe-count (for multiple use cases).
-  - INTERSECT DISTINCT and EXCEPT DISTINCT avoid using an
+  - INTERSECT DISTINCT and EXCEPT DISTINCT can avoid using an
     additional, chained DISTINCT operator.
 - base.ValComparer.CanonicalJSON()
   - provides JSON canonicalization into existing []byte buffers which
@@ -89,6 +89,7 @@ Some design ideas meant to help with n1k1's performance...
     - Ex: {a:1,b:2} and {b:2,a:1} are logically the same.
   - numbers also need to be canonicalized.
     - e.g., 0 vs 0.0 vs -0 are logically the same.
+  - reuses a json.Encoder instance to avoid allocations.
 
 ------------------------------------------
 ## Some features...
@@ -199,6 +200,8 @@ efficiently execute that query-plan.
   - glue doesn't code-gen to *.go yet.
   - datastore Fetch() API's allocate garbage.
   - gocb multi-get API's allocate garbage.
+  - go-couchbase does not pipeline transmit's efficiently,
+    ending up with a syscall send()-per-fetch rather than a send()-per-batch.
   - datastore fetch stages should be recycled.
   - what to do with parent value during expression evaluation?
   - sometimes keyspace terms aren't converted to label names correctly,
@@ -211,6 +214,7 @@ efficiently execute that query-plan.
   - implement parallel operator one day?
     - stage already provides some concurrency between producer & consumer.
   - classic N1QL engine uses recover() -- revisit this?
+    - recover() might lead to dangling, unrecoverable resources?
 
 - staging / batchSize might be dynamic / computable?
   - first batch might be "sent early" or ASAP,
@@ -243,6 +247,8 @@ efficiently execute that query-plan.
 
 - UI / terminal and/or web-based?
 
+- advanced wizard to show more what-if's?
+
 - numbers
   - need to treat float's different than int's?
 
@@ -268,7 +274,7 @@ efficiently execute that query-plan.
       and propagating it during processing.
   - better: add another struct property to the base.Vars?
     - it's copied as more base.Vars are chained,
-      so that you don't need to talk the chain to the root
+      so that you don't need to walk the chain to the root
       every time?
     - any spawned child thread/goroutines can push another Vars
       that shadows the ancestor Var chain to avoid concurrent mutations?
@@ -277,7 +283,11 @@ efficiently execute that query-plan.
   - e.g., ARRAY_POSITION(hobbies, 0) might detect early that args[1]
     is a constant number, rather than rechecking that args[1] is a
     value.NUMBER during every Evaluate()?
-    - see the ExprCmp() implementation to see how this works.
+    - see the ExprCmp() implementation to see one kind of approach on this.
+
+- hash join in n1k1 fills the probe map with the left-hand-side values,
+  but N1QL planner might think the right-hand-side is the probe map?
+  - need to double-check this.
 
 - JOIN types: CROSS, FULL, RIGHT OUTER.
 

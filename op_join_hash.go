@@ -22,13 +22,13 @@ import (
 )
 
 // OpJoinHash implements...
-//  o.Kind:             info tracked in probe map values:  yieldsUnprobed:
-//   joinHash-inner      [                      leftVals ]  f
-//   joinHash-leftOuter  [ probeCount           leftVals ]  t
-//   intersect-all       [ probeCount leftCount          ]  f
-//   intersect-distinct  [ probeCount                    ]  f
-//   except-all          [ probeCount leftCount          ]  t
-//   except-distinct     [ probeCount                    ]  t
+//  o.Kind:             info tracked in probe map values:  yieldsUnjoined:
+//   joinHash-inner      [                     leftVals ]  f
+//   joinHash-leftOuter  [ joinCount           leftVals ]  t
+//   intersect-all       [ joinCount leftCount          ]  f
+//   intersect-distinct  [ joinCount                    ]  f
+//   except-all          [ joinCount leftCount          ]  t
+//   except-distinct     [ joinCount                    ]  t
 func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	lzYieldErr base.YieldErr, path, pathNext string) {
 	kindParts := strings.Split(o.Kind, "-")
@@ -38,7 +38,7 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	var exprLeft, exprRight []interface{}
 
 	// Analyze the Op's config according to the above table of flags.
-	var canonical, probeCount, leftCount, leftVals, yieldsUnprobed bool
+	var canonical, joinCount, leftCount, leftVals, yieldsUnjoined bool
 
 	if kindParts[0] == "joinHash" {
 		exprLeft = o.Params[0].([]interface{})
@@ -47,7 +47,7 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 		canonical = false
 
 		if kindParts[1] == "leftOuter" {
-			probeCount, yieldsUnprobed = true, true
+			joinCount, yieldsUnjoined = true, true
 		}
 
 		leftVals = true
@@ -59,13 +59,13 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 		canonical = true
 
-		probeCount = true
+		joinCount = true
 
 		if kindParts[1] == "all" {
 			leftCount = true
 		}
 
-		yieldsUnprobed = kindParts[0] == "except"
+		yieldsUnjoined = kindParts[0] == "except"
 	}
 
 	// ---------------------------------------------------------------
@@ -104,9 +104,9 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 		var lzProbeValNew, lzLeftBytes []byte
 
-		var lzProbeCount uint64
+		var lzJoinCount uint64
 
-		_, _, _ = lzValOut, lzLeftBytes, lzProbeCount
+		_, _, _ = lzValOut, lzLeftBytes, lzJoinCount
 
 		exprLeftFunc :=
 			MakeExprFunc(lzVars, o.Children[0].Labels, exprLeft, pathNext, "JHL") // !lz
@@ -141,7 +141,8 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 					// the probe map.
 					lzProbeValNew = lzProbeValNew[:0]
 
-					if probeCount { // !lz
+					if joinCount { // !lz
+						// Alloc space for joinCount for later RHS probing.
 						lzProbeValNew = append(lzProbeValNew, lzZero16[:8]...)
 					} // !lz
 
@@ -172,7 +173,8 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 					lzProbeValOld := lzProbeVal
 
-					if probeCount { // !lz
+					if joinCount { // !lz
+						// Alloc space for joinCount for later RHS probing.
 						lzProbeValNew = append(lzProbeValNew, lzZero16[:8]...)
 						lzProbeValOld = lzProbeValOld[8:]
 					} // !lz
@@ -198,8 +200,8 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 					} // !lz
 
 					// The updated probe val has the same size as the
-					// existing probe val, so we can optimize by
-					// in-place overwriting the existing probe val.
+					// existing probe val, so optimize by in-place
+					// overwriting the existing probe val.
 					copy(lzProbeVal, lzProbeValNew)
 				}
 			}
@@ -249,12 +251,13 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 				if lzErr == nil && base.ValHasValue(lzProbeKey) {
 					lzProbeVal, lzProbeKeyFound := lzMap.Get([]byte(lzProbeKey))
 					if lzProbeKeyFound {
-						if probeCount { // !lz
-							// Increment probe count.
-							lzProbeCount = binary.LittleEndian.Uint64(lzProbeVal[:8]) + 1
-							binary.LittleEndian.PutUint64(lzProbeVal[:8], lzProbeCount)
+						if joinCount { // !lz
+							// Increment join count on this probe key
+							// as both LHS & RHS have the probe key.
+							lzJoinCount = binary.LittleEndian.Uint64(lzProbeVal[:8]) + 1
+							binary.LittleEndian.PutUint64(lzProbeVal[:8], lzJoinCount)
 
-							if lzProbeCount == 1 {
+							if lzJoinCount == 1 {
 								if opIntersect && !leftCount { // !lz
 									// Ex: intersect-distinct.
 									lzValsOut = base.ValsDecode(lzProbeKey, lzValsOut[:0])
@@ -270,7 +273,7 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 							if opIntersect { // !lz
 								// Ex: intersect-all.
 								lzLeftCount := binary.LittleEndian.Uint64(lzProbeVal[:8])
-								if lzLeftCount >= lzProbeCount {
+								if lzLeftCount >= lzJoinCount {
 									lzValsOut = base.ValsDecode(lzProbeKey, lzValsOut[:0])
 
 									lzYieldValsOrig(lzValsOut)
@@ -294,9 +297,9 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 			lzYieldErr = func(lzErrIn error) {
 				if lzErrIn == nil {
-					// No error, so yield unprobed items if needed.
-					// Ex: joinHash-leftOuter, except.
-					if probeCount && yieldsUnprobed { // !lz
+					// No error, so yield items if needed for
+					// joinHash-leftOuter and for except.
+					if joinCount && yieldsUnjoined { // !lz
 						rightLabelsLen := len(o.Children[1].Labels) // !lz
 						_ = rightLabelsLen                          // !lz
 
@@ -305,8 +308,8 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 						// Callback for entries in the probe map.
 						lzMapVisitor := func(lzProbeKey store.Key, lzProbeVal store.Val) bool {
-							lzProbeCount := binary.LittleEndian.Uint64(lzProbeVal[:8])
-							if lzProbeCount == 0 { // Entry was unprobed.
+							lzJoinCount := binary.LittleEndian.Uint64(lzProbeVal[:8])
+							if lzJoinCount == 0 { // Entry was not visited by RHS.
 								lzProbeVal = lzProbeVal[8:]
 
 								if leftCount { // !lz
