@@ -196,6 +196,12 @@ efficiently execute that query-plan.
 ------------------------------------------
 ## TODO...
 
+- command-line program?
+
+- UI / terminal and/or web-based?
+
+- advanced wizard to show more what-if's?
+
 - conversion of N1QL query-plan into n1k1 query-plan?
   - glue doesn't code-gen to *.go yet.
   - datastore Fetch() API's allocate garbage.
@@ -216,9 +222,8 @@ efficiently execute that query-plan.
   - classic N1QL engine uses recover() -- revisit this?
     - recover() might lead to dangling, unrecoverable resources?
 
-- staging / batchSize might be dynamic / computable?
-  - first batch might be "sent early" or ASAP,
-    so for example first fetch can be more concurrent?
+- numbers
+  - need to treat float's different than int's?
 
 - leveraging multiple cores?
   - scans of different partitions can be on separate cores?
@@ -229,6 +234,10 @@ efficiently execute that query-plan.
     need a final results merge?
     - perhaps merge-sort, merge-join?
 
+- staging / batchSize might be dynamic / computable?
+  - first batch might be "sent early" or ASAP,
+    so for example first fetch can be more concurrent?
+
 - aggregate functions, advanced features?
   - count(*) or COUNT_ALL is different than count(expr),
     w.r.t. missing/null handling?
@@ -236,6 +245,8 @@ efficiently execute that query-plan.
   - FROM LAST? (FROM FIRST is default)
   - filter-where clauses?
   - DISTINCT? e.g., COUNT(DISTINCT productId)?
+  - COUNTN versus COUNT?
+    - COUNTN is only used by index scans?
 
 - ORDER BY ... NULLS FIRST vs NULLS LAST?
 
@@ -245,26 +256,18 @@ efficiently execute that query-plan.
     - inverse optimization on sliding window?
     - not materializing partition if possible?
       - for example, when only a count is needed?
-      - non-materializing WindowPartition implementation
-        might just borrow the underlying ORDER-OFFSET-LIMIT's backing heap?
   - FILTER (WHERE expr) clause?
 
 - GROUP BY ROLLUP?
 - GROUP BY GROUPING SETS?
 
-- command-line program?
-
-- UI / terminal and/or web-based?
-
-- advanced wizard to show more what-if's?
-
-- numbers
-  - need to treat float's different than int's?
-
 - correlated subqueries?
-  - these should just be yet another expression
+  - these should just be yet another expression?
   - analysis of non-correlated vs correlated subqueries should be
-    decided at a higher level than at query-plan execution
+    decided at a higher level than at query-plan execution?
+  - implementation might store the current lzVal into a vars temp
+    slot, which the child or subquery's ExecOp may be able to refer to
+    with variables?
 
 - compiled expr support?
 
@@ -273,20 +276,6 @@ efficiently execute that query-plan.
     so, the first discovery of MISSING or NULL should
     be able to short-circuit and directly break or goto
     some outer handler codepath?
-
-- temporary, but reused (recyclable) raw []bytes buf
-  as a per-tuple working area might be associated with...
-  - perhaps the base.Vals could have a hidden labeled "^tmp"?
-    - but, unlike other Val's, it would be mutated!
-      so, this is not highly favored.
-    - and, also need to be careful to carrying the ^tmp
-      and propagating it during processing.
-  - better: add another struct property to the base.Vars?
-    - it's copied as more base.Vars are chained,
-      so that you don't need to walk the chain to the root
-      every time?
-    - any spawned child thread/goroutines can push another Vars
-      that shadows the ancestor Var chain to avoid concurrent mutations?
 
 - precompute data based on early constant detection?
   - e.g., ARRAY_POSITION(hobbies, 0) might detect early that args[1]
@@ -298,7 +287,7 @@ efficiently execute that query-plan.
   but N1QL planner might think the right-hand-side is the probe map?
   - need to double-check this.
 
-- JOIN types: CROSS, FULL, RIGHT OUTER.
+- JOIN types: CROSS, FULL, RIGHT OUTER, LATERAL.
 
 - NEST via hash-join?
 - NEST via index scan?
@@ -359,15 +348,8 @@ efficiently execute that query-plan.
       and does not propagate attachments?
 
 EXCEPT ALL - tuple should appear MAX(m - n, 0) times in the result,
-  given tuple appears m times in the left side
+  given that a tuple appears m times in the left side
   and n times in the right side, where m >= 0 and n >= 0.
-
-- handling of BINARY data type?
-  - use a label prefix char?  Perhaps '='?
-  - PROBLEM: the operator doesn't know a val is BINARY until runtime,
-    so it can't assign a '=' label prefix at query-plan time?
-  - the '.' label can still have an UNKNOWN type, though,
-    so it might be ok.
 
 - standalone Op for data-staging / pipeline breaking?
 
@@ -400,9 +382,6 @@ EXCEPT ALL - tuple should appear MAX(m - n, 0) times in the result,
   so are not part of query-plan execution?
   - needs more research.
 
-- compiled accessor(s) to a given JSON-path in a raw []byte value?
-  - compiled accessor code versus generic jsonparser.Get() navigation?
-
 - prefetching optimizations?
   - this is an issue internal to scan operators?
   - data-staging / pipeline-breaking should be helpful here?
@@ -423,6 +402,9 @@ EXCEPT ALL - tuple should appear MAX(m - n, 0) times in the result,
     once, but if we can also tell that `sales` expression
     only produces numbers, or only ever produces missing|null|numbers,
     then we can optimize further?
+
+- compiled accessor(s) to a given JSON-path in a raw []byte value?
+  - compiled accessor code versus generic jsonparser.Get() navigation?
 
 - divide by 0 at compile time should be checked instead of
   panic/recover that can leave unclosed, unreclaimable unresources?
@@ -486,6 +468,10 @@ EXCEPT ALL - tuple should appear MAX(m - n, 0) times in the result,
 - PIVOT aggregate-funcs FOR expression IN expected-values?
   - PIVOT count(*) FOR (time, category rating) IN ((1, "movie", 5), ...)?
 
+- SQL 2011 temporal features?
+  - transaction time vs effective time?
+  - PERIOD OVERLAPS?
+
 - NUMA?
   - pinning threads to specific cores?
   - lock free data structures?
@@ -494,3 +480,33 @@ EXCEPT ALL - tuple should appear MAX(m - n, 0) times in the result,
     and accessing non-local memory?
 
 - emit other languages?
+
+- handling of BINARY data type?
+  - use a label prefix char?  Perhaps '='?
+  - PROBLEM: the operator doesn't know a val is BINARY until runtime,
+    so it can't assign a '=' label prefix at query-plan time?
+  - the '.' label can still have an UNKNOWN type, though,
+    so it might be ok.
+
+- (perhaps this is unneeded?) temporary, but reused (recyclable) raw
+  []bytes buf as a per-tuple working area might be associated with...
+  - perhaps the base.Vals could have a hidden labeled "^tmp"?
+    - but, unlike other Val's, it would be mutated!
+      so, this is not highly favored.
+    - and, also need to be careful to carrying the ^tmp
+      and propagating it during processing.
+  - better: add another struct property to the base.Vars?
+    - it's copied as more base.Vars are chained,
+      so that you don't need to walk the chain to the root
+      every time?
+    - any spawned child thread/goroutines can push another Vars
+      that shadows the ancestor Var chain to avoid concurrent mutations?
+
+- non-materializing WindowPartition implementation?
+  might just borrow the underlying ORDER-OFFSET-LIMIT's backing heap?
+  - currently, OpWindowPartition creates a heap-as-chunk-sequence
+    that it resets for each partition.
+  - ANSWER: borrowing underlying ORDER-OFFSET-LIMIT's backing heap for
+    the window partition won't work because the order-by heap is a
+    real heap, which is different than the heap-as-chunk-sequence used
+    by a window partition.
