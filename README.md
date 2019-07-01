@@ -220,6 +220,15 @@ efficiently execute that query-plan.
   - first batch might be "sent early" or ASAP,
     so for example first fetch can be more concurrent?
 
+- leveraging multiple cores?
+  - scans of different partitions can be on separate cores?
+    fetches against different nodes can be on separate cores?
+    concurrently, independently building up their own batches?
+  - filtering, projection can be multiple core, too?
+  - distinct, aggregating, union|intersect|except sorting, can be multiple core, too?
+    need a final results merge?
+    - perhaps merge-sort, merge-join?
+
 - aggregate functions, advanced features?
   - count(*) or COUNT_ALL is different than count(expr),
     w.r.t. missing/null handling?
