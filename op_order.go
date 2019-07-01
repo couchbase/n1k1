@@ -60,7 +60,7 @@ func OpOrderOffsetLimit(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVal
 				MakeProjectFunc(lzVars, o.Children[0].Labels, orders, pathNextOOL, "PF") // !lz
 
 			lzValsLessFunc =
-				MakeValsLessFunc(lzVars, directions) // !lz
+				MakeValsLessFunc(lzVars, directions, pathNextOOL) // !lz
 
 			lzHeap = base.CreateHeapValsProjected(lzVars.Ctx, lzValsLessFunc)
 		} // !lz
@@ -195,29 +195,30 @@ func OpOrderOffsetLimit(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVal
 
 // MakeValsLessFunc returns a ValsLessFunc that compares based on the
 // given "asc" and "desc" directions.
-func MakeValsLessFunc(lzVars *base.Vars, directions []interface{}) (
-	lzValsLessFunc base.ValsLessFunc) {
+func MakeValsLessFunc(lzVars *base.Vars, directions []interface{},
+	path string) (lzValsLessFunc base.ValsLessFunc) {
 	// TODO: One day use eagerly discovered types to optimize?
 
-	if len(directions) > 0 {
+	ndirections := len(directions)
+	if ndirections > 0 {
+		lzAscs := make([]bool, ndirections) // <== varLift: lzAscs by path
+		for directioni, direction := range directions {
+			if direction.(string) == "asc" {
+				lzAscs[directioni] = true
+			}
+		}
+
 		lzValsLessFunc = func(lzValsA, lzValsB base.Vals) bool {
 			var lzCmp int
 
 			for idx := range directions { // !lz
-				direction := directions[idx] // !lz
-
-				lt, gt := true, false             // !lz
-				if direction.(string) == "desc" { // !lz
-					lt, gt = false, true // !lz
-				} // !lz
-
 				lzCmp = lzVars.Ctx.ValComparer.Compare(lzValsA[idx], lzValsB[idx])
 				if lzCmp < 0 {
-					return lt
+					return lzAscs[idx]
 				}
 
 				if lzCmp > 0 {
-					return gt
+					return !lzAscs[idx]
 				}
 			} // !lz
 

@@ -30,6 +30,8 @@ var Keywords = map[string]bool{
 	"cap":    true,
 	"len":    true,
 	"nil":    true,
+	"true":   true,
+	"false":  true,
 	"error":  true,
 	"go":     true,
 	"close":  true,
