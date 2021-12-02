@@ -544,13 +544,13 @@ func (c *Conv) VisitOrder(o *plan.Order) (interface{}, error) {
 	for _, term := range o.Terms() {
 		exprs = append(exprs, []interface{}{"exprTree", term.Expression()})
 
-		if term.Descending() {
+		if term.Descending(nil) { // TODO: The nil context param may be wrong.
 			dirs = append(dirs, "desc")
 		} else {
 			dirs = append(dirs, "asc")
 		}
 
-		if term.NullsPos() {
+		if term.NullsPosExpr() != nil {
 			return NA(o) // TODO: One day handle non-natural nulls ordering.
 		}
 	}
@@ -693,6 +693,32 @@ func (c *Conv) VisitAdvise(o *plan.Advise) (interface{}, error)           { retu
 func (c *Conv) VisitUpdateStatistics(o *plan.UpdateStatistics) (interface{}, error) {
 	return NA(o)
 }
+
+// -------------------------------------------------------------------
+
+// New methods since CB 6.5 / 2019.
+
+func (c *Conv) VisitAll(o *plan.All) (interface{}, error) { return NA(o) } // Related to DISTINCT?
+
+func (c *Conv) VisitStartTransaction(o *plan.StartTransaction) (interface{}, error)   { return NA(o) }
+func (c *Conv) VisitCommitTransaction(o *plan.CommitTransaction) (interface{}, error) { return NA(o) }
+func (c *Conv) VisitRollbackTransaction(o *plan.RollbackTransaction) (interface{}, error) {
+	return NA(o)
+}
+func (c *Conv) VisitTransactionIsolation(o *plan.TransactionIsolation) (interface{}, error) {
+	return NA(o)
+}
+func (c *Conv) VisitSavepoint(o *plan.Savepoint) (interface{}, error) { return NA(o) }
+
+func (c *Conv) VisitCreateScope(o *plan.CreateScope) (interface{}, error)           { return NA(o) }
+func (c *Conv) VisitDropScope(o *plan.DropScope) (interface{}, error)               { return NA(o) }
+func (c *Conv) VisitCreateCollection(o *plan.CreateCollection) (interface{}, error) { return NA(o) }
+func (c *Conv) VisitDropCollection(o *plan.DropCollection) (interface{}, error)     { return NA(o) }
+func (c *Conv) VisitFlushCollection(o *plan.FlushCollection) (interface{}, error)   { return NA(o) }
+
+func (c *Conv) VisitInferExpression(o *plan.InferExpression) (interface{}, error) { return NA(o) }
+
+func (c *Conv) VisitReceive(o *plan.Receive) (interface{}, error) { return NA(o) }
 
 // -------------------------------------------------------------------
 

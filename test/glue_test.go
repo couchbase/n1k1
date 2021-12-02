@@ -14,7 +14,6 @@ package test
 import (
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"os"
 	"strings"
 	"testing"
@@ -25,6 +24,7 @@ import (
 	"github.com/couchbase/query/errors"
 	"github.com/couchbase/query/execution"
 	"github.com/couchbase/query/plan"
+	"github.com/couchbase/query/planner"
 	server_http "github.com/couchbase/query/server/http"
 	"github.com/couchbase/query/value"
 
@@ -738,7 +738,7 @@ func testFileStoreSelect(t *testing.T, stmt string, emit bool) (
 
 	p, err := store.PlanStatement(s, "", nil, nil)
 	if err != nil {
-		t.Fatalf("plan did not expect err: %v", err)
+		t.Fatalf("plan did not expect err: %v, stmt: %s", err, stmt)
 	}
 	if p == nil {
 		t.Fatalf("did not expect nil plan")
@@ -787,14 +787,20 @@ func testGlueExec(t *testing.T, emit bool,
 	requestPipelineBatch := 100
 	requestNamedArgs := map[string]value.Value(nil)
 	requestPositionalArgs := value.Values(nil)
-	requestCredentials := auth.Credentials(nil)
+	requestCredentials := auth.NewCredentials()
 	requestScanConsistency := datastore.UNBOUNDED
 	requestScanVectorSource := &server_http.ZeroScanVectorSource{}
 	requestOutput := &Output{}
 
-	var requestOriginalHttpRequest *http.Request
-
 	var prepared *plan.Prepared
+
+	requestQueryContext := ""
+	requestUseFts := false
+	requestUseCBO := false
+
+	var optimizer planner.Optimizer
+	var requestKvTimeout time.Duration
+	var requestTimeout time.Duration
 
 	context := execution.NewContext(requestId,
 		store.Datastore, store.Systemstore, namespace,
@@ -802,8 +808,14 @@ func testGlueExec(t *testing.T, emit bool,
 		requestScanCap, requestPipelineCap, requestPipelineBatch,
 		requestNamedArgs, requestPositionalArgs,
 		requestCredentials, requestScanConsistency, requestScanVectorSource,
-		requestOutput, requestOriginalHttpRequest,
-		prepared, store.IndexApiVersion, store.FeatureControls)
+		requestOutput,
+		prepared, store.IndexApiVersion, store.FeatureControls,
+		requestQueryContext,
+		requestUseFts,
+		requestUseCBO,
+		optimizer,
+		requestKvTimeout,
+		requestTimeout)
 
 	vars.Temps = vars.Temps[:0]
 
@@ -866,3 +878,9 @@ func (this *Output) FmtPhaseCounts() map[string]interface{}                     
 func (this *Output) FmtPhaseOperators() map[string]interface{}                   { return nil }
 func (this *Output) AddPhaseTime(phase execution.Phases, duration time.Duration) {}
 func (this *Output) FmtPhaseTimes() map[string]interface{}                       { return nil }
+
+func (this *Output) FmtOptimizerEstimates(op execution.Operator) map[string]interface{} { return nil }
+
+func (this *Output) TrackMemory(size uint64) {}
+
+func (this *Output) SetTransactionStartTime(t time.Time) {}

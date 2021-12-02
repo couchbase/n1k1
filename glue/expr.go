@@ -23,6 +23,7 @@ import (
 	"github.com/couchbase/n1k1"
 	"github.com/couchbase/n1k1/base"
 
+	"github.com/couchbase/query/auth"
 	"github.com/couchbase/query/expression"
 	"github.com/couchbase/query/expression/parser"
 	"github.com/couchbase/query/value"
@@ -284,4 +285,73 @@ func (e *ExprGlueContext) EvaluateStatement(statement string,
 	positionalArgs value.Values,
 	subquery, readonly bool) (value.Value, uint64, error) {
 	return nil, 0, nil // TODO.
+}
+
+func (e *ExprGlueContext) GetTimeout() (d time.Duration) {
+	return d // TODO.
+}
+
+func (e *ExprGlueContext) Credentials() *auth.Credentials {
+	return nil // TDOO.
+}
+
+func (e *ExprGlueContext) NewQueryContext(queryContext string, readonly bool) interface{} {
+	return nil // TODO.
+}
+
+func (e *ExprGlueContext) QueryContext() string {
+	return "" // TODO.
+}
+
+func (e *ExprGlueContext) GetTxContext() interface{} {
+	return nil // TODO.
+}
+
+func (e *ExprGlueContext) SetTxContext(t interface{}) {
+	// TODO.
+}
+
+func (e *ExprGlueContext) Readonly() bool {
+	return true // TODO.
+}
+
+func (e *ExprGlueContext) SetAdvisor() {
+	// TODO.
+}
+
+func (e *ExprGlueContext) IncRecursionCount(inc int) int {
+	return 0 // TODO.
+}
+
+func (e *ExprGlueContext) RecursionCount() int {
+	return 0 // TODO.
+}
+
+func (e *ExprGlueContext) StoreValue(key string, val interface{}) {
+	// TODO.
+}
+
+func (e *ExprGlueContext) RetrieveValue(key string) interface{} {
+	return nil // TODO.
+}
+
+func (e *ExprGlueContext) ReleaseValue(key string) {
+	return // TODO.
+}
+
+func (e *ExprGlueContext) OpenStatement(statement string, namedArgs map[string]value.Value, positionalArgs value.Values, subquery, readonly bool) (
+	interface {
+		Results() (interface{}, uint64, error)
+		NextDocument() (value.Value, error)
+		Cancel()
+	}, error) {
+	return nil, nil // TODO.
+}
+
+func (e *ExprGlueContext) Parse(s string) (interface{}, error) {
+	return nil, nil // TODO.
+}
+
+func (e *ExprGlueContext) Infer(value.Value, value.Value) (value.Value, error) {
+	return nil, nil // TODO.
 }

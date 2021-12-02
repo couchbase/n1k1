@@ -120,9 +120,12 @@ func ServiceRequestEx(r server.Request, p plan.Operator,
 	}
 
 	// TODO: YieldStats.
+
 	// TODO: Better allocators / recyclers.
 
-	ctx.SetUp()
+	// TODO: The SetUp() method disappeared after CB 6.5, but
+	// perhaps was replaced by some other method or call path.
+	// ctx.SetUp()
 
 	vars.Ctx.ExecOp(op, vars, yieldVals, yieldErr, "", "")
 

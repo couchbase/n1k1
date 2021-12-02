@@ -26,12 +26,16 @@ import (
 
 // ParseStatement parses and checks semantics on a N1QL statement.
 func ParseStatement(stmt, namespace string, ent bool) (algebra.Statement, error) {
-	s, err := n1ql.ParseStatement2(stmt, namespace)
+	queryContext := "" // TODO.
+
+	s, err := n1ql.ParseStatement2(stmt, namespace, queryContext)
 	if err != nil {
 		return nil, err
 	}
 
-	_, err = s.Accept(semantics.NewSemChecker(ent, s.Type()))
+	txn := false // TODO.
+
+	_, err = s.Accept(semantics.NewSemChecker(ent, s.Type(), txn))
 	if err != nil {
 		return nil, err
 	}
@@ -45,7 +49,7 @@ func ParseStatement(stmt, namespace string, ent bool) (algebra.Statement, error)
 // processing N1QL statements.
 type Store struct {
 	Datastore       datastore.Datastore
-	Systemstore     datastore.Datastore
+	Systemstore     datastore.Systemstore
 	IndexApiVersion int
 	FeatureControls uint64
 }
@@ -66,6 +70,8 @@ func (g *Store) InitParser() error {
 
 	n1ql.SetNamespaces(nsm)
 
+	datastore.SetDatastore(g.Datastore)
+
 	return nil
 }
 
@@ -78,9 +84,26 @@ func (g *Store) PlanStatement(s algebra.Statement, namespace string,
 	var subquery bool
 	var stream bool
 
-	return planner.Build(s, g.Datastore, g.Systemstore,
-		namespace, subquery, stream, namedArgs, positionalArgs,
-		g.IndexApiVersion, g.FeatureControls)
+	var pc planner.PrepareContext
+
+	planner.NewPrepareContext(&pc,
+		"requestId-0",    // requestId
+		"queryContext-0", // queryContext
+		namedArgs,
+		positionalArgs,
+		g.IndexApiVersion,
+		g.FeatureControls,
+		false, // useFts
+		false, // useCBO
+		nil,   // optimizer
+		nil,   // deltaKeyspaces
+		nil,   // dsContext
+	)
+
+	op, _, err := planner.Build(s, g.Datastore, g.Systemstore,
+		namespace, subquery, stream, &pc)
+
+	return op, err
 }
 
 // ------------------------------------------------------------------
