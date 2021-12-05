@@ -33,5 +33,5 @@ cloc:
 
 # Target benchmark-expr-eq runs microbenchmarks on expression eq.
 benchmark-expr-eq:
-	go test -bench=InterpExprStr -benchmem ./test
-	go test -bench=InterpExprEq -benchmem ./test
+	go test -v -bench=InterpExprStr -benchmem ./test
+	go test -v -bench=InterpExprEq -benchmem ./test

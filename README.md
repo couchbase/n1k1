@@ -1,6 +1,13 @@
 n1k1 is a prototype query-plan interpreter and compiler for N1QL.
 
 ------------------------------------------
+Latest...
+
+2021/12 - TODO: While upgrading from CB 6.5 query to CB 7 query,
+UNNEST stopped working and array-as-FROM source stopped working... as
+seen by broken unit tests -- git grep SKIP to see more.
+
+------------------------------------------
 ## Performance approaches...
 
 Some design ideas meant to help with n1k1's performance...
