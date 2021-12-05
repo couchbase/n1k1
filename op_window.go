@@ -86,6 +86,8 @@ func OpWindowPartition(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals
 
 		var lzRank, lzDenseRank uint64
 
+		lzRank, lzDenseRank = lzRank, lzDenseRank // TODO: go vet complains about unused vars.
+
 		var lzBuf8Rank, lzBuf8DenseRank [8]byte
 
 		_, _ = lzBuf8Rank, lzBuf8DenseRank
