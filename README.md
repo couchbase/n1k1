@@ -40,17 +40,29 @@ To consume them externally, go.mod pins each to a real version via
 
     export GOPRIVATE='github.com/couchbase/*'   # direct git, skip sumdb
 
-To attempt the engine build (currently fails only at the native libs):
+To attempt the engine build:
 
     go build -tags n1ql ./...
 
-Remaining work to green this layer:
-  - provide sigar.h + libsigar (e.g. build couchbase-server's sigar/)
-    and OpenSSL 3 headers/libs (brew install openssl@3), then wire
-    CGO_CFLAGS / CGO_LDFLAGS to point at them; OR
-  - decouple glue/ to import only the pure-Go query packages
-    (value, expression, parser, algebra, plan/planner), dropping
-    server + datastore/system so no cgo is needed.
+Two distinct blockers remain (investigated 2026/06) -- cgo is the EASY one:
+
+  1. cgo native libs (sigar, OpenSSL 3): solved by wiring CGO flags to a
+     prebuilt libsigar (ships in "Couchbase Server.app") + openssl@3 (brew).
+     This makes every cgo error vanish; no patching/stubbing needed:
+
+       export CGO_CFLAGS="-I<cb-src>/sigar/include -I$(brew --prefix openssl@3)/include"
+       export CGO_LDFLAGS="-L<Couchbase Server.app>/Contents/Resources/couchbase-core/lib \
+                           -lsigar -L$(brew --prefix openssl@3)/lib"
+
+  2. goyacc parser-gen gap (the real blocker): query/parser/n1ql ships the
+     grammar (n1ql.y) but NOT the generated parser (yyParse/yySymType). Query's
+     build.sh runs goyacc at build time and gitignores the output, so `go get`
+     never produces it and you can't generate into the read-only module cache.
+     Fix by either replacing query => a local checkout where build.sh has run,
+     or forking query at the pinned SHA with the generated parser committed.
+     (Plus minor cbft<->cbgt version drift; bump cbgt@master.)
+
+See TODO.md for the recommended path.
 
 NOTE: do not run `go mod tidy` -- it would prune the engine-only
 dependencies (they're behind the "n1ql" tag, which tidy doesn't enable).

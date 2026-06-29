@@ -14,3 +14,10 @@ Gist only -- details live in commit messages, README, and code comments.
   default build is green. tmp/easy-to-read gated `//go:build ignore`.
 - Makefile: default = core flow; `make n1ql` = deferred engine build.
 - README: documents the whole recipe + the don't-`go mod tidy` warning.
+
+## 2026/06 -- engine-layer feasibility investigation (no code change)
+- Proved cgo is EASY: prebuilt libsigar in Couchbase Server.app + openssl@3
+  via brew; wiring CGO_CFLAGS/LDFLAGS clears all sigar/openssl errors.
+- Found the real blocker is the goyacc parser-gen gap in query/parser/n1ql
+  (generated yyParse/yySymType not shipped by `go get`). cgo patch wouldn't
+  help. Conclusion: don't disable cgo; solve parser-gen instead. See TODO.md.
