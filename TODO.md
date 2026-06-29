@@ -30,6 +30,35 @@ How to source a buildable query (solves the parser-gen gap) -- pick one:
       stays pure `go get`. (Also the place to stub cgo if ever wanted -- but
       cgo is easy, so don't.)
 
+## Decouple sketch -- path to a self-contained, pure-Go, cross-compilable binary
+Goal: a single downloadable binary (CGO_ENABLED=0). Investigated 2026/06.
+Of the query packages glue/ keeps, ALL are cgo-clean except `execution`,
+which pulls `query/system` (sigar) only for mem-pressure checks
+(GetMemActualFree*). cgo enters glue/ via exactly two imports:
+  - query/server         (exec.go, UNUSED param) -> indexing/system (sigar) + gocbcrypto (openssl)
+  - query/datastore/system (stmt.go, 1 call)     -> query/system (sigar)
+  - query/execution      (datastore_scan.go x9)  -> query/system (sigar)
+
+Tiers (each removes more cgo):
+- [ ] **T1 drop query/server** (easy, biggest win): `server.Request` is an
+      unused param in ServiceRequestEx -- replace the server-hook entry point
+      with a direct Exec(n1ql, datastore) API. Removes OpenSSL entirely +
+      indexing/system sigar. Leaves query/system as the ONLY cgo (sigar-only).
+      >> After T1 the user's "lightweight stub" idea is finally cheap: the whole
+         cgo surface is one tiny pkg (query/system, ~380 LOC). Fork+replace it
+         with GetMemActualFree* stubs returning constants, OR static-link sigar.
+- [ ] **T2 drop datastore/system**: used once (system.NewDatastore in stmt.go,
+      for planner.Build's systemstore arg). Verify planner tolerates a nil/stub
+      systemstore for queries that don't touch the system: namespace.
+- [ ] **T3 drop query/execution** (hard, removes last sigar): swap execution.Context
+      for a pure-Go n1k1 context, and replace the execution-based datastore
+      scan/fetch (datastore_scan.go) with n1k1's OWN op_scan -- which already
+      reads .jsons/.csv. This is aligned with n1k1's design, just real work.
+      After T3: CGO_ENABLED=0, cross-compile to darwin/linux/etc.
+
+Note: parser-gen gap is build-time only -- it does NOT affect the shipped
+binary's self-containedness (generated parser is baked in at compile time).
+
 ## After the engine compiles again
 - [ ] Un-gate test/ and see what passes vs the new query version.
 - [ ] Revisit the pre-existing SKIP tests: UNNEST + array-as-FROM
