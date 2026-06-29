@@ -64,7 +64,7 @@ func OpScan(o *base.Op, lzVars *base.Vars,
 	default:
 		errMsg := "unknown scan kind" // TODO: Weak string/double-quote handling.
 
-		lzYieldErr(fmt.Errorf(errMsg))
+		lzYieldErr(fmt.Errorf("%s", errMsg))
 	}
 }
 
@@ -99,7 +99,7 @@ func ScanFile(lzFilePath string, labels base.Labels, lzVars *base.Vars,
 			return
 		}
 
-		lzYieldErr(fmt.Errorf(errMsg))
+		lzYieldErr(fmt.Errorf("%s", errMsg))
 	}
 }
 

@@ -3,9 +3,57 @@ n1k1 is a prototype query-plan interpreter and compiler for N1QL.
 ------------------------------------------
 Latest...
 
+2026/06 - Modernized the build: upgraded to Go 1.25 and switched to
+real, pinned go.mod module versions (the old setup used local-path
+"replace" directives that symlinked into a couchbase-server checkout).
+
+The self-contained core (the root n1k1 package, base/, intermed/, cmd/)
+builds, vets, and tests cleanly:
+
+    go build ./...
+    go vet ./...
+    go test ./...
+
+The N1QL-engine integration in glue/ and test/ is gated behind the
+"n1ql" build tag and is NOT built by default, because the modern
+couchbase/query slice it imports (server, datastore/system, ...)
+now pulls in mandatory cgo native libraries -- sigar (system stats)
+and OpenSSL 3 (gocbcrypto) -- that the old build never needed. The
+Go dependency graph resolves fully; only those native libs are
+outstanding. See "Building the N1QL engine layer" below.
+
 2021/12 - TODO: While upgrading from CB 6.5 query to CB 7 query,
 UNNEST stopped working and array-as-FROM source stopped working... as
 seen by broken unit tests -- git grep SKIP to see more.
+
+------------------------------------------
+## Building the N1QL engine layer (glue/ + test/)
+
+This layer is deferred work, gated behind the "n1ql" build tag.
+
+The couchbase-server modules (query, query-ee, indexing, cbft, ...)
+use placeholder "v0.0.0-00010101..." requires for their siblings,
+resolved via local-path replaces inside their repo-sync build tree.
+To consume them externally, go.mod pins each to a real version via
+"replace" directives, and these env vars are needed to fetch them
+(internal modules aren't in the public checksum database):
+
+    export GOPRIVATE='github.com/couchbase/*'   # direct git, skip sumdb
+
+To attempt the engine build (currently fails only at the native libs):
+
+    go build -tags n1ql ./...
+
+Remaining work to green this layer:
+  - provide sigar.h + libsigar (e.g. build couchbase-server's sigar/)
+    and OpenSSL 3 headers/libs (brew install openssl@3), then wire
+    CGO_CFLAGS / CGO_LDFLAGS to point at them; OR
+  - decouple glue/ to import only the pure-Go query packages
+    (value, expression, parser, algebra, plan/planner), dropping
+    server + datastore/system so no cgo is needed.
+
+NOTE: do not run `go mod tidy` -- it would prune the engine-only
+dependencies (they're behind the "n1ql" tag, which tidy doesn't enable).
 
 ------------------------------------------
 ## Performance approaches...

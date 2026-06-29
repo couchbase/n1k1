@@ -1,3 +1,5 @@
+//go:build n1ql
+
 package glue
 
 import (

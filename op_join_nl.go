@@ -18,17 +18,18 @@ import (
 )
 
 // OpJoinNestedLoop implements...
-//  o.Kind:             via flags that control if-else codepaths:
-//   joinNL-inner
-//   joinNL-leftOuter                           isLeftOuter
-//   joinKeys-inner                      isKeys
-//   joinKeys-leftOuter                  isKeys isLeftOuter
-//   nestNL-inner        isNest
-//   nestNL-leftOuter    isNest                 isLeftOuter
-//   nestKeys-inner      isNest          isKeys
-//   nestKeys-leftOuter  isNest          isKeys isLeftOuter
-//   unnest-inner               isUnnest
-//   unnest-leftOuter           isUnnest        isLeftOuter
+//
+//	o.Kind:             via flags that control if-else codepaths:
+//	 joinNL-inner
+//	 joinNL-leftOuter                           isLeftOuter
+//	 joinKeys-inner                      isKeys
+//	 joinKeys-leftOuter                  isKeys isLeftOuter
+//	 nestNL-inner        isNest
+//	 nestNL-leftOuter    isNest                 isLeftOuter
+//	 nestKeys-inner      isNest          isKeys
+//	 nestKeys-leftOuter  isNest          isKeys isLeftOuter
+//	 unnest-inner               isUnnest
+//	 unnest-leftOuter           isUnnest        isLeftOuter
 func OpJoinNestedLoop(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	lzYieldErr base.YieldErr, path, pathNext string) {
 	var lzErr error

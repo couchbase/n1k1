@@ -1,3 +1,5 @@
+//go:build n1ql
+
 package test
 
 import (

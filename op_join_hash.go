@@ -22,13 +22,14 @@ import (
 )
 
 // OpJoinHash implements...
-//  o.Kind:             info tracked in probe map values:  yieldsUnjoined:
-//   joinHash-inner      [                     leftVals ]  f
-//   joinHash-leftOuter  [ joinCount           leftVals ]  t
-//   intersect-all       [ joinCount leftCount          ]  f
-//   intersect-distinct  [ joinCount                    ]  f
-//   except-all          [ joinCount leftCount          ]  t
-//   except-distinct     [ joinCount                    ]  t
+//
+//	o.Kind:             info tracked in probe map values:  yieldsUnjoined:
+//	 joinHash-inner      [                     leftVals ]  f
+//	 joinHash-leftOuter  [ joinCount           leftVals ]  t
+//	 intersect-all       [ joinCount leftCount          ]  f
+//	 intersect-distinct  [ joinCount                    ]  f
+//	 except-all          [ joinCount leftCount          ]  t
+//	 except-distinct     [ joinCount                    ]  t
 func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	lzYieldErr base.YieldErr, path, pathNext string) {
 	kindParts := strings.Split(o.Kind, "-")

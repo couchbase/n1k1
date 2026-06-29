@@ -1,18 +1,28 @@
 default: run_intermed_build
 
-# Target run_intermed_build builds the intermed_build tool and runs
-# unit tests, and is a useful target during development.
+# Target run_intermed_build builds the intermed_build tool, regenerates
+# the intermed/ code, and runs the self-contained core unit tests. This
+# is the useful day-to-day development target.
+#
+# The N1QL-engine integration (glue/ + test/) is gated behind the "n1ql"
+# build tag and is NOT exercised here -- see the n1ql target below and
+# the "Building the N1QL engine layer" section of the README.
 run_intermed_build:
+	go vet ./...
 	go test -v ./base
-	go test -v ./glue
 	go test .
 	go build ./cmd/intermed_build/
 	./intermed_build
 	go fmt ./...
-	go test ./test/.
+	go test ./...
 	go fmt ./...
-	go test -v ./test/...
-	go fmt ./...
+
+# Target n1ql attempts to build the deferred N1QL-engine layer (glue/ +
+# test/). It currently fails at the cgo native libs (sigar, OpenSSL 3);
+# see the README for what's needed to finish it.
+n1ql:
+	GOPRIVATE='github.com/couchbase/*' go build -tags n1ql ./...
+	GOPRIVATE='github.com/couchbase/*' go test -tags n1ql ./...
 
 # Target easy-to-read parses source code files and generates
 # versions that are easier to read in a tmp subdirectory.
