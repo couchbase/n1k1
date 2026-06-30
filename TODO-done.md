@@ -82,6 +82,16 @@ Gist only -- details live in commit messages, README, and code comments.
   cause, and moot post-T3 (the drift-prone heavy modules aren't compiled; the
   versions that matter come from the fork's go.mod -- itself one snapshot).
 
+## 2026/06 -- MISSING-projection omit + harness key-order (conformance 530 -> 594)
+- Real fix: glue.ExprTree now yields an empty val (base.ValMissing) when a
+  projected expression evaluates to MISSING, so ConvertVals omits the field
+  ({} not {"k":null}) -- matching N1QL. (NULL is still kept.) This fixed the
+  ARRAY .. FOR comprehensions, array slicing (children[0:2]), and many other
+  projections over docs with absent fields. 530 -> 572.
+- Harness fix: TestFilestoreCases now canonicalizes object key order on BOTH
+  sides (recursive unmarshal->marshal); n1k1 doesn't sort keys, so ~22 cases
+  were false-negatives. 572 -> 594. Pass-floor bumped to 594.
+
 ## 2026/06 -- fixed keyspace-alias projection (conformance 358 -> 530)
 - Root cause of the ANY..SATISFIES failures (and broad field-projection
   breakage): conv.go labeled fetch/join/unnest docs with KeyspaceTerm.As()

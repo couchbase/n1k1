@@ -95,6 +95,13 @@ func ExprTree(vars *base.Vars, labels base.Labels,
 			return base.ValMissing
 		}
 
+		// A projected expression that evaluates to MISSING is omitted from the
+		// result object (N1QL semantics). Signal that by yielding an empty val,
+		// which ConvertVals.Convert turns into UnsetField. (NULL is kept.)
+		if vResult == nil || vResult.Type() == value.MISSING {
+			return base.ValMissing
+		}
+
 		buf.Reset()
 
 		err = vResult.WriteJSON(nil, &buf, "", "", true)

@@ -117,24 +117,40 @@ func n1k1RunStatement(store *glue.Store, stmt string) (rows []string, err error)
 	return rows, execErr
 }
 
-// canonStrings turns expected result objects into canonical JSON strings.
-func canonStrings(results []interface{}) []string {
-	out := make([]string, 0, len(results))
-	for _, r := range results {
-		b, _ := json.Marshal(r)
-		out = append(out, string(b))
+// canonJSON normalizes a JSON value's object-key order recursively: unmarshal
+// to generic interface{}, then re-marshal (encoding/json sorts all map keys).
+// Object key order is semantically irrelevant in N1QL results, so both sides
+// of the comparison are normalized this way.
+func canonJSON(v interface{}) string {
+	var b []byte
+	switch x := v.(type) {
+	case string: // already a JSON string (an n1k1 result row)
+		var parsed interface{}
+		if json.Unmarshal([]byte(x), &parsed) != nil {
+			return x
+		}
+		b, _ = json.Marshal(parsed)
+	default: // an expected result object (already generic)
+		b, _ = json.Marshal(x)
 	}
-	return out
+	return string(b)
 }
 
-// rowsMatch compares as multisets (order-insensitive) -- n1k1's row order can
-// differ, and json.Marshal sorts object keys, so both sides are canonical.
+// rowsMatch compares as multisets (order-insensitive across rows, and
+// key-order-insensitive within each object). n1k1's row order can differ, and
+// it doesn't sort object keys, so both sides are canonicalized.
 func rowsMatch(got []string, expected []interface{}) bool {
-	e := canonStrings(expected)
-	if len(got) != len(e) {
+	if len(got) != len(expected) {
 		return false
 	}
-	g := append([]string(nil), got...)
+	g := make([]string, len(got))
+	for i, s := range got {
+		g[i] = canonJSON(s)
+	}
+	e := make([]string, len(expected))
+	for i, r := range expected {
+		e[i] = canonJSON(r)
+	}
 	sort.Strings(g)
 	sort.Strings(e)
 	for i := range g {
@@ -231,7 +247,7 @@ func TestFilestoreCases(t *testing.T) {
 	// Regression guard: n1k1 supports a subset of N1QL, so we don't require
 	// 100% -- but the number of upstream cases that pass should never drop.
 	// Ratchet this up as n1k1's coverage grows.
-	const passFloor = 530
+	const passFloor = 594
 	if pass < passFloor {
 		t.Errorf("filestore conformance regressed: PASS=%d < baseline %d", pass, passFloor)
 	}
