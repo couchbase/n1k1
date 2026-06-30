@@ -48,3 +48,13 @@ Gist only -- details live in commit messages, README, and code comments.
 - Verified: core default build green, n1ql tests green CGO_ENABLED=0, and a
   missing fork doesn't break the default build (query is n1ql-gated). GitHub
   push of the fork deferred (staying local for now). See [[TODO]].
+
+## 2026/06 -- polish
+- Renamed the fork dir query-n1k1-fork -> n1k1-query (shared n1k1- prefix);
+  updated the go.mod replace + docs.
+- README/Makefile: concise copy-paste build/test instructions; `make n1ql` now
+  CGO_ENABLED=0 on ./glue ./test.
+- Fixed `go test ./...`: the generated test/tmp compiler test now emits
+  `//go:build n1ql` (it imports the gated glue), so the default build is clean.
+- Split README.md -> DESIGN.md (internals/performance/idea-backlog moved out;
+  README keeps intro, changelog, build/test, feature list).
