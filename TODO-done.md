@@ -82,6 +82,21 @@ Gist only -- details live in commit messages, README, and code comments.
   cause, and moot post-T3 (the drift-prone heavy modules aren't compiled; the
   versions that matter come from the fork's go.mod -- itself one snapshot).
 
+## 2026/06 -- ORDER BY a source field after projection (conformance 625 -> 627)
+- SELECT dimensions ... ORDER BY dimensions.length: the plan is Order-above-
+  InitialProject, and the planner qualifies the order key as source-relative
+  ((catalog.dimensions).length). The project op had stripped the row to the
+  projected columns, so the source-qualified key resolved to MISSING and didn't
+  sort. ORDER BY can also reference projection aliases, so the order op needs
+  BOTH scopes. VisitOrder now, when directly above a project, builds an
+  augmented project (projected terms + pass-through of the source `.`-path doc
+  columns via labelPath), sorts/pages over that union, then strips back to the
+  projected columns. Faithful to query's AnnotatedValue (projected value +
+  retained original).
+- VisitOffset/VisitLimit fold paging into the inner order op through the strip
+  project (orderFoldTarget), so a separate plan.Limit/Offset doesn't spawn a
+  redundant outer order wrapper (which would double-apply with OFFSET).
+
 ## 2026/06 -- META(alias).id document metadata (conformance 623 -> 625)
 - META(alias).id yielded {} (MISSING): the `^id` attachment was set on the
   whole row's AnnotatedValue, but META(alias) evaluates its operand first, so

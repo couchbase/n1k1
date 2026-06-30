@@ -601,6 +601,53 @@ func (c *Conv) VisitOrder(o *plan.Order) (interface{}, error) {
 		params = append(params, int64(limit))
 	}
 
+	// When the order sits directly above a projection, the ORDER BY exprs may
+	// reference source fields that projection dropped -- e.g. SELECT dimensions
+	// ... ORDER BY dimensions.length, where the planner qualifies the key as
+	// (catalog.dimensions).length. The projected row no longer carries the
+	// "catalog" source doc, so such keys resolve to MISSING and don't sort.
+	// Give the order op a row carrying BOTH the projected columns (so alias-
+	// based ORDER BY still resolves) AND the source doc columns (so source-
+	// qualified keys resolve), then strip back to just the projected columns.
+	if proj := c.TopOp; proj != nil && proj.Kind == "project" &&
+		len(proj.Children) == 1 && proj.Labels.IndexOf(".") < 0 {
+		src := proj.Children[0]
+
+		// Augmented projection: the projected terms, plus a pass-through of the
+		// source's doc (`.`-path) labels so the order keys can resolve them.
+		aug := &base.Op{
+			Kind:     "project",
+			Labels:   append(base.Labels{}, proj.Labels...),
+			Params:   append([]interface{}{}, proj.Params...),
+			Children: proj.Children,
+		}
+		for _, srcLabel := range src.Labels {
+			if srcLabel[0] == '.' && aug.Labels.IndexOf(srcLabel) < 0 {
+				aug.Labels = append(aug.Labels, srcLabel)
+				aug.Params = append(aug.Params, []interface{}{"labelPath", srcLabel})
+			}
+		}
+
+		orderOp := &base.Op{
+			Kind:     "order-offset-limit",
+			Labels:   aug.Labels,
+			Params:   params,
+			Children: []*base.Op{aug},
+		}
+
+		// Strip back to just the originally-projected columns.
+		strip := &base.Op{
+			Kind:     "project",
+			Labels:   append(base.Labels{}, proj.Labels...),
+			Children: []*base.Op{orderOp},
+		}
+		for _, lbl := range proj.Labels {
+			strip.Params = append(strip.Params, []interface{}{"labelPath", lbl})
+		}
+
+		return c.TopSet(o, strip)
+	}
+
 	return c.TopPush(o, &base.Op{
 		Kind:   "order-offset-limit",
 		Labels: c.TopOp.Labels,
@@ -608,15 +655,34 @@ func (c *Conv) VisitOrder(o *plan.Order) (interface{}, error) {
 	})
 }
 
+// orderFoldTarget returns the order-offset-limit op that a separate
+// plan.Offset/plan.Limit should fold its paging into, or nil if none. It looks
+// through the "strip" project that the ORDER-BY source-scope augmentation
+// leaves directly above the inner order op (see VisitOrder), so paging folds
+// into that order rather than spawning a redundant outer wrapper.
+func orderFoldTarget(top *base.Op) *base.Op {
+	if top == nil {
+		return nil
+	}
+	if top.Kind == "order-offset-limit" {
+		return top
+	}
+	if top.Kind == "project" && len(top.Children) == 1 &&
+		top.Children[0].Kind == "order-offset-limit" {
+		return top.Children[0]
+	}
+	return nil
+}
+
 func (c *Conv) VisitOffset(o *plan.Offset) (interface{}, error) {
 	offset := EvalExprInt64(nil, o.Expression(), nil, 0)
 
-	if c.TopOp != nil && c.TopOp.Kind == "order-offset-limit" {
-		for len(c.TopOp.Params) < 3 {
-			c.TopOp.Params = append(c.TopOp.Params, nil)
+	if t := orderFoldTarget(c.TopOp); t != nil {
+		for len(t.Params) < 3 {
+			t.Params = append(t.Params, nil)
 		}
 
-		c.TopOp.Params[2] = int64(offset)
+		t.Params[2] = int64(offset)
 
 		return c.TopOp, nil
 	}
@@ -631,12 +697,12 @@ func (c *Conv) VisitOffset(o *plan.Offset) (interface{}, error) {
 func (c *Conv) VisitLimit(o *plan.Limit) (interface{}, error) {
 	limit := EvalExprInt64(nil, o.Expression(), nil, int64(math.MaxInt64))
 
-	if c.TopOp != nil && c.TopOp.Kind == "order-offset-limit" {
-		for len(c.TopOp.Params) < 4 {
-			c.TopOp.Params = append(c.TopOp.Params, nil)
+	if t := orderFoldTarget(c.TopOp); t != nil {
+		for len(t.Params) < 4 {
+			t.Params = append(t.Params, nil)
 		}
 
-		c.TopOp.Params[3] = int64(limit)
+		t.Params[3] = int64(limit)
 
 		return c.TopOp, nil
 	}
