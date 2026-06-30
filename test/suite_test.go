@@ -283,7 +283,14 @@ func reportSuite(t *testing.T, nFiles, pass, skipped int, nonPass []caseOutcome,
 		if !ok {
 			g = "UNEXPECTED"
 		}
-		fmt.Fprintf(&b, "  %s  (%s)\n    %s\n    -- %s\n", o.loc, g, fullLine(o.stmt), o.detail)
+		// EXPLAIN cases only differ by the wrapped query (n1k1 doesn't convert
+		// the plan-text output at all), so a snippet is enough -- showing the
+		// full SQL would just be noise. Everything else gets the complete query.
+		sql := fullLine(o.stmt)
+		if strings.HasPrefix(strings.ToUpper(strings.TrimSpace(o.stmt)), "EXPLAIN") {
+			sql = oneLine(o.stmt)
+		}
+		fmt.Fprintf(&b, "  %s  (%s)\n    %s\n    -- %s\n", o.loc, g, sql, o.detail)
 	}
 
 	// Exotic (skipped) cases: not the plain {statements, results} shape, so n1k1
