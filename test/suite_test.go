@@ -127,7 +127,7 @@ func n1k1RunStatement(store *glue.Store, stmt string) (rows []string, err error)
 func caseRunnable(c map[string]interface{}) (stmt string, results []interface{}, ok bool) {
 	for k := range c {
 		switch k {
-		case "statements", "results", "ordered", "description":
+		case "statements", "results", "ordered", "description", "pretty":
 		default:
 			return "", nil, false // exotic field -> skip
 		}
@@ -149,7 +149,7 @@ func caseRunnable(c map[string]interface{}) (stmt string, results []interface{},
 func caseError(c map[string]interface{}) (stmt, expErr string, ok bool) {
 	for k := range c {
 		switch k {
-		case "statements", "error", "ordered", "description":
+		case "statements", "error", "ordered", "description", "pretty":
 		default:
 			return "", "", false
 		}
@@ -179,7 +179,7 @@ func errMatches(got, want string) bool {
 func caseMatch(c map[string]interface{}) (stmt, matchStmt string, ok bool) {
 	for k := range c {
 		switch k {
-		case "statements", "matchStatements", "ordered", "description":
+		case "statements", "matchStatements", "ordered", "description", "pretty":
 		default:
 			return "", "", false
 		}
@@ -527,7 +527,7 @@ func reportSuite(t *testing.T, nFiles, pass, errPass, skipped int, nonPass []cas
 
 	// Backstop on the raw pass count, in case a pass silently turns into a
 	// different already-listed failure (no unexpected case, but pass drops).
-	const passFloor = 640
+	const passFloor = 643
 	if pass < passFloor {
 		t.Errorf("suite conformance regressed: PASS=%d < baseline %d", pass, passFloor)
 	}
@@ -557,7 +557,7 @@ func exoticInfo(c map[string]interface{}) (reason, content string) {
 	var extra []string
 	for k := range c {
 		switch k {
-		case "statements", "results", "ordered", "description":
+		case "statements", "results", "ordered", "description", "pretty":
 		default:
 			extra = append(extra, k)
 		}
