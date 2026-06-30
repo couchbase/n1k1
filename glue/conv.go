@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"sort"
 	"strings"
 
 	"github.com/couchbase/query/algebra"
@@ -96,6 +97,30 @@ func projAllFieldPaths(labels base.Labels) bool {
 		}
 	}
 	return len(labels) > 0
+}
+
+// stripBindingNames wraps a SELECT-* star expression so that the given LET /
+// WITH binding variable names are removed from the spread, via OBJECT_REMOVE.
+// With no binding names it returns the expression unchanged (so non-LET star
+// queries are unaffected). Names are sorted for deterministic codegen.
+func stripBindingNames(e expression.Expression, names map[string]bool) expression.Expression {
+	if e == nil || len(names) == 0 {
+		return e
+	}
+
+	sorted := make([]string, 0, len(names))
+	for name := range names {
+		sorted = append(sorted, name)
+	}
+	sort.Strings(sorted)
+
+	operands := make(expression.Expressions, 0, len(sorted)+1)
+	operands = append(operands, e)
+	for _, name := range sorted {
+		operands = append(operands, expression.NewConstant(name))
+	}
+
+	return expression.NewObjectRemove(operands...)
 }
 
 // -------------------------------------------------------------------
@@ -311,8 +336,47 @@ func (c *Conv) VisitHashNest(o *plan.HashNest) (interface{}, error) { return NA(
 
 // Let + Letting, With
 
-func (c *Conv) VisitLet(o *plan.Let) (interface{}, error)   { return NA(o) }
-func (c *Conv) VisitWith(o *plan.With) (interface{}, error) { return NA(o) }
+// VisitLet converts a LET clause: each binding computes a named variable that
+// later clauses (WHERE / ORDER BY / projection) can reference. Model it as a
+// "project" that passes through every existing column unchanged and appends one
+// computed column per binding, labeled .["<var>"], so a downstream expression
+// referencing the variable resolves it as a field (matching query, which does
+// item.SetField(variable, val); see execution/let.go). SELECT * must not spread
+// these added columns -- VisitInitialProject strips the binding names from the
+// star (see stripBindingNames).
+func (c *Conv) VisitLet(o *plan.Let) (interface{}, error) {
+	src := c.TopOp
+
+	op := &base.Op{
+		Kind:   "project",
+		Labels: append(base.Labels{}, src.Labels...),
+		Params: make([]interface{}, 0, len(src.Labels)+len(o.Bindings())),
+	}
+
+	// Pass through every existing column unchanged.
+	for _, lbl := range src.Labels {
+		op.Params = append(op.Params, []interface{}{"labelPath", lbl})
+	}
+
+	// Append a computed column per LET binding.
+	for _, b := range o.Bindings() {
+		op.Labels = append(op.Labels, "."+LabelSuffix(b.Variable()))
+		op.Params = append(op.Params, []interface{}{"exprTree", b.Expression()})
+	}
+
+	return c.TopPush(o, op)
+}
+
+// VisitWith converts a WITH clause (CTE) by visiting the wrapped child query.
+// query computes the WITH bindings during planning and exposes them via the
+// scope; n1k1 doesn't materialize them as row columns, so a WITH variable
+// referenced as a data source (FROM cte) isn't supported -- but the common case,
+// where the bindings don't feed back into the row, works. SELECT * won't leak a
+// WITH name since it's never added as a field (and VisitInitialProject also
+// strips any project binding names from the star).
+func (c *Conv) VisitWith(o *plan.With) (interface{}, error) {
+	return o.Child().Accept(c)
+}
 
 // Filter
 
@@ -540,9 +604,13 @@ func (c *Conv) VisitInitialProject(o *plan.InitialProject) (interface{}, error) 
 		// label tells Convert to merge, which also lets multiple stars (and a
 		// star mixed with plain terms) combine into one object.
 		if rt.Star() {
+			// SELECT * spreads the whole row; LET / WITH binding variables live
+			// in the row as fields (see VisitLet) but must not appear in *, so
+			// strip them -- matching query, which UnsetFields the binding names
+			// from the star value (execution/project_initial.go).
 			op.Labels = append(op.Labels, ".*")
 			op.Params = append(op.Params,
-				[]interface{}{"exprTree", rt.Expression()})
+				[]interface{}{"exprTree", stripBindingNames(rt.Expression(), o.BindingNames())})
 			continue
 		}
 

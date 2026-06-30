@@ -627,7 +627,7 @@ func reportSuite(t *testing.T, nFiles, pass, errPass, skipped int, nonPass []cas
 
 	// Backstop on the raw pass count, in case a pass silently turns into a
 	// different already-listed failure (no unexpected case, but pass drops).
-	const passFloor = 648
+	const passFloor = 651
 	if pass < passFloor {
 		t.Errorf("suite conformance regressed: PASS=%d < baseline %d", pass, passFloor)
 	}
@@ -731,11 +731,6 @@ var expectedNonPass = map[string]string{
 	"case_innerjoin.json[10]": "onkeys-proj",
 	"case_leftjoin.json[4]":   "onkeys-proj",
 
-	// LET / WITH bindings.
-	"case_select.json[23]": "let-with",
-	"case_select.json[24]": "let-with",
-	"case_select.json[25]": "let-with",
-
 	// Huge generator builtins (engine refuses; upstream errors too).
 	"case_func_array.json[58]": "resource-guard",
 	"case_func_array.json[59]": "resource-guard",
@@ -764,7 +759,6 @@ var groupWhy = map[string]string{
 	"meta-fetch":       "META() over fetch metadata subpaths ($document.exptime) not wired",
 	"groupby-key":      "GROUP BY on a computed / array-index key unresolved in VisitFinalGroup",
 	"onkeys-proj":      "ON KEYS join projection: label/vals arity mismatch",
-	"let-with":         "LET / WITH bindings (plan.Let / plan.With) not converted",
 	"resource-guard":   "engine refuses huge generator builtins (ARRAY_RANGE/REPEAT ~1e10)",
 	"system-namespace": "system: namespace needs a systemstore (intentionally nil; see FileStore)",
 	"prepared":         "prepared-statement EXECUTE (plan.Discard) not supported",

@@ -7,7 +7,7 @@ Status: modernization + a pure-Go N1QL (SQL++) engine (CGO_ENABLED=0,
 cross-compiles) are done. Remaining work:
 
 ## Conformance (SQL++ suite corpus)
-- [ ] Raise the TestSuiteCases pass rate (currently ~648/691 runnable).
+- [ ] Raise the TestSuiteCases pass rate (currently ~651/691 runnable).
       Remaining gaps: COUNT(*) over a bare keyspace (CountScan) + EXPLAIN +
       index-union scans unsupported. Ratchet the pass-floor in
       test/suite_test.go as fixed.
@@ -129,7 +129,9 @@ in glue/patches/README.md.
 - UNION-ALL data-staging batchSize should be configurable?
 - UNION-ALL data-staging batchChSize should be configurable?
 
-- WITH?
+- WITH -- basic (non-recursive, non-data-source) CTEs convert (glue VisitWith
+  visits the child; bindings not materialized as row columns, so a WITH var
+  used as a FROM data source -- FROM cte -- is not yet supported).
 - WITH RECURSIVE?
 
 - speed mismatch between producers and consumers?
@@ -208,9 +210,13 @@ EXCEPT ALL - tuple should appear MAX(m - n, 0) times in the result,
     - YieldStats() should be locked for concurrency safety.
   - early stop when processing is canceled?
 
-- LET / LETTING are parser-time expression expansions (like macros?)
-  so are not part of query-plan execution?
-  - needs more research.
+- LET: supported. The planner emits a plan.Let operator; glue VisitLet converts
+  it to a "project" that passes through every existing column and appends one
+  computed column per binding (labeled .["<var>"]), so downstream clauses
+  reference the variable as a field (matching query's item.SetField). SELECT *
+  strips the binding names from the star (VisitInitialProject + stripBindingNames
+  via OBJECT_REMOVE), so LET vars don't leak into *.
+  - LETTING (LET in the GROUP BY / HAVING scope) not yet exercised.
 
 - prefetching optimizations?
   - this is an issue internal to scan operators?
