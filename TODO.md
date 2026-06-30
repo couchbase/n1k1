@@ -53,12 +53,12 @@ DONE so far (2026/06):
 
 REMAINING for a truly shippable binary:
 - [x] **Local fork** (done): patches committed as real git history in the
-      sibling repo ../query-n1k1-fork (branch n1k1-pure-go: base + gen parser +
-      system stub + semchecker). go.mod replaces query => ../query-n1k1-fork and
+      sibling repo ../n1k1-query (branch n1k1-pure-go: base + gen parser +
+      system stub + semchecker). go.mod replaces query => ../n1k1-query and
       the sibling-module replaces are pruned (only query remains; default build
       doesn't resolve query so a missing fork doesn't break core).
 - [ ] **Push the fork to GitHub** for reproducibility-for-others: push
-      ../query-n1k1-fork, then swap the replace to a github pseudo-version so
+      ../n1k1-query, then swap the replace to a github pseudo-version so
       n1k1 builds via plain `go get` without the local sibling. (Deferred --
       staying local for now.)
 - [ ] **go.mod indirect block is stale**: still lists the dropped subtree's

@@ -56,13 +56,13 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags n1ql ./glue/...  # cross-co
 These patches now live as real git commits in a local fork repo, the source
 n1k1 builds against:
 
-    ../query-n1k1-fork            (sibling of this repo)
+    ../n1k1-query            (sibling of this repo)
       main          - verbatim pinned snapshot (query @ v0.0.0-20260627002010)
       n1k1-pure-go  - main + 3 commits: gen parser, system stub, semchecker
 
 n1k1's go.mod points at it:
 
-    replace github.com/couchbase/query => ../query-n1k1-fork
+    replace github.com/couchbase/query => ../n1k1-query
 
 Because n1k1's glue/ is gated behind `-tags n1ql`, the default (core) build
 never resolves query, so a missing fork does NOT break `go build ./...`. Only
@@ -76,5 +76,5 @@ fresh copy, `git init`, and commit the base + each patch.
 ## Still TODO: push the fork to GitHub for true reproducibility
 
 The relative-path replace only works on a machine that has the sibling fork.
-To make n1k1 build for anyone via plain `go get`: push ../query-n1k1-fork to
+To make n1k1 build for anyone via plain `go get`: push ../n1k1-query to
 GitHub and change the replace to `=> github.com/<you>/query <pseudo-version>`.
