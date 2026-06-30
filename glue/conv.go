@@ -122,8 +122,6 @@ func (c *Conv) VisitPrimaryScan3(o *plan.PrimaryScan3) (interface{}, error) {
 	})
 }
 
-func (c *Conv) VisitParentScan(o *plan.ParentScan) (interface{}, error) { return NA(o) } // TODO: ParentScan seems unused?
-
 func (c *Conv) VisitIndexScan(o *plan.IndexScan) (interface{}, error) {
 	return c.TopPush(o, &base.Op{
 		Kind:   "datastore-scan-index",
@@ -501,11 +499,6 @@ func (c *Conv) VisitInitialProject(o *plan.InitialProject) (interface{}, error) 
 	return c.TopPush(o, op)
 }
 
-func (c *Conv) VisitFinalProject(o *plan.FinalProject) (interface{}, error) {
-	// TODO: Need to convert projections back into a SELF'ish single object?
-	return c.TopOp, nil
-}
-
 func (c *Conv) VisitIndexCountProject(o *plan.IndexCountProject) (interface{}, error) {
 	return NA(o)
 }
@@ -546,7 +539,7 @@ func (c *Conv) VisitOrder(o *plan.Order) (interface{}, error) {
 	for _, term := range o.Terms() {
 		exprs = append(exprs, []interface{}{"exprTree", term.Expression()})
 
-		if term.Descending(nil) { // TODO: The nil context param may be wrong.
+		if term.Descending(nil, nil) { // nil item/context is fine for constant ASC/DESC.
 			dirs = append(dirs, "desc")
 		} else {
 			dirs = append(dirs, "asc")
@@ -715,12 +708,52 @@ func (c *Conv) VisitSavepoint(o *plan.Savepoint) (interface{}, error) { return N
 func (c *Conv) VisitCreateScope(o *plan.CreateScope) (interface{}, error)           { return NA(o) }
 func (c *Conv) VisitDropScope(o *plan.DropScope) (interface{}, error)               { return NA(o) }
 func (c *Conv) VisitCreateCollection(o *plan.CreateCollection) (interface{}, error) { return NA(o) }
+func (c *Conv) VisitAlterCollection(o *plan.AlterCollection) (interface{}, error)   { return NA(o) }
 func (c *Conv) VisitDropCollection(o *plan.DropCollection) (interface{}, error)     { return NA(o) }
 func (c *Conv) VisitFlushCollection(o *plan.FlushCollection) (interface{}, error)   { return NA(o) }
 
 func (c *Conv) VisitInferExpression(o *plan.InferExpression) (interface{}, error) { return NA(o) }
 
 func (c *Conv) VisitReceive(o *plan.Receive) (interface{}, error) { return NA(o) }
+
+// -------------------------------------------------------------------
+
+// New methods since CB 7 / 2026 -- DDL / admin / sequence / catalog /
+// credential-store / user/group ops, plus external scan. n1k1 doesn't
+// interpret these, so they're "not applicable".
+
+func (c *Conv) VisitCreateBucket(o *plan.CreateBucket) (interface{}, error) { return NA(o) }
+func (c *Conv) VisitAlterBucket(o *plan.AlterBucket) (interface{}, error)   { return NA(o) }
+func (c *Conv) VisitDropBucket(o *plan.DropBucket) (interface{}, error)     { return NA(o) }
+
+func (c *Conv) VisitCreateCatalog(o *plan.CreateCatalog) (interface{}, error) { return NA(o) }
+func (c *Conv) VisitAlterCatalog(o *plan.AlterCatalog) (interface{}, error)   { return NA(o) }
+func (c *Conv) VisitDropCatalog(o *plan.DropCatalog) (interface{}, error)     { return NA(o) }
+
+func (c *Conv) VisitCreateSequence(o *plan.CreateSequence) (interface{}, error) { return NA(o) }
+func (c *Conv) VisitAlterSequence(o *plan.AlterSequence) (interface{}, error)   { return NA(o) }
+func (c *Conv) VisitDropSequence(o *plan.DropSequence) (interface{}, error)     { return NA(o) }
+
+func (c *Conv) VisitCreateUser(o *plan.CreateUser) (interface{}, error) { return NA(o) }
+func (c *Conv) VisitAlterUser(o *plan.AlterUser) (interface{}, error)   { return NA(o) }
+func (c *Conv) VisitDropUser(o *plan.DropUser) (interface{}, error)     { return NA(o) }
+
+func (c *Conv) VisitCreateGroup(o *plan.CreateGroup) (interface{}, error) { return NA(o) }
+func (c *Conv) VisitAlterGroup(o *plan.AlterGroup) (interface{}, error)   { return NA(o) }
+func (c *Conv) VisitDropGroup(o *plan.DropGroup) (interface{}, error)     { return NA(o) }
+
+func (c *Conv) VisitCreateCredentialStore(o *plan.CreateCredentialStore) (interface{}, error) {
+	return NA(o)
+}
+func (c *Conv) VisitAlterCredentialStore(o *plan.AlterCredentialStore) (interface{}, error) {
+	return NA(o)
+}
+func (c *Conv) VisitDropCredentialStore(o *plan.DropCredentialStore) (interface{}, error) {
+	return NA(o)
+}
+
+func (c *Conv) VisitExplainFunction(o *plan.ExplainFunction) (interface{}, error) { return NA(o) }
+func (c *Conv) VisitExternalScan(o *plan.ExternalScan) (interface{}, error)       { return NA(o) }
 
 // -------------------------------------------------------------------
 

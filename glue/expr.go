@@ -25,7 +25,6 @@ import (
 	"github.com/couchbase/n1k1"
 	"github.com/couchbase/n1k1/base"
 
-	"github.com/couchbase/query/auth"
 	"github.com/couchbase/query/expression"
 	"github.com/couchbase/query/expression/parser"
 	"github.com/couchbase/query/value"
@@ -69,7 +68,7 @@ func ExprTree(vars *base.Vars, labels base.Labels,
 
 	context, ok := vars.Temps[0].(expression.Context)
 	if !ok {
-		context = &ExprGlueContext{MyNow: vars.Ctx.Now}
+		context = NewExprGlueContext(vars.Ctx.Now)
 	}
 
 	cv, err := NewConvertVals(labels)
@@ -98,7 +97,7 @@ func ExprTree(vars *base.Vars, labels base.Labels,
 
 		buf.Reset()
 
-		err = vResult.WriteJSON(&buf, "", "", true)
+		err = vResult.WriteJSON(nil, &buf, "", "", true)
 		if err != nil {
 			yieldErr(err)
 			return base.ValMissing
@@ -226,18 +225,18 @@ OUTER:
 					if len(kk) > 1 {
 						var att map[string]value.Value
 
-						v := av.GetAttachment(kk[0])
+						v := av.GetAttachment(attKey(kk[0]))
 						if v == nil {
 							att = map[string]value.Value{}
 
-							av.SetAttachment(kk[0], att)
+							av.SetAttachment(attKey(kk[0]), att)
 						} else {
 							att = v.(map[string]value.Value)
 						}
 
 						att[kk[1]] = value.NewValue(vv)
 					} else {
-						av.SetAttachment(label[1:], vv)
+						av.SetAttachment(attKey(label[1:]), vv)
 					}
 				}
 
@@ -263,97 +262,34 @@ OUTER:
 
 // --------------------------------------------------------
 
-// ExprGlueContext implements query/expression.Context interface.
+// ExprGlueContext implements query/expression.Context. It embeds query's
+// own lightweight expression.IndexContext to inherit no-op/default
+// implementations of the (large, evolving) interface, overriding only Now().
+// This keeps n1k1 compiling as query adds Context methods over time.
 type ExprGlueContext struct {
-	MyNow                time.Time
-	MyAuthenticatedUsers []string
-	MyDatastoreVersion   string
+	*expression.IndexContext
+
+	MyNow time.Time
+}
+
+func NewExprGlueContext(now time.Time) *ExprGlueContext {
+	return &ExprGlueContext{IndexContext: &expression.IndexContext{}, MyNow: now}
 }
 
 func (e *ExprGlueContext) Now() time.Time {
 	return e.MyNow
 }
 
-func (e *ExprGlueContext) AuthenticatedUsers() []string {
-	return e.MyAuthenticatedUsers
-}
+// --------------------------------------------------------
 
-func (e *ExprGlueContext) DatastoreVersion() string {
-	return e.MyDatastoreVersion
-}
-
-func (e *ExprGlueContext) EvaluateStatement(statement string,
-	namedArgs map[string]value.Value,
-	positionalArgs value.Values,
-	subquery, readonly bool) (value.Value, uint64, error) {
-	return nil, 0, nil // TODO.
-}
-
-func (e *ExprGlueContext) GetTimeout() (d time.Duration) {
-	return d // TODO.
-}
-
-func (e *ExprGlueContext) Credentials() *auth.Credentials {
-	return nil // TDOO.
-}
-
-func (e *ExprGlueContext) NewQueryContext(queryContext string, readonly bool) interface{} {
-	return nil // TODO.
-}
-
-func (e *ExprGlueContext) QueryContext() string {
-	return "" // TODO.
-}
-
-func (e *ExprGlueContext) GetTxContext() interface{} {
-	return nil // TODO.
-}
-
-func (e *ExprGlueContext) SetTxContext(t interface{}) {
-	// TODO.
-}
-
-func (e *ExprGlueContext) Readonly() bool {
-	return true // TODO.
-}
-
-func (e *ExprGlueContext) SetAdvisor() {
-	// TODO.
-}
-
-func (e *ExprGlueContext) IncRecursionCount(inc int) int {
-	return 0 // TODO.
-}
-
-func (e *ExprGlueContext) RecursionCount() int {
-	return 0 // TODO.
-}
-
-func (e *ExprGlueContext) StoreValue(key string, val interface{}) {
-	// TODO.
-}
-
-func (e *ExprGlueContext) RetrieveValue(key string) interface{} {
-	return nil // TODO.
-}
-
-func (e *ExprGlueContext) ReleaseValue(key string) {
-	return // TODO.
-}
-
-func (e *ExprGlueContext) OpenStatement(statement string, namedArgs map[string]value.Value, positionalArgs value.Values, subquery, readonly bool) (
-	interface {
-		Results() (interface{}, uint64, error)
-		NextDocument() (value.Value, error)
-		Cancel()
-	}, error) {
-	return nil, nil // TODO.
-}
-
-func (e *ExprGlueContext) Parse(s string) (interface{}, error) {
-	return nil, nil // TODO.
-}
-
-func (e *ExprGlueContext) Infer(value.Value, value.Value) (value.Value, error) {
-	return nil, nil // TODO.
+// attKey maps a n1k1 attachment label name to query's value-package int16
+// attachment key (attachments became int16-keyed since 2019). Only the
+// "aggregates" attachment is used by n1k1's generated ops today.
+func attKey(name string) int16 {
+	switch name {
+	case "aggregates":
+		return value.ATT_AGGREGATES
+	default:
+		return value.ATT_AGGREGATES // TODO: extend if other attachment names appear.
+	}
 }

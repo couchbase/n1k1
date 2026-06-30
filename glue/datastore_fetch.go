@@ -86,7 +86,7 @@ func DatastoreFetch(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 			delete(fetchMap, k)
 		}
 
-		errs := keyspace.Fetch(keys, fetchMap, context, subPaths)
+		errs := keyspace.Fetch(keys, fetchMap, context, subPaths, nil /* projection */, false /* useSubDoc */)
 		for _, err := range errs {
 			yieldErr(fmt.Errorf("DatastoreFetch, err: %v", err))
 		}
@@ -105,7 +105,7 @@ func DatastoreFetch(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 
 					buf.Reset()
 
-					err := v.WriteJSON(&buf, "", "", true)
+					err := v.WriteJSON(nil, &buf, "", "", true)
 
 					jv := buf.Bytes()
 

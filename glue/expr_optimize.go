@@ -39,7 +39,7 @@ func ExprTreeOptimize(labels base.Labels, e expression.Expression,
 	if c, ok := e.(*expression.Constant); ok {
 		buf.Reset()
 
-		if c.Value().WriteJSON(buf, "", "", true) != nil {
+		if c.Value().WriteJSON(nil, buf, "", "", true) != nil {
 			return nil, false
 		}
 

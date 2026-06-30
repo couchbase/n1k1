@@ -21,6 +21,7 @@ import (
 	"github.com/couchbase/query/plan"
 	"github.com/couchbase/query/planner"
 	"github.com/couchbase/query/semantics"
+	"github.com/couchbase/query/settings"
 	"github.com/couchbase/query/util"
 	"github.com/couchbase/query/value"
 )
@@ -36,7 +37,7 @@ func ParseStatement(stmt, namespace string, ent bool) (algebra.Statement, error)
 
 	txn := false // TODO.
 
-	_, err = s.Accept(semantics.NewSemChecker(ent, s.Type(), txn))
+	_, err = s.Accept(semantics.GetSemChecker(s.Type(), txn))
 	if err != nil {
 		return nil, err
 	}
@@ -99,12 +100,20 @@ func (g *Store) PlanStatement(s algebra.Statement, namespace string,
 		nil,   // optimizer
 		nil,   // deltaKeyspaces
 		nil,   // dsContext
+		false, // isPrepare
+		settings.PS_MODE_OFF,
+		settings.PS_ERROR_FLEXIBLE,
+		datastore.UNBOUNDED, // scanConsistency
 	)
 
-	op, _, err := planner.Build(s, g.Datastore, g.Systemstore,
-		namespace, subquery, stream, &pc)
+	// planner.Build now returns a *plan.QueryPlan (+ a 4th duration map).
+	qp, _, err, _ := planner.Build(s, g.Datastore, g.Systemstore,
+		namespace, subquery, stream, false /* forceSQBuild */, &pc)
+	if err != nil {
+		return nil, err
+	}
 
-	return op, err
+	return qp.PlanOp(), nil
 }
 
 // ------------------------------------------------------------------
