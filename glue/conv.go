@@ -345,26 +345,32 @@ func (c *Conv) VisitHashNest(o *plan.HashNest) (interface{}, error) { return NA(
 // these added columns -- VisitInitialProject strips the binding names from the
 // star (see stripBindingNames).
 func (c *Conv) VisitLet(o *plan.Let) (interface{}, error) {
-	src := c.TopOp
-
-	op := &base.Op{
-		Kind:   "project",
-		Labels: append(base.Labels{}, src.Labels...),
-		Params: make([]interface{}, 0, len(src.Labels)+len(o.Bindings())),
-	}
-
-	// Pass through every existing column unchanged.
-	for _, lbl := range src.Labels {
-		op.Params = append(op.Params, []interface{}{"labelPath", lbl})
-	}
-
-	// Append a computed column per LET binding.
+	// Stack one pass-through "project" per binding (rather than one project for
+	// all of them) so a later binding can reference an earlier one -- e.g.
+	// LET x = 1, y = x + 1 -- matching query's left-to-right LET scoping, where
+	// each binding is added to the item before the next is evaluated.
 	for _, b := range o.Bindings() {
+		src := c.TopOp
+
+		op := &base.Op{
+			Kind:   "project",
+			Labels: append(base.Labels{}, src.Labels...),
+			Params: make([]interface{}, 0, len(src.Labels)+1),
+		}
+
+		// Pass through every existing column unchanged.
+		for _, lbl := range src.Labels {
+			op.Params = append(op.Params, []interface{}{"labelPath", lbl})
+		}
+
+		// Append this binding's computed column.
 		op.Labels = append(op.Labels, "."+LabelSuffix(b.Variable()))
 		op.Params = append(op.Params, []interface{}{"exprTree", b.Expression()})
+
+		c.TopPush(o, op)
 	}
 
-	return c.TopPush(o, op)
+	return c.TopOp, nil
 }
 
 // VisitWith converts a WITH clause (CTE) by visiting the wrapped child query.

@@ -274,6 +274,14 @@ OUTER:
 
 				av, ok := v.(value.AnnotatedValue)
 				if !ok {
+					if v == nil {
+						// An orphan attachment -- e.g. a leading ^id with no
+						// preceding doc `.`-label, as in `SELECT <letvar> FROM ks
+						// LET ...` over an index-only scan (no Fetch). Back it with
+						// an empty object so a following `.`-field is settable
+						// (NewAnnotatedValue(nil) wraps NULL, which isn't).
+						v = value.NewValue(map[string]interface{}{})
+					}
 					av = value.NewAnnotatedValue(v)
 				}
 

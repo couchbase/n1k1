@@ -210,13 +210,15 @@ EXCEPT ALL - tuple should appear MAX(m - n, 0) times in the result,
     - YieldStats() should be locked for concurrency safety.
   - early stop when processing is canceled?
 
-- LET: supported. The planner emits a plan.Let operator; glue VisitLet converts
-  it to a "project" that passes through every existing column and appends one
-  computed column per binding (labeled .["<var>"]), so downstream clauses
-  reference the variable as a field (matching query's item.SetField). SELECT *
+- LET / LETTING: supported. The planner emits a plan.Let operator for both (a
+  LET clause, and LETTING in the GROUP BY / HAVING scope); glue VisitLet converts
+  it to a stack of pass-through "project"s -- one per binding, so a later binding
+  can reference an earlier one (LET x=1, y=x+1) -- each appending a computed
+  column labeled .["<var>"], so downstream clauses reference the variable as a
+  field (matching query's item.SetField). LETTING bindings over aggregates work
+  because the project passes through the group's ^aggregates attachment. SELECT *
   strips the binding names from the star (VisitInitialProject + stripBindingNames
-  via OBJECT_REMOVE), so LET vars don't leak into *.
-  - LETTING (LET in the GROUP BY / HAVING scope) not yet exercised.
+  via OBJECT_REMOVE), so the vars don't leak into *. Unit tests: test/let_test.go.
 
 - prefetching optimizations?
   - this is an issue internal to scan operators?
