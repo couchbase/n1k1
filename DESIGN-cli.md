@@ -31,7 +31,7 @@ Things we deliberately **don't** copy in v1: persistent DB file format
 ------------------------------------------------------------------------
 ## 2. The single most important refactor: a reusable session
 
-Today the *only* end-to-end driver is the test harness `test/filestore_test.go:
+Today the *only* end-to-end driver is the test harness `test/suite_test.go:
 n1k1RunStatement`. It hardcodes the full pipeline. The CLI must not duplicate
 that. Extract it into `glue` as the shared engine both the test and the CLI use:
 
@@ -85,7 +85,7 @@ front-end (parse args, read lines, format rows).
   n1k1 [flags] [datastore-dir]
 
   n1k1                         # REPL on cwd (or no store until .open)
-  n1k1 ./test/filestore/json   # REPL with that datastore opened
+  n1k1 ./test/suite/json       # REPL with that datastore opened
   n1k1 -c "SELECT 1+1"         # one-shot, print, exit
   echo "SELECT ..." | n1k1     # stdin pipe (batch mode, no prompt)
   n1k1 -f script.n1ql          # run a file of ;-separated statements
@@ -193,7 +193,7 @@ base.Labels)` — no engine coupling.
 ## 8. Suggested build order (each step independently shippable)
 
 0. **Extract `glue.Session`** from `n1k1RunStatement`; re-point the test at it.
-   Gate: filestore pass count stays 631. *(No user-visible change; de-risks
+   Gate: suite pass count stays 631. *(No user-visible change; de-risks
    everything after.)*
 1. **Minimal CLI**: `cmd/n1k1`, `-c` + stdin + naive REPL (read-until-`;`),
    `jsonlines` output only. Proves the binary + single end-to-end path.

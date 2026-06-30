@@ -103,7 +103,7 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 // emitOpToLines runs the n1k1 *compiler* (intermed.ExecOp with the Emit hooks
 // captured) over a single base.Op tree and returns the generated Go source
 // lines for that query. This is the core codegen step shared by the
-// TestCasesSimple generator and the filestore-corpus generator.
+// TestCasesSimple generator and the suite-corpus generator.
 func emitOpToLines(o *base.Op) []string {
 	outStack := [][]string{nil}
 
@@ -275,7 +275,7 @@ func emitOpToLines(o *base.Op) []string {
 	// emit them as an interpreted "island": a glue.DatastoreOp(<baked op>, ...)
 	// call. The op node is bakeable as a Go literal (its Params are int Temps
 	// indices, not live objects); the live query-plan objects are supplied at
-	// the generated program's runtime via lzVars.Temps (see SetupCompiledFilestore).
+	// the generated program's runtime via lzVars.Temps (see SetupCompiledSuite).
 	// This is the datastore-scan bridge: compiled operators above, interpreted
 	// scan/fetch below, runtime data passed in through lzVars.
 	intermed.ExecOpEx = func(o *base.Op, lzVars *base.Vars,

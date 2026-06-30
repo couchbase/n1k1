@@ -13,10 +13,12 @@
 
 package test
 
-// Runs the upstream couchbase/query "filestore" test corpus (vendored under
-// test/filestore/json/default) against n1k1. Each case is {statements, results}
-// over the file datastore. n1k1 supports a subset of N1QL, so this reports
-// pass / fail / unsupported counts rather than requiring 100%.
+// Runs the SQL++ conformance suite -- the upstream couchbase/query corpus (from
+// their test/filestore tests), vendored under test/suite/json/default -- against
+// n1k1. ("suite" because it's a data-driven set of cases stored as files, run
+// over glue.FileStore; it isn't itself a test of file-store features.) Each case
+// is {statements, results} over the file datastore. n1k1 supports a subset of
+// N1QL, so this reports pass / fail / unsupported counts rather than 100%.
 
 import (
 	"encoding/json"
@@ -35,7 +37,7 @@ import (
 	"github.com/couchbase/n1k1/glue"
 )
 
-const filestoreRoot = "filestore/json" // FileStore root; queries use default:<keyspace>.
+const suiteRoot = "suite/json" // corpus root for glue.FileStore; queries use default:<keyspace>.
 
 // n1k1RunStatement parses, plans, converts and executes a single statement
 // through n1k1's own operators, returning the result rows as canonical JSON
@@ -138,18 +140,18 @@ func caseRunnable(c map[string]interface{}) (stmt string, results []interface{},
 	return s, r, true
 }
 
-func TestFilestoreCases(t *testing.T) {
-	if _, err := os.Stat(filestoreRoot + "/default/cases"); err != nil {
-		t.Skipf("filestore corpus not present: %v", err)
+func TestSuiteCases(t *testing.T) {
+	if _, err := os.Stat(suiteRoot + "/default/cases"); err != nil {
+		t.Skipf("suite corpus not present: %v", err)
 	}
 
-	store, err := glue.FileStore(filestoreRoot)
+	store, err := glue.FileStore(suiteRoot)
 	if err != nil {
 		t.Fatalf("FileStore: %v", err)
 	}
 	store.InitParser()
 
-	files, _ := filepath.Glob(filestoreRoot + "/default/cases/case_*.json")
+	files, _ := filepath.Glob(suiteRoot + "/default/cases/case_*.json")
 	sort.Strings(files)
 
 	var pass, skipped int
@@ -190,7 +192,7 @@ func TestFilestoreCases(t *testing.T) {
 		}
 	}
 
-	reportFilestore(t, len(files), pass, skipped, nonPass, exotic)
+	reportSuite(t, len(files), pass, skipped, nonPass, exotic)
 }
 
 // caseOutcome records one non-passing corpus case.
@@ -206,11 +208,11 @@ type exoticCase struct {
 	loc, reason, snippet string
 }
 
-// reportFilestore prints a readable summary + a grouped table of the expected
+// reportSuite prints a readable summary + a grouped table of the expected
 // non-pass cases, then enforces two guards: any UNEXPECTED non-pass (one not in
 // expectedNonPass) is a regression and fails the test; a stale table entry (a
 // listed case that now passes) is warned about so it can be removed.
-func reportFilestore(t *testing.T, nFiles, pass, skipped int, nonPass []caseOutcome, exotic []exoticCase) {
+func reportSuite(t *testing.T, nFiles, pass, skipped int, nonPass []caseOutcome, exotic []exoticCase) {
 	groupCount := map[string]int{}
 	seen := map[string]bool{}
 	var unexpected []caseOutcome
@@ -256,7 +258,7 @@ func reportFilestore(t *testing.T, nFiles, pass, skipped int, nonPass []caseOutc
 
 	// Per-case listing of every non-pass case (in corpus order), each tagged
 	// with its group ("UNEXPECTED" if not in expectedNonPass) and statement.
-	fmt.Fprintf(&b, "\nfilestore non-pass cases (%d):\n", len(nonPass))
+	fmt.Fprintf(&b, "\nsuite non-pass cases (%d):\n", len(nonPass))
 	tw := tabwriter.NewWriter(&b, 0, 2, 2, ' ', 0)
 	for _, o := range nonPass {
 		g, ok := expectedNonPass[o.loc]
@@ -293,7 +295,7 @@ func reportFilestore(t *testing.T, nFiles, pass, skipped int, nonPass []caseOutc
 	}
 	tw.Flush()
 
-	b.WriteString("\nfilestore conformance\n=====================\n")
+	b.WriteString("\nsuite conformance\n=================\n")
 	tw = tabwriter.NewWriter(&b, 0, 2, 2, ' ', 0)
 	fmt.Fprintf(tw, "  files scanned\t%*d\n", valW, nFiles)
 	fmt.Fprintf(tw, "  runnable cases\t%*d\n", valW, total)
@@ -363,7 +365,7 @@ func reportFilestore(t *testing.T, nFiles, pass, skipped int, nonPass []caseOutc
 	// different already-listed failure (no unexpected case, but pass drops).
 	const passFloor = 631
 	if pass < passFloor {
-		t.Errorf("filestore conformance regressed: PASS=%d < baseline %d", pass, passFloor)
+		t.Errorf("suite conformance regressed: PASS=%d < baseline %d", pass, passFloor)
 	}
 }
 

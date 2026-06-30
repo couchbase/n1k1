@@ -29,14 +29,14 @@ passing; see above.)
     export GOPRIVATE='github.com/couchbase/*'
     make test-all              # build + test glue/ + test/ (pure-Go, CGO off)
     make test-glue             # just the glue/ unit tests
-    make test-filestore        # just the 600+ filestore conformance cases, verbose
+    make test-suite            # just the 600+ SQL++ conformance-suite cases, verbose
     make test-compiler         # generate Go from the compiler + run the generated tests
 
     # Same, spelled out without make:
     CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -tags n1ql ./glue ./test
-    CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -tags n1ql -v -run TestFilestoreCases ./test
+    CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -tags n1ql -v -run TestSuiteCases ./test
 
-`make test-filestore` prints a summary plus a grouped table of the expected
+`make test-suite` prints a summary plus a grouped table of the expected
 non-pass cases (and flags any unexpected regression); see the conformance note
 below. Details for each layer follow.
 
@@ -71,20 +71,21 @@ Cross-compile the (cgo-free) engine to any target:
 `make test-all` runs the engine build + tests; `make test-glue` runs just the
 glue/ unit tests.
 
-The n1ql suite includes TestFilestoreCases, which runs the upstream
-couchbase/query "filestore" conformance corpus (vendored under
-test/filestore/ -- {query, expected-results} cases over a small JSON dataset)
-against n1k1. n1k1 implements a subset of N1QL, so it's a pass-rate guard, not
-100%: ~631 of ~670 runnable cases currently pass, and the test fails if that
-count regresses (ratchet it up as coverage grows). Use `make test-filestore`
-(or add `-v -run TestFilestoreCases` yourself) to see: a per-case index of the
-non-pass cases; the full SQL++ of every UNSUPPORTED query (with its error and
-group, so it's clear what to support next); a snippet of each "exotic" case
-skipped because it isn't the plain {statements, results} shape (error/match/
-resultset/prepared/etc.); a summary; a grouped table of the expected non-pass
-cases (with a short why for each group); and any unexpected regressions. The
-accepted non-pass cases are enumerated in the `expectedNonPass` table in
-test/filestore_test.go -- shrink it as coverage grows.
+The n1ql layer includes TestSuiteCases, which runs the SQL++ conformance suite:
+the upstream couchbase/query corpus (from their test/filestore tests), vendored
+under test/suite/ -- {query, expected-results} cases over a small JSON dataset --
+against n1k1. ("suite" because it's a data-driven set of cases stored as files,
+run over glue.FileStore; it isn't itself a test of file-store features.) n1k1
+implements a subset of N1QL, so it's a pass-rate guard, not 100%: ~631 of ~670
+runnable cases currently pass, and the test fails if that count regresses (ratchet
+it up as coverage grows). Use `make test-suite` (or add `-v -run TestSuiteCases`
+yourself) to see: a per-case index of the non-pass cases; the full SQL++ of every
+UNSUPPORTED query (with its error and group, so it's clear what to support next);
+a snippet of each "exotic" case skipped because it isn't the plain {statements,
+results} shape (error/match/resultset/prepared/etc.); a summary; a grouped table
+of the expected non-pass cases (with a short why for each group); and any
+unexpected regressions. The accepted non-pass cases are enumerated in the
+`expectedNonPass` table in test/suite_test.go -- shrink it as coverage grows.
 
 `make test-compiler` exercises the n1k1 *compiler* (not just the interpreter).
 Two generators emit Go source into test/tmp/ (gitignored), then that package is
@@ -92,8 +93,8 @@ compiled and run -- its TestGeneratedN / TestGeneratedFS_N funcs execute the
 *compiled* query and compare results:
 
 - TestCasesSimpleWithCompiler -- the hand-built TestCasesSimple Op trees.
-- TestFilestoreWithCompiler -- a *differential* test: Op trees the glue layer
-  derives from real SQL++ corpus queries are compiled and checked against the
+- TestSuiteWithCompiler -- a *differential* test: Op trees the glue layer derives
+  from real SQL++ conformance-suite queries are compiled and checked against the
   same expected results the interpreter is checked against (~600 cases, covering
   WHERE / ORDER BY / GROUP BY / HAVING / DISTINCT / UNNEST / aggregates over real
   datastore scans). Two things make a conv-derived plan expressible as generated
@@ -103,7 +104,7 @@ compiled and run -- its TestGeneratedN / TestGeneratedFS_N funcs execute the
   - Datastore scans/fetches: the op is baked to a Go literal and run as a
     glue.DatastoreOp "island"; its int params are vars.Temps indices, and the
     live query-plan objects are supplied at the generated program's runtime by
-    test.SetupCompiledFilestore (which rebuilds vars.Temps). So the compiled code
+    test.SetupCompiledSuite (which rebuilds vars.Temps). So the compiled code
     carries the SQL++ shape and the datastore is passed in as runtime data.
   Excluded: non-deterministic cases (NOW_*/CLOCK_*/UUID/random), and plans using
   the temp-*/sequence ops (subquery/LET machinery) -- not yet bridged.

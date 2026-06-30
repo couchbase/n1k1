@@ -22,7 +22,7 @@ run_intermed_build:
 # glue targets exercise the N1QL-engine layer (glue/ + test/), build pure-Go
 # (CGO_ENABLED=0), and need the patched query fork -- see patches/README.md.
 
-.PHONY: test build build-glue test-glue test-filestore test-compiler test-all
+.PHONY: test build build-glue test-glue test-suite test-compiler test-all
 
 # test runs the self-contained core build + vet + unit tests (no external setup).
 test: build
@@ -41,24 +41,26 @@ build-glue:
 test-glue: build-glue
 	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -tags n1ql -v ./glue
 
-# test-filestore runs just the upstream couchbase/query "filestore" conformance
-# corpus (600+ cases under test/filestore/) verbosely: a summary, a grouped
-# table of expected non-pass cases, and any unexpected regressions.
-test-filestore: build-glue
-	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -tags n1ql -v -run TestFilestoreCases ./test
+# test-suite runs just the SQL++ conformance suite (the upstream couchbase/query
+# corpus, 600+ cases under test/suite/) verbosely: a summary, the full SQL++ of
+# unsupported queries, exotic-case snippets, a grouped table of expected non-pass
+# cases, and any unexpected regressions.
+test-suite: build-glue
+	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -tags n1ql -v -run TestSuiteCases ./test
 
 # test-compiler exercises the n1k1 *compiler* end to end. The first step runs
 # the two generators -- TestCasesSimpleWithCompiler (hand-built TestCasesSimple
-# Op trees) and TestFilestoreWithCompiler (Op trees the glue layer derives from
-# real SQL++ corpus queries) -- which emit Go source into test/tmp/ (gitignored).
-# The second step compiles and runs that generated package, whose TestGeneratedN
-# / TestGeneratedFS_N funcs execute the *compiled* query and compare its results.
-# The two steps MUST stay ordered so ./test/tmp never compiles a stale copy.
+# Op trees) and TestSuiteWithCompiler (Op trees the glue layer derives from real
+# SQL++ conformance-suite queries) -- which emit Go source into test/tmp/
+# (gitignored). The second step compiles and runs that generated package, whose
+# TestGeneratedN / TestGeneratedFS_N funcs execute the *compiled* query and
+# compare its results. The two steps MUST stay ordered so ./test/tmp never
+# compiles a stale copy.
 test-compiler: build-glue
-	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -tags n1ql -run 'TestCasesSimpleWithCompiler|TestFilestoreWithCompiler' ./test
+	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -tags n1ql -run 'TestCasesSimpleWithCompiler|TestSuiteWithCompiler' ./test
 	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -tags n1ql -v ./test/tmp
 
-# test-all runs the whole N1QL-engine layer (glue/ + test/, includes filestore)
+# test-all runs the whole N1QL-engine layer (glue/ + test/, includes the suite)
 # plus the compiler end-to-end test.
 test-all: build-glue
 	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -tags n1ql -v ./glue ./test

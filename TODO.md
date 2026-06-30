@@ -7,11 +7,11 @@ build/test commands are in README.md.
 Status: modernization + a pure-Go N1QL engine (CGO_ENABLED=0, cross-compiles)
 are done. Remaining work:
 
-## Conformance (filestore corpus)
-- [ ] Raise the TestFilestoreCases pass rate (currently ~631/672 runnable).
+## Conformance (SQL++ suite corpus)
+- [ ] Raise the TestSuiteCases pass rate (currently ~631/672 runnable).
       Remaining gaps: COUNT(*) over a bare keyspace (CountScan) + EXPLAIN +
       index-union scans unsupported. Ratchet the pass-floor in
-      test/filestore_test.go as fixed.
+      test/suite_test.go as fixed.
       NOT-FIXABLE: array_position(array_agg(...)) depends on the array_agg
       element order, which N1QL leaves undefined -- n1k1's scan order differs
       from the corpus's, so the position differs (same multiset). 1 case. This
