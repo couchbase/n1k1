@@ -41,31 +41,25 @@ DONE so far (2026/06):
 - [x] T1: dropped query/server from glue/exec.go (was an unused param).
 - [x] T2: dropped query/datastore/system from glue/stmt.go (Systemstore=nil).
 
-CORRECTION to the earlier "stub+T1+T2 == pure-Go" claim -- it is NOT enough.
-A full compile (past import resolution) surfaced two more blockers:
-- **cbft is cgo** (c_malloc.go / jemalloc cHeapAlloc), pulled via query/execution.
-  cbgt also pulls cloudfoundry/gosigar (needs cgo on darwin). So CGO_ENABLED=0
-  is IMPOSSIBLE while glue/ imports query/execution => **T3 is REQUIRED**, not
-  optional, for the pure-Go binary.
-- **glue/ has 2019->2026 query API drift** (must fix just to compile, any cgo
-  mode): plan.Visitor gained methods (VisitAlterBucket, ...), plan.ParentScan /
-  FinalProject removed, keyspace.Fetch / value.WriteJSON / Descending signatures
-  changed. Lives in glue/conv.go (parse->plan->convert, KEEP) and
-  glue/datastore_fetch.go + datastore_scan.go (data path, rewritten by T3).
+- [x] **Fixed glue/ API drift**: conv.go plan.Visitor (new methods, removed
+      types), semantics.GetSemChecker, planner.NewPrepareContext/Build,
+      Fetch/WriteJSON/attachment/Descending signatures.
+- [x] **T3: dropped query/execution**. glue.GlueContext (glue/context.go) embeds
+      expression.IndexContext for expression.Context and implements
+      datastore.Context; scan accessors replaced with constants; Fetch uses
+      datastore.NULL_QUERY_CONTEXT. Dropped cbft/cbgt/indexing/n1fty/query-ee/
+      gocbcrypto/eventing-ee. RESULT: CGO_ENABLED=0 build + tests GREEN,
+      cross-compiles to linux/darwin/windows.
 
-- [ ] **Fix glue/ API drift** (prereq, ~1-2 days): update conv.go visitor +
-      changed plan types/signatures. conv.go part is unavoidable (it's the
-      parse->plan->convert core we keep for SQL++ currency).
-- [ ] **T3 drop query/execution** (~2-4 days, the real work): replace
-      execution.Context with an n1k1 context implementing the bits actually used
-      -- expression.Context (for expr.Evaluate) + datastore.Context (for the file
-      datastore scan/fetch: RequestId, ScanConsistency, ScanVectorSource,
-      Error/Warning). expression.Context is ~31 methods, but query ships
-      lightweight impls to crib from (expression.IndexContext, ErrorContext); the
-      goal is an n1k1 wrapper, not a from-scratch 31-method impl. Then rewire the
-      ~9 datastore_scan.go call sites + datastore_fetch.go. Payoff: drops
-      cbft/cbgt/indexing/n1fty/query-ee/eventing-ee/gosigar => CGO_ENABLED=0,
-      cross-compile darwin+linux, go.mod shrinks to a handful of modules.
+REMAINING for a truly shippable binary:
+- [ ] **Reproducible query sourcing** (packaging): the build still uses a local
+      patched copy of query (tmp/query-local, via go.mod replace) -- not
+      reproducible for others. Fork couchbase/query at the pinned SHA, commit the
+      3 patches (gen parser, system stub, semchecker_ce) from patches/, and
+      replace => fork@sha. Then prune the now-unneeded replaces from go.mod
+      (cbft/cbgt/indexing/n1fty/query-ee/etc. -- T3 dropped them).
+- [ ] **A main()**: glue is a library; add a cmd/ that takes a SQL++ string +
+      file datastore and prints results, to actually produce the downloadable binary.
 
 SQL++ CURRENCY (key requirement) -- tension to respect:
   n1k1 stays current by tracking query's parser/algebra/expression/plan/planner

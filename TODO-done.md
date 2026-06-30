@@ -29,3 +29,13 @@ Gist only -- details live in commit messages, README, and code comments.
 - Corrected an over-claim: stub+T1+T2 is NOT pure-Go yet. cbft (via execution)
   is cgo (jemalloc) + cbgt->gosigar needs darwin cgo, so CGO_ENABLED=0 REQUIRES
   T3 (drop execution). Also glue/ has 2019->2026 query API drift to fix. See TODO.md.
+
+## 2026/06 -- glue API drift fixed + T3 DONE (pure-Go engine achieved)
+- Fixed glue/ 2019->2026 query API drift (plan.Visitor new methods, removed
+  types, semantics/planner/Fetch/WriteJSON/attachment signature changes).
+- T3: replaced query/execution.Context with glue.GlueContext (embeds
+  expression.IndexContext; implements datastore.Context). Dropped execution ->
+  the whole cbft/cbgt/indexing/n1fty/query-ee/gocbcrypto/eventing-ee subtree.
+- RESULT: `CGO_ENABLED=0 go test -tags n1ql ./glue ./test` is GREEN, and the
+  engine cross-compiles to linux/darwin/windows. 3 query patches needed
+  (parser-gen, system stub, semchecker enterprise) -- see patches/.
