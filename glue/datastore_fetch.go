@@ -19,7 +19,6 @@ import (
 	"fmt"
 
 	"github.com/couchbase/query/datastore"
-	"github.com/couchbase/query/execution"
 	"github.com/couchbase/query/value"
 
 	"github.com/couchbase/n1k1/base"
@@ -35,8 +34,6 @@ type SubPathser interface {
 
 func DatastoreFetch(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 	yieldErr base.YieldErr, path, pathNext string) {
-	context := vars.Temps[0].(*execution.Context)
-
 	plan := vars.Temps[o.Params[0].(int)].(Keyspacer)
 
 	keyspace := plan.Keyspace()
@@ -86,7 +83,7 @@ func DatastoreFetch(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 			delete(fetchMap, k)
 		}
 
-		errs := keyspace.Fetch(keys, fetchMap, context, subPaths, nil /* projection */, false /* useSubDoc */)
+		errs := keyspace.Fetch(keys, fetchMap, datastore.NULL_QUERY_CONTEXT, subPaths, nil /* projection */, false /* useSubDoc */)
 		for _, err := range errs {
 			yieldErr(fmt.Errorf("DatastoreFetch, err: %v", err))
 		}

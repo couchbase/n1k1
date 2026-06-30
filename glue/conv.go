@@ -550,10 +550,28 @@ func (c *Conv) VisitOrder(o *plan.Order) (interface{}, error) {
 		}
 	}
 
+	params := []interface{}{exprs, dirs}
+
+	// Modern query folds OFFSET/LIMIT into the Order operator (rather than
+	// emitting separate plan.Offset/plan.Limit operators after it), so read
+	// them here. Param slots: [exprs, dirs, offset, limit].
+	if o.Offset() != nil {
+		offset := EvalExprInt64(nil, o.Offset().Expression(), nil, 0)
+		params = append(params, int64(offset))
+	}
+
+	if o.Limit() != nil {
+		for len(params) < 3 {
+			params = append(params, int64(0)) // default offset slot
+		}
+		limit := EvalExprInt64(nil, o.Limit().Expression(), nil, int64(math.MaxInt64))
+		params = append(params, int64(limit))
+	}
+
 	return c.TopPush(o, &base.Op{
 		Kind:   "order-offset-limit",
 		Labels: c.TopOp.Labels,
-		Params: []interface{}{exprs, dirs},
+		Params: params,
 	})
 }
 

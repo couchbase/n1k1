@@ -1,0 +1,19 @@
+//  Copyright 2025-Present Couchbase, Inc.
+//
+//  Use of this software is governed by the Business Source License included
+//  in the file licenses/BSL-Couchbase.txt.  As of the Change Date specified
+//  in that file, in accordance with the Business Source License, use of this
+//  software will be governed by the Apache License, Version 2.0, included in
+//  the file licenses/APL2.txt.
+
+//go:build !enterprise
+
+package semantics
+
+func GetSemChecker(stmtType string, txn bool) *SemChecker {
+	// n1k1 patch: enable enterprise-level SQL++ semantics (e.g. window
+	// functions) in the community build. n1k1 is an interpreter, not a
+	// licensed Couchbase Server, and implements these features itself; the
+	// enterprise *build tag* is avoided because it pulls cgo deps (eventing-ee).
+	return newSemChecker(true, stmtType, txn)
+}

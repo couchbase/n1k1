@@ -22,7 +22,6 @@ import (
 
 	"github.com/couchbase/query/datastore"
 	"github.com/couchbase/query/errors"
-	"github.com/couchbase/query/execution"
 	"github.com/couchbase/query/expression"
 	"github.com/couchbase/query/plan"
 	"github.com/couchbase/query/value"
@@ -30,7 +29,7 @@ import (
 
 func DatastoreScanKeys(o *base.Op, vars *base.Vars,
 	yieldVals base.YieldVals, yieldErr base.YieldErr) {
-	context := vars.Temps[0].(*execution.Context)
+	context := vars.Temps[0].(*GlueContext)
 
 	scan := vars.Temps[o.Params[0].(int)].(*plan.KeyScan)
 
@@ -84,15 +83,13 @@ func DatastoreScanKeys(o *base.Op, vars *base.Vars,
 func DatastoreScanPrimary(o *base.Op, vars *base.Vars,
 	yieldVals base.YieldVals, yieldErr base.YieldErr) {
 	DatastoreScan(o, vars, yieldVals, yieldErr,
-		func(context *execution.Context, conn *datastore.IndexConnection) {
-			nks := vars.Temps[o.Params[0].(int)].(Termer).Term()
-			vec := context.ScanVectorSource().ScanVector(nks.Namespace(), nks.Keyspace())
-
+		func(context *GlueContext, conn *datastore.IndexConnection) {
+			// File datastore: no scan vector, default consistency.
 			if scan, ok := vars.Temps[o.Params[0].(int)].(*plan.PrimaryScan); ok {
 				limit := EvalExprInt64(context, scan.Limit(), nil, math.MaxInt64)
 
-				go scan.Index().ScanEntries(context.RequestId(), limit,
-					context.ScanConsistency(), vec, conn)
+				go scan.Index().ScanEntries(glueRequestId, limit,
+					datastore.UNBOUNDED, nil, conn)
 			} else if scan, ok := vars.Temps[o.Params[0].(int)].(*plan.PrimaryScan3); ok {
 				offset := EvalExprInt64(context, scan.Offset(), nil, int64(0))
 				limit := EvalExprInt64(context, scan.Limit(), nil, math.MaxInt64)
@@ -103,9 +100,9 @@ func DatastoreScanPrimary(o *base.Op, vars *base.Vars,
 
 				// TODO: Handle advanced PrimaryScan3 params.
 
-				go scan.Index().ScanEntries3(context.RequestId(),
+				go scan.Index().ScanEntries3(glueRequestId,
 					indexProjection, offset, limit, indexGroupAggs, indexOrder,
-					context.ScanConsistency(), vec, conn)
+					datastore.UNBOUNDED, nil, conn)
 			}
 		})
 }
@@ -115,16 +112,13 @@ func DatastoreScanPrimary(o *base.Op, vars *base.Vars,
 func DatastoreScanIndex(o *base.Op, vars *base.Vars,
 	yieldVals base.YieldVals, yieldErr base.YieldErr) {
 	DatastoreScan(o, vars, yieldVals, yieldErr,
-		func(context *execution.Context, conn *datastore.IndexConnection) {
+		func(context *GlueContext, conn *datastore.IndexConnection) {
 			scan := vars.Temps[o.Params[0].(int)].(*plan.IndexScan)
 
 			/* covers := scan.Covers() // TODO: Do we care about covers?
 			if len(covers) > 0 {
 				panic("covers unimplemented / TODO")
 			} */
-
-			nks := scan.Term()
-			vec := context.ScanVectorSource().ScanVector(nks.Namespace(), nks.Keyspace())
 
 			limit := EvalExprInt64(context, scan.Limit(), nil, math.MaxInt64)
 
@@ -152,8 +146,8 @@ func DatastoreScanIndex(o *base.Op, vars *base.Vars,
 						return
 					}
 
-					scan.Index().Scan(context.RequestId(), dspan, scan.Distinct(), limit,
-						context.ScanConsistency(), vec, conn)
+					scan.Index().Scan(glueRequestId, dspan, scan.Distinct(), limit,
+						datastore.UNBOUNDED, nil, conn)
 				}(span)
 			}
 		})
@@ -163,8 +157,8 @@ func DatastoreScanIndex(o *base.Op, vars *base.Vars,
 
 func DatastoreScan(o *base.Op, vars *base.Vars,
 	yieldVals base.YieldVals, yieldErr base.YieldErr,
-	cb func(*execution.Context, *datastore.IndexConnection)) {
-	context := vars.Temps[0].(*execution.Context)
+	cb func(*GlueContext, *datastore.IndexConnection)) {
+	context := vars.Temps[0].(*GlueContext)
 
 	conn := datastore.NewIndexConnection(context)
 
@@ -230,7 +224,7 @@ func DatastoreScan(o *base.Op, vars *base.Vars,
 
 // -------------------------------------------------------------------
 
-func EvalSpan(context *execution.Context, ps *plan.Span, parent value.Value) (
+func EvalSpan(context *GlueContext, ps *plan.Span, parent value.Value) (
 	dspan *datastore.Span, empty bool, err error) {
 	dspan = &datastore.Span{}
 
@@ -256,7 +250,7 @@ func EvalSpan(context *execution.Context, ps *plan.Span, parent value.Value) (
 
 // -------------------------------------------------------------------
 
-func EvalExprs(context *execution.Context, cx expression.Expressions,
+func EvalExprs(context *GlueContext, cx expression.Expressions,
 	parent value.Value) (cv value.Values, empty bool, err error) {
 	if len(cx) > 0 {
 		cv = make(value.Values, len(cx))
@@ -274,7 +268,7 @@ func EvalExprs(context *execution.Context, cx expression.Expressions,
 
 // -------------------------------------------------------------------
 
-func EvalExpr(context *execution.Context, expr expression.Expression,
+func EvalExpr(context *GlueContext, expr expression.Expression,
 	parent value.Value) (v value.Value, empty bool, err error) {
 	if expr != nil {
 		v, err = expr.Evaluate(parent, context)
@@ -293,7 +287,7 @@ func EvalExpr(context *execution.Context, expr expression.Expression,
 
 // -------------------------------------------------------------------
 
-func EvalExprInt64(context *execution.Context, expr expression.Expression,
+func EvalExprInt64(context *GlueContext, expr expression.Expression,
 	parent value.Value, defval int64) (val int64) {
 	if expr != nil {
 		val, err := expr.Evaluate(parent, context)

@@ -30,7 +30,6 @@ import (
 	"github.com/couchbase/n1k1"
 	"github.com/couchbase/n1k1/base"
 
-	"github.com/couchbase/query/execution"
 	"github.com/couchbase/query/plan"
 	"github.com/couchbase/query/value"
 )
@@ -52,7 +51,7 @@ func init() {
 // decoupling n1k1 from query/server, which pulled in cgo deps. The arg was
 // unused.)
 func ServiceRequestEx(p plan.Operator,
-	ctx *execution.Context, timeout time.Duration, asyncReadyCB func()) bool {
+	ctx *GlueContext, timeout time.Duration, asyncReadyCB func()) bool {
 	texter, ok := p.(interface{ Text() string })
 	if !ok || !strings.HasSuffix(texter.Text(), " n1k1 */") {
 		return false

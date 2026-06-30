@@ -1,48 +1,59 @@
 # patches/ — building the gated N1QL engine layer (`-tags n1ql`)
 
-n1k1's `glue/` reuses Couchbase `query` for SQL++ parse+plan. Consuming `query`
-as an external module needs two local fixups it doesn't ship:
+n1k1's `glue/` reuses Couchbase `query` for SQL++ parse+plan, then executes with
+n1k1's own operators. As of the 2026 decouple work, the engine builds **pure-Go,
+`CGO_ENABLED=0`, and cross-compiles** (linux/darwin/windows). Getting there
+needs three small local fixups to the `query` module, since it isn't designed to
+be consumed as an external module:
 
 1. **Generated parser** — `query/parser/n1ql` ships the grammar (`n1ql.y`) but
-   not the goyacc output (`y.go`, defining `yyParse`/`yySymType`). It's
-   generated at build time and gitignored upstream.
-2. **Pure-Go `query/system`** — the real one is cgo (sigar) and is pulled
-   pervasively via `query/memory` ← `query/tenant` by the *entire* query stack
-   (even the parser). `query-system-stub.go.txt` here is a pure-Go drop-in
-   replacement so n1k1 can target `CGO_ENABLED=0`.
+   not the goyacc output (`y.go`, defining `yyParse`/`yySymType`). Generated at
+   build time upstream and gitignored.
+2. **Pure-Go `query/system`** (`query-system-stub.go.txt`) — the real one is cgo
+   (sigar), pulled pervasively via `query/memory` ← `query/tenant` by nearly the
+   whole query stack (even the parser). The stub returns benign memory stats.
+3. **Enterprise semantics in community build** (`query-semantics-semchecker_ce.go.txt`)
+   — a 1-line change so enterprise-level SQL++ (e.g. window functions) parses
+   without the `enterprise` build tag (which would pull cgo deps like
+   eventing-ee/V8). n1k1 implements these features itself.
 
 ## Recipe (iteration scaffold)
 
 ```bash
+export GOFLAGS=-mod=mod GOPRIVATE='github.com/couchbase/*'
+
 # 1. copy the pinned query module to a writable, gitignored local dir
-QDIR=$(GOPRIVATE='github.com/couchbase/*' go list -m -f '{{.Dir}}' github.com/couchbase/query)
+QDIR=$(go list -m -f '{{.Dir}}' github.com/couchbase/query)
 rm -rf tmp/query-local && cp -R "$QDIR" tmp/query-local && chmod -R u+w tmp/query-local
 
 # 2. generate the parser
 go install golang.org/x/tools/cmd/goyacc@latest
 (cd tmp/query-local/parser/n1ql && "$(go env GOPATH)/bin/goyacc" n1ql.y && rm -f y.output)
 
-# 3. drop in the pure-Go system stub
-cp patches/query-system-stub.go.txt tmp/query-local/system/systemStats.go
+# 3. drop in the two source patches
+cp patches/query-system-stub.go.txt          tmp/query-local/system/systemStats.go
+cp patches/query-semantics-semchecker_ce.go.txt tmp/query-local/semantics/semchecker_ce.go
 
-# 4. point go.mod at the local copy + align co-developed module versions
-export GOFLAGS=-mod=mod GOPRIVATE='github.com/couchbase/*'
+# 4. point go.mod at the local copy
 go mod edit -replace github.com/couchbase/query=./tmp/query-local
-go get github.com/couchbase/cbft@master github.com/couchbase/cbgt@master \
-       github.com/couchbase/cbauth@master github.com/couchbase/gomemcached@master \
-       github.com/cloudfoundry/gosigar@latest
 ```
 
-## KNOWN REMAINING BLOCKERS (as of 2026/06 — not yet resolved)
+After T3 (dropping `query/execution`), glue's dependency graph no longer pulls
+cbft/cbgt/indexing/n1fty/query-ee/gocbcrypto/eventing-ee, so those replaces are
+no longer needed. The replace block in go.mod can be pruned to just `query`
+(plus whatever the parse+plan slice still requires; `go build` will tell you).
 
-The above gets the deps to RESOLVE, but the gated build does NOT yet succeed:
+## Build & test
 
-- **cbft is cgo** (`c_malloc.go` / jemalloc `cHeapAlloc`), pulled via
-  `query/execution`. So `CGO_ENABLED=0` is impossible while `glue/` imports
-  `execution`. Reaching a pure-Go binary REQUIRES T3 (drop `query/execution`).
-- **glue/ has 2019→2026 API drift** vs current query: `plan.Visitor` gained
-  methods (`VisitAlterBucket`, …), `plan.ParentScan`/`FinalProject` removed,
-  `keyspace.Fetch` / `value.WriteJSON` / `Descending` signatures changed.
-  `glue/conv.go` + `glue/datastore_fetch.go` must be updated to compile.
+```bash
+CGO_ENABLED=0 go build -tags n1ql ./glue/... ./test/...   # builds, no cgo
+CGO_ENABLED=0 go test  -tags n1ql ./glue ./test           # all green
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags n1ql ./glue/...  # cross-compiles
+```
 
-See ../TODO.md for the plan.
+## Reproducible (non-scaffold) sourcing — the remaining packaging step
+
+The local copy works for development but isn't reproducible for others. To ship:
+fork `couchbase/query` at the pinned SHA, commit the generated `y.go` + the two
+patches above, and `go mod edit -replace github.com/couchbase/query=<fork>@<sha>`.
+Then n1k1 builds with plain `go build` (no local tree). See ../TODO.md.
