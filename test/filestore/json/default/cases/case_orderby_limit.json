@@ -1,0 +1,174 @@
+[
+    {
+        "statements": "SELECT dimensions FROM default:catalog ORDER BY dimensions.length, dimensions.width ASC LIMIT 0",
+        "results":[
+        ]
+    },
+    {
+        "statements": "SELECT dimensions FROM default:catalog ORDER BY dimensions.length, dimensions.width ASC LIMIT -1",
+        "results":[
+        ]
+    },
+    {
+        "statements": "SELECT dimensions FROM default:catalog ORDER BY dimensions.length, dimensions.width ASC LIMIT 0 OFFSET 0",
+        "results":[
+        ]
+    },
+    {
+        "statements": "SELECT dimensions FROM default:catalog ORDER BY dimensions.length, dimensions.width ASC LIMIT -1 OFFSET 2",
+        "results":[
+        ]
+    },
+    {
+        "statements": "EXPLAIN SELECT dimensions FROM default:catalog ORDER BY dimensions.length, dimensions.width ASC LIMIT 1 OFFSET 1",
+        "results": [
+        {
+	"plan":
+	    {
+            "#operator": "Sequence",
+            "~children": [
+                {
+                    "#operator": "Sequence",
+                    "~children": [
+                        {
+                            "#operator": "PrimaryScan",
+                            "index": "#primary",
+                            "keyspace": "catalog",
+                            "namespace": "default",
+                            "using": "system"
+                        },
+                        {
+                            "#operator": "Fetch",
+                            "early_projection": [
+                              "dimensions"
+                            ],
+                            "keyspace": "catalog",
+                            "namespace": "default"
+                        },
+                        {
+                            "#operator": "Parallel",
+                            "~child": {
+                                "#operator": "Sequence",
+                                "~children": [
+                                    {
+                                        "#operator": "InitialProject",
+                                        "preserve_order": true,
+                                        "result_terms": [
+                                            {
+                                                "expr": "(`catalog`.`dimensions`)"
+                                            }
+                                        ]
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                },
+                {
+                    "#operator": "Order",
+                    "flags": 6,
+                    "limit": "1",
+                    "offset": "1",
+                    "sort_terms": [
+                        {
+                            "expr": "((`catalog`.`dimensions`).`length`)"
+                        },
+                        {
+                            "desc":"\"asc\"",
+                            "expr": "((`catalog`.`dimensions`).`width`)"
+                        }
+                    ]
+                },
+                {
+                    "#operator": "Limit",
+                    "expr": "1"
+                }
+            ]
+	},
+	"text": "SELECT dimensions FROM default:catalog ORDER BY dimensions.length, dimensions.width ASC LIMIT 1 OFFSET 1"
+        }
+      ]
+    },
+
+
+    {
+        "statements": "EXPLAIN SELECT personal_details.first_name AS first_name, personal_details.state, personal_details.age AS age FROM default:user_profile AS u ORDER BY age, first_name DESC LIMIT 3",
+        "results": [
+        {
+	"plan":
+	    {
+            "#operator": "Sequence",
+            "~children": [
+                {
+                    "#operator": "Sequence",
+                    "~children": [
+                        {
+                            "#operator": "PrimaryScan",
+                            "as": "u",
+                            "index": "#primary",
+                            "keyspace": "user_profile",
+                            "namespace": "default",
+                            "using": "system"
+                        },
+                        {
+                            "#operator": "Fetch",
+                            "as": "u",
+                            "early_projection": [
+                              "personal_details"
+                            ],
+                            "keyspace": "user_profile",
+                            "namespace": "default"
+                        },
+                        {
+                            "#operator": "Parallel",
+                            "~child": {
+                                "#operator": "Sequence",
+                                "~children": [
+                                    {
+                                        "#operator": "InitialProject",
+                                        "preserve_order": true,
+                                        "result_terms": [
+                                            {
+                                                "as": "first_name",
+                                                "expr": "((`u`.`personal_details`).`first_name`)"
+                                            },
+                                            {
+                                                "expr": "((`u`.`personal_details`).`state`)"
+                                            },
+                                            {
+                                                "as": "age",
+                                                "expr": "((`u`.`personal_details`).`age`)"
+                                            }
+                                        ]
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                },
+                {
+                    "#operator": "Order",
+                    "flags": 6,
+                    "limit": "3",
+                    "sort_terms": [
+                        {
+                            "expr": "`age`"
+                        },
+                        {
+                            "desc":"\"desc\"",
+                            "expr": "`first_name`"
+                        }
+                    ]
+                },
+                {
+                    "#operator": "Limit",
+                    "expr": "3"
+                }
+            ]
+	  },
+	  "text": "SELECT personal_details.first_name AS first_name, personal_details.state, personal_details.age AS age FROM default:user_profile AS u ORDER BY age, first_name DESC LIMIT 3"
+          }
+        ]
+     }
+]
+

@@ -1,0 +1,35 @@
+[
+	{
+	"statements": "delete from system:completed_requests",
+	"results": [
+	]
+	},
+	{
+	"statements": "select errorCount, resultCount, resultSize, statement from system:completed_requests",
+	"results": [
+        {
+            "errorCount": 0,
+            "resultCount": 0,
+            "resultSize": 0,
+            "statement": "delete from system:completed_requests"
+        }
+	]
+	},
+	{
+	"statements": "select errorCount, resultCount, resultSize, statement from system:completed_requests order by statement",
+	"results": [
+        {
+            "errorCount": 0,
+            "resultCount": 0,
+            "resultSize": 0,
+            "statement": "delete from system:completed_requests"
+        },
+        {
+            "errorCount": 0,
+            "resultCount": 1,
+            "resultSize": 0,
+            "statement": "select errorCount, resultCount, resultSize, statement from system:completed_requests"
+        }
+	]
+	}
+]

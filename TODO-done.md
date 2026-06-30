@@ -82,6 +82,16 @@ Gist only -- details live in commit messages, README, and code comments.
   cause, and moot post-T3 (the drift-prone heavy modules aren't compiled; the
   versions that matter come from the fork's go.mod -- itself one snapshot).
 
+## 2026/06 -- upstream filestore conformance corpus runs against n1k1
+- Vendored the couchbase/query "filestore" test corpus (test/filestore/ --
+  24 datasets / 510 docs / 46 case files of {statements, results}).
+- New TestFilestoreCases harness (test/filestore_test.go) parses+plans+converts+
+  executes each statement through n1k1's own ops and compares (multiset
+  canonical-JSON) to the expected results, classifying pass / fail / unsupported.
+- 358 of ~672 runnable cases PASS (the rest: ANY..SATISFIES result mismatches,
+  EXPLAIN / index-union-scan unsupported, a couple UNNEST+GROUP-BY panics).
+  A pass-floor assertion guards against regressions; ratchet up as coverage grows.
+
 ## 2026/06 -- un-skipped the pre-existing SKIP tests (all pass)
 - The 6 SKIP-prefixed tests from the 2021 CB 6.5->7 breakage (UNNEST x3,
   GROUP BY SUM x2 = "TermerPanic"; array-as-FROM + WHERE = "Results3Not1")

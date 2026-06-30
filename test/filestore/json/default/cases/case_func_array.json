@@ -1,0 +1,853 @@
+[
+ {
+        "statements": "SELECT  ARRAY_LENGTH(ARRAY director FOR director IN details.director  END) AS D FROM default:catalog WHERE POLY_LENGTH(details.director) > 1 ORDER BY D",
+        "results": [
+        {
+            "D": null
+        },
+        {
+            "D": 2
+        }
+    ]
+    },
+    {
+      "statements": "select ARRAY_APPEND((ARRAY ol.productId FOR ol IN orderlines END), \"GreanTea\") AS A FROM default:orders ORDER BY A",
+      "results": [
+        {
+            "A": [
+                "coffee01",
+                "sugar22",
+                "GreanTea"
+            ]
+        },
+        {
+            "A": [
+                "coffee01",
+                "sugar22",
+                "GreanTea"
+            ]
+        },
+        {
+            "A": [
+                "coffee01",
+                "tea111",
+                "GreanTea"
+            ]
+        },
+        {
+            "A": [
+                "tea111",
+                "sugar22",
+                "GreanTea"
+            ]
+        }
+    ]
+  },
+  {
+     "statements": "SELECT array_avg(array_agg(LENGTH(title))) FROM default:catalog",
+     "results": [
+        {
+            "$1": 13.666666666666666
+        }
+    ]
+     
+  },
+  {
+     "description":"Object in an array hence avg returns null for each entry",
+     "statements":"SELECT LENGTH(title) FROM default:catalog ORDER BY title",
+     "results": [
+        {
+            "$1": 7
+        },
+        {
+            "$1": 18
+        },
+        {
+            "$1": 16
+        }
+    ]
+  },
+  {
+     "description":"Object in an array hence avg returns null for each entry",
+     "statements":"SELECT ARRAY_AVG(LENGTH(title)) FROM default:catalog ORDER BY title",
+     "results": [
+        {
+            "$1": null
+        },
+        {
+            "$1": null
+        },
+        {
+            "$1": null
+        }
+    ]    
+  },
+  {
+     "description":"error for array functions",
+     "statements":"SELECT array_vg(LENGTH(title)) FROM default:catalog ORDER BY title",
+     "error": "Invalid function array_vg (resolving to default:array_vg) (near line 1, column 8)"
+  },
+  {
+     "statements":"select ARRAY_CONCAT((ARRAY ol.productId FOR ol IN orderlines END), [id]) AS A FROM default:orders ORDER BY A",
+     "results": [
+        {
+            "A": [
+                "coffee01",
+                "sugar22",
+                "1200"
+            ]
+        },
+        {
+            "A": [
+                "coffee01",
+                "sugar22",
+                "1236"
+            ]
+        },
+        {
+            "A": [
+                "coffee01",
+                "tea111",
+                "1234"
+            ]
+        },
+        {
+            "A": [
+                "tea111",
+                "sugar22",
+                "1235"
+            ]
+        }
+    ]
+  },
+  {
+     "statements":"select ARRAY_CONCAT((ARRAY ol.productId FOR ol IN orderlines END), [id], [\"GreenTea\"]) AS A FROM default:orders ORDER BY A",
+     "results": [
+        {
+            "A": [
+                "coffee01",
+                "sugar22",
+                "1200",
+                "GreenTea"
+            ]
+        },
+        {
+            "A": [
+                "coffee01",
+                "sugar22",
+                "1236",
+                "GreenTea"
+            ]
+        },
+        {
+            "A": [
+                "coffee01",
+                "tea111",
+                "1234",
+                "GreenTea"
+            ]
+        },
+        {
+            "A": [
+                "tea111",
+                "sugar22",
+                "1235",
+                "GreenTea"
+            ]
+        }
+    ]
+  },
+  {
+     "statements":"SELECT ARRAY_CONTAINS(array_agg(LENGTH(title)), 7) FROM default:catalog",
+     "results": [
+        {
+            "$1": true
+        }
+    ]
+  },
+  {
+     "statements":"SELECT ARRAY_CONTAINS_ANY(array_agg(LENGTH(title)), [500,7]) FROM default:catalog",
+     "results": [
+        {
+            "$1": true
+        }
+    ]
+  },
+  {
+     "statements":"SELECT ARRAY_CONTAINS_ALL(array_agg(LENGTH(title)), [7,16,18]) FROM default:catalog",
+     "results": [
+        {
+            "$1": true
+        }
+    ]
+  },
+  {
+     "statements":"SELECT ARRAY_COUNT(array_agg(LENGTH(title))) FROM default:catalog",
+     "results": [
+        {
+            "$1": 3
+        }
+    ]
+  },
+  {
+    "description":"Output before Distinct",
+    "statements":"SELECT array_concat(array_agg(LENGTH(title)),[16,18,54]) FROM default:catalog",
+     "results": [
+        {
+            "$1": [
+                7,
+                16,
+                18,
+                16,
+                18,
+                54
+            ]
+        }
+    ]
+  },
+ {
+   "description":"Distinct gives inconsistent results, hence sort",
+   "statements":"SELECT array_sort(array_distinct(array_concat(array_agg(LENGTH(title)),[16,18,54]))) FROM default:catalog",
+   "results": [
+        {
+            "$1": [
+                7,
+                16,
+                18,
+                54
+            ]
+        }
+    ] 
+ },
+ {
+   "description":"Output before Distinct",
+   "statements":"select array_sort(ARRAY_CONCAT((ARRAY ol.productId FOR ol IN orderlines END), [\"coffee01\"])) AS A FROM default:orders ORDER BY A ",
+   "results": [
+        {
+            "A": [
+                "coffee01",
+                "coffee01",
+                "sugar22"
+            ]
+        },
+        {
+            "A": [
+                "coffee01",
+                "coffee01",
+                "sugar22"
+            ]
+        },
+        {
+            "A": [
+                "coffee01",
+                "coffee01",
+                "tea111"
+            ]
+        },
+        {
+            "A": [
+                "coffee01",
+                "sugar22",
+                "tea111"
+            ]
+        }
+    ]
+ },
+ { 
+   "description":"Distinct gives inconsistent results, hence sort",
+   "statements":" select array_sort(ARRAY_DISTINCT(ARRAY_CONCAT((ARRAY ol.productId FOR ol IN orderlines END), [\"coffee01\"]))) AS A FROM default:orders ORDER BY A ",
+   "results": [
+        {
+            "A": [
+                "coffee01",
+                "sugar22"
+            ]
+        },
+        {
+            "A": [
+                "coffee01",
+                "sugar22"
+            ]
+        },
+        {
+            "A": [
+                "coffee01",
+                "sugar22",
+                "tea111"
+            ]
+        },
+        {
+            "A": [
+                "coffee01",
+                "tea111"
+            ]
+        }
+    ]
+ },
+ {
+   "description":"If prev example is an array of slices then the result is as follows.",
+   "statements":"select array_sort(ARRAY_DISTINCT(array_agg(ARRAY ol.productId FOR ol IN orderlines END) ) ) AS A FROM default:orders",
+   "results": [
+        {
+            "A": [
+                [
+                    "coffee01",
+                    "sugar22"
+                ],
+                [
+                    "coffee01",
+                    "tea111"
+                ],
+                [
+                    "tea111",
+                    "sugar22"
+                ]
+            ]
+        }
+    ]
+ },
+ {
+     "statements":"select ARRAY_IFNULL([null, null, null, \"append\", \"avg\", null, \"max\"])",
+     "results": [
+        {
+            "$1": "append"
+        }
+    ]
+  },
+ {
+     "statements":"select ARRAY_INSERT([1,2,3], 0, 0)",
+     "results": [
+        {
+            "$1": [
+                0,
+                1,
+                2,
+                3
+            ]
+        }
+    ]
+  },
+ {
+     "statements":"select ARRAY_INSERT([1,2,3], 1, 0)",
+     "results": [
+        {
+            "$1": [
+                1,
+                0,
+                2,
+                3
+            ]
+        }
+    ]
+  },
+ {
+     "statements":"select ARRAY_INSERT([1,2,3], 3, 0)",
+     "results": [
+        {
+            "$1": [
+                1,
+                2,
+                3,
+                0
+            ]
+        }
+    ]
+  },
+ {
+     "statements":"select ARRAY_INSERT([], 0, 0)",
+     "results": [
+        {
+            "$1": [
+                0
+            ]
+        }
+    ]
+  },
+ {
+     "statements":"select ARRAY_INSERT([1, 2, 3], 0, \"a\")",
+     "results": [
+        {
+            "$1": [
+                "a",
+                1,
+                2,
+                3
+            ]
+        }
+    ]
+  },
+ {
+     "statements":"select ARRAY_INSERT([1, 2, 3], 0, [\"a\", \"b\"])",
+     "results": [
+        {
+            "$1": [
+                [
+                    "a",
+                    "b"
+                ],
+                1,
+                2,
+                3
+            ]
+        }
+    ]
+  },
+ {
+     "statements":"select ARRAY_INSERT([1, 2, 3], 0, MISSING)",
+     "results": [
+        {}
+    ]
+  },
+ {
+     "statements":"select ARRAY_INSERT(MISSING, 0, 0)",
+     "results": [
+        {}
+    ]
+  },
+ {
+     "statements":"select ARRAY_INSERT([], MISSING, 0)",
+     "results": [
+        {}
+    ]
+  },
+ {
+     "statements":"select ARRAY_INSERT(1, 0, 0)",
+     "results": [
+        {
+            "$1": null
+        }
+    ]
+  },
+ {
+     "statements":"select ARRAY_INSERT([], -1, 0)",
+     "results": [
+        {
+            "$1": null
+        }
+    ]
+  },
+ {
+     "statements":"select ARRAY_INSERT([], 1.5, 0)",
+     "results": [
+        {
+            "$1": null
+        }
+    ]
+  },
+ {
+     "statements":"select ARRAY_INSERT([], 23, 0)",
+     "results": [
+        {
+            "$1": null
+        }
+    ]
+  },
+  {
+     "statements":"select ARRAY_LENGTH([null, null, null, \"append\", \"avg\", null, \"max\"])",
+     "results": [
+        {
+            "$1": 7
+        }
+    ]
+  },
+  {
+     "statements":"select array_max(ARRAY ol.productId FOR ol IN orderlines END) AS A FROM default:orders ORDER BY A",
+     "results": [
+        {
+            "A": "sugar22"
+        },
+        {
+            "A": "sugar22"
+        },
+        {
+            "A": "tea111"
+        },
+        {
+            "A": "tea111"
+        }
+    ]
+  },
+ {
+    "statements":"select array_min(ARRAY ol.productId FOR ol IN orderlines END) AS A FROM default:orders ORDER BY A",
+    "results": [
+        {
+            "A": "coffee01"
+        },
+        {
+            "A": "coffee01"
+        },
+        {
+            "A": "coffee01"
+        },
+        {
+            "A": "sugar22"
+        }
+    ]
+ },
+ {
+    "statements":"select array_position(array_agg(array_min(ARRAY ol.productId FOR ol IN orderlines END) ) , \"sugar22\" ) AS A FROM default:orders",
+    "results": [
+        {
+            "A": 3
+        }
+    ]
+ },
+ {
+    "statements":"select ARRAY_PREPEND((ARRAY ol.productId FOR ol IN orderlines END), [id]) AS A FROM default:orders ORDER BY A",
+     "results": [
+        {
+            "A": [
+                [
+                    "coffee01",
+                    "sugar22"
+                ],
+                "1200"
+            ]
+        },
+        {
+            "A": [
+                [
+                    "coffee01",
+                    "sugar22"
+                ],
+                "1236"
+            ]
+        },
+        {
+            "A": [
+                [
+                    "coffee01",
+                    "tea111"
+                ],
+                "1234"
+            ]
+        },
+        {
+            "A": [
+                [
+                    "tea111",
+                    "sugar22"
+                ],
+                "1235"
+            ]
+        }
+    ]    
+ },
+ {
+    "statements":"select ARRAY_PUT((ARRAY ol.productId FOR ol IN orderlines END), [id]) AS A FROM default:orders ORDER BY A",
+    "results": [
+        {
+            "A": [
+                "coffee01",
+                "sugar22",
+                [
+                    "1200"
+                ]
+            ]
+        },
+        {
+            "A": [
+                "coffee01",
+                "sugar22",
+                [
+                    "1236"
+                ]
+            ]
+        },
+        {
+            "A": [
+                "coffee01",
+                "tea111",
+                [
+                    "1234"
+                ]
+            ]
+        },
+        {
+            "A": [
+                "tea111",
+                "sugar22",
+                [
+                    "1235"
+                ]
+            ]
+        }
+    ]
+ },
+ {
+    "statements":"select ARRAY_REMOVE( array_agg(ARRAY ol.productId FOR ol IN orderlines END), [\"coffee01\", \"sugar22\"])  AS A FROM default:orders",
+    "results": [
+        {
+            "A": [
+                [
+                    "coffee01",
+                    "tea111"
+                ],
+                [
+                    "tea111",
+                    "sugar22"
+                ]
+            ]
+        }
+    ]
+ },
+ {
+    "statements":"select ARRAY_REVERSE( ARRAY_REMOVE( array_agg(ARRAY ol.productId FOR ol IN orderlines END), [\"coffee01\", \"sugar22\"]))  AS A FROM default:orders",
+    "results": [
+        {
+            "A": [
+                [
+                    "tea111",
+                    "sugar22"
+                ],
+                [
+                    "coffee01",
+                    "tea111"
+                ]
+            ]
+        }
+    ]
+ },
+ {
+    "statements":"select array_range(-3,10,2) ",
+    "results": [
+        {
+            "$1": [
+                -3,
+                -1,
+                1,
+                3,
+                5,
+                7,
+                9
+            ]
+        }
+    ]
+ },
+ {
+    "statements":"select array_range(-3,10) ",
+    "results": [
+        {
+            "$1": [
+                -3,
+                -2,
+                -1,
+                0,
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9
+            ]
+        }
+    ]
+ },
+ {
+    "statements":"select array_repeat(\"N1ql\",-1) ",
+    "results": [
+        {
+            "$1": null
+        }
+    ]
+ },
+ {
+    "statements":"select array_repeat(\"N1ql\",0) ",
+    "results": [
+        {
+            "$1": []
+        }
+    ]
+ },
+ {
+    "statements":"select array_repeat(\"N1ql\",3) ",
+     "results": [
+        {
+            "$1": [
+                "N1ql",
+                "N1ql",
+                "N1ql"
+            ]
+        }
+    ]
+ },
+ {
+    "statements":"select array_repeat([\"N1ql\",4],3)",
+    "results": [
+        {
+            "$1": [
+                [
+                    "N1ql",
+                    4
+                ],
+                [
+                    "N1ql",
+                    4
+                ],
+                [
+                    "N1ql",
+                    4
+                ]
+            ]
+        }
+    ]
+ },
+ {
+    "statements":"select array_replace([\"2010\",\"2011\",2012, 2013,\"2013\"], \"2013\", [2013, 2014] ) ",
+ "results": [
+        {
+            "$1": [
+                "2010",
+                "2011",
+                2012,
+                2013,
+                [
+                    2013,
+                    2014
+                ]
+            ]
+        }
+    ]
+},
+{
+   "statements":"select array_sum(array_range(-3,5)) as sum ",
+   "results": [
+        {
+            "sum": 4
+        }
+    ]
+},
+{
+    "statements":"select ARRAY_INTERSECT([1], [2])",
+    "results": [
+        {
+            "$1": [
+            ]
+        }
+    ]
+},
+{
+    "statements":"select ARRAY_INTERSECT([[1],[2]], [[2],[3]])",
+    "results": [
+        {
+            "$1": [
+              [
+                2
+              ]
+            ]
+        }
+    ]
+},
+{
+    "statements":"select ARRAY_INTERSECT([1, 2], [1, 2, 3], [1, 3])",
+    "results": [
+        {
+            "$1": [
+                1
+            ]
+        }
+    ]
+},
+{
+    "statements": "select ARRAY_SORT(ARRAY_UNION([1], [2]))",
+    "results": [
+        {
+            "$1": [
+                1,
+                2
+            ]
+        }
+    ]
+},
+{
+    "statements": "select ARRAY_SORT(ARRAY_UNION([1, 2], [1, 2, 4], [1, 3]))",
+    "results": [
+        {
+            "$1": [
+                1,
+                2,
+                3,
+                4
+            ]
+        }
+    ]
+},
+{
+    "statements": "select ARRAY_SORT(ARRAY_SYMDIFF1([1], [2]))",
+    "results": [
+        {
+            "$1": [
+                1,
+                2
+            ]
+        }
+    ]
+},
+{
+    "statements": "select ARRAY_SORT(ARRAY_SYMDIFF1([1], [2], [1]))",
+    "results": [
+        {
+            "$1": [
+                2
+            ]
+        }
+    ]
+},
+{
+    "statements": "select ARRAY_SORT(ARRAY_SYMDIFF1([1, 2], [1, 2, 4], [1, 3]))",
+    "results": [
+        {
+            "$1": [
+                3,
+                4
+            ]
+        }
+    ]
+},
+{
+    "statements": "select ARRAY_SORT(ARRAY_SYMDIFFN([1], [2]))",
+    "results": [
+        {
+            "$1": [
+                1,
+                2
+            ]
+        }
+    ]
+},
+{
+    "statements": "select ARRAY_SORT(ARRAY_SYMDIFFN([1], [2], [1]))",
+    "results": [
+        {
+            "$1": [
+                2
+            ]
+        }
+    ]
+},
+{
+    "statements": "select ARRAY_SORT(ARRAY_SYMDIFFN([1, 2], [1, 2, 4], [1, 3]))",
+    "results": [
+        {
+            "$1": [
+                1,
+                3,
+                4
+            ]
+        }
+    ]
+},
+{
+    "statements": "SELECT ARRAY_RANGE(0, 10000000000)",
+    "results": [
+    ]
+},
+{
+    "statements": "SELECT ARRAY_REPEAT(0, 10000000000)",
+    "results": [
+    ]
+}
+]

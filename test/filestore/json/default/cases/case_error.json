@@ -1,0 +1,14 @@
+[
+    {
+        "statements": "this isn't a query",
+        "errorCode": 3000
+    },
+    {
+        "statements": "SELECT * FROM",
+        "errorCode": 3000
+    },
+    {
+        "statements": "SELECT * FROM default:contacts USE KEYS [\"dave\", \"jane\", \"ian\"] UNNEST contacts.contacts",
+        "errorCode" : 4020
+    }
+]

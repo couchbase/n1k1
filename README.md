@@ -49,6 +49,14 @@ Cross-compile the (cgo-free) engine to any target:
 
 `make n1ql` runs the engine build + tests.
 
+The n1ql suite includes TestFilestoreCases, which runs the upstream
+couchbase/query "filestore" conformance corpus (vendored under
+test/filestore/ -- {query, expected-results} cases over a small JSON dataset)
+against n1k1. n1k1 implements a subset of N1QL, so it's a pass-rate guard, not
+100%: ~358 of ~670 runnable cases currently pass, and the test fails if that
+count regresses (ratchet it up as coverage grows). Run with `-v` to see the
+pass / fail / unsupported breakdown and sample failures.
+
 NOTE: do not run `go mod tidy` -- query is reached only via the n1ql-gated
 glue/, so tidy would prune it (tidy doesn't enable custom build tags).
 

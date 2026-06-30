@@ -1,0 +1,10 @@
+[
+    {
+        "statements": "this isn't a query",
+        "errorCode": 3000
+    },
+    {
+        "statements": "SELECT * FROM",
+        "errorCode": 3000
+    }
+]

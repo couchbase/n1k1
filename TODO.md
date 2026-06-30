@@ -7,6 +7,13 @@ DESIGN.md; build/test commands are in README.md.
 Status: modernization + a pure-Go N1QL engine (CGO_ENABLED=0, cross-compiles)
 are done. Remaining work:
 
+## Conformance (filestore corpus)
+- [ ] Raise the TestFilestoreCases pass rate (currently ~358/672 runnable).
+      Notable gaps: ANY/EVERY .. SATISFIES collection predicates return wrong
+      results; a couple of UNNEST + GROUP BY paths panic (Termer / nil
+      expression); EXPLAIN and index-union scans are unsupported. Ratchet the
+      pass-floor in test/filestore_test.go up as these get fixed.
+
 ## Keeping current with SQL++
 n1k1's SQL++ support tracks couchbase/query (parser/algebra/expression/plan/
 planner). To move to a newer query, follow "Updating the fork to a newer query"
