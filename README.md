@@ -30,6 +30,7 @@ passing; see above.)
     make test-all              # build + test glue/ + test/ (pure-Go, CGO off)
     make test-glue             # just the glue/ unit tests
     make test-filestore        # just the 600+ filestore conformance cases, verbose
+    make test-compiler         # generate Go from the compiler + run the generated tests
 
     # Same, spelled out without make:
     CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -tags n1ql ./glue ./test
@@ -80,6 +81,13 @@ count regresses (ratchet it up as coverage grows). Use `make test-filestore`
 table of the expected non-pass cases (with a short why for each group), and any
 unexpected regressions. The accepted non-pass cases are enumerated in the
 `expectedNonPass` table in test/filestore_test.go -- shrink it as coverage grows.
+
+`make test-compiler` exercises the n1k1 *compiler* (not just the interpreter):
+it runs TestCasesSimpleWithCompiler to generate Go source for every
+TestCasesSimple case into test/tmp/ (gitignored), then compiles and runs that
+generated package -- whose TestGeneratedN funcs execute the *compiled* query and
+compare its yields. The two steps are ordered so the generated file is never
+stale. (This is the harness the filestore differential test builds on.)
 
 NOTE: do not run `go mod tidy` -- query is reached only via the n1ql-gated
 glue/, so tidy would prune it (tidy doesn't enable custom build tags).

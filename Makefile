@@ -22,7 +22,7 @@ run_intermed_build:
 # glue targets exercise the N1QL-engine layer (glue/ + test/), build pure-Go
 # (CGO_ENABLED=0), and need the patched query fork -- see patches/README.md.
 
-.PHONY: test build build-glue test-glue test-filestore test-all
+.PHONY: test build build-glue test-glue test-filestore test-compiler test-all
 
 # test runs the self-contained core build + vet + unit tests (no external setup).
 test: build
@@ -47,9 +47,21 @@ test-glue: build-glue
 test-filestore: build-glue
 	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -tags n1ql -v -run TestFilestoreCases ./test
 
-# test-all runs the whole N1QL-engine layer (glue/ + test/, includes filestore).
+# test-compiler exercises the n1k1 *compiler* end to end: the first step runs
+# TestCasesSimpleWithCompiler, which generates Go source for every TestCasesSimple
+# case into test/tmp/ (gitignored); the second step compiles and runs that
+# generated package, whose TestGeneratedN funcs execute the compiled query and
+# compare its yields. The two steps MUST stay ordered -- the generated file is
+# regenerated first so ./test/tmp never compiles a stale copy.
+test-compiler: build-glue
+	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -tags n1ql -run TestCasesSimpleWithCompiler ./test
+	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -tags n1ql -v ./test/tmp
+
+# test-all runs the whole N1QL-engine layer (glue/ + test/, includes filestore)
+# plus the compiler end-to-end test.
 test-all: build-glue
 	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -tags n1ql -v ./glue ./test
+	$(MAKE) test-compiler
 
 # Target easy-to-read parses source code files and generates
 # versions that are easier to read in a tmp subdirectory.
