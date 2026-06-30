@@ -140,6 +140,38 @@ func caseRunnable(c map[string]interface{}) (stmt string, results []interface{},
 	return s, r, true
 }
 
+// caseError reports whether a case is a simple error-expectation case: a
+// {statements, error} pair (no results) carrying only allowed metadata. n1k1
+// reuses query's parser/planner, so it should reject an invalid query with the
+// same error -- this turns such cases from "exotic / skipped" into runnable
+// negative tests. Cases with extra fields (e.g. prepared-statement preStatements
+// / positionalArgs) stay exotic.
+func caseError(c map[string]interface{}) (stmt, expErr string, ok bool) {
+	for k := range c {
+		switch k {
+		case "statements", "error", "ordered", "description":
+		default:
+			return "", "", false
+		}
+	}
+	s, hasStmt := c["statements"].(string)
+	e, hasErr := c["error"].(string)
+	if !hasStmt || !hasErr {
+		return "", "", false
+	}
+	if _, hasResults := c["results"]; hasResults {
+		return "", "", false
+	}
+	return s, e, true
+}
+
+// errMatches reports whether n1k1's error text equals the corpus's expected
+// error (trimmed). Exact match is meaningful here because n1k1 surfaces query's
+// own parse/plan error strings verbatim; a divergence is real signal.
+func errMatches(got, want string) bool {
+	return strings.TrimSpace(got) == strings.TrimSpace(want)
+}
+
 func TestSuiteCases(t *testing.T) {
 	if _, err := os.Stat(suiteRoot + "/default/cases"); err != nil {
 		t.Skipf("suite corpus not present: %v", err)
@@ -154,7 +186,7 @@ func TestSuiteCases(t *testing.T) {
 	files, _ := filepath.Glob(suiteRoot + "/default/cases/case_*.json")
 	sort.Strings(files)
 
-	var pass, skipped int
+	var pass, errPass, skipped int
 	var nonPass []caseOutcome // every fail/unsupported case, for classification
 	var exotic []exoticCase   // every skipped (non-{statements,results}) case
 
@@ -172,27 +204,45 @@ func TestSuiteCases(t *testing.T) {
 		for ci, c := range cases {
 			loc := fmt.Sprintf("%s[%d]", filepath.Base(f), ci)
 
-			stmt, results, ok := caseRunnable(c)
-			if !ok {
-				skipped++
-				reason, content := exoticInfo(c)
-				exotic = append(exotic, exoticCase{loc, reason, content})
+			// Result case: {statements, results} -- run and compare rows.
+			if stmt, results, ok := caseRunnable(c); ok {
+				got, err := n1k1RunStatement(store, stmt)
+				switch {
+				case err != nil:
+					nonPass = append(nonPass, caseOutcome{loc, stmt, "UNSUPPORTED", oneLine(err.Error())})
+				case rowsMatch(got, results):
+					pass++
+				default:
+					nonPass = append(nonPass, caseOutcome{loc, stmt, "FAIL", "results differ"})
+				}
 				continue
 			}
 
-			got, err := n1k1RunStatement(store, stmt)
-			switch {
-			case err != nil:
-				nonPass = append(nonPass, caseOutcome{loc, stmt, "UNSUPPORTED", oneLine(err.Error())})
-			case rowsMatch(got, results):
-				pass++
-			default:
-				nonPass = append(nonPass, caseOutcome{loc, stmt, "FAIL", "results differ"})
+			// Error-expectation case: {statements, error} -- n1k1 reuses query's
+			// parser/planner, so it should reject invalid queries with the same
+			// message. PASS iff it errors with the expected text; a mismatching
+			// error (or none) is a non-pass.
+			if stmt, expErr, ok := caseError(c); ok {
+				_, err := n1k1RunStatement(store, stmt)
+				switch {
+				case err == nil:
+					nonPass = append(nonPass, caseOutcome{loc, stmt, "FAIL", "expected error, got rows"})
+				case errMatches(err.Error(), expErr):
+					errPass++
+				default:
+					nonPass = append(nonPass, caseOutcome{loc, stmt, "UNSUPPORTED", oneLine(err.Error())})
+				}
+				continue
 			}
+
+			// Exotic: anything else (match/resultset/prepared/pre-post/etc.).
+			skipped++
+			reason, content := exoticInfo(c)
+			exotic = append(exotic, exoticCase{loc, reason, content})
 		}
 	}
 
-	reportSuite(t, len(files), pass, skipped, nonPass, exotic)
+	reportSuite(t, len(files), pass, errPass, skipped, nonPass, exotic)
 }
 
 // caseOutcome records one non-passing corpus case.
@@ -213,7 +263,7 @@ type exoticCase struct {
 // non-pass cases, then enforces two guards: any UNEXPECTED non-pass (one not in
 // expectedNonPass) is a regression and fails the test; a stale table entry (a
 // listed case that now passes) is warned about so it can be removed.
-func reportSuite(t *testing.T, nFiles, pass, skipped int, nonPass []caseOutcome, exotic []exoticCase) {
+func reportSuite(t *testing.T, nFiles, pass, errPass, skipped int, nonPass []caseOutcome, exotic []exoticCase) {
 	groupCount := map[string]int{}
 	seen := map[string]bool{}
 	var unexpected []caseOutcome
@@ -242,14 +292,14 @@ func reportSuite(t *testing.T, nFiles, pass, skipped int, nonPass []caseOutcome,
 	}
 	sort.Strings(stale)
 
-	total := pass + fail + unsupported
+	total := pass + errPass + fail + unsupported
 
 	// valW is the width of the widest count, so the value column right-aligns
 	// (tabwriter left-aligns each cell, so we right-justify the digits ourselves
 	// to a shared width rather than use whole-table AlignRight, which would also
 	// right-align the label/text columns).
 	valW := 1
-	for _, n := range []int{nFiles, total, pass, unsupported, fail, skipped} {
+	for _, n := range []int{nFiles, total, pass, errPass, unsupported, fail, skipped} {
 		if w := len(strconv.Itoa(n)); w > valW {
 			valW = w
 		}
@@ -291,7 +341,8 @@ func reportSuite(t *testing.T, nFiles, pass, skipped int, nonPass []caseOutcome,
 	tw = tabwriter.NewWriter(&b, 0, 2, 2, ' ', 0)
 	fmt.Fprintf(tw, "  files scanned\t%*d\n", valW, nFiles)
 	fmt.Fprintf(tw, "  runnable cases\t%*d\n", valW, total)
-	fmt.Fprintf(tw, "  PASS\t%*d\t(%.1f%%)\n", valW, pass, 100*float64(pass)/float64(total))
+	fmt.Fprintf(tw, "  PASS (rows)\t%*d\t(%.1f%%)\n", valW, pass, 100*float64(pass)/float64(total))
+	fmt.Fprintf(tw, "  PASS (error rejected)\t%*d\n", valW, errPass)
 	fmt.Fprintf(tw, "  UNSUPPORTED\t%*d\n", valW, unsupported)
 	fmt.Fprintf(tw, "  FAIL\t%*d\n", valW, fail)
 	fmt.Fprintf(tw, "  skipped (exotic)\t%*d\n", valW, skipped)
@@ -420,8 +471,9 @@ func exoticInfo(c map[string]interface{}) (reason, content string) {
 }
 
 // expectedNonPass enumerates every corpus case n1k1 does not currently pass:
-// the UNSUPPORTED plans/features it can't yet convert, plus the lone FAIL whose
-// result ordering N1QL leaves undefined. Each maps to a group key explained by
+// the UNSUPPORTED plans/features it can't yet convert, the lone FAIL whose
+// result ordering N1QL leaves undefined, and any error-expectation case whose
+// error text n1k1 doesn't reproduce. Each maps to a group key explained by
 // groupWhy below. This is the accepted baseline -- the test fails if a case NOT
 // listed here stops passing (a regression) and warns if a listed case starts
 // passing (stale -- remove it). Shrink this table as coverage grows.
@@ -440,6 +492,9 @@ var expectedNonPass = map[string]string{
 
 	// Secondary index / union scan (n1k1 does primary scans).
 	"case_by_id.json[2]": "index-scan",
+
+	// Error case: n1k1 panics on an unknown function instead of query's error.
+	"case_func_array.json[5]": "unknown-func",
 
 	// UNNEST used as a JOIN/NEST source.
 	"case_from-over.json[6]": "unnest-source",
@@ -496,6 +551,7 @@ var expectedNonPass = map[string]string{
 var groupWhy = map[string]string{
 	"explain":          "EXPLAIN / plan-text output not converted to n1k1 ops",
 	"index-scan":       "secondary index / union scan not converted (n1k1 does primary scans)",
+	"unknown-func":     "unknown scalar function: query reports 'Invalid function', n1k1 panics in parse",
 	"unnest-source":    "UNNEST as a JOIN/NEST source: plan.Unnest is not yet a glue.Termer",
 	"meta-fetch":       "META() over fetch metadata subpaths ($document.exptime) not wired",
 	"groupby-key":      "GROUP BY on a computed / array-index key unresolved in VisitFinalGroup",
