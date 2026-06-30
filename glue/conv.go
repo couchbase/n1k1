@@ -94,6 +94,18 @@ func LabelSuffix(s string) string {
 	return s
 }
 
+// projAllFieldPaths reports whether every label is a plain `.["..."]` field
+// path (not "." whole-row, ".*" star-spread, or a "^" attachment). The ORDER-BY
+// source-scope augmentation only applies to such projections.
+func projAllFieldPaths(labels base.Labels) bool {
+	for _, l := range labels {
+		if !strings.HasPrefix(l, ".[") {
+			return false
+		}
+	}
+	return len(labels) > 0
+}
+
 // -------------------------------------------------------------------
 
 // Scan
@@ -520,13 +532,27 @@ func (c *Conv) VisitInitialProject(o *plan.InitialProject) (interface{}, error) 
 	raw := o.Projection() != nil && o.Projection().Raw()
 
 	for _, term := range o.Terms() {
-		label := "." + LabelSuffix(term.Result().Alias())
+		rt := term.Result()
+
+		// A star term (SELECT *, SELECT path.*) spreads the fields of its
+		// (object) value into the result row -- and yields no fields when the
+		// value is not an object (N1QL: path.* over a scalar => {}). The ".*"
+		// label tells Convert to merge, which also lets multiple stars (and a
+		// star mixed with plain terms) combine into one object.
+		if rt.Star() {
+			op.Labels = append(op.Labels, ".*")
+			op.Params = append(op.Params,
+				[]interface{}{"exprTree", rt.Expression()})
+			continue
+		}
+
+		label := "." + LabelSuffix(rt.Alias())
 		if raw {
 			label = "."
 		}
 		op.Labels = append(op.Labels, label)
 		op.Params = append(op.Params,
-			[]interface{}{"exprTree", term.Result().Expression()})
+			[]interface{}{"exprTree", rt.Expression()})
 	}
 
 	return c.TopPush(o, op)
@@ -610,7 +636,7 @@ func (c *Conv) VisitOrder(o *plan.Order) (interface{}, error) {
 	// based ORDER BY still resolves) AND the source doc columns (so source-
 	// qualified keys resolve), then strip back to just the projected columns.
 	if proj := c.TopOp; proj != nil && proj.Kind == "project" &&
-		len(proj.Children) == 1 && proj.Labels.IndexOf(".") < 0 {
+		len(proj.Children) == 1 && projAllFieldPaths(proj.Labels) {
 		src := proj.Children[0]
 
 		// Augmented projection: the projected terms, plus a pass-through of the

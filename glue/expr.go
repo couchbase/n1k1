@@ -134,8 +134,9 @@ func NewConvertVals(labels base.Labels) (*ConvertVals, error) {
 	for _, label := range labels {
 		var path []string
 
-		// Ex label: `.["address","city"]`.
-		if len(label) > 1 && label[0] == '.' {
+		// Ex label: `.["address","city"]`. The ".*" star-spread label carries
+		// no path (handled specially in Convert), so don't JSON-parse it.
+		if len(label) > 1 && label[0] == '.' && label != ".*" {
 			err := json.Unmarshal([]byte(label[1:]), &path)
 			if err != nil {
 				return nil, err
@@ -173,6 +174,29 @@ OUTER:
 		switch label[0] {
 		case '.': // Label is a path into v of where to set vals[i].
 			lastParent, lastKey = nil, ""
+
+			if label == ".*" {
+				// Star spread: merge vals[i]'s fields into v when it is an
+				// object; a non-object contributes nothing (so SELECT path.*
+				// over a scalar yields {}). v is forced to an object so the
+				// result is {} rather than null when nothing merges.
+				if v == nil {
+					v = value.NewValue(map[string]interface{}{})
+				}
+
+				if len(vals[i]) > 0 {
+					sv := value.NewParsedValue(vals[i], true)
+					if sv.Type() == value.OBJECT {
+						for fk, fv := range sv.Fields() {
+							if err := v.SetField(fk, fv); err != nil {
+								return nil, err
+							}
+						}
+					}
+				}
+
+				continue OUTER
+			}
 
 			if label == "." {
 				if v != nil {

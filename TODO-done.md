@@ -82,6 +82,22 @@ Gist only -- details live in commit messages, README, and code comments.
   cause, and moot post-T3 (the drift-prone heavy modules aren't compiled; the
   versions that matter come from the fork's go.mod -- itself one snapshot).
 
+## 2026/06 -- star projection spread, SELECT path.* (conformance 627 -> 631)
+- SELECT path.* must SPREAD the fields of an object value into the result row,
+  and yield no fields (=> {}) when the value is not an object. n1k1 labeled the
+  star term "." (whole-row) and projected the raw value, so a scalar prefix
+  (details.format = "DVD") leaked the scalar instead of {}, and multiple stars
+  collided ("Convert, v non-nil on '.'").
+- Introduced a ".*" spread-merge label: VisitInitialProject emits ".*" for any
+  star term (Result().Star()); ConvertVals merges that val's object fields into
+  v (non-object => nothing, v forced to {}). Merge composes, so multiple stars
+  and star-mixed-with-plain terms combine into one object.
+- The ORDER-BY source-scope augmentation now applies only to plain `.["..."]`
+  field-path projections (projAllFieldPaths), skipping "." / ".*" / "^" rows.
+- Fixed case_select[7] (scalar.* => {}) and promoted [8]/[9]/[12] from
+  UNSUPPORTED to PASS. Bare SELECT * (object) is unchanged. The lone remaining
+  FAIL is the NOT-FIXABLE array_position(array_agg(...)) ordering case.
+
 ## 2026/06 -- ORDER BY a source field after projection (conformance 625 -> 627)
 - SELECT dimensions ... ORDER BY dimensions.length: the plan is Order-above-
   InitialProject, and the planner qualifies the order key as source-relative

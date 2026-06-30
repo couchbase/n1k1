@@ -52,7 +52,14 @@ func ExprTreeOptimize(labels base.Labels, e expression.Expression,
 			return nil, false
 		}
 
+		// Default to the whole-row label present in labels: "." normally, or
+		// the ".*" star-spread row (SELECT path.*), whose stored val is the
+		// object itself. A field with no more-specific path label match then
+		// resolves against that whole row rather than a missing "." label.
 		labelBest := "."
+		if labels.IndexOf(".") < 0 && labels.IndexOf(".*") >= 0 {
+			labelBest = ".*"
+		}
 		iBest := -1
 	OUTER:
 		for i := 0; i < len(fieldPath); i++ {
