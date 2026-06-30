@@ -19,6 +19,24 @@ passing; see above.)
 ------------------------------------------
 ## Building & testing
 
+### TL;DR -- copy/paste
+
+    # Core (self-contained, no external setup):
+    make                       # regenerate intermed/ + run core tests
+    go test ./...              # just the core tests
+
+    # N1QL engine layer (needs GOPRIVATE for the couchbase/query fork):
+    export GOPRIVATE='github.com/couchbase/*'
+    make n1ql                  # build + test glue/ + test/ (pure-Go, CGO off)
+    make filestore             # just the 600+ filestore conformance cases, verbose
+
+    # Same, spelled out without make:
+    CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -tags n1ql ./glue ./test
+    CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -tags n1ql -v -run TestFilestoreCases ./test
+
+`make filestore` prints the `PASS=… FAIL=… UNSUPPORTED=…` breakdown plus
+sample failures (see the conformance note below). Details for each layer follow.
+
 ### Core (default -- no external setup)
 
     go build ./...
@@ -54,8 +72,9 @@ couchbase/query "filestore" conformance corpus (vendored under
 test/filestore/ -- {query, expected-results} cases over a small JSON dataset)
 against n1k1. n1k1 implements a subset of N1QL, so it's a pass-rate guard, not
 100%: ~631 of ~670 runnable cases currently pass, and the test fails if that
-count regresses (ratchet it up as coverage grows). Run with `-v` to see the
-pass / fail / unsupported breakdown and sample failures.
+count regresses (ratchet it up as coverage grows). Use `make filestore` (or add
+`-v -run TestFilestoreCases` yourself) to see the pass / fail / unsupported
+breakdown and sample failures.
 
 NOTE: do not run `go mod tidy` -- query is reached only via the n1ql-gated
 glue/, so tidy would prune it (tidy doesn't enable custom build tags).

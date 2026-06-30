@@ -18,11 +18,16 @@ run_intermed_build:
 	go fmt ./...
 
 # Target n1ql builds + tests the N1QL-engine layer (glue/ + test/) pure-Go
-# (CGO_ENABLED=0). Requires the patched query fork at ../n1k1-query -- see
-# patches/README.md.
+# (CGO_ENABLED=0). Requires the patched query fork -- see patches/README.md.
 n1ql:
 	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go build -tags n1ql ./glue/... ./test/...
 	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -tags n1ql ./glue ./test
+
+# Target filestore runs just the upstream couchbase/query "filestore"
+# conformance corpus (600+ cases under test/filestore/) verbosely, printing the
+# PASS / FAIL / UNSUPPORTED breakdown and sample failures.
+filestore:
+	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -tags n1ql -v -run TestFilestoreCases ./test
 
 # Target easy-to-read parses source code files and generates
 # versions that are easier to read in a tmp subdirectory.
