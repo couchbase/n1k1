@@ -24,9 +24,12 @@ in glue/patches/README.md.
 
 ## More features
 
-- command-line program?
-  - cmd/ main(): take a SQL++ string + a file datastore and print
-    results -- the actual downloadable binary. glue/ is library-only today.
+- command-line program: DONE (v1). cmd/n1k1 -- a single pure-Go binary that runs
+  SQL++ over a file datastore, with a REPL, dot-commands (.tables/.schema/.mode/
+  .timer/.explain/.read/.output/...) and box/json/jsonlines/csv/markdown/line/
+  list output. `make cli`. The engine pipeline is glue.Session (shared with the
+  test harness). See DESIGN-cli.md. Future (DESIGN-cli.md §7): arrow-key history /
+  line editing, tab completion, FROM 'file.csv' table-functions, query cancel.
 
 - UI / terminal and/or web-based?
 

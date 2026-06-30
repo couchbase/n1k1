@@ -22,9 +22,19 @@ run_intermed_build:
 # glue targets exercise the N1QL-engine layer (glue/ + test/), build pure-Go
 # (CGO_ENABLED=0), and need the patched query fork -- see glue/patches/README.md.
 
-.PHONY: test build build-glue test-glue test-suite test-compiler test-all
+.PHONY: test build build-glue test-glue test-suite test-compiler test-all cli install-cli
 
 test-all: test test-glue test-suite test-compiler
+
+# cli builds the n1k1 command-line tool: a single pure-Go binary (CGO off) that
+# runs SQL++ over a file datastore. See cmd/n1k1 and DESIGN-cli.md.
+cli: build-glue
+	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go build -tags n1ql -o n1k1 ./cmd/n1k1
+	@echo 'built ./n1k1 -- try:  ./n1k1 ./test/suite/json   (or:  ./n1k1 -c "SELECT 1+1" .)'
+
+# install-cli installs the n1k1 binary into $(GOBIN) (or $(GOPATH)/bin).
+install-cli:
+	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go install -tags n1ql ./cmd/n1k1
 
 # test runs the self-contained core build + vet + unit tests (no external setup).
 test: build

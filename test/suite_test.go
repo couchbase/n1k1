@@ -30,105 +30,40 @@ import (
 	"strings"
 	"testing"
 	"text/tabwriter"
-	"time"
 
-	"github.com/couchbase/n1k1/base"
-	"github.com/couchbase/n1k1/engine"
 	"github.com/couchbase/n1k1/glue"
 )
 
 const suiteRoot = "suite/json" // corpus root for glue.FileStore; queries use default:<keyspace>.
 
-// n1k1RunStatement parses, plans, converts and executes a single statement
-// through n1k1's own operators, returning the result rows as canonical JSON
-// strings. Any parse/plan/convert/exec error (or panic) is returned as err,
-// which the harness treats as "unsupported".
+// n1k1RunStatement runs a single statement via glue.Session and returns the
+// result rows as canonical JSON strings. Any parse/plan/convert/exec error (or
+// panic) is returned as err, which the harness treats as "unsupported".
 func n1k1RunStatement(store *glue.Store, stmt string) (rows []string, err error) {
 	rows, _, err = n1k1RunStatementCtx(store, stmt)
 	return rows, err
 }
 
-// n1k1RunStatementCtx is n1k1RunStatement that also returns the GlueContext used
-// for expression evaluation, whose GetErrors() exposes any warnings the engine
-// recorded (e.g. divide-by-zero). gctx is nil on a parse/plan/panic error.
-func n1k1RunStatementCtx(store *glue.Store, stmt string) (rows []string, gctx *glue.GlueContext, err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			rows, gctx, err = nil, nil, fmt.Errorf("panic: %v", r)
-		}
-	}()
+// n1k1RunStatementCtx is n1k1RunStatement that also returns the glue.Result, so
+// callers can inspect warnings the engine recorded (Result.Warnings, e.g.
+// divide-by-zero). res is nil on a parse/plan/convert/panic error.
+//
+// The actual engine pipeline lives in glue.Session.Run (shared with cmd/n1k1);
+// this is just the rows-as-strings adapter the suite comparisons expect.
+func n1k1RunStatementCtx(store *glue.Store, stmt string) (rows []string, res *glue.Result, err error) {
+	sess := &glue.Session{Store: store, Namespace: "default"}
 
-	s, err := glue.ParseStatement(stmt, "default", true)
+	res, err = sess.Run(stmt)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	p, err := store.PlanStatement(s, "default", nil, nil)
-	if err != nil {
-		return nil, nil, err
+	rows = make([]string, len(res.Rows))
+	for i, r := range res.Rows {
+		rows[i] = string(r)
 	}
 
-	conv := &glue.Conv{Temps: []interface{}{nil}}
-	if _, err = p.Accept(conv); err != nil {
-		return nil, nil, err
-	}
-	if conv.TopOp == nil {
-		return nil, nil, fmt.Errorf("nil TopOp (unsupported plan)")
-	}
-
-	cv, err := glue.NewConvertVals(conv.TopOp.Labels)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	if engine.ExprCatalog["exprStr"] == nil {
-		engine.ExprCatalog["exprStr"] = glue.ExprStr
-	}
-	if engine.ExprCatalog["exprTree"] == nil {
-		engine.ExprCatalog["exprTree"] = glue.ExprTree
-	}
-
-	tmpDir, vars := glue.MakeVars("", "n1k1fs")
-	defer os.RemoveAll(tmpDir)
-
-	vars.Temps = vars.Temps[:0]
-	gctx = glue.NewGlueContext(time.Now())
-	vars.Temps = append(vars.Temps, gctx)
-	vars.Temps = append(vars.Temps, conv.Temps[1:]...)
-	for i := 0; i < 16; i++ {
-		vars.Temps = append(vars.Temps, nil)
-	}
-
-	origExecOpEx := engine.ExecOpEx
-	defer func() { engine.ExecOpEx = origExecOpEx }()
-	engine.ExecOpEx = glue.DatastoreOp
-
-	var execErr error
-	yieldVals := func(vals base.Vals) {
-		v, e := cv.Convert(vals)
-		if e != nil {
-			if execErr == nil {
-				execErr = e
-			}
-			return
-		}
-		var b []byte
-		if v != nil {
-			b, _ = json.Marshal(v.Actual())
-		} else {
-			b = []byte("null")
-		}
-		rows = append(rows, string(b))
-	}
-	yieldErr := func(e error) {
-		if e != nil && execErr == nil {
-			execErr = e
-		}
-	}
-
-	engine.ExecOp(conv.TopOp, vars, yieldVals, yieldErr, "", "")
-
-	return rows, gctx, execErr
+	return rows, res, nil
 }
 
 // caseRunnable reports whether a case is the simple {statements, results}
@@ -383,13 +318,13 @@ func TestSuiteCases(t *testing.T) {
 			// warning. PASS when rows match AND n1k1 recorded a warning (code not
 			// required to match -- a runtime advisory; see caseWarning).
 			if stmt, results, ok := caseWarning(c); ok {
-				got, gctx, err := n1k1RunStatementCtx(store, stmt)
+				got, res, err := n1k1RunStatementCtx(store, stmt)
 				switch {
 				case err != nil:
 					nonPass = append(nonPass, errOutcome(loc, stmt, err))
 				case !rowsMatch(got, results):
 					nonPass = append(nonPass, caseOutcome{loc, stmt, "FAIL", "results differ"})
-				case gctx == nil || len(gctx.GetErrors()) == 0:
+				case res == nil || len(res.Warnings) == 0:
 					nonPass = append(nonPass, caseOutcome{loc, stmt, "FAIL", "expected a warning, got none"})
 				default:
 					pass++ // rows matched and a warning was emitted
