@@ -44,33 +44,41 @@ const suiteRoot = "suite/json" // corpus root for glue.FileStore; queries use de
 // strings. Any parse/plan/convert/exec error (or panic) is returned as err,
 // which the harness treats as "unsupported".
 func n1k1RunStatement(store *glue.Store, stmt string) (rows []string, err error) {
+	rows, _, err = n1k1RunStatementCtx(store, stmt)
+	return rows, err
+}
+
+// n1k1RunStatementCtx is n1k1RunStatement that also returns the GlueContext used
+// for expression evaluation, whose GetErrors() exposes any warnings the engine
+// recorded (e.g. divide-by-zero). gctx is nil on a parse/plan/panic error.
+func n1k1RunStatementCtx(store *glue.Store, stmt string) (rows []string, gctx *glue.GlueContext, err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			rows, err = nil, fmt.Errorf("panic: %v", r)
+			rows, gctx, err = nil, nil, fmt.Errorf("panic: %v", r)
 		}
 	}()
 
 	s, err := glue.ParseStatement(stmt, "default", true)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	p, err := store.PlanStatement(s, "default", nil, nil)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	conv := &glue.Conv{Temps: []interface{}{nil}}
 	if _, err = p.Accept(conv); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if conv.TopOp == nil {
-		return nil, fmt.Errorf("nil TopOp (unsupported plan)")
+		return nil, nil, fmt.Errorf("nil TopOp (unsupported plan)")
 	}
 
 	cv, err := glue.NewConvertVals(conv.TopOp.Labels)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	if engine.ExprCatalog["exprStr"] == nil {
@@ -84,7 +92,8 @@ func n1k1RunStatement(store *glue.Store, stmt string) (rows []string, err error)
 	defer os.RemoveAll(tmpDir)
 
 	vars.Temps = vars.Temps[:0]
-	vars.Temps = append(vars.Temps, glue.NewGlueContext(time.Now()))
+	gctx = glue.NewGlueContext(time.Now())
+	vars.Temps = append(vars.Temps, gctx)
 	vars.Temps = append(vars.Temps, conv.Temps[1:]...)
 	for i := 0; i < 16; i++ {
 		vars.Temps = append(vars.Temps, nil)
@@ -119,7 +128,7 @@ func n1k1RunStatement(store *glue.Store, stmt string) (rows []string, err error)
 
 	engine.ExecOp(conv.TopOp, vars, yieldVals, yieldErr, "", "")
 
-	return rows, execErr
+	return rows, gctx, execErr
 }
 
 // caseRunnable reports whether a case is the simple {statements, results}
@@ -203,6 +212,29 @@ func caseErrorCode(c map[string]interface{}) (stmt string, ok bool) {
 		return "", false
 	}
 	return s, true
+}
+
+// caseWarning reports whether a case is a {statements, results, warningCode}
+// case: the statement succeeds AND emits a warning (e.g. divide-by-zero ->
+// null + warning). We verify the rows match AND that n1k1 recorded a warning
+// (n1k1 evaluates these via query's expression eval, whose warnings land in the
+// GlueContext). Lenient on the code, like the errorCode cases: any warning
+// counts -- it's a runtime advisory, and n1k1's engine is its own.
+func caseWarning(c map[string]interface{}) (stmt string, results []interface{}, ok bool) {
+	for k := range c {
+		switch k {
+		case "statements", "results", "warningCode", "ordered", "description", "pretty":
+		default:
+			return "", nil, false
+		}
+	}
+	s, hasStmt := c["statements"].(string)
+	r, hasResults := c["results"].([]interface{})
+	_, hasCode := c["warningCode"].(float64)
+	if !hasStmt || !hasResults || !hasCode {
+		return "", nil, false
+	}
+	return s, r, true
 }
 
 // caseMatch reports whether a case is a {statements, matchStatements} pair: the
@@ -343,6 +375,24 @@ func TestSuiteCases(t *testing.T) {
 					nonPass = append(nonPass, errOutcome(loc, stmt, err))
 				default:
 					errPass++
+				}
+				continue
+			}
+
+			// Warning case: {statements, results, warningCode} -- succeeds with a
+			// warning. PASS when rows match AND n1k1 recorded a warning (code not
+			// required to match -- a runtime advisory; see caseWarning).
+			if stmt, results, ok := caseWarning(c); ok {
+				got, gctx, err := n1k1RunStatementCtx(store, stmt)
+				switch {
+				case err != nil:
+					nonPass = append(nonPass, errOutcome(loc, stmt, err))
+				case !rowsMatch(got, results):
+					nonPass = append(nonPass, caseOutcome{loc, stmt, "FAIL", "results differ"})
+				case gctx == nil || len(gctx.GetErrors()) == 0:
+					nonPass = append(nonPass, caseOutcome{loc, stmt, "FAIL", "expected a warning, got none"})
+				default:
+					pass++ // rows matched and a warning was emitted
 				}
 				continue
 			}
@@ -577,7 +627,7 @@ func reportSuite(t *testing.T, nFiles, pass, errPass, skipped int, nonPass []cas
 
 	// Backstop on the raw pass count, in case a pass silently turns into a
 	// different already-listed failure (no unexpected case, but pass drops).
-	const passFloor = 643
+	const passFloor = 648
 	if pass < passFloor {
 		t.Errorf("suite conformance regressed: PASS=%d < baseline %d", pass, passFloor)
 	}
@@ -610,8 +660,8 @@ func exoticInfo(c map[string]interface{}) (reason, content string) {
 		// Fields the harness handles (so they're not what makes a case exotic).
 		// "resultset" is deliberately omitted -- it's non-authoritative (see the
 		// NOTE by caseRunnable), so it should surface as the exotic reason.
-		case "statements", "results", "error", "errorCode", "matchStatements",
-			"ordered", "description", "pretty":
+		case "statements", "results", "error", "errorCode", "warningCode",
+			"matchStatements", "ordered", "description", "pretty":
 		default:
 			extra = append(extra, k)
 		}
