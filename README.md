@@ -115,4 +115,4 @@ See Makefile
 ## Design & internals...
 
 See DESIGN.md for how the n1k1 compiler works, the performance
-approaches, and the TODO / ideas list.
+approaches, etc.
