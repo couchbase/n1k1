@@ -14,18 +14,27 @@ are done. Remaining work:
       checkout needed.
 
 ## Cleanups
-- [ ] go.mod indirect block is stale (still lists the dropped cbft/cbgt/
-      indexing/n1fty/query-ee/... subtree). Can't `go mod tidy` -- it would
-      prune the n1ql-gated query. Cosmetic; fix if/when query becomes an
-      untagged dep.
-- [ ] Vestigial files: tmp/ symlinks, committed cpu.pprof, intermed_build binary.
-- [ ] tmp/easy-to-read is regenerable via `make easy-to-read` -- consider deleting.
+- [x] Vestigial files: were NOT committed -- cpu.pprof (*.pprof), the
+      intermed_build binary (/intermed_build), and tmp/ are all gitignored.
+      Removed the local cruft + the dead tmp/ symlinks; nothing to commit.
+- WON'T-FIX (investigated 2026/06): go.mod's couchbase indirect block can't be
+  cleaned with `go mod tidy`. tidy considers enterprise-tagged imports
+  (query/planner -> query-ee, query/tenant -> regulator, ...) and tries to
+  resolve them, but couchbase's modules pin each other at the placeholder
+  v0.0.0-00010101 (resolved only inside a repo-sync build). Giving the fork's
+  placeholders real versions just cascades to the next layer (cbft/n1fty ->
+  cbgt@00010101, ...). The community build sidesteps all this via module-graph
+  pruning -- those enterprise packages are never compiled. So the entries
+  faithfully mirror the fork's graph and are harmless; "fixing" them means
+  recreating the full sibling replace-soup, i.e. the opposite of a cleanup.
 
 ## Tests / dependencies
 - [ ] Revisit the pre-existing SKIP tests: UNNEST + array-as-FROM (broke in the
       2021 CB 6.5 -> 7 upgrade). `git grep SKIP`.
-- [ ] Re-pin the couchbase modules to ONE consistent manifest snapshot instead
-      of per-module @master (current pins are ~contemporaneous, not exact).
+- WON'T-FIX / moot: "re-pin to one consistent manifest snapshot" -- same root
+  cause as above, and largely moot post-T3: the heavy modules that could drift
+  (cbft/cbgt/indexing/...) are no longer compiled, and the versions that DO
+  matter come from the fork's go.mod, which is itself one consistent snapshot.
 
 ## Keeping current with SQL++ (recurring upkeep)
 n1k1 tracks query's parser/algebra/expression/plan/planner -- that IS the SQL++
