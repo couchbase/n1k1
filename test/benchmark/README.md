@@ -46,10 +46,29 @@ Indicative numbers (apple-silicon, `-benchtime=30x`; trends matter, not exact ns
   spill boundary: ~4.5M rows/s at 1000 distinct (in-memory) vs ~4.2M at 64000
   (spilled) — ~6% slower while paging to disk, not a cliff.
 
-## Not here yet (later phases)
+## Phase 2: interpreted vs compiled
 
-- **Compiled queries** — Phase 2: run the same query interpreted vs the
-  compiler-generated Go, to measure operator fusion / lifted-var reuse.
+`make bench-compiler` generates, for a fixed query set, paired
+`BenchmarkInterp_X` (engine.ExecOp over a baked Op tree) and
+`BenchmarkCompiled_X` (the operators fused inline as compiler-generated Go) into
+`test/tmp`, run side by side. (Generator: `test/bench_compiler_test.go`'s
+`TestGenerateBenchmarks`.)
+
+Findings (100K rows/op; stable across `-count=2`):
+
+| query | interpreted | compiled | |
+|---|---|---|---|
+| ScanFilterProject | ~18.5ms, 34 allocs/op | ~19.1ms, 20 allocs/op | ~3% slower, **41% fewer allocs** |
+| GroupBy | ~13.8ms, 42 allocs/op | ~12.7ms, 29 allocs/op | ~8% faster, **31% fewer allocs** |
+
+- **Fusion + lifted-var reuse cut allocations** by ~30–40% (fewer closures /
+  reused buffers) — the DESIGN.md claim holds on the allocation axis.
+- **Wall-time is roughly equal** at these shapes/scales: removing per-op
+  function-call overhead is swamped by the per-row cost of JSON parsing and
+  value handling. Useful signal: to go faster, optimize parsing, not just fuse.
+
+## Not here yet
+
 - **vs couchbase/query** — Phase 3: a standalone cbq-engine over the same JSON
   dir (`-datastore dir:...`), or a fork-patched in-process timing hook.
 
