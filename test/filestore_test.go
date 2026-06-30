@@ -24,7 +24,9 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
+	"text/tabwriter"
 	"time"
 
 	"github.com/couchbase/n1k1"
@@ -219,8 +221,8 @@ func TestFilestoreCases(t *testing.T) {
 	files, _ := filepath.Glob(filestoreRoot + "/default/cases/case_*.json")
 	sort.Strings(files)
 
-	var pass, fail, unsupported, skipped int
-	var failEx, unsupEx []string
+	var pass, skipped int
+	var nonPass []caseOutcome // every fail/unsupported case, for classification
 
 	for _, f := range files {
 		b, err := os.ReadFile(f)
@@ -240,49 +242,222 @@ func TestFilestoreCases(t *testing.T) {
 				continue
 			}
 
-			got, err := n1k1RunStatement(store, stmt)
 			loc := fmt.Sprintf("%s[%d]", filepath.Base(f), ci)
-			if err != nil {
-				unsupported++
-				if len(unsupEx) < 12 {
-					unsupEx = append(unsupEx, fmt.Sprintf("%s: %s -- %v", loc, stmt, err))
-				}
-				continue
-			}
-			if rowsMatch(got, results) {
+			got, err := n1k1RunStatement(store, stmt)
+			switch {
+			case err != nil:
+				nonPass = append(nonPass, caseOutcome{loc, stmt, "UNSUPPORTED", oneLine(err.Error())})
+			case rowsMatch(got, results):
 				pass++
-			} else {
-				fail++
-				if len(failEx) < 12 {
-					failEx = append(failEx, fmt.Sprintf("%s: %s", loc, stmt))
-				}
+			default:
+				nonPass = append(nonPass, caseOutcome{loc, stmt, "FAIL", "results differ"})
 			}
 		}
 	}
 
-	total := pass + fail + unsupported
-	t.Logf("filestore cases over %d files: PASS=%d FAIL=%d UNSUPPORTED=%d (skipped exotic=%d), runnable=%d",
-		len(files), pass, fail, unsupported, skipped, total)
-	if len(failEx) > 0 {
-		t.Logf("sample FAILs (ran, wrong results):\n  %v", joinLines(failEx))
-	}
-	if len(unsupEx) > 0 {
-		t.Logf("sample UNSUPPORTED (parse/plan/exec error or panic):\n  %v", joinLines(unsupEx))
+	reportFilestore(t, len(files), pass, skipped, nonPass)
+}
+
+// caseOutcome records one non-passing corpus case.
+type caseOutcome struct {
+	loc, stmt, status, detail string
+}
+
+// reportFilestore prints a readable summary + a grouped table of the expected
+// non-pass cases, then enforces two guards: any UNEXPECTED non-pass (one not in
+// expectedNonPass) is a regression and fails the test; a stale table entry (a
+// listed case that now passes) is warned about so it can be removed.
+func reportFilestore(t *testing.T, nFiles, pass, skipped int, nonPass []caseOutcome) {
+	groupCount := map[string]int{}
+	seen := map[string]bool{}
+	var unexpected []caseOutcome
+	var fail, unsupported int
+
+	for _, o := range nonPass {
+		if o.status == "FAIL" {
+			fail++
+		} else {
+			unsupported++
+		}
+		g, ok := expectedNonPass[o.loc]
+		if !ok {
+			unexpected = append(unexpected, o)
+			continue
+		}
+		groupCount[g]++
+		seen[o.loc] = true
 	}
 
-	// Regression guard: n1k1 supports a subset of N1QL, so we don't require
-	// 100% -- but the number of upstream cases that pass should never drop.
-	// Ratchet this up as n1k1's coverage grows.
+	var stale []string
+	for loc := range expectedNonPass {
+		if !seen[loc] {
+			stale = append(stale, loc)
+		}
+	}
+	sort.Strings(stale)
+
+	total := pass + fail + unsupported
+
+	var b strings.Builder
+	b.WriteString("\nfilestore conformance\n=====================\n")
+	tw := tabwriter.NewWriter(&b, 0, 2, 2, ' ', 0)
+	fmt.Fprintf(tw, "  files scanned\t%d\n", nFiles)
+	fmt.Fprintf(tw, "  runnable cases\t%d\n", total)
+	fmt.Fprintf(tw, "  PASS\t%d\t(%.1f%%)\n", pass, 100*float64(pass)/float64(total))
+	fmt.Fprintf(tw, "  UNSUPPORTED\t%d\n", unsupported)
+	fmt.Fprintf(tw, "  FAIL\t%d\n", fail)
+	fmt.Fprintf(tw, "  skipped (exotic)\t%d\n", skipped)
+	tw.Flush()
+
+	// Grouped breakdown of the expected non-pass cases, most-common first.
+	type gc struct {
+		group string
+		count int
+	}
+	var rows []gc
+	for g, c := range groupCount {
+		rows = append(rows, gc{g, c})
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].count != rows[j].count {
+			return rows[i].count > rows[j].count
+		}
+		return rows[i].group < rows[j].group
+	})
+
+	fmt.Fprintf(&b, "\nexpected non-pass by group (%d cases; shrink as coverage grows):\n",
+		len(expectedNonPass))
+	tw = tabwriter.NewWriter(&b, 0, 2, 2, ' ', 0)
+	fmt.Fprintf(tw, "  COUNT\tGROUP\tWHY\n")
+	fmt.Fprintf(tw, "  -----\t-----\t---\n")
+	for _, r := range rows {
+		fmt.Fprintf(tw, "  %d\t%s\t%s\n", r.count, r.group, groupWhy[r.group])
+	}
+	tw.Flush()
+
+	t.Log(b.String())
+
+	// Hygiene: a listed case that no longer fails was likely fixed -- nudge to
+	// remove it. Kept a warning (not a failure) so a fix never breaks the build.
+	if len(stale) > 0 {
+		t.Logf("expectedNonPass has %d stale entr(y/ies) -- now passing or absent, please remove:\n  %s",
+			len(stale), strings.Join(stale, "\n  "))
+	}
+
+	// Regression: a non-pass case not in the expected table is a new break.
+	if len(unexpected) > 0 {
+		lines := make([]string, 0, len(unexpected))
+		for _, o := range unexpected {
+			lines = append(lines, fmt.Sprintf("%s [%s] %s -- %s",
+				o.loc, o.status, oneLine(o.stmt), o.detail))
+		}
+		sort.Strings(lines)
+		t.Errorf("%d UNEXPECTED non-pass case(s) (regression -- fix it, or add to expectedNonPass):\n  %s",
+			len(unexpected), strings.Join(lines, "\n  "))
+	}
+
+	// Backstop on the raw pass count, in case a pass silently turns into a
+	// different already-listed failure (no unexpected case, but pass drops).
 	const passFloor = 631
 	if pass < passFloor {
 		t.Errorf("filestore conformance regressed: PASS=%d < baseline %d", pass, passFloor)
 	}
 }
 
-func joinLines(a []string) string {
-	out := ""
-	for _, s := range a {
-		out += s + "\n  "
+// oneLine collapses internal whitespace and truncates, for compact log rows.
+func oneLine(s string) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if len(s) > 100 {
+		s = s[:97] + "..."
 	}
-	return out
+	return s
+}
+
+// expectedNonPass enumerates every corpus case n1k1 does not currently pass:
+// the UNSUPPORTED plans/features it can't yet convert, plus the lone FAIL whose
+// result ordering N1QL leaves undefined. Each maps to a group key explained by
+// groupWhy below. This is the accepted baseline -- the test fails if a case NOT
+// listed here stops passing (a regression) and warns if a listed case starts
+// passing (stale -- remove it). Shrink this table as coverage grows.
+var expectedNonPass = map[string]string{
+	// EXPLAIN / plan-text output.
+	"case_by_id.json[1]":         "explain",
+	"case_by_id.json[3]":         "explain",
+	"case_by_id.json[4]":         "explain",
+	"case_by_id.json[6]":         "explain",
+	"case_by_id.json[7]":         "explain",
+	"case_by_id.json[8]":         "explain",
+	"case_by_id.json[9]":         "explain",
+	"case_func_date.json[6]":     "explain",
+	"case_orderby_limit.json[4]": "explain",
+	"case_orderby_limit.json[5]": "explain",
+
+	// Secondary index / union scan (n1k1 does primary scans).
+	"case_by_id.json[2]": "index-scan",
+
+	// UNNEST used as a JOIN/NEST source.
+	"case_from-over.json[6]": "unnest-source",
+	"case_innerjoin.json[5]": "unnest-source",
+	"case_innerjoin.json[8]": "unnest-source",
+	"case_leftjoin.json[2]":  "unnest-source",
+	"case_leftjoin.json[3]":  "unnest-source",
+	"case_unnest.json[1]":    "unnest-source",
+	"case_unnest.json[3]":    "unnest-source",
+
+	// META() over fetch metadata subpaths.
+	"case_func_meta.json[0]": "meta-fetch",
+	"case_func_meta.json[1]": "meta-fetch",
+	"case_func_meta.json[6]": "meta-fetch",
+
+	// GROUP BY on a computed / array-index key.
+	"case_func_date.json[4]":       "groupby-key",
+	"case_group_by_having.json[5]": "groupby-key",
+
+	// ON KEYS join projection arity mismatch.
+	"case_innerjoin.json[10]": "onkeys-proj",
+	"case_leftjoin.json[4]":   "onkeys-proj",
+
+	// Aggregate evaluated over an UNNEST scope.
+	"case_from-over.json[5]": "agg-unnest-scope",
+
+	// LET / WITH bindings.
+	"case_select.json[23]": "let-with",
+	"case_select.json[24]": "let-with",
+	"case_select.json[25]": "let-with",
+
+	// Huge generator builtins (engine refuses; upstream errors too).
+	"case_func_array.json[58]": "resource-guard",
+	"case_func_array.json[59]": "resource-guard",
+	"case_func_date.json[84]":  "resource-guard",
+	"case_func_str.json[48]":   "resource-guard",
+
+	// system: namespace (needs a systemstore, intentionally nil).
+	"case_system_completed.json[0]": "system-namespace",
+	"case_system_completed.json[1]": "system-namespace",
+	"case_system_completed.json[2]": "system-namespace",
+	"case_system_prepareds.json[1]": "system-namespace",
+	"case_system_prepareds.json[3]": "system-namespace",
+	"case_system_prepareds.json[4]": "system-namespace",
+
+	// Prepared-statement EXECUTE.
+	"case_system_prepareds.json[2]": "prepared",
+
+	// The one FAIL: ARRAY_AGG element order is undefined in N1QL.
+	"case_func_array.json[34]": "arrayagg-order",
+}
+
+// groupWhy gives a one-line reason for each expectedNonPass group.
+var groupWhy = map[string]string{
+	"explain":          "EXPLAIN / plan-text output not converted to n1k1 ops",
+	"index-scan":       "secondary index / union scan not converted (n1k1 does primary scans)",
+	"unnest-source":    "UNNEST as a JOIN/NEST source: plan.Unnest is not yet a glue.Termer",
+	"meta-fetch":       "META() over fetch metadata subpaths ($document.exptime) not wired",
+	"groupby-key":      "GROUP BY on a computed / array-index key unresolved in VisitFinalGroup",
+	"onkeys-proj":      "ON KEYS join projection: label/vals arity mismatch",
+	"agg-unnest-scope": "aggregate over an UNNEST scope hits an AnnotatedValue assertion",
+	"let-with":         "LET / WITH bindings (plan.Let / plan.With) not converted",
+	"resource-guard":   "engine refuses huge generator builtins (ARRAY_RANGE/REPEAT ~1e10)",
+	"system-namespace": "system: namespace needs a systemstore (intentionally nil; see FileStore)",
+	"prepared":         "prepared-statement EXECUTE (plan.Discard) not supported",
+	"arrayagg-order":   "ARRAY_AGG element order is undefined in N1QL; ordering differs (not fixable)",
 }

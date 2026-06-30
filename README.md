@@ -27,15 +27,17 @@ passing; see above.)
 
     # N1QL engine layer (needs GOPRIVATE for the couchbase/query fork):
     export GOPRIVATE='github.com/couchbase/*'
-    make n1ql                  # build + test glue/ + test/ (pure-Go, CGO off)
-    make filestore             # just the 600+ filestore conformance cases, verbose
+    make test-n1ql             # build + test glue/ + test/ (pure-Go, CGO off)
+    make test-glue             # just the glue/ unit tests
+    make test-filestore        # just the 600+ filestore conformance cases, verbose
 
     # Same, spelled out without make:
     CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -tags n1ql ./glue ./test
     CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -tags n1ql -v -run TestFilestoreCases ./test
 
-`make filestore` prints the `PASS=… FAIL=… UNSUPPORTED=…` breakdown plus
-sample failures (see the conformance note below). Details for each layer follow.
+`make test-filestore` prints a summary plus a grouped table of the expected
+non-pass cases (and flags any unexpected regression); see the conformance note
+below. Details for each layer follow.
 
 ### Core (default -- no external setup)
 
@@ -65,16 +67,19 @@ Cross-compile the (cgo-free) engine to any target:
     CGO_ENABLED=0 GOOS=darwin  GOARCH=arm64 go build -tags n1ql ./glue/...
     CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -tags n1ql ./glue/...
 
-`make n1ql` runs the engine build + tests.
+`make test-n1ql` runs the engine build + tests; `make test-glue` runs just the
+glue/ unit tests.
 
 The n1ql suite includes TestFilestoreCases, which runs the upstream
 couchbase/query "filestore" conformance corpus (vendored under
 test/filestore/ -- {query, expected-results} cases over a small JSON dataset)
 against n1k1. n1k1 implements a subset of N1QL, so it's a pass-rate guard, not
 100%: ~631 of ~670 runnable cases currently pass, and the test fails if that
-count regresses (ratchet it up as coverage grows). Use `make filestore` (or add
-`-v -run TestFilestoreCases` yourself) to see the pass / fail / unsupported
-breakdown and sample failures.
+count regresses (ratchet it up as coverage grows). Use `make test-filestore`
+(or add `-v -run TestFilestoreCases` yourself) to see a summary, a grouped
+table of the expected non-pass cases (with a short why for each group), and any
+unexpected regressions. The accepted non-pass cases are enumerated in the
+`expectedNonPass` table in test/filestore_test.go -- shrink it as coverage grows.
 
 NOTE: do not run `go mod tidy` -- query is reached only via the n1ql-gated
 glue/, so tidy would prune it (tidy doesn't enable custom build tags).
