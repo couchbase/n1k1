@@ -94,12 +94,19 @@ compiled and run -- its TestGeneratedN / TestGeneratedFS_N funcs execute the
 - TestCasesSimpleWithCompiler -- the hand-built TestCasesSimple Op trees.
 - TestFilestoreWithCompiler -- a *differential* test: Op trees the glue layer
   derives from real SQL++ corpus queries are compiled and checked against the
-  same expected results the interpreter is checked against. This milestone
-  covers the "datastore-free" subset (FROM-less SELECT <expr> cases): live
-  query/expression objects are serialized back to N1QL text (exprTree ->
-  exprStr) so they're expressible as generated source, and non-deterministic
-  (NOW_*/CLOCK_*/UUID/random) cases are excluded. Cases whose plan needs a
-  datastore scan or vars.Temps runtime state aren't compiled yet.
+  same expected results the interpreter is checked against (~600 cases, covering
+  WHERE / ORDER BY / GROUP BY / HAVING / DISTINCT / UNNEST / aggregates over real
+  datastore scans). Two things make a conv-derived plan expressible as generated
+  source:
+  - Expressions: the conv emits live query/expression objects (exprTree); these
+    are serialized back to N1QL text (exprStr) and re-parsed at runtime.
+  - Datastore scans/fetches: the op is baked to a Go literal and run as a
+    glue.DatastoreOp "island"; its int params are vars.Temps indices, and the
+    live query-plan objects are supplied at the generated program's runtime by
+    test.SetupCompiledFilestore (which rebuilds vars.Temps). So the compiled code
+    carries the SQL++ shape and the datastore is passed in as runtime data.
+  Excluded: non-deterministic cases (NOW_*/CLOCK_*/UUID/random), and plans using
+  the temp-*/sequence ops (subquery/LET machinery) -- not yet bridged.
 
 The two steps are ordered so the generated files are never stale.
 

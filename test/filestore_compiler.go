@@ -21,9 +21,15 @@ package test
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
+	"runtime"
 	"sort"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/couchbase/n1k1"
 	"github.com/couchbase/n1k1/base"
 	"github.com/couchbase/n1k1/glue"
 )
@@ -135,4 +141,98 @@ func CheckCompiledRows(t *testing.T, labels base.Labels, yields []base.Vals,
 		t.Fatalf("compiled rows mismatch\n about: %s\n got:   %v\n want:  %s",
 			about, got, expectedJSON)
 	}
+}
+
+// --------------------------------------------------------
+// Runtime support for the datastore-backed compiler tests.
+
+var (
+	fsStoreOnce sync.Once
+	fsStore     *glue.Store
+	fsStoreErr  error
+)
+
+// compiledFilestoreStore opens the corpus FileStore once and wires the runtime
+// hooks the compiled-query islands depend on: ExecOpEx routes datastore ops to
+// glue.DatastoreOp, and the expr catalog provides the interpreted exprStr/
+// exprTree evaluators. The corpus root is located relative to this source file
+// (via runtime.Caller) so it resolves regardless of the test's working dir --
+// the generated tests run from test/tmp/, not test/.
+func compiledFilestoreStore() (*glue.Store, error) {
+	fsStoreOnce.Do(func() {
+		_, file, _, _ := runtime.Caller(0)
+		root := filepath.Join(filepath.Dir(file), "filestore", "json")
+
+		fsStore, fsStoreErr = glue.FileStore(root)
+		if fsStoreErr != nil {
+			return
+		}
+		fsStore.InitParser()
+
+		n1k1.ExecOpEx = glue.DatastoreOp
+		if n1k1.ExprCatalog["exprStr"] == nil {
+			n1k1.ExprCatalog["exprStr"] = glue.ExprStr
+		}
+		if n1k1.ExprCatalog["exprTree"] == nil {
+			n1k1.ExprCatalog["exprTree"] = glue.ExprTree
+		}
+	})
+	return fsStore, fsStoreErr
+}
+
+// SetupCompiledFilestore is the runtime preamble for a generated datastore-
+// backed compiler test. It re-parses/plans/converts the statement to obtain the
+// live query-plan objects, and exposes them to the compiled operator code as
+// runtime "parameters" via lzVars.Temps -- Temps[0] a fresh GlueContext, then
+// the conv's plan objects at the same indices the baked datastore ops reference.
+// (The compiled code carries only the SQL++ shape; the datastore arrives here.)
+// Returns the vars + yield-capture funcs the generated code drives, plus a
+// cleanup that removes the temp dir.
+func SetupCompiledFilestore(t *testing.T, stmt string) (
+	lzVars *base.Vars, lzYieldVals base.YieldVals, lzYieldErr base.YieldErr,
+	returnYields func() []base.Vals, cleanup func()) {
+	store, err := compiledFilestoreStore()
+	if err != nil {
+		t.Fatalf("SetupCompiledFilestore store: %v", err)
+	}
+
+	s, err := glue.ParseStatement(stmt, "default", true)
+	if err != nil {
+		t.Fatalf("SetupCompiledFilestore parse: %v\n stmt: %s", err, stmt)
+	}
+	p, err := store.PlanStatement(s, "default", nil, nil)
+	if err != nil {
+		t.Fatalf("SetupCompiledFilestore plan: %v\n stmt: %s", err, stmt)
+	}
+	conv := &glue.Conv{Temps: []interface{}{nil}}
+	if _, err = p.Accept(conv); err != nil {
+		t.Fatalf("SetupCompiledFilestore accept: %v\n stmt: %s", err, stmt)
+	}
+
+	tmpDir, vars := glue.MakeVars("", "n1k1fsc")
+
+	// Build vars.Temps exactly as the interpreter driver does, so the int Temps
+	// indices baked into the datastore ops line up with the live plan objects.
+	vars.Temps = vars.Temps[:0]
+	vars.Temps = append(vars.Temps, glue.NewGlueContext(time.Now()))
+	vars.Temps = append(vars.Temps, conv.Temps[1:]...)
+	for i := 0; i < 16; i++ {
+		vars.Temps = append(vars.Temps, nil)
+	}
+
+	var yields []base.Vals
+	yv := func(vals base.Vals) {
+		var cp base.Vals
+		for _, v := range vals {
+			cp = append(cp, append(base.Val(nil), v...))
+		}
+		yields = append(yields, cp)
+	}
+	ye := func(err error) {
+		if err != nil {
+			t.Errorf("SetupCompiledFilestore yieldErr: %v\n stmt: %s", err, stmt)
+		}
+	}
+
+	return vars, yv, ye, func() []base.Vals { return yields }, func() { os.RemoveAll(tmpDir) }
 }

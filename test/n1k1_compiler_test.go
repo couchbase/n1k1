@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -270,6 +271,24 @@ func emitOpToLines(o *base.Op) []string {
 
 	// TODO: Need to handle exprTree when in compiled mode?
 
+	// Datastore ops hit ExecOp's default branch (ExecOpEx). In compiled mode we
+	// emit them as an interpreted "island": a glue.DatastoreOp(<baked op>, ...)
+	// call. The op node is bakeable as a Go literal (its Params are int Temps
+	// indices, not live objects); the live query-plan objects are supplied at
+	// the generated program's runtime via lzVars.Temps (see SetupCompiledFilestore).
+	// This is the datastore-scan bridge: compiled operators above, interpreted
+	// scan/fetch below, runtime data passed in through lzVars.
+	intermed.ExecOpEx = func(o *base.Op, lzVars *base.Vars,
+		lzYieldVals base.YieldVals, lzYieldErr base.YieldErr, path, pathItem string) {
+		lit, ok := bakeOp(o)
+		if !ok {
+			intermed.Emit("UNBAKEABLE_DATASTORE_OP_%s // forces a compile error\n", o.Kind)
+			return
+		}
+		intermed.Emit("glue.DatastoreOp(%s, lzVars, lzYieldVals, lzYieldErr, %q, %q)\n",
+			lit, path, pathItem)
+	}
+
 	intermed.ExecOp(o,
 		&base.Vars{Ctx: &base.Ctx{ExprCatalog: intermed.ExprCatalog}},
 		nil, nil, "Top", "EO")
@@ -281,6 +300,86 @@ func emitOpToLines(o *base.Op) []string {
 	}
 
 	return outStack[len(outStack)-1]
+}
+
+// bakeParam renders a single op param as a Go literal expression. Datastore op
+// params are int Temps-indices (and, after exprTree->exprStr rewriting, nested
+// string/[]interface{} trees), so only those primitive shapes are supported;
+// anything else (e.g. a live object) returns ok=false so the caller can skip.
+func bakeParam(v interface{}) (string, bool) {
+	switch x := v.(type) {
+	case nil:
+		return "nil", true
+	case bool:
+		return fmt.Sprintf("%v", x), true
+	case int:
+		return strconv.Itoa(x), true
+	case int64:
+		return fmt.Sprintf("int64(%d)", x), true
+	case string:
+		return fmt.Sprintf("%q", x), true
+	case base.Val:
+		return fmt.Sprintf("base.Val(%q)", string(x)), true
+	case []interface{}:
+		parts := make([]string, len(x))
+		for i, e := range x {
+			s, ok := bakeParam(e)
+			if !ok {
+				return "", false
+			}
+			parts[i] = s
+		}
+		return "[]interface{}{" + strings.Join(parts, ", ") + "}", true
+	default:
+		return "", false
+	}
+}
+
+// bakeOp renders a base.Op subtree as a Go literal expression. Used to emit
+// datastore ops (and their children) as the argument to a generated
+// glue.DatastoreOp(...) call. Returns ok=false if any param isn't bakeable.
+func bakeOp(o *base.Op) (string, bool) {
+	if o == nil {
+		return "nil", true
+	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "&base.Op{Kind: %q", o.Kind)
+
+	sb.WriteString(", Labels: base.Labels{")
+	for i, l := range o.Labels {
+		if i > 0 {
+			sb.WriteString(", ")
+		}
+		fmt.Fprintf(&sb, "%q", l)
+	}
+	sb.WriteString("}")
+
+	if len(o.Params) > 0 {
+		ps, ok := bakeParam(o.Params)
+		if !ok {
+			return "", false
+		}
+		sb.WriteString(", Params: ")
+		sb.WriteString(ps)
+	}
+
+	if len(o.Children) > 0 {
+		sb.WriteString(", Children: []*base.Op{")
+		for i, c := range o.Children {
+			if i > 0 {
+				sb.WriteString(", ")
+			}
+			cs, ok := bakeOp(c)
+			if !ok {
+				return "", false
+			}
+			sb.WriteString(cs)
+		}
+		sb.WriteString("}")
+	}
+
+	sb.WriteString("}")
+	return sb.String(), true
 }
 
 func clearFuncLines(lines []string) {

@@ -84,8 +84,14 @@ func stringifyExprTrees(o *base.Op) (ok bool) {
 		if op == nil {
 			return
 		}
-		for i := range op.Params {
-			op.Params[i] = rewrite(op.Params[i])
+		// Rewrite op.Params as a whole, not element-wise: some ops carry the
+		// exprTree pair AS their Params slice (e.g. filter: ["exprTree", cond]),
+		// while others nest pairs inside it (e.g. project: [[exprTree,e1], ...]).
+		// rewrite() handles both -- it rewrites a pair in place and recurses.
+		if len(op.Params) > 0 {
+			if rw, isArr := rewrite(op.Params).([]interface{}); isArr {
+				op.Params = rw
+			}
 		}
 		for _, c := range op.Children {
 			walk(c)
@@ -114,27 +120,48 @@ func convOf(store *glue.Store, stmt string) (cv *glue.Conv) {
 	return c
 }
 
-// needsRuntimeState reports whether an Op tree contains any op that depends on
-// runtime state the standalone generated harness does not set up: datastore
-// scans/fetches (live query-plan objects in vars.Temps), and the temp-*/
-// sequence ops (subquery/LET machinery that populates vars.Temps[1+] at run
-// time). Such a tree can't run as self-contained generated code yet -- the leaf
-// would dereference a nil Temps slot. We restrict this milestone to trees free
-// of them (in practice: FROM-less SELECT <expr> over the "nil" single-row leaf).
-func needsRuntimeState(o *base.Op) bool {
+// usesUnbridgedOp reports whether an Op tree contains an op this milestone can't
+// compile yet. Datastore scans/fetches ARE bridged: their op is baked to a
+// literal and run as a glue.DatastoreOp island, with the live plan objects
+// supplied at runtime via lzVars.Temps (see SetupCompiledFilestore). Still
+// excluded are the temp-*/sequence ops -- subquery/LET machinery that reads and
+// writes vars.Temps[1+] slots whose contents aren't reconstructed by the
+// runtime preamble.
+func usesUnbridgedOp(o *base.Op) bool {
 	if o == nil {
 		return false
 	}
 	k := o.Kind
-	if strings.HasPrefix(k, "datastore") || strings.HasPrefix(k, "temp") || k == "sequence" {
+	if strings.HasPrefix(k, "temp") || k == "sequence" {
 		return true
 	}
 	for _, c := range o.Children {
-		if needsRuntimeState(c) {
+		if usesUnbridgedOp(c) {
 			return true
 		}
 	}
 	return false
+}
+
+// allDatastoreOpsBakeable reports whether every datastore op in the tree can be
+// rendered as a Go literal (bakeOp). A datastore op whose params aren't all
+// primitive (int Temps-index / string / nested slice) can't be emitted, so the
+// case is skipped rather than producing broken generated code.
+func allDatastoreOpsBakeable(o *base.Op) bool {
+	if o == nil {
+		return true
+	}
+	if strings.HasPrefix(o.Kind, "datastore") {
+		if _, ok := bakeOp(o); !ok {
+			return false
+		}
+	}
+	for _, c := range o.Children {
+		if !allDatastoreOpsBakeable(c) {
+			return false
+		}
+	}
+	return true
 }
 
 // nonDetTokens are N1QL builtins whose result depends on wall-clock time or
@@ -157,8 +184,9 @@ func nonDeterministic(stmt string) bool {
 
 // optionalImports are imported by the generated file only if the emitted code
 // actually references the package (Go errors on unused imports). The always-on
-// imports (os, testing, base, glue, test) are emitted unconditionally.
+// imports (testing, base, glue, test) are emitted unconditionally.
 var optionalImports = []struct{ qualifier, path string }{
+	{"os.", "os"},
 	{"bufio.", "bufio"},
 	{"bytes.", "bytes"},
 	{"heap.", "container/heap"},
@@ -186,12 +214,13 @@ func TestFilestoreWithCompiler(t *testing.T) {
 
 	type genCase struct {
 		about    string
+		stmt     string
 		labels   base.Labels
 		expected string // expected results as JSON
 		lines    []string
 	}
 	var gen []genCase
-	var considered, datastoreFree int
+	var considered, convertible int
 
 	for _, f := range files {
 		b, err := os.ReadFile(f)
@@ -213,15 +242,7 @@ func TestFilestoreWithCompiler(t *testing.T) {
 			considered++
 
 			conv := convOf(store, stmt)
-			if conv == nil || needsRuntimeState(conv.TopOp) {
-				continue
-			}
-			datastoreFree++
-
-			// Only emit cases the interpreter already gets right, so the
-			// generated test is a clean compiler-vs-oracle differential.
-			got, runErr := n1k1RunStatement(store, stmt)
-			if runErr != nil || !rowsMatch(got, results) {
+			if conv == nil || usesUnbridgedOp(conv.TopOp) {
 				continue
 			}
 
@@ -230,11 +251,24 @@ func TestFilestoreWithCompiler(t *testing.T) {
 			if !stringifyExprTrees(conv.TopOp) {
 				continue
 			}
+			// Skip if any datastore op can't be baked to a literal.
+			if !allDatastoreOpsBakeable(conv.TopOp) {
+				continue
+			}
+			convertible++
+
+			// Only emit cases the interpreter already gets right, so the
+			// generated test is a clean compiler-vs-oracle differential.
+			got, runErr := n1k1RunStatement(store, stmt)
+			if runErr != nil || !rowsMatch(got, results) {
+				continue
+			}
 
 			expectedJSON, _ := json.Marshal(results)
 
 			gen = append(gen, genCase{
 				about:    fmt.Sprintf("%s[%d] %s", filepath.Base(f), ci, oneLine(stmt)),
+				stmt:     stmt,
 				labels:   conv.TopOp.Labels,
 				expected: string(expectedJSON),
 				lines:    emitOpToLines(conv.TopOp),
@@ -259,7 +293,6 @@ func TestFilestoreWithCompiler(t *testing.T) {
 		``,
 		"package tmp",
 		``,
-		`import "os"`,
 		`import "testing"`,
 		`import "github.com/couchbase/n1k1/base"`,
 		`import "github.com/couchbase/n1k1/glue"`,
@@ -276,9 +309,9 @@ func TestFilestoreWithCompiler(t *testing.T) {
 		c = append(c, "// ------------------------------------------")
 		c = append(c, "// "+g.about)
 		c = append(c, fmt.Sprintf("func TestGeneratedFS_%d(t *testing.T) {", i))
-		c = append(c, `  lzTmpDir, lzVars, lzYieldVals, lzYieldErr, returnYields :=`)
-		c = append(c, fmt.Sprintf(`    test.MakeYieldCaptureFuncs(nil, %d, %q)`, i, ""))
-		c = append(c, "  os.RemoveAll(lzTmpDir)")
+		c = append(c, `  lzVars, lzYieldVals, lzYieldErr, returnYields, cleanup :=`)
+		c = append(c, fmt.Sprintf(`    test.SetupCompiledFilestore(t, %q)`, g.stmt))
+		c = append(c, "  defer cleanup()")
 		c = append(c, "  _ = lzVars")
 		c = append(c, "  _ = lzYieldVals")
 		c = append(c, "  _ = lzYieldErr")
@@ -296,6 +329,6 @@ func TestFilestoreWithCompiler(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	t.Logf("filestore compiler: considered=%d datastore-free=%d emitted=%d",
-		considered, datastoreFree, len(gen))
+	t.Logf("filestore compiler: considered=%d convertible=%d emitted=%d",
+		considered, convertible, len(gen))
 }
