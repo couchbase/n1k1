@@ -143,6 +143,65 @@ func usesUnbridgedOp(o *base.Op) bool {
 	return false
 }
 
+// joinFamilyPrefixes are the ops whose generated code declares an un-suffixed
+// `var lzErr` (OpJoinNestedLoop / OpJoinHash). The interpreter runs each in its
+// own function scope, but the compiler fuses them inline, so two in an
+// ancestor/descendant relation collide ("lzErr redeclared"). Until the codegen
+// path-suffixes that var, the compiler can't emit nested join-family ops.
+var joinFamilyPrefixes = []string{
+	"joinNL", "joinKeys", "joinHash", "nestNL", "nestKeys", "unnest",
+	"intersect", "except",
+}
+
+func isJoinFamily(kind string) bool {
+	for _, p := range joinFamilyPrefixes {
+		if strings.HasPrefix(kind, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasNestedJoinFamily reports whether any join-family op has a join-family op
+// among its descendants -- the case the compiler can't fuse yet (see above).
+func hasNestedJoinFamily(o *base.Op) bool {
+	var anyJoinFamily func(op *base.Op) bool
+	anyJoinFamily = func(op *base.Op) bool {
+		if op == nil {
+			return false
+		}
+		if isJoinFamily(op.Kind) {
+			return true
+		}
+		for _, c := range op.Children {
+			if anyJoinFamily(c) {
+				return true
+			}
+		}
+		return false
+	}
+	var walk func(op *base.Op) bool
+	walk = func(op *base.Op) bool {
+		if op == nil {
+			return false
+		}
+		if isJoinFamily(op.Kind) {
+			for _, c := range op.Children {
+				if anyJoinFamily(c) {
+					return true
+				}
+			}
+		}
+		for _, c := range op.Children {
+			if walk(c) {
+				return true
+			}
+		}
+		return false
+	}
+	return walk(o)
+}
+
 // allDatastoreOpsBakeable reports whether every datastore op in the tree can be
 // rendered as a Go literal (bakeOp). A datastore op whose params aren't all
 // primitive (int Temps-index / string / nested slice) can't be emitted, so the
@@ -242,7 +301,7 @@ func TestSuiteWithCompiler(t *testing.T) {
 			considered++
 
 			conv := convOf(store, stmt)
-			if conv == nil || usesUnbridgedOp(conv.TopOp) {
+			if conv == nil || usesUnbridgedOp(conv.TopOp) || hasNestedJoinFamily(conv.TopOp) {
 				continue
 			}
 

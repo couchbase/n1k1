@@ -78,14 +78,6 @@ func (c *Conv) TopSet(p plan.Operator, op *base.Op) (*base.Op, error) {
 
 // -------------------------------------------------------------------
 
-// Termer provides access to a keyspace term, since the plan package
-// doesn't provide a term accessor interface.
-type Termer interface {
-	Term() *algebra.KeyspaceTerm
-}
-
-// -------------------------------------------------------------------
-
 // LabelSuffix converts a string into label syntax.
 func LabelSuffix(s string) string {
 	if s != "" {
@@ -228,12 +220,14 @@ func (c *Conv) VisitJoin(o *plan.Join) (interface{}, error) {
 	// Allocate a vars.Temps slot to hold evaluated keys.
 	varsTempsSlot := c.AddTemp(nil)
 
+	// The output preserves the left input's labels (derived from the left child
+	// rather than assuming the left plan is a keyspace Termer -- it isn't when
+	// the left is an UNNEST or another join) and appends the joined keyspace's
+	// doc+id. Matches OpJoinNestedLoop's runtime Children[0]+Children[1] labels.
 	rv := &base.Op{
 		Kind: "joinKeys-inner",
-		Labels: base.Labels{
-			"." + LabelSuffix(c.TopPlan.(Termer).Term().Alias()), "^id",
-			"." + LabelSuffix(o.Term().Alias()), "^id",
-		},
+		Labels: append(append(base.Labels{}, c.TopOp.Labels...),
+			"."+LabelSuffix(o.Term().Alias()), "^id"),
 		Params: []interface{}{
 			// The vars.Temps slot that holds evaluated keys.
 			varsTempsSlot,
@@ -266,12 +260,18 @@ func (c *Conv) VisitNest(o *plan.Nest) (interface{}, error)           { return N
 func (c *Conv) VisitIndexNest(o *plan.IndexNest) (interface{}, error) { return NA(o) }
 
 func (c *Conv) VisitUnnest(o *plan.Unnest) (interface{}, error) {
+	// The output preserves the left input's labels (whatever they are -- a
+	// keyspace doc+id, or, for chained UNNEST / UNNEST over a join, several
+	// labels) and appends the unnested element under the UNNEST alias. Derive
+	// them from the left child's labels rather than assuming the left plan is a
+	// keyspace Termer (it isn't when the left is itself an UNNEST or a join).
+	// This also matches how OpJoinNestedLoop assembles vals at runtime
+	// (Children[0].Labels + Children[1].Labels).
+	unnestLabel := "." + LabelSuffix(o.Term().Alias())
+
 	rv := &base.Op{
-		Kind: "unnest-inner",
-		Labels: base.Labels{
-			"." + LabelSuffix(c.TopPlan.(Termer).Term().Alias()), "^id",
-			"." + LabelSuffix(o.Term().Alias()),
-		},
+		Kind:   "unnest-inner",
+		Labels: append(append(base.Labels{}, c.TopOp.Labels...), unnestLabel),
 		Params: []interface{}{
 			// The expression to unnest.
 			"exprTree", o.Term().Expression(),
@@ -280,7 +280,7 @@ func (c *Conv) VisitUnnest(o *plan.Unnest) (interface{}, error) {
 			c.TopOp,
 			&base.Op{
 				Kind:   "noop",
-				Labels: base.Labels{"." + LabelSuffix(o.Term().Alias())},
+				Labels: base.Labels{unnestLabel},
 			}},
 	}
 
