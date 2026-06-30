@@ -79,3 +79,12 @@ indexing/n1fty/query-ee/...) were pruned -- only the query replace remains.
 3. In n1k1: `go get github.com/couchbase/n1k1-query@n1k1-pure-go` to resolve the
    new pseudo-version, then `go mod edit -replace github.com/couchbase/query=\
    github.com/couchbase/n1k1-query@<that-version>`.
+4. Rebuild + test n1k1 (`make n1ql`). Tracking query's parser/algebra/
+   expression/plan/planner IS how n1k1 stays current with SQL++, so a newer
+   query may shift APIs n1k1 relies on -- expect occasional touch-ups in glue/
+   (GlueContext, conv.go's plan.Visitor methods, or Fetch / expression.Context /
+   value signatures). The goyacc step in (2) is the only part worth automating.
+
+Note: `go mod tidy` does NOT work for n1k1 -- query's enterprise modules pin each
+other at the v0.0.0-00010101 placeholder, which tidy can't resolve (the build
+itself is fine: module-graph pruning never compiles those packages).

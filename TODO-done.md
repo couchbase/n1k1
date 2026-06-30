@@ -67,3 +67,17 @@ Gist only -- details live in commit messages, README, and code comments.
   `=> github.com/couchbase/n1k1-query <pseudo-version>`. The fork keeps module
   path github.com/couchbase/query, so Go maps it to the query import path; n1k1
   builds with plain `go` (+ GOPRIVATE), verified independent of the local sibling.
+
+## 2026/06 -- cleanup pass (one done, two investigated WON'T-FIX)
+- Vestigial files: cpu.pprof, the intermed_build binary, and tmp/ are all
+  gitignored (never committed) -- removed the local cruft + dead tmp/ symlinks;
+  nothing to commit.
+- WON'T-FIX, go.mod indirect block: can't `go mod tidy`. tidy considers
+  couchbase's enterprise-tagged imports (query/planner -> query-ee, query/tenant
+  -> regulator, ...) pinned at the v0.0.0-00010101 placeholder; giving the fork's
+  placeholders real versions just cascades (cbft/n1fty -> cbgt@00010101, ...).
+  The community build is fine -- module-graph pruning never compiles those, so
+  the entries are harmless graph-mirror noise. Verified empirically, reverted.
+- WON'T-FIX / moot, "re-pin to one consistent manifest snapshot": same root
+  cause, and moot post-T3 (the drift-prone heavy modules aren't compiled; the
+  versions that matter come from the fork's go.mod -- itself one snapshot).

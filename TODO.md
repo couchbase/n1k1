@@ -7,41 +7,14 @@ DESIGN.md; build/test commands are in README.md.
 Status: modernization + a pure-Go N1QL engine (CGO_ENABLED=0, cross-compiles)
 are done. Remaining work:
 
-## Shipping
-- [x] Pushed the query fork to github.com/couchbase/n1k1-query; go.mod now pins
-      `replace github.com/couchbase/query => github.com/couchbase/n1k1-query
-      <pseudo-version>`, so n1k1 builds with plain `go` (+ GOPRIVATE) -- no local
-      checkout needed.
-
-## Cleanups
-- [x] Vestigial files: were NOT committed -- cpu.pprof (*.pprof), the
-      intermed_build binary (/intermed_build), and tmp/ are all gitignored.
-      Removed the local cruft + the dead tmp/ symlinks; nothing to commit.
-- WON'T-FIX (investigated 2026/06): go.mod's couchbase indirect block can't be
-  cleaned with `go mod tidy`. tidy considers enterprise-tagged imports
-  (query/planner -> query-ee, query/tenant -> regulator, ...) and tries to
-  resolve them, but couchbase's modules pin each other at the placeholder
-  v0.0.0-00010101 (resolved only inside a repo-sync build). Giving the fork's
-  placeholders real versions just cascades to the next layer (cbft/n1fty ->
-  cbgt@00010101, ...). The community build sidesteps all this via module-graph
-  pruning -- those enterprise packages are never compiled. So the entries
-  faithfully mirror the fork's graph and are harmless; "fixing" them means
-  recreating the full sibling replace-soup, i.e. the opposite of a cleanup.
-
-## Tests / dependencies
+## Tests
 - [ ] Revisit the pre-existing SKIP tests: UNNEST + array-as-FROM (broke in the
       2021 CB 6.5 -> 7 upgrade). `git grep SKIP`.
-- WON'T-FIX / moot: "re-pin to one consistent manifest snapshot" -- same root
-  cause as above, and largely moot post-T3: the heavy modules that could drift
-  (cbft/cbgt/indexing/...) are no longer compiled, and the versions that DO
-  matter come from the fork's go.mod, which is itself one consistent snapshot.
 
-## Keeping current with SQL++ (recurring upkeep)
-n1k1 tracks query's parser/algebra/expression/plan/planner -- that IS the SQL++
-feature set. Each query bump costs: (a) re-run goyacc, since query doesn't ship
-the generated parser; (b) maybe touch up glue's GlueContext / conv.go visitor
-when expression.Context / plan.Visitor / datastore signatures drift. Worth
-automating (a) into the fork's update flow.
+## Keeping current with SQL++
+n1k1's SQL++ support tracks couchbase/query (parser/algebra/expression/plan/
+planner). To move to a newer query, follow "Updating the fork to a newer query"
+in patches/README.md.
 
 ## More features
 
