@@ -1,11 +1,10 @@
 # TODO
 
-Forward-looking only. What's DONE is in TODO-done.md; how the engine is built &
-patched is in glue/patches/README.md; internals + the design are in DESIGN.md;
-build/test commands are in README.md.
+Forward-looking only. What's DONE is in TODO-done.md; internals + the
+design are in DESIGN.md; build/test commands are in README.md.
 
-Status: modernization + a pure-Go N1QL engine (CGO_ENABLED=0, cross-compiles)
-are done. Remaining work:
+Status: modernization + a pure-Go N1QL (SQL++) engine (CGO_ENABLED=0,
+cross-compiles) are done. Remaining work:
 
 ## Conformance (SQL++ suite corpus)
 - [ ] Raise the TestSuiteCases pass rate (currently ~640/680 runnable).
