@@ -514,8 +514,17 @@ func (c *Conv) VisitInitialProject(o *plan.InitialProject) (interface{}, error) 
 		Params: make([]interface{}, 0, len(o.Terms())),
 	}
 
+	// SELECT RAW expr (a.k.a. SELECT ELEMENT) yields the projected value
+	// itself as each result, not wrapped under an alias -- so label it "."
+	// (the whole value) rather than .["alias"].
+	raw := o.Projection() != nil && o.Projection().Raw()
+
 	for _, term := range o.Terms() {
-		op.Labels = append(op.Labels, "."+LabelSuffix(term.Result().Alias()))
+		label := "." + LabelSuffix(term.Result().Alias())
+		if raw {
+			label = "."
+		}
+		op.Labels = append(op.Labels, label)
 		op.Params = append(op.Params,
 			[]interface{}{"exprTree", term.Result().Expression()})
 	}
