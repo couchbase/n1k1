@@ -1,5 +1,3 @@
-//go:build n1ql
-
 //  Copyright (c) 2026 Couchbase, Inc.
 //  Licensed under the Apache License, Version 2.0 (the "License");
 //  you may not use this file except in compliance with the
@@ -11,7 +9,12 @@
 //  express or implied. See the License for the specific language
 //  governing permissions and limitations under the License.
 
-package main
+package cmd
+
+// Result renderers shared by n1k1 command-line tools. Rows are canonical-JSON
+// values ([]json.RawMessage); each renderer turns them into a textual output
+// mode. Pure (no engine / n1ql deps) so it is reusable and unit-testable
+// without the n1ql build tag.
 
 import (
 	"bytes"
@@ -24,12 +27,13 @@ import (
 	"unicode/utf8"
 )
 
-// Output modes (DuckDB-parallel). box is the default at a TTY; jsonlines for
-// pipes / -c.
-var outputModes = []string{"box", "jsonlines", "json", "csv", "markdown", "line", "list"}
+// OutputModes are the supported renderers. "box" is the default at a TTY;
+// "jsonlines" for pipes / one-shot.
+var OutputModes = []string{"box", "jsonlines", "json", "csv", "markdown", "line", "list"}
 
-func validMode(m string) bool {
-	for _, x := range outputModes {
+// ValidMode reports whether m names a known output mode.
+func ValidMode(m string) bool {
+	for _, x := range OutputModes {
 		if x == m {
 			return true
 		}
@@ -37,14 +41,45 @@ func validMode(m string) bool {
 	return false
 }
 
-// scalarCol is the synthetic column name used for rows that are a bare JSON
-// value (SELECT RAW / SELECT VALUE) rather than an object.
+// scalarCol is the synthetic column name for rows that are a bare JSON value
+// (SELECT RAW / SELECT VALUE) rather than an object.
 const scalarCol = "value"
 
-// tableOf decodes the canonical-JSON rows into a column set (object keys in
-// first-seen order, plus scalarCol if any row is a bare value) and a string
-// cell grid. cell strings are display-ready: JSON strings unquoted, everything
-// else compact JSON.
+// ---------------------------------------------------------------------------
+// Style: optional ANSI styling. Zero value (On=false) emits plain text, so it
+// is safe for pipes / files; callers turn it On only for an interactive TTY.
+
+type Style struct{ On bool }
+
+const (
+	ansiReset  = "\x1b[0m"
+	ansiDim    = "\x1b[2m"
+	ansiBold   = "\x1b[1m"
+	ansiCyan   = "\x1b[36m"
+	ansiRed    = "\x1b[31m"
+	ansiYellow = "\x1b[33m"
+)
+
+func (s Style) wrap(code, x string) string {
+	if !s.On || x == "" {
+		return x
+	}
+	return code + x + ansiReset
+}
+
+func (s Style) Dim(x string) string    { return s.wrap(ansiDim, x) }
+func (s Style) Bold(x string) string   { return s.wrap(ansiBold, x) }
+func (s Style) Cyan(x string) string   { return s.wrap(ansiCyan, x) }
+func (s Style) Red(x string) string    { return s.wrap(ansiRed, x) }
+func (s Style) Yellow(x string) string { return s.wrap(ansiYellow, x) }
+
+func (s Style) header(x string) string { return s.wrap(ansiBold+ansiCyan, x) }
+
+// ---------------------------------------------------------------------------
+
+// tableOf decodes rows into a column set (object keys in first-seen order, plus
+// scalarCol if any row is a bare value) and a string cell grid. Cell strings
+// are display-ready: JSON strings unquoted, everything else compact JSON.
 func tableOf(rows []json.RawMessage) (cols []string, cells [][]string) {
 	seen := map[string]bool{}
 	decoded := make([]interface{}, len(rows))
@@ -56,13 +91,12 @@ func tableOf(rows []json.RawMessage) (cols []string, cells [][]string) {
 		}
 		decoded[i] = v
 
-		if m, ok := v.(map[string]interface{}); ok {
+		if _, ok := v.(map[string]interface{}); ok {
 			for _, k := range orderedKeys(raw) {
 				if !seen[k] {
 					seen[k] = true
 					cols = append(cols, k)
 				}
-				_ = m
 			}
 		} else if !seen[scalarCol] {
 			seen[scalarCol] = true
@@ -118,7 +152,6 @@ func orderedKeys(raw json.RawMessage) []string {
 		if depth == 0 {
 			if k, ok := tok.(string); ok {
 				keys = append(keys, k)
-				// skip this key's value
 				skipValue(dec)
 			}
 		}
@@ -151,8 +184,8 @@ func skipValue(dec *json.Decoder) {
 	}
 }
 
-// cellString renders a decoded JSON value for display: strings as-is (unquoted),
-// numbers/bools/null as JSON, objects/arrays as compact JSON.
+// cellString renders a decoded JSON value for display: strings as-is, numbers/
+// bools/null as JSON, objects/arrays as compact JSON.
 func cellString(v interface{}) string {
 	switch x := v.(type) {
 	case nil:
@@ -179,15 +212,15 @@ func isNumeric(s string) bool {
 
 // ---------------------------------------------------------------------------
 
-// renderJSONLines prints one compact JSON value per line (clean for pipes).
-func renderJSONLines(w io.Writer, rows []json.RawMessage) {
+// RenderJSONLines prints one compact JSON value per line (clean for pipes).
+func RenderJSONLines(w io.Writer, rows []json.RawMessage) {
 	for _, r := range rows {
 		fmt.Fprintln(w, compactJSON(r))
 	}
 }
 
-// renderJSON prints all rows as one pretty JSON array.
-func renderJSON(w io.Writer, rows []json.RawMessage) {
+// RenderJSON prints all rows as one pretty JSON array.
+func RenderJSON(w io.Writer, rows []json.RawMessage) {
 	if len(rows) == 0 {
 		fmt.Fprintln(w, "[]")
 		return
@@ -214,8 +247,8 @@ func compactJSON(r json.RawMessage) string {
 	return buf.String()
 }
 
-// renderCSV prints a header row of columns then one CSV record per row.
-func renderCSV(w io.Writer, rows []json.RawMessage) {
+// RenderCSV prints a header row of columns then one CSV record per row.
+func RenderCSV(w io.Writer, rows []json.RawMessage) {
 	cols, cells := tableOf(rows)
 	cw := csv.NewWriter(w)
 	cw.Write(cols)
@@ -225,8 +258,8 @@ func renderCSV(w io.Writer, rows []json.RawMessage) {
 	cw.Flush()
 }
 
-// renderMarkdown prints a GitHub-flavored Markdown table.
-func renderMarkdown(w io.Writer, rows []json.RawMessage) {
+// RenderMarkdown prints a GitHub-flavored Markdown table.
+func RenderMarkdown(w io.Writer, rows []json.RawMessage) {
 	cols, cells := tableOf(rows)
 	if len(cols) == 0 {
 		return
@@ -250,9 +283,9 @@ func escapeMD(ss []string) []string {
 	return out
 }
 
-// renderLine prints each row vertically as "col = value" lines (DuckDB's line
+// RenderLine prints each row vertically as "col = value" lines (DuckDB's line
 // mode), best for wide/nested docs. Rows are separated by a blank line.
-func renderLine(w io.Writer, rows []json.RawMessage) {
+func RenderLine(w io.Writer, rows []json.RawMessage) {
 	cols, cells := tableOf(rows)
 	width := 0
 	for _, c := range cols {
@@ -270,21 +303,22 @@ func renderLine(w io.Writer, rows []json.RawMessage) {
 	}
 }
 
-// renderList prints each row's values joined by sep (pipe-friendly), no header.
-func renderList(w io.Writer, rows []json.RawMessage, sep string) {
+// RenderList prints each row's values joined by sep (pipe-friendly), no header.
+func RenderList(w io.Writer, rows []json.RawMessage, sep string) {
 	_, cells := tableOf(rows)
 	for _, row := range cells {
 		fmt.Fprintln(w, strings.Join(row, sep))
 	}
 }
 
-// renderBox prints the signature boxed unicode table. maxWidth caps a column's
+// RenderBox prints the signature boxed unicode table. maxWidth caps a column's
 // width (0 = uncapped), truncating with an ellipsis; maxRows caps shown rows
-// (0 = all) with a DuckDB-style elision row. timer/elapsed go in the footer.
-func renderBox(w io.Writer, rows []json.RawMessage, maxWidth, maxRows int, elapsed string) {
+// (0 = all) with a head/tail elision row; elapsed (if non-empty) joins the
+// footer. style adds dim borders/footer and a cyan-bold header when On.
+func RenderBox(w io.Writer, rows []json.RawMessage, maxWidth, maxRows int, elapsed string, style Style) {
 	cols, cells := tableOf(rows)
 	if len(cols) == 0 {
-		fmt.Fprintln(w, "(0 rows)")
+		fmt.Fprintln(w, style.Dim("(0 rows)"))
 		return
 	}
 
@@ -328,7 +362,7 @@ func renderBox(w io.Writer, rows []json.RawMessage, maxWidth, maxRows int, elaps
 		shown = []span{{0, len(cells)}}
 	}
 
-	line := func(l, m, r string) {
+	border := func(l, m, r string) {
 		var b strings.Builder
 		b.WriteString(l)
 		for j := range cols {
@@ -338,35 +372,41 @@ func renderBox(w io.Writer, rows []json.RawMessage, maxWidth, maxRows int, elaps
 			}
 		}
 		b.WriteString(r)
-		fmt.Fprintln(w, b.String())
+		fmt.Fprintln(w, style.Dim(b.String()))
 	}
-	printRow := func(vals []string) {
+	bar := style.Dim("│")
+	printRow := func(vals []string, head bool) {
 		var b strings.Builder
-		b.WriteString("│")
+		b.WriteString(bar)
 		for j, v := range vals {
+			cell := pad(truncate(v, widths[j]), widths[j], numeric[j])
+			if head {
+				cell = style.header(cell)
+			}
 			b.WriteString(" ")
-			b.WriteString(pad(truncate(v, widths[j]), widths[j], numeric[j]))
-			b.WriteString(" │")
+			b.WriteString(cell)
+			b.WriteString(" ")
+			b.WriteString(bar)
 		}
 		fmt.Fprintln(w, b.String())
 	}
 
-	line("┌", "┬", "┐")
-	printRow(cols)
-	line("├", "┼", "┤")
+	border("┌", "┬", "┐")
+	printRow(cols, true)
+	border("├", "┼", "┤")
 	for si, sp := range shown {
 		for i := sp.from; i < sp.to; i++ {
-			printRow(cells[i])
+			printRow(cells[i], false)
 		}
 		if si == 0 && len(shown) > 1 {
 			dots := make([]string, len(cols))
 			for j := range dots {
 				dots[j] = "·"
 			}
-			printRow(dots)
+			printRow(dots, false)
 		}
 	}
-	line("└", "┴", "┘")
+	border("└", "┴", "┘")
 
 	footer := fmt.Sprintf("%d row(s)", len(cells))
 	if elided > 0 {
@@ -376,7 +416,7 @@ func renderBox(w io.Writer, rows []json.RawMessage, maxWidth, maxRows int, elaps
 	if elapsed != "" {
 		footer += "  ·  " + elapsed
 	}
-	fmt.Fprintln(w, footer)
+	fmt.Fprintln(w, style.Dim(footer))
 }
 
 func runeLen(s string) int { return utf8.RuneCountInString(s) }
@@ -403,4 +443,29 @@ func pad(s string, n int, right bool) string {
 		return strings.Repeat(" ", gap) + s
 	}
 	return s + strings.Repeat(" ", gap)
+}
+
+// ---------------------------------------------------------------------------
+
+// SplitStatements splits SQL text on top-level ';' (ignoring ';' inside ' " or
+// ` quotes), returning the complete statements and any trailing remainder.
+func SplitStatements(s string) (stmts []string, rest string) {
+	var start int
+	var quote rune
+	for i, r := range s {
+		if quote != 0 {
+			if r == quote {
+				quote = 0
+			}
+			continue
+		}
+		switch r {
+		case '\'', '"', '`':
+			quote = r
+		case ';':
+			stmts = append(stmts, s[start:i])
+			start = i + 1
+		}
+	}
+	return stmts, s[start:]
 }

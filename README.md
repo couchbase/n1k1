@@ -43,6 +43,8 @@ queries report "unsupported".
 
 The REPL has arrow-key history and line editing (via the pure-Go `peterh/liner`),
 persisted to `~/.n1k1_history`; Ctrl-C cancels the current line, Ctrl-D exits.
+Tasteful colors and emoji status markers appear at an interactive terminal only
+(piped/redirected output stays plain); set `NO_COLOR` to disable them.
 
 ------------------------------------------
 ## Building & testing

@@ -37,6 +37,7 @@ import (
 	"github.com/peterh/liner"
 
 	"github.com/couchbase/n1k1/base"
+	"github.com/couchbase/n1k1/cmd"
 	"github.com/couchbase/n1k1/glue"
 )
 
@@ -45,7 +46,7 @@ func main() {
 		cFlag      = flag.String("c", "", "run one statement and exit")
 		fFlag      = flag.String("f", "", "run statements from a file and exit")
 		nsFlag     = flag.String("ns", "default", "datastore namespace")
-		modeFlag   = flag.String("mode", "", "output mode: "+strings.Join(outputModes, "|")+" (default box at a TTY, else jsonlines)")
+		modeFlag   = flag.String("mode", "", "output mode: "+strings.Join(cmd.OutputModes, "|")+" (default box at a TTY, else jsonlines)")
 		timerFlag  = flag.Bool("timer", false, "print row count + elapsed after each statement")
 		vFlag      = flag.Bool("v", false, "verbose: show unsupported reasons / plan on error")
 		initFlag   = flag.String("init", "", "run dot-commands/SQL from this file at startup (default ~/.n1k1rc)")
@@ -75,10 +76,13 @@ func main() {
 			mode = "jsonlines"
 		}
 	}
-	if !validMode(mode) {
-		fmt.Fprintf(os.Stderr, "n1k1: unknown -mode %q (want %s)\n", mode, strings.Join(outputModes, "|"))
+	if !cmd.ValidMode(mode) {
+		fmt.Fprintf(os.Stderr, "n1k1: unknown -mode %q (want %s)\n", mode, strings.Join(cmd.OutputModes, "|"))
 		os.Exit(2)
 	}
+
+	// Colors/emojis only for an interactive stdout, and honoring NO_COLOR.
+	fancy := isTTY(os.Stdout) && os.Getenv("NO_COLOR") == ""
 
 	c := &cli{
 		sess:     sess,
@@ -92,6 +96,8 @@ func main() {
 		listSep:  "|",
 		out:      os.Stdout,
 		stderr:   os.Stderr,
+		fancyTTY: fancy,
+		style:    cmd.Style{On: fancy},
 	}
 
 	// Startup init file (dot-commands / SQL), unless suppressed.
@@ -157,13 +163,26 @@ type cli struct {
 	outFile *os.File  // non-nil when .output redirected to a file
 	stderr  io.Writer
 
+	fancyTTY bool      // stdout is an interactive TTY (drives colors/emojis)
+	style    cmd.Style // ANSI styling for the box renderer
+
 	buf strings.Builder // REPL/batch statement accumulator
+}
+
+// icon returns the given emoji marker only in interactive (fancy) mode, so
+// piped/redirected output and dumb terminals stay plain.
+func (c *cli) icon(s string) string {
+	if c.fancyTTY {
+		return s
+	}
+	return ""
 }
 
 // ---- input loops ----------------------------------------------------------
 
 func (c *cli) repl() {
-	fmt.Fprintf(c.stderr, "n1k1 -- SQL++ over %s (namespace %q). Type .help for commands, .quit to exit.\n", c.dir, c.ns)
+	fmt.Fprintf(c.stderr, "%s%s SQL++ over %s (namespace %q). Type %s for commands, %s to exit.\n",
+		c.icon("🔎 "), c.style.Cyan("n1k1"), c.dir, c.ns, c.style.Bold(".help"), c.style.Bold(".quit"))
 
 	ln := liner.NewLiner()
 	defer ln.Close()
@@ -274,7 +293,7 @@ func (c *cli) feed(line string) bool {
 	c.buf.WriteString(line)
 	c.buf.WriteByte('\n')
 
-	stmts, rest := splitStatements(c.buf.String())
+	stmts, rest := cmd.SplitStatements(c.buf.String())
 	for _, s := range stmts {
 		c.exec(s)
 	}
@@ -307,50 +326,50 @@ func (c *cli) exec(stmt string) {
 	if err != nil {
 		var unsup *glue.ErrUnsupported
 		if errors.As(err, &unsup) {
-			fmt.Fprintf(c.stderr, "Error (unsupported): %s\n", unsup.Reason)
+			fmt.Fprintf(c.stderr, "%s%s\n", c.icon("🚧 "), c.style.Yellow("Unsupported: "+unsup.Reason))
 		} else {
-			fmt.Fprintf(c.stderr, "Error: %s\n", err)
+			fmt.Fprintf(c.stderr, "%s%s\n", c.icon("✗ "), c.style.Red("Error: "+err.Error()))
 		}
 		return
 	}
 
 	if c.explain {
-		fmt.Fprintln(c.stderr, "plan:")
+		fmt.Fprintln(c.stderr, c.style.Dim("plan:"))
 		printPlan(c.stderr, res.Plan, 1)
 	}
 
 	c.renderResult(res)
 
 	for _, w := range res.Warnings {
-		fmt.Fprintf(c.stderr, "Warning: %s\n", w.Error())
+		fmt.Fprintf(c.stderr, "%s%s\n", c.icon("⚠️  "), c.style.Yellow("Warning: "+w.Error()))
 	}
 }
 
 func (c *cli) renderResult(res *glue.Result) {
 	switch c.mode {
 	case "jsonlines":
-		renderJSONLines(c.out, res.Rows)
+		cmd.RenderJSONLines(c.out, res.Rows)
 	case "json":
-		renderJSON(c.out, res.Rows)
+		cmd.RenderJSON(c.out, res.Rows)
 	case "csv":
-		renderCSV(c.out, res.Rows)
+		cmd.RenderCSV(c.out, res.Rows)
 	case "markdown":
-		renderMarkdown(c.out, res.Rows)
+		cmd.RenderMarkdown(c.out, res.Rows)
 	case "line":
-		renderLine(c.out, res.Rows)
+		cmd.RenderLine(c.out, res.Rows)
 	case "list":
-		renderList(c.out, res.Rows, c.listSep)
+		cmd.RenderList(c.out, res.Rows, c.listSep)
 	default: // "box"
 		elapsed := ""
 		if c.timer {
-			elapsed = res.Elapsed.String()
+			elapsed = c.icon("⏱ ") + res.Elapsed.String()
 		}
-		renderBox(c.out, res.Rows, c.maxWidth, c.maxRows, elapsed)
+		cmd.RenderBox(c.out, res.Rows, c.maxWidth, c.maxRows, elapsed, c.style)
 		return // box prints its own row-count/elapsed footer
 	}
 
 	if c.timer {
-		fmt.Fprintf(c.stderr, "%d row(s) in %s\n", len(res.Rows), res.Elapsed)
+		fmt.Fprintf(c.stderr, "%s%d row(s) in %s\n", c.icon("⏱ "), len(res.Rows), res.Elapsed)
 	}
 }
 
@@ -359,8 +378,8 @@ func (c *cli) renderResult(res *glue.Result) {
 // dot handles a meta command line (it always starts with '.'). Returns true to
 // quit the REPL.
 func (c *cli) dot(line string) bool {
-	cmd, arg := splitFirst(line)
-	switch cmd {
+	name, arg := splitFirst(line)
+	switch name {
 	case ".quit", ".exit":
 		return true
 	case ".help":
@@ -372,10 +391,10 @@ func (c *cli) dot(line string) bool {
 	case ".schema":
 		c.cmdSchema(arg)
 	case ".mode":
-		if validMode(arg) {
+		if cmd.ValidMode(arg) {
 			c.mode = arg
 		} else {
-			fmt.Fprintf(c.stderr, "modes: %s\n", strings.Join(outputModes, " "))
+			fmt.Fprintf(c.stderr, "modes: %s\n", strings.Join(cmd.OutputModes, " "))
 		}
 	case ".timer":
 		c.timer = (arg == "on")
@@ -395,7 +414,7 @@ func (c *cli) dot(line string) bool {
 	case ".output":
 		c.cmdOutput(arg)
 	default:
-		fmt.Fprintf(c.stderr, "unknown command %q -- try .help\n", cmd)
+		fmt.Fprintf(c.stderr, "unknown command %q -- try .help\n", name)
 	}
 	return false
 }
@@ -405,7 +424,7 @@ func (c *cli) printHelp() {
 .open <dir>           open a different file datastore directory
 .tables / .keyspaces  list keyspaces in the namespace
 .schema [<keyspace>]  sampled shape (keys + JSON types) of a keyspace
-.mode <m>             output mode: `+strings.Join(outputModes, " ")+`
+.mode <m>             output mode: `+strings.Join(cmd.OutputModes, " ")+`
 .timer on|off         toggle elapsed-time reporting
 .explain              toggle printing the converted n1k1 plan per query
 .maxrows <n>          box: cap rows shown (0 = all)
@@ -496,6 +515,7 @@ func (c *cli) cmdOutput(path string) {
 	}
 	if path == "" {
 		c.out = os.Stdout
+		c.style.On = c.fancyTTY // restore styling for the terminal
 		return
 	}
 	f, err := os.Create(path)
@@ -504,32 +524,10 @@ func (c *cli) cmdOutput(path string) {
 		return
 	}
 	c.outFile, c.out = f, f
+	c.style.On = false // never write ANSI codes to a file
 }
 
 // ---- helpers --------------------------------------------------------------
-
-// splitStatements splits SQL text on top-level ';' (ignoring ';' inside ' " or
-// ` quotes), returning the complete statements and any trailing remainder.
-func splitStatements(s string) (stmts []string, rest string) {
-	var start int
-	var quote rune
-	for i, r := range s {
-		if quote != 0 {
-			if r == quote {
-				quote = 0
-			}
-			continue
-		}
-		switch r {
-		case '\'', '"', '`':
-			quote = r
-		case ';':
-			stmts = append(stmts, s[start:i])
-			start = i + 1
-		}
-	}
-	return stmts, s[start:]
-}
 
 func splitFirst(s string) (head, tail string) {
 	s = strings.TrimSpace(s)
