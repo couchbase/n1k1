@@ -26,6 +26,7 @@ and building against a small patched fork of couchbase/query.
     make test-glue             # just the glue/ unit tests
     make test-suite            # just the 600+ SQL++ conformance-suite cases, verbose
     make test-compiler         # generate Go from the compiler + run the generated tests
+    make bench                 # benchmarks (see "Benchmarks" below for the full set)
 
     # Similar, without make:
     CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -tags n1ql ./glue ./test
@@ -74,6 +75,22 @@ compiled and run -- its TestGeneratedN / TestGeneratedFS_N funcs execute the
 
 NOTE: do not run `go mod tidy` -- query is reached only via the n1ql-gated
 glue/, so tidy would prune it (tidy doesn't enable custom build tags).
+
+### Benchmarks
+
+Pure-Go and n1ql-gated; they validate the DESIGN.md performance claims. See
+test/benchmark/README.md and DESIGN-benchmark.md for what each one measures.
+
+    export GOPRIVATE='github.com/couchbase/*'
+
+    make bench               # engine throughput + allocs (scan/filter/project, GROUP BY)
+    make bench-spill         # pin the GROUP BY spill-to-disk point (verbose)
+    make bench-compiler      # interpreted vs compiled, side by side (Phase 2)
+    make benchmark-expr-eq   # static-param expr optimization: ExprEq vs ExprStr
+
+    # Without make -- e.g. one benchmark, custom -benchtime, or for benchstat:
+    CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' \
+      go test -tags n1ql -run=xxx -bench=Scan -benchmem -benchtime=10x ./test/benchmark
 
 ------------------------------------------
 ## Some features...
