@@ -82,6 +82,16 @@ Gist only -- details live in commit messages, README, and code comments.
   cause, and moot post-T3 (the drift-prone heavy modules aren't compiled; the
   versions that matter come from the fork's go.mod -- itself one snapshot).
 
+## 2026/06 -- compiler: nested join-family ops (Futamura projection)
+- Nested/chained UNNEST and UNNEST-feeding-a-JOIN now compile. They had failed
+  with "lzErr redeclared in this block" when the generator fused two join-family
+  ops into one Go block (lzErr was just the first of several function-scope vars
+  to collide). Fix: wrap OpJoinNestedLoop's runtime body in `if LzScope { ... }`
+  -- emitted as `if true { ... }`, a fresh block scope per fused instance, like
+  every other nestable op -- with the compile-time setup hoisted above it.
+  Dropped the hasNestedJoinFamily() exclusion from the suite compiler generator;
+  the differential (compiled output vs interpreter oracle) stays green.
+
 ## 2026/06 -- star projection spread, SELECT path.* (conformance 627 -> 631)
 - SELECT path.* must SPREAD the fields of an object value into the result row,
   and yield no fields (=> {}) when the value is not an object. n1k1 labeled the

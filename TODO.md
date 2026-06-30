@@ -8,21 +8,14 @@ Status: modernization + a pure-Go N1QL engine (CGO_ENABLED=0, cross-compiles)
 are done. Remaining work:
 
 ## Conformance (SQL++ suite corpus)
-- [ ] Raise the TestSuiteCases pass rate (currently ~639/680 runnable).
+- [ ] Raise the TestSuiteCases pass rate (currently ~640/680 runnable).
       Remaining gaps: COUNT(*) over a bare keyspace (CountScan) + EXPLAIN +
       index-union scans unsupported. Ratchet the pass-floor in
       test/suite_test.go as fixed.
-
-## Compiler (Futamura projection)
-- (done 2026/06) Nested join-family ops (nested/chained UNNEST, UNNEST feeding a
-  JOIN) now compile -- OpJoinNestedLoop's runtime body is wrapped in
-  `if LzScope { ... }` like the other nestable ops, giving each fused instance
-  its own block scope (was "lzErr redeclared in this block"). The
-  hasNestedJoinFamily() compiler-generator exclusion is removed.
       NOT-FIXABLE: array_position(array_agg(...)) depends on the array_agg
       element order, which N1QL leaves undefined -- n1k1's scan order differs
       from the corpus's, so the position differs (same multiset). 1 case. This
-      is now the ONLY remaining FAIL; the rest are UNSUPPORTED (unconverted
+      is the ONLY remaining FAIL; the rest are UNSUPPORTED (unconverted
       plans: EXPLAIN, index/union/count scans).
 
 ## Keeping current with SQL++
