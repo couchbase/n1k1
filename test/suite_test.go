@@ -180,6 +180,31 @@ func errMatches(got, want string) bool {
 	return strings.TrimSpace(got) == strings.TrimSpace(want)
 }
 
+// caseErrorCode reports whether a case is a {statements, errorCode} negative
+// test -- it expects the statement to be rejected. Unlike the {error}-text
+// cases, we do NOT require the code to match the corpus's: n1k1 reuses query's
+// parser/planner (so parse/plan codes do line up), but it has its own execution
+// engine, so a runtime error needn't carry query's exact code. The test's
+// intent ("this is rejected") is met by any clean (non-panic) error.
+func caseErrorCode(c map[string]interface{}) (stmt string, ok bool) {
+	for k := range c {
+		switch k {
+		case "statements", "errorCode", "ordered", "description", "pretty":
+		default:
+			return "", false
+		}
+	}
+	s, hasStmt := c["statements"].(string)
+	_, hasCode := c["errorCode"].(float64)
+	if !hasStmt || !hasCode {
+		return "", false
+	}
+	if _, hasResults := c["results"]; hasResults {
+		return "", false
+	}
+	return s, true
+}
+
 // caseMatch reports whether a case is a {statements, matchStatements} pair: the
 // two statements must yield equal results (a cross-statement equivalence check,
 // e.g. "SELECT 1+1 AS result" must match "SELECT 2 AS result"). Both are run
@@ -301,6 +326,23 @@ func TestSuiteCases(t *testing.T) {
 					errPass++
 				default:
 					nonPass = append(nonPass, errOutcome(loc, stmt, err))
+				}
+				continue
+			}
+
+			// Error-code negative test: {statements, errorCode} -- expects a
+			// failure. PASS on any clean (non-panic) error; the code needn't
+			// match query's (see caseErrorCode). A panic is still a PANIC bug,
+			// and returning rows is a FAIL (it should have been rejected).
+			if stmt, ok := caseErrorCode(c); ok {
+				_, err := n1k1RunStatement(store, stmt)
+				switch {
+				case err == nil:
+					nonPass = append(nonPass, caseOutcome{loc, stmt, "FAIL", "expected error, got rows"})
+				case isPanicErr(err):
+					nonPass = append(nonPass, errOutcome(loc, stmt, err))
+				default:
+					errPass++
 				}
 				continue
 			}
@@ -565,7 +607,11 @@ func exoticInfo(c map[string]interface{}) (reason, content string) {
 	var extra []string
 	for k := range c {
 		switch k {
-		case "statements", "results", "ordered", "description", "pretty":
+		// Fields the harness handles (so they're not what makes a case exotic).
+		// "resultset" is deliberately omitted -- it's non-authoritative (see the
+		// NOTE by caseRunnable), so it should surface as the exotic reason.
+		case "statements", "results", "error", "errorCode", "matchStatements",
+			"ordered", "description", "pretty":
 		default:
 			extra = append(extra, k)
 		}
