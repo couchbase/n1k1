@@ -639,8 +639,8 @@ var expectedNonPass = map[string]string{
 	"case_innerjoin.json[10]": "onkeys-proj",
 	"case_leftjoin.json[4]":   "onkeys-proj",
 
-	// Aggregate evaluated over an UNNEST scope.
-	"case_from-over.json[5]": "agg-unnest-scope",
+	// ORDER BY an aggregate (e.g. count(*)).
+	"case_from-over.json[5]": "orderby-agg",
 
 	// LET / WITH bindings.
 	"case_select.json[23]": "let-with",
@@ -673,11 +673,11 @@ var groupWhy = map[string]string{
 	"explain":          "EXPLAIN / plan-text output not converted to n1k1 ops",
 	"index-scan":       "secondary index / union scan not converted (n1k1 does primary scans)",
 	"unknown-func":     "unknown scalar function: query reports 'Invalid function', n1k1 panics in parse",
-	"unnest-source":    "UNNEST as a JOIN/NEST source: plan.Unnest is not yet a glue.Termer",
+	"unnest-source":    "UNNEST whose left input is another UNNEST or a join: VisitUnnest asserts the left plan is a keyspace Termer (panic)",
 	"meta-fetch":       "META() over fetch metadata subpaths ($document.exptime) not wired",
 	"groupby-key":      "GROUP BY on a computed / array-index key unresolved in VisitFinalGroup",
 	"onkeys-proj":      "ON KEYS join projection: label/vals arity mismatch",
-	"agg-unnest-scope": "aggregate over an UNNEST scope hits an AnnotatedValue assertion",
+	"orderby-agg":      "ORDER BY an aggregate (e.g. count(*)): the sort evaluates it over rows that lost the aggregates attachment (panic)",
 	"let-with":         "LET / WITH bindings (plan.Let / plan.With) not converted",
 	"resource-guard":   "engine refuses huge generator builtins (ARRAY_RANGE/REPEAT ~1e10)",
 	"system-namespace": "system: namespace needs a systemstore (intentionally nil; see FileStore)",
