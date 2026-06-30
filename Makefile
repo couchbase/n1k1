@@ -52,12 +52,15 @@ test-suite: build-glue
 # the two generators -- TestCasesSimpleWithCompiler (hand-built TestCasesSimple
 # Op trees) and TestSuiteWithCompiler (Op trees the glue layer derives from real
 # SQL++ conformance-suite queries) -- which emit Go source into test/tmp/
-# (gitignored). The second step compiles and runs that generated package, whose
-# TestGeneratedN / TestGeneratedFS_N funcs execute the *compiled* query and
-# compare its results. The two steps MUST stay ordered so ./test/tmp never
-# compiles a stale copy.
+# (gitignored). The middle step `go fmt`s that generated source so it's readable
+# (the emitter doesn't indent); it's run from inside test/tmp because `go fmt
+# ./test/tmp` from the module root would trigger go.sum/module verification.
+# The last step compiles and runs the generated package, whose TestGeneratedN /
+# TestGeneratedFS_N funcs execute the *compiled* query and compare its results.
+# The steps MUST stay ordered so ./test/tmp never compiles a stale copy.
 test-compiler: build-glue
 	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -tags n1ql -run 'TestCasesSimpleWithCompiler|TestSuiteWithCompiler' ./test
+	cd test/tmp && go fmt
 	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -tags n1ql -v ./test/tmp
 
 # test-all runs the whole N1QL-engine layer (glue/ + test/, includes the suite)
