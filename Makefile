@@ -88,3 +88,14 @@ cloc:
 benchmark-expr-eq:
 	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -v -tags n1ql -bench=InterpExprStr -benchmem ./test
 	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -v -tags n1ql -bench=InterpExprEq -benchmem ./test
+
+# bench runs the Phase-1 engine benchmarks (see DESIGN-benchmark.md +
+# test/benchmark/README.md): scan/filter/project throughput + allocs, and
+# GROUP BY across the spill point. Pure-Go (CGO_ENABLED=0), n1ql-gated.
+bench: build-glue
+	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -tags n1ql -run=xxx -bench=. -benchmem ./test/benchmark
+
+# bench-spill pins the distinct-key cardinality at which GROUP BY's rhmap/store
+# grows its metadata slots onto disk (a "*_slots_*" temp file).
+bench-spill: build-glue
+	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -tags n1ql -run TestSpillPoint -v ./test/benchmark
