@@ -332,7 +332,14 @@ func (c *Conv) VisitFinalGroup(o *plan.FinalGroup) (interface{}, error) {
 
 	for _, agg := range o.Aggregates() {
 		// TODO: Optimize as one aggExpr can support >=1 aggCalc.
-		aggExprs = append(aggExprs, []interface{}{"exprTree", agg.Operands()[0]})
+		operands := agg.Operands()
+		if len(operands) == 0 || operands[0] == nil {
+			// COUNT(*) has no operand expression; project a constant so the
+			// aggregate sees a non-MISSING value for every input row.
+			aggExprs = append(aggExprs, []interface{}{"json", "true"})
+		} else {
+			aggExprs = append(aggExprs, []interface{}{"exprTree", operands[0]})
+		}
 		aggCalcs = append(aggCalcs, []interface{}{strings.ToLower(agg.Name())})
 
 		labels = append(labels, "^aggregates|"+agg.String())
