@@ -527,7 +527,7 @@ func reportSuite(t *testing.T, nFiles, pass, errPass, skipped int, nonPass []cas
 
 	// Backstop on the raw pass count, in case a pass silently turns into a
 	// different already-listed failure (no unexpected case, but pass drops).
-	const passFloor = 639
+	const passFloor = 640
 	if pass < passFloor {
 		t.Errorf("suite conformance regressed: PASS=%d < baseline %d", pass, passFloor)
 	}
@@ -627,9 +627,6 @@ var expectedNonPass = map[string]string{
 	"case_innerjoin.json[10]": "onkeys-proj",
 	"case_leftjoin.json[4]":   "onkeys-proj",
 
-	// ORDER BY an aggregate (e.g. count(*)).
-	"case_from-over.json[5]": "orderby-agg",
-
 	// LET / WITH bindings.
 	"case_select.json[23]": "let-with",
 	"case_select.json[24]": "let-with",
@@ -663,7 +660,6 @@ var groupWhy = map[string]string{
 	"meta-fetch":       "META() over fetch metadata subpaths ($document.exptime) not wired",
 	"groupby-key":      "GROUP BY on a computed / array-index key unresolved in VisitFinalGroup",
 	"onkeys-proj":      "ON KEYS join projection: label/vals arity mismatch",
-	"orderby-agg":      "ORDER BY an aggregate (e.g. count(*)): the sort evaluates it over rows that lost the aggregates attachment (panic)",
 	"let-with":         "LET / WITH bindings (plan.Let / plan.With) not converted",
 	"resource-guard":   "engine refuses huge generator builtins (ARRAY_RANGE/REPEAT ~1e10)",
 	"system-namespace": "system: namespace needs a systemstore (intentionally nil; see FileStore)",

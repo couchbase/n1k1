@@ -639,6 +639,32 @@ func (c *Conv) VisitOrder(o *plan.Order) (interface{}, error) {
 		len(proj.Children) == 1 && projAllFieldPaths(proj.Labels) {
 		src := proj.Children[0]
 
+		// ORDER BY an aggregate (e.g. count(*)) must sort by the already-
+		// projected aggregate column, not re-evaluate the aggregate. The order
+		// runs above the projection, whose rows no longer carry the
+		// "^aggregates" attachment the group produced -- re-evaluating count(*)
+		// there panics (it asserts an AnnotatedValue). The projection already
+		// computed it, so rewrite an aggregate order term to a labelPath on the
+		// matching projected column (matched by expression text).
+		projExprLabel := map[string]string{}
+		for i, p := range proj.Params {
+			if pp, ok := p.([]interface{}); ok && len(pp) == 2 {
+				if name, _ := pp[0].(string); name == "exprTree" {
+					if e, ok := pp[1].(expression.Expression); ok {
+						projExprLabel[e.String()] = proj.Labels[i]
+					}
+				}
+			}
+		}
+		for i, term := range o.Terms() {
+			if _, isAgg := term.Expression().(algebra.Aggregate); !isAgg {
+				continue
+			}
+			if lbl, ok := projExprLabel[term.Expression().String()]; ok {
+				exprs[i] = []interface{}{"labelPath", lbl}
+			}
+		}
+
 		// Augmented projection: the projected terms, plus a pass-through of the
 		// source's doc (`.`-path) labels so the order keys can resolve them.
 		aug := &base.Op{
