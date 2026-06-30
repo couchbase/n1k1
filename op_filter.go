@@ -30,7 +30,7 @@ func OpFilter(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 			lzVal = exprFunc(lzVals, lzYieldErr) // <== emitCaptured: pathNextF "FF"
 
-			if base.ValEqualTrue(lzVal) {
+			if base.ValTruthy(lzVal) {
 				lzYieldValsOrig(lzVals) // <== emitCaptured: path ""
 			}
 		}

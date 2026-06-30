@@ -123,7 +123,7 @@ func OpJoinNestedLoop(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 				lzVal = exprFunc(lzVals, lzYieldErr) // <== emitCaptured: pathNext, "JF"
 			} // !lz
 
-			if base.ValEqualTrue(lzVal) {
+			if base.ValTruthy(lzVal) {
 				if isLeftOuter { // !lz
 					lzHadInner = true
 				} // !lz

@@ -82,6 +82,17 @@ Gist only -- details live in commit messages, README, and code comments.
   cause, and moot post-T3 (the drift-prone heavy modules aren't compiled; the
   versions that matter come from the fork's go.mod -- itself one snapshot).
 
+## 2026/06 -- WHERE/ON truth-value semantics (conformance 622 -> 623)
+- N1QL truth: a value passes a WHERE/ON condition if value.Truth() is true --
+  i.e. unless it is MISSING, NULL, false, 0/NaN, or an empty string/array/object.
+  n1k1's filter/join used ValEqualTrue (passes only the literal `true`), so a
+  FIRST/ANY comprehension yielding a non-empty STRING (e.g. "Euros Lyn") was
+  dropped. Added base.ValTruthy and used it in op_filter.go + op_join_nl.go
+  (regenerated intermed). Fixed the FIRST .. FOR .. WHEN case.
+- NOT-FIXABLE left behind: array_position(array_agg(array_min(...))) -- the
+  result is the position of a value in an ARRAY_AGG, whose element order N1QL
+  leaves undefined; n1k1's scan order differs from the corpus (same multiset).
+
 ## 2026/06 -- SELECT RAW + array-multiset comparison (conformance 617 -> 622)
 - SELECT RAW / ELEMENT: VisitInitialProject labels the projected value "." (the
   whole row) when Projection().Raw(), so the value is not wrapped under an alias.

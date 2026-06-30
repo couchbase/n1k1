@@ -16,6 +16,7 @@ package base
 import (
 	"encoding/binary"
 	"fmt"
+	"strconv"
 
 	"github.com/buger/jsonparser"
 )
@@ -48,6 +49,41 @@ func ValEqualNull(val Val) bool {
 
 func ValEqualTrue(val Val) bool {
 	return len(val) != 0 && val[0] == 't' // Ex: true.
+}
+
+// ValTruthy implements N1QL's truth-value semantics (value.Value.Truth())
+// for boolean condition contexts (WHERE, ON, WHEN, HAVING). A value is truthy
+// unless it is MISSING, NULL, false, the number 0 (or NaN), or an empty
+// string / array / object. E.g. a non-empty string such as "Euros Lyn" is
+// truthy, which is why a FIRST/ANY comprehension yielding a string passes a
+// WHERE clause.
+func ValTruthy(val Val) bool {
+	if len(val) == 0 { // MISSING.
+		return false
+	}
+
+	switch val[0] {
+	case 't': // true.
+		return true
+	case 'f', 'n': // false or null.
+		return false
+	case '"': // String: truthy if non-empty (i.e. more than just "").
+		return len(val) > 2
+	case '[', '{': // Array or object: truthy if it has any element/field.
+		for i := 1; i < len(val); i++ {
+			c := val[i]
+			if c == ']' || c == '}' {
+				return false // Only whitespace before the close => empty.
+			}
+			if c != ' ' && c != '\t' && c != '\n' && c != '\r' {
+				return true
+			}
+		}
+		return false
+	default: // Number: truthy if non-zero and not NaN.
+		f, err := strconv.ParseFloat(string(val), 64)
+		return err == nil && f != 0 && f == f
+	}
 }
 
 // ValEqual is based on N1QL's rules for missing & null's.

@@ -1,19 +1,21 @@
 # TODO
 
 Forward-looking only. What's DONE is in TODO-done.md; how the engine is built &
-patched is in patches/README.md; internals + the design-era idea backlog are in
-DESIGN.md; build/test commands are in README.md.
+patched is in patches/README.md; internals + the design are in DESIGN.md;
+build/test commands are in README.md.
 
 Status: modernization + a pure-Go N1QL engine (CGO_ENABLED=0, cross-compiles)
 are done. Remaining work:
 
 ## Conformance (filestore corpus)
-- [ ] Raise the TestFilestoreCases pass rate (currently ~622/672 runnable).
-      Remaining gaps: META().id (incl. with ANY / in joins); FIRST .. FOR
-      comprehensions; nested ".*" projection (SELECT details.format.*); deeply
-      nested array funcs; COUNT(*) over a bare keyspace (CountScan) + EXPLAIN +
-      index-union scans unsupported. Ratchet the pass-floor in
-      test/filestore_test.go as fixed.
+- [ ] Raise the TestFilestoreCases pass rate (currently ~623/672 runnable).
+      Remaining gaps: META().id (incl. with ANY / in joins); nested ".*"
+      projection (SELECT details.format.*); COUNT(*) over a bare keyspace
+      (CountScan) + EXPLAIN + index-union scans unsupported. Ratchet the
+      pass-floor in test/filestore_test.go as fixed.
+      NOT-FIXABLE: array_position(array_agg(...)) depends on the array_agg
+      element order, which N1QL leaves undefined -- n1k1's scan order differs
+      from the corpus's, so the position differs (same multiset). 1 case.
 
 - [ ] ORDER BY a source field when SELECT projects a subset (e.g. SELECT
       dimensions ... ORDER BY dimensions.length): the plan runs InitialProject
