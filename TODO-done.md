@@ -82,6 +82,16 @@ Gist only -- details live in commit messages, README, and code comments.
   cause, and moot post-T3 (the drift-prone heavy modules aren't compiled; the
   versions that matter come from the fork's go.mod -- itself one snapshot).
 
+## 2026/06 -- no-GROUP-BY aggregation + ARRAY_AGG (conformance 594 -> 605)
+- Fixed op_group.go: it gated the whole aggregation on len(groupExprs) > 0, so
+  an aggregate with no GROUP BY (empty group keys) produced 0 rows. Now the
+  group key is always computed via ValsEncodeCanonical -- empty groupExprs ->
+  the canonical "0 vals" key, i.e. one constant group / one output row.
+  (Fixes SUM/AVG/MIN/MAX/ARRAY_AGG without GROUP BY.) Regenerated intermed.
+- Implemented base.AggArrayAgg (ARRAY_AGG): accumulates the group's non-MISSING
+  values; Result is their JSON array. Registered in AggCatalog.
+- array_avg/array_count/array_contains(array_agg(...)) etc. now pass.
+
 ## 2026/06 -- MISSING-projection omit + harness key-order (conformance 530 -> 594)
 - Real fix: glue.ExprTree now yields an empty val (base.ValMissing) when a
   projected expression evaluates to MISSING, so ConvertVals omits the field

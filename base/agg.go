@@ -71,6 +71,9 @@ func init() {
 
 	AggCatalog["max"] = len(Aggs)
 	Aggs = append(Aggs, AggMax)
+
+	AggCatalog["array_agg"] = len(Aggs)
+	Aggs = append(Aggs, AggArrayAgg)
 }
 
 // -----------------------------------------------------
@@ -185,4 +188,58 @@ func AggCompareResult(vars *Vars, agg, buf []byte) (v Val, aggRest, bufOut []byt
 	vBuf := append(buf[:0], agg[8:8+n]...)
 
 	return Val(vBuf), agg[8+n:], BufUnused(buf, len(vBuf))
+}
+
+// -----------------------------------------------------
+
+// AggArrayAgg implements ARRAY_AGG: it accumulates the group's (non-MISSING)
+// values, and its Result is their JSON array. NULL is included; MISSING is not.
+//
+// State layout: an 8-byte element count, followed by that many length-prefixed
+// (8-byte len + JSON bytes) elements.
+var AggArrayAgg = &Agg{
+	Init: func(vars *Vars, agg []byte) []byte { return append(agg, Zero8[:8]...) },
+
+	Update: func(vars *Vars, v Val, aggNew, agg []byte, vc *ValComparer) (
+		[]byte, []byte, bool) {
+		n := binary.LittleEndian.Uint64(agg[:8])
+
+		// Walk the existing elements to find the end of this agg's portion.
+		total := 0
+		for i := uint64(0); i < n; i++ {
+			l := binary.LittleEndian.Uint64(agg[8+total : 8+total+8])
+			total += 8 + int(l)
+		}
+
+		if len(v) <= 0 { // ARRAY_AGG ignores MISSING.
+			return append(aggNew, agg[:8+total]...), agg[8+total:], false
+		}
+
+		aggNew = BinaryAppendUint64(aggNew, n+1)
+		aggNew = append(aggNew, agg[8:8+total]...)
+		aggNew = BinaryAppendUint64(aggNew, uint64(len(v)))
+		aggNew = append(aggNew, v...)
+
+		return aggNew, agg[8+total:], true
+	},
+
+	Result: func(vars *Vars, agg, buf []byte) (v Val, aggRest, bufOut []byte) {
+		n := binary.LittleEndian.Uint64(agg[:8])
+
+		vBuf := append(buf[:0], '[')
+
+		total := 0
+		for i := uint64(0); i < n; i++ {
+			l := int(binary.LittleEndian.Uint64(agg[8+total : 8+total+8]))
+			if i > 0 {
+				vBuf = append(vBuf, ',')
+			}
+			vBuf = append(vBuf, agg[8+total+8:8+total+8+l]...)
+			total += 8 + l
+		}
+
+		vBuf = append(vBuf, ']')
+
+		return Val(vBuf), agg[8+total:], BufUnused(buf, len(vBuf))
+	},
 }

@@ -80,82 +80,85 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 		lzYieldValsOrig := lzYieldVals
 
 		lzYieldVals = func(lzVals base.Vals) {
-			if len(groupExprs) > 0 { // !lz
-				lzValsOut = lzValsOut[:0]
+			// Compute the group key. With no GROUP BY (empty groupExprs), this
+			// is the canonical encoding of zero vals -- one constant key -- so
+			// all input rows fold into a single group, i.e. one output row of
+			// the aggregates.
+			lzValsOut = lzValsOut[:0]
 
-				lzValsOut = groupProjectFunc(lzVals, lzValsOut, lzYieldErr) // <== emitCaptured: pathNextG "GP"
+			lzValsOut = groupProjectFunc(lzVals, lzValsOut, lzYieldErr) // <== emitCaptured: pathNextG "GP"
 
-				lzGroupKey, lzErr = base.ValsEncodeCanonical(lzValsOut,
-					lzGroupKey[:0], lzVars.Ctx.ValComparer)
-				if lzErr == nil {
-					// Check if we've seen the group key before or not.
-					lzGroupVal, lzGroupKeyFound = lzSet.Get(lzGroupKey)
+			lzGroupKey, lzErr = base.ValsEncodeCanonical(lzValsOut,
+				lzGroupKey[:0], lzVars.Ctx.ValComparer)
 
-					if len(aggExprs) > 0 { // !lz
-						if !lzGroupKeyFound {
-							// We have aggregate exprs on a newly seen
-							// group key, so initialize the agg data
-							// structures for this new group key.
-							lzGroupVal = lzGroupValReuse[:0]
+			if lzErr == nil {
+				// Check if we've seen the group key before or not.
+				lzGroupVal, lzGroupKeyFound = lzSet.Get(lzGroupKey)
 
-							for _, aggCalc := range aggCalcs { // !lz
-								for _, aggName := range aggCalc.([]interface{}) { // !lz
-									aggIdx := base.AggCatalog[aggName.(string)] // !lz
-									lzAgg = base.Aggs[aggIdx]
+				if len(aggExprs) > 0 { // !lz
+					if !lzGroupKeyFound {
+						// We have aggregate exprs on a newly seen
+						// group key, so initialize the agg data
+						// structures for this new group key.
+						lzGroupVal = lzGroupValReuse[:0]
 
-									lzGroupVal = lzAgg.Init(lzVars, lzGroupVal)
-								} // !lz
-							} // !lz
-
-							lzGroupValReuse = lzGroupVal[:0]
-						}
-
-						// Project the aggregate exprs from the tuple.
-						lzValsOut = lzValsOut[:0]
-
-						lzValsOut = aggProjectFunc(lzVals, lzValsOut, lzYieldErr) // <== emitCaptured: pathNextG "AP"
-
-						lzGroupValNew = lzGroupValNew[:0]
-
-						var lzGroupValChanged, lzChanged bool
-
-						// Use the projected aggregate exprs to update
-						// the agg data structures.
-						for aggCalcI, aggCalc := range aggCalcs { // !lz
+						for _, aggCalc := range aggCalcs { // !lz
 							for _, aggName := range aggCalc.([]interface{}) { // !lz
 								aggIdx := base.AggCatalog[aggName.(string)] // !lz
 								lzAgg = base.Aggs[aggIdx]
 
-								lzGroupValNew, lzGroupVal, lzChanged = lzAgg.Update(lzVars,
-									lzValsOut[aggCalcI], lzGroupValNew, lzGroupVal, lzVars.Ctx.ValComparer)
-
-								lzGroupValChanged = lzGroupValChanged || lzChanged
+								lzGroupVal = lzAgg.Init(lzVars, lzGroupVal)
 							} // !lz
 						} // !lz
 
-						if lzGroupKeyFound {
-							if lzGroupValChanged {
-								// With a previously seen group key, the
-								// previous agg data structure might be
-								// in-place overwritable if its size is >=
-								// the new agg data structure's size.
-								if len(lzGroupVal) >= len(lzGroupValNew) {
-									copy(lzGroupVal, lzGroupValNew)
-								} else {
-									lzSet.Set(lzGroupKey, lzGroupValNew)
-								}
-							}
-						} else {
-							// We fall thru to the below lzSet.Set().
-							lzGroupVal = lzGroupValNew
-						}
+						lzGroupValReuse = lzGroupVal[:0]
+					}
+
+					// Project the aggregate exprs from the tuple.
+					lzValsOut = lzValsOut[:0]
+
+					lzValsOut = aggProjectFunc(lzVals, lzValsOut, lzYieldErr) // <== emitCaptured: pathNextG "AP"
+
+					lzGroupValNew = lzGroupValNew[:0]
+
+					var lzGroupValChanged, lzChanged bool
+
+					// Use the projected aggregate exprs to update
+					// the agg data structures.
+					for aggCalcI, aggCalc := range aggCalcs { // !lz
+						for _, aggName := range aggCalc.([]interface{}) { // !lz
+							aggIdx := base.AggCatalog[aggName.(string)] // !lz
+							lzAgg = base.Aggs[aggIdx]
+
+							lzGroupValNew, lzGroupVal, lzChanged = lzAgg.Update(lzVars,
+								lzValsOut[aggCalcI], lzGroupValNew, lzGroupVal, lzVars.Ctx.ValComparer)
+
+							lzGroupValChanged = lzGroupValChanged || lzChanged
+						} // !lz
 					} // !lz
 
-					if !lzGroupKeyFound {
-						lzSet.Set(lzGroupKey, lzGroupVal)
+					if lzGroupKeyFound {
+						if lzGroupValChanged {
+							// With a previously seen group key, the
+							// previous agg data structure might be
+							// in-place overwritable if its size is >=
+							// the new agg data structure's size.
+							if len(lzGroupVal) >= len(lzGroupValNew) {
+								copy(lzGroupVal, lzGroupValNew)
+							} else {
+								lzSet.Set(lzGroupKey, lzGroupValNew)
+							}
+						}
+					} else {
+						// We fall thru to the below lzSet.Set().
+						lzGroupVal = lzGroupValNew
 					}
+				} // !lz
+
+				if !lzGroupKeyFound {
+					lzSet.Set(lzGroupKey, lzGroupVal)
 				}
-			} // !lz
+			}
 		}
 
 		lzYieldErrOrig := lzYieldErr

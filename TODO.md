@@ -8,12 +8,12 @@ Status: modernization + a pure-Go N1QL engine (CGO_ENABLED=0, cross-compiles)
 are done. Remaining work:
 
 ## Conformance (filestore corpus)
-- [ ] Raise the TestFilestoreCases pass rate (currently ~594/672 runnable).
-      Remaining gaps: array-aggregate funcs over ARRAY_AGG (array_avg/
-      array_contains/... of array_agg(...)); FIRST .. FOR comprehensions;
-      UNNEST + ORDER BY / SELECT contact.* shapes; META().id with ANY; a couple
-      of UNNEST + GROUP BY paths panic (Termer / nil expression); EXPLAIN and
-      index-union scans are unsupported. Ratchet the pass-floor in
+- [ ] Raise the TestFilestoreCases pass rate (currently ~605/672 runnable).
+      Remaining gaps: DISTINCT aggregates (COUNT(DISTINCT x), ARRAY_AGG(DISTINCT
+      x)); FIRST .. FOR comprehensions; UNNEST + projection (SELECT child /
+      contact.* over UNNEST); META().id with ANY; object_filter and other
+      scalar funcs; COUNT(*) panics (nil operand) + CountScan unsupported;
+      EXPLAIN and index-union scans unsupported. Ratchet the pass-floor in
       test/filestore_test.go up as these get fixed.
 
 ## Keeping current with SQL++
