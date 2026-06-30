@@ -41,7 +41,9 @@ cloc:
 	find . | grep go | grep -v test | grep -v generated | grep -v tmp | \
        xargs cloc --by-file
 
-# Target benchmark-expr-eq runs microbenchmarks on expression eq.
+# Target benchmark-expr-eq runs microbenchmarks on expression eq. These live in
+# test/ (which uses glue/), so they need the n1ql tag + the ../n1k1-query fork
+# and build pure-Go (CGO_ENABLED=0) -- see patches/README.md.
 benchmark-expr-eq:
-	go test -v -bench=InterpExprStr -benchmem ./test
-	go test -v -bench=InterpExprEq -benchmem ./test
+	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -v -tags n1ql -bench=InterpExprStr -benchmem ./test
+	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -v -tags n1ql -bench=InterpExprEq -benchmem ./test
