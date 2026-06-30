@@ -11,11 +11,18 @@ are done. Remaining work:
 - [ ] Raise the TestFilestoreCases pass rate (currently ~617/672 runnable).
       Remaining gaps: META().id (incl. with ANY / in joins); FIRST .. FOR
       comprehensions; object_filter and other scalar funcs; nested ".*"
-      projection (SELECT details.format.*); multi-key ORDER BY + LIMIT;
-      ARRAY_AGG element ORDER differs from upstream (harness compares arrays
-      order-sensitively -- semantically equal); COUNT(*) over a bare keyspace
-      (CountScan) + EXPLAIN + index-union scans unsupported. Ratchet the
-      pass-floor in test/filestore_test.go up as these get fixed.
+      projection (SELECT details.format.*); ARRAY_AGG element ORDER differs from
+      upstream (harness compares arrays order-sensitively -- semantically equal);
+      COUNT(*) over a bare keyspace (CountScan) + EXPLAIN + index-union scans
+      unsupported. Ratchet the pass-floor in test/filestore_test.go as fixed.
+
+- [ ] ORDER BY a source field when SELECT projects a subset (e.g. SELECT
+      dimensions ... ORDER BY dimensions.length): the plan runs InitialProject
+      THEN Order, but the order-by exprs are source-qualified (catalog.dimensions
+      .length). n1k1's project op strips the row to the projected fields, so the
+      order keys resolve to MISSING -> no real sort. Needs the projected rows to
+      retain the source doc in scope (as the real engine's AnnotatedValue does),
+      or conv to run Order below the Project. Architectural; ~2 cases.
 
 ## Keeping current with SQL++
 n1k1's SQL++ support tracks couchbase/query (parser/algebra/expression/plan/
