@@ -82,6 +82,16 @@ Gist only -- details live in commit messages, README, and code comments.
   cause, and moot post-T3 (the drift-prone heavy modules aren't compiled; the
   versions that matter come from the fork's go.mod -- itself one snapshot).
 
+## 2026/06 -- COUNT(*) panic + DISTINCT aggregates (conformance 605 -> 613)
+- COUNT(*) nil-operand panic: VisitFinalGroup projected agg.Operands()[0], nil
+  for COUNT(*), which panicked in the expr evaluator. Now COUNT(*) projects a
+  constant so the agg sees a non-MISSING value per row. 605 -> 611.
+- DISTINCT aggregates: conv emits count_distinct / array_agg_distinct aggCalc
+  names when agg.Distinct(); base.AggCountDistinct / AggArrayAggDistinct share
+  aggDistinctUpdate (accumulate unique canonical values). 611 -> 613.
+  (A couple ARRAY_AGG cases still differ only in array element ORDER vs
+  upstream -- a harness comparison nuance, not a dedup bug.)
+
 ## 2026/06 -- no-GROUP-BY aggregation + ARRAY_AGG (conformance 594 -> 605)
 - Fixed op_group.go: it gated the whole aggregation on len(groupExprs) > 0, so
   an aggregate with no GROUP BY (empty group keys) produced 0 rows. Now the

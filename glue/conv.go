@@ -340,7 +340,11 @@ func (c *Conv) VisitFinalGroup(o *plan.FinalGroup) (interface{}, error) {
 		} else {
 			aggExprs = append(aggExprs, []interface{}{"exprTree", operands[0]})
 		}
-		aggCalcs = append(aggCalcs, []interface{}{strings.ToLower(agg.Name())})
+		aggName := strings.ToLower(agg.Name())
+		if agg.Distinct() && (aggName == "count" || aggName == "array_agg") {
+			aggName += "_distinct" // e.g. COUNT(DISTINCT x), ARRAY_AGG(DISTINCT x).
+		}
+		aggCalcs = append(aggCalcs, []interface{}{aggName})
 
 		labels = append(labels, "^aggregates|"+agg.String())
 	}

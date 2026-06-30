@@ -12,6 +12,7 @@
 package base
 
 import (
+	"bytes"
 	"encoding/binary"
 	"math"
 	"strconv"
@@ -74,6 +75,96 @@ func init() {
 
 	AggCatalog["array_agg"] = len(Aggs)
 	Aggs = append(Aggs, AggArrayAgg)
+
+	// DISTINCT variants: e.g. COUNT(DISTINCT x), ARRAY_AGG(DISTINCT x). They
+	// share aggDistinctUpdate (accumulate unique canonical values) and differ
+	// only in Result.
+	AggCatalog["count_distinct"] = len(Aggs)
+	Aggs = append(Aggs, AggCountDistinct)
+
+	AggCatalog["array_agg_distinct"] = len(Aggs)
+	Aggs = append(Aggs, AggArrayAggDistinct)
+}
+
+// -----------------------------------------------------
+
+// aggDistinctWalk returns the byte length of the n length-prefixed elements
+// that begin at agg[8:] (i.e. this distinct-agg's portion, excluding the count).
+func aggDistinctWalk(n uint64, agg []byte) (total int) {
+	for i := uint64(0); i < n; i++ {
+		l := binary.LittleEndian.Uint64(agg[8+total : 8+total+8])
+		total += 8 + int(l)
+	}
+	return total
+}
+
+// aggDistinctUpdate adds v's canonical form to the distinct set if not already
+// present. State: count(uint64) + count*(len-prefixed canonical val).
+func aggDistinctUpdate(v Val, aggNew, agg []byte, vc *ValComparer) (
+	[]byte, []byte, bool) {
+	n := binary.LittleEndian.Uint64(agg[:8])
+	total := aggDistinctWalk(n, agg)
+
+	if len(v) <= 0 { // DISTINCT aggregates ignore MISSING.
+		return append(aggNew, agg[:8+total]...), agg[8+total:], false
+	}
+
+	cv, err := vc.CanonicalJSON(v, nil)
+	if err != nil {
+		cv = v
+	}
+
+	// Already present?
+	off := 0
+	for i := uint64(0); i < n; i++ {
+		l := int(binary.LittleEndian.Uint64(agg[8+off : 8+off+8]))
+		if bytes.Equal(agg[8+off+8:8+off+8+l], cv) {
+			return append(aggNew, agg[:8+total]...), agg[8+total:], false
+		}
+		off += 8 + l
+	}
+
+	aggNew = BinaryAppendUint64(aggNew, n+1)
+	aggNew = append(aggNew, agg[8:8+total]...)
+	aggNew = BinaryAppendUint64(aggNew, uint64(len(cv)))
+	aggNew = append(aggNew, cv...)
+
+	return aggNew, agg[8+total:], true
+}
+
+var AggCountDistinct = &Agg{
+	Init: func(vars *Vars, agg []byte) []byte { return append(agg, Zero8[:8]...) },
+	Update: func(vars *Vars, v Val, aggNew, agg []byte, vc *ValComparer) ([]byte, []byte, bool) {
+		return aggDistinctUpdate(v, aggNew, agg, vc)
+	},
+	Result: func(vars *Vars, agg, buf []byte) (v Val, aggRest, bufOut []byte) {
+		n := binary.LittleEndian.Uint64(agg[:8])
+		total := aggDistinctWalk(n, agg)
+		vBuf := strconv.AppendUint(buf[:0], n, 10)
+		return Val(vBuf), agg[8+total:], BufUnused(buf, len(vBuf))
+	},
+}
+
+var AggArrayAggDistinct = &Agg{
+	Init: func(vars *Vars, agg []byte) []byte { return append(agg, Zero8[:8]...) },
+	Update: func(vars *Vars, v Val, aggNew, agg []byte, vc *ValComparer) ([]byte, []byte, bool) {
+		return aggDistinctUpdate(v, aggNew, agg, vc)
+	},
+	Result: func(vars *Vars, agg, buf []byte) (v Val, aggRest, bufOut []byte) {
+		n := binary.LittleEndian.Uint64(agg[:8])
+		vBuf := append(buf[:0], '[')
+		total := 0
+		for i := uint64(0); i < n; i++ {
+			l := int(binary.LittleEndian.Uint64(agg[8+total : 8+total+8]))
+			if i > 0 {
+				vBuf = append(vBuf, ',')
+			}
+			vBuf = append(vBuf, agg[8+total+8:8+total+8+l]...)
+			total += 8 + l
+		}
+		vBuf = append(vBuf, ']')
+		return Val(vBuf), agg[8+total:], BufUnused(buf, len(vBuf))
+	},
 }
 
 // -----------------------------------------------------
