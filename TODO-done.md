@@ -82,6 +82,21 @@ Gist only -- details live in commit messages, README, and code comments.
   cause, and moot post-T3 (the drift-prone heavy modules aren't compiled; the
   versions that matter come from the fork's go.mod -- itself one snapshot).
 
+## 2026/06 -- META(alias).id document metadata (conformance 623 -> 625)
+- META(alias).id yielded {} (MISSING): the `^id` attachment was set on the
+  whole row's AnnotatedValue, but META(alias) evaluates its operand first, so
+  it needs the metadata on the *keyspace sub-value*, not the outer row. The
+  labels already emit each doc as a `.`-path immediately followed by its `^id`
+  (see conv.go), so ConvertVals.Convert now attaches `^id` to that preceding
+  doc sub-value (wraps it as an AnnotatedValue + SetId). META(u)/META(o) in a
+  join resolve independently this way. Fixed the bare-projection + ANY-WHERE
+  cases (case_by_id, case_innerjoin).
+- Second bug, join-side keys: DatastoreFetch appended the incoming key val to
+  `^id` verbatim, but join ON KEYS array keys arrive via ArrayYield, which
+  strips JSON string quotes -- so `^id` was an unquoted string read downstream
+  as BINARY ("<binary (13 b)>"). Fetch now re-encodes the parsed key with
+  strconv.AppendQuote so `^id` is always canonical JSON.
+
 ## 2026/06 -- WHERE/ON truth-value semantics (conformance 622 -> 623)
 - N1QL truth: a value passes a WHERE/ON condition if value.Truth() is true --
   i.e. unless it is MISSING, NULL, false, 0/NaN, or an empty string/array/object.

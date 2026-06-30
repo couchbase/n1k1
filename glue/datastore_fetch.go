@@ -17,6 +17,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"strconv"
 
 	"github.com/couchbase/query/datastore"
 	"github.com/couchbase/query/value"
@@ -90,8 +91,10 @@ func DatastoreFetch(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 
 		var buf bytes.Buffer
 
+		var idBuf []byte
+
 		// Keep the same ordering as the batch.
-		for i, key := range keys {
+		for _, key := range keys {
 			if key != "" {
 				v, ok := fetchMap[key]
 				if ok && v != nil {
@@ -107,8 +110,15 @@ func DatastoreFetch(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 					jv := buf.Bytes()
 
 					if err == nil && len(jv) > 0 {
-						vals = append(vals[:0], jv)      // Label ".".
-						vals = append(vals, batch[i]...) // Label "^id".
+						// "^id" must be canonical JSON so Convert reads it as a
+						// string. The incoming key val can arrive unquoted (when
+						// a join's ON KEYS array is split by ArrayYield, which
+						// strips string quotes), so re-encode from the parsed
+						// key rather than passing batch[i] through verbatim.
+						idBuf = strconv.AppendQuote(idBuf[:0], key)
+
+						vals = append(vals[:0], jv) // Label ".".
+						vals = append(vals, idBuf)  // Label "^id".
 
 						yieldVals(vals)
 					}

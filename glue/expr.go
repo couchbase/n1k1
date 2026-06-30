@@ -160,10 +160,20 @@ func (s *ConvertVals) Convert(vals base.Vals) (value.Value, error) {
 
 	var v value.Value // The result of the merged vals.
 
+	// The labels emit each keyspace doc as a `.`-path label immediately
+	// followed by its `^id` attachment (see conv.go). lastParent/lastKey track
+	// the most-recently-set doc field so a following `^id` can attach the
+	// metadata to that sub-value (so META(alias).id resolves), rather than to
+	// the outer row. Reset whenever the preceding label wasn't a doc-set.
+	var lastParent value.Value
+	var lastKey string
+
 OUTER:
 	for i, label := range s.Labels {
 		switch label[0] {
 		case '.': // Label is a path into v of where to set vals[i].
+			lastParent, lastKey = nil, ""
+
 			if label == "." {
 				if v != nil {
 					return nil, fmt.Errorf("Convert, v non-nil on '.'")
@@ -209,6 +219,10 @@ OUTER:
 				if err != nil {
 					return nil, err
 				}
+
+				// Remember this doc-set so a following `^id` attaches the
+				// document metadata to it (enables META(alias).id).
+				lastParent, lastKey = subObj, path[len(path)-1]
 			} else {
 				subObj.UnsetField(path[len(path)-1])
 			}
@@ -217,6 +231,22 @@ OUTER:
 			if len(vals[i]) > 0 {
 				// TODO: Is vals[i] always JSON encoded?
 				vv := value.NewParsedValue(vals[i], true)
+
+				if label[1:] == "id" && lastParent != nil {
+					// Attach the doc id to the preceding doc sub-value, so
+					// META(alias).id resolves against that keyspace's value.
+					cur, _ := lastParent.Field(lastKey)
+					av, ok := cur.(value.AnnotatedValue)
+					if !ok {
+						av = value.NewAnnotatedValue(cur)
+					}
+					av.SetId(vv)
+					if err := lastParent.SetField(lastKey, av); err != nil {
+						return nil, err
+					}
+
+					continue OUTER
+				}
 
 				av, ok := v.(value.AnnotatedValue)
 				if !ok {
