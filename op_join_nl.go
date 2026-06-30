@@ -32,13 +32,20 @@ import (
 //	 unnest-leftOuter           isUnnest        isLeftOuter
 func OpJoinNestedLoop(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	lzYieldErr base.YieldErr, path, pathNext string) {
-	// TODO(compiler): lzErr has no path suffix, so when the compiler fuses two
-	// join-family ops inline (e.g. UNNEST feeding a JOIN, or chained UNNEST) the
-	// nested declaration collides -- "lzErr redeclared in this block". The
-	// interpreter is unaffected (each op runs in its own func scope). Until this
-	// is path-suffixed (like the other lz vars), TestSuiteWithCompiler skips
-	// nested-join-family cases via hasNestedJoinFamily(). Same issue applies to
-	// the other un-suffixed `var lzErr` decls (OpJoinHash, OpSequence, etc.).
+	// TODO(compiler): nested join-family ops don't compile -- the generator
+	// fuses both inline into one Go block and their function-scope vars collide
+	// ("lzErr redeclared in this block"; lzErr is just the first of several --
+	// lzHadInner, lzValsPre, lzNestBytes, lzValsJoin, lzYieldValsOrig all clash
+	// too). Root cause: unlike every other nestable op (OpProject, OpGroup,
+	// OpUnionAll, OpOrderOffsetLimit, OpWindow*, OpJoinHash), this func does NOT
+	// wrap its body in `if LzScope { ... }`, which in generated code becomes
+	// `if true { ... }` -- a fresh block scope per fused instance. The fix:
+	// wrap the body in `if LzScope {` like the others, and `// <== varLift: ...
+	// by path` the reuse-buffer vars that the lzYieldVals closure mutates across
+	// calls (cf. lzValsReuse in OpProject), so they hoist to the top, unique per
+	// path. The interpreter is unaffected (LzScope==true; each op is its own
+	// func scope already). Until then, TestSuiteWithCompiler skips these via
+	// hasNestedJoinFamily(); the interpreter runs them fine.
 	var lzErr error
 
 	lzYieldErrOrig := lzYieldErr

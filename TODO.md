@@ -14,13 +14,20 @@ are done. Remaining work:
       test/suite_test.go as fixed.
 
 ## Compiler (Futamura projection)
-- [ ] Fix "lzErr redeclared in this block" in generated code: OpJoinNestedLoop
-      (and OpJoinHash, OpSequence, ...) declare an un-suffixed `var lzErr`, so
-      the compiler can't fuse two join-family ops in an ancestor/descendant
-      relation (nested/chained UNNEST, UNNEST feeding a JOIN). Path-suffix the
-      var like the other lz vars. Until then, TestSuiteWithCompiler skips such
-      cases (hasNestedJoinFamily); the interpreter is unaffected. See the
-      TODO(compiler) note in op_join_nl.go.
+- [ ] Compile nested join-family ops (nested/chained UNNEST, UNNEST feeding a
+      JOIN). They fail with "lzErr redeclared in this block" in generated code.
+      Root cause: OpJoinNestedLoop is the only nestable op that does NOT wrap its
+      body in `if LzScope { ... }` (which becomes `if true {}` -- a fresh block
+      scope per fused instance), so when the generator inlines two of them into
+      one block their function-scope vars collide (lzErr, and also lzHadInner,
+      lzValsPre, lzNestBytes, lzValsJoin, lzYieldValsOrig). Fix = wrap the body
+      in `if LzScope {` like OpProject/OpGroup/etc., and `varLift ... by path`
+      the reuse buffers the lzYieldVals closure mutates across calls (cf.
+      lzValsReuse in OpProject). The differential test is the safety net: with
+      hasNestedJoinFamily() removed, TestSuiteWithCompiler must stay green.
+      Until done, those cases are skipped from the compiler differential only;
+      the interpreter runs them fine. See the TODO(compiler) note in
+      op_join_nl.go.
       NOT-FIXABLE: array_position(array_agg(...)) depends on the array_agg
       element order, which N1QL leaves undefined -- n1k1's scan order differs
       from the corpus's, so the position differs (same multiset). 1 case. This
