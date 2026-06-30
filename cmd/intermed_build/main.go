@@ -6,8 +6,11 @@ import (
 	"os"
 )
 
-var sourceDir = flag.String("sourceDir", ".",
-	"top-level directory of n1k1 source files")
+var sourceDir = flag.String("sourceDir", "engine",
+	"directory of the n1k1 engine source files")
+
+var outDir = flag.String("outDir", "intermed",
+	"output directory for the generated intermed package")
 
 func main() {
 	flag.Parse()
@@ -18,7 +21,7 @@ func main() {
 		log.Printf(" -%s=%s\n", f.Name, f.Value)
 	})
 
-	err := IntermedBuild(*sourceDir, *sourceDir+"/intermed")
+	err := IntermedBuild(*sourceDir, *outDir)
 	if err != nil {
 		log.Fatal(err)
 	}

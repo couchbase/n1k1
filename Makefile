@@ -10,7 +10,7 @@ default: run_intermed_build
 run_intermed_build:
 	go vet ./...
 	go test -v ./base
-	go test .
+	go test ./engine
 	go build ./cmd/intermed_build/
 	./intermed_build
 	go fmt ./...
@@ -74,10 +74,10 @@ test-all: build-glue
 easy-to-read:
 	mkdir -p ./tmp/easy-to-read
 	rm -f ./tmp/easy-to-read/*.go
-	for f in ./*.go; do \
+	for f in engine/*.go; do \
        sed -e 's/[Ll]z//g' $$f | \
        sed -e 's/ \/\/ !//g' | \
-       sed -e 's/ \/\/ <== .*//g' > ./tmp/easy-to-read/$$f; \
+       sed -e 's/ \/\/ <== .*//g' > ./tmp/easy-to-read/$$(basename $$f); \
     done
 	go fmt ./tmp/easy-to-read
 

@@ -12,7 +12,6 @@ import (
 //
 // Conclusion is that some non-scalar types are boxed, which leads to
 // some memory allocations.
-//
 func BenchmarkBoxing(b *testing.B) {
 	m := []interface{}{123.3}
 

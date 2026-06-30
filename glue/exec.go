@@ -27,8 +27,8 @@ import (
 
 	"github.com/couchbase/rhmap/store"
 
-	"github.com/couchbase/n1k1"
 	"github.com/couchbase/n1k1/base"
+	"github.com/couchbase/n1k1/engine"
 
 	"github.com/couchbase/query/plan"
 	"github.com/couchbase/query/value"
@@ -157,10 +157,10 @@ func MakeVars(dir, prefix string) (string, *base.Vars) {
 		Temps: make([]interface{}, 16),
 		Ctx: &base.Ctx{
 			ValComparer: base.NewValComparer(),
-			ExprCatalog: n1k1.ExprCatalog,
+			ExprCatalog: engine.ExprCatalog,
 			YieldStats:  func(stats *base.Stats) error { return nil },
 			TempDir:     tmpDir,
-			ExecOp:      n1k1.ExecOp,
+			ExecOp:      engine.ExecOp,
 			AllocMap: func() (*store.RHStore, error) {
 				mm.Lock()
 				defer mm.Unlock()

@@ -5,20 +5,20 @@ package test
 import (
 	"testing"
 
-	"github.com/couchbase/n1k1"
 	"github.com/couchbase/n1k1/base"
+	"github.com/couchbase/n1k1/engine"
 	"github.com/couchbase/n1k1/glue"
 )
 
 func MakeYieldCaptureFuncs(t *testing.T, testi int, expectErr string) (
 	string, *base.Vars, base.YieldVals, base.YieldErr,
 	func() []base.Vals) {
-	if n1k1.ExprCatalog["exprStr"] == nil {
-		n1k1.ExprCatalog["exprStr"] = glue.ExprStr
+	if engine.ExprCatalog["exprStr"] == nil {
+		engine.ExprCatalog["exprStr"] = glue.ExprStr
 	}
 
-	if n1k1.ExprCatalog["exprTree"] == nil {
-		n1k1.ExprCatalog["exprTree"] = glue.ExprTree
+	if engine.ExprCatalog["exprTree"] == nil {
+		engine.ExprCatalog["exprTree"] = glue.ExprTree
 	}
 
 	var yields []base.Vals

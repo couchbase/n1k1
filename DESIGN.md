@@ -9,7 +9,7 @@ README.md.
 
 Or, how intermed_build generates a N1QL compiler...
 
-- 1: First, take a look at the n1k1/*.go files. You'll see a simple,
+- 1: First, take a look at the engine/*.go files. You'll see a simple,
 interpreter for a "N1QL" query-plan. In ExecOp(), it recursively walks
 through a query-plan tree, and processes the query-plan by pushing (or
 yield()'ing) data records from child nodes (e.g., a scan) up to parent
@@ -22,27 +22,27 @@ some variables are lazy or late-bound (they need actual data records),
 versus other variables that are early-bound (they use information
 that's already available at query-plan compilation time).
 
-- 1.2: Of note, the n1k1/*.go files are written in a careful subset of
+- 1.2: Of note, the engine/*.go files are written in a careful subset of
 golang. It's all legal golang code, but it follows additional rules
 and conventions (like the "lz" conventions and directives in code
 comments) to make parsing by n1k1's intermed_build tool easy.
 
 - 2: The intermed_build tool parses the "lz" conventions and other
-markers (e.g., code comment directives) from the n1k1/*.go source
-files to translate that interpreter code into a intermediary, helper
-package, called n1k1/intermed.
+markers (e.g., code comment directives) from the engine/*.go source
+files to translate that interpreter code into an intermediary, helper
+package, called intermed/.
 
-- 2.1: The n1k1/intermed package will be used later by the final n1k1
+- 2.1: The intermed/ package will be used later by the final n1k1
 query compiler.
 
 - 2.2: The way the intermed_build tool works is that it processes the
-n1k1/*.go source files line-by-line, and translates any "lz" lines
+engine/*.go source files line-by-line, and translates any "lz" lines
 into printf's. Non-lazy expressions are turned into printf'ed
 placeholder vars. Non-lazy lines are emitted entirely as-is, as they
 are early-bound.
 
 - 3: Finally, the n1k1 compiler, which imports and uses the generated
-n1k1/intermed package, will take the user's input of a N1QL query-plan
+intermed/ package, will take the user's input of a N1QL query-plan
 and will emit *.go code (or possibly other languages) that can
 efficiently execute that query-plan.
 

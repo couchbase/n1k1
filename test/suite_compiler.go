@@ -29,8 +29,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/couchbase/n1k1"
 	"github.com/couchbase/n1k1/base"
+	"github.com/couchbase/n1k1/engine"
 	"github.com/couchbase/n1k1/glue"
 )
 
@@ -169,12 +169,12 @@ func compiledSuiteStore() (*glue.Store, error) {
 		}
 		suiteStore.InitParser()
 
-		n1k1.ExecOpEx = glue.DatastoreOp
-		if n1k1.ExprCatalog["exprStr"] == nil {
-			n1k1.ExprCatalog["exprStr"] = glue.ExprStr
+		engine.ExecOpEx = glue.DatastoreOp
+		if engine.ExprCatalog["exprStr"] == nil {
+			engine.ExprCatalog["exprStr"] = glue.ExprStr
 		}
-		if n1k1.ExprCatalog["exprTree"] == nil {
-			n1k1.ExprCatalog["exprTree"] = glue.ExprTree
+		if engine.ExprCatalog["exprTree"] == nil {
+			engine.ExprCatalog["exprTree"] = glue.ExprTree
 		}
 	})
 	return suiteStore, suiteStoreErr

@@ -22,8 +22,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/couchbase/n1k1"
 	"github.com/couchbase/n1k1/base"
+	"github.com/couchbase/n1k1/engine"
 
 	"github.com/couchbase/query/expression"
 	"github.com/couchbase/query/expression/parser"
@@ -63,7 +63,7 @@ func ExprTree(vars *base.Vars, labels base.Labels,
 	if ok {
 		// TODO: Compiled approach should probably invoke something
 		// like vars.MakeExprFunc().
-		return n1k1.MakeExprFunc(vars, labels, paramsOut, path, "")
+		return engine.MakeExprFunc(vars, labels, paramsOut, path, "")
 	}
 
 	context, ok := vars.Temps[0].(expression.Context)

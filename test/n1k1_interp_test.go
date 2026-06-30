@@ -8,8 +8,8 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/couchbase/n1k1"
 	"github.com/couchbase/n1k1/base"
+	"github.com/couchbase/n1k1/engine"
 	"github.com/couchbase/n1k1/glue"
 )
 
@@ -18,7 +18,7 @@ func TestCasesSimpleWithInterp(t *testing.T) {
 		tmpDir, vars, yieldVals, yieldErr, returnYields :=
 			MakeYieldCaptureFuncs(t, testi, test.expectErr)
 
-		n1k1.ExecOp(&test.o, vars, yieldVals, yieldErr, "", "")
+		engine.ExecOp(&test.o, vars, yieldVals, yieldErr, "", "")
 
 		yields := returnYields()
 
@@ -51,8 +51,8 @@ func BenchmarkInterpExprEq_1Docs(b *testing.B) {
 }
 
 func BenchmarkInterpExprStr_1Docs(b *testing.B) {
-	if n1k1.ExprCatalog["exprStr"] == nil {
-		n1k1.ExprCatalog["exprStr"] = glue.ExprStr
+	if engine.ExprCatalog["exprStr"] == nil {
+		engine.ExprCatalog["exprStr"] = glue.ExprStr
 	}
 
 	benchmarkInterpNDocs(b,
@@ -76,8 +76,8 @@ func BenchmarkInterpExprEq_1000Docs(b *testing.B) {
 }
 
 func BenchmarkInterpExprStr_1000Docs(b *testing.B) {
-	if n1k1.ExprCatalog["exprStr"] == nil {
-		n1k1.ExprCatalog["exprStr"] = glue.ExprStr
+	if engine.ExprCatalog["exprStr"] == nil {
+		engine.ExprCatalog["exprStr"] = glue.ExprStr
 	}
 
 	benchmarkInterpNDocs(b,
@@ -101,8 +101,8 @@ func BenchmarkInterpExprEq_100000Docs(b *testing.B) {
 }
 
 func BenchmarkInterpExprStr_100000Docs(b *testing.B) {
-	if n1k1.ExprCatalog["exprStr"] == nil {
-		n1k1.ExprCatalog["exprStr"] = glue.ExprStr
+	if engine.ExprCatalog["exprStr"] == nil {
+		engine.ExprCatalog["exprStr"] = glue.ExprStr
 	}
 
 	benchmarkInterpNDocs(b,
@@ -121,7 +121,7 @@ func benchmarkInterpNDocs(b *testing.B,
 		Temps: []interface{}{nil},
 		Ctx: &base.Ctx{
 			ValComparer: base.NewValComparer(),
-			ExprCatalog: n1k1.ExprCatalog,
+			ExprCatalog: engine.ExprCatalog,
 			YieldStats:  func(stats *base.Stats) error { return nil },
 		},
 	}
@@ -165,7 +165,7 @@ func benchmarkInterpNDocs(b *testing.B,
 	for i := 0; i < b.N; i++ {
 		yieldValsCount = 0
 
-		n1k1.ExecOp(&o, vars, yieldVals, yieldErr, "", "")
+		engine.ExecOp(&o, vars, yieldVals, yieldErr, "", "")
 
 		if yieldValsCount != nDocs {
 			b.Fatalf("yieldValsCount: %d != nDocs: %d",
@@ -242,7 +242,7 @@ func benchmarkInterpGroupBy(b *testing.B, nDocs int) {
 	for i := 0; i < b.N; i++ {
 		yieldValsCount = 0
 
-		n1k1.ExecOp(&o, vars, yieldVals, yieldErr, "", "")
+		engine.ExecOp(&o, vars, yieldVals, yieldErr, "", "")
 
 		if yieldValsCount != 1 {
 			b.Fatalf("yieldValsCount: %d != 1", yieldValsCount)

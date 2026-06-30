@@ -32,8 +32,8 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/couchbase/n1k1"
 	"github.com/couchbase/n1k1/base"
+	"github.com/couchbase/n1k1/engine"
 	"github.com/couchbase/n1k1/glue"
 )
 
@@ -73,11 +73,11 @@ func n1k1RunStatement(store *glue.Store, stmt string) (rows []string, err error)
 		return nil, err
 	}
 
-	if n1k1.ExprCatalog["exprStr"] == nil {
-		n1k1.ExprCatalog["exprStr"] = glue.ExprStr
+	if engine.ExprCatalog["exprStr"] == nil {
+		engine.ExprCatalog["exprStr"] = glue.ExprStr
 	}
-	if n1k1.ExprCatalog["exprTree"] == nil {
-		n1k1.ExprCatalog["exprTree"] = glue.ExprTree
+	if engine.ExprCatalog["exprTree"] == nil {
+		engine.ExprCatalog["exprTree"] = glue.ExprTree
 	}
 
 	tmpDir, vars := glue.MakeVars("", "n1k1fs")
@@ -90,9 +90,9 @@ func n1k1RunStatement(store *glue.Store, stmt string) (rows []string, err error)
 		vars.Temps = append(vars.Temps, nil)
 	}
 
-	origExecOpEx := n1k1.ExecOpEx
-	defer func() { n1k1.ExecOpEx = origExecOpEx }()
-	n1k1.ExecOpEx = glue.DatastoreOp
+	origExecOpEx := engine.ExecOpEx
+	defer func() { engine.ExecOpEx = origExecOpEx }()
+	engine.ExecOpEx = glue.DatastoreOp
 
 	var execErr error
 	yieldVals := func(vals base.Vals) {
@@ -117,7 +117,7 @@ func n1k1RunStatement(store *glue.Store, stmt string) (rows []string, err error)
 		}
 	}
 
-	n1k1.ExecOp(conv.TopOp, vars, yieldVals, yieldErr, "", "")
+	engine.ExecOp(conv.TopOp, vars, yieldVals, yieldErr, "", "")
 
 	return rows, execErr
 }

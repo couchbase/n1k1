@@ -23,8 +23,8 @@ import (
 
 	"github.com/couchbase/query/plan"
 
-	"github.com/couchbase/n1k1"
 	"github.com/couchbase/n1k1/base"
+	"github.com/couchbase/n1k1/engine"
 	"github.com/couchbase/n1k1/glue"
 )
 
@@ -795,13 +795,13 @@ func testGlueExec(t *testing.T, emit bool,
 		vars.Temps = append(vars.Temps, nil)
 	}
 
-	origExecOpEx := n1k1.ExecOpEx
+	origExecOpEx := engine.ExecOpEx
 
-	defer func() { n1k1.ExecOpEx = origExecOpEx }()
+	defer func() { engine.ExecOpEx = origExecOpEx }()
 
-	n1k1.ExecOpEx = glue.DatastoreOp
+	engine.ExecOpEx = glue.DatastoreOp
 
-	n1k1.ExecOp(conv.TopOp, vars, yieldVals, yieldErr, "", "")
+	engine.ExecOp(conv.TopOp, vars, yieldVals, yieldErr, "", "")
 
 	results := returnYields()
 
