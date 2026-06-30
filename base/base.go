@@ -322,8 +322,26 @@ func ArrayYield(val Val, yieldVals YieldVals, valsPre Vals) (Vals, bool) {
 				return
 			}
 
+			// jsonparser.ArrayEach strips the surrounding quotes from a string
+			// element, so a string like "Humor" arrives as raw bytes (Humor)
+			// that downstream reads as BINARY rather than a JSON string. Re-wrap
+			// it so the yielded element is valid JSON. (Other element types --
+			// objects, numbers, bools, null -- are already valid JSON as-is.)
+			//
+			// TODO: this allocates per string element; reuse a scratch buffer if
+			// it shows up hot (it can't reuse valsPre, whose bytes outlive the
+			// callback when the consumer retains references).
+			elem := v
+			if vType == jsonparser.String {
+				q := make([]byte, 0, len(v)+2)
+				q = append(q, '"')
+				q = append(q, v...)
+				q = append(q, '"')
+				elem = q
+			}
+
 			valsPre = valsPre[:0]
-			valsPre = append(valsPre, v)
+			valsPre = append(valsPre, elem)
 
 			yieldVals(valsPre)
 		})

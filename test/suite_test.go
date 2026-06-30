@@ -527,7 +527,7 @@ func reportSuite(t *testing.T, nFiles, pass, errPass, skipped int, nonPass []cas
 
 	// Backstop on the raw pass count, in case a pass silently turns into a
 	// different already-listed failure (no unexpected case, but pass drops).
-	const passFloor = 637
+	const passFloor = 639
 	if pass < passFloor {
 		t.Errorf("suite conformance regressed: PASS=%d < baseline %d", pass, passFloor)
 	}
@@ -617,10 +617,6 @@ var expectedNonPass = map[string]string{
 	// Error case: n1k1 panics on an unknown function instead of query's error.
 	"case_func_array.json[5]": "unknown-func",
 
-	// Chained UNNEST over an array of scalars (e.g. UNNEST a string array).
-	"case_from-over.json[6]": "unnest-scalar",
-	"case_unnest.json[3]":    "unnest-scalar",
-
 	// META() over fetch metadata subpaths.
 	"case_func_meta.json[0]": "meta-fetch",
 	"case_func_meta.json[1]": "meta-fetch",
@@ -668,7 +664,6 @@ var groupWhy = map[string]string{
 	"explain":          "EXPLAIN / plan-text output not converted to n1k1 ops",
 	"index-scan":       "secondary index / union scan not converted (n1k1 does primary scans)",
 	"unknown-func":     "unknown scalar function: query reports 'Invalid function', n1k1 panics in parse",
-	"unnest-scalar":    "UNNEST over an array of scalars (e.g. strings): each element comes back mis-typed as BINARY (quotes stripped), so results differ",
 	"meta-fetch":       "META() over fetch metadata subpaths ($document.exptime) not wired",
 	"groupby-key":      "GROUP BY on a computed / array-index key unresolved in VisitFinalGroup",
 	"onkeys-proj":      "ON KEYS join projection: label/vals arity mismatch",

@@ -76,7 +76,7 @@ the upstream couchbase/query corpus (from their test/filestore tests), vendored
 under test/suite/ -- {query, expected-results} cases over a small JSON dataset --
 against n1k1. ("suite" because it's a data-driven set of cases stored as files,
 run over glue.FileStore; it isn't itself a test of file-store features.) n1k1
-implements a subset of N1QL, so it's a pass-rate guard, not 100%: ~637 of ~680
+implements a subset of N1QL, so it's a pass-rate guard, not 100%: ~639 of ~680
 runnable cases currently pass, and the test fails if that count regresses (ratchet
 it up as coverage grows). Three case shapes are run: {statements, results}
 (compare rows), {statements, matchStatements} (two statements must yield equal
