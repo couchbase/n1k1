@@ -82,6 +82,13 @@ Gist only -- details live in commit messages, README, and code comments.
   cause, and moot post-T3 (the drift-prone heavy modules aren't compiled; the
   versions that matter come from the fork's go.mod -- itself one snapshot).
 
+## 2026/06 -- UNNEST pushed-down filter (conformance 613 -> 617)
+- WHERE predicates on an UNNEST alias (e.g. UNNEST x AS child WHERE child.y=...)
+  are pushed by the planner INTO the Unnest operator (plan.Unnest.Filter()), not
+  emitted as a separate Filter -- so n1k1 dropped them and returned unfiltered
+  rows. VisitUnnest now chains a filter op on the unnested output when
+  o.Filter() != nil. Fixed the SELECT child / * / contact.* over UNNEST cluster.
+
 ## 2026/06 -- COUNT(*) panic + DISTINCT aggregates (conformance 605 -> 613)
 - COUNT(*) nil-operand panic: VisitFinalGroup projected agg.Operands()[0], nil
   for COUNT(*), which panicked in the expr evaluator. Now COUNT(*) projects a

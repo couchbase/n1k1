@@ -276,7 +276,20 @@ func (c *Conv) VisitUnnest(o *plan.Unnest) (interface{}, error) {
 		rv.Kind = "unnest-leftOuter"
 	}
 
-	return c.TopSet(o, rv)
+	c.TopSet(o, rv)
+
+	// The planner pushes a post-UNNEST predicate (e.g. WHERE child.x = ...)
+	// into the Unnest operator rather than emitting a separate Filter, so
+	// apply it here as a filter on the unnested output.
+	if f := o.Filter(); f != nil {
+		return c.TopPush(o, &base.Op{
+			Kind:   "filter",
+			Labels: c.TopOp.Labels,
+			Params: []interface{}{"exprTree", f},
+		})
+	}
+
+	return c.TopOp, nil
 }
 
 func (c *Conv) VisitNLJoin(o *plan.NLJoin) (interface{}, error)     { return NA(o) }

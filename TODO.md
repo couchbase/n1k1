@@ -8,13 +8,14 @@ Status: modernization + a pure-Go N1QL engine (CGO_ENABLED=0, cross-compiles)
 are done. Remaining work:
 
 ## Conformance (filestore corpus)
-- [ ] Raise the TestFilestoreCases pass rate (currently ~613/672 runnable).
-      Remaining gaps: UNNEST + projection (SELECT child / contact.* over UNNEST)
-      -- the biggest cluster; FIRST .. FOR comprehensions; META().id with ANY;
-      object_filter and other scalar funcs; ARRAY_AGG element ORDER differs from
-      upstream (harness compares arrays order-sensitively -- semantically equal);
-      COUNT(*) over a bare keyspace (CountScan) + EXPLAIN + index-union scans
-      unsupported. Ratchet the pass-floor in test/filestore_test.go up as fixed.
+- [ ] Raise the TestFilestoreCases pass rate (currently ~617/672 runnable).
+      Remaining gaps: META().id (incl. with ANY / in joins); FIRST .. FOR
+      comprehensions; object_filter and other scalar funcs; nested ".*"
+      projection (SELECT details.format.*); multi-key ORDER BY + LIMIT;
+      ARRAY_AGG element ORDER differs from upstream (harness compares arrays
+      order-sensitively -- semantically equal); COUNT(*) over a bare keyspace
+      (CountScan) + EXPLAIN + index-union scans unsupported. Ratchet the
+      pass-floor in test/filestore_test.go up as these get fixed.
 
 ## Keeping current with SQL++
 n1k1's SQL++ support tracks couchbase/query (parser/algebra/expression/plan/
