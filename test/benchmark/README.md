@@ -75,8 +75,15 @@ stable across repeats:
 
 ## Not here yet
 
-- **vs couchbase/query** — Phase 3: a standalone cbq-engine over the same JSON
-  dir (`-datastore dir:...`), or a fork-patched in-process timing hook.
+- **vs couchbase/query** — Phase 3 is **blocked in a stock dev env** (no
+  buildable server source tree). The prebuilt `cbq-engine` from Couchbase
+  Server.app can't run standalone (it blocks forever on the cbauth/metakv
+  settings notifier), an in-process race is impossible (the cgo `query/execution`
+  deps were pruned by the pure-Go decouple), and a from-source patched build
+  needs the full server module manifest. The blockers, the one-line patch that
+  makes a from-source `cbq-engine` run standalone, and a turnkey run recipe are
+  documented in `../../DESIGN-benchmark.md` §10. Phase 1/2 stand alone as the
+  perf story.
 
 ## Notes
 

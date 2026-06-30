@@ -42,16 +42,11 @@ and it's not in n1k1's dependency graph. So:
 - **Phase 2 (deferred) — n1k1 interpreted vs compiled.** The novel head-to-head
   that validates fusion/lifting. In-process, pure-Go, builds on Phase 1 by
   running the same query both ways (see §7).
-- **Phase 3 (deferred) — vs couchbase/query, as an absolute baseline.** Build
-  the fork's `cmd/cbq-engine` as a standalone binary and point it at the **same**
-  JSON directory: it takes `-datastore "dir:PATH"`, backed by the very same
-  `datastore/file` package `glue.FileStore` uses — so the data is identical.
-  Drive it over HTTP and compare end-to-end. Caveats: HTTP/server overhead
-  dominates micro-comparisons, and cbq-engine needs cgo (sigar). Plan-B if HTTP
-  noise is too high: we already maintain patches on the n1k1-query fork
-  (glue/patches/), so we can add a thin in-process timing/bench entry point
-  there to measure query's executor directly. Phase 3 is opt-in and heavier;
-  Phase 1 stands alone.
+- **Phase 3 (BLOCKED in a stock env) — vs couchbase/query, as an absolute
+  baseline.** Investigated 2026-06; *not* runnable here without a full Couchbase
+  Server build/runtime. Three mechanisms, all blocked (see §10). Phase 1/2 stand
+  alone as the perf story; Phase 3 is recorded for a future run on an equipped
+  box.
 
 ------------------------------------------------------------------------
 ## 3. Metrics & dimensions
@@ -155,3 +150,71 @@ buffers). This reuses the Phase 1 generator, scales, and metrics — only the
 3. **Phase 3 trigger** — defer cbq-engine until Phase 1/2 give a clear internal
    picture; revisit whether HTTP-over-the-wire or a fork-patched in-process
    timing hook is the cleaner apples-to-apples.
+
+------------------------------------------------------------------------
+## 10. Phase 3 feasibility — findings (2026-06)
+
+Goal: time the **same** queries over the **same** data through couchbase/query's
+executor, as an absolute baseline. We probed every mechanism; none runs in a
+stock dev environment (Couchbase Server.app installed, but no server source tree
+checked out). Recorded here so a future run on an equipped box is turnkey.
+
+**(a) In-process, in n1k1's module — impossible.** `query/execution` imports
+`n1fty/verify → cbft`, which is cgo and was deliberately pruned by the pure-Go
+decouple. It's not in n1k1's dependency graph, and re-adding it (n1fty, cbft,
+indexing, …) would undo the pure-Go property the whole project rests on. Any
+package that transitively touches `query/execution` hits this same wall, so even
+a minimal in-process harness is out.
+
+**(b) Prebuilt `cbq-engine` (ships in Couchbase Server.app) — can't run
+standalone.** It *does* support `-datastore "dir:PATH"` (the same `datastore/file`
+package `glue.FileStore` uses) and `test/suite/json/default/contacts/...` is
+already a valid `dir:` datastore. But the shipped 7.6.x binary is a *server*
+build: `server/cbq-engine/main.go` calls `waitForInitialSettings()`
+*unconditionally* at the top of `main()`, which does a `wg.Wait()` that only
+completes when the **metakv settings notifier** fires. Without a cluster
+(`CBAUTH_REVRPC_URL` unset) the notifier retries `MAX_METAKV_RETRIES`=100 times
+with backoff, then `Fatalf`s. No flag bypasses it (`-configstore` already
+defaults to `stub:`; the wait is unconditional). So the binary never binds :8093.
+
+**(c) Patched build from source — needs the full server manifest.** The fix to
+(b) is a one-line guard: skip `waitForInitialSettings()` when `-configstore`
+starts with `stub:` (run with default settings). Verified the patch site. But
+building `cbq-engine` needs the whole Couchbase Server module graph — `n1fty`,
+`cbauth`, `indexing`, `cbgt`, `cbft`, `gomemcached`, `go-couchbase`, `goutils`,
+`go_json`, … — wired via the query go.mod's `replace => ../<sibling>` directives,
+plus cgo (sigar/jemalloc). Local sibling checkouts exist but are stale GOPATH-era
+trees with no `go.mod` at coherent versions, so they don't resolve as modules.
+Producing a buildable set is a `repo sync`-against-a-manifest exercise — a real
+server build, out of scope for this sandbox. (cgo itself is fine here: cc/clang
+present, and Couchbase Server.app carries the sigar native libs.)
+
+### To run Phase 3 later (recipe)
+
+On a machine with a buildable couchbase/query (a synced server source tree, or
+sibling modules at coherent versions), the **closest analog to n1k1** (file-based,
+no KV/GSI/network) is the standalone `dir:` datastore:
+
+1. Patch `server/cbq-engine/main.go` — guard the settings wait:
+   ```go
+   var initialCfg queryMetakv.Config
+   var num_cpus int
+   if strings.HasPrefix(*CONFIGSTORE, "stub:") {
+       // standalone: no cbauth/metakv, run with default settings
+   } else {
+       initialCfg, num_cpus = waitForInitialSettings()
+   }
+   ```
+2. `CGO_ENABLED=1 go build -o cbq-engine ./server/cbq-engine`
+3. `./cbq-engine -datastore "dir:$PWD/test/suite/json" -configstore stub:`
+4. Warm up, then POST the benchmark queries to `http://localhost:8093/query/service`
+   (`--data-urlencode statement=...`), time N runs, compare to n1k1's numbers for
+   the same query shapes (Phase 1/2 harness). Mind that HTTP/server overhead
+   dominates micro-comparisons — prefer large per-query row counts.
+
+A heavier alternative giving real *product* numbers (but a different architecture
+— KV + GSI + network, not a file scan): start the full Couchbase Server locally
+(`couchbase-server`, `couchbase-cli cluster-init`, `bucket-create`, `cbimport`
+the corpus, `CREATE PRIMARY INDEX`), then query the running service. This
+initializes/modifies the local Couchbase install, so it's a deliberate, opt-in
+step.
