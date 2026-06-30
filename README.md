@@ -76,16 +76,19 @@ the upstream couchbase/query corpus (from their test/filestore tests), vendored
 under test/suite/ -- {query, expected-results} cases over a small JSON dataset --
 against n1k1. ("suite" because it's a data-driven set of cases stored as files,
 run over glue.FileStore; it isn't itself a test of file-store features.) n1k1
-implements a subset of N1QL, so it's a pass-rate guard, not 100%: ~631 of ~670
+implements a subset of N1QL, so it's a pass-rate guard, not 100%: ~632 of ~680
 runnable cases currently pass, and the test fails if that count regresses (ratchet
-it up as coverage grows). {statements, error} cases are run too, as negative
-tests: n1k1 reuses query's parser/planner, so it should reject an invalid query
-with the same error -- a PASS is when its error text matches the corpus's. Use
-`make test-suite` (or add `-v -run TestSuiteCases` yourself) to see: a per-case
-table of the non-pass cases (status, category, loc, full SQL -- EXPLAIN clipped);
-the full statement of each "exotic" case skipped because it isn't a plain
-{statements, results} or {statements, error} shape (match/resultset/prepared/
-etc.); a summary (PASS rows / PASS error-rejected / UNSUPPORTED / FAIL / exotic);
+it up as coverage grows). Three case shapes are run: {statements, results}
+(compare rows), {statements, matchStatements} (two statements must yield equal
+results), and {statements, error} as negative tests (n1k1 reuses query's parser/
+planner, so it should reject an invalid query with the same error -- a PASS is
+when its error text matches the corpus's). Use `make test-suite` (or add `-v -run
+TestSuiteCases` yourself) to see: a per-case table of the non-pass cases (status,
+category, loc, full SQL -- EXPLAIN clipped); a prominent PANICS section (the
+engine should never panic -- these are bugs, surfaced separately from the benign
+UNSUPPORTED count); the full statement of each "exotic" case skipped because it
+isn't one of the three runnable shapes (resultset/prepared/pre-post/etc.); a
+summary (PASS rows / PASS error-rejected / UNSUPPORTED / PANIC / FAIL / exotic);
 a grouped table of the expected non-pass cases (with a short why for each group);
 and any unexpected regressions. The accepted non-pass cases are enumerated in the
 `expectedNonPass` table in test/suite_test.go -- shrink it as coverage grows.

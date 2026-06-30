@@ -172,6 +172,50 @@ func errMatches(got, want string) bool {
 	return strings.TrimSpace(got) == strings.TrimSpace(want)
 }
 
+// caseMatch reports whether a case is a {statements, matchStatements} pair: the
+// two statements must yield equal results (a cross-statement equivalence check,
+// e.g. "SELECT 1+1 AS result" must match "SELECT 2 AS result"). Both are run
+// through n1k1 and their result multisets compared.
+func caseMatch(c map[string]interface{}) (stmt, matchStmt string, ok bool) {
+	for k := range c {
+		switch k {
+		case "statements", "matchStatements", "ordered", "description":
+		default:
+			return "", "", false
+		}
+	}
+	s, hasStmt := c["statements"].(string)
+	m, hasMatch := c["matchStatements"].(string)
+	if !hasStmt || !hasMatch {
+		return "", "", false
+	}
+	return s, m, true
+}
+
+// rowsEqualStrings compares two sets of n1k1 result rows (each a JSON string) as
+// multisets, canonicalizing key/element order like rowsMatch does.
+func rowsEqualStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	ca := make([]string, len(a))
+	for i, s := range a {
+		ca[i] = canonJSON(s)
+	}
+	cb := make([]string, len(b))
+	for i, s := range b {
+		cb[i] = canonJSON(s)
+	}
+	sort.Strings(ca)
+	sort.Strings(cb)
+	for i := range ca {
+		if ca[i] != cb[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func TestSuiteCases(t *testing.T) {
 	if _, err := os.Stat(suiteRoot + "/default/cases"); err != nil {
 		t.Skipf("suite corpus not present: %v", err)
@@ -209,11 +253,29 @@ func TestSuiteCases(t *testing.T) {
 				got, err := n1k1RunStatement(store, stmt)
 				switch {
 				case err != nil:
-					nonPass = append(nonPass, caseOutcome{loc, stmt, "UNSUPPORTED", oneLine(err.Error())})
+					nonPass = append(nonPass, errOutcome(loc, stmt, err))
 				case rowsMatch(got, results):
 					pass++
 				default:
 					nonPass = append(nonPass, caseOutcome{loc, stmt, "FAIL", "results differ"})
+				}
+				continue
+			}
+
+			// Match case: {statements, matchStatements} -- run both and require
+			// equal result multisets (e.g. "SELECT 1+1" must match "SELECT 2").
+			if stmt, matchStmt, ok := caseMatch(c); ok {
+				got, err := n1k1RunStatement(store, stmt)
+				want, err2 := n1k1RunStatement(store, matchStmt)
+				switch {
+				case err != nil:
+					nonPass = append(nonPass, errOutcome(loc, stmt, err))
+				case err2 != nil:
+					nonPass = append(nonPass, errOutcome(loc, matchStmt, err2))
+				case rowsEqualStrings(got, want):
+					pass++
+				default:
+					nonPass = append(nonPass, caseOutcome{loc, stmt, "FAIL", "matchStatements differ"})
 				}
 				continue
 			}
@@ -230,12 +292,12 @@ func TestSuiteCases(t *testing.T) {
 				case errMatches(err.Error(), expErr):
 					errPass++
 				default:
-					nonPass = append(nonPass, caseOutcome{loc, stmt, "UNSUPPORTED", oneLine(err.Error())})
+					nonPass = append(nonPass, errOutcome(loc, stmt, err))
 				}
 				continue
 			}
 
-			// Exotic: anything else (match/resultset/prepared/pre-post/etc.).
+			// Exotic: anything else (resultset/prepared/pre-post/etc.).
 			skipped++
 			reason, content := exoticInfo(c)
 			exotic = append(exotic, exoticCase{loc, reason, content})
@@ -248,6 +310,38 @@ func TestSuiteCases(t *testing.T) {
 // caseOutcome records one non-passing corpus case.
 type caseOutcome struct {
 	loc, stmt, status, detail string
+}
+
+// errOutcome builds the non-pass outcome for a case that returned an error,
+// distinguishing a PANIC (the engine should never panic -- it's a bug) from a
+// plain UNSUPPORTED (a plan/feature n1k1 doesn't handle). The panic text comes
+// through as an error because n1k1RunStatement (and query's parser) recover.
+func errOutcome(loc, stmt string, err error) caseOutcome {
+	status := "UNSUPPORTED"
+	if isPanicErr(err) {
+		status = "PANIC"
+	}
+	return caseOutcome{loc, stmt, status, oneLine(err.Error())}
+}
+
+// isPanicErr reports whether an error came from a recovered panic (rather than a
+// deliberate error return). Panics surface as: our own "panic: ..." wrapper,
+// query's "Error while parsing: runtime error: ...", or the raw runtime-panic
+// strings ("interface conversion:", "invalid memory address", "nil pointer").
+func isPanicErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	for _, marker := range []string{
+		"panic:", "runtime error:", "interface conversion:",
+		"invalid memory address", "nil pointer",
+	} {
+		if strings.Contains(s, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // exoticCase records one corpus case skipped by caseRunnable -- i.e. not the
@@ -267,12 +361,17 @@ func reportSuite(t *testing.T, nFiles, pass, errPass, skipped int, nonPass []cas
 	groupCount := map[string]int{}
 	seen := map[string]bool{}
 	var unexpected []caseOutcome
-	var fail, unsupported int
+	var panics []caseOutcome
+	var fail, unsupported, panicked int
 
 	for _, o := range nonPass {
-		if o.status == "FAIL" {
+		switch o.status {
+		case "FAIL":
 			fail++
-		} else {
+		case "PANIC":
+			panicked++
+			panics = append(panics, o)
+		default:
 			unsupported++
 		}
 		g, ok := expectedNonPass[o.loc]
@@ -292,14 +391,14 @@ func reportSuite(t *testing.T, nFiles, pass, errPass, skipped int, nonPass []cas
 	}
 	sort.Strings(stale)
 
-	total := pass + errPass + fail + unsupported
+	total := pass + errPass + fail + unsupported + panicked
 
 	// valW is the width of the widest count, so the value column right-aligns
 	// (tabwriter left-aligns each cell, so we right-justify the digits ourselves
 	// to a shared width rather than use whole-table AlignRight, which would also
 	// right-align the label/text columns).
 	valW := 1
-	for _, n := range []int{nFiles, total, pass, errPass, unsupported, fail, skipped} {
+	for _, n := range []int{nFiles, total, pass, errPass, unsupported, fail, panicked, skipped} {
 		if w := len(strconv.Itoa(n)); w > valW {
 			valW = w
 		}
@@ -328,8 +427,22 @@ func reportSuite(t *testing.T, nFiles, pass, errPass, skipped int, nonPass []cas
 	}
 	tw.Flush()
 
-	// Exotic (skipped) cases: not the plain {statements, results} shape, so n1k1
-	// doesn't attempt them. Show why + the full statement/content to gauge them.
+	// PANICS: the engine should never panic -- these are bugs, not merely
+	// unsupported features, so surface them prominently with the panic message
+	// (which the table above omits). They're still tracked in expectedNonPass so
+	// the build stays green, but they must not hide inside the UNSUPPORTED count.
+	if len(panics) > 0 {
+		fmt.Fprintf(&b, "\n!! PANICS (%d) -- the engine should never panic; these are bugs to fix:\n", len(panics))
+		tw = tabwriter.NewWriter(&b, 0, 2, 2, ' ', 0)
+		for _, o := range panics {
+			fmt.Fprintf(tw, "  %s\t%s\n", o.loc, o.detail)
+			fmt.Fprintf(tw, "  \t%s\n", fullLine(o.stmt))
+		}
+		tw.Flush()
+	}
+
+	// Exotic (skipped) cases: not a {statements, results/error/matchStatements}
+	// shape, so n1k1 doesn't attempt them. Show why + the full statement/content.
 	fmt.Fprintf(&b, "\nexotic / skipped cases (%d):\n", len(exotic))
 	tw = tabwriter.NewWriter(&b, 0, 2, 2, ' ', 0)
 	for _, e := range exotic {
@@ -344,6 +457,7 @@ func reportSuite(t *testing.T, nFiles, pass, errPass, skipped int, nonPass []cas
 	fmt.Fprintf(tw, "  PASS (rows)\t%*d\t(%.1f%%)\n", valW, pass, 100*float64(pass)/float64(total))
 	fmt.Fprintf(tw, "  PASS (error rejected)\t%*d\n", valW, errPass)
 	fmt.Fprintf(tw, "  UNSUPPORTED\t%*d\n", valW, unsupported)
+	fmt.Fprintf(tw, "  PANIC (engine bug)\t%*d\n", valW, panicked)
 	fmt.Fprintf(tw, "  FAIL\t%*d\n", valW, fail)
 	fmt.Fprintf(tw, "  skipped (exotic)\t%*d\n", valW, skipped)
 	tw.Flush()
@@ -385,6 +499,13 @@ func reportSuite(t *testing.T, nFiles, pass, errPass, skipped int, nonPass []cas
 
 	t.Log(b.String())
 
+	// Panics are engine bugs. Warn loudly (even when expected/green) so they
+	// stay on the radar rather than blending into the UNSUPPORTED count.
+	if panicked > 0 {
+		t.Logf("WARNING: %d case(s) PANIC the engine (see the PANICS section above) -- these are bugs to fix",
+			panicked)
+	}
+
 	// Hygiene: a listed case that no longer fails was likely fixed -- nudge to
 	// remove it. Kept a warning (not a failure) so a fix never breaks the build.
 	if len(stale) > 0 {
@@ -406,7 +527,7 @@ func reportSuite(t *testing.T, nFiles, pass, errPass, skipped int, nonPass []cas
 
 	// Backstop on the raw pass count, in case a pass silently turns into a
 	// different already-listed failure (no unexpected case, but pass drops).
-	const passFloor = 631
+	const passFloor = 632
 	if pass < passFloor {
 		t.Errorf("suite conformance regressed: PASS=%d < baseline %d", pass, passFloor)
 	}
