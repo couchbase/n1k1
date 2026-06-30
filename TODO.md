@@ -1,7 +1,7 @@
 # TODO
 
 Forward-looking only. What's DONE is in TODO-done.md; how the engine is built &
-patched is in patches/README.md; internals + the design are in DESIGN.md;
+patched is in glue/patches/README.md; internals + the design are in DESIGN.md;
 build/test commands are in README.md.
 
 Status: modernization + a pure-Go N1QL engine (CGO_ENABLED=0, cross-compiles)
@@ -28,7 +28,7 @@ are done. Remaining work:
 ## Keeping current with SQL++
 n1k1's SQL++ support tracks couchbase/query (parser/algebra/expression/plan/
 planner). To move to a newer query, follow "Updating the fork to a newer query"
-in patches/README.md.
+in glue/patches/README.md.
 
 ## More features
 

@@ -20,7 +20,7 @@ run_intermed_build:
 # ------------------------------------------------------------------
 # Testing targets. Core targets (test/build) are self-contained. The n1ql /
 # glue targets exercise the N1QL-engine layer (glue/ + test/), build pure-Go
-# (CGO_ENABLED=0), and need the patched query fork -- see patches/README.md.
+# (CGO_ENABLED=0), and need the patched query fork -- see glue/patches/README.md.
 
 .PHONY: test build build-glue test-glue test-suite test-compiler test-all
 
@@ -88,7 +88,7 @@ cloc:
 
 # Target benchmark-expr-eq runs microbenchmarks on expression eq. These live in
 # test/ (which uses glue/), so they need the n1ql tag + the ../n1k1-query fork
-# and build pure-Go (CGO_ENABLED=0) -- see patches/README.md.
+# and build pure-Go (CGO_ENABLED=0) -- see glue/patches/README.md.
 benchmark-expr-eq:
 	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -v -tags n1ql -bench=InterpExprStr -benchmem ./test
 	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -v -tags n1ql -bench=InterpExprEq -benchmem ./test

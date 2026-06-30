@@ -22,7 +22,7 @@ Gist only -- details live in commit messages, README, and code comments.
   (generated yyParse/yySymType not shipped by `go get`). See TODO.md.
 
 ## 2026/06 -- decouple work started (toward pure-Go CGO_ENABLED=0 binary)
-- Stubbed query/system to pure-Go (patches/query-system-stub.go.txt) -- sigar is
+- Stubbed query/system to pure-Go (glue/patches/query-system-stub.go.txt) -- sigar is
   pulled pervasively via query/memory<-query/tenant, so it must be stubbed.
 - T1: dropped query/server from glue/exec.go (unused param).
 - T2: dropped query/datastore/system from glue/stmt.go (Systemstore=nil).
@@ -38,7 +38,7 @@ Gist only -- details live in commit messages, README, and code comments.
   the whole cbft/cbgt/indexing/n1fty/query-ee/gocbcrypto/eventing-ee subtree.
 - RESULT: `CGO_ENABLED=0 go test -tags n1ql ./glue ./test` is GREEN, and the
   engine cross-compiles to linux/darwin/windows. 3 query patches needed
-  (parser-gen, system stub, semchecker enterprise) -- see patches/.
+  (parser-gen, system stub, semchecker enterprise) -- see glue/patches/.
 
 ## 2026/06 -- local query fork wired in (reproducible build, staying local)
 - Created sibling repo ../n1k1-query as a real git fork: main = pinned

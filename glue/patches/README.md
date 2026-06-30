@@ -1,4 +1,4 @@
-# patches/ — building the gated N1QL engine layer (`-tags n1ql`)
+# glue/patches/ — building the gated N1QL engine layer (`-tags n1ql`)
 
 n1k1's `glue/` reuses Couchbase `query` for SQL++ parse+plan, then executes with
 n1k1's own operators. As of the 2026 decouple work, the engine builds **pure-Go,
@@ -31,8 +31,8 @@ go install golang.org/x/tools/cmd/goyacc@latest
 (cd tmp/query-local/parser/n1ql && "$(go env GOPATH)/bin/goyacc" n1ql.y && rm -f y.output)
 
 # 3. drop in the two source patches
-cp patches/query-system-stub.go.txt          tmp/query-local/system/systemStats.go
-cp patches/query-semantics-semchecker_ce.go.txt tmp/query-local/semantics/semchecker_ce.go
+cp glue/patches/query-system-stub.go.txt          tmp/query-local/system/systemStats.go
+cp glue/patches/query-semantics-semchecker_ce.go.txt tmp/query-local/semantics/semchecker_ce.go
 
 # 4. point go.mod at the local copy
 go mod edit -replace github.com/couchbase/query=./tmp/query-local
@@ -75,7 +75,7 @@ indexing/n1fty/query-ee/...) were pruned -- only the query replace remains.
 1. On the fork's `main`: replace contents with the new pinned query snapshot,
    commit. (Or add couchbase/query as a remote and merge.)
 2. Re-create the `n1k1-pure-go` branch = main + the 3 patches (run steps 1-3 of
-   the recipe above: goyacc the parser, apply patches/*.txt), commit, push.
+   the recipe above: goyacc the parser, apply glue/patches/*.txt), commit, push.
 3. In n1k1: `go get github.com/couchbase/n1k1-query@n1k1-pure-go` to resolve the
    new pseudo-version, then `go mod edit -replace github.com/couchbase/query=\
    github.com/couchbase/n1k1-query@<that-version>`.

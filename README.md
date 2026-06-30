@@ -54,7 +54,7 @@ intermed_build codegen tool).
 This layer reuses couchbase/query for SQL++ parse+plan, then executes with
 n1k1's own operators. It builds pure-Go (CGO_ENABLED=0) against a small
 patched fork of couchbase/query -- github.com/couchbase/n1k1-query -- pinned
-via a go.mod `replace` (no local checkout needed; see patches/README.md for
+via a go.mod `replace` (no local checkout needed; see glue/patches/README.md for
 how the fork is maintained):
 
     export GOPRIVATE='github.com/couchbase/*'    # couchbase modules are fetched over git
