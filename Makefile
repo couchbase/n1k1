@@ -61,7 +61,7 @@ test-suite: build-glue
 test-compiler: build-glue
 	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -tags n1ql -run 'TestCasesSimpleWithCompiler|TestSuiteWithCompiler' ./test
 	cd test/tmp && go fmt
-	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -tags n1ql -v ./test/tmp
+	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -tags n1ql ./test/tmp
 
 # test-all runs the whole N1QL-engine layer (glue/ + test/, includes the suite)
 # plus the compiler end-to-end test.
