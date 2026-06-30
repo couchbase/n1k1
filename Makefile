@@ -6,7 +6,7 @@ default: run_intermed_build
 #
 # The N1QL-engine integration (glue/ + test/) is gated behind the "n1ql"
 # build tag and is NOT exercised here -- see the n1ql target below and
-# the "Building the N1QL engine layer" section of the README.
+# the "Building & testing" section of the README.
 run_intermed_build:
 	go vet ./...
 	go test -v ./base
@@ -17,12 +17,12 @@ run_intermed_build:
 	go test ./...
 	go fmt ./...
 
-# Target n1ql attempts to build the deferred N1QL-engine layer (glue/ +
-# test/). It currently fails at the cgo native libs (sigar, OpenSSL 3);
-# see the README for what's needed to finish it.
+# Target n1ql builds + tests the N1QL-engine layer (glue/ + test/) pure-Go
+# (CGO_ENABLED=0). Requires the patched query fork at ../n1k1-query -- see
+# patches/README.md.
 n1ql:
-	GOPRIVATE='github.com/couchbase/*' go build -tags n1ql ./...
-	GOPRIVATE='github.com/couchbase/*' go test -tags n1ql ./...
+	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go build -tags n1ql ./glue/... ./test/...
+	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -tags n1ql ./glue ./test
 
 # Target easy-to-read parses source code files and generates
 # versions that are easier to read in a tmp subdirectory.

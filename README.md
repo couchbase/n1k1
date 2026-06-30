@@ -3,69 +3,55 @@ n1k1 is a prototype query-plan interpreter and compiler for N1QL.
 ------------------------------------------
 Latest...
 
-2026/06 - Modernized the build: upgraded to Go 1.25 and switched to
-real, pinned go.mod module versions (the old setup used local-path
-"replace" directives that symlinked into a couchbase-server checkout).
-
-The self-contained core (the root n1k1 package, base/, intermed/, cmd/)
-builds, vets, and tests cleanly:
-
-    go build ./...
-    go vet ./...
-    go test ./...
-
-The N1QL-engine integration in glue/ and test/ is gated behind the
-"n1ql" build tag and is NOT built by default, because the modern
-couchbase/query slice it imports (server, datastore/system, ...)
-now pulls in mandatory cgo native libraries -- sigar (system stats)
-and OpenSSL 3 (gocbcrypto) -- that the old build never needed. The
-Go dependency graph resolves fully; only those native libs are
-outstanding. See "Building the N1QL engine layer" below.
+2026/06 - Modernized, and made the N1QL engine pure-Go. Upgraded to
+Go 1.25 + go modules with pinned versions (the old setup symlinked into
+a couchbase-server checkout). The self-contained core builds/tests
+cleanly by default. The N1QL-engine layer (glue/ + test/), gated behind
+the "n1ql" build tag, now builds with CGO_ENABLED=0 and cross-compiles,
+by decoupling from query/execution and building against a small patched
+fork of couchbase/query. See "Building & testing" below.
 
 2021/12 - TODO: While upgrading from CB 6.5 query to CB 7 query,
 UNNEST stopped working and array-as-FROM source stopped working... as
 seen by broken unit tests -- git grep SKIP to see more.
 
 ------------------------------------------
-## Building the N1QL engine layer (glue/ + test/)
+## Building & testing
 
-This layer is deferred work, gated behind the "n1ql" build tag.
+### Core (default -- no external setup)
 
-The couchbase-server modules (query, query-ee, indexing, cbft, ...)
-use placeholder "v0.0.0-00010101..." requires for their siblings,
-resolved via local-path replaces inside their repo-sync build tree.
-To consume them externally, go.mod pins each to a real version via
-"replace" directives, and these env vars are needed to fetch them
-(internal modules aren't in the public checksum database):
+    go build ./...
+    go vet ./...
+    go test ./...
 
-    export GOPRIVATE='github.com/couchbase/*'   # direct git, skip sumdb
+`make` runs the same core flow (and regenerates intermed/ via the
+intermed_build codegen tool).
 
-To attempt the engine build:
+### N1QL engine layer (glue/ + test/, gated behind the "n1ql" tag)
 
-    go build -tags n1ql ./...
+This layer reuses couchbase/query for SQL++ parse+plan, then executes with
+n1k1's own operators. It builds pure-Go (CGO_ENABLED=0) against a small
+patched fork of couchbase/query, expected as the sibling repo ../n1k1-query.
 
-Two distinct blockers remain (investigated 2026/06) -- cgo is the EASY one:
+One-time: create that fork (full recipe in patches/README.md) -- copy the
+pinned query module, goyacc-generate parser/n1ql/y.go, apply the two
+patches in patches/, and git-commit. Then:
 
-  1. cgo native libs (sigar, OpenSSL 3): solved by wiring CGO flags to a
-     prebuilt libsigar (ships in "Couchbase Server.app") + openssl@3 (brew).
-     This makes every cgo error vanish; no patching/stubbing needed:
+    export GOPRIVATE='github.com/couchbase/*'    # only needed to fetch couchbase modules over git
 
-       export CGO_CFLAGS="-I<cb-src>/sigar/include -I$(brew --prefix openssl@3)/include"
-       export CGO_LDFLAGS="-L<Couchbase Server.app>/Contents/Resources/couchbase-core/lib \
-                           -lsigar -L$(brew --prefix openssl@3)/lib"
+    CGO_ENABLED=0 go build -tags n1ql ./glue/... ./test/...
+    CGO_ENABLED=0 go test  -tags n1ql ./glue ./test
 
-  2. goyacc parser-gen gap (the real blocker): query/parser/n1ql ships the
-     grammar (n1ql.y) but NOT the generated parser (yyParse/yySymType). Query's
-     build.sh runs goyacc at build time and gitignores the output, so `go get`
-     never produces it and you can't generate into the read-only module cache.
-     Fix by either replacing query => a local checkout where build.sh has run,
-     or forking query at the pinned SHA with the generated parser committed.
-     (Plus minor cbft<->cbgt version drift; bump cbgt@master.)
+Cross-compile the (cgo-free) engine to any target:
 
-See TODO.md for the recommended path.
+    CGO_ENABLED=0 GOOS=linux   GOARCH=amd64 go build -tags n1ql ./glue/...
+    CGO_ENABLED=0 GOOS=darwin  GOARCH=arm64 go build -tags n1ql ./glue/...
+    CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -tags n1ql ./glue/...
 
-NOTE: do not run `go mod tidy` -- it would prune the engine-only
-dependencies (they're behind the "n1ql" tag, which tidy doesn't enable).
+`make n1ql` runs the engine build + tests.
+
+NOTE: do not run `go mod tidy` -- query is reached only via the n1ql-gated
+glue/, so tidy would prune it (tidy doesn't enable custom build tags).
 
 ------------------------------------------
 ## Performance approaches...
