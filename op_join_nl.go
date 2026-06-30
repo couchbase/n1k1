@@ -32,6 +32,13 @@ import (
 //	 unnest-leftOuter           isUnnest        isLeftOuter
 func OpJoinNestedLoop(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	lzYieldErr base.YieldErr, path, pathNext string) {
+	// TODO(compiler): lzErr has no path suffix, so when the compiler fuses two
+	// join-family ops inline (e.g. UNNEST feeding a JOIN, or chained UNNEST) the
+	// nested declaration collides -- "lzErr redeclared in this block". The
+	// interpreter is unaffected (each op runs in its own func scope). Until this
+	// is path-suffixed (like the other lz vars), TestSuiteWithCompiler skips
+	// nested-join-family cases via hasNestedJoinFamily(). Same issue applies to
+	// the other un-suffixed `var lzErr` decls (OpJoinHash, OpSequence, etc.).
 	var lzErr error
 
 	lzYieldErrOrig := lzYieldErr
