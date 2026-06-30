@@ -24,6 +24,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"text/tabwriter"
@@ -298,15 +299,26 @@ func reportFilestore(t *testing.T, nFiles, pass, skipped int, nonPass []caseOutc
 
 	total := pass + fail + unsupported
 
+	// valW is the width of the widest count, so the value column right-aligns
+	// (tabwriter left-aligns each cell, so we right-justify the digits ourselves
+	// to a shared width rather than use whole-table AlignRight, which would also
+	// right-align the label/text columns).
+	valW := 1
+	for _, n := range []int{nFiles, total, pass, unsupported, fail, skipped} {
+		if w := len(strconv.Itoa(n)); w > valW {
+			valW = w
+		}
+	}
+
 	var b strings.Builder
 	b.WriteString("\nfilestore conformance\n=====================\n")
 	tw := tabwriter.NewWriter(&b, 0, 2, 2, ' ', 0)
-	fmt.Fprintf(tw, "  files scanned\t%d\n", nFiles)
-	fmt.Fprintf(tw, "  runnable cases\t%d\n", total)
-	fmt.Fprintf(tw, "  PASS\t%d\t(%.1f%%)\n", pass, 100*float64(pass)/float64(total))
-	fmt.Fprintf(tw, "  UNSUPPORTED\t%d\n", unsupported)
-	fmt.Fprintf(tw, "  FAIL\t%d\n", fail)
-	fmt.Fprintf(tw, "  skipped (exotic)\t%d\n", skipped)
+	fmt.Fprintf(tw, "  files scanned\t%*d\n", valW, nFiles)
+	fmt.Fprintf(tw, "  runnable cases\t%*d\n", valW, total)
+	fmt.Fprintf(tw, "  PASS\t%*d\t(%.1f%%)\n", valW, pass, 100*float64(pass)/float64(total))
+	fmt.Fprintf(tw, "  UNSUPPORTED\t%*d\n", valW, unsupported)
+	fmt.Fprintf(tw, "  FAIL\t%*d\n", valW, fail)
+	fmt.Fprintf(tw, "  skipped (exotic)\t%*d\n", valW, skipped)
 	tw.Flush()
 
 	// Grouped breakdown of the expected non-pass cases, most-common first.
@@ -325,13 +337,22 @@ func reportFilestore(t *testing.T, nFiles, pass, skipped int, nonPass []caseOutc
 		return rows[i].group < rows[j].group
 	})
 
+	// cw right-justifies the COUNT column (header, rule, and counts) to a shared
+	// width so the numbers right-align under the header.
+	cw := len("COUNT")
+	for _, r := range rows {
+		if w := len(strconv.Itoa(r.count)); w > cw {
+			cw = w
+		}
+	}
+
 	fmt.Fprintf(&b, "\nexpected non-pass by group (%d cases; shrink as coverage grows):\n",
 		len(expectedNonPass))
 	tw = tabwriter.NewWriter(&b, 0, 2, 2, ' ', 0)
-	fmt.Fprintf(tw, "  COUNT\tGROUP\tWHY\n")
-	fmt.Fprintf(tw, "  -----\t-----\t---\n")
+	fmt.Fprintf(tw, "  %*s\tGROUP\tWHY\n", cw, "COUNT")
+	fmt.Fprintf(tw, "  %s\t-----\t---\n", strings.Repeat("-", cw))
 	for _, r := range rows {
-		fmt.Fprintf(tw, "  %d\t%s\t%s\n", r.count, r.group, groupWhy[r.group])
+		fmt.Fprintf(tw, "  %*d\t%s\t%s\n", cw, r.count, r.group, groupWhy[r.group])
 	}
 	tw.Flush()
 

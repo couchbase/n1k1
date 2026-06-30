@@ -22,7 +22,7 @@ run_intermed_build:
 # glue targets exercise the N1QL-engine layer (glue/ + test/), build pure-Go
 # (CGO_ENABLED=0), and need the patched query fork -- see patches/README.md.
 
-.PHONY: test build build-glue test-glue test-filestore test-n1ql
+.PHONY: test build build-glue test-glue test-filestore test-all
 
 # test runs the self-contained core build + vet + unit tests (no external setup).
 test: build
@@ -47,8 +47,8 @@ test-glue: build-glue
 test-filestore: build-glue
 	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -tags n1ql -v -run TestFilestoreCases ./test
 
-# test-n1ql runs the whole N1QL-engine layer (glue/ + test/, includes filestore).
-test-n1ql: build-glue
+# test-all runs the whole N1QL-engine layer (glue/ + test/, includes filestore).
+test-all: build-glue
 	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -tags n1ql ./glue ./test
 
 # Target easy-to-read parses source code files and generates

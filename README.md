@@ -27,7 +27,7 @@ passing; see above.)
 
     # N1QL engine layer (needs GOPRIVATE for the couchbase/query fork):
     export GOPRIVATE='github.com/couchbase/*'
-    make test-n1ql             # build + test glue/ + test/ (pure-Go, CGO off)
+    make test-all              # build + test glue/ + test/ (pure-Go, CGO off)
     make test-glue             # just the glue/ unit tests
     make test-filestore        # just the 600+ filestore conformance cases, verbose
 
@@ -67,7 +67,7 @@ Cross-compile the (cgo-free) engine to any target:
     CGO_ENABLED=0 GOOS=darwin  GOARCH=arm64 go build -tags n1ql ./glue/...
     CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -tags n1ql ./glue/...
 
-`make test-n1ql` runs the engine build + tests; `make test-glue` runs just the
+`make test-all` runs the engine build + tests; `make test-glue` runs just the
 glue/ unit tests.
 
 The n1ql suite includes TestFilestoreCases, which runs the upstream
