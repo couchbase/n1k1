@@ -17,6 +17,7 @@ import (
 	"github.com/couchbase/query/algebra"
 	"github.com/couchbase/query/datastore"
 	"github.com/couchbase/query/datastore/file"
+	"github.com/couchbase/query/functions"
 	"github.com/couchbase/query/parser/n1ql"
 	"github.com/couchbase/query/plan"
 	"github.com/couchbase/query/planner"
@@ -25,6 +26,18 @@ import (
 	"github.com/couchbase/query/util"
 	"github.com/couchbase/query/value"
 )
+
+// The query server normally calls functions.FunctionsInit() at startup to
+// allocate the user-defined-function cache. n1k1 runs server-less and drops the
+// functions/constructor subsystem to stay pure-Go, so that init never happens
+// and functions.cache stays nil. The parser still routes an unknown function
+// (e.g. SELECT array_vg(...)) through the UDF-resolution fallback, which reads
+// functions.cache and would nil-panic. Initialize the cache here (pure-Go: just
+// a util.GenCache) with storage-backed UDF loading disabled, so an unknown
+// function resolves to a clean "Invalid function ..." parse error instead.
+func init() {
+	functions.FunctionsInit(1, func() bool { return false })
+}
 
 // ParseStatement parses and checks semantics on a N1QL statement.
 func ParseStatement(stmt, namespace string, ent bool) (algebra.Statement, error) {

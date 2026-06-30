@@ -614,9 +614,6 @@ var expectedNonPass = map[string]string{
 	// Secondary index / union scan (n1k1 does primary scans).
 	"case_by_id.json[2]": "index-scan",
 
-	// Error case: n1k1 panics on an unknown function instead of query's error.
-	"case_func_array.json[5]": "unknown-func",
-
 	// META() over fetch metadata subpaths.
 	"case_func_meta.json[0]": "meta-fetch",
 	"case_func_meta.json[1]": "meta-fetch",
@@ -663,7 +660,6 @@ var expectedNonPass = map[string]string{
 var groupWhy = map[string]string{
 	"explain":          "EXPLAIN / plan-text output not converted to n1k1 ops",
 	"index-scan":       "secondary index / union scan not converted (n1k1 does primary scans)",
-	"unknown-func":     "unknown scalar function: query reports 'Invalid function', n1k1 panics in parse",
 	"meta-fetch":       "META() over fetch metadata subpaths ($document.exptime) not wired",
 	"groupby-key":      "GROUP BY on a computed / array-index key unresolved in VisitFinalGroup",
 	"onkeys-proj":      "ON KEYS join projection: label/vals arity mismatch",
