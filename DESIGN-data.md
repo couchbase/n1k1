@@ -280,6 +280,99 @@ derived artifacts live, and **how** do we know source data changed?
   upgrade path when/if users want a real interoperable table format and don't
   want bespoke metadata.
 
+## 6. Primary keys / document IDs (`META().id`)
+
+Once we move past one-doc-per-file, "what is a record's key?" stops being
+obvious — and it couples to almost everything else: fetch, indexing, compression,
+and encryption.
+
+### Why it matters
+SQL++ exposes `META().id`; `USE KEYS`, `JOIN … ON KEYS`, and the fetch-after-scan
+path all need a stable per-record key. In `DESIGN-indexing.md` an index `Scan()`
+emits a `PrimaryKey` **string** that `Fetch` later resolves back to a document.
+Today, one-doc-per-file makes the **filename stem** the key. Multi-record formats
+(CSV, JSONL, Parquet, logs) have **no natural key**, so we must synthesize one.
+
+### Requirements for a synthesized ID
+- **Deterministic** — same input ⇒ same ID, so an index built in one run matches
+  fetches in another.
+- **Unique within a keyspace** — which may span many files ⇒ composite with the
+  source file identity.
+- **Self-describing / addressable (ideally)** — encodes enough for `Fetch` to
+  re-read *just that record* (O(1)) without rescanning the keyspace.
+- **Stable under the expected mutation pattern** — append-only vs editable.
+
+### Strategies (configurable per source)
+1. **Filename stem** (today) — for one-doc-per-file. Human-meaningful, stable.
+2. **User-designated natural key** — let the catalog (§2.3) name a key
+   column/expression (a real PK), reusing the same expression parsing as the
+   secondary-index design. Best when the data has a true key; keeps `META().id`
+   stable across re-ingest.
+3. **Ordinal / line number** within a file — zero-padded for lexicographic order
+   (the "`0`-prefixed" idea). Simple, cheap, stable for append-only; but `Fetch`
+   needs a rescan-to-line unless paired with a sync index.
+4. **Byte offset** of the record's start in the **logical (decompressed/
+   decrypted) stream** — enables O(1) `Fetch` (seek + decode one record) given a
+   seekable substrate. Preferred for large files.
+5. **Content hash** (xxhash/blake3) of the record — stable across reorder/move,
+   dedup-friendly; but not addressable (no seek) and needs disambiguation for
+   identical rows. Good for dedup/idempotency.
+
+**Recommended default** for multi-record sources: a composite, self-describing ID
+`<source-relpath>#<logical-offset>` (offset form) — globally unique, and `Fetch`
+parses it to open the file (through the decrypt→decompress layers), seek to the
+offset, and decode one record. Fall back to `#L<lineno>` when offsets aren't
+seekable. Offer the **natural-key** option (strategy 2) for keyed data.
+
+### Tweak: compressed containers
+Plain gzip/zstd streams are **not** randomly seekable, so a byte offset alone
+can't give O(1) fetch. Two fixes, both reusing §5's manifest checkpoints:
+- **Seekable container formats for data we write/own:** BGZF (block-gzip) or the
+  seekable-zstd format (`SaveTheRbtz/zstd-seekable-format-go` exposes
+  `ReadAt`/`Seek` by *decompressed* offset, layered on `klauspost/compress` which
+  we already depend on). The doc-ID stores the logical offset; the format's seek
+  table maps it to the compressed block.
+- **Opaque/plain-gzip inputs we don't control:** keep ordinal/line IDs and store
+  periodic **sync points** (offset every N records) in the manifest, bounding
+  `Fetch` re-scan to one inter-checkpoint span — the approach `zindex`/`gztool`
+  use for gzip.
+- **`.zip` containers:** the ID must include the entry name, e.g.
+  `<zip-path>!<entry>#<offset>`. The central directory gives per-entry start
+  offsets (random access *between* entries); *within* an entry the stream caveats
+  above apply.
+
+### Tweak: encrypted containers (encryption-at-rest)
+A recurring enterprise ask; design it as another transparent layer.
+- **Layering:** raw → **decrypt** → decompress → decode (mirrors §3). Don't invent
+  crypto.
+- **Random access needs segmented/chunked encryption, not whole-file AEAD:**
+  - **Google Tink** `streamingaead` (AES-GCM-HKDF, ~1 MB segments; segments are
+    position-bound and individually decryptable ⇒ random access by plaintext
+    offset).
+  - **age**'s STREAM (chunked; its `DecryptReaderAt` implements `io.ReaderAt` for
+    random-access decryption).
+  Both give plaintext-offset random access — exactly what offset doc IDs need. So
+  **seekable-compression and seekable-encryption share one mechanism:** the
+  doc-ID's logical (plaintext) offset is mapped through the format's segment/block
+  table.
+- **Key management:** envelope encryption — a data key (DEK) wrapped by a KEK from
+  a KMS / keyring / passphrase. Use **`gocloud.dev/secrets`** (already a dep) for
+  KMS-backed wrapping, or age recipients/passphrase for the simple local case.
+  (Couchbase's `cbauth`/`gocbcrypto` are in the tree but heavier than a standalone
+  CLI needs.)
+- **Critical coupling — derived artifacts leak plaintext.** Indexes (bbolt/bleve),
+  extracted Office text, and the manifest are all built from *decrypted* content;
+  storing them in the clear would defeat encryption-at-rest. The `.n1k1` sidecar
+  must itself be encrypted at rest (same DEK/KEK) or kept only in memory. Treat
+  this as a hard requirement, not an afterthought.
+
+### Stability coupling with §5
+Positional IDs (offset/line) are durable only if the content *above* them is
+immutable — exactly the append-only log case §5 optimizes, where per-file offset
+checkpoints double as both the change-detection state **and** the `Fetch` seek
+index. For mutable files, prefer a natural key (strategy 2) or content-hash IDs
+(strategy 5), and document that synthetic positional IDs may shift on edit.
+
 ## Phasing (suggested)
 
 1. Relax the file datastore: directory = keyspace = union of *all* supported
@@ -289,10 +382,16 @@ derived artifacts live, and **how** do we know source data changed?
 3. Transparent gzip/zstd decode; `.zip` as a container.
 4. Explicit `read_*('glob', opts)` table functions in FROM (power mode).
 5. Catalog/sidecar (`.n1k1/catalog.json`) with hive + projected-date partitions.
-6. Index/cache sidecar + manifest with Merkle + append-only offsets (joins
+6. Synthetic document IDs for multi-record sources: composite
+   `<relpath>#<offset|line>` populating `META().id`; natural-key option in the
+   catalog. (Needed as soon as step 2 lands multi-record files.)
+7. Index/cache sidecar + manifest with Merkle + append-only offsets, where the
+   offset checkpoints double as the `Fetch` seek index (joins
    `DESIGN-indexing.md`).
-7. Office/unstructured extraction (pure-Go default + optional Tika/extractous),
+8. Office/unstructured extraction (pure-Go default + optional Tika/extractous),
    feeding FTS.
+9. Encryption-at-rest: transparent decrypt layer (Tink/age segmented),
+   envelope keys via `gocloud.dev/secrets`, and **encrypted sidecar artifacts**.
 
 ## Open questions
 
@@ -308,6 +407,12 @@ derived artifacts live, and **how** do we know source data changed?
   CSV cells as strings; how to expose overrides.
 - **Native vs cgo extractors/OCR.** Whether to accept the `extractous`/Tika
   native dependency for document breadth + OCR, or stay pure-Go and narrower.
+- **Default doc-ID scheme.** Positional `<relpath>#<offset>` (addressable, but
+  shifts on edit) vs content-hash (stable, not seekable) vs requiring a natural
+  key — and how aggressively to default per source/mutation pattern.
+- **Encryption scope & seekability.** Which segmented-encryption format (Tink
+  vs age) and whether to require seekable compression/encryption for large
+  encrypted sources, vs accepting rescan-from-checkpoint when inputs are opaque.
 
 ## Sources
 
@@ -330,3 +435,9 @@ derived artifacts live, and **how** do we know source data changed?
   https://github.com/rahulpoonia29/extractous-go
 - restic/chunker (FastCDC content-defined chunking in Go):
   https://github.com/restic/chunker
+- Seekable zstd (random access by decompressed offset, over klauspost/compress):
+  https://github.com/SaveTheRbtz/zstd-seekable-format-go
+- Tink Streaming AEAD (segmented encryption, random access):
+  https://developers.google.com/tink/streaming-aead
+- age STREAM / `DecryptReaderAt` (chunked, random-access decryption):
+  https://github.com/FiloSottile/age
