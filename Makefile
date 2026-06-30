@@ -39,7 +39,7 @@ build-glue:
 
 # test-glue runs the glue package unit tests (N1QL engine layer).
 test-glue: build-glue
-	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -tags n1ql ./glue
+	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -tags n1ql -v ./glue
 
 # test-filestore runs just the upstream couchbase/query "filestore" conformance
 # corpus (600+ cases under test/filestore/) verbosely: a summary, a grouped
@@ -49,7 +49,7 @@ test-filestore: build-glue
 
 # test-all runs the whole N1QL-engine layer (glue/ + test/, includes filestore).
 test-all: build-glue
-	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -tags n1ql ./glue ./test
+	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -tags n1ql -v ./glue ./test
 
 # Target easy-to-read parses source code files and generates
 # versions that are easier to read in a tmp subdirectory.
