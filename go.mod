@@ -85,6 +85,7 @@ require (
 	github.com/blevesearch/zapx/v16 v16.3.4 // indirect
 	github.com/blevesearch/zapx/v17 v17.1.9 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
+	github.com/cloudfoundry/gosigar v1.3.122 // indirect
 	github.com/cncf/xds/go v0.0.0-20251210132809-ee656c7534f5 // indirect
 	github.com/cockroachdb/apd/v3 v3.2.1 // indirect
 	github.com/containerd/console v1.0.5 // indirect
@@ -117,8 +118,12 @@ require (
 	github.com/couchbase/tools-common/cloud/v8 v8.1.4 // indirect
 	github.com/couchbase/tools-common/couchbase/v4 v4.1.0 // indirect
 	github.com/couchbase/tools-common/fs v1.0.3 // indirect
+	github.com/couchbase/tools-common/strings v1.0.0 // indirect
+	github.com/couchbase/tools-common/sync/v2 v2.0.2 // indirect
 	github.com/couchbase/tools-common/testing v1.0.3 // indirect
+	github.com/couchbase/tools-common/types v1.1.4 // indirect
 	github.com/couchbase/tools-common/types/v2 v2.2.2 // indirect
+	github.com/couchbase/tools-common/utils/v3 v3.1.1 // indirect
 	github.com/couchbaselabs/gocbconnstr/v2 v2.0.0 // indirect
 	github.com/creasty/defaults v1.8.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
@@ -225,7 +230,7 @@ require (
 	golang.org/x/net v0.54.0 // indirect
 	golang.org/x/oauth2 v0.34.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
-	golang.org/x/sys v0.45.0 // indirect
+	golang.org/x/sys v0.46.0 // indirect
 	golang.org/x/telemetry v0.0.0-20260409153401-be6f6cb8b1fa // indirect
 	golang.org/x/term v0.43.0 // indirect
 	golang.org/x/text v0.37.0 // indirect
@@ -244,21 +249,4 @@ require (
 // The couchbase-server modules use placeholder v0.0.0-00010101... requires for
 // their siblings (resolved via local-path replaces inside the repo-sync build
 // tree). Consuming them externally requires replacing each with a real version.
-replace (
-	github.com/couchbase/bhive => github.com/couchbase/bhive v0.0.0-20260614175612-e4f21cfe79fa
-	github.com/couchbase/cbft => github.com/couchbase/cbft v0.5.0
-	github.com/couchbase/cbftx => github.com/couchbase/cbftx v0.0.0-20260629132614-b1ba6e53476d
-	github.com/couchbase/cbgt => github.com/couchbase/cbgt v1.4.14
-	github.com/couchbase/eventing => github.com/couchbase/eventing v0.0.0-20260609085639-37cd80170493
-	github.com/couchbase/eventing-ee => github.com/couchbase/eventing-ee v0.0.0-20260512141556-8783013c2a7a
-	github.com/couchbase/go_json => github.com/couchbase/go_json v0.0.0-20250803152502-4641f4ef8578
-	github.com/couchbase/gocbcrypto => github.com/couchbase/gocbcrypto v0.0.0-20260312210123-066b00fd5492
-	github.com/couchbase/godbc => github.com/couchbase/godbc v0.0.0-20260618052033-fcd013c8cda1
-	github.com/couchbase/hebrew => github.com/couchbase/hebrew v1.0.0
-	github.com/couchbase/indexing => github.com/couchbase/indexing v0.0.0-20260626061901-ecc60d14eb83
-	github.com/couchbase/n1fty => github.com/couchbase/n1fty v0.0.0-20260626130716-05233efe63f0
-	github.com/couchbase/plasma => github.com/couchbase/plasma v0.0.0-20260626061919-872db1e5043d
-	github.com/couchbase/query => github.com/couchbase/query v0.0.0-20260627002010-d19d17173f34
-	github.com/couchbase/query-ee => github.com/couchbase/query-ee v0.0.0-20260618222216-0740e55c5c1e
-	github.com/couchbase/regulator => github.com/couchbase/regulator v0.0.0-20260227193052-7fe2b3883943
-)
+replace github.com/couchbase/query => ../query-n1k1-fork

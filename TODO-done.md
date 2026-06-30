@@ -39,3 +39,12 @@ Gist only -- details live in commit messages, README, and code comments.
 - RESULT: `CGO_ENABLED=0 go test -tags n1ql ./glue ./test` is GREEN, and the
   engine cross-compiles to linux/darwin/windows. 3 query patches needed
   (parser-gen, system stub, semchecker enterprise) -- see patches/.
+
+## 2026/06 -- local query fork wired in (reproducible build, staying local)
+- Created sibling repo ../query-n1k1-fork as a real git fork: main = pinned
+  snapshot; n1k1-pure-go branch = base + the 3 patches as separate commits.
+- go.mod: replace query => ../query-n1k1-fork; pruned all sibling-module
+  replaces (T3 dropped them) -- only the query replace remains.
+- Verified: core default build green, n1ql tests green CGO_ENABLED=0, and a
+  missing fork doesn't break the default build (query is n1ql-gated). GitHub
+  push of the fork deferred (staying local for now). See [[TODO]].

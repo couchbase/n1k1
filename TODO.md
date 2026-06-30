@@ -52,12 +52,18 @@ DONE so far (2026/06):
       cross-compiles to linux/darwin/windows.
 
 REMAINING for a truly shippable binary:
-- [ ] **Reproducible query sourcing** (packaging): the build still uses a local
-      patched copy of query (tmp/query-local, via go.mod replace) -- not
-      reproducible for others. Fork couchbase/query at the pinned SHA, commit the
-      3 patches (gen parser, system stub, semchecker_ce) from patches/, and
-      replace => fork@sha. Then prune the now-unneeded replaces from go.mod
-      (cbft/cbgt/indexing/n1fty/query-ee/etc. -- T3 dropped them).
+- [x] **Local fork** (done): patches committed as real git history in the
+      sibling repo ../query-n1k1-fork (branch n1k1-pure-go: base + gen parser +
+      system stub + semchecker). go.mod replaces query => ../query-n1k1-fork and
+      the sibling-module replaces are pruned (only query remains; default build
+      doesn't resolve query so a missing fork doesn't break core).
+- [ ] **Push the fork to GitHub** for reproducibility-for-others: push
+      ../query-n1k1-fork, then swap the replace to a github pseudo-version so
+      n1k1 builds via plain `go get` without the local sibling. (Deferred --
+      staying local for now.)
+- [ ] **go.mod indirect block is stale**: still lists the dropped subtree's
+      transitive deps. Can't `go mod tidy` (it would prune the n1ql-gated query).
+      Cosmetic; harmless. Clean up if/when query becomes a normal (untagged) dep.
 - [ ] **A main()**: glue is a library; add a cmd/ that takes a SQL++ string +
       file datastore and prints results, to actually produce the downloadable binary.
 
