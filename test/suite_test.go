@@ -175,8 +175,8 @@ func TestSuiteCases(t *testing.T) {
 			stmt, results, ok := caseRunnable(c)
 			if !ok {
 				skipped++
-				reason, snippet := exoticInfo(c)
-				exotic = append(exotic, exoticCase{loc, reason, snippet})
+				reason, content := exoticInfo(c)
+				exotic = append(exotic, exoticCase{loc, reason, content})
 				continue
 			}
 
@@ -203,9 +203,10 @@ type caseOutcome struct {
 // exoticCase records one corpus case skipped by caseRunnable -- i.e. not the
 // plain {statements, results} shape n1k1 attempts (it carries error/match/
 // resultset/pre-post or a non-string statement). reason says why it was
-// skipped; snippet is a clipped peek at its statements (or whole-case JSON).
+// skipped; content is its full statement text (or whole-case JSON if there's
+// no string statement).
 type exoticCase struct {
-	loc, reason, snippet string
+	loc, reason, content string
 }
 
 // reportSuite prints a readable summary + a grouped table of the expected
@@ -256,9 +257,9 @@ func reportSuite(t *testing.T, nFiles, pass, skipped int, nonPass []caseOutcome,
 
 	var b strings.Builder
 
-	// Per-case listing of every non-pass case (in corpus order), each tagged with
-	// its group ("UNEXPECTED" if not in expectedNonPass) and its SQL++. The SQL is
-	// shown in full (SQL is the last column, so tabwriter leaves it unpadded) so
+	// Per-case listing of every non-pass case (in corpus order): status
+	// (UNSUPPORTED/FAIL) and category first, then loc and the SQL++. The SQL is
+	// shown in full (it's the last column, so tabwriter leaves it unpadded) so
 	// it's clear exactly what n1k1 can't yet handle -- except EXPLAIN cases, which
 	// only differ by the wrapped query (n1k1 doesn't convert the plan-text output
 	// at all), so those get just a snippet.
@@ -273,16 +274,16 @@ func reportSuite(t *testing.T, nFiles, pass, skipped int, nonPass []caseOutcome,
 		if strings.HasPrefix(strings.ToUpper(strings.TrimSpace(o.stmt)), "EXPLAIN") {
 			sql = oneLine(o.stmt)
 		}
-		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\n", o.loc, o.status, g, sql)
+		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\n", o.status, g, o.loc, sql)
 	}
 	tw.Flush()
 
 	// Exotic (skipped) cases: not the plain {statements, results} shape, so n1k1
-	// doesn't attempt them. Show why + a clipped snippet to gauge what they are.
-	fmt.Fprintf(&b, "\nexotic / skipped cases -- snippet (%d):\n", len(exotic))
+	// doesn't attempt them. Show why + the full statement/content to gauge them.
+	fmt.Fprintf(&b, "\nexotic / skipped cases (%d):\n", len(exotic))
 	tw = tabwriter.NewWriter(&b, 0, 2, 2, ' ', 0)
 	for _, e := range exotic {
-		fmt.Fprintf(tw, "  %s\t%s\t%s\n", e.loc, e.reason, e.snippet)
+		fmt.Fprintf(tw, "  %s\t%s\t%s\n", e.loc, e.reason, e.content)
 	}
 	tw.Flush()
 
@@ -375,12 +376,12 @@ func fullLine(s string) string {
 	return strings.Join(strings.Fields(s), " ")
 }
 
-// exoticInfo explains why a case was skipped by caseRunnable and returns a
-// clipped snippet of it. The reason lists any non-{statements,results,ordered,
+// exoticInfo explains why a case was skipped by caseRunnable and returns its
+// full content. The reason lists any non-{statements,results,ordered,
 // description} fields present (sorted, for stable output), and/or notes a
-// missing/typed statements/results. The snippet prefers the statements text,
-// falling back to the whole-case JSON.
-func exoticInfo(c map[string]interface{}) (reason, snippet string) {
+// missing/typed statements/results. The content prefers the (full) statements
+// text, falling back to the whole-case JSON.
+func exoticInfo(c map[string]interface{}) (reason, content string) {
 	var extra []string
 	for k := range c {
 		switch k {
@@ -407,15 +408,15 @@ func exoticInfo(c map[string]interface{}) (reason, snippet string) {
 	reason = strings.Join(reasons, "; ")
 
 	if s, ok := c["statements"].(string); ok {
-		snippet = oneLine(s)
+		content = fullLine(s)
 	} else if v, ok := c["statements"]; ok {
 		bb, _ := json.Marshal(v)
-		snippet = oneLine(string(bb))
+		content = fullLine(string(bb))
 	} else {
 		bb, _ := json.Marshal(c)
-		snippet = oneLine(string(bb))
+		content = fullLine(string(bb))
 	}
-	return reason, snippet
+	return reason, content
 }
 
 // expectedNonPass enumerates every corpus case n1k1 does not currently pass:
