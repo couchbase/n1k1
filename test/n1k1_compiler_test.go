@@ -209,6 +209,10 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 	}
 
 	c := []string{
+		// The generated file imports glue (gated behind the n1ql tag), so it
+		// must carry the same constraint or it breaks the default `go test ./...`.
+		"//go:build n1ql",
+		``,
 		"package tmp",
 		``,
 		`import "bufio"`,
