@@ -11,7 +11,7 @@
 //  express or implied. See the License for the specific language
 //  governing permissions and limitations under the License.
 
-package test
+package benchmark
 
 // TestGenerateBenchmarks (Phase 2 of DESIGN-benchmark.md) emits, for a fixed
 // set of queries, paired benchmark funcs into test/tmp: BenchmarkInterp_X runs
@@ -27,7 +27,7 @@ import (
 	"testing"
 
 	"github.com/couchbase/n1k1/base"
-	"github.com/couchbase/n1k1/test/benchmark"
+	"github.com/couchbase/n1k1/test/emit"
 )
 
 func benchScanFilterProjectOp(data string, reps int) *base.Op {
@@ -66,7 +66,7 @@ func TestGenerateBenchmarks(t *testing.T) {
 	const distinct = 200
 	const benchRowsPerOp = 30_000_000 // ~5s/op at the engine's ~5-7M rows/s.
 	reps := benchRowsPerOp / distinct
-	data := benchmark.GenJSONs(distinct, distinct)
+	data := GenJSONs(distinct, distinct)
 	rowsPerOp := distinct * reps
 
 	queries := []struct {
@@ -80,11 +80,11 @@ func TestGenerateBenchmarks(t *testing.T) {
 	var body []string
 	var allEmitted strings.Builder
 	for _, q := range queries {
-		opLit, ok := bakeOp(q.op)
+		opLit, ok := emit.BakeOp(q.op)
 		if !ok {
-			t.Fatalf("bakeOp %s failed", q.name)
+			t.Fatalf("emit.BakeOp %s failed", q.name)
 		}
-		lines := emitOpToLines(q.op)
+		lines := emit.OpToLines(q.op)
 		for _, ln := range lines {
 			allEmitted.WriteString(ln)
 		}
@@ -105,19 +105,19 @@ func TestGenerateBenchmarks(t *testing.T) {
 		`import "github.com/couchbase/n1k1/engine"`,
 		`import "github.com/couchbase/n1k1/glue"`,
 	}
-	for _, oi := range optionalImports { // reuse the suite-compiler's import set
-		if oi.path == "os" {
+	for _, oi := range emit.OptionalImports { // reuse the suite-compiler's import set
+		if oi.Path == "os" {
 			continue // already always-on above
 		}
-		if strings.Contains(allEmitted.String(), oi.qualifier) {
-			c = append(c, fmt.Sprintf("import %q", oi.path))
+		if strings.Contains(allEmitted.String(), oi.Qualifier) {
+			c = append(c, fmt.Sprintf("import %q", oi.Path))
 		}
 	}
 	c = append(c, ``, "var _ = engine.ExecOp", "var _ = glue.MakeVars",
 		"var _ = base.Op{}", ``)
 	c = append(c, body...)
 
-	err := ioutil.WriteFile("./tmp/generated_by_bench_test.go",
+	err := ioutil.WriteFile("../tmp/generated_by_bench_test.go",
 		[]byte(strings.Join(c, "\n")), 0644)
 	if err != nil {
 		t.Fatal(err)

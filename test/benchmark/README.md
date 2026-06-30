@@ -26,8 +26,13 @@ Compare runs with `benchstat` (save `-bench` output to files, then
 | static-param expr optimization | `ScanFilter` (eq) + `test/BenchmarkInterpExprEq` vs `ExprStr` | low, flat allocs |
 | rhmap spill-to-disk + graceful degradation | `TestSpillPoint`, `BenchmarkGroupBy` | spill onset; throughput holds across it |
 
-(Lower-level micro-benchmarks for canonical JSON, value compare, parse, boxing
-already live in `base/` and `test/`.)
+Lower-level micro-benchmarks also live here: `compare_test.go` (value compare)
+and `boxing_test.go` (interface boxing / allocs). The interpreter-vs-compiled
+generator is `bench_compiler_test.go` (Phase 2, below). The compiler-codegen
+helpers it shares with the `test/` differential generators are in the
+`test/emit` package. (Canonical-JSON / parse micro-benchmarks still live in
+`base/`; the static-param expr-eq benchmarks are `test/`'s `BenchmarkInterpExpr*`,
+run via `make benchmark-expr-eq`.)
 
 ## Findings so far
 

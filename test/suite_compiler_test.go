@@ -42,6 +42,7 @@ import (
 
 	"github.com/couchbase/n1k1/base"
 	"github.com/couchbase/n1k1/glue"
+	"github.com/couchbase/n1k1/test/emit"
 
 	"github.com/couchbase/query/expression"
 )
@@ -152,7 +153,7 @@ func allDatastoreOpsBakeable(o *base.Op) bool {
 		return true
 	}
 	if strings.HasPrefix(o.Kind, "datastore") {
-		if _, ok := bakeOp(o); !ok {
+		if _, ok := emit.BakeOp(o); !ok {
 			return false
 		}
 	}
@@ -182,21 +183,6 @@ func nonDeterministic(stmt string) bool {
 	return false
 }
 
-// optionalImports are imported by the generated file only if the emitted code
-// actually references the package (Go errors on unused imports). The always-on
-// imports (testing, base, glue, test) are emitted unconditionally.
-var optionalImports = []struct{ qualifier, path string }{
-	{"os.", "os"},
-	{"bufio.", "bufio"},
-	{"bytes.", "bytes"},
-	{"heap.", "container/heap"},
-	{"binary.", "encoding/binary"},
-	{"math.", "math"},
-	{"strconv.", "strconv"},
-	{"strings.", "strings"},
-	{"reflect.", "reflect"},
-	{"store.", "github.com/couchbase/rhmap/store"},
-}
 
 func TestSuiteWithCompiler(t *testing.T) {
 	if _, err := os.Stat(suiteRoot + "/default/cases"); err != nil {
@@ -271,7 +257,7 @@ func TestSuiteWithCompiler(t *testing.T) {
 				stmt:     stmt,
 				labels:   conv.TopOp.Labels,
 				expected: string(expectedJSON),
-				lines:    emitOpToLines(conv.TopOp),
+				lines:    emit.OpToLines(conv.TopOp),
 			})
 		}
 	}
@@ -298,9 +284,9 @@ func TestSuiteWithCompiler(t *testing.T) {
 		`import "github.com/couchbase/n1k1/glue"`,
 		`import "github.com/couchbase/n1k1/test"`,
 	}
-	for _, oi := range optionalImports {
-		if strings.Contains(emitted, oi.qualifier) {
-			c = append(c, fmt.Sprintf("import %q", oi.path))
+	for _, oi := range emit.OptionalImports {
+		if strings.Contains(emitted, oi.Qualifier) {
+			c = append(c, fmt.Sprintf("import %q", oi.Path))
 		}
 	}
 	c = append(c, ``, "var _ = glue.ExprStr", "var _ = base.Labels(nil)", ``)

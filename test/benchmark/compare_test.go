@@ -1,6 +1,6 @@
 //go:build n1ql
 
-package test
+package benchmark
 
 import (
 	"testing"
