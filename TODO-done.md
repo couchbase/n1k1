@@ -19,5 +19,13 @@ Gist only -- details live in commit messages, README, and code comments.
 - Proved cgo is EASY: prebuilt libsigar in Couchbase Server.app + openssl@3
   via brew; wiring CGO_CFLAGS/LDFLAGS clears all sigar/openssl errors.
 - Found the real blocker is the goyacc parser-gen gap in query/parser/n1ql
-  (generated yyParse/yySymType not shipped by `go get`). cgo patch wouldn't
-  help. Conclusion: don't disable cgo; solve parser-gen instead. See TODO.md.
+  (generated yyParse/yySymType not shipped by `go get`). See TODO.md.
+
+## 2026/06 -- decouple work started (toward pure-Go CGO_ENABLED=0 binary)
+- Stubbed query/system to pure-Go (patches/query-system-stub.go.txt) -- sigar is
+  pulled pervasively via query/memory<-query/tenant, so it must be stubbed.
+- T1: dropped query/server from glue/exec.go (unused param).
+- T2: dropped query/datastore/system from glue/stmt.go (Systemstore=nil).
+- Corrected an over-claim: stub+T1+T2 is NOT pure-Go yet. cbft (via execution)
+  is cgo (jemalloc) + cbgt->gosigar needs darwin cgo, so CGO_ENABLED=0 REQUIRES
+  T3 (drop execution). Also glue/ has 2019->2026 query API drift to fix. See TODO.md.

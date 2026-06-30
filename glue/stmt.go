@@ -17,7 +17,6 @@ import (
 	"github.com/couchbase/query/algebra"
 	"github.com/couchbase/query/datastore"
 	"github.com/couchbase/query/datastore/file"
-	"github.com/couchbase/query/datastore/system"
 	"github.com/couchbase/query/parser/n1ql"
 	"github.com/couchbase/query/plan"
 	"github.com/couchbase/query/planner"
@@ -111,20 +110,19 @@ func (g *Store) PlanStatement(s algebra.Statement, namespace string,
 // ------------------------------------------------------------------
 
 // FileStore returns a store instance based on a file datastore.
+//
+// Systemstore is intentionally nil: the query/datastore/system package pulls in
+// query/server -> indexing (cgo) via query/aus, which we drop to keep n1k1
+// pure-Go. Queries that don't reference the system: namespace don't need it.
 func FileStore(path string) (*Store, error) {
 	ds, err := file.NewDatastore(path)
 	if err != nil {
 		return nil, err
 	}
 
-	ss, err := system.NewDatastore(ds)
-	if err != nil {
-		return nil, err
-	}
-
 	return &Store{
 		Datastore:       ds,
-		Systemstore:     ss,
+		Systemstore:     nil,
 		IndexApiVersion: datastore.INDEX_API_MAX,
 		FeatureControls: util.DEF_N1QL_FEAT_CTRL,
 	}, nil

@@ -1,0 +1,103 @@
+// Copyright 2022-Present Couchbase, Inc.
+//
+// Use of this software is governed by the Business Source License included
+// in the file licenses/BSL-Couchbase.txt.  As of the Change Date specified
+// in that file, in accordance with the Business Source License, use of this
+// software will be governed by the Apache License, Version 2.0, included in
+// the file licenses/APL2.txt.
+
+package system
+
+// NOTE (n1k1): This is a pure-Go STUB that replaces the original cgo (sigar)
+// implementation, so n1k1 can build with CGO_ENABLED=0 into a single,
+// cross-compilable, self-contained binary. sigar is pulled in pervasively via
+// query/memory <- query/tenant by nearly the entire query stack (even the
+// parser), so there is no way to simply "not import" it -- it must be stubbed.
+//
+// System/cgroup stats are reported as benign placeholders: ample free memory
+// and zero CPU. The only real consequence is that query's memory-quota
+// accounting never observes memory pressure, which is fine for n1k1's use as a
+// query-plan interpreter over file data. See n1k1 TODO.md.
+
+import (
+	"time"
+)
+
+const SIGAR_CGROUP_SUPPORTED = 1 // SigarControlGroupInfo.Supported value if cgroups are supported
+
+const (
+	stubTotalMem = uint64(64) << 30 // pretend 64 GiB total
+	stubFreeMem  = uint64(48) << 30 // pretend 48 GiB free
+)
+
+type SystemStats struct{}
+
+// Open a new handle (no-op in the stub).
+func NewSystemStats() (*SystemStats, error) {
+	return &SystemStats{}, nil
+}
+
+// Close handle (no-op in the stub).
+func (s *SystemStats) Close() {}
+
+func (s *SystemStats) ProcessCpuStats() (int, uint64, uint64, error) {
+	return 0, 0, uint64(time.Now().UnixMilli()), nil
+}
+
+// ProcessRSS gets the size in bytes of the memory-resident portion of this Go runtime.
+func (s *SystemStats) ProcessRSS() (int, uint64, error) {
+	return 0, 0, nil
+}
+
+// SystemFreeMem gets the current free memory in bytes.
+func (s *SystemStats) SystemFreeMem() (uint64, error) {
+	return stubFreeMem, nil
+}
+
+// SystemActualFreeMem gets the current free memory in bytes (incl. inactive kernel pages).
+func (s *SystemStats) SystemActualFreeMem() (uint64, error) {
+	return stubFreeMem, nil
+}
+
+// SystemTotalMem gets the total memory in bytes.
+func (s *SystemStats) SystemTotalMem() (uint64, error) {
+	return stubTotalMem, nil
+}
+
+// GetTotalAndFreeMem returns (TotalMem, FreeMem, ActualFreeMem, cGroupValues, error).
+func (s *SystemStats) GetTotalAndFreeMem() (uint64, uint64, uint64, bool, error) {
+	return stubTotalMem, stubFreeMem, stubFreeMem, false, nil
+}
+
+// SigarCpuT type Go-wraps the sigar C library sigar_cpu_t type.
+type SigarCpuT struct {
+	Sys     uint64 // CPU executing system thread
+	User    uint64 // CPU executing user thread at normal priority [-20, 0]
+	Nice    uint64 // CPU executing user thread at low priority [1, 20]
+	Irq     uint64 // CPU executing "top half" (uninterruptible) part of a HW interrupt handler
+	SoftIrq uint64 // CPU executing "bottom half" (long, slow) part of a HW interrupt handler
+	Wait    uint64 // CPU not executing anything but an IO is outstanding (a type of idle time)
+	Idle    uint64 // CPU not executing anything and no IO is outstanding
+	Stolen  uint64 // CPU time given to other virtual machines in a VM or cloud environment
+}
+
+// SigarCpuGet returns zeroed CPU stats in the stub.
+func (h *SystemStats) SigarCpuGet() (*SigarCpuT, error) {
+	return &SigarCpuT{}, nil
+}
+
+// SigarControlGroupInfo holds the subset of sigar_control_group_info_t GSI uses.
+type SigarControlGroupInfo struct {
+	Supported uint8 // "1" if cgroup info is supported, "0" otherwise
+	Version   uint8 // "1" for cgroup v1, "2" for cgroup v2
+
+	NumCpuPrc     uint16
+	MemoryMax     uint64
+	MemoryCurrent uint64
+	UsageUsec     uint64
+}
+
+// GetControlGroupInfo reports cgroups as unsupported in the stub.
+func (h *SystemStats) GetControlGroupInfo() *SigarControlGroupInfo {
+	return &SigarControlGroupInfo{Supported: 0}
+}

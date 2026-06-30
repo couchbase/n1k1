@@ -32,7 +32,6 @@ import (
 
 	"github.com/couchbase/query/execution"
 	"github.com/couchbase/query/plan"
-	"github.com/couchbase/query/server"
 	"github.com/couchbase/query/value"
 )
 
@@ -48,7 +47,11 @@ func init() {
 	}
 }
 
-func ServiceRequestEx(r server.Request, p plan.Operator,
+// ServiceRequestEx runs a planned statement through n1k1's own operators.
+// (Formerly took a query/server.Request as its first arg -- dropped as part of
+// decoupling n1k1 from query/server, which pulled in cgo deps. The arg was
+// unused.)
+func ServiceRequestEx(p plan.Operator,
 	ctx *execution.Context, timeout time.Duration, asyncReadyCB func()) bool {
 	texter, ok := p.(interface{ Text() string })
 	if !ok || !strings.HasSuffix(texter.Text(), " n1k1 */") {
