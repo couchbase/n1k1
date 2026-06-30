@@ -203,7 +203,7 @@ func (c *Conv) VisitFetch(o *plan.Fetch) (interface{}, error) {
 
 	return c.TopPush(o, &base.Op{
 		Kind:   "datastore-fetch",
-		Labels: base.Labels{"." + LabelSuffix(o.Term().As()), "^id"},
+		Labels: base.Labels{"." + LabelSuffix(o.Term().Alias()), "^id"},
 		Params: []interface{}{c.AddTemp(o)},
 	})
 }
@@ -219,8 +219,8 @@ func (c *Conv) VisitJoin(o *plan.Join) (interface{}, error) {
 	rv := &base.Op{
 		Kind: "joinKeys-inner",
 		Labels: base.Labels{
-			"." + LabelSuffix(c.TopPlan.(Termer).Term().As()), "^id",
-			"." + LabelSuffix(o.Term().As()), "^id",
+			"." + LabelSuffix(c.TopPlan.(Termer).Term().Alias()), "^id",
+			"." + LabelSuffix(o.Term().Alias()), "^id",
 		},
 		Params: []interface{}{
 			// The vars.Temps slot that holds evaluated keys.
@@ -232,7 +232,7 @@ func (c *Conv) VisitJoin(o *plan.Join) (interface{}, error) {
 			c.TopOp,
 			&base.Op{
 				Kind:   "datastore-fetch",
-				Labels: base.Labels{"." + LabelSuffix(o.Term().As()), "^id"},
+				Labels: base.Labels{"." + LabelSuffix(o.Term().Alias()), "^id"},
 				Params: []interface{}{c.AddTemp(o)},
 				Children: []*base.Op{&base.Op{
 					Kind:   "temp-yield-var",
@@ -257,8 +257,8 @@ func (c *Conv) VisitUnnest(o *plan.Unnest) (interface{}, error) {
 	rv := &base.Op{
 		Kind: "unnest-inner",
 		Labels: base.Labels{
-			"." + LabelSuffix(c.TopPlan.(Termer).Term().As()), "^id",
-			"." + LabelSuffix(o.Term().As()),
+			"." + LabelSuffix(c.TopPlan.(Termer).Term().Alias()), "^id",
+			"." + LabelSuffix(o.Term().Alias()),
 		},
 		Params: []interface{}{
 			// The expression to unnest.
@@ -268,7 +268,7 @@ func (c *Conv) VisitUnnest(o *plan.Unnest) (interface{}, error) {
 			c.TopOp,
 			&base.Op{
 				Kind:   "noop",
-				Labels: base.Labels{"." + LabelSuffix(o.Term().As())},
+				Labels: base.Labels{"." + LabelSuffix(o.Term().Alias())},
 			}},
 	}
 

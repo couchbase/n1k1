@@ -82,6 +82,19 @@ Gist only -- details live in commit messages, README, and code comments.
   cause, and moot post-T3 (the drift-prone heavy modules aren't compiled; the
   versions that matter come from the fork's go.mod -- itself one snapshot).
 
+## 2026/06 -- fixed keyspace-alias projection (conformance 358 -> 530)
+- Root cause of the ANY..SATISFIES failures (and broad field-projection
+  breakage): conv.go labeled fetch/join/unnest docs with KeyspaceTerm.As()
+  (the EXPLICIT alias, empty for an unaliased `FROM contacts`), but query's
+  planner qualifies expressions with the EFFECTIVE alias (`contacts.name`).
+  So `contacts.name` couldn't resolve against a "."-labeled doc -> empty rows.
+- Fix: use Term().Alias() (effective: explicit, else keyspace name). This
+  fixes field projection AND makes SELECT * wrap under the keyspace alias
+  ({"contacts": {...}}), matching N1QL.
+- Conformance jumped 358 -> 530 / 672; the ANY/EVERY..SATISFIES bucket is
+  essentially resolved. Updated the 4 existing SELECT * tests for the (now
+  conformant) wrapped output and bumped the pass-floor to 530.
+
 ## 2026/06 -- upstream filestore conformance corpus runs against n1k1
 - Vendored the couchbase/query "filestore" test corpus (test/filestore/ --
   24 datasets / 510 docs / 46 case files of {statements, results}).

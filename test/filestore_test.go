@@ -231,7 +231,7 @@ func TestFilestoreCases(t *testing.T) {
 	// Regression guard: n1k1 supports a subset of N1QL, so we don't require
 	// 100% -- but the number of upstream cases that pass should never drop.
 	// Ratchet this up as n1k1's coverage grows.
-	const passFloor = 358
+	const passFloor = 530
 	if pass < passFloor {
 		t.Errorf("filestore conformance regressed: PASS=%d < baseline %d", pass, passFloor)
 	}

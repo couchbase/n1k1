@@ -28,6 +28,15 @@ import (
 	"github.com/couchbase/n1k1/glue"
 )
 
+// orderId pulls "id" out of a `SELECT * FROM data:orders` row. N1QL wraps a
+// SELECT * under the keyspace's effective alias, so the row is
+// {"orders": {..., "id": ...}} (the keyspace name "orders" is the alias).
+func orderId(m map[string]interface{}) string {
+	o, _ := m["orders"].(map[string]interface{})
+	id, _ := o["id"].(string)
+	return id
+}
+
 func TestFileStoreSelectStarUseKeys1(t *testing.T) {
 	store, p, conv, err :=
 		testFileStoreSelect(t, `SELECT * FROM data:orders USE KEYS "1234"`, false)
@@ -55,7 +64,7 @@ func TestFileStoreSelectStarUseKeys1(t *testing.T) {
 		}
 
 		if strings.Index("1234",
-			m["id"].(string)) < 0 {
+			orderId(m)) < 0 {
 			t.Fatalf("unexpected id: %+v, m: %+v", result, m)
 		}
 	}
@@ -88,7 +97,7 @@ func TestFileStoreSelectStarUseKeys2(t *testing.T) {
 		}
 
 		if strings.Index("1200,1234",
-			m["id"].(string)) < 0 {
+			orderId(m)) < 0 {
 			t.Fatalf("unexpected id: %+v, m: %+v", result, m)
 		}
 	}
@@ -121,7 +130,7 @@ func TestFileStoreSelectStar(t *testing.T) {
 		}
 
 		if strings.Index("1200,1234,1235,1236",
-			m["id"].(string)) < 0 {
+			orderId(m)) < 0 {
 			t.Fatalf("unexpected id: %+v, m: %+v", result, m)
 		}
 	}
@@ -154,7 +163,7 @@ func TestFileStoreSelectStar123(t *testing.T) {
 		}
 
 		if strings.Index("1200,1234,1235,1236",
-			m["id"].(string)) < 0 {
+			orderId(m)) < 0 {
 			t.Fatalf("unexpected id: %+v, m: %+v", result, m)
 		}
 
