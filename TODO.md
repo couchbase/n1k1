@@ -8,10 +8,10 @@ Status: modernization + a pure-Go N1QL engine (CGO_ENABLED=0, cross-compiles)
 are done. Remaining work:
 
 ## Shipping
-- [ ] Push the query fork (../n1k1-query) to GitHub, then swap go.mod's
-      `replace github.com/couchbase/query => ../n1k1-query` to a GitHub
-      pseudo-version, so n1k1 builds via plain `go get` without the local
-      sibling. (Deferred -- staying local for now.)
+- [x] Pushed the query fork to github.com/couchbase/n1k1-query; go.mod now pins
+      `replace github.com/couchbase/query => github.com/couchbase/n1k1-query
+      <pseudo-version>`, so n1k1 builds with plain `go` (+ GOPRIVATE) -- no local
+      checkout needed.
 - [ ] Add a cmd/ main(): take a SQL++ string + a file datastore and print
       results -- the actual downloadable binary. glue/ is library-only today.
 

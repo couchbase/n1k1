@@ -31,13 +31,11 @@ intermed_build codegen tool).
 
 This layer reuses couchbase/query for SQL++ parse+plan, then executes with
 n1k1's own operators. It builds pure-Go (CGO_ENABLED=0) against a small
-patched fork of couchbase/query, expected as the sibling repo ../n1k1-query.
+patched fork of couchbase/query -- github.com/couchbase/n1k1-query -- pinned
+via a go.mod `replace` (no local checkout needed; see patches/README.md for
+how the fork is maintained):
 
-One-time: create that fork (full recipe in patches/README.md) -- copy the
-pinned query module, goyacc-generate parser/n1ql/y.go, apply the two
-patches in patches/, and git-commit. Then:
-
-    export GOPRIVATE='github.com/couchbase/*'    # only needed to fetch couchbase modules over git
+    export GOPRIVATE='github.com/couchbase/*'    # couchbase modules are fetched over git
 
     CGO_ENABLED=0 go build -tags n1ql ./glue/... ./test/...
     CGO_ENABLED=0 go test  -tags n1ql ./glue ./test

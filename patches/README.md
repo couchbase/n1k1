@@ -51,30 +51,31 @@ CGO_ENABLED=0 go test  -tags n1ql ./glue ./test           # all green
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags n1ql ./glue/...  # cross-compiles
 ```
 
-## Local fork (current setup)
+## The fork (github.com/couchbase/n1k1-query)
 
-These patches now live as real git commits in a local fork repo, the source
-n1k1 builds against:
+These patches live as real git commits in a published fork of couchbase/query:
 
-    ../n1k1-query            (sibling of this repo)
+    github.com/couchbase/n1k1-query
       main          - verbatim pinned snapshot (query @ v0.0.0-20260627002010)
       n1k1-pure-go  - main + 3 commits: gen parser, system stub, semchecker
 
-n1k1's go.mod points at it:
+The fork keeps its go.mod module path as github.com/couchbase/query (so its
+internal imports and n1k1's `query/...` imports are unchanged); only the repo
+URL differs. n1k1's go.mod pins it via a version replace:
 
-    replace github.com/couchbase/query => ../n1k1-query
+    replace github.com/couchbase/query => github.com/couchbase/n1k1-query <pseudo-version>
 
-Because n1k1's glue/ is gated behind `-tags n1ql`, the default (core) build
-never resolves query, so a missing fork does NOT break `go build ./...`. Only
-the `-tags n1ql` engine build needs the sibling fork checked out on its
-n1k1-pure-go branch. After T3 the sibling-module replaces (cbft/cbgt/indexing/
-n1fty/query-ee/...) were pruned — only the query replace remains.
+So n1k1 builds with plain `go` (GOPRIVATE for git fetch) -- no local checkout
+needed. Because glue/ is gated behind `-tags n1ql`, the default (core) build
+never resolves query at all. After T3 the sibling-module replaces (cbft/cbgt/
+indexing/n1fty/query-ee/...) were pruned -- only the query replace remains.
 
-To recreate the fork from scratch, run steps 1-3 of the recipe above against a
-fresh copy, `git init`, and commit the base + each patch.
+### Updating the fork to a newer query (recurring)
 
-## Still TODO: push the fork to GitHub for true reproducibility
-
-The relative-path replace only works on a machine that has the sibling fork.
-To make n1k1 build for anyone via plain `go get`: push ../n1k1-query to
-GitHub and change the replace to `=> github.com/<you>/query <pseudo-version>`.
+1. On the fork's `main`: replace contents with the new pinned query snapshot,
+   commit. (Or add couchbase/query as a remote and merge.)
+2. Re-create the `n1k1-pure-go` branch = main + the 3 patches (run steps 1-3 of
+   the recipe above: goyacc the parser, apply patches/*.txt), commit, push.
+3. In n1k1: `go get github.com/couchbase/n1k1-query@n1k1-pure-go` to resolve the
+   new pseudo-version, then `go mod edit -replace github.com/couchbase/query=\
+   github.com/couchbase/n1k1-query@<that-version>`.

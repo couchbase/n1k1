@@ -58,3 +58,12 @@ Gist only -- details live in commit messages, README, and code comments.
   `//go:build n1ql` (it imports the gated glue), so the default build is clean.
 - Split README.md -> DESIGN.md (internals/performance/idea-backlog moved out;
   README keeps intro, changelog, build/test, feature list).
+- Fixed `make benchmark-expr-eq` (needs -tags n1ql + CGO_ENABLED=0; benchmarks
+  live in the gated test/).
+
+## 2026/06 -- fork published to GitHub (build no longer needs a local sibling)
+- Fork pushed to github.com/couchbase/n1k1-query (main + n1k1-pure-go branches).
+- go.mod swapped from `replace query => ../n1k1-query` to a version replace
+  `=> github.com/couchbase/n1k1-query <pseudo-version>`. The fork keeps module
+  path github.com/couchbase/query, so Go maps it to the query import path; n1k1
+  builds with plain `go` (+ GOPRIVATE), verified independent of the local sibling.
