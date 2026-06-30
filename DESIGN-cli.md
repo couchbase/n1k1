@@ -1,10 +1,12 @@
-# n1k1 CLI — design (DuckDB-inspired)
+# n1k1 CLI — design
 
-A single-binary, batteries-included shell for running SQL++/N1QL against
-n1k1's own operators over a file datastore. The goal is the DuckDB CLI
-*feel* — launch a binary, get a friendly REPL, point it at some data, get
-pretty results — adapted to n1k1's realities (SQL++ not SQL, a directory-as-
-database file datastore, a query-only engine that supports a subset of N1QL).
+A single-binary, batteries-included CLI and shell for running
+SQL++/N1QL using n1k1's engine over a file datastore. We take
+inspiration from great CLI's, such as from DuckDB, sqlite, etc.
+
+Just download the binary and run -- point it at some data, get pretty
+results — adapted to n1k1's capabilities (SQL++, directory-as-database,
+query-focused). REPL welcome.
 
 ------------------------------------------------------------------------
 ## 1. What we're borrowing from DuckDB (and why it fits)
@@ -17,14 +19,14 @@ DuckDB's CLI taste, and how each piece maps onto n1k1:
 | **REPL** with multiline-until-`;`, history, Ctrl-C/Ctrl-D | Low-friction exploration | New, but small; the engine call already exists. |
 | **`-c "<sql>"`** one-shot + **stdin pipe** | Scriptable, composable with unix | New, thin. |
 | **Dot-commands** (`.help`, `.tables`, `.mode`, `.open`, `.read`, `.timer`…) | Meta-ops that aren't SQL | New; maps cleanly onto store/render state. |
-| **`duckbox` renderer** (boxed unicode table, row-count footer, smart truncation) | The signature "it just looks good" | New; n1k1 already knows the **column set** — it's `conv.TopOp.Labels`. |
+| **`box` renderer** (boxed unicode table, row-count footer, smart truncation) | The signature "it just looks good" | New; n1k1 already knows the **column set** — it's `conv.TopOp.Labels`. |
 | **Multiple output modes** (`json`, `jsonlines`, `csv`, `markdown`, `line`, `list`) | Right format for the job | New; the engine yields canonical JSON rows, so each mode is a formatter. |
 | **`.timer on`** | Instant feedback on cost | New; engine call is easy to wrap with timing. |
 | **File-as-table** (`FROM 'data.csv'`) | Zero-setup querying | **Partial** — n1k1 has CSV/NDJSON file scans, but the N1QL `FROM` resolves keyspaces in a datastore dir. v1 opens a directory; file-table funcs are a later item (§7). |
 | **`~/.duckdbrc` init file**, `-init` | Personalization | New, trivial. |
 | **Rich syntax errors with a caret** | Teaching tool | Partial — couchbase/query parse errors carry an offset we can render. |
 
-Things we deliberately **don't** copy in v1: persistent DB file format
+Things we deliberately **don't** take on yet in v1: persistent DB file format
 (n1k1's store is a read-only directory of JSON), `INSERT`/DDL-heavy flows
 (the engine is query-focused), extensions/`INSTALL`, the HTTP/UI server.
 
@@ -94,7 +96,7 @@ front-end (parse args, read lines, format rows).
     -c <stmt>     run one statement and exit
     -f <file>     run statements from a file and exit (DuckDB: -init/-c hybrid)
     -ns <name>    namespace (default "default")
-    -mode <m>     output mode: duckbox|json|jsonlines|csv|markdown|line|list
+    -mode <m>     output mode: box|json|jsonlines|csv|markdown|line|list
     -timer        show timing
     -init <file>  run dot-commands/SQL from file at startup (default ~/.n1k1rc)
     -no-init      skip the init file
@@ -102,7 +104,7 @@ front-end (parse args, read lines, format rows).
     -v            verbose (show unsupported reasons, plan on error)
   ```
 
-  Mode selection mirrors DuckDB: a TTY defaults to `duckbox`; a pipe/`-c`
+  Mode selection: a TTY defaults to `box`; a pipe/`-c`
   defaults to `jsonlines` (clean for downstream tools) unless `-mode` says
   otherwise.
 
@@ -141,8 +143,8 @@ Chosen to match DuckDB names where the concept exists, so muscle memory carries.
 | `.schema [<keyspace>]` | Infer a shape from sampling the first N docs of a keyspace (top-level keys + observed JSON types). No real schema exists in a JSON store, so it's a *sampled* shape, clearly labeled. |
 | `.mode <m>` | Set output mode (see §6). |
 | `.timer on\|off` | Toggle elapsed-time footer. |
-| `.maxrows <n>` | duckbox: cap rows shown (head+tail with a `·` elision row, DuckDB-style). |
-| `.maxwidth <n>` | duckbox: cap column width, truncate with `…`. |
+| `.maxrows <n>` | box: cap rows shown (head+tail with a `·` elision row, DuckDB-style). |
+| `.maxwidth <n>` | box: cap column width, truncate with `…`. |
 | `.read <file>` | Execute statements/dot-commands from a file. |
 | `.output <file>` / `.output` | Redirect results to a file / back to stdout. |
 | `.explain` | Toggle: also print the converted `base.Op` plan tree for each query. The natural home for showing *why* something is UNSUPPORTED. |
@@ -150,12 +152,12 @@ Chosen to match DuckDB names where the concept exists, so muscle memory carries.
 | `.quit` / `.exit` | Leave. |
 
 ------------------------------------------------------------------------
-## 6. Output modes & the duckbox renderer
+## 6. Output modes & the box renderer
 
 The engine hands back `Result{Labels, Rows}`. Rows are JSON objects keyed by
 the projection's column labels. Formatters:
 
-- **`duckbox`** (default, TTY) — the signature look:
+- **`box`** (default, TTY) — the signature look:
   - Columns = `Result.Labels` (the projection aliases). When a row is a bare
     value (`raw`/`SELECT VALUE`), use a single `value` column.
   - Box-drawing borders (`┌─┬─┐ │ ├─┼─┤ └─┴─┘`).
@@ -197,7 +199,7 @@ base.Labels)` — no engine coupling.
    everything after.)*
 1. **Minimal CLI**: `cmd/n1k1`, `-c` + stdin + naive REPL (read-until-`;`),
    `jsonlines` output only. Proves the binary + single end-to-end path.
-2. **duckbox renderer + `.mode`** (duckbox/jsonlines/json/csv/markdown/line),
+2. **box renderer + `.mode`** (box/jsonlines/json/csv/markdown/line),
    `.timer`. The "feels like DuckDB" moment.
 3. **Navigation dot-commands**: `.open`, `.tables`/`.keyspaces`, `.schema`,
    `.read`, `.output`, `.help`, `.quit`.
@@ -208,7 +210,7 @@ base.Labels)` — no engine coupling.
 ## 9. Decisions (resolved)
 
 - **Binary name:** `n1k1` (`cmd/n1k1/main.go`). Matches the module name.
-- **Default TTY mode:** `duckbox` (DuckDB-like). Pipes/`-c` still default to
+- **Default TTY mode:** `box` (DuckDB-like). Pipes/`-c` still default to
   `jsonlines`. (`.mode line` remains available for wide/nested docs.)
 - **Line editor:** accept **one small pure-Go dep** (`peterh/liner` or
   `chzyer/readline`, both CGO-free) for arrow-key history + editing from v1.
