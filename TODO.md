@@ -27,9 +27,10 @@ in glue/patches/README.md.
 - command-line program: DONE (v1). cmd/n1k1 -- a single pure-Go binary that runs
   SQL++ over a file datastore, with a REPL, dot-commands (.tables/.schema/.mode/
   .timer/.explain/.read/.output/...) and box/json/jsonlines/csv/markdown/line/
-  list output. `make cli`. The engine pipeline is glue.Session (shared with the
-  test harness). See DESIGN-cli.md. Future (DESIGN-cli.md §7): arrow-key history /
-  line editing, tab completion, FROM 'file.csv' table-functions, query cancel.
+  list output, plus REPL arrow-key history / line editing (peterh/liner, pure-Go,
+  history at ~/.n1k1_history). `make cli`. The engine pipeline is glue.Session
+  (shared with the test harness). See DESIGN-cli.md. Future (DESIGN-cli.md §7):
+  tab completion, FROM 'file.csv' table-functions, mid-query cancel.
 
 - UI / terminal and/or web-based?
 

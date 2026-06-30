@@ -41,6 +41,9 @@ Output is `box` at a TTY and `jsonlines` when piped or under `-c` (override with
 `-mode`). The engine is query-only and supports a subset of N1QL, so some
 queries report "unsupported".
 
+The REPL has arrow-key history and line editing (via the pure-Go `peterh/liner`),
+persisted to `~/.n1k1_history`; Ctrl-C cancels the current line, Ctrl-D exits.
+
 ------------------------------------------
 ## Building & testing
 

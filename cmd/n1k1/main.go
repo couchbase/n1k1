@@ -34,6 +34,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/peterh/liner"
+
 	"github.com/couchbase/n1k1/base"
 	"github.com/couchbase/n1k1/glue"
 )
@@ -162,23 +164,70 @@ type cli struct {
 
 func (c *cli) repl() {
 	fmt.Fprintf(c.stderr, "n1k1 -- SQL++ over %s (namespace %q). Type .help for commands, .quit to exit.\n", c.dir, c.ns)
-	sc := bufio.NewScanner(os.Stdin)
-	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
-	c.prompt()
-	for sc.Scan() {
-		if c.feed(sc.Text()) {
+
+	ln := liner.NewLiner()
+	defer ln.Close()
+	ln.SetCtrlCAborts(true) // Ctrl-C aborts the current line, not the process
+
+	hist := historyPath()
+	loadHistory(ln, hist)
+	defer saveHistory(ln, hist)
+
+	for {
+		prompt := "n1k1> "
+		if c.buf.Len() > 0 {
+			prompt = "  ...> " // continuing an unterminated statement
+		}
+
+		line, err := ln.Prompt(prompt)
+		switch err {
+		case liner.ErrPromptAborted: // Ctrl-C: discard the in-progress buffer
+			c.buf.Reset()
+			continue
+		case io.EOF: // Ctrl-D
+			fmt.Fprintln(c.stderr)
+			return
+		case nil:
+		default:
+			fmt.Fprintf(c.stderr, "input error: %v\n", err)
+			return
+		}
+
+		if strings.TrimSpace(line) != "" {
+			ln.AppendHistory(line)
+		}
+		if c.feed(line) {
 			return // .quit / .exit
 		}
-		c.prompt()
 	}
-	fmt.Fprintln(c.stderr) // newline after Ctrl-D
 }
 
-func (c *cli) prompt() {
-	if c.buf.Len() == 0 {
-		fmt.Fprint(c.stderr, "n1k1> ")
-	} else {
-		fmt.Fprint(c.stderr, "  ...> ")
+// historyPath is where the REPL persists line history (~/.n1k1_history).
+func historyPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".n1k1_history")
+}
+
+func loadHistory(ln *liner.State, path string) {
+	if path == "" {
+		return
+	}
+	if f, err := os.Open(path); err == nil {
+		ln.ReadHistory(f)
+		f.Close()
+	}
+}
+
+func saveHistory(ln *liner.State, path string) {
+	if path == "" {
+		return
+	}
+	if f, err := os.Create(path); err == nil {
+		ln.WriteHistory(f)
+		f.Close()
 	}
 }
 
