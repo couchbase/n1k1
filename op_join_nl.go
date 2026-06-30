@@ -32,30 +32,8 @@ import (
 //	 unnest-leftOuter           isUnnest        isLeftOuter
 func OpJoinNestedLoop(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	lzYieldErr base.YieldErr, path, pathNext string) {
-	// TODO(compiler): nested join-family ops don't compile -- the generator
-	// fuses both inline into one Go block and their function-scope vars collide
-	// ("lzErr redeclared in this block"; lzErr is just the first of several --
-	// lzHadInner, lzValsPre, lzNestBytes, lzValsJoin, lzYieldValsOrig all clash
-	// too). Root cause: unlike every other nestable op (OpProject, OpGroup,
-	// OpUnionAll, OpOrderOffsetLimit, OpWindow*, OpJoinHash), this func does NOT
-	// wrap its body in `if LzScope { ... }`, which in generated code becomes
-	// `if true { ... }` -- a fresh block scope per fused instance. The fix:
-	// wrap the body in `if LzScope {` like the others, and `// <== varLift: ...
-	// by path` the reuse-buffer vars that the lzYieldVals closure mutates across
-	// calls (cf. lzValsReuse in OpProject), so they hoist to the top, unique per
-	// path. The interpreter is unaffected (LzScope==true; each op is its own
-	// func scope already). Until then, TestSuiteWithCompiler skips these via
-	// hasNestedJoinFamily(); the interpreter runs them fine.
-	var lzErr error
-
-	lzYieldErrOrig := lzYieldErr
-
-	lzYieldErr = func(lzErrIn error) {
-		if lzErr == nil {
-			lzErr = lzErrIn // Capture the incoming error.
-		}
-	}
-
+	// NOTE: this compile-time setup is kept above the scoped runtime body below,
+	// so intermed_build runs it at code-gen time (not as emitted runtime code).
 	joinKind := strings.Split(o.Kind, "-")
 
 	isNest := strings.HasPrefix(joinKind[0], "nest") // Ex: "nestNL", "nestKeys".
@@ -89,139 +67,156 @@ func OpJoinNestedLoop(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 			MakeExprFunc(lzVars, labelsAB, exprParams, pathNext, "JF") // !lz
 	}
 
-	var lzHadInner bool // Used only when isLeftOuter is true.
+	// The runtime body below is wrapped in a scope block so the compiler emits a
+	// fresh Go block per fused instance. Without it, fusing two join-family ops
+	// (nested/chained UNNEST, or UNNEST feeding a JOIN) into one block collides
+	// their function-scope runtime vars. Every other nestable op does the same;
+	// the interpreter just sees an always-true block.
+	if LzScope {
+		var lzErr error
 
-	var lzValsPre base.Vals
+		lzYieldErrOrig := lzYieldErr
 
-	var lzNestBytes []byte // Used only when isNest is true.
-
-	_, _, _, _ = exprFunc, lzHadInner, lzValsPre, lzNestBytes
-
-	lzValsJoin := make(base.Vals, lenLabelsAB)
-
-	lzYieldValsOrig := lzYieldVals
-
-	lzYieldVals = func(lzValsA base.Vals) {
-		if lzErr != nil {
-			return
-		}
-
-		lzValsJoin = lzValsJoin[:0]
-		lzValsJoin = append(lzValsJoin, lzValsA...)
-
-		if isNest { // !lz
-			lzNestBytes = lzNestBytes[:0]
-			lzNestBytes = append(lzNestBytes, '[')
-		} // !lz
-
-		if isLeftOuter { // !lz
-			lzHadInner = false
-		} // !lz
-
-		var lzVal base.Val
-
-		lzYieldVals := func(lzValsB base.Vals) {
-			lzValsJoin = lzValsJoin[0:lenLabelsA]
-			lzValsJoin = append(lzValsJoin, lzValsB...)
-
-			lzVals := lzValsJoin
-
-			if isUnnest || isKeys { // !lz
-				// UNNEST is a self-join, so the join condition is always true.
-				//
-				// ON KEYS has the right-driver only providing items with keys
-				// that came from the left side, so the join condition is
-				// also always true.
-				lzVal = base.ValTrue
-			} else { // !lz
-				lzVal = exprFunc(lzVals, lzYieldErr) // <== emitCaptured: pathNext, "JF"
-			} // !lz
-
-			if base.ValTruthy(lzVal) {
-				if isLeftOuter { // !lz
-					lzHadInner = true
-				} // !lz
-
-				if isNest { // !lz
-					// Append right-side val into lzNestBytes, comma separated.
-					//
-					// NOTE: Assume right-side nest val will be in lzValsB[-1].
-					//
-					// TODO: Double check that lzValsB[-1] assumption.
-					if len(lzValsB) > 0 && len(lzValsB[len(lzValsB)-1]) > 0 {
-						if len(lzNestBytes) > 1 {
-							lzNestBytes = append(lzNestBytes, ',')
-						}
-
-						lzNestBytes = append(lzNestBytes, lzValsB[len(lzValsB)-1]...)
-					}
-				} else { // !lz
-					lzYieldValsOrig(lzVals) // <== emitCaptured: path ""
-				} // !lz
+		lzYieldErr = func(lzErrIn error) {
+			if lzErr == nil {
+				lzErr = lzErrIn // Capture the incoming error.
 			}
 		}
 
-		// The right driver.
-		if isUnnest || isKeys { // !lz
-			// In UNNEST and ON KEYS case, we evaluate the expr only
-			// on the left-side vals.
-			lzVals := lzValsA
+		var lzHadInner bool // Used only when isLeftOuter is true.
 
-			lzVal = exprFunc(lzVals, lzYieldErr) // <== emitCaptured: pathNext, "JF"
+		var lzValsPre base.Vals
 
-			if isUnnest { // !lz
-				// Case of UNNEST, the evaluated expr's val is an
-				// array that we yield  as the right-side's items.
-				lzValsPre, _ = base.ArrayYield(lzVal, lzYieldVals, lzValsPre[:0])
-			} else { // !lz
-				// Case of ON KEYS, the evaluated expr's val is
-				// treated as key(s) which we place into a
-				// vars.Temps[]. The right driver should fetch and
-				// yield based on those keys.
-				lzVars.Temps[o.Params[0].(int)] = lzVal
+		var lzNestBytes []byte // Used only when isNest is true.
 
-				ExecOp(o.Children[1], lzVars, lzYieldVals, lzYieldErr, pathNext, "JNLI") // !lz
+		_, _, _, _ = exprFunc, lzHadInner, lzValsPre, lzNestBytes
 
-				lzVars.Temps[o.Params[0].(int)] = nil
-			} // !lz
-		} else { // !lz
-			ExecOp(o.Children[1], lzVars, lzYieldVals, lzYieldErr, pathNext, "JNLI") // !lz
-		} // !lz
+		lzValsJoin := make(base.Vals, lenLabelsAB)
 
-		// Case of NEST, we've been collecting a JSON encoded array of
-		// right-side values, which we finally join to the left-side
-		// and yield onwards.
-		if isNest { // !lz
-			if len(lzNestBytes) > 1 && lzErr == nil {
-				lzNestBytes = append(lzNestBytes, ']')
+		lzYieldValsOrig := lzYieldVals
 
-				lzValsJoin = lzValsJoin[0:lenLabelsA]
-				lzValsJoin = append(lzValsJoin, base.Val(lzNestBytes))
-
-				lzYieldValsOrig(lzValsJoin)
+		lzYieldVals = func(lzValsA base.Vals) {
+			if lzErr != nil {
+				return
 			}
-		} // !lz
 
-		// Case of leftOuter join when the right driver was empty.
-		if isLeftOuter { // !lz
-			if !lzHadInner && lzErr == nil {
+			lzValsJoin = lzValsJoin[:0]
+			lzValsJoin = append(lzValsJoin, lzValsA...)
+
+			if isNest { // !lz
+				lzNestBytes = lzNestBytes[:0]
+				lzNestBytes = append(lzNestBytes, '[')
+			} // !lz
+
+			if isLeftOuter { // !lz
+				lzHadInner = false
+			} // !lz
+
+			var lzVal base.Val
+
+			lzYieldVals := func(lzValsB base.Vals) {
 				lzValsJoin = lzValsJoin[0:lenLabelsA]
+				lzValsJoin = append(lzValsJoin, lzValsB...)
 
-				if isNest { // !lz
-					lzValsJoin = append(lzValsJoin, base.ValArrayEmpty)
+				lzVals := lzValsJoin
+
+				if isUnnest || isKeys { // !lz
+					// UNNEST is a self-join, so the join condition is always true.
+					//
+					// ON KEYS has the right-driver only providing items with keys
+					// that came from the left side, so the join condition is
+					// also always true.
+					lzVal = base.ValTrue
 				} else { // !lz
-					for i := 0; i < lenLabelsB; i++ { // !lz
-						lzValsJoin = append(lzValsJoin, base.ValMissing)
+					lzVal = exprFunc(lzVals, lzYieldErr) // <== emitCaptured: pathNext, "JF"
+				} // !lz
+
+				if base.ValTruthy(lzVal) {
+					if isLeftOuter { // !lz
+						lzHadInner = true
 					} // !lz
-				} // !lz
 
-				lzYieldValsOrig(lzValsJoin)
+					if isNest { // !lz
+						// Append right-side val into lzNestBytes, comma separated.
+						//
+						// NOTE: Assume right-side nest val will be in lzValsB[-1].
+						//
+						// TODO: Double check that lzValsB[-1] assumption.
+						if len(lzValsB) > 0 && len(lzValsB[len(lzValsB)-1]) > 0 {
+							if len(lzNestBytes) > 1 {
+								lzNestBytes = append(lzNestBytes, ',')
+							}
+
+							lzNestBytes = append(lzNestBytes, lzValsB[len(lzValsB)-1]...)
+						}
+					} else { // !lz
+						lzYieldValsOrig(lzVals) // <== emitCaptured: path ""
+					} // !lz
+				}
 			}
-		} // !lz
+
+			// The right driver.
+			if isUnnest || isKeys { // !lz
+				// In UNNEST and ON KEYS case, we evaluate the expr only
+				// on the left-side vals.
+				lzVals := lzValsA
+
+				lzVal = exprFunc(lzVals, lzYieldErr) // <== emitCaptured: pathNext, "JF"
+
+				if isUnnest { // !lz
+					// Case of UNNEST, the evaluated expr's val is an
+					// array that we yield  as the right-side's items.
+					lzValsPre, _ = base.ArrayYield(lzVal, lzYieldVals, lzValsPre[:0])
+				} else { // !lz
+					// Case of ON KEYS, the evaluated expr's val is
+					// treated as key(s) which we place into a
+					// vars.Temps[]. The right driver should fetch and
+					// yield based on those keys.
+					lzVars.Temps[o.Params[0].(int)] = lzVal
+
+					ExecOp(o.Children[1], lzVars, lzYieldVals, lzYieldErr, pathNext, "JNLI") // !lz
+
+					lzVars.Temps[o.Params[0].(int)] = nil
+				} // !lz
+			} else { // !lz
+				ExecOp(o.Children[1], lzVars, lzYieldVals, lzYieldErr, pathNext, "JNLI") // !lz
+			} // !lz
+
+			// Case of NEST, we've been collecting a JSON encoded array of
+			// right-side values, which we finally join to the left-side
+			// and yield onwards.
+			if isNest { // !lz
+				if len(lzNestBytes) > 1 && lzErr == nil {
+					lzNestBytes = append(lzNestBytes, ']')
+
+					lzValsJoin = lzValsJoin[0:lenLabelsA]
+					lzValsJoin = append(lzValsJoin, base.Val(lzNestBytes))
+
+					lzYieldValsOrig(lzValsJoin)
+				}
+			} // !lz
+
+			// Case of leftOuter join when the right driver was empty.
+			if isLeftOuter { // !lz
+				if !lzHadInner && lzErr == nil {
+					lzValsJoin = lzValsJoin[0:lenLabelsA]
+
+					if isNest { // !lz
+						lzValsJoin = append(lzValsJoin, base.ValArrayEmpty)
+					} else { // !lz
+						for i := 0; i < lenLabelsB; i++ { // !lz
+							lzValsJoin = append(lzValsJoin, base.ValMissing)
+						} // !lz
+					} // !lz
+
+					lzYieldValsOrig(lzValsJoin)
+				}
+			} // !lz
+		}
+
+		// The left driver.
+		ExecOp(o.Children[0], lzVars, lzYieldVals, lzYieldErr, pathNext, "JNLO") // !lz
+
+		lzYieldErrOrig(lzErr)
 	}
-
-	// The left driver.
-	ExecOp(o.Children[0], lzVars, lzYieldVals, lzYieldErr, pathNext, "JNLO") // !lz
-
-	lzYieldErrOrig(lzErr)
 }
