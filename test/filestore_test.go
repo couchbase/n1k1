@@ -311,8 +311,22 @@ func reportFilestore(t *testing.T, nFiles, pass, skipped int, nonPass []caseOutc
 	}
 
 	var b strings.Builder
-	b.WriteString("\nfilestore conformance\n=====================\n")
+
+	// Per-case listing of every non-pass case (in corpus order), each tagged
+	// with its group ("UNEXPECTED" if not in expectedNonPass) and statement.
+	fmt.Fprintf(&b, "\nfilestore non-pass cases (%d):\n", len(nonPass))
 	tw := tabwriter.NewWriter(&b, 0, 2, 2, ' ', 0)
+	for _, o := range nonPass {
+		g, ok := expectedNonPass[o.loc]
+		if !ok {
+			g = "UNEXPECTED"
+		}
+		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\n", o.loc, o.status, g, oneLine(o.stmt))
+	}
+	tw.Flush()
+
+	b.WriteString("\nfilestore conformance\n=====================\n")
+	tw = tabwriter.NewWriter(&b, 0, 2, 2, ' ', 0)
 	fmt.Fprintf(tw, "  files scanned\t%*d\n", valW, nFiles)
 	fmt.Fprintf(tw, "  runnable cases\t%*d\n", valW, total)
 	fmt.Fprintf(tw, "  PASS\t%*d\t(%.1f%%)\n", valW, pass, 100*float64(pass)/float64(total))
