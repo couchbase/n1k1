@@ -140,6 +140,14 @@ func caseRunnable(c map[string]interface{}) (stmt string, results []interface{},
 	return s, r, true
 }
 
+// NOTE on "resultset": a handful of cases (case_array[10,11], case_innerjoin
+// [1,9]) carry a "resultset" block instead of "results". No couchbase/query
+// test harness reads that key (it compares only against "results"), so upstream
+// runs the statement but never validates its output -- the resultset data is
+// inert/non-authoritative. case_array[10]'s is in fact wrong (its array_agg
+// values don't match the GROUP BY key, which n1k1 gets right). So we do NOT
+// assert against "resultset"; these stay in the exotic/skipped bucket.
+
 // caseError reports whether a case is a simple error-expectation case: a
 // {statements, error} pair (no results) carrying only allowed metadata. n1k1
 // reuses query's parser/planner, so it should reject an invalid query with the
