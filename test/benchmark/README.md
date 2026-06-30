@@ -54,18 +54,24 @@ Indicative numbers (apple-silicon, `-benchtime=30x`; trends matter, not exact ns
 `test/tmp`, run side by side. (Generator: `test/bench_compiler_test.go`'s
 `TestGenerateBenchmarks`.)
 
-Findings (100K rows/op; stable across `-count=2`):
+Each op runs ~5s (30M rows; `bench-compiler` uses `-benchtime=30s`, so per-op
+fixed setup is negligible and the delta is the per-row codepath). Findings,
+stable across repeats:
 
-| query | interpreted | compiled | |
+| query (30M rows/op) | interpreted | compiled | |
 |---|---|---|---|
-| ScanFilterProject | ~18.5ms, 34 allocs/op | ~19.1ms, 20 allocs/op | ~3% slower, **41% fewer allocs** |
-| GroupBy | ~13.8ms, 42 allocs/op | ~12.7ms, 29 allocs/op | ~8% faster, **31% fewer allocs** |
+| ScanFilterProject | ~5.60s, 35 allocs/op | ~5.77s, 21 allocs/op | ~3% slower, **40% fewer allocs** |
+| GroupBy | ~4.28s, 174 allocs/op | ~3.74s, ~150 allocs/op | **~13% faster**, ~15% fewer allocs |
 
-- **Fusion + lifted-var reuse cut allocations** by ~30–40% (fewer closures /
-  reused buffers) — the DESIGN.md claim holds on the allocation axis.
-- **Wall-time is roughly equal** at these shapes/scales: removing per-op
-  function-call overhead is swamped by the per-row cost of JSON parsing and
-  value handling. Useful signal: to go faster, optimize parsing, not just fuse.
+- **Fusion + lifted-var reuse cut allocations** (fewer closures / reused
+  buffers) on both — the DESIGN.md claim holds on the allocation axis. (allocs/op
+  also held ~flat from 100K → 30M rows: 35 vs 34 for the pipeline — garbage
+  avoidance again, at 300x scale.)
+- **Wall-time is shape-dependent.** GROUP BY (aggregation is function-call-heavy
+  per row) gets a clear ~13% from fusion. The scan→filter→project pipeline is
+  parse-bound (jsonparser field extraction dominates), so eliminating per-op
+  call overhead is marginal there (even slightly slower). Useful signal: for
+  scan/filter/project, optimize parsing; fusion pays most for call-heavy ops.
 
 ## Not here yet
 

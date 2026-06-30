@@ -58,7 +58,14 @@ func benchGroupByOp(data string, reps int) *base.Op {
 }
 
 func TestGenerateBenchmarks(t *testing.T) {
-	const distinct, reps = 200, 500 // 100K input rows per op; 200 groups (no spill).
+	// Large rows-per-op so each op runs several seconds: per-op fixed setup
+	// (MakeExprFunc / MakeVars / reader creation) is then negligible vs row
+	// processing, so the interp-vs-compiled delta reflects the per-row codepath
+	// (where fusion lives), not setup noise. 200 distinct "g" values => 200
+	// groups (no spill); `reps` amplifies to the row count cheaply.
+	const distinct = 200
+	const benchRowsPerOp = 30_000_000 // ~5s/op at the engine's ~5-7M rows/s.
+	reps := benchRowsPerOp / distinct
 	data := benchmark.GenJSONs(distinct, distinct)
 	rowsPerOp := distinct * reps
 
