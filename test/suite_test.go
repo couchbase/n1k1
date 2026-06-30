@@ -256,8 +256,12 @@ func reportSuite(t *testing.T, nFiles, pass, skipped int, nonPass []caseOutcome,
 
 	var b strings.Builder
 
-	// Per-case listing of every non-pass case (in corpus order), each tagged
-	// with its group ("UNEXPECTED" if not in expectedNonPass) and statement.
+	// Per-case listing of every non-pass case (in corpus order), each tagged with
+	// its group ("UNEXPECTED" if not in expectedNonPass) and its SQL++. The SQL is
+	// shown in full (SQL is the last column, so tabwriter leaves it unpadded) so
+	// it's clear exactly what n1k1 can't yet handle -- except EXPLAIN cases, which
+	// only differ by the wrapped query (n1k1 doesn't convert the plan-text output
+	// at all), so those get just a snippet.
 	fmt.Fprintf(&b, "\nsuite non-pass cases (%d):\n", len(nonPass))
 	tw := tabwriter.NewWriter(&b, 0, 2, 2, ' ', 0)
 	for _, o := range nonPass {
@@ -265,33 +269,13 @@ func reportSuite(t *testing.T, nFiles, pass, skipped int, nonPass []caseOutcome,
 		if !ok {
 			g = "UNEXPECTED"
 		}
-		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\n", o.loc, o.status, g, oneLine(o.stmt))
-	}
-	tw.Flush()
-
-	// Full SQL++ of every UNSUPPORTED query, so it's clear exactly what n1k1
-	// can't yet plan/convert (the clipped table above is just the index).
-	var unsup []caseOutcome
-	for _, o := range nonPass {
-		if o.status == "UNSUPPORTED" {
-			unsup = append(unsup, o)
-		}
-	}
-	fmt.Fprintf(&b, "\nunsupported queries -- full SQL++ (%d):\n", len(unsup))
-	for _, o := range unsup {
-		g, ok := expectedNonPass[o.loc]
-		if !ok {
-			g = "UNEXPECTED"
-		}
-		// EXPLAIN cases only differ by the wrapped query (n1k1 doesn't convert
-		// the plan-text output at all), so a snippet is enough -- showing the
-		// full SQL would just be noise. Everything else gets the complete query.
 		sql := fullLine(o.stmt)
 		if strings.HasPrefix(strings.ToUpper(strings.TrimSpace(o.stmt)), "EXPLAIN") {
 			sql = oneLine(o.stmt)
 		}
-		fmt.Fprintf(&b, "  %s  (%s)\n    %s\n    -- %s\n", o.loc, g, sql, o.detail)
+		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\n", o.loc, o.status, g, sql)
 	}
+	tw.Flush()
 
 	// Exotic (skipped) cases: not the plain {statements, results} shape, so n1k1
 	// doesn't attempt them. Show why + a clipped snippet to gauge what they are.
