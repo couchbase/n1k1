@@ -11,11 +11,6 @@ the "n1ql" build tag, now builds with CGO_ENABLED=0 and cross-compiles,
 by decoupling from query/execution and building against a small patched
 fork of couchbase/query. See "Building & testing" below.
 
-2021/12 - While upgrading from CB 6.5 query to CB 7 query, UNNEST stopped
-working and array-as-FROM source stopped working, leaving SKIP-prefixed
-unit tests. (Resolved by the 2026/06 modernization -- all un-skipped and
-passing; see above.)
-
 ------------------------------------------
 ## Building & testing
 

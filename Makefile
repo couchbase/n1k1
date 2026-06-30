@@ -24,6 +24,8 @@ run_intermed_build:
 
 .PHONY: test build build-glue test-glue test-suite test-compiler test-all
 
+test-all: test test-glue test-suite test-compiler
+
 # test runs the self-contained core build + vet + unit tests (no external setup).
 test: build
 	go vet ./...
@@ -62,12 +64,6 @@ test-compiler: build-glue
 	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -tags n1ql -run 'TestCasesSimpleWithCompiler|TestSuiteWithCompiler' ./test
 	cd test/tmp && go fmt
 	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -tags n1ql ./test/tmp
-
-# test-all runs the whole N1QL-engine layer (glue/ + test/, includes the suite)
-# plus the compiler end-to-end test.
-test-all: build-glue
-	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -tags n1ql -v ./glue ./test
-	$(MAKE) test-compiler
 
 # Target easy-to-read parses source code files and generates
 # versions that are easier to read in a tmp subdirectory.
