@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/couchbase/query/errors"
+	"github.com/couchbase/query/plan"
 
 	"github.com/couchbase/n1k1/base"
 	"github.com/couchbase/n1k1/engine"
@@ -61,6 +62,18 @@ type Result struct {
 	Plan     *base.Op          // the converted n1k1 op tree (for .explain / -v)
 }
 
+// findExplain returns the *plan.Explain node in a plan tree (it sits under the
+// top-level Authorize the planner adds), or nil if the statement isn't EXPLAIN.
+func findExplain(op plan.Operator) *plan.Explain {
+	switch o := op.(type) {
+	case *plan.Explain:
+		return o
+	case *plan.Authorize:
+		return findExplain(o.Child())
+	}
+	return nil
+}
+
 // ErrUnsupported means n1k1 can't (yet) run this statement -- the plan converted
 // to no op tree, a convert step failed, or execution panicked -- as opposed to
 // the statement being genuinely invalid (a parse/plan error, returned verbatim).
@@ -87,6 +100,20 @@ func (s *Session) Run(stmt string) (res *Result, err error) {
 	p, err := s.Store.PlanStatement(parsed, s.Namespace, nil, nil)
 	if err != nil {
 		return nil, err
+	}
+
+	// EXPLAIN: the couchbase/query planner already built the plan (it's what conv
+	// would otherwise convert). Rather than convert+execute, emit that plan as a
+	// single JSON row, matching N1QL's EXPLAIN output. The Explain op sits under
+	// the top Authorize wrapper, so unwrap to find it.
+	if ex := findExplain(p); ex != nil {
+		// plan.Explain marshals to {"text": <stmt>, "plan": <op>} -- N1QL's
+		// EXPLAIN result shape.
+		b, err := json.Marshal(ex)
+		if err != nil {
+			return nil, err
+		}
+		return &Result{Rows: []json.RawMessage{b}}, nil
 	}
 
 	conv := &Conv{Temps: []interface{}{nil}}

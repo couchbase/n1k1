@@ -562,7 +562,7 @@ func reportSuite(t *testing.T, nFiles, pass, errPass, skipped int, nonPass []cas
 
 	// Backstop on the raw pass count, in case a pass silently turns into a
 	// different already-listed failure (no unexpected case, but pass drops).
-	const passFloor = 651
+	const passFloor = 661
 	if pass < passFloor {
 		t.Errorf("suite conformance regressed: PASS=%d < baseline %d", pass, passFloor)
 	}
@@ -638,18 +638,6 @@ func exoticInfo(c map[string]interface{}) (reason, content string) {
 // listed here stops passing (a regression) and warns if a listed case starts
 // passing (stale -- remove it). Shrink this table as coverage grows.
 var expectedNonPass = map[string]string{
-	// EXPLAIN / plan-text output.
-	"case_by_id.json[1]":         "explain",
-	"case_by_id.json[3]":         "explain",
-	"case_by_id.json[4]":         "explain",
-	"case_by_id.json[6]":         "explain",
-	"case_by_id.json[7]":         "explain",
-	"case_by_id.json[8]":         "explain",
-	"case_by_id.json[9]":         "explain",
-	"case_func_date.json[6]":     "explain",
-	"case_orderby_limit.json[4]": "explain",
-	"case_orderby_limit.json[5]": "explain",
-
 	// Secondary index / union scan (n1k1 does primary scans).
 	"case_by_id.json[2]": "index-scan",
 
@@ -689,7 +677,6 @@ var expectedNonPass = map[string]string{
 
 // groupWhy gives a one-line reason for each expectedNonPass group.
 var groupWhy = map[string]string{
-	"explain":          "EXPLAIN / plan-text output not converted to n1k1 ops",
 	"index-scan":       "secondary index / union scan not converted (n1k1 does primary scans)",
 	"meta-fetch":       "META() over fetch metadata subpaths ($document.exptime) not wired",
 	"groupby-key":      "GROUP BY on a computed / array-index key unresolved in VisitFinalGroup",

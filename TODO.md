@@ -7,15 +7,19 @@ Status: modernization + a pure-Go N1QL (SQL++) engine (CGO_ENABLED=0,
 cross-compiles) are done. Remaining work:
 
 ## Conformance (SQL++ suite corpus)
-- [ ] Raise the TestSuiteCases pass rate (currently ~651/691 runnable).
-      Remaining gaps: COUNT(*) over a bare keyspace (CountScan) + EXPLAIN +
-      index-union scans unsupported. Ratchet the pass-floor in
-      test/suite_test.go as fixed.
+- [ ] Raise the TestSuiteCases pass rate (currently ~661/691 runnable).
+      Remaining gaps: COUNT(*) over a bare keyspace (CountScan) + index-union
+      scans unsupported. Ratchet the pass-floor in test/suite_test.go as fixed.
       NOT-FIXABLE: array_position(array_agg(...)) depends on the array_agg
       element order, which N1QL leaves undefined -- n1k1's scan order differs
       from the corpus's, so the position differs (same multiset). 1 case. This
       is the ONLY remaining FAIL; the rest are UNSUPPORTED (unconverted
-      plans: EXPLAIN, index/union/count scans).
+      plans: index/union/count scans).
+- EXPLAIN: DONE. glue.Session intercepts the plan.Explain op (under the top
+  Authorize) and emits couchbase/query's plan JSON ({"text","plan"}) -- no
+  conv/exec needed. Matches the vendored corpus exactly (the fork's planner
+  reproduces those plans), and works for queries n1k1 can't execute (it only
+  plans). Reclaimed 10 suite cases (651 -> 661).
 
 ## Keeping current with SQL++
 n1k1's SQL++ support tracks couchbase/query (parser/algebra/expression/plan/
