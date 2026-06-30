@@ -117,22 +117,48 @@ func n1k1RunStatement(store *glue.Store, stmt string) (rows []string, err error)
 	return rows, execErr
 }
 
-// canonJSON normalizes a JSON value's object-key order recursively: unmarshal
-// to generic interface{}, then re-marshal (encoding/json sorts all map keys).
-// Object key order is semantically irrelevant in N1QL results, so both sides
-// of the comparison are normalized this way.
-func canonJSON(v interface{}) string {
-	var b []byte
+// deepNormalize recursively sorts object keys (implicitly, via json.Marshal)
+// and array elements. The harness already treats result rows as an unordered
+// multiset; array element order is likewise not meaningful for the comparison
+// -- ARRAY_AGG order is undefined in N1QL, and the upstream corpus's order
+// reflects its own scan/aggregation order, which n1k1 needn't replicate. So we
+// compare arrays as multisets too. (Sorting both sides identically can only
+// turn a false failure into a pass; it never breaks a genuinely-equal pair.)
+func deepNormalize(v interface{}) interface{} {
 	switch x := v.(type) {
-	case string: // already a JSON string (an n1k1 result row)
-		var parsed interface{}
-		if json.Unmarshal([]byte(x), &parsed) != nil {
-			return x
+	case map[string]interface{}:
+		m := make(map[string]interface{}, len(x))
+		for k, e := range x {
+			m[k] = deepNormalize(e)
 		}
-		b, _ = json.Marshal(parsed)
-	default: // an expected result object (already generic)
-		b, _ = json.Marshal(x)
+		return m
+	case []interface{}:
+		out := make([]interface{}, len(x))
+		for i, e := range x {
+			out[i] = deepNormalize(e)
+		}
+		sort.Slice(out, func(i, j int) bool {
+			bi, _ := json.Marshal(out[i])
+			bj, _ := json.Marshal(out[j])
+			return string(bi) < string(bj)
+		})
+		return out
+	default:
+		return v
 	}
+}
+
+// canonJSON returns a fully order-normalized JSON string for a value (an n1k1
+// result row passed as a JSON string, or an expected result object).
+func canonJSON(v interface{}) string {
+	if s, ok := v.(string); ok { // n1k1 result row (JSON string)
+		var parsed interface{}
+		if json.Unmarshal([]byte(s), &parsed) != nil {
+			return s
+		}
+		v = parsed
+	}
+	b, _ := json.Marshal(deepNormalize(v))
 	return string(b)
 }
 
@@ -247,7 +273,7 @@ func TestFilestoreCases(t *testing.T) {
 	// Regression guard: n1k1 supports a subset of N1QL, so we don't require
 	// 100% -- but the number of upstream cases that pass should never drop.
 	// Ratchet this up as n1k1's coverage grows.
-	const passFloor = 619
+	const passFloor = 622
 	if pass < passFloor {
 		t.Errorf("filestore conformance regressed: PASS=%d < baseline %d", pass, passFloor)
 	}

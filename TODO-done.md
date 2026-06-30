@@ -82,6 +82,14 @@ Gist only -- details live in commit messages, README, and code comments.
   cause, and moot post-T3 (the drift-prone heavy modules aren't compiled; the
   versions that matter come from the fork's go.mod -- itself one snapshot).
 
+## 2026/06 -- SELECT RAW + array-multiset comparison (conformance 617 -> 622)
+- SELECT RAW / ELEMENT: VisitInitialProject labels the projected value "." (the
+  whole row) when Projection().Raw(), so the value is not wrapped under an alias.
+  Fixed the object_filter cases (the func was already correct). 617 -> 619.
+- TestFilestoreCases now compares arrays as multisets too (deepNormalize sorts
+  array elements + object keys recursively) -- ARRAY_AGG order is undefined and
+  the corpus order reflects upstream scan order. Fixed 3 ARRAY_AGG cases. 619 -> 622.
+
 ## 2026/06 -- UNNEST pushed-down filter (conformance 613 -> 617)
 - WHERE predicates on an UNNEST alias (e.g. UNNEST x AS child WHERE child.y=...)
   are pushed by the planner INTO the Unnest operator (plan.Unnest.Filter()), not

@@ -8,13 +8,12 @@ Status: modernization + a pure-Go N1QL engine (CGO_ENABLED=0, cross-compiles)
 are done. Remaining work:
 
 ## Conformance (filestore corpus)
-- [ ] Raise the TestFilestoreCases pass rate (currently ~617/672 runnable).
+- [ ] Raise the TestFilestoreCases pass rate (currently ~622/672 runnable).
       Remaining gaps: META().id (incl. with ANY / in joins); FIRST .. FOR
-      comprehensions; object_filter and other scalar funcs; nested ".*"
-      projection (SELECT details.format.*); ARRAY_AGG element ORDER differs from
-      upstream (harness compares arrays order-sensitively -- semantically equal);
-      COUNT(*) over a bare keyspace (CountScan) + EXPLAIN + index-union scans
-      unsupported. Ratchet the pass-floor in test/filestore_test.go as fixed.
+      comprehensions; nested ".*" projection (SELECT details.format.*); deeply
+      nested array funcs; COUNT(*) over a bare keyspace (CountScan) + EXPLAIN +
+      index-union scans unsupported. Ratchet the pass-floor in
+      test/filestore_test.go as fixed.
 
 - [ ] ORDER BY a source field when SELECT projects a subset (e.g. SELECT
       dimensions ... ORDER BY dimensions.length): the plan runs InitialProject
