@@ -77,10 +77,14 @@ test/filestore/ -- {query, expected-results} cases over a small JSON dataset)
 against n1k1. n1k1 implements a subset of N1QL, so it's a pass-rate guard, not
 100%: ~631 of ~670 runnable cases currently pass, and the test fails if that
 count regresses (ratchet it up as coverage grows). Use `make test-filestore`
-(or add `-v -run TestFilestoreCases` yourself) to see a summary, a grouped
-table of the expected non-pass cases (with a short why for each group), and any
-unexpected regressions. The accepted non-pass cases are enumerated in the
-`expectedNonPass` table in test/filestore_test.go -- shrink it as coverage grows.
+(or add `-v -run TestFilestoreCases` yourself) to see: a per-case index of the
+non-pass cases; the full SQL++ of every UNSUPPORTED query (with its error and
+group, so it's clear what to support next); a snippet of each "exotic" case
+skipped because it isn't the plain {statements, results} shape (error/match/
+resultset/prepared/etc.); a summary; a grouped table of the expected non-pass
+cases (with a short why for each group); and any unexpected regressions. The
+accepted non-pass cases are enumerated in the `expectedNonPass` table in
+test/filestore_test.go -- shrink it as coverage grows.
 
 `make test-compiler` exercises the n1k1 *compiler* (not just the interpreter).
 Two generators emit Go source into test/tmp/ (gitignored), then that package is

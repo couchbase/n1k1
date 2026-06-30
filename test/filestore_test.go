@@ -154,6 +154,7 @@ func TestFilestoreCases(t *testing.T) {
 
 	var pass, skipped int
 	var nonPass []caseOutcome // every fail/unsupported case, for classification
+	var exotic []exoticCase   // every skipped (non-{statements,results}) case
 
 	for _, f := range files {
 		b, err := os.ReadFile(f)
@@ -167,13 +168,16 @@ func TestFilestoreCases(t *testing.T) {
 		}
 
 		for ci, c := range cases {
+			loc := fmt.Sprintf("%s[%d]", filepath.Base(f), ci)
+
 			stmt, results, ok := caseRunnable(c)
 			if !ok {
 				skipped++
+				reason, snippet := exoticInfo(c)
+				exotic = append(exotic, exoticCase{loc, reason, snippet})
 				continue
 			}
 
-			loc := fmt.Sprintf("%s[%d]", filepath.Base(f), ci)
 			got, err := n1k1RunStatement(store, stmt)
 			switch {
 			case err != nil:
@@ -186,7 +190,7 @@ func TestFilestoreCases(t *testing.T) {
 		}
 	}
 
-	reportFilestore(t, len(files), pass, skipped, nonPass)
+	reportFilestore(t, len(files), pass, skipped, nonPass, exotic)
 }
 
 // caseOutcome records one non-passing corpus case.
@@ -194,11 +198,19 @@ type caseOutcome struct {
 	loc, stmt, status, detail string
 }
 
+// exoticCase records one corpus case skipped by caseRunnable -- i.e. not the
+// plain {statements, results} shape n1k1 attempts (it carries error/match/
+// resultset/pre-post or a non-string statement). reason says why it was
+// skipped; snippet is a clipped peek at its statements (or whole-case JSON).
+type exoticCase struct {
+	loc, reason, snippet string
+}
+
 // reportFilestore prints a readable summary + a grouped table of the expected
 // non-pass cases, then enforces two guards: any UNEXPECTED non-pass (one not in
 // expectedNonPass) is a regression and fails the test; a stale table entry (a
 // listed case that now passes) is warned about so it can be removed.
-func reportFilestore(t *testing.T, nFiles, pass, skipped int, nonPass []caseOutcome) {
+func reportFilestore(t *testing.T, nFiles, pass, skipped int, nonPass []caseOutcome, exotic []exoticCase) {
 	groupCount := map[string]int{}
 	seen := map[string]bool{}
 	var unexpected []caseOutcome
@@ -252,6 +264,32 @@ func reportFilestore(t *testing.T, nFiles, pass, skipped int, nonPass []caseOutc
 			g = "UNEXPECTED"
 		}
 		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\n", o.loc, o.status, g, oneLine(o.stmt))
+	}
+	tw.Flush()
+
+	// Full SQL++ of every UNSUPPORTED query, so it's clear exactly what n1k1
+	// can't yet plan/convert (the clipped table above is just the index).
+	var unsup []caseOutcome
+	for _, o := range nonPass {
+		if o.status == "UNSUPPORTED" {
+			unsup = append(unsup, o)
+		}
+	}
+	fmt.Fprintf(&b, "\nunsupported queries -- full SQL++ (%d):\n", len(unsup))
+	for _, o := range unsup {
+		g, ok := expectedNonPass[o.loc]
+		if !ok {
+			g = "UNEXPECTED"
+		}
+		fmt.Fprintf(&b, "  %s  (%s)\n    %s\n    -- %s\n", o.loc, g, fullLine(o.stmt), o.detail)
+	}
+
+	// Exotic (skipped) cases: not the plain {statements, results} shape, so n1k1
+	// doesn't attempt them. Show why + a clipped snippet to gauge what they are.
+	fmt.Fprintf(&b, "\nexotic / skipped cases -- snippet (%d):\n", len(exotic))
+	tw = tabwriter.NewWriter(&b, 0, 2, 2, ' ', 0)
+	for _, e := range exotic {
+		fmt.Fprintf(tw, "  %s\t%s\t%s\n", e.loc, e.reason, e.snippet)
 	}
 	tw.Flush()
 
@@ -336,6 +374,55 @@ func oneLine(s string) string {
 		s = s[:97] + "..."
 	}
 	return s
+}
+
+// fullLine collapses internal whitespace but does NOT truncate -- for showing a
+// query's complete text on one tidy log line.
+func fullLine(s string) string {
+	return strings.Join(strings.Fields(s), " ")
+}
+
+// exoticInfo explains why a case was skipped by caseRunnable and returns a
+// clipped snippet of it. The reason lists any non-{statements,results,ordered,
+// description} fields present (sorted, for stable output), and/or notes a
+// missing/typed statements/results. The snippet prefers the statements text,
+// falling back to the whole-case JSON.
+func exoticInfo(c map[string]interface{}) (reason, snippet string) {
+	var extra []string
+	for k := range c {
+		switch k {
+		case "statements", "results", "ordered", "description":
+		default:
+			extra = append(extra, k)
+		}
+	}
+	sort.Strings(extra)
+
+	var reasons []string
+	if len(extra) > 0 {
+		reasons = append(reasons, "fields: "+strings.Join(extra, ","))
+	}
+	if _, ok := c["statements"].(string); !ok {
+		if _, present := c["statements"]; present {
+			reasons = append(reasons, "non-string statements")
+		} else {
+			reasons = append(reasons, "no statements")
+		}
+	} else if _, ok := c["results"].([]interface{}); !ok {
+		reasons = append(reasons, "no results array")
+	}
+	reason = strings.Join(reasons, "; ")
+
+	if s, ok := c["statements"].(string); ok {
+		snippet = oneLine(s)
+	} else if v, ok := c["statements"]; ok {
+		bb, _ := json.Marshal(v)
+		snippet = oneLine(string(bb))
+	} else {
+		bb, _ := json.Marshal(c)
+		snippet = oneLine(string(bb))
+	}
+	return reason, snippet
 }
 
 // expectedNonPass enumerates every corpus case n1k1 does not currently pass:
