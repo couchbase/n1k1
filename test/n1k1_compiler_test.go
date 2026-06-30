@@ -24,188 +24,8 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 
 	var testOuts [][]string
 
-	for testi, test := range tests {
-		outStack := [][]string{nil}
-
-		appendOut := func(at int, s string) int {
-			out := outStack[at]
-			pos := len(out)
-			out = append(out, s)
-			outStack[at] = out
-			return pos
-		}
-
-		appendOuts := func(at int, ss []string) int {
-			out := outStack[at]
-			pos := len(out)
-			out = append(out, ss...)
-			outStack[at] = out
-			return pos
-		}
-
-		intermed.Emit = func(format string, a ...interface{}) (
-			n int, err error) {
-			s := fmt.Sprintf(format, a...)
-			s = strings.Replace(s, "LzScope", "true", -1)
-
-			appendOut(len(outStack)-1, s)
-
-			return len(s), nil
-		}
-
-		intermed.EmitLift = func(format string, a ...interface{}) (
-			n int, err error) {
-			s := fmt.Sprintf(format, a...)
-			s = strings.Replace(s, "LzScope", "true", -1)
-
-			appendOut(0, s)
-
-			return len(s), nil
-		}
-
-		intermed.EmitPush = func(path, pathItem string) string {
-			outStack = append(outStack, nil)
-
-			return path + "_" + pathItem
-		}
-
-		emitPopsCaptured := map[string]Captured{}
-
-		intermed.EmitPop = func(path, pathItem string) {
-			out := outStack[len(outStack)-1]
-
-			outStack[len(outStack)-1] = nil
-			outStack = outStack[0 : len(outStack)-1]
-
-			at := len(outStack) - 1
-			pos := appendOuts(at, out)
-
-			emitPopsCaptured[path+"_"+pathItem] = Captured{
-				At:  at,
-				Pos: pos,
-				Out: out,
-			}
-		}
-
-		intermed.EmitCaptured = func(path, pathItem, orig string) {
-			key := path
-			if pathItem != "" {
-				key = key + "_" + pathItem
-			}
-
-			captured, ok := emitPopsCaptured[key]
-			if !ok {
-				if false {
-					fmt.Printf("====================================================\n")
-					fmt.Printf("UNKNOWN CAPTURED - testi: %d, test.about: %s\n",
-						testi, test.about)
-					fmt.Printf("  key: %s, ok: %t\n", key, ok)
-					fmt.Printf("  emitPopsCaptured: %+v\n", emitPopsCaptured)
-				}
-
-				intermed.Emit(orig)
-
-				return
-			}
-
-			capturedOut := captured.Out
-
-			// Scan backwards until a func/closure.
-			start := len(capturedOut) - 1
-			for start >= 0 {
-				if strings.Index(capturedOut[start], " func(") > 0 {
-					break
-				}
-
-				start = start - 1
-			}
-
-			// Emit the body of the last func/closure.
-			var out []string
-
-			scopes := 0 // Count scope / braces of IF statements.
-
-			for i := start + 1; i < len(capturedOut); i++ {
-				trimmed := strings.TrimSpace(capturedOut[i])
-				if len(trimmed) <= 0 {
-					continue
-				}
-
-				if strings.HasPrefix(trimmed, "return ") { // Filter away return lines.
-					continue
-				}
-
-				if strings.HasPrefix(trimmed, "if ") ||
-					strings.HasPrefix(trimmed, "for ") {
-					scopes += 1
-				}
-
-				if strings.HasSuffix(trimmed, "}") { // Ignore IF close braces.
-					if scopes > 0 {
-						scopes -= 1
-					} else {
-						continue
-					}
-				}
-
-				out = append(out, capturedOut[i])
-			}
-
-			// Collapse sibling lines that look like...
-			//    a = foo
-			//    bar := a
-			// Into...
-			//    bar := foo
-			for i := 1; i < len(out); i++ {
-				if len(out[i-1]) > 0 {
-					prev := strings.Split(strings.TrimSpace(out[i-1]), " = ")
-					if len(prev) == 2 {
-						curr := strings.Split(strings.TrimSpace(out[i]), " := ")
-						if len(curr) == 2 &&
-							prev[0] == curr[1] {
-							out[i-1] = curr[0] + " := " + prev[1]
-							out[i] = ""
-						}
-					}
-				}
-			}
-
-			appendOuts(len(outStack)-1, out)
-
-			if captured.At >= 0 {
-				clearFuncLines(outStack[captured.At][captured.Pos : captured.Pos+len(captured.Out)])
-
-				captured.At = -1
-			}
-		}
-
-		intermed.ExprCatalog["exprStr"] = func(
-			lzVars *base.Vars, labels base.Labels,
-			params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-			intermed.EmitLift(
-				"var lzExprStrFunc%s = glue.ExprStr(lzVars, %#v, %#v, %#v)\n",
-				path, labels, params, path)
-
-			intermed.Emit("lzVal = lzExprStrFunc%s(lzVals, lzYieldErr)\n", path)
-
-			return lzExprFunc
-		}
-
-		// TODO: Need to handle exprTree when in compiled mode?
-
-		intermed.ExecOp(&test.o,
-			&base.Vars{Ctx: &base.Ctx{ExprCatalog: intermed.ExprCatalog}},
-			nil, nil, "Top", "EO")
-
-		if len(outStack) != 1 {
-			panic(fmt.Sprintf("len(outStack) should be height 1, got: %d,\n"+
-				" test: %+v\n outStack: %+v",
-				len(outStack), test, outStack))
-		}
-
-		out := outStack[len(outStack)-1]
-
-		testOuts = append(testOuts, out)
+	for _, test := range tests {
+		testOuts = append(testOuts, emitOpToLines(&test.o))
 	}
 
 	c := []string{
@@ -277,6 +97,190 @@ func TestCasesSimpleWithCompiler(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+}
+
+// emitOpToLines runs the n1k1 *compiler* (intermed.ExecOp with the Emit hooks
+// captured) over a single base.Op tree and returns the generated Go source
+// lines for that query. This is the core codegen step shared by the
+// TestCasesSimple generator and the filestore-corpus generator.
+func emitOpToLines(o *base.Op) []string {
+	outStack := [][]string{nil}
+
+	appendOut := func(at int, s string) int {
+		out := outStack[at]
+		pos := len(out)
+		out = append(out, s)
+		outStack[at] = out
+		return pos
+	}
+
+	appendOuts := func(at int, ss []string) int {
+		out := outStack[at]
+		pos := len(out)
+		out = append(out, ss...)
+		outStack[at] = out
+		return pos
+	}
+
+	intermed.Emit = func(format string, a ...interface{}) (
+		n int, err error) {
+		s := fmt.Sprintf(format, a...)
+		s = strings.Replace(s, "LzScope", "true", -1)
+
+		appendOut(len(outStack)-1, s)
+
+		return len(s), nil
+	}
+
+	intermed.EmitLift = func(format string, a ...interface{}) (
+		n int, err error) {
+		s := fmt.Sprintf(format, a...)
+		s = strings.Replace(s, "LzScope", "true", -1)
+
+		appendOut(0, s)
+
+		return len(s), nil
+	}
+
+	intermed.EmitPush = func(path, pathItem string) string {
+		outStack = append(outStack, nil)
+
+		return path + "_" + pathItem
+	}
+
+	emitPopsCaptured := map[string]Captured{}
+
+	intermed.EmitPop = func(path, pathItem string) {
+		out := outStack[len(outStack)-1]
+
+		outStack[len(outStack)-1] = nil
+		outStack = outStack[0 : len(outStack)-1]
+
+		at := len(outStack) - 1
+		pos := appendOuts(at, out)
+
+		emitPopsCaptured[path+"_"+pathItem] = Captured{
+			At:  at,
+			Pos: pos,
+			Out: out,
+		}
+	}
+
+	intermed.EmitCaptured = func(path, pathItem, orig string) {
+		key := path
+		if pathItem != "" {
+			key = key + "_" + pathItem
+		}
+
+		captured, ok := emitPopsCaptured[key]
+		if !ok {
+			if false {
+				fmt.Printf("====================================================\n")
+				fmt.Printf("UNKNOWN CAPTURED - key: %s, ok: %t\n", key, ok)
+				fmt.Printf("  emitPopsCaptured: %+v\n", emitPopsCaptured)
+			}
+
+			intermed.Emit(orig)
+
+			return
+		}
+
+		capturedOut := captured.Out
+
+		// Scan backwards until a func/closure.
+		start := len(capturedOut) - 1
+		for start >= 0 {
+			if strings.Index(capturedOut[start], " func(") > 0 {
+				break
+			}
+
+			start = start - 1
+		}
+
+		// Emit the body of the last func/closure.
+		var out []string
+
+		scopes := 0 // Count scope / braces of IF statements.
+
+		for i := start + 1; i < len(capturedOut); i++ {
+			trimmed := strings.TrimSpace(capturedOut[i])
+			if len(trimmed) <= 0 {
+				continue
+			}
+
+			if strings.HasPrefix(trimmed, "return ") { // Filter away return lines.
+				continue
+			}
+
+			if strings.HasPrefix(trimmed, "if ") ||
+				strings.HasPrefix(trimmed, "for ") {
+				scopes += 1
+			}
+
+			if strings.HasSuffix(trimmed, "}") { // Ignore IF close braces.
+				if scopes > 0 {
+					scopes -= 1
+				} else {
+					continue
+				}
+			}
+
+			out = append(out, capturedOut[i])
+		}
+
+		// Collapse sibling lines that look like...
+		//    a = foo
+		//    bar := a
+		// Into...
+		//    bar := foo
+		for i := 1; i < len(out); i++ {
+			if len(out[i-1]) > 0 {
+				prev := strings.Split(strings.TrimSpace(out[i-1]), " = ")
+				if len(prev) == 2 {
+					curr := strings.Split(strings.TrimSpace(out[i]), " := ")
+					if len(curr) == 2 &&
+						prev[0] == curr[1] {
+						out[i-1] = curr[0] + " := " + prev[1]
+						out[i] = ""
+					}
+				}
+			}
+		}
+
+		appendOuts(len(outStack)-1, out)
+
+		if captured.At >= 0 {
+			clearFuncLines(outStack[captured.At][captured.Pos : captured.Pos+len(captured.Out)])
+
+			captured.At = -1
+		}
+	}
+
+	intermed.ExprCatalog["exprStr"] = func(
+		lzVars *base.Vars, labels base.Labels,
+		params []interface{}, path string) (lzExprFunc base.ExprFunc) {
+		intermed.EmitLift(
+			"var lzExprStrFunc%s = glue.ExprStr(lzVars, %#v, %#v, %#v)\n",
+			path, labels, params, path)
+
+		intermed.Emit("lzVal = lzExprStrFunc%s(lzVals, lzYieldErr)\n", path)
+
+		return lzExprFunc
+	}
+
+	// TODO: Need to handle exprTree when in compiled mode?
+
+	intermed.ExecOp(o,
+		&base.Vars{Ctx: &base.Ctx{ExprCatalog: intermed.ExprCatalog}},
+		nil, nil, "Top", "EO")
+
+	if len(outStack) != 1 {
+		panic(fmt.Sprintf("len(outStack) should be height 1, got: %d,\n"+
+			" op: %+v\n outStack: %+v",
+			len(outStack), o, outStack))
+	}
+
+	return outStack[len(outStack)-1]
 }
 
 func clearFuncLines(lines []string) {

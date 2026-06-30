@@ -47,14 +47,15 @@ test-glue: build-glue
 test-filestore: build-glue
 	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -tags n1ql -v -run TestFilestoreCases ./test
 
-# test-compiler exercises the n1k1 *compiler* end to end: the first step runs
-# TestCasesSimpleWithCompiler, which generates Go source for every TestCasesSimple
-# case into test/tmp/ (gitignored); the second step compiles and runs that
-# generated package, whose TestGeneratedN funcs execute the compiled query and
-# compare its yields. The two steps MUST stay ordered -- the generated file is
-# regenerated first so ./test/tmp never compiles a stale copy.
+# test-compiler exercises the n1k1 *compiler* end to end. The first step runs
+# the two generators -- TestCasesSimpleWithCompiler (hand-built TestCasesSimple
+# Op trees) and TestFilestoreWithCompiler (Op trees the glue layer derives from
+# real SQL++ corpus queries) -- which emit Go source into test/tmp/ (gitignored).
+# The second step compiles and runs that generated package, whose TestGeneratedN
+# / TestGeneratedFS_N funcs execute the *compiled* query and compare its results.
+# The two steps MUST stay ordered so ./test/tmp never compiles a stale copy.
 test-compiler: build-glue
-	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -tags n1ql -run TestCasesSimpleWithCompiler ./test
+	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -tags n1ql -run 'TestCasesSimpleWithCompiler|TestFilestoreWithCompiler' ./test
 	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -tags n1ql -v ./test/tmp
 
 # test-all runs the whole N1QL-engine layer (glue/ + test/, includes filestore)
