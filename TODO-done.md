@@ -81,3 +81,10 @@ Gist only -- details live in commit messages, README, and code comments.
 - WON'T-FIX / moot, "re-pin to one consistent manifest snapshot": same root
   cause, and moot post-T3 (the drift-prone heavy modules aren't compiled; the
   versions that matter come from the fork's go.mod -- itself one snapshot).
+
+## 2026/06 -- un-skipped the pre-existing SKIP tests (all pass)
+- The 6 SKIP-prefixed tests from the 2021 CB 6.5->7 breakage (UNNEST x3,
+  GROUP BY SUM x2 = "TermerPanic"; array-as-FROM + WHERE = "Results3Not1")
+  now PASS as-is -- the breakage was resolved by the modernization + T3 decouple
+  + glue API-drift fixes. Just stripped the SKIP<reason>_ prefixes; no code
+  change needed. No SKIP markers remain in the tree.

@@ -7,10 +7,6 @@ DESIGN.md; build/test commands are in README.md.
 Status: modernization + a pure-Go N1QL engine (CGO_ENABLED=0, cross-compiles)
 are done. Remaining work:
 
-## Tests
-- [ ] Revisit the pre-existing SKIP tests: UNNEST + array-as-FROM (broke in the
-      2021 CB 6.5 -> 7 upgrade). `git grep SKIP`.
-
 ## Keeping current with SQL++
 n1k1's SQL++ support tracks couchbase/query (parser/algebra/expression/plan/
 planner). To move to a newer query, follow "Updating the fork to a newer query"

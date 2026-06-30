@@ -227,7 +227,7 @@ func TestFileStoreLeftOuterJoinOnKeys(t *testing.T) {
 	}
 }
 
-func SKIPTermerPanic_TestFileStoreUnnest(t *testing.T) {
+func TestFileStoreUnnest(t *testing.T) {
 	store, p, conv, err :=
 		testFileStoreSelect(t, `SELECT * FROM data:orders AS a UNNEST orderlines AS ol`, false)
 	if err != nil {
@@ -249,7 +249,7 @@ func SKIPTermerPanic_TestFileStoreUnnest(t *testing.T) {
 	}
 }
 
-func SKIPTermerPanic_TestFileStoreUnnestOnMissingField(t *testing.T) {
+func TestFileStoreUnnestOnMissingField(t *testing.T) {
 	store, p, conv, err :=
 		testFileStoreSelect(t, `SELECT * FROM data:orders AS a UNNEST notAField AS ol`, false)
 	if err != nil {
@@ -265,7 +265,7 @@ func SKIPTermerPanic_TestFileStoreUnnestOnMissingField(t *testing.T) {
 	}
 }
 
-func SKIPTermerPanic_TestFileStoreLeftOuterUnnest(t *testing.T) {
+func TestFileStoreLeftOuterUnnest(t *testing.T) {
 	store, p, conv, err :=
 		testFileStoreSelect(t, `SELECT * FROM data:orders AS a LEFT OUTER UNNEST notAField AS ol`, false)
 	if err != nil {
@@ -337,7 +337,7 @@ func TestFileStoreFromConstArray(t *testing.T) {
 	}
 }
 
-func SKIPResults3Not1_TestFileStoreFromConstArrayWhere(t *testing.T) {
+func TestFileStoreFromConstArrayWhere(t *testing.T) {
 	store, p, conv, err :=
 		testFileStoreSelect(t, `SELECT * FROM [1,2,{"x":[3]}] AS a WHERE a > 2`, false)
 	if err != nil {
@@ -578,7 +578,7 @@ func TestFileStoreGroupByCount(t *testing.T) {
 	}
 }
 
-func SKIPTermerPanic_TestFileStoreGroupBySum(t *testing.T) {
+func TestFileStoreGroupBySum(t *testing.T) {
 	store, p, conv, err :=
 		testFileStoreSelect(t, `SELECT o.custId, SUM(ol.qty) FROM data:orders AS o UNNEST o.orderlines AS ol GROUP BY o.custId`, false)
 	if err != nil {
@@ -608,7 +608,7 @@ func SKIPTermerPanic_TestFileStoreGroupBySum(t *testing.T) {
 	}
 }
 
-func SKIPTermerPanic_TestFileStoreGroupByCountSum(t *testing.T) {
+func TestFileStoreGroupByCountSum(t *testing.T) {
 	store, p, conv, err :=
 		testFileStoreSelect(t, `SELECT o.custId, COUNT(o.custId), SUM(ol.qty) FROM data:orders AS o UNNEST o.orderlines AS ol GROUP BY o.custId`, false)
 	if err != nil {
