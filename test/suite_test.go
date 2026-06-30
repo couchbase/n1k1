@@ -443,7 +443,7 @@ func reportSuite(t *testing.T, nFiles, pass, errPass, skipped int, nonPass []cas
 
 	// Exotic (skipped) cases: not a {statements, results/error/matchStatements}
 	// shape, so n1k1 doesn't attempt them. Show why + the full statement/content.
-	fmt.Fprintf(&b, "\nexotic / skipped cases (%d):\n", len(exotic))
+	fmt.Fprintf(&b, "\nskipped cases (%d):\n", len(exotic))
 	tw = tabwriter.NewWriter(&b, 0, 2, 2, ' ', 0)
 	for _, e := range exotic {
 		fmt.Fprintf(tw, "  %s\t%s\t%s\n", e.loc, e.reason, e.content)
@@ -452,14 +452,14 @@ func reportSuite(t *testing.T, nFiles, pass, errPass, skipped int, nonPass []cas
 
 	b.WriteString("\nsuite conformance\n=================\n")
 	tw = tabwriter.NewWriter(&b, 0, 2, 2, ' ', 0)
-	fmt.Fprintf(tw, "  files scanned\t%*d\n", valW, nFiles)
-	fmt.Fprintf(tw, "  runnable cases\t%*d\n", valW, total)
-	fmt.Fprintf(tw, "  PASS (rows)\t%*d\t(%.1f%%)\n", valW, pass, 100*float64(pass)/float64(total))
-	fmt.Fprintf(tw, "  PASS (error rejected)\t%*d\n", valW, errPass)
-	fmt.Fprintf(tw, "  UNSUPPORTED\t%*d\n", valW, unsupported)
-	fmt.Fprintf(tw, "  PANIC (engine bug)\t%*d\n", valW, panicked)
-	fmt.Fprintf(tw, "  FAIL\t%*d\n", valW, fail)
-	fmt.Fprintf(tw, "  skipped (exotic)\t%*d\n", valW, skipped)
+	fmt.Fprintf(tw, "  suite # files         \t%*d\n", valW, nFiles)
+	fmt.Fprintf(tw, "  suite # cases         \t%*d\n", valW, total)
+	fmt.Fprintf(tw, "    PASS                \t%*d\t(%.1f%%)\n", valW, pass, 100*float64(pass)/float64(total))
+	fmt.Fprintf(tw, "    PASS (err expected) \t%*d\n", valW, errPass)
+	fmt.Fprintf(tw, "    PANIC               \t%*d\n", valW, panicked)
+	fmt.Fprintf(tw, "    non-pass UNSUPPORTED\t%*d\n", valW, unsupported)
+	fmt.Fprintf(tw, "    non-pass FAIL       \t%*d\n", valW, fail)
+	fmt.Fprintf(tw, "    skipped             \t%*d\n", valW, skipped)
 	tw.Flush()
 
 	// Grouped breakdown of the expected non-pass cases, most-common first.
@@ -487,7 +487,7 @@ func reportSuite(t *testing.T, nFiles, pass, errPass, skipped int, nonPass []cas
 		}
 	}
 
-	fmt.Fprintf(&b, "\nexpected non-pass by group (%d cases; shrink as coverage grows):\n",
+	fmt.Fprintf(&b, "\nsuite non-pass by group (%d cases; shrink as coverage grows):\n",
 		len(expectedNonPass))
 	tw = tabwriter.NewWriter(&b, 0, 2, 2, ' ', 0)
 	fmt.Fprintf(tw, "  %*s\tGROUP\tWHY\n", cw, "COUNT")
