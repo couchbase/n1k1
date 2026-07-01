@@ -43,6 +43,16 @@ type Conv struct {
 	// binding is inlined to its Expression(); a recursive one becomes a
 	// with-recursive fixpoint op. Populated by VisitWith.
 	withBindings map[string]expression.With
+
+	// groupKeyExprLabels maps a *computed* (non-field-path) GROUP BY key's
+	// expression string to the synthetic label under which VisitFinalGroup
+	// materialized its value. VisitInitialProject uses it to read such a key
+	// back by label instead of re-evaluating the expression -- which can't be
+	// reconstructed from the grouped row (e.g. `orderlines[1]`, `now_str()`).
+	// Plain field-path keys are absent here (they re-materialize at their path
+	// and are re-evaluated as before). Populated by VisitFinalGroup.
+	groupKeyExprLabels map[string]string
+	groupKeyCount      int
 }
 
 // -------------------------------------------------------------------
@@ -458,17 +468,29 @@ func (c *Conv) VisitFinalGroup(o *plan.FinalGroup) (interface{}, error) {
 	var groups []interface{}
 
 	for _, key := range o.Keys() {
-		// TODO: Only works for simple GROUP BY expressions on field names,
-		// not grouping on general expressions. The reason is the generated
-		// label here is only on field names, and a later projection
-		// is based on the full expression string.
-		fieldPath, ok := ExprFieldPath(key)
-		if !ok {
-			return nil, fmt.Errorf("VisitFinalGroup, ExprFieldPath, key: %v", key)
+		groups = append(groups, []interface{}{"exprTree", key})
+
+		// A plain field-path key (e.g. `custId`, `a.b`) materializes its value
+		// at that path in the grouped row, so the downstream projection can
+		// re-evaluate the same expression against it. Label it by the path.
+		if fieldPath, ok := ExprFieldPath(key); ok {
+			labels = append(labels, "."+LabelSuffix(strings.Join(fieldPath, `","`)))
+			continue
 		}
 
-		labels = append(labels, "."+LabelSuffix(strings.Join(fieldPath, `","`)))
-		groups = append(groups, []interface{}{"exprTree", key})
+		// A computed key (e.g. `orderlines[1]`, `now_str()`) has no field path
+		// to re-materialize at, and can't be reconstructed from the grouped row.
+		// Store its value under a synthetic label; VisitInitialProject reads it
+		// back by that label when a projected term is exactly this key. (Terms
+		// that merely *recompute* -- e.g. now_str() inside a larger expr -- fall
+		// through to re-evaluation, which is fine for side-effect-free funcs.)
+		if c.groupKeyExprLabels == nil {
+			c.groupKeyExprLabels = map[string]string{}
+		}
+		synth := "." + LabelSuffix(fmt.Sprintf("$group%d", c.groupKeyCount))
+		c.groupKeyCount++
+		c.groupKeyExprLabels[key.String()] = synth
+		labels = append(labels, synth)
 	}
 
 	var aggExprs []interface{}
@@ -674,8 +696,16 @@ func (c *Conv) VisitInitialProject(o *plan.InitialProject) (interface{}, error) 
 			label = "."
 		}
 		op.Labels = append(op.Labels, label)
-		op.Params = append(op.Params,
-			[]interface{}{"exprTree", rt.Expression()})
+
+		// If this term is exactly a computed GROUP BY key, read the value the
+		// group already materialized (by synthetic label) rather than
+		// re-evaluating -- the grouped row can't reconstruct e.g. orderlines[1].
+		if lbl, ok := c.groupKeyExprLabels[rt.Expression().String()]; ok {
+			op.Params = append(op.Params, []interface{}{"labelPath", lbl})
+		} else {
+			op.Params = append(op.Params,
+				[]interface{}{"exprTree", rt.Expression()})
+		}
 	}
 
 	return c.TopPush(o, op)
