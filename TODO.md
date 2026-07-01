@@ -145,6 +145,17 @@ in glue/patches/README.md.
   {levels,documents} (with implicit depth/doc caps 100 / 10000 otherwise). Works
   in interpreter + compiler.
 
+- subquery / CTE known gaps (found while stretch-testing; see test/cases.go):
+  - a correlated subquery that CONTAINS an aggregate (e.g. SELECT (SELECT RAW
+    COUNT(*) ... WHERE x = o.y)) panics: "*value.ScopeValue is not
+    value.AnnotatedValue" -- the correlated ScopeValue wrap collides with the
+    aggregate op's AnnotatedValue expectation.
+  - a CTE whose binding references ANOTHER CTE (WITH a AS (...), b AS (SELECT ..
+    FROM a) ... FROM b) fails "nil item": EvaluateSubquery.compile convs the
+    sub-SELECT with a fresh Conv that lacks the outer withBindings, so `FROM a`
+    doesn't resolve. Fix = thread withBindings into sub-conversions.
+  - UNION ALL of two SELECTs (plan.UnionAll) is still NA.
+
 - speed mismatch between producers and consumers?
   - e.g., scan racing ahead and filling memory with candidate tuples
     when the fetch / filter is way behind?

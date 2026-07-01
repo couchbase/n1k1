@@ -6136,6 +6136,169 @@ var queryCases = []queryCase{
 			}
 		},
 	},
+
+	// ---- more subqueries (stretch) ------------------------------------
+	{
+		name: "SubqueryCorrelatedInProjection",
+		// a correlated subquery as a projected array: each order's peers (orders
+		// sharing its custId). abc/bbb -> 1 peer; ccc -> 2 peers.
+		stmt: `SELECT o.id, (SELECT RAW o2.id FROM data:orders o2 WHERE o2.custId = o.custId) AS peers ` +
+			`FROM data:orders o ORDER BY o.id`,
+		rows: 4,
+		check: func(t *testing.T, rows []base.Vals) {
+			wantIDs := []string{"1200", "1234", "1235", "1236"}
+			wantLen := []int{1, 1, 2, 2}
+			for i, row := range rows {
+				if id := trimQ(string(row[0])); id != wantIDs[i] {
+					t.Fatalf("row %d id: got %s, want %s", i, id, wantIDs[i])
+				}
+				var peers []interface{}
+				if err := json.Unmarshal(row[1], &peers); err != nil {
+					t.Fatalf("row %d peers unmarshal: %v", i, err)
+				}
+				if len(peers) != wantLen[i] {
+					t.Fatalf("row %d peers: got %d, want %d (%s)", i, len(peers), wantLen[i], row[1])
+				}
+			}
+		},
+	},
+	{
+		name: "SubqueryNestedIn",
+		// a subquery inside a subquery inside a WHERE IN.
+		stmt: `SELECT o.id FROM data:orders o WHERE o.custId IN ` +
+			`(SELECT RAW o2.custId FROM data:orders o2 WHERE o2.custId IN ` +
+			`(SELECT RAW o3.custId FROM data:orders o3 WHERE o3.id = "1235")) ORDER BY o.id`,
+		rows: 2, // -> custId ccc -> orders 1235, 1236
+		check: func(t *testing.T, rows []base.Vals) {
+			for _, row := range rows {
+				if id := trimQ(string(row[0])); id != "1235" && id != "1236" {
+					t.Fatalf("unexpected id %s", id)
+				}
+			}
+		},
+	},
+
+	// ---- direct FROM-(subquery) AS x (plan.Alias) ---------------------
+	{
+		name: "FromSubqueryWhere",
+		stmt: `SELECT x.id FROM (SELECT o.id, o.custId FROM data:orders o WHERE o.custId = "ccc") AS x ` +
+			`ORDER BY x.id`,
+		rows: 2,
+		check: func(t *testing.T, rows []base.Vals) {
+			want := []string{"1235", "1236"}
+			for i, row := range rows {
+				if got := trimQ(string(row[0])); got != want[i] {
+					t.Fatalf("order[%d]: got %s, want %s", i, got, want[i])
+				}
+			}
+		},
+	},
+	{
+		name: "FromSubqueryGroupBy",
+		stmt: `SELECT x.custId, COUNT(*) AS c FROM (SELECT o.custId FROM data:orders o) AS x ` +
+			`GROUP BY x.custId ORDER BY x.custId`,
+		rows: 3,
+		check: func(t *testing.T, rows []base.Vals) {
+			want := map[string]string{"abc": "1", "bbb": "1", "ccc": "2"}
+			for _, row := range rows {
+				cust := trimQ(string(row[0]))
+				if want[cust] != string(row[1]) {
+					t.Fatalf("custId %s: got c=%s, want %s", cust, row[1], want[cust])
+				}
+			}
+		},
+	},
+
+	// ---- more WITH RECURSIVE (stretch) --------------------------------
+	{
+		name: "RecursivePowers", // v *= 2 while v < 16 -> 1,2,4,8,16
+		stmt: `WITH RECURSIVE p AS (SELECT 1 AS v ` +
+			`UNION SELECT p.v * 2 AS v FROM p WHERE p.v < 16) ` +
+			`SELECT x.v FROM p AS x ORDER BY x.v`,
+		rows: 5,
+		check: func(t *testing.T, rows []base.Vals) {
+			want := []string{"1", "2", "4", "8", "16"}
+			for i, row := range rows {
+				if string(row[0]) != want[i] {
+					t.Fatalf("order[%d]: got %s, want %s", i, row[0], want[i])
+				}
+			}
+		},
+	},
+	{
+		name: "RecursiveFibonacci", // two-column recursion; a = 0,1,1,2,3,5,8,13
+		stmt: `WITH RECURSIVE fib AS (SELECT 0 AS a, 1 AS b ` +
+			`UNION SELECT fib.b AS a, fib.a + fib.b AS b FROM fib WHERE fib.b < 20) ` +
+			`SELECT x.a FROM fib AS x ORDER BY x.a`,
+		rows: 8,
+		check: func(t *testing.T, rows []base.Vals) {
+			want := []string{"0", "1", "1", "2", "3", "5", "8", "13"}
+			for i, row := range rows {
+				if string(row[0]) != want[i] {
+					t.Fatalf("order[%d]: got %s, want %s", i, row[0], want[i])
+				}
+			}
+		},
+	},
+	{
+		name: "RecursiveOuterWhere", // 1..10, keep evens downstream -> 2,4,6,8,10
+		stmt: `WITH RECURSIVE r AS (SELECT 1 AS n ` +
+			`UNION SELECT r.n + 1 AS n FROM r WHERE r.n < 10) ` +
+			`SELECT x.n FROM r AS x WHERE x.n % 2 = 0 ORDER BY x.n`,
+		rows: 5,
+		check: func(t *testing.T, rows []base.Vals) {
+			want := []string{"2", "4", "6", "8", "10"}
+			for i, row := range rows {
+				if string(row[0]) != want[i] {
+					t.Fatalf("order[%d]: got %s, want %s", i, row[0], want[i])
+				}
+			}
+		},
+	},
+	{
+		name: "RecursiveOptionsLevels", // OPTIONS caps recursion depth: anchor + 2 steps
+		stmt: `WITH RECURSIVE r AS (SELECT 1 AS n ` +
+			`UNION SELECT r.n + 1 AS n FROM r WHERE r.n < 100) OPTIONS {"levels": 2} ` +
+			`SELECT x.n FROM r AS x ORDER BY x.n`,
+		rows: 3,
+		check: func(t *testing.T, rows []base.Vals) {
+			want := []string{"1", "2", "3"}
+			for i, row := range rows {
+				if string(row[0]) != want[i] {
+					t.Fatalf("order[%d]: got %s, want %s", i, row[0], want[i])
+				}
+			}
+		},
+	},
+	{
+		name: "RecursiveCycleUnionAll",
+		// UNION ALL (no dedup) with a cyclic step (1->2->3->1...); the CYCLE clause
+		// detects the repeat on n and stops -> 1,2,3.
+		stmt: `WITH RECURSIVE r AS (SELECT 1 AS n ` +
+			`UNION ALL SELECT CASE WHEN r.n >= 3 THEN 1 ELSE r.n + 1 END AS n FROM r) ` +
+			`CYCLE n RESTRICT SELECT x.n FROM r AS x ORDER BY x.n`,
+		rows: 3,
+		check: func(t *testing.T, rows []base.Vals) {
+			want := []string{"1", "2", "3"}
+			for i, row := range rows {
+				if string(row[0]) != want[i] {
+					t.Fatalf("order[%d]: got %s, want %s", i, row[0], want[i])
+				}
+			}
+		},
+	},
+	{
+		name: "RecursiveMax", // downstream MAX over 1..10
+		stmt: `WITH RECURSIVE r AS (SELECT 1 AS n ` +
+			`UNION SELECT r.n + 1 AS n FROM r WHERE r.n < 10) ` +
+			`SELECT MAX(x.n) AS m FROM r AS x`,
+		rows: 1,
+		check: func(t *testing.T, rows []base.Vals) {
+			if string(rows[0][0]) != "10" {
+				t.Fatalf("expected m=10, got %s", rows[0][0])
+			}
+		},
+	},
 }
 
 // rowObj unmarshals a single-label result row (a JSON object) into a map.
