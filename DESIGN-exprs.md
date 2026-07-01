@@ -30,6 +30,8 @@ tests (`base/arith_test.go`):
 - **`BETWEEN`** — `item BETWEEN low AND high` (`engine/expr_between.go`), via a new
   reusable ternary harness `MakeTriExprFunc` / `base.TriExprFunc`.
 - **`IN`** — `x IN arr` membership (`engine/expr_in.go` + `base.ValIn`).
+- **Type checks** — `IS_ARRAY/IS_NUMBER/IS_STRING/IS_BOOLEAN/IS_OBJECT/IS_ATOM`
+  (`engine/expr_type.go`), unary, MISSING/NULL passthrough.
 
 Shared helpers keeping it DRY: `base.ArithApply` (op dispatch), `base.ValKind`
 (VALUE/NULL/MISSING classification — the one place encoding "empty==MISSING,
@@ -44,13 +46,17 @@ native `a+b` is `0 B/op, 0 allocs/op` (31 ns) vs cbq's `Evaluate()` fallback at
 The two-layer thesis held: the primitives carry the semantics; each per-op
 skeleton collapsed into a tiny shared harness (`ExprArithBi`/`ExprNeg`,
 `ExprIsPredicate`); copying cbq's propagation branch-for-branch + differential
-testing gave byte-identical results. One concrete porting lesson: match the cbq
-**`Function.Name()`** (the canonical no-underscore form set by each `Init()`,
-e.g. `isnull`), not the registry alias, when wiring `OptimizableFuncs`.
+testing gave byte-identical results. Porting lessons: (1) match the cbq
+**`Function.Name()`** (canonical form set by each `Init()` — no-underscore
+`isnull` for the unknown predicates, but *underscore* `is_array` for the type
+checks), not the registry alias, when wiring `OptimizableFuncs`; (2) a **MISSING
+constant** has no JSON form — `value.WriteJSON` emits `"null"` — so
+`ExprTreeOptimize` must emit an empty json constant (→ MISSING) for it, else any
+native op given a `missing` literal wrongly sees NULL.
 
-Next candidates (Tier A): `is [not] distinct from` (binary); `||` concat +
-`COALESCE` + n-ary `IFNULL/IFMISSING` (all need a variadic `MakeNaryExprFunc` —
-see the codegen note below); `CASE`; `LIKE`; the `is_*` type checks; then Tier B
+Next candidates (Tier A): `is [not] distinct from` (binary, low priority); `||`
+concat + `COALESCE` + n-ary `IFNULL/IFMISSING` (all need a variadic
+`MakeNaryExprFunc` — see the codegen note below); `CASE`; `LIKE`; then Tier B
 functions.
 
 ## Why this matters
@@ -121,12 +127,13 @@ semantics.
 | `ifnull` `ifmissing` `ifmissingornull` `nvl` | `engine/expr_cond.go` | **conditional-unknown selectors** (zero-copy operand pick; 2-operand) ✅ |
 | `between` | `engine/expr_between.go` | **BETWEEN** (ternary; collation-order bounds) ✅ |
 | `in` | `engine/expr_in.go` + `base.ValIn` | **IN** (array membership; 2-operand) ✅ |
+| `is_array` `is_number` `is_string` `is_boolean` `is_object` `is_atom` | `engine/expr_type.go` | **type checks** (unary; MISSING/NULL passthrough) ✅ |
 | `window-partition-row-number`, `window-frame-count`, `window-frame-step-value` | `engine/expr_window.go` | window helpers (FIRST/LAST/NTH/LEAD/LAG) |
 | `exprStr` / `exprTree` | `glue/expr.go` | **the fallback** (parse / delegate to cbq) |
 
 Still **absent and therefore delegated:** `like`, `is [not] distinct from`,
-`||`, `CASE`, `COALESCE` / n-ary (>2-operand) `IFNULL`/`IFMISSING`/…, type checks
-(`is_array`/`is_number`/…), and *all* ~335 remaining scalar functions.
+`||`, `CASE`, `COALESCE` / n-ary (>2-operand) `IFNULL`/`IFMISSING`/…, `TYPE()` /
+`IS_BINARY`, and *all* ~330 remaining scalar functions.
 
 ## The universe & the gap
 
@@ -177,6 +184,8 @@ projection cost and are the highest ROI.
   byte-kind classified, constant results.
 - ✅ **DONE — `BETWEEN`** (`engine/expr_between.go`) via `MakeTriExprFunc`.
 - ✅ **DONE — scalar `IN`** (`engine/expr_in.go` + `base.ValIn`).
+- ✅ **DONE — type checks `is_array/number/string/boolean/object/atom`**
+  (`engine/expr_type.go`).
 - **`is [not] distinct from`** — direct byte/type checks (`base.Parse`,
   `ValComparer`).
 - **Type checks `is_array/object/string/number/boolean/atom`** — `base.Parse`
