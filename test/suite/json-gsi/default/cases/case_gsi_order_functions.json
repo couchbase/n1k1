@@ -1,0 +1,558 @@
+[
+  {
+    "statements": "SELECT FIRST sale FOR sale IN orderlines END AS first_sale FROM orders WHERE test_id=\"order_func\" ORDER BY first_sale",
+    "results": [
+      {
+        "first_sale": {
+          "productId": "coffee01",
+          "qty": 1
+        }
+      },
+      {
+        "first_sale": {
+          "productId": "coffee01",
+          "qty": 1
+        }
+      },
+      {
+        "first_sale": {
+          "productId": "coffee01",
+          "qty": 2
+        }
+      },
+      {
+        "first_sale": {
+          "productId": "tea111",
+          "qty": 1
+        }
+      }
+    ]
+  },
+  {
+    "statements": "SELECT FIRST sale FOR sale IN orderlines WHEN sale.qty > 1 AND sale.productId = \"coffee01\" END AS dos FROM orders WHERE test_id=\"order_func\" ORDER BY dos",
+    "results": [
+      {},
+      {},
+      {},
+      {
+        "dos": {
+          "productId": "coffee01",
+          "qty": 2
+        }
+      }
+    ]
+  },
+  {
+    "statements": "SELECT ANY thing IN orderlines[1].thing satisfies qty = 1 END AS things, array_length(orderlines), FIRST sale FOR sale IN orderlines END AS first_sale FROM orders WHERE test_id=\"order_func\" ORDER BY id",
+    "results": [
+      {
+        "$1": 2,
+        "first_sale": {
+          "productId": "coffee01",
+          "qty": 1
+        }
+      },
+      {
+        "$1": 2,
+        "first_sale": {
+          "productId": "coffee01",
+          "qty": 2
+        }
+      },
+      {
+        "$1": 2,
+        "first_sale": {
+          "productId": "tea111",
+          "qty": 1
+        }
+      },
+      {
+        "$1": 2,
+        "first_sale": {
+          "productId": "coffee01",
+          "qty": 1
+        }
+      }
+    ]
+  },
+  {
+    "statements": "SELECT id FROM orders WHERE FIRST sale FOR sale IN orderlines WHEN length(orderlines[0].productId) > 6 END AND test_id=\"order_func\" ORDER BY id",
+    "results": [
+      {
+        "id": "1200"
+      },
+      {
+        "id": "1234"
+      },
+      {
+        "id": "1236"
+      }
+    ]
+  },
+  {
+    "statements": "SELECT FIRST sale FOR sale IN orderlines END AS A FROM orders WHERE poly_length(orderlines[0].productId) > 6 AND test_id=\"order_func\" ORDER BY A",
+    "results": [
+      {
+        "A": {
+          "productId": "coffee01",
+          "qty": 1
+        }
+      },
+      {
+        "A": {
+          "productId": "coffee01",
+          "qty": 1
+        }
+      },
+      {
+        "A": {
+          "productId": "coffee01",
+          "qty": 2
+        }
+      }
+    ]
+  },
+  {
+    "statements": "SELECT id, FIRST sale FOR sale IN orderlines END AS first_sale FROM orders WHERE test_id=\"order_func\" ORDER BY first_sale, id",
+    "results": [
+      {
+        "first_sale": {
+          "productId": "coffee01",
+          "qty": 1
+        },
+        "id": "1200"
+      },
+      {
+        "first_sale": {
+          "productId": "coffee01",
+          "qty": 1
+        },
+        "id": "1236"
+      },
+      {
+        "first_sale": {
+          "productId": "coffee01",
+          "qty": 2
+        },
+        "id": "1234"
+      },
+      {
+        "first_sale": {
+          "productId": "tea111",
+          "qty": 1
+        },
+        "id": "1235"
+      }
+    ]
+  },
+  {
+    "statements": "SELECT custId, FIRST sale FOR sale IN orderlines WHEN orderlines[0].productId > custId END as chosen_one FROM orders WHERE test_id=\"order_func\" ORDER BY custId",
+    "results": [
+      {
+        "chosen_one": {
+          "productId": "tea111",
+          "qty": 1
+        },
+        "custId": "customer12"
+      },
+      {
+        "custId": "customer18"
+      },
+      {
+        "custId": "customer312"
+      },
+      {
+        "custId": "customer38"
+      }
+    ]
+  },
+  {
+    "statements": "SELECT ANY thing IN orderlines[0].thing satisfies qty = 1 END AS things, FIRST sale FOR sale IN orderlines END as orderlin FROM orders WHERE test_id=\"order_func\" ORDER BY things, orderlin",
+    "results": [
+      {
+        "orderlin": {
+          "productId": "coffee01",
+          "qty": 1
+        }
+      },
+      {
+        "orderlin": {
+          "productId": "coffee01",
+          "qty": 1
+        }
+      },
+      {
+        "orderlin": {
+          "productId": "coffee01",
+          "qty": 2
+        }
+      },
+      {
+        "orderlin": {
+          "productId": "tea111",
+          "qty": 1
+        }
+      }
+    ]
+  },
+  {
+    "statements": "SELECT id, (orderlines[0].qty + orderlines[1].qty) AS totquant FROM orders WHERE test_id=\"order_func\" ORDER BY totquant, id",
+    "results": [
+      {
+        "id": "1200",
+        "totquant": 2
+      },
+      {
+        "id": "1235",
+        "totquant": 2
+      },
+      {
+        "id": "1236",
+        "totquant": 2
+      },
+      {
+        "id": "1234",
+        "totquant": 3
+      }
+    ]
+  },
+  {
+    "statements": "SELECT id, (orderlines[0].qty + orderlines[1].qty) FROM orders WHERE test_id=\"order_func\" ORDER BY totquant, id",
+    "results": [
+      {
+        "$1": 2,
+        "id": "1200"
+      },
+      {
+        "$1": 3,
+        "id": "1234"
+      },
+      {
+        "$1": 2,
+        "id": "1235"
+      },
+      {
+        "$1": 2,
+        "id": "1236"
+      }
+    ]
+  },
+  {
+    "statements": "SELECT id, (orderlines[0].qty + orderlines[1].qty) AS totquant FROM orders WHERE test_id=\"order_func\" ORDER BY totquant DESC, id ASC",
+    "results": [
+      {
+        "id": "1234",
+        "totquant": 3
+      },
+      {
+        "id": "1200",
+        "totquant": 2
+      },
+      {
+        "id": "1235",
+        "totquant": 2
+      },
+      {
+        "id": "1236",
+        "totquant": 2
+      }
+    ]
+  },
+  {
+    "statements": "SELECT id, orderlines[0].*, (orderlines[0].qty + orderlines[1].qty) AS totquant FROM orders WHERE test_id=\"order_func\" ORDER BY totquant, id DESC",
+    "results": [
+      {
+        "id": "1236",
+        "productId": "coffee01",
+        "qty": 1,
+        "totquant": 2
+      },
+      {
+        "id": "1235",
+        "productId": "tea111",
+        "qty": 1,
+        "totquant": 2
+      },
+      {
+        "id": "1200",
+        "productId": "coffee01",
+        "qty": 1,
+        "totquant": 2
+      },
+      {
+        "id": "1234",
+        "productId": "coffee01",
+        "qty": 2,
+        "totquant": 3
+      }
+    ]
+  },
+  {
+    "statements": "SELECT orderlines[1] FROM orders WHERE test_id=\"order_func\" ORDER BY orderlines[1].qty, orderlines[1].productId",
+    "results": [
+      {
+        "$1": {
+          "productId": "sugar22",
+          "qty": 1
+        }
+      },
+      {
+        "$1": {
+          "productId": "sugar22",
+          "qty": 1
+        }
+      },
+      {
+        "$1": {
+          "productId": "sugar22",
+          "qty": 1
+        }
+      },
+      {
+        "$1": {
+          "productId": "tea111",
+          "qty": 1
+        }
+      }
+    ]
+  },
+  {
+    "statements": "SELECT orderlines[0] FROM orders WHERE test_id=\"order_func\" ORDER BY orderlines[0].productId, orderlines[0].qty ASC LIMIT 1",
+    "results": [
+      {
+        "$1": {
+          "productId": "coffee01",
+          "qty": 1
+        }
+      }
+    ]
+  },
+  {
+    "statements": "SELECT orderlines[0] FROM orders WHERE test_id=\"order_func\" ORDER BY orderlines[0].productId, orderlines[0].qty ASC LIMIT 1 OFFSET 2",
+    "results": [
+      {
+        "$1": {
+          "productId": "coffee01",
+          "qty": 2
+        }
+      }
+    ]
+  },
+  {
+    "statements": "SELECT id, custId, orderlines[0].productId AS pId FROM orders WHERE test_id=\"order_func\" ORDER BY pId, custId",
+    "results": [
+      {
+        "custId": "customer18",
+        "id": "1200",
+        "pId": "coffee01"
+      },
+      {
+        "custId": "customer312",
+        "id": "1234",
+        "pId": "coffee01"
+      },
+      {
+        "custId": "customer38",
+        "id": "1236",
+        "pId": "coffee01"
+      },
+      {
+        "custId": "customer12",
+        "id": "1235",
+        "pId": "tea111"
+      }
+    ]
+  },
+  {
+    "description": "MB-56317",
+    "statements": "SELECT custId, COUNT(1) AS cnt FROM orders WHERE test_id=\"order_func\" GROUP BY custId ORDER BY custId, test_id",
+    "error": "Expression (`orders`.`test_id`) (near line 1, column 104) must depend only on group keys or aggregates."
+  },
+  {
+    "statements": "SELECT orderlines[0] FROM orders WHERE test_id=\"order_func\" ORDER BY orderlines[0].productId, orderlines[0].qty ASC LIMIT 10 OFFSET 2",
+    "results": [
+      {
+        "$1": {
+          "productId": "coffee01",
+          "qty": 2
+        }
+      },
+      {
+        "$1": {
+          "productId": "tea111",
+          "qty": 1
+        }
+      }
+    ]
+  },
+  {
+    "statements": "SELECT orderlines[0] FROM orders WHERE test_id=\"order_func\" ORDER BY orderlines[0].productId, orderlines[0].qty DESC LIMIT 10 OFFSET 2",
+    "results": [
+      {
+        "$1": {
+          "productId": "coffee01",
+          "qty": 1
+        }
+      },
+      {
+        "$1": {
+          "productId": "tea111",
+          "qty": 1
+        }
+      }
+    ]
+  },
+  {
+    "statements": "SELECT orderlines[0] FROM orders WHERE test_id=\"order_func\" ORDER BY orderlines[0].productId, orderlines[0].qty ASC LIMIT 10",
+    "results": [
+      {
+        "$1": {
+          "productId": "coffee01",
+          "qty": 1
+        }
+      },
+      {
+        "$1": {
+          "productId": "coffee01",
+          "qty": 1
+        }
+      },
+      {
+        "$1": {
+          "productId": "coffee01",
+          "qty": 2
+        }
+      },
+      {
+        "$1": {
+          "productId": "tea111",
+          "qty": 1
+        }
+      }
+    ]
+  },
+  {
+    "statements": "SELECT orderlines[0] FROM orders WHERE test_id=\"order_func\" ORDER BY orderlines[0].productId, orderlines[0].qty ASC LIMIT 0 OFFSET 2",
+    "results": []
+  },
+  {
+    "statements": "SELECT orderlines[0] FROM orders WHERE test_id=\"order_func\" ORDER BY orderlines[0].productId, orderlines[0].qty DESC LIMIT 0",
+    "results": []
+  },
+  {
+    "statements": "SELECT orderlines[0] FROM orders WHERE test_id=\"order_func\" ORDER BY orderlines[0].productId, orderlines[0].qty ASC LIMIT 0 OFFSET 0",
+    "results": []
+  },
+  {
+    "statements": "SELECT orderlines[0] FROM orders WHERE test_id=\"order_func\" ORDER BY orderlines[0].productId, orderlines[0].qty ASC LIMIT -1 OFFSET 0",
+    "results": []
+  },
+  {
+    "statements": "SELECT orderlines[0] FROM orders WHERE test_id=\"order_func\" ORDER BY orderlines[0].productId, orderlines[0].qty DESC LIMIT -1",
+    "results": []
+  },
+  {
+    "statements": "SELECT orderlines[0] FROM orders WHERE test_id=\"order_func\" ORDER BY orderlines[0].productId, orderlines[0].qty ASC OFFSET 4",
+    "results": []
+  },
+  {
+    "statements": "SELECT orderlines[0] FROM orders WHERE test_id=\"order_func\" ORDER BY orderlines[0].productId, orderlines[0].qty ASC OFFSET 8192 LIMIT 1",
+    "results": []
+  },
+  {
+    "description": "order_limit_prune_sort: Tests full sort with no pruning",
+    "statements": "SELECT custId, `shipped-on` FROM orders USE INDEX (order_cust) WHERE custId is valued AND test_id=\"order_limit_prune_sort\" ORDER BY custId, `shipped-on`",
+    "sortCount": 9
+  },
+  {
+    "description": "order_limit_prune_sort: Check plan reflects 'partial_sort_term_count'",
+    "ignore": "index_id",
+    "explain": {
+      "disabled": false,
+      "results": [
+        {
+          "present": true
+        }
+      ],
+      "statement": "SELECT true AS present FROM $explan AS p WHERE ANY v WITHIN p.plan.`~children` SATISFIES v.`#operator` = 'Order' AND v.partial_sort_term_count = 1 END"
+    },
+    "statements": "SELECT custId, `shipped-on` FROM orders USE INDEX (order_cust) WHERE custId is valued AND test_id=\"order_limit_prune_sort\" ORDER BY custId,`shipped-on` limit 4",
+    "sortCount": 4,
+    "ordered": true,
+    "results": [
+      {
+        "custId": "c1",
+        "shipped-on": "2022-01-01"
+      },
+      {
+        "custId": "c1",
+        "shipped-on": "2022-01-02"
+      },
+      {
+        "custId": "c1",
+        "shipped-on": "2022-01-03"
+      },
+      {
+        "custId": "c2",
+        "shipped-on": "2022-01-01"
+      }
+    ]
+  },
+  {
+    "description": "order_limit_prune_sort: Tests offset + limit still using reduced sort count",
+    "statements": "SELECT custId, `shipped-on` FROM orders USE INDEX (order_cust) WHERE custId is valued AND test_id=\"order_limit_prune_sort\" ORDER BY custId, `shipped-on` offset 4 limit 2",
+    "sortCount": 3
+  },
+  {
+    "description": "order_limit_prune_sort: Tests offset + limit using reduced sort count produces correct results",
+    "statements": "SELECT custId, `shipped-on` FROM orders USE INDEX (order_cust) WHERE custId is valued AND test_id=\"order_limit_prune_sort\" ORDER BY custId, `shipped-on` offset 5 limit 2",
+    "ordered": true,
+    "results": [
+      {
+        "custId": "c2",
+        "shipped-on": "2022-01-03"
+      },
+      {
+        "custId": "c3",
+        "shipped-on": "2022-01-01"
+      }
+    ]
+  },
+  {
+    "description": "order_limit_prune_sort: Tests offset + limit using reduced sort count with multiple partial sort keys",
+    "statements": "SELECT custId, `shipped-on` FROM orders USE INDEX (order_cust_shipped) WHERE custId is valued AND test_id=\"order_limit_prune_sort\" ORDER BY custId, `shipped-on` DESC, orderId offset 4 limit 2",
+    "sortCount": 3
+  },
+  {
+    "description": "order_limit_prune_sort: Check plan reflects 'partial_sort_term_count'",
+    "ignore": "index_id",
+    "explain": {
+      "disabled": false,
+      "results": [
+        {
+          "present": true
+        }
+      ],
+      "statement": "SELECT true AS present FROM $explan AS p WHERE ANY v WITHIN p.plan.`~children` SATISFIES v.`#operator` = 'Order' AND v.partial_sort_term_count = 1 END AND ANY y WITHIN p.plan.`~children` SATISFIES y.`#operator` LIKE 'IndexScan%' AND y.covers IS NOT MISSING END"
+    },
+    "statements": "SELECT custId, `shipped-on`, orderId FROM orders WHERE custId is valued AND test_id='order_limit_prune_sort' ORDER BY custId, `shipped-on` DESC, orderId offset 5 limit 2"
+  },
+  {
+    "description": "order_limit_prune_sort: Tests offset + limit using reduced sort count and covering index scan",
+    "statements": "SELECT custId, `shipped-on`, orderId FROM orders WHERE custId is valued AND test_id='order_limit_prune_sort' ORDER BY custId, `shipped-on` DESC, orderId offset 5 limit 2",
+    "ordered": true,
+    "sortCount": 4,
+    "results": [
+      {
+        "custId": "c2",
+        "orderId": 1,
+        "shipped-on": "2022-01-01"
+      },
+      {
+        "custId": "c3",
+        "orderId": 1,
+        "shipped-on": "2022-01-03"
+      }
+    ]
+  }
+]

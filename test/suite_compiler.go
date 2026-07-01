@@ -147,9 +147,10 @@ func CheckCompiledRows(t *testing.T, labels base.Labels, yields []base.Vals,
 // Runtime support for the datastore-backed compiler tests.
 
 var (
-	suiteStoreOnce sync.Once
-	suiteStore     *glue.Store
-	suiteStoreErr  error
+	suiteStoreMu   sync.Mutex
+	suiteStores    = map[string]*glue.Store{}
+	suiteStoreErrs = map[string]error{}
+	compiledWired  sync.Once
 
 	dataStoreOnce sync.Once
 	dataStore     *glue.Store
@@ -173,22 +174,29 @@ func wireCompiledRuntime() {
 	}
 }
 
-// compiledSuiteStore opens the corpus FileStore once. The root is located
-// relative to this source file (via runtime.Caller) so it resolves regardless
-// of the test's working dir -- the generated tests run from test/tmp/, not test/.
-func compiledSuiteStore() (*glue.Store, error) {
-	suiteStoreOnce.Do(func() {
-		_, file, _, _ := runtime.Caller(0)
-		root := filepath.Join(filepath.Dir(file), "suite", "json")
-		suiteStore, suiteStoreErr = glue.FileStore(root)
-		if suiteStoreErr != nil {
-			return
-		}
-		suiteStore.InitParser()
-		wireCompiledRuntime()
-	})
-	return suiteStore, suiteStoreErr
+// compiledSuiteStoreAt opens (once per name) the corpus FileStore under
+// test/suite/<name>. The root is located relative to this source file (via
+// runtime.Caller) so it resolves regardless of the test's working dir -- the
+// generated tests run from test/tmp/, not test/. name is "json" (default corpus)
+// or "json-gsi" (the data-backed gsi corpus).
+func compiledSuiteStoreAt(name string) (*glue.Store, error) {
+	suiteStoreMu.Lock()
+	defer suiteStoreMu.Unlock()
+	if s, ok := suiteStores[name]; ok {
+		return s, suiteStoreErrs[name]
+	}
+	_, file, _, _ := runtime.Caller(0)
+	root := filepath.Join(filepath.Dir(file), "suite", name)
+	s, err := glue.FileStore(root)
+	if err == nil {
+		s.InitParser()
+		compiledWired.Do(wireCompiledRuntime)
+	}
+	suiteStores[name], suiteStoreErrs[name] = s, err
+	return s, err
 }
+
+func compiledSuiteStore() (*glue.Store, error) { return compiledSuiteStoreAt("json") }
 
 // compiledDataStore opens the local test/ file store once (namespace "data" =
 // test/data), for the queryCases compiler differential. Located relative to
@@ -215,6 +223,17 @@ func SetupCompiledSuite(t *testing.T, stmt string) (
 	store, err := compiledSuiteStore()
 	if err != nil {
 		t.Fatalf("SetupCompiledSuite store: %v", err)
+	}
+	return setupCompiled(t, store, "default", stmt)
+}
+
+// SetupCompiledGsiSuite is SetupCompiledSuite against the data-backed gsi corpus
+// (test/suite/json-gsi); called by the generated gsi compiler tests.
+func SetupCompiledGsiSuite(t *testing.T, stmt string) (
+	*base.Vars, base.YieldVals, base.YieldErr, func() []base.Vals, func()) {
+	store, err := compiledSuiteStoreAt("json-gsi")
+	if err != nil {
+		t.Fatalf("SetupCompiledGsiSuite store: %v", err)
 	}
 	return setupCompiled(t, store, "default", stmt)
 }

@@ -224,7 +224,19 @@ func rowsEqualStrings(a, b []string) bool {
 	return true
 }
 
+// TestSuiteCases runs the original tuqtng-era + imported no-FROM gsi corpus.
 func TestSuiteCases(t *testing.T) {
+	runSuiteCases(t, suiteRoot, expectedNonPass, groupWhy, 1030)
+}
+
+// TestGsiSuiteCases runs the data-backed gsi corpus (isolated root so its shared
+// keyspaces -- customer/orders/product/purchase/review -- don't collide with the
+// default corpus's own `orders`). See DESIGN-testing.md + import_gsi_data_cases.py.
+func TestGsiSuiteCases(t *testing.T) {
+	runSuiteCases(t, gsiSuiteRoot, gsiExpectedNonPass, gsiGroupWhy, gsiPassFloor)
+}
+
+func runSuiteCases(t *testing.T, suiteRoot string, expectedNonPass, groupWhy map[string]string, passFloor int) {
 	if _, err := os.Stat(suiteRoot + "/default/cases"); err != nil {
 		t.Skipf("suite corpus not present: %v", err)
 	}
@@ -347,7 +359,7 @@ func TestSuiteCases(t *testing.T) {
 		}
 	}
 
-	reportSuite(t, len(files), pass, errPass, skipped, nonPass, exotic)
+	reportSuite(t, len(files), pass, errPass, skipped, nonPass, exotic, expectedNonPass, groupWhy, passFloor)
 }
 
 // caseOutcome records one non-passing corpus case.
@@ -400,7 +412,8 @@ type exoticCase struct {
 // non-pass cases, then enforces two guards: any UNEXPECTED non-pass (one not in
 // expectedNonPass) is a regression and fails the test; a stale table entry (a
 // listed case that now passes) is warned about so it can be removed.
-func reportSuite(t *testing.T, nFiles, pass, errPass, skipped int, nonPass []caseOutcome, exotic []exoticCase) {
+func reportSuite(t *testing.T, nFiles, pass, errPass, skipped int, nonPass []caseOutcome, exotic []exoticCase,
+	expectedNonPass, groupWhy map[string]string, passFloor int) {
 	groupCount := map[string]int{}
 	seen := map[string]bool{}
 	var unexpected []caseOutcome
@@ -575,7 +588,6 @@ func reportSuite(t *testing.T, nFiles, pass, errPass, skipped int, nonPass []cas
 
 	// Backstop on the raw pass count, in case a pass silently turns into a
 	// different already-listed failure (no unexpected case, but pass drops).
-	const passFloor = 1030
 	if pass < passFloor {
 		t.Errorf("suite conformance regressed: PASS=%d < baseline %d", pass, passFloor)
 	}

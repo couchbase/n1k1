@@ -183,7 +183,19 @@ func nonDeterministic(stmt string) bool {
 	return false
 }
 
+// TestSuiteWithCompiler generates+checks compiled islands for the default corpus.
 func TestSuiteWithCompiler(t *testing.T) {
+	runSuiteCompiler(t, suiteRoot,
+		"./tmp/generated_by_suite_compiler_test.go", "TestGeneratedFS_", "SetupCompiledSuite")
+}
+
+// TestGsiSuiteWithCompiler is the compiler half of the data-backed gsi suite.
+func TestGsiSuiteWithCompiler(t *testing.T) {
+	runSuiteCompiler(t, gsiSuiteRoot,
+		"./tmp/generated_by_gsi_suite_compiler_test.go", "TestGeneratedGsiFS_", "SetupCompiledGsiSuite")
+}
+
+func runSuiteCompiler(t *testing.T, suiteRoot, outFile, funcPrefix, setupCall string) {
 	if _, err := os.Stat(suiteRoot + "/default/cases"); err != nil {
 		t.Skipf("suite corpus not present: %v", err)
 	}
@@ -293,9 +305,9 @@ func TestSuiteWithCompiler(t *testing.T) {
 	for i, g := range gen {
 		c = append(c, "// ------------------------------------------")
 		c = append(c, "// "+g.about)
-		c = append(c, fmt.Sprintf("func TestGeneratedFS_%d(t *testing.T) {", i))
+		c = append(c, fmt.Sprintf("func %s%d(t *testing.T) {", funcPrefix, i))
 		c = append(c, `  lzVars, lzYieldVals, lzYieldErr, returnYields, cleanup :=`)
-		c = append(c, fmt.Sprintf(`    test.SetupCompiledSuite(t, %q)`, g.stmt))
+		c = append(c, fmt.Sprintf(`    test.%s(t, %q)`, setupCall, g.stmt))
 		c = append(c, "  defer cleanup()")
 		c = append(c, "  _ = lzVars")
 		c = append(c, "  _ = lzYieldVals")
@@ -308,12 +320,11 @@ func TestSuiteWithCompiler(t *testing.T) {
 		c = append(c, "}\n")
 	}
 
-	err = ioutil.WriteFile("./tmp/generated_by_suite_compiler_test.go",
-		[]byte(strings.Join(c, "\n")), 0644)
+	err = ioutil.WriteFile(outFile, []byte(strings.Join(c, "\n")), 0644)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	t.Logf("suite compiler: considered=%d convertible=%d emitted=%d",
-		considered, convertible, len(gen))
+	t.Logf("suite compiler (%s): considered=%d convertible=%d emitted=%d",
+		suiteRoot, considered, convertible, len(gen))
 }

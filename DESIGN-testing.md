@@ -79,31 +79,58 @@ select 1.
   robustness bug worth fixing; the engine should never panic on an unsupported
   function.)
 
-## Roadmap — the data-backed categories (~915 PURE statements)
+## Data-backed categories (DONE — isolated gsi corpus)
 
-The bigger prize is the FROM-based function/query categories. They need their
-datasets loaded. Plan:
+The FROM-based function/query categories need their datasets loaded. Because the
+fork's shared `orders` keyspace would **collide** with n1k1's existing `orders`
+(adding docs would change results of the default corpus's own cases), the fork
+data lives in a **separate corpus root**, `test/suite/json-gsi/`, with its own
+tests. Implemented:
 
-1. **Isolated suite root.** The fork's shared `orders` keyspace **collides** with
-   n1k1's existing `orders` dataset (adding docs would change results of existing
-   cases). So load the fork data under a *separate* root, e.g.
-   `test/suite/json-gsi/default/<keyspace>/`, with its own
-   `TestGsiSuiteCases` + `TestGsiSuiteWithCompiler` (factor the two existing
-   suite bodies into a `runSuite(root, expectedNonPass, passFloor)` helper so
-   both roots share one implementation — DRY).
-2. **Converter.** n1k1 can't run INSERT, so transform each category's
-   `insert.json` `INSERT INTO <ks> VALUES("<key>", <obj>)` into a file-datastore
-   doc `default/<ks>/<key>.json = <obj>` (the VALUES payload is plain JSON; a
-   brace-matcher or the n1ql parser extracts key+value). Docs across categories
-   merge into shared keyspaces — keys are `test_id`-suffixed so they don't
-   collide, and each case's `WHERE test_id="..."` scopes it correctly.
-3. **Import + triage.** Copy the PURE categories' `case_*.json`, run both modes,
-   and for each failure either fix n1k1 or record it in the root's
-   `expectedNonPass` (grouped by reason) — every pass is a real gain and every
-   recorded gap is explicit and regression-guarded.
-4. **PLAN categories.** Import the query cases but drop the ones whose expected
-   output is a plan/EXPLAIN shape (n1k1 does primary scan + filter, so rows are
-   correct but the plan differs).
+- **`test/suite/import_gsi_data_cases.py`** transforms each category's
+  `insert.json` `INSERT INTO <ks> (KEY,VALUE) VALUES("<key>", <obj>)` into a
+  file-datastore doc `json-gsi/default/<ks>/<key>.json` (brace-matched JSON
+  payload) and copies its `{statements,results|error}` cases to
+  `json-gsi/default/cases/case_gsi_<cat>.json`. Docs from all categories merge
+  into the shared keyspaces (`customer`/`orders`/`product`/`purchase`/`review`);
+  keys are `test_id`-suffixed so they don't collide and each case's
+  `WHERE test_id="..."` scopes it.
+- **17 categories imported:** 6,157 docs, ~493 cases. string/number/array/obj/
+  json/comp/conditional/case/typeconv/select/where/alias/any/from/order/key/meta
+  functions.
+- **Harness:** the interp and compiler suite bodies were factored into
+  root-parameterized helpers — `runSuiteCases(root, expectedNonPass, groupWhy,
+  passFloor)` and `runSuiteCompiler(root, outFile, funcPrefix, setupCall)` — so
+  `TestSuiteCases`/`TestGsiSuiteCases` and `TestSuiteWithCompiler`/
+  `TestGsiSuiteWithCompiler` share one implementation (DRY). `compiledSuiteStore`
+  is now root-keyed; `SetupCompiledGsiSuite` runs generated gsi islands against
+  the gsi store; the gsi generated file uses a `TestGeneratedGsiFS_` prefix so it
+  coexists with the default one in `test/tmp/`.
+- **Results:** **443 / 493 pass in interp mode** (`gsiPassFloor=443`);
+  **439 emitted + green in compiler mode.** No panics. The 49 non-pass are
+  triaged in `gsiExpectedNonPass` by group: `use-keys` (USE [PRIMARY] KEYS),
+  `first-comprehension` (FIRST … FOR … END), `any-every` (ANY/EVERY predicates /
+  tie-broken LIMIT), `json-funcs`/`obj-funcs` (key-order/output diffs),
+  `unsupported` (e.g. slice `arr[0:1]`), and `results-differ` (to investigate) —
+  each an explicit, regression-guarded gap to chip away at.
+
+**Follow-ups:** more PURE categories (aggregate/window/etc.); **PLAN** categories
+(import query cases, drop plan/EXPLAIN-shape assertions since n1k1 does primary
+scan + filter); and investigating the `results-differ` bucket for real fixes vs.
+tie-broken-LIMIT noise.
+
+### Building the gsi suite in a fresh worktree
+
+A fresh git worktree can't load the module graph out of the box: the repo's
+go.mod requires several **placeholder EE modules** (`cbgt`, `query-ee`,
+`regulator`, `eventing-ee`, `gocbcrypto`, `hebrew`, `n1fty`, `plasma`) at the
+`v0.0.0-0001…` non-version, whose go.mod files exist only in Couchbase's internal
+repo-sync tree. None are imported in the CE build (`go mod why`: not needed), but
+the graph loader still demands them. To bootstrap a worktree (all local /
+uncommitted): add a local-path `replace` for each to an empty stub module, then
+regenerate the gitignored `intermed/` (`go build ./cmd/intermed_build/ &&
+./intermed_build`) and create the gitignored `test/tmp/` dir. (A committed `make
+bootstrap`/`go.work` to automate this is a worthwhile future convenience.)
 
 ## Guidance / lessons
 

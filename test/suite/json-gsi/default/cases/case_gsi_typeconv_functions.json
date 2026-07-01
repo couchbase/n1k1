@@ -1,0 +1,335 @@
+[
+  {
+    "statements": "select IS_ARRAY(orders.orderlines) as a from orders WHERE test_id=\"typeconv_func\" order by a",
+    "results": [
+      {
+        "a": true
+      },
+      {
+        "a": true
+      },
+      {
+        "a": true
+      },
+      {
+        "a": true
+      }
+    ]
+  },
+  {
+    "statements": "select IS_ARRAY(orders.id) as a from orders WHERE test_id=\"typeconv_func\" order by a",
+    "results": [
+      {
+        "a": false
+      },
+      {
+        "a": false
+      },
+      {
+        "a": false
+      },
+      {
+        "a": false
+      }
+    ]
+  },
+  {
+    "statements": "select IS_ARRAY(null) ",
+    "results": [
+      {
+        "$1": null
+      }
+    ]
+  },
+  {
+    "statements": "select IS_ARRAY(missing) ",
+    "results": [
+      {}
+    ]
+  },
+  {
+    "statements": "select IS_ATOM(orders.orderlines) as a from orders WHERE test_id=\"typeconv_func\" order by a ",
+    "results": [
+      {
+        "a": false
+      },
+      {
+        "a": false
+      },
+      {
+        "a": false
+      },
+      {
+        "a": false
+      }
+    ]
+  },
+  {
+    "statements": "select IS_ATOM(orders.id) as a from orders WHERE test_id=\"typeconv_func\" order by a ",
+    "results": [
+      {
+        "a": true
+      },
+      {
+        "a": true
+      },
+      {
+        "a": true
+      },
+      {
+        "a": true
+      }
+    ]
+  },
+  {
+    "statements": "select IS_BOOLEAN(false) ",
+    "results": [
+      {
+        "$1": true
+      }
+    ]
+  },
+  {
+    "statements": "select IS_BOOLEAN(1) ",
+    "results": [
+      {
+        "$1": false
+      }
+    ]
+  },
+  {
+    "statements": "select IS_NUM(0) ",
+    "results": [
+      {
+        "$1": true
+      }
+    ]
+  },
+  {
+    "statements": "select IS_NUM([1,2]) ",
+    "results": [
+      {
+        "$1": false
+      }
+    ]
+  },
+  {
+    "statements": "select IS_OBJ(orders) as a from orders WHERE test_id=\"typeconv_func\"",
+    "results": [
+      {
+        "a": true
+      },
+      {
+        "a": true
+      },
+      {
+        "a": true
+      },
+      {
+        "a": true
+      }
+    ]
+  },
+  {
+    "statements": "select is_string(\"\")",
+    "results": [
+      {
+        "$1": true
+      }
+    ]
+  },
+  {
+    "statements": "SELECT TYPE(ARRAY productId FOR productId IN orderlines END) AS all_products FROM orders WHERE test_id=\"typeconv_func\" ORDER BY all_products ",
+    "results": [
+      {
+        "all_products": "array"
+      },
+      {
+        "all_products": "array"
+      },
+      {
+        "all_products": "array"
+      },
+      {
+        "all_products": "array"
+      }
+    ]
+  },
+  {
+    "statements": "select (ARRAY TYPE(c) for c in [ 1, \"yes\", true,[1,2], missing, null] END)  as ok ",
+    "results": [
+      {
+        "ok": [
+          "number",
+          "string",
+          "boolean",
+          "array",
+          "missing",
+          "null"
+        ]
+      }
+    ]
+  },
+  {
+    "testcase": "MB-66955",
+    "statements": "SELECT o.custId, ol.qty FROM orders o UNNEST o.orderlines AS ol WHERE o.type = \"order\" AND IS_OBJECT(ol) AND ol.productId LIKE \"tea%\"",
+    "results": [
+      {
+        "custId": "customer312",
+        "qty": 1
+      },
+      {
+        "custId": "customer12",
+        "qty": 1
+      }
+    ]
+  },
+  {
+    "statements": "select TOARRAY(orders.id) as a from orders WHERE test_id=\"typeconv_func\" order by a",
+    "results": [
+      {
+        "a": [
+          "1200"
+        ]
+      },
+      {
+        "a": [
+          "1234"
+        ]
+      },
+      {
+        "a": [
+          "1235"
+        ]
+      },
+      {
+        "a": [
+          "1236"
+        ]
+      }
+    ]
+  },
+  {
+    "statements": "select TOATOM(TOARRAY(orders.id)) AS a from orders WHERE test_id=\"typeconv_func\" ORDER BY a",
+    "results": [
+      {
+        "a": "1200"
+      },
+      {
+        "a": "1234"
+      },
+      {
+        "a": "1235"
+      },
+      {
+        "a": "1236"
+      }
+    ]
+  },
+  {
+    "statements": "select TONUMBER(id) as a from orders WHERE test_id=\"typeconv_func\" ORDER BY a",
+    "results": [
+      {
+        "a": 1200
+      },
+      {
+        "a": 1234
+      },
+      {
+        "a": 1235
+      },
+      {
+        "a": 1236
+      }
+    ]
+  },
+  {
+    "statements": "select TOSTRING(TONUMBER(id)) as a from orders WHERE test_id=\"typeconv_func\" ORDER BY a",
+    "results": [
+      {
+        "a": "1200"
+      },
+      {
+        "a": "1234"
+      },
+      {
+        "a": "1235"
+      },
+      {
+        "a": "1236"
+      }
+    ]
+  },
+  {
+    "statements": "select TOOBJECT(orders.`shipped-on`) as a from orders WHERE test_id=\"typeconv_func\" ORDER BY a",
+    "results": [
+      {},
+      {},
+      {
+        "a": null
+      },
+      {
+        "a": {}
+      }
+    ]
+  },
+  {
+    "statements": "select TOOBJECT(orders.orderlines[1]) as a from orders WHERE test_id=\"typeconv_func\" ORDER BY a",
+    "results": [
+      {
+        "a": {
+          "productId": "sugar22",
+          "qty": 1
+        }
+      },
+      {
+        "a": {
+          "productId": "sugar22",
+          "qty": 1
+        }
+      },
+      {
+        "a": {
+          "productId": "sugar22",
+          "qty": 1
+        }
+      },
+      {
+        "a": {
+          "productId": "tea111",
+          "qty": 1
+        }
+      }
+    ]
+  },
+  {
+    "statements": "select TOBOOLEAN(orders.orderlines[1]) as a from orders WHERE test_id=\"typeconv_func\" ORDER BY a",
+    "results": [
+      {
+        "a": true
+      },
+      {
+        "a": true
+      },
+      {
+        "a": true
+      },
+      {
+        "a": true
+      }
+    ]
+  },
+  {
+    "statements": "select TOBOOLEAN(orders.`shipped-on`) as a from orders WHERE test_id=\"typeconv_func\" ORDER BY a",
+    "results": [
+      {},
+      {},
+      {
+        "a": null
+      },
+      {
+        "a": true
+      }
+    ]
+  }
+]
