@@ -182,6 +182,65 @@ Keep these on the fallback; they're one-shot, rare, non-deterministic, or extern
 These are infrequent and their allocation cost is negligible against a whole-query
 budget — porting them isn't worth the semantic-fidelity risk.
 
+## Why porting is largely mechanical: cbq's two-layer structure
+
+cbq's scalar expressions follow a rigid, uniform pattern, so porting can be
+near line-for-line — and copying it faithfully is exactly what minimizes
+edge-case misses.
+
+**Layer 1 — a thin, uniform `Evaluate` skeleton.** Each expression only: (1)
+evaluates operands recursively, (2) propagates errors, (3) applies a standard
+MISSING/NULL branch, (4) delegates the real work to a `value` primitive. Verbatim
+shapes from the source:
+- **Comparison** delegates entirely — `Eq.Evaluate` → `first.Equals(second)` (the
+  value method returns MISSING/NULL/bool per N1QL rules). `Between` → `op.Compare
+  (low/high)`, MISSING propagates, non-comparable → NULL.
+- **Arithmetic** is MISSING-dominant — `Add` loops operands: any MISSING →
+  MISSING; any non-number → NULL; else `sum.Add(value.AsNumberValue(arg))`.
+- **Unary unknown-passthrough** — `Not` / `IsString`: MISSING and NULL pass
+  through unchanged; else compute (`arg.Truth()` / `arg.Type()==STRING`).
+- **Conditional** — `IfNull`: return the first operand whose type isn't NULL.
+
+These collapse into a **handful of propagation classes**:
+
+| Class | Rule | Members |
+|---|---|---|
+| delegate-to-value | the value primitive encodes the 3-valued result | eq/ne/lt/le/gt/ge, between |
+| MISSING-dominant → NULL | any MISSING → MISSING; else any non-typed → NULL; else compute | arithmetic, most scalar funcs |
+| unknown-passthrough | MISSING → MISSING, NULL → NULL; else compute | not, `is_*` type checks, most string/num/date funcs |
+| short-circuit truth-table | special 3-valued tables | and, or, coalesce/ifnull/ifmissing |
+
+Members of a class share the *identical* skeleton, so n1k1 should encode each
+class as **one reusable harness** (exactly as `engine/expr_cmp.go:ExprCmp` already
+generalizes `eq..ge`) and plug in only the leaf op. A new expr = pick a class +
+supply the leaf.
+
+**Layer 2 — the semantics live in a tiny `value` primitive set.** All the
+subtlety (three-valued logic, type collation order, numeric canonicalization
+`0`/`0.0`/`-0`, int-vs-float, coercion) is concentrated in ~6 `value.Value`
+methods: `Equals`, `Compare`, `Collate`, `Truth`, `Type`/`Actual`, and
+`NumberValue` arithmetic (`Add/Sub/Mult/Div/Mod`). Every expression is built on
+these.
+
+**The strategy that minimizes misses:**
+1. **Port the primitives first** as byte-level `base` functions that match the cbq
+   `value` methods exactly. n1k1 already has the comparison ones —
+   `ValComparer.CompareWithType`/`Collate` mirror `value.Compare`/`Collate`, and
+   `ValTruthy` mirrors `Truth()`. The main gap is **numeric arithmetic** (mirror
+   `value.NumberValue`, incl. int64/float64 paths and div/mod-by-zero) plus
+   confirming `ValTruthy` and the type mapping match cbq bit-for-bit.
+2. **Port each skeleton** by copying cbq's `Evaluate` branch-for-branch into the
+   class harness — same operand order, same MISSING/NULL branches.
+3. **Differential-test** against the cbq fallback (the oracle): identical
+   primitives + identical skeleton ⇒ identical results, unknown-value edges
+   included.
+
+Caveat — the parts that are *not* obvious and must be copied, not reinvented:
+`AND`/`OR` and the conditional-unknown family have subtle 3-valued truth tables
+(`NULL AND FALSE = FALSE`, `NULL AND TRUE = NULL`, …). Port `logic_and.go`,
+`logic_or.go`, and `func_cond_unknown.go` exactly — and audit n1k1's *existing*
+`and`/`or` against them.
+
 ## The porting recipe (per expression)
 
 1. **Register** a name in `ExprCatalog` + add it (and its cbq function name) to
