@@ -33,7 +33,7 @@ import (
 	"github.com/couchbase/query/errors"
 	"github.com/couchbase/query/timestamp"
 
-	"github.com/couchbase/n1k1/recordsource"
+	"github.com/couchbase/n1k1/records"
 )
 
 const flatRootNamespace = "default"
@@ -79,7 +79,7 @@ func dirHasRecordFile(dir string) bool {
 		return false
 	}
 	for _, e := range entries {
-		if !e.IsDir() && recordsource.IsRecordFile(e.Name()) {
+		if !e.IsDir() && records.IsRecordFile(e.Name()) {
 			return true
 		}
 	}

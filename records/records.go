@@ -9,7 +9,7 @@
 //  express or implied. See the License for the specific language
 //  governing permissions and limitations under the License.
 
-// Package recordsource decodes on-disk data files into a stream of JSON
+// Package records decodes on-disk data files into a stream of JSON
 // records for n1k1's FROM path. It is deliberately pure-Go (no couchbase/query
 // dependency and no build tag) so it can be unit-tested standalone and reused
 // by both the glue datastore path and the engine's direct-file scan path.
@@ -20,7 +20,7 @@
 // buffer and are only valid until the next Next call — callers copy to retain.
 // This mirrors n1k1's base.Val = []byte engine, so a decoded record hands
 // straight to a base.Val with no interface{} boxing.
-package recordsource
+package records
 
 import (
 	"bufio"
@@ -114,7 +114,7 @@ func openDecompressed(path string) (io.Reader, []io.Closer, error) {
 		return gz, closers, nil
 	case ".zst":
 		f.Close()
-		return nil, nil, fmt.Errorf("recordsource: .zst not yet supported: %s", path)
+		return nil, nil, fmt.Errorf("records: .zst not yet supported: %s", path)
 	default:
 		return f, closers, nil
 	}
@@ -127,7 +127,7 @@ func openDecompressed(path string) (io.Reader, []io.Closer, error) {
 // META().id convention.
 func OpenFile(path, idPrefix string) (Source, error) {
 	if !IsRecordFile(path) {
-		return nil, fmt.Errorf("recordsource: unsupported file: %s", path)
+		return nil, fmt.Errorf("records: unsupported file: %s", path)
 	}
 	r, closers, err := openDecompressed(path)
 	if err != nil {
@@ -507,7 +507,7 @@ func ParseModes(csv string) (WalkOptions, error) {
 		case "recurse", "recursive":
 			opts.Recurse = true
 		default:
-			return WalkOptions{}, fmt.Errorf("recordsource: unknown scan mode %q", tok)
+			return WalkOptions{}, fmt.Errorf("records: unknown scan mode %q", tok)
 		}
 	}
 	return opts, nil

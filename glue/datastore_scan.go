@@ -21,7 +21,7 @@ import (
 	"strings"
 
 	"github.com/couchbase/n1k1/base"
-	"github.com/couchbase/n1k1/recordsource"
+	"github.com/couchbase/n1k1/records"
 
 	"github.com/couchbase/query/datastore"
 	"github.com/couchbase/query/errors"
@@ -85,11 +85,11 @@ func DatastoreScanKeys(o *base.Op, vars *base.Vars,
 
 // ScanWalkOptions controls how DatastoreScanRecords discovers/decodes files
 // (formats, recursion, compression). It defaults to the flexible AllModes; the
-// CLI's --modes flag overrides it via recordsource.ParseModes to lock scanning
+// CLI's -scan flag overrides it via records.ParseModes to lock scanning
 // down (e.g. don't recurse into unwanted subdirs). Process-global to match the
 // engine.ExecOpEx registration style -- fine for the single-process CLI; a
 // per-store field is the cleaner future form (see DESIGN-data.md).
-var ScanWalkOptions = recordsource.AllModes()
+var ScanWalkOptions = records.AllModes()
 
 // recordsScanPlan is the subset of the plan scan ops the n1k1-native records
 // scan needs -- just the target keyspace. plan.PrimaryScan/PrimaryScan3 and
@@ -105,7 +105,7 @@ type limiter interface {
 }
 
 // DatastoreScanRecords reads a file keyspace's directory n1k1-native via the
-// recordsource package (union of files, recurse subdirs, decode JSONL /
+// records package (union of files, recurse subdirs, decode JSONL /
 // multi-doc / single-doc JSON, transparent gzip) and yields whole documents
 // directly -- the `.` label = the doc's JSON bytes and `^id` = its key. This
 // replaces cbq's scan-keys + fetch-docs round-trip for the file datastore (see
@@ -136,7 +136,7 @@ func DatastoreScanRecords(o *base.Op, vars *base.Vars,
 		limit = EvalExprInt64(context, lim.Limit(), nil, math.MaxInt64)
 	}
 
-	src, err := recordsource.Walk(dir, ScanWalkOptions)
+	src, err := records.Walk(dir, ScanWalkOptions)
 	if err != nil {
 		yieldErr(fmt.Errorf("DatastoreScanRecords, walk %q: %v", dir, err))
 		return
@@ -145,7 +145,7 @@ func DatastoreScanRecords(o *base.Op, vars *base.Vars,
 
 	var vals base.Vals
 	var idBuf []byte
-	var rec recordsource.Record
+	var rec records.Record
 
 	var n int64
 	for n < limit {

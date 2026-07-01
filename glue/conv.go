@@ -153,7 +153,7 @@ func (c *Conv) VisitPrimaryScan3(o *plan.PrimaryScan3) (interface{}, error) {
 }
 
 // recordsScan emits a datastore-scan-records op that reads the keyspace's
-// directory n1k1-native (recordsource: union of files, recurse, decode,
+// directory n1k1-native (records: union of files, recurse, decode,
 // transparent gzip) and yields whole documents (".alias") plus "^id" directly,
 // replacing cbq's scan-keys + fetch-docs round-trip for the file datastore (see
 // DESIGN-data.md "Where this code lives" A2). A following plan.Fetch over the

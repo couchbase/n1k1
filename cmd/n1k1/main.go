@@ -39,7 +39,7 @@ import (
 	"github.com/couchbase/n1k1/base"
 	"github.com/couchbase/n1k1/cmd"
 	"github.com/couchbase/n1k1/glue"
-	"github.com/couchbase/n1k1/recordsource"
+	"github.com/couchbase/n1k1/records"
 )
 
 // prog is the command's short name, derived from how the binary was invoked
@@ -75,7 +75,7 @@ func main() {
 
 	// -scan locks down which formats/layouts/compression n1k1 will scan, so a
 	// tree with subdirs/formats the user doesn't want considered can be excluded.
-	if opts, err := recordsource.ParseModes(*scanFlag); err != nil {
+	if opts, err := records.ParseModes(*scanFlag); err != nil {
 		fmt.Fprintf(os.Stderr, "%s: bad -scan: %v\n", prog, err)
 		os.Exit(2)
 	} else {

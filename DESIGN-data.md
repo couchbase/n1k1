@@ -400,7 +400,7 @@ contains subdirs/formats they *don't* want scanned can restrict n1k1 to an
 explicit comma-separated set, e.g. `-scan=json,jsonl` (no `recurse` ⇒ don't
 descend; no `gzip` ⇒ ignore `.gz`). Empty/absent or `all` ⇒ everything flexible.
 This is "flexible by default, explicit when needed" as a one-flag safety valve;
-`recordsource.ParseModes` turns the list into the discovery/decoder filter.
+`records.ParseModes` turns the list into the discovery/decoder filter.
 (Named `-scan`, not `-modes`, to avoid confusion with the `-mode` output flag.)
 
 ### Integration gap: schemaless docs vs n1k1's positional labels

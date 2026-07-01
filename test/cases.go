@@ -6329,7 +6329,7 @@ var queryCases = []queryCase{
 			}
 		},
 	},
-	// --- recordsource decoders through BOTH interpreter and compiler. These use
+	// --- records decoders through BOTH interpreter and compiler. These use
 	// test/data keyspaces backed by JSONL / CSV / gzip (not one-doc-per-file) so
 	// TestQueryCasesWithCompiler proves datastore-scan-records + the decoders bake
 	// and run in the compiled path, not just the interpreter.
