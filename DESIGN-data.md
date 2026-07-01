@@ -1081,6 +1081,19 @@ Once we move past one-doc-per-file, "what is a record's key?" stops being
 obvious — and it couples to almost everything else: fetch, indexing, compression,
 and encryption.
 
+### Implemented: file metadata via a `_meta` doc field (not `META()`)
+The fork's `META()` exposes only a **fixed bitmask** of fields (id/cas/keyspace/
+type/flags/expiration/xattrs), so per-file metadata can't ride `META()` without a
+fork change. Instead the records layer injects a reserved **`_meta`** sub-object
+into the document — `` `path` `` (dir-relative, incl. subdirs), `name`, `ext`,
+`size`, `mtime` — controlled by the CLI `-meta` mode: `off` / `on` / `auto`
+(default). Under `auto` each *provider* decides: office/PDF documents include it,
+structured JSON/CSV do not — which also keeps the exact-match conformance suite
+unchanged (it never sees `_meta`). `META().id` itself is left as the stable key
+(stem / `relpath#i`), since `USE KEYS` / `JOIN ON KEYS` depend on its format;
+full path + extension are available via `_meta` instead. (`path` is a SQL++
+reserved word → query it as `` _meta.`path` ``.)
+
 ### Why it matters
 SQL++ exposes `META().id`; `USE KEYS`, `JOIN … ON KEYS`, and the fetch-after-scan
 path all need a stable per-record key. In `DESIGN-indexing.md` an index `Scan()`

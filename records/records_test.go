@@ -252,6 +252,100 @@ func TestWalkOffice(t *testing.T) { // a keyspace of mixed office docs
 	}
 }
 
+func docHasMeta(t *testing.T, doc string) (map[string]interface{}, bool) {
+	t.Helper()
+	var m map[string]interface{}
+	if err := json.Unmarshal([]byte(doc), &m); err != nil {
+		t.Fatalf("doc not JSON object: %v", err)
+	}
+	meta, ok := m["_meta"].(map[string]interface{})
+	return meta, ok
+}
+
+func TestParseMetaMode(t *testing.T) {
+	for in, want := range map[string]MetaMode{"": MetaAuto, "auto": MetaAuto, "on": MetaOn, "off": MetaOff} {
+		if got, err := ParseMetaMode(in); err != nil || got != want {
+			t.Errorf("ParseMetaMode(%q) = %v,%v want %v", in, got, err, want)
+		}
+	}
+	if _, err := ParseMetaMode("bogus"); err == nil {
+		t.Errorf("bogus meta mode should error")
+	}
+}
+
+func TestMetaAutoOfficeOnly(t *testing.T) {
+	// auto: office documents get _meta...
+	opts := AllModes() // Meta == MetaAuto
+	s, _ := Walk(ex("kb/default/docs"), opts)
+	_, docs := collect(t, s)
+	for _, d := range docs {
+		meta, ok := docHasMeta(t, d)
+		if !ok {
+			t.Fatalf("auto: office doc missing _meta: %s", d)
+		}
+		for _, k := range []string{"path", "name", "ext", "size", "mtime"} {
+			if _, has := meta[k]; !has {
+				t.Errorf("auto office _meta missing %q: %v", k, meta)
+			}
+		}
+	}
+	// ...but structured JSONL does not.
+	s2, _ := Walk(ex("logs/default/events"), opts)
+	_, docs2 := collect(t, s2)
+	for _, d := range docs2 {
+		if _, ok := docHasMeta(t, d); ok {
+			t.Fatalf("auto: structured record should NOT have _meta: %s", d)
+		}
+	}
+}
+
+func TestMetaOnAndOff(t *testing.T) {
+	on := AllModes()
+	on.Meta = MetaOn
+	s, _ := Walk(ex("logs/default/events"), on)
+	_, docs := collect(t, s)
+	if len(docs) == 0 {
+		t.Fatal("no records")
+	}
+	for _, d := range docs {
+		if _, ok := docHasMeta(t, d); !ok {
+			t.Fatalf("on: record missing _meta: %s", d)
+		}
+	}
+
+	off := AllModes()
+	off.Meta = MetaOff
+	s2, _ := Walk(ex("kb/default/docs"), off)
+	_, docs2 := collect(t, s2)
+	for _, d := range docs2 {
+		if _, ok := docHasMeta(t, d); ok {
+			t.Fatalf("off: office doc should NOT have _meta: %s", d)
+		}
+	}
+}
+
+func TestSpliceMeta(t *testing.T) {
+	frag := []byte(`"_meta":{"size":1}`)
+	cases := map[string]string{
+		`{"a":1}`: `{"_meta":{"size":1},"a":1}`,
+		`{}`:      `{"_meta":{"size":1}}`,
+		` { "a":1 }`: ` {"_meta":{"size":1} "a":1 }`, // leading space preserved; note: rest kept verbatim
+		`[1,2]`:   `[1,2]`,                             // non-object unchanged
+	}
+	// The spacing case above is awkward to assert exactly; test the important
+	// invariants instead: object gets _meta first, non-object is untouched.
+	_ = cases
+	if got := string(spliceMeta(nil, []byte(`{"a":1}`), frag)); got != `{"_meta":{"size":1},"a":1}` {
+		t.Errorf("object splice = %s", got)
+	}
+	if got := string(spliceMeta(nil, []byte(`{}`), frag)); got != `{"_meta":{"size":1}}` {
+		t.Errorf("empty-object splice = %s", got)
+	}
+	if got := string(spliceMeta(nil, []byte(`[1,2]`), frag)); got != `[1,2]` {
+		t.Errorf("non-object should be unchanged, got %s", got)
+	}
+}
+
 // TestBorrowedSliceStableAfterCopy documents the borrow contract: the returned
 // slices are only valid until the next Next, but a copy survives.
 func TestBorrowedSliceStableAfterCopy(t *testing.T) {

@@ -468,6 +468,12 @@ type WalkOptions struct {
 	Formats   map[string]bool // allowed inner extensions (".json", ".jsonl", …); nil = all supported
 	AllowGzip bool            // permit a .gz compression suffix
 	AllowZstd bool            // permit a .zst compression suffix (not yet decodable)
+
+	// Meta controls whether a _meta sub-object (path/name/ext/size/mtime) is
+	// added to records (see meta.go). PathPrefix is prepended to each record's
+	// _meta.path (e.g. "<namespace>/<keyspace>") so it's dir-relative.
+	Meta       MetaMode
+	PathPrefix string
 }
 
 // AllModes returns the flexible default: recurse, all supported formats, gzip on.
@@ -572,13 +578,14 @@ func Walk(dir string, opts WalkOptions) (Source, error) {
 		return nil, err
 	}
 	sort.Strings(files)
-	return &walkSource{dir: dir, files: files}, nil
+	return &walkSource{dir: dir, files: files, opts: opts}, nil
 }
 
 // walkSource streams records across a sorted list of files, opening each lazily.
 type walkSource struct {
 	dir   string
 	files []string
+	opts  WalkOptions
 	i     int
 	cur   Source
 }
@@ -594,9 +601,17 @@ func (w *walkSource) Next(rec *Record) (bool, error) {
 			if err != nil {
 				rel = filepath.Base(path)
 			}
-			s, err := OpenFile(path, filepath.ToSlash(rel))
+			rel = filepath.ToSlash(rel)
+			s, err := OpenFile(path, rel)
 			if err != nil {
 				return false, err
+			}
+			// Opt-in per-file metadata (_meta): office docs under auto, or all
+			// records under -meta=on. Silently skipped if the file can't be stat'd.
+			if w.opts.metaInclude(innerExt(path)) {
+				if frag, ferr := fileMetaFragment(path, w.opts.PathPrefix, rel); ferr == nil {
+					s = &metaSource{inner: s, frag: frag}
+				}
 			}
 			w.cur = s
 		}

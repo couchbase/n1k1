@@ -68,19 +68,27 @@ func main() {
 		timerFlag = flag.Bool("timer", false, "print row count + elapsed after each statement")
 		vFlag     = flag.Bool("v", false, "verbose: show unsupported reasons / plan on error")
 		initFlag  = flag.String("init", "", "startup file of dot-commands/SQL (default ~/."+prog+"rc; use \"\", \"-\" or \"none\" to skip)")
-		scanFlag  = flag.String("scan", "", "restrict scanning to a comma-separated set (all|json|jsonl|csv|tsv|gzip|recurse); empty or 'all' = everything")
+		scanFlag  = flag.String("scan", "", "restrict scanning to a comma-separated set (all|json|jsonl|csv|tsv|office|gzip|recurse); empty or 'all' = everything")
+		metaFlag  = flag.String("meta", "auto", "add a _meta sub-object (path/name/ext/size/mtime) to records: on|off|auto (auto = office docs only)")
 	)
 	flag.Usage = usage
 	flag.Parse()
 
 	// -scan locks down which formats/layouts/compression n1k1 will scan, so a
 	// tree with subdirs/formats the user doesn't want considered can be excluded.
-	if opts, err := records.ParseModes(*scanFlag); err != nil {
-		fmt.Fprintf(os.Stderr, "%s: bad -scan: %v\n", prog, err)
+	scanOpts, serr := records.ParseModes(*scanFlag)
+	if serr != nil {
+		fmt.Fprintf(os.Stderr, "%s: bad -scan: %v\n", prog, serr)
 		os.Exit(2)
-	} else {
-		glue.ScanWalkOptions = opts
 	}
+	// -meta controls per-file metadata injection (_meta).
+	mm, merr := records.ParseMetaMode(*metaFlag)
+	if merr != nil {
+		fmt.Fprintf(os.Stderr, "%s: %v\n", prog, merr)
+		os.Exit(2)
+	}
+	scanOpts.Meta = mm
+	glue.ScanWalkOptions = scanOpts
 
 	dir := "."
 	if args := flag.Args(); len(args) > 0 {

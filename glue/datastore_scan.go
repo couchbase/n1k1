@@ -136,7 +136,12 @@ func DatastoreScanRecords(o *base.Op, vars *base.Vars,
 		limit = EvalExprInt64(context, lim.Limit(), nil, math.MaxInt64)
 	}
 
-	src, err := records.Walk(dir, ScanWalkOptions)
+	// Per-scan: set the _meta.path prefix to this keyspace's dir-relative
+	// location, so metadata paths read like "default/orders/order-1001.json".
+	opts := ScanWalkOptions
+	opts.PathPrefix = metaPathPrefix(keyspace)
+
+	src, err := records.Walk(dir, opts)
 	if err != nil {
 		yieldErr(fmt.Errorf("DatastoreScanRecords, walk %q: %v", dir, err))
 		return
@@ -171,6 +176,19 @@ func DatastoreScanRecords(o *base.Op, vars *base.Vars,
 	}
 
 	yieldErr(nil)
+}
+
+// metaPathPrefix is the keyspace's location relative to the datastore dir, used
+// to prefix records' _meta.path. For a flat root the files sit directly under the
+// datastore dir, so there's no prefix.
+func metaPathPrefix(keyspace datastore.Keyspace) string {
+	if _, ok := keyspace.(interface{ RecordsDir() string }); ok {
+		return "" // flat root
+	}
+	if ns := keyspace.Namespace(); ns != nil {
+		return ns.Name() + "/" + keyspace.Name()
+	}
+	return keyspace.Name()
 }
 
 // keyspaceDir resolves a file-datastore keyspace to its on-disk directory,

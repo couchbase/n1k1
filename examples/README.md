@@ -32,6 +32,26 @@ strings. Office extraction is pure-Go (DOCX/XLSX via zip+XML, PDF via
 content-stream text ops) — great for text documents, but scanned/OCR or exotic-
 font PDFs need the optional Tika/extractous backend (a later build tag).
 
+## File metadata (`_meta`)
+
+Records can carry a `_meta` sub-object with the source file's `` `path` ``
+(dir-relative, incl. subdirs), `name`, `ext`, `size` (bytes), and `mtime`
+(RFC3339). Controlled by `-meta`:
+
+- `-meta=auto` (default) — office/PDF documents get `_meta`; structured
+  JSON/CSV data does not (so plain data stays clean).
+- `-meta=on` — every record gets `_meta`.
+- `-meta=off` — no record does.
+
+```
+n1k1 -c "SELECT d.filename, d._meta.size, d._meta.mtime FROM docs d ORDER BY d._meta.size" examples/kb
+n1k1 -meta=on -c "SELECT c._meta.\`path\` FROM cpu c" examples/metrics
+```
+
+(`path` is a SQL++ reserved word, so query it back-quoted: `` _meta.`path` ``.
+Metadata lives in the doc because the fork's `META()` only exposes a fixed field
+set — id/cas/keyspace/…)
+
 ## Layout details
 
 ```
