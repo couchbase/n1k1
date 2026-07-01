@@ -284,6 +284,45 @@ Artifact.
     https://spark.apache.org/docs/latest/web-ui.html ,
     https://github.com/charmbracelet/bubbletea
 
+## Parallel progress: racing bars for concurrent work
+
+The other satisfying UI (think `docker pull`'s per-layer bars, or npm/pip/cargo
+downloading many packages at once): **many progress bars racing rightward in
+parallel.** It reads as "it's working hard" — and the *unevenness* is genuinely
+diagnostic, not just eye-candy: bars advancing at different rates expose **data
+skew and stragglers** (the one partition/lane that lags is your bottleneck).
+
+### What becomes a "lane" (bar) in a query engine
+Each independent unit of concurrent work gets its own bar:
+- **`base.Stage` actors** (`NumActors`) — the built-in parallelism unit.
+- **Parallel scans** over multiple files / partitions — one bar per file/partition.
+- **Parallel `GROUP BY` shards** (per-actor maps merged at the end) — one bar each.
+- **Ingest / index / transfer** — one bar per file being read/indexed/sent (this is
+  the most natural fit, see below).
+Each lane needs its own counters + a **denominator** (its total): file size, or the
+manifest's per-partition `doc_count` (`DESIGN-data.md §5`). Lanes with no known
+total render as spinners, not bars.
+
+### It's the same core, keyed by lane
+This reuses everything above — per-actor **local counters** (no atomics), rolled up
+at the ~10 Hz checkpoint — just keyed by **lane/task id** instead of by operator.
+The snapshot becomes a small `[]LaneStat{ id, label, current, total, rate, state }`.
+The plan-flow diagram and the racing bars are **two lenses over the same stream**:
+the diagram shows operator *relationships*; the bars show concurrent *tasks*.
+
+### Scaling: bound the visible lanes
+The trap is thousands of partitions → thousands of bars. Cap it like `docker pull`
+does: show an **overall aggregate bar** plus the **top-K active/slowest lanes**, and
+collapse the rest into a "…and M more" line. Lanes **appear/disappear** as tasks
+start/finish (stable ordering, finished bars flip green/✓ then retire). Highlight
+the straggler lane — that's the diagnostic payoff.
+
+### Libraries
+`vbauerster/mpb` (Unlicense) is purpose-built for concurrent multi-bar CLIs
+(decorators, ETA, add/remove bars); `pterm` (MIT, dep) has a multi-area/progress
+printer; bubbletea can do it with more control. All permissive. Prior art: `docker
+pull` (per-layer bars), npm/pip/cargo parallel downloads, `mpb`'s own examples.
+
 ## Multi-phase pipelines (ingest / index / transfer)
 These long-running operations benefit most (queries are often sub-second). Same
 core; denominators come from source file sizes and the `DESIGN-data.md §5`
