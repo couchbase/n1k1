@@ -27,9 +27,9 @@ interpreter unit tests.
 `a+b` is `0 B/op, 0 allocs/op` (31 ns) vs cbq's `Evaluate()` fallback at
 `384 B/op, 8 allocs/op` (190 ns) — ~6× faster, zero per-eval garbage.
 
-**Next:** `is [not] distinct from` (binary, low priority); `NULLIF`/`MISSINGIF`/
-`GREATEST`/`LEAST`; `element`/`slice` navigation; then Tier B (string/numeric/date
-functions). `LIKE`/`REGEXP_*` are deliberately deferred — see Lessons.
+**Next:** `element`/`slice` navigation; `is [not] distinct from` (binary, low
+priority); then Tier B (string/numeric/date functions). `LIKE`/`REGEXP_*` are
+deliberately deferred — see Lessons.
 
 ## Why this matters
 
@@ -99,6 +99,8 @@ type/collation semantics.
 | `is_array` `is_number` `is_string` `is_boolean` `is_object` `is_atom` | `engine/expr_type.go` | type checks (unary; MISSING/NULL passthrough) |
 | `ifnull` `ifmissing` `ifmissingornull` `nvl` (`coalesce`) | `engine/expr_cond.go` | conditional-unknown selectors (n-ary) |
 | `case` | `engine/expr_case.go` + `base.CaseReduce` | searched + simple CASE (n-ary; simple desugars to eq conds) |
+| `nullif` `missingif` | `engine/expr_nullif.go` + `base.NullMissingIf` | NULLIF / MISSINGIF (binary) |
+| `greatest` `least` | `engine/expr_greatest.go` + `base.GreatestLeast` | GREATEST / LEAST (n-ary; collation max/min) |
 | `concat` (`\|\|`) | `engine/expr_concat.go` + `base.NaryConcat` | string concatenation (n-ary) |
 | `between` | `engine/expr_between.go` | BETWEEN (ternary; collation-order bounds) |
 | `in` | `engine/expr_in.go` + `base.ValIn` | IN (array membership; 2-operand) |
@@ -111,9 +113,9 @@ Reusable harnesses: `MakeBiExprFunc` (binary), `MakeTriExprFunc` (ternary),
 "empty==MISSING, leading-n==null"), `CondUnknownKeep`/`NaryFirstKept`,
 `NaryConcat`, `CaseReduce`, `ValIn`.
 
-Still **delegated:** `LIKE`/`REGEXP_*`, `is [not] distinct from`, `NULLIF`/
-`MISSINGIF`/`GREATEST`/`LEAST`, `TYPE()`/`IS_BINARY`, and the ~320 remaining
-scalar functions (string/numeric/date/array/object/…).
+Still **delegated:** `LIKE`/`REGEXP_*`, `is [not] distinct from`, `element`/`slice`
+navigation, `TYPE()`/`IS_BINARY`, and the ~320 remaining scalar functions
+(string/numeric/date/array/object/…).
 
 ## The universe & the gap
 
@@ -147,8 +149,6 @@ The done items are in the inventory table above; below is what's *left*, tiered
 by how they fit the byte/register/lz model.
 
 ### Tier A — remaining scalar, byte-friendly, high per-row frequency
-- **`NULLIF`/`MISSINGIF`/`GREATEST`/`LEAST`** — control-flow / compare over
-  already-native operands; select-a-buffer.
 - **`element`/`slice` navigation** — extend `labelPath` via `jsonparser`.
 - **`is [not] distinct from`** (binary, low priority) — null-safe equality via
   `ValComparer`.
