@@ -23,12 +23,12 @@ Status legend (matches the design doc):
 | `metrics/` | E | deep/recursive tree, unkeyed union (JSONL) | `SELECT host, AVG(value) FROM default:cpu GROUP BY host` | 🟢 |
 | `archive/` | H | transparent gzip (`.jsonl.gz`) | `SELECT * FROM default:orders` | 🟢 |
 | `finance/` | J | CSV rows → JSON objects (header keys, inferred types) | `SELECT currency, SUM(amount) FROM txns GROUP BY currency` | 🟢 |
-| `kb/` | L | office/unstructured docs → extractor rows (`{filename,kind,text}`) | `SELECT filename FROM default:docs WHERE text LIKE '%vacation%'` | 🟢 |
+| `kb/` | L | PDF/office/unstructured docs → extract-provider rows (`{filename,kind,text}`) | `SELECT filename FROM default:docs WHERE text LIKE '%vacation%'` | 🟢 |
 
 **A/B/C/E/H/J/L work today.** Parquet (K) is a later phase; indexing
 (`DESIGN-indexing.md`) is also later. CSV/TSV cells get light type inference
 (numbers/bools/null, string fallback); leading-zero values like `007` stay
-strings. Office extraction is pure-Go (DOCX/XLSX via zip+XML, PDF via
+strings. The `extract` provider is pure-Go (DOCX/XLSX via zip+XML, PDF via
 content-stream text ops) — great for text documents, but scanned/OCR or exotic-
 font PDFs need the optional Tika/extractous backend (a later build tag).
 
@@ -40,7 +40,7 @@ Records can carry a `_meta` sub-object with the source file's `` `path` ``
 JSON-array) also get `pos` — their 0-based ordinal within that file.
 Controlled by `-meta`:
 
-- `-meta=auto` (default) — office/PDF documents get `_meta`; structured
+- `-meta=auto` (default) — extracted documents (PDF/DOCX/XLSX) get `_meta`; structured
   JSON/CSV data does not (so plain data stays clean).
 - `-meta=on` — every record gets `_meta`.
 - `-meta=off` — no record does.
@@ -83,8 +83,8 @@ kb/              (L) 🟡  one extractor row (or many) per document
 
 ## Regenerating the binaries
 
-The JSON/JSONL files are plain text, checked in directly. The gzip and Office/PDF
-files are generated (minimal-but-valid, no third-party deps):
+The JSON/JSONL files are plain text, checked in directly. The gzip and
+PDF/DOCX/XLSX files are generated (minimal-but-valid, no third-party deps):
 
 ```
 python3 examples/generate_binaries.py

@@ -11,9 +11,10 @@
 
 package records
 
-// Office / PDF text extraction (DESIGN-data.md §4). Each document file yields a
-// single record { filename, kind, text }, so unstructured docs become queryable
-// and full-text-searchable (SELECT filename FROM docs WHERE text LIKE '%x%').
+// The "extract" provider: text extraction from documents (DESIGN-data.md §4).
+// Each document file (PDF/DOCX/XLSX) yields a single record { filename, kind,
+// text }, so unstructured docs become queryable and full-text-searchable
+// (SELECT filename FROM docs WHERE text LIKE '%x%').
 //
 // Pure-Go, stdlib-only (no third-party deps): DOCX/XLSX are ZIP+OOXML, decoded
 // with archive/zip + encoding/xml; PDF text is pulled from content-stream show-
@@ -36,18 +37,18 @@ import (
 	"strings"
 )
 
-// officeExts are the document extensions handled by the extractor.
-var officeExts = map[string]bool{".pdf": true, ".docx": true, ".xlsx": true}
+// extractExts are the document extensions handled by the extract provider.
+var extractExts = map[string]bool{".pdf": true, ".docx": true, ".xlsx": true}
 
-func isOfficeExt(ext string) bool { return officeExts[ext] }
+func isExtractExt(ext string) bool { return extractExts[ext] }
 
-// officeSource yields exactly one record (the extracted document) per file.
-type officeSource struct {
+// extractSource yields exactly one record (the extracted document) per file.
+type extractSource struct {
 	rec     Record
 	emitted bool
 }
 
-func newOfficeSource(path string) (*officeSource, error) {
+func newExtractSource(path string) (*extractSource, error) {
 	ext := strings.ToLower(filepath.Ext(path))
 	kind := strings.TrimPrefix(ext, ".")
 	var text string
@@ -60,7 +61,7 @@ func newOfficeSource(path string) (*officeSource, error) {
 	case ".pdf":
 		text, err = pdfText(path)
 	default:
-		return nil, fmt.Errorf("records: unsupported office file: %s", path)
+		return nil, fmt.Errorf("records: unsupported document for extraction: %s", path)
 	}
 	if err != nil {
 		return nil, err
@@ -73,10 +74,10 @@ func newOfficeSource(path string) (*officeSource, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &officeSource{rec: Record{ID: []byte(stem(path)), Doc: doc}}, nil
+	return &extractSource{rec: Record{ID: []byte(stem(path)), Doc: doc}}, nil
 }
 
-func (s *officeSource) Next(rec *Record) (bool, error) {
+func (s *extractSource) Next(rec *Record) (bool, error) {
 	if s.emitted {
 		return false, nil
 	}
@@ -85,7 +86,7 @@ func (s *officeSource) Next(rec *Record) (bool, error) {
 	return true, nil
 }
 
-func (s *officeSource) Close() error { return nil }
+func (s *extractSource) Close() error { return nil }
 
 // ------------------------------------------------------------------ DOCX
 

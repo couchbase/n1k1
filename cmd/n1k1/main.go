@@ -69,8 +69,8 @@ func main() {
 		timerFlag = flag.Bool("timer", false, "print row count + elapsed after each statement")
 		vFlag     = flag.Bool("v", false, "verbose: show unsupported reasons / plan on error")
 		initFlag  = flag.String("init", "", "startup file of dot-commands/SQL (default ~/."+prog+"rc; use \"\", \"-\" or \"none\" to skip)")
-		scanFlag  = flag.String("scan", "", "restrict scanning to a comma-separated set (all|json|jsonl|csv|tsv|office|gzip|recurse); empty or 'all' = everything")
-		metaFlag  = flag.String("meta", "auto", "add a _meta sub-object (path/name/ext/size/mtime) to records: on|off|auto (auto = office docs only)")
+		scanFlag  = flag.String("scan", "", "restrict scanning to a comma-separated set (all|json|jsonl|csv|tsv|extract|gzip|recurse); empty or 'all' = everything")
+		metaFlag  = flag.String("meta", "auto", "add a _meta sub-object (path/name/ext/size/mtime) to records: on|off|auto (auto = extracted docs only)")
 	)
 	flag.Usage = usage
 	flag.Parse()

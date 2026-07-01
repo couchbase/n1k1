@@ -207,7 +207,7 @@ func TestTSVDecode(t *testing.T) {
 	}
 }
 
-func TestOfficeExtract(t *testing.T) { // scenario L
+func TestExtract(t *testing.T) { // scenario L
 	cases := []struct{ file, kind, want string }{
 		{"kb/default/docs/handbook.pdf", "pdf", "Vacation Policy"},
 		{"kb/default/docs/q1-report.docx", "docx", "Revenue grew"},
@@ -241,14 +241,14 @@ func TestOfficeExtract(t *testing.T) { // scenario L
 	}
 }
 
-func TestWalkOffice(t *testing.T) { // a keyspace of mixed office docs
+func TestWalkExtract(t *testing.T) { // a keyspace of mixed documents
 	s, err := Walk(ex("kb/default/docs"), AllModes())
 	if err != nil {
 		t.Fatal(err)
 	}
 	ids, docs := collect(t, s)
 	if len(docs) != 3 {
-		t.Fatalf("want 3 office docs (pdf/docx/xlsx), got %d (%v)", len(docs), ids)
+		t.Fatalf("want 3 extracted docs (pdf/docx/xlsx), got %d (%v)", len(docs), ids)
 	}
 }
 
@@ -273,19 +273,19 @@ func TestParseMetaMode(t *testing.T) {
 	}
 }
 
-func TestMetaAutoOfficeOnly(t *testing.T) {
-	// auto: office documents get _meta...
+func TestMetaAutoExtractOnly(t *testing.T) {
+	// auto: extracted documents get _meta...
 	opts := AllModes() // Meta == MetaAuto
 	s, _ := Walk(ex("kb/default/docs"), opts)
 	_, docs := collect(t, s)
 	for _, d := range docs {
 		meta, ok := docHasMeta(t, d)
 		if !ok {
-			t.Fatalf("auto: office doc missing _meta: %s", d)
+			t.Fatalf("auto: extracted doc missing _meta: %s", d)
 		}
 		for _, k := range []string{"path", "name", "ext", "size", "mtime"} {
 			if _, has := meta[k]; !has {
-				t.Errorf("auto office _meta missing %q: %v", k, meta)
+				t.Errorf("auto extracted doc _meta missing %q: %v", k, meta)
 			}
 		}
 	}
@@ -319,7 +319,7 @@ func TestMetaOnAndOff(t *testing.T) {
 	_, docs2 := collect(t, s2)
 	for _, d := range docs2 {
 		if _, ok := docHasMeta(t, d); ok {
-			t.Fatalf("off: office doc should NOT have _meta: %s", d)
+			t.Fatalf("off: extracted doc should NOT have _meta: %s", d)
 		}
 	}
 }

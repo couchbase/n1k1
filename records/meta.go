@@ -19,7 +19,7 @@ package records
 //
 //	off  -> never
 //	on   -> every record
-//	auto -> the provider decides: office/PDF documents yes, structured data no.
+//	auto -> the provider decides: extracted documents yes, structured data no.
 
 import (
 	"encoding/json"
@@ -35,7 +35,7 @@ import (
 type MetaMode int
 
 const (
-	MetaAuto MetaMode = iota // provider decides (office docs: yes, structured: no)
+	MetaAuto MetaMode = iota // provider decides (extracted docs: yes, structured: no)
 	MetaOn                   // every record
 	MetaOff                  // no record
 )
@@ -55,7 +55,7 @@ func ParseMetaMode(s string) (MetaMode, error) {
 }
 
 // metaInclude reports whether a file with the given inner extension should get a
-// _meta sub-object. Under auto, only office/PDF documents do -- structured
+// _meta sub-object. Under auto, only extracted documents do -- structured
 // JSON/CSV data is left untouched.
 func (o WalkOptions) metaInclude(innerExt string) bool {
 	switch o.Meta {
@@ -64,7 +64,7 @@ func (o WalkOptions) metaInclude(innerExt string) bool {
 	case MetaOff:
 		return false
 	default:
-		return isOfficeExt(innerExt)
+		return isExtractExt(innerExt)
 	}
 }
 
