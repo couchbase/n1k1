@@ -382,3 +382,74 @@ Verify each at adoption time (transitive deps included).
    scalar and table-valued/streaming sources. Extensions compile to Wasm from Go
    (`GOOS=wasip1`), Rust, C, etc. Highest isolation, at the cost of boundary
    marshaling + slower-than-native execution.
+
+## Vision: a sandboxed extension registry
+
+The end state the Wasm path enables: an **online registry of extensions**
+(e.g. a PDF/PPTX/DOCX/XLSX shredder compiled from Go/Rust to Wasm) that a query
+pulls in and runs *safely*, because isolation is enforced by the Wasm machinery
+rather than by trusting the code. A query like:
+
+```sql
+SELECT d.page, d.text
+  FROM shred("report.pdf", {"want": ["text", "tables"], "pages": "1-20"}) AS d
+```
+
+resolves `shred` to a registry Wasm module, feeds it the raw PDF bytes plus a
+config, and streams back whatever JSON the extension chooses to emit.
+
+**Why this is the sweet spot (not a stretch).** "Raw bytes in → pure transform →
+stream chunks out, *no ambient authority*" is the ideal Wasm shape: a shredder
+needs **zero I/O capabilities** (no filesystem, no network), so "safe by design"
+is literally true — the sandbox confines memory *and* nothing is granted to
+exfiltrate or escape. Precedent for exactly this model: Extism (app-extensibility
+via Wasm plugins + a hub), Shopify Functions, Redpanda Data Transforms,
+Envoy/Istio proxy-wasm, Fastly Compute. This is "Extism for a SQL++ engine."
+
+**Architecture (maps onto n1k1's existing shapes).**
+
+- **Compile once, instantiate per worker.** wazero compiles the module once
+  (`CompiledModule`, shareable across goroutines); each concurrent worker gets its
+  **own instance** with its own linear memory. That is both mandatory (an instance
+  is single-threaded) and exactly how n1k1's parallel scans/joins already fan out
+  — pool instances, one per goroutine.
+- **Config prepared once.** Two amortization layers: the module compiles once; and
+  a guest `init(config)` export can parse "what do we want from this PDF" into
+  linear memory once per instance, then many documents flow through that
+  configured instance.
+- **Stream out with free backpressure.** The guest calls a host `emit(ptr,len)`
+  per chunk; the host reads it as a zero-copy linear-memory view and yields into
+  the push pipeline. Since the guest runs synchronously, `emit` can block until
+  the downstream consumer is ready — so a 500-page PDF shreds without
+  materializing the whole output.
+- **Reproducibility bonus.** A no-capabilities transform is deterministic
+  (well-defined FP, no wall clock unless granted); pinning an extension by content
+  hash makes the whole pipeline reproducible and its outputs cacheable.
+
+**Design constraints / gotchas (carry these forward as requirements).**
+
+1. **DoS ≠ memory safety.** Cap *both* memory (bounded pages) *and* CPU per call
+   (`WithCloseOnContextDone` interrupts a runaway guest on context timeout).
+2. **Large-input residency vs bounded memory.** PDF parsing needs random access
+   (xref is at the end), so the whole input is usually resident — a small pool and
+   a multi-GB file conflict. Either size the pool per document or add a host
+   `read_range(off,len)` callback so the guest pulls input incrementally.
+   MB-scale docs are a non-issue.
+3. **ETL lane, not a hot loop.** Wasm parsing + boundary marshaling is slower than
+   native; this is an enrichment/ingest path (I/O-bound anyway), never an inner
+   numeric loop.
+4. **Guest toolchain heft.** Standard Go→`wasip1` modules are large and GC-heavy;
+   prefer TinyGo (smaller, Go subset) or Rust (leanest) and guide authors
+   accordingly.
+5. **Registry hygiene.** An online registry runs third-party code, so sign, record
+   provenance, and pin by version/hash. The payoff: the sandbox caps the blast
+   radius at "bad output or throttled DoS," never data exfiltration or shell — a
+   far better supply-chain story than npm/pip.
+
+**Sequencing** (the registry is the last, most ambitious piece): (1) a local
+single Wasm source function; (2) instance pool + `init(config)` + memory/CPU
+limits; (3) the online registry with signing and hash-pinning. The valuable core
+is step 2 — `FROM shred('x.pdf', {...})` backed by a pooled, bounded,
+capability-free Wasm instance that streams JSON; it fuses the wazero host
+(above), shred-as-a-streaming-source (DESIGN-data.md), and the emit/backpressure
+protocol.
