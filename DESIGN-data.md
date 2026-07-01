@@ -27,14 +27,14 @@ division of ownership:
 
 Where they touch, and how they're kept consistent here:
 
-1. **Home = the fork's file datastore is the *seam*; code lives in n1k1.** Both
-   docs now use the same **thin hook-seam** design (the `engine.ExecOpEx` IoC
-   pattern): the fork gets only hook-variable declarations + today's-behavior
-   fallbacks, and the real logic lives in n1k1. This doc's decoders/discovery
-   register into datastore-scan/fetch seams; `DESIGN-indexing.md`'s `secondaryIndex`
-   and FTS `Indexer`/`FTSIndex` are **n1k1 types** advertised through
-   `fileIndexer.Indexes()` / `keyspace.Indexers()` seams (Go interfaces are
-   structural, so the planner uses them polymorphically). Fully consistent.
+1. **Fork = plan-time metadata only; execution lives in n1k1.** Both docs keep the
+   fork thin and put real logic in n1k1 (the `engine.ExecOpEx` IoC pattern). The
+   fork advertises *plan-time* facts the planner needs: this doc, a keyspace's
+   existence (a `DiscoverKeyspaces` seam, only for catalog-defined names);
+   `DESIGN-indexing.md`, the available indexes (n1k1-built `datastore.Index`/
+   `FTSIndex` objects via `fileIndexer.Indexes()` / `keyspace.Indexers()`). All
+   *execution* — scan, fetch, decode, index `Scan()` — runs in n1k1 glue ops over
+   `[]byte`, not in the fork. Fully consistent.
 2. **The `.n1k1/` sidecar is shared.** The indexing doc specifies the *canonical*
    tree; this doc owns only `catalog.json`'s source/layout half and
    `manifest.json` (see §5 "Where"). `catalog.json` therefore holds **both**
@@ -103,7 +103,7 @@ There are **two separate, only-partially-connected** data paths today:
 
 ## Where this code lives (the load-bearing decision)
 
-**What we take from cbq, and what we don't.** n1k1 reuses cbq for one thing: its
+**What we take from cbq, and what we don't.** n1k1 reuses cbq for its
 parser + **planner output, the `plan.Operator` tree** (index selection, spans,
 join order, pushdowns — see `DESIGN-indexing.md` "Background"). It does **not**
 use cbq's **execution runtime** — the tuple-by-tuple operator iteration over boxed
@@ -111,38 +111,54 @@ use cbq's **execution runtime** — the tuple-by-tuple operator iteration over b
 the opposite of n1k1's `base.Val = []byte` buffer-reuse engine. `glue.Conv` lowers
 the plan tree into n1k1 `base.Op`s that execute over `[]byte`. So the fork is a
 source of *plans*, not a runtime — which is exactly why new datastore behavior
-belongs in **thin seams**, not fork code.
+belongs in **thin seams**, not fork code. Exception: n1k1 does reuse cbq's
+expression evaluation machinery as a fallback for complex expressions.
 
 `FROM default:orders` is resolved by cbq's planner, which asks the
-`datastore.Datastore` interface (the fork's `datastore/file`) for keyspaces/scans,
-producing a `plan.Op` that `conv` then lowers. Three candidate homes:
+`datastore.Datastore` interface (the fork's `datastore/file`) for keyspace
+metadata, producing a `plan.Op` that `conv` then lowers. **Two different needs
+hide behind "the datastore" — separate them, because only one touches the fork:**
 
-- **(A) Thin hook seams in the fork's `datastore/file` — chosen.** It's the only
-  thing `FROM keyspace` reaches, so hooks attach here (`loadKeyspaces` discovery,
-  `primaryIndex.ScanEntries` record stream, `fetch` one doc — verified seams). But
-  don't grow the fork with a `recordsource/` subpackage; mirror n1k1's existing
-  IoC pattern — the engine declares `var ExecOpEx func(…)` / `ExprCatalog`, and
-  `glue` sets them at startup (`engine.ExecOpEx = glue.DatastoreOp`, save/restored
-  in `Session.Run`). The fork gets a handful of `var Hook func(…)` (e.g.
-  `DiscoverKeyspaces` / `OpenRecordStream` / `FetchRecord`) + today's-behavior
-  fallbacks; **all real logic — decoders, discovery, doc-IDs, compression — lives
-  in n1k1** and registers into them. Cheap to carry across a cbq rebase; the
-  churning code stays where it's freely iterable and testable.
+- **(A1) Plan-time keyspace metadata — a thin fork seam (the *only* one needed).**
+  The planner must believe `FROM keyspace` exists and has a primary index (it calls
+  `namespace.KeyspaceByName` / `keyspace.Indexers` during `Build`), so *this* comes
+  from the fork. For today's convention (keyspace = a subdir) it already resolves;
+  for a **catalog-defined name** (e.g. example G's `access`, not a plain subdir)
+  the fork needs one thin discovery seam — a `var DiscoverKeyspaces` that
+  `KeyspaceByName` consults so the planner accepts the name and emits a
+  `PrimaryScan`. That's it for the fork.
+- **(A2) Execution-time scan/fetch — already n1k1's, no fork seam.** `conv` lowers
+  `PrimaryScan`/`Fetch` to n1k1 `datastore-scan`/`datastore-fetch` `base.Op`s run
+  by `glue.DatastoreOp`. Those glue ops *today* delegate down to cbq
+  (`scan.Index().ScanEntries()` / `keyspace.Fetch()`, which do the
+  `ReadDir`/`ReadFile` + `value.AnnotatedValue` boxing) — **but they don't have
+  to.** For new formats/layouts, n1k1's glue scan/fetch ops **read the directory
+  and decode records directly** (glue's `Store` knows the root; the keyspace gives
+  ns+name ⇒ the dir path), yielding `base.Val = []byte` and bypassing cbq's
+  boxing. So the earlier `OpenRecordStream`/`FetchRecord` fork seams are **not
+  needed** — that leaf logic lives in n1k1, exactly because n1k1 owns execution.
+
+  All decoders/layout/doc-ID/compression code is ordinary n1k1 (the decoders
+  shared with path-B `op_scan.go` — one CSV reader), registered via the existing
+  IoC pattern (`engine.ExecOpEx = glue.DatastoreOp`, save/restored in
+  `Session.Run`). **For the convention-relaxation MVP** (keyspace = union of a
+  dir's files, recursing), the keyspace already resolves, so it may need **zero
+  fork changes** — only n1k1's glue scan op learning to enumerate many files +
+  decode.
 - **(B) Wire path-B `op_scan.go` ops to `FROM` — rejected.** FROM resolution is in
   the planner, upstream of `conv`; the engine ops never see a keyspace. Path B
-  stays a low-level primitive — and the right host for the shared byte-oriented
-  decoders (one CSV reader, not two).
+  stays a low-level primitive — and a host for the shared byte-oriented decoders.
 - **(C) A new n1k1-side `datastore.Datastore` — deferred.** Cleanest isolation but
-  re-implements the whole datastore/index interface; only if the thin seam proves
-  insufficient.
+  re-implements the whole datastore/index interface; only if even the discovery
+  seam proves insufficient.
 
-Three things to get right with the seam: **(1) boundary types** — signatures name
-types both sides see (`datastore`/`value`/`errors` + `[]byte`/`string`); the
-declaration is a few fork lines, the implementation all n1k1. **(2) the scan seam
-is a record *stream*** — "keyspace = union-of-files" changes `ScanEntries` control
-flow, so place the hook at enumerate-and-stream, not "read one file." **(3) global
-vs per-store** — prefer hanging hooks off the store/namespace instance over a
-package global (`ExecOpEx` is a process global — fine for a one-process CLI, not
+Things to get right: **(1) the discovery seam returns a *minimal* keyspace** —
+primary index only, `Count()` may be lazy/0 (safe while `useCBO=false`); it exists
+to make the planner emit a `PrimaryScan`, not to serve data. **(2) boundary types**
+— it traffics in `datastore.Keyspace`/`errors` (glue already imports them); a few
+fork lines, impl in n1k1. **(3) global vs per-store** — prefer hanging the hook off
+the store/namespace instance over a package global (`ExecOpEx` is a process global
+— fine for a one-process CLI, not
 two stores at once); same save/restore either way.
 
 ## Compiler compatibility (don't break the Futamura path)
@@ -159,9 +175,10 @@ subquery/CTE ops use.
 Two consequences for this design:
 - **Do NOT introduce new engine scan *kinds* for new formats.** A new
   `parquetData` engine op would need its own bake/emit support and would fork the
-  interpreter/compiler paths again. Instead, teach the *datastore* to decode the
-  format behind the unchanged `datastore-scan` op, so the compiler differential
-  keeps passing untouched.
+  interpreter/compiler paths again. Instead, decode the format **inside the
+  existing glue `datastore-scan`/`datastore-fetch` ops** (which read+decode
+  n1k1-side; see "Where this code lives" A2), so the op *kind* is unchanged and the
+  compiler differential keeps passing untouched.
 - **Anything that can't be a Go literal must arrive via `Temps`.** A live
   `RecordSource`/file handle/decoder is not bakeable; it must be supplied at
   runtime like the store is today. Keep format/layout *choices* (which are static
@@ -1212,11 +1229,12 @@ not bypass:
 
 ## Phasing (suggested)
 
-All new logic lands in **n1k1**, registered at startup into **thin hook seams**
-in the fork's `datastore/file` (the IoC pattern of `engine.ExecOpEx =
-glue.DatastoreOp`), and flows through the unchanged `datastore-scan` op so it
-compiles for free — see "Where this code lives" and "Compiler compatibility". The
-fork gains only the hook-variable declarations + today's-behavior fallbacks.
+All new logic lands in **n1k1** — scan/fetch/decode in the glue `datastore-scan`/
+`datastore-fetch` ops (which compile for free; see "Compiler compatibility"),
+registered via the `engine.ExecOpEx = glue.DatastoreOp` IoC pattern. The **fork
+changes only for plan-time keyspace discovery** (a thin `DiscoverKeyspaces` seam,
+and only for catalog-defined non-directory keyspaces) — see "Where this code
+lives".
 
 1. Relax the file datastore: directory = keyspace = union of *all* supported
    files; recurse; keep `<ns>/<keyspace>` convention + flat-root auto-detect.
@@ -1271,12 +1289,13 @@ Separable tracks (not on the linear path above):
   which we're deferring; the **catalog (mode 3) is the power path**. Remaining
   question is only *whether we ever pay for the grammar fork* or settle for a
   datastore-recognized keyspace-name convention.
-- **Fork divergence budget. (Largely settled — thin hook seams.)** The fork gets
-  only hook-variable declarations + today's-behavior fallbacks (`engine.ExecOpEx`
-  style); all real logic lives in n1k1 and registers at startup. Remaining
-  sub-questions: package-global hooks vs per-store fields (see "Where this code
-  lives" #3), and whether any behavior genuinely can't be expressed at the
-  seam and forces deeper `file.go` edits (fall back to home C only then).
+- **Fork divergence budget. (Largely settled — near-zero.)** Execution (scan/
+  fetch/decode) is n1k1's glue ops; the fork changes only for plan-time keyspace
+  discovery (a thin `DiscoverKeyspaces` seam, and only for catalog-defined
+  non-directory keyspaces — the convention MVP may need none). Remaining
+  sub-questions: package-global hook vs per-store field (see "Where this code
+  lives" #3), and whether any plan-time metadata can't be advertised at the seam
+  (fall back to home C only then).
 - **Columnar-source performance.** Do we ever add column-batch ops to the engine
   so Parquet/Arrow is a real perf win, or accept the transpose-to-rows cost and
   treat columnar formats as correctness-only? (See §1 caveat.)
