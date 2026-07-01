@@ -57,10 +57,27 @@ constant** has no JSON form — `value.WriteJSON` emits `"null"` — so
 `ExprTreeOptimize` must emit an empty json constant (→ MISSING) for it, else any
 native op given a `missing` literal wrongly sees NULL.
 
-Next candidates (Tier A): `CASE` (both searched and simple); `LIKE` (compile the
-pattern once at setup); `is [not] distinct from` (binary, low priority); then
-Tier B functions (string/numeric/date). The variadic set (`||`, `COALESCE`,
-n-ary `IFNULL/IFMISSING`) is now done via `MakeNaryExprFunc`.
+Next candidates (Tier A): `CASE` (both searched and simple); `is [not] distinct
+from` (binary, low priority); then Tier B functions (string/numeric/date). The
+variadic set (`||`, `COALESCE`, n-ary `IFNULL/IFMISSING`) is done via
+`MakeNaryExprFunc`. **`LIKE` is deliberately deferred** — see the regex note
+below.
+
+**Learning — regex/pattern expressions don't fit the zero-alloc model.** `LIKE`
+(and `REGEXP_*`, token functions) compile to a `regexp`. cbq's `LikeCompile`
+allocates a lot (rune slices, `regexp.QuoteMeta`, two `regexp.Compile`), but cbq
+caches the compiled regex per *static* pattern, so its per-tuple cost is just
+`re.Match`. A native port has no good story here: a **dynamic** pattern
+(`x LIKE other.field`) must recompile per tuple (heavy garbage), and even a
+**constant** pattern's per-tuple `regexp.Match` is outside n1k1's
+byte-reuse/zero-steady-state-garbage design (Go's regexp pools its matcher but
+doesn't guarantee zero alloc). The principled fit would be a **hand-rolled,
+allocation-free byte glob matcher** — LIKE is only literals + `%`/`_` + escape,
+anchored, so it's tractable, but it's a bespoke reimplementation with its own
+fidelity surface (escape handling, adjacent-`%` collapse, `(?s)` newline
+semantics, rune-vs-byte). So: keep `LIKE`/`REGEXP_*` on the cbq fallback (its
+static-pattern cache bounds the cost) until a dedicated zero-alloc glob matcher
+is worth building; do **not** ship a naive `regexp`-per-tuple native port.
 
 ## Why this matters
 
@@ -220,9 +237,12 @@ reuse.
 - **Numeric/math** (abs/ceil/floor/round/trunc/sqrt/pow/exp/ln/log/trig/sign/…) —
   `math.*` + `strconv.AppendFloat` into a buffer.
 - **Date/time (non-volatile)** — parse/format millis↔string into a buffer.
-- **Bitwise, type conversions `to_*`, JSON `encode/poly_length/encoded_size`,
-  regexp/LIKE** — LIKE/regexp compile the pattern **once at setup** (early-constant),
-  match per row (classic n1k1 static-arg win).
+- **Bitwise, type conversions `to_*`, JSON `encode/poly_length/encoded_size`** —
+  scalar, parse-and-format into a reused buffer.
+- **`LIKE` / `REGEXP_*`** — *not* a clean Tier-B fit: they compile to a `regexp`
+  and even the per-row match is outside the byte-reuse model (see the regex
+  learning above). Delegated to cbq unless/until a bespoke zero-alloc glob
+  matcher is built.
 
 ### Tier C — port with care / partial (structure-building, but doable in bytes)
 Split by whether they *return* a structure:
