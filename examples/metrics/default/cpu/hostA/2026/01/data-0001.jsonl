@@ -1,0 +1,2 @@
+{"host":"hostA","metric":"cpu","value":0.42,"ts":"2026-01-01T00:00:00Z"}
+{"host":"hostA","metric":"cpu","value":0.55,"ts":"2026-01-01T00:01:00Z"}

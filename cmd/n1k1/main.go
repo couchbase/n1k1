@@ -39,6 +39,7 @@ import (
 	"github.com/couchbase/n1k1/base"
 	"github.com/couchbase/n1k1/cmd"
 	"github.com/couchbase/n1k1/glue"
+	"github.com/couchbase/n1k1/recordsource"
 )
 
 // prog is the command's short name, derived from how the binary was invoked
@@ -68,9 +69,19 @@ func main() {
 		vFlag      = flag.Bool("v", false, "verbose: show unsupported reasons / plan on error")
 		initFlag   = flag.String("init", "", "run dot-commands/SQL from this file at startup (default ~/."+prog+"rc)")
 		noInitFlag = flag.Bool("no-init", false, "skip the startup init file")
+		modesFlag  = flag.String("modes", "", "restrict scanning to a comma-separated set (e.g. json,jsonl,gzip,recurse); empty = all/flexible")
 	)
 	flag.Usage = usage
 	flag.Parse()
+
+	// --modes locks down which formats/layouts/compression n1k1 will scan, so a
+	// tree with subdirs/formats the user doesn't want considered can be excluded.
+	if opts, err := recordsource.ParseModes(*modesFlag); err != nil {
+		fmt.Fprintf(os.Stderr, "n1k1: bad -modes: %v\n", err)
+		os.Exit(2)
+	} else {
+		glue.ScanWalkOptions = opts
+	}
 
 	dir := "."
 	if args := flag.Args(); len(args) > 0 {

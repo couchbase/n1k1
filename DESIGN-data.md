@@ -390,6 +390,13 @@ Hive `key=value` partitions auto-detect within any mode; bare date partitions
 require declaring a projection template (mode 3) because they're ambiguous by
 construction.
 
+**Lockdown flag (`--modes`):** flexibility is the default, but a user whose tree
+contains subdirs/formats they *don't* want scanned can restrict n1k1 to an
+explicit comma-separated set, e.g. `--modes=json,jsonl` (no `recurse` ⇒ don't
+descend; no `gzip` ⇒ ignore `.gz`). Empty/absent ⇒ everything flexible. This is
+"flexible by default, explicit when needed" as a one-flag safety valve;
+`recordsource.ParseModes` turns the list into the discovery/decoder filter.
+
 ### Integration gap: schemaless docs vs n1k1's positional labels
 n1k1's engine identifies fields by **positional `base.Labels`**, not by name —
 an op tree is built against a known label vector. A multi-file keyspace whose

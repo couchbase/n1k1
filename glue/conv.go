@@ -141,11 +141,7 @@ func (c *Conv) VisitPrimaryScan(o *plan.PrimaryScan) (interface{}, error) {
 		return NA(o)
 	}
 
-	return c.TopPush(o, &base.Op{
-		Kind:   "datastore-scan-primary",
-		Labels: base.Labels{"^id"},
-		Params: []interface{}{c.AddTemp(o)},
-	})
+	return c.recordsScan(o, o.Term().Alias())
 }
 
 func (c *Conv) VisitPrimaryScan3(o *plan.PrimaryScan3) (interface{}, error) {
@@ -153,9 +149,19 @@ func (c *Conv) VisitPrimaryScan3(o *plan.PrimaryScan3) (interface{}, error) {
 		return NA(o)
 	}
 
+	return c.recordsScan(o, o.Term().Alias())
+}
+
+// recordsScan emits a datastore-scan-records op that reads the keyspace's
+// directory n1k1-native (recordsource: union of files, recurse, decode,
+// transparent gzip) and yields whole documents (".alias") plus "^id" directly,
+// replacing cbq's scan-keys + fetch-docs round-trip for the file datastore (see
+// DESIGN-data.md "Where this code lives" A2). A following plan.Fetch over the
+// same keyspace becomes a no-op pass-through (see VisitFetch).
+func (c *Conv) recordsScan(o plan.Operator, alias string) (interface{}, error) {
 	return c.TopPush(o, &base.Op{
-		Kind:   "datastore-scan-primary",
-		Labels: base.Labels{"^id"},
+		Kind:   "datastore-scan-records",
+		Labels: base.Labels{"." + LabelSuffix(alias), "^id"},
 		Params: []interface{}{c.AddTemp(o)},
 	})
 }
@@ -251,6 +257,13 @@ func (c *Conv) VisitIndexFtsSearch(o *plan.IndexFtsSearch) (interface{}, error) 
 func (c *Conv) VisitFetch(o *plan.Fetch) (interface{}, error) {
 	if len(o.SubPaths()) > 0 {
 		return NA(o) // TODO.
+	}
+
+	// A file-datastore primary scan (datastore-scan-records) already materialized
+	// whole documents, so the fetch is a no-op pass-through. (Index scans still
+	// yield only keys, so their fetch stays a real datastore-fetch below.)
+	if c.TopOp != nil && c.TopOp.Kind == "datastore-scan-records" {
+		return c.TopOp, nil
 	}
 
 	return c.TopPush(o, &base.Op{
