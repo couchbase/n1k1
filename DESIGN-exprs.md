@@ -13,6 +13,34 @@ honoring n1k1's performance principles (see `DESIGN.md`).
 The goal: an incrementally growing library of native expressions, with the cbq
 fallback kept forever as a correctness backstop.
 
+## Implementation status
+
+Ported so far (branch `exprs-primitives`), each validated by a **differential
+test against cbq** (`glue/expr_arith_diff_test.go`) plus cold interpreter unit
+tests (`engine/expr_arith_test.go`, `engine/expr_pred_test.go`) and numeric-core
+tests (`base/arith_test.go`):
+
+- **Arithmetic** — `+ - * / % DIV MOD` and unary `-`. Numeric core in
+  `base/arith.go` (`Num` int64/float64 union mirroring `value.NumberValue`),
+  harness in `engine/expr_arith.go`.
+- **Unary predicates** — `NOT`, `IS [NOT] NULL/MISSING/VALUED`
+  (`engine/expr_pred.go`).
+
+**Measured memory win** (Apple M2 Pro, `test/benchmark/bench_expr_arith_test.go`):
+native `a+b` is `0 B/op, 0 allocs/op` (31 ns) vs cbq's `Evaluate()` fallback at
+`384 B/op, 8 allocs/op` (190 ns) — ~6× faster, zero per-eval garbage. Division is
+`0 allocs` vs cbq's `408 B/op, 9 allocs`.
+
+The two-layer thesis held: the primitives carry the semantics; each per-op
+skeleton collapsed into a tiny shared harness (`ExprArithBi`/`ExprNeg`,
+`ExprIsPredicate`); copying cbq's propagation branch-for-branch + differential
+testing gave byte-identical results. One concrete porting lesson: match the cbq
+**`Function.Name()`** (the canonical no-underscore form set by each `Init()`,
+e.g. `isnull`), not the registry alias, when wiring `OptimizableFuncs`.
+
+Next candidates (Tier A): `||` concat, `CASE`, the conditional-unknown family
+(`NVL/IFNULL/IFMISSING/COALESCE`), `between`, scalar `in`, then Tier B functions.
+
 ## Why this matters
 
 The fallback path (`glue/expr.go:ExprTree`) does three allocating things **per
@@ -66,7 +94,7 @@ semantics.
   `ge`, plus `Constant` → `json` and `Field` → `labelPath`. A single unsupported
   operand anywhere makes the **whole** expression fall back (recursive).
 
-### Native inventory today (~15 entries)
+### Native inventory today
 
 | Name | File | Role |
 |---|---|---|
@@ -76,12 +104,14 @@ semantics.
 | `valsEncode` / `valsEncodeCanonical` | `engine/expr.go` | key encoding for maps |
 | `and` / `or` | `engine/expr_bi.go` | short-circuit logical |
 | `eq` `lt` `le` `gt` `ge` | `engine/expr_cmp.go` | comparisons (numeric fast path + `ValComparer` fallback) |
+| `add` `sub` `mult` `div` `mod` `idiv` `imod` `neg` | `engine/expr_arith.go` + `base/arith.go` | **arithmetic** (byte-native, mirrors cbq `value.NumberValue`) ✅ |
+| `not` `is_null` `is_not_null` `is_missing` `is_not_missing` `is_valued` `is_not_valued` | `engine/expr_pred.go` | **unary predicates** (byte-kind classified, constant results) ✅ |
 | `window-partition-row-number`, `window-frame-count`, `window-frame-step-value` | `engine/expr_window.go` | window helpers (FIRST/LAST/NTH/LEAD/LAG) |
 | `exprStr` / `exprTree` | `glue/expr.go` | **the fallback** (parse / delegate to cbq) |
 
-Notably **absent and therefore delegated:** `not`, arithmetic (`+ - * / %`),
-`between`, `like`, `in`, `is null/missing/valued`, `||`, `CASE`, `NVL/IFNULL/
-COALESCE`, and *all* ~350 scalar functions.
+Still **absent and therefore delegated:** `between`, `like`, `in`, `||`, `CASE`,
+`NVL/IFNULL/COALESCE`, type checks (`is_array`/`is_number`/…), and *all* ~340
+remaining scalar functions.
 
 ## The universe & the gap
 
@@ -126,11 +156,12 @@ model.* Four tiers:
 ### Tier A — port first (scalar, byte-friendly, high per-row frequency)
 Read operand bytes, compute, append result. These dominate `WHERE`/`JOIN`/
 projection cost and are the highest ROI.
-- **Logical `not`; arithmetic `+ - * / % div idiv neg`** — parse number(s) via
-  `base.ParseFloat64`, compute, append; reuse the `ExprCmp` early-constant/typed
-  fast-path pattern.
-- **`between`, `in`** (scalar list), **`is null/missing/valued`**, **`is [not]
-  distinct from`** — direct byte/type checks (`base.Parse`, `ValComparer`).
+- ✅ **DONE — arithmetic `+ - * / % DIV MOD` and unary `-`** (`base/arith.go`,
+  `engine/expr_arith.go`): int64/float64 `Num` core, byte-in/byte-out, 0 allocs.
+- ✅ **DONE — logical `not`, `is null/missing/valued`** (`engine/expr_pred.go`):
+  byte-kind classified, constant results.
+- **`between`, `in`** (scalar list), **`is [not] distinct from`** — direct
+  byte/type checks (`base.Parse`, `ValComparer`).
 - **Type checks `is_array/object/string/number/boolean/atom`** — `base.Parse`
   returns the type; trivial.
 - **`||` concat, `CASE` (both), `NVL/IFNULL/IFMISSING/IFMISSINGORNULL/COALESCE/
