@@ -307,6 +307,64 @@ structure for everything.
 - SQLite automatic indexes: https://sqlite.org/optoverview.html
 - Database cracking (Idreos/MonetDB): https://www.vldb.org/pvldb/vol4/p586-idreos.pdf
 
+## COUNT(*) / count-scan pushdown
+
+`SELECT COUNT(*)` should never enumerate or fetch documents when the count can be
+pushed down to the datastore or an index. cbq-query's planner already knows how to
+do this; n1k1 just doesn't convert the resulting operators yet.
+
+### How the planner expresses it
+- **`plan.CountScan`** — whole-keyspace count (no sargable predicate). Holds the
+  `datastore.Keyspace` and calls `keyspace.Count(context)`.
+- **`plan.IndexCountScan` / `IndexCountScan2`** — count with a sargable predicate,
+  pushed to an index that implements `datastore.CountIndex` (`Count(span, …)
+  int64`) / `CountIndex2`. Holds `Index()` + `Spans()`.
+- **`plan.IndexCountDistinctScan2`** — `COUNT(DISTINCT …)` pushdown
+  (`CountIndex2.CountDistinct`).
+- **`plan.IndexCountProject`** — the projection wrapper that turns the pushed-down
+  scalar count into the result column.
+
+### Current state (the gap)
+- `glue/conv.go` returns `NA()` for **every** count operator:
+  `VisitCountScan`, `VisitIndexCountScan`, `VisitIndexCountScan2`,
+  `VisitIndexCountDistinctScan2` (lines 179–184) and `VisitIndexCountProject`
+  (line 635). So any statement the planner turns into a count-scan currently
+  fails to convert.
+- **Datastore side is partly done already:** the file datastore's
+  `keyspace.Count()` (returns `len(ReadDir)`) and `Size()` already exist
+  (`n1k1-query/datastore/file/file.go:467`). So whole-keyspace `COUNT(*)` is
+  almost entirely a conv + execution wiring job.
+
+### Implementation (lowest-friction first)
+1. **Whole-keyspace `COUNT(*)` (primary).** Implement `conv.go:VisitCountScan` →
+   emit a new `base.Op` (e.g. `"datastore-count"`) carrying the keyspace; add a
+   glue execution op that calls `keyspace.Count(context)` and yields a **single
+   row with one int64**. Implement `VisitIndexCountProject` to shape the projected
+   column. No datastore changes needed (`Count()` exists). Do this first.
+2. **Predicated `COUNT(*)` via secondary index.** Make the Phase-1
+   `secondaryIndex` also implement `datastore.CountIndex.Count(span, …)` — with
+   bbolt, count entries within the span range (cursor walk, or a maintained
+   counter). Implement `conv.go:VisitIndexCountScan` → evaluate spans (reuse
+   `EvalSpan`) + call `index.Count(span)` → yield one row.
+   - **Same interface-assertion lever as Phase 1:** the planner emits
+     `IndexCountScan` only when the index is a `datastore.CountIndex`, and
+     `IndexCountScan2` only when it's a `CountIndex2` (+ API version). Implement
+     **only the base `CountIndex`** to keep the planner on the simpler
+     `plan.IndexCountScan`.
+3. **`COUNT(DISTINCT …)`.** Needs `CountIndex2.CountDistinct` over the index;
+   defer (harder) — without it the planner falls back to the normal
+   distinct+aggregate path, which still works, just slower.
+
+### Manifest synergy (ties to `DESIGN-data.md` §5)
+Once the change-detection manifest tracks per-file / per-partition **`doc_count`**,
+`COUNT(*)` over a whole keyspace or partition can be answered **O(1) from
+metadata** — no `ReadDir`, no scan — exactly how Parquet/Iceberg answer count from
+row-group / manifest row counts. Concretely: back `keyspace.Count()` with the
+manifest count when present, and for predicated counts, **sum precomputed counts
+for fully-covered partitions** (via partition zone maps) and only actually scan the
+boundary partitions. This makes `COUNT(*)` nearly free on large, mostly-static
+datasets.
+
 ## Verification
 
 - **Phase 1:** create a keyspace with a `.indexes.json` over a field, run a query
