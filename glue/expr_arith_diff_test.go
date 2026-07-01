@@ -167,6 +167,46 @@ func TestCondUnknownDifferentialVsCBQ(t *testing.T) {
 	}
 }
 
+func TestIsTypeDifferentialVsCBQ(t *testing.T) {
+	c := func(v interface{}) expression.Expression { return expression.NewConstant(v) }
+	null := c(value.NULL_VALUE)
+	num := c(5)
+	str := c("x")
+	bln := c(true)
+	arrv := expression.NewConstant([]interface{}{1, 2})
+	objv := expression.NewConstant(map[string]interface{}{"a": 1})
+
+	mk := map[string]func(expression.Expression) expression.Expression{
+		"is_array":   func(e expression.Expression) expression.Expression { return expression.NewIsArray(e) },
+		"is_number":  func(e expression.Expression) expression.Expression { return expression.NewIsNumber(e) },
+		"is_string":  func(e expression.Expression) expression.Expression { return expression.NewIsString(e) },
+		"is_boolean": func(e expression.Expression) expression.Expression { return expression.NewIsBoolean(e) },
+		"is_object":  func(e expression.Expression) expression.Expression { return expression.NewIsObject(e) },
+		"is_atom":    func(e expression.Expression) expression.Expression { return expression.NewIsAtom(e) },
+	}
+	operands := map[string]expression.Expression{
+		"num": num, "str": str, "bln": bln, "arr": arrv, "obj": objv, "null": null,
+		// MISSING constant now round-trips (optimizer emits an empty json ->
+		// MISSING, not "null"); IS_<type>(missing) must be MISSING like cbq.
+		"missing": c(value.MISSING_VALUE),
+	}
+
+	for fn, ctor := range mk {
+		for on, operand := range operands {
+			expr := ctor(operand)
+			want := cbqEval(t, expr)
+			got, ok := nativeEval(t, expr)
+			if !ok {
+				t.Errorf("%s(%s): did not optimize", fn, on)
+				continue
+			}
+			if got != want {
+				t.Errorf("%s(%s): native=%q, cbq=%q", fn, on, got, want)
+			}
+		}
+	}
+}
+
 func TestInDifferentialVsCBQ(t *testing.T) {
 	c := func(v interface{}) expression.Expression { return expression.NewConstant(v) }
 	arr := func(xs ...interface{}) expression.Expression {

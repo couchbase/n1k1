@@ -20,6 +20,7 @@ import (
 	"github.com/couchbase/n1k1/base"
 
 	"github.com/couchbase/query/expression"
+	"github.com/couchbase/query/value"
 )
 
 var OptimizableFuncs = map[string]string{}
@@ -64,6 +65,14 @@ func init() {
 
 	// Membership (see engine/expr_in.go).
 	OptimizableFuncs["in"] = "in"
+
+	// Type checks (see engine/expr_type.go); underscore Name()s.
+	OptimizableFuncs["is_array"] = "is_array"
+	OptimizableFuncs["is_number"] = "is_number"
+	OptimizableFuncs["is_string"] = "is_string"
+	OptimizableFuncs["is_boolean"] = "is_boolean"
+	OptimizableFuncs["is_object"] = "is_object"
+	OptimizableFuncs["is_atom"] = "is_atom"
 }
 
 // ExprTreeOptimize attempts to optimize a N1QL
@@ -71,6 +80,13 @@ func init() {
 func ExprTreeOptimize(labels base.Labels, e expression.Expression,
 	buf *bytes.Buffer) (params []interface{}, ok bool) {
 	if c, ok := e.(*expression.Constant); ok {
+		// A MISSING constant has no JSON form -- value.WriteJSON emits "null",
+		// which would wrongly become NULL. Emit an empty json constant instead;
+		// ExprJson yields a zero-length Val, i.e. MISSING.
+		if c.Value().Type() == value.MISSING {
+			return []interface{}{"json", ""}, true
+		}
+
 		buf.Reset()
 
 		if c.Value().WriteJSON(nil, buf, "", "", true) != nil {
@@ -139,7 +155,8 @@ func ExprTreeOptimize(labels base.Labels, e expression.Expression,
 		}
 	case "neg",
 		"not", "is_null", "is_not_null",
-		"is_missing", "is_not_missing", "is_valued", "is_not_valued":
+		"is_missing", "is_not_missing", "is_valued", "is_not_valued",
+		"is_array", "is_number", "is_string", "is_boolean", "is_object", "is_atom":
 		if len(operands) != 1 {
 			return nil, false
 		}
