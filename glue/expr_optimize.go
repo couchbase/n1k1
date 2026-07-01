@@ -61,6 +61,9 @@ func init() {
 
 	// Ternary (see engine/expr_between.go).
 	OptimizableFuncs["between"] = "between"
+
+	// Membership (see engine/expr_in.go).
+	OptimizableFuncs["in"] = "in"
 }
 
 // ExprTreeOptimize attempts to optimize a N1QL
@@ -129,7 +132,7 @@ func ExprTreeOptimize(labels base.Labels, e expression.Expression,
 	operands := f.Operands()
 	switch name {
 	case "add", "mult", "sub", "div", "mod", "idiv", "imod",
-		"ifnull", "ifmissing", "ifmissingornull", "nvl":
+		"ifnull", "ifmissing", "ifmissingornull", "nvl", "in":
 		// Native harness is two-operand; cbq's n-ary forms fall back.
 		if len(operands) != 2 {
 			return nil, false

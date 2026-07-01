@@ -167,6 +167,46 @@ func TestCondUnknownDifferentialVsCBQ(t *testing.T) {
 	}
 }
 
+func TestInDifferentialVsCBQ(t *testing.T) {
+	c := func(v interface{}) expression.Expression { return expression.NewConstant(v) }
+	arr := func(xs ...interface{}) expression.Expression {
+		if xs == nil { // a zero-arg variadic is a nil slice, which becomes NULL
+			xs = []interface{}{}
+		}
+		return expression.NewConstant(xs)
+	}
+	null := c(value.NULL_VALUE)
+
+	cases := []struct {
+		name string
+		expr expression.Expression
+	}{
+		{"member", expression.NewIn(c(2), arr(1, 2, 3))},
+		{"not-member", expression.NewIn(c(5), arr(1, 2, 3))},
+		{"empty", expression.NewIn(c(2), arr())},
+		{"int-eq-float", expression.NewIn(c(2), arr(1.0, 2.0))},
+		{"string-member", expression.NewIn(c("b"), arr("a", "b"))},
+		{"not-array", expression.NewIn(c(2), c(5))},
+		{"null-x-empty", expression.NewIn(null, arr())},
+		{"null-x-nonempty", expression.NewIn(null, arr(1, 2))},
+		{"nomatch-with-null", expression.NewIn(c(5), arr(1, value.NULL_VALUE, 3))},
+		{"match-with-null", expression.NewIn(c(3), arr(1, value.NULL_VALUE, 3))},
+		{"nomatch-no-null", expression.NewIn(c(5), arr(1, 2, 3))},
+	}
+
+	for _, tc := range cases {
+		want := cbqEval(t, tc.expr)
+		got, ok := nativeEval(t, tc.expr)
+		if !ok {
+			t.Errorf("%s: expression did not optimize to native path", tc.name)
+			continue
+		}
+		if got != want {
+			t.Errorf("%s: native=%q, cbq=%q", tc.name, got, want)
+		}
+	}
+}
+
 func TestBetweenDifferentialVsCBQ(t *testing.T) {
 	c := func(v interface{}) expression.Expression { return expression.NewConstant(v) }
 	null := c(value.NULL_VALUE)
