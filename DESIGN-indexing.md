@@ -1,8 +1,8 @@
 # Design: Integrating Indexes into n1k1
 
-Status: proposal / for review (revised: index code lives in **n1k1**, registered
-into **thin hook seams** in the fork — the `engine.ExecOpEx` IoC pattern — rather
-than living inside the fork's `datastore/file`; see "Where this code lives")
+Status: proposal / for review. Companion: `DESIGN-data.md`. Index code lives in
+**n1k1** behind **thin fork hook seams** (the `engine.ExecOpEx` IoC pattern) — see
+"Where this code lives". Revision changelog is in git history.
 
 This document describes how to add index support — a GSI-like **secondary
 index** first, then a **full-text index** via embedded bleve — to n1k1's
@@ -20,11 +20,15 @@ in-process — no FTS cluster, no GSI service — keeping n1k1 self-contained.
 
 The central fact that shapes this whole design:
 
-> **n1k1 has no planner of its own.** `glue/stmt.go:PlanStatement` calls
-> cbq-query's real `planner.Build()`. Index selection — "index vs no index,
-> which index" — is decided entirely by cbq-query's planner, driven by **what the
+> **n1k1 takes cbq's *plan*, not its runtime.** `glue/stmt.go:PlanStatement` calls
+> cbq-query's real `planner.Build()`, so index selection — "index vs no index,
+> which index" — is decided entirely by cbq's planner, driven by **what the
 > datastore advertises** through the `Keyspace → Indexer → Index` / `FTSIndex`
-> interface tree (`datastore/index.go`).
+> interface tree (`datastore/index.go`). But n1k1 **replaces cbq's execution
+> runtime** (its tuple-by-tuple iteration over boxed `value.AnnotatedValue`s) with
+> its own `base.Op` engine over `base.Val = []byte` — buffer reuse, not per-tuple
+> boxing. So the fork is a source of *plans* (and index metadata), and n1k1 owns
+> execution. This is why index code belongs in n1k1 behind thin seams (below).
 
 The query pipeline (`glue/session.go:Run`):
 
@@ -95,44 +99,30 @@ resolvable.)
 
 ## Where this code lives (thin hook seams, not fork code)
 
-The Background above is the whole leverage: index selection is driven by **what
-the datastore advertises**. So n1k1 does not need to *host* index code in the
-fork — it only needs the fork to **advertise n1k1-built index objects**. This
-mirrors `DESIGN-data.md`'s decision and the IoC pattern n1k1 already uses
-(`engine.ExecOpEx = glue.DatastoreOp`): the fork gets **thin hook seams**; all
-real logic lives in n1k1.
+Since the planner is driven by **what the datastore advertises** (Background),
+n1k1 need not *host* index code in the fork — only get the fork to **advertise
+n1k1-built index objects**. This is the same thin-seam / IoC decision as
+`DESIGN-data.md` ("Where this code lives"): `datastore.Index`/`Indexer`/`FTSIndex`
+are interfaces `glue` already imports, and Go interfaces are structural, so **n1k1
+implements them** and the planner uses them polymorphically. Execution is already
+n1k1-side — `glue/datastore_scan.go:DatastoreScanIndex` calls
+`scan.Index().Scan(...)`, so once the advertised index is an n1k1 type its
+`Scan()` runs in n1k1 (over `[]byte`, not cbq's boxed values).
 
-Why it works: `datastore.Index`, `datastore.Indexer`, and `datastore.FTSIndex`
-are **interfaces** in `query/datastore/index.go`, and `glue` already imports
-`query/datastore` (see `glue/datastore_scan.go`). Go interfaces are structural,
-so an **n1k1 package can fully implement `datastore.Index`/`Indexer`/`FTSIndex`**
-— the planner calls those methods polymorphically and neither knows nor cares
-where the concrete type is defined. Execution is *already* n1k1-side:
-`glue/datastore_scan.go:DatastoreScanIndex` calls `scan.Index().Scan(...)`, so
-once the advertised index object is an n1k1 type, its `Scan()` runs in n1k1.
+The two seams (verified in `datastore/file/file.go`):
+- **GSI/secondary:** `var SecondaryIndexes func(datastore.Keyspace)
+  []datastore.Index`, merged into `fileIndexer.Indexes()` (file.go:817, today
+  primary-only) + `IndexNames`/`IndexById`/`IndexByName`/`IndexIds`.
+- **FTS:** `var ExtraIndexers func(datastore.Keyspace) []datastore.Indexer`,
+  appended in `keyspace.Indexers()` (file.go:491) — a distinct `IndexType`, so a
+  clean append, not a merge.
 
-The seams (verified in `datastore/file/file.go`):
-- **GSI/secondary:** `fileIndexer.Indexes()` (file.go:817, today returns only
-  `fi.primary`), plus `IndexNames`/`IndexById`/`IndexByName`/`IndexIds` — add a
-  hook `var SecondaryIndexes func(ks datastore.Keyspace) []datastore.Index` that
-  each merges into its result (defaulting to today's primary-only when unset).
-- **FTS:** `keyspace.Indexers()` (file.go:491) — add a hook
-  `var ExtraIndexers func(ks datastore.Keyspace) []datastore.Indexer` so n1k1 can
-  append a whole FTS `Indexer` (a *different* `IndexType`, so it's a clean append,
-  not a merge into the GSI indexer).
-
-Everything else — the `secondaryIndex`/`ftsIndex` types, their bbolt/bleve
-backing, the build routine, `.n1k1/catalog.json` loading, and doc-ID handling —
-is an **ordinary n1k1 package** (e.g. `n1k1/index` or in `glue`), registered into
-those hooks at startup and torn down with the same save/restore discipline
-`Session.Run` already uses for `ExecOpEx`. `bbolt`/`bleve` become **n1k1** direct
-deps, not fork deps.
-
-What must still touch the fork (irreducible): the seam declarations + the
-`fileIndexer.Indexes()`/`IndexByName` fix to consult the hook (a few lines each,
-easy to carry across a cbq rebase). Same global-vs-per-store caveat as the data
-doc — prefer hanging the hook off the store/namespace instance over a package
-global where the seam can reach it.
+Everything else — the `secondaryIndex`/`ftsIndex` types, bbolt/bleve backing, the
+build routine, `.n1k1/catalog.json` loading, doc-IDs — is an ordinary n1k1 package
+(`n1k1/index` or `glue`), registered at startup with the `ExecOpEx` save/restore
+discipline; `bbolt`/`bleve` become **n1k1** direct deps. The only irreducible fork
+edits are the seam declarations + the `Indexes()`/`IndexByName` fix. Same
+global-vs-per-store caveat as the data doc.
 
 ## Phase 1 — GSI-like secondary index
 

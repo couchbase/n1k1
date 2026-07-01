@@ -1,34 +1,7 @@
 # Design: Data Sources for n1k1
 
-Status: proposal / for review (revised after a codebase-grounded review — added
-"Where this code lives", "Compiler compatibility", and "MVP line" sections;
-corrected the mode-2 table-function question with parser evidence; scoped zone
-maps behind a consumer; demoted §6/encryption depth to post-MVP; added a testing
-strategy and change-detection timing/concurrency model. Then a coherence pass
-against DESIGN-indexing.md — added a "Relationship to DESIGN-indexing.md"
-section, reconciled the zone-map consumer / predicate-pushdown tension and the
-sidecar / manifest ownership; and added a "Worked examples" section of sample
-input trees + their FROM clauses, tagged by phasing status. Then added
-"Query-defined virtual datasources (VIEWs & generated catalogs)" — a view as an
-implicit WITH binding reusing the CTE machinery, the morphed-over-time S3 case,
-its UNION-ALL blocker + object-store/Glue notes, and worked example O. Then
-investigated the fork's `datastore/virtual` package: it's a metadata-only planner
-shim (no Fetch/Scan), so not a view route — but its `partitionVirtualIndex` +
-`SargableFor` partition-elimination pattern is a head start on predicate pruning;
-noted both in the VIEW recommendation, example F, and the §5 zone-map caveat.
-Then addressed catalog.json comingling: separate by writer/lifecycle (declared
-input = single-writer catalog.json; machine-managed/adaptive index state = per-
-instance dirs), added §5 "Comingling in catalog.json" + a cross-note in
-DESIGN-indexing.md. Then made allocation model a first-class decoder-selection
-axis (§1 "Allocation model"): base.Val is []byte and the engine parses
-allocation-free via jsonparser, so favor read-into / borrowed-slice APIs over
-per-value interface{}/string; noted the encoding/csv string-alloc regression,
-Arrow pooled buffers, an allocs/op benchmark gate, and an open question. Then
-reworked proposal #A (where the code lives): instead of a subpackage inside the
-fork, keep the fork a thin hook seam (var Hook func(…) + today's-behavior
-fallback, the engine.ExecOpEx IoC pattern) with all real logic in n1k1 —
-minimizing fork divergence; updated the decision, phasing, open question, and the
-DESIGN-indexing.md relationship touchpoint.)
+Status: proposal / for review. Companion: `DESIGN-indexing.md` (read together —
+see "Relationship" below). Revision changelog lives in git history, not here.
 
 ---
 
@@ -130,69 +103,47 @@ There are **two separate, only-partially-connected** data paths today:
 
 ## Where this code lives (the load-bearing decision)
 
-Everything below is moot until we decide *which layer* owns the new behavior,
-because n1k1's `FROM` path is not ours to freely rewrite. `FROM default:orders`
-is resolved by the **forked `couchbase/query` planner**, which asks the
-**`datastore.Datastore` interface** (the fork's `datastore/file`) for keyspaces
-and scans, produces a `plan.Op`, and only *then* does n1k1's `glue.Conv` turn
-that plan into `base.Op`s. Three candidate homes, and why the choice matters:
+**What we take from cbq, and what we don't.** n1k1 reuses cbq for one thing: its
+parser + **planner output, the `plan.Operator` tree** (index selection, spans,
+join order, pushdowns — see `DESIGN-indexing.md` "Background"). It does **not**
+use cbq's **execution runtime** — the tuple-by-tuple operator iteration over boxed
+`value.AnnotatedValue`s — because that allocates a boxed value per tuple/field,
+the opposite of n1k1's `base.Val = []byte` buffer-reuse engine. `glue.Conv` lowers
+the plan tree into n1k1 `base.Op`s that execute over `[]byte`. So the fork is a
+source of *plans*, not a runtime — which is exactly why new datastore behavior
+belongs in **thin seams**, not fork code.
 
-- **(A) The fork's `datastore/file` package — the *seam*, but not where the new
-  code lives.** This is the *only* thing `FROM keyspace` actually reaches, so the
-  hooks must attach here (`loadKeyspaces` for discovery, `primaryIndex.ScanEntries`
-  for the record stream, `fetch` for one doc — verified seam points in `file.go`).
-  But **do not grow the fork with a `datastore/file/recordsource/` subpackage of
-  new logic** — that maximizes exactly the divergence we fear. Instead, mirror the
-  IoC pattern n1k1 *already* uses: the engine declares `var ExecOpEx func(…)` and
-  `var ExprCatalog map[…]…`, and `glue` overrides them at startup
-  (`engine.ExecOpEx = glue.DatastoreOp`, with save/restore in `Session.Run`).
-  **Apply the same seam to the datastore:** the fork declares thin package-level
-  hook variables — e.g. `var DiscoverKeyspaces func(dir) ([]KsInfo, error)`,
-  `var OpenRecordStream func(path) (RecordStream, error)`,
-  `var FetchRecord func(id) ([]byte, error)` — each defaulting to today's
-  one-doc-per-file JSON behavior when unset (`if hook != nil { … } else { …today… }`).
-  **All the real logic — decoders, sniffers, discovery, doc-IDs, compression —
-  lives in n1k1** (`glue`, or a new `n1k1/recordsource` pkg) and is registered
-  into those hooks at startup. The fork change shrinks from "a new subpackage" to
-  "a handful of `var Hook func(…)` + fallback branches," which is cheap to carry
-  across a cbq rebase, and the churning code stays in n1k1 where it's freely
-  iterable and testable with n1k1's own harness. *(Credit: this is the user's
-  refinement — keep the fork a thin seam, not a code host.)*
-- **(B) Wire the engine's path-B scan ops (`op_scan.go`) to `FROM` — rejected.**
-  Tempting because `csvData`/`jsonsData`/`filePath` already exist, but FROM-term
-  resolution happens in the *planner*, upstream of `conv`; the engine ops never
-  see a keyspace name. Path B stays what it is today: a low-level primitive for
-  the CLI/tests to scan an explicit file, not a route for `FROM`. (It's still the
-  right place to *host* the shared decoders — see the compiler note below.)
-- **(C) A brand-new n1k1-side `datastore.Datastore` implementation — deferred.**
-  Cleanest isolation from the fork, but it means re-implementing the whole
-  datastore/index interface surface the planner expects. Only worth it if we ever
-  outgrow the file datastore entirely; not for adding formats.
+`FROM default:orders` is resolved by cbq's planner, which asks the
+`datastore.Datastore` interface (the fork's `datastore/file`) for keyspaces/scans,
+producing a `plan.Op` that `conv` then lowers. Three candidate homes:
 
-**Decision:** the fork's `datastore/file` is the **seam** (thin hook variables +
-today's behavior as the fallback); the **implementations live in n1k1** and are
-registered into those hooks at startup, exactly like `engine.ExecOpEx =
-glue.DatastoreOp`. Format decoders, directory discovery, doc-ID synthesis, and
-compression are ordinary n1k1 packages (the decoders shared with path-B
-`op_scan.go` — one CSV reader, not two); derived artifacts (manifest, indexes,
-extracted text — §5, §4) likewise live n1k1-side. Revisit **(C)** only if even the
-thin seam proves insufficient.
+- **(A) Thin hook seams in the fork's `datastore/file` — chosen.** It's the only
+  thing `FROM keyspace` reaches, so hooks attach here (`loadKeyspaces` discovery,
+  `primaryIndex.ScanEntries` record stream, `fetch` one doc — verified seams). But
+  don't grow the fork with a `recordsource/` subpackage; mirror n1k1's existing
+  IoC pattern — the engine declares `var ExecOpEx func(…)` / `ExprCatalog`, and
+  `glue` sets them at startup (`engine.ExecOpEx = glue.DatastoreOp`, save/restored
+  in `Session.Run`). The fork gets a handful of `var Hook func(…)` (e.g.
+  `DiscoverKeyspaces` / `OpenRecordStream` / `FetchRecord`) + today's-behavior
+  fallbacks; **all real logic — decoders, discovery, doc-IDs, compression — lives
+  in n1k1** and registers into them. Cheap to carry across a cbq rebase; the
+  churning code stays where it's freely iterable and testable.
+- **(B) Wire path-B `op_scan.go` ops to `FROM` — rejected.** FROM resolution is in
+  the planner, upstream of `conv`; the engine ops never see a keyspace. Path B
+  stays a low-level primitive — and the right host for the shared byte-oriented
+  decoders (one CSV reader, not two).
+- **(C) A new n1k1-side `datastore.Datastore` — deferred.** Cleanest isolation but
+  re-implements the whole datastore/index interface; only if the thin seam proves
+  insufficient.
 
-Three things to get right with the hook seam:
-1. **Types on the boundary.** Hook signatures must name types both sides can see —
-   the fork's `datastore`/`value`/`errors` types (glue already imports them) plus
-   plain `[]byte`/`string`. The interface *declaration* is a few lines in the fork;
-   the *implementation* is all n1k1.
-2. **The scan seam is a record *stream*, not a per-file swap.** "Keyspace = union
-   of many files, recurse subdirs" changes `ScanEntries`'s control flow (enumerate
-   a file set, stream many records each), so the hook yields a record stream +ID —
-   place it at the enumerate-and-stream level, not at "read one file."
-3. **Global vs per-store.** `ExecOpEx` is a process-global that `Session.Run`
-   save/restores — fine for a single-process CLI, but two stores with different
-   needs would clash. Prefer hanging the hooks off the **store/namespace instance**
-   where the seam can reach it (cleaner, no global); fall back to the package-global
-   pattern only if the seam can't see the store. Same save/restore discipline
-   either way.
+Three things to get right with the seam: **(1) boundary types** — signatures name
+types both sides see (`datastore`/`value`/`errors` + `[]byte`/`string`); the
+declaration is a few fork lines, the implementation all n1k1. **(2) the scan seam
+is a record *stream*** — "keyspace = union-of-files" changes `ScanEntries` control
+flow, so place the hook at enumerate-and-stream, not "read one file." **(3) global
+vs per-store** — prefer hanging hooks off the store/namespace instance over a
+package global (`ExecOpEx` is a process global — fine for a one-process CLI, not
+two stores at once); same save/restore either way.
 
 ## Compiler compatibility (don't break the Futamura path)
 
@@ -722,16 +673,10 @@ events/
 ```
 `n1k1 -c "SELECT * FROM default:clicks WHERE year = 2026" events`
 → `year` and `month` auto-detected from the `key=value` segments as virtual
-columns; `WHERE year = 2026` **prunes the 2025 file before opening it**.
-Depends on partition/zone-map pruning at the scan layer — see the coherence note
-with `DESIGN-indexing.md` in §5 (this is that doc's tier-1 "index-everything-lite"
-consumer, and it needs the predicate to reach the scan).
-**Existing lever to reuse:** the fork *already* decides "does `WHERE year=2026`
-have an EQ/IN on a partition key?" — `planner/build_scan_api.go` builds a
-throwaway `partitionVirtualIndex` (from `datastore/virtual`) and runs
-`SargableFor` against it for **partition elimination**. So the sargability test
-for pruning need not be invented; the remaining work is feeding it the partition
-keys and acting on its verdict at the scan/datastore layer.
+columns; `WHERE year = 2026` **prunes the 2025 file before opening it**. Depends
+on partition/zone-map pruning at the scan layer — see the §5 zone-map caveat (the
+predicate must reach the scan, and the fork's existing `partitionVirtualIndex` +
+`SargableFor` already provides the sargability test).
 
 ### G. Bare date-partition dirs + compression — catalog projection  🟣
 ```
