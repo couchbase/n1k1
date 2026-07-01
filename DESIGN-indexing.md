@@ -297,6 +297,18 @@ be matched back to the exact definition **and** source state they were built fro
   wide), superseding Phase 1's per-keyspace `.indexes.json` sketch; a per-keyspace
   `indexes.json` remains an option for portability, but built artifacts are always
   keyed by `defhash`, so a definition edited anywhere triggers a clean rebuild.
+- **Declared vs machine-managed (single-writer rule — see `DESIGN-data.md` §5
+  "Comingling in `catalog.json`").** `catalog.json` comingles source mappings +
+  index defs safely *only because it stays single-writer*: it holds **declared
+  intent** (human/generator-authored, slow-changing). Everything machine-managed
+  and dynamic — build-state, stats, and **adaptive/auto-created** indexes (the
+  tier-2 auto-index) — lives in **self-describing per-instance dirs**
+  (`idx/<name>__<kind>__<defhash>/meta.json`), never written back into
+  `catalog.json`. So >0 indexers (each a `kind`) can build/rebuild/drop
+  concurrently by touching **different dirs** with no shared-file contention, and
+  the set of built indexes is discoverable by scanning `idx/`. Adaptive indexes
+  that rewrote the human `catalog.json` would break the single-writer property —
+  don't.
 
 ## "Index everything": dynamic / wildcard / automatic secondary indexes
 

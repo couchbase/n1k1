@@ -15,7 +15,11 @@ its UNION-ALL blocker + object-store/Glue notes, and worked example O. Then
 investigated the fork's `datastore/virtual` package: it's a metadata-only planner
 shim (no Fetch/Scan), so not a view route — but its `partitionVirtualIndex` +
 `SargableFor` partition-elimination pattern is a head start on predicate pruning;
-noted both in the VIEW recommendation, example F, and the §5 zone-map caveat.)
+noted both in the VIEW recommendation, example F, and the §5 zone-map caveat.
+Then addressed catalog.json comingling: separate by writer/lifecycle (declared
+input = single-writer catalog.json; machine-managed/adaptive index state = per-
+instance dirs), added §5 "Comingling in catalog.json" + a cross-note in
+DESIGN-indexing.md.)
 
 ---
 
@@ -47,7 +51,10 @@ Where they touch, and how they're kept consistent here:
 2. **The `.n1k1/` sidecar is shared.** The indexing doc specifies the *canonical*
    tree; this doc owns only `catalog.json`'s source/layout half and
    `manifest.json` (see §5 "Where"). `catalog.json` therefore holds **both**
-   source mappings (here) **and** index definitions (there).
+   source mappings (here) **and** *declared* index definitions (there) — safe to
+   comingle only because it stays **single-writer**; machine-managed/adaptive
+   index state lives in per-instance dirs, never rewriting `catalog.json`. See
+   §5 "Comingling in `catalog.json`".
 3. **Zone maps are the load-bearing shared artifact — and the one prior tension.**
    The indexing doc's tier-1 "index-everything-lite" *consumes* the zone maps this
    doc's manifest *produces*. The one correction folded in: pruning is only
@@ -787,6 +794,49 @@ derived artifacts live, and **how** do we know source data changed?
   root**; the truly dataset-global bits (`manifest_schema_version`,
   `config_fingerprint`, a top `root_merkle_hash` over all keyspaces) live in
   `catalog.json`/`LAYOUT`, not in a competing top-level manifest.
+
+### Comingling in `catalog.json`: separate by writer & lifecycle, not subkey
+`catalog.json` carries *both* source/layout mappings (this doc) and index
+definitions (the indexing doc) — is that a dangerous comingle when there can be
+**many indexers, dynamically loaded, each maintaining/removing its own index
+metadata**? The resolving principle is a **one-way data-flow** and a
+**single-writer input file**:
+
+```
+source/layout config → source manifest → index defs → index instances (build-state)
+  (human/gen INPUT)      (derived)          (intent)     (per-indexer OUTPUT)
+```
+Each layer reads only upstream. So split by **who writes it and how fast it
+changes**, not by JSON subkey:
+
+- **Declared input — safe to comingle in `catalog.json`.** Source mappings **and
+  *declared* index intents** are human/generator-authored, slow-changing, and
+  have **one writer / one lifecycle**. Clean subkeys (`sources`, `indexes`,
+  `views`) in a single file are fine *because* there's a single writer — no
+  contention, no cross-blast-radius. (Split into `sources.json` /`indexes.json`
+  only if you ever want them versioned/owned separately; not required.)
+- **Machine-managed output — must NOT live in `catalog.json`.** Everything that
+  changes fast, is owned per-indexer, and gets dynamically created/rebuilt/blown
+  away belongs in **self-describing per-instance dirs**
+  (`idx/<name>__<kind>__<defhash>/meta.json`) + per-keyspace `manifest.json` —
+  which the sidecar layout already does. This directly answers every worry:
+  - *>0 indexers, each with its own metadata* → each instance owns its own dir;
+    different indexers write **different** dirs ⇒ **no shared-file contention**.
+  - *New indexer types loaded over time* → a new indexer = a new **`kind`**
+    (`gsi`/`fts`/`zonemap`/`bloom`/`count`/…); its instances drop into their own
+    dirs. Loading adds dirs; it never edits `catalog.json`.
+  - *Info blown away / index removed* → trash that one instance dir; **blast
+    radius = one dir**; `catalog.json` and other indexers untouched.
+  - *Discovery* → `DESIGN-indexing.md` already notes `catalog.json` is
+    reconstructable by scanning `idx/`, i.e. **the filesystem is the source of
+    truth for what's built** — so built/adaptive indexes never need to be written
+    back into the human catalog.
+- **The one rule this forces:** `catalog.json`'s `indexes` section is **declared
+  intent only**. Adaptive / auto-created indexes (the indexing doc's tier-2
+  auto-index) live **purely as instance dirs** and must **not** rewrite the
+  human `catalog.json` — otherwise the single-writer property (and with it the
+  safety of comingling) is lost. Declared-vs-adaptive is the line, and it maps to
+  file-vs-dir.
 
 ### When: the trigger and concurrency model (the actually-hard part)
 §5 below details *what* to fingerprint, but *when* we re-validate — and who's
