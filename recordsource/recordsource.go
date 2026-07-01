@@ -289,12 +289,76 @@ func appendRecordID(dst []byte, prefix string, n int) []byte {
 
 // -------------------------------------------------------------- directory walk
 
-// WalkOptions configures directory discovery.
+// WalkOptions configures directory discovery and which files are eligible.
+// The zero value is restrictive (no formats, no recurse); use AllModes() for
+// the flexible default, or ParseModes() to honor a user's --modes restriction.
 type WalkOptions struct {
-	Recurse bool // descend into subdirectories (default true via Walk)
+	Recurse   bool            // descend into subdirectories
+	Formats   map[string]bool // allowed inner extensions (".json", ".jsonl", …); nil = all supported
+	AllowGzip bool            // permit a .gz compression suffix
+	AllowZstd bool            // permit a .zst compression suffix (not yet decodable)
 }
 
-// Walk returns a Source over the union of all supported record files under dir,
+// AllModes returns the flexible default: recurse, all supported formats, gzip on.
+// n1k1 uses this unless the user restricts scanning via --modes (see ParseModes).
+func AllModes() WalkOptions {
+	return WalkOptions{Recurse: true, Formats: nil, AllowGzip: true, AllowZstd: false}
+}
+
+// ParseModes builds a restrictive WalkOptions from a comma-separated mode list
+// (the CLI's --modes flag), so a user with subdirs/formats they don't want
+// scanned can lock n1k1 down. Recognized tokens:
+//
+//	json      → .json/.jsons        jsonl → .jsonl/.ndjson
+//	gzip      → allow .gz            recurse → descend subdirs
+//
+// An empty string means "unrestricted" (AllModes). Unknown tokens are an error.
+func ParseModes(csv string) (WalkOptions, error) {
+	csv = strings.TrimSpace(csv)
+	if csv == "" {
+		return AllModes(), nil
+	}
+	opts := WalkOptions{Formats: map[string]bool{}}
+	for _, tok := range strings.Split(csv, ",") {
+		switch strings.ToLower(strings.TrimSpace(tok)) {
+		case "":
+			// tolerate empty items from trailing commas
+		case "json":
+			opts.Formats[".json"], opts.Formats[".jsons"] = true, true
+		case "jsonl", "ndjson":
+			opts.Formats[".jsonl"], opts.Formats[".ndjson"] = true, true
+		case "gzip", "gz":
+			opts.AllowGzip = true
+		case "zstd", "zst":
+			opts.AllowZstd = true
+		case "recurse", "recursive":
+			opts.Recurse = true
+		default:
+			return WalkOptions{}, fmt.Errorf("recordsource: unknown --modes token %q", tok)
+		}
+	}
+	return opts, nil
+}
+
+// eligible reports whether path passes the options' format/compression filter.
+func (o WalkOptions) eligible(path string) bool {
+	if !IsRecordFile(path) {
+		return false
+	}
+	ext := strings.ToLower(filepath.Ext(path))
+	if ext == ".gz" && !o.AllowGzip {
+		return false
+	}
+	if ext == ".zst" && !o.AllowZstd {
+		return false
+	}
+	if o.Formats != nil && !o.Formats[innerExt(path)] {
+		return false
+	}
+	return true
+}
+
+// Walk returns a Source over the union of all eligible record files under dir,
 // concatenating their record streams. Files are visited in sorted (stable)
 // order for deterministic output. Synthetic IDs are prefixed with each file's
 // dir-relative path, e.g. "events/2026-01-01.jsonl#3".
@@ -310,7 +374,7 @@ func Walk(dir string, opts WalkOptions) (Source, error) {
 			}
 			return nil
 		}
-		if IsRecordFile(path) {
+		if opts.eligible(path) {
 			files = append(files, path)
 		}
 		return nil

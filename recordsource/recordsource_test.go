@@ -45,7 +45,7 @@ func collect(t *testing.T, s Source) (ids []string, docs []string) {
 func ex(rel string) string { return filepath.Join("..", "examples", rel) }
 
 func TestWalkMultiFileJSONL(t *testing.T) { // scenario C
-	s, err := Walk(ex("logs/default/events"), WalkOptions{Recurse: true})
+	s, err := Walk(ex("logs/default/events"), AllModes())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +61,7 @@ func TestWalkMultiFileJSONL(t *testing.T) { // scenario C
 }
 
 func TestWalkRecursiveUnion(t *testing.T) { // scenario E
-	s, err := Walk(ex("metrics/default/cpu"), WalkOptions{Recurse: true})
+	s, err := Walk(ex("metrics/default/cpu"), AllModes())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +82,7 @@ func TestWalkRecursiveUnion(t *testing.T) { // scenario E
 }
 
 func TestWalkGzip(t *testing.T) { // scenario H
-	s, err := Walk(ex("archive/default/orders"), WalkOptions{Recurse: true})
+	s, err := Walk(ex("archive/default/orders"), AllModes())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +93,7 @@ func TestWalkGzip(t *testing.T) { // scenario H
 }
 
 func TestWalkOneDocPerFile(t *testing.T) { // scenario A
-	s, err := Walk(ex("shop/default/orders"), WalkOptions{Recurse: true})
+	s, err := Walk(ex("shop/default/orders"), AllModes())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +152,7 @@ func TestJSONArrayAndValueStream(t *testing.T) {
 // TestBorrowedSliceStableAfterCopy documents the borrow contract: the returned
 // slices are only valid until the next Next, but a copy survives.
 func TestBorrowedSliceStableAfterCopy(t *testing.T) {
-	s, err := Walk(ex("logs/default/events"), WalkOptions{Recurse: true})
+	s, err := Walk(ex("logs/default/events"), AllModes())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,11 +171,35 @@ func TestBorrowedSliceStableAfterCopy(t *testing.T) {
 	}
 }
 
+func TestParseModesRestriction(t *testing.T) {
+	// Empty => flexible default.
+	if o, err := ParseModes(""); err != nil || !o.Recurse || o.Formats != nil || !o.AllowGzip {
+		t.Fatalf("empty modes should be AllModes, got %+v err=%v", o, err)
+	}
+	// A locked-down set: only JSONL, no gzip, no recurse.
+	o, err := ParseModes("jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o.Recurse || o.AllowGzip || o.Formats == nil {
+		t.Fatalf("restricted modes leaked flexibility: %+v", o)
+	}
+	// Under this restriction, the gzip archive (needs gzip) yields nothing, and a
+	// flat non-recursive walk of the events dir still finds the top-level .jsonl.
+	if !o.eligible("events/2026-01-01.jsonl") || o.eligible("orders/2025.jsonl.gz") ||
+		o.eligible("orders/order.json") {
+		t.Errorf("eligibility wrong under jsonl-only restriction: %+v", o)
+	}
+	if _, err := ParseModes("json,bogus"); err == nil {
+		t.Errorf("unknown mode token should error")
+	}
+}
+
 // TestWalkAllocsFlat guards the allocation model: allocs/op must not scale with
 // record count (borrowed slices, reused ID buffer). JSONL is the streaming path.
 func TestWalkAllocsFlat(t *testing.T) {
 	run := func() int {
-		s, _ := Walk(ex("logs/default/events"), WalkOptions{Recurse: true})
+		s, _ := Walk(ex("logs/default/events"), AllModes())
 		var rec Record
 		n := 0
 		for {
