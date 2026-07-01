@@ -877,7 +877,18 @@ func (c *Conv) VisitMerge(o *plan.Merge) (interface{}, error)           { return
 
 // Framework
 
-func (c *Conv) VisitAlias(o *plan.Alias) (interface{}, error) { return NA(o) }
+// VisitAlias wraps each child row under the alias -- e.g. FROM (SELECT ...) AS x
+// makes the subquery's rows become {"x": <row>}, so downstream `x.field`
+// resolves. The planner emits Alias directly above a FROM-clause subquery's ops.
+func (c *Conv) VisitAlias(o *plan.Alias) (interface{}, error) {
+	return c.TopPush(o, &base.Op{
+		Kind:   "project",
+		Labels: base.Labels{"." + LabelSuffix(o.Alias())},
+		Params: []interface{}{
+			[]interface{}{"exprTree", expression.NewSelf()},
+		},
+	})
+}
 
 func (c *Conv) VisitAuthorize(o *plan.Authorize) (interface{}, error) {
 	// TODO: Need a real authorize operation here one day?

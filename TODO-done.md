@@ -325,3 +325,11 @@ Gist only -- details live in commit messages, README, and code comments.
   downstream aggregation (SUM/COUNT), dedup convergence, and the safety cap
   (a non-terminating UNION ALL stops at depth 100, no hang). test-all green
   (suite 661 results / 671 total, PANIC 0).
+
+## 2026/06 -- direct FROM-subquery (VisitAlias)
+- FROM (SELECT ...) AS x (a subquery data source not via WITH) plans as an inline
+  sub-sequence followed by a plan.Alias that wraps each subquery row under the
+  alias. VisitAlias was NA; now it emits a project that wraps each child row as
+  {"<alias>": <row>} via a `self` (expression.NewSelf) exprTree, so downstream
+  x.field resolves. Verified: FROM-subquery with WHERE/ORDER, multi-column
+  projection, and downstream aggregation. No suite regressions.
