@@ -214,6 +214,36 @@ func TestIsTypeDifferentialVsCBQ(t *testing.T) {
 	}
 }
 
+func TestConcatDifferentialVsCBQ(t *testing.T) {
+	c := func(v interface{}) expression.Expression { return expression.NewConstant(v) }
+	null := c(value.NULL_VALUE)
+
+	cases := []struct {
+		name string
+		expr expression.Expression
+	}{
+		{"two", expression.NewConcat(c("a"), c("b"))},
+		{"three", expression.NewConcat(c("a"), c("b"), c("c"))},
+		{"empty", expression.NewConcat(c(""), c("x"))},
+		{"escape-nl", expression.NewConcat(c("a\nb"), c("c"))},
+		{"escape-quote", expression.NewConcat(c(`x"y`), c("z"))},
+		{"num-null", expression.NewConcat(c("a"), c(5))},
+		{"null-null", expression.NewConcat(c("a"), null)},
+	}
+
+	for _, tc := range cases {
+		want := cbqEval(t, tc.expr)
+		got, ok := nativeEval(t, tc.expr)
+		if !ok {
+			t.Errorf("%s: did not optimize", tc.name)
+			continue
+		}
+		if got != want {
+			t.Errorf("%s: native=%q, cbq=%q", tc.name, got, want)
+		}
+	}
+}
+
 func TestInDifferentialVsCBQ(t *testing.T) {
 	c := func(v interface{}) expression.Expression { return expression.NewConstant(v) }
 	arr := func(xs ...interface{}) expression.Expression {

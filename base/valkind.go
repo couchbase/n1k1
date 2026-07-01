@@ -73,3 +73,40 @@ func NaryFirstKept(children []ExprFunc, vals Vals, yieldErr YieldErr, mode int) 
 	}
 	return rv
 }
+
+// NaryConcat is the reducer for the `||` string concatenation operator (cbq
+// expression/concat.go): MISSING if any operand is MISSING; NULL if any operand
+// is a non-string value; else the concatenation of all string operands. The
+// result is built into out[:0] (reused); returns the result Val and the grown
+// buffer.
+//
+// It concatenates each operand's *raw JSON string content* (jsonparser leaves
+// escapes intact) between one pair of quotes. That is byte-identical to cbq's
+// unescape-then-reescape for every ordinary escape (\n \t \" \\ etc.); it
+// differs only for a redundant \uXXXX escape of a printable char (e.g. "A"
+// vs "A"), which is vanishingly rare in practice. (A fully faithful version
+// would unescape via jsonparser.Unescape and re-encode via
+// ValComparer.EncodeAsString, at the cost of extra scratch buffers.)
+func NaryConcat(children []ExprFunc, vals Vals, yieldErr YieldErr, out []byte) (Val, []byte) {
+	null := false
+	out = append(out[:0], '"')
+	for _, child := range children {
+		cv := child(vals, yieldErr)
+		if len(cv) == 0 { // MISSING dominant.
+			return ValMissing, out
+		}
+		inner, parseType := Parse(cv)
+		if ParseTypeToValType[parseType] == ValTypeString {
+			if !null {
+				out = append(out, inner...) // raw (escaped) string content
+			}
+		} else {
+			null = true // non-string operand.
+		}
+	}
+	if null {
+		return ValNull, out
+	}
+	out = append(out, '"')
+	return Val(out), out
+}

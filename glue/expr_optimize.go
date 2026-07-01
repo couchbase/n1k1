@@ -66,6 +66,9 @@ func init() {
 	// Membership (see engine/expr_in.go).
 	OptimizableFuncs["in"] = "in"
 
+	// String concatenation `||` (see engine/expr_concat.go); n-ary, no guard.
+	OptimizableFuncs["concat"] = "concat"
+
 	// Type checks (see engine/expr_type.go); underscore Name()s.
 	OptimizableFuncs["is_array"] = "is_array"
 	OptimizableFuncs["is_number"] = "is_number"
