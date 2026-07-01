@@ -188,41 +188,6 @@ func (a Num) IMod(b Num) (Num, bool) {
 // codegen emits an identifier reference rather than an inline string literal.
 const WarnDivideByZero = "Division by 0."
 
-// Binary arithmetic op codes for ArithApply.
-const (
-	ArithAdd = iota
-	ArithSub
-	ArithMult
-	ArithDiv
-	ArithMod
-	ArithIDiv
-	ArithIMod
-)
-
-// ArithApply dispatches a binary arithmetic op by code, so the (lz) expression
-// harness can stay a single small closure. ok is false only for the
-// divide/mod-by-zero cases (Div/Mod/IDiv/IMod), which the caller maps to N1QL
-// NULL; Add/Sub/Mult always return ok=true.
-func ArithApply(op int, a, b Num) (Num, bool) {
-	switch op {
-	case ArithAdd:
-		return a.Add(b), true
-	case ArithSub:
-		return a.Sub(b), true
-	case ArithMult:
-		return a.Mult(b), true
-	case ArithDiv:
-		return a.Div(b)
-	case ArithMod:
-		return a.Mod(b)
-	case ArithIDiv:
-		return a.IDiv(b)
-	case ArithIMod:
-		return a.IMod(b)
-	}
-	return Num{}, false
-}
-
 // AppendNum formats a Num as JSON into out, matching cbq's value serialization
 // (value/integer.go, value/float.go MarshalJSON): FormatInt for ints; for floats
 // FormatFloat('f', -1, 64) with -0 normalized to 0, and NaN/+Inf/-Inf emitted as

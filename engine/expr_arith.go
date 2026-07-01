@@ -34,54 +34,60 @@ func init() {
 
 // -----------------------------------------------------
 
+// Each operator passes its base.Num operation directly -- the (Num, bool) ones
+// (Div/Mod/IDiv/IMod) as method expressions, the always-ok ones (Add/Sub/Mult)
+// via a tiny adapter -- so the shared harness needs no op-code switch.
+func arithAdd(a, b base.Num) (base.Num, bool)  { return a.Add(b), true }
+func arithSub(a, b base.Num) (base.Num, bool)  { return a.Sub(b), true }
+func arithMult(a, b base.Num) (base.Num, bool) { return a.Mult(b), true }
+
 func ExprAdd(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	return ExprArithBi(lzVars, labels, params, path, base.ArithAdd)
+	return ExprArithBi(lzVars, labels, params, path, arithAdd, false)
 }
 
 func ExprSub(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	return ExprArithBi(lzVars, labels, params, path, base.ArithSub)
+	return ExprArithBi(lzVars, labels, params, path, arithSub, false)
 }
 
 func ExprMult(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	return ExprArithBi(lzVars, labels, params, path, base.ArithMult)
+	return ExprArithBi(lzVars, labels, params, path, arithMult, false)
 }
 
+// '/' and DIV emit a divide-by-zero warning (last arg); '%'/MOD stay silent.
 func ExprDiv(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	return ExprArithBi(lzVars, labels, params, path, base.ArithDiv)
+	return ExprArithBi(lzVars, labels, params, path, base.Num.Div, true)
 }
 
 func ExprMod(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	return ExprArithBi(lzVars, labels, params, path, base.ArithMod)
+	return ExprArithBi(lzVars, labels, params, path, base.Num.Mod, false)
 }
 
 func ExprIDiv(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	return ExprArithBi(lzVars, labels, params, path, base.ArithIDiv)
+	return ExprArithBi(lzVars, labels, params, path, base.Num.IDiv, true)
 }
 
 func ExprIMod(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	return ExprArithBi(lzVars, labels, params, path, base.ArithIMod)
+	return ExprArithBi(lzVars, labels, params, path, base.Num.IMod, false)
 }
 
 // -----------------------------------------------------
 
-// ExprArithBi handles the binary arithmetic operators. op is a base.Arith*
-// op-code (early-bound). The N1QL rule: if either operand is MISSING the result
-// is MISSING; else if either operand is not a number the result is NULL; else
-// compute (divide/mod-by-zero also yields NULL).
+// ExprArithBi handles the binary arithmetic operators. apply is the numeric
+// operation (returning ok=false only on divide/mod-by-zero); warnZero requests
+// the divide-by-zero advisory. The N1QL rule: if either operand is MISSING the
+// result is MISSING; else if either operand is not a number the result is NULL;
+// else compute (divide/mod-by-zero also yields NULL).
 func ExprArithBi(lzVars *base.Vars, labels base.Labels, params []interface{},
-	path string, op int) (lzExprFunc base.ExprFunc) {
+	path string, apply func(a, b base.Num) (base.Num, bool), warnZero bool) (
+	lzExprFunc base.ExprFunc) {
 	var lzBufPre []byte // <== varLift: lzBufPre by path
-
-	// Only '/' (Div) and 'DIV' (IDiv) emit a divide-by-zero warning in cbq;
-	// '%'/'MOD' return NULL silently.
-	warnZero := op == base.ArithDiv || op == base.ArithIDiv
 
 	biExprFunc := func(lzA, lzB base.ExprFunc, lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) { // !lz
 		if LzScope {
@@ -96,7 +102,7 @@ func ExprArithBi(lzVars *base.Vars, labels base.Labels, params []interface{},
 				if !lzOkA || !lzOkB {
 					lzVal = base.ValNull // Non-number operand.
 				} else {
-					lzNumR, lzOkR := base.ArithApply(op, lzNumA, lzNumB)
+					lzNumR, lzOkR := apply(lzNumA, lzNumB)
 					if !lzOkR {
 						lzVal = base.ValNull // Divide/mod by zero.
 						if warnZero && lzVars.Ctx.Warn != nil {
