@@ -97,6 +97,7 @@ front-end (parse args, read lines, format rows).
     -f <file>     run statements from a file and exit (DuckDB: -init/-c hybrid)
     -ns <name>    namespace (default "default")
     -mode <m>     output mode: box|json|jsonlines|csv|markdown|line|list
+                  (append |pretty, e.g. box|pretty, to indent JSON 2 spaces)
     -timer        show timing
     -init <file>  run dot-commands/SQL from file at startup (default ~/.n1k1rc)
     -no-init      skip the init file
@@ -179,8 +180,16 @@ the projection's column labels. Formatters:
   between rows. Best for wide/nested docs, which n1k1 has a lot of.
 - **`list`** — values joined by a separator (pipe-friendly).
 
-All formatters live in `cmd/n1k1/render_*.go` and take `([]json.RawMessage,
-base.Labels)` — no engine coupling.
+**`|pretty` modifier.** Any mode may carry a `|pretty` (or `-pretty`) suffix —
+e.g. `box|pretty`, `json|pretty` — which indents nested JSON values by 2 spaces
+instead of emitting them compactly. In `box` a pretty JSON cell spans multiple
+physical lines; the row grows as tall as its tallest cell, shorter cells
+blank-pad below, and column widths use each cell's widest line so the frame stays
+rectangular. `markdown|pretty` folds a cell's newlines to `<br>` to keep the
+table valid; `csv|pretty` relies on the csv writer quoting the embedded newlines.
+
+All formatters live in `cmd/render.go` and take `[]json.RawMessage` (plus a
+`pretty bool`) — no engine coupling.
 
 ------------------------------------------------------------------------
 ## 7. Deferred / future (explicitly out of v1)

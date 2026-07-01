@@ -65,7 +65,7 @@ func main() {
 		cFlag     = flag.String("c", "", "run one statement and exit")
 		fFlag     = flag.String("f", "", "run statements from a file and exit")
 		nsFlag    = flag.String("ns", "default", "datastore namespace")
-		modeFlag  = flag.String("mode", "", "output mode: "+strings.Join(cmd.OutputModes, "|")+" (default box at a TTY, else jsonlines)")
+		modeFlag  = flag.String("mode", "", "output mode: "+strings.Join(cmd.OutputModes, "|")+" (append |pretty to indent JSON; default box at a TTY, else jsonlines)")
 		timerFlag = flag.Bool("timer", false, "print row count + elapsed after each statement")
 		vFlag     = flag.Bool("v", false, "verbose: show unsupported reasons / plan on error")
 		initFlag  = flag.String("init", "", "startup file of dot-commands/SQL (default ~/."+prog+"rc; use \"\", \"-\" or \"none\" to skip)")
@@ -414,19 +414,21 @@ func (c *cli) exec(stmt string) {
 }
 
 func (c *cli) renderResult(res *glue.Result) {
-	switch c.mode {
+	// A "|pretty" / "-pretty" suffix on the mode 2-space-indents JSON values.
+	base, pretty, _ := cmd.ParseMode(c.mode)
+	switch base {
 	case "jsonlines":
-		cmd.RenderJSONLines(c.out, res.Rows)
+		cmd.RenderJSONLines(c.out, res.Rows, pretty)
 	case "json":
-		cmd.RenderJSON(c.out, res.Rows)
+		cmd.RenderJSON(c.out, res.Rows, pretty)
 	case "csv":
-		cmd.RenderCSV(c.out, res.Rows)
+		cmd.RenderCSV(c.out, res.Rows, pretty)
 	case "markdown":
-		cmd.RenderMarkdown(c.out, res.Rows)
+		cmd.RenderMarkdown(c.out, res.Rows, pretty)
 	case "line":
-		cmd.RenderLine(c.out, res.Rows)
+		cmd.RenderLine(c.out, res.Rows, pretty)
 	case "list":
-		cmd.RenderList(c.out, res.Rows, c.listSep)
+		cmd.RenderList(c.out, res.Rows, c.listSep, pretty)
 	default: // "box"
 		elapsed := ""
 		if c.timer {
@@ -436,7 +438,7 @@ func (c *cli) renderResult(res *glue.Result) {
 		if c.maxWidth < 0 { // auto: fit the box to the terminal's width
 			termWidth = c.terminalWidth()
 		}
-		cmd.RenderBox(c.out, res.Rows, c.maxWidth, c.maxRows, termWidth, elapsed, c.style)
+		cmd.RenderBox(c.out, res.Rows, c.maxWidth, c.maxRows, termWidth, elapsed, c.style, pretty)
 		return // box prints its own row-count/elapsed footer
 	}
 
@@ -518,7 +520,7 @@ func (c *cli) printHelp() {
 .open <dir>           open a different file datastore directory
 .tables / .keyspaces  list keyspaces (with a copy-paste example each)
 .schema [<keyspace>]  sampled shape (keys + JSON types) of a keyspace
-.mode <m>             output mode: `+strings.Join(cmd.OutputModes, " ")+`
+.mode <m>             output mode (append |pretty to indent JSON): `+strings.Join(cmd.OutputModes, " ")+`
 .timer [on|off]       elapsed-time reporting (no arg shows the current setting)
 .explain              toggle printing EXPLAIN PLAN per query
 .maxrows <n>          box: cap rows shown (0 = all; negative = last |n| rows)
