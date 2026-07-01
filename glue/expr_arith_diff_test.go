@@ -214,6 +214,55 @@ func TestIsTypeDifferentialVsCBQ(t *testing.T) {
 	}
 }
 
+func TestCaseDifferentialVsCBQ(t *testing.T) {
+	c := func(v interface{}) expression.Expression { return expression.NewConstant(v) }
+	wt := func(when, then expression.Expression) *expression.WhenTerm {
+		return &expression.WhenTerm{When: when, Then: then}
+	}
+
+	cases := []struct {
+		name string
+		expr expression.Expression
+	}{
+		// Searched CASE.
+		{"searched-first", expression.NewSearchedCase(
+			expression.WhenTerms{wt(c(true), c("a")), wt(c(false), c("b"))}, nil)},
+		{"searched-second", expression.NewSearchedCase(
+			expression.WhenTerms{wt(c(false), c("a")), wt(c(true), c("b"))}, nil)},
+		{"searched-else", expression.NewSearchedCase(
+			expression.WhenTerms{wt(c(false), c("a"))}, c("e"))},
+		{"searched-no-match-no-else", expression.NewSearchedCase(
+			expression.WhenTerms{wt(c(false), c("a"))}, nil)},
+		{"searched-null-cond", expression.NewSearchedCase(
+			expression.WhenTerms{wt(c(value.NULL_VALUE), c("a")), wt(c(true), c("b"))}, nil)},
+		{"searched-num-cond", expression.NewSearchedCase(
+			expression.WhenTerms{wt(c(5), c("a"))}, c("z"))},
+		// Simple CASE (desugars to eq conditions).
+		{"simple-match", expression.NewSimpleCase(c(5),
+			expression.WhenTerms{wt(c(5), c("five")), wt(c(6), c("six"))}, c("other"))},
+		{"simple-second", expression.NewSimpleCase(c(6),
+			expression.WhenTerms{wt(c(5), c("five")), wt(c(6), c("six"))}, c("other"))},
+		{"simple-else", expression.NewSimpleCase(c(9),
+			expression.WhenTerms{wt(c(5), c("five"))}, c("other"))},
+		{"simple-no-else", expression.NewSimpleCase(c(9),
+			expression.WhenTerms{wt(c(5), c("five"))}, nil)},
+		{"simple-str", expression.NewSimpleCase(c("x"),
+			expression.WhenTerms{wt(c("x"), c(1)), wt(c("y"), c(2))}, c(0))},
+	}
+
+	for _, tc := range cases {
+		want := cbqEval(t, tc.expr)
+		got, ok := nativeEval(t, tc.expr)
+		if !ok {
+			t.Errorf("%s: did not optimize", tc.name)
+			continue
+		}
+		if got != want {
+			t.Errorf("%s: native=%q, cbq=%q", tc.name, got, want)
+		}
+	}
+}
+
 func TestConcatDifferentialVsCBQ(t *testing.T) {
 	c := func(v interface{}) expression.Expression { return expression.NewConstant(v) }
 	null := c(value.NULL_VALUE)

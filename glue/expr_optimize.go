@@ -135,6 +135,53 @@ func ExprTreeOptimize(labels base.Labels, e expression.Expression,
 		return params, true
 	}
 
+	// CASE is not an expression.Function; lower both forms to a flat native
+	// "case" param list [cond, then, cond, then, ..., else?]. Children() gives:
+	//   SearchedCase: [when1, then1, ..., else?]
+	//   SimpleCase:   [searchTerm, when1, then1, ..., else?]
+	// SimpleCase desugars to searched form with cond = eq(searchTerm, when).
+	if sc, ok := e.(*expression.SearchedCase); ok {
+		params = []interface{}{"case"}
+		for _, child := range sc.Children() {
+			cp, ok := ExprTreeOptimize(labels, child, buf)
+			if !ok {
+				return nil, false
+			}
+			params = append(params, cp)
+		}
+		return params, true
+	}
+
+	if sc, ok := e.(*expression.SimpleCase); ok {
+		children := sc.Children()
+		searchP, ok := ExprTreeOptimize(labels, children[0], buf)
+		if !ok {
+			return nil, false
+		}
+		params = []interface{}{"case"}
+		i := 1
+		for i+1 < len(children) { // (when, then) pairs
+			whenP, ok := ExprTreeOptimize(labels, children[i], buf)
+			if !ok {
+				return nil, false
+			}
+			thenP, ok := ExprTreeOptimize(labels, children[i+1], buf)
+			if !ok {
+				return nil, false
+			}
+			params = append(params, []interface{}{"eq", searchP, whenP}, thenP)
+			i += 2
+		}
+		if i < len(children) { // trailing else
+			elseP, ok := ExprTreeOptimize(labels, children[i], buf)
+			if !ok {
+				return nil, false
+			}
+			params = append(params, elseP)
+		}
+		return params, true
+	}
+
 	f, ok := e.(expression.Function)
 	if !ok {
 		return nil, false

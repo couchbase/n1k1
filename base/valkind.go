@@ -110,3 +110,24 @@ func NaryConcat(children []ExprFunc, vals Vals, yieldErr YieldErr, out []byte) (
 	out = append(out, '"')
 	return Val(out), out
 }
+
+// CaseReduce evaluates a CASE as a flat child list [cond, then, cond, then, ...,
+// else?]: it returns the first `then` whose `cond` is truthy, else the trailing
+// `else` (present when the list has odd length), else NULL. It short-circuits
+// like cbq (later conds/thens are not evaluated). Simple CASE is desugared to
+// this searched form (each cond an eq) by the optimizer, so one reducer serves
+// both. Mirrors cbq expression/case_searched.go + case_simple.go.
+func CaseReduce(children []ExprFunc, vals Vals, yieldErr YieldErr) Val {
+	n := len(children)
+	i := 0
+	for i+1 < n { // (cond, then) pairs
+		if ValTruthy(children[i](vals, yieldErr)) {
+			return children[i+1](vals, yieldErr)
+		}
+		i += 2
+	}
+	if i < n { // trailing else (odd length)
+		return children[i](vals, yieldErr)
+	}
+	return ValNull
+}
