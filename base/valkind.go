@@ -131,3 +131,42 @@ func CaseReduce(children []ExprFunc, vals Vals, yieldErr YieldErr) Val {
 	}
 	return ValNull
 }
+
+// NullMissingIf implements NULLIF (whenEqual=ValNull) and MISSINGIF
+// (whenEqual=ValMissing), per cbq func_cond_unknown.go: MISSING if either operand
+// is MISSING; NULL if either is NULL; whenEqual if a equals b (N1QL collation);
+// else the first operand a (verbatim). vc.Compare == 0 mirrors a.Equals(b).Truth().
+func NullMissingIf(vc *ValComparer, a, b, whenEqual Val) Val {
+	ka, kb := ValKind(a), ValKind(b)
+	if ka == ValKindMissing || kb == ValKindMissing {
+		return ValMissing
+	}
+	if ka == ValKindNull || kb == ValKindNull {
+		return ValNull
+	}
+	if vc.Compare(a, b) == 0 {
+		return whenEqual
+	}
+	return a
+}
+
+// GreatestLeast implements GREATEST (greater=true) and LEAST (greater=false), per
+// cbq func_comp.go: the max/min operand by N1QL collation, skipping MISSING/NULL
+// operands; NULL if every operand is MISSING/NULL. The winning operand's bytes are
+// returned verbatim.
+func GreatestLeast(vc *ValComparer, children []ExprFunc, vals Vals, yieldErr YieldErr, greater bool) Val {
+	rv := ValNull
+	rvSet := false
+	for _, child := range children {
+		a := child(vals, yieldErr)
+		if ValKind(a) != ValKindValue {
+			continue // skip MISSING/NULL
+		}
+		if !rvSet {
+			rv, rvSet = a, true
+		} else if cmp := vc.Compare(a, rv); (greater && cmp > 0) || (!greater && cmp < 0) {
+			rv = a
+		}
+	}
+	return rv
+}

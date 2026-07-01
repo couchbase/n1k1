@@ -69,6 +69,13 @@ func init() {
 	// String concatenation `||` (see engine/expr_concat.go); n-ary, no guard.
 	OptimizableFuncs["concat"] = "concat"
 
+	// NULLIF/MISSINGIF (binary, see engine/expr_nullif.go); GREATEST/LEAST
+	// (n-ary, see engine/expr_greatest.go).
+	OptimizableFuncs["nullif"] = "nullif"
+	OptimizableFuncs["missingif"] = "missingif"
+	OptimizableFuncs["greatest"] = "greatest"
+	OptimizableFuncs["least"] = "least"
+
 	// Type checks (see engine/expr_type.go); underscore Name()s.
 	OptimizableFuncs["is_array"] = "is_array"
 	OptimizableFuncs["is_number"] = "is_number"
@@ -197,9 +204,10 @@ func ExprTreeOptimize(labels base.Labels, e expression.Expression,
 	// forms fall back to cbq rather than silently dropping operands.
 	operands := f.Operands()
 	switch name {
-	case "add", "mult", "sub", "div", "mod", "idiv", "imod", "in":
+	case "add", "mult", "sub", "div", "mod", "idiv", "imod", "in",
+		"nullif", "missingif":
 		// These native harnesses are two-operand; cbq's n-ary forms fall back.
-		// (ifnull/ifmissing/ifmissingornull/nvl are now n-ary -- no guard.)
+		// (ifnull/ifmissing/ifmissingornull/nvl and greatest/least are n-ary.)
 		if len(operands) != 2 {
 			return nil, false
 		}

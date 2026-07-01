@@ -214,6 +214,74 @@ func TestIsTypeDifferentialVsCBQ(t *testing.T) {
 	}
 }
 
+func TestNullMissingIfDifferentialVsCBQ(t *testing.T) {
+	c := func(v interface{}) expression.Expression { return expression.NewConstant(v) }
+	miss := c(value.MISSING_VALUE)
+	null := c(value.NULL_VALUE)
+
+	cases := []struct {
+		name string
+		expr expression.Expression
+	}{
+		{"nullif-eq", expression.NewNullIf(c(5), c(5))},
+		{"nullif-ne", expression.NewNullIf(c(5), c(6))},
+		{"nullif-canon", expression.NewNullIf(c(5), c(5.0))},
+		{"nullif-a-missing", expression.NewNullIf(miss, c(5))},
+		{"nullif-a-null", expression.NewNullIf(null, c(5))},
+		{"nullif-b-null", expression.NewNullIf(c(5), null)},
+		{"nullif-str-ne", expression.NewNullIf(c("a"), c("b"))},
+		{"missingif-eq", expression.NewMissingIf(c(5), c(5))},
+		{"missingif-ne", expression.NewMissingIf(c(5), c(6))},
+		{"missingif-a-missing", expression.NewMissingIf(miss, c(5))},
+		{"missingif-b-null", expression.NewMissingIf(c(5), null)},
+	}
+	for _, tc := range cases {
+		want := cbqEval(t, tc.expr)
+		got, ok := nativeEval(t, tc.expr)
+		if !ok {
+			t.Errorf("%s: did not optimize", tc.name)
+			continue
+		}
+		if got != want {
+			t.Errorf("%s: native=%q, cbq=%q", tc.name, got, want)
+		}
+	}
+}
+
+func TestGreatestLeastDifferentialVsCBQ(t *testing.T) {
+	c := func(v interface{}) expression.Expression { return expression.NewConstant(v) }
+	miss := c(value.MISSING_VALUE)
+	null := c(value.NULL_VALUE)
+
+	cases := []struct {
+		name string
+		expr expression.Expression
+	}{
+		{"greatest-nums", expression.NewGreatest(c(3), c(7), c(5))},
+		{"greatest-skip-null", expression.NewGreatest(c(3), null, c(9))},
+		{"greatest-skip-missing", expression.NewGreatest(miss, c(4), c(2))},
+		{"greatest-all-unknown", expression.NewGreatest(null, miss)},
+		{"greatest-strings", expression.NewGreatest(c("a"), c("c"), c("b"))},
+		{"greatest-mixed", expression.NewGreatest(c(5), c("a"))},
+		{"greatest-4", expression.NewGreatest(c(1), c(9), c(3), c(7))},
+		{"least-nums", expression.NewLeast(c(3), c(7), c(5))},
+		{"least-skip-missing", expression.NewLeast(miss, c(7), c(2))},
+		{"least-mixed", expression.NewLeast(c(5), c("a"))},
+		{"least-all-unknown", expression.NewLeast(miss, null)},
+	}
+	for _, tc := range cases {
+		want := cbqEval(t, tc.expr)
+		got, ok := nativeEval(t, tc.expr)
+		if !ok {
+			t.Errorf("%s: did not optimize", tc.name)
+			continue
+		}
+		if got != want {
+			t.Errorf("%s: native=%q, cbq=%q", tc.name, got, want)
+		}
+	}
+}
+
 func TestCaseDifferentialVsCBQ(t *testing.T) {
 	c := func(v interface{}) expression.Expression { return expression.NewConstant(v) }
 	wt := func(when, then expression.Expression) *expression.WhenTerm {
