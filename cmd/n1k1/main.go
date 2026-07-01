@@ -61,23 +61,22 @@ func progName() string {
 
 func main() {
 	var (
-		cFlag      = flag.String("c", "", "run one statement and exit")
-		fFlag      = flag.String("f", "", "run statements from a file and exit")
-		nsFlag     = flag.String("ns", "default", "datastore namespace")
-		modeFlag   = flag.String("mode", "", "output mode: "+strings.Join(cmd.OutputModes, "|")+" (default box at a TTY, else jsonlines)")
-		timerFlag  = flag.Bool("timer", false, "print row count + elapsed after each statement")
-		vFlag      = flag.Bool("v", false, "verbose: show unsupported reasons / plan on error")
-		initFlag   = flag.String("init", "", "run dot-commands/SQL from this file at startup (default ~/."+prog+"rc)")
-		noInitFlag = flag.Bool("no-init", false, "skip the startup init file")
-		modesFlag  = flag.String("modes", "", "restrict scanning to a comma-separated set (e.g. json,jsonl,gzip,recurse); empty = all/flexible")
+		cFlag     = flag.String("c", "", "run one statement and exit")
+		fFlag     = flag.String("f", "", "run statements from a file and exit")
+		nsFlag    = flag.String("ns", "default", "datastore namespace")
+		modeFlag  = flag.String("mode", "", "output mode: "+strings.Join(cmd.OutputModes, "|")+" (default box at a TTY, else jsonlines)")
+		timerFlag = flag.Bool("timer", false, "print row count + elapsed after each statement")
+		vFlag     = flag.Bool("v", false, "verbose: show unsupported reasons / plan on error")
+		initFlag  = flag.String("init", "", "startup file of dot-commands/SQL (default ~/."+prog+"rc; use \"\", \"-\" or \"none\" to skip)")
+		scanFlag  = flag.String("scan", "", "restrict scanning to a comma-separated set (all|json|jsonl|csv|tsv|gzip|recurse); empty or 'all' = everything")
 	)
 	flag.Usage = usage
 	flag.Parse()
 
-	// --modes locks down which formats/layouts/compression n1k1 will scan, so a
+	// -scan locks down which formats/layouts/compression n1k1 will scan, so a
 	// tree with subdirs/formats the user doesn't want considered can be excluded.
-	if opts, err := recordsource.ParseModes(*modesFlag); err != nil {
-		fmt.Fprintf(os.Stderr, "%s: bad -modes: %v\n", prog, err)
+	if opts, err := recordsource.ParseModes(*scanFlag); err != nil {
+		fmt.Fprintf(os.Stderr, "%s: bad -scan: %v\n", prog, err)
 		os.Exit(2)
 	} else {
 		glue.ScanWalkOptions = opts
@@ -90,8 +89,21 @@ func main() {
 
 	sess, err := glue.OpenSession(dir, *nsFlag)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "%s: cannot open datastore %q: %v\n", prog, dir, err)
-		os.Exit(1)
+		// No datastore at dir (e.g. it doesn't exist). Keep running with an empty
+		// one so the user can still evaluate expressions (SELECT 1+2;) and .open a
+		// real datastore later, rather than exiting.
+		fmt.Fprintf(os.Stderr, "%s: no datastore at %q (%v); starting empty\n", prog, dir, err)
+		empty, e2 := os.MkdirTemp("", "n1k1-empty-")
+		if e2 != nil {
+			fmt.Fprintf(os.Stderr, "%s: %v\n", prog, e2)
+			os.Exit(1)
+		}
+		defer os.RemoveAll(empty)
+		if sess, err = glue.OpenSession(empty, *nsFlag); err != nil {
+			fmt.Fprintf(os.Stderr, "%s: %v\n", prog, err)
+			os.Exit(1)
+		}
+		dir = ""
 	}
 
 	stdinIsTTY := isTTY(os.Stdin)
@@ -129,18 +141,31 @@ func main() {
 		style:    cmd.Style{On: fancy},
 	}
 
-	// Startup init file (dot-commands / SQL), unless suppressed.
-	if !*noInitFlag {
-		initFile := *initFlag
-		if initFile == "" {
-			if home, e := os.UserHomeDir(); e == nil {
-				initFile = filepath.Join(home, "."+prog+"rc")
-			}
+	// Startup init file (dot-commands / SQL). If -init was not given, use the
+	// default ~/.<prog>rc; if given, the value names a file, or "", "-" or "none"
+	// to skip. (flag.Visit distinguishes "not given" from an explicit -init "".)
+	initGiven := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "init" {
+			initGiven = true
 		}
-		if initFile != "" {
-			if _, e := os.Stat(initFile); e == nil {
-				c.readFile(initFile)
-			}
+	})
+	initFile := ""
+	if !initGiven {
+		if home, e := os.UserHomeDir(); e == nil {
+			initFile = filepath.Join(home, "."+prog+"rc")
+		}
+	} else {
+		switch strings.ToLower(strings.TrimSpace(*initFlag)) {
+		case "", "-", "none", "skip":
+			initFile = "" // explicit skip
+		default:
+			initFile = *initFlag
+		}
+	}
+	if initFile != "" {
+		if _, e := os.Stat(initFile); e == nil {
+			c.readFile(initFile)
 		}
 	}
 
@@ -211,8 +236,8 @@ func (c *cli) icon(s string) string {
 // ---- input loops ----------------------------------------------------------
 
 func (c *cli) repl() {
-	fmt.Fprintf(c.stderr, "%s%s SQL++ over %s (namespace %q). Type %s for commands, %s to exit.\n",
-		c.icon("🔎 "), c.style.Cyan(c.prog), c.dir, c.ns, c.style.Bold(".help"), c.style.Bold(".quit"))
+	fmt.Fprintf(c.stderr, "%s%s — SQL++. Type %s for commands, %s to exit.\n",
+		c.icon("🔎 "), c.style.Cyan(c.prog), c.style.Bold(".help"), c.style.Bold(".quit"))
 
 	// Show the flattened keyspaces + copy-pasteable examples up front, so it's
 	// clear what's queryable (and how the datastore dir was flattened).
@@ -431,7 +456,16 @@ func (c *cli) dot(line string) bool {
 			fmt.Fprintf(c.stderr, "modes: %s\n", strings.Join(cmd.OutputModes, " "))
 		}
 	case ".timer":
-		c.timer = (arg == "on")
+		switch strings.ToLower(arg) {
+		case "":
+			fmt.Fprintf(c.stderr, "timer %s\n", onOff(c.timer))
+		case "on":
+			c.timer = true
+		case "off":
+			c.timer = false
+		default:
+			fmt.Fprintf(c.stderr, "usage: .timer [on|off] (currently %s)\n", onOff(c.timer))
+		}
 	case ".explain":
 		c.explain = !c.explain
 		fmt.Fprintf(c.stderr, "explain %s\n", onOff(c.explain))
@@ -459,7 +493,7 @@ func (c *cli) printHelp() {
 .tables / .keyspaces  list keyspaces (with a copy-paste example each)
 .schema [<keyspace>]  sampled shape (keys + JSON types) of a keyspace
 .mode <m>             output mode: `+strings.Join(cmd.OutputModes, " ")+`
-.timer on|off         toggle elapsed-time reporting
+.timer [on|off]       elapsed-time reporting (no arg shows the current setting)
 .explain              toggle printing EXPLAIN PLAN per query
 .maxrows <n>          box: cap rows shown (0 = all)
 .maxwidth <n>         box: cap column width (0 = uncapped)
@@ -497,11 +531,14 @@ func (c *cli) cmdKeyspaces() {
 func (c *cli) keyspaceNames() ([]string, error) {
 	ns, nerr := c.sess.Store.Datastore.NamespaceByName(c.ns)
 	if nerr != nil {
-		return nil, fmt.Errorf("namespace %q: %v", c.ns, nerr)
+		// Namespace missing usually just means an empty datastore -- report it as
+		// "no keyspaces" (empty list) rather than an error, so the caller can show
+		// a friendly hint instead of a scary message.
+		return nil, nil
 	}
 	names, kerr := ns.KeyspaceNames()
 	if kerr != nil {
-		return nil, fmt.Errorf("keyspaces in %q: %v", c.ns, kerr)
+		return nil, fmt.Errorf("listing keyspaces: %v", kerr)
 	}
 	sort.Strings(names)
 	return names, nil
@@ -527,7 +564,10 @@ func (c *cli) printKeyspaces(w io.Writer) {
 		return
 	}
 	if len(names) == 0 {
-		fmt.Fprintf(w, "(no keyspaces in namespace %q under %s)\n", c.ns, c.dir)
+		fmt.Fprintf(w, "%sNo keyspaces here yet — you can still evaluate expressions, e.g.  %s\n",
+			c.icon("💡 "), c.style.Cyan("SELECT 1+2;"))
+		fmt.Fprintf(w, "   Point at data with  %s  (a dir of JSON, or <namespace>/<keyspace> subdirs).\n",
+			c.style.Bold(".open <dir>"))
 		return
 	}
 	width := 0
@@ -540,8 +580,13 @@ func (c *cli) printKeyspaces(w io.Writer) {
 	if len(names) == 1 {
 		noun = "keyspace"
 	}
-	fmt.Fprintf(w, "%s%d %s in namespace %s — copy/paste to try:\n",
-		c.icon("📚 "), len(names), noun, c.style.Bold(c.ns))
+	// The namespace is almost always "default"; only mention it when it isn't.
+	nsNote := ""
+	if c.ns != "default" {
+		nsNote = " in namespace " + c.style.Bold(c.ns)
+	}
+	fmt.Fprintf(w, "%s%d %s%s — copy/paste to try:\n",
+		c.icon("📚 "), len(names), noun, nsNote)
 	for i, n := range names {
 		pad := n + strings.Repeat(" ", width-len(n))
 		fmt.Fprintf(w, "  %s   %s\n", c.style.Cyan(pad), c.style.Dim(exampleFor(n, i)))

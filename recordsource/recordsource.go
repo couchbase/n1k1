@@ -470,14 +470,16 @@ func AllModes() WalkOptions {
 }
 
 // ParseModes builds a restrictive WalkOptions from a comma-separated mode list
-// (the CLI's --modes flag), so a user with subdirs/formats they don't want
+// (the CLI's -scan flag), so a user with subdirs/formats they don't want
 // scanned can lock n1k1 down. Recognized tokens:
 //
+//	all       → everything (flexible, the default)
 //	json      → .json/.jsons        jsonl → .jsonl/.ndjson
 //	csv       → .csv                 tsv   → .tsv
 //	gzip      → allow .gz            recurse → descend subdirs
 //
-// An empty string means "unrestricted" (AllModes). Unknown tokens are an error.
+// An empty string (or "all") means "unrestricted" (AllModes). Unknown tokens
+// are an error.
 func ParseModes(csv string) (WalkOptions, error) {
 	csv = strings.TrimSpace(csv)
 	if csv == "" {
@@ -488,6 +490,8 @@ func ParseModes(csv string) (WalkOptions, error) {
 		switch strings.ToLower(strings.TrimSpace(tok)) {
 		case "":
 			// tolerate empty items from trailing commas
+		case "all":
+			return AllModes(), nil // everything (flexible), same as empty
 		case "json":
 			opts.Formats[".json"], opts.Formats[".jsons"] = true, true
 		case "jsonl", "ndjson":
@@ -503,7 +507,7 @@ func ParseModes(csv string) (WalkOptions, error) {
 		case "recurse", "recursive":
 			opts.Recurse = true
 		default:
-			return WalkOptions{}, fmt.Errorf("recordsource: unknown --modes token %q", tok)
+			return WalkOptions{}, fmt.Errorf("recordsource: unknown scan mode %q", tok)
 		}
 	}
 	return opts, nil
