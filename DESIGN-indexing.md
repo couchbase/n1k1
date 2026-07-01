@@ -192,6 +192,121 @@ small in-process shim, not n1fty.
 - Definition/build: extend the `.indexes.json` sidecar with FTS specs (or add a
   separate `.fts.json`); build the bleve index on open from a full scan.
 
+## "Index everything": dynamic / wildcard / automatic secondary indexes
+
+bleve's **dynamic mapping** = "index every field, choosing the structure by
+type" (for bleve, text → inverted index). The natural question: what's the
+**B-tree / GSI equivalent** — "index every scalar path with an ordered/range
+structure so any `WHERE`/`ORDER BY` on any field is fast"? There's strong prior
+art, in three families.
+
+### Prior art
+
+**Eager "index everything up front":**
+- **Azure Cosmos DB — the closest analog, and it's the default.** Cosmos DB
+  **automatically indexes every property of every item**, with no schema or
+  secondary-index setup; the default policy enforces a **range index** (an ordered
+  tree-like structure) on every string/number path — i.e. exactly the B-tree
+  equivalent of bleve dynamic mapping, *on by default*. Under the hood it's an
+  **inverted index mapping each JSON path → the items that contain that value**,
+  with three index kinds: **Range** (scalar range/equality/`ORDER BY`),
+  **Composite** (multi-property `ORDER BY` / multi-filter), and **Spatial** (geo).
+  The model is **opt-out**: `excludedPaths` / `includedPaths` with a `/*` wildcard,
+  most-precise path wins. This is the design to emulate for "everything indexed by
+  default."
+- **MongoDB wildcard index `{"$**": 1}`** — eager index of every field path
+  (traverses embedded docs/arrays); supports include/exclude subtrees
+  (`wildcardProjection`). Caveats that matter: the planner can use it for **only
+  one predicate field per query**, it can't do equality on whole objects/arrays,
+  array handling is subtle, and it's slower than a targeted index. Opt-in (you
+  create it), unlike Cosmos's default.
+- **Elasticsearch / Lucene dynamic mapping** — closest to bleve's own model:
+  auto-detect the field type and pick the structure per type — numeric/date/geo →
+  **BKD tree (points)**, the range workhorse; keyword → doc-values; text →
+  analyzed inverted. Lesson: "index everything" should **route by inferred type**,
+  not force one structure onto all fields.
+- **PostgreSQL GIN on `jsonb`** — a single inverted index over *all* key/value
+  pairs of a document (containment `@>`, existence `?`, equality). "Index
+  everything" for JSON, but inverted — good for equality/containment, weak for
+  ranges (`jsonb_path_ops` is the compact variant).
+
+**Cheap always-on *approximate* "index-everything" (prune, don't seek):**
+- **BRIN / min-max / zone maps** (Postgres BRIN, Oracle zone maps, Netezza,
+  Infobright data packs, ORC/Parquet stats, MonetDB) — summarize each block by
+  min/max; tiny enough to keep on *every* column; prune blocks/files that can't
+  match a predicate.
+- **Parquet column bloom filters** (Split Block Bloom Filter) — per-column-chunk
+  bloom for equality/point lookups on high-cardinality columns (IDs/UUIDs);
+  30–50× point-lookup speedups reported. "Index every column for equality,"
+  cheaply.
+
+**Adaptive / workload-driven ("index what's queried," not everything):**
+- **Oracle Automatic Indexing (19c)** — background task (~every 15 min) creates
+  candidate indexes *invisible*, verifies they actually improve queries, then
+  makes them visible; drops unhelpful ones.
+- **Azure SQL automatic tuning** — auto create/drop indexes from workload; drops
+  unused/duplicate indexes over time.
+- **RavenDB auto-indexes** — the doc-DB take: when a query has no matching index,
+  it auto-creates one, then merges/garbage-collects unused ones.
+- **SQLite automatic (transient) indexes** — builds a throwaway B-tree for the
+  duration of a single query when it beats repeated scanning.
+- **Database cracking / adaptive indexing** (Idreos, MonetDB) — the index
+  self-organizes as a *side effect* of query processing; each range query "cracks"
+  the column into progressively-sorted pieces.
+
+### Recommendation for n1k1 — three tiers, mapped to our machinery
+
+1. **Default "index-everything-lite": always-on zone maps + optional per-file
+   bloom filters** at the scan/datastore layer (the *approximate* family). This
+   fits n1k1 today: cheap, always-on, and — crucially — **needs no cbq-query
+   planner changes**, because pruning is a datastore/scan concern (skip a file
+   whose min/max range or bloom filter rules out the predicate), *not* planner
+   index-selection. It's already half-designed: it's exactly the manifest zone
+   maps in `DESIGN-data.md` §5. Recommended as the pragmatic "index everything"
+   default.
+2. **Adaptive auto-index (RavenDB/Oracle-style)** as the self-managing GSI: log
+   the predicates / residual filters the planner produces, and
+   auto-`createSecondaryIndex` an ordinary ordered index for the hot field(s), GC
+   unused ones. Big advantage: the created index is a **normal `RangeKey` index
+   the cbq planner already understands** (Phase 1 machinery) — so this needs **no
+   wildcard-planner work**. Recommended as the realistic medium-term path.
+3. **Eager wildcard GSI (Cosmos/Mongo-style)** — a bbolt store keyed
+   `encode(path) + encode(value) + docID` so any single-path equality/range is
+   contiguous. Feasible to *build*, but the hard part is **planner integration**:
+   cbq-query's `sargableIndexes` matches predicates against a *fixed*
+   `index.RangeKey()` and has no concept of a wildcard index covering arbitrary
+   paths (Cosmos/Mongo have bespoke wildcard planner support; cbq-query doesn't).
+   A true wildcard GSI would need fork-side planner work — recognize a wildcard
+   index and synthesize a `RangeKey`/span from whatever path the predicate names —
+   and inherits Mongo's caveats (one field per query, no whole-object equality,
+   array subtleties). Flag as a research / hard item, not Phase 1.
+
+**Symmetry with FTS:** bleve dynamic mapping already gives "index all text" for
+free. So n1k1's full "index everything" posture = **bleve dynamic (text)** +
+**zone-maps/bloom (cheap scalar pruning)** + **adaptive auto-index (hot scalar
+fields)** — without forcing a giant always-on wildcard structure. If we ever do
+build the eager wildcard GSI, follow the Cosmos/ES lesson and **route by inferred
+type** (ordered bbolt store for scalars, bleve for text/geo), rather than one
+structure for everything.
+
+### Prior-art links
+- Cosmos DB indexing overview / policies:
+  https://learn.microsoft.com/en-us/azure/cosmos-db/index-overview ,
+  https://learn.microsoft.com/en-us/azure/cosmos-db/index-policy
+- MongoDB wildcard indexes:
+  https://www.mongodb.com/docs/manual/core/indexes/index-types/index-wildcard/
+- Elasticsearch dynamic field mapping:
+  https://www.elastic.co/docs/manage-data/data-store/mapping/dynamic-field-mapping
+- Postgres GIN (jsonb): https://www.postgresql.org/docs/current/gin.html ;
+  BRIN: https://www.postgresql.org/docs/current/brin.html
+- Parquet bloom filters: https://parquet.apache.org/docs/file-format/bloomfilter/
+- Oracle Automatic Indexing: https://oracle-base.com/articles/19c/automatic-indexing-19c
+- Azure SQL automatic tuning:
+  https://learn.microsoft.com/en-us/azure/azure-sql/database/automatic-tuning-overview
+- RavenDB auto-indexes: https://ravendb.net/features/indexes/intelligent-auto-indexes
+- SQLite automatic indexes: https://sqlite.org/optoverview.html
+- Database cracking (Idreos/MonetDB): https://www.vldb.org/pvldb/vol4/p586-idreos.pdf
+
 ## Verification
 
 - **Phase 1:** create a keyspace with a `.indexes.json` over a field, run a query
