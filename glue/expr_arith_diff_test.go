@@ -130,3 +130,50 @@ func TestArithDifferentialVsCBQ(t *testing.T) {
 		}
 	}
 }
+
+func TestPredicateDifferentialVsCBQ(t *testing.T) {
+	c := func(v interface{}) expression.Expression { return expression.NewConstant(v) }
+
+	// Representable operands (MISSING isn't a JSON constant -- covered in
+	// engine/expr_pred_test.go).
+	num := c(3)
+	str := c("x")
+	null := c(value.NULL_VALUE)
+	tru := c(true)
+	fls := c(false)
+	zero := c(0)
+
+	cases := []struct {
+		name string
+		expr expression.Expression
+	}{
+		{"isnull-value", expression.NewIsNull(num)},
+		{"isnull-null", expression.NewIsNull(null)},
+		{"isnotnull-value", expression.NewIsNotNull(str)},
+		{"isnotnull-null", expression.NewIsNotNull(null)},
+		{"ismissing-value", expression.NewIsMissing(num)},
+		{"ismissing-null", expression.NewIsMissing(null)},
+		{"isnotmissing-value", expression.NewIsNotMissing(num)},
+		{"isvalued-value", expression.NewIsValued(num)},
+		{"isvalued-null", expression.NewIsValued(null)},
+		{"isnotvalued-value", expression.NewIsNotValued(str)},
+		{"isnotvalued-null", expression.NewIsNotValued(null)},
+		{"not-true", expression.NewNot(tru)},
+		{"not-false", expression.NewNot(fls)},
+		{"not-null", expression.NewNot(null)},
+		{"not-num", expression.NewNot(num)},
+		{"not-zero", expression.NewNot(zero)},
+	}
+
+	for _, tc := range cases {
+		want := cbqEval(t, tc.expr)
+		got, ok := nativeEval(t, tc.expr)
+		if !ok {
+			t.Errorf("%s: expression did not optimize to native path", tc.name)
+			continue
+		}
+		if got != want {
+			t.Errorf("%s: native=%q, cbq=%q", tc.name, got, want)
+		}
+	}
+}

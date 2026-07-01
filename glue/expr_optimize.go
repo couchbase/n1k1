@@ -40,6 +40,17 @@ func init() {
 	OptimizableFuncs["idiv"] = "idiv"
 	OptimizableFuncs["imod"] = "imod"
 	OptimizableFuncs["neg"] = "neg"
+
+	// Unary predicates (see engine/expr_pred.go). Keys are the cbq Function
+	// Name() (the canonical no-underscore forms set by each constructor's
+	// Init(), e.g. "isnull"); values are the n1k1 ExprCatalog names.
+	OptimizableFuncs["not"] = "not"
+	OptimizableFuncs["isnull"] = "is_null"
+	OptimizableFuncs["isnotnull"] = "is_not_null"
+	OptimizableFuncs["ismissing"] = "is_missing"
+	OptimizableFuncs["isnotmissing"] = "is_not_missing"
+	OptimizableFuncs["isvalued"] = "is_valued"
+	OptimizableFuncs["isnotvalued"] = "is_not_valued"
 }
 
 // ExprTreeOptimize attempts to optimize a N1QL
@@ -111,7 +122,9 @@ func ExprTreeOptimize(labels base.Labels, e expression.Expression,
 		if len(operands) != 2 {
 			return nil, false
 		}
-	case "neg":
+	case "neg",
+		"not", "is_null", "is_not_null",
+		"is_missing", "is_not_missing", "is_valued", "is_not_valued":
 		if len(operands) != 1 {
 			return nil, false
 		}
