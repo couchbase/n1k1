@@ -214,6 +214,10 @@ func (c *cli) repl() {
 	fmt.Fprintf(c.stderr, "%s%s SQL++ over %s (namespace %q). Type %s for commands, %s to exit.\n",
 		c.icon("🔎 "), c.style.Cyan(c.prog), c.dir, c.ns, c.style.Bold(".help"), c.style.Bold(".quit"))
 
+	// Show the flattened keyspaces + copy-pasteable examples up front, so it's
+	// clear what's queryable (and how the datastore dir was flattened).
+	c.printKeyspaces(c.stderr)
+
 	ln := liner.NewLiner()
 	defer ln.Close()
 	ln.SetCtrlCAborts(true) // Ctrl-C aborts the current line, not the process
@@ -452,7 +456,7 @@ func (c *cli) dot(line string) bool {
 func (c *cli) printHelp() {
 	fmt.Fprint(c.stderr, `.help                 show this help
 .open <dir>           open a different file datastore directory
-.tables / .keyspaces  list keyspaces in the namespace
+.tables / .keyspaces  list keyspaces (with a copy-paste example each)
 .schema [<keyspace>]  sampled shape (keys + JSON types) of a keyspace
 .mode <m>             output mode: `+strings.Join(cmd.OutputModes, " ")+`
 .timer on|off         toggle elapsed-time reporting
@@ -483,33 +487,65 @@ func (c *cli) cmdOpen(dir string) {
 }
 
 func (c *cli) cmdKeyspaces() {
-	names, err := c.keyspaceNames()
-	if err != nil {
-		fmt.Fprintf(c.stderr, "%v\n", err)
-		return
-	}
-	if len(names) == 0 {
-		fmt.Fprintf(c.stderr, "(no keyspaces under %s/%s)\n", c.dir, c.ns)
-		return
-	}
-	for _, n := range names {
-		fmt.Fprintln(c.out, n)
-	}
+	c.printKeyspaces(c.out)
 }
 
+// keyspaceNames lists the keyspaces the datastore actually exposes in the
+// current namespace -- via the datastore interface, not the raw filesystem, so
+// the listing reflects n1k1's flattening (e.g. a synthetic flat-root keyspace,
+// or later catalog-defined keyspaces), not just literal subdirectories.
 func (c *cli) keyspaceNames() ([]string, error) {
-	entries, err := os.ReadDir(filepath.Join(c.dir, c.ns))
-	if err != nil {
-		return nil, err
+	ns, nerr := c.sess.Store.Datastore.NamespaceByName(c.ns)
+	if nerr != nil {
+		return nil, fmt.Errorf("namespace %q: %v", c.ns, nerr)
 	}
-	var names []string
-	for _, e := range entries {
-		if e.IsDir() {
-			names = append(names, e.Name())
-		}
+	names, kerr := ns.KeyspaceNames()
+	if kerr != nil {
+		return nil, fmt.Errorf("keyspaces in %q: %v", c.ns, kerr)
 	}
 	sort.Strings(names)
 	return names, nil
+}
+
+// exampleFor returns a copy-pasteable SQL++ example for a keyspace, varying the
+// template by position so a multi-keyspace listing shows a mix.
+func exampleFor(ks string, i int) string {
+	tmpls := []string{
+		"SELECT COUNT(*) FROM %s;",
+		"SELECT * FROM %s LIMIT 3;",
+		"SELECT * FROM %s LIMIT 5;",
+	}
+	return fmt.Sprintf(tmpls[i%len(tmpls)], ks)
+}
+
+// printKeyspaces writes the keyspace listing (with a copy-pasteable example per
+// keyspace) to w. Shown at interactive startup and by .tables/.keyspaces.
+func (c *cli) printKeyspaces(w io.Writer) {
+	names, err := c.keyspaceNames()
+	if err != nil {
+		fmt.Fprintf(w, "%v\n", err)
+		return
+	}
+	if len(names) == 0 {
+		fmt.Fprintf(w, "(no keyspaces in namespace %q under %s)\n", c.ns, c.dir)
+		return
+	}
+	width := 0
+	for _, n := range names {
+		if len(n) > width {
+			width = len(n)
+		}
+	}
+	noun := "keyspaces"
+	if len(names) == 1 {
+		noun = "keyspace"
+	}
+	fmt.Fprintf(w, "%s%d %s in namespace %s — copy/paste to try:\n",
+		c.icon("📚 "), len(names), noun, c.style.Bold(c.ns))
+	for i, n := range names {
+		pad := n + strings.Repeat(" ", width-len(n))
+		fmt.Fprintf(w, "  %s   %s\n", c.style.Cyan(pad), c.style.Dim(exampleFor(n, i)))
+	}
 }
 
 func (c *cli) cmdSchema(keyspace string) {
