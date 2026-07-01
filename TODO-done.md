@@ -314,9 +314,10 @@ Gist only -- details live in commit messages, README, and code comments.
   evaluates its FROM identifier against corrParent (so `FROM r` reads the latest
   working set). VisitExpressionScan now allows a correlated *identifier* FROM
   (the CTE case) while still NAing a correlated *subquery* FROM.
-- Safety: an implicit depth cap (100) + doc cap (10000) bound the loop even
-  without a termination predicate (matches query's implicit caps). Not yet
-  honored: the CYCLE clause (w.CycleFields) and explicit OPTIONS (w.Config).
+- Honors UNION dedup, the CYCLE clause (w.CycleFields, via a hopVal cycle key),
+  and OPTIONS {levels,documents} (w.Config). An implicit depth cap (100) + doc
+  cap (10000) bound the loop when a limit isn't set (matches query's implicit
+  caps), so an unbounded recursion can't hang.
 - Works in interpreter AND compiler (with-recursive bakes to a glue.DatastoreOp
   island; the live binding comes from SetupCompiledData's re-conv). Tests:
   test/cases.go RecursiveCount / RecursiveSum, run by both TestQueryCases and

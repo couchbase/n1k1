@@ -139,13 +139,11 @@ in glue/patches/README.md.
 - UNION-ALL data-staging batchSize should be configurable?
 - UNION-ALL data-staging batchChSize should be configurable?
 
-- WITH RECURSIVE -- DONE (common UNION / UNION ALL recursion; see TODO-done.md).
-  Built in three steps: (1) subquery execution, (2) CTE-as-FROM, (3) the
-  with-recursive fixpoint op (glue/recursive.go). Works in interpreter +
-  compiler. Not yet honored: the CYCLE clause (w.CycleFields) and explicit
-  OPTIONS limits (w.Config) -- an implicit depth/doc cap (100 / 10000) bounds
-  the loop regardless. Adjacent gap: direct `FROM (subquery) AS x` (not via WITH)
-  still hits plan.Alias (VisitAlias is NA).
+- WITH RECURSIVE -- DONE (see TODO-done.md). Built in three steps: (1) subquery
+  execution, (2) CTE-as-FROM, (3) the with-recursive fixpoint op
+  (glue/recursive.go), honoring UNION / UNION ALL, the CYCLE clause, and OPTIONS
+  {levels,documents} (with implicit depth/doc caps 100 / 10000 otherwise). Works
+  in interpreter + compiler.
 
 - speed mismatch between producers and consumers?
   - e.g., scan racing ahead and filling memory with candidate tuples
