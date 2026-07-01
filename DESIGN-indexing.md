@@ -112,6 +112,42 @@ checks via `value.Value.Collate` (the N1QL comparator). A fully order-preserving
 byte encoder is a v2 optimization. **This collation correctness is the highest
 risk — the `Collate` boundary check must be right.**
 
+### Why not Parquet/Iceberg/Delta as the index store?
+
+Since those columnar formats offer ordering and stats, it's tempting to build the
+secondary index *on* them. Short answer: use them for **coarse pruning**, not as
+the fine-grained ordered index. Two different things get called "index":
+
+- **Clustered / data-skipping** (coarse, format-native): sort/cluster the data by
+  the key on write, then skip blocks that can't match. Columnar formats are
+  excellent here — Parquet/ORC footer **min/max stats**, the **page/column index**
+  (per-page min/max → binary-search-like skipping on a *sorted* column), and
+  **bloom filters** (equality); Iceberg/Delta add a cross-file **manifest** layer
+  (per-file min/max, sort orders / Z-order, and Iceberg **Puffin** sidecars for
+  sketches, bloom filters, and V3 deletion vectors). In Go, `arrow-go` reads/writes
+  bloom filters + exposes stats/page-index (v18.3.0+); `parquet-go/parquet-go` too.
+  **This is exactly the "index-everything-lite" tier** below and the manifest
+  zone-maps in `DESIGN-data.md §5` — and it needs no cbq planner changes (pruning
+  is a scan-layer concern).
+- **Secondary, non-clustered, ordered index** (fine-grained GSI/b-tree): a compact
+  `key → docID` map with O(log n) seek to an *arbitrary* key, point-precise and
+  cheaply mutable. Columnar formats are **not** a substitute: pruning granularity
+  is row-group/page/file (not row), files are immutable (per-row upsert/delete is
+  merge-on-read, not index maintenance), and neither Iceberg nor Delta has an
+  ordered-secondary-index spec (Puffin carries sketches/bitmaps/deletion-vectors,
+  not a b-tree). Writing `(key, docID)` as a sorted Parquet file and binary-
+  searching row groups just reimplements a b-tree, badly, on immutable storage.
+  **bbolt is the right tool** for this. (Avro is row-oriented — no columnar
+  pruning at all; it's for append logs/manifests, not indexes.)
+
+**Use the columnar libraries to *help build* the bbolt index, not to *be* it:**
+(1) **build accelerator** — read only the key column + a row locator via Arrow
+projection pushdown, far cheaper than reading whole rows; (2) **metadata layer** —
+Iceberg manifests/Puffin can serve as the change-detection + zone-map + per-file
+bloom layer (potentially replacing the bespoke `.n1k1` manifest); (3) **doc-ID** —
+for columnar sources the natural key is `file#row_position` (what Iceberg
+position-deletes use), matching `DESIGN-data.md §6`.
+
 ### Index definition & build (sidecar, since DDL isn't wired)
 
 - **Definition:** a per-keyspace JSON sidecar
