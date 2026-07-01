@@ -15,11 +15,8 @@ cross-compiles) are done. Remaining work:
       from the corpus's, so the position differs (same multiset). 1 case. This
       is the ONLY remaining FAIL; the rest are UNSUPPORTED (unconverted
       plans: index/union/count scans).
-- EXPLAIN: DONE. glue.Session intercepts the plan.Explain op (under the top
-  Authorize) and emits couchbase/query's plan JSON ({"text","plan"}) -- no
-  conv/exec needed. Matches the vendored corpus exactly (the fork's planner
-  reproduces those plans), and works for queries n1k1 can't execute (it only
-  plans). Reclaimed 10 suite cases (651 -> 661).
+      (DONE and moved to TODO-done.md: EXPLAIN, LET/LETTING, WITH-basic,
+      correlated + uncorrelated subqueries.)
 
 ## Keeping current with SQL++
 n1k1's SQL++ support tracks couchbase/query (parser/algebra/expression/plan/
@@ -28,13 +25,9 @@ in glue/patches/README.md.
 
 ## More features
 
-- command-line program: DONE (v1). cmd/n1k1 -- a single pure-Go binary that runs
-  SQL++ over a file datastore, with a REPL, dot-commands (.tables/.schema/.mode/
-  .timer/.explain/.read/.output/...) and box/json/jsonlines/csv/markdown/line/
-  list output, plus REPL arrow-key history / line editing (peterh/liner, pure-Go,
-  history at ~/.n1k1_history). `make cli`. The engine pipeline is glue.Session
-  (shared with the test harness). See DESIGN-cli.md. Future (DESIGN-cli.md §7):
-  tab completion, FROM 'file.csv' table-functions, mid-query cancel.
+- command-line program (cmd/n1k1): v1 DONE (see TODO-done.md). Remaining CLI
+  niceties (DESIGN-cli.md §7): tab completion, FROM 'file.csv' table-functions,
+  mid-query cancel.
 
 - UI / terminal and/or web-based?
 
@@ -48,13 +41,20 @@ in glue/patches/README.md.
     ending up with a syscall send()-per-fetch rather than a send()-per-batch.
   - datastore fetch stages should be recycled.
   - what to do with parent value during expression evaluation?
+    - solved for the INTERPRETER: correlated subqueries thread the outer row via
+      GlueContext.corrParent + a ScopeValue wrap (glue/expr.go, glue/subquery.go).
+      Still open for CODEGEN (the emitted Go path).
   - sometimes keyspace terms aren't converted to label names correctly,
     like when there aren't keyspace aliases, which can lead to
     projections to not being able to access expressions
     like (`travel-sample`.`id`) correctly?
   - scan of COVERS needs support?
   - scan tracks "setBit()" for intersect scan support?
-  - scan expression only handles non-correlated right now?
+  - scan expression (ExpressionScan, i.e. FROM (subquery)/FROM cte) only handles
+    non-correlated right now. (Expression subqueries -- IN (SELECT), scalar,
+    etc. -- DO handle correlation now in the interpreter; see above. This item is
+    the separate FROM-clause/datasource case, tied to CTE-as-datasource in the
+    WITH RECURSIVE roadmap below.)
   - implement parallel operator one day?
     - stage already provides some concurrency between producer & consumer.
   - classic N1QL engine uses recover() -- revisit this?
@@ -137,42 +137,23 @@ in glue/patches/README.md.
 - UNION-ALL data-staging batchSize should be configurable?
 - UNION-ALL data-staging batchChSize should be configurable?
 
-- WITH -- basic (non-recursive, non-data-source) CTEs convert (glue VisitWith
-  visits the child; bindings not materialized as row columns, so a WITH var
-  used as a FROM data source -- FROM cte -- is not yet supported).
-- WITH RECURSIVE: NOT flattened by the planner -- no dedicated recursive plan
-  node; it's the same plan.With node (one VisitWith), with recursion encoded in
-  the binding (expression.With: IsRecursive/Expression[anchor]/
-  RecursiveExpression[step]/IsUnion/CycleFields/Config). The fixpoint loop is a
-  RUNTIME operator (query's execution/with.go: anchor -> dedup+cycle -> loop
-  eval step vs the latest working set, with level/doc limits + implicit caps
-  depth 100 / docs 10000).
-  Substrate mostly EXISTS -- it's wiring, not from-scratch:
-    * engine has temp-capture (run a sub-op, materialize its rows to a vars.Temps
-      slot), temp-yield (replay), temp-yield-var (feed a slot each loop -- the
-      fixpoint-driver pattern). Registered + tested in cases.go; conv emits only
-      temp-yield-var today (join keys).
-    * the planner pre-plans subqueries: QueryPlan.Subqueries() is
-      map[*algebra.Select]Operator.
-  To support it, in dependency order:
-    1. SUBQUERY execution -- DONE, correlated + uncorrelated (glue/subquery.go).
-       GlueContext is now an algebra.Context; EvaluateSubquery plans the sub-SELECT
-       on demand (like query's execution/context.go, not qp.Subqueries() which
-       Build leaves empty), convs it, runs it on n1k1's engine, returns the rows
-       as an array value. Correlated: EvaluateSubquery stashes the outer row on
-       GlueContext.corrParent (save/restore for nesting); ExprTree wraps each
-       sub-row as a value.ScopeValue over corrParent so outer identifiers fall
-       through, and skips the optimized expr path (which only knows the sub-op's
-       own labels). Works: N IN (SELECT ...), (SELECT ...) in projection,
-       ARRAY_LENGTH((SELECT ...)), WHERE ... IN (correlated/uncorrelated SELECT).
-       Known gap: SELECT * inside a correlated subquery can leak outer fields
-       (ScopeValue.Fields() merges parent); sub-row annotations (META/id) aren't
-       preserved through the scope wrap. Rare.
+- WITH RECURSIVE (roadmap). NOT flattened by the planner -- no dedicated
+  recursive plan node; it's the same plan.With node (one VisitWith), with
+  recursion encoded in the binding (expression.With: IsRecursive /
+  Expression[anchor] / RecursiveExpression[step] / IsUnion / CycleFields /
+  Config). The fixpoint loop is a RUNTIME operator (query's execution/with.go:
+  anchor -> dedup+cycle -> loop eval step vs the latest working set, with
+  level/doc limits + implicit caps depth 100 / docs 10000).
+  Substrate exists: engine temp-capture/temp-yield/temp-yield-var (materialize /
+  replay / per-loop feed; registered + tested in cases.go), and subquery
+  execution is done (below). Remaining, in dependency order:
+    1. SUBQUERY execution -- DONE (correlated + uncorrelated; see TODO-done.md
+       and glue/subquery.go). This is the substrate the anchor/step ride on.
     2. CTE-as-datasource: FROM cte is an ExpressionScan reading the alias from
        the scope item; n1k1 must materialize the CTE value into that scope.
        (Non-recursive FROM cte fails today: "nil 'item' parameter".)
     3. The fixpoint driver (mirror execution/with.go: dedup/cycle/union, limits)
-       -- thin, in glue or an engine op, once 1+2 exist.
+       -- thin, in glue or an engine op, once 2 exists.
 
 - speed mismatch between producers and consumers?
   - e.g., scan racing ahead and filling memory with candidate tuples
@@ -249,16 +230,6 @@ EXCEPT ALL - tuple should appear MAX(m - n, 0) times in the result,
     - YieldStats() can return a non-nil error, like ErrLimitReached?
     - YieldStats() should be locked for concurrency safety.
   - early stop when processing is canceled?
-
-- LET / LETTING: supported. The planner emits a plan.Let operator for both (a
-  LET clause, and LETTING in the GROUP BY / HAVING scope); glue VisitLet converts
-  it to a stack of pass-through "project"s -- one per binding, so a later binding
-  can reference an earlier one (LET x=1, y=x+1) -- each appending a computed
-  column labeled .["<var>"], so downstream clauses reference the variable as a
-  field (matching query's item.SetField). LETTING bindings over aggregates work
-  because the project passes through the group's ^aggregates attachment. SELECT *
-  strips the binding names from the star (VisitInitialProject + stripBindingNames
-  via OBJECT_REMOVE), so the vars don't leak into *. Unit tests: test/let_test.go.
 
 - prefetching optimizations?
   - this is an issue internal to scan operators?

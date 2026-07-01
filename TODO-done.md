@@ -223,3 +223,60 @@ Gist only -- details live in commit messages, README, and code comments.
   now PASS as-is -- the breakage was resolved by the modernization + T3 decouple
   + glue API-drift fixes. Just stripped the SKIP<reason>_ prefixes; no code
   change needed. No SKIP markers remain in the tree.
+
+## 2026/06 -- SQL++ features: LET / LETTING, WITH (basic), EXPLAIN
+- LET / LETTING: glue VisitLet stacks one pass-through "project" per binding
+  (so a later binding can reference an earlier one: LET x=1, y=x+1), each
+  appending a .["<var>"] column; SELECT * strips the binding names
+  (VisitInitialProject + stripBindingNames/OBJECT_REMOVE) so they don't leak.
+  LETTING (GROUP BY scope) works over aggregates via the group's ^aggregates
+  attachment. Tests: test/cases_test.go.
+- WITH (basic, non-recursive): VisitWith visits the child; SELECT * doesn't leak
+  the WITH name. WITH-var-as-FROM-datasource is still TODO (see TODO.md
+  recursive-CTE roadmap).
+- EXPLAIN: glue.Session intercepts the plan.Explain op (under the top Authorize)
+  and emits query's plan JSON ({"text","plan"}) -- no conv/exec needed. Matches
+  the vendored corpus exactly (the fork's planner reproduces those plans), and
+  works even for queries n1k1 can't execute (it only plans). +10 suite cases
+  (651 -> 661).
+
+## 2026/06 -- expression subqueries (correlated + uncorrelated)
+- GlueContext became an algebra.Context (Datastore / NamedArg / PositionalArg /
+  EvaluateSubquery), so query's algebra.Subquery.Evaluate can call back into
+  n1k1. EvaluateSubquery plans the sub-SELECT on demand, convs it, runs it on
+  n1k1's engine, and returns the rows as an array value. Store.PlanStatementQP
+  exposes the whole QueryPlan.
+- Correlated: EvaluateSubquery stashes the outer row on GlueContext.corrParent
+  (save/restore for nesting); ExprTree wraps each sub-row as a value.ScopeValue
+  over corrParent so outer identifiers fall through, and skips the optimized expr
+  path (which only knows the sub-op's own labels).
+- Works: N IN (SELECT ...), (SELECT ...) in a projection, ARRAY_LENGTH((SELECT
+  ...)), WHERE ... IN (correlated/uncorrelated SELECT). Tests: test/cases_test.go.
+- Known small gaps -- grep TODO(correlated-subquery) / TODO(subquery-perf) /
+  TODO(subquery-plan) in glue/: SELECT * in a correlated subquery can leak outer
+  fields; sub-row META/id not preserved through the scope wrap; per-outer-row
+  re-execution isn't amortized; sub-SELECTs are re-planned standalone.
+
+## 2026/06 -- cmd/n1k1 CLI + REPL
+- Single pure-Go binary running SQL++ over a file datastore. `make cli`
+  (install-cli to install). -c / -f / stdin-pipe / REPL (read-until-';',
+  multi-line continuation). Dot-commands: .tables/.keyspaces, .schema, .mode,
+  .timer, .explain, .maxrows, .maxwidth, .read, .output, .help, .quit.
+- Output modes: box (default at a TTY) / jsonlines (default piped) / json / csv
+  / markdown / line / list. Renderers live in the reusable, tag-free `cmd`
+  package (unit-tested under the default `make test`).
+- REPL history + line editing via the pure-Go peterh/liner (~/.n1k1_history);
+  tasteful TTY-only colors + emoji status markers (NO_COLOR honored).
+- The engine pipeline is glue.Session, extracted from the test harness and
+  shared with it (so there's one end-to-end path). See DESIGN-cli.md.
+
+## 2026/06 -- benchmarks (DESIGN-benchmark.md) + test reorg
+- test/benchmark/: Phase 1 (intrinsic: garbage avoidance holds -- allocs/op flat
+  1K->30M rows; GROUP BY spill point ~4000-5000 distinct keys; graceful
+  degradation) + Phase 2 (interpreted vs compiled: fusion cuts allocs ~30-40%,
+  wall-time shape-dependent). Phase 3 (vs couchbase/query) BLOCKED in a stock
+  env -- see DESIGN-benchmark.md section 10 for the blockers + a future-run recipe.
+- Test files reorganized: data-driven test/cases_test.go (local SQL++ cases),
+  test/base_test.go, benchmarks consolidated under test/benchmark/, and a shared
+  test/emit package for the compiler codegen helpers. `make bench*` documented in
+  README.

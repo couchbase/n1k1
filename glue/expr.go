@@ -104,6 +104,19 @@ func ExprTree(vars *base.Vars, labels base.Labels,
 		// row so identifiers not found here (e.g. an outer keyspace alias) fall
 		// through to the parent. corrParent is nil outside a correlated subquery,
 		// so uncorrelated / outer evaluation is unaffected.
+		//
+		// TODO(correlated-subquery): two known gaps here (both rare):
+		//   1. SELECT-* leak: value.ScopeValue.Fields() merges the parent's
+		//      fields, so a `SELECT *` inside a correlated subquery spreads the
+		//      OUTER row's fields too. query avoids this by resetting the scope
+		//      parent for star projections (execution/project_initial.go:
+		//      sv.ResetParent(nil)); n1k1's VisitInitialProject would need to do
+		//      the same for the star term.
+		//   2. Annotation loss: v.Actual() drops annotations, so the sub-row's
+		//      META()/id isn't visible after the wrap (a subquery that does
+		//      META(alias) over its own keyspace would see MISSING). Preserving
+		//      them needs a scope wrapper that keeps v itself as "self" rather
+		//      than re-wrapping its plain field map.
 		if gc, ok := context.(*GlueContext); ok && gc.corrParent != nil {
 			if m, ok := v.Actual().(map[string]interface{}); ok {
 				v = value.NewScopeValue(m, gc.corrParent)

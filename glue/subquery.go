@@ -76,9 +76,14 @@ func (c *GlueContext) PositionalArg(position int) (value.Value, bool) { return n
 // value (N1QL represents a subquery expression's result as an array). This
 // satisfies algebra.Context so query's algebra.Subquery.Evaluate can call it.
 //
-// parent is the outer row for correlated subqueries; it is not yet threaded
-// into the sub-op scope, so only uncorrelated subqueries produce correct
-// results (a correlated one sees its outer references as MISSING).
+// parent is the outer row; for a correlated subquery it is exposed to the
+// sub-op's expressions (see corrParent below) so outer references resolve.
+//
+// TODO(subquery-perf): a correlated subquery is evaluated once per outer row,
+// and each call does MakeVars (a fresh temp dir) + a full ExecOp of the sub-op.
+// The conv is cached (see compile), but the per-row MakeVars/spill-dir setup and
+// re-execution are not amortized -- fine for correctness, worth revisiting for
+// large correlated workloads (e.g. reuse vars, or a join-style rewrite).
 func (c *GlueContext) EvaluateSubquery(query *algebra.Select, parent value.Value) (value.Value, error) {
 	if c.subq == nil {
 		return nil, fmt.Errorf("subquery evaluation not configured")
@@ -158,6 +163,17 @@ func (e *subqEvaluator) compile(query *algebra.Select) (*subCompiled, error) {
 	}
 
 	// A subquery SELECT is an algebra.Statement -- plan it like any other.
+	//
+	// TODO(subquery-plan): we re-plan the sub-SELECT standalone rather than using
+	// the outer plan's in-context sub-plan, because QueryPlan.Subqueries() is
+	// empty after a normal planner.Build (query plans subqueries lazily in its
+	// execution context; see execution/context.go EvaluateSubquery ->
+	// SubqueryPlan). Standalone re-planning works here -- a correlated ref like
+	// `c.name` formalizes to a plain Field(Identifier("c"),"name") that resolves
+	// at runtime against the corrParent scope -- but it means the sub-SELECT is
+	// planned without the outer keyspace scope. If a case ever mis-plans this
+	// way, the fix is to plumb an in-context subquery-plan path (mirror query's
+	// SubqueryPlan) instead of PlanStatementQP.
 	qp, err := e.store.PlanStatementQP(query, e.namespace, nil, nil)
 	if err != nil {
 		return nil, err
