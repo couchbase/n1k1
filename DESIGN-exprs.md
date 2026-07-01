@@ -29,6 +29,7 @@ tests (`base/arith_test.go`):
   (`engine/expr_cond.go`, two-operand; cbq's n-ary >2-operand forms fall back).
 - **`BETWEEN`** — `item BETWEEN low AND high` (`engine/expr_between.go`), via a new
   reusable ternary harness `MakeTriExprFunc` / `base.TriExprFunc`.
+- **`IN`** — `x IN arr` membership (`engine/expr_in.go` + `base.ValIn`).
 
 Shared helpers keeping it DRY: `base.ArithApply` (op dispatch), `base.ValKind`
 (VALUE/NULL/MISSING classification — the one place encoding "empty==MISSING,
@@ -117,10 +118,11 @@ semantics.
 | `not` `is_null` `is_not_null` `is_missing` `is_not_missing` `is_valued` `is_not_valued` | `engine/expr_pred.go` | **unary predicates** (byte-kind classified, constant results) ✅ |
 | `ifnull` `ifmissing` `ifmissingornull` `nvl` | `engine/expr_cond.go` | **conditional-unknown selectors** (zero-copy operand pick; 2-operand) ✅ |
 | `between` | `engine/expr_between.go` | **BETWEEN** (ternary; collation-order bounds) ✅ |
+| `in` | `engine/expr_in.go` + `base.ValIn` | **IN** (array membership; 2-operand) ✅ |
 | `window-partition-row-number`, `window-frame-count`, `window-frame-step-value` | `engine/expr_window.go` | window helpers (FIRST/LAST/NTH/LEAD/LAG) |
 | `exprStr` / `exprTree` | `glue/expr.go` | **the fallback** (parse / delegate to cbq) |
 
-Still **absent and therefore delegated:** `like`, `in`, `is [not] distinct from`,
+Still **absent and therefore delegated:** `like`, `is [not] distinct from`,
 `||`, `CASE`, `COALESCE` / n-ary (>2-operand) `IFNULL`/`IFMISSING`/…, type checks
 (`is_array`/`is_number`/…), and *all* ~335 remaining scalar functions.
 
@@ -172,8 +174,9 @@ projection cost and are the highest ROI.
 - ✅ **DONE — logical `not`, `is null/missing/valued`** (`engine/expr_pred.go`):
   byte-kind classified, constant results.
 - ✅ **DONE — `BETWEEN`** (`engine/expr_between.go`) via `MakeTriExprFunc`.
-- **`in`** (scalar list), **`is [not] distinct from`** — direct byte/type checks
-  (`base.Parse`, `ValComparer`).
+- ✅ **DONE — scalar `IN`** (`engine/expr_in.go` + `base.ValIn`).
+- **`is [not] distinct from`** — direct byte/type checks (`base.Parse`,
+  `ValComparer`).
 - **Type checks `is_array/object/string/number/boolean/atom`** — `base.Parse`
   returns the type; trivial.
 - ✅ **DONE (2-operand) — `IFNULL/IFMISSING/IFMISSINGORNULL/NVL`**
