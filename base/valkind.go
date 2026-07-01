@@ -55,3 +55,21 @@ func CondUnknownKeep(mode int, v Val) bool {
 	}
 	return false
 }
+
+// NaryFirstKept is the reducer for the variadic IFNULL/IFMISSING/IFMISSINGORNULL
+// (and COALESCE) selectors: it returns the first operand "kept" under the mode,
+// else NULL. Like cbq, all operands are evaluated (only the first keeper is
+// captured), so error behavior matches too. Plain Go (not lz) -- the engine
+// harness calls it in a single line, so intermed_build emits that call verbatim.
+func NaryFirstKept(children []ExprFunc, vals Vals, yieldErr YieldErr, mode int) Val {
+	rv := ValNull
+	found := false
+	for _, child := range children {
+		cv := child(vals, yieldErr)
+		if !found && CondUnknownKeep(mode, cv) {
+			rv = cv
+			found = true
+		}
+	}
+	return rv
+}

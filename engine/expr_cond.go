@@ -16,13 +16,10 @@ import (
 )
 
 // The conditional-unknown selectors: IFNULL / IFMISSING / IFMISSINGORNULL (and
-// NVL == 2-arg IFNULL). Semantics: return the first operand that is "kept" under
-// the mode, else NULL; the result is the chosen operand's bytes verbatim
-// (zero-copy). Mirrors cbq expression/func_cond_unknown.go.
-//
-// cbq's forms are variadic; n1k1 handles the two-operand case natively (the
-// common one, and all of NVL) and lets >2-operand forms fall back to cbq -- the
-// intermed compiler harness is fixed-arity (see glue/expr_optimize.go's guard).
+// NVL == 2-arg IFNULL, COALESCE == IFMISSINGORNULL). All variadic: return the
+// first operand "kept" under the mode, else NULL; the result is the chosen
+// operand's bytes verbatim (zero-copy). Mirrors cbq expression/func_cond_unknown.go.
+// N-ary (any operand count) via MakeNaryExprFunc.
 
 func init() {
 	ExprCatalog["ifnull"] = ExprIfNull
@@ -31,47 +28,30 @@ func init() {
 	ExprCatalog["nvl"] = ExprIfNull // NVL(a, b) == IFNULL(a, b).
 }
 
+// Per-mode reducers, passed directly to the n-ary harness.
+func naryIfNull(children []base.ExprFunc, vals base.Vals, yieldErr base.YieldErr) base.Val {
+	return base.NaryFirstKept(children, vals, yieldErr, base.CondIfNull)
+}
+
+func naryIfMissing(children []base.ExprFunc, vals base.Vals, yieldErr base.YieldErr) base.Val {
+	return base.NaryFirstKept(children, vals, yieldErr, base.CondIfMissing)
+}
+
+func naryIfMissingOrNull(children []base.ExprFunc, vals base.Vals, yieldErr base.YieldErr) base.Val {
+	return base.NaryFirstKept(children, vals, yieldErr, base.CondIfMissingOrNull)
+}
+
 func ExprIfNull(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	return ExprCondUnknown(lzVars, labels, params, path, base.CondIfNull)
+	return MakeNaryExprFunc(lzVars, labels, params, path, naryIfNull)
 }
 
 func ExprIfMissing(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	return ExprCondUnknown(lzVars, labels, params, path, base.CondIfMissing)
+	return MakeNaryExprFunc(lzVars, labels, params, path, naryIfMissing)
 }
 
 func ExprIfMissingOrNull(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	return ExprCondUnknown(lzVars, labels, params, path, base.CondIfMissingOrNull)
-}
-
-// -----------------------------------------------------
-
-// ExprCondUnknown is the shared two-operand harness. Both operands are evaluated
-// (matching cbq's loop, incl. error behavior); the result is the first kept
-// operand's value, or NULL if neither is kept.
-func ExprCondUnknown(lzVars *base.Vars, labels base.Labels, params []interface{},
-	path string, mode int) (lzExprFunc base.ExprFunc) {
-	biExprFunc := func(lzA, lzB base.ExprFunc, lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) { // !lz
-		if LzScope {
-			lzValA := lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
-			lzValB := lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B"
-
-			if base.CondUnknownKeep(mode, lzValA) {
-				lzVal = lzValA
-			} else if base.CondUnknownKeep(mode, lzValB) {
-				lzVal = lzValB
-			} else {
-				lzVal = base.ValNull
-			}
-		}
-
-		return lzVal
-	} // !lz
-
-	lzExprFunc =
-		MakeBiExprFunc(lzVars, labels, params, path, biExprFunc) // !lz
-
-	return lzExprFunc
+	return MakeNaryExprFunc(lzVars, labels, params, path, naryIfMissingOrNull)
 }

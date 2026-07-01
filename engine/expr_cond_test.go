@@ -46,6 +46,11 @@ func TestExprCondUnknown(t *testing.T) {
 		{"ifmon-num", []interface{}{"ifmissingornull", num3, num}, "3"},
 		// NVL == IFNULL.
 		{"nvl-null-num", []interface{}{"nvl", null, num}, "5"},
+		// N-ary (3+ operands) via MakeNaryExprFunc.
+		{"ifnull-3", []interface{}{"ifnull", null, null, num}, "5"},
+		{"ifmissing-3", []interface{}{"ifmissing", miss, null, num}, "null"}, // null is first non-MISSING
+		{"ifmon-3", []interface{}{"ifmissingornull", miss, null, num}, "5"},
+		{"ifmon-4-none", []interface{}{"ifmissingornull", miss, null, null, null}, "null"},
 	}
 	for _, tc := range tests {
 		if got := evalArith(t, tc.tree); got != tc.want {

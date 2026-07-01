@@ -152,6 +152,13 @@ func TestCondUnknownDifferentialVsCBQ(t *testing.T) {
 		{"ifmon-null-null", expression.NewIfMissingOrNull(null, null)},
 		{"ifmon-null-str", expression.NewIfMissingOrNull(null, str)},
 		{"nvl-null-num", expression.NewNVL(null, num)},
+		// N-ary (>2 operands) now optimizes natively via MakeNaryExprFunc.
+		{"ifnull-3", expression.NewIfNull(null, null, num)},
+		{"ifmissing-3", expression.NewIfMissing(null, num, num5)},
+		{"ifmon-3", expression.NewIfMissingOrNull(null, null, str)},
+		{"ifmon-4-allnull", expression.NewIfMissingOrNull(null, null, null, null)},
+		// (COALESCE parses to IFMISSINGORNULL -- same struct/Name -- so it's
+		// covered by the ifmon cases above; there's no NewCoalesce constructor.)
 	}
 
 	for _, tc := range cases {

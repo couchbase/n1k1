@@ -147,9 +147,9 @@ func ExprTreeOptimize(labels base.Labels, e expression.Expression,
 	// forms fall back to cbq rather than silently dropping operands.
 	operands := f.Operands()
 	switch name {
-	case "add", "mult", "sub", "div", "mod", "idiv", "imod",
-		"ifnull", "ifmissing", "ifmissingornull", "nvl", "in":
-		// Native harness is two-operand; cbq's n-ary forms fall back.
+	case "add", "mult", "sub", "div", "mod", "idiv", "imod", "in":
+		// These native harnesses are two-operand; cbq's n-ary forms fall back.
+		// (ifnull/ifmissing/ifmissingornull/nvl are now n-ary -- no guard.)
 		if len(operands) != 2 {
 			return nil, false
 		}
