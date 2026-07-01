@@ -63,11 +63,11 @@ var recordExts = map[string]bool{
 }
 
 // IsRecordFile reports whether path (by extension, ignoring a .gz/.zst suffix)
-// is a data file this package can decode (structured JSON/CSV, or an office/PDF
-// document the extractor handles).
+// is a data file this package can decode (structured JSON/CSV, or a PDF/DOCX/
+// XLSX document the extract provider handles).
 func IsRecordFile(path string) bool {
 	ext := innerExt(path)
-	return recordExts[ext] || officeExts[ext]
+	return recordExts[ext] || extractExts[ext]
 }
 
 // innerExt returns the format-determining extension, seeing through a single
@@ -131,10 +131,10 @@ func OpenFile(path, idPrefix string) (Source, error) {
 	if !IsRecordFile(path) {
 		return nil, fmt.Errorf("records: unsupported file: %s", path)
 	}
-	// Office/PDF documents are opened by path (zip / whole-file readers), not
-	// through the streaming decompression layer.
-	if isOfficeExt(innerExt(path)) {
-		return newOfficeSource(path)
+	// PDF/DOCX/XLSX documents are opened by path (zip / whole-file readers),
+	// not through the streaming decompression layer.
+	if isExtractExt(innerExt(path)) {
+		return newExtractSource(path)
 	}
 	r, closers, err := openDecompressed(path)
 	if err != nil {
@@ -489,7 +489,7 @@ func AllModes() WalkOptions {
 //	all       → everything (flexible, the default)
 //	json      → .json/.jsons        jsonl → .jsonl/.ndjson
 //	csv       → .csv                 tsv   → .tsv
-//	office    → .pdf/.docx/.xlsx     pdf|docx|xlsx → that one
+//	extract   → .pdf/.docx/.xlsx     pdf|docx|xlsx → that one
 //	gzip      → allow .gz            recurse → descend subdirs
 //
 // An empty string (or "all") means "unrestricted" (AllModes). Unknown tokens
@@ -514,7 +514,7 @@ func ParseModes(csv string) (WalkOptions, error) {
 			opts.Formats[".csv"] = true
 		case "tsv":
 			opts.Formats[".tsv"] = true
-		case "office":
+		case "extract":
 			opts.Formats[".pdf"], opts.Formats[".docx"], opts.Formats[".xlsx"] = true, true, true
 		case "pdf":
 			opts.Formats[".pdf"] = true
@@ -606,7 +606,7 @@ func (w *walkSource) Next(rec *Record) (bool, error) {
 			if err != nil {
 				return false, err
 			}
-			// Opt-in per-file metadata (_meta): office docs under auto, or all
+			// Opt-in per-file metadata (_meta): extracted docs under auto, or all
 			// records under -meta=on. Silently skipped if the file can't be stat'd.
 			if w.opts.metaInclude(innerExt(path)) {
 				if open, ferr := fileMetaOpen(path, w.opts.PathPrefix, rel); ferr == nil {

@@ -35,7 +35,7 @@ originally-drawn MVP line:
   keyed by the header** (light int/float/bool inference) — so it rides the
   **opaque-document path** and did *not* need the typed-label-vector work the doc
   feared (see the reframed note in §2 "Integration gap").
-- **Office/PDF text extraction** (scenario L) — `records/office.go`, pure-Go
+- **Office/PDF text extraction** (scenario L) — `records/extract.go`, pure-Go
   (`.pdf`/`.docx`/`.xlsx` → one `{filename, kind, text}` JSON record each), again
   on the opaque-document path. The optional Tika/extractous+OCR backend is still
   future.
@@ -662,7 +662,7 @@ hook on the file datastore.)
   random-access/pushdown when gzipped — fine for row formats (CSV/JSONL/logs),
   document this limitation.
 
-## 4. "Office" / unstructured documents (PDF, DOCX, XLSX, PPTX, …)
+## 4. The `extract` provider — unstructured documents (PDF, DOCX, XLSX, PPTX, …)
 
 Aspiration: crack open unstructured files, extract their content as queryable
 rows, and optionally full-text index them (ties directly to the FTS/bleve work in
@@ -860,14 +860,14 @@ warehouse/
 columnar→row transpose (see §1 caveat) means no vectorized speedup until the
 engine grows column-batch ops. Footer min/max later feed §5 zone-map pruning.
 
-### L. Office / unstructured docs → extractor rows  ✅ (pure-Go text; OCR later)
+### L. Unstructured docs (PDF/DOCX/XLSX) → `extract`-provider rows  ✅ (pure-Go text; OCR later)
 ```
 kb/
   default/
     docs/   handbook.pdf   q1-report.docx   budget.xlsx
 ```
 `n1k1 -c "SELECT filename, text FROM default:docs WHERE text LIKE '%vacation%'" kb`
-→ **shipped** (`records/office.go`), pure-Go: each `.pdf`/`.docx`/`.xlsx` yields
+→ **shipped** (`records/extract.go`), pure-Go: each `.pdf`/`.docx`/`.xlsx` yields
 **one** `{filename, kind, text}` JSON record (docx via `archive/zip`+`encoding/xml`
 `<w:t>` runs; pdf via content-stream show-text ops with `compress/zlib` inflate;
 xlsx text concatenated). Rides the opaque-document path, so it feeds a bleve FTS
@@ -1392,7 +1392,7 @@ wrapping the fork's datastore with `datastore/virtual` building blocks
    offset checkpoints double as the `Fetch` seek index (joins
    `DESIGN-indexing.md`).
 8. ✅ (basic) Office/unstructured extraction — **pure-Go default shipped**
-   (`records/office.go`, one record/file); ⬜ optional Tika/extractous+OCR backend
+   (`records/extract.go`, one record/file); ⬜ optional Tika/extractous+OCR backend
    and per-spreadsheet-row extraction remain; FTS wiring joins `DESIGN-indexing.md`.
 9. ⬜ Encryption-at-rest: transparent decrypt layer (Tink/age segmented),
    envelope keys via `gocloud.dev/secrets`, and **encrypted sidecar artifacts**.
