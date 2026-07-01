@@ -141,7 +141,7 @@ func (s *Session) Run(stmt string) (res *Result, err error) {
 	defer os.RemoveAll(tmpDir)
 
 	gctx := NewGlueContext(time.Now())
-	gctx.InitSubqueries(s.Store, s.Namespace) // enable expression subqueries
+	gctx.InitSubqueries(s.Store, s.Namespace, conv.WithBindings()) // enable expression subqueries
 
 	vars.Temps = vars.Temps[:0]
 	vars.Temps = append(vars.Temps, gctx)

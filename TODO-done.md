@@ -333,3 +333,18 @@ Gist only -- details live in commit messages, README, and code comments.
   {"<alias>": <row>} via a `self` (expression.NewSelf) exprTree, so downstream
   x.field resolves. Verified: FROM-subquery with WHERE/ORDER, multi-column
   projection, and downstream aggregation. No suite regressions.
+
+## 2026/06 -- CTE referencing another CTE (thread withBindings into sub-convs)
+- WITH a AS (...), b AS (SELECT .. FROM a) ... FROM b failed "nil item": the
+  runtime sub-SELECT conversion (subqEvaluator.compile) used a fresh Conv without
+  the outer WITH bindings, so b's `FROM a` didn't resolve. Now the outer conv's
+  bindings (Conv.WithBindings) are passed via InitSubqueries into the subquery
+  evaluator, and compile seeds each sub-conv with a copy -- so nested/chained CTE
+  references resolve.
+- RECURSIVE bindings are excluded from the seeded copy: inside a recursive step,
+  `FROM r` must read the latest working set (corrParent, a plain expr-scan), not
+  re-enter the fixpoint. (So a non-recursive CTE referencing a recursive CTE's
+  full result stays unsupported -- rare; noted in TODO.)
+- Tests: test/cases.go CteRefCte (b scans a) + CteChain3 (a->b->c), run by both
+  TestQueryCases and the compiler differential (emitted 32, skipped 0). test-all
+  green (suite 661/671, PANIC 0).

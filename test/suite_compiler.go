@@ -252,7 +252,7 @@ func setupCompiled(t *testing.T, store *glue.Store, namespace, stmt string) (
 	// Build vars.Temps exactly as the interpreter driver does, so the int Temps
 	// indices baked into the datastore ops line up with the live plan objects.
 	gctx := glue.NewGlueContext(time.Now())
-	gctx.InitSubqueries(store, namespace) // so compiled expression subqueries run
+	gctx.InitSubqueries(store, namespace, conv.WithBindings()) // so compiled expression subqueries run
 	vars.Temps = vars.Temps[:0]
 	vars.Temps = append(vars.Temps, gctx)
 	vars.Temps = append(vars.Temps, conv.Temps[1:]...)

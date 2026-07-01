@@ -6299,6 +6299,36 @@ var queryCases = []queryCase{
 			}
 		},
 	},
+
+	// ---- CTE referencing another CTE (chained WITH) ------------------
+	{
+		name: "CteRefCte", // b's binding scans CTE a
+		stmt: `WITH a AS (SELECT o.custId FROM data:orders o), ` +
+			`b AS (SELECT DISTINCT x.custId FROM a AS x) ` +
+			`SELECT y.custId FROM b AS y ORDER BY y.custId`,
+		rows: 3, // distinct custIds
+		check: func(t *testing.T, rows []base.Vals) {
+			want := []string{"abc", "bbb", "ccc"}
+			for i, row := range rows {
+				if got := trimQ(string(row[0])); got != want[i] {
+					t.Fatalf("order[%d]: got %s, want %s", i, got, want[i])
+				}
+			}
+		},
+	},
+	{
+		name: "CteChain3", // a -> b (a filtered) -> c (b filtered)
+		stmt: `WITH a AS ([{"n":1},{"n":2},{"n":3}]), ` +
+			`b AS (SELECT x.n FROM a AS x WHERE x.n > 1), ` +
+			`c AS (SELECT y.n FROM b AS y WHERE y.n < 3) ` +
+			`SELECT z.n FROM c AS z`,
+		rows: 1, // {n:2}
+		check: func(t *testing.T, rows []base.Vals) {
+			if string(rows[0][0]) != "2" {
+				t.Fatalf("expected n=2, got %s", rows[0][0])
+			}
+		},
+	},
 }
 
 // rowObj unmarshals a single-label result row (a JSON object) into a map.

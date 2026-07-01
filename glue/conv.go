@@ -81,6 +81,11 @@ func (c *Conv) TopSet(p plan.Operator, op *base.Op) (*base.Op, error) {
 	return op, nil
 }
 
+// WithBindings returns the WITH CTE bindings this conversion discovered (alias
+// -> binding), for threading into subquery sub-conversions (see
+// GlueContext.InitSubqueries). May be nil.
+func (c *Conv) WithBindings() map[string]expression.With { return c.withBindings }
+
 // -------------------------------------------------------------------
 
 // LabelSuffix converts a string into label syntax.

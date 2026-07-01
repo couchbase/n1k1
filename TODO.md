@@ -150,11 +150,12 @@ in glue/patches/README.md.
     COUNT(*) ... WHERE x = o.y)) panics: "*value.ScopeValue is not
     value.AnnotatedValue" -- the correlated ScopeValue wrap collides with the
     aggregate op's AnnotatedValue expectation.
-  - a CTE whose binding references ANOTHER CTE (WITH a AS (...), b AS (SELECT ..
-    FROM a) ... FROM b) fails "nil item": EvaluateSubquery.compile convs the
-    sub-SELECT with a fresh Conv that lacks the outer withBindings, so `FROM a`
-    doesn't resolve. Fix = thread withBindings into sub-conversions.
   - UNION ALL of two SELECTs (plan.UnionAll) is still NA.
+  - a NON-recursive CTE that references a RECURSIVE CTE's full result (WITH
+    RECURSIVE r ..., b AS (SELECT .. FROM r) ... FROM b) isn't supported:
+    sub-conversions exclude recursive bindings (so a recursive step's FROM r
+    reads corrParent, not the fixpoint), so b's FROM r doesn't route to
+    with-recursive. Rare.
 
 - speed mismatch between producers and consumers?
   - e.g., scan racing ahead and filling memory with candidate tuples

@@ -19,6 +19,7 @@ import (
 
 	"github.com/couchbase/query/algebra"
 	"github.com/couchbase/query/datastore"
+	"github.com/couchbase/query/expression"
 	"github.com/couchbase/query/value"
 
 	"github.com/couchbase/n1k1/base"
@@ -39,6 +40,12 @@ type subqEvaluator struct {
 	store     *Store
 	namespace string
 	cache     map[*algebra.Select]*subCompiled
+
+	// withBindings carries the outer query's WITH CTE bindings into sub-SELECT
+	// conversions, so a sub-SELECT that references an outer CTE (WITH a AS (...),
+	// b AS (SELECT .. FROM a) ... FROM b) can still resolve `FROM a`. Without it,
+	// compile()'s fresh Conv wouldn't know the CTE.
+	withBindings map[string]expression.With
 }
 
 // subCompiled is one subquery's sub-plan converted to a base.Op, cached so
@@ -50,13 +57,16 @@ type subCompiled struct {
 }
 
 // InitSubqueries wires this context to evaluate expression subqueries by
-// planning them against the given store/namespace. Until it's called,
-// EvaluateSubquery errors.
-func (c *GlueContext) InitSubqueries(store *Store, namespace string) {
+// planning them against the given store/namespace. withBindings is the outer
+// query's WITH CTE bindings (Conv.WithBindings(), or nil) so sub-SELECTs can
+// reference outer CTEs. Until this is called, EvaluateSubquery errors.
+func (c *GlueContext) InitSubqueries(store *Store, namespace string,
+	withBindings map[string]expression.With) {
 	c.subq = &subqEvaluator{
-		store:     store,
-		namespace: namespace,
-		cache:     map[*algebra.Select]*subCompiled{},
+		store:        store,
+		namespace:    namespace,
+		cache:        map[*algebra.Select]*subCompiled{},
+		withBindings: withBindings,
 	}
 }
 
@@ -179,7 +189,23 @@ func (e *subqEvaluator) compile(query *algebra.Select) (*subCompiled, error) {
 		return nil, err
 	}
 
-	conv := &Conv{Temps: []interface{}{nil}}
+	// Seed the sub-conv with a copy of the outer WITH bindings so a sub-SELECT
+	// that references an outer CTE (e.g. `FROM a`) resolves it. Exclude RECURSIVE
+	// bindings: inside a recursive CTE's step, `FROM r` must read the latest
+	// working set (via corrParent, as a plain expr-scan) -- not re-enter the
+	// fixpoint -- so r must fall through rather than route to with-recursive.
+	// (A copy, so the sub-SELECT's own WITH bindings don't mutate the outer map.)
+	var wb map[string]expression.With
+	for k, v := range e.withBindings {
+		if v.IsRecursive() {
+			continue
+		}
+		if wb == nil {
+			wb = map[string]expression.With{}
+		}
+		wb[k] = v
+	}
+	conv := &Conv{Temps: []interface{}{nil}, withBindings: wb}
 	if _, err := qp.PlanOp().Accept(conv); err != nil {
 		return nil, err
 	}
