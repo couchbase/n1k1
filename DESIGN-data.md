@@ -8,7 +8,12 @@ strategy and change-detection timing/concurrency model. Then a coherence pass
 against DESIGN-indexing.md — added a "Relationship to DESIGN-indexing.md"
 section, reconciled the zone-map consumer / predicate-pushdown tension and the
 sidecar / manifest ownership; and added a "Worked examples" section of sample
-input trees + their FROM clauses, tagged by phasing status.)
+input trees + their FROM clauses, tagged by phasing status. Then added
+"Query-defined virtual datasources (VIEWs & generated catalogs)" — a view as an
+implicit WITH binding reusing the CTE machinery, the morphed-over-time S3 case,
+its UNION-ALL blocker + object-store/Glue notes, and worked example O.)
+
+---
 
 This document explores the kinds of source data n1k1 should support — file
 formats, directory layouts, compression, "office"/unstructured documents — and
@@ -331,6 +336,130 @@ was built against. Two workable stances, both post-MVP-friendly:
   that vector. **This is the actually-hard part of "beyond JSON," and it's the
   real reason CSV/Parquet sit above the MVP line — not the decoding, the labels.**
 
+## Query-defined virtual datasources (VIEWs & generated catalogs)
+
+**The idea (user's S3 scenario):** a bucket's ingest layout/schema *morphed over
+time* — an early era wrote flat `{ts, user}` JSON, a later era renamed fields and
+nested them, a third switched to Parquet under `year=/month=` dirs. You want all
+of it to look like **one coherent keyspace** — a **VIEW** — so `FROM events` just
+works and the historical mess is hidden. This is a natural, high-value extension
+of the catalog (§2 mode 3), and it splits into two distinct capabilities:
+
+- **(a) VIEW = a catalog entry whose definition is a SQL++ query.** `FROM events`
+  expands to a stored `SELECT` that *unions and normalizes* the heterogeneous
+  physical sub-sources into one shape. The reshaping (rename, nest/unnest,
+  cast, add-missing-as-NULL, tag with an era column) is expressed in SQL++.
+- **(b) Generated catalog = a query that *produces* the catalog itself.** Instead
+  of hand-listing partitions, a bootstrap query over a listing/metadata source
+  (an S3 inventory, a Glue table, a manifest file) *emits* the set of
+  sub-sources + derived partition columns. The physical layout is described by
+  data, not static config — the crawler pattern.
+
+### Why this fits n1k1 unusually well: a view is an implicit WITH binding
+
+The expansion machinery **already exists** — it's the WITH/CTE stack recently
+built in the glue layer. `Conv` threads `withBindings` (a `map[string]With`)
+through conversions; `FROM <cte>` expands via the CTE / FROM-subquery path
+(`VisitExpressionScan` / `VisitAlias`); CTE-referencing-CTE is threaded; and
+`WITH RECURSIVE` runs a fixpoint. **A catalog VIEW is just an implicit,
+always-available WITH binding**: before planning, seed `Conv.withBindings` (or
+rewrite the FROM term) from the catalog, so
+
+```sql
+FROM events            -- events is a catalog view
+```
+is planned exactly as if the user had written
+```sql
+WITH events AS ( <the view's stored SELECT> ) SELECT … FROM events
+```
+Consequences, all leveraging work already done:
+- **Pure glue-layer** — no fork/datastore change for the *expansion* itself
+  (the sub-sources it reads are ordinary catalog keyspaces).
+- **Views over views** compose for free via the existing CTE-ref-CTE threading.
+- **Recursive views** ride the existing `WITH RECURSIVE` fixpoint.
+- **Compiler-safe** — expansion happens before `conv`, so compiled and
+  interpreted paths are identical (see "Compiler compatibility").
+
+### The one real blocker for the morphing-schema case: UNION ALL
+
+The normalizing view is a union of per-era projections:
+```sql
+-- catalog view "events" (schema reconciliation across eras)
+  SELECT ts,             user_id,      action, "era1" AS _era FROM events_era1
+  UNION ALL
+  SELECT event_time AS ts, uid AS user_id, act AS action, "era2" FROM events_era2
+  UNION ALL
+  SELECT meta.ts,        meta.user AS user_id, kind AS action, "era3" FROM events_era3
+```
+**`plan.UnionAll` is `NA()` in `glue/conv.go` today** (verified: the parser and
+planner accept `UNION ALL`, but conv rejects it). So this view shape is blocked
+until `VisitUnionAll` (and likely `VisitUnion`/distinct) is implemented. Good
+news: it's a **bounded** task — the recursive-CTE work already built the
+union *execution* substrate (data-staging batches + `trackSet` dedup in
+`glue/recursive.go`), so what's missing is mainly the top-level `plan.UnionAll` →
+`base.Op` conversion, not a new engine capability. **This is the single
+prerequisite** and belongs on the roadmap before query-defined views are useful
+for the morphing case. (Views that *don't* union — a single reshaping `SELECT`
+over one evolving source — work as soon as the catalog-view expansion lands,
+without UNION.)
+
+### S3 / object store: orthogonal, but the deps are already here
+
+The VIEW idea is independent of *where* bytes live — but the scenario is remote,
+and n1k1 reads local files today. That's a separable backend concern, and it's
+**dep-ready, not from-scratch**: `go.mod` already carries (indirect)
+`aws-sdk-go-v2/service/s3` + `feature/s3/manager`, **`aws-sdk-go-v2/service/glue`**
+(AWS's own data-catalog service), and `gocloud.dev` (whose `blob` package
+abstracts S3/GCS/Azure). Two implications:
+- An **object-store `RecordSource` backend** (via `gocloud.dev/blob` for
+  portability, or `aws-sdk` directly) slots under the same decoder/layout layers
+  as local files — the catalog's `root`/`layout` glob just points at `s3://…`.
+- The presence of the **Glue** client hints at capability (b): read an existing
+  **Glue Data Catalog** as the generated catalog, rather than crawling raw S3.
+
+### Virtual vs materialized (ties to §5)
+
+- **Virtual view** — re-expanded and re-scanned on every query. Simple, always
+  fresh, but pays the full union/normalize/scan cost each time, and depends on
+  **predicate pushdown through the view** to be fast (see below).
+- **Materialized view** — run the view once, cache the flattened, normalized rows
+  as a derived artifact in `.n1k1/` (a snapshot keyspace), rebuilt via the §5
+  change-detection manifest when any underlying sub-source changes. This is the
+  performance answer for expensive normalization over huge, mostly-static
+  historical trees — and it's exactly what the manifest + sidecar are for.
+
+### The hard part: predicate pushdown through a view
+
+A `WHERE ts >= '2023-01-01'` on `events` must reach the *sub-source* scans — and
+ideally prune whole eras/partitions (§2 F/G) — or the view reads all of history
+every time. After expansion the planner sees a union of subqueries; whether it
+pushes the outer predicate into each branch (and thence to partition pruning)
+depends on cbq-query's rewrite rules and on the §5 predicate-to-scan work. **Flag
+as the key open question** for views: a naive virtual view is correct but can be
+catastrophically slow on morphing S3 histories; materialization or pushdown is
+what makes it practical.
+
+### Prior art
+- **DuckDB `CREATE VIEW` + macros** — query-defined logical tables/functions.
+- **Trino / Athena VIEWs + the Glue crawler** — the crawler *generates* the
+  catalog from S3 (capability b); views normalize on top.
+- **Iceberg schema evolution** — the lakehouse's native answer to "schema morphed
+  over time": column-ID mapping makes renamed/added/dropped columns coherent
+  across snapshots *without* a union view. A query-defined view is the
+  poor-man's version when the data was never written as a managed table — worth
+  saying explicitly, because "just put it in Iceberg" is the alternative.
+- **dbt models** — query-defined, optionally materialized, dependency-tracked
+  transformations; the materialized-view lifecycle mirrors §5.
+
+### Recommendation
+Model views as **catalog entries with a `query` field** (a stored SQL++ `SELECT`),
+expanded as implicit WITH bindings before planning — reusing the CTE machinery,
+no datastore change. **Sequencing:** (1) single-source reshaping views land with
+the catalog-view expansion; (2) union/normalize views unblock once `VisitUnionAll`
+is implemented; (3) object-store backend and generated/Glue catalogs are a
+separable track; (4) materialization + pushdown are the performance follow-ups
+tied to §5. See worked example **O**.
+
 ## 3. Compression & containers
 
 ### What DuckDB does
@@ -572,13 +701,39 @@ n1k1 -c "SELECT * FROM read_csv('finance/*.csv', header=true) AS t" .
 **Rejected by the parser today** (see Open questions) — needs a grammar fork.
 Until then, express the same intent with a catalog keyspace (G/J).
 
+### O. Query-defined VIEW over a morphed-over-time source  🟣 (needs UNION ALL)
+```
+s3-events/                          # (or an s3:// root; object-store backend is separable)
+  events_era1/  2019/*.json         # flat  {ts, user}
+  events_era2/  2021/*.jsonl.gz     # renamed {event_time, uid}
+  events_era3/  year=2023/*.parquet # nested  {meta:{ts,user}, kind}
+  .n1k1/catalog.json
+```
+`.n1k1/catalog.json` defines each era as a keyspace (their own format/layout,
+per §2 mode 3) **plus a view** that reconciles them:
+```json
+{ "views": { "events": { "query":
+  "SELECT ts, user_id, action, 'era1' AS _era FROM events_era1
+   UNION ALL SELECT event_time AS ts, uid AS user_id, act AS action, 'era2' FROM events_era2
+   UNION ALL SELECT meta.ts, meta.user AS user_id, kind AS action, 'era3' FROM events_era3" } } }
+```
+`n1k1 -c "SELECT _era, COUNT(*) FROM events WHERE ts >= '2023-01-01' GROUP BY _era" s3-events`
+→ `events` expands as an implicit WITH binding (reusing the CTE machinery); the
+three eras present as one coherent keyspace. **Blocked on `VisitUnionAll`** (see
+"Query-defined virtual datasources"); the `WHERE ts >=` also wants pushdown into
+the era sub-scans to avoid reading all history (the open question there). A
+single-source reshaping view (no UNION) works without that blocker.
+
 **What the examples reveal for decisions:** (1) the flat-root keyspace-naming
 question (B) needs an answer before MVP; (2) the MVP cases (A/B/C/E/H-gzip) all
 stay on the opaque-document path, which is *why* they're cheap; (3) every case
 that introduces *columns* (D/F/J/K) forces the typed-label reconciliation, which
 is the real cost boundary — not the decoding; (4) partition pruning (F/G) is the
 first feature that needs the predicate pushed to the scan layer, linking directly
-to `DESIGN-indexing.md`'s zone-map tier.
+to `DESIGN-indexing.md`'s zone-map tier; (5) the VIEW case (O) reuses the WITH/CTE
+machinery for free but is gated on `VisitUnionAll` and on predicate-pushdown to
+stay fast — the highest-leverage single feature for the "morphed-over-time"
+scenario.
 
 ## 5. Indexes & derived artifacts: storage + change detection
 
@@ -959,6 +1114,17 @@ for free — see "Where this code lives" and "Compiler compatibility".
 9. Encryption-at-rest: transparent decrypt layer (Tink/age segmented),
    envelope keys via `gocloud.dev/secrets`, and **encrypted sidecar artifacts**.
 
+Separable tracks (not on the linear path above):
+- **Query-defined VIEWs** (see "Query-defined virtual datasources"): (i)
+  single-source reshaping views land with catalog-view expansion, riding the
+  existing WITH/CTE machinery; (ii) union/normalize views (the morphed-schema
+  case) unblock once **`VisitUnionAll`** is implemented in `glue/conv.go`; (iii)
+  materialized views + predicate pushdown are the perf follow-ups (join §5).
+- **Object-store backend** (S3/GCS/Azure via `gocloud.dev/blob` or `aws-sdk`,
+  both already indirect deps) — lets any catalog `root`/glob point at `s3://…`;
+  independent of format/layout. Reading an existing **Glue Data Catalog**
+  (`aws-sdk-go-v2/service/glue`, present) is the "generated catalog" variant.
+
 ## Open questions
 
 - **SQL++ surface for table functions / globs. (RESOLVED — no.)** Checked
@@ -982,6 +1148,17 @@ for free — see "Where this code lives" and "Compiler compatibility".
   minimal custom `.n1k1` manifest? Trade interop/robustness vs simplicity.
 - **CSV typing in a JSON/SQL++ world.** How aggressively to infer types vs treat
   CSV cells as strings; how to expose overrides.
+- **Predicate pushdown through a VIEW.** For a query-defined virtual datasource
+  (esp. the morphed-S3 union view), does a `WHERE`/partition predicate on the view
+  reach the sub-source scans so whole eras/partitions prune — or does the view
+  read all history each query? Depends on cbq's rewrite rules over the expanded
+  union + the §5 predicate-to-scan work. The gating perf question for views;
+  materialization is the fallback. (Correctness is fine either way.)
+- **View definition home & DDL.** Views live in `.n1k1/catalog.json` as a stored
+  `SELECT` string (no `CREATE VIEW` DDL, since n1k1 doesn't execute DDL — same
+  situation as index defs in `DESIGN-indexing.md`). Is a catalog `views` map the
+  right surface, and how do view names coexist with keyspace names in resolution
+  (view shadows keyspace? separate namespace)?
 - **Native vs cgo extractors/OCR.** Whether to accept the `extractous`/Tika
   native dependency for document breadth + OCR, or stay pure-Go and narrower.
 - **Default doc-ID scheme.** Positional `<relpath>#<offset>` (addressable, but
