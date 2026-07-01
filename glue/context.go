@@ -45,6 +45,10 @@ type GlueContext struct {
 	// (e.g. by ServiceRequestEx). The test path instead drives n1k1.ExecOp
 	// directly with its own yield callbacks and ignores this.
 	Results []value.AnnotatedValue
+
+	// subq drives expression-subquery evaluation (see subquery.go). nil until
+	// InitSubqueries is called; when nil, EvaluateSubquery errors.
+	subq *subqEvaluator
 }
 
 // NewGlueContext returns a GlueContext stamped with the given "now".

@@ -97,10 +97,11 @@ func (s *Session) Run(stmt string) (res *Result, err error) {
 		return nil, err
 	}
 
-	p, err := s.Store.PlanStatement(parsed, s.Namespace, nil, nil)
+	qp, err := s.Store.PlanStatementQP(parsed, s.Namespace, nil, nil)
 	if err != nil {
 		return nil, err
 	}
+	p := qp.PlanOp()
 
 	// EXPLAIN: the couchbase/query planner already built the plan (it's what conv
 	// would otherwise convert). Rather than convert+execute, emit that plan as a
@@ -140,6 +141,7 @@ func (s *Session) Run(stmt string) (res *Result, err error) {
 	defer os.RemoveAll(tmpDir)
 
 	gctx := NewGlueContext(time.Now())
+	gctx.InitSubqueries(s.Store, s.Namespace) // enable expression subqueries
 
 	vars.Temps = vars.Temps[:0]
 	vars.Temps = append(vars.Temps, gctx)

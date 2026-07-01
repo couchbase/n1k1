@@ -15,9 +15,11 @@ package test
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/couchbase/n1k1/base"
+	"github.com/couchbase/n1k1/glue"
 )
 
 // This is the data-driven home for local SQL++ feature unit tests -- run each
@@ -183,6 +185,51 @@ var queryCases = []queryCase{
 			}
 		},
 	},
+
+	// ---- Subqueries (uncorrelated) ------------------------------------
+	{
+		name: "SubqueryConstIn", // constant membership in a subquery result
+		stmt: `SELECT 5 IN (SELECT RAW 5) AS hit`,
+		rows: 1,
+		check: func(t *testing.T, rows []base.Vals) {
+			if string(rows[0][0]) != "true" {
+				t.Fatalf("expected hit=true, got %s", rows[0][0])
+			}
+		},
+	},
+	{
+		name: "SubqueryArrayLength", // ARRAY_LENGTH over a subquery's rows
+		stmt: `SELECT ARRAY_LENGTH((SELECT RAW o.id FROM data:orders o)) AS n`,
+		rows: 1,
+		check: func(t *testing.T, rows []base.Vals) {
+			if string(rows[0][0]) != "4" { // 4 orders
+				t.Fatalf("expected n=4, got %s", rows[0][0])
+			}
+		},
+	},
+	{
+		name: "SubqueryInProjection", // a subquery's array as a projected column
+		stmt: `SELECT (SELECT RAW o.id FROM data:orders o WHERE o.custId = "abc") AS ids`,
+		rows: 1,
+		check: func(t *testing.T, rows []base.Vals) {
+			if string(rows[0][0]) != `["1200"]` { // only order 1200 has custId abc
+				t.Fatalf("expected ids=[\"1200\"], got %s", rows[0][0])
+			}
+		},
+	},
+	{
+		name: "SubqueryWhereIn", // WHERE ... IN (uncorrelated subquery)
+		stmt: `SELECT o.id FROM data:orders o ` +
+			`WHERE o.custId IN (SELECT RAW o2.custId FROM data:orders o2 WHERE o2.id = "1235")`,
+		rows: 2, // subquery -> ["ccc"]; orders with custId ccc = 1235, 1236
+		check: func(t *testing.T, rows []base.Vals) {
+			for _, row := range rows {
+				if id := trimQ(string(row[0])); id != "1235" && id != "1236" {
+					t.Fatalf("unexpected id %s", id)
+				}
+			}
+		},
+	},
 }
 
 // TestQueryCases runs every queryCase as a subtest.
@@ -197,6 +244,25 @@ func TestQueryCases(t *testing.T) {
 				c.check(t, rows)
 			}
 		})
+	}
+}
+
+// TestSubqueryCorrelatedUnsupported checks that a correlated subquery (one
+// referencing an outer field) fails with a clear error rather than silently
+// returning wrong results -- correlation isn't threaded into the sub-op scope
+// yet. Run via glue.Session so the exec error surfaces as a return value.
+func TestSubqueryCorrelatedUnsupported(t *testing.T) {
+	sess, err := glue.OpenSession(".", "data")
+	if err != nil {
+		t.Fatalf("OpenSession: %v", err)
+	}
+	_, err = sess.Run(`SELECT o.id FROM data:orders o ` +
+		`WHERE 1 IN (SELECT RAW 1 FROM data:orders o2 WHERE o2.id = o.id)`)
+	if err == nil {
+		t.Fatalf("expected an error for a correlated subquery")
+	}
+	if !strings.Contains(err.Error(), "correlated") {
+		t.Fatalf("expected a 'correlated' error, got: %v", err)
 	}
 }
 

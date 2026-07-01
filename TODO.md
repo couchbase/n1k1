@@ -155,16 +155,14 @@ in glue/patches/README.md.
     * the planner pre-plans subqueries: QueryPlan.Subqueries() is
       map[*algebra.Select]Operator.
   To support it, in dependency order:
-    1. SUBQUERY execution (needed by all subqueries, not just CTEs; the
-       anchor/step are subquery exprs). algebra.Subquery.Evaluate does
-       context.(algebra.Context).EvaluateSubquery(query,item); GlueContext only
-       implements expression.IndexContext, so every subquery panics today
-       ("*glue.GlueContext is not algebra.Context: missing method Datastore").
-       Fix: (a) stop discarding qp in PlanStatement (returns qp.PlanOp(),
-       dropping Subqueries()); (b) make GlueContext an algebra.Context whose
-       EvaluateSubquery looks up qp.Subqueries()[sel], convs it, runs it under
-       temp-capture, returns the array. Correlation = thread `item` into the
-       sub-op scope (temp-yield-var slot). Fiddly part: correlation.
+    1. SUBQUERY execution -- DONE for UNCORRELATED (glue/subquery.go). GlueContext
+       is now an algebra.Context; EvaluateSubquery plans the sub-SELECT on demand
+       (like query's execution/context.go, not qp.Subqueries() which Build leaves
+       empty), convs it, runs it on n1k1's engine, returns the rows as an array
+       value. Works: N IN (SELECT ...), (SELECT ...) in projection, ARRAY_LENGTH
+       ((SELECT ...)), WHERE ... IN (SELECT ...). CORRELATED still TODO: errors
+       explicitly (query.IsCorrelated()); needs the outer row threaded into the
+       sub-op scope (the temp-yield-var slot pattern).
     2. CTE-as-datasource: FROM cte is an ExpressionScan reading the alias from
        the scope item; n1k1 must materialize the CTE value into that scope.
        (Non-recursive FROM cte fails today: "nil 'item' parameter".)

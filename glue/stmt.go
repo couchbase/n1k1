@@ -96,6 +96,19 @@ func (g *Store) InitParser() error {
 func (g *Store) PlanStatement(s algebra.Statement, namespace string,
 	namedArgs map[string]value.Value, positionalArgs value.Values) (
 	plan.Operator, error) {
+	qp, err := g.PlanStatementQP(s, namespace, namedArgs, positionalArgs)
+	if err != nil {
+		return nil, err
+	}
+	return qp.PlanOp(), nil
+}
+
+// PlanStatementQP is PlanStatement but returns the whole *plan.QueryPlan, so
+// callers can reach qp.Subqueries() (the pre-planned sub-SELECT operators the
+// planner builds for expression subqueries) -- which qp.PlanOp() alone drops.
+func (g *Store) PlanStatementQP(s algebra.Statement, namespace string,
+	namedArgs map[string]value.Value, positionalArgs value.Values) (
+	*plan.QueryPlan, error) {
 	var subquery bool
 	var stream bool
 
@@ -119,14 +132,14 @@ func (g *Store) PlanStatement(s algebra.Statement, namespace string,
 		datastore.UNBOUNDED, // scanConsistency
 	)
 
-	// planner.Build now returns a *plan.QueryPlan (+ a 4th duration map).
+	// planner.Build returns a *plan.QueryPlan (+ a 4th duration map).
 	qp, _, err, _ := planner.Build(s, g.Datastore, g.Systemstore,
 		namespace, subquery, stream, false /* forceSQBuild */, &pc)
 	if err != nil {
 		return nil, err
 	}
 
-	return qp.PlanOp(), nil
+	return qp, nil
 }
 
 // ------------------------------------------------------------------

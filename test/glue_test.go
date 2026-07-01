@@ -784,6 +784,7 @@ func testGlueExec(t *testing.T, emit bool,
 
 	// n1k1's own context, replacing query/execution.Context (which is cgo).
 	context := glue.NewGlueContext(time.Now())
+	context.InitSubqueries(store, "") // enable expression subqueries
 
 	vars.Temps = vars.Temps[:0]
 
