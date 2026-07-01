@@ -11,7 +11,11 @@ sidecar / manifest ownership; and added a "Worked examples" section of sample
 input trees + their FROM clauses, tagged by phasing status. Then added
 "Query-defined virtual datasources (VIEWs & generated catalogs)" — a view as an
 implicit WITH binding reusing the CTE machinery, the morphed-over-time S3 case,
-its UNION-ALL blocker + object-store/Glue notes, and worked example O.)
+its UNION-ALL blocker + object-store/Glue notes, and worked example O. Then
+investigated the fork's `datastore/virtual` package: it's a metadata-only planner
+shim (no Fetch/Scan), so not a view route — but its `partitionVirtualIndex` +
+`SargableFor` partition-elimination pattern is a head start on predicate pruning;
+noted both in the VIEW recommendation, example F, and the §5 zone-map caveat.)
 
 ---
 
@@ -460,6 +464,20 @@ is implemented; (3) object-store backend and generated/Glue catalogs are a
 separable track; (4) materialization + pushdown are the performance follow-ups
 tied to §5. See worked example **O**.
 
+**Not the route: the fork's `datastore/virtual` package.** It's tempting (name
+aside) but it's a *metadata-only, planner-facing shim*, not a datasource:
+`virtualKeyspace` refuses `Fetch`/mutations (`Count()`→0) and `VirtualIndex.Scan`
+is an **empty body** that yields nothing. It exists so the planner can hold a
+keyspace/index *object* where the interface requires one without backing data
+(`Namespace.VirtualKeyspaceByName`, system keyspaces) and — its one active use —
+to run `SargableFor` against a throwaway `partitionVirtualIndex` for **partition
+elimination** (see §2 F). Macro-expansion is better for views anyway: the view
+name is rewritten away before planning, so no keyspace object is ever needed.
+(The keyspace interface's `ExternalScan`/`IsExternalCollection` looked like a
+cleaner external-data seam, but it's only really implemented on the EE couchbase
+*collection* path — file/mock/virtual all `conn.Fatal` — so it's not a usable
+hook on the file datastore.)
+
 ## 3. Compression & containers
 
 ### What DuckDB does
@@ -605,6 +623,12 @@ columns; `WHERE year = 2026` **prunes the 2025 file before opening it**.
 Depends on partition/zone-map pruning at the scan layer — see the coherence note
 with `DESIGN-indexing.md` in §5 (this is that doc's tier-1 "index-everything-lite"
 consumer, and it needs the predicate to reach the scan).
+**Existing lever to reuse:** the fork *already* decides "does `WHERE year=2026`
+have an EQ/IN on a partition key?" — `planner/build_scan_api.go` builds a
+throwaway `partitionVirtualIndex` (from `datastore/virtual`) and runs
+`SargableFor` against it for **partition elimination**. So the sargability test
+for pruning need not be invented; the remaining work is feeding it the partition
+keys and acting on its verdict at the scan/datastore layer.
 
 ### G. Bare date-partition dirs + compression — catalog projection  🟣
 ```
@@ -886,6 +910,13 @@ zone maps/counts when the planner can exploit them.
 > the predicate-pushdown work (that's when F/G partition pruning in the worked
 > examples lights up); defer cardinality/distinct until CBO. This is the single
 > most important point to keep the two design docs coherent.
+>
+> **Head start on the sargability half:** the fork already runs `SargableFor`
+> against a throwaway `partitionVirtualIndex` (`datastore/virtual`, from
+> `planner/build_scan_api.go`) to decide **partition elimination** — so the
+> "does the predicate constrain the partition/zone key?" test exists; what's
+> missing is delivering that verdict to the scan layer and acting on it (option
+> (a)/(b) above).
 
 ### Libraries (well-tested building blocks)
 - **Don't hand-roll a table format if you can avoid it.** `apache/iceberg-go`
