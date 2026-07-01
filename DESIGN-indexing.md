@@ -150,14 +150,17 @@ position-deletes use), matching `DESIGN-data.md §6`.
 
 ### Index definition & build (sidecar, since DDL isn't wired)
 
-- **Definition:** a per-keyspace JSON sidecar
-  `<datastoreDir>/<namespace>/<keyspace>/.indexes.json`:
-  `[{ "name": "...", "keys": ["expr", ...], "where": "expr"? }]`.
+- **Definition:** index definitions live in the sidecar catalog
+  `.n1k1/catalog.json` (canonical) as
+  `[{ "name": "...", "keys": ["expr", ...], "where": "expr"? }]` — see the
+  **Sidecar layout** section for the full `.n1k1/` naming scheme. (A per-keyspace
+  `indexes.json` remains an option for portability.)
 - **Load:** in `newKeyspace` (file.go ~line 734), after the primary index is
-  created, read `.indexes.json`; parse each key/where string with the n1ql
-  expression parser; call a new `fileIndexer.createSecondaryIndex(name,
-  rangeKeys, where)` that constructs the index, opens/creates its bbolt file
-  (e.g. `.idx_<name>.bolt`), and registers it in `fi.indexes`.
+  created, read the catalog; parse each key/where string with the n1ql expression
+  parser; call a new `fileIndexer.createSecondaryIndex(name, rangeKeys, where)`
+  that constructs the index, opens/creates its bbolt file at the layout path
+  `.n1k1/<ns>/<ks>/idx/<name>__gsi__<defhash>/data.bolt`, and registers it in
+  `fi.indexes`.
 - **Build (v1 = rebuild-on-open):** full keyspace scan (reuse the
   `primaryIndex.ScanEntries` directory-read pattern) → fetch each doc → evaluate
   the parsed key expressions (and `where`) against the doc `value.Value` → insert
@@ -198,7 +201,7 @@ key and stop at `span.Range.High`, honoring
 2. (fork) Add `fileIndexer.createSecondaryIndex(name, rangeKeys, where)`.
 3. (fork) Implement the build routine (full-scan → eval keys → bbolt insert).
 4. (fork) Implement `secondaryIndex.Scan()` (cursor seek/iterate/`Collate`).
-5. (fork) Wire sidecar `.indexes.json` loading in `newKeyspace`.
+5. (fork) Wire sidecar `.n1k1/catalog.json` loading in `newKeyspace`.
 6. (fork) **Fix `fileIndexer.Indexes()`** (file.go:816) to return primary **plus**
    all secondaries; verify `IndexNames`/`IndexIds`/`IndexByName` cover the map.
 7. (fork) Commit; bump the `replace … => …/n1k1-query <newver>` pin in n1k1's
@@ -225,8 +228,75 @@ small in-process shim, not n1fty.
 - **conv.go gap:** `VisitIndexFtsSearch` currently returns `NA()`. Implement it
   (plus a `datastore-scan-fts` execution op mirroring `DatastoreScanIndex`) so
   the `plan.IndexFtsSearch` the planner emits for `SEARCH()` is converted.
-- Definition/build: extend the `.indexes.json` sidecar with FTS specs (or add a
-  separate `.fts.json`); build the bleve index on open from a full scan.
+- Definition/build: add FTS index specs to `.n1k1/catalog.json` (`kind: fts`);
+  build the bleve index into `.n1k1/<ns>/<ks>/idx/<name>__fts__<defhash>/bleve/`
+  on open from a full scan.
+
+## Sidecar layout (`.n1k1/`): naming for many index schemes
+
+A dataset accumulates *many* independent derived artifacts — several secondary
+(GSI) indexes, FTS/bleve indexes, always-on zone-maps/bloom, count caches, and
+change-detection manifests — across multiple keyspaces, each with its own
+definition, format version, and rebuild lifecycle. The `.n1k1/` layout must let
+these coexist, be built / dropped / GC'd independently, be swapped atomically, and
+be matched back to the exact definition **and** source state they were built from.
+
+### Directory tree
+```
+<dataRoot>/.n1k1/
+  LAYOUT                       # one line: sidecar layout format version
+  catalog.json                # source of truth: all index definitions + config fingerprint (DESIGN-data §2.3/§5)
+  <namespace>/
+    <keyspace>/
+      manifest.json           # source fingerprints + zone-maps for change detection (DESIGN-data §5)
+      idx/
+        <name>__<kind>__<defhash>/    # one directory per built index instance
+          meta.json                   # def, kind, key exprs, format_version, built_from, build state, stats
+          data.bolt                   # kind=gsi   : bbolt B+tree
+          bleve/                      # kind=fts   : bleve index directory
+          zonemap.cbor | bloom.bin    # kind=zonemap | bloom : lightweight artifacts
+          count.json                  # kind=count : cached COUNT(*) / per-partition counts
+      tmp/
+        <name>__<kind>__<defhash>.<gen>/   # in-progress build; atomically renamed into idx/
+      trash/                               # dropped/orphaned instances awaiting lazy delete
+```
+
+### The instance name: `<name>__<kind>__<defhash>`
+- **`name`** — the user-facing index name, filesystem-sanitized (slugify/percent-
+  escape unsafe chars; the true name lives in `meta.json`).
+- **`kind`** — the scheme: `gsi` | `fts` | `zonemap` | `bloom` | `wildcard` |
+  `count`. Lets many schemes coexist on the same keyspace, even on the same key.
+- **`defhash`** — short hex hash of the *normalized* definition (key expressions +
+  `WHERE` + options + collation/format version). This is the workhorse:
+  - **Redefinition safety:** reusing a name with a changed definition yields a new
+    `defhash` ⇒ a new directory; the old one is orphaned and GC'd — no in-place
+    corruption, no stale-definition reads.
+  - **Planner matching:** "is there a built index for *this* definition?" becomes a
+    directory-existence check; the datastore advertises only instances whose
+    `built_from` matches the current source manifest (otherwise it's stale).
+  - **Self-describing:** `catalog.json` can be reconstructed by scanning `idx/`.
+
+### Atomic build, versioning, lifecycle
+- Build into `tmp/…​.<gen>/`, then **atomic rename** into `idx/…/` (POSIX dir
+  rename on the same filesystem) so readers never see a half-built index. For
+  concurrent readers during rebuild, use a `<gen>` suffix + a `CURRENT` pointer per
+  instance (LevelDB/RocksDB-style); simplest v1 = single instance + rename swap.
+- Rebuild is triggered by any of: `meta.json.format_version` bump, changed
+  `defhash`, or `built_from` ≠ current source manifest / `catalog.config_fingerprint`
+  (DESIGN-data §5).
+- **GC:** on open, reconcile `idx/` against `catalog.json` + the source manifest;
+  orphans and stale instances move to `trash/` and are deleted lazily. Dropping an
+  index removes its catalog entry and trashes its instance dir.
+
+### Encryption & definition home
+- If encryption-at-rest is on (DESIGN-data §6), artifact payloads (`data.bolt`,
+  `bleve/`, `zonemap`, manifests) are encrypted with the dataset DEK; `meta.json`
+  records the wrapping key id. The whole `.n1k1/` tree is a derived-data leak
+  surface, so it is in-scope for the encryption guarantee.
+- Index **definitions** are the source of truth in `.n1k1/catalog.json` (dataset-
+  wide), superseding Phase 1's per-keyspace `.indexes.json` sketch; a per-keyspace
+  `indexes.json` remains an option for portability, but built artifacts are always
+  keyed by `defhash`, so a definition edited anywhere triggers a clean rebuild.
 
 ## "Index everything": dynamic / wildcard / automatic secondary indexes
 
@@ -403,7 +473,7 @@ datasets.
 
 ## Verification
 
-- **Phase 1:** create a keyspace with a `.indexes.json` over a field, run a query
+- **Phase 1:** define an index in `.n1k1/catalog.json` over a field, run a query
   whose `WHERE` matches the index's leading key, and confirm via the CLI's plan
   output (`Result.Plan`) that it is an **`IndexScan`, not `PrimaryScan`**, and
   that results match the same query without the index. Run
