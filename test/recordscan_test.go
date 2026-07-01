@@ -137,6 +137,25 @@ func TestCountStar(t *testing.T) {
 	})
 }
 
+// TestRecordScanCSV: scenario J -- CSV rows decode to JSON objects (header keys),
+// queryable by column with type inference, through the standard FROM path.
+func TestRecordScanCSV(t *testing.T) {
+	root := writeKeyspace(t, "txns", map[string]string{
+		"q1.csv": "id,amount,currency\n" +
+			"t1,10.5,USD\n" +
+			"t2,20,USD\n" +
+			"t3,5.25,EUR\n",
+	})
+	// Filter + aggregate over CSV-derived columns (amount inferred numeric).
+	store, conv := flatRootConv(t, root,
+		"SELECT x.currency AS cur, SUM(x.amount) AS tot FROM default:txns x "+
+			"WHERE x.currency = 'USD' GROUP BY x.currency")
+	rows := flatRootRows(t, conv, testGlueExec(t, false, store, conv))
+	if len(rows) != 1 || jsonOf(rows[0]) != `{"cur":"USD","tot":30.5}` {
+		t.Fatalf("CSV query: want {cur:USD,tot:30.5}, got %v", rows)
+	}
+}
+
 // TestRecordScanMixedFormats: a keyspace mixing one-doc JSON + JSONL unions both.
 func TestRecordScanMixedFormats(t *testing.T) {
 	root := writeKeyspace(t, "mix", map[string]string{

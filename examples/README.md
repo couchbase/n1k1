@@ -22,10 +22,13 @@ Status legend (matches the design doc):
 | `logs/` | C | multi-file keyspace, many records/file (JSONL) | `SELECT action, COUNT(*) FROM default:events GROUP BY action` | 🟢 |
 | `metrics/` | E | deep/recursive tree, unkeyed union (JSONL) | `SELECT host, AVG(value) FROM default:cpu GROUP BY host` | 🟢 |
 | `archive/` | H | transparent gzip (`.jsonl.gz`) | `SELECT * FROM default:orders` | 🟢 |
+| `finance/` | J | CSV rows → JSON objects (header keys, inferred types) | `SELECT currency, SUM(amount) FROM txns GROUP BY currency` | 🟢 |
 | `kb/` | L | office/unstructured docs → extractor rows | `SELECT filename, text FROM default:docs WHERE text LIKE '%vacation%'` | 🟡 |
 
-Only **A works today**; B/C/E/H are the MVP target (this branch); L (office
-extraction) is a later phase. Indexing (`DESIGN-indexing.md`) is also later.
+**A/B/C/E/H/J work today.** L (office extraction) and Parquet (K) are later
+phases; indexing (`DESIGN-indexing.md`) is also later. CSV/TSV cells get light
+type inference (numbers/bools/null, string fallback); leading-zero values like
+`007` stay strings.
 
 ## Layout details
 

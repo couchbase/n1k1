@@ -26,9 +26,11 @@ import (
 	"bufio"
 	"bytes"
 	"compress/gzip"
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -53,9 +55,11 @@ type Source interface {
 
 // Supported record-file extensions (after any compression suffix is stripped).
 // jsonl/ndjson are line-delimited (streaming); json/jsons are a value stream or
-// a top-level array.
+// a top-level array; csv/tsv are header + delimited rows decoded into JSON
+// objects.
 var recordExts = map[string]bool{
 	".json": true, ".jsons": true, ".jsonl": true, ".ndjson": true,
+	".csv": true, ".tsv": true,
 }
 
 // IsRecordFile reports whether path (by extension, ignoring a .gz/.zst suffix)
@@ -132,6 +136,17 @@ func OpenFile(path, idPrefix string) (Source, error) {
 	switch innerExt(path) {
 	case ".jsonl", ".ndjson":
 		return newJSONLSource(r, closers, idPrefix), nil
+	case ".csv", ".tsv":
+		comma := ','
+		if innerExt(path) == ".tsv" {
+			comma = '\t'
+		}
+		s, err := newCSVSource(r, closers, idPrefix, comma)
+		if err != nil {
+			closeAll(closers)
+			return nil, err
+		}
+		return s, nil
 	default: // .json, .jsons
 		s, err := newJSONSource(r, closers, idPrefix, stem(path))
 		if err != nil {
@@ -287,6 +302,155 @@ func appendRecordID(dst []byte, prefix string, n int) []byte {
 	return dst
 }
 
+// -------------------------------------------------------------- CSV/TSV source
+
+// csvSource decodes a delimited file (CSV/TSV) into one JSON object per data
+// row, keyed by the header row. Values get light type inference (int/float/bool/
+// null) with a string fallback -- see csvAppendValue. The doc JSON is built into
+// a reused buffer (borrowed until the next Next); encoding/csv handles quoting/
+// escaping/embedded newlines correctly (unlike the old op_scan.go splitter).
+//
+// Allocation note: encoding/csv with ReuseRecord reuses its []string slice, but
+// the field strings themselves are allocated per row -- acceptable for a first
+// cut (they're consumed immediately into the doc buffer). A fully []byte-native
+// CSV reader is a later optimization (DESIGN-data.md "Allocation model").
+type csvSource struct {
+	r        *csv.Reader
+	header   []string
+	closers  []io.Closer
+	idPrefix string
+	row      int
+	docBuf   []byte
+	idBuf    []byte
+	done     bool
+}
+
+func newCSVSource(r io.Reader, closers []io.Closer, idPrefix string, comma rune) (*csvSource, error) {
+	cr := csv.NewReader(r)
+	cr.Comma = comma
+	cr.ReuseRecord = true    // reuse the []string across rows
+	cr.FieldsPerRecord = -1  // tolerate ragged rows (map by position)
+	cr.TrimLeadingSpace = false
+
+	s := &csvSource{r: cr, closers: closers, idPrefix: idPrefix}
+
+	hdr, err := cr.Read()
+	if err == io.EOF {
+		s.done = true // empty file: no header, no rows
+		return s, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	s.header = append([]string(nil), hdr...) // copy (ReuseRecord will overwrite)
+	return s, nil
+}
+
+func (s *csvSource) Next(rec *Record) (bool, error) {
+	if s.done {
+		return false, nil
+	}
+	fields, err := s.r.Read()
+	if err == io.EOF {
+		s.done = true
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	s.docBuf = csvRowToJSON(s.docBuf[:0], s.header, fields)
+	rec.Doc = s.docBuf
+	s.idBuf = appendRecordID(s.idBuf[:0], s.idPrefix, s.row)
+	rec.ID = s.idBuf
+	s.row++
+	return true, nil
+}
+
+func (s *csvSource) Close() error { return closeAll(s.closers) }
+
+// csvRowToJSON builds {"<hdr0>":<v0>,...} into dst. A field missing for a header
+// column (short row) becomes null; extra fields beyond the header are dropped.
+func csvRowToJSON(dst []byte, header, fields []string) []byte {
+	dst = append(dst, '{')
+	for i, key := range header {
+		if i > 0 {
+			dst = append(dst, ',')
+		}
+		dst = strconv.AppendQuote(dst, key)
+		dst = append(dst, ':')
+		if i < len(fields) {
+			dst = csvAppendValue(dst, fields[i])
+		} else {
+			dst = append(dst, "null"...)
+		}
+	}
+	dst = append(dst, '}')
+	return dst
+}
+
+// csvAppendValue appends a CSV cell as a JSON value with light per-cell type
+// inference: empty -> null; true/false -> bool; numbers -> int/float; else a
+// JSON string. Two guards keep identifier-ish cells as strings rather than
+// lossily coercing them: a leading-zero integer part ("007", zip codes) and an
+// integer that overflows int64 (long account/id numbers) stay strings --
+// while ordinary decimals like "129.50" become numbers (so SUM/AVG work).
+// (Per-cell inference is inherently limited; column-level sniffing + per-column
+// overrides are a later refinement -- DESIGN-data.md §1.)
+func csvAppendValue(dst []byte, s string) []byte {
+	switch {
+	case s == "":
+		return append(dst, "null"...)
+	case s == "true" || s == "false":
+		return append(dst, s...)
+	case hasLeadingZeroIntPart(s):
+		// "007", "00.5": preserve as string.
+	case isIntegerShaped(s):
+		if i, err := strconv.ParseInt(s, 10, 64); err == nil {
+			return strconv.AppendInt(dst, i, 10)
+		}
+		// integer-shaped but overflows int64: keep full precision as a string.
+	default:
+		if f, err := strconv.ParseFloat(s, 64); err == nil &&
+			!math.IsInf(f, 0) && !math.IsNaN(f) {
+			return strconv.AppendFloat(dst, f, 'g', -1, 64)
+		}
+	}
+	return strconv.AppendQuote(dst, s)
+}
+
+// isIntegerShaped reports whether s is an optional sign followed by all digits.
+func isIntegerShaped(s string) bool {
+	if len(s) > 0 && (s[0] == '+' || s[0] == '-') {
+		s = s[1:]
+	}
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// hasLeadingZeroIntPart reports whether the integer part of s (before any '.'/'e')
+// is a multi-digit run starting with '0' -- the "007" / "00.5" identifier case.
+func hasLeadingZeroIntPart(s string) bool {
+	if len(s) > 0 && (s[0] == '+' || s[0] == '-') {
+		s = s[1:]
+	}
+	end := len(s)
+	for i := 0; i < len(s); i++ {
+		if s[i] == '.' || s[i] == 'e' || s[i] == 'E' {
+			end = i
+			break
+		}
+	}
+	ip := s[:end]
+	return len(ip) > 1 && ip[0] == '0'
+}
+
 // -------------------------------------------------------------- directory walk
 
 // WalkOptions configures directory discovery and which files are eligible.
@@ -310,6 +474,7 @@ func AllModes() WalkOptions {
 // scanned can lock n1k1 down. Recognized tokens:
 //
 //	json      → .json/.jsons        jsonl → .jsonl/.ndjson
+//	csv       → .csv                 tsv   → .tsv
 //	gzip      → allow .gz            recurse → descend subdirs
 //
 // An empty string means "unrestricted" (AllModes). Unknown tokens are an error.
@@ -327,6 +492,10 @@ func ParseModes(csv string) (WalkOptions, error) {
 			opts.Formats[".json"], opts.Formats[".jsons"] = true, true
 		case "jsonl", "ndjson":
 			opts.Formats[".jsonl"], opts.Formats[".ndjson"] = true, true
+		case "csv":
+			opts.Formats[".csv"] = true
+		case "tsv":
+			opts.Formats[".tsv"] = true
 		case "gzip", "gz":
 			opts.AllowGzip = true
 		case "zstd", "zst":

@@ -149,6 +149,63 @@ func TestJSONArrayAndValueStream(t *testing.T) {
 	}
 }
 
+func TestCSVDecode(t *testing.T) {
+	dir := t.TempDir()
+	// Includes quoting, an embedded comma+newline, type-inference cases, a
+	// ragged (short) row, and an empty cell.
+	csvBody := "id,name,amount,active,note\n" +
+		"1,Alice,10.5,true,hi\n" +
+		"2,\"Bob, Jr.\",20,false,\"line1\nline2\"\n" +
+		"007,Carol,,true,\n" + // 007 stays a string; empty amount+note -> null
+		"4,Dave\n" // ragged: missing amount/active/note -> null
+	if err := os.WriteFile(filepath.Join(dir, "people.csv"), []byte(csvBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s, err := OpenFile(filepath.Join(dir, "people.csv"), "people.csv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids, docs := collect(t, s)
+	if len(docs) != 4 {
+		t.Fatalf("want 4 rows, got %d: %v", len(docs), docs)
+	}
+	if ids[0] != "people.csv#0" {
+		t.Errorf("first id = %q, want people.csv#0", ids[0])
+	}
+	// Row 0: typed values.
+	if docs[0] != `{"id":1,"name":"Alice","amount":10.5,"active":true,"note":"hi"}` {
+		t.Errorf("row0 = %s", docs[0])
+	}
+	// Row 1: quoted comma + embedded newline preserved as a string.
+	if docs[1] != `{"id":2,"name":"Bob, Jr.","amount":20,"active":false,"note":"line1\nline2"}` {
+		t.Errorf("row1 = %s", docs[1])
+	}
+	// Row 2: "007" stays a string (no lossy 007->7); empty cells -> null.
+	if docs[2] != `{"id":"007","name":"Carol","amount":null,"active":true,"note":null}` {
+		t.Errorf("row2 = %s", docs[2])
+	}
+	// Row 3: ragged short row -> missing columns null.
+	if docs[3] != `{"id":4,"name":"Dave","amount":null,"active":null,"note":null}` {
+		t.Errorf("row3 = %s", docs[3])
+	}
+}
+
+func TestTSVDecode(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "t.tsv"),
+		[]byte("a\tb\n1\tx\n2\ty\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s, err := OpenFile(filepath.Join(dir, "t.tsv"), "t.tsv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, docs := collect(t, s)
+	if len(docs) != 2 || docs[0] != `{"a":1,"b":"x"}` {
+		t.Fatalf("tsv decode: %v", docs)
+	}
+}
+
 // TestBorrowedSliceStableAfterCopy documents the borrow contract: the returned
 // slices are only valid until the next Next, but a copy survives.
 func TestBorrowedSliceStableAfterCopy(t *testing.T) {
