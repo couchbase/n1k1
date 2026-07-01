@@ -229,58 +229,61 @@ func (c *ValComparer) CompareWithType(aValue, bValue []byte,
 				return nil
 			})
 
+		// Compute the result into rv, then release the pooled kvs exactly once
+		// after all use (sort + loop). Releasing before use -- as this branch did
+		// -- hands the depth-pool slice back while we still sort/read it, which
+		// corrupts later same-depth Compare/canonical calls that reuse this
+		// ValComparer. (See the matching fix in canonical.go's object branch.)
+		rv := 0
+		switch {
+		case aErr != nil || bErr != nil:
+			rv = CompareErr(aErr, bErr)
+		case aLen != bLen:
+			rv = aLen - bLen // Larger object wins.
+		default:
+			sort.Sort(kvs)
+
+			// With closely matching objects, the sorted kvs should look like a
+			// sequence of pairs, like:
+			//   [{"city","sf",1}, {"city","sf",-1}, {"state",...} ...]
+			// A KeyVal from aValue has Pos 1; from bValue has Pos -1. The loop
+			// looks for a non-matching pair, kvX & kvY.
+			depthPlus1 := depth + 1
+
+			for i := 0; i < len(kvs); {
+				kvX := kvs[i]
+				i++
+
+				if i >= len(kvs) {
+					rv = kvX.Pos
+					break
+				}
+
+				kvY := kvs[i]
+				i++
+
+				if kvX.Pos == kvY.Pos {
+					rv = kvX.Pos
+					break
+				}
+
+				if !bytes.Equal(kvX.Key, kvY.Key) {
+					rv = kvX.Pos
+					break
+				}
+
+				cmp := c.CompareWithType(kvX.Val, kvY.Val,
+					int(kvX.ValType), int(kvY.ValType), depthPlus1)
+				if cmp != 0 {
+					rv = cmp
+					break
+				}
+			}
+		}
+
 		c.KeyValsRelease(depth, kvs)
 
-		if aErr != nil || bErr != nil {
-			return CompareErr(aErr, bErr)
-		}
-
-		if aLen != bLen {
-			return aLen - bLen // Larger object wins.
-		}
-
-		sort.Sort(kvs)
-
-		// With closely matching objects, the sorted kvs should look
-		// like a sequence of pairs, like...
-		//
-		// [{"city", "sf", 1}, {"city", "sf", -1}, {"state", ...} ...]
-		//
-		// A KeyVal entry from aValue has Pos 1.
-		// A KeyVal entry from bValue has Pos -1.
-		//
-		// The following loop looks for a non-matching pair, kvX & kvY.
-		//
-		depthPlus1 := depth + 1
-
-		i := 0
-		for i < len(kvs) {
-			kvX := kvs[i]
-			i++
-
-			if i >= len(kvs) {
-				return kvX.Pos
-			}
-
-			kvY := kvs[i]
-			i++
-
-			if kvX.Pos == kvY.Pos {
-				return kvX.Pos
-			}
-
-			if !bytes.Equal(kvX.Key, kvY.Key) {
-				return kvX.Pos
-			}
-
-			cmp := c.CompareWithType(kvX.Val, kvY.Val,
-				int(kvX.ValType), int(kvY.ValType), depthPlus1)
-			if cmp != 0 {
-				return cmp
-			}
-		}
-
-		return 0
+		return rv
 
 	default: // Null, NotExist, Unknown.
 		return 0

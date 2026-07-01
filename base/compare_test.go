@@ -342,3 +342,42 @@ func BenchmarkParse(b *testing.B) {
 		Parse(x)
 	}
 }
+
+// TestValComparerObjectDoesNotCorrupt guards against a regression where
+// canonicalizing or comparing an OBJECT value left the shared ValComparer's
+// depth-pool in a corrupted state (KeyValsRelease was called before the sort +
+// loop that still used the pooled slice), making a *subsequent* Compare on the
+// same comparer return the wrong result. That surfaced as rows being dropped
+// after an ORDER BY / DISTINCT / GROUP BY on an object-valued key.
+func TestValComparerObjectDoesNotCorrupt(t *testing.T) {
+	obj := Val(`{"name":"1200","zzz":{"a":1,"b":2}}`)
+	str := Val(`"select_func"`)
+
+	// CanonicalJSON(object) must not corrupt a later Compare.
+	vc := &ValComparer{}
+	if vc.Compare(str, str) != 0 {
+		t.Fatal("baseline: equal strings should compare 0")
+	}
+	_, err := vc.CanonicalJSON(obj, nil)
+	if err != nil {
+		t.Fatalf("CanonicalJSON: %v", err)
+	}
+	if got := vc.Compare(str, str); got != 0 {
+		t.Errorf("Compare after object CanonicalJSON = %d, want 0 (comparer corrupted)", got)
+	}
+	if got := vc.Compare(Val(`"a"`), Val(`"b"`)); got >= 0 {
+		t.Errorf("Compare(a,b) after object CanonicalJSON = %d, want <0", got)
+	}
+
+	// Compare(object,...) must not corrupt a later Compare either.
+	vc2 := &ValComparer{}
+	_ = vc2.Compare(obj, Val(`{"name":"1234","zzz":{"a":1,"b":9}}`))
+	if got := vc2.Compare(str, str); got != 0 {
+		t.Errorf("Compare after object Compare = %d, want 0 (comparer corrupted)", got)
+	}
+
+	// Object comparison itself stays correct.
+	if got := vc.Compare(Val(`{"name":"1234"}`), Val(`{"name":"1235"}`)); got >= 0 {
+		t.Errorf("Compare distinct objects = %d, want <0", got)
+	}
+}

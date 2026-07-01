@@ -16,16 +16,19 @@ import (
 )
 
 // The conditional-unknown selectors: IFNULL / IFMISSING / IFMISSINGORNULL (and
-// NVL == 2-arg IFNULL, COALESCE == IFMISSINGORNULL). All variadic: return the
-// first operand "kept" under the mode, else NULL; the result is the chosen
-// operand's bytes verbatim (zero-copy). Mirrors cbq expression/func_cond_unknown.go.
-// N-ary (any operand count) via MakeNaryExprFunc.
+// COALESCE == IFMISSINGORNULL). All variadic: return the first operand "kept"
+// under the mode, else NULL; the result is the chosen operand's bytes verbatim
+// (zero-copy). Mirrors cbq expression/func_cond_unknown.go. N-ary (any operand
+// count) via MakeNaryExprFunc.
 
 func init() {
 	ExprCatalog["ifnull"] = ExprIfNull
 	ExprCatalog["ifmissing"] = ExprIfMissing
 	ExprCatalog["ifmissingornull"] = ExprIfMissingOrNull
-	ExprCatalog["nvl"] = ExprIfNull // NVL(a, b) == IFNULL(a, b).
+	// NVL(a, b) returns b when a is NULL *or* MISSING (cbq NVL.Evaluate:
+	// `first.Type() > NULL ? first : second`), i.e. it's 2-arg IFMISSINGORNULL --
+	// not IFNULL, which keeps a MISSING first operand.
+	ExprCatalog["nvl"] = ExprIfMissingOrNull
 }
 
 // Per-mode reducers, passed directly to the n-ary harness.

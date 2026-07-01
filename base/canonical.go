@@ -96,8 +96,6 @@ func (c *ValComparer) CanonicalJSONWithType(v []byte, vType int,
 				return nil
 			})
 
-		c.KeyValsRelease(depth, kvs)
-
 		c.PrepareEncoder()
 
 		sort.Sort(kvs)
@@ -115,6 +113,7 @@ func (c *ValComparer) CanonicalJSONWithType(v []byte, vType int,
 
 			out, err = c.EncodeAsString(kv.Key, out)
 			if err != nil {
+				c.KeyValsRelease(depth, kvs)
 				return out, err
 			}
 
@@ -123,9 +122,18 @@ func (c *ValComparer) CanonicalJSONWithType(v []byte, vType int,
 			out, err = c.CanonicalJSONWithType(kv.Val, kv.ValType,
 				out, depthPlus1)
 			if err != nil {
+				c.KeyValsRelease(depth, kvs)
 				return out, err
 			}
 		}
+
+		// Release only after the sort + loop are done using kvs (the pooled
+		// slice): releasing earlier hands the buffer back to the depth pool while
+		// we still mutate/read it, corrupting later same-depth Compare/encode
+		// calls that reuse the ValComparer (e.g. a WHERE filter after an
+		// ORDER BY / DISTINCT / GROUP BY on an object-valued key). Matches the
+		// Array branch, which releases after use.
+		c.KeyValsRelease(depth, kvs)
 
 		return append(out, '}'), nil
 
