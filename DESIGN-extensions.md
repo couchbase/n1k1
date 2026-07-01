@@ -1,18 +1,24 @@
-# Extending n1k1's function library — builtins, drop-in UDFs, and table-valued/streaming functions
+# Extending n1k1 — functions, drop-in extensions, dynamic loading, and table-valued/streaming
 
 ## Why
 
 n1k1 runs SQL++ by reusing cbq's parser + planner and evaluating expressions
 (natively where ported, otherwise via the embedded cbq evaluator). A natural next
-question: can we grow the *function* surface — add builtins, let users drop in
-their own functions, and support functions that return whole tables (e.g. shred a
-PDF/PPT/DOC/XLSX into many JSON rows) — ideally **streaming** so a huge result
-doesn't have to be materialized in memory?
+question: how do we grow the engine's *surface* — add builtins, let users drop in
+their own functions/extensions (JS or Go), load extensions dynamically, and
+support functions that return whole tables (e.g. shred a PDF/PPT/DOC/XLSX into
+many JSON rows) — ideally **streaming** so a huge result doesn't have to be
+materialized in memory?
 
 Short answer: yes to all, in tiers with different effort/trade-offs. The
 enabling plumbing (the UDF resolution seam, `FROM <expr>` scans, a push-based
 streaming engine, spill-to-disk) already exists; the work is wiring and one small
 new "streaming source function" protocol.
+
+**One hard constraint frames every option below:** n1k1 builds **`CGO_ENABLED=0`**
+— a pure-Go static binary (Makefile makes this explicit and every build/test uses
+it). That rules out anything needing cgo, most notably Go's own `plugin` package
+(see "Dynamic loading in Go"). Everything recommended here stays cgo-free.
 
 ## How cbq resolves a function name (the seam)
 
@@ -71,6 +77,59 @@ of the UDF resolver instead of cbq's metakv/Enterprise machinery:
 
 Pure SQL++, trivial to wire (it's just an expression bound to a name), but limited
 to expressions — can't touch a PDF. A nice-to-have that composes with Tiers 1–2.
+
+## Dynamic loading in Go — what's viable (and the cgo question)
+
+Can extensions be loaded dynamically — old-school DLLs, `.so` files, or pure-Go
+modules — and what does cgo cost?
+
+### Go's `plugin` package (`.so`) — a non-starter for n1k1
+
+`plugin.Open()` loads a `-buildmode=plugin` shared object and `Lookup`s Go symbols.
+It sounds ideal but is disqualified here:
+
+- **Requires cgo.** The `plugin` package is built on `dlopen`, so the *host*
+  binary must be `CGO_ENABLED=1`. n1k1 is `CGO_ENABLED=0` by design — enabling cgo
+  would forfeit the pure-Go static binary (the whole point). Under
+  `CGO_ENABLED=0`, `plugin.Open` isn't even implemented.
+- **No Windows.** Supported only on Linux/FreeBSD/macOS — there is no Go
+  equivalent of loading a DLL for *Go* code. (You can FFI into a C DLL via
+  `golang.org/x/sys/windows` `LoadLibrary`/`GetProcAddress`, but that's the C ABI —
+  cgo-style marshaling, not pure-Go extensions.)
+- **Brittle even where it works.** Plugin and host must be built with the *exact*
+  same Go toolchain version, the same versions of every shared dependency, and
+  matching build flags — any drift is a runtime load error. Plugins can't be
+  unloaded.
+
+Worth noting on cost: *once loaded*, calling a Go plugin symbol is an ordinary Go
+call — there is **no per-call cgo cost** (the cgo cost is only at `dlopen`/link
+time, and in the host having cgo enabled at all). So the problem isn't call
+speed; it's that the mechanism is fundamentally incompatible with a cgo-free,
+cross-platform, version-independent binary.
+
+### cgo cost, in general
+
+- **Pure Go compiled normally, or interpreted/Wasm runtimes below:** *zero* cgo —
+  no boundary, native or near-native calls.
+- **Calling actual C via cgo:** ~tens of ns of overhead per call, plus the
+  pointer-passing rules (can't hand Go-managed pointers to C freely). Only
+  relevant if an extension is C — which we're avoiding.
+- **Go `plugin`:** forces host cgo (loses the static binary); per-call is free.
+
+### Pure-Go, cgo-free ways to load/run extensions (recommended)
+
+| Mechanism | What it is | Cost | Fit |
+|---|---|---|---|
+| **Compile-time registry** | Extensions are Go packages built into the binary via an `init()`-registration map (or build tags). | Native speed, zero overhead. | Best for a curated set (e.g. the document shredders). Adding one needs a rebuild. |
+| **wazero (Wasm)** | Embed WebAssembly modules via `tetratelabs/wazero` (Apache-2, **pure Go, no cgo**, cross-platform incl. Windows). Extensions compiled to Wasm from Go (`GOOS=wasip1`), Rust, C, AssemblyScript, … | Boundary marshaling + slower-than-native execution; sandboxed. Linear memory *is* an ArrayBuffer → can pass bytes with minimal copying. | The modern "load an untrusted binary extension at runtime" answer; true sandbox. |
+| **yaegi (Go interpreter)** | `traefik/yaegi` (Apache-2, pure Go, no cgo) interprets Go *source* at runtime. | Interpreted (slower than native); supports a large Go subset. | The "Go in a directory/repo" analog of the JS-in-a-directory idea — no build step, cross-platform. |
+| **goja (JS)** | Tier-2 above. | Interpreted JS. | Drop-in scripts from a directory/repo. |
+| **subprocess / gRPC** | e.g. `hashicorp/go-plugin`: extension runs as a separate process. | IPC serialization per call — heavy for per-row work. | Strong isolation / any language; good for coarse-grained, not hot loops. |
+
+Net: for n1k1, **dynamic native `.so`/DLL loading is out** (cgo + platform +
+version lock-in). The viable spectrum is compile-time registration (fastest) →
+yaegi/goja (drop-in source, no build) → wazero (sandboxed binary extensions) →
+subprocess (isolation). All are cgo-free and keep the static-binary property.
 
 ## Table-valued (set-returning) functions in FROM
 
@@ -166,6 +225,38 @@ UDF and a Go generator source behave identically to the rest of the pipeline —
 bounded memory, spillable consumers, early termination. A JS function that simply
 `return`s a value keeps the materializing `expr-scan` path; only ones that call
 `emit` (or return an iterator) take the streaming source path.
+
+### Advanced: can JS participate in n1k1's reusable-slice discipline?
+
+n1k1's zero-garbage design reuses byte buffers (`varLift`, `[]byte` recycled per
+row). Could an expert JS author avoid copies and hook into that discipline via
+`ArrayBuffer`? Partly — with real limits:
+
+- **`SharedArrayBuffer` isn't the relevant primitive.** It exists for *cross-agent*
+  (Web Worker) shared memory. A goja `Runtime` is single-threaded — one instance
+  per goroutine, not goroutine-safe — so there's no second agent to share with.
+  The primitive that matters is plain **`ArrayBuffer`** + typed-array views
+  (`Uint8Array`, `DataView`).
+- **Near-zero-copy IN.** goja can back an `ArrayBuffer` with a Go `[]byte`
+  (`Runtime.NewArrayBuffer([]byte)`) and hand the JS a `Uint8Array` *view* over
+  n1k1's current row buffer — no copy. The JS reads/parses through typed arrays.
+- **Near-zero-copy OUT.** The JS writes results into a **preallocated**
+  `ArrayBuffer` whose bytes n1k1 reads back (`ArrayBuffer.Bytes()`), instead of
+  returning JS objects that goja would marshal (allocate) on the way out.
+- **The hard limits.** (1) *Lifetime*: n1k1 recycles the row buffer on the next
+  iteration, so a view into it is valid only *within* the callback — the JS must
+  consume (or copy out) before the pipeline advances. The push/callback model
+  makes that window well-defined. (2) goja still GC-manages all ordinary JS
+  values; only the `ArrayBuffer` backing store is under manual control, and typed
+  arrays created *inside* JS still allocate. So the discipline holds for the
+  buffers you explicitly thread through, not for arbitrary JS. (3) It's an
+  expert-only path — most JS functions will just take the ordinary
+  marshal-a-value route and pay the copy.
+
+So: yes, a sophisticated author can operate on `ArrayBuffer`-backed views to stay
+allocation-light and honor the reuse contract *for the byte buffers they manage*,
+valid within the callback window — but it's an opt-in fast lane, not the default,
+and `SharedArrayBuffer` specifically doesn't apply to the single-threaded runtime.
 
 This is exactly why **document shredding belongs at the source/scan layer, not as
 a scalar expression** (see DESIGN-data.md): shredding is one-to-many, I/O- and
