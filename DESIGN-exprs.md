@@ -25,6 +25,13 @@ tests (`base/arith_test.go`):
   harness in `engine/expr_arith.go`.
 - **Unary predicates** — `NOT`, `IS [NOT] NULL/MISSING/VALUED`
   (`engine/expr_pred.go`).
+- **Conditional-unknown selectors** — `IFNULL`/`IFMISSING`/`IFMISSINGORNULL`/`NVL`
+  (`engine/expr_cond.go`, two-operand; cbq's n-ary >2-operand forms fall back).
+
+Shared helpers keeping it DRY: `base.ArithApply` (op dispatch), `base.ValKind`
+(VALUE/NULL/MISSING classification — the one place encoding "empty==MISSING,
+leading-n==null") + `base.CondUnknownKeep`. IS-predicates collapsed to a
+3-element result table indexed by `ValKind`.
 
 **Measured memory win** (Apple M2 Pro, `test/benchmark/bench_expr_arith_test.go`):
 native `a+b` is `0 B/op, 0 allocs/op` (31 ns) vs cbq's `Evaluate()` fallback at
@@ -106,12 +113,13 @@ semantics.
 | `eq` `lt` `le` `gt` `ge` | `engine/expr_cmp.go` | comparisons (numeric fast path + `ValComparer` fallback) |
 | `add` `sub` `mult` `div` `mod` `idiv` `imod` `neg` | `engine/expr_arith.go` + `base/arith.go` | **arithmetic** (byte-native, mirrors cbq `value.NumberValue`) ✅ |
 | `not` `is_null` `is_not_null` `is_missing` `is_not_missing` `is_valued` `is_not_valued` | `engine/expr_pred.go` | **unary predicates** (byte-kind classified, constant results) ✅ |
+| `ifnull` `ifmissing` `ifmissingornull` `nvl` | `engine/expr_cond.go` | **conditional-unknown selectors** (zero-copy operand pick; 2-operand) ✅ |
 | `window-partition-row-number`, `window-frame-count`, `window-frame-step-value` | `engine/expr_window.go` | window helpers (FIRST/LAST/NTH/LEAD/LAG) |
 | `exprStr` / `exprTree` | `glue/expr.go` | **the fallback** (parse / delegate to cbq) |
 
 Still **absent and therefore delegated:** `between`, `like`, `in`, `||`, `CASE`,
-`NVL/IFNULL/COALESCE`, type checks (`is_array`/`is_number`/…), and *all* ~340
-remaining scalar functions.
+`COALESCE` / n-ary (>2-operand) `IFNULL`/`IFMISSING`/…, type checks
+(`is_array`/`is_number`/…), and *all* ~340 remaining scalar functions.
 
 ## The universe & the gap
 
@@ -164,10 +172,21 @@ projection cost and are the highest ROI.
   byte/type checks (`base.Parse`, `ValComparer`).
 - **Type checks `is_array/object/string/number/boolean/atom`** — `base.Parse`
   returns the type; trivial.
-- **`||` concat, `CASE` (both), `NVL/IFNULL/IFMISSING/IFMISSINGORNULL/COALESCE/
-  NULLIF/MISSINGIF/GREATEST/LEAST`** — control-flow over already-native operands;
-  mostly select-a-buffer, minimal work.
+- ✅ **DONE (2-operand) — `IFNULL/IFMISSING/IFMISSINGORNULL/NVL`**
+  (`engine/expr_cond.go`): zero-copy operand selection by `base.ValKind`.
+- **`||` concat, `CASE` (both), `COALESCE/NULLIF/MISSINGIF/GREATEST/LEAST`, and
+  n-ary `IFNULL/…`** — control-flow over already-native operands; mostly
+  select-a-buffer. (n-ary needs a variadic harness the fixed-arity `intermed`
+  codegen doesn't yet support — see the note below.)
 - **`element`/`slice` navigation** — extends `labelPath` via `jsonparser`.
+
+> **Codegen constraint learned during porting:** expression files *are* processed
+> by `intermed_build`, and its harness is **fixed-arity** — `MakeBiExprFunc`
+> (binary) and single-child (unary) generate valid compiled code, but a runtime
+> loop over a `[]ExprFunc` (n-ary) does not. So variadic operators are done in
+> their two-operand form natively and fall back to cbq beyond that, until a
+> variadic expr harness (a `MakeNaryExprFunc` analog) is added. This gates `||`,
+> `COALESCE`, and n-ary `IFNULL/IFMISSING`.
 
 ### Tier B — port next (scalar but needs parse+format into a reused buffer)
 A bounded amount of transient work, still zero steady-state garbage with buffer
