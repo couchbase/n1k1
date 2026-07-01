@@ -14,7 +14,6 @@
 package glue
 
 import (
-	"encoding/json"
 	"fmt"
 	"math"
 	"sort"
@@ -23,7 +22,6 @@ import (
 	"github.com/couchbase/query/algebra"
 	"github.com/couchbase/query/expression"
 	"github.com/couchbase/query/plan"
-	"github.com/couchbase/query/value"
 
 	"github.com/couchbase/n1k1/base"
 )
@@ -39,6 +37,11 @@ type Conv struct {
 
 	// TopOp holds top of the converted base.Op tree.
 	TopOp *base.Op
+
+	// withBindings maps a WITH CTE alias to its binding expression, so a later
+	// `FROM <alias>` (an ExpressionScan over the identifier) can be inlined to
+	// evaluate the binding. Populated by VisitWith.
+	withBindings map[string]expression.Expression
 }
 
 // -------------------------------------------------------------------
@@ -192,30 +195,29 @@ func (c *Conv) VisitOrderedIntersectScan(o *plan.OrderedIntersectScan) (interfac
 }
 
 func (c *Conv) VisitExpressionScan(o *plan.ExpressionScan) (interface{}, error) {
-	if o.IsCorrelated() { // TODO: Handle correlated expression scan?
+	if o.IsCorrelated() { // TODO: correlated expression scan (FROM referencing outer fields)
 		return NA(o)
 	}
 
-	// TODO: The nil parent & nil context does not support all
-	// expressions, such as CURL(), current datetime, etc. Should
-	// check if the expr is constant or volatile?
-	var parent value.Value
-	var context expression.Context
-
-	v, err := o.FromExpr().Evaluate(parent, context)
-	if err != nil {
-		return nil, err
+	// The FROM expression: a constant (FROM [1,2,3] AS x), a subquery
+	// (FROM (SELECT ...) AS x), or a WITH CTE reference (FROM cte AS x, an
+	// identifier). For a CTE reference, inline the recorded binding expression so
+	// it's evaluated instead of the unbound identifier.
+	expr := o.FromExpr()
+	if id, ok := expr.(*expression.Identifier); ok {
+		if be, ok := c.withBindings[id.Identifier()]; ok {
+			expr = be
+		}
 	}
 
-	jv, err := json.Marshal(v)
-	if err != nil {
-		return nil, fmt.Errorf("VisitExpressionScan, json.Marshal, err: %v", err)
-	}
-
+	// Evaluate the expression at runtime (via the "expr-scan" glue op) rather
+	// than at convert time: a subquery / CTE binding needs the engine + the
+	// datastore, which only exist at runtime. The live expression is passed
+	// through a vars.Temps slot (like datastore ops carry their plan objects).
 	return c.TopPush(o, &base.Op{
-		Kind:   "temp-yield-var",
+		Kind:   "expr-scan",
 		Labels: base.Labels{"." + LabelSuffix(o.Alias())},
-		Params: []interface{}{c.AddTemp(base.Val(jv))},
+		Params: []interface{}{c.AddTemp(expr)},
 	})
 }
 
@@ -373,14 +375,20 @@ func (c *Conv) VisitLet(o *plan.Let) (interface{}, error) {
 	return c.TopOp, nil
 }
 
-// VisitWith converts a WITH clause (CTE) by visiting the wrapped child query.
-// query computes the WITH bindings during planning and exposes them via the
-// scope; n1k1 doesn't materialize them as row columns, so a WITH variable
-// referenced as a data source (FROM cte) isn't supported -- but the common case,
-// where the bindings don't feed back into the row, works. SELECT * won't leak a
-// WITH name since it's never added as a field (and VisitInitialProject also
-// strips any project binding names from the star).
+// VisitWith converts a WITH clause (CTE): record each binding's alias ->
+// expression, then visit the wrapped child. A later `FROM <alias>` is an
+// ExpressionScan over the identifier <alias>; VisitExpressionScan inlines it by
+// evaluating the recorded binding expression (a constant, or a subquery run via
+// EvaluateSubquery). Bindings that don't feed the row (unreferenced CTEs) are
+// simply unused; SELECT * won't leak a WITH name (never added as a field, and
+// VisitInitialProject strips project binding names from the star).
 func (c *Conv) VisitWith(o *plan.With) (interface{}, error) {
+	if c.withBindings == nil {
+		c.withBindings = map[string]expression.Expression{}
+	}
+	for _, w := range o.Bindings().Bindings() {
+		c.withBindings[w.Alias()] = w.Expression()
+	}
 	return o.Child().Accept(c)
 }
 

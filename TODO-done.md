@@ -280,3 +280,24 @@ Gist only -- details live in commit messages, README, and code comments.
   test/base_test.go, benchmarks consolidated under test/benchmark/, and a shared
   test/emit package for the compiler codegen helpers. `make bench*` documented in
   README.
+
+## 2026/06 -- CTE as a FROM data source (WITH r AS (...) ... FROM r)
+- New "expr-scan" glue op (glue/datastore.go, routed via ExecOpEx like datastore
+  ops): evaluates a FROM expression at runtime and yields one row per array
+  element under the alias label. It handles FROM [array], FROM (subquery) via a
+  CTE, and -- reusing GlueContext.EvaluateSubquery -- a subquery-bound CTE that
+  runs on the engine + datastore.
+- glue VisitWith records each CTE alias -> its binding expression;
+  VisitExpressionScan inlines a `FROM cte` (an ExpressionScan over the bare
+  identifier) to that binding expression, passed to expr-scan via a vars.Temps
+  slot. Replaces the old convert-time temp-yield-var path (which couldn't see a
+  CTE binding -- "nil item").
+- Fixed an ORDER-BY regression the switch exposed: expr-scan (like scans /
+  temp-yield-var) must call yieldErr(nil) at end-of-stream, or a buffering parent
+  (ORDER BY drains its heap on yieldErr(nil)) emits nothing.
+- Works in the interpreter AND the compiler (expr-scan bakes to a glue.DatastoreOp
+  island; the live expression is supplied by SetupCompiledData's re-conv).
+  Tests: test/cases.go WithCteFromConstArray / WithCteFromSubquery, run by both
+  TestQueryCases and TestQueryCasesWithCompiler. test-all green (suite 661/671).
+- Remaining for WITH RECURSIVE: the fixpoint driver. Also: direct
+  `FROM (subquery) AS x` (not via WITH) still hits plan.Alias (VisitAlias is NA).

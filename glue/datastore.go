@@ -14,6 +14,11 @@
 package glue
 
 import (
+	"encoding/json"
+	"fmt"
+
+	"github.com/couchbase/query/expression"
+
 	"github.com/couchbase/n1k1/base"
 )
 
@@ -28,5 +33,53 @@ func DatastoreOp(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 		DatastoreScanKeys(o, vars, yieldVals, yieldErr)
 	case "datastore-fetch":
 		DatastoreFetch(o, vars, yieldVals, yieldErr, path, pathNext)
+	case "expr-scan":
+		ExprScanOp(o, vars, yieldVals, yieldErr)
 	}
+}
+
+// ExprScanOp implements a FROM-clause expression scan (FROM <expr>/<subquery>/
+// <cte> AS alias). It evaluates the expression (from a vars.Temps slot) at
+// runtime -- so a subquery or CTE binding runs through the engine + datastore
+// via GlueContext.EvaluateSubquery -- then yields one row per element of the
+// resulting array (a non-array value yields a single row), under the alias label.
+func ExprScanOp(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
+	yieldErr base.YieldErr) {
+	idx, ok := o.Params[0].(int)
+	if !ok {
+		yieldErr(fmt.Errorf("expr-scan: expected int Temps index, got %T", o.Params[0]))
+		return
+	}
+	expr, ok := vars.Temps[idx].(expression.Expression)
+	if !ok {
+		yieldErr(fmt.Errorf("expr-scan: no expression at Temps[%d]", idx))
+		return
+	}
+
+	var ctx expression.Context
+	if c, ok := vars.Temps[0].(expression.Context); ok {
+		ctx = c
+	}
+
+	v, err := expr.Evaluate(nil, ctx) // nil item: uncorrelated (VisitExpressionScan NAs correlated)
+	if err != nil {
+		yieldErr(err)
+		return
+	}
+
+	if v != nil {
+		jv, err := json.Marshal(v)
+		if err != nil {
+			yieldErr(err)
+			return
+		}
+		val := base.Val(jv)
+		if _, ok := base.ArrayYield(val, yieldVals, nil); !ok {
+			yieldVals(base.Vals{val}) // not an array: a single row
+		}
+	}
+
+	// Signal a clean end-of-stream: buffering parents (e.g. ORDER BY, which drains
+	// its heap on yieldErr(nil)) need it, as scans/temp-yield-var do.
+	yieldErr(nil)
 }

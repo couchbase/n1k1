@@ -151,11 +151,19 @@ in glue/patches/README.md.
   execution is done (below). Remaining, in dependency order:
     1. SUBQUERY execution -- DONE (correlated + uncorrelated; see TODO-done.md
        and glue/subquery.go). This is the substrate the anchor/step ride on.
-    2. CTE-as-datasource: FROM cte is an ExpressionScan reading the alias from
-       the scope item; n1k1 must materialize the CTE value into that scope.
-       (Non-recursive FROM cte fails today: "nil 'item' parameter".)
-    3. The fixpoint driver (mirror execution/with.go: dedup/cycle/union, limits)
-       -- thin, in glue or an engine op, once 2 exists.
+    2. CTE-as-datasource -- DONE for non-recursive (constant + subquery bindings;
+       see TODO-done.md). glue VisitWith records alias->binding-expr, and
+       VisitExpressionScan inlines a `FROM cte` (an ExpressionScan over the
+       identifier) to that expression, evaluated at runtime by the new "expr-scan"
+       glue op (which also handles FROM [array] and reuses EvaluateSubquery for a
+       subquery binding). Works in interpreter + compiler.
+    3. The fixpoint driver (mirror execution/with.go: eval anchor -> dedup/cycle
+       -> loop the recursive step vs the latest working set, with level/doc
+       limits + implicit caps). This is the remaining recursive-specific piece --
+       now that a subquery binding runs (1) and `FROM cte` reads it (2), what's
+       left is the WITH RECURSIVE loop that re-runs the step and unions results.
+       Note: direct `FROM (subquery) AS x` (not via WITH) still hits plan.Alias
+       (VisitAlias is NA) -- a separate small gap.
 
 - speed mismatch between producers and consumers?
   - e.g., scan racing ahead and filling memory with candidate tuples

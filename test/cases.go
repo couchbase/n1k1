@@ -6078,6 +6078,35 @@ var queryCases = []queryCase{
 			`1 IN (SELECT RAW 1 FROM data:orders o2 WHERE o2.id = o.id)`,
 		rows: 4,
 	},
+
+	// ---- WITH CTE used as a FROM data source -------------------------
+	{
+		name: "WithCteFromConstArray", // WITH r AS (<array>) ... FROM r
+		stmt: `WITH r AS ([{"n":1},{"n":2}]) SELECT x.n FROM r AS x ORDER BY x.n`,
+		rows: 2,
+		check: func(t *testing.T, rows []base.Vals) {
+			want := []string{"1", "2"} // ordered by x.n
+			for i, row := range rows {
+				if string(row[0]) != want[i] {
+					t.Fatalf("order[%d]: got %s, want %s", i, row[0], want[i])
+				}
+			}
+		},
+	},
+	{
+		name: "WithCteFromSubquery", // WITH r AS (SELECT ...) ... FROM r (binding runs on the engine)
+		stmt: `WITH r AS (SELECT o.id, o.custId FROM data:orders o) ` +
+			`SELECT x.id FROM r AS x WHERE x.custId = "ccc" ORDER BY x.id`,
+		rows: 2, // orders with custId ccc: 1235, 1236
+		check: func(t *testing.T, rows []base.Vals) {
+			want := []string{"1235", "1236"}
+			for i, row := range rows {
+				if got := trimQ(string(row[0])); got != want[i] {
+					t.Fatalf("order[%d]: got %s, want %s", i, got, want[i])
+				}
+			}
+		},
+	},
 }
 
 // rowObj unmarshals a single-label result row (a JSON object) into a map.
