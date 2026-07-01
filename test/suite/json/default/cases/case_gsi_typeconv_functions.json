@@ -1,0 +1,71 @@
+[
+  {
+    "statements": "select IS_ARRAY(null) ",
+    "results": [
+      {
+        "$1": null
+      }
+    ]
+  },
+  {
+    "statements": "select IS_ARRAY(missing) ",
+    "results": [
+      {}
+    ]
+  },
+  {
+    "statements": "select IS_BOOLEAN(false) ",
+    "results": [
+      {
+        "$1": true
+      }
+    ]
+  },
+  {
+    "statements": "select IS_BOOLEAN(1) ",
+    "results": [
+      {
+        "$1": false
+      }
+    ]
+  },
+  {
+    "statements": "select IS_NUM(0) ",
+    "results": [
+      {
+        "$1": true
+      }
+    ]
+  },
+  {
+    "statements": "select IS_NUM([1,2]) ",
+    "results": [
+      {
+        "$1": false
+      }
+    ]
+  },
+  {
+    "statements": "select is_string(\"\")",
+    "results": [
+      {
+        "$1": true
+      }
+    ]
+  },
+  {
+    "statements": "select (ARRAY TYPE(c) for c in [ 1, \"yes\", true,[1,2], missing, null] END)  as ok ",
+    "results": [
+      {
+        "ok": [
+          "number",
+          "string",
+          "boolean",
+          "array",
+          "missing",
+          "null"
+        ]
+      }
+    ]
+  }
+]

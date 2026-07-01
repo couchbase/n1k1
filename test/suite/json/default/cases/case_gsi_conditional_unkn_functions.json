@@ -1,0 +1,46 @@
+[
+  {
+    "statements": "SELECT MISSINGIF(null,\"n1ql\")",
+    "results": [
+      {
+        "$1": null
+      }
+    ]
+  },
+  {
+    "statements": "SELECT MISSINGIF(missing,\"n1ql\")",
+    "results": [
+      {}
+    ]
+  },
+  {
+    "statements": "SELECT MISSINGIF(12,\"n1ql\") ",
+    "results": [
+      {
+        "$1": 12
+      }
+    ]
+  },
+  {
+    "statements": "SELECT NULLIF(null,\"n1ql\") ",
+    "results": [
+      {
+        "$1": null
+      }
+    ]
+  },
+  {
+    "statements": "SELECT NULLIF(missing,\"n1ql\") ",
+    "results": [
+      {}
+    ]
+  },
+  {
+    "statements": "SELECT NULLIF(12,\"n1ql\") ",
+    "results": [
+      {
+        "$1": 12
+      }
+    ]
+  }
+]

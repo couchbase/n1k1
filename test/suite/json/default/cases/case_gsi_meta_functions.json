@@ -1,0 +1,32 @@
+[
+  {
+    "statements": "select BASE64_DECODE(BASE64_ENCODE({'a': 1, 'b': 2 }))",
+    "results": [
+      {
+        "$1": {
+          "a": 1,
+          "b": 2
+        }
+      }
+    ]
+  },
+  {
+    "statements": "select DECODE_BASE64(ENCODE_BASE64({'a': 1, 'b': 2 }))",
+    "results": [
+      {
+        "$1": {
+          "a": 1,
+          "b": 2
+        }
+      }
+    ]
+  },
+  {
+    "statements": "select ISSTRING(DS_VERSION()) as hasversion",
+    "results": [
+      {
+        "hasversion": true
+      }
+    ]
+  }
+]

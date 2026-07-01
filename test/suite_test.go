@@ -13,12 +13,20 @@
 
 package test
 
-// Runs the SQL++ conformance suite -- the upstream couchbase/query corpus (from
-// their test/filestore tests), vendored under test/suite/json/default -- against
-// n1k1. ("suite" because it's a data-driven set of cases stored as files, run
-// over glue.FileStore; it isn't itself a test of file-store features.) Each case
-// is {statements, results} over the file datastore. n1k1 supports a subset of
-// N1QL, so this reports pass / fail / unsupported counts rather than 100%.
+// Runs the SQL++ conformance suite -- the upstream couchbase/query corpus,
+// vendored under test/suite/json/default -- against n1k1. ("suite" because it's a
+// data-driven set of cases stored as files, run over glue.FileStore; it isn't
+// itself a test of file-store features.) Each case is {statements, results} over
+// the file datastore. n1k1 supports a subset of N1QL, so this reports pass / fail
+// / unsupported counts rather than 100%.
+//
+// Two provenances live side by side in default/cases/:
+//   - case_*.json  -- the original tuqtng-era black-box corpus (test/filestore).
+//   - case_gsi_*.json  -- constant-expression (no-FROM) cases imported from the
+//     fork's newer test/gsi/test_cases function suites; see test/suite/
+//     import_gsi_cases.py and DESIGN-testing.md. These need no dataset and
+//     exercise the scalar/function expression engine. Date determinism relies on
+//     the UTC pin in main_test.go.
 
 import (
 	"encoding/json"
@@ -567,7 +575,7 @@ func reportSuite(t *testing.T, nFiles, pass, errPass, skipped int, nonPass []cas
 
 	// Backstop on the raw pass count, in case a pass silently turns into a
 	// different already-listed failure (no unexpected case, but pass drops).
-	const passFloor = 661
+	const passFloor = 1030
 	if pass < passFloor {
 		t.Errorf("suite conformance regressed: PASS=%d < baseline %d", pass, passFloor)
 	}

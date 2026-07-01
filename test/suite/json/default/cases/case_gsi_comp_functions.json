@@ -1,0 +1,41 @@
+[
+  {
+    "statements": "select LEAST(\"Yes\" , 99) AS A ",
+    "results": [
+      {
+        "A": 99
+      }
+    ]
+  },
+  {
+    "statements": "select GREATEST (\"Yes\" , 99) AS A ",
+    "results": [
+      {
+        "A": "Yes"
+      }
+    ]
+  },
+  {
+    "statements": "select eq(1,1),eq(1,2),lt(1,2),lt(2,1),le(2,2),le(1,2),le(3,2)",
+    "results": [
+      {
+        "$1": true,
+        "$2": false,
+        "$3": true,
+        "$4": false,
+        "$5": true,
+        "$6": true,
+        "$7": false
+      }
+    ]
+  },
+  {
+    "statements": "select `between`(10,5,15),`between`(10,15,25)",
+    "results": [
+      {
+        "$1": true,
+        "$2": false
+      }
+    ]
+  }
+]
