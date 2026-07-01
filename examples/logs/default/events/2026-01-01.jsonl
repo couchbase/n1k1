@@ -1,0 +1,3 @@
+{"ts":"2026-01-01T08:14:02Z","user":"alice","action":"login","ip":"10.0.0.5"}
+{"ts":"2026-01-01T08:15:40Z","user":"alice","action":"view","page":"/dashboard"}
+{"ts":"2026-01-01T09:02:11Z","user":"bob","action":"login","ip":"10.0.0.9"}
