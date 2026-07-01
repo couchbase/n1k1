@@ -453,3 +453,112 @@ is step 2 — `FROM shred('x.pdf', {...})` backed by a pooled, bounded,
 capability-free Wasm instance that streams JSON; it fuses the wazero host
 (above), shred-as-a-streaming-source (DESIGN-data.md), and the emit/backpressure
 protocol.
+
+## Scanning a corpus (a directory of documents)
+
+The single-file `shred("report.pdf", …)` doesn't scale to a Drive/Box/SharePoint
+tree of thousands of office docs. There the *directory* is the driver and `shred`
+runs per file. Three spellings, increasingly n1k1-native:
+
+**A — Composable: a `files()` crawler + per-file `UNNEST shred()` (recommended)**
+
+```sql
+SELECT f.path, f.size, d.page, d.text
+FROM files("/mnt/drive", {"glob": "**/*.{pdf,docx,xlsx}"}) AS f
+UNNEST shred(f, {"want": ["text", "tables"], "pages": "1-20"}) AS d
+WHERE f.modified > "2024-01-01"
+  AND d.text LIKE "%invoice%"
+```
+
+`files()` streams one row per document (path, size, mtime, mime, a bytes/handle);
+`UNNEST shred(f, …)` runs the extension per file and flattens its output into
+rows. This is the powerful form because it **separates crawling from parsing**, so
+cheap file-level predicates (`glob`, `modified`, `size`, `mime`) filter *before*
+the expensive shred. n1k1's `UNNEST` is implemented (`conv.go:VisitUnnest` →
+`unnest-inner`, a nested-loop that streams each element correlated to the left),
+so `UNNEST <array-returning-fn>` composes structurally today — the extension
+resolution is the only new piece.
+
+**B — Convenience: a combined directory shredder**
+
+```sql
+SELECT d.path, d.page, d.text
+FROM shred_dir("/mnt/drive", {"glob": "**/*.pdf", "want": ["text"]}) AS d
+```
+
+One source function walks the tree *and* shreds, streaming rows tagged with their
+source path. Less composable, but a nice shorthand.
+
+**C — Directory-as-keyspace (most n1k1-native)**
+
+```sql
+SELECT meta(f).id AS path, d.page, d.text
+FROM `drive` AS f                      -- a keyspace = the directory of docs
+UNNEST shred(f, {"want": ["text"]}) AS d
+```
+
+n1k1 already treats a subdirectory as a keyspace; here the "documents" are file
+entries (metadata + a bytes accessor) and `META().id` is the path. This slots into
+the file-source direction explored in DESIGN-data.md.
+
+### Why it executes well
+
+- **Parallel, one file per Wasm instance.** A directory is embarrassingly
+  parallel; n1k1's parallel scan fans out and each worker grabs a pooled, bounded
+  Wasm instance to shred a *different* file — the "concurrent threads, own
+  instance" model above.
+- **Corpus-level streaming, bounded memory.** `files()` streams entries (fine for
+  millions of files); only *one document per worker* is resident at a time, and
+  `UNNEST` materializes just that file's shred array, not the corpus. Downstream
+  GROUP BY/ORDER BY spill as usual.
+- **Predicate/column pushdown.** Form A skips parsing entirely for files failing a
+  cheap file-level predicate, and passes `{"want":…, "pages":…}` into the
+  extension so it does less work — the difference between minutes and hours at
+  corpus scale.
+- **Metadata-only queries for free.** `SELECT mime, count(*), sum(size) FROM
+  files("/mnt/drive") GROUP BY mime` answers "what's in here" with zero shredding.
+- **Incremental / caching.** With per-file content hashes (see the metadata/merkle
+  ideas in DESIGN-data.md), a re-run can skip unchanged files by caching shred
+  output keyed on `hash + config` — a big win for a slowly-changing corpus.
+
+## Namespacing & versioning of extensions
+
+Extension names can be namespaced and versioned. cbq's function names are already
+**path-structured**, and because n1k1 owns the UDF resolver it can layer its own
+scheme on top.
+
+**Native cbq model (path-based).** The grammar builds names via
+`functionsBridge.NewFunctionName([]parts, …)`: 1-part (`pdf_shred`), 2-part global
+(`namespace:func`), or 4-part scoped (`namespace:bucket.scope.func`) — where `:`
+separates the **namespace** and `.` the scope path. (3-part names aren't a native
+shape — there's an explicit "cannot deal with 3 part names" guard.) So namespacing
+exists natively, but `:` already means *namespace*, so a bare `name:version` would
+clash with that meaning.
+
+**The flexible path (recommended for a registry).** Because n1k1 supplies its own
+resolver, **backtick-quote the name** to hand the parser a single literal
+identifier and let n1k1's registry resolver interpret it however you define:
+
+```sql
+FROM `pdf_shred:v2`(f, {...}) AS d           -- (name=pdf_shred, version=v2)
+SELECT `lean:mathlib:bozeman`(42)            -- (org=lean, pkg=mathlib, fn=bozeman)
+```
+
+Backticks stop N1QL from splitting on `:`/`.`, so the resolver receives the exact
+string and maps it to a registry coordinate. Without backticks, `a:b:c` collides
+with the namespace/scope grammar — so backticks are the enabler for any custom
+scheme.
+
+**Versioning — three levels, in preference order:**
+
+1. **Content-hash pinning (best).** The registry maps `pdf_shred:v2` → a specific
+   Wasm module *by hash*; the name is a human alias, the hash is the truth. This
+   makes pipelines reproducible (ties to the determinism point in the Vision).
+2. **Version in the (backtick-quoted) name** — simple and human-readable.
+3. **Version in config/args** — `shred(f, {"impl":"pdf_shred","version":"v2"})` —
+   keeps the SQL name stable and pins in params.
+
+So `` `lean:mathlib:bozeman`(42) `` is entirely plausible: backtick-quote it → the
+resolver reads `org:pkg:fn`, fetches the hash-pinned Wasm module from the registry,
+instantiates it (bounded, pooled), and runs it — namespaced *and* versioned *and*
+sandboxed.
