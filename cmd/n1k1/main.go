@@ -142,7 +142,7 @@ func main() {
 		timer:    *timerFlag,
 		verbose:  *vFlag,
 		maxRows:  0,
-		maxWidth: 50,
+		maxWidth: -1,
 		listSep:  "|",
 		out:      os.Stdout,
 		stderr:   os.Stderr,

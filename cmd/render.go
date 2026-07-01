@@ -437,9 +437,9 @@ func RenderBox(w io.Writer, rows []json.RawMessage, maxWidth, maxRows, termWidth
 	if elided > 0 {
 		footer += fmt.Sprintf(" (showing %d, %d elided)", len(cells)-elided, elided)
 	}
-	footer += fmt.Sprintf("  ·  %d column(s)", len(cols))
+	footer += fmt.Sprintf(" · %d column(s)", len(cols))
 	if elapsed != "" {
-		footer += "  ·  " + elapsed
+		footer += " · " + elapsed
 	}
 	fmt.Fprintln(w, style.Dim(footer))
 }
