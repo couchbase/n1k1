@@ -1,6 +1,8 @@
 *~
 *.pprof
 *.test
+*.tmp
+.claude/
 /expr_build
 /expr/*.go
 /intermed_build
