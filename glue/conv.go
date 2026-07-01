@@ -695,15 +695,21 @@ func (c *Conv) VisitDistinct(o *plan.Distinct) (interface{}, error) {
 		return c.TopOp, nil
 	}
 
+	// DISTINCT is backed by OpGroup, which dedups on -- and yields -- exactly the
+	// group-key exprs. So the key must cover *every* projected column (not just
+	// the first): SELECT DISTINCT a, b dedups on the (a, b) pair, and OpGroup then
+	// re-emits both. Emitting only Labels[0] both deduped on the wrong key and
+	// yielded a single val against N labels (a label/vals arity mismatch that
+	// crashed multi-column DISTINCT, e.g. ON KEYS join projections).
+	groupExprs := make([]interface{}, 0, len(c.TopOp.Labels))
+	for _, label := range c.TopOp.Labels {
+		groupExprs = append(groupExprs, []interface{}{"labelPath", label})
+	}
+
 	return c.TopPush(o, &base.Op{
 		Kind:   "distinct",
 		Labels: c.TopOp.Labels,
-		Params: []interface{}{
-			[]interface{}{
-				// TODO: This expression might not be enough for the DISTINCT?
-				[]interface{}{"labelPath", c.TopOp.Labels[0]},
-			},
-		},
+		Params: []interface{}{groupExprs},
 	})
 }
 
