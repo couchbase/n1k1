@@ -287,6 +287,9 @@ type ExprFunc func(vals Vals, yieldErr YieldErr) Val
 // A BiExprFunc represents a two-parameter expression.
 type BiExprFunc func(a, b ExprFunc, vals Vals, yieldErr YieldErr) Val
 
+// A TriExprFunc represents a three-parameter ("ternary") expression.
+type TriExprFunc func(a, b, c ExprFunc, vals Vals, yieldErr YieldErr) Val
+
 // A ProjectFunc projects (in relational parlance) the given vals into
 // resulting vals, and can reuse the optional, pre-allocated valsPre.
 type ProjectFunc func(vals, valsPre Vals, yieldErr YieldErr) Vals

@@ -167,6 +167,39 @@ func TestCondUnknownDifferentialVsCBQ(t *testing.T) {
 	}
 }
 
+func TestBetweenDifferentialVsCBQ(t *testing.T) {
+	c := func(v interface{}) expression.Expression { return expression.NewConstant(v) }
+	null := c(value.NULL_VALUE)
+
+	cases := []struct {
+		name string
+		expr expression.Expression
+	}{
+		{"in-range", expression.NewBetween(c(3), c(1), c(5))},
+		{"below", expression.NewBetween(c(0), c(1), c(5))},
+		{"above", expression.NewBetween(c(9), c(1), c(5))},
+		{"eq-low", expression.NewBetween(c(1), c(1), c(5))},
+		{"eq-high", expression.NewBetween(c(5), c(1), c(5))},
+		{"float", expression.NewBetween(c(2.5), c(2), c(3))},
+		{"string", expression.NewBetween(c("b"), c("a"), c("c"))},
+		{"item-null", expression.NewBetween(null, c(1), c(5))},
+		{"low-null", expression.NewBetween(c(3), null, c(5))},
+		{"high-null", expression.NewBetween(c(3), c(1), null)},
+	}
+
+	for _, tc := range cases {
+		want := cbqEval(t, tc.expr)
+		got, ok := nativeEval(t, tc.expr)
+		if !ok {
+			t.Errorf("%s: expression did not optimize to native path", tc.name)
+			continue
+		}
+		if got != want {
+			t.Errorf("%s: native=%q, cbq=%q", tc.name, got, want)
+		}
+	}
+}
+
 func TestPredicateDifferentialVsCBQ(t *testing.T) {
 	c := func(v interface{}) expression.Expression { return expression.NewConstant(v) }
 

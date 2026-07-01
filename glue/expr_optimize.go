@@ -58,6 +58,9 @@ func init() {
 	OptimizableFuncs["ifmissing"] = "ifmissing"
 	OptimizableFuncs["ifmissingornull"] = "ifmissingornull"
 	OptimizableFuncs["nvl"] = "nvl"
+
+	// Ternary (see engine/expr_between.go).
+	OptimizableFuncs["between"] = "between"
 }
 
 // ExprTreeOptimize attempts to optimize a N1QL
@@ -135,6 +138,10 @@ func ExprTreeOptimize(labels base.Labels, e expression.Expression,
 		"not", "is_null", "is_not_null",
 		"is_missing", "is_not_missing", "is_valued", "is_not_valued":
 		if len(operands) != 1 {
+			return nil, false
+		}
+	case "between":
+		if len(operands) != 3 {
 			return nil, false
 		}
 	}
