@@ -203,6 +203,87 @@ CLI use **`pterm`** (already a dep) or **`mpb`** for bars/spinners/ETA. Adopt th
 good UX defaults: DuckDB's "only show a bar after ~2 s" and ClickHouse's "≤10
 updates/s, skip entirely for quick queries."
 
+## Visualizing the plan with live data-flow
+
+The payoff of everything above: render the *executing* plan as a diagram and
+**animate rows flowing edge→edge in real time**, so expensive shapes — nested-loop
+joins, big sorts, spills — become viscerally obvious. The visualizer is just a
+**consumer** of two things we already produce: the **plan graph** and the **per-op
+snapshot stream**.
+
+### What drives it
+- **Plan graph** (nodes + edges) extracted once at start from the `base.Op` tree
+  (`Kind` / `Children` / `Labels`). `EXPLAIN` already emits the plan, so this is
+  largely in hand.
+- **Per-op snapshot stream** at ~10 Hz (the stats core above), keyed by op id:
+  `RowsIn`, `RowsOut`, rows/s, bytes, spill, wall-time.
+- Each **edge's flow** = the child's `RowsOut` (= the parent's `RowsIn` on that
+  input).
+
+### The visceral signals (how NL joins get exposed)
+- **Edge flow → animation speed / particle density / line thickness** (Sankey-style
+  width ∝ rows). Watch a firehose pour *into* a node and a trickle come *out*.
+- **Row amplification** (`RowsOut/RowsIn`): the Snowflake **"exploding join"** tell
+  — a join emitting *more* rows than its inputs. Flash the edge/node red when the
+  ratio blows up.
+- **Work, not just rows** — the key to making NL joins look as bad as they are:
+  instrument the join to count **inner probes / comparisons**, not only output
+  rows. A nested-loop join over L×R does |L|×|R| comparisons — show that counter
+  spinning wildly and the node glowing hot even while output is small, while a hash
+  join (build once, probe once) stays calm. This needs a per-op **"work" counter**
+  (probes / comparisons / hash inserts) in the `Stats` slot, beyond rows in/out.
+- **Node heat = time share** → a live flame-graph-on-the-plan (which op is eating
+  wall-clock right now).
+- **Pipeline breakers:** blocking ops (`GROUP BY`, `ORDER BY`) visibly *inhale* all
+  input and emit nothing until a final burst.
+- **Spill:** when rhmap/store spills to mmap/disk, the node flips to a red "disk"
+  state — "this fell out of memory."
+
+### Render targets (ASCII / SVG / canvas)
+1. **ASCII / TUI (default, works over SSH):** box-drawing nodes with live counters;
+   edges animated with marching glyphs (`▸▸▸`) / color intensity by throughput; hot
+   nodes glow. Build with charmbracelet **bubbletea + lipgloss** or **pterm**
+   (dep); refresh ~10 Hz from snapshots.
+2. **SVG (share / report):** emit a **self-contained** SVG of the plan (à la PEV2's
+   single `pev2.html`) — a static heat map, or a recorded timeline replayed via
+   inlined CSS/SMIL: a "query movie." No external refs.
+3. **Canvas / web (rich, interactive):** an HTML page — or a claude.ai **Artifact**
+   (self-contained, CSP-safe) — with SVG/canvas + JS particles flowing along edges
+   at real throughput; live via SSE/WebSocket, or replayed from a trace. This is
+   where "watch particles flood the NL join" really lands.
+
+### Live vs replay + the query-trace format
+Record `(plan graph + snapshot stream)` as a self-contained JSON **query trace**;
+render it **live** (subscribe) or **replay/scrub** later for post-mortems ("why was
+this slow?"). Same visualizer, two sources; the trace is shareable and can back an
+Artifact.
+
+### Layout & separation
+- **Layout:** Reingold–Tilford for plan trees (parents centered over children —
+  trivial pure-Go, no dep); layered Sugiyama for DAGs with shared subplans (dagre
+  in the web target). ASCII can use a simple bottom-up indented box layout.
+- **Separation:** the engine core stays render-agnostic — it already emits the
+  snapshot stream and the plan, so ASCII / SVG / web are interchangeable front-ends
+  over one trace. Reuses the "spinning numbers" partial previews for node-local
+  aggregate values.
+
+### Libraries (permissive) & prior art
+- **Libraries:** bubbletea / lipgloss / bubbles (MIT), pterm (MIT, dep), tview
+  (MIT), termdash (Apache-2.0); gonum/graph (BSD) or a hand-rolled Reingold–Tilford
+  for layout; dagre (MIT) in a web artifact. **Avoid as a bundled dep:** Graphviz
+  is **Eclipse Public License** (weak/file-level copyleft) — not GPL/AGPL, but
+  outside the MIT/Apache-2 policy; use only as an *optional external `dot` binary*,
+  never linked/vendored. Pure-Go layout sidesteps this.
+- **Prior art:** PostgreSQL **PEV2** / explain.dalibo.com (plan tree, per-node
+  time/rows/cost/buffers, self-contained `pev2.html`), explain.depesz.com;
+  **Snowflake Query Profile** (the canonical row-explosion / exploding-join view);
+  **Spark / Flink UI** (live DAG with per-stage input/output/shuffle rows+bytes);
+  **Sankey diagrams** (edge width ∝ flow).
+  - https://github.com/dalibo/pev2 ,
+    https://medium.com/snowflake/understanding-the-exploding-joins-problem-in-snowflake-6b4f89f006c7 ,
+    https://spark.apache.org/docs/latest/web-ui.html ,
+    https://github.com/charmbracelet/bubbletea
+
 ## Multi-phase pipelines (ingest / index / transfer)
 These long-running operations benefit most (queries are often sub-second). Same
 core; denominators come from source file sizes and the `DESIGN-data.md §5`
@@ -226,6 +307,11 @@ indexed) plus overall %.
   `YieldStats` checkpoints and their cheap-counter semantics.
 - **Partial-result sampling policy:** first-N vs top-N-by-value vs a fixed watched
   set; and how firmly to guard previews from being consumed as final results.
+- **Per-op "work" counters** (join probes/comparisons, hash inserts) that power the
+  data-flow visualization: worth the hot-path cost? Gate behind an
+  explain-analyze / viz mode so normal runs pay nothing.
+- **Visualization transport:** live streaming (SSE/WebSocket) vs record-then-replay
+  as the default; and ASCII animation fidelity vs needing the web canvas.
 
 ## Prior art
 - DuckDB progress bar (`enable_progress_bar`, ~2 s threshold, per-source
