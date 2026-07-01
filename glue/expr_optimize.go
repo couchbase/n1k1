@@ -30,6 +30,16 @@ func init() {
 	OptimizableFuncs["le"] = "le"
 	OptimizableFuncs["gt"] = "gt"
 	OptimizableFuncs["ge"] = "ge"
+
+	// Arithmetic (see engine/expr_arith.go, base/arith.go).
+	OptimizableFuncs["add"] = "add"
+	OptimizableFuncs["sub"] = "sub"
+	OptimizableFuncs["mult"] = "mult"
+	OptimizableFuncs["div"] = "div"
+	OptimizableFuncs["mod"] = "mod"
+	OptimizableFuncs["idiv"] = "idiv"
+	OptimizableFuncs["imod"] = "imod"
+	OptimizableFuncs["neg"] = "neg"
 }
 
 // ExprTreeOptimize attempts to optimize a N1QL
@@ -92,9 +102,24 @@ func ExprTreeOptimize(labels base.Labels, e expression.Expression,
 		return nil, false
 	}
 
+	// The native arithmetic harness (engine/expr_arith.go) handles the binary
+	// operators and unary neg only. cbq's add/mult are n-ary; the >2-operand
+	// forms fall back to cbq rather than silently dropping operands.
+	operands := f.Operands()
+	switch name {
+	case "add", "mult", "sub", "div", "mod", "idiv", "imod":
+		if len(operands) != 2 {
+			return nil, false
+		}
+	case "neg":
+		if len(operands) != 1 {
+			return nil, false
+		}
+	}
+
 	params = append(params, name)
 
-	for _, operand := range f.Operands() {
+	for _, operand := range operands {
 		child, ok := ExprTreeOptimize(labels, operand, buf)
 		if !ok {
 			return nil, false
