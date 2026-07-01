@@ -1,6 +1,10 @@
 # Design: Data Sources for n1k1
 
-Status: proposal / for review
+Status: proposal / for review (revised after a codebase-grounded review — added
+"Where this code lives", "Compiler compatibility", and "MVP line" sections;
+corrected the mode-2 table-function question with parser evidence; scoped zone
+maps behind a consumer; demoted §6/encryption depth to post-MVP; added a testing
+strategy and change-detection timing/concurrency model)
 
 This document explores the kinds of source data n1k1 should support — file
 formats, directory layouts, compression, "office"/unstructured documents — and
@@ -61,6 +65,86 @@ There are **two separate, only-partially-connected** data paths today:
   `scritchley/orc`, `hamba/avro`, `klauspost/compress`, `blevesearch/bleve/v2`,
   `go.etcd.io/bbolt`; `buger/jsonparser` is a direct dep used for JSON decoding.
 
+## Where this code lives (the load-bearing decision)
+
+Everything below is moot until we decide *which layer* owns the new behavior,
+because n1k1's `FROM` path is not ours to freely rewrite. `FROM default:orders`
+is resolved by the **forked `couchbase/query` planner**, which asks the
+**`datastore.Datastore` interface** (the fork's `datastore/file`) for keyspaces
+and scans, produces a `plan.Op`, and only *then* does n1k1's `glue.Conv` turn
+that plan into `base.Op`s. Three candidate homes, and why the choice matters:
+
+- **(A) The fork's `datastore/file` package — chosen for formats/layout/doc-IDs.**
+  This is the *only* thing `FROM keyspace` actually reaches. Relaxing "keyspace =
+  dir of one-doc-per-file" into "keyspace = union of all supported files" is an
+  **additive** change to `loadKeyspaces`/`Scan`/`fetch` there. Cost: it diverges
+  the fork from upstream `couchbase/query`, and re-basing the fork onto a newer
+  query release has already been a maintenance chore. **Mitigation: keep the new
+  code in a self-contained subpackage (e.g. `datastore/file/recordsource/`) that
+  the existing `file.go` calls into with a few small, greppable hook points**, so
+  a future merge touches `file.go` minimally.
+- **(B) Wire the engine's path-B scan ops (`op_scan.go`) to `FROM` — rejected.**
+  Tempting because `csvData`/`jsonsData`/`filePath` already exist, but FROM-term
+  resolution happens in the *planner*, upstream of `conv`; the engine ops never
+  see a keyspace name. Path B stays what it is today: a low-level primitive for
+  the CLI/tests to scan an explicit file, not a route for `FROM`. (It's still the
+  right place to *host* the shared decoders — see the compiler note below.)
+- **(C) A brand-new n1k1-side `datastore.Datastore` implementation — deferred.**
+  Cleanest isolation from the fork, but it means re-implementing the whole
+  datastore/index interface surface the planner expects. Only worth it if we ever
+  outgrow the file datastore entirely; not for adding formats.
+
+**Decision:** put format decoding + directory discovery + doc-ID synthesis +
+compression in **(A)**, structured so the *decoders themselves* are a standalone
+`RecordSource` package shared with path-B `op_scan.go` (one CSV reader, not two).
+Derived artifacts (manifest, indexes, extracted text — §5, §4) can live n1k1-side
+and be handed to the datastore as callbacks, since they don't need to be inside
+the fork. Revisit **(C)** only if fork divergence becomes unmanageable.
+
+## Compiler compatibility (don't break the Futamura path)
+
+n1k1 is an interpreter **and** a compiler; a data-source design that only works
+in the interpreter would silently break compiled queries for the *most common*
+shape (`FROM <file>`). The good news: **if FROM-file scans keep flowing through
+the existing `datastore-scan`/`datastore-fetch` op path, they compile for free.**
+That path is already compiler-safe — the ops carry only int `Temps`-indices as
+Params; the live datastore object arrives at runtime via `SetupCompiled*`
+re-planning (see `test/suite_compiler.go`). This is the same bridge the recent
+subquery/CTE ops use.
+
+Two consequences for this design:
+- **Do NOT introduce new engine scan *kinds* for new formats.** A new
+  `parquetData` engine op would need its own bake/emit support and would fork the
+  interpreter/compiler paths again. Instead, teach the *datastore* to decode the
+  format behind the unchanged `datastore-scan` op, so the compiler differential
+  keeps passing untouched.
+- **Anything that can't be a Go literal must arrive via `Temps`.** A live
+  `RecordSource`/file handle/decoder is not bakeable; it must be supplied at
+  runtime like the store is today. Keep format/layout *choices* (which are static
+  strings/ints) in Params, and live handles in `Temps`.
+- **Test hook:** the queryCases compiler-differential harness
+  (`test/query_compiler_test.go`) is exactly where a `FROM read_csv-style` or
+  `FROM multi-file-keyspace` case should be added, so every new format is proven
+  to compile, not just interpret.
+
+## MVP line (what actually moves the needle next)
+
+The full doc describes ~9 subsystems (formats × layouts × compression ×
+containers × office/OCR × encryption × doc-IDs × manifests × incremental
+indexing). That is "rebuild DuckDB + a lakehouse table format + Tika + a KMS."
+**Draw the line here — the ~2-week win that makes n1k1 meaningfully more useful:**
+
+> **MVP = relax the file datastore (home A) so a keyspace directory is the union
+> of *all* its files (recursing subdirs), and add two decoders — JSONL and
+> multi-doc JSON — plus transparent `.gz`. Prove one multi-file-keyspace case in
+> the compiler differential.**
+
+That is phasing steps 1, 2a, and the gzip half of 3. It delivers ~80% of the
+"DuckDB for SQL++/JSON" value against the data people already have, is additive
+to the fork, and is compiler-transparent. **Everything past this line
+(Parquet, catalog, office/OCR, manifests/zone-maps, encryption) waits behind
+demonstrated demand** — see the scope note before §6.
+
 ## Design principle: separate the concerns into layers
 
 The single biggest lesson from DuckDB is to **decouple four things** that n1k1
@@ -104,6 +188,15 @@ Each layer should be independently pluggable. The rest of this doc designs each.
 - **Reuse the existing `primitives/external/iceberg_reader.go`** (Arrow-batch
   iteration over Iceberg/Parquet) as the backbone for columnar formats rather
   than writing a new Parquet path — it just needs wiring into a `RecordSource`.
+  - **Caveat — columnar source, row engine.** n1k1's engine is row-at-a-time
+    (`base.Vals` per row) and built around garbage-avoidance. Feeding Arrow
+    *columnar* RecordBatches into it means transposing to rows and allocating
+    per value — which throws away Parquet's columnar/pushdown advantage and cuts
+    against the project's whole ethos. So "Parquet is a big win" is only true
+    with a vectorized/column-batch op path the engine **doesn't have today**.
+    Treat Parquet as a *correctness* feature first (you can query it at all),
+    and defer the *performance* win until/unless the engine grows column-batch
+    ops. This is a real reason Parquet sits well below the MVP line.
 - **Type handling:** JSON formats are naturally typed/loose (SQL++'s home turf).
   For CSV/TSV, sniff types but always allow "everything is a string" fallback;
   expose per-column type overrides like DuckDB's `columns=`/`types=`.
@@ -152,15 +245,25 @@ Support **three resolution modes**, in increasing power:
      files, they're keyspaces; if `<dir>` itself contains data files, it's a
      single flat keyspace. This mirrors DuckDB's "no mandatory layout."
 
-2. **Explicit table functions / globs in FROM** (DuckDB-style power mode). Let
-   the FROM term name a path/glob and options directly, e.g. (syntax TBD within
-   SQL++ constraints — likely via a table-valued function):
-   `FROM read_json('logs/**/*.jsonl.gz') AS t` or
-   `FROM read_csv('sales/*.csv', header=true) AS t`. The FROM term then *tells*
-   us format, files, and options — no guessing. This is the escape hatch for
-   anything convention can't express.
+2. **Explicit table functions / globs in FROM** (DuckDB-style power mode) —
+   **blocked on a grammar fork; not the near-term power path.** The aspiration is
+   `FROM read_json('logs/**/*.jsonl.gz') AS t` / `FROM read_csv('sales/*.csv',
+   header=true) AS t`. **Empirically, the fork's parser does not support this
+   today:** `FROM read_csv('foo.csv')` fails with *"Invalid function read_csv
+   (resolving to default:read_csv)"* (it's parsed as a scalar function call, not
+   a table source), and bare `FROM 'foo.csv'` fails with *"FROM expression term
+   must have a name or alias"*. There is **no table-valued-function machinery in
+   the fork's `algebra/`** to hook into. So mode 2 is not "syntax TBD" — it
+   requires **patching the goyacc grammar + adding a `FromTerm`/algebra node +
+   planner support** in the fork, which is exactly the kind of deep, merge-hostile
+   fork change we're trying to avoid (the grammar is generated and painful to
+   re-base). **Verdict: defer mode 2; make the catalog (mode 3) the real power
+   path.** If we ever do want inline globs, the cheapest surface is probably a
+   thin `read_csv(...)`-shaped *keyspace-name convention* the datastore
+   recognizes, not a true grammar extension — but even that is post-MVP.
 
-3. **Catalog / sidecar mapping** for named, reusable, partitioned sources. A
+3. **Catalog / sidecar mapping** for named, reusable, partitioned sources — **the
+   realistic power path, since mode 2 needs a grammar fork.** A
    per-root config (e.g. `.n1k1/catalog.json`) maps a keyspace name to: a root
    glob, a format, partition columns (hive or **projected** date templates à la
    Athena), and compression. This is where the "invisible date container dirs"
@@ -168,11 +271,32 @@ Support **three resolution modes**, in increasing power:
    with `date` as a projected partition column, so `WHERE date >= ...` prunes by
    *computing* directory names instead of listing them.
 
-**Auto-detect vs FROM-term:** use both. Convention auto-detects the common cases;
-the FROM term (mode 2) and catalog (mode 3) override when the user needs control.
+**Auto-detect vs override:** use convention for the common cases and the
+**catalog (mode 3)** for control; mode 2 (inline globs) is deferred per above.
 Hive `key=value` partitions auto-detect within any mode; bare date partitions
 require declaring a projection template (mode 3) because they're ambiguous by
 construction.
+
+### Integration gap: schemaless docs vs n1k1's positional labels
+n1k1's engine identifies fields by **positional `base.Labels`**, not by name —
+an op tree is built against a known label vector. A multi-file keyspace whose
+files have *different* shapes (the `union_by_name` case) has no single fixed
+label vector, and JSON docs are schemaless to begin with. So a `RecordSource`
+can't just "yield rows"; the FROM path has to settle on a label vector the plan
+was built against. Two workable stances, both post-MVP-friendly:
+- **Opaque-document scan (recommended default, matches today).** Yield each
+  record as a single self-value (as the file datastore does now — one document
+  in, projections pull fields by name at expr-eval time via the value layer),
+  so the scan needs only a trivial label vector and heterogeneous shapes "just
+  work." This is why the MVP (JSONL/multi-doc JSON) is easy: those are just more
+  documents on the existing opaque-doc path.
+- **Typed/columnar labels (CSV/Parquet).** Formats with a real header/schema
+  *do* have a stable column set; there the `RecordSource`'s inferred schema
+  becomes the label vector, and `union_by_name` across files means computing the
+  union column set up front (a listing pass) or falling back to opaque per-row
+  objects. Partition virtual-columns (§ hive/projected) would be appended to
+  that vector. **This is the actually-hard part of "beyond JSON," and it's the
+  real reason CSV/Parquet sit above the MVP line — not the decoding, the labels.**
 
 ## 3. Compression & containers
 
@@ -243,10 +367,34 @@ derived artifacts live, and **how** do we know source data changed?
   `<dir>-INDEXES` sibling (keeps everything movable as one tree) — but make the
   location configurable.
 
+### When: the trigger and concurrency model (the actually-hard part)
+§5 below details *what* to fingerprint, but *when* we re-validate — and who's
+allowed to — is the harder design question and needs an explicit answer:
+- **Trigger.** Default to **lazy check-on-query**: on each query touching a
+  keyspace, `stat` the tree (cheap, Merkle-pruned) and rebuild only stale
+  artifacts before scanning. Optionally a **TTL** ("trust the manifest for N
+  seconds") to skip even the `stat` storm on hot repeated queries, and a
+  `--no-revalidate` fast path for known-static trees (ties to `sealed?` below).
+  A background `fsnotify` watcher is a *later* nicety, not the baseline — a CLI
+  process is short-lived and shouldn't depend on a daemon.
+- **Files changing mid-scan.** A long scan can race a writer. Baseline stance:
+  snapshot the manifest fingerprints at query start; if a file's `(size,mtime)`
+  changed *since* the snapshot when we open it, either error clearly or re-read —
+  don't silently mix old and new. Document that the file datastore offers no MVCC.
+- **Concurrency on `.n1k1/`.** Multiple n1k1 processes (or a stale sidecar from a
+  crash) can corrupt a shared manifest/index. Need a **lockfile / atomic
+  rename-into-place** for manifest writes, and readers must tolerate a
+  concurrently-updating sidecar (or fall back to reading source directly if the
+  sidecar is locked/absent). bbolt already gives single-writer file locking for
+  the index store; the manifest needs the same discipline.
+
 ### How: a manifest with per-file fingerprints, Merkle-rolled
 - **Per-file fingerprint:** record `(relative_path, size, mtime, content_hash?)`.
-  - `(size, mtime)` alone is the cheap check Spark/DuckDB-class tools effectively
-    rely on — fast, but can miss same-size same-mtime edits. Good default.
+  - `(size, mtime)` alone is the cheap check the **Spark/Hive/Delta-class**
+    manifest-driven tools effectively rely on — fast, but can miss same-size
+    same-mtime edits. Good default. (DuckDB by contrast mostly *re-reads* files
+    per query and has no persistent manifest by default, so the mtime-cache
+    framing is really the Spark/lakehouse lineage, not DuckDB's.)
   - Add an optional **content hash** (xxhash/blake3) for correctness-critical
     use; only compute it when `(size, mtime)` says a file might have changed.
 - **Merkle rollup for cheap subtree skipping:** hash each directory node from its
@@ -261,7 +409,10 @@ derived artifacts live, and **how** do we know source data changed?
   advance the offset — never re-read old data. New dated container dirs appear as
   brand-new manifest entries (their parent subtree hash changes), so only the new
   partitions get indexed. This makes the common "logs keep coming, old data
-  never changes" case incremental by construction.
+  never changes" case incremental by construction. (Assumes `known_offset` sits
+  on a *record boundary* in the decompressed stream — store it as the end of the
+  last complete record, and re-scan from the prior boundary if a partial trailing
+  record was appended since.)
 
 ### Manifest contents — what to track (per file, per partition, per root)
 The manifest is the memory of "what we saw last time." The richer it is, the more
@@ -320,6 +471,18 @@ distinct, schema) serve *pruning + planning*; **build-state fields** serve
 *incremental indexing*. Start minimal (identity + hash + merkle + offset) and add
 zone maps/counts when the planner can exploit them.
 
+> **Caveat — the stats fields have no consumer yet.** n1k1 runs query's planner
+> with **CBO off**, and the current file-datastore path does **no predicate
+> pushdown** — so zone maps, cardinality, null/distinct estimates, and
+> partition-level min/max have nothing that reads them today. Building and
+> maintaining them now would be speculative cost with zero payoff. Sequence them
+> *strictly behind* whatever will exploit them: partition **pruning** needs the
+> datastore to accept a predicate and skip files (a fork datastore-interface
+> change), and cardinality/zone-map planning needs CBO on (or a bespoke n1k1-side
+> pruner). Until one of those exists, the manifest should carry only the
+> **change-detection + build-state** fields. Zone maps are a §5 *aspiration*, not
+> part of the first manifest.
+
 ### Libraries (well-tested building blocks)
 - **Don't hand-roll a table format if you can avoid it.** `apache/iceberg-go`
   (already a dep; v0.5+ supports read and increasingly write, V3 spec, manifests
@@ -340,6 +503,21 @@ zone maps/counts when the planner can exploit them.
   testable, and matches our needs exactly. Keep **Iceberg-go** in mind as the
   upgrade path when/if users want a real interoperable table format and don't
   want bespoke metadata.
+
+---
+
+> **Scope note — everything from here down is post-MVP / aspirational.** §6
+> (doc-ID synthesis beyond the filename stem) is only *needed* once step 2 lands
+> multi-record files, and even then the minimal answer — a composite
+> `<relpath>#<line>` with a rescan-based `Fetch` — is enough; the seekable-zstd /
+> BGFF / byte-offset machinery is a later optimization. The **encryption-at-rest**
+> subsection (Tink vs age STREAM, envelope KEK/DEK, encrypted sidecars) is
+> genuinely valuable to have written down, but it is a *much-later* enterprise
+> feature and is presented here at the same fidelity as "add a JSONL reader" only
+> because this is a design doc, not a plan. **Do not read the length of §6 as a
+> measure of near-term effort.** For the MVP and the phase after it, the doc-ID is
+> still just the filename stem (one-doc-per-file) or `<relpath>#L<lineno>` (multi-
+> record), and there is no encryption layer at all.
 
 ## 6. Primary keys / document IDs (`META().id`)
 
@@ -473,14 +651,53 @@ already in the graph; upstream repos otherwise):
 
 Note: DuckDB (MIT) is referenced only as design inspiration, not a dependency.
 
+## Testing strategy (this project lives by its test harness)
+
+n1k1's credibility rests on two oracles that any data-source work must plug into,
+not bypass:
+- **Interpreter/compiler differential.** Every new format/layout must be exercised
+  by a case in the queryCases harness (`test/cases.go` + `test/query_compiler_test.go`)
+  so the *compiled* path is proven to match the *interpreted* path — this is the
+  guard that keeps new datastore behavior compiler-safe (see "Compiler
+  compatibility" above). A `FROM` over a multi-file keyspace, a `.gz` file, and
+  (later) a CSV/Parquet file each want a differential case.
+- **Golden fixtures for decoders.** Each `RecordSource` decoder gets small
+  input fixtures (a `.jsonl`, a quoted/escaped `.csv`, a `.jsonl.gz`) with an
+  expected row set — table-driven, like the existing `cases.go` style. This is
+  where the naive `op_scan.go` CSV splitter's bugs (quoting/escaping/embedded
+  newlines) get pinned so the replacement reader can't regress them.
+- **Conformance suite.** The existing suite corpus is JSON one-doc-per-file, so it
+  keeps validating the convention path unchanged; new formats need their own
+  fixtures rather than riding the suite.
+- **Differential vs DuckDB (optional, high-value).** For CSV type-inference and
+  JSON array-vs-ndjson edge cases, comparing n1k1's output to DuckDB on the same
+  file is a cheap, strong oracle — worth a small opt-in test target, not a
+  dependency.
+- **Change-detection tests.** The manifest logic (mtime skip, merkle subtree
+  skip, append-only tail, concurrent-writer race) is pure logic over a temp dir
+  and should be unit-tested directly — it's the part most likely to be subtly
+  wrong.
+
 ## Phasing (suggested)
+
+All new datastore code lands in **home A** (fork's `datastore/file`, contained
+subpackage) and flows through the unchanged `datastore-scan` op so it compiles
+for free — see "Where this code lives" and "Compiler compatibility".
 
 1. Relax the file datastore: directory = keyspace = union of *all* supported
    files; recurse; keep `<ns>/<keyspace>` convention + flat-root auto-detect.
-2. Add decoders: JSONL + multi-doc JSON, then CSV/TSV (with sniffer), then
-   Parquet (arrow-go).
+   Yield records on the **opaque-document path** (no fixed label vector needed).
+2. Add decoders: **JSONL + multi-doc JSON** (opaque-doc, easy), *then* CSV/TSV
+   (with sniffer — needs the typed-label story, harder), *then* Parquet (arrow-go;
+   correctness-only until column-batch ops exist).
 3. Transparent gzip/zstd decode; `.zip` as a container.
-4. Explicit `read_*('glob', opts)` table functions in FROM (power mode).
+
+   **← MVP LINE.** Steps 1, 2a (JSONL + multi-doc JSON), and gzip from step 3 are
+   the ~2-week win; add one multi-file-keyspace differential case. Everything
+   below waits behind demonstrated demand.
+
+4. Explicit `read_*('glob', opts)` table functions in FROM (power mode) —
+   **blocked on a grammar fork (see Open questions); deferred in favor of step 5.**
 5. Catalog/sidecar (`.n1k1/catalog.json`) with hive + projected-date partitions.
 6. Synthetic document IDs for multi-record sources: composite
    `<relpath>#<offset|line>` populating `META().id`; natural-key option in the
@@ -495,10 +712,21 @@ Note: DuckDB (MIT) is referenced only as design inspiration, not a dependency.
 
 ## Open questions
 
-- **SQL++ surface for table functions / globs.** Does the n1k1-query parser
-  accept DuckDB-style `read_csv('glob', …)` table-valued functions in FROM, or do
-  we route everything through keyspace names + the catalog? Determines whether
-  mode 2 (§2) is viable as-is. (Needs a parser/algebra check.)
+- **SQL++ surface for table functions / globs. (RESOLVED — no.)** Checked
+  empirically: the fork's parser rejects both `FROM read_csv('foo.csv')`
+  ("Invalid function … default:read_csv") and bare `FROM 'foo.csv'` ("must have a
+  name or alias"), and there is no table-valued-function machinery in the fork's
+  `algebra/`. So mode 2 requires a **goyacc grammar + algebra + planner fork**,
+  which we're deferring; the **catalog (mode 3) is the power path**. Remaining
+  question is only *whether we ever pay for the grammar fork* or settle for a
+  datastore-recognized keyspace-name convention.
+- **Fork divergence budget.** How much are we willing to change the forked
+  `couchbase/query` `datastore/file` to relax layout/formats, given the cost of
+  re-basing the fork onto newer query releases? (Drives whether we stay in home A
+  with contained hooks, or eventually build a standalone n1k1 datastore, home C.)
+- **Columnar-source performance.** Do we ever add column-batch ops to the engine
+  so Parquet/Arrow is a real perf win, or accept the transpose-to-rows cost and
+  treat columnar formats as correctness-only? (See §1 caveat.)
 - **Partition columns vs document shape.** Hive/projected partition values become
   virtual columns — how do they coexist with SQL++'s schemaless document model?
 - **Bespoke manifest vs Iceberg-go.** Adopt Iceberg's proven metadata, or keep a
