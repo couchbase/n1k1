@@ -110,6 +110,33 @@ func TestRecordScanGzip(t *testing.T) {
 	}
 }
 
+// TestCountStar: COUNT(*) works (VisitCountScan de-optimized to scan+count) and
+// counts RECORDS -- for multi-record JSONL it must be 5, not the 2-file count
+// cbq's keyspace.Count() would have returned.
+func TestCountStar(t *testing.T) {
+	t.Run("jsonl-records-not-files", func(t *testing.T) {
+		root := writeKeyspace(t, "events", map[string]string{
+			"a.jsonl": "{\"x\":1}\n{\"x\":2}\n{\"x\":3}\n",
+			"b.jsonl": "{\"x\":4}\n{\"x\":5}\n",
+		})
+		store, conv := flatRootConv(t, root, "SELECT COUNT(*) AS n FROM default:events")
+		rows := flatRootRows(t, conv, testGlueExec(t, false, store, conv))
+		if len(rows) != 1 || jsonOf(rows[0]) != `{"n":5}` {
+			t.Fatalf("COUNT(*) should count 5 records across 2 files, got %v", rows)
+		}
+	})
+	t.Run("one-doc-per-file", func(t *testing.T) {
+		root := writeKeyspace(t, "docs", map[string]string{
+			"d1.json": `{"a":1}`, "d2.json": `{"a":2}`, "d3.json": `{"a":3}`, "d4.json": `{"a":4}`,
+		})
+		store, conv := flatRootConv(t, root, "SELECT COUNT(*) AS n FROM default:docs")
+		rows := flatRootRows(t, conv, testGlueExec(t, false, store, conv))
+		if len(rows) != 1 || jsonOf(rows[0]) != `{"n":4}` {
+			t.Fatalf("COUNT(*) want {n:4}, got %v", rows)
+		}
+	})
+}
+
 // TestRecordScanMixedFormats: a keyspace mixing one-doc JSON + JSONL unions both.
 func TestRecordScanMixedFormats(t *testing.T) {
 	root := writeKeyspace(t, "mix", map[string]string{

@@ -91,10 +91,16 @@ func DatastoreScanKeys(o *base.Op, vars *base.Vars,
 // per-store field is the cleaner future form (see DESIGN-data.md).
 var ScanWalkOptions = recordsource.AllModes()
 
-// recordsScanPlan is the subset of plan.PrimaryScan / plan.PrimaryScan3 that the
-// n1k1-native records scan needs: the target keyspace and an optional LIMIT.
+// recordsScanPlan is the subset of the plan scan ops the n1k1-native records
+// scan needs -- just the target keyspace. plan.PrimaryScan/PrimaryScan3 and
+// plan.CountScan all satisfy it. A LIMIT (present on PrimaryScan*, absent on
+// CountScan) is read via the optional limiter interface below.
 type recordsScanPlan interface {
 	Keyspace() datastore.Keyspace
+}
+
+// limiter is the optional LIMIT accessor (PrimaryScan/PrimaryScan3 have it).
+type limiter interface {
 	Limit() expression.Expression
 }
 
@@ -125,7 +131,10 @@ func DatastoreScanRecords(o *base.Op, vars *base.Vars,
 		return
 	}
 
-	limit := EvalExprInt64(context, scan.Limit(), nil, math.MaxInt64)
+	limit := int64(math.MaxInt64)
+	if lim, ok := scan.(limiter); ok {
+		limit = EvalExprInt64(context, lim.Limit(), nil, math.MaxInt64)
+	}
 
 	src, err := recordsource.Walk(dir, ScanWalkOptions)
 	if err != nil {

@@ -191,7 +191,14 @@ func (c *Conv) VisitDummyScan(o *plan.DummyScan) (interface{}, error) {
 	return c.TopPush(o, &base.Op{Kind: "nil"})
 }
 
-func (c *Conv) VisitCountScan(o *plan.CountScan) (interface{}, error)           { return NA(o) }
+// VisitCountScan converts the planner's whole-keyspace COUNT(*) pushdown. n1k1
+// has no O(1) count (and, for JSONL/gzip keyspaces, cbq's file-count would be
+// wrong anyway), so we de-optimize: yield the records (like a primary scan) and
+// let the downstream count(*) group-aggregate count them -- correct for every
+// format. (A true O(1) count-from-metadata is a later, indexing-doc item.)
+func (c *Conv) VisitCountScan(o *plan.CountScan) (interface{}, error) {
+	return c.recordsScan(o, o.Term().Alias())
+}
 func (c *Conv) VisitIndexCountScan(o *plan.IndexCountScan) (interface{}, error) { return NA(o) }
 func (c *Conv) VisitIndexCountScan2(o *plan.IndexCountScan2) (interface{}, error) {
 	return NA(o)
