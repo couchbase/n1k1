@@ -140,7 +140,36 @@ in glue/patches/README.md.
 - WITH -- basic (non-recursive, non-data-source) CTEs convert (glue VisitWith
   visits the child; bindings not materialized as row columns, so a WITH var
   used as a FROM data source -- FROM cte -- is not yet supported).
-- WITH RECURSIVE?
+- WITH RECURSIVE: NOT flattened by the planner -- no dedicated recursive plan
+  node; it's the same plan.With node (one VisitWith), with recursion encoded in
+  the binding (expression.With: IsRecursive/Expression[anchor]/
+  RecursiveExpression[step]/IsUnion/CycleFields/Config). The fixpoint loop is a
+  RUNTIME operator (query's execution/with.go: anchor -> dedup+cycle -> loop
+  eval step vs the latest working set, with level/doc limits + implicit caps
+  depth 100 / docs 10000).
+  Substrate mostly EXISTS -- it's wiring, not from-scratch:
+    * engine has temp-capture (run a sub-op, materialize its rows to a vars.Temps
+      slot), temp-yield (replay), temp-yield-var (feed a slot each loop -- the
+      fixpoint-driver pattern). Registered + tested in cases.go; conv emits only
+      temp-yield-var today (join keys).
+    * the planner pre-plans subqueries: QueryPlan.Subqueries() is
+      map[*algebra.Select]Operator.
+  To support it, in dependency order:
+    1. SUBQUERY execution (needed by all subqueries, not just CTEs; the
+       anchor/step are subquery exprs). algebra.Subquery.Evaluate does
+       context.(algebra.Context).EvaluateSubquery(query,item); GlueContext only
+       implements expression.IndexContext, so every subquery panics today
+       ("*glue.GlueContext is not algebra.Context: missing method Datastore").
+       Fix: (a) stop discarding qp in PlanStatement (returns qp.PlanOp(),
+       dropping Subqueries()); (b) make GlueContext an algebra.Context whose
+       EvaluateSubquery looks up qp.Subqueries()[sel], convs it, runs it under
+       temp-capture, returns the array. Correlation = thread `item` into the
+       sub-op scope (temp-yield-var slot). Fiddly part: correlation.
+    2. CTE-as-datasource: FROM cte is an ExpressionScan reading the alias from
+       the scope item; n1k1 must materialize the CTE value into that scope.
+       (Non-recursive FROM cte fails today: "nil 'item' parameter".)
+    3. The fixpoint driver (mirror execution/with.go: dedup/cycle/union, limits)
+       -- thin, in glue or an engine op, once 1+2 exist.
 
 - speed mismatch between producers and consumers?
   - e.g., scan racing ahead and filling memory with candidate tuples
