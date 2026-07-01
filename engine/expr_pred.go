@@ -35,78 +35,71 @@ func init() {
 
 // -----------------------------------------------------
 
+// Each IS predicate is a 3-element result table indexed by base.ValKind
+// ({value, null, missing}); the shared ExprIsPredicate harness just looks up.
+
 // IS NULL:        NULL -> true,  MISSING -> MISSING, else false.
 func ExprIsNull(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
 	return ExprIsPredicate(lzVars, labels, params, path,
-		base.ValMissing, base.ValTrue, base.ValFalse)
+		[]base.Val{base.ValFalse, base.ValTrue, base.ValMissing})
 }
 
 // IS NOT NULL:    NULL -> false, MISSING -> MISSING, else true.
 func ExprIsNotNull(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
 	return ExprIsPredicate(lzVars, labels, params, path,
-		base.ValMissing, base.ValFalse, base.ValTrue)
+		[]base.Val{base.ValTrue, base.ValFalse, base.ValMissing})
 }
 
 // IS MISSING:     MISSING -> true, else false.
 func ExprIsMissing(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
 	return ExprIsPredicate(lzVars, labels, params, path,
-		base.ValTrue, base.ValFalse, base.ValFalse)
+		[]base.Val{base.ValFalse, base.ValFalse, base.ValTrue})
 }
 
 // IS NOT MISSING: MISSING -> false, else true.
 func ExprIsNotMissing(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
 	return ExprIsPredicate(lzVars, labels, params, path,
-		base.ValFalse, base.ValTrue, base.ValTrue)
+		[]base.Val{base.ValTrue, base.ValTrue, base.ValFalse})
 }
 
 // IS VALUED:      NULL/MISSING -> false, else true.
 func ExprIsValued(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
 	return ExprIsPredicate(lzVars, labels, params, path,
-		base.ValFalse, base.ValFalse, base.ValTrue)
+		[]base.Val{base.ValTrue, base.ValFalse, base.ValFalse})
 }
 
 // IS NOT VALUED:  NULL/MISSING -> true, else false.
 func ExprIsNotValued(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
 	return ExprIsPredicate(lzVars, labels, params, path,
-		base.ValTrue, base.ValTrue, base.ValFalse)
+		[]base.Val{base.ValFalse, base.ValTrue, base.ValTrue})
 }
 
 // -----------------------------------------------------
 
 // ExprIsPredicate is the shared unary harness for the IS [NOT] NULL/MISSING/
-// VALUED tests. It classifies the operand into one of three byte-kinds and
-// returns the matching constant Val: whenMissing (operand is empty / MISSING),
-// whenNull (operand is "null"), or whenValue (any other value).
+// VALUED tests. byKind is a 3-element result table indexed by base.ValKind
+// (value / null / missing); the harness classifies the operand and returns the
+// matching constant Val.
 func ExprIsPredicate(lzVars *base.Vars, labels base.Labels, params []interface{},
-	path string, whenMissing, whenNull, whenValue base.Val) (lzExprFunc base.ExprFunc) {
+	path string, byKind []base.Val) (lzExprFunc base.ExprFunc) {
 	exprA := params[0].([]interface{})
 
-	var lzWhenMissing base.Val = whenMissing // <== varLift: lzWhenMissing by path
-	var lzWhenNull base.Val = whenNull       // <== varLift: lzWhenNull by path
-	var lzWhenValue base.Val = whenValue     // <== varLift: lzWhenValue by path
+	var lzByKind []base.Val = byKind // <== varLift: lzByKind by path
 
 	lzExprFunc =
 		MakeExprFunc(lzVars, labels, exprA, path, "A") // !lz
 	lzA := lzExprFunc
 
 	lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
-		_, _, _ = lzWhenMissing, lzWhenNull, lzWhenValue
-
 		lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
 
-		if len(lzVal) == 0 {
-			lzVal = lzWhenMissing
-		} else if base.ValEqualNull(lzVal) {
-			lzVal = lzWhenNull
-		} else {
-			lzVal = lzWhenValue
-		}
+		lzVal = lzByKind[base.ValKind(lzVal)]
 
 		return lzVal
 	}
@@ -129,10 +122,8 @@ func ExprNot(lzVars *base.Vars, labels base.Labels,
 	lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
 		lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
 
-		if len(lzVal) == 0 {
-			lzVal = base.ValMissing
-		} else if base.ValEqualNull(lzVal) {
-			lzVal = base.ValNull
+		if base.ValKind(lzVal) != base.ValKindValue {
+			// MISSING and NULL pass through unchanged.
 		} else if base.ValTruthy(lzVal) {
 			lzVal = base.ValFalse
 		} else {

@@ -51,6 +51,13 @@ func init() {
 	OptimizableFuncs["isnotmissing"] = "is_not_missing"
 	OptimizableFuncs["isvalued"] = "is_valued"
 	OptimizableFuncs["isnotvalued"] = "is_not_valued"
+
+	// Conditional-unknown selectors (see engine/expr_cond.go); variadic, so no
+	// arity guard -- the native harness is n-ary.
+	OptimizableFuncs["ifnull"] = "ifnull"
+	OptimizableFuncs["ifmissing"] = "ifmissing"
+	OptimizableFuncs["ifmissingornull"] = "ifmissingornull"
+	OptimizableFuncs["nvl"] = "nvl"
 }
 
 // ExprTreeOptimize attempts to optimize a N1QL
@@ -118,7 +125,9 @@ func ExprTreeOptimize(labels base.Labels, e expression.Expression,
 	// forms fall back to cbq rather than silently dropping operands.
 	operands := f.Operands()
 	switch name {
-	case "add", "mult", "sub", "div", "mod", "idiv", "imod":
+	case "add", "mult", "sub", "div", "mod", "idiv", "imod",
+		"ifnull", "ifmissing", "ifmissingornull", "nvl":
+		// Native harness is two-operand; cbq's n-ary forms fall back.
 		if len(operands) != 2 {
 			return nil, false
 		}

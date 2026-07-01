@@ -131,6 +131,42 @@ func TestArithDifferentialVsCBQ(t *testing.T) {
 	}
 }
 
+func TestCondUnknownDifferentialVsCBQ(t *testing.T) {
+	c := func(v interface{}) expression.Expression { return expression.NewConstant(v) }
+	num := c(3)
+	num5 := c(5)
+	str := c("x")
+	null := c(value.NULL_VALUE)
+
+	cases := []struct {
+		name string
+		expr expression.Expression
+	}{
+		// MISSING isn't a representable constant; covered in engine/expr_cond_test.go.
+		{"ifnull-null-num", expression.NewIfNull(null, num)},
+		{"ifnull-num-num", expression.NewIfNull(num, num5)},
+		{"ifnull-null-null", expression.NewIfNull(null, null)},
+		{"ifmissing-null-num", expression.NewIfMissing(null, num)},
+		{"ifmissing-num", expression.NewIfMissing(num, num5)},
+		{"ifmon-null-num", expression.NewIfMissingOrNull(null, num)},
+		{"ifmon-null-null", expression.NewIfMissingOrNull(null, null)},
+		{"ifmon-null-str", expression.NewIfMissingOrNull(null, str)},
+		{"nvl-null-num", expression.NewNVL(null, num)},
+	}
+
+	for _, tc := range cases {
+		want := cbqEval(t, tc.expr)
+		got, ok := nativeEval(t, tc.expr)
+		if !ok {
+			t.Errorf("%s: expression did not optimize to native path", tc.name)
+			continue
+		}
+		if got != want {
+			t.Errorf("%s: native=%q, cbq=%q", tc.name, got, want)
+		}
+	}
+}
+
 func TestPredicateDifferentialVsCBQ(t *testing.T) {
 	c := func(v interface{}) expression.Expression { return expression.NewConstant(v) }
 
