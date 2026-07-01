@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -203,6 +204,51 @@ func TestTSVDecode(t *testing.T) {
 	_, docs := collect(t, s)
 	if len(docs) != 2 || docs[0] != `{"a":1,"b":"x"}` {
 		t.Fatalf("tsv decode: %v", docs)
+	}
+}
+
+func TestOfficeExtract(t *testing.T) { // scenario L
+	cases := []struct{ file, kind, want string }{
+		{"kb/default/docs/handbook.pdf", "pdf", "Vacation Policy"},
+		{"kb/default/docs/q1-report.docx", "docx", "Revenue grew"},
+		{"kb/default/docs/budget.xlsx", "xlsx", "Salaries"},
+	}
+	for _, tc := range cases {
+		s, err := OpenFile(ex(tc.file), "docs/"+filepath.Base(tc.file))
+		if err != nil {
+			t.Fatalf("%s: %v", tc.file, err)
+		}
+		ids, docs := collect(t, s) // one extractor row per document
+		if len(docs) != 1 {
+			t.Fatalf("%s: want 1 record, got %d", tc.file, len(docs))
+		}
+		var m map[string]interface{}
+		if err := json.Unmarshal([]byte(docs[0]), &m); err != nil {
+			t.Fatal(err)
+		}
+		if m["kind"] != tc.kind {
+			t.Errorf("%s: kind = %v, want %s", tc.file, m["kind"], tc.kind)
+		}
+		if m["filename"] != filepath.Base(tc.file) {
+			t.Errorf("%s: filename = %v", tc.file, m["filename"])
+		}
+		if text, _ := m["text"].(string); !strings.Contains(text, tc.want) {
+			t.Errorf("%s: extracted text missing %q; got %.100q", tc.file, tc.want, text)
+		}
+		if ids[0] == "" {
+			t.Errorf("%s: empty id", tc.file)
+		}
+	}
+}
+
+func TestWalkOffice(t *testing.T) { // a keyspace of mixed office docs
+	s, err := Walk(ex("kb/default/docs"), AllModes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids, docs := collect(t, s)
+	if len(docs) != 3 {
+		t.Fatalf("want 3 office docs (pdf/docx/xlsx), got %d (%v)", len(docs), ids)
 	}
 }
 

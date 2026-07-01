@@ -6368,6 +6368,12 @@ var queryCases = []queryCase{
 			}
 		},
 	},
+	{
+		name: "RecScanOffice", // PDF/DOCX/XLSX text extraction + full-text-ish filter
+		stmt: `SELECT d.filename AS filename FROM data:docs AS d ` +
+			`WHERE d.text LIKE "%vacation%"`,
+		rows: 2, // handbook.pdf + q1-report.docx mention "vacation"
+	},
 }
 
 // rowObj unmarshals a single-label result row (a JSON object) into a map.

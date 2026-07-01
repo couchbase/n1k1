@@ -63,9 +63,11 @@ var recordExts = map[string]bool{
 }
 
 // IsRecordFile reports whether path (by extension, ignoring a .gz/.zst suffix)
-// is a data file this package can decode.
+// is a data file this package can decode (structured JSON/CSV, or an office/PDF
+// document the extractor handles).
 func IsRecordFile(path string) bool {
-	return recordExts[innerExt(path)]
+	ext := innerExt(path)
+	return recordExts[ext] || officeExts[ext]
 }
 
 // innerExt returns the format-determining extension, seeing through a single
@@ -128,6 +130,11 @@ func openDecompressed(path string) (io.Reader, []io.Closer, error) {
 func OpenFile(path, idPrefix string) (Source, error) {
 	if !IsRecordFile(path) {
 		return nil, fmt.Errorf("records: unsupported file: %s", path)
+	}
+	// Office/PDF documents are opened by path (zip / whole-file readers), not
+	// through the streaming decompression layer.
+	if isOfficeExt(innerExt(path)) {
+		return newOfficeSource(path)
 	}
 	r, closers, err := openDecompressed(path)
 	if err != nil {
@@ -476,6 +483,7 @@ func AllModes() WalkOptions {
 //	all       → everything (flexible, the default)
 //	json      → .json/.jsons        jsonl → .jsonl/.ndjson
 //	csv       → .csv                 tsv   → .tsv
+//	office    → .pdf/.docx/.xlsx     pdf|docx|xlsx → that one
 //	gzip      → allow .gz            recurse → descend subdirs
 //
 // An empty string (or "all") means "unrestricted" (AllModes). Unknown tokens
@@ -500,6 +508,14 @@ func ParseModes(csv string) (WalkOptions, error) {
 			opts.Formats[".csv"] = true
 		case "tsv":
 			opts.Formats[".tsv"] = true
+		case "office":
+			opts.Formats[".pdf"], opts.Formats[".docx"], opts.Formats[".xlsx"] = true, true, true
+		case "pdf":
+			opts.Formats[".pdf"] = true
+		case "docx":
+			opts.Formats[".docx"] = true
+		case "xlsx":
+			opts.Formats[".xlsx"] = true
 		case "gzip", "gz":
 			opts.AllowGzip = true
 		case "zstd", "zst":
