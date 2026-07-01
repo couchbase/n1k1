@@ -6107,6 +6107,35 @@ var queryCases = []queryCase{
 			}
 		},
 	},
+
+	// ---- WITH RECURSIVE (the fixpoint: anchor + repeated step) --------
+	{
+		name: "RecursiveCount", // 1..5 via UNION recursion
+		stmt: `WITH RECURSIVE r AS (SELECT 1 AS n ` +
+			`UNION SELECT r.n + 1 AS n FROM r WHERE r.n < 5) ` +
+			`SELECT x.n FROM r AS x ORDER BY x.n`,
+		rows: 5,
+		check: func(t *testing.T, rows []base.Vals) {
+			want := []string{"1", "2", "3", "4", "5"}
+			for i, row := range rows {
+				if string(row[0]) != want[i] {
+					t.Fatalf("order[%d]: got %s, want %s", i, row[0], want[i])
+				}
+			}
+		},
+	},
+	{
+		name: "RecursiveSum", // downstream aggregate over the recursive result: 1+2+3+4+5
+		stmt: `WITH RECURSIVE r AS (SELECT 1 AS n ` +
+			`UNION SELECT r.n + 1 AS n FROM r WHERE r.n < 5) ` +
+			`SELECT SUM(x.n) AS total FROM r AS x`,
+		rows: 1,
+		check: func(t *testing.T, rows []base.Vals) {
+			if string(rows[0][0]) != "15" {
+				t.Fatalf("expected total=15, got %s", rows[0][0])
+			}
+		},
+	},
 }
 
 // rowObj unmarshals a single-label result row (a JSON object) into a map.

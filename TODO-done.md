@@ -301,3 +301,26 @@ Gist only -- details live in commit messages, README, and code comments.
   TestQueryCases and TestQueryCasesWithCompiler. test-all green (suite 661/671).
 - Remaining for WITH RECURSIVE: the fixpoint driver. Also: direct
   `FROM (subquery) AS x` (not via WITH) still hits plan.Alias (VisitAlias is NA).
+
+## 2026/06 -- WITH RECURSIVE (the fixpoint)
+- New "with-recursive" glue op (glue/recursive.go, via ExecOpEx): runs a
+  recursive CTE's fixpoint and yields the accumulated rows under the alias.
+  Mirrors query's execution/with.go -- eval the anchor (w.Expression()), then
+  repeatedly eval the step (w.RecursiveExpression()) with the CTE alias bound to
+  the latest working set, UNION-deduping and accumulating, until the step yields
+  nothing.
+- The step's `FROM <cte>` is a correlated ExpressionScan over the identifier; the
+  fixpoint stashes {alias: workingSet} on GlueContext.corrParent, and expr-scan
+  evaluates its FROM identifier against corrParent (so `FROM r` reads the latest
+  working set). VisitExpressionScan now allows a correlated *identifier* FROM
+  (the CTE case) while still NAing a correlated *subquery* FROM.
+- Safety: an implicit depth cap (100) + doc cap (10000) bound the loop even
+  without a termination predicate (matches query's implicit caps). Not yet
+  honored: the CYCLE clause (w.CycleFields) and explicit OPTIONS (w.Config).
+- Works in interpreter AND compiler (with-recursive bakes to a glue.DatastoreOp
+  island; the live binding comes from SetupCompiledData's re-conv). Tests:
+  test/cases.go RecursiveCount / RecursiveSum, run by both TestQueryCases and
+  TestQueryCasesWithCompiler (emitted 20, skipped 0). Verified UNION/UNION ALL,
+  downstream aggregation (SUM/COUNT), dedup convergence, and the safety cap
+  (a non-terminating UNION ALL stops at depth 100, no hang). test-all green
+  (suite 661 results / 671 total, PANIC 0).

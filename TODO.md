@@ -139,31 +139,13 @@ in glue/patches/README.md.
 - UNION-ALL data-staging batchSize should be configurable?
 - UNION-ALL data-staging batchChSize should be configurable?
 
-- WITH RECURSIVE (roadmap). NOT flattened by the planner -- no dedicated
-  recursive plan node; it's the same plan.With node (one VisitWith), with
-  recursion encoded in the binding (expression.With: IsRecursive /
-  Expression[anchor] / RecursiveExpression[step] / IsUnion / CycleFields /
-  Config). The fixpoint loop is a RUNTIME operator (query's execution/with.go:
-  anchor -> dedup+cycle -> loop eval step vs the latest working set, with
-  level/doc limits + implicit caps depth 100 / docs 10000).
-  Substrate exists: engine temp-capture/temp-yield/temp-yield-var (materialize /
-  replay / per-loop feed; registered + tested in cases.go), and subquery
-  execution is done (below). Remaining, in dependency order:
-    1. SUBQUERY execution -- DONE (correlated + uncorrelated; see TODO-done.md
-       and glue/subquery.go). This is the substrate the anchor/step ride on.
-    2. CTE-as-datasource -- DONE for non-recursive (constant + subquery bindings;
-       see TODO-done.md). glue VisitWith records alias->binding-expr, and
-       VisitExpressionScan inlines a `FROM cte` (an ExpressionScan over the
-       identifier) to that expression, evaluated at runtime by the new "expr-scan"
-       glue op (which also handles FROM [array] and reuses EvaluateSubquery for a
-       subquery binding). Works in interpreter + compiler.
-    3. The fixpoint driver (mirror execution/with.go: eval anchor -> dedup/cycle
-       -> loop the recursive step vs the latest working set, with level/doc
-       limits + implicit caps). This is the remaining recursive-specific piece --
-       now that a subquery binding runs (1) and `FROM cte` reads it (2), what's
-       left is the WITH RECURSIVE loop that re-runs the step and unions results.
-       Note: direct `FROM (subquery) AS x` (not via WITH) still hits plan.Alias
-       (VisitAlias is NA) -- a separate small gap.
+- WITH RECURSIVE -- DONE (common UNION / UNION ALL recursion; see TODO-done.md).
+  Built in three steps: (1) subquery execution, (2) CTE-as-FROM, (3) the
+  with-recursive fixpoint op (glue/recursive.go). Works in interpreter +
+  compiler. Not yet honored: the CYCLE clause (w.CycleFields) and explicit
+  OPTIONS limits (w.Config) -- an implicit depth/doc cap (100 / 10000) bounds
+  the loop regardless. Adjacent gap: direct `FROM (subquery) AS x` (not via WITH)
+  still hits plan.Alias (VisitAlias is NA).
 
 - speed mismatch between producers and consumers?
   - e.g., scan racing ahead and filling memory with candidate tuples

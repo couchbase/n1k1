@@ -18,6 +18,7 @@ import (
 	"fmt"
 
 	"github.com/couchbase/query/expression"
+	"github.com/couchbase/query/value"
 
 	"github.com/couchbase/n1k1/base"
 )
@@ -35,6 +36,8 @@ func DatastoreOp(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 		DatastoreFetch(o, vars, yieldVals, yieldErr, path, pathNext)
 	case "expr-scan":
 		ExprScanOp(o, vars, yieldVals, yieldErr)
+	case "with-recursive":
+		WithRecursiveOp(o, vars, yieldVals, yieldErr)
 	}
 }
 
@@ -57,11 +60,18 @@ func ExprScanOp(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 	}
 
 	var ctx expression.Context
-	if c, ok := vars.Temps[0].(expression.Context); ok {
+	var item value.Value // the scope to evaluate against
+	if c, ok := vars.Temps[0].(*GlueContext); ok {
+		ctx = c
+		// Inside a WITH RECURSIVE step, corrParent holds {alias: workingSet}, so a
+		// `FROM <recursive-cte>` (this scan, over the identifier) resolves to the
+		// latest working set. nil otherwise (constant / subquery bindings).
+		item = c.corrParent
+	} else if c, ok := vars.Temps[0].(expression.Context); ok {
 		ctx = c
 	}
 
-	v, err := expr.Evaluate(nil, ctx) // nil item: uncorrelated (VisitExpressionScan NAs correlated)
+	v, err := expr.Evaluate(item, ctx)
 	if err != nil {
 		yieldErr(err)
 		return

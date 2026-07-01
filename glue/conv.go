@@ -38,10 +38,11 @@ type Conv struct {
 	// TopOp holds top of the converted base.Op tree.
 	TopOp *base.Op
 
-	// withBindings maps a WITH CTE alias to its binding expression, so a later
-	// `FROM <alias>` (an ExpressionScan over the identifier) can be inlined to
-	// evaluate the binding. Populated by VisitWith.
-	withBindings map[string]expression.Expression
+	// withBindings maps a WITH CTE alias to its binding, so a later `FROM <alias>`
+	// (an ExpressionScan over the identifier) can be handled: a non-recursive
+	// binding is inlined to its Expression(); a recursive one becomes a
+	// with-recursive fixpoint op. Populated by VisitWith.
+	withBindings map[string]expression.With
 }
 
 // -------------------------------------------------------------------
@@ -195,18 +196,33 @@ func (c *Conv) VisitOrderedIntersectScan(o *plan.OrderedIntersectScan) (interfac
 }
 
 func (c *Conv) VisitExpressionScan(o *plan.ExpressionScan) (interface{}, error) {
-	if o.IsCorrelated() { // TODO: correlated expression scan (FROM referencing outer fields)
-		return NA(o)
+	// A correlated FROM identifier is a CTE reference whose binding lives in an
+	// outer scope -- e.g. a WITH RECURSIVE step's `FROM r`, where r is the latest
+	// working set. expr-scan resolves it against GlueContext.corrParent at
+	// runtime, so allow it. A correlated *subquery* FROM-expr (FROM (SELECT ...
+	// outer.x)) isn't supported yet.
+	if o.IsCorrelated() {
+		if _, isID := o.FromExpr().(*expression.Identifier); !isID {
+			return NA(o)
+		}
 	}
 
 	// The FROM expression: a constant (FROM [1,2,3] AS x), a subquery
 	// (FROM (SELECT ...) AS x), or a WITH CTE reference (FROM cte AS x, an
-	// identifier). For a CTE reference, inline the recorded binding expression so
-	// it's evaluated instead of the unbound identifier.
+	// identifier).
 	expr := o.FromExpr()
 	if id, ok := expr.(*expression.Identifier); ok {
-		if be, ok := c.withBindings[id.Identifier()]; ok {
-			expr = be
+		if w, ok := c.withBindings[id.Identifier()]; ok {
+			if w.IsRecursive() {
+				// FROM <recursive-cte>: run the fixpoint (anchor + repeated step)
+				// at runtime; the whole binding is passed to the with-recursive op.
+				return c.TopPush(o, &base.Op{
+					Kind:   "with-recursive",
+					Labels: base.Labels{"." + LabelSuffix(o.Alias())},
+					Params: []interface{}{c.AddTemp(w)},
+				})
+			}
+			expr = w.Expression() // non-recursive CTE: inline the binding
 		}
 	}
 
@@ -384,10 +400,10 @@ func (c *Conv) VisitLet(o *plan.Let) (interface{}, error) {
 // VisitInitialProject strips project binding names from the star).
 func (c *Conv) VisitWith(o *plan.With) (interface{}, error) {
 	if c.withBindings == nil {
-		c.withBindings = map[string]expression.Expression{}
+		c.withBindings = map[string]expression.With{}
 	}
 	for _, w := range o.Bindings().Bindings() {
-		c.withBindings[w.Alias()] = w.Expression()
+		c.withBindings[w.Alias()] = w
 	}
 	return o.Child().Accept(c)
 }
