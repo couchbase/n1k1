@@ -26,12 +26,15 @@ tests (`base/arith_test.go`):
 - **Unary predicates** — `NOT`, `IS [NOT] NULL/MISSING/VALUED`
   (`engine/expr_pred.go`).
 - **Conditional-unknown selectors** — `IFNULL`/`IFMISSING`/`IFMISSINGORNULL`/`NVL`
-  (`engine/expr_cond.go`, two-operand; cbq's n-ary >2-operand forms fall back).
-- **`BETWEEN`** — `item BETWEEN low AND high` (`engine/expr_between.go`), via a new
+  /`COALESCE` (`engine/expr_cond.go`), **n-ary** via `MakeNaryExprFunc`.
+- **`BETWEEN`** — `item BETWEEN low AND high` (`engine/expr_between.go`), via a
   reusable ternary harness `MakeTriExprFunc` / `base.TriExprFunc`.
 - **`IN`** — `x IN arr` membership (`engine/expr_in.go` + `base.ValIn`).
 - **Type checks** — `IS_ARRAY/IS_NUMBER/IS_STRING/IS_BOOLEAN/IS_OBJECT/IS_ATOM`
   (`engine/expr_type.go`), unary, MISSING/NULL passthrough.
+- **`||` string concatenation** — n-ary (`engine/expr_concat.go` + `base.NaryConcat`).
+- **Variadic harness** — `MakeNaryExprFunc` / `base.NaryExprFunc` (the n-ary analog
+  of `MakeBiExprFunc`/`MakeTriExprFunc`), unlocking the two above.
 
 Shared helpers keeping it DRY: `base.ArithApply` (op dispatch), `base.ValKind`
 (VALUE/NULL/MISSING classification — the one place encoding "empty==MISSING,
@@ -54,10 +57,10 @@ constant** has no JSON form — `value.WriteJSON` emits `"null"` — so
 `ExprTreeOptimize` must emit an empty json constant (→ MISSING) for it, else any
 native op given a `missing` literal wrongly sees NULL.
 
-Next candidates (Tier A): `is [not] distinct from` (binary, low priority); `||`
-concat + `COALESCE` + n-ary `IFNULL/IFMISSING` (all need a variadic
-`MakeNaryExprFunc` — see the codegen note below); `CASE`; `LIKE`; then Tier B
-functions.
+Next candidates (Tier A): `CASE` (both searched and simple); `LIKE` (compile the
+pattern once at setup); `is [not] distinct from` (binary, low priority); then
+Tier B functions (string/numeric/date). The variadic set (`||`, `COALESCE`,
+n-ary `IFNULL/IFMISSING`) is now done via `MakeNaryExprFunc`.
 
 ## Why this matters
 
@@ -124,7 +127,8 @@ semantics.
 | `eq` `lt` `le` `gt` `ge` | `engine/expr_cmp.go` | comparisons (numeric fast path + `ValComparer` fallback) |
 | `add` `sub` `mult` `div` `mod` `idiv` `imod` `neg` | `engine/expr_arith.go` + `base/arith.go` | **arithmetic** (byte-native, mirrors cbq `value.NumberValue`) ✅ |
 | `not` `is_null` `is_not_null` `is_missing` `is_not_missing` `is_valued` `is_not_valued` | `engine/expr_pred.go` | **unary predicates** (byte-kind classified, constant results) ✅ |
-| `ifnull` `ifmissing` `ifmissingornull` `nvl` | `engine/expr_cond.go` | **conditional-unknown selectors** (zero-copy operand pick; 2-operand) ✅ |
+| `ifnull` `ifmissing` `ifmissingornull` `nvl` (`coalesce`) | `engine/expr_cond.go` | **conditional-unknown selectors** (n-ary; zero-copy operand pick) ✅ |
+| `concat` (`\|\|`) | `engine/expr_concat.go` + `base.NaryConcat` | **string concatenation** (n-ary) ✅ |
 | `between` | `engine/expr_between.go` | **BETWEEN** (ternary; collation-order bounds) ✅ |
 | `in` | `engine/expr_in.go` + `base.ValIn` | **IN** (array membership; 2-operand) ✅ |
 | `is_array` `is_number` `is_string` `is_boolean` `is_object` `is_atom` | `engine/expr_type.go` | **type checks** (unary; MISSING/NULL passthrough) ✅ |
@@ -132,8 +136,8 @@ semantics.
 | `exprStr` / `exprTree` | `glue/expr.go` | **the fallback** (parse / delegate to cbq) |
 
 Still **absent and therefore delegated:** `like`, `is [not] distinct from`,
-`||`, `CASE`, `COALESCE` / n-ary (>2-operand) `IFNULL`/`IFMISSING`/…, `TYPE()` /
-`IS_BINARY`, and *all* ~330 remaining scalar functions.
+`CASE`, `NULLIF`/`MISSINGIF`/`GREATEST`/`LEAST`, `TYPE()` / `IS_BINARY`, and
+*all* ~330 remaining scalar functions.
 
 ## The universe & the gap
 
@@ -188,23 +192,24 @@ projection cost and are the highest ROI.
   (`engine/expr_type.go`).
 - **`is [not] distinct from`** — direct byte/type checks (`base.Parse`,
   `ValComparer`).
-- **Type checks `is_array/object/string/number/boolean/atom`** — `base.Parse`
-  returns the type; trivial.
-- ✅ **DONE (2-operand) — `IFNULL/IFMISSING/IFMISSINGORNULL/NVL`**
-  (`engine/expr_cond.go`): zero-copy operand selection by `base.ValKind`.
-- **`||` concat, `CASE` (both), `COALESCE/NULLIF/MISSINGIF/GREATEST/LEAST`, and
-  n-ary `IFNULL/…`** — control-flow over already-native operands; mostly
-  select-a-buffer. (n-ary needs a variadic harness the fixed-arity `intermed`
-  codegen doesn't yet support — see the note below.)
+- ✅ **DONE — type checks `is_array/number/string/boolean/object/atom`**
+  (`engine/expr_type.go`).
+- ✅ **DONE — `IFNULL/IFMISSING/IFMISSINGORNULL/NVL/COALESCE`** (n-ary,
+  `engine/expr_cond.go`): zero-copy operand selection by `base.ValKind`.
+- ✅ **DONE — `||` concat** (n-ary, `engine/expr_concat.go` + `base.NaryConcat`).
+- **`CASE` (both), `NULLIF/MISSINGIF/GREATEST/LEAST`** — control-flow over
+  already-native operands; mostly select-a-buffer.
 - **`element`/`slice` navigation** — extends `labelPath` via `jsonparser`.
 
-> **Codegen constraint learned during porting:** expression files *are* processed
-> by `intermed_build`, and its harness is **fixed-arity** — `MakeBiExprFunc`
-> (binary) and single-child (unary) generate valid compiled code, but a runtime
-> loop over a `[]ExprFunc` (n-ary) does not. So variadic operators are done in
-> their two-operand form natively and fall back to cbq beyond that, until a
-> variadic expr harness (a `MakeNaryExprFunc` analog) is added. This gates `||`,
-> `COALESCE`, and n-ary `IFNULL/IFMISSING`.
+> **Codegen note (resolved):** expression files *are* processed by
+> `intermed_build`. Its fixed-arity harnesses (`MakeBiExprFunc` binary, unary
+> single-child) codegen cleanly, and a **`MakeNaryExprFunc`** now handles the
+> variadic case too — the trick is to (a) build the child ExprFuncs in a `// !lz`
+> loop over the params (emitted verbatim, like `op_union`), (b) pre-declare
+> `lzVals`/`lzYieldErr` with `// !lz` dummy decls so the executed reduce-call has
+> them in the generator's scope, and (c) keep the reduce in a plain `base` helper
+> the harness calls in one `// !lz` line (so intermed doesn't try to fuse it).
+> A runtime loop over `[]ExprFunc` *inside the codegen'd eval body* is what fails.
 
 ### Tier B — port next (scalar but needs parse+format into a reused buffer)
 A bounded amount of transient work, still zero steady-state garbage with buffer
