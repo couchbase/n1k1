@@ -489,8 +489,13 @@ func reportSuite(t *testing.T, nFiles, pass, errPass, skipped int, nonPass []cas
 	tw = tabwriter.NewWriter(&b, 0, 2, 2, ' ', 0)
 	fmt.Fprintf(tw, "  suite # files         \t%*d\n", valW, nFiles)
 	fmt.Fprintf(tw, "  suite # cases         \t%*d\n", valW, total)
-	fmt.Fprintf(tw, "    PASS                \t%*d\t(%.1f%%)\n", valW, pass, 100*float64(pass)/float64(total))
+	// A conformance PASS is "n1k1 behaved as the corpus expects": either it
+	// produced the expected rows (pass), or it correctly errored on an
+	// error-expecting case (errPass). Both belong in the pass-rate numerator.
+	passing := pass + errPass
+	fmt.Fprintf(tw, "    PASS (results)      \t%*d\n", valW, pass)
 	fmt.Fprintf(tw, "    PASS (err expected) \t%*d\n", valW, errPass)
+	fmt.Fprintf(tw, "    PASS (total)        \t%*d\t(%.1f%%)\n", valW, passing, 100*float64(passing)/float64(total))
 	fmt.Fprintf(tw, "    PANIC               \t%*d\n", valW, panicked)
 	fmt.Fprintf(tw, "    non-pass UNSUPPORTED\t%*d\n", valW, unsupported)
 	fmt.Fprintf(tw, "    non-pass FAIL       \t%*d\n", valW, fail)

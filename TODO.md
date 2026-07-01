@@ -7,7 +7,9 @@ Status: modernization + a pure-Go N1QL (SQL++) engine (CGO_ENABLED=0,
 cross-compiles) are done. Remaining work:
 
 ## Conformance (SQL++ suite corpus)
-- [ ] Raise the TestSuiteCases pass rate (currently ~661/691 runnable).
+- [ ] Raise the TestSuiteCases pass rate (currently ~671/691 = 97.1%: 661 that
+      produce the expected results + 10 that correctly error on error-expecting
+      cases). The pass-floor in test/suite_test.go ratchets on the 661 (results).
       Remaining gaps: COUNT(*) over a bare keyspace (CountScan) + index-union
       scans unsupported. Ratchet the pass-floor in test/suite_test.go as fixed.
       NOT-FIXABLE: array_position(array_agg(...)) depends on the array_agg
