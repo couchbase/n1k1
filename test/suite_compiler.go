@@ -150,71 +150,111 @@ var (
 	suiteStoreOnce sync.Once
 	suiteStore     *glue.Store
 	suiteStoreErr  error
+
+	dataStoreOnce sync.Once
+	dataStore     *glue.Store
+	dataStoreErr  error
 )
 
-// compiledSuiteStore opens the corpus FileStore once and wires the runtime
-// hooks the compiled-query islands depend on: ExecOpEx routes datastore ops to
-// glue.DatastoreOp, and the expr catalog provides the interpreted exprStr/
-// exprTree evaluators. The corpus root is located relative to this source file
-// (via runtime.Caller) so it resolves regardless of the test's working dir --
-// the generated tests run from test/tmp/, not test/.
+// wireCompiledRuntime sets the global engine hooks the compiled-query islands
+// depend on: ExecOpEx routes datastore ops to glue.DatastoreOp, and the expr
+// catalog provides the interpreted exprStr/exprTree evaluators.
+func wireCompiledRuntime() {
+	engine.ExecOpEx = glue.DatastoreOp
+	if engine.ExprCatalog["exprStr"] == nil {
+		engine.ExprCatalog["exprStr"] = glue.ExprStr
+	}
+	if engine.ExprCatalog["exprTree"] == nil {
+		engine.ExprCatalog["exprTree"] = glue.ExprTree
+	}
+}
+
+// compiledSuiteStore opens the corpus FileStore once. The root is located
+// relative to this source file (via runtime.Caller) so it resolves regardless
+// of the test's working dir -- the generated tests run from test/tmp/, not test/.
 func compiledSuiteStore() (*glue.Store, error) {
 	suiteStoreOnce.Do(func() {
 		_, file, _, _ := runtime.Caller(0)
 		root := filepath.Join(filepath.Dir(file), "suite", "json")
-
 		suiteStore, suiteStoreErr = glue.FileStore(root)
 		if suiteStoreErr != nil {
 			return
 		}
 		suiteStore.InitParser()
-
-		engine.ExecOpEx = glue.DatastoreOp
-		if engine.ExprCatalog["exprStr"] == nil {
-			engine.ExprCatalog["exprStr"] = glue.ExprStr
-		}
-		if engine.ExprCatalog["exprTree"] == nil {
-			engine.ExprCatalog["exprTree"] = glue.ExprTree
-		}
+		wireCompiledRuntime()
 	})
 	return suiteStore, suiteStoreErr
 }
 
-// SetupCompiledSuite is the runtime preamble for a generated datastore-
-// backed compiler test. It re-parses/plans/converts the statement to obtain the
-// live query-plan objects, and exposes them to the compiled operator code as
-// runtime "parameters" via lzVars.Temps -- Temps[0] a fresh GlueContext, then
-// the conv's plan objects at the same indices the baked datastore ops reference.
-// (The compiled code carries only the SQL++ shape; the datastore arrives here.)
-// Returns the vars + yield-capture funcs the generated code drives, plus a
-// cleanup that removes the temp dir.
+// compiledDataStore opens the local test/ file store once (namespace "data" =
+// test/data), for the queryCases compiler differential. Located relative to
+// this source file so it resolves from test/tmp/.
+func compiledDataStore() (*glue.Store, error) {
+	dataStoreOnce.Do(func() {
+		_, file, _, _ := runtime.Caller(0)
+		root := filepath.Dir(file) // test/ ; "data:" -> test/data
+		dataStore, dataStoreErr = glue.FileStore(root)
+		if dataStoreErr != nil {
+			return
+		}
+		dataStore.InitParser()
+		wireCompiledRuntime()
+	})
+	return dataStore, dataStoreErr
+}
+
+// SetupCompiledSuite / SetupCompiledData are the runtime preamble for a generated
+// datastore-backed compiler test, over the suite corpus / the local test data
+// respectively. See setupCompiled.
 func SetupCompiledSuite(t *testing.T, stmt string) (
-	lzVars *base.Vars, lzYieldVals base.YieldVals, lzYieldErr base.YieldErr,
-	returnYields func() []base.Vals, cleanup func()) {
+	*base.Vars, base.YieldVals, base.YieldErr, func() []base.Vals, func()) {
 	store, err := compiledSuiteStore()
 	if err != nil {
 		t.Fatalf("SetupCompiledSuite store: %v", err)
 	}
+	return setupCompiled(t, store, "default", stmt)
+}
 
-	s, err := glue.ParseStatement(stmt, "default", true)
+func SetupCompiledData(t *testing.T, stmt string) (
+	*base.Vars, base.YieldVals, base.YieldErr, func() []base.Vals, func()) {
+	store, err := compiledDataStore()
 	if err != nil {
-		t.Fatalf("SetupCompiledSuite parse: %v\n stmt: %s", err, stmt)
+		t.Fatalf("SetupCompiledData store: %v", err)
 	}
-	p, err := store.PlanStatement(s, "default", nil, nil)
+	return setupCompiled(t, store, "", stmt)
+}
+
+// setupCompiled re-parses/plans/converts the statement to obtain the live
+// query-plan objects, and exposes them to the compiled operator code as runtime
+// "parameters" via lzVars.Temps -- Temps[0] a GlueContext (with subqueries
+// enabled), then the conv's plan objects at the same indices the baked datastore
+// ops reference. (The compiled code carries only the SQL++ shape; the datastore
+// arrives here.) Returns the vars + yield-capture funcs the generated code
+// drives, plus a cleanup that removes the temp dir.
+func setupCompiled(t *testing.T, store *glue.Store, namespace, stmt string) (
+	lzVars *base.Vars, lzYieldVals base.YieldVals, lzYieldErr base.YieldErr,
+	returnYields func() []base.Vals, cleanup func()) {
+	s, err := glue.ParseStatement(stmt, namespace, true)
 	if err != nil {
-		t.Fatalf("SetupCompiledSuite plan: %v\n stmt: %s", err, stmt)
+		t.Fatalf("setupCompiled parse: %v\n stmt: %s", err, stmt)
+	}
+	p, err := store.PlanStatement(s, namespace, nil, nil)
+	if err != nil {
+		t.Fatalf("setupCompiled plan: %v\n stmt: %s", err, stmt)
 	}
 	conv := &glue.Conv{Temps: []interface{}{nil}}
 	if _, err = p.Accept(conv); err != nil {
-		t.Fatalf("SetupCompiledSuite accept: %v\n stmt: %s", err, stmt)
+		t.Fatalf("setupCompiled accept: %v\n stmt: %s", err, stmt)
 	}
 
 	tmpDir, vars := glue.MakeVars("", "n1k1fsc")
 
 	// Build vars.Temps exactly as the interpreter driver does, so the int Temps
 	// indices baked into the datastore ops line up with the live plan objects.
+	gctx := glue.NewGlueContext(time.Now())
+	gctx.InitSubqueries(store, namespace) // so compiled expression subqueries run
 	vars.Temps = vars.Temps[:0]
-	vars.Temps = append(vars.Temps, glue.NewGlueContext(time.Now()))
+	vars.Temps = append(vars.Temps, gctx)
 	vars.Temps = append(vars.Temps, conv.Temps[1:]...)
 	for i := 0; i < 16; i++ {
 		vars.Temps = append(vars.Temps, nil)
@@ -230,7 +270,7 @@ func SetupCompiledSuite(t *testing.T, stmt string) (
 	}
 	ye := func(err error) {
 		if err != nil {
-			t.Errorf("SetupCompiledSuite yieldErr: %v\n stmt: %s", err, stmt)
+			t.Errorf("setupCompiled yieldErr: %v\n stmt: %s", err, stmt)
 		}
 	}
 

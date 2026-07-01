@@ -71,7 +71,7 @@ test-suite: build-glue
 # TestGeneratedFS_N funcs execute the *compiled* query and compare its results.
 # The steps MUST stay ordered so ./test/tmp never compiles a stale copy.
 test-compiler: build-glue
-	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -tags n1ql -run 'TestCasesSimpleWithCompiler|TestSuiteWithCompiler' ./test
+	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -tags n1ql -run 'TestCasesSimpleWithCompiler|TestSuiteWithCompiler|TestQueryCasesWithCompiler' ./test
 	cd test/tmp && go fmt
 	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -tags n1ql ./test/tmp
 

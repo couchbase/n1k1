@@ -104,13 +104,13 @@ func stringifyExprTrees(o *base.Op) (ok bool) {
 
 // convOf parses, plans and converts a statement to a n1k1 Op tree, recovering
 // from the panics some unsupported plans raise (mirrors n1k1RunStatement).
-func convOf(store *glue.Store, stmt string) (cv *glue.Conv) {
+func convOf(store *glue.Store, namespace, stmt string) (cv *glue.Conv) {
 	defer func() { recover() }()
-	s, err := glue.ParseStatement(stmt, "default", true)
+	s, err := glue.ParseStatement(stmt, namespace, true)
 	if err != nil {
 		return nil
 	}
-	p, err := store.PlanStatement(s, "default", nil, nil)
+	p, err := store.PlanStatement(s, namespace, nil, nil)
 	if err != nil {
 		return nil
 	}
@@ -183,7 +183,6 @@ func nonDeterministic(stmt string) bool {
 	return false
 }
 
-
 func TestSuiteWithCompiler(t *testing.T) {
 	if _, err := os.Stat(suiteRoot + "/default/cases"); err != nil {
 		t.Skipf("suite corpus not present: %v", err)
@@ -227,7 +226,7 @@ func TestSuiteWithCompiler(t *testing.T) {
 			}
 			considered++
 
-			conv := convOf(store, stmt)
+			conv := convOf(store, "default", stmt)
 			if conv == nil || usesUnbridgedOp(conv.TopOp) {
 				continue
 			}
