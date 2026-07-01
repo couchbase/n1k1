@@ -169,6 +169,11 @@ func DatastoreScanRecords(o *base.Op, vars *base.Vars,
 // scan/fetch execution, so it reads the directory itself rather than routing
 // through cbq's ScanEntries/Fetch.
 func keyspaceDir(keyspace datastore.Keyspace) (string, error) {
+	// A synthetic flat-root keyspace knows its own directory (the root itself),
+	// which isn't <root>/<ns>/<keyspace>. See flatroot.go.
+	if rd, ok := keyspace.(interface{ RecordsDir() string }); ok {
+		return rd.RecordsDir(), nil
+	}
 	ns := keyspace.Namespace()
 	if ns == nil || ns.Datastore() == nil {
 		return "", fmt.Errorf("keyspaceDir: keyspace %q has no datastore", keyspace.Name())

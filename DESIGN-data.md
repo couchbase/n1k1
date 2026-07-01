@@ -119,14 +119,19 @@ expression evaluation machinery as a fallback for complex expressions.
 metadata, producing a `plan.Op` that `conv` then lowers. **Two different needs
 hide behind "the datastore" — separate them, because only one touches the fork:**
 
-- **(A1) Plan-time keyspace metadata — a thin fork seam (the *only* one needed).**
-  The planner must believe `FROM keyspace` exists and has a primary index (it calls
-  `namespace.KeyspaceByName` / `keyspace.Indexers` during `Build`), so *this* comes
-  from the fork. For today's convention (keyspace = a subdir) it already resolves;
-  for a **catalog-defined name** (e.g. example G's `access`, not a plain subdir)
-  the fork needs one thin discovery seam — a `var DiscoverKeyspaces` that
-  `KeyspaceByName` consults so the planner accepts the name and emits a
-  `PrimaryScan`. That's it for the fork.
+- **(A1) Plan-time keyspace metadata — n1k1 fakes it, NO fork change.** The planner
+  must believe `FROM keyspace` exists and has a primary index (it calls
+  `namespace.KeyspaceByName` / `keyspace.Indexers` during `Build`). Rather than a
+  fork seam, n1k1 **wraps the datastore** to advertise a *synthetic* namespace +
+  keyspace — pure planner-facing metadata, no physical dir — reusing the fork's
+  importable `datastore/virtual` building blocks (`virtual.NewVirtualKeyspace` +
+  `NewVirtualIndex(isPrimary)`) so the planner emits a `PrimaryScan`.
+  **Implemented for flat roots** in `glue/flatroot.go`: `maybeFlatRoot` (called
+  from `FileStore`) detects a root holding data files directly and exposes it as
+  `default:<basename>`; the synthetic keyspace's `RecordsDir()` points records-scan
+  at the root. Same pattern extends to catalog-defined names (§2 G) later. (Credit:
+  the user's "fake it" insight — it converts B from a multi-repo fork+pin change
+  into n1k1-only work.)
 - **(A2) Execution-time scan/fetch — already n1k1's, no fork seam.** `conv` lowers
   `PrimaryScan`/`Fetch` to n1k1 `datastore-scan`/`datastore-fetch` `base.Op`s run
   by `glue.DatastoreOp`. Those glue ops *today* delegate down to cbq
