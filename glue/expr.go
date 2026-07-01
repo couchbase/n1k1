@@ -59,11 +59,22 @@ func ExprTree(vars *base.Vars, labels base.Labels,
 
 	var buf bytes.Buffer
 
-	paramsOut, ok := ExprTreeOptimize(labels, expr, &buf)
-	if ok {
-		// TODO: Compiled approach should probably invoke something
-		// like vars.MakeExprFunc().
-		return engine.MakeExprFunc(vars, labels, paramsOut, path, "")
+	// Inside a correlated subquery, skip the optimized expr path: it evaluates
+	// using only this sub-op's labels and can't see the outer row, so a
+	// correlated reference would resolve to MISSING. The general path below
+	// wraps each row as a scope over the correlation parent (see below).
+	correlated := false
+	if gc, ok := vars.Temps[0].(*GlueContext); ok && gc.corrParent != nil {
+		correlated = true
+	}
+
+	if !correlated {
+		paramsOut, ok := ExprTreeOptimize(labels, expr, &buf)
+		if ok {
+			// TODO: Compiled approach should probably invoke something
+			// like vars.MakeExprFunc().
+			return engine.MakeExprFunc(vars, labels, paramsOut, path, "")
+		}
 	}
 
 	context, ok := vars.Temps[0].(expression.Context)
@@ -87,6 +98,16 @@ func ExprTree(vars *base.Vars, labels base.Labels,
 		if err != nil {
 			yieldErr(err)
 			return base.ValMissing
+		}
+
+		// Inside a correlated subquery, give this sub-row a scope over the outer
+		// row so identifiers not found here (e.g. an outer keyspace alias) fall
+		// through to the parent. corrParent is nil outside a correlated subquery,
+		// so uncorrelated / outer evaluation is unaffected.
+		if gc, ok := context.(*GlueContext); ok && gc.corrParent != nil {
+			if m, ok := v.Actual().(map[string]interface{}); ok {
+				v = value.NewScopeValue(m, gc.corrParent)
+			}
 		}
 
 		vResult, err := expr.Evaluate(v, context)

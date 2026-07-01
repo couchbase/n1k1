@@ -49,6 +49,12 @@ type GlueContext struct {
 	// subq drives expression-subquery evaluation (see subquery.go). nil until
 	// InitSubqueries is called; when nil, EvaluateSubquery errors.
 	subq *subqEvaluator
+
+	// corrParent is the outer row during a correlated subquery's execution, so
+	// the sub-op's expressions can resolve outer identifiers by falling through
+	// to it (ExprTree wraps each sub-row as a scope over this parent). nil
+	// outside a correlated subquery. See subquery.go / expr.go.
+	corrParent value.Value
 }
 
 // NewGlueContext returns a GlueContext stamped with the given "now".

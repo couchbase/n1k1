@@ -155,14 +155,19 @@ in glue/patches/README.md.
     * the planner pre-plans subqueries: QueryPlan.Subqueries() is
       map[*algebra.Select]Operator.
   To support it, in dependency order:
-    1. SUBQUERY execution -- DONE for UNCORRELATED (glue/subquery.go). GlueContext
-       is now an algebra.Context; EvaluateSubquery plans the sub-SELECT on demand
-       (like query's execution/context.go, not qp.Subqueries() which Build leaves
-       empty), convs it, runs it on n1k1's engine, returns the rows as an array
-       value. Works: N IN (SELECT ...), (SELECT ...) in projection, ARRAY_LENGTH
-       ((SELECT ...)), WHERE ... IN (SELECT ...). CORRELATED still TODO: errors
-       explicitly (query.IsCorrelated()); needs the outer row threaded into the
-       sub-op scope (the temp-yield-var slot pattern).
+    1. SUBQUERY execution -- DONE, correlated + uncorrelated (glue/subquery.go).
+       GlueContext is now an algebra.Context; EvaluateSubquery plans the sub-SELECT
+       on demand (like query's execution/context.go, not qp.Subqueries() which
+       Build leaves empty), convs it, runs it on n1k1's engine, returns the rows
+       as an array value. Correlated: EvaluateSubquery stashes the outer row on
+       GlueContext.corrParent (save/restore for nesting); ExprTree wraps each
+       sub-row as a value.ScopeValue over corrParent so outer identifiers fall
+       through, and skips the optimized expr path (which only knows the sub-op's
+       own labels). Works: N IN (SELECT ...), (SELECT ...) in projection,
+       ARRAY_LENGTH((SELECT ...)), WHERE ... IN (correlated/uncorrelated SELECT).
+       Known gap: SELECT * inside a correlated subquery can leak outer fields
+       (ScopeValue.Fields() merges parent); sub-row annotations (META/id) aren't
+       preserved through the scope wrap. Rare.
     2. CTE-as-datasource: FROM cte is an ExpressionScan reading the alias from
        the scope item; n1k1 must materialize the CTE value into that scope.
        (Non-recursive FROM cte fails today: "nil 'item' parameter".)

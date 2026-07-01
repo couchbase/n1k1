@@ -84,16 +84,20 @@ func (c *GlueContext) EvaluateSubquery(query *algebra.Select, parent value.Value
 		return nil, fmt.Errorf("subquery evaluation not configured")
 	}
 
-	// Correlated subqueries need the outer row threaded into the sub-op scope,
-	// which isn't wired yet -- error explicitly rather than silently returning
-	// wrong (empty) results.
-	if query.IsCorrelated() {
-		return nil, fmt.Errorf("correlated subqueries are not yet supported")
-	}
-
 	sc, err := c.subq.compile(query)
 	if err != nil {
 		return nil, err
+	}
+
+	// Correlated subquery: expose the outer row (parent) to the sub-op's
+	// expressions for the duration of this execution, so they can resolve outer
+	// identifiers (ExprTree wraps each sub-row as a scope over corrParent). Saved
+	// and restored so nested subqueries chain their parents correctly. n1k1's
+	// engine is single-goroutine (synchronous push), so this is safe.
+	if query.IsCorrelated() {
+		prev := c.corrParent
+		c.corrParent = parent
+		defer func() { c.corrParent = prev }()
 	}
 
 	// Expr constructors are global on the engine; ensure they're wired (the

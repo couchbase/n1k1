@@ -15,11 +15,9 @@ package test
 
 import (
 	"encoding/json"
-	"strings"
 	"testing"
 
 	"github.com/couchbase/n1k1/base"
-	"github.com/couchbase/n1k1/glue"
 )
 
 // This is the data-driven home for local SQL++ feature unit tests -- run each
@@ -230,6 +228,30 @@ var queryCases = []queryCase{
 			}
 		},
 	},
+
+	// ---- Subqueries (correlated: sub-op references an outer field) --------
+	{
+		name: "SubqueryCorrelatedShared",
+		// orders whose custId is shared by >1 order. custIds: abc,bbb,ccc,ccc ->
+		// only the two ccc orders (1235, 1236) qualify.
+		stmt: `SELECT o.id FROM data:orders o WHERE ` +
+			`ARRAY_LENGTH((SELECT RAW o2.id FROM data:orders o2 WHERE o2.custId = o.custId)) > 1`,
+		rows: 2,
+		check: func(t *testing.T, rows []base.Vals) {
+			for _, row := range rows {
+				if id := trimQ(string(row[0])); id != "1235" && id != "1236" {
+					t.Fatalf("unexpected id %s", id)
+				}
+			}
+		},
+	},
+	{
+		name: "SubqueryCorrelatedSelf",
+		// every order matches itself -> all 4 orders.
+		stmt: `SELECT o.id FROM data:orders o WHERE ` +
+			`1 IN (SELECT RAW 1 FROM data:orders o2 WHERE o2.id = o.id)`,
+		rows: 4,
+	},
 }
 
 // TestQueryCases runs every queryCase as a subtest.
@@ -244,25 +266,6 @@ func TestQueryCases(t *testing.T) {
 				c.check(t, rows)
 			}
 		})
-	}
-}
-
-// TestSubqueryCorrelatedUnsupported checks that a correlated subquery (one
-// referencing an outer field) fails with a clear error rather than silently
-// returning wrong results -- correlation isn't threaded into the sub-op scope
-// yet. Run via glue.Session so the exec error surfaces as a return value.
-func TestSubqueryCorrelatedUnsupported(t *testing.T) {
-	sess, err := glue.OpenSession(".", "data")
-	if err != nil {
-		t.Fatalf("OpenSession: %v", err)
-	}
-	_, err = sess.Run(`SELECT o.id FROM data:orders o ` +
-		`WHERE 1 IN (SELECT RAW 1 FROM data:orders o2 WHERE o2.id = o.id)`)
-	if err == nil {
-		t.Fatalf("expected an error for a correlated subquery")
-	}
-	if !strings.Contains(err.Error(), "correlated") {
-		t.Fatalf("expected a 'correlated' error, got: %v", err)
 	}
 }
 
