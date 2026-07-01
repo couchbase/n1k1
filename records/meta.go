@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -67,9 +68,11 @@ func (o WalkOptions) metaInclude(innerExt string) bool {
 	}
 }
 
-// fileMetaFragment builds the reusable `"_meta":{...}` JSON fragment for a file:
-// path (PathPrefix joined with the dir-relative rel), name, ext, size, mtime.
-func fileMetaFragment(absPath, pathPrefix, rel string) ([]byte, error) {
+// fileMetaOpen builds the reusable, UNCLOSED `"_meta":{<file fields>` fragment
+// for a file: path (PathPrefix joined with the dir-relative rel), name, ext,
+// size, mtime. metaSource closes it per record, optionally appending the
+// record's `index` within a multi-record container file.
+func fileMetaOpen(absPath, pathPrefix, rel string) ([]byte, error) {
 	fi, err := os.Stat(absPath)
 	if err != nil {
 		return nil, err
@@ -88,16 +91,19 @@ func fileMetaFragment(absPath, pathPrefix, rel string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return append([]byte(`"_meta":`), obj...), nil
+	// `"_meta":` + obj without its trailing '}' (metaSource closes it).
+	return append([]byte(`"_meta":`), obj[:len(obj)-1]...), nil
 }
 
-// metaSource wraps a decoder Source and splices a per-file "_meta" object into
-// each (object) record's Doc. The spliced Doc is built into a reused buffer,
-// preserving the borrowed-slice contract.
+// metaSource wraps a decoder Source and splices a "_meta" object into each
+// (object) record's Doc: the file-level fields, plus a `pos` (the record's
+// ordinal within its container file) when the record id carries a "#<n>" suffix
+// (JSONL/CSV/gz/JSON-array). Built into reused buffers (borrowed-slice contract).
 type metaSource struct {
 	inner Source
-	frag  []byte // `"_meta":{...}`
-	buf   []byte
+	open  []byte // `"_meta":{<file fields>`  (no closing brace)
+	frag  []byte // per-record `"_meta":{...}` (reused)
+	buf   []byte // spliced doc (reused)
 }
 
 func (m *metaSource) Next(rec *Record) (bool, error) {
@@ -105,9 +111,38 @@ func (m *metaSource) Next(rec *Record) (bool, error) {
 	if !ok || err != nil {
 		return ok, err
 	}
+	m.frag = append(m.frag[:0], m.open...)
+	if idx, has := recordIndex(rec.ID); has {
+		// "pos" = the record's 0-based ordinal within its container file.
+		// (Not "index"/"offset" -- both are SQL++ reserved words.)
+		m.frag = append(m.frag, `,"pos":`...)
+		m.frag = strconv.AppendInt(m.frag, int64(idx), 10)
+	}
+	m.frag = append(m.frag, '}')
 	m.buf = spliceMeta(m.buf[:0], rec.Doc, m.frag)
 	rec.Doc = m.buf
 	return true, nil
+}
+
+// recordIndex extracts the trailing "#<n>" ordinal from a record id (e.g.
+// "events/day1.jsonl#3" -> 3). Returns false for a bare stem (one-doc-per-file),
+// which has no in-file position.
+func recordIndex(id []byte) (int, bool) {
+	h := -1
+	for i := len(id) - 1; i >= 0; i-- {
+		if id[i] == '#' {
+			h = i
+			break
+		}
+	}
+	if h < 0 || h == len(id)-1 {
+		return 0, false
+	}
+	n, err := strconv.Atoi(string(id[h+1:]))
+	if err != nil {
+		return 0, false
+	}
+	return n, true
 }
 
 func (m *metaSource) Close() error { return m.inner.Close() }

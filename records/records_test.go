@@ -324,6 +324,32 @@ func TestMetaOnAndOff(t *testing.T) {
 	}
 }
 
+func TestMetaPos(t *testing.T) {
+	on := AllModes()
+	on.Meta = MetaOn
+	// Records from a container file (JSONL) carry _meta.pos (in-file ordinal).
+	s, _ := Walk(ex("logs/default/events"), on)
+	_, docs := collect(t, s)
+	for _, d := range docs {
+		meta, ok := docHasMeta(t, d)
+		if !ok {
+			t.Fatalf("missing _meta: %s", d)
+		}
+		if _, has := meta["pos"]; !has {
+			t.Errorf("container-file record _meta missing pos: %v", meta)
+		}
+	}
+	// One-doc-per-file records have no in-file position.
+	s2, _ := Walk(ex("shop/default/orders"), on)
+	_, docs2 := collect(t, s2)
+	for _, d := range docs2 {
+		meta, _ := docHasMeta(t, d)
+		if _, has := meta["pos"]; has {
+			t.Errorf("one-doc-per-file record should have no pos: %v", meta)
+		}
+	}
+}
+
 func TestSpliceMeta(t *testing.T) {
 	frag := []byte(`"_meta":{"size":1}`)
 	cases := map[string]string{

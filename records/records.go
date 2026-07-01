@@ -609,8 +609,8 @@ func (w *walkSource) Next(rec *Record) (bool, error) {
 			// Opt-in per-file metadata (_meta): office docs under auto, or all
 			// records under -meta=on. Silently skipped if the file can't be stat'd.
 			if w.opts.metaInclude(innerExt(path)) {
-				if frag, ferr := fileMetaFragment(path, w.opts.PathPrefix, rel); ferr == nil {
-					s = &metaSource{inner: s, frag: frag}
+				if open, ferr := fileMetaOpen(path, w.opts.PathPrefix, rel); ferr == nil {
+					s = &metaSource{inner: s, open: open}
 				}
 			}
 			w.cur = s

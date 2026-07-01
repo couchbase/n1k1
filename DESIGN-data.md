@@ -1086,7 +1086,9 @@ The fork's `META()` exposes only a **fixed bitmask** of fields (id/cas/keyspace/
 type/flags/expiration/xattrs), so per-file metadata can't ride `META()` without a
 fork change. Instead the records layer injects a reserved **`_meta`** sub-object
 into the document — `` `path` `` (dir-relative, incl. subdirs), `name`, `ext`,
-`size`, `mtime` — controlled by the CLI `-meta` mode: `off` / `on` / `auto`
+`size`, `mtime`, and `pos` (the record's 0-based ordinal within a container file
+— JSONL/CSV/gzip/JSON-array; absent for one-doc-per-file) — controlled by the CLI
+`-meta` mode: `off` / `on` / `auto`
 (default). Under `auto` each *provider* decides: office/PDF documents include it,
 structured JSON/CSV do not — which also keeps the exact-match conformance suite
 unchanged (it never sees `_meta`). `META().id` itself is left as the stable key

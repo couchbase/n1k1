@@ -36,7 +36,9 @@ font PDFs need the optional Tika/extractous backend (a later build tag).
 
 Records can carry a `_meta` sub-object with the source file's `` `path` ``
 (dir-relative, incl. subdirs), `name`, `ext`, `size` (bytes), and `mtime`
-(RFC3339). Controlled by `-meta`:
+(RFC3339). Records that live inside a container file (JSONL, CSV, gzip,
+JSON-array) also get `pos` — their 0-based ordinal within that file.
+Controlled by `-meta`:
 
 - `-meta=auto` (default) — office/PDF documents get `_meta`; structured
   JSON/CSV data does not (so plain data stays clean).
