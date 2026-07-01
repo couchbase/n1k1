@@ -38,8 +38,8 @@ terminate statements with `;` and use dot-commands:
     n1k1> .explain                  also print the converted n1k1 plan
     n1k1> .help                     all commands;  .quit to exit
 
-Output is `box` at a TTY and `jsonlines` when piped or under `-c` (override with
-`-mode`). The engine is query-only and supports a subset of N1QL, so some
+Output is `box|pretty` at a TTY and `jsonlines` when piped or under `-c`
+(override with `-mode`). The engine is query-only and supports a subset of N1QL, so some
 queries report "unsupported".
 
 The REPL has arrow-key history and line editing (via the pure-Go `peterh/liner`),
