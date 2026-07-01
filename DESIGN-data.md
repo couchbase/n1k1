@@ -19,7 +19,16 @@ noted both in the VIEW recommendation, example F, and the §5 zone-map caveat.
 Then addressed catalog.json comingling: separate by writer/lifecycle (declared
 input = single-writer catalog.json; machine-managed/adaptive index state = per-
 instance dirs), added §5 "Comingling in catalog.json" + a cross-note in
-DESIGN-indexing.md.)
+DESIGN-indexing.md. Then made allocation model a first-class decoder-selection
+axis (§1 "Allocation model"): base.Val is []byte and the engine parses
+allocation-free via jsonparser, so favor read-into / borrowed-slice APIs over
+per-value interface{}/string; noted the encoding/csv string-alloc regression,
+Arrow pooled buffers, an allocs/op benchmark gate, and an open question. Then
+reworked proposal #A (where the code lives): instead of a subpackage inside the
+fork, keep the fork a thin hook seam (var Hook func(…) + today's-behavior
+fallback, the engine.ExecOpEx IoC pattern) with all real logic in n1k1 —
+minimizing fork divergence; updated the decision, phasing, open question, and the
+DESIGN-indexing.md relationship touchpoint.)
 
 ---
 
@@ -45,9 +54,14 @@ division of ownership:
 
 Where they touch, and how they're kept consistent here:
 
-1. **Home = the fork's file datastore.** Both docs land new code in
-   `../n1k1-query/datastore/file/` (this doc's "Where this code lives" = the
-   indexing doc's "the file datastore lives in an editable fork"). Consistent.
+1. **Home = the fork's file datastore is the *seam*; code lives in n1k1.** Both
+   docs now use the same **thin hook-seam** design (the `engine.ExecOpEx` IoC
+   pattern): the fork gets only hook-variable declarations + today's-behavior
+   fallbacks, and the real logic lives in n1k1. This doc's decoders/discovery
+   register into datastore-scan/fetch seams; `DESIGN-indexing.md`'s `secondaryIndex`
+   and FTS `Indexer`/`FTSIndex` are **n1k1 types** advertised through
+   `fileIndexer.Indexes()` / `keyspace.Indexers()` seams (Go interfaces are
+   structural, so the planner uses them polymorphically). Fully consistent.
 2. **The `.n1k1/` sidecar is shared.** The indexing doc specifies the *canonical*
    tree; this doc owns only `catalog.json`'s source/layout half and
    `manifest.json` (see §5 "Where"). `catalog.json` therefore holds **both**
@@ -123,15 +137,27 @@ is resolved by the **forked `couchbase/query` planner**, which asks the
 and scans, produces a `plan.Op`, and only *then* does n1k1's `glue.Conv` turn
 that plan into `base.Op`s. Three candidate homes, and why the choice matters:
 
-- **(A) The fork's `datastore/file` package — chosen for formats/layout/doc-IDs.**
-  This is the *only* thing `FROM keyspace` actually reaches. Relaxing "keyspace =
-  dir of one-doc-per-file" into "keyspace = union of all supported files" is an
-  **additive** change to `loadKeyspaces`/`Scan`/`fetch` there. Cost: it diverges
-  the fork from upstream `couchbase/query`, and re-basing the fork onto a newer
-  query release has already been a maintenance chore. **Mitigation: keep the new
-  code in a self-contained subpackage (e.g. `datastore/file/recordsource/`) that
-  the existing `file.go` calls into with a few small, greppable hook points**, so
-  a future merge touches `file.go` minimally.
+- **(A) The fork's `datastore/file` package — the *seam*, but not where the new
+  code lives.** This is the *only* thing `FROM keyspace` actually reaches, so the
+  hooks must attach here (`loadKeyspaces` for discovery, `primaryIndex.ScanEntries`
+  for the record stream, `fetch` for one doc — verified seam points in `file.go`).
+  But **do not grow the fork with a `datastore/file/recordsource/` subpackage of
+  new logic** — that maximizes exactly the divergence we fear. Instead, mirror the
+  IoC pattern n1k1 *already* uses: the engine declares `var ExecOpEx func(…)` and
+  `var ExprCatalog map[…]…`, and `glue` overrides them at startup
+  (`engine.ExecOpEx = glue.DatastoreOp`, with save/restore in `Session.Run`).
+  **Apply the same seam to the datastore:** the fork declares thin package-level
+  hook variables — e.g. `var DiscoverKeyspaces func(dir) ([]KsInfo, error)`,
+  `var OpenRecordStream func(path) (RecordStream, error)`,
+  `var FetchRecord func(id) ([]byte, error)` — each defaulting to today's
+  one-doc-per-file JSON behavior when unset (`if hook != nil { … } else { …today… }`).
+  **All the real logic — decoders, sniffers, discovery, doc-IDs, compression —
+  lives in n1k1** (`glue`, or a new `n1k1/recordsource` pkg) and is registered
+  into those hooks at startup. The fork change shrinks from "a new subpackage" to
+  "a handful of `var Hook func(…)` + fallback branches," which is cheap to carry
+  across a cbq rebase, and the churning code stays in n1k1 where it's freely
+  iterable and testable with n1k1's own harness. *(Credit: this is the user's
+  refinement — keep the fork a thin seam, not a code host.)*
 - **(B) Wire the engine's path-B scan ops (`op_scan.go`) to `FROM` — rejected.**
   Tempting because `csvData`/`jsonsData`/`filePath` already exist, but FROM-term
   resolution happens in the *planner*, upstream of `conv`; the engine ops never
@@ -143,12 +169,30 @@ that plan into `base.Op`s. Three candidate homes, and why the choice matters:
   datastore/index interface surface the planner expects. Only worth it if we ever
   outgrow the file datastore entirely; not for adding formats.
 
-**Decision:** put format decoding + directory discovery + doc-ID synthesis +
-compression in **(A)**, structured so the *decoders themselves* are a standalone
-`RecordSource` package shared with path-B `op_scan.go` (one CSV reader, not two).
-Derived artifacts (manifest, indexes, extracted text — §5, §4) can live n1k1-side
-and be handed to the datastore as callbacks, since they don't need to be inside
-the fork. Revisit **(C)** only if fork divergence becomes unmanageable.
+**Decision:** the fork's `datastore/file` is the **seam** (thin hook variables +
+today's behavior as the fallback); the **implementations live in n1k1** and are
+registered into those hooks at startup, exactly like `engine.ExecOpEx =
+glue.DatastoreOp`. Format decoders, directory discovery, doc-ID synthesis, and
+compression are ordinary n1k1 packages (the decoders shared with path-B
+`op_scan.go` — one CSV reader, not two); derived artifacts (manifest, indexes,
+extracted text — §5, §4) likewise live n1k1-side. Revisit **(C)** only if even the
+thin seam proves insufficient.
+
+Three things to get right with the hook seam:
+1. **Types on the boundary.** Hook signatures must name types both sides can see —
+   the fork's `datastore`/`value`/`errors` types (glue already imports them) plus
+   plain `[]byte`/`string`. The interface *declaration* is a few lines in the fork;
+   the *implementation* is all n1k1.
+2. **The scan seam is a record *stream*, not a per-file swap.** "Keyspace = union
+   of many files, recurse subdirs" changes `ScanEntries`'s control flow (enumerate
+   a file set, stream many records each), so the hook yields a record stream +ID —
+   place it at the enumerate-and-stream level, not at "read one file."
+3. **Global vs per-store.** `ExecOpEx` is a process-global that `Session.Run`
+   save/restores — fine for a single-process CLI, but two stores with different
+   needs would clash. Prefer hanging the hooks off the **store/namespace instance**
+   where the seam can reach it (cleaner, no global); fall back to the package-global
+   pattern only if the seam can't see the store. Same save/restore discipline
+   either way.
 
 ## Compiler compatibility (don't break the Futamura path)
 
@@ -223,15 +267,19 @@ Each layer should be independently pluggable. The rest of this doc designs each.
   FROM is treated as a file to read, with the reader chosen by extension.
 
 ### Recommendation for n1k1
-- Define a small `RecordSource` interface: given an `io.Reader` (post-
-  decompression) + options, yield a stream of `value.Value` (n1k1's JSON value)
-  rows, plus an optional inferred schema/labels.
+- Define a small `RecordSource` interface shaped **for buffer reuse, not
+  convenience** (see "Allocation model" below): prefer a
+  `ReadInto(rec *Record) error` (or a `ForEach(func(rec *Record) error)`
+  callback) where `rec` holds **`[][]byte` field slices borrowed from a reused
+  read buffer**, valid only until the next call — *not* a `Read() (value.Value,
+  error)` that allocates a fresh boxed value per row. The raw per-record bytes
+  hand straight to `base.Val` (`[]byte`) or to a lazy `value.NewValue(bytes)`.
 - Implement decoders in priority order: **JSONL** and **multi-doc JSON** (closest
   to today's model and to SQL++'s JSON nature; the engine's `ScanReaderAsJsons`
   is a starting point) → **CSV/TSV** (one shared reader, delimiter param, with a
   DuckDB-style sniffer for header/types — **replace the naive `op_scan.go` CSV
-  splitter**; prefer Go's `encoding/csv` or Arrow's `arrow/csv` reader, which the
-  fork already imports, over hand-rolled comma-splitting) → then **Parquet**
+  splitter's *parsing*, but keep its zero-copy *allocation* model**; see the
+  allocation caveat on `encoding/csv` below) → then **Parquet**
   (via `apache/arrow-go`, already a dep; columnar + pushdown is a big win) →
   ORC/Avro later (deps already present).
 - **Reuse the existing `primitives/external/iceberg_reader.go`** (Arrow-batch
@@ -252,6 +300,54 @@ Each layer should be independently pluggable. The rest of this doc designs each.
 - **Format selection:** primarily by file extension (`.csv`,`.tsv`,`.jsonl`,
   `.ndjson`,`.json`,`.parquet`), overridable by an explicit FROM-term option (see
   §2). Content sniffing only as a tiebreaker.
+
+### Allocation model: favor read-into / borrowed-slice APIs (a first-class axis)
+n1k1 is built to avoid garbage: **`base.Val` is `[]byte`** ("JSON encoded, usually
+treated as immutable"), and the engine already parses values *allocation-free* via
+`buger/jsonparser` (see `base/arith.go`, `base/canonical.go` — `ParseInt`/
+`ParseFloat`/`Get` return `[]byte` sub-slices, never boxing). A decoder that
+allocates an `interface{}`/`string`/`map[string]interface{}` **per value or per
+tuple** would blow that up over a large file. So allocation behavior is a
+**selection criterion on par with correctness**, not an afterthought:
+
+- **The rule.** Prefer readers that (a) **read into a caller-owned/reused buffer**
+  (`ReadInto(buf)`) or (b) **return sub-slices that borrow a reused read buffer**
+  (valid until the next `Read`, à la `csv.Reader.ReuseRecord` / jsonparser),
+  over any `Read() (interface{}, error)` / `Read() ([]string, error)` that
+  allocates per row/value. State the **borrow/lifetime contract** on the
+  `RecordSource` explicitly — "slices are valid only until the next call; copy to
+  persist" — because a downstream op that retains a borrowed slice past the next
+  read corrupts data. (This is exactly what `base.Val`'s "usually immutable"
+  already assumes.)
+- **Today already gets this right.** `engine/op_scan.go:ScanReaderAsCsv` reuses its
+  row slice (`lzValsScan[:0]`) and yields each field as a **sub-slice of the
+  `bufio.Scanner` buffer** — zero-copy. The replacement CSV reader must **keep
+  this borrow model**; only the comma-splitting *correctness* is naive.
+- **JSONL / JSON → `buger/jsonparser` (already a direct dep).** It hands back
+  `[]byte` sub-slices into the input (via `Get`/`ObjectEach`/`ArrayEach`), no map
+  materialization — and it's the decoder the engine already trusts. Strongly
+  prefer it over `encoding/json` (a `map[string]interface{}` per doc). On the FROM
+  path the raw per-record bytes go to the fork's existing lazy
+  `value.NewValue(bytes)` (couchbase/query parses on demand — *not* an eager
+  unmarshal), so JSONL stays near-zero-alloc end to end.
+- **CSV/TSV — the real tradeoff.** Go's `encoding/csv` is correct but its
+  `Read()` returns freshly-allocated `[]string`; even with `ReuseRecord=true`
+  (which reuses only the slice header) the **field strings are still allocated** —
+  a *regression* from today's `[]byte`-borrow model, and `string` is the wrong
+  target type for a `[]byte` engine. Options, best first: (1) a `[]byte`-oriented
+  CSV reader that yields field sub-slices into a reused buffer, or fix the
+  hand-rolled scanner's quoting/escaping while keeping its borrow model (a bounded
+  task); (2) `encoding/csv` + `ReuseRecord` as a correctness-first fallback,
+  eating the string allocs. Prefer (1) so correctness and allocation both win.
+- **Arrow / Parquet.** Values live in **pooled contiguous buffers** (a reusable
+  `memory.Allocator` + offset arrays), so per-value allocation *inside* Arrow is
+  near zero, and `array.String/Binary.Value(i)` returns a **borrowed** sub-slice —
+  use those, `Release()` each batch, and reuse the allocator. But crossing into
+  n1k1's row world still costs the transpose/copy of the columnar caveat above;
+  the byte-borrow discipline minimizes it, it doesn't erase it.
+- **Make it measurable.** Treat **allocations/op** (`go test -benchmem`, using the
+  existing `benchmark/` harness) as an acceptance metric for every decoder —
+  "allocs per row" is the number to hold near constant regardless of file size.
 
 ## 2. Directory layouts & FROM-term resolution
 
@@ -1162,12 +1258,20 @@ not bypass:
   skip, append-only tail, concurrent-writer race) is pure logic over a temp dir
   and should be unit-tested directly — it's the part most likely to be subtly
   wrong.
+- **Allocation benchmarks (a gate, not just a metric).** Per the "Allocation
+  model" axis in §1, benchmark each decoder with `go test -benchmem` in
+  `benchmark/` and assert **allocs/op stays ~flat as row count grows** — a rising
+  curve means a per-value/per-tuple allocation leaked in (e.g. an `encoding/csv`
+  regression, or a downstream op copying a borrowed slice it needn't). This is the
+  guardrail that keeps a decoder faithful to n1k1's `base.Val = []byte` ethos.
 
 ## Phasing (suggested)
 
-All new datastore code lands in **home A** (fork's `datastore/file`, contained
-subpackage) and flows through the unchanged `datastore-scan` op so it compiles
-for free — see "Where this code lives" and "Compiler compatibility".
+All new logic lands in **n1k1**, registered at startup into **thin hook seams**
+in the fork's `datastore/file` (the IoC pattern of `engine.ExecOpEx =
+glue.DatastoreOp`), and flows through the unchanged `datastore-scan` op so it
+compiles for free — see "Where this code lives" and "Compiler compatibility". The
+fork gains only the hook-variable declarations + today's-behavior fallbacks.
 
 1. Relax the file datastore: directory = keyspace = union of *all* supported
    files; recurse; keep `<ns>/<keyspace>` convention + flat-root auto-detect.
@@ -1208,6 +1312,12 @@ Separable tracks (not on the linear path above):
 
 ## Open questions
 
+- **`RecordSource` signature & the CSV reader choice (allocation).** Lock the
+  borrowed-slice contract (`ReadInto`/`ForEach` yielding `[][]byte` valid until
+  the next call) — then decide CSV: a `[]byte`-oriented reader (correctness +
+  zero-copy, but which lib / or fix the hand-rolled scanner) vs `encoding/csv` +
+  `ReuseRecord` (correct but allocates `string` fields, a regression from today's
+  byte-borrow). See §1 "Allocation model". This gates decoder implementation.
 - **SQL++ surface for table functions / globs. (RESOLVED — no.)** Checked
   empirically: the fork's parser rejects both `FROM read_csv('foo.csv')`
   ("Invalid function … default:read_csv") and bare `FROM 'foo.csv'` ("must have a
@@ -1216,10 +1326,12 @@ Separable tracks (not on the linear path above):
   which we're deferring; the **catalog (mode 3) is the power path**. Remaining
   question is only *whether we ever pay for the grammar fork* or settle for a
   datastore-recognized keyspace-name convention.
-- **Fork divergence budget.** How much are we willing to change the forked
-  `couchbase/query` `datastore/file` to relax layout/formats, given the cost of
-  re-basing the fork onto newer query releases? (Drives whether we stay in home A
-  with contained hooks, or eventually build a standalone n1k1 datastore, home C.)
+- **Fork divergence budget. (Largely settled — thin hook seams.)** The fork gets
+  only hook-variable declarations + today's-behavior fallbacks (`engine.ExecOpEx`
+  style); all real logic lives in n1k1 and registers at startup. Remaining
+  sub-questions: package-global hooks vs per-store fields (see "Where this code
+  lives" #3), and whether any behavior genuinely can't be expressed at the
+  seam and forces deeper `file.go` edits (fall back to home C only then).
 - **Columnar-source performance.** Do we ever add column-batch ops to the engine
   so Parquet/Arrow is a real perf win, or accept the transpose-to-rows cost and
   treat columnar formats as correctness-only? (See §1 caveat.)

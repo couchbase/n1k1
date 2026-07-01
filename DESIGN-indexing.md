@@ -1,6 +1,8 @@
 # Design: Integrating Indexes into n1k1
 
-Status: proposal / for review
+Status: proposal / for review (revised: index code lives in **n1k1**, registered
+into **thin hook seams** in the fork — the `engine.ExecOpEx` IoC pattern — rather
+than living inside the fork's `datastore/file`; see "Where this code lives")
 
 This document describes how to add index support — a GSI-like **secondary
 index** first, then a **full-text index** via embedded bleve — to n1k1's
@@ -83,15 +85,61 @@ resolvable.)
   `../n1k1-query`. The file datastore is `datastore/file/file.go`; its
   `fileIndexer` already owns `indexes map[string]datastore.Index` and a working
   `primaryIndex` to model from. `fileIndexer.Indexes()` (line 816) currently
-  returns only `fi.primary` — this must change to expose secondaries.
+  returns only `fi.primary` — the one irreducible fork edit is to make it (and
+  `IndexByName`/`IndexById`/`IndexNames`) also return whatever the **`SecondaryIndexes`
+  hook** contributes (see "Where this code lives"). The advertised index objects
+  are built in n1k1, not here.
 - **CREATE INDEX DDL is not wired** into n1k1's executor
   (`conv.go:VisitCreateIndex` returns `NA()`; n1k1 runs its own `base.Op` tree,
   not cbq's `execution` package). v1 defines indexes via a sidecar file.
 
+## Where this code lives (thin hook seams, not fork code)
+
+The Background above is the whole leverage: index selection is driven by **what
+the datastore advertises**. So n1k1 does not need to *host* index code in the
+fork — it only needs the fork to **advertise n1k1-built index objects**. This
+mirrors `DESIGN-data.md`'s decision and the IoC pattern n1k1 already uses
+(`engine.ExecOpEx = glue.DatastoreOp`): the fork gets **thin hook seams**; all
+real logic lives in n1k1.
+
+Why it works: `datastore.Index`, `datastore.Indexer`, and `datastore.FTSIndex`
+are **interfaces** in `query/datastore/index.go`, and `glue` already imports
+`query/datastore` (see `glue/datastore_scan.go`). Go interfaces are structural,
+so an **n1k1 package can fully implement `datastore.Index`/`Indexer`/`FTSIndex`**
+— the planner calls those methods polymorphically and neither knows nor cares
+where the concrete type is defined. Execution is *already* n1k1-side:
+`glue/datastore_scan.go:DatastoreScanIndex` calls `scan.Index().Scan(...)`, so
+once the advertised index object is an n1k1 type, its `Scan()` runs in n1k1.
+
+The seams (verified in `datastore/file/file.go`):
+- **GSI/secondary:** `fileIndexer.Indexes()` (file.go:817, today returns only
+  `fi.primary`), plus `IndexNames`/`IndexById`/`IndexByName`/`IndexIds` — add a
+  hook `var SecondaryIndexes func(ks datastore.Keyspace) []datastore.Index` that
+  each merges into its result (defaulting to today's primary-only when unset).
+- **FTS:** `keyspace.Indexers()` (file.go:491) — add a hook
+  `var ExtraIndexers func(ks datastore.Keyspace) []datastore.Indexer` so n1k1 can
+  append a whole FTS `Indexer` (a *different* `IndexType`, so it's a clean append,
+  not a merge into the GSI indexer).
+
+Everything else — the `secondaryIndex`/`ftsIndex` types, their bbolt/bleve
+backing, the build routine, `.n1k1/catalog.json` loading, and doc-ID handling —
+is an **ordinary n1k1 package** (e.g. `n1k1/index` or in `glue`), registered into
+those hooks at startup and torn down with the same save/restore discipline
+`Session.Run` already uses for `ExecOpEx`. `bbolt`/`bleve` become **n1k1** direct
+deps, not fork deps.
+
+What must still touch the fork (irreducible): the seam declarations + the
+`fileIndexer.Indexes()`/`IndexByName` fix to consult the hook (a few lines each,
+easy to carry across a cbq rebase). Same global-vs-per-store caveat as the data
+doc — prefer hanging the hook off the store/namespace instance over a package
+global where the seam can reach it.
+
 ## Phase 1 — GSI-like secondary index
 
-All Phase 1 code is in the fork (`../n1k1-query/datastore/file/file.go`), except
-the `go.mod` pin bump and a direct `bbolt` import in n1k1.
+Phase 1 code lives in **n1k1** (the `secondaryIndex` type, its build, sidecar
+loading), registered into the fork's thin `SecondaryIndexes` seam at startup. The
+only fork edits are that seam + the `fileIndexer.Indexes()`/`IndexByName` fix;
+`bbolt` becomes a direct n1k1 require.
 
 ### Storage backing: `go.etcd.io/bbolt`
 
@@ -155,22 +203,26 @@ position-deletes use), matching `DESIGN-data.md §6`.
   `[{ "name": "...", "keys": ["expr", ...], "where": "expr"? }]` — see the
   **Sidecar layout** section for the full `.n1k1/` naming scheme. (A per-keyspace
   `indexes.json` remains an option for portability.)
-- **Load:** in `newKeyspace` (file.go ~line 734), after the primary index is
-  created, read the catalog; parse each key/where string with the n1ql expression
-  parser; call a new `fileIndexer.createSecondaryIndex(name, rangeKeys, where)`
-  that constructs the index, opens/creates its bbolt file at the layout path
-  `.n1k1/<ns>/<ks>/idx/<name>__gsi__<defhash>/data.bolt`, and registers it in
-  `fi.indexes`.
-- **Build (v1 = rebuild-on-open):** full keyspace scan (reuse the
-  `primaryIndex.ScanEntries` directory-read pattern) → fetch each doc → evaluate
-  the parsed key expressions (and `where`) against the doc `value.Value` → insert
+- **Load (in n1k1, via the `SecondaryIndexes` hook):** the hook n1k1 registers is
+  called with the keyspace when the planner asks for its indexes; n1k1 reads the
+  catalog, parses each key/where string with the n1ql expression parser, and
+  returns `secondaryIndex` objects (opening/creating each bbolt file at
+  `.n1k1/<ns>/<ks>/idx/<name>__gsi__<defhash>/data.bolt`). No `newKeyspace` fork
+  edit — the fork just calls the hook from `fileIndexer.Indexes()`. Cache per
+  keyspace so repeated planning doesn't reopen bbolt.
+- **Build (v1 = rebuild-on-open), also n1k1-side:** full keyspace scan (drive it
+  through the same primary `ScanEntries`/`Fetch` the datastore already exposes) →
+  evaluate the parsed key expressions (and `where`) against each doc → insert
   `(encodedKey → docID)` into bbolt. Gate behind sidecar presence so unindexed
-  keyspaces are unaffected.
+  keyspaces are unaffected. All of this is ordinary n1k1 code — it uses the
+  fork's datastore only through its public `datastore.Keyspace` methods.
 
-### The `secondaryIndex` type (base `datastore.Index` only)
+### The `secondaryIndex` type (n1k1-side, base `datastore.Index` only)
 
-Model on `primaryIndex`; hold a `*bbolt.DB` + bucket name + the parsed
-`rangeKeys`/`where`.
+An **n1k1 package** type implementing `datastore.Index`; hold a `*bbolt.DB` +
+bucket name + the parsed `rangeKeys`/`where`. (It's an n1k1 type advertised via
+the `SecondaryIndexes` hook — the planner uses it polymorphically; see "Where
+this code lives".)
 
 | Method | Implementation |
 |---|---|
@@ -182,7 +234,7 @@ Model on `primaryIndex`; hold a `*bbolt.DB` + bucket name + the parsed
 | `Condition()` | the partial-index `where` expr, or `nil` |
 | `State()` | `(datastore.ONLINE, "", nil)` |
 | `Statistics()` | `(nil, nil)` — safe while `useCBO=false` |
-| `Drop()` | remove from `fi.indexes` + delete bbolt file |
+| `Drop()` | drop from n1k1's index registry + trash the bbolt file (catalog edit) |
 | `Scan(reqId, span, distinct, limit, cons, vector, conn)` | core — see below |
 
 **`Scan()` contract** (per `datastore/index.go:712` and the drain loop in
@@ -197,16 +249,26 @@ key and stop at `span.Range.High`, honoring
 
 ### Step sequence (Phase 1)
 
-1. (fork) Add the `secondaryIndex` type implementing base `datastore.Index`.
-2. (fork) Add `fileIndexer.createSecondaryIndex(name, rangeKeys, where)`.
-3. (fork) Implement the build routine (full-scan → eval keys → bbolt insert).
-4. (fork) Implement `secondaryIndex.Scan()` (cursor seek/iterate/`Collate`).
-5. (fork) Wire sidecar `.n1k1/catalog.json` loading in `newKeyspace`.
-6. (fork) **Fix `fileIndexer.Indexes()`** (file.go:816) to return primary **plus**
-   all secondaries; verify `IndexNames`/`IndexIds`/`IndexByName` cover the map.
-7. (fork) Commit; bump the `replace … => …/n1k1-query <newver>` pin in n1k1's
-   `go.mod`; promote `go.etcd.io/bbolt` to a direct require.
-8. (n1k1) Verify end-to-end. No n1k1 read-path code changes expected.
+Fork edits are just the seam (steps 1–2); everything else is n1k1.
+
+1. **(fork, once)** Add `var SecondaryIndexes func(datastore.Keyspace)
+   []datastore.Index` and call it from `fileIndexer.Indexes()` (file.go:816),
+   merging its result with `fi.primary`; do the same in
+   `IndexByName`/`IndexById`/`IndexNames`/`IndexIds`. Default (unset hook) =
+   today's primary-only behavior. Commit; bump the `replace … => …/n1k1-query
+   <newver>` pin.
+2. **(fork, once)** Prefer wiring the hook to the store/namespace instance if
+   reachable from `fileIndexer`; else a package global with `Session.Run`
+   save/restore (matches `ExecOpEx`).
+3. **(n1k1)** Add the `secondaryIndex` type implementing base `datastore.Index`
+   (incl. `Scan()`: cursor seek/iterate/`Collate`; see contract above).
+4. **(n1k1)** Add the catalog reader + build routine (parse key/where exprs;
+   full-scan → eval → bbolt insert); cache per keyspace.
+5. **(n1k1)** Register the `SecondaryIndexes` hook at startup (alongside
+   `engine.ExecOpEx = glue.DatastoreOp`); add `go.etcd.io/bbolt` as a **direct
+   n1k1** require.
+6. **(n1k1)** Verify end-to-end. `conv.go:VisitIndexScan` + `datastore_scan.go`
+   already handle the read path — no changes there.
 
 ## Phase 2 — FTS via embedded bleve
 
@@ -215,9 +277,10 @@ The planner hook already exists (`planner/build_scan_search.go` + the
 FTS sargability is externalized into `datastore.FTSIndex`, we provide it — with a
 small in-process shim, not n1fty.
 
-- Implement an `Indexer` + `FTSIndex` (in the fork's file datastore alongside the
-  secondary index, or in a small new datastore package) backed by an embedded
-  `bleve.Index`:
+- Implement an `Indexer` + `FTSIndex` **as an n1k1 package** (bleve becomes a
+  direct n1k1 require), advertised through the fork's **`ExtraIndexers` seam**
+  (`keyspace.Indexers()` appends it — a distinct `IndexType`, so it's a clean
+  append, not a merge into the GSI indexer). Backed by an embedded `bleve.Index`:
   - `Sargable(field, query, options, mappings)` / `SargableFlex(req)` /
     `Pageable(...)` — answer from the bleve index mapping. **Salvage** n1fty's
     predicate→bleve-query mapping logic (the fiddly part) rather than depending on
@@ -510,20 +573,37 @@ datasets.
   before doing composite keys.
 - **CBO.** `Statistics()` returning nil is safe while `useCBO=false`; revisit if
   CBO is ever enabled.
+- **Interface-drift now lands in n1k1 (a feature, not a cost).** Because the
+  `datastore.Index`/`Indexer`/`FTSIndex` implementations live in n1k1, a cbq
+  rebase that changes those signatures breaks the n1k1 build — but n1k1 already
+  tracks these interfaces (`conv.go`, `datastore_scan.go`), so it's the natural
+  owner, and the break is a compile error in n1k1 rather than a silent drift
+  inside the fork. The fork carries only the tiny seam declarations.
 
 ## Affected files
 
-- `../n1k1-query/datastore/file/file.go` — `secondaryIndex`,
-  `createSecondaryIndex`, build, sidecar load, fix `Indexes()`; later the bleve
-  `FTSIndex`.
-- `glue/datastore_scan.go` — verify-only for Phase 1; add `datastore-scan-fts` in
-  Phase 2.
+**Fork (thin seams only — the whole point):**
+- `../n1k1-query/datastore/file/file.go` — add `var SecondaryIndexes
+  func(datastore.Keyspace) []datastore.Index` and consult it in
+  `fileIndexer.Indexes()`/`IndexByName`/`IndexById`/`IndexNames`; add `var
+  ExtraIndexers func(datastore.Keyspace) []datastore.Indexer` and append it in
+  `keyspace.Indexers()` (Phase 2). Both default to today's behavior when unset.
+  **No index types, build, or sidecar code here.**
+
+**n1k1 (all the real logic — a new `n1k1/index` pkg, or in `glue`):**
+- The `secondaryIndex` type (`datastore.Index`, incl. `Scan()`/`CountIndex`), the
+  bleve-backed FTS `Indexer` + `FTSIndex` (Phase 2), the catalog reader, the build
+  routine, and hook registration at startup.
+- `glue/datastore_scan.go` — verify-only for Phase 1 (already calls
+  `scan.Index().Scan`); add `datastore-scan-fts` in Phase 2.
 - `glue/conv.go` — verify-only for Phase 1 (`VisitIndexScan` works); implement
   `VisitIndexFtsSearch` in Phase 2; `VisitCreateIndex` is a future DDL hook.
 - `glue/stmt.go` — leave `IndexApiVersion` as-is for Phase 1; set `useFts=true`
-  in Phase 2.
-- `go.mod` — bump the `n1k1-query` pin; add direct `go.etcd.io/bbolt` (Phase 1)
-  and `blevesearch/bleve/v2` (Phase 2).
+  in Phase 2. Register `SecondaryIndexes`/`ExtraIndexers` near
+  `engine.ExecOpEx = glue.DatastoreOp`.
+- `go.mod` — bump the `n1k1-query` pin (for the seams); add direct
+  `go.etcd.io/bbolt` (Phase 1) and `blevesearch/bleve/v2` (Phase 2) as **n1k1**
+  deps.
 
 ## Dependency licensing
 
