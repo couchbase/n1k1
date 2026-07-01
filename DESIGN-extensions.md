@@ -368,3 +368,17 @@ Verify each at adoption time (transitive deps included).
 4. **Native Go builtins** via `expression.RegisterFunction` (fork) for the
    document parsers, or expose them as sources per step 3.
 5. **Streaming CTEs** — single-use pipe first, then multi-use spill-and-rescan.
+6. **wazero (Wasm) sandboxed extensions** — for untrusted/binary extensions where
+   goja and native builtins don't fit. Add `tetratelabs/wazero` (Apache-2, pure
+   Go, cgo-free — keeps the `CGO_ENABLED=0` static binary) as an extension host:
+   resolve a Wasm module (from the same directory/repo registry as Tier 2) to a
+   function name, instantiate it with a **bounded linear memory** (min=max pages /
+   `WithMemoryLimitPages`) so a runaway guest traps inside its own pool. Reuse the
+   step-3 streaming source-op protocol: place n1k1's recycled row buffer in a
+   fixed window of the guest's linear memory (copy-in doubles as the normal
+   marshal) and read outputs back as zero-copy `[]byte` views (re-fetch after any
+   `memory.grow`). A guest ABI convention — `alloc(n)`/`process(ptr,len)`/an
+   `emit`-style host callback for streaming — lets Wasm functions behave like both
+   scalar and table-valued/streaming sources. Extensions compile to Wasm from Go
+   (`GOOS=wasip1`), Rust, C, etc. Highest isolation, at the cost of boundary
+   marshaling + slower-than-native execution.
