@@ -25,9 +25,21 @@ import (
 // Element comparison reuses ValComparer.CompareWithType with the jsonparser
 // element type, so strings (unquoted by jsonparser) compare consistently with x.
 //
-// TODO(perf): for a static array operand, precompute the elements once (cbq
-// builds a hash table); today each call re-scans and allocates one iteration
-// closure -- still far cheaper than cbq's per-element value.Value boxing.
+// On early exit: jsonparser.ArrayEach has no stop/early-exit API (its callback
+// returns nothing), so we scan the whole array. That's only wasteful in the
+// match case -- and even then only for large lists -- because a *no-match* must
+// scan fully anyway to detect a NULL element (which makes the result NULL, not
+// FALSE). cbq itself returns TRUE on the first match but likewise scans fully on
+// no-match.
+//
+// TODO(perf): the real win (and it yields early-exit for free) is to precompute
+// a *constant* array operand once at setup -- parse its elements into a lifted
+// slice, then per-eval do a plain loop with `break` on match. That removes both
+// the per-eval re-scan and the one iteration-closure alloc ArrayEach forces
+// here, mirroring cbq's static-list hash table. Dynamic arrays keep this path.
+// (A hand-rolled early-exit ArrayEach was considered and rejected: jsonparser
+// exposes no public element-cursor -- getType is unexported -- so it would mean
+// re-implementing JSON scanning, exactly the fragile thing we avoid.)
 func ValIn(vc *ValComparer, x, arr Val) Val {
 	if ValKind(x) == ValKindMissing || ValKind(arr) == ValKindMissing {
 		return ValMissing
