@@ -31,14 +31,37 @@ import (
 // "jsonlines" for pipes / one-shot.
 var OutputModes = []string{"box", "jsonlines", "json", "csv", "markdown", "line", "list"}
 
-// ValidMode reports whether m names a known output mode.
-func ValidMode(m string) bool {
+// ParseMode splits an output-mode string into its base mode and an optional
+// "pretty" modifier. The modifier is appended with a '|' or '-' separator (e.g.
+// "box|pretty" or "box-pretty") and, when present, indents nested JSON values by
+// 2 spaces — so in box mode a JSON cell prints across multiple lines. ok is
+// false when the base is unknown or the modifier is anything but "pretty".
+func ParseMode(m string) (base string, pretty bool, ok bool) {
+	base = m
+	if i := strings.IndexAny(m, "|-"); i >= 0 {
+		base = m[:i]
+		if m[i+1:] != "pretty" {
+			return base, false, false
+		}
+		pretty = true
+	}
+	return base, pretty, isBaseMode(base)
+}
+
+func isBaseMode(m string) bool {
 	for _, x := range OutputModes {
 		if x == m {
 			return true
 		}
 	}
 	return false
+}
+
+// ValidMode reports whether m names a known output mode, optionally with a
+// "|pretty" / "-pretty" modifier.
+func ValidMode(m string) bool {
+	_, _, ok := ParseMode(m)
+	return ok
 }
 
 // scalarCol is the synthetic column name for rows that are a bare JSON value
@@ -79,8 +102,9 @@ func (s Style) header(x string) string { return s.wrap(ansiBold+ansiCyan, x) }
 
 // tableOf decodes rows into a column set (object keys in first-seen order, plus
 // scalarCol if any row is a bare value) and a string cell grid. Cell strings
-// are display-ready: JSON strings unquoted, everything else compact JSON.
-func tableOf(rows []json.RawMessage) (cols []string, cells [][]string) {
+// are display-ready: JSON strings unquoted, everything else compact JSON (or,
+// when pretty, 2-space-indented JSON that may span multiple lines).
+func tableOf(rows []json.RawMessage, pretty bool) (cols []string, cells [][]string) {
 	seen := map[string]bool{}
 	decoded := make([]interface{}, len(rows))
 
@@ -111,10 +135,10 @@ func tableOf(rows []json.RawMessage) (cols []string, cells [][]string) {
 			switch {
 			case isObj:
 				if cv, ok := m[c]; ok {
-					row[j] = cellString(cv)
+					row[j] = cellString(cv, pretty)
 				}
 			case c == scalarCol:
-				row[j] = cellString(v)
+				row[j] = cellString(v, pretty)
 			}
 		}
 		cells = append(cells, row)
@@ -185,8 +209,9 @@ func skipValue(dec *json.Decoder) {
 }
 
 // cellString renders a decoded JSON value for display: strings as-is, numbers/
-// bools/null as JSON, objects/arrays as compact JSON.
-func cellString(v interface{}) string {
+// bools/null as JSON, objects/arrays as compact JSON (or 2-space-indented,
+// possibly multi-line, JSON when pretty).
+func cellString(v interface{}, pretty bool) string {
 	switch x := v.(type) {
 	case nil:
 		return "null"
@@ -197,7 +222,12 @@ func cellString(v interface{}) string {
 	case bool:
 		return strconv.FormatBool(x)
 	default:
-		b, _ := json.Marshal(x)
+		var b []byte
+		if pretty {
+			b, _ = json.MarshalIndent(x, "", "  ")
+		} else {
+			b, _ = json.Marshal(x)
+		}
 		return string(b)
 	}
 }
@@ -212,15 +242,21 @@ func isNumeric(s string) bool {
 
 // ---------------------------------------------------------------------------
 
-// RenderJSONLines prints one compact JSON value per line (clean for pipes).
-func RenderJSONLines(w io.Writer, rows []json.RawMessage) {
+// RenderJSONLines prints one JSON value per line (compact; clean for pipes).
+// When pretty, each value is 2-space-indented and so spans multiple lines.
+func RenderJSONLines(w io.Writer, rows []json.RawMessage, pretty bool) {
 	for _, r := range rows {
-		fmt.Fprintln(w, compactJSON(r))
+		if pretty {
+			fmt.Fprintln(w, indentJSON(r, ""))
+		} else {
+			fmt.Fprintln(w, compactJSON(r))
+		}
 	}
 }
 
-// RenderJSON prints all rows as one pretty JSON array.
-func RenderJSON(w io.Writer, rows []json.RawMessage) {
+// RenderJSON prints all rows as one JSON array, one row per element. Rows are
+// compact by default; when pretty, each element is fully 2-space-indented.
+func RenderJSON(w io.Writer, rows []json.RawMessage, pretty bool) {
 	if len(rows) == 0 {
 		fmt.Fprintln(w, "[]")
 		return
@@ -229,7 +265,11 @@ func RenderJSON(w io.Writer, rows []json.RawMessage) {
 	b.WriteString("[\n")
 	for i, r := range rows {
 		b.WriteString("  ")
-		b.WriteString(compactJSON(r))
+		if pretty {
+			b.WriteString(indentJSON(r, "  "))
+		} else {
+			b.WriteString(compactJSON(r))
+		}
 		if i < len(rows)-1 {
 			b.WriteByte(',')
 		}
@@ -247,9 +287,21 @@ func compactJSON(r json.RawMessage) string {
 	return buf.String()
 }
 
-// RenderCSV prints a header row of columns then one CSV record per row.
-func RenderCSV(w io.Writer, rows []json.RawMessage) {
-	cols, cells := tableOf(rows)
+// indentJSON 2-space-indents a JSON value. prefix is prepended to every line
+// after the first (so a value can be nested under an outer indent).
+func indentJSON(r json.RawMessage, prefix string) string {
+	var buf bytes.Buffer
+	if err := json.Indent(&buf, r, prefix, "  "); err != nil {
+		return compactJSON(r)
+	}
+	return buf.String()
+}
+
+// RenderCSV prints a header row of columns then one CSV record per row. When
+// pretty, JSON cells are indented; the csv writer quotes their embedded newlines
+// so the output stays valid CSV.
+func RenderCSV(w io.Writer, rows []json.RawMessage, pretty bool) {
+	cols, cells := tableOf(rows, pretty)
 	cw := csv.NewWriter(w)
 	cw.Write(cols)
 	for _, row := range cells {
@@ -258,9 +310,10 @@ func RenderCSV(w io.Writer, rows []json.RawMessage) {
 	cw.Flush()
 }
 
-// RenderMarkdown prints a GitHub-flavored Markdown table.
-func RenderMarkdown(w io.Writer, rows []json.RawMessage) {
-	cols, cells := tableOf(rows)
+// RenderMarkdown prints a GitHub-flavored Markdown table. When pretty, a JSON
+// cell's newlines become <br> so the multi-line value stays inside one table row.
+func RenderMarkdown(w io.Writer, rows []json.RawMessage, pretty bool) {
+	cols, cells := tableOf(rows, pretty)
 	if len(cols) == 0 {
 		return
 	}
@@ -278,15 +331,17 @@ func RenderMarkdown(w io.Writer, rows []json.RawMessage) {
 func escapeMD(ss []string) []string {
 	out := make([]string, len(ss))
 	for i, s := range ss {
-		out[i] = strings.ReplaceAll(s, "|", "\\|")
+		s = strings.ReplaceAll(s, "|", "\\|")
+		s = strings.ReplaceAll(s, "\n", "<br>") // keep pretty JSON in one table row
+		out[i] = s
 	}
 	return out
 }
 
 // RenderLine prints each row vertically as "col = value" lines (DuckDB's line
 // mode), best for wide/nested docs. Rows are separated by a blank line.
-func RenderLine(w io.Writer, rows []json.RawMessage) {
-	cols, cells := tableOf(rows)
+func RenderLine(w io.Writer, rows []json.RawMessage, pretty bool) {
+	cols, cells := tableOf(rows, pretty)
 	width := 0
 	for _, c := range cols {
 		if len(c) > width {
@@ -304,8 +359,8 @@ func RenderLine(w io.Writer, rows []json.RawMessage) {
 }
 
 // RenderList prints each row's values joined by sep (pipe-friendly), no header.
-func RenderList(w io.Writer, rows []json.RawMessage, sep string) {
-	_, cells := tableOf(rows)
+func RenderList(w io.Writer, rows []json.RawMessage, sep string, pretty bool) {
+	_, cells := tableOf(rows, pretty)
 	for _, row := range cells {
 		fmt.Fprintln(w, strings.Join(row, sep))
 	}
@@ -323,8 +378,12 @@ func RenderList(w io.Writer, rows []json.RawMessage, sep string) {
 // middle, 0 shows all, and <0 keeps the last |maxRows| rows with the "·"
 // elision row at the front. elapsed (if non-empty) joins the footer. style adds
 // dim borders/footer and a cyan-bold header when On.
-func RenderBox(w io.Writer, rows []json.RawMessage, maxWidth, maxRows, termWidth int, elapsed string, style Style) {
-	cols, cells := tableOf(rows)
+//
+// When pretty, JSON cells are 2-space-indented and a cell may span multiple
+// lines; such a row is as tall as its tallest cell, with shorter cells blank-
+// padded below their content. Column widths use each cell's widest line.
+func RenderBox(w io.Writer, rows []json.RawMessage, maxWidth, maxRows, termWidth int, elapsed string, style Style, pretty bool) {
+	cols, cells := tableOf(rows, pretty)
 	if len(cols) == 0 {
 		fmt.Fprintln(w, style.Dim("(0 rows)"))
 		return
@@ -344,7 +403,7 @@ func RenderBox(w io.Writer, rows []json.RawMessage, maxWidth, maxRows, termWidth
 			if !isNumeric(cell) {
 				numeric[j] = false
 			}
-			if l := runeLen(cell); l > widths[j] {
+			if l := cellWidth(cell); l > widths[j] {
 				widths[j] = l
 			}
 		}
@@ -394,19 +453,35 @@ func RenderBox(w io.Writer, rows []json.RawMessage, maxWidth, maxRows, termWidth
 	}
 	bar := style.Dim("│")
 	printRow := func(vals []string, head bool) {
-		var b strings.Builder
-		b.WriteString(bar)
+		// A cell may span multiple lines (pretty JSON); the row is as tall as
+		// its tallest cell, and shorter cells pad with blank lines below.
+		lines := make([][]string, len(vals))
+		height := 1
 		for j, v := range vals {
-			cell := pad(truncate(v, widths[j]), widths[j], numeric[j])
-			if head {
-				cell = style.header(cell)
+			lines[j] = strings.Split(v, "\n")
+			if len(lines[j]) > height {
+				height = len(lines[j])
 			}
-			b.WriteString(" ")
-			b.WriteString(cell)
-			b.WriteString(" ")
-			b.WriteString(bar)
 		}
-		fmt.Fprintln(w, b.String())
+		for k := 0; k < height; k++ {
+			var b strings.Builder
+			b.WriteString(bar)
+			for j := range vals {
+				seg := ""
+				if k < len(lines[j]) {
+					seg = lines[j][k]
+				}
+				cell := pad(truncate(seg, widths[j]), widths[j], numeric[j])
+				if head {
+					cell = style.header(cell)
+				}
+				b.WriteString(" ")
+				b.WriteString(cell)
+				b.WriteString(" ")
+				b.WriteString(bar)
+			}
+			fmt.Fprintln(w, b.String())
+		}
 	}
 
 	printDots := func() {
@@ -493,6 +568,21 @@ func capColumnsToWidth(widths []int, termWidth int) {
 }
 
 func runeLen(s string) int { return utf8.RuneCountInString(s) }
+
+// cellWidth is a cell's display width — the rune width of its widest line, so
+// multi-line (pretty JSON) cells size their column correctly.
+func cellWidth(s string) int {
+	if !strings.ContainsRune(s, '\n') {
+		return runeLen(s)
+	}
+	w := 0
+	for _, line := range strings.Split(s, "\n") {
+		if l := runeLen(line); l > w {
+			w = l
+		}
+	}
+	return w
+}
 
 // truncate shortens s to at most n runes, marking the cut with an ellipsis.
 func truncate(s string, n int) string {

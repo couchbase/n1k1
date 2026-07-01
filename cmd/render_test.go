@@ -30,9 +30,45 @@ func TestValidMode(t *testing.T) {
 		if !ValidMode(m) {
 			t.Errorf("ValidMode(%q) = false", m)
 		}
+		if !ValidMode(m + "|pretty") {
+			t.Errorf("ValidMode(%q|pretty) = false", m)
+		}
+		if !ValidMode(m + "-pretty") {
+			t.Errorf("ValidMode(%q-pretty) = false", m)
+		}
 	}
 	if ValidMode("nope") {
 		t.Errorf("ValidMode(nope) = true")
+	}
+	if ValidMode("box|nope") {
+		t.Errorf("ValidMode(box|nope) = true")
+	}
+	if ValidMode("nope|pretty") {
+		t.Errorf("ValidMode(nope|pretty) = true")
+	}
+}
+
+func TestParseMode(t *testing.T) {
+	tests := []struct {
+		in         string
+		wantBase   string
+		wantPretty bool
+		wantOK     bool
+	}{
+		{"box", "box", false, true},
+		{"box|pretty", "box", true, true},
+		{"box-pretty", "box", true, true},
+		{"json|pretty", "json", true, true},
+		{"box|nope", "box", false, false},
+		{"nope", "nope", false, false},
+		{"nope|pretty", "nope", true, false},
+	}
+	for _, tc := range tests {
+		base, pretty, ok := ParseMode(tc.in)
+		if base != tc.wantBase || pretty != tc.wantPretty || ok != tc.wantOK {
+			t.Errorf("ParseMode(%q) = (%q, %v, %v), want (%q, %v, %v)",
+				tc.in, base, pretty, ok, tc.wantBase, tc.wantPretty, tc.wantOK)
+		}
 	}
 }
 
@@ -62,7 +98,7 @@ func TestSplitStatements(t *testing.T) {
 
 func TestTableOf(t *testing.T) {
 	// Columns are first-seen order across rows; cells map by key; missing -> "".
-	cols, cells := tableOf(raws(`{"a":1,"b":2}`, `{"b":3,"a":4}`, `{"c":5}`))
+	cols, cells := tableOf(raws(`{"a":1,"b":2}`, `{"b":3,"a":4}`, `{"c":5}`), false)
 	if got := strings.Join(cols, ","); got != "a,b,c" {
 		t.Fatalf("cols = %q, want a,b,c", got)
 	}
@@ -75,7 +111,7 @@ func TestTableOf(t *testing.T) {
 }
 
 func TestTableOfScalars(t *testing.T) {
-	cols, cells := tableOf(raws(`5`, `"hi"`, `true`))
+	cols, cells := tableOf(raws(`5`, `"hi"`, `true`), false)
 	if len(cols) != 1 || cols[0] != scalarCol {
 		t.Fatalf("cols = %v, want [%s]", cols, scalarCol)
 	}
@@ -100,8 +136,28 @@ func TestCellString(t *testing.T) {
 	for _, tc := range tests {
 		var v interface{}
 		json.Unmarshal([]byte(tc.raw), &v)
-		if got := cellString(v); got != tc.want {
+		if got := cellString(v, false); got != tc.want {
 			t.Errorf("cellString(%s) = %q, want %q", tc.raw, got, tc.want)
+		}
+	}
+}
+
+func TestCellStringPretty(t *testing.T) {
+	tests := []struct {
+		raw  string
+		want string
+	}{
+		{`null`, "null"},                // scalars unchanged by pretty
+		{`"hi"`, "hi"},                  //
+		{`12`, "12"},                    //
+		{`{"x":1}`, "{\n  \"x\": 1\n}"}, // nested object -> indented, multi-line
+		{`[1,2]`, "[\n  1,\n  2\n]"},    // nested array -> indented, multi-line
+	}
+	for _, tc := range tests {
+		var v interface{}
+		json.Unmarshal([]byte(tc.raw), &v)
+		if got := cellString(v, true); got != tc.want {
+			t.Errorf("cellString(%s, pretty) = %q, want %q", tc.raw, got, tc.want)
 		}
 	}
 }
@@ -139,7 +195,7 @@ func TestPad(t *testing.T) {
 
 func TestRenderJSONLines(t *testing.T) {
 	var b strings.Builder
-	RenderJSONLines(&b, raws(`{"a":1}`, `{"b": 2}`))
+	RenderJSONLines(&b, raws(`{"a":1}`, `{"b": 2}`), false)
 	if b.String() != "{\"a\":1}\n{\"b\":2}\n" {
 		t.Errorf("jsonlines = %q", b.String())
 	}
@@ -147,13 +203,13 @@ func TestRenderJSONLines(t *testing.T) {
 
 func TestRenderJSON(t *testing.T) {
 	var b strings.Builder
-	RenderJSON(&b, raws(`{"a":1}`, `{"b":2}`))
+	RenderJSON(&b, raws(`{"a":1}`, `{"b":2}`), false)
 	want := "[\n  {\"a\":1},\n  {\"b\":2}\n]\n"
 	if b.String() != want {
 		t.Errorf("json = %q, want %q", b.String(), want)
 	}
 	var e strings.Builder
-	RenderJSON(&e, nil)
+	RenderJSON(&e, nil, false)
 	if e.String() != "[]\n" {
 		t.Errorf("json empty = %q", e.String())
 	}
@@ -161,7 +217,7 @@ func TestRenderJSON(t *testing.T) {
 
 func TestRenderCSV(t *testing.T) {
 	var b strings.Builder
-	RenderCSV(&b, raws(`{"a":1,"b":"x"}`, `{"a":2,"b":"y,z"}`))
+	RenderCSV(&b, raws(`{"a":1,"b":"x"}`, `{"a":2,"b":"y,z"}`), false)
 	want := "a,b\n1,x\n2,\"y,z\"\n" // csv quotes the comma
 	if b.String() != want {
 		t.Errorf("csv = %q, want %q", b.String(), want)
@@ -170,7 +226,7 @@ func TestRenderCSV(t *testing.T) {
 
 func TestRenderMarkdown(t *testing.T) {
 	var b strings.Builder
-	RenderMarkdown(&b, raws(`{"a":1,"b":2}`))
+	RenderMarkdown(&b, raws(`{"a":1,"b":2}`), false)
 	want := "| a | b |\n| --- | --- |\n| 1 | 2 |\n"
 	if b.String() != want {
 		t.Errorf("markdown = %q, want %q", b.String(), want)
@@ -179,7 +235,7 @@ func TestRenderMarkdown(t *testing.T) {
 
 func TestRenderLine(t *testing.T) {
 	var b strings.Builder
-	RenderLine(&b, raws(`{"name":"dave","type":"contact"}`))
+	RenderLine(&b, raws(`{"name":"dave","type":"contact"}`), false)
 	want := "name = dave\ntype = contact\n"
 	if b.String() != want {
 		t.Errorf("line = %q, want %q", b.String(), want)
@@ -188,7 +244,7 @@ func TestRenderLine(t *testing.T) {
 
 func TestRenderList(t *testing.T) {
 	var b strings.Builder
-	RenderList(&b, raws(`{"a":1,"b":2}`, `{"a":3,"b":4}`), "|")
+	RenderList(&b, raws(`{"a":1,"b":2}`, `{"a":3,"b":4}`), "|", false)
 	if b.String() != "1|2\n3|4\n" {
 		t.Errorf("list = %q", b.String())
 	}
@@ -196,7 +252,7 @@ func TestRenderList(t *testing.T) {
 
 func TestRenderBoxPlain(t *testing.T) {
 	var b strings.Builder
-	RenderBox(&b, raws(`{"name":"dave"}`, `{"name":"earl"}`), 0, 0, 0, "", Style{})
+	RenderBox(&b, raws(`{"name":"dave"}`, `{"name":"earl"}`), 0, 0, 0, "", Style{}, false)
 	out := b.String()
 	if strings.Contains(out, "\x1b[") {
 		t.Errorf("plain box must not contain ANSI: %q", out)
@@ -210,16 +266,47 @@ func TestRenderBoxPlain(t *testing.T) {
 
 func TestRenderBoxStyled(t *testing.T) {
 	var b strings.Builder
-	RenderBox(&b, raws(`{"n":1}`), 0, 0, 0, "", Style{On: true})
+	RenderBox(&b, raws(`{"n":1}`), 0, 0, 0, "", Style{On: true}, false)
 	if !strings.Contains(b.String(), "\x1b[") {
 		t.Errorf("styled box should contain ANSI escapes")
+	}
+}
+
+// TestRenderBoxPretty: a "pretty" box expands a nested JSON cell across several
+// physical lines, keeping the frame rectangular (every frame line same width).
+func TestRenderBoxPretty(t *testing.T) {
+	var b strings.Builder
+	RenderBox(&b, raws(`{"n":1,"doc":{"x":1,"y":2}}`), 0, 0, 0, "", Style{}, true)
+	out := b.String()
+	for _, want := range []string{"│ {", `"x": 1`, `"y": 2`, "1 row(s)"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("pretty box missing %q in:\n%s", want, out)
+		}
+	}
+	// The nested doc's 4 pretty lines ({ , x, y, }) each become a physical row,
+	// so the box has more content lines than a compact one-line render would.
+	if n := strings.Count(out, "│"); n < 4 {
+		t.Errorf("expected multi-line cell (many │) in:\n%s", out)
+	}
+	// Every frame line (starts with a box-drawing rune) must share one width,
+	// or the multi-line padding is wrong.
+	width := -1
+	for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
+		if len(line) < 3 || !strings.ContainsAny(line[:3], "┌├└│") {
+			continue
+		}
+		if width < 0 {
+			width = runeLen(line)
+		} else if runeLen(line) != width {
+			t.Errorf("ragged frame line (%d != %d): %q\nfull:\n%s", runeLen(line), width, line, out)
+		}
 	}
 }
 
 func TestRenderBoxElision(t *testing.T) {
 	var b strings.Builder
 	rows := raws(`{"n":1}`, `{"n":2}`, `{"n":3}`, `{"n":4}`, `{"n":5}`)
-	RenderBox(&b, rows, 0, 2, 0, "", Style{}) // maxRows=2 -> head+tail with elision
+	RenderBox(&b, rows, 0, 2, 0, "", Style{}, false) // maxRows=2 -> head+tail with elision
 	out := b.String()
 	if !strings.Contains(out, "·") {
 		t.Errorf("expected elision row (·) in:\n%s", out)
@@ -234,7 +321,7 @@ func TestRenderBoxElision(t *testing.T) {
 func TestRenderBoxTailElision(t *testing.T) {
 	var b strings.Builder
 	rows := raws(`{"n":1}`, `{"n":2}`, `{"n":3}`, `{"n":4}`, `{"n":5}`)
-	RenderBox(&b, rows, 0, -2, 0, "", Style{}) // maxRows=-2 -> last 2 rows
+	RenderBox(&b, rows, 0, -2, 0, "", Style{}, false) // maxRows=-2 -> last 2 rows
 	out := b.String()
 	if !strings.Contains(out, "· ") {
 		t.Errorf("expected elision row (·) in:\n%s", out)
@@ -265,7 +352,7 @@ func TestRenderBoxAutoWidthFits(t *testing.T) {
 
 	// Narrow terminal: the 100-char value must be truncated to fit.
 	var narrow strings.Builder
-	RenderBox(&narrow, rows, -1, 0, 40, "", Style{})
+	RenderBox(&narrow, rows, -1, 0, 40, "", Style{}, false)
 	for _, line := range strings.Split(strings.TrimRight(narrow.String(), "\n"), "\n") {
 		if runeLen(line) > 40 {
 			t.Errorf("auto line exceeds termWidth 40 (%d): %q", runeLen(line), line)
@@ -277,7 +364,7 @@ func TestRenderBoxAutoWidthFits(t *testing.T) {
 
 	// Wide terminal: the whole value fits, so no truncation.
 	var wide strings.Builder
-	RenderBox(&wide, rows, -1, 0, 200, "", Style{})
+	RenderBox(&wide, rows, -1, 0, 200, "", Style{}, false)
 	if strings.Contains(wide.String(), "…") {
 		t.Errorf("wide auto box should not truncate:\n%s", wide.String())
 	}

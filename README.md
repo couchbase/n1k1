@@ -33,6 +33,7 @@ terminate statements with `;` and use dot-commands:
     n1k1> .tables                   list keyspaces
     n1k1> .schema contacts          sampled shape (keys + JSON types)
     n1k1> .mode box|json|jsonlines|csv|markdown|line|list
+    n1k1> .mode box|pretty          add "|pretty" to any mode: indent JSON 2 spaces
     n1k1> .timer on                 show row count + elapsed
     n1k1> .explain                  also print the converted n1k1 plan
     n1k1> .help                     all commands;  .quit to exit
