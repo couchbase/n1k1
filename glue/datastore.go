@@ -26,6 +26,8 @@ import (
 func DatastoreOp(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 	yieldErr base.YieldErr, path, pathNext string) {
 	switch o.Kind {
+	case "datastore-scan-records":
+		DatastoreScanRecords(o, vars, yieldVals, yieldErr)
 	case "datastore-scan-primary":
 		DatastoreScanPrimary(o, vars, yieldVals, yieldErr)
 	case "datastore-scan-index":

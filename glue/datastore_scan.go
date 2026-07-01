@@ -16,9 +16,12 @@ package glue
 import (
 	"fmt"
 	"math"
+	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/couchbase/n1k1/base"
+	"github.com/couchbase/n1k1/recordsource"
 
 	"github.com/couchbase/query/datastore"
 	"github.com/couchbase/query/errors"
@@ -76,6 +79,99 @@ func DatastoreScanKeys(o *base.Op, vars *base.Vars,
 	}
 
 	yieldErr(nil)
+}
+
+// -------------------------------------------------------------------
+
+// recordsScanPlan is the subset of plan.PrimaryScan / plan.PrimaryScan3 that the
+// n1k1-native records scan needs: the target keyspace and an optional LIMIT.
+type recordsScanPlan interface {
+	Keyspace() datastore.Keyspace
+	Limit() expression.Expression
+}
+
+// DatastoreScanRecords reads a file keyspace's directory n1k1-native via the
+// recordsource package (union of files, recurse subdirs, decode JSONL /
+// multi-doc / single-doc JSON, transparent gzip) and yields whole documents
+// directly -- the `.` label = the doc's JSON bytes and `^id` = its key. This
+// replaces cbq's scan-keys + fetch-docs round-trip for the file datastore (see
+// DESIGN-data.md "Where this code lives" A2): the bytes flow straight to
+// base.Val = []byte with no cbq value.AnnotatedValue boxing, and multi-record
+// files (which have no natural per-record key for the scan/fetch split) work.
+func DatastoreScanRecords(o *base.Op, vars *base.Vars,
+	yieldVals base.YieldVals, yieldErr base.YieldErr) {
+	context := vars.Temps[0].(*GlueContext)
+
+	scan, ok := vars.Temps[o.Params[0].(int)].(recordsScanPlan)
+	if !ok {
+		yieldErr(fmt.Errorf("DatastoreScanRecords: unexpected plan %T",
+			vars.Temps[o.Params[0].(int)]))
+		return
+	}
+
+	keyspace := scan.Keyspace()
+
+	dir, err := keyspaceDir(keyspace)
+	if err != nil {
+		yieldErr(err)
+		return
+	}
+
+	limit := EvalExprInt64(context, scan.Limit(), nil, math.MaxInt64)
+
+	// TODO(--modes): thread the CLI's scan restriction here instead of AllModes.
+	src, err := recordsource.Walk(dir, recordsource.AllModes())
+	if err != nil {
+		yieldErr(fmt.Errorf("DatastoreScanRecords, walk %q: %v", dir, err))
+		return
+	}
+	defer src.Close()
+
+	var vals base.Vals
+	var idBuf []byte
+	var rec recordsource.Record
+
+	var n int64
+	for n < limit {
+		ok, err := src.Next(&rec)
+		if err != nil {
+			yieldErr(fmt.Errorf("DatastoreScanRecords, next: %v", err))
+			return
+		}
+		if !ok {
+			break
+		}
+
+		// `^id` must be canonical JSON (a quoted string) so Convert reads it as a
+		// string, matching the fetch path. rec.Doc / rec.ID are borrowed until the
+		// next Next -- fine, the engine consumes each yield synchronously.
+		idBuf = strconv.AppendQuote(idBuf[:0], string(rec.ID))
+
+		vals = append(vals[:0], base.Val(rec.Doc)) // Label ".alias".
+		vals = append(vals, base.Val(idBuf))       // Label "^id".
+
+		yieldVals(vals)
+		n++
+	}
+
+	yieldErr(nil)
+}
+
+// keyspaceDir resolves a file-datastore keyspace to its on-disk directory,
+// <root>/<namespace>/<keyspace>, from the datastore's file:// URL. n1k1 owns
+// scan/fetch execution, so it reads the directory itself rather than routing
+// through cbq's ScanEntries/Fetch.
+func keyspaceDir(keyspace datastore.Keyspace) (string, error) {
+	ns := keyspace.Namespace()
+	if ns == nil || ns.Datastore() == nil {
+		return "", fmt.Errorf("keyspaceDir: keyspace %q has no datastore", keyspace.Name())
+	}
+	url := ns.Datastore().URL()
+	root := strings.TrimPrefix(url, "file://")
+	if root == url {
+		return "", fmt.Errorf("keyspaceDir: non-file datastore URL %q", url)
+	}
+	return filepath.Join(root, ns.Name(), keyspace.Name()), nil
 }
 
 // -------------------------------------------------------------------
