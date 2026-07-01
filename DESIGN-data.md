@@ -1,7 +1,59 @@
 # Design: Data Sources for n1k1
 
-Status: proposal / for review. Companion: `DESIGN-indexing.md` (read together —
-see "Relationship" below). Revision changelog lives in git history, not here.
+Status: **partially implemented** (MVP + several post-MVP items shipped — see
+"Implementation status" below); rest is proposal / for review. Companion:
+`DESIGN-indexing.md` (read together — see "Relationship" below). Revision
+changelog lives in git history, not here.
+
+---
+
+## Implementation status (what has actually landed)
+
+The single biggest confirmed learning: **the data-source work needed ZERO changes
+to the `n1k1-query` fork (cbq).** The design predicted this ("fake it" for
+plan-time metadata; execution in n1k1 glue ops) and it held — the fork's only
+n1k1-specific commits are build-plumbing, none touching datasources:
+`semantics/semchecker_ce.go` (enable EE SQL++ semantics in the community build),
+`system/systemStats.go` (pure-Go stub dropping the sigar cgo dep), and a
+committed goyacc-generated `parser/n1ql/y.go`. **No `datastore/file`,
+`datastore/virtual`, `algebra/`, or planner edits — and no `DiscoverKeyspaces`
+seam was ever added.** The hedged "a thin `DiscoverKeyspaces` seam, only for
+catalog-defined keyspaces" language that still appears below is now **superseded**:
+flat-root discovery was done entirely n1k1-side by *wrapping* the fork's datastore
+with `datastore/virtual` building blocks (`glue/flatroot.go`), so even the
+catalog case is expected to need no seam.
+
+Landed n1k1-side (all in `records/` + `glue/`, `//go:build n1ql`), well past the
+originally-drawn MVP line:
+- **Flat-root keyspaces** (scenario B) — `glue/flatroot.go` wraps the datastore to
+  advertise a synthetic `default:<basename>` keyspace with a primary index; the
+  records-scan reads the root dir via `RecordsDir()`. Never calls into the fork.
+- **Multi-file keyspace = union of files, recursing** (scenarios C, E) — the
+  `records` package (`records.go`) walks the dir and unions all decodable files.
+- **Decoders:** JSONL/ndjson, multi-doc JSON (array + `.jsons`), **and CSV/TSV**
+  (scenario J). CSV was shipped by decoding each data row into **one JSON object
+  keyed by the header** (light int/float/bool inference) — so it rides the
+  **opaque-document path** and did *not* need the typed-label-vector work the doc
+  feared (see the reframed note in §2 "Integration gap").
+- **Office/PDF text extraction** (scenario L) — `records/office.go`, pure-Go
+  (`.pdf`/`.docx`/`.xlsx` → one `{filename, kind, text}` JSON record each), again
+  on the opaque-document path. The optional Tika/extractous+OCR backend is still
+  future.
+- **Transparent gzip** (`.gz`, scenario H). `.zst` is *recognized* by the walker
+  but decoding is still a stub (`records: .zst not yet supported`).
+- **`-scan` lockdown flag** (`records.ParseModes`) — comma-separated allow-list of
+  formats/`recurse`/`gzip`.
+- **`-meta` flag + `_meta` sub-object** (`records/meta.go`) — `on|off|auto`,
+  injecting `path`/`name`/`ext`/`size`/`mtime`/`pos`. See §6.
+- **`COUNT(*)` pushdown** — `glue` `VisitCountScan` via scan+count.
+- **Compiler-differential + decoder-golden tests** landed (flat-root diff, decoder
+  interp-vs-compiler proof, a 443-interp/439-compiler data-backed GSI suite).
+
+Still proposal / not built: catalog/sidecar (`.n1k1/catalog.json`), manifests &
+zone maps (§5), Parquet/ORC/Avro, `.zip` containers, zstd decode, synthetic
+offset doc-IDs & seekable-fetch, query-defined VIEWs (needs `VisitUnionAll`),
+object-store backend, encryption-at-rest, inline table functions (needs a grammar
+fork). Status markers on the worked examples (§ "Worked examples") reflect this.
 
 ---
 
@@ -27,14 +79,16 @@ division of ownership:
 
 Where they touch, and how they're kept consistent here:
 
-1. **Fork = plan-time metadata only; execution lives in n1k1.** Both docs keep the
-   fork thin and put real logic in n1k1 (the `engine.ExecOpEx` IoC pattern). The
-   fork advertises *plan-time* facts the planner needs: this doc, a keyspace's
-   existence (a `DiscoverKeyspaces` seam, only for catalog-defined names);
-   `DESIGN-indexing.md`, the available indexes (n1k1-built `datastore.Index`/
-   `FTSIndex` objects via `fileIndexer.Indexes()` / `keyspace.Indexers()`). All
-   *execution* — scan, fetch, decode, index `Scan()` — runs in n1k1 glue ops over
-   `[]byte`, not in the fork. Fully consistent.
+1. **Fork = plan-time metadata only; execution lives in n1k1 — and the fork itself
+   is untouched.** Both docs keep the fork thin and put real logic in n1k1 (the
+   `engine.ExecOpEx` IoC pattern). Plan-time facts the planner needs are supplied
+   *without editing the fork*: this doc, a keyspace's existence — achieved by
+   **wrapping** the fork's datastore with its own `datastore/virtual` building
+   blocks (`glue/flatroot.go`), **not** the once-anticipated `DiscoverKeyspaces`
+   seam (which was never built); `DESIGN-indexing.md`, the available indexes
+   (n1k1-built `datastore.Index`/`FTSIndex` objects via `fileIndexer.Indexes()` /
+   `keyspace.Indexers()`). All *execution* — scan, fetch, decode, index `Scan()` —
+   runs in n1k1 glue ops over `[]byte`, not in the fork. Fully consistent.
 2. **The `.n1k1/` sidecar is shared.** The indexing doc specifies the *canonical*
    tree; this doc owns only `catalog.json`'s source/layout half and
    `manifest.json` (see §5 "Where"). `catalog.json` therefore holds **both**
@@ -63,6 +117,12 @@ and eventually PDFs/Office docs — across the directory layouts those formats
 arrive in.
 
 ## Starting point (n1k1 today)
+
+> **Update:** this section describes the *pre-MVP* landscape. As of the
+> "Implementation status" section above, the `records` package now supersedes the
+> naive path-B decoders: it has real JSONL / multi-doc-JSON / CSV-TSV / office
+> decoders with transparent gzip, wired to `FROM` via the flat-root + records-scan
+> glue. Read the below as the historical motivation, not the current state.
 
 There are **two separate, only-partially-connected** data paths today:
 
@@ -143,13 +203,13 @@ hide behind "the datastore" — separate them, because only one touches the fork
   boxing. So the earlier `OpenRecordStream`/`FetchRecord` fork seams are **not
   needed** — that leaf logic lives in n1k1, exactly because n1k1 owns execution.
 
-  All decoders/layout/doc-ID/compression code is ordinary n1k1 (the decoders
-  shared with path-B `op_scan.go` — one CSV reader), registered via the existing
-  IoC pattern (`engine.ExecOpEx = glue.DatastoreOp`, save/restored in
-  `Session.Run`). **For the convention-relaxation MVP** (keyspace = union of a
-  dir's files, recursing), the keyspace already resolves, so it may need **zero
-  fork changes** — only n1k1's glue scan op learning to enumerate many files +
-  decode.
+  All decoders/layout/doc-ID/compression code is ordinary n1k1 — now the
+  `records` package, registered via the existing IoC pattern
+  (`engine.ExecOpEx = glue.DatastoreOp`, save/restored in `Session.Run`).
+  **CONFIRMED — the convention-relaxation MVP (and flat roots, CSV, office, gzip)
+  shipped with zero fork changes**, exactly as predicted: the keyspace resolves
+  (or is faked via `glue/flatroot.go`), and n1k1's glue scan op enumerates the
+  files + decodes them.
 - **(B) Wire path-B `op_scan.go` ops to `FROM` — rejected.** FROM resolution is in
   the planner, upstream of `conv`; the engine ops never see a keyspace. Path B
   stays a low-level primitive — and a host for the shared byte-oriented decoders.
@@ -207,9 +267,16 @@ indexing). That is "rebuild DuckDB + a lakehouse table format + Tika + a KMS."
 
 That is phasing steps 1, 2a, and the gzip half of 3. It delivers ~80% of the
 "DuckDB for SQL++/JSON" value against the data people already have, is additive
-to the fork, and is compiler-transparent. **Everything past this line
-(Parquet, catalog, office/OCR, manifests/zone-maps, encryption) waits behind
-demonstrated demand** — see the scope note before §6.
+to the fork, and is compiler-transparent.
+
+> **✅ SHIPPED — and then some.** The MVP above landed, and in practice the line
+> was crossed cheaply: **CSV/TSV (J), office/PDF extraction (L), flat-root
+> keyspaces (B), and `COUNT(*)` pushdown also shipped**, because CSV and office
+> both turned out to fit the *opaque-document path* (emit a JSON object per row /
+> per doc) rather than needing the typed-label work that was assumed to gate them.
+> The compiler differential has flat-root + decoder cases. **Still behind the
+> line:** Parquet, catalog/sidecar, manifests/zone-maps, `.zip`, zstd decode,
+> encryption — see the scope note before §6.
 
 ## Design principle: separate the concerns into layers
 
@@ -421,8 +488,19 @@ was built against. Two workable stances, both post-MVP-friendly:
   becomes the label vector, and `union_by_name` across files means computing the
   union column set up front (a listing pass) or falling back to opaque per-row
   objects. Partition virtual-columns (§ hive/projected) would be appended to
-  that vector. **This is the actually-hard part of "beyond JSON," and it's the
-  real reason CSV/Parquet sit above the MVP line — not the decoding, the labels.**
+  that vector. This was billed as *the* actually-hard part of "beyond JSON."
+  - **Reframed by what shipped.** CSV/TSV landed **without** doing any of the
+    typed-label-vector work — the decoder converts each data row into **one JSON
+    object keyed by the header** (with light int/float/bool inference), so CSV
+    rides the same **opaque-document path** as JSON and `union_by_name` becomes
+    trivial (heterogeneous objects just coexist). Office extraction did the same
+    (one `{filename,kind,text}` object per doc). So the "labels are the real cost
+    boundary" claim was **too pessimistic for row-shaped formats**: emit-JSON
+    sidesteps it. The typed/columnar-label reconciliation is only genuinely
+    forced by **columnar Parquet** (where you want the columns *without*
+    materializing a JSON object per row, or you lose the whole point) — which is
+    the real reason **Parquet** (not CSV) still sits above the line. Hive/projected
+    partition virtual-columns are the other case that still wants real labels.
 
 ## Query-defined virtual datasources (VIEWs & generated catalogs)
 
@@ -628,10 +706,11 @@ CLI invocation is `n1k1 [-c "<stmt>"] [-ns <namespace>] <dataRoot>` (default
 `FROM default:orders` reads `<dataRoot>/default/orders/`. `<dataRoot>` is the last
 CLI arg. Status legend, tied to Phasing:
 
-- ✅ **works today**
-- 🟢 **MVP** (phasing 1, 2a JSONL/multi-doc JSON, gzip)
-- 🟡 **post-MVP, decoder/convention** (CSV, Parquet, `.zip`, office — no catalog)
-- 🟣 **post-MVP, needs the `.n1k1/catalog.json` sidecar**
+- ✅ **implemented & shipped** (works today — includes the MVP *and* the
+  post-MVP decoder items that already landed: flat-root, JSONL/multi-doc JSON,
+  CSV/TSV, office/PDF, gzip)
+- 🟡 **not yet built, decoder/convention** (Parquet, `.zip`, zstd — no catalog)
+- 🟣 **not yet built, needs the `.n1k1/catalog.json` sidecar**
 - 🔴 **deferred, needs a grammar fork** (inline table functions)
 
 ### A. Today's convention — one JSON document per file  ✅
@@ -644,18 +723,18 @@ shop/
 `n1k1 -c "SELECT * FROM default:orders WHERE total > 100" shop`
 → reads `shop/default/orders/*.json`; `META().id` = filename stem (`order-002`).
 
-### B. Flat root — a bare directory of files = one keyspace  🟢
+### B. Flat root — a bare directory of files = one keyspace  ✅
 ```
 sales/          2026-01.json  2026-02.json  2026-03.json
 ```
 `n1k1 -c "SELECT * FROM sales" sales`
 → `sales/` holds data files directly (no ns/keyspace subdirs), so auto-detect
 treats the whole dir as a single flat keyspace.
-**Open decision this example forces:** what is the keyspace *name* for a flat
-root? Candidates: the root's basename (`sales`, shown here), or a fixed default
-(`default:default`). Recommend **basename**, with `-ns`/an alias override.
+**Decision (RESOLVED — basename).** `glue/flatroot.go` names the keyspace after
+the root's basename (`filepath.Base`), under a synthetic `default` namespace
+(`default:sales`), matching the recommendation here.
 
-### C. Multi-file keyspace, many records per file  🟢
+### C. Multi-file keyspace, many records per file  ✅
 ```
 logs/
   default/
@@ -667,18 +746,21 @@ files**; `META().id` = `events/2026-01-02.jsonl#L57`. This is the core MVP
 relaxation (dir = union-of-files) and rides the opaque-document path — no label
 reconciliation needed because each JSONL line is one document.
 
-### D. Mixed formats in one keyspace  🟡
+### D. Mixed formats in one keyspace  ✅
 ```
 inventory/
   default/
     items/    legacy.csv   new.jsonl   adjustments.json
 ```
 `n1k1 -c "SELECT sku, qty FROM default:items" inventory`
-→ union across CSV + JSONL + JSON. This is where **`union_by_name` and the
-typed-label reconciliation** (see "schemaless vs positional labels" in §2) bite:
-the CSV's header columns must be merged with the JSON docs' fields.
+→ union across CSV + JSONL + JSON. Expected to be the hard `union_by_name` case,
+but it **works today** precisely because CSV also decodes to a JSON object per row
+(header-keyed): all three formats land on the opaque-document path, so
+heterogeneous shapes coexist with no typed-label reconciliation needed. (The only
+caveat is CSV type inference — a CSV `qty` is int-inferred, a JSON `qty` keeps its
+JSON type.)
 
-### E. Deep / recursive tree as an unkeyed union  🟢
+### E. Deep / recursive tree as an unkeyed union  ✅
 ```
 metrics/
   default/
@@ -729,15 +811,17 @@ No `key=value`, so the date dirs are **not** auto-detectable — declare them:
 (Athena-style projection) instead of listing the whole tree; `date` is a virtual
 column. This is the marquee case for why the catalog (mode 3) exists.
 
-### H. Transparent compression, single file  🟢 (gzip) / 🟡 (zstd)
+### H. Transparent compression, single file  ✅ (gzip) / 🟡 (zstd)
 ```
 archive/
   default/
     orders/   2025.jsonl.gz   2026.jsonl.zst
 ```
 `n1k1 -c "SELECT * FROM default:orders" archive`
-→ decompressed by *inner* extension (`.jsonl.gz` → gzip → JSONL). gzip is MVP;
-zstd is a fast-follow (`klauspost/compress`, already a dep).
+→ decompressed by *inner* extension (`.jsonl.gz` → gzip → JSONL). **gzip
+shipped** (`compress/gzip`). zstd is still a stub: the walker recognizes `.zst`
+(and `-scan=zstd`) but `openDecompressed` returns "not yet supported" — the
+fast-follow is wiring `klauspost/compress` (already a dep) into that switch.
 
 ### I. `.zip` container = a directory of entries  🟡
 ```
@@ -749,16 +833,21 @@ exports/
 → enumerate zip entries, decode each by its inner extension, union;
 `META().id` = `reports/2026-q1.zip!feb.csv#L12`.
 
-### J. CSV/TSV with header + sniffer  🟡
+### J. CSV/TSV with header + sniffer  ✅
 ```
 finance/
   default/
     txns/   2026.csv           # header: id,amount,currency,ts
 ```
 `n1k1 -c "SELECT id, amount FROM default:txns WHERE currency = 'USD'" finance`
-→ sniffer infers header + column types; each data row becomes an object keyed by
-header names; `META().id` = `txns/2026.csv#L<line>`. Replaces the naive
-`op_scan.go` comma-splitter with `encoding/csv` or `arrow/csv`.
+→ **shipped** (`records/records.go` `csvSource`): the header row names the columns
+and each data row becomes **one JSON object** keyed by header names, with light
+int/float/bool inference; TSV is the same reader with a tab delimiter. Built on
+Go's `encoding/csv` (quoting/escaping/embedded-newlines correct), not the naive
+`op_scan.go` splitter. **Allocation caveat, as the design warned:** this first cut
+allocates the field strings per row (`encoding/csv` returns `[]string`); the
+zero-copy `[]byte`-borrow reader is a later optimization. Emitting a JSON object
+means CSV rides the opaque-document path — no typed-label work (see §2 reframe).
 
 ### K. Parquet  🟡 (correctness-first)
 ```
@@ -771,15 +860,21 @@ warehouse/
 columnar→row transpose (see §1 caveat) means no vectorized speedup until the
 engine grows column-batch ops. Footer min/max later feed §5 zone-map pruning.
 
-### L. Office / unstructured docs → extractor rows  🟡
+### L. Office / unstructured docs → extractor rows  ✅ (pure-Go text; OCR later)
 ```
 kb/
   default/
     docs/   handbook.pdf   q1-report.docx   budget.xlsx
 ```
 `n1k1 -c "SELECT filename, text FROM default:docs WHERE text LIKE '%vacation%'" kb`
-→ each file yields row(s) with `filename`/`text`/metadata (xlsx → one row per
-sheet row); feeds a bleve FTS index (`DESIGN-indexing.md` Phase 2). See §4.
+→ **shipped** (`records/office.go`), pure-Go: each `.pdf`/`.docx`/`.xlsx` yields
+**one** `{filename, kind, text}` JSON record (docx via `archive/zip`+`encoding/xml`
+`<w:t>` runs; pdf via content-stream show-text ops with `compress/zlib` inflate;
+xlsx text concatenated). Rides the opaque-document path, so it feeds a bleve FTS
+index (`DESIGN-indexing.md` Phase 2) with no label work. **Deliberately narrow:**
+no scanned-PDF OCR, no exotic font encodings, and it emits one record per file
+(not the "one row per spreadsheet row" the design floated) — those want the
+optional Tika/extractous+Tesseract backend (a later build tag). See §4.
 
 ### M. The co-located sidecar (applies to all of the above)
 ```
@@ -827,15 +922,18 @@ the era sub-scans to avoid reading all history (the open question there). A
 single-source reshaping view (no UNION) works without that blocker.
 
 **What the examples reveal for decisions:** (1) the flat-root keyspace-naming
-question (B) needs an answer before MVP; (2) the MVP cases (A/B/C/E/H-gzip) all
-stay on the opaque-document path, which is *why* they're cheap; (3) every case
-that introduces *columns* (D/F/J/K) forces the typed-label reconciliation, which
-is the real cost boundary — not the decoding; (4) partition pruning (F/G) is the
-first feature that needs the predicate pushed to the scan layer, linking directly
-to `DESIGN-indexing.md`'s zone-map tier; (5) the VIEW case (O) reuses the WITH/CTE
-machinery for free but is gated on `VisitUnionAll` and on predicate-pushdown to
-stay fast — the highest-leverage single feature for the "morphed-over-time"
-scenario.
+question (B) was resolved to *basename* and shipped; (2) the cheap cases
+(A/B/C/D/E/H-gzip/J/L) all stay on the opaque-document path, which is *why* they
+shipped fast — **and (revised) that path stretched further than expected: CSV (J)
+and office (L) also fit it** by emitting a JSON object per row/doc, so they did
+*not* pay the typed-label cost; (3) the typed-label reconciliation turned out to
+be forced only by **columnar Parquet (K)** and by **partition virtual-columns
+(F/G)** — *not* by CSV — so the "columns ⇒ hard" heuristic was too broad; (4)
+partition pruning (F/G) is still the first feature that needs the predicate pushed
+to the scan layer, linking directly to `DESIGN-indexing.md`'s zone-map tier; (5)
+the VIEW case (O) reuses the WITH/CTE machinery for free but is gated on
+`VisitUnionAll` and on predicate-pushdown to stay fast — the highest-leverage
+single feature for the "morphed-over-time" scenario.
 
 ## 5. Indexes & derived artifacts: storage + change detection
 
@@ -1234,13 +1332,13 @@ not bypass:
   by a case in the queryCases harness (`test/cases.go` + `test/query_compiler_test.go`)
   so the *compiled* path is proven to match the *interpreted* path — this is the
   guard that keeps new datastore behavior compiler-safe (see "Compiler
-  compatibility" above). A `FROM` over a multi-file keyspace, a `.gz` file, and
-  (later) a CSV/Parquet file each want a differential case.
-- **Golden fixtures for decoders.** Each `RecordSource` decoder gets small
-  input fixtures (a `.jsonl`, a quoted/escaped `.csv`, a `.jsonl.gz`) with an
-  expected row set — table-driven, like the existing `cases.go` style. This is
-  where the naive `op_scan.go` CSV splitter's bugs (quoting/escaping/embedded
-  newlines) get pinned so the replacement reader can't regress them.
+  compatibility" above). **Done for what shipped:** flat-root and the record
+  decoders each have interp-vs-compiler cases, plus a data-backed GSI suite
+  (443 interp / 439 compiler). Parquet will want one when it lands.
+- **Golden fixtures for decoders.** Each decoder has small input fixtures with an
+  expected row set (`records/records_test.go`) — table-driven, like `cases.go`.
+  The CSV reader is built on `encoding/csv`, so quoting/escaping/embedded-newlines
+  are handled by the stdlib rather than the old naive `op_scan.go` splitter.
 - **Conformance suite.** The existing suite corpus is JSON one-doc-per-file, so it
   keeps validating the convention path unchanged; new formats need their own
   fixtures rather than riding the suite.
@@ -1263,35 +1361,40 @@ not bypass:
 
 All new logic lands in **n1k1** — scan/fetch/decode in the glue `datastore-scan`/
 `datastore-fetch` ops (which compile for free; see "Compiler compatibility"),
-registered via the `engine.ExecOpEx = glue.DatastoreOp` IoC pattern. The **fork
-changes only for plan-time keyspace discovery** (a thin `DiscoverKeyspaces` seam,
-and only for catalog-defined non-directory keyspaces) — see "Where this code
-lives".
+registered via the `engine.ExecOpEx = glue.DatastoreOp` IoC pattern. **Confirmed:
+the fork needed no changes at all** — plan-time keyspace discovery was done by
+wrapping the fork's datastore with `datastore/virtual` building blocks
+(`glue/flatroot.go`), so the anticipated `DiscoverKeyspaces` seam was never built.
 
-1. Relax the file datastore: directory = keyspace = union of *all* supported
+1. ✅ Relax the file datastore: directory = keyspace = union of *all* supported
    files; recurse; keep `<ns>/<keyspace>` convention + flat-root auto-detect.
    Yield records on the **opaque-document path** (no fixed label vector needed).
-2. Add decoders: **JSONL + multi-doc JSON** (opaque-doc, easy), *then* CSV/TSV
-   (with sniffer — needs the typed-label story, harder), *then* Parquet (arrow-go;
-   correctness-only until column-batch ops exist).
-3. Transparent gzip/zstd decode; `.zip` as a container.
+2. Add decoders: ✅ **JSONL + multi-doc JSON**, ✅ **CSV/TSV** (shipped via
+   emit-JSON-object-per-row, so it stayed on the opaque path — the typed-label
+   story was *not* needed after all); ⬜ *then* Parquet (arrow-go; correctness-only
+   until column-batch ops exist — the one decoder that still needs real labels).
+3. ✅ Transparent **gzip**; ⬜ zstd decode (walker recognizes `.zst`, decode is a
+   stub); ⬜ `.zip` as a container.
 
-   **← MVP LINE.** Steps 1, 2a (JSONL + multi-doc JSON), and gzip from step 3 are
-   the ~2-week win; add one multi-file-keyspace differential case. Everything
-   below waits behind demonstrated demand.
+   **← MVP LINE (crossed).** Steps 1, 2a, and gzip were the planned ~2-week win and
+   shipped, *plus* CSV/TSV (2b), flat-root, office extraction (step 8), and
+   `COUNT(*)` pushdown — with multi-file/flat-root/decoder differential cases.
+   Everything below still waits behind demonstrated demand.
 
-4. Explicit `read_*('glob', opts)` table functions in FROM (power mode) —
+4. ⬜ Explicit `read_*('glob', opts)` table functions in FROM (power mode) —
    **blocked on a grammar fork (see Open questions); deferred in favor of step 5.**
-5. Catalog/sidecar (`.n1k1/catalog.json`) with hive + projected-date partitions.
-6. Synthetic document IDs for multi-record sources: composite
-   `<relpath>#<offset|line>` populating `META().id`; natural-key option in the
-   catalog. (Needed as soon as step 2 lands multi-record files.)
-7. Index/cache sidecar + manifest with Merkle + append-only offsets, where the
+5. ⬜ Catalog/sidecar (`.n1k1/catalog.json`) with hive + projected-date partitions.
+6. ◐ Synthetic document IDs for multi-record sources: **partially done** — the
+   `_meta.pos` in-file ordinal shipped (§6), but `META().id` itself is still the
+   stem / simple `relpath#i`; the composite `<relpath>#<offset|line>` +
+   natural-key option remain.
+7. ⬜ Index/cache sidecar + manifest with Merkle + append-only offsets, where the
    offset checkpoints double as the `Fetch` seek index (joins
    `DESIGN-indexing.md`).
-8. Office/unstructured extraction (pure-Go default + optional Tika/extractous),
-   feeding FTS.
-9. Encryption-at-rest: transparent decrypt layer (Tink/age segmented),
+8. ✅ (basic) Office/unstructured extraction — **pure-Go default shipped**
+   (`records/office.go`, one record/file); ⬜ optional Tika/extractous+OCR backend
+   and per-spreadsheet-row extraction remain; FTS wiring joins `DESIGN-indexing.md`.
+9. ⬜ Encryption-at-rest: transparent decrypt layer (Tink/age segmented),
    envelope keys via `gocloud.dev/secrets`, and **encrypted sidecar artifacts**.
 
 Separable tracks (not on the linear path above):
@@ -1307,12 +1410,14 @@ Separable tracks (not on the linear path above):
 
 ## Open questions
 
-- **`RecordSource` signature & the CSV reader choice (allocation).** Lock the
-  borrowed-slice contract (`ReadInto`/`ForEach` yielding `[][]byte` valid until
-  the next call) — then decide CSV: a `[]byte`-oriented reader (correctness +
-  zero-copy, but which lib / or fix the hand-rolled scanner) vs `encoding/csv` +
-  `ReuseRecord` (correct but allocates `string` fields, a regression from today's
-  byte-borrow). See §1 "Allocation model". This gates decoder implementation.
+- **`RecordSource` signature & the CSV reader choice (allocation). (Partly
+  settled.)** The shipped decoders use a `Next(rec *Record) (bool, error)` shape,
+  and CSV was implemented on **`encoding/csv`** (correctness-first) — which does
+  allocate the field `string`s per row, the very regression the design flagged.
+  **Still open:** whether to replace it with a `[]byte`-oriented zero-copy reader
+  (borrowed sub-slices, à la the old `op_scan.go` scanner's model), and to add the
+  allocation benchmark gate from §1. Correctness shipped; the alloc discipline for
+  large CSVs is the remaining work.
 - **SQL++ surface for table functions / globs. (RESOLVED — no.)** Checked
   empirically: the fork's parser rejects both `FROM read_csv('foo.csv')`
   ("Invalid function … default:read_csv") and bare `FROM 'foo.csv'` ("must have a
@@ -1321,13 +1426,18 @@ Separable tracks (not on the linear path above):
   which we're deferring; the **catalog (mode 3) is the power path**. Remaining
   question is only *whether we ever pay for the grammar fork* or settle for a
   datastore-recognized keyspace-name convention.
-- **Fork divergence budget. (Largely settled — near-zero.)** Execution (scan/
-  fetch/decode) is n1k1's glue ops; the fork changes only for plan-time keyspace
-  discovery (a thin `DiscoverKeyspaces` seam, and only for catalog-defined
-  non-directory keyspaces — the convention MVP may need none). Remaining
-  sub-questions: package-global hook vs per-store field (see "Where this code
-  lives" #3), and whether any plan-time metadata can't be advertised at the seam
-  (fall back to home C only then).
+- **Fork divergence budget. (RESOLVED — zero.)** Everything shipped —
+  flat-root discovery, multi-file union, JSONL/JSON/CSV/office decoders, gzip,
+  `COUNT(*)`, `_meta` — landed **without a single datasource change to the fork.**
+  The fork's only n1k1 commits are build-plumbing (EE-semantics toggle, pure-Go
+  sigar stub, committed generated parser). Plan-time discovery was done by
+  *wrapping* the datastore with `datastore/virtual` building blocks
+  (`glue/flatroot.go`), so no `DiscoverKeyspaces` seam was needed. Execution
+  (scan/fetch/decode) is all n1k1 glue ops. The only remaining sub-question is
+  whether a future **catalog** (non-directory keyspace names) can still be faked by
+  the same wrapping trick — the expectation, given flat-root worked, is **yes,
+  still no fork change**; home C (a full n1k1-side datastore) stays the fallback of
+  last resort.
 - **Columnar-source performance.** Do we ever add column-batch ops to the engine
   so Parquet/Arrow is a real perf win, or accept the transpose-to-rows cost and
   treat columnar formats as correctness-only? (See §1 caveat.)
