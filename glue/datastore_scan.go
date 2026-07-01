@@ -83,6 +83,14 @@ func DatastoreScanKeys(o *base.Op, vars *base.Vars,
 
 // -------------------------------------------------------------------
 
+// ScanWalkOptions controls how DatastoreScanRecords discovers/decodes files
+// (formats, recursion, compression). It defaults to the flexible AllModes; the
+// CLI's --modes flag overrides it via recordsource.ParseModes to lock scanning
+// down (e.g. don't recurse into unwanted subdirs). Process-global to match the
+// engine.ExecOpEx registration style -- fine for the single-process CLI; a
+// per-store field is the cleaner future form (see DESIGN-data.md).
+var ScanWalkOptions = recordsource.AllModes()
+
 // recordsScanPlan is the subset of plan.PrimaryScan / plan.PrimaryScan3 that the
 // n1k1-native records scan needs: the target keyspace and an optional LIMIT.
 type recordsScanPlan interface {
@@ -119,8 +127,7 @@ func DatastoreScanRecords(o *base.Op, vars *base.Vars,
 
 	limit := EvalExprInt64(context, scan.Limit(), nil, math.MaxInt64)
 
-	// TODO(--modes): thread the CLI's scan restriction here instead of AllModes.
-	src, err := recordsource.Walk(dir, recordsource.AllModes())
+	src, err := recordsource.Walk(dir, ScanWalkOptions)
 	if err != nil {
 		yieldErr(fmt.Errorf("DatastoreScanRecords, walk %q: %v", dir, err))
 		return
