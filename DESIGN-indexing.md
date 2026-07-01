@@ -233,3 +233,11 @@ small in-process shim, not n1fty.
   in Phase 2.
 - `go.mod` — bump the `n1k1-query` pin; add direct `go.etcd.io/bbolt` (Phase 1)
   and `blevesearch/bleve/v2` (Phase 2).
+
+## Dependency licensing
+
+Policy: permissive licenses only — **no GPL / AGPL**. The new dependencies this
+design introduces are all compliant: `go.etcd.io/bbolt` (MIT),
+`blevesearch/bleve/v2` (Apache-2.0), and the alternatives considered
+`couchbase/moss` / `couchbase/rhmap` (Apache-2.0). See the full dependency
+license table in `DESIGN-data.md`.

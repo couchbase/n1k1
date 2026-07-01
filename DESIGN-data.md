@@ -209,21 +209,25 @@ page-count/sheet/row), or *many* rows for inherently tabular docs (one row per
 spreadsheet row, one row per slide/page). The extracted rows then flow through
 the normal pipeline and can be fed to a bleve FTS index for content search.
 
-### Libraries (the user asked for well-tested options)
-- **Breadth, "bulletproof":** Apache **Tika** is the gold standard (60+ formats)
-  but is Java — run it as a sidecar server, or use **`extractous-go`** (Go
-  bindings over the Rust "Extractous" engine, which wraps Tika + Tesseract OCR;
-  actively maintained as of late 2025, supports PDF/DOCX/XLSX/PPTX/HTML + OCR for
-  scanned docs). This is the recommended path for *breadth* and for scanned-PDF
-  OCR, at the cost of a cgo/native dependency.
-- **Pure-Go, narrower:** `xuri/excelize` (XLSX, excellent), `ledongthuc/pdf` /
-  `pdfcpu` / `go-fitz` (PDF, varying robustness/cgo), `sajari/docconv`
-  (aggregator wrapping several tools). Good when staying pure-Go matters more
-  than format coverage.
-- **Recommendation:** make extraction a pluggable backend with two
-  implementations — a pure-Go default for the common cases (xlsx via excelize,
-  basic PDF/text) and an optional `extractous`/Tika backend (build tag) for
-  breadth + OCR. Office docs being zip-based dovetails with the §3 zip handling.
+### Libraries (well-tested **and** permissively licensed — see the licensing note)
+Document extraction is where the licensing landmines are, so the choices below are
+constrained to MIT/Apache-2.0/BSD only.
+- **Breadth, "bulletproof":** Apache **Tika** (Apache-2.0, 60+ formats) — Java,
+  run as a sidecar server — or **`extractous`** (core Apache-2.0; Rust engine
+  wrapping Tika + Tesseract OCR, both Apache-2.0; Go bindings exist). Recommended
+  for *breadth* and scanned-PDF OCR, at the cost of a cgo/native dependency.
+- **Pure-Go, narrower:** `xuri/excelize` (XLSX; **BSD-3**), `ledongthuc/pdf`
+  (**BSD-3**) and/or `pdfcpu` (**Apache-2.0**) for PDF text.
+- **Avoid (viral / non-permissive):** `go-fitz` and anything else wrapping
+  **MuPDF** — **AGPLv3**. **UniDoc/unipdf** — **AGPL/commercial** dual license.
+  `sajari/docconv`, though MIT itself, shells out to GPL binaries (`wv`,
+  `poppler-utils`, `unrtf`, `antiword`) — avoid unless restricted to
+  permissive-only backends. These are the common PDF/office traps; don't reach
+  for them.
+- **Recommendation:** a pluggable extraction backend with two implementations — a
+  pure-Go default (excelize + ledongthuc/pdf or pdfcpu) and an optional
+  Tika/extractous backend (build tag) for breadth + OCR. Both stay within the
+  permissive-license policy. Office docs being zip-based dovetails with §3.
 
 ## 5. Indexes & derived artifacts: storage + change detection
 
@@ -258,6 +262,63 @@ derived artifacts live, and **how** do we know source data changed?
   brand-new manifest entries (their parent subtree hash changes), so only the new
   partitions get indexed. This makes the common "logs keep coming, old data
   never changes" case incremental by construction.
+
+### Manifest contents — what to track (per file, per partition, per root)
+The manifest is the memory of "what we saw last time." The richer it is, the more
+work we can *skip* — not just change detection, but **predicate/partition pruning**
+(don't even open files that can't match a `WHERE`), **cardinality** for planning,
+and **incremental** index builds. Three levels:
+
+**Per source file:**
+- `relpath`, and stable identity: `size`, `mtime`; optionally `inode`/`dev` (to
+  distinguish rename from rewrite) and `ctime`.
+- `content_hash` (xxhash/blake3), plus `prefix_hash` + `known_offset` for the
+  append-only tail optimization.
+- `format`, `compression`, `encryption` (as detected), and `codec_seekable?`
+  (whether we can random-seek by logical offset — drives the doc-ID scheme in §6).
+- `doc_count` (records contributed by this file) — feeds cardinality & `LIMIT`
+  short-circuits.
+- **Zone map / min–max stats:** `min_id`/`max_id` (the synthetic or natural doc
+  IDs) **and** min/max (and null-count, distinct-estimate) for indexed/key columns
+  — this is what lets a query prune the file without reading it (Parquet/Iceberg
+  do exactly this).
+- `schema_fingerprint` (columns + inferred types seen) — detects schema drift and
+  drives `union_by_name`.
+- `partition_values` (derived from the path: hive `k=v` or projected date).
+- Per-index build state: for each index name, `built_through_offset` / `built?` —
+  so incremental/partial index builds know what's already covered.
+- `status` + `error` (files that failed to parse are recorded, not silently
+  dropped — surfaces "we skipped N files").
+- `last_scanned_at` (wall clock of the visit that produced this row).
+
+**Per partition / subdirectory (rollup, Merkle-style):**
+- `merkle_hash` rolled from child fingerprints (subtree-skip: unchanged hash ⇒
+  skip the whole subtree without `stat`-ing every file).
+- Aggregates: `doc_count`, `byte_count`, `file_count`, and rolled
+  `min_id`/`max_id` + column min/max (partition-level zone map → partition
+  pruning).
+- `partition_key`/`value` (e.g. `date=20260101`).
+- `sealed?` — an immutability hint: a *past* date partition that by policy will
+  never change can be trusted from cache and skipped even for the cheap
+  `(size,mtime)` check. Big win for huge historical log trees.
+- `last_visited_at`.
+
+**Per manifest (root):**
+- `manifest_schema_version` and `producer_version` (n1k1 build) — bump ⇒ rebuild
+  derived artifacts whose format changed.
+- `root_merkle_hash` (one compare answers "did anything change at all?").
+- `config_fingerprint` — hash of the catalog + index/extraction definitions the
+  artifacts were built from; if the *definitions* change, invalidate derived data
+  even when source bytes didn't.
+- `encryption` info (wrapped-DEK / key id) if the sidecar is itself encrypted
+  (§6's hard requirement).
+- Global aggregates (total docs/bytes) and `last_full_scan_at`.
+
+Rule of thumb: **stat-level fields** (`size`, `mtime`, hashes, offsets, merkle)
+serve *change detection*; **stats fields** (min/max zone maps, counts, null/
+distinct, schema) serve *pruning + planning*; **build-state fields** serve
+*incremental indexing*. Start minimal (identity + hash + merkle + offset) and add
+zone maps/counts when the planner can exploit them.
 
 ### Libraries (well-tested building blocks)
 - **Don't hand-roll a table format if you can avoid it.** `apache/iceberg-go`
@@ -372,6 +433,45 @@ immutable — exactly the append-only log case §5 optimizes, where per-file off
 checkpoints double as both the change-detection state **and** the `Fetch` seek
 index. For mutable files, prefer a natural key (strategy 2) or content-hash IDs
 (strategy 5), and document that synthetic positional IDs may shift on edit.
+
+## Dependency licensing (policy: permissive only — no GPL / AGPL)
+
+Every library proposed here is intended to be **MIT / Apache-2.0 / BSD** — no
+copyleft/viral licenses. Verified below (module-cache `LICENSE` files for deps
+already in the graph; upstream repos otherwise):
+
+| Library | Role | License |
+|---|---|---|
+| `go.etcd.io/bbolt` | GSI ordered store | MIT |
+| `blevesearch/bleve/v2` | FTS index | Apache-2.0 |
+| `couchbase/rhmap`, `couchbase/moss` | spill / alt store | Apache-2.0 |
+| `apache/iceberg-go` | table format / manifests | Apache-2.0 |
+| `apache/arrow-go/v18` | columnar / Parquet / CSV | Apache-2.0 |
+| `substrait-io/substrait` | plan IR | Apache-2.0 |
+| `scritchley/orc` | ORC reader | MIT |
+| `hamba/avro` | Avro | MIT |
+| `klauspost/compress` | gzip/zstd | BSD-3-Clause |
+| `SaveTheRbtz/zstd-seekable-format-go` | seekable zstd | MIT |
+| `buger/jsonparser` | JSON decode | MIT |
+| Go stdlib (`encoding/csv`, `compress/gzip`, `archive/zip`) | formats | BSD-3 (Go) |
+| `cespare/xxhash`, `lukechampine/blake3` | fingerprints | MIT |
+| `restic/chunker` | FastCDC dedup | BSD-2-Clause |
+| `google/tink-go` | streaming AEAD (encryption) | Apache-2.0 |
+| `FiloSottile/age` | file encryption (STREAM) | BSD-3-Clause |
+| `gocloud.dev/secrets` | KMS envelope keys | Apache-2.0 |
+| Apache **Tika**, **extractous**, **Tesseract** | doc extraction / OCR | Apache-2.0 |
+| `xuri/excelize` | XLSX | BSD-3-Clause |
+| `ledongthuc/pdf` | PDF text | BSD-3-Clause |
+| `pdfcpu/pdfcpu` | PDF text/tooling | Apache-2.0 |
+| `go-git/go-git` | Merkle/tree reference | Apache-2.0 |
+
+**Excluded (viral / non-permissive) — do NOT use:**
+- `go-fitz` and any **MuPDF** wrapper — **AGPLv3**.
+- **UniDoc / unipdf** — **AGPL / commercial** dual license.
+- `sajari/docconv` — MIT itself, but shells out to **GPL** binaries (`wv`,
+  `poppler-utils`, `unrtf`, `antiword`); avoid unless limited to permissive tools.
+
+Note: DuckDB (MIT) is referenced only as design inspiration, not a dependency.
 
 ## Phasing (suggested)
 
