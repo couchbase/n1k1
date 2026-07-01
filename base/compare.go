@@ -132,9 +132,13 @@ func (c *ValComparer) CompareWithType(aValue, bValue []byte,
 		av, aErr := jsonparser.Unescape(aValue, aBuf[:cap(aBuf)])
 		bv, bErr := jsonparser.Unescape(bValue, bBuf[:cap(bBuf)])
 
-		kvs[0].Key = av
-		kvs[1].Key = bv
-
+		// NOTE: do NOT store av/bv back into the pooled kvs[].Key. When the input
+		// has no escapes, jsonparser.Unescape returns the *input* slice unchanged
+		// -- i.e. av/bv can alias the caller's memory (e.g. a static constant or a
+		// doc field). Recording those pointers as reusable pool buffers would let
+		// a later ReuseNextKey (e.g. the Object branch copying a field name) write
+		// into that caller memory and corrupt it. The pool keeps its own aBuf/bBuf
+		// buffers; that's all that's safe to reuse.
 		c.KeyValsRelease(depth, kvs)
 
 		if aErr != nil || bErr != nil {

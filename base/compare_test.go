@@ -381,3 +381,32 @@ func TestValComparerObjectDoesNotCorrupt(t *testing.T) {
 		t.Errorf("Compare distinct objects = %d, want <0", got)
 	}
 }
+
+// TestStringCompareDoesNotPoisonPool guards against a regression where a String
+// CompareWithType stored its (possibly input-aliasing) unescaped operands back
+// into the reusable KeyVals pool. When jsonparser.Unescape finds no escapes it
+// returns the input slice unchanged, so the pool ended up holding pointers to
+// caller memory (e.g. a static constant); a later Object canonical/compare then
+// ReuseNextKey'd that slot and overwrote the constant. Manifested as rows being
+// dropped after an ORDER BY / DISTINCT on an object key (the WHERE constant got
+// clobbered by an object field name).
+func TestStringCompareDoesNotPoisonPool(t *testing.T) {
+	vc := &ValComparer{}
+	konst := Val(`"select_func"`) // a stable "constant" the caller must keep intact
+
+	// A String compare against the constant (as a WHERE eq would do).
+	if vc.Compare(konst, Val(`"array_func"`)) == 0 {
+		t.Fatal("baseline: distinct strings should not compare equal")
+	}
+	// Now canonicalize an object whose key would be copied via ReuseNextKey.
+	if _, err := vc.CanonicalJSON(Val(`{"name":"x"}`), nil); err != nil {
+		t.Fatalf("CanonicalJSON: %v", err)
+	}
+	// The constant must be untouched.
+	if string(konst) != `"select_func"` {
+		t.Errorf("constant was corrupted to %q (pool poisoning regression)", string(konst))
+	}
+	if vc.Compare(konst, Val(`"select_func"`)) != 0 {
+		t.Errorf("constant no longer compares equal to itself after object canonicalize")
+	}
+}
