@@ -41,6 +41,23 @@ import (
 	"github.com/couchbase/n1k1/glue"
 )
 
+// prog is the command's short name, derived from how the binary was invoked
+// (e.g. the base name of a symlink pointing at it), so an aliased install
+// presents itself under that alias in usage, prompts and messages. Defaults
+// to "n1k1".
+var prog = progName()
+
+// progName returns the base name of os.Args[0], falling back to "n1k1" when
+// the invocation path is empty or degenerate (".", "/").
+func progName() string {
+	if len(os.Args) > 0 {
+		if b := filepath.Base(os.Args[0]); b != "" && b != "." && b != string(filepath.Separator) {
+			return b
+		}
+	}
+	return "n1k1"
+}
+
 func main() {
 	var (
 		cFlag      = flag.String("c", "", "run one statement and exit")
@@ -62,7 +79,7 @@ func main() {
 
 	sess, err := glue.OpenSession(dir, *nsFlag)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "n1k1: cannot open datastore %q: %v\n", dir, err)
+		fmt.Fprintf(os.Stderr, "%s: cannot open datastore %q: %v\n", prog, dir, err)
 		os.Exit(1)
 	}
 
@@ -77,7 +94,7 @@ func main() {
 		}
 	}
 	if !cmd.ValidMode(mode) {
-		fmt.Fprintf(os.Stderr, "n1k1: unknown -mode %q (want %s)\n", mode, strings.Join(cmd.OutputModes, "|"))
+		fmt.Fprintf(os.Stderr, "%s: unknown -mode %q (want %s)\n", prog, mode, strings.Join(cmd.OutputModes, "|"))
 		os.Exit(2)
 	}
 
@@ -85,6 +102,7 @@ func main() {
 	fancy := isTTY(os.Stdout) && os.Getenv("NO_COLOR") == ""
 
 	c := &cli{
+		prog:     prog,
 		sess:     sess,
 		dir:      dir,
 		ns:       *nsFlag,
@@ -131,22 +149,23 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintf(os.Stderr, `n1k1 -- SQL++/N1QL over a file datastore (a directory of JSON docs)
+	fmt.Fprintf(os.Stderr, `%[1]s -- SQL++/N1QL over a file datastore (a directory of JSON docs)
 
-usage: n1k1 [flags] [datastore-dir]
+usage: %[1]s [flags] [datastore-dir]
 
-  n1k1 ./test/suite/json        REPL over that datastore
-  n1k1 -c "SELECT 1+1"          run one statement and exit
-  echo "SELECT ..." | n1k1 dir  stdin pipe (batch mode)
-  n1k1 -f script.n1ql dir       run a file of ;-separated statements
+  %[1]s ./test/suite/json        REPL over that datastore
+  %[1]s -c "SELECT 1+1"          run one statement and exit
+  echo "SELECT ..." | %[1]s dir  stdin pipe (batch mode)
+  %[1]s -f script.n1ql dir       run a file of ;-separated statements
 
 flags:
-`)
+`, prog)
 	flag.PrintDefaults()
 }
 
 // cli holds front-end state; all engine work goes through c.sess (glue.Session).
 type cli struct {
+	prog string // short command name (from how the binary was invoked)
 	sess *glue.Session
 	dir  string
 	ns   string
@@ -182,7 +201,7 @@ func (c *cli) icon(s string) string {
 
 func (c *cli) repl() {
 	fmt.Fprintf(c.stderr, "%s%s SQL++ over %s (namespace %q). Type %s for commands, %s to exit.\n",
-		c.icon("🔎 "), c.style.Cyan("n1k1"), c.dir, c.ns, c.style.Bold(".help"), c.style.Bold(".quit"))
+		c.icon("🔎 "), c.style.Cyan(c.prog), c.dir, c.ns, c.style.Bold(".help"), c.style.Bold(".quit"))
 
 	ln := liner.NewLiner()
 	defer ln.Close()
@@ -193,7 +212,7 @@ func (c *cli) repl() {
 	defer saveHistory(ln, hist)
 
 	for {
-		prompt := "n1k1> "
+		prompt := c.prog + "> "
 		if c.buf.Len() > 0 {
 			prompt = "  ...> " // continuing an unterminated statement
 		}
@@ -268,7 +287,7 @@ func (c *cli) batch(r io.Reader) {
 func (c *cli) readFile(path string) bool {
 	f, err := os.Open(path)
 	if err != nil {
-		fmt.Fprintf(c.stderr, "n1k1: cannot read %q: %v\n", path, err)
+		fmt.Fprintf(c.stderr, "%s: cannot read %q: %v\n", c.prog, path, err)
 		return false
 	}
 	defer f.Close()
