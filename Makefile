@@ -1,8 +1,9 @@
-default: run_intermed_build
+# `make` (no args) runs the full local test sweep -- see the `test` target below.
+default: test
 
 # Target run_intermed_build builds the intermed_build tool, regenerates
-# the intermed/ code, and runs the self-contained core unit tests. This
-# is the useful day-to-day development target.
+# the intermed/ code, and runs the self-contained core unit tests. A quick
+# core-only dev loop (it was the old `make` default; the default is now `test`).
 #
 # The N1QL-engine integration (glue/ + test/) is gated behind the "n1ql"
 # build tag and is NOT exercised here -- see the n1ql target below and
@@ -22,9 +23,18 @@ run_intermed_build:
 # glue targets exercise the N1QL-engine layer (glue/ + test/), build pure-Go
 # (CGO_ENABLED=0), and need the patched query fork -- see glue/patches/README.md.
 
-.PHONY: test build build-glue test-glue test-suite test-compiler test-all cli install-cli
+.PHONY: test test-core build intermed build-glue test-glue test-suite test-gsi test-compiler test-all cli install-cli
 
-test-all: test test-glue test-suite test-compiler
+# test (the default `make` target) is the full local test sweep: the core unit
+# tests, the glue N1QL-engine tests, the SQL++ conformance suite, and the
+# compiler -- but NOT the larger data-backed gsi suite (see test-all). ~1 minute.
+test: test-core test-glue test-suite test-compiler
+
+# test-all is the exhaustive sweep: everything in `test` PLUS the data-backed gsi
+# suites via ./test/... (TestGsiSuiteCases + TestGsiSuiteWithCompiler + the
+# generated gsi islands). SLOW -- roughly 3-5 minutes total: the gsi corpus
+# primary-scans large keyspaces with no index, so each gsi pass alone is ~40-55s.
+test-all: test test-gsi
 
 # cli builds the n1k1 command-line tool: a single pure-Go binary (CGO off) that
 # runs SQL++ over a file datastore. See cmd/n1k1 and DESIGN-cli.md.
@@ -36,8 +46,9 @@ cli: build-glue
 install-cli:
 	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go install -tags n1ql ./cmd/n1k1
 
-# test runs the self-contained core build + vet + unit tests (no external setup).
-test: build
+# test-core runs the self-contained core build + vet + unit tests (no external
+# setup, no n1ql tag).
+test-core: build
 	go vet ./...
 	go test ./...
 
@@ -45,8 +56,16 @@ test: build
 build:
 	go build ./...
 
-# build-glue builds the N1QL-engine layer (glue/ + test/) pure-Go.
-build-glue:
+# intermed regenerates the gitignored intermed/ package (the compiled-query
+# codegen) from engine/*.go -- a prerequisite for building the n1ql/glue layer
+# (test/emit imports it). Formerly done by the old default target.
+intermed:
+	go build ./cmd/intermed_build/
+	./intermed_build
+
+# build-glue builds the N1QL-engine layer (glue/ + test/) pure-Go. Regenerates
+# intermed/ first so a fresh checkout (where intermed/*.go is gitignored) builds.
+build-glue: intermed
 	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go build -tags n1ql ./glue/... ./test/...
 
 # test-glue runs the glue package unit tests (N1QL engine layer).
@@ -72,6 +91,17 @@ test-suite: build-glue
 # The steps MUST stay ordered so ./test/tmp never compiles a stale copy.
 test-compiler: build-glue
 	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -tags n1ql -run 'TestCasesSimpleWithCompiler|TestSuiteWithCompiler|TestQueryCasesWithCompiler' ./test
+	cd test/tmp && go fmt
+	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -tags n1ql ./test/tmp
+
+# test-gsi runs the data-backed gsi corpus (test/suite/json-gsi; see
+# DESIGN-testing.md): the interpreter suite (verbose -- prints the summary +
+# grouped expected-non-pass table), then the compiler-generation pass, then the
+# generated gsi islands in test/tmp. SLOW -- ~2-3 minutes: the gsi keyspaces are
+# large and there's no index, so every pass is a full primary scan.
+test-gsi: build-glue
+	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -tags n1ql -v -run TestGsiSuiteCases ./test
+	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -tags n1ql -run TestGsiSuiteWithCompiler ./test
 	cd test/tmp && go fmt
 	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -tags n1ql ./test/tmp
 
