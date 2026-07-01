@@ -1155,6 +1155,10 @@ checkpoints double as both the change-detection state **and** the `Fetch` seek
 index. For mutable files, prefer a natural key (strategy 2) or content-hash IDs
 (strategy 5), and document that synthetic positional IDs may shift on edit.
 
+Idea: keep checksums and various sentinel positional ID's and local
+chunk signatures and checksums at various offsets throughout the files
+-- canary signals if anything might have changed. Not comprehensive.
+
 ## Dependency licensing (policy: permissive only — no GPL / AGPL)
 
 Every library proposed here is intended to be **MIT / Apache-2.0 / BSD** — no
