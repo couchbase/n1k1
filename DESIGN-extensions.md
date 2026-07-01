@@ -131,6 +131,48 @@ version lock-in). The viable spectrum is compile-time registration (fastest) →
 yaegi/goja (drop-in source, no build) → wazero (sandboxed binary extensions) →
 subprocess (isolation). All are cgo-free and keep the static-binary property.
 
+### WASM memory: zero-copy reach and bounded pools
+
+Two properties make Wasm especially interesting for n1k1's zero-garbage,
+bounded-memory design.
+
+**Zero-copy is nuanced — ~1 copy in, 0 copies out.** A Wasm module has exactly one
+**linear memory**: a contiguous byte array that *is* the guest's whole address
+space. The guest can only address *its* linear memory — it can't hold a pointer
+into n1k1's Go heap, so you cannot hand an extension a pointer to an arbitrary
+n1k1 `[]byte` (that's the isolation the "no shared buffer" warnings refer to).
+*But* the host side is zero-copy: wazero exposes the guest's linear memory to n1k1
+as a Go `[]byte` **view** (`api.Memory.Read` aliases the backing array, not a
+copy). So:
+
+- **Input** must live in linear memory → n1k1 writes the row bytes in (one write).
+- **Output** is read back as an aliased view → no copy.
+- **The reuse trick:** make n1k1's reusable row buffer a *fixed window of the
+  guest's linear memory*. The per-row marshal n1k1 does anyway becomes the "copy
+  in"; the guest reads in place and writes results into another window that n1k1
+  reads in place — no *extra* copies beyond materializing the row somewhere. Far
+  cheaper than gRPC/subprocess (which serialize both ways).
+- **Caveat:** `memory.grow` can move the backing array, invalidating aliased
+  views — hold them only across a grow-free call, or re-fetch. Bounded
+  (non-growable) memory keeps the array stable, so views stay valid.
+
+The browser `SharedArrayBuffer` story people recall is a *different axis*: it
+shares Wasm linear memory across **Worker threads** (the threads proposal), not
+host↔guest copying, and doesn't apply to a single-threaded host embedding.
+
+**Bounded memory is first-class.** A Wasm `memory` declares initial + optional
+**max** pages (64 KiB each); the runtime refuses `memory.grow` past the max, and
+wazero also caps at the runtime level (`RuntimeConfig.WithMemoryLimitPages`). So
+"here is a fixed pool — that's it" is native: set min=max (or the limit) and
+growth fails. Core Wasm has **no `malloc`** — allocation is entirely the guest's
+toolchain, so a guest compiled with a bump/arena allocator (or none) does no
+dynamic allocation at all; a TinyGo/Rust/C guest that *does* allocate does so only
+*within* the fixed pool, and exhausting it **traps and is contained** (it can't
+touch n1k1's heap). The call/operand stack is runtime-managed and also boundable,
+so deep recursion traps rather than corrupts. This isolation — a runaway guest
+OOMs/overflows inside its own pool — is the key advantage over goja (in-process,
+shares the Go heap + GC) and Go plugins (share everything).
+
 ## Table-valued (set-returning) functions in FROM
 
 "Table-valued function" is the right term (a.k.a. *set-returning function*). The
