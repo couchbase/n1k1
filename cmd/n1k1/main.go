@@ -65,7 +65,7 @@ func main() {
 		cFlag     = flag.String("c", "", "run one statement and exit")
 		fFlag     = flag.String("f", "", "run statements from a file and exit")
 		nsFlag    = flag.String("ns", "default", "datastore namespace")
-		modeFlag  = flag.String("mode", "", "output mode: "+strings.Join(cmd.OutputModes, "|")+" (append |pretty to indent JSON; default box at a TTY, else jsonlines)")
+		modeFlag  = flag.String("mode", "", "output mode: "+strings.Join(cmd.OutputModes, "|")+" (append |pretty to indent JSON; default box|pretty at a TTY, else jsonlines)")
 		timerFlag = flag.Bool("timer", false, "print row count + elapsed after each statement")
 		vFlag     = flag.Bool("v", false, "verbose: show unsupported reasons / plan on error")
 		initFlag  = flag.String("init", "", "startup file of dot-commands/SQL (default ~/."+prog+"rc; use \"\", \"-\" or \"none\" to skip)")
@@ -120,9 +120,9 @@ func main() {
 	mode := *modeFlag
 	if mode == "" {
 		if stdinIsTTY && *cFlag == "" && *fFlag == "" {
-			mode = "box"
+			mode = "box|pretty" // interactive: pretty-print nested JSON by default
 		} else {
-			mode = "jsonlines"
+			mode = "jsonlines" // pipes/-c/-f: stay compact (one JSON per line)
 		}
 	}
 	if !cmd.ValidMode(mode) {

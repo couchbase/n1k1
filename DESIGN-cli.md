@@ -105,9 +105,9 @@ front-end (parse args, read lines, format rows).
     -v            verbose (show unsupported reasons, plan on error)
   ```
 
-  Mode selection: a TTY defaults to `box`; a pipe/`-c`
-  defaults to `jsonlines` (clean for downstream tools) unless `-mode` says
-  otherwise.
+  Mode selection: a TTY defaults to `box|pretty`; a pipe/`-c`
+  defaults to `jsonlines` (compact, clean for downstream tools) unless `-mode`
+  says otherwise.
 
 ------------------------------------------------------------------------
 ## 4. The REPL
@@ -224,8 +224,9 @@ All formatters live in `cmd/render.go` and take `[]json.RawMessage` (plus a
 ## 9. Decisions (resolved)
 
 - **Binary name:** `n1k1` (`cmd/n1k1/main.go`). Matches the module name.
-- **Default TTY mode:** `box` (DuckDB-like). Pipes/`-c` still default to
-  `jsonlines`. (`.mode line` remains available for wide/nested docs.)
+- **Default TTY mode:** `box|pretty` (DuckDB-like, with nested JSON indented).
+  Pipes/`-c` still default to compact `jsonlines`. (`.mode line` remains
+  available for wide/nested docs.)
 - **Line editor:** accept **one small pure-Go dep** (`peterh/liner` or
   `chzyer/readline`, both CGO-free) for arrow-key history + editing from v1.
   Add it via an explicit `go get <pkg>@<ver>` (never `go mod tidy`) and verify
