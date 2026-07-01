@@ -77,7 +77,7 @@ func main() {
 	// --modes locks down which formats/layouts/compression n1k1 will scan, so a
 	// tree with subdirs/formats the user doesn't want considered can be excluded.
 	if opts, err := recordsource.ParseModes(*modesFlag); err != nil {
-		fmt.Fprintf(os.Stderr, "n1k1: bad -modes: %v\n", err)
+		fmt.Fprintf(os.Stderr, "%s: bad -modes: %v\n", prog, err)
 		os.Exit(2)
 	} else {
 		glue.ScanWalkOptions = opts
@@ -460,7 +460,7 @@ func (c *cli) printHelp() {
 .schema [<keyspace>]  sampled shape (keys + JSON types) of a keyspace
 .mode <m>             output mode: `+strings.Join(cmd.OutputModes, " ")+`
 .timer on|off         toggle elapsed-time reporting
-.explain              toggle printing the converted n1k1 plan per query
+.explain              toggle printing EXPLAIN PLAN per query
 .maxrows <n>          box: cap rows shown (0 = all)
 .maxwidth <n>         box: cap column width (0 = uncapped)
 .read <file>          run statements/dot-commands from a file
