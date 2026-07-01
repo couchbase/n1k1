@@ -282,6 +282,48 @@ func TestGreatestLeastDifferentialVsCBQ(t *testing.T) {
 	}
 }
 
+func TestElementDifferentialVsCBQ(t *testing.T) {
+	c := func(v interface{}) expression.Expression { return expression.NewConstant(v) }
+	arr := c([]interface{}{10, 20, 30})
+	strs := c([]interface{}{"a", "b", "c"})
+	nested := c([]interface{}{[]interface{}{1, 2}, map[string]interface{}{"x": 3}})
+	withNull := c([]interface{}{nil, 2})
+
+	cases := []struct {
+		name string
+		expr expression.Expression
+	}{
+		{"first", expression.NewElement(arr, c(0))},
+		{"last-positive", expression.NewElement(arr, c(2))},
+		{"negative-last", expression.NewElement(arr, c(-1))},
+		{"negative-mid", expression.NewElement(arr, c(-2))},
+		{"negative-oob", expression.NewElement(arr, c(-4))},
+		{"oob", expression.NewElement(arr, c(5))},
+		{"string-elem", expression.NewElement(strs, c(1))},
+		{"nested-elem", expression.NewElement(nested, c(1))},
+		{"null-elem", expression.NewElement(withNull, c(0))},
+		{"integral-float-index", expression.NewElement(arr, c(1.0))},
+		{"fractional-index", expression.NewElement(arr, c(1.5))},
+		{"nonnumber-index", expression.NewElement(arr, c("x"))},
+		{"missing-index", expression.NewElement(arr, c(value.MISSING_VALUE))},
+		{"null-index", expression.NewElement(arr, c(value.NULL_VALUE))},
+		{"missing-arr", expression.NewElement(c(value.MISSING_VALUE), c(0))},
+		{"null-arr", expression.NewElement(c(value.NULL_VALUE), c(0))},
+		{"nonarray-arr", expression.NewElement(c(5), c(0))},
+	}
+	for _, tc := range cases {
+		want := cbqEval(t, tc.expr)
+		got, ok := nativeEval(t, tc.expr)
+		if !ok {
+			t.Errorf("%s: did not optimize", tc.name)
+			continue
+		}
+		if got != want {
+			t.Errorf("%s: native=%q, cbq=%q", tc.name, got, want)
+		}
+	}
+}
+
 func TestCaseDifferentialVsCBQ(t *testing.T) {
 	c := func(v interface{}) expression.Expression { return expression.NewConstant(v) }
 	wt := func(when, then expression.Expression) *expression.WhenTerm {

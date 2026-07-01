@@ -76,6 +76,9 @@ func init() {
 	OptimizableFuncs["greatest"] = "greatest"
 	OptimizableFuncs["least"] = "least"
 
+	// Array element navigation `arr[idx]` (binary, see engine/expr_nav.go).
+	OptimizableFuncs["element"] = "element"
+
 	// Type checks (see engine/expr_type.go); underscore Name()s.
 	OptimizableFuncs["is_array"] = "is_array"
 	OptimizableFuncs["is_number"] = "is_number"
@@ -205,7 +208,7 @@ func ExprTreeOptimize(labels base.Labels, e expression.Expression,
 	operands := f.Operands()
 	switch name {
 	case "add", "mult", "sub", "div", "mod", "idiv", "imod", "in",
-		"nullif", "missingif":
+		"nullif", "missingif", "element":
 		// These native harnesses are two-operand; cbq's n-ary forms fall back.
 		// (ifnull/ifmissing/ifmissingornull/nvl and greatest/least are n-ary.)
 		if len(operands) != 2 {

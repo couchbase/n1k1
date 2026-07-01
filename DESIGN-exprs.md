@@ -27,9 +27,9 @@ interpreter unit tests.
 `a+b` is `0 B/op, 0 allocs/op` (31 ns) vs cbq's `Evaluate()` fallback at
 `384 B/op, 8 allocs/op` (190 ns) — ~6× faster, zero per-eval garbage.
 
-**Next:** `element`/`slice` navigation; `is [not] distinct from` (binary, low
-priority); then Tier B (string/numeric/date functions). `LIKE`/`REGEXP_*` are
-deliberately deferred — see Lessons.
+**Next:** `slice` navigation (blocked — see Lessons); `is [not] distinct from`
+(binary, low priority); then Tier B (string/numeric/date functions). `LIKE`/
+`REGEXP_*` are deliberately deferred — see Lessons.
 
 ## Why this matters
 
@@ -101,6 +101,7 @@ type/collation semantics.
 | `case` | `engine/expr_case.go` + `base.CaseReduce` | searched + simple CASE (n-ary; simple desugars to eq conds) |
 | `nullif` `missingif` | `engine/expr_nullif.go` + `base.NullMissingIf` | NULLIF / MISSINGIF (binary) |
 | `greatest` `least` | `engine/expr_greatest.go` + `base.GreatestLeast` | GREATEST / LEAST (n-ary; collation max/min) |
+| `element` | `engine/expr_nav.go` + `base.ValElement` | array element nav `arr[idx]` (binary; negative index, requoted strings) |
 | `concat` (`\|\|`) | `engine/expr_concat.go` + `base.NaryConcat` | string concatenation (n-ary) |
 | `between` | `engine/expr_between.go` | BETWEEN (ternary; collation-order bounds) |
 | `in` | `engine/expr_in.go` + `base.ValIn` | IN (array membership; 2-operand) |
@@ -113,7 +114,7 @@ Reusable harnesses: `MakeBiExprFunc` (binary), `MakeTriExprFunc` (ternary),
 "empty==MISSING, leading-n==null"), `CondUnknownKeep`/`NaryFirstKept`,
 `NaryConcat`, `CaseReduce`, `ValIn`.
 
-Still **delegated:** `LIKE`/`REGEXP_*`, `is [not] distinct from`, `element`/`slice`
+Still **delegated:** `LIKE`/`REGEXP_*`, `is [not] distinct from`, `slice`
 navigation, `TYPE()`/`IS_BINARY`, and the ~320 remaining scalar functions
 (string/numeric/date/array/object/…).
 
@@ -149,7 +150,7 @@ The done items are in the inventory table above; below is what's *left*, tiered
 by how they fit the byte/register/lz model.
 
 ### Tier A — remaining scalar, byte-friendly, high per-row frequency
-- **`element`/`slice` navigation** — extend `labelPath` via `jsonparser`.
+- **`slice` navigation `arr[start:end]`** — blocked on cbq internals, see Lessons.
 - **`is [not] distinct from`** (binary, low priority) — null-safe equality via
   `ValComparer`.
 
@@ -260,6 +261,16 @@ safety net (it caught the `Function.Name()` and MISSING-constant bugs below).
   (`SearchedCase`/`SimpleCase`) isn't an `expression.Function` and has unexported
   fields; `ExprTreeOptimize` reaches its parts via `Children()` and lowers both to
   a flat `case` param list (simple → searched with `eq` conds).
+- **`element` navigation is a `Function`; `slice` is blocked.** `arr[idx]` is
+  `expression.Element` (a `BinaryFunctionBase`, `Name()=="element"`), so it rides
+  the generic 2-operand optimizer path + `MakeBiExprFunc`; `base.ValElement` does
+  the index math (negative-from-end, integral-only, MISSING/NULL propagation) and
+  re-quotes string elements that `jsonparser` unquotes. `arr[start:end]`
+  (`expression.Slice`) can't be lowered: its presence-of-bound state lives in
+  *unexported* `start`/`end` bools with no accessor, so `Operands()` alone can't
+  tell `arr[X:]` from `arr[:X]` (both are 2 operands); and `jsonparser` has no
+  slice primitive. Unblocking needs an exported `HasStart()`/`HasEnd()` on the
+  fork's `Slice` plus a real `base.ValSlice` byte helper — deferred.
 - **DRY via shared `base` reducers + one classifier.** `ValKind` centralizes
   kind detection; `NaryFirstKept`/`NaryConcat`/`CaseReduce` are plain `base` helpers
   the lz harness calls in one line (so intermed doesn't try to fuse them).
