@@ -8,4 +8,4 @@
 /test/tmp/*.go
 tmp
 /n1k1
-
+/sql++
