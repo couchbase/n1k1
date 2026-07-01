@@ -185,14 +185,14 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintf(os.Stderr, `%[1]s -- SQL++/N1QL over a file datastore (a directory of JSON docs)
+	fmt.Fprintf(os.Stderr, `%[1]s -- SQL++ for local files (e.g., directories of JSON docs)
 
 usage: %[1]s [flags] [datastore-dir]
 
   %[1]s ./test/suite/json        REPL over that datastore
   %[1]s -c "SELECT 1+1"          run one statement and exit
   echo "SELECT ..." | %[1]s dir  stdin pipe (batch mode)
-  %[1]s -f script.n1ql dir       run a file of ;-separated statements
+  %[1]s -f script.sql++ dir       run a file of ;-separated statements
 
 flags:
 `, prog)
