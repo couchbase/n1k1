@@ -48,8 +48,10 @@ testing gave byte-identical results. One concrete porting lesson: match the cbq
 **`Function.Name()`** (the canonical no-underscore form set by each `Init()`,
 e.g. `isnull`), not the registry alias, when wiring `OptimizableFuncs`.
 
-Next candidates (Tier A): `||` concat, `CASE`, the conditional-unknown family
-(`NVL/IFNULL/IFMISSING/COALESCE`), `between`, scalar `in`, then Tier B functions.
+Next candidates (Tier A): `is [not] distinct from` (binary); `||` concat +
+`COALESCE` + n-ary `IFNULL/IFMISSING` (all need a variadic `MakeNaryExprFunc` —
+see the codegen note below); `CASE`; `LIKE`; the `is_*` type checks; then Tier B
+functions.
 
 ## Why this matters
 
