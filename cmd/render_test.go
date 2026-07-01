@@ -196,7 +196,7 @@ func TestRenderList(t *testing.T) {
 
 func TestRenderBoxPlain(t *testing.T) {
 	var b strings.Builder
-	RenderBox(&b, raws(`{"name":"dave"}`, `{"name":"earl"}`), 0, 0, "", Style{})
+	RenderBox(&b, raws(`{"name":"dave"}`, `{"name":"earl"}`), 0, 0, 0, "", Style{})
 	out := b.String()
 	if strings.Contains(out, "\x1b[") {
 		t.Errorf("plain box must not contain ANSI: %q", out)
@@ -210,7 +210,7 @@ func TestRenderBoxPlain(t *testing.T) {
 
 func TestRenderBoxStyled(t *testing.T) {
 	var b strings.Builder
-	RenderBox(&b, raws(`{"n":1}`), 0, 0, "", Style{On: true})
+	RenderBox(&b, raws(`{"n":1}`), 0, 0, 0, "", Style{On: true})
 	if !strings.Contains(b.String(), "\x1b[") {
 		t.Errorf("styled box should contain ANSI escapes")
 	}
@@ -219,13 +219,90 @@ func TestRenderBoxStyled(t *testing.T) {
 func TestRenderBoxElision(t *testing.T) {
 	var b strings.Builder
 	rows := raws(`{"n":1}`, `{"n":2}`, `{"n":3}`, `{"n":4}`, `{"n":5}`)
-	RenderBox(&b, rows, 0, 2, "", Style{}) // maxRows=2 -> head+tail with elision
+	RenderBox(&b, rows, 0, 2, 0, "", Style{}) // maxRows=2 -> head+tail with elision
 	out := b.String()
 	if !strings.Contains(out, "·") {
 		t.Errorf("expected elision row (·) in:\n%s", out)
 	}
 	if !strings.Contains(out, "5 row(s)") || !strings.Contains(out, "elided") {
 		t.Errorf("expected true count + elided note in footer:\n%s", out)
+	}
+}
+
+// TestRenderBoxTailElision: a negative maxRows keeps the LAST |n| rows and puts
+// the "·" elision row at the front of the box.
+func TestRenderBoxTailElision(t *testing.T) {
+	var b strings.Builder
+	rows := raws(`{"n":1}`, `{"n":2}`, `{"n":3}`, `{"n":4}`, `{"n":5}`)
+	RenderBox(&b, rows, 0, -2, 0, "", Style{}) // maxRows=-2 -> last 2 rows
+	out := b.String()
+	if !strings.Contains(out, "· ") {
+		t.Errorf("expected elision row (·) in:\n%s", out)
+	}
+	// Last two values must be shown; the earlier ones elided.
+	for _, want := range []string{"│ 4 │", "│ 5 │"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected tail row %q in:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "│ 1 │") || strings.Contains(out, "│ 2 │") {
+		t.Errorf("head rows should be elided in:\n%s", out)
+	}
+	// The elision row must precede the first shown data row.
+	if i, j := strings.Index(out, "·"), strings.Index(out, "│ 4 │"); i < 0 || i > j {
+		t.Errorf("elision row should be at the front in:\n%s", out)
+	}
+	if !strings.Contains(out, "5 row(s)") || !strings.Contains(out, "elided") {
+		t.Errorf("expected true count + elided note in footer:\n%s", out)
+	}
+}
+
+// TestRenderBoxAutoWidthFits: auto mode (maxWidth<0) shrinks an over-wide table
+// to fit termWidth, but leaves a table that already fits untouched.
+func TestRenderBoxAutoWidthFits(t *testing.T) {
+	long := strings.Repeat("x", 100)
+	rows := raws(`{"a":"` + long + `"}`)
+
+	// Narrow terminal: the 100-char value must be truncated to fit.
+	var narrow strings.Builder
+	RenderBox(&narrow, rows, -1, 0, 40, "", Style{})
+	for _, line := range strings.Split(strings.TrimRight(narrow.String(), "\n"), "\n") {
+		if runeLen(line) > 40 {
+			t.Errorf("auto line exceeds termWidth 40 (%d): %q", runeLen(line), line)
+		}
+	}
+	if !strings.Contains(narrow.String(), "…") {
+		t.Errorf("expected truncation ellipsis in narrow auto box:\n%s", narrow.String())
+	}
+
+	// Wide terminal: the whole value fits, so no truncation.
+	var wide strings.Builder
+	RenderBox(&wide, rows, -1, 0, 200, "", Style{})
+	if strings.Contains(wide.String(), "…") {
+		t.Errorf("wide auto box should not truncate:\n%s", wide.String())
+	}
+	if !strings.Contains(wide.String(), long) {
+		t.Errorf("wide auto box should show full value:\n%s", wide.String())
+	}
+}
+
+// TestCapColumnsToWidth checks the max-min fair-share width distribution.
+func TestCapColumnsToWidth(t *testing.T) {
+	// Narrow columns keep their width; the wide one absorbs the shrink.
+	w := []int{1, 1, 100}
+	capColumnsToWidth(w, 50) // budget = 50 - (3*3+1) = 40
+	if w[0] != 1 || w[1] != 1 {
+		t.Errorf("narrow columns should be untouched: %v", w)
+	}
+	if got, want := w[0]+w[1]+w[2], 40; got != want {
+		t.Errorf("content total = %d, want %d (%v)", got, want, w)
+	}
+
+	// Already fits: untouched.
+	w2 := []int{3, 4, 5}
+	capColumnsToWidth(w2, 200)
+	if w2[0] != 3 || w2[1] != 4 || w2[2] != 5 {
+		t.Errorf("fitting table should be untouched: %v", w2)
 	}
 }
 

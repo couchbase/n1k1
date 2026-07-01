@@ -35,6 +35,7 @@ import (
 	"strings"
 
 	"github.com/peterh/liner"
+	"golang.org/x/term"
 
 	"github.com/couchbase/n1k1/base"
 	"github.com/couchbase/n1k1/cmd"
@@ -218,8 +219,8 @@ type cli struct {
 	timer    bool
 	verbose  bool
 	explain  bool
-	maxRows  int // box: 0 = show all
-	maxWidth int // box: per-column cap, 0 = uncapped
+	maxRows  int // box: 0 = all; >0 = head+tail; <0 = last |n| rows
+	maxWidth int // box: per-column cap; 0 = uncapped; <0 = auto (fit terminal)
 	listSep  string
 
 	out     io.Writer // result destination (stdout, or a .output file)
@@ -431,7 +432,11 @@ func (c *cli) renderResult(res *glue.Result) {
 		if c.timer {
 			elapsed = c.icon("⏱ ") + res.Elapsed.String()
 		}
-		cmd.RenderBox(c.out, res.Rows, c.maxWidth, c.maxRows, elapsed, c.style)
+		termWidth := 0
+		if c.maxWidth < 0 { // auto: fit the box to the terminal's width
+			termWidth = c.terminalWidth()
+		}
+		cmd.RenderBox(c.out, res.Rows, c.maxWidth, c.maxRows, termWidth, elapsed, c.style)
 		return // box prints its own row-count/elapsed footer
 	}
 
@@ -478,12 +483,25 @@ func (c *cli) dot(line string) bool {
 		c.explain = !c.explain
 		fmt.Fprintf(c.stderr, "explain %s\n", onOff(c.explain))
 	case ".maxrows":
-		if n, err := strconv.Atoi(arg); err == nil {
+		if arg == "" {
+			fmt.Fprintf(c.stderr, "maxrows %s\n", c.maxRowsDesc())
+		} else if n, err := strconv.Atoi(arg); err == nil {
 			c.maxRows = n
+			fmt.Fprintf(c.stderr, "maxrows %s\n", c.maxRowsDesc())
+		} else {
+			fmt.Fprintf(c.stderr, "usage: .maxrows <n>  (0 = all; negative = last |n| rows)\n")
 		}
 	case ".maxwidth":
-		if n, err := strconv.Atoi(arg); err == nil {
+		if arg == "" {
+			fmt.Fprintf(c.stderr, "maxwidth %s\n", c.maxWidthDesc())
+		} else if strings.EqualFold(arg, "auto") {
+			c.maxWidth = -1
+			fmt.Fprintf(c.stderr, "maxwidth %s\n", c.maxWidthDesc())
+		} else if n, err := strconv.Atoi(arg); err == nil && n >= 0 {
 			c.maxWidth = n
+			fmt.Fprintf(c.stderr, "maxwidth %s\n", c.maxWidthDesc())
+		} else {
+			fmt.Fprintf(c.stderr, "usage: .maxwidth <n|auto>  (0 = uncapped; auto = fit terminal)\n")
 		}
 	case ".read":
 		c.readFile(arg)
@@ -503,8 +521,8 @@ func (c *cli) printHelp() {
 .mode <m>             output mode: `+strings.Join(cmd.OutputModes, " ")+`
 .timer [on|off]       elapsed-time reporting (no arg shows the current setting)
 .explain              toggle printing EXPLAIN PLAN per query
-.maxrows <n>          box: cap rows shown (0 = all)
-.maxwidth <n>         box: cap column width (0 = uncapped)
+.maxrows <n>          box: cap rows shown (0 = all; negative = last |n| rows)
+.maxwidth <n|auto>    box: cap column width (0 = uncapped; auto = fit terminal)
 .read <file>          run statements/dot-commands from a file
 .output [<file>]      send results to a file, or back to stdout if omitted
 .quit / .exit         leave
@@ -661,6 +679,47 @@ func onOff(b bool) string {
 		return "on"
 	}
 	return "off"
+}
+
+// terminalWidth reports the current output terminal's column count for auto
+// box-width fitting, or 0 when it can't be determined (e.g. output is a pipe or
+// a redirected file). Falls back to the COLUMNS env var when the ioctl fails.
+func (c *cli) terminalWidth() int {
+	if f, ok := c.out.(*os.File); ok {
+		if w, _, err := term.GetSize(int(f.Fd())); err == nil && w > 0 {
+			return w
+		}
+	}
+	if s := strings.TrimSpace(os.Getenv("COLUMNS")); s != "" {
+		if n, err := strconv.Atoi(s); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 0
+}
+
+// maxRowsDesc describes the current .maxrows setting for status messages.
+func (c *cli) maxRowsDesc() string {
+	switch {
+	case c.maxRows == 0:
+		return "0 (all rows)"
+	case c.maxRows < 0:
+		return fmt.Sprintf("%d (last %d rows)", c.maxRows, -c.maxRows)
+	default:
+		return fmt.Sprintf("%d (head+tail)", c.maxRows)
+	}
+}
+
+// maxWidthDesc describes the current .maxwidth setting for status messages.
+func (c *cli) maxWidthDesc() string {
+	switch {
+	case c.maxWidth < 0:
+		return "auto (fit terminal)"
+	case c.maxWidth == 0:
+		return "0 (uncapped)"
+	default:
+		return fmt.Sprintf("%d", c.maxWidth)
+	}
 }
 
 func isTTY(f *os.File) bool {

@@ -143,8 +143,8 @@ Chosen to match DuckDB names where the concept exists, so muscle memory carries.
 | `.schema [<keyspace>]` | Infer a shape from sampling the first N docs of a keyspace (top-level keys + observed JSON types). No real schema exists in a JSON store, so it's a *sampled* shape, clearly labeled. |
 | `.mode <m>` | Set output mode (see §6). |
 | `.timer on\|off` | Toggle elapsed-time footer. |
-| `.maxrows <n>` | box: cap rows shown (head+tail with a `·` elision row, DuckDB-style). |
-| `.maxwidth <n>` | box: cap column width, truncate with `…`. |
+| `.maxrows <n>` | box: cap rows shown. `>0` = head+tail with a `·` elision row (DuckDB-style); `<0` = last `|n|` rows with the `·` elision row at the front; `0` = all. |
+| `.maxwidth <n\|auto>` | box: cap column width, truncate with `…`. `0` = uncapped; `auto` = fit the box to the detected terminal width, widening columns to use spare space and shrinking (max-min fair share) only when the table overflows. |
 | `.read <file>` | Execute statements/dot-commands from a file. |
 | `.output <file>` / `.output` | Redirect results to a file / back to stdout. |
 | `.explain` | Toggle: also print the converted `base.Op` plan tree for each query. The natural home for showing *why* something is UNSUPPORTED. |
@@ -162,10 +162,15 @@ the projection's column labels. Formatters:
     value (`raw`/`SELECT VALUE`), use a single `value` column.
   - Box-drawing borders (`┌─┬─┐ │ ├─┼─┤ └─┴─┘`).
   - Right-align numbers, left-align strings; nested objects/arrays rendered as
-    compact JSON, truncated to `.maxwidth` with `…`.
+    compact JSON, truncated to `.maxwidth` with `…`. With `.maxwidth auto` the
+    box is fit to the terminal width (detected via the tty, else `$COLUMNS`):
+    columns widen into spare space and only shrink — max-min fair share — when
+    the natural table would overflow.
   - Footer: `N rows (showing X)  ·  C columns  ·  elapsed` when `.timer on`.
   - When rows exceed `.maxrows`, show head + tail split by a `·····` elision
-    row (DuckDB's trick), with the true count in the footer.
+    row (DuckDB's trick), with the true count in the footer. A negative
+    `.maxrows` instead keeps the last `|n|` rows, with the elision row at the
+    front.
 - **`jsonlines`** (default for pipes/`-c`) — one canonical JSON row per line.
 - **`json`** — a single pretty JSON array.
 - **`csv`** — header from labels; nested values emitted as JSON text, quoted.

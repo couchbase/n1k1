@@ -311,11 +311,19 @@ func RenderList(w io.Writer, rows []json.RawMessage, sep string) {
 	}
 }
 
-// RenderBox prints the signature boxed unicode table. maxWidth caps a column's
-// width (0 = uncapped), truncating with an ellipsis; maxRows caps shown rows
-// (0 = all) with a head/tail elision row; elapsed (if non-empty) joins the
-// footer. style adds dim borders/footer and a cyan-bold header when On.
-func RenderBox(w io.Writer, rows []json.RawMessage, maxWidth, maxRows int, elapsed string, style Style) {
+// RenderBox prints the signature boxed unicode table.
+//
+// maxWidth caps a column's width, truncating with an ellipsis: >0 is a fixed
+// per-column cap, 0 is uncapped, and <0 ("auto") fits the box to termWidth,
+// widening columns to use whatever horizontal space is available (and shrinking
+// them, fairly, when the natural table is too wide). termWidth is only consulted
+// in auto mode; when it is unknown (<=0) auto falls back to uncapped.
+//
+// maxRows caps shown rows: >0 keeps a head+tail with a "·" elision row in the
+// middle, 0 shows all, and <0 keeps the last |maxRows| rows with the "·"
+// elision row at the front. elapsed (if non-empty) joins the footer. style adds
+// dim borders/footer and a cyan-bold header when On.
+func RenderBox(w io.Writer, rows []json.RawMessage, maxWidth, maxRows, termWidth int, elapsed string, style Style) {
 	cols, cells := tableOf(rows)
 	if len(cols) == 0 {
 		fmt.Fprintln(w, style.Dim("(0 rows)"))
@@ -347,18 +355,28 @@ func RenderBox(w io.Writer, rows []json.RawMessage, maxWidth, maxRows int, elaps
 				widths[j] = maxWidth
 			}
 		}
+	} else if maxWidth < 0 && termWidth > 0 {
+		capColumnsToWidth(widths, termWidth)
 	}
 
-	// Which rows to show (head+tail elision when over maxRows).
+	// Which rows to show. dotsFront places the elision row before the shown
+	// rows (tail mode); otherwise a middle elision row separates head from tail.
 	type span struct{ from, to int } // [from, to)
 	var shown []span
 	elided := 0
-	if maxRows > 0 && len(cells) > maxRows {
+	dotsFront := false
+	switch {
+	case maxRows > 0 && len(cells) > maxRows:
 		head := (maxRows + 1) / 2
 		tail := maxRows - head
 		shown = []span{{0, head}, {len(cells) - tail, len(cells)}}
 		elided = len(cells) - maxRows
-	} else {
+	case maxRows < 0 && len(cells) > -maxRows:
+		n := -maxRows
+		shown = []span{{len(cells) - n, len(cells)}}
+		elided = len(cells) - n
+		dotsFront = true
+	default:
 		shown = []span{{0, len(cells)}}
 	}
 
@@ -391,19 +409,26 @@ func RenderBox(w io.Writer, rows []json.RawMessage, maxWidth, maxRows int, elaps
 		fmt.Fprintln(w, b.String())
 	}
 
+	printDots := func() {
+		dots := make([]string, len(cols))
+		for j := range dots {
+			dots[j] = "·"
+		}
+		printRow(dots, false)
+	}
+
 	border("┌", "┬", "┐")
 	printRow(cols, true)
 	border("├", "┼", "┤")
+	if dotsFront {
+		printDots()
+	}
 	for si, sp := range shown {
 		for i := sp.from; i < sp.to; i++ {
 			printRow(cells[i], false)
 		}
 		if si == 0 && len(shown) > 1 {
-			dots := make([]string, len(cols))
-			for j := range dots {
-				dots[j] = "·"
-			}
-			printRow(dots, false)
+			printDots()
 		}
 	}
 	border("└", "┴", "┘")
@@ -417,6 +442,54 @@ func RenderBox(w io.Writer, rows []json.RawMessage, maxWidth, maxRows int, elaps
 		footer += "  ·  " + elapsed
 	}
 	fmt.Fprintln(w, style.Dim(footer))
+}
+
+// capColumnsToWidth shrinks widths in place so the whole box fits within
+// termWidth columns, distributing the budget fairly (max-min): narrow columns
+// keep their natural width, and only the columns wide enough to overflow are
+// capped, sharing the leftover space equally. When the table already fits,
+// widths are left untouched — so wider terminals simply show more.
+func capColumnsToWidth(widths []int, termWidth int) {
+	if len(widths) == 0 {
+		return
+	}
+	// Non-content overhead per the box frame: each column adds a leading "│ "
+	// and trailing " " (3 runes) and the box has one final "│".
+	budget := termWidth - (3*len(widths) + 1)
+	if budget < len(widths) {
+		budget = len(widths) // floor: at least 1 content rune per column
+	}
+
+	// Max-min fair share: repeatedly hand each not-yet-fixed column an equal
+	// slice of the remaining budget; any column that fits under its slice is
+	// fixed at its natural width, returning the slack for the rest.
+	fixed := make([]bool, len(widths))
+	remaining := budget
+	nFree := len(widths)
+	for {
+		share := remaining / nFree
+		if share < 1 {
+			share = 1
+		}
+		grewFixed := false
+		for j, wd := range widths {
+			if !fixed[j] && wd <= share {
+				fixed[j] = true
+				remaining -= wd
+				nFree--
+				grewFixed = true
+			}
+		}
+		if !grewFixed || nFree == 0 {
+			// Cap every remaining (over-share) column at the final fair share.
+			for j := range widths {
+				if !fixed[j] && widths[j] > share {
+					widths[j] = share
+				}
+			}
+			return
+		}
+	}
 }
 
 func runeLen(s string) int { return utf8.RuneCountInString(s) }
