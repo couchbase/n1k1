@@ -66,7 +66,7 @@ func main() {
 		modeFlag   = flag.String("mode", "", "output mode: "+strings.Join(cmd.OutputModes, "|")+" (default box at a TTY, else jsonlines)")
 		timerFlag  = flag.Bool("timer", false, "print row count + elapsed after each statement")
 		vFlag      = flag.Bool("v", false, "verbose: show unsupported reasons / plan on error")
-		initFlag   = flag.String("init", "", "run dot-commands/SQL from this file at startup (default ~/.n1k1rc)")
+		initFlag   = flag.String("init", "", "run dot-commands/SQL from this file at startup (default ~/."+prog+"rc)")
 		noInitFlag = flag.Bool("no-init", false, "skip the startup init file")
 	)
 	flag.Usage = usage
@@ -123,7 +123,7 @@ func main() {
 		initFile := *initFlag
 		if initFile == "" {
 			if home, e := os.UserHomeDir(); e == nil {
-				initFile = filepath.Join(home, ".n1k1rc")
+				initFile = filepath.Join(home, "."+prog+"rc")
 			}
 		}
 		if initFile != "" {
@@ -240,13 +240,13 @@ func (c *cli) repl() {
 	}
 }
 
-// historyPath is where the REPL persists line history (~/.n1k1_history).
+// historyPath is where the REPL persists line history (~/.<prog>_history).
 func historyPath() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(home, ".n1k1_history")
+	return filepath.Join(home, "."+prog+"_history")
 }
 
 func loadHistory(ln *liner.State, path string) {
