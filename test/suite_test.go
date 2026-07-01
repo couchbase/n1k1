@@ -226,7 +226,7 @@ func rowsEqualStrings(a, b []string) bool {
 
 // TestSuiteCases runs the original tuqtng-era + imported no-FROM gsi corpus.
 func TestSuiteCases(t *testing.T) {
-	runSuiteCases(t, suiteRoot, expectedNonPass, groupWhy, 1030)
+	runSuiteCases(t, suiteRoot, expectedNonPass, groupWhy, 1032)
 }
 
 // TestGsiSuiteCases runs the data-backed gsi corpus (isolated root so its shared
@@ -675,10 +675,6 @@ var expectedNonPass = map[string]string{
 	"case_func_date.json[4]":       "groupby-key",
 	"case_group_by_having.json[5]": "groupby-key",
 
-	// ON KEYS join projection arity mismatch.
-	"case_innerjoin.json[10]": "onkeys-proj",
-	"case_leftjoin.json[4]":   "onkeys-proj",
-
 	// Huge generator builtins (engine refuses; upstream errors too).
 	"case_func_array.json[58]": "resource-guard",
 	"case_func_array.json[59]": "resource-guard",
@@ -705,7 +701,6 @@ var groupWhy = map[string]string{
 	"index-scan":       "secondary index / union scan not converted (n1k1 does primary scans)",
 	"meta-fetch":       "META() over fetch metadata subpaths ($document.exptime) not wired",
 	"groupby-key":      "GROUP BY on a computed / array-index key unresolved in VisitFinalGroup",
-	"onkeys-proj":      "ON KEYS join projection: label/vals arity mismatch",
 	"resource-guard":   "engine refuses huge generator builtins (ARRAY_RANGE/REPEAT ~1e10)",
 	"system-namespace": "system: namespace needs a systemstore (intentionally nil; see FileStore)",
 	"prepared":         "prepared-statement EXECUTE (plan.Discard) not supported",
