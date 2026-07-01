@@ -6329,6 +6329,45 @@ var queryCases = []queryCase{
 			}
 		},
 	},
+	// --- recordsource decoders through BOTH interpreter and compiler. These use
+	// test/data keyspaces backed by JSONL / CSV / gzip (not one-doc-per-file) so
+	// TestQueryCasesWithCompiler proves datastore-scan-records + the decoders bake
+	// and run in the compiled path, not just the interpreter.
+	{
+		name: "RecScanJSONL", // multi-file JSONL union
+		stmt: `SELECT e.act AS act FROM data:events AS e`,
+		rows: 5,
+	},
+	{
+		name: "RecScanCountJSONL", // COUNT(*) over JSONL (records, not files)
+		stmt: `SELECT COUNT(*) AS n FROM data:events`,
+		rows: 1,
+		check: func(t *testing.T, rows []base.Vals) {
+			if string(rows[0][0]) != "5" {
+				t.Fatalf("expected n=5 records, got %s", rows[0][0])
+			}
+		},
+	},
+	{
+		name: "RecScanCSV", // CSV rows -> JSON objects, filter + aggregate
+		stmt: `SELECT SUM(t.amount) AS tot FROM data:txns AS t WHERE t.currency = "USD"`,
+		rows: 1,
+		check: func(t *testing.T, rows []base.Vals) {
+			if string(rows[0][0]) != "30.5" {
+				t.Fatalf("expected USD tot=30.5, got %s", rows[0][0])
+			}
+		},
+	},
+	{
+		name: "RecScanGzip", // transparent gzip
+		stmt: `SELECT COUNT(*) AS n FROM data:gzipped`,
+		rows: 1,
+		check: func(t *testing.T, rows []base.Vals) {
+			if string(rows[0][0]) != "3" {
+				t.Fatalf("expected n=3, got %s", rows[0][0])
+			}
+		},
+	},
 }
 
 // rowObj unmarshals a single-label result row (a JSON object) into a map.
