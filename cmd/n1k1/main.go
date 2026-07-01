@@ -592,9 +592,9 @@ func (c *cli) printKeyspaces(w io.Writer) {
 		return
 	}
 	if len(names) == 0 {
-		fmt.Fprintf(w, "%sNo keyspaces here yet — you can still evaluate expressions, e.g.  %s\n",
+		fmt.Fprintf(w, "%sNo keyspaces here yet — you can still evaluate expressions, e.g. %s\n",
 			c.icon("💡 "), c.style.Cyan("SELECT 1+2;"))
-		fmt.Fprintf(w, "   Point at data with  %s  (a dir of JSON, or <namespace>/<keyspace> subdirs).\n",
+		fmt.Fprintf(w, "   Point at data with %s (a dir of JSON, or <namespace>/<keyspace> subdirs).\n",
 			c.style.Bold(".open <dir>"))
 		return
 	}
