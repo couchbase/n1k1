@@ -4,7 +4,11 @@ Status: proposal / for review (revised after a codebase-grounded review — adde
 "Where this code lives", "Compiler compatibility", and "MVP line" sections;
 corrected the mode-2 table-function question with parser evidence; scoped zone
 maps behind a consumer; demoted §6/encryption depth to post-MVP; added a testing
-strategy and change-detection timing/concurrency model)
+strategy and change-detection timing/concurrency model. Then a coherence pass
+against DESIGN-indexing.md — added a "Relationship to DESIGN-indexing.md"
+section, reconciled the zone-map consumer / predicate-pushdown tension and the
+sidecar / manifest ownership; and added a "Worked examples" section of sample
+input trees + their FROM clauses, tagged by phasing status.)
 
 This document explores the kinds of source data n1k1 should support — file
 formats, directory layouts, compression, "office"/unstructured documents — and
@@ -12,9 +16,38 @@ how derived artifacts (indexes, caches) should be stored and kept in sync with
 changing source data. It takes inspiration from DuckDB, and from how Spark, AWS
 Athena/Glue, ClickHouse, and log tools handle the same problems.
 
-Companion doc: `DESIGN-indexing.md` (how the planner uses indexes). This doc
-covers where index/derived data lives and how we detect that source data has
-changed.
+### Relationship to `DESIGN-indexing.md` (read them together)
+
+These two docs are one design split in two, and they must stay coherent. The
+division of ownership:
+
+- **This doc (data):** what source formats/layouts n1k1 ingests, how a `FROM`
+  term resolves to files, compression/containers, document extraction, synthetic
+  `META().id`s, and the **change-detection manifest** (fingerprints + zone-map
+  *data*).
+- **`DESIGN-indexing.md` (indexing):** how the cbq planner comes to *use* an
+  index (GSI via `RangeKey` sargability, FTS via `datastore.FTSIndex`), the
+  `secondaryIndex`/bleve implementations, COUNT(*) pushdown, "index-everything"
+  tiers, and the **canonical `.n1k1/` sidecar layout**.
+
+Where they touch, and how they're kept consistent here:
+
+1. **Home = the fork's file datastore.** Both docs land new code in
+   `../n1k1-query/datastore/file/` (this doc's "Where this code lives" = the
+   indexing doc's "the file datastore lives in an editable fork"). Consistent.
+2. **The `.n1k1/` sidecar is shared.** The indexing doc specifies the *canonical*
+   tree; this doc owns only `catalog.json`'s source/layout half and
+   `manifest.json` (see §5 "Where"). `catalog.json` therefore holds **both**
+   source mappings (here) **and** index definitions (there).
+3. **Zone maps are the load-bearing shared artifact — and the one prior tension.**
+   The indexing doc's tier-1 "index-everything-lite" *consumes* the zone maps this
+   doc's manifest *produces*. The one correction folded in: pruning is only
+   "no-planner-change" once the **predicate reaches the scan** (filter pushdown);
+   see the reconciliation caveat in §5. Both docs now agree.
+4. **Doc-IDs match:** columnar `file#row_position` (indexing doc) = this doc's
+   `<relpath>#<offset|line>` (§6). Consistent.
+5. **COUNT(*) synergy:** the indexing doc answers `COUNT(*)` from this doc's
+   per-file/partition `doc_count`. Consistent.
 
 ## Motivation & scope
 
@@ -353,6 +386,200 @@ constrained to MIT/Apache-2.0/BSD only.
   Tika/extractous backend (build tag) for breadth + OCR. Both stay within the
   permissive-license policy. Office docs being zip-based dovetails with §3.
 
+## Worked examples: sample input trees and their FROM clauses
+
+Concrete layouts a user might drop on disk, and the exact `FROM` that reads them.
+This is the section to argue with when making decisions — if a layout below has an
+awkward or ambiguous `FROM`, that's a design smell to fix here first.
+
+CLI invocation is `n1k1 [-c "<stmt>"] [-ns <namespace>] <dataRoot>` (default
+`-ns default`). The datastore maps `<dataRoot>/<namespace>/<keyspace>/…`, so
+`FROM default:orders` reads `<dataRoot>/default/orders/`. `<dataRoot>` is the last
+CLI arg. Status legend, tied to Phasing:
+
+- ✅ **works today**
+- 🟢 **MVP** (phasing 1, 2a JSONL/multi-doc JSON, gzip)
+- 🟡 **post-MVP, decoder/convention** (CSV, Parquet, `.zip`, office — no catalog)
+- 🟣 **post-MVP, needs the `.n1k1/catalog.json` sidecar**
+- 🔴 **deferred, needs a grammar fork** (inline table functions)
+
+### A. Today's convention — one JSON document per file  ✅
+```
+shop/
+  default/
+    orders/     order-001.json  order-002.json  order-003.json
+    customers/  alice.json       bob.json
+```
+`n1k1 -c "SELECT * FROM default:orders WHERE total > 100" shop`
+→ reads `shop/default/orders/*.json`; `META().id` = filename stem (`order-002`).
+
+### B. Flat root — a bare directory of files = one keyspace  🟢
+```
+sales/          2026-01.json  2026-02.json  2026-03.json
+```
+`n1k1 -c "SELECT * FROM sales" sales`
+→ `sales/` holds data files directly (no ns/keyspace subdirs), so auto-detect
+treats the whole dir as a single flat keyspace.
+**Open decision this example forces:** what is the keyspace *name* for a flat
+root? Candidates: the root's basename (`sales`, shown here), or a fixed default
+(`default:default`). Recommend **basename**, with `-ns`/an alias override.
+
+### C. Multi-file keyspace, many records per file  🟢
+```
+logs/
+  default/
+    events/   2026-01-01.jsonl  2026-01-02.jsonl  2026-01-03.jsonl
+```
+`n1k1 -c "SELECT type, COUNT(*) FROM default:events GROUP BY type" logs`
+→ keyspace `events` = the **union of every record across all three `.jsonl`
+files**; `META().id` = `events/2026-01-02.jsonl#L57`. This is the core MVP
+relaxation (dir = union-of-files) and rides the opaque-document path — no label
+reconciliation needed because each JSONL line is one document.
+
+### D. Mixed formats in one keyspace  🟡
+```
+inventory/
+  default/
+    items/    legacy.csv   new.jsonl   adjustments.json
+```
+`n1k1 -c "SELECT sku, qty FROM default:items" inventory`
+→ union across CSV + JSONL + JSON. This is where **`union_by_name` and the
+typed-label reconciliation** (see "schemaless vs positional labels" in §2) bite:
+the CSV's header columns must be merged with the JSON docs' fields.
+
+### E. Deep / recursive tree as an unkeyed union  🟢
+```
+metrics/
+  default/
+    cpu/
+      hostA/2026/01/data-0001.jsonl
+      hostA/2026/02/data-0002.jsonl
+      hostB/2026/01/data-0003.jsonl
+```
+`n1k1 -c "SELECT * FROM default:cpu" metrics`
+→ recurse all subdirs, union every `.jsonl`. The `hostA`/`hostB`/`2026`/`01`
+path segments are **invisible** (not columns) — to expose them, use Hive naming
+(F) or a catalog projection (G).
+
+### F. Hive partitioning — `key=value` dirs become virtual columns  🟡
+```
+events/
+  default/
+    clicks/
+      year=2026/month=01/part-0.parquet
+      year=2026/month=02/part-1.parquet
+      year=2025/month=12/part-2.parquet
+```
+`n1k1 -c "SELECT * FROM default:clicks WHERE year = 2026" events`
+→ `year` and `month` auto-detected from the `key=value` segments as virtual
+columns; `WHERE year = 2026` **prunes the 2025 file before opening it**.
+Depends on partition/zone-map pruning at the scan layer — see the coherence note
+with `DESIGN-indexing.md` in §5 (this is that doc's tier-1 "index-everything-lite"
+consumer, and it needs the predicate to reach the scan).
+
+### G. Bare date-partition dirs + compression — catalog projection  🟣
+```
+ecommerce/
+  20260101/  access-0.log.gz  access-1.log.gz
+  20260102/  access-0.log.gz
+  .n1k1/catalog.json
+```
+No `key=value`, so the date dirs are **not** auto-detectable — declare them:
+```json
+{ "keyspaces": { "access": {
+  "root": "ecommerce",
+  "layout": "ecommerce/{date:YYYYMMDD}/*.log.gz",
+  "format": "jsonl", "compression": "gzip",
+  "partitions": [ { "name": "date", "type": "date", "projection": "YYYYMMDD" } ]
+} } }
+```
+`n1k1 -c "SELECT * FROM access WHERE date >= '2026-01-02'" ecommerce`
+→ the engine **computes** the candidate directory names from the predicate
+(Athena-style projection) instead of listing the whole tree; `date` is a virtual
+column. This is the marquee case for why the catalog (mode 3) exists.
+
+### H. Transparent compression, single file  🟢 (gzip) / 🟡 (zstd)
+```
+archive/
+  default/
+    orders/   2025.jsonl.gz   2026.jsonl.zst
+```
+`n1k1 -c "SELECT * FROM default:orders" archive`
+→ decompressed by *inner* extension (`.jsonl.gz` → gzip → JSONL). gzip is MVP;
+zstd is a fast-follow (`klauspost/compress`, already a dep).
+
+### I. `.zip` container = a directory of entries  🟡
+```
+exports/
+  default/
+    reports/   2026-q1.zip        # contains jan.csv, feb.csv, mar.csv
+```
+`n1k1 -c "SELECT * FROM default:reports" exports`
+→ enumerate zip entries, decode each by its inner extension, union;
+`META().id` = `reports/2026-q1.zip!feb.csv#L12`.
+
+### J. CSV/TSV with header + sniffer  🟡
+```
+finance/
+  default/
+    txns/   2026.csv           # header: id,amount,currency,ts
+```
+`n1k1 -c "SELECT id, amount FROM default:txns WHERE currency = 'USD'" finance`
+→ sniffer infers header + column types; each data row becomes an object keyed by
+header names; `META().id` = `txns/2026.csv#L<line>`. Replaces the naive
+`op_scan.go` comma-splitter with `encoding/csv` or `arrow/csv`.
+
+### K. Parquet  🟡 (correctness-first)
+```
+warehouse/
+  default/
+    sales/   part-0.parquet   part-1.parquet
+```
+`n1k1 -c "SELECT SUM(amount) FROM default:sales" warehouse`
+→ read via `arrow-go` / the existing `iceberg_reader.go`. Correctness-first: the
+columnar→row transpose (see §1 caveat) means no vectorized speedup until the
+engine grows column-batch ops. Footer min/max later feed §5 zone-map pruning.
+
+### L. Office / unstructured docs → extractor rows  🟡
+```
+kb/
+  default/
+    docs/   handbook.pdf   q1-report.docx   budget.xlsx
+```
+`n1k1 -c "SELECT filename, text FROM default:docs WHERE text LIKE '%vacation%'" kb`
+→ each file yields row(s) with `filename`/`text`/metadata (xlsx → one row per
+sheet row); feeds a bleve FTS index (`DESIGN-indexing.md` Phase 2). See §4.
+
+### M. The co-located sidecar (applies to all of the above)
+```
+shop/
+  default/orders/…                     # source data
+  .n1k1/
+    catalog.json                       # source mappings (G) + index defs (indexing doc)
+    default/orders/
+      manifest.json                    # source fingerprints + zone maps (§5)
+      idx/byTotal__gsi__ab12/data.bolt # a secondary index (indexing doc)
+```
+Nothing in `FROM` changes; the sidecar just makes queries faster / incremental.
+The full `.n1k1/` layout is specified canonically in **`DESIGN-indexing.md`**
+("Sidecar layout"); this doc owns only `catalog.json`'s *source/layout* half and
+`manifest.json`.
+
+### N. Deferred — inline table functions  🔴
+```
+n1k1 -c "SELECT * FROM read_csv('finance/*.csv', header=true) AS t" .
+```
+**Rejected by the parser today** (see Open questions) — needs a grammar fork.
+Until then, express the same intent with a catalog keyspace (G/J).
+
+**What the examples reveal for decisions:** (1) the flat-root keyspace-naming
+question (B) needs an answer before MVP; (2) the MVP cases (A/B/C/E/H-gzip) all
+stay on the opaque-document path, which is *why* they're cheap; (3) every case
+that introduces *columns* (D/F/J/K) forces the typed-label reconciliation, which
+is the real cost boundary — not the decoding; (4) partition pruning (F/G) is the
+first feature that needs the predicate pushed to the scan layer, linking directly
+to `DESIGN-indexing.md`'s zone-map tier.
+
 ## 5. Indexes & derived artifacts: storage + change detection
 
 This is the part most coupled to `DESIGN-indexing.md`. Two questions: **where** do
@@ -366,6 +593,21 @@ derived artifacts live, and **how** do we know source data changed?
   was built from. A co-located hidden dir is cleaner than a parallel
   `<dir>-INDEXES` sibling (keeps everything movable as one tree) — but make the
   location configurable.
+- **Canonical layout lives in `DESIGN-indexing.md` ("Sidecar layout").** To avoid
+  the two docs drifting, that doc owns the full `.n1k1/` tree
+  (`LAYOUT`, `catalog.json`, `<ns>/<ks>/manifest.json`,
+  `<ns>/<ks>/idx/<name>__<kind>__<defhash>/…`, `tmp/`, `trash/`). This doc owns
+  only two things *inside* that tree: **`catalog.json`'s source/layout half**
+  (the keyspace→glob/format/partition/compression mappings of §2.3 — the
+  *other* half, index definitions, is the indexing doc's) and the
+  **`manifest.json`** contents (below).
+- **Manifest placement — reconcile with the indexing doc: per-keyspace, not one
+  root file.** This doc's "Per manifest (root)" fields below are a slight
+  misnomer; align with `DESIGN-indexing.md`, which places a **`manifest.json` per
+  keyspace** (`<ns>/<ks>/manifest.json`). Read "per-root" here as **per-keyspace-
+  root**; the truly dataset-global bits (`manifest_schema_version`,
+  `config_fingerprint`, a top `root_merkle_hash` over all keyspaces) live in
+  `catalog.json`/`LAYOUT`, not in a competing top-level manifest.
 
 ### When: the trigger and concurrency model (the actually-hard part)
 §5 below details *what* to fingerprint, but *when* we re-validate — and who's
@@ -471,17 +713,24 @@ distinct, schema) serve *pruning + planning*; **build-state fields** serve
 *incremental indexing*. Start minimal (identity + hash + merkle + offset) and add
 zone maps/counts when the planner can exploit them.
 
-> **Caveat — the stats fields have no consumer yet.** n1k1 runs query's planner
-> with **CBO off**, and the current file-datastore path does **no predicate
-> pushdown** — so zone maps, cardinality, null/distinct estimates, and
-> partition-level min/max have nothing that reads them today. Building and
-> maintaining them now would be speculative cost with zero payoff. Sequence them
-> *strictly behind* whatever will exploit them: partition **pruning** needs the
-> datastore to accept a predicate and skip files (a fork datastore-interface
-> change), and cardinality/zone-map planning needs CBO on (or a bespoke n1k1-side
-> pruner). Until one of those exists, the manifest should carry only the
-> **change-detection + build-state** fields. Zone maps are a §5 *aspiration*, not
-> part of the first manifest.
+> **Caveat — the stats fields need a consumer, and it isn't free (reconciling
+> with `DESIGN-indexing.md`).** That doc's "index-everything-lite" tier-1 pitches
+> always-on zone maps + bloom as needing **no cbq-planner changes**, because
+> file-skipping is a *scan-layer* concern rather than planner index-selection.
+> That's true as far as it goes — but there's a real prerequisite it glosses and
+> this doc must state: **the predicate has to reach the scan.** Today a primary
+> scan doesn't get the `WHERE`; the planner emits a separate residual `Filter` op
+> *above* the scan, so the datastore never sees what to prune by. So zone-map
+> pruning needs one of: (a) filter/predicate **pushdown into the primary scan**
+> (a conv + fork datastore-interface change — modest, and the recommended path),
+> or (b) a datastore-side predicate hook. Neither is "nothing," but both are far
+> short of turning **CBO** on. Cardinality / null-distinct estimates, by
+> contrast, only pay off with CBO (off today) — so those stay speculative longer.
+> **Sequencing:** the first manifest carries only **change-detection +
+> build-state** fields; add per-file/partition **min/max zone maps** together with
+> the predicate-pushdown work (that's when F/G partition pruning in the worked
+> examples lights up); defer cardinality/distinct until CBO. This is the single
+> most important point to keep the two design docs coherent.
 
 ### Libraries (well-tested building blocks)
 - **Don't hand-roll a table format if you can avoid it.** `apache/iceberg-go`
