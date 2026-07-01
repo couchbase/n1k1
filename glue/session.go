@@ -143,6 +143,10 @@ func (s *Session) Run(stmt string) (res *Result, err error) {
 	gctx := NewGlueContext(time.Now())
 	gctx.InitSubqueries(s.Store, s.Namespace, conv.WithBindings()) // enable expression subqueries
 
+	// Route native-expression advisories (e.g. divide-by-zero) into the
+	// request's warning collector; kept cbq-free on the engine side.
+	vars.Ctx.Warn = func(w string) { gctx.Warning(errors.NewWarning(w)) }
+
 	vars.Temps = vars.Temps[:0]
 	vars.Temps = append(vars.Temps, gctx)
 	vars.Temps = append(vars.Temps, conv.Temps[1:]...)

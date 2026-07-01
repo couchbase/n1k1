@@ -183,6 +183,11 @@ func (a Num) IMod(b Num) (Num, bool) {
 	return IntNum(a.i64() % d), true
 }
 
+// WarnDivideByZero is the advisory emitted (via Ctx.Warn) when '/' or DIV
+// divides by zero, matching cbq's message. Kept as a named constant so the lz
+// codegen emits an identifier reference rather than an inline string literal.
+const WarnDivideByZero = "Division by 0."
+
 // Binary arithmetic op codes for ArithApply.
 const (
 	ArithAdd = iota

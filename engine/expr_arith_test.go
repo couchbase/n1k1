@@ -105,3 +105,35 @@ func TestExprArithPropagation(t *testing.T) {
 		}
 	}
 }
+
+// TestExprArithDivideByZeroWarns verifies that '/' (div) and DIV (idiv) emit a
+// divide-by-zero advisory via Ctx.Warn, while '%'/MOD stay silent -- matching
+// cbq (arith_div.go / arith_idiv.go warn; arith_mod.go / arith_imod.go don't).
+func TestExprArithDivideByZeroWarns(t *testing.T) {
+	cases := []struct {
+		op    string
+		warns bool
+	}{
+		{"div", true},
+		{"idiv", true},
+		{"mod", false},
+		{"imod", false},
+	}
+	for _, tc := range cases {
+		warned := 0
+		vars := &base.Vars{Ctx: &base.Ctx{
+			ExprCatalog: ExprCatalog,
+			ValComparer: base.NewValComparer(),
+			Warn:        func(string) { warned++ },
+		}}
+		tree := []interface{}{tc.op, j("5"), j("0")}
+		fn := MakeExprFunc(vars, nil, tree, "", "")
+		out := string(fn(nil, func(error) {}))
+		if out != "null" {
+			t.Errorf("%s by zero: got %q, want null", tc.op, out)
+		}
+		if (warned > 0) != tc.warns {
+			t.Errorf("%s by zero: warned=%d, want warns=%v", tc.op, warned, tc.warns)
+		}
+	}
+}

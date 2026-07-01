@@ -79,6 +79,10 @@ func ExprArithBi(lzVars *base.Vars, labels base.Labels, params []interface{},
 	path string, op int) (lzExprFunc base.ExprFunc) {
 	var lzBufPre []byte // <== varLift: lzBufPre by path
 
+	// Only '/' (Div) and 'DIV' (IDiv) emit a divide-by-zero warning in cbq;
+	// '%'/'MOD' return NULL silently.
+	warnZero := op == base.ArithDiv || op == base.ArithIDiv
+
 	biExprFunc := func(lzA, lzB base.ExprFunc, lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) { // !lz
 		if LzScope {
 			lzValA := lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
@@ -95,6 +99,9 @@ func ExprArithBi(lzVars *base.Vars, labels base.Labels, params []interface{},
 					lzNumR, lzOkR := base.ArithApply(op, lzNumA, lzNumB)
 					if !lzOkR {
 						lzVal = base.ValNull // Divide/mod by zero.
+						if warnZero && lzVars.Ctx.Warn != nil {
+							lzVars.Ctx.Warn(base.WarnDivideByZero)
+						}
 					} else {
 						lzBufPre = base.AppendNum(lzBufPre[:0], lzNumR)
 						lzVal = base.Val(lzBufPre)

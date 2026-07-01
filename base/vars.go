@@ -82,6 +82,12 @@ type Ctx struct {
 	// YieldStats may be invoked concurrently by multiple goroutines.
 	YieldStats YieldStats
 
+	// Warn records a non-fatal advisory (e.g. divide-by-zero) during
+	// evaluation. It is cbq-free by design (a plain string), so engine/base
+	// stay decoupled from couchbase/query; glue wires it to the request's
+	// warning collector. May be nil (warnings then dropped).
+	Warn func(warning string)
+
 	// TempDir is the path to a temporary directory that can be used
 	// while processing the request, where the temporary directory
 	// might be shared amongst concurrent requests.
