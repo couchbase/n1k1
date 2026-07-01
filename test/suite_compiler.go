@@ -154,6 +154,10 @@ var (
 	dataStoreOnce sync.Once
 	dataStore     *glue.Store
 	dataStoreErr  error
+
+	flatStoreOnce sync.Once
+	flatStore     *glue.Store
+	flatStoreErr  error
 )
 
 // wireCompiledRuntime sets the global engine hooks the compiled-query islands
@@ -221,6 +225,39 @@ func SetupCompiledData(t *testing.T, stmt string) (
 	if err != nil {
 		t.Fatalf("SetupCompiledData store: %v", err)
 	}
+	return setupCompiled(t, store, "", stmt)
+}
+
+// compiledFlatRootStore opens test/flatpeople as a FLAT ROOT (record files
+// directly under it, no ns/keyspace subdirs) once -- so its keyspace is the
+// synthetic default:flatpeople from the flat-root "fake it" wrapper. Used by the
+// flat-root compiler differential.
+func compiledFlatRootStore() (*glue.Store, error) {
+	flatStoreOnce.Do(func() {
+		_, file, _, _ := runtime.Caller(0)
+		root := filepath.Join(filepath.Dir(file), "flatpeople")
+		flatStore, flatStoreErr = glue.FileStore(root)
+		if flatStoreErr != nil {
+			return
+		}
+		flatStore.InitParser()
+		wireCompiledRuntime()
+	})
+	return flatStore, flatStoreErr
+}
+
+// SetupCompiledFlatRoot is the runtime preamble for a generated flat-root
+// compiler test (over the synthetic default:flatpeople keyspace).
+func SetupCompiledFlatRoot(t *testing.T, stmt string) (
+	*base.Vars, base.YieldVals, base.YieldErr, func() []base.Vals, func()) {
+	store, err := compiledFlatRootStore()
+	if err != nil {
+		t.Fatalf("SetupCompiledFlatRoot store: %v", err)
+	}
+	// Re-assert this store's parser/datastore globals: several compiled stores
+	// (suite/data/flat) coexist in the generated tmp package, and InitParser is
+	// once-per-store, so make sure the parser resolves against THIS store.
+	store.InitParser()
 	return setupCompiled(t, store, "", stmt)
 }
 
