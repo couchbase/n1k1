@@ -10,7 +10,7 @@ const gsiSuiteRoot = "suite/json-gsi"
 
 // gsiPassFloor is the results-pass backstop for the gsi corpus (bump as coverage
 // grows), mirroring the default suite's floor.
-const gsiPassFloor = 453
+const gsiPassFloor = 460
 
 // gsiExpectedNonPass lists gsi cases n1k1 doesn't yet pass, keyed by loc
 // (case_gsi_<cat>.json[i]) -> group. Any non-pass NOT listed is a regression.
@@ -44,14 +44,7 @@ var gsiExpectedNonPass = map[string]string{
 	"case_gsi_json_functions.json[33]":  "json-funcs",
 	"case_gsi_json_functions.json[34]":  "json-funcs",
 	"case_gsi_json_functions.json[35]":  "json-funcs",
-	"case_gsi_key_functions.json[0]":    "use-keys",
-	"case_gsi_key_functions.json[1]":    "use-keys",
-	"case_gsi_key_functions.json[2]":    "use-keys",
-	"case_gsi_key_functions.json[3]":    "use-keys",
-	"case_gsi_key_functions.json[4]":    "use-keys",
-	"case_gsi_key_functions.json[5]":    "use-keys",
-	"case_gsi_key_functions.json[6]":    "use-keys",
-	"case_gsi_key_functions.json[7]":    "use-keys",
+	"case_gsi_key_functions.json[4]":    "tie-order",
 	"case_gsi_obj_functions.json[2]":    "obj-funcs",
 	"case_gsi_obj_functions.json[3]":    "obj-funcs",
 	"case_gsi_obj_functions.json[8]":    "obj-funcs",
@@ -59,7 +52,7 @@ var gsiExpectedNonPass = map[string]string{
 
 var gsiGroupWhy = map[string]string{
 	"any-every":      "ANY/EVERY ... SATISFIES collection predicates (or tie-broken ORDER BY+LIMIT)",
-	"use-keys":       "USE [PRIMARY] KEYS key-based access -- not supported yet",
+	"tie-order":      "USE KEYS/UNNEST works; ORDER BY key ties (same customerId) resolve in a different-but-valid order than cbq -- non-deterministic",
 	"json-funcs":     "JSON_ENCODE/ENCODED_SIZE/POLY_LENGTH/TOKENS -- output/order differs or unsupported",
 	"obj-funcs":      "OBJECT_PAIRS/OBJECT_VALUES/OBJECT_PAIRS_NESTED -- key-order/output differs",
 	"unsupported":    "uses a feature n1k1 doesn't support yet (e.g. slice arr[0:1])",

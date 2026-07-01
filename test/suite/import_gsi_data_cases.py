@@ -26,8 +26,8 @@ CATEGORIES = [
     "key_functions", "meta_functions",
 ]
 NONDET = re.compile(r"\b(now_\w+|clock_\w+|random|rand|uuid|newid)\s*\(", re.IGNORECASE)
-INSERT = re.compile(r'INSERT\s+INTO\s+(\w+)\s*\(KEY\s*,\s*VALUE\s*\)\s*VALUES\s*\(\s*"([^"]+)"\s*,\s*',
-                    re.IGNORECASE | re.DOTALL)
+INSERT_PREFIX = re.compile(r'\s*INSERT\s+INTO\s+(\w+)\s*\(\s*KEY\s*,\s*VALUE\s*\)', re.IGNORECASE)
+QUOTED = re.compile(r'"((?:[^"\\]|\\.)*)"')
 
 def brace_match(s, start):
     # s[start] == '{'; return index just past the matching '}', honoring strings/escapes.
@@ -47,27 +47,69 @@ def brace_match(s, start):
         i += 1
     raise ValueError("unbalanced braces")
 
+
+def parse_inserts(stmt):
+    """Yield (keyspace, index-in-statement, key, value-object-text) for every
+    VALUES tuple. The fork packs many docs per statement
+    (VALUES("k1",{..}), VALUES("k2",{..}), ...); the value objects are the only
+    top-level {...} spans, and each key is the quoted string just before its
+    value object."""
+    m = INSERT_PREFIX.match(stmt)
+    if not m:
+        return
+    ks, i, idx = m.group(1), m.end(), 0
+    while True:
+        b = stmt.find("{", i)
+        if b < 0:
+            return
+        keys = QUOTED.findall(stmt[i:b])
+        e = brace_match(stmt, b)
+        if keys:
+            yield ks, idx, keys[-1], stmt[b:e]
+            idx += 1
+        i = e
+
+
+def referenced_keys(cdir):
+    """All quoted string literals appearing in a category's case statements. A
+    doc whose KEY matches one is referenced directly (e.g. USE KEYS "k"), so it
+    must be imported even though the keyspace is otherwise sparsely sampled."""
+    refs = set()
+    for cf in sorted(glob.glob(os.path.join(cdir, "case*.json"))):
+        try:
+            cases = json.load(open(cf))
+        except Exception:
+            continue
+        for c in cases if isinstance(cases, list) else []:
+            s = c.get("statements") if isinstance(c, dict) else None
+            if isinstance(s, str):
+                refs.update(QUOTED.findall(s))
+    return refs
+
+
 def main(qf):
     tc = os.path.join(qf, "test/gsi/test_cases")
     root = os.path.join(os.path.dirname(__file__), "json-gsi/default")
     ncase = ndoc = 0
     for cat in CATEGORIES:
         cdir = os.path.join(tc, cat)
-        # (a) data
+        # (a) data. Import the first doc of each INSERT statement (a light,
+        # representative sample -- the fork packs ~100 docs/statement, far more
+        # than a file-per-doc corpus wants), PLUS any doc whose KEY is referenced
+        # directly by a case (e.g. USE KEYS "k"), which needs that exact doc.
         ins = os.path.join(cdir, "insert.json")
         if os.path.exists(ins):
+            refs = referenced_keys(cdir)
             for c in json.load(open(ins)):
                 stmt = c.get("statements", "")
-                m = INSERT.search(stmt)
-                if not m: continue
-                ks, key = m.group(1), m.group(2)
-                b = stmt.index("{", m.end() - 1)
-                obj = stmt[b:brace_match(stmt, b)]
-                val = json.loads(obj)  # validate + normalize
-                ksdir = os.path.join(root, ks)
-                os.makedirs(ksdir, exist_ok=True)
-                json.dump(val, open(os.path.join(ksdir, key + ".json"), "w"))
-                ndoc += 1
+                for ks, idx, key, obj in parse_inserts(stmt):
+                    if idx != 0 and key not in refs:
+                        continue
+                    val = json.loads(obj)  # validate + normalize
+                    ksdir = os.path.join(root, ks)
+                    os.makedirs(ksdir, exist_ok=True)
+                    json.dump(val, open(os.path.join(ksdir, key + ".json"), "w"))
+                    ndoc += 1
         # (b) cases
         picked = []
         for cf in sorted(glob.glob(os.path.join(cdir, "case*.json"))):
