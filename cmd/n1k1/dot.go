@@ -131,10 +131,17 @@ func (c *cli) printHelp() {
 .output [<file>]      send results to a file, or back to stdout if omitted
 .version              show version + build info (incl. dependency SHAs)
 .quit / .exit         leave
-
-Statements are SQL++; terminate with ';'. Keyspaces are queried as
-<namespace>:<keyspace>, e.g.  SELECT * FROM `+c.ns+`:orders LIMIT 5;
 `)
+	// Show the current datastore + a live example over a real keyspace (the
+	// "default:" namespace prefix is optional). Handle "no datastore open".
+	fmt.Fprintf(c.stderr, "\ndatastore: %s\n", c.dataLoc())
+	if ex := c.exampleQuery(); ex != "" {
+		fmt.Fprintf(c.stderr, "Statements are SQL++; terminate with ';'. A keyspace is queried by "+
+			"name (the \"default:\" namespace prefix is optional), e.g. %s\n", ex)
+	} else {
+		fmt.Fprintln(c.stderr, "Statements are SQL++; terminate with ';'. Open a datastore with "+
+			".open <dir>, then query a keyspace by name (the \"default:\" prefix is optional).")
+	}
 }
 
 func (c *cli) cmdOpen(dir string) {

@@ -149,6 +149,30 @@ func (c *cli) printKeyspaces(w io.Writer) {
 	}
 }
 
+// dataLoc describes where n1k1 is currently reading from (the dir or file from
+// the CLI arg or the last .open), for status output. Empty means no datastore.
+func (c *cli) dataLoc() string {
+	if c.dir == "" {
+		return "(none — use .open <dir> to load one)"
+	}
+	return c.dir
+}
+
+// exampleQuery builds a copy-pasteable example over a real current keyspace, or
+// "" when none is available. The "default:" namespace prefix is omitted (it's
+// optional); a non-default namespace is shown as <ns>:<keyspace>.
+func (c *cli) exampleQuery() string {
+	names, err := c.keyspaceNames()
+	if err != nil || len(names) == 0 {
+		return ""
+	}
+	ref := quoteIdent(names[0])
+	if c.ns != "" && c.ns != "default" {
+		ref = c.ns + ":" + ref
+	}
+	return "SELECT * FROM " + ref + " LIMIT 5;"
+}
+
 // cmdSchema renders a keyspace's sampled shape as a box: one row per top-level
 // field with its observed JSON type(s), distinct-value count, and a copy-pasteable
 // SQL++ example that filters on the field using the values seen (= / IN / IS NOT
@@ -163,6 +187,8 @@ func (c *cli) cmdSchema(keyspace string) {
 		}
 		kss = names
 	}
+	// Remind which datastore this shape is from (easy to forget across sessions).
+	fmt.Fprintf(c.out, "%sdatastore: %s\n", c.icon("📂 "), c.dataLoc())
 	for _, ks := range kss {
 		stats, n, err := c.sampleSchema(ks, 50)
 		if err != nil {

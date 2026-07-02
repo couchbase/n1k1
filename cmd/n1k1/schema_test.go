@@ -130,6 +130,34 @@ func TestSchemaDistinctAndExample(t *testing.T) {
 	}
 }
 
+// TestExampleQuery: the .help/.schema example uses a real keyspace, omits the
+// optional "default:" prefix, and is empty when there are no keyspaces.
+func TestExampleQuery(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "events.jsonl")
+	if err := os.WriteFile(path, []byte(`{"n":1}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sess, err := glue.OpenSession(path, "default")
+	if err != nil {
+		t.Fatalf("OpenSession: %v", err)
+	}
+	c := &cli{sess: sess, ns: "default"}
+	if got := c.exampleQuery(); got != "SELECT * FROM events LIMIT 5;" {
+		t.Errorf("exampleQuery = %q", got)
+	}
+
+	// No datastore / no keyspaces -> no example.
+	empty := &cli{}
+	empty.sess, err = glue.OpenSession(t.TempDir(), "default")
+	if err != nil {
+		t.Fatalf("OpenSession(empty): %v", err)
+	}
+	if got := empty.exampleQuery(); got != "" {
+		t.Errorf("exampleQuery(no keyspaces) = %q, want empty", got)
+	}
+}
+
 // TestSchemaExample unit-tests the SQL++ generation directly across the branches.
 func TestSchemaExample(t *testing.T) {
 	raws := func(ss ...string) []json.RawMessage {

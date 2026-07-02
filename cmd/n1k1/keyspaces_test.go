@@ -13,7 +13,10 @@
 
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // TestQuotePath: dotted field paths are backticked per-segment (only where SQL++
 // needs it), so a nested path stays a path expression.
@@ -30,6 +33,15 @@ func TestQuotePath(t *testing.T) {
 		if got := quotePath(in); got != want {
 			t.Errorf("quotePath(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+func TestDataLoc(t *testing.T) {
+	if got := (&cli{dir: "/data/shop"}).dataLoc(); got != "/data/shop" {
+		t.Errorf("dataLoc(dir) = %q", got)
+	}
+	if got := (&cli{}).dataLoc(); !strings.Contains(got, "none") {
+		t.Errorf("dataLoc(empty) = %q, want a 'none' hint", got)
 	}
 }
 
