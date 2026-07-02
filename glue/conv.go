@@ -272,15 +272,21 @@ func (c *Conv) VisitIndexFtsSearch(o *plan.IndexFtsSearch) (interface{}, error) 
 // Fetch
 
 func (c *Conv) VisitFetch(o *plan.Fetch) (interface{}, error) {
-	if len(o.SubPaths()) > 0 {
-		return NA(o) // TODO.
-	}
-
 	// A file-datastore primary scan (datastore-scan-records) already materialized
 	// whole documents, so the fetch is a no-op pass-through. (Index scans still
 	// yield only keys, so their fetch stays a real datastore-fetch below.)
+	//
+	// This precedes the SubPaths() guard on purpose: when the planner references
+	// META() it attaches a metadata subpath (e.g. "$document.exptime") to the
+	// Fetch, but the file datastore has no such per-doc metadata -- exptime etc.
+	// don't exist -- and META().id already rides the scan's "^id" label. So for a
+	// whole-doc scan the subpaths are simply irrelevant and safely ignored.
 	if c.TopOp != nil && c.TopOp.Kind == "datastore-scan-records" {
 		return c.TopOp, nil
+	}
+
+	if len(o.SubPaths()) > 0 {
+		return NA(o) // TODO: metadata subpaths on a real (index-scan) fetch.
 	}
 
 	return c.TopPush(o, &base.Op{

@@ -226,7 +226,7 @@ func rowsEqualStrings(a, b []string) bool {
 
 // TestSuiteCases runs the original tuqtng-era + imported no-FROM gsi corpus.
 func TestSuiteCases(t *testing.T) {
-	runSuiteCases(t, suiteRoot, expectedNonPass, groupWhy, 1034)
+	runSuiteCases(t, suiteRoot, expectedNonPass, groupWhy, 1037)
 }
 
 // TestGsiSuiteCases runs the data-backed gsi corpus (isolated root so its shared
@@ -666,11 +666,6 @@ var expectedNonPass = map[string]string{
 	// Secondary index / union scan (n1k1 does primary scans).
 	"case_by_id.json[2]": "index-scan",
 
-	// META() over fetch metadata subpaths.
-	"case_func_meta.json[0]": "meta-fetch",
-	"case_func_meta.json[1]": "meta-fetch",
-	"case_func_meta.json[6]": "meta-fetch",
-
 	// Huge generator builtins (engine refuses; upstream errors too).
 	"case_func_array.json[58]": "resource-guard",
 	"case_func_array.json[59]": "resource-guard",
@@ -695,7 +690,6 @@ var expectedNonPass = map[string]string{
 // groupWhy gives a one-line reason for each expectedNonPass group.
 var groupWhy = map[string]string{
 	"index-scan":       "secondary index / union scan not converted (n1k1 does primary scans)",
-	"meta-fetch":       "META() over fetch metadata subpaths ($document.exptime) not wired",
 	"resource-guard":   "engine refuses huge generator builtins (ARRAY_RANGE/REPEAT ~1e10)",
 	"system-namespace": "system: namespace needs a systemstore (intentionally nil; see FileStore)",
 	"prepared":         "prepared-statement EXECUTE (plan.Discard) not supported",
