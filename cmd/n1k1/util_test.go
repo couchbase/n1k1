@@ -13,7 +13,10 @@
 
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestSplitFirst(t *testing.T) {
 	cases := []struct {
@@ -36,5 +39,23 @@ func TestSplitFirst(t *testing.T) {
 func TestOnOff(t *testing.T) {
 	if onOff(true) != "on" || onOff(false) != "off" {
 		t.Errorf("onOff: got %q/%q", onOff(true), onOff(false))
+	}
+}
+
+func TestVerboseName(t *testing.T) {
+	cases := []struct {
+		n    int
+		want string // substring the name must contain
+	}{
+		{-1, "off"},
+		{0, "off"},
+		{1, "on"},
+		{2, "debug"},
+		{5, "debug"},
+	}
+	for _, tc := range cases {
+		if got := verboseName(tc.n); !strings.Contains(got, tc.want) {
+			t.Errorf("verboseName(%d) = %q, want substring %q", tc.n, got, tc.want)
+		}
 	}
 }

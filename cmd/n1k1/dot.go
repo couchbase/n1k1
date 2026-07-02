@@ -104,6 +104,27 @@ func (c *cli) dot(line string) bool {
 				}
 			}
 		}
+	case ".verbose":
+		// Check/set the verbose diagnostics level: 0=off, 1=show query plans,
+		// 2=+timing. Accepts off|on|debug or a number; no arg shows the current.
+		switch a := strings.ToLower(strings.TrimSpace(arg)); a {
+		case "":
+			// show only
+		case "off":
+			c.verbose = 0
+		case "on":
+			c.verbose = 1
+		case "debug":
+			c.verbose = 2
+		default:
+			if n, err := strconv.Atoi(a); err == nil && n >= 0 {
+				c.verbose = n
+			} else {
+				fmt.Fprintf(c.stderr, "usage: .verbose [off|on|debug|<n>]  (currently %s)\n", verboseName(c.verbose))
+				return false
+			}
+		}
+		fmt.Fprintf(c.stderr, "verbose %s\n", verboseName(c.verbose))
 	case ".explain":
 		c.explain = !c.explain
 		fmt.Fprintf(c.stderr, "explain %s\n", onOff(c.explain))
@@ -149,6 +170,7 @@ func (c *cli) printHelp() {
 .formats [<set>]      restrict scanning to formats/modes, e.g. json,csv,gzip (no arg shows current)
 .timer [on|off]       elapsed-time reporting (no arg shows the current setting)
 .explain              toggle printing EXPLAIN PLAN per query
+.verbose [off|on|debug]  diagnostics level (off|on=plans|debug=+timing; no arg shows current)
 .maxrows <n>          box: cap rows shown (0 = all; negative = last |n| rows)
 .maxwidth <n|auto>    box: cap column width (0 = uncapped; auto = fit terminal)
 .read <file>          run statements/dot-commands from a file

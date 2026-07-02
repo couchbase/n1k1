@@ -58,7 +58,8 @@ func main() {
 		nsFlag      = flag.String("ns", "default", "datastore namespace")
 		modeFlag    = flag.String("mode", "", "output mode: "+strings.Join(cmd.OutputModes, "|")+" (append |pretty to indent JSON; default box|pretty at a TTY, else jsonlines)")
 		timerFlag   = flag.Bool("timer", false, "print row count + elapsed after each statement")
-		vFlag       = flag.Bool("v", false, "verbose: show more info on errors")
+		vFlag       = flag.Bool("v", false, "verbose diagnostics: show the query plan per statement (see .verbose for levels)")
+		verboseFlag = flag.Bool("verbose", false, "alias for -v")
 		initFlag    = flag.String("init", "", "startup file of dot-commands/SQL++ (default ~/."+prog+"rc; use \"\", \"-\" or \"none\" to skip)")
 		formatsFlag = flag.String("formats", "", "restrict scanning to a comma-separated set (all|json|jsonl|csv|tsv|extract|doc|text|image|video|gzip|recurse); empty or 'all' = everything")
 		metaFlag    = flag.String("meta", "auto", "add a _meta sub-object (path/name/ext/size/mtime) to records: on|off|auto (auto = extracted docs only)")
@@ -158,6 +159,12 @@ func main() {
 	// Colors/emojis only for an interactive stdout, and honoring NO_COLOR.
 	fancy := isTTY(os.Stdout) && os.Getenv("NO_COLOR") == ""
 
+	// -v / -verbose (synonyms) turn verbose on at level 1; finer levels via .verbose.
+	verbose := 0
+	if *vFlag || *verboseFlag {
+		verbose = 1
+	}
+
 	c := &cli{
 		prog:      prog,
 		sess:      sess,
@@ -166,7 +173,7 @@ func main() {
 		mode:      mode,
 		indexMode: *indexFlag,
 		timer:     *timerFlag,
-		verbose:   *vFlag,
+		verbose:   verbose,
 		maxRows:   0,
 		maxWidth:  -1,
 		listSep:   "|",
@@ -282,7 +289,7 @@ type cli struct {
 	mode      string
 	indexMode string // -index: eager|lazy|off (drives eager build on open)
 	timer     bool
-	verbose   bool
+	verbose   int // 0=off, 1=show query plans, 2=+timing (see .verbose)
 	explain   bool
 	maxRows   int // box: 0 = all; >0 = head+tail; <0 = last |n| rows
 	maxWidth  int // box: per-column cap; 0 = uncapped; <0 = auto (fit terminal)

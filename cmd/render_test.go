@@ -425,3 +425,32 @@ func TestStyleOffIsPlain(t *testing.T) {
 		t.Errorf("Style{On}.Red should wrap with ANSI")
 	}
 }
+
+func TestIsByteSize(t *testing.T) {
+	for _, s := range []string{"512B", "2.6MB", "603.4KB", "1.0GB", "0B"} {
+		if !isByteSize(s) {
+			t.Errorf("isByteSize(%q) = false, want true", s)
+		}
+	}
+	for _, s := range []string{"128", "hello", "MB", "", "2.6XB", "MB2"} {
+		if isByteSize(s) {
+			t.Errorf("isByteSize(%q) = true, want false", s)
+		}
+	}
+	// rightAlignable = numbers OR byte sizes.
+	if !rightAlignable("128") || !rightAlignable("2.6MB") || rightAlignable("hello") {
+		t.Errorf("rightAlignable wrong")
+	}
+}
+
+// TestBoxRightAlignsByteSizes: a column of humanBytes-style sizes right-aligns
+// (the narrower value is padded on the left), like a numeric column.
+func TestBoxRightAlignsByteSizes(t *testing.T) {
+	var b strings.Builder
+	RenderBox(&b, raws(`{"size":"2.6MB"}`, `{"size":"603.4KB"}`), 0, 0, 0, "", Style{}, false)
+	out := b.String()
+	// "603.4KB" is the widest (7); "2.6MB" (5) must be right-aligned -> "  2.6MB".
+	if !strings.Contains(out, "  2.6MB ") {
+		t.Errorf("size column not right-aligned:\n%s", out)
+	}
+}

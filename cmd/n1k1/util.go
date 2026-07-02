@@ -51,6 +51,18 @@ func onOff(b bool) string {
 	return "off"
 }
 
+// verboseName describes a verbose level for status output.
+func verboseName(n int) string {
+	switch {
+	case n <= 0:
+		return "off (0)"
+	case n == 1:
+		return "on (1): show query plans"
+	default:
+		return fmt.Sprintf("debug (%d): plans + timing", n)
+	}
+}
+
 // terminalWidth reports the current output terminal's column count for auto
 // box-width fitting, or 0 when it can't be determined (e.g. output is a pipe or
 // a redirected file). Falls back to the COLUMNS env var when the ioctl fails.

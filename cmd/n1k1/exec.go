@@ -47,7 +47,8 @@ func (c *cli) exec(stmt string) {
 		return
 	}
 
-	if c.explain {
+	// .explain, or verbose >= 1, prints the converted plan per statement.
+	if c.explain || c.verbose >= 1 {
 		fmt.Fprintln(c.stderr, c.style.Dim("plan:"))
 		printPlan(c.stderr, res.Plan, 1)
 	}
@@ -60,7 +61,8 @@ func (c *cli) exec(stmt string) {
 }
 
 func (c *cli) renderResult(res *glue.Result) {
-	c.renderRows(res.Rows, res.Elapsed.String(), c.timer)
+	// verbose >= 2 (debug) shows the row-count/elapsed footer even without .timer.
+	c.renderRows(res.Rows, res.Elapsed.String(), c.timer || c.verbose >= 2)
 }
 
 // renderRows renders JSON-object rows in the current output mode -- used both for

@@ -240,6 +240,22 @@ func isNumeric(s string) bool {
 	return err == nil
 }
 
+// isByteSize reports whether s is a humanBytes-style size (a number plus a
+// B/KB/MB/GB/TB/PB unit, e.g. "512B", "2.6MB"). Such quantities right-align in the
+// box like plain numbers. Units are checked longest-first so "KB" wins over "B".
+func isByteSize(s string) bool {
+	for _, u := range []string{"PB", "TB", "GB", "MB", "KB", "B"} {
+		if strings.HasSuffix(s, u) {
+			return isNumeric(s[:len(s)-len(u)])
+		}
+	}
+	return false
+}
+
+// rightAlignable reports whether a cell should right-align in a box column: JSON
+// numbers and human byte sizes (both read as quantities).
+func rightAlignable(s string) bool { return isNumeric(s) || isByteSize(s) }
+
 // ---------------------------------------------------------------------------
 
 // RenderJSONLines prints one JSON value per line (compact; clean for pipes).
@@ -402,7 +418,7 @@ func RenderBox(w io.Writer, rows []json.RawMessage, maxWidth, maxRows, termWidth
 	}
 	for _, row := range cells {
 		for j, cell := range row {
-			if !isNumeric(cell) {
+			if !rightAlignable(cell) {
 				numeric[j] = false
 			}
 			if l := cellWidth(cell); l > widths[j] {
