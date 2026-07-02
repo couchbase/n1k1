@@ -112,7 +112,15 @@ func ExprTree(vars *base.Vars, labels base.Labels,
 		//   fields too. query avoids this by resetting the scope parent for star
 		//   projections (execution/project_initial.go: sv.ResetParent(nil));
 		//   n1k1's VisitInitialProject would need to do the same for the star term.
-		if gc, ok := context.(*GlueContext); ok && gc.corrParent != nil {
+		// The `v != nil` guard: a no-FROM sub-SELECT (e.g. the innermost
+		// `SELECT RAW a` in `SELECT RAW (SELECT RAW a)`) yields a single empty row
+		// that Convert maps to a nil value; v.Actual() below would nil-deref. Skipping
+		// the scope-wrap turns that panic into a graceful non-pass.
+		// TODO(correlated-nil-row): to make such a row actually resolve the outer
+		// identifier, evaluate against gc.corrParent when v is nil AND chain parents
+		// for nesting (corrParent is one value, replaced not composed on each
+		// EvaluateSubquery). Fixes the panic-subquery cases subqexp[5], withs[8,9].
+		if gc, ok := context.(*GlueContext); ok && gc.corrParent != nil && v != nil {
 			// Prefer keeping v as "self" via SetParent: it preserves v's
 			// annotations -- notably a subquery aggregate's "^aggregates"
 			// attachment, which SUM(...)/etc. read back; re-wrapping v.Actual() in
