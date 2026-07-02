@@ -546,7 +546,7 @@ Consequences, all leveraging work already done:
 - **Compiler-safe** — expansion happens before `conv`, so compiled and
   interpreted paths are identical (see "Compiler compatibility").
 
-### The one real blocker for the morphing-schema case: UNION ALL
+### The one real blocker for the morphing-schema case: UNION ALL (TODO)
 
 The normalizing view is a union of per-era projections:
 ```sql
