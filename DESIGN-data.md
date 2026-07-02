@@ -25,14 +25,18 @@ catalog case is expected to need no seam.
 
 Landed n1k1-side (all in `records/` + `glue/`, `//go:build n1ql`), well past the
 originally-drawn MVP line:
-- **Flat-root keyspaces** (scenario B) — `glue/flatroot.go` wraps the datastore to
+- **Flat-root keyspaces** (scenario B) — `glue/flat.go` wraps the datastore to
   advertise a synthetic `default:<basename>` keyspace with a primary index; the
   records-scan reads the root dir via `RecordsDir()`. Never calls into the fork.
 - **Single file as a keyspace** (scenario B2) — the CLI arg may be a lone record
   file (`events.jsonl`, `dump.ndjson`, `orders.jsonl.gz`), not just a directory.
-  Same `glue/flatroot.go` wrapper, one level flatter: `maybeFlatFile` fakes a
+  Same `glue/flat.go` wrapper, one level flatter: `maybeFlatFile` fakes a
   `default:<stem>` keyspace whose `RecordsFile()` points the records-scan
   (`records.File`) at the one file. Covered by `test/flatfile_test.go`.
+- **Grab-bag directory** (scenario B3) — a dir with loose data files *and*
+  unrelated subdirs (e.g. `~/Desktop`) exposes one keyspace per top-level
+  *structured* file, by stem (`maybeFlat`), merging any real `default` namespace.
+  Fixes the prior "no keyspaces" for such dirs. Covered by `glue/flat_test.go`.
 - **Multi-file keyspace = union of files, recursing** (scenarios C, E) — the
   `records` package (`records.go`) walks the dir and unions all decodable files.
 - **Decoders:** JSONL/ndjson, multi-doc JSON (array + `.jsons`), **and CSV/TSV**
@@ -779,6 +783,35 @@ flatter:
   new op kind (see "Compiler compatibility"). Covered by `test/flatfile_test.go`.
 `META().id` = `events.jsonl#57` for JSONL (base name + line index), or the file
 stem for a single-document `.json` (matching scenario A).
+
+### B3. Grab-bag directory — loose files + unrelated subdirs  ✅
+```
+~/Desktop/
+  people-100.csv          organizations-100.csv     Sales Transaction.csv
+  2025-W2.pdf   budget.xlsx   notes/   screenshots/   projects/   ...
+```
+`n1k1 -c "SELECT * FROM \`people-100\` LIMIT 5" ~/Desktop`
+→ a *casual* directory that has loose data files **and** unrelated
+subdirectories (the classic `~/Desktop`). Previously this reported **"no
+keyspaces"**: the file datastore read every subdir as a `namespace`, which
+suppressed flat-root detection (scenario B), so the loose files were never
+exposed and `default` was empty.
+**Resolved.** `glue/flat.go` `maybeFlat` now, when a directory has subdirs *and*
+loose top-level record files, exposes **one keyspace per top-level structured
+file, keyed by stem** (`people-100.csv` → `` `people-100` ``) — the
+"directory = database, file = table" model. It differs from scenario B (no
+subdirs → one union keyspace by basename) because `records.Walk` would recurse
+into the unrelated subdirs. Decisions/limits:
+- **Structured files only.** Auto-discovery is limited to JSON-family + CSV/TSV
+  (`records.IsStructuredFile`); extracted documents (PDF/DOCX/XLSX) are *not*
+  auto-exposed, so a folder of documents doesn't flood the keyspace list — query
+  one explicitly via the single-file arg (B2), e.g. `n1k1 ~/Desktop/2025-W2.pdf`.
+- **Additive / non-hiding.** A real `default` namespace's keyspaces (a classic
+  `<ns>/<keyspace>` layout that *also* has loose root files) are merged in, and
+  other real namespaces still resolve — flat discovery only ever *adds*.
+- **First-seen wins** on a stem collision (`a.json` + `a.csv` → one `a`).
+Each per-file keyspace rides the same `RecordsFile` single-file scan path as B2.
+Covered by `glue/flat_test.go` (`TestMaybeFlatGrabBag`, `…MergesRealDefault`).
 
 ### C. Multi-file keyspace, many records per file  ✅
 ```
