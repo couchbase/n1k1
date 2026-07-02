@@ -429,6 +429,16 @@ Support **three resolution modes**, in increasing power:
      name (or a default) as the keyspace. Auto-detect: if subdirs contain data
      files, they're keyspaces; if `<dir>` itself contains data files, it's a
      single flat keyspace. This mirrors DuckDB's "no mandatory layout."
+   - **Go one step flatter: the CLI arg may be a *single file*, not a dir.** The
+     smallest onboarding case — "I have one `events.jsonl` (or `dump.ndjson`, or
+     `orders.jsonl.gz`) and nothing else" — should just work:
+     `n1k1 -c "SELECT * FROM events" events.jsonl`. Auto-detect: if the CLI arg is
+     a regular file (not a directory), treat it as a one-file keyspace named after
+     its base name *with the record/compression extensions stripped*
+     (`events.jsonl` → `events`, `orders.jsonl.gz` → `orders`). This is the
+     natural sibling of flat-root — same "fake the metadata" trick, no catalog, no
+     deeper directories — and closes the gap where DuckDB's `FROM 'foo.jsonl'`
+     replacement scan has no n1k1 equivalent. See worked example **B2**.
 
 2. **Explicit table functions / globs in FROM** (DuckDB-style power mode) —
    **blocked on a grammar fork; not the near-term power path.** The aspiration is
@@ -733,6 +743,38 @@ treats the whole dir as a single flat keyspace.
 **Decision (RESOLVED — basename).** `glue/flatroot.go` names the keyspace after
 the root's basename (`filepath.Base`), under a synthetic `default` namespace
 (`default:sales`), matching the recommendation here.
+
+### B2. Single file as a keyspace — no directory at all  🟡 (convention extension)
+```
+events.jsonl              # just one file on disk; no shop/ dir, no default/ dir
+```
+`n1k1 -c "SELECT type, COUNT(*) FROM events GROUP BY type" events.jsonl`
+→ the CLI arg is a **regular file**, not a directory. Auto-detect treats it as a
+one-file keyspace named after the base name with record/compression extensions
+stripped (`events.jsonl` → `events`; `orders.jsonl.gz` → `orders`;
+`dump.ndjson` → `dump`). This is the "I just have a single JSONL/NDJSON/`*.gz`
+file" case — the flattest possible onboarding, and DuckDB's `FROM 'foo.jsonl'`
+replacement-scan analogue.
+**Why it's cheap (proposal / not yet built):** it's the same "fake the metadata"
+move as flat-root (B), one level flatter. Sketch:
+- `FileStore` currently does `file.NewDatastore(path)` then `maybeFlatRoot(path,
+  ds)` (`glue/stmt.go`). The fork's file datastore expects `path` to be a
+  *directory* tree, so a single-file arg must be intercepted **before** it — add a
+  `maybeFlatFile(path, ds)` (or fold into `maybeFlatRoot`) that, when
+  `os.Stat(path)` reports a regular file and `records.IsRecordFile(path)`, wraps
+  `ds` with the same synthetic `default:<basename>` keyspace machinery already in
+  `glue/flatroot.go`.
+- The keyspace's `RecordsDir()` is the one wrinkle: today it returns a directory
+  that `DatastoreScanRecords` hands to `records.Walk`. For a single file, either
+  (a) point the records-scan at the file directly — `filepath.Walk` over a regular
+  file already visits just that file, so `Walk` mostly works as-is, but the
+  synthetic-ID relpath basis (`<relpath>#<line>`, §6) wants the file's own base
+  name, not a dir-relative path — or (b) add a `RecordsFile() string` sibling to
+  `RecordsDir()` that the scan op prefers when set. Option (b) is cleaner and
+  keeps the dir-walk and single-file paths from entangling.
+- Compiler-transparent for free: still a `PrimaryScan` → `datastore-scan` op, no
+  new op kind (see "Compiler compatibility").
+`META().id` = `events.jsonl#L57` (the file's own base name as the ID prefix).
 
 ### C. Multi-file keyspace, many records per file  ✅
 ```
