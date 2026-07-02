@@ -513,8 +513,8 @@ func (c *Conv) VisitFinalGroup(o *plan.FinalGroup) (interface{}, error) {
 			aggExprs = append(aggExprs, []interface{}{"exprTree", operands[0]})
 		}
 		aggName := strings.ToLower(agg.Name())
-		if agg.Distinct() && (aggName == "count" || aggName == "array_agg") {
-			aggName += "_distinct" // e.g. COUNT(DISTINCT x), ARRAY_AGG(DISTINCT x).
+		if _, ok := base.AggCatalog[aggName+"_distinct"]; ok && agg.Distinct() {
+			aggName += "_distinct" // e.g. COUNT(DISTINCT x), MEDIAN(DISTINCT x).
 		}
 		aggCalcs = append(aggCalcs, []interface{}{aggName})
 

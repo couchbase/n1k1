@@ -1,0 +1,1192 @@
+[
+  {
+    "description": "MB-61613",
+    "statements": "SELECT t from (SELECT 1) t",
+    "results": [
+      {
+        "t": {
+          "$1": 1
+        }
+      }
+    ]
+  },
+  {
+    "description": "MB-67432",
+    "statements": "SELECT n.* FROM (SELECT d.c10, a1 FROM {\"c10\":1, \"a1\":[{\"c20\":\"xyz\"}]} AS d UNNEST d.a1) AS n JOIN [{\"c1\":1}, {\"c1\":1},{\"c1\":1},{\"c1\":1},{\"c1\":1}] AS r1 ON r1.c1 = n.c10",
+    "results": [
+      {
+        "a1": {
+          "c20": "xyz"
+        },
+        "c10": 1
+      },
+      {
+        "a1": {
+          "c20": "xyz"
+        },
+        "c10": 1
+      },
+      {
+        "a1": {
+          "c20": "xyz"
+        },
+        "c10": 1
+      },
+      {
+        "a1": {
+          "c20": "xyz"
+        },
+        "c10": 1
+      },
+      {
+        "a1": {
+          "c20": "xyz"
+        },
+        "c10": 1
+      }
+    ]
+  },
+  {
+    "description": "MB-65476, part 1",
+    "statements": "SELECT p.color, ARRAY_LENGTH(p.a1) AS a1_len FROM ( SELECT d.color, ARRAY_AGG(DISTINCT d) AS a1 FROM (SELECT d1.* FROM product AS d1 WHERE d1.test_id = 'agg_func' AND d1.type = 'product') AS d GROUP BY d.color ) AS p ORDER BY p.color",
+    "results": [
+      {
+        "color": "azure",
+        "a1_len": 41
+      },
+      {
+        "color": "black",
+        "a1_len": 39
+      },
+      {
+        "color": "blue",
+        "a1_len": 23
+      },
+      {
+        "color": "cyan",
+        "a1_len": 23
+      },
+      {
+        "color": "fuchsia",
+        "a1_len": 26
+      },
+      {
+        "color": "gold",
+        "a1_len": 24
+      },
+      {
+        "color": "green",
+        "a1_len": 27
+      },
+      {
+        "color": "grey",
+        "a1_len": 37
+      },
+      {
+        "color": "indigo",
+        "a1_len": 31
+      },
+      {
+        "color": "ivory",
+        "a1_len": 32
+      },
+      {
+        "color": "lavender",
+        "a1_len": 22
+      },
+      {
+        "color": "lime",
+        "a1_len": 26
+      },
+      {
+        "color": "magenta",
+        "a1_len": 21
+      },
+      {
+        "color": "maroon",
+        "a1_len": 33
+      },
+      {
+        "color": "mint green",
+        "a1_len": 18
+      },
+      {
+        "color": "olive",
+        "a1_len": 25
+      },
+      {
+        "color": "orange",
+        "a1_len": 29
+      },
+      {
+        "color": "orchid",
+        "a1_len": 28
+      },
+      {
+        "color": "pink",
+        "a1_len": 24
+      },
+      {
+        "color": "plum",
+        "a1_len": 32
+      },
+      {
+        "color": "purple",
+        "a1_len": 34
+      },
+      {
+        "color": "red",
+        "a1_len": 28
+      },
+      {
+        "color": "salmon",
+        "a1_len": 33
+      },
+      {
+        "color": "silver",
+        "a1_len": 28
+      },
+      {
+        "color": "sky blue",
+        "a1_len": 34
+      },
+      {
+        "color": "tan",
+        "a1_len": 32
+      },
+      {
+        "color": "teal",
+        "a1_len": 27
+      },
+      {
+        "color": "turquoise",
+        "a1_len": 31
+      },
+      {
+        "color": "violet",
+        "a1_len": 30
+      },
+      {
+        "color": "white",
+        "a1_len": 26
+      },
+      {
+        "color": "yellow",
+        "a1_len": 36
+      }
+    ]
+  },
+  {
+    "description": "MB-65476, part 2",
+    "statements": "SELECT p.color, ARRAY_LENGTH(p.a1) AS a1_len FROM ( SELECT d.color, ARRAY_AGG(d) AS a1 FROM (SELECT d1.* FROM product AS d1 WHERE d1.test_id = 'agg_func' AND d1.type = 'product') AS d GROUP BY d.color ) AS p ORDER BY p.color",
+    "results": [
+      {
+        "color": "azure",
+        "a1_len": 41
+      },
+      {
+        "color": "black",
+        "a1_len": 39
+      },
+      {
+        "color": "blue",
+        "a1_len": 23
+      },
+      {
+        "color": "cyan",
+        "a1_len": 23
+      },
+      {
+        "color": "fuchsia",
+        "a1_len": 26
+      },
+      {
+        "color": "gold",
+        "a1_len": 24
+      },
+      {
+        "color": "green",
+        "a1_len": 27
+      },
+      {
+        "color": "grey",
+        "a1_len": 37
+      },
+      {
+        "color": "indigo",
+        "a1_len": 31
+      },
+      {
+        "color": "ivory",
+        "a1_len": 32
+      },
+      {
+        "color": "lavender",
+        "a1_len": 22
+      },
+      {
+        "color": "lime",
+        "a1_len": 26
+      },
+      {
+        "color": "magenta",
+        "a1_len": 21
+      },
+      {
+        "color": "maroon",
+        "a1_len": 33
+      },
+      {
+        "color": "mint green",
+        "a1_len": 18
+      },
+      {
+        "color": "olive",
+        "a1_len": 25
+      },
+      {
+        "color": "orange",
+        "a1_len": 29
+      },
+      {
+        "color": "orchid",
+        "a1_len": 28
+      },
+      {
+        "color": "pink",
+        "a1_len": 24
+      },
+      {
+        "color": "plum",
+        "a1_len": 32
+      },
+      {
+        "color": "purple",
+        "a1_len": 34
+      },
+      {
+        "color": "red",
+        "a1_len": 28
+      },
+      {
+        "color": "salmon",
+        "a1_len": 33
+      },
+      {
+        "color": "silver",
+        "a1_len": 28
+      },
+      {
+        "color": "sky blue",
+        "a1_len": 34
+      },
+      {
+        "color": "tan",
+        "a1_len": 32
+      },
+      {
+        "color": "teal",
+        "a1_len": 27
+      },
+      {
+        "color": "turquoise",
+        "a1_len": 31
+      },
+      {
+        "color": "violet",
+        "a1_len": 30
+      },
+      {
+        "color": "white",
+        "a1_len": 26
+      },
+      {
+        "color": "yellow",
+        "a1_len": 36
+      }
+    ]
+  },
+  {
+    "statements": "SELECT DISTINCT custId FROM orders where test_id = \"agg_func\" ORDER BY custId",
+    "results": [
+      {
+        "custId": "customer12"
+      },
+      {
+        "custId": "customer18"
+      },
+      {
+        "custId": "customer312"
+      },
+      {
+        "custId": "customer38"
+      }
+    ]
+  },
+  {
+    "statements": "SELECT COUNT(DISTINCT color) AS numcolors, product.categories AS category FROM product WHERE test_id = \"agg_func\" GROUP BY product.categories ORDER BY numcolors, product.categories DESC LIMIT 3",
+    "results": [
+      {
+        "category": [
+          "Exercise & Fitness"
+        ],
+        "numcolors": 5
+      },
+      {
+        "category": [
+          "Outdoor Recreation"
+        ],
+        "numcolors": 6
+      },
+      {
+        "category": [
+          "Watches"
+        ],
+        "numcolors": 7
+      }
+    ]
+  },
+  {
+    "statements": "SELECT ARRAY_AGG(DISTINCT color) AS coloroptions,product.categories FROM product WHERE test_id = \"agg_func\" GROUP BY product.categories ORDER BY product.categories, coloroptions LIMIT 2",
+    "results": [
+      {
+        "categories": [
+          "All Sports & Outdoors"
+        ],
+        "coloroptions": [
+          "azure",
+          "black",
+          "blue",
+          "cyan",
+          "gold",
+          "green",
+          "indigo",
+          "ivory",
+          "lavender",
+          "maroon",
+          "mint green",
+          "olive",
+          "orchid",
+          "pink",
+          "plum",
+          "purple",
+          "red",
+          "sky blue",
+          "tan",
+          "violet",
+          "yellow"
+        ]
+      },
+      {
+        "categories": [
+          "Appliances"
+        ],
+        "coloroptions": [
+          "azure",
+          "black",
+          "blue",
+          "fuchsia",
+          "gold",
+          "green",
+          "grey",
+          "indigo",
+          "ivory",
+          "lavender",
+          "lime",
+          "magenta",
+          "maroon",
+          "mint green",
+          "olive",
+          "orange",
+          "orchid",
+          "pink",
+          "plum",
+          "red",
+          "salmon",
+          "silver",
+          "sky blue",
+          "tan",
+          "teal",
+          "turquoise",
+          "violet",
+          "white",
+          "yellow"
+        ]
+      }
+    ]
+  },
+  {
+    "statements": "SELECT COUNT(DISTINCT color) AS totcolors, COUNT(product.categories) AS totcategories FROM product WHERE test_id = \"agg_func\"",
+    "results": [
+      {
+        "totcategories": 900,
+        "totcolors": 31
+      }
+    ]
+  },
+  {
+    "statements": "SELECT categories, ROUND(SUM(unitPrice), 2) AS totprice FROM product WHERE test_id = \"agg_func\" AND ANY reviewList IN reviewList SATISFIES reviewList LIKE \"%0\" END GROUP BY categories HAVING ROUND(SUM(unitPrice), 2) ORDER BY categories LIMIT 5",
+    "results": [
+      {
+        "categories": [
+          "All Sports & Outdoors"
+        ],
+        "totprice": 809.77
+      },
+      {
+        "categories": [
+          "Appliances"
+        ],
+        "totprice": 11502.98
+      },
+      {
+        "categories": [
+          "Arts, Crafts & Sewing"
+        ],
+        "totprice": 2854.93
+      },
+      {
+        "categories": [
+          "Baby"
+        ],
+        "totprice": 2677.96
+      },
+      {
+        "categories": [
+          "Bedding & Bath"
+        ],
+        "totprice": 71.97
+      }
+    ]
+  },
+  {
+    "statements": "SELECT product.categories CATG, COUNT(*) AS numprods FROM product WHERE test_id = \"agg_func\" GROUP BY product.categories HAVING COUNT(*) BETWEEN 15 and 30 ORDER BY CATG, numprods LIMIT 3",
+    "results": [
+      {
+        "CATG": [
+          "Golf"
+        ],
+        "numprods": 20
+      },
+      {
+        "CATG": [
+          "Hardware"
+        ],
+        "numprods": 20
+      },
+      {
+        "CATG": [
+          "Luggage"
+        ],
+        "numprods": 15
+      }
+    ]
+  },
+  {
+    "statements": "SELECT product.categories AS CATG, COUNT (*) AS numprods FROM product WHERE test_id = \"agg_func\" GROUP BY product.categories ORDER BY CATG,numprods LIMIT 3",
+    "results": [
+      {
+        "CATG": [
+          "All Sports & Outdoors"
+        ],
+        "numprods": 39
+      },
+      {
+        "CATG": [
+          "Appliances"
+        ],
+        "numprods": 78
+      },
+      {
+        "CATG": [
+          "Arts, Crafts & Sewing"
+        ],
+        "numprods": 37
+      }
+    ]
+  },
+  {
+    "statements": "SELECT product.categories AS CATG, COUNT (*) AS numprods FROM product WHERE test_id = \"agg_func\" GROUP BY product.categories ORDER BY numprods,CATG LIMIT 3",
+    "results": [
+      {
+        "CATG": [
+          "Exercise & Fitness"
+        ],
+        "numprods": 5
+      },
+      {
+        "CATG": [
+          "Bedding & Bath"
+        ],
+        "numprods": 7
+      },
+      {
+        "CATG": [
+          "Outdoor Recreation"
+        ],
+        "numprods": 7
+      }
+    ]
+  },
+  {
+    "statements": "SELECT COUNTN(cntn) AS cntn, COUNTN(DISTINCT cntn) AS dcntn, COUNT(cntn) AS cnt, COUNT(DISTINCT cntn) AS dcnt FROM orders WHERE test_id = \"cntn_agg_func\"",
+    "results": [
+      {
+        "cnt": 5,
+        "cntn": 3,
+        "dcnt": 4,
+        "dcntn": 2
+      }
+    ]
+  },
+  {
+    "description": "Query to check that Index grouping and aggregation is not done when GROUP AS clause is present.  This query would have otherwise been covered if the Group As clause was not present",
+    "explain": {
+      "disabled": false,
+      "results": [
+        {
+          "present": true
+        }
+      ],
+      "statement": "SELECT true AS present FROM $explan AS p WHERE ANY v WITHIN p.plan.`~children` SATISFIES v.`#operator` LIKE 'IndexScan%' AND v.index_group_aggs IS MISSING AND v.covers IS MISSING END"
+    },
+    "statements": "SELECT custId, COUNT(*) AS count FROM orders WHERE custId AND test_id = \"agg_func\" GROUP BY custId GROUP AS g  ORDER BY count, custId LIMIT 4;",
+    "results": [
+      {
+        "custId": "customer12",
+        "count": 1
+      },
+      {
+        "custId": "customer18",
+        "count": 1
+      },
+      {
+        "custId": "customer312",
+        "count": 1
+      },
+      {
+        "custId": "customer38",
+        "count": 1
+      }
+    ]
+  },
+  {
+    "description": "Group As with COUNT to check if length of group as field is accurate",
+    "statements": "SELECT color as product_color, len(g) as count_group_items, COUNT(*) AS count FROM product where test_id = \"agg_func\" GROUP BY color GROUP AS g ORDER BY product_color LIMIT 5;",
+    "results": [
+      {
+        "product_color": "azure",
+        "count_group_items": 41,
+        "count": 41
+      },
+      {
+        "product_color": "black",
+        "count_group_items": 39,
+        "count": 39
+      },
+      {
+        "product_color": "blue",
+        "count_group_items": 23,
+        "count": 23
+      },
+      {
+        "product_color": "cyan",
+        "count_group_items": 23,
+        "count": 23
+      },
+      {
+        "product_color": "fuchsia",
+        "count_group_items": 26,
+        "count": 26
+      }
+    ]
+  },
+  {
+    "description": "Query that has a LET clause and CTE and references the Group As field in a subquery",
+    "statements": "WITH cte1 AS (SELECT 1) SELECT custId, COUNT(*) AS count, (SELECT g1.o.id id, g1.o.cte1 cte1 , g1.o.var var FROM g g1) AS group_ids FROM orders o LET var = 1000 WHERE test_id = \"agg_func\" GROUP BY custId GROUP AS g  ORDER BY count, custId LIMIT 4;",
+    "results": [
+      {
+        "custId": "customer12",
+        "count": 1,
+        "group_ids": [
+          {
+            "id": "1235"
+          }
+        ]
+      },
+      {
+        "custId": "customer18",
+        "count": 1,
+        "group_ids": [
+          {
+            "id": "1200"
+          }
+        ]
+      },
+      {
+        "custId": "customer312",
+        "count": 1,
+        "group_ids": [
+          {
+            "id": "1234"
+          }
+        ]
+      },
+      {
+        "custId": "customer38",
+        "count": 1,
+        "group_ids": [
+          {
+            "id": "1236"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "description": "Query with a join - there is a field for each keyspace in the Group As output",
+    "statements": "SELECT c.custId, count(*) AS count, g FROM orders o INNER JOIN customer c ON o.custId = c.custId AND o.test_id = \"agg_func\" AND c.test_id = \"agg_func\" GROUP BY c.custId GROUP AS g ORDER BY count, c.custId LIMIT 1;",
+    "results": [
+      {
+        "custId": "customer12",
+        "count": 1,
+        "g": [
+          {
+            "c": {
+              "custId": "customer12",
+              "emailAddress": "mburren2@acquirethisname.com",
+              "firstName": "Marris",
+              "lastName": "Burren",
+              "test_id": "agg_func",
+              "type": "customer"
+            },
+            "o": {
+              "custId": "customer12",
+              "id": "1235",
+              "orderlines": [
+                {
+                  "productId": "tea111",
+                  "qty": 1
+                },
+                {
+                  "productId": "sugar22",
+                  "qty": 1
+                }
+              ],
+              "test_id": "agg_func",
+              "type": "order"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "description": "Query referencing an element in the Group As array in the projection",
+    "statements": "SELECT id, COUNT(*) AS count, g[0].orders.id AS group_ids FROM orders WHERE custId AND test_id = \"agg_func\" GROUP BY id GROUP AS g ORDER BY count, id LIMIT 4;",
+    "results": [
+      {
+        "id": "1200",
+        "count": 1,
+        "group_ids": "1200"
+      },
+      {
+        "id": "1234",
+        "count": 1,
+        "group_ids": "1234"
+      },
+      {
+        "id": "1235",
+        "count": 1,
+        "group_ids": "1235"
+      },
+      {
+        "id": "1236",
+        "count": 1,
+        "group_ids": "1236"
+      }
+    ]
+  },
+  {
+    "description": "Query referencing the Group As alias in the HAVING clause",
+    "statements": "SELECT color AS product_color, len(g) AS count_group_items FROM product WHERE test_id = \"agg_func\" GROUP BY color GROUP AS g HAVING len(g) > 25 ORDER BY product_color LIMIT 3;",
+    "results": [
+      {
+        "product_color": "azure",
+        "count_group_items": 41
+      },
+      {
+        "product_color": "black",
+        "count_group_items": 39
+      },
+      {
+        "product_color": "fuchsia",
+        "count_group_items": 26
+      }
+    ]
+  },
+  {
+    "description": "Query referencing the Group As alias in the LETTING clause",
+    "statements": "SELECT id, COUNT(*) as count, var as group_ids FROM orders WHERE custId AND test_id = \"agg_func\" GROUP BY id GROUP AS g  LETTING var = g[0].orders.id ORDER BY count, id LIMIT 4;",
+    "results": [
+      {
+        "id": "1200",
+        "count": 1,
+        "group_ids": "1200"
+      },
+      {
+        "id": "1234",
+        "count": 1,
+        "group_ids": "1234"
+      },
+      {
+        "id": "1235",
+        "count": 1,
+        "group_ids": "1235"
+      },
+      {
+        "id": "1236",
+        "count": 1,
+        "group_ids": "1236"
+      }
+    ]
+  },
+  {
+    "description": "simple group by usage",
+    "statements": "select custId, count(*) as c from orders where test_id = \"agg_func\" group by custId order by c, custId",
+    "results": [
+      {
+        "c": 1,
+        "custId": "customer12"
+      },
+      {
+        "c": 1,
+        "custId": "customer18"
+      },
+      {
+        "c": 1,
+        "custId": "customer312"
+      },
+      {
+        "c": 1,
+        "custId": "customer38"
+      }
+    ]
+  },
+  {
+    "description": "use all aggregate functions, no group by",
+    "statements": "SELECT MIN(unitPrice) AS min, MAX(unitPrice) AS max, ROUND(AVG(unitPrice),5) AS avg, ROUND(SUM(unitPrice),5) AS sum, COUNT(unitPrice) AS count FROM product where test_id = \"agg_func\" ORDER BY min",
+    "results": [
+      {
+        "avg": 87.55629,
+        "count": 900,
+        "max": 2299.99,
+        "min": 0.69,
+        "sum": 78800.66
+      }
+    ]
+  },
+  {
+    "description": "use all aggregate functions, this type with group by",
+    "statements": "SELECT color as product_color, MIN(unitPrice) AS min, MAX(unitPrice) AS max, ROUND(AVG(unitPrice),5) AS avg, ROUND(SUM(unitPrice),5) AS sum, COUNT(unitPrice) AS count FROM product where test_id = \"agg_func\" GROUP BY color ORDER BY min, avg limit 5",
+    "results": [
+      {
+        "avg": 91.08,
+        "count": 26,
+        "max": 760,
+        "min": 0.69,
+        "product_color": "fuchsia",
+        "sum": 2368.08
+      },
+      {
+        "avg": 59.67,
+        "count": 28,
+        "max": 349.99,
+        "min": 1.41,
+        "product_color": "red",
+        "sum": 1670.76
+      },
+      {
+        "avg": 118.87778,
+        "count": 36,
+        "max": 1499,
+        "min": 1.41,
+        "product_color": "yellow",
+        "sum": 4279.6
+      },
+      {
+        "avg": 101.69172,
+        "count": 29,
+        "max": 599.99,
+        "min": 1.45,
+        "product_color": "orange",
+        "sum": 2949.06
+      },
+      {
+        "avg": 46.10913,
+        "count": 23,
+        "max": 196.95,
+        "min": 2.39,
+        "product_color": "blue",
+        "sum": 1060.51
+      }
+    ]
+  },
+  {
+    "description": "use all aggregate functions, with group by and having",
+    "statements": "SELECT color as product_colori, MIN(unitPrice) AS min, MAX(unitPrice) AS max, ROUND(AVG(unitPrice),5) AS avg, ROUND(SUM(unitPrice),5) AS sum, COUNT(unitPrice) AS count FROM product where test_id = \"agg_func\" GROUP BY color HAVING count(unitPrice) > 34 ORDER BY min, avg ",
+    "results": [
+      {
+        "avg": 118.87778,
+        "count": 36,
+        "max": 1499,
+        "min": 1.41,
+        "product_colori": "yellow",
+        "sum": 4279.6
+      },
+      {
+        "avg": 68.27732,
+        "count": 41,
+        "max": 300,
+        "min": 3.99,
+        "product_colori": "azure",
+        "sum": 2799.37
+      },
+      {
+        "avg": 156.08622,
+        "count": 37,
+        "max": 599,
+        "min": 3.99,
+        "product_colori": "grey",
+        "sum": 5775.19
+      },
+      {
+        "avg": 88.55128,
+        "count": 39,
+        "max": 599.99,
+        "min": 4.57,
+        "product_colori": "black",
+        "sum": 3453.5
+      }
+    ]
+  },
+  {
+    "description": "use all aggregate functions, with group by alias",
+    "statements": "SELECT month, COUNT(*) as order_count FROM product AS p WHERE test_id = \"agg_func\" GROUP BY DATE_PART_STR(dateAdded, \"month\") as month having month > 11",
+    "results": [
+      {
+        "month": 12,
+        "order_count": 63
+      }
+    ]
+  },
+  {
+    "description": "use array aggregate function",
+    "statements": "SELECT array_Agg(id) from orders where test_id = \"agg_func\"",
+    "results": [
+      {
+        "$1": [
+          "1200",
+          "1234",
+          "1235",
+          "1236"
+        ]
+      }
+    ]
+  },
+  {
+    "statements": "SELECT orderlines[1], count(*) AS count FROM orders where test_id = \"agg_func\" GROUP BY orderlines[1] ORDER BY count",
+    "results": [
+      {
+        "$1": {
+          "productId": "tea111",
+          "qty": 1
+        },
+        "count": 1
+      },
+      {
+        "$1": {
+          "productId": "sugar22",
+          "qty": 1
+        },
+        "count": 3
+      }
+    ]
+  },
+  {
+    "statements": "SELECT orderlines,  count(*) AS count FROM orders where test_id = \"agg_func\" GROUP BY orderlines ORDER BY orderlines",
+    "results": [
+      {
+        "count": 2,
+        "orderlines": [
+          {
+            "productId": "coffee01",
+            "qty": 1
+          },
+          {
+            "productId": "sugar22",
+            "qty": 1
+          }
+        ]
+      },
+      {
+        "count": 1,
+        "orderlines": [
+          {
+            "productId": "coffee01",
+            "qty": 2
+          },
+          {
+            "productId": "tea111",
+            "qty": 1
+          }
+        ]
+      },
+      {
+        "count": 1,
+        "orderlines": [
+          {
+            "productId": "tea111",
+            "qty": 1
+          },
+          {
+            "productId": "sugar22",
+            "qty": 1
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "statements": "select orderlines as O, count(*) as count from orders where ANY ord IN orderlines SATISFIES ord.productId = \"tea111\" END AND test_id = \"agg_func\" GROUP BY orderlines HAVING ARRAY_LENGTH(orderlines) >=2 ORDER BY O",
+    "results": [
+      {
+        "O": [
+          {
+            "productId": "coffee01",
+            "qty": 2
+          },
+          {
+            "productId": "tea111",
+            "qty": 1
+          }
+        ],
+        "count": 1
+      },
+      {
+        "O": [
+          {
+            "productId": "tea111",
+            "qty": 1
+          },
+          {
+            "productId": "sugar22",
+            "qty": 1
+          }
+        ],
+        "count": 1
+      }
+    ]
+  },
+  {
+    "statements": "SELECT ROUND(Median(unitPrice), 3) AS median, count(*) AS cnt FROM product WHERE test_id = \"agg_func\"",
+    "results": [
+      {
+        "cnt": 900,
+        "median": 27.965
+      }
+    ]
+  },
+  {
+    "statements": "SELECT Median(DISTINCT unitPrice) FROM product WHERE test_id = \"agg_func\"",
+    "results": [
+      {
+        "$1": 33.864999999999995
+      }
+    ]
+  },
+  {
+    "statements": "SELECT ROUND(Median(DISTINCT unitPrice), 0) FROM product WHERE test_id = \"agg_func\"",
+    "results": [
+      {
+        "$1": 34
+      }
+    ]
+  },
+  {
+    "statements": "SELECT Median(orderInfo.qty) from orders UNNEST orderlines AS orderInfo WHERE orders.test_id = \"agg_func\"",
+    "results": [
+      {
+        "$1": 1
+      }
+    ]
+  },
+  {
+    "statements": "SELECT Median(DISTINCT orderInfo.qty) from orders UNNEST orderlines AS orderInfo WHERE orders.test_id = \"agg_func\"",
+    "results": [
+      {
+        "$1": 1.5
+      }
+    ]
+  },
+  {
+    "statements": "SELECT Stddev(orderInfo.qty) from orders UNNEST orderlines AS orderInfo WHERE orders.test_id = \"agg_func\"",
+    "results": [
+      {
+        "$1": 0.3535533905932738
+      }
+    ]
+  },
+  {
+    "statements": "SELECT Stddev_samp(DISTINCT orderInfo.qty) from orders UNNEST orderlines AS orderInfo WHERE orders.test_id = \"agg_func\"",
+    "results": [
+      {
+        "$1": 0.7071067811865476
+      }
+    ]
+  },
+  {
+    "statements": "SELECT Stddev_samp(orderInfo.qty) from orders UNNEST orderlines AS orderInfo WHERE orders.test_id = \"agg_func\"",
+    "results": [
+      {
+        "$1": 0.3535533905932738
+      }
+    ]
+  },
+  {
+    "statements": "SELECT Stddev(DISTINCT orderInfo.qty) from orders UNNEST orderlines AS orderInfo WHERE orders.test_id = \"agg_func\"",
+    "results": [
+      {
+        "$1": 0.7071067811865476
+      }
+    ]
+  },
+  {
+    "statements": "SELECT Stddev(cntn) FROM orders WHERE cntn=10 and test_id = \"cntn_agg_func\"",
+    "results": [
+      {
+        "$1": 0
+      }
+    ]
+  },
+  {
+    "statements": "SELECT Stddev(DISTINCT cntn) FROM orders WHERE cntn=10 and test_id = \"cntn_agg_func\"",
+    "results": [
+      {
+        "$1": 0
+      }
+    ]
+  },
+  {
+    "statements": "SELECT Stddev_samp(cntn) FROM orders WHERE test_id = \"cntn_agg_func\"",
+    "results": [
+      {
+        "$1": 0.5773502691896257
+      }
+    ]
+  },
+  {
+    "statements": "SELECT Stddev_samp(DISTINCT cntn) FROM orders WHERE test_id = \"cntn_agg_func\"",
+    "results": [
+      {
+        "$1": 0.7071067811865476
+      }
+    ]
+  },
+  {
+    "statements": "SELECT Stddev_samp(cntn) FROM orders WHERE test_id = \"cntn_agg_func\" AND cntn = 11",
+    "results": [
+      {
+        "$1": null
+      }
+    ]
+  },
+  {
+    "statements": "SELECT Variance(cntn) FROM orders WHERE test_id = \"cntn_agg_func\"",
+    "results": [
+      {
+        "$1": 0.3333333333333333
+      }
+    ]
+  },
+  {
+    "statements": "select variance_samp(orderInfo.qty) from orders UNNEST orderlines As orderInfo WHERE orders.test_id = \"agg_func\"",
+    "results": [
+      {
+        "$1": 0.125
+      }
+    ]
+  },
+  {
+    "statements": "SELECT Variance_samp(cntn) FROM orders WHERE test_id = \"cntn_agg_func\"",
+    "results": [
+      {
+        "$1": 0.3333333333333333
+      }
+    ]
+  },
+  {
+    "statements": "SELECT variance_samp(cntn) FROM orders WHERE test_id = \"cntn_agg_func\" AND cntn = 11",
+    "results": [
+      {
+        "$1": null
+      }
+    ]
+  },
+  {
+    "statements": "SELECT Variance_pop(cntn) FROM orders WHERE test_id = \"cntn_agg_func\"",
+    "results": [
+      {
+        "$1": 0.2222222222222222
+      }
+    ]
+  },
+  {
+    "statements": "select variance_pop(orderInfo.qty) from orders UNNEST orderlines As orderInfo WHERE orders.test_id = \"agg_func\"",
+    "results": [
+      {
+        "$1": 0.109375
+      }
+    ]
+  },
+  {
+    "statements": "SELECT Var_pop(cntn) FROM orders WHERE test_id = \"cntn_agg_func\"",
+    "results": [
+      {
+        "$1": 0.2222222222222222
+      }
+    ]
+  },
+  {
+    "statements": "select variance_pop(DISTINCT orderInfo.qty) from orders UNNEST orderlines As orderInfo WHERE orders.test_id = \"agg_func\"",
+    "results": [
+      {
+        "$1": 0.25
+      }
+    ]
+  },
+  {
+    "statements": "select variance_samp(DISTINCT orderInfo.qty) from orders UNNEST orderlines As orderInfo WHERE orders.test_id = \"agg_func\"",
+    "results": [
+      {
+        "$1": 0.5
+      }
+    ]
+  },
+  {
+    "statements": "SELECT MEDIAN(c0) AS oagg_0, MEDIAN(c5) AS oagg_1, MEDIAN(c5) AS oagg_2, MEDIAN(c2) AS oagg_3, MEDIAN(c7) AS oagg_4, MEDIAN(c8) AS oagg_5, MEDIAN(c5) AS oagg_6, MEDIAN(c6) AS oagg_7, MEDIAN(c1) AS oagg_8 FROM orders WHERE test_id=\"median_agg_func\"",
+    "results": [
+      {
+        "oagg_0": 3,
+        "oagg_1": 504,
+        "oagg_2": 504,
+        "oagg_3": 203,
+        "oagg_4": 703,
+        "oagg_5": 802,
+        "oagg_6": 504,
+        "oagg_7": 602,
+        "oagg_8": 104
+      }
+    ]
+  }
+]

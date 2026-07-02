@@ -15,6 +15,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"math"
+	"sort"
 	"strconv"
 )
 
@@ -84,6 +85,35 @@ func init() {
 
 	AggCatalog["array_agg_distinct"] = len(Aggs)
 	Aggs = append(Aggs, AggArrayAggDistinct)
+
+	// COUNTN counts only NUMBER-typed values (COUNT counts all non-MISSING).
+	registerAgg("countn", &Agg{Init: aggU64Init, Update: aggCountNUpdate, Result: aggU64Result})
+	registerAgg("countn_distinct", &Agg{
+		Init: aggU64Init, Update: aggNumDistinctUpdate, Result: aggDistinctCountResult})
+
+	// MEDIAN / STDDEV / VARIANCE family. Each accumulates the group's NUMBER
+	// values (a numeric list, or a distinct canonical set for DISTINCT) and
+	// computes the statistic in Result, mirroring couchbase/query's two-pass
+	// algorithm (mean = sum/count; variance = sum of squared deviations /
+	// (count - delta), delta=1 for sample and 0 for population) so the float
+	// results match exactly. "variance"/"stddev" are the sample forms.
+	for _, v := range []struct {
+		name         string
+		samp, sqrtIt bool
+	}{
+		{"variance", true, false}, {"var_samp", true, false}, {"var_pop", false, false},
+		{"stddev", true, true}, {"stddev_samp", true, true}, {"stddev_pop", false, true},
+	} {
+		registerAgg(v.name, makeVarianceAgg(false, v.samp, v.sqrtIt))
+		registerAgg(v.name+"_distinct", makeVarianceAgg(true, v.samp, v.sqrtIt))
+	}
+	registerAgg("median", makeMedianAgg(false))
+	registerAgg("median_distinct", makeMedianAgg(true))
+}
+
+func registerAgg(name string, agg *Agg) {
+	AggCatalog[name] = len(Aggs)
+	Aggs = append(Aggs, agg)
 }
 
 // -----------------------------------------------------
@@ -343,4 +373,174 @@ var AggArrayAgg = &Agg{
 
 		return Val(vBuf), agg[8+total:], BufUnused(buf, len(vBuf))
 	},
+}
+
+// -----------------------------------------------------
+// COUNTN / MEDIAN / STDDEV / VARIANCE support.
+
+// aggU64Init / aggU64Result handle a bare 8-byte uint64 counter state.
+func aggU64Init(vars *Vars, agg []byte) []byte { return append(agg, Zero8[:8]...) }
+
+func aggU64Result(vars *Vars, agg, buf []byte) (v Val, aggRest, bufOut []byte) {
+	c := binary.LittleEndian.Uint64(agg[:8])
+	vBuf := strconv.AppendUint(buf[:0], c, 10)
+	return Val(vBuf), agg[8:], BufUnused(buf, len(vBuf))
+}
+
+// isNumberVal reports whether v parses as a JSON number.
+func isNumberVal(v Val) bool {
+	_, pt := Parse(v)
+	return ParseTypeToValType[pt] == ValTypeNumber
+}
+
+// aggCountNUpdate increments the counter only for NUMBER-typed values.
+func aggCountNUpdate(vars *Vars, v Val, aggNew, agg []byte, vc *ValComparer) (
+	[]byte, []byte, bool) {
+	c := binary.LittleEndian.Uint64(agg[:8])
+	if isNumberVal(v) {
+		return BinaryAppendUint64(aggNew, c+1), agg[8:], true
+	}
+	return append(aggNew, agg[:8]...), agg[8:], false
+}
+
+// aggNumDistinctUpdate is aggDistinctUpdate restricted to NUMBER values (others
+// are ignored), used by COUNTN(DISTINCT ...) and the DISTINCT statistical aggs.
+func aggNumDistinctUpdate(vars *Vars, v Val, aggNew, agg []byte, vc *ValComparer) (
+	[]byte, []byte, bool) {
+	if isNumberVal(v) {
+		return aggDistinctUpdate(v, aggNew, agg, vc)
+	}
+	n := binary.LittleEndian.Uint64(agg[:8])
+	total := aggDistinctWalk(n, agg)
+	return append(aggNew, agg[:8+total]...), agg[8+total:], false
+}
+
+// aggDistinctCountResult returns the size of a distinct set (for COUNTN DISTINCT).
+func aggDistinctCountResult(vars *Vars, agg, buf []byte) (v Val, aggRest, bufOut []byte) {
+	n := binary.LittleEndian.Uint64(agg[:8])
+	total := aggDistinctWalk(n, agg)
+	vBuf := strconv.AppendUint(buf[:0], n, 10)
+	return Val(vBuf), agg[8+total:], BufUnused(buf, len(vBuf))
+}
+
+// aggNumListUpdate appends v's float64 to a numeric-list state (an 8-byte count
+// followed by that many 8-byte float64s). Non-numbers are ignored.
+func aggNumListUpdate(vars *Vars, v Val, aggNew, agg []byte, vc *ValComparer) (
+	[]byte, []byte, bool) {
+	n := binary.LittleEndian.Uint64(agg[:8])
+	end := 8 + int(n)*8
+	pv, pt := Parse(v)
+	if ParseTypeToValType[pt] == ValTypeNumber {
+		if f, err := ParseFloat64(pv); err == nil {
+			aggNew = BinaryAppendUint64(aggNew, n+1)
+			aggNew = append(aggNew, agg[8:end]...)
+			aggNew = BinaryAppendUint64(aggNew, math.Float64bits(f))
+			return aggNew, agg[end:], true
+		}
+	}
+	return append(aggNew, agg[:end]...), agg[end:], false
+}
+
+// aggFloats extracts the accumulated float64 values (and the trailing aggRest)
+// from either a numeric-list state (distinct==false) or a distinct canonical
+// set (distinct==true).
+func aggFloats(distinct bool, agg []byte) (vals []float64, aggRest []byte) {
+	n := binary.LittleEndian.Uint64(agg[:8])
+	off := 8
+	if !distinct {
+		vals = make([]float64, 0, n)
+		for i := uint64(0); i < n; i++ {
+			vals = append(vals, math.Float64frombits(
+				binary.LittleEndian.Uint64(agg[off:off+8])))
+			off += 8
+		}
+		return vals, agg[off:]
+	}
+	total := aggDistinctWalk(n, agg)
+	vals = make([]float64, 0, n)
+	for i := uint64(0); i < n; i++ {
+		l := int(binary.LittleEndian.Uint64(agg[off : off+8]))
+		off += 8
+		if f, err := ParseFloat64(agg[off : off+l]); err == nil {
+			vals = append(vals, f)
+		}
+		off += l
+	}
+	return vals, agg[8+total:]
+}
+
+// makeVarianceAgg builds a VARIANCE/STDDEV handler. samp selects sample (delta=1)
+// vs population (delta=0); sqrtIt takes the square root (STDDEV vs VARIANCE).
+func makeVarianceAgg(distinct, samp, sqrtIt bool) *Agg {
+	update := aggNumListUpdate
+	if distinct {
+		update = aggNumDistinctUpdate
+	}
+	delta := 0.0
+	if samp {
+		delta = 1.0
+	}
+	return &Agg{
+		Init:   aggU64Init,
+		Update: update,
+		Result: func(vars *Vars, agg, buf []byte) (v Val, aggRest, bufOut []byte) {
+			vals, rest := aggFloats(distinct, agg)
+			count := len(vals)
+			if count == 0 { // Empty group -> NULL.
+				return ValNull, rest, buf
+			}
+			if count == 1 { // Sample stat of one value is undefined (NULL); pop is 0.
+				if samp {
+					return ValNull, rest, buf
+				}
+				vBuf := strconv.AppendFloat(buf[:0], 0, 'f', -1, 64)
+				return Val(vBuf), rest, BufUnused(buf, len(vBuf))
+			}
+			sum := 0.0
+			for _, f := range vals {
+				sum += f
+			}
+			mean := sum / float64(count)
+			variance := 0.0
+			for _, f := range vals {
+				d := f - mean
+				variance += d * d
+			}
+			r := variance / (float64(count) - delta)
+			if sqrtIt {
+				r = math.Sqrt(r)
+			}
+			vBuf := strconv.AppendFloat(buf[:0], r, 'f', -1, 64)
+			return Val(vBuf), rest, BufUnused(buf, len(vBuf))
+		},
+	}
+}
+
+// makeMedianAgg builds a MEDIAN handler (sort the values; for an even count,
+// average the two middle values), matching couchbase/query.
+func makeMedianAgg(distinct bool) *Agg {
+	update := aggNumListUpdate
+	if distinct {
+		update = aggNumDistinctUpdate
+	}
+	return &Agg{
+		Init:   aggU64Init,
+		Update: update,
+		Result: func(vars *Vars, agg, buf []byte) (v Val, aggRest, bufOut []byte) {
+			vals, rest := aggFloats(distinct, agg)
+			if len(vals) == 0 {
+				return ValNull, rest, buf
+			}
+			sort.Float64s(vals)
+			n := len(vals)
+			var m float64
+			if n&1 == 1 {
+				m = vals[n/2]
+			} else {
+				m = (vals[n/2-1] + vals[n/2]) / 2
+			}
+			vBuf := strconv.AppendFloat(buf[:0], m, 'f', -1, 64)
+			return Val(vBuf), rest, BufUnused(buf, len(vBuf))
+		},
+	}
 }

@@ -38,3 +38,43 @@ func TestArrayAggEmptyIsNull(t *testing.T) {
 		}
 	}
 }
+
+// aggResultOver runs the named aggregate over vals and returns its Result string.
+func aggResultOver(name string, vals ...string) string {
+	vc := &ValComparer{}
+	agg := Aggs[AggCatalog[name]]
+	st := agg.Init(nil, nil)
+	for _, s := range vals {
+		st, _, _ = agg.Update(nil, Val(s), nil, st, vc)
+	}
+	v, _, _ := agg.Result(nil, st, nil)
+	return string(v)
+}
+
+// TestStatisticalAggs guards COUNTN / MEDIAN / STDDEV / VARIANCE. The expected
+// floats mirror couchbase/query's two-pass algorithm exactly (values 10,10,11:
+// mean=31/3, sum of squared deviations=2/3; var_samp=1/3, var_pop=2/9).
+func TestStatisticalAggs(t *testing.T) {
+	cases := []struct{ name, want string; vals []string }{
+		// COUNTN counts only numbers (the string is ignored); COUNT would be 4.
+		{"countn", "3", []string{"10", "10", "11", `"x"`}},
+		{"countn_distinct", "2", []string{"10", "10", "11"}},
+		{"variance", "0.3333333333333333", []string{"10", "10", "11"}},   // sample
+		{"var_samp", "0.3333333333333333", []string{"10", "10", "11"}},
+		{"var_pop", "0.2222222222222222", []string{"10", "10", "11"}},
+		{"stddev", "0.5773502691896257", []string{"10", "10", "11"}},     // sqrt(1/3)
+		{"stddev_pop", "0.4714045207910317", []string{"10", "10", "11"}},
+		{"median", "10", []string{"11", "10", "10"}},                     // sorts first
+		{"median", "1.5", []string{"2", "1"}},                            // even -> avg of two
+		{"median_distinct", "10.5", []string{"10", "10", "11"}},          // distinct {10,11}
+		// Population stat of a single value is 0; empty group is NULL.
+		{"var_pop", "0", []string{"5"}},
+		{"variance", "null", []string{"5"}},   // sample of one -> NULL
+		{"variance", "null", []string{`"x"`}}, // no numbers -> NULL
+	}
+	for _, c := range cases {
+		if got := aggResultOver(c.name, c.vals...); got != c.want {
+			t.Errorf("%s(%v) = %q, want %q", c.name, c.vals, got, c.want)
+		}
+	}
+}
