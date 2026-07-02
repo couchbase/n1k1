@@ -61,8 +61,9 @@ const ftsSigFile = "sig" // <instDir>/sig -- source signature for freshness
 // ftsIndexer is a read-only datastore.Indexer of type FTS advertising the
 // keyspace's bleve-backed full-text indexes.
 type ftsIndexer struct {
-	ks      *siKeyspace
-	indexes []*ftsIndex
+	ks       *siKeyspace
+	indexes  []*ftsIndex
+	buildErr map[string]string // def.Name -> why it couldn't be opened/built (for .index status)
 }
 
 func (ix *ftsIndexer) BucketId() string          { return "" }

@@ -845,6 +845,50 @@ func TestFTSIndexInfoSize(t *testing.T) {
 	}
 }
 
+// TestIndexInfoSurfacesBuildError: when an index can't be built, .index status
+// reports the REAL error, not the old dead-end "not built (see log)" (the process
+// logger is nil by default, so nothing was ever logged). Forces a failure by making
+// the per-keyspace sidecar dir uncreatable.
+func TestIndexInfoSurfacesBuildError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses directory permissions")
+	}
+	docs := map[string]string{"d1": `{"id":"d1","body":"hello world text here"}`}
+	catalog := `{"indexes":[{"name":"ft","keyspace":"docs","kind":"fts"}]}`
+	root := writeKeyspaceDocs(t, "docs", docs, catalog)
+
+	// Make <root>/.n1k1/default read-only so building the bleve index dir under it
+	// (.n1k1/default/docs/idx/...) fails with a permission error.
+	sidecar := filepath.Join(root, ".n1k1", "default")
+	if err := os.MkdirAll(sidecar, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(sidecar, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(sidecar, 0o755) // so t.TempDir cleanup can remove it
+
+	store, _ := flatRootConv(t, root, `SELECT 1`)
+	var found bool
+	for _, ix := range glue.SecondaryIndexInfos(store.Datastore) {
+		if ix.Name != "ft" {
+			continue
+		}
+		found = true
+		if ix.Built {
+			t.Error("index should not be built (sidecar is read-only)")
+		}
+		// A real error (e.g. "mkdir ...: permission denied"), not the old dead-end
+		// "not built (see log)" nor the bare "not built" fallback.
+		if ix.Err == "" || ix.Err == "not built" || ix.Err == "not built (see log)" {
+			t.Errorf("want a real build error surfaced, got %q", ix.Err)
+		}
+	}
+	if !found {
+		t.Fatal("no IndexInfo for the fts index")
+	}
+}
+
 func equalStrs(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

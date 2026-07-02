@@ -299,28 +299,38 @@ func SecondaryIndexInfos(ds datastore.Datastore) []IndexInfo {
 			continue
 		}
 		if def.isFTS() {
+			ftsIx := ks.ftsIndexerL()
 			var fi *ftsIndex
-			for _, x := range ks.ftsIndexerL().indexes {
+			for _, x := range ftsIx.indexes {
 				if x.def == def {
 					fi = x
 					break
 				}
 			}
 			if fi == nil {
-				info.Err = "not built (see log)"
+				if e := ftsIx.buildErr[def.Name]; e != "" {
+					info.Err = e
+				} else {
+					info.Err = "not built"
+				}
 			} else {
 				fi.fillInfo(&info)
 			}
 		} else {
+			siIx := ks.secondaryIndexer()
 			var found *secondaryIndex
-			for _, si := range ks.secondaryIndexer().indexes {
+			for _, si := range siIx.indexes {
 				if si.def == def {
 					found = si
 					break
 				}
 			}
 			if found == nil {
-				info.Err = "not built (see log)"
+				if e := siIx.buildErr[def.Name]; e != "" {
+					info.Err = e
+				} else {
+					info.Err = "not built"
+				}
 			} else {
 				found.fillInfo(&info)
 			}
@@ -435,7 +445,7 @@ type siKeyspace struct {
 // catalog defs.
 func (k *siKeyspace) secondaryIndexer() *siIndexer {
 	k.onceSI.Do(func() {
-		ix := &siIndexer{ks: k}
+		ix := &siIndexer{ks: k, buildErr: map[string]string{}}
 		for _, def := range k.defs {
 			if def.isFTS() {
 				continue
@@ -443,7 +453,10 @@ func (k *siKeyspace) secondaryIndexer() *siIndexer {
 			si, err := openSecondaryIndex(k, def, nil, false)
 			if err != nil {
 				// Don't fail the query -- just don't advertise this index, so the
-				// planner falls back to a primary scan. Surface why on stderr.
+				// planner falls back to a primary scan. Retain why so .index can SHOW
+				// it (the process logger is nil by default, so logging.Errorf is a
+				// no-op -- don't leave the user chasing a log that was never written).
+				ix.buildErr[def.Name] = err.Error()
 				logging.Errorf("secondary index: index %q on %s:%s unavailable: %v",
 					def.Name, k.Namespace().Name(), k.Name(), err)
 				continue
@@ -458,13 +471,17 @@ func (k *siKeyspace) secondaryIndexer() *siIndexer {
 // ftsIndexerL builds (lazily) the FTS indexer over this keyspace's kind:fts defs.
 func (k *siKeyspace) ftsIndexerL() *ftsIndexer {
 	k.onceFTS.Do(func() {
-		ix := &ftsIndexer{ks: k}
+		ix := &ftsIndexer{ks: k, buildErr: map[string]string{}}
 		for _, def := range k.defs {
 			if !def.isFTS() {
 				continue
 			}
 			fi, err := openFTSIndex(k, def, nil, false)
 			if err != nil {
+				// Retain the reason so SecondaryIndexInfos / .index can SHOW it (the
+				// process logger is nil by default, so logging.Errorf goes nowhere --
+				// don't leave the user chasing a log that was never written).
+				ix.buildErr[def.Name] = err.Error()
 				logging.Errorf("fts: index %q on %s:%s unavailable: %v",
 					def.Name, k.Namespace().Name(), k.Name(), err)
 				continue
@@ -500,8 +517,9 @@ func (k *siKeyspace) Indexer(name datastore.IndexType) (datastore.Indexer, error
 // the keyspace's built secondary indexes. Mutating methods are no-ops/errors:
 // definitions are declared in the catalog, not via DDL.
 type siIndexer struct {
-	ks      *siKeyspace
-	indexes []*secondaryIndex
+	ks       *siKeyspace
+	indexes  []*secondaryIndex
+	buildErr map[string]string // def.Name -> why it couldn't be opened/built (for .index status)
 }
 
 func (ix *siIndexer) BucketId() string          { return "" }
