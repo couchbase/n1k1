@@ -150,9 +150,12 @@ func TestFlatFileGzipStem(t *testing.T) {
 
 // TestFlatFileNotTriggeredForNonRecordFile: pointing at a non-record file must not
 // synthesize a keyspace (it falls through to the plain file datastore, which
-// errors because the arg isn't a directory).
+// errors because the arg isn't a directory). Uses a ".dat" file: since the
+// extract feature landed, .txt/.log/.md/.pdf/... are record files (their text is
+// extracted), so the non-record case needs an extension that is neither a
+// structured-data format nor an extractable document.
 func TestFlatFileNotTriggeredForNonRecordFile(t *testing.T) {
-	path := writeFlatFile(t, "notes.txt", "hello")
+	path := writeFlatFile(t, "notes.dat", "hello")
 	if _, err := glue.FileStore(path); err == nil {
 		t.Fatalf("non-record file %q should not yield a usable store", path)
 	}
