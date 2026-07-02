@@ -991,7 +991,11 @@ func (c *cli) cmdSchema(keyspace string) {
 		kss = names
 	}
 	for _, ks := range kss {
-		shape, n := sampleSchema(filepath.Join(c.dir, c.ns, ks), 50)
+		shape, n, err := c.sampleSchema(ks, 50)
+		if err != nil {
+			fmt.Fprintf(c.stderr, "%s%s\n", c.icon("✗ "), c.style.Red("Error: "+err.Error()))
+			continue
+		}
 		fmt.Fprintf(c.out, "%s  (sampled %d docs):\n", ks, n)
 		keys := make([]string, 0, len(shape))
 		for k := range shape {
@@ -1091,28 +1095,27 @@ func isTTY(f *os.File) bool {
 	return st.Mode()&os.ModeCharDevice != 0
 }
 
-// sampleSchema reads up to limit *.json docs from a keyspace dir and returns a
-// map of top-level key -> observed JSON type names, plus how many docs sampled.
-func sampleSchema(dir string, limit int) (map[string][]string, int) {
-	shape := map[string]map[string]bool{}
-	entries, err := os.ReadDir(dir)
+// sampleSchema infers a keyspace's shape (top-level key -> observed JSON type
+// names) by running `SELECT <alias>.* FROM <ks> LIMIT n` through the session --
+// the same resolution + decoding path real queries take. This keeps .schema in
+// lockstep with what queries actually see: flat roots, single-file keyspaces,
+// multi-record JSONL/CSV, and gzip all work, not just one-doc-per-file *.json
+// (the old filesystem walk reported "0 docs" for every one of those). Returns the
+// shape, the number of docs sampled, and any query error.
+func (c *cli) sampleSchema(ks string, limit int) (map[string][]string, int, error) {
+	// quoteIdent so keyspaces like "2026-01" parse; alias x so `x.*` projects the
+	// document's fields unwrapped (SELECT * would nest them under the keyspace).
+	stmt := fmt.Sprintf("SELECT x.* FROM %s AS x LIMIT %d", quoteIdent(ks), limit)
+	res, err := c.sess.Run(stmt)
 	if err != nil {
-		return map[string][]string{}, 0
+		return nil, 0, err
 	}
-	n := 0
-	for _, e := range entries {
-		if n >= limit || e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
-			continue
-		}
-		b, err := os.ReadFile(filepath.Join(dir, e.Name()))
-		if err != nil {
-			continue
-		}
+	shape := map[string]map[string]bool{}
+	for _, row := range res.Rows {
 		var m map[string]interface{}
-		if json.Unmarshal(b, &m) != nil {
-			continue
+		if json.Unmarshal(row, &m) != nil {
+			continue // a non-object row (e.g. a bare scalar) contributes no fields
 		}
-		n++
 		for k, v := range m {
 			if shape[k] == nil {
 				shape[k] = map[string]bool{}
@@ -1126,7 +1129,7 @@ func sampleSchema(dir string, limit int) (map[string][]string, int) {
 			out[k] = append(out[k], t)
 		}
 	}
-	return out, n
+	return out, len(res.Rows), nil
 }
 
 func jsonType(v interface{}) string {
