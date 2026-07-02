@@ -39,6 +39,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -109,13 +110,140 @@ type IndexInfo struct {
 	Err       string // why it isn't built, if !Built
 }
 
+// IndexBuildEvent reports the progress of a concurrent eager build. report
+// callbacks are delivered SERIALLY from a single goroutine (events from the
+// parallel workers are funneled through one channel), so a consumer needn't lock.
+type IndexBuildEvent struct {
+	Name      string
+	Namespace string
+	Keyspace  string
+	Phase     string // "start" | "progress" | "done" | "error"
+	Docs      int    // docs scanned so far (progress) / total scanned (done)
+	Total     int    // estimated total docs = source file count (0 if unknown)
+	Entries   int    // indexed entries (done)
+	SizeBytes int64  // data.bolt size (done)
+	Err       error  // set on "error"
+}
+
 // EagerBuildSecondaryIndexes opens (building/rebuilding as needed) every catalog
-// index now, so the first query doesn't pay the build cost. No-op when ds isn't
-// index-wrapped (mode "off", or no catalog). Individual build failures are logged
-// by the indexer and left out; the returned error is the first keyspace-resolution
-// failure, if any.
-func EagerBuildSecondaryIndexes(ds datastore.Datastore) error {
-	return eachIndexKeyspace(ds, func(ks *siKeyspace) { ks.secondaryIndexer() })
+// index now, **concurrently** (one worker per CPU, capped at the index count), so
+// the first query pays no build cost. No-op when ds isn't index-wrapped (mode
+// "off", or no catalog). Each index is an independent bbolt file, so builds don't
+// contend. report (optional) receives serialized progress events. Individual
+// build failures are reported as "error" events and don't abort the others; the
+// returned error is the first keyspace-resolution failure, if any.
+func EagerBuildSecondaryIndexes(ds datastore.Datastore, report func(IndexBuildEvent)) error {
+	sds, ok := ds.(*siDatastore)
+	if !ok {
+		return nil
+	}
+
+	type job struct {
+		ks    *siKeyspace
+		def   *indexDef
+		total int
+	}
+	var jobs []job
+	ksCache := map[string]*siKeyspace{}
+	totalCache := map[string]int{}
+	var firstErr error
+	for _, def := range sds.cat.Indexes {
+		key := def.Namespace + ":" + def.Keyspace
+		ks := ksCache[key]
+		if ks == nil {
+			k, err := sds.wrappedKeyspace(def.Namespace, def.Keyspace)
+			if err != nil {
+				if firstErr == nil {
+					firstErr = err
+				}
+				continue
+			}
+			ks = k
+			ksCache[key] = k
+			totalCache[key] = countSourceFiles(filepath.Join(sds.root, def.Namespace, def.Keyspace))
+		}
+		jobs = append(jobs, job{ks: ks, def: def, total: totalCache[key]})
+	}
+	if len(jobs) == 0 {
+		return firstErr
+	}
+
+	workers := runtime.NumCPU()
+	if workers > len(jobs) {
+		workers = len(jobs)
+	}
+	if workers < 1 {
+		workers = 1
+	}
+
+	events := make(chan IndexBuildEvent, 128)
+	sem := make(chan struct{}, workers)
+	var wg sync.WaitGroup
+	for _, j := range jobs {
+		wg.Add(1)
+		go func(j job) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			base := IndexBuildEvent{
+				Name: j.def.Name, Namespace: j.def.Namespace,
+				Keyspace: j.def.Keyspace, Total: j.total,
+			}
+			ev := base
+			ev.Phase = "start"
+			events <- ev
+
+			si, err := openSecondaryIndex(j.ks, j.def, func(docs int) {
+				pe := base
+				pe.Phase = "progress"
+				pe.Docs = docs
+				events <- pe
+			})
+
+			de := base
+			if err != nil {
+				de.Phase = "error"
+				de.Err = err
+			} else {
+				de.Phase = "done"
+				var info IndexInfo
+				si.fillInfo(&info)
+				de.Entries, de.SizeBytes = info.Entries, info.SizeBytes
+			}
+			events <- de
+		}(j)
+	}
+	go func() { wg.Wait(); close(events) }()
+
+	for ev := range events {
+		if report != nil {
+			report(ev)
+		}
+	}
+	return firstErr
+}
+
+// countSourceFiles counts the record files under a keyspace dir -- an estimate of
+// the doc count for a progress-bar denominator (exact for one-doc-per-file; a
+// lower bound for multi-doc files, so a bar may saturate early). Best-effort: 0 on
+// error means "unknown total" (the UI shows an indeterminate count-up).
+func countSourceFiles(dir string) int {
+	var n int
+	_ = filepath.WalkDir(dir, func(_ string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			if d.Name() == sidecarDir {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		n++
+		return nil
+	})
+	return n
 }
 
 // SecondaryIndexInfos returns one IndexInfo per declared index (across all
@@ -153,33 +281,6 @@ func SecondaryIndexInfos(ds datastore.Datastore) []IndexInfo {
 		infos = append(infos, info)
 	}
 	return infos
-}
-
-// eachIndexKeyspace resolves each distinct namespace:keyspace named in the catalog
-// to its wrapped siKeyspace and calls fn on it.
-func eachIndexKeyspace(ds datastore.Datastore, fn func(*siKeyspace)) error {
-	sds, ok := ds.(*siDatastore)
-	if !ok {
-		return nil
-	}
-	seen := map[string]bool{}
-	var firstErr error
-	for _, def := range sds.cat.Indexes {
-		key := def.Namespace + ":" + def.Keyspace
-		if seen[key] {
-			continue
-		}
-		seen[key] = true
-		ks, err := sds.wrappedKeyspace(def.Namespace, def.Keyspace)
-		if err != nil {
-			if firstErr == nil {
-				firstErr = err
-			}
-			continue
-		}
-		fn(ks)
-	}
-	return firstErr
 }
 
 // wrappedKeyspace resolves namespace:keyspace to its *siKeyspace wrapper.
@@ -284,7 +385,7 @@ func (k *siKeyspace) secondaryIndexer() *siIndexer {
 	k.once.Do(func() {
 		ix := &siIndexer{ks: k}
 		for _, def := range k.defs {
-			si, err := openSecondaryIndex(k, def)
+			si, err := openSecondaryIndex(k, def, nil)
 			if err != nil {
 				// Don't fail the query -- just don't advertise this index, so the
 				// planner falls back to a primary scan. Surface why on stderr.
@@ -532,79 +633,101 @@ func encodeSeq(vals value.Values) []byte {
 // re-opening per plan would be wasteful. n1k1 is a single-process CLI, so a
 // process-global cache (matching the engine.ExecOpEx global style) is the natural
 // fit -- the design's "cache per keyspace so repeated planning doesn't reopen
-// bbolt". A cache hit re-validates freshness and rebuilds in place if the source
-// changed.
+// bbolt".
+//
+// Each path maps to an indexSlot rather than a *secondaryIndex directly, so
+// **different indexes build concurrently**: the global mutex is held only to fetch
+// (or create) the slot, never during a build. slot.once opens the bbolt file once
+// (the OS-lock-contended step); slot.mu serializes freshness rebuilds of that one
+// index. Two goroutines building *different* indexes touch different slots and
+// different bbolt files (and only read the shared source dir), so they run fully
+// in parallel -- see EagerBuildSecondaryIndexes.
 var openIndexes = struct {
 	sync.Mutex
-	m map[string]*secondaryIndex
-}{m: map[string]*secondaryIndex{}}
+	m map[string]*indexSlot
+}{m: map[string]*indexSlot{}}
+
+type indexSlot struct {
+	once sync.Once  // opens the bbolt file exactly once
+	mu   sync.Mutex // serializes freshness rebuilds after open
+	si   *secondaryIndex
+	err  error
+}
+
+func indexSlotFor(dbPath string) *indexSlot {
+	openIndexes.Lock()
+	defer openIndexes.Unlock()
+	s := openIndexes.m[dbPath]
+	if s == nil {
+		s = &indexSlot{}
+		openIndexes.m[dbPath] = s
+	}
+	return s
+}
 
 // openSecondaryIndex opens (building/rebuilding as needed) the bbolt file backing
 // def on ks, and returns the ready-to-scan index. Repeated calls for the same
-// on-disk index return the cached instance (re-checking freshness).
-func openSecondaryIndex(ks *siKeyspace, def *indexDef) (*secondaryIndex, error) {
+// on-disk index return the cached instance (re-checking freshness). onDoc, when
+// non-nil, is invoked during a (re)build with the running scanned-doc count (for
+// progress reporting); pass nil on the lazy query path.
+func openSecondaryIndex(ks *siKeyspace, def *indexDef, onDoc func(int)) (*secondaryIndex, error) {
 	ns := ks.Namespace().Name()
 	instDir := filepath.Join(ks.sds.root, sidecarDir, ns, ks.Name(), "idx",
 		fmt.Sprintf("%s__si__%s", fsSafe(def.Name), def.defHash()))
 	dbPath := filepath.Join(instDir, "data.bolt")
-
 	srcDir := filepath.Join(ks.sds.root, ns, ks.Name())
+
+	slot := indexSlotFor(dbPath)
+
+	// Open the bbolt file exactly once. This is the only step that must not run
+	// concurrently for the *same* file (exclusive OS lock); builds for *different*
+	// files proceed in parallel because each has its own slot/once.
+	slot.once.Do(func() {
+		if e := os.MkdirAll(instDir, 0o755); e != nil {
+			slot.err = e
+			return
+		}
+		db, e := bolt.Open(dbPath, 0o644, &bolt.Options{Timeout: 5 * time.Second})
+		if e != nil {
+			slot.err = e
+			return
+		}
+		slot.si = &secondaryIndex{ks: ks, def: def, db: db}
+	})
+	if slot.err != nil {
+		return nil, slot.err
+	}
+
+	// (Re)build under the per-index mutex if the source changed -- an empty freshly
+	// opened DB is "not fresh", so this also does the initial build. Serialized per
+	// index, not globally, so other indexes keep building in parallel.
+	slot.mu.Lock()
+	defer slot.mu.Unlock()
 	sig, err := sourceSignature(srcDir)
 	if err != nil {
 		return nil, err
 	}
-
-	openIndexes.Lock()
-	defer openIndexes.Unlock()
-
-	// Cache hit: reuse the open DB, rebuilding the entries in place if the source
-	// changed since it was built.
-	if si, ok := openIndexes.m[dbPath]; ok {
-		fresh, err := indexFresh(si.db, sig)
-		if err != nil {
-			return nil, err
-		}
-		if !fresh {
-			if err := buildIndex(si.db, ks, def, srcDir, sig); err != nil {
-				return nil, err
-			}
-		}
-		// Re-home to the current keyspace wrapper (Indexer()/Fetch route through it).
-		si.ks = ks
-		return si, nil
-	}
-
-	if err := os.MkdirAll(instDir, 0o755); err != nil {
-		return nil, err
-	}
-
-	db, err := bolt.Open(dbPath, 0o644, &bolt.Options{Timeout: 5 * time.Second})
+	fresh, err := indexFresh(slot.si.db, sig)
 	if err != nil {
-		return nil, err
-	}
-
-	fresh, err := indexFresh(db, sig)
-	if err != nil {
-		db.Close()
 		return nil, err
 	}
 	if !fresh {
-		if err := buildIndex(db, ks, def, srcDir, sig); err != nil {
-			db.Close()
+		if err := buildIndex(slot.si.db, ks, def, srcDir, sig, onDoc); err != nil {
 			return nil, err
 		}
 	}
-
-	si := &secondaryIndex{ks: ks, def: def, db: db}
-	openIndexes.m[dbPath] = si
-	return si, nil
+	// Re-home to the current keyspace wrapper (Indexer()/Fetch route through it).
+	slot.si.ks = ks
+	return slot.si, nil
 }
 
 // buildIndex (re)populates the bbolt entries bucket by scanning the keyspace's
 // files n1k1-native (records: union of files, recurse, decode, gzip),
 // evaluating the key/where expressions per doc, and inserting
-// encode(keyValues)+docID. v1 rebuilds the whole index in one transaction.
-func buildIndex(db *bolt.DB, ks *siKeyspace, def *indexDef, srcDir, sig string) error {
+// encode(keyValues)+docID. v1 rebuilds the whole index in one transaction. onDoc,
+// when non-nil, is called with the running scanned-doc count (throttled) for
+// progress reporting.
+func buildIndex(db *bolt.DB, ks *siKeyspace, def *indexDef, srcDir, sig string, onDoc func(int)) error {
 	// Evaluate expressions with a lightweight context (build time -- Now() is the
 	// only context method a simple field/scalar expression might touch).
 	ctx := NewGlueContext(time.Now())
@@ -629,6 +752,7 @@ func buildIndex(db *bolt.DB, ks *siKeyspace, def *indexDef, srcDir, sig string) 
 
 		var rec records.Record
 		var keyBuf []byte
+		var scanned int
 		for {
 			ok, err := src.Next(&rec)
 			if err != nil {
@@ -636,6 +760,10 @@ func buildIndex(db *bolt.DB, ks *siKeyspace, def *indexDef, srcDir, sig string) 
 			}
 			if !ok {
 				break
+			}
+			scanned++
+			if onDoc != nil && scanned%512 == 0 {
+				onDoc(scanned)
 			}
 
 			doc := value.NewValue(append([]byte(nil), rec.Doc...))
@@ -674,6 +802,9 @@ func buildIndex(db *bolt.DB, ks *siKeyspace, def *indexDef, srcDir, sig string) 
 			if err := b.Put(append([]byte(nil), keyBuf...), nil); err != nil {
 				return err
 			}
+		}
+		if onDoc != nil {
+			onDoc(scanned) // final count
 		}
 
 		// Record the source signature so the next open can skip a rebuild.

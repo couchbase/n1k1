@@ -106,7 +106,18 @@ every `maybeSecondaryIndexes`, so a mid-session `.open` re-applies it):
 - **`lazy`** (default) — advertise indexes; each builds on first use (the first
   query over its keyspace, or `.indexes`). First such query pays the build cost.
 - **`eager`** — after opening the datastore, `EagerBuildSecondaryIndexes` opens/
-  builds *every* catalog index up front, so no query pays the build cost.
+  builds *every* catalog index up front, so no query pays the build cost. Builds run
+  **concurrently** (one worker per CPU, capped at the index count): each index is an
+  independent bbolt file, so they don't contend — the only shared state is the
+  read-only source dir and a briefly-locked slot map. The open/build cache is a
+  per-path `indexSlot` (a `once` opens the OS-lock-contended bbolt file; a per-slot
+  mutex serializes that one index's rebuilds), so different indexes build in
+  parallel while the same index never double-opens. Progress is streamed as
+  serialized `IndexBuildEvent`s (start/progress/done/error) to an optional reporter;
+  the CLI renders a live multi-line bar per index on a TTY (`cmd/n1k1/indexprogress.go`),
+  or one plain line per finished index when piped. The per-index bar's denominator
+  is the keyspace's source **file count** (exact for one-doc-per-file; a lower bound
+  otherwise, so the bar may saturate before "done").
 - **`off`** — `maybeSecondaryIndexes` returns the datastore unwrapped, so no
   secondary index is advertised and the planner always primary/records-scans.
   The A/B-timing switch (and an escape hatch if an index ever misbehaves).

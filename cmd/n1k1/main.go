@@ -612,7 +612,10 @@ func (c *cli) eagerBuildIndexes() {
 	if c.indexMode != "eager" || c.sess == nil || c.sess.Store == nil {
 		return
 	}
-	if err := glue.EagerBuildSecondaryIndexes(c.sess.Store.Datastore); err != nil {
+	prog := newIndexProgress(c.stderr, c.fancyTTY)
+	err := glue.EagerBuildSecondaryIndexes(c.sess.Store.Datastore, prog.handle)
+	prog.finish()
+	if err != nil {
 		fmt.Fprintf(c.stderr, "%s: eager index build: %v\n", c.prog, err)
 	}
 }

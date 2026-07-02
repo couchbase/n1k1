@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"sync"
 	"testing"
 
 	"github.com/couchbase/n1k1/base"
@@ -230,6 +231,51 @@ func TestSecondaryIndexInfos(t *testing.T) {
 		}
 		if ix.Entries != len(siDocs) {
 			t.Errorf("%s: want %d entries, got %d", name, len(siDocs), ix.Entries)
+		}
+	}
+}
+
+// TestSecondaryIndexEagerConcurrent: EagerBuildSecondaryIndexes builds several
+// indexes concurrently, emits a start+done event per index, and the built indexes
+// are then usable. Run under -race to check the concurrent open/build path.
+func TestSecondaryIndexEagerConcurrent(t *testing.T) {
+	catalog := `{ "indexes": [
+	  { "name": "ix_country", "keyspace": "customer", "keys": ["country"] },
+	  { "name": "ix_age", "keyspace": "customer", "keys": ["age"] }
+	] }`
+	root := writeIndexedKeyspace(t, siDocs, catalog)
+	store, _ := flatRootConv(t, root, `SELECT 1`)
+
+	var mu sync.Mutex
+	starts, dones := map[string]bool{}, map[string]bool{}
+	err := glue.EagerBuildSecondaryIndexes(store.Datastore, func(ev glue.IndexBuildEvent) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch ev.Phase {
+		case "start":
+			starts[ev.Name] = true
+		case "done":
+			dones[ev.Name] = true
+		case "error":
+			t.Errorf("index %s build error: %v", ev.Name, ev.Err)
+		}
+	})
+	if err != nil {
+		t.Fatalf("eager build: %v", err)
+	}
+	for _, name := range []string{"ix_country", "ix_age"} {
+		if !starts[name] || !dones[name] {
+			t.Errorf("%s: start=%v done=%v (want both)", name, starts[name], dones[name])
+		}
+	}
+	// Both usable afterward.
+	infos := glue.SecondaryIndexInfos(store.Datastore)
+	if len(infos) != 2 {
+		t.Fatalf("want 2 infos, got %d", len(infos))
+	}
+	for _, ix := range infos {
+		if !ix.Built || ix.Entries != len(siDocs) {
+			t.Errorf("%s: Built=%v Entries=%d", ix.Name, ix.Built, ix.Entries)
 		}
 	}
 }
