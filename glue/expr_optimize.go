@@ -110,6 +110,14 @@ func ExprTreeOptimize(labels base.Labels, e expression.Expression,
 	}
 
 	if field, ok := e.(*expression.Field); ok {
+		// A case-insensitive field reference (`name`i) matches a field name
+		// ignoring case. Our native path navigation below is case-sensitive, so
+		// hand any case-insensitive step in the chain to query's Field.Evaluate
+		// (the general expr path), which does the case-insensitive lookup.
+		if fieldChainCaseInsensitive(field) {
+			return nil, false
+		}
+
 		fieldPath, ok := ExprFieldPath(field)
 		if !ok {
 			return nil, false
@@ -239,4 +247,20 @@ func ExprTreeOptimize(labels base.Labels, e expression.Expression,
 	}
 
 	return params, true
+}
+
+// fieldChainCaseInsensitive reports whether e is a field/identifier reference
+// where any step is case-insensitive (`name`i) -- which our case-sensitive
+// native path navigation can't honor.
+func fieldChainCaseInsensitive(e expression.Expression) bool {
+	switch x := e.(type) {
+	case *expression.Field:
+		if x.CaseInsensitive() {
+			return true
+		}
+		return fieldChainCaseInsensitive(x.First())
+	case *expression.Identifier:
+		return x.CaseInsensitive()
+	}
+	return false
 }
