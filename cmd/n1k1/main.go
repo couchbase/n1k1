@@ -221,7 +221,7 @@ func resolveSession(dir string, explicit bool, ns string) (sess *glue.Session, e
 		return sess, dir, func() {}, nil
 	}
 	if explicit {
-		return nil, "", func() {}, fmt.Errorf("cannot open datastore %q: %v", dir, err)
+		return nil, "", func() {}, fmt.Errorf("cannot open datastore %q: %s", dir, tidyMsg(err.Error()))
 	}
 	// No path was named: keep going with an empty store.
 	empty, e2 := os.MkdirTemp("", "n1k1-empty-")
@@ -448,7 +448,7 @@ func (c *cli) exec(stmt string) {
 		if errors.As(err, &unsup) {
 			fmt.Fprintf(c.stderr, "%s%s\n", c.icon("🚧 "), c.style.Yellow("Unsupported: "+unsup.Reason))
 		} else {
-			fmt.Fprintf(c.stderr, "%s%s\n", c.icon("✗ "), c.style.Red("Error: "+err.Error()))
+			fmt.Fprintf(c.stderr, "%s%s\n", c.icon("✗ "), c.style.Red("Error: "+tidyMsg(err.Error())))
 			// Point a caret at the offending column when the parser gives one.
 			fmt.Fprint(c.stderr, errorCaret(stmt, err.Error(), c.style))
 		}
@@ -1061,6 +1061,17 @@ func splitFirst(s string) (head, tail string) {
 		return s[:i], strings.TrimSpace(s[i+1:])
 	}
 	return s, ""
+}
+
+// tidyMsg collapses runs of two-or-more spaces to a single space, cleaning up
+// fork error strings before display -- e.g. couchbase/query renders a file
+// datastore error as "Error in file datastore  - cause: ..." with a doubled space
+// where its (empty) message slot would go.
+func tidyMsg(s string) string {
+	for strings.Contains(s, "  ") {
+		s = strings.ReplaceAll(s, "  ", " ")
+	}
+	return s
 }
 
 func onOff(b bool) string {

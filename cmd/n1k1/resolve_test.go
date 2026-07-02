@@ -53,6 +53,22 @@ func TestResolveSessionExplicitGoodPath(t *testing.T) {
 	}
 }
 
+// TestTidyMsg: doubled spaces (e.g. the fork's "file datastore  - cause") collapse
+// to one, while ordinary single-spaced text is untouched.
+func TestTidyMsg(t *testing.T) {
+	cases := map[string]string{
+		"Error in file datastore  - cause: x": "Error in file datastore - cause: x",
+		"a   b    c":                          "a b c",
+		"already single spaced":               "already single spaced",
+		"":                                    "",
+	}
+	for in, want := range cases {
+		if got := tidyMsg(in); got != want {
+			t.Errorf("tidyMsg(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 // TestResolveSessionFallbackWhenNotExplicit: with no path named (explicit=false),
 // a failed open falls back to a fresh empty store (effDir == "") so a bare REPL
 // still starts; cleanup is safe to call.
