@@ -1,0 +1,723 @@
+[
+  {
+    "testcase": "Single IN-list on leading index key",
+    "ignore": "index_id",
+    "explain": {
+      "disabled": false,
+      "results": [
+        {
+          "present": true
+        }
+      ],
+      "statement": "SELECT true AS present FROM $explan AS p WHERE ANY v WITHIN p.plan.`~children` SATISFIES v.`#operator` = 'IndexScan3' AND v.has_dynamic_in = true and ARRAY_LENGTH(v.spans) = 1 AND ARRAY_LENGTH(v.spans[0].`range`) = 1 AND v.spans[0].`range`[0].dynamic_in = true END"
+    },
+    "statements": "SELECT c21, c22 FROM shellTest WHERE c21 IN $inlist ORDER BY c21, c22",
+    "namedArgs": {
+      "inlist": [
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    "ordered": true,
+    "results": [
+      {
+        "c21": 1,
+        "c22": 5
+      },
+      {
+        "c21": 3,
+        "c22": 15
+      },
+      {
+        "c21": 5,
+        "c22": 25
+      }
+    ]
+  },
+  {
+    "testcase": "two IN-lists under OR on same leading index key",
+    "ignore": "index_id",
+    "explain": {
+      "disabled": false,
+      "results": [
+        {
+          "present": true
+        }
+      ],
+      "statement": "SELECT true AS present FROM $explan AS p WHERE ANY v WITHIN p.plan.`~children` SATISFIES v.`#operator` = 'IndexScan3' AND v.has_dynamic_in = true and ARRAY_LENGTH(v.spans) > 1 AND ARRAY_LENGTH(v.spans[1].`range`) = 1 AND v.spans[1].`range`[0].dynamic_in = true END"
+    },
+    "statements": "SELECT c21, c22 FROM shellTest WHERE c21 IN $inlist OR c21 IN $inlist2 ORDER BY c21, c22",
+    "namedArgs": {
+      "inlist": [
+        1,
+        2,
+        3
+      ],
+      "inlist2": [
+        "a",
+        "b",
+        "c"
+      ]
+    },
+    "ordered": true,
+    "results": [
+      {
+        "c21": 1,
+        "c22": 5
+      },
+      {
+        "c21": 3,
+        "c22": 15
+      },
+      {
+        "c21": "a",
+        "c22": "5a"
+      }
+    ]
+  },
+  {
+    "testcase": "one IN-list on non-leading index key with non-IN-list predicate on leading index key",
+    "ignore": "index_id",
+    "explain": {
+      "disabled": false,
+      "results": [
+        {
+          "present": true
+        }
+      ],
+      "statement": "SELECT true AS present FROM $explan AS p WHERE ANY v WITHIN p.plan.`~children` SATISFIES v.`#operator` = 'IndexScan3' AND v.has_dynamic_in = true and ARRAY_LENGTH(v.spans) = 1 AND ARRAY_LENGTH(v.spans[0].`range`) > 1 AND v.spans[0].`range`[1].dynamic_in = true END"
+    },
+    "statements": "SELECT c21, c22 FROM shellTest WHERE c21 BETWEEN 1 AND 5 AND c22 IN $inlist ORDER BY c21, c22",
+    "namedArgs": {
+      "inlist": [
+        5,
+        10,
+        15,
+        20,
+        25
+      ]
+    },
+    "ordered": true,
+    "results": [
+      {
+        "c21": 1,
+        "c22": 5
+      },
+      {
+        "c21": 3,
+        "c22": 15
+      },
+      {
+        "c21": 5,
+        "c22": 25
+      }
+    ]
+  },
+  {
+    "testcase": "two IN-lists on different index keys",
+    "ignore": "index_id",
+    "explain": {
+      "disabled": false,
+      "results": [
+        {
+          "present": true
+        }
+      ],
+      "statement": "SELECT true AS present FROM $explan AS p WHERE ANY v WITHIN p.plan.`~children` SATISFIES v.`#operator` = 'IndexScan3' AND v.has_dynamic_in = true and ARRAY_LENGTH(v.spans) = 1 AND ARRAY_LENGTH(v.spans[0].`range`) > 1 AND v.spans[0].`range`[0].dynamic_in = true AND v.spans[0].`range`[1].dynamic_in = true END"
+    },
+    "statements": "SELECT c21, c22 FROM shellTest WHERE c21 IN $inlist AND c22 IN $inlist2 ORDER BY c21, c22",
+    "namedArgs": {
+      "inlist": [
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "inlist2": [
+        5,
+        10,
+        15
+      ]
+    },
+    "ordered": true,
+    "results": [
+      {
+        "c21": 1,
+        "c22": 5
+      },
+      {
+        "c21": 3,
+        "c22": 15
+      }
+    ]
+  },
+  {
+    "testcase": "two IN-lists on non-leading index key, with non-IN-list predicate on leading index key",
+    "ignore": "index_id",
+    "explain": {
+      "disabled": false,
+      "results": [
+        {
+          "present": true
+        }
+      ],
+      "statement": "SELECT true AS present FROM $explan AS p WHERE ANY v WITHIN p.plan.`~children` SATISFIES v.`#operator` = 'IndexScan3' AND v.has_dynamic_in = true and ARRAY_LENGTH(v.spans) > 1 AND ARRAY_LENGTH(v.spans[0].`range`) > 1 AND ARRAY_LENGTH(v.spans[1].`range`) > 1 AND v.spans[0].`range`[1].dynamic_in = true AND v.spans[1].`range`[1].dynamic_in = true END"
+    },
+    "statements": "SELECT c21, c22 FROM shellTest WHERE c21 BETWEEN 1 AND 5 AND (c22 IN $inlist OR c22 IN $inlist2)",
+    "namedArgs": {
+      "inlist": [
+        5,
+        10,
+        15
+      ],
+      "inlist2": [
+        20,
+        25
+      ]
+    },
+    "ordered": true,
+    "results": [
+      {
+        "c21": 1,
+        "c22": 5
+      },
+      {
+        "c21": 3,
+        "c22": 15
+      },
+      {
+        "c21": 5,
+        "c22": 25
+      }
+    ]
+  },
+  {
+    "testcase": "two IN-lists on non-leading index key, with non-IN-list OR predicate on leading index key",
+    "ignore": "index_id",
+    "explain": {
+      "disabled": false,
+      "results": [
+        {
+          "present": true
+        }
+      ],
+      "statement": "SELECT true AS present FROM $explan AS p WHERE ANY v WITHIN p.plan.`~children` SATISFIES v.`#operator` = 'IndexScan3' AND v.has_dynamic_in = true and ARRAY_LENGTH(v.spans) = 6 AND ARRAY_LENGTH(v.spans[0].`range`) > 1 AND ARRAY_LENGTH(v.spans[5].`range`) > 1 AND v.spans[0].`range`[1].dynamic_in = true AND v.spans[5].`range`[1].dynamic_in = true END"
+    },
+    "statements": "SELECT c21, c22 FROM shellTest WHERE (c21 = 1 OR c21 = 3 OR c21 = 5) AND (c22 IN $inlist OR c22 IN $inlist2)",
+    "namedArgs": {
+      "inlist": [
+        5,
+        10,
+        15
+      ],
+      "inlist2": [
+        20,
+        25
+      ]
+    },
+    "ordered": true,
+    "results": [
+      {
+        "c21": 1,
+        "c22": 5
+      },
+      {
+        "c21": 3,
+        "c22": 15
+      },
+      {
+        "c21": 5,
+        "c22": 25
+      }
+    ]
+  },
+  {
+    "testcase": "two IN-lists on leading index key, two IN-lists on non-leading index key",
+    "ignore": "index_id",
+    "explain": {
+      "disabled": false,
+      "results": [
+        {
+          "present": true
+        }
+      ],
+      "statement": "SELECT true AS present FROM $explan AS p WHERE ANY v WITHIN p.plan.`~children` SATISFIES v.`#operator` = 'IndexScan3' AND v.has_dynamic_in = true and ARRAY_LENGTH(v.spans) = 4 AND ARRAY_LENGTH(v.spans[0].`range`) > 1 AND ARRAY_LENGTH(v.spans[3].`range`) > 1 AND v.spans[0].`range`[0].dynamic_in = true AND v.spans[0].`range`[1].dynamic_in = true AND v.spans[3].`range`[0].dynamic_in = true AND v.spans[3].`range`[1].dynamic_in = true END"
+    },
+    "statements": "SELECT c21, c22 FROM shellTest WHERE (c21 IN $inlist OR c21 IN $inlist2) AND (c22 IN $inlist3 OR c22 IN $inlist4)",
+    "namedArgs": {
+      "inlist": [
+        1,
+        2,
+        3
+      ],
+      "inlist2": [
+        "a",
+        "b",
+        "c"
+      ],
+      "inlist3": [
+        5,
+        15
+      ],
+      "inlist4": [
+        "5a",
+        "5c"
+      ]
+    },
+    "ordered": true,
+    "results": [
+      {
+        "c21": 1,
+        "c22": 5
+      },
+      {
+        "c21": 3,
+        "c22": 15
+      },
+      {
+        "c21": "a",
+        "c22": "5a"
+      }
+    ]
+  },
+  {
+    "testcase": "MB-53774",
+    "statements": "SELECT d FROM [NULL, 1, 2, 3, NULL] AS d WHERE d IN [ 17, 16, 14, 2, 3, 7, 12, null, 19, 4, 13, 15, 18, 6, 5, 9, 11, 8, 10 ]",
+    "results": [
+      {
+        "d": 2
+      },
+      {
+        "d": 3
+      }
+    ]
+  },
+  {
+    "testcase": "IN-list with all constants",
+    "statements": "SELECT c21, c22 FROM shellTest WHERE c21 IN [1, 2, 3, 4, 5, 6, \"a\", \"b\", \"c\", \"d\", 11, 12, 13, 14, 15, 16, \"x\"] ORDER BY c21, c22",
+    "ordered": true,
+    "results": [
+      {
+        "c21": 1,
+        "c22": 5
+      },
+      {
+        "c21": 3,
+        "c22": 15
+      },
+      {
+        "c21": 5,
+        "c22": 25
+      },
+      {
+        "c21": 6,
+        "c22": 30
+      },
+      {
+        "c21": "a",
+        "c22": "5a"
+      },
+      {
+        "c21": "d",
+        "c22": "5d"
+      }
+    ]
+  },
+  {
+    "testcase": "NOT IN-list with all constants",
+    "statements": "SELECT c21, c22 FROM shellTest WHERE c21 NOT IN [1, 2, 3, 4, 5, 6, \"a\", \"b\", \"c\", \"d\", 11, 12, 13, 14, 15, 16, \"x\"] ORDER BY c21, c22",
+    "ordered": true,
+    "results": [
+      {
+        "c21": "h",
+        "c22": "5h"
+      },
+      {
+        "c21": "k",
+        "c22": "5k"
+      },
+      {
+        "c21": "o",
+        "c22": "5o"
+      }
+    ]
+  },
+  {
+    "testcase": "Prepare statement for IN-list with host variables as elements",
+    "statements": "PREPARE stmt1 FROM SELECT c21, c22 FROM shellTest WHERE c21 IN [1, 2, 3, $1, $2, $3, \"a\", \"b\", \"c\", \"d\", 11, 12, 13, 14, 15, 16, \"x\"] ORDER BY c21, c22"
+  },
+  {
+    "testcase": "Execute the prepared statement above",
+    "statements": "EXECUTE stmt1",
+    "positionalArgs": [
+      4,
+      5,
+      "h"
+    ],
+    "ordered": true,
+    "results": [
+      {
+        "c21": 1,
+        "c22": 5
+      },
+      {
+        "c21": 3,
+        "c22": 15
+      },
+      {
+        "c21": 5,
+        "c22": 25
+      },
+      {
+        "c21": "a",
+        "c22": "5a"
+      },
+      {
+        "c21": "d",
+        "c22": "5d"
+      },
+      {
+        "c21": "h",
+        "c22": "5h"
+      }
+    ]
+  },
+  {
+    "testcase": "Execute again the prepared statement above",
+    "statements": "EXECUTE stmt1",
+    "positionalArgs": [
+      6,
+      "i",
+      "o"
+    ],
+    "ordered": true,
+    "results": [
+      {
+        "c21": 1,
+        "c22": 5
+      },
+      {
+        "c21": 3,
+        "c22": 15
+      },
+      {
+        "c21": 6,
+        "c22": 30
+      },
+      {
+        "c21": "a",
+        "c22": "5a"
+      },
+      {
+        "c21": "d",
+        "c22": "5d"
+      },
+      {
+        "c21": "o",
+        "c22": "5o"
+      }
+    ]
+  },
+  {
+    "testcase": "Prepare statement for NOT IN-list with host variables as elements",
+    "statements": "PREPARE stmt2 FROM SELECT c21, c22 FROM shellTest WHERE c21 NOT IN [1, 2, 3, $1, $2, $3, \"a\", \"b\", \"c\", \"d\", 11, 12, 13, 14, 15, 16, \"x\"] ORDER BY c21, c22"
+  },
+  {
+    "testcase": "Execute the prepared statement above",
+    "statements": "EXECUTE stmt2",
+    "positionalArgs": [
+      4,
+      5,
+      "h"
+    ],
+    "ordered": true,
+    "results": [
+      {
+        "c21": 6,
+        "c22": 30
+      },
+      {
+        "c21": "k",
+        "c22": "5k"
+      },
+      {
+        "c21": "o",
+        "c22": "5o"
+      }
+    ]
+  },
+  {
+    "testcase": "Execute again the prepared statement above",
+    "statements": "EXECUTE stmt2",
+    "positionalArgs": [
+      6,
+      "i",
+      "o"
+    ],
+    "ordered": true,
+    "results": [
+      {
+        "c21": 5,
+        "c22": 25
+      },
+      {
+        "c21": "h",
+        "c22": "5h"
+      },
+      {
+        "c21": "k",
+        "c22": "5k"
+      }
+    ]
+  },
+  {
+    "testcase": "Prepare statemet with entire IN-list as a host variable",
+    "statements": "PREPARE stmt3 FROM SELECT c21, c22 FROM shellTest WHERE c21 IN $inlist ORDER BY c21, c22"
+  },
+  {
+    "testcase": "Execute the prepared statement above",
+    "statements": "EXECUTE stmt3",
+    "namedArgs": {
+      "inlist": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        "h",
+        "a",
+        "b",
+        "c",
+        "d",
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        "x"
+      ]
+    },
+    "ordered": true,
+    "results": [
+      {
+        "c21": 1,
+        "c22": 5
+      },
+      {
+        "c21": 3,
+        "c22": 15
+      },
+      {
+        "c21": 5,
+        "c22": 25
+      },
+      {
+        "c21": "a",
+        "c22": "5a"
+      },
+      {
+        "c21": "d",
+        "c22": "5d"
+      },
+      {
+        "c21": "h",
+        "c22": "5h"
+      }
+    ]
+  },
+  {
+    "testcase": "Execute the prepared statement above",
+    "statements": "EXECUTE stmt3",
+    "namedArgs": {
+      "inlist": [
+        11,
+        12,
+        13,
+        6,
+        "i",
+        "o",
+        "a",
+        "b",
+        "c",
+        "d",
+        21,
+        22,
+        23,
+        24,
+        25,
+        26,
+        "z"
+      ]
+    },
+    "ordered": true,
+    "results": [
+      {
+        "c21": 6,
+        "c22": 30
+      },
+      {
+        "c21": "a",
+        "c22": "5a"
+      },
+      {
+        "c21": "d",
+        "c22": "5d"
+      },
+      {
+        "c21": "o",
+        "c22": "5o"
+      }
+    ]
+  },
+  {
+    "testcase": "Prepare statemet with entire NOT IN-list as a host variable",
+    "statements": "PREPARE stmt4 FROM SELECT c21, c22 FROM shellTest WHERE c21 NOT IN $inlist ORDER BY c21, c22"
+  },
+  {
+    "testcase": "Execute the prepared statement above",
+    "statements": "EXECUTE stmt4",
+    "namedArgs": {
+      "inlist": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        "h",
+        "a",
+        "b",
+        "c",
+        "d",
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        "x"
+      ]
+    },
+    "ordered": true,
+    "results": [
+      {
+        "c21": 6,
+        "c22": 30
+      },
+      {
+        "c21": "k",
+        "c22": "5k"
+      },
+      {
+        "c21": "o",
+        "c22": "5o"
+      }
+    ]
+  },
+  {
+    "testcase": "Execute the prepared statement above",
+    "statements": "EXECUTE stmt4",
+    "namedArgs": {
+      "inlist": [
+        11,
+        12,
+        13,
+        6,
+        "i",
+        "o",
+        "a",
+        "b",
+        "c",
+        "d",
+        21,
+        22,
+        23,
+        24,
+        25,
+        26,
+        "z"
+      ]
+    },
+    "ordered": true,
+    "results": [
+      {
+        "c21": 1,
+        "c22": 5
+      },
+      {
+        "c21": 3,
+        "c22": 15
+      },
+      {
+        "c21": 5,
+        "c22": 25
+      },
+      {
+        "c21": "h",
+        "c22": "5h"
+      },
+      {
+        "c21": "k",
+        "c22": "5k"
+      }
+    ]
+  },
+  {
+    "testcase": "Clear prepared cache",
+    "statements": "DELETE FROM system:prepareds"
+  },
+  {
+    "testcase": "IN-list with uncorrelated subquery",
+    "statements": "SELECT c21, c22 FROM shellTest WHERE c21 IN (SELECT raw c11 FROM shellTest t WHERE t.type = \"subq\") ORDER BY c21, c22",
+    "ordered": true,
+    "results": [
+      {
+        "c21": 1,
+        "c22": 5
+      },
+      {
+        "c21": 3,
+        "c22": 15
+      },
+      {
+        "c21": 5,
+        "c22": 25
+      }
+    ]
+  },
+  {
+    "testcase": "NOT IN-list with uncorrelated subquery",
+    "statements": "SELECT c21, c22 FROM shellTest WHERE c21 NOT IN (SELECT raw c11 FROM shellTest t WHERE t.type = \"subq\") ORDER BY c21, c22",
+    "ordered": true,
+    "results": [
+      {
+        "c21": 6,
+        "c22": 30
+      },
+      {
+        "c21": "a",
+        "c22": "5a"
+      },
+      {
+        "c21": "d",
+        "c22": "5d"
+      },
+      {
+        "c21": "h",
+        "c22": "5h"
+      },
+      {
+        "c21": "k",
+        "c22": "5k"
+      },
+      {
+        "c21": "o",
+        "c22": "5o"
+      }
+    ]
+  }
+]

@@ -1,0 +1,1 @@
+{"purchaseId": "purchase9074", "lineItems": [{"count": 5, "product": "product75"}, {"count": 5, "product": "product224"}, {"count": 1, "product": "product704"}, {"count": 5, "product": "product432"}], "type": "purchase", "customerId": "customer567", "purchasedAt": "2013-07-10T15:52:44Z", "test_id": "unnest"}

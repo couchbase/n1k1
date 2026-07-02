@@ -10,7 +10,7 @@ const gsiSuiteRoot = "suite/json-gsi"
 
 // gsiPassFloor is the results-pass backstop for the gsi corpus (bump as coverage
 // grows), mirroring the default suite's floor.
-const gsiPassFloor = 718
+const gsiPassFloor = 722
 
 // gsiExpectedNonPass lists gsi cases n1k1 doesn't yet pass, keyed by loc
 // (case_gsi_<cat>.json[i]) -> group. Any non-pass NOT listed is a regression.
@@ -29,6 +29,12 @@ var gsiExpectedNonPass = map[string]string{
 	"case_gsi_subqexp.json[43]":             "fork-data-missing",
 	"case_gsi_subqexp.json[46]":             "fork-data-missing",
 	"case_gsi_subqexp.json[47]":             "subquery",
+	"case_gsi_unnest.json[0]":               "mega-order-limit",
+	"case_gsi_unnest.json[1]":               "mega-order-limit",
+	"case_gsi_unnest.json[2]":               "mega-order-limit",
+	"case_gsi_unnest.json[5]":               "mega-order-limit",
+	"case_gsi_unnest.json[6]":               "mega-order-limit",
+	"case_gsi_unnest.json[7]":               "mega-order-limit",
 }
 
 var gsiGroupWhy = map[string]string{
@@ -37,4 +43,5 @@ var gsiGroupWhy = map[string]string{
 	"results-differ":    "aggregate[41]: STDDEV(DISTINCT x) over a single distinct value -- cbq's stored expected is 0 but its algebra computes NULL for a 1-element sample; n1k1 follows the documented algorithm",
 	"fork-data-missing": "queries reference docs the fork's shared/global setup provides but its per-category insert.json doesn't (so our merged corpus lacks them): aggregate[54] test_id=\"median_agg_func\"; subqexp[36,40,43,46] USE KEYS ['1235'...] (subqexp inserts keys \"subqexp_1235\"...)",
 	"subquery":          "remaining correlated-subquery gaps: an aggregate inside a correlated subquery (SUM(...) over FROM outer.field -- hits 'nil item'), and a correlated subquery whose FROM is itself a subquery+WITH. (Plain correlated SELECT / EXISTS / IN subqueries now work.)",
+	"mega-order-limit":  "unnest[0,1,2,5,6,7]: UNNEST p.lineItems over the `purchase` MEGA keyspace with ORDER BY <unnested-elem> LIMIT n. The fork loads ~10,000 purchase docs; our corpus keeps a light sample (see MEGA_KEYSPACES), so the top-N after sorting the full unnested set can't be reproduced. UNNEST itself is correct (the specific-`product` unnest cases pass); only the full-set ordered LIMIT differs",
 }

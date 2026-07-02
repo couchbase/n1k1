@@ -1,0 +1,735 @@
+[
+  {
+    "testcase": "MB-51753",
+    "explain": {
+      "disabled": false,
+      "results": [
+        {
+          "present": true
+        }
+      ],
+      "statement": "SELECT true AS present FROM $explan AS p WHERE ANY v WITHIN p.`plan`.`~children` SATISFIES v.`#operator` = \"InitialProject\" AND CONTAINS(v.`result_terms`[0].`expr`, \"correlated \") END"
+    },
+    "statements": "SELECT (WITH a AS (s.a11) SELECT RAW c1 FROM a AS c1) AS arr, s.test_id FROM shellTest s WHERE s.c11 IN [1, 2] AND type = \"left\"",
+    "results": [
+      {
+        "arr": [
+          1,
+          2,
+          3,
+          4
+        ],
+        "test_id": "withs"
+      },
+      {
+        "arr": [
+          3,
+          3,
+          5,
+          10
+        ],
+        "test_id": "withs"
+      }
+    ]
+  },
+  {
+    "testcase": "MB-51753 part2, detect correlation reference for (non-)covering",
+    "explain": {
+      "disabled": false,
+      "results": [
+        {
+          "present": true
+        }
+      ],
+      "statement": "SELECT true AS present FROM $explan AS p WHERE ANY v WITHIN p.`plan`.`~children` SATISFIES v.`#operator` = \"InitialProject\" AND CONTAINS(v.`result_terms`[0].`expr`, \"correlated \") END"
+    },
+    "statements": "SELECT (WITH a AS (s.a11) SELECT RAW c1 FROM a AS c1) AS arr FROM shellTest s WHERE s.c11 IN [1, 2] AND type = \"left\"",
+    "results": [
+      {
+        "arr": [
+          1,
+          2,
+          3,
+          4
+        ]
+      },
+      {
+        "arr": [
+          3,
+          3,
+          5,
+          10
+        ]
+      }
+    ]
+  },
+  {
+    "testcase": "MB-50881",
+    "statements": "WITH s as ([{\"a\":1}, {\"a\":2}]) SELECT s1.a FROM s AS s1 WHERE s1.a = 1 UNION ALL SELECT s1.a + 10 AS a11 FROM s AS s1 WHERE s1.a = 2",
+    "results": [
+      {
+        "a11": 12
+      },
+      {
+        "a": 1
+      }
+    ]
+  },
+  {
+    "testcase": "MB-52200",
+    "statements": "WITH arrs AS ([1,2,3,4]) SELECT meta().id, FIRST v FOR v IN arrs END AS elem FROM shellTest s WHERE s.c11 = 1 AND type = \"left\"",
+    "results": [
+      {
+        "elem": 1,
+        "id": "test11_withs"
+      }
+    ]
+  },
+  {
+    "testcase": "MB-55835",
+    "explain": {
+      "disabled": false,
+      "results": [
+        {
+          "present": true
+        }
+      ],
+      "statement": "SELECT true AS present FROM $explan AS p WHERE ANY v WITHIN p.`plan`.`~child`.`~children` SATISFIES v.`#operator` LIKE 'IndexScan%' AND v.`as` = 's' AND v.`covers` IS NOT MISSING END"
+    },
+    "statements": "WITH cte AS ([{\"c1\": 1}, {\"c1\":2}]) SELECT s.c12, cte1.c1 FROM shellTest s, cte cte1 WHERE s.c11 = cte1.c1 AND s.type = \"left\"",
+    "results": [
+      {
+        "c12": 10,
+        "c1": 1
+      },
+      {
+        "c12": 20,
+        "c1": 2
+      }
+    ]
+  },
+  {
+    "testcase": "MB-55978, part 1",
+    "explain": {
+      "disabled": false,
+      "results": [
+        {
+          "present": true
+        }
+      ],
+      "statement": "SELECT true AS present FROM $explan AS p WHERE ANY v WITHIN p.`plan`.`~child`.`~children` SATISFIES v.`#operator` = 'ExpressionScan' AND v.`alias` = 'c1' AND v.`nested_loop` = true AND v.`uncorrelated` = true END"
+    },
+    "statements": "WITH a AS ([1, 2, 3]) SELECT c1, st.c12 FROM shellTest st JOIN a AS c1 USE NL ON st.c11 = c1 WHERE st.type = \"left\"",
+    "results": [
+      {
+        "c1": 1,
+        "c12": 10
+      },
+      {
+        "c1": 2,
+        "c12": 20
+      },
+      {
+        "c1": 3,
+        "c12": 30
+      }
+    ]
+  },
+  {
+    "testcase": "MB-55978, part 2, ExpressionScan inside correlated subquery, main query covered",
+    "explain": {
+      "disabled": false,
+      "results": [
+        {
+          "present": true
+        }
+      ],
+      "statement": "SELECT true AS present FROM $explan AS p WHERE ANY u WITHIN p.`plan`.`~children` SATISFIES u.`#operator` LIKE 'IndexScan%' AND u.`covers` IS NOT MISSING END AND ANY v WITHIN p.`~subqueries`[0].plan.`~children` SATISFIES v.`#operator` = 'ExpressionScan' AND v.`alias` = 's' AND v.`uncorrelated` IS MISSING END"
+    },
+    "statements": "SELECT (SELECT s, st.c11 FROM st.a11 AS s) AS sub FROM shellTest AS st WHERE st.c12 = 30 AND st.type = \"left\"",
+    "results": [
+      {
+        "sub": [
+          {
+            "c11": 3,
+            "s": 3
+          },
+          {
+            "c11": 3,
+            "s": 4
+          },
+          {
+            "c11": 3,
+            "s": 20
+          },
+          {
+            "c11": 3,
+            "s": 40
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "testcase": "MB-55978, part 3, ExpressionScan under nested-loop join inside correlated subquery, main query covered",
+    "explain": {
+      "disabled": false,
+      "results": [
+        {
+          "present": true
+        }
+      ],
+      "statement": "SELECT true AS present FROM $explan AS p WHERE ANY u WITHIN p.`plan`.`~child`.`~children` SATISFIES u.`#operator` LIKE 'IndexScan%' AND u.`covers` IS NOT MISSING END AND ANY v WITHIN p.`~subqueries`[0].plan.`~children` SATISFIES v.`#operator` = 'ExpressionScan' AND v.`alias` = 'a' AND v.`nested_loop` = true AND v.`uncorrelated` = true END"
+    },
+    "statements": "WITH a AS ([20, 40]) SELECT (SELECT s, st.c11 FROM st.a11 AS s JOIN a USE NL ON a = s) AS sub FROM shellTest AS st WHERE st.c12 = 30 AND st.type = \"left\"",
+    "results": [
+      {
+        "sub": [
+          {
+            "c11": 3,
+            "s": 20
+          },
+          {
+            "c11": 3,
+            "s": 40
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "testcase": "MB-57903",
+    "statements": "select a, (SELECT RAW (SELECT RAW a) ) AS b  from [1,2,3] a",
+    "results": [
+      {
+        "a": 1,
+        "b": [
+          [
+            1
+          ]
+        ]
+      },
+      {
+        "a": 2,
+        "b": [
+          [
+            2
+          ]
+        ]
+      },
+      {
+        "a": 3,
+        "b": [
+          [
+            3
+          ]
+        ]
+      }
+    ]
+  },
+  {
+    "testcase": "MB-57904",
+    "statements": "select a, (WITH w1 AS (a) SELECT RAW w1) AS b  from [1,2,3] a",
+    "results": [
+      {
+        "a": 1,
+        "b": [
+          1
+        ]
+      },
+      {
+        "a": 2,
+        "b": [
+          2
+        ]
+      },
+      {
+        "a": 3,
+        "b": [
+          3
+        ]
+      }
+    ]
+  },
+  {
+    "testcase": "MB-59084",
+    "statements": "WITH a AS ([10,20,30]) SELECT l.c12, r.c21, r.a21 FROM shellTest l JOIN shellTest r ON l.c11 = r.c21 WHERE l.c11 > 1 AND r.c22 IN a AND l.type = \"left\" AND r.type = \"right\"",
+    "results": [
+      {
+        "a21": [
+          2,
+          3,
+          30
+        ],
+        "c12": 20,
+        "c21": 2
+      },
+      {
+        "a21": [
+          3,
+          10,
+          30
+        ],
+        "c12": 30,
+        "c21": 3
+      }
+    ]
+  },
+  {
+    "testcase": "MB-64442",
+    "statements": "SELECT (WITH w1 AS (d) SELECT d1.[w1]  FROM {\"a\":\"aa\", \"b\": \"bb\"} AS d1) AS val FROM [\"a\", \"b\"] AS d",
+    "results": [
+      {
+        "val": [
+          {
+            "w1": "aa"
+          }
+        ]
+      },
+      {
+        "val": [
+          {
+            "w1": "bb"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "testcase": "MB-65954",
+    "explain": {
+      "disabled": false,
+      "results": [
+        {
+          "present": true
+        }
+      ],
+      "statement": "SELECT true AS present FROM $explan AS p WHERE ANY u WITHIN p.`~subqueries`[0].`plan`.`~children` SATISFIES u.`#operator` LIKE 'IndexScan%' AND u.`covers` IS NOT MISSING AND u.`as` = 'r' END AND ANY v WITHIN p.`~subqueries`[0].`plan`.`~children` SATISFIES v.`#operator` LIKE 'IndexScan%' AND v.`covers` IS NOT MISSING AND v.`as` = 'l' END"
+    },
+    "statements": "WITH w1 AS (SELECT l.c11, r.c21, r.c22 FROM shellTest l JOIN shellTest r USE HASH(probe) ON l.c11 = r.c21 WHERE l.c11 > 1 AND r.c22 IN [20,21]  AND l.type = \"left\" AND r.type = \"right\") SELECT w1",
+    "results": [
+      {
+        "w1": [
+          {
+            "c11": 2,
+            "c21": 2,
+            "c22": 20
+          },
+          {
+            "c11": 2,
+            "c21": 2,
+            "c22": 21
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "testcase": "MB-66660, part-1, WITH alias reference in FROM clause of subquery",
+    "explain": {
+      "disabled": false,
+      "results": [
+        {
+          "present": true
+        }
+      ],
+      "statement": "SELECT true AS present FROM $explan AS p WHERE ANY v WITHIN p.`~subqueries` SATISFIES ANY u WITHIN v.`plan`.`~children` SATISFIES u.`#operator` = 'ExpressionScan' AND u.`expr` = '`w1`' END AND CONTAINS(v.`subquery`, '(`w1`)') END"
+    },
+    "statements": "WITH w1 AS ( [{\"a\":\"f1\", \"b\":10}]), w2 AS (SELECT RAW OBJECT v.a:v.b FOR v IN (SELECT x.* FROM w1 AS x) END) SELECT w2",
+    "results": [
+      {
+        "w2": [
+          {
+            "f1": 10
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "testcase": "MB-66660, part-2, WITH alias reference in non-FROM clause of subquery",
+    "explain": {
+      "disabled": false,
+      "results": [
+        {
+          "present": true
+        }
+      ],
+      "statement": "SELECT true AS present FROM $explan AS p WHERE ANY v WITHIN p.`~subqueries`[0].`plan`.`~children` SATISFIES v.`#operator` LIKE 'IndexScan%' AND v.`index` = 'st_idx1' END"
+    },
+    "statements": "WITH w1 AS ([10, 20]), w2 AS  (SELECT c11, c12, test_id FROM shellTest d WHERE c11 IS NOT MISSING AND c12 IN w1 AND type = \"left\") SELECT w2",
+    "results": [
+      {
+        "w2": [
+          {
+            "c11": 1,
+            "c12": 10,
+            "test_id": "withs"
+          },
+          {
+            "c11": 2,
+            "c12": 20,
+            "test_id": "withs"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "testcase": "MB-66699, WITH alias reference in non-FROM clause of subquery, covering",
+    "explain": {
+      "disabled": false,
+      "results": [
+        {
+          "present": true
+        }
+      ],
+      "statement": "SELECT true AS present FROM $explan AS p WHERE ANY v WITHIN p.`~subqueries`[0].`plan`.`~children` SATISFIES v.`#operator` LIKE 'IndexScan%' AND v.`index` = 'st_idx1' AND v.`covers` IS NOT MISSING END"
+    },
+    "statements": "WITH w1 AS ([10, 20]), w2 AS  (SELECT c11, c12 FROM shellTest d WHERE c11 IS NOT MISSING AND c12 IN w1 AND type = \"left\") SELECT w2",
+    "results": [
+      {
+        "w2": [
+          {
+            "c11": 1,
+            "c12": 10
+          },
+          {
+            "c11": 2,
+            "c12": 20
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "testcase": "MB-67432",
+    "explain": {
+      "disabled": false,
+      "results": [
+        {
+          "present": true
+        }
+      ],
+      "statement": "SELECT true AS present FROM $explan AS p WHERE ANY v WITHIN p.`plan`.`~children` SATISFIES v.`#operator` = 'HashJoin' END"
+    },
+    "statements": "SELECT r.* FROM (WITH w1 AS (ARRAY {\"c1\":1} FOR v IN ARRAY_RANGE(0,5) END), w2 AS (SELECT d.c10, a1 FROM {\"c10\":1, \"a1\":[{\"c20\":\"xyz\"}]} AS d UNNEST d.a1) SELECT n.* FROM w2 AS n LEFT JOIN w1 AS r1 ON r1.c1 = n.c10 ) AS r",
+    "results": [
+      {
+        "a1": {
+          "c20": "xyz"
+        },
+        "c10": 1
+      },
+      {
+        "a1": {
+          "c20": "xyz"
+        },
+        "c10": 1
+      },
+      {
+        "a1": {
+          "c20": "xyz"
+        },
+        "c10": 1
+      },
+      {
+        "a1": {
+          "c20": "xyz"
+        },
+        "c10": 1
+      },
+      {
+        "a1": {
+          "c20": "xyz"
+        },
+        "c10": 1
+      }
+    ]
+  },
+  {
+    "testcase": "MB-44279 Part 1",
+    "statements": "WITH a1 AS ([{\"EffectiveDate\": \"2021-01-27\"}, {\"EffectiveDate\": \"2021-01-28\"}]) SELECT a1, r FROM a1 UNNEST (SELECT d.EffectiveDate FROM a1 AS d) AS r",
+    "error": "Duplicate WITH alias reference in FROM expression: 'a1' (near line 1, column 138)"
+  },
+  {
+    "testcase": "MB-44279 Part 2",
+    "statements": "WITH a1 AS ([{\"EffectiveDate\": \"2021-01-27\"}, {\"EffectiveDate\": \"2021-01-28\"}]) SELECT l, r FROM a1 AS l UNNEST (SELECT d.EffectiveDate FROM a1 AS d) AS r",
+    "results": [
+      {
+        "l": {
+          "EffectiveDate": "2021-01-27"
+        },
+        "r": {
+          "EffectiveDate": "2021-01-27"
+        }
+      },
+      {
+        "l": {
+          "EffectiveDate": "2021-01-27"
+        },
+        "r": {
+          "EffectiveDate": "2021-01-28"
+        }
+      },
+      {
+        "l": {
+          "EffectiveDate": "2021-01-28"
+        },
+        "r": {
+          "EffectiveDate": "2021-01-27"
+        }
+      },
+      {
+        "l": {
+          "EffectiveDate": "2021-01-28"
+        },
+        "r": {
+          "EffectiveDate": "2021-01-28"
+        }
+      }
+    ]
+  },
+  {
+    "testcase": "MB-44279 Part 3",
+    "explain": {
+      "disabled": false,
+      "results": [
+        {
+          "present": true
+        }
+      ],
+      "statement": "SELECT true AS present FROM $explan AS p WHERE ANY v WITHIN p.`plan`.`~child`.`~children` SATISFIES v.`#operator` LIKE 'IndexScan%' AND v.`spans`[0].`range`[0].dynamic_in = true END"
+    },
+    "statements": "WITH cte AS ([1,2,3,4,5,6]) SELECT s.c11 FROM shellTest s WHERE s.c11 IN cte AND type = \"left\"",
+    "results": [
+      {
+        "c11": 1
+      },
+      {
+        "c11": 2
+      },
+      {
+        "c11": 3
+      },
+      {
+        "c11": 4
+      }
+    ]
+  },
+  {
+    "testcase": "MB-56431, part 1, KeyspaceTerm alias conflict with WITH alias",
+    "statements": "WITH a AS ([20, 40]) SELECT a FROM shellTest AS a WHERE a.c12 = 30 AND a.type = \"left\"",
+    "error": "Duplicate FROM alias 'a'"
+  },
+  {
+    "testcase": "MB-56431, part 2, ExpressionTerm alias conflict with WITH alias",
+    "statements": "WITH a AS ([20, 40]) SELECT a FROM [ {\"c12\": 30, \"type\": \"left\"} ] AS a WHERE a.c12 = 30 AND a.type = \"left\"",
+    "error": "Duplicate FROM expression alias 'a' (near line 1, column 68)"
+  },
+  {
+    "testcase": "MB-56431, part 3, SubqueryTerm alias conflict with WITH alias",
+    "statements": "WITH a AS ([20, 40]) SELECT a FROM (SELECT c12, type FROM shellTest) AS a WHERE a.c12 = 30 AND a.type = \"left\"",
+    "error": "Duplicate subquery alias 'a' (near line 1, column 70)"
+  },
+  {
+    "testcase": "MB-56431, part 4, binding variable conflict with WITH alias",
+    "statements": "WITH a AS ([20, 40]) SELECT c11 FROM shellTest AS st WHERE st.c12 = 30 AND st.type = \"left\" AND ANY a IN st.a11 SATISFIES a = 3 END",
+    "error": "Duplicate variable: 'a' already in scope (near line 1, column 101)."
+  },
+  {
+    "testcase": "MB-56431, part 5, Unnest alias conflict with WITH alias",
+    "statements": "WITH a AS ([20, 40]) SELECT a FROM shellTest AS st UNNEST st.a11 AS a WHERE st.c12 = 30 AND st.type = \"left\"",
+    "error": "Duplicate UNNEST alias 'a' (near line 1, column 66)"
+  },
+  {
+    "testcase": "Simple CTE in UNION ALL",
+    "statements": "WITH cte AS (SELECT 1 as a) SELECT cte.a from cte UNION ALL SELECT cte.a from cte",
+    "results": [
+      {
+        "a": 1
+      },
+      {
+        "a": 1
+      }
+    ]
+  },
+  {
+    "testcase": "Simple CTE in UNION ALL with subquery expression on both sides",
+    "statements": "WITH cte AS (SELECT 1 as a) (SELECT cte.a from cte) UNION ALL (SELECT cte.a from cte)",
+    "results": [
+      {
+        "a": 1
+      },
+      {
+        "a": 1
+      }
+    ]
+  },
+  {
+    "testcase": "Nested CTE in UNION ALL, not in SQL standard but supported in Postgres",
+    "statements": "WITH cte AS (SELECT 1 as a) (WITH cte2 as (SELECT 2 as b) SELECT cte2.b from cte2) UNION ALL (SELECT cte.a from cte)",
+    "results": [
+      {
+        "a": 1
+      },
+      {
+        "b": 2
+      }
+    ]
+  },
+  {
+    "testcase": "Nested CTE in UNION ALL (second arm), not in SQL standard but supported in Postgres",
+    "statements": "WITH cte AS (SELECT 1 as a) SELECT cte.a from cte UNION ALL (WITH cte2 as (SELECT 2 as b) SELECT cte2.b from cte2)",
+    "results": [
+      {
+        "a": 1
+      },
+      {
+        "b": 2
+      }
+    ]
+  },
+  {
+    "testcase": "CTE only under UNION ALL, not in SQL standard but supported in Postgres",
+    "statements": "(WITH cte AS (SELECT 1 as a) SELECT cte.a FROM cte) UNION ALL (WITH cte as (SELECT 1 as a) SELECT cte.a from cte)",
+    "results": [
+      {
+        "a": 1
+      },
+      {
+        "a": 1
+      }
+    ]
+  },
+  {
+    "testcase": "Nested CTE, with UNION arm referencing both outer CTE and CTE under UNION",
+    "statements": "WITH cte1 AS (SELECT 1 as a) SELECT cte1.a from cte1 UNION ALL (WITH cte2 as (SELECT a FROM [1,2] a) SELECT cte2.a from cte1, cte2 WHERE cte1.a = cte2.a)",
+    "results": [
+      {
+        "a": 1
+      },
+      {
+        "a": 1
+      }
+    ]
+  },
+  {
+    "testcase": "Simple CTE in INTERSECT",
+    "statements": "WITH cte AS (SELECT 1 as a) SELECT cte.a from cte INTERSECT SELECT cte.a from cte",
+    "results": [
+      {
+        "a": 1
+      }
+    ]
+  },
+  {
+    "testcase": "CTE only under INTERSECT ALL, not in SQL standard but supported in Postgres",
+    "statements": "(WITH cte AS (SELECT 1 as a) SELECT cte.a FROM cte) INTERSECT ALL (WITH cte as (SELECT 1 as a) SELECT cte.a from cte)",
+    "results": [
+      {
+        "a": 1
+      }
+    ]
+  },
+  {
+    "testcase": "Nested CTE in INTERSECT ALL (second arm), not in SQL standard but supported in Postgres",
+    "statements": "WITH cte1 AS (SELECT a FROM [1,2,3] as a) SELECT cte1.a from cte1 INTERSECT ALL (WITH cte2 as (SELECT a FROM [3,4,5] as a) SELECT cte2.a from cte2)",
+    "results": [
+      {
+        "a": 3
+      }
+    ]
+  },
+  {
+    "testcase": "Simple CTE in EXCEPT",
+    "statements": "WITH cte AS (SELECT a FROM [1,2,3] as a) SELECT cte.a from cte EXCEPT SELECT cte.a from cte WHERE cte.a > 1",
+    "results": [
+      {
+        "a": 1
+      }
+    ]
+  },
+  {
+    "testcase": "CTE only under EXCEPT ALL, not in SQL standard but supported in Postgres",
+    "statements": "(WITH cte AS (SELECT a FROM [1,2,3] as a) SELECT cte.a FROM cte) EXCEPT ALL (WITH cte as (SELECT a FROM [3,4,5] as a) SELECT cte.a from cte)",
+    "results": [
+      {
+        "a": 1
+      },
+      {
+        "a": 2
+      }
+    ]
+  },
+  {
+    "testcase": "Nested CTE in EXCEPT ALL (second arm), not in SQL standard but supported in Postgres",
+    "statements": "WITH cte1 AS (SELECT a FROM [1,2,3] as a) SELECT cte1.a from cte1 EXCEPT ALL (WITH cte2 as (SELECT a FROM [3,4,5] as a) SELECT cte2.a from cte2)",
+    "results": [
+      {
+        "a": 1
+      },
+      {
+        "a": 2
+      }
+    ]
+  },
+  {
+    "testcase": "Same CTE alias in top query and nested query, error",
+    "statements": "WITH cte1 AS (SELECT a FROM [1,2,3] as a) SELECT cte1.a from cte1 UNION ALL (WITH cte1 as (SELECT a FROM [3,4,5] as a) SELECT cte1.a from cte1)",
+    "error": "Duplicate WITH clause alias 'cte1' (near line 1, column 83)"
+  },
+  {
+    "testcase": "Nested CTE not in parentheses, error",
+    "statements": "WITH cte1 AS (SELECT a FROM [1,2,3] as a) SELECT cte1.a from cte1 UNION ALL WITH cte1 as (SELECT a FROM [3,4,5] as a) SELECT cte1.a from cte1",
+    "error": "syntax error - line 1, column 77, near '...from cte1 UNION ALL ', at: WITH (reserved word)"
+  },
+  {
+    "testcase": "Simple expression as CTE",
+    "statements": "WITH a AS ([1,2,3]) SELECT c1 FROM a AS c1",
+    "results": [
+      {
+        "c1": 1
+      },
+      {
+        "c1": 2
+      },
+      {
+        "c1": 3
+      }
+    ]
+  },
+  {
+    "testcase": "Simple expression as CTE",
+    "statements": "WITH a AS ([1,2,3]) SELECT c1, st.c12 FROM a AS c1 JOIN shellTest st ON c1 = st.c11 WHERE st.type = \"left\"",
+    "results": [
+      {
+        "c1": 1,
+        "c12": 10
+      },
+      {
+        "c1": 2,
+        "c12": 20
+      },
+      {
+        "c1": 3,
+        "c12": 30
+      }
+    ]
+  },
+  {
+    "testcase": "Simple query as CTE",
+    "statements": "WITH arrs AS (SELECT RAW a1 FROM shellTest s UNNEST s.a11 AS a1 WHERE s.c11 = 3 AND s.type = \"left\") SELECT st.c22 FROM shellTest st JOIN arrs a ON st.c21 = a WHERE st.type = \"right\"",
+    "results": [
+      {
+        "c22": 30
+      },
+      {
+        "c22": 31
+      },
+      {
+        "c22": 32
+      }
+    ]
+  }
+]

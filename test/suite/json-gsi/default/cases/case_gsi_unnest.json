@@ -1,0 +1,1627 @@
+[
+  {
+    "statements": "SELECT * FROM purchase as p UNNEST p.lineItems AS line where p.test_id = \"unnest\" ORDER BY line, p limit 2",
+    "results": [
+      {
+        "line": {
+          "count": 1,
+          "product": "product0"
+        },
+        "p": {
+          "customerId": "customer402",
+          "lineItems": [
+            {
+              "count": 1,
+              "product": "product0"
+            },
+            {
+              "count": 5,
+              "product": "product699"
+            },
+            {
+              "count": 5,
+              "product": "product750"
+            },
+            {
+              "count": 1,
+              "product": "product566"
+            },
+            {
+              "count": 3,
+              "product": "product794"
+            }
+          ],
+          "purchaseId": "purchase2171",
+          "purchasedAt": "2013-08-09T15:52:35Z",
+          "test_id": "unnest",
+          "type": "purchase"
+        }
+      },
+      {
+        "line": {
+          "count": 1,
+          "product": "product0"
+        },
+        "p": {
+          "customerId": "customer428",
+          "lineItems": [
+            {
+              "count": 4,
+              "product": "product157"
+            },
+            {
+              "count": 1,
+              "product": "product416"
+            },
+            {
+              "count": 1,
+              "product": "product0"
+            }
+          ],
+          "purchaseId": "purchase7821",
+          "purchasedAt": "2013-11-07T15:52:42Z",
+          "test_id": "unnest",
+          "type": "purchase"
+        }
+      }
+    ]
+  },
+  {
+    "statements": "SELECT * FROM purchase AS p UNNEST p.lineItems AS line WHERE line.count > 2 AND p.test_id = \"unnest\" ORDER BY line, p limit 5",
+    "results": [
+      {
+        "line": {
+          "count": 3,
+          "product": "product0"
+        },
+        "p": {
+          "customerId": "customer130",
+          "lineItems": [
+            {
+              "count": 3,
+              "product": "product0"
+            },
+            {
+              "count": 3,
+              "product": "product606"
+            },
+            {
+              "count": 4,
+              "product": "product327"
+            },
+            {
+              "count": 1,
+              "product": "product467"
+            },
+            {
+              "count": 5,
+              "product": "product521"
+            }
+          ],
+          "purchaseId": "purchase3437",
+          "purchasedAt": "2013-08-09T15:52:37Z",
+          "test_id": "unnest",
+          "type": "purchase"
+        }
+      },
+      {
+        "line": {
+          "count": 3,
+          "product": "product0"
+        },
+        "p": {
+          "customerId": "customer368",
+          "lineItems": [
+            {
+              "count": 3,
+              "product": "product123"
+            },
+            {
+              "count": 4,
+              "product": "product97"
+            },
+            {
+              "count": 5,
+              "product": "product755"
+            },
+            {
+              "count": 3,
+              "product": "product0"
+            },
+            {
+              "count": 2,
+              "product": "product168"
+            }
+          ],
+          "purchaseId": "purchase6809",
+          "purchasedAt": "2013-09-08T15:52:41Z",
+          "test_id": "unnest",
+          "type": "purchase"
+        }
+      },
+      {
+        "line": {
+          "count": 3,
+          "product": "product0"
+        },
+        "p": {
+          "customerId": "customer562",
+          "lineItems": [
+            {
+              "count": 5,
+              "product": "product899"
+            },
+            {
+              "count": 1,
+              "product": "product693"
+            },
+            {
+              "count": 3,
+              "product": "product0"
+            }
+          ],
+          "purchaseId": "purchase7310",
+          "purchasedAt": "2013-07-10T15:52:41Z",
+          "test_id": "unnest",
+          "type": "purchase"
+        }
+      },
+      {
+        "line": {
+          "count": 3,
+          "product": "product0"
+        },
+        "p": {
+          "customerId": "customer631",
+          "lineItems": [
+            {
+              "count": 5,
+              "product": "product893"
+            },
+            {
+              "count": 5,
+              "product": "product618"
+            },
+            {
+              "count": 3,
+              "product": "product0"
+            },
+            {
+              "count": 4,
+              "product": "product807"
+            },
+            {
+              "count": 3,
+              "product": "product867"
+            }
+          ],
+          "purchaseId": "purchase993",
+          "purchasedAt": "2013-10-08T15:52:34Z",
+          "test_id": "unnest",
+          "type": "purchase"
+        }
+      },
+      {
+        "line": {
+          "count": 3,
+          "product": "product0"
+        },
+        "p": {
+          "customerId": "customer823",
+          "lineItems": [
+            {
+              "count": 2,
+              "product": "product325"
+            },
+            {
+              "count": 3,
+              "product": "product0"
+            },
+            {
+              "count": 3,
+              "product": "product757"
+            },
+            {
+              "count": 3,
+              "product": "product637"
+            }
+          ],
+          "purchaseId": "purchase3286",
+          "purchasedAt": "2013-10-08T15:52:37Z",
+          "test_id": "unnest",
+          "type": "purchase"
+        }
+      }
+    ]
+  },
+  {
+    "statements": "SELECT child FROM purchase AS p UNNEST p.lineItems AS child WHERE child.product = \"product0\" AND p.test_id = \"unnest\" ORDER BY child limit 10",
+    "results": [
+      {
+        "child": {
+          "count": 1,
+          "product": "product0"
+        }
+      },
+      {
+        "child": {
+          "count": 1,
+          "product": "product0"
+        }
+      },
+      {
+        "child": {
+          "count": 1,
+          "product": "product0"
+        }
+      },
+      {
+        "child": {
+          "count": 1,
+          "product": "product0"
+        }
+      },
+      {
+        "child": {
+          "count": 2,
+          "product": "product0"
+        }
+      },
+      {
+        "child": {
+          "count": 2,
+          "product": "product0"
+        }
+      },
+      {
+        "child": {
+          "count": 2,
+          "product": "product0"
+        }
+      },
+      {
+        "child": {
+          "count": 2,
+          "product": "product0"
+        }
+      },
+      {
+        "child": {
+          "count": 3,
+          "product": "product0"
+        }
+      },
+      {
+        "child": {
+          "count": 3,
+          "product": "product0"
+        }
+      }
+    ]
+  },
+  {
+    "statements": "SELECT p.purchaseId FROM purchase AS p UNNEST p.lineItems[0:2] AS child WHERE child.product = \"product73\" AND p.test_id = \"unnest\" ORDER BY p.purchaseId limit 5",
+    "results": [
+      {
+        "purchaseId": "purchase1015"
+      },
+      {
+        "purchaseId": "purchase2272"
+      },
+      {
+        "purchaseId": "purchase2547"
+      },
+      {
+        "purchaseId": "purchase3461"
+      },
+      {
+        "purchaseId": "purchase4831"
+      }
+    ]
+  },
+  {
+    "statements": "SELECT p.* FROM purchase AS p UNNEST p.lineItems AS child WHERE child.product = \"product73\" AND child.count = 1 AND p.test_id = \"unnest\" ORDER BY child, p",
+    "results": [
+      {
+        "customerId": "customer134",
+        "lineItems": [
+          {
+            "count": 1,
+            "product": "product73"
+          },
+          {
+            "count": 5,
+            "product": "product36"
+          },
+          {
+            "count": 4,
+            "product": "product350"
+          },
+          {
+            "count": 2,
+            "product": "product787"
+          }
+        ],
+        "purchaseId": "purchase3461",
+        "purchasedAt": "2014-01-06T15:52:37Z",
+        "test_id": "unnest",
+        "type": "purchase"
+      },
+      {
+        "customerId": "customer326",
+        "lineItems": [
+          {
+            "count": 2,
+            "product": "product602"
+          },
+          {
+            "count": 5,
+            "product": "product215"
+          },
+          {
+            "count": 1,
+            "product": "product398"
+          },
+          {
+            "count": 1,
+            "product": "product73"
+          },
+          {
+            "count": 1,
+            "product": "product487"
+          }
+        ],
+        "purchaseId": "purchase4683",
+        "purchasedAt": "2014-04-06T15:52:39Z",
+        "test_id": "unnest",
+        "type": "purchase"
+      },
+      {
+        "customerId": "customer337",
+        "lineItems": [
+          {
+            "count": 1,
+            "product": "product73"
+          },
+          {
+            "count": 2,
+            "product": "product392"
+          },
+          {
+            "count": 4,
+            "product": "product862"
+          },
+          {
+            "count": 1,
+            "product": "product619"
+          }
+        ],
+        "purchaseId": "purchase2547",
+        "purchasedAt": "2013-06-10T15:52:36Z",
+        "test_id": "unnest",
+        "type": "purchase"
+      },
+      {
+        "customerId": "customer437",
+        "lineItems": [
+          {
+            "count": 1,
+            "product": "product73"
+          },
+          {
+            "count": 5,
+            "product": "product499"
+          },
+          {
+            "count": 1,
+            "product": "product633"
+          },
+          {
+            "count": 4,
+            "product": "product183"
+          }
+        ],
+        "purchaseId": "purchase534",
+        "purchasedAt": "2014-01-06T15:52:33Z",
+        "test_id": "unnest",
+        "type": "purchase"
+      },
+      {
+        "customerId": "customer511",
+        "lineItems": [
+          {
+            "count": 1,
+            "product": "product73"
+          },
+          {
+            "count": 4,
+            "product": "product853"
+          }
+        ],
+        "purchaseId": "purchase4831",
+        "purchasedAt": "2014-04-06T15:52:39Z",
+        "test_id": "unnest",
+        "type": "purchase"
+      },
+      {
+        "customerId": "customer555",
+        "lineItems": [
+          {
+            "count": 1,
+            "product": "product73"
+          }
+        ],
+        "purchaseId": "purchase1920",
+        "purchasedAt": "2013-08-09T15:52:35Z",
+        "test_id": "unnest",
+        "type": "purchase"
+      },
+      {
+        "customerId": "customer567",
+        "lineItems": [
+          {
+            "count": 2,
+            "product": "product811"
+          },
+          {
+            "count": 5,
+            "product": "product276"
+          },
+          {
+            "count": 1,
+            "product": "product73"
+          }
+        ],
+        "purchaseId": "purchase9560",
+        "purchasedAt": "2013-07-10T15:52:44Z",
+        "test_id": "unnest",
+        "type": "purchase"
+      },
+      {
+        "customerId": "customer867",
+        "lineItems": [
+          {
+            "count": 1,
+            "product": "product73"
+          }
+        ],
+        "purchaseId": "purchase4858",
+        "purchasedAt": "2014-01-06T15:52:39Z",
+        "test_id": "unnest",
+        "type": "purchase"
+      }
+    ]
+  },
+  {
+    "statements": "SELECT * FROM purchase as p UNNEST p.lineItems where p.test_id = \"unnest\" ORDER BY lineItems, p limit 2",
+    "results": [
+      {
+        "lineItems": {
+          "count": 1,
+          "product": "product0"
+        },
+        "p": {
+          "customerId": "customer402",
+          "lineItems": [
+            {
+              "count": 1,
+              "product": "product0"
+            },
+            {
+              "count": 5,
+              "product": "product699"
+            },
+            {
+              "count": 5,
+              "product": "product750"
+            },
+            {
+              "count": 1,
+              "product": "product566"
+            },
+            {
+              "count": 3,
+              "product": "product794"
+            }
+          ],
+          "purchaseId": "purchase2171",
+          "purchasedAt": "2013-08-09T15:52:35Z",
+          "test_id": "unnest",
+          "type": "purchase"
+        }
+      },
+      {
+        "lineItems": {
+          "count": 1,
+          "product": "product0"
+        },
+        "p": {
+          "customerId": "customer428",
+          "lineItems": [
+            {
+              "count": 4,
+              "product": "product157"
+            },
+            {
+              "count": 1,
+              "product": "product416"
+            },
+            {
+              "count": 1,
+              "product": "product0"
+            }
+          ],
+          "purchaseId": "purchase7821",
+          "purchasedAt": "2013-11-07T15:52:42Z",
+          "test_id": "unnest",
+          "type": "purchase"
+        }
+      }
+    ]
+  },
+  {
+    "statements": "SELECT * FROM purchase AS p UNNEST p.lineItems WHERE lineItems.count > 2 AND p.test_id = \"unnest\" ORDER BY lineItems, p limit 5",
+    "results": [
+      {
+        "lineItems": {
+          "count": 3,
+          "product": "product0"
+        },
+        "p": {
+          "customerId": "customer130",
+          "lineItems": [
+            {
+              "count": 3,
+              "product": "product0"
+            },
+            {
+              "count": 3,
+              "product": "product606"
+            },
+            {
+              "count": 4,
+              "product": "product327"
+            },
+            {
+              "count": 1,
+              "product": "product467"
+            },
+            {
+              "count": 5,
+              "product": "product521"
+            }
+          ],
+          "purchaseId": "purchase3437",
+          "purchasedAt": "2013-08-09T15:52:37Z",
+          "test_id": "unnest",
+          "type": "purchase"
+        }
+      },
+      {
+        "lineItems": {
+          "count": 3,
+          "product": "product0"
+        },
+        "p": {
+          "customerId": "customer368",
+          "lineItems": [
+            {
+              "count": 3,
+              "product": "product123"
+            },
+            {
+              "count": 4,
+              "product": "product97"
+            },
+            {
+              "count": 5,
+              "product": "product755"
+            },
+            {
+              "count": 3,
+              "product": "product0"
+            },
+            {
+              "count": 2,
+              "product": "product168"
+            }
+          ],
+          "purchaseId": "purchase6809",
+          "purchasedAt": "2013-09-08T15:52:41Z",
+          "test_id": "unnest",
+          "type": "purchase"
+        }
+      },
+      {
+        "lineItems": {
+          "count": 3,
+          "product": "product0"
+        },
+        "p": {
+          "customerId": "customer562",
+          "lineItems": [
+            {
+              "count": 5,
+              "product": "product899"
+            },
+            {
+              "count": 1,
+              "product": "product693"
+            },
+            {
+              "count": 3,
+              "product": "product0"
+            }
+          ],
+          "purchaseId": "purchase7310",
+          "purchasedAt": "2013-07-10T15:52:41Z",
+          "test_id": "unnest",
+          "type": "purchase"
+        }
+      },
+      {
+        "lineItems": {
+          "count": 3,
+          "product": "product0"
+        },
+        "p": {
+          "customerId": "customer631",
+          "lineItems": [
+            {
+              "count": 5,
+              "product": "product893"
+            },
+            {
+              "count": 5,
+              "product": "product618"
+            },
+            {
+              "count": 3,
+              "product": "product0"
+            },
+            {
+              "count": 4,
+              "product": "product807"
+            },
+            {
+              "count": 3,
+              "product": "product867"
+            }
+          ],
+          "purchaseId": "purchase993",
+          "purchasedAt": "2013-10-08T15:52:34Z",
+          "test_id": "unnest",
+          "type": "purchase"
+        }
+      },
+      {
+        "lineItems": {
+          "count": 3,
+          "product": "product0"
+        },
+        "p": {
+          "customerId": "customer823",
+          "lineItems": [
+            {
+              "count": 2,
+              "product": "product325"
+            },
+            {
+              "count": 3,
+              "product": "product0"
+            },
+            {
+              "count": 3,
+              "product": "product757"
+            },
+            {
+              "count": 3,
+              "product": "product637"
+            }
+          ],
+          "purchaseId": "purchase3286",
+          "purchasedAt": "2013-10-08T15:52:37Z",
+          "test_id": "unnest",
+          "type": "purchase"
+        }
+      }
+    ]
+  },
+  {
+    "statements": "SELECT lineItems AS child FROM purchase AS p UNNEST p.lineItems WHERE lineItems.product = \"product0\" AND p.test_id = \"unnest\" ORDER BY lineItems limit 10",
+    "results": [
+      {
+        "child": {
+          "count": 1,
+          "product": "product0"
+        }
+      },
+      {
+        "child": {
+          "count": 1,
+          "product": "product0"
+        }
+      },
+      {
+        "child": {
+          "count": 1,
+          "product": "product0"
+        }
+      },
+      {
+        "child": {
+          "count": 1,
+          "product": "product0"
+        }
+      },
+      {
+        "child": {
+          "count": 2,
+          "product": "product0"
+        }
+      },
+      {
+        "child": {
+          "count": 2,
+          "product": "product0"
+        }
+      },
+      {
+        "child": {
+          "count": 2,
+          "product": "product0"
+        }
+      },
+      {
+        "child": {
+          "count": 2,
+          "product": "product0"
+        }
+      },
+      {
+        "child": {
+          "count": 3,
+          "product": "product0"
+        }
+      },
+      {
+        "child": {
+          "count": 3,
+          "product": "product0"
+        }
+      }
+    ]
+  },
+  {
+    "statements": "SELECT p.purchaseId FROM purchase AS p UNNEST p.lineItems[0:2] AS child WHERE child.product = \"product73\" AND p.test_id = \"unnest\" ORDER BY p.purchaseId limit 5",
+    "results": [
+      {
+        "purchaseId": "purchase1015"
+      },
+      {
+        "purchaseId": "purchase2272"
+      },
+      {
+        "purchaseId": "purchase2547"
+      },
+      {
+        "purchaseId": "purchase3461"
+      },
+      {
+        "purchaseId": "purchase4831"
+      }
+    ]
+  },
+  {
+    "statements": "SELECT p.* FROM purchase AS p UNNEST p.lineItems WHERE lineItems.product = \"product73\" AND lineItems.count = 1 AND p.test_id = \"unnest\" ORDER BY lineItems, p",
+    "results": [
+      {
+        "customerId": "customer134",
+        "lineItems": [
+          {
+            "count": 1,
+            "product": "product73"
+          },
+          {
+            "count": 5,
+            "product": "product36"
+          },
+          {
+            "count": 4,
+            "product": "product350"
+          },
+          {
+            "count": 2,
+            "product": "product787"
+          }
+        ],
+        "purchaseId": "purchase3461",
+        "purchasedAt": "2014-01-06T15:52:37Z",
+        "test_id": "unnest",
+        "type": "purchase"
+      },
+      {
+        "customerId": "customer326",
+        "lineItems": [
+          {
+            "count": 2,
+            "product": "product602"
+          },
+          {
+            "count": 5,
+            "product": "product215"
+          },
+          {
+            "count": 1,
+            "product": "product398"
+          },
+          {
+            "count": 1,
+            "product": "product73"
+          },
+          {
+            "count": 1,
+            "product": "product487"
+          }
+        ],
+        "purchaseId": "purchase4683",
+        "purchasedAt": "2014-04-06T15:52:39Z",
+        "test_id": "unnest",
+        "type": "purchase"
+      },
+      {
+        "customerId": "customer337",
+        "lineItems": [
+          {
+            "count": 1,
+            "product": "product73"
+          },
+          {
+            "count": 2,
+            "product": "product392"
+          },
+          {
+            "count": 4,
+            "product": "product862"
+          },
+          {
+            "count": 1,
+            "product": "product619"
+          }
+        ],
+        "purchaseId": "purchase2547",
+        "purchasedAt": "2013-06-10T15:52:36Z",
+        "test_id": "unnest",
+        "type": "purchase"
+      },
+      {
+        "customerId": "customer437",
+        "lineItems": [
+          {
+            "count": 1,
+            "product": "product73"
+          },
+          {
+            "count": 5,
+            "product": "product499"
+          },
+          {
+            "count": 1,
+            "product": "product633"
+          },
+          {
+            "count": 4,
+            "product": "product183"
+          }
+        ],
+        "purchaseId": "purchase534",
+        "purchasedAt": "2014-01-06T15:52:33Z",
+        "test_id": "unnest",
+        "type": "purchase"
+      },
+      {
+        "customerId": "customer511",
+        "lineItems": [
+          {
+            "count": 1,
+            "product": "product73"
+          },
+          {
+            "count": 4,
+            "product": "product853"
+          }
+        ],
+        "purchaseId": "purchase4831",
+        "purchasedAt": "2014-04-06T15:52:39Z",
+        "test_id": "unnest",
+        "type": "purchase"
+      },
+      {
+        "customerId": "customer555",
+        "lineItems": [
+          {
+            "count": 1,
+            "product": "product73"
+          }
+        ],
+        "purchaseId": "purchase1920",
+        "purchasedAt": "2013-08-09T15:52:35Z",
+        "test_id": "unnest",
+        "type": "purchase"
+      },
+      {
+        "customerId": "customer567",
+        "lineItems": [
+          {
+            "count": 2,
+            "product": "product811"
+          },
+          {
+            "count": 5,
+            "product": "product276"
+          },
+          {
+            "count": 1,
+            "product": "product73"
+          }
+        ],
+        "purchaseId": "purchase9560",
+        "purchasedAt": "2013-07-10T15:52:44Z",
+        "test_id": "unnest",
+        "type": "purchase"
+      },
+      {
+        "customerId": "customer867",
+        "lineItems": [
+          {
+            "count": 1,
+            "product": "product73"
+          }
+        ],
+        "purchaseId": "purchase4858",
+        "purchasedAt": "2014-01-06T15:52:39Z",
+        "test_id": "unnest",
+        "type": "purchase"
+      }
+    ]
+  },
+  {
+    "testcase": "UNNEST scan, covered",
+    "ignore": "index_id",
+    "explain": {
+      "disabled": false,
+      "results": [
+        {
+          "present": true
+        }
+      ],
+      "statement": "SELECT true AS present FROM $explan AS p WHERE ANY v WITHIN p.plan.`~children` SATISFIES v.`#operator` LIKE 'IndexScan%' AND v.`covers` IS NOT MISSING AND CONTAINS(v.`filter`, '`li`.`product`') END"
+    },
+    "statements": "SELECT p.customerId, li.product FROM purchase p UNNEST p.lineItems AS li WHERE li.product LIKE 'product28%' AND p.test_id = 'unnest' AND p.customerId = 'customer684'",
+    "results": [
+      {
+        "customerId": "customer684",
+        "product": "product282"
+      },
+      {
+        "customerId": "customer684",
+        "product": "product284"
+      },
+      {
+        "customerId": "customer684",
+        "product": "product289"
+      },
+      {
+        "customerId": "customer684",
+        "product": "product289"
+      }
+    ]
+  },
+  {
+    "testcase": "UNNEST SCAN, covered, GROUP BY, no index filter",
+    "ignore": "index_id",
+    "explain": {
+      "disabled": false,
+      "results": [
+        {
+          "present": true
+        }
+      ],
+      "statement": "SELECT true AS present FROM $explan AS p WHERE ANY v WITHIN p.plan.`~children` SATISFIES v.`#operator` LIKE 'IndexScan%' AND v.`filter` IS MISSING AND v.`index_group_aggs` IS NOT MISSING END"
+    },
+    "statements": "SELECT p.customerId, li.product, COUNT(1) AS cnt FROM purchase p UNNEST p.lineItems AS li WHERE li.product LIKE 'product28%' AND p.test_id = 'unnest' GROUP BY p.customerId, li.product ORDER BY cnt DESC, li.product, p.customerId LIMIT 4",
+    "ordered": true,
+    "results": [
+      {
+        "customerId": "customer118",
+        "product": "product28",
+        "cnt": 2
+      },
+      {
+        "customerId": "customer93",
+        "product": "product28",
+        "cnt": 2
+      },
+      {
+        "customerId": "customer74",
+        "product": "product280",
+        "cnt": 2
+      },
+      {
+        "customerId": "customer212",
+        "product": "product284",
+        "cnt": 2
+      }
+    ]
+  },
+  {
+    "testcase": "UNNEST scan, not covered",
+    "ignore": "index_id",
+    "explain": {
+      "disabled": false,
+      "results": [
+        {
+          "present": true
+        }
+      ],
+      "statement": "SELECT true AS present FROM $explan AS p WHERE ANY v WITHIN p.plan.`~children` SATISFIES v.`#operator` LIKE 'IndexScan%' AND v.`covers` IS MISSING AND CONTAINS(v.`filter`, '`li`.`product`') END"
+    },
+    "statements": "SELECT p.customerId, li.product FROM purchase p UNNEST p.lineItems AS li WHERE li.product LIKE '%roduct28%' AND p.test_id = 'unnest' AND p.customerId = 'customer684' AND p.type = 'purchase'",
+    "results": [
+      {
+        "customerId": "customer684",
+        "product": "product282"
+      },
+      {
+        "customerId": "customer684",
+        "product": "product284"
+      },
+      {
+        "customerId": "customer684",
+        "product": "product289"
+      },
+      {
+        "customerId": "customer684",
+        "product": "product289"
+      }
+    ]
+  },
+  {
+    "testcase": "UNNEST scan, covered",
+    "ignore": "index_id",
+    "explain": {
+      "disabled": false,
+      "results": [
+        {
+          "present": true
+        }
+      ],
+      "statement": "SELECT true AS present FROM $explan AS p WHERE ANY v WITHIN p.plan.`~children` SATISFIES v.`#operator` LIKE 'IndexScan%' AND v.`covers` IS NOT MISSING AND CONTAINS(v.`filter`, '`lineItems`.`product`') END"
+    },
+    "statements": "SELECT p.customerId, lineItems.product FROM purchase p UNNEST p.lineItems WHERE lineItems.product LIKE 'product28%' AND p.test_id = 'unnest' AND p.customerId = 'customer684'",
+    "results": [
+      {
+        "customerId": "customer684",
+        "product": "product282"
+      },
+      {
+        "customerId": "customer684",
+        "product": "product284"
+      },
+      {
+        "customerId": "customer684",
+        "product": "product289"
+      },
+      {
+        "customerId": "customer684",
+        "product": "product289"
+      }
+    ]
+  },
+  {
+    "testcase": "UNNEST SCAN, covered, GROUP BY, no index filter",
+    "ignore": "index_id",
+    "explain": {
+      "disabled": false,
+      "results": [
+        {
+          "present": true
+        }
+      ],
+      "statement": "SELECT true AS present FROM $explan AS p WHERE ANY v WITHIN p.plan.`~children` SATISFIES v.`#operator` LIKE 'IndexScan%' AND v.`filter` IS MISSING AND v.`index_group_aggs` IS NOT MISSING END"
+    },
+    "statements": "SELECT p.customerId, lineItems.product, COUNT(1) AS cnt FROM purchase p UNNEST p.lineItems WHERE lineItems.product LIKE 'product28%' AND p.test_id = 'unnest' GROUP BY p.customerId, lineItems.product ORDER BY cnt DESC, lineItems.product, p.customerId LIMIT 4",
+    "ordered": true,
+    "results": [
+      {
+        "customerId": "customer118",
+        "product": "product28",
+        "cnt": 2
+      },
+      {
+        "customerId": "customer93",
+        "product": "product28",
+        "cnt": 2
+      },
+      {
+        "customerId": "customer74",
+        "product": "product280",
+        "cnt": 2
+      },
+      {
+        "customerId": "customer212",
+        "product": "product284",
+        "cnt": 2
+      }
+    ]
+  },
+  {
+    "testcase": "UNNEST scan, not covered",
+    "ignore": "index_id",
+    "explain": {
+      "disabled": false,
+      "results": [
+        {
+          "present": true
+        }
+      ],
+      "statement": "SELECT true AS present FROM $explan AS p WHERE ANY v WITHIN p.plan.`~children` SATISFIES v.`#operator` LIKE 'IndexScan%' AND v.`covers` IS MISSING AND CONTAINS(v.`filter`, '`lineItems`.`product`') END"
+    },
+    "statements": "SELECT p.customerId, lineItems.product FROM purchase p UNNEST p.lineItems WHERE lineItems.product LIKE '%roduct28%' AND p.test_id = 'unnest' AND p.customerId = 'customer684' AND p.type = 'purchase'",
+    "results": [
+      {
+        "customerId": "customer684",
+        "product": "product282"
+      },
+      {
+        "customerId": "customer684",
+        "product": "product284"
+      },
+      {
+        "customerId": "customer684",
+        "product": "product289"
+      },
+      {
+        "customerId": "customer684",
+        "product": "product289"
+      }
+    ]
+  },
+  {
+    "comments": "With sequential scans idx2 is no longer chosen",
+    "disabled": true,
+    "testcase": "MB-28720",
+    "ignore": "index_id",
+    "explain": {
+      "disabled": false,
+      "results": [
+        {
+          "present": true
+        }
+      ],
+      "statement": "SELECT true AS present FROM $explan AS p WHERE ANY v WITHIN p.plan.`~children` SATISFIES v.`#operator` LIKE 'IndexScan%' AND v.`index` = 'idx2' END"
+    },
+    "statements": "SELECT META(d).id AS id FROM shellTest AS d  UNNEST  OBJECT_PAIRS(META(d).id) AS op WHERE [op.name, META(d).id] > [1,10]",
+    "ordered": true,
+    "results": []
+  },
+  {
+    "testcase": "MB-30970",
+    "ignore": "index_id",
+    "explain": {
+      "disabled": false,
+      "results": [
+        {
+          "present": true
+        }
+      ],
+      "statement": "SELECT true AS present FROM $explan AS p WHERE ANY v WITHIN p.plan.`~children` SATISFIES v.`#operator` = 'UnionScan' AND ANY v1 WITHIN v.scans SATISFIES v1.`#operator` LIKE 'IndexScan%' AND v1.`index` = 'iax1' END AND ANY v2 WITHIN v.scans SATISFIES v2.`#operator` LIKE 'IndexScan%' AND v2.`index` = 'iax2' END END"
+    },
+    "statements": "SELECT 1 AS a FROM shellTest AS d UNNEST d.a1 AS v WHERE v.x = 10 OR v.y = 20",
+    "ordered": true,
+    "results": []
+  },
+  {
+    "testcase": "MB-30292",
+    "ignore": "index_id",
+    "explain": {
+      "disabled": false,
+      "results": [
+        {
+          "present": true
+        }
+      ],
+      "statement": "SELECT true AS present FROM $explan AS p WHERE ANY v WITHIN p.plan.`~children` SATISFIES v.`#operator` LIKE 'IndexScan%' AND v.`index` = 'ix22' END"
+    },
+    "statements": "SELECT [op.name,op.val,x] FROM shellTest AS d UNNEST d.a1 AS x UNNEST x AS op WHERE [op.name,op.val,x] = [\"type2\", \"bla\",\"xxx\"]",
+    "ordered": true,
+    "results": []
+  },
+  {
+    "testcase": "MB-38105",
+    "ignore": "index_id",
+    "explain": {
+      "disabled": false,
+      "results": [
+        {
+          "present": true
+        }
+      ],
+      "statement": "SELECT true AS present FROM $explan AS p WHERE ANY v WITHIN p.plan.`~children` SATISFIES v.`#operator` LIKE 'IndexScan%' AND v.`index` = 'idx11' AND ARRAY_LENGTH(v.spans) = 2 AND v.spans[0].`range`[0].inclusion = 0 AND v.spans[1].`range`[0].inclusion = 0 END"
+    },
+    "statements": "SELECT 1 FROM shellTest AS d UNNEST d.a1 AS a  WHERE d.c1 != 10 AND d.c1 = a.u1",
+    "ordered": true,
+    "results": []
+  },
+  {
+    "testcase": "MB-46641",
+    "ignore": "index_id",
+    "explain": {
+      "disabled": false,
+      "results": [
+        {
+          "cnt": 0
+        }
+      ],
+      "statement": "SELECT COUNT(1) AS cnt FROM (SELECT 1 FROM $explan AS p WHERE ANY v WITHIN p.plan.`~children` SATISFIES v.`#operator` = 'IntersectScan' END) AS present"
+    },
+    "statements": "SELECT * FROM shellTest AS d UNNEST d.arr AS u WHERE d.type = 'doc' AND u > 10",
+    "ordered": true,
+    "results": []
+  },
+  {
+    "testcase": "MB-51410",
+    "ignore": "index_id",
+    "explain": {
+      "disabled": false,
+      "results": [
+        {
+          "present": true
+        }
+      ],
+      "statement": "SELECT true AS present FROM $explan AS p WHERE ANY v WITHIN p.plan.`~children` SATISFIES v.`#operator` LIKE 'IndexScan%' AND v.`index_order` IS MISSING END"
+    },
+    "statements": "SELECT u.x, d.c1 FROM shellTest AS d USE INDEX (ix101) UNNEST d.arr10 AS u WHERE u.x > 0 ORDER BY u.x",
+    "ordered": true,
+    "results": [
+      {
+        "x": 1
+      },
+      {
+        "x": 1
+      },
+      {
+        "x": 1
+      },
+      {
+        "x": 2
+      }
+    ]
+  },
+  {
+    "testcase": "MB-55849",
+    "ignore": "index_id",
+    "explain": {
+      "disabled": false,
+      "results": [
+        {
+          "present": true
+        }
+      ],
+      "statement": "SELECT true AS present FROM $explan AS p WHERE ANY v WITHIN p.plan.`~children` SATISFIES v.`#operator` LIKE 'IndexScan%' AND v.`index` = 'ix102' END"
+    },
+    "statements": "SELECT d.a, u FROM shellTest AS d UNNEST ARRAY_CONCAT(d.a, d.b) AS u",
+    "ordered": true,
+    "results": []
+  },
+  {
+    "testcase": "MB-56775, part 1, project (unnested) array, not covered",
+    "ignore": "index_id",
+    "explain": {
+      "disabled": false,
+      "results": [
+        {
+          "present": true
+        }
+      ],
+      "statement": "SELECT true AS present FROM $explan AS p WHERE ANY v WITHIN p.plan.`~children` SATISFIES v.`#operator` LIKE 'IndexScan%' AND v.`index` = 'ix101' AND v.`covers` IS MISSING END"
+    },
+    "statements": "SELECT d.arr10, u.x FROM shellTest AS d UNNEST d.arr10 AS u WHERE u.x > 1",
+    "results": [
+      {
+        "arr10": [
+          {
+            "x": 1
+          },
+          {
+            "x": 2
+          },
+          {
+            "x": 1
+          },
+          {
+            "x": 1
+          }
+        ],
+        "x": 2
+      }
+    ]
+  },
+  {
+    "testcase": "MB-56775, part 2, not project (unnested) array, covered",
+    "ignore": "index_id",
+    "explain": {
+      "disabled": false,
+      "results": [
+        {
+          "present": true
+        }
+      ],
+      "statement": "SELECT true AS present FROM $explan AS p WHERE ANY v WITHIN p.plan.`~children` SATISFIES v.`#operator` LIKE 'IndexScan%' AND v.`index` = 'ix101' AND v.`covers` IS NOT MISSING END"
+    },
+    "statements": "SELECT meta(d).id, u.x FROM shellTest AS d UNNEST d.arr10 AS u WHERE u.x > 1",
+    "results": [
+      {
+        "id": "test101_unnest",
+        "x": 2
+      }
+    ]
+  },
+  {
+    "comments": "With sequential scans idx2 is no longer chosen",
+    "disabled": true,
+    "testcase": "MB-28720",
+    "ignore": "index_id",
+    "explain": {
+      "disabled": false,
+      "results": [
+        {
+          "present": true
+        }
+      ],
+      "statement": "SELECT true AS present FROM $explan AS p WHERE ANY v WITHIN p.plan.`~children` SATISFIES v.`#operator` LIKE 'IndexScan%' AND v.`index` = 'idx2' END"
+    },
+    "statements": "SELECT META(d).id AS id FROM shellTest AS d  UNNEST  OBJECT_PAIRS(META(d).id) AS op WHERE [op.name, META(d).id] > [1,10]",
+    "ordered": true,
+    "results": []
+  },
+  {
+    "testcase": "MB-30970",
+    "ignore": "index_id",
+    "explain": {
+      "disabled": false,
+      "results": [
+        {
+          "present": true
+        }
+      ],
+      "statement": "SELECT true AS present FROM $explan AS p WHERE ANY v WITHIN p.plan.`~children` SATISFIES v.`#operator` = 'UnionScan' AND ANY v1 WITHIN v.scans SATISFIES v1.`#operator` LIKE 'IndexScan%' AND v1.`index` = 'iax1' END AND ANY v2 WITHIN v.scans SATISFIES v2.`#operator` LIKE 'IndexScan%' AND v2.`index` = 'iax2' END END"
+    },
+    "statements": "SELECT 1 AS a FROM shellTest AS d UNNEST d.a1 WHERE a1.x = 10 OR a1.y = 20",
+    "ordered": true,
+    "results": []
+  },
+  {
+    "testcase": "MB-30292",
+    "ignore": "index_id",
+    "explain": {
+      "disabled": false,
+      "results": [
+        {
+          "present": true
+        }
+      ],
+      "statement": "SELECT true AS present FROM $explan AS p WHERE ANY v WITHIN p.plan.`~children` SATISFIES v.`#operator` LIKE 'IndexScan%' AND v.`index` = 'ix22' END"
+    },
+    "statements": "SELECT [op.name,op.val,a1] FROM shellTest AS d UNNEST d.a1 UNNEST a1 AS op WHERE [op.name,op.val,a1] = [\"type2\", \"bla\",\"xxx\"]",
+    "ordered": true,
+    "results": []
+  },
+  {
+    "testcase": "MB-38105",
+    "ignore": "index_id",
+    "explain": {
+      "disabled": false,
+      "results": [
+        {
+          "present": true
+        }
+      ],
+      "statement": "SELECT true AS present FROM $explan AS p WHERE ANY v WITHIN p.plan.`~children` SATISFIES v.`#operator` LIKE 'IndexScan%' AND v.`index` = 'idx11' AND ARRAY_LENGTH(v.spans) = 2 AND v.spans[0].`range`[0].inclusion = 0 AND v.spans[1].`range`[0].inclusion = 0 END"
+    },
+    "statements": "SELECT 1 FROM shellTest AS d UNNEST d.a1  WHERE d.c1 != 10 AND d.c1 = a1.u1",
+    "ordered": true,
+    "results": []
+  },
+  {
+    "testcase": "MB-46641",
+    "ignore": "index_id",
+    "explain": {
+      "disabled": false,
+      "results": [
+        {
+          "cnt": 0
+        }
+      ],
+      "statement": "SELECT COUNT(1) AS cnt FROM (SELECT 1 FROM $explan AS p WHERE ANY v WITHIN p.plan.`~children` SATISFIES v.`#operator` = 'IntersectScan' END) AS present"
+    },
+    "statements": "SELECT * FROM shellTest AS d UNNEST d.arr WHERE d.type = 'doc' AND arr > 10",
+    "ordered": true,
+    "results": []
+  },
+  {
+    "testcase": "MB-51410",
+    "ignore": "index_id",
+    "explain": {
+      "disabled": false,
+      "results": [
+        {
+          "present": true
+        }
+      ],
+      "statement": "SELECT true AS present FROM $explan AS p WHERE ANY v WITHIN p.plan.`~children` SATISFIES v.`#operator` LIKE 'IndexScan%' AND v.`index_order` IS MISSING END"
+    },
+    "statements": "SELECT arr10.x, d.c1 FROM shellTest AS d USE INDEX (ix101) UNNEST d.arr10 WHERE arr10.x > 0 ORDER BY arr10.x",
+    "ordered": true,
+    "results": [
+      {
+        "x": 1
+      },
+      {
+        "x": 1
+      },
+      {
+        "x": 1
+      },
+      {
+        "x": 2
+      }
+    ]
+  },
+  {
+    "testcase": "MB-55849",
+    "ignore": "index_id",
+    "explain": {
+      "disabled": false,
+      "results": [
+        {
+          "present": true
+        }
+      ],
+      "statement": "SELECT true AS present FROM $explan AS p WHERE ANY v WITHIN p.plan.`~children` SATISFIES v.`#operator` LIKE 'IndexScan%' AND v.`index` = 'ix102' END"
+    },
+    "statements": "SELECT d.a, u FROM shellTest AS d UNNEST ARRAY_CONCAT(d.a, d.b) AS u",
+    "ordered": true,
+    "results": []
+  },
+  {
+    "testcase": "MB-56775, part 1, project (unnested) array, not covered",
+    "ignore": "index_id",
+    "explain": {
+      "disabled": false,
+      "results": [
+        {
+          "present": true
+        }
+      ],
+      "statement": "SELECT true AS present FROM $explan AS p WHERE ANY v WITHIN p.plan.`~children` SATISFIES v.`#operator` LIKE 'IndexScan%' AND v.`index` = 'ix101' AND v.`covers` IS MISSING END"
+    },
+    "statements": "SELECT d.arr10, arr10.x FROM shellTest AS d UNNEST d.arr10 WHERE arr10.x > 1",
+    "results": [
+      {
+        "arr10": [
+          {
+            "x": 1
+          },
+          {
+            "x": 2
+          },
+          {
+            "x": 1
+          },
+          {
+            "x": 1
+          }
+        ],
+        "x": 2
+      }
+    ]
+  },
+  {
+    "testcase": "MB-56775, part 2, not project (unnested) array, covered",
+    "ignore": "index_id",
+    "explain": {
+      "disabled": false,
+      "results": [
+        {
+          "present": true
+        }
+      ],
+      "statement": "SELECT true AS present FROM $explan AS p WHERE ANY v WITHIN p.plan.`~children` SATISFIES v.`#operator` LIKE 'IndexScan%' AND v.`index` = 'ix101' AND v.`covers` IS NOT MISSING END"
+    },
+    "statements": "SELECT meta(d).id, arr10.x FROM shellTest AS d UNNEST d.arr10 WHERE arr10.x > 1",
+    "results": [
+      {
+        "id": "test101_unnest",
+        "x": 2
+      }
+    ]
+  },
+  {
+    "testcase": "MB-61707, part 1",
+    "ignore": "index_id",
+    "explain": {
+      "disabled": false,
+      "results": [
+        {
+          "present": true
+        }
+      ],
+      "statement": "SELECT true AS present FROM $explan AS p WHERE ANY v WITHIN p.plan.`~children` SATISFIES v.`#operator` LIKE 'IndexScan%' AND v.`index` = 'ix111' AND v.`covers` IS NOT MISSING END"
+    },
+    "statements": "SELECT f1 FROM shellTest AS d UNNEST d.f1 WHERE f1 = 1",
+    "results": []
+  },
+  {
+    "testcase": "MB-61707, part 2",
+    "ignore": "index_id",
+    "explain": {
+      "disabled": false,
+      "results": [
+        {
+          "present": true
+        }
+      ],
+      "statement": "SELECT true AS present FROM $explan AS p WHERE ANY v WITHIN p.plan.`~children` SATISFIES v.`#operator` LIKE 'IndexScan%' AND v.`index` = 'ix112' AND v.`covers` IS NOT MISSING END"
+    },
+    "statements": "SELECT arr FROM shellTest AS d UNNEST d.f2 UNNEST f2.arr WHERE arr IN [10, 20]",
+    "results": []
+  },
+  {
+    "testcase": "MB-61707, part 3",
+    "ignore": "index_id",
+    "explain": {
+      "disabled": false,
+      "results": [
+        {
+          "present": true
+        }
+      ],
+      "statement": "SELECT true AS present FROM $explan AS p WHERE ANY v WITHIN p.plan.`~children` SATISFIES v.`#operator` LIKE 'IndexScan%' AND v.`index` = 'ix113' AND v.`covers` IS NOT MISSING END"
+    },
+    "statements": "SELECT f3.id FROM shellTest AS d UNNEST d.f3 WHERE f3.id = 10",
+    "results": []
+  },
+  {
+    "testcase": "MB-63593",
+    "ignore": "index_id",
+    "explain": {
+      "disabled": false,
+      "results": [
+        {
+          "present": true
+        }
+      ],
+      "statement": "SELECT true AS present FROM $explan AS p WHERE ANY v WITHIN p.plan.`~children` SATISFIES v.`#operator` LIKE 'IndexScan%' AND v.`index` = 'ix113' AND v.`filter` IS MISSING END"
+    },
+    "statements": "SELECT r0.x, r1.id FROM shellTest AS d UNNEST d.f3 AS r0 UNNEST d.f3 AS r1 WHERE r1.id = 1 AND r0.x < 20",
+    "results": [
+      {
+        "x": 10,
+        "id": 1
+      },
+      {
+        "x": 10,
+        "id": 1
+      },
+      {
+        "x": 10,
+        "id": 1
+      },
+      {
+        "x": 10,
+        "id": 1
+      }
+    ]
+  }
+]
