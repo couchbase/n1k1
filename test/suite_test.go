@@ -79,7 +79,7 @@ func n1k1RunStatementCtx(store *glue.Store, stmt string) (rows []string, res *gl
 func caseRunnable(c map[string]interface{}) (stmt string, results []interface{}, ok bool) {
 	for k := range c {
 		switch k {
-		case "statements", "results", "ordered", "description", "pretty":
+		case "statements", "results", "ordered", "description", "pretty", "sortCount":
 		default:
 			return "", nil, false // exotic field -> skip
 		}
@@ -101,6 +101,15 @@ func caseRunnable(c map[string]interface{}) (stmt string, results []interface{},
 // case_array[10] is left as "resultset" (skipped): its resultset is in fact
 // wrong (its array_agg values don't match the GROUP BY key, which n1k1 gets
 // right), so we must NOT assert against it.
+
+// NOTE on "sortCount": a cbq plan-optimization assertion (the number of sort
+// operators the planner emits after pruning) -- inert metadata for n1k1, which
+// asserts on results, not plan shape. It's whitelisted (like "description") so a
+// {statements, results, sortCount} case still runs and validates its results
+// (e.g. order_functions[33], an ORDER BY ... OFFSET ... LIMIT sort-prune case).
+// The order_functions sortCount cases that carry NO "results" (or carry
+// "explain"/"ignore") are pure plan-shape checks with nothing result-comparable,
+// so they stay skipped.
 
 // caseError reports whether a case is a simple error-expectation case: a
 // {statements, error} pair (no results) carrying only allowed metadata. n1k1
@@ -623,7 +632,7 @@ func exoticInfo(c map[string]interface{}) (reason, content string) {
 		// "resultset" is deliberately omitted -- it's non-authoritative (see the
 		// NOTE by caseRunnable), so it should surface as the exotic reason.
 		case "statements", "results", "error", "errorCode", "warningCode",
-			"matchStatements", "ordered", "description", "pretty":
+			"matchStatements", "ordered", "description", "pretty", "sortCount":
 		default:
 			extra = append(extra, k)
 		}
