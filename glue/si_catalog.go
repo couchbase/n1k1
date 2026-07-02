@@ -52,6 +52,62 @@ func SidecarName() string { return sidecarDir }
 // catalog is the parsed .n1k1/catalog.json (index half only for v1).
 type catalog struct {
 	Indexes []*indexDef `json:"indexes"`
+	// Formats persists the -formats/.formats scanning restriction for this
+	// datastore (a records.ParseModes string, e.g. "json,csv,gzip"); read/written
+	// via CatalogFormats/CatalogSetFormats. Empty = the flexible default.
+	Formats string `json:"formats,omitempty"`
+}
+
+// CatalogFormats returns the persisted "formats" scanning restriction from
+// <dataRoot>/<sidecar>/catalog.json, or "" when there's no sidecar/field. It's
+// read independently of the index defs so a malformed index entry doesn't hide
+// the (simple) formats string.
+func CatalogFormats(dataRoot string) (string, error) {
+	raw, err := os.ReadFile(filepath.Join(dataRoot, sidecarDir, "catalog.json"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", err
+	}
+	var top struct {
+		Formats string `json:"formats"`
+	}
+	if err := json.Unmarshal(raw, &top); err != nil {
+		return "", fmt.Errorf("catalog.json parse: %w", err)
+	}
+	return top.Formats, nil
+}
+
+// CatalogSetFormats writes the "formats" field into <dataRoot>/<sidecar>/
+// catalog.json, creating the sidecar/file if needed and preserving any existing
+// content (indexes, unknown keys) by round-tripping through a generic map. A blank
+// formats removes the field.
+func CatalogSetFormats(dataRoot, formats string) error {
+	dir := filepath.Join(dataRoot, sidecarDir)
+	path := filepath.Join(dir, "catalog.json")
+	top := map[string]json.RawMessage{}
+	if raw, err := os.ReadFile(path); err == nil {
+		if uerr := json.Unmarshal(raw, &top); uerr != nil {
+			return fmt.Errorf("catalog.json parse: %w", uerr) // don't clobber a bad file
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	if strings.TrimSpace(formats) == "" {
+		delete(top, "formats")
+	} else {
+		fb, _ := json.Marshal(formats)
+		top["formats"] = fb
+	}
+	out, err := json.MarshalIndent(top, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, append(out, '\n'), 0o644)
 }
 
 // indexDef is one declared index definition. Kind selects the machinery: "gsi"

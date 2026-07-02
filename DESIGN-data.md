@@ -487,8 +487,11 @@ explicit comma-separated set, e.g. `-formats=json,jsonl` (no `recurse` ⇒ don't
 descend; no `gzip` ⇒ ignore `.gz`). Empty/absent or `all` ⇒ everything flexible.
 This is "flexible by default, explicit when needed" as a one-flag safety valve;
 `records.ParseModes` turns the list into the discovery/decoder filter. The REPL's
-`.formats` command shows/sets it live. (Named `-formats`, not `-mode`, to avoid
-confusion with the `-mode` output flag.)
+`.formats` command shows/sets it live and **persists** the set into the
+datastore's `<sidecar>/catalog.json` (`"formats"` field), so a directory
+remembers its formats across sessions. Precedence on open: an explicit `-formats`
+flag wins, else the persisted catalog value, else the flexible default. (Named
+`-formats`, not `-mode`, to avoid confusion with the `-mode` output flag.)
 
 ### Integration gap: schemaless docs vs n1k1's positional labels
 n1k1's engine identifies fields by **positional `base.Labels`**, not by name —

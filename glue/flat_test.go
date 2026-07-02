@@ -73,6 +73,45 @@ func TestMaybeFlatGrabBag(t *testing.T) {
 	}
 }
 
+// TestCatalogFormats: formats round-trip through catalog.json, preserving any
+// existing index defs; a blank removes the field.
+func TestCatalogFormats(t *testing.T) {
+	root := t.TempDir()
+	if f, err := CatalogFormats(root); err != nil || f != "" {
+		t.Fatalf("no catalog yet: got %q err %v", f, err)
+	}
+	// Pre-seed a catalog with an index -- CatalogSetFormats must not clobber it.
+	sc := filepath.Join(root, sidecarDir)
+	if err := os.MkdirAll(sc, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sc, "catalog.json"),
+		[]byte(`{"indexes":[{"name":"ix","keyspace":"k","keys":["a"]}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := CatalogSetFormats(root, "json,csv"); err != nil {
+		t.Fatal(err)
+	}
+	if f, _ := CatalogFormats(root); f != "json,csv" {
+		t.Errorf("formats = %q, want json,csv", f)
+	}
+	if cat, err := loadCatalog(root); err != nil || cat == nil || len(cat.Indexes) != 1 {
+		t.Errorf("index def not preserved after set: %+v err %v", cat, err)
+	}
+
+	// A blank removes the field (but keeps the catalog/indexes).
+	if err := CatalogSetFormats(root, ""); err != nil {
+		t.Fatal(err)
+	}
+	if f, _ := CatalogFormats(root); f != "" {
+		t.Errorf("blank should remove formats, got %q", f)
+	}
+	if cat, _ := loadCatalog(root); cat == nil || len(cat.Indexes) != 1 {
+		t.Errorf("index def lost when clearing formats: %+v", cat)
+	}
+}
+
 func TestSidecarName(t *testing.T) {
 	if SidecarName() != ".n1k1" {
 		t.Errorf("default SidecarName() = %q, want .n1k1", SidecarName())

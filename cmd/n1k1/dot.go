@@ -94,6 +94,15 @@ func (c *cli) dot(line string) bool {
 			opts.Meta = glue.ScanWalkOptions.Meta // keep the current .meta setting
 			glue.ScanWalkOptions = opts
 			fmt.Fprintf(c.stderr, "formats: %s\n", glue.ScanWalkOptions.Describe())
+			// Persist to the datastore's catalog.json so it's remembered next open
+			// (directory datastores only; a single-file arg has no sidecar of its own).
+			if fi, serr := os.Stat(c.dir); serr == nil && fi.IsDir() {
+				if err := glue.CatalogSetFormats(c.dir, a); err != nil {
+					fmt.Fprintf(c.stderr, "  (not saved to %s: %v)\n", c.catalogPath(), err)
+				} else {
+					fmt.Fprintf(c.stderr, "  saved to %s\n", c.catalogPath())
+				}
+			}
 		}
 	case ".explain":
 		c.explain = !c.explain

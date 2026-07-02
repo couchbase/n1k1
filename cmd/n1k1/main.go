@@ -88,21 +88,12 @@ func main() {
 		os.Exit(2)
 	}
 
-	// -formats locks down which file formats/compression/recursion n1k1 will scan,
-	// so a tree with formats the user doesn't want considered can be excluded.
-	scanOpts, serr := records.ParseModes(*formatsFlag)
-	if serr != nil {
-		fmt.Fprintf(os.Stderr, "%s: bad -formats: %v\n", prog, serr)
-		os.Exit(2)
-	}
 	// -meta controls per-file metadata injection (_meta).
 	mm, merr := records.ParseMetaMode(*metaFlag)
 	if merr != nil {
 		fmt.Fprintf(os.Stderr, "%s: %v\n", prog, merr)
 		os.Exit(2)
 	}
-	scanOpts.Meta = mm
-	glue.ScanWalkOptions = scanOpts
 
 	dir := "."
 	explicit := false
@@ -110,6 +101,33 @@ func main() {
 		dir = args[0]
 		explicit = true
 	}
+
+	// -formats locks down which file formats/compression/recursion n1k1 will scan.
+	// Precedence: an explicit -formats flag wins; else the datastore's persisted
+	// formats (catalog.json, see CatalogSetFormats); else the flexible default.
+	formatsGiven := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "formats" {
+			formatsGiven = true
+		}
+	})
+	formatsStr := *formatsFlag
+	if !formatsGiven {
+		if cf, cerr := glue.CatalogFormats(dir); cerr == nil {
+			formatsStr = cf
+		}
+	}
+	scanOpts, serr := records.ParseModes(formatsStr)
+	if serr != nil {
+		if formatsGiven {
+			fmt.Fprintf(os.Stderr, "%s: bad -formats: %v\n", prog, serr)
+			os.Exit(2)
+		}
+		fmt.Fprintf(os.Stderr, "%s: ignoring bad formats in catalog.json (%v)\n", prog, serr)
+		scanOpts = records.AllModes()
+	}
+	scanOpts.Meta = mm
+	glue.ScanWalkOptions = scanOpts
 
 	sess, dir, cleanup, err := resolveSession(dir, explicit, *nsFlag)
 	if err != nil {

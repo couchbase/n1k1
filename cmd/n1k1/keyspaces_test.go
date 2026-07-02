@@ -14,9 +14,32 @@
 package main
 
 import (
+	"bytes"
 	"strings"
 	"testing"
+
+	"github.com/couchbase/n1k1/glue"
 )
+
+// TestDotFormatsPersists: `.formats <set>` on a directory datastore updates the
+// live scan options and persists the set into the catalog.
+func TestDotFormatsPersists(t *testing.T) {
+	saved := glue.ScanWalkOptions
+	defer func() { glue.ScanWalkOptions = saved }()
+
+	dir := t.TempDir()
+	var buf bytes.Buffer
+	c := &cli{prog: "n1k1", dir: dir, out: &buf, stderr: &buf}
+	if quit := c.dot(".formats json,csv"); quit {
+		t.Fatal("dot returned quit")
+	}
+	if f, err := glue.CatalogFormats(dir); err != nil || f != "json,csv" {
+		t.Errorf("persisted formats = %q err %v, want json,csv", f, err)
+	}
+	if !strings.Contains(glue.ScanWalkOptions.Describe(), "csv") {
+		t.Errorf("live formats not updated: %s", glue.ScanWalkOptions.Describe())
+	}
+}
 
 // TestQuotePath: dotted field paths are backticked per-segment (only where SQL++
 // needs it), so a nested path stays a path expression.
