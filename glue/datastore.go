@@ -148,7 +148,11 @@ func ExprScanOp(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 		return
 	}
 
-	if v != nil {
+	// FROM <expr> treats the value as a collection: an array yields one row per
+	// element, any other value one row -- EXCEPT MISSING, which yields zero rows
+	// (you can't iterate over a missing field). NULL still yields one (null) row.
+	// This matches cbq's ExpressionScan (_ARRAY_MISSING_VALUE is the empty slice).
+	if v != nil && v.Type() != value.MISSING {
 		jv, err := json.Marshal(v)
 		if err != nil {
 			yieldErr(err)
