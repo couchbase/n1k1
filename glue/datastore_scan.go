@@ -415,46 +415,122 @@ func reconstructCoverDoc(paths [][]string, keys value.Values,
 
 // -------------------------------------------------------------------
 
-// DatastoreScanFTS drives an FTS scan (plan.IndexFtsSearch): it evaluates the
-// SEARCH() info's field/query/options/offset/limit expressions into a
-// datastore.FTSSearchInfo and calls the bleve-backed index's Search, whose hits
-// (docIDs) the shared drain yields as ^id for the following Fetch. (The hit score
-// in IndexEntry.MetaData isn't surfaced yet -- a v1 limitation.)
+// DatastoreScanFTS drives an FTS scan (plan.IndexFtsSearch): it runs the
+// bleve-backed index's Search, then fetches the matching docs itself and emits one
+// row per hit as `.alias` (the doc) + `^id` + `^smeta`. The `^smeta` carries
+// {outname: {score, id}}, which ConvertVals attaches under value.ATT_SMETA on the
+// alias value so SEARCH_SCORE()/SEARCH_META() resolve (they read that attachment;
+// see expr.go). It fetches here rather than leaving it to a following plan.Fetch
+// because the hit score is only available at the scan and would be lost across a
+// separate fetch op -- so VisitIndexFtsSearch emits no synth fetch and VisitFetch
+// passes through after this op.
 func DatastoreScanFTS(o *base.Op, vars *base.Vars,
 	yieldVals base.YieldVals, yieldErr base.YieldErr) {
-	DatastoreScan(o, vars, yieldVals, yieldErr,
-		func(context *GlueContext, conn *datastore.IndexConnection) {
-			scan := vars.Temps[o.Params[0].(int)].(*plan.IndexFtsSearch)
-			fts, ok := scan.Index().(datastore.FTSIndex)
-			if !ok {
-				context.Error(errors.NewError(nil,
-					fmt.Sprintf("DatastoreScanFTS: index %T is not an FTSIndex", scan.Index())))
-				conn.Sender().Close()
-				return
-			}
+	context := vars.Temps[0].(*GlueContext)
+	scan := vars.Temps[o.Params[0].(int)].(*plan.IndexFtsSearch)
+	fts, ok := scan.Index().(datastore.FTSIndex)
+	if !ok {
+		yieldErr(fmt.Errorf("DatastoreScanFTS: index %T is not an FTSIndex", scan.Index()))
+		return
+	}
+	outName := scan.SearchInfo().OutName()
 
-			var parent value.Value
-			si := scan.SearchInfo()
-			field, _, _ := EvalExpr(context, si.FieldName(), parent)
-			query, _, qerr := EvalExpr(context, si.Query(), parent)
-			options, _, _ := EvalExpr(context, si.Options(), parent)
-			if qerr != nil {
-				context.Error(errors.NewEvaluationError(qerr, "SEARCH query"))
-				conn.Sender().Close()
-				return
-			}
+	// Evaluate the SEARCH() info (field/query/options/offset/limit) on this
+	// goroutine; only the bleve search itself runs concurrently with the drain.
+	var parent value.Value
+	si := scan.SearchInfo()
+	field, _, _ := EvalExpr(context, si.FieldName(), parent)
+	query, _, qerr := EvalExpr(context, si.Query(), parent)
+	if qerr != nil {
+		yieldErr(fmt.Errorf("DatastoreScanFTS, SEARCH query: %v", qerr))
+		return
+	}
+	options, _, _ := EvalExpr(context, si.Options(), parent)
+	info := &datastore.FTSSearchInfo{
+		Field:   field,
+		Query:   query,
+		Options: options,
+		Order:   si.Order(),
+		Offset:  EvalExprInt64(context, si.Offset(), parent, 0),
+		Limit:   EvalExprInt64(context, si.Limit(), parent, math.MaxInt64),
+	}
 
-			info := &datastore.FTSSearchInfo{
-				Field:   field,
-				Query:   query,
-				Options: options,
-				Order:   si.Order(),
-				Offset:  EvalExprInt64(context, si.Offset(), parent, 0),
-				Limit:   EvalExprInt64(context, si.Limit(), parent, math.MaxInt64),
-			}
+	// Run the search and collect (docID, score) hits.
+	conn := datastore.NewIndexConnection(context)
+	defer conn.Dispose()
+	defer conn.SendStop()
 
-			go fts.Search(glueRequestId, info, datastore.UNBOUNDED, nil, conn)
-		})
+	go fts.Search(glueRequestId, info, datastore.UNBOUNDED, nil, conn)
+
+	type ftsHit struct {
+		id    string
+		score value.Value
+	}
+	var hits []ftsHit
+	sender := conn.Sender()
+	for {
+		entry, ok := sender.GetEntry()
+		if !ok || entry == nil {
+			break
+		}
+		hits = append(hits, ftsHit{id: entry.PrimaryKey, score: entry.MetaData})
+	}
+
+	// Fetch the hit documents from the keyspace (one batch; a CLI result set is small).
+	keyspace := scan.Keyspace()
+	keys := make([]string, 0, len(hits))
+	for _, h := range hits {
+		keys = append(keys, h.id)
+	}
+	fetchMap := make(map[string]value.AnnotatedValue, len(keys))
+	if len(keys) > 0 {
+		errs := keyspace.Fetch(keys, fetchMap, datastore.NULL_QUERY_CONTEXT, nil, nil, false)
+		for _, e := range errs {
+			yieldErr(fmt.Errorf("DatastoreScanFTS, fetch: %v", e))
+		}
+	}
+
+	var docBuf, smBuf bytes.Buffer
+	var idBuf base.Val
+	row := make(base.Vals, 3)
+
+	for _, h := range hits {
+		v, ok := fetchMap[h.id]
+		if !ok || v == nil {
+			continue
+		}
+		docBuf.Reset()
+		if err := v.WriteJSON(nil, &docBuf, "", "", true); err != nil {
+			yieldErr(fmt.Errorf("DatastoreScanFTS, encode doc %q: %v", h.id, err))
+			return
+		}
+		smBuf.Reset()
+		if err := writeSmetaJSON(&smBuf, outName, h.score, h.id); err != nil {
+			yieldErr(fmt.Errorf("DatastoreScanFTS, encode smeta %q: %v", h.id, err))
+			return
+		}
+		idBuf = strconv.AppendQuote(idBuf[:0], h.id)
+
+		row[0] = base.Val(docBuf.Bytes()) // Label ".alias".
+		row[1] = base.Val(idBuf)          // Label "^id".
+		row[2] = base.Val(smBuf.Bytes())  // Label "^smeta".
+		yieldVals(row)
+	}
+
+	yieldErr(nil)
+}
+
+// writeSmetaJSON writes the search-meta attachment for one hit -- {outname:
+// {score, id}} -- which ConvertVals binds under value.ATT_SMETA on the alias value.
+// SEARCH_META(alias) reads outname's object off that attachment and SEARCH_SCORE
+// reads its `.score` (see the search package's SearchMeta/SearchScore).
+func writeSmetaJSON(buf *bytes.Buffer, outName string, score value.Value, id string) error {
+	meta := map[string]interface{}{"id": id}
+	if score != nil {
+		meta["score"] = score
+	}
+	sm := value.NewValue(map[string]interface{}{outName: meta})
+	return sm.WriteJSON(nil, buf, "", "", true)
 }
 
 // -------------------------------------------------------------------

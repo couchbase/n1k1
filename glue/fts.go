@@ -25,9 +25,12 @@ package glue
 // .n1k1/<ns>/<ks>/idx/<name>__fts__<defhash>/bleve/ from a full keyspace scan,
 // rebuilt when the source signature changes (same static-data model as gsi).
 //
-// v1 scope: explicit SEARCH() only (Sargable + Search); the implicit
-// predicate->FTS "flex" path (SargableFlex) is stubbed, and bleve uses a dynamic
-// mapping (indexes every field), so a declared index's "keys" are not yet honored.
+// Shipped: explicit SEARCH() (Sargable + Search); SEARCH_SCORE()/SEARCH_META()
+// (the hit score/meta surfaced via value.ATT_SMETA -- see DatastoreScanFTS); and
+// declared field mappings (a def with "keys" indexes exactly those fields; empty
+// keys stays dynamic -- see ftsMapping). Not yet: the implicit predicate->FTS
+// "flex" path (SargableFlex is stubbed), and per-field analyzers/types (declared
+// fields are all mapped as text).
 
 import (
 	"encoding/json"
@@ -38,6 +41,7 @@ import (
 	"sync"
 
 	bleve "github.com/blevesearch/bleve/v2"
+	"github.com/blevesearch/bleve/v2/mapping"
 	"github.com/blevesearch/bleve/v2/search/query"
 
 	"github.com/couchbase/query/datastore"
@@ -254,6 +258,36 @@ func bleveQuery(si *datastore.FTSSearchInfo) (query.Query, error) {
 	}
 }
 
+// ftsMapping builds the bleve index mapping for a def. With no declared keys it
+// returns the default dynamic mapping (index every field). With declared field
+// keys it returns a non-dynamic mapping that indexes exactly those fields (nested
+// dotted paths like "addr.city" become sub-document mappings) as text -- so the
+// index is scoped to the declared fields and a SEARCH() on any other field matches
+// nothing, honoring the catalog definition. (Per-field analyzers/types are a
+// future item; v1 maps every declared field as text.)
+func ftsMapping(def *indexDef) mapping.IndexMapping {
+	im := bleve.NewIndexMapping()
+	if len(def.Keys) == 0 {
+		return im // dynamic: index every field
+	}
+	im.DefaultMapping.Dynamic = false
+	for _, key := range def.Keys {
+		parts := strings.Split(key, ".")
+		dm := im.DefaultMapping
+		for _, p := range parts[:len(parts)-1] {
+			sub := dm.Properties[p]
+			if sub == nil {
+				sub = bleve.NewDocumentMapping()
+				sub.Dynamic = false
+				dm.AddSubDocumentMapping(p, sub)
+			}
+			dm = sub
+		}
+		dm.AddFieldMappingsAt(parts[len(parts)-1], bleve.NewTextFieldMapping())
+	}
+	return im
+}
+
 // ------------------------------------------------------------------- build
 
 // openFTSIndexes caches opened bleve indexes by directory across the process
@@ -350,7 +384,7 @@ func buildBleve(bleveDir, instDir string, ks *siKeyspace, def *indexDef,
 	if err := os.RemoveAll(bleveDir); err != nil {
 		return nil, err
 	}
-	idx, err := bleve.New(bleveDir, bleve.NewIndexMapping())
+	idx, err := bleve.New(bleveDir, ftsMapping(def))
 	if err != nil {
 		return nil, fmt.Errorf("fts build, bleve.New %q: %w", bleveDir, err)
 	}

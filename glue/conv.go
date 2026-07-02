@@ -376,25 +376,20 @@ func (c *Conv) VisitExpressionScan(o *plan.ExpressionScan) (interface{}, error) 
 
 // VisitIndexFtsSearch converts the FTS scan the planner emits for a SEARCH()
 // predicate over a bleve-backed index (fts.go). datastore-scan-fts runs
-// bleve.Search and yields matching docIDs; the following Fetch reads the docs
-// (mirrors VisitIndexScan -- non-covering, so a real plan.Fetch follows; a
-// covering scan synthesizes one). Because our Sargable returns exact=true the
-// planner drops the residual SEARCH() filter, which n1k1 couldn't evaluate anyway.
+// bleve.Search, fetches the matching docs itself, and yields each as `.alias` +
+// `^id` + `^smeta` (the search-meta attachment carrying the hit score). It fetches
+// in the op rather than via a following plan.Fetch because the score is only
+// available at the scan and would be lost across a separate fetch -- so we emit no
+// synth fetch here, and VisitFetch passes through after an FTS scan. Because our
+// Sargable returns exact=true the planner drops the residual SEARCH() filter, which
+// n1k1 couldn't evaluate anyway (VisitFilter strips it, gated on sawFTS).
 func (c *Conv) VisitIndexFtsSearch(o *plan.IndexFtsSearch) (interface{}, error) {
-	c.sawFTS = true // VisitFilter strips the covered SEARCH() term from the residual
-	c.TopPush(o, &base.Op{
+	c.sawFTS = true
+	return c.TopPush(o, &base.Op{
 		Kind:   "datastore-scan-fts",
-		Labels: base.Labels{"^id"},
+		Labels: base.Labels{"." + LabelSuffix(o.Term().Alias()), "^id", "^smeta"},
 		Params: []interface{}{c.AddTemp(o)},
 	})
-	if len(o.Covers()) > 0 {
-		return c.TopPush(o, &base.Op{
-			Kind:   "datastore-fetch",
-			Labels: base.Labels{"." + LabelSuffix(o.Term().Alias()), "^id"},
-			Params: []interface{}{c.AddTemp(o)},
-		})
-	}
-	return c.TopOp, nil
 }
 
 // Fetch
@@ -410,6 +405,13 @@ func (c *Conv) VisitFetch(o *plan.Fetch) (interface{}, error) {
 	// don't exist -- and META().id already rides the scan's "^id" label. So for a
 	// whole-doc scan the subpaths are simply irrelevant and safely ignored.
 	if c.TopOp != nil && c.TopOp.Kind == "datastore-scan-records" {
+		return c.TopOp, nil
+	}
+
+	// An FTS scan (datastore-scan-fts) already fetched the docs itself (so it could
+	// attach the hit score before the doc value was replaced), so the planner's
+	// following plan.Fetch is a no-op pass-through. See VisitIndexFtsSearch.
+	if c.TopOp != nil && c.TopOp.Kind == "datastore-scan-fts" {
 		return c.TopOp, nil
 	}
 

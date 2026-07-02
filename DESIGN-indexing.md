@@ -103,10 +103,11 @@ Phase 2 (FTS via embedded bleve) is also shipped: `SELECT … WHERE SEARCH(ks,
 **True covering execution is shipped too** — a covering scan over an index whose
 keys are all plain field refs is answered straight from the index (no fetch), by
 reconstructing the projected doc from the decoded key values (see the covering
-learning below). Not yet built (still proposal below): incremental index
+learning below). The FTS follow-ups
+`SEARCH_SCORE()`/`SEARCH_META()` surfacing and declared field mappings are shipped
+too (see "Phase 2"). Not yet built (still proposal below): incremental index
 maintenance, a fingerprint/zone-map manifest, predicated `CountIndex` pushdown
-(blocked on exact-spans), and the FTS follow-ups (`SargableFlex`/implicit
-predicates, declared-mapping honoring, score surfacing).
+(blocked on exact-spans), and the FTS `SargableFlex`/implicit-predicate flex path.
 Known v1 limitations: freshness is a coarse (count, newest-mtime) signature, so a
 change that keeps both identical (rare) won't trigger a rebuild — run `.index
 rebuild` to force one; and array/object index *values* sort by byte order, not
@@ -457,23 +458,34 @@ in-process (a small shim, not n1fty). Landed in `glue/fts.go`:
   - `Search(...)` runs `bleveIndex.Search()` locally (`req.Size=DocCount`) and
     pushes `datastore.IndexEntry{PrimaryKey: hit.ID, MetaData: hit.Score}` into
     `conn.Sender()` — the same drain pattern Phase 1 uses.
-- **conv.go:** `VisitIndexFtsSearch` now emits a `datastore-scan-fts` op (mirrors
-  `VisitIndexScan`, with a synth `datastore-fetch` when covered), and
-  `DatastoreScanFTS` (`glue/datastore_scan.go`) evals the search info and runs the
-  index. The residual `SEARCH()` the planner leaves in the `Filter` — which n1k1
-  can't re-evaluate (it would return false and drop every row) — is rewritten to
-  `TRUE` by `stripSearch` (`glue/expr.go`), gated on a `sawFTS` flag so a genuine
+- **conv.go / DatastoreScanFTS:** `VisitIndexFtsSearch` emits a single
+  `datastore-scan-fts` op (labels `.alias` + `^id` + `^smeta`). `DatastoreScanFTS`
+  runs the bleve search, **fetches the matching docs itself**, and emits each as
+  the doc + id + search-meta. It fetches in the op (not via a following
+  `plan.Fetch`) because the hit score is only available at the scan and would be
+  lost across a separate fetch — so `VisitFetch` passes through after an FTS scan.
+  The residual `SEARCH()` the planner leaves in the `Filter` — which n1k1 can't
+  re-evaluate (it would return false and drop every row) — is rewritten to `TRUE`
+  by `stripSearch` (`glue/expr.go`), gated on a `sawFTS` flag so a genuine
   co-predicate like `… AND d.id = "d1"` is preserved. (Analogous to `stripCovers`.)
-- **Catalog/build:** FTS index specs use `kind: fts` in `.n1k1/catalog.json`
-  (keys are field names; empty = dynamic / all-fields). The bleve index is built
-  into `.n1k1/<ns>/<ks>/idx/<name>__fts__<defhash>/bleve/` from a full scan on
-  open, with the Phase 1 source-signature freshness check (rebuild when stale).
+- **Score/meta surfacing (follow-up, shipped):** `SEARCH_SCORE(alias)` and
+  `SEARCH_META(alias)` now return the bleve relevance score / meta. The score rides
+  the `^smeta` label as `{outname: {score, id}}`, which `ConvertVals` binds under
+  `value.ATT_SMETA` on the alias value — exactly where the `search` package's
+  `SearchMeta`/`SearchScore` read it.
+- **Catalog/build:** FTS index specs use `kind: fts` in `.n1k1/catalog.json`. The
+  bleve index is built into `.n1k1/<ns>/<ks>/idx/<name>__fts__<defhash>/bleve/`
+  from a full scan on open, with the Phase 1 source-signature freshness check.
   `.index list` shows a `fts` row; `.index rebuild` / `.index build` work.
+- **Declared mappings (follow-up, shipped):** a def's `keys` now scope the bleve
+  mapping (`ftsMapping`): empty `keys` = dynamic (index every field, the default);
+  listed field keys build a **non-dynamic** mapping indexing exactly those fields
+  (nested dotted paths → sub-document mappings), so a `SEARCH()` on any other field
+  matches nothing.
 
-**v1 scope / follow-ups:** only explicit `SEARCH()` is handled (`SargableFlex`,
-the implicit-predicate path, is stubbed); the bleve mapping is dynamic (declared
-catalog "keys" are recorded but not yet used to build a custom mapping); and the
-hit score (`IndexEntry.MetaData`) is not yet surfaced to the query result.
+**Remaining follow-ups:** the implicit-predicate → FTS "flex" path (`SargableFlex`)
+is still stubbed, so only explicit `SEARCH()` is handled; and declared fields are
+all mapped as text (per-field analyzers/types not yet configurable).
 
 ## Sidecar layout (`.n1k1/`): naming for many index schemes
 
@@ -860,7 +872,9 @@ datasets.
   expected docs, with no cbft/network calls (purely local bleve). Confirm the plan
   uses a `datastore-scan-fts` op (`TestFTSSearch` asserts this) and results match
   the whole-doc and field forms (`SEARCH(d,"quick")` → `d1,d2`; `SEARCH(d.title,
-  "world")` → `d2`). Scores are computed by bleve but not yet surfaced in results.
+  "world")` → `d2`). `SEARCH_SCORE(d)`/`SEARCH_META(d)` return the bleve score/meta
+  (`TestFTSScoreMeta`), and a `kind:fts` def with `keys` scopes matches to those
+  fields (`TestFTSDeclaredMapping`).
 
 ## Risks & open questions
 

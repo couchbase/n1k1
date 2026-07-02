@@ -307,6 +307,25 @@ OUTER:
 					continue OUTER
 				}
 
+				if label[1:] == "smeta" && lastParent != nil {
+					// Attach the FTS search-meta ({outname:{score,id}}) to the
+					// preceding doc sub-value under value.ATT_SMETA, so
+					// SEARCH_META(alias)/SEARCH_SCORE(alias) resolve against that
+					// keyspace's value (they read this attachment; see fts.go /
+					// datastore_scan.go:DatastoreScanFTS).
+					cur, _ := lastParent.Field(lastKey)
+					av, ok := cur.(value.AnnotatedValue)
+					if !ok {
+						av = value.NewAnnotatedValue(cur)
+					}
+					av.SetAttachment(value.ATT_SMETA, vv)
+					if err := lastParent.SetField(lastKey, av); err != nil {
+						return nil, err
+					}
+
+					continue OUTER
+				}
+
 				av, ok := v.(value.AnnotatedValue)
 				if !ok {
 					if v == nil {

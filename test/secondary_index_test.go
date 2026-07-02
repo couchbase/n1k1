@@ -14,6 +14,7 @@
 package test
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"sort"
@@ -590,6 +591,83 @@ func TestFTSSearch(t *testing.T) {
 		{`SELECT d.id AS id FROM docs d WHERE SEARCH(d.title, "world")`, []string{"d2"}},
 		{`SELECT d.id AS id FROM docs d WHERE SEARCH(d, "lazy")`, []string{"d1"}},
 		{`SELECT d.id AS id FROM docs d WHERE SEARCH(d, "quick") AND d.id = "d1"`, []string{"d1"}},
+	}
+	for _, tc := range cases {
+		store, conv := flatRootConv(t, root, tc.stmt)
+		if !hasKind(conv.TopOp, "datastore-scan-fts") {
+			t.Errorf("%q: expected an FTS scan, got %v", tc.stmt, opKinds(conv.TopOp))
+		}
+		rows := flatRootRows(t, conv, testGlueExec(t, false, store, conv))
+		if got := idJSONs(rows); !equalStrs(got, wantIDJSONs(tc.want)) {
+			t.Errorf("%q: want %v, got %v", tc.stmt, tc.want, got)
+		}
+	}
+}
+
+// TestFTSScoreMeta: SEARCH_SCORE(alias) and SEARCH_META(alias) surface the bleve
+// hit score/meta (via the ATT_SMETA attachment the FTS scan attaches). Each match
+// gets a positive score, and SEARCH_META's {id,score} agrees with the row id and
+// SEARCH_SCORE.
+func TestFTSScoreMeta(t *testing.T) {
+	docs := map[string]string{
+		"d1": `{"id":"d1","title":"the quick brown fox","body":"lazy dog"}`,
+		"d2": `{"id":"d2","title":"hello world","body":"a quick start"}`,
+	}
+	catalog := `{"indexes":[{"name":"ft","keyspace":"docs","kind":"fts"}]}`
+	root := writeKeyspaceDocs(t, "docs", docs, catalog)
+
+	stmt := `SELECT d.id AS id, SEARCH_SCORE(d) AS score, SEARCH_META(d) AS m ` +
+		`FROM docs d WHERE SEARCH(d, "quick")`
+	store, conv := flatRootConv(t, root, stmt)
+	if !hasKind(conv.TopOp, "datastore-scan-fts") {
+		t.Fatalf("expected an FTS scan, got %v", opKinds(conv.TopOp))
+	}
+	rows := flatRootRows(t, conv, testGlueExec(t, false, store, conv))
+	if len(rows) != 2 {
+		t.Fatalf("want 2 rows, got %d: %v", len(rows), rows)
+	}
+	for _, r := range rows {
+		var m map[string]interface{}
+		if err := json.Unmarshal([]byte(jsonOf(r)), &m); err != nil {
+			t.Fatalf("row json %q: %v", jsonOf(r), err)
+		}
+		sc, ok := m["score"].(float64)
+		if !ok || sc <= 0 {
+			t.Errorf("SEARCH_SCORE: want a positive number, got %v (%T)", m["score"], m["score"])
+		}
+		meta, ok := m["m"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("SEARCH_META: want an object, got %v", m["m"])
+		}
+		if meta["id"] != m["id"] {
+			t.Errorf("SEARCH_META.id %v != row id %v", meta["id"], m["id"])
+		}
+		if ms, ok := meta["score"].(float64); !ok || ms != sc {
+			t.Errorf("SEARCH_META.score %v != SEARCH_SCORE %v", meta["score"], sc)
+		}
+	}
+}
+
+// TestFTSDeclaredMapping: a kind:fts def that lists specific field keys indexes
+// exactly those fields (ftsMapping builds a non-dynamic bleve mapping), so a
+// SEARCH() on any other field -- or a whole-doc SEARCH that would only match via an
+// unindexed field -- finds nothing.
+func TestFTSDeclaredMapping(t *testing.T) {
+	docs := map[string]string{
+		// "quick" appears in d1.title and d2.body; only title is indexed.
+		"d1": `{"id":"d1","title":"quick brown fox","body":"lazy dog"}`,
+		"d2": `{"id":"d2","title":"hello world","body":"a quick start"}`,
+	}
+	catalog := `{"indexes":[{"name":"ft_title","keyspace":"docs","kind":"fts","keys":["title"]}]}`
+	root := writeKeyspaceDocs(t, "docs", docs, catalog)
+
+	cases := []struct {
+		stmt string
+		want []string
+	}{
+		{`SELECT d.id AS id FROM docs d WHERE SEARCH(d, "quick")`, []string{"d1"}}, // only d1.title
+		{`SELECT d.id AS id FROM docs d WHERE SEARCH(d.body, "quick")`, nil},       // body not indexed
+		{`SELECT d.id AS id FROM docs d WHERE SEARCH(d.title, "world")`, []string{"d2"}},
 	}
 	for _, tc := range cases {
 		store, conv := flatRootConv(t, root, tc.stmt)
