@@ -140,9 +140,9 @@ func TestHumanBytes(t *testing.T) {
 	cases := map[int64]string{
 		0:       "0B",
 		512:     "512B",
-		1024:    "1.0K",
-		1536:    "1.5K",
-		1048576: "1.0M",
+		1024:    "1.0KB",
+		1536:    "1.5KB",
+		1048576: "1.0MB",
 	}
 	for n, want := range cases {
 		if got := humanBytes(n); got != want {

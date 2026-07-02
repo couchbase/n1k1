@@ -477,7 +477,9 @@ func (c *cli) cmdIndexRebuild(name string) {
 	}
 }
 
-// humanBytes renders a byte count compactly (e.g. 4.0K, 1.2M).
+// humanBytes renders a byte count compactly with a unit (e.g. 512B, 4.0KB,
+// 1.2MB). Powers of 1024 (KB/MB/GB/TB here mean KiB/MiB/... -- the common `ls -h`
+// convention).
 func humanBytes(n int64) string {
 	const unit = 1024
 	if n < unit {
@@ -488,5 +490,5 @@ func humanBytes(n int64) string {
 		div *= unit
 		exp++
 	}
-	return fmt.Sprintf("%.1f%c", float64(n)/float64(div), "KMGT"[exp])
+	return fmt.Sprintf("%.1f%cB", float64(n)/float64(div), "KMGT"[exp])
 }
