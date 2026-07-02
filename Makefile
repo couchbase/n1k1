@@ -1,6 +1,6 @@
 default: test
 
-.PHONY: test test-core build intermed build-glue test-glue test-suite test-suite-gsi test-compiler test-all cli install-cli
+.PHONY: test test-core test-glue test-suite test-suite-gsi test-compiler test-all cli install-cli build build-glue build-intermed
 
 # cli builds the n1k1 command-line tool: a single pure-Go binary (CGO off) that
 # runs SQL++ queries over local files. See cmd/n1k1 and DESIGN-cli.md.
@@ -19,12 +19,12 @@ build:
 # build-glue builds the n1ql-engine (cbq-engine) integrations (glue/ +
 # test/) pure-Go. Regenerates intermed/ first so a fresh checkout
 # (where intermed/*.go is gitignored) builds.
-build-glue: intermed
+build-glue: build-intermed
 	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go build -tags n1ql ./glue/... ./test/...
 
 # intermed regenerates the gitignored intermed/ package (the compiled-query
 # codegen) from engine/*.go -- a prerequisite for building the glue/ layer.
-intermed:
+build-intermed:
 	go build ./cmd/intermed_build/
 	./intermed_build
 

@@ -62,13 +62,13 @@ func progName() string {
 
 func main() {
 	var (
-		cFlag     = flag.String("c", "", "run one statement and exit")
+		cFlag     = flag.String("c", "", "run statements and exit")
 		fFlag     = flag.String("f", "", "run statements from a file and exit")
 		nsFlag    = flag.String("ns", "default", "datastore namespace")
 		modeFlag  = flag.String("mode", "", "output mode: "+strings.Join(cmd.OutputModes, "|")+" (append |pretty to indent JSON; default box|pretty at a TTY, else jsonlines)")
 		timerFlag = flag.Bool("timer", false, "print row count + elapsed after each statement")
 		vFlag     = flag.Bool("v", false, "verbose: show unsupported reasons / plan on error")
-		initFlag  = flag.String("init", "", "startup file of dot-commands/SQL (default ~/."+prog+"rc; use \"\", \"-\" or \"none\" to skip)")
+		initFlag  = flag.String("init", "", "startup file of dot-commands/SQL++ (default ~/."+prog+"rc; use \"\", \"-\" or \"none\" to skip)")
 		scanFlag  = flag.String("scan", "", "restrict scanning to a comma-separated set (all|json|jsonl|csv|tsv|extract|gzip|recurse); empty or 'all' = everything")
 		metaFlag  = flag.String("meta", "auto", "add a _meta sub-object (path/name/ext/size/mtime) to records: on|off|auto (auto = extracted docs only)")
 	)
@@ -194,14 +194,14 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintf(os.Stderr, `%[1]s -- SQL++ for local files (e.g., directories of JSON docs)
+	fmt.Fprintf(os.Stderr, `%[1]s -- SQL++ for local files (json, jsonl, csv, gz, and more)
 
 usage: %[1]s [flags] [datastore-dir]
 
-  %[1]s ./test/suite/json        REPL over that datastore
-  %[1]s -c "SELECT 1+1"          run one statement and exit
-  echo "SELECT ..." | %[1]s dir  stdin pipe (batch mode)
-  %[1]s -f script.sql++ dir       run a file of ;-separated statements
+  %[1]s ./test/suite/json     REPL over a datastore-dir
+  %[1]s -c "SELECT 1+1"       run ;-separated statements
+  echo "SELECT ..." | %[1]s   stdin for ;-separated statements
+  %[1]s -f script.sql++ dir   run a file of ;-separated statements
 
 flags:
 `, prog)
