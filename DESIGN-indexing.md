@@ -687,13 +687,23 @@ do this; n1k1 just doesn't convert the resulting operators yet.
    instead does primary-scan + filter + aggregate. Confirmed empirically: `COUNT(*)`,
    `COUNT(1)`, `COUNT(custId)` with a sargable `WHERE` all plan `datastore-scan-records`,
    never a count scan.
-   - **So this requires implementing `datastore.Index2`** (`RangeKey2`, exact-span
-     metadata) + `conv.go:VisitIndexScan2`. That's the same upgrade that would drop
-     the always-present residual `Filter` on ordinary index scans — a broader win,
-     but it means the `Scan`/`Count` must be **exactly** span-correct (no superset)
-     since the planner would remove the residual safety net. The base-`CountIndex`
-     note previously here was wrong: `CountIndex` is necessary but **not
-     sufficient** without exact spans. The prototype was reverted pending `Index2`.
+   - **`Index2` is necessary but NOT sufficient (verified — deeper than expected).**
+     A second prototype implemented `datastore.Index2` (`RangeKey2` + `Scan2` over
+     `Spans2`) + `conv.go:VisitIndexScan2` + a `datastore-scan-index2` op. This DID
+     make the planner emit `plan.IndexScan2` (confirmed: the op became
+     `datastore-scan-index2`) — but **the residual `Filter` still was not dropped**,
+     so spans still weren't treated as exact and count pushdown still didn't fire.
+     Neither advertising `IK_MISSING` on the leading key nor enabling the
+     `N1QL_INDEX_MISSING` feature control changed that (and `IK_MISSING` without
+     actually indexing MISSING values would be a *correctness* bug for `IS MISSING`
+     queries). `sarg_eq` builds the equality span as exact (`NewSpan2(…, true)`), so
+     exactness is being cleared/ignored somewhere further along (the sarge AND-wrap,
+     the covering-filter/`filterCovers` logic, or a CBO-off path) that this pass did
+     not pin down. Both prototypes were reverted; **filter-elimination and count
+     pushdown remain open, pending a deeper trace of why cbq keeps the post-scan
+     `Filter` for an `IndexScan2` even on an exact single-key equality.** Likely
+     next probes: `useCBO=true`; the `filterCovers`/`coveringScan` filter-retention
+     path; and whether `Index3`/`IndexScan3` (group-agg pushdown) behaves differently.
 3. **`COUNT(DISTINCT …)`.** Needs `CountIndex2.CountDistinct` over the index;
    defer (harder) — without it the planner falls back to the normal
    distinct+aggregate path, which still works, just slower.
