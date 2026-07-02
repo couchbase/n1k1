@@ -129,9 +129,10 @@ func (ix *ftsIndexer) SetConnectionSecurityConfig(c *datastore.ConnectionSecurit
 
 // ftsIndex is a bleve-backed datastore.FTSIndex.
 type ftsIndex struct {
-	ks  *siKeyspace
-	def *indexDef
-	idx bleve.Index
+	ks       *siKeyspace
+	def      *indexDef
+	idx      bleve.Index
+	bleveDir string // the on-disk bleve index directory (for size/path reporting)
 }
 
 var _ datastore.FTSIndex = (*ftsIndex)(nil)
@@ -520,7 +521,7 @@ func openFTSIndex(ks *siKeyspace, def *indexDef, onDoc func(int), force bool) (*
 			slot.err = e
 			return
 		}
-		slot.fi = &ftsIndex{ks: ks, def: def, idx: idx}
+		slot.fi = &ftsIndex{ks: ks, def: def, idx: idx, bleveDir: bleveDir}
 	})
 	if slot.err != nil {
 		return nil, slot.err
@@ -638,7 +639,20 @@ func (fi *ftsIndex) fillInfo(info *IndexInfo) {
 	if n, err := fi.idx.DocCount(); err == nil {
 		info.Entries = int(n)
 	}
-	if p := fi.idx.Name(); p != "" {
-		info.Path = p
-	}
+	// A bleve index is a directory (store/*.zap + bolt), not one file like gsi's
+	// bbolt, so sum the tree rather than os.Stat a single file.
+	info.Path = fi.bleveDir
+	info.SizeBytes = dirSize(fi.bleveDir)
+}
+
+// dirSize sums the sizes of the regular files under dir (recursively), 0 on error.
+func dirSize(dir string) int64 {
+	var total int64
+	_ = filepath.Walk(dir, func(_ string, fi os.FileInfo, err error) error {
+		if err == nil && fi.Mode().IsRegular() {
+			total += fi.Size()
+		}
+		return nil
+	})
+	return total
 }

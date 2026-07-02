@@ -809,6 +809,42 @@ func TestFTSFlexIndex(t *testing.T) {
 	}
 }
 
+// TestFTSIndexInfoSize: a built FTS index reports a non-zero on-disk size (the
+// bleve index is a directory, so the size is summed over its files -- not left at
+// 0 like a single-file stat would give).
+func TestFTSIndexInfoSize(t *testing.T) {
+	docs := map[string]string{
+		"d1": `{"id":"d1","body":"the quick brown fox jumps over the lazy dog"}`,
+		"d2": `{"id":"d2","body":"a fast auburn fox leaps above a sleepy hound"}`,
+	}
+	catalog := `{"indexes":[{"name":"ft","keyspace":"docs","kind":"fts"}]}`
+	root := writeKeyspaceDocs(t, "docs", docs, catalog)
+	store, _ := flatRootConv(t, root, `SELECT 1`)
+
+	var found bool
+	for _, ix := range glue.SecondaryIndexInfos(store.Datastore) {
+		if ix.Name != "ft" {
+			continue
+		}
+		found = true
+		if !ix.Built || ix.Err != "" {
+			t.Fatalf("fts index not built: Built=%v Err=%q", ix.Built, ix.Err)
+		}
+		if ix.Entries != 2 {
+			t.Errorf("entries = %d, want 2", ix.Entries)
+		}
+		if ix.SizeBytes <= 0 {
+			t.Errorf("SizeBytes = %d, want > 0 (summed bleve dir)", ix.SizeBytes)
+		}
+		if ix.Path == "" {
+			t.Error("Path empty, want the bleve dir")
+		}
+	}
+	if !found {
+		t.Fatal("no IndexInfo for the fts index")
+	}
+}
+
 func equalStrs(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
