@@ -294,7 +294,7 @@
     ]
   },
   {
-    "statements": "SELECT OBJECT_pairs_nested(customer,{'pattern':'e$'}) FROM customer WHERE emailAddress = 'august.mayer@bashirian.info'",
+    "statements": "SELECT OBJECT_pairs_nested(customer,{'pattern':'e$'}) FROM customer WHERE emailAddress = 'august.mayer@bashirian.info' AND test_id=\"obj_func\"",
     "results": [
       {
         "$1": [
@@ -328,6 +328,7 @@
           }
         ]
       }
-    ]
+    ],
+    "description": "n1k1: appended `AND test_id=\"obj_func\"` to the fork's unscoped source statement. The fork runs this against a customer bucket holding only obj_functions docs; n1k1's merged customer keyspace holds one copy of this doc per category, so without the scope OBJECT_PAIRS_NESTED returns that row once per category. The `e$` pattern excludes the differing test_id field, so the expected result is unchanged."
   }
 ]

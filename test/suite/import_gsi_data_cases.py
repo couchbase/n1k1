@@ -31,6 +31,46 @@ CATEGORIES = [
 MEGA_KEYSPACES = {"purchase", "review"}
 NONDET = re.compile(r"\b(now_\w+|clock_\w+|random|rand|uuid|newid)\s*\(", re.IGNORECASE)
 INSERT_PREFIX = re.compile(r'\s*INSERT\s+INTO\s+(\w+)\s*\(\s*KEY\s*,\s*VALUE\s*\)', re.IGNORECASE)
+
+# n1k1 merges every category's docs into one shared keyspace and relies on each
+# case's `WHERE test_id="<cat>"` predicate to re-create the per-category bucket
+# isolation the fork gets by reloading buckets between categories. A tiny number
+# of source cases query a shared keyspace WITHOUT any test_id predicate: against
+# the fork's isolated bucket they match a single doc, but against our merged
+# corpus they match that same logical doc once per category (identical rows), so
+# n1k1 emits duplicates the fork never sees. We append the missing scope so the
+# case still exercises the same function against the same expected output. Each
+# patch is (category, lowercase-substring-to-match, clause-to-append, note); the
+# note lands in the case's `description` (a runner-allowed field) to document the
+# deliberate divergence from the source. Only applied when the matched statement
+# has no test_id predicate already.
+SCOPE_PATCHES = [
+    ("obj_functions",
+     "object_pairs_nested(customer",
+     ' AND test_id="obj_func"',
+     'n1k1: appended `AND test_id="obj_func"` to the fork\'s unscoped source '
+     'statement. The fork runs this against a customer bucket holding only '
+     'obj_functions docs; n1k1\'s merged customer keyspace holds one copy of '
+     'this doc per category, so without the scope OBJECT_PAIRS_NESTED returns '
+     'that row once per category. The `e$` pattern excludes the differing '
+     'test_id field, so the expected result is unchanged.'),
+]
+
+def apply_scope_patch(cat, c):
+    """Return c, possibly with a shared-keyspace scope predicate appended to its
+    statement (see SCOPE_PATCHES). Copies c before mutating so the source stays
+    untouched."""
+    stmt = c.get("statements", "")
+    low = stmt.lower()
+    if "test_id" in low:
+        return c
+    for pcat, needle, clause, note in SCOPE_PATCHES:
+        if cat == pcat and needle in low:
+            c = dict(c)
+            c["statements"] = stmt + clause
+            c["description"] = note
+            return c
+    return c
 QUOTED = re.compile(r'"((?:[^"\\]|\\.)*)"')
 
 def brace_match(s, start):
@@ -128,7 +168,7 @@ def main(qf):
                 if not isinstance(c, dict): continue
                 stmt = c.get("statements")
                 if not isinstance(stmt, str) or NONDET.search(stmt): continue
-                picked.append(c)
+                picked.append(apply_scope_patch(cat, c))
         if picked:
             os.makedirs(os.path.join(root, "cases"), exist_ok=True)
             json.dump(picked, open(os.path.join(root, "cases", f"case_gsi_{cat}.json"), "w"), indent=2)
