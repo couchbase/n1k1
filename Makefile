@@ -1,6 +1,6 @@
 default: test
 
-.PHONY: test test-core test-glue test-suite test-suite-gsi test-compiler test-all cli install-cli build build-glue build-intermed
+.PHONY: test test-core test-n1ql test-n1ql-all test-glue test-suite test-suite-gsi test-compiler test-all cli install-cli build build-glue build-intermed
 
 # VERSION is `git describe` of the source tree at build time, injected into the
 # CLI via -ldflags so `n1k1 -version` reports it. Falls back to "dev" outside a
@@ -35,11 +35,35 @@ build-intermed:
 	go build ./cmd/intermed_build/
 	./intermed_build
 
-# test is a fast local test sweep, but NOT the slower test suites (see test-all).
-test: test-core test-glue test-suite test-compiler
+# test is a fast local sweep: the self-contained core (test-core) plus every
+# n1ql-tagged test EXCEPT the slow gsi corpus (test-n1ql).
+test: test-core test-n1ql
 
-# test-all is the slow local test sweep -- many minutes total.
-test-all: test test-suite-gsi
+# test-all is the full sweep -- many minutes total. Like test, but ALSO runs the
+# slow gsi corpus, both interpreter and compiler (test-n1ql-all supersedes
+# test-n1ql). Every test runs exactly once -- no target reruns another's tests.
+test-all: test-core test-n1ql-all
+
+# test-n1ql runs every n1ql-tagged test EXCEPT the slow gsi corpus: the ./glue
+# unit tests and the WHOLE ./test package (no -run filter, so nothing is missed
+# -- interpreter suites, the WithCompiler generators, and every unit test), then
+# compiles+runs the generated code the generators emit into test/tmp. The gsi
+# corpus (TestGsiSuite*) and its generated funcs (TestGeneratedGsiFS*) are
+# skipped -- test-all covers them via test-n1ql-all.
+test-n1ql: build-glue
+	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -tags n1ql ./glue
+	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -tags n1ql -skip TestGsiSuite ./test
+	cd test/tmp && go fmt
+	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -tags n1ql -skip TestGeneratedGsiFS ./test/tmp
+
+# test-n1ql-all is test-n1ql plus the slow gsi corpus: the whole ./test package
+# (incl. TestGsiSuiteCases + TestGsiSuiteWithCompiler) and ALL the generated
+# code. SLOW: several minutes (every gsi pass is a full primary scan -- TODO).
+test-n1ql-all: build-glue
+	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -tags n1ql ./glue
+	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -tags n1ql ./test
+	cd test/tmp && go fmt
+	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -tags n1ql ./test/tmp
 
 # test-core runs the self-contained core build + vet + tests (no external
 # setup, no n1ql tag).
