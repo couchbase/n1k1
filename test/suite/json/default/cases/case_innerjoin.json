@@ -365,7 +365,7 @@
     },
     {
         "statements": "SELECT * FROM default:orders2 INNER JOIN default:contacts AS cont ON  KEYS orders2.custId ORDER BY orders2.id, cont.name",
-        "resultset": [
+        "results": [
         {
             "cont": {
                 "children": [
@@ -842,7 +842,7 @@
     {
         "statements": "SELECT META(o).id oid, META(u2).id uid, search.category cat FROM default:users_with_orders u USE KEYS \"Aide_48687583\" UNNEST u.shipped_order_history s INNER JOIN default:users_with_orders o ON KEYS s.order_id INNER JOIN default:users_with_orders u2 ON KEYS META(u).id UNNEST u.search_history search ORDER BY oid, uid",
 
-        "resultset": [
+        "results": [
         {
             "cat": "Books",
             "oid": "T183428307793",

@@ -419,7 +419,7 @@
 
     {
         "statements" : "SELECT name, array_prepend([\"manik\", \"gerald\", \"steve\"], array_agg(name)) AS names FROM default:contacts GROUP BY contacts.name ORDER BY contacts.name",
-        "resultset": [
+        "results": [
         {
             "name": "harry",
             "names": [

@@ -92,13 +92,15 @@ func caseRunnable(c map[string]interface{}) (stmt string, results []interface{},
 	return s, r, true
 }
 
-// NOTE on "resultset": a handful of cases (case_array[10,11], case_innerjoin
-// [1,9]) carry a "resultset" block instead of "results". No couchbase/query
-// test harness reads that key (it compares only against "results"), so upstream
-// runs the statement but never validates its output -- the resultset data is
-// inert/non-authoritative. case_array[10]'s is in fact wrong (its array_agg
-// values don't match the GROUP BY key, which n1k1 gets right). So we do NOT
-// assert against "resultset"; these stay in the exotic/skipped bucket.
+// NOTE on "resultset": a few cases carried a "resultset" block instead of
+// "results". No couchbase/query test harness reads that key (it compares only
+// against "results"), so upstream runs the statement but never validates its
+// output -- the resultset data is inert/non-authoritative. Where n1k1
+// independently reproduces the resultset exactly, we promoted it to "results"
+// (case_array[11], case_innerjoin[1,9]) to make it a validated regression test.
+// case_array[10] is left as "resultset" (skipped): its resultset is in fact
+// wrong (its array_agg values don't match the GROUP BY key, which n1k1 gets
+// right), so we must NOT assert against it.
 
 // caseError reports whether a case is a simple error-expectation case: a
 // {statements, error} pair (no results) carrying only allowed metadata. n1k1
@@ -226,7 +228,7 @@ func rowsEqualStrings(a, b []string) bool {
 
 // TestSuiteCases runs the original tuqtng-era + imported no-FROM gsi corpus.
 func TestSuiteCases(t *testing.T) {
-	runSuiteCases(t, suiteRoot, expectedNonPass, groupWhy, 1037)
+	runSuiteCases(t, suiteRoot, expectedNonPass, groupWhy, 1040)
 }
 
 // TestGsiSuiteCases runs the data-backed gsi corpus (isolated root so its shared
