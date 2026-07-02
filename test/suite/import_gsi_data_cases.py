@@ -16,7 +16,7 @@ dropping only wall-clock/random/id cases (non-reproducible).
 Usage (from repo root):
   python3 test/suite/import_gsi_data_cases.py "$(go list -m -f '{{.Dir}}' github.com/couchbase/query)"
 """
-import json, os, re, sys, glob
+import json, os, re, sys, glob, hashlib
 
 CATEGORIES = [
     "string_functions", "number_functions", "array_functions", "obj_functions",
@@ -122,7 +122,10 @@ def parse_inserts(stmt):
     VALUES tuple. The fork packs many docs per statement
     (VALUES("k1",{..}), VALUES("k2",{..}), ...); the value objects are the only
     top-level {...} spans, and each key is the quoted string just before its
-    value object."""
+    value object. When the KEY is a non-literal expression rather than a quoted
+    string -- e.g. VALUES(UUID(), {..}) -- there's no literal to use as the file
+    name, so synthesize a deterministic key from a hash of the value object (the
+    doc's identity for our corpus is its content/test_id, not its random key)."""
     m = INSERT_PREFIX.match(stmt)
     if not m:
         return
@@ -133,9 +136,10 @@ def parse_inserts(stmt):
             return
         keys = QUOTED.findall(stmt[i:b])
         e = brace_match(stmt, b)
-        if keys:
-            yield ks, idx, keys[-1], stmt[b:e]
-            idx += 1
+        obj = stmt[b:e]
+        key = keys[-1] if keys else "gen_" + hashlib.md5(obj.encode()).hexdigest()[:16]
+        yield ks, idx, key, obj
+        idx += 1
         i = e
 
 

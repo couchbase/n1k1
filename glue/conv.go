@@ -242,6 +242,7 @@ func (c *Conv) VisitIndexCountScan2(o *plan.IndexCountScan2) (interface{}, error
 func (c *Conv) VisitIndexCountDistinctScan2(o *plan.IndexCountDistinctScan2) (interface{}, error) {
 	return NA(o)
 }
+
 // VisitDistinctScan wraps a single index scan whose predicate produced several
 // spans (e.g. a same-field OR: `age < 30 OR age > 50`), deduping docIDs across
 // them. n1k1's datastore-scan-index already drains every span of the inner
@@ -459,10 +460,65 @@ func (c *Conv) VisitUnnest(o *plan.Unnest) (interface{}, error) {
 	return c.TopOp, nil
 }
 
-func (c *Conv) VisitNLJoin(o *plan.NLJoin) (interface{}, error)     { return NA(o) }
+// VisitNLJoin converts an ANSI nested-loop JOIN. The left input is the current
+// TopOp; the right (inner) side is o.Child(), a self-contained sub-plan we
+// convert as a fresh branch. OpJoinNestedLoop re-drives the right branch for
+// each left row and applies the ON clause to the joined left+right vals.
+func (c *Conv) VisitNLJoin(o *plan.NLJoin) (interface{}, error) {
+	right, err := c.convertBranch(o.Child())
+	if err != nil {
+		return nil, err
+	}
+	return c.TopSet(o, c.ansiJoinOp("joinNL", o.Outer(), o.Onclause(), c.TopOp, right))
+}
+
 func (c *Conv) VisitNLNest(o *plan.NLNest) (interface{}, error)     { return NA(o) }
-func (c *Conv) VisitHashJoin(o *plan.HashJoin) (interface{}, error) { return NA(o) }
 func (c *Conv) VisitHashNest(o *plan.HashNest) (interface{}, error) { return NA(o) }
+
+// VisitHashJoin converts an ANSI HASH JOIN. n1k1 has no hash-join runtime wired
+// through the glue layer yet, but the join is semantically a nested-loop join
+// with the same ON clause, so we execute it as one (correct, if not as fast).
+func (c *Conv) VisitHashJoin(o *plan.HashJoin) (interface{}, error) {
+	right, err := c.convertBranch(o.Child())
+	if err != nil {
+		return nil, err
+	}
+	return c.TopSet(o, c.ansiJoinOp("joinNL", o.Outer(), o.Onclause(), c.TopOp, right))
+}
+
+// convertBranch converts a sub-plan into its own base.Op tree, independent of
+// the current TopOp (saved and restored around the conversion), for use as a
+// join's inner/right child.
+func (c *Conv) convertBranch(child plan.Operator) (*base.Op, error) {
+	saved := c.TopOp
+	c.TopOp = nil
+	if _, err := child.Accept(c); err != nil {
+		c.TopOp = saved
+		return nil, err
+	}
+	branch := c.TopOp
+	c.TopOp = saved
+	return branch, nil
+}
+
+// ansiJoinOp builds an ANSI join base.Op (kind "joinNL") over left+right with
+// the ON clause as its filter, matching OpJoinNestedLoop's expectations: the
+// filter is evaluated on the concatenated left+right labels/vals.
+func (c *Conv) ansiJoinOp(kind string, outer bool, onclause expression.Expression,
+	left, right *base.Op) *base.Op {
+	if outer {
+		kind += "-leftOuter"
+	} else {
+		kind += "-inner"
+	}
+	return &base.Op{
+		Kind: kind,
+		Labels: append(append(base.Labels{}, left.Labels...),
+			right.Labels...),
+		Params:   []interface{}{"exprTree", onclause},
+		Children: []*base.Op{left, right},
+	}
+}
 
 // Let + Letting, With
 
