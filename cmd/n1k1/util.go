@@ -51,6 +51,76 @@ func onOff(b bool) string {
 	return "off"
 }
 
+// verboseLevel is the value of the -v / -verbose flag: a diagnostics level
+// (0=off, 1=show query plans, 2=+timing). It behaves like a boolean flag so a
+// bare -v works and repeats accumulate (-v -v -v -> 3), while -v=on|off|debug|<n>
+// sets an explicit level. normalizeVerbose rewrites the space form (-v <level>)
+// into the =-form before parsing so both spellings work.
+type verboseLevel int
+
+func (v *verboseLevel) String() string {
+	if v == nil {
+		return "0"
+	}
+	return strconv.Itoa(int(*v))
+}
+
+func (v *verboseLevel) Set(s string) error {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", "true": // bare -v (or a repeat): raise the level by one
+		*v++
+	case "on":
+		*v = 1
+	case "off", "false":
+		*v = 0
+	case "debug":
+		*v = 2
+	default:
+		n, err := strconv.Atoi(strings.TrimSpace(s))
+		if err != nil || n < 0 {
+			return fmt.Errorf("want on|off|debug|<n>, got %q", s)
+		}
+		*v = verboseLevel(n)
+	}
+	return nil
+}
+
+// IsBoolFlag lets -v be given bare (no argument) and repeated (-v -v -v).
+func (v *verboseLevel) IsBoolFlag() bool { return true }
+
+// isVerboseLevelToken reports whether s is a value -v/-verbose accepts as its
+// level, so the space form "-v <level>" can be rewritten to "-v=<level>".
+func isVerboseLevelToken(s string) bool {
+	switch strings.ToLower(s) {
+	case "on", "off", "debug":
+		return true
+	}
+	n, err := strconv.Atoi(s)
+	return err == nil && n >= 0
+}
+
+// normalizeVerbose rewrites a space-separated verbose level ("-v 3", "-verbose on")
+// into the =-form ("-v=3") the flag package needs, so both spellings work. A bare
+// -v not followed by a level token -- including repeats (-v -v -v) and "-v <dir>"
+// -- is left untouched. Tokens after a "--" end-of-flags marker pass through as-is.
+func normalizeVerbose(args []string) []string {
+	out := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--" { // everything after is positional
+			return append(out, args[i:]...)
+		}
+		if (a == "-v" || a == "-verbose" || a == "--verbose") &&
+			i+1 < len(args) && isVerboseLevelToken(args[i+1]) {
+			out = append(out, a+"="+args[i+1])
+			i++ // consume the level token
+			continue
+		}
+		out = append(out, a)
+	}
+	return out
+}
+
 // verboseName describes a verbose level for status output.
 func verboseName(n int) string {
 	switch {

@@ -58,8 +58,6 @@ func main() {
 		nsFlag      = flag.String("ns", "default", "datastore namespace")
 		modeFlag    = flag.String("mode", "", "output mode: "+strings.Join(cmd.OutputModes, "|")+" (append |pretty to indent JSON; default box|pretty at a TTY, else jsonlines)")
 		timerFlag   = flag.Bool("timer", false, "print row count + elapsed after each statement")
-		vFlag       = flag.Bool("v", false, "alias for -verbose")
-		verboseFlag = flag.Bool("verbose", false, "verbose diagnostics (see .verbose for levels)")
 		initFlag    = flag.String("init", "", "startup file of dot-commands/SQL++ (default ~/."+prog+"rc; use \"\", \"-\" or \"none\" to skip)")
 		formatsFlag = flag.String("formats", "", "restrict scanning to a comma-separated set (all|json|jsonl|csv|tsv|extract|doc|text|image|video|gzip|recurse); empty or 'all' = everything")
 		metaFlag    = flag.String("meta", "auto", "add a _meta sub-object (path/name/ext/size/mtime) to records: on|off|auto (auto = extracted docs only)")
@@ -68,8 +66,15 @@ func main() {
 			"lazy (default; build each on first use) | eager (build all up front -- clean -timer "+
 			"benchmarks + up-front build errors) | off (ignore the catalog; always full-scan -- A/B baseline)")
 	)
+	// -verbose / -v (synonyms sharing one value): a diagnostics level. A bare
+	// -verbose means on (level 1) and repeats accumulate (-v -v -v -> 3);
+	// -verbose=on|off|debug|<n> sets an explicit level. normalizeVerbose lets the
+	// space form (-verbose 3, -v on) work too. See .verbose in the REPL.
+	var vLevel verboseLevel
+	flag.Var(&vLevel, "verbose", "verbose level: bare -verbose = on (repeat to raise); -verbose=on|off|debug|<n> sets it (see .verbose)")
+	flag.Var(&vLevel, "v", "alias for -verbose")
 	flag.Usage = usage
-	flag.Parse()
+	flag.CommandLine.Parse(normalizeVerbose(os.Args[1:]))
 
 	// The sidecar dir (catalog.json, built indexes) is named after this binary --
 	// ".n1k1" by default, ".<alias>" when invoked under a symlinked name.
@@ -161,12 +166,6 @@ func main() {
 	// Colors/emojis only for an interactive stdout, and honoring NO_COLOR.
 	fancy := isTTY(os.Stdout) && os.Getenv("NO_COLOR") == ""
 
-	// -v / -verbose (synonyms) turn verbose on at level 1; finer levels via .verbose.
-	verbose := 0
-	if *vFlag || *verboseFlag {
-		verbose = 1
-	}
-
 	c := &cli{
 		prog:      prog,
 		sess:      sess,
@@ -175,7 +174,7 @@ func main() {
 		mode:      mode,
 		indexMode: *indexFlag,
 		timer:     *timerFlag,
-		verbose:   verbose,
+		verbose:   int(vLevel),
 		maxRows:   0,
 		maxWidth:  -1,
 		listSep:   "|",

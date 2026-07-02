@@ -42,6 +42,66 @@ func TestOnOff(t *testing.T) {
 	}
 }
 
+func TestVerboseLevelSet(t *testing.T) {
+	cases := []struct {
+		start   int    // level before Set
+		arg     string // value passed to Set
+		want    int    // level after
+		wantErr bool
+	}{
+		{0, "true", 1, false},  // bare -v raises by one
+		{1, "true", 2, false},  // repeat accumulates
+		{0, "on", 1, false},    //
+		{5, "off", 0, false},   //
+		{0, "debug", 2, false}, //
+		{0, "3", 3, false},     // numeric level
+		{2, "DEBUG", 2, false}, // case-insensitive
+		{0, "false", 0, false}, //
+		{1, "nope", 1, true},   // bad -> error, level unchanged
+		{1, "-1", 1, true},     // negative -> error
+	}
+	for _, tc := range cases {
+		v := verboseLevel(tc.start)
+		err := v.Set(tc.arg)
+		if (err != nil) != tc.wantErr {
+			t.Errorf("Set(%q) err=%v, wantErr=%v", tc.arg, err, tc.wantErr)
+		}
+		if int(v) != tc.want {
+			t.Errorf("Set(%q) from %d -> %d, want %d", tc.arg, tc.start, int(v), tc.want)
+		}
+	}
+	var vb verboseLevel
+	if !vb.IsBoolFlag() {
+		t.Error("verboseLevel should be a bool flag")
+	}
+}
+
+func TestNormalizeVerbose(t *testing.T) {
+	cases := []struct {
+		in, want []string
+	}{
+		// space form rewritten to =-form
+		{[]string{"-v", "3"}, []string{"-v=3"}},
+		{[]string{"-v", "on", "dir"}, []string{"-v=on", "dir"}},
+		{[]string{"-verbose", "debug"}, []string{"-verbose=debug"}},
+		// bare -v not followed by a level token stays bare
+		{[]string{"-v", "dir"}, []string{"-v", "dir"}},
+		{[]string{"-v", "-c", "SELECT 1"}, []string{"-v", "-c", "SELECT 1"}},
+		// repeats accumulate as bare flags
+		{[]string{"-v", "-v", "-v"}, []string{"-v", "-v", "-v"}},
+		// already =-form untouched
+		{[]string{"-v=2", "dir"}, []string{"-v=2", "dir"}},
+		// after "--", tokens pass through verbatim (a dir literally named "3")
+		{[]string{"-v", "--", "3"}, []string{"-v", "--", "3"}},
+	}
+	for _, tc := range cases {
+		got := normalizeVerbose(tc.in)
+		if strings.Join(got, "\x00") != strings.Join(tc.want, "\x00") {
+			t.Errorf("normalizeVerbose(%v) = %v, want %v", tc.in, got, tc.want)
+		}
+	}
+}
+
 func TestVerboseName(t *testing.T) {
 	cases := []struct {
 		n    int

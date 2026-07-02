@@ -88,7 +88,7 @@ func (c *cli) renderRows(rows []json.RawMessage, elapsed string, footer bool) {
 		cmd.RenderList(c.out, rows, c.listSep, pretty)
 	default: // "box"
 		el := ""
-		if footer && c.timer {
+		if footer {
 			el = c.icon("⏱ ") + elapsed
 		}
 		termWidth := 0
@@ -99,7 +99,7 @@ func (c *cli) renderRows(rows []json.RawMessage, elapsed string, footer bool) {
 		return // box prints its own row-count/elapsed footer
 	}
 
-	if footer && c.timer {
+	if footer {
 		fmt.Fprintf(c.stderr, "%s%d row(s) in %s\n", c.icon("⏱ "), len(rows), elapsed)
 	}
 }
