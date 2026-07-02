@@ -128,7 +128,11 @@ controls. Both live in n1k1 (`cmd/n1k1`, `glue/si.go`); the fork is untouched.
 
 **`-index=eager|lazy|off`** (flag) — *when* catalog indexes build, via the
 process-global `glue.SecondaryIndexMode` (set before `OpenSession`, re-read on
-every `maybeSecondaryIndexes`, so a mid-session `.open` re-applies it):
+every `maybeSecondaryIndexes`, so a mid-session `.open` re-applies it). All three
+give identical query *results* (builds are cached on disk + freshness-validated, so
+one-time); they trade off build *timing* / visibility — pick by intent: **lazy**
+for normal use, **eager** to warm indexes for clean `-timer` benchmarks (and to see
+build errors up front), **off** to A/B against a no-index full-scan baseline.
 - **`lazy`** (default) — advertise indexes; each builds on first use (the first
   query over its keyspace, or `.indexes`). First such query pays the build cost.
 - **`eager`** — after opening the datastore, `EagerBuildSecondaryIndexes` opens/

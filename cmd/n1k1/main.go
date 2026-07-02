@@ -64,7 +64,9 @@ func main() {
 		formatsFlag = flag.String("formats", "", "restrict scanning to a comma-separated set (all|json|jsonl|csv|tsv|extract|doc|text|image|video|gzip|recurse); empty or 'all' = everything")
 		metaFlag    = flag.String("meta", "auto", "add a _meta sub-object (path/name/ext/size/mtime) to records: on|off|auto (auto = extracted docs only)")
 		verFlag     = flag.Bool("version", false, "print version + build info (incl. dependency SHAs) and exit")
-		indexFlag   = flag.String("index", "lazy", "secondary index build mode: eager|lazy|off")
+		indexFlag   = flag.String("index", "lazy", "use catalog (secondary/FTS) indexes: "+
+			"lazy (default; build each on first use) | eager (build all up front -- clean -timer "+
+			"benchmarks + up-front build errors) | off (ignore the catalog; always full-scan -- A/B baseline)")
 	)
 	flag.Usage = usage
 	flag.Parse()

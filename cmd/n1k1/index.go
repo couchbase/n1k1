@@ -372,6 +372,11 @@ path ("personal_details.state"); list several for a composite index; optional
 "where" makes it partial. A "kind":"fts" index is full-text (bleve, dynamic: indexes
 every field), queried with SEARCH(keyspace, "text") or SEARCH(keyspace.field, "q").
 After editing catalog.json, run '.index rebuild' (or just query -- lazy on first use).
+
+Startup flag -index picks whether/when these are used (builds are cached on disk):
+  lazy   (default) build each index on first use -- fast startup
+  eager  build all up front -- clean -timer benchmarks + see build errors up front
+  off    ignore the catalog entirely -- always full-scan (an A/B baseline)
 `)
 }
 
