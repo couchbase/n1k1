@@ -447,37 +447,71 @@ func (c *cli) exec(stmt string) {
 }
 
 func (c *cli) renderResult(res *glue.Result) {
+	c.renderRows(res.Rows, res.Elapsed.String(), c.timer)
+}
+
+// renderRows renders JSON-object rows in the current output mode -- used both for
+// query results (renderResult) and for tabular dot-command output like `.index
+// list`/`.index show`, so those get the box renderer at a TTY too. elapsed is the
+// box footer's timing string; footer is whether to show the row-count/elapsed
+// footer at all (dot-commands pass false).
+func (c *cli) renderRows(rows []json.RawMessage, elapsed string, footer bool) {
 	// A "|pretty" / "-pretty" suffix on the mode 2-space-indents JSON values.
 	base, pretty, _ := cmd.ParseMode(c.mode)
 	switch base {
 	case "jsonlines":
-		cmd.RenderJSONLines(c.out, res.Rows, pretty)
+		cmd.RenderJSONLines(c.out, rows, pretty)
 	case "json":
-		cmd.RenderJSON(c.out, res.Rows, pretty)
+		cmd.RenderJSON(c.out, rows, pretty)
 	case "csv":
-		cmd.RenderCSV(c.out, res.Rows, pretty)
+		cmd.RenderCSV(c.out, rows, pretty)
 	case "markdown":
-		cmd.RenderMarkdown(c.out, res.Rows, pretty)
+		cmd.RenderMarkdown(c.out, rows, pretty)
 	case "line":
-		cmd.RenderLine(c.out, res.Rows, pretty)
+		cmd.RenderLine(c.out, rows, pretty)
 	case "list":
-		cmd.RenderList(c.out, res.Rows, c.listSep, pretty)
+		cmd.RenderList(c.out, rows, c.listSep, pretty)
 	default: // "box"
-		elapsed := ""
-		if c.timer {
-			elapsed = c.icon("⏱ ") + res.Elapsed.String()
+		el := ""
+		if footer && c.timer {
+			el = c.icon("⏱ ") + elapsed
 		}
 		termWidth := 0
 		if c.maxWidth < 0 { // auto: fit the box to the terminal's width
 			termWidth = c.terminalWidth()
 		}
-		cmd.RenderBox(c.out, res.Rows, c.maxWidth, c.maxRows, termWidth, elapsed, c.style, pretty)
+		cmd.RenderBox(c.out, rows, c.maxWidth, c.maxRows, termWidth, el, c.style, pretty)
 		return // box prints its own row-count/elapsed footer
 	}
 
-	if c.timer {
-		fmt.Fprintf(c.stderr, "%s%d row(s) in %s\n", c.icon("⏱ "), len(res.Rows), res.Elapsed)
+	if footer && c.timer {
+		fmt.Fprintf(c.stderr, "%s%d row(s) in %s\n", c.icon("⏱ "), len(rows), elapsed)
 	}
+}
+
+// orderedJSONRow builds a JSON object from ordered key/value pairs, preserving key
+// order in the text (Go maps don't) so the box renderer's columns appear in that
+// order. Nil values are omitted (so a column absent from every row disappears).
+func orderedJSONRow(pairs ...[2]interface{}) json.RawMessage {
+	var b strings.Builder
+	b.WriteByte('{')
+	first := true
+	for _, p := range pairs {
+		if p[1] == nil {
+			continue
+		}
+		if !first {
+			b.WriteByte(',')
+		}
+		first = false
+		k, _ := json.Marshal(p[0].(string))
+		v, _ := json.Marshal(p[1])
+		b.Write(k)
+		b.WriteByte(':')
+		b.Write(v)
+	}
+	b.WriteByte('}')
+	return json.RawMessage(b.String())
 }
 
 // ---- dot-commands ---------------------------------------------------------
@@ -658,27 +692,43 @@ func (c *cli) indexInfos() []glue.IndexInfo {
 	return infos
 }
 
-// cmdIndexList implements `.index list`: one line per declared secondary index with
-// its keys, WHERE, and (once built) entry count + on-disk size. Opens/builds any
-// not-yet-built index to report live stats.
+// cmdIndexList implements `.index list`: one row per declared secondary index with
+// its keys, WHERE, and (once built) entry count + on-disk size, rendered in the
+// current output mode (a box at a TTY). Opens/builds any not-yet-built index to
+// report live stats.
 func (c *cli) cmdIndexList() {
-	for _, ix := range c.indexInfos() {
-		name := ix.Namespace + ":" + ix.Keyspace + "." + ix.Name
-		keys := "(" + strings.Join(ix.Keys, ", ") + ")"
+	infos := c.indexInfos()
+	if len(infos) == 0 {
+		return // indexInfos already printed the reason
+	}
+	rows := make([]json.RawMessage, 0, len(infos))
+	for _, ix := range infos {
+		where, entries, size, status := interface{}(nil), interface{}(nil), interface{}(nil), interface{}(nil)
 		if ix.Where != "" {
-			keys += " WHERE " + ix.Where
+			where = ix.Where
 		}
-		status := "not built"
 		if ix.Built {
-			status = fmt.Sprintf("%d entries, %s", ix.Entries, humanBytes(ix.SizeBytes))
+			entries = ix.Entries
+			size = humanBytes(ix.SizeBytes)
 		} else if ix.Err != "" {
 			status = ix.Err
+		} else {
+			status = "not built"
 		}
-		fmt.Fprintf(c.out, "%s %s  [%s]\n", name, keys, status)
+		rows = append(rows, orderedJSONRow(
+			[2]interface{}{"index", ix.Namespace + ":" + ix.Keyspace + "." + ix.Name},
+			[2]interface{}{"keys", strings.Join(ix.Keys, ", ")},
+			[2]interface{}{"where", where},
+			[2]interface{}{"entries", entries},
+			[2]interface{}{"size", size},
+			[2]interface{}{"status", status},
+		))
 	}
+	c.renderRows(rows, "", false)
 }
 
-// cmdIndexShow implements `.index show <name>`: the full detail of one index.
+// cmdIndexShow implements `.index show <name>`: one index's full detail, rendered
+// as a field/value table (so it boxes nicely at a TTY).
 func (c *cli) cmdIndexShow(name string) {
 	if name == "" {
 		fmt.Fprintln(c.stderr, "usage: .index show <name>")
@@ -688,19 +738,30 @@ func (c *cli) cmdIndexShow(name string) {
 		if ix.Name != name {
 			continue
 		}
-		fmt.Fprintf(c.out, "name:      %s\n", ix.Name)
-		fmt.Fprintf(c.out, "keyspace:  %s:%s\n", ix.Namespace, ix.Keyspace)
-		fmt.Fprintf(c.out, "keys:      %s\n", strings.Join(ix.Keys, ", "))
+		pairs := [][2]string{
+			{"name", ix.Name},
+			{"keyspace", ix.Namespace + ":" + ix.Keyspace},
+			{"keys", strings.Join(ix.Keys, ", ")},
+		}
 		if ix.Where != "" {
-			fmt.Fprintf(c.out, "where:     %s\n", ix.Where)
+			pairs = append(pairs, [2]string{"where", ix.Where})
 		}
 		if ix.Built {
-			fmt.Fprintf(c.out, "entries:   %d\n", ix.Entries)
-			fmt.Fprintf(c.out, "size:      %s\n", humanBytes(ix.SizeBytes))
-			fmt.Fprintf(c.out, "path:      %s\n", ix.Path)
+			pairs = append(pairs,
+				[2]string{"entries", strconv.Itoa(ix.Entries)},
+				[2]string{"size", humanBytes(ix.SizeBytes)},
+				[2]string{"path", ix.Path})
 		} else {
-			fmt.Fprintf(c.out, "status:    not built (%s)\n", ix.Err)
+			pairs = append(pairs, [2]string{"status", "not built (" + ix.Err + ")"})
 		}
+		rows := make([]json.RawMessage, 0, len(pairs))
+		for _, p := range pairs {
+			rows = append(rows, orderedJSONRow(
+				[2]interface{}{"field", p[0]},
+				[2]interface{}{"value", p[1]},
+			))
+		}
+		c.renderRows(rows, "", false)
 		return
 	}
 	fmt.Fprintf(c.stderr, "no such index %q (try .index list)\n", name)
