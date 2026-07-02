@@ -25,6 +25,10 @@ import (
 
 func DatastoreOp(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 	yieldErr base.YieldErr, path, pathNext string) {
+	// Count rows out of a datastore scan (and drive live progress checkpoints);
+	// a no-op when stats are off or the kind isn't a counter-contributing scan.
+	yieldVals = countingYield(o, vars, yieldVals)
+
 	switch o.Kind {
 	case "datastore-scan-records":
 		DatastoreScanRecords(o, vars, yieldVals, yieldErr)

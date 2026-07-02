@@ -259,15 +259,34 @@ modes):
   alloc — `YieldStats` now receives the shared `Ctx.Stats`); `filter` →
   `RowsIn`/`RowsOut` (selectivity); `group`/`distinct` → `RowsIn`/`GroupsOut`
   (fan-in); `order-offset-limit` → `RowsIn`/`RowsOut`; the nested-loop `join`/`nest`/
-  `unnest` family → `RowsLeft`/`Probes` (the exploding-join work signal).
-- Nil `Ctx.Stats` ⇒ the zero-cost off path (unchanged default); `LayoutStats` +
-  setting `Ctx.Stats` opts a caller in.
+  `unnest` family → `RowsLeft`/`Probes` (the exploding-join work signal). The
+  **glue datastore scans** (`datastore-scan-records`/`-primary`/`-index`/
+  `-index-cover`/`-fts`/`-keys`) also get `RowsOut` — instrumented in `glue`
+  (`countingYield` in `glue/stats.go`), since the CLI's real file reads go through
+  those, not the engine's `OpScan`; that wrapper also drives a live `YieldStats`
+  checkpoint every 1024 rows (these scans have no built-in per-row checkpoint).
+- **Single source of truth + greppable.** Every counter is one `base.DefStat(name,
+  kinds…)` line (in `engine/stats.go` and `glue/stats.go`) that defines both the
+  offset constant and the registered name together, so they can't drift. To list
+  every counter straight from source (no doc drift): **`git grep '= base.DefStat'`**
+  — one line per counter, across engine and glue, each showing its name and op
+  Kind(s) (`git grep 'DefStat("RowsOut'` finds every op with a RowsOut). `DefStat` is
+  idempotent, so the compiled path's re-run of an engine package's initializers
+  doesn't double-register.
+- **`glue`/CLI opt-in, live.** `Session.CollectStats` lays out the counters and
+  returns them as `Result.Stats`; `Session.OnStats` receives the live `*Stats` at
+  each checkpoint. The CLI exposes `-stats` and `.stats [on|off]`: it prints a
+  per-operator footer (an indented op tree with each op's counters), and on a TTY
+  redraws it live (throttled ~10 Hz, in place, on stderr) while the query runs.
+  Off by default → zero cost.
+- Nil `Ctx.Stats` ⇒ the zero-cost off path (unchanged default).
 
 Not yet wired (follow-ups): `project`/`union`/`window` and hash-join counters;
 `BytesIn` and pruning/`FilesOpened`/`FilesPruned` counters (need the
-`DESIGN-data.md §5` manifest); per-op **live** flush cadence for non-scan ops; the
-`glue`/CLI opt-in (`RunObserved`, `-progress`, `.stats`) over this core; and the
-`StatKind` gauge/peak marker.
+`DESIGN-data.md §5` manifest); per-op **live** flush cadence for non-scan ops (they
+flush once at completion today, so mid-query they read 0 while the scan ticks); the
+richer views/screens (`.stats view plan`, racing bars, DVR) and `EXPLAIN
+PRICE`/`COST` over this core; and the `StatKind` gauge/peak marker.
 
 ## Delivery: getting stats to the client — the approaches
 

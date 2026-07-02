@@ -39,6 +39,19 @@ type Session struct {
 	// request; they flow to the planner and to eval-time NamedParameter lookups
 	// (see GlueContext.NamedArg). nil when the statement uses none.
 	NamedArgs map[string]value.Value
+
+	// CollectStats opts a run into the per-operator counter core: Run lays out a
+	// base.Stats over the op tree (see base.LayoutStats), points Ctx.Stats at it,
+	// and returns it as Result.Stats. Off by default (zero cost). See
+	// DESIGN-stats.md.
+	CollectStats bool
+
+	// OnStats, if set (and CollectStats is on), is invoked at each engine stats
+	// checkpoint with the live shared *Stats, for progress display. It runs on the
+	// execution goroutine, so it must be fast and non-blocking (snapshot/render a
+	// throttled view; don't do slow work). Its counters are monotonic and may show
+	// per-field skew mid-run -- fine for progress.
+	OnStats func(*base.Stats)
 }
 
 // OpenSession opens a file-datastore directory and prepares it for queries.
@@ -66,6 +79,7 @@ type Result struct {
 	Warnings []errors.Error    // non-fatal advisories recorded during execution
 	Elapsed  time.Duration     // wall-clock of the ExecOp run
 	Plan     *base.Op          // the converted n1k1 op tree (for .explain / -v)
+	Stats    *base.Stats       // per-operator counters when CollectStats was on, else nil
 }
 
 // findExplain returns the *plan.Explain node in a plan tree (it sits under the
@@ -161,6 +175,22 @@ func (s *Session) Run(stmt string) (res *Result, err error) {
 		vars.Temps = append(vars.Temps, nil)
 	}
 
+	// Opt-in per-operator counters: size a flat counter array over the op tree,
+	// point Ctx.Stats at it, and (if a live callback was given) route the engine's
+	// stats checkpoints to it. Off by default, so the hot path pays nothing.
+	var stats *base.Stats
+	if s.CollectStats {
+		stats = base.LayoutStats(conv.TopOp)
+		vars.Ctx.Stats = stats
+		if stats != nil && s.OnStats != nil {
+			onStats := s.OnStats
+			vars.Ctx.YieldStats = func(st *base.Stats) error {
+				onStats(st)
+				return nil
+			}
+		}
+	}
+
 	origExecOpEx := engine.ExecOpEx
 	defer func() { engine.ExecOpEx = origExecOpEx }()
 	engine.ExecOpEx = DatastoreOp
@@ -204,5 +234,6 @@ func (s *Session) Run(stmt string) (res *Result, err error) {
 		Warnings: gctx.GetErrors(),
 		Elapsed:  elapsed,
 		Plan:     conv.TopOp,
+		Stats:    stats,
 	}, nil
 }

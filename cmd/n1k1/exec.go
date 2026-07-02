@@ -34,7 +34,26 @@ func (c *cli) exec(stmt string) {
 		return
 	}
 
+	// .stats / -stats: collect per-operator counters, and on a TTY draw them live
+	// (throttled, in place, to stderr) while the query runs. Reset afterwards so a
+	// later query -- or another user of this Session -- pays nothing.
+	var sv *statsView
+	if c.stats {
+		c.sess.CollectStats = true
+		if c.fancyTTY {
+			sv = newStatsView(c.stderr, true)
+			c.sess.OnStats = sv.onStats
+		}
+	}
+
 	res, err := c.sess.Run(stmt)
+
+	c.sess.CollectStats = false
+	c.sess.OnStats = nil
+	if sv != nil {
+		sv.finish()
+	}
+
 	if err != nil {
 		var unsup *glue.ErrUnsupported
 		if errors.As(err, &unsup) {
@@ -54,6 +73,12 @@ func (c *cli) exec(stmt string) {
 	}
 
 	c.renderResult(res)
+
+	// .stats footer: the final per-operator counters (also the whole display for a
+	// non-TTY run, which skipped the live draw).
+	if c.stats && res.Stats != nil {
+		newStatsView(c.stderr, c.fancyTTY).renderFinal(res.Stats)
+	}
 
 	for _, w := range res.Warnings {
 		fmt.Fprintf(c.stderr, "%s%s\n", c.icon("⚠️  "), c.style.Yellow("Warning: "+w.Error()))

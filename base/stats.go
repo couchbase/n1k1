@@ -25,11 +25,51 @@ import (
 // when same-op parallelism lands).
 
 // StatsDescs declares, per op Kind, the ordered names of the int64 counters that
-// kind contributes. Engine ops register their names here at init time; the
+// kind contributes. Ops register their names via DefStat (below) at init time; the
 // layout pass (LayoutStats) consults it to size the flat counter array. The
 // ordering is the contract: an op's Nth registered stat lives at
 // Counters[op.StatsBase+N], which is the constant offset the hot path uses.
 var StatsDescs = map[string][]string{}
+
+// DefStat registers an int64 counter named name for each of the given op Kinds
+// and returns its offset within an op's counter section. Declaring every counter
+// through DefStat -- one per line, across engine/ and glue/ -- keeps a single
+// source of truth (the offset constant and the registered name live together) and
+// makes the whole set greppable straight from source, no doc drift:
+//
+//	git grep '= base.DefStat'   # the counter catalog: one line each, name + op Kind(s)
+//	git grep 'DefStat("RowsOut' # every op that has a RowsOut counter
+//
+// It is idempotent: re-registering an already-present name returns the existing
+// offset without appending, so re-runs (e.g. the generated compiled path
+// re-executes an engine package's initializers) keep offsets stable. Kinds that
+// share a layout (group/distinct, the joinNL family, the datastore scans) are
+// passed together so their sections stay aligned; the returned offset is from the
+// first kind and applies to all.
+func DefStat(name string, kinds ...string) int {
+	off := -1
+
+	for _, k := range kinds {
+		idx := -1
+		for i, n := range StatsDescs[k] {
+			if n == name {
+				idx = i
+				break
+			}
+		}
+
+		if idx < 0 {
+			idx = len(StatsDescs[k])
+			StatsDescs[k] = append(StatsDescs[k], name)
+		}
+
+		if off < 0 {
+			off = idx
+		}
+	}
+
+	return off
+}
 
 // StatsOpInfo describes one operator's section of the flat counter array, for
 // human-readable attribution at report time (e.g. rendering counters next to a

@@ -15,59 +15,42 @@ import (
 	"github.com/couchbase/n1k1/base"
 )
 
-// Stat counter offsets, one block of constants per op Kind. Each constant is the
-// index of a stat within that op's counter section, and MUST match the order the
-// names are registered in base.StatsDescs (init below). The hot path uses these
-// as compile-time constant offsets, e.g. counters[o.StatsBase + StatScanRowsOut].
+// Every operator counter is declared below with base.DefStat, one per line. That
+// single line is the source of truth for both the counter's registered name (so
+// LayoutStats can size the flat array -- see base.StatsDescs) and its offset
+// constant (used by the op's hot path). To list every counter straight from the
+// source (no doc drift):
 //
-// Naming convention (see DESIGN-stats.md "Stat naming"): Noun-first
-// ("NounAdjective") so a subsystem's stats sort/cluster together (RowsIn,
-// RowsOut, ...). Counters are monotonically increasing by default (unmarked); a
-// current-level gauge would take a "Cur" suffix and a high-water mark a "Peak"
-// suffix. All counters below are monotonic.
-const (
-	// scan -> RowsOut.
-	StatScanRowsOut = 0
+//	git grep '= base.DefStat'   # the counter catalog across engine/ and glue/
+//	git grep 'DefStat("RowsOut' # every op that has a RowsOut counter
+//
+// See DESIGN-stats.md "Stat naming" for the naming rules (Noun-first; monotonic
+// is the unmarked default; a gauge takes a "Cur" suffix, a high-water "Peak").
+// All counters below are monotonic.
+var (
+	StatScanRowsOut = base.DefStat("RowsOut", "scan")
 
-	// filter -> RowsIn, RowsOut (RowsOut/RowsIn is the selectivity).
-	StatFilterRowsIn  = 0
-	StatFilterRowsOut = 1
+	StatFilterRowsIn  = base.DefStat("RowsIn", "filter")  // rows examined
+	StatFilterRowsOut = base.DefStat("RowsOut", "filter") // rows passing the predicate
 
-	// group / distinct -> RowsIn, GroupsOut (RowsIn/GroupsOut is the fan-in).
-	StatGroupRowsIn    = 0
-	StatGroupGroupsOut = 1
+	StatGroupRowsIn    = base.DefStat("RowsIn", "group", "distinct")    // rows aggregated
+	StatGroupGroupsOut = base.DefStat("GroupsOut", "group", "distinct") // distinct groups
 
-	// order-offset-limit -> RowsIn, RowsOut (RowsIn is the sort/heap pressure).
-	StatOrderRowsIn  = 0
-	StatOrderRowsOut = 1
+	StatOrderRowsIn  = base.DefStat("RowsIn", "order-offset-limit")  // rows into sort/limit
+	StatOrderRowsOut = base.DefStat("RowsOut", "order-offset-limit") // rows after offset/limit
 
-	// joinNL family -> RowsLeft, Probes. Probes counts inner-loop row visits
-	// (|left| x |right-per-left|): the "exploding join" work signal -- it spins
-	// wildly even when RowsOut stays small. See DESIGN-stats.md.
-	StatJoinNLRowsLeft = 0
-	StatJoinNLProbes   = 1
+	// joinNL family: Probes counts inner-loop row visits (|left| x
+	// |right-per-left|) -- the "exploding join" work signal that spins even when
+	// RowsOut stays small. See DESIGN-stats.md.
+	StatJoinNLRowsLeft = base.DefStat("RowsLeft", joinNLKinds...) // left-driver (outer) rows
+	StatJoinNLProbes   = base.DefStat("Probes", joinNLKinds...)   // inner-loop row visits
 )
 
-// joinNLKinds are the op Kinds handled by OpJoinNestedLoop; they all share the
-// same counter layout.
+// joinNLKinds are the op Kinds handled by OpJoinNestedLoop; they share a layout.
 var joinNLKinds = []string{
 	"joinNL-inner", "joinNL-leftOuter",
 	"joinKeys-inner", "joinKeys-leftOuter",
 	"nestNL-inner", "nestNL-leftOuter",
 	"nestKeys-inner", "nestKeys-leftOuter",
 	"unnest-inner", "unnest-leftOuter",
-}
-
-func init() {
-	// Register the counters each op Kind contributes, so LayoutStats can size
-	// the flat counter array. Order defines the offsets above.
-	base.StatsDescs["scan"] = []string{"RowsOut"}
-	base.StatsDescs["filter"] = []string{"RowsIn", "RowsOut"}
-	base.StatsDescs["group"] = []string{"RowsIn", "GroupsOut"}
-	base.StatsDescs["distinct"] = []string{"RowsIn", "GroupsOut"}
-	base.StatsDescs["order-offset-limit"] = []string{"RowsIn", "RowsOut"}
-
-	for _, k := range joinNLKinds {
-		base.StatsDescs[k] = []string{"RowsLeft", "Probes"}
-	}
 }

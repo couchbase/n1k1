@@ -129,6 +129,17 @@ func (c *cli) dot(line string) bool {
 	case ".explain":
 		c.explain = !c.explain
 		fmt.Fprintf(c.stderr, "explain %s\n", onOff(c.explain))
+	case ".stats":
+		switch strings.ToLower(arg) {
+		case "":
+			fmt.Fprintf(c.stderr, "stats %s\n", onOff(c.stats))
+		case "on":
+			c.stats = true
+		case "off":
+			c.stats = false
+		default:
+			fmt.Fprintf(c.stderr, "usage: .stats [on|off] (currently %s)\n", onOff(c.stats))
+		}
 	case ".maxrows":
 		if arg == "" {
 			fmt.Fprintf(c.stderr, "maxrows %s\n", c.maxRowsDesc())
@@ -173,6 +184,7 @@ func (c *cli) printHelp() {
 		".meta [on|off|auto]   add a _meta sub-object to records (no arg shows the current setting)",
 		".formats [<set>]      restrict scanning to formats/modes, e.g. json,csv,gzip (no arg shows current)",
 		".timer [on|off]       elapsed-time reporting (no arg shows the current setting)",
+		".stats [on|off]       per-operator counters (rows in/out, join probes) live + as a footer",
 		".explain              toggle printing EXPLAIN PLAN per query",
 		".verbose [off|on|debug]  diagnostics level (off|on=plans|debug=+timing; no arg shows current)",
 		".maxrows <n>          box: cap rows shown (0 = all; negative = last |n| rows)",
