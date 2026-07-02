@@ -905,13 +905,15 @@ Index definitions live in <dataRoot>/.n1k1/catalog.json:
   {
     "indexes": [
       { "name": "ix_country", "keyspace": "customer", "keys": ["country"] },
-      { "name": "ix_adult", "keyspace": "customer", "keys": ["age"], "where": "age >= 18" }
+      { "name": "ix_adult", "keyspace": "customer", "keys": ["age"], "where": "age >= 18" },
+      { "name": "ft_docs", "keyspace": "docs", "kind": "fts" }
     ]
   }
-Each key is a N1QL expression -- a field ("country") or a nested path
-("personal_details.state"); "keys" may list several for a composite index; the
-optional "where" makes it a partial index. After editing catalog.json, run
-'.index rebuild' (or just query -- lazy builds on first use).
+A gsi (default) index's keys are N1QL expressions -- a field ("country") or nested
+path ("personal_details.state"); list several for a composite index; optional
+"where" makes it partial. A "kind":"fts" index is full-text (bleve, dynamic: indexes
+every field), queried with SEARCH(keyspace, "text") or SEARCH(keyspace.field, "q").
+After editing catalog.json, run '.index rebuild' (or just query -- lazy on first use).
 `)
 }
 
@@ -956,9 +958,14 @@ func (c *cli) cmdIndexList() {
 		} else {
 			status = "not built"
 		}
+		keys := strings.Join(ix.Keys, ", ")
+		if ix.Kind == "fts" && keys == "" {
+			keys = "(all fields)"
+		}
 		rows = append(rows, orderedJSONRow(
 			[2]interface{}{"index", ix.Namespace + ":" + ix.Keyspace + "." + ix.Name},
-			[2]interface{}{"keys", strings.Join(ix.Keys, ", ")},
+			[2]interface{}{"kind", ix.Kind},
+			[2]interface{}{"keys", keys},
 			[2]interface{}{"where", where},
 			[2]interface{}{"entries", entries},
 			[2]interface{}{"size", size},
@@ -979,10 +986,15 @@ func (c *cli) cmdIndexShow(name string) {
 		if ix.Name != name {
 			continue
 		}
+		keys := strings.Join(ix.Keys, ", ")
+		if ix.Kind == "fts" && keys == "" {
+			keys = "(all fields)"
+		}
 		pairs := [][2]string{
 			{"name", ix.Name},
 			{"keyspace", ix.Namespace + ":" + ix.Keyspace},
-			{"keys", strings.Join(ix.Keys, ", ")},
+			{"kind", ix.Kind},
+			{"keys", keys},
 		}
 		if ix.Where != "" {
 			pairs = append(pairs, [2]string{"where", ix.Where})

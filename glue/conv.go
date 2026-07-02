@@ -59,6 +59,11 @@ type Conv struct {
 	// the Initial/Intermediate groups being skipped). See VisitFinalGroup.
 	groupAs       string
 	groupAsFields []string
+
+	// sawFTS is set once an FTS scan (VisitIndexFtsSearch) is emitted, so
+	// VisitFilter knows to strip the (already-satisfied) SEARCH() term from the
+	// residual filter -- n1k1 can't re-evaluate SEARCH() outside the index.
+	sawFTS bool
 }
 
 // -------------------------------------------------------------------
@@ -339,7 +344,28 @@ func (c *Conv) VisitExpressionScan(o *plan.ExpressionScan) (interface{}, error) 
 
 // FTS Search
 
-func (c *Conv) VisitIndexFtsSearch(o *plan.IndexFtsSearch) (interface{}, error) { return NA(o) }
+// VisitIndexFtsSearch converts the FTS scan the planner emits for a SEARCH()
+// predicate over a bleve-backed index (fts.go). datastore-scan-fts runs
+// bleve.Search and yields matching docIDs; the following Fetch reads the docs
+// (mirrors VisitIndexScan -- non-covering, so a real plan.Fetch follows; a
+// covering scan synthesizes one). Because our Sargable returns exact=true the
+// planner drops the residual SEARCH() filter, which n1k1 couldn't evaluate anyway.
+func (c *Conv) VisitIndexFtsSearch(o *plan.IndexFtsSearch) (interface{}, error) {
+	c.sawFTS = true // VisitFilter strips the covered SEARCH() term from the residual
+	c.TopPush(o, &base.Op{
+		Kind:   "datastore-scan-fts",
+		Labels: base.Labels{"^id"},
+		Params: []interface{}{c.AddTemp(o)},
+	})
+	if len(o.Covers()) > 0 {
+		return c.TopPush(o, &base.Op{
+			Kind:   "datastore-fetch",
+			Labels: base.Labels{"." + LabelSuffix(o.Term().Alias()), "^id"},
+			Params: []interface{}{c.AddTemp(o)},
+		})
+	}
+	return c.TopOp, nil
+}
 
 // Fetch
 
@@ -641,10 +667,20 @@ func (c *Conv) VisitWith(o *plan.With) (interface{}, error) {
 // Filter
 
 func (c *Conv) VisitFilter(o *plan.Filter) (interface{}, error) {
+	cond := o.Condition()
+	// When an FTS scan (plan.IndexFtsSearch) is in this plan, the bleve Search
+	// already selected the matching docs, but the planner still leaves the
+	// SEARCH() term in the residual Filter -- and n1k1 can't re-evaluate SEARCH()
+	// (no live FTS verify; it would return false and drop every row). Strip the
+	// covered SEARCH() term (-> true) so only the genuine residual predicate
+	// remains. Gated on sawFTS so a SEARCH() with no FTS index still filters.
+	if c.sawFTS {
+		cond = stripSearch(cond)
+	}
 	return c.TopPush(o, &base.Op{
 		Kind:   "filter",
 		Labels: c.TopOp.Labels,
-		Params: []interface{}{"exprTree", o.Condition()},
+		Params: []interface{}{"exprTree", cond},
 	})
 }
 

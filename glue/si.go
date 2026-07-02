@@ -101,12 +101,13 @@ type IndexInfo struct {
 	Name      string
 	Namespace string
 	Keyspace  string
+	Kind      string // "gsi" | "fts"
 	Keys      []string
 	Where     string
 	Built     bool   // false if the artifact couldn't be opened/built (see Err)
-	Entries   int    // bbolt entry count (docIDs indexed), when Built
-	SizeBytes int64  // data.bolt file size, when Built
-	Path      string // data.bolt path, when Built
+	Entries   int    // indexed doc/entry count, when Built
+	SizeBytes int64  // artifact size (gsi: data.bolt), when Built
+	Path      string // artifact path, when Built
 	Err       string // why it isn't built, if !Built
 }
 
@@ -212,21 +213,34 @@ func buildIndexesConcurrent(ds datastore.Datastore, force bool, only string,
 			ev.Phase = "start"
 			events <- ev
 
-			si, err := openSecondaryIndex(j.ks, j.def, func(docs int) {
+			onDoc := func(docs int) {
 				pe := base
 				pe.Phase = "progress"
 				pe.Docs = docs
 				events <- pe
-			}, force)
+			}
 
 			de := base
+			var info IndexInfo
+			var err error
+			if j.def.isFTS() {
+				var fi *ftsIndex
+				fi, err = openFTSIndex(j.ks, j.def, onDoc, force)
+				if err == nil {
+					fi.fillInfo(&info)
+				}
+			} else {
+				var si *secondaryIndex
+				si, err = openSecondaryIndex(j.ks, j.def, onDoc, force)
+				if err == nil {
+					si.fillInfo(&info)
+				}
+			}
 			if err != nil {
 				de.Phase = "error"
 				de.Err = err
 			} else {
 				de.Phase = "done"
-				var info IndexInfo
-				si.fillInfo(&info)
 				de.Entries, de.SizeBytes = info.Entries, info.SizeBytes
 			}
 			events <- de
@@ -276,7 +290,7 @@ func SecondaryIndexInfos(ds datastore.Datastore) []IndexInfo {
 	for _, def := range sds.cat.Indexes {
 		info := IndexInfo{
 			Name: def.Name, Namespace: def.Namespace, Keyspace: def.Keyspace,
-			Keys: def.Keys, Where: def.Where,
+			Kind: def.Kind, Keys: def.Keys, Where: def.Where,
 		}
 		ks, err := sds.wrappedKeyspace(def.Namespace, def.Keyspace)
 		if err != nil {
@@ -284,17 +298,32 @@ func SecondaryIndexInfos(ds datastore.Datastore) []IndexInfo {
 			infos = append(infos, info)
 			continue
 		}
-		var found *secondaryIndex
-		for _, si := range ks.secondaryIndexer().indexes {
-			if si.def == def {
-				found = si
-				break
+		if def.isFTS() {
+			var fi *ftsIndex
+			for _, x := range ks.ftsIndexerL().indexes {
+				if x.def == def {
+					fi = x
+					break
+				}
 			}
-		}
-		if found == nil {
-			info.Err = "not built (see log)"
+			if fi == nil {
+				info.Err = "not built (see log)"
+			} else {
+				fi.fillInfo(&info)
+			}
 		} else {
-			found.fillInfo(&info)
+			var found *secondaryIndex
+			for _, si := range ks.secondaryIndexer().indexes {
+				if si.def == def {
+					found = si
+					break
+				}
+			}
+			if found == nil {
+				info.Err = "not built (see log)"
+			} else {
+				found.fillInfo(&info)
+			}
 		}
 		infos = append(infos, info)
 	}
@@ -395,14 +424,22 @@ type siKeyspace struct {
 	sds  *siDatastore
 	defs []*indexDef
 
-	once    sync.Once
-	indexer *siIndexer
+	onceSI sync.Once
+	siIx   *siIndexer
+
+	onceFTS sync.Once
+	ftsIx   *ftsIndexer
 }
 
+// secondaryIndexer builds (lazily) the GSI indexer over this keyspace's non-fts
+// catalog defs.
 func (k *siKeyspace) secondaryIndexer() *siIndexer {
-	k.once.Do(func() {
+	k.onceSI.Do(func() {
 		ix := &siIndexer{ks: k}
 		for _, def := range k.defs {
+			if def.isFTS() {
+				continue
+			}
 			si, err := openSecondaryIndex(k, def, nil, false)
 			if err != nil {
 				// Don't fail the query -- just don't advertise this index, so the
@@ -413,9 +450,30 @@ func (k *siKeyspace) secondaryIndexer() *siIndexer {
 			}
 			ix.indexes = append(ix.indexes, si)
 		}
-		k.indexer = ix
+		k.siIx = ix
 	})
-	return k.indexer
+	return k.siIx
+}
+
+// ftsIndexerL builds (lazily) the FTS indexer over this keyspace's kind:fts defs.
+func (k *siKeyspace) ftsIndexerL() *ftsIndexer {
+	k.onceFTS.Do(func() {
+		ix := &ftsIndexer{ks: k}
+		for _, def := range k.defs {
+			if !def.isFTS() {
+				continue
+			}
+			fi, err := openFTSIndex(k, def, nil, false)
+			if err != nil {
+				logging.Errorf("fts: index %q on %s:%s unavailable: %v",
+					def.Name, k.Namespace().Name(), k.Name(), err)
+				continue
+			}
+			ix.indexes = append(ix.indexes, fi)
+		}
+		k.ftsIx = ix
+	})
+	return k.ftsIx
 }
 
 func (k *siKeyspace) Indexers() ([]datastore.Indexer, errors.Error) {
@@ -423,12 +481,15 @@ func (k *siKeyspace) Indexers() ([]datastore.Indexer, errors.Error) {
 	if err != nil {
 		return base, err
 	}
-	return append(base, k.secondaryIndexer()), nil
+	return append(base, k.secondaryIndexer(), k.ftsIndexerL()), nil
 }
 
 func (k *siKeyspace) Indexer(name datastore.IndexType) (datastore.Indexer, errors.Error) {
-	if name == datastore.GSI {
+	switch name {
+	case datastore.GSI:
 		return k.secondaryIndexer(), nil
+	case datastore.FTS:
+		return k.ftsIndexerL(), nil
 	}
 	return k.Keyspace.Indexer(name)
 }

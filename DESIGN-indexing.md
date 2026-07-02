@@ -88,9 +88,12 @@ the index and match the no-index result (`test/secondary_index_test.go`
 prefix is approximate, but the always-present residual `Filter` enforces the exact
 predicate, so results are correct (just occasionally a slightly wider index walk).
 
+Phase 2 (FTS via embedded bleve) is also shipped: `SELECT … WHERE SEARCH(ks,
+"query")` runs locally against a `kind: fts` bleve index (see "Phase 2" below).
 Not yet built (still proposal below): true covering execution, incremental index
-maintenance, a fingerprint/zone-map manifest, `CountIndex` pushdown, and all of
-Phase 2 (FTS).
+maintenance, a fingerprint/zone-map manifest, `CountIndex` pushdown, and the FTS
+follow-ups (`SargableFlex`/implicit predicates, declared-mapping honoring, score
+surfacing).
 Known v1 limitations: freshness is a coarse (count, newest-mtime) signature, so a
 change that keeps both identical (rare) won't trigger a rebuild — run `.index
 rebuild` to force one; and array/object index *values* sort by byte order, not
@@ -422,30 +425,41 @@ Fork edits are just the seam (steps 1–2); everything else is n1k1.
 6. **(n1k1)** Verify end-to-end. `conv.go:VisitIndexScan` + `datastore_scan.go`
    already handle the read path — no changes there.
 
-## Phase 2 — FTS via embedded bleve
+## Phase 2 — FTS via embedded bleve ✅ SHIPPED
 
-The planner hook already exists (`planner/build_scan_search.go` + the
-`SargableFlex` path); set `useFts=true` in `glue/stmt.go:PlanStatement`. Because
-FTS sargability is externalized into `datastore.FTSIndex`, we provide it — with a
-small in-process shim, not n1fty.
+`SELECT … WHERE SEARCH(ks, "query")` now runs locally against an embedded
+`bleve.Index` — no cbft cluster, no n1fty, zero fork edits. The planner hook
+already existed (`planner/build_scan_search.go` + the `SargableFlex` path); we
+set `useFts=true` in `glue/stmt.go` and provide the `datastore.FTSIndex`
+in-process (a small shim, not n1fty). Landed in `glue/fts.go`:
 
-- Implement an `Indexer` + `FTSIndex` **as an n1k1 package** (bleve becomes a
-  direct n1k1 require), advertised through the fork's **`ExtraIndexers` seam**
-  (`keyspace.Indexers()` appends it — a distinct `IndexType`, so it's a clean
-  append, not a merge into the GSI indexer). Backed by an embedded `bleve.Index`:
-  - `Sargable(field, query, options, mappings)` / `SargableFlex(req)` /
-    `Pageable(...)` — answer from the bleve index mapping. **Salvage** n1fty's
-    predicate→bleve-query mapping logic (the fiddly part) rather than depending on
-    the package.
-  - `Search(reqId, searchInfo, cons, vector, conn)` — run `bleveIndex.Search()`
-    locally and push `datastore.IndexEntry{PrimaryKey: docID, MetaData: score}`
-    into `conn.Sender()` — the same drain pattern Phase 1 uses.
-- **conv.go gap:** `VisitIndexFtsSearch` currently returns `NA()`. Implement it
-  (plus a `datastore-scan-fts` execution op mirroring `DatastoreScanIndex`) so
-  the `plan.IndexFtsSearch` the planner emits for `SEARCH()` is converted.
-- Definition/build: add FTS index specs to `.n1k1/catalog.json` (`kind: fts`);
-  build the bleve index into `.n1k1/<ns>/<ks>/idx/<name>__fts__<defhash>/bleve/`
-  on open from a full scan.
+- **`ftsIndexer` + `ftsIndex`** — an `Indexer` (`Name()==datastore.FTS`) and an
+  `FTSIndex`, advertised by appending to `keyspace.Indexers()` (a distinct
+  `IndexType`, so a clean append alongside the GSI indexer — no merge). Backed by
+  an embedded `bleve.Index`:
+  - `Sargable(field, query, options, mappings)` returns `exact=true` so the
+    planner drops the residual predicate; `SargableFlex` is stubbed (`nil,nil`)
+    and `Pageable` is `false` in v1.
+  - `Search(...)` runs `bleveIndex.Search()` locally (`req.Size=DocCount`) and
+    pushes `datastore.IndexEntry{PrimaryKey: hit.ID, MetaData: hit.Score}` into
+    `conn.Sender()` — the same drain pattern Phase 1 uses.
+- **conv.go:** `VisitIndexFtsSearch` now emits a `datastore-scan-fts` op (mirrors
+  `VisitIndexScan`, with a synth `datastore-fetch` when covered), and
+  `DatastoreScanFTS` (`glue/datastore_scan.go`) evals the search info and runs the
+  index. The residual `SEARCH()` the planner leaves in the `Filter` — which n1k1
+  can't re-evaluate (it would return false and drop every row) — is rewritten to
+  `TRUE` by `stripSearch` (`glue/expr.go`), gated on a `sawFTS` flag so a genuine
+  co-predicate like `… AND d.id = "d1"` is preserved. (Analogous to `stripCovers`.)
+- **Catalog/build:** FTS index specs use `kind: fts` in `.n1k1/catalog.json`
+  (keys are field names; empty = dynamic / all-fields). The bleve index is built
+  into `.n1k1/<ns>/<ks>/idx/<name>__fts__<defhash>/bleve/` from a full scan on
+  open, with the Phase 1 source-signature freshness check (rebuild when stale).
+  `.index list` shows a `fts` row; `.index rebuild` / `.index build` work.
+
+**v1 scope / follow-ups:** only explicit `SEARCH()` is handled (`SargableFlex`,
+the implicit-predicate path, is stubbed); the bleve mapping is dynamic (declared
+catalog "keys" are recorded but not yet used to build a custom mapping); and the
+hit score (`IndexEntry.MetaData`) is not yet surfaced to the query result.
 
 ## Sidecar layout (`.n1k1/`): naming for many index schemes
 
@@ -822,8 +836,11 @@ datasets.
   output (`Result.Plan`) that it is an **`IndexScan`, not `PrimaryScan`**, and
   that results match the same query without the index. Run
   `go test -tags n1ql ./glue/...` and the conformance harness in `test/`.
-- **Phase 2:** a `SELECT … WHERE SEARCH(ks, "…")` query returns the expected docs
-  with scores, with no cbft/network calls (purely local bleve).
+- **Phase 2 (done):** a `SELECT … WHERE SEARCH(ks, "…")` query returns the
+  expected docs, with no cbft/network calls (purely local bleve). Confirm the plan
+  uses a `datastore-scan-fts` op (`TestFTSSearch` asserts this) and results match
+  the whole-doc and field forms (`SEARCH(d,"quick")` → `d1,d2`; `SEARCH(d.title,
+  "world")` → `d2`). Scores are computed by bleve but not yet surfaced in results.
 
 ## Risks & open questions
 

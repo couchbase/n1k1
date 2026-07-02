@@ -41,18 +41,25 @@ type catalog struct {
 	Indexes []*indexDef `json:"indexes"`
 }
 
-// indexDef is one declared secondary-index definition.
+// indexDef is one declared index definition. Kind selects the machinery: "gsi"
+// (default) is the bbolt range secondary index (si.go); "fts" is the bleve
+// full-text index (fts.go), where Keys are the fields to index (empty = dynamic,
+// index every field) and Where is not used.
 type indexDef struct {
 	Name      string   `json:"name"`
 	Namespace string   `json:"namespace"` // defaults to "default"
 	Keyspace  string   `json:"keyspace"`
-	Keys      []string `json:"keys"`  // key expression strings (leading key drives sargability)
-	Where     string   `json:"where"` // optional partial-index condition
+	Kind      string   `json:"kind,omitempty"`  // "gsi" (default) | "fts"
+	Keys      []string `json:"keys"`            // gsi: key exprs (leading drives sargability); fts: field names
+	Where     string   `json:"where,omitempty"` // gsi: optional partial-index condition
 
-	// Parsed forms (filled by parse()).
+	// Parsed forms (filled by parse(); gsi only).
 	rangeKey  expression.Expressions
 	condition expression.Expression
 }
+
+// isFTS reports whether this is a full-text (bleve) index.
+func (d *indexDef) isFTS() bool { return d.Kind == "fts" }
 
 // loadCatalog reads and parses <dataRoot>/.n1k1/catalog.json. It returns
 // (nil, nil) when no sidecar exists -- the common "no metadata, behave as today"
@@ -74,6 +81,9 @@ func loadCatalog(dataRoot string) (*catalog, error) {
 		if def.Namespace == "" {
 			def.Namespace = "default"
 		}
+		if def.Kind == "" {
+			def.Kind = "gsi"
+		}
 		if err := def.parse(); err != nil {
 			return nil, fmt.Errorf("loadCatalog %q, index %q: %w", path, def.Name, err)
 		}
@@ -81,10 +91,18 @@ func loadCatalog(dataRoot string) (*catalog, error) {
 	return &cat, nil
 }
 
-// parse compiles the key/where expression strings via the n1ql parser.
+// parse validates the def and, for a gsi index, compiles its key/where expression
+// strings via the n1ql parser. An fts index needs no expression parsing (its Keys
+// are plain field names, empty = dynamic).
 func (d *indexDef) parse() error {
-	if d.Name == "" || d.Keyspace == "" || len(d.Keys) == 0 {
-		return fmt.Errorf("index def needs name, keyspace, and at least one key")
+	if d.Name == "" || d.Keyspace == "" {
+		return fmt.Errorf("index def needs name and keyspace")
+	}
+	if d.isFTS() {
+		return nil // fts: keys are field names (empty = index all); no expr/where
+	}
+	if len(d.Keys) == 0 {
+		return fmt.Errorf("gsi index def needs at least one key")
 	}
 	d.rangeKey = make(expression.Expressions, 0, len(d.Keys))
 	for _, k := range d.Keys {
@@ -127,7 +145,8 @@ type catalogIndexJSON struct {
 	Name      string   `json:"name"`
 	Namespace string   `json:"namespace,omitempty"`
 	Keyspace  string   `json:"keyspace"`
-	Keys      []string `json:"keys"`
+	Kind      string   `json:"kind,omitempty"`
+	Keys      []string `json:"keys,omitempty"`
 	Where     string   `json:"where,omitempty"`
 }
 
@@ -155,10 +174,14 @@ func CatalogAddIndexes(dataRoot string, fragmentJSON []byte) ([]string, error) {
 		adds = []catalogIndexJSON{one}
 	}
 
-	// Validate each (name/keyspace/keys present, key/where expressions parse).
+	// Validate each (name/keyspace present, key/where expressions parse for gsi).
 	for _, a := range adds {
+		kind := a.Kind
+		if kind == "" {
+			kind = "gsi"
+		}
 		d := &indexDef{Name: a.Name, Namespace: a.Namespace, Keyspace: a.Keyspace,
-			Keys: a.Keys, Where: a.Where}
+			Kind: kind, Keys: a.Keys, Where: a.Where}
 		if err := d.parse(); err != nil {
 			return nil, fmt.Errorf("index %q: %w", a.Name, err)
 		}

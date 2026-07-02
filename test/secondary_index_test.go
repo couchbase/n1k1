@@ -485,6 +485,40 @@ func TestSecondaryIndexCreate(t *testing.T) {
 	}
 }
 
+// TestFTSSearch: a kind:fts (bleve) index answers SEARCH() -- both whole-doc and
+// field forms -- planning a datastore-scan-fts (not records-scan+filter) and
+// returning the matching docs. Exercises Phase 2 end-to-end (fts.go + the
+// stripSearch residual-filter fix).
+func TestFTSSearch(t *testing.T) {
+	docs := map[string]string{
+		"d1": `{"id":"d1","title":"the quick brown fox","body":"lazy dog"}`,
+		"d2": `{"id":"d2","title":"hello world","body":"a quick start"}`,
+		"d3": `{"id":"d3","title":"slow and steady","body":"nothing here"}`,
+	}
+	catalog := `{"indexes":[{"name":"ft_docs","keyspace":"docs","kind":"fts"}]}`
+	root := writeKeyspaceDocs(t, "docs", docs, catalog)
+
+	cases := []struct {
+		stmt string
+		want []string
+	}{
+		{`SELECT d.id AS id FROM docs d WHERE SEARCH(d, "quick")`, []string{"d1", "d2"}},
+		{`SELECT d.id AS id FROM docs d WHERE SEARCH(d.title, "world")`, []string{"d2"}},
+		{`SELECT d.id AS id FROM docs d WHERE SEARCH(d, "lazy")`, []string{"d1"}},
+		{`SELECT d.id AS id FROM docs d WHERE SEARCH(d, "quick") AND d.id = "d1"`, []string{"d1"}},
+	}
+	for _, tc := range cases {
+		store, conv := flatRootConv(t, root, tc.stmt)
+		if !hasKind(conv.TopOp, "datastore-scan-fts") {
+			t.Errorf("%q: expected an FTS scan, got %v", tc.stmt, opKinds(conv.TopOp))
+		}
+		rows := flatRootRows(t, conv, testGlueExec(t, false, store, conv))
+		if got := idJSONs(rows); !equalStrs(got, wantIDJSONs(tc.want)) {
+			t.Errorf("%q: want %v, got %v", tc.stmt, tc.want, got)
+		}
+	}
+}
+
 func equalStrs(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

@@ -126,7 +126,7 @@ func (g *Store) PlanStatementQP(s algebra.Statement, namespace string,
 		positionalArgs,
 		g.IndexApiVersion,
 		g.FeatureControls,
-		false, // useFts
+		true,  // useFts -- let the planner use bleve FTS indexes for SEARCH() (fts.go)
 		false, // useCBO
 		nil,   // optimizer
 		nil,   // deltaKeyspaces

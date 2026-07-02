@@ -27,6 +27,7 @@ import (
 
 	"github.com/couchbase/query/expression"
 	"github.com/couchbase/query/expression/parser"
+	"github.com/couchbase/query/expression/search"
 	"github.com/couchbase/query/value"
 )
 
@@ -414,6 +415,35 @@ func stripCovers(expr expression.Expression) expression.Expression {
 }
 
 type coverStripper struct {
+	expression.MapperBase
+}
+
+// stripSearch replaces every SEARCH() function in the tree with TRUE. Used by
+// conv's VisitFilter when an FTS scan is present: the bleve Search already
+// selected the matching docs, so the SEARCH() term in the residual filter is
+// satisfied -- and n1k1 has no live FTS verify to re-evaluate it (it would
+// evaluate false and drop every row). A `SEARCH(...) AND x` filter thus reduces to
+// `x`; a bare `SEARCH(...)` becomes `TRUE` (pass all fetched docs). See fts.go.
+func stripSearch(expr expression.Expression) expression.Expression {
+	if expr == nil {
+		return nil
+	}
+	ss := &searchStripper{}
+	ss.SetMapper(ss)
+	ss.SetMapFunc(func(e expression.Expression) (expression.Expression, error) {
+		if _, ok := e.(*search.Search); ok {
+			return expression.TRUE_EXPR, nil
+		}
+		return e, e.MapChildren(ss)
+	})
+	out, err := ss.Map(expr)
+	if err != nil {
+		return expr
+	}
+	return out
+}
+
+type searchStripper struct {
 	expression.MapperBase
 }
 

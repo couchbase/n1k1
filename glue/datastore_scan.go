@@ -336,6 +336,50 @@ func DatastoreScanIndex(o *base.Op, vars *base.Vars,
 
 // -------------------------------------------------------------------
 
+// DatastoreScanFTS drives an FTS scan (plan.IndexFtsSearch): it evaluates the
+// SEARCH() info's field/query/options/offset/limit expressions into a
+// datastore.FTSSearchInfo and calls the bleve-backed index's Search, whose hits
+// (docIDs) the shared drain yields as ^id for the following Fetch. (The hit score
+// in IndexEntry.MetaData isn't surfaced yet -- a v1 limitation.)
+func DatastoreScanFTS(o *base.Op, vars *base.Vars,
+	yieldVals base.YieldVals, yieldErr base.YieldErr) {
+	DatastoreScan(o, vars, yieldVals, yieldErr,
+		func(context *GlueContext, conn *datastore.IndexConnection) {
+			scan := vars.Temps[o.Params[0].(int)].(*plan.IndexFtsSearch)
+			fts, ok := scan.Index().(datastore.FTSIndex)
+			if !ok {
+				context.Error(errors.NewError(nil,
+					fmt.Sprintf("DatastoreScanFTS: index %T is not an FTSIndex", scan.Index())))
+				conn.Sender().Close()
+				return
+			}
+
+			var parent value.Value
+			si := scan.SearchInfo()
+			field, _, _ := EvalExpr(context, si.FieldName(), parent)
+			query, _, qerr := EvalExpr(context, si.Query(), parent)
+			options, _, _ := EvalExpr(context, si.Options(), parent)
+			if qerr != nil {
+				context.Error(errors.NewEvaluationError(qerr, "SEARCH query"))
+				conn.Sender().Close()
+				return
+			}
+
+			info := &datastore.FTSSearchInfo{
+				Field:   field,
+				Query:   query,
+				Options: options,
+				Order:   si.Order(),
+				Offset:  EvalExprInt64(context, si.Offset(), parent, 0),
+				Limit:   EvalExprInt64(context, si.Limit(), parent, math.MaxInt64),
+			}
+
+			go fts.Search(glueRequestId, info, datastore.UNBOUNDED, nil, conn)
+		})
+}
+
+// -------------------------------------------------------------------
+
 func DatastoreScan(o *base.Op, vars *base.Vars,
 	yieldVals base.YieldVals, yieldErr base.YieldErr,
 	cb func(*GlueContext, *datastore.IndexConnection)) {
