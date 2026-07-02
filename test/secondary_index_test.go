@@ -400,6 +400,53 @@ func TestSecondaryIndexReindex(t *testing.T) {
 	}
 }
 
+// TestSecondaryIndexSuggest: the .index suggest advisor proposes selective scalar
+// / nested-no-array fields and skips low-cardinality, array, and object fields.
+func TestSecondaryIndexSuggest(t *testing.T) {
+	docs := map[string]string{}
+	for i := 0; i < 12; i++ {
+		id := fmtID(i)
+		status := "a"
+		if i%2 == 0 {
+			status = "b"
+		}
+		// id: unique (high card) -> suggest; status: 2 values (low) -> skip;
+		// tags: array -> skip; profile: object -> skip; profile.city: nested unique -> suggest.
+		docs[id] = `{"id":"` + id + `","status":"` + status + `","tags":["x","y"],` +
+			`"profile":{"city":"city` + strconv.Itoa(i) + `"}}`
+	}
+	root := writeKeyspaceDocs(t, "ks", docs, `{"indexes":[]}`)
+	store, _ := flatRootConv(t, root, `SELECT 1`)
+
+	sugg, err := glue.SuggestIndexes(store, "default", "ks", 0)
+	if err != nil {
+		t.Fatalf("SuggestIndexes: %v", err)
+	}
+	got := map[string]bool{}
+	for _, s := range sugg {
+		got[s.Field] = true
+	}
+	for _, want := range []string{"id", "profile.city"} {
+		if !got[want] {
+			t.Errorf("expected suggestion for %q; got fields %v", want, keysOf(got))
+		}
+	}
+	for _, no := range []string{"status", "tags", "profile"} {
+		if got[no] {
+			t.Errorf("did not expect suggestion for %q (low-card/array/object)", no)
+		}
+	}
+}
+
+func keysOf(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
 func equalStrs(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

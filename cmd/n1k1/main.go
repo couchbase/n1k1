@@ -671,12 +671,52 @@ func (c *cli) cmdIndex(arg string) {
 	case "help", "example":
 		c.cmdIndexHelp()
 	case "suggest", "auto-plan":
-		// Advisor: sample docs + score candidate scalar fields, emit a catalog.json
-		// fragment (see DESIGN-indexing.md "adaptive auto-index"). Not built yet.
-		fmt.Fprintln(c.stderr, "'.index suggest' is planned (index advisor) -- see .index help")
+		c.cmdIndexSuggest(rest)
 	default:
 		fmt.Fprintf(c.stderr, "unknown subcommand %q; try .index help\n", sub)
 	}
+}
+
+// cmdIndexSuggest implements `.index suggest [<keyspace>]`: sample docs, score
+// selective scalar/nested-no-array fields, and print a catalog.json fragment
+// (stdout) the user can review/edit and save into .n1k1/catalog.json. Each
+// suggestion carries a "why" field (ignored by the catalog loader) with its
+// sample stats. The rationale header goes to stderr so stdout stays pasteable.
+func (c *cli) cmdIndexSuggest(keyspace string) {
+	if c.sess == nil || c.sess.Store == nil {
+		fmt.Fprintln(c.stderr, "no datastore open")
+		return
+	}
+	sugg, err := glue.SuggestIndexes(c.sess.Store, c.ns, keyspace, 0)
+	if err != nil {
+		fmt.Fprintf(c.stderr, "%s: index suggest: %v\n", c.prog, err)
+		return
+	}
+	if len(sugg) == 0 {
+		fmt.Fprintln(c.stderr, "no index suggestions (no selective scalar fields found in the sample)")
+		return
+	}
+	// Struct field order = JSON key order (encoding/json); "why" is ignored by the
+	// catalog loader (unknown field), so the fragment pastes straight into catalog.json.
+	type outDef struct {
+		Name     string   `json:"name"`
+		Keyspace string   `json:"keyspace"`
+		Keys     []string `json:"keys"`
+		Why      string   `json:"why"`
+	}
+	type outCat struct {
+		Indexes []outDef `json:"indexes"`
+	}
+	cat := outCat{}
+	for _, s := range sugg {
+		cat.Indexes = append(cat.Indexes, outDef{
+			Name: s.Name, Keyspace: s.Keyspace, Keys: []string{s.Field}, Why: s.Why,
+		})
+	}
+	b, _ := json.MarshalIndent(cat, "", "  ")
+	fmt.Fprintf(c.stderr, "%s%d suggestion(s) -- review/edit, then save into <dataRoot>/.n1k1/catalog.json (drop \"why\"):\n",
+		c.icon("💡 "), len(sugg))
+	fmt.Fprintln(c.out, string(b))
 }
 
 // cmdIndexHelp prints the .index subcommand syntax plus a copy-pasteable
@@ -686,7 +726,7 @@ func (c *cli) cmdIndexHelp() {
   .index [list]            list secondary indexes with keys + built stats
   .index show <name>       show one index's definition + stats
   .index rebuild [<name>]  force-rebuild (all, or one), ignoring freshness
-  .index suggest           (planned) advise candidate indexes from a doc sample
+  .index suggest [<ks>]    advise candidate indexes from a doc sample (emits catalog JSON)
   .index help              this help
 
 Index definitions live in <dataRoot>/.n1k1/catalog.json:

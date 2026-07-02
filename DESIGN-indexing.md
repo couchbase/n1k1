@@ -148,8 +148,10 @@ every `maybeSecondaryIndexes`, so a mid-session `.open` re-applies it):
 - **`.index help`** (alias `example`) — prints the subcommand syntax plus a
   copy-pasteable `catalog.json` example (the definition format isn't otherwise
   discoverable from the CLI). Shipped.
-- **`.index suggest`** — the advisor (see "adaptive auto-index"); currently a stub
-  that points at `.index help`.
+- **`.index suggest [<keyspace>]`** — the advisor (see "adaptive auto-index"):
+  samples docs, scores selective scalar/nested-no-array fields, and prints an
+  editable `catalog.json` fragment (each def carries a `why` the loader ignores).
+  Shipped (`glue.SuggestIndexes` in `si_suggest.go`).
 
 **Design stance on scope.** Per-index knobs (collation, the "index-everything"
 value-size cap + truncation marker, `defer`, CBO stats) belong in `catalog.json`
@@ -638,11 +640,12 @@ art, in three families.
    **CLI ladder: advise → human edits → create/build** (naming resolved; respects
    the single-writer-catalog rule). The elegant bit is **output format == input
    format**: the advisor emits exactly a `catalog.json` fragment.
-   - **`.index suggest`** *(advisor, read-only; aka `auto-plan`)* — sample + score,
-     print a `{"indexes":[…]}` fragment with a per-suggestion `score/why` comment. No
-     side effects; the natural companion to cbq's `ADVISE`. You paste it into an
-     editor, prune / rename / add `where`, then drop it into `.n1k1/catalog.json` or
-     feed it to:
+   - **`.index suggest`** *(advisor, read-only; aka `auto-plan`)* — **SHIPPED.**
+     Samples docs, scores selective scalar / nested-no-array fields, and prints a
+     `{"indexes":[…]}` fragment with a per-suggestion `why` field (the catalog loader
+     ignores it, so the fragment pastes back verbatim). No side effects; the natural
+     companion to cbq's `ADVISE`. You paste it into an editor, prune / rename / add
+     `where`, then drop it into `.n1k1/catalog.json` or feed it to:
    - **`.index create <json>`** *(explicit apply)* — append the def(s) to
      `.n1k1/catalog.json` and build. Writing the human catalog is fine here because
      it's **explicit user intent**; the single-writer rule only forbids *background*
@@ -650,9 +653,11 @@ art, in three families.
    - **`.index auto`** *(fully autonomous, later)* — sampling + workload
      confirmation + GC, writing a **separate machine-managed auto-catalog**, never
      the human `catalog.json`.
-   The **advisor (`.index auto-plan`) is the bounded, high-value first step**: it
-   needs only the sampling/path-walk/scoring above and the existing catalog format —
-   no workload logging, no autonomous creation, no GC.
+   The **advisor (`.index suggest`) is shipped** as the bounded first step (only
+   sampling/path-walk/scoring + the existing catalog format — no workload logging,
+   no autonomous creation, no GC). Still ahead: `.index create` (explicit catalog
+   write), and the fully-autonomous `.index auto` (workload confirmation + GC into a
+   machine-managed auto-catalog).
 3. **Eager wildcard GSI (Cosmos/Mongo-style)** — a bbolt store keyed
    `encode(path) + encode(value) + docID` so any single-path equality/range is
    contiguous.
