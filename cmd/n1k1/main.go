@@ -413,6 +413,8 @@ func (c *cli) exec(stmt string) {
 			fmt.Fprintf(c.stderr, "%s%s\n", c.icon("🚧 "), c.style.Yellow("Unsupported: "+unsup.Reason))
 		} else {
 			fmt.Fprintf(c.stderr, "%s%s\n", c.icon("✗ "), c.style.Red("Error: "+err.Error()))
+			// Point a caret at the offending column when the parser gives one.
+			fmt.Fprint(c.stderr, errorCaret(stmt, err.Error(), c.style))
 		}
 		return
 	}
