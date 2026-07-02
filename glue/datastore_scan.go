@@ -208,7 +208,7 @@ func metaPathPrefix(keyspace datastore.Keyspace) string {
 // through cbq's ScanEntries/Fetch.
 func keyspaceDir(keyspace datastore.Keyspace) (string, error) {
 	// A synthetic flat-root keyspace knows its own directory (the root itself),
-	// which isn't <root>/<ns>/<keyspace>. See flatroot.go.
+	// which isn't <root>/<ns>/<keyspace>. See flat.go.
 	if rd, ok := keyspace.(interface{ RecordsDir() string }); ok {
 		return rd.RecordsDir(), nil
 	}

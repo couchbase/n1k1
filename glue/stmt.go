@@ -175,7 +175,7 @@ func FileStore(path string) (*Store, error) {
 	} else {
 		// Flat root (data files directly under path, no ns/keyspace subdirs): fake a
 		// synthetic default:<basename> keyspace so `FROM <basename>` plans. No-op for
-		// the normal <ns>/<keyspace> layout. See flatroot.go.
+		// the normal <ns>/<keyspace> layout. See flat.go.
 		ds = maybeFlatRoot(path, ds)
 	}
 
