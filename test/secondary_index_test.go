@@ -203,6 +203,90 @@ func TestSecondaryIndexComposite(t *testing.T) {
 	}
 }
 
+// TestSecondaryIndexCovering: when a query projects only index-key fields the
+// planner emits a covering IndexScan (no Fetch); n1k1 answers it straight from
+// the index -- a datastore-scan-index-cover reconstructing the doc from the
+// decoded key values, with NO datastore-fetch and NO full records scan. Results
+// must still match. Exercises the "true covering execution" path (si.go decode +
+// reconstructCoverDoc), including a nested-field key path.
+func TestSecondaryIndexCovering(t *testing.T) {
+	docs := map[string]string{}
+	type row struct{ region, prod, city string }
+	var all []row
+	i := 0
+	for _, region := range []string{"US", "US", "EU"} {
+		for _, prod := range []string{"a", "b"} {
+			id := fmtID(i)
+			city := region + "-city"
+			// `extra` is deliberately NOT an index key and NOT projected, so the
+			// scan stays covering (proving we don't need the real doc).
+			docs[id] = `{"id":"` + id + `","region":"` + region + `","product":"` + prod +
+				`","addr":{"city":"` + city + `"},"extra":"ignored"}`
+			all = append(all, row{region, prod, city})
+			i++
+		}
+	}
+
+	t.Run("flat keys", func(t *testing.T) {
+		catalog := `{ "indexes": [
+		  { "name": "ix_rp", "keyspace": "sales", "keys": ["region","product"] }
+		] }`
+		root := writeKeyspaceDocs(t, "sales", docs, catalog)
+
+		stmt := `SELECT s.region AS r, s.product AS p FROM sales s WHERE s.region = "US"`
+		store, conv := flatRootConv(t, root, stmt)
+
+		if !hasKind(conv.TopOp, "datastore-scan-index-cover") {
+			t.Fatalf("expected a true covering scan (datastore-scan-index-cover), got %v",
+				opKinds(conv.TopOp))
+		}
+		if hasKind(conv.TopOp, "datastore-fetch") {
+			t.Errorf("covering scan should NOT fetch, got %v", opKinds(conv.TopOp))
+		}
+		if hasKind(conv.TopOp, "datastore-scan-records") {
+			t.Errorf("covering scan should NOT full-scan, got %v", opKinds(conv.TopOp))
+		}
+
+		var want []string
+		for _, r := range all {
+			if r.region == "US" {
+				want = append(want, `{"p":"`+r.prod+`","r":"US"}`)
+			}
+		}
+		sort.Strings(want)
+		got := idJSONs(flatRootRows(t, conv, testGlueExec(t, false, store, conv)))
+		if !equalStrs(got, want) {
+			t.Errorf("covering results: want %v, got %v", want, got)
+		}
+	})
+
+	t.Run("nested key path", func(t *testing.T) {
+		catalog := `{ "indexes": [
+		  { "name": "ix_city", "keyspace": "sales", "keys": ["addr.city","product"] }
+		] }`
+		root := writeKeyspaceDocs(t, "sales", docs, catalog)
+
+		// Project the nested key path -> reconstructCoverDoc must rebuild {"addr":{"city":..}}.
+		stmt := `SELECT s.addr.city AS c FROM sales s WHERE s.addr.city = "US-city"`
+		store, conv := flatRootConv(t, root, stmt)
+
+		if !hasKind(conv.TopOp, "datastore-scan-index-cover") {
+			t.Fatalf("expected a covering scan over a nested key, got %v", opKinds(conv.TopOp))
+		}
+		var want []string
+		for _, r := range all {
+			if r.city == "US-city" {
+				want = append(want, `{"c":"US-city"}`)
+			}
+		}
+		sort.Strings(want)
+		got := idJSONs(flatRootRows(t, conv, testGlueExec(t, false, store, conv)))
+		if !equalStrs(got, want) {
+			t.Errorf("nested covering results: want %v, got %v", want, got)
+		}
+	})
+}
+
 func fmtID(i int) string { return "s" + strconv.Itoa(i) }
 
 // writeKeyspaceDocs builds <root>/default/<keyspace>/<key>.json for each doc plus

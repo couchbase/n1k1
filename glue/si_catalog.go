@@ -56,6 +56,14 @@ type indexDef struct {
 	// Parsed forms (filled by parse(); gsi only).
 	rangeKey  expression.Expressions
 	condition expression.Expression
+
+	// keyPaths[i] is the doc field path of rangeKey[i] when that key is a plain
+	// field reference (e.g. "region" -> ["region"], "address.city" ->
+	// ["address","city"]), else nil for a non-field key expression (e.g.
+	// LOWER(name)). Enables true covering execution: a covering scan whose keys are
+	// all field paths can reconstruct the projected doc straight from the decoded
+	// index-key values (si.go), skipping the fetch. gsi only.
+	keyPaths [][]string
 }
 
 // isFTS reports whether this is a full-text (bleve) index.
@@ -105,12 +113,15 @@ func (d *indexDef) parse() error {
 		return fmt.Errorf("gsi index def needs at least one key")
 	}
 	d.rangeKey = make(expression.Expressions, 0, len(d.Keys))
+	d.keyPaths = make([][]string, 0, len(d.Keys))
 	for _, k := range d.Keys {
 		e, err := n1ql.ParseExpression(k)
 		if err != nil {
 			return fmt.Errorf("parsing key %q: %w", k, err)
 		}
 		d.rangeKey = append(d.rangeKey, e)
+		p, _ := fieldPath(e) // nil for a non-field key (disables covering)
+		d.keyPaths = append(d.keyPaths, p)
 	}
 	if strings.TrimSpace(d.Where) != "" {
 		e, err := n1ql.ParseExpression(d.Where)
@@ -120,6 +131,51 @@ func (d *indexDef) parse() error {
 		d.condition = e
 	}
 	return nil
+}
+
+// coverable reports whether a covering scan over this index can reconstruct the
+// projected document from the decoded index-key values alone (so it can skip the
+// fetch): true when every key is a plain field reference (keyPaths all non-nil).
+// A partial index (condition != nil) is excluded -- the planner may then carry
+// filter-covers for the condition's fields that a key-only reconstruction can't
+// satisfy, so those fall back to fetch. Empty for fts (no rangeKey).
+func (d *indexDef) coverable() bool {
+	if d.isFTS() || len(d.keyPaths) == 0 || d.condition != nil {
+		return false
+	}
+	for _, p := range d.keyPaths {
+		if p == nil {
+			return false
+		}
+	}
+	return true
+}
+
+// fieldPath returns the doc field path of a plain field-reference expression
+// (Identifier / nested Field), e.g. `region` -> ["region"] and `address.city` ->
+// ["address","city"]. ok is false for anything else (a function call, a subscript,
+// etc.), which disables covering reconstruction for that key.
+func fieldPath(e expression.Expression) (path []string, ok bool) {
+	switch t := e.(type) {
+	case *expression.Identifier:
+		return []string{t.Identifier()}, true
+	case *expression.Field:
+		base, ok := fieldPath(t.First())
+		if !ok {
+			return nil, false
+		}
+		nameVal := t.Second().Value()
+		if nameVal == nil {
+			return nil, false
+		}
+		name, ok := nameVal.Actual().(string)
+		if !ok {
+			return nil, false
+		}
+		return append(base, name), true
+	default:
+		return nil, false
+	}
 }
 
 // defHash is a short, stable hex hash of the normalized definition (keys +

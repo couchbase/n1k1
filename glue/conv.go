@@ -188,20 +188,34 @@ func (c *Conv) recordsScan(o plan.Operator, alias string) (interface{}, error) {
 }
 
 func (c *Conv) VisitIndexScan(o *plan.IndexScan) (interface{}, error) {
+	// A covering index scan carries the projected/filtered fields as cover
+	// expressions and the planner emits NO plan.Fetch (the index alone answers the
+	// query). The covers lower (via stripCovers, expr.go) to plain doc-field
+	// accesses (e.g. `.age`) that need a document to read from.
+	//
+	// True covering: when the index is coverable (every key is a plain field ref),
+	// reconstruct that document straight from the decoded index-key values -- no
+	// fetch. datastore-scan-index-cover emits a `.alias` doc + `^id` in the same
+	// shape a fetch would, so the peeled field accesses (and META().id) resolve
+	// against it identically. See DESIGN-indexing.md "true covering execution".
+	if len(o.Covers()) > 0 && coverableIndexScan(o) {
+		return c.TopPush(o, &base.Op{
+			Kind:   "datastore-scan-index-cover",
+			Labels: base.Labels{"." + LabelSuffix(o.Term().Alias()), "^id"},
+			Params: []interface{}{c.AddTemp(o)},
+		})
+	}
+
 	c.TopPush(o, &base.Op{
 		Kind:   "datastore-scan-index",
 		Labels: base.Labels{"^id"},
 		Params: []interface{}{c.AddTemp(o)},
 	})
 
-	// A covering index scan carries the projected/filtered fields as cover
-	// expressions and the planner emits NO plan.Fetch (the index alone answers the
-	// query). n1k1 has no cover execution yet (SetCover is an unimplemented TODO in
-	// datastore_scan.go), and the covers lower to plain doc-field accesses (e.g.
-	// `.age`) with no document to read them from -- so a covering scan would yield
-	// only ^id and every field access would be MISSING. Until covers are wired,
-	// de-optimize by materializing the document: synthesize a datastore-fetch over
-	// the scanned keyspace (plan.IndexScan implements Keyspacer), so the field
+	// A non-coverable covering scan (e.g. an expression key like LOWER(name), a
+	// partial index, or a non-n1k1 index): the index can't reconstruct the doc, so
+	// de-optimize by materializing it -- synthesize a datastore-fetch over the
+	// scanned keyspace (plan.IndexScan implements Keyspacer) so the peeled field
 	// accesses resolve against a real ".". Non-covering scans skip this -- a real
 	// plan.Fetch follows and VisitFetch adds the fetch.
 	if len(o.Covers()) > 0 {
@@ -213,6 +227,22 @@ func (c *Conv) VisitIndexScan(o *plan.IndexScan) (interface{}, error) {
 	}
 
 	return c.TopOp, nil
+}
+
+// coverableIndexScan reports whether a covering IndexScan can be answered
+// straight from the index (no fetch): the index must be an n1k1 secondary index
+// whose keys are all plain field refs (def.coverable), and the scan must carry no
+// filter-covers (a partial index's condition-field covers a key-only
+// reconstruction can't satisfy). Everything else falls back to scan+fetch.
+func coverableIndexScan(o *plan.IndexScan) bool {
+	si, ok := o.Index().(*secondaryIndex)
+	if !ok {
+		return false
+	}
+	if len(o.FilterCovers()) > 0 {
+		return false
+	}
+	return si.def.coverable()
 }
 
 func (c *Conv) VisitIndexScan2(o *plan.IndexScan2) (interface{}, error) { return NA(o) }

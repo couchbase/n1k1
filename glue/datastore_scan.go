@@ -14,6 +14,7 @@
 package glue
 
 import (
+	"bytes"
 	"fmt"
 	"math"
 	"path/filepath"
@@ -266,72 +267,150 @@ func DatastoreScanIndex(o *base.Op, vars *base.Vars,
 		func(context *GlueContext, conn *datastore.IndexConnection) {
 			scan := vars.Temps[o.Params[0].(int)].(*plan.IndexScan)
 
-			/* covers := scan.Covers() // TODO: Do we care about covers?
-			if len(covers) > 0 {
-				panic("covers unimplemented / TODO")
-			} */
+			if si, isSI := scan.Index().(*secondaryIndex); isSI {
+				scanSISpans(context, conn, scan, si, false)
+				return
+			}
 
+			// A non-n1k1 index -- e.g. the file datastore's #primary used for a
+			// covering IndexScan. Its interface Scan closes the sender itself,
+			// so keep the original goroutine-per-span shape (single span in
+			// practice) and don't add our own close (that would double-close and
+			// truncate the drain to zero rows).
 			limit := EvalExprInt64(context, scan.Limit(), nil, math.MaxInt64)
 
-			// TODO: for nested-loop join we need to pass in values from
-			// left-hand-side (outer) of the join for span evaluation?
-			// outerValue := parent
-			// if !scan.Term().IsUnderNL() {
-			//     outerValue = nil
-			// }
+			var outerValue value.Value // TODO: nested-loop join outer values.
 
-			var outerValue value.Value
-
-			if si, isSI := scan.Index().(*secondaryIndex); isSI {
-				// n1k1 secondary index: run ALL spans in ONE goroutine sharing a
-				// single sender, closing it exactly once at the end. (A predicate
-				// can produce several spans -- an IN list, a same-field OR, a
-				// DistinctScan. A goroutine-per-span, each Close-ing the shared
-				// sender, would let the first to finish truncate the drain and drop
-				// the others' entries.) scanSpan doesn't close; dedup docIDs across
-				// spans so overlapping ranges never double-emit.
-				go func() {
-					defer conn.Sender().Close()
-					// Dedup docIDs across the whole scan: multi-span predicates (IN /
-					// OR / DistinctScan) can legitimately revisit a docID, and it's
-					// also cheap insurance against a stale/rebuilt index emitting a key
-					// twice (v1 freshness is a coarse mtime signature). A selective
-					// index scan's result set is small, so the map cost is negligible.
-					seen := map[string]bool{}
-					for _, span := range scan.Spans() {
-						dspan, empty, err := EvalSpan(context, span, outerValue)
+			for _, span := range scan.Spans() {
+				go func(span *plan.Span) {
+					dspan, empty, err := EvalSpan(context, span, outerValue)
+					if err != nil || empty {
 						if err != nil {
 							context.Error(errors.NewEvaluationError(err, "span"))
-							continue
 						}
-						if empty {
-							continue
-						}
-						si.scanSpan(dspan, limit, seen, conn)
+						conn.Sender().Close()
+						return
 					}
-				}()
-			} else {
-				// A non-n1k1 index -- e.g. the file datastore's #primary used for a
-				// covering IndexScan. Its interface Scan closes the sender itself,
-				// so keep the original goroutine-per-span shape (single span in
-				// practice) and don't add our own close (that would double-close and
-				// truncate the drain to zero rows).
-				for _, span := range scan.Spans() {
-					go func(span *plan.Span) {
-						dspan, empty, err := EvalSpan(context, span, outerValue)
-						if err != nil || empty {
-							if err != nil {
-								context.Error(errors.NewEvaluationError(err, "span"))
-							}
-							conn.Sender().Close()
-							return
-						}
-						scan.Index().Scan(glueRequestId, dspan, scan.Distinct(),
-							limit, datastore.UNBOUNDED, nil, conn)
-					}(span)
-				}
+					scan.Index().Scan(glueRequestId, dspan, scan.Distinct(),
+						limit, datastore.UNBOUNDED, nil, conn)
+				}(span)
 			}
 		})
+}
+
+// scanSISpans launches the n1k1 secondary index scan for all of an IndexScan's
+// spans in ONE goroutine sharing a single sender, closing it exactly once at the
+// end. (A predicate can produce several spans -- an IN list, a same-field OR, a
+// DistinctScan. A goroutine-per-span, each Close-ing the shared sender, would let
+// the first to finish truncate the drain and drop the others' entries.) scanSpan
+// doesn't close; docIDs are deduped across spans so overlapping ranges never
+// double-emit. projectKeys threads through to decode key values for a covering
+// scan (DatastoreScanIndexCovering).
+func scanSISpans(context *GlueContext, conn *datastore.IndexConnection,
+	scan *plan.IndexScan, si *secondaryIndex, projectKeys bool) {
+	limit := EvalExprInt64(context, scan.Limit(), nil, math.MaxInt64)
+
+	var outerValue value.Value // TODO: nested-loop join outer values.
+
+	go func() {
+		defer conn.Sender().Close()
+		// Dedup docIDs across the whole scan: multi-span predicates (IN / OR /
+		// DistinctScan) can legitimately revisit a docID, and it's also cheap
+		// insurance against a stale/rebuilt index emitting a key twice (v1 freshness
+		// is a coarse mtime signature). A selective index scan's result set is
+		// small, so the map cost is negligible.
+		seen := map[string]bool{}
+		for _, span := range scan.Spans() {
+			dspan, empty, err := EvalSpan(context, span, outerValue)
+			if err != nil {
+				context.Error(errors.NewEvaluationError(err, "span"))
+				continue
+			}
+			if empty {
+				continue
+			}
+			si.scanSpan(dspan, limit, seen, projectKeys, conn)
+		}
+	}()
+}
+
+// DatastoreScanIndexCovering answers a covering IndexScan over an n1k1 secondary
+// index straight from the index -- no fetch. It runs the scan with projectKeys so
+// each entry carries its decoded key values, then reconstructs the projected
+// document from the index def's field paths and emits it under the `.alias` label
+// (plus `^id`) in the exact shape a fetch would -- so the peeled cover field
+// accesses (stripCovers, expr.go) and META().id resolve against it identically.
+// conv.go only routes here when coverableIndexScan is satisfied (all keys are
+// plain field refs, no filter-covers). See DESIGN-indexing.md "true covering".
+func DatastoreScanIndexCovering(o *base.Op, vars *base.Vars,
+	yieldVals base.YieldVals, yieldErr base.YieldErr) {
+	scan := vars.Temps[o.Params[0].(int)].(*plan.IndexScan)
+	si, ok := scan.Index().(*secondaryIndex)
+	if !ok {
+		yieldErr(fmt.Errorf("DatastoreScanIndexCovering: index %T is not an n1k1 secondary index",
+			scan.Index()))
+		return
+	}
+	paths := si.def.keyPaths
+
+	var docBuf bytes.Buffer
+	var idBuf base.Val
+	row := make(base.Vals, 2)
+
+	buildRow := func(context *GlueContext, entry *datastore.IndexEntry) (base.Vals, error) {
+		doc, err := reconstructCoverDoc(paths, entry.EntryKey, &docBuf)
+		if err != nil {
+			return nil, err
+		}
+		idBuf = strconv.AppendQuote(idBuf[:0], entry.PrimaryKey)
+		row[0] = doc             // Label ".alias".
+		row[1] = base.Val(idBuf) // Label "^id".
+		return row, nil
+	}
+
+	datastoreScanDrain(o, vars, yieldVals, yieldErr,
+		func(context *GlueContext, conn *datastore.IndexConnection) {
+			scanSISpans(context, conn, scan, si, true)
+		}, buildRow)
+}
+
+// reconstructCoverDoc rebuilds the projected document of a covering scan from the
+// decoded index-key values and the index def's field paths (e.g. paths
+// [["region"],["address","city"]] + keys [v0,v1] -> {"region":v0,"address":{"city":v1}}).
+// A MISSING/absent key value leaves the field out (matching a doc that lacked it).
+// The buffer is reused across rows (the drain consumes each yield synchronously).
+func reconstructCoverDoc(paths [][]string, keys value.Values,
+	buf *bytes.Buffer) (base.Val, error) {
+	doc := value.NewValue(map[string]interface{}{})
+	for i, p := range paths {
+		if i >= len(keys) || len(p) == 0 {
+			continue
+		}
+		kv := keys[i]
+		if kv == nil || kv.Type() == value.MISSING {
+			continue
+		}
+		cur := doc
+		for j := 0; j < len(p)-1; j++ {
+			nxt, ok := cur.Field(p[j])
+			if !ok || nxt.Type() != value.OBJECT {
+				m := value.NewValue(map[string]interface{}{})
+				if err := cur.SetField(p[j], m); err != nil {
+					return nil, err
+				}
+				nxt = m
+			}
+			cur = nxt
+		}
+		if err := cur.SetField(p[len(p)-1], kv); err != nil {
+			return nil, err
+		}
+	}
+	buf.Reset()
+	if err := doc.WriteJSON(nil, buf, "", "", true); err != nil {
+		return nil, err
+	}
+	return base.Val(buf.Bytes()), nil
 }
 
 // -------------------------------------------------------------------
@@ -383,6 +462,22 @@ func DatastoreScanFTS(o *base.Op, vars *base.Vars,
 func DatastoreScan(o *base.Op, vars *base.Vars,
 	yieldVals base.YieldVals, yieldErr base.YieldErr,
 	cb func(*GlueContext, *datastore.IndexConnection)) {
+	datastoreScanDrain(o, vars, yieldVals, yieldErr, cb, nil)
+}
+
+// datastoreScanDrain runs an index-connection scan (cb launches it) and drains
+// its sender. With buildRow == nil it yields one val per entry -- the ^id (the
+// default scan+fetch path, where a following Fetch materializes the doc). With a
+// buildRow it yields whatever that builds per entry -- used by
+// DatastoreScanIndexCovering to emit a reconstructed `.alias` doc + `^id` with no
+// fetch. (The cbq cover-slot mechanism -- IndexEntry.EntryKey/FilterCovers ->
+// AnnotatedValue.SetCover -- is not used: n1k1 has no cover slots on base.Val, so
+// covering is answered by reconstructing the doc and letting stripCovers peel the
+// covers back to plain field accesses; see conv.go/expr.go.)
+func datastoreScanDrain(o *base.Op, vars *base.Vars,
+	yieldVals base.YieldVals, yieldErr base.YieldErr,
+	cb func(*GlueContext, *datastore.IndexConnection),
+	buildRow func(*GlueContext, *datastore.IndexEntry) (base.Vals, error)) {
 	context := vars.Temps[0].(*GlueContext)
 
 	conn := datastore.NewIndexConnection(context)
@@ -403,45 +498,20 @@ func DatastoreScan(o *base.Op, vars *base.Vars,
 			break
 		}
 
+		if buildRow != nil {
+			row, err := buildRow(context, entry)
+			if err != nil {
+				yieldErr(err)
+				return
+			}
+			yieldVals(row)
+			continue
+		}
+
 		valId = strconv.AppendQuote(valId[:0], entry.PrimaryKey)
 		vals = append(vals[:0], valId)
 
 		yieldVals(vals)
-
-		// TODO: Handle NL case.
-		// scopeValue := parent
-		// if scan.Term().IsUnderNL() {
-		//     scopeValue = nil
-		// }
-
-		// av := this.newEmptyDocumentWithKey(entry.PrimaryKey, scopeValue, context)
-
-		// TODO: The COVER() expression which accesses the SetCover()
-		// data appears in a GROUP BY & aggregate expr rewrite.
-		// Need to put this into the vals as meta-ish entries?
-		/*
-			covers := scan.Covers()
-			if len(covers) > 0 {
-				for c, v := range scan.FilterCovers() {
-					av.SetCover(c.Text(), v)
-				}
-
-				// Matches planner.builder.buildCoveringScan()
-				for i, ek := range entry.EntryKey {
-					av.SetCover(covers[i].Text(), ek)
-				}
-
-				// Matches planner.builder.buildCoveringScan()
-				av.SetCover(covers[len(covers)-1].Text(),
-					value.NewValue(entry.PrimaryKey))
-
-				av.SetField(this.plan.Term().Alias(), av) // TODO?
-			}
-
-			av.SetBit(this.bit) // TODO: Needed for intersect scan.
-
-			ok = this.sendItem(av)
-		*/
 	}
 
 	yieldErr(nil)

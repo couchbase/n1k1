@@ -32,6 +32,8 @@ func DatastoreOp(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 		DatastoreScanPrimary(o, vars, yieldVals, yieldErr)
 	case "datastore-scan-index":
 		DatastoreScanIndex(o, vars, yieldVals, yieldErr)
+	case "datastore-scan-index-cover":
+		DatastoreScanIndexCovering(o, vars, yieldVals, yieldErr)
 	case "datastore-scan-fts":
 		DatastoreScanFTS(o, vars, yieldVals, yieldErr)
 	case "datastore-scan-keys":

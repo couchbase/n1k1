@@ -57,12 +57,22 @@ Learnings that changed the plan (all forced by getting real queries to pass):
   Fetch**, rewriting field refs into `expression.Cover` nodes that read a per-value
   cover slot n1k1 never fills → every field came back MISSING. Covering is on by
   default in the planner and can't be disabled from n1k1's side without a fork
-  edit. Fix, entirely n1k1-side: (1) `VisitIndexScan` **synthesizes a
-  datastore-fetch** when `len(Covers())>0` to materialize the document; (2)
-  `glue/expr.go:stripCovers` peels every `expression.Cover` back to its underlying
-  expression before eval, so the field refs resolve against the fetched doc. A real
-  cover-execution path (emit index-key values as cover labels) is the future
-  optimization; today covering scans de-optimize to scan+fetch, which is correct.
+  edit. Fix, entirely n1k1-side: `glue/expr.go:stripCovers` peels every
+  `expression.Cover` back to its underlying expression before eval, so the field
+  refs resolve against a materialized `.` document. **True covering execution is now
+  shipped** — instead of always fetching, when the index is *coverable* (every key
+  is a plain field ref and there are no filter-covers: `indexDef.coverable`),
+  `VisitIndexScan` emits a **`datastore-scan-index-cover`** op that reconstructs the
+  projected doc straight from the decoded index-key values (`si.go` sets
+  `IndexEntry.EntryKey`; `datastore_scan.go:reconstructCoverDoc` rebuilds
+  `{field: value}`, including nested paths, in the exact row shape a fetch would) —
+  **no fetch at all**. The peeled covers and `META().id` resolve against the
+  reconstructed doc identically to the fetched one. A **non**-coverable covering
+  scan (an expression key like `LOWER(name)`, a partial index, or a non-n1k1 index)
+  falls back to the correct scan+fetch: `VisitIndexScan` synthesizes a
+  `datastore-fetch` when `len(Covers())>0`. n1k1 has no cover slots on its
+  `[]byte`-valued rows, so doc-reconstruction — not cbq's `SetCover` mechanism — is
+  how covering is realized (`test/secondary_index_test.go:TestSecondaryIndexCovering`).
 - **Multi-span sender close.** `DatastoreScanIndex` ran a goroutine per span, each
   `Close`-ing the shared sender — so an IN-list / same-field-OR / `DistinctScan`
   (several spans) had the first span truncate the drain and drop the rest. Now all
@@ -90,10 +100,13 @@ predicate, so results are correct (just occasionally a slightly wider index walk
 
 Phase 2 (FTS via embedded bleve) is also shipped: `SELECT … WHERE SEARCH(ks,
 "query")` runs locally against a `kind: fts` bleve index (see "Phase 2" below).
-Not yet built (still proposal below): true covering execution, incremental index
-maintenance, a fingerprint/zone-map manifest, `CountIndex` pushdown, and the FTS
-follow-ups (`SargableFlex`/implicit predicates, declared-mapping honoring, score
-surfacing).
+**True covering execution is shipped too** — a covering scan over an index whose
+keys are all plain field refs is answered straight from the index (no fetch), by
+reconstructing the projected doc from the decoded key values (see the covering
+learning below). Not yet built (still proposal below): incremental index
+maintenance, a fingerprint/zone-map manifest, predicated `CountIndex` pushdown
+(blocked on exact-spans), and the FTS follow-ups (`SargableFlex`/implicit
+predicates, declared-mapping honoring, score surfacing).
 Known v1 limitations: freshness is a coarse (count, newest-mtime) signature, so a
 change that keeps both identical (rare) won't trigger a rebuild — run `.index
 rebuild` to force one; and array/object index *values* sort by byte order, not
@@ -398,9 +411,10 @@ this code lives".)
 key and stop at `span.Range.High`, honoring
 `span.Range.Inclusion & datastore.LOW/HIGH` via `Collate`; for each match
 `conn.Sender().SendEntry(&datastore.IndexEntry{PrimaryKey: docID})`; respect
-`limit`. `EntryKey`/`MetaData` may be left empty — n1k1's drain reads only
-`PrimaryKey` (covering-index `EntryKey` is a commented-out TODO in
-`datastore_scan.go`).
+`limit`. `MetaData` may be left empty. `EntryKey` is filled only for a covering
+scan (`scanSpan`'s `projectKeys`): it carries the decoded key values so the
+covering drain can reconstruct the projected doc without a fetch — the default
+(non-covering) drain reads only `PrimaryKey`.
 
 ### Step sequence (Phase 1)
 
@@ -836,6 +850,12 @@ datasets.
   output (`Result.Plan`) that it is an **`IndexScan`, not `PrimaryScan`**, and
   that results match the same query without the index. Run
   `go test -tags n1ql ./glue/...` and the conformance harness in `test/`.
+- **Covering (done):** project only index-key fields (e.g. `SELECT s.region,
+  s.product FROM s WHERE s.region="US"` over `keys:["region","product"]`) and
+  confirm the plan is a **`datastore-scan-index-cover`** with **no
+  `datastore-fetch`** and no full records scan, yet results match the index-off
+  run (verified for scalar, numeric, and nested-path keys —
+  `TestSecondaryIndexCovering`).
 - **Phase 2 (done):** a `SELECT … WHERE SEARCH(ks, "…")` query returns the
   expected docs, with no cbft/network calls (purely local bleve). Confirm the plan
   uses a `datastore-scan-fts` op (`TestFTSSearch` asserts this) and results match

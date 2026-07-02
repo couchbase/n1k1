@@ -607,7 +607,7 @@ func (si *secondaryIndex) Scan(requestId string, span *datastore.Span, distinct 
 	limit int64, cons datastore.ScanConsistency, vector timestamp.Vector,
 	conn *datastore.IndexConnection) {
 	defer conn.Sender().Close()
-	si.scanSpan(span, limit, nil, conn)
+	si.scanSpan(span, limit, nil, false, conn)
 }
 
 // scanSpan walks the bbolt B+tree in N1QL collation order (guaranteed by the
@@ -618,8 +618,11 @@ func (si *secondaryIndex) Scan(requestId string, span *datastore.Span, distinct 
 // the sender (the caller owns that, so several spans can share one connection),
 // and skips docIDs already in seen (dedup across a multi-span scan; pass nil to
 // disable).
+// When projectKeys is set (a covering scan), it also decodes each entry's key
+// components into IndexEntry.EntryKey so the drainer can reconstruct the projected
+// doc without a fetch (DatastoreScanIndexCovering).
 func (si *secondaryIndex) scanSpan(span *datastore.Span, limit int64,
-	seen map[string]bool, conn *datastore.IndexConnection) {
+	seen map[string]bool, projectKeys bool, conn *datastore.IndexConnection) {
 	if limit <= 0 {
 		limit = int64(1) << 62
 	}
@@ -679,7 +682,11 @@ func (si *secondaryIndex) scanSpan(span *datastore.Span, limit int64,
 				seen[string(docID)] = true
 			}
 
-			if !conn.Sender().SendEntry(&datastore.IndexEntry{PrimaryKey: string(docID)}) {
+			entry := &datastore.IndexEntry{PrimaryKey: string(docID)}
+			if projectKeys {
+				entry.EntryKey = decodeKeyComponents(k, compEnds)
+			}
+			if !conn.Sender().SendEntry(entry) {
 				break
 			}
 			sent++
@@ -689,6 +696,23 @@ func (si *secondaryIndex) scanSpan(span *datastore.Span, limit int64,
 	if err != nil {
 		conn.Error(errors.NewError(err, "secondary-index scan"))
 	}
+}
+
+// decodeKeyComponents recovers the index-key values from a stored bbolt key,
+// given the per-component byte offsets returned by splitKey. Used by a covering
+// scan to reconstruct the projected doc straight from the index (no fetch). A
+// component that fails to decode leaves a nil (MISSING) slot rather than dropping
+// the whole entry.
+func decodeKeyComponents(key []byte, compEnds []int) value.Values {
+	keys := make(value.Values, len(compEnds))
+	start := 0
+	for i, end := range compEnds {
+		if v, _, ok := decodeValue(key[start:end]); ok {
+			keys[i] = v
+		}
+		start = end
+	}
+	return keys
 }
 
 // encodeSeq encodes a sequence of bound values (one per sarged key) into a
