@@ -680,9 +680,6 @@ func exoticInfo(c map[string]interface{}) (reason, content string) {
 // listed here stops passing (a regression) and warns if a listed case starts
 // passing (stale -- remove it). Shrink this table as coverage grows.
 var expectedNonPass = map[string]string{
-	// Secondary index / union scan (n1k1 does primary scans).
-	"case_by_id.json[2]": "index-scan",
-
 	// Huge generator builtins (engine refuses; upstream errors too).
 	"case_func_array.json[58]": "resource-guard",
 	"case_func_array.json[59]": "resource-guard",
@@ -706,7 +703,6 @@ var expectedNonPass = map[string]string{
 
 // groupWhy gives a one-line reason for each expectedNonPass group.
 var groupWhy = map[string]string{
-	"index-scan":       "secondary index / union scan not converted (n1k1 does primary scans)",
 	"resource-guard":   "engine refuses huge generator builtins (ARRAY_RANGE/REPEAT ~1e10)",
 	"system-namespace": "system: namespace needs a systemstore (intentionally nil; see FileStore)",
 	"prepared":         "prepared-statement EXECUTE (plan.Discard) not supported",
