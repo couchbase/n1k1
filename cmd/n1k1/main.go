@@ -608,9 +608,7 @@ func (c *cli) printHelp() {
 	fmt.Fprint(c.stderr, `.help                 show this help
 .open <dir>           open a different file datastore directory
 .tables / .keyspaces  list keyspaces (with a copy-paste example each)
-.index [list]         list secondary indexes (.n1k1/catalog.json) with keys + stats
-.index show <name>    show one secondary index's definition + stats
-.index rebuild [<n>]  force-rebuild secondary indexes (all, or one), ignoring freshness
+.index [list|show <name>|rebuild [<n>]]  secondary indexes (run .index help for details)
 .schema [<keyspace>]  sampled shape (keys + JSON types) of a keyspace
 .mode <m>             output mode (append |pretty to indent JSON): `+strings.Join(cmd.OutputModes, " ")+`
 .meta [on|off|auto]   add a _meta sub-object to records (no arg shows the current setting)
@@ -659,7 +657,8 @@ func (c *cli) eagerBuildIndexes() {
 }
 
 // cmdIndex dispatches the .index command family: `.index [list]`, `.index show
-// <name>`, `.index rebuild [<name>]`. (`.indexes` is an alias for `.index list`.)
+// <name>`, `.index rebuild [<name>]`, `.index help`. (`.indexes` is an alias for
+// `.index list`.)
 func (c *cli) cmdIndex(arg string) {
 	sub, rest := splitFirst(arg)
 	switch strings.ToLower(sub) {
@@ -669,9 +668,39 @@ func (c *cli) cmdIndex(arg string) {
 		c.cmdIndexShow(rest)
 	case "rebuild":
 		c.cmdIndexRebuild(rest)
+	case "help", "example":
+		c.cmdIndexHelp()
+	case "suggest", "auto-plan":
+		// Advisor: sample docs + score candidate scalar fields, emit a catalog.json
+		// fragment (see DESIGN-indexing.md "adaptive auto-index"). Not built yet.
+		fmt.Fprintln(c.stderr, "'.index suggest' is planned (index advisor) -- see .index help")
 	default:
-		fmt.Fprintf(c.stderr, "usage: .index [list | show <name> | rebuild [<name>]]\n")
+		fmt.Fprintf(c.stderr, "unknown subcommand %q; try .index help\n", sub)
 	}
+}
+
+// cmdIndexHelp prints the .index subcommand syntax plus a copy-pasteable
+// catalog.json example (the definition format isn't otherwise discoverable).
+func (c *cli) cmdIndexHelp() {
+	fmt.Fprint(c.stderr, `.index commands:
+  .index [list]            list secondary indexes with keys + built stats
+  .index show <name>       show one index's definition + stats
+  .index rebuild [<name>]  force-rebuild (all, or one), ignoring freshness
+  .index suggest           (planned) advise candidate indexes from a doc sample
+  .index help              this help
+
+Index definitions live in <dataRoot>/.n1k1/catalog.json:
+  {
+    "indexes": [
+      { "name": "ix_country", "keyspace": "customer", "keys": ["country"] },
+      { "name": "ix_adult", "keyspace": "customer", "keys": ["age"], "where": "age >= 18" }
+    ]
+  }
+Each key is a N1QL expression -- a field ("country") or a nested path
+("personal_details.state"); "keys" may list several for a composite index; the
+optional "where" makes it a partial index. After editing catalog.json, run
+'.index rebuild' (or just query -- lazy builds on first use).
+`)
 }
 
 // indexInfos returns the datastore's secondary-index snapshots, or nil (printing a

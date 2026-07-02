@@ -145,6 +145,11 @@ every `maybeSecondaryIndexes`, so a mid-session `.open` re-applies it):
   `buildIndexesConcurrent(force=true)`, same concurrent build + progress as eager).
   The escape hatch for the coarse (file count, newest-mtime) freshness check — e.g.
   an edit within the same mtime tick — without deleting the `.n1k1` artifact.
+- **`.index help`** (alias `example`) — prints the subcommand syntax plus a
+  copy-pasteable `catalog.json` example (the definition format isn't otherwise
+  discoverable from the CLI). Shipped.
+- **`.index suggest`** — the advisor (see "adaptive auto-index"); currently a stub
+  that points at `.index help`.
 
 **Design stance on scope.** Per-index knobs (collation, the "index-everything"
 value-size cap + truncation marker, `defer`, CBO stats) belong in `catalog.json`
@@ -613,6 +618,41 @@ art, in three families.
    vice-versa), so treat it as a prior, not truth; and these estimates are exactly
    what a future `Index.Statistics()` should return to feed cbq's CBO
    (`useCBO=true`) instead of the current `nil`.
+
+   **Which fields are eligible (path walk during sampling).** Walk each sampled
+   doc's paths (`buger/jsonparser` `ObjectEach`, recursively) and classify each
+   leaf:
+   - **Scalar leaf, no array crossed** — the b-tree candidates. A top-level scalar
+     (`country`) or a pure-object nested path (`personal_details.state`) resolves to
+     exactly one scalar per doc; the key expression is just the dotted path (cbq
+     handles it, the build evals it — already true for our nested-key tests).
+   - **Any array segment on the path** (or the value itself is an array) — **skip
+     for the scalar tier.** A field under an array is multi-valued per doc, which a
+     plain scalar index can't represent; that needs cbq's **array index**
+     (`(DISTINCT) ARRAY … FOR … END`, sargable only via `ANY`/`UNNEST`) — a separate,
+     harder candidate class (flag it, don't auto-create in v1).
+   - **Type-unstable** (scalar in some docs, object/array in others — schema drift)
+     — skip or mark low-confidence; **synthetic `_meta`** and **oversized values**
+     (value-size cap) — exclude.
+
+   **CLI ladder: advise → human edits → create/build** (naming resolved; respects
+   the single-writer-catalog rule). The elegant bit is **output format == input
+   format**: the advisor emits exactly a `catalog.json` fragment.
+   - **`.index suggest`** *(advisor, read-only; aka `auto-plan`)* — sample + score,
+     print a `{"indexes":[…]}` fragment with a per-suggestion `score/why` comment. No
+     side effects; the natural companion to cbq's `ADVISE`. You paste it into an
+     editor, prune / rename / add `where`, then drop it into `.n1k1/catalog.json` or
+     feed it to:
+   - **`.index create <json>`** *(explicit apply)* — append the def(s) to
+     `.n1k1/catalog.json` and build. Writing the human catalog is fine here because
+     it's **explicit user intent**; the single-writer rule only forbids *background*
+     machinery from rewriting `catalog.json`.
+   - **`.index auto`** *(fully autonomous, later)* — sampling + workload
+     confirmation + GC, writing a **separate machine-managed auto-catalog**, never
+     the human `catalog.json`.
+   The **advisor (`.index auto-plan`) is the bounded, high-value first step**: it
+   needs only the sampling/path-walk/scoring above and the existing catalog format —
+   no workload logging, no autonomous creation, no GC.
 3. **Eager wildcard GSI (Cosmos/Mongo-style)** — a bbolt store keyed
    `encode(path) + encode(value) + docID` so any single-path equality/range is
    contiguous.
