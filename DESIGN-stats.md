@@ -23,9 +23,12 @@ TiVo, optionally popped open in a browser); and a **cost lens** — `EXPLAIN PRI
 
 ## What n1k1 already has (a skeleton wired for exactly this)
 
-This is not greenfield. The plumbing is scaffolded:
-- **`base.Stats struct{}`** (`base/base.go:310`) — currently empty (`// TODO`).
-- **`type YieldStats func(*Stats) error`** (`base/base.go:308`) — the callback an
+This is not greenfield. The plumbing is scaffolded (and the counter core below is
+now implemented — see "Implementation status"; `base.Stats` is no longer the empty
+`struct{}` this section originally described):
+- **`base.Stats`** (`base/stats.go`) — the counter core (`Counters []int64`,
+  `Index`, `Ops`); originally an empty `struct{} // TODO` in `base/base.go`.
+- **`type YieldStats func(*Stats) error`** (`base/base.go`) — the callback an
   op invokes "occasionally … to yield stats and progress information," documented
   as concurrent-safe, and whose **error return doubles as early-exit / abort**
   (e.g. `LIMIT`, cancellation).
@@ -167,6 +170,104 @@ Pipeline breakers (`GROUP BY`, `ORDER BY`) are a *display* nuance ("inhale, then
 final burst"), not a counting one: each still runs in a goroutine that owns its
 counters and increments them normally. The flat array is agnostic to streaming vs.
 blocking — it only cares about "which goroutine owns which slots."
+
+### Stat naming
+
+Counter names are the public-ish surface (they key the index and label the plan
+tree), so pin a convention:
+
+- **Noun first ("NounAdjective"), not "AdjectiveNoun".** Lead with the *thing*
+  counted so a subsystem's stats sort/cluster together: `RowsIn`, `RowsOut`,
+  `RowsLeft`; `BytesIn`, `BytesOut`; `GroupsOut`. Not `InRows` / `OutRows` (which
+  scatter `Rows` across the alphabet). When the counters are listed, everything
+  about `Rows` is adjacent, everything about `Bytes` is adjacent, etc.
+- **Monotonic is the default, and unmarked.** The overwhelming majority of
+  counters only ever increase (cumulative totals); leave them unadorned so the
+  common case stays terse (`RowsOut`, `Probes`, `GroupsOut`).
+- **A current level takes a `Cur` suffix; a high-water mark takes `Peak`.** A value
+  that can rise *and* fall — current memory, in-flight batches, live group-map
+  entries — is a gauge, not a total: `MemCur`, `BatchesCur`; its high-water mark is
+  `MemPeak`. The suffix (not a prefix) keeps the noun leading, so `Mem*` still
+  clusters (`MemCur`, `MemPeak` adjacent).
+- **On cbft/cbgt's `Tot`/`Cur` *prefixes*:** adopt the *distinction* (total vs.
+  current) but flip it to a **suffix**, because a prefix sorts all `Tot*` together
+  and all `Cur*` together — which fights the "group a noun's stats" goal above. And
+  since monotonic dominates, make it the *unmarked* default rather than prefixing
+  everything with `Tot`: shorter names, and the rarer gauges (`Cur`/`Peak`) are the
+  ones that visually stand out — which is the right emphasis, since a gauge needs
+  different rendering (a bar/needle) than a monotonic counter (a rising sparkline).
+- **Future: a machine-readable `StatKind`.** If tooling should pick sparkline
+  (monotonic) vs. gauge (level) rendering without string-parsing the suffix, carry
+  a `StatKind` (Counter / Gauge / Peak) in the descriptor. Not needed yet — every
+  registered counter today is monotonic — but the naming above is chosen to line up
+  with that enum when it lands.
+
+### Codegen safety (dev notes for adding counters)
+
+n1k1 ops are **dual-mode source**: the same `op_*.go` runs directly in the
+interpreter *and* is read by `cmd/intermed_build` to emit the compiled path
+(`intermed/generated_by_intermed_build.go`). A few rules keep an added counter
+working in **both**:
+
+- **`lz`-prefix drives what gets emitted.** A source line assigning an
+  `lz`-prefixed var from a non-`lz` expression is emitted with the value **baked**
+  as a literal (`lzStatsBase := statsBase` → `Emit("lzStatsBase := %#v", statsBase)`).
+  That is exactly how the op's base offset becomes a compile-time constant in the
+  compiled path — so write `lzStatsBase := o.StatsBase` (or a passed-in
+  `statsBase`) and index with `Counters[lzStatsBase+StatFooBar]`. **Never** index
+  by a non-`lz` var directly in emitted code (it won't exist at runtime), and
+  **never** do a per-row map lookup.
+- **Per-row increments go on a local `lz` counter** (`lzStatRowsOut++`), which is
+  emitted into the runtime loop and costs ~nothing even when stats are off. **Flush**
+  that local into the shared slot only at a coarse point, guarded by
+  `if lzVars != nil && lzVars.Ctx != nil && lzVars.Ctx.Stats != nil { ... }` — the
+  same nil-guard idiom the scan checkpoint already uses. Scans flush at each
+  1024-row `YieldStats` checkpoint (live); other ops currently flush once, after
+  their child drains (final value correct; live intermediate cadence is a
+  follow-up).
+- **Signature changes ripple through regeneration, not by hand.** Adding a param
+  (e.g. `statsBase int` to `ScanReaderAsCsv`) is fine: the `// !lz` call sites are
+  gen-time and are re-emitted when you re-run `intermed_build`. The generated file
+  is **gitignored** and must be regenerated — do not commit it.
+- **Always regenerate + compile + run the suite in both modes.** After touching an
+  op, run `go build ./cmd/intermed_build/ && ./intermed_build`, then
+  `go build ./intermed/`, then the suite with `-tags n1ql` (see the worktree
+  bootstrap in `DESIGN-testing.md` — the local-path `replace` stubs for the EE
+  placeholder modules are what let a worktree build the `n1ql` path at all). The
+  suite is the only check that exercises the *compiled* counters at runtime; the
+  `engine` unit tests only cover the interpreter.
+- **Single-writer slots need no atomics — today.** Each op instance's section is
+  written by one goroutine (a scan→filter→group pipeline all runs in one
+  goroutine; only `Stage`/`UNION` actors split goroutines, and those are distinct
+  subtrees → distinct sections). Plain `=`/`++` is safe. If same-op parallelism
+  ever lands (parallel scan, parallel `GROUP BY` shards writing one op's slots),
+  add the per-`(op, actor)` dimension described above *before* relying on the
+  counts.
+
+### Implementation status
+
+Implemented (interpreter + compiled path, verified by the `n1ql` suite in both
+modes):
+
+- **`base/stats.go`** — `Stats{Counters, Index, Ops}`, the `StatsDescs` registry
+  (op Kind → ordered stat names), `LayoutStats(root)` (pre-order walk sizing the
+  array, assigning `Op.StatsBase`, building the `"opId:statName"` index), and
+  `Stats.Get(key)`. `Op.StatsBase` (`json:"-"`) and `Ctx.Stats` added; the empty
+  `Stats struct{}` placeholder removed.
+- **Instrumented ops** (all monotonic counters): `scan` → `RowsOut` (live, flushed
+  at the 1024-row checkpoint; also removed the per-checkpoint throwaway `Stats`
+  alloc — `YieldStats` now receives the shared `Ctx.Stats`); `filter` →
+  `RowsIn`/`RowsOut` (selectivity); `group`/`distinct` → `RowsIn`/`GroupsOut`
+  (fan-in); `order-offset-limit` → `RowsIn`/`RowsOut`; the nested-loop `join`/`nest`/
+  `unnest` family → `RowsLeft`/`Probes` (the exploding-join work signal).
+- Nil `Ctx.Stats` ⇒ the zero-cost off path (unchanged default); `LayoutStats` +
+  setting `Ctx.Stats` opts a caller in.
+
+Not yet wired (follow-ups): `project`/`union`/`window` and hash-join counters;
+`BytesIn` and pruning/`FilesOpened`/`FilesPruned` counters (need the
+`DESIGN-data.md §5` manifest); per-op **live** flush cadence for non-scan ops; the
+`glue`/CLI opt-in (`RunObserved`, `-progress`, `.stats`) over this core; and the
+`StatKind` gauge/peak marker.
 
 ## Delivery: getting stats to the client — the approaches
 
@@ -600,8 +701,9 @@ touches the fork.
 - **Where the reporter goroutine lives** — engine, glue, or CLI only.
 - **Denominators:** how eagerly to compute totals (file sizes now; manifest
   `doc_count` when the `DESIGN-data.md` work lands) vs indeterminate progress.
-- **Codegen path:** ensure the `intermed`/`lz` compiled path preserves the
-  `YieldStats` checkpoints and their cheap-counter semantics.
+- **Codegen path:** *(resolved for the counters landed so far — see "Codegen
+  safety")* the base offset rides through as a baked literal and the suite verifies
+  the compiled path at runtime; keep this invariant as more ops are instrumented.
 - **Partial-result sampling policy:** first-N vs top-N-by-value vs a fixed watched
   set; and how firmly to guard previews from being consumed as final results.
 - **Per-op "work" counters** (join probes/comparisons, hash inserts) that power the

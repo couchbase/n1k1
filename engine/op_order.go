@@ -73,9 +73,15 @@ func OpOrderOffsetLimit(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVal
 
 		_, _, _, _ = lzEncoded, lzExamined, lzValsPre, lzValsMax
 
+		lzStatRowsIn := 0          // stats: rows fed into the sort/limit.
+		lzStatRowsOut := 0         // stats: rows yielded after sort/offset/limit.
+		lzStatsBase := o.StatsBase // stats: baked as a literal in the compiled path.
+
 		lzYieldValsOrig := lzYieldVals
 
 		lzYieldVals = func(lzVals base.Vals) {
+			lzStatRowsIn++ // stats
+
 			if len(orders) > 0 { // !lz
 				// If there were ORDER BY exprs, we use the lzHeap.
 				lzValsOut := lzValsPre[:0]
@@ -124,6 +130,8 @@ func OpOrderOffsetLimit(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVal
 				}
 			} else { // !lz
 				if lzExamined >= offset && lzExamined < offsetPlusLimit {
+					lzStatRowsOut++ // stats
+
 					lzYieldValsOrig(lzVals)
 				}
 
@@ -169,6 +177,8 @@ func OpOrderOffsetLimit(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVal
 
 						lzValsPre = base.ValsProjectedDecodeVals(lzItem, lzValsPre[:0])
 
+						lzStatRowsOut++ // stats
+
 						lzYieldValsOrig(lzValsPre)
 					}
 
@@ -183,6 +193,13 @@ func OpOrderOffsetLimit(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVal
 
 		if LzScope {
 			ExecOp(o.Children[0], lzVars, lzYieldVals, lzYieldErr, pathNext, "OOLO") // !lz
+
+			// stats: flush final counts (sorted rows are yielded during the child
+			// drain above, via the lzYieldErr wrapper).
+			if lzVars != nil && lzVars.Ctx != nil && lzVars.Ctx.Stats != nil {
+				lzVars.Ctx.Stats.Counters[lzStatsBase+StatOrderRowsIn] = int64(lzStatRowsIn)
+				lzVars.Ctx.Stats.Counters[lzStatsBase+StatOrderRowsOut] = int64(lzStatRowsOut)
+			}
 
 			if lzHeap != nil {
 				lzHeap.Close()

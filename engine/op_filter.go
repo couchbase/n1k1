@@ -23,14 +23,22 @@ func OpFilter(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 		exprFunc :=
 			MakeExprFunc(lzVars, o.Children[0].Labels, o.Params, pathNextF, "FF") // !lz
 
+		lzStatRowsIn := 0          // stats: rows examined.
+		lzStatRowsOut := 0         // stats: rows passing the predicate.
+		lzStatsBase := o.StatsBase // stats: baked as a literal in the compiled path.
+
 		lzYieldValsOrig := lzYieldVals
 
 		lzYieldVals = func(lzVals base.Vals) {
+			lzStatRowsIn++ // stats: local counter, flushed when the scan completes.
+
 			var lzVal base.Val
 
 			lzVal = exprFunc(lzVals, lzYieldErr) // <== emitCaptured: pathNextF "FF"
 
 			if base.ValTruthy(lzVal) {
+				lzStatRowsOut++ // stats
+
 				lzYieldValsOrig(lzVals) // <== emitCaptured: path ""
 			}
 		}
@@ -38,5 +46,11 @@ func OpFilter(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 		EmitPop(pathNext, "F") // !lz
 
 		ExecOp(o.Children[0], lzVars, lzYieldVals, lzYieldErr, pathNextF, "") // !lz
+
+		// stats: flush final counts once the child has drained.
+		if lzVars != nil && lzVars.Ctx != nil && lzVars.Ctx.Stats != nil {
+			lzVars.Ctx.Stats.Counters[lzStatsBase+StatFilterRowsIn] = int64(lzStatRowsIn)
+			lzVars.Ctx.Stats.Counters[lzStatsBase+StatFilterRowsOut] = int64(lzStatRowsOut)
+		}
 	}
 }

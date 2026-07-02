@@ -93,12 +93,18 @@ func OpJoinNestedLoop(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 		lzValsJoin := make(base.Vals, lenLabelsAB)
 
+		lzStatRowsLeft := 0        // stats: left-driver (outer) rows.
+		lzStatProbes := 0          // stats: inner-loop row visits (the join work).
+		lzStatsBase := o.StatsBase // stats: baked as a literal in the compiled path.
+
 		lzYieldValsOrig := lzYieldVals
 
 		lzYieldVals = func(lzValsA base.Vals) {
 			if lzErr != nil {
 				return
 			}
+
+			lzStatRowsLeft++ // stats
 
 			lzValsJoin = lzValsJoin[:0]
 			lzValsJoin = append(lzValsJoin, lzValsA...)
@@ -115,6 +121,8 @@ func OpJoinNestedLoop(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 			var lzVal base.Val
 
 			lzYieldVals := func(lzValsB base.Vals) {
+				lzStatProbes++ // stats: one inner-loop row visit.
+
 				lzValsJoin = lzValsJoin[0:lenLabelsA]
 				lzValsJoin = append(lzValsJoin, lzValsB...)
 
@@ -216,6 +224,12 @@ func OpJoinNestedLoop(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 		// The left driver.
 		ExecOp(o.Children[0], lzVars, lzYieldVals, lzYieldErr, pathNext, "JNLO") // !lz
+
+		// stats: flush final counts once the left driver has drained.
+		if lzVars != nil && lzVars.Ctx != nil && lzVars.Ctx.Stats != nil {
+			lzVars.Ctx.Stats.Counters[lzStatsBase+StatJoinNLRowsLeft] = int64(lzStatRowsLeft)
+			lzVars.Ctx.Stats.Counters[lzStatsBase+StatJoinNLProbes] = int64(lzStatProbes)
+		}
 
 		lzYieldErrOrig(lzErr)
 	}

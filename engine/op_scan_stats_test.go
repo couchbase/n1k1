@@ -30,22 +30,32 @@ func makeJsons(n int) string {
 	return sb.String()
 }
 
-// runScanWithStats builds a scan op over the given jsons, lays out stats, runs
-// the op, and returns the resulting *Stats plus how many rows were yielded.
-func runScanWithStats(t *testing.T, o *base.Op, jsons string) (*base.Stats, int) {
+func scanOp(n int) *base.Op {
+	return &base.Op{
+		Kind:   "scan",
+		Labels: base.Labels{"."},
+		Params: []interface{}{"jsonsData", makeJsons(n)},
+	}
+}
+
+// runOpWithStats lays out stats for the op tree, runs it with a full-enough Ctx
+// (expr catalog + comparer, so filters evaluate), and returns the resulting
+// *Stats plus the number of rows yielded at the top.
+func runOpWithStats(t *testing.T, root *base.Op) (*base.Stats, int) {
 	t.Helper()
 
-	stats := base.LayoutStats(o)
+	stats := base.LayoutStats(root)
 	if stats == nil {
-		t.Fatal("LayoutStats returned nil; expected scan to contribute a counter")
+		t.Fatal("LayoutStats returned nil; expected a counter-contributing op")
 	}
 
-	var yieldStatsCalls int
-
 	vars := &base.Vars{
+		Temps: make([]interface{}, 16),
 		Ctx: &base.Ctx{
-			Stats:      stats,
-			YieldStats: func(s *base.Stats) error { yieldStatsCalls++; return nil },
+			Stats:       stats,
+			ExprCatalog: ExprCatalog,
+			ValComparer: base.NewValComparer(),
+			YieldStats:  func(s *base.Stats) error { return nil },
 		},
 	}
 
@@ -57,7 +67,7 @@ func runScanWithStats(t *testing.T, o *base.Op, jsons string) (*base.Stats, int)
 		}
 	}
 
-	ExecOp(o, vars, yieldVals, yieldErr, "", "")
+	ExecOp(root, vars, yieldVals, yieldErr, "", "")
 
 	return stats, rowsYielded
 }
@@ -67,13 +77,9 @@ func runScanWithStats(t *testing.T, o *base.Op, jsons string) (*base.Stats, int)
 // final flush (< 1024 rows) and across many YieldStats checkpoints (> 1024).
 func TestScanStatsRowsOut(t *testing.T) {
 	for _, n := range []int{0, 1, 3, 1024, 2500} {
-		o := &base.Op{
-			Kind:   "scan",
-			Labels: base.Labels{"."},
-			Params: []interface{}{"jsonsData", makeJsons(n)},
-		}
+		o := scanOp(n)
 
-		stats, rowsYielded := runScanWithStats(t, o, "")
+		stats, rowsYielded := runOpWithStats(t, o)
 
 		if rowsYielded != n {
 			t.Fatalf("n=%d: yielded %d rows, want %d", n, rowsYielded, n)
@@ -90,17 +96,56 @@ func TestScanStatsRowsOut(t *testing.T) {
 	}
 }
 
-// TestLayoutStatsTree checks base offsets and the attribution index for a small
-// tree: only ops registered in StatsDescs get a section, keyed by tree path.
-func TestLayoutStatsTree(t *testing.T) {
-	scan := &base.Op{
-		Kind:   "scan",
-		Labels: base.Labels{"."},
-		Params: []interface{}{"jsonsData", makeJsons(2)},
+// TestFilterStats checks RowsIn/RowsOut on a filter over a scan, using constant
+// predicates so no field access is needed: "true" passes every row, "false"
+// passes none. RowsIn must equal the scan's output either way.
+func TestFilterStats(t *testing.T) {
+	const n = 7
+
+	cases := []struct {
+		pred    string
+		wantOut int64
+	}{
+		{"true", n},
+		{"false", 0},
 	}
+
+	for _, c := range cases {
+		filter := &base.Op{
+			Kind:     "filter",
+			Labels:   base.Labels{"."},
+			Params:   []interface{}{"json", c.pred},
+			Children: []*base.Op{scanOp(n)},
+		}
+
+		stats, rowsYielded := runOpWithStats(t, filter)
+
+		if rowsYielded != int(c.wantOut) {
+			t.Fatalf("pred=%q: yielded %d rows, want %d", c.pred, rowsYielded, c.wantOut)
+		}
+
+		// filter is the root op "0"; scan is child "0/0".
+		if got, ok := stats.Get("0:RowsIn"); !ok || got != n {
+			t.Fatalf("pred=%q: filter RowsIn=(%d,%v), want %d", c.pred, got, ok, n)
+		}
+		if got, ok := stats.Get("0:RowsOut"); !ok || got != c.wantOut {
+			t.Fatalf("pred=%q: filter RowsOut=(%d,%v), want %d", c.pred, got, ok, c.wantOut)
+		}
+		if got, ok := stats.Get("0/0:RowsOut"); !ok || got != n {
+			t.Fatalf("pred=%q: scan RowsOut=(%d,%v), want %d", c.pred, got, ok, n)
+		}
+	}
+}
+
+// TestLayoutStatsTree checks base offsets and the attribution index for a small
+// tree. filter (registered) and scan (registered) each get a section, keyed by
+// tree path; sections are laid out pre-order (filter root, then its scan child).
+func TestLayoutStatsTree(t *testing.T) {
+	scan := scanOp(2)
 	filter := &base.Op{
 		Kind:     "filter",
 		Labels:   base.Labels{"."},
+		Params:   []interface{}{"json", "true"},
 		Children: []*base.Op{scan},
 	}
 
@@ -109,35 +154,32 @@ func TestLayoutStatsTree(t *testing.T) {
 		t.Fatal("LayoutStats returned nil")
 	}
 
-	// filter contributes no counters (not registered) -> StatsBase -1.
-	if filter.StatsBase != -1 {
-		t.Fatalf("filter.StatsBase=%d, want -1", filter.StatsBase)
+	// Pre-order: filter (root "0") gets base 0 with 2 slots (RowsIn, RowsOut);
+	// scan ("0/0") follows at base 2 with 1 slot (RowsOut). Total 3.
+	if filter.StatsBase != 0 {
+		t.Fatalf("filter.StatsBase=%d, want 0", filter.StatsBase)
 	}
-	// scan is the only counter-contributing op -> base 0, one slot.
-	if scan.StatsBase != 0 {
-		t.Fatalf("scan.StatsBase=%d, want 0", scan.StatsBase)
+	if scan.StatsBase != 2 {
+		t.Fatalf("scan.StatsBase=%d, want 2", scan.StatsBase)
 	}
-	if len(stats.Counters) != 1 {
-		t.Fatalf("len(Counters)=%d, want 1", len(stats.Counters))
+	if len(stats.Counters) != 3 {
+		t.Fatalf("len(Counters)=%d, want 3", len(stats.Counters))
 	}
 
-	// The scan sits at tree path "0/0" (child 0 of the root filter "0").
-	if _, ok := stats.Index["0/0:RowsOut"]; !ok {
-		t.Fatalf("Index missing key 0/0:RowsOut; have %v", stats.Index)
+	for _, key := range []string{"0:RowsIn", "0:RowsOut", "0/0:RowsOut"} {
+		if _, ok := stats.Index[key]; !ok {
+			t.Fatalf("Index missing key %q; have %v", key, stats.Index)
+		}
 	}
-	if len(stats.Ops) != 1 || stats.Ops[0].Id != "0/0" || stats.Ops[0].Kind != "scan" {
-		t.Fatalf("Ops=%+v, want one scan at id 0/0", stats.Ops)
+	if len(stats.Ops) != 2 || stats.Ops[0].Kind != "filter" || stats.Ops[1].Kind != "scan" {
+		t.Fatalf("Ops=%+v, want filter then scan", stats.Ops)
 	}
 }
 
 // TestScanStatsOff verifies the zero-cost off path: with no Stats on the Ctx, a
 // scan runs normally and never touches the counter machinery.
 func TestScanStatsOff(t *testing.T) {
-	o := &base.Op{
-		Kind:   "scan",
-		Labels: base.Labels{"."},
-		Params: []interface{}{"jsonsData", makeJsons(5)},
-	}
+	o := scanOp(5)
 
 	vars := &base.Vars{Ctx: &base.Ctx{}} // Stats nil, YieldStats nil.
 

@@ -77,9 +77,15 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 		_, _, _, _ = lzValOut, lzGroupValNew, lzGroupValReuse, lzAgg
 
+		lzStatRowsIn := 0          // stats: rows aggregated.
+		lzStatGroupsOut := 0       // stats: distinct groups yielded.
+		lzStatsBase := o.StatsBase // stats: baked as a literal in the compiled path.
+
 		lzYieldValsOrig := lzYieldVals
 
 		lzYieldVals = func(lzVals base.Vals) {
+			lzStatRowsIn++ // stats: local counter, flushed when the child drains.
+
 			// Compute the group key. With no GROUP BY (empty groupExprs), this
 			// is the canonical encoding of zero vals -- one constant key -- so
 			// all input rows fold into a single group, i.e. one output row of
@@ -195,6 +201,8 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 						}
 					} // !lz
 
+					lzStatGroupsOut++ // stats
+
 					lzYieldValsOrig(lzValsOut)
 
 					return true
@@ -210,6 +218,13 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 		if lzErr == nil {
 			ExecOp(o.Children[0], lzVars, lzYieldVals, lzYieldErr, pathNext, "GO") // !lz
+		}
+
+		// stats: flush final counts (groups are yielded during the child drain
+		// above, via the lzYieldErr visitor).
+		if lzVars != nil && lzVars.Ctx != nil && lzVars.Ctx.Stats != nil {
+			lzVars.Ctx.Stats.Counters[lzStatsBase+StatGroupRowsIn] = int64(lzStatRowsIn)
+			lzVars.Ctx.Stats.Counters[lzStatsBase+StatGroupGroupsOut] = int64(lzStatGroupsOut)
 		}
 
 		lzVars.Ctx.RecycleMap(lzSet)
