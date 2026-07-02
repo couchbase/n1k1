@@ -149,7 +149,7 @@ Chosen to match DuckDB names where the concept exists, so muscle memory carries.
 | `.open <dir>` | Open a new file datastore directory (re-`FileStore`+`InitParser`). |
 | `.tables` / `.keyspaces` | List keyspaces under the namespace (the subdirs of `<dir>/<ns>/`). DuckDB calls them tables; we accept both, print "keyspaces". |
 | `.schema [<keyspace>]` | Infer a shape from sampling the first N docs of a keyspace (top-level keys + observed JSON types). No real schema exists in a JSON store, so it's a *sampled* shape, clearly labeled. |
-| `.indexes` | List secondary indexes from `.n1k1/catalog.json` with keys/`WHERE` and (once built) entry count + on-disk size. Builds any not-yet-built index to report stats. Owned by DESIGN-indexing.md "CLI control". |
+| `.index [list\|show <name>\|rebuild [<name>]]` | Secondary-index family (`.indexes` = `.index list`): list indexes from `.n1k1/catalog.json` with keys/`WHERE` + built stats, show one index's detail, or force-rebuild (all/one) ignoring freshness. Owned by DESIGN-indexing.md "CLI control". |
 | `.mode <m>` | Set output mode (see §6). |
 | `.meta [on\|off\|auto]` | Check or set whether records get a `_meta` sub-object (path/name/ext/size/mtime/pos). Mirrors the `-meta` flag; no arg prints the current setting. Mutates `glue.ScanWalkOptions.Meta`, which the records-scan reads per query. |
 | `.timer on\|off` | Toggle elapsed-time footer. |

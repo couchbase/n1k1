@@ -92,9 +92,9 @@ Not yet built (still proposal below): true covering execution, incremental index
 maintenance, a fingerprint/zone-map manifest, `CountIndex` pushdown, and all of
 Phase 2 (FTS).
 Known v1 limitations: freshness is a coarse (count, newest-mtime) signature, so a
-change that keeps both identical (rare) won't trigger a rebuild — run `.reindex` to
-force one; and array/object index *values* sort by byte order, not collation (fine
-— predicates range over scalars).
+change that keeps both identical (rare) won't trigger a rebuild — run `.index
+rebuild` to force one; and array/object index *values* sort by byte order, not
+collation (fine — predicates range over scalars).
 
 ---
 
@@ -130,27 +130,30 @@ every `maybeSecondaryIndexes`, so a mid-session `.open` re-applies it):
   secondary index is advertised and the planner always primary/records-scans.
   The A/B-timing switch (and an escape hatch if an index ever misbehaves).
 
-**`.indexes`** (dot-command) — introspection, alongside `.tables`/`.schema`. Lists
-each declared index as `ns:keyspace.name (keys…) [WHERE …]  [N entries, SIZE]`,
-opening/building any not-yet-built index to report live bbolt stats
-(`glue.SecondaryIndexInfos` → entry count via `Bucket.Stats().KeyN`, file size via
-`os.Stat`). Under `-index=off` it prints "disabled". Because it can trigger a build,
-`.indexes` doubles as an explicit "build now".
-
-**`.reindex [<name>]`** (dot-command) — force-rebuild all catalog indexes (or the
-one named) regardless of the freshness signature (`glue.RebuildSecondaryIndexes` →
-`buildIndexesConcurrent(force=true)`, same concurrent build + progress as eager).
-This is the escape hatch for the coarse (file count, newest-mtime) freshness check
-— e.g. an edit within the same mtime tick — without deleting the `.n1k1` artifact.
+**`.index` command family** (dot-commands) — all indexing dot-commands live under
+`.index <subcommand>` so the family is discoverable:
+- **`.index list`** (or bare `.index`; `.indexes` is an alias) — one line per
+  declared index: `ns:keyspace.name (keys…) [WHERE …]  [N entries, SIZE]`,
+  opening/building any not-yet-built index to report live bbolt stats
+  (`glue.SecondaryIndexInfos` → entry count via `Bucket.Stats().KeyN`, file size via
+  `os.Stat`). Under `-index=off` it prints "disabled". Because listing can trigger a
+  build, it doubles as an explicit "build now".
+- **`.index show <name>`** — the full detail of one index (keyspace, keys, WHERE,
+  entries, size, on-disk path).
+- **`.index rebuild [<name>]`** — force-rebuild all catalog indexes (or the one
+  named) regardless of the freshness signature (`glue.RebuildSecondaryIndexes` →
+  `buildIndexesConcurrent(force=true)`, same concurrent build + progress as eager).
+  The escape hatch for the coarse (file count, newest-mtime) freshness check — e.g.
+  an edit within the same mtime tick — without deleting the `.n1k1` artifact.
 
 **Design stance on scope.** Per-index knobs (collation, the "index-everything"
 value-size cap + truncation marker, `defer`, CBO stats) belong in `catalog.json`
 as per-index fields, *not* as global flags — they're properties of a definition,
 and `catalog.json` is the single-writer source of truth (see "Sidecar layout").
 Reserve flags/dot-commands for process-wide *timing/introspection/lifecycle*
-(`-index`, `.indexes`, `.reindex`; a future `.index drop <name>`). DDL
-(`CREATE/DROP INDEX`) stays unwired in v1 (`conv.go: VisitCreateIndex` is `NA()`);
-the catalog is the definition surface.
+(`-index`, and the `.index list|show|rebuild` family; a future `.index drop
+<name>`). DDL (`CREATE/DROP INDEX`) stays unwired in v1 (`conv.go: VisitCreateIndex`
+is `NA()`); the catalog is the definition surface.
 
 ## Motivation
 

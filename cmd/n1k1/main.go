@@ -497,10 +497,10 @@ func (c *cli) dot(line string) bool {
 		c.cmdOpen(arg)
 	case ".tables", ".keyspaces":
 		c.cmdKeyspaces()
-	case ".indexes", ".index":
-		c.cmdIndexes()
-	case ".reindex":
-		c.cmdReindex(arg)
+	case ".index":
+		c.cmdIndex(arg)
+	case ".indexes": // alias for ".index list"
+		c.cmdIndex("list")
 	case ".schema":
 		c.cmdSchema(arg)
 	case ".mode":
@@ -574,8 +574,9 @@ func (c *cli) printHelp() {
 	fmt.Fprint(c.stderr, `.help                 show this help
 .open <dir>           open a different file datastore directory
 .tables / .keyspaces  list keyspaces (with a copy-paste example each)
-.indexes              list secondary indexes (.n1k1/catalog.json) with keys + stats
-.reindex [<name>]     force-rebuild secondary indexes (all, or one), ignoring freshness
+.index [list]         list secondary indexes (.n1k1/catalog.json) with keys + stats
+.index show <name>    show one secondary index's definition + stats
+.index rebuild [<n>]  force-rebuild secondary indexes (all, or one), ignoring freshness
 .schema [<keyspace>]  sampled shape (keys + JSON types) of a keyspace
 .mode <m>             output mode (append |pretty to indent JSON): `+strings.Join(cmd.OutputModes, " ")+`
 .meta [on|off|auto]   add a _meta sub-object to records (no arg shows the current setting)
@@ -623,13 +624,28 @@ func (c *cli) eagerBuildIndexes() {
 	}
 }
 
-// cmdIndexes implements .indexes: list each declared secondary index with its
-// keys, WHERE, and (once built) entry count and on-disk size. It opens/builds any
-// not-yet-built index to report live stats.
-func (c *cli) cmdIndexes() {
+// cmdIndex dispatches the .index command family: `.index [list]`, `.index show
+// <name>`, `.index rebuild [<name>]`. (`.indexes` is an alias for `.index list`.)
+func (c *cli) cmdIndex(arg string) {
+	sub, rest := splitFirst(arg)
+	switch strings.ToLower(sub) {
+	case "", "list":
+		c.cmdIndexList()
+	case "show":
+		c.cmdIndexShow(rest)
+	case "rebuild":
+		c.cmdIndexRebuild(rest)
+	default:
+		fmt.Fprintf(c.stderr, "usage: .index [list | show <name> | rebuild [<name>]]\n")
+	}
+}
+
+// indexInfos returns the datastore's secondary-index snapshots, or nil (printing a
+// friendly reason) when there are none / no datastore.
+func (c *cli) indexInfos() []glue.IndexInfo {
 	if c.sess == nil || c.sess.Store == nil {
 		fmt.Fprintln(c.stderr, "no datastore open")
-		return
+		return nil
 	}
 	infos := glue.SecondaryIndexInfos(c.sess.Store.Datastore)
 	if len(infos) == 0 {
@@ -638,9 +654,15 @@ func (c *cli) cmdIndexes() {
 		} else {
 			fmt.Fprintln(c.stderr, "no secondary indexes (declare them in .n1k1/catalog.json)")
 		}
-		return
 	}
-	for _, ix := range infos {
+	return infos
+}
+
+// cmdIndexList implements `.index list`: one line per declared secondary index with
+// its keys, WHERE, and (once built) entry count + on-disk size. Opens/builds any
+// not-yet-built index to report live stats.
+func (c *cli) cmdIndexList() {
+	for _, ix := range c.indexInfos() {
 		name := ix.Namespace + ":" + ix.Keyspace + "." + ix.Name
 		keys := "(" + strings.Join(ix.Keys, ", ") + ")"
 		if ix.Where != "" {
@@ -656,11 +678,40 @@ func (c *cli) cmdIndexes() {
 	}
 }
 
-// cmdReindex implements .reindex [name]: force-rebuild all catalog indexes (or the
-// one named), ignoring the freshness signature -- the escape hatch when the coarse
-// (file count, newest mtime) freshness check misses a change (e.g. an edit within
-// the same mtime tick). Shows the same concurrent build progress as -index=eager.
-func (c *cli) cmdReindex(name string) {
+// cmdIndexShow implements `.index show <name>`: the full detail of one index.
+func (c *cli) cmdIndexShow(name string) {
+	if name == "" {
+		fmt.Fprintln(c.stderr, "usage: .index show <name>")
+		return
+	}
+	for _, ix := range c.indexInfos() {
+		if ix.Name != name {
+			continue
+		}
+		fmt.Fprintf(c.out, "name:      %s\n", ix.Name)
+		fmt.Fprintf(c.out, "keyspace:  %s:%s\n", ix.Namespace, ix.Keyspace)
+		fmt.Fprintf(c.out, "keys:      %s\n", strings.Join(ix.Keys, ", "))
+		if ix.Where != "" {
+			fmt.Fprintf(c.out, "where:     %s\n", ix.Where)
+		}
+		if ix.Built {
+			fmt.Fprintf(c.out, "entries:   %d\n", ix.Entries)
+			fmt.Fprintf(c.out, "size:      %s\n", humanBytes(ix.SizeBytes))
+			fmt.Fprintf(c.out, "path:      %s\n", ix.Path)
+		} else {
+			fmt.Fprintf(c.out, "status:    not built (%s)\n", ix.Err)
+		}
+		return
+	}
+	fmt.Fprintf(c.stderr, "no such index %q (try .index list)\n", name)
+}
+
+// cmdIndexRebuild implements `.index rebuild [<name>]`: force-rebuild all catalog
+// indexes (or the one named), ignoring the freshness signature -- the escape hatch
+// when the coarse (file count, newest mtime) freshness check misses a change (e.g.
+// an edit within the same mtime tick). Shows the same concurrent build progress as
+// -index=eager.
+func (c *cli) cmdIndexRebuild(name string) {
 	if c.sess == nil || c.sess.Store == nil {
 		fmt.Fprintln(c.stderr, "no datastore open")
 		return
@@ -669,7 +720,7 @@ func (c *cli) cmdReindex(name string) {
 	err := glue.RebuildSecondaryIndexes(c.sess.Store.Datastore, name, prog.handle)
 	prog.finish()
 	if err != nil {
-		fmt.Fprintf(c.stderr, "%s: reindex: %v\n", c.prog, err)
+		fmt.Fprintf(c.stderr, "%s: index rebuild: %v\n", c.prog, err)
 	}
 }
 
