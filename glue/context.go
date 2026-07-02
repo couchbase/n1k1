@@ -19,9 +19,18 @@ import (
 	"github.com/couchbase/query/encryption"
 	"github.com/couchbase/query/errors"
 	"github.com/couchbase/query/expression"
+	"github.com/couchbase/query/expression/parser"
 	"github.com/couchbase/query/tenant"
 	"github.com/couchbase/query/value"
 )
+
+// Parse parses an expression string, overriding the embedded IndexContext.Parse
+// (a no-op that returns nil). expression.Context requires it; expression
+// machinery uses it e.g. for a computed SELECT ... EXCLUDE to_string(...) that
+// yields field names to parse. Returns the parsed *expression.Expression.
+func (g *GlueContext) Parse(s string) (interface{}, error) {
+	return parser.Parse(s)
+}
 
 // GlueContext is n1k1's own evaluation + datastore context. It replaces
 // query/execution.Context, which n1k1 previously reused but which transitively

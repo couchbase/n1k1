@@ -44,7 +44,72 @@ func DatastoreOp(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 		ExprScanOp(o, vars, yieldVals, yieldErr)
 	case "with-recursive":
 		WithRecursiveOp(o, vars, yieldVals, yieldErr)
+	case "project-exclude":
+		ProjectExcludeOp(o, vars, yieldVals, yieldErr, path, pathNext)
 	}
+}
+
+// ProjectExcludeOp implements SELECT * EXCLUDE <path>... over a lone unprefixed
+// star. It runs its child (the "." star projection, whose single val is the
+// projected object) and, per row, deletes the excluded paths from that object
+// -- reusing query's expression.GetReferences (resolve each EXCLUDE expression
+// to a path against the row, matching getExclusions(singleQualification=true))
+// and expression.DeleteFromObject (deep-delete, incl. nested/array-index paths).
+// This mirrors execution/project_initial.go's unprefixed-star exclude branch.
+func ProjectExcludeOp(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
+	yieldErr base.YieldErr, path, pathNext string) {
+	idx, ok := o.Params[0].(int)
+	if !ok {
+		yieldErr(fmt.Errorf("project-exclude: expected int Temps index, got %T", o.Params[0]))
+		return
+	}
+	excludes, ok := vars.Temps[idx].(expression.Expressions)
+	if !ok {
+		yieldErr(fmt.Errorf("project-exclude: no expressions at Temps[%d]", idx))
+		return
+	}
+	ctx, _ := vars.Temps[0].(expression.Context)
+
+	// The star projection yields one val (the ".*" object); star index within the
+	// row is the single ".*" label position.
+	starIdx := 0
+	for i, l := range o.Labels {
+		if l == ".*" {
+			starIdx = i
+			break
+		}
+	}
+
+	inner := func(vals base.Vals) {
+		var m map[string]interface{}
+		if err := json.Unmarshal(vals[starIdx], &m); err != nil || m == nil {
+			yieldVals(vals) // not an object (or empty): nothing to exclude
+			return
+		}
+
+		av := value.NewAnnotatedValue(value.NewValue(m))
+		av.SetSelf(true) // resolve unqualified EXCLUDE paths against the row (self)
+
+		refs, _, err := expression.GetReferences(excludes, av, ctx, true)
+		if err != nil {
+			yieldErr(err)
+			return
+		}
+		for _, ref := range refs {
+			expression.DeleteFromObject(m, ref)
+		}
+
+		jv, err := json.Marshal(m)
+		if err != nil {
+			yieldErr(err)
+			return
+		}
+		out := append(base.Vals{}, vals...)
+		out[starIdx] = base.Val(jv)
+		yieldVals(out)
+	}
+
+	vars.Ctx.ExecOp(o.Children[0], vars, inner, yieldErr, pathNext, "PE")
 }
 
 // ExprScanOp implements a FROM-clause expression scan (FROM <expr>/<subquery>/

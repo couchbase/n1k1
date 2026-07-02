@@ -1001,7 +1001,39 @@ func (c *Conv) VisitInitialProject(o *plan.InitialProject) (interface{}, error) 
 		}
 	}
 
-	return c.TopPush(o, op)
+	if _, err := c.TopPush(o, op); err != nil {
+		return nil, err
+	}
+
+	// SELECT ... EXCLUDE <path>...: remove the excluded paths from the projected
+	// value. Only supported for a lone unprefixed star (SELECT * EXCLUDE ...) --
+	// query resolves that via getExclusions(singleQualification=true) with the
+	// row as self; other shapes (o.* EXCLUDE, star mixed with terms) use a
+	// different resolution we don't handle yet. The project-exclude glue op reuses
+	// query's expression.GetReferences + DeleteFromObject at runtime (see
+	// datastore.go) since the exclude paths can be nested, array-indexed, or
+	// computed per row -- not expressible as a static OBJECT_REMOVE.
+	if excl := projectionExclude(o); len(excl) > 0 {
+		if len(op.Labels) == 1 && op.Labels[0] == ".*" {
+			// TopPush chains the current TopOp (the project op) as the child.
+			return c.TopPush(o, &base.Op{
+				Kind:   "project-exclude",
+				Labels: append(base.Labels{}, op.Labels...),
+				Params: []interface{}{c.AddTemp(excl)},
+			})
+		}
+		return NA(o) // EXCLUDE on a non-lone-star projection: not yet supported.
+	}
+
+	return c.TopOp, nil
+}
+
+// projectionExclude returns the projection's EXCLUDE expressions, or nil.
+func projectionExclude(o *plan.InitialProject) expression.Expressions {
+	if o.Projection() == nil {
+		return nil
+	}
+	return o.Projection().Exclude()
 }
 
 func (c *Conv) VisitIndexCountProject(o *plan.IndexCountProject) (interface{}, error) {
