@@ -152,6 +152,10 @@ var AggArrayAggDistinct = &Agg{
 	},
 	Result: func(vars *Vars, agg, buf []byte) (v Val, aggRest, bufOut []byte) {
 		n := binary.LittleEndian.Uint64(agg[:8])
+		// ARRAY_AGG(DISTINCT ...) over an all-MISSING group is NULL, not [] (N1QL).
+		if n == 0 {
+			return ValNull, agg[8:], buf
+		}
 		vBuf := append(buf[:0], '[')
 		total := 0
 		for i := uint64(0); i < n; i++ {
@@ -316,6 +320,12 @@ var AggArrayAgg = &Agg{
 
 	Result: func(vars *Vars, agg, buf []byte) (v Val, aggRest, bufOut []byte) {
 		n := binary.LittleEndian.Uint64(agg[:8])
+
+		// ARRAY_AGG over a group with no non-MISSING values is NULL, not [] (N1QL;
+		// n counts non-MISSING accumulated values, so n==0 means all were MISSING).
+		if n == 0 {
+			return ValNull, agg[8:], buf
+		}
 
 		vBuf := append(buf[:0], '[')
 
