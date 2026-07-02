@@ -598,15 +598,50 @@ func (c *cli) keyspaceNames() ([]string, error) {
 	return names, nil
 }
 
+// needsBackticks reports whether a keyspace/identifier name must be wrapped in
+// backticks to parse as SQL++. An unquoted identifier is [A-Za-z_][A-Za-z0-9_]*;
+// anything else -- empty, a leading digit, or a '.', '-', space, etc. -- needs
+// quoting. Filesystem-derived keyspace names (a flat-root basename or single-file
+// stem like "2026-01") routinely hit this. Backticks around an already-valid
+// identifier are harmless, so being conservative here is safe.
+func needsBackticks(name string) bool {
+	if name == "" {
+		return true
+	}
+	for i, r := range name {
+		switch {
+		case r == '_' || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z'):
+			// always allowed
+		case r >= '0' && r <= '9':
+			if i == 0 {
+				return true // an unquoted identifier can't start with a digit
+			}
+		default:
+			return true // any other rune (., -, space, :, ...) forces backticks
+		}
+	}
+	return false
+}
+
+// quoteIdent wraps name in backticks when SQL++ parsing requires it, escaping an
+// embedded backtick by doubling it. A valid bare identifier is returned unchanged.
+func quoteIdent(name string) string {
+	if !needsBackticks(name) {
+		return name
+	}
+	return "`" + strings.ReplaceAll(name, "`", "``") + "`"
+}
+
 // exampleFor returns a copy-pasteable SQL++ example for a keyspace, varying the
-// template by position so a multi-keyspace listing shows a mix.
+// template by position so a multi-keyspace listing shows a mix. The keyspace is
+// backticked when SQL++ parsing requires it, so the sample is paste-ready.
 func exampleFor(ks string, i int) string {
 	tmpls := []string{
 		"SELECT COUNT(*) FROM %s;",
 		"SELECT * FROM %s LIMIT 3;",
 		"SELECT * FROM %s LIMIT 5;",
 	}
-	return fmt.Sprintf(tmpls[i%len(tmpls)], ks)
+	return fmt.Sprintf(tmpls[i%len(tmpls)], quoteIdent(ks))
 }
 
 // printKeyspaces writes the keyspace listing (with a copy-pasteable example per
@@ -624,10 +659,14 @@ func (c *cli) printKeyspaces(w io.Writer) {
 			c.style.Bold(".open <dir>"))
 		return
 	}
+	// Display names backticked when SQL++ needs it (e.g. "2026-01"), so the
+	// listed keyspace matches how it must be typed; pad on the displayed form.
+	disp := make([]string, len(names))
 	width := 0
-	for _, n := range names {
-		if len(n) > width {
-			width = len(n)
+	for i, n := range names {
+		disp[i] = quoteIdent(n)
+		if len(disp[i]) > width {
+			width = len(disp[i])
 		}
 	}
 	noun := "keyspaces"
@@ -642,7 +681,7 @@ func (c *cli) printKeyspaces(w io.Writer) {
 	fmt.Fprintf(w, "%s%d %s%s — copy/paste to try:\n",
 		c.icon("📚 "), len(names), noun, nsNote)
 	for i, n := range names {
-		pad := n + strings.Repeat(" ", width-len(n))
+		pad := disp[i] + strings.Repeat(" ", width-len(disp[i]))
 		fmt.Fprintf(w, "  %s   %s\n", c.style.Cyan(pad), c.style.Dim(exampleFor(n, i)))
 	}
 }
