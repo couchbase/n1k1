@@ -649,12 +649,14 @@ do this; n1k1 just doesn't convert the resulting operators yet.
 - **`plan.IndexCountProject`** — the projection wrapper that turns the pushed-down
   scalar count into the result column.
 
-### Current state (the gap)
-- `glue/conv.go` returns `NA()` for **every** count operator:
-  `VisitCountScan`, `VisitIndexCountScan`, `VisitIndexCountScan2`,
-  `VisitIndexCountDistinctScan2` (lines 179–184) and `VisitIndexCountProject`
-  (line 635). So any statement the planner turns into a count-scan currently
-  fails to convert.
+### Current state
+- **Whole-keyspace `COUNT(*)` is done** (item 1 below): `conv.go:VisitCountScan`
+  de-optimizes to a records scan + `count(*)` group-aggregate (correct for every
+  format; a true O(1) count is the manifest item below).
+- The predicated/index count operators (`VisitIndexCountScan`, `IndexCountScan2`,
+  `IndexCountDistinctScan2`, `VisitIndexCountProject`) still return `NA()` — but see
+  item 2: the base-index versions can't be reached anyway (the planner won't emit
+  them without exact spans / `Index2`), so `NA()` is currently unreachable, not a gap.
 - **Datastore side is partly done already:** the file datastore's
   `keyspace.Count()` (returns `len(ReadDir)`) and `Size()` already exist
   (`n1k1-query/datastore/file/file.go:467`). So whole-keyspace `COUNT(*)` is
@@ -666,16 +668,32 @@ do this; n1k1 just doesn't convert the resulting operators yet.
    glue execution op that calls `keyspace.Count(context)` and yields a **single
    row with one int64**. Implement `VisitIndexCountProject` to shape the projected
    column. No datastore changes needed (`Count()` exists). Do this first.
-2. **Predicated `COUNT(*)` via secondary index.** Make the Phase-1
-   `secondaryIndex` also implement `datastore.CountIndex.Count(span, …)` — with
-   bbolt, count entries within the span range (cursor walk, or a maintained
-   counter). Implement `conv.go:VisitIndexCountScan` → evaluate spans (reuse
-   `EvalSpan`) + call `index.Count(span)` → yield one row.
-   - **Same interface-assertion lever as Phase 1:** the planner emits
-     `IndexCountScan` only when the index is a `datastore.CountIndex`, and
-     `IndexCountScan2` only when it's a `CountIndex2` (+ API version). Implement
-     **only the base `CountIndex`** to keep the planner on the simpler
-     `plan.IndexCountScan`.
+2. **Predicated `COUNT(*)` via secondary index — BLOCKED on `Index2` (verified).**
+   The mechanical parts are easy and were prototyped: `secondaryIndex.Count(span)`
+   (a bbolt cursor tally over the span, sharing the `Scan` walk), plus
+   `conv.go:VisitIndexCountScan` (a `datastore-index-count` op that sums
+   `index.Count` over the spans and yields one row holding the int64 under a
+   `^count` label) and `VisitIndexCountProject` (projects that scalar into the
+   result column, reading the `^count` label for the aggregate term). **All
+   correct — but the cbq planner never emits `plan.IndexCountScan` for a base
+   `datastore.Index`,** so the wiring is dead. Root cause (traced through the
+   planner): count pushdown lives in the *covering* path
+   (`build_scan_covering.go:buildCoveringPushdDownIndexScan2` →
+   `build_scan_pushdowns.go:indexCoveringPushDownProperty`) and is gated on
+   **`_PUSHDOWN_EXACTSPANS`**. A base (API1) index's spans are **never** marked
+   exact — which is *also* why every base-`IndexScan` n1k1 produces carries a
+   residual `Filter` (the planner assumes the index over-returns and re-checks).
+   No exact spans ⇒ no `_PUSHDOWN_GROUPAGGS` ⇒ no `IndexCountScan`; the planner
+   instead does primary-scan + filter + aggregate. Confirmed empirically: `COUNT(*)`,
+   `COUNT(1)`, `COUNT(custId)` with a sargable `WHERE` all plan `datastore-scan-records`,
+   never a count scan.
+   - **So this requires implementing `datastore.Index2`** (`RangeKey2`, exact-span
+     metadata) + `conv.go:VisitIndexScan2`. That's the same upgrade that would drop
+     the always-present residual `Filter` on ordinary index scans — a broader win,
+     but it means the `Scan`/`Count` must be **exactly** span-correct (no superset)
+     since the planner would remove the residual safety net. The base-`CountIndex`
+     note previously here was wrong: `CountIndex` is necessary but **not
+     sufficient** without exact spans. The prototype was reverted pending `Index2`.
 3. **`COUNT(DISTINCT …)`.** Needs `CountIndex2.CountDistinct` over the index;
    defer (harder) — without it the planner falls back to the normal
    distinct+aggregate path, which still works, just slower.
