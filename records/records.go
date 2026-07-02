@@ -63,11 +63,11 @@ var recordExts = map[string]bool{
 }
 
 // IsRecordFile reports whether path (by extension, ignoring a .gz/.zst suffix)
-// is a data file this package can decode (structured JSON/CSV, or a PDF/DOCX/
-// XLSX document the extract provider handles).
+// is a data file this package can decode (structured JSON/CSV, or a document/
+// media file the extract provider handles -- see the extractors table).
 func IsRecordFile(path string) bool {
 	ext := innerExt(path)
-	return recordExts[ext] || extractExts[ext]
+	return recordExts[ext] || isExtractExt(ext)
 }
 
 // IsStructuredFile reports whether path is a *structured* data file (JSON family
@@ -503,7 +503,10 @@ func AllModes() WalkOptions {
 //	all       → everything (flexible, the default)
 //	json      → .json/.jsons        jsonl → .jsonl/.ndjson
 //	csv       → .csv                 tsv   → .tsv
-//	extract   → .pdf/.docx/.xlsx     pdf|docx|xlsx → that one
+//	extract   → every extract format (all of the below groups)
+//	doc       → .pdf/.docx/.xlsx/.pptx    text → .txt/.log/.md/.markdown/.rtf
+//	image     → .png/.jpg/.jpeg           video → .mp4/.mov
+//	pdf|docx|xlsx|pptx|txt|md|rtf|png|jpg|mp4|… → that one extension
 //	gzip      → allow .gz            recurse → descend subdirs
 //
 // An empty string (or "all") means "unrestricted" (AllModes). Unknown tokens
@@ -529,13 +532,41 @@ func ParseModes(csv string) (WalkOptions, error) {
 		case "tsv":
 			opts.Formats[".tsv"] = true
 		case "extract":
-			opts.Formats[".pdf"], opts.Formats[".docx"], opts.Formats[".xlsx"] = true, true, true
+			for ext := range extractors { // every registered extract format
+				opts.Formats[ext] = true
+			}
+		case "doc", "docs", "office":
+			opts.Formats[".pdf"], opts.Formats[".docx"] = true, true
+			opts.Formats[".xlsx"], opts.Formats[".pptx"] = true, true
+		case "text":
+			opts.Formats[".txt"], opts.Formats[".log"] = true, true
+			opts.Formats[".md"], opts.Formats[".markdown"], opts.Formats[".rtf"] = true, true, true
+		case "image", "img":
+			opts.Formats[".png"], opts.Formats[".jpg"], opts.Formats[".jpeg"] = true, true, true
+		case "video":
+			opts.Formats[".mp4"], opts.Formats[".mov"] = true, true
 		case "pdf":
 			opts.Formats[".pdf"] = true
 		case "docx":
 			opts.Formats[".docx"] = true
 		case "xlsx":
 			opts.Formats[".xlsx"] = true
+		case "pptx":
+			opts.Formats[".pptx"] = true
+		case "txt":
+			opts.Formats[".txt"], opts.Formats[".log"] = true, true
+		case "md", "markdown":
+			opts.Formats[".md"], opts.Formats[".markdown"] = true, true
+		case "rtf":
+			opts.Formats[".rtf"] = true
+		case "png":
+			opts.Formats[".png"] = true
+		case "jpg", "jpeg":
+			opts.Formats[".jpg"], opts.Formats[".jpeg"] = true, true
+		case "mp4":
+			opts.Formats[".mp4"] = true
+		case "mov":
+			opts.Formats[".mov"] = true
 		case "gzip", "gz":
 			opts.AllowGzip = true
 		case "zstd", "zst":

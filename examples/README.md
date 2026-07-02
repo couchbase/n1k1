@@ -23,14 +23,18 @@ Status legend (matches the design doc):
 | `metrics/` | E | deep/recursive tree, unkeyed union (JSONL) | `SELECT host, AVG(value) FROM default:cpu GROUP BY host` | 🟢 |
 | `archive/` | H | transparent gzip (`.jsonl.gz`) | `SELECT * FROM default:orders` | 🟢 |
 | `finance/` | J | CSV rows → JSON objects (header keys, inferred types) | `SELECT currency, SUM(amount) FROM txns GROUP BY currency` | 🟢 |
-| `kb/` | L | PDF/office/unstructured docs → extract-provider rows (`{filename,kind,text}`) | `SELECT filename FROM default:docs WHERE text LIKE '%vacation%'` | 🟢 |
+| `kb/` | L | docs & media → extract-provider rows (`{filename,kind,text,…}`) | `SELECT filename FROM default:docs WHERE text LIKE '%vacation%'` | 🟢 |
 
 **A/B/C/E/H/J/L work today.** Parquet (K) is a later phase; indexing
 (`DESIGN-indexing.md`) is also later. CSV/TSV cells get light type inference
 (numbers/bools/null, string fallback); leading-zero values like `007` stay
-strings. The `extract` provider is pure-Go (DOCX/XLSX via zip+XML, PDF via
-content-stream text ops) — great for text documents, but scanned/OCR or exotic-
-font PDFs need the optional Tika/extractous backend (a later build tag).
+strings. The `extract` provider is pure-Go (no cgo): **text** from `.pdf`,
+`.docx`/`.pptx`/`.xlsx` (zip+XML), `.txt`/`.log`/`.md`/`.markdown`, and `.rtf`;
+**metadata only** for media — `.png`/`.jpg`/`.jpeg` (width/height) and
+`.mp4`/`.mov` (duration/width/height/created). It's great for text documents, but
+image text (OCR), scanned/exotic-font PDFs, and video transcription (ASR) need
+the optional Tika/extractous+Tesseract backend (a later cgo build tag). Restrict
+discovery with `-scan` groups: `doc`, `text`, `image`, `video`, or `extract`.
 
 ## File metadata (`_meta`)
 
@@ -40,7 +44,7 @@ Records can carry a `_meta` sub-object with the source file's `` `path` ``
 JSON-array) also get `pos` — their 0-based ordinal within that file.
 Controlled by `-meta`:
 
-- `-meta=auto` (default) — extracted documents (PDF/DOCX/XLSX) get `_meta`; structured
+- `-meta=auto` (default) — extracted documents/media get `_meta`; structured
   JSON/CSV data does not (so plain data stays clean).
 - `-meta=on` — every record gets `_meta`.
 - `-meta=off` — no record does.
@@ -75,10 +79,14 @@ metrics/         (E) 🟢  recurse subdirs; a keyspace = union of all files bene
 archive/         (H) 🟢  transparent decompression by inner extension
   default/orders/2025.jsonl.gz 2026.jsonl.gz (gzip'd JSONL; 5 orders total)
 
-kb/              (L) 🟡  one extractor row (or many) per document
+kb/              (L) 🟢  one extract row per document/media file
   default/docs/handbook.pdf                 (PDF text — mentions "vacation")
   default/docs/q1-report.docx               (Word — mentions "vacation")
   default/docs/budget.xlsx                  (Excel — a small budget table)
+  default/docs/deck.pptx                    (PowerPoint — 3 slides of text)
+  default/docs/notes.txt readme.md memo.rtf (plain text / Markdown / RTF)
+  default/media/logo.png                    (image — width/height metadata, no text)
+  default/media/clip.mp4                     (video — duration/width/height/created)
 ```
 
 ## Regenerating the binaries

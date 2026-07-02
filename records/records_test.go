@@ -12,7 +12,13 @@
 package records
 
 import (
+	"archive/zip"
+	"encoding/binary"
 	"encoding/json"
+	"image"
+	"image/color"
+	"image/jpeg"
+	"image/png"
 	"os"
 	"path/filepath"
 	"strings"
@@ -315,8 +321,241 @@ func TestWalkExtract(t *testing.T) { // a keyspace of mixed documents
 		t.Fatal(err)
 	}
 	ids, docs := collect(t, s)
-	if len(docs) != 3 {
-		t.Fatalf("want 3 extracted docs (pdf/docx/xlsx), got %d (%v)", len(docs), ids)
+	// pdf, docx, xlsx, pptx, txt, md, rtf.
+	if len(docs) != 7 {
+		t.Fatalf("want 7 extracted docs, got %d (%v)", len(docs), ids)
+	}
+	kinds := map[string]bool{}
+	for _, d := range docs {
+		var m map[string]interface{}
+		json.Unmarshal([]byte(d), &m)
+		kinds[m["kind"].(string)] = true
+	}
+	for _, k := range []string{"pdf", "docx", "xlsx", "pptx", "txt", "md", "rtf"} {
+		if !kinds[k] {
+			t.Errorf("walk missing extracted kind %q (got %v)", k, kinds)
+		}
+	}
+}
+
+func TestWalkExtractMedia(t *testing.T) { // a keyspace of media (metadata only)
+	s, err := Walk(ex("kb/default/media"), AllModes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, docs := collect(t, s)
+	if len(docs) != 2 { // logo.png, clip.mp4
+		t.Fatalf("want 2 media records, got %d", len(docs))
+	}
+	for _, d := range docs {
+		var m map[string]interface{}
+		json.Unmarshal([]byte(d), &m)
+		if m["text"] != "" {
+			t.Errorf("media record should have empty text: %s", d)
+		}
+		if m["width"] == nil || m["height"] == nil {
+			t.Errorf("media record missing dimensions: %s", d)
+		}
+	}
+}
+
+// extractOne runs a single file through the extract provider and returns its one
+// decoded record as a JSON map.
+func extractOne(t *testing.T, path string) map[string]interface{} {
+	t.Helper()
+	s, err := OpenFile(path, filepath.Base(path))
+	if err != nil {
+		t.Fatalf("%s: OpenFile: %v", path, err)
+	}
+	_, docs := collect(t, s)
+	if len(docs) != 1 {
+		t.Fatalf("%s: want 1 extracted record, got %d", path, len(docs))
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal([]byte(docs[0]), &m); err != nil {
+		t.Fatalf("%s: record not JSON: %v", path, err)
+	}
+	return m
+}
+
+func writeFile(t *testing.T, path string, b []byte) string {
+	t.Helper()
+	if err := os.WriteFile(path, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestExtractPlainText(t *testing.T) { // txt / log / md / markdown
+	dir := t.TempDir()
+	for _, tc := range []struct{ name, body, kind string }{
+		{"notes.txt", "  hello world  ", "txt"},
+		{"server.log", "ERROR boom\nWARN meh", "log"},
+		{"README.md", "# Title\n\nsome **bold** prose", "md"},
+		{"doc.markdown", "plain markdown", "markdown"},
+	} {
+		m := extractOne(t, writeFile(t, filepath.Join(dir, tc.name), []byte(tc.body)))
+		if m["kind"] != tc.kind {
+			t.Errorf("%s: kind = %v, want %s", tc.name, m["kind"], tc.kind)
+		}
+		want := strings.TrimSpace(tc.body)
+		if m["text"] != want {
+			t.Errorf("%s: text = %q, want %q", tc.name, m["text"], want)
+		}
+	}
+}
+
+func TestExtractRTF(t *testing.T) {
+	dir := t.TempDir()
+	// Body text + a skipped font table + \par break + a \u escape (é, uc1 fallback
+	// '?') + a \'e9 hex byte, exercising the de-RTF paths.
+	rtf := `{\rtf1\ansi\deff0{\fonttbl{\f0 Arial;}}` +
+		`Hello RTF world.\par Caf\u233?\'e9 time.}`
+	m := extractOne(t, writeFile(t, filepath.Join(dir, "memo.rtf"), []byte(rtf)))
+	if m["kind"] != "rtf" {
+		t.Errorf("kind = %v, want rtf", m["kind"])
+	}
+	text, _ := m["text"].(string)
+	if !strings.Contains(text, "Hello RTF world.") {
+		t.Errorf("rtf text missing body: %q", text)
+	}
+	if strings.Contains(text, "Arial") {
+		t.Errorf("rtf text leaked font-table content: %q", text)
+	}
+	if !strings.Contains(text, "Café") { // \u233 -> é, fallback '?' skipped
+		t.Errorf("rtf \\u escape not decoded: %q", text)
+	}
+}
+
+func TestExtractPPTX(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "deck.pptx")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zw := zip.NewWriter(f)
+	slide := func(text string) string {
+		return `<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">` +
+			`<a:p><a:r><a:t>` + text + `</a:t></a:r></a:p></p:sld>`
+	}
+	// Out-of-order names to prove numeric slide ordering (slide10 after slide2).
+	for name, body := range map[string]string{
+		"ppt/slides/slide10.xml": slide("Tenth slide"),
+		"ppt/slides/slide2.xml":  slide("Second slide"),
+		"ppt/slides/slide1.xml":  slide("First slide"),
+	} {
+		w, _ := zw.Create(name)
+		w.Write([]byte(body))
+	}
+	zw.Close()
+	f.Close()
+
+	m := extractOne(t, path)
+	if m["kind"] != "pptx" {
+		t.Errorf("kind = %v, want pptx", m["kind"])
+	}
+	text, _ := m["text"].(string)
+	if text != "First slide\nSecond slide\nTenth slide" {
+		t.Errorf("pptx text/order wrong: %q", text)
+	}
+}
+
+func TestExtractImage(t *testing.T) {
+	dir := t.TempDir()
+	img := image.NewRGBA(image.Rect(0, 0, 64, 48))
+	img.Set(0, 0, color.RGBA{1, 2, 3, 255})
+
+	pngPath := filepath.Join(dir, "logo.png")
+	pf, _ := os.Create(pngPath)
+	png.Encode(pf, img)
+	pf.Close()
+
+	jpgPath := filepath.Join(dir, "photo.jpg")
+	jf, _ := os.Create(jpgPath)
+	jpeg.Encode(jf, img, nil)
+	jf.Close()
+
+	for _, tc := range []struct{ path, kind string }{{pngPath, "png"}, {jpgPath, "jpg"}} {
+		m := extractOne(t, tc.path)
+		if m["kind"] != tc.kind {
+			t.Errorf("%s: kind = %v, want %s", tc.path, m["kind"], tc.kind)
+		}
+		if m["text"] != "" {
+			t.Errorf("%s: media should have empty text, got %q", tc.path, m["text"])
+		}
+		if m["width"] != float64(64) || m["height"] != float64(48) {
+			t.Errorf("%s: dims = %vx%v, want 64x48", tc.path, m["width"], m["height"])
+		}
+	}
+}
+
+// mp4box builds one ISO-BMFF box (type + payload) for the synthetic-video test.
+func mp4box(typ string, payload []byte) []byte {
+	b := make([]byte, 8+len(payload))
+	binary.BigEndian.PutUint32(b, uint32(8+len(payload)))
+	copy(b[4:8], typ)
+	copy(b[8:], payload)
+	return b
+}
+
+func TestExtractMP4(t *testing.T) {
+	dir := t.TempDir()
+
+	// mvhd v0: [version+flags 4][creation 4][mod 4][timescale 4][duration 4].
+	mvhd := make([]byte, 20)
+	// creation = 2020-01-01 UTC in seconds since 1904 (1577836800 + 2082844800).
+	binary.BigEndian.PutUint32(mvhd[4:8], 1577836800+2082844800)
+	binary.BigEndian.PutUint32(mvhd[12:16], 600)  // timescale
+	binary.BigEndian.PutUint32(mvhd[16:20], 1800) // duration -> 3.0s
+
+	// tkhd: width/height are the final two 16.16 fixed-point words.
+	tkhd := make([]byte, 84)
+	binary.BigEndian.PutUint32(tkhd[76:80], 1920<<16)
+	binary.BigEndian.PutUint32(tkhd[80:84], 1080<<16)
+
+	moov := mp4box("moov", append(mp4box("mvhd", mvhd), mp4box("trak", mp4box("tkhd", tkhd))...))
+	// A leading ftyp proves readTopLevelBox scans past non-moov boxes.
+	file := append(mp4box("ftyp", []byte("isom\x00\x00\x00\x00")), moov...)
+
+	m := extractOne(t, writeFile(t, filepath.Join(dir, "clip.mp4"), file))
+	if m["kind"] != "mp4" {
+		t.Errorf("kind = %v, want mp4", m["kind"])
+	}
+	if m["text"] != "" {
+		t.Errorf("video should have empty text, got %q", m["text"])
+	}
+	if m["duration_secs"] != float64(3) {
+		t.Errorf("duration_secs = %v, want 3", m["duration_secs"])
+	}
+	if m["width"] != float64(1920) || m["height"] != float64(1080) {
+		t.Errorf("dims = %vx%v, want 1920x1080", m["width"], m["height"])
+	}
+	if created, _ := m["created"].(string); !strings.HasPrefix(created, "2020-01-01") {
+		t.Errorf("created = %q, want a 2020-01-01 timestamp", created)
+	}
+}
+
+func TestExtractParseModes(t *testing.T) {
+	o, err := ParseModes("text,image")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !o.eligible("a.txt") || !o.eligible("b.md") || !o.eligible("c.png") {
+		t.Errorf("text,image should admit txt/md/png: %+v", o.Formats)
+	}
+	if o.eligible("d.pdf") || o.eligible("e.mp4") {
+		t.Errorf("text,image should NOT admit pdf/mp4: %+v", o.Formats)
+	}
+	// "extract" admits every registered format, including the new ones.
+	all, err := ParseModes("extract")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ext := range []string{"x.pptx", "x.rtf", "x.jpeg", "x.mov", "x.pdf"} {
+		if !all.eligible(ext) {
+			t.Errorf("extract should admit %s", ext)
+		}
 	}
 }
 

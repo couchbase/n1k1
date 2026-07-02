@@ -906,21 +906,32 @@ warehouse/
 columnar→row transpose (see §1 caveat) means no vectorized speedup until the
 engine grows column-batch ops. Footer min/max later feed §5 zone-map pruning.
 
-### L. Unstructured docs (PDF/DOCX/XLSX) → `extract`-provider rows  ✅ (pure-Go text; OCR later)
+### L. Unstructured docs & media → `extract`-provider rows  ✅ (pure-Go text + media metadata; OCR later)
 ```
 kb/
   default/
-    docs/   handbook.pdf   q1-report.docx   budget.xlsx
+    docs/   handbook.pdf  q1-report.docx  budget.xlsx  deck.pptx  notes.txt  memo.rtf  readme.md
+    media/  logo.png  clip.mp4          # .jpg/.jpeg/.mov also supported
 ```
 `n1k1 -c "SELECT filename, text FROM default:docs WHERE text LIKE '%vacation%'" kb`
-→ **shipped** (`records/extract.go`), pure-Go: each `.pdf`/`.docx`/`.xlsx` yields
-**one** `{filename, kind, text}` JSON record (docx via `archive/zip`+`encoding/xml`
-`<w:t>` runs; pdf via content-stream show-text ops with `compress/zlib` inflate;
-xlsx text concatenated). Rides the opaque-document path, so it feeds a bleve FTS
-index (`DESIGN-indexing.md` Phase 2) with no label work. **Deliberately narrow:**
-no scanned-PDF OCR, no exotic font encodings, and it emits one record per file
-(not the "one row per spreadsheet row" the design floated) — those want the
-optional Tika/extractous+Tesseract backend (a later build tag). See §4.
+→ **shipped** (`records/extract.go`), pure-Go (no cgo). Each file yields **one**
+`{filename, kind, text, …}` JSON record via a per-extension **`Extractor`** registry
+producing a reusable `ExtractedDoc{Kind, Text, Meta}` (the seam the bleve FTS
+indexer will consume — `DESIGN-indexing.md` Phase 2 — so extraction lives here
+once). Two families:
+- **Text** (`text` field): `.pdf` (content-stream show-text ops + `compress/zlib`
+  inflate), `.docx`/`.pptx`/`.xlsx` (`archive/zip`+`encoding/xml` OOXML runs),
+  `.txt`/`.log`/`.md`/`.markdown` (verbatim), `.rtf` (de-controlled to plain text).
+- **Media metadata** (no `text` — that needs OCR/ASR): `.png`/`.jpg`/`.jpeg` →
+  `width`/`height` (`image.DecodeConfig`); `.mp4`/`.mov` → `duration_secs`/`width`/
+  `height`/`created` (a minimal ISO-BMFF box reader that streams headers, never
+  the whole file).
+
+**Deliberately narrow:** no scanned-PDF OCR, no exotic font encodings, no image
+text or speech transcription, and one record per file (not the "one row per
+spreadsheet row" the design floated) — those want the optional Tika/extractous+
+Tesseract backend (a later cgo build tag). See §4. `-scan` groups: `doc`, `text`,
+`image`, `video`, or `extract` for all.
 
 ### M. The co-located sidecar (applies to all of the above)
 ```

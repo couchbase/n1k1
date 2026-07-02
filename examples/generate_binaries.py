@@ -2,20 +2,25 @@
 """Generate the binary sample files for the n1k1 data-source examples:
 
   - H (compression):  archive/default/orders/*.jsonl.gz
-  - L (office/PDF):    kb/default/docs/{handbook.pdf, q1-report.docx, budget.xlsx}
+  - L (extract):       kb/default/docs/{handbook.pdf, q1-report.docx, budget.xlsx,
+                       deck.pptx}  and  kb/default/media/{logo.png, clip.mp4}
 
-The JSON / JSONL sample files (scenarios A, B, C, E) are plain text checked in
-directly; only the binaries are generated here so they're reproducible. Run:
+The JSON / JSONL sample files (scenarios A, B, C, E) and the plain-text extract
+samples (notes.txt, readme.md, memo.rtf) are checked in directly; only the
+binaries are generated here so they're reproducible. Run:
 
     python3 examples/generate_binaries.py
 
-All Office files are hand-built minimal-but-valid OOXML / PDF (no third-party
-deps) so they open in Word/Excel/LibreOffice/any PDF viewer.
+All files are hand-built minimal-but-valid (no third-party deps): the Office/PDF
+files open in Word/Excel/PowerPoint/LibreOffice/any PDF viewer, the PNG is a
+valid image, and the MP4 is a valid ISO base-media container.
 """
 
 import gzip
 import os
+import struct
 import zipfile
+import zlib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -201,9 +206,137 @@ def gen_xlsx():
     print("wrote", os.path.relpath(path, HERE))
 
 
+# ------------------------------------------------------------------- L: PPTX
+def gen_pptx():
+    root = os.path.join(HERE, "kb", "default", "docs")
+    os.makedirs(root, exist_ok=True)
+    slides_text = [
+        "Company All-Hands",
+        "Q1 revenue grew 12% quarter over quarter.",
+        "Reminder: use the HR portal for vacation requests.",
+    ]
+    A = "http://schemas.openxmlformats.org/drawingml/2006/main"
+    P = "http://schemas.openxmlformats.org/presentationml/2006/main"
+
+    def slide_xml(text):
+        return (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<p:sld xmlns:a="%s" xmlns:p="%s">'
+            "<p:cSld><p:spTree>"
+            "<p:sp><p:txBody>"
+            "<a:p><a:r><a:t>%s</a:t></a:r></a:p>"
+            "</p:txBody></p:sp>"
+            "</p:spTree></p:cSld></p:sld>" % (A, P, text)
+        )
+
+    content_types = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+        '<Default Extension="xml" ContentType="application/xml"/>'
+        '<Override PartName="/ppt/presentation.xml" '
+        'ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/>'
+        "</Types>"
+    )
+    rels = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId1" '
+        'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
+        'Target="ppt/presentation.xml"/></Relationships>'
+    )
+    presentation = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<p:presentation xmlns:p="%s"/>' % P
+    )
+    path = os.path.join(root, "deck.pptx")
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("[Content_Types].xml", content_types)
+        z.writestr("_rels/.rels", rels)
+        z.writestr("ppt/presentation.xml", presentation)
+        for i, text in enumerate(slides_text, start=1):
+            z.writestr("ppt/slides/slide%d.xml" % i, slide_xml(text))
+    print("wrote", os.path.relpath(path, HERE))
+
+
+# ------------------------------------------------------------------- L: PNG
+def gen_png():
+    root = os.path.join(HERE, "kb", "default", "media")
+    os.makedirs(root, exist_ok=True)
+    w, h = 48, 24  # a solid teal rectangle; dimensions are what `extract` reports
+
+    def chunk(tag, data):
+        return (
+            struct.pack(">I", len(data))
+            + tag
+            + data
+            + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+        )
+
+    ihdr = struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)  # 8-bit RGB
+    raw = bytearray()
+    for _ in range(h):
+        raw.append(0)  # filter byte per scanline
+        raw += bytes((0x1B, 0x9E, 0x8A)) * w
+    idat = zlib.compress(bytes(raw), 9)
+    png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", idat) + chunk(b"IEND", b"")
+    path = os.path.join(root, "logo.png")
+    with open(path, "wb") as f:
+        f.write(png)
+    print("wrote", os.path.relpath(path, HERE))
+
+
+# ------------------------------------------------------------------- L: MP4
+def gen_mp4():
+    root = os.path.join(HERE, "kb", "default", "media")
+    os.makedirs(root, exist_ok=True)
+
+    def box(tag, payload):
+        return struct.pack(">I", 8 + len(payload)) + tag + payload
+
+    # mvhd v0: creation(1904 epoch), timescale, duration -> 4.0s.
+    creation = 1577836800 + 2082844800  # 2020-01-01 UTC in seconds since 1904
+    mvhd = (
+        struct.pack(">I", 0)  # version+flags
+        + struct.pack(">I", creation)
+        + struct.pack(">I", creation)
+        + struct.pack(">I", 1000)  # timescale
+        + struct.pack(">I", 4000)  # duration -> 4.0s
+        + b"\x00\x01\x00\x00"  # rate 1.0
+        + b"\x01\x00"  # volume 1.0
+        + b"\x00" * 10  # reserved
+        + b"\x00" * 36  # unity matrix (zeros fine for our metadata reader)
+        + b"\x00" * 24  # predefined
+        + struct.pack(">I", 2)  # next track id
+    )
+    # tkhd v0: display width/height are the final two 16.16 fixed-point words.
+    tkhd = (
+        struct.pack(">I", 0)  # version+flags
+        + struct.pack(">II", creation, creation)
+        + struct.pack(">I", 1)  # track id
+        + b"\x00" * 4  # reserved
+        + struct.pack(">I", 4000)  # duration
+        + b"\x00" * 8  # reserved
+        + b"\x00" * 4  # layer + alt group
+        + b"\x00" * 4  # volume + reserved
+        + b"\x00" * 36  # matrix
+        + struct.pack(">I", 640 << 16)  # width
+        + struct.pack(">I", 360 << 16)  # height
+    )
+    moov = box(b"moov", box(b"mvhd", mvhd) + box(b"trak", box(b"tkhd", tkhd)))
+    ftyp = box(b"ftyp", b"isom\x00\x00\x02\x00isomiso2mp41")
+    path = os.path.join(root, "clip.mp4")
+    with open(path, "wb") as f:
+        f.write(ftyp + moov)
+    print("wrote", os.path.relpath(path, HERE))
+
+
 if __name__ == "__main__":
     gen_gzip()
     gen_pdf()
     gen_docx()
     gen_xlsx()
+    gen_pptx()
+    gen_png()
+    gen_mp4()
     print("done")
