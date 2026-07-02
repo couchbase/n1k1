@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -156,6 +157,16 @@ func (c *cli) dataLoc() string {
 		return "(none — use .open <dir> to load one)"
 	}
 	return c.dir
+}
+
+// catalogPath is where .index create/suggest read & write index definitions for
+// the current datastore (its .n1k1/catalog.json), or a placeholder when no dir is
+// known (e.g. an empty-store session).
+func (c *cli) catalogPath() string {
+	if c.dir == "" {
+		return "<dataRoot>/.n1k1/catalog.json"
+	}
+	return filepath.Join(c.dir, ".n1k1", "catalog.json")
 }
 
 // exampleQuery builds a copy-pasteable example over a real current keyspace, or

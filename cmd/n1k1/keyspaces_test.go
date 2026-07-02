@@ -36,6 +36,15 @@ func TestQuotePath(t *testing.T) {
 	}
 }
 
+func TestCatalogPath(t *testing.T) {
+	if got := (&cli{dir: "/data/shop"}).catalogPath(); got != "/data/shop/.n1k1/catalog.json" {
+		t.Errorf("catalogPath(dir) = %q", got)
+	}
+	if got := (&cli{}).catalogPath(); !strings.Contains(got, "<dataRoot>") {
+		t.Errorf("catalogPath(empty) = %q, want a placeholder", got)
+	}
+}
+
 func TestDataLoc(t *testing.T) {
 	if got := (&cli{dir: "/data/shop"}).dataLoc(); got != "/data/shop" {
 		t.Errorf("dataLoc(dir) = %q", got)

@@ -295,8 +295,10 @@ func (c *cli) cmdIndexSuggest(keyspace string) {
 		})
 	}
 	b, _ := json.MarshalIndent(cat, "", "  ")
-	fmt.Fprintf(c.stderr, "%s%d suggestion(s). Option 1 -- save this fragment into <dataRoot>/.n1k1/catalog.json (drop \"why\"):\n",
-		c.icon("💡 "), len(sugg))
+	// The "why" fields are harmless -- the catalog loader ignores unknown keys --
+	// so the fragment can be saved as-is into the datastore's catalog.json.
+	fmt.Fprintf(c.stderr, "%s%d suggestion(s). Option 1 -- save this fragment into %s:\n",
+		c.icon("💡 "), len(sugg), c.catalogPath())
 	fmt.Fprintln(c.out, string(b))
 
 	// Option 2: the equivalent .index create commands, copy-pasteable straight

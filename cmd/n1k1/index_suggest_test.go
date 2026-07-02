@@ -55,6 +55,14 @@ func TestIndexSuggestEmitsCreateCommands(t *testing.T) {
 	if !strings.Contains(out.String(), `"indexes"`) || !strings.Contains(out.String(), `"sku"`) {
 		t.Errorf("stdout should be a catalog fragment for sku, got:\n%s", out.String())
 	}
+	// The fragment carries "why" and must be usable as-is (the catalog loader
+	// ignores unknown keys) -- so the header no longer says to drop it.
+	if !strings.Contains(out.String(), `"why"`) {
+		t.Errorf("fragment should include the why rationale, got:\n%s", out.String())
+	}
+	if added, aerr := glue.CatalogAddIndexes(root, []byte(out.String())); aerr != nil || len(added) == 0 {
+		t.Errorf("catalog fragment (with \"why\") should be accepted as-is: added=%v err=%v", added, aerr)
+	}
 	// stderr: a `.index create ... on customer (sku)` command.
 	var createLine string
 	for _, ln := range strings.Split(errb.String(), "\n") {
