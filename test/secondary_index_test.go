@@ -418,7 +418,7 @@ func TestSecondaryIndexSuggest(t *testing.T) {
 	root := writeKeyspaceDocs(t, "ks", docs, `{"indexes":[]}`)
 	store, _ := flatRootConv(t, root, `SELECT 1`)
 
-	sugg, err := glue.SuggestIndexes(store, "default", "ks", 0)
+	sugg, _, err := glue.SuggestIndexes(store, "default", "ks", 0)
 	if err != nil {
 		t.Fatalf("SuggestIndexes: %v", err)
 	}
