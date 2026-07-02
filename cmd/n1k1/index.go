@@ -274,17 +274,20 @@ func (c *cli) cmdIndexSuggest(keyspace string) {
 	}
 	if len(sugg) == 0 {
 		if note == "" {
-			note = "no selective scalar fields found in the sample"
+			note = "no selective scalar or text fields found in the sample"
 		}
 		fmt.Fprintf(c.stderr, "no index suggestions (%s)\n", note)
 		return
 	}
 	// Struct field order = JSON key order (encoding/json); "why" is ignored by the
 	// catalog loader (unknown field), so the fragment pastes straight into catalog.json.
+	// kind is emitted only for fts (gsi is the loader's default); keys is omitted for a
+	// dynamic (whole-keyspace) fts index.
 	type outDef struct {
 		Name     string   `json:"name"`
 		Keyspace string   `json:"keyspace"`
-		Keys     []string `json:"keys"`
+		Kind     string   `json:"kind,omitempty"`
+		Keys     []string `json:"keys,omitempty"`
 		Why      string   `json:"why"`
 	}
 	type outCat struct {
@@ -292,12 +295,20 @@ func (c *cli) cmdIndexSuggest(keyspace string) {
 	}
 	cat := outCat{}
 	for _, s := range sugg {
-		cat.Indexes = append(cat.Indexes, outDef{
-			// Keys are SQL++ key *expressions* (parsed by the catalog loader), so a
-			// field whose name/segment has spaces etc. must be backticked; keyspace
-			// is a plain lookup name, kept raw.
-			Name: s.Name, Keyspace: s.Keyspace, Keys: []string{quotePath(s.Field)}, Why: s.Why,
-		})
+		def := outDef{Name: s.Name, Keyspace: s.Keyspace, Why: s.Why}
+		if s.Kind == "fts" {
+			def.Kind = "fts"
+		}
+		if s.Field != "" { // a dynamic fts index has no keys (indexes every field)
+			if s.Kind == "fts" {
+				def.Keys = []string{s.Field} // fts keys are literal field paths, not SQL++ exprs
+			} else {
+				// gsi keys are SQL++ key *expressions* (parsed by the catalog loader),
+				// so a field whose name/segment has spaces etc. must be backticked.
+				def.Keys = []string{quotePath(s.Field)}
+			}
+		}
+		cat.Indexes = append(cat.Indexes, def)
 	}
 	b, _ := json.MarshalIndent(cat, "", "  ")
 	// The "why" fields are harmless -- the catalog loader ignores unknown keys --
@@ -311,6 +322,18 @@ func (c *cli) cmdIndexSuggest(keyspace string) {
 	// catalog.json fragment for redirecting.
 	fmt.Fprintf(c.stderr, "%sOption 2 -- paste these commands:\n", c.icon("💡 "))
 	for _, s := range sugg {
+		if s.Kind == "fts" {
+			// The `<name> on <ks> (<exprs>)` DSL builds a gsi index; an fts index
+			// goes via the JSON form (also accepted by .index create). A dynamic fts
+			// (empty Field) carries no keys.
+			d := map[string]interface{}{"name": s.Name, "keyspace": s.Keyspace, "kind": "fts"}
+			if s.Field != "" {
+				d["keys"] = []string{s.Field}
+			}
+			j, _ := json.Marshal(d)
+			fmt.Fprintf(c.stderr, "  .index create %s\n", j)
+			continue
+		}
 		// Backtick the keyspace/name (whitespace-delimited in the DSL) and the key
 		// path segments, so a name/keyspace/field with spaces still parses.
 		fmt.Fprintf(c.stderr, "  .index create %s on %s (%s)\n",

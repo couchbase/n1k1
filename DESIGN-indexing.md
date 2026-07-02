@@ -167,9 +167,18 @@ every `maybeSecondaryIndexes`, so a mid-session `.open` re-applies it):
   copy-pasteable `catalog.json` example (the definition format isn't otherwise
   discoverable from the CLI). Shipped.
 - **`.index suggest [<keyspace>]`** — the advisor (see "adaptive auto-index"):
-  samples docs, scores selective scalar/nested-no-array fields, and prints an
-  editable `catalog.json` fragment (each def carries a `why` the loader ignores).
-  Shipped (`glue.SuggestIndexes` in `si_suggest.go`).
+  samples docs and prints an editable `catalog.json` fragment (each def carries a
+  `why` the loader ignores). It advises **both index types by query shape**: a
+  `gsi` index for selective scalar (`nested-no-array`) fields — equality/range — and
+  a `kind:fts` index for **text** fields (mostly multi-word or long strings, which
+  make poor b-tree keys but good full-text targets, and which the b-tree path
+  rejects). A field that fits both (e.g. a multi-word, selective `title`) yields
+  **both suggestions, each tagged** with the query pattern it serves, so the user
+  keeps whichever matches their queries. With ≥2 text fields it also suggests a
+  single **whole-keyspace dynamic FTS** (`kind:fts`, no keys). Dedup is per-kind (a
+  `gsi` on a field doesn't suppress an `fts` suggestion for it, and vice versa; a
+  dynamic FTS suppresses all FTS suggestions). Shipped (`glue.SuggestIndexes` in
+  `si_suggest.go`).
 - **`.index create ...`** — add index def(s) to `catalog.json` and build them, in
   two input forms: a DSL `.index create <name> on <keyspace> (<expr>[, <expr>])
   [where <expr>]`, or a JSON fragment `.index create {"indexes":[…]}` (pastes back

@@ -523,6 +523,93 @@ func TestSecondaryIndexSuggest(t *testing.T) {
 	}
 }
 
+// TestSuggestFTSAndBoth: the advisor proposes FTS indexes for text fields, GSI for
+// selective scalars, BOTH (tagged) for a field that fits both, a whole-keyspace
+// dynamic FTS when there are >=2 text fields, and dedups per-kind against existing
+// indexes.
+func TestSuggestFTSAndBoth(t *testing.T) {
+	titles := []string{"red running shoes", "blue denim jacket", "green wool sweater",
+		"black leather boots", "white cotton shirt"}
+	bodies := []string{
+		"a comfortable pair of shoes designed for long distance running",
+		"classic denim jacket with a modern fit and durable stitching",
+		"soft merino wool sweater that keeps you warm without the bulk",
+		"handcrafted leather boots built to last through years of wear",
+		"breathable cotton shirt perfect for warm weather casual outings"}
+	docs := map[string]string{}
+	for i := 0; i < 30; i++ {
+		id := fmtID(i)
+		status := "active"
+		if i%2 == 0 {
+			status = "discontinued"
+		}
+		// id: unique scalar -> gsi. title: unique AND multi-word -> both. body: only 5
+		// distinct (repetitive) but long text -> fts only. status: 2 values -> neither.
+		docs[id] = `{"id":"` + id + `","status":"` + status +
+			`","title":"` + titles[i%5] + ` v` + strconv.Itoa(i) +
+			`","body":"` + bodies[i%5] + `"}`
+	}
+
+	// find returns the set of (field, kind) pairs suggested for the given catalog.
+	find := func(catalog string) map[[2]string]bool {
+		root := writeKeyspaceDocs(t, "products", docs, catalog)
+		store, _ := flatRootConv(t, root, `SELECT 1`)
+		sugg, _, err := glue.SuggestIndexes(store, "default", "products", 0)
+		if err != nil {
+			t.Fatalf("SuggestIndexes: %v", err)
+		}
+		m := map[[2]string]bool{}
+		for _, s := range sugg {
+			m[[2]string{s.Field, s.Kind}] = true
+		}
+		return m
+	}
+
+	t.Run("both/either/neither", func(t *testing.T) {
+		g := find(`{"indexes":[]}`)
+		want := [][2]string{
+			{"id", "gsi"},    // selective scalar
+			{"title", "gsi"}, // selective ...
+			{"title", "fts"}, // ... and multi-word -> BOTH
+			{"body", "fts"},  // long repetitive text -> fts only
+			{"", "fts"},      // dynamic (>=2 text fields)
+		}
+		for _, w := range want {
+			if !g[w] {
+				t.Errorf("missing suggestion %v (got %v)", w, g)
+			}
+		}
+		if g[[2]string{"body", "gsi"}] {
+			t.Error("body is repetitive (5 distinct) -> should NOT be a gsi suggestion")
+		}
+		if g[[2]string{"status", "gsi"}] || g[[2]string{"status", "fts"}] {
+			t.Error("status (2 values, single word) -> should be neither")
+		}
+	})
+
+	t.Run("gsi on title does not suppress fts on title", func(t *testing.T) {
+		g := find(`{"indexes":[{"name":"g","keyspace":"products","keys":["title"]}]}`)
+		if g[[2]string{"title", "gsi"}] {
+			t.Error("existing gsi(title) should suppress the gsi suggestion")
+		}
+		if !g[[2]string{"title", "fts"}] {
+			t.Error("existing gsi(title) must NOT suppress the fts suggestion (per-kind dedup)")
+		}
+	})
+
+	t.Run("dynamic fts suppresses all fts", func(t *testing.T) {
+		g := find(`{"indexes":[{"name":"ft","keyspace":"products","kind":"fts"}]}`)
+		for k := range g {
+			if k[1] == "fts" {
+				t.Errorf("a dynamic fts index should suppress all fts suggestions; got %v", k)
+			}
+		}
+		if !g[[2]string{"id", "gsi"}] {
+			t.Error("gsi suggestions should still be produced alongside an existing dynamic fts")
+		}
+	})
+}
+
 func keysOf(m map[string]bool) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {

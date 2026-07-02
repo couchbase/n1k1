@@ -14,19 +14,24 @@
 package glue
 
 // The `.index suggest` advisor (see DESIGN-indexing.md "adaptive auto-index").
-// Samples a keyspace's docs, walks their scalar leaf paths, and proposes secondary
-// indexes for the *high-cardinality* (selective) fields -- the ones a b-tree
-// actually helps. It's read-only: the CLI renders the suggestions as an editable
+// Samples a keyspace's docs, walks their scalar leaf paths, and proposes indexes
+// keyed to the query shape each field fits -- a b-tree secondary index (gsi) for
+// selective scalars (equality/range) and a bleve full-text index (fts) for text
+// fields (SEARCH()). It's read-only: the CLI renders the suggestions as an editable
 // .n1k1/catalog.json fragment the user reviews and feeds back.
 //
-// Field eligibility (the path walk enforces it):
-//   - scalar leaf, no array crossed  -> candidate (recurse into objects only, so
+// Field eligibility (the path walk enforces the scalar/array parts):
+//   - scalar leaf, no array crossed -> candidate (recurse into objects only, so
 //     any path under an array is naturally never recorded);
 //   - a path that is ever a non-scalar (object/array) -> excluded (covers type
 //     drift and array-valued fields; array fields would need a separate array
 //     index, out of scope here);
-//   - oversized values, and fields present in too few docs, or with too LOW
-//     cardinality (poor selectivity) -> excluded.
+//   - GSI: high-cardinality (selective), small-valued scalars; oversized, too-few,
+//     or too-low-cardinality fields are excluded.
+//   - FTS: "texty" strings (mostly multi-word or long) -- poor b-tree keys but good
+//     full-text targets. Independent of cardinality/size, so a field can qualify
+//     for both (suggested as both, tagged) or neither. With >=2 text fields, a
+//     single whole-keyspace dynamic FTS is suggested too.
 
 import (
 	"fmt"
@@ -50,13 +55,25 @@ const (
 	suggestMinDistinct   = 8    // below this, cardinality is too low to bother
 	suggestUniqDenom     = 5    // require distinct*denom >= present (uniqueness >= 1/denom)
 	suggestMaxDepth      = 6    // don't descend nested objects past this
+
+	// FTS ("texty") heuristic: a string field is a full-text candidate when its
+	// values are mostly strings and either a good fraction are multi-token or the
+	// average length is long -- the shape that wants SEARCH() not a b-tree.
+	suggestTextyStrFrac = 80 // >= this % of a field's scalar values must be strings
+	suggestTextyWSFrac  = 40 // texty if >= this % of the string values are multi-word
+	suggestTextyAvgLen  = 24 // ... or the average string length is at least this
+	suggestFTSDynamicN  = 2  // suggest a whole-keyspace dynamic FTS at >= this many text fields
 )
 
-// IndexSuggestion is one advised secondary index (a high-cardinality scalar field).
+// IndexSuggestion is one advised index. Kind is "gsi" (a high-cardinality scalar
+// field -- equality/range) or "fts" (a text field -- SEARCH()); the same field can
+// yield both when it fits both, each tagged with the query pattern it serves. A
+// dynamic whole-keyspace FTS suggestion has an empty Field.
 type IndexSuggestion struct {
 	Namespace string
 	Keyspace  string
-	Field     string // the key expression (a field or dotted nested path)
+	Kind      string // "gsi" | "fts"
+	Field     string // the key expression (a field or dotted nested path); "" = dynamic FTS
 	Name      string // suggested index name
 	Sampled   int    // docs sampled
 	Present   int    // docs where the field was a scalar leaf
@@ -71,6 +88,14 @@ type pathStat struct {
 	distinct  map[string]struct{}
 	capped    bool
 	maxLen    int
+
+	// String-value stats, for the FTS ("texty") heuristic: how many scalar values
+	// were strings, how many of those contained internal whitespace (multi-token),
+	// and the total string length (for an average). A field that is mostly
+	// multi-word / long text is an FTS candidate, not a b-tree one.
+	strCount int
+	wsCount  int
+	lenSum   int
 }
 
 // SuggestIndexes samples up to sampleN docs from each keyspace in namespace (or
@@ -113,7 +138,7 @@ func SuggestIndexes(store *Store, namespace, only string, sampleN int) ([]IndexS
 			return nil, "", fmt.Errorf("sampling %s: %v", ksName, err)
 		}
 		totalSampled += sampled
-		existing := existingLeadingKeys(store.Datastore, namespace, ksName)
+		existing := existingIndexes(store.Datastore, namespace, ksName)
 		out = append(out, scoreSuggestions(namespace, ksName, stats, sampled, existing)...)
 	}
 
@@ -147,8 +172,9 @@ func emptySuggestNote(sampled, keyspaces int) string {
 			"(a field needs ≥%d distinct values before it's worth indexing); add more data",
 			sampled, suggestMinDistinct)
 	default:
-		return fmt.Sprintf("sampled %d docs — no field was selective enough "+
-			"(needs ≥%d distinct values, present in ≥50%% of docs, and mostly-unique)",
+		return fmt.Sprintf("sampled %d docs — no field was a selective scalar "+
+			"(needs ≥%d distinct values, present in ≥50%% of docs, mostly-unique) "+
+			"nor a text field (mostly multi-word/long strings)",
 			sampled, suggestMinDistinct)
 	}
 }
@@ -208,6 +234,13 @@ func walkScalarPaths(doc []byte, prefix string, stats map[string]*pathStat, dept
 			if len(value) > ps.maxLen {
 				ps.maxLen = len(value)
 			}
+			if dt == jsonparser.String {
+				ps.strCount++
+				ps.lenSum += len(value)
+				if hasWhitespace(value) {
+					ps.wsCount++
+				}
+			}
 			if !ps.capped {
 				ps.distinct[string(value)] = struct{}{}
 				if len(ps.distinct) >= suggestDistinctCap {
@@ -219,20 +252,43 @@ func walkScalarPaths(doc []byte, prefix string, stats map[string]*pathStat, dept
 	})
 }
 
-// scoreSuggestions applies the eligibility + selectivity heuristic to one
-// keyspace's path stats.
+// scoreSuggestions applies the eligibility heuristics to one keyspace's path
+// stats, emitting both GSI (selective scalar) and FTS (text) suggestions. A field
+// that fits both (e.g. a multi-word `title` that is also selective) yields BOTH,
+// each tagged with the query pattern it serves, so the user keeps whichever matches
+// their queries. When a keyspace has several text fields, a single whole-keyspace
+// dynamic FTS index is suggested instead of/besides the per-field ones.
 func scoreSuggestions(namespace, ksName string, stats map[string]*pathStat,
-	sampled int, existing map[string]bool) []IndexSuggestion {
+	sampled int, existing existingIdx) []IndexSuggestion {
 	var out []IndexSuggestion
+	textyFields := 0
 	for path, ps := range stats {
 		if ps.nonScalar > 0 || ps.scalar == 0 { // pure scalar leaf only (stable, no array)
 			continue
 		}
-		if ps.maxLen > suggestMaxValueLen { // oversized index keys
-			continue
-		}
 		present := ps.scalar
 		if present*2 < sampled { // present in < 50% of sampled docs
+			continue
+		}
+
+		// FTS candidate: a text field (mostly strings, and either multi-word or long).
+		// FTS ignores the b-tree gates (cardinality, oversized keys) -- long prose is
+		// exactly what it wants. A dynamic FTS already covers every field, so skip.
+		if !existing.ftsDynamic && !existing.fts[path] && isTexty(ps, present) {
+			textyFields++
+			avg := ps.lenSum / max1(ps.strCount)
+			wsPct := ps.wsCount * 100 / max1(ps.strCount)
+			out = append(out, IndexSuggestion{
+				Namespace: namespace, Keyspace: ksName, Kind: "fts", Field: path,
+				Name:    "ft_" + fsSafe(ksName+"_"+path),
+				Sampled: sampled, Present: present, Distinct: len(ps.distinct), Capped: ps.capped,
+				Why: fmt.Sprintf("full-text SEARCH(): present %d, ~%d chars avg, %d%% multi-word",
+					present, avg, wsPct),
+			})
+		}
+
+		// GSI candidate: a selective, small, high-cardinality scalar (equality/range).
+		if ps.maxLen > suggestMaxValueLen { // oversized b-tree keys
 			continue
 		}
 		distinct := len(ps.distinct)
@@ -242,7 +298,7 @@ func scoreSuggestions(namespace, ksName string, stats map[string]*pathStat,
 		if !ps.capped && distinct*suggestUniqDenom < present { // low uniqueness -> weak selectivity
 			continue
 		}
-		if existing[path] { // already declared
+		if existing.gsi[path] { // already declared
 			continue
 		}
 		distStr := strconv.Itoa(distinct)
@@ -250,27 +306,86 @@ func scoreSuggestions(namespace, ksName string, stats map[string]*pathStat,
 			distStr = ">=" + strconv.Itoa(suggestDistinctCap)
 		}
 		out = append(out, IndexSuggestion{
-			Namespace: namespace, Keyspace: ksName, Field: path,
+			Namespace: namespace, Keyspace: ksName, Kind: "gsi", Field: path,
 			Name:    "auto_" + fsSafe(ksName+"_"+path),
 			Sampled: sampled, Present: present, Distinct: distinct, Capped: ps.capped,
-			Why: fmt.Sprintf("sampled %d, present %d, distinct %s", sampled, present, distStr),
+			Why: fmt.Sprintf("equality/range: sampled %d, present %d, distinct %s",
+				sampled, present, distStr),
+		})
+	}
+
+	// A keyspace with several text fields is better served by one dynamic FTS index
+	// (indexes every field) than many single-field ones -- suggest that too.
+	if textyFields >= suggestFTSDynamicN && !existing.ftsDynamic {
+		out = append(out, IndexSuggestion{
+			Namespace: namespace, Keyspace: ksName, Kind: "fts", Field: "",
+			Name: "ft_" + fsSafe(ksName) + "_all",
+			Why: fmt.Sprintf("full-text SEARCH() across %d text fields (dynamic mapping, all fields)",
+				textyFields),
 		})
 	}
 	return out
 }
 
-// existingLeadingKeys returns the set of leading-key expressions already declared
-// for namespace:keyspace, so the advisor doesn't re-suggest them.
-func existingLeadingKeys(ds datastore.Datastore, namespace, keyspace string) map[string]bool {
-	m := map[string]bool{}
-	sds, ok := ds.(*siDatastore)
-	if !ok {
-		return m
+// isTexty reports whether a field's values look like free text (an FTS candidate
+// rather than a b-tree key): mostly string-valued, and either a good fraction are
+// multi-token (contain whitespace) or the average length is long.
+func isTexty(ps *pathStat, present int) bool {
+	if ps.strCount*100 < present*suggestTextyStrFrac { // not predominantly strings
+		return false
 	}
-	for _, def := range sds.cat.indexesFor(namespace, keyspace) {
-		if len(def.Keys) > 0 {
-			m[def.Keys[0]] = true
+	avg := ps.lenSum / max1(ps.strCount)
+	wsPct := ps.wsCount * 100 / max1(ps.strCount)
+	return wsPct >= suggestTextyWSFrac || avg >= suggestTextyAvgLen
+}
+
+func max1(n int) int {
+	if n < 1 {
+		return 1
+	}
+	return n
+}
+
+// hasWhitespace reports whether b contains an internal space/tab/newline (a
+// multi-token string), the cheap "is this free text" signal.
+func hasWhitespace(b []byte) bool {
+	for _, c := range b {
+		if c == ' ' || c == '\t' || c == '\n' {
+			return true
 		}
 	}
-	return m
+	return false
+}
+
+// existingIdx captures what's already declared for a keyspace, per kind, so the
+// advisor doesn't re-suggest it. Dedup is per-kind: a GSI index on `title` must not
+// suppress an FTS suggestion for `title` (the "both" case), and vice versa.
+type existingIdx struct {
+	gsi        map[string]bool // gsi leading-key expressions already declared
+	fts        map[string]bool // fts declared field-path keys
+	ftsDynamic bool            // a dynamic (no-keys) fts index exists -> covers every field
+}
+
+// existingIndexes returns what's already declared for namespace:keyspace.
+func existingIndexes(ds datastore.Datastore, namespace, keyspace string) existingIdx {
+	e := existingIdx{gsi: map[string]bool{}, fts: map[string]bool{}}
+	sds, ok := ds.(*siDatastore)
+	if !ok {
+		return e
+	}
+	for _, def := range sds.cat.indexesFor(namespace, keyspace) {
+		if def.isFTS() {
+			if len(def.Keys) == 0 {
+				e.ftsDynamic = true
+			}
+			for _, k := range def.Keys {
+				e.fts[k] = true
+			}
+			continue
+		}
+		if len(def.Keys) > 0 {
+			e.gsi[def.Keys[0]] = true
+		}
+	}
+	return e
 }
