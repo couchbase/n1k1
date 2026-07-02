@@ -329,6 +329,6 @@
         ]
       }
     ],
-    "description": "n1k1: appended `AND test_id=\"obj_func\"` to the fork's unscoped source statement. The fork runs this against a customer bucket holding only obj_functions docs; n1k1's merged customer keyspace holds one copy of this doc per category, so without the scope OBJECT_PAIRS_NESTED returns that row once per category. The `e$` pattern excludes the differing test_id field, so the expected result is unchanged."
+    "description": "n1k1: scoped the fork's unscoped source statement with test_id=\"obj_func\". The fork runs it against a customer bucket holding only obj_functions docs; n1k1's merged customer keyspace holds one copy of this doc per category, so unscoped OBJECT_PAIRS_NESTED returns that row once per category. The e$ pattern excludes the differing test_id field, so expected output is unchanged."
   }
 ]

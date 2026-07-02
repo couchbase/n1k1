@@ -32,7 +32,7 @@
     ]
   },
   {
-    "statements": "SELECT JSON_ENCODE(ccInfo) AS encoded FROM customer ORDER BY encoded, firstName LIMIT 3",
+    "statements": "SELECT JSON_ENCODE(ccInfo) AS encoded FROM customer WHERE test_id=\"json_func\" ORDER BY encoded, firstName LIMIT 3",
     "results": [
       {
         "encoded": "{\"cardExpiry\":\"2011-10-12\",\"cardNumber\":\"1211-1221-1234-2201\",\"cardType\":\"americanexpress\"}"
@@ -43,10 +43,11 @@
       {
         "encoded": "{\"cardExpiry\":\"2011-10-12\",\"cardNumber\":\"1211-1221-1234-2201\",\"cardType\":\"americanexpress\"}"
       }
-    ]
+    ],
+    "description": "n1k1: scoped with test_id=\"json_func\" (see obj_functions patch). Unscoped, the ORDER BY over the merged customer keyspace ranks other categories' rows (incl. docs with no ccInfo -> JSON_ENCODE null) ahead of the json_func ones."
   },
   {
-    "statements": "SELECT ENCODE_JSON(ccInfo) AS encoded FROM customer ORDER BY encoded, firstName LIMIT 3",
+    "statements": "SELECT ENCODE_JSON(ccInfo) AS encoded FROM customer WHERE test_id=\"json_func\" ORDER BY encoded, firstName LIMIT 3",
     "results": [
       {
         "encoded": "{\"cardExpiry\":\"2011-10-12\",\"cardNumber\":\"1211-1221-1234-2201\",\"cardType\":\"americanexpress\"}"
@@ -57,7 +58,8 @@
       {
         "encoded": "{\"cardExpiry\":\"2011-10-12\",\"cardNumber\":\"1211-1221-1234-2201\",\"cardType\":\"americanexpress\"}"
       }
-    ]
+    ],
+    "description": "n1k1: scoped with test_id=\"json_func\" (see obj_functions patch). Unscoped, the ORDER BY over the merged customer keyspace ranks other categories' rows (incl. docs with no ccInfo -> ENCODE_JSON null) ahead of the json_func ones."
   },
   {
     "statements": "select ENCODE_JSON([1,2,3])",
@@ -92,7 +94,7 @@
     ]
   },
   {
-    "statements": "SELECT ENCODED_SIZE(ccInfo) as es from customer ORDER BY es, firstName LIMIT 3",
+    "statements": "SELECT ENCODED_SIZE(ccInfo) as es from customer WHERE test_id=\"json_func\" ORDER BY es, firstName LIMIT 3",
     "results": [
       {
         "es": 80
@@ -103,7 +105,8 @@
       {
         "es": 80
       }
-    ]
+    ],
+    "description": "n1k1: scoped with test_id=\"json_func\" (see obj_functions patch). Unscoped, ENCODED_SIZE's ORDER BY over the merged customer keyspace ranks other categories' rows ahead of the json_func ones."
   },
   {
     "statements": "select POLY_LENGTH(\"\")",
@@ -122,7 +125,7 @@
     ]
   },
   {
-    "statements": "SELECT POLY_LENGTH(ccInfo) as ccpoly FROM customer ORDER BY firstName LIMIT 3",
+    "statements": "SELECT POLY_LENGTH(ccInfo) as ccpoly FROM customer WHERE test_id=\"json_func\" ORDER BY firstName LIMIT 3",
     "results": [
       {
         "ccpoly": 3
@@ -133,7 +136,8 @@
       {
         "ccpoly": 3
       }
-    ]
+    ],
+    "description": "n1k1: scoped with test_id=\"json_func\" (see obj_functions patch). Unscoped, POLY_LENGTH's ORDER BY over the merged customer keyspace ranks other categories' rows ahead of the json_func ones."
   },
   {
     "statements": "select POLY_LENGTH(missing)",

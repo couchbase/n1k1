@@ -36,38 +36,61 @@ INSERT_PREFIX = re.compile(r'\s*INSERT\s+INTO\s+(\w+)\s*\(\s*KEY\s*,\s*VALUE\s*\
 # case's `WHERE test_id="<cat>"` predicate to re-create the per-category bucket
 # isolation the fork gets by reloading buckets between categories. A tiny number
 # of source cases query a shared keyspace WITHOUT any test_id predicate: against
-# the fork's isolated bucket they match a single doc, but against our merged
-# corpus they match that same logical doc once per category (identical rows), so
-# n1k1 emits duplicates the fork never sees. We append the missing scope so the
-# case still exercises the same function against the same expected output. Each
-# patch is (category, lowercase-substring-to-match, clause-to-append, note); the
-# note lands in the case's `description` (a runner-allowed field) to document the
-# deliberate divergence from the source. Only applied when the matched statement
-# has no test_id predicate already.
+# the fork's isolated bucket they see only that category's docs, but against our
+# merged corpus they see every category's (duplicate/extra rows n1k1 emits that
+# the fork never sees). We inject the missing scope so the case still exercises
+# the same function against the same expected output. Each patch is (category,
+# lowercase-substring-to-match, test_id, note); the note lands in the case's
+# `description` (a runner-allowed field) to document the deliberate divergence
+# from the source. Only applied when the matched statement has no test_id yet.
 SCOPE_PATCHES = [
-    ("obj_functions",
-     "object_pairs_nested(customer",
-     ' AND test_id="obj_func"',
-     'n1k1: appended `AND test_id="obj_func"` to the fork\'s unscoped source '
-     'statement. The fork runs this against a customer bucket holding only '
-     'obj_functions docs; n1k1\'s merged customer keyspace holds one copy of '
-     'this doc per category, so without the scope OBJECT_PAIRS_NESTED returns '
-     'that row once per category. The `e$` pattern excludes the differing '
-     'test_id field, so the expected result is unchanged.'),
+    ("obj_functions", "object_pairs_nested(customer", "obj_func",
+     'n1k1: scoped the fork\'s unscoped source statement with test_id="obj_func". '
+     'The fork runs it against a customer bucket holding only obj_functions docs; '
+     "n1k1's merged customer keyspace holds one copy of this doc per category, so "
+     "unscoped OBJECT_PAIRS_NESTED returns that row once per category. The e$ "
+     "pattern excludes the differing test_id field, so expected output is unchanged."),
+    ("json_functions", "json_encode(ccinfo)", "json_func",
+     'n1k1: scoped with test_id="json_func" (see obj_functions patch). Unscoped, '
+     "the ORDER BY over the merged customer keyspace ranks other categories' rows "
+     "(incl. docs with no ccInfo -> JSON_ENCODE null) ahead of the json_func ones."),
+    ("json_functions", "encode_json(ccinfo)", "json_func",
+     'n1k1: scoped with test_id="json_func" (see obj_functions patch). Unscoped, '
+     "the ORDER BY over the merged customer keyspace ranks other categories' rows "
+     "(incl. docs with no ccInfo -> ENCODE_JSON null) ahead of the json_func ones."),
+    ("json_functions", "encoded_size(ccinfo)", "json_func",
+     'n1k1: scoped with test_id="json_func" (see obj_functions patch). Unscoped, '
+     "ENCODED_SIZE's ORDER BY over the merged customer keyspace ranks other "
+     "categories' rows ahead of the json_func ones."),
+    ("json_functions", "poly_length(ccinfo)", "json_func",
+     'n1k1: scoped with test_id="json_func" (see obj_functions patch). Unscoped, '
+     "POLY_LENGTH's ORDER BY over the merged customer keyspace ranks other "
+     "categories' rows ahead of the json_func ones."),
 ]
 
+def inject_test_id_scope(stmt, tid):
+    """Add a `test_id="<tid>"` predicate to stmt: fold it into an existing WHERE
+    with AND, else insert a WHERE clause. Placed before any trailing ORDER BY /
+    GROUP BY / HAVING / LIMIT so it stays a valid predicate."""
+    m = re.search(r'\b(order\s+by|group\s+by|having|limit)\b', stmt, re.IGNORECASE)
+    cut = m.start() if m else len(stmt)
+    head, tail = stmt[:cut].rstrip(), stmt[cut:]
+    conj = "AND" if re.search(r'\bwhere\b', head, re.IGNORECASE) else "WHERE"
+    scoped = f'{head} {conj} test_id="{tid}"'
+    return (scoped + " " + tail).rstrip() if tail else scoped
+
 def apply_scope_patch(cat, c):
-    """Return c, possibly with a shared-keyspace scope predicate appended to its
+    """Return c, possibly with a shared-keyspace scope predicate injected into its
     statement (see SCOPE_PATCHES). Copies c before mutating so the source stays
     untouched."""
     stmt = c.get("statements", "")
     low = stmt.lower()
     if "test_id" in low:
         return c
-    for pcat, needle, clause, note in SCOPE_PATCHES:
+    for pcat, needle, tid, note in SCOPE_PATCHES:
         if cat == pcat and needle in low:
             c = dict(c)
-            c["statements"] = stmt + clause
+            c["statements"] = inject_test_id_scope(stmt, tid)
             c["description"] = note
             return c
     return c
