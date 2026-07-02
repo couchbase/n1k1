@@ -132,15 +132,13 @@ func (c *cli) printHelp() {
 .version              show version + build info (incl. dependency SHAs)
 .quit / .exit         leave
 `)
-	// Show the current datastore + a live example over a real keyspace (the
-	// "default:" namespace prefix is optional). Handle "no datastore open".
+	// Show the current datastore + a live example over a real keyspace, or a hint
+	// to open one when there's no datastore.
 	fmt.Fprintf(c.stderr, "\ndatastore: %s\n", c.dataLoc())
 	if ex := c.exampleQuery(); ex != "" {
-		fmt.Fprintf(c.stderr, "Statements are SQL++; terminate with ';'. A keyspace is queried by "+
-			"name (the \"default:\" namespace prefix is optional), e.g. %s\n", ex)
+		fmt.Fprintf(c.stderr, "Statements are SQL++; terminate with ';'. Example: %s\n", ex)
 	} else {
-		fmt.Fprintln(c.stderr, "Statements are SQL++; terminate with ';'. Open a datastore with "+
-			".open <dir>, then query a keyspace by name (the \"default:\" prefix is optional).")
+		fmt.Fprintln(c.stderr, "Statements are SQL++; terminate with ';'. Open a datastore with .open <dir> to query it.")
 	}
 }
 
