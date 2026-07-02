@@ -410,3 +410,35 @@ func TestStringCompareDoesNotPoisonPool(t *testing.T) {
 		t.Errorf("constant no longer compares equal to itself after object canonicalize")
 	}
 }
+
+// TestArrayCompareIsAntisymmetric guards a bug where comparing arrays whose
+// FIRST differing element decided the result (with more elements following)
+// let the "shorter array is less" rule override the real comparison: the
+// element loop stops advancing its index once cmp != 0, so i < bLen stayed
+// true and Compare returned -1 regardless of the actual order. Manifested as
+// multi-key ORDER BY on an array-valued sort key (e.g. OBJECT_PAIRS(...))
+// mis-sorting rows -- Compare(a,b) and Compare(b,a) both returned -1.
+func TestArrayCompareIsAntisymmetric(t *testing.T) {
+	vc := &ValComparer{}
+
+	cases := [][2]string{
+		{`["2011","zzz"]`, `["2015","zzz"]`},         // strings, decide on elem 0
+		{`[2011,9]`, `[2015,9]`},                     // numbers, decide on elem 0
+		{`["x","a"]`, `["x","b"]`},                   // decide on elem 1
+		{`[{"n":"a","v":"1"},{"n":"b","v":"x"}]`, `[{"n":"a","v":"2"},{"n":"b","v":"x"}]`}, // objects
+		{`["x"]`, `["x","y"]`},                       // equal prefix, a shorter -> a < b
+	}
+	for _, c := range cases {
+		a, b := Val(c[0]), Val(c[1])
+		if ab, ba := vc.Compare(a, b), vc.Compare(b, a); ab != -1 || ba != 1 {
+			t.Errorf("Compare(%s,%s)=%d, Compare reversed=%d; want -1 and +1",
+				c[0], c[1], ab, ba)
+		}
+	}
+
+	// Equal arrays compare equal both ways.
+	eq := Val(`[1,2,3]`)
+	if vc.Compare(eq, Val(`[1,2,3]`)) != 0 {
+		t.Errorf("equal arrays should compare equal")
+	}
+}

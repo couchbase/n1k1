@@ -202,12 +202,22 @@ func (c *ValComparer) CompareWithType(aValue, bValue []byte,
 
 		c.KeyValsRelease(depth, kvs)
 
-		if i < bLen {
-			return -1
-		}
-
 		if aErr != nil || bErr != nil {
 			return CompareErr(aErr, bErr)
+		}
+
+		// A non-zero cmp from the first differing element decides the
+		// result. Only when all compared elements were equal (cmp == 0)
+		// does a shorter aValue (i < bLen) make aValue the lesser. NOTE:
+		// the loop stops advancing i once cmp != 0, so i < bLen can be
+		// true here even though cmp already decided -- don't let the
+		// shorter-array rule override a real element comparison.
+		if cmp != 0 {
+			return cmp
+		}
+
+		if i < bLen {
+			return -1
 		}
 
 		return cmp

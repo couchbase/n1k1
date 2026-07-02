@@ -10,7 +10,7 @@ const gsiSuiteRoot = "suite/json-gsi"
 
 // gsiPassFloor is the results-pass backstop for the gsi corpus (bump as coverage
 // grows), mirroring the default suite's floor.
-const gsiPassFloor = 467
+const gsiPassFloor = 469
 
 // gsiExpectedNonPass lists gsi cases n1k1 doesn't yet pass, keyed by loc
 // (case_gsi_<cat>.json[i]) -> group. Any non-pass NOT listed is a regression.
@@ -38,8 +38,6 @@ var gsiExpectedNonPass = map[string]string{
 	"case_gsi_json_functions.json[5]":   "json-funcs",
 	"case_gsi_json_functions.json[10]":  "json-funcs",
 	"case_gsi_json_functions.json[13]":  "json-funcs",
-	"case_gsi_obj_functions.json[2]":    "obj-funcs",
-	"case_gsi_obj_functions.json[3]":    "obj-funcs",
 	"case_gsi_obj_functions.json[8]":    "obj-funcs",
 }
 
