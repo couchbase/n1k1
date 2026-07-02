@@ -998,7 +998,31 @@ func (c *Conv) VisitDistinct(o *plan.Distinct) (interface{}, error) {
 
 // Set operators
 
-func (c *Conv) VisitUnionAll(o *plan.UnionAll) (interface{}, error)         { return NA(o) }
+// VisitUnionAll converts UNION ALL: each child is a self-contained SELECT
+// sub-plan converted as its own branch; OpUnionAll runs them concurrently and
+// remaps each child's vals to the union's output labels by label name. (Plain
+// UNION is this wrapped in a plan.Distinct, which VisitDistinct handles.)
+func (c *Conv) VisitUnionAll(o *plan.UnionAll) (interface{}, error) {
+	children := make([]*base.Op, 0, len(o.Children()))
+	for _, ch := range o.Children() {
+		branch, err := c.convertBranch(ch)
+		if err != nil {
+			return nil, err
+		}
+		children = append(children, branch)
+	}
+	if len(children) == 0 {
+		return NA(o)
+	}
+	// The union's output labels are the first branch's; OpUnionAll matches the
+	// other branches' columns to these by label name (missing -> MISSING).
+	return c.TopSet(o, &base.Op{
+		Kind:     "union-all",
+		Labels:   append(base.Labels{}, children[0].Labels...),
+		Children: children,
+	})
+}
+
 func (c *Conv) VisitIntersectAll(o *plan.IntersectAll) (interface{}, error) { return NA(o) }
 func (c *Conv) VisitExceptAll(o *plan.ExceptAll) (interface{}, error)       { return NA(o) }
 

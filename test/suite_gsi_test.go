@@ -10,7 +10,7 @@ const gsiSuiteRoot = "suite/json-gsi"
 
 // gsiPassFloor is the results-pass backstop for the gsi corpus (bump as coverage
 // grows), mirroring the default suite's floor.
-const gsiPassFloor = 693
+const gsiPassFloor = 694
 
 // gsiExpectedNonPass lists gsi cases n1k1 doesn't yet pass, keyed by loc
 // (case_gsi_<cat>.json[i]) -> group. Any non-pass NOT listed is a regression.
@@ -42,6 +42,5 @@ var gsiGroupWhy = map[string]string{
 	"fork-data-missing": "aggregate[54]: queries test_id=\"median_agg_func\" docs that the fork's insert.json never inserts (only agg_func/cntn_agg_func), so the keyspace has no matching rows",
 	"select-exclude":    "SELECT * EXCLUDE <path> (and o.* EXCLUDE ...) -- the star-projection EXCLUDE clause isn't applied, so excluded fields still appear; not yet supported",
 	"comma-join":        "comma/cross join (FROM a, b) -- no ON clause; glue rejects it (NA) rather than panic. Not yet supported",
-	"union":             "UNION / UNION ALL set operators (plan.UnionAll) -- not yet supported",
 	"ci-identifier":     "case-insensitive field identifiers (`name`i) -- t.`title`i matching a TITLE field; not yet supported",
 }

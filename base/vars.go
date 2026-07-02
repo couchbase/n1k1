@@ -31,9 +31,18 @@ type Vars struct {
 
 // ChainExtend returns a new Vars linked to the Vars chain, which is
 // safely usable by a concurrent goroutine and useful for shadowing.
+//
+// The temps are shallow-copied (not left empty): they hold the read-only
+// convert-time resources -- plan objects and FROM-expression trees that ops
+// like datastore-scan / expr-scan read by slot index -- which each concurrent
+// actor (e.g. a UNION ALL contributor) still needs. Any per-run resource an
+// actor creates is TempSet into its own copy, so actors don't share mutable
+// state.
 func (v *Vars) ChainExtend() *Vars {
+	temps := make([]interface{}, len(v.Temps))
+	copy(temps, v.Temps)
 	return &Vars{
-		Temps: make([]interface{}, len(v.Temps)),
+		Temps: temps,
 		Next:  v,
 		Ctx:   v.Ctx.Clone(),
 	}
