@@ -79,7 +79,10 @@ func (c *GlueContext) Datastore() datastore.Datastore {
 	return nil
 }
 
-func (c *GlueContext) NamedArg(name string) (value.Value, bool)       { return nil, false }
+func (c *GlueContext) NamedArg(name string) (value.Value, bool) {
+	v, ok := c.namedArgs[name]
+	return v, ok
+}
 func (c *GlueContext) PositionalArg(position int) (value.Value, bool) { return nil, false }
 
 // EvaluateSubquery runs a subquery SELECT and returns its rows as an array

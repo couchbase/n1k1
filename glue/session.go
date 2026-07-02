@@ -21,6 +21,7 @@ import (
 
 	"github.com/couchbase/query/errors"
 	"github.com/couchbase/query/plan"
+	"github.com/couchbase/query/value"
 
 	"github.com/couchbase/n1k1/base"
 	"github.com/couchbase/n1k1/engine"
@@ -33,6 +34,11 @@ import (
 type Session struct {
 	Store     *Store
 	Namespace string // e.g. "default"
+
+	// NamedArgs are optional named query parameters ($name) supplied with the
+	// request; they flow to the planner and to eval-time NamedParameter lookups
+	// (see GlueContext.NamedArg). nil when the statement uses none.
+	NamedArgs map[string]value.Value
 }
 
 // OpenSession opens a file-datastore directory and prepares it for queries.
@@ -97,7 +103,7 @@ func (s *Session) Run(stmt string) (res *Result, err error) {
 		return nil, err
 	}
 
-	qp, err := s.Store.PlanStatementQP(parsed, s.Namespace, nil, nil)
+	qp, err := s.Store.PlanStatementQP(parsed, s.Namespace, s.NamedArgs, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -142,6 +148,7 @@ func (s *Session) Run(stmt string) (res *Result, err error) {
 
 	gctx := NewGlueContext(time.Now())
 	gctx.InitSubqueries(s.Store, s.Namespace, conv.WithBindings()) // enable expression subqueries
+	gctx.SetNamedArgs(s.NamedArgs)                                 // resolve $name at eval time
 
 	// Route native-expression advisories (e.g. divide-by-zero) into the
 	// request's warning collector; kept cbq-free on the engine side.

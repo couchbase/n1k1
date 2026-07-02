@@ -64,7 +64,16 @@ type GlueContext struct {
 	// to it (ExprTree wraps each sub-row as a scope over this parent). nil
 	// outside a correlated subquery. See subquery.go / expr.go.
 	corrParent value.Value
+
+	// namedArgs holds the request's named query parameters ($name), resolved by
+	// NamedArg at eval time (a `WHERE x IN $inlist` NamedParameter looks here).
+	// nil when the statement uses none. See Session.NamedArgs.
+	namedArgs map[string]value.Value
 }
+
+// SetNamedArgs installs the request's named query parameters ($name), so
+// NamedArg can resolve them during expression evaluation.
+func (c *GlueContext) SetNamedArgs(args map[string]value.Value) { c.namedArgs = args }
 
 // NewGlueContext returns a GlueContext stamped with the given "now".
 func NewGlueContext(now time.Time) *GlueContext {
