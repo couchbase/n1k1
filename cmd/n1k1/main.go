@@ -678,8 +678,8 @@ func (c *cli) eagerBuildIndexes() {
 }
 
 // cmdIndex dispatches the .index command family: `.index [list]`, `.index show
-// <name>`, `.index rebuild [<name>]`, `.index help`. (`.indexes` is an alias for
-// `.index list`.)
+// <name>`, `.index rebuild [<name>]`, `.index suggest`, `.index create`, `.index
+// help`. (`.indexes` is an alias for `.index list`.)
 func (c *cli) cmdIndex(arg string) {
 	sub, rest := splitFirst(arg)
 	switch strings.ToLower(sub) {
@@ -693,9 +693,154 @@ func (c *cli) cmdIndex(arg string) {
 		c.cmdIndexHelp()
 	case "suggest", "auto-plan":
 		c.cmdIndexSuggest(rest)
+	case "create":
+		c.cmdIndexCreate(rest)
 	default:
 		fmt.Fprintf(c.stderr, "unknown subcommand %q; try .index help\n", sub)
 	}
+}
+
+// cmdIndexCreate implements `.index create`: add index definition(s) to
+// .n1k1/catalog.json and build them. Two input forms:
+//
+//	.index create <name> on <keyspace> (<expr>[, <expr>]) [where <expr>]
+//	.index create {"indexes":[ ... ]}      (or a single {...}; e.g. `.index suggest` output)
+//
+// It writes the human catalog (explicit user intent), re-opens the session so the
+// new index is advertised, then builds it (showing progress).
+func (c *cli) cmdIndexCreate(arg string) {
+	arg = strings.TrimSpace(arg)
+	if arg == "" {
+		fmt.Fprintln(c.stderr, "usage: .index create <name> on <keyspace> (<expr>[, <expr>]) [where <expr>]")
+		fmt.Fprintln(c.stderr, "   or: .index create {\"indexes\":[ ... ]}   (e.g. paste .index suggest output)")
+		return
+	}
+	if c.sess == nil || c.dir == "" {
+		fmt.Fprintln(c.stderr, "no datastore open (open a <ns>/<keyspace> directory first)")
+		return
+	}
+
+	var fragment []byte
+	if strings.HasPrefix(arg, "{") {
+		fragment = []byte(arg)
+	} else {
+		f, err := parseCreateDSL(arg)
+		if err != nil {
+			fmt.Fprintf(c.stderr, "%s: .index create: %v\n", c.prog, err)
+			return
+		}
+		fragment = f
+	}
+
+	added, err := glue.CatalogAddIndexes(c.dir, fragment)
+	if err != nil {
+		fmt.Fprintf(c.stderr, "%s: .index create: %v\n", c.prog, err)
+		return
+	}
+
+	// Re-open so the datastore re-wraps with the freshly-written catalog (it may
+	// not have been index-wrapped before if this is the first index).
+	sess, oerr := glue.OpenSession(c.dir, c.ns)
+	if oerr != nil {
+		fmt.Fprintf(c.stderr, "%s: reopen after create: %v\n", c.prog, oerr)
+		return
+	}
+	c.sess = sess
+
+	// Build each new index now (force, with progress) so it's ready to use.
+	prog := newIndexProgress(c.stderr, c.fancyTTY)
+	for _, name := range added {
+		if berr := glue.RebuildSecondaryIndexes(c.sess.Store.Datastore, name, prog.handle); berr != nil {
+			fmt.Fprintf(c.stderr, "%s: build %q: %v\n", c.prog, name, berr)
+		}
+	}
+	prog.finish()
+	fmt.Fprintf(c.stderr, "%screated %s\n", c.icon("✓ "), strings.Join(added, ", "))
+}
+
+// parseCreateDSL parses `<name> on <keyspace> (<expr>[, <expr>]) [where <expr>]`
+// into a one-index catalog fragment. Keys are split on top-level commas.
+func parseCreateDSL(s string) ([]byte, error) {
+	open := strings.IndexByte(s, '(')
+	if open < 0 {
+		return nil, fmt.Errorf("expected '(' with the key expression(s)")
+	}
+	closeIdx := matchParen(s, open)
+	if closeIdx < 0 {
+		return nil, fmt.Errorf("unbalanced parentheses")
+	}
+	head := strings.Fields(s[:open])
+	if len(head) != 3 || !strings.EqualFold(head[1], "on") {
+		return nil, fmt.Errorf("expected: <name> on <keyspace> (<expr>...)")
+	}
+	name, keyspace := head[0], head[2]
+
+	keys := splitTopLevelCommas(s[open+1 : closeIdx])
+	if len(keys) == 0 {
+		return nil, fmt.Errorf("need at least one key expression")
+	}
+
+	where := ""
+	if tail := strings.TrimSpace(s[closeIdx+1:]); tail != "" {
+		w, rest := splitFirst(tail)
+		if !strings.EqualFold(w, "where") || strings.TrimSpace(rest) == "" {
+			return nil, fmt.Errorf("trailing text after ')' must be: where <expr>")
+		}
+		where = strings.TrimSpace(rest)
+	}
+
+	def := struct {
+		Name     string   `json:"name"`
+		Keyspace string   `json:"keyspace"`
+		Keys     []string `json:"keys"`
+		Where    string   `json:"where,omitempty"`
+	}{name, keyspace, keys, where}
+	b, err := json.Marshal(struct {
+		Indexes []interface{} `json:"indexes"`
+	}{[]interface{}{def}})
+	return b, err
+}
+
+// matchParen returns the index of the ')' matching the '(' at open, or -1.
+func matchParen(s string, open int) int {
+	depth := 0
+	for i := open; i < len(s); i++ {
+		switch s[i] {
+		case '(':
+			depth++
+		case ')':
+			if depth--; depth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+// splitTopLevelCommas splits on commas not nested inside () or [], trimming each
+// part and dropping empties.
+func splitTopLevelCommas(s string) []string {
+	var out []string
+	depth, start := 0, 0
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '(', '[':
+			depth++
+		case ')', ']':
+			depth--
+		case ',':
+			if depth == 0 {
+				if p := strings.TrimSpace(s[start:i]); p != "" {
+					out = append(out, p)
+				}
+				start = i + 1
+			}
+		}
+	}
+	if p := strings.TrimSpace(s[start:]); p != "" {
+		out = append(out, p)
+	}
+	return out
 }
 
 // cmdIndexSuggest implements `.index suggest [<keyspace>]`: sample docs, score
@@ -751,6 +896,9 @@ func (c *cli) cmdIndexHelp() {
   .index show <name>       show one index's definition + stats
   .index rebuild [<name>]  force-rebuild (all, or one), ignoring freshness
   .index suggest [<ks>]    advise candidate indexes from a doc sample (emits catalog JSON)
+  .index create ...        add index def(s) to catalog.json and build them:
+                             .index create <name> on <ks> (<expr>[, <expr>]) [where <expr>]
+                             .index create {"indexes":[ ... ]}   (e.g. paste suggest output)
   .index help              this help
 
 Index definitions live in <dataRoot>/.n1k1/catalog.json:

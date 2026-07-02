@@ -120,6 +120,104 @@ func (d *indexDef) defHash() string {
 	return hex.EncodeToString(h.Sum(nil))[:12]
 }
 
+// catalogIndexJSON is the wire form of an index def (just the JSON fields, no
+// parsed/internal state) -- used to read an `.index create` fragment and to
+// (re)write catalog.json.
+type catalogIndexJSON struct {
+	Name      string   `json:"name"`
+	Namespace string   `json:"namespace,omitempty"`
+	Keyspace  string   `json:"keyspace"`
+	Keys      []string `json:"keys"`
+	Where     string   `json:"where,omitempty"`
+}
+
+// CatalogAddIndexes validates the index definitions in fragmentJSON (either a
+// {"indexes":[...]} object -- e.g. `.index suggest` output -- or a single {...}
+// def) and merges them into <dataRoot>/.n1k1/catalog.json, returning the names
+// added. Writing the human catalog is allowed here because it is *explicit* user
+// intent (`.index create`), unlike autonomous machinery (see DESIGN-indexing.md
+// single-writer rule). Errors on a malformed/invalid def, a duplicate name, or a
+// catalog that carries non-index sections (won't clobber future data).
+func CatalogAddIndexes(dataRoot string, fragmentJSON []byte) ([]string, error) {
+	// Accept the array form or a single def.
+	var frag struct {
+		Indexes []catalogIndexJSON `json:"indexes"`
+	}
+	if err := json.Unmarshal(fragmentJSON, &frag); err != nil {
+		return nil, fmt.Errorf("parsing index JSON: %w", err)
+	}
+	adds := frag.Indexes
+	if len(adds) == 0 {
+		var one catalogIndexJSON
+		if err := json.Unmarshal(fragmentJSON, &one); err != nil || one.Name == "" {
+			return nil, fmt.Errorf("no index definitions found in the JSON")
+		}
+		adds = []catalogIndexJSON{one}
+	}
+
+	// Validate each (name/keyspace/keys present, key/where expressions parse).
+	for _, a := range adds {
+		d := &indexDef{Name: a.Name, Namespace: a.Namespace, Keyspace: a.Keyspace,
+			Keys: a.Keys, Where: a.Where}
+		if err := d.parse(); err != nil {
+			return nil, fmt.Errorf("index %q: %w", a.Name, err)
+		}
+	}
+
+	path := filepath.Join(dataRoot, sidecarDir, "catalog.json")
+
+	// Read the existing catalog. Guard against clobbering non-index top-level
+	// sections a future catalog might carry (v1 has only "indexes").
+	var existing []catalogIndexJSON
+	if raw, err := os.ReadFile(path); err == nil {
+		top := map[string]json.RawMessage{}
+		if err := json.Unmarshal(raw, &top); err != nil {
+			return nil, fmt.Errorf("reading %q: %w", path, err)
+		}
+		for k := range top {
+			if k != "indexes" {
+				return nil, fmt.Errorf("%q has a %q section; edit it by hand for now", path, k)
+			}
+		}
+		if idx, ok := top["indexes"]; ok {
+			if err := json.Unmarshal(idx, &existing); err != nil {
+				return nil, fmt.Errorf("existing catalog indexes: %w", err)
+			}
+		}
+	} else if !os.IsNotExist(err) {
+		return nil, fmt.Errorf("reading %q: %w", path, err)
+	}
+
+	// Reject duplicate names, then append.
+	have := map[string]bool{}
+	for _, e := range existing {
+		have[e.Name] = true
+	}
+	var added []string
+	for _, a := range adds {
+		if have[a.Name] {
+			return nil, fmt.Errorf("index %q already exists in catalog.json", a.Name)
+		}
+		have[a.Name] = true
+		existing = append(existing, a)
+		added = append(added, a.Name)
+	}
+
+	out, err := json.MarshalIndent(struct {
+		Indexes []catalogIndexJSON `json:"indexes"`
+	}{existing}, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(path, append(out, '\n'), 0o644); err != nil {
+		return nil, err
+	}
+	return added, nil
+}
+
 // indexesFor returns the catalog's index defs for one namespace:keyspace, in a
 // stable (name) order so index advertising is deterministic.
 func (c *catalog) indexesFor(namespace, keyspace string) []*indexDef {

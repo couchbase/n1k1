@@ -152,6 +152,15 @@ every `maybeSecondaryIndexes`, so a mid-session `.open` re-applies it):
   samples docs, scores selective scalar/nested-no-array fields, and prints an
   editable `catalog.json` fragment (each def carries a `why` the loader ignores).
   Shipped (`glue.SuggestIndexes` in `si_suggest.go`).
+- **`.index create ...`** — add index def(s) to `catalog.json` and build them, in
+  two input forms: a DSL `.index create <name> on <keyspace> (<expr>[, <expr>])
+  [where <expr>]`, or a JSON fragment `.index create {"indexes":[…]}` (pastes back
+  `.index suggest` output — the `why` field is accepted and dropped on write). It
+  validates the def(s), merges into `catalog.json` (dup names rejected; won't
+  clobber non-index sections), re-opens the session, and builds. Shipped
+  (`glue.CatalogAddIndexes` in `si_catalog.go`). Writing the human catalog is fine
+  here — it's explicit user intent (single-writer rule bars only *background*
+  rewriting).
 
 **Design stance on scope.** Per-index knobs (collation, the "index-everything"
 value-size cap + truncation marker, `defer`, CBO stats) belong in `catalog.json`
@@ -646,18 +655,18 @@ art, in three families.
      ignores it, so the fragment pastes back verbatim). No side effects; the natural
      companion to cbq's `ADVISE`. You paste it into an editor, prune / rename / add
      `where`, then drop it into `.n1k1/catalog.json` or feed it to:
-   - **`.index create <json>`** *(explicit apply)* — append the def(s) to
-     `.n1k1/catalog.json` and build. Writing the human catalog is fine here because
-     it's **explicit user intent**; the single-writer rule only forbids *background*
-     machinery from rewriting `catalog.json`.
+   - **`.index create ...`** *(explicit apply)* — **SHIPPED.** A DSL form
+     (`<name> on <keyspace> (<expr>…) [where <expr>]`) or the JSON fragment; append
+     the def(s) to `.n1k1/catalog.json` and build. Writing the human catalog is fine
+     here because it's **explicit user intent**; the single-writer rule only forbids
+     *background* machinery from rewriting `catalog.json`.
    - **`.index auto`** *(fully autonomous, later)* — sampling + workload
      confirmation + GC, writing a **separate machine-managed auto-catalog**, never
      the human `catalog.json`.
-   The **advisor (`.index suggest`) is shipped** as the bounded first step (only
-   sampling/path-walk/scoring + the existing catalog format — no workload logging,
-   no autonomous creation, no GC). Still ahead: `.index create` (explicit catalog
-   write), and the fully-autonomous `.index auto` (workload confirmation + GC into a
-   machine-managed auto-catalog).
+   Both the **advisor (`.index suggest`) and explicit apply (`.index create`) are
+   shipped** — the advise→edit→apply loop is complete. Still ahead: the
+   fully-autonomous `.index auto` (workload confirmation + GC into a machine-managed
+   auto-catalog).
 3. **Eager wildcard GSI (Cosmos/Mongo-style)** — a bbolt store keyed
    `encode(path) + encode(value) + docID` so any single-path equality/range is
    contiguous.

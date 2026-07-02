@@ -447,6 +447,44 @@ func keysOf(m map[string]bool) []string {
 	return out
 }
 
+// TestSecondaryIndexCreate: glue.CatalogAddIndexes (the .index create backend)
+// writes defs into catalog.json (array + single-def forms), rejects duplicate
+// names, and the created index is usable after re-open.
+func TestSecondaryIndexCreate(t *testing.T) {
+	root := writeIndexedKeyspace(t, siDocs, `{"indexes":[]}`) // start with no indexes
+
+	added, err := glue.CatalogAddIndexes(root,
+		[]byte(`{"indexes":[{"name":"ix_country","keyspace":"customer","keys":["country"]}]}`))
+	if err != nil {
+		t.Fatalf("add ix_country: %v", err)
+	}
+	if len(added) != 1 || added[0] != "ix_country" {
+		t.Fatalf("added = %v, want [ix_country]", added)
+	}
+
+	// Duplicate name is rejected (no clobber).
+	if _, err := glue.CatalogAddIndexes(root,
+		[]byte(`{"name":"ix_country","keyspace":"customer","keys":["country"]}`)); err == nil {
+		t.Fatalf("expected duplicate-name error")
+	}
+
+	// Single-def form adds another.
+	if _, err := glue.CatalogAddIndexes(root,
+		[]byte(`{"name":"ix_age","keyspace":"customer","keys":["age"]}`)); err != nil {
+		t.Fatalf("add ix_age: %v", err)
+	}
+
+	// The created index is usable after (re-)opening the datastore.
+	store, conv := flatRootConv(t, root, `SELECT c.id AS id FROM default:customer c WHERE c.country = "US"`)
+	if !hasKind(conv.TopOp, "datastore-scan-index") {
+		t.Errorf("created index not used: %v", opKinds(conv.TopOp))
+	}
+	rows := flatRootRows(t, conv, testGlueExec(t, false, store, conv))
+	if got, want := idJSONs(rows), wantIDJSONs([]string{"c1", "c3", "c5"}); !equalStrs(got, want) {
+		t.Fatalf("after create: want %v, got %v", want, got)
+	}
+}
+
 func equalStrs(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
