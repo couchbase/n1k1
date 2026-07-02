@@ -681,6 +681,47 @@ func TestFTSDeclaredMapping(t *testing.T) {
 	}
 }
 
+// TestFTSFlexIndex: the implicit-predicate flex path -- a plain WHERE (no explicit
+// SEARCH()) is served by the bleve FTS index (SargableFlex translates the
+// predicate to a bleve query; datastore-scan-fts runs it). Correctness comes from
+// the residual Filter re-checking the original predicate, so results must match the
+// no-index run; a predicate the index can't translate falls back to a records scan.
+func TestFTSFlexIndex(t *testing.T) {
+	docs := map[string]string{
+		"d1": `{"id":"d1","title":"quick brown fox","age":10}`,
+		"d2": `{"id":"d2","title":"hello world","age":25}`,
+		"d3": `{"id":"d3","title":"slow steady","age":40}`,
+	}
+	catalog := `{"indexes":[{"name":"ft","keyspace":"docs","kind":"fts"}]}`
+	root := writeKeyspaceDocs(t, "docs", docs, catalog)
+
+	cases := []struct {
+		stmt string
+		want []string
+		flex bool // expect the FTS flex scan (else a records scan fallback)
+	}{
+		{`SELECT d.id AS id FROM docs d WHERE d.age > 20`, []string{"d2", "d3"}, true},
+		{`SELECT d.id AS id FROM docs d WHERE d.age = 25`, []string{"d2"}, true},
+		{`SELECT d.id AS id FROM docs d WHERE d.title = "hello world"`, []string{"d2"}, true},
+		{`SELECT d.id AS id FROM docs d WHERE d.age >= 25 AND d.title = "hello world"`, []string{"d2"}, true},
+		{`SELECT d.id AS id FROM docs d WHERE d.age < 25 OR d.title = "slow steady"`, []string{"d1", "d3"}, true},
+		// A function on the field is not translatable -> flex declines -> records scan (still correct).
+		{`SELECT d.id AS id FROM docs d WHERE LOWER(d.title) = "hello world"`, []string{"d2"}, false},
+	}
+	for _, tc := range cases {
+		store, conv := flatRootConv(t, root, tc.stmt)
+		gotFlex := hasKind(conv.TopOp, "datastore-scan-fts")
+		if gotFlex != tc.flex {
+			t.Errorf("%q: FTS flex scan = %v, want %v (ops %v)",
+				tc.stmt, gotFlex, tc.flex, opKinds(conv.TopOp))
+		}
+		rows := flatRootRows(t, conv, testGlueExec(t, false, store, conv))
+		if got := idJSONs(rows); !equalStrs(got, wantIDJSONs(tc.want)) {
+			t.Errorf("%q: want %v, got %v", tc.stmt, tc.want, got)
+		}
+	}
+}
+
 func equalStrs(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

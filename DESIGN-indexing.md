@@ -104,10 +104,11 @@ Phase 2 (FTS via embedded bleve) is also shipped: `SELECT … WHERE SEARCH(ks,
 keys are all plain field refs is answered straight from the index (no fetch), by
 reconstructing the projected doc from the decoded key values (see the covering
 learning below). The FTS follow-ups
-`SEARCH_SCORE()`/`SEARCH_META()` surfacing and declared field mappings are shipped
-too (see "Phase 2"). Not yet built (still proposal below): incremental index
-maintenance, a fingerprint/zone-map manifest, predicated `CountIndex` pushdown
-(blocked on exact-spans), and the FTS `SargableFlex`/implicit-predicate flex path.
+`SEARCH_SCORE()`/`SEARCH_META()` surfacing, declared field mappings, and the
+`SargableFlex` implicit-predicate flex path are shipped too (see "Phase 2"). Not
+yet built (still proposal below): incremental index maintenance, a
+fingerprint/zone-map manifest, and predicated `CountIndex` pushdown (blocked on
+exact-spans).
 Known v1 limitations: freshness is a coarse (count, newest-mtime) signature, so a
 change that keeps both identical (rare) won't trigger a rebuild — run `.index
 rebuild` to force one; and array/object index *values* sort by byte order, not
@@ -482,10 +483,25 @@ in-process (a small shim, not n1fty). Landed in `glue/fts.go`:
   listed field keys build a **non-dynamic** mapping indexing exactly those fields
   (nested dotted paths → sub-document mappings), so a `SEARCH()` on any other field
   matches nothing.
+- **Flex / implicit predicates (follow-up, shipped):** `SargableFlex` now lets a
+  plain `WHERE` predicate (no explicit `SEARCH()`) be served by the bleve index.
+  It translates the sargable part of the predicate (`Eq`/`LT`/`LE`, plus `AND`/`OR`;
+  `>`/`>=` are `LT`/`LE` with swapped operands) over **indexed** fields into a bleve
+  query DSL (match for string `=`, numeric point/range otherwise; `AND`→`conjuncts`,
+  `OR`→`disjuncts`); the planner wraps it as a synthetic `SEARCH(ks, <query>)` →
+  `plan.IndexFtsSearch`, so `DatastoreScanFTS` runs it. The keyspace alias is
+  stripped from field paths to match bleve's unqualified field names, and
+  `bleveQuery` parses a DSL object via `query.ParseQuery`. **Correctness is
+  independent of translation precision:** we never set `FTS_FLEXINDEX_EXACT`, so the
+  planner keeps the *original* predicate in the residual `Filter`, which n1k1
+  re-evaluates on the fetched doc — the bleve query need only be a superset
+  (candidate filter). An `AND` may drop an untranslatable conjunct (still a
+  superset); an `OR` bails if any disjunct is untranslatable (dropping one would
+  wrongly narrow); a wholly untranslatable predicate declines and falls back to a
+  records scan.
 
-**Remaining follow-ups:** the implicit-predicate → FTS "flex" path (`SargableFlex`)
-is still stubbed, so only explicit `SEARCH()` is handled; and declared fields are
-all mapped as text (per-field analyzers/types not yet configurable).
+**Remaining follow-up:** declared fields are all mapped as text (per-field
+analyzers/types not yet configurable).
 
 ## Sidecar layout (`.n1k1/`): naming for many index schemes
 
@@ -873,8 +889,11 @@ datasets.
   uses a `datastore-scan-fts` op (`TestFTSSearch` asserts this) and results match
   the whole-doc and field forms (`SEARCH(d,"quick")` → `d1,d2`; `SEARCH(d.title,
   "world")` → `d2`). `SEARCH_SCORE(d)`/`SEARCH_META(d)` return the bleve score/meta
-  (`TestFTSScoreMeta`), and a `kind:fts` def with `keys` scopes matches to those
-  fields (`TestFTSDeclaredMapping`).
+  (`TestFTSScoreMeta`), a `kind:fts` def with `keys` scopes matches to those fields
+  (`TestFTSDeclaredMapping`), and a plain `WHERE` predicate (no `SEARCH()`) is served
+  by the index via the flex path — `datastore-scan-fts` with results matching the
+  no-index run, falling back to a records scan for untranslatable predicates
+  (`TestFTSFlexIndex`).
 
 ## Risks & open questions
 

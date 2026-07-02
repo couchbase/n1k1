@@ -26,11 +26,11 @@ package glue
 // rebuilt when the source signature changes (same static-data model as gsi).
 //
 // Shipped: explicit SEARCH() (Sargable + Search); SEARCH_SCORE()/SEARCH_META()
-// (the hit score/meta surfaced via value.ATT_SMETA -- see DatastoreScanFTS); and
+// (the hit score/meta surfaced via value.ATT_SMETA -- see DatastoreScanFTS);
 // declared field mappings (a def with "keys" indexes exactly those fields; empty
-// keys stays dynamic -- see ftsMapping). Not yet: the implicit predicate->FTS
-// "flex" path (SargableFlex is stubbed), and per-field analyzers/types (declared
-// fields are all mapped as text).
+// keys stays dynamic -- see ftsMapping); and the implicit-predicate "flex" path
+// (SargableFlex translates a plain WHERE predicate to a bleve query). Not yet:
+// per-field analyzers/types (declared fields are all mapped as text).
 
 import (
 	"encoding/json"
@@ -182,12 +182,189 @@ func (fi *ftsIndex) Pageable(order []string, offset, limit int64,
 	return false
 }
 
-// SargableFlex (implicit predicate -> FTS translation) is not supported in v1;
-// returning no response means the planner won't pick this index via the flex path,
-// only via an explicit SEARCH().
+// SargableFlex is the implicit-predicate -> FTS "flex" path: it lets a plain
+// WHERE predicate (no explicit SEARCH()) be served by this bleve index. It
+// translates the sargable part of req.Pred into a bleve query DSL; the planner
+// wraps that as a synthetic SEARCH(keyspace, <query>) and plans a
+// plan.IndexFtsSearch (which DatastoreScanFTS already runs). Returning nil (no
+// translatable predicate) just declines the flex path.
+//
+// We deliberately never set FTS_FLEXINDEX_EXACT, so the planner keeps the original
+// predicate in the residual Filter -- which n1k1 re-evaluates against the fetched
+// doc. That makes correctness independent of translation precision: the bleve query
+// need only be a superset (candidate filter), and the residual Filter narrows it
+// exactly. (Contrast the explicit SEARCH() path, whose residual SEARCH() n1k1
+// can't re-evaluate, so it must be exact + stripped.)
 func (fi *ftsIndex) SargableFlex(requestId string, req *datastore.FTSFlexRequest) (
 	*datastore.FTSFlexResponse, errors.Error) {
-	return nil, nil
+	if req == nil || req.Pred == nil {
+		return nil, nil
+	}
+	q, sarged, ok := fi.flexTranslate(req.Pred, req.Keyspace)
+	if !ok || len(sarged) == 0 {
+		return nil, nil
+	}
+	raw, err := json.Marshal(q)
+	if err != nil {
+		return nil, nil
+	}
+	// Options name the index, matching n1fty. Also, the planner builds
+	// search.NewSearch(ident, query, options) and only parses options when
+	// SearchOptions != "" -- an empty string leaves a nil options operand that its
+	// later Equivalent() comparison dereferences (panics), so always return one.
+	opts, err := json.Marshal(map[string]interface{}{"index": fi.def.Name})
+	if err != nil {
+		return nil, nil
+	}
+	return &datastore.FTSFlexResponse{
+		SearchQuery:    string(raw), // a JSON object literal -- also valid N1QL, so the planner can parse it
+		SearchOptions:  string(opts),
+		StaticSargKeys: sarged,
+		RespFlags:      0, // never EXACT: the residual Filter re-checks the predicate
+		NumIndexedKeys: uint32(len(sarged)),
+	}, nil
+}
+
+// flexTranslate converts a predicate subtree into a bleve query DSL fragment
+// (map[string]interface{}, JSON-marshalable) plus the field->expression paths it
+// sarged. ok=false means "not translatable" -- the caller decides how to handle it:
+// an AND may drop an untranslatable conjunct (the result stays a superset, which the
+// residual Filter narrows), but an OR must bail entirely if any disjunct is
+// untranslatable (dropping a disjunct would wrongly narrow the result). Only Eq / LT
+// / LE (>, >= are parsed as LT/LE with swapped operands) over indexed fields are
+// handled; everything else declines.
+func (fi *ftsIndex) flexTranslate(e expression.Expression, alias string) (
+	q map[string]interface{}, sarged map[string]expression.Expression, ok bool) {
+	switch t := e.(type) {
+	case *expression.And:
+		conj := make([]interface{}, 0, len(t.Operands()))
+		sarged = map[string]expression.Expression{}
+		for _, c := range t.Operands() {
+			cq, cs, cok := fi.flexTranslate(c, alias)
+			if !cok {
+				continue // drop untranslatable conjunct -> superset (residual re-checks)
+			}
+			conj = append(conj, cq)
+			for k, v := range cs {
+				sarged[k] = v
+			}
+		}
+		if len(conj) == 0 {
+			return nil, nil, false
+		}
+		if len(conj) == 1 {
+			return conj[0].(map[string]interface{}), sarged, true
+		}
+		return map[string]interface{}{"conjuncts": conj}, sarged, true
+	case *expression.Or:
+		disj := make([]interface{}, 0, len(t.Operands()))
+		sarged = map[string]expression.Expression{}
+		for _, c := range t.Operands() {
+			cq, cs, cok := fi.flexTranslate(c, alias)
+			if !cok {
+				return nil, nil, false // OR must translate every branch or none
+			}
+			disj = append(disj, cq)
+			for k, v := range cs {
+				sarged[k] = v
+			}
+		}
+		if len(disj) == 0 {
+			return nil, nil, false
+		}
+		return map[string]interface{}{"disjuncts": disj}, sarged, true
+	case *expression.Eq:
+		return fi.flexCompare(t.Operands()[0], t.Operands()[1], "eq", alias)
+	case *expression.LT:
+		return fi.flexCompare(t.Operands()[0], t.Operands()[1], "lt", alias)
+	case *expression.LE:
+		return fi.flexCompare(t.Operands()[0], t.Operands()[1], "le", alias)
+	}
+	return nil, nil, false
+}
+
+// flexCompare translates one comparison (field OP const, in either operand order)
+// into a bleve clause. The field must be indexed by this index (fieldIndexed).
+func (fi *ftsIndex) flexCompare(a, b expression.Expression, op, alias string) (
+	map[string]interface{}, map[string]expression.Expression, bool) {
+	// Identify the field side and the constant side (comparisons are field OP
+	// const or const OP field).
+	fp, fok := fieldPath(a)
+	fieldExpr, constExpr := a, b
+	fieldFirst := true
+	if !fok || b.Value() == nil {
+		fp, fok = fieldPath(b)
+		fieldExpr, constExpr = b, a
+		fieldFirst = false
+	}
+	if !fok || constExpr.Value() == nil {
+		return nil, nil, false
+	}
+	// Predicate field refs are keyspace-qualified (e.g. `d.age` -> ["d","age"]);
+	// bleve indexed the doc fields unqualified, so drop the leading alias to get the
+	// bleve field path ("age", or "addr.city" for a nested key).
+	if len(fp) > 1 && fp[0] == alias {
+		fp = fp[1:]
+	}
+	field := strings.Join(fp, ".")
+	if !fi.fieldIndexed(field) {
+		return nil, nil, false
+	}
+	clause := bleveClause(field, constExpr.Value(), op, fieldFirst)
+	if clause == nil {
+		return nil, nil, false
+	}
+	return clause, map[string]expression.Expression{field: fieldExpr}, true
+}
+
+// bleveClause builds a single bleve DSL clause for `field OP const`. Equality on a
+// string becomes a match query (analyzer-consistent); equality on a number a
+// point range; <,<=,>,>= become numeric range bounds (fieldFirst distinguishes
+// `field < c` from `c < field`). Non-numeric ranges decline (nil) -- the residual
+// Filter still enforces them.
+func bleveClause(field string, cv value.Value, op string, fieldFirst bool) map[string]interface{} {
+	switch op {
+	case "eq":
+		switch a := cv.Actual().(type) {
+		case string:
+			return map[string]interface{}{"field": field, "match": a}
+		case float64:
+			return map[string]interface{}{"field": field, "min": a, "max": a,
+				"inclusive_min": true, "inclusive_max": true}
+		case bool:
+			return map[string]interface{}{"field": field, "bool": a}
+		}
+		return nil
+	case "lt", "le":
+		n, isNum := cv.Actual().(float64)
+		if !isNum {
+			return nil
+		}
+		incl := op == "le"
+		// `field < c` bounds the max; `c < field` (fieldFirst=false) bounds the min.
+		if fieldFirst {
+			return map[string]interface{}{"field": field, "max": n, "inclusive_max": incl}
+		}
+		return map[string]interface{}{"field": field, "min": n, "inclusive_min": incl}
+	}
+	return nil
+}
+
+// fieldIndexed reports whether a field path is indexed by this index: a dynamic
+// mapping (no declared keys) indexes every field; a declared mapping indexes only
+// its listed field-path keys. For fts, def.Keys are the field-path strings
+// themselves (e.g. "title", "addr.city") -- the same form as the bleve field path
+// -- so compare directly (an fts def parses no key expressions; see si_catalog).
+func (fi *ftsIndex) fieldIndexed(field string) bool {
+	if len(fi.def.Keys) == 0 {
+		return true
+	}
+	for _, k := range fi.def.Keys {
+		if k == field {
+			return true
+		}
+	}
+	return false
 }
 
 // Search runs the SEARCH() query against the bleve index and sends one IndexEntry
@@ -249,12 +426,14 @@ func bleveQuery(si *datastore.FTSSearchInfo) (query.Query, error) {
 		}
 		return bleve.NewQueryStringQuery(qv), nil
 	default:
-		// An object/other: hand bleve the raw JSON to parse as a query DSL.
+		// An object: a bleve query DSL (e.g. from the flex path's translated
+		// predicate, or an explicit SEARCH(ks, {...})). Parse it as bleve's query
+		// DSL rather than treating the JSON text as a query string.
 		raw, e := json.Marshal(qv)
 		if e != nil {
 			return nil, e
 		}
-		return bleve.NewQueryStringQuery(string(raw)), nil
+		return query.ParseQuery(raw)
 	}
 }
 
