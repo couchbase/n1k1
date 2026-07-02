@@ -138,15 +138,95 @@ def referenced_keys(cdir):
 IDLIKE = re.compile(r"^[a-z]+[0-9]+$")
 
 def _collect_idlike(v, out):
+    """Add id-like scalar strings DIRECTLY present in v (top level only): v itself
+    if scalar, or the immediate scalar values of a dict / elements of a list.
+    Deliberately non-recursive -- descending into nested arrays (e.g. a purchase's
+    lineItems) would collect unrelated product ids and over-match docs (a doc
+    sharing any nested product would be pulled in). Result rows and the docs we
+    match against both carry their identifying ids at the top level, so top-level
+    matching is both sufficient and precise."""
     if isinstance(v, str):
         if IDLIKE.match(v):
             out.add(v)
-    elif isinstance(v, dict):
-        for x in v.values():
-            _collect_idlike(x, out)
-    elif isinstance(v, list):
-        for x in v:
-            _collect_idlike(x, out)
+        return
+    items = v.values() if isinstance(v, dict) else v if isinstance(v, list) else []
+    for x in items:
+        if isinstance(x, str) and IDLIKE.match(x):
+            out.add(x)
+
+# Matches a statement whose tail is `FROM <ks> WHERE test_id="<tid>" ORDER BY
+# <cols> LIMIT <n>` with NO other predicate (test_id is immediately followed by
+# ORDER BY). That shape means every doc of that (keyspace, test_id) qualifies,
+# so the result is simply the first n after sorting -- see order_limit_boundary.
+ORDER_LIMIT = re.compile(
+    r'\bfrom\s+(\w+)\s+where\s+test_id\s*=\s*["\'](\w+)["\']\s+'
+    r'order\s+by\s+([\w\s,]+?)\s+limit\s+(\d+)\s*;?\s*$',
+    re.IGNORECASE)
+
+def _n1ql_sort_key(v):
+    # Coarse N1QL collation bucket so mixed-type ORDER BY sorts deterministically
+    # the same way the engine does: missing < null < false < true < number <
+    # string < array/object. Within a bucket, sort by the natural value.
+    if v is None:
+        return (1, 0)
+    if isinstance(v, bool):
+        return (2, int(v))
+    if isinstance(v, (int, float)):
+        return (3, v)
+    if isinstance(v, str):
+        return (4, v)
+    return (5, json.dumps(v, sort_keys=True))
+
+def order_limit_boundary(cdir, docs_by_ks):
+    """Keys of the docs a `... test_id=X ORDER BY cols LIMIT n` case needs from a
+    mega keyspace: the first n docs of that (keyspace, test_id) in ORDER BY order.
+    Only the fixed shape ORDER_LIMIT matches is handled (predicate is test_id
+    alone, so all docs qualify and the projection is irrelevant to WHICH rows
+    win). Sound for the same reason as result_ref_values: these n are the global
+    minima, so any sampled doc sorts at or after them. Skips a case if the sort
+    ties across the LIMIT boundary (docs[n-1] == docs[n]) -- then cbq's cut is
+    tie-broken/non-deterministic and no fixed import can reliably match it."""
+    keep = set()
+    for cf in sorted(glob.glob(os.path.join(cdir, "case*.json"))):
+        try:
+            cases = json.load(open(cf))
+        except Exception:
+            continue
+        for c in cases if isinstance(cases, list) else []:
+            if not isinstance(c, dict):
+                continue
+            stmt = c.get("statements")
+            if not isinstance(stmt, str):
+                continue
+            m = ORDER_LIMIT.search(stmt)
+            if not m:
+                continue
+            ks, tid, cols_s, n = m.group(1), m.group(2), m.group(3), int(m.group(4))
+            if ks not in MEGA_KEYSPACES or ks not in docs_by_ks or n < 1:
+                continue
+            cols = []  # (field, descending?)
+            for part in cols_s.split(","):
+                toks = part.split()
+                if not toks:
+                    cols = None
+                    break
+                cols.append((toks[0], len(toks) > 1 and toks[1].lower() == "desc"))
+            if not cols:
+                continue
+            rows = [(k, v) for k, v in docs_by_ks[ks] if v.get("test_id") == tid]
+            # Sort by successive keys, last-to-first, honoring per-column desc
+            # (stable sort composes correctly).
+            for field, desc in reversed(cols):
+                rows.sort(key=lambda kv: _n1ql_sort_key(kv[1].get(field)), reverse=desc)
+            if n >= len(rows):
+                keep.update(k for k, _ in rows)
+                continue
+            def sk(kv):
+                return tuple(_n1ql_sort_key(kv[1].get(f)) for f, _ in cols)
+            if sk(rows[n - 1]) == sk(rows[n]):  # boundary tie -> non-deterministic
+                continue
+            keep.update(k for k, _ in rows[:n])
+    return keep
 
 def result_ref_values(cdir):
     """Id-like scalar values a category's cases assert on in their EXPECTED
@@ -184,27 +264,35 @@ def main(qf):
         # keyspaces) are impractical for a file-per-doc corpus (repo bloat + slow
         # no-index primary scans), so we keep only a light sample of them: the
         # first doc of each INSERT statement, plus (1) any doc whose KEY is
-        # referenced directly by a case (e.g. USE KEYS "k") and (2) any doc a
-        # case's EXPECTED RESULTS reference by an id-like value (see
-        # result_ref_values -- this lets ORDER BY ... LIMIT / full-scan cases
-        # over a mega keyspace pass without importing all 10k docs).
+        # referenced directly by a case (e.g. USE KEYS "k"), (2) any doc a case's
+        # EXPECTED RESULTS reference by an id-like value (result_ref_values), and
+        # (3) the first-n boundary docs of a `test_id=X ORDER BY cols LIMIT n`
+        # case (order_limit_boundary, for cases whose projection hides the sort
+        # keys). Together these let ORDER BY ... LIMIT / full-scan cases over a
+        # mega keyspace pass without importing all 10k docs.
         ins = os.path.join(cdir, "insert.json")
         if os.path.exists(ins):
             refs = referenced_keys(cdir)
             resvals = result_ref_values(cdir)
+            all_docs = []       # [(ks, idx, key, val)] for this category
+            docs_by_ks = {}     # ks -> [(key, val)], for boundary computation
             for c in json.load(open(ins)):
-                stmt = c.get("statements", "")
-                for ks, idx, key, obj in parse_inserts(stmt):
+                for ks, idx, key, obj in parse_inserts(c.get("statements", "")):
                     val = json.loads(obj)  # validate + normalize
-                    if ks in MEGA_KEYSPACES and idx != 0 and key not in refs:
-                        docvals = set()
-                        _collect_idlike(val, docvals)
-                        if not (docvals & resvals):
-                            continue
-                    ksdir = os.path.join(root, ks)
-                    os.makedirs(ksdir, exist_ok=True)
-                    json.dump(val, open(os.path.join(ksdir, key + ".json"), "w"))
-                    ndoc += 1
+                    all_docs.append((ks, idx, key, val))
+                    docs_by_ks.setdefault(ks, []).append((key, val))
+            boundary = order_limit_boundary(cdir, docs_by_ks)
+            for ks, idx, key, val in all_docs:
+                if ks in MEGA_KEYSPACES and idx != 0 and key not in refs \
+                        and key not in boundary:
+                    docvals = set()
+                    _collect_idlike(val, docvals)
+                    if not (docvals & resvals):
+                        continue
+                ksdir = os.path.join(root, ks)
+                os.makedirs(ksdir, exist_ok=True)
+                json.dump(val, open(os.path.join(ksdir, key + ".json"), "w"))
+                ndoc += 1
         # (b) cases
         picked = []
         for cf in sorted(glob.glob(os.path.join(cdir, "case*.json"))):
