@@ -26,6 +26,7 @@ CATEGORIES = [
     "key_functions", "meta_functions",
     "arith_functions", "bitwise_functions", "nav_functions", "integers",
     "date_functions", "aggregate_functions",
+    "subqexp",
 ]
 # Keyspaces the fork loads with ~10,000 docs (~100 per INSERT statement). Too
 # large for a one-file-per-doc corpus + no-index primary scans, so only a light

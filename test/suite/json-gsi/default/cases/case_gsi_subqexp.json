@@ -1,0 +1,571 @@
+[
+  {
+    "testcase": "primaryscan3 operator, catch limit in fetch",
+    "statements": "SELECT d.a FROM customer d LET v = (SELECT d1.a FROM customer AS d1 WHERE d.a = d1.a);",
+    "error": "Correlated subquery's keyspace (d1) cannot have more than 1000 documents without appropriate secondary index"
+  },
+  {
+    "testcase": "indexscan3 operator, catch limit in indexscan3",
+    "statements": "SELECT d.a FROM customer d LET v = (SELECT meta(d1).id FROM customer AS d1 WHERE d.a = 1);",
+    "error": "Correlated subquery's keyspace (d1) cannot have more than 1000 documents without appropriate secondary index"
+  },
+  {
+    "testcase": "MB-52629",
+    "statements": "SELECT product.id as id, product.name as name, ( SELECT customer.id AS id, customer.name AS name FROM shellTest customer USE KEYS ( SELECT RAW `to` FROM shellTest WHERE `from`=product.id)) AS customers FROM shellTest product WHERE product.id IN [ \"1\", \"2\"]",
+    "results": [
+      {
+        "customers": [
+          {
+            "id": "11",
+            "name": "Customer 11"
+          }
+        ],
+        "id": "1",
+        "name": "Product 1"
+      },
+      {
+        "customers": [
+          {
+            "id": "12",
+            "name": "Customer 12"
+          }
+        ],
+        "id": "2",
+        "name": "Product 2"
+      }
+    ]
+  },
+  {
+    "testcase": "MB-57863, part 1, ExpressionTerm",
+    "statements": "SELECT month FROM [{\"month\":1}] AS s",
+    "results": [
+      {
+        "month": 1
+      }
+    ]
+  },
+  {
+    "testcase": "MB-57863, part 2, SubqueryTerm",
+    "statements": "SELECT month FROM (SELECT month FROM [{\"month\":1}] AS s) AS sub",
+    "results": [
+      {
+        "month": 1
+      }
+    ]
+  },
+  {
+    "testcase": "MB-57903",
+    "statements": "select a, (SELECT RAW (SELECT RAW a) ) AS b  from [1,2,3] a",
+    "results": [
+      {
+        "a": 1,
+        "b": [
+          [
+            1
+          ]
+        ]
+      },
+      {
+        "a": 2,
+        "b": [
+          [
+            2
+          ]
+        ]
+      },
+      {
+        "a": 3,
+        "b": [
+          [
+            3
+          ]
+        ]
+      }
+    ]
+  },
+  {
+    "testcase": "MB-60011, part 1, covering index scan on primary index",
+    "statements": "SELECT (SELECT 1 AS one FROM shellTest AS d WHERE META(d).id = t.`to`) AS sub, t.`from`, t.`to`, META(t).id FROM shellTest t WHERE t.`from` = '2'",
+    "results": [
+      {
+        "sub": [
+          {
+            "one": 1
+          }
+        ],
+        "from": "2",
+        "id": "22",
+        "to": "12"
+      }
+    ]
+  },
+  {
+    "testcase": "MB-60011, part 2, non-covering index scan on primary index",
+    "statements": "SELECT (SELECT d.id FROM shellTest AS d WHERE META(d).id = t.`to`) AS sub, t.`from`, t.`to`, META(t).id FROM shellTest t WHERE t.`from` = '2'",
+    "results": [
+      {
+        "sub": [
+          {
+            "id": "12"
+          }
+        ],
+        "from": "2",
+        "id": "22",
+        "to": "12"
+      }
+    ]
+  },
+  {
+    "testcase": "MB-63274",
+    "statements": "SELECT u.qty, COUNT(1) AS cnt FROM (SELECT ARRAY {'qty': v.qty} FOR v IN orderlines WHEN v.price > 2.0 END AS quantities FROM orders AS t WHERE test_id = 'subqexp' AND META().id LIKE 'subqexp_%' ) AS d UNNEST d.quantities AS u GROUP BY u.qty UNION SELECT u.qty, COUNT(1) AS cnt FROM (SELECT ARRAY {'qty': v.qty} FOR v IN orderlines WHEN v.price > 2.0 END AS quantities FROM orders AS t WHERE test_id = 'subqexp' AND META().id LIKE 'subqexp_%' ) AS d UNNEST d.quantities AS u GROUP BY u.qty",
+    "results": [
+      {
+        "qty": 1,
+        "cnt": 4
+      }
+    ]
+  },
+  {
+    "statements": "INSERT INTO $1 AS d VALUES($2, $3)",
+    "positionalArgs": [
+      "orders",
+      "o101",
+      {
+        "type": "order",
+        "test_id": "subqexp",
+        "a": "o101"
+      }
+    ],
+    "results": []
+  },
+  {
+    "statements": "SELECT d.a FROM $1 AS d USE KEYS $2",
+    "positionalArgs": [
+      "orders",
+      "o101"
+    ],
+    "results": [
+      {
+        "a": "o101"
+      }
+    ]
+  },
+  {
+    "statements": "UPSERT INTO $1 AS d VALUES($2, $3)",
+    "positionalArgs": [
+      "orders",
+      "o101",
+      {
+        "type": "order",
+        "test_id": "subqexp",
+        "a": "o111"
+      }
+    ],
+    "results": []
+  },
+  {
+    "statements": "SELECT d.a FROM $1 AS d USE KEYS $2",
+    "positionalArgs": [
+      "orders",
+      "o101"
+    ],
+    "results": [
+      {
+        "a": "o111"
+      }
+    ]
+  },
+  {
+    "statements": "UPDATE $1 AS d USE KEYS $2 SET d = $3",
+    "positionalArgs": [
+      "orders",
+      "o101",
+      {
+        "type": "order",
+        "test_id": "subqexp",
+        "a": "o101"
+      }
+    ],
+    "results": []
+  },
+  {
+    "statements": "SELECT d.a FROM $1 AS d USE KEYS $2",
+    "positionalArgs": [
+      "orders",
+      "o101"
+    ],
+    "results": [
+      {
+        "a": "o101"
+      }
+    ]
+  },
+  {
+    "statements": "DELETE FROM $1 AS d USE KEYS $2",
+    "positionalArgs": [
+      "orders",
+      "o101"
+    ],
+    "results": []
+  },
+  {
+    "statements": "SELECT d.a FROM $1 AS d USE KEYS $2",
+    "positionalArgs": [
+      "orders",
+      "o101"
+    ],
+    "results": []
+  },
+  {
+    "statements": "SELECT a   FROM [] AS a",
+    "results": []
+  },
+  {
+    "statements": "SELECT a   FROM ['abc', 1, 2.5 ] AS a ORDER BY a",
+    "results": [
+      {
+        "a": 1
+      },
+      {
+        "a": 2.5
+      },
+      {
+        "a": "abc"
+      }
+    ]
+  },
+  {
+    "statements": "SELECT a   FROM [{'x':11},{'x':12},'abc'] AS a ORDER BY a",
+    "results": [
+      {
+        "a": "abc"
+      },
+      {
+        "a": {
+          "x": 11
+        }
+      },
+      {
+        "a": {
+          "x": 12
+        }
+      }
+    ]
+  },
+  {
+    "statements": "SELECT a.x FROM [{'x':11},{'x':12},'abc'] AS a ORDER BY a.x",
+    "results": [
+      {},
+      {
+        "x": 11
+      },
+      {
+        "x": 12
+      }
+    ]
+  },
+  {
+    "statements": "SELECT p.x FROM {'p':[{'x':11},{'x':12}],'q':'abc','r':null}.p ORDER BY p.x",
+    "results": [
+      {
+        "x": 11
+      },
+      {
+        "x": 12
+      }
+    ]
+  },
+  {
+    "statements": "SELECT q   FROM {'p':[{'x':11},{'x':12}],'q':'abc','r':null}.q",
+    "results": [
+      {
+        "q": "abc"
+      }
+    ]
+  },
+  {
+    "statements": "SELECT r   FROM {'p':[{'x':11},{'x':12}],'q':'abc','r':null}.r",
+    "results": [
+      {
+        "r": null
+      }
+    ]
+  },
+  {
+    "statements": "SELECT s   FROM {'p':[{'x':11},{'x':12}],'q':'abc','r':null}.s",
+    "results": []
+  },
+  {
+    "statements": "SELECT id, (SELECT RAW SUM(orderlines.price) FROM orders.orderlines)[0] AS total FROM orders WHERE test_id = 'subqexp' ORDER BY id",
+    "results": [
+      {
+        "id": "1235",
+        "total": 9
+      },
+      {
+        "id": "1236",
+        "total": 7.5
+      }
+    ]
+  },
+  {
+    "statements": "SELECT id, (SELECT orderlines FROM orders.orderlines ORDER BY orderlines.price) orderlines FROM orders WHERE test_id = 'subqexp' ORDER BY id",
+    "results": [
+      {
+        "id": "1235",
+        "orderlines": [
+          {
+            "orderlines": {
+              "price": 1.5,
+              "productId": "drink",
+              "qty": 1
+            }
+          },
+          {
+            "orderlines": {
+              "price": 2.5,
+              "productId": "snack",
+              "qty": 1
+            }
+          },
+          {
+            "orderlines": {
+              "price": 5,
+              "productId": "lunch",
+              "qty": 1
+            }
+          }
+        ]
+      },
+      {
+        "id": "1236",
+        "orderlines": [
+          {
+            "orderlines": {
+              "price": 2.5,
+              "productId": "snack",
+              "qty": 1
+            }
+          },
+          {
+            "orderlines": {
+              "price": 5,
+              "productId": "lunch",
+              "qty": 1
+            }
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "statements": "SELECT id, (SELECT orderlines FROM orders.orderlines ORDER BY orderlines.price DESC) orderlines FROM orders WHERE test_id = 'subqexp' ORDER BY id",
+    "results": [
+      {
+        "id": "1235",
+        "orderlines": [
+          {
+            "orderlines": {
+              "price": 5,
+              "productId": "lunch",
+              "qty": 1
+            }
+          },
+          {
+            "orderlines": {
+              "price": 2.5,
+              "productId": "snack",
+              "qty": 1
+            }
+          },
+          {
+            "orderlines": {
+              "price": 1.5,
+              "productId": "drink",
+              "qty": 1
+            }
+          }
+        ]
+      },
+      {
+        "id": "1236",
+        "orderlines": [
+          {
+            "orderlines": {
+              "price": 5,
+              "productId": "lunch",
+              "qty": 1
+            }
+          },
+          {
+            "orderlines": {
+              "price": 2.5,
+              "productId": "snack",
+              "qty": 1
+            }
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "statements": "SELECT id FROM orders WHERE EXISTS (SELECT raw 1 FROM orders.orderlines WHERE orderlines.qty >= 1) AND test_id = 'subqexp' ORDER BY id",
+    "results": [
+      {
+        "id": "1235"
+      },
+      {
+        "id": "1236"
+      }
+    ]
+  },
+  {
+    "statements": "SELECT id FROM orders WHERE NOT EXISTS (SELECT raw 1 FROM orders.orderlines WHERE orderlines.qty > 1) AND test_id = 'subqexp' ORDER BY id",
+    "results": [
+      {
+        "id": "1235"
+      },
+      {
+        "id": "1236"
+      }
+    ]
+  },
+  {
+    "statements": "SELECT id FROM orders WHERE 'lunch' IN (SELECT RAW orderlines.productId FROM orders.orderlines) AND test_id = 'subqexp' ORDER BY id",
+    "results": [
+      {
+        "id": "1235"
+      },
+      {
+        "id": "1236"
+      }
+    ]
+  },
+  {
+    "statements": "SELECT id FROM orders WHERE 'drink' IN (SELECT RAW orderlines.productId FROM orders.orderlines) AND test_id = 'subqexp' ORDER BY id",
+    "results": [
+      {
+        "id": "1235"
+      }
+    ]
+  },
+  {
+    "statements": "SELECT id, total FROM orders LET total = (SELECT RAW SUM(orderlines.price) FROM orders.orderlines)[0] WHERE test_id = 'subqexp' ORDER BY id",
+    "results": [
+      {
+        "id": "1235",
+        "total": 9
+      },
+      {
+        "id": "1236",
+        "total": 7.5
+      }
+    ]
+  },
+  {
+    "statements": "SELECT id, total FROM orders WHERE test_id = 'subqexp' GROUP by id LETTING total = (SELECT RAW SUM(orderlines.price) FROM orders.orderlines)[0] ORDER BY id",
+    "error": "Expression (correlated (select raw sum((`orderlines`.`price`)) from (`orders`.`orderlines`))[0]) (near line 1, column 84) must depend only on group keys or aggregates."
+  },
+  {
+    "statements": "SELECT id, (SELECT RAW SUM(item.price) FROM items as item)[0] total FROM orders LET items = (SELECT orderlines.* FROM orders.orderlines ORDER BY orderlines.price) WHERE test_id = 'subqexp' ORDER BY id",
+    "results": [
+      {
+        "id": "1235",
+        "total": 9
+      },
+      {
+        "id": "1236",
+        "total": 7.5
+      }
+    ]
+  },
+  {
+    "statements": "MERGE INTO orders USING orders o USE KEYS VALIDATE ['subqexp_1235', 'subqexp_1236', 'bad_key'] ON KEY id WHEN NOT MATCHED THEN INSERT {o.id,'test_id':'subqexp'}",
+    "warningCode": 5503
+  },
+  {
+    "statements": "SELECT id FROM orders USE KEYS ['1235', '1236'] ORDER BY id",
+    "results": [
+      {
+        "id": "1235"
+      },
+      {
+        "id": "1236"
+      }
+    ]
+  },
+  {
+    "statements": "DELETE FROM orders USE KEYS VALIDATE ['1235', '1236', 'bad_key']",
+    "warningCode": 5503
+  },
+  {
+    "comments": "Repeat without VALIDATE and there should be no warning",
+    "statements": "DELETE FROM orders USE KEYS ['1235', '1236', 'bad_key']"
+  },
+  {
+    "statements": "MERGE INTO orders USING (SELECT 's'||id  AS id FROM orders WHERE test_id = 'subqexp' ) o ON KEY o.id WHEN NOT MATCHED THEN INSERT {o.id,'test_id':'subqexp'}"
+  },
+  {
+    "statements": "SELECT id FROM orders USE KEYS ['s1235', 's1236'] ORDER BY id",
+    "results": [
+      {
+        "id": "s1235"
+      },
+      {
+        "id": "s1236"
+      }
+    ]
+  },
+  {
+    "statements": "DELETE FROM orders USE KEYS ['s1235', 's1236']"
+  },
+  {
+    "statements": "MERGE INTO orders USING (SELECT 'se'||id  AS id, (SELECT RAW SUM(orderlines.price) FROM orders.orderlines)[0] AS total FROM orders WHERE test_id = 'subqexp') o ON KEY o.id WHEN NOT MATCHED THEN INSERT {o.id, o.total, 'test_id':'subqexp'}"
+  },
+  {
+    "statements": "SELECT id, total FROM orders USE KEYS ['se1235', 'se1236'] ORDER BY id",
+    "results": [
+      {
+        "id": "se1235",
+        "total": 9
+      },
+      {
+        "id": "se1236",
+        "total": 7.5
+      }
+    ]
+  },
+  {
+    "statements": "DELETE FROM orders USE KEYS ['se1235', 'se1236']"
+  },
+  {
+    "statements": "MERGE INTO orders USING [{'id':'c1235'},{'id':'c1236'}] o ON KEY id WHEN NOT MATCHED THEN INSERT {o.id, 'test_id':'subqexp'}"
+  },
+  {
+    "statements": "SELECT id FROM orders USE KEYS ['c1235', 'c1236'] ORDER BY id",
+    "results": [
+      {
+        "id": "c1235"
+      },
+      {
+        "id": "c1236"
+      }
+    ]
+  },
+  {
+    "statements": "SELECT (SELECT t.a, p1 FROM (WITH p1 AS ('ABC') SELECT t1.a, p1 FROM data AS t1) AS t) AS proj1 LET data = [{'a':10}]",
+    "results": [
+      {
+        "proj1": [
+          {
+            "a": 10,
+            "p1": "ABC"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "statements": "DELETE FROM orders USE KEYS ['c1235', 'c1236']"
+  }
+]
