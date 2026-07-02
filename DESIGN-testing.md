@@ -94,11 +94,15 @@ tests. Implemented:
   `json-gsi/default/cases/case_gsi_<cat>.json`. Docs from all categories merge
   into the shared keyspaces (`customer`/`orders`/`product`/`purchase`/`review`);
   keys are `test_id`-suffixed so they don't collide and each case's
-  `WHERE test_id="..."` scopes it. The fork packs ~100 docs per INSERT statement;
-  the importer keeps the first of each (a light sample) **plus any doc whose KEY
-  a case references directly** (`referenced_keys`) — needed for `USE KEYS "k"`,
-  which fetches an exact doc rather than scanning.
-- **17 categories imported:** 6,157 docs, ~493 cases. string/number/array/obj/
+  `WHERE test_id="..."` scopes it. The fork packs ~100 docs per INSERT statement.
+  Moderate keyspaces (`customer`/`product`/`orders`) import **fully** (all VALUES
+  tuples). The **mega** keyspaces (`purchase`/`review` — 10,000 docs each) are
+  impractical for a one-file-per-doc, no-index corpus (repo bloat + minutes-long
+  primary scans), so only a light sample is kept: the first doc of each INSERT
+  statement. Either way, a doc whose KEY a case references directly
+  (`referenced_keys`) is always imported — needed for `USE KEYS "k"`, which
+  fetches an exact doc rather than scanning.
+- **17 categories imported:** ~7,150 docs, ~493 cases. string/number/array/obj/
   json/comp/conditional/case/typeconv/select/where/alias/any/from/order/key/meta
   functions.
 - **Harness:** the interp and compiler suite bodies were factored into
@@ -109,14 +113,14 @@ tests. Implemented:
   is now root-keyed; `SetupCompiledGsiSuite` runs generated gsi islands against
   the gsi store; the gsi generated file uses a `TestGeneratedGsiFS_` prefix so it
   coexists with the default one in `test/tmp/`.
-- **Results:** **460 / 493 pass in interp mode** (`gsiPassFloor=460`), green in
+- **Results:** **465 / 493 pass in interp mode** (`gsiPassFloor=465`), green in
   compiler mode, no panics. `USE KEYS` / `USE PRIMARY KEYS` (incl. array/`ARRAY
-  … FOR`/`FIRST … FOR`/`||` key exprs and `UNNEST`) work — 7/8 key_functions
-  cases pass once the referenced docs are imported; the 8th is a tie-broken
-  `ORDER BY` (`tie-order`). Remaining `gsiExpectedNonPass` groups: `tie-order`
-  (valid-but-different order for tied sort keys), `json-funcs`/`obj-funcs`
-  (JSON/OBJECT function key-order/output diffs), `unsupported` (e.g. slice
-  `arr[0:1]`), and `results-differ`. Each is an explicit, regression-guarded gap.
+  … FOR`/`FIRST … FOR`/`||` key exprs and `UNNEST`) work. Remaining
+  `gsiExpectedNonPass` groups: `any-every` and comp `results-differ` (need the
+  full mega `purchase`/`review` datasets — the aggregate/`ORDER BY … LIMIT` cases
+  can't match cbq on the light sample), `json-funcs` (`JSON_ENCODE`(MISSING)
+  semantics), `obj-funcs` (`ORDER BY` on array/object-valued keys). Each is an
+  explicit, regression-guarded gap.
 
 **Follow-ups:** more PURE categories (aggregate/window/etc.); **PLAN** categories
 (import query cases, drop plan/EXPLAIN-shape assertions since n1k1 does primary

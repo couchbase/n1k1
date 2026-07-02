@@ -10,7 +10,7 @@ const gsiSuiteRoot = "suite/json-gsi"
 
 // gsiPassFloor is the results-pass backstop for the gsi corpus (bump as coverage
 // grows), mirroring the default suite's floor.
-const gsiPassFloor = 460
+const gsiPassFloor = 465
 
 // gsiExpectedNonPass lists gsi cases n1k1 doesn't yet pass, keyed by loc
 // (case_gsi_<cat>.json[i]) -> group. Any non-pass NOT listed is a regression.
@@ -36,15 +36,10 @@ var gsiExpectedNonPass = map[string]string{
 	"case_gsi_comp_functions.json[3]":   "results-differ",
 	"case_gsi_comp_functions.json[4]":   "results-differ",
 	"case_gsi_comp_functions.json[5]":   "results-differ",
-	"case_gsi_from_functions.json[6]":   "unsupported",
 	"case_gsi_json_functions.json[4]":   "json-funcs",
 	"case_gsi_json_functions.json[5]":   "json-funcs",
 	"case_gsi_json_functions.json[10]":  "json-funcs",
 	"case_gsi_json_functions.json[13]":  "json-funcs",
-	"case_gsi_json_functions.json[33]":  "json-funcs",
-	"case_gsi_json_functions.json[34]":  "json-funcs",
-	"case_gsi_json_functions.json[35]":  "json-funcs",
-	"case_gsi_key_functions.json[4]":    "tie-order",
 	"case_gsi_obj_functions.json[2]":    "obj-funcs",
 	"case_gsi_obj_functions.json[3]":    "obj-funcs",
 	"case_gsi_obj_functions.json[8]":    "obj-funcs",
@@ -52,9 +47,7 @@ var gsiExpectedNonPass = map[string]string{
 
 var gsiGroupWhy = map[string]string{
 	"any-every":      "ANY/EVERY ... SATISFIES collection predicates (or tie-broken ORDER BY+LIMIT)",
-	"tie-order":      "USE KEYS/UNNEST works; ORDER BY key ties (same customerId) resolve in a different-but-valid order than cbq -- non-deterministic",
 	"json-funcs":     "JSON_ENCODE/ENCODED_SIZE/POLY_LENGTH/TOKENS -- output/order differs or unsupported",
 	"obj-funcs":      "OBJECT_PAIRS/OBJECT_VALUES/OBJECT_PAIRS_NESTED -- key-order/output differs",
-	"unsupported":    "uses a feature n1k1 doesn't support yet (e.g. slice arr[0:1])",
 	"results-differ": "results differ from cbq (tie-broken ORDER BY+LIMIT for comp GREATEST/LEAST; ARRAY_AGG of an all-MISSING group -> [] vs cbq NULL) -- mostly non-determinism",
 }

@@ -25,6 +25,10 @@ CATEGORIES = [
     "alias_functions", "any_functions", "from_functions", "order_functions",
     "key_functions", "meta_functions",
 ]
+# Keyspaces the fork loads with ~10,000 docs (~100 per INSERT statement). Too
+# large for a one-file-per-doc corpus + no-index primary scans, so only a light
+# per-statement sample is imported (see main). Moderate keyspaces import fully.
+MEGA_KEYSPACES = {"purchase", "review"}
 NONDET = re.compile(r"\b(now_\w+|clock_\w+|random|rand|uuid|newid)\s*\(", re.IGNORECASE)
 INSERT_PREFIX = re.compile(r'\s*INSERT\s+INTO\s+(\w+)\s*\(\s*KEY\s*,\s*VALUE\s*\)', re.IGNORECASE)
 QUOTED = re.compile(r'"((?:[^"\\]|\\.)*)"')
@@ -93,17 +97,21 @@ def main(qf):
     ncase = ndoc = 0
     for cat in CATEGORIES:
         cdir = os.path.join(tc, cat)
-        # (a) data. Import the first doc of each INSERT statement (a light,
-        # representative sample -- the fork packs ~100 docs/statement, far more
-        # than a file-per-doc corpus wants), PLUS any doc whose KEY is referenced
-        # directly by a case (e.g. USE KEYS "k"), which needs that exact doc.
+        # (a) data. Moderate keyspaces are imported fully; the MEGA keyspaces
+        # (purchase/review -- the fork packs ~100 docs/statement, i.e. 10,000-doc
+        # keyspaces) are impractical for a file-per-doc corpus (repo bloat + slow
+        # no-index primary scans), so we keep only a light sample of them: the
+        # first doc of each INSERT statement. Either way, always import a doc whose
+        # KEY is referenced directly by a case (e.g. USE KEYS "k"), which needs
+        # that exact doc. (Cases that aggregate/ORDER BY LIMIT over a full mega
+        # keyspace stay in gsiExpectedNonPass -- they'd need all 10k docs.)
         ins = os.path.join(cdir, "insert.json")
         if os.path.exists(ins):
             refs = referenced_keys(cdir)
             for c in json.load(open(ins)):
                 stmt = c.get("statements", "")
                 for ks, idx, key, obj in parse_inserts(stmt):
-                    if idx != 0 and key not in refs:
+                    if ks in MEGA_KEYSPACES and idx != 0 and key not in refs:
                         continue
                     val = json.loads(obj)  # validate + normalize
                     ksdir = os.path.join(root, ks)
