@@ -88,8 +88,16 @@ type Ctx struct {
 	// ValComparer is not concurrent safe. See Clone().
 	ValComparer *ValComparer
 
-	// YieldStats may be invoked concurrently by multiple goroutines.
+	// YieldStats may be invoked concurrently by multiple goroutines. It is
+	// handed the request's shared *Stats (Stats below), or nil when stats are
+	// off; implementors must tolerate a nil argument.
 	YieldStats YieldStats
+
+	// Stats is the request's shared counter core, sized once by LayoutStats at
+	// setup, or nil when stats are off (the default, zero-cost path). Cloned by
+	// pointer in Clone(), so every actor bumps into the one backing array. See
+	// stats.go and DESIGN-stats.md.
+	Stats *Stats
 
 	// Warn records a non-fatal advisory (e.g. divide-by-zero) during
 	// evaluation. It is cbq-free by design (a plain string), so engine/base

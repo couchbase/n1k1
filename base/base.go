@@ -277,6 +277,12 @@ type Op struct {
 	// Children are the data source operators that feed or yield data
 	// to their immediate parent operator.
 	Children []*Op `json:"Children,omitempty"`
+
+	// StatsBase is the offset of this op's first counter within the flat
+	// Ctx.Stats.Counters array, assigned once by LayoutStats at request setup
+	// (-1 if the op contributes no counters). Not serialized -- it is recomputed
+	// from StatsDescs each run. See stats.go and DESIGN-stats.md.
+	StatsBase int `json:"-"`
 }
 
 // -----------------------------------------------------
@@ -312,10 +318,9 @@ type ExprCatalogFunc func(vars *Vars, labels Labels,
 // and can return an error to abort further processing.
 //
 // The YieldStats implementor must copy any incoming stats that it
-// wants to keep and should be implemented as concurrent safe.
+// wants to keep and should be implemented as concurrent safe. The argument
+// is the request's shared *Stats (see stats.go), or nil when stats are off.
 type YieldStats func(*Stats) error
-
-type Stats struct{} // TODO.
 
 // -----------------------------------------------------
 

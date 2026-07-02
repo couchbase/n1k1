@@ -38,12 +38,14 @@ func OpScan(o *base.Op, lzVars *base.Vars,
 
 	_, _ = lzFilePath, lzReader // !lz
 
+	statsBase := o.StatsBase // Offset of this scan's counters (see stats.go).
+
 	switch kind {
 	case "filePath":
 		paramsFilePath := o.Params[1].(string)
 		lzFilePath := paramsFilePath
 
-		ScanFile(lzFilePath, o.Labels, lzVars, lzYieldVals, lzYieldErr, reps) // !lz
+		ScanFile(lzFilePath, o.Labels, lzVars, lzYieldVals, lzYieldErr, reps, statsBase) // !lz
 
 	case "csvData":
 		paramsCsvData := o.Params[1].(string)
@@ -51,7 +53,7 @@ func OpScan(o *base.Op, lzVars *base.Vars,
 
 		lzReader := strings.NewReader(lzCsvData)
 
-		ScanReaderAsCsv(lzReader, o.Labels, lzVars, lzYieldVals, lzYieldErr, reps) // !lz
+		ScanReaderAsCsv(lzReader, o.Labels, lzVars, lzYieldVals, lzYieldErr, reps, statsBase) // !lz
 
 	case "jsonsData": // Multiple JSON documents, one per line.
 		paramsJsonsData := o.Params[1].(string)
@@ -59,7 +61,7 @@ func OpScan(o *base.Op, lzVars *base.Vars,
 
 		lzReader := strings.NewReader(lzJsonsData)
 
-		ScanReaderAsJsons(lzReader, o.Labels, lzVars, lzYieldVals, lzYieldErr, reps) // !lz
+		ScanReaderAsJsons(lzReader, o.Labels, lzVars, lzYieldVals, lzYieldErr, reps, statsBase) // !lz
 
 	default:
 		errMsg := "unknown scan kind" // TODO: Weak string/double-quote handling.
@@ -71,7 +73,7 @@ func OpScan(o *base.Op, lzVars *base.Vars,
 // ---------------------------------------------------------------
 
 func ScanFile(lzFilePath string, labels base.Labels, lzVars *base.Vars,
-	lzYieldVals base.YieldVals, lzYieldErr base.YieldErr, reps int) {
+	lzYieldVals base.YieldVals, lzYieldErr base.YieldErr, reps int, statsBase int) {
 	errMsg := "unknown file format" // TODO: Weak string/double-quote handling.
 
 	fileSuffixCsv := ".csv"
@@ -90,12 +92,12 @@ func ScanFile(lzFilePath string, labels base.Labels, lzVars *base.Vars,
 		defer lzReader.Close()
 
 		if strings.HasSuffix(lzFilePath, fileSuffixCsv) {
-			ScanReaderAsCsv(lzReader, labels, lzVars, lzYieldVals, lzYieldErr, reps) // !lz
+			ScanReaderAsCsv(lzReader, labels, lzVars, lzYieldVals, lzYieldErr, reps, statsBase) // !lz
 			return
 		}
 
 		if strings.HasSuffix(lzFilePath, fileSuffixJsons) {
-			ScanReaderAsJsons(lzReader, labels, lzVars, lzYieldVals, lzYieldErr, reps) // !lz
+			ScanReaderAsJsons(lzReader, labels, lzVars, lzYieldVals, lzYieldErr, reps, statsBase) // !lz
 			return
 		}
 
@@ -106,10 +108,13 @@ func ScanFile(lzFilePath string, labels base.Labels, lzVars *base.Vars,
 // ---------------------------------------------------------------
 
 func ScanReaderAsCsv(lzReader io.Reader, labels base.Labels, lzVars *base.Vars,
-	lzYieldVals base.YieldVals, lzYieldErr base.YieldErr, reps int) {
+	lzYieldVals base.YieldVals, lzYieldErr base.YieldErr, reps int, statsBase int) {
 	var lzValsScan base.Vals
 
 	lzYielded := 0
+
+	lzStatRowsOut := 0       // stats: rows yielded downstream (local, never reset).
+	lzStatsBase := statsBase // stats: baked as a literal in the compiled path.
 
 	lzScanner := bufio.NewScanner(lzReader)
 
@@ -132,6 +137,8 @@ func ScanReaderAsCsv(lzReader io.Reader, labels base.Labels, lzVars *base.Vars,
 		if len(lzValsScan) > 0 {
 			for lzI := 0; lzI < reps; lzI++ {
 				lzYieldVals(lzValsScan)
+
+				lzStatRowsOut++ // stats: local counter, flushed at the checkpoint.
 			}
 		}
 
@@ -139,10 +146,12 @@ func ScanReaderAsCsv(lzReader io.Reader, labels base.Labels, lzVars *base.Vars,
 		if lzYielded >= ScanYieldStatsEvery {
 			lzYielded = 0
 
-			if lzVars != nil && lzVars.Ctx != nil && lzVars.Ctx.YieldStats != nil {
-				var lzStats base.Stats // TODO.
+			if lzVars != nil && lzVars.Ctx != nil && lzVars.Ctx.Stats != nil {
+				lzVars.Ctx.Stats.Counters[lzStatsBase+StatScanRowsOut] = int64(lzStatRowsOut)
+			}
 
-				lzErr := lzVars.Ctx.YieldStats(&lzStats)
+			if lzVars != nil && lzVars.Ctx != nil && lzVars.Ctx.YieldStats != nil {
+				lzErr := lzVars.Ctx.YieldStats(lzVars.Ctx.Stats)
 				if lzErr != nil { // Also used for early exit (e.g., LIMIT).
 					lzYieldErr(lzErr)
 					return
@@ -151,16 +160,24 @@ func ScanReaderAsCsv(lzReader io.Reader, labels base.Labels, lzVars *base.Vars,
 		}
 	}
 
+	// stats: final flush of rows since the last checkpoint.
+	if lzVars != nil && lzVars.Ctx != nil && lzVars.Ctx.Stats != nil {
+		lzVars.Ctx.Stats.Counters[lzStatsBase+StatScanRowsOut] = int64(lzStatRowsOut)
+	}
+
 	lzYieldErr(lzScanner.Err()) // Might be nil.
 }
 
 // ---------------------------------------------------------------
 
 func ScanReaderAsJsons(lzReader io.Reader, labels base.Labels, lzVars *base.Vars,
-	lzYieldVals base.YieldVals, lzYieldErr base.YieldErr, reps int) {
+	lzYieldVals base.YieldVals, lzYieldErr base.YieldErr, reps int, statsBase int) {
 	var lzValsScan base.Vals
 
 	lzYielded := 0
+
+	lzStatRowsOut := 0       // stats: rows yielded downstream (local, never reset).
+	lzStatsBase := statsBase // stats: baked as a literal in the compiled path.
 
 	lzScanner := bufio.NewScanner(lzReader)
 
@@ -173,6 +190,8 @@ func ScanReaderAsJsons(lzReader io.Reader, labels base.Labels, lzVars *base.Vars
 
 			for lzI := 0; lzI < reps; lzI++ {
 				lzYieldVals(lzValsScan)
+
+				lzStatRowsOut++ // stats: local counter, flushed at the checkpoint.
 			}
 		}
 
@@ -180,16 +199,23 @@ func ScanReaderAsJsons(lzReader io.Reader, labels base.Labels, lzVars *base.Vars
 		if lzYielded >= ScanYieldStatsEvery {
 			lzYielded = 0
 
-			if lzVars != nil && lzVars.Ctx != nil && lzVars.Ctx.YieldStats != nil {
-				var lzStats base.Stats // TODO.
+			if lzVars != nil && lzVars.Ctx != nil && lzVars.Ctx.Stats != nil {
+				lzVars.Ctx.Stats.Counters[lzStatsBase+StatScanRowsOut] = int64(lzStatRowsOut)
+			}
 
-				lzErr := lzVars.Ctx.YieldStats(&lzStats)
+			if lzVars != nil && lzVars.Ctx != nil && lzVars.Ctx.YieldStats != nil {
+				lzErr := lzVars.Ctx.YieldStats(lzVars.Ctx.Stats)
 				if lzErr != nil { // Also used for early exit (e.g., LIMIT).
 					lzYieldErr(lzErr)
 					return
 				}
 			}
 		}
+	}
+
+	// stats: final flush of rows since the last checkpoint.
+	if lzVars != nil && lzVars.Ctx != nil && lzVars.Ctx.Stats != nil {
+		lzVars.Ctx.Stats.Counters[lzStatsBase+StatScanRowsOut] = int64(lzStatRowsOut)
 	}
 
 	lzYieldErr(lzScanner.Err()) // Might be nil.
