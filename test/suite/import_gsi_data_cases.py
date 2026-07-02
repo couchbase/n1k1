@@ -131,6 +131,48 @@ def referenced_keys(cdir):
     return refs
 
 
+# An id-like scalar: a keyspace-ish name prefix followed by digits, e.g.
+# "purchase10", "customer128", "product85". Used to force-import the specific
+# mega-keyspace docs a case's EXPECTED RESULTS reference (see below); the tight
+# shape avoids matching ratings/counts/free-text that happen to appear in a row.
+IDLIKE = re.compile(r"^[a-z]+[0-9]+$")
+
+def _collect_idlike(v, out):
+    if isinstance(v, str):
+        if IDLIKE.match(v):
+            out.add(v)
+    elif isinstance(v, dict):
+        for x in v.values():
+            _collect_idlike(x, out)
+    elif isinstance(v, list):
+        for x in v:
+            _collect_idlike(x, out)
+
+def result_ref_values(cdir):
+    """Id-like scalar values a category's cases assert on in their EXPECTED
+    RESULTS. The fork computes each result over the full ~10k-doc mega keyspace,
+    so a case that projects e.g. purchaseId/customerId names specific docs that
+    a sampled corpus won't contain -- its result then differs (usually fewer or
+    mis-ordered rows). Force-importing exactly the referenced docs makes those
+    cases pass without importing all 10k docs. This is sound, not circular:
+    every expected result is cbq's answer over the FULL dataset, so adding any
+    real fork doc can only move our result toward that answer, never away (a
+    doc that "should" rank in an ORDER BY ... LIMIT is already referenced, hence
+    imported; any other real doc either fails the predicate or sorts past the
+    limit). A doc is matched if one of its own id-like values is referenced."""
+    vals = set()
+    for cf in sorted(glob.glob(os.path.join(cdir, "case*.json"))):
+        try:
+            cases = json.load(open(cf))
+        except Exception:
+            continue
+        for c in cases if isinstance(cases, list) else []:
+            if isinstance(c, dict):
+                for row in c.get("results", []) or []:
+                    _collect_idlike(row, vals)
+    return vals
+
+
 def main(qf):
     tc = os.path.join(qf, "test/gsi/test_cases")
     root = os.path.join(os.path.dirname(__file__), "json-gsi/default")
@@ -141,19 +183,24 @@ def main(qf):
         # (purchase/review -- the fork packs ~100 docs/statement, i.e. 10,000-doc
         # keyspaces) are impractical for a file-per-doc corpus (repo bloat + slow
         # no-index primary scans), so we keep only a light sample of them: the
-        # first doc of each INSERT statement. Either way, always import a doc whose
-        # KEY is referenced directly by a case (e.g. USE KEYS "k"), which needs
-        # that exact doc. (Cases that aggregate/ORDER BY LIMIT over a full mega
-        # keyspace stay in gsiExpectedNonPass -- they'd need all 10k docs.)
+        # first doc of each INSERT statement, plus (1) any doc whose KEY is
+        # referenced directly by a case (e.g. USE KEYS "k") and (2) any doc a
+        # case's EXPECTED RESULTS reference by an id-like value (see
+        # result_ref_values -- this lets ORDER BY ... LIMIT / full-scan cases
+        # over a mega keyspace pass without importing all 10k docs).
         ins = os.path.join(cdir, "insert.json")
         if os.path.exists(ins):
             refs = referenced_keys(cdir)
+            resvals = result_ref_values(cdir)
             for c in json.load(open(ins)):
                 stmt = c.get("statements", "")
                 for ks, idx, key, obj in parse_inserts(stmt):
-                    if ks in MEGA_KEYSPACES and idx != 0 and key not in refs:
-                        continue
                     val = json.loads(obj)  # validate + normalize
+                    if ks in MEGA_KEYSPACES and idx != 0 and key not in refs:
+                        docvals = set()
+                        _collect_idlike(val, docvals)
+                        if not (docvals & resvals):
+                            continue
                     ksdir = os.path.join(root, ks)
                     os.makedirs(ksdir, exist_ok=True)
                     json.dump(val, open(os.path.join(ksdir, key + ".json"), "w"))
