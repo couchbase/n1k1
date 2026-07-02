@@ -110,27 +110,21 @@ func main() {
 	glue.ScanWalkOptions = scanOpts
 
 	dir := "."
+	explicit := false
 	if args := flag.Args(); len(args) > 0 {
 		dir = args[0]
+		explicit = true
 	}
 
-	sess, err := glue.OpenSession(dir, *nsFlag)
+	sess, dir, cleanup, err := resolveSession(dir, explicit, *nsFlag)
 	if err != nil {
-		// No datastore at dir (e.g. it doesn't exist). Keep running with an empty
-		// one so the user can still evaluate expressions (SELECT 1+2;) and .open a
-		// real datastore later, rather than exiting.
-		fmt.Fprintf(os.Stderr, "%s: no datastore at %q (%v); starting empty\n", prog, dir, err)
-		empty, e2 := os.MkdirTemp("", "n1k1-empty-")
-		if e2 != nil {
-			fmt.Fprintf(os.Stderr, "%s: %v\n", prog, e2)
-			os.Exit(1)
-		}
-		defer os.RemoveAll(empty)
-		if sess, err = glue.OpenSession(empty, *nsFlag); err != nil {
-			fmt.Fprintf(os.Stderr, "%s: %v\n", prog, err)
-			os.Exit(1)
-		}
-		dir = ""
+		fmt.Fprintf(os.Stderr, "%s: %v\n", prog, err)
+		os.Exit(1)
+	}
+	defer cleanup()
+	if dir == "" { // fell back to an empty store (no path was given)
+		fmt.Fprintf(os.Stderr, "%s: no datastore; starting empty — use %s\n",
+			prog, ".open <dir>")
 	}
 
 	stdinIsTTY := isTTY(os.Stdin)
@@ -212,6 +206,33 @@ func main() {
 	default:
 		c.repl()
 	}
+}
+
+// resolveSession opens a Session for dir. Failing to open an *explicitly given*
+// path -- a typo, a missing/unreadable directory or file, or a file that isn't a
+// datastore -- is returned as an error so the caller exits non-zero; silently
+// querying an empty store would let a bad path in a script "succeed". When no path
+// was given (a bare REPL), an open failure instead falls back to a fresh empty
+// store so the user can still evaluate expressions and `.open` a datastore later;
+// in that case effDir is "" and cleanup removes the temp dir (it's a no-op
+// otherwise). Callers should always `defer cleanup()`.
+func resolveSession(dir string, explicit bool, ns string) (sess *glue.Session, effDir string, cleanup func(), err error) {
+	if sess, err = glue.OpenSession(dir, ns); err == nil {
+		return sess, dir, func() {}, nil
+	}
+	if explicit {
+		return nil, "", func() {}, fmt.Errorf("cannot open datastore %q: %v", dir, err)
+	}
+	// No path was named: keep going with an empty store.
+	empty, e2 := os.MkdirTemp("", "n1k1-empty-")
+	if e2 != nil {
+		return nil, "", func() {}, e2
+	}
+	if sess, err = glue.OpenSession(empty, ns); err != nil {
+		os.RemoveAll(empty)
+		return nil, "", func() {}, err
+	}
+	return sess, "", func() { os.RemoveAll(empty) }, nil
 }
 
 func usage() {
