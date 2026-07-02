@@ -637,9 +637,19 @@ func (c *Conv) VisitLet(o *plan.Let) (interface{}, error) {
 			op.Params = append(op.Params, []interface{}{"labelPath", lbl})
 		}
 
-		// Append this binding's computed column.
+		// Append this binding's computed column. A GROUP BY <expr> AS <alias>
+		// becomes a LETTING binding (alias = expr) after the group; when the
+		// binding's expression is exactly a computed group key, read the value
+		// the group already materialized (by synthetic label) rather than
+		// re-evaluating it -- the grouped row has dropped the key's input fields
+		// (e.g. DATE_PART_STR(dateAdded,...) can't recompute; dateAdded is gone).
+		// Same treatment VisitInitialProject gives a projected group key.
 		op.Labels = append(op.Labels, "."+LabelSuffix(b.Variable()))
-		op.Params = append(op.Params, []interface{}{"exprTree", b.Expression()})
+		if lbl, ok := c.groupKeyExprLabels[b.Expression().String()]; ok {
+			op.Params = append(op.Params, []interface{}{"labelPath", lbl})
+		} else {
+			op.Params = append(op.Params, []interface{}{"exprTree", b.Expression()})
+		}
 
 		c.TopPush(o, op)
 	}
