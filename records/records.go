@@ -70,6 +70,14 @@ func IsRecordFile(path string) bool {
 	return recordExts[ext] || extractExts[ext]
 }
 
+// IsStructuredFile reports whether path is a *structured* data file (JSON family
+// or CSV/TSV) -- i.e. a record file that is NOT an extracted document (PDF/DOCX/
+// XLSX). Directory discovery uses this to auto-expose data files as keyspaces
+// without flooding the list with every document in a folder.
+func IsStructuredFile(path string) bool {
+	return recordExts[innerExt(path)]
+}
+
 // innerExt returns the format-determining extension, seeing through a single
 // compression suffix: "a/b.jsonl.gz" -> ".jsonl", "x.json" -> ".json".
 func innerExt(path string) string {
@@ -341,8 +349,8 @@ type csvSource struct {
 func newCSVSource(r io.Reader, closers []io.Closer, idPrefix string, comma rune) (*csvSource, error) {
 	cr := csv.NewReader(r)
 	cr.Comma = comma
-	cr.ReuseRecord = true    // reuse the []string across rows
-	cr.FieldsPerRecord = -1  // tolerate ragged rows (map by position)
+	cr.ReuseRecord = true   // reuse the []string across rows
+	cr.FieldsPerRecord = -1 // tolerate ragged rows (map by position)
 	cr.TrimLeadingSpace = false
 
 	s := &csvSource{r: cr, closers: closers, idPrefix: idPrefix}

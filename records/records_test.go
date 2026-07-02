@@ -156,6 +156,24 @@ func TestFileRespectsScanFilter(t *testing.T) { // -scan lockdown reaches single
 	}
 }
 
+func TestIsStructuredFile(t *testing.T) {
+	// Structured data files (auto-exposed as grab-bag keyspaces)...
+	for _, p := range []string{"a.json", "a.jsons", "a.jsonl", "a.ndjson", "a.csv", "a.tsv", "a.jsonl.gz"} {
+		if !IsStructuredFile(p) {
+			t.Errorf("IsStructuredFile(%q) = false, want true", p)
+		}
+	}
+	// ...but not extracted documents (still IsRecordFile) or unknown types.
+	for _, p := range []string{"a.pdf", "a.docx", "a.xlsx", "a.txt", "a"} {
+		if IsStructuredFile(p) {
+			t.Errorf("IsStructuredFile(%q) = true, want false", p)
+		}
+	}
+	if !IsRecordFile("a.pdf") {
+		t.Errorf("a.pdf should still be a record file (extract)")
+	}
+}
+
 func TestStem(t *testing.T) {
 	cases := map[string]string{
 		"events.jsonl":        "events",
@@ -419,10 +437,10 @@ func TestMetaPos(t *testing.T) {
 func TestSpliceMeta(t *testing.T) {
 	frag := []byte(`"_meta":{"size":1}`)
 	cases := map[string]string{
-		`{"a":1}`: `{"_meta":{"size":1},"a":1}`,
-		`{}`:      `{"_meta":{"size":1}}`,
+		`{"a":1}`:    `{"_meta":{"size":1},"a":1}`,
+		`{}`:         `{"_meta":{"size":1}}`,
 		` { "a":1 }`: ` {"_meta":{"size":1} "a":1 }`, // leading space preserved; note: rest kept verbatim
-		`[1,2]`:   `[1,2]`,                             // non-object unchanged
+		`[1,2]`:      `[1,2]`,                        // non-object unchanged
 	}
 	// The spacing case above is awkward to assert exactly; test the important
 	// invariants instead: object gets _meta first, non-object is untouched.

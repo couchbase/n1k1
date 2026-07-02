@@ -13,20 +13,20 @@
 
 package glue
 
-// Flat-root support (DESIGN-data.md scenarios B and B2): when a datastore root
-// holds record files *directly* (no <namespace>/<keyspace> subdirs) -- or the CLI
-// arg is a single record file rather than a directory at all -- n1k1 "fakes" the
-// metadata so the cbq planner accepts `FROM <basename>` -- a synthetic "default"
-// namespace + basename keyspace that exists only as planner-facing metadata (no
-// physical namespace/keyspace dir). The keyspace advertises a primary index so
-// the planner emits a PrimaryScan; n1k1's records-scan then reads the *root*
-// directory (via RecordsDir) or, for a single-file arg, that one file (via
-// RecordsFile). This is entirely n1k1-side -- no fork change -- reusing the fork's
-// datastore/virtual metadata-only building blocks.
+// Flat discovery (DESIGN-data.md scenarios B, B2, B3): when a datastore root holds
+// record files *directly* -- or the CLI arg is a single record file, or a grab-bag
+// directory (loose files alongside unrelated subdirs, e.g. ~/Desktop) -- n1k1
+// "fakes" the metadata so the cbq planner accepts `FROM <keyspace>`. It exposes a
+// synthetic "default" namespace whose keyspaces exist only as planner-facing
+// metadata (no physical <namespace>/<keyspace> dir); each advertises a primary
+// index so the planner emits a PrimaryScan, and n1k1's records-scan then reads the
+// backing directory (RecordsDir) or file (RecordsFile). Entirely n1k1-side (no fork
+// change), reusing the fork's datastore/virtual metadata-only building blocks.
 
 import (
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/couchbase/query/auth"
@@ -40,38 +40,70 @@ import (
 
 const flatRootNamespace = "default"
 
-// maybeFlatRoot wraps ds with a synthetic default:<basename> keyspace when path
-// is a flat root (record files directly under it, and no real namespaces). It
-// returns ds unchanged otherwise.
-func maybeFlatRoot(path string, ds datastore.Datastore) datastore.Datastore {
-	// If the file datastore already found real namespaces (subdirs), it's the
-	// normal <ns>/<keyspace> layout -- leave it alone.
-	if names, err := ds.NamespaceNames(); err != nil || len(names) > 0 {
-		return ds
-	}
-	if !dirHasRecordFile(path) {
-		return ds
-	}
+// maybeFlat wraps ds so a directory's loose top-level record files are queryable,
+// covering two directory shapes:
+//
+//   - Pure flat root (record files directly under path, NO subdirs; scenario B):
+//     one synthetic keyspace named after the directory basename = the union of
+//     those files.
+//   - Grab-bag dir (record files at the top AND subdirs, e.g. ~/Desktop;
+//     scenario B3): each top-level record file becomes its own keyspace by stem,
+//     so `FROM <stem>` queries that one file. The union-by-basename is skipped
+//     here because records.Walk would recurse into the unrelated subdirs.
+//
+// A real "default" namespace's keyspaces (the classic <ns>/<keyspace> layout) are
+// merged in, and other real namespaces still resolve, so this only ADDS keyspaces.
+// Returns ds unchanged when the directory has no top-level record files.
+func maybeFlat(path string, ds datastore.Datastore) datastore.Datastore {
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return ds
 	}
-	base := filepath.Base(filepath.Clean(abs))
-	if base == "" || base == "." || base == string(filepath.Separator) {
+	files, hasSubdir := topLevelRecordFiles(abs)
+	if len(files) == 0 {
 		return ds
 	}
 
-	return wrapFlat(ds, base, abs, "")
+	keyspaces := map[string]*flatKeyspace{}
+	if !hasSubdir {
+		// Scenario B: union of all files, keyed by the directory basename.
+		base := filepath.Base(filepath.Clean(abs))
+		if base != "" && base != "." && base != string(filepath.Separator) {
+			keyspaces[base] = &flatKeyspace{dir: abs}
+		}
+	} else {
+		// Scenario B3: one keyspace per top-level *structured* file, by stem
+		// (first-seen wins on a stem collision, e.g. a.json + a.csv). Extracted
+		// documents (PDF/DOCX/XLSX) are skipped so a folder of documents doesn't
+		// flood the keyspace list -- query one explicitly with `n1k1 <file.pdf>`.
+		for _, name := range files {
+			if !records.IsStructuredFile(name) {
+				continue
+			}
+			ks := records.Stem(name)
+			if ks == "" || ks == "." {
+				continue
+			}
+			if _, dup := keyspaces[ks]; dup {
+				continue
+			}
+			keyspaces[ks] = &flatKeyspace{file: filepath.Join(abs, name)}
+		}
+	}
+
+	// Merge with a real "default" namespace (classic layout) if one exists.
+	var real datastore.Namespace
+	if rd, rerr := ds.NamespaceByName(flatRootNamespace); rerr == nil {
+		real = rd
+	}
+	return wrapFlatKeyspaces(ds, keyspaces, real)
 }
 
-// maybeFlatFile wraps ds with a synthetic default:<stem> keyspace when path is a
-// single record file (DESIGN-data.md scenario B2): the CLI arg is one
-// JSONL/NDJSON/JSON/CSV/... file (optionally .gz) rather than a directory. The
-// keyspace is named after the file's base name with its format/compression
-// extensions stripped (events.jsonl -> events, orders.jsonl.gz -> orders); its
-// RecordsFile points the records-scan at just this one file. Callers pass a path
-// already known to be a regular, decodable record file (see FileStore); it
-// returns ds unchanged if that doesn't hold.
+// maybeFlatFile wraps ds with a synthetic default:<stem> keyspace for a single
+// record-file CLI arg (scenario B2): the arg is one JSONL/NDJSON/JSON/CSV/... file
+// (optionally .gz), keyed by its base name minus format/compression extensions
+// (events.jsonl -> events, orders.jsonl.gz -> orders). Its RecordsFile points the
+// records-scan at just that file. Returns ds unchanged if path isn't a record file.
 func maybeFlatFile(path string, ds datastore.Datastore) datastore.Datastore {
 	if !records.IsRecordFile(path) {
 		return ds
@@ -84,51 +116,78 @@ func maybeFlatFile(path string, ds datastore.Datastore) datastore.Datastore {
 	if name == "" || name == "." {
 		return ds
 	}
-	return wrapFlat(ds, name, "", abs)
+	return wrapFlatKeyspaces(ds, map[string]*flatKeyspace{name: {file: abs}}, nil)
 }
 
-// wrapFlat builds the shared synthetic default:<ksName> keyspace wrapper used by
-// both flat-root (dir set, file empty) and flat-file (file set, dir empty). It
-// returns ds unchanged if the virtual keyspace can't be constructed.
-func wrapFlat(ds datastore.Datastore, ksName, dir, file string) datastore.Datastore {
-	w := &flatDatastore{Datastore: ds}
-	ns := &flatNamespace{datastore: w, ksName: ksName}
-	vks, verr := virtual.NewVirtualKeyspace(ns, []string{flatRootNamespace, ksName})
-	if verr != nil {
+// wrapFlatKeyspaces builds a synthetic "default" namespace exposing keyspaces (each
+// given its own primary-index indexer), merged over an optional real "default"
+// namespace. Returns ds unchanged if no keyspace can be constructed.
+func wrapFlatKeyspaces(ds datastore.Datastore, keyspaces map[string]*flatKeyspace,
+	real datastore.Namespace) datastore.Datastore {
+	if len(keyspaces) == 0 {
 		return ds
 	}
-	ks := &flatKeyspace{Keyspace: vks, dir: dir, file: file}
-	ks.indexer = newFlatIndexer(ks)
-	ns.ks = ks
+	w := &flatDatastore{Datastore: ds}
+	ns := &flatNamespace{datastore: w, keyspaces: map[string]*flatKeyspace{}, real: real}
+	for name, ks := range keyspaces {
+		vks, verr := virtual.NewVirtualKeyspace(ns, []string{flatRootNamespace, name})
+		if verr != nil {
+			continue
+		}
+		ks.Keyspace = vks
+		ks.indexer = newFlatIndexer(ks)
+		ns.keyspaces[name] = ks
+	}
+	if len(ns.keyspaces) == 0 {
+		return ds
+	}
 	w.ns = ns
 	return w
 }
 
-// dirHasRecordFile reports whether dir directly contains a decodable record file.
-func dirHasRecordFile(dir string) bool {
+// topLevelRecordFiles returns the sorted names of decodable record files directly
+// under dir (not recursing), and whether dir contains any subdirectory.
+func topLevelRecordFiles(dir string) (files []string, hasSubdir bool) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return false
+		return nil, false
 	}
 	for _, e := range entries {
-		if !e.IsDir() && records.IsRecordFile(e.Name()) {
-			return true
+		if e.IsDir() {
+			hasSubdir = true
+		} else if records.IsRecordFile(e.Name()) {
+			files = append(files, e.Name())
 		}
 	}
-	return false
+	sort.Strings(files)
+	return files, hasSubdir
 }
 
 // --------------------------------------------------------- datastore wrapper
 
-// flatDatastore embeds the real datastore (promoting its ~40 methods) and
-// overrides only namespace lookup to expose the single synthetic namespace.
+// flatDatastore embeds the real datastore (promoting its ~40 methods) and exposes
+// a synthetic "default" namespace on top, delegating other namespaces to the real
+// datastore so nothing is hidden.
 type flatDatastore struct {
 	datastore.Datastore
 	ns *flatNamespace
 }
 
-func (d *flatDatastore) NamespaceIds() ([]string, errors.Error)   { return []string{flatRootNamespace}, nil }
-func (d *flatDatastore) NamespaceNames() ([]string, errors.Error) { return []string{flatRootNamespace}, nil }
+func (d *flatDatastore) NamespaceIds() ([]string, errors.Error)   { return d.namespaceNames() }
+func (d *flatDatastore) NamespaceNames() ([]string, errors.Error) { return d.namespaceNames() }
+
+// namespaceNames is the synthetic "default" plus any real namespaces (dedup'd).
+func (d *flatDatastore) namespaceNames() ([]string, errors.Error) {
+	out := []string{flatRootNamespace}
+	if real, err := d.Datastore.NamespaceNames(); err == nil {
+		for _, n := range real {
+			if !strings.EqualFold(n, flatRootNamespace) {
+				out = append(out, n)
+			}
+		}
+	}
+	return out, nil
+}
 
 func (d *flatDatastore) NamespaceById(id string) (datastore.Namespace, errors.Error) {
 	return d.NamespaceByName(id)
@@ -138,49 +197,85 @@ func (d *flatDatastore) NamespaceByName(name string) (datastore.Namespace, error
 	if strings.EqualFold(name, flatRootNamespace) {
 		return d.ns, nil
 	}
-	return nil, errors.NewError(nil, "flat-root: no namespace "+name)
+	return d.Datastore.NamespaceByName(name)
 }
 
 // --------------------------------------------------------- namespace
 
-// flatNamespace is the synthetic "default" namespace holding one keyspace.
+// flatNamespace is the synthetic "default" namespace. It holds the synthetic
+// keyspaces and, when the real datastore also has a "default" namespace (the
+// classic <ns>/<keyspace> layout), merges/delegates to it.
 type flatNamespace struct {
 	datastore *flatDatastore
-	ksName    string
-	ks        *flatKeyspace
+	keyspaces map[string]*flatKeyspace
+	real      datastore.Namespace // optional real "default" to merge + delegate to
 }
 
 func (p *flatNamespace) Datastore() datastore.Datastore { return p.datastore }
 func (p *flatNamespace) Id() string                     { return flatRootNamespace }
 func (p *flatNamespace) Name() string                   { return flatRootNamespace }
 
-func (p *flatNamespace) KeyspaceIds() ([]string, errors.Error)   { return []string{p.ksName}, nil }
-func (p *flatNamespace) KeyspaceNames() ([]string, errors.Error) { return []string{p.ksName}, nil }
+func (p *flatNamespace) KeyspaceIds() ([]string, errors.Error)   { return p.keyspaceNames() }
+func (p *flatNamespace) KeyspaceNames() ([]string, errors.Error) { return p.keyspaceNames() }
+
+func (p *flatNamespace) keyspaceNames() ([]string, errors.Error) {
+	seen := map[string]bool{}
+	var out []string
+	for n := range p.keyspaces {
+		out = append(out, n)
+		seen[strings.ToLower(n)] = true
+	}
+	if p.real != nil {
+		if rn, err := p.real.KeyspaceNames(); err == nil {
+			for _, n := range rn {
+				if !seen[strings.ToLower(n)] {
+					out = append(out, n)
+				}
+			}
+		}
+	}
+	sort.Strings(out)
+	return out, nil
+}
 
 func (p *flatNamespace) KeyspaceById(id string) (datastore.Keyspace, errors.Error) {
 	return p.KeyspaceByName(id)
 }
 
 func (p *flatNamespace) KeyspaceByName(name string) (datastore.Keyspace, errors.Error) {
-	if strings.EqualFold(name, p.ksName) {
-		return p.ks, nil
+	for n, ks := range p.keyspaces {
+		if strings.EqualFold(n, name) {
+			return ks, nil
+		}
 	}
-	return nil, errors.NewError(nil, "flat-root: no keyspace "+name)
+	if p.real != nil {
+		return p.real.KeyspaceByName(name)
+	}
+	return nil, errors.NewError(nil, "flat: no keyspace "+name)
 }
 
 func (p *flatNamespace) BucketIds() ([]string, errors.Error)   { return nil, nil }
 func (p *flatNamespace) BucketNames() ([]string, errors.Error) { return nil, nil }
 
 func (p *flatNamespace) BucketById(name string) (datastore.Bucket, errors.Error) {
-	return nil, errors.NewError(nil, "flat-root: no buckets")
+	return nil, errors.NewError(nil, "flat: no buckets")
 }
 func (p *flatNamespace) BucketByName(name string) (datastore.Bucket, errors.Error) {
-	return nil, errors.NewError(nil, "flat-root: no buckets")
+	return nil, errors.NewError(nil, "flat: no buckets")
 }
 
 func (p *flatNamespace) Objects(creds *auth.Credentials, filter func(string) bool,
 	preload bool) ([]datastore.Object, errors.Error) {
-	return []datastore.Object{{Id: p.ksName, Name: p.ksName, IsKeyspace: true}}, nil
+	var out []datastore.Object
+	for n := range p.keyspaces {
+		out = append(out, datastore.Object{Id: n, Name: n, IsKeyspace: true})
+	}
+	if p.real != nil {
+		if ro, err := p.real.Objects(creds, filter, preload); err == nil {
+			out = append(out, ro...)
+		}
+	}
+	return out, nil
 }
 
 // --------------------------------------------------------- keyspace
@@ -188,11 +283,11 @@ func (p *flatNamespace) Objects(creds *auth.Credentials, filter func(string) boo
 // flatKeyspace embeds a metadata-only virtual keyspace (promoting its Keyspace
 // methods) and overrides index advertising to expose a primary index, plus
 // RecordsDir/RecordsFile so the records-scan reads the flat root directory (or,
-// for a single-file arg, the one file). Exactly one of dir/file is set.
+// for a per-file keyspace, the one file). Exactly one of dir/file is set.
 type flatKeyspace struct {
 	datastore.Keyspace
 	dir     string // flat root: keyspace = union of files under this dir
-	file    string // flat file (scenario B2): keyspace = this one file
+	file    string // single file (scenario B2/B3): keyspace = this one file
 	indexer datastore.Indexer
 }
 
@@ -202,7 +297,7 @@ type flatKeyspace struct {
 func (k *flatKeyspace) RecordsDir() string { return k.dir }
 
 // RecordsFile, when non-empty, points DatastoreScanRecords at a single record
-// file rather than a directory to walk (DESIGN-data.md scenario B2).
+// file rather than a directory to walk (scenarios B2/B3).
 func (k *flatKeyspace) RecordsFile() string { return k.file }
 
 func (k *flatKeyspace) Indexer(name datastore.IndexType) (datastore.Indexer, errors.Error) {
@@ -241,7 +336,7 @@ func (ix *flatIndexer) Indexes() ([]datastore.Index, errors.Error) {
 func (ix *flatIndexer) IndexIds() ([]string, errors.Error)   { return []string{ix.primary.Id()}, nil }
 func (ix *flatIndexer) IndexNames() ([]string, errors.Error) { return []string{ix.primary.Name()}, nil }
 
-func (ix *flatIndexer) IndexById(id string) (datastore.Index, errors.Error)   { return ix.primary, nil }
+func (ix *flatIndexer) IndexById(id string) (datastore.Index, errors.Error) { return ix.primary, nil }
 func (ix *flatIndexer) IndexByName(name string) (datastore.Index, errors.Error) {
 	return ix.primary, nil
 }

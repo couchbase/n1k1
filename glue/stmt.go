@@ -173,11 +173,12 @@ func FileStore(path string) (*Store, error) {
 		// Single file: fake a synthetic default:<stem> keyspace reading just it.
 		ds = maybeFlatFile(flatFile, ds)
 	} else {
-		// Flat root (data files directly under path, no ns/keyspace subdirs): fake a
-		// synthetic default:<basename> keyspace so `FROM <basename>` plans. No-op for
-		// the normal <ns>/<keyspace> layout. See flat.go.
-		if flat := maybeFlatRoot(path, ds); flat != ds {
-			ds = flat // flat-root layout (secondary indexes not wired here in v1)
+		// Flat discovery: fake synthetic default keyspaces for loose top-level
+		// record files -- union-by-basename for a pure flat root, or one keyspace
+		// per file for a grab-bag dir with subdirs (e.g. ~/Desktop). No-op for the
+		// normal <ns>/<keyspace> layout with no loose root files. See flat.go.
+		if flat := maybeFlat(path, ds); flat != ds {
+			ds = flat // flat layout (secondary indexes not wired here in v1)
 		} else {
 			// Normal <ns>/<keyspace> layout: advertise any secondary indexes
 			// declared in .n1k1/catalog.json so selective queries plan an
