@@ -373,6 +373,13 @@ func (c *Conv) VisitDummyFetch(o *plan.DummyFetch) (interface{}, error) { return
 // Join
 
 func (c *Conv) VisitJoin(o *plan.Join) (interface{}, error) {
+	// A lookup JOIN needs an ON KEYS expression to fetch the right side. A
+	// comma-join term (FROM a, b) has none -- JoinKeys() is nil -- so bail out
+	// cleanly rather than emit an ["exprTree", nil] that panics at eval time.
+	if o.Term().JoinKeys() == nil {
+		return NA(o)
+	}
+
 	// Allocate a vars.Temps slot to hold evaluated keys.
 	varsTempsSlot := c.AddTemp(nil)
 
@@ -465,6 +472,12 @@ func (c *Conv) VisitUnnest(o *plan.Unnest) (interface{}, error) {
 // convert as a fresh branch. OpJoinNestedLoop re-drives the right branch for
 // each left row and applies the ON clause to the joined left+right vals.
 func (c *Conv) VisitNLJoin(o *plan.NLJoin) (interface{}, error) {
+	// A nil ON clause is a comma/cross join (FROM a, b) -- no join predicate to
+	// feed the nested-loop filter; bail cleanly rather than emit an
+	// ["exprTree", nil] that panics at eval time.
+	if o.Onclause() == nil {
+		return NA(o)
+	}
 	right, err := c.convertBranch(o.Child())
 	if err != nil {
 		return nil, err
@@ -479,6 +492,9 @@ func (c *Conv) VisitHashNest(o *plan.HashNest) (interface{}, error) { return NA(
 // through the glue layer yet, but the join is semantically a nested-loop join
 // with the same ON clause, so we execute it as one (correct, if not as fast).
 func (c *Conv) VisitHashJoin(o *plan.HashJoin) (interface{}, error) {
+	if o.Onclause() == nil { // comma/cross join -- see VisitNLJoin.
+		return NA(o)
+	}
 	right, err := c.convertBranch(o.Child())
 	if err != nil {
 		return nil, err

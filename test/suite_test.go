@@ -79,7 +79,7 @@ func n1k1RunStatementCtx(store *glue.Store, stmt string) (rows []string, res *gl
 func caseRunnable(c map[string]interface{}) (stmt string, results []interface{}, ok bool) {
 	for k := range c {
 		switch k {
-		case "statements", "results", "ordered", "description", "pretty", "sortCount":
+		case "statements", "results", "ordered", "description", "pretty", "sortCount", "comment":
 		default:
 			return "", nil, false // exotic field -> skip
 		}
@@ -110,6 +110,12 @@ func caseRunnable(c map[string]interface{}) (stmt string, results []interface{},
 // The order_functions sortCount cases that carry NO "results" (or carry
 // "explain"/"ignore") are pure plan-shape checks with nothing result-comparable,
 // so they stay skipped.
+
+// NOTE on "comment": a human note the fork attaches to some cases (an alias for
+// "description"), so it's whitelisted too. This unlocks the array_functions
+// `[]`/`[*]` navigation cases (which n1k1 passes); the select_functions cases it
+// also unlocks stay non-pass for real feature gaps recorded in gsiExpectedNonPass
+// (SELECT * EXCLUDE, UNION, comma-join, case-insensitive `name`i identifiers).
 
 // caseError reports whether a case is a simple error-expectation case: a
 // {statements, error} pair (no results) carrying only allowed metadata. n1k1
@@ -632,7 +638,7 @@ func exoticInfo(c map[string]interface{}) (reason, content string) {
 		// "resultset" is deliberately omitted -- it's non-authoritative (see the
 		// NOTE by caseRunnable), so it should surface as the exotic reason.
 		case "statements", "results", "error", "errorCode", "warningCode",
-			"matchStatements", "ordered", "description", "pretty", "sortCount":
+			"matchStatements", "ordered", "description", "pretty", "sortCount", "comment":
 		default:
 			extra = append(extra, k)
 		}
