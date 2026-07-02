@@ -205,10 +205,11 @@ func splitTopLevelCommas(s string) []string {
 }
 
 // cmdIndexSuggest implements `.index suggest [<keyspace>]`: sample docs, score
-// selective scalar/nested-no-array fields, and print a catalog.json fragment
-// (stdout) the user can review/edit and save into .n1k1/catalog.json. Each
-// suggestion carries a "why" field (ignored by the catalog loader) with its
-// sample stats. The rationale header goes to stderr so stdout stays pasteable.
+// selective scalar/nested-no-array fields, and present the advised indexes two
+// ways -- a catalog.json fragment (on stdout, for saving into .n1k1/catalog.json;
+// each entry carries a "why" the catalog loader ignores) and the equivalent
+// `.index create` commands (on stderr, to paste into the REPL). Headers + the
+// commands go to stderr so stdout stays a clean, redirectable JSON fragment.
 func (c *cli) cmdIndexSuggest(keyspace string) {
 	if c.sess == nil || c.sess.Store == nil {
 		fmt.Fprintln(c.stderr, "no datastore open")
@@ -244,9 +245,17 @@ func (c *cli) cmdIndexSuggest(keyspace string) {
 		})
 	}
 	b, _ := json.MarshalIndent(cat, "", "  ")
-	fmt.Fprintf(c.stderr, "%s%d suggestion(s) -- review/edit, then save into <dataRoot>/.n1k1/catalog.json (drop \"why\"):\n",
+	fmt.Fprintf(c.stderr, "%s%d suggestion(s). Option 1 -- save this fragment into <dataRoot>/.n1k1/catalog.json (drop \"why\"):\n",
 		c.icon("💡 "), len(sugg))
 	fmt.Fprintln(c.out, string(b))
+
+	// Option 2: the equivalent .index create commands, copy-pasteable straight
+	// into the REPL. Kept on stderr (like the headers) so stdout stays a clean
+	// catalog.json fragment for redirecting.
+	fmt.Fprintf(c.stderr, "%sOption 2 -- paste these commands:\n", c.icon("💡 "))
+	for _, s := range sugg {
+		fmt.Fprintf(c.stderr, "  .index create %s on %s (%s)\n", s.Name, s.Keyspace, s.Field)
+	}
 }
 
 // cmdIndexHelp prints the .index subcommand syntax plus a copy-pasteable
