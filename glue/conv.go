@@ -483,6 +483,28 @@ func (c *Conv) VisitHashJoin(o *plan.HashJoin) (interface{}, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	// Use the real hash-join op (OpJoinHash: build a probe map from one side,
+	// probe with the other) for the common shape -- an inner equijoin on a
+	// single build/probe key pair with no residual filter. The planner always
+	// makes the child (right) the build side and the outer (left/TopOp) the
+	// probe side, so Children[0] (which OpJoinHash fills the map from) is the
+	// right branch. Anything else (LEFT OUTER, composite keys, or a residual
+	// non-equi ON filter that OpJoinHash can't apply) falls back to the
+	// nested-loop join, which is correct if slower.
+	build, probe := o.BuildExprs(), o.ProbeExprs()
+	if !o.Outer() && o.Filter() == nil && len(build) == 1 && len(probe) == 1 {
+		return c.TopSet(o, &base.Op{
+			Kind:   "joinHash-inner",
+			Labels: append(append(base.Labels{}, right.Labels...), c.TopOp.Labels...),
+			Params: []interface{}{
+				[]interface{}{"exprTree", build[0]}, // build key, on right (Children[0])
+				[]interface{}{"exprTree", probe[0]}, // probe key, on left (Children[1])
+			},
+			Children: []*base.Op{right, c.TopOp},
+		})
+	}
+
 	return c.TopSet(o, c.ansiJoinOp("joinNL", o.Outer(), o.Onclause(), c.TopOp, right))
 }
 
