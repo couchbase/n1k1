@@ -103,14 +103,14 @@ front-end (parse args, read lines, format rows).
     -no-init      skip the init file
     -readonly     (no-op today; the file store is already read-only — reserved)
     -index <mode> secondary index build: eager|lazy|off (see DESIGN-indexing.md)
-    -scan <set>   restrict file discovery (see DESIGN-data.md)
+    -formats <set> restrict scanning to a format set (see DESIGN-data.md)
     -meta <mode>  per-record _meta injection: on|off|auto
     -v            verbose (show unsupported reasons, plan on error)
   ```
 
   Index flags/commands (`-index`, `.indexes`) are owned by **DESIGN-indexing.md
   "CLI control"** — see there for the build-timing model and per-index-option
-  stance. Data-source flags (`-scan`, `-meta`) are owned by DESIGN-data.md.
+  stance. Data-source flags (`-formats`, `-meta`) are owned by DESIGN-data.md.
 
   Mode selection: a TTY defaults to `box|pretty`; a pipe/`-c`
   defaults to `jsonlines` (compact, clean for downstream tools) unless `-mode`
@@ -152,6 +152,7 @@ Chosen to match DuckDB names where the concept exists, so muscle memory carries.
 | `.index [list\|show <name>\|rebuild [<name>]\|suggest [<ks>]\|help]` | Secondary-index family (`.indexes` = `.index list`): list indexes from `.n1k1/catalog.json` with stats, show one, force-rebuild (all/one), suggest candidate indexes from a doc sample (editable catalog fragment), create def(s) into catalog.json + build (DSL or pasted JSON), or help. Owned by DESIGN-indexing.md "CLI control". |
 | `.mode <m>` | Set output mode (see §6). |
 | `.meta [on\|off\|auto]` | Check or set whether records get a `_meta` sub-object (path/name/ext/size/mtime/pos). Mirrors the `-meta` flag; no arg prints the current setting. Mutates `glue.ScanWalkOptions.Meta`, which the records-scan reads per query. |
+| `.formats [<set>]` | Check or set which file formats / modes (json,csv,gzip,recurse,...) scanning considers. Mirrors the `-formats` flag; no arg shows the current setting. Live over glue.ScanWalkOptions. |
 | `.timer on\|off` | Toggle elapsed-time footer. |
 | `.maxrows <n>` | box: cap rows shown. `>0` = head+tail with a `·` elision row (DuckDB-style); `<0` = last `|n|` rows with the `·` elision row at the front; `0` = all. |
 | `.maxwidth <n\|auto>` | box: cap column width, truncate with `…`. `0` = uncapped; `auto` = fit the box to the detected terminal width, widening columns to use spare space and shrinking (max-min fair share) only when the table overflows. |

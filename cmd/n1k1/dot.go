@@ -81,6 +81,20 @@ func (c *cli) dot(line string) bool {
 				fmt.Fprintf(c.stderr, "meta %s\n", glue.ScanWalkOptions.Meta)
 			}
 		}
+	case ".formats":
+		// Check/set which file formats (+ gzip/zstd/recurse) scanning considers.
+		// The engine reads glue.ScanWalkOptions per query, so a change takes effect
+		// for subsequent statements. No arg shows the current setting.
+		if a := strings.TrimSpace(arg); a == "" {
+			fmt.Fprintf(c.stderr, "formats: %s\n", glue.ScanWalkOptions.Describe())
+		} else if opts, err := records.ParseModes(a); err != nil {
+			fmt.Fprintf(c.stderr, "usage: .formats [all|json|jsonl|csv|tsv|extract|doc|text|image|video|gzip|recurse]  (currently %s)\n",
+				glue.ScanWalkOptions.Describe())
+		} else {
+			opts.Meta = glue.ScanWalkOptions.Meta // keep the current .meta setting
+			glue.ScanWalkOptions = opts
+			fmt.Fprintf(c.stderr, "formats: %s\n", glue.ScanWalkOptions.Describe())
+		}
 	case ".explain":
 		c.explain = !c.explain
 		fmt.Fprintf(c.stderr, "explain %s\n", onOff(c.explain))
@@ -123,6 +137,7 @@ func (c *cli) printHelp() {
 .schema [<keyspace>]  sampled shape (keys + JSON types) of a keyspace
 .mode <m>             output mode (append |pretty to indent JSON): `+strings.Join(cmd.OutputModes, " ")+`
 .meta [on|off|auto]   add a _meta sub-object to records (no arg shows the current setting)
+.formats [<set>]      restrict scanning to formats/modes, e.g. json,csv,gzip (no arg shows current)
 .timer [on|off]       elapsed-time reporting (no arg shows the current setting)
 .explain              toggle printing EXPLAIN PLAN per query
 .maxrows <n>          box: cap rows shown (0 = all; negative = last |n| rows)

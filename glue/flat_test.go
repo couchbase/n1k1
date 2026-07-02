@@ -73,6 +73,23 @@ func TestMaybeFlatGrabBag(t *testing.T) {
 	}
 }
 
+func TestSidecarName(t *testing.T) {
+	if SidecarName() != ".n1k1" {
+		t.Errorf("default SidecarName() = %q, want .n1k1", SidecarName())
+	}
+	orig := sidecarDir
+	defer func() { sidecarDir = orig }()
+
+	SetSidecarName(".foo")
+	if SidecarName() != ".foo" {
+		t.Errorf("after SetSidecarName(.foo) = %q", SidecarName())
+	}
+	SetSidecarName("") // blank is ignored (keeps current)
+	if SidecarName() != ".foo" {
+		t.Errorf("blank should be ignored, got %q", SidecarName())
+	}
+}
+
 // TestIsFlatDatastore: grab-bag/flat layouts report true; a classic
 // <ns>/<keyspace> directory (where secondary indexes are supported) reports false.
 func TestIsFlatDatastore(t *testing.T) {

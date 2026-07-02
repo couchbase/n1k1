@@ -24,6 +24,7 @@ import (
 	"strings"
 
 	"github.com/couchbase/n1k1/cmd"
+	"github.com/couchbase/n1k1/glue"
 )
 
 func (c *cli) cmdKeyspaces() {
@@ -160,13 +161,15 @@ func (c *cli) dataLoc() string {
 }
 
 // catalogPath is where .index create/suggest read & write index definitions for
-// the current datastore (its .n1k1/catalog.json), or a placeholder when no dir is
-// known (e.g. an empty-store session).
+// the current datastore (its <sidecar>/catalog.json), or a placeholder when no dir
+// is known (e.g. an empty-store session). The sidecar dir is named after the
+// program ("."+prog), matching glue.SidecarName().
 func (c *cli) catalogPath() string {
+	sidecar := glue.SidecarName() // "."+prog (main sets it); ".n1k1" by default
 	if c.dir == "" {
-		return "<dataRoot>/.n1k1/catalog.json"
+		return "<dataRoot>/" + sidecar + "/catalog.json"
 	}
-	return filepath.Join(c.dir, ".n1k1", "catalog.json")
+	return filepath.Join(c.dir, sidecar, "catalog.json")
 }
 
 // exampleQuery builds a copy-pasteable example over a real current keyspace, or

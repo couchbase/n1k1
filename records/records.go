@@ -496,6 +496,35 @@ func AllModes() WalkOptions {
 	return WalkOptions{Recurse: true, Formats: nil, AllowGzip: true, AllowZstd: false}
 }
 
+// Describe renders the enabled formats/modes as a human-readable summary for the
+// .formats CLI command: "all formats" (or a sorted extension list) plus the
+// gzip/zstd/recurse flags. Not a round-trippable token list.
+func (o WalkOptions) Describe() string {
+	var parts []string
+	if o.Formats == nil {
+		parts = append(parts, "all formats")
+	} else if len(o.Formats) == 0 {
+		parts = append(parts, "(no formats)")
+	} else {
+		exts := make([]string, 0, len(o.Formats))
+		for e := range o.Formats {
+			exts = append(exts, strings.TrimPrefix(e, "."))
+		}
+		sort.Strings(exts)
+		parts = append(parts, strings.Join(exts, ","))
+	}
+	if o.AllowGzip {
+		parts = append(parts, "gzip")
+	}
+	if o.AllowZstd {
+		parts = append(parts, "zstd")
+	}
+	if o.Recurse {
+		parts = append(parts, "recurse")
+	}
+	return strings.Join(parts, " · ")
+}
+
 // ParseModes builds a restrictive WalkOptions from a comma-separated mode list
 // (the CLI's -scan flag), so a user with subdirs/formats they don't want
 // scanned can lock n1k1 down. Recognized tokens:

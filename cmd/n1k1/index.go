@@ -391,7 +391,7 @@ func (c *cli) indexInfos() []glue.IndexInfo {
 			fmt.Fprintln(c.stderr, "secondary indexes aren't supported for this flat/single-file datastore "+
 				"(they need a <namespace>/<keyspace> layout)")
 		default:
-			fmt.Fprintln(c.stderr, "no secondary indexes (create one with .index create, or declare them in .n1k1/catalog.json)")
+			fmt.Fprintf(c.stderr, "no secondary indexes (create one with .index create, or declare them in %s)\n", c.catalogPath())
 		}
 	}
 	return infos

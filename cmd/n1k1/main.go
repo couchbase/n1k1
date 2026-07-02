@@ -53,20 +53,24 @@ func progName() string {
 
 func main() {
 	var (
-		cFlag     = flag.String("c", "", "run statements and exit")
-		fFlag     = flag.String("f", "", "run statements from a file and exit")
-		nsFlag    = flag.String("ns", "default", "datastore namespace")
-		modeFlag  = flag.String("mode", "", "output mode: "+strings.Join(cmd.OutputModes, "|")+" (append |pretty to indent JSON; default box|pretty at a TTY, else jsonlines)")
-		timerFlag = flag.Bool("timer", false, "print row count + elapsed after each statement")
-		vFlag     = flag.Bool("v", false, "verbose: show more info on errors")
-		initFlag  = flag.String("init", "", "startup file of dot-commands/SQL++ (default ~/."+prog+"rc; use \"\", \"-\" or \"none\" to skip)")
-		scanFlag  = flag.String("scan", "", "restrict file discovery to a comma-separated set (all|json|jsonl|csv|tsv|extract|doc|text|image|video|gzip|recurse); empty or 'all' = everything")
-		metaFlag  = flag.String("meta", "auto", "add a _meta sub-object (path/name/ext/size/mtime) to records: on|off|auto (auto = extracted docs only)")
-		verFlag   = flag.Bool("version", false, "print version + build info (incl. dependency SHAs) and exit")
-		indexFlag = flag.String("index", "lazy", "secondary index (.n1k1/catalog.json) build mode: eager|lazy|off")
+		cFlag       = flag.String("c", "", "run statements and exit")
+		fFlag       = flag.String("f", "", "run statements from a file and exit")
+		nsFlag      = flag.String("ns", "default", "datastore namespace")
+		modeFlag    = flag.String("mode", "", "output mode: "+strings.Join(cmd.OutputModes, "|")+" (append |pretty to indent JSON; default box|pretty at a TTY, else jsonlines)")
+		timerFlag   = flag.Bool("timer", false, "print row count + elapsed after each statement")
+		vFlag       = flag.Bool("v", false, "verbose: show more info on errors")
+		initFlag    = flag.String("init", "", "startup file of dot-commands/SQL++ (default ~/."+prog+"rc; use \"\", \"-\" or \"none\" to skip)")
+		formatsFlag = flag.String("formats", "", "restrict scanning to a comma-separated set (all|json|jsonl|csv|tsv|extract|doc|text|image|video|gzip|recurse); empty or 'all' = everything")
+		metaFlag    = flag.String("meta", "auto", "add a _meta sub-object (path/name/ext/size/mtime) to records: on|off|auto (auto = extracted docs only)")
+		verFlag     = flag.Bool("version", false, "print version + build info (incl. dependency SHAs) and exit")
+		indexFlag   = flag.String("index", "lazy", "secondary index build mode: eager|lazy|off")
 	)
 	flag.Usage = usage
 	flag.Parse()
+
+	// The sidecar dir (catalog.json, built indexes) is named after this binary --
+	// ".n1k1" by default, ".<alias>" when invoked under a symlinked name.
+	glue.SetSidecarName("." + prog)
 
 	// -version works without a datastore, so handle it before opening a session.
 	if *verFlag {
@@ -84,11 +88,11 @@ func main() {
 		os.Exit(2)
 	}
 
-	// -scan locks down which formats/layouts/compression n1k1 will scan, so a
-	// tree with subdirs/formats the user doesn't want considered can be excluded.
-	scanOpts, serr := records.ParseModes(*scanFlag)
+	// -formats locks down which file formats/compression/recursion n1k1 will scan,
+	// so a tree with formats the user doesn't want considered can be excluded.
+	scanOpts, serr := records.ParseModes(*formatsFlag)
 	if serr != nil {
-		fmt.Fprintf(os.Stderr, "%s: bad -scan: %v\n", prog, serr)
+		fmt.Fprintf(os.Stderr, "%s: bad -formats: %v\n", prog, serr)
 		os.Exit(2)
 	}
 	// -meta controls per-file metadata injection (_meta).

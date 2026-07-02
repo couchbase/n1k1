@@ -33,8 +33,21 @@ import (
 	"github.com/couchbase/query/parser/n1ql"
 )
 
-// sidecarDir is the per-dataRoot derived-artifact directory.
-const sidecarDir = ".n1k1"
+// sidecarDir is the per-dataRoot derived-artifact directory (catalog.json,
+// built indexes, ...). Defaults to ".n1k1"; the CLI sets it to "."+<prog> via
+// SetSidecarName so an aliased binary keeps its own sidecar.
+var sidecarDir = ".n1k1"
+
+// SetSidecarName overrides the sidecar directory name (e.g. "."+prog). A blank
+// name is ignored (keeps the default). Call once at startup, before any query.
+func SetSidecarName(name string) {
+	if name != "" {
+		sidecarDir = name
+	}
+}
+
+// SidecarName returns the current sidecar directory name.
+func SidecarName() string { return sidecarDir }
 
 // catalog is the parsed .n1k1/catalog.json (index half only for v1).
 type catalog struct {

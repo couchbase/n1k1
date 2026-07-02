@@ -50,7 +50,7 @@ originally-drawn MVP line:
   future.
 - **Transparent gzip** (`.gz`, scenario H). `.zst` is *recognized* by the walker
   but decoding is still a stub (`records: .zst not yet supported`).
-- **`-scan` lockdown flag** (`records.ParseModes`) — comma-separated allow-list of
+- **`-formats` lockdown flag** (`records.ParseModes`) — comma-separated allow-list of
   formats/`recurse`/`gzip`.
 - **`-meta` flag + `_meta` sub-object** (`records/meta.go`) — `on|off|auto`,
   injecting `path`/`name`/`ext`/`size`/`mtime`/`pos`. See §6.
@@ -481,13 +481,14 @@ Hive `key=value` partitions auto-detect within any mode; bare date partitions
 require declaring a projection template (mode 3) because they're ambiguous by
 construction.
 
-**Lockdown flag (`-scan`):** flexibility is the default, but a user whose tree
+**Lockdown flag (`-formats`):** flexibility is the default, but a user whose tree
 contains subdirs/formats they *don't* want scanned can restrict n1k1 to an
-explicit comma-separated set, e.g. `-scan=json,jsonl` (no `recurse` ⇒ don't
+explicit comma-separated set, e.g. `-formats=json,jsonl` (no `recurse` ⇒ don't
 descend; no `gzip` ⇒ ignore `.gz`). Empty/absent or `all` ⇒ everything flexible.
 This is "flexible by default, explicit when needed" as a one-flag safety valve;
-`records.ParseModes` turns the list into the discovery/decoder filter.
-(Named `-scan`, not `-modes`, to avoid confusion with the `-mode` output flag.)
+`records.ParseModes` turns the list into the discovery/decoder filter. The REPL's
+`.formats` command shows/sets it live. (Named `-formats`, not `-mode`, to avoid
+confusion with the `-mode` output flag.)
 
 ### Integration gap: schemaless docs vs n1k1's positional labels
 n1k1's engine identifies fields by **positional `base.Labels`**, not by name —
@@ -777,7 +778,7 @@ flatter:
   `RecordsDir()`); `DatastoreScanRecords` prefers it and calls `records.File(path,
   opts)` — a one-file `Source` (base name as the synthetic-ID prefix) — instead of
   `records.Walk(dir, opts)`, keeping the dir-walk and single-file paths from
-  entangling. `-scan` lockdown still applies (a `.gz` file under `-scan=jsonl` is
+  entangling. `-formats` lockdown still applies (a `.gz` file under `-formats=jsonl` is
   rejected).
 - Compiler-transparent for free: still a `PrimaryScan` → `datastore-scan` op, no
   new op kind (see "Compiler compatibility"). Covered by `test/flatfile_test.go`.
@@ -899,7 +900,7 @@ archive/
 `n1k1 -c "SELECT * FROM default:orders" archive`
 → decompressed by *inner* extension (`.jsonl.gz` → gzip → JSONL). **gzip
 shipped** (`compress/gzip`). zstd is still a stub: the walker recognizes `.zst`
-(and `-scan=zstd`) but `openDecompressed` returns "not yet supported" — the
+(and `-formats=zstd`) but `openDecompressed` returns "not yet supported" — the
 fast-follow is wiring `klauspost/compress` (already a dep) into that switch.
 
 ### I. `.zip` container = a directory of entries  🟡
@@ -963,7 +964,7 @@ once). Two families:
 **Deliberately narrow:** no scanned-PDF OCR, no exotic font encodings, no image
 text or speech transcription, and one record per file (not the "one row per
 spreadsheet row" the design floated) — those want the optional Tika/extractous+
-Tesseract backend (a later cgo build tag). See §4. `-scan` groups: `doc`, `text`,
+Tesseract backend (a later cgo build tag). See §4. `-formats` groups: `doc`, `text`,
 `image`, `video`, or `extract` for all.
 
 ### M. The co-located sidecar (applies to all of the above)

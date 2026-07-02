@@ -162,6 +162,19 @@ func TestFileRespectsScanFilter(t *testing.T) { // -scan lockdown reaches single
 	}
 }
 
+func TestWalkOptionsDescribe(t *testing.T) {
+	if got := AllModes().Describe(); got != "all formats · gzip · recurse" {
+		t.Errorf("AllModes().Describe() = %q", got)
+	}
+	o, err := ParseModes("json,csv,gzip,recurse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := o.Describe(); got != "csv,json,jsons · gzip · recurse" {
+		t.Errorf("Describe() = %q", got)
+	}
+}
+
 func TestIsStructuredFile(t *testing.T) {
 	// Structured data files (auto-exposed as grab-bag keyspaces)...
 	for _, p := range []string{"a.json", "a.jsons", "a.jsonl", "a.ndjson", "a.csv", "a.tsv", "a.jsonl.gz"} {
