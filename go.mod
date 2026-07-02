@@ -6,6 +6,7 @@ require (
 	github.com/buger/jsonparser v1.1.2
 	github.com/couchbase/query v0.0.0-20260627002010-d19d17173f34
 	github.com/couchbase/rhmap v0.0.0-20200512125128-60fa597d6dd1
+	go.etcd.io/bbolt v1.4.0 // secondary-index (GSI-like) storage; see DESIGN-indexing.md
 )
 
 require (
@@ -211,7 +212,6 @@ require (
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	github.com/youmark/pkcs8 v0.0.0-20240726163527-a2c0da244d78 // indirect
 	github.com/zeebo/xxh3 v1.0.2 // indirect
-	go.etcd.io/bbolt v1.4.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/detectors/gcp v1.39.0 // indirect
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.65.0 // indirect

@@ -176,7 +176,18 @@ func FileStore(path string) (*Store, error) {
 		// Flat root (data files directly under path, no ns/keyspace subdirs): fake a
 		// synthetic default:<basename> keyspace so `FROM <basename>` plans. No-op for
 		// the normal <ns>/<keyspace> layout. See flat.go.
-		ds = maybeFlatRoot(path, ds)
+		if flat := maybeFlatRoot(path, ds); flat != ds {
+			ds = flat // flat-root layout (secondary indexes not wired here in v1)
+		} else {
+			// Normal <ns>/<keyspace> layout: advertise any secondary indexes
+			// declared in .n1k1/catalog.json so selective queries plan an
+			// IndexScan instead of a full primary scan. See si.go.
+			wrapped, werr := maybeSecondaryIndexes(path, ds)
+			if werr != nil {
+				return nil, werr
+			}
+			ds = wrapped
+		}
 	}
 
 	return &Store{

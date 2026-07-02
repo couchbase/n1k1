@@ -277,24 +277,54 @@ func DatastoreScanIndex(o *base.Op, vars *base.Vars,
 
 			var outerValue value.Value
 
-			for _, span := range scan.Spans() {
-				go func(span *plan.Span) {
-					// TODO: defer context.Recover(nil) // Recover from any panic?
-
-					dspan, empty, err := EvalSpan(context, span, outerValue)
-					if err != nil || empty {
+			if si, isSI := scan.Index().(*secondaryIndex); isSI {
+				// n1k1 secondary index: run ALL spans in ONE goroutine sharing a
+				// single sender, closing it exactly once at the end. (A predicate
+				// can produce several spans -- an IN list, a same-field OR, a
+				// DistinctScan. A goroutine-per-span, each Close-ing the shared
+				// sender, would let the first to finish truncate the drain and drop
+				// the others' entries.) scanSpan doesn't close; dedup docIDs across
+				// spans so overlapping ranges never double-emit.
+				go func() {
+					defer conn.Sender().Close()
+					// Dedup docIDs across the whole scan: multi-span predicates (IN /
+					// OR / DistinctScan) can legitimately revisit a docID, and it's
+					// also cheap insurance against a stale/rebuilt index emitting a key
+					// twice (v1 freshness is a coarse mtime signature). A selective
+					// index scan's result set is small, so the map cost is negligible.
+					seen := map[string]bool{}
+					for _, span := range scan.Spans() {
+						dspan, empty, err := EvalSpan(context, span, outerValue)
 						if err != nil {
 							context.Error(errors.NewEvaluationError(err, "span"))
+							continue
 						}
-
-						conn.Sender().Close()
-
-						return
+						if empty {
+							continue
+						}
+						si.scanSpan(dspan, limit, seen, conn)
 					}
-
-					scan.Index().Scan(glueRequestId, dspan, scan.Distinct(), limit,
-						datastore.UNBOUNDED, nil, conn)
-				}(span)
+				}()
+			} else {
+				// A non-n1k1 index -- e.g. the file datastore's #primary used for a
+				// covering IndexScan. Its interface Scan closes the sender itself,
+				// so keep the original goroutine-per-span shape (single span in
+				// practice) and don't add our own close (that would double-close and
+				// truncate the drain to zero rows).
+				for _, span := range scan.Spans() {
+					go func(span *plan.Span) {
+						dspan, empty, err := EvalSpan(context, span, outerValue)
+						if err != nil || empty {
+							if err != nil {
+								context.Error(errors.NewEvaluationError(err, "span"))
+							}
+							conn.Sender().Close()
+							return
+						}
+						scan.Index().Scan(glueRequestId, dspan, scan.Distinct(),
+							limit, datastore.UNBOUNDED, nil, conn)
+					}(span)
+				}
 			}
 		})
 }

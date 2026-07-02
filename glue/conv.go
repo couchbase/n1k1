@@ -183,11 +183,31 @@ func (c *Conv) recordsScan(o plan.Operator, alias string) (interface{}, error) {
 }
 
 func (c *Conv) VisitIndexScan(o *plan.IndexScan) (interface{}, error) {
-	return c.TopPush(o, &base.Op{
+	c.TopPush(o, &base.Op{
 		Kind:   "datastore-scan-index",
 		Labels: base.Labels{"^id"},
 		Params: []interface{}{c.AddTemp(o)},
 	})
+
+	// A covering index scan carries the projected/filtered fields as cover
+	// expressions and the planner emits NO plan.Fetch (the index alone answers the
+	// query). n1k1 has no cover execution yet (SetCover is an unimplemented TODO in
+	// datastore_scan.go), and the covers lower to plain doc-field accesses (e.g.
+	// `.age`) with no document to read them from -- so a covering scan would yield
+	// only ^id and every field access would be MISSING. Until covers are wired,
+	// de-optimize by materializing the document: synthesize a datastore-fetch over
+	// the scanned keyspace (plan.IndexScan implements Keyspacer), so the field
+	// accesses resolve against a real ".". Non-covering scans skip this -- a real
+	// plan.Fetch follows and VisitFetch adds the fetch.
+	if len(o.Covers()) > 0 {
+		return c.TopPush(o, &base.Op{
+			Kind:   "datastore-fetch",
+			Labels: base.Labels{"." + LabelSuffix(o.Term().Alias()), "^id"},
+			Params: []interface{}{c.AddTemp(o)},
+		})
+	}
+
+	return c.TopOp, nil
 }
 
 func (c *Conv) VisitIndexScan2(o *plan.IndexScan2) (interface{}, error) { return NA(o) }
@@ -222,11 +242,56 @@ func (c *Conv) VisitIndexCountScan2(o *plan.IndexCountScan2) (interface{}, error
 func (c *Conv) VisitIndexCountDistinctScan2(o *plan.IndexCountDistinctScan2) (interface{}, error) {
 	return NA(o)
 }
-func (c *Conv) VisitDistinctScan(o *plan.DistinctScan) (interface{}, error)   { return NA(o) }
-func (c *Conv) VisitUnionScan(o *plan.UnionScan) (interface{}, error)         { return NA(o) }
-func (c *Conv) VisitIntersectScan(o *plan.IntersectScan) (interface{}, error) { return NA(o) }
+// VisitDistinctScan wraps a single index scan whose predicate produced several
+// spans (e.g. a same-field OR: `age < 30 OR age > 50`), deduping docIDs across
+// them. n1k1's datastore-scan-index already drains every span of the inner
+// IndexScan, and the planner only emits these spans as disjoint ranges (an
+// overlapping OR is simplified first), so no docID repeats -- we convert the
+// inner scan directly. (A general dedup op is future work if overlapping spans
+// ever arise.)
+func (c *Conv) VisitDistinctScan(o *plan.DistinctScan) (interface{}, error) {
+	return o.Scan().Accept(c)
+}
+
+// VisitUnionScan handles an OR of several sargable secondary indexes. cbq unions
+// the per-index docID sets; n1k1 has no union-scan op, and unlike an intersect we
+// can't drop to one child (that would miss the other OR branch's rows). So we
+// fall back to a full records (primary) scan of the keyspace and let the residual
+// Filter apply the OR predicate -- exactly the behavior when no index exists, so
+// always correct. (Without this, advertising indexes would turn a previously
+// working OR query into an Unsupported UnionScan.)
+func (c *Conv) VisitUnionScan(o *plan.UnionScan) (interface{}, error) {
+	scans := o.Scans()
+	if len(scans) == 0 {
+		return NA(o)
+	}
+	is, ok := scans[0].(*plan.IndexScan)
+	if !ok {
+		return NA(o)
+	}
+	return c.recordsScan(is, is.Term().Alias())
+}
+
+// VisitIntersectScan handles an AND of several sargable secondary indexes. cbq
+// intersects the per-index docID sets; n1k1 has no set-intersection scan op, so
+// we convert just the *first* child index scan and lean on the residual Filter
+// the planner always places after the scan to enforce the full predicate. Using
+// one index yields a superset of docIDs, which the Filter then narrows -- correct,
+// just less selective than a true intersection. (v1 pragmatic reduction; a real
+// intersect op is future work. Verified against the no-index path.)
+func (c *Conv) VisitIntersectScan(o *plan.IntersectScan) (interface{}, error) {
+	return c.firstIntersectScan(o.Scans())
+}
+
 func (c *Conv) VisitOrderedIntersectScan(o *plan.OrderedIntersectScan) (interface{}, error) {
-	return NA(o)
+	return c.firstIntersectScan(o.Scans())
+}
+
+func (c *Conv) firstIntersectScan(scans []plan.SecondaryScan) (interface{}, error) {
+	if len(scans) == 0 {
+		return NA(nil)
+	}
+	return scans[0].Accept(c)
 }
 
 func (c *Conv) VisitExpressionScan(o *plan.ExpressionScan) (interface{}, error) {

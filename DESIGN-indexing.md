@@ -1,8 +1,94 @@
 # Design: Integrating Indexes into n1k1
 
-Status: proposal / for review. Companion: `DESIGN-data.md`. Index code lives in
-**n1k1** behind **thin fork hook seams** (the `engine.ExecOpEx` IoC pattern) — see
-"Where this code lives". Revision changelog is in git history.
+Status: **Phase 1 (secondary index) shipped** — see "Implementation status" below;
+rest is proposal / for review. Companion: `DESIGN-data.md`. Revision changelog is
+in git history.
+
+---
+
+## Implementation status (what has actually landed)
+
+**Phase 1 — the GSI-like secondary index — is implemented and passing**, with the
+same headline learning as `DESIGN-data.md`: **it needed ZERO changes to the
+`n1k1-query` fork.** The design below proposed a `SecondaryIndexes` fork seam;
+that turned out to be unnecessary. The cbq planner collects candidate indexes by
+iterating every indexer from `keyspace.Indexers()`
+(`planner/build_scan.go:allIndexes`), so n1k1 advertises a secondary index purely
+by **wrapping** the file datastore's namespaces/keyspaces to append an extra
+indexer — exactly the "fake it by wrapping `datastore/virtual` building blocks"
+move that gave data-sources zero fork edits. **The `SecondaryIndexes` /
+`ExtraIndexers` fork seams described later in this doc are therefore superseded
+for Phase 1** (kept below as the original proposal / an alternative).
+
+Naming: this is a **local secondary index** ("si"), not Couchbase Server's GSI
+service. Code uses the `si` prefix (`glue/si.go`, `si_encode.go`, `si_catalog.go`,
+type `secondaryIndex`, sidecar `<name>__si__<defhash>`); it still advertises
+`Type() == datastore.GSI`, because that is cbq's enum for an ordered range
+secondary index (what drives sargability) — distinct from the GSI *service*.
+
+Landed n1k1-side (all `//go:build n1ql`):
+- **`glue/si_encode.go`** — order-preserving, self-delimiting key encoding of
+  `value.Value` scalars (type-tag + payload) so bbolt's byte order == N1QL
+  collation order and a real `Cursor.Seek` prunes range scans. Numbers use the
+  IEEE-754 order-preserving transform; strings/containers use `0x00`-escaped
+  self-delimiting bytes so a composite key can always recover its docID suffix.
+- **`glue/si_catalog.go`** — reads `.n1k1/catalog.json`
+  `{ "indexes": [ { name, namespace?, keyspace, keys[], where? } ] }`, parsing
+  key/where strings via `n1ql.ParseExpression`. Missing sidecar ⇒ no indexes
+  (behave exactly as before). `defHash` = short hash of the normalized def.
+- **`glue/si.go`** — the `secondaryIndex` (`datastore.Index`) + a read-only
+  `siIndexer` (`datastore.GSI`), advertised by wrapping the datastore
+  (`maybeSecondaryIndexes`, wired in `FileStore`). bbolt-backed; **rebuild-on-open
+  validated by a source signature** (file count + newest mtime — the "assume
+  static data, validate by timestamp" model the reviewer asked for; no fingerprint
+  manifest yet). A process-global cache keyed by bbolt path opens/builds each index
+  once (bbolt takes an exclusive file lock, so re-opening per Store would
+  deadlock). Build scans the keyspace n1k1-native via `records.Walk`, evals the
+  key/where exprs per doc, inserts `encode(keyValues)+docID`.
+- **Read path reused as-is.** `conv.go:VisitIndexScan` → `datastore-scan-index` →
+  `DatastoreScanIndex` → `secondaryIndex.Scan` yields docIDs; the following Fetch
+  reads docs via the (embedded, real) keyspace's `Fetch`. Verified end-to-end:
+  the planner emits an `IndexScan` (not `PrimaryScan`) and results match the
+  no-index path (`test/secondary_index_test.go`, and a CLI diff battery).
+
+Learnings that changed the plan (all forced by getting real queries to pass):
+- **Covering scans (biggest surprise).** cbq turns a query whose projected/filtered
+  fields are all index keys + `META().id` into a **covering `IndexScan` with no
+  Fetch**, rewriting field refs into `expression.Cover` nodes that read a per-value
+  cover slot n1k1 never fills → every field came back MISSING. Covering is on by
+  default in the planner and can't be disabled from n1k1's side without a fork
+  edit. Fix, entirely n1k1-side: (1) `VisitIndexScan` **synthesizes a
+  datastore-fetch** when `len(Covers())>0` to materialize the document; (2)
+  `glue/expr.go:stripCovers` peels every `expression.Cover` back to its underlying
+  expression before eval, so the field refs resolve against the fetched doc. A real
+  cover-execution path (emit index-key values as cover labels) is the future
+  optimization; today covering scans de-optimize to scan+fetch, which is correct.
+- **Multi-span sender close.** `DatastoreScanIndex` ran a goroutine per span, each
+  `Close`-ing the shared sender — so an IN-list / same-field-OR / `DistinctScan`
+  (several spans) had the first span truncate the drain and drop the rest. Now all
+  spans for an n1k1 secondary index run in one goroutine sharing the sender, closed
+  once, deduping docIDs across spans (`secondaryIndex.scanSpan`).
+- **Intersect/Union/Distinct scans.** A predicate over *two* indexed fields makes
+  the planner emit an `IntersectScan` (AND), `UnionScan` (OR), or `DistinctScan`
+  (same-field OR / IN) that n1k1 didn't convert (→ "Unsupported"). Handled n1k1-side
+  in `conv.go`: `IntersectScan`/`OrderedIntersectScan` → convert the **first** child
+  scan and let the residual Filter enforce the rest (a superset the Filter narrows —
+  correct); `UnionScan` → fall back to a **full records scan** + Filter (can't drop
+  an OR branch); `DistinctScan` → convert the inner scan (its spans are disjoint).
+- **Build/scan number-encoding must agree.** A JSON number reaches the build path
+  and the predicate-bound path as *different* Go types under `value.Value.Actual()`
+  (`float64` vs `int64`); `toFloat64` must handle both or bounds encode as 0 and
+  every numeric scan returns nothing.
+
+Not yet built (still proposal below): composite-key *range bounds* beyond the
+leading prefix, true covering execution, incremental index maintenance, a
+fingerprint/zone-map manifest, `CountIndex` pushdown, and all of Phase 2 (FTS).
+Known v1 limitations: freshness is a coarse (count, newest-mtime) signature, so a
+change that keeps both identical (rare) won't trigger a rebuild — delete the
+`.n1k1` artifact to force one; and array/object index *values* sort by byte order,
+not collation (fine — predicates range over scalars).
+
+---
 
 This document describes how to add index support — a GSI-like **secondary
 index** first, then a **full-text index** via embedded bleve — to n1k1's
@@ -443,7 +529,32 @@ art, in three families.
    wildcard-planner work**. Recommended as the realistic medium-term path.
 3. **Eager wildcard GSI (Cosmos/Mongo-style)** — a bbolt store keyed
    `encode(path) + encode(value) + docID` so any single-path equality/range is
-   contiguous. Feasible to *build*, but the hard part is **planner integration**:
+   contiguous.
+
+   **Key layout / physical-storage constraints (reviewer note, worth building
+   around).** A range-scannable KV library like bbolt (or moss) does *not* want a
+   separate bucket/collection per field-path — there can be thousands of paths, and
+   many KV stores cap or slow down badly with lots of containers. So encode the
+   **field-path into the key** rather than using a bucket-per-path:
+   `<fieldPathShortPrefix> : <encodedValue> : <docID>`. To keep keys compact and
+   the prefix fixed-width (so a path's entries stay contiguous and seekable),
+   don't put the raw dotted path in every key — maintain a small **dictionary
+   index mapping field-path → short byte prefix** (assign a monotonic id the first
+   time a path is seen; store the id↔path map in its own bucket). A wildcard scan
+   for `WHERE a.b.c = v` becomes: look up the prefix for `a.b.c`, then
+   `Seek(prefix + encode(v))`. This reuses Phase 1's order-preserving
+   `encodeValue` for the `<encodedValue>` segment unchanged.
+   - **Value size limits — yes, expect them.** bbolt keys are bounded (max ~32 KB,
+     and large keys wreck the B+tree's fan-out/page efficiency long before that),
+     and huge indexed values bloat the index for little selectivity gain. So the
+     encoder must **cap the encoded value**: truncate long strings/blobs to a
+     prefix (e.g. first N bytes) and set a "truncated" marker bit in the key so the
+     scan knows the residual predicate must be re-checked against the fetched doc
+     (which already happens — index results always feed a residual Filter). Values
+     over the cap become a *prefix probe*, not an exact index entry. Document the
+     cap and the truncation-marker convention next to `encodeValue`.
+
+   Feasible to *build*, but the hard part is **planner integration**:
    cbq-query's `sargableIndexes` matches predicates against a *fixed*
    `index.RangeKey()` and has no concept of a wildcard index covering arbitrary
    paths (Cosmos/Mongo have bespoke wildcard planner support; cbq-query doesn't).

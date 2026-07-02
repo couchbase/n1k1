@@ -55,7 +55,7 @@ func ExprStr(vars *base.Vars, labels base.Labels,
 // conversions.
 func ExprTree(vars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (exprFunc base.ExprFunc) {
-	expr := params[0].(expression.Expression)
+	expr := stripCovers(params[0].(expression.Expression))
 
 	var buf bytes.Buffer
 
@@ -381,6 +381,40 @@ func NewExprGlueContext(now time.Time) *ExprGlueContext {
 
 func (e *ExprGlueContext) Now() time.Time {
 	return e.MyNow
+}
+
+// --------------------------------------------------------
+
+// stripCovers replaces every expression.Cover node in the tree with the plain
+// expression it wraps (its Covered()). The cbq planner rewrites a covering
+// index scan's projected/filtered field references into Cover nodes, whose
+// Evaluate() reads a per-value "cover" slot that only a real GSI runtime sets --
+// n1k1 never sets it, so a Cover would always evaluate to MISSING. n1k1 instead
+// materializes the document (VisitIndexScan synthesizes a datastore-fetch for a
+// covering scan), so once the Covers are peeled back to their underlying field
+// accesses they resolve normally against the fetched doc. Cover-less trees pass
+// through unchanged. See DESIGN-indexing.md "covering scans".
+func stripCovers(expr expression.Expression) expression.Expression {
+	if expr == nil {
+		return nil
+	}
+	cs := &coverStripper{}
+	cs.SetMapper(cs)
+	cs.SetMapFunc(func(e expression.Expression) (expression.Expression, error) {
+		if cov, ok := e.(*expression.Cover); ok {
+			return cs.Map(cov.Covered()) // peel, and recurse (handles nested covers)
+		}
+		return e, e.MapChildren(cs)
+	})
+	out, err := cs.Map(expr)
+	if err != nil {
+		return expr // on any mapper error, fall back to the original tree
+	}
+	return out
+}
+
+type coverStripper struct {
+	expression.MapperBase
 }
 
 // --------------------------------------------------------
