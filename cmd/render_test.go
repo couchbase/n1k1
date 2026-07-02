@@ -303,6 +303,28 @@ func TestRenderBoxPretty(t *testing.T) {
 	}
 }
 
+// TestRenderBoxPrettySplitters: pretty mode fences body rows apart with a
+// horizontal splitter (├…┤) between each pair, since multi-line cells would
+// otherwise run together. Plain mode adds no such splitters.
+func TestRenderBoxPrettySplitters(t *testing.T) {
+	rows := raws(`{"doc":{"x":1}}`, `{"doc":{"x":2}}`, `{"doc":{"x":3}}`)
+
+	var pretty strings.Builder
+	RenderBox(&pretty, rows, 0, 0, 0, "", Style{}, true)
+	// One splitter under the header + one between each of the 3 body rows = 3
+	// mid-borders starting with "├".
+	if n := strings.Count(pretty.String(), "├"); n != 3 {
+		t.Errorf("expected 3 ├ mid-borders (header + 2 row splitters), got %d:\n%s", n, pretty.String())
+	}
+
+	var plain strings.Builder
+	RenderBox(&plain, rows, 0, 0, 0, "", Style{}, false)
+	// Plain mode: only the header separator uses "├".
+	if n := strings.Count(plain.String(), "├"); n != 1 {
+		t.Errorf("plain box should have exactly 1 ├ (header separator), got %d:\n%s", n, plain.String())
+	}
+}
+
 func TestRenderBoxElision(t *testing.T) {
 	var b strings.Builder
 	rows := raws(`{"n":1}`, `{"n":2}`, `{"n":3}`, `{"n":4}`, `{"n":5}`)

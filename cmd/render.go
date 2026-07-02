@@ -381,7 +381,9 @@ func RenderList(w io.Writer, rows []json.RawMessage, sep string, pretty bool) {
 //
 // When pretty, JSON cells are 2-space-indented and a cell may span multiple
 // lines; such a row is as tall as its tallest cell, with shorter cells blank-
-// padded below their content. Column widths use each cell's widest line.
+// padded below their content. Column widths use each cell's widest line. Because
+// those multi-line rows would otherwise run together, pretty mode also draws a
+// horizontal splitter (├─┼─┤) between adjacent body rows.
 func RenderBox(w io.Writer, rows []json.RawMessage, maxWidth, maxRows, termWidth int, elapsed string, style Style, pretty bool) {
 	cols, cells := tableOf(rows, pretty)
 	if len(cols) == 0 {
@@ -492,19 +494,31 @@ func RenderBox(w io.Writer, rows []json.RawMessage, maxWidth, maxRows, termWidth
 		printRow(dots, false)
 	}
 
-	border("┌", "┬", "┐")
-	printRow(cols, true)
-	border("├", "┼", "┤")
+	// Body rows in display order (any leading/middle elision "·" row included),
+	// gathered as thunks so pretty mode can slip a splitter between each pair.
+	var body []func()
 	if dotsFront {
-		printDots()
+		body = append(body, printDots)
 	}
 	for si, sp := range shown {
 		for i := sp.from; i < sp.to; i++ {
-			printRow(cells[i], false)
+			i := i
+			body = append(body, func() { printRow(cells[i], false) })
 		}
 		if si == 0 && len(shown) > 1 {
-			printDots()
+			body = append(body, printDots)
 		}
+	}
+
+	border("┌", "┬", "┐")
+	printRow(cols, true)
+	border("├", "┼", "┤")
+	for i, emit := range body {
+		// Pretty rows may span several lines, so fence them apart for legibility.
+		if i > 0 && pretty {
+			border("├", "┼", "┤")
+		}
+		emit()
 	}
 	border("└", "┴", "┘")
 
