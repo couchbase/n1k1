@@ -77,3 +77,49 @@ func TestIndexSuggestEmitsCreateCommands(t *testing.T) {
 		t.Errorf("round-tripped DSL = %s", b)
 	}
 }
+
+// TestIndexSuggestQuotesSpacedField: a field whose name has a space is backticked
+// in both the catalog fragment (a key expression) and the .index create command,
+// and the emitted command round-trips through parseCreateDSL.
+func TestIndexSuggestQuotesSpacedField(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "default", "people")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 12; i++ {
+		doc := fmt.Sprintf(`{"full name":"Person-%04d","kind":"x"}`, i)
+		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("p%02d.json", i)), []byte(doc), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sess, err := glue.OpenSession(root, "default")
+	if err != nil {
+		t.Fatalf("OpenSession: %v", err)
+	}
+	var out, errb bytes.Buffer
+	c := &cli{prog: "n1k1", sess: sess, ns: "default", out: &out, stderr: &errb}
+	c.cmdIndexSuggest("people")
+
+	// Catalog fragment: the key must be the backticked expression.
+	if !strings.Contains(out.String(), "`full name`") {
+		t.Errorf("catalog fragment should backtick the spaced key; got:\n%s", out.String())
+	}
+	// .index create command: keyspace + key backticked, and it round-trips.
+	var line string
+	for _, ln := range strings.Split(errb.String(), "\n") {
+		if strings.Contains(ln, ".index create") {
+			line = strings.TrimSpace(ln)
+		}
+	}
+	if !strings.Contains(line, "(`full name`)") {
+		t.Fatalf("create command should backtick the spaced key; got %q", line)
+	}
+	b, perr := parseCreateDSL(strings.TrimPrefix(line, ".index create "))
+	if perr != nil {
+		t.Fatalf("emitted command not valid create-DSL (%q): %v", line, perr)
+	}
+	if !strings.Contains(string(b), `"keyspace":"people"`) || !strings.Contains(string(b), "`full name`") {
+		t.Errorf("round-trip = %s", b)
+	}
+}

@@ -15,6 +15,24 @@ package main
 
 import "testing"
 
+// TestQuotePath: dotted field paths are backticked per-segment (only where SQL++
+// needs it), so a nested path stays a path expression.
+func TestQuotePath(t *testing.T) {
+	cases := map[string]string{
+		"sku":                "sku",
+		"profile.city":       "profile.city",
+		"first name":         "`first name`",
+		"profile.first name": "profile.`first name`",
+		"a.b c.d":            "a.`b c`.d",
+		"2026-01":            "`2026-01`", // leading-digit/hyphen segment
+	}
+	for in, want := range cases {
+		if got := quotePath(in); got != want {
+			t.Errorf("quotePath(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 // TestJsonType covers the type-name mapping .schema uses to describe fields
 // (the value shapes come from encoding/json's decode of a JSON document).
 func TestJsonType(t *testing.T) {

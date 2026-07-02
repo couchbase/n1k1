@@ -130,11 +130,13 @@ func parseCreateDSL(s string) ([]byte, error) {
 	if closeIdx < 0 {
 		return nil, fmt.Errorf("unbalanced parentheses")
 	}
-	head := strings.Fields(s[:open])
+	head := fieldsBacktickAware(s[:open])
 	if len(head) != 3 || !strings.EqualFold(head[1], "on") {
 		return nil, fmt.Errorf("expected: <name> on <keyspace> (<expr>...)")
 	}
-	name, keyspace := head[0], head[2]
+	// name and keyspace are identifiers -- unquote a backticked one (e.g. a
+	// keyspace with spaces) to the plain name the catalog stores/looks up by.
+	name, keyspace := unquoteIdent(head[0]), unquoteIdent(head[2])
 
 	keys := splitTopLevelCommas(s[open+1 : closeIdx])
 	if len(keys) == 0 {
@@ -176,6 +178,51 @@ func matchParen(s string, open int) int {
 		}
 	}
 	return -1
+}
+
+// fieldsBacktickAware splits s on whitespace like strings.Fields, but treats a
+// `...`-quoted span as a single token (so a backticked keyspace/name with spaces
+// stays whole). A doubled backtick “ inside the quotes is a literal backtick and
+// does not end the span. Backticks are kept in the returned tokens (see
+// unquoteIdent).
+func fieldsBacktickAware(s string) []string {
+	var toks []string
+	var cur []byte
+	inTick := false
+	flush := func() {
+		if len(cur) > 0 {
+			toks = append(toks, string(cur))
+			cur = cur[:0]
+		}
+	}
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		switch {
+		case ch == '`':
+			cur = append(cur, ch)
+			if inTick && i+1 < len(s) && s[i+1] == '`' { // escaped `` -> literal
+				cur = append(cur, '`')
+				i++
+			} else {
+				inTick = !inTick
+			}
+		case !inTick && (ch == ' ' || ch == '\t'):
+			flush()
+		default:
+			cur = append(cur, ch)
+		}
+	}
+	flush()
+	return toks
+}
+
+// unquoteIdent strips surrounding backticks from a token and un-doubles any
+// escaped “ -> ` inside; a non-backticked token is returned unchanged.
+func unquoteIdent(tok string) string {
+	if len(tok) >= 2 && tok[0] == '`' && tok[len(tok)-1] == '`' {
+		return strings.ReplaceAll(tok[1:len(tok)-1], "``", "`")
+	}
+	return tok
 }
 
 // splitTopLevelCommas splits on commas not nested inside () or [], trimming each
@@ -241,7 +288,10 @@ func (c *cli) cmdIndexSuggest(keyspace string) {
 	cat := outCat{}
 	for _, s := range sugg {
 		cat.Indexes = append(cat.Indexes, outDef{
-			Name: s.Name, Keyspace: s.Keyspace, Keys: []string{s.Field}, Why: s.Why,
+			// Keys are SQL++ key *expressions* (parsed by the catalog loader), so a
+			// field whose name/segment has spaces etc. must be backticked; keyspace
+			// is a plain lookup name, kept raw.
+			Name: s.Name, Keyspace: s.Keyspace, Keys: []string{quotePath(s.Field)}, Why: s.Why,
 		})
 	}
 	b, _ := json.MarshalIndent(cat, "", "  ")
@@ -254,7 +304,10 @@ func (c *cli) cmdIndexSuggest(keyspace string) {
 	// catalog.json fragment for redirecting.
 	fmt.Fprintf(c.stderr, "%sOption 2 -- paste these commands:\n", c.icon("💡 "))
 	for _, s := range sugg {
-		fmt.Fprintf(c.stderr, "  .index create %s on %s (%s)\n", s.Name, s.Keyspace, s.Field)
+		// Backtick the keyspace/name (whitespace-delimited in the DSL) and the key
+		// path segments, so a name/keyspace/field with spaces still parses.
+		fmt.Fprintf(c.stderr, "  .index create %s on %s (%s)\n",
+			quoteIdent(s.Name), quoteIdent(s.Keyspace), quotePath(s.Field))
 	}
 }
 

@@ -83,6 +83,18 @@ func quoteIdent(name string) string {
 	return "`" + strings.ReplaceAll(name, "`", "``") + "`"
 }
 
+// quotePath backticks each dotted segment of a field *path* that SQL++ needs
+// quoted, so a nested path stays a path expression: "profile.first name" ->
+// "profile.`first name`", "sku" -> "sku". Used for index key expressions (a
+// whole-path quoteIdent would wrongly turn a.b into the single identifier `a.b`).
+func quotePath(path string) string {
+	segs := strings.Split(path, ".")
+	for i, s := range segs {
+		segs[i] = quoteIdent(s)
+	}
+	return strings.Join(segs, ".")
+}
+
 // exampleFor returns a copy-pasteable SQL++ example for a keyspace, varying the
 // template by position so a multi-keyspace listing shows a mix. The keyspace is
 // backticked when SQL++ parsing requires it, so the sample is paste-ready.

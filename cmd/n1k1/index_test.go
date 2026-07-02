@@ -49,6 +49,12 @@ func TestParseCreateDSL(t *testing.T) {
 		d.Where != "amount > 1" {
 		t.Errorf("multi+where = %+v err %v", d, err)
 	}
+	// Backticked keyspace (spaces) unquotes to the plain name; a backticked key
+	// (spaces) stays a key expression.
+	if d, err := parse("ix on `Sales Transaction` (`full name`)"); err != nil ||
+		d.Keyspace != "Sales Transaction" || len(d.Keys) != 1 || d.Keys[0] != "`full name`" {
+		t.Errorf("backticked = %+v err %v", d, err)
+	}
 
 	bad := []string{
 		"noparens",            // no '('
@@ -103,6 +109,29 @@ func TestSplitTopLevelCommas(t *testing.T) {
 			if got[i] != want[i] {
 				t.Errorf("splitTopLevelCommas(%q)[%d] = %q, want %q", in, i, got[i], want[i])
 			}
+		}
+	}
+}
+
+func TestFieldsBacktickAwareAndUnquote(t *testing.T) {
+	toks := fieldsBacktickAware("ix on `Sales Transaction v.4a`")
+	if len(toks) != 3 || toks[0] != "ix" || toks[1] != "on" || toks[2] != "`Sales Transaction v.4a`" {
+		t.Fatalf("fieldsBacktickAware = %q", toks)
+	}
+	// A doubled backtick inside quotes is a literal ` and doesn't end the span.
+	toks = fieldsBacktickAware("n on `a``b c`")
+	if len(toks) != 3 || toks[2] != "`a``b c`" {
+		t.Fatalf("escaped backtick tokens = %q", toks)
+	}
+	cases := map[string]string{
+		"`Sales Transaction`": "Sales Transaction",
+		"`a``b`":              "a`b",
+		"plain":               "plain",
+		"`x`":                 "x",
+	}
+	for in, want := range cases {
+		if got := unquoteIdent(in); got != want {
+			t.Errorf("unquoteIdent(%q) = %q, want %q", in, got, want)
 		}
 	}
 }
