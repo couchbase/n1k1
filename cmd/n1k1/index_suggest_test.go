@@ -86,6 +86,37 @@ func TestIndexSuggestEmitsCreateCommands(t *testing.T) {
 	}
 }
 
+// TestIndexCreateRefusesFlatDatastore: .index create on a flat/grab-bag datastore
+// refuses honestly (secondary indexes need a <ns>/<keyspace> layout) rather than
+// claiming success and writing an orphan catalog.
+func TestIndexCreateRefusesFlatDatastore(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "orgs.csv"), []byte("id\n1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sess, err := glue.OpenSession(root, "default")
+	if err != nil {
+		t.Fatalf("OpenSession: %v", err)
+	}
+	var out, errb bytes.Buffer
+	c := &cli{prog: "n1k1", sess: sess, ns: "default", dir: root, out: &out, stderr: &errb}
+
+	c.cmdIndexCreate("ix on orgs (id)")
+
+	if !strings.Contains(errb.String(), "aren't supported") {
+		t.Errorf("expected an honest refusal, got: %q", errb.String())
+	}
+	if strings.Contains(errb.String(), "created") {
+		t.Errorf("must not claim success: %q", errb.String())
+	}
+	if _, serr := os.Stat(filepath.Join(root, ".n1k1", "catalog.json")); !os.IsNotExist(serr) {
+		t.Errorf("no catalog.json should be written on refusal (stat err: %v)", serr)
+	}
+}
+
 // TestIndexSuggestQuotesSpacedField: a field whose name has a space is backticked
 // in both the catalog fragment (a key expression) and the .index create command,
 // and the emitted command round-trips through parseCreateDSL.

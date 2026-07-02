@@ -73,6 +73,34 @@ func TestMaybeFlatGrabBag(t *testing.T) {
 	}
 }
 
+// TestIsFlatDatastore: grab-bag/flat layouts report true; a classic
+// <ns>/<keyspace> directory (where secondary indexes are supported) reports false.
+func TestIsFlatDatastore(t *testing.T) {
+	// grab-bag: a subdir + a loose data file -> flat.
+	gb := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(gb, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(gb, "orgs.csv"), []byte("id\n1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if st, err := FileStore(gb); err != nil || !IsFlatDatastore(st.Datastore) {
+		t.Errorf("grab-bag should be a flat datastore (err %v)", err)
+	}
+
+	// classic <ns>/<keyspace> (no catalog) -> not flat.
+	cl := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(cl, "default", "orders"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cl, "default", "orders", "o.json"), []byte(`{"id":1}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if st, err := FileStore(cl); err != nil || IsFlatDatastore(st.Datastore) {
+		t.Errorf("classic layout should not be flat (err %v)", err)
+	}
+}
+
 // TestMaybeFlatMergesRealDefault: loose root files coexist with a real
 // <root>/default/<keyspace> layout -- the synthetic per-file keyspace is added
 // without hiding the real keyspaces.

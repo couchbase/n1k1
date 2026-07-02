@@ -80,6 +80,11 @@ func (c *cli) cmdIndexCreate(arg string) {
 		fmt.Fprintln(c.stderr, "no datastore open (open a <ns>/<keyspace> directory first)")
 		return
 	}
+	if glue.IsFlatDatastore(c.sess.Store.Datastore) {
+		fmt.Fprintf(c.stderr, "%s: secondary indexes need a <namespace>/<keyspace> datastore directory; "+
+			"%q is a flat/single-file datastore, where they aren't supported yet (nothing written)\n", c.prog, c.dir)
+		return
+	}
 
 	var fragment []byte
 	if strings.HasPrefix(arg, "{") {
@@ -311,6 +316,11 @@ func (c *cli) cmdIndexSuggest(keyspace string) {
 		fmt.Fprintf(c.stderr, "  .index create %s on %s (%s)\n",
 			quoteIdent(s.Name), quoteIdent(s.Keyspace), quotePath(s.Field))
 	}
+	if glue.IsFlatDatastore(c.sess.Store.Datastore) {
+		fmt.Fprintf(c.stderr, "%snote: this is a flat/single-file datastore, where secondary indexes "+
+			"aren't supported yet -- the above is advisory only (they need a <namespace>/<keyspace> layout).\n",
+			c.icon("⚠️  "))
+	}
 }
 
 // cmdIndexHelp prints the .index subcommand syntax plus a copy-pasteable
@@ -351,10 +361,14 @@ func (c *cli) indexInfos() []glue.IndexInfo {
 	}
 	infos := glue.SecondaryIndexInfos(c.sess.Store.Datastore)
 	if len(infos) == 0 {
-		if c.indexMode == "off" {
+		switch {
+		case c.indexMode == "off":
 			fmt.Fprintln(c.stderr, "secondary indexes disabled (-index=off)")
-		} else {
-			fmt.Fprintln(c.stderr, "no secondary indexes (declare them in .n1k1/catalog.json)")
+		case glue.IsFlatDatastore(c.sess.Store.Datastore):
+			fmt.Fprintln(c.stderr, "secondary indexes aren't supported for this flat/single-file datastore "+
+				"(they need a <namespace>/<keyspace> layout)")
+		default:
+			fmt.Fprintln(c.stderr, "no secondary indexes (create one with .index create, or declare them in .n1k1/catalog.json)")
 		}
 	}
 	return infos
