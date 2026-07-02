@@ -501,24 +501,48 @@ func (c *Conv) VisitHashJoin(o *plan.HashJoin) (interface{}, error) {
 	}
 
 	// Use the real hash-join op (OpJoinHash: build a probe map from one side,
-	// probe with the other) for the common shape -- an inner equijoin on a
-	// single build/probe key pair with no residual filter. The planner always
-	// makes the child (right) the build side and the outer (left/TopOp) the
-	// probe side, so Children[0] (which OpJoinHash fills the map from) is the
-	// right branch. Anything else (LEFT OUTER, composite keys, or a residual
-	// non-equi ON filter that OpJoinHash can't apply) falls back to the
-	// nested-loop join, which is correct if slower.
+	// probe with the other) for the common shape -- an equijoin on a single
+	// build/probe key pair with no residual filter. build[0] is the child (right)
+	// branch's key, probe[0] the outer (left/TopOp) branch's key. Anything else
+	// (composite keys, or a residual non-equi ON filter OpJoinHash can't apply)
+	// falls back to the nested-loop join, which is correct if slower.
 	build, probe := o.BuildExprs(), o.ProbeExprs()
-	if !o.Outer() && o.Filter() == nil && len(build) == 1 && len(probe) == 1 {
-		return c.TopSet(o, &base.Op{
-			Kind:   "joinHash-inner",
-			Labels: append(append(base.Labels{}, right.Labels...), c.TopOp.Labels...),
-			Params: []interface{}{
-				[]interface{}{"exprTree", build[0]}, // build key, on right (Children[0])
-				[]interface{}{"exprTree", probe[0]}, // probe key, on left (Children[1])
-			},
-			Children: []*base.Op{right, c.TopOp},
-		})
+	if o.Filter() == nil && len(build) == 1 && len(probe) == 1 {
+		if !o.Outer() {
+			// INNER: fill the map from the right branch, probe with the left.
+			return c.TopSet(o, &base.Op{
+				Kind:   "joinHash-inner",
+				Labels: append(append(base.Labels{}, right.Labels...), c.TopOp.Labels...),
+				Params: []interface{}{
+					[]interface{}{"exprTree", build[0]}, // build key, on right (Children[0])
+					[]interface{}{"exprTree", probe[0]}, // probe key, on left (Children[1])
+				},
+				Children: []*base.Op{right, c.TopOp},
+			})
+		}
+		// LEFT OUTER: OpJoinHash's leftOuter path applies ONLY the equijoin key and
+		// preserves the *map/build* side. That's correct only when the ON clause is
+		// exactly that equijoin: a residual predicate (an extra ANDed term) on the
+		// non-preserved side can't be pushed off a LEFT JOIN and OpJoinHash won't
+		// apply it, so anything but a bare equijoin must fall back to the NL join
+		// (which evaluates the full Onclause). Unlike the inner case, we can't rely
+		// on residuals being pushed to the probe scan (the planner doesn't always).
+		if _, residual := o.Onclause().(*expression.And); !residual {
+			// Preserved outer side = left (TopOp) must be the build side: fill the
+			// map from the left using the left key (probe[0]), probe with the right
+			// using the right key (build[0]). Unmatched left rows -- including ones
+			// with a NULL/MISSING key, which OpJoinHash keeps -- come out with the
+			// right side MISSING.
+			return c.TopSet(o, &base.Op{
+				Kind:   "joinHash-leftOuter",
+				Labels: append(append(base.Labels{}, c.TopOp.Labels...), right.Labels...),
+				Params: []interface{}{
+					[]interface{}{"exprTree", probe[0]}, // build/map key = left key, on left (Children[0])
+					[]interface{}{"exprTree", build[0]}, // probe key = right key, on right (Children[1])
+				},
+				Children: []*base.Op{c.TopOp, right},
+			})
+		}
 	}
 
 	return c.TopSet(o, c.ansiJoinOp("joinNL", o.Outer(), o.Onclause(), c.TopOp, right))

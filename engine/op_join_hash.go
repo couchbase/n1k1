@@ -133,8 +133,17 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 				lzValOut = lzProbeKey[:0]
 			} // !lz
 
-			// The probe key must be valued.
-			if lzErr == nil && base.ValHasValue(lzProbeKey) {
+			// The probe key must be valued -- EXCEPT for joinHash-leftOuter, which
+			// must also keep a build(outer)-side row whose join key is NULL/MISSING.
+			// Such a row can never be probed (the RHS probe path below skips unvalued
+			// keys), so it stays unjoined and the leftOuter map-visitor emits it with
+			// the probe side MISSING. Without this, a LEFT OUTER JOIN would wrongly
+			// drop outer rows whose join key is NULL/MISSING.
+			lzKeyOK := base.ValHasValue(lzProbeKey)
+			if leftVals && yieldsUnjoined { // !lz
+				lzKeyOK = true
+			} // !lz
+			if lzErr == nil && lzKeyOK {
 				// Check if we have an entry for the probe key.
 				lzProbeVal, lzProbeKeyFound := lzMap.Get([]byte(lzProbeKey))
 				if !lzProbeKeyFound {

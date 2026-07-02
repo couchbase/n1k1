@@ -3,11 +3,30 @@
 package test
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 
+	"github.com/couchbase/n1k1/base"
 	"github.com/couchbase/n1k1/glue"
 )
+
+// planHasKind reports whether op or any descendant has the given Kind.
+func planHasKind(op *base.Op, kind string) bool {
+	if op == nil {
+		return false
+	}
+	if op.Kind == kind {
+		return true
+	}
+	for _, ch := range op.Children {
+		if planHasKind(ch, kind) {
+			return true
+		}
+	}
+	return false
+}
 
 // TestAnsiHashJoin exercises the hash-join wiring (VisitHashJoin ->
 // OpJoinHash's probe-map equijoin). The planner only emits a HashJoin under a
@@ -55,11 +74,11 @@ func TestAnsiHashJoin(t *testing.T) {
 // it (3 rows) -- a format-agnostic proof that outer semantics actually fire. All
 // hint variants (none / USE HASH build / probe) must equal the USE NL baseline.
 //
-// NOTE: VisitHashJoin only routes the *inner* single-key equijoin to the real
-// hash op; LEFT OUTER (and residual-filter) shapes fall back to the nested-loop
-// join (glue/conv.go). So this locks the end-to-end correctness of USE HASH on a
-// LEFT JOIN -- currently via that NL fallback -- not the joinHash-leftOuter op
-// itself (which is covered at the op level by test/cases.go).
+// NOTE: this query's ON clause has residual predicates (test_id, !=), which for a
+// LEFT JOIN can't be pushed off the preserved side, so VisitHashJoin falls back to
+// the nested-loop join (glue/conv.go). It therefore locks USE HASH-on-LEFT-JOIN
+// correctness via that fallback; TestAnsiHashLeftJoinEquijoin below covers a pure
+// equijoin that actually runs on the joinHash-leftOuter op.
 func TestAnsiHashLeftJoin(t *testing.T) {
 	store, err := glue.FileStore(gsiSuiteRoot)
 	if err != nil {
@@ -96,5 +115,64 @@ func TestAnsiHashLeftJoin(t *testing.T) {
 		if got := run("LEFT JOIN", hint); !reflect.DeepEqual(got, want) {
 			t.Errorf("LEFT JOIN hint %q = %v, want %v", hint, got, want)
 		}
+	}
+}
+
+// TestAnsiHashLeftJoinEquijoin exercises the real joinHash-leftOuter op for a pure
+// equijoin LEFT JOIN (VisitHashJoin builds the map from the outer/left side). It
+// asserts the plan actually uses joinHash-leftOuter (not the NL fallback) and that
+// its result equals USE NL -- including the two outer rows that stress the op: an
+// unmatched left row (rome) and, critically, a left row whose join key is NULL
+// (void), which OpJoinHash must preserve rather than drop.
+func TestAnsiHashLeftJoinEquijoin(t *testing.T) {
+	root := t.TempDir()
+	write := func(ks, key, doc string) {
+		t.Helper()
+		dir := filepath.Join(root, "default", ks)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, key+".json"), []byte(doc), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("dept", "d1", `{"id":"d1","city":"paris"}`)
+	write("dept", "d2", `{"id":"d2","city":"london"}`)
+	write("dept", "d3", `{"id":"d3","city":"rome"}`) // unmatched -> outer
+	write("dept", "d4", `{"id":null,"city":"void"}`) // NULL key -> outer, must survive
+	write("emp", "e1", `{"nm":"al","dep":"d1"}`)
+	write("emp", "e2", `{"nm":"bo","dep":"d1"}`)
+	write("emp", "e3", `{"nm":"cy","dep":"d2"}`)
+
+	store, err := glue.FileStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.InitParser(); err != nil {
+		t.Fatal(err)
+	}
+
+	q := func(hint string) string {
+		return "SELECT d.city ct, e.nm nm FROM dept d LEFT JOIN emp e " + hint +
+			" ON e.dep = d.id ORDER BY ct, nm"
+	}
+
+	want, _, err := n1k1RunStatementCtx(store, q("USE NL"))
+	if err != nil {
+		t.Fatalf("USE NL: %v", err)
+	}
+	if len(want) != 5 { // paris×2 (d1), london (d2), rome (unmatched), void (null key)
+		t.Fatalf("USE NL baseline = %d rows, want 5: %v", len(want), want)
+	}
+
+	got, res, err := n1k1RunStatementCtx(store, q("USE HASH(build)"))
+	if err != nil {
+		t.Fatalf("USE HASH(build): %v", err)
+	}
+	if !planHasKind(res.Plan, "joinHash-leftOuter") {
+		t.Fatalf("USE HASH(build) LEFT JOIN should run on joinHash-leftOuter, plan was:\n%v", res.Plan)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("joinHash-leftOuter result = %v, want (USE NL) %v", got, want)
 	}
 }
