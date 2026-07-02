@@ -17,20 +17,23 @@ const gsiPassFloor = 678
 // None panic; these are feature gaps or output/order differences to chip away at.
 var gsiExpectedNonPass = map[string]string{
 	"case_gsi_array_functions.json[62]":     "nondeterministic",
-	"case_gsi_aggregate_functions.json[1]":  "join",
-	"case_gsi_aggregate_functions.json[14]": "group-as",
-	"case_gsi_aggregate_functions.json[15]": "group-as",
-	"case_gsi_aggregate_functions.json[16]": "join",
+	"case_gsi_aggregate_functions.json[1]":  "order-agg",
+	"case_gsi_aggregate_functions.json[2]":  "order-agg",
+	"case_gsi_aggregate_functions.json[3]":  "join",
+	"case_gsi_aggregate_functions.json[16]": "group-as",
 	"case_gsi_aggregate_functions.json[17]": "group-as",
-	"case_gsi_aggregate_functions.json[18]": "group-as",
+	"case_gsi_aggregate_functions.json[18]": "join",
 	"case_gsi_aggregate_functions.json[19]": "group-as",
-	"case_gsi_aggregate_functions.json[24]": "group-by-expr",
-	"case_gsi_aggregate_functions.json[39]": "results-differ",
-	"case_gsi_aggregate_functions.json[52]": "fork-data-missing",
+	"case_gsi_aggregate_functions.json[20]": "group-as",
+	"case_gsi_aggregate_functions.json[21]": "group-as",
+	"case_gsi_aggregate_functions.json[26]": "group-by-expr",
+	"case_gsi_aggregate_functions.json[41]": "results-differ",
+	"case_gsi_aggregate_functions.json[54]": "fork-data-missing",
 }
 
 var gsiGroupWhy = map[string]string{
 	"nondeterministic":  "array_position over ARRAY_AGG's unspecified element order -- n1k1 aggregates in scan order, cbq in its own, so the position differs; no fixed corpus can match it",
+	"order-agg":         "ORDER BY an aggregate nested in a larger expr (e.g. MAX(x)[1].unitPrice) with a `.*`-spread projection: no projected column to bind to, so it would re-evaluate the aggregate above the group -- glue rejects it (NA) rather than panic. TODO: evaluate such order keys at the group level",
 	"group-as":          "GROUP AS <var> group-collection feature (len(g), g[0]..., correlated subquery over the group) -- not yet supported",
 	"join":              "join/subquery-join forms (ANSI INNER JOIN with GROUP AS, UNNEST-of-subquery JOIN) the glue layer reports unsupported",
 	"group-by-expr":     "GROUP BY <expr> AS alias (e.g. DATE_PART_STR(...)) with HAVING on the alias -- not yet supported",

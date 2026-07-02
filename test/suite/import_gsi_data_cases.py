@@ -32,21 +32,6 @@ CATEGORIES = [
 # per-statement sample is imported (see main). Moderate keyspaces import fully.
 MEGA_KEYSPACES = {"purchase", "review"}
 NONDET = re.compile(r"\b(now_\w+|clock_\w+|random|rand|uuid|newid)\s*\(", re.IGNORECASE)
-
-# Cases dropped because they currently PANIC the n1k1 engine (a bug to fix, but
-# out of scope for the import). Keyed by (category, lowercase-substring). The
-# aggregate_functions pair below does MAX([scalar, <subquery-row object>])[1].*
-# -- feeding a plain objectValue into a spot where cbq's aggregate/value code
-# does a v.(value.AnnotatedValue) assertion, which panics ("interface conversion:
-# value.objectValue is not value.AnnotatedValue"). TODO: marshal grouped subquery
-# rows as AnnotatedValue (or reject before cbq panics), then re-include these.
-CASE_SKIP = [
-    ("aggregate_functions", "max([d.dateadded, d]"),
-]
-
-def case_skipped(cat, stmt):
-    low = stmt.lower()
-    return any(cat == pcat and needle in low for pcat, needle in CASE_SKIP)
 INSERT_PREFIX = re.compile(r'\s*INSERT\s+INTO\s+(\w+)\s*\(\s*KEY\s*,\s*VALUE\s*\)', re.IGNORECASE)
 
 # n1k1 merges every category's docs into one shared keyspace and relies on each
@@ -343,7 +328,6 @@ def main(qf):
                 if not isinstance(c, dict): continue
                 stmt = c.get("statements")
                 if not isinstance(stmt, str) or NONDET.search(stmt): continue
-                if case_skipped(cat, stmt): continue
                 picked.append(apply_scope_patch(cat, c))
         if picked:
             os.makedirs(os.path.join(root, "cases"), exist_ok=True)
