@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"sync"
 	"testing"
 
@@ -143,6 +144,89 @@ func TestSecondaryIndexUsedAndCorrect(t *testing.T) {
 			t.Errorf("%q: want ids %v, got %v", tc.stmt, tc.wantIDs, got)
 		}
 	}
+}
+
+// TestSecondaryIndexComposite: a two-key index (region, product) serves leading-
+// key-only, full-key, leading+range, and IN predicates -- each using the index and
+// matching the no-index result. The self-delimiting composite key encoding makes
+// prefix matching work; the residual filter enforces any part the span prefix
+// doesn't pin precisely.
+func TestSecondaryIndexComposite(t *testing.T) {
+	docs := map[string]string{}
+	// regions US(3),EU(2),AS(1) x products a,b,c
+	i := 0
+	for _, region := range []string{"US", "US", "US", "EU", "EU", "AS"} {
+		for _, prod := range []string{"a", "b", "c"} {
+			docs[fmtID(i)] = `{"id":"` + fmtID(i) + `","region":"` + region + `","product":"` + prod + `"}`
+			i++
+		}
+	}
+	catalog := `{ "indexes": [
+	  { "name": "ix_region_product", "keyspace": "sales", "keys": ["region","product"] }
+	] }`
+	root := writeKeyspaceDocs(t, "sales", docs, catalog)
+
+	cases := []struct {
+		stmt string
+		want func(id, region, prod string) bool
+	}{
+		{`SELECT s.id AS id FROM sales s WHERE s.region = "US"`,
+			func(_, r, _ string) bool { return r == "US" }},
+		{`SELECT s.id AS id FROM sales s WHERE s.region = "US" AND s.product = "b"`,
+			func(_, r, p string) bool { return r == "US" && p == "b" }},
+		{`SELECT s.id AS id FROM sales s WHERE s.region = "EU" AND s.product >= "b"`,
+			func(_, r, p string) bool { return r == "EU" && p >= "b" }},
+		{`SELECT s.id AS id FROM sales s WHERE s.region IN ["EU","AS"]`,
+			func(_, r, _ string) bool { return r == "EU" || r == "AS" }},
+	}
+	for _, tc := range cases {
+		store, conv := flatRootConv(t, root, tc.stmt)
+		if !hasKind(conv.TopOp, "datastore-scan-index") {
+			t.Errorf("%q: expected IndexScan, got %v", tc.stmt, opKinds(conv.TopOp))
+		}
+		var want []string
+		i := 0
+		for _, region := range []string{"US", "US", "US", "EU", "EU", "AS"} {
+			for _, prod := range []string{"a", "b", "c"} {
+				id := fmtID(i)
+				if tc.want(id, region, prod) {
+					want = append(want, `{"id":"`+id+`"}`)
+				}
+				i++
+			}
+		}
+		sort.Strings(want)
+		got := idJSONs(flatRootRows(t, conv, testGlueExec(t, false, store, conv)))
+		if !equalStrs(got, want) {
+			t.Errorf("%q: want %v, got %v", tc.stmt, want, got)
+		}
+	}
+}
+
+func fmtID(i int) string { return "s" + strconv.Itoa(i) }
+
+// writeKeyspaceDocs builds <root>/default/<keyspace>/<key>.json for each doc plus
+// a .n1k1/catalog.json, returning the root.
+func writeKeyspaceDocs(t *testing.T, keyspace string, docs map[string]string, catalog string) string {
+	t.Helper()
+	root := t.TempDir()
+	ksDir := filepath.Join(root, "default", keyspace)
+	if err := os.MkdirAll(ksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for key, body := range docs {
+		if err := os.WriteFile(filepath.Join(ksDir, key+".json"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sc := filepath.Join(root, ".n1k1")
+	if err := os.MkdirAll(sc, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sc, "catalog.json"), []byte(catalog), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return root
 }
 
 // TestSecondaryIndexPartialWhere: a partial-index `where` only indexes matching

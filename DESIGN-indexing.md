@@ -80,9 +80,17 @@ Learnings that changed the plan (all forced by getting real queries to pass):
   (`float64` vs `int64`); `toFloat64` must handle both or bounds encode as 0 and
   every numeric scan returns nothing.
 
-Not yet built (still proposal below): composite-key *range bounds* beyond the
-leading prefix, true covering execution, incremental index maintenance, a
-fingerprint/zone-map manifest, `CountIndex` pushdown, and all of Phase 2 (FTS).
+**Composite (multi-key) indexes work** (`keys: ["region","product"]`): the build
+encodes every key component and the self-delimiting encoding makes prefix matching
+correct, so leading-key-only, full-key, leading+range, and IN predicates all use
+the index and match the no-index result (`test/secondary_index_test.go`
+`TestSecondaryIndexComposite`). Per-component boundary *exactness* on a composite
+prefix is approximate, but the always-present residual `Filter` enforces the exact
+predicate, so results are correct (just occasionally a slightly wider index walk).
+
+Not yet built (still proposal below): true covering execution, incremental index
+maintenance, a fingerprint/zone-map manifest, `CountIndex` pushdown, and all of
+Phase 2 (FTS).
 Known v1 limitations: freshness is a coarse (count, newest-mtime) signature, so a
 change that keeps both identical (rare) won't trigger a rebuild — delete the
 `.n1k1` artifact to force one; and array/object index *values* sort by byte order,
@@ -740,9 +748,11 @@ datasets.
 - **Index freshness.** File datastore mutations (`performOp`, `Delete`) have no
   index-maintenance hooks. v1 = rebuild-on-open (document the index as static);
   incremental maintenance on insert/update/delete is v2.
-- **Composite indexes.** v1 targets single-leading-key indexes; confirm
-  `EvalSpan` / `DatastoreScanIndex` handle multi-column `Range.Low/High` arrays
-  before doing composite keys.
+- **Composite indexes — DONE.** Multi-key indexes work (`EvalSpan` /
+  `DatastoreScanIndex` handle the multi-column `Range.Low/High` arrays, and the
+  self-delimiting composite key encoding makes prefix matching correct). Verified
+  by `TestSecondaryIndexComposite`; the residual `Filter` covers any per-component
+  boundary imprecision, so results stay exact.
 - **CBO.** `Statistics()` returning nil is safe while `useCBO=false`; revisit if
   CBO is ever enabled.
 - **Interface-drift now lands in n1k1 (a feature, not a cost).** Because the
