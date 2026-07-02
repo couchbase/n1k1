@@ -247,3 +247,98 @@ All formatters live in `cmd/render.go` and take `[]json.RawMessage` (plus a
   `chzyer/readline`, both CGO-free) for arrow-key history + editing from v1.
   Add it via an explicit `go get <pkg>@<ver>` (never `go mod tidy`) and verify
   it builds with `CGO_ENABLED=0`; history persists to `~/.n1k1_history`.
+  - *Resolved to `peterh/liner v1.2.0`* (MIT). See §10 for what that already
+    gives us and what a Claude-Code-style editor would additionally require.
+
+------------------------------------------------------------------------
+## 10. Line editing: emacs keys, multi-line, and mouse (research)
+
+Motivating question: some CLIs (e.g. Claude Code) support emacs-style keys —
+`Ctrl-N`/`Ctrl-P` to move between lines, `Ctrl-A`/`Ctrl-E`, etc. — **and** mouse
+clicks that reposition the cursor. What would it take for n1k1, and which
+non-viral (non-GPL) libraries help?
+
+### 10.1 What we already have (for free)
+
+The REPL runs on **`github.com/peterh/liner`** (MIT — permissive, non-viral,
+pure Go / no cgo). It already binds the full single-line emacs set:
+
+| Key | Action | Key | Action |
+|---|---|---|---|
+| `Ctrl-A` | start of line | `Ctrl-E` | end of line |
+| `Ctrl-B` / `←` | left | `Ctrl-F` / `→` | right |
+| `Ctrl-D` | delete char (EOF if empty) | `Ctrl-K` | kill to end of line |
+| `Ctrl-U` | kill to start of line | `Ctrl-W` | delete previous word |
+| `Ctrl-Y` | yank (paste kill) | `Ctrl-T` | transpose chars |
+| `Ctrl-L` | clear screen | `Ctrl-R` / `Ctrl-S` | reverse / forward history search |
+| `Ctrl-P` / `↑` | **previous history** entry | `Ctrl-N` / `↓` | **next history** entry |
+| `Ctrl-C` | abort current line | `Ctrl-D` (empty) | EOF / exit |
+
+So "emacs feel" is *mostly already there* for our workload — statements are
+usually one line, and `Ctrl-P`/`Ctrl-N` walking history (prefix-aware) is what
+most users actually want at a prompt.
+
+### 10.2 The two capabilities that are genuinely missing
+
+1. **Multi-line cursor navigation.** In liner, `Ctrl-P`/`Ctrl-N` move through
+   *history*, not between the rows of a multi-row buffer (a pasted 3-line query,
+   or a statement that wrapped). liner has no 2D buffer — one logical line only.
+   Claude-Code-style `Ctrl-N`/`Ctrl-P`-move-down/up-a-line needs the editor to
+   own a 2D cursor over a multi-row buffer.
+2. **Mouse click-to-position.** liner has *zero* mouse support on Unix. Moving
+   the cursor to a click requires the program to enable **xterm mouse reporting**
+   (emit `ESC[?1000h` + SGR ext `ESC[?1006h`; the terminal then sends
+   `ESC[<btn;col;row;M/m` on click), parse those events, and map `(col,row)` →
+   buffer offset.
+
+Both push us from **readline-class** ("call a blocking `Prompt()` that returns a
+string") to **TUI-class** ("own raw mode, render the input region ourselves, run
+an event loop, and translate key/mouse events into edits on a 2D buffer"). That
+is the real cost — an architectural step change in how input is read, not a
+library swap.
+
+### 10.3 Library landscape (all permissive / non-viral)
+
+| Library | License | Multi-line edit | Mouse | Model | Notes |
+|---|---|---|---|---|---|
+| `peterh/liner` *(current)* | MIT | ✗ | ✗ | blocking `Prompt()` | single line + emacs keys + history; what we ship |
+| `chzyer/readline` | MIT | partial | ✗ | blocking | fuller readline (kill-ring, vi mode); still single logical line, no mouse |
+| `reeflective/readline` | Apache-2.0 | ✓ | ✗ | blocking | modern readline, true multiline emacs/vi editing — closes gap #1 only |
+| `c-bata/go-prompt` (+ `elk-language/go-prompt` fork) | MIT | ✗ | ✗ | callback loop | rich completion menus; single logical line |
+| `charmbracelet/bubbletea` + `bubbles/textarea` | MIT | ✓ | ✓ | Elm event loop | `textarea` gives 2D nav + click-to-position; bubbletea enables mouse + parses SGR — closes **both** gaps |
+| `gdamore/tcell` (+ `rivo/tview`, tview is MIT) | Apache-2.0 | ✓ | ✓ | event loop | lowest level; full mouse + 2D; build (or reuse tview's) input widget |
+
+No mainstream Go line-editor is GPL/viral, so licensing is not a constraint —
+the choice is purely architecture vs. feature.
+
+### 10.4 The mouse-mode caveat (worth stating up front)
+
+Enabling xterm mouse reporting **takes clicks away from the terminal emulator**,
+which normally uses click-drag for native text selection/copy. Once mouse mode
+is on, users typically must hold **Shift** (or **Option/Alt** on macOS iTerm2) to
+select-and-copy. Every mouse-capable TUI lives with this; if we adopt one we
+must enable mouse only while the prompt is up and disable it around query output,
+and document the Shift-to-select behavior.
+
+### 10.5 Recommendation
+
+- **Now: keep `peterh/liner`.** It already delivers the emacs single-line
+  bindings including `Ctrl-P`/`Ctrl-N` (history), for a ~zero-cost dependency and
+  a blocking `Prompt()` that fits the current loop. For a query REPL whose inputs
+  are mostly short, this covers the large majority of the "emacs feel" ask.
+- **If multi-line editing (only) becomes a priority:** migrate to
+  **`reeflective/readline`** (Apache-2.0) — it keeps the simple blocking model
+  while adding true multi-row emacs editing (real `Ctrl-N`/`Ctrl-P` line moves),
+  without pulling in a full TUI or the mouse-selection tradeoff.
+- **If we want mouse click-to-position too (full Claude-Code parity):** the
+  cleanest route is **`bubbletea` + `bubbles/textarea`** (MIT). `textarea`
+  already implements 2D cursor movement and click-to-position, and bubbletea owns
+  mouse enable + SGR parsing. Cost: adopt the Elm event-loop model for the input
+  phase, a larger dependency tree (bubbletea, bubbles, lipgloss, termenv…), and
+  the mouse/selection caveat in §10.4. Given n1k1's mostly-single-line workload,
+  this is **deferred** — revisit only if editing long multi-line statements
+  becomes a common pain point.
+- **Dependency hygiene (all options):** add via explicit `go get <pkg>@<ver>`,
+  never `go mod tidy` (it prunes the n1ql-only `query` dep and the `replace`
+  pins), and verify a clean `CGO_ENABLED=0` build so the cross-compile story
+  holds.
