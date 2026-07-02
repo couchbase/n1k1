@@ -125,14 +125,29 @@ type IndexBuildEvent struct {
 	Err       error  // set on "error"
 }
 
-// EagerBuildSecondaryIndexes opens (building/rebuilding as needed) every catalog
-// index now, **concurrently** (one worker per CPU, capped at the index count), so
-// the first query pays no build cost. No-op when ds isn't index-wrapped (mode
-// "off", or no catalog). Each index is an independent bbolt file, so builds don't
-// contend. report (optional) receives serialized progress events. Individual
-// build failures are reported as "error" events and don't abort the others; the
-// returned error is the first keyspace-resolution failure, if any.
+// EagerBuildSecondaryIndexes opens (building as needed) every catalog index now,
+// concurrently, so the first query pays no build cost. See buildIndexesConcurrent.
 func EagerBuildSecondaryIndexes(ds datastore.Datastore, report func(IndexBuildEvent)) error {
+	return buildIndexesConcurrent(ds, false, "", report)
+}
+
+// RebuildSecondaryIndexes force-rebuilds catalog indexes (all, or just the one
+// named `only`) regardless of the source freshness signature -- the .reindex
+// escape hatch for the coarse (count, newest-mtime) freshness check. Concurrent,
+// with the same progress events.
+func RebuildSecondaryIndexes(ds datastore.Datastore, only string, report func(IndexBuildEvent)) error {
+	return buildIndexesConcurrent(ds, true, only, report)
+}
+
+// buildIndexesConcurrent opens/(re)builds catalog indexes **concurrently** (one
+// worker per CPU, capped at the index count) -- each index is an independent bbolt
+// file, so builds don't contend. force rebuilds regardless of freshness; only, when
+// non-empty, restricts to that index name. No-op when ds isn't index-wrapped (mode
+// "off", or no catalog). report (optional) receives serialized progress events;
+// individual build failures become "error" events and don't abort the others. The
+// returned error is the first keyspace-resolution failure, if any.
+func buildIndexesConcurrent(ds datastore.Datastore, force bool, only string,
+	report func(IndexBuildEvent)) error {
 	sds, ok := ds.(*siDatastore)
 	if !ok {
 		return nil
@@ -148,6 +163,9 @@ func EagerBuildSecondaryIndexes(ds datastore.Datastore, report func(IndexBuildEv
 	totalCache := map[string]int{}
 	var firstErr error
 	for _, def := range sds.cat.Indexes {
+		if only != "" && def.Name != only {
+			continue
+		}
 		key := def.Namespace + ":" + def.Keyspace
 		ks := ksCache[key]
 		if ks == nil {
@@ -199,7 +217,7 @@ func EagerBuildSecondaryIndexes(ds datastore.Datastore, report func(IndexBuildEv
 				pe.Phase = "progress"
 				pe.Docs = docs
 				events <- pe
-			})
+			}, force)
 
 			de := base
 			if err != nil {
@@ -385,7 +403,7 @@ func (k *siKeyspace) secondaryIndexer() *siIndexer {
 	k.once.Do(func() {
 		ix := &siIndexer{ks: k}
 		for _, def := range k.defs {
-			si, err := openSecondaryIndex(k, def, nil)
+			si, err := openSecondaryIndex(k, def, nil, false)
 			if err != nil {
 				// Don't fail the query -- just don't advertise this index, so the
 				// planner falls back to a primary scan. Surface why on stderr.
@@ -669,8 +687,9 @@ func indexSlotFor(dbPath string) *indexSlot {
 // def on ks, and returns the ready-to-scan index. Repeated calls for the same
 // on-disk index return the cached instance (re-checking freshness). onDoc, when
 // non-nil, is invoked during a (re)build with the running scanned-doc count (for
-// progress reporting); pass nil on the lazy query path.
-func openSecondaryIndex(ks *siKeyspace, def *indexDef, onDoc func(int)) (*secondaryIndex, error) {
+// progress reporting); pass nil on the lazy query path. force=true rebuilds
+// unconditionally (the .reindex escape hatch for the coarse-mtime freshness).
+func openSecondaryIndex(ks *siKeyspace, def *indexDef, onDoc func(int), force bool) (*secondaryIndex, error) {
 	ns := ks.Namespace().Name()
 	instDir := filepath.Join(ks.sds.root, sidecarDir, ns, ks.Name(), "idx",
 		fmt.Sprintf("%s__si__%s", fsSafe(def.Name), def.defHash()))
@@ -711,7 +730,7 @@ func openSecondaryIndex(ks *siKeyspace, def *indexDef, onDoc func(int)) (*second
 	if err != nil {
 		return nil, err
 	}
-	if !fresh {
+	if force || !fresh {
 		if err := buildIndex(slot.si.db, ks, def, srcDir, sig, onDoc); err != nil {
 			return nil, err
 		}

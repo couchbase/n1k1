@@ -364,6 +364,42 @@ func TestSecondaryIndexEagerConcurrent(t *testing.T) {
 	}
 }
 
+// TestSecondaryIndexReindex: RebuildSecondaryIndexes force-rebuilds (all, or one by
+// name) and the index stays usable/correct afterward -- the .reindex escape hatch.
+func TestSecondaryIndexReindex(t *testing.T) {
+	root := writeIndexedKeyspace(t, siDocs, siCatalog)
+	store, _ := flatRootConv(t, root, `SELECT 1`)
+
+	for _, only := range []string{"", "ix_age"} {
+		var dones int
+		err := glue.RebuildSecondaryIndexes(store.Datastore, only, func(ev glue.IndexBuildEvent) {
+			if ev.Phase == "error" {
+				t.Errorf("reindex %q error: %v", ev.Name, ev.Err)
+			}
+			if ev.Phase == "done" {
+				dones++
+			}
+		})
+		if err != nil {
+			t.Fatalf("reindex only=%q: %v", only, err)
+		}
+		want := 2 // all
+		if only != "" {
+			want = 1
+		}
+		if dones != want {
+			t.Errorf("reindex only=%q: want %d done events, got %d", only, want, dones)
+		}
+	}
+	// Still correct after the rebuilds.
+	stmt := `SELECT c.id AS id FROM default:customer c WHERE c.age = 45`
+	store2, conv := flatRootConv(t, root, stmt)
+	rows := flatRootRows(t, conv, testGlueExec(t, false, store2, conv))
+	if got := idJSONs(rows); !equalStrs(got, wantIDJSONs([]string{"c2"})) {
+		t.Fatalf("after reindex: want [c2], got %v", got)
+	}
+}
+
 func equalStrs(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

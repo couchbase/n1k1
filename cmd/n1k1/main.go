@@ -499,6 +499,8 @@ func (c *cli) dot(line string) bool {
 		c.cmdKeyspaces()
 	case ".indexes", ".index":
 		c.cmdIndexes()
+	case ".reindex":
+		c.cmdReindex(arg)
 	case ".schema":
 		c.cmdSchema(arg)
 	case ".mode":
@@ -573,6 +575,7 @@ func (c *cli) printHelp() {
 .open <dir>           open a different file datastore directory
 .tables / .keyspaces  list keyspaces (with a copy-paste example each)
 .indexes              list secondary indexes (.n1k1/catalog.json) with keys + stats
+.reindex [<name>]     force-rebuild secondary indexes (all, or one), ignoring freshness
 .schema [<keyspace>]  sampled shape (keys + JSON types) of a keyspace
 .mode <m>             output mode (append |pretty to indent JSON): `+strings.Join(cmd.OutputModes, " ")+`
 .meta [on|off|auto]   add a _meta sub-object to records (no arg shows the current setting)
@@ -650,6 +653,23 @@ func (c *cli) cmdIndexes() {
 			status = ix.Err
 		}
 		fmt.Fprintf(c.out, "%s %s  [%s]\n", name, keys, status)
+	}
+}
+
+// cmdReindex implements .reindex [name]: force-rebuild all catalog indexes (or the
+// one named), ignoring the freshness signature -- the escape hatch when the coarse
+// (file count, newest mtime) freshness check misses a change (e.g. an edit within
+// the same mtime tick). Shows the same concurrent build progress as -index=eager.
+func (c *cli) cmdReindex(name string) {
+	if c.sess == nil || c.sess.Store == nil {
+		fmt.Fprintln(c.stderr, "no datastore open")
+		return
+	}
+	prog := newIndexProgress(c.stderr, c.fancyTTY)
+	err := glue.RebuildSecondaryIndexes(c.sess.Store.Datastore, name, prog.handle)
+	prog.finish()
+	if err != nil {
+		fmt.Fprintf(c.stderr, "%s: reindex: %v\n", c.prog, err)
 	}
 }
 

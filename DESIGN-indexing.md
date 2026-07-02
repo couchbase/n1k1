@@ -92,9 +92,9 @@ Not yet built (still proposal below): true covering execution, incremental index
 maintenance, a fingerprint/zone-map manifest, `CountIndex` pushdown, and all of
 Phase 2 (FTS).
 Known v1 limitations: freshness is a coarse (count, newest-mtime) signature, so a
-change that keeps both identical (rare) won't trigger a rebuild — delete the
-`.n1k1` artifact to force one; and array/object index *values* sort by byte order,
-not collation (fine — predicates range over scalars).
+change that keeps both identical (rare) won't trigger a rebuild — run `.reindex` to
+force one; and array/object index *values* sort by byte order, not collation (fine
+— predicates range over scalars).
 
 ---
 
@@ -137,14 +137,20 @@ opening/building any not-yet-built index to report live bbolt stats
 `os.Stat`). Under `-index=off` it prints "disabled". Because it can trigger a build,
 `.indexes` doubles as an explicit "build now".
 
+**`.reindex [<name>]`** (dot-command) — force-rebuild all catalog indexes (or the
+one named) regardless of the freshness signature (`glue.RebuildSecondaryIndexes` →
+`buildIndexesConcurrent(force=true)`, same concurrent build + progress as eager).
+This is the escape hatch for the coarse (file count, newest-mtime) freshness check
+— e.g. an edit within the same mtime tick — without deleting the `.n1k1` artifact.
+
 **Design stance on scope.** Per-index knobs (collation, the "index-everything"
 value-size cap + truncation marker, `defer`, CBO stats) belong in `catalog.json`
 as per-index fields, *not* as global flags — they're properties of a definition,
 and `catalog.json` is the single-writer source of truth (see "Sidecar layout").
-Reserve flags/dot-commands for process-wide *timing/introspection*
-(`-index`, `.indexes`) and, later, lifecycle verbs (`.reindex <name>`,
-`.index drop <name>`). DDL (`CREATE/DROP INDEX`) stays unwired in v1 (`conv.go:
-VisitCreateIndex` is `NA()`); the catalog is the definition surface.
+Reserve flags/dot-commands for process-wide *timing/introspection/lifecycle*
+(`-index`, `.indexes`, `.reindex`; a future `.index drop <name>`). DDL
+(`CREATE/DROP INDEX`) stays unwired in v1 (`conv.go: VisitCreateIndex` is `NA()`);
+the catalog is the definition surface.
 
 ## Motivation
 
