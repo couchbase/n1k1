@@ -63,8 +63,8 @@ func main() {
 		metaFlag    = flag.String("meta", "auto", "add a _meta sub-object (path/name/ext/size/mtime) to records: on|off|auto (auto = extracted docs only)")
 		verFlag     = flag.Bool("version", false, "print version + build info (incl. dependency SHAs) and exit")
 		indexFlag   = flag.String("index", "lazy", "use catalog (secondary/FTS) indexes: "+
-			"lazy (default; build each on first use) | eager (build all up front -- clean -timer "+
-			"benchmarks + up-front build errors) | off (ignore the catalog; always full-scan -- A/B baseline)")
+			"lazy (default; build each on first use) | eager (build all up front)"+
+			" | off (ignore the catalog; always full-scan)")
 	)
 	// -verbose / -v (synonyms sharing one value): a diagnostics level. A bare
 	// -verbose means on (level 1) and repeats accumulate (-v -v -v -> 3);
