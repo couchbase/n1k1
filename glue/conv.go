@@ -531,17 +531,19 @@ func (c *Conv) VisitUnnest(o *plan.Unnest) (interface{}, error) {
 // convert as a fresh branch. OpJoinNestedLoop re-drives the right branch for
 // each left row and applies the ON clause to the joined left+right vals.
 func (c *Conv) VisitNLJoin(o *plan.NLJoin) (interface{}, error) {
-	// A nil ON clause is a comma/cross join (FROM a, b) -- no join predicate to
-	// feed the nested-loop filter; bail cleanly rather than emit an
-	// ["exprTree", nil] that panics at eval time.
-	if o.Onclause() == nil {
-		return NA(o)
+	// A nil ON clause is a comma/cross join (FROM a, b): every left row pairs
+	// with every right row. The nested-loop op needs a predicate to evaluate, so
+	// stand in a constant TRUE -- a cross product is a nested-loop join whose
+	// filter always holds. (A nil ["exprTree", nil] would panic at eval time.)
+	onclause := o.Onclause()
+	if onclause == nil {
+		onclause = expression.TRUE_EXPR
 	}
 	right, err := c.convertBranch(o.Child())
 	if err != nil {
 		return nil, err
 	}
-	return c.TopSet(o, c.ansiJoinOp("joinNL", o.Outer(), o.Onclause(), c.TopOp, right))
+	return c.TopSet(o, c.ansiJoinOp("joinNL", o.Outer(), onclause, c.TopOp, right))
 }
 
 func (c *Conv) VisitNLNest(o *plan.NLNest) (interface{}, error)     { return NA(o) }
