@@ -77,7 +77,7 @@ func TestSuggestIndexesSingleFile(t *testing.T) {
 		t.Fatalf("FileStore: %v", err)
 	}
 
-	sugg, err := SuggestIndexes(store, "default", "", 0)
+	sugg, _, err := SuggestIndexes(store, "default", "", 0)
 	if err != nil {
 		t.Fatalf("SuggestIndexes: %v", err)
 	}
@@ -112,7 +112,7 @@ func TestSuggestIndexesFlatRoot(t *testing.T) {
 		t.Fatalf("FileStore: %v", err)
 	}
 
-	sugg, err := SuggestIndexes(store, "default", "", 0)
+	sugg, _, err := SuggestIndexes(store, "default", "", 0)
 	if err != nil {
 		t.Fatalf("SuggestIndexes: %v", err)
 	}
@@ -122,6 +122,33 @@ func TestSuggestIndexesFlatRoot(t *testing.T) {
 	}
 	if sku.Keyspace != "inv" {
 		t.Errorf("keyspace = %q, want inv", sku.Keyspace)
+	}
+}
+
+// TestSuggestIndexesSmallSampleNote: a tiny sample (fewer than suggestMinDistinct
+// docs) yields no suggestions but an explanatory note -- this is the examples/
+// archive case (5 gzip'd docs) that read as "broken" without the diagnostic.
+func TestSuggestIndexesSmallSampleNote(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "orders.jsonl")
+	// 5 docs, every field unique -> selective, but 5 < suggestMinDistinct(8).
+	if err := os.WriteFile(path, []byte(strings.Join(jsonlDocs(5), "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store, err := FileStore(path)
+	if err != nil {
+		t.Fatalf("FileStore: %v", err)
+	}
+
+	sugg, note, err := SuggestIndexes(store, "default", "", 0)
+	if err != nil {
+		t.Fatalf("SuggestIndexes: %v", err)
+	}
+	if len(sugg) != 0 {
+		t.Fatalf("expected no suggestions from a 5-doc sample, got %+v", sugg)
+	}
+	if !strings.Contains(note, "5") || !strings.Contains(note, "too few") {
+		t.Errorf("note should flag the tiny sample, got %q", note)
 	}
 }
 

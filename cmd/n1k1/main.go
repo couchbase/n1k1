@@ -687,13 +687,16 @@ func (c *cli) cmdIndexSuggest(keyspace string) {
 		fmt.Fprintln(c.stderr, "no datastore open")
 		return
 	}
-	sugg, err := glue.SuggestIndexes(c.sess.Store, c.ns, keyspace, 0)
+	sugg, note, err := glue.SuggestIndexes(c.sess.Store, c.ns, keyspace, 0)
 	if err != nil {
 		fmt.Fprintf(c.stderr, "%s: index suggest: %v\n", c.prog, err)
 		return
 	}
 	if len(sugg) == 0 {
-		fmt.Fprintln(c.stderr, "no index suggestions (no selective scalar fields found in the sample)")
+		if note == "" {
+			note = "no selective scalar fields found in the sample"
+		}
+		fmt.Fprintf(c.stderr, "no index suggestions (%s)\n", note)
 		return
 	}
 	// Struct field order = JSON key order (encoding/json); "why" is ignored by the

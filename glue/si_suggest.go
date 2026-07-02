@@ -76,33 +76,43 @@ type pathStat struct {
 // SuggestIndexes samples up to sampleN docs from each keyspace in namespace (or
 // just `only`, if non-empty) and returns advised indexes for selective scalar
 // fields, most-selective first. Already-declared leading keys are skipped.
-func SuggestIndexes(store *Store, namespace, only string, sampleN int) ([]IndexSuggestion, error) {
+//
+// The second return is a human diagnostic that is non-empty only when no
+// suggestions were produced -- it explains *why* (an empty keyspace, a sample too
+// small to judge cardinality, or fields that just weren't selective enough), so
+// the CLI can say something more useful than "nothing found". Sampling itself is
+// correct for every layout/format (single-file, flat-root, multi-record, gzip,
+// ...) because it goes through openKeyspaceRecords, the shared scan resolver.
+func SuggestIndexes(store *Store, namespace, only string, sampleN int) ([]IndexSuggestion, string, error) {
 	if sampleN <= 0 {
 		sampleN = suggestDefaultSample
 	}
 	ns, nerr := store.Datastore.NamespaceByName(namespace)
 	if nerr != nil {
-		return nil, fmt.Errorf("namespace %q: %v", namespace, nerr)
+		return nil, "", fmt.Errorf("namespace %q: %v", namespace, nerr)
 	}
 	names, kerr := ns.KeyspaceNames()
 	if kerr != nil {
-		return nil, fmt.Errorf("listing keyspaces: %v", kerr)
+		return nil, "", fmt.Errorf("listing keyspaces: %v", kerr)
 	}
 	sort.Strings(names)
 
 	var out []IndexSuggestion
+	totalSampled, keyspaces := 0, 0
 	for _, ksName := range names {
 		if only != "" && !strings.EqualFold(ksName, only) {
 			continue
 		}
+		keyspaces++
 		ks, kerr := ns.KeyspaceByName(ksName)
 		if kerr != nil {
 			continue
 		}
 		stats, sampled, err := sampleKeyspace(ks, sampleN)
 		if err != nil {
-			return nil, fmt.Errorf("sampling %s: %v", ksName, err)
+			return nil, "", fmt.Errorf("sampling %s: %v", ksName, err)
 		}
+		totalSampled += sampled
 		existing := existingLeadingKeys(store.Datastore, namespace, ksName)
 		out = append(out, scoreSuggestions(namespace, ksName, stats, sampled, existing)...)
 	}
@@ -114,7 +124,33 @@ func SuggestIndexes(store *Store, namespace, only string, sampleN int) ([]IndexS
 		}
 		return out[i].Field < out[j].Field
 	})
-	return out, nil
+
+	note := ""
+	if len(out) == 0 {
+		note = emptySuggestNote(totalSampled, keyspaces)
+	}
+	return out, note, nil
+}
+
+// emptySuggestNote explains why a sample produced no suggestions. The common
+// surprise is a *tiny* sample: with fewer than suggestMinDistinct docs, no field
+// can reach the distinct-value floor, so even an obviously-unique key like "id"
+// is (deliberately) not advised off so little evidence -- say that plainly.
+func emptySuggestNote(sampled, keyspaces int) string {
+	switch {
+	case keyspaces == 0:
+		return "no keyspaces to sample"
+	case sampled == 0:
+		return "sampled 0 docs — the keyspace looks empty"
+	case sampled < suggestMinDistinct:
+		return fmt.Sprintf("sampled only %d doc(s) — too few to judge cardinality "+
+			"(a field needs ≥%d distinct values before it's worth indexing); add more data",
+			sampled, suggestMinDistinct)
+	default:
+		return fmt.Sprintf("sampled %d docs — no field was selective enough "+
+			"(needs ≥%d distinct values, present in ≥50%% of docs, and mostly-unique)",
+			sampled, suggestMinDistinct)
+	}
 }
 
 // sampleKeyspace walks up to sampleN docs, accumulating per-path stats.
