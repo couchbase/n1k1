@@ -40,6 +40,19 @@ const (
 	MetaOff                  // no record
 )
 
+// String renders the mode in its flag/dot-command spelling (auto|on|off), so
+// callers can echo the current setting back to the user.
+func (m MetaMode) String() string {
+	switch m {
+	case MetaOn:
+		return "on"
+	case MetaOff:
+		return "off"
+	default:
+		return "auto"
+	}
+}
+
 // ParseMetaMode parses the -meta flag value ("", "auto", "on", "off").
 func ParseMetaMode(s string) (MetaMode, error) {
 	switch strings.ToLower(strings.TrimSpace(s)) {

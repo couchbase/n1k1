@@ -143,6 +143,7 @@ Chosen to match DuckDB names where the concept exists, so muscle memory carries.
 | `.tables` / `.keyspaces` | List keyspaces under the namespace (the subdirs of `<dir>/<ns>/`). DuckDB calls them tables; we accept both, print "keyspaces". |
 | `.schema [<keyspace>]` | Infer a shape from sampling the first N docs of a keyspace (top-level keys + observed JSON types). No real schema exists in a JSON store, so it's a *sampled* shape, clearly labeled. |
 | `.mode <m>` | Set output mode (see §6). |
+| `.meta [on\|off\|auto]` | Check or set whether records get a `_meta` sub-object (path/name/ext/size/mtime/pos). Mirrors the `-meta` flag; no arg prints the current setting. Mutates `glue.ScanWalkOptions.Meta`, which the records-scan reads per query. |
 | `.timer on\|off` | Toggle elapsed-time footer. |
 | `.maxrows <n>` | box: cap rows shown. `>0` = head+tail with a `·` elision row (DuckDB-style); `<0` = last `|n|` rows with the `·` elision row at the front; `0` = all. |
 | `.maxwidth <n\|auto>` | box: cap column width, truncate with `…`. `0` = uncapped; `auto` = fit the box to the detected terminal width, widening columns to use spare space and shrinking (max-min fair share) only when the table overflows. |

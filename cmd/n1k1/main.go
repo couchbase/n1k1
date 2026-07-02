@@ -198,11 +198,20 @@ func usage() {
 
 usage: %[1]s [flags] [datastore-dir | file]
 
-  %[1]s ./test/suite/json     REPL over a datastore-dir
-  %[1]s -c "SELECT 1+1"       run ;-separated statements
-  %[1]s -c "SELECT * FROM events" events.jsonl   query a single file
-  echo "SELECT ..." | %[1]s   stdin for ;-separated statements
-  %[1]s -f script.sql++ dir   run a file of ;-separated statements
+  # a single file -- the keyspace is the file name minus its extensions,
+  # so events.jsonl is FROM events, sales.csv is FROM sales, etc:
+  %[1]s -c "SELECT * FROM events LIMIT 5"                    events.jsonl
+  %[1]s -c "SELECT COUNT(*) AS n FROM access"                access.ndjson.gz
+  %[1]s -c "SELECT city, SUM(amt) AS t FROM sales GROUP BY city"  sales.csv
+
+  # a directory of files (flat, or <ns>/<keyspace>/ subdirs):
+  %[1]s ./test/suite/json                                    REPL over a datastore-dir
+  %[1]s -c "SELECT * FROM default:orders WHERE n > 5"        shop
+
+  # statements from -c, a file, or stdin:
+  %[1]s -c "SELECT 1+1"
+  %[1]s -f script.sql++ dir
+  echo "SELECT ..." | %[1]s
 
 flags:
 `, prog)
@@ -482,6 +491,22 @@ func (c *cli) dot(line string) bool {
 		default:
 			fmt.Fprintf(c.stderr, "usage: .timer [on|off] (currently %s)\n", onOff(c.timer))
 		}
+	case ".meta":
+		// Toggle/check the _meta sub-object (path/name/ext/size/mtime). The engine
+		// reads glue.ScanWalkOptions.Meta per query, so mutating it here takes
+		// effect for subsequent statements.
+		switch a := strings.ToLower(strings.TrimSpace(arg)); a {
+		case "":
+			fmt.Fprintf(c.stderr, "meta %s\n", glue.ScanWalkOptions.Meta)
+		default:
+			mm, err := records.ParseMetaMode(a)
+			if err != nil {
+				fmt.Fprintf(c.stderr, "usage: .meta [on|off|auto]  (currently %s)\n", glue.ScanWalkOptions.Meta)
+			} else {
+				glue.ScanWalkOptions.Meta = mm
+				fmt.Fprintf(c.stderr, "meta %s\n", glue.ScanWalkOptions.Meta)
+			}
+		}
 	case ".explain":
 		c.explain = !c.explain
 		fmt.Fprintf(c.stderr, "explain %s\n", onOff(c.explain))
@@ -522,6 +547,7 @@ func (c *cli) printHelp() {
 .tables / .keyspaces  list keyspaces (with a copy-paste example each)
 .schema [<keyspace>]  sampled shape (keys + JSON types) of a keyspace
 .mode <m>             output mode (append |pretty to indent JSON): `+strings.Join(cmd.OutputModes, " ")+`
+.meta [on|off|auto]   add a _meta sub-object to records (no arg shows the current setting)
 .timer [on|off]       elapsed-time reporting (no arg shows the current setting)
 .explain              toggle printing EXPLAIN PLAN per query
 .maxrows <n>          box: cap rows shown (0 = all; negative = last |n| rows)

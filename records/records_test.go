@@ -323,6 +323,22 @@ func TestParseMetaMode(t *testing.T) {
 	}
 }
 
+// TestMetaModeStringRoundTrip: String() renders the flag/dot-command spelling and
+// round-trips through ParseMetaMode (the .meta dot command echoes it back).
+func TestMetaModeStringRoundTrip(t *testing.T) {
+	for _, m := range []MetaMode{MetaAuto, MetaOn, MetaOff} {
+		got, err := ParseMetaMode(m.String())
+		if err != nil || got != m {
+			t.Errorf("round-trip %v -> %q -> %v,%v", m, m.String(), got, err)
+		}
+	}
+	for m, want := range map[MetaMode]string{MetaAuto: "auto", MetaOn: "on", MetaOff: "off"} {
+		if got := m.String(); got != want {
+			t.Errorf("%d.String() = %q, want %q", m, got, want)
+		}
+	}
+}
+
 func TestMetaAutoExtractOnly(t *testing.T) {
 	// auto: extracted documents get _meta...
 	opts := AllModes() // Meta == MetaAuto
