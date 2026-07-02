@@ -57,14 +57,33 @@ import (
 
 const (
 	siEntriesBucket = "entries" // encode(keys)+docID -> nil
-	siMetaBucket    = "meta"     // "sig" -> source signature
+	siMetaBucket    = "meta"    // "sig" -> source signature
 	siSigKey        = "sig"
 )
 
-// maybeSecondaryIndexes wraps ds so keyspaces advertise the catalog's secondary indexes. It
-// returns ds unchanged when there's no .n1k1/catalog.json or it defines no
-// indexes (the common case -- no metadata, behave exactly as before).
+// SecondaryIndexMode controls whether/when catalog-declared secondary indexes are
+// used, set from the CLI's -index flag (see DESIGN-indexing.md "CLI control"):
+//
+//	"lazy"  (default) advertise indexes; each builds on first use (first query
+//	         over its keyspace, or the .indexes command).
+//	"eager"  advertise indexes and build them all up front
+//	         (EagerBuildSecondaryIndexes) so the first query pays no build cost.
+//	"off"    ignore the catalog entirely -- advertise no secondary index, so the
+//	         planner always does a primary/records scan (useful for A/B timing).
+//
+// Process-global to match the engine.ExecOpEx / ScanWalkOptions style -- fine for
+// the single-process CLI. Read on each maybeSecondaryIndexes call, so a mid-session
+// .open re-applies the current mode.
+var SecondaryIndexMode = "lazy"
+
+// maybeSecondaryIndexes wraps ds so keyspaces advertise the catalog's secondary
+// indexes. It returns ds unchanged when SecondaryIndexMode is "off", there's no
+// .n1k1/catalog.json, or it defines no indexes (the common case -- no metadata,
+// behave exactly as before).
 func maybeSecondaryIndexes(dataRoot string, ds datastore.Datastore) (datastore.Datastore, error) {
+	if SecondaryIndexMode == "off" {
+		return ds, nil
+	}
 	cat, err := loadCatalog(dataRoot)
 	if err != nil {
 		return ds, err
@@ -73,6 +92,126 @@ func maybeSecondaryIndexes(dataRoot string, ds datastore.Datastore) (datastore.D
 		return ds, nil
 	}
 	return &siDatastore{Datastore: ds, root: dataRoot, cat: cat}, nil
+}
+
+// IndexInfo is a snapshot of one declared secondary index for the .indexes CLI
+// command: its definition plus, when built, live bbolt stats.
+type IndexInfo struct {
+	Name      string
+	Namespace string
+	Keyspace  string
+	Keys      []string
+	Where     string
+	Built     bool   // false if the artifact couldn't be opened/built (see Err)
+	Entries   int    // bbolt entry count (docIDs indexed), when Built
+	SizeBytes int64  // data.bolt file size, when Built
+	Path      string // data.bolt path, when Built
+	Err       string // why it isn't built, if !Built
+}
+
+// EagerBuildSecondaryIndexes opens (building/rebuilding as needed) every catalog
+// index now, so the first query doesn't pay the build cost. No-op when ds isn't
+// index-wrapped (mode "off", or no catalog). Individual build failures are logged
+// by the indexer and left out; the returned error is the first keyspace-resolution
+// failure, if any.
+func EagerBuildSecondaryIndexes(ds datastore.Datastore) error {
+	return eachIndexKeyspace(ds, func(ks *siKeyspace) { ks.secondaryIndexer() })
+}
+
+// SecondaryIndexInfos returns one IndexInfo per declared index (across all
+// keyspaces), opening/building each as needed to read its stats. Returns nil when
+// ds isn't index-wrapped.
+func SecondaryIndexInfos(ds datastore.Datastore) []IndexInfo {
+	sds, ok := ds.(*siDatastore)
+	if !ok {
+		return nil
+	}
+	var infos []IndexInfo
+	for _, def := range sds.cat.Indexes {
+		info := IndexInfo{
+			Name: def.Name, Namespace: def.Namespace, Keyspace: def.Keyspace,
+			Keys: def.Keys, Where: def.Where,
+		}
+		ks, err := sds.wrappedKeyspace(def.Namespace, def.Keyspace)
+		if err != nil {
+			info.Err = err.Error()
+			infos = append(infos, info)
+			continue
+		}
+		var found *secondaryIndex
+		for _, si := range ks.secondaryIndexer().indexes {
+			if si.def == def {
+				found = si
+				break
+			}
+		}
+		if found == nil {
+			info.Err = "not built (see log)"
+		} else {
+			found.fillInfo(&info)
+		}
+		infos = append(infos, info)
+	}
+	return infos
+}
+
+// eachIndexKeyspace resolves each distinct namespace:keyspace named in the catalog
+// to its wrapped siKeyspace and calls fn on it.
+func eachIndexKeyspace(ds datastore.Datastore, fn func(*siKeyspace)) error {
+	sds, ok := ds.(*siDatastore)
+	if !ok {
+		return nil
+	}
+	seen := map[string]bool{}
+	var firstErr error
+	for _, def := range sds.cat.Indexes {
+		key := def.Namespace + ":" + def.Keyspace
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		ks, err := sds.wrappedKeyspace(def.Namespace, def.Keyspace)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		fn(ks)
+	}
+	return firstErr
+}
+
+// wrappedKeyspace resolves namespace:keyspace to its *siKeyspace wrapper.
+func (d *siDatastore) wrappedKeyspace(namespace, keyspace string) (*siKeyspace, error) {
+	ns, nerr := d.NamespaceByName(namespace)
+	if nerr != nil {
+		return nil, fmt.Errorf("namespace %q: %v", namespace, nerr)
+	}
+	ks, kerr := ns.KeyspaceByName(keyspace)
+	if kerr != nil {
+		return nil, fmt.Errorf("keyspace %q: %v", keyspace, kerr)
+	}
+	sks, ok := ks.(*siKeyspace)
+	if !ok {
+		return nil, fmt.Errorf("keyspace %q has no secondary indexes", keyspace)
+	}
+	return sks, nil
+}
+
+// fillInfo populates the live bbolt stats for a built index.
+func (si *secondaryIndex) fillInfo(info *IndexInfo) {
+	info.Built = true
+	info.Path = si.db.Path()
+	if fi, err := os.Stat(si.db.Path()); err == nil {
+		info.SizeBytes = fi.Size()
+	}
+	_ = si.db.View(func(tx *bolt.Tx) error {
+		if b := tx.Bucket([]byte(siEntriesBucket)); b != nil {
+			info.Entries = b.Stats().KeyN
+		}
+		return nil
+	})
 }
 
 // ------------------------------------------------------ datastore/ns wrappers
@@ -187,7 +326,7 @@ type siIndexer struct {
 
 func (ix *siIndexer) BucketId() string          { return "" }
 func (ix *siIndexer) ScopeId() string           { return "" }
-func (ix *siIndexer) KeyspaceId() string         { return ix.ks.Id() }
+func (ix *siIndexer) KeyspaceId() string        { return ix.ks.Id() }
 func (ix *siIndexer) Name() datastore.IndexType { return datastore.GSI }
 
 func (ix *siIndexer) IndexIds() ([]string, errors.Error) {
@@ -241,10 +380,10 @@ func (ix *siIndexer) CreateIndex(requestId, name string, seekKey, rangeKey expre
 	return nil, errors.NewError(nil, "secondary index: CREATE INDEX not supported (define in .n1k1/catalog.json)")
 }
 
-func (ix *siIndexer) BuildIndexes(requestId string, names ...string) errors.Error { return nil }
-func (ix *siIndexer) Refresh() errors.Error                                        { return nil }
-func (ix *siIndexer) MetadataVersion() uint64                                      { return 0 }
-func (ix *siIndexer) SetLogLevel(level logging.Level)                              {}
+func (ix *siIndexer) BuildIndexes(requestId string, names ...string) errors.Error       { return nil }
+func (ix *siIndexer) Refresh() errors.Error                                             { return nil }
+func (ix *siIndexer) MetadataVersion() uint64                                           { return 0 }
+func (ix *siIndexer) SetLogLevel(level logging.Level)                                   {}
 func (ix *siIndexer) SetConnectionSecurityConfig(c *datastore.ConnectionSecurityConfig) {}
 
 // --------------------------------------------------------------- the index
@@ -257,15 +396,15 @@ type secondaryIndex struct {
 	db  *bolt.DB
 }
 
-func (si *secondaryIndex) KeyspaceId() string                  { return si.ks.Id() }
-func (si *secondaryIndex) Id() string                          { return si.def.Name }
-func (si *secondaryIndex) Name() string                        { return si.def.Name }
-func (si *secondaryIndex) Type() datastore.IndexType           { return datastore.GSI }
-func (si *secondaryIndex) Indexer() datastore.Indexer          { return si.ks.secondaryIndexer() }
-func (si *secondaryIndex) SeekKey() expression.Expressions     { return nil }
-func (si *secondaryIndex) RangeKey() expression.Expressions    { return si.def.rangeKey }
-func (si *secondaryIndex) Condition() expression.Expression    { return si.def.condition }
-func (si *secondaryIndex) IsPrimary() bool                     { return false }
+func (si *secondaryIndex) KeyspaceId() string               { return si.ks.Id() }
+func (si *secondaryIndex) Id() string                       { return si.def.Name }
+func (si *secondaryIndex) Name() string                     { return si.def.Name }
+func (si *secondaryIndex) Type() datastore.IndexType        { return datastore.GSI }
+func (si *secondaryIndex) Indexer() datastore.Indexer       { return si.ks.secondaryIndexer() }
+func (si *secondaryIndex) SeekKey() expression.Expressions  { return nil }
+func (si *secondaryIndex) RangeKey() expression.Expressions { return si.def.rangeKey }
+func (si *secondaryIndex) Condition() expression.Expression { return si.def.condition }
+func (si *secondaryIndex) IsPrimary() bool                  { return false }
 
 func (si *secondaryIndex) State() (datastore.IndexState, string, errors.Error) {
 	return datastore.ONLINE, "", nil

@@ -20,6 +20,7 @@ import (
 	"testing"
 
 	"github.com/couchbase/n1k1/base"
+	"github.com/couchbase/n1k1/glue"
 )
 
 // writeIndexedKeyspace builds a classic <root>/<ns>/<keyspace>/<key>.json layout
@@ -182,6 +183,54 @@ func TestNoCatalogNoIndex(t *testing.T) {
 	rows := flatRootRows(t, conv, testGlueExec(t, false, store, conv))
 	if got, want := idJSONs(rows), wantIDJSONs([]string{"c1", "c3", "c5"}); !equalStrs(got, want) {
 		t.Fatalf("no-catalog query: want %v, got %v", want, got)
+	}
+}
+
+// TestSecondaryIndexModeOff: with glue.SecondaryIndexMode == "off" the catalog is
+// ignored -- no IndexScan is planned -- but results are still correct (primary scan).
+func TestSecondaryIndexModeOff(t *testing.T) {
+	defer func(prev string) { glue.SecondaryIndexMode = prev }(glue.SecondaryIndexMode)
+	glue.SecondaryIndexMode = "off"
+
+	root := writeIndexedKeyspace(t, siDocs, siCatalog)
+	stmt := `SELECT c.id AS id FROM default:customer c WHERE c.country = "US"`
+	store, conv := flatRootConv(t, root, stmt)
+	if hasKind(conv.TopOp, "datastore-scan-index") {
+		t.Fatalf("-index=off: should not plan an IndexScan, got %v", opKinds(conv.TopOp))
+	}
+	rows := flatRootRows(t, conv, testGlueExec(t, false, store, conv))
+	if got, want := idJSONs(rows), wantIDJSONs([]string{"c1", "c3", "c5"}); !equalStrs(got, want) {
+		t.Fatalf("-index=off query: want %v, got %v", want, got)
+	}
+	if infos := glue.SecondaryIndexInfos(store.Datastore); infos != nil {
+		t.Fatalf("-index=off: expected no index infos, got %v", infos)
+	}
+}
+
+// TestSecondaryIndexInfos: .indexes introspection reports each declared index,
+// built, with the right key count.
+func TestSecondaryIndexInfos(t *testing.T) {
+	root := writeIndexedKeyspace(t, siDocs, siCatalog)
+	store, _ := flatRootConv(t, root, `SELECT 1`) // opens the (wrapped) store
+	infos := glue.SecondaryIndexInfos(store.Datastore)
+	if len(infos) != 2 {
+		t.Fatalf("want 2 index infos, got %d (%+v)", len(infos), infos)
+	}
+	byName := map[string]glue.IndexInfo{}
+	for _, ix := range infos {
+		byName[ix.Name] = ix
+	}
+	for _, name := range []string{"ix_country", "ix_age"} {
+		ix, ok := byName[name]
+		if !ok {
+			t.Fatalf("missing index %q in %+v", name, infos)
+		}
+		if !ix.Built || ix.Err != "" {
+			t.Errorf("%s: want built, got Built=%v Err=%q", name, ix.Built, ix.Err)
+		}
+		if ix.Entries != len(siDocs) {
+			t.Errorf("%s: want %d entries, got %d", name, len(siDocs), ix.Entries)
+		}
 	}
 }
 

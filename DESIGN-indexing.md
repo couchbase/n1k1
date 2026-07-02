@@ -95,6 +95,38 @@ index** first, then a **full-text index** via embedded bleve — to n1k1's
 standalone SQL++ CLI (`cmd/n1k1`), **without** depending on cbft, cbgt, n1fty,
 or cbauth and their distributed-systems machinery.
 
+## CLI control (build timing & introspection)
+
+Index lifecycle is otherwise implicit (build-on-first-use), so the CLI exposes two
+controls. Both live in n1k1 (`cmd/n1k1`, `glue/si.go`); the fork is untouched.
+
+**`-index=eager|lazy|off`** (flag) — *when* catalog indexes build, via the
+process-global `glue.SecondaryIndexMode` (set before `OpenSession`, re-read on
+every `maybeSecondaryIndexes`, so a mid-session `.open` re-applies it):
+- **`lazy`** (default) — advertise indexes; each builds on first use (the first
+  query over its keyspace, or `.indexes`). First such query pays the build cost.
+- **`eager`** — after opening the datastore, `EagerBuildSecondaryIndexes` opens/
+  builds *every* catalog index up front, so no query pays the build cost.
+- **`off`** — `maybeSecondaryIndexes` returns the datastore unwrapped, so no
+  secondary index is advertised and the planner always primary/records-scans.
+  The A/B-timing switch (and an escape hatch if an index ever misbehaves).
+
+**`.indexes`** (dot-command) — introspection, alongside `.tables`/`.schema`. Lists
+each declared index as `ns:keyspace.name (keys…) [WHERE …]  [N entries, SIZE]`,
+opening/building any not-yet-built index to report live bbolt stats
+(`glue.SecondaryIndexInfos` → entry count via `Bucket.Stats().KeyN`, file size via
+`os.Stat`). Under `-index=off` it prints "disabled". Because it can trigger a build,
+`.indexes` doubles as an explicit "build now".
+
+**Design stance on scope.** Per-index knobs (collation, the "index-everything"
+value-size cap + truncation marker, `defer`, CBO stats) belong in `catalog.json`
+as per-index fields, *not* as global flags — they're properties of a definition,
+and `catalog.json` is the single-writer source of truth (see "Sidecar layout").
+Reserve flags/dot-commands for process-wide *timing/introspection*
+(`-index`, `.indexes`) and, later, lifecycle verbs (`.reindex <name>`,
+`.index drop <name>`). DDL (`CREATE/DROP INDEX`) stays unwired in v1 (`conv.go:
+VisitCreateIndex` is `NA()`); the catalog is the definition surface.
+
 ## Motivation
 
 Today every n1k1 query over the file datastore is a full keyspace (primary) scan

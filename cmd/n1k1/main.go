@@ -72,6 +72,7 @@ func main() {
 		scanFlag  = flag.String("scan", "", "restrict file discovery to a comma-separated set (all|json|jsonl|csv|tsv|extract|gzip|recurse); empty or 'all' = everything")
 		metaFlag  = flag.String("meta", "auto", "add a _meta sub-object (path/name/ext/size/mtime) to records: on|off|auto (auto = extracted docs only)")
 		verFlag   = flag.Bool("version", false, "print version + build info (incl. dependency SHAs) and exit")
+		indexFlag = flag.String("index", "lazy", "secondary index (.n1k1/catalog.json) build mode: eager|lazy|off")
 	)
 	flag.Usage = usage
 	flag.Parse()
@@ -80,6 +81,16 @@ func main() {
 	if *verFlag {
 		printVersion(os.Stdout)
 		return
+	}
+
+	// -index selects when catalog-declared secondary indexes are built (lazy on
+	// first use, eager up front, or off = ignore the catalog). See DESIGN-indexing.md.
+	switch *indexFlag {
+	case "eager", "lazy", "off":
+		glue.SecondaryIndexMode = *indexFlag
+	default:
+		fmt.Fprintf(os.Stderr, "%s: bad -index %q (want eager|lazy|off)\n", prog, *indexFlag)
+		os.Exit(2)
 	}
 
 	// -scan locks down which formats/layouts/compression n1k1 will scan, so a
@@ -141,21 +152,24 @@ func main() {
 	fancy := isTTY(os.Stdout) && os.Getenv("NO_COLOR") == ""
 
 	c := &cli{
-		prog:     prog,
-		sess:     sess,
-		dir:      dir,
-		ns:       *nsFlag,
-		mode:     mode,
-		timer:    *timerFlag,
-		verbose:  *vFlag,
-		maxRows:  0,
-		maxWidth: -1,
-		listSep:  "|",
-		out:      os.Stdout,
-		stderr:   os.Stderr,
-		fancyTTY: fancy,
-		style:    cmd.Style{On: fancy},
+		prog:      prog,
+		sess:      sess,
+		dir:       dir,
+		ns:        *nsFlag,
+		mode:      mode,
+		indexMode: *indexFlag,
+		timer:     *timerFlag,
+		verbose:   *vFlag,
+		maxRows:   0,
+		maxWidth:  -1,
+		listSep:   "|",
+		out:       os.Stdout,
+		stderr:    os.Stderr,
+		fancyTTY:  fancy,
+		style:     cmd.Style{On: fancy},
 	}
+
+	c.eagerBuildIndexes() // -index=eager: build all catalog indexes up front
 
 	// Startup init file (dot-commands / SQL). If -init was not given, use the
 	// default ~/.<prog>rc; if given, the value names a file, or "", "-" or "none"
@@ -231,13 +245,14 @@ type cli struct {
 	dir  string
 	ns   string
 
-	mode     string
-	timer    bool
-	verbose  bool
-	explain  bool
-	maxRows  int // box: 0 = all; >0 = head+tail; <0 = last |n| rows
-	maxWidth int // box: per-column cap; 0 = uncapped; <0 = auto (fit terminal)
-	listSep  string
+	mode      string
+	indexMode string // -index: eager|lazy|off (drives eager build on open)
+	timer     bool
+	verbose   bool
+	explain   bool
+	maxRows   int // box: 0 = all; >0 = head+tail; <0 = last |n| rows
+	maxWidth  int // box: per-column cap; 0 = uncapped; <0 = auto (fit terminal)
+	listSep   string
 
 	out     io.Writer // result destination (stdout, or a .output file)
 	outFile *os.File  // non-nil when .output redirected to a file
@@ -482,6 +497,8 @@ func (c *cli) dot(line string) bool {
 		c.cmdOpen(arg)
 	case ".tables", ".keyspaces":
 		c.cmdKeyspaces()
+	case ".indexes", ".index":
+		c.cmdIndexes()
 	case ".schema":
 		c.cmdSchema(arg)
 	case ".mode":
@@ -555,6 +572,7 @@ func (c *cli) printHelp() {
 	fmt.Fprint(c.stderr, `.help                 show this help
 .open <dir>           open a different file datastore directory
 .tables / .keyspaces  list keyspaces (with a copy-paste example each)
+.indexes              list secondary indexes (.n1k1/catalog.json) with keys + stats
 .schema [<keyspace>]  sampled shape (keys + JSON types) of a keyspace
 .mode <m>             output mode (append |pretty to indent JSON): `+strings.Join(cmd.OutputModes, " ")+`
 .meta [on|off|auto]   add a _meta sub-object to records (no arg shows the current setting)
@@ -583,7 +601,67 @@ func (c *cli) cmdOpen(dir string) {
 		return
 	}
 	c.sess, c.dir = sess, dir
+	c.eagerBuildIndexes() // re-apply -index=eager to the newly opened datastore
 	fmt.Fprintf(c.stderr, "opened %s\n", dir)
+}
+
+// eagerBuildIndexes builds all catalog-declared secondary indexes now when
+// -index=eager, so the first query over the datastore pays no build cost. No-op
+// in lazy/off mode or when the datastore has no indexes.
+func (c *cli) eagerBuildIndexes() {
+	if c.indexMode != "eager" || c.sess == nil || c.sess.Store == nil {
+		return
+	}
+	if err := glue.EagerBuildSecondaryIndexes(c.sess.Store.Datastore); err != nil {
+		fmt.Fprintf(c.stderr, "%s: eager index build: %v\n", c.prog, err)
+	}
+}
+
+// cmdIndexes implements .indexes: list each declared secondary index with its
+// keys, WHERE, and (once built) entry count and on-disk size. It opens/builds any
+// not-yet-built index to report live stats.
+func (c *cli) cmdIndexes() {
+	if c.sess == nil || c.sess.Store == nil {
+		fmt.Fprintln(c.stderr, "no datastore open")
+		return
+	}
+	infos := glue.SecondaryIndexInfos(c.sess.Store.Datastore)
+	if len(infos) == 0 {
+		if c.indexMode == "off" {
+			fmt.Fprintln(c.stderr, "secondary indexes disabled (-index=off)")
+		} else {
+			fmt.Fprintln(c.stderr, "no secondary indexes (declare them in .n1k1/catalog.json)")
+		}
+		return
+	}
+	for _, ix := range infos {
+		name := ix.Namespace + ":" + ix.Keyspace + "." + ix.Name
+		keys := "(" + strings.Join(ix.Keys, ", ") + ")"
+		if ix.Where != "" {
+			keys += " WHERE " + ix.Where
+		}
+		status := "not built"
+		if ix.Built {
+			status = fmt.Sprintf("%d entries, %s", ix.Entries, humanBytes(ix.SizeBytes))
+		} else if ix.Err != "" {
+			status = ix.Err
+		}
+		fmt.Fprintf(c.out, "%s %s  [%s]\n", name, keys, status)
+	}
+}
+
+// humanBytes renders a byte count compactly (e.g. 4.0K, 1.2M).
+func humanBytes(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%dB", n)
+	}
+	div, exp := int64(unit), 0
+	for x := n / unit; x >= unit; x /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f%c", float64(n)/float64(div), "KMGT"[exp])
 }
 
 func (c *cli) cmdKeyspaces() {

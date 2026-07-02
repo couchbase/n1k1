@@ -102,8 +102,15 @@ front-end (parse args, read lines, format rows).
     -init <file>  run dot-commands/SQL from file at startup (default ~/.n1k1rc)
     -no-init      skip the init file
     -readonly     (no-op today; the file store is already read-only — reserved)
+    -index <mode> secondary index build: eager|lazy|off (see DESIGN-indexing.md)
+    -scan <set>   restrict file discovery (see DESIGN-data.md)
+    -meta <mode>  per-record _meta injection: on|off|auto
     -v            verbose (show unsupported reasons, plan on error)
   ```
+
+  Index flags/commands (`-index`, `.indexes`) are owned by **DESIGN-indexing.md
+  "CLI control"** — see there for the build-timing model and per-index-option
+  stance. Data-source flags (`-scan`, `-meta`) are owned by DESIGN-data.md.
 
   Mode selection: a TTY defaults to `box|pretty`; a pipe/`-c`
   defaults to `jsonlines` (compact, clean for downstream tools) unless `-mode`
@@ -142,6 +149,7 @@ Chosen to match DuckDB names where the concept exists, so muscle memory carries.
 | `.open <dir>` | Open a new file datastore directory (re-`FileStore`+`InitParser`). |
 | `.tables` / `.keyspaces` | List keyspaces under the namespace (the subdirs of `<dir>/<ns>/`). DuckDB calls them tables; we accept both, print "keyspaces". |
 | `.schema [<keyspace>]` | Infer a shape from sampling the first N docs of a keyspace (top-level keys + observed JSON types). No real schema exists in a JSON store, so it's a *sampled* shape, clearly labeled. |
+| `.indexes` | List secondary indexes from `.n1k1/catalog.json` with keys/`WHERE` and (once built) entry count + on-disk size. Builds any not-yet-built index to report stats. Owned by DESIGN-indexing.md "CLI control". |
 | `.mode <m>` | Set output mode (see §6). |
 | `.meta [on\|off\|auto]` | Check or set whether records get a `_meta` sub-object (path/name/ext/size/mtime/pos). Mirrors the `-meta` flag; no arg prints the current setting. Mutates `glue.ScanWalkOptions.Meta`, which the records-scan reads per query. |
 | `.timer on\|off` | Toggle elapsed-time footer. |
