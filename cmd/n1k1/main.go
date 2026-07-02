@@ -67,9 +67,9 @@ func main() {
 		nsFlag    = flag.String("ns", "default", "datastore namespace")
 		modeFlag  = flag.String("mode", "", "output mode: "+strings.Join(cmd.OutputModes, "|")+" (append |pretty to indent JSON; default box|pretty at a TTY, else jsonlines)")
 		timerFlag = flag.Bool("timer", false, "print row count + elapsed after each statement")
-		vFlag     = flag.Bool("v", false, "verbose: show unsupported reasons / plan on error")
+		vFlag     = flag.Bool("v", false, "verbose: show more info on errors")
 		initFlag  = flag.String("init", "", "startup file of dot-commands/SQL++ (default ~/."+prog+"rc; use \"\", \"-\" or \"none\" to skip)")
-		scanFlag  = flag.String("scan", "", "restrict scanning to a comma-separated set (all|json|jsonl|csv|tsv|extract|gzip|recurse); empty or 'all' = everything")
+		scanFlag  = flag.String("scan", "", "restrict file discovery to a comma-separated set (all|json|jsonl|csv|tsv|extract|gzip|recurse); empty or 'all' = everything")
 		metaFlag  = flag.String("meta", "auto", "add a _meta sub-object (path/name/ext/size/mtime) to records: on|off|auto (auto = extracted docs only)")
 	)
 	flag.Usage = usage
@@ -198,20 +198,19 @@ func usage() {
 
 usage: %[1]s [flags] [datastore-dir | file]
 
-  # a single file -- the keyspace is the file name minus its extensions,
-  # so events.jsonl is FROM events, sales.csv is FROM sales, etc:
-  %[1]s -c "SELECT * FROM events LIMIT 5"                    events.jsonl
-  %[1]s -c "SELECT COUNT(*) AS n FROM access"                access.ndjson.gz
-  %[1]s -c "SELECT city, SUM(amt) AS t FROM sales GROUP BY city"  sales.csv
+  # a single file -- the keyspace is the filename minus its extension:
+  %[1]s -c "SELECT * FROM events LIMIT 5"                   events.jsonl
+  %[1]s -c "SELECT COUNT(*) AS n FROM access"               access.ndjson.gz
+  %[1]s -c "SELECT city, SUM(amt) FROM sales GROUP BY city" path/to/sales.csv
 
-  # a directory of files (flat, or <ns>/<keyspace>/ subdirs):
-  %[1]s ./test/suite/json                                    REPL over a datastore-dir
-  %[1]s -c "SELECT * FROM default:orders WHERE n > 5"        shop
+  # a directory tree of files (flat, <ns>/<keyspace>/, or nested subdirs):
+  %[1]s ./test/suite/json
+  %[1]s -c "SELECT * FROM invoices WHERE total > 5" path/to/biz-datastore-dir
 
   # statements from -c, a file, or stdin:
   %[1]s -c "SELECT 1+1"
-  %[1]s -f script.sql++ dir
-  echo "SELECT ..." | %[1]s
+  %[1]s -f script.sql++ path/to/datastore-dir
+  echo "SELECT 1+1" | %[1]s
 
 flags:
 `, prog)
