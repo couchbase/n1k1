@@ -16,6 +16,7 @@ package glue
 import (
 	"fmt"
 	"os"
+	"sync"
 
 	"github.com/couchbase/query/algebra"
 	"github.com/couchbase/query/datastore"
@@ -39,7 +40,16 @@ import (
 type subqEvaluator struct {
 	store     *Store
 	namespace string
-	cache     map[*algebra.Select]*subCompiled
+
+	// mu guards cache. Subqueries are normally evaluated on the single push
+	// goroutine, but OpUnionAll runs its branches as concurrent actors that share
+	// this evaluator (ChainExtend copies the Temps slice but not the *GlueContext
+	// it points at), so two branch subqueries can compile() at once -- an
+	// unsynchronized map write is a fatal "concurrent map writes". (corrParent is
+	// untouched here: only correlated subqueries set it, and those are rarer
+	// inside a concurrent union branch -- tracked separately if it bites.)
+	mu    sync.Mutex
+	cache map[*algebra.Select]*subCompiled
 
 	// withBindings carries the outer query's WITH CTE bindings into sub-SELECT
 	// conversions, so a sub-SELECT that references an outer CTE (WITH a AS (...),
@@ -171,6 +181,8 @@ func (c *GlueContext) EvaluateSubquery(query *algebra.Select, parent value.Value
 
 // compile plans + converts (once, cached) a subquery SELECT to a base.Op tree.
 func (e *subqEvaluator) compile(query *algebra.Select) (*subCompiled, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	if sc, ok := e.cache[query]; ok {
 		return sc, nil
 	}
