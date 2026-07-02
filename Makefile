@@ -2,15 +2,22 @@ default: test
 
 .PHONY: test test-core test-glue test-suite test-suite-gsi test-compiler test-all cli install-cli build build-glue build-intermed
 
+# VERSION is `git describe` of the source tree at build time, injected into the
+# CLI via -ldflags so `n1k1 -version` reports it. Falls back to "dev" outside a
+# git checkout. (Dependency SHAs come from the embedded build info at runtime --
+# no `go mod tidy` needed, so the go.mod `replace` pins stay untouched.)
+VERSION := $(shell git describe --long --tags --always --dirty 2>/dev/null || echo dev)
+VERSION_LDFLAGS := -X main.version=$(VERSION)
+
 # cli builds the n1k1 command-line tool: a single pure-Go binary (CGO off) that
 # runs SQL++ queries over local files. See cmd/n1k1 and DESIGN-cli.md.
 cli: build-glue
-	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go build -tags n1ql -o n1k1 ./cmd/n1k1
+	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go build -tags n1ql -ldflags "$(VERSION_LDFLAGS)" -o n1k1 ./cmd/n1k1
 	@echo 'built ./n1k1 -- try: ./n1k1 ./test/suite/json (or: ./n1k1 -c "SELECT 1+1" .)'
 
 # install-cli installs the n1k1 binary into $(GOBIN) (or $(GOPATH)/bin).
 install-cli:
-	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go install -tags n1ql ./cmd/n1k1
+	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go install -tags n1ql -ldflags "$(VERSION_LDFLAGS)" ./cmd/n1k1
 
 # build builds the self-contained core packages.
 build:

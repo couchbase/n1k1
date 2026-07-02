@@ -71,9 +71,16 @@ func main() {
 		initFlag  = flag.String("init", "", "startup file of dot-commands/SQL++ (default ~/."+prog+"rc; use \"\", \"-\" or \"none\" to skip)")
 		scanFlag  = flag.String("scan", "", "restrict file discovery to a comma-separated set (all|json|jsonl|csv|tsv|extract|gzip|recurse); empty or 'all' = everything")
 		metaFlag  = flag.String("meta", "auto", "add a _meta sub-object (path/name/ext/size/mtime) to records: on|off|auto (auto = extracted docs only)")
+		verFlag   = flag.Bool("version", false, "print version + build info (incl. dependency SHAs) and exit")
 	)
 	flag.Usage = usage
 	flag.Parse()
+
+	// -version works without a datastore, so handle it before opening a session.
+	if *verFlag {
+		printVersion(os.Stdout)
+		return
+	}
 
 	// -scan locks down which formats/layouts/compression n1k1 will scan, so a
 	// tree with subdirs/formats the user doesn't want considered can be excluded.
@@ -467,6 +474,8 @@ func (c *cli) dot(line string) bool {
 		return true
 	case ".help":
 		c.printHelp()
+	case ".version":
+		printVersion(c.stderr)
 	case ".open":
 		c.cmdOpen(arg)
 	case ".tables", ".keyspaces":
@@ -553,6 +562,7 @@ func (c *cli) printHelp() {
 .maxwidth <n|auto>    box: cap column width (0 = uncapped; auto = fit terminal)
 .read <file>          run statements/dot-commands from a file
 .output [<file>]      send results to a file, or back to stdout if omitted
+.version              show version + build info (incl. dependency SHAs)
 .quit / .exit         leave
 
 Statements are SQL++; terminate with ';'. Keyspaces are queried as

@@ -150,6 +150,7 @@ Chosen to match DuckDB names where the concept exists, so muscle memory carries.
 | `.read <file>` | Execute statements/dot-commands from a file. |
 | `.output <file>` / `.output` | Redirect results to a file / back to stdout. |
 | `.explain` | Toggle: also print the converted `base.Op` plan tree for each query. The natural home for showing *why* something is UNSUPPORTED. |
+| `.version` | Show the build version (`git describe`, injected via `-ldflags -X main.version`) plus the Go toolchain, the embedded VCS stamp, and the full module dependency graph with go.sum hashes. The `-version` flag prints the same and exits. Dep SHAs come from `runtime/debug.ReadBuildInfo` (no `go mod tidy`, honors the `replace` pins). |
 | `.shell <cmd>` / `.system <cmd>` | Run a shell command (DuckDB parity; gated, off by default if we want caution). |
 | `.quit` / `.exit` | Leave. |
 
