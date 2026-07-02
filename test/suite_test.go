@@ -39,6 +39,8 @@ import (
 	"testing"
 	"text/tabwriter"
 
+	"github.com/couchbase/query/value"
+
 	"github.com/couchbase/n1k1/glue"
 )
 
@@ -48,7 +50,7 @@ const suiteRoot = "suite/json" // corpus root for glue.FileStore; queries use de
 // result rows as canonical JSON strings. Any parse/plan/convert/exec error (or
 // panic) is returned as err, which the harness treats as "unsupported".
 func n1k1RunStatement(store *glue.Store, stmt string) (rows []string, err error) {
-	rows, _, err = n1k1RunStatementCtx(store, stmt)
+	rows, _, err = n1k1RunStatementCtx(store, stmt, nil)
 	return rows, err
 }
 
@@ -58,8 +60,8 @@ func n1k1RunStatement(store *glue.Store, stmt string) (rows []string, err error)
 //
 // The actual engine pipeline lives in glue.Session.Run (shared with cmd/n1k1);
 // this is just the rows-as-strings adapter the suite comparisons expect.
-func n1k1RunStatementCtx(store *glue.Store, stmt string) (rows []string, res *glue.Result, err error) {
-	sess := &glue.Session{Store: store, Namespace: "default"}
+func n1k1RunStatementCtx(store *glue.Store, stmt string, named map[string]value.Value) (rows []string, res *glue.Result, err error) {
+	sess := &glue.Session{Store: store, Namespace: "default", NamedArgs: named}
 
 	res, err = sess.Run(stmt)
 	if err != nil {
@@ -79,7 +81,7 @@ func n1k1RunStatementCtx(store *glue.Store, stmt string) (rows []string, res *gl
 func caseRunnable(c map[string]interface{}) (stmt string, results []interface{}, ok bool) {
 	for k := range c {
 		switch k {
-		case "statements", "results", "ordered", "description", "pretty", "sortCount", "comment":
+		case "statements", "results", "ordered", "description", "pretty", "sortCount", "comment", "namedArgs", "testcase", "explain", "ignore":
 		default:
 			return "", nil, false // exotic field -> skip
 		}
@@ -90,6 +92,22 @@ func caseRunnable(c map[string]interface{}) (stmt string, results []interface{},
 		return "", nil, false
 	}
 	return s, r, true
+}
+
+// caseNamedArgs extracts a case's "namedArgs" object as query named parameters
+// ($name), converting each JSON value to a value.Value. Returns nil when the
+// case has none (the common path). The runner threads these into the session so
+// a `WHERE x IN $inlist` NamedParameter resolves at eval time.
+func caseNamedArgs(c map[string]interface{}) map[string]value.Value {
+	raw, ok := c["namedArgs"].(map[string]interface{})
+	if !ok || len(raw) == 0 {
+		return nil
+	}
+	args := make(map[string]value.Value, len(raw))
+	for k, v := range raw {
+		args[k] = value.NewValue(v)
+	}
+	return args
 }
 
 // NOTE on "resultset": a few cases carried a "resultset" block instead of
@@ -243,7 +261,7 @@ func rowsEqualStrings(a, b []string) bool {
 
 // TestSuiteCases runs the original tuqtng-era + imported no-FROM gsi corpus.
 func TestSuiteCases(t *testing.T) {
-	runSuiteCases(t, suiteRoot, expectedNonPass, groupWhy, 1040)
+	runSuiteCases(t, suiteRoot, expectedNonPass, groupWhy, 1041)
 }
 
 // TestGsiSuiteCases runs the data-backed gsi corpus (isolated root so its shared
@@ -287,7 +305,7 @@ func runSuiteCases(t *testing.T, suiteRoot string, expectedNonPass, groupWhy map
 
 			// Result case: {statements, results} -- run and compare rows.
 			if stmt, results, ok := caseRunnable(c); ok {
-				got, err := n1k1RunStatement(store, stmt)
+				got, _, err := n1k1RunStatementCtx(store, stmt, caseNamedArgs(c))
 				switch {
 				case err != nil:
 					nonPass = append(nonPass, errOutcome(loc, stmt, err))
@@ -355,7 +373,7 @@ func runSuiteCases(t *testing.T, suiteRoot string, expectedNonPass, groupWhy map
 			// warning. PASS when rows match AND n1k1 recorded a warning (code not
 			// required to match -- a runtime advisory; see caseWarning).
 			if stmt, results, ok := caseWarning(c); ok {
-				got, res, err := n1k1RunStatementCtx(store, stmt)
+				got, res, err := n1k1RunStatementCtx(store, stmt, caseNamedArgs(c))
 				switch {
 				case err != nil:
 					nonPass = append(nonPass, errOutcome(loc, stmt, err))
@@ -690,12 +708,14 @@ var expectedNonPass = map[string]string{
 	"case_system_completed.json[0]": "system-namespace",
 	"case_system_completed.json[1]": "system-namespace",
 	"case_system_completed.json[2]": "system-namespace",
+	"case_system_prepareds.json[0]": "system-namespace", // PREPARE ... FROM system:prepareds (panics on nil systemstore)
 	"case_system_prepareds.json[1]": "system-namespace",
 	"case_system_prepareds.json[3]": "system-namespace",
 	"case_system_prepareds.json[4]": "system-namespace",
 
 	// Prepared-statement EXECUTE.
 	"case_system_prepareds.json[2]": "prepared",
+	"case_prepare.json[4]":          "prepared",
 
 	// The one FAIL: ARRAY_AGG element order is undefined in N1QL.
 	"case_func_array.json[34]": "arrayagg-order",

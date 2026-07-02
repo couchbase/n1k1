@@ -73,15 +73,49 @@ SCOPE_PATCHES = [
 ]
 
 def inject_test_id_scope(stmt, tid):
-    """Add a `test_id="<tid>"` predicate to stmt: fold it into an existing WHERE
-    with AND, else insert a WHERE clause. Placed before any trailing ORDER BY /
-    GROUP BY / HAVING / LIMIT so it stays a valid predicate."""
+    """Add a `test_id="<tid>"` predicate to stmt: AND it onto an existing WHERE
+    (wrapping the existing predicate in parens so it scopes the WHOLE clause, not
+    just the last `OR` branch), else insert a WHERE clause. Placed before any
+    trailing ORDER BY / GROUP BY / HAVING / LIMIT so it stays a valid predicate."""
     m = re.search(r'\b(order\s+by|group\s+by|having|limit)\b', stmt, re.IGNORECASE)
     cut = m.start() if m else len(stmt)
     head, tail = stmt[:cut].rstrip(), stmt[cut:]
-    conj = "AND" if re.search(r'\bwhere\b', head, re.IGNORECASE) else "WHERE"
-    scoped = f'{head} {conj} test_id="{tid}"'
+    wm = re.search(r'\bwhere\b', head, re.IGNORECASE)
+    if wm:
+        pred = head[wm.end():].strip()
+        scoped = head[:wm.start()].rstrip() + f' WHERE ({pred}) AND test_id="{tid}"'
+    else:
+        scoped = f'{head} WHERE test_id="{tid}"'
     return (scoped + " " + tail).rstrip() if tail else scoped
+
+# AUTO_SCOPE_CATS: categories whose cases query the shared shellTest keyspace
+# WITHOUT a test_id predicate (unlike most categories, which the fork's own
+# statements already scope). The fork reloads shellTest per category, so its
+# statements see only that category's docs; our merged corpus holds every
+# category's shellTest docs at once, so an unscoped `FROM shellTest WHERE ...`
+# returns cross-category rows. Inject test_id=<cat> to restore that isolation.
+AUTO_SCOPE_CATS = {"inlist"}
+
+def auto_scope_shelltest(cat, c):
+    """For AUTO_SCOPE_CATS, inject test_id=<cat> into a plain SELECT whose main
+    FROM is the shared shellTest keyspace and that carries no test_id predicate.
+    Skips PREPARE/EXECUTE/DELETE (unsupported anyway) and JOINs (two shellTest
+    terms make an unqualified test_id ambiguous). Copies c before mutating."""
+    if cat not in AUTO_SCOPE_CATS:
+        return c
+    stmt = c.get("statements", "")
+    low = stmt.lower()
+    if "test_id" in low or not re.search(r'\bfrom\s+shelltest\b', low):
+        return c
+    if re.match(r'\s*(prepare|execute|delete)\b', low) or re.search(r'\bjoin\b', low):
+        return c
+    c = dict(c)
+    c["statements"] = inject_test_id_scope(stmt, cat)
+    note = (f'n1k1: auto-scoped with test_id="{cat}" -- the fork runs this against a '
+            f'freshly-loaded shellTest bucket, but our merged corpus also holds other '
+            f"categories' shellTest docs, so the unscoped query would over-match.")
+    c["description"] = (c["description"] + " " + note) if c.get("description") else note
+    return c
 
 def apply_scope_patch(cat, c):
     """Return c, possibly with a shared-keyspace scope predicate injected into its
@@ -334,7 +368,7 @@ def main(qf):
                 if not isinstance(c, dict): continue
                 stmt = c.get("statements")
                 if not isinstance(stmt, str) or NONDET.search(stmt): continue
-                picked.append(apply_scope_patch(cat, c))
+                picked.append(auto_scope_shelltest(cat, apply_scope_patch(cat, c)))
         if picked:
             os.makedirs(os.path.join(root, "cases"), exist_ok=True)
             json.dump(picked, open(os.path.join(root, "cases", f"case_gsi_{cat}.json"), "w"), indent=2)

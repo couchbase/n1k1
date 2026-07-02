@@ -294,7 +294,7 @@
     ]
   },
   {
-    "statements": "SELECT OBJECT_pairs_nested(customer,{'pattern':'e$'}) FROM customer WHERE emailAddress = 'august.mayer@bashirian.info' AND test_id=\"obj_func\"",
+    "statements": "SELECT OBJECT_pairs_nested(customer,{'pattern':'e$'}) FROM customer WHERE (emailAddress = 'august.mayer@bashirian.info') AND test_id=\"obj_func\"",
     "results": [
       {
         "$1": [

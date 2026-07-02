@@ -157,7 +157,7 @@ func TestAnsiHashLeftJoinEquijoin(t *testing.T) {
 			" ON e.dep = d.id ORDER BY ct, nm"
 	}
 
-	want, _, err := n1k1RunStatementCtx(store, q("USE NL"))
+	want, _, err := n1k1RunStatementCtx(store, q("USE NL"), nil)
 	if err != nil {
 		t.Fatalf("USE NL: %v", err)
 	}
@@ -165,7 +165,7 @@ func TestAnsiHashLeftJoinEquijoin(t *testing.T) {
 		t.Fatalf("USE NL baseline = %d rows, want 5: %v", len(want), want)
 	}
 
-	got, res, err := n1k1RunStatementCtx(store, q("USE HASH(build)"))
+	got, res, err := n1k1RunStatementCtx(store, q("USE HASH(build)"), nil)
 	if err != nil {
 		t.Fatalf("USE HASH(build): %v", err)
 	}

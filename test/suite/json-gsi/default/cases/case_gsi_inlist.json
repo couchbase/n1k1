@@ -11,7 +11,7 @@
       ],
       "statement": "SELECT true AS present FROM $explan AS p WHERE ANY v WITHIN p.plan.`~children` SATISFIES v.`#operator` = 'IndexScan3' AND v.has_dynamic_in = true and ARRAY_LENGTH(v.spans) = 1 AND ARRAY_LENGTH(v.spans[0].`range`) = 1 AND v.spans[0].`range`[0].dynamic_in = true END"
     },
-    "statements": "SELECT c21, c22 FROM shellTest WHERE c21 IN $inlist ORDER BY c21, c22",
+    "statements": "SELECT c21, c22 FROM shellTest WHERE (c21 IN $inlist) AND test_id=\"inlist\" ORDER BY c21, c22",
     "namedArgs": {
       "inlist": [
         1,
@@ -35,7 +35,8 @@
         "c21": 5,
         "c22": 25
       }
-    ]
+    ],
+    "description": "n1k1: auto-scoped with test_id=\"inlist\" -- the fork runs this against a freshly-loaded shellTest bucket, but our merged corpus also holds other categories' shellTest docs, so the unscoped query would over-match."
   },
   {
     "testcase": "two IN-lists under OR on same leading index key",
@@ -49,7 +50,7 @@
       ],
       "statement": "SELECT true AS present FROM $explan AS p WHERE ANY v WITHIN p.plan.`~children` SATISFIES v.`#operator` = 'IndexScan3' AND v.has_dynamic_in = true and ARRAY_LENGTH(v.spans) > 1 AND ARRAY_LENGTH(v.spans[1].`range`) = 1 AND v.spans[1].`range`[0].dynamic_in = true END"
     },
-    "statements": "SELECT c21, c22 FROM shellTest WHERE c21 IN $inlist OR c21 IN $inlist2 ORDER BY c21, c22",
+    "statements": "SELECT c21, c22 FROM shellTest WHERE (c21 IN $inlist OR c21 IN $inlist2) AND test_id=\"inlist\" ORDER BY c21, c22",
     "namedArgs": {
       "inlist": [
         1,
@@ -76,7 +77,8 @@
         "c21": "a",
         "c22": "5a"
       }
-    ]
+    ],
+    "description": "n1k1: auto-scoped with test_id=\"inlist\" -- the fork runs this against a freshly-loaded shellTest bucket, but our merged corpus also holds other categories' shellTest docs, so the unscoped query would over-match."
   },
   {
     "testcase": "one IN-list on non-leading index key with non-IN-list predicate on leading index key",
@@ -90,7 +92,7 @@
       ],
       "statement": "SELECT true AS present FROM $explan AS p WHERE ANY v WITHIN p.plan.`~children` SATISFIES v.`#operator` = 'IndexScan3' AND v.has_dynamic_in = true and ARRAY_LENGTH(v.spans) = 1 AND ARRAY_LENGTH(v.spans[0].`range`) > 1 AND v.spans[0].`range`[1].dynamic_in = true END"
     },
-    "statements": "SELECT c21, c22 FROM shellTest WHERE c21 BETWEEN 1 AND 5 AND c22 IN $inlist ORDER BY c21, c22",
+    "statements": "SELECT c21, c22 FROM shellTest WHERE (c21 BETWEEN 1 AND 5 AND c22 IN $inlist) AND test_id=\"inlist\" ORDER BY c21, c22",
     "namedArgs": {
       "inlist": [
         5,
@@ -114,7 +116,8 @@
         "c21": 5,
         "c22": 25
       }
-    ]
+    ],
+    "description": "n1k1: auto-scoped with test_id=\"inlist\" -- the fork runs this against a freshly-loaded shellTest bucket, but our merged corpus also holds other categories' shellTest docs, so the unscoped query would over-match."
   },
   {
     "testcase": "two IN-lists on different index keys",
@@ -128,7 +131,7 @@
       ],
       "statement": "SELECT true AS present FROM $explan AS p WHERE ANY v WITHIN p.plan.`~children` SATISFIES v.`#operator` = 'IndexScan3' AND v.has_dynamic_in = true and ARRAY_LENGTH(v.spans) = 1 AND ARRAY_LENGTH(v.spans[0].`range`) > 1 AND v.spans[0].`range`[0].dynamic_in = true AND v.spans[0].`range`[1].dynamic_in = true END"
     },
-    "statements": "SELECT c21, c22 FROM shellTest WHERE c21 IN $inlist AND c22 IN $inlist2 ORDER BY c21, c22",
+    "statements": "SELECT c21, c22 FROM shellTest WHERE (c21 IN $inlist AND c22 IN $inlist2) AND test_id=\"inlist\" ORDER BY c21, c22",
     "namedArgs": {
       "inlist": [
         1,
@@ -153,7 +156,8 @@
         "c21": 3,
         "c22": 15
       }
-    ]
+    ],
+    "description": "n1k1: auto-scoped with test_id=\"inlist\" -- the fork runs this against a freshly-loaded shellTest bucket, but our merged corpus also holds other categories' shellTest docs, so the unscoped query would over-match."
   },
   {
     "testcase": "two IN-lists on non-leading index key, with non-IN-list predicate on leading index key",
@@ -167,7 +171,7 @@
       ],
       "statement": "SELECT true AS present FROM $explan AS p WHERE ANY v WITHIN p.plan.`~children` SATISFIES v.`#operator` = 'IndexScan3' AND v.has_dynamic_in = true and ARRAY_LENGTH(v.spans) > 1 AND ARRAY_LENGTH(v.spans[0].`range`) > 1 AND ARRAY_LENGTH(v.spans[1].`range`) > 1 AND v.spans[0].`range`[1].dynamic_in = true AND v.spans[1].`range`[1].dynamic_in = true END"
     },
-    "statements": "SELECT c21, c22 FROM shellTest WHERE c21 BETWEEN 1 AND 5 AND (c22 IN $inlist OR c22 IN $inlist2)",
+    "statements": "SELECT c21, c22 FROM shellTest WHERE (c21 BETWEEN 1 AND 5 AND (c22 IN $inlist OR c22 IN $inlist2)) AND test_id=\"inlist\"",
     "namedArgs": {
       "inlist": [
         5,
@@ -193,7 +197,8 @@
         "c21": 5,
         "c22": 25
       }
-    ]
+    ],
+    "description": "n1k1: auto-scoped with test_id=\"inlist\" -- the fork runs this against a freshly-loaded shellTest bucket, but our merged corpus also holds other categories' shellTest docs, so the unscoped query would over-match."
   },
   {
     "testcase": "two IN-lists on non-leading index key, with non-IN-list OR predicate on leading index key",
@@ -207,7 +212,7 @@
       ],
       "statement": "SELECT true AS present FROM $explan AS p WHERE ANY v WITHIN p.plan.`~children` SATISFIES v.`#operator` = 'IndexScan3' AND v.has_dynamic_in = true and ARRAY_LENGTH(v.spans) = 6 AND ARRAY_LENGTH(v.spans[0].`range`) > 1 AND ARRAY_LENGTH(v.spans[5].`range`) > 1 AND v.spans[0].`range`[1].dynamic_in = true AND v.spans[5].`range`[1].dynamic_in = true END"
     },
-    "statements": "SELECT c21, c22 FROM shellTest WHERE (c21 = 1 OR c21 = 3 OR c21 = 5) AND (c22 IN $inlist OR c22 IN $inlist2)",
+    "statements": "SELECT c21, c22 FROM shellTest WHERE ((c21 = 1 OR c21 = 3 OR c21 = 5) AND (c22 IN $inlist OR c22 IN $inlist2)) AND test_id=\"inlist\"",
     "namedArgs": {
       "inlist": [
         5,
@@ -233,7 +238,8 @@
         "c21": 5,
         "c22": 25
       }
-    ]
+    ],
+    "description": "n1k1: auto-scoped with test_id=\"inlist\" -- the fork runs this against a freshly-loaded shellTest bucket, but our merged corpus also holds other categories' shellTest docs, so the unscoped query would over-match."
   },
   {
     "testcase": "two IN-lists on leading index key, two IN-lists on non-leading index key",
@@ -247,7 +253,7 @@
       ],
       "statement": "SELECT true AS present FROM $explan AS p WHERE ANY v WITHIN p.plan.`~children` SATISFIES v.`#operator` = 'IndexScan3' AND v.has_dynamic_in = true and ARRAY_LENGTH(v.spans) = 4 AND ARRAY_LENGTH(v.spans[0].`range`) > 1 AND ARRAY_LENGTH(v.spans[3].`range`) > 1 AND v.spans[0].`range`[0].dynamic_in = true AND v.spans[0].`range`[1].dynamic_in = true AND v.spans[3].`range`[0].dynamic_in = true AND v.spans[3].`range`[1].dynamic_in = true END"
     },
-    "statements": "SELECT c21, c22 FROM shellTest WHERE (c21 IN $inlist OR c21 IN $inlist2) AND (c22 IN $inlist3 OR c22 IN $inlist4)",
+    "statements": "SELECT c21, c22 FROM shellTest WHERE ((c21 IN $inlist OR c21 IN $inlist2) AND (c22 IN $inlist3 OR c22 IN $inlist4)) AND test_id=\"inlist\"",
     "namedArgs": {
       "inlist": [
         1,
@@ -282,7 +288,8 @@
         "c21": "a",
         "c22": "5a"
       }
-    ]
+    ],
+    "description": "n1k1: auto-scoped with test_id=\"inlist\" -- the fork runs this against a freshly-loaded shellTest bucket, but our merged corpus also holds other categories' shellTest docs, so the unscoped query would over-match."
   },
   {
     "testcase": "MB-53774",
@@ -298,7 +305,7 @@
   },
   {
     "testcase": "IN-list with all constants",
-    "statements": "SELECT c21, c22 FROM shellTest WHERE c21 IN [1, 2, 3, 4, 5, 6, \"a\", \"b\", \"c\", \"d\", 11, 12, 13, 14, 15, 16, \"x\"] ORDER BY c21, c22",
+    "statements": "SELECT c21, c22 FROM shellTest WHERE (c21 IN [1, 2, 3, 4, 5, 6, \"a\", \"b\", \"c\", \"d\", 11, 12, 13, 14, 15, 16, \"x\"]) AND test_id=\"inlist\" ORDER BY c21, c22",
     "ordered": true,
     "results": [
       {
@@ -325,11 +332,12 @@
         "c21": "d",
         "c22": "5d"
       }
-    ]
+    ],
+    "description": "n1k1: auto-scoped with test_id=\"inlist\" -- the fork runs this against a freshly-loaded shellTest bucket, but our merged corpus also holds other categories' shellTest docs, so the unscoped query would over-match."
   },
   {
     "testcase": "NOT IN-list with all constants",
-    "statements": "SELECT c21, c22 FROM shellTest WHERE c21 NOT IN [1, 2, 3, 4, 5, 6, \"a\", \"b\", \"c\", \"d\", 11, 12, 13, 14, 15, 16, \"x\"] ORDER BY c21, c22",
+    "statements": "SELECT c21, c22 FROM shellTest WHERE (c21 NOT IN [1, 2, 3, 4, 5, 6, \"a\", \"b\", \"c\", \"d\", 11, 12, 13, 14, 15, 16, \"x\"]) AND test_id=\"inlist\" ORDER BY c21, c22",
     "ordered": true,
     "results": [
       {
@@ -344,7 +352,8 @@
         "c21": "o",
         "c22": "5o"
       }
-    ]
+    ],
+    "description": "n1k1: auto-scoped with test_id=\"inlist\" -- the fork runs this against a freshly-loaded shellTest bucket, but our merged corpus also holds other categories' shellTest docs, so the unscoped query would over-match."
   },
   {
     "testcase": "Prepare statement for IN-list with host variables as elements",
@@ -672,7 +681,7 @@
   },
   {
     "testcase": "IN-list with uncorrelated subquery",
-    "statements": "SELECT c21, c22 FROM shellTest WHERE c21 IN (SELECT raw c11 FROM shellTest t WHERE t.type = \"subq\") ORDER BY c21, c22",
+    "statements": "SELECT c21, c22 FROM shellTest WHERE (c21 IN (SELECT raw c11 FROM shellTest t WHERE t.type = \"subq\")) AND test_id=\"inlist\" ORDER BY c21, c22",
     "ordered": true,
     "results": [
       {
@@ -687,11 +696,12 @@
         "c21": 5,
         "c22": 25
       }
-    ]
+    ],
+    "description": "n1k1: auto-scoped with test_id=\"inlist\" -- the fork runs this against a freshly-loaded shellTest bucket, but our merged corpus also holds other categories' shellTest docs, so the unscoped query would over-match."
   },
   {
     "testcase": "NOT IN-list with uncorrelated subquery",
-    "statements": "SELECT c21, c22 FROM shellTest WHERE c21 NOT IN (SELECT raw c11 FROM shellTest t WHERE t.type = \"subq\") ORDER BY c21, c22",
+    "statements": "SELECT c21, c22 FROM shellTest WHERE (c21 NOT IN (SELECT raw c11 FROM shellTest t WHERE t.type = \"subq\")) AND test_id=\"inlist\" ORDER BY c21, c22",
     "ordered": true,
     "results": [
       {
@@ -718,6 +728,7 @@
         "c21": "o",
         "c22": "5o"
       }
-    ]
+    ],
+    "description": "n1k1: auto-scoped with test_id=\"inlist\" -- the fork runs this against a freshly-loaded shellTest bucket, but our merged corpus also holds other categories' shellTest docs, so the unscoped query would over-match."
   }
 ]
