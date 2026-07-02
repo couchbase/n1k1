@@ -125,7 +125,7 @@ func TestFlatRootWithCompiler(t *testing.T) {
 		c = append(c, "}\n")
 	}
 
-	if err := ioutil.WriteFile("./tmp/generated_by_flatroot_compiler_test.go",
+	if err := ioutil.WriteFile("./tmp/generated_by_flat_compiler_test.go",
 		[]byte(strings.Join(c, "\n")), 0644); err != nil {
 		t.Fatal(err)
 	}
