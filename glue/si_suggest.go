@@ -144,19 +144,6 @@ func sampleKeyspace(ks datastore.Keyspace, sampleN int) (map[string]*pathStat, i
 	return stats, sampled, nil
 }
 
-// openKeyspaceRecords opens a records.Source for a keyspace (a single flat file if
-// it advertises RecordsFile, else its directory), matching DatastoreScanRecords.
-func openKeyspaceRecords(ks datastore.Keyspace, opts records.WalkOptions) (records.Source, error) {
-	if rf, ok := ks.(interface{ RecordsFile() string }); ok && rf.RecordsFile() != "" {
-		return records.File(rf.RecordsFile(), opts)
-	}
-	dir, err := keyspaceDir(ks)
-	if err != nil {
-		return nil, err
-	}
-	return records.Walk(dir, opts)
-}
-
 // walkScalarPaths records each scalar leaf's path (recursing into objects only, so
 // array-nested paths are never recorded), tracking presence, distinct values, and
 // max value length per path.

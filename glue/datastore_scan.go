@@ -135,27 +135,14 @@ func DatastoreScanRecords(o *base.Op, vars *base.Vars,
 	opts := ScanWalkOptions
 	opts.PathPrefix = metaPathPrefix(keyspace)
 
-	// Single-file keyspace (DESIGN-data.md scenario B2): read the one file
-	// directly; otherwise walk the keyspace directory and union its files.
-	var src records.Source
-	var err error
-	if rf, ok := keyspace.(interface{ RecordsFile() string }); ok && rf.RecordsFile() != "" {
-		src, err = records.File(rf.RecordsFile(), opts)
-		if err != nil {
-			yieldErr(fmt.Errorf("DatastoreScanRecords, file %q: %v", rf.RecordsFile(), err))
-			return
-		}
-	} else {
-		dir, derr := keyspaceDir(keyspace)
-		if derr != nil {
-			yieldErr(derr)
-			return
-		}
-		src, err = records.Walk(dir, opts)
-		if err != nil {
-			yieldErr(fmt.Errorf("DatastoreScanRecords, walk %q: %v", dir, err))
-			return
-		}
+	// Resolve the keyspace to a records.Source (a single flat file if it advertises
+	// RecordsFile, else its directory walked + unioned). openKeyspaceRecords is the
+	// one place this resolution lives, shared with the .index suggest advisor so the
+	// scan and the sampler can never disagree about where a keyspace's data is.
+	src, err := openKeyspaceRecords(keyspace, opts)
+	if err != nil {
+		yieldErr(fmt.Errorf("DatastoreScanRecords, open %q: %v", keyspace.Name(), err))
+		return
 	}
 	defer src.Close()
 
@@ -222,6 +209,24 @@ func keyspaceDir(keyspace datastore.Keyspace) (string, error) {
 		return "", fmt.Errorf("keyspaceDir: non-file datastore URL %q", url)
 	}
 	return filepath.Join(root, ns.Name(), keyspace.Name()), nil
+}
+
+// openKeyspaceRecords opens a records.Source for a keyspace: a single flat file
+// when it advertises RecordsFile (DESIGN-data.md scenario B2), otherwise its
+// directory (flat-root or <root>/<ns>/<keyspace>) walked and unioned. This is the
+// single resolver for "where does a keyspace's data live", used by both the scan
+// op (DatastoreScanRecords) and the .index suggest sampler (sampleKeyspace) so
+// they can never diverge -- the class of bug that once made .schema, which sampled
+// the filesystem on its own, report 0 docs for these layouts.
+func openKeyspaceRecords(ks datastore.Keyspace, opts records.WalkOptions) (records.Source, error) {
+	if rf, ok := ks.(interface{ RecordsFile() string }); ok && rf.RecordsFile() != "" {
+		return records.File(rf.RecordsFile(), opts)
+	}
+	dir, err := keyspaceDir(ks)
+	if err != nil {
+		return nil, err
+	}
+	return records.Walk(dir, opts)
 }
 
 // -------------------------------------------------------------------
