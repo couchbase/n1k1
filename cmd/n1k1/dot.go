@@ -17,6 +17,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -160,24 +161,31 @@ func (c *cli) dot(line string) bool {
 }
 
 func (c *cli) printHelp() {
-	fmt.Fprint(c.stderr, `.help                 show this help
-.open <dir>           open a different file datastore directory
-.tables / .keyspaces  list keyspaces (with a copy-paste example each)
-.index [list|show <name>|rebuild [<n>]]  secondary indexes (run .index help for details)
-.schema [<keyspace>]  sampled shape (keys + JSON types) of a keyspace
-.mode <m>             output mode (append |pretty to indent JSON): `+strings.Join(cmd.OutputModes, " ")+`
-.meta [on|off|auto]   add a _meta sub-object to records (no arg shows the current setting)
-.formats [<set>]      restrict scanning to formats/modes, e.g. json,csv,gzip (no arg shows current)
-.timer [on|off]       elapsed-time reporting (no arg shows the current setting)
-.explain              toggle printing EXPLAIN PLAN per query
-.verbose [off|on|debug]  diagnostics level (off|on=plans|debug=+timing; no arg shows current)
-.maxrows <n>          box: cap rows shown (0 = all; negative = last |n| rows)
-.maxwidth <n|auto>    box: cap column width (0 = uncapped; auto = fit terminal)
-.read <file>          run statements/dot-commands from a file
-.output [<file>]      send results to a file, or back to stdout if omitted
-.version              show version + build info (incl. dependency SHAs)
-.quit / .exit         leave
-`)
+	// Each line begins with its ".command" token, so a lexicographic sort lists
+	// them in command-name order.
+	lines := []string{
+		".help                 show this help",
+		".open <dir>           open a different file datastore directory",
+		".tables / .keyspaces  list keyspaces (with a copy-paste example each)",
+		".index [list|show <name>|rebuild [<n>]]  secondary indexes (run .index help for details)",
+		".schema [<keyspace>]  sampled shape (keys + JSON types) of a keyspace",
+		".mode <m>             output mode (append |pretty to indent JSON): " + strings.Join(cmd.OutputModes, " "),
+		".meta [on|off|auto]   add a _meta sub-object to records (no arg shows the current setting)",
+		".formats [<set>]      restrict scanning to formats/modes, e.g. json,csv,gzip (no arg shows current)",
+		".timer [on|off]       elapsed-time reporting (no arg shows the current setting)",
+		".explain              toggle printing EXPLAIN PLAN per query",
+		".verbose [off|on|debug]  diagnostics level (off|on=plans|debug=+timing; no arg shows current)",
+		".maxrows <n>          box: cap rows shown (0 = all; negative = last |n| rows)",
+		".maxwidth <n|auto>    box: cap column width (0 = uncapped; auto = fit terminal)",
+		".read <file>          run statements/dot-commands from a file",
+		".output [<file>]      send results to a file, or back to stdout if omitted",
+		".version              show version + build info (incl. dependency SHAs)",
+		".quit / .exit         leave",
+	}
+	sort.Strings(lines)
+	for _, l := range lines {
+		fmt.Fprintln(c.stderr, l)
+	}
 	// Show the current datastore + a live example over a real keyspace, or a hint
 	// to open one when there's no datastore.
 	fmt.Fprintf(c.stderr, "\ndatastore: %s\n", c.dataLoc())
