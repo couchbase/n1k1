@@ -53,6 +53,12 @@ type Conv struct {
 	// and are re-evaluated as before). Populated by VisitFinalGroup.
 	groupKeyExprLabels map[string]string
 	groupKeyCount      int
+
+	// groupAs / groupAsFields carry a GROUP AS <name> binding from the
+	// InitialGroup (which owns it) to VisitFinalGroup (which does the grouping,
+	// the Initial/Intermediate groups being skipped). See VisitFinalGroup.
+	groupAs       string
+	groupAsFields []string
 }
 
 // -------------------------------------------------------------------
@@ -462,6 +468,9 @@ func (c *Conv) VisitFilter(o *plan.Filter) (interface{}, error) {
 // Group
 
 func (c *Conv) VisitInitialGroup(o *plan.InitialGroup) (interface{}, error) {
+	// The InitialGroup owns the GROUP AS binding; stash it for VisitFinalGroup,
+	// which does the actual grouping (Initial/Intermediate are skipped).
+	c.groupAs, c.groupAsFields = o.GroupAs(), o.GroupAsFields()
 	return c.TopOp, nil // Skip as the final group will handle grouping.
 }
 
@@ -519,6 +528,25 @@ func (c *Conv) VisitFinalGroup(o *plan.FinalGroup) (interface{}, error) {
 		aggCalcs = append(aggCalcs, []interface{}{aggName})
 
 		labels = append(labels, "^aggregates|"+agg.String())
+	}
+
+	// GROUP AS <name>: bind <name> to an array of one object per grouped row,
+	// {field: <that row's field value>} over the in-scope group-as fields --
+	// exactly what query materializes (execution/groupby_initial.go). Model it as
+	// ARRAY_AGG of an ObjectConstruct so it rides the existing aggregate path,
+	// and label it as a plain field path (not a "^aggregates" attachment) so the
+	// projection / HAVING / LETTING / ORDER BY can reference <name> as an ordinary
+	// identifier (e.g. len(g), g[0].orders.id). An absent field is simply omitted
+	// from the object (ObjectConstruct drops MISSING values), matching query.
+	if groupAs := c.groupAs; groupAs != "" {
+		mapping := map[expression.Expression]expression.Expression{}
+		for _, f := range c.groupAsFields {
+			mapping[expression.NewConstant(f)] = expression.NewIdentifier(f)
+		}
+		aggExprs = append(aggExprs, []interface{}{"exprTree", expression.NewObjectConstruct(mapping)})
+		aggCalcs = append(aggCalcs, []interface{}{"array_agg"})
+		labels = append(labels, "."+LabelSuffix(groupAs))
+		c.groupAs, c.groupAsFields = "", nil // consume
 	}
 
 	return c.TopPush(o, &base.Op{
