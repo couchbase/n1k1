@@ -95,6 +95,12 @@ func stem(path string) string {
 	return base
 }
 
+// Stem returns the keyspace-style base name for a single record file: the base
+// name with its format extension and any compression suffix removed
+// ("orders.jsonl.gz" -> "orders", "dump.ndjson" -> "dump"). Used for the
+// single-file-as-keyspace naming of DESIGN-data.md scenario B2.
+func Stem(path string) string { return stem(path) }
+
 // openDecompressed opens path and, if it carries a .gz suffix, wraps it in a
 // transparent gzip reader (keyed off the outer extension). Returns a reader and
 // the underlying closers to release.
@@ -579,6 +585,20 @@ func Walk(dir string, opts WalkOptions) (Source, error) {
 	}
 	sort.Strings(files)
 	return &walkSource{dir: dir, files: files, opts: opts}, nil
+}
+
+// File returns a Source over exactly one record file, with no directory walk --
+// the single-file analogue of Walk for DESIGN-data.md scenario B2, where the CLI
+// arg is one JSONL/NDJSON/JSON/CSV/... file (optionally .gz) rather than a
+// directory. The file must pass opts' format/compression filter. Synthetic IDs
+// are prefixed with the file's base name, e.g. "events.jsonl#3".
+func File(path string, opts WalkOptions) (Source, error) {
+	if !opts.eligible(path) {
+		return nil, fmt.Errorf("records: not a scannable file: %s", path)
+	}
+	// dir = the file's parent so walkSource's Rel(dir, path) yields the base name
+	// as the synthetic-ID prefix; the file list is exactly this one file.
+	return &walkSource{dir: filepath.Dir(path), files: []string{path}, opts: opts}, nil
 }
 
 // walkSource streams records across a sorted list of files, opening each lazily.

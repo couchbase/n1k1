@@ -196,10 +196,11 @@ func main() {
 func usage() {
 	fmt.Fprintf(os.Stderr, `%[1]s -- SQL++ for local files (json, jsonl, csv, gz, and more)
 
-usage: %[1]s [flags] [datastore-dir]
+usage: %[1]s [flags] [datastore-dir | file]
 
   %[1]s ./test/suite/json     REPL over a datastore-dir
   %[1]s -c "SELECT 1+1"       run ;-separated statements
+  %[1]s -c "SELECT * FROM events" events.jsonl   query a single file
   echo "SELECT ..." | %[1]s   stdin for ;-separated statements
   %[1]s -f script.sql++ dir   run a file of ;-separated statements
 

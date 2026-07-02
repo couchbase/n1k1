@@ -125,12 +125,6 @@ func DatastoreScanRecords(o *base.Op, vars *base.Vars,
 
 	keyspace := scan.Keyspace()
 
-	dir, err := keyspaceDir(keyspace)
-	if err != nil {
-		yieldErr(err)
-		return
-	}
-
 	limit := int64(math.MaxInt64)
 	if lim, ok := scan.(limiter); ok {
 		limit = EvalExprInt64(context, lim.Limit(), nil, math.MaxInt64)
@@ -141,10 +135,27 @@ func DatastoreScanRecords(o *base.Op, vars *base.Vars,
 	opts := ScanWalkOptions
 	opts.PathPrefix = metaPathPrefix(keyspace)
 
-	src, err := records.Walk(dir, opts)
-	if err != nil {
-		yieldErr(fmt.Errorf("DatastoreScanRecords, walk %q: %v", dir, err))
-		return
+	// Single-file keyspace (DESIGN-data.md scenario B2): read the one file
+	// directly; otherwise walk the keyspace directory and union its files.
+	var src records.Source
+	var err error
+	if rf, ok := keyspace.(interface{ RecordsFile() string }); ok && rf.RecordsFile() != "" {
+		src, err = records.File(rf.RecordsFile(), opts)
+		if err != nil {
+			yieldErr(fmt.Errorf("DatastoreScanRecords, file %q: %v", rf.RecordsFile(), err))
+			return
+		}
+	} else {
+		dir, derr := keyspaceDir(keyspace)
+		if derr != nil {
+			yieldErr(derr)
+			return
+		}
+		src, err = records.Walk(dir, opts)
+		if err != nil {
+			yieldErr(fmt.Errorf("DatastoreScanRecords, walk %q: %v", dir, err))
+			return
+		}
 	}
 	defer src.Close()
 

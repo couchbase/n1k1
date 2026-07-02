@@ -121,6 +121,56 @@ func TestOpenFileSingleJSON(t *testing.T) {
 	}
 }
 
+func TestFileSingleJSONL(t *testing.T) { // scenario B2
+	s, err := File(ex("logs/default/events/2026-01-01.jsonl"), AllModes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids, docs := collect(t, s)
+	if len(docs) == 0 {
+		t.Fatal("want records from a single JSONL file, got 0")
+	}
+	// The synthetic-ID prefix is the file's own base name (not a dir-relative
+	// path), plus the within-file record index.
+	if want := "2026-01-01.jsonl#0"; ids[0] != want {
+		t.Errorf("first id = %q, want %q", ids[0], want)
+	}
+}
+
+func TestFileGzip(t *testing.T) { // scenario B2 over a single .jsonl.gz
+	s, err := File(ex("archive/default/orders/2025.jsonl.gz"), AllModes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, docs := collect(t, s)
+	if len(docs) == 0 {
+		t.Fatal("want records from a single gzip'd JSONL file, got 0")
+	}
+}
+
+func TestFileRespectsScanFilter(t *testing.T) { // -scan lockdown reaches single files
+	opts := AllModes()
+	opts.AllowGzip = false
+	if _, err := File(ex("archive/default/orders/2025.jsonl.gz"), opts); err == nil {
+		t.Error("File should reject a .gz when AllowGzip is false")
+	}
+}
+
+func TestStem(t *testing.T) {
+	cases := map[string]string{
+		"events.jsonl":        "events",
+		"a/b/orders.jsonl.gz": "orders",
+		"dump.ndjson":         "dump",
+		"data.csv":            "data",
+		"report.json":         "report",
+	}
+	for in, want := range cases {
+		if got := Stem(in); got != want {
+			t.Errorf("Stem(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestJSONArrayAndValueStream(t *testing.T) {
 	dir := t.TempDir()
 	arr := filepath.Join(dir, "a.json")

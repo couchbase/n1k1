@@ -28,6 +28,11 @@ originally-drawn MVP line:
 - **Flat-root keyspaces** (scenario B) — `glue/flatroot.go` wraps the datastore to
   advertise a synthetic `default:<basename>` keyspace with a primary index; the
   records-scan reads the root dir via `RecordsDir()`. Never calls into the fork.
+- **Single file as a keyspace** (scenario B2) — the CLI arg may be a lone record
+  file (`events.jsonl`, `dump.ndjson`, `orders.jsonl.gz`), not just a directory.
+  Same `glue/flatroot.go` wrapper, one level flatter: `maybeFlatFile` fakes a
+  `default:<stem>` keyspace whose `RecordsFile()` points the records-scan
+  (`records.File`) at the one file. Covered by `test/flatfile_test.go`.
 - **Multi-file keyspace = union of files, recursing** (scenarios C, E) — the
   `records` package (`records.go`) walks the dir and unions all decodable files.
 - **Decoders:** JSONL/ndjson, multi-doc JSON (array + `.jsons`), **and CSV/TSV**
@@ -429,16 +434,16 @@ Support **three resolution modes**, in increasing power:
      name (or a default) as the keyspace. Auto-detect: if subdirs contain data
      files, they're keyspaces; if `<dir>` itself contains data files, it's a
      single flat keyspace. This mirrors DuckDB's "no mandatory layout."
-   - **Go one step flatter: the CLI arg may be a *single file*, not a dir.** The
-     smallest onboarding case — "I have one `events.jsonl` (or `dump.ndjson`, or
-     `orders.jsonl.gz`) and nothing else" — should just work:
-     `n1k1 -c "SELECT * FROM events" events.jsonl`. Auto-detect: if the CLI arg is
-     a regular file (not a directory), treat it as a one-file keyspace named after
-     its base name *with the record/compression extensions stripped*
-     (`events.jsonl` → `events`, `orders.jsonl.gz` → `orders`). This is the
-     natural sibling of flat-root — same "fake the metadata" trick, no catalog, no
-     deeper directories — and closes the gap where DuckDB's `FROM 'foo.jsonl'`
-     replacement scan has no n1k1 equivalent. See worked example **B2**.
+   - **Go one step flatter: the CLI arg may be a *single file*, not a dir**
+     (**shipped**). The smallest onboarding case — "I have one `events.jsonl` (or
+     `dump.ndjson`, or `orders.jsonl.gz`) and nothing else" — just works:
+     `n1k1 -c "SELECT * FROM events" events.jsonl`. If the CLI arg is a regular
+     file (not a directory), it's a one-file keyspace named after its base name
+     *with the record/compression extensions stripped* (`events.jsonl` →
+     `events`, `orders.jsonl.gz` → `orders`). The natural sibling of flat-root —
+     same "fake the metadata" trick, no catalog, no deeper directories — closing
+     the gap where DuckDB's `FROM 'foo.jsonl'` replacement scan had no n1k1
+     equivalent. See worked example **B2**.
 
 2. **Explicit table functions / globs in FROM** (DuckDB-style power mode) —
    **blocked on a grammar fork; not the near-term power path.** The aspiration is
@@ -744,7 +749,7 @@ treats the whole dir as a single flat keyspace.
 the root's basename (`filepath.Base`), under a synthetic `default` namespace
 (`default:sales`), matching the recommendation here.
 
-### B2. Single file as a keyspace — no directory at all  🟡 (convention extension)
+### B2. Single file as a keyspace — no directory at all  ✅
 ```
 events.jsonl              # just one file on disk; no shop/ dir, no default/ dir
 ```
@@ -755,26 +760,25 @@ stripped (`events.jsonl` → `events`; `orders.jsonl.gz` → `orders`;
 `dump.ndjson` → `dump`). This is the "I just have a single JSONL/NDJSON/`*.gz`
 file" case — the flattest possible onboarding, and DuckDB's `FROM 'foo.jsonl'`
 replacement-scan analogue.
-**Why it's cheap (proposal / not yet built):** it's the same "fake the metadata"
-move as flat-root (B), one level flatter. Sketch:
-- `FileStore` currently does `file.NewDatastore(path)` then `maybeFlatRoot(path,
-  ds)` (`glue/stmt.go`). The fork's file datastore expects `path` to be a
-  *directory* tree, so a single-file arg must be intercepted **before** it — add a
-  `maybeFlatFile(path, ds)` (or fold into `maybeFlatRoot`) that, when
-  `os.Stat(path)` reports a regular file and `records.IsRecordFile(path)`, wraps
-  `ds` with the same synthetic `default:<basename>` keyspace machinery already in
-  `glue/flatroot.go`.
-- The keyspace's `RecordsDir()` is the one wrinkle: today it returns a directory
-  that `DatastoreScanRecords` hands to `records.Walk`. For a single file, either
-  (a) point the records-scan at the file directly — `filepath.Walk` over a regular
-  file already visits just that file, so `Walk` mostly works as-is, but the
-  synthetic-ID relpath basis (`<relpath>#<line>`, §6) wants the file's own base
-  name, not a dir-relative path — or (b) add a `RecordsFile() string` sibling to
-  `RecordsDir()` that the scan op prefers when set. Option (b) is cleaner and
-  keeps the dir-walk and single-file paths from entangling.
+**Shipped** — the same "fake the metadata" move as flat-root (B), one level
+flatter:
+- `FileStore` (`glue/stmt.go`) `os.Stat`s the CLI arg; when it's a **regular file**
+  and `records.IsRecordFile` accepts it, the fork's file datastore (which `ReadDir`s
+  its root and so *cannot* be handed a file) is built against the file's **parent
+  dir**, then wrapped by `maybeFlatFile` — advertising a synthetic
+  `default:<stem>` keyspace (`records.Stem` strips the format + compression
+  extensions). A non-record regular file falls through unchanged, so it errors as
+  before instead of silently mis-resolving.
+- The synthetic keyspace carries a `RecordsFile()` (sibling of flat-root's
+  `RecordsDir()`); `DatastoreScanRecords` prefers it and calls `records.File(path,
+  opts)` — a one-file `Source` (base name as the synthetic-ID prefix) — instead of
+  `records.Walk(dir, opts)`, keeping the dir-walk and single-file paths from
+  entangling. `-scan` lockdown still applies (a `.gz` file under `-scan=jsonl` is
+  rejected).
 - Compiler-transparent for free: still a `PrimaryScan` → `datastore-scan` op, no
-  new op kind (see "Compiler compatibility").
-`META().id` = `events.jsonl#L57` (the file's own base name as the ID prefix).
+  new op kind (see "Compiler compatibility"). Covered by `test/flatfile_test.go`.
+`META().id` = `events.jsonl#57` for JSONL (base name + line index), or the file
+stem for a single-document `.json` (matching scenario A).
 
 ### C. Multi-file keyspace, many records per file  ✅
 ```

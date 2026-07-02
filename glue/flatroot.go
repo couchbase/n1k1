@@ -13,14 +13,16 @@
 
 package glue
 
-// Flat-root support (DESIGN-data.md scenario B): when a datastore root holds
-// record files *directly* (no <namespace>/<keyspace> subdirs), n1k1 "fakes" the
+// Flat-root support (DESIGN-data.md scenarios B and B2): when a datastore root
+// holds record files *directly* (no <namespace>/<keyspace> subdirs) -- or the CLI
+// arg is a single record file rather than a directory at all -- n1k1 "fakes" the
 // metadata so the cbq planner accepts `FROM <basename>` -- a synthetic "default"
 // namespace + basename keyspace that exists only as planner-facing metadata (no
 // physical namespace/keyspace dir). The keyspace advertises a primary index so
 // the planner emits a PrimaryScan; n1k1's records-scan then reads the *root*
-// directory itself (via RecordsDir below). This is entirely n1k1-side -- no fork
-// change -- reusing the fork's datastore/virtual metadata-only building blocks.
+// directory (via RecordsDir) or, for a single-file arg, that one file (via
+// RecordsFile). This is entirely n1k1-side -- no fork change -- reusing the fork's
+// datastore/virtual metadata-only building blocks.
 
 import (
 	"os"
@@ -59,13 +61,43 @@ func maybeFlatRoot(path string, ds datastore.Datastore) datastore.Datastore {
 		return ds
 	}
 
+	return wrapFlat(ds, base, abs, "")
+}
+
+// maybeFlatFile wraps ds with a synthetic default:<stem> keyspace when path is a
+// single record file (DESIGN-data.md scenario B2): the CLI arg is one
+// JSONL/NDJSON/JSON/CSV/... file (optionally .gz) rather than a directory. The
+// keyspace is named after the file's base name with its format/compression
+// extensions stripped (events.jsonl -> events, orders.jsonl.gz -> orders); its
+// RecordsFile points the records-scan at just this one file. Callers pass a path
+// already known to be a regular, decodable record file (see FileStore); it
+// returns ds unchanged if that doesn't hold.
+func maybeFlatFile(path string, ds datastore.Datastore) datastore.Datastore {
+	if !records.IsRecordFile(path) {
+		return ds
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return ds
+	}
+	name := records.Stem(abs)
+	if name == "" || name == "." {
+		return ds
+	}
+	return wrapFlat(ds, name, "", abs)
+}
+
+// wrapFlat builds the shared synthetic default:<ksName> keyspace wrapper used by
+// both flat-root (dir set, file empty) and flat-file (file set, dir empty). It
+// returns ds unchanged if the virtual keyspace can't be constructed.
+func wrapFlat(ds datastore.Datastore, ksName, dir, file string) datastore.Datastore {
 	w := &flatDatastore{Datastore: ds}
-	ns := &flatNamespace{datastore: w, ksName: base}
-	vks, verr := virtual.NewVirtualKeyspace(ns, []string{flatRootNamespace, base})
+	ns := &flatNamespace{datastore: w, ksName: ksName}
+	vks, verr := virtual.NewVirtualKeyspace(ns, []string{flatRootNamespace, ksName})
 	if verr != nil {
 		return ds
 	}
-	ks := &flatKeyspace{Keyspace: vks, dir: abs}
+	ks := &flatKeyspace{Keyspace: vks, dir: dir, file: file}
 	ks.indexer = newFlatIndexer(ks)
 	ns.ks = ks
 	w.ns = ns
@@ -155,17 +187,23 @@ func (p *flatNamespace) Objects(creds *auth.Credentials, filter func(string) boo
 
 // flatKeyspace embeds a metadata-only virtual keyspace (promoting its Keyspace
 // methods) and overrides index advertising to expose a primary index, plus
-// RecordsDir so the records-scan reads the flat root directory.
+// RecordsDir/RecordsFile so the records-scan reads the flat root directory (or,
+// for a single-file arg, the one file). Exactly one of dir/file is set.
 type flatKeyspace struct {
 	datastore.Keyspace
-	dir     string
+	dir     string // flat root: keyspace = union of files under this dir
+	file    string // flat file (scenario B2): keyspace = this one file
 	indexer datastore.Indexer
 }
 
 // RecordsDir is consulted by DatastoreScanRecords to locate the physical
 // directory: for a flat root the keyspace's data lives at the root itself, not
-// at <root>/<ns>/<keyspace>.
+// at <root>/<ns>/<keyspace>. Empty in single-file mode (see RecordsFile).
 func (k *flatKeyspace) RecordsDir() string { return k.dir }
+
+// RecordsFile, when non-empty, points DatastoreScanRecords at a single record
+// file rather than a directory to walk (DESIGN-data.md scenario B2).
+func (k *flatKeyspace) RecordsFile() string { return k.file }
 
 func (k *flatKeyspace) Indexer(name datastore.IndexType) (datastore.Indexer, errors.Error) {
 	return k.indexer, nil

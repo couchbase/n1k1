@@ -14,6 +14,9 @@
 package glue
 
 import (
+	"os"
+	"path/filepath"
+
 	"github.com/couchbase/query/algebra"
 	"github.com/couchbase/query/datastore"
 	"github.com/couchbase/query/datastore/file"
@@ -25,6 +28,8 @@ import (
 	"github.com/couchbase/query/settings"
 	"github.com/couchbase/query/util"
 	"github.com/couchbase/query/value"
+
+	"github.com/couchbase/n1k1/records"
 )
 
 // The query server normally calls functions.FunctionsInit() at startup to
@@ -150,15 +155,29 @@ func (g *Store) PlanStatementQP(s algebra.Statement, namespace string,
 // query/server -> indexing (cgo) via query/aus, which we drop to keep n1k1
 // pure-Go. Queries that don't reference the system: namespace don't need it.
 func FileStore(path string) (*Store, error) {
-	ds, err := file.NewDatastore(path)
+	// Single-file arg (DESIGN-data.md scenario B2): `n1k1 events.jsonl`. The fork's
+	// file datastore ReadDir's its root, so it can't be a file -- build it against
+	// the file's parent dir and remember the file to wrap below.
+	dsPath, flatFile := path, ""
+	if fi, err := os.Stat(path); err == nil && fi.Mode().IsRegular() &&
+		records.IsRecordFile(path) {
+		dsPath, flatFile = filepath.Dir(path), path
+	}
+
+	ds, err := file.NewDatastore(dsPath)
 	if err != nil {
 		return nil, err
 	}
 
-	// Flat root (data files directly under path, no ns/keyspace subdirs): fake a
-	// synthetic default:<basename> keyspace so `FROM <basename>` plans. No-op for
-	// the normal <ns>/<keyspace> layout. See flatroot.go.
-	ds = maybeFlatRoot(path, ds)
+	if flatFile != "" {
+		// Single file: fake a synthetic default:<stem> keyspace reading just it.
+		ds = maybeFlatFile(flatFile, ds)
+	} else {
+		// Flat root (data files directly under path, no ns/keyspace subdirs): fake a
+		// synthetic default:<basename> keyspace so `FROM <basename>` plans. No-op for
+		// the normal <ns>/<keyspace> layout. See flatroot.go.
+		ds = maybeFlatRoot(path, ds)
+	}
 
 	return &Store{
 		Datastore:       ds,
