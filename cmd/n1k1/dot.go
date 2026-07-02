@@ -201,7 +201,7 @@ func (c *cli) cmdOpen(dir string) {
 		fmt.Fprintln(c.stderr, "usage: .open <dir>")
 		return
 	}
-	sess, err := glue.OpenSession(dir, c.ns)
+	sess, err := glue.OpenSession(dir, defaultNamespace)
 	if err != nil {
 		fmt.Fprintf(c.stderr, "cannot open %q: %v\n", dir, err)
 		return

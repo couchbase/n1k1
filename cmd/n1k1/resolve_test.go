@@ -22,7 +22,7 @@ import (
 // opened is fatal (returns an error) rather than silently starting empty -- so a
 // typo'd path in `-c`/piped/scripted use fails loudly instead of "succeeding".
 func TestResolveSessionExplicitBadPathErrors(t *testing.T) {
-	sess, effDir, cleanup, err := resolveSession("bad/path/does-not-exist", true, "default")
+	sess, effDir, cleanup, err := resolveSession("bad/path/does-not-exist", true)
 	if cleanup != nil {
 		cleanup()
 	}
@@ -38,7 +38,7 @@ func TestResolveSessionExplicitBadPathErrors(t *testing.T) {
 // even if it has no keyspaces yet) succeeds and reports that dir.
 func TestResolveSessionExplicitGoodPath(t *testing.T) {
 	dir := t.TempDir()
-	sess, effDir, cleanup, err := resolveSession(dir, true, "default")
+	sess, effDir, cleanup, err := resolveSession(dir, true)
 	if cleanup != nil {
 		defer cleanup()
 	}
@@ -75,7 +75,7 @@ func TestTidyMsg(t *testing.T) {
 func TestResolveSessionFallbackWhenNotExplicit(t *testing.T) {
 	// A path that cannot be opened, but "not explicit" (as if defaulted).
 	bad := filepath.Join(t.TempDir(), "definitely-missing")
-	sess, effDir, cleanup, err := resolveSession(bad, false, "default")
+	sess, effDir, cleanup, err := resolveSession(bad, false)
 	if cleanup != nil {
 		defer cleanup()
 	}

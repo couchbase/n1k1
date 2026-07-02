@@ -51,11 +51,17 @@ func progName() string {
 	return "n1k1"
 }
 
+// defaultNamespace is the only namespace n1k1's file datastore uses. Couchbase in
+// practice only ever has "default", and every flat/single-file layout synthesizes
+// its keyspaces into it, so the namespace isn't user-selectable; a rare classic
+// multi-namespace directory tree can still be reached by qualifying a keyspace as
+// "<ns>:<keyspace>" in SQL.
+const defaultNamespace = "default"
+
 func main() {
 	var (
 		cFlag       = flag.String("c", "", "run statements and exit")
 		fFlag       = flag.String("f", "", "run statements from a file and exit")
-		nsFlag      = flag.String("ns", "default", "datastore namespace")
 		modeFlag    = flag.String("mode", "", "output mode: "+strings.Join(cmd.OutputModes, "|")+" (append |pretty to indent JSON; default box|pretty at a TTY, else jsonlines)")
 		timerFlag   = flag.Bool("timer", false, "print row count + elapsed after each statement")
 		initFlag    = flag.String("init", "", "startup file of dot-commands/SQL++ (default ~/."+prog+"rc; use \"\", \"-\" or \"none\" to skip)")
@@ -137,7 +143,7 @@ func main() {
 	scanOpts.Meta = mm
 	glue.ScanWalkOptions = scanOpts
 
-	sess, dir, cleanup, err := resolveSession(dir, explicit, *nsFlag)
+	sess, dir, cleanup, err := resolveSession(dir, explicit)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s: %v\n", prog, err)
 		os.Exit(1)
@@ -170,7 +176,6 @@ func main() {
 		prog:      prog,
 		sess:      sess,
 		dir:       dir,
-		ns:        *nsFlag,
 		mode:      mode,
 		indexMode: *indexFlag,
 		timer:     *timerFlag,
@@ -237,8 +242,8 @@ func main() {
 // store so the user can still evaluate expressions and `.open` a datastore later;
 // in that case effDir is "" and cleanup removes the temp dir (it's a no-op
 // otherwise). Callers should always `defer cleanup()`.
-func resolveSession(dir string, explicit bool, ns string) (sess *glue.Session, effDir string, cleanup func(), err error) {
-	if sess, err = glue.OpenSession(dir, ns); err == nil {
+func resolveSession(dir string, explicit bool) (sess *glue.Session, effDir string, cleanup func(), err error) {
+	if sess, err = glue.OpenSession(dir, defaultNamespace); err == nil {
 		return sess, dir, func() {}, nil
 	}
 	if explicit {
@@ -249,7 +254,7 @@ func resolveSession(dir string, explicit bool, ns string) (sess *glue.Session, e
 	if e2 != nil {
 		return nil, "", func() {}, e2
 	}
-	if sess, err = glue.OpenSession(empty, ns); err != nil {
+	if sess, err = glue.OpenSession(empty, defaultNamespace); err != nil {
 		os.RemoveAll(empty)
 		return nil, "", func() {}, err
 	}
@@ -285,7 +290,6 @@ type cli struct {
 	prog string // short command name (from how the binary was invoked)
 	sess *glue.Session
 	dir  string
-	ns   string
 
 	mode      string
 	indexMode string // -index: eager|lazy|off (drives eager build on open)

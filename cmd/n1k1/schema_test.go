@@ -38,7 +38,7 @@ func TestSchemaSamplesMultiRecordSingleFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenSession: %v", err)
 	}
-	c := &cli{sess: sess, ns: "default"}
+	c := &cli{sess: sess}
 
 	stats, n, err := c.sampleSchema("events", 50)
 	if err != nil {
@@ -79,7 +79,7 @@ func TestSchemaFlatRootUnion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenSession: %v", err)
 	}
-	c := &cli{sess: sess, ns: "default"}
+	c := &cli{sess: sess}
 
 	stats, n, err := c.sampleSchema(base, 50)
 	if err != nil {
@@ -109,7 +109,7 @@ func TestSchemaDistinctAndExample(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenSession: %v", err)
 	}
-	c := &cli{sess: sess, ns: "default"}
+	c := &cli{sess: sess}
 
 	stats, _, err := c.sampleSchema("txns", 50)
 	if err != nil {
@@ -142,7 +142,7 @@ func TestExampleQuery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenSession: %v", err)
 	}
-	c := &cli{sess: sess, ns: "default"}
+	c := &cli{sess: sess}
 	if got := c.exampleQuery(); got != "SELECT * FROM events LIMIT 5;" {
 		t.Errorf("exampleQuery = %q", got)
 	}

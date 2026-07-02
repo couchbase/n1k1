@@ -106,7 +106,7 @@ func (c *cli) cmdIndexCreate(arg string) {
 
 	// Re-open so the datastore re-wraps with the freshly-written catalog (it may
 	// not have been index-wrapped before if this is the first index).
-	sess, oerr := glue.OpenSession(c.dir, c.ns)
+	sess, oerr := glue.OpenSession(c.dir, defaultNamespace)
 	if oerr != nil {
 		fmt.Fprintf(c.stderr, "%s: reopen after create: %v\n", c.prog, oerr)
 		return
@@ -267,7 +267,7 @@ func (c *cli) cmdIndexSuggest(keyspace string) {
 		fmt.Fprintln(c.stderr, "no datastore open")
 		return
 	}
-	sugg, note, err := glue.SuggestIndexes(c.sess.Store, c.ns, keyspace, 0)
+	sugg, note, err := glue.SuggestIndexes(c.sess.Store, defaultNamespace, keyspace, 0)
 	if err != nil {
 		fmt.Fprintf(c.stderr, "%s: index suggest: %v\n", c.prog, err)
 		return

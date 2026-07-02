@@ -32,11 +32,11 @@ func (c *cli) cmdKeyspaces() {
 }
 
 // keyspaceNames lists the keyspaces the datastore actually exposes in the
-// current namespace -- via the datastore interface, not the raw filesystem, so
+// default namespace -- via the datastore interface, not the raw filesystem, so
 // the listing reflects n1k1's flattening (e.g. a synthetic flat-root keyspace,
 // or later catalog-defined keyspaces), not just literal subdirectories.
 func (c *cli) keyspaceNames() ([]string, error) {
-	ns, nerr := c.sess.Store.Datastore.NamespaceByName(c.ns)
+	ns, nerr := c.sess.Store.Datastore.NamespaceByName(defaultNamespace)
 	if nerr != nil {
 		// Namespace missing usually just means an empty datastore -- report it as
 		// "no keyspaces" (empty list) rather than an error, so the caller can show
@@ -138,13 +138,8 @@ func (c *cli) printKeyspaces(w io.Writer) {
 	if len(names) == 1 {
 		noun = "keyspace"
 	}
-	// The namespace is almost always "default"; only mention it when it isn't.
-	nsNote := ""
-	if c.ns != "default" {
-		nsNote = " in namespace " + c.style.Bold(c.ns)
-	}
-	fmt.Fprintf(w, "%s%d %s%s — copy/paste to try:\n",
-		c.icon("📚 "), len(names), noun, nsNote)
+	fmt.Fprintf(w, "%s%d %s — copy/paste to try:\n",
+		c.icon("📚 "), len(names), noun)
 	for i, n := range names {
 		pad := disp[i] + strings.Repeat(" ", width-len(disp[i]))
 		fmt.Fprintf(w, "  %s   %s\n", c.style.Cyan(pad), c.style.Dim(exampleFor(n, i)))
@@ -174,17 +169,13 @@ func (c *cli) catalogPath() string {
 
 // exampleQuery builds a copy-pasteable example over a real current keyspace, or
 // "" when none is available. The "default:" namespace prefix is omitted (it's
-// optional); a non-default namespace is shown as <ns>:<keyspace>.
+// optional, and n1k1 only uses the default namespace).
 func (c *cli) exampleQuery() string {
 	names, err := c.keyspaceNames()
 	if err != nil || len(names) == 0 {
 		return ""
 	}
-	ref := quoteIdent(names[0])
-	if c.ns != "" && c.ns != "default" {
-		ref = c.ns + ":" + ref
-	}
-	return "SELECT * FROM " + ref + " LIMIT 5;"
+	return "SELECT * FROM " + quoteIdent(names[0]) + " LIMIT 5;"
 }
 
 // cmdSchema renders a keyspace's sampled shape as a box: one row per top-level

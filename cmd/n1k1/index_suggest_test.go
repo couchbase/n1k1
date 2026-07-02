@@ -47,7 +47,7 @@ func TestIndexSuggestEmitsCreateCommands(t *testing.T) {
 		t.Fatalf("OpenSession: %v", err)
 	}
 	var out, errb bytes.Buffer
-	c := &cli{prog: "n1k1", sess: sess, ns: "default", out: &out, stderr: &errb}
+	c := &cli{prog: "n1k1", sess: sess, out: &out, stderr: &errb}
 
 	c.cmdIndexSuggest("customer")
 
@@ -102,7 +102,7 @@ func TestIndexCreateRefusesFlatDatastore(t *testing.T) {
 		t.Fatalf("OpenSession: %v", err)
 	}
 	var out, errb bytes.Buffer
-	c := &cli{prog: "n1k1", sess: sess, ns: "default", dir: root, out: &out, stderr: &errb}
+	c := &cli{prog: "n1k1", sess: sess, dir: root, out: &out, stderr: &errb}
 
 	c.cmdIndexCreate("ix on orgs (id)")
 
@@ -137,7 +137,7 @@ func TestIndexSuggestQuotesSpacedField(t *testing.T) {
 		t.Fatalf("OpenSession: %v", err)
 	}
 	var out, errb bytes.Buffer
-	c := &cli{prog: "n1k1", sess: sess, ns: "default", out: &out, stderr: &errb}
+	c := &cli{prog: "n1k1", sess: sess, out: &out, stderr: &errb}
 	c.cmdIndexSuggest("people")
 
 	// Catalog fragment: the key must be the backticked expression.
