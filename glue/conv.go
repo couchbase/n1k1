@@ -331,13 +331,14 @@ func (c *Conv) firstIntersectScan(scans []plan.SecondaryScan) (interface{}, erro
 }
 
 func (c *Conv) VisitExpressionScan(o *plan.ExpressionScan) (interface{}, error) {
-	// A correlated FROM identifier is a CTE reference whose binding lives in an
-	// outer scope -- e.g. a WITH RECURSIVE step's `FROM r`, where r is the latest
-	// working set. expr-scan resolves it against GlueContext.corrParent at
-	// runtime, so allow it. A correlated *subquery* FROM-expr (FROM (SELECT ...
-	// outer.x)) isn't supported yet.
+	// A correlated FROM-expr is resolved against the outer row (corrParent) by
+	// expr-scan at runtime. That works for an identifier (a CTE ref -- e.g. a
+	// WITH RECURSIVE step's `FROM r`) or a path into the outer row (a correlated
+	// subquery's `FROM orders.orderlines`, which iterates the outer order's
+	// lineitems). A correlated *subquery* FROM-expr (FROM (SELECT ... outer.x))
+	// would need nested subquery evaluation and isn't supported yet.
 	if o.IsCorrelated() {
-		if _, isID := o.FromExpr().(*expression.Identifier); !isID {
+		if _, isSubq := o.FromExpr().(expression.Subquery); isSubq {
 			return NA(o)
 		}
 	}

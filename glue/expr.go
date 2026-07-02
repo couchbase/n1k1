@@ -106,20 +106,21 @@ func ExprTree(vars *base.Vars, labels base.Labels,
 		// through to the parent. corrParent is nil outside a correlated subquery,
 		// so uncorrelated / outer evaluation is unaffected.
 		//
-		// TODO(correlated-subquery): two known gaps here (both rare):
-		//   1. SELECT-* leak: value.ScopeValue.Fields() merges the parent's
-		//      fields, so a `SELECT *` inside a correlated subquery spreads the
-		//      OUTER row's fields too. query avoids this by resetting the scope
-		//      parent for star projections (execution/project_initial.go:
-		//      sv.ResetParent(nil)); n1k1's VisitInitialProject would need to do
-		//      the same for the star term.
-		//   2. Annotation loss: v.Actual() drops annotations, so the sub-row's
-		//      META()/id isn't visible after the wrap (a subquery that does
-		//      META(alias) over its own keyspace would see MISSING). Preserving
-		//      them needs a scope wrapper that keeps v itself as "self" rather
-		//      than re-wrapping its plain field map.
+		// TODO(correlated-subquery): a known gap remains here (rare):
+		//   SELECT-* leak: value.ScopeValue.Fields() merges the parent's fields,
+		//   so a `SELECT *` inside a correlated subquery spreads the OUTER row's
+		//   fields too. query avoids this by resetting the scope parent for star
+		//   projections (execution/project_initial.go: sv.ResetParent(nil));
+		//   n1k1's VisitInitialProject would need to do the same for the star term.
 		if gc, ok := context.(*GlueContext); ok && gc.corrParent != nil {
-			if m, ok := v.Actual().(map[string]interface{}); ok {
+			// Prefer keeping v as "self" via SetParent: it preserves v's
+			// annotations -- notably a subquery aggregate's "^aggregates"
+			// attachment, which SUM(...)/etc. read back; re-wrapping v.Actual() in
+			// a fresh ScopeValue would drop them and panic. Fall back to a
+			// ScopeValue for a non-annotated object value.
+			if av, ok := v.(value.AnnotatedValue); ok {
+				v = av.SetParent(gc.corrParent)
+			} else if m, ok := v.Actual().(map[string]interface{}); ok {
 				v = value.NewScopeValue(m, gc.corrParent)
 			}
 		}
