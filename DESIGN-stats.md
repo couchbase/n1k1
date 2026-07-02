@@ -94,6 +94,80 @@ Keep it **flat, fixed-size, copyable** (counters, not maps, on the hot path):
   `var lzStats base.Stats` allocation — pass a pointer to the op's persistent
   counters instead of allocating.)
 
+## A concrete counter core: one flat `[]int64` keyed by op id
+
+The section above states the *policy* (local increments, lazy roll-up); this one
+proposes a concrete data structure for it that fits n1k1's existing seams almost
+exactly. The shape: **every op contributes a known set of `int64` counters, all
+counters live in one big pre-sized `[]int64`, and a `map[string]int` maps a
+human-readable `"opId:statName"` to that counter's index.** Each op owns a
+contiguous sub-slice; `YieldStats` hands out the whole array; the receiver uses
+the map to attribute counters back to operators (numbers, sparklines, or moving
+bars next to each node in an `EXPLAIN`-style plan tree).
+
+Most of this already exists in the tree — the point is to *reuse* it, not invent:
+
+- **The op id already exists.** `ExecOp` threads `path`/`pathItem` through every
+  op via `EmitPush(path, pathItem)` (`engine/op.go:27,126`), producing a unique
+  string like `_0_1_2` as it descends the tree. That **is** the `opId` — and it
+  already survives into the compiled path (codegen uses it to mint unique variable
+  names), so the same key works in both the interpreted and `intermed` builds.
+- **The layout is computed once, at convert time.** Each op kind declares its stat
+  names (a small static `StatsDesc`, e.g. scan → `{RowsOut, BytesIn, FilesOpened,
+  FilesPruned}`, joinNL → `{Probes, RowsOut}`). Walking the plan once sums every
+  op's contribution into a total `N`, allocates one `make([]int64, N)`, and builds
+  the `map[string]int` of `"path:statName" → index`. This is non-`lz` setup work —
+  it runs at preparation time, never on the hot path.
+- **The shared array lives on `Ctx`.** `base.Ctx` is per-request, immutable for the
+  request's lifetime, concurrent-safe, and already shared across every actor's
+  cloned `Vars` (`ChainExtend` → `Ctx.Clone`, `base/vars.go:41,124`). It is the
+  natural home for both the `[]int64` and the index map. `YieldStats` then no
+  longer needs to allocate a throwaway `Stats` per checkpoint (the bug flagged
+  above) — it signals "the counters moved; come read them."
+
+### Keep the per-row path free — flush at the checkpoint, don't atomic-add per row
+The tempting version — `atomic.AddInt64(&arr[i], 1)` per row — is *correct* on
+64-bit (`[]int64` elements are 8-byte aligned) but violates the core principle:
+- An atomic add is a locked memory op on **every row**.
+- Worse, if an op ever runs in **N actor goroutines that share its slots** (or even
+  land on the same 64-byte cache line), those cores ping-pong that line on every
+  increment — **false sharing** that erases the parallelism it's meant to measure.
+
+So split it exactly as "Collection" prescribes: the per-row work is a **local**
+`++` (a stack/struct counter, no atomics); at the **already-present 1024-row
+`YieldStats` checkpoint** — which runs synchronously on the actor's own goroutine
+(`engine/op_scan.go:139`) — the actor **flushes its local deltas** into its section
+of the shared `[]int64`. Atomics (if any) touch the array ~once per 1024 rows, and
+the only true concurrent reader is the ~10 Hz reporter, for which monotonic
+per-field skew is acceptable (no seqlock needed — see Open questions).
+
+### The index must be a compile-time constant, never a per-row map lookup
+The `map[string]int` is a **planning + reporting** artifact only. Resolve
+`"path:statName" → base offset` at convert time, bake the integer `base` into the
+generated op closure, and the hot path is just `counters[base+RowsOut]++`. A map
+lookup per row would dwarf the work being measured. This is what lets the scheme
+survive codegen unchanged: `base` is an ordinary int computed in the non-`lz`
+setup block; only the increment (and the checkpoint flush) crosses into `lz`.
+
+### The concurrency dimension: per-op today, per-(op, actor) when needed
+What the plan-time layout keys on determines whether flushes ever contend:
+- **Today it's already contention-free.** The only fan-out is `op_union.go`, which
+  spawns **one actor per child** (`base.NewStage(numChildren, …)`), and each actor
+  runs a *distinct* child subtree with a *distinct* `path` → distinct sections → no
+  two goroutines ever touch the same slot. "One section per `opId`" just works.
+- **When same-op parallelism lands** (the doc's anticipated parallel scans /
+  parallel `GROUP BY` shards — N actors running the *same* op/path), add an actor
+  dimension: array size `= Σ over ops of (numStats × numActors)`, each `(op, actor)`
+  gets private slots, and roll-up sums an op's actor rows at report time.
+  `NumActors` is known at stage setup — before the hot path — so allocation stays
+  one-shot and up-front; the hot path is unchanged.
+
+### Why blocking ops don't complicate it
+Pipeline breakers (`GROUP BY`, `ORDER BY`) are a *display* nuance ("inhale, then a
+final burst"), not a counting one: each still runs in a goroutine that owns its
+counters and increments them normally. The flat array is agnostic to streaming vs.
+blocking — it only cares about "which goroutine owns which slots."
+
 ## Delivery: getting stats to the client — the approaches
 
 These differ only in **how the client is notified**; all share one counter core.
