@@ -24,6 +24,8 @@ CATEGORIES = [
     "case_functions", "typeconv_functions", "select_functions", "where_functions",
     "alias_functions", "any_functions", "from_functions", "order_functions",
     "key_functions", "meta_functions",
+    "arith_functions", "bitwise_functions", "nav_functions", "integers",
+    "date_functions",
 ]
 # Keyspaces the fork loads with ~10,000 docs (~100 per INSERT statement). Too
 # large for a one-file-per-doc corpus + no-index primary scans, so only a light
