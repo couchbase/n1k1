@@ -12,6 +12,15 @@ The easy part is aggregating everything and reporting once at the end (progress 
 100% by definition). The hard part — and the focus here — is delivering
 occasional, cheap updates to whoever asked, *without* slowing the pipeline.
 
+Beyond the raw plumbing, this doc also designs the **user-facing surface** that
+governs it: a `-progress` flag + a `.stats` dot command (a verbosity dial + a
+view/screen selector, in the family of the shipped `.timer`/`.explain`/`.meta`
+controls — see `DESIGN-cli.md`); making **pruning** ("we skipped 99% of the
+files") a headline signal; **record & playback** of a query's progress (a DVR /
+TiVo, optionally popped open in a browser); and a **cost lens** — `EXPLAIN PRICE`
+(what will this query likely cost, in $ / credits + wall-time) and `EXPLAIN COST`
+(what did it actually cost), both riding the same measured counters.
+
 ## What n1k1 already has (a skeleton wired for exactly this)
 
 This is not greenfield. The plumbing is scaffolded:
@@ -55,6 +64,15 @@ Keep it **flat, fixed-size, copyable** (counters, not maps, on the hot path):
   sizes, or the manifest `doc_count` / partition counts from `DESIGN-data.md §5`
   when available; otherwise progress is **indeterminate** (spinner, not bar) — cf.
   ClickHouse's `total_rows_approx`.
+- **Pruning / skip counters (often the single most useful stat):** files /
+  partitions / row-groups **considered** vs **actually opened**, plus bytes
+  skipped — so the UI can shout *"read 88 of 9,500 files (skipped 99% via zone
+  maps)"*. These come from the scan layer's manifest / zone-map checks
+  (`DESIGN-data.md §5`) and index sargability (`DESIGN-indexing.md`), incremented
+  **once per file/partition decision** (not per row), so they're nearly free. A
+  query that pruned well vs one about to read the world is the difference this
+  number exposes; it also feeds `EXPLAIN COST` (bytes not scanned = money not
+  spent). See "Pruning visibility" below.
 - **Phase-tagged** (`Phase` enum): `query` (rows scanned/filtered/grouped, spill
   bytes), `ingest` (files, bytes, docs), `index` (docs indexed, index bytes,
   spill), `transfer` (bytes in/out).
@@ -203,6 +221,49 @@ CLI use **`pterm`** (already a dep) or **`mpb`** for bars/spinners/ETA. Adopt th
 good UX defaults: DuckDB's "only show a bar after ~2 s" and ClickHouse's "≤10
 updates/s, skip entirely for quick queries."
 
+## CLI control surface: the `-progress` flag & `.stats` dot command
+
+All of the above is opt-in machinery; the user needs one obvious dial for **how
+much** to show and **which view**. Model it on the controls already shipped
+(`-meta`/`.meta`, `-scan`, `.timer`, `.explain`, `.version` — see
+`DESIGN-cli.md`), so it feels native and stays zero-cost when off.
+
+**Two orthogonal axes** — a *detail level* and a *view* — set by a startup flag
+and adjustable live in the REPL:
+
+- **Detail level (how many stats):** `off | auto | min | rich | debug`.
+  - `off` — never collect/animate (fast path pays nothing; the counter gates stay
+    nil, exactly as `op_scan.go` already nil-checks its hook).
+  - `auto` (**default**) — DuckDB-style: stay silent, and only reveal a live
+    display once a query crosses ~2 s; sub-second queries print nothing extra.
+  - `min` — a single throttled status line (rows, rows/s, %, ETA).
+  - `rich` — bars/spinners + partial-result previews + the pruning panel.
+  - `debug` — also the per-op "work" counters (join probes, hash inserts) and the
+    live plan-flow diagram; the only level that pays the hot-path work-counter cost
+    (§ open questions), so it's explicitly gated here.
+- **View (what visualization):** `line | bars | plan | pruning | preview`, each a
+  front-end over the *same* snapshot stream (§ "Layout & separation"). `-progress`
+  picks the initial level+view; a non-TTY / `NO_COLOR` / piped run forces `min`
+  plaintext regardless (same discipline as the caret/colored-error code).
+
+**Flip between screens during a long query.** In the interactive TUI the views are
+**tabbed panels** over one live trace — press a hotkey (Tab, or `1`–`5`) to swap
+between racing bars, the plan-flow diagram, the top-N partial-result leaderboard,
+and the pruning panel *without* interrupting the running query. This is cheap
+because switching views is purely render-side: the engine emits one trace; each
+screen is a different projection of it. (bubbletea's model/update/view loop is a
+natural fit; pterm's multi-area printer a simpler one.)
+
+**Dot command (REPL), mirroring `.meta`/`.timer` idioms:**
+```
+.stats                 # show current level + view
+.stats rich            # set detail level
+.stats view plan       # switch the active screen (also Tab/1–5 while running)
+.stats off             # disable
+```
+`-progress=<level>[:<view>]` is the batch/`-c` equivalent. Keep the surface small:
+one dial, one view selector, sensible `auto` default — not a config forest.
+
 ## Visualizing the plan with live data-flow
 
 The payoff of everything above: render the *executing* plan as a diagram and
@@ -238,6 +299,30 @@ snapshot stream**.
   input and emit nothing until a final burst.
 - **Spill:** when rhmap/store spills to mmap/disk, the node flips to a red "disk"
   state — "this fell out of memory."
+- **Pruning:** files/partitions eliminated before opening render as **dimmed,
+  struck-through, or greyed tiles** that never light up — you can *see* the query
+  skip the world (see below).
+
+### Pruning visibility: the "what did we skip?" view
+The user's instinct is right: *if indexes/zone-maps skip huge swaths of files,
+that's a headline, not a footnote.* Make it a first-class screen (and the
+`pruning` view of § CLI control surface), driven by the pruning counters in
+"What to measure":
+- **The one-liner:** `scanned 88 / 9,500 files · 12 MB / 47 GB · pruned 99.3% (zone
+  maps: 8,900, partition filter: 512)` — attributing *why* each swath was skipped
+  (zone-map min/max miss, Hive/partition predicate, index sargability), sourced
+  from `DESIGN-data.md §5` (manifest + zone maps) and `DESIGN-indexing.md` (index
+  `RangeKey` sargability).
+- **The visual:** a grid/treemap of files or partitions where **opened** tiles
+  fill with throughput color and **pruned** tiles stay dark — a Hive-partitioned
+  `year=/month=` tree literally lighting up only the matching partitions. This is
+  the payoff shot for partition pruning.
+- **Anti-signal too:** when pruning is *poor* (predicate not sargable, no zone
+  map, `SELECT *` over everything), the panel is a wall of lit tiles — a visceral
+  "you're reading everything; add an index / a WHERE / a partition column." Ties
+  directly to `EXPLAIN COST` ($ saved by pruning vs $ spent scanning).
+- **Cheap:** these are per-file/partition decisions (thousands, not billions), so
+  the panel updates at the coarse cadence with no hot-path cost.
 
 ### Render targets (ASCII / SVG / canvas)
 1. **ASCII / TUI (default, works over SSH):** box-drawing nodes with live counters;
@@ -256,7 +341,8 @@ snapshot stream**.
 Record `(plan graph + snapshot stream)` as a self-contained JSON **query trace**;
 render it **live** (subscribe) or **replay/scrub** later for post-mortems ("why was
 this slow?"). Same visualizer, two sources; the trace is shareable and can back an
-Artifact.
+Artifact. This trace is the substrate for the DVR/TiVo controls and the
+browser-open target described in "Record & playback" below.
 
 ### Layout & separation
 - **Layout:** Reingold–Tilford for plan trees (parents centered over children —
@@ -283,6 +369,54 @@ Artifact.
     https://medium.com/snowflake/understanding-the-exploding-joins-problem-in-snowflake-6b4f89f006c7 ,
     https://spark.apache.org/docs/latest/web-ui.html ,
     https://github.com/charmbracelet/bubbletea
+
+## Record & playback: a DVR / TiVo for queries
+
+The query-trace (§ "Live vs replay") turns progress into something you can
+**rewind, pause, scrub, and re-watch** — a DVR for query execution. This is
+high-value precisely because the interesting moment (the exploding join, the
+spill, the straggler lane) is often *over* before you focused on it.
+
+- **Always-on ring buffer (the DVR part).** Keep the last N query traces in a
+  bounded in-memory ring (bytes-capped, oldest evicted) so *any* just-finished
+  query can be replayed without having asked first — "wait, what just happened?"
+  Traces are small (plan graph + a few hundred ~10 Hz snapshot frames), so a few
+  MB covers a deep history. `.rec on` promotes recording to persistent
+  (`.n1k1/traces/<ts>.json`); `-progress` at `rich`/`debug` auto-records to the
+  ring.
+- **Transport controls (the TiVo part).** Over a recorded (or paused-live) trace:
+  `space` pause/resume, `←/→` step one snapshot frame, `,`/`.` slow/fast (0.25×–8×),
+  `home`/`end` jump to start/finish, and a scrubber bar. Because a frame is an
+  immutable snapshot, seeking is just indexing into the frame slice — the
+  visualizer already renders one frame; replay only changes *which* frame and the
+  clock driving it.
+- **Live rewind.** Pausing a *running* query freezes the display (a rolling window
+  of recent frames stays in the ring) while the engine keeps going; resuming
+  snaps back to live. The engine never blocks on the viewer (latest-wins channel,
+  § delivery (c)).
+- **REPL surface:** `.rec [on|off]`, `.play [<trace>|last]`, `.play last` replaying
+  the previous query from the ring — sibling to `.stats`.
+
+### Pop it open in a browser
+For anything richer than ASCII, **write the trace into a self-contained HTML page
+and open it in the default browser** — the "explore this playback" gesture:
+- **What:** one file, no external refs (CSP-safe, à la PEV2's `pev2.html`), with
+  the trace inlined as JSON + a small player (SVG/canvas, particles flowing at
+  recorded throughput, a scrubber). Static heat-map, animated **SMIL/CSS** "query
+  movie," or interactive canvas — the § "Render targets" tiers, fed by a trace
+  instead of a live stream.
+- **How to launch:** the OS opener with **zero new deps** — `open` (macOS),
+  `xdg-open` (Linux), `rundll32 …FileProtocolHandler` (Windows), behind a
+  `.play --web` / `-progress=...:web` gesture. Or, in a Claude context, publish the
+  page as an **Artifact** (self-contained, already CSP-constrained).
+- **Why a browser:** scrubbing a timeline, hovering nodes for exact counters, and
+  particle animation are things a terminal can only approximate; the same trace
+  still replays in ASCII for SSH/headless. One trace, many players.
+
+Prior art worth stealing from: **asciinema** (record/replay a terminal session as
+a tiny self-contained cast + web player — the exact shape of "record once, scrub
+in a browser later"); **rr** / time-travel debuggers (record-then-replay
+execution); DVR/TiVo (the always-buffering-so-you-can-rewind mental model).
 
 ## Parallel progress: racing bars for concurrent work
 
@@ -334,6 +468,56 @@ indexed) plus overall %.
   `expvar` / `sync/atomic` — stdlib (BSD); Prometheus client — Apache-2.0 (already
   a dep). All fit the no-GPL/AGPL policy (see `DESIGN-data.md`).
 
+## `EXPLAIN PRICE` & `EXPLAIN COST`: dollars, not just rows
+
+`EXPLAIN` shows the *plan*; two cost-flavored siblings answer the questions users
+actually lose sleep over — **before**: "what will this query cost me?" and
+**after**: "what did it just cost me?" Both are the stats core wearing a price tag.
+
+- **`EXPLAIN PRICE` — a-priori estimate.** From the plan's cardinality/byte
+  estimates (bytes to scan, egress bytes, object-store GET/LIST request counts,
+  estimated compute-seconds) **×** a cloud pricing table, produce a **$ (or credit)
+  range + a predicted wall-time**, with the assumptions shown. The canonical prior
+  art is **BigQuery's dry-run** (`--dry_run` returns bytes-to-be-scanned, which ×
+  on-demand $/TB = a price) and **Athena** (billed per TB scanned) — this is that,
+  generalized. Crucially it's **pruning-aware**: the estimate must run *after*
+  partition/zone-map pruning (`DESIGN-data.md §5`), so `WHERE year=2026` quotes the
+  pruned bytes, and the panel can show *"$0.02 — pruning saved an estimated
+  $6.40"*. Present as a range, not false precision (estimate error compounds).
+- **`EXPLAIN COST` — a-posteriori actual.** After a run, price the **measured**
+  counters we already collect — bytes actually scanned, egress, request counts,
+  wall/compute time — against the same table: *"this query cost $0.018 (2.1 GB
+  scanned, 140 GET, 3.2 s)"*. This is nearly free: it's the pruning/byte/time
+  counters from "What to measure," multiplied by unit prices. A `.cost` toggle can
+  append it as a footer next to the `.timer` line.
+
+**Where the prices come from (and staying honest).**
+- A small **pricing table** (per provider/region: $/GB scanned, $/GB egress,
+  $/1k GET/LIST, $/compute-second or credit rates), cached locally (e.g.
+  `.n1k1/pricing.json` or the user cache dir) and **refreshable** from public
+  sources — **AWS Price List API**, **GCP Cloud Billing Catalog API**, Azure retail
+  prices (all public JSON). Prices are facts, so no licensing landmine; ship a
+  **bundled offline default** and a `--pricing <file>` / `.pricing` override so it
+  works air-gapped and is auditable.
+- **Local files cost ≈ $0** — n1k1 reads local disk today, so the honest answer for
+  a local query is "$0 (local); ~3.2 s wall". The $ story becomes real with the
+  **object-store backend** (`DESIGN-data.md` S3/gocloud): egress + GET + scanned
+  bytes are what a lakehouse actually bills. Frame PRICE/COST as *"what this would
+  cost against `s3://…` at current <provider/region> prices"* even when reading a
+  local mirror — a genuinely useful pre-flight before pointing the same query at
+  the cloud. Optionally, a fun-but-clearly-labeled local **energy/time** estimate
+  (compute-seconds × a wattage guess) rather than pretending disk reads are free.
+
+**How to wire it without a grammar fork.** True `EXPLAIN PRICE`/`EXPLAIN COST`
+keywords would need patching the goyacc grammar — the same merge-hostile fork
+change `DESIGN-data.md` rejects for inline table functions. Prefer, in order:
+(1) **dot commands** `.price <stmt>` / `.cost [on|off]` (no parser change, matches
+`.explain`); (2) a **CLI pre-parse intercept** that recognizes a leading `EXPLAIN
+PRICE`/`EXPLAIN COST` and strips it to the inner statement before handing the rest
+to the parser (a cheap string check, like the single-file arg detection). Both
+reuse the existing plan (for PRICE) and the stats counters (for COST); neither
+touches the fork.
+
 ## Open questions
 - **Per-op tree vs single rolled-up number** as the default surface — cost vs
   usefulness.
@@ -351,6 +535,16 @@ indexed) plus overall %.
   explain-analyze / viz mode so normal runs pay nothing.
 - **Visualization transport:** live streaming (SSE/WebSocket) vs record-then-replay
   as the default; and ASCII animation fidelity vs needing the web canvas.
+- **DVR ring bounds:** how many traces / how many MB to keep always-recorded, and
+  whether `rich`/`debug` auto-record cost is acceptable when the user never replays.
+- **Screen-flip UX:** tabbed panels vs a split dashboard; how many views before it's
+  clutter; whether view state should persist across queries in a session.
+- **Cost model fidelity:** $ vs credits (Snowflake/BigQuery-flat-rate don't map to
+  per-byte $); PRICE estimate error bars; how stale a cached pricing table may get
+  before it's misleading; provider/region defaults when unspecified.
+- **PRICE without a real remote:** is a "what this *would* cost on s3://…" number
+  for a local query illuminating or confusing? And is the local energy/time
+  estimate worth including at all?
 
 ## Prior art
 - DuckDB progress bar (`enable_progress_bar`, ~2 s threshold, per-source
@@ -369,3 +563,14 @@ indexed) plus overall %.
   estimates that refine over time; the academic root of "watch the numbers
   converge" (we do the perception-level version, not statistical confidence
   intervals): https://dl.acm.org/doi/10.1145/253260.253291
+- Record/replay & DVR: **asciinema** (self-contained terminal cast + web player)
+  https://asciinema.org/ ; **rr** time-travel debugger https://rr-project.org/ .
+- Cost/pricing prior art: **BigQuery dry-run** byte estimate + on-demand pricing
+  https://cloud.google.com/bigquery/docs/estimate-costs ; **Athena** per-TB-scanned
+  billing (pruning = savings) https://docs.aws.amazon.com/athena/latest/ug/performance-tuning-data-optimization-techniques.html ;
+  **AWS Price List API** https://docs.aws.amazon.com/awsaccountbilling/latest/aboutv2/price-changes.html
+  and **GCP Cloud Billing Catalog API**
+  https://cloud.google.com/billing/docs/reference/rest/v1/services.skus/list
+  (public pricing sources for the cached table).
+- Partition/zone-map pruning as a headline stat: Snowflake pruning stats in Query
+  Profile; Spark "files pruned"; Iceberg/Parquet row-group skipping.

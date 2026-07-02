@@ -203,8 +203,13 @@ All formatters live in `cmd/render.go` and take `[]json.RawMessage` (plus a
 - **Query cancellation** mid-run (Ctrl-C aborting `ExecOp` via the ctx).
 - **Tab completion** of keywords / keyspace names / dot-commands.
 - **`.import` / `COPY` / writes** — engine is query-only today.
-- **Progress bar** for long/spilling queries (the engine already spills; it
-  could emit `YieldStats`).
+- **Progress / live stats** for long/spilling queries (the engine already spills
+  and has the `YieldStats` seam). Designed in `DESIGN-stats.md`, which proposes the
+  matching CLI surface: a `-progress` flag + `.stats` dot command (a detail dial +
+  a view selector, screens flippable mid-query), a `pruning` view surfacing "we
+  skipped 99% of the files", `.rec`/`.play` record-and-replay (a DVR, optionally
+  opened in a browser), and `EXPLAIN PRICE` / `EXPLAIN COST` (`.price`/`.cost`) for
+  $/credit estimates and actuals. All follow the `.timer`/`.meta` idioms above.
 - **Persistent settings / PRAGMA**.
 
 ------------------------------------------------------------------------
