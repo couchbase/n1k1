@@ -19,7 +19,10 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strconv"
 	"strings"
+
+	"github.com/couchbase/n1k1/cmd"
 )
 
 func (c *cli) cmdKeyspaces() {
@@ -134,6 +137,10 @@ func (c *cli) printKeyspaces(w io.Writer) {
 	}
 }
 
+// cmdSchema renders a keyspace's sampled shape as a box: one row per top-level
+// field with its observed JSON type(s), distinct-value count, and a copy-pasteable
+// SQL++ example that filters on the field using the values seen (= / IN / IS NOT
+// MISSING). Always box|pretty regardless of the -mode output setting.
 func (c *cli) cmdSchema(keyspace string) {
 	kss := []string{keyspace}
 	if keyspace == "" {
@@ -145,33 +152,131 @@ func (c *cli) cmdSchema(keyspace string) {
 		kss = names
 	}
 	for _, ks := range kss {
-		shape, n, err := c.sampleSchema(ks, 50)
+		stats, n, err := c.sampleSchema(ks, 50)
 		if err != nil {
-			fmt.Fprintf(c.stderr, "%s%s\n", c.icon("✗ "), c.style.Red("Error: "+err.Error()))
+			fmt.Fprintf(c.stderr, "%s%s\n", c.icon("✗ "), c.style.Red("Error: "+tidyMsg(err.Error())))
 			continue
 		}
 		fmt.Fprintf(c.out, "%s  (sampled %d docs):\n", ks, n)
-		keys := make([]string, 0, len(shape))
-		for k := range shape {
-			keys = append(keys, k)
+
+		fields := make([]string, 0, len(stats))
+		for f := range stats {
+			fields = append(fields, f)
 		}
-		sort.Strings(keys)
-		for _, k := range keys {
-			types := shape[k]
+		sort.Strings(fields)
+
+		rows := make([]json.RawMessage, 0, len(fields))
+		for _, f := range fields {
+			fs := stats[f]
+			types := make([]string, 0, len(fs.types))
+			for t := range fs.types {
+				types = append(types, t)
+			}
 			sort.Strings(types)
-			fmt.Fprintf(c.out, "  %-20s %s\n", k, strings.Join(types, "|"))
+			distinct := strconv.Itoa(len(fs.values))
+			if fs.capped {
+				distinct += "+"
+			}
+			rows = append(rows, orderedJSONRow(
+				[2]interface{}{"field", f},
+				[2]interface{}{"types", strings.Join(types, "|")},
+				[2]interface{}{"distinct", distinct},
+				[2]interface{}{"example", schemaExample(ks, f, fs)},
+			))
 		}
+		c.renderSchemaBox(rows)
 	}
 }
 
-// sampleSchema infers a keyspace's shape (top-level key -> observed JSON type
-// names) by running `SELECT <alias>.* FROM <ks> LIMIT n` through the session --
-// the same resolution + decoding path real queries take. This keeps .schema in
-// lockstep with what queries actually see: flat roots, single-file keyspaces,
-// multi-record JSONL/CSV, and gzip all work, not just one-doc-per-file *.json
-// (the old filesystem walk reported "0 docs" for every one of those). Returns the
-// shape, the number of docs sampled, and any query error.
-func (c *cli) sampleSchema(ks string, limit int) (map[string][]string, int, error) {
+// renderSchemaBox draws the schema rows with the box renderer, always pretty and
+// independent of the session's -mode (so .schema reads as a table even when piped
+// output would otherwise be jsonlines).
+func (c *cli) renderSchemaBox(rows []json.RawMessage) {
+	if len(rows) == 0 {
+		return
+	}
+	termWidth := 0
+	if c.maxWidth < 0 {
+		termWidth = c.terminalWidth()
+	}
+	cmd.RenderBox(c.out, rows, c.maxWidth, c.maxRows, termWidth, "", c.style, true /* pretty */)
+}
+
+// Bounds for the distinct values .schema keeps per field: maxSchemaValues caps how
+// many distinct scalar values are retained; maxSchemaIn is how many it will list in
+// an IN [...] example before falling back to a single `= <value>`.
+const (
+	maxSchemaValues = 16
+	maxSchemaIn     = 5
+)
+
+// fieldStat accumulates, over the .schema sample, one top-level field's observed
+// JSON types plus a bounded set of distinct scalar values used to synthesize a
+// WHERE example.
+type fieldStat struct {
+	types     map[string]bool
+	values    []json.RawMessage // distinct non-null scalar values, first-seen order
+	seen      map[string]bool   // dedup by the value's canonical JSON text
+	capped    bool              // more distinct scalar values than maxSchemaValues
+	nonScalar bool              // saw an object/array value (no useful = literal)
+}
+
+// observe records one occurrence of a field's value (v = decoded, raw = its JSON).
+func (fs *fieldStat) observe(v interface{}, raw json.RawMessage) {
+	if fs.types == nil {
+		fs.types = map[string]bool{}
+		fs.seen = map[string]bool{}
+	}
+	t := jsonType(v)
+	fs.types[t] = true
+	switch t {
+	case "object", "array":
+		fs.nonScalar = true
+	case "null":
+		// null isn't a useful equality literal (`= null` is never true); skip it.
+	default: // string, number, bool -- candidate WHERE literals
+		key := string(raw)
+		if fs.seen[key] {
+			return
+		}
+		if len(fs.values) >= maxSchemaValues {
+			fs.capped = true
+			return
+		}
+		fs.seen[key] = true
+		fs.values = append(fs.values, raw)
+	}
+}
+
+// schemaExample builds a copy-pasteable SQL++ query filtering on one field, using
+// the distinct values sampled: `= v` for a single value, `IN [...]` for a few, a
+// representative `= v` when there are many, and `IS NOT MISSING` for a field with
+// no scalar values (object/array-valued, or only ever null).
+func schemaExample(ks, field string, fs *fieldStat) string {
+	qks, qf := quoteIdent(ks), quoteIdent(field)
+	switch {
+	case len(fs.values) == 0:
+		return fmt.Sprintf("SELECT * FROM %s WHERE %s IS NOT MISSING;", qks, qf)
+	case len(fs.values) == 1:
+		return fmt.Sprintf("SELECT * FROM %s WHERE %s = %s;", qks, qf, fs.values[0])
+	case len(fs.values) <= maxSchemaIn && !fs.capped:
+		parts := make([]string, len(fs.values))
+		for i, v := range fs.values {
+			parts[i] = string(v)
+		}
+		return fmt.Sprintf("SELECT * FROM %s WHERE %s IN [%s];", qks, qf, strings.Join(parts, ", "))
+	default:
+		return fmt.Sprintf("SELECT * FROM %s WHERE %s = %s;", qks, qf, fs.values[0])
+	}
+}
+
+// sampleSchema samples a keyspace by running `SELECT <alias>.* FROM <ks> LIMIT n`
+// through the session -- the same resolution + decoding path real queries take, so
+// .schema stays in lockstep with what queries actually see (flat roots, single-file
+// keyspaces, multi-record JSONL/CSV, gzip -- not just one-doc-per-file *.json). It
+// returns per-field stats (types + distinct values), the docs sampled, and any
+// query error.
+func (c *cli) sampleSchema(ks string, limit int) (map[string]*fieldStat, int, error) {
 	// quoteIdent so keyspaces like "2026-01" parse; alias x so `x.*` projects the
 	// document's fields unwrapped (SELECT * would nest them under the keyspace).
 	stmt := fmt.Sprintf("SELECT x.* FROM %s AS x LIMIT %d", quoteIdent(ks), limit)
@@ -179,26 +284,23 @@ func (c *cli) sampleSchema(ks string, limit int) (map[string][]string, int, erro
 	if err != nil {
 		return nil, 0, err
 	}
-	shape := map[string]map[string]bool{}
+	stats := map[string]*fieldStat{}
 	for _, row := range res.Rows {
 		var m map[string]interface{}
 		if json.Unmarshal(row, &m) != nil {
 			continue // a non-object row (e.g. a bare scalar) contributes no fields
 		}
 		for k, v := range m {
-			if shape[k] == nil {
-				shape[k] = map[string]bool{}
+			fs := stats[k]
+			if fs == nil {
+				fs = &fieldStat{}
+				stats[k] = fs
 			}
-			shape[k][jsonType(v)] = true
+			raw, _ := json.Marshal(v)
+			fs.observe(v, raw)
 		}
 	}
-	out := make(map[string][]string, len(shape))
-	for k, set := range shape {
-		for t := range set {
-			out[k] = append(out[k], t)
-		}
-	}
-	return out, len(res.Rows), nil
+	return stats, len(res.Rows), nil
 }
 
 func jsonType(v interface{}) string {
