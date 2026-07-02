@@ -136,6 +136,14 @@ func usesUnbridgedOp(o *base.Op) bool {
 	if strings.HasPrefix(k, "temp") || k == "sequence" {
 		return true
 	}
+	switch k {
+	case "joinHash-inner", "joinHash-leftOuter",
+		"intersect-distinct", "intersect-all", "except-distinct", "except-all":
+		// All run through OpJoinHash, whose two-branch codegen emits duplicate
+		// reuse-var declarations (lzValsReuseTop_<path> for both branches) -- correct
+		// in the interpreter, but not yet compilable. Skip generating these.
+		return true
+	}
 	for _, c := range o.Children {
 		if usesUnbridgedOp(c) {
 			return true

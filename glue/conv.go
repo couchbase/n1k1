@@ -1100,8 +1100,40 @@ func (c *Conv) VisitUnionAll(o *plan.UnionAll) (interface{}, error) {
 	})
 }
 
-func (c *Conv) VisitIntersectAll(o *plan.IntersectAll) (interface{}, error) { return NA(o) }
-func (c *Conv) VisitExceptAll(o *plan.ExceptAll) (interface{}, error)       { return NA(o) }
+func (c *Conv) VisitIntersectAll(o *plan.IntersectAll) (interface{}, error) {
+	return c.setOp(o, "intersect", o.First(), o.Second(), o.Distinct())
+}
+
+func (c *Conv) VisitExceptAll(o *plan.ExceptAll) (interface{}, error) {
+	return c.setOp(o, "except", o.First(), o.Second(), o.Distinct())
+}
+
+// setOp converts INTERSECT / EXCEPT ([ALL]) to the engine's hash-based set-op
+// (OpJoinHash, kinds intersect-*/except-*): the left (first) branch fills a probe
+// map keyed by each row's canonical whole-row encoding and the right (second)
+// probes it. The op canonicalizes the vals itself (valsEncodeCanonical), so no
+// key Params are needed; result rows are the left branch's, so its labels carry
+// through. distinct picks -distinct (set semantics) vs -all (multiset min/diff).
+func (c *Conv) setOp(o plan.Operator, kind string, first, second plan.Operator, distinct bool) (interface{}, error) {
+	left, err := c.convertBranch(first)
+	if err != nil {
+		return nil, err
+	}
+	right, err := c.convertBranch(second)
+	if err != nil {
+		return nil, err
+	}
+	if distinct {
+		kind += "-distinct"
+	} else {
+		kind += "-all"
+	}
+	return c.TopSet(o, &base.Op{
+		Kind:     kind,
+		Labels:   append(base.Labels{}, left.Labels...),
+		Children: []*base.Op{left, right},
+	})
+}
 
 // Order, Paging
 
