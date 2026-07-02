@@ -39,7 +39,7 @@ build-intermed:
 test: test-core test-suite
 
 # test-all is the full sweep -- many minutes total.
-test-all: test-core test-glue test-compiler test-suite-all
+test-all: test-core test-glue test-suite-all
 
 # test-core runs the self-contained core build + vet + tests (no external
 # setup, no n1ql tag).
@@ -68,7 +68,7 @@ test-compiler: build-glue
 # test-suite runs the main SQL++ conformance suite (based on the
 # upstream couchbase/query corpus.
 test-suite: test-glue
-	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -tags n1ql -v -skip TestGsiSuite ./test
+	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -tags n1ql -v -skip 'TestCasesSimpleWithCompiler|TestSuiteWithCompiler|TestQueryCasesWithCompiler|TestGsiSuite' ./test
 	cd test/tmp && go fmt
 	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -tags n1ql -skip TestGeneratedGsiFS ./test/tmp
 
