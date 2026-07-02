@@ -587,6 +587,32 @@ art, in three families.
    unused ones. Big advantage: the created index is a **normal `RangeKey` index
    the cbq planner already understands** (Phase 1 machinery) — so this needs **no
    wildcard-planner work**. Recommended as the realistic medium-term path.
+
+   **Seeding candidates by sampling doc cardinality (reviewer idea — with one
+   inversion).** Workload logging is *reactive*: an index only appears after
+   queries reveal a hot field. A cheap *proactive* cold-start is to sample N docs
+   (first/random, O(sample)) and, per top-level scalar path, estimate
+   **cardinality**, **presence** (fraction of docs that have it), **type
+   stability** (mostly-scalar, indexable), and **value size** (huge values →
+   skip / truncate, per the value-size cap above). But the naive reading —
+   "*low*-cardinality fields → index them" — is **backwards for a b-tree / GSI
+   secondary index.** A range/equality index earns its keep on **high
+   selectivity**: a *high*-cardinality field (values are rare) means an
+   equality/range matches few docs, so the index prunes hard; a *low*-cardinality
+   field (e.g. `status` with 3 values, `country` with ~200) matches a large
+   fraction, so the scan yields most docIDs and then fetches most docs — barely
+   better than a primary scan, and a cost-based planner would reject it. So the
+   sampling signal for a **b-tree auto-index is HIGH cardinality (÷ doc count) +
+   queried**, not low. Low-cardinality fields are still valuable — but for the
+   *other* machinery: **zone-maps / partition pruning** (tier 1), **bitmap**-style
+   structures, or as a **composite leading key** (low-card leading + high-card
+   trailing). Best policy = combine both signals: sampling proposes candidates
+   (structure + selectivity), the **workload confirms** which are actually queried
+   — auto-create where `queried ∧ selective`. Caveats: sample cardinality
+   extrapolates imperfectly (a field rare in the sample may be common overall, and
+   vice-versa), so treat it as a prior, not truth; and these estimates are exactly
+   what a future `Index.Statistics()` should return to feed cbq's CBO
+   (`useCBO=true`) instead of the current `nil`.
 3. **Eager wildcard GSI (Cosmos/Mongo-style)** — a bbolt store keyed
    `encode(path) + encode(value) + docID` so any single-path equality/range is
    contiguous.
