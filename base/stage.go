@@ -107,7 +107,10 @@ func (stage *Stage) StartActor(aFunc ActorFunc, aData interface{}, batchSize int
 			var preallocVal Val
 
 			if cap(batch) > len(batch) {
-				preallocVals := batch[0 : len(batch)+1][len(batch)]
+				// NOTE: '=' not ':=' -- assign the outer preallocVals so the recycled
+				// slot's slice actually reaches ValsDeepCopy; a ':=' here would shadow
+				// it, leaving preallocVals nil and forcing make(Vals) on every row.
+				preallocVals = batch[0 : len(batch)+1][len(batch)]
 				preallocVals = preallocVals[0:cap(preallocVals)]
 
 				if len(preallocVals) > 0 {
