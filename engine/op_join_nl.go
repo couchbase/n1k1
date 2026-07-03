@@ -93,9 +93,10 @@ func OpJoinNestedLoop(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 		lzValsJoin := make(base.Vals, lenLabelsAB)
 
-		lzStatRowsLeft := 0        // stats: left-driver (outer) rows. // <== genCompiler:hide
-		lzStatProbes := 0          // stats: inner-loop row visits (the join work). // <== genCompiler:hide
-		lzStatsBase := o.StatsBase // stats: baked as a literal in the compiled path. // <== genCompiler:hide
+		lzStats := statsOf(lzVars)                        // stats (live) // <== genCompiler:hide
+		lzStatsBase := o.StatsBase                        // <== genCompiler:hide
+		statZero(lzStats, lzStatsBase+StatJoinNLRowsLeft) // <== genCompiler:hide
+		statZero(lzStats, lzStatsBase+StatJoinNLProbes)   // <== genCompiler:hide
 
 		lzYieldValsOrig := lzYieldVals
 
@@ -104,7 +105,7 @@ func OpJoinNestedLoop(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 				return
 			}
 
-			lzStatRowsLeft++ // stats // <== genCompiler:hide
+			statBump(lzStats, lzStatsBase+StatJoinNLRowsLeft) // stats: live // <== genCompiler:hide
 
 			lzValsJoin = lzValsJoin[:0]
 			lzValsJoin = append(lzValsJoin, lzValsA...)
@@ -121,7 +122,7 @@ func OpJoinNestedLoop(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 			var lzVal base.Val
 
 			lzYieldVals := func(lzValsB base.Vals) {
-				lzStatProbes++ // stats: one inner-loop row visit. // <== genCompiler:hide
+				statBump(lzStats, lzStatsBase+StatJoinNLProbes) // stats: live, one inner-loop visit // <== genCompiler:hide
 
 				lzValsJoin = lzValsJoin[0:lenLabelsA]
 				lzValsJoin = append(lzValsJoin, lzValsB...)
@@ -224,12 +225,6 @@ func OpJoinNestedLoop(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 		// The left driver.
 		ExecOp(o.Children[0], lzVars, lzYieldVals, lzYieldErr, pathNext, "JNLO") // !lz
-
-		// stats: flush final counts once the left driver has drained.
-		if lzVars != nil && lzVars.Ctx != nil && lzVars.Ctx.Stats != nil {
-			lzVars.Ctx.Stats.Counters[lzStatsBase+StatJoinNLRowsLeft] = int64(lzStatRowsLeft) // <== genCompiler:hide
-			lzVars.Ctx.Stats.Counters[lzStatsBase+StatJoinNLProbes] = int64(lzStatProbes) // <== genCompiler:hide
-		}
 
 		lzYieldErrOrig(lzErr)
 	}

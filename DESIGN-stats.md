@@ -305,6 +305,17 @@ modes):
   each checkpoint. The CLI exposes `-stats` and `.stats [on|off]`, and on a TTY
   redraws the display live (throttled ~10 Hz, in place, on stderr) while the query
   runs. Off by default → zero cost.
+- **Everything animates, not just scans.** Two things make the whole tree move
+  during a query, not just fill in at the end: (1) every op writes its counters to
+  the shared array **per row** (`statBump`), reset at each op invocation
+  (`statZero`) — so a re-run inner subtree restarts while a single-run op climbs
+  cumulatively; (2) the render trigger fires at each **scan-invocation boundary**
+  (a pulse in `DatastoreOp`), not only every N rows — essential because a
+  nested-loop join's inner scan yields only a handful of rows per pass, far under
+  the per-row checkpoint interval, so the modulo alone would never fire. These are
+  single-writer (one goroutine per op instance) so no atomics; the render still
+  throttles to ~10 Hz. (Interpreter-only via `genCompiler:hide`, matching the
+  counter core's compiled-path limitation.)
 - **Aligned columnar display.** The footer is a table, not `Key=Val` soup: a
   tree-indented `op` column, then one **right-aligned numeric column per stat name
   shared by ≥2 operators** (so a value repeated down the plan — `RowsOut`, `Probes`
@@ -318,16 +329,16 @@ modes):
       filter                       6        5
         datastore-scan-records              6/6
   glossary: GroupsOut: distinct groups (or DISTINCT rows) emitted
-            RowsIn: input rows the operator consumed  ·  RowsOut: rows emitted to the parent
+            RowsIn: input rows the operator consumed · RowsOut: rows emitted to the parent
   ```
 - Nil `Ctx.Stats` ⇒ the zero-cost off path (unchanged default).
 
 Not yet wired (follow-ups): `project`/`union`/`window` and hash-join counters;
 `BytesIn` and pruning/`FilesOpened`/`FilesPruned` counters (need the
-`DESIGN-data.md §5` manifest); per-op **live** flush cadence for non-scan ops (they
-flush once at completion today, so mid-query they read 0 while the scan ticks); the
-richer views/screens (`.stats view plan`, racing bars, DVR) and `EXPLAIN
-PRICE`/`COST` over this core; and the `StatKind` gauge/peak marker.
+`DESIGN-data.md §5` manifest); the richer views/screens (`.stats view plan`,
+racing bars, DVR) and `EXPLAIN PRICE`/`COST` over this core; the `StatKind`
+gauge/peak marker; and re-enabling counters on the **compiled** path (they are
+`genCompiler:hide` today, so `-stats` over a compiled/`intermed` run is empty).
 
 ### Estimates & progress bars
 

@@ -23,24 +23,26 @@ func OpFilter(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 		exprFunc :=
 			MakeExprFunc(lzVars, o.Children[0].Labels, o.Params, pathNextF, "FF") // !lz
 
-		// Stats counters are genCompiler:hide'd -> interpreter-only for now; the
-		// compiled (intermed) path collects no stats yet. See DESIGN-stats.md
-		// "KNOWN LIMITATION -- compiled path currently has NO stats (TODO)".
-		lzStatRowsIn := 0          // stats: rows examined. // <== genCompiler:hide
-		lzStatRowsOut := 0         // stats: rows passing the predicate. // <== genCompiler:hide
-		lzStatsBase := o.StatsBase // stats: baked as a literal in the compiled path. // <== genCompiler:hide
+		// Stats counters update live (per row) into the shared array so the CLI
+		// display animates; they are genCompiler:hide'd -> interpreter-only for now
+		// (the compiled path collects no stats -- see DESIGN-stats.md's KNOWN
+		// LIMITATION). statZero resets at setup so a re-run filter restarts.
+		lzStats := statsOf(lzVars)                       // <== genCompiler:hide
+		lzStatsBase := o.StatsBase                       // <== genCompiler:hide
+		statZero(lzStats, lzStatsBase+StatFilterRowsIn)  // <== genCompiler:hide
+		statZero(lzStats, lzStatsBase+StatFilterRowsOut) // <== genCompiler:hide
 
 		lzYieldValsOrig := lzYieldVals
 
 		lzYieldVals = func(lzVals base.Vals) {
-			lzStatRowsIn++ // stats: local counter, flushed when the scan completes. // <== genCompiler:hide
+			statBump(lzStats, lzStatsBase+StatFilterRowsIn) // stats: live // <== genCompiler:hide
 
 			var lzVal base.Val
 
 			lzVal = exprFunc(lzVals, lzYieldErr) // <== emitCaptured: pathNextF "FF"
 
 			if base.ValTruthy(lzVal) {
-				lzStatRowsOut++ // stats // <== genCompiler:hide
+				statBump(lzStats, lzStatsBase+StatFilterRowsOut) // stats: live // <== genCompiler:hide
 
 				lzYieldValsOrig(lzVals) // <== emitCaptured: path ""
 			}
@@ -49,11 +51,5 @@ func OpFilter(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 		EmitPop(pathNext, "F") // !lz
 
 		ExecOp(o.Children[0], lzVars, lzYieldVals, lzYieldErr, pathNextF, "") // !lz
-
-		// stats: flush final counts once the child has drained.
-		if lzVars != nil && lzVars.Ctx != nil && lzVars.Ctx.Stats != nil {
-			lzVars.Ctx.Stats.Counters[lzStatsBase+StatFilterRowsIn] = int64(lzStatRowsIn) // <== genCompiler:hide
-			lzVars.Ctx.Stats.Counters[lzStatsBase+StatFilterRowsOut] = int64(lzStatRowsOut) // <== genCompiler:hide
-		}
 	}
 }

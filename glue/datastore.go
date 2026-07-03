@@ -51,6 +51,16 @@ func DatastoreOp(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 	case "project-exclude":
 		ProjectExcludeOp(o, vars, yieldVals, yieldErr, path, pathNext)
 	}
+
+	// Live progress pulse: a scan invocation just finished. Each pass yields far
+	// fewer rows than countingYield's per-row checkpoint interval (a nested-loop
+	// join's inner scan is a handful of rows re-run many times), so without a pulse
+	// here YieldStats would rarely fire and the display wouldn't animate. The
+	// receiver throttles to ~10 Hz, so pulsing per invocation is cheap. Gated to
+	// counter-contributing scans (StatsBase >= 0) and to stats being on.
+	if o.StatsBase >= 0 && vars.Ctx != nil && vars.Ctx.Stats != nil && vars.Ctx.YieldStats != nil {
+		_ = vars.Ctx.YieldStats(vars.Ctx.Stats)
+	}
 }
 
 // ProjectExcludeOp implements SELECT * EXCLUDE <path>... over a lone unprefixed

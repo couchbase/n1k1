@@ -80,7 +80,7 @@ func TestStatsGlossary(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("expected 1 line, got %d: %v", len(got), got)
 	}
-	want := "glossary: RowsIn: input rows  ·  RowsOut: emitted rows"
+	want := "glossary: RowsIn: input rows · RowsOut: emitted rows"
 	if got[0] != want {
 		t.Errorf("glossary:\n got: %q\nwant: %q", got[0], want)
 	}
