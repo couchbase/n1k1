@@ -99,6 +99,7 @@ func listDocKeys(dir string) ([]string, error) {
 // full scan; a map hit on every re-scan). Past the key cap it lists fresh without
 // caching. First writer wins under a race.
 func (c *GlueContext) scanKeys(dir string) ([]string, error) {
+	c = c.shared() // the cache lives on the root, shared across UNION ALL clones
 	c.scanKeyCacheMu.Lock()
 	if keys, ok := c.scanKeyCache[dir]; ok {
 		c.scanKeyCacheMu.Unlock()

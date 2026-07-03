@@ -29,6 +29,17 @@ type Vars struct {
 
 // -----------------------------------------------------
 
+// ChainCloner lets a temp resource that is otherwise shallow-copied by
+// ChainExtend hand back a per-actor clone instead, so mutable per-goroutine
+// state it carries doesn't get shared across concurrent actors. Temps[0] (the
+// evaluation context) implements this: it holds dynamically-scoped state (an
+// outer correlated row) that each UNION ALL actor must mutate independently.
+// Kept as an interface{}-returning method so base stays decoupled from glue.
+type ChainCloner interface {
+	// ChainClone returns a clone safe for one concurrent actor to mutate.
+	ChainClone() interface{}
+}
+
 // ChainExtend returns a new Vars linked to the Vars chain, which is
 // safely usable by a concurrent goroutine and useful for shadowing.
 //
@@ -38,9 +49,19 @@ type Vars struct {
 // actor (e.g. a UNION ALL contributor) still needs. Any per-run resource an
 // actor creates is TempSet into its own copy, so actors don't share mutable
 // state.
+//
+// The one exception is Temps[0], the evaluation context: it is a single shared
+// pointer, so a shallow copy would let concurrent actors race on the
+// dynamically-scoped state it carries (e.g. the outer row of a correlated
+// subquery). If it implements ChainCloner, each actor gets its own clone.
 func (v *Vars) ChainExtend() *Vars {
 	temps := make([]interface{}, len(v.Temps))
 	copy(temps, v.Temps)
+	if len(temps) > 0 {
+		if cc, ok := temps[0].(ChainCloner); ok {
+			temps[0] = cc.ChainClone()
+		}
+	}
 	return &Vars{
 		Temps: temps,
 		Next:  v,

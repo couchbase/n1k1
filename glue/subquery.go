@@ -47,11 +47,12 @@ type subqEvaluator struct {
 
 	// mu guards cache. Subqueries are normally evaluated on the single push
 	// goroutine, but OpUnionAll runs its branches as concurrent actors that share
-	// this evaluator (ChainExtend copies the Temps slice but not the *GlueContext
-	// it points at), so two branch subqueries can compile() at once -- an
-	// unsynchronized map write is a fatal "concurrent map writes". (corrParent is
-	// untouched here: only correlated subqueries set it, and those are rarer
-	// inside a concurrent union branch -- tracked separately if it bites.)
+	// this evaluator (the *GlueContext is per-actor cloned by ChainExtend, but the
+	// subqEvaluator it points at is shared), so two branch subqueries can compile()
+	// at once -- an unsynchronized map write is a fatal "concurrent map writes".
+	// The correlated scope (corrParent/withScope), by contrast, lives on the
+	// per-actor context clone, so EvaluateSubquery's save/set/restore of it below is
+	// isolated per branch -- see GlueContext.ChainClone.
 	mu    sync.Mutex
 	cache map[*algebra.Select]*subCompiled
 
@@ -167,14 +168,14 @@ func (c *GlueContext) EvaluateSubquery(query *algebra.Select, parent value.Value
 		return nil, err
 	}
 
-	// Correlated subquery: expose the outer row (parent) to the sub-op's
-	// expressions for the duration of this execution, so they can resolve outer
-	// identifiers (ExprTree wraps each sub-row as a scope over corrParent). Saved
-	// and restored so nested subqueries chain their parents correctly. n1k1's
-	// engine is single-goroutine (synchronous push), so this is safe.
-	// Set up the subquery's scope: its WITH (CTE) variables plus, for a correlated
-	// subquery, the outer row. Saved and restored so nested subqueries chain
-	// correctly. n1k1's engine is single-goroutine (synchronous push), so safe.
+	// Set up the subquery's scope on this context: its WITH (CTE) variables plus,
+	// for a correlated subquery, the outer row (parent) -- so the sub-op's
+	// expressions resolve outer identifiers (ExprTree wraps each sub-row as a scope
+	// over corrParent). Saved and restored so nested subqueries chain their parents
+	// correctly. Safe under concurrency because a UNION ALL branch runs on its own
+	// per-actor context clone (see GlueContext.ChainClone), so these writes never
+	// touch a sibling branch's scope; within one branch the sub-op executes
+	// synchronously, so the save/restore nests correctly.
 	prevCorr, prevWith := c.corrParent, c.withScope
 	defer func() { c.corrParent, c.withScope = prevCorr, prevWith }()
 	{
