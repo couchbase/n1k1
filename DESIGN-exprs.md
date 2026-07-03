@@ -159,9 +159,10 @@ Convert+Evaluate but skips WriteJSON) isolates each stage:
   irreducible for 16.8M cross-join rows.
 
 So the fallback is **73% of the bytes (7.6 GB)** and 39% of the time — and the
-allocation is **`Convert` building the object, not `WriteJSON`.** (This corrects an
-earlier guess that WriteJSON would force materialization and make laziness moot: it
-doesn't — WriteJSON barely allocates.)
+allocation is **`Convert` building the object, not `WriteJSON`.** (Myth, disproven:
+we first assumed `WriteJSON` would force materialization, making a lazy value moot.
+It doesn't — `WriteJSON` barely allocates, and a lazy value can serialize straight
+from the retained label bytes, so lazy Convert *is* viable — lever 3.)
 
 **What is already optimized (don't re-do these):**
 - `SELECT 1` (a constant projection) → a `Constant` node → `ExprTreeOptimize`
