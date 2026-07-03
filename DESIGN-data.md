@@ -398,6 +398,92 @@ tuple** would blow that up over a large file. So allocation behavior is a
   existing `benchmark/` harness) as an acceptance metric for every decoder —
   "allocs per row" is the number to hold near constant regardless of file size.
 
+#### Measured (2026-07): the *fetch* path is exactly where this discipline breaks
+
+A heap profile of a 3-way nested-loop self-join
+(`SELECT COUNT(*) FROM orders o1, orders o2, orders o3`, 262,144 rows;
+`n1k1 -stats=final -profile-mem`) allocated **~931 MB** — yet only **~3 MB live at
+exit**, so it's pure GC churn, not a leak. The breakdown (via `go tool pprof
+-alloc_space`):
+
+- **~71% is `glue.DatastoreFetch` → the fork's `query/datastore/file.(*keyspace).Fetch`
+  (662 MB).** Unlike the native scan, the *fetch* path materializes cbq
+  `value.AnnotatedValue`s (`value.init`, `annotatedValue.SetMetaField`) and
+  re-parses with **`encoding/json.Unmarshal`, not jsonparser** — precisely the
+  eager, per-doc boxing this section warns against. (`DatastoreScanRecords`, by
+  contrast, yields `base.Val = rec.Doc` raw bytes and honors the borrow contract.)
+- **~120 MB** copying file bytes onto the heap (`os.ReadFile` / `readFileContents`).
+- **~135 MB** `readdir`/`lstat`/`keyPath` *locating* each doc by key — there is no
+  key→path index, so fetch-by-key re-walks the directory.
+- All of it amplified **O(|L|×|R|)** because the nested-loop join re-fetches the
+  same docs hundreds of thousands of times.
+
+Leverage order (biggest first): **(1)** don't re-read the same doc 262K times — a
+build-side/hash join or a small decoded-doc cache; **(2)** route fetch through the
+**native byte path** (`base.Val`+jsonparser, as `DatastoreScanRecords` already
+does) instead of cbq `Fetch`, erasing the boxing + `encoding/json` garbage;
+**(3)** a key→path index to kill the `readdir`/`stat` churn; only **(4)** then the
+read-copy itself (below). The read technique is the *last* lever, not the first.
+
+#### mmap vs read-into — choose per file shape, not universally
+
+`blevesearch/mmap-go` is already an (indirect) dep, and mmap-ing a file as a
+`[]byte` is genuinely zero-copy — jsonparser subslices straight into the mapping.
+But it only removes the ~120 MB read-copy above (not the boxing/parse/locate cost),
+and it has sharp edges:
+
+- **Lifetime / SIGBUS.** An mmap `[]byte` is valid only while mapped; a `base.Val`
+  subslice that outlives the mapping (retained into a join buffer, a GROUP BY map,
+  an ORDER BY heap) dangles into unmapped memory — a **segfault, not a nil-panic**.
+  n1k1 deep-copies across `Stage` actor boundaries but not within a single-goroutine
+  pipeline, so mmap means keeping a pool of mappings alive for the whole query and
+  unmapping at the end.
+- **Bad for large / compressed / container files.** mmap suits *uncompressed,
+  byte-addressable, partially-read* files. `*.jsonl.gz` / `.zst` (§3) hand you the
+  **compressed** bytes — you must stream-decompress into a buffer anyway, so mmap
+  buys nothing. PDF/PPTX/XLSX (`extract` provider, §4) are *extracted*, not
+  sub-sliced; the allocation is the extracted text, not the container read.
+- **Bad for many tiny files.** Today's layout is one JSON doc per file; mmap has
+  per-call syscall + page-fault overhead and 4 KB page granularity, so mapping a
+  200-byte doc costs more than reading it. mmap's payoff is coupled to a
+  **packed/segment layout** (few large files, §5-adjacent), not one-file-per-doc.
+- **The portable alternative: read-into a reused buffer.** Go's
+  **`io.ReaderAt.ReadAt(p []byte, off int64)` *is* the `ReadInto(prealloc, pos,
+  numBytes)` API** — it reads a chosen range into a caller-owned slice (`*os.File`
+  implements it). Paired with a pooled / per-actor reused buffer, reads become
+  amortized zero-alloc **without** mmap's lifetime hazard, work for large files
+  (read only the needed range), and skip page-granularity waste. It copies once,
+  into memory you own and recycle, rather than zero-copy. Rule of thumb: **mmap for
+  a packed segment of many docs; `ReadAt` + reused buffer for everything else**
+  (large, compressed-after-decompress, or per-doc).
+
+#### Push down what the query needs to the fetch/reader
+
+The cheapest read is the one you skip. Thread the set of referenced fields (and
+predicates) down to the scan/fetch op so it can do less:
+
+- **`_meta`-only queries need no file read at all.** `_meta` (path/name/ext/size/
+  mtime — §6) comes from the directory entry / `stat`, which the scan already holds;
+  `SELECT _meta.name, _meta.size FROM ks WHERE _meta.size > …` (or a bare
+  `COUNT(*)`) should answer straight from `readdir` results and never open a doc.
+  This is the extreme of projection pushdown and ties to the pruning-visibility
+  story in `DESIGN-stats.md`.
+- **Partial decode for the fields you do use.** jsonparser's `EachKey` / `Get(path…)`
+  pulls only the requested paths out of the raw bytes — no whole-object
+  materialization — so a query touching 2 of 50 fields parses ~2 fields. This is
+  pushdown *into* the decode step; it needs the referenced-path set threaded down
+  from `conv`.
+- **Range pushdown for big / columnar files.** With `ReadAt`, a reader fetches only
+  the byte ranges it needs (a Parquet column chunk, a record at a manifest-known
+  offset — §5), reading kilobytes of a gigabyte file. mmap gives this "for free"
+  via the page cache, but with the caveats above; `ReadAt` gives it explicitly and
+  safely.
+
+Net: the allocation win is less about *how* we get bytes (mmap vs read) than about
+**not materializing, not re-reading, and not reading at all what the query doesn't
+touch** — with `ReadAt`+reused-buffer and field/`_meta` pushdown as the portable
+levers, and mmap reserved for a packed-segment layout.
+
 ## 2. Directory layouts & FROM-term resolution
 
 This is the crux of the user's question: flat vs two-level vs deep, auto-detect
