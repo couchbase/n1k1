@@ -640,25 +640,82 @@ func pad(s string, n int, right bool) string {
 
 // ---------------------------------------------------------------------------
 
-// SplitStatements splits SQL text on top-level ';' (ignoring ';' inside ' " or
-// ` quotes), returning the complete statements and any trailing remainder.
+// SplitStatements splits SQL text on top-level ';', returning the complete
+// statements and any trailing remainder. A ';' is ignored inside ' " or `
+// quotes and inside SQL comments (-- to end of line, or /* ... */ blocks), so a
+// comment or string containing ';' doesn't wrongly split a statement. Quote and
+// comment delimiters are all ASCII, so byte scanning is safe over UTF-8 text.
 func SplitStatements(s string) (stmts []string, rest string) {
 	var start int
-	var quote rune
-	for i, r := range s {
-		if quote != 0 {
-			if r == quote {
+	var quote byte // 0, or the active quote char (' " `)
+	inLine := false
+	inBlock := false
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		switch {
+		case inLine:
+			if ch == '\n' {
+				inLine = false
+			}
+		case inBlock:
+			if ch == '*' && i+1 < len(s) && s[i+1] == '/' {
+				inBlock = false
+				i++
+			}
+		case quote != 0:
+			if ch == quote {
 				quote = 0
 			}
-			continue
-		}
-		switch r {
-		case '\'', '"', '`':
-			quote = r
-		case ';':
+		case ch == '\'' || ch == '"' || ch == '`':
+			quote = ch
+		case ch == '-' && i+1 < len(s) && s[i+1] == '-':
+			inLine = true
+			i++
+		case ch == '/' && i+1 < len(s) && s[i+1] == '*':
+			inBlock = true
+			i++
+		case ch == ';':
 			stmts = append(stmts, s[start:i])
 			start = i + 1
 		}
 	}
 	return stmts, s[start:]
+}
+
+// IsBlankOrComment reports whether s is only whitespace and complete SQL
+// comments (-- line comments and /* ... */ blocks) -- i.e. no executable SQL.
+// An unterminated /* ... block returns false: real SQL may follow it on a later
+// line, so the caller should keep buffering. Mirrors the sqlite shell's
+// _all_whitespace(): blank/comment-only input is skipped when nothing is
+// buffered, and a trailing comment after a ';' doesn't keep the buffer busy.
+func IsBlankOrComment(s string) bool {
+	for i := 0; i < len(s); {
+		ch := s[i]
+		switch {
+		case ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' || ch == '\v' || ch == '\f':
+			i++
+		case ch == '-' && i+1 < len(s) && s[i+1] == '-': // line comment
+			i += 2
+			for i < len(s) && s[i] != '\n' {
+				i++
+			}
+		case ch == '/' && i+1 < len(s) && s[i+1] == '*': // block comment
+			i += 2
+			closed := false
+			for i < len(s) {
+				if s[i] == '*' && i+1 < len(s) && s[i+1] == '/' {
+					i += 2
+					closed = true
+					break
+				}
+				i++
+			}
+			if !closed {
+				return false // unterminated: might precede real SQL later
+			}
+		default:
+			return false // a real (non-comment, non-space) token
+		}
+	}
+	return true
 }

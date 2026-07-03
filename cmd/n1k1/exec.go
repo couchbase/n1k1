@@ -29,10 +29,12 @@ import (
 // ---- statement execution --------------------------------------------------
 
 func (c *cli) exec(stmt string) {
-	stmt = strings.TrimSpace(stmt)
-	if stmt == "" {
+	// Nothing to run for whitespace- or comment-only text (e.g. a "/* ... */;"
+	// or a stray "-- note;"): the parser would reject an empty statement.
+	if cmd.IsBlankOrComment(stmt) {
 		return
 	}
+	stmt = strings.TrimSpace(stmt)
 
 	// .stats / -stats: collect per-operator counters, and on a TTY draw them live
 	// (throttled, in place, to stderr) while the query runs. Reset afterwards so a

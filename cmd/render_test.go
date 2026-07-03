@@ -84,6 +84,10 @@ func TestSplitStatements(t *testing.T) {
 		{`SELECT ';' AS x; SELECT 2`, []string{`SELECT ';' AS x`}, " SELECT 2"},
 		{`SELECT "a;b"; 1`, []string{`SELECT "a;b"`}, " 1"},
 		{"SELECT `c;d` ; 1", []string{"SELECT `c;d` "}, " 1"},
+		// ';' inside comments must not split.
+		{"SELECT 1 /* a ; b */ AS x; 2", []string{"SELECT 1 /* a ; b */ AS x"}, " 2"},
+		{"SELECT 1; -- tail ; note\nSELECT 2;", []string{"SELECT 1", " -- tail ; note\nSELECT 2"}, ""},
+		{"/* c */; 1", []string{"/* c */"}, " 1"},
 	}
 	for _, tc := range tests {
 		stmts, rest := SplitStatements(tc.in)
@@ -92,6 +96,27 @@ func TestSplitStatements(t *testing.T) {
 		}
 		if strings.Join(stmts, "|") != strings.Join(tc.wantStmts, "|") {
 			t.Errorf("SplitStatements(%q) stmts = %q, want %q", tc.in, stmts, tc.wantStmts)
+		}
+	}
+}
+
+func TestIsBlankOrComment(t *testing.T) {
+	blank := []string{
+		"", "   ", "\t\n ", "-- just a note", "  -- note with ; and 'quote'",
+		"/* block */", "/* a */  /* b */", "-- one\n/* two */\n   ",
+	}
+	for _, s := range blank {
+		if !IsBlankOrComment(s) {
+			t.Errorf("IsBlankOrComment(%q) = false, want true", s)
+		}
+	}
+	real := []string{
+		"SELECT 1", "  x", "-- c\nSELECT 1", "/* unterminated", "/* open\nstill open",
+		"SELECT 1 -- trailing", ";",
+	}
+	for _, s := range real {
+		if IsBlankOrComment(s) {
+			t.Errorf("IsBlankOrComment(%q) = true, want false", s)
 		}
 	}
 }

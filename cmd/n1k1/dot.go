@@ -167,6 +167,24 @@ func (c *cli) dot(line string) bool {
 		} else {
 			fmt.Fprintf(c.stderr, "usage: .maxwidth <n|auto>  (0 = uncapped; auto = fit terminal)\n")
 		}
+	case ".print":
+		// Emit text (a script progress marker, e.g. "STARTING big query..."). Goes
+		// to stderr so it interleaves with other diagnostics and never pollutes the
+		// query results on stdout. sqlite/duckdb call this .print.
+		fmt.Fprintln(c.stderr, arg)
+	case ".echo":
+		// Echo each input line as it's read (great for logging what a -f/.read
+		// script ran). sqlite/duckdb call this .echo.
+		switch strings.ToLower(strings.TrimSpace(arg)) {
+		case "":
+			fmt.Fprintf(c.stderr, "echo %s\n", onOff(c.echo))
+		case "on":
+			c.echo = true
+		case "off":
+			c.echo = false
+		default:
+			fmt.Fprintf(c.stderr, "usage: .echo [on|off] (currently %s)\n", onOff(c.echo))
+		}
 	case ".read":
 		c.readFile(arg)
 	case ".output":
@@ -206,6 +224,8 @@ func (c *cli) printHelp() {
 		".maxrows <n>          box: cap rows shown (0 = all; negative = last |n| rows)",
 		".maxwidth <n|auto>    box: cap column width (0 = uncapped; auto = fit terminal)",
 		".read <file>          run statements/dot-commands from a file",
+		".echo " + c.helpOpts(onOff(c.echo), "on", "off") + "        echo each input line as it's read (handy for scripts)",
+		".print <text>         emit text to stderr (e.g. a script progress marker)",
 		".output [<file>]      send results to a file, or back to stdout if omitted",
 		".version              show version + build info (incl. dependency SHAs)",
 		".quit / .exit         leave",

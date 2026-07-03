@@ -131,15 +131,23 @@ func (c *cli) readFile(path string) bool {
 
 // feed processes one input line. When the line starts a dot-command (and no SQL
 // is buffered) it runs immediately; otherwise it accumulates until a top-level
-// ';' completes one or more statements. Returns true to quit.
+// ';' completes one or more statements. Blank lines and comment-only lines are
+// skipped when nothing is buffered (so a leading comment doesn't hide the next
+// dot-command); with `.echo on` each non-blank line is echoed as it's read.
+// Returns true to quit.
 func (c *cli) feed(line string) bool {
+	if c.echo && strings.TrimSpace(line) != "" {
+		fmt.Fprintln(c.stderr, c.style.Dim(line))
+	}
+
 	if c.buf.Len() == 0 {
-		t := strings.TrimSpace(line)
-		if t == "" {
-			return false
+		// Dot-commands run immediately -- only at statement start.
+		if t := strings.TrimLeft(line, " \t"); strings.HasPrefix(t, ".") {
+			return c.dot(strings.TrimSpace(line))
 		}
-		if strings.HasPrefix(t, ".") {
-			return c.dot(t)
+		// Skip blank/comment-only lines (sqlite/duckdb: nothing to execute yet).
+		if cmd.IsBlankOrComment(line) {
+			return false
 		}
 	}
 
@@ -151,9 +159,10 @@ func (c *cli) feed(line string) bool {
 		c.exec(s)
 	}
 	c.buf.Reset()
-	// Only carry a non-blank remainder forward; a trailing newline must not keep
-	// the buffer "non-empty" (that would hide the next line's dot-command).
-	if strings.TrimSpace(rest) != "" {
+	// Carry the remainder forward only if it holds real SQL (or an unterminated
+	// block comment); a trailing comment/whitespace must not keep the buffer
+	// "non-empty" (that would hide the next line's dot-command).
+	if !cmd.IsBlankOrComment(rest) {
 		c.buf.WriteString(rest)
 	}
 	return false
@@ -161,7 +170,7 @@ func (c *cli) feed(line string) bool {
 
 // flush runs any buffered text as a final (unterminated) statement.
 func (c *cli) flush() {
-	if strings.TrimSpace(c.buf.String()) != "" {
+	if !cmd.IsBlankOrComment(c.buf.String()) {
 		c.exec(c.buf.String())
 	}
 	c.buf.Reset()
