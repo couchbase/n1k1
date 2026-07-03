@@ -10,7 +10,7 @@ const gsiSuiteRoot = "suite/json-gsi"
 
 // gsiPassFloor is the results-pass backstop for the gsi corpus (bump as coverage
 // grows), mirroring the default suite's floor.
-const gsiPassFloor = 787
+const gsiPassFloor = 792
 
 // gsiExpectedNonPass lists gsi cases n1k1 doesn't yet pass, keyed by loc
 // (case_gsi_<cat>.json[i]) -> group. Any non-pass NOT listed is a regression.
@@ -47,9 +47,7 @@ var gsiExpectedNonPass = map[string]string{
 	"case_gsi_unnest.json[5]":               "mega-order-limit",
 	"case_gsi_unnest.json[6]":               "mega-order-limit",
 	"case_gsi_unnest.json[7]":               "mega-order-limit",
-	"case_gsi_withs.json[2]":                "set-op",
 	"case_gsi_withs.json[3]":                "with-subquery",
-	"case_gsi_withs.json[4]":                "with-subquery",
 	"case_gsi_withs.json[8]":                "subquery",
 	"case_gsi_withs.json[9]":                "subquery",
 	"case_gsi_withs.json[10]":               "with-subquery",
@@ -59,9 +57,6 @@ var gsiExpectedNonPass = map[string]string{
 	"case_gsi_withs.json[14]":               "with-subquery",
 	"case_gsi_withs.json[15]":               "with-subquery",
 	"case_gsi_withs.json[19]":               "with-subquery",
-	"case_gsi_withs.json[27]":               "set-op",
-	"case_gsi_withs.json[28]":               "set-op",
-	"case_gsi_withs.json[30]":               "set-op",
 }
 
 var gsiGroupWhy = map[string]string{
@@ -74,6 +69,5 @@ var gsiGroupWhy = map[string]string{
 	"dynamic-field":     "select_functions[20]: dynamic bracket field navigation t.[<expr>] / t.[$param] -- n1k1 doesn't evaluate the bracket expression as a field name (t.[t.lookup] should read t[t.lookup], not yield the literal). Not yet supported",
 	"prepared":          "inlist[17,18,20,21]: EXECUTE of a PREPAREd statement -- n1k1 has no prepared-statement store, so EXECUTE can't resolve the plan (the PREPARE cases themselves carry no results and are skipped)",
 	"unscoped-orders":   "typeconv_functions[14]: queries the shared `orders` keyspace with only `type=\"order\"` and no test_id predicate, so our merged corpus (every category's orders docs) over-matches where the fork's per-category bucket held just two. Same class as the shellTest auto-scope, but for orders",
-	"set-op":            "withs[2,27,28,30]: UNION ALL where a branch is itself a nested WITH or a comma-join (SELECT ... FROM cte1, cte2). Plain UNION / UNION ALL and INTERSECT[ ALL] / EXCEPT[ ALL] now work; these remaining ones are the branch-shape gaps",
-	"with-subquery":     "withs[3,4,10,11,12,13,14,15,19]: WITH (CTE) combined with an unsupported shape -- a CTE used as a comma-join/JOIN term, a CTE-as-subquery selected directly (SELECT w2 where w2 is a subquery CTE), FIRST over a CTE, or dynamic-field navigation into a CTE. Plain WITH works; these combinations don't yet",
+	"with-subquery":     "withs[3,10,11,12,13,14,15,19]: WITH (CTE) combined with a still-unsupported shape -- a CTE-as-subquery selected directly (SELECT w2 where w2 is a subquery CTE), FIRST over a CTE, dynamic-field navigation into a CTE, or a JOIN whose predicate is a CTE-membership test. Plain WITH, and WITH over UNION ALL / a comma-join branch, now work; these combinations don't yet",
 }

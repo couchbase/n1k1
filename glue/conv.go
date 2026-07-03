@@ -553,12 +553,40 @@ func (c *Conv) VisitHashNest(o *plan.HashNest) (interface{}, error) { return NA(
 // through the glue layer yet, but the join is semantically a nested-loop join
 // with the same ON clause, so we execute it as one (correct, if not as fast).
 func (c *Conv) VisitHashJoin(o *plan.HashJoin) (interface{}, error) {
-	if o.Onclause() == nil { // comma/cross join -- see VisitNLJoin.
-		return NA(o)
-	}
 	right, err := c.convertBranch(o.Child())
 	if err != nil {
 		return nil, err
+	}
+
+	build, probe := o.BuildExprs(), o.ProbeExprs()
+
+	// A comma-join the planner hashed has a nil ON clause: the equality lives in
+	// build/probe (the same equality often repeated as a redundant Filter), e.g.
+	// `FROM a, b WHERE a.x=b.y`. Build the single-key inner equijoin via OpJoinHash
+	// and apply any Filter as a residual on top (a redundant filter is harmless; a
+	// genuine residual is then still enforced). Composite-key / outer comma-join
+	// hashes aren't handled -- bail cleanly (the NL fallback needs an ON clause).
+	if o.Onclause() == nil {
+		if o.Outer() || len(build) != 1 || len(probe) != 1 {
+			return NA(o)
+		}
+		c.TopSet(o, &base.Op{
+			Kind:   "joinHash-inner",
+			Labels: append(append(base.Labels{}, right.Labels...), c.TopOp.Labels...),
+			Params: []interface{}{
+				[]interface{}{"exprTree", build[0]}, // build key, on right (Children[0])
+				[]interface{}{"exprTree", probe[0]}, // probe key, on left (Children[1])
+			},
+			Children: []*base.Op{right, c.TopOp},
+		})
+		if f := o.Filter(); f != nil {
+			return c.TopPush(o, &base.Op{
+				Kind:   "filter",
+				Labels: c.TopOp.Labels,
+				Params: []interface{}{"exprTree", f},
+			})
+		}
+		return c.TopOp, nil
 	}
 
 	// Use the real hash-join op (OpJoinHash: build a probe map from one side,
@@ -567,7 +595,6 @@ func (c *Conv) VisitHashJoin(o *plan.HashJoin) (interface{}, error) {
 	// branch's key, probe[0] the outer (left/TopOp) branch's key. Anything else
 	// (composite keys, or a residual non-equi ON filter OpJoinHash can't apply)
 	// falls back to the nested-loop join, which is correct if slower.
-	build, probe := o.BuildExprs(), o.ProbeExprs()
 	if o.Filter() == nil && len(build) == 1 && len(probe) == 1 {
 		if !o.Outer() {
 			// INNER: fill the map from the right branch, probe with the left.
@@ -606,6 +633,8 @@ func (c *Conv) VisitHashJoin(o *plan.HashJoin) (interface{}, error) {
 		}
 	}
 
+	// onclause != nil here (the nil case is fully handled above): the NL fallback
+	// evaluates the full ON clause on the concatenated left+right vals.
 	return c.TopSet(o, c.ansiJoinOp("joinNL", o.Outer(), o.Onclause(), c.TopOp, right))
 }
 
@@ -1091,11 +1120,25 @@ func (c *Conv) VisitUnionAll(o *plan.UnionAll) (interface{}, error) {
 	if len(children) == 0 {
 		return NA(o)
 	}
-	// The union's output labels are the first branch's; OpUnionAll matches the
-	// other branches' columns to these by label name (missing -> MISSING).
+	// The union's output columns are the UNION (by name) of every branch's labels,
+	// not just the first branch's -- cbq matches columns by name across branches
+	// and a row carries only its own columns (others MISSING). Using children[0]
+	// alone dropped columns unique to a later branch (e.g. `SELECT a ... UNION ALL
+	// SELECT b AS x ...` lost x). OpUnionAll remaps each branch's vals to these
+	// labels by name (missing -> MISSING, which the projection omits from output).
+	var labels base.Labels
+	seen := map[string]bool{}
+	for _, ch := range children {
+		for _, l := range ch.Labels {
+			if !seen[l] {
+				seen[l] = true
+				labels = append(labels, l)
+			}
+		}
+	}
 	return c.TopSet(o, &base.Op{
 		Kind:     "union-all",
-		Labels:   append(base.Labels{}, children[0].Labels...),
+		Labels:   labels,
 		Children: children,
 	})
 }
