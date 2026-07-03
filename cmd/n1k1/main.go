@@ -66,7 +66,7 @@ func main() {
 		timerFlag   = flag.Bool("timer", false, "print row count + elapsed after each statement")
 		statsFlag   = flag.Bool("stats", false, "show per-operator counters (rows in/out, join probes) live + as a footer (see .stats)")
 		initFlag    = flag.String("init", "", "startup file of dot-commands/SQL++ (default ~/."+prog+"rc; use \"\", \"-\" or \"none\" to skip)")
-		formatsFlag = flag.String("formats", "", "restrict scanning to a comma-separated set (all|json|jsonl|csv|tsv|extract|doc|text|image|video|gzip|recurse); empty or 'all' = everything")
+		formatsFlag = flag.String("formats", "", "restrict files scanned to a comma-separated set (all|json|jsonl|csv|tsv|extract|doc|text|image|video|gzip|recurse); empty or 'all' = everything")
 		metaFlag    = flag.String("meta", "auto", "add a _meta sub-object (path/name/ext/size/mtime) to records: on|off|auto (auto = extracted docs only)")
 		verFlag     = flag.Bool("version", false, "print version + build info (incl. dependency SHAs) and exit")
 		indexFlag   = flag.String("index", "lazy", "use catalog (secondary/FTS) indexes: "+

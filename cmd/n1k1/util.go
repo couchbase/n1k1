@@ -127,9 +127,9 @@ func verboseName(n int) string {
 	case n <= 0:
 		return "off (0)"
 	case n == 1:
-		return "on (1): show query plans"
+		return "on (1): info level"
 	default:
-		return fmt.Sprintf("debug (%d): plans + timing", n)
+		return fmt.Sprintf("on (%d): debug level", n)
 	}
 }
 
