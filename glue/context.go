@@ -89,7 +89,7 @@ type GlueContext struct {
 	// contract requires). Bounded by DatastoreFetchCacheMaxBytes and guarded by
 	// fetchCacheMu. A UNION ALL runs each branch as a concurrent actor with its own
 	// context clone (see ChainClone); the caches live on the shared root, reached
-	// via shared(), so the mutex still guards one copy. See datastore_fetch.go.
+	// via getRoot(), so the mutex still guards one copy. See datastore_fetch.go.
 	fetchCache   map[string]map[string][]byte // dir -> key -> owned doc bytes
 	fetchCacheN  int                          // total bytes currently cached (against the cap)
 	fetchCacheMu sync.Mutex
@@ -109,20 +109,20 @@ type GlueContext struct {
 	// concurrent actor; base.Vars.ChainExtend clones the context so the branches
 	// don't race on the dynamically-scoped corrParent/withScope. Request-wide state
 	// that must still be shared across those clones -- the fetch/scan caches and the
-	// error sink -- is reached via shared(), which resolves to the root, so a clone
+	// error sink -- is reached via getRoot(), which resolves to the root, so a clone
 	// never touches its own (zero) caches or mutexes.
 	root *GlueContext
 
 	// errsMu guards errs against concurrent Error/Warning/Fatal from UNION ALL
-	// branch actors (which delegate to the root via shared()). Lives on the root.
+	// branch actors (which delegate to the root via getRoot()). Lives on the root.
 	errsMu sync.Mutex
 }
 
-// shared resolves to the request's root GlueContext -- itself when this is the
+// getRoot resolves to the request's root GlueContext -- itself when this is the
 // root, else the root a per-actor clone points at (see ChainClone / the root
 // field). Request-wide state (the fetch/scan caches, the errs sink) is accessed
 // through it so all of a UNION ALL's branch clones share one copy.
-func (c *GlueContext) shared() *GlueContext {
+func (c *GlueContext) getRoot() *GlueContext {
 	if c.root != nil {
 		return c.root
 	}
@@ -136,7 +136,7 @@ func (c *GlueContext) shared() *GlueContext {
 // correlated subquery still inherits the outer row) and independently mutates
 // it. Everything request-wide -- the subquery evaluator, named args, and (via
 // the root pointer) the fetch/scan caches and error sink -- stays shared. The
-// caches/mutexes are left zero on the clone: shared() routes those accesses to
+// caches/mutexes are left zero on the clone: getRoot() routes those accesses to
 // the root, so the clone never uses them (and we avoid copying a live lock).
 func (c *GlueContext) ChainClone() interface{} {
 	return &GlueContext{
@@ -146,7 +146,7 @@ func (c *GlueContext) ChainClone() interface{} {
 		namedArgs:    c.namedArgs,
 		corrParent:   c.corrParent, // snapshot; the clone mutates its own copy
 		withScope:    c.withScope,
-		root:         c.shared(), // caches + errs delegate here
+		root:         c.getRoot(), // caches + errs delegate here
 	}
 }
 
@@ -230,7 +230,7 @@ func (c *GlueContext) Now() time.Time { return c.now }
 // shared root, so a row surfacing through a UNION ALL branch clone still lands
 // in the request's Results.
 func (c *GlueContext) Result(item value.AnnotatedValue) bool {
-	s := c.shared()
+	s := c.getRoot()
 	s.Results = append(s.Results, item)
 	return true
 }
@@ -259,7 +259,7 @@ func (c *GlueContext) Error(e errors.Error)   { c.appendErr(e) }
 func (c *GlueContext) Warning(e errors.Error) { c.appendErr(e) }
 
 func (c *GlueContext) appendErr(e errors.Error) {
-	s := c.shared()
+	s := c.getRoot()
 	s.errsMu.Lock()
 	s.errs = append(s.errs, e)
 	s.errsMu.Unlock()
@@ -267,7 +267,7 @@ func (c *GlueContext) appendErr(e errors.Error) {
 
 // GetErrors returns the request's accumulated errors. Called after execution
 // (all actors joined), so no lock is needed for the read.
-func (c *GlueContext) GetErrors() []errors.Error { return c.shared().errs }
+func (c *GlueContext) GetErrors() []errors.Error { return c.getRoot().errs }
 
 func (c *GlueContext) GetReqDeadline() time.Time { return time.Time{} }
 

@@ -54,7 +54,7 @@ var DatastoreFetchCacheMaxBytes = 64 << 20 // 64 MiB.
 // fetchCacheGet returns the cached bytes for (dir, key) -- owned, immutable -- if
 // any. Keyed by the existing dir and key strings, so a hit allocates nothing.
 func (c *GlueContext) fetchCacheGet(dir, key string) ([]byte, bool) {
-	c = c.shared() // the cache lives on the root, shared across UNION ALL clones
+	c = c.getRoot() // the cache lives on the root, shared across UNION ALL clones
 	c.fetchCacheMu.Lock()
 	var b []byte
 	var ok bool
@@ -69,7 +69,7 @@ func (c *GlueContext) fetchCacheGet(dir, key string) ([]byte, bool) {
 // byte cap, and returns the cached slice; it returns nil when the cache is full,
 // so the caller yields its (borrowed) read buffer instead. First writer wins.
 func (c *GlueContext) fetchCachePut(dir, key string, b []byte) []byte {
-	c = c.shared() // the cache lives on the root, shared across UNION ALL clones
+	c = c.getRoot() // the cache lives on the root, shared across UNION ALL clones
 	c.fetchCacheMu.Lock()
 	defer c.fetchCacheMu.Unlock()
 
