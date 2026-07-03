@@ -91,6 +91,16 @@ type GlueContext struct {
 	fetchCache   map[string]map[string][]byte // dir -> key -> owned doc bytes
 	fetchCacheN  int                          // total bytes currently cached (against the cap)
 	fetchCacheMu sync.Mutex
+
+	// scanKeyCache memoizes a keyspace's full doc-key listing per request. A full
+	// (unbounded) primary/index scan over the file datastore re-reads the directory
+	// on every invocation; under a nested-loop join that's O(N^2) readdirs. Keyed by
+	// keyspace dir; the []string is the doc keys in on-disk (name-sorted) order.
+	// Bounded by DatastoreScanKeyCacheMax and guarded by scanKeyCacheMu. See
+	// DatastoreScanIndex in datastore_scan.go.
+	scanKeyCache   map[string][]string
+	scanKeyCacheN  int // total keys cached (against the cap)
+	scanKeyCacheMu sync.Mutex
 }
 
 // SetNamedArgs installs the request's named query parameters ($name), so

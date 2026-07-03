@@ -17,6 +17,7 @@ import (
 	"bytes"
 	"fmt"
 	"math"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -30,6 +31,101 @@ import (
 	"github.com/couchbase/query/plan"
 	"github.com/couchbase/query/value"
 )
+
+// DatastoreScanCache enables the native cached key-listing fast-path for a full
+// (unbounded) scan over the file datastore's #primary index: list the keyspace
+// directory once per request (GlueContext.scanKeyCache) and yield the doc keys
+// directly, bypassing cbq's per-scan readdir. Under a nested-loop join the inner
+// keyspace is re-scanned O(N) or O(N^2) times, so this turns all-but-the-first
+// scan into a cache replay. env N1K1_SCAN_NOCACHE=1 disables.
+var DatastoreScanCache = true
+
+// DatastoreScanKeyCacheMax caps the total cached keys across keyspaces so a query
+// over many/huge keyspaces can't grow the heap without bound; past the cap a scan
+// lists fresh (no caching) instead.
+var DatastoreScanKeyCacheMax = 1 << 20 // ~1M keys.
+
+func init() {
+	if os.Getenv("N1K1_SCAN_NOCACHE") != "" {
+		DatastoreScanCache = false
+	}
+}
+
+// isFullScan reports whether an IndexScan is an unbounded full scan (a single span
+// with no seek and no low/high range) -- the case a native directory listing can
+// serve exactly. Ranged/seeked spans keep cbq's range-filtering Scan.
+func isFullScan(scan *plan.IndexScan) bool {
+	spans := scan.Spans()
+	if len(spans) != 1 {
+		return false
+	}
+	s := spans[0]
+	return len(s.Seek) == 0 && len(s.Range.Low) == 0 && len(s.Range.High) == 0
+}
+
+// dirKeyspace reports whether ks is a classic directory-backed file keyspace
+// (<root>/<ns>/<keyspace>/<key>.json), i.e. not a synthetic flat-root (RecordsDir)
+// or single-file (RecordsFile) keyspace -- matching where the native fetch applies.
+func dirKeyspace(ks datastore.Keyspace) bool {
+	if _, ok := ks.(interface{ RecordsDir() string }); ok {
+		return false
+	}
+	if _, ok := ks.(interface{ RecordsFile() string }); ok {
+		return false
+	}
+	return true
+}
+
+// listDocKeys lists dir's document keys the same way cbq's file primaryIndex.Scan
+// does: every non-dir entry, mapped by documentPathToId (strip the last extension),
+// in os.ReadDir's name-sorted order (matching cbq's ioutil.ReadDir order).
+func listDocKeys(dir string) ([]string, error) {
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	keys := make([]string, 0, len(ents))
+	for _, e := range ents {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		keys = append(keys, name[:len(name)-len(filepath.Ext(name))]) // documentPathToId
+	}
+	return keys, nil
+}
+
+// scanKeys returns dir's doc keys, memoized per request (read + cached on the first
+// full scan; a map hit on every re-scan). Past the key cap it lists fresh without
+// caching. First writer wins under a race.
+func (c *GlueContext) scanKeys(dir string) ([]string, error) {
+	c.scanKeyCacheMu.Lock()
+	if keys, ok := c.scanKeyCache[dir]; ok {
+		c.scanKeyCacheMu.Unlock()
+		return keys, nil
+	}
+	c.scanKeyCacheMu.Unlock()
+
+	keys, err := listDocKeys(dir)
+	if err != nil {
+		return nil, err
+	}
+
+	c.scanKeyCacheMu.Lock()
+	if existing, ok := c.scanKeyCache[dir]; ok {
+		c.scanKeyCacheMu.Unlock()
+		return existing, nil
+	}
+	if c.scanKeyCacheN+len(keys) <= DatastoreScanKeyCacheMax {
+		if c.scanKeyCache == nil {
+			c.scanKeyCache = make(map[string][]string)
+		}
+		c.scanKeyCache[dir] = keys
+		c.scanKeyCacheN += len(keys)
+	}
+	c.scanKeyCacheMu.Unlock()
+	return keys, nil
+}
 
 func DatastoreScanKeys(o *base.Op, vars *base.Vars,
 	yieldVals base.YieldVals, yieldErr base.YieldErr) {
@@ -267,6 +363,40 @@ func DatastoreScanPrimary(o *base.Op, vars *base.Vars,
 
 func DatastoreScanIndex(o *base.Op, vars *base.Vars,
 	yieldVals base.YieldVals, yieldErr base.YieldErr) {
+	scan := vars.Temps[o.Params[0].(int)].(*plan.IndexScan)
+
+	// Native cached key-listing fast-path: a full (unbounded) scan over the file
+	// datastore's non-n1k1 #primary re-reads the directory on every invocation --
+	// O(N^2) under a nested-loop join. List+cache the keyspace's keys once and yield
+	// them directly (bypassing cbq's readdir + the conn machinery). Ranged/seeked
+	// spans and n1k1 secondary indexes keep the cbq path below.
+	if gctx, _ := vars.Temps[0].(*GlueContext); gctx != nil && DatastoreScanCache && isFullScan(scan) {
+		if _, isSI := scan.Index().(*secondaryIndex); !isSI {
+			ks := scan.Keyspace()
+			if dir, err := keyspaceDir(ks); err == nil && dirKeyspace(ks) {
+				if keys, err := gctx.scanKeys(dir); err == nil {
+					limit := EvalExprInt64(gctx, scan.Limit(), nil, math.MaxInt64)
+
+					var valId base.Val
+					var vals base.Vals
+					var n int64
+					for _, key := range keys {
+						if limit < math.MaxInt64 && n >= limit {
+							break
+						}
+						valId = strconv.AppendQuote(valId[:0], key)
+						vals = append(vals[:0], valId)
+						yieldVals(vals)
+						n++
+					}
+					yieldErr(nil) // Clean end-of-stream (buffering parents rely on it).
+					return
+				}
+				// A listing error falls through to the cbq scan below.
+			}
+		}
+	}
+
 	DatastoreScan(o, vars, yieldVals, yieldErr,
 		func(context *GlueContext, conn *datastore.IndexConnection) {
 			scan := vars.Temps[o.Params[0].(int)].(*plan.IndexScan)

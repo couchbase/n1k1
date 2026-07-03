@@ -535,9 +535,23 @@ results): **total allocation ~2.0 GB → ~917 MB (~54%), the fetch subtree
   3-way `orders` self-join (identical results): the **fetch subtree 377 MB → 78 MB**
   (~79%), and **total ~917 MB → ~541 MB** (native+cache vs native-no-cache; ~73%
   below the original cbq `Fetch` at ~2.0 GB). `DatastoreFetchCache` toggles it; env
-  `N1K1_FETCH_NOCACHE=1` disables. The now-dominant ~470 MB is the *scan* re-listing
-  the directory (`primaryIndex.Scan` → `readdir`/`lstat`) O(|L|²) times — a separate
-  lever (a per-request directory-listing cache on the scan side), not the fetch.
+  `N1K1_FETCH_NOCACHE=1` disables.
+- **Done: per-request scan key-listing cache (the scan-side lever).** After the doc
+  cache, the dominant ~470 MB was the *scan* re-reading the directory: a full
+  (unbounded) scan over the file `#primary` `readdir`s the keyspace on every
+  invocation, O(|L|²) under a nested-loop join. `GlueContext.scanKeyCache` memoizes
+  a keyspace's full doc-key listing per request (keyed by dir), and
+  `DatastoreScanIndex` now serves an unbounded full scan over the non-n1k1
+  `#primary` **natively** — list+cache the keys once, yield them directly (bypassing
+  cbq's `readdir` and the whole `IndexConnection` machinery). It replicates cbq
+  faithfully (every non-dir entry, `documentPathToId` = strip the last extension, in
+  `os.ReadDir` name-sorted order, honoring the scan's `LIMIT`); **ranged/seeked
+  spans and n1k1 secondary indexes keep the cbq path**, so only the exact
+  full-listing case is intercepted. All in glue (no fork change). Measured on the
+  3-way join (identical results): **~541 MB → ~152 MB** — and end to end, with the
+  native fetch + both caches, **~2.0 GB → ~152 MB (~92%)**, GCs 420 → 31.
+  `DatastoreScanCache` toggles it; env `N1K1_SCAN_NOCACHE=1` disables. Bounded by
+  `DatastoreScanKeyCacheMax` (past it, list fresh, no caching).
 - **Container fetch is future work.** Fetch-by-key *into* a `.jsonl` needs a
   manifest offset index (§5) + `ReadAt(buf, offset)` to read just that record;
   a `.gz` can't be range-read (must decompress a stream), so it needs either full
