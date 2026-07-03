@@ -10,7 +10,7 @@ const gsiSuiteRoot = "suite/json-gsi"
 
 // gsiPassFloor is the results-pass backstop for the gsi corpus (bump as coverage
 // grows), mirroring the default suite's floor.
-const gsiPassFloor = 810
+const gsiPassFloor = 812
 
 // gsiExpectedNonPass lists gsi cases n1k1 doesn't yet pass, keyed by loc
 // (case_gsi_<cat>.json[i]) -> group. Any non-pass NOT listed is a regression.
@@ -37,8 +37,6 @@ var gsiExpectedNonPass = map[string]string{
 	"case_gsi_unnest.json[5]":               "mega-order-limit",
 	"case_gsi_unnest.json[6]":               "mega-order-limit",
 	"case_gsi_unnest.json[7]":               "mega-order-limit",
-	"case_gsi_withs.json[9]":                "with-subquery",
-	"case_gsi_withs.json[11]":               "with-subquery",
 }
 
 var gsiGroupWhy = map[string]string{
@@ -49,5 +47,4 @@ var gsiGroupWhy = map[string]string{
 	"subquery":          "remaining correlated-subquery gaps, both derived-table shapes: a derived-table FROM (SELECT ...) UNNEST ... GROUP BY under UNION (subqexp[8]), and a correlated subquery whose FROM is a WITH-derived table (subqexp[47]). Now working: correlated SELECT/EXISTS/IN, a correlated subquery in the projection (subqexp[6,7], via qp.Subqueries() in-context sub-plans), a subquery USE KEYS (SELECT RAW ...) (subqexp[2]), a no-FROM correlated subquery nested in another's RAW projection (subqexp[5], withs[8]), and an AGGREGATE inside a correlated subquery (subqexp[25,32,34] -- fixed by re-scoping the annotated aggregate row over corrParent, since annotatedValue.SetParent returns nil for a non-ScopeValue backing).",
 	"mega-order-limit":  "unnest[0,1,2,5,6,7]: UNNEST p.lineItems over the `purchase` MEGA keyspace with ORDER BY <unnested-elem> LIMIT n. The fork loads ~10,000 purchase docs; our corpus keeps a light sample (see MEGA_KEYSPACES), so the top-N after sorting the full unnested set can't be reproduced. UNNEST itself is correct (the specific-`product` unnest cases pass); only the full-set ordered LIMIT differs",
 	"prepared":          "inlist[17,18,20,21]: EXECUTE of a PREPAREd statement -- n1k1 has no prepared-statement store, so EXECUTE can't resolve the plan (the PREPARE cases themselves carry no results and are skipped)",
-	"with-subquery":     "a CORRELATED WITH inside a subquery: withs[9] `(WITH w1 AS (a) SELECT RAW w1)` and withs[11] `(WITH w1 AS (d) SELECT d1.[w1] FROM {...} d1)` -- w1 binds to the outer row, so it needs the correlated CTE value bound in the sub-scope (buildWithScope only binds top-level/constant CTEs, not correlated ones). Plain WITH, WITH-vars in expressions (`x IN cte`, FIRST/JOIN over a CTE), dynamic fields, a directly-projected subquery CTE (SELECT w2), and WITH over UNION ALL / comma-join now work; these correlated-CTE cases don't yet",
 }

@@ -155,6 +155,28 @@ func (c *GlueContext) EvaluateSubquery(query *algebra.Select, parent value.Value
 	// engine is single-goroutine (synchronous push), so this is safe.
 	if query.IsCorrelated() {
 		prev := c.corrParent
+		// A CORRELATED WITH inside the subquery (`(WITH w1 AS (a) SELECT RAW w1)`,
+		// `(WITH w1 AS (d) SELECT d1.[w1] FROM {...} d1)`) binds each CTE alias to an
+		// expression over the OUTER row -- so it can't be pre-evaluated at plan time
+		// (buildWithScope only binds top-level constants). Evaluate each binding here
+		// against the outer row and layer {alias: value} as a scope OVER parent, then
+		// use that as corrParent: the sub-op's rows scope over it, so `w1` resolves
+		// (top of the layered scope) and outer identifiers still resolve through its
+		// parent. Only non-recursive bindings (a recursive CTE owns its own op).
+		if wc := query.With(); wc != nil && !wc.IsRecursive() {
+			m := map[string]interface{}{}
+			for _, w := range wc.Bindings() {
+				if w == nil || w.IsRecursive() {
+					continue
+				}
+				if v, err := w.Expression().Evaluate(parent, c); err == nil && v != nil {
+					m[w.Alias()] = v
+				}
+			}
+			if len(m) > 0 {
+				parent = value.NewScopeValue(m, parent)
+			}
+		}
 		c.corrParent = parent
 		defer func() { c.corrParent = prev }()
 	}
