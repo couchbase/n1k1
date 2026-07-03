@@ -200,9 +200,21 @@ periodic check, not just a nicety:
 
 - **Concurrent actors.** `base.Stage` spawns `NumActors` goroutines (UNION ALL
   runs one contributor per child today; parallel scans / parallel `GROUP BY`
-  shards are on the roadmap). We've already been bitten once — the
-  `subq-cache-race` fix guarded the subquery-compile cache against UNION ALL's
-  concurrent actors.
+  shards are on the roadmap). UNION ALL sharing a single `*GlueContext` across its
+  branch actors has bitten us three times, each caught by `-race`:
+  - `subq-cache-race`: the subquery-compile cache (a map) was written concurrently
+    — guarded with a mutex.
+  - `corrParent`/`withScope` race: `EvaluateSubquery` save/set/restores the
+    correlated-subquery scope on the context, which two branches raced on. Fixed at
+    the concurrency boundary — `base.Vars.ChainExtend` now clones `Temps[0]` (the
+    context) per actor via the `base.ChainCloner` interface (`GlueContext.ChainClone`),
+    giving each branch its own scope while sharing caches/error-sink through a `root`
+    pointer. This is the general lesson: **per-actor mutable state must live behind
+    `ChainExtend`, not on the shared context.**
+  - cbq's global `AnnotatedValue` pool (`util.LocklessPool`) incremented its
+    get/put cursors non-atomically, assuming a single caller; n1k1's concurrent
+    actors made it a real race. Fixed in the query fork (`glue/patches/patch-03`,
+    LocklessPool cursors made atomic).
 - **Shared, lock-free-by-design state.** The stats counter core
   (`DESIGN-stats.md`) is a single flat `[]int64` that ops bump *without atomics*,
   justified by "each op instance writes only its own slots (single writer)". That
