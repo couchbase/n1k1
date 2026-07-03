@@ -751,40 +751,68 @@ func TestNoPanicRegress(t *testing.T) {
 	cases := []struct {
 		name string
 		stmt string
+		// gracefulErrOK: this statement exercises a feature n1k1 doesn't implement
+		// (window aggregates), so the strongest guarantee is "no process crash" --
+		// a graceful runtime error is acceptable. Default (false) additionally
+		// requires a CLEAN error (no panic-ish text at all; see isPanicErr).
+		gracefulErrOK bool
 	}{
 		// indexscan: a parameterized LIMIT/OFFSET. n1k1 folds LIMIT/OFFSET to a
 		// constant at conversion time with a nil context; a $-parameter there
 		// nil-derefed (*GlueContext)(nil).NamedArg. See EvalExprInt64.
-		{"limit-named-param", `SELECT type FROM purchase WHERE test_id = "arrayIndex" ORDER BY purchasedAt OFFSET $offset LIMIT $limit`},
-		{"limit-named-param-only", `SELECT c11 FROM shellTest ORDER BY c11 LIMIT $limit`},
-		{"offset-named-param-only", `SELECT c11 FROM shellTest ORDER BY c11 OFFSET $off`},
-		{"limit-positional-param", `SELECT c11 FROM shellTest ORDER BY c11 LIMIT $1`},
+		{"limit-named-param", `SELECT type FROM purchase WHERE test_id = "arrayIndex" ORDER BY purchasedAt OFFSET $offset LIMIT $limit`, false},
+		{"limit-named-param-only", `SELECT c11 FROM shellTest ORDER BY c11 LIMIT $limit`, false},
+		{"offset-named-param-only", `SELECT c11 FROM shellTest ORDER BY c11 OFFSET $off`, false},
+		{"limit-positional-param", `SELECT c11 FROM shellTest ORDER BY c11 LIMIT $1`, false},
 
 		// udf: CREATE/DROP/EXECUTE FUNCTION route through the functions registry
 		// subsystem the CE build leaves uninitialized -- planner.Build nil-derefed
 		// in CreateFunction.Privileges. See PlanStatementQP.
-		{"udf-create-external", `CREATE OR REPLACE FUNCTION UDF_UT_externalJS1(var1) LANGUAGE JAVASCRIPT AS "external1" AT "lib1"`},
-		{"udf-create-inline", `CREATE FUNCTION add1(a) { a + 1 }`},
-		{"udf-execute", `EXECUTE FUNCTION add1(5)`},
-		{"udf-drop", `DROP FUNCTION add1`},
+		{"udf-create-external", `CREATE OR REPLACE FUNCTION UDF_UT_externalJS1(var1) LANGUAGE JAVASCRIPT AS "external1" AT "lib1"`, false},
+		{"udf-create-inline", `CREATE FUNCTION add1(a) { a + 1 }`, false},
+		{"udf-execute", `EXECUTE FUNCTION add1(5)`, false},
+		{"udf-drop", `DROP FUNCTION add1`, false},
 
 		// extractddl: EXTRACTDDL runs a nested statement over system:keyspaces via
 		// context.EvaluateStatement, which n1k1 doesn't provide -- the embedded
 		// IndexContext default returned (nil,0,nil) and ExtractDDL nil-derefed
 		// v.Actual(). GlueContext.EvaluateStatement now returns a clean error.
-		{"extractddl", `SELECT EXTRACTDDL('customer') AS ddl`},
+		{"extractddl", `SELECT EXTRACTDDL('customer') AS ddl`, false},
 
 		// subqexp: a parameterized keyspace `FROM $1 AS d USE KEYS $2`. n1k1 can't
 		// resolve a keyspace name at runtime, leaving the plan's keyspace nil;
 		// DatastoreFetch nil-derefed in keyspaceDir. It now fails cleanly.
-		{"from-param-keyspace", `SELECT d.a FROM $1 AS d USE KEYS $2`},
+		{"from-param-keyspace", `SELECT d.a FROM $1 AS d USE KEYS $2`, false},
+
+		// window[27]: a window aggregate over a GROUP BY. Two crashes: (a) an empty
+		// OVER() got the CURRENT-ROW default frame instead of the whole partition,
+		// driving CurrentUpdate into FindGroupEdge with no order-by column; and (b)
+		// a no-PARTITION-BY window kept the partition id at 0, off-by-one'ing
+		// lzCurrentPos so FindGroupEdge walked one past the partition end -- a
+		// slice-out-of-range. Fixed by DefaultWindowFrameNoOrderBy (conv.go) and the
+		// sentinel lzPartitionId (op_window.go). gracefulErrOK: n1k1 doesn't yet
+		// evaluate window aggregates (they still need AnnotatedValue rows + frame
+		// state), so a runtime error is fine -- just never a crash.
+		{"window-agg-over-group", `SELECT d.c2, COUNT(d.c3) AS a1, SUM(COUNT(d.c3)) OVER() AS w1, SUM(COUNT(d.c2)) OVER(wn1) AS w2 FROM [{"c2":1,"c3":10,"c4":5},{"c2":1,"c3":20,"c4":6},{"c2":2,"c3":30,"c4":7}] AS d GROUP BY d.c2 WINDOW wn1 AS (PARTITION BY MIN(d.c3) ORDER BY MAX(d.c4))`, true},
+		{"window-sum-over-empty", `SELECT d.x, SUM(d.x) OVER() AS tot FROM [{"x":1},{"x":2},{"x":3}] AS d`, true},
 	}
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			_, err := n1k1RunStatement(store, c.stmt)
-			if err != nil && isPanicErr(err) {
-				t.Errorf("PANIC (must be a clean error or rows instead):\n  stmt: %s\n  err:  %v", c.stmt, err)
+			if err == nil {
+				return
+			}
+			// A recovered PROCESS panic is wrapped by Session.Run as
+			// ErrUnsupported{"panic: ..."} -- the "did the engine crash" signal.
+			if strings.HasPrefix(err.Error(), "unsupported: panic:") {
+				t.Errorf("engine PANIC (must not crash):\n  stmt: %s\n  err:  %v", c.stmt, err)
+				return
+			}
+			// For cases expected to fail cleanly, also reject any panic-ish error
+			// text (interface conversion / nil pointer surfaced as a plain error).
+			if !c.gracefulErrOK && isPanicErr(err) {
+				t.Errorf("panic-ish error (want a clean error or rows):\n  stmt: %s\n  err:  %v", c.stmt, err)
 			}
 		})
 	}

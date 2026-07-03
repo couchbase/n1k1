@@ -211,7 +211,15 @@ func OpWindowFrames(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 		var lzFrames []base.WindowFrame
 
-		var lzPartitionId, lzCurrentPos uint64
+		// lzPartitionId starts at a sentinel that no real partition id equals, so
+		// the FIRST row always takes the new-partition branch (lzCurrentPos = 0).
+		// Without this, an OVER() with no PARTITION BY keeps heap.Extra at 0 --
+		// matching a zero-valued lzPartitionId -- so the first row would instead
+		// take the else branch (lzCurrentPos = 1), off-by-one, and CurrentUpdate
+		// would walk FindGroupEdge one past the partition end (a crash).
+		lzPartitionId := ^uint64(0)
+
+		var lzCurrentPos uint64
 
 		lzYieldValsOrig := lzYieldVals
 

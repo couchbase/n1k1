@@ -914,10 +914,24 @@ func (c *Conv) VisitFinalGroup(o *plan.FinalGroup) (interface{}, error) {
 
 // Window functions
 
+// DefaultWindowFrame is the SQL default frame when a window has an ORDER BY but
+// no explicit frame: RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW.
 var DefaultWindowFrame = algebra.NewWindowFrame(algebra.WINDOW_FRAME_RANGE,
 	algebra.WindowFrameExtents{
 		algebra.NewWindowFrameExtent(nil, algebra.WINDOW_FRAME_UNBOUNDED_PRECEDING),
 		algebra.NewWindowFrameExtent(nil, algebra.WINDOW_FRAME_CURRENT_ROW),
+	})
+
+// DefaultWindowFrameNoOrderBy is the SQL default frame when a window has NO
+// ORDER BY: the WHOLE partition (RANGE BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED
+// FOLLOWING). Using the CURRENT-ROW default here instead would (a) be wrong --
+// e.g. SUM(...) OVER() must total the partition, not stop at the current row --
+// and (b) drive CurrentUpdate into FindGroupEdge, which has no order-by column to
+// walk and ran off the partition end (a slice-out-of-range crash).
+var DefaultWindowFrameNoOrderBy = algebra.NewWindowFrame(algebra.WINDOW_FRAME_RANGE,
+	algebra.WindowFrameExtents{
+		algebra.NewWindowFrameExtent(nil, algebra.WINDOW_FRAME_UNBOUNDED_PRECEDING),
+		algebra.NewWindowFrameExtent(nil, algebra.WINDOW_FRAME_UNBOUNDED_FOLLOWING),
 	})
 
 func (c *Conv) VisitWindowAggregate(o *plan.WindowAggregate) (interface{}, error) {
@@ -972,7 +986,14 @@ func (c *Conv) VisitWindowAggregate(o *plan.WindowAggregate) (interface{}, error
 			wf = agg.WindowTerm().WindowFrame()
 		}
 		if wf == nil {
-			wf = DefaultWindowFrame
+			// The default frame depends on whether the window has an ORDER BY: with
+			// one it's UNBOUNDED PRECEDING .. CURRENT ROW; without one it's the whole
+			// partition. See DefaultWindowFrameNoOrderBy.
+			if agg.WindowTerm() != nil && agg.WindowTerm().OrderBy() != nil {
+				wf = DefaultWindowFrame
+			} else {
+				wf = DefaultWindowFrameNoOrderBy
+			}
 		}
 
 		frameType := "rows"
