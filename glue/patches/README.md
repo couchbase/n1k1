@@ -3,19 +3,32 @@
 n1k1's `glue/` reuses Couchbase `query` for SQL++ parse+plan, then executes with
 n1k1's own operators. As of the 2026 decouple work, the engine builds **pure-Go,
 `CGO_ENABLED=0`, and cross-compiles** (linux/darwin/windows). Getting there
-needs three small local fixups to the `query` module, since it isn't designed to
-be consumed as an external module:
+needs a few small local fixups to the `query` module, since it isn't designed to
+be consumed as an external module. The source patches live here as **ordered
+files** (`patch-NN-…`, applied in number order); generating the parser is a build
+step (goyacc), not a patch file:
 
-1. **Generated parser** — `query/parser/n1ql` ships the grammar (`n1ql.y`) but
-   not the goyacc output (`y.go`, defining `yyParse`/`yySymType`). Generated at
-   build time upstream and gitignored.
-2. **Pure-Go `query/system`** (`query-system-stub.go.txt`) — the real one is cgo
-   (sigar), pulled pervasively via `query/memory` ← `query/tenant` by nearly the
-   whole query stack (even the parser). The stub returns benign memory stats.
-3. **Enterprise semantics in community build** (`query-semantics-semchecker_ce.go.txt`)
-   — a 1-line change so enterprise-level SQL++ (e.g. window functions) parses
-   without the `enterprise` build tag (which would pull cgo deps like
-   eventing-ee/V8). n1k1 implements these features itself.
+- **Generated parser** (build step — no patch file) — `query/parser/n1ql` ships the
+  grammar (`n1ql.y`) but not the goyacc output (`y.go`, defining
+  `yyParse`/`yySymType`). Generated at build time upstream and gitignored.
+- **`patch-01-query-system-stub.go.txt`** — pure-Go `query/system`. The real one is
+  cgo (sigar), pulled pervasively via `query/memory` ← `query/tenant` by nearly the
+  whole query stack (even the parser). The stub returns benign memory stats.
+  (Full-file drop-in: replaces `system/systemStats.go`.)
+- **`patch-02-query-semantics-semchecker_ce.go.txt`** — a 1-line change so
+  enterprise-level SQL++ (e.g. window functions) parses without the `enterprise`
+  build tag (which would pull cgo deps like eventing-ee/V8). n1k1 implements these
+  features itself. (Full-file drop-in: replaces `semantics/semchecker_ce.go`.)
+- **`patch-03-query-util-sync-lockless-atomic.diff`** — make `util.LocklessPool`'s
+  `getNext`/`putNext` counters **atomic**. cbq's global AnnotatedValue pool
+  (`value.newAnnotatedValue` → `annotatedPool`) assumed single-threaded `Get`, but
+  n1k1 drives it from many concurrent actor goroutines (`base.Stage`) during
+  expression evaluation, so the plain `getNext++`/`putNext++` was a data race
+  (caught by `go test -race`, e.g. two `Array.Evaluate` under UNNEST). The fix
+  matches the atomic counters already used by the sibling pool in the same file;
+  the pool-slot swap was already atomic and a torn index only costs a slot miss
+  (an extra alloc), never corruption. A **surgical diff** (apply with `patch -p1` /
+  `git apply`), not a full-file drop-in, since `util/sync.go` is large and shared.
 
 ## Recipe (iteration scaffold)
 
@@ -30,9 +43,10 @@ rm -rf tmp/query-local && cp -R "$QDIR" tmp/query-local && chmod -R u+w tmp/quer
 go install golang.org/x/tools/cmd/goyacc@latest
 (cd tmp/query-local/parser/n1ql && "$(go env GOPATH)/bin/goyacc" n1ql.y && rm -f y.output)
 
-# 3. drop in the two source patches
-cp glue/patches/query-system-stub.go.txt          tmp/query-local/system/systemStats.go
-cp glue/patches/query-semantics-semchecker_ce.go.txt tmp/query-local/semantics/semchecker_ce.go
+# 3. apply the source patches in order (01/02 are full-file drop-ins; 03 is a diff)
+cp glue/patches/patch-01-query-system-stub.go.txt            tmp/query-local/system/systemStats.go
+cp glue/patches/patch-02-query-semantics-semchecker_ce.go.txt tmp/query-local/semantics/semchecker_ce.go
+(cd tmp/query-local && patch -p1 < "$OLDPWD/glue/patches/patch-03-query-util-sync-lockless-atomic.diff")
 
 # 4. point go.mod at the local copy
 go mod edit -replace github.com/couchbase/query=./tmp/query-local
@@ -57,7 +71,8 @@ These patches live as real git commits in a published fork of couchbase/query:
 
     github.com/couchbase/n1k1-query
       main          - verbatim pinned snapshot (query @ v0.0.0-20260627002010)
-      n1k1-pure-go  - main + 3 commits: gen parser, system stub, semchecker
+      n1k1-pure-go  - main + patches: gen parser, patch-01 system stub,
+                      patch-02 semchecker, patch-03 LocklessPool atomic
 
 The fork keeps its go.mod module path as github.com/couchbase/query (so its
 internal imports and n1k1's `query/...` imports are unchanged); only the repo
@@ -74,8 +89,10 @@ indexing/n1fty/query-ee/...) were pruned -- only the query replace remains.
 
 1. On the fork's `main`: replace contents with the new pinned query snapshot,
    commit. (Or add couchbase/query as a remote and merge.)
-2. Re-create the `n1k1-pure-go` branch = main + the 3 patches (run steps 1-3 of
-   the recipe above: goyacc the parser, apply glue/patches/*.txt), commit, push.
+2. Re-create the `n1k1-pure-go` branch = main + the patches (run steps 1-3 of
+   the recipe above: goyacc the parser, `cp` the `patch-01`/`patch-02` `.go.txt`
+   files, `patch -p1 <` the `patch-03` `.diff`), commit, push. Re-derive any patch
+   that no longer applies cleanly against the newer query.
 3. In n1k1: `go get github.com/couchbase/n1k1-query@n1k1-pure-go` to resolve the
    new pseudo-version, then `go mod edit -replace github.com/couchbase/query=\
    github.com/couchbase/n1k1-query@<that-version>`.

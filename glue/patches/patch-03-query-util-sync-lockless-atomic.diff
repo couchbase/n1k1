@@ -1,0 +1,38 @@
+diff --git a/util/sync.go b/util/sync.go
+index d167b9b4..303c96e7 100644
+--- a/util/sync.go
++++ b/util/sync.go
+@@ -349,14 +349,19 @@ func NewLocklessPool(p *LocklessPool, f func() unsafe.Pointer) {
+ }
+ 
+ func (p *LocklessPool) Get() unsafe.Pointer {
+-	l := p.getNext % _POOL_SIZE
++	// n1k1 patch: getNext is read/incremented atomically. n1k1 drives Get from
++	// many concurrent actor goroutines (base.Stage), so the plain getNext++ was a
++	// data race (-race). Matches the atomic getNext in the sibling pool above; the
++	// pool-slot swap was already atomic, and a torn index only ever costs a slot
++	// miss (an extra p.f()), never corruption.
++	l := atomic.LoadUint32(&p.getNext) % _POOL_SIZE
+ 	e := atomic.SwapPointer(&p.pool[l], nil) // must be atomic to prevent multiple users
+ 
+ 	// niet
+ 	if e == nil {
+ 		return p.f()
+ 	} else {
+-		p.getNext++
++		atomic.AddUint32(&p.getNext, 1)
+ 		return e
+ 	}
+ 
+@@ -364,8 +369,9 @@ func (p *LocklessPool) Get() unsafe.Pointer {
+ }
+ 
+ func (p *LocklessPool) Put(s unsafe.Pointer) {
+-	l := p.putNext % _POOL_SIZE
+-	p.putNext++
++	// n1k1 patch: putNext accessed atomically (see Get).
++	l := atomic.LoadUint32(&p.putNext) % _POOL_SIZE
++	atomic.AddUint32(&p.putNext, 1)
+ 	atomic.StorePointer(&p.pool[l], s)
+ }
+ 
