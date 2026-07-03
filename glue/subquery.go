@@ -82,6 +82,13 @@ type subCompiled struct {
 	topOp *base.Op
 	temps []interface{}
 	cv    *ConvertVals
+
+	// withScope holds the sub-conv's constant WITH bindings referenced as
+	// variables (Conv.WithScopeBindings()) -- e.g. a nested derived-table's
+	// `WITH p1 AS ('ABC')`. The main query builds its withScope in Session.Run;
+	// a subquery has no such preamble, so EvaluateSubquery builds one from this
+	// (see buildWithScope) so `p1` resolves inside the sub-op.
+	withScope map[string]expression.With
 }
 
 // InitSubqueries wires this context to evaluate expression subqueries by
@@ -153,32 +160,50 @@ func (c *GlueContext) EvaluateSubquery(query *algebra.Select, parent value.Value
 	// identifiers (ExprTree wraps each sub-row as a scope over corrParent). Saved
 	// and restored so nested subqueries chain their parents correctly. n1k1's
 	// engine is single-goroutine (synchronous push), so this is safe.
-	if query.IsCorrelated() {
-		prev := c.corrParent
-		// A CORRELATED WITH inside the subquery (`(WITH w1 AS (a) SELECT RAW w1)`,
-		// `(WITH w1 AS (d) SELECT d1.[w1] FROM {...} d1)`) binds each CTE alias to an
-		// expression over the OUTER row -- so it can't be pre-evaluated at plan time
-		// (buildWithScope only binds top-level constants). Evaluate each binding here
-		// against the outer row and layer {alias: value} as a scope OVER parent, then
-		// use that as corrParent: the sub-op's rows scope over it, so `w1` resolves
-		// (top of the layered scope) and outer identifiers still resolve through its
-		// parent. Only non-recursive bindings (a recursive CTE owns its own op).
-		if wc := query.With(); wc != nil && !wc.IsRecursive() {
-			m := map[string]interface{}{}
-			for _, w := range wc.Bindings() {
-				if w == nil || w.IsRecursive() {
-					continue
-				}
-				if v, err := w.Expression().Evaluate(parent, c); err == nil && v != nil {
-					m[w.Alias()] = v
-				}
-			}
-			if len(m) > 0 {
-				parent = value.NewScopeValue(m, parent)
+	// Set up the subquery's scope: its WITH (CTE) variables plus, for a correlated
+	// subquery, the outer row. Saved and restored so nested subqueries chain
+	// correctly. n1k1's engine is single-goroutine (synchronous push), so safe.
+	prevCorr, prevWith := c.corrParent, c.withScope
+	defer func() { c.corrParent, c.withScope = prevCorr, prevWith }()
+	{
+		// Collect the subquery's WITH-variable values:
+		//  - CONSTANT CTEs the sub-conv recorded (e.g. a nested derived-table's
+		//    `WITH p1 AS ('ABC')`) -- buildWithScope evaluates these; the main query
+		//    gets its equivalent in Session.Run, but a subquery has no such preamble.
+		//  - CORRELATED CTEs (`WITH w1 AS (a)` where a is an outer field) -- can't be
+		//    pre-evaluated at plan time; evaluate each against the outer row here.
+		withVars := map[string]interface{}{}
+		if cw := buildWithScope(sc.withScope, c); cw != nil {
+			for k, v := range cw.Fields() {
+				withVars[k] = v
 			}
 		}
-		c.corrParent = parent
-		defer func() { c.corrParent = prev }()
+		if query.IsCorrelated() {
+			if wc := query.With(); wc != nil && !wc.IsRecursive() {
+				for _, w := range wc.Bindings() {
+					if w == nil || w.IsRecursive() {
+						continue
+					}
+					if v, err := w.Expression().Evaluate(parent, c); err == nil && v != nil {
+						withVars[w.Alias()] = v
+					}
+				}
+			}
+		}
+
+		// Base of the scope chain: the outer row ONLY for a correlated subquery
+		// (else nil -- a non-correlated subquery must not see outer fields). The CTE
+		// vars layer on top, so both they and (when correlated) outer identifiers
+		// resolve as the sub-op's rows scope over this.
+		var base value.Value
+		if query.IsCorrelated() {
+			base = parent
+		}
+		if len(withVars) > 0 {
+			c.corrParent = value.NewScopeValue(withVars, base)
+		} else if query.IsCorrelated() {
+			c.corrParent = base
+		}
 	}
 
 	// Expr constructors are global on the engine; ensure they're wired (the
@@ -330,7 +355,22 @@ func (e *subqEvaluator) compile(query *algebra.Select) (*subCompiled, error) {
 		return nil, err
 	}
 
-	sc := &subCompiled{topOp: conv.TopOp, temps: conv.Temps, cv: cv}
+	// The subquery's OWN constant WITH bindings referenced as variables (the outer
+	// ones seeded into wb are already covered by the outer query's withScope on the
+	// shared context, so exclude them). EvaluateSubquery builds a withScope from
+	// these so e.g. a nested derived-table's `WITH p1 AS ('ABC')` resolves.
+	var subWith map[string]expression.With
+	for alias, w := range conv.WithScopeBindings() {
+		if _, seeded := wb[alias]; seeded {
+			continue
+		}
+		if subWith == nil {
+			subWith = map[string]expression.With{}
+		}
+		subWith[alias] = w
+	}
+
+	sc := &subCompiled{topOp: conv.TopOp, temps: conv.Temps, cv: cv, withScope: subWith}
 	e.cache[query] = sc
 	return sc, nil
 }

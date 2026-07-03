@@ -468,6 +468,17 @@ func (c *Conv) VisitFetch(o *plan.Fetch) (interface{}, error) {
 		return c.TopOp, nil
 	}
 
+	// A covering-but-not-reconstructable IndexScan (e.g. #primary covering
+	// META().id under a LIKE range) already SYNTHESIZED a datastore-fetch to
+	// materialize the doc (see VisitIndexScan) -- so the planner's following
+	// plan.Fetch is redundant. Adding a second fetch would read the already-
+	// materialized doc (the `.alias` val at index 0) as if it were the ^id key,
+	// find no such document, and drop every row. Pass through. (Two consecutive
+	// datastore-fetches are never meaningful -- the first has the doc already.)
+	if c.TopOp != nil && c.TopOp.Kind == "datastore-fetch" {
+		return c.TopOp, nil
+	}
+
 	if len(o.SubPaths()) > 0 {
 		return NA(o) // TODO: metadata subpaths on a real (index-scan) fetch.
 	}
