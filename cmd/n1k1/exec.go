@@ -38,13 +38,16 @@ func (c *cli) exec(stmt string) {
 	c.failed = false // reset; set below if this statement errors (drives .bail)
 
 	// .stats / -stats: collect per-operator counters, and on a TTY draw them live
-	// (throttled, in place, to stderr) while the query runs. Reset afterwards so a
-	// later query -- or another user of this Session -- pays nothing.
+	// (throttled, in place, to stderr) while the query runs. One statsView spans the
+	// whole statement -- created before Run so its runtime baseline (for the footer's
+	// per-statement mem/GC/goroutine deltas) is captured at the start, and reused for
+	// the final render. Reset the Session hooks afterwards so a later query -- or
+	// another user of this Session -- pays nothing.
 	var sv *statsView
 	if c.stats {
 		c.sess.CollectStats = true
+		sv = newStatsView(c.stderr, c.fancyTTY, c.terminalWidth())
 		if c.fancyTTY {
-			sv = newStatsView(c.stderr, true, c.terminalWidth())
 			c.sess.OnStats = sv.onStats
 		}
 	}
@@ -79,9 +82,10 @@ func (c *cli) exec(stmt string) {
 	c.renderResult(res)
 
 	// .stats footer: the final per-operator counters (also the whole display for a
-	// non-TTY run, which skipped the live draw).
-	if c.stats && res.Stats != nil {
-		newStatsView(c.stderr, c.fancyTTY, c.terminalWidth()).renderFinal(res.Stats)
+	// non-TTY run, which skipped the live draw). Reuse sv so the runtime line shows
+	// deltas over the whole statement.
+	if sv != nil && res.Stats != nil {
+		sv.renderFinal(res.Stats)
 	}
 
 	for _, w := range res.Warnings {

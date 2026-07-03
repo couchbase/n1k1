@@ -14,6 +14,7 @@
 package main
 
 import (
+	"io"
 	"strings"
 	"testing"
 
@@ -101,5 +102,32 @@ func TestStatsGlossaryWrap(t *testing.T) {
 	}
 	if !strings.HasPrefix(got[1], strings.Repeat(" ", len("glossary: "))) {
 		t.Errorf("continuation not aligned: %q", got[1])
+	}
+}
+
+// TestHumanCount checks the K/M/G count abbreviation used in the runtime line.
+func TestHumanCount(t *testing.T) {
+	cases := map[uint64]string{0: "0", 999: "999", 1500: "1.5K", 214000: "214.0K", 8_000_000: "8.0M", 2_000_000_000: "2.0G"}
+	for n, want := range cases {
+		if got := humanCount(n); got != want {
+			t.Errorf("humanCount(%d) = %q, want %q", n, got, want)
+		}
+	}
+}
+
+// TestBodyLinesRuntime checks that the live/footer body appends a process
+// "runtime:" line after the per-op table.
+func TestBodyLinesRuntime(t *testing.T) {
+	s := &base.Stats{
+		Counters: []int64{6},
+		Ops:      []base.StatsOpInfo{{Id: "0", Kind: "scan", Base: 0, Names: []string{"RowsOut"}}},
+	}
+	sv := newStatsView(io.Discard, false, 0) // captures a runtime baseline
+	lines := sv.bodyLines(s)
+	if len(lines) != len(statsLines(s))+1 {
+		t.Fatalf("bodyLines has %d lines, want table+1", len(lines))
+	}
+	if last := lines[len(lines)-1]; !strings.HasPrefix(last, "runtime: ") {
+		t.Errorf("last body line = %q, want a runtime: line", last)
 	}
 }

@@ -17,6 +17,8 @@ package main
 import (
 	"fmt"
 	"io"
+	"runtime"
+	"runtime/metrics"
 	"sort"
 	"strings"
 	"time"
@@ -35,10 +37,93 @@ type statsView struct {
 	width int       // wrap width for the footer glossary (0 -> a default)
 	last  time.Time // last live render, for throttling
 	drawn int       // lines drawn by the last live render (for cursor-up)
+
+	baseRT runtimeSample // process runtime baseline, captured at construction
 }
 
 func newStatsView(w io.Writer, fancy bool, width int) *statsView {
-	return &statsView{w: w, fancy: fancy, width: width}
+	// Capture the runtime baseline at query start, so the footer's process line can
+	// show per-statement deltas (bytes allocated, GCs, goroutines spawned).
+	return &statsView{w: w, fancy: fancy, width: width, baseRT: readRuntimeSample()}
+}
+
+// runtimeSample is a cheap, process-wide snapshot of memory/GC/goroutine usage.
+// It is NOT per-operator (n1k1 leans on cbq's expression machinery, which heap-
+// allocs opaquely, so we can't attribute allocations to a single op) -- it is a
+// coarse "how hard is the whole process working" readout.
+type runtimeSample struct {
+	allocBytes uint64 // cumulative bytes allocated (garbage + live); delta = churn
+	allocObjs  uint64 // cumulative allocation count; delta = objects allocated
+	heapBytes  uint64 // live heap object bytes right now (a gauge; GC lowers it)
+	gcCycles   uint64 // cumulative GC cycles; delta = GCs during the statement
+	goroutines int    // current goroutine count
+}
+
+// rtMetrics are read via runtime/metrics, which (unlike runtime.ReadMemStats)
+// does not stop the world -- so sampling at the render cadence is cheap. We only
+// sample when we actually redraw (≤10 Hz, throttled), never per row, so a fast
+// query pays almost nothing regardless of its row rate.
+var rtMetrics = []string{
+	"/gc/heap/allocs:bytes",
+	"/gc/heap/allocs:objects",
+	"/memory/classes/heap/objects:bytes",
+	"/gc/cycles/total:gc-cycles",
+}
+
+func readRuntimeSample() runtimeSample {
+	s := make([]metrics.Sample, len(rtMetrics))
+	for i := range rtMetrics {
+		s[i].Name = rtMetrics[i]
+	}
+	metrics.Read(s)
+	u := func(i int) uint64 {
+		if s[i].Value.Kind() == metrics.KindUint64 {
+			return s[i].Value.Uint64()
+		}
+		return 0
+	}
+	return runtimeSample{
+		allocBytes: u(0),
+		allocObjs:  u(1),
+		heapBytes:  u(2),
+		gcCycles:   u(3),
+		goroutines: runtime.NumGoroutine(),
+	}
+}
+
+// runtimeLine formats the process footer line as per-statement deltas from the
+// baseline, plus current gauges (live heap, goroutines). Empty if no baseline.
+func (v *statsView) runtimeLine() string {
+	now := readRuntimeSample()
+	return fmt.Sprintf("runtime: %s allocated · %s allocs · heap %s · %d GCs · %d goroutines",
+		humanBytes(int64(now.allocBytes-v.baseRT.allocBytes)),
+		humanCount(now.allocObjs-v.baseRT.allocObjs),
+		humanBytes(int64(now.heapBytes)),
+		now.gcCycles-v.baseRT.gcCycles,
+		now.goroutines)
+}
+
+// bodyLines are the live-updating footer lines: the per-op table plus the process
+// runtime line (both animate). The glossary (renderFinal only) is a static legend
+// appended after.
+func (v *statsView) bodyLines(s *base.Stats) []string {
+	return append(statsLines(s), v.runtimeLine())
+}
+
+// humanCount abbreviates a large count as K/M/G (distinct from humanBytes's
+// byte units), e.g. 214000 -> "214.0K".
+func humanCount(n uint64) string {
+	f := float64(n)
+	switch {
+	case n >= 1_000_000_000:
+		return fmt.Sprintf("%.1fG", f/1e9)
+	case n >= 1_000_000:
+		return fmt.Sprintf("%.1fM", f/1e6)
+	case n >= 1_000:
+		return fmt.Sprintf("%.1fK", f/1e3)
+	default:
+		return fmt.Sprintf("%d", n)
+	}
 }
 
 // onStats is the live callback wired to Session.OnStats. It runs on the execution
@@ -58,7 +143,7 @@ func (v *statsView) onStats(s *base.Stats) {
 	if v.drawn > 0 {
 		fmt.Fprintf(v.w, "\033[%dA", v.drawn) // cursor up over the previous draw
 	}
-	lines := statsLines(s)
+	lines := v.bodyLines(s)
 	for _, ln := range lines {
 		fmt.Fprintf(v.w, "\r\033[K%s\n", ln) // clear line + content
 	}
@@ -86,7 +171,7 @@ func (v *statsView) renderFinal(s *base.Stats) {
 		return
 	}
 	fmt.Fprintln(v.w, "stats:")
-	for _, ln := range statsLines(s) {
+	for _, ln := range v.bodyLines(s) {
 		fmt.Fprintln(v.w, ln)
 	}
 	for _, ln := range statsGlossary(statNamesIn(s), v.width) {

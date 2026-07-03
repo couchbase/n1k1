@@ -380,6 +380,47 @@ richer front-ends (racing bars, Sankey edges) consume the same `Counters`/`Total
 pair. A future `StatKind` (counter vs. gauge) would let a renderer pick a rising
 sparkline vs. a resetting needle without inferring it from re-run behavior.
 
+### Process / runtime stats (memory, GC, goroutines)
+
+The per-op counters are about *rows*; a second, complementary readout is *how hard
+the process is working* — memory, allocations, GC, goroutines. Per-operator
+memory attribution is out of reach (n1k1 leans on cbq's expression machinery, which
+heap-allocs opaquely, so bytes can't be pinned to one op), but a **process-wide**
+readout is both cheap and genuinely useful, and it's the honest granularity. The
+CLI shows it as one `runtime:` line at the bottom of the footer:
+
+```
+runtime: 932.4MB allocated · 8.0M allocs · heap 5.9MB · 239 GCs · 5 goroutines
+```
+
+Design choices:
+- **What.** *allocated* (cumulative bytes) and *allocs* (cumulative count) are
+  **deltas from a per-statement baseline** — the churn this statement generated;
+  *GCs* is the GC-cycle delta. These are the headline: a 3-way nested-loop join
+  shows ~932 MB allocated / 8 M allocs / 239 GCs even though live *heap* is only
+  ~6 MB — i.e. the cbq-eval allocation cost, which the per-op row counters can't
+  show, made visible. *heap* (live object bytes) and *goroutines* are current
+  gauges (heap rises and falls with GC; goroutines expose actor parallelism / a
+  leak).
+- **How, cheaply.** Read via `runtime/metrics` (`/gc/heap/allocs:*`,
+  `/memory/classes/heap/objects:bytes`, `/gc/cycles/total:gc-cycles`) plus
+  `runtime.NumGoroutine()`. `runtime/metrics` does **not** stop the world, unlike
+  `runtime.ReadMemStats` — so it's safe to sample periodically. (Answering the
+  cadence question: measuring *does* cost, so don't do it per row.)
+- **When.** Sampled only when the display actually **redraws** — piggybacking the
+  existing ~10 Hz render throttle — so it's bounded by frame rate, not row rate: a
+  fast query pays almost nothing, a long one samples ~10×/s. The baseline is
+  captured at statement start (in the CLI's `statsView`), and the same view is
+  reused for the final footer so the deltas span the whole statement.
+- **Where.** Entirely render-side (`cmd/n1k1`), so `base`/`engine`/`glue` take no
+  `runtime`-package dependency; a library user samples on their own cadence.
+
+Other candidates worth adding later: an **alloc-rate** (bytes/s = allocated ÷
+elapsed) and **rows/s** throughput (from the scan `RowsOut` delta ÷ elapsed) as
+velocity readouts; **GC pause** time (`/gc/pauses:seconds` histogram) when GC
+dominates; process **CPU** time (getrusage) for a compute-vs-IO split; and a
+**peak heap** high-water mark. All are process-wide and cheap on the same cadence.
+
 ## Delivery: getting stats to the client — the approaches
 
 These differ only in **how the client is notified**; all share one counter core.
