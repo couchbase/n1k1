@@ -124,9 +124,8 @@ The `exprTree` fallback (`glue/expr.go:ExprTree`) is the expensive path. For **e
 row** its closure calls `ConvertVals.Convert` to rebuild the row's `base.Vals` (JSON
 byte slices, one per label) into a cbq `value.Value` — an `objectValue`, each label
 wrapped via `value.NewParsedValue` + `SetField` — then `expr.Evaluate(v)` and
-`vResult.WriteJSON(&buf)` back to bytes. This is the byte-model ↔ value-model bridge:
-the cost of a delegated expression isn't just slower evaluation, it's the
-`Convert` round-trip that materializes the whole row into an object.
+`vResult.WriteJSON(&buf)` back to bytes. This byte-model ↔ value-model bridge — the
+`Convert` round-trip — is the real cost of a delegated expression.
 
 **Invocation path:** `Session.Run` → cbq plan → `glue.Conv` emits a `base.Op` whose
 `Params` hold `["exprTree", <expression.Expression>]` for delegated exprs →
@@ -199,9 +198,16 @@ emitted by:
   keep more batches in flight (10.4 → 12.0 GB, more GCs). Reuse still never engages.
 
 **Levers that would help (ranked for this count-over-join shape):**
-1. *Elide values the consumer discards* — when `count(*)` (or any values-agnostic
-   consumer) sits over a subquery, don't project/serialize the rows at all. Biggest
-   win here, but it's cross-op (planner/pushdown) work.
+1. *Discard-elision (dead-value elimination)* — if no consumer reads a projected
+   value, don't build it. Here a values-agnostic `count(*)` sits over the subquery,
+   so the two `self` projections that serialize 16.8M full rows could each collapse
+   to the `["json","true"]` placeholder (rows still flow, so the count stays 16.8M).
+   Biggest win — takes the cost to ~0 — but it's a cross-op **liveness pass**: it
+   must prove the value is read by *nothing* downstream (`count(x)`, `SELECT c.f`,
+   `ORDER BY c.x`, HAVING, `META()`, correlated inner refs all disqualify it), so it
+   stays conservative. A field-pruning variant (materialize only referenced fields)
+   generalizes it. NB: these `self` projections come from cbq's planner, so the
+   cleanest fix may ultimately be upstream.
 2. *A `self`-projection byte path* — when a projection expr is exactly
    `expression.Self` (and not scoped), assemble the output JSON object directly from
    the input label bytes, skipping Convert+Evaluate+WriteJSON. Bounded; analogous to
