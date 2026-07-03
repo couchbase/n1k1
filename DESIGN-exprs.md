@@ -118,6 +118,62 @@ Still **delegated:** `LIKE`/`REGEXP_*`, `is [not] distinct from`, `slice`
 navigation, `TYPE()`/`IS_BINARY`, and the ~320 remaining scalar functions
 (string/numeric/date/array/object/…).
 
+## The `exprTree` fallback's per-row cost (profiling, 2026-07)
+
+The `exprTree` fallback (`glue/expr.go:ExprTree`) is the expensive path. For **every
+row** it calls `ConvertVals.Convert` to rebuild the row's `base.Vals` (JSON byte
+slices, one per label) into a cbq `value.Value` — an `objectValue`, each label
+wrapped via `value.NewParsedValue` + `SetField` — then `expr.Evaluate` + `WriteJSON`
+back to bytes. This is the byte-model ↔ value-model bridge, and it allocates
+O(row size) per row. So the cost of a delegated expression is not just slower
+evaluation; it's the Convert round-trip on the whole row.
+
+**Profiled query** (via `-profile-cpu`/`-profile-mem`):
+`SELECT count(*) FROM (SELECT 1 FROM orders o1,o2,o3,o4) c` over 64-doc `orders`
+→ 64⁴ = 16.8M join rows. Result: **10.4 GB allocated, 121.7 M allocs, ~1400 GCs,
+~14 s.** The CPU profile is **~86% Go scheduler/GC** (`pthread_cond_signal` via
+goroutine wake-ups) — a *symptom* of the allocation rate, not real work. Allocation
+by site: `objectValue.setField` 43.6%, `go_json.SimpleUnmarshal` 20.9%,
+`ConvertVals.Convert` 7.5 GB cumulative — i.e. essentially all of it is the Convert
+bridge materializing documents.
+
+**What is already optimized (don't re-do these):**
+- `SELECT 1` (a constant projection) → a `Constant` node → `ExprTreeOptimize`
+  compiles it to the native `json` func; **no Convert**. (Verified: a bare
+  `SELECT 1 FROM orders` never enters the Convert closure.)
+- `COUNT(*)` → its star operand has `operands[0] == nil`, so `VisitGroup`
+  (`glue/conv.go`) already projects the constant `["json","true"]` as the aggregate
+  input and the aggregate just counts. **No per-row Convert for `COUNT(*)`.**
+  (Verified: in the profiled query `count(*)` reached Convert exactly once — the
+  final result projection — not 16.8M times. A "special-case COUNT(\*)"
+  optimization is therefore unnecessary; it already exists.)
+
+**Where the 16.8M Converts actually came from:** a whole-row **`self` projection**.
+`FROM (subquery) AS x` wraps each subquery row under its alias via `VisitAlias`,
+which emits `expression.NewSelf()` (the only source of `self` in conversion). `self`
+= the entire multi-label joined row; `ExprTreeOptimize` can't reduce it to a label
+path, so it falls through to `Convert` and rebuilds the full 8-label object every
+row — even though the outer `count(*)` discards the value.
+
+**Levers tried that did NOT help (measured), and why:**
+- *`ValsDeepCopy` prealloc reuse* (`base/stage.go`): a `:=` shadowed the outer
+  `preallocVals`, so the recycled slice never reached `ValsDeepCopy` (it always
+  `make`d). Fixed (a real latent bug) — but **inert here**: the recycled-buffer
+  reuse depends on the consumer recycling a batch before the producer re-acquires,
+  and with `batchChSize=0` the producer wins that race, so both the val and vals
+  buffers are re-`make`d ~per row regardless of the shadow.
+- *Enlarging the `BatchCh` buffer* (`batchChSize` 0→4→…→256 in
+  `glue/datastore_fetch.go`): allocation **count stayed flat**; larger buffers only
+  keep more batches in flight (10.4 → 12.0 GB, more GCs). Reuse still never engages.
+
+**The lever that would help — on-demand (lazy) `Convert`.** Return a `value.Value`
+that materializes a field only when accessed, so `count(*)` (accesses nothing) and
+whole-row/field-less projections that get discarded stop paying to build the object.
+This is more general than any per-op special-case (it subsumes the `self`-projection
+case too), but needs a lazy multi-label `value.Value` implementation
+(`Field`/`Fields`/`WriteJSON`/`Type`/`Actual`/annotations…) — correctness-sensitive,
+tracked as future work.
+
 ## The universe & the gap
 
 The cbq `expression/` package defines **~357 distinct scalar expression types
