@@ -69,11 +69,67 @@ type GlueContext struct {
 	// NamedArg at eval time (a `WHERE x IN $inlist` NamedParameter looks here).
 	// nil when the statement uses none. See Session.NamedArgs.
 	namedArgs map[string]value.Value
+
+	// withScope holds the query's WITH (CTE) aliases as fields, so an expression
+	// that references a CTE by name (e.g. `x IN cte`, `FIRST v FOR v IN cte`)
+	// resolves it: Identifier.Evaluate reads item.Field(name), and ExprTree scopes
+	// each non-star row over this. The star projection resets the scope (see the
+	// resetScope marker in expr.go / VisitInitialProject) so WITH aliases don't leak
+	// into SELECT *. nil when the query has no eagerly-bindable WITH bindings.
+	// (`FROM <cte>` is handled separately by VisitExpressionScan.) See buildWithScope.
+	withScope value.Value
 }
 
 // SetNamedArgs installs the request's named query parameters ($name), so
 // NamedArg can resolve them during expression evaluation.
 func (c *GlueContext) SetNamedArgs(args map[string]value.Value) { c.namedArgs = args }
+
+// SetWithScope installs the WITH-alias scope (see the withScope field).
+func (c *GlueContext) SetWithScope(v value.Value) { c.withScope = v }
+
+// SetWithScopeFrom builds the WITH-alias scope from the given bindings (see
+// buildWithScope) and installs it. Both the interpreter (Session.Run) and the
+// compiled path (setupCompiled) call this with conv.WithScopeBindings(), so a
+// `x IN cte` resolves identically in both.
+func (c *GlueContext) SetWithScopeFrom(bindings map[string]expression.With) {
+	c.withScope = buildWithScope(bindings, c)
+}
+
+// buildWithScope evaluates a query's non-recursive CONSTANT WITH bindings into
+// one AnnotatedValue keyed by alias, for scoping expression evaluation (see the
+// GlueContext.withScope field). Only constant bindings (arrays, objects) are
+// bound: a subquery binding (cte AS (SELECT ...)) is skipped -- eagerly running
+// it here risks a nil-item error or interfering with the main query's own
+// subquery/GROUP-AS execution, and it still works as `FROM <cte>` via
+// VisitExpressionScan. Recursive CTEs are skipped (the with-recursive op owns
+// them). Returns nil when nothing bound. NOTE: map iteration order means
+// dependent bindings (b AS (..a..)) bind reliably only for the common
+// single-binding case; ordered binding is a TODO.
+func buildWithScope(bindings map[string]expression.With, ctx *GlueContext) value.Value {
+	if len(bindings) == 0 {
+		return nil
+	}
+	wv := value.NewAnnotatedValue(map[string]interface{}{})
+	bound := false
+	for alias, w := range bindings {
+		if w == nil || w.IsRecursive() {
+			continue
+		}
+		if _, isSubq := w.Expression().(expression.Subquery); isSubq {
+			continue
+		}
+		v, err := w.Expression().Evaluate(wv, ctx)
+		if err != nil || v == nil {
+			continue
+		}
+		wv.SetField(alias, v)
+		bound = true
+	}
+	if !bound {
+		return nil
+	}
+	return wv
+}
 
 // NewGlueContext returns a GlueContext stamped with the given "now".
 func NewGlueContext(now time.Time) *GlueContext {

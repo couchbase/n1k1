@@ -309,6 +309,7 @@ func setupCompiled(t *testing.T, store *glue.Store, namespace, stmt string) (
 	// indices baked into the datastore ops line up with the live plan objects.
 	gctx := glue.NewGlueContext(time.Now())
 	gctx.InitSubqueries(store, namespace, conv.WithBindings()) // so compiled expression subqueries run
+	gctx.SetWithScopeFrom(conv.WithScopeBindings())            // so compiled `x IN cte` resolves (matches interp)
 	vars.Temps = vars.Temps[:0]
 	vars.Temps = append(vars.Temps, gctx)
 	vars.Temps = append(vars.Temps, conv.Temps[1:]...)

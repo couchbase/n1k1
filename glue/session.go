@@ -163,6 +163,7 @@ func (s *Session) Run(stmt string) (res *Result, err error) {
 	gctx := NewGlueContext(time.Now())
 	gctx.InitSubqueries(s.Store, s.Namespace, conv.WithBindings()) // enable expression subqueries
 	gctx.SetNamedArgs(s.NamedArgs)                                 // resolve $name at eval time
+	gctx.SetWithScopeFrom(conv.WithScopeBindings()) // resolve `x IN cte` etc.
 
 	// Route native-expression advisories (e.g. divide-by-zero) into the
 	// request's warning collector; kept cbq-free on the engine side.

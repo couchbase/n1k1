@@ -51,6 +51,12 @@ func ExprStr(vars *base.Vars, labels base.Labels,
 	return ExprTree(vars, labels, paramsTree, path)
 }
 
+// exprResetScope is a sentinel passed as the 2nd exprTree param by the star
+// (".*") projection: ExprTree then evaluates its row WITHOUT the corrParent /
+// withScope scope wrap, so SELECT * spreads only the row's own fields (query's
+// ResetParent(nil) equivalent). See VisitInitialProject and ExprTree.
+const exprResetScope = "^resetScope"
+
 // ExprTree evaluates a N1QL query/expression.Expression tree, for
 // backwards compatibility at the cost of performance from data
 // conversions.
@@ -60,16 +66,22 @@ func ExprTree(vars *base.Vars, labels base.Labels,
 
 	var buf bytes.Buffer
 
-	// Inside a correlated subquery, skip the optimized expr path: it evaluates
-	// using only this sub-op's labels and can't see the outer row, so a
-	// correlated reference would resolve to MISSING. The general path below
-	// wraps each row as a scope over the correlation parent (see below).
-	correlated := false
-	if gc, ok := vars.Temps[0].(*GlueContext); ok && gc.corrParent != nil {
-		correlated = true
-	}
+	// resetScope: the star (".*") projection passes this marker so its row is NOT
+	// scoped over corrParent/withScope below -- SELECT * must spread only the row's
+	// own fields, not the hidden scope vars (WITH aliases, or an outer correlated
+	// row). Mirrors query's ResetParent(nil) for the star term
+	// (execution/project_initial.go). See VisitInitialProject.
+	resetScope := len(params) > 1 && params[1] == exprResetScope
 
-	if !correlated {
+	// "scoped" evaluation wraps each row as a scope over a parent so identifiers
+	// not in the row resolve to the outer correlated row (corrParent) or the WITH
+	// aliases (withScope). When scoped we must skip the optimized expr path: it
+	// evaluates using only this op's labels and can't see the parent. The star
+	// (resetScope) never needs the parent, so it stays on the fast path.
+	gc, isGlue := vars.Temps[0].(*GlueContext)
+	scoped := isGlue && !resetScope && (gc.corrParent != nil || gc.withScope != nil)
+
+	if !scoped {
 		paramsOut, ok := ExprTreeOptimize(labels, expr, &buf)
 		if ok {
 			// TODO: Compiled approach should probably invoke something
@@ -101,35 +113,33 @@ func ExprTree(vars *base.Vars, labels base.Labels,
 			return base.ValMissing
 		}
 
-		// Inside a correlated subquery, give this sub-row a scope over the outer
-		// row so identifiers not found here (e.g. an outer keyspace alias) fall
-		// through to the parent. corrParent is nil outside a correlated subquery,
-		// so uncorrelated / outer evaluation is unaffected.
-		//
-		// TODO(correlated-subquery): a known gap remains here (rare):
-		//   SELECT-* leak: value.ScopeValue.Fields() merges the parent's fields,
-		//   so a `SELECT *` inside a correlated subquery spreads the OUTER row's
-		//   fields too. query avoids this by resetting the scope parent for star
-		//   projections (execution/project_initial.go: sv.ResetParent(nil));
-		//   n1k1's VisitInitialProject would need to do the same for the star term.
+		// Scope this row over its parent so identifiers not in the row resolve to
+		// the outer correlated row (corrParent) or the WITH aliases (withScope);
+		// corrParent wins when both are set (a subquery's rows scope over the outer
+		// row). The star projection is exempt (resetScope -> scoped is false), so
+		// SELECT * spreads only the row's own fields, not these hidden scope vars.
 		// The `v != nil` guard: a no-FROM sub-SELECT (e.g. the innermost
 		// `SELECT RAW a` in `SELECT RAW (SELECT RAW a)`) yields a single empty row
 		// that Convert maps to a nil value; v.Actual() below would nil-deref. Skipping
 		// the scope-wrap turns that panic into a graceful non-pass.
 		// TODO(correlated-nil-row): to make such a row actually resolve the outer
-		// identifier, evaluate against gc.corrParent when v is nil AND chain parents
+		// identifier, evaluate against the parent when v is nil AND chain parents
 		// for nesting (corrParent is one value, replaced not composed on each
 		// EvaluateSubquery). Fixes the panic-subquery cases subqexp[5], withs[8,9].
-		if gc, ok := context.(*GlueContext); ok && gc.corrParent != nil && v != nil {
+		if scoped && v != nil {
+			parent := gc.corrParent
+			if parent == nil {
+				parent = gc.withScope
+			}
 			// Prefer keeping v as "self" via SetParent: it preserves v's
 			// annotations -- notably a subquery aggregate's "^aggregates"
 			// attachment, which SUM(...)/etc. read back; re-wrapping v.Actual() in
 			// a fresh ScopeValue would drop them and panic. Fall back to a
 			// ScopeValue for a non-annotated object value.
 			if av, ok := v.(value.AnnotatedValue); ok {
-				v = av.SetParent(gc.corrParent)
+				v = av.SetParent(parent)
 			} else if m, ok := v.Actual().(map[string]interface{}); ok {
-				v = value.NewScopeValue(m, gc.corrParent)
+				v = value.NewScopeValue(m, parent)
 			}
 		}
 

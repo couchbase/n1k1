@@ -44,6 +44,13 @@ type Conv struct {
 	// with-recursive fixpoint op. Populated by VisitWith.
 	withBindings map[string]expression.With
 
+	// withFromUsed records CTE aliases consumed as a FROM/JOIN source by
+	// VisitExpressionScan. Those are handled by expr-scan, so they must NOT go into
+	// the eval-time withScope (buildWithScope) -- scoping them would spread a
+	// nested/derived-table CTE into an unrelated SELECT *. Only aliases referenced
+	// as expression VARIABLES (`x IN cte`) belong in withScope. See WithScopeBindings.
+	withFromUsed map[string]bool
+
 	// groupKeyExprLabels maps a *computed* (non-field-path) GROUP BY key's
 	// expression string to the synthetic label under which VisitFinalGroup
 	// materialized its value. VisitInitialProject uses it to read such a key
@@ -106,6 +113,25 @@ func (c *Conv) TopSet(p plan.Operator, op *base.Op) (*base.Op, error) {
 // -> binding), for threading into subquery sub-conversions (see
 // GlueContext.InitSubqueries). May be nil.
 func (c *Conv) WithBindings() map[string]expression.With { return c.withBindings }
+
+// WithScopeBindings returns the WITH bindings eligible for the eval-time
+// withScope (a CTE referenced as a variable, e.g. `x IN cte`): all bindings
+// EXCEPT those consumed as a FROM/JOIN source (expr-scan handles those, and
+// scoping a nested/derived-table CTE globally would leak it into unrelated
+// projections -- see withFromUsed). May be nil.
+func (c *Conv) WithScopeBindings() map[string]expression.With {
+	if len(c.withBindings) == 0 {
+		return nil
+	}
+	out := make(map[string]expression.With, len(c.withBindings))
+	for alias, w := range c.withBindings {
+		if c.withFromUsed[alias] {
+			continue
+		}
+		out[alias] = w
+	}
+	return out
+}
 
 // -------------------------------------------------------------------
 
@@ -349,6 +375,10 @@ func (c *Conv) VisitExpressionScan(o *plan.ExpressionScan) (interface{}, error) 
 	expr := o.FromExpr()
 	if id, ok := expr.(*expression.Identifier); ok {
 		if w, ok := c.withBindings[id.Identifier()]; ok {
+			if c.withFromUsed == nil {
+				c.withFromUsed = map[string]bool{}
+			}
+			c.withFromUsed[id.Identifier()] = true // consumed as FROM -> not a withScope var
 			if w.IsRecursive() {
 				// FROM <recursive-cte>: run the fixpoint (anchor + repeated step)
 				// at runtime; the whole binding is passed to the with-recursive op.
@@ -1012,9 +1042,14 @@ func (c *Conv) VisitInitialProject(o *plan.InitialProject) (interface{}, error) 
 			// in the row as fields (see VisitLet) but must not appear in *, so
 			// strip them -- matching query, which UnsetFields the binding names
 			// from the star value (execution/project_initial.go).
+			// The exprResetScope marker makes ExprTree evaluate this star row
+			// WITHOUT the corrParent/withScope wrap, so it spreads only the row's own
+			// fields -- WITH aliases (withScope) and outer correlated rows don't leak
+			// into *. (stripBindingNames still removes LET names, which live in the
+			// row itself.) Mirrors query's ResetParent(nil) for the star term.
 			op.Labels = append(op.Labels, ".*")
 			op.Params = append(op.Params,
-				[]interface{}{"exprTree", stripBindingNames(rt.Expression(), o.BindingNames())})
+				[]interface{}{"exprTree", stripBindingNames(rt.Expression(), o.BindingNames()), exprResetScope})
 			continue
 		}
 
