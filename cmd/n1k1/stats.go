@@ -131,7 +131,7 @@ func statsGlossary(names []string, width int) []string {
 	if len(items) == 0 {
 		return nil
 	}
-	return wrapItems(items, "glossary: ", " · ", width)
+	return wrapItems(items, "glossary: ", "; ", width)
 }
 
 // wrapItems greedily packs items (separated by sep) onto lines no wider than
