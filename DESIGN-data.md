@@ -496,6 +496,42 @@ Net: the allocation win is less about *how* we get bytes (mmap vs read) than abo
 touch** — with `ReadAt`+reused-buffer and field/`_meta` pushdown as the portable
 levers, and mmap reserved for a packed-segment layout.
 
+#### Implemented (2026-07): native byte-path fetch (`glue.DatastoreFetch`)
+
+The lever above — "route fetch through the native byte path instead of cbq
+`Fetch`" — has landed, **entirely inside n1k1** (no fork change; we only read the
+fork to mirror its behavior). For the classic directory-backed file keyspace,
+`DatastoreFetch` now reads each `<dir>/<key>.json` directly into a **reused,
+growable buffer** via `io.ReaderAt.ReadAt(buf, 0)` and yields those raw JSON bytes
+as `base.Val` — no `value.AnnotatedValue` boxing, and **no standard-JSON parsing**
+in the path at all (even the `^id` key is decoded with jsonparser, not
+`encoding/json`). Faithful drop-in: cbq's file keyspace is `.json`-only
+(`keyPath = <base>/<key>.json`), so the native read replicates its key→path exactly,
+including the **path-traversal guard** (`filepath.Rel` check) and the
+missing-file-⇒-skip semantics. Measured on the 3-way `orders` self-join (identical
+results): **total allocation ~2.0 GB → ~917 MB (~54%), the fetch subtree
+~1468 MB → ~377 MB (~74%), GCs 420 → 200.** `DatastoreFetchNative` (env
+`N1K1_FETCH_CBQ=1` forces the old path) toggles it for A/B.
+
+- **Fallbacks (still cbq `Fetch`).** A subpath projection was pushed down
+  (`SubPaths`), or the keyspace is a synthetic **flat-root** (`RecordsDir`) or
+  **single-file** (`RecordsFile`) keyspace — i.e. not a directory of standalone
+  `<key>.json` files. So a **container-backed** keyspace (docs inside a `.jsonl`
+  or `.gz`) never gets a bogus `<key>.json` native read; it stays on the cbq/scan
+  path (and cbq's `.json`-only Fetch can't fetch-by-key into a container either, so
+  those are scan-only today regardless).
+- **Residual cost = re-opening, not boxing.** Native's remaining ~377 MB is
+  per-key file-open syscall churn (`os.Open`/`Stat` → `syscall.ByteSliceFromString`,
+  `os.newFile`) because the nested-loop join re-opens the same files O(|L|×|R|)
+  times. The reused buffer already makes the *read* alloc-free; killing the re-open
+  needs the **don't-re-read** lever — a small decoded-doc / fd cache — which is the
+  next step (bigger than this one for join-heavy workloads).
+- **Container fetch is future work.** Fetch-by-key *into* a `.jsonl` needs a
+  manifest offset index (§5) + `ReadAt(buf, offset)` to read just that record;
+  a `.gz` can't be range-read (must decompress a stream), so it needs either full
+  decompression + an in-memory/segment index or a packed uncompressed segment. Both
+  are exactly the mmap-vs-`ReadAt` tradeoffs above, keyed off a manifest.
+
 ## 2. Directory layouts & FROM-term resolution
 
 This is the crux of the user's question: flat vs two-level vs deep, auto-detect
