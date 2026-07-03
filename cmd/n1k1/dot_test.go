@@ -16,7 +16,43 @@ package main
 import (
 	"strings"
 	"testing"
+
+	"github.com/couchbase/n1k1/cmd"
 )
+
+// TestHelpHighlightCurrent checks that .help's choice lists highlight the current
+// value (zero-width ANSI when styling is on) and degrade to plain text when off.
+func TestHelpHighlightCurrent(t *testing.T) {
+	on := cmd.Style{On: true}
+	c := &cli{style: on}
+
+	// highlightCurrent: only the current token is wrapped.
+	got := c.highlightCurrent("on", "|", "on", "off")
+	if !strings.Contains(got, on.Bold(on.Cyan("on"))) {
+		t.Errorf("current token not highlighted: %q", got)
+	}
+	if strings.Contains(got, on.Bold(on.Cyan("off"))) {
+		t.Errorf("non-current token should not be highlighted: %q", got)
+	}
+
+	// helpOpts brackets the list and highlights the current value.
+	opts := c.helpOpts("debug", "off", "on", "debug")
+	if !strings.HasPrefix(opts, "[") || !strings.HasSuffix(opts, "]") {
+		t.Errorf("helpOpts not bracketed: %q", opts)
+	}
+	if !strings.Contains(opts, on.Bold(on.Cyan("debug"))) {
+		t.Errorf("helpOpts current not highlighted: %q", opts)
+	}
+
+	// Styling off: plain text, so column alignment in .help is preserved.
+	plain := &cli{style: cmd.Style{}}
+	if s := plain.highlightCurrent("on", " ", "box", "json", "on"); s != "box json on" {
+		t.Errorf("plain highlightCurrent = %q, want \"box json on\"", s)
+	}
+	if s := plain.helpOpts("off", "on", "off"); s != "[on|off]" {
+		t.Errorf("plain helpOpts = %q, want \"[on|off]\"", s)
+	}
+}
 
 // TestDotVerbose exercises the .verbose level command: named levels
 // (off/on/debug), a bare numeric level, no-arg (show only), and a bad arg.

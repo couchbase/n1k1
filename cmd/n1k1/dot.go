@@ -178,21 +178,31 @@ func (c *cli) dot(line string) bool {
 }
 
 func (c *cli) printHelp() {
+	// The current value of each on|off-style setting is highlighted in its choice
+	// list below, so the active setting stands out at a glance.
+	mode, _, _ := cmd.ParseMode(c.mode) // current output mode, minus any |pretty
+	vcur := "off"                       // .verbose level -> its choice token
+	if c.verbose == 1 {
+		vcur = "on"
+	} else if c.verbose >= 2 {
+		vcur = "debug"
+	}
 	// Each line begins with its ".command" token, so a lexicographic sort lists
-	// them in command-name order.
+	// them in command-name order. Choice lists keep a fixed visible width (the
+	// highlight is zero-width ANSI), so the description column stays aligned.
 	lines := []string{
 		".help                 show this help",
 		".open <dir>           open a different file datastore directory",
 		".tables / .keyspaces  list keyspaces (with a copy-paste example each)",
 		".index [list|show <name>|rebuild [<n>]]  secondary indexes (run .index help for details)",
 		".schema [<keyspace>]  sampled shape (keys + JSON types) of a keyspace",
-		".mode <m>             output mode (append |pretty to indent JSON): " + strings.Join(cmd.OutputModes, " "),
-		".meta [on|off|auto]   add a _meta sub-object to records (no arg shows the current setting)",
+		".mode <m>             output mode (append |pretty to indent JSON): " + c.highlightCurrent(mode, " ", cmd.OutputModes...),
+		".meta " + c.helpOpts(glue.ScanWalkOptions.Meta.String(), "on", "off", "auto") + "   add a _meta sub-object to records (no arg shows the current setting)",
 		".formats [<set>]      restrict scanning to formats/modes, e.g. json,csv,gzip (no arg shows current)",
-		".timer [on|off]       elapsed-time reporting (no arg shows the current setting)",
-		".stats [on|off|about]  per-operator counters live + as a footer (about = glossary of every counter)",
+		".timer " + c.helpOpts(onOff(c.timer), "on", "off") + "       elapsed-time reporting (no arg shows the current setting)",
+		".stats " + c.helpOpts(onOff(c.stats), "on", "off", "about") + "  per-operator counters live + as a footer (about = glossary of every counter)",
 		".explain              toggle printing EXPLAIN PLAN per query",
-		".verbose [off|on|debug]  diagnostics level (off|on=plans|debug=+timing; no arg shows current)",
+		".verbose " + c.helpOpts(vcur, "off", "on", "debug") + "  diagnostics level (off|on=plans|debug=+timing; no arg shows current)",
 		".maxrows <n>          box: cap rows shown (0 = all; negative = last |n| rows)",
 		".maxwidth <n|auto>    box: cap column width (0 = uncapped; auto = fit terminal)",
 		".read <file>          run statements/dot-commands from a file",
@@ -212,6 +222,28 @@ func (c *cli) printHelp() {
 	} else {
 		fmt.Fprintln(c.stderr, "Statements are SQL++; terminate with ';'. Open a datastore with .open <dir> to query it.")
 	}
+}
+
+// highlightCurrent joins opts with sep, rendering the token equal to current in a
+// highlighted style so the .help listing shows the active setting. Token text is
+// unchanged (the highlight is zero-width ANSI), so column alignment is preserved,
+// and it degrades to plain text when styling is off (piped/redirected output).
+func (c *cli) highlightCurrent(current, sep string, opts ...string) string {
+	parts := make([]string, len(opts))
+	for i, o := range opts {
+		if o == current {
+			parts[i] = c.style.Bold(c.style.Cyan(o))
+		} else {
+			parts[i] = o
+		}
+	}
+	return strings.Join(parts, sep)
+}
+
+// helpOpts renders a "[a|b|c]" choice list for .help with the current value
+// highlighted.
+func (c *cli) helpOpts(current string, opts ...string) string {
+	return "[" + c.highlightCurrent(current, "|", opts...) + "]"
 }
 
 func (c *cli) cmdOpen(dir string) {
