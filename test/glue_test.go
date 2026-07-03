@@ -766,15 +766,6 @@ func testFileStoreSelect(t *testing.T, stmt string, emit bool) (
 
 // -------------------------------------------------------------
 
-// TODO(nested-stage-deadlock): testGlueExec drives engine.ExecOp directly on the
-// caller's goroutine, so it deadlocks on a plan that NESTS one base.Stage inside
-// another -- e.g. an ON KEYS join (an outer datastore-scan stage whose actor, per
-// row, runs an inner datastore-fetch stage): the inner ProcessBatchesFromActors
-// blocks on a channel the outer, single-threaded drain never gets to feed. Real
-// queries run fine through glue.Session.Run; only this harness is affected. Until
-// this harness supports nested stages, exercise such plans via Session.Run (see
-// the gsi suite) or a non-nesting form (e.g. USE KEYS instead of an ON KEYS join,
-// as TestFlatFileJSONLUseKeysFetch does).
 func testGlueExec(t *testing.T, emit bool,
 	store *glue.Store, conv *glue.Conv) []base.Vals {
 	if emit {

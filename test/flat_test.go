@@ -318,15 +318,18 @@ func TestFlatFileAggregate(t *testing.T) {
 	}
 }
 
-// TODO(flat-aliased-meta-scan): on a flat keyspace, a scan that projects an
-// ALIASED META -- e.g. `SELECT META(e1).id FROM events e1` -- yields zero rows,
-// while the unaliased `SELECT META().id FROM events` returns them (and aliased
-// META works on a classic <ns>/<keyspace> keyspace). Because of this, an ON KEYS
-// self-join over a flat keyspace (`... FROM ks e1 JOIN ks e2 ON KEYS META(e1).id`)
-// comes back empty: its left side produces no keys, so the (working -- see below)
-// container fetch never runs. Root cause not yet pinned (likely the flat
-// keyspace's alias/META binding in conv or the records scan); orthogonal to the
-// container-fetch work below.
+// TODO(covering-meta-scan-container): a COVERING primary scan over a keyspace
+// whose directory holds container files (a *.jsonl) returns ZERO rows -- e.g.
+// `SELECT meta().id FROM events` (projecting only meta().id, so the primary index
+// covers it) or an aliased `SELECT meta(e).id FROM events e`. The covering /
+// primary-key path lists the keyspace directory as if it were one-doc-per-file
+// (documentPathToId -> file stems), which don't match the container records'
+// ids, so nothing resolves. A NON-covering scan (meta().id plus a doc field) is
+// fine -- it takes the whole-doc records scan, which assigns correct
+// <relpath>#<line>@<offset> ids. Empty, not a hang (the flat-keyspace #primary
+// scan that used to *hang* is fixed -- see DatastoreScanIndex/scanContainerKeys).
+// Fix likely belongs in the covering/primary path: list container record ids via
+// the records source (as scanContainerKeys does) instead of readdir stems.
 
 // TestFlatFileJSONLUseKeysFetch: a key-based fetch (USE KEYS) into a .jsonl
 // container resolves each record via the byte offset baked into its META().id
@@ -354,6 +357,33 @@ func TestFlatFileJSONLUseKeysFetch(t *testing.T) {
 	for _, want := range []string{`{"n":1,"u":"a"}`, `{"n":3,"u":"c"}`} {
 		if !got[want] {
 			t.Fatalf("missing fetched row %s; got %v", want, rows)
+		}
+	}
+}
+
+// TestFlatFileJSONLOnKeysJoinRoundTrip: an ON KEYS self-join over a .jsonl
+// container -- the inner side is a full #primary IndexScan (yielding record ids)
+// feeding a Fetch. Both used to hang: the flat keyspace's virtual primary index
+// can't be scanned by cbq's IndexConnection (its Scan never feeds the sender, so
+// the drain deadlocks). DatastoreScanIndex now yields the ids from the records
+// source (scanContainerKeys), and the Fetch resolves each via its byte offset --
+// so every record round-trips to itself.
+func TestFlatFileJSONLOnKeysJoinRoundTrip(t *testing.T) {
+	path := writeFlatFile(t, "events.jsonl",
+		`{"n":1,"u":"a"}`+"\n"+`{"n":2,"u":"b"}`+"\n"+`{"n":3,"u":"c"}`+"\n")
+	stmt := "SELECT e2.n AS n, e2.u AS u FROM events e1 JOIN events e2 ON KEYS META(e1).id"
+	store, conv := flatRootConv(t, path, stmt)
+	rows := flatRootRows(t, conv, testGlueExec(t, false, store, conv))
+	if len(rows) != 3 {
+		t.Fatalf("want 3 round-tripped rows, got %d (%v)", len(rows), rows)
+	}
+	got := map[string]bool{}
+	for _, row := range rows {
+		got[jsonOf(row)] = true
+	}
+	for _, want := range []string{`{"n":1,"u":"a"}`, `{"n":2,"u":"b"}`, `{"n":3,"u":"c"}`} {
+		if !got[want] {
+			t.Fatalf("missing round-tripped row %s; got %v", want, rows)
 		}
 	}
 }

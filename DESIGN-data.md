@@ -564,6 +564,14 @@ results): **total allocation ~2.0 GB → ~917 MB (~54%), the fetch subtree
   makes `USE KEYS`, `ON KEYS` joins, and non-covering index-scan fetches work
   against `.jsonl` keyspaces (both classic `<ns>/<keyspace>` and flat/single-file),
   where they previously returned nothing. All in glue + `records` (no fork change).
+  Paired scan-side fix: a full `#primary` `IndexScan` over a flat/container
+  keyspace used to **hang** — cbq's `IndexConnection` can't scan such a keyspace's
+  virtual primary index (its `Scan` never feeds the sender, deadlocking the
+  drain). `DatastoreScanIndex` now yields the record ids from the records source
+  (`scanContainerKeys`, cached per request), the same ids the records scan
+  assigns, so the following Fetch can resolve them. (A *covering* primary scan —
+  `SELECT` only `meta().id` — over such a keyspace still returns empty via the
+  readdir/stem path; tracked as a TODO, empty not a hang.)
 - **Still future work: compressed / non-line containers.** A `.gz` offset is into
   the *decompressed* stream, which can't seek the compressed bytes, so a `.gz`
   record omits the `@<offset>` suffix and isn't key-fetchable yet (needs full

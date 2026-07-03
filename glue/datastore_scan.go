@@ -128,6 +128,64 @@ func (c *GlueContext) scanKeys(dir string) ([]string, error) {
 	return keys, nil
 }
 
+// scanContainerKeys returns a container keyspace's record ids -- the SAME ids the
+// records scan assigns (<relpath>#<line>[@<offset>]) -- memoized per request like
+// scanKeys. It answers a full #primary IndexScan over a flat/container keyspace
+// (a *.jsonl / multi-doc file): cbq's IndexConnection can't scan such a keyspace's
+// virtual primary index (its Scan never feeds the sender, so the drain's GetEntry
+// deadlocks -- see DatastoreScanIndex), and unlike a directory of <key>.json files
+// the ids aren't file stems (listDocKeys would be wrong), so they must come from
+// the records source. The ids let a following Fetch resolve each record (via the
+// baked-in byte offset). Cache key is prefixed so it can't collide with a classic
+// dir listing.
+func (c *GlueContext) scanContainerKeys(ks datastore.Keyspace) ([]string, error) {
+	c = c.getRoot()
+	cacheKey := "\x00container\x00" + containerBaseDir(ks)
+
+	c.scanKeyCacheMu.Lock()
+	if keys, ok := c.scanKeyCache[cacheKey]; ok {
+		c.scanKeyCacheMu.Unlock()
+		return keys, nil
+	}
+	c.scanKeyCacheMu.Unlock()
+
+	opts := ScanWalkOptions
+	opts.PathPrefix = metaPathPrefix(ks)
+	src, err := openKeyspaceRecords(ks, opts)
+	if err != nil {
+		return nil, err
+	}
+	defer src.Close()
+
+	var keys []string
+	var rec records.Record
+	for {
+		ok, err := src.Next(&rec)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			break
+		}
+		keys = append(keys, string(rec.ID)) // Owned copy (rec.ID borrowed until next Next).
+	}
+
+	c.scanKeyCacheMu.Lock()
+	if existing, ok := c.scanKeyCache[cacheKey]; ok {
+		c.scanKeyCacheMu.Unlock()
+		return existing, nil
+	}
+	if c.scanKeyCacheN+len(keys) <= DatastoreScanKeyCacheMax {
+		if c.scanKeyCache == nil {
+			c.scanKeyCache = make(map[string][]string)
+		}
+		c.scanKeyCache[cacheKey] = keys
+		c.scanKeyCacheN += len(keys)
+	}
+	c.scanKeyCacheMu.Unlock()
+	return keys, nil
+}
+
 func DatastoreScanKeys(o *base.Op, vars *base.Vars,
 	yieldVals base.YieldVals, yieldErr base.YieldErr) {
 	context := vars.Temps[0].(*GlueContext)
@@ -366,35 +424,53 @@ func DatastoreScanIndex(o *base.Op, vars *base.Vars,
 	yieldVals base.YieldVals, yieldErr base.YieldErr) {
 	scan := vars.Temps[o.Params[0].(int)].(*plan.IndexScan)
 
-	// Native cached key-listing fast-path: a full (unbounded) scan over the file
-	// datastore's non-n1k1 #primary re-reads the directory on every invocation --
-	// O(N^2) under a nested-loop join. List+cache the keyspace's keys once and yield
-	// them directly (bypassing cbq's readdir + the conn machinery). Ranged/seeked
-	// spans and n1k1 secondary indexes keep the cbq path below.
+	// Native key-listing fast-path for a full (unbounded) #primary scan. Two cases,
+	// both yielding the keyspace's ids directly (bypassing cbq's IndexConnection),
+	// each memoized per request so a nested-loop join's re-scans are cache hits:
+	//   - a directory of <key>.json files: list them via readdir (scanKeys) -- also
+	//     the O(N^2)-readdir win.
+	//   - a flat/container keyspace (a *.jsonl / multi-doc file): read the record ids
+	//     from the records source (scanContainerKeys). REQUIRED, not just an
+	//     optimization -- cbq's IndexConnection can't scan such a keyspace's virtual
+	//     primary index (its Scan never feeds the sender, so the drain deadlocks).
+	// Ranged/seeked spans and n1k1 secondary indexes keep the cbq path below.
+	// TODO: a ranged #primary scan over a flat/container keyspace still falls to the
+	// cbq path and would hang; rare (a predicate on META().id), but should be closed.
 	if gctx, _ := vars.Temps[0].(*GlueContext); gctx != nil && DatastoreScanCache && isFullScan(scan) {
 		if _, isSI := scan.Index().(*secondaryIndex); !isSI {
 			ks := scan.Keyspace()
-			if dir, err := keyspaceDir(ks); err == nil && dirKeyspace(ks) {
-				if keys, err := gctx.scanKeys(dir); err == nil {
-					limit := EvalExprInt64(gctx, scan.Limit(), nil, math.MaxInt64)
 
-					var valId base.Val
-					var vals base.Vals
-					var n int64
-					for _, key := range keys {
-						if limit < math.MaxInt64 && n >= limit {
-							break
-						}
-						valId = strconv.AppendQuote(valId[:0], key)
-						vals = append(vals[:0], valId)
-						yieldVals(vals)
-						n++
-					}
-					yieldErr(nil) // Clean end-of-stream (buffering parents rely on it).
-					return
-				}
-				// A listing error falls through to the cbq scan below.
+			var keys []string
+			var keyErr error
+			listed := false
+			if dir, err := keyspaceDir(ks); err == nil && dirKeyspace(ks) {
+				keys, keyErr = gctx.scanKeys(dir)
+				listed = true
+			} else if containerBaseDir(ks) != "" {
+				keys, keyErr = gctx.scanContainerKeys(ks)
+				listed = true
 			}
+
+			if listed && keyErr == nil {
+				limit := EvalExprInt64(gctx, scan.Limit(), nil, math.MaxInt64)
+
+				var valId base.Val
+				var vals base.Vals
+				var n int64
+				for _, key := range keys {
+					if limit < math.MaxInt64 && n >= limit {
+						break
+					}
+					valId = strconv.AppendQuote(valId[:0], key)
+					vals = append(vals[:0], valId)
+					yieldVals(vals)
+					n++
+				}
+				yieldErr(nil) // Clean end-of-stream (buffering parents rely on it).
+				return
+			}
+			// A listing error (or a non-container, non-dir keyspace) falls through
+			// to the cbq scan below.
 		}
 	}
 
