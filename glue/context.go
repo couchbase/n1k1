@@ -14,6 +14,7 @@
 package glue
 
 import (
+	"sync"
 	"time"
 
 	"github.com/couchbase/query/encryption"
@@ -78,6 +79,18 @@ type GlueContext struct {
 	// into SELECT *. nil when the query has no eagerly-bindable WITH bindings.
 	// (`FROM <cte>` is handled separately by VisitExpressionScan.) See buildWithScope.
 	withScope value.Value
+
+	// fetchCache memoizes doc bytes read by the native fetch path within this one
+	// request -- a nested-loop join re-fetches the same keys O(NxM) times, so this
+	// turns all-but-the-first read of each doc into a map hit. Two-level, keyed by
+	// keyspace dir then doc key, so a hit needs no per-fetch path-string building
+	// (both keys already exist). Values are owned, immutable copies (safe to yield
+	// repeatedly, and stable for the whole request -- more than the YieldVals borrow
+	// contract requires). Bounded by DatastoreFetchCacheMaxBytes and guarded by
+	// fetchCacheMu (UNION-ALL actors share the GlueContext). See datastore_fetch.go.
+	fetchCache   map[string]map[string][]byte // dir -> key -> owned doc bytes
+	fetchCacheN  int                          // total bytes currently cached (against the cap)
+	fetchCacheMu sync.Mutex
 }
 
 // SetNamedArgs installs the request's named query parameters ($name), so

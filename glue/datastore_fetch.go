@@ -31,12 +31,66 @@ import (
 )
 
 func init() {
-	// Escape hatch for A/B profiling and debugging: N1K1_FETCH_CBQ=1 forces the
-	// legacy cbq keyspace.Fetch path (value boxing + encoding/json) instead of the
-	// native byte read.
+	// Escape hatches for A/B profiling and debugging.
 	if os.Getenv("N1K1_FETCH_CBQ") != "" {
-		DatastoreFetchNative = false
+		DatastoreFetchNative = false // legacy cbq keyspace.Fetch (value boxing + encoding/json).
 	}
+	if os.Getenv("N1K1_FETCH_NOCACHE") != "" {
+		DatastoreFetchCache = false // native read every time (no per-request doc cache).
+	}
+}
+
+// DatastoreFetchCache memoizes native-fetch doc bytes per request (see
+// GlueContext.fetchCache): a nested-loop join re-fetches the same docs O(NxM)
+// times, so after the first pass every fetch is a map hit -- no re-open, no
+// re-read, no allocation. env N1K1_FETCH_NOCACHE=1 disables.
+var DatastoreFetchCache = true
+
+// DatastoreFetchCacheMaxBytes caps the per-request doc cache so a fetch over a huge
+// keyspace can't grow the heap without bound; a miss past the cap reads into a
+// reused buffer instead of caching.
+var DatastoreFetchCacheMaxBytes = 64 << 20 // 64 MiB.
+
+// fetchCacheGet returns the cached bytes for (dir, key) -- owned, immutable -- if
+// any. Keyed by the existing dir and key strings, so a hit allocates nothing.
+func (c *GlueContext) fetchCacheGet(dir, key string) ([]byte, bool) {
+	c.fetchCacheMu.Lock()
+	var b []byte
+	var ok bool
+	if m := c.fetchCache[dir]; m != nil {
+		b, ok = m[key]
+	}
+	c.fetchCacheMu.Unlock()
+	return b, ok
+}
+
+// fetchCachePut stores an owned copy of b under (dir, key) once, while under the
+// byte cap, and returns the cached slice; it returns nil when the cache is full,
+// so the caller yields its (borrowed) read buffer instead. First writer wins.
+func (c *GlueContext) fetchCachePut(dir, key string, b []byte) []byte {
+	c.fetchCacheMu.Lock()
+	defer c.fetchCacheMu.Unlock()
+
+	m := c.fetchCache[dir]
+	if m != nil {
+		if existing, ok := m[key]; ok {
+			return existing
+		}
+	}
+	if c.fetchCacheN+len(b) > DatastoreFetchCacheMaxBytes {
+		return nil
+	}
+	cp := append([]byte(nil), b...) // Owned, immutable copy (stable for the request).
+	if c.fetchCache == nil {
+		c.fetchCache = make(map[string]map[string][]byte)
+	}
+	if m == nil {
+		m = make(map[string][]byte)
+		c.fetchCache[dir] = m
+	}
+	m[key] = cp
+	c.fetchCacheN += len(cp)
+	return cp
 }
 
 type Keyspacer interface {
@@ -62,6 +116,10 @@ func DatastoreFetch(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 	plan := vars.Temps[o.Params[0].(int)].(Keyspacer)
 
 	keyspace := plan.Keyspace()
+
+	// The per-request GlueContext hosts the doc cache (persists across this fetch
+	// op's re-invocations by an outer nested-loop join). nil-tolerant: no cache then.
+	gctx, _ := vars.Temps[0].(*GlueContext)
 
 	var subPaths []string
 	if subPathser, ok := plan.(SubPathser); ok {
@@ -122,20 +180,46 @@ func DatastoreFetch(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 			keys = append(keys, key)
 		}
 
-		// ---- Native byte path: read <dir>/<key>.json into a reused buffer. ----
+		// ---- Native byte path: cache-hit, else read <dir>/<key>.json. ----
 		if nativeDir != "" {
+			useCache := DatastoreFetchCache && gctx != nil
+
 			for _, key := range keys {
 				if key == "" {
 					continue
 				}
 
-				doc, ok, err := readDocFileInto(nativeDir, key, &docBuf)
-				if err != nil {
-					yieldErr(fmt.Errorf("DatastoreFetch (native), key %q: %v", key, err))
-					continue
+				var doc []byte
+				if useCache {
+					doc, _ = gctx.fetchCacheGet(nativeDir, key) // Owned; nil on miss. No path built.
 				}
-				if !ok || len(doc) == 0 {
-					continue // Missing / empty file => non-existent doc; skip (matches cbq).
+
+				if doc == nil {
+					// Miss: resolve+guard the path (only here, not per hit), read the
+					// whole doc into the reused buffer (no per-read alloc), then cache
+					// an owned copy so every later fetch of this key -- the common case
+					// under a nested-loop join -- is a hit needing no path or read.
+					p, ok := docPath(nativeDir, key)
+					if !ok {
+						yieldErr(fmt.Errorf("DatastoreFetch (native): invalid key %q", key))
+						continue
+					}
+
+					b, ok2, err := readWholeFileInto(p, &docBuf)
+					if err != nil {
+						yieldErr(fmt.Errorf("DatastoreFetch (native), key %q: %v", key, err))
+						continue
+					}
+					if !ok2 || len(b) == 0 {
+						continue // Missing / empty file => non-existent doc; skip (matches cbq).
+					}
+
+					doc = b // Borrowed from docBuf (valid until the next read)...
+					if useCache {
+						if cached := gctx.fetchCachePut(nativeDir, key, b); cached != nil {
+							doc = cached // ...unless cached, then owned + stable for the request.
+						}
+					}
 				}
 
 				// "^id" must be canonical JSON (a quoted string) so Convert reads it
@@ -199,23 +283,27 @@ func DatastoreFetch(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 	// TODO: Recycle stage.
 }
 
-// readDocFileInto reads the document file backing key (`<dir>/<key>.json`) into
-// the reused, growable buffer *bufp, returning the JSON bytes borrowed from that
-// buffer (valid only until the next call -- the YieldVals copy-on-retain contract
-// applies, exactly as for the scan's reused row buffer). ok is false when the file
-// doesn't exist (a non-existent doc, which the caller skips -- matching cbq's file
-// keyspace, which ignores os.IsNotExist). It rejects path-traversal keys the same
-// way cbq's keyspace.keyPath does, so a crafted key can't escape the keyspace dir.
-func readDocFileInto(dir, key string, bufp *[]byte) (doc []byte, ok bool, err error) {
-	p := filepath.Join(dir, key+".json")
-
-	// Path-traversal guard (mirrors couchbase/query datastore/file keyspace.keyPath):
-	// reject any key that resolves outside dir.
+// docPath resolves key to its backing file `<dir>/<key>.json`, rejecting
+// path-traversal keys the same way cbq's file keyspace.keyPath does (so a crafted
+// key like "../../etc/passwd" can't escape the keyspace dir). ok is false for a
+// rejected key. The path also serves as the doc cache key.
+func docPath(dir, key string) (p string, ok bool) {
+	p = filepath.Join(dir, key+".json")
 	if rel, e := filepath.Rel(dir, p); e != nil ||
 		rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
-		return nil, false, fmt.Errorf("invalid key %q", key)
+		return "", false
 	}
+	return p, true
+}
 
+// readWholeFileInto reads the whole file at p into the reused, growable buffer
+// *bufp via io.ReaderAt.ReadAt(buf, 0) -- one copy into memory we own and recycle,
+// no per-doc heap allocation. The returned slice borrows *bufp (valid only until
+// the next call; the caller either copies it into the doc cache or relies on the
+// YieldVals copy-on-retain contract). ok is false when the file doesn't exist (a
+// non-existent doc, which the caller skips -- matching cbq's file keyspace, which
+// ignores os.IsNotExist).
+func readWholeFileInto(p string, bufp *[]byte) (doc []byte, ok bool, err error) {
 	f, e := os.Open(p)
 	if e != nil {
 		if os.IsNotExist(e) {
@@ -234,13 +322,10 @@ func readDocFileInto(dir, key string, bufp *[]byte) (doc []byte, ok bool, err er
 		return nil, true, nil // Empty file -> skipped by the caller (len(doc)==0).
 	}
 
-	// Grow the reused buffer to fit; read the whole doc at offset 0 via ReadAt
-	// (io.ReaderAt) into it -- one copy into memory we own and recycle, no per-doc
-	// heap allocation. (Slicing to the bytes actually read tolerates a shrink race.)
 	if int64(cap(*bufp)) < n {
 		*bufp = make([]byte, n)
 	}
-	nRead, e := f.ReadAt((*bufp)[:n], 0)
+	nRead, e := f.ReadAt((*bufp)[:n], 0) // Slicing to bytes-read tolerates a shrink race.
 	if e != nil && e != io.EOF {
 		return nil, false, e
 	}

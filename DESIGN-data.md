@@ -520,12 +520,24 @@ results): **total allocation ~2.0 GB → ~917 MB (~54%), the fetch subtree
   or `.gz`) never gets a bogus `<key>.json` native read; it stays on the cbq/scan
   path (and cbq's `.json`-only Fetch can't fetch-by-key into a container either, so
   those are scan-only today regardless).
-- **Residual cost = re-opening, not boxing.** Native's remaining ~377 MB is
-  per-key file-open syscall churn (`os.Open`/`Stat` → `syscall.ByteSliceFromString`,
-  `os.newFile`) because the nested-loop join re-opens the same files O(|L|×|R|)
-  times. The reused buffer already makes the *read* alloc-free; killing the re-open
-  needs the **don't-re-read** lever — a small decoded-doc / fd cache — which is the
-  next step (bigger than this one for join-heavy workloads).
+- **Done: per-request doc cache (the "don't re-read" lever).** The residual after
+  the byte path was ~377 MB of per-key file-open churn (`os.Open`/`Stat` →
+  `syscall.ByteSliceFromString`, `os.newFile`) — the nested-loop join re-opening the
+  same files O(|L|×|R|) times. `GlueContext.fetchCache` now memoizes doc bytes per
+  request, two-level (keyspace dir → doc key → owned, immutable copy), so after the
+  first pass every fetch is a map hit with **no re-open, no re-read, no allocation**
+  (and no per-fetch path building — the `<dir>/<key>.json` string and its
+  path-traversal guard run only on a miss). It's guarded by a mutex (UNION-ALL
+  actors share the `GlueContext`), bounded by `DatastoreFetchCacheMaxBytes` (64 MiB;
+  a miss past the cap reads into the reused buffer instead of caching), and lives
+  for exactly one request (fresh `GlueContext` per `Run`). Cached bytes are stable
+  for the whole request — *safer* than the borrow contract needs. Measured on the
+  3-way `orders` self-join (identical results): the **fetch subtree 377 MB → 78 MB**
+  (~79%), and **total ~917 MB → ~541 MB** (native+cache vs native-no-cache; ~73%
+  below the original cbq `Fetch` at ~2.0 GB). `DatastoreFetchCache` toggles it; env
+  `N1K1_FETCH_NOCACHE=1` disables. The now-dominant ~470 MB is the *scan* re-listing
+  the directory (`primaryIndex.Scan` → `readdir`/`lstat`) O(|L|²) times — a separate
+  lever (a per-request directory-listing cache on the scan side), not the fetch.
 - **Container fetch is future work.** Fetch-by-key *into* a `.jsonl` needs a
   manifest offset index (§5) + `ReadAt(buf, offset)` to read just that record;
   a `.gz` can't be range-read (must decompress a stream), so it needs either full
