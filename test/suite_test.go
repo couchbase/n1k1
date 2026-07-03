@@ -728,3 +728,64 @@ var groupWhy = map[string]string{
 	"prepared":         "prepared statements not supported (no prepared-statement store): PREPARE is rejected in PlanStatementQP -- planner.Build nil-derefs on it; EXECUTE (plan.Discard) also unsupported",
 	"arrayagg-order":   "ARRAY_AGG element order is undefined in N1QL; ordering differs (not fixable)",
 }
+
+// TestNoPanicRegress hand-codes queries (drawn from the couchbase/query fork's gsi
+// corpus, including categories n1k1 doesn't import) that once CRASHED the engine.
+// A panic is always a bug: n1k1 must return a clean error or correct rows, never
+// nil-deref / slice-out-of-range. Each entry asserts "no panic" -- an
+// ErrUnsupported (clean error) is an acceptable outcome; a recovered panic is not.
+//
+// This is a bespoke hardening harness: rather than import whole unsupported
+// categories (which bloats the results suite with feature gaps), we lift only the
+// specific panic-repro statements here. See DESIGN-testing.md.
+func TestNoPanicRegress(t *testing.T) {
+	store, err := glue.FileStore(gsiSuiteRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Prime the process-global datastore (Session.Run does this too).
+	if _, _, err := n1k1RunStatementCtx(store, "SELECT 1", nil); err != nil {
+		t.Fatalf("prime: %v", err)
+	}
+
+	cases := []struct {
+		name string
+		stmt string
+	}{
+		// indexscan: a parameterized LIMIT/OFFSET. n1k1 folds LIMIT/OFFSET to a
+		// constant at conversion time with a nil context; a $-parameter there
+		// nil-derefed (*GlueContext)(nil).NamedArg. See EvalExprInt64.
+		{"limit-named-param", `SELECT type FROM purchase WHERE test_id = "arrayIndex" ORDER BY purchasedAt OFFSET $offset LIMIT $limit`},
+		{"limit-named-param-only", `SELECT c11 FROM shellTest ORDER BY c11 LIMIT $limit`},
+		{"offset-named-param-only", `SELECT c11 FROM shellTest ORDER BY c11 OFFSET $off`},
+		{"limit-positional-param", `SELECT c11 FROM shellTest ORDER BY c11 LIMIT $1`},
+
+		// udf: CREATE/DROP/EXECUTE FUNCTION route through the functions registry
+		// subsystem the CE build leaves uninitialized -- planner.Build nil-derefed
+		// in CreateFunction.Privileges. See PlanStatementQP.
+		{"udf-create-external", `CREATE OR REPLACE FUNCTION UDF_UT_externalJS1(var1) LANGUAGE JAVASCRIPT AS "external1" AT "lib1"`},
+		{"udf-create-inline", `CREATE FUNCTION add1(a) { a + 1 }`},
+		{"udf-execute", `EXECUTE FUNCTION add1(5)`},
+		{"udf-drop", `DROP FUNCTION add1`},
+
+		// extractddl: EXTRACTDDL runs a nested statement over system:keyspaces via
+		// context.EvaluateStatement, which n1k1 doesn't provide -- the embedded
+		// IndexContext default returned (nil,0,nil) and ExtractDDL nil-derefed
+		// v.Actual(). GlueContext.EvaluateStatement now returns a clean error.
+		{"extractddl", `SELECT EXTRACTDDL('customer') AS ddl`},
+
+		// subqexp: a parameterized keyspace `FROM $1 AS d USE KEYS $2`. n1k1 can't
+		// resolve a keyspace name at runtime, leaving the plan's keyspace nil;
+		// DatastoreFetch nil-derefed in keyspaceDir. It now fails cleanly.
+		{"from-param-keyspace", `SELECT d.a FROM $1 AS d USE KEYS $2`},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := n1k1RunStatement(store, c.stmt)
+			if err != nil && isPanicErr(err) {
+				t.Errorf("PANIC (must be a clean error or rows instead):\n  stmt: %s\n  err:  %v", c.stmt, err)
+			}
+		})
+	}
+}

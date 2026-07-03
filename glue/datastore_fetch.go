@@ -116,6 +116,13 @@ func DatastoreFetch(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 	plan := vars.Temps[o.Params[0].(int)].(Keyspacer)
 
 	keyspace := plan.Keyspace()
+	// A `FROM $1 AS d USE KEYS ...` (a positional/named-parameter keyspace) leaves
+	// the plan's keyspace nil -- n1k1 can't resolve a keyspace name at runtime.
+	// Fail cleanly rather than nil-deref down in keyspaceDir/openKeyspaceRecords.
+	if keyspace == nil {
+		yieldErr(fmt.Errorf("DatastoreFetch: unresolved keyspace (parameterized FROM not supported)"))
+		return
+	}
 
 	// The per-request GlueContext hosts the doc cache (persists across this fetch
 	// op's re-invocations by an outer nested-loop join). nil-tolerant: no cache then.

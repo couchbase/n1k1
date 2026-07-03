@@ -171,6 +171,12 @@ func NewGlueContext(now time.Time) *GlueContext {
 	return &GlueContext{IndexContext: &expression.IndexContext{}, now: now}
 }
 
+// convEvalContext is a non-nil, no-namedArgs GlueContext for conv-time constant
+// folding of LIMIT/OFFSET/window-frame expressions (see EvalExprInt64). It exists
+// so evaluating a stray parameterized expression there degrades to a clean
+// non-number rather than nil-derefing a typed-nil *GlueContext.
+var convEvalContext = NewGlueContext(time.Time{})
+
 func (c *GlueContext) Now() time.Time { return c.now }
 
 // Result collects a result row (stand-in for execution.Context.Result).

@@ -801,11 +801,22 @@ func EvalExpr(context *GlueContext, expr expression.Expression,
 
 func EvalExprInt64(context *GlueContext, expr expression.Expression,
 	parent value.Value, defval int64) (val int64) {
-	if expr != nil {
-		val, err := expr.Evaluate(parent, context)
-		if err == nil && val.Type() == value.NUMBER {
-			return val.(value.NumberValue).Int64()
-		}
+	if expr == nil {
+		return defval
+	}
+	// Conv-time callers (VisitLimit/VisitOffset/VisitOrder baking a LIMIT/OFFSET,
+	// window-frame bounds) pass a nil *GlueContext to fold a CONSTANT. A
+	// parameterized expression there (`LIMIT $n`) must NOT crash: a typed-nil
+	// *GlueContext still satisfies expression.Context, so Evaluate would call
+	// NamedParameter -> (*GlueContext)(nil).NamedArg -> nil-receiver deref.
+	// Substitute a non-nil empty context so such an expr fails cleanly to a
+	// non-number (-> defval) instead. Runtime callers pass a real context.
+	var ctx expression.Context = context
+	if context == nil {
+		ctx = convEvalContext
+	}
+	if v, err := expr.Evaluate(parent, ctx); err == nil && v.Type() == value.NUMBER {
+		return v.(value.NumberValue).Int64()
 	}
 
 	return defval

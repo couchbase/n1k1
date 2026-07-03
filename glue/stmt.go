@@ -121,6 +121,14 @@ func (g *Store) PlanStatementQP(s algebra.Statement, namespace string,
 	if _, ok := s.(*algebra.Prepare); ok {
 		return nil, &ErrUnsupported{Reason: "PREPARE not supported (no prepared-statement store)"}
 	}
+	// UDF statements (CREATE/DROP/EXECUTE FUNCTION) route through the functions
+	// registry subsystem, which n1k1's CE build doesn't initialize -- planner.Build
+	// nil-derefs in CreateFunction.Privileges (functions.go). Reject cleanly (same
+	// rationale as PREPARE) rather than crash.
+	switch s.(type) {
+	case *algebra.CreateFunction, *algebra.DropFunction, *algebra.ExecuteFunction:
+		return nil, &ErrUnsupported{Reason: "user-defined functions not supported (no functions registry)"}
+	}
 
 	var subquery bool
 	var stream bool

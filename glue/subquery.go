@@ -133,6 +133,18 @@ func (c *GlueContext) NamedArg(name string) (value.Value, bool) {
 }
 func (c *GlueContext) PositionalArg(position int) (value.Value, bool) { return nil, false }
 
+// EvaluateStatement runs a nested SQL++ statement string for functions that need
+// one (e.g. EXTRACTDDL queries `system:keyspaces`). n1k1 has no such executor
+// (and no systemstore), and the embedded IndexContext default returns (nil, 0,
+// nil) -- which callers like ExtractDDL.Evaluate then nil-deref (`v.Actual()`).
+// Return a clean error instead so those functions surface as unsupported rather
+// than crashing.
+func (c *GlueContext) EvaluateStatement(statement string, namedArgs map[string]value.Value,
+	positionalArgs value.Values, subquery, readonly, profileUdfExecTrees bool, funcKey string) (
+	value.Value, uint64, error) {
+	return nil, 0, fmt.Errorf("EvaluateStatement not supported (no nested-statement executor)")
+}
+
 // EvaluateSubquery runs a subquery SELECT and returns its rows as an array
 // value (N1QL represents a subquery expression's result as an array). This
 // satisfies algebra.Context so query's algebra.Subquery.Evaluate can call it.
