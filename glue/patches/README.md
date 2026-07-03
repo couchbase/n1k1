@@ -29,6 +29,19 @@ step (goyacc), not a patch file:
   the pool-slot swap was already atomic and a torn index only costs a slot miss
   (an extra alloc), never corruption. A **surgical diff** (apply with `patch -p1` /
   `git apply`), not a full-file drop-in, since `util/sync.go` is large and shared.
+- **`patch-04-query-planner-optdoccount-live.diff`** — make the CE
+  `planner/optDocCount` return a **live** keyspace document count (resolve the
+  qualified name via `datastore.GetKeyspace(...).Count()`) instead of the stock
+  `-1`. That count feeds the planner's count-driven guards -- chiefly the
+  correlated-subquery primary-scan guard in `build_scan.go` (`>1000 docs ->
+  NewSubqueryNumDocsExceeded`), which otherwise never fires because the CE stub
+  reports "no stats". n1k1's file datastore counts cheaply (a directory listing),
+  so this enables that guard WITHOUT the EE CBO dictionary / `UPDATE STATISTICS`:
+  a correlated subquery over a 5000-doc keyspace is refused at plan time instead
+  of running an O(N^2) scan. Only guards whose subquery correlates on the INNER
+  keyspace are plan-detectable (see `gsiSkipRun` in test/suite_gsi_test.go). NOT
+  full CBO -- every other cost/selectivity function in `optutil_ce.go` still
+  returns NOT_AVAIL; only doc count is provided. A **surgical diff** (`patch -p1`).
 
 ## Recipe (iteration scaffold)
 
@@ -43,10 +56,11 @@ rm -rf tmp/query-local && cp -R "$QDIR" tmp/query-local && chmod -R u+w tmp/quer
 go install golang.org/x/tools/cmd/goyacc@latest
 (cd tmp/query-local/parser/n1ql && "$(go env GOPATH)/bin/goyacc" n1ql.y && rm -f y.output)
 
-# 3. apply the source patches in order (01/02 are full-file drop-ins; 03 is a diff)
+# 3. apply the source patches in order (01/02 are full-file drop-ins; 03/04 are diffs)
 cp glue/patches/patch-01-query-system-stub.go.txt            tmp/query-local/system/systemStats.go
 cp glue/patches/patch-02-query-semantics-semchecker_ce.go.txt tmp/query-local/semantics/semchecker_ce.go
 (cd tmp/query-local && patch -p1 < "$OLDPWD/glue/patches/patch-03-query-util-sync-lockless-atomic.diff")
+(cd tmp/query-local && patch -p1 < "$OLDPWD/glue/patches/patch-04-query-planner-optdoccount-live.diff")
 
 # 4. point go.mod at the local copy
 go mod edit -replace github.com/couchbase/query=./tmp/query-local
@@ -72,7 +86,8 @@ These patches live as real git commits in a published fork of couchbase/query:
     github.com/couchbase/n1k1-query
       main          - verbatim pinned snapshot (query @ v0.0.0-20260627002010)
       n1k1-pure-go  - main + patches: gen parser, patch-01 system stub,
-                      patch-02 semchecker, patch-03 LocklessPool atomic
+                      patch-02 semchecker, patch-03 LocklessPool atomic,
+                      patch-04 optDocCount live count
 
 The fork keeps its go.mod module path as github.com/couchbase/query (so its
 internal imports and n1k1's `query/...` imports are unchanged); only the repo

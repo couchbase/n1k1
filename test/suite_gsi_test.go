@@ -37,14 +37,17 @@ var gsiExpectedNonPass = map[string]string{
 	"case_gsi_unnest.json[7]":               "mega-order-limit",
 }
 
-// gsiSkipRun names gsi cases n1k1 can parse+plan but must NOT execute: they test
-// cbq's correlated-subquery resource guard ("keyspace cannot have more than 1000
-// documents without appropriate secondary index"), which n1k1 doesn't implement.
-// Both run a correlated subquery over the ~5000-doc `customer` keyspace once per
-// outer row -- O(N^2), effectively a hang -- so we skip rather than attempt them.
+// gsiSkipRun names gsi cases n1k1 can parse+plan but must NOT execute. subqexp[1]
+// tests cbq's correlated-subquery resource guard ("keyspace cannot have more than
+// 1000 documents without appropriate secondary index"): its subquery has no
+// predicate on the INNER keyspace (`WHERE d.a = 1` references only the outer), so
+// the planner doesn't classify it as an in-correlated-subquery primary scan and
+// the plan-time guard (build_scan.go) never fires -- it would run a full ~5000-doc
+// `customer` scan per outer row (O(N^2), a hang). subqexp[0] (whose subquery DOES
+// correlate on the inner, `d.a = d1.a`) now errors at plan time via patch-04 (a
+// live optDocCount feeding that guard), so it's no longer skipped.
 var gsiSkipRun = map[string]string{
-	"case_gsi_subqexp.json[0]": "correlated-subquery doc-limit guard (unimplemented); O(N^2) over customer",
-	"case_gsi_subqexp.json[1]": "correlated-subquery doc-limit guard (unimplemented); O(N^2) over customer",
+	"case_gsi_subqexp.json[1]": "correlated-subquery doc-limit guard not plan-detectable (no inner predicate); O(N^2) over customer",
 }
 
 var gsiGroupWhy = map[string]string{

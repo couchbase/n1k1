@@ -1,0 +1,45 @@
+diff --git a/planner/optutil_ce.go b/planner/optutil_ce.go
+--- a/planner/optutil_ce.go
++++ b/planner/optutil_ce.go
+@@ -11,6 +11,8 @@
+ package planner
+ 
+ import (
++	"strings"
++
+ 	"github.com/couchbase/query/algebra"
+ 	"github.com/couchbase/query/datastore"
+ 	"github.com/couchbase/query/errors"
+@@ -23,8 +25,31 @@
+ 	// no-op
+ }
+ 
++// optDocCount returns a keyspace's document count for the planner's count-driven
++// decisions. n1k1 patch (patch-04): the stock CE stub returns -1 (no stats), which
++// disables e.g. the correlated-subquery primary-scan guard in build_scan.go
++// (>1000 docs -> NewSubqueryNumDocsExceeded). n1k1's file datastore can count
++// cheaply (a directory listing), so return a LIVE count -- enabling those guards
++// without the EE CBO dictionary / UPDATE STATISTICS. `keyspace` is a qualified
++// name (namespace:bucket[.scope.collection]); split to parts, resolve, Count().
++// Best-effort: -1 on any miss, which restores the original guard-disabled behavior.
+ func optDocCount(keyspace string, useCBO bool) int64 {
+-	return -1
++	if keyspace == "" {
++		return -1
++	}
++	parts := strings.FieldsFunc(keyspace, func(r rune) bool { return r == ':' || r == '.' })
++	if len(parts) == 0 {
++		return -1
++	}
++	ks, err := datastore.GetKeyspace(parts...)
++	if err != nil || ks == nil {
++		return -1
++	}
++	cnt, err := ks.Count(datastore.NULL_QUERY_CONTEXT)
++	if err != nil {
++		return -1
++	}
++	return cnt
+ }
+ 
+ func optFilterSelectivity(filter *base.Filter, advisorValidate bool, context *PrepareContext) {
