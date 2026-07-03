@@ -185,6 +185,19 @@ func (c *cli) dot(line string) bool {
 		default:
 			fmt.Fprintf(c.stderr, "usage: .echo [on|off] (currently %s)\n", onOff(c.echo))
 		}
+	case ".bail":
+		// Stop running input (a -f/.read script, stdin, or the REPL) on the first
+		// statement error, instead of plowing on. sqlite/duckdb call this .bail.
+		switch strings.ToLower(strings.TrimSpace(arg)) {
+		case "":
+			fmt.Fprintf(c.stderr, "bail %s\n", onOff(c.bail))
+		case "on":
+			c.bail = true
+		case "off":
+			c.bail = false
+		default:
+			fmt.Fprintf(c.stderr, "usage: .bail [on|off] (currently %s)\n", onOff(c.bail))
+		}
 	case ".read":
 		c.readFile(arg)
 	case ".output":
@@ -224,6 +237,7 @@ func (c *cli) printHelp() {
 		".maxrows <n>          box: cap rows shown (0 = all; negative = last |n| rows)",
 		".maxwidth <n|auto>    box: cap column width (0 = uncapped; auto = fit terminal)",
 		".read <file>          run statements/dot-commands from a file",
+		".bail " + c.helpOpts(onOff(c.bail), "on", "off") + "        stop on the first statement error (handy for scripts)",
 		".echo " + c.helpOpts(onOff(c.echo), "on", "off") + "        echo each input line as it's read (handy for scripts)",
 		".print <text>         emit text to stderr (e.g. a script progress marker)",
 		".output [<file>]      send results to a file, or back to stdout if omitted",

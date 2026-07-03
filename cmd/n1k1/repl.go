@@ -157,6 +157,10 @@ func (c *cli) feed(line string) bool {
 	stmts, rest := cmd.SplitStatements(c.buf.String())
 	for _, s := range stmts {
 		c.exec(s)
+		if c.bail && c.failed { // .bail on: stop the input loop on first error
+			c.buf.Reset()
+			return true
+		}
 	}
 	c.buf.Reset()
 	// Carry the remainder forward only if it holds real SQL (or an unterminated

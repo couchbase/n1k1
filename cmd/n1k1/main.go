@@ -299,6 +299,8 @@ type cli struct {
 	verbose   int // 0=off, 1=show query plans, 2=+timing (see .verbose)
 	explain   bool
 	echo      bool // echo each input line as it's read (see .echo)
+	bail      bool // stop the input loop on the first statement error (see .bail)
+	failed    bool // transient: the last exec'd statement errored (drives .bail)
 	stats     bool // per-operator counters, live + a footer (see .stats, DESIGN-stats.md)
 	maxRows   int  // box: 0 = all; >0 = head+tail; <0 = last |n| rows
 	maxWidth  int  // box: per-column cap; 0 = uncapped; <0 = auto (fit terminal)

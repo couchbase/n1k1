@@ -35,6 +35,7 @@ func (c *cli) exec(stmt string) {
 		return
 	}
 	stmt = strings.TrimSpace(stmt)
+	c.failed = false // reset; set below if this statement errors (drives .bail)
 
 	// .stats / -stats: collect per-operator counters, and on a TTY draw them live
 	// (throttled, in place, to stderr) while the query runs. Reset afterwards so a
@@ -57,6 +58,7 @@ func (c *cli) exec(stmt string) {
 	}
 
 	if err != nil {
+		c.failed = true // .bail on stops the input loop after this
 		var unsup *glue.ErrUnsupported
 		if errors.As(err, &unsup) {
 			fmt.Fprintf(c.stderr, "%s%s\n", c.icon("🚧 "), c.style.Yellow("Unsupported: "+unsup.Reason))
