@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"unsafe"
 
 	"github.com/buger/jsonparser"
 
@@ -90,7 +91,9 @@ func (c *GlueContext) fetchCachePut(dir, key string, b []byte) []byte {
 		m = make(map[string][]byte)
 		c.fetchCache[dir] = m
 	}
-	m[key] = cp
+	// Clone the key: callers may pass an unsafe zero-copy key aliasing a batch
+	// buffer (see DatastoreFetch), so the map must own a stable copy.
+	m[strings.Clone(key)] = cp
 	c.fetchCacheN += len(cp)
 	return cp
 }
@@ -205,14 +208,25 @@ func DatastoreFetch(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 		keys = keys[:0]
 
 		for _, vals := range batch {
-			// The incoming ^id is a canonical-JSON string (e.g. `"key"`); decode it
-			// with jsonparser (the engine's parser) rather than encoding/json, so the
-			// native path pulls in no standard-JSON machinery. GetString with no path
-			// keys decodes the root string token (quotes + escapes). A non-JSON-string
-			// (BINARY key) falls back to the raw bytes.
-			key, err := jsonparser.GetString(vals[0])
-			if err != nil {
-				key = string(vals[0]) // BINARY key.
+			// Decode the ^id (a canonical-JSON string, e.g. `"key"`) to the plain doc
+			// key. This mirrors jsonparser.GetString's logic, but on the common
+			// no-escape fast path returns an UNSAFE zero-copy string aliasing vals[0]'s
+			// bytes -- avoiding the per-row copy GetString makes there (string(v)),
+			// which was ~60% of this query's allocation count. The alias is valid only
+			// while this batch lives (until this callback returns), which covers every
+			// use below (keys, the fetch-cache *lookups*, and yieldDoc's AppendQuote
+			// which copies). The two spots that *retain* a key past the batch --
+			// fetchCachePut and the cbq-fallback cbqKeys -- strings.Clone it. BINARY and
+			// escaped keys take safe, owning fallbacks.
+			var key string
+			v, dt, _, e := jsonparser.Get(vals[0])
+			switch {
+			case e != nil || dt != jsonparser.String:
+				key = string(vals[0]) // BINARY / non-string key: owned copy.
+			case bytes.IndexByte(v, '\\') >= 0:
+				key, _ = jsonparser.ParseString(v) // escaped: unescape (allocates; rare).
+			case len(v) > 0:
+				key = unsafe.String(unsafe.SliceData(v), len(v)) // zero-copy alias.
 			}
 
 			keys = append(keys, key)
@@ -294,8 +308,10 @@ func DatastoreFetch(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 			}
 
 			// Neither native path applies (a synthetic keyspace, or a subpath
-			// projection over classic <key>.json): defer to cbq's Fetch.
-			cbqKeys = append(cbqKeys, key)
+			// projection over classic <key>.json): defer to cbq's Fetch. Clone the
+			// key -- it may be an unsafe batch-aliasing string, and cbq's Fetch (and
+			// fetchMap) can retain it past this batch.
+			cbqKeys = append(cbqKeys, strings.Clone(key))
 		}
 
 		if len(cbqKeys) == 0 {
