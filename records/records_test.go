@@ -162,16 +162,33 @@ func TestFileRespectsScanFilter(t *testing.T) { // -scan lockdown reaches single
 	}
 }
 
-func TestWalkOptionsDescribe(t *testing.T) {
-	if got := AllModes().Describe(); got != "all formats · gzip · recurse" {
-		t.Errorf("AllModes().Describe() = %q", got)
+func TestWalkOptionsSpec(t *testing.T) {
+	// The default is "all"; ParseModes canonicalizes aliases and preserves order.
+	if got := AllModes().Spec; got != "all" {
+		t.Errorf("AllModes().Spec = %q, want \"all\"", got)
 	}
-	o, err := ParseModes("json,csv,gzip,recurse")
-	if err != nil {
-		t.Fatal(err)
+	cases := map[string]string{
+		"json,csv,gzip":     "json,csv,gzip",
+		"ndjson,gz":         "jsonl,gzip",  // aliases -> primary tokens
+		"gzip,json,JSON":    "gzip,json",   // deduped, case-insensitive
+		" tsv , recursive ": "tsv,recurse", // trimmed, alias
+		"":                  "all",         // empty -> the default
 	}
-	if got := o.Describe(); got != "csv,json,jsons · gzip · recurse" {
-		t.Errorf("Describe() = %q", got)
+	for in, want := range cases {
+		o, err := ParseModes(in)
+		if err != nil {
+			t.Fatalf("ParseModes(%q): %v", in, err)
+		}
+		if o.Spec != want {
+			t.Errorf("ParseModes(%q).Spec = %q, want %q", in, o.Spec, want)
+		}
+		// Spec must round-trip: re-parsing it yields the same Spec.
+		o2, err := ParseModes(o.Spec)
+		if err != nil {
+			t.Errorf("Spec %q does not re-parse: %v", o.Spec, err)
+		} else if o2.Spec != o.Spec {
+			t.Errorf("Spec %q re-parsed to %q (not stable)", o.Spec, o2.Spec)
+		}
 	}
 }
 
@@ -802,10 +819,6 @@ func TestModesMatchParseModes(t *testing.T) {
 		case "gzip":
 			if o, _ := ParseModes("gzip"); !o.AllowGzip {
 				t.Error("gzip should set AllowGzip")
-			}
-		case "zstd":
-			if o, _ := ParseModes("zstd"); !o.AllowZstd {
-				t.Error("zstd should set AllowZstd")
 			}
 		case "recurse":
 			if o, _ := ParseModes("recurse"); !o.Recurse {

@@ -483,6 +483,12 @@ type WalkOptions struct {
 	AllowGzip bool            // permit a .gz compression suffix
 	AllowZstd bool            // permit a .zst compression suffix (not yet decodable)
 
+	// Spec is the canonical, reusable -formats/.formats token string that produced
+	// this WalkOptions (e.g. "json,csv,gzip", or "all" for the default). Set by
+	// AllModes/ParseModes; it round-trips (unlike a raw extension list, since exts
+	// like .jsons/.ndjson aren't themselves valid tokens). Shown by `.formats`.
+	Spec string
+
 	// Meta controls whether a _meta sub-object (path/name/ext/size/mtime) is
 	// added to records (see meta.go). PathPrefix is prepended to each record's
 	// _meta.path (e.g. "<namespace>/<keyspace>") so it's dir-relative.
@@ -493,36 +499,7 @@ type WalkOptions struct {
 // AllModes returns the flexible default: recurse, all supported formats, gzip on.
 // n1k1 uses this unless the user restricts scanning via --modes (see ParseModes).
 func AllModes() WalkOptions {
-	return WalkOptions{Recurse: true, Formats: nil, AllowGzip: true, AllowZstd: false}
-}
-
-// Describe renders the enabled formats/modes as a human-readable summary for the
-// .formats CLI command: "all formats" (or a sorted extension list) plus the
-// gzip/zstd/recurse flags. Not a round-trippable token list.
-func (o WalkOptions) Describe() string {
-	var parts []string
-	if o.Formats == nil {
-		parts = append(parts, "all formats")
-	} else if len(o.Formats) == 0 {
-		parts = append(parts, "(no formats)")
-	} else {
-		exts := make([]string, 0, len(o.Formats))
-		for e := range o.Formats {
-			exts = append(exts, strings.TrimPrefix(e, "."))
-		}
-		sort.Strings(exts)
-		parts = append(parts, strings.Join(exts, ","))
-	}
-	if o.AllowGzip {
-		parts = append(parts, "gzip")
-	}
-	if o.AllowZstd {
-		parts = append(parts, "zstd")
-	}
-	if o.Recurse {
-		parts = append(parts, "recurse")
-	}
-	return strings.Join(parts, " · ")
+	return WalkOptions{Recurse: true, Formats: nil, AllowGzip: true, AllowZstd: false, Spec: "all"}
 }
 
 // ParseModes builds a restrictive WalkOptions from a comma-separated mode list
@@ -546,6 +523,16 @@ func ParseModes(csv string) (WalkOptions, error) {
 		return AllModes(), nil
 	}
 	opts := WalkOptions{Formats: map[string]bool{}}
+	// Record the canonical primary token per recognized input, deduped and in the
+	// order given, so opts.Spec round-trips (e.g. "ndjson,gz" -> "jsonl,gzip").
+	var spec []string
+	seen := map[string]bool{}
+	add := func(canon string) {
+		if !seen[canon] {
+			seen[canon] = true
+			spec = append(spec, canon)
+		}
+	}
 	for _, tok := range strings.Split(csv, ",") {
 		switch strings.ToLower(strings.TrimSpace(tok)) {
 		case "":
@@ -554,58 +541,82 @@ func ParseModes(csv string) (WalkOptions, error) {
 			return AllModes(), nil // everything (flexible), same as empty
 		case "json":
 			opts.Formats[".json"], opts.Formats[".jsons"] = true, true
+			add("json")
 		case "jsonl", "ndjson":
 			opts.Formats[".jsonl"], opts.Formats[".ndjson"] = true, true
+			add("jsonl")
 		case "csv":
 			opts.Formats[".csv"] = true
+			add("csv")
 		case "tsv":
 			opts.Formats[".tsv"] = true
+			add("tsv")
 		case "extract":
 			for ext := range extractors { // every registered extract format
 				opts.Formats[ext] = true
 			}
+			add("extract")
 		case "doc", "docs", "office":
 			opts.Formats[".pdf"], opts.Formats[".docx"] = true, true
 			opts.Formats[".xlsx"], opts.Formats[".pptx"] = true, true
+			add("doc")
 		case "text":
 			opts.Formats[".txt"], opts.Formats[".log"] = true, true
 			opts.Formats[".md"], opts.Formats[".markdown"], opts.Formats[".rtf"] = true, true, true
+			add("text")
 		case "image", "img":
 			opts.Formats[".png"], opts.Formats[".jpg"], opts.Formats[".jpeg"] = true, true, true
+			add("image")
 		case "video":
 			opts.Formats[".mp4"], opts.Formats[".mov"] = true, true
+			add("video")
 		case "pdf":
 			opts.Formats[".pdf"] = true
+			add("pdf")
 		case "docx":
 			opts.Formats[".docx"] = true
+			add("docx")
 		case "xlsx":
 			opts.Formats[".xlsx"] = true
+			add("xlsx")
 		case "pptx":
 			opts.Formats[".pptx"] = true
+			add("pptx")
 		case "txt":
 			opts.Formats[".txt"], opts.Formats[".log"] = true, true
+			add("txt")
 		case "md", "markdown":
 			opts.Formats[".md"], opts.Formats[".markdown"] = true, true
+			add("md")
 		case "rtf":
 			opts.Formats[".rtf"] = true
+			add("rtf")
 		case "png":
 			opts.Formats[".png"] = true
+			add("png")
 		case "jpg", "jpeg":
 			opts.Formats[".jpg"], opts.Formats[".jpeg"] = true, true
+			add("jpg")
 		case "mp4":
 			opts.Formats[".mp4"] = true
+			add("mp4")
 		case "mov":
 			opts.Formats[".mov"] = true
+			add("mov")
 		case "gzip", "gz":
 			opts.AllowGzip = true
+			add("gzip")
 		case "zstd", "zst":
 			opts.AllowZstd = true
+			add("zstd")
 		case "recurse", "recursive":
 			opts.Recurse = true
+			add("recurse")
 		default:
 			return WalkOptions{}, fmt.Errorf("records: unknown scan mode %q", tok)
 		}
 	}
+	opts.Spec = strings.Join(spec, ",")
 	return opts, nil
 }
 
@@ -634,7 +645,6 @@ func Modes() []ModeInfo {
 		{"image", []string{"img"}, []string{".png", ".jpg", ".jpeg"}, "extract", "images (metadata only)"},
 		{"video", nil, []string{".mp4", ".mov"}, "extract", "video files (metadata only)"},
 		{"gzip", []string{"gz"}, nil, "modifier", "also read .gz-compressed files (transparent)"},
-		{"zstd", []string{"zst"}, nil, "modifier", "permit a .zst suffix (not yet decoded)"},
 		{"recurse", []string{"recursive"}, nil, "modifier", "descend into subdirectories"},
 		{"all", nil, nil, "meta", "everything (the default when -formats is unset)"},
 	}

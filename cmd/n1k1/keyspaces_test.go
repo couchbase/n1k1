@@ -36,8 +36,8 @@ func TestDotFormatsPersists(t *testing.T) {
 	if f, err := glue.CatalogFormats(dir); err != nil || f != "json,csv" {
 		t.Errorf("persisted formats = %q err %v, want json,csv", f, err)
 	}
-	if !strings.Contains(glue.ScanWalkOptions.Describe(), "csv") {
-		t.Errorf("live formats not updated: %s", glue.ScanWalkOptions.Describe())
+	if !strings.Contains(glue.ScanWalkOptions.Spec, "csv") {
+		t.Errorf("live formats not updated: %s", glue.ScanWalkOptions.Spec)
 	}
 }
 

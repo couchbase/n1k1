@@ -90,11 +90,11 @@ func (c *cli) dot(line string) bool {
 			c.printFormats()
 		} else if opts, err := records.ParseModes(a); err != nil {
 			fmt.Fprintf(c.stderr, "usage: .formats [all|json|jsonl|csv|tsv|extract|doc|text|image|video|gzip|recurse]  (currently %s)\n",
-				glue.ScanWalkOptions.Describe())
+				glue.ScanWalkOptions.Spec)
 		} else {
 			opts.Meta = glue.ScanWalkOptions.Meta // keep the current .meta setting
 			glue.ScanWalkOptions = opts
-			fmt.Fprintf(c.stderr, "formats: %s\n", glue.ScanWalkOptions.Describe())
+			fmt.Fprintf(c.stderr, "formats: %s\n", glue.ScanWalkOptions.Spec)
 			// Persist to the datastore's catalog.json so it's remembered next open
 			// (directory datastores only; a single-file arg has no sidecar of its own).
 			if fi, serr := os.Stat(c.dir); serr == nil && fi.IsDir() {
@@ -284,7 +284,7 @@ func (c *cli) helpOpts(current string, opts ...string) string {
 // reference of every supported format/mode token (with its file extensions and a
 // short explanation), so users can see what to pass to restrict scanning.
 func (c *cli) printFormats() {
-	fmt.Fprintf(c.stderr, "formats: %s\n", glue.ScanWalkOptions.Describe())
+	fmt.Fprintf(c.stderr, "formats: %s\n", glue.ScanWalkOptions.Spec)
 	fmt.Fprintln(c.stderr, "\nsupported (comma-separate to restrict, e.g. -formats json,csv,gzip):")
 
 	modes := records.Modes()
