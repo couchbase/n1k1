@@ -114,6 +114,14 @@ func (g *Store) PlanStatement(s algebra.Statement, namespace string,
 func (g *Store) PlanStatementQP(s algebra.Statement, namespace string,
 	namedArgs map[string]value.Value, positionalArgs value.Values) (
 	*plan.QueryPlan, error) {
+	// PREPARE has no home in n1k1 (no prepared-statement store to save into), and
+	// planner.Build nil-derefs on a *algebra.Prepare -- its prepare path assumes
+	// infrastructure the CE build lacks. Reject it cleanly here so it surfaces as a
+	// graceful "unsupported", not a recovered "panic:" (an engine-bug signal).
+	if _, ok := s.(*algebra.Prepare); ok {
+		return nil, &ErrUnsupported{Reason: "PREPARE not supported (no prepared-statement store)"}
+	}
+
 	var subquery bool
 	var stream bool
 

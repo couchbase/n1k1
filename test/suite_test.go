@@ -708,12 +708,12 @@ var expectedNonPass = map[string]string{
 	"case_system_completed.json[0]": "system-namespace",
 	"case_system_completed.json[1]": "system-namespace",
 	"case_system_completed.json[2]": "system-namespace",
-	"case_system_prepareds.json[0]": "system-namespace", // PREPARE ... FROM system:prepareds (panics on nil systemstore)
 	"case_system_prepareds.json[1]": "system-namespace",
 	"case_system_prepareds.json[3]": "system-namespace",
 	"case_system_prepareds.json[4]": "system-namespace",
 
 	// Prepared-statement EXECUTE.
+	"case_system_prepareds.json[0]": "prepared", // PREPARE ... (rejected in PlanStatementQP)
 	"case_system_prepareds.json[2]": "prepared",
 	"case_prepare.json[4]":          "prepared",
 
@@ -725,6 +725,6 @@ var expectedNonPass = map[string]string{
 var groupWhy = map[string]string{
 	"resource-guard":   "engine refuses huge generator builtins (ARRAY_RANGE/REPEAT ~1e10)",
 	"system-namespace": "system: namespace needs a systemstore (intentionally nil; see FileStore)",
-	"prepared":         "prepared-statement EXECUTE (plan.Discard) not supported",
+	"prepared":         "prepared statements not supported (no prepared-statement store): PREPARE is rejected in PlanStatementQP -- planner.Build nil-derefs on it; EXECUTE (plan.Discard) also unsupported",
 	"arrayagg-order":   "ARRAY_AGG element order is undefined in N1QL; ordering differs (not fixable)",
 }
