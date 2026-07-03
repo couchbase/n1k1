@@ -121,21 +121,48 @@ navigation, `TYPE()`/`IS_BINARY`, and the ~320 remaining scalar functions
 ## The `exprTree` fallback's per-row cost (profiling, 2026-07)
 
 The `exprTree` fallback (`glue/expr.go:ExprTree`) is the expensive path. For **every
-row** it calls `ConvertVals.Convert` to rebuild the row's `base.Vals` (JSON byte
-slices, one per label) into a cbq `value.Value` — an `objectValue`, each label
-wrapped via `value.NewParsedValue` + `SetField` — then `expr.Evaluate` + `WriteJSON`
-back to bytes. This is the byte-model ↔ value-model bridge, and it allocates
-O(row size) per row. So the cost of a delegated expression is not just slower
-evaluation; it's the Convert round-trip on the whole row.
+row** its closure calls `ConvertVals.Convert` to rebuild the row's `base.Vals` (JSON
+byte slices, one per label) into a cbq `value.Value` — an `objectValue`, each label
+wrapped via `value.NewParsedValue` + `SetField` — then `expr.Evaluate(v)` and
+`vResult.WriteJSON(&buf)` back to bytes. This is the byte-model ↔ value-model bridge:
+the cost of a delegated expression isn't just slower evaluation, it's the
+`Convert` round-trip that materializes the whole row into an object.
+
+**Invocation path:** `Session.Run` → cbq plan → `glue.Conv` emits a `base.Op` whose
+`Params` hold `["exprTree", <expression.Expression>]` for delegated exprs →
+`op_project.go:MakeProjectFunc` → `engine.MakeExprFunc` dispatches
+`ExprCatalog["exprTree"]` → `glue.ExprTree`. `ExprTree` first tries
+`ExprTreeOptimize` (compiles `Constant`→`json`, `Field`→`labelPath`,
+arithmetic/compare/CASE→native, **no Convert**); only if the whole tree isn't
+recognized (or the row is `scoped`, i.e. a correlated subquery) does it fall to the
+per-row Convert closure.
 
 **Profiled query** (via `-profile-cpu`/`-profile-mem`):
 `SELECT count(*) FROM (SELECT 1 FROM orders o1,o2,o3,o4) c` over 64-doc `orders`
-→ 64⁴ = 16.8M join rows. Result: **10.4 GB allocated, 121.7 M allocs, ~1400 GCs,
-~14 s.** The CPU profile is **~86% Go scheduler/GC** (`pthread_cond_signal` via
-goroutine wake-ups) — a *symptom* of the allocation rate, not real work. Allocation
-by site: `objectValue.setField` 43.6%, `go_json.SimpleUnmarshal` 20.9%,
-`ConvertVals.Convert` 7.5 GB cumulative — i.e. essentially all of it is the Convert
-bridge materializing documents.
+→ 64⁴ = 16.8M join rows. Baseline: **10.4 GB allocated, 121.7 M allocs, ~1600 GCs,
+~14.5 s.** The CPU profile is **~86% Go scheduler/GC** (`pthread_cond_signal` via
+goroutine wake-ups) — a *symptom* of the allocation rate, not real work.
+
+**Cost attribution** — an env-gated probe in the `ExprTree` closure
+(`HACK_EXPR=skip` returns a preallocated constant with no work; `=nowrite` does
+Convert+Evaluate but skips WriteJSON) isolates each stage:
+
+| probe | alloc | allocs | GCs | time |
+|---|---|---|---|---|
+| baseline (Convert+Evaluate+WriteJSON) | 10.4 GB | 121.7 M | 1617 | 14.6 s |
+| `nowrite` (Convert+Evaluate only) | 10.3 GB | 113.3 M | 1599 | 12.2 s |
+| `skip` (none of the fallback) | **2.8 GB** | **63.0 M** | **433** | **8.9 s** |
+
+- **`Convert`+`Evaluate` (building the objectValue) = 7.5 GB / 50 M allocs** — the
+  allocation bulk (`objectValue.setField` 43.6%, `go_json.SimpleUnmarshal` 20.9%).
+- **`WriteJSON` ≈ 0.1 GB** (it writes into a reused `buf`) but ~2.4 s of CPU.
+- **Skeleton** (join fan-out, fetch, group, `ValsDeepCopy`) = **2.8 GB / 8.9 s** —
+  irreducible for 16.8M cross-join rows.
+
+So the fallback is **73% of the bytes (7.6 GB)** and 39% of the time — and the
+allocation is **`Convert` building the object, not `WriteJSON`.** (This corrects an
+earlier guess that WriteJSON would force materialization and make laziness moot: it
+doesn't — WriteJSON barely allocates.)
 
 **What is already optimized (don't re-do these):**
 - `SELECT 1` (a constant projection) → a `Constant` node → `ExprTreeOptimize`
@@ -144,35 +171,48 @@ bridge materializing documents.
 - `COUNT(*)` → its star operand has `operands[0] == nil`, so `VisitGroup`
   (`glue/conv.go`) already projects the constant `["json","true"]` as the aggregate
   input and the aggregate just counts. **No per-row Convert for `COUNT(*)`.**
-  (Verified: in the profiled query `count(*)` reached Convert exactly once — the
-  final result projection — not 16.8M times. A "special-case COUNT(\*)"
-  optimization is therefore unnecessary; it already exists.)
+  (Verified: `count(*)` reached Convert exactly once — the final result projection —
+  not 16.8M times. A "special-case COUNT(\*)" optimization is unnecessary; it exists.)
 
-**Where the 16.8M Converts actually came from:** a whole-row **`self` projection**.
-`FROM (subquery) AS x` wraps each subquery row under its alias via `VisitAlias`,
-which emits `expression.NewSelf()` (the only source of `self` in conversion). `self`
-= the entire multi-label joined row; `ExprTreeOptimize` can't reduce it to a label
-path, so it falls through to `Convert` and rebuilds the full 8-label object every
-row — even though the outer `count(*)` discards the value.
+**Where the 16.8M Converts actually came from: a whole-row `self` projection.**
+`expression.Self` = "the entire current item/row as one value" (not a specific
+field). `ExprTreeOptimize` can't reduce it to a label path, so a `self` projection
+always falls to Convert and rebuilds the full multi-label object per row. It's
+emitted by:
+- **`SELECT *`** — e.g. `SELECT * FROM orders o1` projects `self`.
+- **`FROM (subquery) AS x`** — the derived-table row-wrap (`VisitAlias`, the only
+  source of `expression.NewSelf()`) packages each subquery row under its alias via a
+  `self` projection. So `SELECT count(*) FROM (SELECT 1 FROM a,b,c,d) c` builds &
+  serializes 16.8M full rows via `self`, only for `count(*)` to discard the values.
+  (A plain identifier like `SELECT o1 FROM orders o1` is a field access `` `o1` ``,
+  *not* self; `SELECT 1` is a constant. Both differ from `self`.)
 
 **Levers tried that did NOT help (measured), and why:**
 - *`ValsDeepCopy` prealloc reuse* (`base/stage.go`): a `:=` shadowed the outer
   `preallocVals`, so the recycled slice never reached `ValsDeepCopy` (it always
   `make`d). Fixed (a real latent bug) — but **inert here**: the recycled-buffer
   reuse depends on the consumer recycling a batch before the producer re-acquires,
-  and with `batchChSize=0` the producer wins that race, so both the val and vals
-  buffers are re-`make`d ~per row regardless of the shadow.
+  and with `batchChSize=0` the producer wins that race, so both buffers are
+  re-`make`d ~per row regardless of the shadow.
 - *Enlarging the `BatchCh` buffer* (`batchChSize` 0→4→…→256 in
   `glue/datastore_fetch.go`): allocation **count stayed flat**; larger buffers only
   keep more batches in flight (10.4 → 12.0 GB, more GCs). Reuse still never engages.
 
-**The lever that would help — on-demand (lazy) `Convert`.** Return a `value.Value`
-that materializes a field only when accessed, so `count(*)` (accesses nothing) and
-whole-row/field-less projections that get discarded stop paying to build the object.
-This is more general than any per-op special-case (it subsumes the `self`-projection
-case too), but needs a lazy multi-label `value.Value` implementation
-(`Field`/`Fields`/`WriteJSON`/`Type`/`Actual`/annotations…) — correctness-sensitive,
-tracked as future work.
+**Levers that would help (ranked for this count-over-join shape):**
+1. *Elide values the consumer discards* — when `count(*)` (or any values-agnostic
+   consumer) sits over a subquery, don't project/serialize the rows at all. Biggest
+   win here, but it's cross-op (planner/pushdown) work.
+2. *A `self`-projection byte path* — when a projection expr is exactly
+   `expression.Self` (and not scoped), assemble the output JSON object directly from
+   the input label bytes, skipping Convert+Evaluate+WriteJSON. Bounded; analogous to
+   the existing `labelPath`/`json` fast paths.
+3. *Lazy/on-demand `Convert`* — return a `value.Value` that materializes a field
+   only on access **and serializes JSON straight from the retained label bytes**
+   (the probe shows WriteJSON needn't build the map). Most general (helps
+   field-selective queries like `WHERE a.x > 5` too), but needs a lazy multi-label
+   `value.Value` impl (`Field`/`Fields`/`WriteJSON`/`Type`/`Actual`/annotations,
+   plus the correlated-subquery scope-wrap which calls `Actual()`) —
+   correctness-sensitive, tracked as future work.
 
 ## The universe & the gap
 
