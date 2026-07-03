@@ -432,12 +432,24 @@ read-copy itself (below). The read technique is the *last* lever, not the first.
 But it only removes the ~120 MB read-copy above (not the boxing/parse/locate cost),
 and it has sharp edges:
 
-- **Lifetime / SIGBUS.** An mmap `[]byte` is valid only while mapped; a `base.Val`
-  subslice that outlives the mapping (retained into a join buffer, a GROUP BY map,
-  an ORDER BY heap) dangles into unmapped memory — a **segfault, not a nil-panic**.
-  n1k1 deep-copies across `Stage` actor boundaries but not within a single-goroutine
-  pipeline, so mmap means keeping a pool of mappings alive for the whole query and
-  unmapping at the end.
+- **Lifetime / SIGBUS — bounded by an existing contract.** An mmap `[]byte` is
+  valid only while mapped, so a retained `base.Val` subslice would dangle into
+  unmapped memory (a **segfault, not a nil-panic**). But n1k1's `YieldVals` contract
+  *already* says a consumer "should copy any inputs it wants to keep, because the
+  provided slices might be reused by future invocations" (`base/base.go`), and it is
+  **load-bearing today** — the scan yields sub-slices of one reused per-row buffer
+  (`lzValsScan[:0]`) and `Stage` deep-copies (`ValsDeepCopy`) at actor boundaries.
+  So anything that *retains* data (a join build side, a GROUP BY map, an ORDER BY
+  heap, a cross-actor batch) already holds a **copy**, not the borrowed bytes.
+  Consequence: a mapping only has to outlive the **scan of its own file** (until the
+  last yield for that file returns), not the whole query — unmap at end-of-scan is
+  safe *as long as the contract is honored*. The residual risk is narrower than it
+  first looks: a contract **violation** (an op that keeps a borrowed slice without
+  copying) is a silent data-corruption bug *today* (the reused buffer clobbers it on
+  the next row); under mmap the same latent bug becomes a **delayed SIGBUS at
+  unmap**. So mmap mostly changes that bug class's failure mode (wrong-results →
+  crash) rather than adding an architectural burden — worth a hardening/`-race`-style
+  pass over retention sites, not a redesign.
 - **Bad for large / compressed / container files.** mmap suits *uncompressed,
   byte-addressable, partially-read* files. `*.jsonl.gz` / `.zst` (§3) hand you the
   **compressed** bytes — you must stream-decompress into a buffer anyway, so mmap
