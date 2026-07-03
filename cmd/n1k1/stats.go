@@ -324,6 +324,26 @@ func statsAbout() []string {
 //	      datastore-scan-index                     64/64
 //	      datastore-scan-index                     64/64
 //	    datastore-scan-index                       64/64
+//
+// displayDepths returns each op's indentation depth for the table: the number of
+// *shown* ancestors (ops whose tree id is a path-prefix of this one). Nesting thus
+// reflects the operators actually in the table -- uncounted intermediate ops
+// (project, sequence, ...) don't inflate the indent, which otherwise jumps by
+// several levels between, say, a group and the join beneath it. s.Ops is pre-order,
+// so ancestors precede descendants and a simple id-prefix stack suffices.
+func displayDepths(ops []base.StatsOpInfo) []int {
+	depths := make([]int, len(ops))
+	var stack []string // ids of the current shown-ancestor chain
+	for i, op := range ops {
+		for len(stack) > 0 && !strings.HasPrefix(op.Id, stack[len(stack)-1]+"/") {
+			stack = stack[:len(stack)-1]
+		}
+		depths[i] = len(stack)
+		stack = append(stack, op.Id)
+	}
+	return depths
+}
+
 func statsLines(s *base.Stats) []string {
 	if len(s.Ops) == 0 {
 		return nil // No counter-contributing ops -> no table (caller prints nothing).
@@ -366,9 +386,11 @@ func statsLines(s *base.Stats) []string {
 	}
 	anyMisc := false
 
-	for _, op := range s.Ops {
+	depths := displayDepths(s.Ops)
+
+	for i, op := range s.Ops {
 		r := row{
-			op:    strings.Repeat("  ", strings.Count(op.Id, "/")) + op.Kind,
+			op:    strings.Repeat("  ", depths[i]) + op.Kind,
 			cells: make([]string, len(cols)),
 		}
 		if len(r.op) > opW {

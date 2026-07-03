@@ -148,3 +148,28 @@ func TestParseStatsMode(t *testing.T) {
 		t.Errorf("parseStatsMode(bogus) should error")
 	}
 }
+
+// TestDisplayDepths checks that indentation reflects nesting among *shown* ops:
+// uncounted intermediate ops (gaps in the id path) must not inflate the indent,
+// and siblings sit at the same depth.
+func TestDisplayDepths(t *testing.T) {
+	ops := []base.StatsOpInfo{
+		{Id: "0/0", Kind: "group"},                        // 0
+		{Id: "0/0/0/0", Kind: "joinNL-inner"},             // 1 (project/seq gap above)
+		{Id: "0/0/0/0/0", Kind: "joinNL-inner"},           // 2
+		{Id: "0/0/0/0/0/0", Kind: "datastore-scan-index"}, // 3
+		{Id: "0/0/0/0/0/1", Kind: "datastore-scan-index"}, // 3 (sibling)
+		{Id: "0/0/0/0/1", Kind: "datastore-scan-index"},   // 2 (outer join's other child)
+	}
+	got := displayDepths(ops)
+	want := []int{0, 1, 2, 3, 3, 2}
+	if len(got) != len(want) {
+		t.Fatalf("displayDepths len=%d, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("displayDepths%v = %v, want %v", ops, got, want)
+			break
+		}
+	}
+}
