@@ -153,6 +153,14 @@ func MakeVars(dir, prefix string) (string, *base.Vars) {
 	var recycledHeap *store.Heap
 	var recycledChunks *store.Chunks
 
+	// Request-scoped batch pool (see base.Ctx.AllocBatch): a bounded free-list of
+	// []Vals, so the many throwaway Stages a nested-loop join creates per inner
+	// re-scan reuse batch/Val buffers instead of re-allocating. Own mutex to keep
+	// the hot per-batch path off mm (which guards the rarer map/heap/chunk pools).
+	var bm sync.Mutex
+	var recycledBatches [][]base.Vals
+	const maxRecycledBatches = 256 // cap retention; drop extras for GC
+
 	return tmpDir, &base.Vars{
 		Temps: make([]interface{}, 16),
 		Ctx: &base.Ctx{
@@ -281,6 +289,28 @@ func MakeVars(dir, prefix string) (string, *base.Vars) {
 
 					c.Close()
 				}
+			},
+			AllocBatch: func() []base.Vals {
+				bm.Lock()
+				defer bm.Unlock()
+
+				if n := len(recycledBatches); n > 0 {
+					rv := recycledBatches[n-1]
+					recycledBatches[n-1] = nil
+					recycledBatches = recycledBatches[:n-1]
+					return rv
+				}
+				return nil
+			},
+			RecycleBatch: func(batch []base.Vals) {
+				if batch == nil {
+					return
+				}
+				bm.Lock()
+				if len(recycledBatches) < maxRecycledBatches {
+					recycledBatches = append(recycledBatches, batch)
+				}
+				bm.Unlock()
 			},
 		},
 	}

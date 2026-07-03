@@ -142,6 +142,17 @@ type Ctx struct {
 	AllocChunks   func() (*store.Chunks, error)
 	RecycleChunks func(*store.Chunks)
 
+	// AllocBatch/RecycleBatch pool []Vals batches across the whole request, so the
+	// throwaway Stage instances a nested-loop join spins up per inner re-scan can
+	// reuse batch + Val buffers instead of re-allocating them (Stage.Recycled is
+	// per-instance and dies with the Stage). AllocBatch returns a recycled batch or
+	// nil -- it never blocks (so it can't deadlock); RecycleBatch returns one to the
+	// pool (bounded; drops extras for GC). nil => Stage falls back to its own
+	// per-instance Recycled. Shared across Ctx.Clone() (func fields are copied, so
+	// every actor's clone closes over the one pool).
+	AllocBatch   func() []Vals
+	RecycleBatch func([]Vals)
+
 	// TODO: Other things that might appear here might be request ID,
 	// request-specific allocators or resources, etc.
 }

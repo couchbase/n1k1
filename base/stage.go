@@ -206,16 +206,27 @@ func (stage *Stage) ProcessBatchesFromActors(cb func([]Vals)) {
 
 // --------------------------------------------------------
 
-// RecycleBatch holds onto a batch for a future AcquireBatch().
+// RecycleBatch holds onto a batch for a future AcquireBatch(). It prefers the
+// request-scoped pool (Ctx.RecycleBatch) so a batch outlives this Stage instance
+// and can be reused by the many throwaway Stages a nested-loop join creates per
+// inner re-scan; it falls back to the per-instance Recycled when no Ctx pool is
+// wired (e.g. some tests).
 func (stage *Stage) RecycleBatch(batch []Vals) {
+	if stage.Vars != nil && stage.Vars.Ctx != nil && stage.Vars.Ctx.RecycleBatch != nil {
+		stage.Vars.Ctx.RecycleBatch(batch)
+		return
+	}
 	stage.M.Lock()
 	stage.Recycled = append(stage.Recycled, batch)
 	stage.M.Unlock()
 }
 
-// AcquireBatch returns either a previously recycled batch or nil if
-// there aren't any.
+// AcquireBatch returns a previously recycled batch, or nil if there aren't any
+// (never blocks). Prefers the request-scoped pool; see RecycleBatch.
 func (stage *Stage) AcquireBatch() (rv []Vals) {
+	if stage.Vars != nil && stage.Vars.Ctx != nil && stage.Vars.Ctx.AllocBatch != nil {
+		return stage.Vars.Ctx.AllocBatch()
+	}
 	stage.M.Lock()
 	n := len(stage.Recycled)
 	if n > 0 {
