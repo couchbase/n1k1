@@ -34,7 +34,16 @@ CATEGORIES = [
 # per-statement sample is imported (see main). Moderate keyspaces import fully.
 MEGA_KEYSPACES = {"purchase", "review"}
 NONDET = re.compile(r"\b(now_\w+|clock_\w+|random|rand|uuid|newid)\s*\(", re.IGNORECASE)
-INSERT_PREFIX = re.compile(r'\s*INSERT\s+INTO\s+(\w+)\s*\(\s*KEY\s*,\s*VALUE\s*\)', re.IGNORECASE)
+# Match `INSERT INTO <ks> [(KEY,VALUE)] VALUES(...)` -- the (KEY,VALUE) column
+# spec is optional (some inserts omit it, e.g. subqexp's shellTest graph docs:
+# `INSERT INTO shellTest VALUES("22", {"from":"2",...})`). Requiring a trailing
+# VALUES deliberately excludes the SELECT-based flood insert
+# `INSERT INTO customer (KEY k, VALUE v) SELECT uuid() k, {"a":1} v FROM ...`
+# (UUID keys we can't materialize anyway). parse_inserts then finds each doc's
+# {...} and the quoted key just before it, so m.end() landing past VALUES is fine.
+INSERT_PREFIX = re.compile(
+    r'\s*INSERT\s+INTO\s+(\w+)\s*(?:\(\s*KEY\s*,\s*VALUE\s*\)\s*)?VALUES\b',
+    re.IGNORECASE)
 
 # n1k1 merges every category's docs into one shared keyspace and relies on each
 # case's `WHERE test_id="<cat>"` predicate to re-create the per-category bucket

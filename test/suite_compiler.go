@@ -294,10 +294,11 @@ func setupCompiled(t *testing.T, store *glue.Store, namespace, stmt string) (
 	if err != nil {
 		t.Fatalf("setupCompiled parse: %v\n stmt: %s", err, stmt)
 	}
-	p, err := store.PlanStatement(s, namespace, nil, nil)
+	qp, err := store.PlanStatementQP(s, namespace, nil, nil)
 	if err != nil {
 		t.Fatalf("setupCompiled plan: %v\n stmt: %s", err, stmt)
 	}
+	p := qp.PlanOp()
 	conv := &glue.Conv{Temps: []interface{}{nil}}
 	if _, err = p.Accept(conv); err != nil {
 		t.Fatalf("setupCompiled accept: %v\n stmt: %s", err, stmt)
@@ -308,7 +309,7 @@ func setupCompiled(t *testing.T, store *glue.Store, namespace, stmt string) (
 	// Build vars.Temps exactly as the interpreter driver does, so the int Temps
 	// indices baked into the datastore ops line up with the live plan objects.
 	gctx := glue.NewGlueContext(time.Now())
-	gctx.InitSubqueries(store, namespace, conv.WithBindings()) // so compiled expression subqueries run
+	gctx.InitSubqueries(store, namespace, conv.WithBindings(), qp.Subqueries()) // so compiled expression subqueries run
 	gctx.SetWithScopeFrom(conv.WithScopeBindings())            // so compiled `x IN cte` resolves (matches interp)
 	vars.Temps = vars.Temps[:0]
 	vars.Temps = append(vars.Temps, gctx)

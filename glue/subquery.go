@@ -21,6 +21,7 @@ import (
 	"github.com/couchbase/query/algebra"
 	"github.com/couchbase/query/datastore"
 	"github.com/couchbase/query/expression"
+	"github.com/couchbase/query/plan"
 	"github.com/couchbase/query/value"
 
 	"github.com/couchbase/n1k1/base"
@@ -28,15 +29,17 @@ import (
 )
 
 // subqEvaluator executes expression subqueries (IN (SELECT ...), scalar
-// subqueries, ...) by re-entering the n1k1 pipeline. A subquery SELECT is itself
-// an algebra.Statement, so we plan it with the same planner (on demand, mirroring
-// query's own execution/context.go which plans subqueries lazily rather than from
-// QueryPlan.Subqueries()), conv it to a base.Op, run it on n1k1's engine, and
-// collect the rows into an array value -- the shape N1QL expects for a subquery.
+// subqueries, ...) by re-entering the n1k1 pipeline. It prefers the outer plan's
+// in-context sub-plan (preplanned, from qp.Subqueries()); when a subquery isn't
+// there it re-plans the sub-SELECT standalone with the same planner. Either way
+// it convs the plan to a base.Op, runs it on n1k1's engine, and collects the rows
+// into an array value -- the shape N1QL expects for a subquery.
 //
-// Scope: uncorrelated subqueries only. The parent (outer) row is not yet
-// threaded into the sub-op's scope, so a correlated subquery (one that
-// references outer fields) won't resolve those fields. See EvaluateSubquery.
+// Correlated subqueries resolve outer references: the outer row is exposed as
+// corrParent (see EvaluateSubquery), which ExprTree scopes each sub-row over and
+// the scan ops read for a correlated USE KEYS / index span (see scanParent). The
+// remaining gap is an AGGREGATE inside a correlated subquery (see the "subquery"
+// group in suite_gsi_test.go).
 type subqEvaluator struct {
 	store     *Store
 	namespace string
@@ -56,6 +59,14 @@ type subqEvaluator struct {
 	// b AS (SELECT .. FROM a) ... FROM b) can still resolve `FROM a`. Without it,
 	// compile()'s fresh Conv wouldn't know the CTE.
 	withBindings map[string]expression.With
+
+	// preplanned holds the outer plan's in-context sub-plans (qp.Subqueries(),
+	// flattened recursively by the planner and keyed by the subquery's
+	// *algebra.Select). compile() prefers these over re-planning standalone: they
+	// were planned WITH the outer keyspace scope, so a correlated reference (an
+	// index span `META(d).id = t.to`, a USE KEYS expr) formalizes correctly.
+	// Standalone re-planning loses that scope and degenerates the span to null.
+	preplanned map[*algebra.Select]plan.Operator
 }
 
 // subCompiled is one subquery's sub-plan converted to a base.Op, cached so
@@ -71,12 +82,14 @@ type subCompiled struct {
 // query's WITH CTE bindings (Conv.WithBindings(), or nil) so sub-SELECTs can
 // reference outer CTEs. Until this is called, EvaluateSubquery errors.
 func (c *GlueContext) InitSubqueries(store *Store, namespace string,
-	withBindings map[string]expression.With) {
+	withBindings map[string]expression.With,
+	preplanned map[*algebra.Select]plan.Operator) {
 	c.subq = &subqEvaluator{
 		store:        store,
 		namespace:    namespace,
 		cache:        map[*algebra.Select]*subCompiled{},
 		withBindings: withBindings,
+		preplanned:   preplanned,
 	}
 }
 
@@ -187,21 +200,24 @@ func (e *subqEvaluator) compile(query *algebra.Select) (*subCompiled, error) {
 		return sc, nil
 	}
 
-	// A subquery SELECT is an algebra.Statement -- plan it like any other.
-	//
-	// TODO(subquery-plan): we re-plan the sub-SELECT standalone rather than using
-	// the outer plan's in-context sub-plan, because QueryPlan.Subqueries() is
-	// empty after a normal planner.Build (query plans subqueries lazily in its
-	// execution context; see execution/context.go EvaluateSubquery ->
-	// SubqueryPlan). Standalone re-planning works here -- a correlated ref like
-	// `c.name` formalizes to a plain Field(Identifier("c"),"name") that resolves
-	// at runtime against the corrParent scope -- but it means the sub-SELECT is
-	// planned without the outer keyspace scope. If a case ever mis-plans this
-	// way, the fix is to plumb an in-context subquery-plan path (mirror query's
-	// SubqueryPlan) instead of PlanStatementQP.
-	qp, err := e.store.PlanStatementQP(query, e.namespace, nil, nil)
-	if err != nil {
-		return nil, err
+	// Prefer the outer plan's in-context sub-plan (qp.Subqueries(), threaded in via
+	// InitSubqueries). It was planned WITH the outer keyspace scope, so a correlated
+	// reference formalizes correctly -- notably an index span like
+	// `META(d).id = t.to`, which standalone re-planning degenerates to a `null`
+	// span bound (t is out of scope), silently returning no rows. Fall back to
+	// standalone re-planning when the subquery isn't in the map (e.g. a subquery
+	// reached only via a nested evaluation the outer planner didn't pre-plan): a
+	// plain correlated ref like `c.name` still resolves at runtime against the
+	// corrParent scope.
+	var planOp plan.Operator
+	if op, ok := e.preplanned[query]; ok && op != nil {
+		planOp = op
+	} else {
+		qp, err := e.store.PlanStatementQP(query, e.namespace, nil, nil)
+		if err != nil {
+			return nil, err
+		}
+		planOp = qp.PlanOp()
 	}
 
 	// Seed the sub-conv with a copy of the outer WITH bindings so a sub-SELECT
@@ -221,7 +237,7 @@ func (e *subqEvaluator) compile(query *algebra.Select) (*subCompiled, error) {
 		wb[k] = v
 	}
 	conv := &Conv{Temps: []interface{}{nil}, withBindings: wb}
-	if _, err := qp.PlanOp().Accept(conv); err != nil {
+	if _, err := planOp.Accept(conv); err != nil {
 		return nil, err
 	}
 	if conv.TopOp == nil {

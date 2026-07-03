@@ -87,6 +87,18 @@ func (c *GlueContext) SetNamedArgs(args map[string]value.Value) { c.namedArgs = 
 // SetWithScope installs the WITH-alias scope (see the withScope field).
 func (c *GlueContext) SetWithScope(v value.Value) { c.withScope = v }
 
+// scanParent is the value against which a scan op should evaluate a correlated
+// KEYS / index-span expression: the outer row during a correlated subquery
+// (corrParent), else the WITH-alias scope. nil at top level. A correlated
+// `USE KEYS <expr>` or an index span like `META(d).id = t.to` needs the outer
+// row to resolve, so DatastoreScanKeys/EvalSpan pass this rather than nil.
+func (c *GlueContext) scanParent() value.Value {
+	if c.corrParent != nil {
+		return c.corrParent
+	}
+	return c.withScope
+}
+
 // SetWithScopeFrom builds the WITH-alias scope from the given bindings (see
 // buildWithScope) and installs it. Both the interpreter (Session.Run) and the
 // compiled path (setupCompiled) call this with conv.WithScopeBindings(), so a

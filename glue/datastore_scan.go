@@ -37,7 +37,11 @@ func DatastoreScanKeys(o *base.Op, vars *base.Vars,
 
 	scan := vars.Temps[o.Params[0].(int)].(*plan.KeyScan)
 
-	var parent value.Value // TODO: handle parent?
+	// A correlated `USE KEYS <expr>` (e.g. the outer term of subqexp[2], whose
+	// keys are themselves a correlated subquery) needs the outer row to resolve
+	// its key expression; scanParent supplies corrParent (else the WITH scope),
+	// nil at top level.
+	parent := context.scanParent()
 
 	keys, err := scan.Keys().Evaluate(parent, context)
 	if err != nil {
@@ -279,7 +283,11 @@ func DatastoreScanIndex(o *base.Op, vars *base.Vars,
 			// truncate the drain to zero rows).
 			limit := EvalExprInt64(context, scan.Limit(), nil, math.MaxInt64)
 
-			var outerValue value.Value // TODO: nested-loop join outer values.
+			// A correlated index span (e.g. `META(d).id = t.to` in subqexp[6,7])
+			// evaluates its Low/High against the outer row; scanParent supplies it
+			// (corrParent, else WITH scope), nil at top level and for a nested-loop
+			// join outer (a separate TODO).
+			outerValue := context.scanParent()
 
 			for _, span := range scan.Spans() {
 				go func(span *plan.Span) {
@@ -310,7 +318,10 @@ func scanSISpans(context *GlueContext, conn *datastore.IndexConnection,
 	scan *plan.IndexScan, si *secondaryIndex, projectKeys bool) {
 	limit := EvalExprInt64(context, scan.Limit(), nil, math.MaxInt64)
 
-	var outerValue value.Value // TODO: nested-loop join outer values.
+	// A correlated index span evaluates its Low/High against the outer row;
+	// scanParent supplies it (corrParent, else WITH scope). nil at top level and
+	// for a nested-loop join outer (a separate TODO).
+	outerValue := context.scanParent()
 
 	go func() {
 		defer conn.Sender().Close()

@@ -19,6 +19,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/couchbase/query/datastore"
 	"github.com/couchbase/query/errors"
 	"github.com/couchbase/query/plan"
 	"github.com/couchbase/query/value"
@@ -112,6 +113,18 @@ func (s *Session) Run(stmt string) (res *Result, err error) {
 		}
 	}()
 
+	// A correlated / USE-KEYS subquery re-plans and re-evaluates through
+	// couchbase/query's algebra, which resolves keyspaces via the process-global
+	// datastore (datastore.GetDatastore) rather than the store we thread through
+	// PlanStatementQP -- so without this, a subquery-bearing query errors with
+	// "Datastore not set" (or worse, resolves against a stale global set by an
+	// earlier Session). OpenSession points the global at this store via InitParser,
+	// but Run is also invoked on directly-constructed Sessions (the test harness,
+	// embedders), so ensure it here too. Cheap idempotent global assignment.
+	if s.Store != nil && s.Store.Datastore != nil {
+		datastore.SetDatastore(s.Store.Datastore)
+	}
+
 	parsed, err := ParseStatement(stmt, s.Namespace, true)
 	if err != nil {
 		return nil, err
@@ -161,7 +174,7 @@ func (s *Session) Run(stmt string) (res *Result, err error) {
 	defer os.RemoveAll(tmpDir)
 
 	gctx := NewGlueContext(time.Now())
-	gctx.InitSubqueries(s.Store, s.Namespace, conv.WithBindings()) // enable expression subqueries
+	gctx.InitSubqueries(s.Store, s.Namespace, conv.WithBindings(), qp.Subqueries()) // enable expression subqueries
 	gctx.SetNamedArgs(s.NamedArgs)                                 // resolve $name at eval time
 	gctx.SetWithScopeFrom(conv.WithScopeBindings()) // resolve `x IN cte` etc.
 

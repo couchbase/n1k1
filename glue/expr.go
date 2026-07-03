@@ -118,25 +118,26 @@ func ExprTree(vars *base.Vars, labels base.Labels,
 		// corrParent wins when both are set (a subquery's rows scope over the outer
 		// row). The star projection is exempt (resetScope -> scoped is false), so
 		// SELECT * spreads only the row's own fields, not these hidden scope vars.
-		// The `v != nil` guard: a no-FROM sub-SELECT (e.g. the innermost
-		// `SELECT RAW a` in `SELECT RAW (SELECT RAW a)`) yields a single empty row
-		// that Convert maps to a nil value; v.Actual() below would nil-deref. Skipping
-		// the scope-wrap turns that panic into a graceful non-pass.
-		// TODO(correlated-nil-row): to make such a row actually resolve the outer
-		// identifier, evaluate against the parent when v is nil AND chain parents
-		// for nesting (corrParent is one value, replaced not composed on each
-		// EvaluateSubquery). Fixes the panic-subquery cases subqexp[5], withs[8,9].
-		if scoped && v != nil {
+		if scoped {
 			parent := gc.corrParent
 			if parent == nil {
 				parent = gc.withScope
 			}
-			// Prefer keeping v as "self" via SetParent: it preserves v's
-			// annotations -- notably a subquery aggregate's "^aggregates"
-			// attachment, which SUM(...)/etc. read back; re-wrapping v.Actual() in
-			// a fresh ScopeValue would drop them and panic. Fall back to a
-			// ScopeValue for a non-annotated object value.
-			if av, ok := v.(value.AnnotatedValue); ok {
+			// A no-FROM sub-SELECT (e.g. the innermost `SELECT RAW a` in
+			// `SELECT RAW (SELECT RAW a)`) yields a single empty row that Convert
+			// maps to a nil value. Scope an EMPTY object over the parent so the
+			// outer identifier still resolves through it -- and, crucially, so a
+			// nested subquery chains its parent through this scope (the outer
+			// subquery's empty row becomes the inner subquery's corrParent, whose
+			// own empty row scopes over it, reaching the outermost row). Without
+			// this the identifier is unresolvable and the row collapses.
+			if v == nil {
+				v = value.NewScopeValue(map[string]interface{}{}, parent)
+			} else if av, ok := v.(value.AnnotatedValue); ok {
+				// Prefer keeping v as "self" via SetParent: it preserves v's
+				// annotations -- notably a subquery aggregate's "^aggregates"
+				// attachment, which SUM(...)/etc. read back; re-wrapping v.Actual()
+				// in a fresh ScopeValue would drop them and panic.
 				v = av.SetParent(parent)
 			} else if m, ok := v.Actual().(map[string]interface{}); ok {
 				v = value.NewScopeValue(m, parent)

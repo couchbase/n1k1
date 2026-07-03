@@ -146,8 +146,15 @@ func (g *Store) PlanStatementQP(s algebra.Statement, namespace string,
 	)
 
 	// planner.Build returns a *plan.QueryPlan (+ a 4th duration map).
+	//
+	// forceSQBuild=true: pre-plan expression subqueries into qp.Subqueries() (the
+	// planner otherwise does this only for EXPLAIN/ADVISE). n1k1's subquery
+	// evaluator prefers these in-context sub-plans over re-planning each subquery
+	// standalone -- standalone loses the outer keyspace scope, which degenerates a
+	// correlated index span (e.g. `META(d).id = t.to`) to a null bound that
+	// silently returns no rows. See glue/subquery.go compile().
 	qp, _, err, _ := planner.Build(s, g.Datastore, g.Systemstore,
-		namespace, subquery, stream, false /* forceSQBuild */, &pc)
+		namespace, subquery, stream, true /* forceSQBuild */, &pc)
 	if err != nil {
 		return nil, err
 	}
