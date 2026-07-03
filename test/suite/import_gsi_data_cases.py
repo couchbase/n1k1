@@ -70,22 +70,32 @@ SCOPE_PATCHES = [
      'n1k1: scoped with test_id="json_func" (see obj_functions patch). Unscoped, '
      "POLY_LENGTH's ORDER BY over the merged customer keyspace ranks other "
      "categories' rows ahead of the json_func ones."),
+    ("typeconv_functions", "unnest o.orderlines as ol", "typeconv_func",
+     'n1k1: scoped the fork\'s unscoped source statement with o.test_id="typeconv_func". '
+     "The fork runs it against an orders bucket holding only typeconv docs; n1k1's "
+     "merged orders keyspace holds every category's orders, so unscoped this "
+     "UNNEST+LIKE over-matches (it returned many custId/qty rows vs the fork's two). "
+     "Qualified o.test_id because a bare test_id is ambiguous after UNNEST (o + ol).",
+     "o.test_id"),
 ]
 
-def inject_test_id_scope(stmt, tid):
-    """Add a `test_id="<tid>"` predicate to stmt: AND it onto an existing WHERE
+def inject_test_id_scope(stmt, tid, field="test_id"):
+    """Add a `<field>="<tid>"` predicate to stmt: AND it onto an existing WHERE
     (wrapping the existing predicate in parens so it scopes the WHOLE clause, not
     just the last `OR` branch), else insert a WHERE clause. Placed before any
-    trailing ORDER BY / GROUP BY / HAVING / LIMIT so it stays a valid predicate."""
+    trailing ORDER BY / GROUP BY / HAVING / LIMIT so it stays a valid predicate.
+    `field` defaults to the bare `test_id`; pass a qualified name (e.g. `o.test_id`)
+    when a bare `test_id` would be ambiguous -- e.g. after UNNEST, where both the
+    doc alias and the unnested alias are in scope."""
     m = re.search(r'\b(order\s+by|group\s+by|having|limit)\b', stmt, re.IGNORECASE)
     cut = m.start() if m else len(stmt)
     head, tail = stmt[:cut].rstrip(), stmt[cut:]
     wm = re.search(r'\bwhere\b', head, re.IGNORECASE)
     if wm:
         pred = head[wm.end():].strip()
-        scoped = head[:wm.start()].rstrip() + f' WHERE ({pred}) AND test_id="{tid}"'
+        scoped = head[:wm.start()].rstrip() + f' WHERE ({pred}) AND {field}="{tid}"'
     else:
-        scoped = f'{head} WHERE test_id="{tid}"'
+        scoped = f'{head} WHERE {field}="{tid}"'
     return (scoped + " " + tail).rstrip() if tail else scoped
 
 # AUTO_SCOPE_CATS: categories whose cases query the shared shellTest keyspace
@@ -125,10 +135,12 @@ def apply_scope_patch(cat, c):
     low = stmt.lower()
     if "test_id" in low:
         return c
-    for pcat, needle, tid, note in SCOPE_PATCHES:
+    for patch in SCOPE_PATCHES:
+        pcat, needle, tid, note = patch[0], patch[1], patch[2], patch[3]
+        field = patch[4] if len(patch) > 4 else "test_id"  # qualified when ambiguous
         if cat == pcat and needle in low:
             c = dict(c)
-            c["statements"] = inject_test_id_scope(stmt, tid)
+            c["statements"] = inject_test_id_scope(stmt, tid, field)
             c["description"] = note
             return c
     return c

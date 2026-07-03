@@ -172,7 +172,7 @@
   },
   {
     "testcase": "MB-66955",
-    "statements": "SELECT o.custId, ol.qty FROM orders o UNNEST o.orderlines AS ol WHERE o.type = \"order\" AND IS_OBJECT(ol) AND ol.productId LIKE \"tea%\"",
+    "statements": "SELECT o.custId, ol.qty FROM orders o UNNEST o.orderlines AS ol WHERE (o.type = \"order\" AND IS_OBJECT(ol) AND ol.productId LIKE \"tea%\") AND o.test_id=\"typeconv_func\"",
     "results": [
       {
         "custId": "customer312",
@@ -182,7 +182,8 @@
         "custId": "customer12",
         "qty": 1
       }
-    ]
+    ],
+    "description": "n1k1: scoped the fork's unscoped source statement with o.test_id=\"typeconv_func\". The fork runs it against an orders bucket holding only typeconv docs; n1k1's merged orders keyspace holds every category's orders, so unscoped this UNNEST+LIKE over-matches (it returned many custId/qty rows vs the fork's two). Qualified o.test_id because a bare test_id is ambiguous after UNNEST (o + ol)."
   },
   {
     "statements": "select TOARRAY(orders.id) as a from orders WHERE test_id=\"typeconv_func\" order by a",

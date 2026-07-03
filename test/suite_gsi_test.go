@@ -10,7 +10,7 @@ const gsiSuiteRoot = "suite/json-gsi"
 
 // gsiPassFloor is the results-pass backstop for the gsi corpus (bump as coverage
 // grows), mirroring the default suite's floor.
-const gsiPassFloor = 800
+const gsiPassFloor = 801
 
 // gsiExpectedNonPass lists gsi cases n1k1 doesn't yet pass, keyed by loc
 // (case_gsi_<cat>.json[i]) -> group. Any non-pass NOT listed is a regression.
@@ -35,7 +35,6 @@ var gsiExpectedNonPass = map[string]string{
 	"case_gsi_subqexp.json[43]":             "fork-data-missing",
 	"case_gsi_subqexp.json[46]":             "fork-data-missing",
 	"case_gsi_subqexp.json[47]":             "subquery",
-	"case_gsi_typeconv_functions.json[14]":  "unscoped-orders",
 	"case_gsi_inlist.json[17]":              "prepared",
 	"case_gsi_inlist.json[18]":              "prepared",
 	"case_gsi_inlist.json[20]":              "prepared",
@@ -59,6 +58,5 @@ var gsiGroupWhy = map[string]string{
 	"subquery":          "correlated / nested / derived-table subquery gaps: an aggregate inside a correlated subquery (SUM(...) over an outer field -- 'nil item'); a correlated subquery whose FROM is a subquery+WITH; a correlated subquery in the projection (SELECT (SELECT ... WHERE = outer) ...); a subquery USE KEYS (SELECT RAW ...); a derived-table FROM (SELECT ...) UNNEST ... under UNION; and a no-FROM correlated subquery nested in another subquery's RAW projection (SELECT RAW (SELECT RAW a)) -- its empty row can't resolve the outer id, see TODO(correlated-nil-row) in glue/expr.go. (Plain correlated SELECT / EXISTS / IN subqueries do work.)",
 	"mega-order-limit":  "unnest[0,1,2,5,6,7]: UNNEST p.lineItems over the `purchase` MEGA keyspace with ORDER BY <unnested-elem> LIMIT n. The fork loads ~10,000 purchase docs; our corpus keeps a light sample (see MEGA_KEYSPACES), so the top-N after sorting the full unnested set can't be reproduced. UNNEST itself is correct (the specific-`product` unnest cases pass); only the full-set ordered LIMIT differs",
 	"prepared":          "inlist[17,18,20,21]: EXECUTE of a PREPAREd statement -- n1k1 has no prepared-statement store, so EXECUTE can't resolve the plan (the PREPARE cases themselves carry no results and are skipped)",
-	"unscoped-orders":   "typeconv_functions[14]: queries the shared `orders` keyspace with only `type=\"order\"` and no test_id predicate, so our merged corpus (every category's orders docs) over-matches where the fork's per-category bucket held just two. Same class as the shellTest auto-scope, but for orders",
 	"with-subquery":     "withs[11]: a CORRELATED WITH inside a subquery (`SELECT (WITH w1 AS (d) SELECT d1.[w1] FROM {...} d1) FROM [...] d`) -- w1 binds to the outer `d`, so it needs the correlated CTE value bound in the sub-scope (buildWithScope only binds top-level/constant CTEs, not correlated ones). Plain WITH, WITH-vars in expressions (`x IN cte`, FIRST/JOIN over a CTE), dynamic fields, a directly-projected subquery CTE (SELECT w2), and WITH over UNION ALL / comma-join now work; this correlated-CTE case doesn't yet",
 }
