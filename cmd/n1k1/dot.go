@@ -87,7 +87,7 @@ func (c *cli) dot(line string) bool {
 		// The engine reads glue.ScanWalkOptions per query, so a change takes effect
 		// for subsequent statements. No arg shows the current setting.
 		if a := strings.TrimSpace(arg); a == "" {
-			fmt.Fprintf(c.stderr, "formats: %s\n", glue.ScanWalkOptions.Describe())
+			c.printFormats()
 		} else if opts, err := records.ParseModes(a); err != nil {
 			fmt.Fprintf(c.stderr, "usage: .formats [all|json|jsonl|csv|tsv|extract|doc|text|image|video|gzip|recurse]  (currently %s)\n",
 				glue.ScanWalkOptions.Describe())
@@ -229,7 +229,7 @@ func (c *cli) printHelp() {
 		".schema [<keyspace>]  sampled shape (keys + JSON types) of a keyspace",
 		".mode <m>             output mode (append |pretty to indent JSON): " + c.highlightCurrent(mode, " ", cmd.OutputModes...),
 		".meta " + c.helpOpts(glue.ScanWalkOptions.Meta.String(), "on", "off", "auto") + "   add a _meta sub-object to records (no arg shows the current setting)",
-		".formats [<set>]      restrict scanning to formats/modes, e.g. json,csv,gzip (no arg shows current)",
+		".formats [<set>]      restrict scanning to formats/modes, e.g. json,csv,gzip (no arg lists them all)",
 		".timer " + c.helpOpts(onOff(c.timer), "on", "off") + "       elapsed-time reporting (no arg shows the current setting)",
 		".stats " + c.helpOpts(onOff(c.stats), "on", "off", "about") + "  per-operator counters live + as a footer (about = glossary of every counter)",
 		".explain              toggle printing EXPLAIN PLAN per query",
@@ -278,6 +278,48 @@ func (c *cli) highlightCurrent(current, sep string, opts ...string) string {
 // highlighted.
 func (c *cli) helpOpts(current string, opts ...string) string {
 	return "[" + c.highlightCurrent(current, "|", opts...) + "]"
+}
+
+// printFormats shows the current .formats/-formats setting, then a grouped
+// reference of every supported format/mode token (with its file extensions and a
+// short explanation), so users can see what to pass to restrict scanning.
+func (c *cli) printFormats() {
+	fmt.Fprintf(c.stderr, "formats: %s\n", glue.ScanWalkOptions.Describe())
+	fmt.Fprintln(c.stderr, "\nsupported (comma-separate to restrict, e.g. -formats json,csv,gzip):")
+
+	modes := records.Modes()
+	name := func(m records.ModeInfo) string { // "jsonl/ndjson", "gzip/gz", ...
+		return strings.Join(append([]string{m.Token}, m.Aliases...), "/")
+	}
+	nameW, extW := 0, 0 // column widths
+	for _, m := range modes {
+		if n := len(name(m)); n > nameW {
+			nameW = n
+		}
+		if e := len(strings.Join(m.Exts, " ")); e > extW {
+			extW = e
+		}
+	}
+
+	groups := []struct{ kind, title string }{
+		{"structured", "structured (parsed into rows):"},
+		{"extract", "extract (text + metadata from unstructured files, one record each):"},
+		{"modifier", "modifiers:"},
+		{"meta", ""},
+	}
+	for _, g := range groups {
+		if g.title != "" {
+			fmt.Fprintf(c.stderr, "  %s\n", g.title)
+		}
+		for _, m := range modes {
+			if m.Kind != g.kind {
+				continue
+			}
+			fmt.Fprintf(c.stderr, "    %-*s  %-*s  %s\n",
+				nameW, name(m), extW, strings.Join(m.Exts, " "), m.Desc)
+		}
+	}
+	fmt.Fprintln(c.stderr, "  (individual extensions also work as tokens, e.g. pdf, docx, png)")
 }
 
 func (c *cli) cmdOpen(dir string) {

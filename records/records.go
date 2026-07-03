@@ -609,6 +609,37 @@ func ParseModes(csv string) (WalkOptions, error) {
 	return opts, nil
 }
 
+// ModeInfo documents one token accepted by ParseModes, for help output (the
+// CLI's `.formats` listing). Kind groups the token for display.
+type ModeInfo struct {
+	Token   string   // primary token
+	Aliases []string // other tokens that mean the same
+	Exts    []string // file extensions it admits (nil for modifiers / "all")
+	Kind    string   // "structured" | "extract" | "modifier" | "meta"
+	Desc    string   // short one-line explanation
+}
+
+// Modes returns the supported scan modes/formats in display order, for help
+// output. Keep this in sync with ParseModes -- TestModesMatchParseModes checks
+// that every token here (and its aliases) parses and admits the listed exts.
+func Modes() []ModeInfo {
+	return []ModeInfo{
+		{"json", nil, []string{".json", ".jsons"}, "structured", "one JSON value, or an array of values, per file"},
+		{"jsonl", []string{"ndjson"}, []string{".jsonl", ".ndjson"}, "structured", "JSON Lines: one JSON value per line"},
+		{"csv", nil, []string{".csv"}, "structured", "comma-separated values (header row = field names)"},
+		{"tsv", nil, []string{".tsv"}, "structured", "tab-separated values (header row = field names)"},
+		{"extract", nil, nil, "extract", "every extractable format below (text + metadata)"},
+		{"doc", []string{"docs", "office"}, []string{".pdf", ".docx", ".xlsx", ".pptx"}, "extract", "office & PDF documents"},
+		{"text", nil, []string{".txt", ".log", ".md", ".markdown", ".rtf"}, "extract", "plain / rich text files"},
+		{"image", []string{"img"}, []string{".png", ".jpg", ".jpeg"}, "extract", "images (metadata only)"},
+		{"video", nil, []string{".mp4", ".mov"}, "extract", "video files (metadata only)"},
+		{"gzip", []string{"gz"}, nil, "modifier", "also read .gz-compressed files (transparent)"},
+		{"zstd", []string{"zst"}, nil, "modifier", "permit a .zst suffix (not yet decoded)"},
+		{"recurse", []string{"recursive"}, nil, "modifier", "descend into subdirectories"},
+		{"all", nil, nil, "meta", "everything (the default when -formats is unset)"},
+	}
+}
+
 // eligible reports whether path passes the options' format/compression filter.
 func (o WalkOptions) eligible(path string) bool {
 	if !IsRecordFile(path) {

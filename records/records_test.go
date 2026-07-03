@@ -780,3 +780,41 @@ func TestWalkAllocsFlat(t *testing.T) {
 		t.Errorf("allocs/run = %.0f, higher than expected for a small walk", avg)
 	}
 }
+
+// TestModesMatchParseModes guards against drift between the Modes() help catalog
+// and ParseModes: every documented token (and alias) must parse, admit its listed
+// extensions, and set the right modifier flag.
+func TestModesMatchParseModes(t *testing.T) {
+	for _, m := range Modes() {
+		for _, tok := range append([]string{m.Token}, m.Aliases...) {
+			opts, err := ParseModes(tok)
+			if err != nil {
+				t.Errorf("Modes token %q does not parse: %v", tok, err)
+				continue
+			}
+			for _, ext := range m.Exts {
+				if !opts.Formats[ext] {
+					t.Errorf("token %q should admit ext %q, but ParseModes didn't", tok, ext)
+				}
+			}
+		}
+		switch m.Token {
+		case "gzip":
+			if o, _ := ParseModes("gzip"); !o.AllowGzip {
+				t.Error("gzip should set AllowGzip")
+			}
+		case "zstd":
+			if o, _ := ParseModes("zstd"); !o.AllowZstd {
+				t.Error("zstd should set AllowZstd")
+			}
+		case "recurse":
+			if o, _ := ParseModes("recurse"); !o.Recurse {
+				t.Error("recurse should set Recurse")
+			}
+		case "all":
+			if o, _ := ParseModes("all"); o.Formats != nil {
+				t.Error("all should be unrestricted (nil Formats)")
+			}
+		}
+	}
+}
