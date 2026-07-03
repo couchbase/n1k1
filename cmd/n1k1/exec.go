@@ -41,7 +41,7 @@ func (c *cli) exec(stmt string) {
 	if c.stats {
 		c.sess.CollectStats = true
 		if c.fancyTTY {
-			sv = newStatsView(c.stderr, true)
+			sv = newStatsView(c.stderr, true, c.terminalWidth())
 			c.sess.OnStats = sv.onStats
 		}
 	}
@@ -77,7 +77,7 @@ func (c *cli) exec(stmt string) {
 	// .stats footer: the final per-operator counters (also the whole display for a
 	// non-TTY run, which skipped the live draw).
 	if c.stats && res.Stats != nil {
-		newStatsView(c.stderr, c.fancyTTY).renderFinal(res.Stats)
+		newStatsView(c.stderr, c.fancyTTY, c.terminalWidth()).renderFinal(res.Stats)
 	}
 
 	for _, w := range res.Warnings {

@@ -137,8 +137,14 @@ func (c *cli) dot(line string) bool {
 			c.stats = true
 		case "off":
 			c.stats = false
+		case "about", "help":
+			// Glossary of every registered counter (known at startup), a reference
+			// for the names shown in the footer.
+			for _, ln := range statsAbout() {
+				fmt.Fprintln(c.stderr, ln)
+			}
 		default:
-			fmt.Fprintf(c.stderr, "usage: .stats [on|off] (currently %s)\n", onOff(c.stats))
+			fmt.Fprintf(c.stderr, "usage: .stats [on|off|about] (currently %s)\n", onOff(c.stats))
 		}
 	case ".maxrows":
 		if arg == "" {
@@ -184,7 +190,7 @@ func (c *cli) printHelp() {
 		".meta [on|off|auto]   add a _meta sub-object to records (no arg shows the current setting)",
 		".formats [<set>]      restrict scanning to formats/modes, e.g. json,csv,gzip (no arg shows current)",
 		".timer [on|off]       elapsed-time reporting (no arg shows the current setting)",
-		".stats [on|off]       per-operator counters (rows in/out, join probes) live + as a footer",
+		".stats [on|off|about]  per-operator counters live + as a footer (about = glossary of every counter)",
 		".explain              toggle printing EXPLAIN PLAN per query",
 		".verbose [off|on|debug]  diagnostics level (off|on=plans|debug=+timing; no arg shows current)",
 		".maxrows <n>          box: cap rows shown (0 = all; negative = last |n| rows)",

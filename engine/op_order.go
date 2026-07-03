@@ -197,8 +197,11 @@ func OpOrderOffsetLimit(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVal
 			// stats: flush final counts (sorted rows are yielded during the child
 			// drain above, via the lzYieldErr wrapper).
 			if lzVars != nil && lzVars.Ctx != nil && lzVars.Ctx.Stats != nil {
-				lzVars.Ctx.Stats.Counters[lzStatsBase+StatOrderRowsIn] = int64(lzStatRowsIn) // <== genCompiler:hide
+				lzVars.Ctx.Stats.Counters[lzStatsBase+StatOrderRowsIn] = int64(lzStatRowsIn)   // <== genCompiler:hide
 				lzVars.Ctx.Stats.Counters[lzStatsBase+StatOrderRowsOut] = int64(lzStatRowsOut) // <== genCompiler:hide
+				if limit < math.MaxInt64 {                                                     // A LIMIT is a real output-row denominator. // <== genCompiler:hide
+					lzVars.Ctx.Stats.Totals[lzStatsBase+StatOrderRowsOut] = limit // <== genCompiler:hide
+				} // <== genCompiler:hide
 			}
 
 			if lzHeap != nil {

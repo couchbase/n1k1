@@ -35,7 +35,7 @@ var datastoreScanKinds = []string{
 
 // StatDatastoreScanRowsOut is the offset of the RowsOut counter within a
 // datastore-scan op's section. See DESIGN-stats.md.
-var StatDatastoreScanRowsOut = base.DefStat("RowsOut", datastoreScanKinds...)
+var StatDatastoreScanRowsOut = base.DefStat("RowsOut", "rows emitted to the parent", datastoreScanKinds...)
 
 // DatastoreScanYieldStatsEvery is how many rows a datastore scan yields between
 // live YieldStats checkpoints. Unlike the engine's OpScan, these scans have no
@@ -57,17 +57,29 @@ func countingYield(o *base.Op, vars *base.Vars, yieldVals base.YieldVals) base.Y
 		return yieldVals
 	}
 
-	counters := vars.Ctx.Stats.Counters
-	slot := o.StatsBase + StatDatastoreScanRowsOut
 	stats := vars.Ctx.Stats
+	counters := stats.Counters
+	totals := stats.Totals
+	slot := o.StatsBase + StatDatastoreScanRowsOut
 	yieldStats := vars.Ctx.YieldStats
 	every := int64(DatastoreScanYieldStatsEvery)
 
+	// n is per-invocation: DatastoreOp (hence this closure) is re-entered for each
+	// scan invocation, so for a nested-loop join's inner scan n resets to 0 every
+	// outer row -- RowsOut naturally counts the *current* inner pass, a bar that
+	// resets each iteration. The denominator (Totals) is the peak pass size seen
+	// so far, which lives in the shared array and thus persists across invocations,
+	// giving that resetting bar a stable 0..peak scale. A scan run once (a plain
+	// top-level scan) simply ends at RowsOut == peak == its row count.
 	var n int64
 
 	return func(vals base.Vals) {
 		n++
 		counters[slot] = n
+
+		if totals != nil && n > totals[slot] {
+			totals[slot] = n
+		}
 
 		if yieldStats != nil && n%every == 0 {
 			_ = yieldStats(stats)

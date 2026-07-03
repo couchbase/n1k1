@@ -31,22 +31,38 @@ import (
 // Counters[op.StatsBase+N], which is the constant offset the hot path uses.
 var StatsDescs = map[string][]string{}
 
-// DefStat registers an int64 counter named name for each of the given op Kinds
-// and returns its offset within an op's counter section. Declaring every counter
-// through DefStat -- one per line, across engine/ and glue/ -- keeps a single
-// source of truth (the offset constant and the registered name live together) and
-// makes the whole set greppable straight from source, no doc drift:
+// StatAbout maps a stat name to a short one-line description of what it measures.
+// It is populated by DefStat at package-init time (so the full glossary is known
+// at program startup, before main), and is used by the CLI's ".stats about" and
+// the footer glossary. Keyed by name because a name means the same thing across
+// ops by convention (see DESIGN-stats.md "Stat naming").
+var StatAbout = map[string]string{}
+
+// DefStat registers an int64 counter named name (with a one-line "about"
+// description) for each of the given op Kinds, and returns its offset within an
+// op's counter section. Declaring every counter through DefStat -- one per line,
+// across engine/ and glue/ -- keeps a single source of truth (the offset
+// constant, the registered name, and its description live together) and makes the
+// whole set greppable straight from source, no doc drift:
 //
-//	git grep '= base.DefStat'   # the counter catalog: one line each, name + op Kind(s)
+//	git grep '= base.DefStat'   # the counter catalog: name, about, op Kind(s)
 //	git grep 'DefStat("RowsOut' # every op that has a RowsOut counter
 //
 // It is idempotent: re-registering an already-present name returns the existing
 // offset without appending, so re-runs (e.g. the generated compiled path
-// re-executes an engine package's initializers) keep offsets stable. Kinds that
-// share a layout (group/distinct, the joinNL family, the datastore scans) are
-// passed together so their sections stay aligned; the returned offset is from the
-// first kind and applies to all.
-func DefStat(name string, kinds ...string) int {
+// re-executes an engine package's initializers) keep offsets stable. The first
+// non-empty about for a name wins (the convention is that a name means the same
+// thing everywhere, so all registrations pass the same about). Kinds that share a
+// layout (group/distinct, the joinNL family, the datastore scans) are passed
+// together so their sections stay aligned; the returned offset is from the first
+// kind and applies to all.
+func DefStat(name, about string, kinds ...string) int {
+	if about != "" {
+		if _, seen := StatAbout[name]; !seen {
+			StatAbout[name] = about
+		}
+	}
+
 	off := -1
 
 	for _, k := range kinds {
@@ -97,6 +113,18 @@ type Stats struct {
 	Counters []int64
 	Index    map[string]int // "opId:statName" -> index into Counters.
 	Ops      []StatsOpInfo  // Per-op sections, in layout (pre-order) order.
+
+	// Totals is a parallel denominator/estimate for each counter (same length
+	// and indexing as Counters), used to drive progress bars: a bar for slot i is
+	// Counters[i] / Totals[i]. A Totals[i] of 0 means "no estimate" -> render a
+	// spinner/plain number, not a bar. Estimates come from several sources (see
+	// DESIGN-stats.md "Estimates & progress bars"): a query LIMIT, a scan's
+	// self-observed peak (which lets a re-run inner op -- e.g. a nested-loop
+	// join's inner scan -- show a bar that *resets* each outer iteration), the
+	// planner's cardinality when cost-based stats exist, or propagation from a
+	// child. Because a counter may reset (a re-run op) while its total holds, a
+	// bar here is NOT necessarily monotonic.
+	Totals []int64
 }
 
 // LayoutStats walks the op tree once (pre-order), assigns each op the base
@@ -141,6 +169,8 @@ func LayoutStats(root *Op) *Stats {
 	if len(s.Counters) == 0 {
 		return nil
 	}
+
+	s.Totals = make([]int64, len(s.Counters)) // Denominators; 0 = no estimate.
 
 	return s
 }

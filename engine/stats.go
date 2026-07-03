@@ -21,29 +21,29 @@ import (
 // constant (used by the op's hot path). To list every counter straight from the
 // source (no doc drift):
 //
-//	git grep '= base.DefStat'   # the counter catalog across engine/ and glue/
+//	git grep '= base.DefStat'   # the counter catalog: name, about-string, op Kind(s)
 //	git grep 'DefStat("RowsOut' # every op that has a RowsOut counter
 //
 // See DESIGN-stats.md "Stat naming" for the naming rules (Noun-first; monotonic
 // is the unmarked default; a gauge takes a "Cur" suffix, a high-water "Peak").
 // All counters below are monotonic.
 var (
-	StatScanRowsOut = base.DefStat("RowsOut", "scan")
+	StatScanRowsOut = base.DefStat("RowsOut", "rows emitted to the parent", "scan")
 
-	StatFilterRowsIn  = base.DefStat("RowsIn", "filter")  // rows examined
-	StatFilterRowsOut = base.DefStat("RowsOut", "filter") // rows passing the predicate
+	StatFilterRowsIn  = base.DefStat("RowsIn", "input rows the operator consumed", "filter")
+	StatFilterRowsOut = base.DefStat("RowsOut", "rows emitted to the parent", "filter")
 
-	StatGroupRowsIn    = base.DefStat("RowsIn", "group", "distinct")    // rows aggregated
-	StatGroupGroupsOut = base.DefStat("GroupsOut", "group", "distinct") // distinct groups
+	StatGroupRowsIn    = base.DefStat("RowsIn", "input rows the operator consumed", "group", "distinct")
+	StatGroupGroupsOut = base.DefStat("GroupsOut", "distinct groups (or DISTINCT rows) emitted", "group", "distinct")
 
-	StatOrderRowsIn  = base.DefStat("RowsIn", "order-offset-limit")  // rows into sort/limit
-	StatOrderRowsOut = base.DefStat("RowsOut", "order-offset-limit") // rows after offset/limit
+	StatOrderRowsIn  = base.DefStat("RowsIn", "input rows the operator consumed", "order-offset-limit")
+	StatOrderRowsOut = base.DefStat("RowsOut", "rows emitted to the parent", "order-offset-limit")
 
 	// joinNL family: Probes counts inner-loop row visits (|left| x
 	// |right-per-left|) -- the "exploding join" work signal that spins even when
 	// RowsOut stays small. See DESIGN-stats.md.
-	StatJoinNLRowsLeft = base.DefStat("RowsLeft", joinNLKinds...) // left-driver (outer) rows
-	StatJoinNLProbes   = base.DefStat("Probes", joinNLKinds...)   // inner-loop row visits
+	StatJoinNLRowsLeft = base.DefStat("RowsLeft", "outer (left) rows driving a nested-loop join", joinNLKinds...)
+	StatJoinNLProbes   = base.DefStat("Probes", "inner-loop row visits -- join work (|left|x|right|)", joinNLKinds...)
 )
 
 // joinNLKinds are the op Kinds handled by OpJoinNestedLoop; they share a layout.

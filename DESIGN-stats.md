@@ -284,20 +284,42 @@ modes):
   (`countingYield` in `glue/stats.go`), since the CLI's real file reads go through
   those, not the engine's `OpScan`; that wrapper also drives a live `YieldStats`
   checkpoint every 1024 rows (these scans have no built-in per-row checkpoint).
-- **Single source of truth + greppable.** Every counter is one `base.DefStat(name,
-  kinds…)` line (in `engine/stats.go` and `glue/stats.go`) that defines both the
-  offset constant and the registered name together, so they can't drift. To list
-  every counter straight from source (no doc drift): **`git grep '= base.DefStat'`**
-  — one line per counter, across engine and glue, each showing its name and op
-  Kind(s) (`git grep 'DefStat("RowsOut'` finds every op with a RowsOut). `DefStat` is
-  idempotent, so the compiled path's re-run of an engine package's initializers
+- **Single source of truth + greppable + self-documenting.** Every counter is one
+  `base.DefStat(name, about, kinds…)` line (in `engine/stats.go` and
+  `glue/stats.go`) that defines the offset constant, the registered name, **and a
+  one-line description** together, so they can't drift. To list every counter
+  straight from source (no doc drift): **`git grep '= base.DefStat'`** — one line
+  per counter, across engine and glue, each showing its name, description and op
+  Kind(s) (`git grep 'DefStat("RowsOut'` finds every op with a RowsOut). `DefStat`
+  is idempotent, so the compiled path's re-run of an engine package's initializers
   doesn't double-register.
+- **Descriptions are known at startup, and surfaced at runtime.** `DefStat` runs in
+  package-var initializers, so the full catalog — names, descriptions
+  (`base.StatAbout`), kinds — is populated before `main`. The CLI exposes it:
+  `.stats about` prints the whole glossary (every counter, aligned, alphabetized),
+  and the `-stats` footer appends a **compact glossary of just the stats shown**
+  (alphabetized, `name: description`, concatenated and wrapped to a few lines), so
+  the table is self-explanatory without a lookup.
 - **`glue`/CLI opt-in, live.** `Session.CollectStats` lays out the counters and
   returns them as `Result.Stats`; `Session.OnStats` receives the live `*Stats` at
-  each checkpoint. The CLI exposes `-stats` and `.stats [on|off]`: it prints a
-  per-operator footer (an indented op tree with each op's counters), and on a TTY
-  redraws it live (throttled ~10 Hz, in place, on stderr) while the query runs.
-  Off by default → zero cost.
+  each checkpoint. The CLI exposes `-stats` and `.stats [on|off]`, and on a TTY
+  redraws the display live (throttled ~10 Hz, in place, on stderr) while the query
+  runs. Off by default → zero cost.
+- **Aligned columnar display.** The footer is a table, not `Key=Val` soup: a
+  tree-indented `op` column, then one **right-aligned numeric column per stat name
+  shared by ≥2 operators** (so a value repeated down the plan — `RowsOut`, `Probes`
+  — lines up for easy comparison), then a trailing free-form `misc` column for the
+  one-off stats (`GroupsOut`). A counter with a known estimate renders `cur/total`.
+  Example:
+  ```
+  op                          RowsIn  RowsOut  misc
+  order-offset-limit               1      1/5
+    group                          5           GroupsOut=1
+      filter                       6        5
+        datastore-scan-records              6/6
+  glossary: GroupsOut: distinct groups (or DISTINCT rows) emitted
+            RowsIn: input rows the operator consumed  ·  RowsOut: rows emitted to the parent
+  ```
 - Nil `Ctx.Stats` ⇒ the zero-cost off path (unchanged default).
 
 Not yet wired (follow-ups): `project`/`union`/`window` and hash-join counters;
@@ -306,6 +328,46 @@ Not yet wired (follow-ups): `project`/`union`/`window` and hash-join counters;
 flush once at completion today, so mid-query they read 0 while the scan ticks); the
 richer views/screens (`.stats view plan`, racing bars, DVR) and `EXPLAIN
 PRICE`/`COST` over this core; and the `StatKind` gauge/peak marker.
+
+### Estimates & progress bars
+
+Progress bars need a **denominator**. The counter core carries one:
+`Stats.Totals` is a parallel `[]int64` (same length/indexing as `Counters`), where
+`Totals[i]` is the estimate for counter `i` and `0` means *indeterminate* (render a
+spinner or a plain number, not a bar). A bar for slot `i` is `Counters[i] /
+Totals[i]`; the CLI table shows this compactly as `cur/total`.
+
+**Bars need not be monotonic — and shouldn't be.** An operator that is *re-run*
+resets its counter each invocation, which is exactly the desired UX for a
+nested-loop join's inner scan: its bar fills 0→N, snaps back to 0, and fills again
+per outer row. This falls out of the model for free — `DatastoreOp` (hence
+`countingYield`) is re-entered per invocation, so the inner scan's `RowsOut`
+counter naturally counts the *current* pass. The denominator is the **self-observed
+peak** pass size, kept in the shared `Totals` (so it persists across invocations
+and gives the resetting bar a stable 0..peak scale). No estimate is needed up front
+— it self-calibrates after the first pass. A scan run once simply ends at
+`cur == peak` (100%).
+
+Where estimates come from, in rough order of availability:
+- **Self-observed peak** (implemented) — for a re-run op, the largest pass seen so
+  far; drives the resetting inner-loop bar above, needs no planner input.
+- **A query `LIMIT`** (implemented) — a hard denominator for the top operator's
+  output rows: `order-offset-limit`'s `RowsOut` total is the `LIMIT`, so the final
+  result bar fills toward it. Cheap and exact.
+- **Planner cardinality** — cbq plan operators expose `Cardinality()`; when
+  cost-based stats exist it's a real row estimate per op. It is often `0` on the
+  file datastore (no `UPDATE STATISTICS`), so treat it as best-effort: use it when
+  `> 0`, else fall back to indeterminate.
+- **Manifest doc/byte counts** (`DESIGN-data.md §5`) — a scan's total rows/bytes
+  from the keyspace manifest, the classic scan-progress denominator; lands with
+  that work.
+- **Propagation** — a parent can borrow a child's estimate (a filter's output ≤ its
+  input; a project's output = its input), so an estimate at a scan flows upward.
+
+The bar itself is render-side: the CLI shows `cur/total` in the aligned table;
+richer front-ends (racing bars, Sankey edges) consume the same `Counters`/`Totals`
+pair. A future `StatKind` (counter vs. gauge) would let a renderer pick a rising
+sparkline vs. a resetting needle without inferring it from re-run behavior.
 
 ## Delivery: getting stats to the client — the approaches
 
