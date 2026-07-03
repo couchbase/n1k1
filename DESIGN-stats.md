@@ -236,6 +236,25 @@ working in **both**:
   placeholder modules are what let a worktree build the `n1ql` path at all). The
   suite is the only check that exercises the *compiled* counters at runtime; the
   `engine` unit tests only cover the interpreter.
+
+> **KNOWN LIMITATION — compiled path currently has NO stats (TODO).** The counter
+> lines above are all marked `// <== genCompiler:hide`, so `cmd/intermed_build`
+> omits them from `intermed/` and the compiled path collects nothing. This is a
+> stopgap: the *compiler-test* codegen (`test/emit.OpToLines`) inlines the whole
+> op tree into one function, and a per-op local counter (`lzStatRowsOut`) declared
+> at op-entry but incremented inside the yield closure gets **cleared** when that
+> closure is inlined at a child's call site (`clearFuncLines` keeps only lifted
+> `var X = Y` idioms) → `undefined: lzStatRowsOut`. Naively fixing it surfaces two
+> more codegen gaps: a plain `var X = 0` collides across sibling ops (redeclared),
+> and the flush line carries *two* lifted vars (`lzStatsBase` + a counter) which
+> the `varLift` format-arg path mis-aligns (`lzStatRowsIn%!s(int=0)`). So stats are
+> interpreter-only for now (the CLI's live progress runs on the interpreter, so no
+> user-visible loss). TO RE-ENABLE in the compiled path: drop the
+> `genCompiler:hide` markers and make the counters survive inlining — give each a
+> path-unique name via `// <== varLift: lzStat… by path` (as `lzValsReuse` does) AND
+> teach `varLift` to align format args when several lifted vars share one line.
+> Scans are exempt: they compile to a `glue.DatastoreOp` island, and `countingYield`
+> already tracks their rows out in both modes.
 - **Single-writer slots need no atomics — today.** Each op instance's section is
   written by one goroutine (a scan→filter→group pipeline all runs in one
   goroutine; only `Stage`/`UNION` actors split goroutines, and those are distinct

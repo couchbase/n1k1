@@ -23,21 +23,24 @@ func OpFilter(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 		exprFunc :=
 			MakeExprFunc(lzVars, o.Children[0].Labels, o.Params, pathNextF, "FF") // !lz
 
-		lzStatRowsIn := 0          // stats: rows examined.
-		lzStatRowsOut := 0         // stats: rows passing the predicate.
-		lzStatsBase := o.StatsBase // stats: baked as a literal in the compiled path.
+		// Stats counters are genCompiler:hide'd -> interpreter-only for now; the
+		// compiled (intermed) path collects no stats yet. See DESIGN-stats.md
+		// "KNOWN LIMITATION -- compiled path currently has NO stats (TODO)".
+		lzStatRowsIn := 0          // stats: rows examined. // <== genCompiler:hide
+		lzStatRowsOut := 0         // stats: rows passing the predicate. // <== genCompiler:hide
+		lzStatsBase := o.StatsBase // stats: baked as a literal in the compiled path. // <== genCompiler:hide
 
 		lzYieldValsOrig := lzYieldVals
 
 		lzYieldVals = func(lzVals base.Vals) {
-			lzStatRowsIn++ // stats: local counter, flushed when the scan completes.
+			lzStatRowsIn++ // stats: local counter, flushed when the scan completes. // <== genCompiler:hide
 
 			var lzVal base.Val
 
 			lzVal = exprFunc(lzVals, lzYieldErr) // <== emitCaptured: pathNextF "FF"
 
 			if base.ValTruthy(lzVal) {
-				lzStatRowsOut++ // stats
+				lzStatRowsOut++ // stats // <== genCompiler:hide
 
 				lzYieldValsOrig(lzVals) // <== emitCaptured: path ""
 			}
@@ -49,8 +52,8 @@ func OpFilter(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 		// stats: flush final counts once the child has drained.
 		if lzVars != nil && lzVars.Ctx != nil && lzVars.Ctx.Stats != nil {
-			lzVars.Ctx.Stats.Counters[lzStatsBase+StatFilterRowsIn] = int64(lzStatRowsIn)
-			lzVars.Ctx.Stats.Counters[lzStatsBase+StatFilterRowsOut] = int64(lzStatRowsOut)
+			lzVars.Ctx.Stats.Counters[lzStatsBase+StatFilterRowsIn] = int64(lzStatRowsIn) // <== genCompiler:hide
+			lzVars.Ctx.Stats.Counters[lzStatsBase+StatFilterRowsOut] = int64(lzStatRowsOut) // <== genCompiler:hide
 		}
 	}
 }
