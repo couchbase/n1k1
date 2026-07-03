@@ -192,3 +192,45 @@ Notes / gotchas learned:
   ambiguity — constant no-FROM cases are single-row by construction).
 - **Provenance matters.** `case_gsi_*.json` are regenerable from the fork via
   `import_gsi_cases.py`; re-run it after a fork bump to refresh.
+
+## Concurrency testing: run the suite under the `-race` detector
+
+n1k1 has enough real concurrency that Go's race detector earns its keep as a
+periodic check, not just a nicety:
+
+- **Concurrent actors.** `base.Stage` spawns `NumActors` goroutines (UNION ALL
+  runs one contributor per child today; parallel scans / parallel `GROUP BY`
+  shards are on the roadmap). We've already been bitten once — the
+  `subq-cache-race` fix guarded the subquery-compile cache against UNION ALL's
+  concurrent actors.
+- **Shared, lock-free-by-design state.** The stats counter core
+  (`DESIGN-stats.md`) is a single flat `[]int64` that ops bump *without atomics*,
+  justified by "each op instance writes only its own slots (single writer)". That
+  invariant is exactly what `-race` verifies: if two goroutines ever write the same
+  slot (e.g. same-op parallelism lands without the per-`(op,actor)` split), it
+  reports the write/write race instead of silently producing a wrong count.
+- **The borrowed-slice / copy-on-retain contract.** `YieldVals` requires consumers
+  to copy inputs they keep (see `base/base.go`; the scan reuses one per-row buffer,
+  `Stage` deep-copies at actor boundaries). A violation is *silent corruption*
+  today — and if a borrowed slice is read by one goroutine while another overwrites
+  the reused buffer, `-race` flags it directly. (This is the cheap way to harden the
+  retention sites before considering the mmap read path in `DESIGN-data.md`, whose
+  failure mode for the same bug class would be a delayed SIGBUS.)
+
+**How to run it** (in a bootstrapped worktree — see above — so `./test` builds):
+
+```sh
+CGO_ENABLED=1 go test -race -tags n1ql -count=1 ./engine/ ./base/ ./glue/ ./test/
+```
+
+- The detector only reports races that *actually occur* in a run, so exercise the
+  concurrent paths under it — UNION ALL, subqueries, and (when they land) parallel
+  scans / `GROUP BY` shards — not just single-pipeline queries.
+- It needs `cgo` and roughly 2–10× the time and memory of a normal run, so treat it
+  as a **periodic / pre-merge / CI** gate rather than a per-iteration check. The
+  interpreter and compiler suites both benefit; the compiled path's generated
+  goroutines are worth a race pass too.
+- `-race` catches *unsynchronized shared access*; it does **not** catch a
+  use-after-unmap (that surfaces as a SIGBUS on a normal run). The two are
+  complementary: `-race` for the shared-slot / borrowed-buffer invariants, ordinary
+  runs (and eventually mmap experiments) for lifetime faults.
