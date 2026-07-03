@@ -114,6 +114,28 @@ func (c *Conv) TopSet(p plan.Operator, op *base.Op) (*base.Op, error) {
 // GlueContext.InitSubqueries). May be nil.
 func (c *Conv) WithBindings() map[string]expression.With { return c.withBindings }
 
+// inlineProjectedSubqueryCTE rewrites a projection term that is exactly a
+// reference to a subquery-bound CTE (`SELECT w2` where `w2 AS (SELECT ...)`) into
+// that subquery expression, so it projects as {w2: <subquery result array>} --
+// the value semantics of selecting a materialized CTE. A CONSTANT CTE the
+// subquery references (e.g. `... IN w1`) resolves via withScope at eval time. Only
+// the top-level `SELECT <cte>` shape is handled (not `SELECT f(w2)`); non-CTE and
+// FROM-used / recursive / constant CTEs pass through unchanged.
+func (c *Conv) inlineProjectedSubqueryCTE(e expression.Expression) expression.Expression {
+	id, ok := e.(*expression.Identifier)
+	if !ok {
+		return e
+	}
+	w, ok := c.withBindings[id.Identifier()]
+	if !ok || w.IsRecursive() || c.withFromUsed[id.Identifier()] {
+		return e
+	}
+	if _, isSubq := w.Expression().(expression.Subquery); !isSubq {
+		return e // a constant CTE is handled by withScope, not inlined
+	}
+	return w.Expression()
+}
+
 // WithScopeBindings returns the WITH bindings eligible for the eval-time
 // withScope (a CTE referenced as a variable, e.g. `x IN cte`): all bindings
 // EXCEPT those consumed as a FROM/JOIN source (expr-scan handles those, and
@@ -1066,7 +1088,7 @@ func (c *Conv) VisitInitialProject(o *plan.InitialProject) (interface{}, error) 
 			op.Params = append(op.Params, []interface{}{"labelPath", lbl})
 		} else {
 			op.Params = append(op.Params,
-				[]interface{}{"exprTree", rt.Expression()})
+				[]interface{}{"exprTree", c.inlineProjectedSubqueryCTE(rt.Expression())})
 		}
 	}
 
