@@ -1616,12 +1616,20 @@ func ExprFieldPath(expr expression.Expression) (rv []string, ok bool) {
 
 	visit = func(e expression.Expression) bool {
 		if f, ok := e.(*expression.Field); ok {
-			ok = visit(f.First())
-			if !ok {
+			// Only a STATIC field step (`a.b`, where Second is a *FieldName) is a
+			// path component. A DYNAMIC field (`a.[expr]` / `a.[$p]`, where Second is
+			// an arbitrary expression) can't be a static path -- its name is computed
+			// per row -- so bail: the caller then uses the general expr.Evaluate path,
+			// which navigates the dynamic field correctly (cbq's Field.Evaluate).
+			fn, isFieldName := f.Second().(*expression.FieldName)
+			if !isFieldName {
+				return false
+			}
+			if !visit(f.First()) {
 				return false
 			}
 
-			rv = append(rv, f.Second().Alias())
+			rv = append(rv, fn.Alias())
 		} else if i, ok := e.(*expression.Identifier); ok {
 			rv = append(rv, i.Identifier())
 		} else {
