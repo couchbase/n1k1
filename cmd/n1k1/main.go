@@ -27,6 +27,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
+	"runtime/pprof"
 	"strings"
 
 	"github.com/couchbase/n1k1/cmd"
@@ -68,6 +70,8 @@ func main() {
 		formatsFlag = flag.String("formats", "", "restrict files scanned to a comma-separated set (all|json|jsonl|csv|tsv|extract|doc|text|image|video|gzip|recurse); empty or 'all' = everything")
 		metaFlag    = flag.String("meta", "auto", "add a _meta sub-object (path/name/ext/size/mtime) to records: on|off|auto (auto = extracted docs only)")
 		verFlag     = flag.Bool("version", false, "print version + build info (incl. dependency SHAs) and exit")
+		cpuProfile  = flag.String("profile-cpu", "", "write a CPU profile to this file (go tool pprof)")
+		memProfile  = flag.String("profile-mem", "", "write a memory/alloc profile to this file at exit (go tool pprof)")
 		indexFlag   = flag.String("index", "lazy", "use catalog (secondary/FTS) indexes: "+
 			"lazy (default; build each on first use) | eager (build all up front)"+
 			" | off (ignore the catalog; always full-scan)")
@@ -226,6 +230,39 @@ func main() {
 		if _, e := os.Stat(initFile); e == nil {
 			c.readFile(initFile)
 		}
+	}
+
+	// -profile-cpu / -profile-mem: standard go-tool-pprof profiles around the run
+	// below. The mem profile is written at exit (deferred, after a GC so inuse is
+	// current); alloc_space in it is cumulative, which is what shows where a query's
+	// allocations come from -- pair with -stats=final. (os.Exit paths skip these
+	// defers, but the -c/-f/pipe/REPL run paths return normally.)
+	if *cpuProfile != "" {
+		f, ferr := os.Create(*cpuProfile)
+		if ferr != nil {
+			fmt.Fprintf(os.Stderr, "%s: profile-cpu: %v\n", prog, ferr)
+			os.Exit(1)
+		}
+		defer f.Close()
+		if serr := pprof.StartCPUProfile(f); serr != nil {
+			fmt.Fprintf(os.Stderr, "%s: profile-cpu: %v\n", prog, serr)
+			os.Exit(1)
+		}
+		defer pprof.StopCPUProfile()
+	}
+	if *memProfile != "" {
+		defer func() {
+			f, ferr := os.Create(*memProfile)
+			if ferr != nil {
+				fmt.Fprintf(os.Stderr, "%s: profile-mem: %v\n", prog, ferr)
+				return
+			}
+			defer f.Close()
+			runtime.GC() // update in-use stats; alloc_space is cumulative regardless
+			if werr := pprof.WriteHeapProfile(f); werr != nil {
+				fmt.Fprintf(os.Stderr, "%s: profile-mem: %v\n", prog, werr)
+			}
+		}()
 	}
 
 	switch {

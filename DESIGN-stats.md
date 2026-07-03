@@ -319,6 +319,17 @@ modes):
   end sample is **pinned the moment execution returns** — before result rendering,
   which itself allocates — so the footer's `allocated`/`GCs` reflect the statement,
   not the display, in both `on` and `final`.
+- **Profiled to confirm the source (`-profile-mem`).** The CLI has `-profile-cpu`
+  / `-profile-mem` (standard `go tool pprof`). On the 3-way `orders` join (~931 MB
+  *allocated*, but only ~3 MB *in-use* at exit — pure churn, no leak/growth), the
+  alloc profile is **~79% `glue.DatastoreFetch`**: the nested-loop join re-fetches
+  docs from disk hundreds of thousands of times, and the file datastore's
+  fetch-by-key opens + `stat`/`readdir`s + re-parses (`os.readFileContents`,
+  `syscall.ByteSliceFromString`, `encoding/json`, cbq `value` boxing) each time.
+  The **stats subsystem does not appear in the profile at all** (`statBump` and
+  friends allocate nothing) — confirming `-stats` is not the memory driver; the
+  churn is intrinsic to the fetch path. (A key→path map or a fetch cache would cut
+  it — out of scope here.)
 - **Everything animates, not just scans.** Two things make the whole tree move
   during a query, not just fill in at the end: (1) every op writes its counters to
   the shared array **per row** (`statBump`), reset at each op invocation
