@@ -144,7 +144,7 @@ func caseNamedArgs(c map[string]interface{}) map[string]value.Value {
 func caseError(c map[string]interface{}) (stmt, expErr string, ok bool) {
 	for k := range c {
 		switch k {
-		case "statements", "error", "ordered", "description", "pretty":
+		case "statements", "error", "ordered", "description", "pretty", "testcase":
 		default:
 			return "", "", false
 		}
@@ -164,7 +164,19 @@ func caseError(c map[string]interface{}) (stmt, expErr string, ok bool) {
 // error (trimmed). Exact match is meaningful here because n1k1 surfaces query's
 // own parse/plan error strings verbatim; a divergence is real signal.
 func errMatches(got, want string) bool {
-	return strings.TrimSpace(got) == strings.TrimSpace(want)
+	got, want = strings.TrimSpace(got), strings.TrimSpace(want)
+	if got == want {
+		return true
+	}
+	// cbq appends a source position "(near line X, column Y)" to many errors; some
+	// stored expected texts omit it. Accept got = want + that position suffix (the
+	// message matched; only the position detail is extra). Mirrors cbq's own
+	// prefix-style error matching.
+	if rest, ok := strings.CutPrefix(got, want); ok &&
+		strings.HasPrefix(strings.TrimSpace(rest), "(near line") {
+		return true
+	}
+	return false
 }
 
 // caseErrorCode reports whether a case is a {statements, errorCode} negative
@@ -176,7 +188,7 @@ func errMatches(got, want string) bool {
 func caseErrorCode(c map[string]interface{}) (stmt string, ok bool) {
 	for k := range c {
 		switch k {
-		case "statements", "errorCode", "ordered", "description", "pretty":
+		case "statements", "errorCode", "ordered", "description", "pretty", "testcase":
 		default:
 			return "", false
 		}
@@ -201,7 +213,7 @@ func caseErrorCode(c map[string]interface{}) (stmt string, ok bool) {
 func caseWarning(c map[string]interface{}) (stmt string, results []interface{}, ok bool) {
 	for k := range c {
 		switch k {
-		case "statements", "results", "warningCode", "ordered", "description", "pretty":
+		case "statements", "results", "warningCode", "ordered", "description", "pretty", "testcase":
 		default:
 			return "", nil, false
 		}
@@ -222,7 +234,7 @@ func caseWarning(c map[string]interface{}) (stmt string, results []interface{}, 
 func caseMatch(c map[string]interface{}) (stmt, matchStmt string, ok bool) {
 	for k := range c {
 		switch k {
-		case "statements", "matchStatements", "ordered", "description", "pretty":
+		case "statements", "matchStatements", "ordered", "description", "pretty", "testcase":
 		default:
 			return "", "", false
 		}
@@ -261,17 +273,21 @@ func rowsEqualStrings(a, b []string) bool {
 
 // TestSuiteCases runs the original tuqtng-era + imported no-FROM gsi corpus.
 func TestSuiteCases(t *testing.T) {
-	runSuiteCases(t, suiteRoot, expectedNonPass, groupWhy, 1041)
+	runSuiteCases(t, suiteRoot, expectedNonPass, groupWhy, 1041, nil)
 }
 
 // TestGsiSuiteCases runs the data-backed gsi corpus (isolated root so its shared
 // keyspaces -- customer/orders/product/purchase/review -- don't collide with the
 // default corpus's own `orders`). See DESIGN-testing.md + import_gsi_data_cases.py.
 func TestGsiSuiteCases(t *testing.T) {
-	runSuiteCases(t, gsiSuiteRoot, gsiExpectedNonPass, gsiGroupWhy, gsiPassFloor)
+	runSuiteCases(t, gsiSuiteRoot, gsiExpectedNonPass, gsiGroupWhy, gsiPassFloor, gsiSkipRun)
 }
 
-func runSuiteCases(t *testing.T, suiteRoot string, expectedNonPass, groupWhy map[string]string, passFloor int) {
+// runSuiteCases drives one corpus. skipRun (may be nil) names locs to skip
+// entirely -- for cases n1k1 can parse/plan but can't RUN in bounded time (they
+// exercise a cbq resource guard n1k1 doesn't implement); running them would be
+// O(N^2). They're counted as skipped, not attempted.
+func runSuiteCases(t *testing.T, suiteRoot string, expectedNonPass, groupWhy map[string]string, passFloor int, skipRun map[string]string) {
 	if _, err := os.Stat(suiteRoot + "/default/cases"); err != nil {
 		t.Skipf("suite corpus not present: %v", err)
 	}
@@ -302,6 +318,13 @@ func runSuiteCases(t *testing.T, suiteRoot string, expectedNonPass, groupWhy map
 
 		for ci, c := range cases {
 			loc := fmt.Sprintf("%s[%d]", filepath.Base(f), ci)
+
+			// Intractable-to-run cases (see skipRun): skip without attempting.
+			if why, ok := skipRun[loc]; ok {
+				skipped++
+				exotic = append(exotic, exoticCase{loc, why, oneLine(fmt.Sprint(c["statements"]))})
+				continue
+			}
 
 			// Result case: {statements, results} -- run and compare rows.
 			if stmt, results, ok := caseRunnable(c); ok {

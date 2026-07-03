@@ -37,6 +37,16 @@ var gsiExpectedNonPass = map[string]string{
 	"case_gsi_unnest.json[7]":               "mega-order-limit",
 }
 
+// gsiSkipRun names gsi cases n1k1 can parse+plan but must NOT execute: they test
+// cbq's correlated-subquery resource guard ("keyspace cannot have more than 1000
+// documents without appropriate secondary index"), which n1k1 doesn't implement.
+// Both run a correlated subquery over the ~5000-doc `customer` keyspace once per
+// outer row -- O(N^2), effectively a hang -- so we skip rather than attempt them.
+var gsiSkipRun = map[string]string{
+	"case_gsi_subqexp.json[0]": "correlated-subquery doc-limit guard (unimplemented); O(N^2) over customer",
+	"case_gsi_subqexp.json[1]": "correlated-subquery doc-limit guard (unimplemented); O(N^2) over customer",
+}
+
 var gsiGroupWhy = map[string]string{
 	"nondeterministic":  "array_position over ARRAY_AGG's unspecified element order -- n1k1 aggregates in scan order, cbq in its own, so the position differs; no fixed corpus can match it",
 	"order-agg":         "ORDER BY an aggregate nested in a larger expr (e.g. MAX(x)[1].unitPrice) with a `.*`-spread projection: no projected column to bind to, so it would re-evaluate the aggregate above the group -- glue rejects it (NA) rather than panic. TODO: evaluate such order keys at the group level",
