@@ -135,19 +135,35 @@ func DatastoreFetch(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 		subPaths = subPathser.SubPaths()
 	}
 
-	// Native fast-path eligibility, resolved once: the classic cbq file keyspace
-	// layout (<root>/<ns>/<keyspace>/<key>.json), and no subpath projection (which
-	// only cbq's Fetch honors -- yielding the whole doc would be a superset). A
-	// synthetic flat-root (RecordsDir) or single-file (RecordsFile) keyspace is not
-	// a directory of standalone <key>.json files, so it stays on the cbq path.
+	// Native byte-path directories, resolved once. A key is dispatched by its form
+	// (below): a container record id `<relpath>#<line>@<offset>` seeks into a
+	// multi-doc file under containerDir; a plain key reads `<dir>/<key>.json` under
+	// nativeDir. They usually resolve to the same keyspace directory -- the id form
+	// picks the reader -- so a keyspace holding both standalone .json docs and .jsonl
+	// containers works. Anything neither path handles falls back to cbq's Fetch.
+	//
+	//   - nativeDir (classic <key>.json): only for a real cbq file keyspace
+	//     (<root>/<ns>/<keyspace>) with no subpath projection (which only cbq's
+	//     Fetch honors -- yielding the whole doc would be a superset). A synthetic
+	//     flat/single-file keyspace has no <key>.json files, so it stays "".
+	//   - containerDir (multi-doc records): the keyspace's data directory, for any
+	//     keyspace -- flat (RecordsDir / the RecordsFile's dir) or classic
+	//     (keyspaceDir). Set regardless of subpaths: cbq can't fetch a container
+	//     record at all, so yielding the whole doc is the only correct option.
 	nativeDir := ""
-	if DatastoreFetchNative && len(subPaths) == 0 {
+	containerDir := ""
+	if DatastoreFetchNative {
 		_, isFlat := keyspace.(interface{ RecordsDir() string })
 		_, isFile := keyspace.(interface{ RecordsFile() string })
 		if !isFlat && !isFile {
 			if dir, err := keyspaceDir(keyspace); err == nil {
-				nativeDir = dir
+				if len(subPaths) == 0 {
+					nativeDir = dir
+				}
+				containerDir = dir
 			}
+		} else {
+			containerDir = containerBaseDir(keyspace)
 		}
 	}
 
@@ -164,13 +180,26 @@ func DatastoreFetch(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 
 	var vals base.Vals
 
-	var keys []string // Same len() as batch.
+	var keys []string    // Same len() as batch.
+	var cbqKeys []string // Keys neither native path handled; deferred to cbq.
 
 	fetchMap := map[string]value.AnnotatedValue{}
 
 	var docBuf []byte // Reused across keys on the native path (single drain goroutine).
 	var idBuf []byte
 	var buf bytes.Buffer // Reused for cbq-fallback WriteJSON.
+
+	useCache := DatastoreFetchCache && gctx != nil
+
+	// yieldDoc emits one fetched doc: "." = doc bytes, "^id" = the key as canonical
+	// JSON (a quoted string, so Convert reads it as a string; the incoming key can
+	// arrive unquoted from an ON KEYS split).
+	yieldDoc := func(doc []byte, key string) {
+		idBuf = strconv.AppendQuote(idBuf[:0], key)
+		vals = append(vals[:0], base.Val(doc)) // Label ".".
+		vals = append(vals, idBuf)             // Label "^id".
+		yieldVals(vals)
+	}
 
 	stage.ProcessBatchesFromActors(func(batch []base.Vals) {
 		keys = keys[:0]
@@ -189,20 +218,52 @@ func DatastoreFetch(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 			keys = append(keys, key)
 		}
 
-		// ---- Native byte path: cache-hit, else read <dir>/<key>.json. ----
-		if nativeDir != "" {
-			useCache := DatastoreFetchCache && gctx != nil
+		cbqKeys = cbqKeys[:0]
 
-			for _, key := range keys {
-				if key == "" {
+		for _, key := range keys {
+			if key == "" {
+				continue
+			}
+
+			// ---- Container record: seek to the byte offset baked into the id. ----
+			// A key with an `@<offset>` suffix is a seekable multi-doc record.
+			if containerDir != "" {
+				if _, _, isContainer := parseContainerKey(key); isContainer {
+					var doc []byte
+					if useCache {
+						doc, _ = gctx.fetchCacheGet(containerDir, key) // Owned; nil on miss.
+					}
+					if doc == nil {
+						// Miss: parse `<relpath>#<line>@<offset>`, open the container file,
+						// seek to the record's byte offset, read its one line into the reused
+						// buffer, then cache an owned copy so a nested-loop join's re-fetches
+						// are hits.
+						b, ok2, err := readContainerRecord(containerDir, key, &docBuf)
+						if err != nil {
+							yieldErr(fmt.Errorf("DatastoreFetch (container), key %q: %v", key, err))
+							continue
+						}
+						if !ok2 || len(b) == 0 {
+							continue // Missing record => non-existent doc; skip (matches cbq).
+						}
+						doc = b // Borrowed from docBuf (valid until the next read)...
+						if useCache {
+							if cached := gctx.fetchCachePut(containerDir, key, b); cached != nil {
+								doc = cached // ...unless cached, then owned + stable for the request.
+							}
+						}
+					}
+					yieldDoc(doc, key)
 					continue
 				}
+			}
 
+			// ---- Classic byte path: cache-hit, else read <dir>/<key>.json. ----
+			if nativeDir != "" {
 				var doc []byte
 				if useCache {
 					doc, _ = gctx.fetchCacheGet(nativeDir, key) // Owned; nil on miss. No path built.
 				}
-
 				if doc == nil {
 					// Miss: resolve+guard the path (only here, not per hit), read the
 					// whole doc into the reused buffer (no per-read alloc), then cache
@@ -213,7 +274,6 @@ func DatastoreFetch(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 						yieldErr(fmt.Errorf("DatastoreFetch (native): invalid key %q", key))
 						continue
 					}
-
 					b, ok2, err := readWholeFileInto(p, &docBuf)
 					if err != nil {
 						yieldErr(fmt.Errorf("DatastoreFetch (native), key %q: %v", key, err))
@@ -222,7 +282,6 @@ func DatastoreFetch(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 					if !ok2 || len(b) == 0 {
 						continue // Missing / empty file => non-existent doc; skip (matches cbq).
 					}
-
 					doc = b // Borrowed from docBuf (valid until the next read)...
 					if useCache {
 						if cached := gctx.fetchCachePut(nativeDir, key, b); cached != nil {
@@ -230,16 +289,16 @@ func DatastoreFetch(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 						}
 					}
 				}
-
-				// "^id" must be canonical JSON (a quoted string) so Convert reads it
-				// as a string; the incoming key can arrive unquoted (ON KEYS split).
-				idBuf = strconv.AppendQuote(idBuf[:0], key)
-
-				vals = append(vals[:0], base.Val(doc)) // Label ".".
-				vals = append(vals, idBuf)             // Label "^id".
-
-				yieldVals(vals)
+				yieldDoc(doc, key)
+				continue
 			}
+
+			// Neither native path applies (a synthetic keyspace, or a subpath
+			// projection over classic <key>.json): defer to cbq's Fetch.
+			cbqKeys = append(cbqKeys, key)
+		}
+
+		if len(cbqKeys) == 0 {
 			return
 		}
 
@@ -251,13 +310,13 @@ func DatastoreFetch(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 			delete(fetchMap, k)
 		}
 
-		errs := keyspace.Fetch(keys, fetchMap, datastore.NULL_QUERY_CONTEXT, subPaths, nil /* projection */, false /* useSubDoc */)
+		errs := keyspace.Fetch(cbqKeys, fetchMap, datastore.NULL_QUERY_CONTEXT, subPaths, nil /* projection */, false /* useSubDoc */)
 		for _, err := range errs {
 			yieldErr(fmt.Errorf("DatastoreFetch, err: %v", err))
 		}
 
 		// Keep the same ordering as the batch.
-		for _, key := range keys {
+		for _, key := range cbqKeys {
 			if key != "" {
 				v, ok := fetchMap[key]
 				if ok && v != nil {
@@ -273,12 +332,7 @@ func DatastoreFetch(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 					jv := buf.Bytes()
 
 					if err == nil && len(jv) > 0 {
-						idBuf = strconv.AppendQuote(idBuf[:0], key)
-
-						vals = append(vals[:0], jv) // Label ".".
-						vals = append(vals, idBuf)  // Label "^id".
-
-						yieldVals(vals)
+						yieldDoc(jv, key)
 					}
 				}
 			}
@@ -340,4 +394,113 @@ func readWholeFileInto(p string, bufp *[]byte) (doc []byte, ok bool, err error) 
 	}
 
 	return (*bufp)[:nRead], true, nil
+}
+
+// containerBaseDir returns the directory a container keyspace's `<relpath>` record
+// ids are relative to: the walked directory for a RecordsDir keyspace, or the
+// file's own directory for a single RecordsFile keyspace -- matching how
+// records.Walk / records.File assign each record's id prefix, so a fetch resolves
+// the same path the scan named. Returns "" when the keyspace isn't a container.
+func containerBaseDir(keyspace datastore.Keyspace) string {
+	if rd, ok := keyspace.(interface{ RecordsDir() string }); ok && rd.RecordsDir() != "" {
+		return rd.RecordsDir()
+	}
+	if rf, ok := keyspace.(interface{ RecordsFile() string }); ok && rf.RecordsFile() != "" {
+		return filepath.Dir(rf.RecordsFile())
+	}
+	return ""
+}
+
+// parseContainerKey splits a seekable container record id
+// `<relpath>#<line>@<offset>` into its dir-relative file path and byte offset.
+// ok is false when the id has no `@<offset>` suffix -- a record in a compressed
+// (.gz/.zst), CSV, or JSON-array file, whose bytes aren't randomly seekable, so
+// key-based fetch of it isn't supported yet. Parses from the right (last '@',
+// then the '#' before it) so a `<relpath>` containing '#'/'@' still resolves.
+func parseContainerKey(key string) (relpath string, off int64, ok bool) {
+	at := strings.LastIndexByte(key, '@')
+	if at < 0 {
+		return "", 0, false
+	}
+	n, err := strconv.ParseInt(key[at+1:], 10, 64)
+	if err != nil || n < 0 {
+		return "", 0, false
+	}
+	h := strings.LastIndexByte(key[:at], '#')
+	if h <= 0 { // also rejects an empty relpath (h == 0)
+		return "", 0, false
+	}
+	return key[:h], n, true
+}
+
+// containerFilePath joins a container keyspace's base dir and a record's
+// dir-relative path, rejecting a path that escapes the dir (the same traversal
+// guard as docPath, so a crafted key can't read outside the keyspace).
+func containerFilePath(dir, relpath string) (string, bool) {
+	p := filepath.Join(dir, filepath.FromSlash(relpath))
+	if rel, e := filepath.Rel(dir, p); e != nil ||
+		rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return "", false
+	}
+	return p, true
+}
+
+// readContainerRecord resolves one container record: it parses key's
+// `<relpath>@<offset>`, opens the file, seeks to the record's byte offset, and
+// reads its single line into the reused buffer *bufp, returning the doc with
+// surrounding whitespace trimmed (matching the scan's Doc). ok is false -- with
+// no error -- for an unsupported (non-seekable) key or a missing file, both of
+// which the caller treats as a non-existent doc and skips.
+func readContainerRecord(dir, key string, bufp *[]byte) (doc []byte, ok bool, err error) {
+	relpath, off, ok := parseContainerKey(key)
+	if !ok {
+		return nil, false, nil
+	}
+	p, ok := containerFilePath(dir, relpath)
+	if !ok {
+		return nil, false, fmt.Errorf("invalid container key %q", key)
+	}
+	f, e := os.Open(p)
+	if e != nil {
+		if os.IsNotExist(e) {
+			return nil, false, nil
+		}
+		return nil, false, e
+	}
+	defer f.Close()
+
+	line, e := readLineAtInto(f, off, bufp)
+	if e != nil {
+		return nil, false, e
+	}
+	return bytes.TrimSpace(line), true, nil
+}
+
+// readLineAtInto seeks f to off and reads the one line beginning there into the
+// reused, growable buffer *bufp, returning it WITHOUT the trailing newline. Reads
+// in chunks (no per-call bufio allocation) until '\n' or EOF.
+func readLineAtInto(f *os.File, off int64, bufp *[]byte) ([]byte, error) {
+	if _, err := f.Seek(off, io.SeekStart); err != nil {
+		return nil, err
+	}
+	buf := (*bufp)[:0]
+	var chunk [8192]byte
+	for {
+		n, err := f.Read(chunk[:])
+		if n > 0 {
+			if i := bytes.IndexByte(chunk[:n], '\n'); i >= 0 {
+				buf = append(buf, chunk[:i]...)
+				*bufp = buf
+				return buf, nil
+			}
+			buf = append(buf, chunk[:n]...)
+		}
+		if err != nil {
+			if err == io.EOF {
+				*bufp = buf
+				return buf, nil
+			}
+			return nil, err
+		}
+	}
 }

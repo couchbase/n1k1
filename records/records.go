@@ -89,6 +89,14 @@ func innerExt(path string) string {
 	return ext
 }
 
+// isCompressed reports whether path carries a compression suffix (.gz/.zst),
+// i.e. its bytes are decompressed on read -- so a byte offset into the record
+// stream doesn't address the file's raw bytes and can't be sought.
+func isCompressed(path string) bool {
+	ext := strings.ToLower(filepath.Ext(path))
+	return ext == ".gz" || ext == ".zst"
+}
+
 // stem returns the file's base name with its format extension (and any
 // compression suffix) removed: "orders/order-1001.json" -> "order-1001",
 // "2025.jsonl.gz" -> "2025".
@@ -154,9 +162,14 @@ func OpenFile(path, idPrefix string) (Source, error) {
 	if err != nil {
 		return nil, err
 	}
+	// A byte offset into the stream is seekable only for an uncompressed file (a
+	// .gz/.zst offset is into the decompressed stream, which can't seek the
+	// compressed bytes). Gates the "@<offset>" id suffix (see newJSONLSource).
+	seekable := !isCompressed(path)
+
 	switch innerExt(path) {
 	case ".jsonl", ".ndjson":
-		return newJSONLSource(r, closers, idPrefix), nil
+		return newJSONLSource(r, closers, idPrefix, seekable), nil
 	case ".csv", ".tsv":
 		comma := ','
 		if innerExt(path) == ".tsv" {
@@ -196,25 +209,53 @@ type jsonlSource struct {
 	sc       *bufio.Scanner
 	closers  []io.Closer
 	idPrefix string
+	seekable bool   // append a byte-offset suffix to ids (uncompressed files only)
 	line     int    // 1-based line counter over input lines
+	off      int64  // cumulative bytes consumed (absolute file position)
+	tokOff   int64  // byte offset of the token from the most recent split call
 	idBuf    []byte // reused ID scratch
 }
 
-func newJSONLSource(r io.Reader, closers []io.Closer, idPrefix string) *jsonlSource {
+// newJSONLSource streams r as line-delimited JSON. seekable reports whether r is
+// the file's raw bytes (not a decompressing wrapper), i.e. whether a byte offset
+// into it is meaningful for random access -- when true, each record id carries an
+// "@<offset>" suffix so a key-based fetch can seek straight to the line (see
+// jsonlSource.Next and glue's container fetch). For a compressed file it is false
+// (an uncompressed-stream offset can't seek the compressed bytes).
+func newJSONLSource(r io.Reader, closers []io.Closer, idPrefix string, seekable bool) *jsonlSource {
+	s := &jsonlSource{closers: closers, idPrefix: idPrefix, seekable: seekable}
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024) // allow large records
-	return &jsonlSource{sc: sc, closers: closers, idPrefix: idPrefix}
+	// Wrap ScanLines to track each line's absolute byte offset without giving up
+	// the alloc-free borrow-the-buffer reads: the running sum of advance counts is
+	// the file position, and a line starts at that position before its own advance
+	// is applied (0-advance "need more data" calls leave tokOff untouched).
+	sc.Split(func(data []byte, atEOF bool) (advance int, token []byte, err error) {
+		advance, token, err = bufio.ScanLines(data, atEOF)
+		s.tokOff = s.off
+		s.off += int64(advance)
+		return advance, token, err
+	})
+	s.sc = sc
+	return s
 }
 
 func (s *jsonlSource) Next(rec *Record) (bool, error) {
 	for s.sc.Scan() {
 		s.line++
+		lineOff := s.tokOff // start-of-line offset for the token Scan just produced
 		b := bytes.TrimSpace(s.sc.Bytes())
 		if len(b) == 0 {
 			continue // skip blank lines
 		}
 		rec.Doc = b // borrowed from scanner
 		s.idBuf = appendRecordID(s.idBuf[:0], s.idPrefix, s.line-1)
+		if s.seekable {
+			// "@<offset>" of the line's first byte; fetch seeks here then TrimSpaces
+			// the line, matching Doc exactly even with leading/trailing whitespace.
+			s.idBuf = append(s.idBuf, '@')
+			s.idBuf = strconv.AppendInt(s.idBuf, lineOff, 10)
+		}
 		rec.ID = s.idBuf
 		return true, nil
 	}

@@ -60,8 +60,9 @@ func TestWalkMultiFileJSONL(t *testing.T) { // scenario C
 	if len(docs) != 8 {
 		t.Fatalf("want 8 event records, got %d (%v)", len(docs), ids)
 	}
-	// IDs are dir-relative path + record index within file.
-	want0 := "2026-01-01.jsonl#0"
+	// IDs are dir-relative path + record index within file, and (for a seekable
+	// uncompressed file) a trailing "@<byteOffset>" -- the first record is at 0.
+	want0 := "2026-01-01.jsonl#0@0"
 	if ids[0] != want0 {
 		t.Errorf("first id = %q, want %q", ids[0], want0)
 	}
@@ -79,7 +80,7 @@ func TestWalkRecursiveUnion(t *testing.T) { // scenario E
 	// A nested file's ID keeps its dir-relative path.
 	found := false
 	for _, id := range ids {
-		if id == "hostA/2026/01/data-0001.jsonl#0" {
+		if id == "hostA/2026/01/data-0001.jsonl#0@0" {
 			found = true
 		}
 	}
@@ -138,7 +139,7 @@ func TestFileSingleJSONL(t *testing.T) { // scenario B2
 	}
 	// The synthetic-ID prefix is the file's own base name (not a dir-relative
 	// path), plus the within-file record index.
-	if want := "2026-01-01.jsonl#0"; ids[0] != want {
+	if want := "2026-01-01.jsonl#0@0"; ids[0] != want {
 		t.Errorf("first id = %q, want %q", ids[0], want)
 	}
 }

@@ -22,6 +22,7 @@ package records
 //	auto -> the provider decides: extracted documents yes, structured data no.
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -137,9 +138,11 @@ func (m *metaSource) Next(rec *Record) (bool, error) {
 	return true, nil
 }
 
-// recordIndex extracts the trailing "#<n>" ordinal from a record id (e.g.
-// "events/day1.jsonl#3" -> 3). Returns false for a bare stem (one-doc-per-file),
-// which has no in-file position.
+// recordIndex extracts the "#<n>" ordinal from a record id (e.g.
+// "events/day1.jsonl#3" -> 3, "events/day1.jsonl#3@120" -> 3). Returns false for
+// a bare stem (one-doc-per-file), which has no in-file position. A seekable jsonl
+// id carries a trailing "@<byteOffset>" (see newJSONLSource) that is not part of
+// the ordinal, so parsing stops at it.
 func recordIndex(id []byte) (int, bool) {
 	h := -1
 	for i := len(id) - 1; i >= 0; i-- {
@@ -151,7 +154,11 @@ func recordIndex(id []byte) (int, bool) {
 	if h < 0 || h == len(id)-1 {
 		return 0, false
 	}
-	n, err := strconv.Atoi(string(id[h+1:]))
+	num := id[h+1:]
+	if at := bytes.IndexByte(num, '@'); at >= 0 {
+		num = num[:at] // drop the "@<offset>" suffix
+	}
+	n, err := strconv.Atoi(string(num))
 	if err != nil {
 		return 0, false
 	}

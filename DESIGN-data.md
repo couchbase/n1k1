@@ -513,13 +513,13 @@ results): **total allocation ~2.0 GB → ~917 MB (~54%), the fetch subtree
 ~1468 MB → ~377 MB (~74%), GCs 420 → 200.** `DatastoreFetchNative` (env
 `N1K1_FETCH_CBQ=1` forces the old path) toggles it for A/B.
 
-- **Fallbacks (still cbq `Fetch`).** A subpath projection was pushed down
-  (`SubPaths`), or the keyspace is a synthetic **flat-root** (`RecordsDir`) or
-  **single-file** (`RecordsFile`) keyspace — i.e. not a directory of standalone
-  `<key>.json` files. So a **container-backed** keyspace (docs inside a `.jsonl`
-  or `.gz`) never gets a bogus `<key>.json` native read; it stays on the cbq/scan
-  path (and cbq's `.json`-only Fetch can't fetch-by-key into a container either, so
-  those are scan-only today regardless).
+- **Fallbacks (still cbq `Fetch`).** Only reached when *neither* native reader
+  fits: a plain `<key>.json` key with a subpath projection pushed down
+  (`SubPaths` — cbq honors the projection), or a synthetic keyspace whose records
+  aren't byte-seekable (a single-doc `.json`, a `.gz`/csv container — see below).
+  A key is dispatched by its form: a container id `<relpath>#<line>@<offset>` seeks
+  into the multi-doc file, a plain key reads `<dir>/<key>.json`, so a directory
+  holding *both* resolves each correctly.
 - **Done: per-request doc cache (the "don't re-read" lever).** The residual after
   the byte path was ~377 MB of per-key file-open churn (`os.Open`/`Stat` →
   `syscall.ByteSliceFromString`, `os.newFile`) — the nested-loop join re-opening the
@@ -552,11 +552,24 @@ results): **total allocation ~2.0 GB → ~917 MB (~54%), the fetch subtree
   native fetch + both caches, **~2.0 GB → ~152 MB (~92%)**, GCs 420 → 31.
   `DatastoreScanCache` toggles it; env `N1K1_SCAN_NOCACHE=1` disables. Bounded by
   `DatastoreScanKeyCacheMax` (past it, list fresh, no caching).
-- **Container fetch is future work.** Fetch-by-key *into* a `.jsonl` needs a
-  manifest offset index (§5) + `ReadAt(buf, offset)` to read just that record;
-  a `.gz` can't be range-read (must decompress a stream), so it needs either full
-  decompression + an in-memory/segment index or a packed uncompressed segment. Both
-  are exactly the mmap-vs-`ReadAt` tradeoffs above, keyed off a manifest.
+- **Done: fetch-by-key into an (uncompressed) `.jsonl` container.** Rather than a
+  side manifest, the record's **byte offset is baked into its id** at scan time:
+  `records`' JSONL reader tracks each line's start offset and emits
+  `META().id` = `<relpath>#<line>@<offset>` for a seekable (uncompressed) file (it
+  tracks offsets alloc-free by summing a `bufio.ScanLines` wrapper's advances, so
+  the scan still borrows the scan buffer). `DatastoreFetch` then parses the
+  `@<offset>`, `os.Seek`s straight to it, and reads that one line into the reused
+  buffer — O(1) per key, no full-keyspace materialization — feeding the same
+  per-request doc cache, so a nested-loop join's re-fetches are map hits. This
+  makes `USE KEYS`, `ON KEYS` joins, and non-covering index-scan fetches work
+  against `.jsonl` keyspaces (both classic `<ns>/<keyspace>` and flat/single-file),
+  where they previously returned nothing. All in glue + `records` (no fork change).
+- **Still future work: compressed / non-line containers.** A `.gz` offset is into
+  the *decompressed* stream, which can't seek the compressed bytes, so a `.gz`
+  record omits the `@<offset>` suffix and isn't key-fetchable yet (needs full
+  decompression + an in-memory/segment index, or a packed uncompressed segment —
+  the mmap-vs-`ReadAt` tradeoffs above). CSV / JSON-array records likewise don't
+  carry an offset yet.
 
 ## 2. Directory layouts & FROM-term resolution
 
@@ -945,8 +958,13 @@ flatter:
   rejected).
 - Compiler-transparent for free: still a `PrimaryScan` → `datastore-scan` op, no
   new op kind (see "Compiler compatibility"). Covered by `test/flatfile_test.go`.
-`META().id` = `events.jsonl#57` for JSONL (base name + line index), or the file
-stem for a single-document `.json` (matching scenario A).
+`META().id` = `events.jsonl#57@4210` for JSONL (base name + line index + the
+record's byte offset), or the file stem for a single-document `.json` (matching
+scenario A). The trailing `@<offset>` is present only for a byte-seekable file
+(uncompressed) and lets a key-based fetch -- `USE KEYS`, `ON KEYS` join, a
+non-covering index scan -- seek straight to the record (see "Fetch against
+container files" below); a compressed record omits it (its offset can't seek the
+gzip stream) and isn't key-fetchable yet.
 
 ### B3. Grab-bag directory — loose files + unrelated subdirs  ✅
 ```
@@ -985,9 +1003,10 @@ logs/
 ```
 `n1k1 -c "SELECT type, COUNT(*) FROM default:events GROUP BY type" logs`
 → keyspace `events` = the **union of every record across all three `.jsonl`
-files**; `META().id` = `events/2026-01-02.jsonl#L57`. This is the core MVP
-relaxation (dir = union-of-files) and rides the opaque-document path — no label
-reconciliation needed because each JSONL line is one document.
+files**; `META().id` = `events/2026-01-02.jsonl#57@4210` (dir-relative path +
+line index + byte offset). This is the core MVP relaxation (dir =
+union-of-files) and rides the opaque-document path — no label reconciliation
+needed because each JSONL line is one document.
 
 ### D. Mixed formats in one keyspace  ✅
 ```

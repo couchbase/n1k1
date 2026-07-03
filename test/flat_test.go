@@ -318,6 +318,46 @@ func TestFlatFileAggregate(t *testing.T) {
 	}
 }
 
+// TODO(flat-aliased-meta-scan): on a flat keyspace, a scan that projects an
+// ALIASED META -- e.g. `SELECT META(e1).id FROM events e1` -- yields zero rows,
+// while the unaliased `SELECT META().id FROM events` returns them (and aliased
+// META works on a classic <ns>/<keyspace> keyspace). Because of this, an ON KEYS
+// self-join over a flat keyspace (`... FROM ks e1 JOIN ks e2 ON KEYS META(e1).id`)
+// comes back empty: its left side produces no keys, so the (working -- see below)
+// container fetch never runs. Root cause not yet pinned (likely the flat
+// keyspace's alias/META binding in conv or the records scan); orthogonal to the
+// container-fetch work below.
+
+// TestFlatFileJSONLUseKeysFetch: a key-based fetch (USE KEYS) into a .jsonl
+// container resolves each record via the byte offset baked into its META().id
+// (<relpath>#<line>@<offset>). Before offset ids, fetch had no way to map a
+// positional key back to a doc in a multi-doc file and returned nothing. The
+// ids/offsets are fixed by the exact bytes below: each `{...}` line is 15 bytes +
+// a newline = 16, so the records start at 0, 16, 32.
+func TestFlatFileJSONLUseKeysFetch(t *testing.T) {
+	path := writeFlatFile(t, "events.jsonl",
+		`{"n":1,"u":"a"}`+"\n"+`{"n":2,"u":"b"}`+"\n"+`{"n":3,"u":"c"}`+"\n")
+
+	// Fetch the 1st and 3rd records by id; the projected fields prove the fetch
+	// returned the correct doc for each offset (not a neighbor).
+	stmt := `SELECT x.n AS n, x.u AS u FROM events x ` +
+		`USE KEYS ["events.jsonl#0@0", "events.jsonl#2@32"]`
+	store, conv := flatRootConv(t, path, stmt)
+	rows := flatRootRows(t, conv, testGlueExec(t, false, store, conv))
+	if len(rows) != 2 {
+		t.Fatalf("want 2 fetched rows, got %d (%v)", len(rows), rows)
+	}
+	got := map[string]bool{}
+	for _, row := range rows {
+		got[jsonOf(row)] = true
+	}
+	for _, want := range []string{`{"n":1,"u":"a"}`, `{"n":3,"u":"c"}`} {
+		if !got[want] {
+			t.Fatalf("missing fetched row %s; got %v", want, rows)
+		}
+	}
+}
+
 // TestFlatFileGzipStem: a single foo.jsonl.gz is keyspace "foo" (both the .gz and
 // .jsonl extensions are stripped) and transparently decompressed.
 func TestFlatFileGzipStem(t *testing.T) {
