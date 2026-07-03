@@ -16,6 +16,7 @@ package glue
 import (
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 
 	"github.com/couchbase/query/algebra"
@@ -61,12 +62,18 @@ type subqEvaluator struct {
 	withBindings map[string]expression.With
 
 	// preplanned holds the outer plan's in-context sub-plans (qp.Subqueries(),
-	// flattened recursively by the planner and keyed by the subquery's
-	// *algebra.Select). compile() prefers these over re-planning standalone: they
-	// were planned WITH the outer keyspace scope, so a correlated reference (an
-	// index span `META(d).id = t.to`, a USE KEYS expr) formalizes correctly.
-	// Standalone re-planning loses that scope and degenerates the span to null.
-	preplanned map[*algebra.Select]plan.Operator
+	// flattened recursively by the planner). compile() prefers these over
+	// re-planning standalone: they were planned WITH the outer keyspace scope, so a
+	// correlated reference (an index span `META(d).id = t.to`, a USE KEYS expr)
+	// formalizes correctly. Standalone re-planning loses that scope and degenerates
+	// the span to null.
+	//
+	// Keyed by the subquery's canonical String(), NOT its *algebra.Select pointer:
+	// the interpreter evaluates the very *algebra.Select object the outer plan
+	// carries, but the COMPILED path serializes each subquery to a string and
+	// re-parses it (glue.ExprStr) into a fresh *algebra.Select -- a different
+	// pointer with the same String(). String-keying lets both paths hit.
+	preplanned map[string]plan.Operator
 }
 
 // subCompiled is one subquery's sub-plan converted to a base.Op, cached so
@@ -83,7 +90,18 @@ type subCompiled struct {
 // reference outer CTEs. Until this is called, EvaluateSubquery errors.
 func (c *GlueContext) InitSubqueries(store *Store, namespace string,
 	withBindings map[string]expression.With,
-	preplanned map[*algebra.Select]plan.Operator) {
+	subqueries map[*algebra.Select]plan.Operator) {
+	// Re-key the planner's pointer-keyed sub-plan map by canonical String() so both
+	// the interpreter (same *algebra.Select pointer) and the compiled path (a
+	// re-parsed subquery, same string / different pointer) resolve it. See the
+	// preplanned field.
+	var preplanned map[string]plan.Operator
+	if len(subqueries) > 0 {
+		preplanned = make(map[string]plan.Operator, len(subqueries))
+		for sel, op := range subqueries {
+			preplanned[subqKey(sel)] = op
+		}
+	}
 	c.subq = &subqEvaluator{
 		store:        store,
 		namespace:    namespace,
@@ -192,6 +210,47 @@ func (c *GlueContext) EvaluateSubquery(query *algebra.Select, parent value.Value
 	return value.NewValue(out), nil
 }
 
+// subqKey is the preplanned-map key for a subquery SELECT: its canonical
+// String() with any `cover (...)` planner annotations stripped. The pre-planned
+// sub-plan's SELECT carries index-covering covers, but the runtime subquery
+// expression (which the interpreter evaluates directly, and which the compiled
+// path re-parses from a string) is the plain logical form -- so matching on the
+// raw String() would miss. Stripping covers from the serialized form on both
+// sides (build + lookup) normalizes them to the same logical key.
+func subqKey(sel *algebra.Select) string {
+	return stripCoverText(sel.String())
+}
+
+// stripCoverText removes N1QL `cover (<expr>)` planner annotations from a
+// serialized expression/statement, keeping <expr>. Scans left-to-right, matching
+// the balanced parens that open right after each "cover " token. Leaves the
+// string unchanged past any unbalanced remainder (defensive; shouldn't happen).
+func stripCoverText(s string) string {
+	const tok = "cover ("
+	for {
+		i := strings.Index(s, tok)
+		if i < 0 {
+			return s
+		}
+		open := i + len(tok) - 1 // index of the '(' in "cover ("
+		depth, j := 0, open
+		for ; j < len(s); j++ {
+			if s[j] == '(' {
+				depth++
+			} else if s[j] == ')' {
+				depth--
+				if depth == 0 {
+					break
+				}
+			}
+		}
+		if j >= len(s) {
+			return s // unbalanced -- give up rather than corrupt
+		}
+		s = s[:i] + s[open+1:j] + s[j+1:] // drop "cover (" and its matching ")"
+	}
+}
+
 // compile plans + converts (once, cached) a subquery SELECT to a base.Op tree.
 func (e *subqEvaluator) compile(query *algebra.Select) (*subCompiled, error) {
 	e.mu.Lock()
@@ -210,7 +269,7 @@ func (e *subqEvaluator) compile(query *algebra.Select) (*subCompiled, error) {
 	// plain correlated ref like `c.name` still resolves at runtime against the
 	// corrParent scope.
 	var planOp plan.Operator
-	if op, ok := e.preplanned[query]; ok && op != nil {
+	if op, ok := e.preplanned[subqKey(query)]; ok && op != nil {
 		planOp = op
 	} else {
 		qp, err := e.store.PlanStatementQP(query, e.namespace, nil, nil)
