@@ -3988,6 +3988,7 @@ github.com/couchbase/goutils v0.3.0 h1:rsv72B6BDjW9jmwlfiDUrdu3EpNvPuo5WLULHzQ0D
 github.com/couchbase/goutils v0.3.0/go.mod h1:7Gm+D3vXfV4HS+hQWvKfy6e6ILCptGXNqBKvQXhplhk=
 github.com/couchbase/hebrew v1.0.0 h1:opGGoyzDSu8OSGsCkQbdTJhPzvLZ95/boLp+AHyDSdY=
 github.com/couchbase/hebrew v1.0.0/go.mod h1:7Gu1fjw3PqVEFdVKHVfuqcVAkuHPOnUwi0QlXxLM5Nk=
+github.com/couchbase/indexing v0.0.0-20220923223016-071e9308c875/go.mod h1:CmFPObvSiewpTui7iBamzk4doM7nVJ0yDL/fAQT22rg=
 github.com/couchbase/indexing v0.0.0-20260626061901-ecc60d14eb83 h1:VNgoQKwtjGRSS8KVC04TvP2k2aOMY7BKKS2ck30azFE=
 github.com/couchbase/indexing v0.0.0-20260626061901-ecc60d14eb83/go.mod h1:Qu4TuOK+L6efq6RCLCo0HLV1Eqyf1QPf7hNdmncjJOk=
 github.com/couchbase/logstats v0.0.0-20220303011129-24ba9753289f/go.mod h1:p/jovd/oa3G6iTHvebYyzTYR1D0j5O7RAj3fxJPWVOI=
@@ -4001,6 +4002,8 @@ github.com/couchbase/n1fty v0.0.0-20260626130716-05233efe63f0 h1:dxuK726vQJaIPuA
 github.com/couchbase/n1fty v0.0.0-20260626130716-05233efe63f0/go.mod h1:GK1ie4FrMMMV1vxK+GpMeh6woq/Lqy9aYgmpVGdnRZg=
 github.com/couchbase/n1k1-query v0.0.0-20260630020841-a45e58f8ffe4 h1:JNUPiqYli9MDBZrRrAfwhLD2UmjaDZ/qy3jr8Nd++EA=
 github.com/couchbase/n1k1-query v0.0.0-20260630020841-a45e58f8ffe4/go.mod h1:qaGo4hU3sbBrOt6kFtV8MiPd7ap4X54z0A9nonzhnp4=
+github.com/couchbase/n1k1-query v0.0.0-20260703153904-04d3e890c238 h1:mkUPYgDisX+ey8B4AzkhACPtLzBTpLct9T6ve92kYYw=
+github.com/couchbase/n1k1-query v0.0.0-20260703153904-04d3e890c238/go.mod h1:qaGo4hU3sbBrOt6kFtV8MiPd7ap4X54z0A9nonzhnp4=
 github.com/couchbase/nitro v0.0.0-20220707133503-f65f7a599cdf/go.mod h1:fXxxsWFIni3aCcIo155Rlr66vffasDCtRizatvPRdUw=
 github.com/couchbase/plasma v0.0.0-20260626061919-872db1e5043d/go.mod h1:xrAQeTakos5zaaq4RYUHCTI/PvRigxhuZpTcwAPcfnU=
 github.com/couchbase/query v0.0.0-20260627002010-d19d17173f34 h1:uE0e/JTpRygIQ7F4dJILbiAX7DZ0ufPczYdNvMhrpDE=
