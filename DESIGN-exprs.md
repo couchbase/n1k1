@@ -199,16 +199,21 @@ emitted by:
   keep more batches in flight (10.4 → 12.0 GB, more GCs). Reuse still never engages.
 
 **Levers that would help (ranked for this count-over-join shape):**
-1. *Discard-elision (dead-value elimination)* — if no consumer reads a projected
-   value, don't build it. Here a values-agnostic `count(*)` sits over the subquery,
-   so the two `self` projections that serialize 16.8M full rows could each collapse
-   to the `["json","true"]` placeholder (rows still flow, so the count stays 16.8M).
-   Biggest win — takes the cost to ~0 — but it's a cross-op **liveness pass**: it
-   must prove the value is read by *nothing* downstream (`count(x)`, `SELECT c.f`,
-   `ORDER BY c.x`, HAVING, `META()`, correlated inner refs all disqualify it), so it
-   stays conservative. A field-pruning variant (materialize only referenced fields)
-   generalizes it. NB: these `self` projections come from cbq's planner, so the
-   cleanest fix may ultimately be upstream.
+1. *Discard-elision (dead-value elimination)* — **DONE (v1, `glue/discard_elision.go`).**
+   A post-conversion pass over the `base.Op` tree: under a *value-agnostic group*
+   (no GROUP BY keys + every aggregate operand is a constant `["json",…]` term, i.e.
+   the `COUNT(*)`/`COUNT(<const>)` family), splice out the chain of `project` ops
+   directly below it — their `self`-projected values are dead. Safe because `project`
+   is strictly 1:1 (row count preserved → `COUNT(*)` unchanged), a value-agnostic
+   group reads no input value label, and the tree is single-parent; only `project`
+   is spliced (the walk stops at filter/order/limit, which change the row count).
+   Measured on the profiled query: **10.4 → 2.8 GB, 121.7 → 63.0 M allocs, 1617 → 433
+   GCs, 14.6 → 8.5 s** (the `HACK_EXPR=skip` floor), result unchanged. Toggle
+   `glue.DiscardElision`; a differential test asserts on/off parity across query
+   shapes (`COUNT(x)`, GROUP BY, DISTINCT, mixed aggs, subqueries all disqualify or
+   are untouched). v1 is deliberately narrow; a general field-pruning liveness pass
+   (materialize only referenced fields) is future work. NB: these `self` projections
+   come from cbq's planner, so a further fix could be upstream.
 2. *A `self`-projection byte path* — when a projection expr is exactly
    `expression.Self` (and not scoped), assemble the output JSON object directly from
    the input label bytes, skipping Convert+Evaluate+WriteJSON. Bounded; analogous to

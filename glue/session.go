@@ -158,6 +158,10 @@ func (s *Session) Run(stmt string) (res *Result, err error) {
 		return nil, &ErrUnsupported{Reason: "nil TopOp (unconverted plan)"}
 	}
 
+	if DiscardElision {
+		elideDiscarded(conv.TopOp) // drop dead projections under count(*)-style groups
+	}
+
 	cv, err := NewConvertVals(conv.TopOp.Labels)
 	if err != nil {
 		return nil, &ErrUnsupported{Reason: err.Error()}
@@ -175,8 +179,8 @@ func (s *Session) Run(stmt string) (res *Result, err error) {
 
 	gctx := NewGlueContext(time.Now())
 	gctx.InitSubqueries(s.Store, s.Namespace, conv.WithBindings(), qp.Subqueries()) // enable expression subqueries
-	gctx.SetNamedArgs(s.NamedArgs)                                 // resolve $name at eval time
-	gctx.SetWithScopeFrom(conv.WithScopeBindings()) // resolve `x IN cte` etc.
+	gctx.SetNamedArgs(s.NamedArgs)                                                  // resolve $name at eval time
+	gctx.SetWithScopeFrom(conv.WithScopeBindings())                                 // resolve `x IN cte` etc.
 
 	// Route native-expression advisories (e.g. divide-by-zero) into the
 	// request's warning collector; kept cbq-free on the engine side.

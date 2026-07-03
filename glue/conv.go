@@ -82,6 +82,10 @@ func ExecConv(p plan.Operator) (*base.Op, []interface{}, error) {
 
 	_, err := p.Accept(c)
 
+	if DiscardElision && err == nil && c.TopOp != nil {
+		elideDiscarded(c.TopOp) // drop dead projections under count(*)-style groups
+	}
+
 	return c.TopOp, c.Temps, err
 }
 
