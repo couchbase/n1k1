@@ -247,14 +247,14 @@ func SetupCompiledData(t *testing.T, stmt string) (
 	return setupCompiled(t, store, "", stmt)
 }
 
-// compiledFlatRootStore opens test/flatpeople as a FLAT ROOT (record files
+// compiledFlatRootStore opens test/data/flatpeople as a FLAT ROOT (record files
 // directly under it, no ns/keyspace subdirs) once -- so its keyspace is the
 // synthetic default:flatpeople from the flat-root "fake it" wrapper. Used by the
 // flat-root compiler differential.
 func compiledFlatRootStore() (*glue.Store, error) {
 	flatStoreOnce.Do(func() {
 		_, file, _, _ := runtime.Caller(0)
-		root := filepath.Join(filepath.Dir(file), "flatpeople")
+		root := filepath.Join(filepath.Dir(file), "data", "flatpeople")
 		flatStore, flatStoreErr = glue.FileStore(root)
 		if flatStoreErr != nil {
 			return

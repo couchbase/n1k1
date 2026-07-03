@@ -16,7 +16,7 @@ package test
 // TestFlatRootWithCompiler proves the flat-root "fake it" path works through the
 // COMPILER, not just the interpreter: it convs/emits queries over the synthetic
 // default:flatpeople keyspace (a flat root -- record files directly under
-// test/flatpeople, no ns/keyspace subdirs) into test/tmp, where the generated
+// test/data/flatpeople, no ns/keyspace subdirs) into test/tmp, where the generated
 // tests run the baked ops against a flat-root store (SetupCompiledFlatRoot) and
 // compare to the interpreter oracle. Same generate->compile->run->compare flow
 // as TestQueryCasesWithCompiler.
@@ -32,9 +32,9 @@ import (
 )
 
 func TestFlatRootWithCompiler(t *testing.T) {
-	// The flat-root store: test/flatpeople opened as its own root => the wrapper
+	// The flat-root store: test/data/flatpeople opened as its own root => the wrapper
 	// advertises a synthetic default:flatpeople keyspace.
-	store, err := glue.FileStore("./flatpeople")
+	store, err := glue.FileStore("./data/flatpeople")
 	if err != nil {
 		t.Fatalf("FileStore(flatpeople): %v", err)
 	}
