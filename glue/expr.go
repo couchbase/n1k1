@@ -134,11 +134,23 @@ func ExprTree(vars *base.Vars, labels base.Labels,
 			if v == nil {
 				v = value.NewScopeValue(map[string]interface{}{}, parent)
 			} else if av, ok := v.(value.AnnotatedValue); ok {
-				// Prefer keeping v as "self" via SetParent: it preserves v's
-				// annotations -- notably a subquery aggregate's "^aggregates"
-				// attachment, which SUM(...)/etc. read back; re-wrapping v.Actual()
-				// in a fresh ScopeValue would drop them and panic.
-				v = av.SetParent(parent)
+				// Prefer SetParent: when v already wraps a ScopeValue it re-parents
+				// in place, preserving v's annotations -- notably a subquery
+				// aggregate's "^aggregates" attachment, which SUM(...)/COUNT(...)
+				// read back. But annotatedValue.SetParent returns nil when the
+				// underlying value is NOT a ScopeValue (the common case -- Convert
+				// backs an aggregate row with a plain object). Don't let that nil out
+				// the row (it would make the aggregate re-evaluate against a nil item
+				// -- the correlated-aggregate 'nil item'); instead rebuild an
+				// annotated ScopeValue over the parent and copy the annotations
+				// forward so the aggregate / META() attachment still resolves.
+				if sv := av.SetParent(parent); sv != nil {
+					v = sv
+				} else if m, ok := av.Actual().(map[string]interface{}); ok {
+					nav := value.NewAnnotatedValue(value.NewScopeValue(m, parent))
+					nav.CopyAnnotations(av)
+					v = nav
+				}
 			} else if m, ok := v.Actual().(map[string]interface{}); ok {
 				v = value.NewScopeValue(m, parent)
 			}
