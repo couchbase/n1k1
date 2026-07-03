@@ -183,7 +183,6 @@ func DatastoreFetch(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 
 	var vals base.Vals
 
-	var keys []string    // Same len() as batch.
 	var cbqKeys []string // Keys neither native path handled; deferred to cbq.
 
 	fetchMap := map[string]value.AnnotatedValue{}
@@ -205,36 +204,33 @@ func DatastoreFetch(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 	}
 
 	stage.ProcessBatchesFromActors(func(batch []base.Vals) {
-		keys = keys[:0]
+		cbqKeys = cbqKeys[:0]
 
-		for _, vals := range batch {
+		// One pass over the batch: decode each row's ^id and dispatch it right away.
+		// Decode and fetch have no cross-row dependency, so there's no need to
+		// materialize all keys into an intermediate []string first -- that only
+		// churned a fresh slice per re-scan (a nested-loop join re-runs this fetch,
+		// and its whole Stage, once per outer row).
+		for _, bv := range batch {
 			// Decode the ^id (a canonical-JSON string, e.g. `"key"`) to the plain doc
 			// key. This mirrors jsonparser.GetString's logic, but on the common
-			// no-escape fast path returns an UNSAFE zero-copy string aliasing vals[0]'s
-			// bytes -- avoiding the per-row copy GetString makes there (string(v)),
-			// which was ~60% of this query's allocation count. The alias is valid only
-			// while this batch lives (until this callback returns), which covers every
-			// use below (keys, the fetch-cache *lookups*, and yieldDoc's AppendQuote
-			// which copies). The two spots that *retain* a key past the batch --
-			// fetchCachePut and the cbq-fallback cbqKeys -- strings.Clone it. BINARY and
-			// escaped keys take safe, owning fallbacks.
+			// no-escape fast path returns an UNSAFE zero-copy string aliasing bv[0]'s
+			// bytes -- avoiding the per-row copy GetString makes there (string(v)).
+			// The alias is valid only while this batch lives (until this callback
+			// returns), which covers every use below (the fetch-cache *lookups* and
+			// yieldDoc's AppendQuote, which copies). The spots that *retain* a key past
+			// the batch -- fetchCachePut's map store and the cbq-fallback cbqKeys --
+			// strings.Clone it. BINARY and escaped keys take safe, owning fallbacks.
 			var key string
-			v, dt, _, e := jsonparser.Get(vals[0])
+			v, dt, _, e := jsonparser.Get(bv[0])
 			switch {
 			case e != nil || dt != jsonparser.String:
-				key = string(vals[0]) // BINARY / non-string key: owned copy.
+				key = string(bv[0]) // BINARY / non-string key: owned copy.
 			case bytes.IndexByte(v, '\\') >= 0:
 				key, _ = jsonparser.ParseString(v) // escaped: unescape (allocates; rare).
 			case len(v) > 0:
 				key = unsafe.String(unsafe.SliceData(v), len(v)) // zero-copy alias.
 			}
-
-			keys = append(keys, key)
-		}
-
-		cbqKeys = cbqKeys[:0]
-
-		for _, key := range keys {
 			if key == "" {
 				continue
 			}
