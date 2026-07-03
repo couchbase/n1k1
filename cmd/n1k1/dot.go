@@ -130,13 +130,9 @@ func (c *cli) dot(line string) bool {
 		c.explain = !c.explain
 		fmt.Fprintf(c.stderr, "explain %s\n", onOff(c.explain))
 	case ".stats":
-		switch strings.ToLower(arg) {
+		switch a := strings.ToLower(strings.TrimSpace(arg)); a {
 		case "":
-			fmt.Fprintf(c.stderr, "stats %s\n", onOff(c.stats))
-		case "on":
-			c.stats = true
-		case "off":
-			c.stats = false
+			fmt.Fprintf(c.stderr, "stats %s\n", c.statsMode)
 		case "about", "help":
 			// Glossary of every registered counter (known at startup), a reference
 			// for the names shown in the footer.
@@ -144,7 +140,12 @@ func (c *cli) dot(line string) bool {
 				fmt.Fprintln(c.stderr, ln)
 			}
 		default:
-			fmt.Fprintf(c.stderr, "usage: .stats [on|off|about] (currently %s)\n", onOff(c.stats))
+			if m, err := parseStatsMode(a); err == nil {
+				c.statsMode = m
+				fmt.Fprintf(c.stderr, "stats %s\n", c.statsMode)
+			} else {
+				fmt.Fprintf(c.stderr, "usage: .stats [on|off|final|about] (currently %s)\n", c.statsMode)
+			}
 		}
 	case ".maxrows":
 		if arg == "" {
@@ -231,7 +232,7 @@ func (c *cli) printHelp() {
 		".meta " + c.helpOpts(glue.ScanWalkOptions.Meta.String(), "on", "off", "auto") + "   add a _meta sub-object to records (no arg shows the current setting)",
 		".formats [<set>]      restrict files scanned to formats/modes, e.g. json,csv,gzip (no arg shows current)",
 		".timer " + c.helpOpts(onOff(c.timer), "on", "off") + "       elapsed-time reporting (no arg shows the current setting)",
-		".stats " + c.helpOpts(onOff(c.stats), "on", "off", "about") + " show live stats during query (about = glossary of every counter)",
+		".stats " + c.helpOpts(c.statsMode, "on", "off", "final", "about") + " query stats: on=live footer, final=totals at end only (about=glossary)",
 		".explain              toggle printing EXPLAIN PLAN per query",
 		".verbose " + c.helpOpts(vcur, "off", "on", "debug", "n") + "  diagnostics level (n>1 provides more info; no arg shows current)",
 		".maxrows <n>          box: cap rows shown (0 = all; negative = last |n| rows)",

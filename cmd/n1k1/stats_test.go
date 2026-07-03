@@ -131,3 +131,20 @@ func TestBodyLinesRuntime(t *testing.T) {
 		t.Errorf("last body line = %q, want a runtime: line", last)
 	}
 }
+
+// TestParseStatsMode checks the -stats/.stats value parsing, incl. aliases.
+func TestParseStatsMode(t *testing.T) {
+	ok := map[string]string{
+		"": statsOff, "off": statsOff, "false": statsOff,
+		"on": statsOn, "true": statsOn, "LIVE": statsOn,
+		"final": statsFinal, "end": statsFinal, "summary": statsFinal, "Totals": statsFinal,
+	}
+	for in, want := range ok {
+		if got, err := parseStatsMode(in); err != nil || got != want {
+			t.Errorf("parseStatsMode(%q) = (%q,%v), want %q", in, got, err, want)
+		}
+	}
+	if _, err := parseStatsMode("bogus"); err == nil {
+		t.Errorf("parseStatsMode(bogus) should error")
+	}
+}

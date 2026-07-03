@@ -26,6 +26,27 @@ import (
 	"github.com/couchbase/n1k1/base"
 )
 
+// Stats display modes for -stats / .stats.
+const (
+	statsOff   = "off"   // collect nothing, show nothing (zero cost)
+	statsOn    = "on"    // collect + live footer during the query + final totals
+	statsFinal = "final" // collect + print grand totals once at the end (no live footer)
+)
+
+// parseStatsMode normalizes a -stats/.stats value to a mode constant. "final" has
+// aliases (end/total/summary). An empty string means off (the flag/default case).
+func parseStatsMode(s string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "on", "true", "live":
+		return statsOn, nil
+	case "", "off", "false":
+		return statsOff, nil
+	case "final", "end", "total", "totals", "summary":
+		return statsFinal, nil
+	}
+	return "", fmt.Errorf("want on|off|final")
+}
+
 // statsView renders per-operator counters: live during a long query (throttled,
 // redrawn in place on an interactive TTY) and once at the end. It reads
 // base.Stats, whose Ops slice lists the counter-contributing operators in
@@ -38,13 +59,23 @@ type statsView struct {
 	last  time.Time // last live render, for throttling
 	drawn int       // lines drawn by the last live render (for cursor-up)
 
-	baseRT runtimeSample // process runtime baseline, captured at construction
+	baseRT  runtimeSample // process runtime baseline, captured at construction (query start)
+	endRT   runtimeSample // pinned end-of-query sample (see sampleEnd)
+	haveEnd bool          // endRT is set -> the footer uses it instead of sampling now
 }
 
 func newStatsView(w io.Writer, fancy bool, width int) *statsView {
 	// Capture the runtime baseline at query start, so the footer's process line can
 	// show per-statement deltas (bytes allocated, GCs, goroutines spawned).
 	return &statsView{w: w, fancy: fancy, width: width, baseRT: readRuntimeSample()}
+}
+
+// sampleEnd pins the end-of-query runtime sample. The caller invokes it the moment
+// Run returns -- before result rendering, which itself allocates -- so the footer's
+// "allocated"/"GCs" deltas reflect the statement, not the display. renderFinal (in
+// both `on` and `final` modes) then uses this pinned sample for the grand totals.
+func (v *statsView) sampleEnd() {
+	v.endRT, v.haveEnd = readRuntimeSample(), true
 }
 
 // runtimeSample is a cheap, process-wide snapshot of memory/GC/goroutine usage.
@@ -92,9 +123,13 @@ func readRuntimeSample() runtimeSample {
 }
 
 // runtimeLine formats the process footer line as per-statement deltas from the
-// baseline, plus current gauges (live heap, goroutines). Empty if no baseline.
+// baseline, plus current gauges (live heap, goroutines). Live frames sample fresh;
+// the final footer uses the pinned end-of-query sample (see sampleEnd).
 func (v *statsView) runtimeLine() string {
 	now := readRuntimeSample()
+	if v.haveEnd {
+		now = v.endRT
+	}
 	return fmt.Sprintf("runtime: %s allocated · %s allocs · heap %s · %d GCs · %d goroutines",
 		humanBytes(int64(now.allocBytes-v.baseRT.allocBytes)),
 		humanCount(now.allocObjs-v.baseRT.allocObjs),

@@ -88,6 +88,30 @@ func (v *verboseLevel) Set(s string) error {
 // IsBoolFlag lets -v be given bare (no argument) and repeated (-v -v -v).
 func (v *verboseLevel) IsBoolFlag() bool { return true }
 
+// statsModeFlag parses the -stats flag into a mode constant (off|on|final). It
+// behaves like a boolean flag so a bare -stats means "on" (Set("true")), while
+// -stats=off / -stats=final set an explicit mode. (The space form -stats final is
+// not supported, as with other bool-like flags; use -stats=final or `.stats final`.)
+type statsModeFlag struct{ p *string }
+
+func (f statsModeFlag) String() string {
+	if f.p == nil {
+		return statsOff
+	}
+	return *f.p
+}
+
+func (f statsModeFlag) Set(s string) error {
+	m, err := parseStatsMode(s)
+	if err != nil {
+		return err
+	}
+	*f.p = m
+	return nil
+}
+
+func (f statsModeFlag) IsBoolFlag() bool { return true }
+
 // isVerboseLevelToken reports whether s is a value -v/-verbose accepts as its
 // level, so the space form "-v <level>" can be rewritten to "-v=<level>".
 func isVerboseLevelToken(s string) bool {

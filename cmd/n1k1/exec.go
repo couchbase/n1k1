@@ -37,23 +37,28 @@ func (c *cli) exec(stmt string) {
 	stmt = strings.TrimSpace(stmt)
 	c.failed = false // reset; set below if this statement errors (drives .bail)
 
-	// .stats / -stats: collect per-operator counters, and on a TTY draw them live
-	// (throttled, in place, to stderr) while the query runs. One statsView spans the
-	// whole statement -- created before Run so its runtime baseline (for the footer's
-	// per-statement mem/GC/goroutine deltas) is captured at the start, and reused for
-	// the final render. Reset the Session hooks afterwards so a later query -- or
+	// .stats / -stats: collect per-operator counters. `on` also draws them live on a
+	// TTY (throttled, in place, to stderr); `final` collects but shows only the grand
+	// totals at the end -- no live footer, so you can measure a query without the
+	// live-render overhead. One statsView spans the whole statement: created before
+	// Run so its runtime baseline (for the footer's per-statement mem/GC/goroutine
+	// deltas) is captured at the start; its end sample is pinned the moment Run
+	// returns (below). Reset the Session hooks afterwards so a later query -- or
 	// another user of this Session -- pays nothing.
 	var sv *statsView
-	if c.stats {
+	if c.statsMode != statsOff {
 		c.sess.CollectStats = true
 		sv = newStatsView(c.stderr, c.fancyTTY, c.terminalWidth())
-		if c.fancyTTY {
-			c.sess.OnStats = sv.onStats
+		if c.statsMode == statsOn && c.fancyTTY {
+			c.sess.OnStats = sv.onStats // live footer (on-mode only)
 		}
 	}
 
 	res, err := c.sess.Run(stmt)
 
+	if sv != nil {
+		sv.sampleEnd() // pin end-of-query mem BEFORE result rendering allocates
+	}
 	c.sess.CollectStats = false
 	c.sess.OnStats = nil
 	if sv != nil {
@@ -81,9 +86,9 @@ func (c *cli) exec(stmt string) {
 
 	c.renderResult(res)
 
-	// .stats footer: the final per-operator counters (also the whole display for a
-	// non-TTY run, which skipped the live draw). Reuse sv so the runtime line shows
-	// deltas over the whole statement.
+	// .stats footer: the final per-operator counters + runtime totals (this is the
+	// whole display for `final` mode and for a non-TTY run, which skipped the live
+	// draw). Reuse sv so the runtime line shows deltas over the whole statement.
 	if sv != nil && res.Stats != nil {
 		sv.renderFinal(res.Stats)
 	}
@@ -94,8 +99,11 @@ func (c *cli) exec(stmt string) {
 }
 
 func (c *cli) renderResult(res *glue.Result) {
-	// verbose >= 2 (debug) shows the row-count/elapsed footer even without .timer.
-	c.renderRows(res.Rows, res.Elapsed.String(), c.timer || c.verbose >= 2)
+	// Show the row-count/elapsed footer when .timer is on, at verbose >= 2 (debug),
+	// or whenever stats are being collected -- elapsed time is the denominator for
+	// the stats (rows/s, alloc/s), so it belongs with them.
+	footer := c.timer || c.verbose >= 2 || c.statsMode != statsOff
+	c.renderRows(res.Rows, res.Elapsed.String(), footer)
 }
 
 // renderRows renders JSON-object rows in the current output mode -- used both for

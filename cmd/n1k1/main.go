@@ -64,7 +64,6 @@ func main() {
 		fFlag       = flag.String("f", "", "run statements from a file and exit")
 		modeFlag    = flag.String("mode", "", "output mode: "+strings.Join(cmd.OutputModes, "|")+" (append |pretty to indent JSON; default box|pretty at a TTY, else jsonlines)")
 		timerFlag   = flag.Bool("timer", false, "print row count + elapsed after each statement")
-		statsFlag   = flag.Bool("stats", false, "show per-operator counters (rows in/out, join probes) live + as a footer (see .stats)")
 		initFlag    = flag.String("init", "", "startup file of dot-commands/SQL++ (default ~/."+prog+"rc; use \"\", \"-\" or \"none\" to skip)")
 		formatsFlag = flag.String("formats", "", "restrict files scanned to a comma-separated set (all|json|jsonl|csv|tsv|extract|doc|text|image|video|gzip|recurse); empty or 'all' = everything")
 		metaFlag    = flag.String("meta", "auto", "add a _meta sub-object (path/name/ext/size/mtime) to records: on|off|auto (auto = extracted docs only)")
@@ -80,6 +79,14 @@ func main() {
 	var vLevel verboseLevel
 	flag.Var(&vLevel, "verbose", "verbose level: bare -verbose = on (repeat to raise); -verbose=on|off|debug|<n> sets it (see .verbose)")
 	flag.Var(&vLevel, "v", "alias for -verbose")
+
+	// -stats: bare -stats (or -stats=on) = live footer; -stats=off = none;
+	// -stats=final (alias end) = grand totals once at the end, no live footer (for
+	// clean measurement without the live-render overhead). See .stats in the REPL.
+	statsMode := statsOff
+	flag.Var(statsModeFlag{&statsMode}, "stats",
+		"per-operator counters + a runtime footer: on (live) | off | final (totals at end only); see .stats")
+
 	flag.Usage = usage
 	flag.CommandLine.Parse(normalizeVerbose(os.Args[1:]))
 
@@ -180,7 +187,7 @@ func main() {
 		mode:      mode,
 		indexMode: *indexFlag,
 		timer:     *timerFlag,
-		stats:     *statsFlag,
+		statsMode: statsMode,
 		verbose:   int(vLevel),
 		maxRows:   0,
 		maxWidth:  -1,
@@ -298,12 +305,12 @@ type cli struct {
 	timer     bool
 	verbose   int // 0=off, 1=show query plans, 2=+timing (see .verbose)
 	explain   bool
-	echo      bool // echo each input line as it's read (see .echo)
-	bail      bool // stop the input loop on the first statement error (see .bail)
-	failed    bool // transient: the last exec'd statement errored (drives .bail)
-	stats     bool // per-operator counters, live + a footer (see .stats, DESIGN-stats.md)
-	maxRows   int  // box: 0 = all; >0 = head+tail; <0 = last |n| rows
-	maxWidth  int  // box: per-column cap; 0 = uncapped; <0 = auto (fit terminal)
+	echo      bool   // echo each input line as it's read (see .echo)
+	bail      bool   // stop the input loop on the first statement error (see .bail)
+	failed    bool   // transient: the last exec'd statement errored (drives .bail)
+	statsMode string // "off" | "on" (live) | "final" (totals at end); see .stats, DESIGN-stats.md
+	maxRows   int    // box: 0 = all; >0 = head+tail; <0 = last |n| rows
+	maxWidth  int    // box: per-column cap; 0 = uncapped; <0 = auto (fit terminal)
 	listSep   string
 
 	out     io.Writer // result destination (stdout, or a .output file)

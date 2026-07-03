@@ -300,11 +300,25 @@ modes):
   and the `-stats` footer appends a **compact glossary of just the stats shown**
   (alphabetized, `name: description`, concatenated and wrapped to a few lines), so
   the table is self-explanatory without a lookup.
-- **`glue`/CLI opt-in, live.** `Session.CollectStats` lays out the counters and
-  returns them as `Result.Stats`; `Session.OnStats` receives the live `*Stats` at
-  each checkpoint. The CLI exposes `-stats` and `.stats [on|off]`, and on a TTY
-  redraws the display live (throttled ~10 Hz, in place, on stderr) while the query
-  runs. Off by default → zero cost.
+- **`glue`/CLI opt-in, three modes.** `Session.CollectStats` lays out the counters
+  and returns them as `Result.Stats`; `Session.OnStats` receives the live `*Stats`
+  at each checkpoint. The CLI exposes `-stats`/`.stats` with **three** modes:
+  - `off` (default) — collect nothing, show nothing; zero cost.
+  - `on` — collect + on a TTY redraw the footer live (throttled ~10 Hz, in place,
+    on stderr) + print final totals.
+  - `final` (aliases `end`/`summary`) — collect, but show only the **grand totals
+    once at the end**, with no live footer. This exists for **measurement**: it
+    gives the counters and the runtime line without the live-render allocation, so
+    `on` vs `final` isolates the animation's cost and `final` vs `off` isolates the
+    counters' cost. (Measured on the 3-way join: the live animation added ~0.3 MB
+    over ~65 frames against ~932 MB total — i.e. the animation is *not* the memory
+    driver; the churn is intrinsic cbq-eval. `final` is how you confirm that.)
+
+  Any mode but `off` also implies `.timer` (elapsed time is the denominator for
+  rows/s and alloc/s). The runtime baseline is sampled at statement start and the
+  end sample is **pinned the moment execution returns** — before result rendering,
+  which itself allocates — so the footer's `allocated`/`GCs` reflect the statement,
+  not the display, in both `on` and `final`.
 - **Everything animates, not just scans.** Two things make the whole tree move
   during a query, not just fill in at the end: (1) every op writes its counters to
   the shared array **per row** (`statBump`), reset at each op invocation
