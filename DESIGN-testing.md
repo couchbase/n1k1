@@ -130,15 +130,53 @@ tie-broken-LIMIT noise.
 ### Building the gsi suite in a fresh worktree
 
 A fresh git worktree can't load the module graph out of the box: the repo's
-go.mod requires several **placeholder EE modules** (`cbgt`, `query-ee`,
-`regulator`, `eventing-ee`, `gocbcrypto`, `hebrew`, `n1fty`, `plasma`) at the
-`v0.0.0-0001…` non-version, whose go.mod files exist only in Couchbase's internal
-repo-sync tree. None are imported in the CE build (`go mod why`: not needed), but
-the graph loader still demands them. To bootstrap a worktree (all local /
-uncommitted): add a local-path `replace` for each to an empty stub module, then
-regenerate the gitignored `intermed/` (`go build ./cmd/intermed_build/ &&
-./intermed_build`) and create the gitignored `test/tmp/` dir. (A committed `make
-bootstrap`/`go.work` to automate this is a worthwhile future convenience.)
+go.mod requires several **placeholder EE modules** at the `v0.0.0-0001…`
+non-version, whose go.mod files exist only in Couchbase's internal repo-sync
+tree. None are imported in the CE build (`go mod why`: not needed), but the graph
+loader still demands them. Bootstrap = point each at an empty local stub module
+via an **uncommitted** `replace`, regenerate the gitignored `intermed/`, and
+create the gitignored `test/tmp/` dir.
+
+Copy-paste recipe (verified 2026-07; run from the repo root of the NEW worktree):
+
+```sh
+# 1. The exact EE modules that need stubbing = go.mod's placeholder requires.
+#    As of 2026-07 there are SEVEN (an earlier doc said 8 -- `plasma` was dropped):
+EE="cbgt query-ee regulator eventing-ee gocbcrypto hebrew n1fty"
+# If in doubt, list them fresh:
+#   grep -E '00010101000000-000000000000' go.mod | awk '{print $1}' | sed 's#github.com/couchbase/##'
+
+# 2. Create empty stub modules somewhere persistent (a scratch dir is fine).
+STUBS="$PWD/../ee-stubs"           # or $CLAUDE_JOB_DIR/tmp/ee-stubs for an agent
+GOVER=$(grep -E '^go [0-9]' go.mod | awk '{print $2}')
+for m in $EE; do
+  mkdir -p "$STUBS/$m"
+  printf 'module github.com/couchbase/%s\n\ngo %s\n' "$m" "$GOVER" > "$STUBS/$m/go.mod"
+done
+
+# 3. Append uncommitted local-path replaces to THIS worktree's go.mod.
+#    (Never commit these -- they're host-specific paths.)
+for m in $EE; do echo "replace github.com/couchbase/$m => $STUBS/$m"; done >> go.mod
+
+# 4. Regenerate intermed/ (gitignored) and make the test/tmp/ dir (gitignored).
+mkdir -p test/tmp
+go build ./cmd/intermed_build/ && ./intermed_build
+
+# 5. Verify.
+CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go build -tags n1ql ./glue/... ./test/...
+```
+
+Notes / gotchas learned:
+- **Base the worktree on LOCAL master, not origin.** All work here stays local
+  (the human pushes); `git worktree add <path> -b <branch> master` branches from
+  local `master` (which is ahead of `origin/master`). A tool default of
+  `origin/<default>` would silently drop unpushed local commits.
+- The stub go.mod needs only `module <path>` + a `go <ver>` line -- no `.go`
+  files (nothing imports them; the graph loader just needs the go.mod to exist).
+- `test/tmp/` is shared + gitignored; concurrent worktrees/sessions running the
+  compiler generators clobber it. `mkdir -p test/tmp` before regenerating, and
+  don't trust its contents across a context switch.
+- Still TODO: a committed `make bootstrap` / `go.work` to automate the above.
 
 ## Guidance / lessons
 
