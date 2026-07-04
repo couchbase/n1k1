@@ -5925,6 +5925,20 @@ var TestCasesSimple = []TestCaseSimple{
 		[]interface{}{"json", `null`}, []interface{}{"json", `2`}}, `null`),
 	naryProjectCase("power-str", []interface{}{"power",
 		[]interface{}{"json", `2`}, []interface{}{"json", `"x"`}}, `null`),
+
+	// Binary string (value-producing) in the COMPILED path.
+	naryProjectCase("contains-yes", []interface{}{"contains",
+		[]interface{}{"json", `"hello"`}, []interface{}{"json", `"ell"`}}, `true`),
+	naryProjectCase("contains-no", []interface{}{"contains",
+		[]interface{}{"json", `"hello"`}, []interface{}{"json", `"z"`}}, `false`),
+	naryProjectCase("position0-found", []interface{}{"position0",
+		[]interface{}{"json", `"hello"`}, []interface{}{"json", `"ll"`}}, `2`),
+	naryProjectCase("position0-absent", []interface{}{"position0",
+		[]interface{}{"json", `"hello"`}, []interface{}{"json", `"z"`}}, `-1`),
+	naryProjectCase("position1-found", []interface{}{"position1",
+		[]interface{}{"json", `"hello"`}, []interface{}{"json", `"ll"`}}, `3`),
+	naryProjectCase("contains-null", []interface{}{"contains",
+		[]interface{}{"json", `null`}, []interface{}{"json", `"x"`}}, `null`),
 }
 
 // naryProjectCase builds a TestCaseSimple that projects a single native

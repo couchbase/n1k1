@@ -28,6 +28,9 @@ func init() {
 	ExprCatalog["lower"] = ExprLower
 	ExprCatalog["title"] = ExprTitle
 	ExprCatalog["length"] = ExprLength
+	ExprCatalog["contains"] = ExprContains
+	ExprCatalog["position0"] = ExprPosition0
+	ExprCatalog["position1"] = ExprPosition1
 }
 
 func ExprUpper(lzVars *base.Vars, labels base.Labels,
@@ -93,6 +96,74 @@ func ExprLength(lzVars *base.Vars, labels base.Labels,
 
 		return lzVal
 	}
+
+	return lzExprFunc
+}
+
+// ExprContains: two string operands -> bool (no output buffer). Captures each
+// operand FROM lzVal, mirrors the binary harness (ExprArithBi).
+func ExprContains(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
+	biExprFunc := func(lzA, lzB base.ExprFunc, lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) { // !lz
+		if LzScope {
+			lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
+			lzValA := lzVal
+
+			lzVal = lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B"
+			lzValB := lzVal
+
+			lzVal = base.StrContains(lzValA, lzValB)
+		}
+
+		return lzVal
+	} // !lz
+
+	lzExprFunc =
+		MakeBiExprFunc(lzVars, labels, params, path, biExprFunc) // !lz
+
+	return lzExprFunc
+}
+
+func ExprPosition0(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string) base.ExprFunc {
+	return exprStrPosition(lzVars, labels, params, path, 0)
+}
+
+func ExprPosition1(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string) base.ExprFunc {
+	return exprStrPosition(lzVars, labels, params, path, 1)
+}
+
+// exprStrPosition is the shared POSITION0/POSITION1 harness. base.StrPositionIndex
+// computes the int (startPos %#v, no buffer); the int is then formatted into the
+// reused lzBufPre (buffer %s, no startPos) -- kept on separate lines.
+func exprStrPosition(lzVars *base.Vars, labels base.Labels, params []interface{},
+	path string, startPos int) (lzExprFunc base.ExprFunc) {
+	var lzBufPre []byte // <== varLift: lzBufPre by path
+
+	biExprFunc := func(lzA, lzB base.ExprFunc, lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) { // !lz
+		if LzScope {
+			lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
+			lzValA := lzVal
+
+			lzVal = lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B"
+			lzValB := lzVal
+
+			lzIdx, lzSentinel, lzOk := base.StrPositionIndex(lzValA, lzValB, startPos)
+			if !lzOk {
+				lzVal = lzSentinel
+			} else {
+				lzOut := base.AppendNum(lzBufPre[:0], base.IntNum(int64(lzIdx)))
+				lzBufPre = lzOut
+				lzVal = base.Val(lzOut)
+			}
+		}
+
+		return lzVal
+	} // !lz
+
+	lzExprFunc =
+		MakeBiExprFunc(lzVars, labels, params, path, biExprFunc) // !lz
 
 	return lzExprFunc
 }

@@ -617,6 +617,40 @@ func TestMathBinaryDifferentialVsCBQ(t *testing.T) {
 	}
 }
 
+func TestStrBinaryDifferentialVsCBQ(t *testing.T) {
+	c := func(v interface{}) expression.Expression { return expression.NewConstant(v) }
+
+	mk := map[string]func(a, b expression.Expression) expression.Expression{
+		"contains":  func(a, b expression.Expression) expression.Expression { return expression.NewContains(a, b) },
+		"position0": func(a, b expression.Expression) expression.Expression { return expression.NewPosition0(a, b) },
+		"position1": func(a, b expression.Expression) expression.Expression { return expression.NewPosition1(a, b) },
+	}
+	// Substring present/absent/at-start/empty, unicode, escapes; plus non-string
+	// and MISSING operands (-> NULL / MISSING).
+	pairs := []struct{ a, b expression.Expression }{
+		{c("hello world"), c("o w")}, {c("hello"), c("z")}, {c("hello"), c("he")},
+		{c("hello"), c("")}, {c("café x"), c("x")}, {c("a\"b\nc"), c("b\nc")},
+		{c("abc"), c("abc")}, {c(""), c("x")},
+		{c(value.NULL_VALUE), c("x")}, {c("x"), c(5)}, {c(5), c("x")},
+		{c(value.MISSING_VALUE), c("x")},
+	}
+
+	for fn, ctor := range mk {
+		for i, p := range pairs {
+			expr := ctor(p.a, p.b)
+			want := cbqEval(t, expr)
+			got, ok := nativeEval(t, expr)
+			if !ok {
+				t.Errorf("%s pair[%d]: did not optimize", fn, i)
+				continue
+			}
+			if got != want {
+				t.Errorf("%s pair[%d]: native=%q, cbq=%q", fn, i, got, want)
+			}
+		}
+	}
+}
+
 func TestStrUnaryDifferentialVsCBQ(t *testing.T) {
 	c := func(v interface{}) expression.Expression { return expression.NewConstant(v) }
 
