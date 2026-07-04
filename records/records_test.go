@@ -75,8 +75,10 @@ func TestWalkRecursiveUnion(t *testing.T) { // scenario E
 		t.Fatal(err)
 	}
 	ids, docs := collect(t, s)
-	if len(docs) != 5 {
-		t.Fatalf("want 5 cpu samples across nested dirs, got %d (%v)", len(docs), ids)
+	// examples/metrics/cpu holds 4 nested JSONL files (hostA Jan+Feb, hostB, hostC)
+	// of 24 hourly samples each = 96, unioned across the host/date subdirs.
+	if len(docs) != 96 {
+		t.Fatalf("want 96 cpu samples across nested dirs, got %d (%v)", len(docs), ids)
 	}
 	// A nested file's ID keeps its dir-relative path.
 	found := false
@@ -107,8 +109,8 @@ func TestWalkOneDocPerFile(t *testing.T) { // scenario A
 		t.Fatal(err)
 	}
 	ids, docs := collect(t, s)
-	if len(docs) != 3 {
-		t.Fatalf("want 3 orders, got %d", len(docs))
+	if len(docs) != 20 {
+		t.Fatalf("want 20 orders, got %d", len(docs))
 	}
 	// Single-doc files keep today's convention: META().id == file stem.
 	for _, id := range ids {
