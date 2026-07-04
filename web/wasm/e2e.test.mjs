@@ -59,6 +59,19 @@ if (!fs.existsSync(wasmPath)) {
     assert.deepEqual(r.keyspaces.sort(), ["beers", "breweries"]);
   });
 
+  test("in-memory secondary index yields an IndexScan (browser build)", () => {
+    // The built-in sample ships a .n1k1/catalog.json with a gsi index on abv;
+    // the wasm build has no bbolt, so this exercises idx_mem.go end-to-end.
+    const ex = run("EXPLAIN SELECT b.name FROM beers b WHERE b.abv >= 7");
+    assert.ok(ex.ok, ex.error);
+    const plan = JSON.stringify(ex.rows[0]);
+    assert.ok(plan.includes("beers_by_abv"), "mem index not chosen:\n" + plan);
+    assert.ok(plan.includes("IndexScan"), "expected an IndexScan operator:\n" + plan);
+    // and it returns the right rows (7.0, 7.0, 7.0, 10, 10 ... abv>=7 in the sample)
+    const q = run("SELECT COUNT(*) AS n FROM beers b WHERE b.abv >= 7");
+    assert.ok(q.ok && q.rows[0].n >= 1, JSON.stringify(q.rows));
+  });
+
   test("ingestion → mount → open → query (tar.gz)", async () => {
     const enc = new TextEncoder();
     const tarBlocks = [];

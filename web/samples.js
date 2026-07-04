@@ -37,12 +37,24 @@ const BREWERIES = {
   "st_james_gate":  { name: "St. James's Gate",       city: "Dublin",        state: "",   country: "Ireland",       founded: 1759 },
 };
 
+// A .n1k1/catalog.json sidecar declares secondary indexes. In the browser these
+// are built in memory (idx_mem.go) and the planner uses them for IndexScans —
+// see the "Indexed filter (EXPLAIN)" example. catalog.json lives beside the
+// `default` namespace at the datastore root (/n1k1data/.n1k1/catalog.json).
+const CATALOG = JSON.stringify({
+  indexes: [
+    { name: "beers_by_abv", keyspace: "beers", keys: ["abv"] },
+    { name: "beers_by_style", keyspace: "beers", keys: ["style"] },
+  ],
+}, null, 2);
+
 // The tree the fs shim mounts at /n1k1data.
 const DATASETS = {
   default: {
     beers: docs(BEERS),
     breweries: docs(BREWERIES),
   },
+  ".n1k1": { "catalog.json": CATALOG },
 };
 
 const SAMPLE_QUERIES = [
@@ -62,6 +74,8 @@ const SAMPLE_QUERIES = [
     sql: "SELECT bw.name, bw.city\nFROM breweries bw\nWHERE bw.founded < 2000\nORDER BY bw.founded" },
   { label: "Expressions only",
     sql: "SELECT 1 + 1 AS two,\n       ROUND(PI(), 4) AS pi,\n       UPPER(\"n1k1\") AS engine,\n       ARRAY_LENGTH([1, 2, 3]) AS len,\n       SUBSTR(\"hello world\", 0, 5) AS hi" },
-  { label: "EXPLAIN",
+  { label: "Indexed filter (EXPLAIN)",
+    sql: "EXPLAIN SELECT b.name, b.abv\nFROM beers b\nWHERE b.abv >= 7\nORDER BY b.abv DESC" },
+  { label: "EXPLAIN (group)",
     sql: "EXPLAIN SELECT b.style, COUNT(*)\nFROM beers b\nGROUP BY b.style" },
 ];

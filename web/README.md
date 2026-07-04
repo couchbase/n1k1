@@ -21,6 +21,12 @@ Pick an example query or write your own, then **Run** (or ⌘/Ctrl+Enter). Joins
 `GROUP BY`, `UNNEST`, subqueries and `EXPLAIN` all work against the sample
 `beers` / `breweries` keyspaces.
 
+The sample ships a `.n1k1/catalog.json` declaring secondary indexes on `beers`.
+The browser has no bbolt (it needs mmap), so these are **in-memory** indexes
+(`glue/idx_mem.go`) — the **Indexed filter (EXPLAIN)** example shows the planner
+choosing an `IndexScan` over them, exactly as the native binary does with its
+on-disk bbolt indexes.
+
 ### Drag & drop your own files (all browsers)
 
 Drag `.json`, `.jsonl`/`.ndjson`, their `.gz` variants, or a `.tar` / `.tar.gz`

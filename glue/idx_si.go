@@ -35,7 +35,6 @@ package glue
 
 import (
 	"bytes"
-	"encoding/binary"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -84,6 +83,11 @@ var SecondaryIndexMode = "lazy"
 func maybeSecondaryIndexes(dataRoot string, ds datastore.Datastore) (datastore.Datastore, error) {
 	if SecondaryIndexMode == "off" {
 		return ds, nil
+	}
+	// Opt-in mmap-free in-memory backend (the default, and only, backend in the
+	// WASM build -- see idx_wasm.go). See idx_mem.go.
+	if SecondaryIndexMode == "mem" {
+		return maybeMemIndexes(dataRoot, ds)
 	}
 	cat, err := loadCatalog(dataRoot)
 	if err != nil {
@@ -594,6 +598,7 @@ type secondaryIndex struct {
 	db  *bolt.DB
 }
 
+func (si *secondaryIndex) indexDefn() *indexDef             { return si.def }
 func (si *secondaryIndex) KeyspaceId() string               { return si.ks.Id() }
 func (si *secondaryIndex) Id() string                       { return si.def.Name }
 func (si *secondaryIndex) Name() string                     { return si.def.Name }
@@ -714,36 +719,6 @@ func (si *secondaryIndex) scanSpan(span *datastore.Span, limit int64,
 	if err != nil {
 		conn.Error(errors.NewError(err, "secondary-index scan"))
 	}
-}
-
-// decodeKeyComponents recovers the index-key values from a stored bbolt key,
-// given the per-component byte offsets returned by splitKey. Used by a covering
-// scan to reconstruct the projected doc straight from the index (no fetch). A
-// component that fails to decode leaves a nil (MISSING) slot rather than dropping
-// the whole entry.
-func decodeKeyComponents(key []byte, compEnds []int) value.Values {
-	keys := make(value.Values, len(compEnds))
-	start := 0
-	for i, end := range compEnds {
-		if v, _, ok := decodeValue(key[start:end]); ok {
-			keys[i] = v
-		}
-		start = end
-	}
-	return keys
-}
-
-// encodeSeq encodes a sequence of bound values (one per sarged key) into a
-// single comparable byte prefix.
-func encodeSeq(vals value.Values) []byte {
-	if len(vals) == 0 {
-		return nil
-	}
-	var out []byte
-	for _, v := range vals {
-		out = encodeValue(out, v)
-	}
-	return out
 }
 
 // ------------------------------------------------------------------- build
@@ -952,43 +927,6 @@ func indexFresh(db *bolt.DB, sig string) (bool, error) {
 		return nil
 	})
 	return fresh, err
-}
-
-// sourceSignature summarizes a keyspace directory for change detection: file
-// count and the newest mtime (nanoseconds) over the whole tree. This is the
-// simple "assume static data, validate by timestamp" model the user asked for --
-// adding/removing/touching any file changes the signature and forces a rebuild.
-func sourceSignature(dir string) (string, error) {
-	var count int64
-	var newest int64
-	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			// Don't descend into the sidecar itself if it's ever nested here.
-			if d.Name() == sidecarDir {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		info, err := d.Info()
-		if err != nil {
-			return err
-		}
-		count++
-		if mt := info.ModTime().UnixNano(); mt > newest {
-			newest = mt
-		}
-		return nil
-	})
-	if err != nil {
-		return "", err
-	}
-	var b [16]byte
-	binary.BigEndian.PutUint64(b[0:8], uint64(count))
-	binary.BigEndian.PutUint64(b[8:16], uint64(newest))
-	return fmt.Sprintf("%x", b), nil
 }
 
 // fsSafe sanitizes an index name for use as a directory segment.

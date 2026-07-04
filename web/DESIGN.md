@@ -60,18 +60,27 @@ keyspace).
 **Recommended order** (all converge on the storage-as-interface refactor):
 1. **Drag-drop ingestion** (#2) — cheapest, cross-browser, reuses existing gzip/JSONL
    handling. **DONE** — see `wasm/ingest.js` + "Ingestion" below.
-2. **In-memory secondary index** (Phase 1 under #1) — engine value; `IndexScan` in
-   `EXPLAIN`; no worker/persistence.
+2. **In-memory secondary index** (Phase 1 under #1) — **DONE** — see `glue/idx_mem.go`
+   + "Secondary indexes" below. Real `IndexScan` in `EXPLAIN`, both builds.
 3. **Web Worker** (#3) — foundational; unlocks visible live stats + cancellation +
    streaming at once.
 4. **OPFS index cache** (Phase 2 under #1) — layers on top of #2/#3.
 
 ### 1. Secondary indexes in the wasm build (the through-line)
 The reason we can't just recompile bbolt/bleve is mmap. Realistic path:
-- **Phase 1** — mmap-free **in-memory SI**, built from `catalog.json` at open, backing
-  the scan with a sorted structure over the existing order-preserving key encoding
-  (`idx_si_encode.go`). Gives real `IndexScan` plans in the browser (visible in
-  `EXPLAIN`); no persistence, no worker, cross-browser. *Prerequisite for everything below.*
+- **Phase 1 — DONE** (`glue/idx_mem.go`). mmap-free **in-memory SI**, built from
+  `catalog.json` at open, backing the scan with a sorted `[][]byte` (encode(keys)+docID)
+  binary-searched per span — sharing the order-preserving encoding and the exact
+  bound/inclusion logic with bbolt (`idx_si_encode.go`). The engine dispatches on a
+  `nativeIndex` interface (`idx_native.go`) that both bbolt `secondaryIndex` and `memIndex`
+  satisfy, so the ~5 core scan/convert sites (conv.go, datastore_scan.go) are backend-
+  agnostic. Wiring: wasm always uses mem (`idx_wasm.go`); native keeps bbolt default with
+  mem opt-in via `SecondaryIndexMode="mem"` (`idx_si.go`). Built process-wide cached, rebuilt
+  on `sourceSignature` change. Gives real `IndexScan` in `EXPLAIN` in both builds; no
+  persistence, no worker, cross-browser. Tests: `glue/idx_mem_test.go` (native, incl.
+  primary-scan parity) + `web/wasm/e2e.test.mjs` (browser build). The `.n1k1/catalog.json`
+  sidecar sits at the datastore root, beside the `default` namespace (a separate, empty
+  ".n1k1" namespace to the file datastore — harmless). Follow-up: FTS still bbolt/bleve-only.
 - **Phase 2** — **OPFS as a persistence cache** for that in-memory index: serialize on
   build, deserialize on open, invalidate on `sourceSignature` mismatch (`idx_si.go` has
   the freshness logic). Because the index is RAM-resident during queries, OPFS is touched

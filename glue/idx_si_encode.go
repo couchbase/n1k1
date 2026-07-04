@@ -56,6 +56,36 @@ const (
 	tagObject  = byte(0x07)
 )
 
+// encodeSeq encodes a sequence of bound values (one per sarged key) into a
+// single comparable byte prefix. Shared by the bbolt and in-memory scan paths.
+func encodeSeq(vals value.Values) []byte {
+	if len(vals) == 0 {
+		return nil
+	}
+	var out []byte
+	for _, v := range vals {
+		out = encodeValue(out, v)
+	}
+	return out
+}
+
+// decodeKeyComponents recovers the index-key values from a stored key, given the
+// per-component byte offsets returned by splitKey. Used by a covering scan to
+// reconstruct the projected doc straight from the index (no fetch). A component
+// that fails to decode leaves a nil (MISSING) slot rather than dropping the whole
+// entry. Shared by the bbolt and in-memory scan paths.
+func decodeKeyComponents(key []byte, compEnds []int) value.Values {
+	keys := make(value.Values, len(compEnds))
+	start := 0
+	for i, end := range compEnds {
+		if v, _, ok := decodeValue(key[start:end]); ok {
+			keys[i] = v
+		}
+		start = end
+	}
+	return keys
+}
+
 // encodeValue appends the order-preserving encoding of v to dst and returns it.
 func encodeValue(dst []byte, v value.Value) []byte {
 	if v == nil {
