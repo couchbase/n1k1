@@ -125,7 +125,27 @@ type GlueContext struct {
 	// errsMu guards errs against concurrent Error/Warning/Fatal from UNION ALL
 	// branch actors (which delegate to the root via getRoot()). Lives on the root.
 	errsMu sync.Mutex
+
+	// jsRT is the lazily-built goja runtime for JS UDFs, scoped to THIS context.
+	// A fresh GlueContext per Session.Run makes it per-query (JS globals reset each
+	// query); ChainClone deliberately does NOT copy it, so each concurrent UNION
+	// ALL actor gets its own -- keeping the single-threaded goja runtime lock-free.
+	// See ext_goja.go. NOT routed through getRoot() (that would re-share it).
+	jsRT *jsSharedRuntime
 }
+
+// jsShared returns this context's JS runtime, building it (console + all loaded
+// UDFs) on first use. Single-threaded per context/actor, so no lock.
+func (c *GlueContext) jsShared() *jsSharedRuntime {
+	if c.jsRT == nil {
+		c.jsRT = newJSSharedRuntime()
+	}
+	return c.jsRT
+}
+
+// dropJSShared discards a poisoned JS runtime (after a panic/timeout); the next
+// UDF call rebuilds a clean one.
+func (c *GlueContext) dropJSShared() { c.jsRT = nil }
 
 // getRoot resolves to the request's root GlueContext -- itself when this is the
 // root, else the root a per-actor clone points at (see ChainClone / the root

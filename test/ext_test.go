@@ -14,6 +14,7 @@
 package test
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -135,6 +136,54 @@ func TestExtJSUDFGuards(t *testing.T) {
 	if err := glue.RegisterJSFunc("count",
 		`function count(x) { return x; }`); err == nil {
 		t.Fatalf("registering UDF named 'count' should be refused (aggregate collision)")
+	}
+}
+
+// TestExtJSRuntimeModel covers the per-query/per-actor shared-runtime model:
+// (a) a UDF can call another loaded UDF (shared JS scope); (b) console.log is
+// available and writes to glue.JSConsoleWriter; (c) module-scope globals reset
+// on each query (fresh runtime per Session.Run).
+func TestExtJSRuntimeModel(t *testing.T) {
+	// (a) cross-UDF call: outer() calls inner().
+	if err := glue.RegisterJSFunc("rt_inner", `function rt_inner(x){ return x*10; }`); err != nil {
+		t.Fatalf("register inner: %v", err)
+	}
+	if err := glue.RegisterJSFunc("rt_outer", `function rt_outer(x){ return rt_inner(x) + 1; }`); err != nil {
+		t.Fatalf("register outer: %v", err)
+	}
+	sess := extSession(t)
+	if got := extRawRows(t, sess, `SELECT RAW rt_outer(5)`); len(got) != 1 || got[0] != `51` {
+		t.Fatalf("cross-UDF rt_outer(5) = %v, want [51]", got)
+	}
+
+	// (b) console.log writes to JSConsoleWriter.
+	var logbuf bytes.Buffer
+	saved := glue.JSConsoleWriter
+	glue.JSConsoleWriter = &logbuf
+	defer func() { glue.JSConsoleWriter = saved }()
+	if err := glue.RegisterJSFunc("rt_logger", `function rt_logger(x){ console.log("saw", x); return x; }`); err != nil {
+		t.Fatalf("register logger: %v", err)
+	}
+	if got := extRawRows(t, sess, `SELECT RAW rt_logger(7)`); len(got) != 1 || got[0] != `7` {
+		t.Fatalf("rt_logger(7) = %v, want [7]", got)
+	}
+	if !strings.Contains(logbuf.String(), "saw 7") {
+		t.Fatalf("console.log output = %q, want it to contain %q", logbuf.String(), "saw 7")
+	}
+
+	// (c) module-scope globals reset per query: a counter restarts at 1 each Run.
+	if err := glue.RegisterJSFunc("rt_counter", `var n=0; function rt_counter(x){ return ++n; }`); err != nil {
+		t.Fatalf("register counter: %v", err)
+	}
+	q := `SELECT RAW rt_counter(v) FROM [10,20,30] AS v`
+	first := extRawRows(t, sess, q)
+	second := extRawRows(t, sess, q)
+	want := []string{"1", "2", "3"}
+	if strings.Join(first, ",") != strings.Join(want, ",") {
+		t.Fatalf("counter query 1 = %v, want %v", first, want)
+	}
+	if strings.Join(second, ",") != strings.Join(want, ",") {
+		t.Fatalf("counter query 2 = %v, want %v (globals should reset per query)", second, want)
 	}
 }
 

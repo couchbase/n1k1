@@ -59,6 +59,31 @@ when the baked `exprTree`/`exprStr` string is re-parsed at runtime).
   `base.AggCatalog[name]`, so the cbq Cumulate*/ComputeFinal machinery is never
   run. Work in GROUP BY and as bare aggregates; auto-registered at glue init.
 
+### JS UDF runtime & state (the goja execution model)
+
+The live `goja.Runtime` is scoped **per query, per actor**, not per process or per
+UDF (`glue/ext_goja.go`): programs compile once at registration, but the runtime
+is built lazily on the eval context (`GlueContext.jsRT`) — a fresh `GlueContext`
+per `Session.Run`, and `ChainExtend`'s per-actor context clone gives each
+concurrent UNION ALL branch (and future parallel scan/GROUP-BY shard) its own.
+One `goja.Runtime` isn't goroutine-safe, so this scoping keeps each single-
+threaded with **no pool and no lock** (aligning with DESIGN.md: avoid `sync.Pool`
++ locking). Each runtime defines *all* loaded UDFs in one shared JS scope and
+installs a `console`. Consequences (all covered by `test/ext_test.go`):
+
+- **Module-scope JS globals persist across calls within a query and RESET on the
+  next query** — good for per-query caches (hoisted compiled regexes, memo
+  tables); a "global counter" is per-actor and resets per query, so it is *not*
+  a reliable running total — use SQL aggregates (or a `base.Agg` extension) for
+  cross-row accumulation. No cross-query state leakage.
+- **A UDF can call another loaded UDF** (e.g. `foobar()` calling `slugify()`) —
+  they share the runtime's global scope.
+- **`console.log` / `.error` / `.warn` / `.info` / `.debug` work** for debugging,
+  writing to `glue.JSConsoleWriter` (default `os.Stderr`).
+- Cost: one `goja.New()` + re-running all UDF programs per query/actor (amortized
+  over the query's rows; fine for n1k1's scan-heavy analytical profile — measured
+  JS boundary ≈ 1 µs/row, dominated by the boxed `ConvertVals`, not goja itself).
+
 The design/roadmap below is the fuller picture (WASM, streaming sources,
 document shredding, a registry); the rest of this doc is forward-looking.
 

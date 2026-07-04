@@ -425,6 +425,8 @@ type ExprGlueContext struct {
 	*expression.IndexContext
 
 	MyNow time.Time
+
+	jsRT *jsSharedRuntime // per-context JS UDF runtime; see ext_goja.go / jsRuntimeHost.
 }
 
 func NewExprGlueContext(now time.Time) *ExprGlueContext {
@@ -434,6 +436,17 @@ func NewExprGlueContext(now time.Time) *ExprGlueContext {
 func (e *ExprGlueContext) Now() time.Time {
 	return e.MyNow
 }
+
+// jsShared / dropJSShared satisfy jsRuntimeHost so a JS UDF evaluated through the
+// fallback context (no GlueContext in vars.Temps[0]) still reuses one runtime.
+func (e *ExprGlueContext) jsShared() *jsSharedRuntime {
+	if e.jsRT == nil {
+		e.jsRT = newJSSharedRuntime()
+	}
+	return e.jsRT
+}
+
+func (e *ExprGlueContext) dropJSShared() { e.jsRT = nil }
 
 // --------------------------------------------------------
 

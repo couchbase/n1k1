@@ -45,6 +45,21 @@ glue.ListExtensions()                                    // []ExtensionInfo{name
 glue.UnloadExtension("triple")                           // disable (reload to re-enable)
 ```
 
+## Runtime model (what you can rely on)
+
+Each **query** gets its own JavaScript runtime (and each concurrent UNION ALL
+branch its own), holding all loaded UDFs together. So:
+
+- **UDFs can call each other** — `foobar.js` may call `slugify(...)` if `slugify`
+  is also loaded (they share one scope).
+- **`console.log(...)`** (and `.warn/.error/.info/.debug`) work for debugging;
+  output goes to stderr.
+- **Module-scope `var`/globals persist across calls *within a query* and reset on
+  the next query.** Great for per-query caches (e.g. a compiled regex hoisted out
+  of the function, a memo table). Do **not** use a global as a running total or
+  row counter — it's per-runtime and resets each query; use SQL (`COUNT`/`SUM`,
+  or `GROUP BY` with an aggregate) for cross-row accumulation.
+
 ## Notes
 
 - Loading is **opt-in** — executing user code in-process is a real attack
