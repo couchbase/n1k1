@@ -20,6 +20,9 @@ import (
 // other value yields the boolean result of a type test. Mirrors cbq
 // expression/func_type_check.go. (IS_BINARY and the TYPE() function are left to
 // the cbq fallback.)
+//
+// Also the scalar type-CONVERSION functions TO_BOOLEAN / TO_STRING / TO_NUMBER
+// (see the second half of this file); logic in base.ToBoolean/ToString/ToNumber.
 
 func init() {
 	ExprCatalog["is_array"] = ExprIsArray
@@ -28,6 +31,10 @@ func init() {
 	ExprCatalog["is_boolean"] = ExprIsBoolean
 	ExprCatalog["is_object"] = ExprIsObject
 	ExprCatalog["is_atom"] = ExprIsAtom
+
+	ExprCatalog["to_boolean"] = ExprToBoolean
+	ExprCatalog["to_string"] = ExprToString
+	ExprCatalog["to_number"] = ExprToNumber
 }
 
 // Each predicate passes its type test directly into the shared harness.
@@ -97,6 +104,72 @@ func ExprIsType(lzVars *base.Vars, labels base.Labels, params []interface{},
 				lzVal = base.ValFalse
 			}
 		}
+
+		return lzVal
+	}
+
+	return lzExprFunc
+}
+
+// -----------------------------------------------------
+// Scalar type conversions (TO_BOOLEAN / TO_STRING / TO_NUMBER). TO_BOOLEAN
+// yields a constant Val (no buffer); the others build into the reused lzBufPre.
+// TO_NUMBER's 2-arg strip form is variadic -> falls back per the optimizer guard.
+
+func ExprToBoolean(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
+	exprA := params[0].([]interface{})
+
+	lzExprFunc =
+		MakeExprFunc(lzVars, labels, exprA, path, "A") // !lz
+	lzA := lzExprFunc
+
+	lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
+		lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
+
+		lzVal = base.ToBoolean(lzVal)
+
+		return lzVal
+	}
+
+	return lzExprFunc
+}
+
+func ExprToString(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
+	exprA := params[0].([]interface{})
+
+	var lzBufPre []byte // <== varLift: lzBufPre by path
+
+	lzExprFunc =
+		MakeExprFunc(lzVars, labels, exprA, path, "A") // !lz
+	lzA := lzExprFunc
+
+	lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
+		lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
+
+		lzVal, lzBufPre = base.ToString(lzVal, lzBufPre)
+
+		return lzVal
+	}
+
+	return lzExprFunc
+}
+
+func ExprToNumber(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
+	exprA := params[0].([]interface{})
+
+	var lzBufPre []byte // <== varLift: lzBufPre by path
+
+	lzExprFunc =
+		MakeExprFunc(lzVars, labels, exprA, path, "A") // !lz
+	lzA := lzExprFunc
+
+	lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
+		lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
+
+		lzVal, lzBufPre = base.ToNumber(lzVal, lzBufPre)
 
 		return lzVal
 	}

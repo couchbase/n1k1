@@ -37,7 +37,7 @@ func init() {
 		"upper", "lower", "length", "title", // unary string (expr_str.go)
 		"contains", "position0", "position1", // binary string (expr_str.go)
 		"power", "atan2", // binary math (expr_math.go)
-		"to_boolean", "to_string", "to_number", // type conversions (expr_typeconv.go)
+		"to_boolean", "to_string", "to_number", // type conversions (expr_type.go)
 		"and", "or", // three-valued logical (expr_logic.go)
 		"not",                                            // unary predicate (expr_pred.go)
 		"ifnull", "ifmissing", "ifmissingornull", "nvl",  // conditional-unknown (expr_cond.go)
