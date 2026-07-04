@@ -226,7 +226,16 @@ type jsonlSource struct {
 	off      int64  // cumulative bytes consumed (absolute file position)
 	tokOff   int64  // byte offset of the token from the most recent split call
 	idBuf    []byte // reused ID scratch
+	scanBuf  []byte // the pooled bufio.Scanner buffer, returned to jsonlBufPool on Close
 }
+
+// jsonlBufPool recycles the 64 KiB buffer newJSONLSource hands to bufio.Scanner. A
+// nested-loop join re-opens each inner file O(N) times; a fresh 64 KiB buffer per
+// open was ~441 MB of churn on a 3-way self-join over a single .jsonl keyspace (the
+// container analogue of the .json reader churn pooled above). The scanner's bytes
+// are borrowed only until the next Next (see jsonlSource / DatastoreScanRecords), so
+// the source's data is consumed before Close, which recycles the buffer.
+var jsonlBufPool = sync.Pool{New: func() interface{} { return make([]byte, 0, 64*1024) }}
 
 // newJSONLSource streams r as line-delimited JSON. seekable reports whether r is
 // the file's raw bytes (not a decompressing wrapper), i.e. whether a byte offset
@@ -235,9 +244,12 @@ type jsonlSource struct {
 // jsonlSource.Next and glue's container fetch). For a compressed file it is false
 // (an uncompressed-stream offset can't seek the compressed bytes).
 func newJSONLSource(r io.Reader, closers []io.Closer, idPrefix string, seekable bool) *jsonlSource {
-	s := &jsonlSource{closers: closers, idPrefix: idPrefix, seekable: seekable}
+	buf := jsonlBufPool.Get().([]byte)
+	s := &jsonlSource{closers: closers, idPrefix: idPrefix, seekable: seekable, scanBuf: buf}
 	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024) // allow large records
+	// Reuse the pooled 64 KiB buffer; the 16 MiB cap still permits a large record
+	// (the scanner detaches into a fresh larger buffer then, leaving scanBuf intact).
+	sc.Buffer(buf[:0], 16*1024*1024)
 	// Wrap ScanLines to track each line's absolute byte offset without giving up
 	// the alloc-free borrow-the-buffer reads: the running sum of advance counts is
 	// the file position, and a line starts at that position before its own advance
@@ -277,7 +289,14 @@ func (s *jsonlSource) Next(rec *Record) (bool, error) {
 	return false, nil
 }
 
-func (s *jsonlSource) Close() error { return closeAll(s.closers) }
+func (s *jsonlSource) Close() error {
+	err := closeAll(s.closers)
+	if s.scanBuf != nil {
+		jsonlBufPool.Put(s.scanBuf[:0]) // recycle the 64 KiB buffer; guarded against double-Close
+		s.scanBuf = nil
+	}
+	return err
+}
 
 // -------------------------------------------------------------- JSON source
 
