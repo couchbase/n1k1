@@ -448,9 +448,28 @@ safety net (it caught the `Function.Name()` and MISSING-constant bugs below).
   asymmetry). Verified byte-identical to cbq in `TestLogicAndOrDifferentialVsCBQ`
   (interpreter) and exercised in the compiled path by the `naryProjectCase` cases
   in `test/cases.go`.
-- **Func-value params are intermed-safe.** The harness can take an op as a `func`
-  (method expression like `base.Num.Div`, or an adapter) instead of an int + switch
-  — cleaner, and codegen handles it. (Dropped the `ArithApply` op-code switch.)
+- **Func-value params are intermed-safe (via `LzExprFmt` + positional tokens).**
+  A shared harness can take an op as a real `func` value (a package-level func like
+  `base.StrCaseUpper`, or a method expression like `base.Num.Div`) instead of an int
+  op-code + `switch`. Two codegen pieces make this work:
+  - **Fix A — `base.LzExprFmt`.** The generator rendered a compile-time-known "live"
+    expr with `%#v`, which for a func yields an un-compilable pointer literal
+    `(func(int)bool)(0x…)`. `LzExprFmt` renders a func by its qualified Go name
+    (`base.StrCaseUpper`, `math.Abs`) so the compiled path emits a genuine call;
+    everything non-func stays byte-identical to `%#v`. Only NAMED, exported funcs
+    in a package the generated `tmp` imports work — not closures (uncallable runtime
+    name) nor unexported engine-local funcs. Put the leaf logic in `base`, pass
+    `base.Foo`. A nil/unresolvable func falls back to `%#v` (valid `(T)(nil)`).
+  - **Fix B — positional arg tokens.** The `varLift` (reused-buffer) pass and the
+    `SimpleExprRE` (live-expr/func) pass used to append fmt args in pass order (all
+    buffer args, then all live-expr args), which mis-ordered them when a func
+    placeholder and a `varLift` placeholder shared one emitted line. Each pass now
+    plants a positional `\x00<n>\x00` token; a final left-to-right scan emits `%s`
+    and collects args in on-line order. So transform + encode can collapse to one
+    line, e.g. `lzBufPre = base.EncodeStr(c, caseFn(lzDecoded), lzBufPre)`.
+  Applied so far: the type-check predicates (`is_*` → `base.TypeIs*`) and the
+  case-transform family (`upper`/`lower`/`title` → `base.StrCase*`). The token merge
+  is behavior-preserving — regen produced byte-identical output for every other op.
 - **Regex/pattern exprs don't fit the zero-alloc model.** `LIKE`/`REGEXP_*` compile
   to a `regexp`; cbq caches the compiled regex per static pattern so its per-tuple
   cost is `re.Match`, but a native port has no good story — a dynamic pattern

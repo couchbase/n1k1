@@ -22,7 +22,7 @@ import (
 // (the intermed compiler calls this in place of a raw %#v). Everything except a
 // func renders exactly as %#v did before -- so ints/bools/strings are unchanged.
 //
-// A FUNC value renders as its qualified Go name (e.g. base.StrUpper, math.Abs,
+// A FUNC value renders as its qualified Go name (e.g. base.StrCaseUpper, math.Abs,
 // base.Num.Div), so a harness can take an op as a real func param and have the
 // compiled path emit a genuine call rather than an un-compilable pointer literal.
 // This only works for NAMED, exported funcs in a package the generated `tmp` file
@@ -34,7 +34,7 @@ func LzExprFmt(v interface{}) string {
 		if fn := runtime.FuncForPC(rv.Pointer()); fn != nil {
 			if name := fn.Name(); name != "" {
 				// Strip the import path, keeping the package-qualified name:
-				//   github.com/couchbase/n1k1/base.StrUpper -> base.StrUpper
+				//   github.com/couchbase/n1k1/base.StrCaseUpper -> base.StrCaseUpper
 				//   github.com/couchbase/n1k1/base.Num.Div  -> base.Num.Div (method expr)
 				//   math.Abs                                -> math.Abs
 				if i := strings.LastIndex(name, "/"); i >= 0 {

@@ -17,11 +17,11 @@ import (
 
 // Unary string functions on JSON-string bytes into a reused buffer -- no boxing.
 // The case-transform family (UPPER/LOWER/TITLE) shares exprStrCase, selected by
-// an int op-code; the op-code (base.StrCaseApply, %#v) and the reused lzBufPre
-// buffer (varLift %s) stay on SEPARATE emitted lines, because the generator
-// mis-orders args when a %#v placeholder sits between %s placeholders on one line
-// (see base/str.go, DESIGN-exprs.md). LENGTH yields a number, not a re-encoded
-// string, so it has its own harness.
+// a case-transform FUNC (base.StrCaseUpper/Lower/Title) emitted by name (see
+// base/lzfmt.go). The func and the reused lzBufPre buffer now co-exist on one
+// emitted line -- the generator preserves fmt-arg order across a func placeholder
+// and a varLift buffer placeholder (see cmd/intermed_build, DESIGN-exprs.md).
+// LENGTH yields a number, not a re-encoded string, so it has its own harness.
 
 func init() {
 	ExprCatalog["upper"] = ExprUpper
@@ -35,24 +35,24 @@ func init() {
 
 func ExprUpper(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) base.ExprFunc {
-	return exprStrCase(lzVars, labels, params, path, base.StrUpper)
+	return exprStrCase(lzVars, labels, params, path, base.StrCaseUpper)
 }
 
 func ExprLower(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) base.ExprFunc {
-	return exprStrCase(lzVars, labels, params, path, base.StrLower)
+	return exprStrCase(lzVars, labels, params, path, base.StrCaseLower)
 }
 
 func ExprTitle(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) base.ExprFunc {
-	return exprStrCase(lzVars, labels, params, path, base.StrTitle)
+	return exprStrCase(lzVars, labels, params, path, base.StrCaseTitle)
 }
 
 // exprStrCase is the shared case-transform harness. base.StrDecode guards +
-// decodes; base.StrCaseApply transforms (op-code line, no buffer); base.EncodeStr
-// re-encodes into lzBufPre (buffer line, no op-code).
+// decodes; caseFn transforms and base.EncodeStr re-encodes into lzBufPre on a
+// single line -- the caseFn func value and the varLift buffer now co-exist.
 func exprStrCase(lzVars *base.Vars, labels base.Labels, params []interface{},
-	path string, op int) (lzExprFunc base.ExprFunc) {
+	path string, caseFn func([]byte) []byte) (lzExprFunc base.ExprFunc) {
 	exprA := params[0].([]interface{})
 
 	var lzBufPre []byte // <== varLift: lzBufPre by path
@@ -68,8 +68,7 @@ func exprStrCase(lzVars *base.Vars, labels base.Labels, params []interface{},
 		if !lzOk {
 			lzVal = lzSentinel
 		} else {
-			lzRaw := base.StrCaseApply(op, lzDecoded)
-			lzBufPre = base.EncodeStr(lzVars.Ctx.ValComparer, lzRaw, lzBufPre)
+			lzBufPre = base.EncodeStr(lzVars.Ctx.ValComparer, caseFn(lzDecoded), lzBufPre)
 			lzVal = base.Val(lzBufPre)
 		}
 

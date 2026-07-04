@@ -20,22 +20,30 @@ import (
 
 // Unary string functions on JSON-string bytes. cbq's func_str.go skeleton is
 // uniform (MISSING -> MISSING, a non-string operand -> NULL, else compute on the
-// DECODED string), so the pieces below are split so ONE engine harness can serve
-// the whole case-transform family: StrDecode (guard + decode) and StrCaseApply
-// (the per-op-code transform, kept off the reused-buffer line) then EncodeStr.
-// The int op-code and the reused buffer never share an emitted line -- see
-// engine/expr_str.go and DESIGN-exprs.md.
+// DECODED string), so ONE engine harness serves the whole case-transform family:
+// StrDecode (guard + decode), a case-transform func (StrCaseUpper/Lower/Title),
+// then EncodeStr into the reused buffer. The case func is passed as a real func
+// value and emitted by name; it can now share an emitted line with the reused
+// buffer, so transform + encode collapse into one line -- see engine/expr_str.go,
+// base/lzfmt.go, and DESIGN-exprs.md.
 //
 // The operand's inner (still-escaped) content is decoded once via
 // jsonparser.Unescape -- which returns the input unchanged when there are no
 // escapes (no allocation) -- matching cbq's arg.ToString().
 
-// Case-transform op-codes for StrCaseApply.
-const (
-	StrUpper = iota
-	StrLower
-	StrTitle
-)
+// Case-transform funcs on decoded string bytes, returning the raw (not yet
+// JSON-encoded) result. bytes.* (not strings.*(string(decoded))) avoids the
+// []byte<->string round-trip allocations; one allocation remains for the
+// transformed result (inherent -- the case-folded content differs from the
+// input), which EncodeStr then copies into the reused output buffer. Passed as
+// real func values into the shared harness and emitted by name (see LzExprFmt).
+func StrCaseUpper(decoded []byte) []byte { return bytes.ToUpper(decoded) }
+func StrCaseLower(decoded []byte) []byte { return bytes.ToLower(decoded) }
+
+// StrCaseTitle mirrors cbq exactly: strings.Title(strings.ToLower).
+func StrCaseTitle(decoded []byte) []byte {
+	return bytes.Title(bytes.ToLower(decoded)) //nolint:staticcheck // match cbq strings.Title
+}
 
 // StrDecode returns the operand's decoded string bytes and ok=true for a JSON
 // string; for MISSING/non-string it returns the sentinel Val to yield and
@@ -53,25 +61,6 @@ func StrDecode(v Val) (decoded []byte, sentinel Val, ok bool) {
 		return nil, ValNull, false
 	}
 	return d, nil, true
-}
-
-// StrCaseApply case-transforms the decoded string bytes per op-code, returning
-// the raw (not yet JSON-encoded) result. StrTitle mirrors cbq exactly:
-// strings.Title(strings.ToLower).
-func StrCaseApply(op int, decoded []byte) []byte {
-	// bytes.* (not strings.*(string(decoded))) avoids the []byte<->string round-trip
-	// allocations; one allocation remains for the transformed result (inherent --
-	// the case-folded content differs from the input), which EncodeStr then copies
-	// into the reused output buffer.
-	switch op {
-	case StrUpper:
-		return bytes.ToUpper(decoded)
-	case StrLower:
-		return bytes.ToLower(decoded)
-	case StrTitle:
-		return bytes.Title(bytes.ToLower(decoded)) //nolint:staticcheck // match cbq strings.Title
-	}
-	return decoded
 }
 
 // EncodeStr re-encodes raw bytes as a JSON string into the reused bufPre.

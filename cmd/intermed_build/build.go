@@ -6,6 +6,7 @@ import (
 	"log"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/couchbase/n1k1/cmd"
@@ -223,6 +224,13 @@ var LzRE = regexp.MustCompile(`[Ll]z`)
 
 var SimpleExprRE = regexp.MustCompile(`[a-zA-Z][a-zA-Z0-9\._]+`)
 
+// ArgTokenRE matches a positional placeholder token \x00<n>\x00 that both the
+// varLift and SimpleExprRE passes plant where a live fmt arg belongs. It has no
+// letters, so SimpleExprRE never matches it. A final left-to-right scan turns
+// each token back into "%s" and collects its arg in the ORDER it appears on the
+// line -- see EmitBlock.
+var ArgTokenRE = regexp.MustCompile("\x00([0-9]+)\x00")
+
 func EmitBlock(state *State, he *HandlerEntry, isLzBlock bool,
 	out []string, line string) ([]string, string) {
 	if !isLzBlock && strings.Index(line, "return ") > 0 {
@@ -235,6 +243,20 @@ func EmitBlock(state *State, he *HandlerEntry, isLzBlock bool,
 	var liveExprs []string
 
 	liveExprsIgnore := map[string]bool{}
+
+	// Positional arg tokens: the varLift and SimpleExprRE passes each plant a
+	// \x00<n>\x00 token where a live fmt arg belongs, recording the Go expression
+	// for that arg. A final scan (below) walks the line left-to-right, turning
+	// each token into "%s" and appending its arg -- so a varLift (buffer) arg and
+	// a SimpleExprRE (live-expr / func) arg on the SAME line interleave in the
+	// right order. Appending per-pass instead mis-ordered them (all varLift args
+	// ahead of all SimpleExprRE args regardless of on-line position).
+	var tokenArgs []string
+	mkToken := func(arg string) string {
+		tok := "\x00" + strconv.Itoa(len(tokenArgs)) + "\x00"
+		tokenArgs = append(tokenArgs, arg)
+		return tok
+	}
 
 	lineLeftRight := strings.Split(line, "// ")
 	if len(lineLeftRight) > 1 {
@@ -292,18 +314,13 @@ func EmitBlock(state *State, he *HandlerEntry, isLzBlock bool,
 
 		for varName, suffix := range he.Replacements {
 			if strings.Index(lineLeftRight[0], varName) > 0 {
-				// Replace-all turns every occurrence into `<var>%s`, so the suffix
-				// must be supplied once PER occurrence -- else a var used twice on
-				// one line (e.g. `lzBuf = f(lzBuf[:0])`) emits a second `%s` with
-				// no arg (`%!s(MISSING)`), which won't compile.
-				n := strings.Count(lineLeftRight[0], varName)
+				// Every occurrence gets the SAME token; the final scan emits the
+				// suffix once per occurrence (a var used twice on one line, e.g.
+				// `lzBuf = f(lzBuf[:0])`, then correctly gets two `%s` args).
+				tok := mkToken(suffix)
 
 				lineLeftRight[0] = strings.Replace(lineLeftRight[0],
-					varName, varName+"%s", -1)
-
-				for i := 0; i < n; i++ {
-					liveExprs = append(liveExprs, suffix)
-				}
+					varName, varName+tok, -1)
 
 				liveExprsIgnore[suffix] = true
 			}
@@ -357,11 +374,16 @@ func EmitBlock(state *State, he *HandlerEntry, isLzBlock bool,
 			// Render live exprs via base.LzExprFmt rather than a raw %#v: it is
 			// %#v for ints/bools/strings (unchanged) but emits a FUNC value by its
 			// qualified name, so a harness can take a real func param (e.g.
-			// base.StrUpper) instead of an int op-code + switch.
-			liveExprs = append(liveExprs, "base.LzExprFmt("+simpleExpr+")")
-
-			return "%s"
+			// base.StrCaseUpper) instead of an int op-code + switch.
+			return mkToken("base.LzExprFmt(" + simpleExpr + ")")
 		})
+
+	// Turn positional tokens into %s in the order they appear, collecting args.
+	line = ArgTokenRE.ReplaceAllStringFunc(line, func(tok string) string {
+		idx, _ := strconv.Atoi(tok[1 : len(tok)-1])
+		liveExprs = append(liveExprs, tokenArgs[idx])
+		return "%s"
+	})
 
 	if strings.HasSuffix(line, "}") &&
 		len(state.Indent) > 0 {
