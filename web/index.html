@@ -128,6 +128,7 @@
           <select id="examples"></select>
         </label>
         <button class="run" id="run" disabled>Run &#9654;</button>
+        <button id="cancel" title="Stop the running query" style="display:none">&#9632; Cancel</button>
         <button id="openFolder" title="Query a folder of JSON files from your computer (Chrome/Edge)" style="display:none">&#128193; Open folder&hellip;</button>
         <button id="loadFiles" title="Load .json / .jsonl / .gz / .tar.gz files (all browsers)">&#128228; Load files&hellip;</button>
         <input id="fileInput" type="file" multiple accept=".json,.jsonl,.ndjson,.jsons,.gz,.tgz,.tar" style="display:none">
@@ -181,7 +182,9 @@
 
   const sel = $("examples"), schemaEl = $("schema"), sourceName = $("sourceName");
   let currentExamples = [];
-  let ready = false; // set true once the worker's engine is ready
+  let ready = false;          // set true once the worker's engine is ready
+  let inflight = null;        // { cancelReject } while a query runs
+  let currentSource = null;   // { reopen } to re-mount after a cancel-respawn
 
   function setStatus(html) { statusEl.innerHTML = html; }
 
@@ -269,10 +272,12 @@
   // Handle the reply from one of the engine's open ops (openBuiltin/loadFiles/
   // openTree). The worker already did the OPFS index-cache preload; here we just
   // surface errors or activate. m is the RPC envelope {ok, result|error}.
-  async function activateFromOpen(m, label, curatedExamples) {
+  async function activateFromOpen(m, label, curatedExamples, reopen) {
     if (!m || !m.ok) { setStatus('<span class="err">Open failed: ' + escapeHtml((m && m.error) || "worker") + "</span>"); return; }
     const resp = m.result;
     if (!resp || !resp.ok) { setStatus('<span class="err">Open failed: ' + escapeHtml((resp && resp.error) || "") + "</span>"); return; }
+    // Remember how to re-mount this dataset if a cancel respawns the worker.
+    currentSource = { reopen: reopen };
     await activateSource(resp.keyspaces, label, curatedExamples);
   }
 
@@ -331,12 +336,26 @@
 
   async function run() {
     const sql = sqlEl.value.trim();
-    if (!sql) return;
+    if (!sql || !ready) return;
     setStatus('<span class="spin">Running&hellip;</span>');
     clearStats();
+    showCancel(true);
     // The query runs in the worker; the UI thread stays free, so live per-op
-    // stats (onStats -> renderStats) paint while it executes.
-    const m = await engine.query(sql);
+    // stats (onStats -> renderStats) paint while it executes. Race the result
+    // against a cancel signal -- cancelQuery terminates the worker (the only way
+    // to interrupt synchronous wasm) and rejects this, so run() unblocks.
+    let cancelReject;
+    const cancelled = new Promise((_, rej) => { cancelReject = rej; });
+    inflight = { cancelReject };
+    let m;
+    try {
+      m = await Promise.race([engine.query(sql), cancelled]);
+    } catch (e) {
+      return; // cancelled; cancelQuery() owns the status/UI from here
+    } finally {
+      if (inflight && inflight.cancelReject === cancelReject) inflight = null;
+      showCancel(false);
+    }
     if (!m || !m.ok) { setStatus('<span class="err">Engine error: ' + escapeHtml((m && m.error) || "worker") + "</span>"); return; }
     const resp = m.result;
 
@@ -362,6 +381,37 @@
   sqlEl.addEventListener("keydown", (e) => {
     if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); run(); }
   });
+
+  // ---- Cancel a running query -----------------------------------------------
+  // A synchronous wasm query blocks the worker thread, so a "cancel" message
+  // can't reach it -- the only interrupt is to terminate the worker. We then
+  // respawn a fresh one and re-mount the active dataset so the demo stays usable.
+  const cancelBtn = $("cancel");
+  function showCancel(on) {
+    cancelBtn.style.display = on ? "" : "none";
+    runBtn.disabled = on;
+  }
+  cancelBtn.addEventListener("click", cancelQuery);
+  async function cancelQuery() {
+    if (!inflight) return;
+    const rej = inflight.cancelReject;
+    inflight = null;
+    ready = false;
+    showCancel(false);
+    engine.terminate();          // hard-stop the running query
+    rej(new Error("cancelled")); // unblock run()'s Promise.race
+    clearStats();
+    setStatus('<span class="err">&#9632; Query cancelled.</span> <span class="spin">Restarting engine&hellip;</span>');
+    engine = makeEngine();
+    try {
+      await engine.ready;
+      if (currentSource) await currentSource.reopen(); // re-mount the active dataset
+      ready = true;
+      setStatus('<span class="ok">&#9632; Query cancelled.</span> Engine ready.');
+    } catch (e) {
+      setStatus('<span class="err">Engine restart failed: ' + escapeHtml(String((e && e.message) || e)) + "</span>");
+    }
+  }
 
   // ---- Live per-operator stats (streamed from the worker mid-query) ----------
   const statsEl = $("liveStats");
@@ -456,7 +506,8 @@
     }
     const note = stats.truncated ? " (truncated at cap)" : "";
     const label = fileObjs.length === 1 ? fileObjs[0].name : fileObjs.length + " files";
-    await activateFromOpen(m, label + "  ·  " + (stats.docs || 0) + " docs" + note, null);
+    await activateFromOpen(m, label + "  ·  " + (stats.docs || 0) + " docs" + note, null,
+      () => engine.loadFiles(files, mount));
   }
 
   async function openFolder() {
@@ -488,12 +539,14 @@
     const mount = "/userdata-" + (openFolder._n = (openFolder._n || 0) + 1);
     const m = await engine.openTree(mount, { default: keyspaces });
     const note = stats.truncated ? " (truncated at the size/file cap)" : "";
-    await activateFromOpen(m, dirHandle.name + "  ·  " + stats.count + " file(s)" + note, null);
+    await activateFromOpen(m, dirHandle.name + "  ·  " + stats.count + " file(s)" + note, null,
+      () => engine.openTree(mount, { default: keyspaces }));
   }
 
   // ---- Engine: the n1k1 wasm runs in a Web Worker (off the main thread) -------
   // The UI stays responsive during a query and live stats stream back mid-run.
-  const engine = (function makeEngine() {
+  // makeEngine() is re-called on a cancel (worker.terminate() + respawn).
+  function makeEngine() {
     const worker = new Worker("wasm/worker.js");
     let seq = 0;
     const pending = new Map();
@@ -512,18 +565,21 @@
     });
     return {
       ready: readyP,
+      terminate: () => worker.terminate(),
       openBuiltin: () => rpc("openBuiltin"),
       loadFiles: (files, mount) => rpc("loadFiles", { files, mount }),
       openTree: (mount, tree) => rpc("openTree", { mount, tree }),
       query: (sql) => rpc("query", { sql }),
     };
-  })();
+  }
+  let engine = makeEngine();
 
   engine.ready.then(async () => {
     ready = true;
     runBtn.disabled = false;
     sqlEl.placeholder = "";
-    await activateFromOpen(await engine.openBuiltin(), "built-in sample", SAMPLE_QUERIES);
+    await activateFromOpen(await engine.openBuiltin(), "built-in sample", SAMPLE_QUERIES,
+      () => engine.openBuiltin());
   }).catch((e) => {
     setStatus('<span class="err">Failed to start engine: ' + escapeHtml(String((e && e.message) || e)) +
               '</span><br><span class="spin">(serve over HTTP, not file://; needs a browser with Web Workers)</span>');

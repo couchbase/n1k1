@@ -65,8 +65,8 @@ keyspace).
 3. **OPFS index cache** (Phase 2 under #1) — **DONE** — `wasm/opfs.js` + `glue/idx_mem.go`
    two-tier cache. See "Secondary indexes" below.
 4. **Web Worker** (#3) — **DONE** — `wasm/worker.js` hosts the engine off the main
-   thread; live stats stream mid-query. See "Web Worker" below. Next under it:
-   cancellation + streaming results.
+   thread; live stats stream mid-query; **query cancellation** (terminate+respawn) done.
+   See "Web Worker" below. Next under it: streaming results.
 
 ### 1. Secondary indexes in the wasm build (the through-line)
 The reason we can't just recompile bbolt/bleve is mmap. Realistic path:
@@ -127,9 +127,20 @@ it stays responsive; a query blocks only the worker thread. All UI query calls (
 `buildSchema`) are now async. Web Workers are ~universal so there's no inline fallback;
 paths are relative to `web/wasm/` (../wasm_exec.js, ../n1k1.wasm, ../samples.js). The
 transport is browser-verified — node has no Web Worker API — but the engine behind it stays
-node-tested via the direct globals (e2e.test.mjs). Next under this: **cancellation**
-(needs an engine stop signal) and **streaming results** (the engine is pull-based; yield
-rows incrementally instead of collecting).
+node-tested via the direct globals (e2e.test.mjs).
+
+**Cancellation (DONE).** A synchronous wasm query blocks the worker thread, so a "cancel"
+*message* can't reach it — the only interrupts are `worker.terminate()` or a
+`SharedArrayBuffer` flag the Go side polls (SAB needs COOP/COEP cross-origin-isolation
+headers, which static hosting / GitHub Pages don't set — so unavailable here; that's also
+why there's no cooperative engine stop). So Cancel does **terminate + respawn**: kill the
+worker, reject the in-flight query (`run()` races the result against a cancel signal), spawn
+a fresh worker, and re-mount the active dataset (`currentSource.reopen()` — the main thread
+retains the files/tree, so a cancel doesn't lose a dropped dataset). Cost: re-instantiate
+wasm + re-mount + rebuild indexes on respawn — acceptable since cancel is user-driven and
+rare. No engine change; browser-only (untestable in node). Next under the worker:
+**streaming results** (the engine is pull-based; yield rows incrementally instead of
+collecting).
 
 ### 4. Live stats  (DONE)
 `Session.CollectStats` + `OnStats(*base.Stats)` fire per `engine.ScanYieldStatsEvery` rows
