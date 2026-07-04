@@ -69,13 +69,13 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 		var lzValsOut base.Vals
 
-		var lzGroupKey, lzGroupVal, lzGroupValNew, lzGroupValReuse []byte
+		var lzGroupKey, lzGroupVal, lzGroupValNew, lzGroupValReuse, lzGroupValPrev []byte
 
 		var lzGroupKeyFound bool
 
 		var lzAgg *base.Agg
 
-		_, _, _, _ = lzValOut, lzGroupValNew, lzGroupValReuse, lzAgg
+		_, _, _, _, _ = lzValOut, lzGroupValNew, lzGroupValReuse, lzAgg, lzGroupValPrev
 
 		lzStats := statsOf(lzVars)                        // stats (live) // <== genCompiler:hide
 		lzStatsBase := o.StatsBase                        // <== genCompiler:hide
@@ -101,6 +101,13 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 			if lzErr == nil {
 				// Check if we've seen the group key before or not.
 				lzGroupVal, lzGroupKeyFound = lzSet.Get(lzGroupKey)
+
+				// Remember the stored value slice (a mutable view into the map's
+				// backing bytes) before the Update loop below reassigns lzGroupVal to
+				// each agg's post-consume remainder -- so a same-size update can
+				// overwrite in place instead of re-Set'ing (append into the map's
+				// never-reclaimed value heap) on every row.
+				lzGroupValPrev = lzGroupVal
 
 				if len(aggExprs) > 0 { // !lz
 					if !lzGroupKeyFound {
@@ -146,12 +153,17 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 					if lzGroupKeyFound {
 						if lzGroupValChanged {
-							// With a previously seen group key, the
-							// previous agg data structure might be
-							// in-place overwritable if its size is >=
-							// the new agg data structure's size.
-							if len(lzGroupVal) >= len(lzGroupValNew) {
-								copy(lzGroupVal, lzGroupValNew)
+							// With a previously seen group key, overwrite the stored
+							// agg bytes in place when the new agg data is exactly the
+							// same size (always true for fixed-width aggs like count /
+							// sum / avg) -- avoiding a re-Set that appends a fresh copy
+							// into the map's append-only value heap on every row. A
+							// different size (a growing variable-width agg) falls back
+							// to Set, which records the new length; an in-place copy of
+							// a shorter value would leave a stale tail the reader can't
+							// distinguish, since the map tracks the value size itself.
+							if len(lzGroupValPrev) == len(lzGroupValNew) {
+								copy(lzGroupValPrev, lzGroupValNew)
 							} else {
 								lzSet.Set(lzGroupKey, lzGroupValNew)
 							}
