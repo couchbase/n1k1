@@ -95,6 +95,29 @@ func findExplain(op plan.Operator) *plan.Explain {
 	return nil
 }
 
+// convForDisplay best-effort converts a cbq plan sub-tree into n1k1's op tree for
+// EXPLAIN display, mirroring Run's convert + discard-elision. It never fails the
+// caller: EXPLAIN shows the cbq plan regardless, so an unconvertible plan or a
+// convert panic just yields a nil tree (no n1k1 plan shown).
+func convForDisplay(inner plan.Operator) (op *base.Op) {
+	if inner == nil {
+		return nil
+	}
+	defer func() {
+		if recover() != nil {
+			op = nil
+		}
+	}()
+	c := &Conv{Temps: []interface{}{nil}}
+	if _, err := inner.Accept(c); err != nil || c.TopOp == nil {
+		return nil
+	}
+	if DiscardElision {
+		elideDiscarded(c.TopOp)
+	}
+	return c.TopOp
+}
+
 // ErrUnsupported means n1k1 can't (yet) run this statement -- the plan converted
 // to no op tree, a convert step failed, or execution panicked -- as opposed to
 // the statement being genuinely invalid (a parse/plan error, returned verbatim).
@@ -142,12 +165,16 @@ func (s *Session) Run(stmt string) (res *Result, err error) {
 	// the top Authorize wrapper, so unwrap to find it.
 	if ex := findExplain(p); ex != nil {
 		// plan.Explain marshals to {"text": <stmt>, "plan": <op>} -- N1QL's
-		// EXPLAIN result shape.
+		// EXPLAIN result shape (unchanged, for compatibility).
 		b, err := json.Marshal(ex)
 		if err != nil {
 			return nil, err
 		}
-		return &Result{Rows: []json.RawMessage{b}}, nil
+		// Also convert the underlying plan into n1k1's own op tree, purely for
+		// display (the CLI's EXPLAIN / .explain rendering shows what n1k1 would
+		// actually run, and which expressions evaluate natively vs boxed). EXPLAIN
+		// doesn't execute, so a convert failure/panic just leaves Plan nil.
+		return &Result{Rows: []json.RawMessage{b}, Plan: convForDisplay(ex.Plan())}, nil
 	}
 
 	conv := &Conv{Temps: []interface{}{nil}}

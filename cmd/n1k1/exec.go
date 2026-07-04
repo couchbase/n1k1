@@ -18,10 +18,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"strings"
 
-	"github.com/couchbase/n1k1/base"
 	"github.com/couchbase/n1k1/cmd"
 	"github.com/couchbase/n1k1/glue"
 )
@@ -78,10 +76,11 @@ func (c *cli) exec(stmt string) {
 		return
 	}
 
-	// .explain, or verbose >= 1, prints the converted plan per statement.
-	if c.explain || c.verbose >= 1 {
-		fmt.Fprintln(c.stderr, c.style.Dim("plan:"))
-		printPlan(c.stderr, res.Plan, 1)
+	// .explain, verbose >= 1, or an EXPLAIN statement prints n1k1's converted op
+	// tree (what n1k1 actually runs), annotated with each expression's eval lane.
+	if res.Plan != nil && (c.explain || c.verbose >= 1 || isExplainStmt(stmt)) {
+		fmt.Fprintln(c.stderr, c.style.Dim("n1k1 plan (expr lane: native = raw bytes, boxed = cbq value + GC):"))
+		fmt.Fprint(c.stderr, glue.FormatConvPlan(res.Plan))
 	}
 
 	c.renderResult(res)
@@ -171,12 +170,8 @@ func orderedJSONRow(pairs ...[2]interface{}) json.RawMessage {
 }
 
 // printPlan prints the converted n1k1 op tree, one node per line, indented.
-func printPlan(w io.Writer, op *base.Op, depth int) {
-	if op == nil {
-		return
-	}
-	fmt.Fprintf(w, "%s%s %v\n", strings.Repeat("  ", depth), op.Kind, op.Labels)
-	for _, ch := range op.Children {
-		printPlan(w, ch, depth+1)
-	}
+// isExplainStmt reports whether stmt is an EXPLAIN statement (so the CLI shows
+// n1k1's converted plan even without the .explain toggle).
+func isExplainStmt(stmt string) bool {
+	return strings.HasPrefix(strings.ToUpper(strings.TrimSpace(stmt)), "EXPLAIN")
 }
