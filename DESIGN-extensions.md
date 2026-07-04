@@ -35,7 +35,7 @@ when the baked `exprTree`/`exprStr` string is re-parsed at runtime).
   (path)` loads one file, each **dispatching by file extension** (today `.js`;
   `.wasm`/etc. slot into `extensionLoaders` later). `glue.RegisterJSFunc(name,
   source)` registers inline JS. The "directory *is* the catalog." A `.js` file
-  becomes an `expression.Function` (`glue/ext_goja.go`) resolved as `NAME(args)`
+  becomes an `expression.Function` (`glue/ext_jsvm.go`) resolved as `NAME(args)`
   and evaluated through the existing interpreted/boxed lane (ExprTree →
   `Expression.Evaluate`). The JS runtime is pure-Go/MIT/cgo-free (goja),
   preserving the `CGO_ENABLED=0` static binary; runtimes are pooled per
@@ -60,7 +60,7 @@ when the baked `exprTree`/`exprStr` string is re-parsed at runtime).
   run. Work in GROUP BY and as bare aggregates; auto-registered at glue init.
 - **JS aggregates (3-callback protocol)** — a UDF *aggregate* written in
   JavaScript: `NAME_init()`, `NAME_update(state, value)`, `NAME_final(state)`
-  (`glue/ext_jsagg.go`, `glue.RegisterJSAggregate`, or a `NAME.agg.js` file for
+  (`glue/ext_agg_jsvm.go`, `glue.RegisterJSAggregate`, or a `NAME.agg.js` file for
   `-ext`). A `base.Agg` bridge threads the accumulator `state` as JSON bytes in
   the group's (spillable) buffer and drives the JS callbacks on the same
   per-query/per-actor runtime as scalar UDFs. Same parse/plan `algebra.Aggregate`
@@ -79,7 +79,7 @@ when the baked `exprTree`/`exprStr` string is re-parsed at runtime).
 ### JS UDF runtime & state (the goja execution model)
 
 The live `goja.Runtime` is scoped **per query, per actor**, not per process or per
-UDF (`glue/ext_goja.go`): programs compile once at registration, but the runtime
+UDF (`glue/ext_jsvm.go`): programs compile once at registration, but the runtime
 is built lazily on the eval context (`GlueContext.jsRT`) — a fresh `GlueContext`
 per `Session.Run`, and `ChainExtend`'s per-actor context clone gives each
 concurrent UNION ALL branch (and future parallel scan/GROUP-BY shard) its own.
@@ -464,7 +464,7 @@ Verify each at adoption time (transitive deps included).
    the directory-registry Tier-2 UDFs already shipped via step 0.
 2. **DONE — Tier 2 JavaScript + a general extension loader** — the "code in a
    repo" feature: `glue.RegisterExtensionDir`/`RegisterExtensionFile` dispatch by
-   file extension (`.js` today), CLI `-ext`/`.ext`; JS impl in `glue/ext_goja.go`.
+   file extension (`.js` today), CLI `-ext`/`.ext`; JS impl in `glue/ext_jsvm.go`.
 3. **Streaming source-function op** + route `FROM shred(...)`/loaders to it;
    pair with the DESIGN-data.md file-source work.
 4. **Native Go builtins** via `expression.RegisterFunction` (fork, patch-05, now

@@ -138,7 +138,7 @@ type GlueContext struct {
 	// A fresh GlueContext per Session.Run makes it per-query (JS globals reset each
 	// query); ChainClone deliberately does NOT copy it, so each concurrent UNION
 	// ALL actor gets its own -- keeping the single-threaded goja runtime lock-free.
-	// See ext_goja.go. NOT routed through getRoot() (that would re-share it).
+	// See ext_jsvm.go. NOT routed through getRoot() (that would re-share it).
 	jsRT *jsSharedRuntime
 }
 

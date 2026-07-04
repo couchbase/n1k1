@@ -61,7 +61,7 @@ type ExtensionInfo struct {
 
 // extLoaded tracks the currently-loaded extension functions by name, so the CLI
 // can list and unload them. Registering records here; UnloadExtension removes.
-// (Distinct from extOurs in ext_goja.go, which persists across unload to keep
+// (Distinct from extOurs in ext_jsvm.go, which persists across unload to keep
 // reload from tripping the builtin-shadow guard.)
 var extLoaded = map[string]ExtensionInfo{}
 
@@ -89,7 +89,7 @@ var extensionLoaders = map[string]struct {
 func RegisterExtensionFile(path string) (string, error) {
 	base := filepath.Base(path)
 
-	// "<name>.agg.js" is a JS AGGREGATE (3-callback protocol; see ext_jsagg.go),
+	// "<name>.agg.js" is a JS AGGREGATE (3-callback protocol; see ext_agg_jsvm.go),
 	// checked before the generic ".js" scalar loader since it also ends in ".js".
 	if lower := strings.ToLower(base); strings.HasSuffix(lower, ".agg.js") {
 		name := strings.TrimSuffix(lower, ".agg.js")

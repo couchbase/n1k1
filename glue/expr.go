@@ -364,7 +364,7 @@ OUTER:
 					// Attach the FTS search-meta ({outname:{score,id}}) to the
 					// preceding doc sub-value under value.ATT_SMETA, so
 					// SEARCH_META(alias)/SEARCH_SCORE(alias) resolve against that
-					// keyspace's value (they read this attachment; see fts.go /
+					// keyspace's value (they read this attachment; see idx_fts.go /
 					// datastore_scan.go:DatastoreScanFTS).
 					cur, _ := lastParent.Field(lastKey)
 					av, ok := cur.(value.AnnotatedValue)
@@ -447,7 +447,7 @@ type ExprGlueContext struct {
 
 	MyNow time.Time
 
-	jsRT *jsSharedRuntime // per-context JS UDF runtime; see ext_goja.go / jsRuntimeHost.
+	jsRT *jsSharedRuntime // per-context JS UDF runtime; see ext_jsvm.go / jsRuntimeHost.
 }
 
 func NewExprGlueContext(now time.Time) *ExprGlueContext {
@@ -508,7 +508,7 @@ type coverStripper struct {
 // selected the matching docs, so the SEARCH() term in the residual filter is
 // satisfied -- and n1k1 has no live FTS verify to re-evaluate it (it would
 // evaluate false and drop every row). A `SEARCH(...) AND x` filter thus reduces to
-// `x`; a bare `SEARCH(...)` becomes `TRUE` (pass all fetched docs). See fts.go.
+// `x`; a bare `SEARCH(...)` becomes `TRUE` (pass all fetched docs). See idx_fts.go.
 func stripSearch(expr expression.Expression) expression.Expression {
 	if expr == nil {
 		return nil

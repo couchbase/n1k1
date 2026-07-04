@@ -142,7 +142,7 @@ func (g *Store) PlanStatementQP(s algebra.Statement, namespace string,
 		positionalArgs,
 		g.IndexApiVersion,
 		g.FeatureControls,
-		true,  // useFts -- let the planner use bleve FTS indexes for SEARCH() (fts.go)
+		true,  // useFts -- let the planner use bleve FTS indexes for SEARCH() (idx_fts.go)
 		false, // useCBO
 		nil,   // optimizer
 		nil,   // deltaKeyspaces
@@ -205,7 +205,7 @@ func FileStore(path string) (*Store, error) {
 		} else {
 			// Normal <ns>/<keyspace> layout: advertise any secondary indexes
 			// declared in .n1k1/catalog.json so selective queries plan an
-			// IndexScan instead of a full primary scan. See si.go.
+			// IndexScan instead of a full primary scan. See idx_si.go.
 			wrapped, werr := maybeSecondaryIndexes(path, ds)
 			if werr != nil {
 				return nil, werr

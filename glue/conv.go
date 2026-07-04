@@ -447,7 +447,7 @@ func (c *Conv) VisitExpressionScan(o *plan.ExpressionScan) (interface{}, error) 
 // FTS Search
 
 // VisitIndexFtsSearch converts the FTS scan the planner emits for a SEARCH()
-// predicate over a bleve-backed index (fts.go). datastore-scan-fts runs
+// predicate over a bleve-backed index (idx_fts.go). datastore-scan-fts runs
 // bleve.Search, fetches the matching docs itself, and yields each as `.alias` +
 // `^id` + `^smeta` (the search-meta attachment carrying the hit score). It fetches
 // in the op rather than via a following plan.Fetch because the score is only

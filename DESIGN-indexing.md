@@ -21,22 +21,22 @@ move that gave data-sources zero fork edits. **The `SecondaryIndexes` /
 for Phase 1** (kept below as the original proposal / an alternative).
 
 Naming: this is a **local secondary index** ("si"), not Couchbase Server's GSI
-service. Code uses the `si` prefix (`glue/si.go`, `si_encode.go`, `si_catalog.go`,
+service. Code uses the `si` prefix (`glue/idx_si.go`, `idx_si_encode.go`, `idx_si_catalog.go`,
 type `secondaryIndex`, sidecar `<name>__si__<defhash>`); it still advertises
 `Type() == datastore.GSI`, because that is cbq's enum for an ordered range
 secondary index (what drives sargability) — distinct from the GSI *service*.
 
 Landed n1k1-side (all `//go:build n1ql`):
-- **`glue/si_encode.go`** — order-preserving, self-delimiting key encoding of
+- **`glue/idx_si_encode.go`** — order-preserving, self-delimiting key encoding of
   `value.Value` scalars (type-tag + payload) so bbolt's byte order == N1QL
   collation order and a real `Cursor.Seek` prunes range scans. Numbers use the
   IEEE-754 order-preserving transform; strings/containers use `0x00`-escaped
   self-delimiting bytes so a composite key can always recover its docID suffix.
-- **`glue/si_catalog.go`** — reads `.n1k1/catalog.json`
+- **`glue/idx_si_catalog.go`** — reads `.n1k1/catalog.json`
   `{ "indexes": [ { name, namespace?, keyspace, keys[], where? } ] }`, parsing
   key/where strings via `n1ql.ParseExpression`. Missing sidecar ⇒ no indexes
   (behave exactly as before). `defHash` = short hash of the normalized def.
-- **`glue/si.go`** — the `secondaryIndex` (`datastore.Index`) + a read-only
+- **`glue/idx_si.go`** — the `secondaryIndex` (`datastore.Index`) + a read-only
   `siIndexer` (`datastore.GSI`), advertised by wrapping the datastore
   (`maybeSecondaryIndexes`, wired in `FileStore`). bbolt-backed; **rebuild-on-open
   validated by a source signature** (file count + newest mtime — the "assume
@@ -124,7 +124,7 @@ or cbauth and their distributed-systems machinery.
 ## CLI control (build timing & introspection)
 
 Index lifecycle is otherwise implicit (build-on-first-use), so the CLI exposes two
-controls. Both live in n1k1 (`cmd/n1k1`, `glue/si.go`); the fork is untouched.
+controls. Both live in n1k1 (`cmd/n1k1`, `glue/idx_si.go`); the fork is untouched.
 
 **`-index=eager|lazy|off`** (flag) — *when* catalog indexes build, via the
 process-global `glue.SecondaryIndexMode` (set before `OpenSession`, re-read on
@@ -182,14 +182,14 @@ build errors up front), **off** to A/B against a no-index full-scan baseline.
   single **whole-keyspace dynamic FTS** (`kind:fts`, no keys). Dedup is per-kind (a
   `gsi` on a field doesn't suppress an `fts` suggestion for it, and vice versa; a
   dynamic FTS suppresses all FTS suggestions). Shipped (`glue.SuggestIndexes` in
-  `si_suggest.go`).
+  `idx_si_suggest.go`).
 - **`.index create ...`** — add index def(s) to `catalog.json` and build them, in
   two input forms: a DSL `.index create <name> on <keyspace> (<expr>[, <expr>])
   [where <expr>]`, or a JSON fragment `.index create {"indexes":[…]}` (pastes back
   `.index suggest` output — the `why` field is accepted and dropped on write). It
   validates the def(s), merges into `catalog.json` (dup names rejected; won't
   clobber non-index sections), re-opens the session, and builds. Shipped
-  (`glue.CatalogAddIndexes` in `si_catalog.go`). Writing the human catalog is fine
+  (`glue.CatalogAddIndexes` in `idx_si_catalog.go`). Writing the human catalog is fine
   here — it's explicit user intent (single-writer rule bars only *background*
   rewriting).
 
@@ -460,7 +460,7 @@ Fork edits are just the seam (steps 1–2); everything else is n1k1.
 `bleve.Index` — no cbft cluster, no n1fty, zero fork edits. The planner hook
 already existed (`planner/build_scan_search.go` + the `SargableFlex` path); we
 set `useFts=true` in `glue/stmt.go` and provide the `datastore.FTSIndex`
-in-process (a small shim, not n1fty). Landed in `glue/fts.go`:
+in-process (a small shim, not n1fty). Landed in `glue/idx_fts.go`:
 
 - **`ftsIndexer` + `ftsIndex`** — an `Indexer` (`Name()==datastore.FTS`) and an
   `FTSIndex`, advertised by appending to `keyspace.Indexers()` (a distinct

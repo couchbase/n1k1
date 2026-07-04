@@ -26,7 +26,7 @@ package glue
 // DatastoreScanIndex -> secondaryIndex.Scan yields docIDs, and the following
 // Fetch uses the (embedded, real) keyspace's Fetch to read the docs.
 //
-// Definitions come from .n1k1/catalog.json (si_catalog.go). Freshness is the
+// Definitions come from .n1k1/catalog.json (idx_si_catalog.go). Freshness is the
 // simple, static-data model the user asked for: the built bbolt file records a
 // signature of the source directory (file count + newest mtime); on open we
 // rebuild only if that signature changed. No fingerprint manifest yet -- if a
@@ -629,7 +629,7 @@ func (si *secondaryIndex) Scan(requestId string, span *datastore.Span, distinct 
 }
 
 // scanSpan walks the bbolt B+tree in N1QL collation order (guaranteed by the
-// order-preserving key encoding, si_encode.go), seeking to the span's low bound
+// order-preserving key encoding, idx_si_encode.go), seeking to the span's low bound
 // and emitting each in-range entry's docID. Because the encoding is
 // order-preserving for scalars, a real seek prunes the walk; boundary inclusion
 // is applied exactly by comparing the encoded key prefixes. It does NOT close

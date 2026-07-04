@@ -32,7 +32,7 @@ import (
 // value)/NAME_final(state). The accumulator "state" is any JSON-serializable JS
 // value; between rows n1k1 threads it as JSON bytes in the group's byte buffer
 // (so it spills like every other aggregate -- DESIGN.md). This is the aggregate
-// analogue of the scalar JS UDF (ext_goja.go): the trio runs on the same
+// analogue of the scalar JS UDF (ext_jsvm.go): the trio runs on the same
 // per-query/per-actor shared runtime, so it can use console.log and call other
 // loaded UDFs.
 //

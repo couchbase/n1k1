@@ -15,7 +15,7 @@ package glue
 
 // Reader for the .n1k1/catalog.json sidecar (see DESIGN-indexing.md "Sidecar
 // layout"). v1 reads only the index-definition half: index defs the planner
-// then gets to use via a secondary-index indexer (si.go). Source-mapping/view/manifest
+// then gets to use via a secondary-index indexer (idx_si.go). Source-mapping/view/manifest
 // fields are ignored for now, so the same file can grow those later without
 // breaking this reader (single-writer, declared-intent file).
 
@@ -111,8 +111,8 @@ func CatalogSetFormats(dataRoot, formats string) error {
 }
 
 // indexDef is one declared index definition. Kind selects the machinery: "gsi"
-// (default) is the bbolt range secondary index (si.go); "fts" is the bleve
-// full-text index (fts.go), where Keys are the fields to index (empty = dynamic,
+// (default) is the bbolt range secondary index (idx_si.go); "fts" is the bleve
+// full-text index (idx_fts.go), where Keys are the fields to index (empty = dynamic,
 // index every field) and Where is not used.
 type indexDef struct {
 	Name      string   `json:"name"`
@@ -131,7 +131,7 @@ type indexDef struct {
 	// ["address","city"]), else nil for a non-field key expression (e.g.
 	// LOWER(name)). Enables true covering execution: a covering scan whose keys are
 	// all field paths can reconstruct the projected doc straight from the decoded
-	// index-key values (si.go), skipping the fetch. gsi only.
+	// index-key values (idx_si.go), skipping the fetch. gsi only.
 	keyPaths [][]string
 }
 
