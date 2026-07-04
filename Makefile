@@ -19,8 +19,11 @@ cli: build-glue
 install-cli:
 	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go install -tags n1ql -ldflags "$(VERSION_LDFLAGS)" ./cmd/n1k1
 
-# build builds the self-contained core packages.
-build:
+# build builds the self-contained core packages. Regenerates intermed/ first:
+# intermed/*.go is gitignored and generated from engine/*.go, so `go build ./...`
+# would otherwise compile a stale (or absent) generated file and fail whenever a
+# base symbol it references changes.
+build: build-intermed
 	go build ./...
 
 # build-glue builds the n1ql-engine (cbq-engine) integrations (glue/ +
