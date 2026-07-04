@@ -257,4 +257,4 @@ require (
 // The couchbase-server modules use placeholder v0.0.0-00010101... requires for
 // their siblings (resolved via local-path replaces inside the repo-sync build
 // tree). Consuming them externally requires replacing each with a real version.
-replace github.com/couchbase/query => github.com/couchbase/n1k1-query v0.0.0-20260703224706-6b0ef16926a2
+replace github.com/couchbase/query => github.com/couchbase/n1k1-query v0.0.0-20260704004447-edd1747b2dce
