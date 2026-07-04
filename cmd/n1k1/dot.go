@@ -243,7 +243,7 @@ func (c *cli) printHelp() {
 		".formats [<set>]      restrict files scanned to formats/modes, e.g. json,csv,gzip (no arg shows current)",
 		".timer " + c.helpOpts(onOff(c.timer), "on", "off") + "       elapsed-time reporting (no arg shows the current setting)",
 		".stats " + c.helpOpts(c.statsMode, "on", "off", "final", "about") + " query stats: on=live footer, final=totals at end only (about=glossary)",
-		".explain " + c.helpOpts(onOff(c.explain), "on", "off") + "     print n1k1's converted plan per query",
+		".explain " + c.helpOpts(onOff(c.explain), "on", "off") + "     print " + prog + "'s converted plan per query",
 		".verbose " + c.helpOpts(vcur, "off", "on", "debug", "n") + "  diagnostics level (n>1 provides more info; no arg shows current)",
 		".maxrows <n>          box: cap rows shown (0 = all; negative = last |n| rows)",
 		".maxwidth <n|auto>    box: cap column width (0 = uncapped; auto = fit terminal)",
