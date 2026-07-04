@@ -42,6 +42,19 @@ func init() {
 	OptimizableFuncs["imod"] = "imod"
 	OptimizableFuncs["neg"] = "neg"
 
+	// Unary numeric math functions (see engine/expr_math.go, base/mathfn.go);
+	// single-operand, value-producing on the byte path.
+	OptimizableFuncs["abs"] = "abs"
+	OptimizableFuncs["ceil"] = "ceil"
+	OptimizableFuncs["floor"] = "floor"
+	OptimizableFuncs["sqrt"] = "sqrt"
+	OptimizableFuncs["exp"] = "exp"
+	OptimizableFuncs["ln"] = "ln"
+	OptimizableFuncs["log"] = "log"
+	OptimizableFuncs["sign"] = "sign"
+	OptimizableFuncs["degrees"] = "degrees"
+	OptimizableFuncs["radians"] = "radians"
+
 	// Logical AND / OR (see engine/expr_logic.go, base/logic.go); n-ary (cbq's
 	// And/Or are CommutativeFunctionBase), so no arity guard -- the native
 	// harness reduces all operands with N1QL three-valued semantics. High value:
@@ -271,6 +284,8 @@ func ExprTreeOptimize(labels base.Labels, e expression.Expression,
 			return nil, false
 		}
 	case "neg",
+		"abs", "ceil", "floor", "sqrt", "exp", "ln", "log", "sign",
+		"degrees", "radians",
 		"not", "is_null", "is_not_null",
 		"is_missing", "is_not_missing", "is_valued", "is_not_valued",
 		"is_array", "is_number", "is_string", "is_boolean", "is_object", "is_atom":

@@ -540,6 +540,46 @@ func TestLogicAndOrDifferentialVsCBQ(t *testing.T) {
 	}
 }
 
+func TestMathUnaryDifferentialVsCBQ(t *testing.T) {
+	c := func(v interface{}) expression.Expression { return expression.NewConstant(v) }
+	null := c(value.NULL_VALUE)
+
+	mk := map[string]func(expression.Expression) expression.Expression{
+		"abs":     func(e expression.Expression) expression.Expression { return expression.NewAbs(e) },
+		"ceil":    func(e expression.Expression) expression.Expression { return expression.NewCeil(e) },
+		"floor":   func(e expression.Expression) expression.Expression { return expression.NewFloor(e) },
+		"sqrt":    func(e expression.Expression) expression.Expression { return expression.NewSqrt(e) },
+		"exp":     func(e expression.Expression) expression.Expression { return expression.NewExp(e) },
+		"ln":      func(e expression.Expression) expression.Expression { return expression.NewLn(e) },
+		"log":     func(e expression.Expression) expression.Expression { return expression.NewLog(e) },
+		"sign":    func(e expression.Expression) expression.Expression { return expression.NewSign(e) },
+		"degrees": func(e expression.Expression) expression.Expression { return expression.NewDegrees(e) },
+		"radians": func(e expression.Expression) expression.Expression { return expression.NewRadians(e) },
+	}
+	// Operands span sign, magnitude, int-vs-float, and the domain edges that
+	// produce NaN/Inf (sqrt(-1), ln(0), ln(-1), log(0)) -- all must agree with cbq.
+	operands := map[string]expression.Expression{
+		"pos-int": c(9), "neg-int": c(-7), "zero": c(0), "pos-float": c(2.5),
+		"neg-float": c(-2.5), "big": c(1000000), "frac": c(0.5), "one": c(1),
+		"null": null, "str": c("x"), "bool": c(true),
+	}
+
+	for fn, ctor := range mk {
+		for on, operand := range operands {
+			expr := ctor(operand)
+			want := cbqEval(t, expr)
+			got, ok := nativeEval(t, expr)
+			if !ok {
+				t.Errorf("%s(%s): did not optimize", fn, on)
+				continue
+			}
+			if got != want {
+				t.Errorf("%s(%s): native=%q, cbq=%q", fn, on, got, want)
+			}
+		}
+	}
+}
+
 func TestPredicateDifferentialVsCBQ(t *testing.T) {
 	c := func(v interface{}) expression.Expression { return expression.NewConstant(v) }
 

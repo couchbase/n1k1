@@ -5888,6 +5888,17 @@ var TestCasesSimple = []TestCaseSimple{
 		[]interface{}{"labelPath", "a"}}, `-1`),
 	naryProjectCase("add-null", []interface{}{"add",
 		[]interface{}{"json", `null`}, []interface{}{"json", `1`}}, `null`),
+
+	// Unary numeric math functions (value-producing) in the COMPILED path.
+	naryProjectCase("abs", []interface{}{"abs", []interface{}{"json", `-7`}}, `7`),
+	naryProjectCase("ceil", []interface{}{"ceil", []interface{}{"json", `2.1`}}, `3`),
+	naryProjectCase("floor", []interface{}{"floor", []interface{}{"json", `2.9`}}, `2`),
+	naryProjectCase("sqrt", []interface{}{"sqrt", []interface{}{"json", `9`}}, `3`),
+	naryProjectCase("sqrt-neg", []interface{}{"sqrt", []interface{}{"json", `-1`}}, `"NaN"`),
+	naryProjectCase("sign-neg", []interface{}{"sign", []interface{}{"json", `-42`}}, `-1`),
+	naryProjectCase("abs-field", []interface{}{"abs", []interface{}{"labelPath", "a"}}, `1`),
+	naryProjectCase("abs-null", []interface{}{"abs", []interface{}{"json", `null`}}, `null`),
+	naryProjectCase("abs-str", []interface{}{"abs", []interface{}{"json", `"x"`}}, `null`),
 }
 
 // naryProjectCase builds a TestCaseSimple that projects a single native

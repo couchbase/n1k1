@@ -63,6 +63,15 @@ func (n Num) i64() int64 {
 	return int64(n.F)
 }
 
+// Float64 returns the number as a float64 -- what cbq's numberValue.Actual()
+// yields, and the domain the math functions compute over.
+func (n Num) Float64() float64 {
+	if n.IsInt {
+		return float64(n.I)
+	}
+	return n.F
+}
+
 // ParseNum parses JSON number bytes into a Num, choosing int64 when the literal
 // is integral and fits, else float64 -- mirroring how cbq boxes JSON numbers.
 // ok is false if b is not a valid JSON number. Allocation-free (jsonparser
