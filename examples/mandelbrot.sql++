@@ -1,0 +1,88 @@
+-- ---------------------------------------------------------------------------
+-- mandelbrot.sql++ — the Mandelbrot set as ASCII art, in pure SQL++.
+--
+-- A tribute to the famous PostgreSQL recursive-CTE Mandelbrot query, ported to
+-- n1k1's SQL++/N1QL dialect. No JavaScript, no UDFs — just a WITH RECURSIVE
+-- fixpoint, arithmetic, and string building.
+--
+-- Run it:
+--     n1k1 -f examples/mandelbrot.sql++ | jq -r '.line'
+--
+-- The `jq -r '.line'` strips the {"line":"..."} JSON wrapper so the rows print
+-- as a clean picture. Expect the main cardioid, the period-2 bulb on the left,
+-- and top/bottom symmetry. Runs in well under a second.
+--
+-- How it works: the complex plane is sampled on a grid. For each point c we
+-- iterate z -> z*z + c starting from z = 0 and count how many steps it takes
+-- for |z| to escape past 2 (i.e. |z|^2 > 4). Points that never escape within
+-- the iteration budget are "in the set"; the escape count of the rest gives us
+-- a shading gradient for the fringe.
+-- ---------------------------------------------------------------------------
+
+WITH RECURSIVE
+
+  -- Z accumulates one row per (grid point, iteration). The anchor seeds every
+  -- pixel at iteration 0; the recursive arm advances z by one step per round,
+  -- keeping only points that have not yet escaped and are under the budget.
+  Z AS (
+
+    -- ANCHOR: lay down the pixel grid.
+    --   ix in 0..69 maps to the real axis      cx in [-2.5, 1.0]
+    --   iy in 0..31 maps to the imaginary axis cy in [-1.0, 1.0]
+    -- Every seed starts at z = c (equivalently one step from z = 0), so the
+    -- running point (x, y) is initialised to (cx, cy) and the counter i to 0.
+    -- The comma between the two ARRAY_RANGE terms is a cross join, so this
+    -- yields the full 70 x 32 = 2240-point grid.
+    SELECT ix, iy,
+           -2.5 + 3.5 * ix / 70 AS cx,   -- real part of c
+           -1.0 + 2.0 * iy / 32 AS cy,   -- imaginary part of c
+           -2.5 + 3.5 * ix / 70 AS x,    -- real part of running z
+           -1.0 + 2.0 * iy / 32 AS y,    -- imaginary part of running z
+           0 AS i                        -- escape-iteration counter
+    FROM ARRAY_RANGE(0, 70) AS ix, ARRAY_RANGE(0, 32) AS iy
+
+    UNION ALL
+
+    -- RECURSIVE STEP: one iteration of z -> z*z + c.
+    -- For z = x + yi:   z*z = (x*x - y*y) + (2*x*y)i,  so
+    --   x' = x*x - y*y + cx
+    --   y' = 2*x*y     + cy
+    -- Both new values are computed from the PREVIOUS row's x and y (standard
+    -- SQL projection semantics), so the update is simultaneous — no aliasing.
+    -- WHERE is the escape + budget test: drop points once |z|^2 >= 4 (they have
+    -- escaped and their fate is decided) or once we hit 45 iterations.
+    SELECT ix, iy, cx, cy,
+           x * x - y * y + cx AS x,
+           2 * x * y + cy AS y,
+           i + 1 AS i
+    FROM Z
+    WHERE x * x + y * y < 4.0 AND i < 45
+  )
+
+  -- The recursive engine has implicit safety caps (100 levels / 10000 docs) to
+  -- stop runaway recursion. Because UNION ALL retains every intermediate
+  -- iteration, a 2240-point grid produces far more than 10000 rows, so we raise
+  -- the ceilings explicitly. "levels" bounds recursion depth; "documents" bounds
+  -- total accumulated rows.
+  OPTIONS {"levels": 60, "documents": 5000000}
+
+-- RENDER: reduce each pixel to its final escape count, then paint.
+--
+--   Inner query  — MAX(i) per (ix, iy) is the escape iteration for that pixel.
+--                  ORDER BY iy, ix matters: ARRAY_AGG preserves input order but
+--                  GROUP BY does not, so we pre-sort to keep each row's columns
+--                  left-to-right.
+--   Outer query  — group the sorted pixels by row (iy) and stitch them into one
+--                  string. IDIV(mi, 5) buckets the 0..45 escape count into the
+--                  0..9 palette; SUBSTR is 0-based in n1k1, so a bucket indexes
+--                  the palette directly. Denser glyphs = deeper in the set;
+--                  '@' marks points that never escaped (mi = 45 -> bucket 9).
+SELECT CONCAT2("", ARRAY_AGG(SUBSTR(" .:-=+*#%@", LEAST(IDIV(mi, 5), 9), 1))) AS line
+FROM (
+       SELECT ix, iy, MAX(i) AS mi
+       FROM Z
+       GROUP BY ix, iy
+       ORDER BY iy, ix
+     ) AS Zt
+GROUP BY iy
+ORDER BY iy
