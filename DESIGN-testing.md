@@ -186,12 +186,54 @@ Notes / gotchas learned:
   gates regressions via `expectedNonPass` + `passFloor`. Prefer adding cases here
   over bespoke `TestFooBar()` funcs. Reserve Go unit tests for things the suite
   can't express — e.g. the byte-level differential-vs-cbq expression tests in
-  `glue/expr_arith_diff_test.go`, or engine-internal harness tests.
+  `glue/expr_test.go`, or engine-internal harness tests.
 - **Keep the suite host-independent.** Pin TZ; exclude wall-clock/random/id;
   prefer cases with `ORDER BY` or single-row results (no result-ordering
   ambiguity — constant no-FROM cases are single-row by construction).
 - **Provenance matters.** `case_gsi_*.json` are regenerable from the fork via
   `import_gsi_cases.py`; re-run it after a fork bump to refresh.
+
+## Verifying the compiler path (learned the hard way)
+
+The compiler is validated in **two phases, both mandatory**:
+
+1. `go test -run '…WithCompiler' ./test` — runs the generators (`emit.OpToLines`
+   over each Op tree) and writes Go into the gitignored `test/tmp/`. This catches
+   *generation-time* faults (a generator that panics).
+2. `cd test/tmp && go fmt && go test ./test/tmp` — **compiles and runs** that
+   generated code, whose `TestGeneratedN` funcs execute the compiled query and
+   compare results. This is the only step that catches *compiled-code* faults:
+   undefined variables (the generated file won't build) and wrong per-row output.
+
+The `make test-compiler` / `test-suite` / `test-suite-all` targets chain both in
+the required order. **If you run tests by hand, running phase 1 alone (or a bare
+`go test ./test/…`) is false confidence** — a whole class of codegen bugs lives
+only in phase 2. This is precisely how a broken `emitCaptured` operand-capture in
+native `and`/`or` (and the older `nullif`) shipped: phase 1 was green.
+
+Two traps that make green history meaningless for a newly-native op:
+
+- **Interpreter-differential ≠ compiled coverage.** The byte-level differential
+  tests (`glue/expr_test.go`, `nativeEval → engine.MakeExprFunc`) exercise only
+  the **interpreter** native path. They cannot catch compiled codegen bugs — the
+  `and`/`or` truth-table differential passed while the compiled path didn't build.
+- **Compiled coverage is incidental, and the fallback masks gaps.** The
+  `…WithCompiler` generators only compile+run expressions that appear in
+  *convertible* cases, and the cbq `exprTree` fallback has a *working* compiled
+  path. So a predicate using an op that ISN'T native rides the fallback and looks
+  fine; the moment you add that op to `OptimizableFuncs`, the same query routes
+  onto native codegen that **no prior run ever generated**. A long green history
+  of `make test-all` says nothing about an op's native compiled path until a
+  convertible case actually reaches it.
+
+**Mitigation — test each native op's compiled path directly.** `TestCasesSimple`
+(`test/cases.go`) holds hand-built Op trees whose `Params` are native expr param
+trees *verbatim*, bypassing the optimizer; they run in BOTH modes via the
+existing pipeline. The `naryProjectCase` helper adds one per combining op
+(`and`/`or`/`nullif`/…). This makes compiled coverage explicit and
+optimizer-independent rather than hoping a suite query happens to exercise it. A
+natural next step is a guard test that enumerates `OptimizableFuncs` and fails on
+any entry with no compiled-mode case.
 
 ## Concurrency testing: run the suite under the `-race` detector
 

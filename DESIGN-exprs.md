@@ -20,8 +20,10 @@ conditional-unknown selectors (`IFNULL`/`IFMISSING`/`IFMISSINGORNULL`/`NVL`/
 `COALESCE`); `BETWEEN`; `IN`; the `IS_*` type checks; `||` concatenation; and
 `CASE` (searched + simple) — plus the reusable `MakeBiExprFunc` /
 `MakeTriExprFunc` / `MakeNaryExprFunc` harness family. Every op is validated by a
-**differential test against cbq** (`glue/expr_arith_diff_test.go`) plus cold
-interpreter unit tests.
+**differential test against cbq** (`glue/expr_test.go`) plus cold interpreter
+unit tests — but note these drive the **interpreter** native path only; the
+**compiled** codegen is a separate concern covered by the compiler suite (see the
+compiled-path caveat below and `DESIGN-testing.md`).
 
 **Measured win** (Apple M2 Pro, `test/benchmark/bench_expr_arith_test.go`): native
 `a+b` is `0 B/op, 0 allocs/op` (31 ns) vs cbq's `Evaluate()` fallback at
@@ -121,6 +123,15 @@ Reusable harnesses: `MakeBiExprFunc` (binary), `MakeTriExprFunc` (ternary),
 Still **delegated:** `LIKE`/`REGEXP_*`, `is [not] distinct from`, `slice`
 navigation, `TYPE()`/`IS_BINARY`, and the ~320 remaining scalar functions
 (string/numeric/date/array/object/…).
+
+> ⚠️ **Compiled-path caveat for the n-ary ops** (`ifnull`/`ifmissing`/
+> `ifmissingornull`/`nvl`, `greatest`/`least`, `concat`, `case`): these are
+> correct in the **interpreter** but their **compiled** (`intermed`) path is
+> broken — `MakeNaryExprFunc` can't split a variable-arity `lzChildren` setup out
+> of the `emitCaptured` inline eval. It's dormant because no convertible compiled
+> case reaches them, but they remain optimizer-wired, so a future one would fail
+> at `go test ./test/tmp`. `and`/`or` sidestep this via the binary+fold route. See
+> Lessons.
 
 ## The `exprTree` fallback's per-row cost (profiling, 2026-07)
 
@@ -390,31 +401,53 @@ safety net (it caught the `Function.Name()` and MISSING-constant bugs below).
 - **A MISSING constant has no JSON form.** `value.WriteJSON` emits `"null"`, so
   `ExprTreeOptimize` must emit an *empty* json constant (→ MISSING) for a MISSING
   `Constant`; otherwise any native op given a `missing` literal wrongly sees NULL.
-- **intermed codegen is fixed-arity, with an n-ary escape hatch.** Binary
-  (`MakeBiExprFunc`) and unary (single-child) codegen cleanly. For **n-ary**
-  (`MakeNaryExprFunc`): (a) build child ExprFuncs in a `// !lz` loop over the params
-  (emitted verbatim, like `op_union`); (b) pre-declare `lzVals`/`lzYieldErr` with
-  `// !lz` dummy decls so the executed reduce-call has them in the generator's
-  scope; (c) keep the reduce in a plain `base` helper called in one `// !lz` line.
-  A runtime loop over `[]ExprFunc` *inside the codegen'd eval body* fails.
-  Also: an inline string literal in codegen'd code desyncs the tokenizer — use a
-  named `base` const (e.g. `WarnDivideByZero`).
-- **`MakeNaryExprFunc`'s COMPILED path is currently broken (interpreter-only).**
-  Wiring `and`/`or` surfaced this: no compiled query had ever exercised an n-ary
-  native (ifnull/greatest/concat/nvl were optimizer-wired but never hit the
-  `intermed` generator in a filter/project the compiler tests cover). The
-  generator (a) drops the `lzExprFunc =` assignment inside the child-build loop,
-  so `lzChildren` fills with nils, and (b) runs the reduce (`base.NaryFirstKept`,
-  a plain func) *at generation time* instead of emitting it — because, unlike a
-  `biExprFunc` closure that emits its own body, a plain base reducer just
-  executes. Net: compiled n-ary panics (nil child). Until the harness is fixed to
-  build `lzChildren` and emit the reduce as a runtime call, prefer the **binary
-  harness + an optimizer fold**: `and`/`or` use `MakeBiExprFunc` (proven compiled
-  path, like `nullif`) and `ExprTreeOptimize` right-nests cbq's n-ary And/Or into
-  binary applications (exact under three-valued logic). `base.LogicAnd2/LogicOr2`
-  hold the two-operand semantics, including the AND-missing-over-null /
-  OR-null-over-missing asymmetry (verified byte-identical to cbq in
-  `TestLogicAndOrDifferentialVsCBQ`).
+- **`emitCaptured` captures FROM the shared `lzVal` register, not into a fresh
+  var.** A binary op that needs both operand values (`and`/`or`, `nullif`) must
+  write each child into `lzVal` and read it out on the *next* line, mirroring
+  `ExprCmp`:
+
+  ```go
+  lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
+  lzValA := lzVal
+  lzVal = lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B"
+  lzValB := lzVal
+  ```
+
+  `emitCaptured` *replaces the whole marked line* with the child's emitted code
+  (which assigns `lzVal`), so a direct `lzValA := lzA(...)` bind is silently
+  dropped and `lzValA` is undefined in the **compiled** path. The interpreter runs
+  the source line literally, so it works there — which is exactly how this shipped
+  broken in both `and`/`or` and the older `nullif`/`missingif` (see the
+  compiled-path testing lesson in `DESIGN-testing.md`). Also: an inline string
+  literal in codegen'd code desyncs the tokenizer — use a named `base` const
+  (e.g. `WarnDivideByZero`).
+- **`MakeNaryExprFunc`'s COMPILED path is broken and not trivially fixable.** Both
+  `op_filter` and `op_project` inline each expression's per-row eval via
+  `emitCaptured`. A binary op fits because it captures a FIXED set of child slots
+  (`"A"`/`"B"`) inlined straight into the reduce expression. An n-ary op instead
+  needs a runtime-sized `lzChildren` slice built once (setup) plus a reduce that
+  loops over it (per-row eval) — and there is no way to split that variable-arity
+  setup out of the single inlined eval `emitCaptured` gives you. So compiled n-ary
+  emits an undefined `lzChildren` (or, with a plain-func reducer, executes the
+  reducer at generation time and panics on nil children). This is **pre-existing
+  and unexercised** — no compiled suite case reaches `ifnull`/`greatest`/`least`/
+  `concat`/`case` natively, so it stayed hidden until wiring `and`/`or` first put
+  a native combining-op into a compiled filter. Two ways forward, neither done:
+  (a) fold the foldable ops (`ifnull`/`greatest`/`least`/`concat`) to right-nested
+  binary in the optimizer — as `and`/`or` already do (exact under their
+  associative three-valued semantics), giving them the proven `MakeBiExprFunc`
+  compiled path; (b) a capture-stack rework for `CASE`, which is not foldable.
+  Interpreter n-ary is correct and unaffected. **Risk:** these ops remain in
+  `OptimizableFuncs`, so a future *convertible* compiled query using one would
+  fail at `go test ./test/tmp`; the safety valve is to de-wire them (fall back to
+  the working `exprTree` path) until (a)/(b) lands.
+- **The n-ary→binary fold is exact under three-valued logic.** `and`/`or` prove
+  the pattern: `ExprTreeOptimize` right-nests cbq's n-ary And/Or into
+  `MakeBiExprFunc` applications, with `base.LogicAnd2`/`LogicOr2` holding the
+  two-operand semantics (incl. the AND-MISSING-over-NULL / OR-NULL-over-MISSING
+  asymmetry). Verified byte-identical to cbq in `TestLogicAndOrDifferentialVsCBQ`
+  (interpreter) and exercised in the compiled path by the `naryProjectCase` cases
+  in `test/cases.go`.
 - **Func-value params are intermed-safe.** The harness can take an op as a `func`
   (method expression like `base.Num.Div`, or an adapter) instead of an int + switch
   — cleaner, and codegen handles it. (Dropped the `ArithApply` op-code switch.)
@@ -466,6 +499,6 @@ sites dominate a real workload, and port those first.
 - Native impls: `engine/expr*.go`; byte toolkit in `base/` (`base.go`, `arith.go`,
   `compare.go`, `canonical.go`, `valkind.go`, `valin.go`).
 - Fallback + optimizer: `glue/expr.go`, `glue/expr_optimize.go`.
-- Differential + unit tests: `glue/expr_arith_diff_test.go`, `engine/expr_*_test.go`,
+- Differential + unit tests: `glue/expr_test.go`, `engine/expr_*_test.go`,
   `base/arith_test.go`; benchmark in `test/benchmark/bench_expr_arith_test.go`.
 - Universe: `n1k1-query/expression/` (~357 types; `func_registry.go` ~410 entries).
