@@ -245,6 +245,59 @@ the only ops worth vectorizing. Anything variable-width or type-polymorphic (i.e
 most raw JSON) is out of reach until decoded into one of those fixed layouts.
 
 -------------------------------------------------------
+## Fixed lane counts and the "tail" (remainder) problem
+
+A SIMD register is fixed in **bits**, and holds only a *handful* of lanes — not
+hundreds. Lane count = width ÷ element size:
+
+| Register width | uint64 | uint32 | float64 | uint8 |
+|---|---|---|---|---|
+| 128-bit (SSE, ARM NEON, **WASM SIMD**) | 2 | 4 | 2 | 16 |
+| 256-bit (AVX2) | 4 | 8 | 4 | 32 |
+| 512-bit (AVX-512) | 8 | 16 | 8 | 64 |
+
+So the widest common register does **8** uint64s at a time. (`archsimd`'s type
+names spell this out: `Int8x16` = 16×int8 = 128-bit; `Float64x8` = 8×float64 =
+512-bit.)
+
+**The tail.** A column of N values almost never divides evenly by the lane count
+L. 1003 uint64s at L=8 → 125 full vectors + **3 leftover**. Handling that
+remainder is universal SIMD bookkeeping; the standard techniques, most common
+first:
+
+1. **Scalar remainder loop.** SIMD over `N − (N mod L)`, then a plain loop for the
+   last `N mod L`. Always correct; one extra branchy loop. This is the default.
+2. **Masked / predicated ops.** AVX-512 (`k`-mask registers) and ARM **SVE**
+   (length-agnostic by design) compute only the active lanes via a bitmask, so the
+   tail is one masked op — no scalar epilogue. But needs AVX-512/SVE (not baseline
+   SSE/AVX2/NEON/WASM).
+3. **Pad to a lane multiple with identity values.** If you *own the buffer*,
+   over-allocate to a multiple of L and fill the pad with the op's identity (`0`
+   for SUM/OR, `+∞` for MIN, `−∞` for MAX). Kernels then run only whole vectors and
+   the pad is inert — no tail branch. Cost moves to allocation time.
+4. **Overlapping last block.** Place the final vector to *end* exactly at N,
+   re-touching a few done elements. Fine for idempotent ops (min/max, memcpy),
+   **wrong for reductions** (SUM double-counts) unless the overlap is masked.
+
+**How columnar engines dodge it:** fix a logical batch size that's a multiple of
+every lane count — DuckDB's `STANDARD_VECTOR_SIZE = 2048` (divisible by 2/4/8/16)
+— so the tail *disappears inside every batch but the last*. "A tail per kernel
+call" becomes "a tail once per column."
+
+**Why this favors n1k1.** Because n1k1 would own the column encoding, techniques
+(2)/(3) come nearly free:
+- Pick the columnar batch width as a multiple of L (DuckDB-style) → tails only on
+  the final batch.
+- Pad fixed-width column buffers to a lane multiple with identity values → most
+  kernels never branch for a tail.
+- The **validity/selection bitmap** the design already needs (§ encoding 5) *is*
+  the mask for technique (2): a masked reduction that skips MISSING/NULL lanes is
+  the same machinery that skips tail lanes.
+- The mandatory scalar-Go fallback (Phase 4) doubles as the remainder loop of
+  technique (1) — so it's never wasted work; it's the arm64/WASM path *and* the
+  tail handler.
+
+-------------------------------------------------------
 ## SIMD-json parse — what it is, and why it's not a drop-in
 
 `simdjson` (Daniel Lemire et al.) and its Go port **`minio/simdjson-go`** parse
