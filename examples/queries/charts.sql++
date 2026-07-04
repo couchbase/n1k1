@@ -1,10 +1,10 @@
--- examples/charts.sql++ — inline unicode charts with the sparkline() and
+-- examples/queries/charts.sql++ — inline unicode charts with the sparkline() and
 -- histogram() extension aggregates.
 --
 -- These aggregates are ALWAYS available (native, zero-garbage) — no -ext / no
 -- loading needed. Run this file against the metrics dataRoot:
 --
---     n1k1 -f examples/charts.sql++ examples/metrics
+--     n1k1 -f examples/queries/charts.sql++ examples/metrics
 --
 --   sparkline(x) — a mini line chart of the values in scan order (long series are
 --                  downsampled to ~100 bars); use it for time series.

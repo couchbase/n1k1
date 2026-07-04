@@ -6,7 +6,7 @@
 -- fixpoint, arithmetic, and string building.
 --
 -- Run it:
---     n1k1 -f examples/mandelbrot.sql++ | jq -r '.line'
+--     n1k1 -f examples/queries/mandelbrot.sql++ | jq -r '.line'
 --
 -- The `jq -r '.line'` strips the {"line":"..."} JSON wrapper so the rows print
 -- as a clean picture. Expect the main cardioid, the period-2 bulb on the left,
