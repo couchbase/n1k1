@@ -175,7 +175,9 @@ Mapping that onto n1k1:
   compute. It could speed `op_scan`'s JSON path and `jsonparser` boundary-finding
   regardless of whether the engine goes columnar. Worth separating in the mind:
   *SIMD-parse* helps the row engine today; *SIMD-compute* needs the columnar
-  encoding first.
+  encoding first. (Deep dive on the actual library + its constraints in
+  § *Go's SIMD reality* below — the short version is it's more limited and more
+  x86-specific than it first sounds.)
 
 - **No / not worth it:**
   - Variable-width JSON text columns (encoding 1) — element boundaries are
@@ -188,6 +190,105 @@ Mapping that onto n1k1:
 The honest SIMD conclusion: **SIMD is a leaf optimization that only lights up
 after types are known and a fixed-width columnar encoding exists.** It is the
 *last* payoff of the columnar path, not the entry point. Don't lead with it.
+
+-------------------------------------------------------
+## Go's SIMD reality (as of 2026) — what's actually reachable
+
+The "kinds of operations are limited" instinct is correct, and it's a *toolchain*
+limit, not just a design choice. Before committing to any SIMD kernel, know the
+four ways to reach SIMD from Go and their costs:
+
+1. **Compiler autovectorization — basically absent.** Go's SSA backend does *not*
+   autovectorize general loops. A few runtime primitives (`bytes.IndexByte`,
+   `bytes.Equal`, `crypto/*`, `hash/crc32`, `math/bits` popcount) are fast because
+   they're **hand-written Plan9 assembly** in the stdlib, not because the compiler
+   vectorized Go. You cannot expect a plain Go `for` loop over a column to become
+   SIMD by itself.
+2. **Hand-written Plan9 assembly (`.s` files).** The real, portable-today option.
+   Per-arch (amd64 `.s`, arm64 `.s`, …), each with a Go fallback for other arches.
+   High maintenance; easy to get wrong; but it's what actually ships.
+3. **`avo` (`mmcloughlin/avo`) — generate that assembly from Go.** This is how
+   `klauspost/*` and `minio/simdjson-go` are built. Still per-arch and still
+   producing asm, but far more maintainable than raw `.s`. If n1k1 hand-rolls
+   kernels, this is the tool to use.
+4. **`GOEXPERIMENT=simd` → the `simd/archsimd` package (NEW).** Landed in **Go
+   1.26** (RC1 Dec 2025, released ~Feb 2026); development continues on `dev.simd`
+   for 1.27. Exposes real intrinsics — vector types like `Int8x16`, `Float64x8`
+   (128/256/512-bit), each intrinsic ≈ one machine instruction — and the roadmap
+   has a future *portable* high-level vector API layered on top. **But the caveats
+   are severe for n1k1's purposes:**
+   - **AMD64-only.** No ARM64/NEON. Many dev machines here are Apple Silicon
+     (this repo is developed on `darwin`/arm64), so archsimd kernels wouldn't even
+     run natively during development.
+   - **No WASM.** The `web/` browser build (`wasm-browser-demo`) can't use
+     archsimd at all; WASM SIMD is a *separate* 128-bit instruction set reached
+     through entirely different codegen.
+   - **Experimental + build-flag gated + unstable API.** Code only compiles under
+     `GOEXPERIMENT=simd`; the surface can still change. Betting n1k1 code on it in
+     2026 means dual codepaths and a moving target.
+
+**The boundary-overhead trap (and why it reinforces "batch first").** A live Go
+issue (golang/go#77647) documents that hand-written-asm SIMD carries a **Go↔asm
+call-boundary cost** on every invocation; for *small* data chunks that fixed
+overhead eats the SIMD win entirely. The intrinsics work (option 4) exists partly
+to erase that boundary. For n1k1 the lesson is direct: **per-`Val` (per-scalar)
+SIMD is a guaranteed loss** — the call overhead dwarfs the work — **so SIMD only
+pays when amortized across a whole column batch of M values in one call.** This is
+independent confirmation of this doc's central thesis: get the columnar *batch*
+first; SIMD is only worthwhile on top of it.
+
+**Practical takeaway.** The set of SIMD ops n1k1 could realistically reach *today*
+(via avo/`.s`, portably) is narrow: fixed-width integer/float compare, arithmetic,
+min/max/sum reductions, and bitmap AND/OR/POPCOUNT. That's *exactly* the set the
+columnar encodings (§2, §4, §5) produce — which is fine, because those are also
+the only ops worth vectorizing. Anything variable-width or type-polymorphic (i.e.
+most raw JSON) is out of reach until decoded into one of those fixed layouts.
+
+-------------------------------------------------------
+## SIMD-json parse — what it is, and why it's not a drop-in
+
+`simdjson` (Daniel Lemire et al.) and its Go port **`minio/simdjson-go`** parse
+JSON with a **two-stage** design:
+
+- **Stage 1 (the SIMD part):** scan the raw bytes 32/64 at a time to classify
+  *structural characters* (`{ } [ ] : ,`, quotes, whitespace) and emit their byte
+  offsets. This is the vectorized step — it finds *where* the structure is without
+  interpreting values.
+- **Stage 2:** consume those offsets to build a **"tape"** — a flat array encoding
+  the document's structure (element types + offsets/inline values). In
+  `simdjson-go` the two stages run as concurrent goroutines over a channel, and it
+  emits *incremental* uint32 offsets so arbitrarily large files parse (limit: no
+  single string element > 4 GB).
+
+Why it does **not** slot cleanly into n1k1's hot path:
+
+- **Hard CPU requirement, no fallback.** Needs **AVX2 + CLMUL** (Intel Haswell
+  2013+, AMD Ryzen/EPYC 2017+). There is **no scalar fallback** — you call
+  `SupportedCPU()` and route around it yourself. `gccgo` and **WASM** are
+  unsupported, and it's **amd64-only** (no arm64) — so it can't run on Apple
+  Silicon dev machines *or* in the `web/` browser build. That's two of n1k1's
+  actual environments excluded outright.
+- **It produces a tape, not borrowed sub-slices.** n1k1's whole value model is
+  `jsonparser.Get()` — *lazy, on-demand, zero-copy `[]byte` sub-slices* into the
+  original document, touching only the 1–2 fields a query actually projects out of
+  a wide doc (`DESIGN-exprs.md`, `DESIGN-data.md` § borrow contract). simdjson-go
+  instead parses the **whole document** into a tape up front. For n1k1's common
+  case (project a couple of fields from a wide record) that's *more* work, not
+  less — you materialize structure you'll never read. (It can point string
+  payloads back into the message buffer via `WithCopyStrings(false)`, but the tape
+  itself is still whole-document.)
+- **It wins on the opposite workload:** parsing *gigabytes* where you consume most
+  of each large document, with enough per-doc bytes to amortize the two-goroutine
+  setup. On small docs the fixed overhead loses to `jsonparser`.
+
+**So where does it actually fit?** Not as a `jsonparser` replacement on the row
+path — but as an **ingest engine for the columnar path**. Stage-1's structural
+scan + a tape is a natural front-end for *transposing a JSON file into column
+batches* (§ encoding 1/3): parse once, scatter values into per-column buffers.
+That places it around **Phase 5** (columnar ingest), gated behind
+`SupportedCPU()` with the plain `jsonparser` row path as the mandatory fallback
+for arm64 / WASM / pre-Haswell / small-doc cases. Treat *SIMD-parse* and
+*SIMD-compute* as two separate, independently-justified investments.
 
 -------------------------------------------------------
 ## The compiler is the leverage (why n1k1 is unusually well-placed)
@@ -266,8 +367,13 @@ forces the next.
   op (aggregation is the best first target). Interpreter stays row-only.
 
 - **Phase 4 — SIMD kernels.** Now, and only now, drop SIMD into the fixed-width
-  kernels from Phase 3 (predicate scan, SUM/MIN/MAX, bitmap AND). Include a
-  scalar fallback and a WASM-SIMD variant for the browser build.
+  kernels from Phase 3 (predicate scan, SUM/MIN/MAX, bitmap AND). Reach it via
+  `avo`-generated asm (portable-today) or `GOEXPERIMENT=simd`/`archsimd`
+  (amd64-only, unstable) — see § *Go's SIMD reality*. **A plain-Go scalar kernel
+  is mandatory, not optional**, since arm64 (Apple Silicon dev machines) and WASM
+  can't run the amd64 asm; add a WASM-SIMD (128-bit) variant for the browser build
+  separately. Every SIMD kernel is one impl among ≥2 that must agree under
+  differential test.
 
 - **Phase 5 — Arrow/Parquet zero-transpose (encoding 3).** Feed borrowed Arrow
   column buffers straight into the Phase 2/3 column path, closing the
@@ -327,7 +433,14 @@ forces the next.
 - Does the WASM build (`web/`) change the cost/benefit? WASM SIMD is 128-bit
   only and JS-boundary costs dominate there (`js-udf-perf`), so the columnar win
   in-browser may come more from *fewer boundary crossings* (batching) than from
-  SIMD width.
+  SIMD width. Neither `archsimd` nor `simdjson-go` runs in WASM at all.
+- **How many SIMD backends can we stomach?** Portable SIMD across amd64 + arm64 +
+  WASM means ≥3 asm/intrinsic backends *plus* a scalar reference — a real
+  maintenance and testing multiplier. Is the win worth it beyond amd64 servers,
+  or should SIMD stay an amd64-only accelerator with scalar-Go everywhere else
+  (and columnar *batching alone* — fewer calls, better cache behavior — carry the
+  arm64/WASM benefit)? Batching helps every arch; SIMD helps one. That argues for
+  landing the columnar batch value even where no SIMD kernel ever ships.
 
 -------------------------------------------------------
 ## One-line summary
