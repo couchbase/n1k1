@@ -75,8 +75,13 @@ func main() {
 		indexFlag   = flag.String("index", "lazy", "use catalog (secondary/FTS) indexes: "+
 			"lazy (default; build each on first use) | eager (build all up front)"+
 			" | off (ignore the catalog; always full-scan)")
-		extFlag = flag.String("ext", "", "load query extensions from comma-separated dirs and/or files; kind auto-detected by file extension (.js = JavaScript UDF). See .ext")
 	)
+	// -ext / -extensions (synonyms): load query extensions at startup. Repeatable
+	// and comma-separated (a dir or a file each); kind auto-detected by file
+	// extension (.js = JavaScript UDF). See the .extensions REPL command.
+	var extPaths extPathsFlag
+	flag.Var(&extPaths, "ext", "load query extension(s) from a dir or file (repeatable; comma-separated ok); .js = JavaScript UDF. See .extensions")
+	flag.Var(&extPaths, "extensions", "alias for -ext")
 	// -verbose / -v (synonyms sharing one value): a diagnostics level. A bare
 	// -verbose means on (level 1) and repeats accumulate (-v -v -v -> 3);
 	// -verbose=on|off|debug|<n> sets an explicit level. normalizeVerbose lets the
@@ -203,11 +208,12 @@ func main() {
 		style:     cmd.Style{On: fancy},
 	}
 
-	// -ext: register query extensions (e.g. JavaScript UDFs) before running any
-	// statements so the parser resolves their names. (The sparkline/histogram
-	// aggregates are always available -- glue registers them at init.)
-	if *extFlag != "" {
-		names, err := loadExtensions(*extFlag)
+	// -ext/-extensions: register query extensions (e.g. JavaScript UDFs) before
+	// running any statements so the parser resolves their names. (The
+	// sparkline/histogram aggregates are always available -- glue registers them
+	// at init.)
+	if len(extPaths) > 0 {
+		names, err := loadExtensions(extPaths)
 		if len(names) > 0 {
 			fmt.Fprintf(os.Stderr, "%s: registered extension function(s): %s\n", prog, strings.Join(names, ", "))
 		}

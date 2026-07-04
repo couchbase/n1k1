@@ -52,17 +52,34 @@ func init() {
 	}
 }
 
+// ExtensionInfo describes one currently-loaded extension function (for listing).
+type ExtensionInfo struct {
+	Name   string // the SQL++ function name
+	Kind   string // e.g. "javascript"
+	Source string // originating dir/file path, or "(inline)"
+}
+
+// extLoaded tracks the currently-loaded extension functions by name, so the CLI
+// can list and unload them. Registering records here; UnloadExtension removes.
+// (Distinct from extOurs in ext_goja.go, which persists across unload to keep
+// reload from tripping the builtin-shadow guard.)
+var extLoaded = map[string]ExtensionInfo{}
+
 // extensionLoaders maps a (lower-case) file extension to the loader that turns
-// such a file into a registered function. This is the single place to add a new
-// extension kind (e.g. ".wasm") as the roadmap advances -- callers stay generic.
-var extensionLoaders = map[string]func(name, path string) error{
-	".js": func(name, path string) error {
+// such a file into a registered function, and the kind label it records. This is
+// the single place to add a new extension kind (e.g. ".wasm") as the roadmap
+// advances -- callers stay generic.
+var extensionLoaders = map[string]struct {
+	kind string
+	load func(name, path string) error
+}{
+	".js": {"javascript", func(name, path string) error {
 		src, err := os.ReadFile(path)
 		if err != nil {
 			return err
 		}
 		return registerJSFunc(name, string(src)) // JavaScript scalar UDF.
-	},
+	}},
 }
 
 // RegisterExtensionFile registers a single extension file as a scalar function
@@ -71,14 +88,15 @@ var extensionLoaders = map[string]func(name, path string) error{
 // unrecognized extension is an error. Returns the registered function name.
 func RegisterExtensionFile(path string) (string, error) {
 	ext := strings.ToLower(filepath.Ext(path))
-	load, ok := extensionLoaders[ext]
+	loader, ok := extensionLoaders[ext]
 	if !ok {
 		return "", fmt.Errorf("RegisterExtensionFile %q: unsupported extension %q", path, ext)
 	}
 	name := strings.ToLower(strings.TrimSuffix(filepath.Base(path), filepath.Ext(path)))
-	if err := load(name, path); err != nil {
+	if err := loader.load(name, path); err != nil {
 		return "", err
 	}
+	extLoaded[name] = ExtensionInfo{Name: name, Kind: loader.kind, Source: path}
 	return name, nil
 }
 
@@ -118,5 +136,37 @@ func RegisterExtensionDir(dir string) ([]string, error) {
 // file into an extension directory. Safe to call at startup before parsing; not
 // safe to call concurrently with query parsing.
 func RegisterJSFunc(name, source string) error {
-	return registerJSFunc(name, source)
+	if err := registerJSFunc(name, source); err != nil {
+		return err
+	}
+	name = strings.ToLower(name)
+	extLoaded[name] = ExtensionInfo{Name: name, Kind: "javascript", Source: "(inline)"}
+	return nil
+}
+
+// ListExtensions returns the currently-loaded extension functions, sorted by
+// name. (The always-on sparkline/histogram aggregates are not "loaded" and are
+// not included.)
+func ListExtensions() []ExtensionInfo {
+	out := make([]ExtensionInfo, 0, len(extLoaded))
+	for _, info := range extLoaded {
+		out = append(out, info)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+// UnloadExtension disables a loaded extension function: the name is replaced in
+// the parser's registry with a stub that errors when called (cbq's registry has
+// no delete, so the name still parses), and it is dropped from the loaded set. A
+// later Register* of the same name re-enables it. Returns an error if the name
+// is not currently loaded.
+func UnloadExtension(name string) error {
+	name = strings.ToLower(name)
+	if _, ok := extLoaded[name]; !ok {
+		return fmt.Errorf("extension %q is not loaded", name)
+	}
+	unregisterJSFunc(name)
+	delete(extLoaded, name)
+	return nil
 }

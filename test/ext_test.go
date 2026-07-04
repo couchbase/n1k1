@@ -227,6 +227,56 @@ func TestExtRegisterExtensionDir(t *testing.T) {
 	}
 }
 
+// TestExtListUnloadReload exercises the extension registry: list reflects loads,
+// unload disables (a call then errors) and drops it from the list, and reload
+// re-enables. Uses uniquely-named UDFs so it doesn't depend on what other tests
+// registered in the shared process.
+func TestExtListUnloadReload(t *testing.T) {
+	const fn = "extlisttest_dbl"
+	loaded := func() bool {
+		for _, e := range glue.ListExtensions() {
+			if e.Name == fn {
+				return true
+			}
+		}
+		return false
+	}
+
+	if err := glue.RegisterJSFunc(fn, `function `+fn+`(x){return x*2;}`); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if !loaded() {
+		t.Fatalf("ListExtensions missing %q after load", fn)
+	}
+	sess := extSession(t)
+	if got := extRawRows(t, sess, `SELECT RAW `+fn+`(21)`); len(got) != 1 || got[0] != `42` {
+		t.Fatalf("%s(21) = %v, want [42]", fn, got)
+	}
+
+	// Unload: dropped from the list, and calling it now errors.
+	if err := glue.UnloadExtension(fn); err != nil {
+		t.Fatalf("unload: %v", err)
+	}
+	if loaded() {
+		t.Fatalf("ListExtensions still has %q after unload", fn)
+	}
+	if _, err := sess.Run(`SELECT RAW ` + fn + `(21)`); err == nil {
+		t.Fatalf("%s after unload: expected an error", fn)
+	}
+	// Unloading again is a clean error, not a panic.
+	if err := glue.UnloadExtension(fn); err == nil {
+		t.Fatalf("double-unload: expected 'not loaded' error")
+	}
+
+	// Reload re-enables (and does not trip the builtin-shadow guard).
+	if err := glue.RegisterJSFunc(fn, `function `+fn+`(x){return x*3;}`); err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if got := extRawRows(t, sess, `SELECT RAW `+fn+`(21)`); len(got) != 1 || got[0] != `63` {
+		t.Fatalf("%s(21) after reload = %v, want [63]", fn, got)
+	}
+}
+
 // TestExtShippedJSExamples loads the example UDFs shipped in
 // extensions/functions/js and confirms they resolve and run, so the docs'
 // examples can't silently rot.

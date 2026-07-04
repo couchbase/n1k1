@@ -11,11 +11,12 @@
 //  express or implied. See the License for the specific language
 //  governing permissions and limitations under the License.
 
-// Loading query extensions into the CLI, via the -ext startup flag and the
-// .ext dot-command. The kind of each extension is auto-detected from its file
-// extension (today: ".js" = a JavaScript scalar UDF). The native
-// sparkline()/histogram() aggregates need NO loading (they are always
-// available). See DESIGN-extensions.md and extensions/functions/.
+// Loading query extensions into the CLI, via the repeatable -ext / -extensions
+// startup flag and the .extensions dot-command (list | load | unload). The kind
+// of each extension is auto-detected from its file extension (today: ".js" = a
+// JavaScript scalar UDF). The native sparkline()/histogram() aggregates need NO
+// loading (they are always available). See DESIGN-extensions.md and
+// extensions/functions/.
 package main
 
 import (
@@ -26,18 +27,41 @@ import (
 	"github.com/couchbase/n1k1/glue"
 )
 
-// loadExtensions registers query extensions from a comma-separated list of
-// directories and/or individual files. A directory is scanned for recognized
-// extension files (glue.RegisterExtensionDir); a file is registered directly
+// extPathsFlag collects -ext / -extensions occurrences. It is repeatable AND
+// accepts a comma-separated list per occurrence, so all of these work:
+//
+//	-ext a -ext b            -ext a,b            -extensions a -ext b
+type extPathsFlag []string
+
+func (e *extPathsFlag) String() string { return strings.Join(*e, ",") }
+
+func (e *extPathsFlag) Set(v string) error {
+	*e = append(*e, splitPaths(v)...)
+	return nil
+}
+
+// splitPaths splits a comma- and/or whitespace-separated path list, dropping
+// empties.
+func splitPaths(s string) []string {
+	var out []string
+	for _, f := range strings.Fields(s) {
+		for _, p := range strings.Split(f, ",") {
+			if p = strings.TrimSpace(p); p != "" {
+				out = append(out, p)
+			}
+		}
+	}
+	return out
+}
+
+// loadExtensions registers query extensions from a list of directories and/or
+// individual files. A directory is scanned for recognized extension files
+// (glue.RegisterExtensionDir); a file is registered directly
 // (glue.RegisterExtensionFile), its kind auto-detected from the extension.
 // Returns the registered function names (in the order encountered).
-func loadExtensions(spec string) ([]string, error) {
+func loadExtensions(paths []string) ([]string, error) {
 	var names []string
-	for _, p := range strings.Split(spec, ",") {
-		p = strings.TrimSpace(p)
-		if p == "" {
-			continue
-		}
+	for _, p := range paths {
 		fi, err := os.Stat(p)
 		if err != nil {
 			return names, err
@@ -59,19 +83,72 @@ func loadExtensions(spec string) ([]string, error) {
 	return names, nil
 }
 
-// cmdExt implements the ".ext <path>[,<path>...]" dot-command: load extensions
-// live in the REPL. With no argument it prints usage.
-func (c *cli) cmdExt(arg string) {
-	arg = strings.TrimSpace(arg)
-	if arg == "" {
-		fmt.Fprintln(c.stderr, "usage: .ext <dir-or-file>[,<dir-or-file>...]  (load query extensions; kind auto-detected, e.g. .js = JavaScript)")
+// cmdExtensions implements the ".extensions [list | load <path...> | unload
+// <name...>]" dot-command (alias ".ext"). No argument (or "list") lists the
+// currently-loaded extensions.
+func (c *cli) cmdExtensions(arg string) {
+	fields := strings.Fields(strings.TrimSpace(arg))
+	sub := ""
+	if len(fields) > 0 {
+		sub = strings.ToLower(fields[0])
+	}
+	switch sub {
+	case "", "list":
+		c.extList()
+	case "load":
+		c.extLoad(fields[1:])
+	case "unload":
+		c.extUnload(fields[1:])
+	default:
+		// Friendly shorthand: ".extensions <dir-or-file>" == "... load <dir-or-file>".
+		c.extLoad(fields)
+	}
+}
+
+func (c *cli) extList() {
+	exts := glue.ListExtensions()
+	if len(exts) == 0 {
+		fmt.Fprintln(c.stderr, "no extensions loaded (sparkline/histogram aggregates are always available)")
 		return
 	}
-	names, err := loadExtensions(arg)
+	fmt.Fprintf(c.stderr, "%d loaded extension function(s):\n", len(exts))
+	for _, e := range exts {
+		fmt.Fprintf(c.stderr, "  %-20s %-11s %s\n", e.Name, e.Kind, e.Source)
+	}
+}
+
+func (c *cli) extLoad(args []string) {
+	var paths []string
+	for _, a := range args {
+		paths = append(paths, splitPaths(a)...)
+	}
+	if len(paths) == 0 {
+		fmt.Fprintln(c.stderr, "usage: .extensions load <dir-or-file>[,<dir-or-file>...]")
+		return
+	}
+	names, err := loadExtensions(paths)
 	if len(names) > 0 {
-		fmt.Fprintf(c.stderr, "registered extension function(s): %s\n", strings.Join(names, ", "))
+		fmt.Fprintf(c.stderr, "loaded: %s\n", strings.Join(names, ", "))
 	}
 	if err != nil {
-		fmt.Fprintf(c.stderr, "%s: .ext: %v\n", c.prog, err)
+		fmt.Fprintf(c.stderr, "%s: .extensions load: %v\n", c.prog, err)
+	}
+}
+
+func (c *cli) extUnload(args []string) {
+	var names []string
+	for _, a := range args {
+		names = append(names, splitPaths(a)...)
+	}
+	if len(names) == 0 {
+		fmt.Fprintln(c.stderr, "usage: .extensions unload <name>[,<name>...]")
+		return
+	}
+	for _, n := range names {
+		if err := glue.UnloadExtension(n); err != nil {
+			fmt.Fprintf(c.stderr, "%s: .extensions unload: %v\n", c.prog, err)
+		} else {
+			fmt.Fprintf(c.stderr, "unloaded: %s\n", strings.ToLower(n))
+		}
 	}
 }

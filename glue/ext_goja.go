@@ -46,10 +46,13 @@ import (
 // memory-capped like a Wasm guest -- see the DESIGN-extensions.md Caveats.)
 var JSCallTimeout = 5 * time.Second
 
-// jsRegistered records the UDF names we ourselves installed, so a re-scan of the
-// same directory can re-register (overwrite) its own functions, while a *first*
-// registration is still refused if it would shadow a stock builtin/aggregate.
-var jsRegistered = map[string]bool{}
+// extOurs records every function name the extension layer has ever installed
+// (loaded, reloaded, or since unloaded). A first-time registration is refused if
+// it would shadow a stock builtin/aggregate; a name already in extOurs may be
+// (re)registered freely -- reload after edit, or reload after unload (unload
+// leaves a stub in cbq's registry, so GetFunction would otherwise look like a
+// collision).
+var extOurs = map[string]bool{}
 
 // jsProgram is a compiled JS UDF shared across a query. goja.Runtime is NOT
 // goroutine-safe and n1k1 evaluates expressions from concurrent actor
@@ -242,7 +245,7 @@ func (this *jsFunc) Evaluate(item value.Value, context expression.Context) (valu
 func registerJSFunc(name, source string) error {
 	name = strings.ToLower(name)
 
-	if !jsRegistered[name] {
+	if !extOurs[name] {
 		if _, ok := expression.GetFunction(name); ok {
 			return fmt.Errorf("JS UDF %q collides with a builtin function name", name)
 		}
@@ -256,6 +259,41 @@ func registerJSFunc(name, source string) error {
 		return err
 	}
 	expression.RegisterFunction(name, newJSFunc(jp))
-	jsRegistered[name] = true
+	extOurs[name] = true
 	return nil
+}
+
+// unregisterJSFunc overwrites name in cbq's function registry with a stub that
+// errors when called. extOurs is kept set so a later reload isn't mistaken for a
+// builtin-shadow collision.
+func unregisterJSFunc(name string) {
+	expression.RegisterFunction(strings.ToLower(name), newUnloadedFunc(strings.ToLower(name)))
+}
+
+// unloadedFunc replaces an unloaded extension in cbq's function registry: the
+// name still parses (cbq's registry has no delete), but calling it errors
+// instead of running stale code. A subsequent (re)load overwrites it again.
+type unloadedFunc struct {
+	expression.FunctionBase
+}
+
+func newUnloadedFunc(name string) expression.Function {
+	rv := &unloadedFunc{}
+	rv.Init(name)
+	rv.SetExpr(rv)
+	return rv
+}
+
+func (this *unloadedFunc) Accept(visitor expression.Visitor) (interface{}, error) {
+	return visitor.VisitFunction(this)
+}
+func (this *unloadedFunc) Type() value.Type { return value.JSON }
+func (this *unloadedFunc) MinArgs() int     { return 0 }
+func (this *unloadedFunc) MaxArgs() int     { return math.MaxInt16 }
+func (this *unloadedFunc) Constructor() expression.FunctionConstructor {
+	name := this.Name()
+	return func(operands ...expression.Expression) expression.Function { return newUnloadedFunc(name) }
+}
+func (this *unloadedFunc) Evaluate(item value.Value, context expression.Context) (value.Value, error) {
+	return nil, fmt.Errorf("extension function %q was unloaded", this.Name())
 }

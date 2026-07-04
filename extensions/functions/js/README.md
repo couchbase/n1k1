@@ -10,21 +10,29 @@ the function is available; no `CREATE FUNCTION` DDL, no rebuild.
 
 ## Loading them
 
-From the CLI (kind auto-detected from the file extension):
+From the CLI (kind auto-detected from the file extension). `-ext` (alias
+`-extensions`) is **repeatable** and accepts comma-separated lists, so you can
+point at several dirs and/or files:
 
 ```sh
 # a whole directory of extensions...
 n1k1 -ext extensions/functions/js  -c "SELECT slugify('Hello, World!')"  examples/shop
-# ...or a single file...
-n1k1 -ext extensions/functions/js/celsius_to_fahrenheit.js  -c "SELECT celsius_to_fahrenheit(37)"  examples/shop
+# ...several dirs/files (repeat the flag, or comma-separate)...
+n1k1 -ext extensions/functions/js -ext ./my_udfs -ext extra.js  -c "..."  examples/shop
 ```
 
-In the REPL, load more at any time with the `.ext` dot-command:
+In the REPL, manage them at any time with the `.extensions` dot-command (alias
+`.ext`) and its sub-commands:
 
 ```
-n1k1> .ext extensions/functions/js
-registered extension function(s): add_two_numbers, celsius_to_fahrenheit, slugify
+n1k1> .extensions load extensions/functions/js     # load a dir (or file)
+loaded: add_two_numbers, celsius_to_fahrenheit, slugify
+n1k1> .extensions list                             # what's loaded
+3 loaded extension function(s):
+  add_two_numbers       javascript  extensions/functions/js/add_two_numbers.js
+  ...
 n1k1> SELECT add_two_numbers(o.items, 10) AS bumped, slugify(o.customer) AS slug FROM orders o;
+n1k1> .extensions unload slugify                   # disable one (reload to re-enable)
 ```
 
 Programmatically (embedders):
@@ -33,6 +41,8 @@ Programmatically (embedders):
 glue.RegisterExtensionDir("extensions/functions/js")     // a directory
 glue.RegisterExtensionFile("path/to/my_fn.js")           // one file (kind by extension)
 glue.RegisterJSFunc("triple", "function triple(x){return x*3;}") // inline source
+glue.ListExtensions()                                    // []ExtensionInfo{name,kind,source}
+glue.UnloadExtension("triple")                           // disable (reload to re-enable)
 ```
 
 ## Notes

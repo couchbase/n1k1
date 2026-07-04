@@ -42,8 +42,12 @@ when the baked `exprTree`/`exprStr` string is re-parsed at runtime).
   goroutine, object/array args are deep-copied in (no source mutation), a
   runaway script is interrupted (`glue.JSCallTimeout`), and a name that would
   shadow a builtin/aggregate is refused. Loading is opt-in (embedder, or the CLI
-  `-ext <dir|file>` flag / `.ext` REPL command) since in-process user code is an
-  attack surface. Example UDFs ship in `extensions/functions/js/`.
+  `-ext`/`-extensions` flag -- repeatable, comma-friendly -- and the
+  `.extensions` REPL command with `list`/`load`/`unload` sub-commands) since
+  in-process user code is an attack surface. A loaded-extensions registry backs
+  `glue.ListExtensions()` and `glue.UnloadExtension(name)` (unload installs a
+  stub that errors on call, since cbq's function registry has no delete; a reload
+  re-enables). Example UDFs ship in `extensions/functions/js/`.
 - **Extension AGGREGATES `sparkline()` / `histogram()`** — native and
   **zero-garbage**, implemented against the `base.Agg` byte-slice
   Init/Update/Result protocol (`base/agg_ext.go`): Update only appends bytes

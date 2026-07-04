@@ -142,7 +142,8 @@ n1k1 -c "SELECT COUNT(*) AS orders, ROUND(AVG(total),2) AS avg, histogram(total)
 
 Scalar user-defined functions are plain JavaScript files whose base name is the
 SQL++ function name. Point `-ext` at a directory (or a single file); the kind is
-auto-detected from the file extension. See `extensions/functions/js/`.
+auto-detected from the file extension. `-ext` is repeatable and comma-friendly,
+so you can load several dirs/files. See `extensions/functions/js/`.
 
 ```sh
 n1k1 -ext extensions/functions/js \
@@ -150,6 +151,8 @@ n1k1 -ext extensions/functions/js \
          FROM orders o LIMIT 3" examples/shop
 ```
 
-In the REPL, load them live with `.ext <dir-or-file>` (run `.help` to see it).
-Loading is opt-in — user code runs in-process. The `sparkline`/`histogram`
-aggregates above need no loading. See `DESIGN-extensions.md`.
+In the REPL, manage them live with `.extensions` (alias `.ext`):
+`.extensions list` shows what's loaded, `.extensions load <dir-or-file>` adds
+more, `.extensions unload <name>` disables one. Loading is opt-in — user code
+runs in-process. The `sparkline`/`histogram` aggregates above need no loading.
+See `DESIGN-extensions.md`.
