@@ -957,23 +957,23 @@ func decodeJSONValuesRef(data []byte) ([][]byte, error) {
 
 func TestSplitJSONValues(t *testing.T) {
 	inputs := []string{
-		`{"a":1}`,                            // single object
-		`  {"a":1}` + "\n",                   // leading/trailing whitespace
-		`{"a":1}{"b":2}` + "\n" + `{"c":3}`,  // whitespace/adjacent value stream
-		`[{"a":1},{"b":2},{"c":3}]`,          // top-level array of records
-		`[ 1, 2, 3 ]`,                        // array of primitives
-		`[]`,                                 // empty array
-		`   `,                                // whitespace only
-		``,                                   // empty
-		`{"s":"a}b]c{[\"quote\""}`,           // braces/brackets/escapes inside strings
-		`{"nest":{"x":[1,{"y":2}]}}`,         // deep nesting
-		`1 2 3`,                              // primitive stream
-		`true false null 3.14 -5e10`,         // keyword/number primitives
+		`{"a":1}`,                           // single object
+		`  {"a":1}` + "\n",                  // leading/trailing whitespace
+		`{"a":1}{"b":2}` + "\n" + `{"c":3}`, // whitespace/adjacent value stream
+		`[{"a":1},{"b":2},{"c":3}]`,         // top-level array of records
+		`[ 1, 2, 3 ]`,                       // array of primitives
+		`[]`,                                // empty array
+		`   `,                               // whitespace only
+		``,                                  // empty
+		`{"s":"a}b]c{[\"quote\""}`,          // braces/brackets/escapes inside strings
+		`{"nest":{"x":[1,{"y":2}]}}`,        // deep nesting
+		`1 2 3`,                             // primitive stream
+		`true false null 3.14 -5e10`,        // keyword/number primitives
 		`{"emoji":"café ☕","arr":[true]}`,   // multibyte + nested
-		"{\"a\":1}\n{\"b\":2}\n",             // newline-separated stream (jsonl-ish)
+		"{\"a\":1}\n{\"b\":2}\n",            // newline-separated stream (jsonl-ish)
 	}
 	for _, in := range inputs {
-		got, gerr := splitJSONValues([]byte(in))
+		got, gerr := splitJSONValues(nil, []byte(in))
 		want, werr := decodeJSONValuesRef([]byte(in))
 		if (gerr == nil) != (werr == nil) {
 			t.Errorf("%q: err mismatch got=%v ref=%v", in, gerr, werr)
@@ -1000,5 +1000,32 @@ func TestSplitJSONValues(t *testing.T) {
 				t.Errorf("%q: doc %d got=%s want=%s", in, i, gb, wb)
 			}
 		}
+	}
+}
+
+// TestSplitJSONValuesReuse exercises the recycled-dst path: a second call reusing
+// the first call's [][]byte must yield correct bytes AND reuse the leaf backing
+// arrays (the recycling win) when capacities suffice.
+func TestSplitJSONValuesReuse(t *testing.T) {
+	first, err := splitJSONValues(nil, []byte(`{"a":111}{"b":222}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first) != 2 {
+		t.Fatalf("first: got %d docs", len(first))
+	}
+	// Record leaf backing-array identity to detect reuse.
+	p0, p1 := &first[0][:1][0], &first[1][:1][0]
+
+	second, err := splitJSONValues(first, []byte(`{"c":333}{"d":444}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second) != 2 || string(second[0]) != `{"c":333}` || string(second[1]) != `{"d":444}` {
+		t.Fatalf("second: got %q", second)
+	}
+	// Same length + same-size docs => leaf arrays should be reused, not reallocated.
+	if &second[0][:1][0] != p0 || &second[1][:1][0] != p1 {
+		t.Errorf("expected leaf buffers to be reused across calls")
 	}
 }

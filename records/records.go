@@ -303,46 +303,84 @@ type jsonSource struct {
 // (json.Decoder itself can't be pooled -- it has no Reset and latches io.EOF.)
 var jsonBufPool = sync.Pool{New: func() interface{} { return new(bytes.Buffer) }}
 
+// jsonSourcePool recycles whole *jsonSource values (their docs [][]byte header and
+// each leaf []byte) across newJSONSource/Close. Under the borrowed-until-next-Next
+// contract (see DatastoreScanRecords), a source's docs are consumed before it is
+// Closed, so on Close the source and its buffers are free to refill the next open.
+var jsonSourcePool = sync.Pool{New: func() interface{} { return &jsonSource{} }}
+
 // jsonBufPoolMaxCap caps which buffers return to the pool, so one huge file can't
 // pin a large buffer in the pool forever.
 const jsonBufPoolMaxCap = 1 << 20 // 1 MiB.
 
+func putJSONBuf(buf *bytes.Buffer) {
+	if buf.Cap() <= jsonBufPoolMaxCap {
+		jsonBufPool.Put(buf)
+	}
+}
+
 func newJSONSource(r io.Reader, closers []io.Closer, idPrefix, stem string) (*jsonSource, error) {
 	buf := jsonBufPool.Get().(*bytes.Buffer)
 	buf.Reset()
-	if _, err := buf.ReadFrom(r); err != nil {
-		if buf.Cap() <= jsonBufPoolMaxCap {
-			jsonBufPool.Put(buf)
+	_, rerr := buf.ReadFrom(r)
+
+	s := jsonSourcePool.Get().(*jsonSource)
+	var docs [][]byte
+	var serr error
+	if rerr == nil {
+		docs, serr = splitJSONValues(s.docs, buf.Bytes()) // reuses s.docs + leaf buffers.
+	}
+	putJSONBuf(buf)
+
+	s.docs = docs // keep (even on error) so the leaf capacities stay pooled.
+	s.i = 0
+	s.idPrefix = idPrefix
+	s.stem = stem
+	if rerr != nil || serr != nil {
+		// OpenFile closes `closers` on error, so leave them off the pooled source.
+		s.closers = nil
+		s.single = false
+		jsonSourcePool.Put(s)
+		if rerr != nil {
+			return nil, rerr
 		}
-		return nil, err
+		return nil, serr
 	}
-	docs, err := splitJSONValues(buf.Bytes())
-	if buf.Cap() <= jsonBufPoolMaxCap {
-		jsonBufPool.Put(buf) // docs own copies of their bytes, so the buffer is free to reuse.
-	}
-	if err != nil {
-		return nil, err
-	}
-	return &jsonSource{
-		docs: docs, closers: closers, idPrefix: idPrefix,
-		stem: stem, single: len(docs) == 1,
-	}, nil
+	s.closers = closers
+	s.single = len(docs) == 1
+	return s, nil
 }
 
-// splitJSONValues splits a complete .json/.jsons buffer into owned per-record byte
+// splitJSONValues splits a complete .json/.jsons buffer into per-record byte
 // slices, matching the historical json.Decoder behavior: a leading '[' is a
 // top-level array whose elements are the records, otherwise the buffer is a stream
 // of one-or-more whitespace-separated JSON values. Structure isn't fully validated
 // here (that happens downstream at evaluation); only value boundaries are found.
-func splitJSONValues(data []byte) ([][]byte, error) {
+//
+// Results are appended into dst, reusing dst's [][]byte backing and each existing
+// leaf []byte (from a recycled jsonSource) so a steady stream of similar files
+// allocates nothing here.
+func splitJSONValues(dst [][]byte, data []byte) ([][]byte, error) {
+	old := dst
+	docs := dst[:0]
+	// appendDoc copies v into docs[len], reusing the recycled leaf buffer at that
+	// index when one exists. It reads old[idx] before append overwrites that slot.
+	appendDoc := func(v []byte) {
+		idx := len(docs)
+		if idx < len(old) {
+			docs = append(docs, append(old[idx][:0], v...))
+		} else {
+			docs = append(docs, append([]byte(nil), v...))
+		}
+	}
+
 	i, n := 0, len(data)
 	for i < n && isJSONSpace(data[i]) {
 		i++
 	}
 	if i >= n {
-		return nil, nil
+		return docs, nil
 	}
-	var docs [][]byte
 	if data[i] == '[' { // top-level array: each element is a record.
 		i++
 		for {
@@ -350,7 +388,7 @@ func splitJSONValues(data []byte) ([][]byte, error) {
 				i++
 			}
 			if i >= n {
-				return nil, fmt.Errorf("records: unterminated JSON array")
+				return docs, fmt.Errorf("records: unterminated JSON array")
 			}
 			if data[i] == ']' {
 				break
@@ -361,9 +399,9 @@ func splitJSONValues(data []byte) ([][]byte, error) {
 			}
 			start, end, err := scanJSONValue(data, i)
 			if err != nil {
-				return nil, err
+				return docs, err
 			}
-			docs = append(docs, append([]byte(nil), data[start:end]...))
+			appendDoc(data[start:end])
 			i = end
 		}
 		return docs, nil
@@ -377,9 +415,9 @@ func splitJSONValues(data []byte) ([][]byte, error) {
 		}
 		start, end, err := scanJSONValue(data, i)
 		if err != nil {
-			return nil, err
+			return docs, err
 		}
-		docs = append(docs, append([]byte(nil), data[start:end]...))
+		appendDoc(data[start:end])
 		i = end
 	}
 	return docs, nil
@@ -463,7 +501,12 @@ func (s *jsonSource) Next(rec *Record) (bool, error) {
 	return true, nil
 }
 
-func (s *jsonSource) Close() error { return closeAll(s.closers) }
+func (s *jsonSource) Close() error {
+	err := closeAll(s.closers)
+	s.closers = nil // drop file refs before the source re-enters the pool.
+	jsonSourcePool.Put(s)
+	return err
+}
 
 // -------------------------------------------------------------- YAML source
 
