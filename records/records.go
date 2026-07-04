@@ -36,6 +36,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	"gopkg.in/yaml.v3"
 )
@@ -294,43 +295,157 @@ type jsonSource struct {
 	idBuf    []byte
 }
 
+// jsonBufPool recycles the read buffer used to slurp a whole .json/.jsons file
+// before splitting it into top-level values. A nested-loop join re-opens each
+// inner file O(N) times, so allocating a fresh bufio.Reader (4 KiB) + json.Decoder
+// per open dominated both CPU and allocations (see DESIGN-data.md); reading into a
+// pooled buffer and splitting the values in-memory removes that per-open churn.
+// (json.Decoder itself can't be pooled -- it has no Reset and latches io.EOF.)
+var jsonBufPool = sync.Pool{New: func() interface{} { return new(bytes.Buffer) }}
+
+// jsonBufPoolMaxCap caps which buffers return to the pool, so one huge file can't
+// pin a large buffer in the pool forever.
+const jsonBufPoolMaxCap = 1 << 20 // 1 MiB.
+
 func newJSONSource(r io.Reader, closers []io.Closer, idPrefix, stem string) (*jsonSource, error) {
-	br := bufio.NewReader(r)
-	// Peek the first non-whitespace byte to distinguish a top-level array.
-	first, err := firstNonSpace(br)
-	if err != nil {
+	buf := jsonBufPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	if _, err := buf.ReadFrom(r); err != nil {
+		if buf.Cap() <= jsonBufPoolMaxCap {
+			jsonBufPool.Put(buf)
+		}
 		return nil, err
 	}
-	var docs [][]byte
-	dec := json.NewDecoder(br)
-	if first == '[' {
-		if _, err := dec.Token(); err != nil { // consume '['
-			return nil, err
-		}
-		for dec.More() {
-			var raw json.RawMessage
-			if err := dec.Decode(&raw); err != nil {
-				return nil, err
-			}
-			docs = append(docs, []byte(raw))
-		}
-	} else {
-		for {
-			var raw json.RawMessage
-			err := dec.Decode(&raw)
-			if err == io.EOF {
-				break
-			}
-			if err != nil {
-				return nil, err
-			}
-			docs = append(docs, []byte(raw))
-		}
+	docs, err := splitJSONValues(buf.Bytes())
+	if buf.Cap() <= jsonBufPoolMaxCap {
+		jsonBufPool.Put(buf) // docs own copies of their bytes, so the buffer is free to reuse.
+	}
+	if err != nil {
+		return nil, err
 	}
 	return &jsonSource{
 		docs: docs, closers: closers, idPrefix: idPrefix,
 		stem: stem, single: len(docs) == 1,
 	}, nil
+}
+
+// splitJSONValues splits a complete .json/.jsons buffer into owned per-record byte
+// slices, matching the historical json.Decoder behavior: a leading '[' is a
+// top-level array whose elements are the records, otherwise the buffer is a stream
+// of one-or-more whitespace-separated JSON values. Structure isn't fully validated
+// here (that happens downstream at evaluation); only value boundaries are found.
+func splitJSONValues(data []byte) ([][]byte, error) {
+	i, n := 0, len(data)
+	for i < n && isJSONSpace(data[i]) {
+		i++
+	}
+	if i >= n {
+		return nil, nil
+	}
+	var docs [][]byte
+	if data[i] == '[' { // top-level array: each element is a record.
+		i++
+		for {
+			for i < n && isJSONSpace(data[i]) {
+				i++
+			}
+			if i >= n {
+				return nil, fmt.Errorf("records: unterminated JSON array")
+			}
+			if data[i] == ']' {
+				break
+			}
+			if data[i] == ',' { // element separator.
+				i++
+				continue
+			}
+			start, end, err := scanJSONValue(data, i)
+			if err != nil {
+				return nil, err
+			}
+			docs = append(docs, append([]byte(nil), data[start:end]...))
+			i = end
+		}
+		return docs, nil
+	}
+	for i < n { // whitespace-separated value stream.
+		for i < n && isJSONSpace(data[i]) {
+			i++
+		}
+		if i >= n {
+			break
+		}
+		start, end, err := scanJSONValue(data, i)
+		if err != nil {
+			return nil, err
+		}
+		docs = append(docs, append([]byte(nil), data[start:end]...))
+		i = end
+	}
+	return docs, nil
+}
+
+// scanJSONValue returns [start,end) of the single JSON value beginning at data[i]
+// (which must be a non-whitespace byte). Objects/arrays are matched by nesting
+// depth while respecting string literals and escapes; strings by their closing
+// quote; primitives (number/true/false/null) run until whitespace or a structural
+// byte (, ] }).
+func scanJSONValue(data []byte, i int) (start, end int, err error) {
+	start = i
+	n := len(data)
+	switch data[i] {
+	case '{', '[':
+		depth, inStr, esc := 0, false, false
+		for ; i < n; i++ {
+			c := data[i]
+			if inStr {
+				switch {
+				case esc:
+					esc = false
+				case c == '\\':
+					esc = true
+				case c == '"':
+					inStr = false
+				}
+				continue
+			}
+			switch c {
+			case '"':
+				inStr = true
+			case '{', '[':
+				depth++
+			case '}', ']':
+				depth--
+				if depth == 0 {
+					return start, i + 1, nil
+				}
+			}
+		}
+		return 0, 0, fmt.Errorf("records: unterminated JSON value")
+	case '"':
+		esc := false
+		for i++; i < n; i++ {
+			c := data[i]
+			switch {
+			case esc:
+				esc = false
+			case c == '\\':
+				esc = true
+			case c == '"':
+				return start, i + 1, nil
+			}
+		}
+		return 0, 0, fmt.Errorf("records: unterminated JSON string")
+	default: // primitive.
+		for i < n {
+			c := data[i]
+			if isJSONSpace(c) || c == ',' || c == ']' || c == '}' {
+				break
+			}
+			i++
+		}
+		return start, i, nil
+	}
 }
 
 func (s *jsonSource) Next(rec *Record) (bool, error) {
@@ -555,23 +670,6 @@ func yamlToJSONValue(v interface{}) interface{} {
 		return x
 	default:
 		return v
-	}
-}
-
-// firstNonSpace reads and un-reads (via Peek) the first non-whitespace byte.
-func firstNonSpace(br *bufio.Reader) (byte, error) {
-	for {
-		b, err := br.Peek(1)
-		if err != nil {
-			return 0, err
-		}
-		switch b[0] {
-		case ' ', '\t', '\r', '\n':
-			br.Discard(1)
-			continue
-		default:
-			return b[0], nil
-		}
 	}
 }
 

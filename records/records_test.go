@@ -921,3 +921,84 @@ func TestModesMatchParseModes(t *testing.T) {
 		}
 	}
 }
+
+// decodeJSONValuesRef is the reference json.Decoder splitter that splitJSONValues
+// replaced; the test asserts the two agree on value boundaries.
+func decodeJSONValuesRef(data []byte) ([][]byte, error) {
+	var docs [][]byte
+	trimmed := strings.TrimLeft(string(data), " \t\r\n")
+	dec := json.NewDecoder(strings.NewReader(string(data)))
+	if strings.HasPrefix(trimmed, "[") {
+		if _, err := dec.Token(); err != nil {
+			return nil, err
+		}
+		for dec.More() {
+			var raw json.RawMessage
+			if err := dec.Decode(&raw); err != nil {
+				return nil, err
+			}
+			docs = append(docs, []byte(raw))
+		}
+		return docs, nil
+	}
+	for {
+		var raw json.RawMessage
+		err := dec.Decode(&raw)
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		docs = append(docs, []byte(raw))
+	}
+	return docs, nil
+}
+
+func TestSplitJSONValues(t *testing.T) {
+	inputs := []string{
+		`{"a":1}`,                            // single object
+		`  {"a":1}` + "\n",                   // leading/trailing whitespace
+		`{"a":1}{"b":2}` + "\n" + `{"c":3}`,  // whitespace/adjacent value stream
+		`[{"a":1},{"b":2},{"c":3}]`,          // top-level array of records
+		`[ 1, 2, 3 ]`,                        // array of primitives
+		`[]`,                                 // empty array
+		`   `,                                // whitespace only
+		``,                                   // empty
+		`{"s":"a}b]c{[\"quote\""}`,           // braces/brackets/escapes inside strings
+		`{"nest":{"x":[1,{"y":2}]}}`,         // deep nesting
+		`1 2 3`,                              // primitive stream
+		`true false null 3.14 -5e10`,         // keyword/number primitives
+		`{"emoji":"café ☕","arr":[true]}`,   // multibyte + nested
+		"{\"a\":1}\n{\"b\":2}\n",             // newline-separated stream (jsonl-ish)
+	}
+	for _, in := range inputs {
+		got, gerr := splitJSONValues([]byte(in))
+		want, werr := decodeJSONValuesRef([]byte(in))
+		if (gerr == nil) != (werr == nil) {
+			t.Errorf("%q: err mismatch got=%v ref=%v", in, gerr, werr)
+			continue
+		}
+		if len(got) != len(want) {
+			t.Errorf("%q: count got=%d ref=%d\n got=%s\n ref=%s", in, len(got), len(want), got, want)
+			continue
+		}
+		for i := range want {
+			// Normalize: RawMessage keeps original bytes; compare re-marshaled forms
+			// so insignificant whitespace differences don't matter.
+			var gv, wv interface{}
+			if err := json.Unmarshal(got[i], &gv); err != nil {
+				t.Errorf("%q: doc %d not valid JSON: %s (%v)", in, i, got[i], err)
+				continue
+			}
+			if err := json.Unmarshal(want[i], &wv); err != nil {
+				continue
+			}
+			gb, _ := json.Marshal(gv)
+			wb, _ := json.Marshal(wv)
+			if string(gb) != string(wb) {
+				t.Errorf("%q: doc %d got=%s want=%s", in, i, gb, wb)
+			}
+		}
+	}
+}
