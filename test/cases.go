@@ -5948,6 +5948,14 @@ var TestCasesSimple = []TestCaseSimple{
 	naryProjectCase("to_num-str", []interface{}{"to_number", []interface{}{"json", `"42"`}}, `42`),
 	naryProjectCase("to_num-bool", []interface{}{"to_number", []interface{}{"json", `true`}}, `1`),
 	naryProjectCase("to_num-junk", []interface{}{"to_number", []interface{}{"json", `"abc"`}}, `null`),
+
+	// Array reader functions (value-producing) in the COMPILED path.
+	naryProjectCase("array_length", []interface{}{"array_length", []interface{}{"json", `[10,20,30]`}}, `3`),
+	naryProjectCase("array_count", []interface{}{"array_count", []interface{}{"json", `[1,null,2]`}}, `2`),
+	naryProjectCase("array_sum", []interface{}{"array_sum", []interface{}{"json", `[1,"x",2,3]`}}, `6`),
+	naryProjectCase("array_avg", []interface{}{"array_avg", []interface{}{"json", `[2,4]`}}, `3`),
+	naryProjectCase("array_avg-empty", []interface{}{"array_avg", []interface{}{"json", `[]`}}, `null`),
+	naryProjectCase("array_length-nonarr", []interface{}{"array_length", []interface{}{"json", `5`}}, `null`),
 }
 
 // naryProjectCase builds a TestCaseSimple that projects a single native

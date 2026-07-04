@@ -617,6 +617,52 @@ func TestMathBinaryDifferentialVsCBQ(t *testing.T) {
 	}
 }
 
+func TestArrayReduceDifferentialVsCBQ(t *testing.T) {
+	c := func(v interface{}) expression.Expression { return expression.NewConstant(v) }
+	arr := func(xs ...interface{}) expression.Expression {
+		if xs == nil { // a zero-arg variadic is a nil slice, which becomes NULL
+			xs = []interface{}{}
+		}
+		return expression.NewConstant(xs)
+	}
+
+	mk := map[string]func(expression.Expression) expression.Expression{
+		"array_length": func(e expression.Expression) expression.Expression { return expression.NewArrayLength(e) },
+		"array_count":  func(e expression.Expression) expression.Expression { return expression.NewArrayCount(e) },
+		"array_sum":    func(e expression.Expression) expression.Expression { return expression.NewArraySum(e) },
+		"array_avg":    func(e expression.Expression) expression.Expression { return expression.NewArrayAvg(e) },
+	}
+	// Arrays mixing numbers/strings/nulls/nested, ints vs floats, empty; plus
+	// non-array and MISSING operands.
+	operands := map[string]expression.Expression{
+		"nums":     arr(1, 2, 3, 4),
+		"mixed":    arr(1, "x", 2.5, nil, 3),
+		"floats":   arr(1.5, 2.5),
+		"withnull": arr(1, nil, 2),
+		"strs":     arr("a", "b"),
+		"nested":   arr(1, []interface{}{2, 3}, 4),
+		"empty":    arr(),
+		"nonarr":   c(5),
+		"null":     c(value.NULL_VALUE),
+		"missing":  c(value.MISSING_VALUE),
+	}
+
+	for fn, ctor := range mk {
+		for on, operand := range operands {
+			expr := ctor(operand)
+			want := cbqEval(t, expr)
+			got, ok := nativeEval(t, expr)
+			if !ok {
+				t.Errorf("%s(%s): did not optimize", fn, on)
+				continue
+			}
+			if got != want {
+				t.Errorf("%s(%s): native=%q, cbq=%q", fn, on, got, want)
+			}
+		}
+	}
+}
+
 func TestTypeConvDifferentialVsCBQ(t *testing.T) {
 	c := func(v interface{}) expression.Expression { return expression.NewConstant(v) }
 
