@@ -497,7 +497,7 @@ sites dominate a real workload, and port those first.
 ## Sources / references
 - Principles: `DESIGN.md`; prior notes in `TODO.md`.
 - Native impls: `engine/expr*.go`; byte toolkit in `base/` (`base.go`, `arith.go`,
-  `compare.go`, `canonical.go`, `valkind.go`, `valin.go`).
+  `compare.go`, `canonical.go`, `val_kind.go`, `val_in.go`).
 - Fallback + optimizer: `glue/expr.go`, `glue/expr_optimize.go`.
 - Differential + unit tests: `glue/expr_test.go`, `engine/expr_*_test.go`,
   `base/arith_test.go`; benchmark in `test/benchmark/bench_expr_arith_test.go`.
