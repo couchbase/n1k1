@@ -5939,6 +5939,15 @@ var TestCasesSimple = []TestCaseSimple{
 		[]interface{}{"json", `"hello"`}, []interface{}{"json", `"ll"`}}, `3`),
 	naryProjectCase("contains-null", []interface{}{"contains",
 		[]interface{}{"json", `null`}, []interface{}{"json", `"x"`}}, `null`),
+
+	// Type conversions (value-producing) in the COMPILED path.
+	naryProjectCase("to_bool-num", []interface{}{"to_boolean", []interface{}{"json", `5`}}, `true`),
+	naryProjectCase("to_bool-zero", []interface{}{"to_boolean", []interface{}{"json", `0`}}, `false`),
+	naryProjectCase("to_str-num", []interface{}{"to_string", []interface{}{"json", `42`}}, `"42"`),
+	naryProjectCase("to_str-bool", []interface{}{"to_string", []interface{}{"json", `true`}}, `"true"`),
+	naryProjectCase("to_num-str", []interface{}{"to_number", []interface{}{"json", `"42"`}}, `42`),
+	naryProjectCase("to_num-bool", []interface{}{"to_number", []interface{}{"json", `true`}}, `1`),
+	naryProjectCase("to_num-junk", []interface{}{"to_number", []interface{}{"json", `"abc"`}}, `null`),
 }
 
 // naryProjectCase builds a TestCaseSimple that projects a single native

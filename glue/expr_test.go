@@ -617,6 +617,43 @@ func TestMathBinaryDifferentialVsCBQ(t *testing.T) {
 	}
 }
 
+func TestTypeConvDifferentialVsCBQ(t *testing.T) {
+	c := func(v interface{}) expression.Expression { return expression.NewConstant(v) }
+
+	mk := map[string]func(expression.Expression) expression.Expression{
+		"to_boolean": func(e expression.Expression) expression.Expression { return expression.NewToBoolean(e) },
+		"to_string":  func(e expression.Expression) expression.Expression { return expression.NewToString(e) },
+		"to_number":  func(e expression.Expression) expression.Expression { return expression.NewToNumber(e) },
+	}
+	// Every value kind + edge strings (parseable int/float, leading zeros, junk,
+	// empty), so to_* branches all fire and must agree with cbq.
+	operands := map[string]expression.Expression{
+		"missing": c(value.MISSING_VALUE), "null": c(value.NULL_VALUE),
+		"true": c(true), "false": c(false),
+		"int": c(42), "negint": c(-7), "float": c(2.5), "wholefloat": c(5.0), "zero": c(0),
+		"str": c("hi"), "emptystr": c(""), "numstr": c("42"), "floatstr": c("2.5"),
+		"leadzero": c("007"), "junkstr": c("abc"),
+		"arr": expression.NewConstant([]interface{}{1, 2}),
+		"emptyarr": expression.NewConstant([]interface{}{}),
+		"obj": expression.NewConstant(map[string]interface{}{"a": 1}),
+	}
+
+	for fn, ctor := range mk {
+		for on, operand := range operands {
+			expr := ctor(operand)
+			want := cbqEval(t, expr)
+			got, ok := nativeEval(t, expr)
+			if !ok {
+				t.Errorf("%s(%s): did not optimize", fn, on)
+				continue
+			}
+			if got != want {
+				t.Errorf("%s(%s): native=%q, cbq=%q", fn, on, got, want)
+			}
+		}
+	}
+}
+
 func TestStrBinaryDifferentialVsCBQ(t *testing.T) {
 	c := func(v interface{}) expression.Expression { return expression.NewConstant(v) }
 

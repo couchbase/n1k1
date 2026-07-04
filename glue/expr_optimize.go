@@ -37,6 +37,7 @@ func init() {
 		"upper", "lower", "length", "title", // unary string (expr_str.go)
 		"contains", "position0", "position1", // binary string (expr_str.go)
 		"power", "atan2", // binary math (expr_math.go)
+		"to_boolean", "to_string", "to_number", // type conversions (expr_typeconv.go)
 		"and", "or", // three-valued logical (expr_logic.go)
 		"not",                                            // unary predicate (expr_pred.go)
 		"ifnull", "ifmissing", "ifmissingornull", "nvl",  // conditional-unknown (expr_cond.go)
@@ -248,6 +249,7 @@ func ExprTreeOptimize(labels base.Labels, e expression.Expression,
 		"abs", "ceil", "floor", "sqrt", "exp", "ln", "log", "sign",
 		"degrees", "radians", "sin", "cos", "tan", "asin", "acos", "atan",
 		"upper", "lower", "length", "title",
+		"to_boolean", "to_string", "to_number",
 		"not", "is_null", "is_not_null",
 		"is_missing", "is_not_missing", "is_valued", "is_not_valued",
 		"is_array", "is_number", "is_string", "is_boolean", "is_object", "is_atom":
