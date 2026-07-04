@@ -26,98 +26,43 @@ import (
 var OptimizableFuncs = map[string]string{}
 
 func init() {
-	OptimizableFuncs["eq"] = "eq"
-	OptimizableFuncs["lt"] = "lt"
-	OptimizableFuncs["le"] = "le"
-	OptimizableFuncs["gt"] = "gt"
-	OptimizableFuncs["ge"] = "ge"
+	// The common case: the cbq Function.Name() and the n1k1 ExprCatalog name are
+	// identical, so optSelf registers name -> name. Grouped by family; see the
+	// referenced engine files for each.
+	optSelf(
+		"eq", "lt", "le", "gt", "ge", // comparisons (expr_cmp.go)
+		"add", "sub", "mult", "div", "mod", "idiv", "imod", "neg", // arithmetic (expr_arith.go)
+		"abs", "ceil", "floor", "sqrt", "exp", "ln", "log", "sign", // unary math (expr_math.go)
+		"degrees", "radians", "sin", "cos", "tan", "asin", "acos", "atan",
+		"upper", "lower", "length", "title", // unary string (expr_str.go)
+		"and", "or", // three-valued logical (expr_logic.go)
+		"not",                                            // unary predicate (expr_pred.go)
+		"ifnull", "ifmissing", "ifmissingornull", "nvl",  // conditional-unknown (expr_cond.go)
+		"between",                    // ternary (expr_between.go)
+		"in",                         // membership (expr_in.go)
+		"concat",                     // string concat `||` (expr_concat.go)
+		"nullif", "missingif",        // (expr_nullif.go)
+		"greatest", "least",          // (expr_greatest.go)
+		"element",                    // array element `arr[idx]` (expr_nav.go)
+		"is_array", "is_number", "is_string", "is_boolean", "is_object", "is_atom", // type checks (expr_type.go)
+	)
 
-	// Arithmetic (see engine/expr_arith.go, base/arith.go).
-	OptimizableFuncs["add"] = "add"
-	OptimizableFuncs["sub"] = "sub"
-	OptimizableFuncs["mult"] = "mult"
-	OptimizableFuncs["div"] = "div"
-	OptimizableFuncs["mod"] = "mod"
-	OptimizableFuncs["idiv"] = "idiv"
-	OptimizableFuncs["imod"] = "imod"
-	OptimizableFuncs["neg"] = "neg"
-
-	// Unary numeric math functions (see engine/expr_math.go, base/mathfn.go);
-	// single-operand, value-producing on the byte path.
-	OptimizableFuncs["abs"] = "abs"
-	OptimizableFuncs["ceil"] = "ceil"
-	OptimizableFuncs["floor"] = "floor"
-	OptimizableFuncs["sqrt"] = "sqrt"
-	OptimizableFuncs["exp"] = "exp"
-	OptimizableFuncs["ln"] = "ln"
-	OptimizableFuncs["log"] = "log"
-	OptimizableFuncs["sign"] = "sign"
-	OptimizableFuncs["degrees"] = "degrees"
-	OptimizableFuncs["radians"] = "radians"
-	OptimizableFuncs["sin"] = "sin"
-	OptimizableFuncs["cos"] = "cos"
-	OptimizableFuncs["tan"] = "tan"
-	OptimizableFuncs["asin"] = "asin"
-	OptimizableFuncs["acos"] = "acos"
-	OptimizableFuncs["atan"] = "atan"
-
-	// Unary string functions (see engine/expr_str.go, base/strfn.go).
-	OptimizableFuncs["upper"] = "upper"
-	OptimizableFuncs["lower"] = "lower"
-	OptimizableFuncs["length"] = "length"
-	OptimizableFuncs["title"] = "title"
-
-	// Logical AND / OR (see engine/expr_logic.go, base/logic.go); n-ary (cbq's
-	// And/Or are CommutativeFunctionBase), so no arity guard -- the native
-	// harness reduces all operands with N1QL three-valued semantics. High value:
-	// these appear in nearly every WHERE / JOIN / ON predicate.
-	OptimizableFuncs["and"] = "and"
-	OptimizableFuncs["or"] = "or"
-
-	// Unary predicates (see engine/expr_pred.go). Keys are the cbq Function
-	// Name() (the canonical no-underscore forms set by each constructor's
-	// Init(), e.g. "isnull"); values are the n1k1 ExprCatalog names.
-	OptimizableFuncs["not"] = "not"
+	// The unknown predicates (expr_pred.go): cbq Function.Name() is the
+	// no-underscore form, but the n1k1 ExprCatalog name has underscores.
 	OptimizableFuncs["isnull"] = "is_null"
 	OptimizableFuncs["isnotnull"] = "is_not_null"
 	OptimizableFuncs["ismissing"] = "is_missing"
 	OptimizableFuncs["isnotmissing"] = "is_not_missing"
 	OptimizableFuncs["isvalued"] = "is_valued"
 	OptimizableFuncs["isnotvalued"] = "is_not_valued"
+}
 
-	// Conditional-unknown selectors (see engine/expr_cond.go); variadic, so no
-	// arity guard -- the native harness is n-ary.
-	OptimizableFuncs["ifnull"] = "ifnull"
-	OptimizableFuncs["ifmissing"] = "ifmissing"
-	OptimizableFuncs["ifmissingornull"] = "ifmissingornull"
-	OptimizableFuncs["nvl"] = "nvl"
-
-	// Ternary (see engine/expr_between.go).
-	OptimizableFuncs["between"] = "between"
-
-	// Membership (see engine/expr_in.go).
-	OptimizableFuncs["in"] = "in"
-
-	// String concatenation `||` (see engine/expr_concat.go); n-ary, no guard.
-	OptimizableFuncs["concat"] = "concat"
-
-	// NULLIF/MISSINGIF (binary, see engine/expr_nullif.go); GREATEST/LEAST
-	// (n-ary, see engine/expr_greatest.go).
-	OptimizableFuncs["nullif"] = "nullif"
-	OptimizableFuncs["missingif"] = "missingif"
-	OptimizableFuncs["greatest"] = "greatest"
-	OptimizableFuncs["least"] = "least"
-
-	// Array element navigation `arr[idx]` (binary, see engine/expr_nav.go).
-	OptimizableFuncs["element"] = "element"
-
-	// Type checks (see engine/expr_type.go); underscore Name()s.
-	OptimizableFuncs["is_array"] = "is_array"
-	OptimizableFuncs["is_number"] = "is_number"
-	OptimizableFuncs["is_string"] = "is_string"
-	OptimizableFuncs["is_boolean"] = "is_boolean"
-	OptimizableFuncs["is_object"] = "is_object"
-	OptimizableFuncs["is_atom"] = "is_atom"
+// optSelf registers each name as optimizable to a native ExprCatalog func of the
+// same name -- the common case where cbq's Function.Name() equals the n1k1 name.
+func optSelf(names ...string) {
+	for _, name := range names {
+		OptimizableFuncs[name] = name
+	}
 }
 
 // ExprTreeOptimize attempts to optimize a N1QL
