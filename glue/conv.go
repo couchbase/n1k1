@@ -258,6 +258,21 @@ func (c *Conv) VisitIndexScan(o *plan.IndexScan) (interface{}, error) {
 		})
 	}
 
+	// A covering scan over the file datastore's #primary (a non-n1k1 index): the
+	// "index" is just the keyspace's document listing, so a covering scan is really
+	// a full document scan. Emit a records-scan (whole doc + ^id) rather than
+	// scan-index + a synthesized fetch below -- so META().id and any covered field
+	// accesses resolve against a real doc, AND a container record whose id carries
+	// no fetchable byte offset (a YAML / JSON-array record) doesn't hit a fetch that
+	// can't resolve it (which silently drops every row). No selectivity is lost: a
+	// #primary covering scan is a full scan anyway. n1k1 secondary indexes keep the
+	// scan-index path (their covering is answered above, or they stay selective).
+	if len(o.Covers()) > 0 && o.Term().Namespace() != "#system" {
+		if _, isSI := o.Index().(*secondaryIndex); !isSI {
+			return c.recordsScan(o, o.Term().Alias())
+		}
+	}
+
 	c.TopPush(o, &base.Op{
 		Kind:   "datastore-scan-index",
 		Labels: base.Labels{"^id"},

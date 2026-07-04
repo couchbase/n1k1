@@ -318,18 +318,32 @@ func TestFlatFileAggregate(t *testing.T) {
 	}
 }
 
-// TODO(covering-meta-scan-container): a COVERING primary scan over a keyspace
-// whose directory holds container files (a *.jsonl) returns ZERO rows -- e.g.
-// `SELECT meta().id FROM events` (projecting only meta().id, so the primary index
-// covers it) or an aliased `SELECT meta(e).id FROM events e`. The covering /
-// primary-key path lists the keyspace directory as if it were one-doc-per-file
-// (documentPathToId -> file stems), which don't match the container records'
-// ids, so nothing resolves. A NON-covering scan (meta().id plus a doc field) is
-// fine -- it takes the whole-doc records scan, which assigns correct
-// <relpath>#<line>@<offset> ids. Empty, not a hang (the flat-keyspace #primary
-// scan that used to *hang* is fixed -- see DatastoreScanIndex/scanContainerKeys).
-// Fix likely belongs in the covering/primary path: list container record ids via
-// the records source (as scanContainerKeys does) instead of readdir stems.
+// TestFlatFileJSONLCoveringMetaScan: `SELECT META().id FROM ks` -- projecting
+// only META().id -- plans as a COVERING #primary scan (no fetch). It used to
+// return zero rows against a container keyspace: conv turned it into
+// datastore-scan-index + a synthesized fetch, and the fetch couldn't resolve a
+// container record id that carries no byte offset (a YAML/JSON-array record). Now
+// VisitIndexScan routes a covering scan over the (non-n1k1) #primary to a
+// records-scan (whole doc + ^id), so META().id resolves with no fetch.
+func TestFlatFileJSONLCoveringMetaScan(t *testing.T) {
+	path := writeFlatFile(t, "events.jsonl",
+		`{"n":1}`+"\n"+`{"n":2}`+"\n"+`{"n":3}`+"\n")
+	store, conv := flatRootConv(t, path, "SELECT META().id AS id FROM events")
+	rows := flatRootRows(t, conv, testGlueExec(t, false, store, conv))
+	if len(rows) != 3 {
+		t.Fatalf("want 3 ids, got %d (%v)", len(rows), rows)
+	}
+	got := map[string]bool{}
+	for _, row := range rows {
+		got[jsonOf(row)] = true
+	}
+	// .jsonl records are byte-seekable, so ids carry the @<offset> suffix.
+	for _, want := range []string{`{"id":"events.jsonl#0@0"}`, `{"id":"events.jsonl#1@8"}`, `{"id":"events.jsonl#2@16"}`} {
+		if !got[want] {
+			t.Fatalf("missing covering-scan id %s; got %v", want, rows)
+		}
+	}
+}
 
 // TestFlatFileJSONLUseKeysFetch: a key-based fetch (USE KEYS) into a .jsonl
 // container resolves each record via the byte offset baked into its META().id
