@@ -54,7 +54,7 @@ func cbqEval(t *testing.T, e expression.Expression) string {
 func nativeEval(t *testing.T, e expression.Expression) (string, bool) {
 	t.Helper()
 	var buf bytes.Buffer
-	params, ok := ExprTreeOptimize(nil, e, &buf)
+	params, ok := ExprTreeOptimize(nil, e, &buf, false)
 	if !ok {
 		return "", false
 	}

@@ -90,8 +90,15 @@ func init() {
 
 // ExprTreeOptimize attempts to optimize a N1QL
 // query/expression.Expression tree into a n1k1 expr params tree.
+// strict, when true, makes a Field reference that does NOT match a real label
+// prefix (i.e. one that would fall back to the whole-row "." / ".*" default) a
+// hard failure rather than a local-row navigation. Callers pass strict=true when
+// a scope is active (correlated subquery / WITH / recursive CTE): there, an
+// identifier absent from the local labels may belong to the parent scope, and
+// the native path can't see the parent -- so we must only take it when every
+// field reference provably resolves to a local label. See ExprTree's scoped gate.
 func ExprTreeOptimize(labels base.Labels, e expression.Expression,
-	buf *bytes.Buffer) (params []interface{}, ok bool) {
+	buf *bytes.Buffer, strict bool) (params []interface{}, ok bool) {
 	if c, ok := e.(*expression.Constant); ok {
 		// A MISSING constant has no JSON form -- value.WriteJSON emits "null",
 		// which would wrongly become NULL. Emit an empty json constant instead;
@@ -145,6 +152,15 @@ func ExprTreeOptimize(labels base.Labels, e expression.Expression,
 			}
 		}
 
+		// Under an active scope, a field that matched no real label prefix
+		// (iBest < 0, so labelBest is the whole-row "." / ".*" default) may be a
+		// parent-scope identifier that the native labelPath can't resolve -- it
+		// would silently navigate the local row and yield MISSING. Refuse it so
+		// the caller keeps the (parent-aware) cbq fallback for this expression.
+		if strict && iBest < 0 {
+			return nil, false
+		}
+
 		params = []interface{}{"labelPath", labelBest}
 		for _, x := range fieldPath[iBest+1:] {
 			params = append(params, x)
@@ -161,7 +177,7 @@ func ExprTreeOptimize(labels base.Labels, e expression.Expression,
 	if sc, ok := e.(*expression.SearchedCase); ok {
 		params = []interface{}{"case"}
 		for _, child := range sc.Children() {
-			cp, ok := ExprTreeOptimize(labels, child, buf)
+			cp, ok := ExprTreeOptimize(labels, child, buf, strict)
 			if !ok {
 				return nil, false
 			}
@@ -172,18 +188,18 @@ func ExprTreeOptimize(labels base.Labels, e expression.Expression,
 
 	if sc, ok := e.(*expression.SimpleCase); ok {
 		children := sc.Children()
-		searchP, ok := ExprTreeOptimize(labels, children[0], buf)
+		searchP, ok := ExprTreeOptimize(labels, children[0], buf, strict)
 		if !ok {
 			return nil, false
 		}
 		params = []interface{}{"case"}
 		i := 1
 		for i+1 < len(children) { // (when, then) pairs
-			whenP, ok := ExprTreeOptimize(labels, children[i], buf)
+			whenP, ok := ExprTreeOptimize(labels, children[i], buf, strict)
 			if !ok {
 				return nil, false
 			}
-			thenP, ok := ExprTreeOptimize(labels, children[i+1], buf)
+			thenP, ok := ExprTreeOptimize(labels, children[i+1], buf, strict)
 			if !ok {
 				return nil, false
 			}
@@ -191,7 +207,7 @@ func ExprTreeOptimize(labels base.Labels, e expression.Expression,
 			i += 2
 		}
 		if i < len(children) { // trailing else
-			elseP, ok := ExprTreeOptimize(labels, children[i], buf)
+			elseP, ok := ExprTreeOptimize(labels, children[i], buf, strict)
 			if !ok {
 				return nil, false
 			}
@@ -238,7 +254,7 @@ func ExprTreeOptimize(labels base.Labels, e expression.Expression,
 	params = append(params, name)
 
 	for _, operand := range operands {
-		child, ok := ExprTreeOptimize(labels, operand, buf)
+		child, ok := ExprTreeOptimize(labels, operand, buf, strict)
 		if !ok {
 			return nil, false
 		}

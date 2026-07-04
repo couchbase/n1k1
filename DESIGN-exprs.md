@@ -29,7 +29,9 @@ interpreter unit tests.
 
 **Next:** `slice` navigation (blocked — see Lessons); `is [not] distinct from`
 (binary, low priority); then Tier B (string/numeric/date functions). `LIKE`/
-`REGEXP_*` are deliberately deferred — see Lessons.
+`REGEXP_*` are deliberately deferred — see Lessons. **Done recently:** native exprs
+now run under an active scope (correlated subqueries / WITH / recursive CTEs) when
+every field ref is provably local — the `strict` optimize path, lever #4 below.
 
 ## Why this matters
 
@@ -225,6 +227,30 @@ emitted by:
    `value.Value` impl (`Field`/`Fields`/`WriteJSON`/`Type`/`Actual`/annotations,
    plus the correlated-subquery scope-wrap which calls `Actual()`) —
    correctness-sensitive, tracked as future work.
+4. *Native exprs under an active scope (`strict` optimize)* — **DONE
+   (`glue/expr_optimize.go` + `glue/expr.go`).** Historically, whenever a scope was
+   active (`corrParent`/`withScope` set — every correlated subquery, WITH-scoped
+   query, and **recursive CTE step**), `ExprTree` skipped the native optimizer
+   *wholesale* and sent every expression to the per-row Convert+Evaluate fallback —
+   because the native `labelPath` can't see the parent scope, so an identifier that
+   lives in the parent would be silently mis-navigated against the local row. But
+   most scoped expressions reference **only local fields** (e.g. a recursive CTE
+   step's `z→z²+c` arithmetic over its own `FROM <cte>` row); the scope is needed by
+   a *sibling* term (the `FROM <cte>` self-scan), not by the arithmetic. `ExprTree`
+   now passes `strict = scoped` to `ExprTreeOptimize`: in strict mode a `Field` that
+   matches no real label prefix (i.e. would fall back to the whole-row `.`/`.*`
+   default — the tell-tale of a possible parent reference) is a hard failure, so the
+   optimizer accepts a scoped expression only when **every** field ref provably
+   resolves to a local label. Fully-local scoped exprs then take the native byte
+   path; anything touching the parent still falls through to the (parent-aware) cbq
+   fallback. Purely additive: `strict=false` (unscoped) is unchanged.
+   Measured on `examples/mandelbrot.sql++` (a `WITH RECURSIVE` fixpoint, 60 renders,
+   profiled via `-profile-cpu`/`-profile-mem`): **~500 → ~208 MB alloc/render (−58%),
+   ~52.3 → ~27.7 s CPU (−47%), ~573 → ~360 ms wall (−37%)**, output byte-identical;
+   the scoped-expr Convert closure (`ExprTree.func2`) alone dropped **−81%** (12.2 →
+   2.3 GB) as the 7 projection exprs went native. The residual: the step's `WHERE`
+   predicate (`(…<4) and (…<45)`) isn't yet optimizer-compilable so still converts,
+   and the subquery *output* boxing (`EvaluateSubquery.func2`) is lever #3 territory.
 
 ## The universe & the gap
 

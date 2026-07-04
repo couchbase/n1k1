@@ -81,13 +81,22 @@ func ExprTree(vars *base.Vars, labels base.Labels,
 	gc, isGlue := vars.Temps[0].(*GlueContext)
 	scoped := isGlue && !resetScope && (gc.corrParent != nil || gc.withScope != nil)
 
-	if !scoped {
-		paramsOut, ok := ExprTreeOptimize(labels, expr, &buf)
-		if ok {
-			// TODO: Compiled approach should probably invoke something
-			// like vars.MakeExprFunc().
-			return engine.MakeExprFunc(vars, labels, paramsOut, path, "")
-		}
+	// Try the native (byte-oriented, allocation-avoiding) expr path. When a scope
+	// is active (scoped), pass strict=true: ExprTreeOptimize then accepts the
+	// expression only if every field reference provably resolves to a local
+	// label. Otherwise an identifier that actually lives in the parent scope
+	// (corrParent / withScope) would be silently mis-navigated against the local
+	// row and yield MISSING -- which is why the scoped case historically skipped
+	// the native path wholesale. A scoped expression that is fully local (e.g. a
+	// recursive CTE step's arithmetic over its own `FROM <cte>` row, or a
+	// correlated subquery predicate touching only the subquery's own fields) thus
+	// still avoids the per-row Convert round-trip; anything referencing the parent
+	// fails strict and falls through to the parent-aware cbq fallback below.
+	paramsOut, ok := ExprTreeOptimize(labels, expr, &buf, scoped)
+	if ok {
+		// TODO: Compiled approach should probably invoke something
+		// like vars.MakeExprFunc().
+		return engine.MakeExprFunc(vars, labels, paramsOut, path, "")
 	}
 
 	context, ok := vars.Temps[0].(expression.Context)
