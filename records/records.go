@@ -1078,6 +1078,19 @@ func (o WalkOptions) eligible(path string) bool {
 // order for deterministic output. Synthetic IDs are prefixed with each file's
 // dir-relative path, e.g. "events/2026-01-01.jsonl#3".
 func Walk(dir string, opts WalkOptions) (Source, error) {
+	files, err := WalkFiles(dir, opts)
+	if err != nil {
+		return nil, err
+	}
+	return &walkSource{dir: dir, files: files, opts: opts}, nil
+}
+
+// WalkFiles returns the sorted list of eligible record-file paths under dir -- the
+// directory-listing half of Walk. Exposed so a caller can cache the listing across
+// repeated scans of the same keyspace (a nested-loop join re-scans O(N) times, and
+// re-walking the tree costs a readdir + an lstat + path building per entry); feed
+// the result to WalkPrelisted to build the Source without re-walking.
+func WalkFiles(dir string, opts WalkOptions) ([]string, error) {
 	var files []string
 	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -1098,7 +1111,14 @@ func Walk(dir string, opts WalkOptions) (Source, error) {
 		return nil, err
 	}
 	sort.Strings(files)
-	return &walkSource{dir: dir, files: files, opts: opts}, nil
+	return files, nil
+}
+
+// WalkPrelisted returns a Source over a precomputed file list (from WalkFiles),
+// skipping the directory walk. files is treated as read-only (the source only
+// indexes into it), so a cached slice can be shared across repeated scans.
+func WalkPrelisted(dir string, files []string, opts WalkOptions) Source {
+	return &walkSource{dir: dir, files: files, opts: opts}
 }
 
 // File returns a Source over exactly one record file, with no directory walk --

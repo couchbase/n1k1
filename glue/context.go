@@ -104,6 +104,15 @@ type GlueContext struct {
 	scanKeyCacheN  int // total keys cached (against the cap)
 	scanKeyCacheMu sync.Mutex
 
+	// walkFileCache memoizes a keyspace directory's eligible record-file listing per
+	// request (the records.WalkFiles result). DatastoreScanRecords re-walks the tree
+	// on every invocation; under a nested-loop join that's O(N^2) readdir+lstat+path
+	// building. Keyed by "<dir>\x00<walk spec>"; bounded by DatastoreScanFileCacheMax
+	// and guarded by walkFileCacheMu. Lives on the shared root like the other caches.
+	walkFileCache   map[string][]string
+	walkFileCacheN  int // total file paths cached (against the cap)
+	walkFileCacheMu sync.Mutex
+
 	// root points at the request's original GlueContext when this one is a
 	// per-actor clone (see ChainClone), else nil. UNION ALL runs each branch as a
 	// concurrent actor; base.Vars.ChainExtend clones the context so the branches

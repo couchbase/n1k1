@@ -191,7 +191,7 @@ func TestOpenKeyspaceRecords(t *testing.T) {
 		if err != nil {
 			t.Fatalf("KeyspaceByName: %v", err)
 		}
-		src, err := openKeyspaceRecords(ks, records.AllModes())
+		src, err := openKeyspaceRecords(ks, records.AllModes(), nil)
 		if err != nil {
 			t.Fatalf("openKeyspaceRecords(%q): %v", tc.path, err)
 		}

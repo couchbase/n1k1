@@ -45,6 +45,11 @@ var DatastoreScanCache = true
 // lists fresh (no caching) instead.
 var DatastoreScanKeyCacheMax = 1 << 20 // ~1M keys.
 
+// DatastoreScanFileCacheMax caps the total cached file paths across keyspaces, so a
+// query over many/huge directories can't grow the heap without bound; past the cap
+// a scan re-walks fresh (no caching). See GlueContext.walkFiles.
+var DatastoreScanFileCacheMax = 1 << 20 // ~1M file paths.
+
 func init() {
 	if os.Getenv("N1K1_SCAN_NOCACHE") != "" {
 		DatastoreScanCache = false
@@ -128,6 +133,45 @@ func (c *GlueContext) scanKeys(dir string) ([]string, error) {
 	return keys, nil
 }
 
+// walkFiles returns dir's sorted eligible record-file listing, memoized per request
+// (like scanKeys) so a nested-loop re-scan replays the cached list instead of
+// re-walking the tree (a readdir + an lstat + path building per entry). Gated by
+// DatastoreScanCache (env N1K1_SCAN_NOCACHE); keyed by dir + the walk spec so a
+// different -scan filter can't collide. First writer wins under a race.
+func (c *GlueContext) walkFiles(dir string, opts records.WalkOptions) ([]string, error) {
+	if !DatastoreScanCache {
+		return records.WalkFiles(dir, opts)
+	}
+	c = c.getRoot() // the cache lives on the root, shared across UNION ALL clones
+	key := dir + "\x00" + opts.Spec
+	c.walkFileCacheMu.Lock()
+	if files, ok := c.walkFileCache[key]; ok {
+		c.walkFileCacheMu.Unlock()
+		return files, nil
+	}
+	c.walkFileCacheMu.Unlock()
+
+	files, err := records.WalkFiles(dir, opts)
+	if err != nil {
+		return nil, err
+	}
+
+	c.walkFileCacheMu.Lock()
+	if existing, ok := c.walkFileCache[key]; ok {
+		c.walkFileCacheMu.Unlock()
+		return existing, nil
+	}
+	if c.walkFileCacheN+len(files) <= DatastoreScanFileCacheMax {
+		if c.walkFileCache == nil {
+			c.walkFileCache = make(map[string][]string)
+		}
+		c.walkFileCache[key] = files
+		c.walkFileCacheN += len(files)
+	}
+	c.walkFileCacheMu.Unlock()
+	return files, nil
+}
+
 // scanContainerKeys returns a container keyspace's record ids -- the SAME ids the
 // records scan assigns (<relpath>#<line>[@<offset>]) -- memoized per request like
 // scanKeys. It answers a full #primary IndexScan over a flat/container keyspace
@@ -151,7 +195,7 @@ func (c *GlueContext) scanContainerKeys(ks datastore.Keyspace) ([]string, error)
 
 	opts := ScanWalkOptions
 	opts.PathPrefix = metaPathPrefix(ks)
-	src, err := openKeyspaceRecords(ks, opts)
+	src, err := openKeyspaceRecords(ks, opts, c)
 	if err != nil {
 		return nil, err
 	}
@@ -299,7 +343,7 @@ func DatastoreScanRecords(o *base.Op, vars *base.Vars,
 	// RecordsFile, else its directory walked + unioned). openKeyspaceRecords is the
 	// one place this resolution lives, shared with the .index suggest advisor so the
 	// scan and the sampler can never disagree about where a keyspace's data is.
-	src, err := openKeyspaceRecords(keyspace, opts)
+	src, err := openKeyspaceRecords(keyspace, opts, context)
 	if err != nil {
 		yieldErr(fmt.Errorf("DatastoreScanRecords, open %q: %v", keyspace.Name(), err))
 		return
@@ -378,13 +422,20 @@ func keyspaceDir(keyspace datastore.Keyspace) (string, error) {
 // op (DatastoreScanRecords) and the .index suggest sampler (sampleKeyspace) so
 // they can never diverge -- the class of bug that once made .schema, which sampled
 // the filesystem on its own, report 0 docs for these layouts.
-func openKeyspaceRecords(ks datastore.Keyspace, opts records.WalkOptions) (records.Source, error) {
+func openKeyspaceRecords(ks datastore.Keyspace, opts records.WalkOptions, gctx *GlueContext) (records.Source, error) {
 	if rf, ok := ks.(interface{ RecordsFile() string }); ok && rf.RecordsFile() != "" {
 		return records.File(rf.RecordsFile(), opts)
 	}
 	dir, err := keyspaceDir(ks)
 	if err != nil {
 		return nil, err
+	}
+	if gctx != nil {
+		files, ferr := gctx.walkFiles(dir, opts)
+		if ferr != nil {
+			return nil, ferr
+		}
+		return records.WalkPrelisted(dir, files, opts), nil
 	}
 	return records.Walk(dir, opts)
 }

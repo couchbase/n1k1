@@ -183,7 +183,7 @@ func emptySuggestNote(sampled, keyspaces int) string {
 func sampleKeyspace(ks datastore.Keyspace, sampleN int) (map[string]*pathStat, int, error) {
 	opts := ScanWalkOptions
 	opts.PathPrefix = ""
-	src, err := openKeyspaceRecords(ks, opts)
+	src, err := openKeyspaceRecords(ks, opts, nil) // one-shot sampler; no request cache
 	if err != nil {
 		return nil, 0, err
 	}
