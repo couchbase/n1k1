@@ -5907,6 +5907,10 @@ var TestCasesSimple = []TestCaseSimple{
 	naryProjectCase("upper-esc", []interface{}{"upper", []interface{}{"json", `"a\"b"`}}, `"A\"B"`),
 	naryProjectCase("length-null", []interface{}{"length", []interface{}{"json", `null`}}, `null`),
 	naryProjectCase("upper-num", []interface{}{"upper", []interface{}{"json", `5`}}, `null`),
+	naryProjectCase("title", []interface{}{"title", []interface{}{"json", `"hELLO wORLD"`}}, `"Hello World"`),
+	naryProjectCase("sin-zero", []interface{}{"sin", []interface{}{"json", `0`}}, `0`),
+	naryProjectCase("cos-zero", []interface{}{"cos", []interface{}{"json", `0`}}, `1`),
+	naryProjectCase("atan-zero", []interface{}{"atan", []interface{}{"json", `0`}}, `0`),
 }
 
 // naryProjectCase builds a TestCaseSimple that projects a single native

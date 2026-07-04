@@ -555,6 +555,12 @@ func TestMathUnaryDifferentialVsCBQ(t *testing.T) {
 		"sign":    func(e expression.Expression) expression.Expression { return expression.NewSign(e) },
 		"degrees": func(e expression.Expression) expression.Expression { return expression.NewDegrees(e) },
 		"radians": func(e expression.Expression) expression.Expression { return expression.NewRadians(e) },
+		"sin":     func(e expression.Expression) expression.Expression { return expression.NewSin(e) },
+		"cos":     func(e expression.Expression) expression.Expression { return expression.NewCos(e) },
+		"tan":     func(e expression.Expression) expression.Expression { return expression.NewTan(e) },
+		"asin":    func(e expression.Expression) expression.Expression { return expression.NewAsin(e) },
+		"acos":    func(e expression.Expression) expression.Expression { return expression.NewAcos(e) },
+		"atan":    func(e expression.Expression) expression.Expression { return expression.NewAtan(e) },
 	}
 	// Operands span sign, magnitude, int-vs-float, and the domain edges that
 	// produce NaN/Inf (sqrt(-1), ln(0), ln(-1), log(0)) -- all must agree with cbq.
@@ -587,6 +593,7 @@ func TestStrUnaryDifferentialVsCBQ(t *testing.T) {
 		"upper":  func(e expression.Expression) expression.Expression { return expression.NewUpper(e) },
 		"lower":  func(e expression.Expression) expression.Expression { return expression.NewLower(e) },
 		"length": func(e expression.Expression) expression.Expression { return expression.NewLength(e) },
+		"title":  func(e expression.Expression) expression.Expression { return expression.NewTitle(e) },
 	}
 	// Strings spanning case, unicode, escapes, empty; plus non-string operands
 	// (NULL/number/bool/array) which must yield NULL, and MISSING via a c(MISSING).

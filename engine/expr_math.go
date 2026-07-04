@@ -33,6 +33,12 @@ func init() {
 	ExprCatalog["sign"] = ExprSign
 	ExprCatalog["degrees"] = ExprDegrees
 	ExprCatalog["radians"] = ExprRadians
+	ExprCatalog["sin"] = ExprSin
+	ExprCatalog["cos"] = ExprCos
+	ExprCatalog["tan"] = ExprTan
+	ExprCatalog["asin"] = ExprAsin
+	ExprCatalog["acos"] = ExprAcos
+	ExprCatalog["atan"] = ExprAtan
 }
 
 func ExprAbs(lzVars *base.Vars, labels base.Labels,
@@ -83,6 +89,36 @@ func ExprDegrees(lzVars *base.Vars, labels base.Labels,
 func ExprRadians(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) base.ExprFunc {
 	return exprMathUnary(lzVars, labels, params, path, base.MathRadians)
+}
+
+func ExprSin(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string) base.ExprFunc {
+	return exprMathUnary(lzVars, labels, params, path, base.MathSin)
+}
+
+func ExprCos(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string) base.ExprFunc {
+	return exprMathUnary(lzVars, labels, params, path, base.MathCos)
+}
+
+func ExprTan(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string) base.ExprFunc {
+	return exprMathUnary(lzVars, labels, params, path, base.MathTan)
+}
+
+func ExprAsin(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string) base.ExprFunc {
+	return exprMathUnary(lzVars, labels, params, path, base.MathAsin)
+}
+
+func ExprAcos(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string) base.ExprFunc {
+	return exprMathUnary(lzVars, labels, params, path, base.MathAcos)
+}
+
+func ExprAtan(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string) base.ExprFunc {
+	return exprMathUnary(lzVars, labels, params, path, base.MathAtan)
 }
 
 // exprMathUnary is the shared single-child harness for the unary math funcs.

@@ -27,6 +27,12 @@ const (
 	MathSign
 	MathDegrees
 	MathRadians
+	MathSin
+	MathCos
+	MathTan
+	MathAsin
+	MathAcos
+	MathAtan
 )
 
 func mathApply(op int, f float64) float64 {
@@ -57,6 +63,18 @@ func mathApply(op int, f float64) float64 {
 		return f * 180.0 / math.Pi
 	case MathRadians:
 		return f * math.Pi / 180.0
+	case MathSin:
+		return math.Sin(f)
+	case MathCos:
+		return math.Cos(f)
+	case MathTan:
+		return math.Tan(f)
+	case MathAsin:
+		return math.Asin(f)
+	case MathAcos:
+		return math.Acos(f)
+	case MathAtan:
+		return math.Atan(f)
 	}
 	return f
 }

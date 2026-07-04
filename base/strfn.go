@@ -46,29 +46,32 @@ func strDecode(v Val) (decoded []byte, sentinel Val, ok bool) {
 	return d, nil, true
 }
 
-// StrUpper / StrLower: uppercase / lowercase a string; MISSING -> MISSING,
+// StrUpper / StrLower / StrTitle: case transforms; MISSING -> MISSING,
 // non-string -> NULL. The result is re-encoded as a JSON string into bufPre.
+// (The transform is a plain func arg to a base helper -- fine, since base code is
+// not lz-codegen'd; only the engine-level call is, and it names the base func.)
 func StrUpper(v Val, c *ValComparer, bufPre []byte) (Val, []byte) {
-	return strCase(v, c, bufPre, true)
+	return strTransform(v, c, bufPre, strings.ToUpper)
 }
 
 func StrLower(v Val, c *ValComparer, bufPre []byte) (Val, []byte) {
-	return strCase(v, c, bufPre, false)
+	return strTransform(v, c, bufPre, strings.ToLower)
 }
 
-func strCase(v Val, c *ValComparer, bufPre []byte, upper bool) (Val, []byte) {
+// StrTitle title-cases the string, mirroring cbq: strings.Title(strings.ToLower).
+func StrTitle(v Val, c *ValComparer, bufPre []byte) (Val, []byte) {
+	return strTransform(v, c, bufPre, strTitleCase)
+}
+
+func strTitleCase(s string) string { return strings.Title(strings.ToLower(s)) } //nolint:staticcheck // match cbq
+
+func strTransform(v Val, c *ValComparer, bufPre []byte, fn func(string) string) (Val, []byte) {
 	decoded, sentinel, ok := strDecode(v)
 	if !ok {
 		return sentinel, bufPre
 	}
-	var s string
-	if upper {
-		s = strings.ToUpper(string(decoded))
-	} else {
-		s = strings.ToLower(string(decoded))
-	}
 	c.PrepareEncoder() // lazily wires c.Encoder to c.Buffer (idempotent)
-	out, _ := c.EncodeAsString([]byte(s), bufPre[:0])
+	out, _ := c.EncodeAsString([]byte(fn(string(decoded))), bufPre[:0])
 	return Val(out), out
 }
 

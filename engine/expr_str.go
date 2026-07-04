@@ -25,6 +25,7 @@ func init() {
 	ExprCatalog["upper"] = ExprUpper
 	ExprCatalog["lower"] = ExprLower
 	ExprCatalog["length"] = ExprLength
+	ExprCatalog["title"] = ExprTitle
 }
 
 func ExprUpper(lzVars *base.Vars, labels base.Labels,
@@ -62,6 +63,27 @@ func ExprLower(lzVars *base.Vars, labels base.Labels,
 		lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
 
 		lzVal, lzBufPre = base.StrLower(lzVal, lzVars.Ctx.ValComparer, lzBufPre)
+
+		return lzVal
+	}
+
+	return lzExprFunc
+}
+
+func ExprTitle(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
+	exprA := params[0].([]interface{})
+
+	var lzBufPre []byte // <== varLift: lzBufPre by path
+
+	lzExprFunc =
+		MakeExprFunc(lzVars, labels, exprA, path, "A") // !lz
+	lzA := lzExprFunc
+
+	lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
+		lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
+
+		lzVal, lzBufPre = base.StrTitle(lzVal, lzVars.Ctx.ValComparer, lzBufPre)
 
 		return lzVal
 	}
