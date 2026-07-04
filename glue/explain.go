@@ -99,7 +99,12 @@ func writeExprVerdict(b *strings.Builder, op *base.Op, param interface{}) {
 	// same labels the engine passes to MakeExprFunc (see OpProject/OpFilter).
 	if len(op.Children) > 0 {
 		var buf bytes.Buffer
-		if _, ok := ExprTreeOptimize(op.Children[0].Labels, stripCovers(e), &buf); ok {
+		// strict=false: report the unscoped (lenient) verdict, matching the common
+		// top-level project/filter case. A scoped op (correlated subquery / WITH /
+		// recursive CTE) evaluates with strict=true, so this can over-report
+		// "native" for an expr that reaches into a parent scope -- acceptable for a
+		// best-effort plan display.
+		if _, ok := ExprTreeOptimize(op.Children[0].Labels, stripCovers(e), &buf, false); ok {
 			verdict = "native"
 		}
 	}
