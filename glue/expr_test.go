@@ -663,6 +663,64 @@ func TestArrayReduceDifferentialVsCBQ(t *testing.T) {
 	}
 }
 
+func TestArrayMinMaxContainsDifferentialVsCBQ(t *testing.T) {
+	c := func(v interface{}) expression.Expression { return expression.NewConstant(v) }
+	arr := func(xs ...interface{}) expression.Expression {
+		if xs == nil {
+			xs = []interface{}{}
+		}
+		return expression.NewConstant(xs)
+	}
+
+	// Unary: array_min / array_max over collation-mixed arrays.
+	mkU := map[string]func(expression.Expression) expression.Expression{
+		"array_min": func(e expression.Expression) expression.Expression { return expression.NewArrayMin(e) },
+		"array_max": func(e expression.Expression) expression.Expression { return expression.NewArrayMax(e) },
+	}
+	uOps := map[string]expression.Expression{
+		"nums": arr(3, 1, 2), "floats": arr(2.5, 1.5), "strs": arr("b", "a", "c"),
+		"mixed": arr(2, "a", true, 1), "withnull": arr(nil, 3, nil, 1),
+		"allnull": arr(nil, nil), "empty": arr(), "one": arr(5),
+		"nonarr": c(5), "null": c(value.NULL_VALUE), "missing": c(value.MISSING_VALUE),
+	}
+	for fn, ctor := range mkU {
+		for on, op := range uOps {
+			expr := ctor(op)
+			want := cbqEval(t, expr)
+			got, ok := nativeEval(t, expr)
+			if !ok {
+				t.Errorf("%s(%s): did not optimize", fn, on)
+			} else if got != want {
+				t.Errorf("%s(%s): native=%q, cbq=%q", fn, on, got, want)
+			}
+		}
+	}
+
+	// Binary: array_contains / array_position (arr, v).
+	mkB := map[string]func(a, b expression.Expression) expression.Expression{
+		"array_contains": func(a, b expression.Expression) expression.Expression { return expression.NewArrayContains(a, b) },
+		"array_position": func(a, b expression.Expression) expression.Expression { return expression.NewArrayPosition(a, b) },
+	}
+	bPairs := []struct{ a, b expression.Expression }{
+		{arr(1, 2, 3), c(2)}, {arr(1, 2, 3), c(9)}, {arr("a", "b"), c("b")},
+		{arr(1, 2.0, 3), c(2)}, {arr(), c(1)}, {arr(1, nil, 2), c(2)},
+		{c(5), c(1)}, {arr(1, 2), c(value.NULL_VALUE)}, {c(value.MISSING_VALUE), c(1)},
+		{arr(1), c(value.MISSING_VALUE)},
+	}
+	for fn, ctor := range mkB {
+		for i, p := range bPairs {
+			expr := ctor(p.a, p.b)
+			want := cbqEval(t, expr)
+			got, ok := nativeEval(t, expr)
+			if !ok {
+				t.Errorf("%s pair[%d]: did not optimize", fn, i)
+			} else if got != want {
+				t.Errorf("%s pair[%d]: native=%q, cbq=%q", fn, i, got, want)
+			}
+		}
+	}
+}
+
 func TestTypeConvDifferentialVsCBQ(t *testing.T) {
 	c := func(v interface{}) expression.Expression { return expression.NewConstant(v) }
 

@@ -5956,6 +5956,17 @@ var TestCasesSimple = []TestCaseSimple{
 	naryProjectCase("array_avg", []interface{}{"array_avg", []interface{}{"json", `[2,4]`}}, `3`),
 	naryProjectCase("array_avg-empty", []interface{}{"array_avg", []interface{}{"json", `[]`}}, `null`),
 	naryProjectCase("array_length-nonarr", []interface{}{"array_length", []interface{}{"json", `5`}}, `null`),
+	naryProjectCase("array_min", []interface{}{"array_min", []interface{}{"json", `[3,1,2]`}}, `1`),
+	naryProjectCase("array_max-str", []interface{}{"array_max", []interface{}{"json", `["a","c","b"]`}}, `"c"`),
+	naryProjectCase("array_max-null", []interface{}{"array_max", []interface{}{"json", `[]`}}, `null`),
+	naryProjectCase("array_contains-yes", []interface{}{"array_contains",
+		[]interface{}{"json", `[1,2,3]`}, []interface{}{"json", `2`}}, `true`),
+	naryProjectCase("array_contains-no", []interface{}{"array_contains",
+		[]interface{}{"json", `[1,2,3]`}, []interface{}{"json", `9`}}, `false`),
+	naryProjectCase("array_position", []interface{}{"array_position",
+		[]interface{}{"json", `["x","y","z"]`}, []interface{}{"json", `"z"`}}, `2`),
+	naryProjectCase("array_position-absent", []interface{}{"array_position",
+		[]interface{}{"json", `[1,2]`}, []interface{}{"json", `9`}}, `-1`),
 }
 
 // naryProjectCase builds a TestCaseSimple that projects a single native

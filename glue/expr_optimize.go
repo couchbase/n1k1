@@ -39,6 +39,7 @@ func init() {
 		"power", "atan2", // binary math (expr_math.go)
 		"to_boolean", "to_string", "to_number", // type conversions (expr_type.go)
 		"array_length", "array_count", "array_sum", "array_avg", // array readers (expr_array.go)
+		"array_min", "array_max", "array_contains", "array_position", // (expr_array.go)
 		"and", "or", // three-valued logical (expr_logic.go)
 		"not",                                            // unary predicate (expr_pred.go)
 		"ifnull", "ifmissing", "ifmissingornull", "nvl",  // conditional-unknown (expr_cond.go)
@@ -240,6 +241,7 @@ func ExprTreeOptimize(labels base.Labels, e expression.Expression,
 	case "add", "mult", "sub", "div", "mod", "idiv", "imod", "in",
 		"power", "atan2",
 		"contains", "position0", "position1",
+		"array_contains", "array_position",
 		"nullif", "missingif", "element":
 		// These native harnesses are two-operand; cbq's n-ary forms fall back.
 		// (ifnull/ifmissing/ifmissingornull/nvl and greatest/least are n-ary.)
@@ -252,6 +254,7 @@ func ExprTreeOptimize(labels base.Labels, e expression.Expression,
 		"upper", "lower", "length", "title",
 		"to_boolean", "to_string", "to_number",
 		"array_length", "array_count", "array_sum", "array_avg",
+		"array_min", "array_max",
 		"not", "is_null", "is_not_null",
 		"is_missing", "is_not_missing", "is_valued", "is_not_valued",
 		"is_array", "is_number", "is_string", "is_boolean", "is_object", "is_atom":

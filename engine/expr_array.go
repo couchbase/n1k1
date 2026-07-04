@@ -27,6 +27,10 @@ func init() {
 	ExprCatalog["array_count"] = ExprArrayCount
 	ExprCatalog["array_sum"] = ExprArraySum
 	ExprCatalog["array_avg"] = ExprArrayAvg
+	ExprCatalog["array_min"] = ExprArrayMin
+	ExprCatalog["array_max"] = ExprArrayMax
+	ExprCatalog["array_contains"] = ExprArrayContains
+	ExprCatalog["array_position"] = ExprArrayPosition
 }
 
 func ExprArrayLength(lzVars *base.Vars, labels base.Labels,
@@ -73,6 +77,106 @@ func exprArrayReduce(lzVars *base.Vars, labels base.Labels, params []interface{}
 
 		return lzVal
 	}
+
+	return lzExprFunc
+}
+
+// ARRAY_MIN / ARRAY_MAX: unary, return the collation-min/-max element into the
+// reused buffer. Per-op named base funcs (no op-code, so no %#v beside the buffer).
+func ExprArrayMin(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
+	exprA := params[0].([]interface{})
+
+	var lzBufPre []byte // <== varLift: lzBufPre by path
+
+	lzExprFunc =
+		MakeExprFunc(lzVars, labels, exprA, path, "A") // !lz
+	lzA := lzExprFunc
+
+	lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
+		lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
+
+		lzVal, lzBufPre = base.ArrayMin(lzVars.Ctx.ValComparer, lzVal, lzBufPre)
+
+		return lzVal
+	}
+
+	return lzExprFunc
+}
+
+func ExprArrayMax(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
+	exprA := params[0].([]interface{})
+
+	var lzBufPre []byte // <== varLift: lzBufPre by path
+
+	lzExprFunc =
+		MakeExprFunc(lzVars, labels, exprA, path, "A") // !lz
+	lzA := lzExprFunc
+
+	lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
+		lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
+
+		lzVal, lzBufPre = base.ArrayMax(lzVars.Ctx.ValComparer, lzVal, lzBufPre)
+
+		return lzVal
+	}
+
+	return lzExprFunc
+}
+
+// ARRAY_CONTAINS(arr, v): binary -> bool (no buffer). Operands captured FROM lzVal.
+func ExprArrayContains(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
+	biExprFunc := func(lzA, lzB base.ExprFunc, lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) { // !lz
+		if LzScope {
+			lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
+			lzValA := lzVal
+
+			lzVal = lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B"
+			lzValB := lzVal
+
+			lzVal = base.ArrayContains(lzVars.Ctx.ValComparer, lzValA, lzValB)
+		}
+
+		return lzVal
+	} // !lz
+
+	lzExprFunc =
+		MakeBiExprFunc(lzVars, labels, params, path, biExprFunc) // !lz
+
+	return lzExprFunc
+}
+
+// ARRAY_POSITION(arr, v): binary -> index (or -1) into the reused buffer. The
+// index (from base.ArrayPositionIndex, no buffer) is formatted separately.
+func ExprArrayPosition(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
+	var lzBufPre []byte // <== varLift: lzBufPre by path
+
+	biExprFunc := func(lzA, lzB base.ExprFunc, lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) { // !lz
+		if LzScope {
+			lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
+			lzValA := lzVal
+
+			lzVal = lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B"
+			lzValB := lzVal
+
+			lzIdx, lzSentinel, lzOk := base.ArrayPositionIndex(lzVars.Ctx.ValComparer, lzValA, lzValB)
+			if !lzOk {
+				lzVal = lzSentinel
+			} else {
+				lzOut := base.AppendNum(lzBufPre[:0], base.IntNum(int64(lzIdx)))
+				lzBufPre = lzOut
+				lzVal = base.Val(lzOut)
+			}
+		}
+
+		return lzVal
+	} // !lz
+
+	lzExprFunc =
+		MakeBiExprFunc(lzVars, labels, params, path, biExprFunc) // !lz
 
 	return lzExprFunc
 }
