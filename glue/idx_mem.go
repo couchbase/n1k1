@@ -20,7 +20,7 @@ package glue
 //
 // It reuses everything storage-independent from the bbolt path: the catalog
 // definitions (idx_si_catalog.go), the order-preserving key encoding and the
-// span-scan comparison logic (idx_si_encode.go), and the nativeIndex interface
+// span-scan comparison logic (idx_si_encode.go), and the index interface
 // the engine dispatches on (idx_native.go). Only the backing store differs: a
 // sorted []entry built by scanning the keyspace once, binary-searched per span
 // instead of a bbolt B+tree cursor. It rebuilds when the source signature
@@ -237,14 +237,14 @@ func (ix *memIndexer) SetConnectionSecurityConfig(c *datastore.ConnectionSecurit
 // --------------------------------------------------------------- the index
 
 // memIndex is an in-memory datastore.Index: a sorted slice of encoded
-// key+docID entries, scanned by binary search. Implements nativeIndex.
+// key+docID entries, scanned by binary search. Implements index.
 type memIndex struct {
 	ks      *memKeyspace
 	def     *indexDef
 	entries [][]byte // each = encodeValue(keys...) ++ docID, sorted by bytes.Compare
 }
 
-var _ nativeIndex = (*memIndex)(nil)
+var _ index = (*memIndex)(nil)
 
 func (mi *memIndex) indexDefn() *indexDef             { return mi.def }
 func (mi *memIndex) KeyspaceId() string               { return mi.ks.Id() }

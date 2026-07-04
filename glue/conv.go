@@ -268,7 +268,7 @@ func (c *Conv) VisitIndexScan(o *plan.IndexScan) (interface{}, error) {
 	// #primary covering scan is a full scan anyway. n1k1 secondary indexes keep the
 	// scan-index path (their covering is answered above, or they stay selective).
 	if len(o.Covers()) > 0 && o.Term().Namespace() != "#system" {
-		if _, isSI := o.Index().(nativeIndex); !isSI {
+		if _, isSI := o.Index().(index); !isSI {
 			return c.recordsScan(o, o.Term().Alias())
 		}
 	}
@@ -302,7 +302,7 @@ func (c *Conv) VisitIndexScan(o *plan.IndexScan) (interface{}, error) {
 // filter-covers (a partial index's condition-field covers a key-only
 // reconstruction can't satisfy). Everything else falls back to scan+fetch.
 func coverableIndexScan(o *plan.IndexScan) bool {
-	si, ok := o.Index().(nativeIndex)
+	si, ok := o.Index().(index)
 	if !ok {
 		return false
 	}

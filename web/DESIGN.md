@@ -72,7 +72,7 @@ The reason we can't just recompile bbolt/bleve is mmap. Realistic path:
   `catalog.json` at open, backing the scan with a sorted `[][]byte` (encode(keys)+docID)
   binary-searched per span — sharing the order-preserving encoding and the exact
   bound/inclusion logic with bbolt (`idx_si_encode.go`). The engine dispatches on a
-  `nativeIndex` interface (`idx_native.go`) that both bbolt `secondaryIndex` and `memIndex`
+  `index` interface (`idx.go`) that both bbolt `secondaryIndex` and `memIndex`
   satisfy, so the ~5 core scan/convert sites (conv.go, datastore_scan.go) are backend-
   agnostic. Wiring: wasm always uses mem (`idx_wasm.go`); native keeps bbolt default with
   mem opt-in via `SecondaryIndexMode="mem"` (`idx_si.go`). Built process-wide cached, rebuilt

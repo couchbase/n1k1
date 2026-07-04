@@ -488,7 +488,7 @@ func DatastoreScanIndex(o *base.Op, vars *base.Vars,
 	// TODO: a ranged #primary scan over a flat/container keyspace still falls to the
 	// cbq path and would hang; rare (a predicate on META().id), but should be closed.
 	if gctx, _ := vars.Temps[0].(*GlueContext); gctx != nil && DatastoreScanCache && isFullScan(scan) {
-		if _, isSI := scan.Index().(nativeIndex); !isSI {
+		if _, isSI := scan.Index().(index); !isSI {
 			ks := scan.Keyspace()
 
 			var keys []string
@@ -529,7 +529,7 @@ func DatastoreScanIndex(o *base.Op, vars *base.Vars,
 		func(context *GlueContext, conn *datastore.IndexConnection) {
 			scan := vars.Temps[o.Params[0].(int)].(*plan.IndexScan)
 
-			if si, isSI := scan.Index().(nativeIndex); isSI {
+			if si, isSI := scan.Index().(index); isSI {
 				scanSISpans(context, conn, scan, si, false)
 				return
 			}
@@ -573,7 +573,7 @@ func DatastoreScanIndex(o *base.Op, vars *base.Vars,
 // double-emit. projectKeys threads through to decode key values for a covering
 // scan (DatastoreScanIndexCovering).
 func scanSISpans(context *GlueContext, conn *datastore.IndexConnection,
-	scan *plan.IndexScan, si nativeIndex, projectKeys bool) {
+	scan *plan.IndexScan, si index, projectKeys bool) {
 	limit := EvalExprInt64(context, scan.Limit(), nil, math.MaxInt64)
 
 	// A correlated index span evaluates its Low/High against the outer row;
@@ -614,7 +614,7 @@ func scanSISpans(context *GlueContext, conn *datastore.IndexConnection,
 func DatastoreScanIndexCovering(o *base.Op, vars *base.Vars,
 	yieldVals base.YieldVals, yieldErr base.YieldErr) {
 	scan := vars.Temps[o.Params[0].(int)].(*plan.IndexScan)
-	si, ok := scan.Index().(nativeIndex)
+	si, ok := scan.Index().(index)
 	if !ok {
 		yieldErr(fmt.Errorf("DatastoreScanIndexCovering: index %T is not an n1k1 secondary index",
 			scan.Index()))

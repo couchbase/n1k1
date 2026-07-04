@@ -22,14 +22,14 @@ import (
 	"github.com/couchbase/query/datastore"
 )
 
-// nativeIndex is an n1k1-built secondary index the engine can scan directly (via
+// index is an n1k1-built secondary index the engine can scan directly (via
 // scanSpan), as opposed to the file datastore's #primary or any other
 // datastore.Index. Both the bbolt-backed secondaryIndex (idx_si.go, native only)
 // and the in-memory memIndex (idx_mem.go, all builds) implement it, so the core
 // conversion/scan paths (conv.go, datastore_scan.go) dispatch on this interface
 // rather than a concrete type -- letting the WASM build (no bbolt) still get real
 // IndexScans from mem indexes. See DESIGN-indexing.md and web/DESIGN.md.
-type nativeIndex interface {
+type index interface {
 	datastore.Index
 
 	// indexDefn returns the catalog definition backing this index (its range
