@@ -36,6 +36,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 // Record is one decoded record. ID is a synthetic document key (META().id) and
@@ -56,10 +58,12 @@ type Source interface {
 // Supported record-file extensions (after any compression suffix is stripped).
 // jsonl/ndjson are line-delimited (streaming); json/jsons are a value stream or
 // a top-level array; csv/tsv are header + delimited rows decoded into JSON
-// objects.
+// objects; yaml/yml are one-or-more (`---`-separated) documents, each converted
+// to a JSON value.
 var recordExts = map[string]bool{
 	".json": true, ".jsons": true, ".jsonl": true, ".ndjson": true,
 	".csv": true, ".tsv": true,
+	".yaml": true, ".yml": true,
 }
 
 // IsRecordFile reports whether path (by extension, ignoring a .gz/.zst suffix)
@@ -176,6 +180,13 @@ func OpenFile(path, idPrefix string) (Source, error) {
 			comma = '\t'
 		}
 		s, err := newCSVSource(r, closers, idPrefix, comma)
+		if err != nil {
+			closeAll(closers)
+			return nil, err
+		}
+		return s, nil
+	case ".yaml", ".yml":
+		s, err := newYAMLSource(r, closers, idPrefix, stem(path))
 		if err != nil {
 			closeAll(closers)
 			return nil, err
@@ -338,6 +349,94 @@ func (s *jsonSource) Next(rec *Record) (bool, error) {
 }
 
 func (s *jsonSource) Close() error { return closeAll(s.closers) }
+
+// -------------------------------------------------------------- YAML source
+
+// newYAMLSource handles .yaml/.yml, mirroring the JSON record model. A file is
+// one of:
+//   - a multi-document (`---`-separated) stream -- one record per document; this
+//     is YAML's native equivalent of JSON Lines (a `.yaml` file IS the container,
+//     no separate extension needed since multi-document is part of YAML itself);
+//   - a single document that is a top-level sequence (list) -- one record per
+//     element, like a top-level array in a `.json` file;
+//   - a single document (map/scalar) -- one record, id = the file stem (the
+//     one-doc-per-file convention).
+//
+// Each record is decoded and re-marshaled to a JSON value, so the rest of the
+// pipeline sees the same JSON bytes it gets for a .json record. Records are
+// buffered and iterated via jsonSource (identical "buffered JSON-byte docs" +
+// id logic: <prefix>#<i> for many, the stem for one). YAML records aren't
+// byte-seekable, so ids carry no "@<offset>" -- key-based fetch into a multi-doc
+// YAML file isn't supported (like a JSON array), only whole-file scans.
+func newYAMLSource(r io.Reader, closers []io.Closer, idPrefix, stem string) (Source, error) {
+	dec := yaml.NewDecoder(r)
+
+	var vals []interface{}
+	for {
+		var v interface{}
+		err := dec.Decode(&v)
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		if v == nil {
+			continue // empty document (e.g. a bare or trailing `---`)
+		}
+		vals = append(vals, v)
+	}
+
+	// A single top-level sequence expands to one record per element (matching a
+	// top-level JSON array); a multi-document stream keeps one record per document
+	// (even when a document is itself a list -- mirroring the JSON value stream).
+	if len(vals) == 1 {
+		if seq, ok := vals[0].([]interface{}); ok {
+			vals = seq
+		}
+	}
+
+	docs := make([][]byte, 0, len(vals))
+	for _, v := range vals {
+		jb, err := json.Marshal(yamlToJSONValue(v))
+		if err != nil {
+			return nil, err
+		}
+		docs = append(docs, jb)
+	}
+
+	return &jsonSource{
+		docs: docs, closers: closers, idPrefix: idPrefix,
+		stem: stem, single: len(docs) == 1,
+	}, nil
+}
+
+// yamlToJSONValue makes a YAML-decoded value json.Marshal-able: it rewrites any
+// map with non-string keys (YAML allows them; JSON doesn't) to a string-keyed
+// map, recursing through nested maps/slices. yaml.v3 already decodes string-keyed
+// mappings as map[string]interface{}, so the common case is a cheap walk.
+func yamlToJSONValue(v interface{}) interface{} {
+	switch x := v.(type) {
+	case map[string]interface{}:
+		for k, val := range x {
+			x[k] = yamlToJSONValue(val)
+		}
+		return x
+	case map[interface{}]interface{}:
+		m := make(map[string]interface{}, len(x))
+		for k, val := range x {
+			m[fmt.Sprint(k)] = yamlToJSONValue(val)
+		}
+		return m
+	case []interface{}:
+		for i, val := range x {
+			x[i] = yamlToJSONValue(val)
+		}
+		return x
+	default:
+		return v
+	}
+}
 
 // firstNonSpace reads and un-reads (via Peek) the first non-whitespace byte.
 func firstNonSpace(br *bufio.Reader) (byte, error) {
@@ -592,6 +691,9 @@ func ParseModes(csv string) (WalkOptions, error) {
 		case "tsv":
 			opts.Formats[".tsv"] = true
 			add("tsv")
+		case "yaml", "yml":
+			opts.Formats[".yaml"], opts.Formats[".yml"] = true, true
+			add("yaml")
 		case "extract":
 			for ext := range extractors { // every registered extract format
 				opts.Formats[ext] = true
@@ -680,6 +782,7 @@ func Modes() []ModeInfo {
 		{"jsonl", []string{"ndjson"}, []string{".jsonl", ".ndjson"}, "structured", "JSON Lines: one JSON value per line"},
 		{"csv", nil, []string{".csv"}, "structured", "comma-separated values (header row = field names)"},
 		{"tsv", nil, []string{".tsv"}, "structured", "tab-separated values (header row = field names)"},
+		{"yaml", []string{"yml"}, []string{".yaml", ".yml"}, "structured", "one YAML document, or a multi-doc (--- separated) stream, per file"},
 		{"extract", nil, nil, "extract", "every extractable format below (text + metadata)"},
 		{"doc", []string{"docs", "office"}, []string{".pdf", ".docx", ".xlsx", ".pptx"}, "extract", "office & PDF documents"},
 		{"text", nil, []string{".txt", ".log", ".md", ".markdown", ".rtf"}, "extract", "plain / rich text files"},

@@ -39,8 +39,10 @@ originally-drawn MVP line:
   Fixes the prior "no keyspaces" for such dirs. Covered by `glue/flat_test.go`.
 - **Multi-file keyspace = union of files, recursing** (scenarios C, E) — the
   `records` package (`records.go`) walks the dir and unions all decodable files.
-- **Decoders:** JSONL/ndjson, multi-doc JSON (array + `.jsons`), **and CSV/TSV**
-  (scenario J). CSV was shipped by decoding each data row into **one JSON object
+- **Decoders:** JSONL/ndjson, multi-doc JSON (array + `.jsons`), CSV/TSV
+  (scenario J), **and YAML** (`.yaml`/`.yml`: a `---`-separated document stream --
+  YAML's native JSON-Lines equivalent -- or a top-level sequence, each document /
+  element decoded to a JSON value). CSV was shipped by decoding each data row into **one JSON object
   keyed by the header** (light int/float/bool inference) — so it rides the
   **opaque-document path** and did *not* need the typed-label-vector work the doc
   feared (see the reframed note in §2 "Integration gap").

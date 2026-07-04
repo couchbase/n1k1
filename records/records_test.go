@@ -195,7 +195,7 @@ func TestWalkOptionsSpec(t *testing.T) {
 
 func TestIsStructuredFile(t *testing.T) {
 	// Structured data files (auto-exposed as grab-bag keyspaces)...
-	for _, p := range []string{"a.json", "a.jsons", "a.jsonl", "a.ndjson", "a.csv", "a.tsv", "a.jsonl.gz"} {
+	for _, p := range []string{"a.json", "a.jsons", "a.jsonl", "a.ndjson", "a.csv", "a.tsv", "a.yaml", "a.yml", "a.jsonl.gz", "a.yaml.gz"} {
 		if !IsStructuredFile(p) {
 			t.Errorf("IsStructuredFile(%q) = false, want true", p)
 		}
@@ -252,6 +252,72 @@ func TestJSONArrayAndValueStream(t *testing.T) {
 		if ids[0] != "t.json#0" {
 			t.Errorf("%s: first id = %q, want t.json#0", tc.path, ids[0])
 		}
+	}
+}
+
+func TestYAMLDecode(t *testing.T) {
+	dir := t.TempDir()
+
+	// Single document -> the stem id (one-doc-per-file convention), mixed scalar
+	// types converted to JSON (sorted keys via json.Marshal).
+	single := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(single, []byte("service: api\nreplicas: 3\nenabled: true\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s, err := OpenFile(single, "config.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids, docs := collect(t, s)
+	if len(docs) != 1 {
+		t.Fatalf("single: want 1 doc, got %d: %v", len(docs), docs)
+	}
+	if ids[0] != "config" {
+		t.Errorf("single id = %q, want config", ids[0])
+	}
+	if docs[0] != `{"enabled":true,"replicas":3,"service":"api"}` {
+		t.Errorf("single doc = %s", docs[0])
+	}
+
+	// Multi-document (--- separated) -> prefix#i ids, with a nested map and array.
+	multi := filepath.Join(dir, "servers.yaml")
+	body := "name: alpha\ntags: [web, prod]\ncpu: {cores: 4}\n" +
+		"---\n" +
+		"name: beta\ntags: [db]\ncpu: {cores: 8}\n"
+	if err := os.WriteFile(multi, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s, err = OpenFile(multi, "servers.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids, docs = collect(t, s)
+	if len(docs) != 2 {
+		t.Fatalf("multi: want 2 docs, got %d: %v", len(docs), docs)
+	}
+	if ids[0] != "servers.yaml#0" || ids[1] != "servers.yaml#1" {
+		t.Errorf("multi ids = %v, want [servers.yaml#0 servers.yaml#1]", ids)
+	}
+	if docs[0] != `{"cpu":{"cores":4},"name":"alpha","tags":["web","prod"]}` {
+		t.Errorf("multi doc0 = %s", docs[0])
+	}
+
+	// A single document that is a top-level sequence expands to one record per
+	// element (like a top-level JSON array), with prefix#i ids.
+	list := filepath.Join(dir, "hosts.yaml")
+	if err := os.WriteFile(list, []byte("- name: a\n- name: b\n- name: c\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s, err = OpenFile(list, "hosts.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids, docs = collect(t, s)
+	if len(docs) != 3 {
+		t.Fatalf("list: want 3 docs, got %d: %v", len(docs), docs)
+	}
+	if ids[0] != "hosts.yaml#0" || docs[0] != `{"name":"a"}` {
+		t.Errorf("list first = %q / %s, want hosts.yaml#0 / {\"name\":\"a\"}", ids[0], docs[0])
 	}
 }
 

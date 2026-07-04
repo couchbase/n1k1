@@ -308,7 +308,7 @@ func resolveSession(dir string, explicit bool) (sess *glue.Session, effDir strin
 }
 
 func usage() {
-	fmt.Fprintf(os.Stderr, `%[1]s -- SQL++ for local files (json, jsonl, csv, gz, and more)
+	fmt.Fprintf(os.Stderr, `%[1]s -- SQL++ for local files (json, jsonl, csv, yaml, gz, and more)
 
 usage: %[1]s [flags] [datastore-dir | file]
 
