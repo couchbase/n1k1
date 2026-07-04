@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>n1k1 &mdash; SQL++ in your browser</title>
+<style>
+  :root {
+    --bg: #fbfbfa; --fg: #1a1a1a; --muted: #6b7280; --line: #e5e7eb;
+    --card: #ffffff; --accent: #b8341b; --accent-fg: #fff; --code-bg: #f4f4f2;
+    --th: #f3f4f6; --ok: #16794c; --err: #b91c1c; --shadow: 0 1px 2px rgba(0,0,0,.06);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #17181a; --fg: #e8e8e6; --muted: #9aa0a6; --line: #2c2e31;
+      --card: #1e1f22; --accent: #e2603f; --accent-fg: #fff; --code-bg: #26282b;
+      --th: #26282b; --ok: #4ade80; --err: #f87171; --shadow: 0 1px 2px rgba(0,0,0,.3);
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg); color: var(--fg);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  code, pre, textarea, .mono {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  header {
+    padding: 22px 24px 16px; border-bottom: 1px solid var(--line);
+  }
+  header h1 { margin: 0; font-size: 22px; letter-spacing: -.01em; }
+  header h1 .accent { color: var(--accent); }
+  header p { margin: 4px 0 0; color: var(--muted); font-size: 13.5px; }
+  .wrap { max-width: 1100px; margin: 0 auto; padding: 20px 24px 48px; }
+  .layout { display: grid; grid-template-columns: 1fr 240px; gap: 22px; }
+  @media (max-width: 760px) { .layout { grid-template-columns: 1fr; } }
+
+  .toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 10px; }
+  select, button {
+    font: inherit; border: 1px solid var(--line); border-radius: 8px;
+    background: var(--card); color: var(--fg); padding: 7px 11px; cursor: pointer;
+  }
+  button.run {
+    background: var(--accent); color: var(--accent-fg); border-color: transparent;
+    font-weight: 600; padding: 8px 18px;
+  }
+  button.run:disabled { opacity: .5; cursor: not-allowed; }
+  .hint { color: var(--muted); font-size: 12.5px; margin-left: auto; }
+
+  textarea {
+    width: 100%; min-height: 132px; resize: vertical; padding: 12px 14px;
+    border: 1px solid var(--line); border-radius: 10px; background: var(--code-bg);
+    color: var(--fg); font-size: 13.5px; line-height: 1.55; tab-size: 2;
+  }
+  textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+
+  #status { margin: 12px 0; font-size: 13px; min-height: 20px; }
+  #status .ok { color: var(--ok); }
+  #status .err { color: var(--err); }
+  #status .spin { color: var(--muted); }
+
+  .results { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; box-shadow: var(--shadow); }
+  .results-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 8px 12px; background: var(--th); border-bottom: 1px solid var(--line); font-size: 12.5px;
+  }
+  .results-head .toggle { display: flex; gap: 4px; }
+  .results-head .toggle button { padding: 3px 10px; font-size: 12px; border-radius: 6px; }
+  .results-head .toggle button.active { background: var(--accent); color: var(--accent-fg); border-color: transparent; }
+  .tablescroll { overflow-x: auto; max-height: 460px; overflow-y: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { text-align: left; padding: 7px 12px; border-bottom: 1px solid var(--line); white-space: nowrap; vertical-align: top; }
+  th { position: sticky; top: 0; background: var(--th); font-weight: 600; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  td .null { color: var(--muted); font-style: italic; }
+  pre.json { margin: 0; padding: 14px 16px; font-size: 12.5px; overflow-x: auto; max-height: 460px; }
+  .empty { padding: 22px; color: var(--muted); text-align: center; }
+
+  aside h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin: 4px 0 8px; }
+  .ks { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin-bottom: 12px; background: var(--card); }
+  .ks .kname { font-weight: 600; font-family: ui-monospace, monospace; font-size: 13px; }
+  .ks .kmeta { color: var(--muted); font-size: 12px; margin: 2px 0 6px; }
+  .ks .field { font-family: ui-monospace, monospace; font-size: 12px; color: var(--fg); }
+  .ks .field .t { color: var(--muted); }
+  footer { color: var(--muted); font-size: 12.5px; margin-top: 26px; }
+  footer code { background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<header>
+  <h1><span class="accent">n1k1</span> &mdash; SQL++ in your browser</h1>
+  <p>A pure-Go SQL++/N1QL engine compiled to WebAssembly. Everything runs client-side &mdash; no server, no network. Query the sample JSON below.</p>
+</header>
+
+<div class="wrap">
+  <div class="layout">
+    <main>
+      <div class="toolbar">
+        <label>Example:
+          <select id="examples"></select>
+        </label>
+        <button class="run" id="run" disabled>Run &#9654;</button>
+        <span class="hint">&#8984;/Ctrl + Enter to run</span>
+      </div>
+      <textarea id="sql" spellcheck="false" placeholder="Loading engine&hellip;"></textarea>
+
+      <div id="status"><span class="spin">Downloading &amp; starting the WebAssembly engine&hellip;</span></div>
+
+      <div class="results" id="resultsBox" style="display:none">
+        <div class="results-head">
+          <span id="resultMeta"></span>
+          <span class="toggle">
+            <button id="viewTable" class="active">Table</button>
+            <button id="viewJson">JSON</button>
+          </span>
+        </div>
+        <div id="tableView" class="tablescroll"></div>
+        <pre id="jsonView" class="json mono" style="display:none"></pre>
+      </div>
+    </main>
+
+    <aside>
+      <h3>Sample data</h3>
+      <div id="schema"></div>
+    </aside>
+  </div>
+
+  <footer>
+    Powered by <code>n1k1.wasm</code> (~12&nbsp;MB gzipped). Reads a
+    <code>&lt;namespace&gt;/&lt;keyspace&gt;/&lt;key&gt;.json</code> document tree
+    from an in-memory filesystem. Try your own SQL++ &mdash; joins, <code>GROUP BY</code>,
+    <code>UNNEST</code>, subqueries, and <code>EXPLAIN</code> all work.
+  </footer>
+</div>
+
+<script src="samples.js"></script>
+<script src="wasm/fs_mem.js"></script>
+<script>
+(function () {
+  "use strict";
+  const $ = (id) => document.getElementById(id);
+  const statusEl = $("status"), sqlEl = $("sql"), runBtn = $("run");
+
+  // ---- Populate the example dropdown + schema sidebar -----------------------
+  const sel = $("examples");
+  SAMPLE_QUERIES.forEach((q, i) => {
+    const o = document.createElement("option");
+    o.value = i; o.textContent = q.label; sel.appendChild(o);
+  });
+  sqlEl.value = SAMPLE_QUERIES[0].sql;
+  sel.addEventListener("change", () => { sqlEl.value = SAMPLE_QUERIES[+sel.value].sql; });
+
+  function typeName(v) {
+    if (v === null) return "null";
+    if (Array.isArray(v)) return "array";
+    return typeof v === "object" ? "object" : typeof v;
+  }
+  const schemaEl = $("schema");
+  for (const [ks, files] of Object.entries(DATASETS.default)) {
+    const ids = Object.keys(files);
+    const sample = JSON.parse(files[ids[0]]);
+    const div = document.createElement("div");
+    div.className = "ks";
+    let html = '<div class="kname">' + ks + '</div><div class="kmeta">' + ids.length + " documents</div>";
+    for (const [k, v] of Object.entries(sample)) {
+      html += '<div class="field">' + k + ' <span class="t">' + typeName(v) + "</span></div>";
+    }
+    div.innerHTML = html;
+    schemaEl.appendChild(div);
+  }
+
+  // ---- Mount data + boot the wasm engine ------------------------------------
+  installN1k1FS("/n1k1data", DATASETS);
+
+  function setStatus(html) { statusEl.innerHTML = html; }
+
+  // View toggle
+  let view = "table";
+  $("viewTable").addEventListener("click", () => switchView("table"));
+  $("viewJson").addEventListener("click", () => switchView("json"));
+  function switchView(v) {
+    view = v;
+    $("viewTable").classList.toggle("active", v === "table");
+    $("viewJson").classList.toggle("active", v === "json");
+    $("tableView").style.display = v === "table" ? "" : "none";
+    $("jsonView").style.display = v === "json" ? "" : "none";
+  }
+
+  function cell(v) {
+    if (v === null || v === undefined) return '<span class="null">null</span>';
+    if (typeof v === "object") return escapeHtml(JSON.stringify(v));
+    return escapeHtml(String(v));
+  }
+  function escapeHtml(s) {
+    return s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+  }
+
+  function renderTable(rows) {
+    if (!rows.length) { $("tableView").innerHTML = '<div class="empty">No rows.</div>'; return; }
+    // Column union across rows, preserving first-seen order.
+    const cols = [];
+    const seen = new Set();
+    let allObjects = true;
+    for (const r of rows) {
+      if (r === null || typeof r !== "object" || Array.isArray(r)) { allObjects = false; break; }
+      for (const k of Object.keys(r)) if (!seen.has(k)) { seen.add(k); cols.push(k); }
+    }
+    if (!allObjects) {
+      // SELECT RAW / scalar rows: single "value" column.
+      let h = "<table><thead><tr><th>value</th></tr></thead><tbody>";
+      for (const r of rows) h += "<tr><td>" + cell(r) + "</td></tr>";
+      $("tableView").innerHTML = h + "</tbody></table>";
+      return;
+    }
+    let h = "<table><thead><tr>";
+    for (const c of cols) h += "<th>" + escapeHtml(c) + "</th>";
+    h += "</tr></thead><tbody>";
+    for (const r of rows) {
+      h += "<tr>";
+      for (const c of cols) {
+        const v = r[c];
+        const numeric = typeof v === "number";
+        h += '<td' + (numeric ? ' class="num"' : "") + ">" + cell(v) + "</td>";
+      }
+      h += "</tr>";
+    }
+    $("tableView").innerHTML = h + "</tbody></table>";
+  }
+
+  function run() {
+    const sql = sqlEl.value.trim();
+    if (!sql) return;
+    setStatus('<span class="spin">Running&hellip;</span>');
+    // Defer so the status paints before the (synchronous) engine call.
+    setTimeout(() => {
+      let resp;
+      try { resp = JSON.parse(globalThis.n1k1RunQuery(sql)); }
+      catch (e) { setStatus('<span class="err">Engine error: ' + escapeHtml(String(e)) + "</span>"); return; }
+
+      $("resultsBox").style.display = "";
+      if (!resp.ok) {
+        setStatus('<span class="err">&#10007; ' + escapeHtml(resp.error) + "</span>");
+        $("resultMeta").textContent = "error";
+        $("tableView").innerHTML = '<div class="empty">&mdash;</div>';
+        $("jsonView").textContent = JSON.stringify(resp, null, 2);
+        return;
+      }
+      const warn = resp.warnings && resp.warnings.length
+        ? ' &middot; <span class="err">' + resp.warnings.length + " warning(s)</span>" : "";
+      setStatus('<span class="ok">&#10003; ' + resp.count + " row" + (resp.count === 1 ? "" : "s") +
+                "</span> in " + resp.elapsedMs.toFixed(2) + " ms" + warn);
+      $("resultMeta").textContent = resp.count + " row" + (resp.count === 1 ? "" : "s") +
+                                    " &middot; " + resp.elapsedMs.toFixed(2) + " ms";
+      renderTable(resp.rows);
+      $("jsonView").textContent = JSON.stringify(resp.rows, null, 2);
+    }, 0);
+  }
+  runBtn.addEventListener("click", run);
+  sqlEl.addEventListener("keydown", (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); run(); }
+  });
+
+  // ---- Load wasm_exec.js then instantiate -----------------------------------
+  const script = document.createElement("script");
+  script.src = "wasm_exec.js";
+  script.onload = async () => {
+    try {
+      const go = new Go();
+      const result = await WebAssembly.instantiateStreaming(fetch("n1k1.wasm"), go.importObject);
+      go.run(result.instance); // blocks in Go on select{}; returns only on exit
+      // Poll briefly for readiness (main sets n1k1Ready after OpenSession).
+      let tries = 0;
+      const iv = setInterval(() => {
+        if (globalThis.n1k1Ready) {
+          clearInterval(iv);
+          runBtn.disabled = false;
+          sqlEl.placeholder = "";
+          setStatus('<span class="ok">Engine ready.</span> Pick an example or write your own, then Run.');
+          run(); // show the first example's result immediately
+        } else if (globalThis.n1k1InitError) {
+          clearInterval(iv);
+          setStatus('<span class="err">Init failed: ' + escapeHtml(globalThis.n1k1InitError) + "</span>");
+        } else if (++tries > 100) {
+          clearInterval(iv);
+          setStatus('<span class="err">Engine did not become ready.</span>');
+        }
+      }, 50);
+    } catch (e) {
+      setStatus('<span class="err">Failed to load engine: ' + escapeHtml(String(e)) +
+                '</span><br><span class="spin">(n1k1.wasm must be served over HTTP, not file://)</span>');
+    }
+  };
+  document.head.appendChild(script);
+})();
+</script>
+</body>
+</html>

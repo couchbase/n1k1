@@ -1,0 +1,63 @@
+# n1k1 in the browser (WebAssembly demo)
+
+A zero-install way to try n1k1: the SQL++/N1QL engine compiled to WebAssembly,
+running entirely client-side over pre-canned JSON. No server, no network calls —
+the query planner and executor run in the browser tab.
+
+![screenshot placeholder]
+
+## Try it
+
+Build the wasm binary, then serve the `web/` directory over HTTP (wasm can't be
+loaded from `file://`):
+
+```sh
+sh web/wasm/build.sh                 # produces web/n1k1.wasm + web/wasm_exec.js
+cd web && python3 -m http.server 8080
+open http://localhost:8080/
+```
+
+Pick an example query or write your own, then **Run** (or ⌘/Ctrl+Enter). Joins,
+`GROUP BY`, `UNNEST`, subqueries and `EXPLAIN` all work against the sample
+`beers` / `breweries` keyspaces.
+
+## How it works
+
+n1k1 is pure Go, so it cross-compiles to `GOOS=js GOARCH=wasm`. Two things need
+handling because a browser has no OS:
+
+1. **No syscalls.** A few files in the engine and its dependencies use mmap /
+   flock / rlimit / rusage, which don't exist under `GOOS=js`:
+   - The on-disk index backends (`glue/idx_si.go` bbolt GSI, `glue/idx_fts.go`
+     bleve FTS) are excluded via `//go:build !wasm`; `glue/idx_wasm.go` supplies
+     the few symbols the core still references. The demo runs every query as a
+     primary scan — no secondary indexes — which is fine for in-memory data.
+   - A handful of dependency files (`couchbase/query/{logging,util}`,
+     `edsrzf/mmap-go`) get js stubs applied to local copies via `go.mod`
+     replaces. `build.sh` does this automatically; the edits are host-specific
+     and left uncommitted (like the EE stubs in `DESIGN-testing.md`).
+
+2. **No filesystem.** `wasm/fs_mem.js` installs a tiny in-memory `fs` (the read
+   path only: `open`/`read`/`stat`/`readdir`), backed by the JSON in
+   `samples.js`. The engine reads its `<namespace>/<keyspace>/<key>.json`
+   document tree from there exactly as it would from disk.
+
+## Files
+
+| file | role |
+|------|------|
+| `index.html`        | the demo page (query editor, results table, schema sidebar) |
+| `samples.js`        | sample datasets + example queries — edit freely, no rebuild needed |
+| `wasm/main_wasm.go` | the wasm entry point; exposes `globalThis.n1k1RunQuery(sql)` |
+| `wasm/fs_mem.js`    | in-memory read-only filesystem shim for `GOOS=js` |
+| `wasm/build.sh`     | builds `n1k1.wasm`, ships `wasm_exec.js`, applies dep patches |
+| `wasm/overlay/`     | js-tagged stubs copied into the local dependency copies |
+
+`n1k1.wasm` (~67 MB raw, ~12 MB gzipped) and `wasm_exec.js` are build outputs and
+are git-ignored; run `build.sh` to (re)generate them.
+
+## Customizing the data
+
+Edit `samples.js`: add keys to `DATASETS.default` (each keyspace is
+`{ "<docKey>.json": <jsonText> }`) and add entries to `SAMPLE_QUERIES`. Reload
+the page — no rebuild required.

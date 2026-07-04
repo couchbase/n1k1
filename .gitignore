@@ -17,3 +17,9 @@ tmp
 # depth. catalog.json is the declared source of truth, so keep it trackable.
 **/.n1k1/*
 !**/.n1k1/catalog.json
+
+# n1k1 WebAssembly demo build outputs (regenerate with web/wasm/build.sh)
+/web/n1k1.wasm
+/web/wasm_exec.js
+# local patched dependency copies for the wasm build (host-specific)
+/.wasm-mods/
