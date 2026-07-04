@@ -81,6 +81,11 @@ type Result struct {
 	Elapsed  time.Duration     // wall-clock of the ExecOp run
 	Plan     *base.Op          // the converted n1k1 op tree (for .explain / -v)
 	Stats    *base.Stats       // per-operator counters when CollectStats was on, else nil
+
+	// BoxedEvals is the number of per-row expressions that fell back to the boxed
+	// cbq lane during execution (the GC-heavy Convert->Evaluate->WriteJSON path);
+	// 0 means every evaluated expression stayed native. See GlueContext.boxedEvals.
+	BoxedEvals int64
 }
 
 // findExplain returns the *plan.Explain node in a plan tree (it sits under the
@@ -274,11 +279,12 @@ func (s *Session) Run(stmt string) (res *Result, err error) {
 	}
 
 	return &Result{
-		Labels:   conv.TopOp.Labels,
-		Rows:     rows,
-		Warnings: gctx.GetErrors(),
-		Elapsed:  elapsed,
-		Plan:     conv.TopOp,
-		Stats:    stats,
+		Labels:     conv.TopOp.Labels,
+		Rows:       rows,
+		Warnings:   gctx.GetErrors(),
+		Elapsed:    elapsed,
+		Plan:       conv.TopOp,
+		Stats:      stats,
+		BoxedEvals: gctx.BoxedEvals(),
 	}, nil
 }

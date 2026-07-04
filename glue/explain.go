@@ -79,34 +79,89 @@ func formatConvOp(b *strings.Builder, op *base.Op, depth int) {
 // A non-exprTree param (an already-native catalog form, or the rare exprStr) has
 // no cbq expression to inspect, so it prints just the catalog name.
 func writeExprVerdict(b *strings.Builder, op *base.Op, param interface{}) {
-	pl, ok := param.([]interface{})
-	if !ok || len(pl) < 2 {
+	e, ok := exprTreeParam(param)
+	if !ok {
+		if pl, ok := param.([]interface{}); ok && len(pl) > 0 {
+			if name, _ := pl[0].(string); name != "" {
+				b.WriteString(name)
+				return
+			}
+		}
 		b.WriteString("?")
 		return
 	}
-	name, _ := pl[0].(string)
-	if name != "exprTree" {
-		b.WriteString(name)
-		return
-	}
-	e, ok := pl[1].(expression.Expression)
-	if !ok {
-		b.WriteString("exprTree")
-		return
-	}
 	verdict := "boxed"
-	// The expression resolves against the operator's input (child) labels -- the
-	// same labels the engine passes to MakeExprFunc (see OpProject/OpFilter).
-	if len(op.Children) > 0 {
-		var buf bytes.Buffer
-		// strict=false: report the unscoped (lenient) verdict, matching the common
-		// top-level project/filter case. A scoped op (correlated subquery / WITH /
-		// recursive CTE) evaluates with strict=true, so this can over-report
-		// "native" for an expr that reaches into a parent scope -- acceptable for a
-		// best-effort plan display.
-		if _, ok := ExprTreeOptimize(op.Children[0].Labels, stripCovers(e), &buf, false); ok {
-			verdict = "native"
-		}
+	if exprIsNative(inputLabels(op), e) {
+		verdict = "native"
 	}
 	fmt.Fprintf(b, "%s [%s]", e.String(), verdict)
+}
+
+// exprTreeParam extracts the cbq expression from an ["exprTree", expr] param list
+// -- the only expression form that can fall back to the boxed lane. Other forms
+// (an already-native catalog param, or the rare exprStr) return ok=false.
+func exprTreeParam(param interface{}) (expression.Expression, bool) {
+	pl, ok := param.([]interface{})
+	if !ok || len(pl) < 2 {
+		return nil, false
+	}
+	if name, _ := pl[0].(string); name != "exprTree" {
+		return nil, false
+	}
+	e, ok := pl[1].(expression.Expression)
+	return e, ok
+}
+
+// exprIsNative reports whether the engine would evaluate e on the native byte path
+// (vs boxing it for cbq's expression.Evaluate), against the given input labels.
+// It mirrors ExprTree's unscoped decision (strict=false); see writeExprVerdict for
+// the scoped caveat.
+func exprIsNative(labels base.Labels, e expression.Expression) bool {
+	var buf bytes.Buffer
+	_, ok := ExprTreeOptimize(labels, stripCovers(e), &buf, false)
+	return ok
+}
+
+// inputLabels returns the labels an op's expressions resolve against -- its input
+// (child) labels, matching what the engine passes to MakeExprFunc (see
+// OpProject/OpFilter). nil for a leaf.
+func inputLabels(op *base.Op) base.Labels {
+	if len(op.Children) > 0 {
+		return op.Children[0].Labels
+	}
+	return nil
+}
+
+// ExprCoverage counts, over an op tree's project and filter expressions, how many
+// the engine evaluates natively (raw bytes, no garbage) vs boxed (converted to a
+// cbq value.Value per row for expression.Evaluate). It's the static, build-time
+// companion to the runtime boxed-eval counter: it says how many distinct
+// expressions fall back, not how many rows flow through them. Same scope and
+// (unscoped) verdict as FormatConvPlan.
+func ExprCoverage(op *base.Op) (native, boxed int) {
+	if op == nil {
+		return 0, 0
+	}
+	tally := func(param interface{}) {
+		if e, ok := exprTreeParam(param); ok {
+			if exprIsNative(inputLabels(op), e) {
+				native++
+			} else {
+				boxed++
+			}
+		}
+	}
+	switch op.Kind {
+	case "project":
+		for _, pr := range op.Params {
+			tally(pr)
+		}
+	case "filter":
+		tally([]interface{}(op.Params))
+	}
+	for _, ch := range op.Children {
+		n, b := ExprCoverage(ch)
+		native, boxed = native+n, boxed+b
+	}
+	return native, boxed
 }

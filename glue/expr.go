@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/couchbase/n1k1/base"
@@ -115,7 +116,18 @@ func ExprTree(vars *base.Vars, labels base.Labels,
 	// TODO: Need to propagate the vars to the expression, too,
 	// perhaps related to bindings?
 
+	// Count each row taking this boxed lane into the request's root counter (see
+	// GlueContext.BoxedEvals). Resolved once here; nil for a non-request context.
+	var boxedCtr *int64
+	if isGlue {
+		boxedCtr = &gc.getRoot().boxedEvals
+	}
+
 	return func(vals base.Vals, yieldErr base.YieldErr) base.Val {
+		if boxedCtr != nil {
+			atomic.AddInt64(boxedCtr, 1)
+		}
+
 		v, err := cv.Convert(vals)
 		if err != nil {
 			yieldErr(err)

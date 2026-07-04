@@ -79,3 +79,48 @@ func TestExplainConvPlan(t *testing.T) {
 		}
 	}
 }
+
+// TestExprCoverageAndBoxedEvals: static ExprCoverage classifies project/filter
+// expressions, and Result.BoxedEvals counts per-row boxed evaluations at run time.
+func TestExprCoverageAndBoxedEvals(t *testing.T) {
+	dir := t.TempDir()
+	ks := filepath.Join(dir, "default", "items")
+	if err := os.MkdirAll(ks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const n = 5
+	for i := 0; i < n; i++ {
+		doc := `{"a":` + string(rune('0'+i)) + `,"s":"x"}`
+		if err := os.WriteFile(filepath.Join(ks, "d"+string(rune('0'+i))+".json"), []byte(doc), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sess, err := OpenSession(dir, "default")
+	if err != nil {
+		t.Fatalf("OpenSession: %v", err)
+	}
+
+	// All-native projection: coverage 2/2, zero boxed evals over n rows.
+	res, err := sess.Run(`SELECT i.a, i.a + 1 AS b FROM items i`)
+	if err != nil {
+		t.Fatalf("native run: %v", err)
+	}
+	if nat, box := ExprCoverage(res.Plan); nat != 2 || box != 0 {
+		t.Errorf("native coverage = %d/%d, want 2 native / 0 boxed", nat, box)
+	}
+	if res.BoxedEvals != 0 {
+		t.Errorf("native query BoxedEvals = %d, want 0", res.BoxedEvals)
+	}
+
+	// SELECT * self-projection: 1 boxed expr, boxed once per row.
+	res, err = sess.Run(`SELECT * FROM items i`)
+	if err != nil {
+		t.Fatalf("star run: %v", err)
+	}
+	if nat, box := ExprCoverage(res.Plan); nat != 0 || box != 1 {
+		t.Errorf("star coverage = %d/%d, want 0 native / 1 boxed", nat, box)
+	}
+	if res.BoxedEvals != n {
+		t.Errorf("SELECT * BoxedEvals = %d, want %d (one per row)", res.BoxedEvals, n)
+	}
+}

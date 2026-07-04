@@ -201,7 +201,7 @@ func (v *statsView) finish() {
 // renderFinal prints the counters once, after the query completes, followed by a
 // compact glossary of the stat names that appeared (so the footer is
 // self-explanatory).
-func (v *statsView) renderFinal(s *base.Stats) {
+func (v *statsView) renderFinal(s *base.Stats, exprLine string) {
 	if s == nil || len(s.Ops) == 0 {
 		return
 	}
@@ -209,9 +209,31 @@ func (v *statsView) renderFinal(s *base.Stats) {
 	for _, ln := range v.bodyLines(s) {
 		fmt.Fprintln(v.w, ln)
 	}
+	if exprLine != "" {
+		fmt.Fprintln(v.w, exprLine)
+	}
 	for _, ln := range statsGlossary(statNamesIn(s), v.width) {
 		fmt.Fprintln(v.w, ln)
 	}
+}
+
+// exprStatsLine summarizes expression evaluation for the stats footer: how many of
+// the plan's project/filter expressions the engine runs natively (raw bytes) vs
+// boxed (converted to a cbq value.Value for expression.Evaluate) -- a static,
+// build-time coverage count -- followed by boxedEvals, the number of per-row
+// evaluations that actually took the GC-heavy boxed lane at run time. Returns ""
+// when there's nothing to report. See glue.ExprCoverage / Result.BoxedEvals.
+func exprStatsLine(native, boxed int, boxedEvals int64) string {
+	total := native + boxed
+	if total == 0 && boxedEvals == 0 {
+		return ""
+	}
+	var parts []string
+	if total > 0 {
+		parts = append(parts, fmt.Sprintf("%d/%d exprs native", native, total))
+	}
+	parts = append(parts, fmt.Sprintf("%s boxed evals", humanCount(uint64(boxedEvals))))
+	return "expr: " + strings.Join(parts, " · ")
 }
 
 // statNamesIn returns the distinct stat names present in s (across all ops).

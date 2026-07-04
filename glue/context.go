@@ -15,6 +15,7 @@ package glue
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/couchbase/query/encryption"
@@ -126,6 +127,13 @@ type GlueContext struct {
 	// branch actors (which delegate to the root via getRoot()). Lives on the root.
 	errsMu sync.Mutex
 
+	// boxedEvals counts per-row expressions that fell back to the boxed cbq lane
+	// (ConvertVals.Convert -> expression.Evaluate -> WriteJSON), the GC-heavy path
+	// ExprTree takes when it can't evaluate natively. Bumped atomically because
+	// UNION ALL branch actors share the root's counter (via getRoot()); read once
+	// after the run into Result.BoxedEvals. See ExprTree and DESIGN-exprs.md.
+	boxedEvals int64
+
 	// jsRT is the lazily-built goja runtime for JS UDFs, scoped to THIS context.
 	// A fresh GlueContext per Session.Run makes it per-query (JS globals reset each
 	// query); ChainClone deliberately does NOT copy it, so each concurrent UNION
@@ -146,6 +154,10 @@ func (c *GlueContext) jsShared() *jsSharedRuntime {
 // dropJSShared discards a poisoned JS runtime (after a panic/timeout); the next
 // UDF call rebuilds a clean one.
 func (c *GlueContext) dropJSShared() { c.jsRT = nil }
+
+// BoxedEvals returns the number of per-row expressions that fell back to the boxed
+// cbq lane during the request (summed across UNION ALL branch actors via the root).
+func (c *GlueContext) BoxedEvals() int64 { return atomic.LoadInt64(&c.getRoot().boxedEvals) }
 
 // getRoot resolves to the request's root GlueContext -- itself when this is the
 // root, else the root a per-actor clone points at (see ChainClone / the root

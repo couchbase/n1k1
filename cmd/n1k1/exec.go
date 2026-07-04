@@ -89,7 +89,11 @@ func (c *cli) exec(stmt string) {
 	// whole display for `final` mode and for a non-TTY run, which skipped the live
 	// draw). Reuse sv so the runtime line shows deltas over the whole statement.
 	if sv != nil && res.Stats != nil {
-		sv.renderFinal(res.Stats)
+		native, boxed := 0, 0
+		if res.Plan != nil {
+			native, boxed = glue.ExprCoverage(res.Plan)
+		}
+		sv.renderFinal(res.Stats, exprStatsLine(native, boxed, res.BoxedEvals))
 	}
 
 	for _, w := range res.Warnings {
