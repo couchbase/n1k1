@@ -144,6 +144,20 @@ n1k1 -c "SELECT COUNT(*) AS orders, ROUND(AVG(total),2) AS avg, histogram(total)
 #  20      97.47   █▇▅▂▂▄▁▂▁▁▂▁▂▁▁▁▁▁▁▂     (right-skewed: many small, a long tail)
 ```
 
+## Recursive SQL++ showpieces (`queries/`)
+
+Pure SQL++ (no JavaScript, no UDFs) with `WITH RECURSIVE` doing real iterative
+computation — each is self-contained (needs no datastore):
+
+```sh
+n1k1 -f examples/queries/mandelbrot.sql++ | jq -r '.line'   # the Mandelbrot set as ASCII art
+n1k1 -f examples/queries/life.sql++       | jq -r '.line'   # Conway's Game of Life: a glider gliding
+```
+
+`life.sql++` carries the whole board as a nested array in one row per
+generation and computes the next generation from the previous — the classic
+5-cell glider reappears shifted by (+1, +1) every 4 generations.
+
 ## Loading JavaScript UDFs (`-ext` / `.ext`)
 
 Scalar user-defined functions are plain JavaScript files whose base name is the

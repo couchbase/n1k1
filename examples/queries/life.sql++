@@ -1,0 +1,77 @@
+-- ---------------------------------------------------------------------------
+-- life.sql++ — Conway's Game of Life as an animation, in pure SQL++.
+--
+-- A glider crawling diagonally across the field — no JavaScript, no UDFs, just a
+-- WITH RECURSIVE fixpoint where each generation's whole board is one row (a
+-- nested array of 0/1 cells) computed from the previous generation's board.
+--
+-- Run it (each row is one line of a frame):
+--     n1k1 -f examples/queries/life.sql++ | jq -r '.line'
+--
+-- You'll see the classic 5-cell glider reappear shifted by (+1 row, +1 col)
+-- every 4 generations — i.e. gliding toward the bottom-right. Runs instantly.
+--
+-- How it works: a cell is born if it has exactly 3 live neighbours, and a live
+-- cell survives with 2 or 3 — evaluated for all cells "simultaneously" from the
+-- previous board. Neighbours are counted by indexing board[r+dr][c+dc] for the 8
+-- offsets; out-of-range (past the end) reads as MISSING (treated as 0), and we
+-- explicitly guard r/c >= 0 because a NEGATIVE index in SQL++ wraps to the end of
+-- the array (so a raw board[r-1] at the top edge would wrongly wrap around).
+-- ---------------------------------------------------------------------------
+
+WITH RECURSIVE
+
+  -- One row per generation: g is the generation number, b is the WIDTH x HEIGHT
+  -- board (an array of rows, each an array of 0/1). Here: 18 wide, 12 tall.
+  life AS (
+
+    -- ANCHOR (generation 0): paint an empty board and stamp a glider at the
+    -- top-left — the 5 live cells (0,1),(1,2),(2,0),(2,1),(2,2):
+    --     . # .
+    --     . . #
+    --     # # #
+    SELECT 0 AS g,
+           (ARRAY (ARRAY (CASE WHEN ANY p IN [[0,1],[1,2],[2,0],[2,1],[2,2]]
+                                    SATISFIES p[0] = r AND p[1] = c END
+                          THEN 1 ELSE 0 END)
+                   FOR c IN ARRAY_RANGE(0, 18) END)
+            FOR r IN ARRAY_RANGE(0, 12) END) AS b
+    FROM [1] AS seed
+
+    UNION ALL
+
+    -- RECURSIVE STEP: next board = apply the Life rules to every cell of b.
+    -- n = live-neighbour count = sum of the 8 guarded neighbour reads. A cell is
+    -- 1 next iff (it is live and n in {2,3}) or (it is dead and n = 3).
+    -- Every column MUST be aliased to the anchor's names (g, b): SQL++ unions
+    -- align by field name, so an un-aliased "g+1" would land under "$1" and vanish.
+    SELECT g + 1 AS g,
+           (ARRAY (ARRAY
+              (CASE
+                 WHEN (b[r][c] = 1
+                       AND ARRAY_SUM(ARRAY (CASE WHEN r+d[0] >= 0 AND c+d[1] >= 0
+                                                 THEN IFMISSING(b[r+d[0]][c+d[1]], 0) ELSE 0 END)
+                                     FOR d IN OFFS END) IN [2, 3])
+                   OR (IFMISSING(b[r][c], 0) = 0
+                       AND ARRAY_SUM(ARRAY (CASE WHEN r+d[0] >= 0 AND c+d[1] >= 0
+                                                 THEN IFMISSING(b[r+d[0]][c+d[1]], 0) ELSE 0 END)
+                                     FOR d IN OFFS END) = 3)
+                 THEN 1 ELSE 0
+               END)
+              FOR c IN ARRAY_RANGE(0, 18) END)
+            FOR r IN ARRAY_RANGE(0, 12) END) AS b
+    FROM life
+    LET OFFS = [[-1,-1],[-1,0],[-1,1],[0,-1],[0,1],[1,-1],[1,0],[1,1]]
+    WHERE g < 24   -- run 24 generations (6 glider cycles)
+  )
+
+-- RENDER each generation as a titled frame. The cross join with ARRAY_RANGE(-1,
+-- HEIGHT) prepends a header line (r = -1) before each board's 12 rows; a live
+-- cell is '#', dead is '.'. ORDER BY g, r keeps frames and their rows in order.
+SELECT CASE
+         WHEN r < 0 THEN "-- generation " || TO_STRING(l.g) || " --"
+         ELSE CONCAT2("", ARRAY (CASE WHEN l.b[r][c] = 1 THEN "#" ELSE "." END)
+                          FOR c IN ARRAY_RANGE(0, 18) END)
+       END AS line
+FROM life AS l, ARRAY_RANGE(-1, 12) AS r
+ORDER BY l.g, r
