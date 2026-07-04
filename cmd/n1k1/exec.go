@@ -83,7 +83,16 @@ func (c *cli) exec(stmt string) {
 		fmt.Fprint(c.stderr, glue.FormatConvPlan(res.Plan))
 	}
 
-	c.renderResult(res)
+	if isExplainStmt(stmt) {
+		// EXPLAIN's result is the cbq plan JSON. Render it as plain pretty-printed
+		// JSON (to stdout, so it stays copy-paste- and pipe-friendly) rather than the
+		// box renderer, whose cell dividers can't be pasted. The label goes to stderr
+		// so a redirect/pipe of stdout gets only the JSON.
+		fmt.Fprintln(c.stderr, "cbq plan:")
+		cmd.RenderJSONLines(c.out, res.Rows, true)
+	} else {
+		c.renderResult(res)
+	}
 
 	// .stats footer: the final per-operator counters + runtime totals (this is the
 	// whole display for `final` mode and for a non-TTY run, which skipped the live
