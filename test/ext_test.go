@@ -179,25 +179,51 @@ func TestExtAggregatesSparklineHistogram(t *testing.T) {
 	}
 }
 
-// TestExtRegisterJSDir exercises the directory-as-catalog registry.
-func TestExtRegisterJSDir(t *testing.T) {
+// TestExtRegisterExtensionDir exercises the directory-as-catalog registry and
+// the single-file loader, with kind auto-detected from the file extension. A
+// non-extension file (README.md) in the dir is skipped.
+func TestExtRegisterExtensionDir(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "triple.js"),
 		[]byte(`function triple(x) { return x * 3; }`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	names, err := glue.RegisterJSDir(dir)
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# not an extension"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	names, err := glue.RegisterExtensionDir(dir)
 	if err != nil {
-		t.Fatalf("RegisterJSDir: %v", err)
+		t.Fatalf("RegisterExtensionDir: %v", err)
 	}
 	if len(names) != 1 || names[0] != "triple" {
-		t.Fatalf("RegisterJSDir names = %v, want [triple]", names)
+		t.Fatalf("RegisterExtensionDir names = %v, want [triple] (README.md skipped)", names)
+	}
+
+	// Single-file loader, kind auto-detected from ".js".
+	f := filepath.Join(dir, "quadruple.js")
+	if err := os.WriteFile(f, []byte(`function quadruple(x) { return x * 4; }`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	name, err := glue.RegisterExtensionFile(f)
+	if err != nil || name != "quadruple" {
+		t.Fatalf("RegisterExtensionFile = (%q, %v), want (quadruple, nil)", name, err)
 	}
 
 	sess := extSession(t)
-	got := extRawRows(t, sess, `SELECT RAW triple(14)`)
-	if len(got) != 1 || got[0] != `42` {
+	if got := extRawRows(t, sess, `SELECT RAW triple(14)`); len(got) != 1 || got[0] != `42` {
 		t.Fatalf("triple(14) = %v, want [42]", got)
+	}
+	if got := extRawRows(t, sess, `SELECT RAW quadruple(3)`); len(got) != 1 || got[0] != `12` {
+		t.Fatalf("quadruple(3) = %v, want [12]", got)
+	}
+
+	// An unrecognized extension is a clean error, not a silent skip.
+	bad := filepath.Join(dir, "thing.xyz")
+	if err := os.WriteFile(bad, []byte("noop"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := glue.RegisterExtensionFile(bad); err == nil {
+		t.Fatalf("RegisterExtensionFile(%q): expected unsupported-extension error", bad)
 	}
 }
 
@@ -205,9 +231,9 @@ func TestExtRegisterJSDir(t *testing.T) {
 // extensions/functions/js and confirms they resolve and run, so the docs'
 // examples can't silently rot.
 func TestExtShippedJSExamples(t *testing.T) {
-	names, err := glue.RegisterJSDir("../extensions/functions/js")
+	names, err := glue.RegisterExtensionDir("../extensions/functions/js")
 	if err != nil {
-		t.Fatalf("RegisterJSDir(shipped): %v", err)
+		t.Fatalf("RegisterExtensionDir(shipped): %v", err)
 	}
 	want := []string{"add_two_numbers", "celsius_to_fahrenheit", "slugify"}
 	if strings.Join(names, ",") != strings.Join(want, ",") {

@@ -102,3 +102,54 @@ PDF/DOCX/XLSX files are generated (minimal-but-valid, no third-party deps):
 ```
 python3 examples/generate_binaries.py
 ```
+
+## Inline charts: sparkline() & histogram() aggregates
+
+n1k1 ships two extension aggregates that render a group's numbers as a little
+unicode chart (▁▂▃▄▅▆▇█) — great for eyeballing shape at a glance. They are
+**always available** (no loading needed) and, like every n1k1 aggregate, work
+with `GROUP BY` or over the whole result:
+
+- `sparkline(x)` — a mini line chart of the values **in scan order** (long
+  series are downsampled to ~100 bars); use it for time series.
+- `histogram(x)` — a bar chart of the value **distribution** across 20 buckets.
+
+```sh
+# CPU per host: a trend line (over time) + a value-distribution histogram.
+# `value` is a reserved word, so back-quote it.
+n1k1 -c "SELECT host, COUNT(*) AS n, sparkline(\`value\`) AS trend, histogram(\`value\`) AS dist
+         FROM cpu GROUP BY host ORDER BY host" examples/metrics
+```
+
+```
+host    n   trend                                              dist
+hostA  48   ▂▂▁▁▁▁▁▂▂▃▃▄▄▅▅▅▆▅▅▅▄▄▃▃▄▃▃▃▂▃▃▃▄▅▅▆▇▇█████▇▇▆▅▅   ▆▁▃▃▆▃▅▃▃▃▅▁█▁▃▁▃▃▃▄
+hostB  24   ▁▂▂█▁▁▁▂▂█▁▁▁▂▂█▁▁▁▁▂█▁▁                           █▆▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▃
+hostC  24   ▁▂▂▂▃▃▄▄▅▅▆▆▇▇██████████                           ▂▂▁▂▂▂▂▁▂▂▁▂▂▂▂▁▂▁▂█
+```
+
+hostA's two-month daily wave, hostB's periodic batch-job spikes, and hostC's
+cold-start ramp all read at a glance. A distribution histogram over order spend:
+
+```sh
+n1k1 -c "SELECT COUNT(*) AS orders, ROUND(AVG(total),2) AS avg, histogram(total) AS spend
+         FROM orders" examples/shop
+#  orders  avg     spend
+#  20      97.47   █▇▅▂▂▄▁▂▁▁▂▁▂▁▁▁▁▁▁▂     (right-skewed: many small, a long tail)
+```
+
+## Loading JavaScript UDFs (`-ext` / `.ext`)
+
+Scalar user-defined functions are plain JavaScript files whose base name is the
+SQL++ function name. Point `-ext` at a directory (or a single file); the kind is
+auto-detected from the file extension. See `extensions/functions/js/`.
+
+```sh
+n1k1 -ext extensions/functions/js \
+     -c "SELECT o.customer, celsius_to_fahrenheit(20) AS f, slugify(o.customer) AS slug
+         FROM orders o LIMIT 3" examples/shop
+```
+
+In the REPL, load them live with `.ext <dir-or-file>` (run `.help` to see it).
+Loading is opt-in — user code runs in-process. The `sparkline`/`histogram`
+aggregates above need no loading. See `DESIGN-extensions.md`.

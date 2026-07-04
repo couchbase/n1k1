@@ -29,10 +29,12 @@ import (
 //   - Native, zero-garbage extension AGGREGATES (sparkline, histogram) are wired
 //     into the cbq parser at package init; their computation lives in
 //     base/agg_ext.go via the base.Agg protocol.
-//   - Drop-in JS scalar UDFs (Tier 2, goja) are OPT-IN -- an embedder calls
-//     RegisterJSDir/RegisterJSFunc explicitly. They are NOT auto-loaded, since
-//     executing user JS in-process is a real attack surface (see the Caveats in
-//     DESIGN-extensions.md); the embedder decides when/whether to enable them.
+//   - Drop-in scalar-function extensions are loaded from files/dirs by
+//     RegisterExtensionFile / RegisterExtensionDir, which dispatch by file
+//     extension (today: ".js" JavaScript UDFs; WASM etc. later). Loading is
+//     OPT-IN -- an embedder (or the CLI's -ext flag / .ext command) calls it
+//     explicitly, since executing user code in-process is a real attack surface
+//     (see the Caveats in DESIGN-extensions.md).
 
 func init() {
 	// Extension aggregates. The name here MUST match a base.AggCatalog entry
@@ -50,39 +52,57 @@ func init() {
 	}
 }
 
-// RegisterJSFunc registers a single goja JS scalar UDF: source must define a
-// function whose name equals name, which then resolves as name(args) in SQL++.
-// Safe to call at startup before parsing; not safe to call concurrently with
-// query parsing.
-func RegisterJSFunc(name, source string) error {
-	return registerJSFunc(name, source)
+// extensionLoaders maps a (lower-case) file extension to the loader that turns
+// such a file into a registered function. This is the single place to add a new
+// extension kind (e.g. ".wasm") as the roadmap advances -- callers stay generic.
+var extensionLoaders = map[string]func(name, path string) error{
+	".js": func(name, path string) error {
+		src, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		return registerJSFunc(name, string(src)) // JavaScript scalar UDF.
+	},
 }
 
-// RegisterJSDir scans dir for "*.js" files and registers each as a scalar UDF
-// whose SQL++ name is the file's base name (minus ".js"); the file must define
-// a JS function of that same name. Returns the registered names (sorted).
-//
-// This is the "a bunch of JS in a directory / git repo" registry from
-// DESIGN-extensions.md Tier 2: the directory IS the catalog; `git pull` to
-// update. Intentionally opt-in (an embedder calls this) for the security
-// reasons noted above.
-func RegisterJSDir(dir string) ([]string, error) {
+// RegisterExtensionFile registers a single extension file as a scalar function
+// whose SQL++ name is the file's base name (minus its extension). The kind is
+// auto-detected from the file extension (today ".js" = JavaScript); an
+// unrecognized extension is an error. Returns the registered function name.
+func RegisterExtensionFile(path string) (string, error) {
+	ext := strings.ToLower(filepath.Ext(path))
+	load, ok := extensionLoaders[ext]
+	if !ok {
+		return "", fmt.Errorf("RegisterExtensionFile %q: unsupported extension %q", path, ext)
+	}
+	name := strings.ToLower(strings.TrimSuffix(filepath.Base(path), filepath.Ext(path)))
+	if err := load(name, path); err != nil {
+		return "", err
+	}
+	return name, nil
+}
+
+// RegisterExtensionDir scans dir (non-recursively) and registers every file
+// whose extension is a recognized extension kind, skipping the rest (READMEs,
+// etc.). The directory IS the catalog (DESIGN-extensions.md); `git pull` to
+// update. Returns the registered names (sorted). Opt-in, per the security note
+// above.
+func RegisterExtensionDir(dir string) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return nil, fmt.Errorf("RegisterJSDir %q: %w", dir, err)
+		return nil, fmt.Errorf("RegisterExtensionDir %q: %w", dir, err)
 	}
 
 	var names []string
 	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".js") {
+		if e.IsDir() {
 			continue
 		}
-		name := strings.ToLower(strings.TrimSuffix(e.Name(), ".js"))
-		src, err := os.ReadFile(filepath.Join(dir, e.Name()))
-		if err != nil {
-			return names, fmt.Errorf("RegisterJSDir reading %q: %w", e.Name(), err)
+		if _, ok := extensionLoaders[strings.ToLower(filepath.Ext(e.Name()))]; !ok {
+			continue // not a recognized extension file
 		}
-		if err := registerJSFunc(name, string(src)); err != nil {
+		name, err := RegisterExtensionFile(filepath.Join(dir, e.Name()))
+		if err != nil {
 			return names, err
 		}
 		names = append(names, name)
@@ -90,4 +110,13 @@ func RegisterJSDir(dir string) ([]string, error) {
 
 	sort.Strings(names)
 	return names, nil
+}
+
+// RegisterJSFunc registers a single JavaScript scalar UDF from inline source:
+// source must define a function whose name equals name, which then resolves as
+// name(args) in SQL++. The programmatic counterpart of dropping a "<name>.js"
+// file into an extension directory. Safe to call at startup before parsing; not
+// safe to call concurrently with query parsing.
+func RegisterJSFunc(name, source string) error {
+	return registerJSFunc(name, source)
 }

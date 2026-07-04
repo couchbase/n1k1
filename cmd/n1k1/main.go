@@ -75,6 +75,7 @@ func main() {
 		indexFlag   = flag.String("index", "lazy", "use catalog (secondary/FTS) indexes: "+
 			"lazy (default; build each on first use) | eager (build all up front)"+
 			" | off (ignore the catalog; always full-scan)")
+		extFlag = flag.String("ext", "", "load query extensions from comma-separated dirs and/or files; kind auto-detected by file extension (.js = JavaScript UDF). See .ext")
 	)
 	// -verbose / -v (synonyms sharing one value): a diagnostics level. A bare
 	// -verbose means on (level 1) and repeats accumulate (-v -v -v -> 3);
@@ -200,6 +201,20 @@ func main() {
 		stderr:    os.Stderr,
 		fancyTTY:  fancy,
 		style:     cmd.Style{On: fancy},
+	}
+
+	// -ext: register query extensions (e.g. JavaScript UDFs) before running any
+	// statements so the parser resolves their names. (The sparkline/histogram
+	// aggregates are always available -- glue registers them at init.)
+	if *extFlag != "" {
+		names, err := loadExtensions(*extFlag)
+		if len(names) > 0 {
+			fmt.Fprintf(os.Stderr, "%s: registered extension function(s): %s\n", prog, strings.Join(names, ", "))
+		}
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "%s: -ext: %v\n", prog, err)
+			os.Exit(1)
+		}
 	}
 
 	c.eagerBuildIndexes() // -index=eager: build all catalog indexes up front

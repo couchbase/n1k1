@@ -30,15 +30,20 @@ when the baked `exprTree`/`exprStr` string is re-parsed at runtime).
   `algebra.RegisterAggregate(name, property, agg)` (patch-06). See
   `glue/patches/README.md`. They just expose the otherwise package-private
   `_FUNCTIONS` / `_AGGREGATES` maps.
-- **Tier-2 goja JS scalar UDFs** — `glue.RegisterJSFunc(name, source)` and
-  `glue.RegisterJSDir(dir)` (the "directory *is* the catalog") register a
-  goja-backed `expression.Function` (`glue/ext_goja.go`). `NAME(args)` then
-  parses and evaluates through the existing interpreted/boxed lane (ExprTree →
-  `Expression.Evaluate`). goja is pure-Go/MIT/cgo-free, preserving the
-  `CGO_ENABLED=0` static binary. Runtimes are pooled per goroutine (goja is not
-  goroutine-safe); a panicking script is contained, never crashing the engine.
-  Opt-in (an embedder calls Register*), since running user JS in-process is an
-  attack surface.
+- **Tier-2 JavaScript scalar UDFs** — a general, extension-agnostic loader:
+  `glue.RegisterExtensionDir(dir)` scans a directory and `RegisterExtensionFile
+  (path)` loads one file, each **dispatching by file extension** (today `.js`;
+  `.wasm`/etc. slot into `extensionLoaders` later). `glue.RegisterJSFunc(name,
+  source)` registers inline JS. The "directory *is* the catalog." A `.js` file
+  becomes an `expression.Function` (`glue/ext_goja.go`) resolved as `NAME(args)`
+  and evaluated through the existing interpreted/boxed lane (ExprTree →
+  `Expression.Evaluate`). The JS runtime is pure-Go/MIT/cgo-free (goja),
+  preserving the `CGO_ENABLED=0` static binary; runtimes are pooled per
+  goroutine, object/array args are deep-copied in (no source mutation), a
+  runaway script is interrupted (`glue.JSCallTimeout`), and a name that would
+  shadow a builtin/aggregate is refused. Loading is opt-in (embedder, or the CLI
+  `-ext <dir|file>` flag / `.ext` REPL command) since in-process user code is an
+  attack surface. Example UDFs ship in `extensions/functions/js/`.
 - **Extension AGGREGATES `sparkline()` / `histogram()`** — native and
   **zero-garbage**, implemented against the `base.Agg` byte-slice
   Init/Update/Result protocol (`base/agg_ext.go`): Update only appends bytes
@@ -402,7 +407,7 @@ Verify each at adoption time (transitive deps included).
    full cbq `functions` subsystem (storage + metadata + `ParkableContext` +
    `Language` runner), two tiny fork setters (`expression.RegisterFunction`,
    `algebra.RegisterAggregate` — patch-05/06) open the builtin + aggregate
-   registries directly. On top of them: **Tier-2 goja scalar UDFs** (step 2) and
+   registries directly. On top of them: **Tier-2 JavaScript scalar UDFs** (step 2) and
    the **`sparkline()`/`histogram()` extension aggregates** (a variant of step 4,
    as native zero-garbage `base.Agg`s rather than scalar builtins). See the
    Status section above. The heavier UDF-subsystem bridge (below) is still the
@@ -411,8 +416,9 @@ Verify each at adoption time (transitive deps included).
    `VisitExecuteFunction`; provide n1k1's resolver + storage). Would add
    `CREATE FUNCTION` DDL (Tier 3) and a metadata-backed catalog; NOT required for
    the directory-registry Tier-2 UDFs already shipped via step 0.
-2. **DONE — Tier 2 goja + directory registry** — the "JS in a repo" feature
-   (`glue/ext_goja.go`, `glue.RegisterJSDir`).
+2. **DONE — Tier 2 JavaScript + a general extension loader** — the "code in a
+   repo" feature: `glue.RegisterExtensionDir`/`RegisterExtensionFile` dispatch by
+   file extension (`.js` today), CLI `-ext`/`.ext`; JS impl in `glue/ext_goja.go`.
 3. **Streaming source-function op** + route `FROM shred(...)`/loaders to it;
    pair with the DESIGN-data.md file-source work.
 4. **Native Go builtins** via `expression.RegisterFunction` (fork, patch-05, now
