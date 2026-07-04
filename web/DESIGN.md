@@ -64,8 +64,9 @@ keyspace).
    + "Secondary indexes" below. Real `IndexScan` in `EXPLAIN`, both builds.
 3. **OPFS index cache** (Phase 2 under #1) — **DONE** — `wasm/opfs.js` + `glue/idx_mem.go`
    two-tier cache. See "Secondary indexes" below.
-4. **Web Worker** (#3) — foundational; unlocks visible live stats + cancellation +
-   streaming at once. *Next.*
+4. **Web Worker** (#3) — **DONE** — `wasm/worker.js` hosts the engine off the main
+   thread; live stats stream mid-query. See "Web Worker" below. Next under it:
+   cancellation + streaming results.
 
 ### 1. Secondary indexes in the wasm build (the through-line)
 The reason we can't just recompile bbolt/bleve is mmap. Realistic path:
@@ -116,17 +117,29 @@ or index. Then `n1k1MountTree` + `n1k1OpenDir` + `activateSource` (the picker's 
 Validated headlessly with real gzip+tar bytes. Not supported: `.zst` (no browser codec),
 `.zip` (central-directory parsing — a follow-up). Caps: 200k docs / 64 MB.
 
-### 3. Web Worker  (foundational; unlocks several)
-Run the engine off the main thread; postMessage queries/results. Enables: **visible live
-stats** (see below), query **cancellation**/timeouts, responsive UI on big scans, and
-synchronous OPFS handles if ever needed.
+### 3. Web Worker  (DONE — `wasm/worker.js`)
+The engine, fs, ingestion and OPFS all run in a classic Web Worker
+(`importScripts` of wasm_exec.js + fs_mem/ingest/opfs + samples). `index.html` is a thin
+async RPC client (`{id, op, args}` ⇄ `{id, ok, result}`): `openBuiltin`/`loadFiles`/
+`openTree`/`query`, bundled to cut round-trips (each open also does the OPFS preload/persist
+inside the worker). The main thread only ships SQL + file bytes and renders rows/stats, so
+it stays responsive; a query blocks only the worker thread. All UI query calls (`run`,
+`buildSchema`) are now async. Web Workers are ~universal so there's no inline fallback;
+paths are relative to `web/wasm/` (../wasm_exec.js, ../n1k1.wasm, ../samples.js). The
+transport is browser-verified — node has no Web Worker API — but the engine behind it stays
+node-tested via the direct globals (e2e.test.mjs). Next under this: **cancellation**
+(needs an engine stop signal) and **streaming results** (the engine is pull-based; yield
+rows incrementally instead of collecting).
 
-### 4. Live stats  (plumbing already there)
-`glue.Session.CollectStats` + `OnStats(*base.Stats)` already emit per-operator counters at
-engine checkpoints (`../DESIGN-stats.md`). Mechanically it works in wasm; but on the main
-thread the UI can't repaint mid-query, so progress only shows *after* completion. Pair with
-#3 (worker) to stream live snapshots into a progress view. Moot for <20 ms demo queries;
-valuable once data/folders are large.
+### 4. Live stats  (DONE)
+`Session.CollectStats` + `OnStats(*base.Stats)` fire per `engine.ScanYieldStatsEvery` rows
+(`../DESIGN-stats.md`). `main_wasm.go`'s runQuery enables them and, via an optional
+`globalThis.n1k1EmitStats` hook (throttled 50 ms), streams `glue.StatsSnapshotJSON` snapshots;
+the worker forwards each as a `{type:"stats"}` message that the (free) main thread paints —
+the concrete payoff of #3. The final snapshot also rides in the query result. Serializer +
+"OnStats fires + snapshot has positive counters" are node/native-tested
+(`glue/stats_snapshot_test.go`). Only visibly *streams* on >`ScanYieldStatsEvery` (1024) rows,
+so load a large folder to watch it; tiny queries just show the final line.
 
 ### 5. Streaming results
 Engine is pull-based (`yieldVals`); today `main_wasm.go` collects all rows then returns.

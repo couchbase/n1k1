@@ -55,7 +55,8 @@
   }
   textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 
-  #status { margin: 12px 0; font-size: 13px; min-height: 20px; }
+  #status { margin: 12px 0 2px; font-size: 13px; min-height: 20px; }
+  #liveStats { font-size: 11.5px; color: var(--muted); min-height: 15px; margin-bottom: 10px; letter-spacing: .02em; }
   #status .ok { color: var(--ok); }
   #status .err { color: var(--err); }
   #status .spin { color: var(--muted); }
@@ -137,7 +138,8 @@
       </div>
       <textarea id="sql" spellcheck="false" placeholder="Loading engine&hellip;"></textarea>
 
-      <div id="status"><span class="spin">Downloading &amp; starting the WebAssembly engine&hellip;</span></div>
+      <div id="status"><span class="spin">Starting the WebAssembly engine in a worker&hellip;</span></div>
+      <div id="liveStats" class="mono"></div>
 
       <div class="results" id="resultsBox" style="display:none">
         <div class="results-head">
@@ -169,9 +171,8 @@
 
 <div id="dropzone">Drop JSON / JSONL / .gz / .tar.gz here to query it</div>
 <script src="samples.js"></script>
-<script src="wasm/fs_mem.js"></script>
-<script src="wasm/ingest.js"></script>
-<script src="wasm/opfs.js"></script>
+<!-- The engine + fs + ingest + OPFS all run inside wasm/worker.js, off the main
+     thread; this page only ships SQL/files to it and renders rows + live stats. -->
 <script>
 (function () {
   "use strict";
@@ -180,6 +181,7 @@
 
   const sel = $("examples"), schemaEl = $("schema"), sourceName = $("sourceName");
   let currentExamples = [];
+  let ready = false; // set true once the worker's engine is ready
 
   function setStatus(html) { statusEl.innerHTML = html; }
 
@@ -225,7 +227,7 @@
   // Build the schema sidebar by asking the engine itself: one COUNT(*) and one
   // LIMIT 1 sample per keyspace. This reuses the running engine rather than a
   // separate JS walk, so it reflects n1k1's own view of the data.
-  function buildSchema(keyspaces) {
+  async function buildSchema(keyspaces) {
     schemaEl.innerHTML = "";
     if (!keyspaces.length) {
       schemaEl.innerHTML = '<div class="ks" style="color:var(--muted)">No keyspaces found.</div>';
@@ -235,51 +237,44 @@
       const div = document.createElement("div");
       div.className = "ks";
       let count = "?";
-      try {
-        const c = JSON.parse(globalThis.n1k1RunQuery("SELECT COUNT(*) AS n FROM " + ident(ks)));
-        if (c.ok && c.rows[0]) count = c.rows[0].n;
-      } catch (e) { /* leave as ? */ }
+      const c = await q("SELECT COUNT(*) AS n FROM " + ident(ks));
+      if (c && c.rows[0]) count = c.rows[0].n;
       let html = '<div class="kname">' + escapeHtml(ks) + '</div>' +
                  '<div class="kmeta">' + count + " documents</div>";
-      try {
-        const s = JSON.parse(globalThis.n1k1RunQuery("SELECT k.* FROM " + ident(ks) + " k LIMIT 1"));
-        const doc = s.ok && s.rows[0] && typeof s.rows[0] === "object" ? s.rows[0] : {};
-        for (const [k, v] of Object.entries(doc)) {
-          html += '<div class="field">' + escapeHtml(k) + ' <span class="t">' + typeName(v) + "</span></div>";
-        }
-      } catch (e) { /* no fields */ }
+      const s = await q("SELECT k.* FROM " + ident(ks) + " k LIMIT 1");
+      const doc = s && s.rows[0] && typeof s.rows[0] === "object" ? s.rows[0] : {};
+      for (const [k, v] of Object.entries(doc)) {
+        html += '<div class="field">' + escapeHtml(k) + ' <span class="t">' + typeName(v) + "</span></div>";
+      }
       div.innerHTML = html;
       schemaEl.appendChild(div);
     }
   }
 
+  // q(sql) -> the engine's result object (rows/count/...) or null on failure.
+  async function q(sql) {
+    const m = await engine.query(sql);
+    return m && m.ok && m.result && m.result.ok ? m.result : null;
+  }
+
   // Switch the UI to a freshly opened data source: rebuild schema + examples,
   // then run the first example so the user sees data immediately.
-  function activateSource(keyspaces, label, curatedExamples) {
+  async function activateSource(keyspaces, label, curatedExamples) {
     sourceName.textContent = label;
-    buildSchema(keyspaces);
+    await buildSchema(keyspaces);
     setExamples(curatedExamples || generateExamples(keyspaces));
-    run();
+    await run();
   }
 
-  // Open a mounted datastore and activate it, with the OPFS index-cache dance
-  // around it: preload any cached index blobs into the fs BEFORE the first query
-  // builds the indexes, then persist freshly-built ones AFTER. Both are no-ops
-  // where OPFS is unavailable, so this works everywhere.
-  async function openAndActivate(mount, label, curatedExamples) {
-    const resp = JSON.parse(globalThis.n1k1OpenDir(mount));
-    if (!resp.ok) {
-      setStatus('<span class="err">Open failed: ' + escapeHtml(resp.error) + "</span>");
-      return false;
-    }
-    try { await globalThis.n1k1OPFS.preload(resp.cachePlan); } catch (e) { /* cache optional */ }
-    activateSource(resp.keyspaces, label, curatedExamples);
-    try { await globalThis.n1k1OPFS.persist(); } catch (e) { /* cache optional */ }
-    return true;
+  // Handle the reply from one of the engine's open ops (openBuiltin/loadFiles/
+  // openTree). The worker already did the OPFS index-cache preload; here we just
+  // surface errors or activate. m is the RPC envelope {ok, result|error}.
+  async function activateFromOpen(m, label, curatedExamples) {
+    if (!m || !m.ok) { setStatus('<span class="err">Open failed: ' + escapeHtml((m && m.error) || "worker") + "</span>"); return; }
+    const resp = m.result;
+    if (!resp || !resp.ok) { setStatus('<span class="err">Open failed: ' + escapeHtml((resp && resp.error) || "") + "</span>"); return; }
+    await activateSource(resp.keyspaces, label, curatedExamples);
   }
-
-  // ---- Mount the built-in sample data (the engine opens it at startup) -------
-  installN1k1FS("/n1k1data", DATASETS);
 
   // View toggle
   let view = "table";
@@ -334,38 +329,56 @@
     $("tableView").innerHTML = h + "</tbody></table>";
   }
 
-  function run() {
+  async function run() {
     const sql = sqlEl.value.trim();
     if (!sql) return;
     setStatus('<span class="spin">Running&hellip;</span>');
-    // Defer so the status paints before the (synchronous) engine call.
-    setTimeout(() => {
-      let resp;
-      try { resp = JSON.parse(globalThis.n1k1RunQuery(sql)); }
-      catch (e) { setStatus('<span class="err">Engine error: ' + escapeHtml(String(e)) + "</span>"); return; }
+    clearStats();
+    // The query runs in the worker; the UI thread stays free, so live per-op
+    // stats (onStats -> renderStats) paint while it executes.
+    const m = await engine.query(sql);
+    if (!m || !m.ok) { setStatus('<span class="err">Engine error: ' + escapeHtml((m && m.error) || "worker") + "</span>"); return; }
+    const resp = m.result;
 
-      $("resultsBox").style.display = "";
-      if (!resp.ok) {
-        setStatus('<span class="err">&#10007; ' + escapeHtml(resp.error) + "</span>");
-        $("resultMeta").textContent = "error";
-        $("tableView").innerHTML = '<div class="empty">&mdash;</div>';
-        $("jsonView").textContent = JSON.stringify(resp, null, 2);
-        return;
-      }
-      const warn = resp.warnings && resp.warnings.length
-        ? ' &middot; <span class="err">' + resp.warnings.length + " warning(s)</span>" : "";
-      setStatus('<span class="ok">&#10003; ' + resp.count + " row" + (resp.count === 1 ? "" : "s") +
-                "</span> in " + resp.elapsedMs.toFixed(2) + " ms" + warn);
-      $("resultMeta").textContent = resp.count + " row" + (resp.count === 1 ? "" : "s") +
-                                    " &middot; " + resp.elapsedMs.toFixed(2) + " ms";
-      renderTable(resp.rows);
-      $("jsonView").textContent = JSON.stringify(resp.rows, null, 2);
-    }, 0);
+    $("resultsBox").style.display = "";
+    if (!resp.ok) {
+      setStatus('<span class="err">&#10007; ' + escapeHtml(resp.error) + "</span>");
+      $("resultMeta").textContent = "error";
+      $("tableView").innerHTML = '<div class="empty">&mdash;</div>';
+      $("jsonView").textContent = JSON.stringify(resp, null, 2);
+      return;
+    }
+    const warn = resp.warnings && resp.warnings.length
+      ? ' &middot; <span class="err">' + resp.warnings.length + " warning(s)</span>" : "";
+    setStatus('<span class="ok">&#10003; ' + resp.count + " row" + (resp.count === 1 ? "" : "s") +
+              "</span> in " + resp.elapsedMs.toFixed(2) + " ms" + warn);
+    $("resultMeta").textContent = resp.count + " row" + (resp.count === 1 ? "" : "s") +
+                                  " &middot; " + resp.elapsedMs.toFixed(2) + " ms";
+    renderTable(resp.rows);
+    $("jsonView").textContent = JSON.stringify(resp.rows, null, 2);
+    renderStats(resp.stats, true); // final snapshot
   }
-  runBtn.addEventListener("click", run);
+  runBtn.addEventListener("click", () => run());
   sqlEl.addEventListener("keydown", (e) => {
     if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); run(); }
   });
+
+  // ---- Live per-operator stats (streamed from the worker mid-query) ----------
+  const statsEl = $("liveStats");
+  function clearStats() { statsEl.textContent = ""; }
+  function renderStats(snapshotJSON, final) {
+    let snap;
+    try { snap = typeof snapshotJSON === "string" ? JSON.parse(snapshotJSON) : snapshotJSON; }
+    catch (e) { return; }
+    if (!snap || !snap.ops || !snap.ops.length) { if (final) clearStats(); return; }
+    // Compact one-liner: each op's kind + its largest counter (rows flowing).
+    const parts = snap.ops.map((op) => {
+      let max = 0;
+      for (const k in op.stats) if (op.stats[k] > max) max = op.stats[k];
+      return max > 0 ? op.kind + ":" + max.toLocaleString() : null;
+    }).filter(Boolean);
+    statsEl.textContent = (final ? "" : "⏳ ") + parts.join("  ");
+  }
 
   // Wrap toggle: switch cell wrapping vs. single-line + horizontal scroll.
   const wrapBtn = $("wrapToggle");
@@ -421,32 +434,33 @@
     loadFiles([...e.dataTransfer.files]);
   });
 
-  // Read File objects to bytes, normalize to a datastore tree, mount + open.
+  // Read File objects to bytes and hand them to the worker, which ingests
+  // (decompress/untar/parse), mounts, and opens — all off the main thread.
   async function loadFiles(fileObjs) {
     if (!fileObjs.length) return;
-    if (!globalThis.n1k1Ready) { setStatus('<span class="err">Engine not ready yet.</span>'); return; }
+    if (!ready) { setStatus('<span class="err">Engine not ready yet.</span>'); return; }
     setStatus('<span class="spin">Reading ' + fileObjs.length + ' file(s)&hellip;</span>');
     let files;
     try {
       files = await Promise.all(fileObjs.map(async (f) => ({ name: f.name, bytes: new Uint8Array(await f.arrayBuffer()) })));
     } catch (e) { setStatus('<span class="err">Read failed: ' + escapeHtml(String(e)) + "</span>"); return; }
 
-    let tree, stats;
-    try { ({ tree, stats } = await globalThis.n1k1Ingest.filesToDatastore(files)); }
-    catch (e) { setStatus('<span class="err">Ingest failed: ' + escapeHtml(String(e)) + "</span>"); return; }
-    if (!stats.keyspaces) {
+    const mount = "/dropdata-" + (++mountSeq);
+    const m = await engine.loadFiles(files, mount);
+    if (!m.ok) { setStatus('<span class="err">Load failed: ' + escapeHtml(m.error) + "</span>"); return; }
+    const resp = m.result, stats = (resp && resp.stats) || {};
+    if (!resp.ok) {
       setStatus('<span class="err">No documents found. Supported: .json, .jsonl/.ndjson, .gz, .tar/.tar.gz.</span>' +
-                (stats.skipped.length ? '<br><span class="spin">Skipped: ' + escapeHtml(stats.skipped.slice(0, 5).join(", ")) + "</span>" : ""));
+                (stats.skipped && stats.skipped.length ? '<br><span class="spin">Skipped: ' + escapeHtml(stats.skipped.slice(0, 5).join(", ")) + "</span>" : ""));
       return;
     }
-    const mount = "/dropdata-" + (++mountSeq);
-    globalThis.n1k1MountTree(mount, tree);
     const note = stats.truncated ? " (truncated at cap)" : "";
     const label = fileObjs.length === 1 ? fileObjs[0].name : fileObjs.length + " files";
-    await openAndActivate(mount, label + "  ·  " + stats.docs + " docs" + note, null);
+    await activateFromOpen(m, label + "  ·  " + (stats.docs || 0) + " docs" + note, null);
   }
 
   async function openFolder() {
+    if (!ready) { setStatus('<span class="err">Engine not ready yet.</span>'); return; }
     let dirHandle;
     try { dirHandle = await window.showDirectoryPicker({ mode: "read" }); }
     catch (e) { return; } // user cancelled
@@ -470,45 +484,50 @@
     if (Object.keys(loose).length) keyspaces[dirHandle.name || "docs"] = loose;
 
     // Mount under a fresh path so it doesn't collide with the built-in sample,
-    // then have the engine (re)open it and report the keyspaces it exposes.
+    // then have the worker open it and report the keyspaces it exposes.
     const mount = "/userdata-" + (openFolder._n = (openFolder._n || 0) + 1);
-    globalThis.n1k1MountTree(mount, { default: keyspaces });
+    const m = await engine.openTree(mount, { default: keyspaces });
     const note = stats.truncated ? " (truncated at the size/file cap)" : "";
-    await openAndActivate(mount, dirHandle.name + "  ·  " + stats.count + " file(s)" + note, null);
+    await activateFromOpen(m, dirHandle.name + "  ·  " + stats.count + " file(s)" + note, null);
   }
 
-  // ---- Load wasm_exec.js then instantiate -----------------------------------
-  const script = document.createElement("script");
-  script.src = "wasm_exec.js";
-  script.onload = async () => {
-    try {
-      const go = new Go();
-      const result = await WebAssembly.instantiateStreaming(fetch("n1k1.wasm"), go.importObject);
-      go.run(result.instance); // blocks in Go on select{}; returns only on exit
-      // Poll briefly for readiness (main sets n1k1Ready after OpenSession).
-      let tries = 0;
-      const iv = setInterval(() => {
-        if (globalThis.n1k1Ready) {
-          clearInterval(iv);
-          runBtn.disabled = false;
-          sqlEl.placeholder = "";
-          // Open the built-in sample and show the curated examples (with the
-          // OPFS index-cache preload/persist around it).
-          openAndActivate("/n1k1data", "built-in sample", SAMPLE_QUERIES);
-        } else if (globalThis.n1k1InitError) {
-          clearInterval(iv);
-          setStatus('<span class="err">Init failed: ' + escapeHtml(globalThis.n1k1InitError) + "</span>");
-        } else if (++tries > 100) {
-          clearInterval(iv);
-          setStatus('<span class="err">Engine did not become ready.</span>');
-        }
-      }, 50);
-    } catch (e) {
-      setStatus('<span class="err">Failed to load engine: ' + escapeHtml(String(e)) +
-                '</span><br><span class="spin">(n1k1.wasm must be served over HTTP, not file://)</span>');
-    }
-  };
-  document.head.appendChild(script);
+  // ---- Engine: the n1k1 wasm runs in a Web Worker (off the main thread) -------
+  // The UI stays responsive during a query and live stats stream back mid-run.
+  const engine = (function makeEngine() {
+    const worker = new Worker("wasm/worker.js");
+    let seq = 0;
+    const pending = new Map();
+    let readyResolve, readyReject;
+    const readyP = new Promise((res, rej) => { readyResolve = res; readyReject = rej; });
+    worker.onmessage = (e) => {
+      const msg = e.data || {};
+      if (msg.type === "ready") { readyResolve(); return; }
+      if (msg.type === "initError") { readyReject(new Error(msg.error)); return; }
+      if (msg.type === "stats") { renderStats(msg.snapshot, false); return; }
+      if (msg.id != null && pending.has(msg.id)) { const r = pending.get(msg.id); pending.delete(msg.id); r(msg); }
+    };
+    worker.onerror = (e) => readyReject(new Error(e.message || "worker failed to load"));
+    const rpc = (op, args) => new Promise((resolve) => {
+      const id = ++seq; pending.set(id, resolve); worker.postMessage({ id, op, args });
+    });
+    return {
+      ready: readyP,
+      openBuiltin: () => rpc("openBuiltin"),
+      loadFiles: (files, mount) => rpc("loadFiles", { files, mount }),
+      openTree: (mount, tree) => rpc("openTree", { mount, tree }),
+      query: (sql) => rpc("query", { sql }),
+    };
+  })();
+
+  engine.ready.then(async () => {
+    ready = true;
+    runBtn.disabled = false;
+    sqlEl.placeholder = "";
+    await activateFromOpen(await engine.openBuiltin(), "built-in sample", SAMPLE_QUERIES);
+  }).catch((e) => {
+    setStatus('<span class="err">Failed to start engine: ' + escapeHtml(String((e && e.message) || e)) +
+              '</span><br><span class="spin">(serve over HTTP, not file://; needs a browser with Web Workers)</span>');
+  });
 })();
 </script>
 </body>

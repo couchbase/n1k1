@@ -21,6 +21,10 @@ Pick an example query or write your own, then **Run** (or ⌘/Ctrl+Enter). Joins
 `GROUP BY`, `UNNEST`, subqueries and `EXPLAIN` all work against the sample
 `beers` / `breweries` keyspaces.
 
+The engine runs in a **Web Worker**, so the page stays responsive and live
+per-operator stats stream under the status line while a query runs (visible on
+larger datasets — a tiny query just shows the final line).
+
 The sample ships a `.n1k1/catalog.json` declaring secondary indexes on `beers`.
 The browser has no bbolt (it needs mmap), so these are **in-memory** indexes
 (`glue/idx_mem.go`) — the **Indexed filter (EXPLAIN)** example shows the planner
@@ -90,6 +94,7 @@ handling because a browser has no OS:
 | `wasm/fs_mem.js`    | in-memory read-only filesystem shim for `GOOS=js` |
 | `wasm/ingest.js`    | drag-drop / file ingestion: gunzip + untar + JSON(L) → keyspaces |
 | `wasm/opfs.js`      | OPFS cache for built in-memory indexes (preload/persist; optional) |
+| `wasm/worker.js`    | Web Worker hosting the engine off the main thread (query RPC + live stats) |
 | `wasm/build.sh`     | builds `n1k1.wasm`, ships `wasm_exec.js`, applies dep patches |
 | `wasm/overlay/`     | js-tagged stubs copied into the local dependency copies |
 

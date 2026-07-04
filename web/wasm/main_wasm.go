@@ -29,6 +29,7 @@ import (
 	"syscall/js"
 	"time"
 
+	"github.com/couchbase/n1k1/base"
 	"github.com/couchbase/n1k1/glue"
 )
 
@@ -136,6 +137,27 @@ func runQuery(this js.Value, args []js.Value) interface{} {
 	}
 	stmt := args[0].String()
 
+	// Live progress: collect per-operator counters and, if the host registered a
+	// globalThis.n1k1EmitStats(json) hook (the Web Worker does -- see
+	// wasm/worker.js), stream throttled snapshots to it during execution. The
+	// engine invokes OnStats every ScanYieldStatsEvery rows, so a long query shows
+	// progress while the worker thread is busy. Throttled to keep the boundary
+	// cheap; the final snapshot is always included in the result below.
+	session.CollectStats = true
+	var lastEmit time.Time
+	session.OnStats = func(s *base.Stats) {
+		hook := js.Global().Get("n1k1EmitStats")
+		if hook.Type() != js.TypeFunction {
+			return
+		}
+		now := time.Now()
+		if now.Sub(lastEmit) < 50*time.Millisecond {
+			return
+		}
+		lastEmit = now
+		hook.Invoke(glue.StatsSnapshotJSON(s))
+	}
+
 	start := time.Now()
 	res, err := session.Run(stmt)
 	if err != nil {
@@ -163,7 +185,8 @@ func runQuery(this js.Value, args []js.Value) interface{} {
 		Warnings  []string          `json:"warnings"`
 		ElapsedMs float64           `json:"elapsedMs"`
 		Count     int               `json:"count"`
-	}{true, rows, warnings, elapsedMs, len(rows)})
+		Stats     json.RawMessage   `json:"stats"` // final per-operator snapshot
+	}{true, rows, warnings, elapsedMs, len(rows), json.RawMessage(glue.StatsSnapshotJSON(res.Stats))})
 	if merr != nil {
 		return respondError("result marshal: " + merr.Error())
 	}
