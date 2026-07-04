@@ -128,7 +128,29 @@ var DatastoreFetchNative = true
 // S3) overlaps with fetch/downstream processing. Both modes share the same
 // fetchOne/flushCbq logic. (A future high-latency datastore would select this
 // per-keyspace rather than globally.)
+//
+// Overridable at startup via the N1K1_DATASTORE_FETCH env var (actor|inline); see
+// the init below.
 var DatastoreFetchActor = false
+
+func init() {
+	if actor, ok := parseFetchMode(os.Getenv("N1K1_DATASTORE_FETCH")); ok {
+		DatastoreFetchActor = actor
+	}
+}
+
+// parseFetchMode maps a N1K1_DATASTORE_FETCH value to the DatastoreFetchActor mode:
+// "actor" -> true (concurrent), "inline" -> false. ok is false for empty or an
+// unrecognized value, in which case the built-in default is kept.
+func parseFetchMode(s string) (actor bool, ok bool) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "actor":
+		return true, true
+	case "inline":
+		return false, true
+	}
+	return false, false
+}
 
 func DatastoreFetch(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 	yieldErr base.YieldErr, path, pathNext string) {
