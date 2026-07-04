@@ -571,15 +571,24 @@ results): **total allocation ~2.0 GB → ~917 MB (~54%), the fetch subtree
   virtual primary index (its `Scan` never feeds the sender, deadlocking the
   drain). `DatastoreScanIndex` now yields the record ids from the records source
   (`scanContainerKeys`, cached per request), the same ids the records scan
-  assigns, so the following Fetch can resolve them. (A *covering* primary scan —
-  `SELECT` only `meta().id` — over such a keyspace still returns empty via the
-  readdir/stem path; tracked as a TODO, empty not a hang.)
-- **Still future work: compressed / non-line containers.** A `.gz` offset is into
-  the *decompressed* stream, which can't seek the compressed bytes, so a `.gz`
-  record omits the `@<offset>` suffix and isn't key-fetchable yet (needs full
+  assigns, so the following Fetch can resolve them. And a *covering* primary scan
+  (`SELECT` only `meta().id`) now routes to a records-scan (whole doc + `^id`)
+  instead of a scan-index + synthesized fetch, so it resolves without a fetch —
+  which also fixes a container record whose id has no fetchable offset (below).
+- **Done: fetch-by-key into a multi-document (`---`) YAML stream.** Same
+  byte-offset scheme: `records` finds each document's start (a `---` marker, which
+  YAML reserves at column 0 — see `yamlDocOffsets`) and bakes it into the id
+  (`<relpath>#<i>@<offset>`); fetch seeks there and decodes that one document
+  (`records.DecodeYAMLDoc`) rather than one line, since a YAML document spans
+  multiple lines. So `USE KEYS` / `ON KEYS` joins work against `---` YAML streams.
+- **Still future work: compressed / non-seekable-shape containers.** A `.gz` offset
+  is into the *decompressed* stream, which can't seek the compressed bytes, so a
+  `.gz` record omits the `@<offset>` suffix and isn't key-fetchable yet (needs full
   decompression + an in-memory/segment index, or a packed uncompressed segment —
-  the mmap-vs-`ReadAt` tradeoffs above). CSV / JSON-array records likewise don't
-  carry an offset yet.
+  the mmap-vs-`ReadAt` tradeoffs above). Records with no clean standalone byte span
+  likewise carry no offset: CSV rows, JSON-array elements, and **top-level YAML
+  sequence elements** (a `- item` isn't a standalone document — only `---`-stream
+  documents are).
 
 ## 2. Directory layouts & FROM-term resolution
 

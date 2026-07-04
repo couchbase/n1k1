@@ -402,6 +402,31 @@ func TestFlatFileJSONLOnKeysJoinRoundTrip(t *testing.T) {
 	}
 }
 
+// TestFlatFileYAMLOnKeysJoinRoundTrip: a multi-document (`---`) YAML file is
+// byte-seekable -- each document's byte offset is baked into its id
+// (svcs.yaml#i@offset) -- so an ON KEYS self-join, whose inner side fetches by
+// META(s1).id, round-trips every document to itself (fetch seeks to the offset
+// and decodes that one YAML document).
+func TestFlatFileYAMLOnKeysJoinRoundTrip(t *testing.T) {
+	path := writeFlatFile(t, "svcs.yaml",
+		"name: a\nteam: x\n---\nname: b\nteam: y\n---\nname: c\nteam: z\n")
+	stmt := "SELECT s2.name AS n FROM svcs s1 JOIN svcs s2 ON KEYS META(s1).id"
+	store, conv := flatRootConv(t, path, stmt)
+	rows := flatRootRows(t, conv, testGlueExec(t, false, store, conv))
+	if len(rows) != 3 {
+		t.Fatalf("want 3 round-tripped rows, got %d (%v)", len(rows), rows)
+	}
+	got := map[string]bool{}
+	for _, row := range rows {
+		got[jsonOf(row)] = true
+	}
+	for _, want := range []string{`{"n":"a"}`, `{"n":"b"}`, `{"n":"c"}`} {
+		if !got[want] {
+			t.Fatalf("missing round-tripped row %s; got %v", want, rows)
+		}
+	}
+}
+
 // TestFlatFileGzipStem: a single foo.jsonl.gz is keyspace "foo" (both the .gz and
 // .jsonl extensions are stripped) and transparently decompressed.
 func TestFlatFileGzipStem(t *testing.T) {

@@ -186,7 +186,7 @@ func OpenFile(path, idPrefix string) (Source, error) {
 		}
 		return s, nil
 	case ".yaml", ".yml":
-		s, err := newYAMLSource(r, closers, idPrefix, stem(path))
+		s, err := newYAMLSource(r, closers, idPrefix, stem(path), seekable)
 		if err != nil {
 			closeAll(closers)
 			return nil, err
@@ -352,63 +352,183 @@ func (s *jsonSource) Close() error { return closeAll(s.closers) }
 
 // -------------------------------------------------------------- YAML source
 
+// yamlSource yields records precomputed from a YAML file: each holds an id and
+// the record's JSON bytes (both borrowed until the next Next, per the Source
+// contract). Built by newYAMLSource.
+type yamlSource struct {
+	recs    []yamlRec
+	i       int
+	closers []io.Closer
+}
+
+type yamlRec struct {
+	id  []byte
+	doc []byte
+}
+
+func (s *yamlSource) Next(rec *Record) (bool, error) {
+	if s.i >= len(s.recs) {
+		return false, nil
+	}
+	rec.ID, rec.Doc = s.recs[s.i].id, s.recs[s.i].doc
+	s.i++
+	return true, nil
+}
+
+func (s *yamlSource) Close() error { return closeAll(s.closers) }
+
 // newYAMLSource handles .yaml/.yml, mirroring the JSON record model. A file is
 // one of:
 //   - a multi-document (`---`-separated) stream -- one record per document; this
-//     is YAML's native equivalent of JSON Lines (a `.yaml` file IS the container,
-//     no separate extension needed since multi-document is part of YAML itself);
+//     is YAML's native equivalent of JSON Lines. When seekable (an uncompressed
+//     file), each document's byte offset is baked into its id
+//     (<prefix>#<i>@<offset>), so a key-based fetch can seek straight to it and
+//     decode that one document (see DecodeYAMLDoc);
 //   - a single document that is a top-level sequence (list) -- one record per
-//     element, like a top-level array in a `.json` file;
-//   - a single document (map/scalar) -- one record, id = the file stem (the
-//     one-doc-per-file convention).
+//     element, like a top-level array in a `.json` file. A sequence element is
+//     NOT a standalone document, so these carry NO offset (ids <prefix>#<i>);
+//   - a single document (map/scalar) -- one record, id = the file stem.
 //
 // Each record is decoded and re-marshaled to a JSON value, so the rest of the
-// pipeline sees the same JSON bytes it gets for a .json record. Records are
-// buffered and iterated via jsonSource (identical "buffered JSON-byte docs" +
-// id logic: <prefix>#<i> for many, the stem for one). YAML records aren't
-// byte-seekable, so ids carry no "@<offset>" -- key-based fetch into a multi-doc
-// YAML file isn't supported (like a JSON array), only whole-file scans.
-func newYAMLSource(r io.Reader, closers []io.Closer, idPrefix, stem string) (Source, error) {
-	dec := yaml.NewDecoder(r)
+// pipeline sees the same JSON bytes it gets for a .json record. The whole file is
+// read up front: document boundaries (byte offsets) are found by scanning for
+// `---` markers, which YAML reserves at column 0 (see yamlDocOffsets), then each
+// document's byte range is yaml.Unmarshal'd.
+func newYAMLSource(r io.Reader, closers []io.Closer, idPrefix, stem string, seekable bool) (Source, error) {
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return nil, err
+	}
 
-	var vals []interface{}
-	for {
-		var v interface{}
-		err := dec.Decode(&v)
-		if err == io.EOF {
-			break
+	// Decode each `---`-delimited document, remembering its start offset.
+	type docAt struct {
+		off int
+		v   interface{}
+	}
+	var docs []docAt
+	offs := yamlDocOffsets(data)
+	for i, off := range offs {
+		end := len(data)
+		if i+1 < len(offs) {
+			end = offs[i+1]
 		}
-		if err != nil {
+		var v interface{}
+		if err := yaml.Unmarshal(data[off:end], &v); err != nil {
 			return nil, err
 		}
 		if v == nil {
 			continue // empty document (e.g. a bare or trailing `---`)
 		}
-		vals = append(vals, v)
+		docs = append(docs, docAt{off, v})
 	}
 
-	// A single top-level sequence expands to one record per element (matching a
-	// top-level JSON array); a multi-document stream keeps one record per document
-	// (even when a document is itself a list -- mirroring the JSON value stream).
-	if len(vals) == 1 {
-		if seq, ok := vals[0].([]interface{}); ok {
-			vals = seq
+	src := &yamlSource{closers: closers}
+	marshal := func(v interface{}) ([]byte, error) { return json.Marshal(yamlToJSONValue(v)) }
+
+	// A single top-level sequence expands to one record per element (like a
+	// top-level JSON array). Elements aren't standalone documents, so no offset.
+	if len(docs) == 1 {
+		if seq, ok := docs[0].v.([]interface{}); ok {
+			for i, el := range seq {
+				jb, err := marshal(el)
+				if err != nil {
+					return nil, err
+				}
+				src.recs = append(src.recs, yamlRec{id: appendRecordID(nil, idPrefix, i), doc: jb})
+			}
+			return src, nil
 		}
-	}
-
-	docs := make([][]byte, 0, len(vals))
-	for _, v := range vals {
-		jb, err := json.Marshal(yamlToJSONValue(v))
+		// A single non-sequence document -> the file stem (one-doc-per-file).
+		jb, err := marshal(docs[0].v)
 		if err != nil {
 			return nil, err
 		}
-		docs = append(docs, jb)
+		src.recs = append(src.recs, yamlRec{id: []byte(stem), doc: jb})
+		return src, nil
 	}
 
-	return &jsonSource{
-		docs: docs, closers: closers, idPrefix: idPrefix,
-		stem: stem, single: len(docs) == 1,
-	}, nil
+	// A multi-document stream -> one record per document, byte-seekable (when the
+	// file's bytes are the raw file, i.e. uncompressed): id <prefix>#<i>@<offset>.
+	for i, d := range docs {
+		jb, err := marshal(d.v)
+		if err != nil {
+			return nil, err
+		}
+		id := appendRecordID(nil, idPrefix, i)
+		if seekable {
+			id = append(id, '@')
+			id = strconv.AppendInt(id, int64(d.off), 10)
+		}
+		src.recs = append(src.recs, yamlRec{id: id, doc: jb})
+	}
+	return src, nil
+}
+
+// yamlDocOffsets returns the byte offset of each YAML document in data. The first
+// document starts at 0; each later one starts at a `---` document-start marker.
+// YAML reserves `---` at column 0 as that marker (block-scalar bodies are
+// indented and a plain scalar can't begin a continuation line with a column-0
+// `---`), so a line beginning `---` (then end-of-line, space/tab, or a `#`
+// comment) reliably delimits a document -- letting a fetch seek to one.
+func yamlDocOffsets(data []byte) []int {
+	offs := []int{0}
+	i, lineNo := 0, 0
+	for i < len(data) {
+		lineStart := i
+		nl := bytes.IndexByte(data[i:], '\n')
+		var line []byte
+		if nl < 0 {
+			line, i = data[i:], len(data)
+		} else {
+			line, i = data[i:i+nl], i+nl+1
+		}
+		// Line 0's start (offset 0) is already recorded; a `---` there is the first
+		// document's own marker, not a separator.
+		if lineNo > 0 && isYAMLDocMarker(line) {
+			offs = append(offs, lineStart)
+		}
+		lineNo++
+	}
+	return offs
+}
+
+func isYAMLDocMarker(line []byte) bool {
+	if !bytes.HasPrefix(line, []byte("---")) {
+		return false
+	}
+	rest := line[3:]
+	return len(rest) == 0 || rest[0] == ' ' || rest[0] == '\t' || rest[0] == '\r' || rest[0] == '#'
+}
+
+// IsYAMLFile reports whether path is a YAML file (by inner extension, ignoring a
+// compression suffix). Used by the fetch path to decode a container record as one
+// YAML document rather than one line.
+func IsYAMLFile(path string) bool {
+	ext := innerExt(path)
+	return ext == ".yaml" || ext == ".yml"
+}
+
+// DecodeYAMLDoc reads exactly one YAML document from r and returns it as JSON
+// bytes (the same shape newYAMLSource produces). For a key-based fetch that has
+// seeked r to a document's byte offset (the `@<offset>` in a multi-doc YAML id).
+// ok is false (nil error) at EOF or for an empty document.
+func DecodeYAMLDoc(r io.Reader) (doc []byte, ok bool, err error) {
+	var v interface{}
+	e := yaml.NewDecoder(r).Decode(&v)
+	if e == io.EOF {
+		return nil, false, nil
+	}
+	if e != nil {
+		return nil, false, e
+	}
+	if v == nil {
+		return nil, false, nil
+	}
+	jb, e := json.Marshal(yamlToJSONValue(v))
+	if e != nil {
+		return nil, false, e
+	}
+	return jb, true, nil
 }
 
 // yamlToJSONValue makes a YAML-decoded value json.Marshal-able: it rewrites any

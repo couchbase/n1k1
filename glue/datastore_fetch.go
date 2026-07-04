@@ -29,6 +29,7 @@ import (
 	"github.com/couchbase/query/value"
 
 	"github.com/couchbase/n1k1/base"
+	"github.com/couchbase/n1k1/records"
 )
 
 func init() {
@@ -490,11 +491,12 @@ func containerBaseDir(keyspace datastore.Keyspace) string {
 }
 
 // parseContainerKey splits a seekable container record id
-// `<relpath>#<line>@<offset>` into its dir-relative file path and byte offset.
-// ok is false when the id has no `@<offset>` suffix -- a record in a compressed
-// (.gz/.zst), CSV, or JSON-array file, whose bytes aren't randomly seekable, so
-// key-based fetch of it isn't supported yet. Parses from the right (last '@',
-// then the '#' before it) so a `<relpath>` containing '#'/'@' still resolves.
+// `<relpath>#<line>@<offset>` into its dir-relative file path and byte offset
+// (a JSONL line's start, or a multi-doc YAML document's start). ok is false when
+// the id has no `@<offset>` suffix -- a record whose bytes aren't randomly
+// seekable (a compressed .gz/.zst, CSV, JSON-array, or top-level-YAML-sequence
+// record), so key-based fetch of it isn't supported. Parses from the right (last
+// '@', then the '#' before it) so a `<relpath>` containing '#'/'@' still resolves.
 func parseContainerKey(key string) (relpath string, off int64, ok bool) {
 	at := strings.LastIndexByte(key, '@')
 	if at < 0 {
@@ -525,10 +527,12 @@ func containerFilePath(dir, relpath string) (string, bool) {
 
 // readContainerRecord resolves one container record: it parses key's
 // `<relpath>@<offset>`, opens the file, seeks to the record's byte offset, and
-// reads its single line into the reused buffer *bufp, returning the doc with
-// surrounding whitespace trimmed (matching the scan's Doc). ok is false -- with
-// no error -- for an unsupported (non-seekable) key or a missing file, both of
-// which the caller treats as a non-existent doc and skips.
+// reads that one record, returning its bytes. A JSONL record is one line (read
+// into the reused buffer *bufp, whitespace-trimmed); a YAML record is one
+// document (decoded to JSON bytes -- see records.DecodeYAMLDoc), since a YAML
+// document spans multiple lines. ok is false -- with no error -- for an
+// unsupported (non-seekable) key or a missing file, both of which the caller
+// treats as a non-existent doc and skips.
 func readContainerRecord(dir, key string, bufp *[]byte) (doc []byte, ok bool, err error) {
 	relpath, off, ok := parseContainerKey(key)
 	if !ok {
@@ -546,6 +550,13 @@ func readContainerRecord(dir, key string, bufp *[]byte) (doc []byte, ok bool, er
 		return nil, false, e
 	}
 	defer f.Close()
+
+	if records.IsYAMLFile(relpath) {
+		if _, e := f.Seek(off, io.SeekStart); e != nil {
+			return nil, false, e
+		}
+		return records.DecodeYAMLDoc(f)
+	}
 
 	line, e := readLineAtInto(f, off, bufp)
 	if e != nil {

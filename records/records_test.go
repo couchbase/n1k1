@@ -19,6 +19,7 @@ import (
 	"image/color"
 	"image/jpeg"
 	"image/png"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -279,7 +280,9 @@ func TestYAMLDecode(t *testing.T) {
 		t.Errorf("single doc = %s", docs[0])
 	}
 
-	// Multi-document (--- separated) -> prefix#i ids, with a nested map and array.
+	// Multi-document (--- separated) -> prefix#i@offset ids (byte-seekable), with a
+	// nested map and array. The `---` line here is at byte 46: "name: alpha\n"(12) +
+	// "tags: [web, prod]\n"(18) + "cpu: {cores: 4}\n"(16).
 	multi := filepath.Join(dir, "servers.yaml")
 	body := "name: alpha\ntags: [web, prod]\ncpu: {cores: 4}\n" +
 		"---\n" +
@@ -295,11 +298,29 @@ func TestYAMLDecode(t *testing.T) {
 	if len(docs) != 2 {
 		t.Fatalf("multi: want 2 docs, got %d: %v", len(docs), docs)
 	}
-	if ids[0] != "servers.yaml#0" || ids[1] != "servers.yaml#1" {
-		t.Errorf("multi ids = %v, want [servers.yaml#0 servers.yaml#1]", ids)
+	if ids[0] != "servers.yaml#0@0" || ids[1] != "servers.yaml#1@46" {
+		t.Errorf("multi ids = %v, want [servers.yaml#0@0 servers.yaml#1@46]", ids)
 	}
 	if docs[0] != `{"cpu":{"cores":4},"name":"alpha","tags":["web","prod"]}` {
 		t.Errorf("multi doc0 = %s", docs[0])
+	}
+
+	// The @offset is real: seek to doc 1's offset and DecodeYAMLDoc gets that
+	// document (what a key-based fetch does).
+	f, err := os.Open(multi)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if _, err := f.Seek(46, io.SeekStart); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := DecodeYAMLDoc(f)
+	if err != nil || !ok {
+		t.Fatalf("DecodeYAMLDoc @46: ok=%v err=%v", ok, err)
+	}
+	if string(got) != `{"cpu":{"cores":8},"name":"beta","tags":["db"]}` {
+		t.Errorf("DecodeYAMLDoc @46 = %s, want doc 1 (beta)", got)
 	}
 
 	// A single document that is a top-level sequence expands to one record per
