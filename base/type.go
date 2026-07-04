@@ -113,3 +113,17 @@ func parseType(v Val) int {
 	_, pt := Parse(v)
 	return pt
 }
+
+// Type-test predicates over a ValType, passed as real func values to the engine's
+// shared is-type harness (ExprIsType). Exported + in base so LzExprFmt can emit
+// them by name (base.TypeIsArray) into the compiled path.
+func TypeIsArray(t int) bool   { return t == ValTypeArray }
+func TypeIsNumber(t int) bool  { return t == ValTypeNumber }
+func TypeIsString(t int) bool  { return t == ValTypeString }
+func TypeIsBoolean(t int) bool { return t == ValTypeBoolean }
+func TypeIsObject(t int) bool  { return t == ValTypeObject }
+
+// TypeIsAtom: a scalar -- boolean, number, or string (not array/object).
+func TypeIsAtom(t int) bool {
+	return t == ValTypeBoolean || t == ValTypeNumber || t == ValTypeString
+}

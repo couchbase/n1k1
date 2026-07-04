@@ -37,46 +37,38 @@ func init() {
 	ExprCatalog["to_number"] = ExprToNumber
 }
 
-// Each predicate passes its type test directly into the shared harness.
-func typeIsArray(t int) bool   { return t == base.ValTypeArray }
-func typeIsNumber(t int) bool  { return t == base.ValTypeNumber }
-func typeIsString(t int) bool  { return t == base.ValTypeString }
-func typeIsBoolean(t int) bool { return t == base.ValTypeBoolean }
-func typeIsObject(t int) bool  { return t == base.ValTypeObject }
-
-// IS_ATOM: a scalar -- boolean, number, or string (not array/object).
-func typeIsAtom(t int) bool {
-	return t == base.ValTypeBoolean || t == base.ValTypeNumber || t == base.ValTypeString
-}
-
+// Each predicate passes its type test as a real func value (base.TypeIs*) into
+// the shared harness -- the codegen emits it by name via LzExprFmt, so no int
+// op-code + switch is needed. This is the func-passing spike; extend the pattern
+// as the codegen supports it (see DESIGN-exprs.md).
 func ExprIsArray(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	return ExprIsType(lzVars, labels, params, path, typeIsArray)
+	return ExprIsType(lzVars, labels, params, path, base.TypeIsArray)
 }
 
 func ExprIsNumber(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	return ExprIsType(lzVars, labels, params, path, typeIsNumber)
+	return ExprIsType(lzVars, labels, params, path, base.TypeIsNumber)
 }
 
 func ExprIsString(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	return ExprIsType(lzVars, labels, params, path, typeIsString)
+	return ExprIsType(lzVars, labels, params, path, base.TypeIsString)
 }
 
 func ExprIsBoolean(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	return ExprIsType(lzVars, labels, params, path, typeIsBoolean)
+	return ExprIsType(lzVars, labels, params, path, base.TypeIsBoolean)
 }
 
 func ExprIsObject(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	return ExprIsType(lzVars, labels, params, path, typeIsObject)
+	return ExprIsType(lzVars, labels, params, path, base.TypeIsObject)
 }
 
 func ExprIsAtom(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	return ExprIsType(lzVars, labels, params, path, typeIsAtom)
+	return ExprIsType(lzVars, labels, params, path, base.TypeIsAtom)
 }
 
 // -----------------------------------------------------

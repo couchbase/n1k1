@@ -354,9 +354,13 @@ func EmitBlock(state *State, he *HandlerEntry, isLzBlock bool,
 				return simpleExpr
 			}
 
-			liveExprs = append(liveExprs, simpleExpr)
+			// Render live exprs via base.LzExprFmt rather than a raw %#v: it is
+			// %#v for ints/bools/strings (unchanged) but emits a FUNC value by its
+			// qualified name, so a harness can take a real func param (e.g.
+			// base.StrUpper) instead of an int op-code + switch.
+			liveExprs = append(liveExprs, "base.LzExprFmt("+simpleExpr+")")
 
-			return "%#v"
+			return "%s"
 		})
 
 	if strings.HasSuffix(line, "}") &&

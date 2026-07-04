@@ -5967,6 +5967,16 @@ var TestCasesSimple = []TestCaseSimple{
 		[]interface{}{"json", `["x","y","z"]`}, []interface{}{"json", `"z"`}}, `2`),
 	naryProjectCase("array_position-absent", []interface{}{"array_position",
 		[]interface{}{"json", `[1,2]`}, []interface{}{"json", `9`}}, `-1`),
+
+	// is-type predicates in the COMPILED path -- exercises func-value params
+	// emitted by name (base.TypeIs*) via LzExprFmt (previously un-compilable).
+	naryProjectCase("is_number-yes", []interface{}{"is_number", []interface{}{"json", `5`}}, `true`),
+	naryProjectCase("is_number-no", []interface{}{"is_number", []interface{}{"json", `"x"`}}, `false`),
+	naryProjectCase("is_string", []interface{}{"is_string", []interface{}{"json", `"hi"`}}, `true`),
+	naryProjectCase("is_array", []interface{}{"is_array", []interface{}{"json", `[1,2]`}}, `true`),
+	naryProjectCase("is_object", []interface{}{"is_object", []interface{}{"json", `{"a":1}`}}, `true`),
+	naryProjectCase("is_atom", []interface{}{"is_atom", []interface{}{"json", `5`}}, `true`),
+	naryProjectCase("is_null-null", []interface{}{"is_null", []interface{}{"json", `null`}}, `true`),
 }
 
 // naryProjectCase builds a TestCaseSimple that projects a single native
