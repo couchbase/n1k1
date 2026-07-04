@@ -217,20 +217,19 @@ func (v *statsView) renderFinal(s *base.Stats, exprLine string) {
 	}
 }
 
-// exprStatsLine summarizes expression evaluation for the stats footer: how many of
-// the plan's project/filter expressions the engine runs natively (raw bytes) vs
-// boxed (converted to a cbq value.Value for expression.Evaluate) -- a static,
-// build-time coverage count -- followed by boxedEvals, the number of per-row
-// evaluations that actually took the GC-heavy boxed lane at run time. Returns ""
-// when there's nothing to report. See glue.ExprCoverage / Result.BoxedEvals.
+// exprStatsLine summarizes the boxed (GC-heavy cbq-fallback) expression work for
+// the stats footer: how many of the plan's project/filter expressions box (a
+// static, build-time count) followed by boxedEvals, the per-row evaluations that
+// actually took the boxed lane at run time. Native work is not reported -- the
+// absence of a boxed mention means it stayed on the native byte path. Returns ""
+// when nothing boxed. See glue.ExprCoverage / Result.BoxedEvals.
 func exprStatsLine(native, boxed int, boxedEvals int64) string {
-	total := native + boxed
-	if total == 0 && boxedEvals == 0 {
+	if boxed == 0 && boxedEvals == 0 {
 		return ""
 	}
 	var parts []string
-	if total > 0 {
-		parts = append(parts, fmt.Sprintf("%d/%d exprs native", native, total))
+	if total := native + boxed; total > 0 {
+		parts = append(parts, fmt.Sprintf("%d/%d exprs boxed", boxed, total))
 	}
 	parts = append(parts, fmt.Sprintf("%s boxed evals", humanCount(uint64(boxedEvals))))
 	return "expr: " + strings.Join(parts, " · ")

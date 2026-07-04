@@ -39,23 +39,26 @@ func TestExplainConvPlan(t *testing.T) {
 	}
 
 	cases := []struct {
-		q       string
-		wantSub []string // substrings the rendered n1k1 plan must contain
+		q          string
+		wantSub    []string // substrings the rendered n1k1 plan must contain
+		wantAbsent []string // substrings it must NOT contain
 	}{
 		{
-			// arithmetic + field refs stay native; the whole query converts.
-			`EXPLAIN SELECT o.custId, o.orderId + 1 AS n FROM orders o WHERE o.orderId > 0`,
-			[]string{"project", "filter", "[native]"},
+			// arithmetic + field refs stay native -> no boxed marker anywhere.
+			q:          `EXPLAIN SELECT o.custId, o.orderId + 1 AS n FROM orders o WHERE o.orderId > 0`,
+			wantSub:    []string{"project", "filter"},
+			wantAbsent: []string{boxedMarker},
 		},
 		{
-			// SELECT * is a self-projection n1k1 can't reduce -> boxed.
-			`EXPLAIN SELECT * FROM orders o`,
-			[]string{"self [boxed]"},
+			// SELECT * is a self-projection n1k1 can't reduce -> boxed marker.
+			q:       `EXPLAIN SELECT * FROM orders o`,
+			wantSub: []string{"self " + boxedMarker},
 		},
 		{
-			// A non-optimizable scalar fn boxes; the sibling arithmetic stays native.
-			`EXPLAIN SELECT SUBSTR(o.custId,0,1) AS s, o.orderId*2 AS d FROM orders o`,
-			[]string{"[boxed]", "[native]"},
+			// A non-optimizable scalar fn boxes; the sibling arithmetic stays native
+			// (unmarked). Exactly one boxed marker in the projection.
+			q:       `EXPLAIN SELECT SUBSTR(o.custId,0,1) AS s, o.orderId*2 AS d FROM orders o`,
+			wantSub: []string{"substr", boxedMarker},
 		},
 	}
 	for _, c := range cases {
@@ -71,6 +74,11 @@ func TestExplainConvPlan(t *testing.T) {
 		for _, sub := range c.wantSub {
 			if !strings.Contains(got, sub) {
 				t.Errorf("%q: plan missing %q\n%s", c.q, sub, got)
+			}
+		}
+		for _, sub := range c.wantAbsent {
+			if strings.Contains(got, sub) {
+				t.Errorf("%q: plan unexpectedly contains %q\n%s", c.q, sub, got)
 			}
 		}
 		// EXPLAIN must still return the cbq plan row (compatibility unchanged).

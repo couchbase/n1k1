@@ -23,18 +23,21 @@ import (
 	"github.com/couchbase/n1k1/base"
 )
 
+// boxedMarker flags a project/filter expression that the engine can't evaluate on
+// its native byte path, so every row is converted into a cbq value.Value and handed
+// to expression.Evaluate -- correct, but GC-heavy. An unmarked expression is native
+// (evaluated directly on the row's raw JSON bytes, no allocation). A distinct
+// non-ASCII marker so it stands out against the ASCII projection-list brackets.
+const boxedMarker = "⟨boxed⟩"
+
 // FormatConvPlan renders n1k1's converted op tree as an indented text tree. For
-// project and filter operators it annotates each expression with the lane the
-// engine would use to evaluate it:
-//
-//   - [native]: evaluated directly on the row's raw JSON bytes (no allocation).
-//   - [boxed]:  n1k1 can't optimize it, so every row is converted into a cbq
-//     value.Value and handed to expression.Evaluate -- correct, but GC-heavy.
+// project and filter operators it flags each boxed expression with boxedMarker;
+// unmarked expressions are native.
 //
 // The verdict is the same static ExprTreeOptimize decision the engine makes when
 // it builds the expression closure (see ExprTree). It assumes no correlated / WITH
-// scope; an expression under such a scope is forced to [boxed] at run time even if
-// shown [native] here (ExprTree's scoped gate), so this is a best-effort static
+// scope; an expression under such a scope is forced to boxed at run time even if
+// shown unmarked here (ExprTree's scoped gate), so this is a best-effort static
 // view, not a runtime measurement.
 func FormatConvPlan(op *base.Op) string {
 	var b strings.Builder
@@ -75,9 +78,10 @@ func formatConvOp(b *strings.Builder, op *base.Op, depth int) {
 	}
 }
 
-// writeExprVerdict renders one expression param list as "<sql> [native|boxed]".
-// A non-exprTree param (an already-native catalog form, or the rare exprStr) has
-// no cbq expression to inspect, so it prints just the catalog name.
+// writeExprVerdict renders one expression param list as its SQL, appending
+// boxedMarker only when the engine would box it (native expressions are unmarked).
+// A non-exprTree param (an already-native catalog form, or the rare exprStr) has no
+// cbq expression to inspect, so it prints just the catalog name.
 func writeExprVerdict(b *strings.Builder, op *base.Op, param interface{}) {
 	e, ok := exprTreeParam(param)
 	if !ok {
@@ -90,11 +94,10 @@ func writeExprVerdict(b *strings.Builder, op *base.Op, param interface{}) {
 		b.WriteString("?")
 		return
 	}
-	verdict := "boxed"
-	if exprIsNative(inputLabels(op), e) {
-		verdict = "native"
+	b.WriteString(e.String())
+	if !exprIsNative(inputLabels(op), e) {
+		b.WriteString(" " + boxedMarker)
 	}
-	fmt.Fprintf(b, "%s [%s]", e.String(), verdict)
 }
 
 // exprTreeParam extracts the cbq expression from an ["exprTree", expr] param list

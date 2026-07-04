@@ -79,7 +79,7 @@ func (c *cli) exec(stmt string) {
 	// .explain, verbose >= 1, or an EXPLAIN statement prints n1k1's converted op
 	// tree (what n1k1 actually runs), annotated with each expression's eval lane.
 	if res.Plan != nil && (c.explain || c.verbose >= 1 || isExplainStmt(stmt)) {
-		fmt.Fprintln(c.stderr, c.style.Dim("n1k1 plan (expr lane: native = raw bytes, boxed = cbq value + GC):"))
+		fmt.Fprintln(c.stderr, c.style.Dim("n1k1 plan (⟨boxed⟩ = expr falls back to cbq value + GC; unmarked = native byte path):"))
 		fmt.Fprint(c.stderr, glue.FormatConvPlan(res.Plan))
 	}
 
