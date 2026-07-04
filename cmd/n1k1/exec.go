@@ -173,7 +173,6 @@ func orderedJSONRow(pairs ...[2]interface{}) json.RawMessage {
 	return json.RawMessage(b.String())
 }
 
-// printPlan prints the converted n1k1 op tree, one node per line, indented.
 // isExplainStmt reports whether stmt is an EXPLAIN statement (so the CLI shows
 // n1k1's converted plan even without the .explain toggle).
 func isExplainStmt(stmt string) bool {
