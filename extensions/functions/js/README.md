@@ -1,12 +1,20 @@
-# Example JavaScript UDFs (drop-in scalar functions)
+# Example JavaScript extensions (drop-in functions)
 
-Each `*.js` file here is a **scalar user-defined function**. The convention is:
+Two kinds of file live here, both keyed by file name:
 
-- the SQL++ function name is the file's base name (minus `.js`);
-- the file must define a JavaScript function of that **same name**.
+- **`*.js` — a scalar function.** The SQL++ function name is the file's base name
+  (minus `.js`), and the file must define a JavaScript function of that **same
+  name**. E.g. `slugify.js` defines `slugify(...)`.
+- **`*.agg.js` — an aggregate function** (3-callback protocol). For base name
+  `NAME`, the file defines `NAME_init()`, `NAME_update(state, value)` and
+  `NAME_final(state)`; the accumulator `state` is any JSON-serializable value.
+  `NAME(expr)` then works in `GROUP BY` (or as a bare aggregate). E.g.
+  `geomean.agg.js` → `SELECT host, geomean(latency) FROM … GROUP BY host`.
 
 The directory *is* the catalog — add a file (or `git pull` a repo of them) and
-the function is available; no `CREATE FUNCTION` DDL, no rebuild.
+the function is available; no `CREATE FUNCTION` DDL, no rebuild. (A JS function
+that **returns an array** also works directly in a `FROM` clause as a
+table-valued source: `SELECT x.* FROM myfunc(…) AS x`.)
 
 ## Loading them
 
@@ -40,7 +48,9 @@ Programmatically (embedders):
 ```go
 glue.RegisterExtensionDir("extensions/functions/js")     // a directory
 glue.RegisterExtensionFile("path/to/my_fn.js")           // one file (kind by extension)
-glue.RegisterJSFunc("triple", "function triple(x){return x*3;}") // inline source
+glue.RegisterJSFunc("triple", "function triple(x){return x*3;}") // inline scalar
+glue.RegisterJSAggregate("product",                              // inline aggregate
+    "function product_init(){return 1;} function product_update(s,v){return s*v;} function product_final(s){return s;}")
 glue.ListExtensions()                                    // []ExtensionInfo{name,kind,source}
 glue.UnloadExtension("triple")                           // disable (reload to re-enable)
 ```

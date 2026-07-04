@@ -87,12 +87,29 @@ var extensionLoaders = map[string]struct {
 // auto-detected from the file extension (today ".js" = JavaScript); an
 // unrecognized extension is an error. Returns the registered function name.
 func RegisterExtensionFile(path string) (string, error) {
+	base := filepath.Base(path)
+
+	// "<name>.agg.js" is a JS AGGREGATE (3-callback protocol; see ext_jsagg.go),
+	// checked before the generic ".js" scalar loader since it also ends in ".js".
+	if lower := strings.ToLower(base); strings.HasSuffix(lower, ".agg.js") {
+		name := strings.TrimSuffix(lower, ".agg.js")
+		src, err := os.ReadFile(path)
+		if err != nil {
+			return "", err
+		}
+		if err := RegisterJSAggregate(name, string(src)); err != nil {
+			return "", err
+		}
+		extLoaded[name] = ExtensionInfo{Name: name, Kind: "javascript-aggregate", Source: path}
+		return name, nil
+	}
+
 	ext := strings.ToLower(filepath.Ext(path))
 	loader, ok := extensionLoaders[ext]
 	if !ok {
 		return "", fmt.Errorf("RegisterExtensionFile %q: unsupported extension %q", path, ext)
 	}
-	name := strings.ToLower(strings.TrimSuffix(filepath.Base(path), filepath.Ext(path)))
+	name := strings.ToLower(strings.TrimSuffix(base, filepath.Ext(path)))
 	if err := loader.load(name, path); err != nil {
 		return "", err
 	}

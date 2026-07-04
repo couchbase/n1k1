@@ -187,6 +187,51 @@ func TestExtJSRuntimeModel(t *testing.T) {
 	}
 }
 
+// TestExtJSAggregate exercises a JS aggregate written to the 3-callback protocol
+// (NAME_init / NAME_update / NAME_final), driven by the base.Agg bridge.
+func TestExtJSAggregate(t *testing.T) {
+	// product(): scalar accumulator state (a running product).
+	if err := glue.RegisterJSAggregate("product", `
+		function product_init()          { return 1; }
+		function product_update(s, v)    { return s * v; }
+		function product_final(s)        { return s; }
+	`); err != nil {
+		t.Fatalf("RegisterJSAggregate product: %v", err)
+	}
+	// jstats(): object-valued accumulator state {n,min,max} -> an object result.
+	if err := glue.RegisterJSAggregate("jstats", `
+		function jstats_init()        { return {n:0, min:null, max:null}; }
+		function jstats_update(s, v)  {
+			s.n++;
+			if (s.min === null || v < s.min) s.min = v;
+			if (s.max === null || v > s.max) s.max = v;
+			return s;
+		}
+		function jstats_final(s)      { return s; }
+	`); err != nil {
+		t.Fatalf("RegisterJSAggregate jstats: %v", err)
+	}
+
+	sess := extSession(t)
+
+	// Single group: product of 1..4 = 24.
+	if got := extRawRows(t, sess, `SELECT RAW product(v) FROM [1,2,3,4] AS v`); len(got) != 1 || got[0] != `24` {
+		t.Fatalf("product([1..4]) = %v, want [24]", got)
+	}
+	// Object-valued result.
+	if got := extRawRows(t, sess, `SELECT RAW jstats(v) FROM [3,1,4,1,5,9,2,6] AS v`); len(got) != 1 || got[0] != `{"max":9,"min":1,"n":8}` {
+		t.Fatalf("jstats(...) = %v, want [{\"max\":9,\"min\":1,\"n\":8}]", got)
+	}
+	// GROUP BY: product per group.
+	got := extRawRows(t, sess, `SELECT x.g AS g, product(x.v) AS p
+		FROM [{"g":"a","v":2},{"g":"a","v":3},{"g":"a","v":4},{"g":"b","v":5},{"g":"b","v":6}] AS x
+		GROUP BY x.g ORDER BY x.g`)
+	want := []string{`{"g":"a","p":24}`, `{"g":"b","p":30}`}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("grouped product = %v, want %v", got, want)
+	}
+}
+
 // TestExtAggregatesSparklineHistogram exercises the native, zero-garbage
 // extension aggregates over a deterministic FROM-array source (so accumulation
 // order is fixed).
@@ -334,9 +379,10 @@ func TestExtShippedJSExamples(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RegisterExtensionDir(shipped): %v", err)
 	}
-	want := []string{"add_two_numbers", "celsius_to_fahrenheit", "slugify"}
+	// Scalar UDFs (*.js) plus the geomean aggregate (*.agg.js), sorted.
+	want := []string{"add_two_numbers", "celsius_to_fahrenheit", "geomean", "slugify"}
 	if strings.Join(names, ",") != strings.Join(want, ",") {
-		t.Fatalf("shipped UDF names = %v, want %v", names, want)
+		t.Fatalf("shipped extension names = %v, want %v", names, want)
 	}
 
 	sess := extSession(t)
@@ -344,6 +390,7 @@ func TestExtShippedJSExamples(t *testing.T) {
 		{`SELECT RAW add_two_numbers(2, 5)`, `7`},
 		{`SELECT RAW celsius_to_fahrenheit(100)`, `212`},
 		{`SELECT RAW slugify("Hello, World!")`, `"hello-world"`},
+		{`SELECT RAW ROUND(geomean(v), 4) FROM [1,2,4,8] AS v`, `2.8284`}, // 64^(1/4)
 	}
 	for _, c := range cases {
 		got := extRawRows(t, sess, c.stmt)

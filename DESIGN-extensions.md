@@ -58,6 +58,23 @@ when the baked `exprTree`/`exprStr` string is re-parsed at runtime).
   accept them; conv.go routes computation to the native handler via
   `base.AggCatalog[name]`, so the cbq Cumulate*/ComputeFinal machinery is never
   run. Work in GROUP BY and as bare aggregates; auto-registered at glue init.
+- **JS aggregates (3-callback protocol)** — a UDF *aggregate* written in
+  JavaScript: `NAME_init()`, `NAME_update(state, value)`, `NAME_final(state)`
+  (`glue/ext_jsagg.go`, `glue.RegisterJSAggregate`, or a `NAME.agg.js` file for
+  `-ext`). A `base.Agg` bridge threads the accumulator `state` as JSON bytes in
+  the group's (spillable) buffer and drives the JS callbacks on the same
+  per-query/per-actor runtime as scalar UDFs. Same parse/plan `algebra.Aggregate`
+  shim as the native aggs, so `NAME(expr)` works in GROUP BY. Trade-off vs a
+  native `base.Agg`: state round-trips through JSON per Update (not zero-garbage)
+  and the callbacks have no error channel (a throw/NaN is contained → null).
+  Ships `extensions/functions/js/geomean.agg.js` as an example.
+- **Table-valued JS functions in FROM** — a JS UDF that *returns an array* is
+  already a set-returning source: `SELECT x.* FROM gen(5) AS x` streams one row
+  per element (the existing `plan.ExpressionScan` → `expr-scan` → `base.ArrayYield`
+  path — no new code), composing with WHERE / GROUP BY / aggregates. Caveat: the
+  array is fully materialized first (Evaluate → one value → marshal → yield); a
+  truly *streaming* `emit(row)` source protocol (no materialization) is the
+  roadmap item below (step 3 / "Streaming JS/goja functions").
 
 ### JS UDF runtime & state (the goja execution model)
 
