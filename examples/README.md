@@ -100,7 +100,7 @@ The JSON/JSONL files are plain text, checked in directly. The gzip and
 PDF/DOCX/XLSX files are generated (minimal-but-valid, no third-party deps):
 
 ```
-python3 examples/generate_binaries.py
+python3 examples/generate.py
 ```
 
 ## Inline charts: sparkline() & histogram() aggregates
