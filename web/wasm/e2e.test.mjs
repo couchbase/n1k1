@@ -1,0 +1,91 @@
+//  Copyright (c) 2026 Couchbase, Inc.
+//  Licensed under the Apache License, Version 2.0 (the "License").
+//
+// End-to-end smoke test: load the built n1k1.wasm, mount data through the fs
+// shim, and run real SQL++ queries — including the drag-drop ingestion path.
+// Skips (does not fail) when web/n1k1.wasm hasn't been built yet.
+//
+//   sh web/wasm/build.sh && node --test web/wasm/
+
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
+import url from "node:url";
+import zlib from "node:zlib";
+
+const webDir = path.resolve(path.dirname(url.fileURLToPath(import.meta.url)), "..");
+const wasmPath = path.join(webDir, "n1k1.wasm");
+
+if (!fs.existsSync(wasmPath)) {
+  test("e2e (needs a built n1k1.wasm — run web/wasm/build.sh)", { skip: true }, () => {});
+} else {
+  // ---- one-time engine boot, shared by the subtests below -------------------
+  const samplesSrc = fs.readFileSync(path.join(webDir, "samples.js"), "utf8");
+  const { DATASETS, SAMPLE_QUERIES } =
+    new Function(samplesSrc + "\nreturn { DATASETS, SAMPLE_QUERIES };")();
+
+  await import(url.pathToFileURL(path.join(webDir, "wasm/fs_mem.js")).href);
+  await import(url.pathToFileURL(path.join(webDir, "wasm/ingest.js")).href);
+  globalThis.installN1k1FS("/n1k1data", DATASETS);
+
+  await import(url.pathToFileURL(path.join(webDir, "wasm_exec.js")).href);
+  const go = new globalThis.Go();
+  const { instance } = await WebAssembly.instantiate(fs.readFileSync(wasmPath), go.importObject);
+  go.run(instance); // blocks in Go on select{}; sets globals as it runs
+  for (let i = 0; i < 100 && !globalThis.n1k1Ready; i++) await new Promise((r) => setTimeout(r, 20));
+  const run = (sql) => JSON.parse(globalThis.n1k1RunQuery(sql));
+
+  test("engine becomes ready", () => {
+    assert.ok(globalThis.n1k1Ready, globalThis.n1k1InitError || "not ready");
+  });
+
+  test("all curated sample queries succeed", () => {
+    for (const { label, sql } of SAMPLE_QUERIES) {
+      const r = run(sql);
+      assert.ok(r.ok, `${label}: ${r.error}`);
+    }
+  });
+
+  test("aggregate + join over the built-in sample", () => {
+    const r = run("SELECT bw.country, COUNT(*) AS n FROM beers b JOIN breweries bw ON KEYS b.brewery_id GROUP BY bw.country ORDER BY n DESC");
+    assert.ok(r.ok);
+    assert.equal(r.rows[0].country, "United States");
+  });
+
+  test("n1k1OpenDir lists the built-in keyspaces", () => {
+    const r = JSON.parse(globalThis.n1k1OpenDir("/n1k1data"));
+    assert.ok(r.ok);
+    assert.deepEqual(r.keyspaces.sort(), ["beers", "breweries"]);
+  });
+
+  test("ingestion → mount → open → query (tar.gz)", async () => {
+    const enc = new TextEncoder();
+    const tarBlocks = [];
+    for (const [name, obj] of [["shops/s1.json", { id: "s1", city: "SF" }], ["shops/s2.json", { id: "s2", city: "NY" }]]) {
+      const data = enc.encode(JSON.stringify(obj));
+      const h = new Uint8Array(512);
+      enc.encodeInto(name, h.subarray(0, 100));
+      enc.encodeInto(data.length.toString(8).padStart(11, "0") + " ", h.subarray(124, 136));
+      h[156] = "0".charCodeAt(0);
+      tarBlocks.push(h);
+      const pad = new Uint8Array(512); pad.set(data); tarBlocks.push(pad);
+    }
+    tarBlocks.push(new Uint8Array(1024));
+    const tarU8 = new Uint8Array(tarBlocks.reduce((n, b) => n + b.length, 0));
+    let o = 0; for (const b of tarBlocks) { tarU8.set(b, o); o += b.length; }
+    const tarGz = new Uint8Array(zlib.gzipSync(Buffer.from(tarU8)));
+
+    const { tree, stats } = await globalThis.n1k1Ingest.filesToDatastore([{ name: "shops.tar.gz", bytes: tarGz }]);
+    assert.equal(stats.docs, 2);
+    globalThis.n1k1MountTree("/e2e-drop", tree);
+    const opened = JSON.parse(globalThis.n1k1OpenDir("/e2e-drop"));
+    assert.ok(opened.ok && opened.keyspaces.includes("shops"));
+    const q = run("SELECT COUNT(*) AS n FROM shops");
+    assert.ok(q.ok && q.rows[0].n === 2, JSON.stringify(q.rows));
+
+    // switching back to the built-in sample still works
+    JSON.parse(globalThis.n1k1OpenDir("/n1k1data"));
+    assert.equal(run("SELECT COUNT(*) AS n FROM beers").rows[0].n, 10);
+  });
+}

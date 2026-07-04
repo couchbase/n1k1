@@ -89,6 +89,20 @@ handling because a browser has no OS:
 `n1k1.wasm` (~67 MB raw, ~12 MB gzipped) and `wasm_exec.js` are build outputs and
 are git-ignored; run `build.sh` to (re)generate them.
 
+## Tests
+
+The JavaScript is tested with Node's built-in runner (no dependencies):
+
+```sh
+node --test "web/wasm/*.test.mjs"      # or: sh web/wasm/test.sh
+```
+
+- `ingest.test.mjs` — gunzip / untar / record parsing / keyspace mapping / caps.
+- `fs_mem.test.mjs` — the in-memory fs (readdir, stat, open/read, path norm, mount, read-only).
+- `e2e.test.mjs` — loads the built `n1k1.wasm` and runs real queries (sample queries,
+  `n1k1OpenDir`, and the drag-drop ingestion path). **Skips** if `n1k1.wasm` isn't built,
+  so build first (`sh web/wasm/build.sh`) to include it.
+
 ## Customizing the data
 
 Edit `samples.js`: add keys to `DATASETS.default` (each keyspace is
