@@ -14,9 +14,7 @@
 // Loading query extensions into the CLI, via the repeatable -ext / -extensions
 // startup flag and the .extensions dot-command (list | load | unload). The kind
 // of each extension is auto-detected from its file extension (today: ".js" = a
-// JavaScript scalar UDF). The native sparkline()/histogram() aggregates need NO
-// loading (they are always available). See DESIGN-extensions.md and
-// extensions/functions/.
+// JavaScript scalar UDF). See DESIGN-extensions.md and extensions/functions/.
 package main
 
 import (
@@ -108,7 +106,7 @@ func (c *cli) cmdExtensions(arg string) {
 func (c *cli) extList() {
 	exts := glue.ListExtensions()
 	if len(exts) == 0 {
-		fmt.Fprintln(c.stderr, "no extensions loaded (sparkline/histogram aggregates are always available)")
+		fmt.Fprintln(c.stderr, "no extensions loaded")
 		return
 	}
 	fmt.Fprintf(c.stderr, "%d loaded extension function(s):\n", len(exts))

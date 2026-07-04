@@ -76,11 +76,11 @@ func main() {
 			"lazy (default; build each on first use) | eager (build all up front)"+
 			" | off (ignore the catalog; always full-scan)")
 	)
-	// -ext / -extensions (synonyms): load query extensions at startup. Repeatable
+	// -ext / -extensions (synonyms): load extensions at startup. Repeatable
 	// and comma-separated (a dir or a file each); kind auto-detected by file
 	// extension (.js = JavaScript UDF). See the .extensions REPL command.
 	var extPaths extPathsFlag
-	flag.Var(&extPaths, "ext", "load query extension(s) from a dir or file (repeatable; comma-separated ok); .js = JavaScript UDF. See .extensions")
+	flag.Var(&extPaths, "ext", "load extension(s) from a dir or file (repeatable; comma-separated ok); .js = JavaScript UDF. See .extensions")
 	flag.Var(&extPaths, "extensions", "alias for -ext")
 	// -verbose / -v (synonyms sharing one value): a diagnostics level. A bare
 	// -verbose means on (level 1) and repeats accumulate (-v -v -v -> 3);
@@ -213,10 +213,7 @@ func main() {
 	// sparkline/histogram aggregates are always available -- glue registers them
 	// at init.)
 	if len(extPaths) > 0 {
-		names, err := loadExtensions(extPaths)
-		if len(names) > 0 {
-			fmt.Fprintf(os.Stderr, "%s: registered extension function(s): %s\n", prog, strings.Join(names, ", "))
-		}
+		_, err := loadExtensions(extPaths)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "%s: -ext: %v\n", prog, err)
 			os.Exit(1)
