@@ -116,6 +116,20 @@ type SubPathser interface {
 // subpath projection was pushed down), fetch falls back to cbq's Fetch.
 var DatastoreFetchNative = true
 
+// DatastoreFetchActor picks DatastoreFetch's execution mode. Default (false) runs
+// the scan inline in the calling goroutine, feeding each scanned ^id straight into
+// the fetch -- no producer goroutine, channel, or per-row batch deep-copy. That's
+// the win for a nested-loop join's re-driven inner (re-run per outer row, consumed
+// immediately), where the actor's producer/consumer channel hand-off dominated CPU
+// and its batch materialization dominated allocs.
+//
+// Set true to keep the concurrent actor: the scan runs in its own goroutine feeding
+// batches over a channel, so a *high-latency* source (e.g. downloading files from
+// S3) overlaps with fetch/downstream processing. Both modes share the same
+// fetchOne/flushCbq logic. (A future high-latency datastore would select this
+// per-keyspace rather than globally.)
+var DatastoreFetchActor = false
+
 func DatastoreFetch(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 	yieldErr base.YieldErr, path, pathNext string) {
 	plan := vars.Temps[o.Params[0].(int)].(Keyspacer)
@@ -170,17 +184,6 @@ func DatastoreFetch(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 		}
 	}
 
-	batchSize := 200 // TODO: Configurability.
-	batchChSize := 0 // TODO: Configurability.
-
-	stage := base.NewStage(1, batchChSize, vars, yieldVals, yieldErr)
-
-	stage.StartActor(func(vars *base.Vars, yieldVals base.YieldVals,
-		yieldErr base.YieldErr, actorData interface{}) {
-
-		vars.Ctx.ExecOp(o.Children[0], vars, yieldVals, yieldErr, pathNext, "DF")
-	}, nil, batchSize)
-
 	var vals base.Vals
 
 	var cbqKeys []string // Keys neither native path handled; deferred to cbq.
@@ -203,113 +206,108 @@ func DatastoreFetch(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 		yieldVals(vals)
 	}
 
-	stage.ProcessBatchesFromActors(func(batch []base.Vals) {
-		cbqKeys = cbqKeys[:0]
+	// fetchOne decodes one scanned ^id and dispatches it: a native/container read
+	// yields the doc immediately; anything neither native path handles is deferred to
+	// cbqKeys for the batched cbq Fetch (flushCbq). Shared by both drivers below, and
+	// only ever called sequentially, so it reuses docBuf/idBuf/vals freely.
+	fetchOne := func(idVal base.Val) {
+		// Decode the ^id (a canonical-JSON string, e.g. `"key"`) to the plain doc key.
+		// Mirrors jsonparser.GetString, but on the no-escape fast path returns an
+		// UNSAFE zero-copy string aliasing idVal's bytes -- valid only until the caller
+		// reuses idVal (the scan's next row), i.e. after this returns. The two spots
+		// that retain a key past that -- fetchCachePut's map store and cbqKeys --
+		// strings.Clone it. BINARY / escaped keys take safe, owning fallbacks.
+		var key string
+		v, dt, _, e := jsonparser.Get(idVal)
+		switch {
+		case e != nil || dt != jsonparser.String:
+			key = string(idVal) // BINARY / non-string key: owned copy.
+		case bytes.IndexByte(v, '\\') >= 0:
+			key, _ = jsonparser.ParseString(v) // escaped: unescape (allocates; rare).
+		case len(v) > 0:
+			key = unsafe.String(unsafe.SliceData(v), len(v)) // zero-copy alias.
+		}
+		if key == "" {
+			return
+		}
 
-		// One pass over the batch: decode each row's ^id and dispatch it right away.
-		// Decode and fetch have no cross-row dependency, so there's no need to
-		// materialize all keys into an intermediate []string first -- that only
-		// churned a fresh slice per re-scan (a nested-loop join re-runs this fetch,
-		// and its whole Stage, once per outer row).
-		for _, bv := range batch {
-			// Decode the ^id (a canonical-JSON string, e.g. `"key"`) to the plain doc
-			// key. This mirrors jsonparser.GetString's logic, but on the common
-			// no-escape fast path returns an UNSAFE zero-copy string aliasing bv[0]'s
-			// bytes -- avoiding the per-row copy GetString makes there (string(v)).
-			// The alias is valid only while this batch lives (until this callback
-			// returns), which covers every use below (the fetch-cache *lookups* and
-			// yieldDoc's AppendQuote, which copies). The spots that *retain* a key past
-			// the batch -- fetchCachePut's map store and the cbq-fallback cbqKeys --
-			// strings.Clone it. BINARY and escaped keys take safe, owning fallbacks.
-			var key string
-			v, dt, _, e := jsonparser.Get(bv[0])
-			switch {
-			case e != nil || dt != jsonparser.String:
-				key = string(bv[0]) // BINARY / non-string key: owned copy.
-			case bytes.IndexByte(v, '\\') >= 0:
-				key, _ = jsonparser.ParseString(v) // escaped: unescape (allocates; rare).
-			case len(v) > 0:
-				key = unsafe.String(unsafe.SliceData(v), len(v)) // zero-copy alias.
-			}
-			if key == "" {
-				continue
-			}
-
-			// ---- Container record: seek to the byte offset baked into the id. ----
-			// A key with an `@<offset>` suffix is a seekable multi-doc record.
-			if containerDir != "" {
-				if _, _, isContainer := parseContainerKey(key); isContainer {
-					var doc []byte
-					if useCache {
-						doc, _ = gctx.fetchCacheGet(containerDir, key) // Owned; nil on miss.
-					}
-					if doc == nil {
-						// Miss: parse `<relpath>#<line>@<offset>`, open the container file,
-						// seek to the record's byte offset, read its one line into the reused
-						// buffer, then cache an owned copy so a nested-loop join's re-fetches
-						// are hits.
-						b, ok2, err := readContainerRecord(containerDir, key, &docBuf)
-						if err != nil {
-							yieldErr(fmt.Errorf("DatastoreFetch (container), key %q: %v", key, err))
-							continue
-						}
-						if !ok2 || len(b) == 0 {
-							continue // Missing record => non-existent doc; skip (matches cbq).
-						}
-						doc = b // Borrowed from docBuf (valid until the next read)...
-						if useCache {
-							if cached := gctx.fetchCachePut(containerDir, key, b); cached != nil {
-								doc = cached // ...unless cached, then owned + stable for the request.
-							}
-						}
-					}
-					yieldDoc(doc, key)
-					continue
-				}
-			}
-
-			// ---- Classic byte path: cache-hit, else read <dir>/<key>.json. ----
-			if nativeDir != "" {
+		// ---- Container record: seek to the byte offset baked into the id. ----
+		// A key with an `@<offset>` suffix is a seekable multi-doc record.
+		if containerDir != "" {
+			if _, _, isContainer := parseContainerKey(key); isContainer {
 				var doc []byte
 				if useCache {
-					doc, _ = gctx.fetchCacheGet(nativeDir, key) // Owned; nil on miss. No path built.
+					doc, _ = gctx.fetchCacheGet(containerDir, key) // Owned; nil on miss.
 				}
 				if doc == nil {
-					// Miss: resolve+guard the path (only here, not per hit), read the
-					// whole doc into the reused buffer (no per-read alloc), then cache
-					// an owned copy so every later fetch of this key -- the common case
-					// under a nested-loop join -- is a hit needing no path or read.
-					p, ok := docPath(nativeDir, key)
-					if !ok {
-						yieldErr(fmt.Errorf("DatastoreFetch (native): invalid key %q", key))
-						continue
-					}
-					b, ok2, err := readWholeFileInto(p, &docBuf)
+					// Miss: parse `<relpath>#<line>@<offset>`, open the container file,
+					// seek to the record's byte offset, read its one line into the reused
+					// buffer, then cache an owned copy so a nested-loop join's re-fetches
+					// are hits.
+					b, ok2, err := readContainerRecord(containerDir, key, &docBuf)
 					if err != nil {
-						yieldErr(fmt.Errorf("DatastoreFetch (native), key %q: %v", key, err))
-						continue
+						yieldErr(fmt.Errorf("DatastoreFetch (container), key %q: %v", key, err))
+						return
 					}
 					if !ok2 || len(b) == 0 {
-						continue // Missing / empty file => non-existent doc; skip (matches cbq).
+						return // Missing record => non-existent doc; skip (matches cbq).
 					}
 					doc = b // Borrowed from docBuf (valid until the next read)...
 					if useCache {
-						if cached := gctx.fetchCachePut(nativeDir, key, b); cached != nil {
+						if cached := gctx.fetchCachePut(containerDir, key, b); cached != nil {
 							doc = cached // ...unless cached, then owned + stable for the request.
 						}
 					}
 				}
 				yieldDoc(doc, key)
-				continue
+				return
 			}
-
-			// Neither native path applies (a synthetic keyspace, or a subpath
-			// projection over classic <key>.json): defer to cbq's Fetch. Clone the
-			// key -- it may be an unsafe batch-aliasing string, and cbq's Fetch (and
-			// fetchMap) can retain it past this batch.
-			cbqKeys = append(cbqKeys, strings.Clone(key))
 		}
 
+		// ---- Classic byte path: cache-hit, else read <dir>/<key>.json. ----
+		if nativeDir != "" {
+			var doc []byte
+			if useCache {
+				doc, _ = gctx.fetchCacheGet(nativeDir, key) // Owned; nil on miss. No path built.
+			}
+			if doc == nil {
+				// Miss: resolve+guard the path (only here, not per hit), read the
+				// whole doc into the reused buffer (no per-read alloc), then cache
+				// an owned copy so every later fetch of this key -- the common case
+				// under a nested-loop join -- is a hit needing no path or read.
+				p, ok := docPath(nativeDir, key)
+				if !ok {
+					yieldErr(fmt.Errorf("DatastoreFetch (native): invalid key %q", key))
+					return
+				}
+				b, ok2, err := readWholeFileInto(p, &docBuf)
+				if err != nil {
+					yieldErr(fmt.Errorf("DatastoreFetch (native), key %q: %v", key, err))
+					return
+				}
+				if !ok2 || len(b) == 0 {
+					return // Missing / empty file => non-existent doc; skip (matches cbq).
+				}
+				doc = b // Borrowed from docBuf (valid until the next read)...
+				if useCache {
+					if cached := gctx.fetchCachePut(nativeDir, key, b); cached != nil {
+						doc = cached // ...unless cached, then owned + stable for the request.
+					}
+				}
+			}
+			yieldDoc(doc, key)
+			return
+		}
+
+		// Neither native path applies (a synthetic keyspace, or a subpath projection
+		// over classic <key>.json): defer to cbq's Fetch. Clone the key -- it may be an
+		// unsafe batch-aliasing string, and cbq's Fetch (and fetchMap) can retain it.
+		cbqKeys = append(cbqKeys, strings.Clone(key))
+	}
+
+	// flushCbq fetches the deferred keys (subpath projection / synthetic keyspaces)
+	// via cbq's batched Fetch and yields them in key order. Shared by both drivers.
+	flushCbq := func() {
 		if len(cbqKeys) == 0 {
 			return
 		}
@@ -327,7 +325,7 @@ func DatastoreFetch(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 			yieldErr(fmt.Errorf("DatastoreFetch, err: %v", err))
 		}
 
-		// Keep the same ordering as the batch.
+		// Keep the same ordering as the keys.
 		for _, key := range cbqKeys {
 			if key != "" {
 				v, ok := fetchMap[key]
@@ -349,6 +347,52 @@ func DatastoreFetch(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 				}
 			}
 		}
+	}
+
+	// Two drivers sharing fetchOne/flushCbq (see DatastoreFetchActor):
+	//
+	//   - inline (default): drive the scan in THIS goroutine, feeding each scanned ^id
+	//     straight into fetchOne. No producer goroutine, channel, or per-row batch
+	//     deep-copy -- the scanned row is consumed before the scan reuses its buffer.
+	//     Ideal for a nested-loop join's re-driven inner (re-run per outer row).
+	//   - actor: drive the scan in a concurrent actor feeding batches over a channel,
+	//     so a high-latency source (e.g. downloading from S3) overlaps with fetch and
+	//     downstream processing.
+	if !DatastoreFetchActor {
+		cbqKeys = cbqKeys[:0]
+
+		var scanErr error
+		vars.Ctx.ExecOp(o.Children[0], vars,
+			func(row base.Vals) { fetchOne(row[0]) },
+			func(err error) {
+				if err != nil && scanErr == nil {
+					scanErr = err // capture (like Stage.Err); reported once as the terminal error
+				}
+			}, pathNext, "DF")
+
+		if scanErr == nil {
+			flushCbq()
+		}
+		yieldErr(scanErr) // terminal signal (nil == done), mirroring stage.YieldErr(stage.Err)
+		return
+	}
+
+	// Actor mode: the scan runs in its own goroutine, producing ^id batches over a
+	// channel that the consumer below drains -- so a slow producer overlaps with fetch.
+	batchSize := 200 // TODO: Configurability.
+	stage := base.NewStage(1, 0 /* batchChSize */, vars, yieldVals, yieldErr)
+
+	stage.StartActor(func(vars *base.Vars, yieldVals base.YieldVals,
+		yieldErr base.YieldErr, actorData interface{}) {
+		vars.Ctx.ExecOp(o.Children[0], vars, yieldVals, yieldErr, pathNext, "DF")
+	}, nil, batchSize)
+
+	stage.ProcessBatchesFromActors(func(batch []base.Vals) {
+		cbqKeys = cbqKeys[:0]
+		for _, bv := range batch {
+			fetchOne(bv[0])
+		}
+		flushCbq()
 	})
 
 	stage.M.Lock()
