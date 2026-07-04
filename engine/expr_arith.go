@@ -34,9 +34,8 @@ func init() {
 
 // -----------------------------------------------------
 
-// Each operator passes its base.Num op-code (an int) to the shared harness --
-// NOT a func value, which the lz codegen can't emit (it renders under %#v as an
-// invalid pointer literal). base.Num.Arith does the dispatch.
+// Each operator passes its base.Arith* func (uniform (a, b Num) (Num, bool)) to
+// the shared harness, emitted by name in the compiled path (see base/lzfmt.go).
 
 func ExprAdd(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
@@ -76,13 +75,13 @@ func ExprIMod(lzVars *base.Vars, labels base.Labels,
 
 // -----------------------------------------------------
 
-// ExprArithBi handles the binary arithmetic operators. apply is the numeric
+// ExprArithBi handles the binary arithmetic operators. arith is the numeric
 // operation (returning ok=false only on divide/mod-by-zero); warnZero requests
 // the divide-by-zero advisory. The N1QL rule: if either operand is MISSING the
 // result is MISSING; else if either operand is not a number the result is NULL;
 // else compute (divide/mod-by-zero also yields NULL).
 func ExprArithBi(lzVars *base.Vars, labels base.Labels, params []interface{},
-	path string, op int, warnZero bool) (
+	path string, arith func(a, b base.Num) (base.Num, bool), warnZero bool) (
 	lzExprFunc base.ExprFunc) {
 	var lzBufPre []byte // <== varLift: lzBufPre by path
 
@@ -106,7 +105,7 @@ func ExprArithBi(lzVars *base.Vars, labels base.Labels, params []interface{},
 				if !lzOkA || !lzOkB {
 					lzVal = base.ValNull // Non-number operand.
 				} else {
-					lzNumR, lzOkR := lzNumA.Arith(op, lzNumB)
+					lzNumR, lzOkR := arith(lzNumA, lzNumB)
 					if !lzOkR {
 						lzVal = base.ValNull // Divide/mod by zero.
 						if warnZero && lzVars.Ctx.Warn != nil {

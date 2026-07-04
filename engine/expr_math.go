@@ -12,15 +12,17 @@
 package engine
 
 import (
+	"math"
+
 	"github.com/couchbase/n1k1/base"
 )
 
 // Unary numeric math functions (ABS/CEIL/FLOOR/SQRT/EXP/LN/LOG/SIGN/DEGREES/
-// RADIANS), evaluated on JSON-number bytes into a reused buffer -- no boxing.
-// cbq's func_num.go skeleton is uniform (MISSING -> MISSING, non-number -> NULL,
-// else math result), so all share exprMathUnary; the per-op math lives in
-// base.MathUnary, selected by an int op-code (NOT a func value, which the lz
-// codegen can't emit).
+// RADIANS/SIN/COS/TAN/ASIN/ACOS/ATAN), evaluated on JSON-number bytes into a
+// reused buffer -- no boxing. cbq's func_num.go skeleton is uniform (MISSING ->
+// MISSING, non-number -> NULL, else math result), so all share exprMathUnary; the
+// per-op math is a real func value (a stdlib math.Abs/... or a base.Math* named
+// func) passed in and emitted by name (see base/lzfmt.go).
 
 func init() {
 	ExprCatalog["abs"] = ExprAbs
@@ -45,37 +47,37 @@ func init() {
 
 func ExprAbs(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) base.ExprFunc {
-	return exprMathUnary(lzVars, labels, params, path, base.MathAbs)
+	return exprMathUnary(lzVars, labels, params, path, math.Abs)
 }
 
 func ExprCeil(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) base.ExprFunc {
-	return exprMathUnary(lzVars, labels, params, path, base.MathCeil)
+	return exprMathUnary(lzVars, labels, params, path, math.Ceil)
 }
 
 func ExprFloor(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) base.ExprFunc {
-	return exprMathUnary(lzVars, labels, params, path, base.MathFloor)
+	return exprMathUnary(lzVars, labels, params, path, math.Floor)
 }
 
 func ExprSqrt(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) base.ExprFunc {
-	return exprMathUnary(lzVars, labels, params, path, base.MathSqrt)
+	return exprMathUnary(lzVars, labels, params, path, math.Sqrt)
 }
 
 func ExprExp(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) base.ExprFunc {
-	return exprMathUnary(lzVars, labels, params, path, base.MathExp)
+	return exprMathUnary(lzVars, labels, params, path, math.Exp)
 }
 
 func ExprLn(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) base.ExprFunc {
-	return exprMathUnary(lzVars, labels, params, path, base.MathLn)
+	return exprMathUnary(lzVars, labels, params, path, math.Log)
 }
 
 func ExprLog(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) base.ExprFunc {
-	return exprMathUnary(lzVars, labels, params, path, base.MathLog)
+	return exprMathUnary(lzVars, labels, params, path, math.Log10)
 }
 
 func ExprSign(lzVars *base.Vars, labels base.Labels,
@@ -95,51 +97,51 @@ func ExprRadians(lzVars *base.Vars, labels base.Labels,
 
 func ExprSin(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) base.ExprFunc {
-	return exprMathUnary(lzVars, labels, params, path, base.MathSin)
+	return exprMathUnary(lzVars, labels, params, path, math.Sin)
 }
 
 func ExprCos(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) base.ExprFunc {
-	return exprMathUnary(lzVars, labels, params, path, base.MathCos)
+	return exprMathUnary(lzVars, labels, params, path, math.Cos)
 }
 
 func ExprTan(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) base.ExprFunc {
-	return exprMathUnary(lzVars, labels, params, path, base.MathTan)
+	return exprMathUnary(lzVars, labels, params, path, math.Tan)
 }
 
 func ExprAsin(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) base.ExprFunc {
-	return exprMathUnary(lzVars, labels, params, path, base.MathAsin)
+	return exprMathUnary(lzVars, labels, params, path, math.Asin)
 }
 
 func ExprAcos(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) base.ExprFunc {
-	return exprMathUnary(lzVars, labels, params, path, base.MathAcos)
+	return exprMathUnary(lzVars, labels, params, path, math.Acos)
 }
 
 func ExprAtan(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) base.ExprFunc {
-	return exprMathUnary(lzVars, labels, params, path, base.MathAtan)
+	return exprMathUnary(lzVars, labels, params, path, math.Atan)
 }
 
 func ExprPower(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) base.ExprFunc {
-	return exprMathBi(lzVars, labels, params, path, base.MathPower)
+	return exprMathBi(lzVars, labels, params, path, math.Pow)
 }
 
 func ExprAtan2(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) base.ExprFunc {
-	return exprMathBi(lzVars, labels, params, path, base.MathAtan2)
+	return exprMathBi(lzVars, labels, params, path, math.Atan2)
 }
 
 // exprMathBi is the shared two-operand harness for binary math funcs
 // (POWER/ATAN2). cbq skeleton: either operand MISSING -> MISSING, either
-// non-number -> NULL, else the op-code result formatted into the reused lzBufPre.
-// Mirrors ExprArithBi; the op-code (%#v) and buffer (varLift %s) stay on separate
-// lines. Each operand is captured FROM lzVal (emitCaptured writes lzVal).
+// non-number -> NULL, else the func result formatted into the reused lzBufPre.
+// Mirrors ExprArithBi. Each operand is captured FROM lzVal (emitCaptured writes
+// lzVal).
 func exprMathBi(lzVars *base.Vars, labels base.Labels, params []interface{},
-	path string, op int) (lzExprFunc base.ExprFunc) {
+	path string, fn func(a, b float64) float64) (lzExprFunc base.ExprFunc) {
 	var lzBufPre []byte // <== varLift: lzBufPre by path
 
 	biExprFunc := func(lzA, lzB base.ExprFunc, lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) { // !lz
@@ -158,7 +160,7 @@ func exprMathBi(lzVars *base.Vars, labels base.Labels, params []interface{},
 				if !lzOkA || !lzOkB {
 					lzVal = base.ValNull // non-number operand
 				} else {
-					lzNumR := base.MathBinApply(op, lzNumA, lzNumB)
+					lzNumR := base.MathBinApply(fn, lzNumA, lzNumB)
 					lzOut := base.AppendNum(lzBufPre[:0], lzNumR)
 					lzBufPre = lzOut
 					lzVal = base.Val(lzOut)
@@ -177,11 +179,10 @@ func exprMathBi(lzVars *base.Vars, labels base.Labels, params []interface{},
 
 // exprMathUnary is the shared single-child harness for the unary math funcs.
 // cbq's skeleton: MISSING passes through, a non-number operand -> NULL, else the
-// op-code result formatted into the reused lzBufPre. NULL also passes through (it
-// isn't a ValKindValue). The op-code (%#v) and the buffer (varLift %s) are kept
-// on separate lines -- the codegen mis-orders args if both share one line.
+// func result formatted into the reused lzBufPre. NULL also passes through (it
+// isn't a ValKindValue).
 func exprMathUnary(lzVars *base.Vars, labels base.Labels, params []interface{},
-	path string, op int) (lzExprFunc base.ExprFunc) {
+	path string, fn func(f float64) float64) (lzExprFunc base.ExprFunc) {
 	exprA := params[0].([]interface{})
 
 	var lzBufPre []byte // <== varLift: lzBufPre by path
@@ -198,7 +199,7 @@ func exprMathUnary(lzVars *base.Vars, labels base.Labels, params []interface{},
 			if !lzOk {
 				lzVal = base.ValNull // non-number operand
 			} else {
-				lzNumR := base.MathApply(op, lzNum)
+				lzNumR := base.MathApply(fn, lzNum)
 				lzOut := base.AppendNum(lzBufPre[:0], lzNumR)
 				lzBufPre = lzOut
 				lzVal = base.Val(lzOut)

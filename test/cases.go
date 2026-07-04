@@ -5865,7 +5865,7 @@ var TestCasesSimple = []TestCaseSimple{
 		[]interface{}{"json", `5`}, []interface{}{"json", `6`}}, `5`),
 
 	// Native arithmetic (value-producing) in the COMPILED path: exercises the
-	// int-op-code dispatch (base.Num.Arith, not a func value) and the reused
+	// func-value dispatch (base.ArithAdd/... emitted by name) and the reused
 	// lzBufPre buffer. `add` reads a scanned field (a=1) to also cover a labelPath
 	// operand; the rest use constants for deterministic results.
 	naryProjectCase("add", []interface{}{"add",

@@ -13,102 +13,39 @@ package base
 
 import "math"
 
-// Unary math op-codes for MathUnary. An int op-code (not a func value) is what
-// the expr harness hands the lz codegen -- a func value renders under %#v as an
-// invalid pointer literal (see Num.Arith / DESIGN-exprs.md).
-const (
-	MathAbs = iota
-	MathCeil
-	MathFloor
-	MathSqrt
-	MathExp
-	MathLn
-	MathLog
-	MathSign
-	MathDegrees
-	MathRadians
-	MathSin
-	MathCos
-	MathTan
-	MathAsin
-	MathAcos
-	MathAtan
-	// Binary ops (used by MathBinApply, not mathApply). Sharing the iota keeps the
-	// values distinct from the unary ones, so a mixup can't silently misdispatch.
-	MathPower
-	MathAtan2
-)
+// The per-op math for the unary/binary math funcs is a real func value passed
+// into the engine harness and emitted by name (see LzExprFmt): a stdlib
+// math.Abs/Ceil/... (a func(float64) float64) directly, or one of the three
+// named funcs below for the ops that aren't a bare stdlib call. POWER/ATAN2 use
+// math.Pow/math.Atan2 (func(float64, float64) float64) via MathBinApply.
 
-func mathApply(op int, f float64) float64 {
-	switch op {
-	case MathAbs:
-		return math.Abs(f)
-	case MathCeil:
-		return math.Ceil(f)
-	case MathFloor:
-		return math.Floor(f)
-	case MathSqrt:
-		return math.Sqrt(f)
-	case MathExp:
-		return math.Exp(f)
-	case MathLn:
-		return math.Log(f)
-	case MathLog:
-		return math.Log10(f)
-	case MathSign:
-		if f < 0 {
-			return -1
-		}
-		if f > 0 {
-			return 1
-		}
-		return 0
-	case MathDegrees:
-		return f * 180.0 / math.Pi
-	case MathRadians:
-		return f * math.Pi / 180.0
-	case MathSin:
-		return math.Sin(f)
-	case MathCos:
-		return math.Cos(f)
-	case MathTan:
-		return math.Tan(f)
-	case MathAsin:
-		return math.Asin(f)
-	case MathAcos:
-		return math.Acos(f)
-	case MathAtan:
-		return math.Atan(f)
+// MathSign returns -1, 0, or +1 for a negative, zero, or positive f (SIGN()).
+func MathSign(f float64) float64 {
+	if f < 0 {
+		return -1
 	}
-	return f
-}
-
-func mathBinApply(op int, a, b float64) float64 {
-	switch op {
-	case MathPower:
-		return math.Pow(a, b)
-	case MathAtan2:
-		return math.Atan2(a, b)
+	if f > 0 {
+		return 1
 	}
 	return 0
 }
 
-// MathBinApply applies a binary math op-code to (a, b), returning the result as a
-// Num. Same skeleton as the unary funcs -- the engine harness handles MISSING ->
+// MathDegrees / MathRadians convert between radians and degrees (DEGREES/RADIANS).
+func MathDegrees(f float64) float64 { return f * 180.0 / math.Pi }
+func MathRadians(f float64) float64 { return f * math.Pi / 180.0 }
+
+// MathBinApply applies a binary math func to (a, b), returning the result as a
+// Num. Same skeleton as MathApply -- the engine harness handles MISSING ->
 // MISSING / non-number -> NULL around it.
-func MathBinApply(op int, a, b Num) Num {
-	return FloatNum(mathBinApply(op, a.Float64(), b.Float64()))
+func MathBinApply(fn func(a, b float64) float64, a, b Num) Num {
+	return FloatNum(fn(a.Float64(), b.Float64()))
 }
 
-// MathApply applies a unary math op-code to n, returning the result as a Num
-// (a float64). The caller (engine/expr_math.go) handles the cbq skeleton around
-// it -- MISSING -> MISSING, non-number -> NULL -- and formats via AppendNum, which
+// MathApply applies a unary math func to n, returning the result as a Num (a
+// float64). The caller (engine/expr_math.go) handles the cbq skeleton around it
+// -- MISSING -> MISSING, non-number -> NULL -- and formats via AppendNum, which
 // serializes a NaN / +Inf / -Inf result as the quoted "NaN" / "+Infinity" /
 // "-Infinity" sentinels (matching cbq), so e.g. sqrt(-1) and ln(0) agree.
-//
-// Kept as a Num->Num compute (not a Val->Val one taking the output buffer) so the
-// harness can keep the op-code (%#v) and the reused buffer (varLift %s) on
-// SEPARATE emitted lines -- the codegen mis-orders args when both appear on one.
-func MathApply(op int, n Num) Num {
-	return FloatNum(mathApply(op, n.Float64()))
+func MathApply(fn func(f float64) float64, n Num) Num {
+	return FloatNum(fn(n.Float64()))
 }

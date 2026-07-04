@@ -467,9 +467,18 @@ safety net (it caught the `Function.Name()` and MISSING-constant bugs below).
     plants a positional `\x00<n>\x00` token; a final left-to-right scan emits `%s`
     and collects args in on-line order. So transform + encode can collapse to one
     line, e.g. `lzBufPre = base.EncodeStr(c, caseFn(lzDecoded), lzBufPre)`.
-  Applied so far: the type-check predicates (`is_*` → `base.TypeIs*`) and the
-  case-transform family (`upper`/`lower`/`title` → `base.StrCase*`). The token merge
-  is behavior-preserving — regen produced byte-identical output for every other op.
+  Applied so far: the type-check predicates (`is_*` → `base.TypeIs*`), the
+  case-transform family (`upper`/`lower`/`title` → `base.StrCase*`), the unary +
+  binary math funcs (`abs`/`ceil`/… → stdlib `math.Abs`/`math.Pow`/… directly, with
+  `base.MathSign`/`Degrees`/`Radians` for the non-stdlib ops — `test/tmp` auto-imports
+  `math` via `emit.OptionalImports`), and the arithmetic operators (`add`/`sub`/… →
+  `base.ArithAdd`/… with a uniform `(a, b Num) (Num, bool)` signature). This deleted
+  the `MathAbs…`/`ArithAdd…` int-op-code enums and their `mathApply`/`Num.Arith`
+  switches. The token merge is behavior-preserving — regen produced byte-identical
+  output for every other op. Remaining int-op-code family: `array_reduce`
+  (`length`/`count`/`sum`/`avg`) — kept as-is, since its four ops share one iteration
+  pass and the switch is a trivial final selector (a func would add, not remove,
+  complexity).
 - **Regex/pattern exprs don't fit the zero-alloc model.** `LIKE`/`REGEXP_*` compile
   to a `regexp`; cbq caches the compiled regex per static pattern so its per-tuple
   cost is `re.Match`, but a native port has no good story — a dynamic pattern
