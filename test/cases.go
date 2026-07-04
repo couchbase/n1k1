@@ -5863,6 +5863,31 @@ var TestCasesSimple = []TestCaseSimple{
 		[]interface{}{"json", `5`}, []interface{}{"json", `5`}}, `null`),
 	naryProjectCase("missingif-ne", []interface{}{"missingif",
 		[]interface{}{"json", `5`}, []interface{}{"json", `6`}}, `5`),
+
+	// Native arithmetic (value-producing) in the COMPILED path: exercises the
+	// int-op-code dispatch (base.Num.Arith, not a func value) and the reused
+	// lzBufPre buffer. `add` reads a scanned field (a=1) to also cover a labelPath
+	// operand; the rest use constants for deterministic results.
+	naryProjectCase("add", []interface{}{"add",
+		[]interface{}{"labelPath", "a"}, []interface{}{"json", `1`}}, `2`),
+	naryProjectCase("sub", []interface{}{"sub",
+		[]interface{}{"json", `1`}, []interface{}{"json", `3`}}, `-2`),
+	naryProjectCase("mult", []interface{}{"mult",
+		[]interface{}{"json", `6`}, []interface{}{"json", `7`}}, `42`),
+	naryProjectCase("div", []interface{}{"div",
+		[]interface{}{"json", `7`}, []interface{}{"json", `2`}}, `3.5`),
+	naryProjectCase("div-zero", []interface{}{"div",
+		[]interface{}{"json", `1`}, []interface{}{"json", `0`}}, `null`),
+	naryProjectCase("mod", []interface{}{"mod",
+		[]interface{}{"json", `7`}, []interface{}{"json", `3`}}, `1`),
+	naryProjectCase("idiv", []interface{}{"idiv",
+		[]interface{}{"json", `7`}, []interface{}{"json", `2`}}, `3`),
+	naryProjectCase("imod", []interface{}{"imod",
+		[]interface{}{"json", `7`}, []interface{}{"json", `2`}}, `1`),
+	naryProjectCase("neg", []interface{}{"neg",
+		[]interface{}{"labelPath", "a"}}, `-1`),
+	naryProjectCase("add-null", []interface{}{"add",
+		[]interface{}{"json", `null`}, []interface{}{"json", `1`}}, `null`),
 }
 
 // naryProjectCase builds a TestCaseSimple that projects a single native

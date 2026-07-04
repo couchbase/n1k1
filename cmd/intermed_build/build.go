@@ -292,10 +292,18 @@ func EmitBlock(state *State, he *HandlerEntry, isLzBlock bool,
 
 		for varName, suffix := range he.Replacements {
 			if strings.Index(lineLeftRight[0], varName) > 0 {
+				// Replace-all turns every occurrence into `<var>%s`, so the suffix
+				// must be supplied once PER occurrence -- else a var used twice on
+				// one line (e.g. `lzBuf = f(lzBuf[:0])`) emits a second `%s` with
+				// no arg (`%!s(MISSING)`), which won't compile.
+				n := strings.Count(lineLeftRight[0], varName)
+
 				lineLeftRight[0] = strings.Replace(lineLeftRight[0],
 					varName, varName+"%s", -1)
 
-				liveExprs = append(liveExprs, suffix)
+				for i := 0; i < n; i++ {
+					liveExprs = append(liveExprs, suffix)
+				}
 
 				liveExprsIgnore[suffix] = true
 			}

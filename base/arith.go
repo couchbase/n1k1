@@ -183,6 +183,43 @@ func (a Num) IMod(b Num) (Num, bool) {
 	return IntNum(a.i64() % d), true
 }
 
+// Arithmetic op codes for Num.Arith. An int op-code (not a func value) is what
+// the harness passes to the lz codegen: a func param renders under `%#v` as an
+// invalid pointer literal, whereas an int renders as a plain integer constant.
+const (
+	ArithAdd = iota
+	ArithSub
+	ArithMult
+	ArithDiv
+	ArithMod
+	ArithIDiv
+	ArithIMod
+)
+
+// Arith applies the arithmetic op-code to a and b, returning ok=false only for a
+// divide/mod-by-zero (Div/Mod/IDiv/IMod). The always-ok ops (Add/Sub/Mult) return
+// ok=true. Centralizing the dispatch here lets the expr harness pass an int
+// op-code, keeping the compiled path free of un-emittable func values.
+func (a Num) Arith(op int, b Num) (Num, bool) {
+	switch op {
+	case ArithAdd:
+		return a.Add(b), true
+	case ArithSub:
+		return a.Sub(b), true
+	case ArithMult:
+		return a.Mult(b), true
+	case ArithDiv:
+		return a.Div(b)
+	case ArithMod:
+		return a.Mod(b)
+	case ArithIDiv:
+		return a.IDiv(b)
+	case ArithIMod:
+		return a.IMod(b)
+	}
+	return Num{}, false
+}
+
 // WarnDivideByZero is the advisory emitted (via Ctx.Warn) when '/' or DIV
 // divides by zero, matching cbq's message. Kept as a named constant so the lz
 // codegen emits an identifier reference rather than an inline string literal.

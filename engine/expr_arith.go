@@ -34,47 +34,44 @@ func init() {
 
 // -----------------------------------------------------
 
-// Each operator passes its base.Num operation directly -- the (Num, bool) ones
-// (Div/Mod/IDiv/IMod) as method expressions, the always-ok ones (Add/Sub/Mult)
-// via a tiny adapter -- so the shared harness needs no op-code switch.
-func arithAdd(a, b base.Num) (base.Num, bool)  { return a.Add(b), true }
-func arithSub(a, b base.Num) (base.Num, bool)  { return a.Sub(b), true }
-func arithMult(a, b base.Num) (base.Num, bool) { return a.Mult(b), true }
+// Each operator passes its base.Num op-code (an int) to the shared harness --
+// NOT a func value, which the lz codegen can't emit (it renders under %#v as an
+// invalid pointer literal). base.Num.Arith does the dispatch.
 
 func ExprAdd(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	return ExprArithBi(lzVars, labels, params, path, arithAdd, false)
+	return ExprArithBi(lzVars, labels, params, path, base.ArithAdd, false)
 }
 
 func ExprSub(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	return ExprArithBi(lzVars, labels, params, path, arithSub, false)
+	return ExprArithBi(lzVars, labels, params, path, base.ArithSub, false)
 }
 
 func ExprMult(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	return ExprArithBi(lzVars, labels, params, path, arithMult, false)
+	return ExprArithBi(lzVars, labels, params, path, base.ArithMult, false)
 }
 
 // '/' and DIV emit a divide-by-zero warning (last arg); '%'/MOD stay silent.
 func ExprDiv(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	return ExprArithBi(lzVars, labels, params, path, base.Num.Div, true)
+	return ExprArithBi(lzVars, labels, params, path, base.ArithDiv, true)
 }
 
 func ExprMod(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	return ExprArithBi(lzVars, labels, params, path, base.Num.Mod, false)
+	return ExprArithBi(lzVars, labels, params, path, base.ArithMod, false)
 }
 
 func ExprIDiv(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	return ExprArithBi(lzVars, labels, params, path, base.Num.IDiv, true)
+	return ExprArithBi(lzVars, labels, params, path, base.ArithIDiv, true)
 }
 
 func ExprIMod(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	return ExprArithBi(lzVars, labels, params, path, base.Num.IMod, false)
+	return ExprArithBi(lzVars, labels, params, path, base.ArithIMod, false)
 }
 
 // -----------------------------------------------------
@@ -85,14 +82,21 @@ func ExprIMod(lzVars *base.Vars, labels base.Labels,
 // result is MISSING; else if either operand is not a number the result is NULL;
 // else compute (divide/mod-by-zero also yields NULL).
 func ExprArithBi(lzVars *base.Vars, labels base.Labels, params []interface{},
-	path string, apply func(a, b base.Num) (base.Num, bool), warnZero bool) (
+	path string, op int, warnZero bool) (
 	lzExprFunc base.ExprFunc) {
 	var lzBufPre []byte // <== varLift: lzBufPre by path
 
 	biExprFunc := func(lzA, lzB base.ExprFunc, lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) { // !lz
 		if LzScope {
-			lzValA := lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
-			lzValB := lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B"
+			// Capture each operand FROM the shared lzVal register (emitCaptured
+			// replaces the marked line with the child's code, which writes lzVal);
+			// a direct lzValX := lzX(...) bind is dropped in the compiled path.
+			// Mirrors ExprCmp.
+			lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
+			lzValA := lzVal
+
+			lzVal = lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B"
+			lzValB := lzVal
 
 			if len(lzValA) == 0 || len(lzValB) == 0 {
 				lzVal = base.ValMissing // MISSING dominant.
@@ -102,15 +106,16 @@ func ExprArithBi(lzVars *base.Vars, labels base.Labels, params []interface{},
 				if !lzOkA || !lzOkB {
 					lzVal = base.ValNull // Non-number operand.
 				} else {
-					lzNumR, lzOkR := apply(lzNumA, lzNumB)
+					lzNumR, lzOkR := lzNumA.Arith(op, lzNumB)
 					if !lzOkR {
 						lzVal = base.ValNull // Divide/mod by zero.
 						if warnZero && lzVars.Ctx.Warn != nil {
 							lzVars.Ctx.Warn(base.WarnDivideByZero)
 						}
 					} else {
-						lzBufPre = base.AppendNum(lzBufPre[:0], lzNumR)
-						lzVal = base.Val(lzBufPre)
+						lzOut := base.AppendNum(lzBufPre[:0], lzNumR)
+						lzBufPre = lzOut
+						lzVal = base.Val(lzOut)
 					}
 				}
 			}
