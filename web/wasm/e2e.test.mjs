@@ -72,6 +72,22 @@ if (!fs.existsSync(wasmPath)) {
     assert.ok(q.ok && q.rows[0].n >= 1, JSON.stringify(q.rows));
   });
 
+  test("OPFS wiring: openDir returns a cache plan; built blobs drain", () => {
+    // The Go side of OPFS caching (the browser opfsGet/opfsPut can't run in
+    // node). openDir advertises what to cache; a built index queues its blob
+    // (the wasm fs write fails) for the host to persist.
+    const r = JSON.parse(globalThis.n1k1OpenDir("/n1k1data"));
+    assert.ok(Array.isArray(r.cachePlan) && r.cachePlan.length >= 1, "cachePlan: " + JSON.stringify(r.cachePlan));
+    assert.ok(r.cachePlan[0].path && r.cachePlan[0].sig, "plan entry has path+sig");
+    // A prior indexed query built the mem index(es); their blobs are queued.
+    const blobs = JSON.parse(globalThis.n1k1TakeIndexBlobs());
+    assert.ok(Object.keys(blobs).length >= 1, "expected queued index blob(s)");
+    // decodes as base64
+    assert.doesNotThrow(() => Buffer.from(Object.values(blobs)[0], "base64"));
+    // draining clears them
+    assert.equal(Object.keys(JSON.parse(globalThis.n1k1TakeIndexBlobs())).length, 0);
+  });
+
   test("ingestion → mount → open → query (tar.gz)", async () => {
     const enc = new TextEncoder();
     const tarBlocks = [];

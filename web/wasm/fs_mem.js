@@ -114,6 +114,26 @@
       return mountPath;
     };
 
+    // Mount a single file (bytes) at an absolute path, registering ancestor
+    // directories. Used to drop an OPFS-cached index blob into the fs before a
+    // query so the engine's cache tier hits (see web/wasm/opfs.js).
+    globalScope.n1k1MountFile = function (filePath, bytes) {
+      const p = norm(filePath);
+      files.set(p, bytes instanceof Uint8Array ? bytes : new TextEncoder().encode(String(bytes)));
+      const segs = p.split("/").filter(Boolean);
+      if (!dirs.has("/")) dirs.set("/", []);
+      let cur = "/";
+      for (let i = 0; i < segs.length; i++) {
+        const parent = cur;
+        cur = norm(cur + "/" + segs[i]);
+        // The last segment is the file itself; earlier ones are directories.
+        if (i < segs.length - 1 && !dirs.has(cur)) dirs.set(cur, []);
+        const arr = dirs.get(parent);
+        if (!arr.includes(segs[i])) { arr.push(segs[i]); arr.sort(); }
+      }
+      return p;
+    };
+
     let nextFd = 3; // 0/1/2 reserved for stdin/stdout/stderr
     const open = new Map(); // fd -> { path }
     const decoder = new TextDecoder("utf-8");

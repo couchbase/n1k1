@@ -22,6 +22,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -52,6 +53,7 @@ func main() {
 
 	js.Global().Set("n1k1RunQuery", js.FuncOf(runQuery))
 	js.Global().Set("n1k1OpenDir", js.FuncOf(openDirJS))
+	js.Global().Set("n1k1TakeIndexBlobs", js.FuncOf(takeIndexBlobs))
 	js.Global().Set("n1k1Ready", js.ValueOf(true))
 	fmt.Println("n1k1 wasm ready; datasets mounted at", dataRoot)
 
@@ -91,17 +93,36 @@ func openDirJS(this js.Value, args []js.Value) interface{} {
 	if len(args) < 1 || args[0].Type() != js.TypeString {
 		return respondError("n1k1OpenDir(path): expected a path string")
 	}
-	names, err := openDir(args[0].String())
+	dataRoot := args[0].String()
+	names, err := openDir(dataRoot)
 	if err != nil {
 		return respondError(err.Error())
 	}
 	if names == nil {
 		names = []string{}
 	}
+	plan := glue.IndexCachePlan(dataRoot)
+	if plan == nil {
+		plan = []map[string]string{}
+	}
 	b, _ := json.Marshal(struct {
-		OK        bool     `json:"ok"`
-		Keyspaces []string `json:"keyspaces"`
-	}{true, names})
+		OK        bool                `json:"ok"`
+		Keyspaces []string            `json:"keyspaces"`
+		CachePlan []map[string]string `json:"cachePlan"`
+	}{true, names, plan})
+	return string(b)
+}
+
+// takeIndexBlobs (JS: n1k1TakeIndexBlobs) returns the freshly-built in-memory
+// index blobs the host should persist to OPFS, as {cachePath: base64Blob}. The
+// blobs are removed from the queue; a later open mounts them back into the fs so
+// the in-memory index loads from cache instead of re-scanning. See wasm/opfs.js.
+func takeIndexBlobs(this js.Value, args []js.Value) interface{} {
+	out := map[string]string{}
+	for path, blob := range glue.TakeIndexBlobs() {
+		out[path] = base64.StdEncoding.EncodeToString(blob)
+	}
+	b, _ := json.Marshal(out)
 	return string(b)
 }
 

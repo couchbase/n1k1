@@ -62,9 +62,10 @@ keyspace).
    handling. **DONE** — see `wasm/ingest.js` + "Ingestion" below.
 2. **In-memory secondary index** (Phase 1 under #1) — **DONE** — see `glue/idx_mem.go`
    + "Secondary indexes" below. Real `IndexScan` in `EXPLAIN`, both builds.
-3. **Web Worker** (#3) — foundational; unlocks visible live stats + cancellation +
-   streaming at once.
-4. **OPFS index cache** (Phase 2 under #1) — layers on top of #2/#3.
+3. **OPFS index cache** (Phase 2 under #1) — **DONE** — `wasm/opfs.js` + `glue/idx_mem.go`
+   two-tier cache. See "Secondary indexes" below.
+4. **Web Worker** (#3) — foundational; unlocks visible live stats + cancellation +
+   streaming at once. *Next.*
 
 ### 1. Secondary indexes in the wasm build (the through-line)
 The reason we can't just recompile bbolt/bleve is mmap. Realistic path:
@@ -81,12 +82,20 @@ The reason we can't just recompile bbolt/bleve is mmap. Realistic path:
   primary-scan parity) + `web/wasm/e2e.test.mjs` (browser build). The `.n1k1/catalog.json`
   sidecar sits at the datastore root, beside the `default` namespace (a separate, empty
   ".n1k1" namespace to the file datastore — harmless). Follow-up: FTS still bbolt/bleve-only.
-- **Phase 2** — **OPFS as a persistence cache** for that in-memory index: serialize on
-  build, deserialize on open, invalidate on `sourceSignature` mismatch (`idx_si.go` has
-  the freshness logic). Because the index is RAM-resident during queries, OPFS is touched
-  only at open/build → **async, main-thread, no worker**. Keep source docs in the picked
-  folder; keep indexes out of it (no `.n1k1/` clutter, no `readwrite` prompt). OPFS is a
-  *cache* (evictable; call `navigator.storage.persist()`), never source of truth.
+- **Phase 2 — DONE** (`wasm/opfs.js` + `glue/idx_mem.go`). `openMemIndex` is a three-tier
+  cache: in-process slot → persisted blob → build+persist. The blob is a self-delimiting
+  `encodeMemBlob(sig, entries)`. Native writes it to `<root>/.n1k1/cache/<ns>__<ks>__<hash>.idx`
+  on disk (free persistent index cache for the CLI too); wasm's read-only fs write fails, so
+  the blob is queued and `n1k1TakeIndexBlobs` hands it to JS. `n1k1OpenDir` returns a
+  `cachePlan` ([{path, sig}]); `opfs.js` preloads matching OPFS blobs into the fs BEFORE the
+  first query (`n1k1MountFile`) and persists freshly-built ones after — async, main-thread,
+  no worker (index is RAM-resident during the query). OPFS is origin-private + evictable, so
+  it's a pure cache; the embedded `sig` invalidates stale blobs. All degrades to no-ops where
+  OPFS is absent (Firefox private mode, etc.). Tests: cache round-trip + tamper-proof
+  "cache is actually used" (`idx_mem_test.go`), and the openDir-cachePlan / blob-drain
+  boundary (`e2e.test.mjs`); the browser `opfsGet`/`opfsPut` themselves are browser-verified
+  (node has no OPFS). Not yet: OPFS *source* persistence (re-open a dropped dataset without
+  re-dropping) — the natural companion.
 - **Phase 3** — sync-handle + worker only if an index must exceed RAM (bbolt-style
   paging), or for FTS. bleve *can* run in-memory via its `gtreap` store (no mmap) — worth
   a spike, but scorch/zap/boltdb must stay out of the graph; a hand-rolled inverted index

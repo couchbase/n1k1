@@ -29,6 +29,8 @@ package glue
 
 import (
 	"bytes"
+	"encoding/binary"
+	"os"
 	"path/filepath"
 	"sort"
 	"sync"
@@ -391,18 +393,186 @@ func openMemIndex(ks *memKeyspace, def *indexDef) (*memIndex, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Tier 1: in-process slot (same Session/process, already built).
 	if slot.mi != nil && slot.sig == sig {
 		slot.mi.ks = ks // re-home to the current keyspace wrapper
 		return slot.mi, nil
 	}
 
+	// Tier 2: a persisted cache blob. Native writes it to <root>/.n1k1/cache/ on
+	// disk; the WASM build has JS mount an OPFS-cached blob into the in-memory fs
+	// at the same path (see web/wasm/opfs.js). Either way, a fresh blob (matching
+	// signature) lets us skip the full keyspace scan.
+	cachePath := memCachePath(ks.mds.root, ns, ks.Name(), def.defHash())
+	if blob, e := os.ReadFile(cachePath); e == nil {
+		if cs, entries, ok := decodeMemBlob(blob); ok && cs == sig {
+			slot.mi = &memIndex{ks: ks, def: def, entries: entries}
+			slot.sig = sig
+			return slot.mi, nil
+		}
+	}
+
+	// Tier 3: build by scanning the keyspace, then persist the blob for next time.
 	entries, err := buildMemEntries(srcDir, def)
 	if err != nil {
 		return nil, err
 	}
+	persistMemBlob(cachePath, encodeMemBlob(sig, entries))
 	slot.mi = &memIndex{ks: ks, def: def, entries: entries}
 	slot.sig = sig
 	return slot.mi, nil
+}
+
+// memCachePath is where a built index blob is cached, beside the catalog under
+// the datastore's sidecar. defHash already encodes the index definition, so a
+// changed def lands on a different path (and stale ones are simply ignored).
+func memCachePath(root, ns, ks, defHash string) string {
+	name := sanitizeSeg(ns) + "__" + sanitizeSeg(ks) + "__" + defHash + ".idx"
+	return filepath.Join(root, sidecarDir, "cache", name)
+}
+
+func sanitizeSeg(s string) string {
+	var b []byte
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == '/' || c == '\\' || c == ':' || c == 0 {
+			c = '_'
+		}
+		b = append(b, c)
+	}
+	return string(b)
+}
+
+// encodeMemBlob serializes an index's source signature and sorted entries into a
+// self-delimiting byte blob: uvarint(len(sig))+sig, uvarint(count), then per
+// entry uvarint(len)+bytes.
+func encodeMemBlob(sig string, entries [][]byte) []byte {
+	var out []byte
+	var tmp [binary.MaxVarintLen64]byte
+	putUv := func(v uint64) {
+		n := binary.PutUvarint(tmp[:], v)
+		out = append(out, tmp[:n]...)
+	}
+	putUv(uint64(len(sig)))
+	out = append(out, sig...)
+	putUv(uint64(len(entries)))
+	for _, e := range entries {
+		putUv(uint64(len(e)))
+		out = append(out, e...)
+	}
+	return out
+}
+
+// decodeMemBlob is the inverse of encodeMemBlob; ok is false for a truncated or
+// malformed blob (treated as a cache miss, never fatal).
+func decodeMemBlob(blob []byte) (sig string, entries [][]byte, ok bool) {
+	p := 0
+	readUv := func() (uint64, bool) {
+		v, n := binary.Uvarint(blob[p:])
+		if n <= 0 {
+			return 0, false
+		}
+		p += n
+		return v, true
+	}
+	sl, ok1 := readUv()
+	if !ok1 || p+int(sl) > len(blob) {
+		return "", nil, false
+	}
+	sig = string(blob[p : p+int(sl)])
+	p += int(sl)
+	cnt, ok2 := readUv()
+	if !ok2 {
+		return "", nil, false
+	}
+	entries = make([][]byte, 0, cnt)
+	for i := uint64(0); i < cnt; i++ {
+		el, ok3 := readUv()
+		if !ok3 || p+int(el) > len(blob) {
+			return "", nil, false
+		}
+		entries = append(entries, append([]byte(nil), blob[p:p+int(el)]...))
+		p += int(el)
+	}
+	return sig, entries, true
+}
+
+// IndexCachePlan is the host-facing view of the in-memory index cache: for each
+// declared index under dataRoot, the cache key (path) and the source signature a
+// persisted blob must match to be reusable. The WASM host (web/wasm) uses it to
+// pre-fetch OPFS-cached blobs and mount them into the fs before the first query
+// builds the indexes. Returns entries as {"path":..., "sig":...} maps.
+func IndexCachePlan(dataRoot string) []map[string]string { return memCachePlan(dataRoot) }
+
+// TakeIndexBlobs drains (and clears) the freshly-built in-memory index blobs
+// whose on-disk write failed -- i.e. the WASM read-only fs. The host persists
+// these (e.g. to OPFS) and mounts them back on a later open so the cache hits.
+// Keyed by cache path. Empty in the native build (writes succeed on disk).
+func TakeIndexBlobs() map[string][]byte { return takePendingMemBlobs() }
+
+// pendingMemBlobs holds freshly-built index blobs whose on-disk write failed --
+// i.e. the WASM build, whose in-memory fs is read-only. JS drains these (see
+// main_wasm.go's n1k1TakeIndexBlobs) and persists them to OPFS, mounting them
+// back into the fs on a later open so openMemIndex's Tier-2 cache hits. In the
+// native build the write succeeds, so nothing accumulates here.
+var pendingMemBlobs = struct {
+	sync.Mutex
+	m map[string][]byte // cachePath -> blob
+}{m: map[string][]byte{}}
+
+// persistMemBlob writes a built index blob to its cache path. On disk (native)
+// that's the durable cache; when the write fails (WASM's read-only fs) the blob
+// is queued for JS to persist to OPFS instead. Best-effort: a failure never
+// fails the query (the index is already built in memory).
+func persistMemBlob(cachePath string, blob []byte) {
+	if err := os.MkdirAll(filepath.Dir(cachePath), 0o755); err == nil {
+		if err := os.WriteFile(cachePath, blob, 0o644); err == nil {
+			return
+		}
+	}
+	pendingMemBlobs.Lock()
+	pendingMemBlobs.m[cachePath] = blob
+	pendingMemBlobs.Unlock()
+}
+
+// takePendingMemBlobs returns and clears the queued (path -> blob) index blobs
+// for the caller (JS/OPFS) to persist. Exposed to JS via main_wasm.go.
+func takePendingMemBlobs() map[string][]byte {
+	pendingMemBlobs.Lock()
+	defer pendingMemBlobs.Unlock()
+	out := pendingMemBlobs.m
+	pendingMemBlobs.m = map[string][]byte{}
+	return out
+}
+
+// memCachePlan returns, for each declared (non-FTS) index under dataRoot, the
+// cache path JS should look up in OPFS and the current source signature it must
+// match. Cheap (no scan): just catalog + defHash + sourceSignature. JS uses this
+// to pre-mount fresh OPFS blobs into the fs before the first query builds them.
+func memCachePlan(dataRoot string) []map[string]string {
+	cat, err := loadCatalog(dataRoot)
+	if err != nil || cat == nil {
+		return nil
+	}
+	var plan []map[string]string
+	for _, def := range cat.Indexes {
+		if def.isFTS() {
+			continue
+		}
+		ns := def.Namespace
+		if ns == "" {
+			ns = "default"
+		}
+		sig, err := sourceSignature(filepath.Join(dataRoot, ns, def.Keyspace))
+		if err != nil {
+			continue
+		}
+		plan = append(plan, map[string]string{
+			"path": memCachePath(dataRoot, ns, def.Keyspace, def.defHash()),
+			"sig":  sig,
+		})
+	}
+	return plan
 }
 
 // buildMemEntries scans the keyspace's record files, evaluates the key/where

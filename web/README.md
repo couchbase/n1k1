@@ -89,6 +89,7 @@ handling because a browser has no OS:
 | `wasm/main_wasm.go` | the wasm entry point; exposes `globalThis.n1k1RunQuery(sql)` |
 | `wasm/fs_mem.js`    | in-memory read-only filesystem shim for `GOOS=js` |
 | `wasm/ingest.js`    | drag-drop / file ingestion: gunzip + untar + JSON(L) → keyspaces |
+| `wasm/opfs.js`      | OPFS cache for built in-memory indexes (preload/persist; optional) |
 | `wasm/build.sh`     | builds `n1k1.wasm`, ships `wasm_exec.js`, applies dep patches |
 | `wasm/overlay/`     | js-tagged stubs copied into the local dependency copies |
 

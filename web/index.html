@@ -171,6 +171,7 @@
 <script src="samples.js"></script>
 <script src="wasm/fs_mem.js"></script>
 <script src="wasm/ingest.js"></script>
+<script src="wasm/opfs.js"></script>
 <script>
 (function () {
   "use strict";
@@ -259,6 +260,22 @@
     buildSchema(keyspaces);
     setExamples(curatedExamples || generateExamples(keyspaces));
     run();
+  }
+
+  // Open a mounted datastore and activate it, with the OPFS index-cache dance
+  // around it: preload any cached index blobs into the fs BEFORE the first query
+  // builds the indexes, then persist freshly-built ones AFTER. Both are no-ops
+  // where OPFS is unavailable, so this works everywhere.
+  async function openAndActivate(mount, label, curatedExamples) {
+    const resp = JSON.parse(globalThis.n1k1OpenDir(mount));
+    if (!resp.ok) {
+      setStatus('<span class="err">Open failed: ' + escapeHtml(resp.error) + "</span>");
+      return false;
+    }
+    try { await globalThis.n1k1OPFS.preload(resp.cachePlan); } catch (e) { /* cache optional */ }
+    activateSource(resp.keyspaces, label, curatedExamples);
+    try { await globalThis.n1k1OPFS.persist(); } catch (e) { /* cache optional */ }
+    return true;
   }
 
   // ---- Mount the built-in sample data (the engine opens it at startup) -------
@@ -424,11 +441,9 @@
     }
     const mount = "/dropdata-" + (++mountSeq);
     globalThis.n1k1MountTree(mount, tree);
-    const resp = JSON.parse(globalThis.n1k1OpenDir(mount));
-    if (!resp.ok) { setStatus('<span class="err">Open failed: ' + escapeHtml(resp.error) + "</span>"); return; }
     const note = stats.truncated ? " (truncated at cap)" : "";
     const label = fileObjs.length === 1 ? fileObjs[0].name : fileObjs.length + " files";
-    activateSource(resp.keyspaces, label + "  ·  " + stats.docs + " docs" + note, null);
+    await openAndActivate(mount, label + "  ·  " + stats.docs + " docs" + note, null);
   }
 
   async function openFolder() {
@@ -458,11 +473,8 @@
     // then have the engine (re)open it and report the keyspaces it exposes.
     const mount = "/userdata-" + (openFolder._n = (openFolder._n || 0) + 1);
     globalThis.n1k1MountTree(mount, { default: keyspaces });
-    const resp = JSON.parse(globalThis.n1k1OpenDir(mount));
-    if (!resp.ok) { setStatus('<span class="err">Open failed: ' + escapeHtml(resp.error) + "</span>"); return; }
-
     const note = stats.truncated ? " (truncated at the size/file cap)" : "";
-    activateSource(resp.keyspaces, dirHandle.name + "  ·  " + stats.count + " file(s)" + note, null);
+    await openAndActivate(mount, dirHandle.name + "  ·  " + stats.count + " file(s)" + note, null);
   }
 
   // ---- Load wasm_exec.js then instantiate -----------------------------------
@@ -480,13 +492,9 @@
           clearInterval(iv);
           runBtn.disabled = false;
           sqlEl.placeholder = "";
-          // Ask the engine which keyspaces the built-in sample exposes, then
-          // show the curated examples and run the first one.
-          let keyspaces = [];
-          try { keyspaces = (JSON.parse(globalThis.n1k1OpenDir("/n1k1data")).keyspaces) || []; }
-          catch (e) { /* fall back to whatever samples.js declared */ }
-          if (!keyspaces.length) keyspaces = Object.keys(DATASETS.default);
-          activateSource(keyspaces, "built-in sample", SAMPLE_QUERIES);
+          // Open the built-in sample and show the curated examples (with the
+          // OPFS index-cache preload/persist around it).
+          openAndActivate("/n1k1data", "built-in sample", SAMPLE_QUERIES);
         } else if (globalThis.n1k1InitError) {
           clearInterval(iv);
           setStatus('<span class="err">Init failed: ' + escapeHtml(globalThis.n1k1InitError) + "</span>");

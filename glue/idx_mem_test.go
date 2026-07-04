@@ -19,6 +19,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/couchbase/query/value"
 )
 
 // writeMemFixture lays out a classic <root>/default/beers/<k>.json datastore plus
@@ -110,6 +112,79 @@ func TestMemIndexRangeScanResults(t *testing.T) {
 		if len(res.Rows) != c.want {
 			t.Errorf("%s: got %d rows, want %d", c.sql, len(res.Rows), c.want)
 		}
+	}
+}
+
+func TestMemBlobRoundTrip(t *testing.T) {
+	sig := "abc123"
+	entries := [][]byte{[]byte("alpha"), []byte(""), []byte("a longer entry \x00 with a NUL")}
+	sig2, got, ok := decodeMemBlob(encodeMemBlob(sig, entries))
+	if !ok || sig2 != sig || len(got) != len(entries) {
+		t.Fatalf("round-trip failed: ok=%v sig=%q n=%d", ok, sig2, len(got))
+	}
+	for i := range entries {
+		if string(got[i]) != string(entries[i]) {
+			t.Errorf("entry %d: got %q want %q", i, got[i], entries[i])
+		}
+	}
+	if _, _, ok := decodeMemBlob([]byte{0xff, 0xff}); ok {
+		t.Error("truncated blob should decode as not-ok (cache miss), not panic")
+	}
+}
+
+// The on-disk cache must actually be USED on a second open, not silently
+// re-scanned. We build once (persisting the blob), then overwrite the cache with
+// a valid blob (same signature) that indexes only ONE of the qualifying docs;
+// a fresh session must then return that single row -- proving the scan was
+// skipped in favor of the cache.
+func TestMemIndexUsesCacheFile(t *testing.T) {
+	withMemMode(t)
+	root := writeMemFixture(t, `"abv"`)
+
+	// First open builds the index and writes .n1k1/cache/<...>.idx to disk.
+	sess, err := OpenSession(root, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res, err := sess.Run("SELECT b.name FROM beers b WHERE b.abv >= 7"); err != nil || len(res.Rows) != 3 {
+		t.Fatalf("baseline: err=%v rows=%d want 3", err, len(res.Rows))
+	}
+
+	caches, _ := filepath.Glob(filepath.Join(root, sidecarDir, "cache", "*.idx"))
+	if len(caches) != 1 {
+		t.Fatalf("expected exactly one cache blob written, got %v", caches)
+	}
+	// Recover the signature the build stored, then rewrite the blob so it indexes
+	// only the abv=10 doc (id "b4" -- the 5th fixture doc, b0..b4).
+	blob, err := os.ReadFile(caches[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	sig, _, ok := decodeMemBlob(blob)
+	if !ok {
+		t.Fatal("could not decode the written cache blob")
+	}
+	entry := append(encodeValue(nil, value.NewValue(10.0)), []byte("b4")...)
+	if err := os.WriteFile(caches[0], encodeMemBlob(sig, [][]byte{entry}), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Drop the in-process (Tier 1) cache so the next open must consult the file.
+	memIndexCache.Lock()
+	memIndexCache.m = map[string]*memSlot{}
+	memIndexCache.Unlock()
+
+	sess2, err := OpenSession(root, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := sess2.Run("SELECT b.name FROM beers b WHERE b.abv >= 7")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Rows) != 1 || !strings.Contains(string(res.Rows[0]), "big") {
+		t.Fatalf("expected the tampered cache to yield 1 row (big); got %d: %s",
+			len(res.Rows), res.Rows)
 	}
 }
 
