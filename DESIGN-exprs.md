@@ -29,9 +29,11 @@ interpreter unit tests.
 
 **Next:** `slice` navigation (blocked — see Lessons); `is [not] distinct from`
 (binary, low priority); then Tier B (string/numeric/date functions). `LIKE`/
-`REGEXP_*` are deliberately deferred — see Lessons. **Done recently:** native exprs
-now run under an active scope (correlated subqueries / WITH / recursive CTEs) when
-every field ref is provably local — the `strict` optimize path, lever #4 below.
+`REGEXP_*` are deliberately deferred — see Lessons. **Done recently:** (a) native
+exprs now run under an active scope (correlated subqueries / WITH / recursive CTEs)
+when every field ref is provably local — the `strict` optimize path, lever #4; and
+(b) logical `and`/`or` are now optimizer-wired with three-valued semantics — lever
+#5 — so `WHERE`/`JOIN`/`ON` conjunctions avoid the boxed lane.
 
 ## Why this matters
 
@@ -94,7 +96,7 @@ type/collation semantics.
 | `labelPath` | `engine/expr.go` | field/path access via `jsonparser` |
 | `labelUint64` | `engine/expr.go` | binary uint64 → JSON int |
 | `valsEncode` / `valsEncodeCanonical` | `engine/expr.go` | key encoding for maps |
-| `and` / `or` | `engine/expr_bi.go` | short-circuit logical |
+| `and` / `or` | `engine/expr_logic.go` + `base/logic.go` | three-valued logical (binary harness; optimizer folds cbq's n-ary And/Or into right-nested binary) |
 | `eq` `lt` `le` `gt` `ge` | `engine/expr_cmp.go` | comparisons (numeric fast path + `ValComparer`) |
 | `add` `sub` `mult` `div` `mod` `idiv` `imod` `neg` | `engine/expr_arith.go` + `base/arith.go` | arithmetic (mirrors cbq `value.NumberValue`) |
 | `not` `is_null` `is_not_null` `is_missing` `is_not_missing` `is_valued` `is_not_valued` | `engine/expr_pred.go` | unary predicates (byte-kind classified) |
@@ -248,9 +250,24 @@ emitted by:
    profiled via `-profile-cpu`/`-profile-mem`): **~500 → ~208 MB alloc/render (−58%),
    ~52.3 → ~27.7 s CPU (−47%), ~573 → ~360 ms wall (−37%)**, output byte-identical;
    the scoped-expr Convert closure (`ExprTree.func2`) alone dropped **−81%** (12.2 →
-   2.3 GB) as the 7 projection exprs went native. The residual: the step's `WHERE`
-   predicate (`(…<4) and (…<45)`) isn't yet optimizer-compilable so still converts,
-   and the subquery *output* boxing (`EvaluateSubquery.func2`) is lever #3 territory.
+   2.3 GB) as the 7 projection exprs went native. Then wiring `and`/`or` (below)
+   took the step's `WHERE` predicate (`(…<4) and (…<45)`) native too, compounding to
+   **~500 → ~129 MB alloc/render (−74% vs original), ~573 → ~285 ms wall (−50%)**.
+   The remaining cost is the subquery *output* boxing (`EvaluateSubquery.func2`) —
+   lever #3 territory.
+5. *Wire logical `and`/`or` into the native optimizer* — **DONE (`engine/expr_logic.go`,
+   `base/logic.go`, `glue/expr_optimize.go`).** The native `and`/`or` handlers existed
+   but were unwired dead code (2-operand, `ValEqualTrue` instead of three-valued,
+   never in `OptimizableFuncs`), so every `WHERE`/`JOIN`/`ON` conjunction fell to the
+   cbq fallback. Reimplemented as correct three-valued binary AND/OR on bytes
+   (`base.LogicAnd2`/`LogicOr2`, matching cbq's asymmetric MISSING/NULL precedence)
+   via the compiled-safe `MakeBiExprFunc`; `ExprTreeOptimize` right-nests cbq's n-ary
+   And/Or into binary applications and registers `and`/`or`. Predicate-side operators
+   are the highest per-row frequency (§ Prioritization), so this is broad: any filter
+   with `AND`/`OR` now avoids the boxed lane. Differential-tested vs cbq over the full
+   truth table incl. MISSING/NULL and non-boolean truthiness
+   (`TestLogicAndOrDifferentialVsCBQ`). NB: this took the binary route because the
+   n-ary harness's *compiled* path is broken — see Lessons.
 
 ## The universe & the gap
 
@@ -382,6 +399,22 @@ safety net (it caught the `Function.Name()` and MISSING-constant bugs below).
   A runtime loop over `[]ExprFunc` *inside the codegen'd eval body* fails.
   Also: an inline string literal in codegen'd code desyncs the tokenizer — use a
   named `base` const (e.g. `WarnDivideByZero`).
+- **`MakeNaryExprFunc`'s COMPILED path is currently broken (interpreter-only).**
+  Wiring `and`/`or` surfaced this: no compiled query had ever exercised an n-ary
+  native (ifnull/greatest/concat/nvl were optimizer-wired but never hit the
+  `intermed` generator in a filter/project the compiler tests cover). The
+  generator (a) drops the `lzExprFunc =` assignment inside the child-build loop,
+  so `lzChildren` fills with nils, and (b) runs the reduce (`base.NaryFirstKept`,
+  a plain func) *at generation time* instead of emitting it — because, unlike a
+  `biExprFunc` closure that emits its own body, a plain base reducer just
+  executes. Net: compiled n-ary panics (nil child). Until the harness is fixed to
+  build `lzChildren` and emit the reduce as a runtime call, prefer the **binary
+  harness + an optimizer fold**: `and`/`or` use `MakeBiExprFunc` (proven compiled
+  path, like `nullif`) and `ExprTreeOptimize` right-nests cbq's n-ary And/Or into
+  binary applications (exact under three-valued logic). `base.LogicAnd2/LogicOr2`
+  hold the two-operand semantics, including the AND-missing-over-null /
+  OR-null-over-missing asymmetry (verified byte-identical to cbq in
+  `TestLogicAndOrDifferentialVsCBQ`).
 - **Func-value params are intermed-safe.** The harness can take an op as a `func`
   (method expression like `base.Num.Div`, or an adapter) instead of an int + switch
   — cleaner, and codegen handles it. (Dropped the `ArithApply` op-code switch.)

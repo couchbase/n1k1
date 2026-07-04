@@ -15,11 +15,6 @@ import (
 	"github.com/couchbase/n1k1/base"
 )
 
-func init() {
-	ExprCatalog["or"] = ExprOr
-	ExprCatalog["and"] = ExprAnd
-}
-
 // MakeBiExprFunc is for constructing handlers for two-argument or
 // "binary" expressions.
 func MakeBiExprFunc(lzVars *base.Vars, labels base.Labels,
@@ -51,46 +46,6 @@ func MakeBiExprFunc(lzVars *base.Vars, labels base.Labels,
 			return lzVal
 		}
 	}
-
-	return lzExprFunc
-}
-
-// -----------------------------------------------------
-
-func ExprOr(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	biExprFunc := func(lzA, lzB base.ExprFunc, lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) { // !lz
-		// TODO: This might not match N1QL logical OR semantics.
-		lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
-		if !base.ValEqualTrue(lzVal) {
-			lzVal = lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B"
-		}
-
-		return lzVal
-	} // !lz
-
-	lzExprFunc =
-		MakeBiExprFunc(lzVars, labels, params, path, biExprFunc) // !lz
-
-	return lzExprFunc
-}
-
-// -----------------------------------------------------
-
-func ExprAnd(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	biExprFunc := func(lzA, lzB base.ExprFunc, lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) { // !lz
-		// TODO: This might not match N1QL logical AND semantics.
-		lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
-		if base.ValEqualTrue(lzVal) {
-			lzVal = lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B"
-		}
-
-		return lzVal
-	} // !lz
-
-	lzExprFunc =
-		MakeBiExprFunc(lzVars, labels, params, path, biExprFunc) // !lz
 
 	return lzExprFunc
 }

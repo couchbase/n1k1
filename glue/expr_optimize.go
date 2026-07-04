@@ -42,6 +42,13 @@ func init() {
 	OptimizableFuncs["imod"] = "imod"
 	OptimizableFuncs["neg"] = "neg"
 
+	// Logical AND / OR (see engine/expr_logic.go, base/logic.go); n-ary (cbq's
+	// And/Or are CommutativeFunctionBase), so no arity guard -- the native
+	// harness reduces all operands with N1QL three-valued semantics. High value:
+	// these appear in nearly every WHERE / JOIN / ON predicate.
+	OptimizableFuncs["and"] = "and"
+	OptimizableFuncs["or"] = "or"
+
 	// Unary predicates (see engine/expr_pred.go). Keys are the cbq Function
 	// Name() (the canonical no-underscore forms set by each constructor's
 	// Init(), e.g. "isnull"); values are the n1k1 ExprCatalog names.
@@ -230,6 +237,31 @@ func ExprTreeOptimize(labels base.Labels, e expression.Expression,
 	// operators and unary neg only. cbq's add/mult are n-ary; the >2-operand
 	// forms fall back to cbq rather than silently dropping operands.
 	operands := f.Operands()
+
+	// Logical AND / OR are n-ary in cbq but the native harness is binary
+	// (engine/expr_logic.go). Fold into right-nested binary applications, which
+	// is exact under three-valued logic (base.LogicAnd2/LogicOr2 short-circuit on
+	// a decided operand and the unknown-precedence is idempotent under nesting).
+	// e.g. AND(a,b,c) -> ["and", a, ["and", b, c]].
+	if name == "and" || name == "or" {
+		n := len(operands)
+		if n < 2 {
+			return nil, false
+		}
+		acc, ok := ExprTreeOptimize(labels, operands[n-1], buf, strict)
+		if !ok {
+			return nil, false
+		}
+		for i := n - 2; i >= 0; i-- {
+			lhs, ok := ExprTreeOptimize(labels, operands[i], buf, strict)
+			if !ok {
+				return nil, false
+			}
+			acc = []interface{}{name, lhs, acc}
+		}
+		return acc, true
+	}
+
 	switch name {
 	case "add", "mult", "sub", "div", "mod", "idiv", "imod", "in",
 		"nullif", "missingif", "element":

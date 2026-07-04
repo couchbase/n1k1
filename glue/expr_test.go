@@ -476,6 +476,70 @@ func TestBetweenDifferentialVsCBQ(t *testing.T) {
 	}
 }
 
+func TestLogicAndOrDifferentialVsCBQ(t *testing.T) {
+	c := func(v interface{}) expression.Expression { return expression.NewConstant(v) }
+	tru := c(true)
+	fls := c(false)
+	null := c(value.NULL_VALUE)
+	miss := c(value.MISSING_VALUE)
+	num := c(5)    // a real, truthy non-boolean
+	zero := c(0)   // a real, non-truthy non-boolean
+	str := c("x")  // truthy string
+	estr := c("")  // non-truthy (empty) string
+
+	cases := []struct {
+		name string
+		expr expression.Expression
+	}{
+		// AND: any real non-truthy -> false; else MISSING dominates NULL.
+		{"and-tt", expression.NewAnd(tru, tru)},
+		{"and-tf", expression.NewAnd(tru, fls)},
+		{"and-ft", expression.NewAnd(fls, tru)},
+		{"and-t-null", expression.NewAnd(tru, null)},
+		{"and-t-miss", expression.NewAnd(tru, miss)},
+		{"and-null-miss", expression.NewAnd(null, miss)}, // -> MISSING (asymmetry)
+		{"and-miss-null", expression.NewAnd(miss, null)}, // -> MISSING
+		{"and-f-null", expression.NewAnd(fls, null)},     // -> FALSE (short-circuit)
+		{"and-f-miss", expression.NewAnd(fls, miss)},
+		{"and-null-null", expression.NewAnd(null, null)},
+		{"and-num-truthy", expression.NewAnd(num, tru)}, // 5 is truthy
+		{"and-zero", expression.NewAnd(zero, tru)},      // 0 is falsy -> FALSE
+		{"and-estr", expression.NewAnd(estr, tru)},      // "" is falsy -> FALSE
+		{"and-str", expression.NewAnd(str, tru)},        // "x" is truthy
+		{"and-3-tf", expression.NewAnd(tru, tru, fls)},
+		{"and-3-tnt", expression.NewAnd(tru, null, tru)},
+		{"and-4-tnmt", expression.NewAnd(tru, null, miss, tru)},
+
+		// OR: any real truthy -> true; else NULL dominates MISSING.
+		{"or-ff", expression.NewOr(fls, fls)},
+		{"or-ft", expression.NewOr(fls, tru)},
+		{"or-f-null", expression.NewOr(fls, null)},
+		{"or-f-miss", expression.NewOr(fls, miss)},
+		{"or-null-miss", expression.NewOr(null, miss)}, // -> NULL (asymmetry)
+		{"or-miss-null", expression.NewOr(miss, null)}, // -> NULL
+		{"or-t-null", expression.NewOr(tru, null)},     // -> TRUE (short-circuit)
+		{"or-null-null", expression.NewOr(null, null)},
+		{"or-miss-miss", expression.NewOr(miss, miss)},
+		{"or-zero-num", expression.NewOr(zero, num)}, // 5 truthy -> TRUE
+		{"or-zero-zero", expression.NewOr(zero, zero)},
+		{"or-estr-estr", expression.NewOr(estr, estr)},
+		{"or-3-fft", expression.NewOr(fls, fls, tru)},
+		{"or-3-fnm", expression.NewOr(fls, null, miss)},
+	}
+
+	for _, tc := range cases {
+		want := cbqEval(t, tc.expr)
+		got, ok := nativeEval(t, tc.expr)
+		if !ok {
+			t.Errorf("%s: expression did not optimize to native path", tc.name)
+			continue
+		}
+		if got != want {
+			t.Errorf("%s: native=%q, cbq=%q", tc.name, got, want)
+		}
+	}
+}
+
 func TestPredicateDifferentialVsCBQ(t *testing.T) {
 	c := func(v interface{}) expression.Expression { return expression.NewConstant(v) }
 
