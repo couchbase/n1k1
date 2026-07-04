@@ -20,7 +20,7 @@ import (
 // an int op-code; the op-code (base.StrCaseApply, %#v) and the reused lzBufPre
 // buffer (varLift %s) stay on SEPARATE emitted lines, because the generator
 // mis-orders args when a %#v placeholder sits between %s placeholders on one line
-// (see base/strfn.go, DESIGN-exprs.md). LENGTH yields a number, not a re-encoded
+// (see base/str.go, DESIGN-exprs.md). LENGTH yields a number, not a re-encoded
 // string, so it has its own harness.
 
 func init() {
