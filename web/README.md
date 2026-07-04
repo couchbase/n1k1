@@ -21,6 +21,25 @@ Pick an example query or write your own, then **Run** (or ⌘/Ctrl+Enter). Joins
 `GROUP BY`, `UNNEST`, subqueries and `EXPLAIN` all work against the sample
 `beers` / `breweries` keyspaces.
 
+### Query your own local folder
+
+In a Chromium browser (Chrome / Edge), click **📁 Open folder…** to point n1k1 at
+a directory of JSON on your own machine — via the
+[File System Access API](https://developer.mozilla.org/en-US/docs/Web/API/File_System_API).
+The files are read into memory (nothing is uploaded; nothing leaves the tab) and
+mapped to n1k1's keyspace layout:
+
+- each **subdirectory** of the picked folder becomes a keyspace of
+  `<key>.json` documents (e.g. `orders/order-1001.json` → keyspace `orders`);
+- any **loose `.json` / `.jsonl` files** at the top level become one keyspace
+  named after the folder.
+
+The schema sidebar and starter queries are then rebuilt by asking the engine
+itself (`COUNT(*)` + a `LIMIT 1` sample per keyspace). Eager-load caps: 5000
+files / 64 MB (larger folders are truncated with a note). Firefox / Safari don't
+implement the picker, so the button is hidden there; the built-in sample still
+works everywhere.
+
 ## How it works
 
 n1k1 is pure Go, so it cross-compiles to `GOOS=js GOARCH=wasm`. Two things need

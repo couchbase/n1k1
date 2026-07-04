@@ -87,8 +87,32 @@
     return { dirs, files };
   }
 
+  // Merge a second {name: subtree|content} tree, mounted at rootPath, into
+  // existing dir/file maps (so a user-picked folder can sit alongside the
+  // built-in demo data). Overwrites any paths that collide.
+  function mergeInto(dirs, files, rootPath, tree) {
+    const add = buildMaps(rootPath, tree);
+    for (const [p, kids] of add.dirs) {
+      if (dirs.has(p)) {
+        const merged = new Set(dirs.get(p));
+        for (const k of kids) merged.add(k);
+        dirs.set(p, Array.from(merged).sort());
+      } else {
+        dirs.set(p, kids);
+      }
+    }
+    for (const [p, bytes] of add.files) files.set(p, bytes);
+  }
+
   globalScope.installN1k1FS = function (rootPath, tree) {
     const { dirs, files } = buildMaps(rootPath, tree);
+
+    // Let callers mount more trees later (e.g. a folder picked via the File
+    // System Access API). Returns the mounted root path.
+    globalScope.n1k1MountTree = function (mountPath, mountTree) {
+      mergeInto(dirs, files, mountPath, mountTree);
+      return mountPath;
+    };
 
     let nextFd = 3; // 0/1/2 reserved for stdin/stdout/stderr
     const open = new Map(); // fd -> { path }

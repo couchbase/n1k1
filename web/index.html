@@ -68,11 +68,28 @@
   .results-head .toggle { display: flex; gap: 4px; }
   .results-head .toggle button { padding: 3px 10px; font-size: 12px; border-radius: 6px; }
   .results-head .toggle button.active { background: var(--accent); color: var(--accent-fg); border-color: transparent; }
-  .tablescroll { overflow-x: auto; max-height: 460px; overflow-y: auto; }
+  /* Horizontal scroll-shadow affordance: left/right shadows appear only when
+     the table overflows and fade as you reach each edge (background-attachment
+     local vs scroll does the trick). */
+  .tablescroll {
+    overflow: auto; max-height: 460px;
+    background:
+      linear-gradient(to right, var(--card) 30%, rgba(0,0,0,0)) left center,
+      linear-gradient(to left, var(--card) 30%, rgba(0,0,0,0)) right center,
+      radial-gradient(farthest-side at 0 50%, rgba(0,0,0,.16), rgba(0,0,0,0)) left center,
+      radial-gradient(farthest-side at 100% 50%, rgba(0,0,0,.16), rgba(0,0,0,0)) right center;
+    background-repeat: no-repeat;
+    background-size: 44px 100%, 44px 100%, 16px 100%, 16px 100%;
+    background-attachment: local, local, scroll, scroll;
+  }
   table { border-collapse: collapse; width: 100%; font-size: 13px; }
-  th, td { text-align: left; padding: 7px 12px; border-bottom: 1px solid var(--line); white-space: nowrap; vertical-align: top; }
-  th { position: sticky; top: 0; background: var(--th); font-weight: 600; }
-  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: 7px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { position: sticky; top: 0; background: var(--th); font-weight: 600; white-space: nowrap; }
+  /* Wrap long text/JSON cells instead of forcing a very wide table; cap column
+     width so no single cell dominates, but let it grow when there's room. */
+  td { white-space: normal; overflow-wrap: anywhere; word-break: break-word; max-width: 44ch; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; overflow-wrap: normal; }
+  body.nowrap td { white-space: nowrap; overflow-wrap: normal; word-break: normal; max-width: none; }
   td .null { color: var(--muted); font-style: italic; }
   pre.json { margin: 0; padding: 14px 16px; font-size: 12.5px; overflow-x: auto; max-height: 460px; }
   .empty { padding: 22px; color: var(--muted); text-align: center; }
@@ -102,7 +119,11 @@
           <select id="examples"></select>
         </label>
         <button class="run" id="run" disabled>Run &#9654;</button>
+        <button id="openFolder" title="Query a folder of JSON files from your computer (Chrome/Edge)" style="display:none">&#128193; Open folder&hellip;</button>
         <span class="hint">&#8984;/Ctrl + Enter to run</span>
+      </div>
+      <div id="source" style="font-size:12.5px;color:var(--muted);margin-bottom:8px">
+        Source: <span id="sourceName" class="mono">built-in sample</span>
       </div>
       <textarea id="sql" spellcheck="false" placeholder="Loading engine&hellip;"></textarea>
 
@@ -114,6 +135,7 @@
           <span class="toggle">
             <button id="viewTable" class="active">Table</button>
             <button id="viewJson">JSON</button>
+            <button id="wrapToggle" title="Toggle cell wrapping">Wrap: on</button>
           </span>
         </div>
         <div id="tableView" class="tablescroll"></div>
@@ -143,38 +165,92 @@
   const $ = (id) => document.getElementById(id);
   const statusEl = $("status"), sqlEl = $("sql"), runBtn = $("run");
 
-  // ---- Populate the example dropdown + schema sidebar -----------------------
-  const sel = $("examples");
-  SAMPLE_QUERIES.forEach((q, i) => {
-    const o = document.createElement("option");
-    o.value = i; o.textContent = q.label; sel.appendChild(o);
-  });
-  sqlEl.value = SAMPLE_QUERIES[0].sql;
-  sel.addEventListener("change", () => { sqlEl.value = SAMPLE_QUERIES[+sel.value].sql; });
+  const sel = $("examples"), schemaEl = $("schema"), sourceName = $("sourceName");
+  let currentExamples = [];
+
+  function setStatus(html) { statusEl.innerHTML = html; }
 
   function typeName(v) {
     if (v === null) return "null";
     if (Array.isArray(v)) return "array";
     return typeof v === "object" ? "object" : typeof v;
   }
-  const schemaEl = $("schema");
-  for (const [ks, files] of Object.entries(DATASETS.default)) {
-    const ids = Object.keys(files);
-    const sample = JSON.parse(files[ids[0]]);
-    const div = document.createElement("div");
-    div.className = "ks";
-    let html = '<div class="kname">' + ks + '</div><div class="kmeta">' + ids.length + " documents</div>";
-    for (const [k, v] of Object.entries(sample)) {
-      html += '<div class="field">' + k + ' <span class="t">' + typeName(v) + "</span></div>";
-    }
-    div.innerHTML = html;
-    schemaEl.appendChild(div);
+  // Quote a keyspace name as a SQL++ identifier (backtick unless already a plain
+  // identifier), mirroring cmd/n1k1's quoteIdent so folder-derived names parse.
+  function ident(name) {
+    return /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) ? name : "`" + name.replace(/`/g, "``") + "`";
   }
 
-  // ---- Mount data + boot the wasm engine ------------------------------------
-  installN1k1FS("/n1k1data", DATASETS);
+  // Populate the example dropdown from a [{label, sql}] list.
+  function setExamples(list) {
+    currentExamples = list;
+    sel.innerHTML = "";
+    list.forEach((q, i) => {
+      const o = document.createElement("option");
+      o.value = i; o.textContent = q.label; sel.appendChild(o);
+    });
+    if (list.length) sqlEl.value = list[0].sql;
+  }
+  sel.addEventListener("change", () => {
+    const q = currentExamples[+sel.value];
+    if (q) sqlEl.value = q.sql;
+  });
 
-  function setStatus(html) { statusEl.innerHTML = html; }
+  // Auto-generate a few starter queries for an arbitrary set of keyspaces (used
+  // when a user opens their own folder, where the curated examples don't apply).
+  function generateExamples(keyspaces) {
+    const out = [];
+    for (const ks of keyspaces.slice(0, 6)) {
+      out.push({ label: "Browse " + ks, sql: "SELECT * FROM " + ident(ks) + " LIMIT 10" });
+    }
+    if (keyspaces.length) {
+      out.push({ label: "Count " + keyspaces[0], sql: "SELECT COUNT(*) AS n FROM " + ident(keyspaces[0]) });
+    }
+    return out.length ? out : [{ label: "Expressions", sql: 'SELECT 1 + 1 AS two, UPPER("n1k1") AS engine' }];
+  }
+
+  // Build the schema sidebar by asking the engine itself: one COUNT(*) and one
+  // LIMIT 1 sample per keyspace. This reuses the running engine rather than a
+  // separate JS walk, so it reflects n1k1's own view of the data.
+  function buildSchema(keyspaces) {
+    schemaEl.innerHTML = "";
+    if (!keyspaces.length) {
+      schemaEl.innerHTML = '<div class="ks" style="color:var(--muted)">No keyspaces found.</div>';
+      return;
+    }
+    for (const ks of keyspaces) {
+      const div = document.createElement("div");
+      div.className = "ks";
+      let count = "?";
+      try {
+        const c = JSON.parse(globalThis.n1k1RunQuery("SELECT COUNT(*) AS n FROM " + ident(ks)));
+        if (c.ok && c.rows[0]) count = c.rows[0].n;
+      } catch (e) { /* leave as ? */ }
+      let html = '<div class="kname">' + escapeHtml(ks) + '</div>' +
+                 '<div class="kmeta">' + count + " documents</div>";
+      try {
+        const s = JSON.parse(globalThis.n1k1RunQuery("SELECT k.* FROM " + ident(ks) + " k LIMIT 1"));
+        const doc = s.ok && s.rows[0] && typeof s.rows[0] === "object" ? s.rows[0] : {};
+        for (const [k, v] of Object.entries(doc)) {
+          html += '<div class="field">' + escapeHtml(k) + ' <span class="t">' + typeName(v) + "</span></div>";
+        }
+      } catch (e) { /* no fields */ }
+      div.innerHTML = html;
+      schemaEl.appendChild(div);
+    }
+  }
+
+  // Switch the UI to a freshly opened data source: rebuild schema + examples,
+  // then run the first example so the user sees data immediately.
+  function activateSource(keyspaces, label, curatedExamples) {
+    sourceName.textContent = label;
+    buildSchema(keyspaces);
+    setExamples(curatedExamples || generateExamples(keyspaces));
+    run();
+  }
+
+  // ---- Mount the built-in sample data (the engine opens it at startup) -------
+  installN1k1FS("/n1k1data", DATASETS);
 
   // View toggle
   let view = "table";
@@ -262,6 +338,72 @@
     if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); run(); }
   });
 
+  // Wrap toggle: switch cell wrapping vs. single-line + horizontal scroll.
+  const wrapBtn = $("wrapToggle");
+  wrapBtn.addEventListener("click", () => {
+    const nowrap = document.body.classList.toggle("nowrap");
+    wrapBtn.textContent = "Wrap: " + (nowrap ? "off" : "on");
+  });
+
+  // ---- Open a local folder via the File System Access API -------------------
+  // Supported in Chromium browsers only; the button stays hidden elsewhere.
+  const MAX_FILES = 5000, MAX_BYTES = 64 * 1024 * 1024; // safety caps for eager load
+  const openBtn = $("openFolder");
+  if (typeof window.showDirectoryPicker === "function") {
+    openBtn.style.display = "";
+    openBtn.addEventListener("click", openFolder);
+  }
+
+  async function readDirTree(handle, stats) {
+    const tree = {};
+    for await (const entry of handle.values()) {
+      if (stats.count >= MAX_FILES || stats.bytes >= MAX_BYTES) { stats.truncated = true; break; }
+      if (entry.kind === "directory") {
+        tree[entry.name] = await readDirTree(entry, stats);
+      } else if (entry.kind === "file" && /\.jsonl?$/i.test(entry.name)) {
+        const file = await entry.getFile();
+        if (file.size > MAX_BYTES) { stats.truncated = true; continue; }
+        tree[entry.name] = await file.text();
+        stats.count++; stats.bytes += file.size;
+      }
+    }
+    return tree;
+  }
+
+  async function openFolder() {
+    let dirHandle;
+    try { dirHandle = await window.showDirectoryPicker({ mode: "read" }); }
+    catch (e) { return; } // user cancelled
+    setStatus('<span class="spin">Reading folder&hellip;</span>');
+    const stats = { count: 0, bytes: 0, truncated: false };
+    let tree;
+    try { tree = await readDirTree(dirHandle, stats); }
+    catch (e) { setStatus('<span class="err">Could not read folder: ' + escapeHtml(String(e)) + "</span>"); return; }
+    if (stats.count === 0) {
+      setStatus('<span class="err">No .json / .jsonl files found in that folder.</span>');
+      return;
+    }
+    // Map the picked folder to n1k1's <namespace>/<keyspace>/<key>.json layout:
+    // each subdirectory becomes a keyspace; any loose top-level files become a
+    // keyspace named after the folder.
+    const subdirs = {}, loose = {};
+    for (const [name, val] of Object.entries(tree)) {
+      if (typeof val === "object") subdirs[name] = val; else loose[name] = val;
+    }
+    const keyspaces = Object.assign({}, subdirs);
+    if (Object.keys(loose).length) keyspaces[dirHandle.name || "docs"] = loose;
+
+    // Mount under a fresh path so it doesn't collide with the built-in sample,
+    // then have the engine (re)open it and report the keyspaces it exposes.
+    const mount = "/userdata-" + (openFolder._n = (openFolder._n || 0) + 1);
+    globalThis.n1k1MountTree(mount, { default: keyspaces });
+    const resp = JSON.parse(globalThis.n1k1OpenDir(mount));
+    if (!resp.ok) { setStatus('<span class="err">Open failed: ' + escapeHtml(resp.error) + "</span>"); return; }
+
+    const note = stats.truncated ? " (truncated at the size/file cap)" : "";
+    activateSource(resp.keyspaces, dirHandle.name + "  ·  " + stats.count + " file(s)" + note, null);
+  }
+
   // ---- Load wasm_exec.js then instantiate -----------------------------------
   const script = document.createElement("script");
   script.src = "wasm_exec.js";
@@ -277,8 +419,13 @@
           clearInterval(iv);
           runBtn.disabled = false;
           sqlEl.placeholder = "";
-          setStatus('<span class="ok">Engine ready.</span> Pick an example or write your own, then Run.');
-          run(); // show the first example's result immediately
+          // Ask the engine which keyspaces the built-in sample exposes, then
+          // show the curated examples and run the first one.
+          let keyspaces = [];
+          try { keyspaces = (JSON.parse(globalThis.n1k1OpenDir("/n1k1data")).keyspaces) || []; }
+          catch (e) { /* fall back to whatever samples.js declared */ }
+          if (!keyspaces.length) keyspaces = Object.keys(DATASETS.default);
+          activateSource(keyspaces, "built-in sample", SAMPLE_QUERIES);
         } else if (globalThis.n1k1InitError) {
           clearInterval(iv);
           setStatus('<span class="err">Init failed: ' + escapeHtml(globalThis.n1k1InitError) + "</span>");

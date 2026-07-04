@@ -24,6 +24,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"syscall/js"
 	"time"
 
@@ -42,21 +43,66 @@ const namespace = "default"
 var session *glue.Session
 
 func main() {
-	sess, err := glue.OpenSession(dataRoot, namespace)
-	if err != nil {
+	if _, err := openDir(dataRoot); err != nil {
 		// Surface the failure to the page and stop; the UI shows #status.
 		js.Global().Set("n1k1InitError", js.ValueOf(err.Error()))
 		fmt.Println("n1k1 OpenSession error:", err)
 		select {}
 	}
-	session = sess
 
 	js.Global().Set("n1k1RunQuery", js.FuncOf(runQuery))
+	js.Global().Set("n1k1OpenDir", js.FuncOf(openDirJS))
 	js.Global().Set("n1k1Ready", js.ValueOf(true))
 	fmt.Println("n1k1 wasm ready; datasets mounted at", dataRoot)
 
-	// Keep the Go runtime alive so the exported callback stays callable.
+	// Keep the Go runtime alive so the exported callbacks stay callable.
 	select {}
+}
+
+// openDir (re)opens the process-wide session over a mounted directory and
+// returns the keyspaces the datastore exposes in the default namespace. The
+// path must already be populated in the in-memory fs (see wasm/fs_mem.js). This
+// is exactly the CLI's OpenSession + datastore-driven keyspace listing (see
+// cmd/n1k1/keyspaces.go), reused so the browser reflects n1k1's own view of a
+// directory (flat-file synthesis, catalog keyspaces, ...) rather than a raw
+// filesystem walk.
+func openDir(path string) ([]string, error) {
+	sess, err := glue.OpenSession(path, namespace)
+	if err != nil {
+		return nil, err
+	}
+	session = sess
+
+	ns, nerr := sess.Store.Datastore.NamespaceByName(namespace)
+	if nerr != nil {
+		return nil, nil // no such namespace usually means an empty datastore
+	}
+	names, kerr := ns.KeyspaceNames()
+	if kerr != nil {
+		return nil, fmt.Errorf("listing keyspaces: %v", kerr)
+	}
+	sort.Strings(names)
+	return names, nil
+}
+
+// openDirJS is the JS-callable wrapper: args[0] is the mount path. Returns a
+// JSON string {ok, keyspaces} or {ok:false, error}.
+func openDirJS(this js.Value, args []js.Value) interface{} {
+	if len(args) < 1 || args[0].Type() != js.TypeString {
+		return respondError("n1k1OpenDir(path): expected a path string")
+	}
+	names, err := openDir(args[0].String())
+	if err != nil {
+		return respondError(err.Error())
+	}
+	if names == nil {
+		names = []string{}
+	}
+	b, _ := json.Marshal(struct {
+		OK        bool     `json:"ok"`
+		Keyspaces []string `json:"keyspaces"`
+	}{true, names})
+	return string(b)
 }
 
 // runQuery is the JS-callable entry point: args[0] is the SQL++ statement, and
