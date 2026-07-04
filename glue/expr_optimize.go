@@ -42,7 +42,7 @@ func init() {
 		"between",                    // ternary (expr_between.go)
 		"in",                         // membership (expr_in.go)
 		"concat",                     // string concat `||` (expr_concat.go)
-		"nullif", "missingif",        // (expr_nullif.go)
+		"nullif", "missingif",        // (expr_null.go)
 		"greatest", "least",          // (expr_greatest.go)
 		"element",                    // array element `arr[idx]` (expr_nav.go)
 		"is_array", "is_number", "is_string", "is_boolean", "is_object", "is_atom", // type checks (expr_type.go)

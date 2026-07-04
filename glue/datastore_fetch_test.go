@@ -21,7 +21,7 @@ import (
 
 // TestDatastoreFetchModesDifferential: DatastoreFetch's inline and actor drivers
 // must return identical results across query shapes (native fetch, container
-// .jsonl, join, subquery, SELECT *). (runRows is defined in discard_elision_test.go.)
+// .jsonl, join, subquery, SELECT *). (runRows is defined in optimize_test.go.)
 func TestDatastoreFetchModesDifferential(t *testing.T) {
 	dir := t.TempDir()
 
