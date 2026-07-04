@@ -15,6 +15,44 @@ enabling plumbing (the UDF resolution seam, `FROM <expr>` scans, a push-based
 streaming engine, spill-to-disk) already exists; the work is wiring and one small
 new "streaming source function" protocol.
 
+## Status (implemented 2026-07)
+
+The first slice is **live and tested** end-to-end in the interpreter
+(`test/ext_test.go`); the full suite (interpreter + compiler) shows no
+regressions. Compiler-mode notes: the extension aggregates dispatch through the
+same `base.AggCatalog[name]` runtime lookup the group-op codegen already emits
+for built-ins, so they compile by construction; a compiled JS UDF requires its
+`Register*` call to have run in the executing process (the name must re-resolve
+when the baked `exprTree`/`exprStr` string is re-parsed at runtime).
+
+- **Two tiny fork setters** unlock parser resolution of new names without a
+  grammar change: `expression.RegisterFunction(name, fn)` (patch-05) and
+  `algebra.RegisterAggregate(name, property, agg)` (patch-06). See
+  `glue/patches/README.md`. They just expose the otherwise package-private
+  `_FUNCTIONS` / `_AGGREGATES` maps.
+- **Tier-2 goja JS scalar UDFs** — `glue.RegisterJSFunc(name, source)` and
+  `glue.RegisterJSDir(dir)` (the "directory *is* the catalog") register a
+  goja-backed `expression.Function` (`glue/ext_goja.go`). `NAME(args)` then
+  parses and evaluates through the existing interpreted/boxed lane (ExprTree →
+  `Expression.Evaluate`). goja is pure-Go/MIT/cgo-free, preserving the
+  `CGO_ENABLED=0` static binary. Runtimes are pooled per goroutine (goja is not
+  goroutine-safe); a panicking script is contained, never crashing the engine.
+  Opt-in (an embedder calls Register*), since running user JS in-process is an
+  attack surface.
+- **Extension AGGREGATES `sparkline()` / `histogram()`** — native and
+  **zero-garbage**, implemented against the `base.Agg` byte-slice
+  Init/Update/Result protocol (`base/agg_ext.go`): Update only appends bytes
+  (reusing the MEDIAN/VARIANCE numeric-list state); Result renders a unicode
+  inline chart (▁▂▃▄▅▆▇█) by walking the byte state directly into the reusable
+  buffer — no intermediate `[]float64`, fixed stack scratch. A generic
+  parse/plan-only `algebra.Aggregate` shim (`glue/ext_agg.go`) makes the parser
+  accept them; conv.go routes computation to the native handler via
+  `base.AggCatalog[name]`, so the cbq Cumulate*/ComputeFinal machinery is never
+  run. Work in GROUP BY and as bare aggregates; auto-registered at glue init.
+
+The design/roadmap below is the fuller picture (WASM, streaming sources,
+document shredding, a registry); the rest of this doc is forward-looking.
+
 **One hard constraint frames every option below:** n1k1 builds **`CGO_ENABLED=0`**
 — a pure-Go static binary (Makefile makes this explicit and every build/test uses
 it). That rules out anything needing cgo, most notably Go's own `plugin` package
@@ -360,13 +398,27 @@ Verify each at adoption time (transitive deps included).
 
 ## Roadmap (suggested phasing)
 
+0. **DONE — parser-resolution setters + first extensions.** Rather than wire the
+   full cbq `functions` subsystem (storage + metadata + `ParkableContext` +
+   `Language` runner), two tiny fork setters (`expression.RegisterFunction`,
+   `algebra.RegisterAggregate` — patch-05/06) open the builtin + aggregate
+   registries directly. On top of them: **Tier-2 goja scalar UDFs** (step 2) and
+   the **`sparkline()`/`histogram()` extension aggregates** (a variant of step 4,
+   as native zero-garbage `base.Agg`s rather than scalar builtins). See the
+   Status section above. The heavier UDF-subsystem bridge (below) is still the
+   path for `CREATE FUNCTION` DDL / metakv-style catalogs if ever wanted.
 1. **Wire the UDF bridge** (init functions subsystem; implement
-   `VisitExecuteFunction`; provide n1k1's resolver + storage). Unlocks Tiers 2–3.
-2. **Tier 2 goja + directory registry** — the "JS in a repo" feature.
+   `VisitExecuteFunction`; provide n1k1's resolver + storage). Would add
+   `CREATE FUNCTION` DDL (Tier 3) and a metadata-backed catalog; NOT required for
+   the directory-registry Tier-2 UDFs already shipped via step 0.
+2. **DONE — Tier 2 goja + directory registry** — the "JS in a repo" feature
+   (`glue/ext_goja.go`, `glue.RegisterJSDir`).
 3. **Streaming source-function op** + route `FROM shred(...)`/loaders to it;
    pair with the DESIGN-data.md file-source work.
-4. **Native Go builtins** via `expression.RegisterFunction` (fork) for the
-   document parsers, or expose them as sources per step 3.
+4. **Native Go builtins** via `expression.RegisterFunction` (fork, patch-05, now
+   available) for the document parsers, or expose them as sources per step 3.
+   (The `sparkline`/`histogram` aggregates already exercise the aggregate side of
+   this via patch-06.)
 5. **Streaming CTEs** — single-use pipe first, then multi-use spill-and-rescan.
 6. **wazero (Wasm) sandboxed extensions** — for untrusted/binary extensions where
    goja and native builtins don't fit. Add `tetratelabs/wazero` (Apache-2, pure

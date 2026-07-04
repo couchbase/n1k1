@@ -43,6 +43,22 @@ step (goyacc), not a patch file:
   full CBO -- every other cost/selectivity function in `optutil_ce.go` still
   returns NOT_AVAIL; only doc count is provided. A **surgical diff** (`patch -p1`).
 
+- **`patch-05-query-expression-register-function.diff`** — add an exported
+  `expression.RegisterFunction(name, fn)` that inserts into the otherwise
+  package-private `_FUNCTIONS` builtin registry, so the parser resolves a new
+  `NAME(args)` scalar function. n1k1's extension layer uses it to register
+  goja-backed JS UDFs (`glue/ext_goja.go`, `glue.RegisterJSFunc`/`RegisterJSDir`)
+  without a grammar change — see DESIGN-extensions.md Tier 1/2. A **surgical diff**
+  (`patch -p1`); a few lines next to `GetFunction`.
+- **`patch-06-query-algebra-register-aggregate.diff`** — add an exported
+  `algebra.RegisterAggregate(name, property, agg)` that inserts into the private
+  `_AGGREGATES` registry, so the parser resolves a new aggregate `NAME(expr)`
+  (honoring the `AGGREGATE_ALLOWS_*` property bits). n1k1 registers a generic
+  parse/plan-only `algebra.Aggregate` shim (`glue/ext_agg.go`) whose actual
+  computation is done natively by a `base.Agg` (zero-garbage; `base/agg_ext.go`),
+  e.g. `sparkline()` / `histogram()`. A **surgical diff** (`patch -p1`); a few
+  lines next to `GetAggregate`.
+
 ## Recipe (iteration scaffold)
 
 ```bash
@@ -56,11 +72,13 @@ rm -rf tmp/query-local && cp -R "$QDIR" tmp/query-local && chmod -R u+w tmp/quer
 go install golang.org/x/tools/cmd/goyacc@latest
 (cd tmp/query-local/parser/n1ql && "$(go env GOPATH)/bin/goyacc" n1ql.y && rm -f y.output)
 
-# 3. apply the source patches in order (01/02 are full-file drop-ins; 03/04 are diffs)
+# 3. apply the source patches in order (01/02 are full-file drop-ins; 03-06 are diffs)
 cp glue/patches/patch-01-query-system-stub.go.txt            tmp/query-local/system/systemStats.go
 cp glue/patches/patch-02-query-semantics-semchecker_ce.go.txt tmp/query-local/semantics/semchecker_ce.go
 (cd tmp/query-local && patch -p1 < "$OLDPWD/glue/patches/patch-03-query-util-sync-lockless-atomic.diff")
 (cd tmp/query-local && patch -p1 < "$OLDPWD/glue/patches/patch-04-query-planner-optdoccount-live.diff")
+(cd tmp/query-local && patch -p1 < "$OLDPWD/glue/patches/patch-05-query-expression-register-function.diff")
+(cd tmp/query-local && patch -p1 < "$OLDPWD/glue/patches/patch-06-query-algebra-register-aggregate.diff")
 
 # 4. point go.mod at the local copy
 go mod edit -replace github.com/couchbase/query=./tmp/query-local
@@ -87,7 +105,8 @@ These patches live as real git commits in a published fork of couchbase/query:
       main          - verbatim pinned snapshot (query @ v0.0.0-20260627002010)
       n1k1-pure-go  - main + patches: gen parser, patch-01 system stub,
                       patch-02 semchecker, patch-03 LocklessPool atomic,
-                      patch-04 optDocCount live count
+                      patch-04 optDocCount live count, patch-05 RegisterFunction,
+                      patch-06 RegisterAggregate
 
 The fork keeps its go.mod module path as github.com/couchbase/query (so its
 internal imports and n1k1's `query/...` imports are unchanged); only the repo

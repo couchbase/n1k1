@@ -1,0 +1,20 @@
+--- a/algebra/agg_registry.go	2026-07-03 15:51:20
++++ b/algebra/agg_registry.go	2026-07-03 16:55:17
+@@ -21,6 +21,17 @@
+ While looking into the map, convert the string name to lowercase.
+ */
+ 
++// RegisterAggregate adds (or overrides) an aggregate function in the registry
++// so the parser resolves NAME(args) (with optional DISTINCT / OVER) to it.
++// property is the AGGREGATE_ALLOWS_* bitmask (e.g. AGGREGATE_ALLOWS_ALL). Added
++// for n1k1's extension layer (see n1k1 glue/patches/patch-06); not present in
++// stock couchbase/query, whose _AGGREGATES map is populated only by this file's
++// static initializer. Not safe for concurrent use with parsing -- call once at
++// init/startup before any query is parsed.
++func RegisterAggregate(name string, property uint32, agg Aggregate) {
++	_AGGREGATES[strings.ToLower(name)] = &AggregateRegistry{property: property, agg: agg}
++}
++
+ func GetAggregate(name string, distinct, filter, window bool) (Aggregate, bool) {
+ 	rv, ok := _AGGREGATES[strings.ToLower(name)]
+ 	if !ok || (distinct && !rv.HasProperty(AGGREGATE_ALLOWS_DISTINCT)) ||

@@ -448,13 +448,13 @@ func aggFloats(distinct bool, agg []byte) (vals []float64, aggRest []byte) {
 	n := binary.LittleEndian.Uint64(agg[:8])
 	off := 8
 	if !distinct {
+		// Same numeric-list layout the zero-garbage aggNumListAt walks (agg_ext.go);
+		// keep the two decoders in step if the layout ever changes.
 		vals = make([]float64, 0, n)
 		for i := uint64(0); i < n; i++ {
-			vals = append(vals, math.Float64frombits(
-				binary.LittleEndian.Uint64(agg[off:off+8])))
-			off += 8
+			vals = append(vals, aggNumListAt(agg, i))
 		}
-		return vals, agg[off:]
+		return vals, agg[8+int(n)*8:]
 	}
 	total := aggDistinctWalk(n, agg)
 	vals = make([]float64, 0, n)

@@ -1,0 +1,19 @@
+--- a/expression/func_registry.go	2026-07-03 15:51:27
++++ b/expression/func_registry.go	2026-07-03 16:55:10
+@@ -23,6 +23,16 @@
+ func GetFunction(name string) (Function, bool) {
+ 	rv, ok := _FUNCTIONS[strings.ToLower(name)]
+ 	return rv, ok
++}
++
++// RegisterFunction adds (or overrides) a builtin scalar function in the
++// registry so the parser resolves NAME(args) to it. Added for n1k1's
++// extension layer (see n1k1 glue/patches/patch-05); not present in stock
++// couchbase/query, whose _FUNCTIONS map is populated only by this file's
++// static initializer. Not safe for concurrent use with parsing -- call
++// once at init/startup before any query is parsed.
++func RegisterFunction(name string, fn Function) {
++	_FUNCTIONS[strings.ToLower(name)] = fn
+ }
+ 
+ /*
