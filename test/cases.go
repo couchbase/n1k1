@@ -5911,6 +5911,20 @@ var TestCasesSimple = []TestCaseSimple{
 	naryProjectCase("sin-zero", []interface{}{"sin", []interface{}{"json", `0`}}, `0`),
 	naryProjectCase("cos-zero", []interface{}{"cos", []interface{}{"json", `0`}}, `1`),
 	naryProjectCase("atan-zero", []interface{}{"atan", []interface{}{"json", `0`}}, `0`),
+
+	// Binary math (value-producing, two operands) in the COMPILED path.
+	naryProjectCase("power", []interface{}{"power",
+		[]interface{}{"json", `2`}, []interface{}{"json", `10`}}, `1024`),
+	naryProjectCase("power-frac", []interface{}{"power",
+		[]interface{}{"json", `9`}, []interface{}{"json", `0.5`}}, `3`),
+	naryProjectCase("power-field", []interface{}{"power",
+		[]interface{}{"labelPath", "a"}, []interface{}{"json", `3`}}, `1`),
+	naryProjectCase("atan2-zero", []interface{}{"atan2",
+		[]interface{}{"json", `0`}, []interface{}{"json", `1`}}, `0`),
+	naryProjectCase("power-null", []interface{}{"power",
+		[]interface{}{"json", `null`}, []interface{}{"json", `2`}}, `null`),
+	naryProjectCase("power-str", []interface{}{"power",
+		[]interface{}{"json", `2`}, []interface{}{"json", `"x"`}}, `null`),
 }
 
 // naryProjectCase builds a TestCaseSimple that projects a single native

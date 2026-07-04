@@ -586,6 +586,37 @@ func TestMathUnaryDifferentialVsCBQ(t *testing.T) {
 	}
 }
 
+func TestMathBinaryDifferentialVsCBQ(t *testing.T) {
+	c := func(v interface{}) expression.Expression { return expression.NewConstant(v) }
+
+	mk := map[string]func(a, b expression.Expression) expression.Expression{
+		"power": func(a, b expression.Expression) expression.Expression { return expression.NewPower(a, b) },
+		"atan2": func(a, b expression.Expression) expression.Expression { return expression.NewAtan2(a, b) },
+	}
+	// Operand pairs spanning sign/magnitude/int-vs-float and NaN/Inf edges
+	// (power(-1,0.5), power(0,-1)=+Inf), plus non-number operands -> NULL and NULL.
+	pairs := []struct{ a, b expression.Expression }{
+		{c(2), c(10)}, {c(2.0), c(0.5)}, {c(-1), c(0.5)}, {c(0), c(-1)},
+		{c(9), c(0)}, {c(1), c(1)}, {c(3), c(-2)}, {c(1), c(0)},
+		{c(value.NULL_VALUE), c(2)}, {c(2), c("x")}, {c("a"), c("b")},
+	}
+
+	for fn, ctor := range mk {
+		for i, p := range pairs {
+			expr := ctor(p.a, p.b)
+			want := cbqEval(t, expr)
+			got, ok := nativeEval(t, expr)
+			if !ok {
+				t.Errorf("%s pair[%d]: did not optimize", fn, i)
+				continue
+			}
+			if got != want {
+				t.Errorf("%s pair[%d]: native=%q, cbq=%q", fn, i, got, want)
+			}
+		}
+	}
+}
+
 func TestStrUnaryDifferentialVsCBQ(t *testing.T) {
 	c := func(v interface{}) expression.Expression { return expression.NewConstant(v) }
 

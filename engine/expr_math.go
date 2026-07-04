@@ -39,6 +39,8 @@ func init() {
 	ExprCatalog["asin"] = ExprAsin
 	ExprCatalog["acos"] = ExprAcos
 	ExprCatalog["atan"] = ExprAtan
+	ExprCatalog["power"] = ExprPower
+	ExprCatalog["atan2"] = ExprAtan2
 }
 
 func ExprAbs(lzVars *base.Vars, labels base.Labels,
@@ -119,6 +121,58 @@ func ExprAcos(lzVars *base.Vars, labels base.Labels,
 func ExprAtan(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) base.ExprFunc {
 	return exprMathUnary(lzVars, labels, params, path, base.MathAtan)
+}
+
+func ExprPower(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string) base.ExprFunc {
+	return exprMathBi(lzVars, labels, params, path, base.MathPower)
+}
+
+func ExprAtan2(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string) base.ExprFunc {
+	return exprMathBi(lzVars, labels, params, path, base.MathAtan2)
+}
+
+// exprMathBi is the shared two-operand harness for binary math funcs
+// (POWER/ATAN2). cbq skeleton: either operand MISSING -> MISSING, either
+// non-number -> NULL, else the op-code result formatted into the reused lzBufPre.
+// Mirrors ExprArithBi; the op-code (%#v) and buffer (varLift %s) stay on separate
+// lines. Each operand is captured FROM lzVal (emitCaptured writes lzVal).
+func exprMathBi(lzVars *base.Vars, labels base.Labels, params []interface{},
+	path string, op int) (lzExprFunc base.ExprFunc) {
+	var lzBufPre []byte // <== varLift: lzBufPre by path
+
+	biExprFunc := func(lzA, lzB base.ExprFunc, lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) { // !lz
+		if LzScope {
+			lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
+			lzValA := lzVal
+
+			lzVal = lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B"
+			lzValB := lzVal
+
+			if len(lzValA) == 0 || len(lzValB) == 0 {
+				lzVal = base.ValMissing // MISSING dominant.
+			} else {
+				lzNumA, lzOkA := base.ParseNum(lzValA)
+				lzNumB, lzOkB := base.ParseNum(lzValB)
+				if !lzOkA || !lzOkB {
+					lzVal = base.ValNull // non-number operand
+				} else {
+					lzNumR := base.MathBinApply(op, lzNumA, lzNumB)
+					lzOut := base.AppendNum(lzBufPre[:0], lzNumR)
+					lzBufPre = lzOut
+					lzVal = base.Val(lzOut)
+				}
+			}
+		}
+
+		return lzVal
+	} // !lz
+
+	lzExprFunc =
+		MakeBiExprFunc(lzVars, labels, params, path, biExprFunc) // !lz
+
+	return lzExprFunc
 }
 
 // exprMathUnary is the shared single-child harness for the unary math funcs.

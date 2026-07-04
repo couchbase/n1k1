@@ -33,6 +33,10 @@ const (
 	MathAsin
 	MathAcos
 	MathAtan
+	// Binary ops (used by MathBinApply, not mathApply). Sharing the iota keeps the
+	// values distinct from the unary ones, so a mixup can't silently misdispatch.
+	MathPower
+	MathAtan2
 )
 
 func mathApply(op int, f float64) float64 {
@@ -77,6 +81,23 @@ func mathApply(op int, f float64) float64 {
 		return math.Atan(f)
 	}
 	return f
+}
+
+func mathBinApply(op int, a, b float64) float64 {
+	switch op {
+	case MathPower:
+		return math.Pow(a, b)
+	case MathAtan2:
+		return math.Atan2(a, b)
+	}
+	return 0
+}
+
+// MathBinApply applies a binary math op-code to (a, b), returning the result as a
+// Num. Same skeleton as the unary funcs -- the engine harness handles MISSING ->
+// MISSING / non-number -> NULL around it.
+func MathBinApply(op int, a, b Num) Num {
+	return FloatNum(mathBinApply(op, a.Float64(), b.Float64()))
 }
 
 // MathApply applies a unary math op-code to n, returning the result as a Num

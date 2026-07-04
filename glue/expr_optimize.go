@@ -35,6 +35,7 @@ func init() {
 		"abs", "ceil", "floor", "sqrt", "exp", "ln", "log", "sign", // unary math (expr_math.go)
 		"degrees", "radians", "sin", "cos", "tan", "asin", "acos", "atan",
 		"upper", "lower", "length", "title", // unary string (expr_str.go)
+		"power", "atan2", // binary math (expr_math.go)
 		"and", "or", // three-valued logical (expr_logic.go)
 		"not",                                            // unary predicate (expr_pred.go)
 		"ifnull", "ifmissing", "ifmissingornull", "nvl",  // conditional-unknown (expr_cond.go)
@@ -234,6 +235,7 @@ func ExprTreeOptimize(labels base.Labels, e expression.Expression,
 
 	switch name {
 	case "add", "mult", "sub", "div", "mod", "idiv", "imod", "in",
+		"power", "atan2",
 		"nullif", "missingif", "element":
 		// These native harnesses are two-operand; cbq's n-ary forms fall back.
 		// (ifnull/ifmissing/ifmissingornull/nvl and greatest/least are n-ary.)
