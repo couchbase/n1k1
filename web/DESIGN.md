@@ -57,6 +57,15 @@ keyspace).
 
 ## Roadmap
 
+**Recommended order** (all converge on the storage-as-interface refactor):
+1. **Drag-drop ingestion** (#2) — cheapest, cross-browser, reuses existing gzip/JSONL
+   handling. **DONE** — see `wasm/ingest.js` + "Ingestion" below.
+2. **In-memory secondary index** (Phase 1 under #1) — engine value; `IndexScan` in
+   `EXPLAIN`; no worker/persistence.
+3. **Web Worker** (#3) — foundational; unlocks visible live stats + cancellation +
+   streaming at once.
+4. **OPFS index cache** (Phase 2 under #1) — layers on top of #2/#3.
+
 ### 1. Secondary indexes in the wasm build (the through-line)
 The reason we can't just recompile bbolt/bleve is mmap. Realistic path:
 - **Phase 1** — mmap-free **in-memory SI**, built from `catalog.json` at open, backing
@@ -78,12 +87,16 @@ Refactor that ties it together: **make index storage an interface** — bbolt im
 in-memory±OPFS impl (wasm) — sharing key-encoding + catalog logic. Also lifts the reusable
 schema/suggest logic out of `cmd/n1k1`.
 
-### 2. Ingestion: drag & drop  (high value, low cost, cross-browser)
-Drop `.json`/`.jsonl`/`.gz`/`.tar.gz` onto the page → decompress (browser
-`DecompressionStream('gzip')` or Go `compress/gzip`+`archive/tar`) → mount → query. n1k1
-already reads JSONL + gzip record files, so a dropped `beers.jsonl.gz` can mount as a
-keyspace with minimal glue. Sidesteps the Chromium-only picker → works everywhere. Likely
-the best next UX win.
+### 2. Ingestion: drag & drop  (DONE — `wasm/ingest.js`)
+Drop (or **Load files…**, cross-browser) `.json`/`.jsonl`/`.ndjson`/`.gz`/`.tar`/`.tar.gz`
+(`.tgz`). `ingest.js` inflates gzip via `DecompressionStream('gzip')`, reads USTAR tars in
+JS, and **normalizes to the classic `<keyspace>/<key>.json` layout** (not n1k1's flat-file
+discovery, whose pure-flat-root case collapses to one basename-named keyspace — see
+`glue/flat.go`). Mapping: a loose `foo.jsonl`→keyspace `foo` (doc per line); a tar dir
+`sub/x.json`→keyspace `sub`, doc key = file stem; doc key otherwise = id/_id/uuid/key field
+or index. Then `n1k1MountTree` + `n1k1OpenDir` + `activateSource` (the picker's tail).
+Validated headlessly with real gzip+tar bytes. Not supported: `.zst` (no browser codec),
+`.zip` (central-directory parsing — a follow-up). Caps: 200k docs / 64 MB.
 
 ### 3. Web Worker  (foundational; unlocks several)
 Run the engine off the main thread; postMessage queries/results. Enables: **visible live

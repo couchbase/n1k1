@@ -100,6 +100,14 @@
   .ks .kmeta { color: var(--muted); font-size: 12px; margin: 2px 0 6px; }
   .ks .field { font-family: ui-monospace, monospace; font-size: 12px; color: var(--fg); }
   .ks .field .t { color: var(--muted); }
+  #dropzone {
+    position: fixed; inset: 0; z-index: 50; display: none;
+    align-items: center; justify-content: center; text-align: center;
+    background: color-mix(in srgb, var(--bg) 82%, transparent);
+    border: 3px dashed var(--accent); color: var(--accent);
+    font-size: 20px; font-weight: 600; padding: 24px; pointer-events: none;
+  }
+  #dropzone.over { display: flex; }
   footer { color: var(--muted); font-size: 12.5px; margin-top: 26px; }
   footer code { background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
   a { color: var(--accent); }
@@ -120,6 +128,8 @@
         </label>
         <button class="run" id="run" disabled>Run &#9654;</button>
         <button id="openFolder" title="Query a folder of JSON files from your computer (Chrome/Edge)" style="display:none">&#128193; Open folder&hellip;</button>
+        <button id="loadFiles" title="Load .json / .jsonl / .gz / .tar.gz files (all browsers)">&#128228; Load files&hellip;</button>
+        <input id="fileInput" type="file" multiple accept=".json,.jsonl,.ndjson,.jsons,.gz,.tgz,.tar" style="display:none">
         <span class="hint">&#8984;/Ctrl + Enter to run</span>
       </div>
       <div id="source" style="font-size:12.5px;color:var(--muted);margin-bottom:8px">
@@ -157,8 +167,10 @@
   </footer>
 </div>
 
+<div id="dropzone">Drop JSON / JSONL / .gz / .tar.gz here to query it</div>
 <script src="samples.js"></script>
 <script src="wasm/fs_mem.js"></script>
+<script src="wasm/ingest.js"></script>
 <script>
 (function () {
   "use strict";
@@ -368,6 +380,55 @@
       }
     }
     return tree;
+  }
+
+  // ---- Load dropped / picked files (all browsers) ---------------------------
+  let mountSeq = 0;
+  $("loadFiles").addEventListener("click", () => $("fileInput").click());
+  $("fileInput").addEventListener("change", (e) => {
+    loadFiles([...e.target.files]);
+    e.target.value = ""; // allow re-picking the same file
+  });
+
+  // Whole-page drag & drop.
+  const dropzone = $("dropzone");
+  let dragDepth = 0;
+  window.addEventListener("dragenter", (e) => {
+    if (e.dataTransfer && [...e.dataTransfer.types].includes("Files")) { e.preventDefault(); dragDepth++; dropzone.classList.add("over"); }
+  });
+  window.addEventListener("dragover", (e) => { if (dropzone.classList.contains("over")) e.preventDefault(); });
+  window.addEventListener("dragleave", () => { if (--dragDepth <= 0) { dragDepth = 0; dropzone.classList.remove("over"); } });
+  window.addEventListener("drop", (e) => {
+    if (!e.dataTransfer || ![...e.dataTransfer.types].includes("Files")) return;
+    e.preventDefault(); dragDepth = 0; dropzone.classList.remove("over");
+    loadFiles([...e.dataTransfer.files]);
+  });
+
+  // Read File objects to bytes, normalize to a datastore tree, mount + open.
+  async function loadFiles(fileObjs) {
+    if (!fileObjs.length) return;
+    if (!globalThis.n1k1Ready) { setStatus('<span class="err">Engine not ready yet.</span>'); return; }
+    setStatus('<span class="spin">Reading ' + fileObjs.length + ' file(s)&hellip;</span>');
+    let files;
+    try {
+      files = await Promise.all(fileObjs.map(async (f) => ({ name: f.name, bytes: new Uint8Array(await f.arrayBuffer()) })));
+    } catch (e) { setStatus('<span class="err">Read failed: ' + escapeHtml(String(e)) + "</span>"); return; }
+
+    let tree, stats;
+    try { ({ tree, stats } = await globalThis.n1k1Ingest.filesToDatastore(files)); }
+    catch (e) { setStatus('<span class="err">Ingest failed: ' + escapeHtml(String(e)) + "</span>"); return; }
+    if (!stats.keyspaces) {
+      setStatus('<span class="err">No documents found. Supported: .json, .jsonl/.ndjson, .gz, .tar/.tar.gz.</span>' +
+                (stats.skipped.length ? '<br><span class="spin">Skipped: ' + escapeHtml(stats.skipped.slice(0, 5).join(", ")) + "</span>" : ""));
+      return;
+    }
+    const mount = "/dropdata-" + (++mountSeq);
+    globalThis.n1k1MountTree(mount, tree);
+    const resp = JSON.parse(globalThis.n1k1OpenDir(mount));
+    if (!resp.ok) { setStatus('<span class="err">Open failed: ' + escapeHtml(resp.error) + "</span>"); return; }
+    const note = stats.truncated ? " (truncated at cap)" : "";
+    const label = fileObjs.length === 1 ? fileObjs[0].name : fileObjs.length + " files";
+    activateSource(resp.keyspaces, label + "  ·  " + stats.docs + " docs" + note, null);
   }
 
   async function openFolder() {

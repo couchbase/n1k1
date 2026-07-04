@@ -21,6 +21,19 @@ Pick an example query or write your own, then **Run** (or ⌘/Ctrl+Enter). Joins
 `GROUP BY`, `UNNEST`, subqueries and `EXPLAIN` all work against the sample
 `beers` / `breweries` keyspaces.
 
+### Drag & drop your own files (all browsers)
+
+Drag `.json`, `.jsonl`/`.ndjson`, their `.gz` variants, or a `.tar` / `.tar.gz`
+onto the page — or click **📤 Load files…**. They're read in the browser
+(nothing is uploaded), decompressed/untarred in JS, and mapped to keyspaces:
+
+- a loose `beers.jsonl` → keyspace `beers`, one document per line;
+- a `.tar` folder `breweries/*.json` → keyspace `breweries`, one doc per file;
+- document keys come from an `id` / `_id` / `uuid` / `key` field when present.
+
+Then query away. This path works in every browser (no picker API). `.zst` and
+`.zip` aren't supported yet; caps: 200k docs / 64 MB.
+
 ### Query your own local folder
 
 In a Chromium browser (Chrome / Edge), click **📁 Open folder…** to point n1k1 at
@@ -69,6 +82,7 @@ handling because a browser has no OS:
 | `samples.js`        | sample datasets + example queries — edit freely, no rebuild needed |
 | `wasm/main_wasm.go` | the wasm entry point; exposes `globalThis.n1k1RunQuery(sql)` |
 | `wasm/fs_mem.js`    | in-memory read-only filesystem shim for `GOOS=js` |
+| `wasm/ingest.js`    | drag-drop / file ingestion: gunzip + untar + JSON(L) → keyspaces |
 | `wasm/build.sh`     | builds `n1k1.wasm`, ships `wasm_exec.js`, applies dep patches |
 | `wasm/overlay/`     | js-tagged stubs copied into the local dependency copies |
 
