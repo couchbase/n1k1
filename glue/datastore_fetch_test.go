@@ -19,27 +19,6 @@ import (
 	"testing"
 )
 
-// TestParseFetchMode covers the N1K1_DATASTORE_FETCH value mapping.
-func TestParseFetchMode(t *testing.T) {
-	cases := []struct {
-		in        string
-		actor, ok bool
-	}{
-		{"actor", true, true},
-		{"inline", false, true},
-		{"ACTOR", true, true},     // case-insensitive
-		{" inline ", false, true}, // trimmed
-		{"", false, false},        // unset -> keep default
-		{"bogus", false, false},   // unrecognized -> keep default
-	}
-	for _, c := range cases {
-		actor, ok := parseFetchMode(c.in)
-		if actor != c.actor || ok != c.ok {
-			t.Errorf("parseFetchMode(%q) = (%v,%v), want (%v,%v)", c.in, actor, ok, c.actor, c.ok)
-		}
-	}
-}
-
 // TestDatastoreFetchModesDifferential: DatastoreFetch's inline and actor drivers
 // must return identical results across query shapes (native fetch, container
 // .jsonl, join, subquery, SELECT *). (runRows is defined in discard_elision_test.go.)

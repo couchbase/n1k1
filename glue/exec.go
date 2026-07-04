@@ -37,7 +37,7 @@ import (
 var Debug = 0
 
 func init() {
-	v := os.Getenv("CB_N1K1_GLUE_EXEC_DEBUG")
+	v := os.Getenv("N1K1_EXEC_DEBUG")
 	if v != "" {
 		i, err := strconv.Atoi(v)
 		if err == nil {
