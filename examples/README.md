@@ -114,6 +114,12 @@ with `GROUP BY` or over the whole result:
   series are downsampled to ~100 bars); use it for time series.
 - `histogram(x)` — a bar chart of the value **distribution** across 20 buckets.
 
+Ready-to-run samples live in [`charts.sql++`](charts.sql++):
+
+```sh
+n1k1 -f examples/charts.sql++ examples/metrics
+```
+
 ```sh
 # CPU per host: a trend line (over time) + a value-distribution histogram.
 # `value` is a reserved word, so back-quote it.

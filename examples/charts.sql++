@@ -1,0 +1,46 @@
+-- examples/charts.sql++ — inline unicode charts with the sparkline() and
+-- histogram() extension aggregates.
+--
+-- These aggregates are ALWAYS available (native, zero-garbage) — no -ext / no
+-- loading needed. Run this file against the metrics dataRoot:
+--
+--     n1k1 -f examples/charts.sql++ examples/metrics
+--
+--   sparkline(x) — a mini line chart of the values in scan order (long series are
+--                  downsampled to ~100 bars); use it for time series.
+--   histogram(x) — a bar chart of the value distribution across 20 buckets.
+--
+-- Both render with the eighth-block runes ▁▂▃▄▅▆▇█, work in GROUP BY or over the
+-- whole result, and (like every aggregate) ignore MISSING and return NULL for an
+-- empty group.
+
+-- 1) Self-contained (needs no dataRoot): a mountain ramp and its distribution,
+--    straight from an array literal — 1..8 then back down.
+SELECT sparkline(v) AS ramp,
+       histogram(v) AS dist
+FROM [1,2,3,4,5,6,7,8,7,6,5,4,3,2,1] AS v;
+
+-- 2) CPU per host over time: a trend line + a value-distribution histogram.
+--    `value` is a SQL++ reserved word, so it's back-quoted.
+SELECT host,
+       COUNT(*)               AS samples,
+       ROUND(AVG(`value`), 2) AS avg,
+       sparkline(`value`)     AS trend,
+       histogram(`value`)     AS dist
+FROM cpu
+GROUP BY host
+ORDER BY host;
+
+-- 3) Order-spend distribution. This one is a different dataRoot (examples/shop),
+--    so it's left commented to keep the run above clean — try it with:
+--
+--     n1k1 -c "SELECT COUNT(*) AS orders, ROUND(AVG(total),2) AS avg_total,
+--              histogram(total) AS spend_dist FROM orders" examples/shop
+--
+--    A right-skewed spend histogram (many small orders, a long tail):
+--      orders  avg_total  spend_dist
+--      20      97.47      █▇▅▂▂▄▁▂▁▁▂▁▂▁▁▁▁▁▁▂
+--
+-- SELECT COUNT(*) AS orders, ROUND(AVG(total), 2) AS avg_total,
+--        histogram(total) AS spend_dist
+-- FROM orders;
