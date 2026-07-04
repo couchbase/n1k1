@@ -5899,6 +5899,14 @@ var TestCasesSimple = []TestCaseSimple{
 	naryProjectCase("abs-field", []interface{}{"abs", []interface{}{"labelPath", "a"}}, `1`),
 	naryProjectCase("abs-null", []interface{}{"abs", []interface{}{"json", `null`}}, `null`),
 	naryProjectCase("abs-str", []interface{}{"abs", []interface{}{"json", `"x"`}}, `null`),
+
+	// Unary string functions (value-producing) in the COMPILED path.
+	naryProjectCase("upper", []interface{}{"upper", []interface{}{"json", `"aBc"`}}, `"ABC"`),
+	naryProjectCase("lower", []interface{}{"lower", []interface{}{"json", `"aBc"`}}, `"abc"`),
+	naryProjectCase("length", []interface{}{"length", []interface{}{"json", `"hello"`}}, `5`),
+	naryProjectCase("upper-esc", []interface{}{"upper", []interface{}{"json", `"a\"b"`}}, `"A\"B"`),
+	naryProjectCase("length-null", []interface{}{"length", []interface{}{"json", `null`}}, `null`),
+	naryProjectCase("upper-num", []interface{}{"upper", []interface{}{"json", `5`}}, `null`),
 }
 
 // naryProjectCase builds a TestCaseSimple that projects a single native

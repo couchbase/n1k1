@@ -580,6 +580,40 @@ func TestMathUnaryDifferentialVsCBQ(t *testing.T) {
 	}
 }
 
+func TestStrUnaryDifferentialVsCBQ(t *testing.T) {
+	c := func(v interface{}) expression.Expression { return expression.NewConstant(v) }
+
+	mk := map[string]func(expression.Expression) expression.Expression{
+		"upper":  func(e expression.Expression) expression.Expression { return expression.NewUpper(e) },
+		"lower":  func(e expression.Expression) expression.Expression { return expression.NewLower(e) },
+		"length": func(e expression.Expression) expression.Expression { return expression.NewLength(e) },
+	}
+	// Strings spanning case, unicode, escapes, empty; plus non-string operands
+	// (NULL/number/bool/array) which must yield NULL, and MISSING via a c(MISSING).
+	operands := map[string]expression.Expression{
+		"mixed": c("Hello World"), "upperstr": c("ABC"), "lowerstr": c("abc"),
+		"empty": c(""), "unicode": c("café ☃"), "escapes": c("a\"b\n\tc"),
+		"digits": c("12ab"), "null": c(value.NULL_VALUE), "num": c(5),
+		"bool": c(true), "arr": expression.NewConstant([]interface{}{1}),
+		"missing": c(value.MISSING_VALUE),
+	}
+
+	for fn, ctor := range mk {
+		for on, operand := range operands {
+			expr := ctor(operand)
+			want := cbqEval(t, expr)
+			got, ok := nativeEval(t, expr)
+			if !ok {
+				t.Errorf("%s(%s): did not optimize", fn, on)
+				continue
+			}
+			if got != want {
+				t.Errorf("%s(%s): native=%q, cbq=%q", fn, on, got, want)
+			}
+		}
+	}
+}
+
 func TestPredicateDifferentialVsCBQ(t *testing.T) {
 	c := func(v interface{}) expression.Expression { return expression.NewConstant(v) }
 
