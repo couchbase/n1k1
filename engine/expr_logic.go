@@ -34,8 +34,14 @@ func ExprAnd(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
 	biExprFunc := func(lzA, lzB base.ExprFunc, lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) { // !lz
 		if LzScope {
-			lzValA := lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
-			lzValB := lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B"
+			// Capture each operand's result FROM the shared lzVal register (the
+			// emitCaptured child code writes lzVal); binding lzValX := lzX(...)
+			// directly would be lost in the compiled path. Mirrors ExprCmp.
+			lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
+			lzValA := lzVal
+
+			lzVal = lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B"
+			lzValB := lzVal
 
 			lzVal = base.LogicAnd2(lzValA, lzValB)
 		}
@@ -53,8 +59,14 @@ func ExprOr(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
 	biExprFunc := func(lzA, lzB base.ExprFunc, lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) { // !lz
 		if LzScope {
-			lzValA := lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
-			lzValB := lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B"
+			// Capture each operand's result FROM the shared lzVal register (the
+			// emitCaptured child code writes lzVal); binding lzValX := lzX(...)
+			// directly would be lost in the compiled path. Mirrors ExprCmp.
+			lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
+			lzValA := lzVal
+
+			lzVal = lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B"
+			lzValB := lzVal
 
 			lzVal = base.LogicOr2(lzValA, lzValB)
 		}

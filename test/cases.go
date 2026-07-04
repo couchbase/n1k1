@@ -5841,6 +5841,48 @@ var TestCasesSimple = []TestCaseSimple{
 			base.Vals{[]byte("30"), []byte("302"), []byte("2"), []byte("300"), []byte("302")},
 		},
 	},
+
+	// ---- Native n-ary / combining-op COMPILED-PATH coverage ----------------
+	// These project each native op's param tree DIRECTLY (bypassing the glue
+	// optimizer), so both the interpreter (TestCasesSimple) and -- crucially --
+	// the compiler (TestCasesSimpleWithCompiler -> `go test ./test/tmp`) exercise
+	// every op's generated code. The n-ary harness (MakeNaryExprFunc) and the
+	// base-combining bi-ops (and/or/nullif) had compiled-path codegen bugs that
+	// stayed latent because no compiled case reached them; these lock that down.
+	// One 1-row scan feeds a single-label project of the computed value.
+	naryProjectCase("and-2", []interface{}{"and",
+		[]interface{}{"json", `true`}, []interface{}{"json", `false`}}, `false`),
+	naryProjectCase("and-3-nested", []interface{}{"and",
+		[]interface{}{"json", `true`},
+		[]interface{}{"and", []interface{}{"json", `true`}, []interface{}{"json", `true`}}}, `true`),
+	naryProjectCase("or-2", []interface{}{"or",
+		[]interface{}{"json", `false`}, []interface{}{"json", `true`}}, `true`),
+	naryProjectCase("or-null", []interface{}{"or",
+		[]interface{}{"json", `false`}, []interface{}{"json", `null`}}, `null`),
+	naryProjectCase("nullif-eq", []interface{}{"nullif",
+		[]interface{}{"json", `5`}, []interface{}{"json", `5`}}, `null`),
+	naryProjectCase("missingif-ne", []interface{}{"missingif",
+		[]interface{}{"json", `5`}, []interface{}{"json", `6`}}, `5`),
+}
+
+// naryProjectCase builds a TestCaseSimple that projects a single native
+// expression param tree over one scanned row, expecting one result row holding
+// wantJSON. Used for the native-op compiled-path coverage block above.
+func naryProjectCase(about string, expr []interface{}, wantJSON string) TestCaseSimple {
+	return TestCaseSimple{
+		about: "compiled-path native op: " + about,
+		o: base.Op{
+			Kind:   "project",
+			Labels: base.Labels{"r"},
+			Params: []interface{}{expr},
+			Children: []*base.Op{{
+				Kind:   "scan",
+				Labels: base.Labels{"a"},
+				Params: []interface{}{"csvData", "\n1\n"},
+			}},
+		},
+		expectYields: []base.Vals{{[]byte(wantJSON)}},
+	}
 }
 
 // -------------------------------------------------------------------

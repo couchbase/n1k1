@@ -40,8 +40,14 @@ func exprNullMissingIf(lzVars *base.Vars, labels base.Labels, params []interface
 
 	biExprFunc := func(lzA, lzB base.ExprFunc, lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) { // !lz
 		if LzScope {
-			lzValA := lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
-			lzValB := lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B"
+			// Capture each operand FROM the shared lzVal register (emitCaptured
+			// child code writes lzVal); a direct lzValX := lzX(...) bind is lost
+			// in the compiled path. Mirrors ExprCmp.
+			lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
+			lzValA := lzVal
+
+			lzVal = lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B"
+			lzValB := lzVal
 
 			lzVal = base.NullMissingIf(lzVars.Ctx.ValComparer, lzValA, lzValB, lzWhenEqual)
 		}
