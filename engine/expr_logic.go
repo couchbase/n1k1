@@ -32,43 +32,30 @@ func init() {
 
 func ExprAnd(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	biExprFunc := func(lzA, lzB base.ExprFunc, lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) { // !lz
-		if LzScope {
-			// Capture each operand's result FROM the shared lzVal register (the
-			// emitCaptured child code writes lzVal); binding lzValX := lzX(...)
-			// directly would be lost in the compiled path. Mirrors ExprCmp.
-			lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
-			lzValA := lzVal
-
-			lzVal = lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B"
-			lzValB := lzVal
-
-			lzVal = base.LogicAnd2(lzValA, lzValB)
-		}
-
-		return lzVal
-	} // !lz
-
-	lzExprFunc =
-		MakeBiExprFunc(lzVars, labels, params, path, biExprFunc) // !lz
-
-	return lzExprFunc
+	return exprLogicBi(lzVars, labels, params, path, base.LogicAnd2)
 }
 
 func ExprOr(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
+	return exprLogicBi(lzVars, labels, params, path, base.LogicOr2)
+}
+
+// exprLogicBi is the shared AND/OR harness: evaluate both operands, then combine
+// them with N1QL three-valued semantics via combine (base.LogicAnd2/LogicOr2,
+// emitted by name -- see base/lzfmt.go). Each operand is captured FROM the shared
+// lzVal register (the emitCaptured child code writes lzVal); binding
+// lzValX := lzX(...) directly would be lost in the compiled path. Mirrors ExprCmp.
+func exprLogicBi(lzVars *base.Vars, labels base.Labels, params []interface{},
+	path string, combine func(a, b base.Val) base.Val) (lzExprFunc base.ExprFunc) {
 	biExprFunc := func(lzA, lzB base.ExprFunc, lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) { // !lz
 		if LzScope {
-			// Capture each operand's result FROM the shared lzVal register (the
-			// emitCaptured child code writes lzVal); binding lzValX := lzX(...)
-			// directly would be lost in the compiled path. Mirrors ExprCmp.
 			lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
 			lzValA := lzVal
 
 			lzVal = lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B"
 			lzValB := lzVal
 
-			lzVal = base.LogicOr2(lzValA, lzValB)
+			lzVal = combine(lzValA, lzValB)
 		}
 
 		return lzVal

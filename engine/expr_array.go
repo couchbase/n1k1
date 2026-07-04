@@ -82,30 +82,21 @@ func exprArrayReduce(lzVars *base.Vars, labels base.Labels, params []interface{}
 }
 
 // ARRAY_MIN / ARRAY_MAX: unary, return the collation-min/-max element into the
-// reused buffer. Per-op named base funcs (no op-code, so no %#v beside the buffer).
+// reused buffer. read is the base func (base.ArrayMin/ArrayMax, emitted by name);
+// it shares an emitted line with the reused lzBufPre (the codegen preserves fmt-arg
+// order across a func placeholder and a varLift buffer -- see cmd/intermed_build).
 func ExprArrayMin(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	exprA := params[0].([]interface{})
-
-	var lzBufPre []byte // <== varLift: lzBufPre by path
-
-	lzExprFunc =
-		MakeExprFunc(lzVars, labels, exprA, path, "A") // !lz
-	lzA := lzExprFunc
-
-	lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
-		lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
-
-		lzVal, lzBufPre = base.ArrayMin(lzVars.Ctx.ValComparer, lzVal, lzBufPre)
-
-		return lzVal
-	}
-
-	return lzExprFunc
+	params []interface{}, path string) base.ExprFunc {
+	return exprArrayMinMax(lzVars, labels, params, path, base.ArrayMin)
 }
 
 func ExprArrayMax(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
+	params []interface{}, path string) base.ExprFunc {
+	return exprArrayMinMax(lzVars, labels, params, path, base.ArrayMax)
+}
+
+func exprArrayMinMax(lzVars *base.Vars, labels base.Labels, params []interface{},
+	path string, read func(vc *base.ValComparer, v base.Val, bufPre []byte) (base.Val, []byte)) (lzExprFunc base.ExprFunc) {
 	exprA := params[0].([]interface{})
 
 	var lzBufPre []byte // <== varLift: lzBufPre by path
@@ -117,7 +108,7 @@ func ExprArrayMax(lzVars *base.Vars, labels base.Labels,
 	lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
 		lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
 
-		lzVal, lzBufPre = base.ArrayMax(lzVars.Ctx.ValComparer, lzVal, lzBufPre)
+		lzVal, lzBufPre = read(lzVars.Ctx.ValComparer, lzVal, lzBufPre)
 
 		return lzVal
 	}
