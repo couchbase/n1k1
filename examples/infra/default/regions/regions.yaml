@@ -1,0 +1,11 @@
+# A single YAML document that is a top-level sequence (list): each element is
+# one record, like a top-level array in a .json file.
+- code: us-east
+  cloud: aws
+  zones: [us-east-1a, us-east-1b]
+- code: eu-west
+  cloud: gcp
+  zones: [eu-west-1a]
+- code: ap-south
+  cloud: azure
+  zones: [ap-south-1a, ap-south-1b, ap-south-1c]

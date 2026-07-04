@@ -24,8 +24,9 @@ Status legend (matches the design doc):
 | `archive/` | H | transparent gzip (`.jsonl.gz`) | `SELECT * FROM default:orders` | 🟢 |
 | `finance/` | J | CSV rows → JSON objects (header keys, inferred types) | `SELECT currency, SUM(amount) FROM txns GROUP BY currency` | 🟢 |
 | `kb/` | L | docs & media → extract-provider rows (`{filename,kind,text,…}`) | `SELECT filename FROM default:docs WHERE text LIKE '%vacation%'` | 🟢 |
+| `infra/` | Y | YAML → JSON records: `---` multi-doc streams + top-level sequences | `SELECT team, SUM(replicas) FROM services GROUP BY team` | 🟢 |
 
-**A/B/C/E/H/J/L work today.** Parquet (K) is a later phase; indexing
+**A/B/C/E/H/J/L/Y work today.** Parquet (K) is a later phase; indexing
 (`DESIGN-indexing.md`) is also later. CSV/TSV cells get light type inference
 (numbers/bools/null, string fallback); leading-zero values like `007` stay
 strings. The `extract` provider is pure-Go (no cgo): **text** from `.pdf`,
@@ -41,7 +42,7 @@ discovery with `-scan` groups: `doc`, `text`, `image`, `video`, or `extract`.
 Records can carry a `_meta` sub-object with the source file's `` `path` ``
 (dir-relative, incl. subdirs), `name`, `ext`, `size` (bytes), and `mtime`
 (RFC3339). Records that live inside a container file (JSONL, CSV, gzip,
-JSON-array) also get `pos` — their 0-based ordinal within that file.
+JSON-array, YAML multi-doc/sequence) also get `pos` — their 0-based ordinal within that file.
 Controlled by `-meta`:
 
 - `-meta=auto` (default) — extracted documents/media get `_meta`; structured
@@ -78,6 +79,10 @@ metrics/         (E) 🟢  recurse subdirs; a keyspace = union of all files bene
 
 archive/         (H) 🟢  transparent decompression by inner extension
   default/orders/2025.jsonl.gz 2026.jsonl.gz (gzip'd JSONL; 5 orders total)
+
+infra/           (Y) 🟢  YAML files decoded to JSON records
+  default/services/api.yaml workers.yaml     (`---` multi-doc streams; 4 services unioned)
+  default/regions/regions.yaml               (one top-level sequence; 3 regions, one per element)
 
 kb/              (L) 🟢  one extract row per document/media file
   default/docs/handbook.pdf                 (PDF text — mentions "vacation")

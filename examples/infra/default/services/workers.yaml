@@ -1,0 +1,15 @@
+name: indexer
+team: search
+replicas: 4
+ports: []
+resources:
+  cpu: 1000m
+  mem: 2Gi
+---
+name: mailer
+team: platform
+replicas: 1
+ports: [25]
+resources:
+  cpu: 100m
+  mem: 128Mi

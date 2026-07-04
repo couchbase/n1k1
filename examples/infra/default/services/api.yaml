@@ -1,0 +1,15 @@
+name: api-gateway
+team: platform
+replicas: 3
+ports: [80, 443]
+resources:
+  cpu: 500m
+  mem: 512Mi
+---
+name: auth
+team: identity
+replicas: 2
+ports: [8080]
+resources:
+  cpu: 250m
+  mem: 256Mi
