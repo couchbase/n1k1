@@ -1050,7 +1050,17 @@ Techniques from leading engines worth stealing, each with the n1k1 tie-in:
 - **LegoBase / DBLAB** (Klonatos & Koch, VLDB 2014) + LMS (Rompf/Odersky): build
   the engine in a high-level language, apply optimizations as **source-to-source
   transforms**. This *is* the home of the lifting-as-a-codegen-step idea and of
-  n1k1's whole `intermed_build` approach.
+  n1k1's whole `intermed_build` approach. Lineage: LegoBase → DBLAB/SC (*"How to
+  Architect a Query Compiler"*, SIGMOD 2016) → LB2 (SIGMOD 2018) and **Flare**
+  (OSDI 2018, LMS accelerating Spark). Reality check: the LMS-*Scala* engines
+  stayed academic; the *idea* (compile queries to native code) shipped via other
+  codegen — **HyPer/Umbra** (LLVM, data-centric produce/consume; → Tableau/CedarDB),
+  **Spark Tungsten whole-stage codegen** (JVM bytecode), **Hekaton** (C→DLL),
+  Impala (LLVM). Conceptual cousin: **GraalVM/Truffle** *automatically* does the
+  first Futamura projection (interpreter → compiler) — the automatic version of
+  what `intermed_build` does by hand. So n1k1 is a pragmatic Go-source-gen member
+  of this family, and the family's results (LB2/Flare matched hand-tuned engines)
+  say the approach works.
 - **Late materialization** (C-Store/Vertica; Abadi, *"Materialization
   Strategies…"*, ICDE 2007): carry column positions/IDs as long as possible;
   materialize tuple values last, or never (aggregates). The deep generalization of
