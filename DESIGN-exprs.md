@@ -113,6 +113,7 @@ type/collation semantics.
 | `in` | `engine/expr_in.go` + `base.ValIn` | IN (array membership; 2-operand) |
 | `upper` `lower` `title` `trim` `ltrim` `rtrim` `reverse` | `engine/expr_str.go` + `base/str.go` | unary string transforms (shared `exprStrTransform`: decode → `func([]byte)[]byte` → re-encode into buffer). `length` `contains` `position0` `position1` are here too. TRIM/LTRIM/RTRIM's 2-arg (explicit cutset) forms are variadic → fall back |
 | `replace` | `engine/expr_str.go` + `base.StrReplaceAll` | REPLACE(str, old, repl) 3-arg (ternary harness → buffer); 4-arg count form variadic → falls back |
+| `substr` (`substr0` `substr1`) | `engine/expr_str.go` + `base.StrSubstr` | SUBSTR (byte-based, cbq `inRunes=false`), 2-arg & 3-arg. The optimizer dispatches on arity to `substr{0,1}_{2,3}` native names so each rides a fixed-arity harness (binary / ternary). Rune-based `mb_substr*` fall back |
 | `abs` `ceil` `floor` `sqrt` `exp` `ln` `log` `sign` `degrees` `radians` `sin` `cos` `tan` `asin` `acos` `atan` `power` `atan2` | `engine/expr_math.go` + `base/math.go` | numeric math (func-passing: stdlib `math.*` / `base.Math*`) |
 | `to_boolean` `to_string` `to_number` | `engine/expr_type.go` + `base/type.go` | scalar type conversions |
 | `array_length` `array_count` `array_sum` `array_avg` `array_min` `array_max` `array_contains` `array_position` | `engine/expr_array.go` + `base/array.go` | reader array ops (no materialization) |

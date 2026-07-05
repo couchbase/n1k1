@@ -34,6 +34,12 @@ func init() {
 	ExprCatalog["rtrim"] = ExprRTrim
 	ExprCatalog["reverse"] = ExprReverse
 	ExprCatalog["replace"] = ExprReplace
+	// SUBSTR0/SUBSTR1, 2-arg and 3-arg -- the optimizer dispatches to an
+	// arity-specific name so each rides a fixed-arity harness (no variadic).
+	ExprCatalog["substr0_2"] = ExprSubstr02
+	ExprCatalog["substr0_3"] = ExprSubstr03
+	ExprCatalog["substr1_2"] = ExprSubstr12
+	ExprCatalog["substr1_3"] = ExprSubstr13
 	ExprCatalog["length"] = ExprLength
 	ExprCatalog["contains"] = ExprContains
 	ExprCatalog["position0"] = ExprPosition0
@@ -141,6 +147,121 @@ func ExprReplace(lzVars *base.Vars, labels base.Labels,
 					lzRaw := base.StrReplaceAll(lzStrA, lzStrB, lzStrC)
 					lzBufPre = base.EncodeStr(lzVars.Ctx.ValComparer, lzRaw, lzBufPre)
 					lzVal = base.Val(lzBufPre)
+				}
+			}
+		}
+
+		return lzVal
+	} // !lz
+
+	lzExprFunc =
+		MakeTriExprFunc(lzVars, labels, params, path, triExprFunc) // !lz
+
+	return lzExprFunc
+}
+
+// SUBSTR0/SUBSTR1 (byte-based, cbq strSubstrApply inRunes=false). Two arities,
+// each a fixed-arity harness: the 2-arg form (str, pos) is binary, the 3-arg form
+// (str, pos, len) is ternary. startPos is 0 (SUBSTR0) or 1 (SUBSTR1). MISSING if
+// any operand is MISSING; else NULL if str is non-string / pos|len non-integral /
+// out-of-range; else the substring re-encoded into the reused buffer.
+
+func ExprSubstr02(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string) base.ExprFunc {
+	return exprSubstr2(lzVars, labels, params, path, 0)
+}
+
+func ExprSubstr03(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string) base.ExprFunc {
+	return exprSubstr3(lzVars, labels, params, path, 0)
+}
+
+func ExprSubstr12(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string) base.ExprFunc {
+	return exprSubstr2(lzVars, labels, params, path, 1)
+}
+
+func ExprSubstr13(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string) base.ExprFunc {
+	return exprSubstr3(lzVars, labels, params, path, 1)
+}
+
+// exprSubstr2 is the 2-arg SUBSTR harness (str, pos) -> str[pos:].
+func exprSubstr2(lzVars *base.Vars, labels base.Labels, params []interface{},
+	path string, startPos int) (lzExprFunc base.ExprFunc) {
+	var lzBufPre []byte // <== varLift: lzBufPre by path
+
+	biExprFunc := func(lzA, lzB base.ExprFunc, lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) { // !lz
+		if LzScope {
+			lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
+			lzValStr := lzVal
+
+			lzVal = lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B"
+			lzValPos := lzVal
+
+			if base.ValKind(lzValStr) == base.ValKindMissing ||
+				base.ValKind(lzValPos) == base.ValKindMissing {
+				lzVal = base.ValMissing
+			} else {
+				lzStr, _, lzStrOk := base.StrDecode(lzValStr)
+				lzPos, lzPosOk := base.SubstrNum(lzValPos)
+				if !lzStrOk || !lzPosOk {
+					lzVal = base.ValNull
+				} else {
+					lzSub, lzInRange := base.StrSubstr(lzStr, lzPos, startPos, false, 0)
+					if !lzInRange {
+						lzVal = base.ValNull
+					} else {
+						lzBufPre = base.EncodeStr(lzVars.Ctx.ValComparer, lzSub, lzBufPre)
+						lzVal = base.Val(lzBufPre)
+					}
+				}
+			}
+		}
+
+		return lzVal
+	} // !lz
+
+	lzExprFunc =
+		MakeBiExprFunc(lzVars, labels, params, path, biExprFunc) // !lz
+
+	return lzExprFunc
+}
+
+// exprSubstr3 is the 3-arg SUBSTR harness (str, pos, len) -> str[pos:pos+len].
+func exprSubstr3(lzVars *base.Vars, labels base.Labels, params []interface{},
+	path string, startPos int) (lzExprFunc base.ExprFunc) {
+	var lzBufPre []byte // <== varLift: lzBufPre by path
+
+	triExprFunc := func(lzA, lzB, lzC base.ExprFunc, lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) { // !lz
+		if LzScope {
+			lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
+			lzValStr := lzVal
+
+			lzVal = lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B"
+			lzValPos := lzVal
+
+			lzVal = lzC(lzVals, lzYieldErr) // <== emitCaptured: path "C"
+			lzValLen := lzVal
+
+			if base.ValKind(lzValStr) == base.ValKindMissing ||
+				base.ValKind(lzValPos) == base.ValKindMissing ||
+				base.ValKind(lzValLen) == base.ValKindMissing {
+				lzVal = base.ValMissing
+			} else {
+				lzStr, _, lzStrOk := base.StrDecode(lzValStr)
+				lzPos, lzPosOk := base.SubstrNum(lzValPos)
+				lzLen, lzLenOk := base.SubstrNum(lzValLen)
+				if !lzStrOk || !lzPosOk || !lzLenOk {
+					lzVal = base.ValNull
+				} else {
+					lzSub, lzInRange := base.StrSubstr(lzStr, lzPos, startPos, true, lzLen)
+					if !lzInRange {
+						lzVal = base.ValNull
+					} else {
+						lzBufPre = base.EncodeStr(lzVars.Ctx.ValComparer, lzSub, lzBufPre)
+						lzVal = base.Val(lzBufPre)
+					}
 				}
 			}
 		}

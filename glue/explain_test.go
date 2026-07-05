@@ -56,9 +56,10 @@ func TestExplainConvPlan(t *testing.T) {
 		},
 		{
 			// A non-optimizable scalar fn boxes; the sibling arithmetic stays native
-			// (unmarked). Exactly one boxed marker in the projection.
-			q:       `EXPLAIN SELECT SUBSTR(o.custId,0,1) AS s, o.orderId*2 AS d FROM orders o`,
-			wantSub: []string{"substr", boxedMarker},
+			// (unmarked). Exactly one boxed marker in the projection. (REPEAT is not
+			// ported -- its RANGE_LIMIT/size-limit error paths need request context.)
+			q:       `EXPLAIN SELECT REPEAT(o.custId,2) AS s, o.orderId*2 AS d FROM orders o`,
+			wantSub: []string{"repeat", boxedMarker},
 		},
 	}
 	for _, c := range cases {

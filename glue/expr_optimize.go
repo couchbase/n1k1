@@ -36,7 +36,8 @@ func init() {
 		"degrees", "radians", "sin", "cos", "tan", "asin", "acos", "atan",
 		"upper", "lower", "length", "title", "trim", "ltrim", "rtrim", "reverse", // unary string (expr_str.go)
 		"contains", "position0", "position1", // binary string (expr_str.go)
-		"replace",        // ternary string, 3-arg form (expr_str.go)
+		"replace",            // ternary string, 3-arg form (expr_str.go)
+		"substr0", "substr1", // SUBSTR, arity-dispatched below (expr_str.go)
 		"power", "atan2", // binary math (expr_math.go)
 		"to_boolean", "to_string", "to_number", // type conversions (expr_type.go)
 		"array_length", "array_count", "array_sum", "array_avg", // array readers (expr_array.go)
@@ -236,6 +237,20 @@ func ExprTreeOptimize(labels base.Labels, e expression.Expression,
 			acc = []interface{}{name, lhs, acc}
 		}
 		return acc, true
+	}
+
+	// SUBSTR0/SUBSTR1 are 2-or-3 arg; dispatch to an arity-specific native name
+	// (substr0_2 / substr0_3 / ...) so each rides a fixed-arity harness. Any other
+	// arity (or the rune-based MB variants, which aren't recognized) falls back.
+	if name == "substr0" || name == "substr1" {
+		switch len(operands) {
+		case 2:
+			name += "_2"
+		case 3:
+			name += "_3"
+		default:
+			return nil, false
+		}
 	}
 
 	switch name {

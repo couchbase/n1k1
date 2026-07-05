@@ -881,6 +881,59 @@ func TestStrReplaceDifferentialVsCBQ(t *testing.T) {
 	}
 }
 
+func TestStrSubstrDifferentialVsCBQ(t *testing.T) {
+	c := func(v interface{}) expression.Expression { return expression.NewConstant(v) }
+	null := c(value.NULL_VALUE)
+	miss := c(value.MISSING_VALUE)
+	s := c("hello") // len 5
+
+	cases := []struct {
+		name string
+		expr expression.Expression
+	}{
+		// SUBSTR0 (0-based), 2-arg.
+		{"s0-2-mid", expression.NewSubstr0(s, c(1))},       // "ello"
+		{"s0-2-zero", expression.NewSubstr0(s, c(0))},      // "hello"
+		{"s0-2-neg", expression.NewSubstr0(s, c(-2))},      // "lo"
+		{"s0-2-oor", expression.NewSubstr0(s, c(5))},       // NULL (pos==len)
+		{"s0-2-negoor", expression.NewSubstr0(s, c(-9))},   // NULL
+		{"s0-2-frac", expression.NewSubstr0(s, c(1.5))},    // NULL (non-integral)
+		{"s0-2-null", expression.NewSubstr0(null, c(1))},   // NULL (non-string)
+		{"s0-2-posnull", expression.NewSubstr0(s, null)},   // NULL
+		{"s0-2-miss", expression.NewSubstr0(miss, c(1))},   // MISSING
+		{"s0-2-posmiss", expression.NewSubstr0(s, miss)},   // MISSING
+		{"s0-2-strnum", expression.NewSubstr0(c(5), c(1))}, // NULL (non-string)
+		// SUBSTR0 (0-based), 3-arg.
+		{"s0-3-mid", expression.NewSubstr0(s, c(1), c(3))},       // "ell"
+		{"s0-3-clamp", expression.NewSubstr0(s, c(3), c(9))},     // "lo" (len clamped)
+		{"s0-3-zerolen", expression.NewSubstr0(s, c(1), c(0))},   // ""
+		{"s0-3-neglen", expression.NewSubstr0(s, c(1), c(-1))},   // NULL
+		{"s0-3-negpos", expression.NewSubstr0(s, c(-3), c(2))},   // "ll"
+		{"s0-3-lenmiss", expression.NewSubstr0(s, c(1), miss)},   // MISSING
+		{"s0-3-lennull", expression.NewSubstr0(s, c(1), null)},   // NULL
+		{"s0-3-lenfrac", expression.NewSubstr0(s, c(1), c(2.5))}, // NULL
+		// SUBSTR1 (1-based).
+		{"s1-2-first", expression.NewSubstr1(s, c(1))},       // "hello"
+		{"s1-2-mid", expression.NewSubstr1(s, c(2))},         // "ello"
+		{"s1-2-zero", expression.NewSubstr1(s, c(0))},        // cbq: pos stays 0 -> "hello"
+		{"s1-2-neg", expression.NewSubstr1(s, c(-1))},        // "o"
+		{"s1-3-mid", expression.NewSubstr1(s, c(2), c(2))},   // "el"
+		{"s1-3-first", expression.NewSubstr1(s, c(1), c(3))}, // "hel"
+	}
+
+	for _, tc := range cases {
+		want := cbqEval(t, tc.expr)
+		got, ok := nativeEval(t, tc.expr)
+		if !ok {
+			t.Errorf("%s: did not optimize", tc.name)
+			continue
+		}
+		if got != want {
+			t.Errorf("%s: native=%q, cbq=%q", tc.name, got, want)
+		}
+	}
+}
+
 func TestPredicateDifferentialVsCBQ(t *testing.T) {
 	c := func(v interface{}) expression.Expression { return expression.NewConstant(v) }
 

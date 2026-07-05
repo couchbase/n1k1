@@ -13,6 +13,7 @@ package base
 
 import (
 	"bytes"
+	"math"
 	"strconv"
 	"unicode"
 	"unicode/utf8"
@@ -95,6 +96,49 @@ func StrReverse(decoded []byte) []byte {
 // 3-arg form; cbq strings.Replace(s, old, repl, -1)). The 4-arg count form is
 // variadic and falls back to cbq per the optimizer arity guard.
 func StrReplaceAll(s, old, repl []byte) []byte { return bytes.Replace(s, old, repl, -1) }
+
+// SubstrNum reads a SUBSTR position/length operand as an integer: ok=false (the
+// caller yields NULL) if v is not a number or not integral -- mirroring cbq's
+// `int(v.Actual().(float64))` guarded by `vf != math.Trunc(vf)`.
+func SubstrNum(v Val) (int, bool) {
+	n, ok := ParseNum(v)
+	if !ok {
+		return 0, false
+	}
+	f := n.Float64()
+	if f != math.Trunc(f) {
+		return 0, false
+	}
+	return int(f), true
+}
+
+// StrSubstr slices the decoded string per SUBSTR (byte-based, cbq
+// strSubstrApply with inRunes=false). startPos is 0 (SUBSTR0) or 1 (SUBSTR1, the
+// 1-based bias applied only to a positive pos). A negative pos counts from the
+// end. hasLen selects the 2-arg (to end) vs 3-arg (fixed length) form. Returns a
+// subslice of decoded (no allocation) and ok=false (-> NULL) for an out-of-range
+// pos or a negative length. EncodeStr re-quotes the result into the buffer.
+func StrSubstr(decoded []byte, pos, startPos int, hasLen bool, length int) ([]byte, bool) {
+	l := len(decoded)
+	if pos < 0 {
+		pos = l + pos
+	} else if pos > 0 && startPos > 0 {
+		pos = pos - startPos
+	}
+	if pos < 0 || pos >= l {
+		return nil, false
+	}
+	if !hasLen {
+		return decoded[pos:], true
+	}
+	if length < 0 {
+		return nil, false
+	}
+	if pos+length > l {
+		length = l - pos
+	}
+	return decoded[pos : pos+length], true
+}
 
 // StrDecode returns the operand's decoded string bytes and ok=true for a JSON
 // string; for MISSING/non-string it returns the sentinel Val to yield and
