@@ -115,7 +115,7 @@ func TestArithThenSum(t *testing.T) {
 	ArithFloat64(prod, packF64(a), packF64(b), n, '*')
 
 	acc := AggSum.Init(nil, nil)
-	SumMaskedFloat64(acc, prod, nil, n) // nil mask = all rows
+	MaskedSumFloat64(acc, prod, nil, n) // nil mask = all rows
 	got := math.Float64frombits(binary.LittleEndian.Uint64(acc[:8]))
 
 	var want float64

@@ -66,19 +66,19 @@ func TestMaskedReduceMatchesManual(t *testing.T) {
 		}
 
 		acc := AggSum.Init(nil, nil)
-		SumMaskedFloat64(acc, col, mask, n)
+		MaskedSumFloat64(acc, col, mask, n)
 		if got := math.Float64frombits(binary.LittleEndian.Uint64(acc[:8])); got != wantSum {
 			t.Errorf("%s: SumMaskedFloat64=%v want %v", name, got, wantSum)
 		}
 
 		cacc := AggCount.Init(nil, nil)
-		CountMasked(cacc, mask, n)
+		MaskedCount(cacc, mask, n)
 		if got := binary.LittleEndian.Uint64(cacc[:8]); got != uint64(wantCount) {
 			t.Errorf("%s: CountMasked=%d want %d", name, got, wantCount)
 		}
 
 		aacc := AggAvg.Init(nil, nil)
-		AvgMaskedFloat64(aacc, col, mask, mask, n) // sel==sum: count and sum over the same mask
+		MaskedAvgFloat64(aacc, col, mask, mask, n) // sel==sum: count and sum over the same mask
 		gotC := binary.LittleEndian.Uint64(aacc[:8])
 		gotS := math.Float64frombits(binary.LittleEndian.Uint64(aacc[8:16]))
 		if gotC != uint64(wantCount) || gotS != wantSum {
@@ -89,7 +89,7 @@ func TestMaskedReduceMatchesManual(t *testing.T) {
 	// All-set mask must equal the unmasked scalar/vector sum exactly.
 	all := bitmap(n, func(int) bool { return true })
 	acc := AggSum.Init(nil, nil)
-	SumMaskedFloat64(acc, col, all, n)
+	MaskedSumFloat64(acc, col, all, n)
 	masked := math.Float64frombits(binary.LittleEndian.Uint64(acc[:8]))
 	scalar := sumScalar(vals, false) // from agg_v_test.go
 	accV := AggSum.Init(nil, nil)
@@ -114,7 +114,7 @@ func TestMaskedReduceMatchesManual(t *testing.T) {
 		}
 	}
 	iacc := AggSum.Init(nil, nil)
-	SumMaskedInt64(iacc, icol, imask, len(ints))
+	MaskedSumInt64(iacc, icol, imask, len(ints))
 	if got := math.Float64frombits(binary.LittleEndian.Uint64(iacc[:8])); got != iwant {
 		t.Errorf("SumMaskedInt64=%v want %v", got, iwant)
 	}

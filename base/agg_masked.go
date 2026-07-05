@@ -53,9 +53,9 @@ func PopCount(mask []byte, n int) int {
 // the SELECTED rows regardless of validity (n1k1 COUNT(x) counts null/missing rows,
 // like COUNT(*)). AVG therefore takes BOTH: count over sel, sum over sum(=sel∧val).
 
-// SumMaskedFloat64 folds values (n LE float64s) where mask bit i is set (nil mask =
+// MaskedSumFloat64 folds values (n LE float64s) where mask bit i is set (nil mask =
 // all n) into AggSum's 8-byte float64 accumulator, in place.
-func SumMaskedFloat64(acc, values, mask []byte, n int) {
+func MaskedSumFloat64(acc, values, mask []byte, n int) {
 	s := math.Float64frombits(binary.LittleEndian.Uint64(acc[:8]))
 	if mask == nil {
 		for i := 0; i < n; i++ {
@@ -71,8 +71,8 @@ func SumMaskedFloat64(acc, values, mask []byte, n int) {
 	binary.LittleEndian.PutUint64(acc[:8], math.Float64bits(s))
 }
 
-// SumMaskedInt64 is SumMaskedFloat64 for an int64 column (each slot added as float64).
-func SumMaskedInt64(acc, values, mask []byte, n int) {
+// MaskedSumInt64 is SumMaskedFloat64 for an int64 column (each slot added as float64).
+func MaskedSumInt64(acc, values, mask []byte, n int) {
 	s := math.Float64frombits(binary.LittleEndian.Uint64(acc[:8]))
 	if mask == nil {
 		for i := 0; i < n; i++ {
@@ -88,9 +88,9 @@ func SumMaskedInt64(acc, values, mask []byte, n int) {
 	binary.LittleEndian.PutUint64(acc[:8], math.Float64bits(s))
 }
 
-// CountMasked adds the number of set bits (first n; nil mask = n) to AggCount's
+// MaskedCount adds the number of set bits (first n; nil mask = n) to AggCount's
 // 8-byte counter. The mask here is the SELECTION -- not ANDed with validity.
-func CountMasked(acc, mask []byte, n int) {
+func MaskedCount(acc, mask []byte, n int) {
 	c := binary.LittleEndian.Uint64(acc[:8])
 	if mask == nil {
 		c += uint64(n)
@@ -100,10 +100,10 @@ func CountMasked(acc, mask []byte, n int) {
 	binary.LittleEndian.PutUint64(acc[:8], c)
 }
 
-// AvgMaskedFloat64 folds into AggAvg's [count][sum] accumulator: count += selected
+// MaskedAvgFloat64 folds into AggAvg's [count][sum] accumulator: count += selected
 // rows (sel; nil = n), sum += values where the sum mask is set (nil = all n). Pass
 // sel = the selection and sum = selection∧validity so AVG = sum(non-null)/count(rows).
-func AvgMaskedFloat64(acc, values, sel, sum []byte, n int) {
+func MaskedAvgFloat64(acc, values, sel, sum []byte, n int) {
 	c := binary.LittleEndian.Uint64(acc[:8])
 	s := math.Float64frombits(binary.LittleEndian.Uint64(acc[8:16]))
 	if sel == nil {

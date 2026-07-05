@@ -126,7 +126,7 @@ func TestFilterThenMaskedReduce(t *testing.T) {
 	FilterFloat64(mask, col, n, CmpGT, c)
 
 	acc := AggSum.Init(nil, nil)
-	SumMaskedFloat64(acc, col, mask, n)
+	MaskedSumFloat64(acc, col, mask, n)
 	got := math.Float64frombits(binary.LittleEndian.Uint64(acc[:8]))
 
 	var want float64
