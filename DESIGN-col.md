@@ -697,7 +697,8 @@ walk it.)
   today's row-JSON path, (b) a hand-built fixed-width `[]byte` column + scalar Go,
   (c) + SIMD via `avo` — on **both amd64 and arm64**. If best-case isn't ≥3–5×,
   the *realistic* win (after transpose/explode overhead) won't justify a dual-lane
-  engine. Stop here.
+  engine. Stop here. **✅ Done on arm64 (pure Go, no SIMD) — the gate is cleared
+  by 40×–730×; see § *Spike results* below.**
 - **Step 3 — Ship a columnar *source*, transpose-to-rows (real feature, no engine
   change).** Wire a pure-Go Parquet/Arrow `RecordSource` yielding borrowed column
   buffers, initially transposed to JSON rows (the `DESIGN-data.md` correctness
@@ -720,6 +721,78 @@ walk it.)
 The throughline: **the row engine is already good and the dual-lane cost is real,
 so prove the ceiling *and* the workload fit before committing — and let columnar
 bytes enter from a columnar source rather than synthesizing them from rows.**
+
+-------------------------------------------------------
+## Spike results — measured ceiling (Apple Silicon, pure Go, NO SIMD)
+
+Step 2's ceiling spike, run on an M-series MacBook (arm64) with **scalar Go only —
+no SIMD, no amd64 asm** — so these numbers are the **floor** of the columnar win,
+not the ceiling. SUM and filter-count over N float64 `price` values, comparing
+n1k1's faithful row path (whole JSON doc per record, `jsonparser.GetFloat` per
+row) against the columnar encodings. All paths zero-alloc. Reproduce:
+`DESIGN-col-spike/` (self-contained module — `cd DESIGN-col-spike && GOTOOLCHAIN=
+local GOPROXY=off go test -bench=. -benchmem`).
+
+**SUM, per-value cost (ns/value), narrow 1-field doc:**
+
+| N | row-JSON (n1k1 today) | JSON-array (enc 1) | fixed-width (enc 2) | native `[]float64` |
+|---|---|---|---|---|
+| 64  | 36.8 | 28.1 | 0.68 | 0.44 |
+| 1K  | 38.8 | 30.2 | 0.87 | 0.83 |
+| 64K | 38.5 | 29.8 | 0.88 | 0.87 |
+| 1M  | 39.8 | 30.0 | 0.91 | 0.87 |
+
+1. **Fixed-width is ~44× the row path and sits AT the native-`[]float64` ceiling**
+   (0.91 vs 0.87 — the little-endian decode is nearly free). The row path's whole
+   cost is **JSON number parsing**, which columnar skips.
+2. **No tipping point in N** at the kernel level — per-value cost is flat for every
+   approach; fixed-width wins from N=64. "You need big data for columnar" is false
+   for the *compute*. (Fixed-width drifts 0.68→0.91 as the 8 MB column outgrows
+   cache — memory-bandwidth bound; the row path is parse-bound, hence flat.)
+3. **JSON-array encoding (enc 1) barely helps** (1.3× over row) — it still parses
+   text per value. The real jump is fixed-width (enc 2). Prioritize enc 2 over
+   enc 1.
+
+**The tipping point IS document width — where the "vertical stripe" shines
+(N=1M):**
+
+| doc width (fields) | row-JSON ns/value | fixed-width | speedup |
+|---|---|---|---|
+| 1  | 38.4 | ~0.9 | 42× |
+| 5  | 83.6 | ~0.9 | 93× |
+| 20 | 294  | ~0.9 | 327× |
+| 50 | 660  | ~0.9 | 730× |
+
+The row path scales **linearly with doc width** — a left-to-right JSON parser must
+scan past every unwanted field to reach `price`. The fixed-width column is
+**constant** — it touches only its stripe. So the columnar win grows with exactly
+what hurts row-at-a-time: **wide records where you project few fields.** That is
+the vertical-stripe payoff, quantified: ~40× at 1 field, ~730× at 50 fields.
+(Filter-count `price > 500`, N=1M, narrow: row 39.5 vs fixed 0.69 → **57×**.)
+
+**Economic break-even when the source is JSON** (you must pay to *build* the
+column). Building a fixed-width column from JSONL costs one parse pass
+(~38 ns/value); each op over it then costs ~0.9. For K ops touching the column:
+row = 38·K, columnar = 38 + 0.9·K → columnar wins once **K > ~1**. So **any query
+that touches a column more than once** (`WHERE price>x … SUM(price)`, GROUP BY +
+agg) already repays a transient transpose. From a **Parquet/Arrow source (no parse
+to build), columnar wins unconditionally.**
+
+**What the spike settles for the approach:**
+- The Step-2 gate (≥3–5×) is **cleared by 40×–730× on arm64 with zero SIMD.** On
+  this hardware the win is *not-parsing* + *touching one stripe*; **SIMD would be
+  additive, not load-bearing.** (This is *why* an arm64-only, no-SIMD target is
+  still very much worth pursuing — the dominant lever isn't vector width.)
+- Confirms **source-first**: unconditional win from a columnar source, and even
+  JSON-sourced columns pay off after a single reuse — so the transpose is *not*
+  the blocker the `DESIGN-data.md` caveat feared, provided the column is reused or
+  the doc is wide (both true for this "directories full of fat files" workload).
+- Confirms **fixed-width (enc 2) ≫ JSON-array (enc 1)** — 44× vs 1.3×.
+- **Caveat — this is the kernel ceiling.** It excludes explode-to-rows transitions
+  (§ critical Q3) and assumes a cleanly-typed column (§ Q4). A single SUM straight
+  over JSONL with no reuse is a wash (you paid the parse to build). The measured
+  win is real precisely for the reuse / wide-doc / columnar-source cases — which
+  is the target workload, not a coincidence.
 
 -------------------------------------------------------
 ## One-line summary
