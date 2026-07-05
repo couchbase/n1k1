@@ -464,8 +464,8 @@ n1k1 stands on each, honestly:
 
 **Schema / stats (up) — mostly a conceived hook, not built:**
 - **Today `Source` exposes nothing** — no types, no nullability. The engine is
-  schemaless; labels carry no type (the `@col.i64` marker of § *Marking a slot as
-  columnar* is proposed, not present). Even CSV's sniffed types are dropped on the
+  schemaless; labels carry no type (the `colI64` shape-tag of § *Carrying columnar
+  shape* is proposed, not present). Even CSV's sniffed types are dropped on the
   way to JSON objects.
 - **Two hooks are designed in `DESIGN-data.md`:** (1) a typed source's inferred
   schema is meant to *become the label vector* — a channel to declare columns
@@ -495,9 +495,8 @@ implement a capability simply falls back to the full transpose. Two capabilities
   column buffers zero-copy (§ enc 3);
 - **schema/stats up** — `ColumnsSource interface { Columns() []ColumnMeta }` where
   `ColumnMeta` carries `{Name, Type, NullCount, Min, Max}`. This **populates the
-  columnar labels/markers** of § *Marking a slot as columnar*: a Parquet footer is
-  the natural *source* of a `@col.i64` / no-nulls marker, the marker its
-  *destination*.
+  columnar shape-tags** of § *Carrying columnar shape*: a Parquet footer is the
+  natural *source* of a `colI64` / no-nulls tag, that tag its *destination*.
 
 New capabilities (zone-map `RowGroupPruner`, predicate pushdown) then drop in as
 further sidecars without touching the core interface or any existing source.
