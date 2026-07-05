@@ -77,14 +77,14 @@ func ArrayReduce(op int, v Val) (result Num, sentinel Val, ok bool) {
 // empty / all-NULL array -> NULL. Mirrors cbq ARRAY_MIN/ARRAY_MAX (v.Collate over
 // non-null elements; NULL sorts below everything, so it never wins).
 func ArrayMin(vc *ValComparer, v Val, bufPre []byte) (Val, []byte) {
-	return arrayMinMax(vc, v, false, bufPre)
+	return ArrayMinMax(vc, v, false, bufPre)
 }
 
 func ArrayMax(vc *ValComparer, v Val, bufPre []byte) (Val, []byte) {
-	return arrayMinMax(vc, v, true, bufPre)
+	return ArrayMinMax(vc, v, true, bufPre)
 }
 
-func arrayMinMax(vc *ValComparer, v Val, wantMax bool, bufPre []byte) (Val, []byte) {
+func ArrayMinMax(vc *ValComparer, v Val, wantMax bool, bufPre []byte) (Val, []byte) {
 	if len(v) == 0 {
 		return ValMissing, bufPre
 	}
