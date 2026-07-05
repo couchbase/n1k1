@@ -155,16 +155,26 @@ func bareAggField(aggExpr interface{}) (string, bool) {
 }
 
 // vecAggCatalogKey maps (aggregate name, Parquet physical type) to the vectorized
-// aggregate's catalog key, or ok=false when not vectorizable (v1: SUM only).
+// aggregate's catalog key, or ok=false when not vectorizable. Only fixed-width
+// 8-byte numeric columns (DOUBLE/INT64) are supported; SUM/AVG are typed, COUNT is
+// type-agnostic (element count) but still requires a supported column.
 func vecAggCatalogKey(aggName, colType string) (string, bool) {
-	if aggName != "sum" {
-		return "", false
-	}
+	var suffix string
 	switch colType {
 	case "DOUBLE":
-		return "sum_v_float64", true
+		suffix = "float64"
 	case "INT64":
-		return "sum_v_int64", true
+		suffix = "int64"
+	default:
+		return "", false
+	}
+	switch aggName {
+	case "sum":
+		return "sum_v_" + suffix, true
+	case "avg":
+		return "avg_v_" + suffix, true
+	case "count":
+		return "count_v", true
 	}
 	return "", false
 }
@@ -224,12 +234,23 @@ func DatastoreColumnarAgg(o *base.Op, vars *base.Vars,
 	defer src.Close()
 
 	specs := o.Params[1].([]interface{})
-	fields := make([]string, len(specs))
 	aggs := make([]*base.Agg, len(specs))
+	// Project the DISTINCT agg fields (several aggs may share one, e.g.
+	// SUM(x),COUNT(x),AVG(x)); aggCol[i] maps agg i to its column in each batch.
+	pos := map[string]int{}
+	var proj []string
+	aggCol := make([]int, len(specs))
 	for i, sp := range specs {
 		s := sp.([]interface{})
 		aggs[i] = base.Aggs[base.AggCatalog[s[0].(string)]]
-		fields[i] = s[1].(string)
+		field := s[1].(string)
+		p, seen := pos[field]
+		if !seen {
+			p = len(proj)
+			pos[field] = p
+			proj = append(proj, field)
+		}
+		aggCol[i] = p
 	}
 
 	cp, ok := src.(records.ColumnsProjector)
@@ -237,7 +258,7 @@ func DatastoreColumnarAgg(o *base.Op, vars *base.Vars,
 		yieldErr(fmt.Errorf("DatastoreColumnarAgg: %q source not projectable", keyspace.Name()))
 		return
 	}
-	if err := cp.ProjectColumns(fields); err != nil {
+	if err := cp.ProjectColumns(proj); err != nil {
 		yieldErr(err)
 		return
 	}
@@ -261,12 +282,12 @@ func DatastoreColumnarAgg(o *base.Op, vars *base.Vars,
 		if !ok {
 			break
 		}
-		if len(cols) != len(aggs) {
-			yieldErr(fmt.Errorf("DatastoreColumnarAgg: got %d columns, want %d", len(cols), len(aggs)))
+		if len(cols) != len(proj) {
+			yieldErr(fmt.Errorf("DatastoreColumnarAgg: got %d columns, want %d", len(cols), len(proj)))
 			return
 		}
 		for i := range aggs {
-			accs[i], _, _ = aggs[i].Update(vars, base.Val(cols[i]), nil, accs[i], nil)
+			accs[i], _, _ = aggs[i].Update(vars, base.Val(cols[aggCol[i]]), nil, accs[i], nil)
 		}
 	}
 

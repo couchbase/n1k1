@@ -440,7 +440,11 @@ func TestParquetSumVectorizedDifferential(t *testing.T) {
 	}{
 		{"sum-float", `SELECT SUM(price) AS s FROM sales3`, true},
 		{"sum-int", `SELECT SUM(id) AS s FROM sales3`, true},
+		{"count-field", `SELECT COUNT(price) AS c FROM sales3`, true},
+		{"avg-float", `SELECT AVG(price) AS a FROM sales3`, true},
+		{"avg-int", `SELECT AVG(id) AS a FROM sales3`, true},
 		{"multi-agg", `SELECT SUM(price) AS sp, SUM(id) AS si FROM sales3`, true},
+		{"mixed-agg", `SELECT SUM(price) AS s, COUNT(price) AS c, AVG(price) AS a FROM sales3`, true},
 		{"aliased", `SELECT SUM(o.price) AS s FROM sales3 AS o`, true},
 		{"with-where", `SELECT SUM(price) AS s FROM sales3 WHERE price > 10`, false}, // filter → row path (5.4)
 		{"count-star", `SELECT COUNT(*) AS c FROM sales3`, false},                    // not SUM

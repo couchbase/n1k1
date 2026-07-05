@@ -73,6 +73,15 @@ func init() {
 	AggCatalog["sum_v_int64"] = len(Aggs)
 	Aggs = append(Aggs, AggSumVInt64)
 
+	AggCatalog["count_v"] = len(Aggs)
+	Aggs = append(Aggs, AggCountV)
+
+	AggCatalog["avg_v_float64"] = len(Aggs)
+	Aggs = append(Aggs, AggAvgVFloat64)
+
+	AggCatalog["avg_v_int64"] = len(Aggs)
+	Aggs = append(Aggs, AggAvgVInt64)
+
 	AggCatalog["avg"] = len(Aggs)
 	Aggs = append(Aggs, AggAvg)
 
@@ -306,6 +315,51 @@ func aggSumVInt64Update(vars *Vars, v Val, aggNew, agg []byte, vc *ValComparer) 
 		s += float64(int64(binary.LittleEndian.Uint64(v[i*8:])))
 	}
 	return BinaryAppendUint64(aggNew, math.Float64bits(s)), agg[8:], n > 0
+}
+
+// count_v: vectorized COUNT over a packed 8-byte column -- shorts to len(v)/8
+// (the element count), no fold loop. Reuses AggCount's counter + Result. Sound
+// only for null_count==0 columns (then COUNT(x) == row count); nulls need a
+// validity mask later.
+var AggCountV = &Agg{
+	Init: AggCount.Init,
+	Update: func(vars *Vars, v Val, aggNew, agg []byte, vc *ValComparer) (
+		[]byte, []byte, bool) {
+		n := len(v) / 8
+		c := binary.LittleEndian.Uint64(agg[:8])
+		return BinaryAppendUint64(aggNew, c+uint64(n)), agg[8:], n > 0
+	},
+	Result: AggCount.Result,
+}
+
+// avg_v: vectorized AVG, reusing AggAvg's [count][sum] accumulator + Result. The
+// count adds len(v)/8; the sum folds the column in buffer order -- same as scalar
+// AVG, so bit-exact. Branchless per-type, like the sum kernels.
+var AggAvgVFloat64 = &Agg{Init: AggAvg.Init, Update: aggAvgVFloat64Update, Result: AggAvg.Result}
+var AggAvgVInt64 = &Agg{Init: AggAvg.Init, Update: aggAvgVInt64Update, Result: AggAvg.Result}
+
+func aggAvgVFloat64Update(vars *Vars, v Val, aggNew, agg []byte, vc *ValComparer) (
+	[]byte, []byte, bool) {
+	n := len(v) / 8
+	c := binary.LittleEndian.Uint64(agg[:8])
+	aggNew = BinaryAppendUint64(aggNew, c+uint64(n))
+	s := math.Float64frombits(binary.LittleEndian.Uint64(agg[8:16]))
+	for i := 0; i < n; i++ {
+		s += math.Float64frombits(binary.LittleEndian.Uint64(v[i*8:]))
+	}
+	return BinaryAppendUint64(aggNew, math.Float64bits(s)), agg[16:], n > 0
+}
+
+func aggAvgVInt64Update(vars *Vars, v Val, aggNew, agg []byte, vc *ValComparer) (
+	[]byte, []byte, bool) {
+	n := len(v) / 8
+	c := binary.LittleEndian.Uint64(agg[:8])
+	aggNew = BinaryAppendUint64(aggNew, c+uint64(n))
+	s := math.Float64frombits(binary.LittleEndian.Uint64(agg[8:16]))
+	for i := 0; i < n; i++ {
+		s += float64(int64(binary.LittleEndian.Uint64(v[i*8:])))
+	}
+	return BinaryAppendUint64(aggNew, math.Float64bits(s)), agg[16:], n > 0
 }
 
 // -----------------------------------------------------

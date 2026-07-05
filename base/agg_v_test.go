@@ -109,3 +109,48 @@ func TestAggSumVectorizedMatchesScalar(t *testing.T) {
 		}
 	}
 }
+
+func countScalar(n int) string {
+	agg := AggCount.Init(nil, nil)
+	for i := 0; i < n; i++ {
+		agg, _, _ = AggCount.Update(nil, Val("null"), nil, agg, nil) // count ignores the value
+	}
+	v, _, _ := AggCount.Result(nil, agg, nil)
+	return string(v)
+}
+
+func avgScalar(vals []float64, asInt bool) string {
+	agg := AggAvg.Init(nil, nil)
+	for _, f := range vals {
+		var js []byte
+		if asInt {
+			js = strconv.AppendInt(nil, int64(f), 10)
+		} else {
+			js = strconv.AppendFloat(nil, f, 'g', -1, 64)
+		}
+		agg, _, _ = AggAvg.Update(nil, Val(js), nil, agg, nil)
+	}
+	v, _, _ := AggAvg.Result(nil, agg, nil)
+	return string(v)
+}
+
+func TestAggCountAvgVectorizedMatchesScalar(t *testing.T) {
+	cases := [][]float64{{}, {0.5}, {1, 2, 3, 4, 5}, {0.1, 0.2, 0.3}, {-5, 10, 2.5}}
+	big := make([]float64, 3000)
+	for i := range big {
+		big[i] = float64(i%700) + 0.25
+	}
+	cases = append(cases, big)
+
+	for i, vals := range cases {
+		if got, want := sumVec(t, "count_v", vals, false), countScalar(len(vals)); got != want {
+			t.Errorf("count case %d: count_v=%q, scalar=%q", i, got, want)
+		}
+		if got, want := sumVec(t, "avg_v_float64", vals, false), avgScalar(vals, false); got != want {
+			t.Errorf("avg float case %d: avg_v_float64=%q, scalar=%q (vals=%v)", i, got, want, vals)
+		}
+		if got, want := sumVec(t, "avg_v_int64", vals, true), avgScalar(vals, true); got != want {
+			t.Errorf("avg int case %d: avg_v_int64=%q, scalar=%q (vals=%v)", i, got, want, vals)
+		}
+	}
+}
