@@ -460,6 +460,80 @@ today (`genCompiler:hide`) but inverted.
    vector ops. Nice, but only matters once (1)–(3) are proving the encoding.
 
 -------------------------------------------------------
+## Pushdown: does n1k1 have the wiring? (projection down, metadata up)
+
+Borrowing columnar `[]byte`s from Parquet / a columnar store pays off only if two
+signals can flow across the scan boundary: **projection down** ("I only want
+fields X, Y") and **metadata up** ("field XYZ is int64, `null_count == 0`"). Where
+n1k1 stands on each, honestly:
+
+**Projection pushdown (down) — a tale of two scan paths:**
+- **cbq / GSI index path: yes, partially — inherited from the couchbase/query
+  planner.** Three real channels already work:
+  - **Index spans** — range predicates are pushed into `secondaryIndex.Scan(span
+    …)` (`glue/idx_si.go`), so the index returns only the matching key range.
+  - **Covering indexes** — `plan.IndexScan.Covers()` (`glue/conv.go`,
+    `coverableIndexScan`) carries the *exact set of fields the query needs*; when
+    the index covers them, the answer comes from the index with **no document
+    fetch**. That is projection pushdown, just expressed in covering-index terms.
+  - **Subpath projection on fetch** — `datastore_fetch.go` passes `subPaths` to
+    cbq's `keyspace.Fetch(…, subPaths, projection, …)` (the fuller `projection`
+    arg is still passed `nil`, an unused slot).
+- **Native file / `records.Source` path: no.** The interface is a narrow whole-doc
+  pipe (`records/records.go`):
+  ```go
+  type Record struct { ID []byte; Doc []byte }   // whole JSON doc, borrowed
+  type Source interface { Next(rec *Record) (bool, error); Close() error }
+  ```
+  `Next` hands back the **entire document**; there is no input to request a
+  subset, and CSV is decoded into whole JSON objects. This is precisely the path a
+  Parquet/columnar reader plugs into — and it has **zero projection channel
+  today.** (`DESIGN-data.md` § "Range pushdown for big/columnar files" via
+  `ReadAt` flags this as future work.)
+
+  **The information already exists** — the wanted-field set lives in the `project`
+  op's expressions, in `Covers()`, and in the label vector at plan time. It is
+  simply **not threaded into `Source`.** Wiring it is "surface an already-known
+  field set to the source," not "invent field tracking."
+
+**Schema / stats (up) — mostly a conceived hook, not built:**
+- **Today `Source` exposes nothing** — no types, no nullability. The engine is
+  schemaless; labels carry no type (the `@col.i64` marker of § *Marking a slot as
+  columnar* is proposed, not present). Even CSV's sniffed types are dropped on the
+  way to JSON objects.
+- **Two hooks are designed in `DESIGN-data.md`:** (1) a typed source's inferred
+  schema is meant to *become the label vector* — a channel to declare columns
+  exists conceptually, it just carries no types/nullability yet; (2) the
+  **catalog / zone-map** design already tracks per-column **min/max, null-count,
+  distinct-estimate, `schema_fingerprint`** — but for *file/partition pruning*,
+  not as a per-scan codegen signal.
+- **Parquet hands you exactly this for free.** Its footer carries the Arrow schema
+  (types) plus per-column-chunk statistics including `null_count` and min/max. So
+  the *storage library provides* "XYZ is int64, `null_count == 0`" — n1k1 just has
+  **no interface to receive and act on it.**
+
+**Synthesis — the two ends of one unbuilt wire.** The needed-field set is known at
+the *plan* end (projection-down), and the types + null-counts are known at the
+*Parquet-footer* end (metadata-up), but `records.Source` carries **neither**.
+Widening that interface is the single concrete missing piece:
+
+- an optional **projection input** (`SetProjection([]fieldRef)` or a projected
+  variant of `Source`) so a columnar reader materializes only wanted columns —
+  which is *also* what makes borrowing Arrow column buffers zero-copy (§ enc 3);
+- an optional **schema / column-stats output** (`Schema()`, `ColumnStats()`) that
+  **populates the columnar labels/markers** of § *Marking a slot as columnar*. A
+  Parquet footer is the natural *source* of a `@col.i64` / no-nulls marker; the
+  marker is its *destination*.
+
+The payoff is concrete and compounding: **`null_count == 0` means the column needs
+no validity bitmap, so its SIMD kernels need no masking** (§ *the tail problem*) —
+the fastest path — while a known fixed type lets the compiler skip JSON parsing
+entirely and emit the vectorized kernel directly. Note the encouraging half: the
+cbq/GSI path already *proves the engine can consume rich pushdown* — the
+architecture isn't hostile to it; the gap is specifically the native
+`records.Source` pipe.
+
+-------------------------------------------------------
 ## Pathway proposal (incremental, each step stands alone)
 
 Each phase is independently shippable and independently *reversible* — none
