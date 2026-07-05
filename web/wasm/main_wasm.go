@@ -40,6 +40,10 @@ const dataRoot = "/n1k1data"
 // namespace is the only namespace the file datastore uses (see cmd/n1k1).
 const namespace = "default"
 
+// rowBatchSize is how many streamed rows are coalesced per n1k1EmitRows post,
+// balancing progressive rendering against postMessage overhead.
+const rowBatchSize = 512
+
 // session is the process-wide engine session over the mounted datasets. Opened
 // once at startup; every n1k1RunQuery reuses it.
 var session *glue.Session
@@ -158,16 +162,49 @@ func runQuery(this js.Value, args []js.Value) interface{} {
 		hook.Invoke(glue.StatsSnapshotJSON(s))
 	}
 
+	// Streaming: if the host registered globalThis.n1k1EmitRows(jsonArray) (the
+	// Web Worker does), stream result rows to it in batches as they're produced
+	// rather than accumulating the whole set -- so the UI renders progressively
+	// and neither side holds every row. The final result then omits rows (the
+	// client already has them). Without the hook (a direct call, e.g. tests),
+	// rows accumulate in res.Rows as before.
+	emitRows := js.Global().Get("n1k1EmitRows")
+	streaming := emitRows.Type() == js.TypeFunction
+	var batch []json.RawMessage
+	flushRows := func() {
+		if len(batch) == 0 {
+			return
+		}
+		b, _ := json.Marshal(batch)
+		emitRows.Invoke(string(b))
+		batch = batch[:0]
+	}
+	if streaming {
+		session.OnRow = func(row []byte) {
+			batch = append(batch, json.RawMessage(append([]byte(nil), row...)))
+			if len(batch) >= rowBatchSize {
+				flushRows()
+			}
+		}
+	} else {
+		session.OnRow = nil
+	}
+
 	start := time.Now()
 	res, err := session.Run(stmt)
 	if err != nil {
 		return respondError(err.Error())
 	}
+	if streaming {
+		flushRows() // final partial batch
+	}
 
-	// Result.Rows are already canonical JSON values; splice them into one array
-	// without re-parsing.
-	rows := make([]json.RawMessage, len(res.Rows))
-	copy(rows, res.Rows)
+	// When streaming, rows were already sent; the result carries only metadata.
+	var rows []json.RawMessage
+	if !streaming {
+		rows = make([]json.RawMessage, len(res.Rows))
+		copy(rows, res.Rows)
+	}
 
 	warnings := make([]string, 0, len(res.Warnings))
 	for _, w := range res.Warnings {
@@ -181,12 +218,13 @@ func runQuery(this js.Value, args []js.Value) interface{} {
 
 	out, merr := json.Marshal(struct {
 		OK        bool              `json:"ok"`
-		Rows      []json.RawMessage `json:"rows"`
+		Rows      []json.RawMessage `json:"rows"` // null when streamed (already sent in batches)
 		Warnings  []string          `json:"warnings"`
 		ElapsedMs float64           `json:"elapsedMs"`
 		Count     int               `json:"count"`
-		Stats     json.RawMessage   `json:"stats"` // final per-operator snapshot
-	}{true, rows, warnings, elapsedMs, len(rows), json.RawMessage(glue.StatsSnapshotJSON(res.Stats))})
+		Stats     json.RawMessage   `json:"stats"`    // final per-operator snapshot
+		Streamed  bool              `json:"streamed"` // rows arrived via n1k1EmitRows
+	}{true, rows, warnings, elapsedMs, res.Count, json.RawMessage(glue.StatsSnapshotJSON(res.Stats)), streaming})
 	if merr != nil {
 		return respondError("result marshal: " + merr.Error())
 	}

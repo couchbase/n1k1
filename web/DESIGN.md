@@ -65,8 +65,8 @@ keyspace).
 3. **OPFS index cache** (Phase 2 under #1) — **DONE** — `wasm/opfs.js` + `glue/idx_mem.go`
    two-tier cache. See "Secondary indexes" below.
 4. **Web Worker** (#3) — **DONE** — `wasm/worker.js` hosts the engine off the main
-   thread; live stats stream mid-query; **query cancellation** (terminate+respawn) done.
-   See "Web Worker" below. Next under it: streaming results.
+   thread; live stats stream mid-query; **cancellation** (terminate+respawn) and
+   **streaming results** (progressive render) done. See "Web Worker" below.
 
 ### 1. Secondary indexes in the wasm build (the through-line)
 The reason we can't just recompile bbolt/bleve is mmap. Realistic path:
@@ -138,9 +138,21 @@ worker, reject the in-flight query (`run()` races the result against a cancel si
 a fresh worker, and re-mount the active dataset (`currentSource.reopen()` — the main thread
 retains the files/tree, so a cancel doesn't lose a dropped dataset). Cost: re-instantiate
 wasm + re-mount + rebuild indexes on respawn — acceptable since cancel is user-driven and
-rare. No engine change; browser-only (untestable in node). Next under the worker:
-**streaming results** (the engine is pull-based; yield rows incrementally instead of
-collecting).
+rare. No engine change; browser-only (untestable in node).
+
+**Streaming results (DONE).** The engine is pull-based, so instead of collecting the whole
+result set, `Session.OnRow` (new; mirrors `OnStats`) streams each row's canonical JSON as
+it's produced — `Result.Rows` stays nil, `Result.Count` still reports the total.
+`main_wasm.runQuery` batches rows (512/batch) to a `globalThis.n1k1EmitRows` hook; the worker
+forwards each batch as a `{type:"rows"}` message; `index.html` appends them to the table
+**progressively** (columns fixed from the first batch) while the query runs, with a live
+"Streaming… N rows" count. The final result message omits rows (the client already has them,
+accumulated for the JSON view). Without the hook (a direct call / tests) rows accumulate as
+before, so it's backward-compatible. Tested: `glue/session_stream_test.go` (OnRow streams,
+Rows nil, Count/parity correct) + `e2e.test.mjs` drives the full Go streaming path via the
+hook (rows arrive in batches, result omits them). The worker↔page transport is
+browser-verified. Caveat: columns come from the first batch — a later row with new keys shows
+only the common columns in the table (the JSON view has everything).
 
 ### 4. Live stats  (DONE)
 `Session.CollectStats` + `OnStats(*base.Stats)` fire per `engine.ScanYieldStatsEvery` rows

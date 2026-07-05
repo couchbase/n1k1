@@ -26,7 +26,8 @@ per-operator stats stream under the status line while a query runs (visible on
 larger datasets — a tiny query just shows the final line). A running query can be
 **cancelled** (the ■ Cancel button): since synchronous wasm can't be interrupted
 by a message, this terminates the worker and respawns a fresh one, re-mounting
-your current dataset.
+your current dataset. Results **stream** in — the table fills progressively as
+rows are produced rather than appearing all at once.
 
 The sample ships a `.n1k1/catalog.json` declaring secondary indexes on `beers`.
 The browser has no bbolt (it needs mmap), so these are **in-memory** indexes

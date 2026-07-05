@@ -88,6 +88,24 @@ if (!fs.existsSync(wasmPath)) {
     assert.equal(Object.keys(JSON.parse(globalThis.n1k1TakeIndexBlobs())).length, 0);
   });
 
+  test("streaming: n1k1EmitRows receives batches; result omits rows", () => {
+    // Register the row-emit hook (the worker does this) and verify the Go side
+    // streams rows to it instead of accumulating them in the result.
+    const collected = [];
+    globalThis.n1k1EmitRows = (batchJSON) => { for (const r of JSON.parse(batchJSON)) collected.push(r); };
+    try {
+      const r = JSON.parse(globalThis.n1k1RunQuery("SELECT b.name FROM beers b ORDER BY b.name"));
+      assert.ok(r.ok, r.error);
+      assert.equal(r.streamed, true, "should report streamed");
+      assert.ok(r.rows == null, "streamed result must not carry rows");
+      assert.equal(r.count, 10, "count reflects all rows");
+      assert.equal(collected.length, 10, "all rows arrived via n1k1EmitRows");
+      assert.ok(collected[0] && typeof collected[0].name === "string", JSON.stringify(collected[0]));
+    } finally {
+      delete globalThis.n1k1EmitRows; // don't affect other tests
+    }
+  });
+
   test("ingestion → mount → open → query (tar.gz)", async () => {
     const enc = new TextEncoder();
     const tarBlocks = [];

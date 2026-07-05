@@ -18,9 +18,14 @@
 // level up (web/), the JS helpers alongside.
 importScripts("../wasm_exec.js", "fs_mem.js", "ingest.js", "opfs.js", "../samples.js");
 
-// The engine calls this during a query; forward each snapshot to the UI.
+// The engine calls these during a query; forward to the UI thread. Stats are
+// throttled per-op counter snapshots; rows are JSON-array batches streamed as
+// they're produced (so the page renders progressively without holding them all).
 self.n1k1EmitStats = function (snapshotJSON) {
   self.postMessage({ type: "stats", snapshot: snapshotJSON });
+};
+self.n1k1EmitRows = function (batchJSON) {
+  self.postMessage({ type: "rows", batch: batchJSON });
 };
 
 // Mount the built-in sample, then boot the wasm (it opens /n1k1data at start).

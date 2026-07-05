@@ -334,29 +334,74 @@
     $("tableView").innerHTML = h + "</tbody></table>";
   }
 
+  // Progressive rendering: rows stream in as batches while the query runs, so
+  // we build the table incrementally instead of all at once. Columns are fixed
+  // from the first batch (later rows with new keys still show their common
+  // columns; the JSON view has everything).
+  let streamRender = null;
+  function startStreamRender() {
+    $("resultsBox").style.display = "";
+    $("tableView").innerHTML = "";
+    $("jsonView").textContent = "";
+    streamRender = { cols: null, allObjects: true, tbody: null, n: 0 };
+  }
+  function appendStreamRows(arr) {
+    const st = streamRender;
+    if (!st) return;
+    if (st.cols === null) {
+      let allObj = true; const cols = []; const seen = new Set();
+      for (const r of arr) {
+        if (r === null || typeof r !== "object" || Array.isArray(r)) { allObj = false; break; }
+        for (const k of Object.keys(r)) if (!seen.has(k)) { seen.add(k); cols.push(k); }
+      }
+      st.allObjects = allObj;
+      st.cols = allObj ? cols : ["value"];
+      let h = "<table><thead><tr>";
+      for (const c of st.cols) h += "<th>" + escapeHtml(c) + "</th>";
+      h += "</tr></thead><tbody></tbody></table>";
+      $("tableView").innerHTML = h;
+      st.tbody = $("tableView").querySelector("tbody");
+    }
+    let rowsHtml = "";
+    for (const r of arr) {
+      st.n++;
+      if (!st.allObjects) { rowsHtml += "<tr><td>" + cell(r) + "</td></tr>"; continue; }
+      rowsHtml += "<tr>";
+      for (const c of st.cols) {
+        const v = (r && typeof r === "object") ? r[c] : undefined;
+        rowsHtml += "<td" + (typeof v === "number" ? ' class="num"' : "") + ">" + cell(v) + "</td>";
+      }
+      rowsHtml += "</tr>";
+    }
+    if (st.tbody) st.tbody.insertAdjacentHTML("beforeend", rowsHtml);
+    setStatus('<span class="spin">Streaming&hellip; ' + st.n.toLocaleString() + " rows</span>");
+  }
+
   async function run() {
     const sql = sqlEl.value.trim();
     if (!sql || !ready) return;
     setStatus('<span class="spin">Running&hellip;</span>');
     clearStats();
     showCancel(true);
-    // The query runs in the worker; the UI thread stays free, so live per-op
-    // stats (onStats -> renderStats) paint while it executes. Race the result
-    // against a cancel signal -- cancelQuery terminates the worker (the only way
-    // to interrupt synchronous wasm) and rejects this, so run() unblocks.
+    startStreamRender();
+    // The query runs in the worker; the UI thread stays free, so rows (and live
+    // per-op stats) paint as they stream in. Race the result against a cancel
+    // signal -- cancelQuery terminates the worker (the only way to interrupt
+    // synchronous wasm) and rejects this, so run() unblocks.
     let cancelReject;
     const cancelled = new Promise((_, rej) => { cancelReject = rej; });
     inflight = { cancelReject };
     let m;
     try {
-      m = await Promise.race([engine.query(sql), cancelled]);
+      m = await Promise.race([engine.query(sql, appendStreamRows), cancelled]);
     } catch (e) {
+      streamRender = null;
       return; // cancelled; cancelQuery() owns the status/UI from here
     } finally {
       if (inflight && inflight.cancelReject === cancelReject) inflight = null;
       showCancel(false);
     }
-    if (!m || !m.ok) { setStatus('<span class="err">Engine error: ' + escapeHtml((m && m.error) || "worker") + "</span>"); return; }
+    if (!m || !m.ok) { setStatus('<span class="err">Engine error: ' + escapeHtml((m && m.error) || "worker") + "</span>"); streamRender = null; return; }
     const resp = m.result;
 
     $("resultsBox").style.display = "";
@@ -365,17 +410,23 @@
       $("resultMeta").textContent = "error";
       $("tableView").innerHTML = '<div class="empty">&mdash;</div>';
       $("jsonView").textContent = JSON.stringify(resp, null, 2);
+      streamRender = null;
       return;
     }
+    const rows = resp.rows || [];
+    // Rows streamed in incrementally already; just handle empties / the
+    // non-streaming fallback (a direct call without the emit hook).
+    if (!resp.streamed) renderTable(rows);
+    else if (!rows.length) $("tableView").innerHTML = '<div class="empty">No rows.</div>';
     const warn = resp.warnings && resp.warnings.length
       ? ' &middot; <span class="err">' + resp.warnings.length + " warning(s)</span>" : "";
     setStatus('<span class="ok">&#10003; ' + resp.count + " row" + (resp.count === 1 ? "" : "s") +
               "</span> in " + resp.elapsedMs.toFixed(2) + " ms" + warn);
     $("resultMeta").textContent = resp.count + " row" + (resp.count === 1 ? "" : "s") +
                                   " &middot; " + resp.elapsedMs.toFixed(2) + " ms";
-    renderTable(resp.rows);
-    $("jsonView").textContent = JSON.stringify(resp.rows, null, 2);
+    $("jsonView").textContent = JSON.stringify(rows, null, 2);
     renderStats(resp.stats, true); // final snapshot
+    streamRender = null;
   }
   runBtn.addEventListener("click", () => run());
   sqlEl.addEventListener("keydown", (e) => {
@@ -550,6 +601,7 @@
     const worker = new Worker("wasm/worker.js");
     let seq = 0;
     const pending = new Map();
+    let activeQuery = null; // { acc, onRows } for the single in-flight query
     let readyResolve, readyReject;
     const readyP = new Promise((res, rej) => { readyResolve = res; readyReject = rej; });
     worker.onmessage = (e) => {
@@ -557,11 +609,33 @@
       if (msg.type === "ready") { readyResolve(); return; }
       if (msg.type === "initError") { readyReject(new Error(msg.error)); return; }
       if (msg.type === "stats") { renderStats(msg.snapshot, false); return; }
+      if (msg.type === "rows") { // a streamed batch (JSON array string) of row values
+        if (!activeQuery) return;
+        let arr; try { arr = JSON.parse(msg.batch); } catch (err) { return; }
+        for (const r of arr) activeQuery.acc.push(r);
+        if (activeQuery.onRows) activeQuery.onRows(arr);
+        return;
+      }
       if (msg.id != null && pending.has(msg.id)) { const r = pending.get(msg.id); pending.delete(msg.id); r(msg); }
     };
     worker.onerror = (e) => readyReject(new Error(e.message || "worker failed to load"));
     const rpc = (op, args) => new Promise((resolve) => {
       const id = ++seq; pending.set(id, resolve); worker.postMessage({ id, op, args });
+    });
+    // Queries stream their rows as {type:"rows"} batches during execution; we
+    // collect them and (optionally) hand each batch to onRows for progressive
+    // render. The resolved result gets .rows = the accumulated batches, so
+    // callers see rows uniformly whether or not they render incrementally.
+    const query = (sql, onRows) => new Promise((resolve) => {
+      const id = ++seq;
+      const aq = { acc: [], onRows: onRows };
+      activeQuery = aq;
+      pending.set(id, (msg) => {
+        activeQuery = null;
+        if (msg.ok && msg.result && msg.result.streamed) msg.result.rows = aq.acc;
+        resolve(msg);
+      });
+      worker.postMessage({ id, op: "query", args: { sql } });
     });
     return {
       ready: readyP,
@@ -569,7 +643,7 @@
       openBuiltin: () => rpc("openBuiltin"),
       loadFiles: (files, mount) => rpc("loadFiles", { files, mount }),
       openTree: (mount, tree) => rpc("openTree", { mount, tree }),
-      query: (sql) => rpc("query", { sql }),
+      query: query,
     };
   }
   let engine = makeEngine();

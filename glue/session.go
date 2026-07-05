@@ -53,6 +53,15 @@ type Session struct {
 	// throttled view; don't do slow work). Its counters are monotonic and may show
 	// per-field skew mid-run -- fine for progress.
 	OnStats func(*base.Stats)
+
+	// OnRow, if set, is invoked with each result row's canonical JSON as it is
+	// produced, instead of accumulating into Result.Rows (which stays nil).
+	// Result.Count still reports the total. This is the streaming path: it lets a
+	// caller render/forward rows incrementally rather than waiting for -- and
+	// holding -- the whole result set (the WASM demo's Web Worker streams batches
+	// to the UI this way). It runs on the execution goroutine, so it must be fast
+	// and must not retain the passed slice (copy if kept).
+	OnRow func([]byte)
 }
 
 // OpenSession opens a file-datastore directory and prepares it for queries.
@@ -81,6 +90,7 @@ type Result struct {
 	Elapsed  time.Duration     // wall-clock of the ExecOp run
 	Plan     *base.Op          // the converted n1k1 op tree (for .explain / -v)
 	Stats    *base.Stats       // per-operator counters when CollectStats was on, else nil
+	Count    int               // number of result rows (len(Rows), or the streamed count when OnRow was set)
 
 	// BoxedEvals is the number of per-row expressions that fell back to the boxed
 	// cbq lane during execution (the GC-heavy Convert->Evaluate->WriteJSON path);
@@ -246,6 +256,7 @@ func (s *Session) Run(stmt string) (res *Result, err error) {
 	engine.ExecOpEx = DatastoreOp
 
 	var rows []json.RawMessage
+	var rowCount int
 	var execErr error
 
 	yieldVals := func(vals base.Vals) {
@@ -262,7 +273,12 @@ func (s *Session) Run(stmt string) (res *Result, err error) {
 		} else {
 			b = []byte("null")
 		}
-		rows = append(rows, json.RawMessage(b))
+		rowCount++
+		if s.OnRow != nil {
+			s.OnRow(b) // stream this row; don't accumulate (Result.Rows stays nil)
+		} else {
+			rows = append(rows, json.RawMessage(b))
+		}
 	}
 	yieldErr := func(e error) {
 		if e != nil && execErr == nil {
@@ -281,6 +297,7 @@ func (s *Session) Run(stmt string) (res *Result, err error) {
 	return &Result{
 		Labels:     conv.TopOp.Labels,
 		Rows:       rows,
+		Count:      rowCount,
 		Warnings:   gctx.GetErrors(),
 		Elapsed:    elapsed,
 		Plan:       conv.TopOp,
