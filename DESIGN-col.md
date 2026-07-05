@@ -241,11 +241,13 @@ copy, which defeats zero-copy). Options, best-fit first:
    pairs them.
    Recommended: (1) now (zero-copy, no `Agg` change), evolving into (3).
 
-### Selection-vector `WHERE` (Step 5.4)
+### Selection-vector `WHERE` (Step 5.4 — DONE)
 
-Today a `WHERE` forces the row path (the rewrite bails on the filter op between the
+A `WHERE` used to force the row path (the rewrite bailed on the filter op between the
 group and the scan). Vectorizing predicated aggregation introduces the **selection
-vector** — the primitive the whole vectorized model leans on.
+vector** — the primitive the whole vectorized model leans on. Now landed: a single
+field-vs-constant comparison fuses into the columnar-agg lane; anything else (AND/OR,
+field-vs-field, non-numeric, nullable predicate column) still takes the row path.
 
 - **Selection = a dense bitmap** (1 bit/row, LSB-first) — the *same layout as
   Arrow's validity bitmap*, so a null lane and an unselected lane combine by a plain
@@ -275,10 +277,20 @@ so wasm-untested here. `bits-and-blooms/bitset` is pure-Go/wasm-safe but an
 unnecessary dep for ~20 lines; and our bitmap must be byte-compatible with Arrow's
 validity anyway (to AND them), so bespoke is the natural fit.
 
-Build order: **5.4a** dense bitmap + masked reduce kernels (base; shared with the
-null path) → **5.4b** compare kernels (predicate → selection) + AND/OR → **5.4c**
-the fused scan→filter→agg op + rewrite (constant extraction from the cbq filter) +
-end-to-end differential test.
+Build order (all landed): **5.4a** dense bitmap + masked reduce kernels
+(`base/agg_masked.go`; shared with the null path) → **5.4b** compare kernels
+(`base/select.go`: `SelectFloat64/Int64` predicate→selection, `AndBitmap`/`OrBitmap`)
+→ **5.4c** the fused scan→filter→agg op + rewrite (`extractColPredicate` pulls
+(field, op, const) from the cbq filter; cbq normalizes `>`/`>=` to `LT`/`LE` with
+swapped operands, so only `LT`/`LE`/`Eq` are matched, reading operand order for
+direction). Differential-tested: 9 WHERE variants (all 6 ops × both column types,
+flipped operands, count+filter routing to columnar not metadata, multi-agg) each fire
+the fused lane and match the row path bit-exactly; 4 bail cases stay on the row path.
+
+Deferred to later: AND/OR of comparisons (the byte-wise `AndBitmap`/`OrBitmap` exist,
+but the rewrite doesn't yet decompose a conjunction into per-clause masks); nullable
+predicate columns (needs validity threaded to AND with the selection — the § Beyond
+null_count==0 companion-slot work); non-fixed-width predicate columns.
 
 -------------------------------------------------------
 ## Key design decisions (settled)

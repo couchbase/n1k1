@@ -445,10 +445,24 @@ func TestParquetSumVectorizedDifferential(t *testing.T) {
 		{"multi-agg", `SELECT SUM(price) AS sp, SUM(id) AS si FROM sales3`, true},
 		{"mixed-agg", `SELECT SUM(price) AS s, COUNT(price) AS c, AVG(price) AS a FROM sales3`, true},
 		{"aliased", `SELECT SUM(o.price) AS s FROM sales3 AS o`, true},
-		{"with-where", `SELECT SUM(price) AS s FROM sales3 WHERE price > 10`, false}, // filter → row path (5.4)
-		{"count-star", `SELECT COUNT(*) AS c FROM sales3`, false},                    // not SUM
-		{"sum-string", `SELECT SUM(f0) AS s FROM sales3`, false},                     // non-numeric column
-		{"grouped", `SELECT f0, SUM(price) AS s FROM sales3 GROUP BY f0`, false},     // has GROUP BY
+		// 5.4c: single-comparison WHERE fuses into the columnar-agg lane.
+		{"where-gt-float", `SELECT SUM(price) AS s FROM sales3 WHERE price > 10`, true},
+		{"where-ge-float", `SELECT SUM(price) AS s FROM sales3 WHERE price >= 10`, true},
+		{"where-lt-float", `SELECT SUM(price) AS s FROM sales3 WHERE price < 50`, true},
+		{"where-le-int", `SELECT SUM(price) AS s FROM sales3 WHERE id <= 15`, true},
+		{"where-gt-int", `SELECT AVG(price) AS a FROM sales3 WHERE id > 20`, true},
+		{"where-eq-int", `SELECT SUM(price) AS s FROM sales3 WHERE id = 5`, true},
+		{"where-const-first", `SELECT SUM(price) AS s FROM sales3 WHERE 10 < price`, true}, // flipped operand order
+		{"where-count", `SELECT COUNT(price) AS c FROM sales3 WHERE price > 10`, true},     // count+filter → columnar, not metadata
+		{"where-multi", `SELECT SUM(price) AS sp, COUNT(id) AS c FROM sales3 WHERE price > 10`, true},
+		// Bails to the row path: predicate not a single numeric field-vs-const compare.
+		{"where-noninteger-int", `SELECT SUM(price) AS s FROM sales3 WHERE id > 10.5`, false}, // non-int const vs int col
+		{"where-field-field", `SELECT SUM(price) AS s FROM sales3 WHERE price > id`, false},   // field vs field
+		{"where-and", `SELECT SUM(price) AS s FROM sales3 WHERE price > 10 AND id < 20`, false}, // conjunction
+		{"where-string", `SELECT SUM(price) AS s FROM sales3 WHERE f0 = "x"`, false},           // non-numeric predicate col
+		{"count-star", `SELECT COUNT(*) AS c FROM sales3`, false},                              // not SUM
+		{"sum-string", `SELECT SUM(f0) AS s FROM sales3`, false},                               // non-numeric column
+		{"grouped", `SELECT f0, SUM(price) AS s FROM sales3 GROUP BY f0`, false},               // has GROUP BY
 	}
 
 	for _, q := range queries {

@@ -21,6 +21,14 @@ package glue
 // qualify keeps the ordinary row path. Correctness bound: results must match the
 // row lane (TestParquetSumVectorizedDifferential), and the pass is conservative --
 // it only fires when it can prove a numeric, non-null column of a records scan.
+//
+// Step 5.4c fuses a single-comparison WHERE into that path: `SELECT SUM(x) FROM data
+// WHERE y > c` matches group->filter->scan, extracts (field, op, const) from the
+// filter's cbq predicate, and per batch evaluates the selection kernel (base.Select*)
+// into a dense bitmap, then folds via the masked reducers (base.SumMasked* etc.).
+// The predicate column must be numeric + non-null (SelectFloat64/Int64 don't consult
+// validity); any predicate we can't prove numeric-single-comparison stays on the row
+// path. cbq normalizes >/>= to LT/LE with swapped operands, so we match only LT/LE/Eq.
 
 import (
 	"encoding/binary"
@@ -30,6 +38,7 @@ import (
 	"sync/atomic"
 
 	"github.com/couchbase/query/expression"
+	"github.com/couchbase/query/value"
 
 	"github.com/couchbase/n1k1/base"
 	"github.com/couchbase/n1k1/records"
@@ -67,13 +76,26 @@ func maybeVectorizeGroup(op *base.Op, temps []interface{}) {
 	if groups, ok := op.Params[0].([]interface{}); !ok || len(groups) != 0 {
 		return
 	}
-	// Child must be a records scan directly (no intervening filter/WHERE -- that
-	// needs selection vectors, a later step).
-	if len(op.Children) != 1 || op.Children[0].Kind != "datastore-scan-records" {
+	// Child is either the records scan directly, or a single-comparison WHERE
+	// filter over it (5.4c). A filter we can't reduce to (field, op, const) keeps
+	// the row path -- we must NOT silently drop it.
+	if len(op.Children) != 1 {
 		return
 	}
 	scan := op.Children[0]
-	if len(scan.Params) == 0 {
+	var pred *colPredicate
+	if scan.Kind == "filter" {
+		if len(scan.Children) != 1 || scan.Children[0].Kind != "datastore-scan-records" {
+			return
+		}
+		p, ok := extractColPredicate(scan)
+		if !ok {
+			return
+		}
+		pred = &p
+		scan = scan.Children[0]
+	}
+	if scan.Kind != "datastore-scan-records" || len(scan.Params) == 0 {
 		return
 	}
 	scanTemp, ok := scan.Params[0].(int)
@@ -100,23 +122,139 @@ func maybeVectorizeGroup(op *base.Op, temps []interface{}) {
 		colByName[c.Name] = c
 	}
 
+	// A predicate's column must be numeric + non-null (the selection kernels don't
+	// consult validity), and an INT64 column requires an integer constant so the
+	// int64 kernel is exact. Otherwise keep the row path.
+	if pred != nil {
+		cm, ok := colByName[pred.field]
+		if !ok || cm.NullCount != 0 {
+			return
+		}
+		switch cm.Type {
+		case "DOUBLE":
+			pred.colType = "DOUBLE"
+		case "INT64":
+			if pred.c != math.Trunc(pred.c) || math.IsInf(pred.c, 0) {
+				return // non-integer constant vs int column -- row path
+			}
+			pred.colType = "INT64"
+		default:
+			return
+		}
+	}
+
 	// Rewrite in place: the group op BECOMES a fused op. Its Labels (the
 	// "^aggregates|..." ones) are kept verbatim so the downstream project reads
 	// results identically; the scan child is absorbed (the op opens the source
-	// itself via scanTemp). Prefer metadata-agg (zero scan) over columnar-agg
-	// (scan kernels); fall through to the row path if neither applies.
-	if specs, ok := metadataAggSpecs(aggExprs, aggCalcs, colByName); ok {
-		op.Kind = "metadata-agg"
-		op.Params = []interface{}{scanTemp, specs}
-		op.Children = nil
-		return
+	// itself via scanTemp). metadata-agg (zero scan) only applies unfiltered;
+	// otherwise columnar-agg carries the optional predicate. Fall through to the
+	// row path if neither applies.
+	if pred == nil {
+		if specs, ok := metadataAggSpecs(aggExprs, aggCalcs, colByName); ok {
+			op.Kind = "metadata-agg"
+			op.Params = []interface{}{scanTemp, specs}
+			op.Children = nil
+			return
+		}
 	}
 	if specs, ok := columnarAggSpecs(aggExprs, aggCalcs, colByName); ok {
 		op.Kind = "columnar-agg"
-		op.Params = []interface{}{scanTemp, specs}
+		op.Params = []interface{}{scanTemp, specs, predSpec(pred)}
 		op.Children = nil
 		return
 	}
+}
+
+// colPredicate is a single vectorizable comparison `field <op> c`.
+type colPredicate struct {
+	field   string
+	op      base.CmpOp
+	c       float64
+	colType string // "DOUBLE" | "INT64", filled once the column is resolved
+}
+
+// predSpec flattens a predicate to plain interface{} for op.Params, or nil.
+func predSpec(p *colPredicate) interface{} {
+	if p == nil {
+		return nil
+	}
+	return []interface{}{p.field, int(p.op), p.c, p.colType}
+}
+
+// extractColPredicate reduces a `filter` op's cbq condition to a single numeric
+// comparison of a bare keyspace field against a constant. cbq rewrites >/>= to
+// LT/LE with swapped operands, so we handle LT/LE/Eq and read operand order to get
+// the effective op. Anything else (AND/OR, field-to-field, non-numeric) -> false.
+func extractColPredicate(filter *base.Op) (colPredicate, bool) {
+	if len(filter.Params) != 2 {
+		return colPredicate{}, false
+	}
+	cond, ok := filter.Params[1].(expression.Expression)
+	if !ok {
+		return colPredicate{}, false
+	}
+	var a, b expression.Expression
+	var lt, le bool // else Eq
+	switch e := cond.(type) {
+	case *expression.LT:
+		a, b, lt = e.First(), e.Second(), true
+	case *expression.LE:
+		a, b, le = e.First(), e.Second(), true
+	case *expression.Eq:
+		a, b = e.First(), e.Second()
+	default:
+		return colPredicate{}, false
+	}
+
+	// Orient: exactly one side a bare field, the other a numeric constant.
+	field, fieldFirst, c, ok := orientComparison(a, b)
+	if !ok {
+		return colPredicate{}, false
+	}
+	var op base.CmpOp
+	switch {
+	case lt && fieldFirst:
+		op = base.CmpLT // field < c
+	case lt && !fieldFirst:
+		op = base.CmpGT // c < field  ==>  field > c
+	case le && fieldFirst:
+		op = base.CmpLE
+	case le && !fieldFirst:
+		op = base.CmpGE
+	default:
+		op = base.CmpEQ
+	}
+	return colPredicate{field: field, op: op, c: c}, true
+}
+
+// orientComparison returns (field, fieldIsFirst, const) when one operand is a bare
+// keyspace field and the other a numeric constant.
+func orientComparison(a, b expression.Expression) (string, bool, float64, bool) {
+	if field, ok := bareFieldOfExpr(a); ok {
+		if c, ok := numericConst(b); ok {
+			return field, true, c, true
+		}
+	}
+	if field, ok := bareFieldOfExpr(b); ok {
+		if c, ok := numericConst(a); ok {
+			return field, false, c, true
+		}
+	}
+	return "", false, 0, false
+}
+
+// numericConst returns the float64 value of a numeric *expression.Constant.
+func numericConst(e expression.Expression) (float64, bool) {
+	c, ok := e.(*expression.Constant)
+	if !ok {
+		return 0, false
+	}
+	v := c.Value()
+	if v == nil || v.Type() != value.NUMBER {
+		return 0, false
+	}
+	f, ok := v.Actual().(float64)
+	return f, ok
 }
 
 // metadataAggSpecs returns per-agg specs when EVERY aggregate can be answered from
@@ -217,6 +355,12 @@ func bareAggField(aggExpr interface{}) (string, bool) {
 	if !ok {
 		return "", false
 	}
+	return bareFieldOfExpr(expr)
+}
+
+// bareFieldOfExpr returns the field name if expr is a plain top-level field of a
+// keyspace identifier (`x` / `alias.x`, not `a.b`, `x+y`, or a dynamic step).
+func bareFieldOfExpr(expr expression.Expression) (string, bool) {
 	f, ok := expr.(*expression.Field)
 	if !ok {
 		return "", false
@@ -312,22 +456,41 @@ func DatastoreColumnarAgg(o *base.Op, vars *base.Vars,
 
 	specs := o.Params[1].([]interface{})
 	aggs := make([]*base.Agg, len(specs))
+	keys := make([]string, len(specs)) // catalog key per agg, for masked dispatch
 	// Project the DISTINCT agg fields (several aggs may share one, e.g.
 	// SUM(x),COUNT(x),AVG(x)); aggCol[i] maps agg i to its column in each batch.
 	pos := map[string]int{}
 	var proj []string
 	aggCol := make([]int, len(specs))
-	for i, sp := range specs {
-		s := sp.([]interface{})
-		aggs[i] = base.Aggs[base.AggCatalog[s[0].(string)]]
-		field := s[1].(string)
+	addCol := func(field string) int {
 		p, seen := pos[field]
 		if !seen {
 			p = len(proj)
 			pos[field] = p
 			proj = append(proj, field)
 		}
-		aggCol[i] = p
+		return p
+	}
+	for i, sp := range specs {
+		s := sp.([]interface{})
+		keys[i] = s[0].(string)
+		aggs[i] = base.Aggs[base.AggCatalog[keys[i]]]
+		aggCol[i] = addCol(s[1].(string))
+	}
+
+	// Optional WHERE predicate (5.4c): also project its column and evaluate it into
+	// a per-batch selection bitmap that gates the masked reducers.
+	var pred *colPredicate
+	predCol := -1
+	if len(o.Params) > 2 && o.Params[2] != nil {
+		ps := o.Params[2].([]interface{})
+		pred = &colPredicate{
+			field:   ps[0].(string),
+			op:      base.CmpOp(ps[1].(int)),
+			c:       ps[2].(float64),
+			colType: ps[3].(string),
+		}
+		predCol = addCol(pred.field)
 	}
 
 	cp, ok := src.(records.ColumnsProjector)
@@ -350,8 +513,9 @@ func DatastoreColumnarAgg(o *base.Op, vars *base.Vars,
 		accs[i] = aggs[i].Init(vars, nil)
 	}
 
+	var mask []byte // reused across batches when a predicate is present
 	for {
-		cols, _, ok, err := cbs.NextColumns()
+		cols, rows, ok, err := cbs.NextColumns()
 		if err != nil {
 			yieldErr(fmt.Errorf("DatastoreColumnarAgg, next: %v", err))
 			return
@@ -363,8 +527,26 @@ func DatastoreColumnarAgg(o *base.Op, vars *base.Vars,
 			yieldErr(fmt.Errorf("DatastoreColumnarAgg: got %d columns, want %d", len(cols), len(proj)))
 			return
 		}
+		if pred == nil {
+			for i := range aggs {
+				accs[i], _, _ = aggs[i].Update(vars, base.Val(cols[aggCol[i]]), nil, accs[i], nil)
+			}
+			continue
+		}
+		// Filtered: predicate column -> selection bitmap -> masked reduce.
+		if nb := (rows + 7) / 8; cap(mask) < nb {
+			mask = make([]byte, nb)
+		} else {
+			mask = mask[:nb]
+		}
+		switch pred.colType {
+		case "DOUBLE":
+			base.SelectFloat64(mask, cols[predCol], rows, pred.op, pred.c)
+		case "INT64":
+			base.SelectInt64(mask, cols[predCol], rows, pred.op, int64(pred.c))
+		}
 		for i := range aggs {
-			accs[i], _, _ = aggs[i].Update(vars, base.Val(cols[aggCol[i]]), nil, accs[i], nil)
+			applyMaskedAgg(keys[i], accs[i], cols[aggCol[i]], mask, rows)
 		}
 	}
 
@@ -379,6 +561,25 @@ func DatastoreColumnarAgg(o *base.Op, vars *base.Vars,
 	yieldVals(out)
 
 	yieldErr(nil)
+}
+
+// applyMaskedAgg folds the set lanes of a column (per the selection bitmap) into
+// acc, dispatched by the same catalog key columnarAggSpecs assigned -- so the
+// filtered path reuses the exact accumulators (and thus Result formatting) as the
+// unfiltered vectorized path. count_v ignores the column (counts set bits).
+func applyMaskedAgg(key string, acc, col, mask []byte, n int) {
+	switch key {
+	case "sum_v_float64":
+		base.SumMaskedFloat64(acc, col, mask, n)
+	case "sum_v_int64":
+		base.SumMaskedInt64(acc, col, mask, n)
+	case "count_v":
+		base.CountMasked(acc, mask, n)
+	case "avg_v_float64":
+		base.AvgMaskedFloat64(acc, col, mask, n)
+	case "avg_v_int64":
+		base.AvgMaskedInt64(acc, col, mask, n)
+	}
 }
 
 // DatastoreMetadataAgg answers COUNT/MIN/MAX from the keyspace's footer statistics
