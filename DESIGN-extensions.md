@@ -383,6 +383,85 @@ is the ergonomic default; `emit_batch([rows])` (or an iterator of chunks) is the
 performance variant, and it lines up with n1k1's existing batched staging rather
 than fighting it.
 
+### What the JS actually looks like (worked example)
+
+Concretely, contrast the three ways to author the same table-valued source — a
+generator of `n` rows `{i, sq}`. Only the first works today; the other two are the
+proposed streaming protocol.
+
+**(a) Materializing — works today.** A plain scalar UDF that `return`s an array;
+`FROM gen(n)` streams its elements via the existing `expr-scan`/`ArrayYield` path.
+Simple, but the whole array is built (and JSON-marshaled) before any row flows, so
+`gen(1000000)` allocates a million-element array even under a `LIMIT 5`.
+
+```js
+// gen.js  — returns the whole array (materializes)
+function gen(n) {
+  var rows = [];
+  for (var i = 1; i <= n; i++) rows.push({ i: i, sq: i * i });
+  return rows;
+}
+```
+
+**(b) Streaming, one row at a time — the `emit` protocol.** The host passes an
+`emit(row)` callback as the FIRST argument; the function pushes rows as it makes
+them and never builds an array. `emit` returns `false` when the consumer wants no
+more (e.g. a `LIMIT` upstream is satisfied), so the loop can stop early — the
+million-row call below yields exactly 5 rows and then returns.
+
+```js
+// gen_stream.js  — emits one row at a time, with backpressure
+function gen_stream(emit, n) {
+  for (var i = 1; i <= n; i++) {
+    if (!emit({ i: i, sq: i * i })) return;   // consumer is done (e.g. LIMIT hit)
+  }
+}
+```
+
+The idiomatic ES equivalent is a **generator** — the host drives `.next()` and
+stops iterating when downstream is full, so backpressure needs no explicit check:
+
+```js
+// gen_gen.js  — a JS generator; the host pulls values and stops when full
+function* gen_gen(n) {
+  for (var i = 1; i <= n; i++) yield { i: i, sq: i * i };
+}
+```
+
+**(c) Streaming in batches — amortize the JS↔Go boundary.** For hot sources,
+`emit` a chunk of rows per call (or `yield` arrays from the generator); the host
+hands each chunk straight to the Stage exchange as one `[]base.Vals`. Fewer
+boundary crossings, same backpressure (stop when a chunk's `emit` returns
+`false`).
+
+```js
+// gen_batch.js  — emits rows in chunks of BATCH
+function gen_batch(emit, n) {
+  var BATCH = 256, chunk = [];
+  for (var i = 1; i <= n; i++) {
+    chunk.push({ i: i, sq: i * i });
+    if (chunk.length === BATCH) { if (!emit(chunk)) return; chunk = []; }
+  }
+  if (chunk.length) emit(chunk);
+}
+```
+
+All three are used identically in SQL — the converter routes a streaming source
+(one that takes `emit` / returns an iterator) to the streaming source op, and a
+plain array-returner to `expr-scan`:
+
+```sql
+SELECT x.i, x.sq
+FROM gen_stream(1000000) AS x     -- never materializes a 1e6 array...
+WHERE x.sq > 10
+LIMIT 5                            -- ...LIMIT stops the JS loop after ~5 rows
+```
+
+(How `emit`/host iteration bridges to the op's `func(base.Vals) bool` yield and
+propagates the boolean back into JS is the runtime side above; a real I/O source —
+`shred_lines(path)` over `read_lines(path)` — is the same shape with a host-
+provided lazy iterator instead of a counter.)
+
 ### Advanced: can JS participate in n1k1's reusable-slice discipline?
 
 n1k1's zero-garbage design reuses byte buffers (`varLift`, `[]byte` recycled per
