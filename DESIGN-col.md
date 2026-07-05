@@ -190,6 +190,35 @@ can only project the typed column loop once you know the column types. See
 Appendix C for the LMS/LegoBase lineage.
 
 -------------------------------------------------------
+### Beyond `null_count == 0`: null handling & footer-stat shortcuts
+
+v1 gates on `null_count == 0`. Lifting that — and going faster still — draws on the
+footer stats the rewrite already reads (`ColumnMeta.{Min,Max,NullCount}` + the file
+row count). A menu, fastest first:
+
+- **Aggregates from stats — *zero scan*.** `COUNT(*)` = `num_rows`; `COUNT(x)` =
+  `num_rows − null_count` (correct for *any* null_count → supersedes `count_v`,
+  reads no data pages); `MIN(x)`/`MAX(x)` = the footer min/max. Multi-file
+  aggregates associatively (Σ counts, min-of-mins, max-of-maxs). A `metadata-agg`
+  op the rewrite emits when every agg is COUNT/MIN/MAX (mixed with SUM/AVG → scan,
+  or a hybrid). Caveats: stats may be absent → fall back; **float MIN/MAX has a
+  NaN/signed-zero subtlety** (Parquet excludes NaN by convention, which matches our
+  transpose's NaN→null but is writer-dependent) → COUNT and integer MIN/MAX are safe
+  first, float MIN/MAX gated. The purest "operate on metadata, not data"
+  (Appendix C).
+- **Sentinel-for-null (materialization-time), for SUM/AVG.** A borrowed Arrow buffer
+  keeps nulls in a *separate* validity bitmap (null slots hold undefined bytes), so
+  a branchless reduction can't read them directly. But when we materialize our own
+  fixed-width column, fill null positions with the reduction's identity /
+  out-of-range sentinel — SUM→0, MIN→(> max), MAX→(< min), the sentinel taken from
+  the footer min/max (so the two shortcuts compose). The hot loop stays branch-free:
+  the "pad with identity" tail-trick (Appendix B) applied to nulls, moving null
+  handling to a one-time bitmap pass instead of a per-element check.
+- **Masked kernel (validity bitmap) — the general case.** For SUM/AVG over a borrowed
+  buffer we can't rewrite, read the validity bitmap and skip null lanes — the same
+  masking AVX-512/SVE use for the tail. Always applicable, slower than the two above.
+
+-------------------------------------------------------
 ## Key design decisions (settled)
 
 - **Columnar source = optional sidecar interfaces**, not a widened `Source` (the
