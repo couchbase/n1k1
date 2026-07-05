@@ -638,6 +638,90 @@ forces the next.
   landing the columnar batch value even where no SIMD kernel ever ships.
 
 -------------------------------------------------------
+## The critical questions this doc has been dodging
+
+Everything above asks *how* to do columnar. The harder questions are *whether* and
+*how much*, and they're about **workload fit**, not mechanism. These gate the
+whole effort:
+
+1. **Does columnar even match n1k1's workload?** n1k1 runs inside couchbase/query
+   over **schemaless, nested, heterogeneous JSON**, frequently accessed
+   *selectively* (index-driven, point lookups, small results, `LIMIT`).
+   Columnar/SIMD win on the **opposite** profile: large low-selectivity scans,
+   flat uniformly-typed columns, aggregation over millions of rows. This is *the*
+   question; everything else is downstream of it. If selective/nested/point
+   queries dominate, columnar is a solution seeking a problem — unless there's a
+   real analytical-scan segment (Parquet lakes, big GROUP BY) to aim at.
+2. **Break-even vs. the existing row engine.** The row engine is already
+   push-based, compiled, and garbage-free — *not* a slow baseline. Columnar's
+   fixed setup (build/transpose batches) loses on small/selective/early-`LIMIT`
+   plans. Need a measured crossover and a rule for when the compiler even picks
+   the column lane.
+3. **How much of a real plan can stay in-lane?** Only a sliver of SQL++'s function
+   surface (`DESIGN-exprs.md`) vectorizes; every other op forces an
+   **explode-to-rows** (and re-transpose to resume). If real plans transition
+   lanes several times, transpose overhead can eat the kernel win. Measure the
+   vectorizable fraction of real plans and the per-transition cost.
+4. **The schema-flexibility tax — mixed-type columns.** A JSON "column" may hold
+   int64 *and* string *and* missing across documents; fixed-width needs one type.
+   Policy? Fall back entirely to JSON-array encoding, or typed-majority + an
+   exception list? How common is a *cleanly* typed column in real Couchbase data?
+   (Parquet sources are pre-typed and sidestep this — another vote for
+   source-first.)
+5. **Spilling & concurrency.** n1k1 spills hash-join/group-by/order-by to disk
+   (rhmap/store) and hands row batches across actor goroutines with deep-copy (the
+   `-race` history). How do column batches + borrowed Arrow buffers survive spill
+   and cross-actor handoff without breaking the borrow contract?
+6. **Who builds the first column batch?** Without a columnar *source*, columns
+   must be synthesized by transposing row JSON — a cost that may never repay. The
+   win is only "free" when the bytes arrive columnar (Parquet/Arrow). Strongly
+   implies **source-first, not engine-first.**
+7. **Dual-lane maintenance appetite.** Every vectorized op doubles the code under
+   test and needs differential testing forever. A standing tax that should be a
+   deliberate choice, not drift.
+
+-------------------------------------------------------
+## Proposed approach — evidence-gated, source-first, kill-early
+
+Given the above, do *not* start by building columnar ops. Sequence to buy the most
+information for the least code, and abandon early if the numbers aren't there.
+(This refines the earlier § *Pathway proposal* with a strategy for *whether* to
+walk it.)
+
+- **Step 1 — Characterize the workload (no code).** Answer Q1: is there a real
+  analytical-scan / Parquet-lake / big-aggregation segment for n1k1? If not, scope
+  columnar to just "*query* Parquet at all" (correctness via transpose) and skip
+  vectorization entirely.
+- **Step 2 — Spike the ceiling (throwaway, ~1–2 days).** Bound the upside:
+  micro-benchmark SUM and a predicate-filter over ~1M values, comparing (a)
+  today's row-JSON path, (b) a hand-built fixed-width `[]byte` column + scalar Go,
+  (c) + SIMD via `avo` — on **both amd64 and arm64**. If best-case isn't ≥3–5×,
+  the *realistic* win (after transpose/explode overhead) won't justify a dual-lane
+  engine. Stop here.
+- **Step 3 — Ship a columnar *source*, transpose-to-rows (real feature, no engine
+  change).** Wire a pure-Go Parquet/Arrow `RecordSource` yielding borrowed column
+  buffers, initially transposed to JSON rows (the `DESIGN-data.md` correctness
+  path). Delivers "query Parquet at all" — user value independent of
+  vectorization — and creates the substrate.
+- **Step 4 — Widen the `Source` interface (the missing wire).** Add the projection
+  input + `Schema()`/`ColumnStats()` output (§ *Pushdown*). Source now reads only
+  wanted columns and declares type + `null_count`; still row-transposed
+  downstream, but pushdown cuts I/O and populates the label markers.
+- **Step 5 — First true vectorized op, compile-time-only.** Aggregation over a
+  proven-typed, non-null column straight from Parquet — end-to-end, no transpose.
+  Introduce column batches + the `@col` markers (§ *Marking a slot*) here.
+  Differential-test against the row lane from line one. Measure on real data.
+- **Step 6 — Expand only on measured wins.** Selection vectors for filter, more
+  aggregates, dictionary encoding for GROUP BY — each gated on a benchmark that
+  beats row-at-a-time on a real workload.
+- **Step 7 — SIMD last, amd64-only, scalar fallback mandatory** (which is also the
+  arm64/WASM path and the tail/remainder loop).
+
+The throughline: **the row engine is already good and the dual-lane cost is real,
+so prove the ceiling *and* the workload fit before committing — and let columnar
+bytes enter from a columnar source rather than synthesizing them from rows.**
+
+-------------------------------------------------------
 ## One-line summary
 
 The user's instinct is right: **`[]byte` is axis-agnostic, so a `Val` can encode
