@@ -363,6 +363,11 @@ func TestParquetProjectionDifferential(t *testing.T) {
 		{"project-order", `SELECT id, price FROM sales2 ORDER BY id`, true},
 		{"filter-agg", `SELECT COUNT(*) AS c, SUM(price) AS s FROM sales2 WHERE price > 3`, true},
 		{"one-field", `SELECT f0 FROM sales2 ORDER BY id`, true},
+		// Aliased keyspace: cbq's formalizer rewrites field refs to the alias, and
+		// EarlyProjection resolves them to bare column names -- so projection still
+		// fires correctly (the alias never reaches the source).
+		{"alias-explicit", `SELECT o.price FROM sales2 AS o ORDER BY o.id`, true},
+		{"alias-where", `SELECT id, price FROM sales2 s WHERE s.price > 3 ORDER BY s.id`, true},
 		// A field set IS pushed (the planner names it), but the Parquet source finds
 		// no such column and harmlessly falls back to read-all -- so the request
 		// still "fires" at the source. Correctness is proven by the ON==OFF compare.
