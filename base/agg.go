@@ -275,34 +275,37 @@ var AggSum = &Agg{
 
 var AggSumVFloat64 = &Agg{
 	Init:   AggSum.Init,
-	Update: aggSumVUpdate(false),
+	Update: aggSumVFloat64Update,
 	Result: AggSum.Result,
 }
 
 var AggSumVInt64 = &Agg{
 	Init:   AggSum.Init,
-	Update: aggSumVUpdate(true),
+	Update: aggSumVInt64Update,
 	Result: AggSum.Result,
 }
 
-func aggSumVUpdate(asInt bool) func(*Vars, Val, []byte, []byte, *ValComparer) (
+// Two dedicated, branchless loops rather than one loop with a per-element type
+// switch -- these are the hot kernels, and the type is fixed for the whole call.
+
+func aggSumVFloat64Update(vars *Vars, v Val, aggNew, agg []byte, vc *ValComparer) (
 	[]byte, []byte, bool) {
-	return func(vars *Vars, v Val, aggNew, agg []byte, vc *ValComparer) (
-		[]byte, []byte, bool) {
-		s := math.Float64frombits(binary.LittleEndian.Uint64(agg[:8]))
-
-		n := len(v) / 8
-		for i := 0; i < n; i++ {
-			bits := binary.LittleEndian.Uint64(v[i*8:])
-			if asInt {
-				s += float64(int64(bits))
-			} else {
-				s += math.Float64frombits(bits)
-			}
-		}
-
-		return BinaryAppendUint64(aggNew, math.Float64bits(s)), agg[8:], n > 0
+	s := math.Float64frombits(binary.LittleEndian.Uint64(agg[:8]))
+	n := len(v) / 8
+	for i := 0; i < n; i++ {
+		s += math.Float64frombits(binary.LittleEndian.Uint64(v[i*8:]))
 	}
+	return BinaryAppendUint64(aggNew, math.Float64bits(s)), agg[8:], n > 0
+}
+
+func aggSumVInt64Update(vars *Vars, v Val, aggNew, agg []byte, vc *ValComparer) (
+	[]byte, []byte, bool) {
+	s := math.Float64frombits(binary.LittleEndian.Uint64(agg[:8]))
+	n := len(v) / 8
+	for i := 0; i < n; i++ {
+		s += float64(int64(binary.LittleEndian.Uint64(v[i*8:])))
+	}
+	return BinaryAppendUint64(aggNew, math.Float64bits(s)), agg[8:], n > 0
 }
 
 // -----------------------------------------------------
