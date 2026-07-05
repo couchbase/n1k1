@@ -207,11 +207,11 @@ func (s *parquetSource) Next(rec *Record) (bool, error) {
 // batch (valid until the next NextColumns/Close). The vectorized aggregates
 // consume these directly -- no transpose, no JSON. Only fixed-width 8-byte numeric
 // columns are supported for now; anything else errors (caller falls back to rows).
-func (s *parquetSource) NextColumns() (cols [][]byte, rows int, ok bool, err error) {
+func (s *parquetSource) NextColumns() (cols, valids [][]byte, rows int, ok bool, err error) {
 	if s.rr == nil {
 		rr, e := s.pr.GetRecordReader(context.Background(), s.proj, nil)
 		if e != nil {
-			return nil, 0, false, e
+			return nil, nil, 0, false, e
 		}
 		s.rr = rr
 	}
@@ -221,21 +221,22 @@ func (s *parquetSource) NextColumns() (cols [][]byte, rows int, ok bool, err err
 	}
 	batch, e := s.rr.Read()
 	if e == io.EOF {
-		return nil, 0, false, nil
+		return nil, nil, 0, false, nil
 	}
 	if e != nil {
-		return nil, 0, false, e
+		return nil, nil, 0, false, e
 	}
 	s.curBatch = batch
 	rows = int(batch.NumRows())
 	for _, c := range batch.Columns() {
 		b, e := arrowValueBytes(c)
 		if e != nil {
-			return nil, 0, false, e
+			return nil, nil, 0, false, e
 		}
 		cols = append(cols, b)
+		valids = append(valids, arrowValidityBytes(c))
 	}
-	return cols, rows, true, nil
+	return cols, valids, rows, true, nil
 }
 
 // arrowValueBytes returns the raw little-endian value buffer of a fixed-width
@@ -251,6 +252,32 @@ func arrowValueBytes(a arrow.Array) ([]byte, error) {
 	default:
 		return nil, fmt.Errorf("records: column type %s is not a fixed 8-byte numeric column", a.DataType())
 	}
+}
+
+// arrowValidityBytes returns the column's validity bitmap normalized to bit 0 ==
+// row 0 (LSB-first, 1 == valid) -- the exact layout base's masked/selection kernels
+// expect, so it doubles as a selection mask (include the non-null lanes). Returns
+// nil when the column has no nulls (all lanes valid; caller uses the unmasked path).
+// A byte-aligned array offset borrows the buffer directly; the rare unaligned offset
+// is copied bit-by-bit into a fresh, aligned bitmap.
+func arrowValidityBytes(a arrow.Array) []byte {
+	data := a.Data()
+	bufs := data.Buffers()
+	if len(bufs) == 0 || bufs[0] == nil || a.NullN() == 0 {
+		return nil
+	}
+	raw := bufs[0].Bytes()
+	off, n := data.Offset(), a.Len()
+	if off%8 == 0 {
+		return raw[off/8 : (off+n+7)/8] // bit off is bit 0 of this slice
+	}
+	out := make([]byte, (n+7)/8)
+	for i := 0; i < n; i++ {
+		if j := off + i; raw[j>>3]&(1<<(uint(j)&7)) != 0 {
+			out[i>>3] |= 1 << (uint(i) & 7)
+		}
+	}
+	return out
 }
 
 func (s *parquetSource) Close() error {

@@ -46,13 +46,26 @@ func PopCount(mask []byte, n int) int {
 	return c
 }
 
-// SumMaskedFloat64 folds values (n LE float64s) where mask bit i is set into
-// AggSum's 8-byte float64 accumulator, in place.
+// A nil mask means "all n lanes" (no selection / no nulls) -- so the same kernel
+// serves the unmasked, filter-only, nulls-only, and filter+nulls cases. NOTE the
+// SUM vs COUNT asymmetry that n1k1's aggregate semantics require: SUM folds over
+// the selection-AND-validity mask (nulls contribute nothing), while COUNT counts
+// the SELECTED rows regardless of validity (n1k1 COUNT(x) counts null/missing rows,
+// like COUNT(*)). AVG therefore takes BOTH: count over sel, sum over sum(=sel∧val).
+
+// SumMaskedFloat64 folds values (n LE float64s) where mask bit i is set (nil mask =
+// all n) into AggSum's 8-byte float64 accumulator, in place.
 func SumMaskedFloat64(acc, values, mask []byte, n int) {
 	s := math.Float64frombits(binary.LittleEndian.Uint64(acc[:8]))
-	for i := 0; i < n; i++ {
-		if BitSet(mask, i) {
+	if mask == nil {
+		for i := 0; i < n; i++ {
 			s += math.Float64frombits(binary.LittleEndian.Uint64(values[i*8:]))
+		}
+	} else {
+		for i := 0; i < n; i++ {
+			if BitSet(mask, i) {
+				s += math.Float64frombits(binary.LittleEndian.Uint64(values[i*8:]))
+			}
 		}
 	}
 	binary.LittleEndian.PutUint64(acc[:8], math.Float64bits(s))
@@ -61,28 +74,52 @@ func SumMaskedFloat64(acc, values, mask []byte, n int) {
 // SumMaskedInt64 is SumMaskedFloat64 for an int64 column (each slot added as float64).
 func SumMaskedInt64(acc, values, mask []byte, n int) {
 	s := math.Float64frombits(binary.LittleEndian.Uint64(acc[:8]))
-	for i := 0; i < n; i++ {
-		if BitSet(mask, i) {
+	if mask == nil {
+		for i := 0; i < n; i++ {
 			s += float64(int64(binary.LittleEndian.Uint64(values[i*8:])))
+		}
+	} else {
+		for i := 0; i < n; i++ {
+			if BitSet(mask, i) {
+				s += float64(int64(binary.LittleEndian.Uint64(values[i*8:])))
+			}
 		}
 	}
 	binary.LittleEndian.PutUint64(acc[:8], math.Float64bits(s))
 }
 
-// CountMasked adds the number of set bits (first n) to AggCount's 8-byte counter.
+// CountMasked adds the number of set bits (first n; nil mask = n) to AggCount's
+// 8-byte counter. The mask here is the SELECTION -- not ANDed with validity.
 func CountMasked(acc, mask []byte, n int) {
-	c := binary.LittleEndian.Uint64(acc[:8]) + uint64(PopCount(mask, n))
+	c := binary.LittleEndian.Uint64(acc[:8])
+	if mask == nil {
+		c += uint64(n)
+	} else {
+		c += uint64(PopCount(mask, n))
+	}
 	binary.LittleEndian.PutUint64(acc[:8], c)
 }
 
-// AvgMaskedFloat64 folds into AggAvg's [count][sum] accumulator (count += set bits).
-func AvgMaskedFloat64(acc, values, mask []byte, n int) {
+// AvgMaskedFloat64 folds into AggAvg's [count][sum] accumulator: count += selected
+// rows (sel; nil = n), sum += values where the sum mask is set (nil = all n). Pass
+// sel = the selection and sum = selection∧validity so AVG = sum(non-null)/count(rows).
+func AvgMaskedFloat64(acc, values, sel, sum []byte, n int) {
 	c := binary.LittleEndian.Uint64(acc[:8])
 	s := math.Float64frombits(binary.LittleEndian.Uint64(acc[8:16]))
-	for i := 0; i < n; i++ {
-		if BitSet(mask, i) {
-			c++
+	if sel == nil {
+		c += uint64(n)
+	} else {
+		c += uint64(PopCount(sel, n))
+	}
+	if sum == nil {
+		for i := 0; i < n; i++ {
 			s += math.Float64frombits(binary.LittleEndian.Uint64(values[i*8:]))
+		}
+	} else {
+		for i := 0; i < n; i++ {
+			if BitSet(sum, i) {
+				s += math.Float64frombits(binary.LittleEndian.Uint64(values[i*8:]))
+			}
 		}
 	}
 	binary.LittleEndian.PutUint64(acc[:8], c)
@@ -90,13 +127,23 @@ func AvgMaskedFloat64(acc, values, mask []byte, n int) {
 }
 
 // AvgMaskedInt64 is AvgMaskedFloat64 for an int64 column.
-func AvgMaskedInt64(acc, values, mask []byte, n int) {
+func AvgMaskedInt64(acc, values, sel, sum []byte, n int) {
 	c := binary.LittleEndian.Uint64(acc[:8])
 	s := math.Float64frombits(binary.LittleEndian.Uint64(acc[8:16]))
-	for i := 0; i < n; i++ {
-		if BitSet(mask, i) {
-			c++
+	if sel == nil {
+		c += uint64(n)
+	} else {
+		c += uint64(PopCount(sel, n))
+	}
+	if sum == nil {
+		for i := 0; i < n; i++ {
 			s += float64(int64(binary.LittleEndian.Uint64(values[i*8:])))
+		}
+	} else {
+		for i := 0; i < n; i++ {
+			if BitSet(sum, i) {
+				s += float64(int64(binary.LittleEndian.Uint64(values[i*8:])))
+			}
 		}
 	}
 	binary.LittleEndian.PutUint64(acc[:8], c)

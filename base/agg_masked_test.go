@@ -78,7 +78,7 @@ func TestMaskedReduceMatchesManual(t *testing.T) {
 		}
 
 		aacc := AggAvg.Init(nil, nil)
-		AvgMaskedFloat64(aacc, col, mask, n)
+		AvgMaskedFloat64(aacc, col, mask, mask, n) // sel==sum: count and sum over the same mask
 		gotC := binary.LittleEndian.Uint64(aacc[:8])
 		gotS := math.Float64frombits(binary.LittleEndian.Uint64(aacc[8:16]))
 		if gotC != uint64(wantCount) || gotS != wantSum {

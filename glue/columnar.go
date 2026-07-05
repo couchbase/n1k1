@@ -20,15 +20,20 @@ package glue
 // qualifying `group` op in place into a `columnar-agg` op; anything that doesn't
 // qualify keeps the ordinary row path. Correctness bound: results must match the
 // row lane (TestParquetSumVectorizedDifferential), and the pass is conservative --
-// it only fires when it can prove a numeric, non-null column of a records scan.
+// it only fires when it can prove a numeric column of a records scan.
 //
 // Step 5.4c fuses a single-comparison WHERE into that path: `SELECT SUM(x) FROM data
 // WHERE y > c` matches group->filter->scan, extracts (field, op, const) from the
 // filter's cbq predicate, and per batch evaluates the filter kernel (base.Filter*)
 // into a dense selection bitmap, then folds via the masked reducers (base.SumMasked*).
-// The predicate column must be numeric + non-null (FilterFloat64/Int64 don't consult
-// validity); any predicate we can't prove numeric-single-comparison stays on the row
-// path. cbq normalizes >/>= to LT/LE with swapped operands, so we match only LT/LE/Eq.
+// Any predicate we can't prove a numeric single comparison stays on the row path.
+// cbq normalizes >/>= to LT/LE with swapped operands, so we match only LT/LE/Eq.
+//
+// Nulls (DESIGN-col.md "Beyond null_count==0"): a column's null_count no longer
+// forces the row path. Each batch carries its Arrow validity bitmap (same LSB-first
+// layout as the selection), and the executor folds through it -- SUM/AVG-sum over
+// selection∧validity (skip nulls), COUNT/AVG-count over the selection alone (n1k1
+// COUNT(x) counts every row, like COUNT(*)).
 
 import (
 	"encoding/binary"
@@ -122,12 +127,13 @@ func maybeVectorizeGroup(op *base.Op, temps []interface{}) {
 		colByName[c.Name] = c
 	}
 
-	// A predicate's column must be numeric + non-null (the selection kernels don't
-	// consult validity), and an INT64 column requires an integer constant so the
-	// int64 kernel is exact. Otherwise keep the row path.
+	// A predicate's column must be numeric; nulls are fine (the executor ANDs the
+	// batch validity into the selection, so a null predicate row isn't selected).
+	// An INT64 column requires an integer constant so the int64 kernel is exact.
+	// Otherwise keep the row path.
 	if pred != nil {
 		cm, ok := colByName[pred.field]
-		if !ok || cm.NullCount != 0 {
+		if !ok {
 			return
 		}
 		switch cm.Type {
@@ -304,7 +310,9 @@ func metadataAggSpecs(aggExprs, aggCalcs []interface{}, colByName map[string]rec
 }
 
 // columnarAggSpecs returns per-agg specs when EVERY aggregate is a vectorizable
-// SUM/AVG/COUNT of a bare, numeric, non-null column (scan kernels). ok=false else.
+// SUM/AVG/COUNT of a bare, numeric column (scan kernels). Nulls are fine: the
+// executor folds over each batch's validity bitmap (SUM/AVG skip nulls, COUNT
+// counts non-null), so null_count>0 no longer forces the row path. ok=false else.
 func columnarAggSpecs(aggExprs, aggCalcs []interface{}, colByName map[string]records.ColumnMeta) ([]interface{}, bool) {
 	specs := make([]interface{}, 0, len(aggCalcs))
 	for i := range aggCalcs {
@@ -318,7 +326,7 @@ func columnarAggSpecs(aggExprs, aggCalcs []interface{}, colByName map[string]rec
 			return nil, false
 		}
 		cm, ok := colByName[field]
-		if !ok || cm.NullCount != 0 {
+		if !ok {
 			return nil, false
 		}
 		key, ok := vecAggCatalogKey(aggName, cm.Type)
@@ -513,9 +521,12 @@ func DatastoreColumnarAgg(o *base.Op, vars *base.Vars,
 		accs[i] = aggs[i].Init(vars, nil)
 	}
 
-	var mask []byte // reused across batches when a predicate is present
+	// Scratch bitmaps reused across batches: predMask holds the predicate's
+	// selected-and-valid rows (WHERE), combined holds predMask AND an agg column's
+	// validity when both a filter and nulls are in play.
+	var predMask, combined []byte
 	for {
-		cols, rows, ok, err := cbs.NextColumns()
+		cols, valids, rows, ok, err := cbs.NextColumns()
 		if err != nil {
 			yieldErr(fmt.Errorf("DatastoreColumnarAgg, next: %v", err))
 			return
@@ -527,26 +538,47 @@ func DatastoreColumnarAgg(o *base.Op, vars *base.Vars,
 			yieldErr(fmt.Errorf("DatastoreColumnarAgg: got %d columns, want %d", len(cols), len(proj)))
 			return
 		}
-		if pred == nil {
-			for i := range aggs {
-				accs[i], _, _ = aggs[i].Update(vars, base.Val(cols[aggCol[i]]), nil, accs[i], nil)
+
+		// Batch selection mask P (WHERE): compare -> bitmap, then AND the predicate
+		// column's validity so a null predicate row is never selected. sel stays nil
+		// (== all rows) when there's no WHERE.
+		var sel []byte
+		if pred != nil {
+			predMask = resize(predMask, rows)
+			switch pred.colType {
+			case "DOUBLE":
+				base.FilterFloat64(predMask, cols[predCol], rows, pred.op, pred.c)
+			case "INT64":
+				base.FilterInt64(predMask, cols[predCol], rows, pred.op, int64(pred.c))
 			}
-			continue
+			if pv := valids[predCol]; pv != nil {
+				base.AndBitmap(predMask, pv)
+			}
+			sel = predMask
 		}
-		// Filtered: predicate column -> selection bitmap -> masked reduce.
-		if nb := (rows + 7) / 8; cap(mask) < nb {
-			mask = make([]byte, nb)
-		} else {
-			mask = mask[:nb]
-		}
-		switch pred.colType {
-		case "DOUBLE":
-			base.FilterFloat64(mask, cols[predCol], rows, pred.op, pred.c)
-		case "INT64":
-			base.FilterInt64(mask, cols[predCol], rows, pred.op, int64(pred.c))
-		}
+
 		for i := range aggs {
-			applyMaskedAgg(keys[i], accs[i], cols[aggCol[i]], mask, rows)
+			av := valids[aggCol[i]]
+			if sel == nil && av == nil {
+				// No filter, no nulls: the unmasked fast path (all rows).
+				accs[i], _, _ = aggs[i].Update(vars, base.Val(cols[aggCol[i]]), nil, accs[i], nil)
+				continue
+			}
+			// sum mask = selection ∧ this column's validity (nil-aware): SUM/AVG-sum
+			// skip nulls; COUNT/AVG-count use sel alone (see applyMaskedAgg).
+			var sum []byte
+			switch {
+			case sel == nil:
+				sum = av // nulls only
+			case av == nil:
+				sum = sel // filter only
+			default:
+				combined = resize(combined, rows)
+				copy(combined, sel)
+				base.AndBitmap(combined, av)
+				sum = combined
+			}
+			applyMaskedAgg(keys[i], accs[i], cols[aggCol[i]], sel, sum, rows)
 		}
 	}
 
@@ -563,22 +595,33 @@ func DatastoreColumnarAgg(o *base.Op, vars *base.Vars,
 	yieldErr(nil)
 }
 
-// applyMaskedAgg folds the set lanes of a column (per the selection bitmap) into
-// acc, dispatched by the same catalog key columnarAggSpecs assigned -- so the
-// filtered path reuses the exact accumulators (and thus Result formatting) as the
-// unfiltered vectorized path. count_v ignores the column (counts set bits).
-func applyMaskedAgg(key string, acc, col, mask []byte, n int) {
+// resize returns buf reused (or freshly grown) to hold a dense bitmap for n rows.
+func resize(buf []byte, n int) []byte {
+	nb := (n + 7) / 8
+	if cap(buf) < nb {
+		return make([]byte, nb)
+	}
+	return buf[:nb]
+}
+
+// applyMaskedAgg folds a column into acc, dispatched by the same catalog key
+// columnarAggSpecs assigned -- so the masked path reuses the exact accumulators
+// (and thus Result formatting) as the unmasked lane. sel is the row SELECTION
+// (predicate; nil = all rows); sum is sel∧validity (nil = all lanes). SUM folds
+// over sum (skips nulls); COUNT counts sel (n1k1 COUNT(x) counts every selected
+// row, null or not); AVG divides sum-over-sum by count-over-sel.
+func applyMaskedAgg(key string, acc, col, sel, sum []byte, n int) {
 	switch key {
 	case "sum_v_float64":
-		base.SumMaskedFloat64(acc, col, mask, n)
+		base.SumMaskedFloat64(acc, col, sum, n)
 	case "sum_v_int64":
-		base.SumMaskedInt64(acc, col, mask, n)
+		base.SumMaskedInt64(acc, col, sum, n)
 	case "count_v":
-		base.CountMasked(acc, mask, n)
+		base.CountMasked(acc, sel, n)
 	case "avg_v_float64":
-		base.AvgMaskedFloat64(acc, col, mask, n)
+		base.AvgMaskedFloat64(acc, col, sel, sum, n)
 	case "avg_v_int64":
-		base.AvgMaskedInt64(acc, col, mask, n)
+		base.AvgMaskedInt64(acc, col, sel, sum, n)
 	}
 }
 
@@ -632,8 +675,10 @@ func DatastoreMetadataAgg(o *base.Op, vars *base.Vars,
 		case "count-star":
 			v = base.Val(strconv.AppendInt(nil, rowCount, 10))
 		case "count":
-			cm := colByName[field]
-			v = base.Val(strconv.AppendInt(nil, cm.Count-cm.NullCount, 10))
+			// n1k1 COUNT(x) counts every row (null/missing included), like COUNT(*),
+			// so it's the row count -- NOT Count-NullCount.
+			_ = field
+			v = base.Val(strconv.AppendInt(nil, rowCount, 10))
 		case "min":
 			v = formatStat(typ, colByName[field].Min)
 		case "max":

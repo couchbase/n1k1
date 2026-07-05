@@ -214,32 +214,29 @@ row count). A menu, fastest first:
   the footer min/max (so the two shortcuts compose). The hot loop stays branch-free:
   the "pad with identity" tail-trick (Appendix B) applied to nulls, moving null
   handling to a one-time bitmap pass instead of a per-element check.
-- **Masked kernel (Arrow validity bitmap) — the general case.** Arrow keeps nulls
-  out-of-band: `Data().Buffers()[0]` is the validity bitmap (1 bit/elem, 1=valid),
-  separate from the values `Buffers()[1]`. The masked kernel reads *both* (still
-  borrowed, zero-copy) and skips null lanes — `for i { if valid(i) { s += v[i] } }`,
-  or word-at-a-time. Necessary because Arrow leaves null slots *undefined* (can't be
-  summed blindly). Bit-exact vs the row engine, which skips nulls too (the transpose
-  emits `null`, `AggSum` skips non-numbers). Always applicable (the general SUM/AVG
-  null path; COUNT/MIN/MAX already dodge nulls via the footer); the same masking
-  AVX-512/SVE use for the tail.
+- **Masked kernel (Arrow validity bitmap) — the general case. DONE.** Arrow keeps
+  nulls out-of-band: `Data().Buffers()[0]` is the validity bitmap (1 bit/elem,
+  1=valid), separate from the values `Buffers()[1]`. The masked kernel reads *both*
+  (still borrowed, zero-copy) and skips null lanes — `for i { if valid(i) { s += v[i]
+  } }`. Necessary because Arrow leaves null slots *undefined* (can't be summed
+  blindly). Bit-exact vs the row engine, which skips nulls in SUM (the transpose
+  emits `null`, `AggSum` skips non-numbers). **Key semantic:** n1k1's `COUNT(x)` and
+  `AVG`'s denominator count *every* row (null/missing included, like `COUNT(*)`), so
+  COUNT folds over the **selection** while SUM/AVG-sum fold over **selection∧validity**
+  — the masked kernels take the two masks separately.
 
-**How validity threads to the kernel** (a `base.Val` is one contiguous `[]byte`, so
-it can't carry two *borrowed* buffers — values + bitmap — without a concatenating
-copy, which defeats zero-copy). Options, best-fit first:
-1. *Near-term (fused op):* `NextColumns` returns validity as a **parallel `[][]byte`**
-   (nil when `null_count==0`); when present the op calls a **masked reducer** — a
-   `base` func taking both borrowed buffers, writing `AggSum`'s accumulator —
-   *instead of* `Agg.Update`. `Agg.Update(one Val)` (shared by every scalar+vector
-   agg) is left untouched; masking lives outside it.
-2. *Sentinel-fill:* the op writes the identity (0) into null slots of a reused
-   scratch buffer (one bitmap pass) and feeds the clean buffer to the existing
-   `sum_v` kernel — branchless, but AVG then needs a `popcount` for its count.
-3. *Long-term (Step 5.4 generic plumbing):* validity is a **companion slot** in the
-   column-batch `Vals`, marked by the parallel `[]ColKind` as "validity-of-*i*" (the
-   "another Val" idea, done via the type vector, not a label sigil). A vectorized op
-   pairs them.
-   Recommended: (1) now (zero-copy, no `Agg` change), evolving into (3).
+**How validity threads to the kernel** — implemented as option (1): `NextColumns`
+returns validity as a **parallel `[][]byte`** (nil when `null_count==0`, and the
+byte-aligned Arrow buffer is borrowed zero-copy; a rare unaligned array offset is
+normalized once). When present the executor ANDs it into the selection and calls a
+**masked reducer** (`base.SumMasked*`/`CountMasked`/`AvgMasked*`) writing `AggSum`/
+`AggAvg`'s accumulator, *instead of* `Agg.Update` — which is left untouched (masking
+lives outside it, so every scalar+vector agg is unchanged). The non-null, no-WHERE
+lane still takes the plain `Agg.Update` fast path. Alternatives considered but not
+taken: *sentinel-fill* (write identity into null slots — but AVG's count still needs
+the validity popcount); *long-term companion-slot* in a column-batch `Vals` via the
+`[]ColKind` type vector (the generic row-plumbing form, deferred — the fused op
+doesn't need it).
 
 ### Selection-vector `WHERE` (Step 5.4 — DONE)
 

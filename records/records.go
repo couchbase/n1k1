@@ -148,12 +148,14 @@ func pickStat(typ string, a, b []byte, wantMin bool) []byte {
 // vectorized path (DESIGN-col.md Step 5). NextColumns advances one batch at a
 // time; cols holds, per projected column (in ProjectColumns order), that column's
 // packed value buffer, BORROWED (valid only until the next NextColumns/Close), and
-// rows is the batch's row count. ok=false marks end-of-stream. Buffers are
-// 8-byte-per-element (float64/int64/uint64) for now, and the caller must have
-// selected only such non-null columns (via ProjectColumns) -- else NextColumns
-// errors and the caller falls back to the row path.
+// rows is the batch's row count. valids is parallel to cols: valids[i] is column
+// i's validity bitmap (LSB-first, 1==valid, bit 0 == row 0) usable directly as a
+// masked-kernel selection mask, or nil when the column has no nulls (all valid).
+// ok=false marks end-of-stream. Buffers are 8-byte-per-element
+// (float64/int64/uint64) for now -- other types error and the caller falls back to
+// the row path.
 type ColumnBatchSource interface {
-	NextColumns() (cols [][]byte, rows int, ok bool, err error)
+	NextColumns() (cols, valids [][]byte, rows int, ok bool, err error)
 }
 
 // Supported record-file extensions (after any compression suffix is stripped).
@@ -1313,15 +1315,15 @@ func (w *walkSource) Columns() []ColumnMeta {
 
 // NextColumns implements ColumnBatchSource across the part files: it opens each
 // file, forwards the projection, and drains its column batches before advancing.
-func (w *walkSource) NextColumns() (cols [][]byte, rows int, ok bool, err error) {
+func (w *walkSource) NextColumns() (cols, valids [][]byte, rows int, ok bool, err error) {
 	for {
 		if w.curCB == nil {
 			if w.iCB >= len(w.files) {
-				return nil, 0, false, nil
+				return nil, nil, 0, false, nil
 			}
 			s, e := OpenFile(w.files[w.iCB], "")
 			if e != nil {
-				return nil, 0, false, e
+				return nil, nil, 0, false, e
 			}
 			if w.proj != nil {
 				if cp, ok := s.(ColumnsProjector); ok {
@@ -1331,16 +1333,16 @@ func (w *walkSource) NextColumns() (cols [][]byte, rows int, ok bool, err error)
 			cb, ok2 := s.(ColumnBatchSource)
 			if !ok2 {
 				s.Close()
-				return nil, 0, false, fmt.Errorf("records: %s is not a ColumnBatchSource", w.files[w.iCB])
+				return nil, nil, 0, false, fmt.Errorf("records: %s is not a ColumnBatchSource", w.files[w.iCB])
 			}
 			w.curCB, w.curCBSrc = cb, s
 		}
-		cols, rows, ok, err = w.curCB.NextColumns()
+		cols, valids, rows, ok, err = w.curCB.NextColumns()
 		if err != nil {
-			return nil, 0, false, err
+			return nil, nil, 0, false, err
 		}
 		if ok {
-			return cols, rows, true, nil
+			return cols, valids, rows, true, nil
 		}
 		w.curCBSrc.Close()
 		w.curCB, w.curCBSrc = nil, nil

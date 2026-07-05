@@ -66,7 +66,7 @@ func sumF64Batches(t *testing.T, cbs ColumnBatchSource) (float64, int) {
 	var sum float64
 	var rows int
 	for {
-		cols, r, ok, err := cbs.NextColumns()
+		cols, _, r, ok, err := cbs.NextColumns()
 		if err != nil {
 			t.Fatal(err)
 		}

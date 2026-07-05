@@ -488,6 +488,119 @@ func TestParquetSumVectorizedDifferential(t *testing.T) {
 	glue.DisableVectorizedAgg = false
 }
 
+// pqWriteNullable writes id(int64)/price(float64) with DISTINCT null patterns --
+// id null when i%5==0, price null when i%7==0 -- so the fused agg must AND each
+// column's own validity (and the predicate column's) rather than one shared mask.
+func pqWriteNullable(t testing.TB, path string, base, n int) {
+	mem := memory.NewGoAllocator()
+	schema := arrow.NewSchema([]arrow.Field{
+		{Name: "id", Type: arrow.PrimitiveTypes.Int64, Nullable: true},
+		{Name: "price", Type: arrow.PrimitiveTypes.Float64, Nullable: true},
+	}, nil)
+	b := array.NewRecordBuilder(mem, schema)
+	defer b.Release()
+	for i := 0; i < n; i++ {
+		id := base + i
+		if id%5 == 0 {
+			b.Field(0).(*array.Int64Builder).AppendNull()
+		} else {
+			b.Field(0).(*array.Int64Builder).Append(int64(id))
+		}
+		if id%7 == 0 {
+			b.Field(1).(*array.Float64Builder).AppendNull()
+		} else {
+			b.Field(1).(*array.Float64Builder).Append(pqPrice(id))
+		}
+	}
+	rec := b.NewRecord()
+	defer rec.Release()
+	tbl := array.NewTableFromRecords(schema, []arrow.Record{rec})
+	defer tbl.Release()
+	fout, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fout.Close()
+	props := parquet.NewWriterProperties(parquet.WithCompression(compress.Codecs.Snappy))
+	if err := pqarrow.WriteTable(tbl, fout, int64(n), props, pqarrow.DefaultWriterProps()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestParquetNullableAggDifferential is the null_count>0 guardrail (DESIGN-col.md
+// "Beyond null_count==0"): SUM/AVG/COUNT over nullable columns now vectorize by
+// folding each batch's Arrow validity bitmap through the masked reducers. Results
+// must match the row lane bit-exactly, and a WHERE combines predicate AND validity.
+func TestParquetNullableAggDifferential(t *testing.T) {
+	dir := t.TempDir()
+	ks := filepath.Join(dir, "default", "sales5")
+	if err := os.MkdirAll(ks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	pqWriteNullable(t, filepath.Join(ks, "part-0.parquet"), 0, 100)
+	pqWriteNullable(t, filepath.Join(ks, "part-1.parquet"), 100, 100) // multi-file
+
+	sess, err := glue.OpenSession(dir, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Independent hand-computed check that the vectorized lane truly skips nulls
+	// (guards against both lanes sharing a null bug the differential wouldn't catch).
+	var wantSumPrice float64
+	for id := 0; id < 200; id++ {
+		if id%7 != 0 {
+			wantSumPrice += pqPrice(id)
+		}
+	}
+
+	queries := []struct {
+		name       string
+		stmt       string
+		vectorizes bool
+	}{
+		{"sum-null-float", `SELECT SUM(price) AS s FROM sales5`, true},
+		{"avg-null-float", `SELECT AVG(price) AS a FROM sales5`, true},
+		{"sum-null-int", `SELECT SUM(id) AS s FROM sales5`, true},
+		{"sum-count-null", `SELECT SUM(price) AS s, COUNT(price) AS c FROM sales5`, true},
+		{"where-null-cross", `SELECT SUM(price) AS s FROM sales5 WHERE id > 20`, true}, // pred=id, agg=price, distinct null patterns
+		{"where-null-same", `SELECT SUM(price) AS s FROM sales5 WHERE price > 50`, true},
+		{"avg-where-null", `SELECT AVG(price) AS a FROM sales5 WHERE id > 20`, true}, // count over survivors, sum over non-null survivors
+		{"count-where-null", `SELECT COUNT(price) AS c FROM sales5 WHERE id > 20`, true}, // filter forces columnar; counts all survivors
+		{"count-null-alone", `SELECT COUNT(price) AS c FROM sales5`, false}, // footer → metadata-agg, not columnar
+	}
+
+	for _, q := range queries {
+		t.Run(q.name, func(t *testing.T) {
+			glue.DisableVectorizedAgg = true
+			baseRows := runSortedRows(t, sess, q.stmt)
+			glue.DisableVectorizedAgg = false
+			before := atomic.LoadInt64(&glue.VectorizedAggApplied)
+			got := runSortedRows(t, sess, q.stmt)
+			applied := atomic.LoadInt64(&glue.VectorizedAggApplied) - before
+
+			if strings.Join(baseRows, "\n") != strings.Join(got, "\n") {
+				t.Fatalf("vectorized changed results!\n OFF: %v\n ON:  %v", baseRows, got)
+			}
+			if q.vectorizes && applied == 0 {
+				t.Errorf("expected the columnar-agg lane to fire, but it didn't")
+			}
+			if !q.vectorizes && applied != 0 {
+				t.Errorf("expected the row path, but the columnar-agg lane fired %d times", applied)
+			}
+		})
+	}
+
+	// Absolute check: SUM(price) over the two files must equal the hand sum.
+	glue.DisableVectorizedAgg = false
+	got := runSortedRows(t, sess, `SELECT SUM(price) AS s FROM sales5`)
+	want := fmt.Sprintf(`{"s":%v}`, wantSumPrice)
+	if len(got) != 1 || got[0] != want {
+		t.Errorf("SUM(price) skipping nulls = %v, want %s", got, want)
+	}
+	glue.DisableVectorizedAgg = false
+}
+
 // TestParquetMetadataAggDifferential guards the metadata-agg lane (COUNT/MIN/MAX
 // answered from footer stats, zero scan): results must equal the row path, the
 // lane fires when it should, and it bails (row path) for non-numeric MIN/MAX or
