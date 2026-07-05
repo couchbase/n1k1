@@ -23,11 +23,15 @@ Status legend (matches the design doc):
 | `metrics/` | E | deep/recursive tree, unkeyed union (JSONL) | `SELECT host, AVG(value) FROM default:cpu GROUP BY host` | 🟢 |
 | `archive/` | H | transparent gzip (`.jsonl.gz`) | `SELECT * FROM default:orders` | 🟢 |
 | `finance/` | J | CSV rows → JSON objects (header keys, inferred types) | `SELECT currency, SUM(amount) FROM txns GROUP BY currency` | 🟢 |
+| `warehouse/` | K | Parquet columnar files → JSON rows (transpose; multi-file keyspace) | `SELECT region, SUM(amount) FROM sales GROUP BY region` | ✅ |
 | `kb/` | L | docs & media → extract-provider rows (`{filename,kind,text,…}`) | `SELECT filename FROM default:docs WHERE text LIKE '%vacation%'` | 🟢 |
 | `infra/` | Y | YAML → JSON records: `---` multi-doc streams + top-level sequences | `SELECT team, SUM(replicas) FROM services GROUP BY team` | 🟢 |
 
-**A/B/C/E/H/J/L/Y work today.** Parquet (K) is a later phase; indexing
-(`DESIGN-indexing.md`) is also later. CSV/TSV cells get light type inference
+**A/B/C/E/H/J/K/L/Y work today.** Parquet (K) reads via `apache/arrow-go`,
+transposing each row to a JSON object (`records/parquet.go`) — so it's a
+correctness feature, not yet vectorized/columnar execution (see `DESIGN-col.md`).
+It is **not available in the wasm/browser build** (arrow-go is native-only).
+Indexing (`DESIGN-indexing.md`) is also later. CSV/TSV cells get light type inference
 (numbers/bools/null, string fallback); leading-zero values like `007` stay
 strings. The `extract` provider is pure-Go (no cgo): **text** from `.pdf`,
 `.docx`/`.pptx`/`.xlsx` (zip+XML), `.txt`/`.log`/`.md`/`.markdown`, and `.rtf`;
@@ -80,6 +84,9 @@ metrics/         (E) 🟢  recurse subdirs; a keyspace = union of all files bene
 archive/         (H) 🟢  transparent decompression by inner extension
   default/orders/2025.jsonl.gz 2026.jsonl.gz (gzip'd JSONL; 5 orders total)
 
+warehouse/       (K) ✅  Parquet files transposed to JSON rows (arrow-go, native only)
+  default/sales/part-0.parquet part-1.parquet (a keyspace = union of the parts; 240 sales rows)
+
 infra/           (Y) 🟢  YAML files decoded to JSON records
   default/services/api.yaml workers.yaml     (`---` multi-doc streams; 4 services unioned)
   default/regions/regions.yaml               (one top-level sequence; 3 regions, one per element)
@@ -101,6 +108,14 @@ PDF/DOCX/XLSX files are generated (minimal-but-valid, no third-party deps):
 
 ```
 python3 examples/generate.py
+```
+
+The Parquet files under `warehouse/` need a real columnar library, so they're
+generated separately with a small Go program (uses `apache/arrow-go`; pyarrow is
+not a repo dependency):
+
+```
+go run examples/warehouse/gen_parquet.go
 ```
 
 ## Inline charts: sparkline() & histogram() aggregates
