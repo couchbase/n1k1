@@ -42,9 +42,9 @@ if [ ! -d "$QUERY_DST" ]; then
   sed -i.bak -e 's|^//go:build !windows$|//go:build !windows \&\& !js|' "$QUERY_DST/util/signals.go"
   sed -i.bak -e 's|^//go:build !windows && !solaris$|//go:build !windows \&\& !solaris \&\& !js|' "$QUERY_DST/util/cpu_times.go"
   rm -f "$QUERY_DST"/logging/platform.go.bak "$QUERY_DST"/util/signals.go.bak "$QUERY_DST"/util/cpu_times.go.bak
-  cp "$OVERLAY/logging_platform_js.go" "$QUERY_DST/logging/platform_js.go"
+  cp "$OVERLAY/logging_js.go" "$QUERY_DST/logging/platform_js.go"
   cp "$OVERLAY/util_signals_js.go"     "$QUERY_DST/util/signals_js.go"
-  cp "$OVERLAY/util_cpu_times_js.go"   "$QUERY_DST/util/cpu_times_js.go"
+  cp "$OVERLAY/util_cpu_js.go"   "$QUERY_DST/util/cpu_times_js.go"
 fi
 
 # --- 2. Local patched copy of edsrzf/mmap-go (add a js implementation) ---------
