@@ -515,15 +515,32 @@ n1k1 stands on each, honestly:
 **Synthesis — the two ends of one unbuilt wire.** The needed-field set is known at
 the *plan* end (projection-down), and the types + null-counts are known at the
 *Parquet-footer* end (metadata-up), but `records.Source` carries **neither**.
-Widening that interface is the single concrete missing piece:
+The missing piece is *not* a wider `records.Source` — it's a pair of **optional
+sidecar interfaces the caller type-asserts against**, which is already the n1k1
+idiom (`glue`'s `SubPathser` = `interface{ SubPaths() []string }`, used as
+`if sp, ok := plan.(SubPathser); ok {…}`; likewise `interface{ RecordsDir()
+string }`). The core `Source` stays `{Next, Close}` — schemaless jsonl/csv/yaml
+sources are untouched (no forced no-op methods), and a source that doesn't
+implement a capability simply falls back to the full transpose. Two capabilities:
 
-- an optional **projection input** (`SetProjection([]fieldRef)` or a projected
-  variant of `Source`) so a columnar reader materializes only wanted columns —
-  which is *also* what makes borrowing Arrow column buffers zero-copy (§ enc 3);
-- an optional **schema / column-stats output** (`Schema()`, `ColumnStats()`) that
-  **populates the columnar labels/markers** of § *Marking a slot as columnar*. A
-  Parquet footer is the natural *source* of a `@col.i64` / no-nulls marker; the
-  marker is its *destination*.
+- **projection down** — `ColumnProjector interface { ProjectColumns(names
+  []string) error }` (call before the first `Next`), so a columnar reader
+  materializes only wanted columns — which is *also* what makes borrowing Arrow
+  column buffers zero-copy (§ enc 3);
+- **schema/stats up** — `SchemaSource interface { Columns() []ColumnMeta }` where
+  `ColumnMeta` carries `{Name, Type, NullCount, Min, Max}`. This **populates the
+  columnar labels/markers** of § *Marking a slot as columnar*: a Parquet footer is
+  the natural *source* of a `@col.i64` / no-nulls marker, the marker its
+  *destination*.
+
+New capabilities (zone-map `RowGroupPruner`, predicate pushdown) then drop in as
+further sidecars without touching the core interface or any existing source.
+Caveat: the interface is the easy part — the *caller* (the glue scan layer) must
+mine the wanted-column set from the plan (`project` exprs / `Covers()` / the label
+vector, which already know it) and push it down; and the richest consumer of
+types/stats is the **planner** (pruning + type specialization) running *before* a
+scan-time `Source` exists, so `SchemaSource` serves the scan-time need while
+plan-time stats stay a catalog/zone-map concern (`DESIGN-data.md`/`DESIGN-stats.md`).
 
 The payoff is concrete and compounding: **`null_count == 0` means the column needs
 no validity bitmap, so its SIMD kernels need no masking** (§ *the tail problem*) —
@@ -712,10 +729,14 @@ walk it.)
   *feasibility* measurements (projection pushdown 80–137× / 0.2% bytes, free footer
   types+null_count+min/max, parse-free Arrow `[]float64` at the 0.9 ns/value
   fixed-width ceiling) are in § *Parquet prototype results*.**
-- **Step 4 — Widen the `Source` interface (the missing wire).** Add the projection
-  input + `Schema()`/`ColumnStats()` output (§ *Pushdown*). Source now reads only
-  wanted columns and declares type + `null_count`; still row-transposed
-  downstream, but pushdown cuts I/O and populates the label markers.
+- **Step 4 — Optional sidecar interfaces on `Source` (the missing wire).** *Not*
+  a wider `Source` — add capability interfaces the scan layer type-asserts, the
+  `SubPathser` idiom (§ *Pushdown*): `ColumnProjector{ ProjectColumns([]string) }`
+  and `SchemaSource{ Columns() []ColumnMeta }`. The Parquet source implements both;
+  jsonl/csv/yaml stay `{Next, Close}` and fall back to the full transpose. The
+  Parquet reader then reads only wanted columns and declares type + `null_count`;
+  still row-transposed downstream, but pushdown cuts I/O and the schema populates
+  the label markers. Real work is caller-side (mine wanted columns from the plan).
 - **Step 5 — First true vectorized op, compile-time-only.** Aggregation over a
   proven-typed, non-null column straight from Parquet — end-to-end, no transpose.
   Introduce column batches + the `@col` markers (§ *Marking a slot*) here.
