@@ -153,72 +153,38 @@ Realistic read: **(1) is a free warm-up, (3)+(5) unlock the Parquet/Arrow win,
 need all five.
 
 -------------------------------------------------------
-## Marking a slot as columnar via the label/register system
+## Carrying columnar shape: a parallel type vector, NOT label sigils
 
-An attractive idea: rather than change the container type, let a **`Labels`
-entry carry a marker prefix** signaling that its positionally-aligned `Val` is a
-*column* (a packed vector), not a scalar. This is more idiomatic than it first
-sounds — **n1k1 already does the scalar version of exactly this.**
+When a slot's `Val` holds a *packed column* (not a scalar), some op needs to know
+"this slot is a column of type T" — decided early (setup/codegen), zero per-row
+cost. n1k1 already does the scalar version of exactly this: `engine/expr.go:
+ExprLabelUint64` reads a slot whose `Val` is a little-endian `uint64` (not JSON),
+dispatched via the expr catalog at setup — so "a labeled register whose bytes
+carry a special interpretation, chosen early" is established. Columnar generalizes
+it from *packed scalar* to *packed vector*.
 
-**Existing precedent.** `engine/expr.go:ExprLabelUint64` reads a slot whose `Val`
-is *not JSON* but a little-endian `uint64` (`binary.LittleEndian.Uint64(
-lzVals[idx])`), converting to JSON only on demand. So "a labeled register whose
-bytes carry a special, non-JSON interpretation, dispatched at compile time" is
-already in the codebase. A columnar marker is the natural generalization: from
-*"this slot is a packed scalar uint64"* to *"this slot is a packed vector of
-uint64."* The label→reader dispatch happens via the expr catalog
-(`base.ExprCatalogFunc`) at setup, so it costs **nothing per row** — which is the
-whole point.
+**Decision (revised): carry shape as a parallel `[]ColKind` aligned with the op's
+`Labels`, the way `Op.StatsBase` / `Ctx.Stats.Counters` are aligned** (see
+`DESIGN-stats.md`) — assigned by a type-inference/layout pass. **Not** a label-
+string sigil (`@col.f64:.["x"]`): mangling labels is fragile (every `IndexOf`
+must strip it) and fights label semantics. Label strings stay clean; the "slot i
+is a packed f64 column" fact lives in the parallel vector. `ColKind` *is* the
+§ encodings list as an enum: `colJSON` (enc 1), `colI64`/`colF64` (enc 2),
+`colStr` = offsets+payload (enc 3), `colDict` (enc 4), plus companion
+validity/selection slots (enc 5) and a `const`-broadcast kind.
 
-**Why labels are the right carrier.** They are **early-bound and positional**
-(`Labels.IndexOf` runs at plan setup, expr.go:66/108, never per row), so a
-vectorized kernel can be selected at codegen with zero runtime dispatch — exactly
-the "compile-time-only vectorized lane" this doc argues for (§ *The compiler is
-the leverage*). And the marker can encode *which* encoding a slot uses, turning
-the § encodings list into one propagatable vocabulary:
+**Deferred until columns flow *between* ops.** The near-term fused ops (§ *Step 5*)
+need none of this — a fused scan→agg knows its own inputs. The shape vector earns
+its keep only at Step 5.4+, when chained vectorized ops exchange columns through
+the generic `Vals` plumbing.
 
-| Marker | Meaning | Encoding |
-|---|---|---|
-| `@col.json` | column as a JSON array | § enc 1 |
-| `@col.i64` / `@col.f64` | fixed-width packed numeric column | § enc 2 |
-| `@col.str` | offsets + contiguous payload | § enc 3 |
-| `@col.dict` | dictionary codes + dict slot | § enc 4 |
-| `@valid` / `@sel` | validity / selection bitmap slot | § enc 5 |
-| `@const` | one scalar broadcast across the batch | (constant vector) |
-
-**Two ways to carry it (a real tradeoff):**
-- **(a) Sigil in the label string** (`@col.f64:.["price"]`). Reuses
-  `Labels []string`, no struct change, and the marker **rides along automatically**
-  wherever labels are copied/derived through the op tree. Cost: `IndexOf` is
-  exact-match, so every consumer matching the *logical* name must strip the prefix
-  first — pervasive marker-awareness.
-- **(b) A parallel shape vector** — a `[]ColKind` positionally aligned with
-  `Labels`, the way `Op.StatsBase` / `Ctx.Stats.Counters` are aligned (see
-  `DESIGN-stats.md`). Keeps `IndexOf` pure; costs one slice; still free at runtime
-  since it's early-bound. More n1k1-idiomatic (positional parallel arrays are the
-  established pattern). A **hybrid** also works: the sigil is the source of truth,
-  parsed once into the `ColKind` enum at setup.
-
-**What the marker does *not* solve (it's a signal, not the whole model):**
-1. **Where the row-count M lives.** Every columnar slot in one `Vals` must share
-   M. That count needs a home — a batch-header field, or derivation from a
-   designated column's `len / elemWidth`. The marker says "column," not "how many."
-2. **Nulls / selection.** A marker can *name* a companion `@valid`/`@sel` slot,
-   but the bitmap must still exist as its own slot (§ enc 5).
-3. **Coherence.** Mixed scalar+column in one batch is only sound if the scalars
-   are `@const` (broadcast); otherwise M is ambiguous. That invariant must be
-   enforced at plan-build.
-4. **Propagation & explode rules.** Output labels are derived from input labels
-   per op, so the marker must flow through label-derivation — and any op that
-   *can't* vectorize a marked column must **explode** it back to rows and drop the
-   marker. Those rules are the operator-fusion / lane-selection logic.
-
-**Correctness boundary.** A marked slot must never reach an op that assumes
-scalar JSON (it would misread packed bytes). The safe stance — consistent with
-how `ExprLabelUint64` is *plan-selected*, not automatic — is that markers appear
-only in **compiler-generated plans** where the compiler has proved every consumer
-will vectorize-or-explode. Markers are an internal compiler artifact, not
-something an interpreter-mode plan ever hand-writes.
+**What it still doesn't settle** (a shape tag is a signal, not the model): where
+the batch row-count M lives (a batch-header field, or `len/elemWidth`); the
+companion validity/selection bitmap slot for nulls; the coherence rule (mixed
+scalar+column only via `const`-broadcast); and the explode rule — any op that
+can't vectorize a column-shaped slot must **explode** it to rows. And the
+correctness boundary: shape tags appear only in compiler/rewrite-produced plans
+that proved every consumer will vectorize-or-explode — never hand-written.
 
 -------------------------------------------------------
 ## SIMD — where it actually helps (and where it can't)
@@ -935,10 +901,10 @@ hits the fixed-width ceiling. The remaining work is *integration* (Source
 interface widening, then the `@col` in-op path), not *feasibility*.
 
 -------------------------------------------------------
-## What Steps 1–4 taught us for Step 5 (the first vectorized op)
+## Step 5 — takeaways from Steps 1–4
 
 Concrete takeaways from building the spike + Parquet source + pushdown, carried
-into Step 5 (borrowed Arrow column → `@col` aggregation, no transpose):
+into Step 5 (borrowed Arrow column → vectorized aggregation, no transpose):
 
 1. **Reuse cbq's plan analysis — don't hand-roll.** The Step-4 win was reading
    `plan.Fetch.EarlyProjection()` instead of writing a fragile field collector.
@@ -974,16 +940,99 @@ v1); multi-file partial-aggregate combine (Σ / min / max associative; AVG carri
 count); and the fused path bypasses the row engine's `Stage`/stats/`YieldStats` —
 preserve scan stats, LIMIT, and cancellation.
 
-**Land-small order:** `walkSource.Columns()` → `ColumnBatchSource` → SUM-only
-scan→agg (null_count=0 numeric, narrow plan shape, differential-tested) →
-COUNT/MIN/MAX/AVG → GROUP BY (dictionary) → SIMD (if ever).
+-------------------------------------------------------
+## Does Step 5 scale, or is it whack-a-mole?
+
+The honest risk: done naively, Step 5 **is** whack-a-mole — one detector per query
+shape (`SUM(x)`, then `SUM(x+y)`, then `…GROUP BY`, …) times one hand-written
+kernel per (operation × type). Combinatorial, and coverage = only the sliver you
+hand-build. What keeps it scalable is three levers plus a universal fallback, with
+a codegen north-star.
+
+**Three levers that turn whack-a-mole into a bounded design:**
+1. **A general "columnarizable?" predicate, not per-shape matching.** The rewrite
+   is a *recursive bottom-up* question over the op/expr tree: each node answers
+   "can I run columnar given my children's shapes and the source column types?"
+   (typed-column scan → yes; pointwise expr → yes iff children are; reduction →
+   yes; string/JSON/date fn → no). Query shapes fall out of *composition* — you
+   never enumerate them. This is the StatsBase discipline applied to shape: one
+   general inference pass, not N special cases.
+2. **Generics kill the type combinatorics.** `sumV[T Numeric]`, `addV[T Numeric]`
+   — one kernel per operation, the compiler instantiates per type (Go 1.25). No
+   `_f64`/`_i64` hand-explosion.
+3. **Lifting: a pointwise scalar kernel → a column loop, mechanically.** `f(a,b)`
+   becomes `for i { out[i] = f(a[i], b[i]) }`. Given a *typed* scalar form (the
+   compile-time type-inference prerequisite, `TODO.md:250`), a generic/codegen
+   wrapper vectorizes the **entire** pointwise arithmetic/comparison surface with
+   no per-function work.
+
+**What does NOT fall out for free (the honest boundary):**
+- **Reductions** (SUM/MIN/MAX/AVG/COUNT): a fixed ~5-member set of vectorized
+  accumulators, written once (generic over type).
+- **Reshaping relational ops** (filter+selection, group-by, join, sort, unnest):
+  each needs a genuine columnar algorithm (selection vectors, hash-group over
+  columns) — but this is the **bounded set of relational operators (~a dozen)**,
+  not unbounded query shapes. Finite, hand-authored once.
+- **The untyped / string / JSON / date long tail** (hundreds of SQL++ functions):
+  most have no clean typed-column form, so the subtree **explodes to rows** and
+  runs the existing scalar engine. A graceful fallback, not a coverage hole.
+
+So coverage = *(pointwise exprs, ≈free via lifting)* + *(fixed reductions)* +
+*(fixed relational operators)* + *(everything else → row engine)*. Much query
+support **does** fall out for free — any composition of vectorized primitives over
+typed columns — and the tail degrades gracefully instead of failing. That is *not*
+whack-a-mole; it's a bounded primitive set + a general composition predicate +
+universal fallback.
+
+**Do we build a second tower? Two answers.**
+- *Runtime:* yes, but a **small, composable** one — generic reductions + the
+  bounded relational ops + a pointwise lifter — never a mirror of all of SQL++.
+- *The codegen way out (n1k1's actual superpower):* n1k1 **already** is a query
+  compiler — `intermed_build` projects the lz-annotated `engine/*.go` (exprs
+  included) into specialized Go per query. The north-star is to teach it to
+  project a **column-batch target** from the *same* lz source: the generated
+  program loops over column batches (inner element loop, exprs inlined) instead of
+  over rows. Then there is no hand-maintained parallel tower — you write each
+  kernel once (scalar, lz-annotated) and the compiler emits *both* the row and the
+  column projection, chosen per query by type inference. The interpreter can stay
+  row-only (mirroring the interpreter-only stats split). Prerequisite: compile-time
+  type inference (`TODO.md:250`) — you can only project the typed column loop once
+  you know the column types.
+
+**Layered end-vision:**
+- **Pragmatic (5.1–5.3):** hand-written generic reductions + fused agg ops behind
+  the general columnarizable predicate. Covers the analytic core (aggregates over
+  numeric columns, ± pointwise operands) — shippable, and the big win on the
+  "directories of Parquet" workload.
+- **Mid (5.4+):** the bounded columnar relational ops (filter+selection, group-by),
+  and *now* the parallel type vector (§ *Carrying columnar shape*) as columns begin
+  to flow between ops.
+- **North star:** codegen the columnar projection from lz source, driven by type
+  inference — vectorized coverage then tracks scalar coverage for pointwise ops
+  automatically, no second tower.
+
+**Roadmap (land-small):** 5.1 `SUM(x)` fused scan→agg (null_count=0 numeric) →
+5.2 multi-agg `SUM(x),SUM(y)` (an N-tuple, nearly free) → 5.3 `SUM(x+y)` fused
+(vectorized arithmetic kernels, inline fold) → 5.4 chained vectorized ops +
+type-vector + selection vectors → GROUP BY (dictionary keys) → codegen north-star
+→ SIMD (if ever). Prereqs before 5.1: `walkSource.Columns()` and a
+`ColumnBatchSource` on `parquetSource`.
+
+**Bottom line:** the general predicate + universal row fallback let us **ship the
+analytic core without covering all of SQL++**, grow coverage by adding bounded
+primitives, and hold the codegen north-star as the way to avoid a hand-maintained
+second tower entirely.
 
 -------------------------------------------------------
 ## One-line summary
 
-The user's instinct is right: **`[]byte` is axis-agnostic, so a `Val` can encode
-a column, and n1k1's compiler + lifted-buffer + batching machinery are unusually
-well-suited to host a vectorized lane.** The work is not "add a column type" —
-it's *type inference in the compiler* + *a selection-vector primitive* + *an
-opt-in fixed-width encoding*, with SIMD as the final leaf payoff and the
-schemaless JSON path always kept as the correctness fallback.
+**`[]byte` is axis-agnostic, so a `Val` can hold a column** — and n1k1's compiler
++ lifted-buffer + batching machinery are unusually well-suited to host a vectorized
+lane. Measured (arm64, no SIMD): fixed-width beats row-JSON 40–730×, and the win is
+*not parsing* + *touching one stripe*, not SIMD. Steps 1–4 shipped the columnar
+*source* (Parquet, projection pushdown reusing cbq's `EarlyProjection`, zero-alloc
+transpose). Step 5 is the frontier cbq itself hasn't crossed — vectorized execution
+— and it stays bounded (not whack-a-mole) via a *general columnarizable predicate*
++ *generics* + *pointwise lifting*, with the untyped tail always falling back to the
+row engine and **codegen from the lz source as the north-star** that avoids a
+hand-maintained second tower. Prerequisite throughout: compile-time type inference.
