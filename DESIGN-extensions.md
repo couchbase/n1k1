@@ -501,6 +501,116 @@ then composes with WHERE/GROUP BY/indexing like any other scan, and spills like
 any other operator — instead of materializing a giant array inside one
 expression call.
 
+## JS extension power tiers: file markers, reuse, async, and calling out
+
+Forward-looking design for how far the JS extension surface can grow. The through
+-line: **goja has no ambient authority** — a bare runtime can't touch the network,
+filesystem, clock-beyond-Now, or spawn processes unless *n1k1 injects a host
+function for it*. So every capability below is an explicit, opt-in grant layered
+on the sandbox, and the file-suffix marker + `-ext` flags are where the operator
+says "yes, this dir may do that."
+
+### Marking a table-valued / streaming source (`*.source.js`)
+
+We already dispatch by suffix: `*.js` = scalar UDF, `*.agg.js` = aggregate. A
+streaming table-valued source (the `emit`/generator protocol above) wants its own
+marker so the converter routes `FROM name(...)` to the streaming source op rather
+than guessing from the function's arity. Candidates: **`*.source.js`**
+(recommended — it names the FROM-clause role and reads well: "a source"),
+`*.stream.js` (emphasizes streaming), or `*.table.js`/`*.tvf.js`. A plain array-
+returning `*.js` still works in FROM via the materializing `expr-scan` path; the
+suffix is specifically the opt-in into the row-at-a-time `emit` contract. This
+slots into the same `extensionLoaders`/`RegisterExtensionFile` dispatch as
+`.agg.js` (a new branch → a new register path).
+
+### Reuse across files: shared scope now, `require()` later
+
+Basic reuse **already works**: every loaded UDF is defined in one shared per-query
+runtime (see "JS UDF runtime & state"), so a `_lib.js` that defines helper
+functions is automatically visible to every other file's functions — that's how a
+UDF calls another UDF today. The catch is it's one flat global namespace (two
+files defining `helper` collide, last-wins). For hygienic reuse, add an explicit
+module system: a host-provided `require("./util")` that resolves *within the
+`-ext` dirs*, evaluates a file once, and returns its exports (memoized) — goja has
+no built-in module loader, but a CommonJS-style `require` registry (à la
+`goja_nodejs`) or goja's evolving ESM `import` support both fit. `require`
+scoped-to-the-ext-dirs also doubles as a safety boundary (can't `require`
+arbitrary host paths).
+
+### Sync vs async — do we need `async`/`await`?
+
+Mostly no, and that's a feature. n1k1 runs each operator on its own goroutine and
+is happy for a producer to **block** (a native file scan blocks on `read()`; the
+push pipeline applies backpressure around it). So the simplest, most robust model
+is **synchronous host functions**: `http_get(url)` / `s3_get(bucket,key)` /
+`run(...)` block the source goroutine, return bytes, and the JS parses and
+`emit`s — no event loop, no Promise plumbing. goja *does* accept `async`/`await`
+syntax, but resolving a Promise requires draining goja's job queue (an event
+loop), which n1k1 would have to pump and bridge back to the synchronous `yield` —
+real machinery for mostly ergonomic gain. Recommendation: ship blocking host
+calls first; offer an event-loop + `await` lane later only if authors demand the
+`await fetch()` idiom. (Concurrency *within* one source — fan-out many HTTP gets —
+is better served by a host `http_get_all([urls])` that parallelizes in Go and
+returns when all are done than by an in-goja event loop.)
+
+### The "full-power" operator API (emit + stats + cancel)
+
+Beyond `emit(row)`, a power-tier source is essentially *authoring a native
+operator in JS*, so give it the operator's context object:
+
+```js
+// metrics.source.js — the full-power shape
+function metrics(ctx, args) {
+  for (const row of ctx.rows(args)) {          // host-provided lazy input
+    ctx.stats.inc("rows_in");                   // -> feeds n1k1's -stats footer
+    if (ctx.cancelled()) return;                // downstream LIMIT / timeout
+    ctx.emit(transform(row));                   // or ctx.emitBatch([...])
+  }
+}
+```
+
+`ctx` bundles `emit`/`emitBatch` (→ the op's `func(base.Vals) bool` yield and the
+`[]base.Vals` Stage batch), `stats` (bump per-op counters — DESIGN-stats.md, so a
+JS source shows up in the runtime footer like any operator), `cancelled()`
+(backpressure/timeout/`LIMIT` as a poll instead of an `emit` return), and `log`.
+This is the "I know what I'm doing" tier: more surface, more responsibility, same
+push/backpressure/spill contract as the engine's own ops.
+
+### Reaching outside: HTTP/S3, and `system()` to allowlisted programs
+
+Because the sandbox grants nothing by default, "drag data off S3 or an HTTPS
+endpoint" is just a host function the operator opts into — gated by a capability
+flag (e.g. `-ext-allow-net`, ideally with a host/bucket allowlist to blunt SSRF
+and exfiltration, the classic in-process-JS risks the Caveats call out). A
+`shred("s3://…")` or `fetch_ndjson(url)` **streaming source** then pulls bytes and
+`emit`s rows as they arrive — bounded memory, backpressure throttling the fetch.
+
+Shelling out is the most powerful (and most dangerous) grant: a host
+`run(cmd, args, stdin?)` that executes **only programs found in the `-ext` dirs**
+— the extension directory doubles as the sanctioned `bin/`, so the operator vets
+exactly what's runnable (arbitrary `/bin/sh` isn't, unless placed/symlinked
+there). The JS reads the child's stdout as a **lazy line/record iterator**,
+transforms, and `emit`s — i.e. wrap any external tool (a `pdftotext`, a Python
+munger) as a streaming table-valued source. This is the "subprocess/IPC" row of
+the dynamic-loading table, and it must be a distinct opt-in (`-ext-allow-exec`):
+a subprocess runs with the engine's privileges, so allowlist-by-directory is the
+containment, not a true sandbox. Streaming from the pipe keeps memory bounded and
+lets `LIMIT` early-terminate (close the pipe → SIGPIPE the child).
+
+### Turtles all the way down: `system()`-ing n1k1 itself
+
+A delightful special case of the above: one of the allowlisted programs is `n1k1`
+itself. A JS source that runs `n1k1 -c "SELECT …" other/dataRoot` and ingests its
+JSONL output becomes a **federation / fan-out** primitive — query a second
+datastore (or host) from inside the first, map-reduce across shards, or use n1k1
+as its own remote subquery engine, each child a *separate process* (crash- and
+memory-isolated — a stronger boundary than in-process goja). Two things to carry
+forward as requirements: (1) a **recursion guard** — pass a depth counter via env
+to the child and refuse past N, or a query that shells to n1k1 that runs the same
+query is a fork bomb; (2) it composes with the streaming contract, so a parent can
+start consuming a child's rows before the child finishes. Same shape as any
+subprocess source — n1k1 just happens to be the program on the other end.
+
 ## Streaming CTEs / subqueries (avoiding materialization)
 
 Same materialization shape appears with CTEs. `VisitWith` records each WITH
