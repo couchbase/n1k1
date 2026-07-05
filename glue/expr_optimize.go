@@ -38,7 +38,8 @@ func init() {
 		"contains", "position0", "position1", // binary string (expr_str.go)
 		"replace",            // ternary string, 3-arg form (expr_str.go)
 		"substr0", "substr1", // SUBSTR, arity-dispatched below (expr_str.go)
-		"split",          // SPLIT, arity-dispatched below (expr_str.go)
+		"split",        // SPLIT, arity-dispatched below (expr_str.go)
+		"lpad", "rpad", // LPAD/RPAD, arity-dispatched below (expr_str.go)
 		"power", "atan2", // binary math (expr_math.go)
 		"to_boolean", "to_string", "to_number", // type conversions (expr_type.go)
 		"array_length", "array_count", "array_sum", "array_avg", // array readers (expr_array.go)
@@ -262,6 +263,19 @@ func ExprTreeOptimize(labels base.Labels, e expression.Expression,
 			name = "split_1"
 		case 2:
 			name = "split_2"
+		default:
+			return nil, false
+		}
+	}
+
+	// LPAD/RPAD are 2-arg (default space pad) or 3-arg (explicit pad); dispatch to
+	// a fixed-arity native name.
+	if name == "lpad" || name == "rpad" {
+		switch len(operands) {
+		case 2:
+			name += "_2"
+		case 3:
+			name += "_3"
 		default:
 			return nil, false
 		}

@@ -141,6 +141,58 @@ func SubstrNum(v Val) (int, bool) {
 	return int(f), true
 }
 
+// PadLen reads an LPAD/RPAD length operand: ok=false (-> NULL) if not a number,
+// not integral, or negative (cbq `num < 0.0 || num != math.Trunc(num)`).
+func PadLen(v Val) (int, bool) {
+	n, ok := ParseNum(v)
+	if !ok {
+		return 0, false
+	}
+	f := n.Float64()
+	if f < 0 || f != math.Trunc(f) {
+		return 0, false
+	}
+	return int(f), true
+}
+
+// StrPad pads (or truncates) s to l bytes with pad, for LPAD (right=false) /
+// RPAD (right=true) -- byte-based, cbq padString with inRunes=false. If l <= len(s)
+// it returns the first l bytes (a subslice; both L and R truncate the prefix).
+// Otherwise it fills l-len(s) bytes with repeated pad (last chunk truncated),
+// before (LPAD) or after (RPAD) s. The pad case allocates its result (content
+// differs from input, like the case transforms); EncodeStr copies it into the
+// reused buffer. The caller guarantees len(pad) >= 1.
+func StrPad(s []byte, l int, pad []byte, right bool) []byte {
+	if l <= len(s) {
+		return s[:l]
+	}
+	out := make([]byte, 0, l)
+	if right {
+		out = append(out, s...)
+	}
+	d := l - len(s)
+	for d > 0 {
+		if len(pad) < d {
+			out = append(out, pad...)
+		} else {
+			out = append(out, pad[:d]...)
+		}
+		d -= len(pad)
+	}
+	if !right {
+		out = append(out, s...)
+	}
+	return out
+}
+
+// strPadSpace is the default LPAD/RPAD pad (a single space) for the 2-arg form.
+var strPadSpace = []byte(" ")
+
+// StrPadSpace is StrPad with the default single-space pad (LPAD/RPAD 2-arg form).
+func StrPadSpace(s []byte, l int, right bool) []byte {
+	return StrPad(s, l, strPadSpace, right)
+}
+
 // StrSubstr slices the decoded string per SUBSTR (byte-based, cbq
 // strSubstrApply with inRunes=false). startPos is 0 (SUBSTR0) or 1 (SUBSTR1, the
 // 1-based bias applied only to a positive pos). A negative pos counts from the

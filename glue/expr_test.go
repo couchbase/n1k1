@@ -980,6 +980,58 @@ func TestStrSplitDifferentialVsCBQ(t *testing.T) {
 	}
 }
 
+func TestStrPadDifferentialVsCBQ(t *testing.T) {
+	c := func(v interface{}) expression.Expression { return expression.NewConstant(v) }
+	null := c(value.NULL_VALUE)
+	miss := c(value.MISSING_VALUE)
+	s := c("ab")
+
+	cases := []struct {
+		name string
+		expr expression.Expression
+	}{
+		// LPAD 2-arg (default space pad).
+		{"l2-grow", expression.NewLPad(s, c(5))},  // "   ab"
+		{"l2-same", expression.NewLPad(s, c(2))},  // "ab"
+		{"l2-trunc", expression.NewLPad(s, c(1))}, // "a" (first l bytes)
+		{"l2-zero", expression.NewLPad(s, c(0))},  // ""
+		// RPAD 2-arg.
+		{"r2-grow", expression.NewRPad(s, c(5))},  // "ab   "
+		{"r2-trunc", expression.NewRPad(s, c(1))}, // "a"
+		// LPAD 3-arg (explicit pad).
+		{"l3-star", expression.NewLPad(s, c(5), c("*"))},     // "***ab"
+		{"l3-multi", expression.NewLPad(s, c(7), c("xy"))},   // "xyxyxab"
+		{"l3-partial", expression.NewLPad(s, c(6), c("xy"))}, // "xyxyab"
+		// RPAD 3-arg.
+		{"r3-star", expression.NewRPad(s, c(5), c("*"))},   // "ab***"
+		{"r3-multi", expression.NewRPad(s, c(7), c("xy"))}, // "abxyxyx"
+		// Guards.
+		{"neg-len", expression.NewLPad(s, c(-1))},          // NULL
+		{"frac-len", expression.NewLPad(s, c(2.5))},        // NULL
+		{"empty-pad", expression.NewLPad(s, c(5), c(""))},  // NULL
+		{"str-num", expression.NewLPad(c(5), c(3))},        // NULL (non-string)
+		{"pad-num", expression.NewLPad(s, c(5), c(9))},     // NULL (non-string pad)
+		{"len-str", expression.NewLPad(s, c("x"))},         // NULL (non-number len)
+		{"miss-s", expression.NewLPad(miss, c(5))},         // MISSING
+		{"miss-len", expression.NewLPad(s, miss)},          // MISSING
+		{"miss-pad", expression.NewLPad(s, c(5), miss)},    // MISSING
+		{"null-s", expression.NewLPad(null, c(5))},         // NULL
+		{"miss-over-null", expression.NewLPad(null, miss)}, // MISSING dominates
+	}
+
+	for _, tc := range cases {
+		want := cbqEval(t, tc.expr)
+		got, ok := nativeEval(t, tc.expr)
+		if !ok {
+			t.Errorf("%s: did not optimize", tc.name)
+			continue
+		}
+		if got != want {
+			t.Errorf("%s: native=%q, cbq=%q", tc.name, got, want)
+		}
+	}
+}
+
 func TestPredicateDifferentialVsCBQ(t *testing.T) {
 	c := func(v interface{}) expression.Expression { return expression.NewConstant(v) }
 

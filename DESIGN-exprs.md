@@ -115,6 +115,7 @@ type/collation semantics.
 | `replace` | `engine/expr_str.go` + `base.StrReplaceAll` | REPLACE(str, old, repl) 3-arg (ternary harness → buffer); 4-arg count form variadic → falls back |
 | `substr` (`substr0` `substr1`) | `engine/expr_str.go` + `base.StrSubstr` | SUBSTR (byte-based, cbq `inRunes=false`), 2-arg & 3-arg. The optimizer dispatches on arity to `substr{0,1}_{2,3}` native names so each rides a fixed-arity harness (binary / ternary). Rune-based `mb_substr*` fall back |
 | `split` | `engine/expr_str.go` + `base.StrSplit*` | SPLIT (1-arg whitespace / 2-arg sep), arity-dispatched to `split_{1,2}`. **First structure-building native expr** — emits a JSON array of strings into the reused buffer via `EncodeAsString` (which appends, unlike `EncodeStr`) |
+| `lpad` `rpad` | `engine/expr_str.go` + `base.StrPad*` | LPAD/RPAD (byte-based, cbq `inRunes=false`), 2-arg (default space pad) & 3-arg, arity-dispatched to `{l,r}pad_{2,3}`. `l <= len(s)` truncates to first `l` bytes; else pad-fill. Rune-based `mb_*pad` fall back |
 | `abs` `ceil` `floor` `sqrt` `exp` `ln` `log` `sign` `degrees` `radians` `sin` `cos` `tan` `asin` `acos` `atan` `power` `atan2` | `engine/expr_math.go` + `base/math.go` | numeric math (func-passing: stdlib `math.*` / `base.Math*`) |
 | `to_boolean` `to_string` `to_number` | `engine/expr_type.go` + `base/type.go` | scalar type conversions |
 | `array_length` `array_count` `array_sum` `array_avg` `array_min` `array_max` `array_contains` `array_position` | `engine/expr_array.go` + `base/array.go` | reader array ops (no materialization) |

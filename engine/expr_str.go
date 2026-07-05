@@ -43,6 +43,11 @@ func init() {
 	// SPLIT: 1-arg (whitespace) / 2-arg (explicit sep), arity-dispatched.
 	ExprCatalog["split_1"] = ExprSplit1
 	ExprCatalog["split_2"] = ExprSplit2
+	// LPAD/RPAD: 2-arg (default space pad) / 3-arg (explicit pad), arity-dispatched.
+	ExprCatalog["lpad_2"] = ExprLPad2
+	ExprCatalog["lpad_3"] = ExprLPad3
+	ExprCatalog["rpad_2"] = ExprRPad2
+	ExprCatalog["rpad_3"] = ExprRPad3
 	ExprCatalog["length"] = ExprLength
 	ExprCatalog["contains"] = ExprContains
 	ExprCatalog["position0"] = ExprPosition0
@@ -342,6 +347,111 @@ func ExprSplit2(lzVars *base.Vars, labels base.Labels,
 
 	lzExprFunc =
 		MakeBiExprFunc(lzVars, labels, params, path, biExprFunc) // !lz
+
+	return lzExprFunc
+}
+
+// LPAD/RPAD (byte-based, cbq padString inRunes=false). MISSING if any operand
+// MISSING; NULL if str/pad non-string, len non-integral or negative, or pad empty;
+// else base.StrPad(Space) into the reused buffer. Two arities: 2-arg (default
+// single-space pad) is binary, 3-arg (explicit pad) is ternary. right selects
+// RPAD (append) vs LPAD (prepend).
+
+func ExprLPad2(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string) base.ExprFunc {
+	return exprPad2(lzVars, labels, params, path, false)
+}
+
+func ExprRPad2(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string) base.ExprFunc {
+	return exprPad2(lzVars, labels, params, path, true)
+}
+
+func ExprLPad3(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string) base.ExprFunc {
+	return exprPad3(lzVars, labels, params, path, false)
+}
+
+func ExprRPad3(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string) base.ExprFunc {
+	return exprPad3(lzVars, labels, params, path, true)
+}
+
+// exprPad2 is the 2-arg LPAD/RPAD harness (str, len) with the default space pad.
+func exprPad2(lzVars *base.Vars, labels base.Labels, params []interface{},
+	path string, right bool) (lzExprFunc base.ExprFunc) {
+	var lzBufPre []byte // <== varLift: lzBufPre by path
+
+	biExprFunc := func(lzA, lzB base.ExprFunc, lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) { // !lz
+		if LzScope {
+			lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
+			lzValStr := lzVal
+
+			lzVal = lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B"
+			lzValLen := lzVal
+
+			if base.ValKind(lzValStr) == base.ValKindMissing ||
+				base.ValKind(lzValLen) == base.ValKindMissing {
+				lzVal = base.ValMissing
+			} else {
+				lzStr, _, lzStrOk := base.StrDecode(lzValStr)
+				lzL, lzLOk := base.PadLen(lzValLen)
+				if !lzStrOk || !lzLOk {
+					lzVal = base.ValNull
+				} else {
+					lzBufPre = base.EncodeStr(lzVars.Ctx.ValComparer, base.StrPadSpace(lzStr, lzL, right), lzBufPre)
+					lzVal = base.Val(lzBufPre)
+				}
+			}
+		}
+
+		return lzVal
+	} // !lz
+
+	lzExprFunc =
+		MakeBiExprFunc(lzVars, labels, params, path, biExprFunc) // !lz
+
+	return lzExprFunc
+}
+
+// exprPad3 is the 3-arg LPAD/RPAD harness (str, len, pad).
+func exprPad3(lzVars *base.Vars, labels base.Labels, params []interface{},
+	path string, right bool) (lzExprFunc base.ExprFunc) {
+	var lzBufPre []byte // <== varLift: lzBufPre by path
+
+	triExprFunc := func(lzA, lzB, lzC base.ExprFunc, lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) { // !lz
+		if LzScope {
+			lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
+			lzValStr := lzVal
+
+			lzVal = lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B"
+			lzValLen := lzVal
+
+			lzVal = lzC(lzVals, lzYieldErr) // <== emitCaptured: path "C"
+			lzValPad := lzVal
+
+			if base.ValKind(lzValStr) == base.ValKindMissing ||
+				base.ValKind(lzValLen) == base.ValKindMissing ||
+				base.ValKind(lzValPad) == base.ValKindMissing {
+				lzVal = base.ValMissing
+			} else {
+				lzStr, _, lzStrOk := base.StrDecode(lzValStr)
+				lzL, lzLOk := base.PadLen(lzValLen)
+				lzPad, _, lzPadOk := base.StrDecode(lzValPad)
+				if !lzStrOk || !lzLOk || !lzPadOk || len(lzPad) < 1 {
+					lzVal = base.ValNull // non-string / bad len / empty pad
+				} else {
+					lzBufPre = base.EncodeStr(lzVars.Ctx.ValComparer, base.StrPad(lzStr, lzL, lzPad, right), lzBufPre)
+					lzVal = base.Val(lzBufPre)
+				}
+			}
+		}
+
+		return lzVal
+	} // !lz
+
+	lzExprFunc =
+		MakeTriExprFunc(lzVars, labels, params, path, triExprFunc) // !lz
 
 	return lzExprFunc
 }
