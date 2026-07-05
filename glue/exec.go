@@ -19,7 +19,6 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -33,18 +32,6 @@ import (
 	"github.com/couchbase/query/plan"
 	"github.com/couchbase/query/value"
 )
-
-var Debug = 0
-
-func init() {
-	v := os.Getenv("N1K1_EXEC_DEBUG")
-	if v != "" {
-		i, err := strconv.Atoi(v)
-		if err == nil {
-			Debug = i
-		}
-	}
-}
 
 // ServiceRequestEx runs a planned statement through n1k1's own operators.
 // (Formerly took a query/server.Request as its first arg -- dropped as part of

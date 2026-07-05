@@ -29,8 +29,10 @@ import (
 	"path/filepath"
 	"runtime"
 	"runtime/pprof"
+	"sort"
 	"strings"
 
+	"github.com/couchbase/n1k1/base"
 	"github.com/couchbase/n1k1/cmd"
 	"github.com/couchbase/n1k1/glue"
 	"github.com/couchbase/n1k1/records"
@@ -188,7 +190,8 @@ func main() {
 	}
 
 	// Colors/emojis only for an interactive stdout, and honoring NO_COLOR.
-	fancy := isTTY(os.Stdout) && os.Getenv("NO_COLOR") == ""
+	fancy := isTTY(os.Stdout) &&
+	      os.Getenv(base.DefEnv("NO_COLOR", "disable colored terminal output")) == ""
 
 	c := &cli{
 		prog:      prog,
@@ -347,6 +350,16 @@ usage: %[1]s [flags] [datastore-dir | file]
 flags:
 `, prog)
 	flag.PrintDefaults()
+
+	fmt.Fprintf(os.Stderr, "\nenv vars:\n")
+	var lines []string
+	for k, about := range base.EnvAbout {
+	    lines = append(lines, "  " + k + ":\t" + about + "\n")
+	}
+	sort.Strings(lines)
+	for _, line := range lines {
+	    fmt.Fprintf(os.Stderr, line)
+	}
 }
 
 // cli holds front-end state; all engine work goes through c.sess (glue.Session).

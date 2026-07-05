@@ -21,6 +21,8 @@ import (
 	"strings"
 
 	"golang.org/x/term"
+
+	"github.com/couchbase/n1k1/base"
 )
 
 // ---- helpers --------------------------------------------------------------
@@ -166,7 +168,7 @@ func (c *cli) terminalWidth() int {
 			return w
 		}
 	}
-	if s := strings.TrimSpace(os.Getenv("COLUMNS")); s != "" {
+	if s := strings.TrimSpace(os.Getenv(base.DefEnv("COLUMNS", "terminal output width"))); s != "" {
 		if n, err := strconv.Atoi(s); err == nil && n > 0 {
 			return n
 		}

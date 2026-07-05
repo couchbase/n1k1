@@ -512,7 +512,7 @@ in the path at all (even the `^id` key is decoded with jsonparser, not
 including the **path-traversal guard** (`filepath.Rel` check) and the
 missing-file-⇒-skip semantics. Measured on the 3-way `orders` self-join (identical
 results): **total allocation ~2.0 GB → ~917 MB (~54%), the fetch subtree
-~1468 MB → ~377 MB (~74%), GCs 420 → 200.** `DatastoreFetchNative` (env
+~1468 MB → ~377 MB (~74%), GCs 420 → 200.** `DatastoreFetchCBQ` (env
 `N1K1_FETCH_CBQ=1` forces the old path) toggles it for A/B.
 
 - **Fallbacks (still cbq `Fetch`).** Only reached when *neither* native reader

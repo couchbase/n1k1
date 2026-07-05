@@ -34,14 +34,14 @@ import (
 
 func init() {
 	// Escape hatches for A/B profiling and debugging.
-	if os.Getenv("N1K1_FETCH_CBQ") != "" {
-		DatastoreFetchNative = false // legacy cbq keyspace.Fetch (value boxing + encoding/json).
+	if os.Getenv(base.DefEnv("N1K1_FETCH_CBQ", "use cbq keyspace.Fetch (value boxing + encoding/json)")) != "" {
+		DatastoreFetchCBQ = false
 	}
-	if os.Getenv("N1K1_FETCH_NOCACHE") != "" {
-		DatastoreFetchCache = false // native read every time (no per-request doc cache).
+	if os.Getenv(base.DefEnv("N1K1_FETCH_NOCACHE", "no per-request caching when fetching from data store")) != "" {
+		DatastoreFetchCache = false
 	}
-	if os.Getenv("N1K1_FETCH_ACTOR") != "" {
-		DatastoreFetchActor = true // concurrent scan goroutine (see DatastoreFetchActor).
+	if os.Getenv(base.DefEnv("N1K1_FETCH_ACTOR", "use concurrent actor-based fetching from data store")) != "" {
+		DatastoreFetchActor = true
 	}
 }
 
@@ -110,7 +110,7 @@ type SubPathser interface {
 	SubPaths() []string
 }
 
-// DatastoreFetchNative enables the native byte-path fetch: for a classic
+// DatastoreFetchCBQ enables the native byte-path fetch: for a classic
 // directory-backed file keyspace it reads each `<dir>/<key>.json` directly into a
 // reused buffer and yields those raw JSON bytes as base.Val, skipping cbq's
 // keyspace.Fetch (which boxes a value.AnnotatedValue and re-parses via
@@ -118,7 +118,7 @@ type SubPathser interface {
 // DESIGN-data.md "Allocation model"). Flip off to A/B against the cbq path. When
 // the keyspace isn't eligible (a synthetic flat-root / single-file keyspace, or a
 // subpath projection was pushed down), fetch falls back to cbq's Fetch.
-var DatastoreFetchNative = true
+var DatastoreFetchCBQ = true
 
 // DatastoreFetchActor picks DatastoreFetch's execution mode. Default (false) runs
 // the scan inline in the calling goroutine, feeding each scanned ^id straight into
@@ -173,7 +173,7 @@ func DatastoreFetch(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 	//     record at all, so yielding the whole doc is the only correct option.
 	nativeDir := ""
 	containerDir := ""
-	if DatastoreFetchNative {
+	if DatastoreFetchCBQ {
 		_, isFlat := keyspace.(interface{ RecordsDir() string })
 		_, isFile := keyspace.(interface{ RecordsFile() string })
 		if !isFlat && !isFile {
