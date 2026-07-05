@@ -1082,6 +1082,63 @@ func TestRoundTruncDifferentialVsCBQ(t *testing.T) {
 	}
 }
 
+func TestDatePartMillisDifferentialVsCBQ(t *testing.T) {
+	c := func(v interface{}) expression.Expression { return expression.NewConstant(v) }
+	null := c(value.NULL_VALUE)
+	miss := c(value.MISSING_VALUE)
+	// A fixed epoch-millis with a non-zero millisecond component. Native and cbq
+	// both read time.Unix in the SAME process-local zone, so results match
+	// regardless of what that zone is -- cbq is the oracle.
+	ms := c(1500000000123)
+
+	// All known components (case-insensitive) + an unknown one (-> NULL).
+	parts := []string{
+		"millennium", "century", "decade", "year", "quarter", "month",
+		"calendar_month", "day", "hour", "minute", "second", "millisecond",
+		"week", "day_of_year", "doy", "day_of_week", "dow", "iso_week",
+		"iso_year", "iso_dow", "timezone", "timezone_hour", "timezone_minute",
+		"YEAR", "Day", "bogus_part",
+	}
+	for _, p := range parts {
+		expr := expression.NewDatePartMillis(ms, c(p))
+		want := cbqEval(t, expr)
+		got, ok := nativeEval(t, expr)
+		if !ok {
+			t.Errorf("date_part_millis(_, %q): did not optimize", p)
+			continue
+		}
+		if got != want {
+			t.Errorf("date_part_millis(_, %q): native=%q, cbq=%q", p, got, want)
+		}
+	}
+
+	// Edge operands.
+	edges := []struct {
+		name string
+		expr expression.Expression
+	}{
+		{"neg-millis", expression.NewDatePartMillis(c(-1000), c("year"))},
+		{"frac-ms", expression.NewDatePartMillis(c(1234), c("millisecond"))},
+		{"oor-hi", expression.NewDatePartMillis(c(999999999999999.0), c("year"))}, // > max -> NULL
+		{"millis-str", expression.NewDatePartMillis(c("x"), c("year"))},           // NULL
+		{"millis-null", expression.NewDatePartMillis(null, c("year"))},            // NULL
+		{"part-num", expression.NewDatePartMillis(ms, c(5))},                      // NULL
+		{"millis-miss", expression.NewDatePartMillis(miss, c("year"))},            // MISSING
+		{"part-miss", expression.NewDatePartMillis(ms, miss)},                     // MISSING
+	}
+	for _, tc := range edges {
+		want := cbqEval(t, tc.expr)
+		got, ok := nativeEval(t, tc.expr)
+		if !ok {
+			t.Errorf("%s: did not optimize", tc.name)
+			continue
+		}
+		if got != want {
+			t.Errorf("%s: native=%q, cbq=%q", tc.name, got, want)
+		}
+	}
+}
+
 func TestPredicateDifferentialVsCBQ(t *testing.T) {
 	c := func(v interface{}) expression.Expression { return expression.NewConstant(v) }
 

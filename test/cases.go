@@ -5964,6 +5964,16 @@ var TestCasesSimple = []TestCaseSimple{
 	naryProjectCase("trunc-2", []interface{}{"trunc_2",
 		[]interface{}{"json", `3.14959`}, []interface{}{"json", `2`}}, `3.14`),
 	naryProjectCase("round-str", []interface{}{"round_1", []interface{}{"json", `"x"`}}, `null`),
+	// DATE_PART_MILLIS: millisecond & year are TZ-independent for this instant
+	// (1500000000123 = 2017-07-14 UTC, mid-year/mid-day -> year 2017 in any zone).
+	naryProjectCase("datepart-ms", []interface{}{"date_part_millis",
+		[]interface{}{"json", `1500000000123`}, []interface{}{"json", `"millisecond"`}}, `123`),
+	naryProjectCase("datepart-year", []interface{}{"date_part_millis",
+		[]interface{}{"json", `1500000000123`}, []interface{}{"json", `"year"`}}, `2017`),
+	naryProjectCase("datepart-bogus", []interface{}{"date_part_millis",
+		[]interface{}{"json", `1500000000123`}, []interface{}{"json", `"bogus"`}}, `null`),
+	naryProjectCase("datepart-strmillis", []interface{}{"date_part_millis",
+		[]interface{}{"json", `"x"`}, []interface{}{"json", `"year"`}}, `null`),
 	naryProjectCase("sin-zero", []interface{}{"sin", []interface{}{"json", `0`}}, `0`),
 	naryProjectCase("cos-zero", []interface{}{"cos", []interface{}{"json", `0`}}, `1`),
 	naryProjectCase("atan-zero", []interface{}{"atan", []interface{}{"json", `0`}}, `0`),

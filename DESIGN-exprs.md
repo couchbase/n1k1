@@ -118,6 +118,7 @@ type/collation semantics.
 | `lpad` `rpad` | `engine/expr_str.go` + `base.StrPad*` | LPAD/RPAD (byte-based, cbq `inRunes=false`), 2-arg (default space pad) & 3-arg, arity-dispatched to `{l,r}pad_{2,3}`. `l <= len(s)` truncates to first `l` bytes; else pad-fill. Rune-based `mb_*pad` fall back |
 | `abs` `ceil` `floor` `sqrt` `exp` `ln` `log` `sign` `degrees` `radians` `sin` `cos` `tan` `asin` `acos` `atan` `power` `atan2` | `engine/expr_math.go` + `base/math.go` | numeric math (func-passing: stdlib `math.*` / `base.Math*`) |
 | `round` `trunc` | `engine/expr_math.go` + `base.RoundFloat`/`TruncFloat` | ROUND (half-to-even) / TRUNC, 1-arg (prec 0) & 2-arg (integral prec), arity-dispatched to `{round,trunc}_{1,2}`; the per-op float func is passed by name. `round_nearest` falls back |
+| `date_part_millis` | `engine/expr_date.go` + `base.DatePartMillis` | DATE_PART_MILLIS(millis, part) 2-arg — extract a component (year/month/…/iso_week/timezone/…) from epoch millis in the process-local zone (port of cbq `millisToTime`+`datePart`). 3-arg named-timezone form falls back. The date-STRING and other date funcs stay delegated (see below) |
 | `to_boolean` `to_string` `to_number` | `engine/expr_type.go` + `base/type.go` | scalar type conversions |
 | `array_length` `array_count` `array_sum` `array_avg` `array_min` `array_max` `array_contains` `array_position` | `engine/expr_array.go` + `base/array.go` | reader array ops (no materialization) |
 | `window-partition-row-number`, `window-frame-*` | `engine/expr_window.go` | window helpers (FIRST/LAST/NTH/LEAD/LAG) |
@@ -339,7 +340,15 @@ by how they fit the byte/register/lz model.
   to Go `strings.*` into a lifted buffer; watch multi-byte variants.
 - **Numeric/math** (abs/ceil/floor/round/sqrt/pow/exp/ln/trig/…) — `math.*` +
   `strconv.AppendFloat`.
-- **Date/time (non-volatile)** — parse/format millis↔string into a buffer.
+- **Date/time (non-volatile)** — parse/format millis↔string into a buffer. `date_part_millis`
+  (2-arg) is **done** (`base.DatePartMillis`; the millis→component path needs no string
+  parsing). The rest hinge on cbq's date-STRING parser (`strToTime` tries a large ordered
+  `_DATE_FORMATS` list) and named-timezone loading (`loadLocation`) — a big, fiddly port
+  where any format-list or TZ mismatch breaks the differential, so still delegated:
+  `str_to_millis`/`millis_to_str`/`date_part_str`/`date_add_*`/`date_diff_*`/`date_trunc_*`/
+  `weekday_*`. `now_*`/`clock_*` are volatile (Tier D). The millis-only funcs
+  (`date_add_millis`/`date_diff_millis`/`date_trunc_millis`/`weekday_millis`) are the next
+  tractable slice — no string parsing, though several take a component/interval string.
 - **Bitwise, `to_*` conversions, JSON `encode/poly_length/encoded_size`** — scalar.
 - **`LIKE`/`REGEXP_*` do NOT fit here** — they compile to a `regexp` and even the
   per-row match is outside the byte-reuse model (see Lessons). Delegated until a
