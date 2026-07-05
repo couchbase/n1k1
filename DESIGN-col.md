@@ -743,6 +743,25 @@ walk it.)
     types/null-count/min-max); `walkSource` forwards a projection to each per-file
     source so multi-file keyspaces benefit. Unknown columns are *tolerated*
     (skipped, not errors) — a field absent from a file is correctly MISSING.
+    Note: `walkSource` forwards `ColumnsProjector` per-file but does **not** yet
+    implement keyspace-level `ColumnsSource` (only the direct single-file source
+    does). That's a deliberate deferral — nothing consumes keyspace schema yet;
+    when Step 5 does, `walkSource.Columns()` must reconcile across parts
+    (homogeneous → first footer + aggregated null-count / min-of-mins-max-of-maxs
+    zone map; divergent → `union_by_name`), peeking the first footer eagerly.
+  - *Allocation cost of the transpose (measured):* the `parquetSource.Next`
+    scaffolding is alloc-free (reused `buf`/`lines`/`idBuf`; `rec.Doc` borrows
+    `buf`), but the core `array.RecordToJSON` is **not** — it boxes every column
+    value into `interface{}` (`GetOneForMarshal`) and runs `encoding/json`
+    reflection per row: ~**8 allocs / ~975 B per row** (draining a 6-col file),
+    the "transpose/copy cost" the `DESIGN-data.md` caveat named — squarely against
+    n1k1's zero-garbage discipline. Step-4 projection cuts it proportionally (drop
+    5 of 6 columns → drop ~5/6 of the boxing + JSON). A contained fix short of
+    Step 5: replace `RecordToJSON` with a hand-rolled Arrow-array→JSON-bytes writer
+    (type-switch per column, append into the reused `buf`; no `interface{}`, no
+    `encoding/json` — mirroring `csvRowToJSON`), taking the transpose to near-zero
+    steady-state alloc (only the per-batch Arrow decode remains). The full win is
+    Step 5's no-transpose `@col` path.
   - *Caller side*: **cbq's planner already computes the field set** — it does
     `expr.FieldNames(ident, …)` over the query and a full `expression.IsCovered`
     cover-check, exposing the result as `plan.Fetch.EarlyProjection()`
