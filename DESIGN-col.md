@@ -1,1100 +1,428 @@
 # n1k1 — columnar & SIMD design notes
 
-Analysis and pathway proposals for **columnar (vectorized) execution** and
-**SIMD** in n1k1. This is a *thinking* document, not a spec: it collects the
-scattered hints in `TODO.md` (`col versus row optimizations`, `SIMD
-optimizations possible?`) and `DESIGN-data.md` (the "columnar source, row
-engine" caveat) into one place, weighs them against n1k1's actual internals, and
-proposes an incremental path where each step earns its keep on its own.
+Design analysis and running record for **columnar (vectorized) execution** and
+**SIMD** in n1k1, organized around a **six-step plan** (Steps 1–4 shipped, Step 5
+next). Longer measured detail, the SIMD deep-dive, and prior art live in the
+appendices.
 
 See also: `DESIGN.md` (row engine + the lz compiler), `DESIGN-data.md`
 (§ Parquet/Arrow scan sources), `DESIGN-exprs.md` (the no-boxing expression
 model), `DESIGN-stats.md`.
 
--------------------------------------------------------
-## The premise the user noticed
-
-n1k1 already passes `[]byte` everywhere. The fundamental currency is:
-
-```go
-type Val  []byte   // one JSON-encoded value, usually immutable
-type Vals []Val    // one row: positional slots aligned with Labels
-type YieldVals func(Vals)   // push one row upward to the parent op
-```
-
-An operator receives rows one at a time through a `YieldVals` closure, does its
-work, and calls the parent's `YieldVals`. A `Vals` is **one row wide**: slot `i`
-is column `i` (a labeled "register", see `DESIGN.md` § registers).
-
-The observation: **`[]byte` is axis-agnostic.** Nothing about the byte slice
-says "I am one scalar." A `Val` could equally hold *a whole column* — M
-sequential values of one field, packed contiguously. `TODO.md:243` already
-sketches exactly this:
-
-> col versus row optimizations — if columns are fixed size or fixed width, then
-> a Val in the Vals can be interpreted as having multiple values in contiguous
-> sequence. e.g. `prices := vals[7]; numPrices := len(prices) / sizeOfUint64`.
-
-So the question is really: **can we reinterpret the two axes n1k1 already has,
-rather than invent a new data structure?** Largely yes — and that framing is the
-most n1k1-idiomatic way in. But the leverage and the friction both live in
-places worth being precise about.
+**Thesis.** `base.Val` is `[]byte` and axis-agnostic — nothing says a `Val` holds
+*one* value, so it can hold a *packed column*. n1k1 is row-at-a-time today, but it
+is a **query compiler** (`intermed_build` projects the lz interpreter into
+specialized Go), which is the unusual leverage for hosting a vectorized lane.
+Measured (arm64, no SIMD): fixed-width columnar beats the row-JSON path **40–730×**,
+and the win is **not-parsing + touching one column stripe**, *not* SIMD. So the
+plan is source-first and evidence-gated, with SIMD as a last, optional leaf.
 
 -------------------------------------------------------
-## Where n1k1 stands today (the honest baseline)
+## The core idea
 
-- **Strictly row-at-a-time.** Every op in `engine/op_*.go` is written as a
-  `lzYieldVals func(base.Vals)` closure invoked once per row (see
-  `op_filter.go`, `op_project.go`). One row in, zero-or-one row out.
-- **Expressions are scalar and per-row.** `base.ExprFunc = func(vals Vals,
-  yieldErr YieldErr) Val` — given one row, produce one value. The whole
-  no-boxing discipline (`DESIGN-exprs.md`) is built on "read JSON bytes for
-  *this row*, append the result into a reused buffer."
-- **Aggregates fold row-by-row.** `base/agg.go` update funcs have the shape
-  `update(vars, v Val, aggNew, agg []byte, vc) ...` — one incoming `Val` folded
-  into an accumulator `[]byte`. No notion of "apply SUM to a column at once."
-- **The one place batches already exist:** `base/stage.go`. The data-staging /
-  pipeline-breaker path exchanges `BatchCh chan []Vals` between actor
-  goroutines. But note what that batch *is*: `[]Vals` — a slice **of rows**,
-  row-major, each row deep-copied via `ValsDeepCopy`. It exists for
-  **concurrency and cache-friendly hand-off**, *not* for vectorized compute. It
-  is the closest structural neighbor to a column batch, but it is transposed the
-  wrong way (rows, not columns) and its bytes are copies.
+- **Today: strictly row-at-a-time.** `type Val []byte` (JSON), `type Vals []Val`
+  (one row; slots positionally aligned with `Labels` — labeled "registers"),
+  pushed upward via `YieldVals(Vals)`. Expressions are per-row
+  (`ExprFunc(vals) Val`); aggregates fold row-by-row (`base/agg.go`); the only
+  batches that exist (`base/stage.go`'s `[]Vals`) are **row-major copies** for
+  concurrency, not vectorized compute. No vectorized kernel exists anywhere.
 
-Two consequences fall out immediately:
+- **Transpose the axes.** A *column batch* reuses the same two-level `[][]byte`
+  shape but reads it column-wise — each slot is a packed vector of M values, not
+  one scalar:
 
-1. There is no vectorized kernel anywhere. "Columnar support" in n1k1 does not
-   mean "read Parquet" — you can already read columnar files and transpose to
-   rows (`DESIGN-data.md` § iceberg_reader). It means **an op path that computes
-   over many values per call.** That path does not exist today.
-2. The schemaless, JSON-`[]byte` value model is the source of both n1k1's
-   flexibility *and* the reason naïve columnar doesn't drop in: a column of
-   arbitrary JSON values is *variable-width and untyped*, which is exactly the
-   case SIMD and fixed-stride columnar hate.
-
--------------------------------------------------------
-## The central idea: transpose the Val/Vals axes
-
-Today:
-
-```
-Vals  = [ col0        col1        col2      ]      <- ONE row
-          "alice"     42          {"x":1}
-```
-
-A **column batch** reinterprets the same two-level `[][]byte` shape:
-
-```
-ColBatch = [ col0-vector   col1-vector   col2-vector ]   <- MANY rows
-             ["alice",       [42,            [{"x":1},
-              "bob",          43,             {"x":2},
-              "cara"]         44]             {"x":3}]
-```
-
-i.e. `Vals` becomes "one entry per column, each `Val` encodes M sequential
-values." The outer slice length goes from *#columns* to *#columns* (same!), and
-the inner `Val` goes from *one value* to *a packed vector*. The row count M is
-the new hidden dimension.
-
-This is attractive because it **reuses `base.Vals` as the container type** and
-keeps the `YieldVals(Vals)` signature — a column batch is "just" a `Vals` whose
-slots the receiver agrees to interpret column-wise. The push-based plumbing, the
-recycling discipline, the Stage batching, the Labels alignment — all survive
-structurally.
-
-The catch is that "each `Val` encodes M sequential values" hides a real
-decision: **how is a column encoded inside one `[]byte`?**
-
--------------------------------------------------------
-## Encoding a column inside one `Val []byte`
-
-Options, roughly in order of "cheap to adopt" → "fast to compute":
-
-1. **JSON-array reuse (zero new format).** A column of M values is literally the
-   JSON text `[v0,v1,...,vM-1]`. n1k1 *already* has the machinery to walk this:
-   `base.ArrayYield` / `jsonparser.ArrayEach`, and the recently-added native
-   array readers (`array_length/count/sum/avg`, commit 1adc8c3). This is the
-   lowest-friction encoding: a column batch is a `Vals` of JSON arrays, and
-   existing array exprs are the first "vectorized" kernels. **But** it is still
-   variable-width text — you re-parse to find element boundaries, so it buys
-   batching (fewer yield calls) without buying SIMD.
-
-2. **Fixed-width native columns** (the `TODO.md:243` case). When a column's type
-   is known and fixed — `int64`, `float64`, a fixed char[N] — pack the raw
-   little-endian values: `len(val)/8` gives the count, `binary.Uint64` indexes
-   element i. This is the encoding SIMD wants (see below). It requires **type
-   knowledge the plan mostly doesn't have yet** (see § the compiler is the
-   leverage).
-
-3. **Offset/length + payload (Arrow-ish, variable-width).** For strings/blobs:
-   one `Val` holds a contiguous byte payload, a sibling `Val` holds M+1 uint32
-   offsets. This is exactly Arrow's `String`/`Binary` layout, and it means an
-   Arrow/Parquet scan source (`DESIGN-data.md`) could hand its **borrowed**
-   column buffers in *without a per-value transpose* — the columnar caveat's
-   copy cost drops to near zero for the columns you pass through unchanged.
-
-4. **Dictionary-encoded columns.** Low-cardinality string columns → an int32
-   code vector + a dictionary `Val`. GROUP BY / DISTINCT / joins on such columns
-   become integer ops (and integer ops are SIMD-friendly). This is where
-   columnar pays for analytics workloads, not just scans.
-
-5. **Validity + selection vectors** (orthogonal, needed by all of the above):
-   - a **validity bitmap** `Val` marks MISSING/NULL positions (JSON's
-     missing/null distinction has to survive — `base.ValMissing` is `nil`,
-     `ValNull` is `"null"`; a bitmap needs *two* states or a pair of bitmaps).
-   - a **selection vector** (list of surviving row indices, or a bitmap) is how
-     a vectorized `filter` avoids compacting: it yields the *same* column batch
-     plus "rows 3,7,12 survive," and downstream ops honor the selection. This is
-     the single most important vectorized-engine primitive and n1k1 has no
-     analog today (today's `op_filter.go` simply doesn't call the parent yield).
-
-Realistic read: **(1) is a free warm-up, (3)+(5) unlock the Parquet/Arrow win,
-(2)+(4) unlock SIMD and analytic GROUP BY.** They are independent; you don't
-need all five.
-
--------------------------------------------------------
-## Carrying columnar shape: a parallel type vector, NOT label sigils
-
-When a slot's `Val` holds a *packed column* (not a scalar), some op needs to know
-"this slot is a column of type T" — decided early (setup/codegen), zero per-row
-cost. n1k1 already does the scalar version of exactly this: `engine/expr.go:
-ExprLabelUint64` reads a slot whose `Val` is a little-endian `uint64` (not JSON),
-dispatched via the expr catalog at setup — so "a labeled register whose bytes
-carry a special interpretation, chosen early" is established. Columnar generalizes
-it from *packed scalar* to *packed vector*.
-
-**Decision (revised): carry shape as a parallel `[]ColKind` aligned with the op's
-`Labels`, the way `Op.StatsBase` / `Ctx.Stats.Counters` are aligned** (see
-`DESIGN-stats.md`) — assigned by a type-inference/layout pass. **Not** a label-
-string sigil (`@col.f64:.["x"]`): mangling labels is fragile (every `IndexOf`
-must strip it) and fights label semantics. Label strings stay clean; the "slot i
-is a packed f64 column" fact lives in the parallel vector. `ColKind` *is* the
-§ encodings list as an enum: `colJSON` (enc 1), `colI64`/`colF64` (enc 2),
-`colStr` = offsets+payload (enc 3), `colDict` (enc 4), plus companion
-validity/selection slots (enc 5) and a `const`-broadcast kind.
-
-**Deferred until columns flow *between* ops.** The near-term fused ops (§ *Step 5*)
-need none of this — a fused scan→agg knows its own inputs. The shape vector earns
-its keep only at Step 5.4+, when chained vectorized ops exchange columns through
-the generic `Vals` plumbing.
-
-**What it still doesn't settle** (a shape tag is a signal, not the model): where
-the batch row-count M lives (a batch-header field, or `len/elemWidth`); the
-companion validity/selection bitmap slot for nulls; the coherence rule (mixed
-scalar+column only via `const`-broadcast); and the explode rule — any op that
-can't vectorize a column-shaped slot must **explode** it to rows. And the
-correctness boundary: shape tags appear only in compiler/rewrite-produced plans
-that proved every consumer will vectorize-or-explode — never hand-written.
-
--------------------------------------------------------
-## SIMD — where it actually helps (and where it can't)
-
-SIMD is only worth wiring where data is **fixed-stride, typed, and contiguous**.
-Mapping that onto n1k1:
-
-- **Yes, big win:**
-  - Fixed-width numeric columns (encoding 2/4): predicate scans
-    (`price < 1000` over an `int64`/`float64` column → a vector compare
-    producing a bitmap), SUM/MIN/MAX/COUNT aggregates, arithmetic projections.
-    These are textbook SIMD and Go can reach them via `math/bits`-style tricks,
-    assembler (`.s`), or a lib. Note the WASM target (see `web/DESIGN.md`,
-    `wasm-browser-demo`): browsers expose **WASM SIMD (128-bit)**, so a
-    fixed-width kernel can even vectorize in the browser build.
-  - Bitmap operations on validity/selection vectors (AND/OR/POPCOUNT across a
-    filter chain) — word-at-a-time already, SIMD widens it.
-  - Dictionary code comparisons (encoding 4).
-
-- **SIMD-json specifically** (`TODO.md:241` "see SIMD-json articles"): this is a
-  *different* use of SIMD — accelerating the **parse** of JSON text, not the
-  compute. It could speed `op_scan`'s JSON path and `jsonparser` boundary-finding
-  regardless of whether the engine goes columnar. Worth separating in the mind:
-  *SIMD-parse* helps the row engine today; *SIMD-compute* needs the columnar
-  encoding first. (Deep dive on the actual library + its constraints in
-  § *Go's SIMD reality* below — the short version is it's more limited and more
-  x86-specific than it first sounds.)
-
-- **No / not worth it:**
-  - Variable-width JSON text columns (encoding 1) — element boundaries are
-    data-dependent; you're back to scalar parsing. SIMD can help *find* the
-    boundaries (SIMD-json) but not *compute* over them.
-  - Anything with the boxed cbq fallback (`glue/expr.go`) — it allocates per
-    row; vectorization is meaningless there. Vectorization only ever applies on
-    the **native** expression lane (`DESIGN-exprs.md`).
-
-The honest SIMD conclusion: **SIMD is a leaf optimization that only lights up
-after types are known and a fixed-width columnar encoding exists.** It is the
-*last* payoff of the columnar path, not the entry point. Don't lead with it.
-
--------------------------------------------------------
-## Go's SIMD reality (as of 2026) — what's actually reachable
-
-The "kinds of operations are limited" instinct is correct, and it's a *toolchain*
-limit, not just a design choice. Before committing to any SIMD kernel, know the
-four ways to reach SIMD from Go and their costs:
-
-1. **Compiler autovectorization — basically absent.** Go's SSA backend does *not*
-   autovectorize general loops. A few runtime primitives (`bytes.IndexByte`,
-   `bytes.Equal`, `crypto/*`, `hash/crc32`, `math/bits` popcount) are fast because
-   they're **hand-written Plan9 assembly** in the stdlib, not because the compiler
-   vectorized Go. You cannot expect a plain Go `for` loop over a column to become
-   SIMD by itself.
-2. **Hand-written Plan9 assembly (`.s` files).** The real, portable-today option.
-   Per-arch (amd64 `.s`, arm64 `.s`, …), each with a Go fallback for other arches.
-   High maintenance; easy to get wrong; but it's what actually ships.
-3. **`avo` (`mmcloughlin/avo`) — generate that assembly from Go.** This is how
-   `klauspost/*` and `minio/simdjson-go` are built. Still per-arch and still
-   producing asm, but far more maintainable than raw `.s`. If n1k1 hand-rolls
-   kernels, this is the tool to use.
-4. **`GOEXPERIMENT=simd` → the `simd/archsimd` package (NEW).** Landed in **Go
-   1.26** (RC1 Dec 2025, released ~Feb 2026); development continues on `dev.simd`
-   for 1.27. Exposes real intrinsics — vector types like `Int8x16`, `Float64x8`
-   (128/256/512-bit), each intrinsic ≈ one machine instruction — and the roadmap
-   has a future *portable* high-level vector API layered on top. **But the caveats
-   are severe for n1k1's purposes:**
-   - **AMD64-only.** No ARM64/NEON. Many dev machines here are Apple Silicon
-     (this repo is developed on `darwin`/arm64), so archsimd kernels wouldn't even
-     run natively during development.
-   - **No WASM.** The `web/` browser build (`wasm-browser-demo`) can't use
-     archsimd at all; WASM SIMD is a *separate* 128-bit instruction set reached
-     through entirely different codegen.
-   - **Experimental + build-flag gated + unstable API.** Code only compiles under
-     `GOEXPERIMENT=simd`; the surface can still change. Betting n1k1 code on it in
-     2026 means dual codepaths and a moving target.
-
-**The boundary-overhead trap (and why it reinforces "batch first").** A live Go
-issue (golang/go#77647) documents that hand-written-asm SIMD carries a **Go↔asm
-call-boundary cost** on every invocation; for *small* data chunks that fixed
-overhead eats the SIMD win entirely. The intrinsics work (option 4) exists partly
-to erase that boundary. For n1k1 the lesson is direct: **per-`Val` (per-scalar)
-SIMD is a guaranteed loss** — the call overhead dwarfs the work — **so SIMD only
-pays when amortized across a whole column batch of M values in one call.** This is
-independent confirmation of this doc's central thesis: get the columnar *batch*
-first; SIMD is only worthwhile on top of it.
-
-**Practical takeaway.** The set of SIMD ops n1k1 could realistically reach *today*
-(via avo/`.s`, portably) is narrow: fixed-width integer/float compare, arithmetic,
-min/max/sum reductions, and bitmap AND/OR/POPCOUNT. That's *exactly* the set the
-columnar encodings (§2, §4, §5) produce — which is fine, because those are also
-the only ops worth vectorizing. Anything variable-width or type-polymorphic (i.e.
-most raw JSON) is out of reach until decoded into one of those fixed layouts.
-
--------------------------------------------------------
-## Fixed lane counts and the "tail" (remainder) problem
-
-A SIMD register is fixed in **bits**, and holds only a *handful* of lanes — not
-hundreds. Lane count = width ÷ element size:
-
-| Register width | uint64 | uint32 | float64 | uint8 |
-|---|---|---|---|---|
-| 128-bit (SSE, ARM NEON, **WASM SIMD**) | 2 | 4 | 2 | 16 |
-| 256-bit (AVX2) | 4 | 8 | 4 | 32 |
-| 512-bit (AVX-512) | 8 | 16 | 8 | 64 |
-
-So the widest common register does **8** uint64s at a time. (`archsimd`'s type
-names spell this out: `Int8x16` = 16×int8 = 128-bit; `Float64x8` = 8×float64 =
-512-bit.)
-
-**The tail.** A column of N values almost never divides evenly by the lane count
-L. 1003 uint64s at L=8 → 125 full vectors + **3 leftover**. Handling that
-remainder is universal SIMD bookkeeping; the standard techniques, most common
-first:
-
-1. **Scalar remainder loop.** SIMD over `N − (N mod L)`, then a plain loop for the
-   last `N mod L`. Always correct; one extra branchy loop. This is the default.
-2. **Masked / predicated ops.** AVX-512 (`k`-mask registers) and ARM **SVE**
-   (length-agnostic by design) compute only the active lanes via a bitmask, so the
-   tail is one masked op — no scalar epilogue. But needs AVX-512/SVE (not baseline
-   SSE/AVX2/NEON/WASM).
-3. **Pad to a lane multiple with identity values.** If you *own the buffer*,
-   over-allocate to a multiple of L and fill the pad with the op's identity (`0`
-   for SUM/OR, `+∞` for MIN, `−∞` for MAX). Kernels then run only whole vectors and
-   the pad is inert — no tail branch. Cost moves to allocation time.
-4. **Overlapping last block.** Place the final vector to *end* exactly at N,
-   re-touching a few done elements. Fine for idempotent ops (min/max, memcpy),
-   **wrong for reductions** (SUM double-counts) unless the overlap is masked.
-
-**How columnar engines dodge it:** fix a logical batch size that's a multiple of
-every lane count — DuckDB's `STANDARD_VECTOR_SIZE = 2048` (divisible by 2/4/8/16)
-— so the tail *disappears inside every batch but the last*. "A tail per kernel
-call" becomes "a tail once per column."
-
-**Why this favors n1k1.** Because n1k1 would own the column encoding, techniques
-(2)/(3) come nearly free:
-- Pick the columnar batch width as a multiple of L (DuckDB-style) → tails only on
-  the final batch.
-- Pad fixed-width column buffers to a lane multiple with identity values → most
-  kernels never branch for a tail.
-- The **validity/selection bitmap** the design already needs (§ encoding 5) *is*
-  the mask for technique (2): a masked reduction that skips MISSING/NULL lanes is
-  the same machinery that skips tail lanes.
-- The mandatory scalar-Go fallback (Phase 4) doubles as the remainder loop of
-  technique (1) — so it's never wasted work; it's the arm64/WASM path *and* the
-  tail handler.
-
--------------------------------------------------------
-## SIMD-json parse — what it is, and why it's not a drop-in
-
-`simdjson` (Daniel Lemire et al.) and its Go port **`minio/simdjson-go`** parse
-JSON with a **two-stage** design:
-
-- **Stage 1 (the SIMD part):** scan the raw bytes 32/64 at a time to classify
-  *structural characters* (`{ } [ ] : ,`, quotes, whitespace) and emit their byte
-  offsets. This is the vectorized step — it finds *where* the structure is without
-  interpreting values.
-- **Stage 2:** consume those offsets to build a **"tape"** — a flat array encoding
-  the document's structure (element types + offsets/inline values). In
-  `simdjson-go` the two stages run as concurrent goroutines over a channel, and it
-  emits *incremental* uint32 offsets so arbitrarily large files parse (limit: no
-  single string element > 4 GB).
-
-Why it does **not** slot cleanly into n1k1's hot path:
-
-- **Hard CPU requirement, no fallback.** Needs **AVX2 + CLMUL** (Intel Haswell
-  2013+, AMD Ryzen/EPYC 2017+). There is **no scalar fallback** — you call
-  `SupportedCPU()` and route around it yourself. `gccgo` and **WASM** are
-  unsupported, and it's **amd64-only** (no arm64) — so it can't run on Apple
-  Silicon dev machines *or* in the `web/` browser build. That's two of n1k1's
-  actual environments excluded outright.
-- **It produces a tape, not borrowed sub-slices.** n1k1's whole value model is
-  `jsonparser.Get()` — *lazy, on-demand, zero-copy `[]byte` sub-slices* into the
-  original document, touching only the 1–2 fields a query actually projects out of
-  a wide doc (`DESIGN-exprs.md`, `DESIGN-data.md` § borrow contract). simdjson-go
-  instead parses the **whole document** into a tape up front. For n1k1's common
-  case (project a couple of fields from a wide record) that's *more* work, not
-  less — you materialize structure you'll never read. (It can point string
-  payloads back into the message buffer via `WithCopyStrings(false)`, but the tape
-  itself is still whole-document.)
-- **It wins on the opposite workload:** parsing *gigabytes* where you consume most
-  of each large document, with enough per-doc bytes to amortize the two-goroutine
-  setup. On small docs the fixed overhead loses to `jsonparser`.
-
-**So where does it actually fit?** Not as a `jsonparser` replacement on the row
-path — but as an **ingest engine for the columnar path**. Stage-1's structural
-scan + a tape is a natural front-end for *transposing a JSON file into column
-batches* (§ encoding 1/3): parse once, scatter values into per-column buffers.
-That places it around **Phase 5** (columnar ingest), gated behind
-`SupportedCPU()` with the plain `jsonparser` row path as the mandatory fallback
-for arm64 / WASM / pre-Haswell / small-doc cases. Treat *SIMD-parse* and
-*SIMD-compute* as two separate, independently-justified investments.
-
--------------------------------------------------------
-## The compiler is the leverage (why n1k1 is unusually well-placed)
-
-Most engines bolt vectorization on as a runtime interpreter mode. n1k1 has
-something better: **it already generates specialized Go** (`intermed_build` →
-`intermed/` → emitted `*.go`, via the Futamura/LMS approach in `DESIGN.md`). Two
-things follow:
-
-- **Type specialization is already the plan.** `TODO.md:250` wants "types
-  learned during expression compilation" so `sales < 1000` can commit to a
-  numeric-only codepath. That *same* type inference is the precondition for
-  choosing a fixed-width column encoding. Columnar and the existing
-  static-typing TODO are the same project viewed from two angles: once the
-  compiler knows a column is `int64`-only, it can (a) skip the JSON parse and
-  (b) emit a vectorized kernel over a packed `int64` `Val`.
-- **Operator fusion + var lifting already produce tight loops.** A vectorized op
-  is "the same fused loop, but the innermost step is a SIMD kernel over a lifted,
-  reused column buffer." The lifted-buffer discipline (`varLift`, see
-  `op_project.go`'s `lzValsReuse`) is exactly the "reusable column buffer"
-  vectorization needs.
-
-So the compiler can host **two emitted lanes**: the current scalar row lane, and
-a vectorized column lane chosen per-op when the plan proves fixed-width types.
-This is far less disruptive than it sounds because the *interpreter* (`engine/`)
-can stay row-only at first — vectorization can be introduced as a
-**compile-time-only** specialization, mirroring how stats are interpreter-only
-today (`genCompiler:hide`) but inverted.
-
--------------------------------------------------------
-## Where columnar naturally enters n1k1 (highest ROI first)
-
-1. **Aggregation / GROUP BY** — the classic columnar win. SUM/COUNT/AVG/MIN/MAX
-   over a typed column is a tight vectorizable loop; `base/agg.go`'s per-row fold
-   is the thing to specialize. Grouping keys as dictionary codes (encoding 4)
-   makes the hash probe integer-keyed.
-2. **Filter with selection vectors** — cheap to prototype, compounding benefit
-   (every downstream op processes fewer rows without compaction). Needs the
-   selection-vector primitive (§ encoding 5).
-3. **Columnar scan sources (Parquet/Arrow)** — `DESIGN-data.md` already flags
-   that the perf win is gated on "a vectorized/column-batch op path the engine
-   doesn't have today." Encodings (3)+(5) are precisely that path; they let
-   `iceberg_reader.go`'s borrowed Arrow buffers flow in without the per-value
-   transpose.
-4. **ORDER BY / TOP-K** — sort keys as fixed-width columns; the max-heap
-   (`base/heap.go`) can compare packed keys. Lower priority.
-5. **Projection arithmetic** — `a + b * c` over three numeric columns → three
-   vector ops. Nice, but only matters once (1)–(3) are proving the encoding.
-
--------------------------------------------------------
-## Pushdown: does n1k1 have the wiring? (projection down, metadata up)
-
-Borrowing columnar `[]byte`s from Parquet / a columnar store pays off only if two
-signals can flow across the scan boundary: **projection down** ("I only want
-fields X, Y") and **metadata up** ("field XYZ is int64, `null_count == 0`"). Where
-n1k1 stands on each, honestly:
-
-**Projection pushdown (down) — a tale of two scan paths:**
-- **cbq / GSI index path: yes, partially — inherited from the couchbase/query
-  planner.** Three real channels already work:
-  - **Index spans** — range predicates are pushed into `secondaryIndex.Scan(span
-    …)` (`glue/idx_si.go`), so the index returns only the matching key range.
-  - **Covering indexes** — `plan.IndexScan.Covers()` (`glue/conv.go`,
-    `coverableIndexScan`) carries the *exact set of fields the query needs*; when
-    the index covers them, the answer comes from the index with **no document
-    fetch**. That is projection pushdown, just expressed in covering-index terms.
-  - **Subpath projection on fetch** — `datastore_fetch.go` passes `subPaths` to
-    cbq's `keyspace.Fetch(…, subPaths, projection, …)` (the fuller `projection`
-    arg is still passed `nil`, an unused slot).
-- **Native file / `records.Source` path: no.** The interface is a narrow whole-doc
-  pipe (`records/records.go`):
-  ```go
-  type Record struct { ID []byte; Doc []byte }   // whole JSON doc, borrowed
-  type Source interface { Next(rec *Record) (bool, error); Close() error }
   ```
-  `Next` hands back the **entire document**; there is no input to request a
-  subset, and CSV is decoded into whole JSON objects. This is precisely the path a
-  Parquet/columnar reader plugs into — and it has **zero projection channel
-  today.** (`DESIGN-data.md` § "Range pushdown for big/columnar files" via
-  `ReadAt` flags this as future work.)
+  row batch:  Vals = [ "alice"       42          {"x":1}    ]   <- ONE row, 3 cols
+  col batch:  Vals = [ ["alice",      [42,         [{"x":1}, ]   <- MANY rows
+                        "bob","cara"]  43,44]       ...]
+  ```
+  The container, push plumbing, recycling, and Labels alignment all survive; the
+  row count M is the new hidden dimension.
 
-  **The information already exists** — the wanted-field set lives in the `project`
-  op's expressions, in `Covers()`, and in the label vector at plan time. It is
-  simply **not threaded into `Source`.** Wiring it is "surface an already-known
-  field set to the source," not "invent field tracking."
+- **The compiler is the leverage.** `intermed_build` already projects lz
+  `engine/*.go` into specialized Go (Futamura/LMS). The same type inference
+  `TODO.md:250` wants ("`sales < 1000` is numeric") is the precondition for a
+  fixed-width column encoding — so columnar and static-typing are one project.
+  Precedent that a slot's bytes can carry a non-JSON interpretation chosen early:
+  `engine/expr.go:ExprLabelUint64` already reads a slot as a packed LE `uint64`.
+  The vectorized lane can be **compile-time-only** (interpreter stays row; mirrors
+  the interpreter-only stats split).
 
-**Schema / stats (up) — mostly a conceived hook, not built:**
-- **Today `Source` exposes nothing** — no types, no nullability. The engine is
-  schemaless; labels carry no type (the `colI64` shape-tag of § *Carrying columnar
-  shape* is proposed, not present). Even CSV's sniffed types are dropped on the
-  way to JSON objects.
-- **Two hooks are designed in `DESIGN-data.md`:** (1) a typed source's inferred
-  schema is meant to *become the label vector* — a channel to declare columns
-  exists conceptually, it just carries no types/nullability yet; (2) the
-  **catalog / zone-map** design already tracks per-column **min/max, null-count,
-  distinct-estimate, `schema_fingerprint`** — but for *file/partition pruning*,
-  not as a per-scan codegen signal.
-- **Parquet hands you exactly this for free.** Its footer carries the Arrow schema
-  (types) plus per-column-chunk statistics including `null_count` and min/max. So
-  the *storage library provides* "XYZ is int64, `null_count == 0`" — n1k1 just has
-  **no interface to receive and act on it.**
-
-**Synthesis — the two ends of one unbuilt wire.** The needed-field set is known at
-the *plan* end (projection-down), and the types + null-counts are known at the
-*Parquet-footer* end (metadata-up), but `records.Source` carries **neither**.
-The missing piece is *not* a wider `records.Source` — it's a pair of **optional
-sidecar interfaces the caller type-asserts against**, which is already the n1k1
-idiom (`glue`'s `SubPathser` = `interface{ SubPaths() []string }`, used as
-`if sp, ok := plan.(SubPathser); ok {…}`; likewise `interface{ RecordsDir()
-string }`). The core `Source` stays `{Next, Close}` — schemaless jsonl/csv/yaml
-sources are untouched (no forced no-op methods), and a source that doesn't
-implement a capability simply falls back to the full transpose. Two capabilities:
-
-- **projection down** — `ColumnsProjector interface { ProjectColumns(names
-  []string) error }` (call before the first `Next`), so a columnar reader
-  materializes only wanted columns — which is *also* what makes borrowing Arrow
-  column buffers zero-copy (§ enc 3);
-- **schema/stats up** — `ColumnsSource interface { Columns() []ColumnMeta }` where
-  `ColumnMeta` carries `{Name, Type, NullCount, Min, Max}`. This **populates the
-  columnar shape-tags** of § *Carrying columnar shape*: a Parquet footer is the
-  natural *source* of a `colI64` / no-nulls tag, that tag its *destination*.
-
-New capabilities (zone-map `RowGroupPruner`, predicate pushdown) then drop in as
-further sidecars without touching the core interface or any existing source.
-Caveat: the interface is the easy part — the *caller* (the glue scan layer) must
-mine the wanted-column set from the plan (`project` exprs / `Covers()` / the label
-vector, which already know it) and push it down; and the richest consumer of
-types/stats is the **planner** (pruning + type specialization) running *before* a
-scan-time `Source` exists, so `ColumnsSource` serves the scan-time need while
-plan-time stats stay a catalog/zone-map concern (`DESIGN-data.md`/`DESIGN-stats.md`).
-
-The payoff is concrete and compounding: **`null_count == 0` means the column needs
-no validity bitmap, so its SIMD kernels need no masking** (§ *the tail problem*) —
-the fastest path — while a known fixed type lets the compiler skip JSON parsing
-entirely and emit the vectorized kernel directly. Note the encouraging half: the
-cbq/GSI path already *proves the engine can consume rich pushdown* — the
-architecture isn't hostile to it; the gap is specifically the native
-`records.Source` pipe.
+- **The tension: schemaless JSON.** A JSON column is variable-width, untyped, and
+  three-state (`MISSING` ≠ `NULL` ≠ value; `base/base.go`). So the fixed-width fast
+  path is an **opt-in specialization the compiler proves**; the row/JSON path is
+  always the correctness fallback.
 
 -------------------------------------------------------
-## Pathway proposal (incremental, each step stands alone)
+## The plan: Steps 1–6
 
-Each phase is independently shippable and independently *reversible* — none
-forces the next.
+Evidence-gated, source-first, kill-early: prove the ceiling *and* the workload fit
+before building, and let columnar bytes enter from a columnar **source** rather
+than synthesizing them from rows. The row engine is already push-based, compiled,
+and garbage-free — a fast baseline the columnar lane must beat, not a slow one.
 
-- **Phase 0 — SIMD-parse, no engine change.** Evaluate SIMD-json-style parsing
-  for `op_scan`'s JSON path / `jsonparser` boundaries. Pure row engine, pure
-  win, decouples the "SIMD" question from the "columnar" question. *(Measure
-  first; may not beat `jsonparser` on real docs.)*
+- **Step 1 — Characterize the workload. ✅** Target: local directories of mixed
+  files incl. Parquet/Iceberg (a DuckDB-style "query your files in place" niche) —
+  a real analytical-scan segment, so columnar is justified. (Were the workload only
+  selective/point/nested JSON queries, columnar would be a solution seeking a
+  problem — see Appendix D.)
 
-- **Phase 1 — column-as-JSON-array batches (encoding 1).** Introduce a
-  convention where a `Vals` slot *may* hold a JSON array representing a column,
-  reusing `ArrayYield` + the native array readers. No new type, no type
-  inference. Proves the transpose plumbing and the recycling story with zero
-  format risk. Wire it first into a single op (e.g. a vectorized COUNT/SUM).
+- **Step 2 — Spike the ceiling. ✅** arm64, pure Go, no SIMD: fixed-width SUM/filter
+  beats the row-JSON path **40× (narrow docs) to 730× (50-field docs)**, sitting at
+  the native-`[]float64` ceiling. The win is *not-parsing* + *touching one stripe*;
+  SIMD would be additive, not load-bearing. The ≥3–5× gate is cleared by 10–150×.
+  Numbers: Appendix A. (`test/col_test.go`.)
 
-- **Phase 2 — selection vectors (encoding 5).** Give `filter` (and the ops below
-  it) an optional "these row indices survive" channel. This is the primitive the
-  whole vectorized model leans on; get its ownership/lifetime contract right
-  early (it must obey the same "copy if you keep it" rule as `YieldVals`, see
-  `base.YieldVals` doc-comment and `DESIGN-data.md` § borrow contract).
+- **Step 3 — Ship a Parquet source (transpose-to-rows). ✅** `records/parquet.go`
+  (arrow-go) decodes Parquet → JSON rows, wired into `records.OpenFile`; a
+  `.parquet` file is now a queryable keyspace (`TestParquetQueryEndToEnd`;
+  `examples/warehouse/`). `!js`-guarded so arrow-go stays out of the wasm build. A
+  correctness feature with no engine change. Numbers: Appendix A.
 
-- **Phase 3 — typed fixed-width columns (encoding 2), compile-time only.** Ride
-  the `TODO.md:250` type-inference work: when the compiler proves a column is
-  numeric-only, emit a fixed-width packed `Val` and a vectorized kernel for one
-  op (aggregation is the best first target). Interpreter stays row-only.
+- **Step 4 — Projection pushdown via sidecar interfaces. ✅** Optional
+  `records.ColumnsProjector` / `ColumnsSource` (+ `ColumnMeta`) the scan
+  type-asserts (the `SubPathser` idiom) — the core `Source` stays `{Next, Close}`
+  and non-implementers fall back to the full transpose. The wanted-column set is
+  **reused from cbq's planner** (`plan.Fetch.EarlyProjection()`, computed via
+  `expr.FieldNames` + a full `expression.IsCovered` check) — no hand-rolled field
+  analysis. `walkSource` forwards the projection to each per-file source. The
+  transpose was made **zero-alloc** (`appendRecordsNDJSON`: 526K→2.1K allocs/op,
+  2.9× faster, replacing `array.RecordToJSON`'s `interface{}`/`encoding/json`
+  boxing). Guarded by `TestParquetProjectionDifferential` (results ON==OFF, incl.
+  aliases) and `TestParquetFastTransposeEquivalence`. See § Key decisions +
+  Appendix A.
 
-- **Phase 4 — SIMD kernels.** Now, and only now, drop SIMD into the fixed-width
-  kernels from Phase 3 (predicate scan, SUM/MIN/MAX, bitmap AND). Reach it via
-  `avo`-generated asm (portable-today) or `GOEXPERIMENT=simd`/`archsimd`
-  (amd64-only, unstable) — see § *Go's SIMD reality*. **A plain-Go scalar kernel
-  is mandatory, not optional**, since arm64 (Apple Silicon dev machines) and WASM
-  can't run the amd64 asm; add a WASM-SIMD (128-bit) variant for the browser build
-  separately. Every SIMD kernel is one impl among ≥2 that must agree under
-  differential test.
+- **Step 5 — First vectorized op: aggregation, no transpose. ◀ NEXT.** A fused
+  Parquet-scan→agg over a proven-typed, non-null column, reusing `AggSum`'s
+  accumulator via `AggCatalog["sum_v_float64"]`, fed the borrowed Arrow buffer as a
+  `base.Val`. **Aggregation is first because its output is one row** — it rejoins
+  the row engine transpose-free. Full design (decision flow, scalability, prereqs)
+  below in § Step 5.
 
-- **Phase 5 — Arrow/Parquet zero-transpose (encoding 3).** Feed borrowed Arrow
-  column buffers straight into the Phase 2/3 column path, closing the
-  `DESIGN-data.md` columnar caveat.
-
-- **Phase 6 — dictionary encoding (encoding 4).** Low-cardinality strings →
-  integer codes for GROUP BY / joins. Highest complexity, do last.
-
--------------------------------------------------------
-## Tensions & hard parts (don't paper over these)
-
-- **Schemaless JSON is the whole point of SQL++.** A column of heterogeneous /
-  missing / nested values has no fixed width and no single type. The fixed-width
-  fast path is an *opt-in specialization the compiler proves*, never the default;
-  the JSON-array/opaque path must always remain as the correctness fallback.
-  Same shape as `DESIGN-exprs.md`'s native-vs-boxed split.
-- **MISSING vs NULL vs value is a three-state per slot**, not the two-state
-  valid/invalid of Arrow. Any bitmap scheme has to preserve n1k1's
-  `ValMissing (nil)` ≠ `ValNull ("null")` distinction or it breaks SQL++
-  semantics (`ValEqualMissing`/`ValEqualNull` in `base/base.go`).
-- **The garbage-avoidance ethos cuts both ways.** Column batches are *more*
-  recyclable than rows (one big buffer per column vs many small `Val`s) — a real
-  win. But `stage.go` today **deep-copies** rows into batches; a columnar batch
-  wants to *borrow* source buffers where possible, which collides with the
-  "materialize on hand-off" safety currently in `ValsDeepCopy`. The borrow
-  contract must be explicit (cf. the `-race` fixes in `race-fixes-union-all`:
-  shared buffers across actors are a landmine).
-- **Expression model is per-row.** `ExprFunc(vals, yieldErr) Val` can't express
-  "compute over a column" without either (a) a parallel vectorized ExprFunc
-  signature, or (b) the compiler synthesizing the vector loop around the scalar
-  kernel. (b) is more n1k1-idiomatic (fusion already does this) but is compiler
-  work, not a library add.
-- **Correctness bar.** n1k1's test discipline is heavy (`DESIGN-testing.md`, the
-  gsi corpus). A vectorized lane doubles the codepaths under test; it needs
-  differential testing (row lane vs column lane must agree) from day one, not as
-  an afterthought.
-- **When is a batch a batch?** Row-at-a-time has latency benefits (first row out
-  fast); vectorized wants big batches for throughput. n1k1 already has the
-  `batchSize` / `batchChSize` knobs in `stage.go` and flags them as
-  "dynamic/computable" TODOs (`TODO.md:77`) — the columnar batch width is the
-  same knob and should reuse that machinery.
+- **Step 6 — Expand on measured wins.** More aggregates, expressions
+  (vectorized arithmetic kernels), selection-vector filter, dictionary GROUP BY —
+  each gated on a benchmark that beats row-at-a-time on a real workload. **SIMD
+  lives here: last and optional** — an amd64-only accelerator with a mandatory
+  scalar-Go path everywhere else; batching alone already carries the arm64/WASM
+  win. Why SIMD is deferred: Appendix B.
 
 -------------------------------------------------------
-## Open questions
+## Step 5 in detail
 
-- Is the biggest near-term prize **SIMD-parse of JSON** (Phase 0, helps the
-  engine that exists) or **vectorized aggregation** (Phase 1–3, needs new
-  plumbing)? Benchmark both before committing (`DESIGN-benchmark.md`).
-- Should the column encoding be **n1k1-native** (fixed-width LE, our own
-  offsets) or **Arrow-compatible** from the start? Arrow-compat costs some
-  design freedom but makes Phase 5 (Parquet zero-transpose) nearly free and opens
-  interop. Leaning Arrow-compatible for the *variable-width/string* layout,
-  n1k1-native for the *numeric* layout.
-- Can the vectorized lane stay **compile-time-only** indefinitely (interpreter
-  = row, compiler = row-or-column), keeping the interpreter simple? That mirrors
-  the current stats split and seems desirable.
-- Does the WASM build (`web/`) change the cost/benefit? WASM SIMD is 128-bit
-  only and JS-boundary costs dominate there (`js-udf-perf`), so the columnar win
-  in-browser may come more from *fewer boundary crossings* (batching) than from
-  SIMD width. Neither `archsimd` nor `simdjson-go` runs in WASM at all.
-- **How many SIMD backends can we stomach?** Portable SIMD across amd64 + arm64 +
-  WASM means ≥3 asm/intrinsic backends *plus* a scalar reference — a real
-  maintenance and testing multiplier. Is the win worth it beyond amd64 servers,
-  or should SIMD stay an amd64-only accelerator with scalar-Go everywhere else
-  (and columnar *batching alone* — fewer calls, better cache behavior — carry the
-  arm64/WASM benefit)? Batching helps every arch; SIMD helps one. That argues for
-  landing the columnar batch value even where no SIMD kernel ever ships.
+Borrowed Arrow column → vectorized aggregation, no transpose. Land-small order:
+**5.1** `SUM(x)` fused scan→agg (null_count=0 numeric) → **5.2** multi-agg
+`SUM(x),SUM(y)` (an N-tuple over one scan pass, nearly free) → **5.3** `SUM(x+y)`
+(vectorized arithmetic kernel, inline fold) → **5.4** chained vectorized ops +
+type-vector + selection vectors → GROUP BY (dictionary keys) → codegen north-star.
+**Prereqs before 5.1:** `walkSource.Columns()` (multi-file keyspace schema) and a
+`ColumnBatchSource` on `parquetSource` yielding borrowed Arrow columns.
 
--------------------------------------------------------
-## The critical questions this doc has been dodging
+**How the system decides to vectorize (`sum` → `sum_v_float64`).** A *two-input*
+decision, and half the info isn't in the plan:
+1. *Plan shape* (base.Op / cbq plan): ungrouped, agg is SUM/etc. of a **bare
+   field**, single Parquet-capable keyspace.
+2. *Column type + `null_count`* — from `ColumnsSource` (the Parquet footer). The
+   plan is **schemaless**; cbq has no type for `x`, only the footer does. So this
+   can't be a pure planner decision.
 
-Everything above asks *how* to do columnar. The harder questions are *whether* and
-*how much*, and they're about **workload fit**, not mechanism. These gate the
-whole effort:
+It lives in a **post-conv rewrite pass** (like `addColumnProjections`): gate on
+plan-shape; consult `ColumnsSource`; if the column is a supported fixed-width type
+with `null_count==0`, swap the `group` op's `aggCalcs[i][0]` from `"sum"` to
+`"sum_v_"+kernelType` and mark the columnar feed; **else leave the row path**
+(conservative fallback — the same empty→read-all discipline as projection
+pushdown). Multi-agg `SUM(x),SUM(y)` is an N-tuple in one scan pass; `SUM(x+y)`
+needs a vectorized arithmetic kernel first (5.3).
 
-1. **Does columnar even match n1k1's workload?** n1k1 runs inside couchbase/query
-   over **schemaless, nested, heterogeneous JSON**, frequently accessed
-   *selectively* (index-driven, point lookups, small results, `LIMIT`).
-   Columnar/SIMD win on the **opposite** profile: large low-selectivity scans,
-   flat uniformly-typed columns, aggregation over millions of rows. This is *the*
-   question; everything else is downstream of it. If selective/nested/point
-   queries dominate, columnar is a solution seeking a problem — unless there's a
-   real analytical-scan segment (Parquet lakes, big GROUP BY) to aim at.
-2. **Break-even vs. the existing row engine.** The row engine is already
-   push-based, compiled, and garbage-free — *not* a slow baseline. Columnar's
-   fixed setup (build/transpose batches) loses on small/selective/early-`LIMIT`
-   plans. Need a measured crossover and a rule for when the compiler even picks
-   the column lane.
-3. **How much of a real plan can stay in-lane?** Only a sliver of SQL++'s function
-   surface (`DESIGN-exprs.md`) vectorizes; every other op forces an
-   **explode-to-rows** (and re-transpose to resume). If real plans transition
-   lanes several times, transpose overhead can eat the kernel win. Measure the
-   vectorizable fraction of real plans and the per-transition cost.
-4. **The schema-flexibility tax — mixed-type columns.** A JSON "column" may hold
-   int64 *and* string *and* missing across documents; fixed-width needs one type.
-   Policy? Fall back entirely to JSON-array encoding, or typed-majority + an
-   exception list? How common is a *cleanly* typed column in real Couchbase data?
-   (Parquet sources are pre-typed and sidestep this — another vote for
-   source-first.)
-5. **Spilling & concurrency.** n1k1 spills hash-join/group-by/order-by to disk
-   (rhmap/store) and hands row batches across actor goroutines with deep-copy (the
-   `-race` history). How do column batches + borrowed Arrow buffers survive spill
-   and cross-actor handoff without breaking the borrow contract?
-6. **Who builds the first column batch?** Without a columnar *source*, columns
-   must be synthesized by transposing row JSON — a cost that may never repay. The
-   win is only "free" when the bytes arrive columnar (Parquet/Arrow). Strongly
-   implies **source-first, not engine-first.**
-7. **Dual-lane maintenance appetite.** Every vectorized op doubles the code under
-   test and needs differential testing forever. A standing tax that should be a
-   deliberate choice, not drift.
+**Reuse `AggSum`, don't duplicate.** SUM's whole state is one float64 (8 bytes)
+and `Result` formats it. So `sum_v_float64` = `&Agg{Init: AggSum.Init, Result:
+AggSum.Result, Update: <vectorized fold>}` — the type lives in the **catalog key**,
+`Init`/`Result` reused verbatim ⇒ **byte-identical output** ⇒ the differential test
+is exact string equality. Not a widened `Agg` interface (no `UpdateColumnXYZ`
+method explosion). Generalizes: MIN/MAX reuse their accumulators, AVG the 16-byte
+sum+count, COUNT the counter.
 
--------------------------------------------------------
-## Proposed approach — evidence-gated, source-first, kill-early
+**Zero-copy from Arrow.** `array.Float64.Float64Values()` is an unsafe reinterpret
+of the underlying buffer (no parse/copy), and `arr.Data().Buffers()[1].Bytes()` is
+that same packed little-endian buffer — **already a `base.Val`**, borrowed. So the
+column flows through the standard `Update(val Val, …)` signature with zero re-encode;
+`sum_v_float64.Update` reinterprets via `binary.LittleEndian` + `math.Float64frombits`
+(keeping `base` arrow-free), summing float64 **in scan order** ⇒ bit-exact vs the
+row fold. `int64` columns → `float64(v)` per slot, matching the row path's
+`ParseFloat64`. (Borrow lifetime: valid until `batch.Release()`; Update-then-Release,
+one call per batch.)
 
-Given the above, do *not* start by building columnar ops. Sequence to buy the most
-information for the least code, and abandon early if the numbers aren't there.
-(This refines the earlier § *Pathway proposal* with a strategy for *whether* to
-walk it.)
+**No label sigils.** Columnar shape is carried by a **parallel `[]ColKind`** aligned
+with `Labels` (StatsBase-style; not a `@col.f64:` label prefix, which would force
+every `IndexOf` to strip it). Deferred until 5.4, when columns flow *between* ops;
+fused 5.1–5.3 ops know their own inputs and need none.
 
-- **Step 1 — Characterize the workload (no code).** Answer Q1: is there a real
-  analytical-scan / Parquet-lake / big-aggregation segment for n1k1? If not, scope
-  columnar to just "*query* Parquet at all" (correctness via transpose) and skip
-  vectorization entirely.
-- **Step 2 — Spike the ceiling (throwaway, ~1–2 days).** Bound the upside:
-  micro-benchmark SUM and a predicate-filter over ~1M values, comparing (a)
-  today's row-JSON path, (b) a hand-built fixed-width `[]byte` column + scalar Go,
-  (c) + SIMD via `avo` — on **both amd64 and arm64**. If best-case isn't ≥3–5×,
-  the *realistic* win (after transpose/explode overhead) won't justify a dual-lane
-  engine. Stop here. **✅ Done on arm64 (pure Go, no SIMD) — the gate is cleared
-  by 40×–730×; see § *Spike results* below.**
-- **Step 3 — Ship a columnar *source*, transpose-to-rows (real feature, no engine
-  change).** Wire a pure-Go Parquet/Arrow `RecordSource` yielding borrowed column
-  buffers, initially transposed to JSON rows (the `DESIGN-data.md` correctness
-  path). Delivers "query Parquet at all" — user value independent of
-  vectorization — and creates the substrate. **✅ Shipped — `records/parquet.go`
-  (arrow-go, transpose-to-rows via `array.RecordToJSON`) wired into
-  `records.OpenFile`; a `.parquet` file is now a queryable keyspace end-to-end
-  (`SELECT … FROM orders` over `orders.parquet`, proven by
-  `test/parquet_test.go:TestParquetQueryEndToEnd`). Guarded `!js` (the wasm/browser
-  build gets a stub — arrow-go stays out of it, verified by `go list -deps`). The
-  *feasibility* measurements (projection pushdown 80–137× / 0.2% bytes, free footer
-  types+null_count+min/max, parse-free Arrow `[]float64` at the 0.9 ns/value
-  fixed-width ceiling) are in § *Parquet prototype results*.**
-- **Step 4 — Optional sidecar interfaces on `Source` (the missing wire).** *Not*
-  a wider `Source` — add capability interfaces the scan layer type-asserts, the
-  `SubPathser` idiom (§ *Pushdown*): `ColumnsProjector{ ProjectColumns([]string) }`
-  and `ColumnsSource{ Columns() []ColumnMeta }`. The Parquet source implements both;
-  jsonl/csv/yaml stay `{Next, Close}` and fall back to the full transpose. The
-  Parquet reader then reads only wanted columns and declares type + `null_count`;
-  still row-transposed downstream, but pushdown cuts I/O and the schema populates
-  the label markers. **✅ DONE — both sides.**
-  - *Source side*: `records.ColumnsProjector` / `records.ColumnsSource`
-    (+ `ColumnMeta`) on the core `Source`; `records/parquet.go` implements both
-    (lazy reader so `ProjectColumns` precedes iteration; `Columns()` reads footer
-    types/null-count/min-max); `walkSource` forwards a projection to each per-file
-    source so multi-file keyspaces benefit. Unknown columns are *tolerated*
-    (skipped, not errors) — a field absent from a file is correctly MISSING.
-    Note: `walkSource` forwards `ColumnsProjector` per-file but does **not** yet
-    implement keyspace-level `ColumnsSource` (only the direct single-file source
-    does). That's a deliberate deferral — nothing consumes keyspace schema yet;
-    when Step 5 does, `walkSource.Columns()` must reconcile across parts
-    (homogeneous → first footer + aggregated null-count / min-of-mins-max-of-maxs
-    zone map; divergent → `union_by_name`), peeking the first footer eagerly.
-  - *Allocation cost of the transpose (measured):* the `parquetSource.Next`
-    scaffolding is alloc-free (reused `buf`/`lines`/`idBuf`; `rec.Doc` borrows
-    `buf`), but the core `array.RecordToJSON` is **not** — it boxes every column
-    value into `interface{}` (`GetOneForMarshal`) and runs `encoding/json`
-    reflection per row: ~**8 allocs / ~975 B per row** (draining a 6-col file),
-    the "transpose/copy cost" the `DESIGN-data.md` caveat named — squarely against
-    n1k1's zero-garbage discipline. Step-4 projection cuts it proportionally (drop
-    5 of 6 columns → drop ~5/6 of the boxing + JSON). **✅ Fixed** —
-    `records/parquet.go` now uses a hand-rolled Arrow-array→JSON writer
-    (`appendRecordsNDJSON`: type-switch per column straight into the reused `buf`;
-    RFC-8259 string escaping; NaN/Inf→null; zero-copy arrow `String.Value`
-    substrings), gated by `fastRenderable` with a `RecordToJSON` fallback for types
-    it doesn't handle (timestamps/decimals/lists/structs). Measured (65 K rows,
-    6 cols): **526 K → 2.1 K allocs/op (~248×, ~0.03 allocs/row), 2.9× faster**;
-    the residual ~2 K allocs are per-*batch* Arrow column-buffer decode (only
-    Step 5's zero-copy columnar borrow removes those). Proven byte-for-value
-    equivalent to `RecordToJSON` by
-    `test/parquet_test.go:TestParquetFastTransposeEquivalence` (ints/uints/floats/
-    escaped-strings/bools/nulls all unmarshal-equal); `BenchmarkParquetTransposeDrain`
-    guards the alloc property.
-  - *Caller side*: **cbq's planner already computes the field set** — it does
-    `expr.FieldNames(ident, …)` over the query and a full `expression.IsCovered`
-    cover-check, exposing the result as `plan.Fetch.EarlyProjection()`
-    (`planner/build_select_from.go:checkEarlyProjection`). So n1k1 *reuses* it:
-    `VisitFetch` reads `EarlyProjection()` off the records-scan's fetch and attaches
-    it; `DatastoreScanRecords` hands it to the source's `ColumnsProjector`. No
-    hand-rolled field analysis — cbq's is battle-tested and correct (handles
-    `SELECT *` → empty → read-all, `ORDER BY`/`WHERE`/agg fields, correlation).
-  - *Correctness guardrail*: `TestParquetProjectionDifferential` — results with
-    projection ON must equal OFF across a battery (project, filter+agg, star,
-    absent-field); a `DisableColumnProjection` knob forces OFF. All pass; projecting
-    a superset is always safe, and the empty/all-unknown cases fall back to read-all.
-- **Step 5 — First true vectorized op, compile-time-only.** Aggregation over a
-  proven-typed, non-null column straight from Parquet — end-to-end, no transpose.
-  Fused scan→agg reusing `AggSum`'s accumulator (see § *Does Step 5 scale?* for the
-  full plan and the whack-a-mole analysis). Differential-test against the row lane
-  from line one. Measure on real data.
-- **Step 6 — Expand only on measured wins.** Selection vectors for filter, more
-  aggregates, dictionary encoding for GROUP BY — each gated on a benchmark that
-  beats row-at-a-time on a real workload.
-- **Step 7 — SIMD last, amd64-only, scalar fallback mandatory** (which is also the
-  arm64/WASM path and the tail/remainder loop).
+**Traps to pre-empt.** `COUNT(col)` ≠ `COUNT(*)` on nulls (null_count=0 sidesteps
+v1); multi-file partial-aggregate combine (Σ / min / max associative, AVG carries
+its count); and the fused path bypasses the row engine's `Stage` / stats /
+`YieldStats` — preserve scan stats, `LIMIT`, and cancellation.
 
-The throughline: **the row engine is already good and the dual-lane cost is real,
-so prove the ceiling *and* the workload fit before committing — and let columnar
-bytes enter from a columnar source rather than synthesizing them from rows.**
+### Does Step 5 scale, or is it whack-a-mole?
+
+Done naively it **is** whack-a-mole — a detector per query shape × a kernel per
+(operation × type). Three levers plus a universal fallback keep it bounded:
+
+1. **A general "columnarizable?" predicate, not per-shape matching.** A recursive
+   bottom-up question over the op/expr tree: each node answers "can I run columnar
+   given my children's shapes and the source column types?" Query shapes fall out
+   of *composition* — you never enumerate them. (StatsBase discipline applied to
+   shape: one inference pass, not N cases.)
+2. **Generics kill the type combinatorics** — `sumV[T Numeric]`, one kernel per
+   operation, the compiler instantiates per type (Go 1.25).
+3. **Pointwise lifting** — a *typed* scalar `f(a,b)` becomes `for i {
+   out[i]=f(a[i],b[i]) }` mechanically, vectorizing the whole pointwise
+   arithmetic/comparison surface with no per-function work.
+
+**Honest boundary (what doesn't fall out for free):** reductions (a fixed ~5) and
+reshaping relational ops (filter+selection, group-by, join, sort — the bounded
+~dozen) are hand-authored once; the untyped/string/date long tail **explodes to
+the row engine** — a graceful fallback, not a hole. So coverage = *pointwise
+(≈free via lifting)* + *fixed reductions* + *fixed relational ops* + *everything
+else → row engine*. Any composition of vectorized primitives over typed columns
+works; that is **not** whack-a-mole.
+
+**The codegen way out (the north-star).** Rather than hand-maintain a second tower,
+teach `intermed_build` to project a **column-batch target** from the *same* lz
+source — the generated program loops over column batches (inner element loop, exprs
+inlined) instead of over rows. Write each kernel once (scalar, lz); the compiler
+emits *both* lanes, chosen per query by type inference. **Pointwise lifting is its
+own LegoBase/LMS source-transform pass** (`// <== pointwise` over a typed scalar
+kernel) whose lz-style output feeds *both* the interpreter (so vectorized kernels
+can be differential-tested vector-vs-scalar *before* the compiler is involved) and
+`intermed_build`. Prerequisite: compile-time type inference (`TODO.md:250`) — you
+can only project the typed column loop once you know the column types. See
+Appendix C for the LMS/LegoBase lineage.
 
 -------------------------------------------------------
-## Spike results — measured ceiling (Apple Silicon, pure Go, NO SIMD)
+## Key design decisions (settled)
 
-Step 2's ceiling spike, run on an M-series MacBook (arm64) with **scalar Go only —
-no SIMD, no amd64 asm** — so these numbers are the **floor** of the columnar win,
-not the ceiling. SUM and filter-count over N float64 `price` values, comparing
-n1k1's faithful row path (whole JSON doc per record, `jsonparser.GetFloat` per
-row) against the columnar encodings. All paths zero-alloc. Reproduce (benchmark
-lives in `test/col_test.go`; needs the `DESIGN-testing.md` worktree bootstrap):
-`CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -tags n1ql ./test/
--run='^$' -bench=BenchmarkCol -benchmem`.
+- **Columnar source = optional sidecar interfaces**, not a widened `Source` (the
+  `SubPathser` idiom). `ColumnsProjector{ ProjectColumns([]string) error }` and
+  `ColumnsSource{ Columns() []ColumnMeta }`; non-implementers fall back to the row
+  transpose. Reuse cbq's `EarlyProjection()` for the field set.
+- **Column encoding = the Arrow value buffer itself.** Its raw `[]byte` *is* the
+  packed fixed-width column (`base.Val`, zero-copy) — no re-encode. The JSON-array
+  encoding barely helps (1.3×, Appendix A) — skip it. Arrow offsets+payload (strings)
+  and dictionary codes (GROUP BY) come later.
+- **Shape carried as a parallel `[]ColKind`** (StatsBase-style), not label sigils;
+  introduced only at 5.4 when columns flow between ops.
+- **`null_count == 0` fast path first** — no validity bitmap ⇒ unmasked kernel;
+  nulls/selection bitmaps come with the relational ops.
+- **Reuse existing accumulators** (`AggSum` etc.) via typed catalog keys
+  (`sum_v_float64`); do not widen the `Agg` interface.
+- **Differential testing from line one** — the row lane is the oracle; scalar-Go
+  kernels sum in scan order ⇒ *exact* equality (SIMD would force epsilon compares,
+  another reason SIMD is last).
+- **Reuse cbq's plan analysis, don't hand-roll** — the recurring Step-4 lesson
+  (EarlyProjection), reapplied to Step 5's vectorizability detection.
 
-**SUM, per-value cost (ns/value), narrow 1-field doc:**
+-------------------------------------------------------
+## Still-open questions
 
-| N | row-JSON (n1k1 today) | JSON-array (enc 1) | fixed-width (enc 2) | native `[]float64` |
+- **Compile-time-only lane forever?** (interpreter stays row, compiler emits
+  row-or-column). Leaning yes; the lifting pass would hand the interpreter
+  vectorized kernels anyway if we ever want them for its own testing.
+- **String/dictionary encoding layout.** Numeric is settled (use Arrow's LE buffer
+  directly). Variable-width strings: Arrow-compatible offsets+payload vs n1k1-native?
+  Lean Arrow-compatible (near-free Parquet interop).
+- **How much columnar to ship to WASM at all?** No `archsimd`/`simdjson`/asm there;
+  the in-browser win is *batching* (fewer JS-boundary crossings), not vector width.
+- **Operate on encoded data?** Computing on Parquet's RLE/dict pages *without*
+  decoding (Appendix C) is the real "stop transposing" — a frontier beyond Step 5.
+- **Predicate/row pushdown.** cbq's `iceberg_row_filter.go` skips rows at the Arrow
+  level before transposing; n1k1 filters after. A future `RowGroupPruner`/predicate
+  sidecar, pairing with 5.4 selection vectors.
+
+-------------------------------------------------------
+## Appendix A — measured results
+
+### Step 2 spike (arm64, pure Go, NO SIMD) — the ceiling
+
+`test/col_test.go`. SUM/filter over N float64 values; row path is faithful to
+n1k1 today (whole JSON doc, `jsonparser.GetFloat` per row). All paths zero-alloc.
+
+**SUM, ns/value, narrow 1-field doc:**
+
+| N | row-JSON | JSON-array (enc 1) | fixed-width (enc 2) | native `[]float64` |
 |---|---|---|---|---|
 | 64  | 36.8 | 28.1 | 0.68 | 0.44 |
 | 1K  | 38.8 | 30.2 | 0.87 | 0.83 |
 | 64K | 38.5 | 29.8 | 0.88 | 0.87 |
 | 1M  | 39.8 | 30.0 | 0.91 | 0.87 |
 
-1. **Fixed-width is ~44× the row path and sits AT the native-`[]float64` ceiling**
-   (0.91 vs 0.87 — the little-endian decode is nearly free). The row path's whole
-   cost is **JSON number parsing**, which columnar skips.
-2. **No tipping point in N** at the kernel level — per-value cost is flat for every
-   approach; fixed-width wins from N=64. "You need big data for columnar" is false
-   for the *compute*. (Fixed-width drifts 0.68→0.91 as the 8 MB column outgrows
-   cache — memory-bandwidth bound; the row path is parse-bound, hence flat.)
-3. **JSON-array encoding (enc 1) barely helps** (1.3× over row) — it still parses
-   text per value. The real jump is fixed-width (enc 2). Prioritize enc 2 over
-   enc 1.
+Fixed-width is ~44× the row path and sits at the native-`[]float64` ceiling (the
+LE decode is nearly free); the row cost is JSON number parsing. **No tipping point
+in N** — fixed-width wins from N=64. JSON-array (enc 1) barely helps (still parses
+text) → prioritize fixed-width (enc 2).
 
-**The tipping point IS document width — where the "vertical stripe" shines
-(N=1M):**
+**Doc-width sweep (N=1M) — where the "vertical stripe" shines:**
 
-| doc width (fields) | row-JSON ns/value | fixed-width | speedup |
+| doc width | row-JSON ns/value | fixed-width | speedup |
 |---|---|---|---|
 | 1  | 38.4 | ~0.9 | 42× |
 | 5  | 83.6 | ~0.9 | 93× |
 | 20 | 294  | ~0.9 | 327× |
 | 50 | 660  | ~0.9 | 730× |
 
-The row path scales **linearly with doc width** — a left-to-right JSON parser must
-scan past every unwanted field to reach `price`. The fixed-width column is
-**constant** — it touches only its stripe. So the columnar win grows with exactly
-what hurts row-at-a-time: **wide records where you project few fields.** That is
-the vertical-stripe payoff, quantified: ~40× at 1 field, ~730× at 50 fields.
-(Filter-count `price > 500`, N=1M, narrow: row 39.5 vs fixed 0.69 → **57×**.)
+The row path scales linearly with doc width (a left-to-right parser skips past
+every unwanted field); the fixed-width column is constant. So the win grows with
+exactly what hurts row-at-a-time: **wide records, few projected fields.**
+(Filter-count `price>500`, N=1M, narrow: row 39.5 vs fixed 0.69 → 57×.)
 
-**Economic break-even when the source is JSON** (you must pay to *build* the
-column). Building a fixed-width column from JSONL costs one parse pass
-(~38 ns/value); each op over it then costs ~0.9. For K ops touching the column:
-row = 38·K, columnar = 38 + 0.9·K → columnar wins once **K > ~1**. So **any query
-that touches a column more than once** (`WHERE price>x … SUM(price)`, GROUP BY +
-agg) already repays a transient transpose. From a **Parquet/Arrow source (no parse
-to build), columnar wins unconditionally.**
+**Economic break-even, JSON source** (you pay to *build* the column, ~38 ns/value
+once, then ~0.9/op): row = 38·K, columnar = 38 + 0.9·K → columnar wins once **K >
+~1** (any query touching a column more than once). From a **Parquet source (no
+parse to build), it wins unconditionally.**
 
-**What the spike settles for the approach:**
-- The Step-2 gate (≥3–5×) is **cleared by 40×–730× on arm64 with zero SIMD.** On
-  this hardware the win is *not-parsing* + *touching one stripe*; **SIMD would be
-  additive, not load-bearing.** (This is *why* an arm64-only, no-SIMD target is
-  still very much worth pursuing — the dominant lever isn't vector width.)
-- Confirms **source-first**: unconditional win from a columnar source, and even
-  JSON-sourced columns pay off after a single reuse — so the transpose is *not*
-  the blocker the `DESIGN-data.md` caveat feared, provided the column is reused or
-  the doc is wide (both true for this "directories full of fat files" workload).
-- Confirms **fixed-width (enc 2) ≫ JSON-array (enc 1)** — 44× vs 1.3×.
-- **Caveat — this is the kernel ceiling.** It excludes explode-to-rows transitions
-  (§ critical Q3) and assumes a cleanly-typed column (§ Q4). A single SUM straight
-  over JSONL with no reuse is a wash (you paid the parse to build). The measured
-  win is real precisely for the reuse / wide-doc / columnar-source cases — which
-  is the target workload, not a coincidence.
+### Step 3/4 Parquet prototype (arrow-go, arm64)
 
--------------------------------------------------------
-## Parquet prototype results — a columnar source, measured (arrow-go, arm64)
+`test/parquet_test.go`. Wide file `{id, price, f0..fN}`, query wants one column.
 
-Step 3's prototype (`test/parquet_test.go`, `apache/arrow-go/v18` — already an
-n1k1 indirect dep, the same library `glue`'s `iceberg_reader` builds on). It
-writes a Parquet file of `{id int64, price float64, f0..fN string}` — a *wide*
-record where a query wants one numeric column — then exercises the three things a
-columnar source is supposed to buy us. All on the same arm64 MacBook, pure Go.
+**Projection pushdown** — read only `price` vs all 14 columns: 0.6 ms / ~0.02 MB
+vs 50 ms / ~10.3 MB → **0.2% of the bytes, ~80× (137× at 1M rows)**, done by the
+file format.
 
-**(1) Projection pushdown — read only the column you want.** Materializing just
-`price` vs the whole 14-column file:
+**Free footer metadata** (no data pages read): `price type=DOUBLE null_count=0
+min=0.5 max=999.5`, etc. → type picks the kernel; `null_count=0` ⇒ no validity
+bitmap; min/max are zone-map inputs.
 
-| read | time | column-chunk bytes |
-|---|---|---|
-| `price` only (1 of 14 cols) | 0.6 ms | ~0.02 MB |
-| all 14 columns | 50 ms | ~10.3 MB |
-
-→ the projection touches **0.2% of the bytes and is ~80× faster to materialize**
-(~137× at 1M rows). This is the "only these fields wanted" wire from § *Pushdown*,
-working at the storage layer — and it's the file format doing it, not n1k1.
-
-**(2) Schema + stats from the footer, free.** With **no data pages read**, the
-footer yields physical types and per-column statistics:
-
-```
-col[0] id     type=INT64      null_count=0
-col[1] price  type=DOUBLE     null_count=0 min=0.5 max=999.5
-col[2] f0     type=BYTE_ARRAY null_count=0
-```
-
-→ "metadata up" (§ *Pushdown*) is real and free: the type picks the fixed-width
-kernel, and **`null_count=0` means no validity bitmap → the unmasked kernel**
-(§ *the tail problem*). `min`/`max` are exactly the zone-map inputs for later
-partition/row-group pruning.
-
-**(3) A parse-free fixed-width column.** Arrow hands back the price column as a
-borrowed contiguous `[]float64`; the SUM kernel runs straight over it:
+**Parse-free column SUM:**
 
 | SUM path | ns/value | vs row-JSON | allocs |
 |---|---|---|---|
 | Arrow column, kernel only | 0.93 | ~56× | 0 |
-| Arrow column, full open+project+decode+sum | 3.0 | ~17× | 2800 / ~18 MB |
-| row-JSON baseline (n1k1 today) | 52 | 1× | 0 |
+| full open+project+decode+sum | 3.0 | ~17× | ~2800 / 18 MB |
+| row-JSON baseline | 52 | 1× | 0 |
 
-→ the kernel sits at the **same ~0.9 ns/value fixed-width ceiling the § Spike
-results measured — but now with NO JSON parse to build the column**, because the
-bytes arrived columnar. Even the *full* path (re-open + Snappy-decode + Arrow
-materialize + sum, every iteration — worst case) is ~17× the row path.
+The kernel hits the fixed-width ceiling with *no parse to build the column*. The
+full path's allocs are Arrow's decode/materialization (per batch); the zero-copy
+end-to-end path (0.93, not 3.0) is Step 5.
 
-**Honest caveats:**
-- The full path allocates (~18 MB / 2800 allocs/op) — that's Arrow's
-  decode/materialization, i.e. the *transpose/copy* the `DESIGN-data.md` columnar
-  caveat named. A real integration reuses the `memory.Allocator` and `Release()`s
-  each batch to amortize it; the prototype doesn't bother.
-- This reads Arrow's *materialized* column — it does **not** yet carry the borrowed
-  buffer all the way into a n1k1 op with columnar markers. That zero-copy,
-  end-to-end path is Step 5, and it's where the 0.93 (not 3.0) becomes the number
-  that matters.
-- Requires the `DESIGN-testing.md` worktree bootstrap (arrow-go pulls the EE
-  module graph like everything else under `-tags n1ql`).
+### Step 4 zero-alloc transpose
 
-**Net:** the columnar-source half of the plan is de-risked. Projection pushdown
-and free typed/null metadata work today through arrow-go; the parse-free column
-hits the fixed-width ceiling. The remaining work is *integration* (Source
-interface widening, then the columnar in-op path), not *feasibility*.
+`appendRecordsNDJSON` (type-switch per Arrow column into a reused buffer; RFC-8259
+escaping; NaN/Inf→null; zero-copy `String.Value`) replaced `array.RecordToJSON`
+(which boxed each value to `interface{}` + `encoding/json`, ~8 allocs/row).
+Measured (65K rows, 6 cols): **526K → 2.1K allocs/op (~248×), 2.9× faster**;
+residual allocs are per-batch Arrow decode. `fastRenderable` gates it, with a
+`RecordToJSON` fallback for exotic types (timestamp/decimal/list/struct). Proven
+equivalent by `TestParquetFastTransposeEquivalence`.
 
 -------------------------------------------------------
-## Step 5 — takeaways from Steps 1–4
+## Appendix B — SIMD reality (why it's last and optional)
 
-Concrete takeaways from building the spike + Parquet source + pushdown, carried
-into Step 5 (borrowed Arrow column → vectorized aggregation, no transpose):
+**Go SIMD is toolchain-limited.** No compiler autovectorization of general loops
+(the fast stdlib bits are hand-written Plan9 asm). Four ways to reach it: (1) raw
+`.s` asm per-arch; (2) `avo` (asm-generator; what klauspost/minio use); (3) cgo
+(defeats the point); (4) `GOEXPERIMENT=simd` → `simd/archsimd` (Go 1.26) — but
+**amd64-only, no ARM/NEON, no WASM, unstable API**. Realistically reachable today
+(portably): fixed-width int/float compare, arithmetic, min/max/sum, bitmap
+AND/OR/POPCOUNT — exactly what the columnar encodings produce.
 
-1. **Reuse cbq's plan analysis — don't hand-roll.** The Step-4 win was reading
-   `plan.Fetch.EarlyProjection()` instead of writing a fragile field collector.
-   Step 5's analog: read the aggregate kind + column + `GROUP BY`/`WHERE` presence
-   off the cbq plan to detect the vectorizable shape; conservatively fall back to
-   the row lane otherwise (the empty→read-all discipline, applied to op selection).
-2. **Aggregation rejoins the row world for free — that's why it's first.** The
-   "vectorized island surrounded by explode-costs" worry (§ critical Q3) evaporates
-   for agg: `SUM` over 1e6 rows yields *one* row. A fused Parquet-scan→agg stays
-   columnar end-to-end and emits a scalar result the row engine consumes with zero
-   transpose. Pick the op whose output is tiny.
-3. **Differential-test the new lane from line one.** Every risky step was de-risked
-   by an ON==OFF / fast==slow oracle. Build a `DisableVectorizedAgg` knob and a
-   scalar-vs-vector equality test *before* the kernel.
-4. **Scalar Go first (arm64 finding).** The win is *no transpose*, not SIMD. And a
-   left-to-right scalar sum over the Arrow column matches the row engine's
-   scan-order fold **bit-for-bit** → the differential test asserts exact equality.
-   (SIMD tree-reduction reorders floats → epsilon compares; another reason SIMD is
-   last.)
-5. **Sidecar idiom + free footer metadata are the tools.** Add a `ColumnBatchSource`
-   the vectorized op type-asserts (row fallback if absent) — same pattern as
-   `ColumnsProjector`. Start with the `null_count == 0` single-numeric-type case:
-   type picks the kernel, no validity bitmap, unmasked loop (simplest *and*
-   fastest).
+**Batch first, then SIMD.** golang/go#77647 documents the Go↔asm call-boundary
+cost; on small chunks it eats the SIMD win. So per-`Val` SIMD is a guaranteed loss
+— SIMD only pays amortized across a whole column batch. Combined with the Step-2
+finding (the win is not-parsing + one-stripe, not vector width), SIMD is a **leaf
+optimization on top of the columnar batch**, mandatory scalar-Go fallback, amd64-only.
 
-**Prerequisites this surfaces:** (a) `walkSource.Columns()` — the multi-file
-`ColumnsSource` gap — so Step 5 can read keyspace type/`null_count`; (b) a
-`ColumnBatchSource` on `parquetSource` yielding borrowed Arrow columns (the inverse
-of the transpose we just optimized).
+**The tail/remainder.** A column of N rarely divides by the lane count L (128/256/512
+bits ÷ elem size = 2–8 lanes). Handled by: a scalar remainder loop (default);
+masked ops (AVX-512/SVE); padding to a lane multiple with identity values; or an
+overlapping last block (idempotent ops only). Columnar engines fix a batch size
+that's a multiple of L (DuckDB's 2048) so tails vanish except on the last batch.
+n1k1 gets techniques for free: the validity/selection bitmap *is* the mask, and the
+mandatory scalar fallback *is* the remainder loop.
 
-**Traps to pre-empt:** `COUNT(col)` ≠ `COUNT(*)` on nulls (null_count=0 sidesteps
-v1); multi-file partial-aggregate combine (Σ / min / max associative; AVG carries
-count); and the fused path bypasses the row engine's `Stage`/stats/`YieldStats` —
-preserve scan stats, LIMIT, and cancellation.
+**SIMD-json (`minio/simdjson-go`)** is a *different* use — accelerating JSON
+*parsing* (SIMD structural scan → a "tape"), not compute. But it's **AVX2+CLMUL,
+no fallback, amd64-only, no WASM/arm64**, and produces a whole-document tape rather
+than jsonparser's lazy zero-copy sub-slices — so it fights n1k1's hot row path. It
+fits only as an *ingest* front-end for the columnar path (parse once, scatter to
+column buffers), gated on `SupportedCPU()`. SIMD-parse and SIMD-compute are
+separate, independently-justified bets.
 
 -------------------------------------------------------
-## Does Step 5 scale, or is it whack-a-mole?
-
-The honest risk: done naively, Step 5 **is** whack-a-mole — one detector per query
-shape (`SUM(x)`, then `SUM(x+y)`, then `…GROUP BY`, …) times one hand-written
-kernel per (operation × type). Combinatorial, and coverage = only the sliver you
-hand-build. What keeps it scalable is three levers plus a universal fallback, with
-a codegen north-star.
-
-**Three levers that turn whack-a-mole into a bounded design:**
-1. **A general "columnarizable?" predicate, not per-shape matching.** The rewrite
-   is a *recursive bottom-up* question over the op/expr tree: each node answers
-   "can I run columnar given my children's shapes and the source column types?"
-   (typed-column scan → yes; pointwise expr → yes iff children are; reduction →
-   yes; string/JSON/date fn → no). Query shapes fall out of *composition* — you
-   never enumerate them. This is the StatsBase discipline applied to shape: one
-   general inference pass, not N special cases.
-2. **Generics kill the type combinatorics.** `sumV[T Numeric]`, `addV[T Numeric]`
-   — one kernel per operation, the compiler instantiates per type (Go 1.25). No
-   `_f64`/`_i64` hand-explosion.
-3. **Lifting: a pointwise scalar kernel → a column loop, mechanically.** `f(a,b)`
-   becomes `for i { out[i] = f(a[i], b[i]) }`. Given a *typed* scalar form (the
-   compile-time type-inference prerequisite, `TODO.md:250`), a generic/codegen
-   wrapper vectorizes the **entire** pointwise arithmetic/comparison surface with
-   no per-function work.
-
-**What does NOT fall out for free (the honest boundary):**
-- **Reductions** (SUM/MIN/MAX/AVG/COUNT): a fixed ~5-member set of vectorized
-  accumulators, written once (generic over type).
-- **Reshaping relational ops** (filter+selection, group-by, join, sort, unnest):
-  each needs a genuine columnar algorithm (selection vectors, hash-group over
-  columns) — but this is the **bounded set of relational operators (~a dozen)**,
-  not unbounded query shapes. Finite, hand-authored once.
-- **The untyped / string / JSON / date long tail** (hundreds of SQL++ functions):
-  most have no clean typed-column form, so the subtree **explodes to rows** and
-  runs the existing scalar engine. A graceful fallback, not a coverage hole.
-
-So coverage = *(pointwise exprs, ≈free via lifting)* + *(fixed reductions)* +
-*(fixed relational operators)* + *(everything else → row engine)*. Much query
-support **does** fall out for free — any composition of vectorized primitives over
-typed columns — and the tail degrades gracefully instead of failing. That is *not*
-whack-a-mole; it's a bounded primitive set + a general composition predicate +
-universal fallback.
-
-**Do we build a second tower? Two answers.**
-- *Runtime:* yes, but a **small, composable** one — generic reductions + the
-  bounded relational ops + a pointwise lifter — never a mirror of all of SQL++.
-- *The codegen way out (n1k1's actual superpower):* n1k1 **already** is a query
-  compiler — `intermed_build` projects the lz-annotated `engine/*.go` (exprs
-  included) into specialized Go per query. The north-star is to teach it to
-  project a **column-batch target** from the *same* lz source: the generated
-  program loops over column batches (inner element loop, exprs inlined) instead of
-  over rows. Then there is no hand-maintained parallel tower — you write each
-  kernel once (scalar) and the compiler emits *both* the row and the column
-  projection, chosen per query by type inference. Prerequisite: compile-time type
-  inference (`TODO.md:250`) — you can only project the typed column loop once you
-  know the column types.
-  - **Pointwise lifting as its own source-transform pass** (the LegoBase/LMS move):
-    a pass reads a *typed* scalar kernel `f(a,b float64) float64` marked
-    `// <== pointwise` and mechanically emits the column loop
-    `for i { out[i]=f(a[i],b[i]) }`. Its output is ordinary engine-level Go, so it
-    feeds **both** consumers: the **interpreter** (which then gets vectorized
-    kernels too — and lets us differential-test vector-vs-scalar *before* the
-    compiler is involved) *and* `intermed_build` (which fuses/specializes them).
-    One source of truth, no second tower. Scope: only *pure pointwise* kernels
-    auto-lift (reductions/reshaping stay hand-authored); it needs a typed scalar
-    form (not `base.Val`-JSON, else the loop still parses) and a column-kernel ABI
-    (input/output columns + count + optional validity/selection mask). Not needed
-    until 5.3 (the expression surface); the ~5 reductions are hand-written first.
-
-**Layered end-vision:**
-- **Pragmatic (5.1–5.3):** hand-written generic reductions + fused agg ops behind
-  the general columnarizable predicate. Covers the analytic core (aggregates over
-  numeric columns, ± pointwise operands) — shippable, and the big win on the
-  "directories of Parquet" workload.
-- **Mid (5.4+):** the bounded columnar relational ops (filter+selection, group-by),
-  and *now* the parallel type vector (§ *Carrying columnar shape*) as columns begin
-  to flow between ops.
-- **North star:** codegen the columnar projection from lz source, driven by type
-  inference — vectorized coverage then tracks scalar coverage for pointwise ops
-  automatically, no second tower.
-
-**Roadmap (land-small):** 5.1 `SUM(x)` fused scan→agg (null_count=0 numeric) →
-5.2 multi-agg `SUM(x),SUM(y)` (an N-tuple, nearly free) → 5.3 `SUM(x+y)` fused
-(vectorized arithmetic kernels, inline fold) → 5.4 chained vectorized ops +
-type-vector + selection vectors → GROUP BY (dictionary keys) → codegen north-star
-→ SIMD (if ever). Prereqs before 5.1: `walkSource.Columns()` and a
-`ColumnBatchSource` on `parquetSource`.
-
-**Bottom line:** the general predicate + universal row fallback let us **ship the
-analytic core without covering all of SQL++**, grow coverage by adding bounded
-primitives, and hold the codegen north-star as the way to avoid a hand-maintained
-second tower entirely.
-
--------------------------------------------------------
-## Prior art & inspiration (columnar / vectorized engines)
+## Appendix C — prior art & inspiration
 
 Techniques from leading engines worth stealing, each with the n1k1 tie-in:
 
-- **DuckDB** — the closest reference: embedded, vectorized push-based, reads
-  Parquet directly, selection vectors + dictionary + late materialization + morsel
-  parallelism. Basically the target this columnar path walks toward; study it.
-- **Compiled vs vectorized — and "both"** (Kersten/Leis et al., VLDB 2018,
-  *"Everything You Always Wanted to Know About Compiled and Vectorized Queries…"*):
-  neither dominates. n1k1 is unusually placed to be a **hybrid** (interpreter +
-  Futamura compiler); the § pointwise-lifting pass is the bridge. HyPer/Umbra
-  (Neumann) = compiled camp; MonetDB/X100 → VectorWise = vectorized camp.
-- **LegoBase / DBLAB** (Klonatos & Koch, VLDB 2014) + LMS (Rompf/Odersky): build
-  the engine in a high-level language, apply optimizations as **source-to-source
-  transforms**. This *is* the home of the lifting-as-a-codegen-step idea and of
-  n1k1's whole `intermed_build` approach. Lineage: LegoBase → DBLAB/SC (*"How to
-  Architect a Query Compiler"*, SIGMOD 2016) → LB2 (SIGMOD 2018) and **Flare**
-  (OSDI 2018, LMS accelerating Spark). Reality check: the LMS-*Scala* engines
-  stayed academic; the *idea* (compile queries to native code) shipped via other
-  codegen — **HyPer/Umbra** (LLVM, data-centric produce/consume; → Tableau/CedarDB),
-  **Spark Tungsten whole-stage codegen** (JVM bytecode), **Hekaton** (C→DLL),
-  Impala (LLVM). Conceptual cousin: **GraalVM/Truffle** *automatically* does the
-  first Futamura projection (interpreter → compiler) — the automatic version of
-  what `intermed_build` does by hand. So n1k1 is a pragmatic Go-source-gen member
-  of this family, and the family's results (LB2/Flare matched hand-tuned engines)
-  say the approach works.
-- **Late materialization** (C-Store/Vertica; Abadi, *"Materialization
-  Strategies…"*, ICDE 2007): carry column positions/IDs as long as possible;
-  materialize tuple values last, or never (aggregates). The deep generalization of
-  "aggregation output is tiny" — the frontier *beyond* Step 5 for cutting the
-  transpose.
-- **Operate on compressed/encoded data** (Abadi et al., *"Integrating Compression
-  and Execution"*, SIGMOD 2006): `SUM` over RLE = value×runlength; GROUP BY on
-  dictionary codes; predicates on bit-packed data — *without decoding*. Parquet
-  pages are RLE/dict/bit-packed and we currently fully decode them via Arrow;
+- **DuckDB** — the closest reference: embedded, vectorized push-based, reads Parquet
+  directly, selection vectors + dictionary + late materialization + morsel
+  parallelism. The target this path walks toward.
+- **Compiled vs vectorized — "both"** (Kersten/Leis et al., VLDB 2018): neither
+  dominates; n1k1 is unusually placed to be a **hybrid** (interpreter + Futamura
+  compiler), with the pointwise-lifting pass as the bridge. HyPer/Umbra = compiled;
+  MonetDB/X100 → VectorWise = vectorized.
+- **LegoBase / DBLAB + LMS** (Klonatos & Koch, VLDB 2014; Rompf/Odersky): build the
+  engine in a high-level language, apply optimizations as **source-to-source
+  transforms** — the home of the lifting idea and of n1k1's `intermed_build`.
+  Lineage: LegoBase → DBLAB/SC (SIGMOD 2016) → LB2 (SIGMOD 2018) & **Flare** (OSDI
+  2018, LMS accelerating Spark). Reality check: the LMS-*Scala* engines stayed
+  academic; the *idea* shipped via other codegen — **HyPer/Umbra** (LLVM →
+  Tableau/CedarDB), **Spark Tungsten** (JVM bytecode), **Hekaton** (C→DLL), Impala
+  (LLVM). Conceptual cousin: **GraalVM/Truffle** *automatically* does the first
+  Futamura projection (interpreter → compiler) — the automatic version of
+  `intermed_build`. So n1k1 is a pragmatic Go-source-gen member of this family, and
+  the family's results (LB2/Flare matched hand-tuned engines) say it works.
+- **Late materialization** (C-Store/Vertica; Abadi, ICDE 2007): carry column
+  positions/IDs as long as possible, materialize values last or never (aggregates).
+  The deep generalization of "aggregation output is tiny" — the frontier beyond
+  Step 5.
+- **Operate on compressed/encoded data** (Abadi et al., SIGMOD 2006): SUM over RLE =
+  value×runlength; GROUP BY on dict codes; predicates on bit-packed data — *without
+  decoding*. Parquet pages are RLE/dict/bit-packed and we fully decode via Arrow;
   computing on encoded pages would skip the decode — the real "stop transposing."
 - **Micro-adaptivity** (Răducanu/Boncz/Zukowski, SIGMOD 2013): keep several kernel
-  flavors and profile per batch to pick the fastest — runtime extension of our
+  flavors, profile per batch, pick the fastest — a runtime extension of our
   compile-time kernel dispatch.
 - **Morsel-driven parallelism** (Leis et al., SIGMOD 2014): the mature form of
-  n1k1's `Stage`/actor batching — NUMA-aware work-stealing over chunks — for
-  scaling the columnar path across cores.
-- **Arrow-native kernel libraries** — Arrow Acero/Compute (arrow-go *has* a
-  `compute` package), DataFusion, Velox, Polars: build-vs-borrow per op rather than
-  hand-writing every kernel.
+  n1k1's `Stage`/actor batching for scaling across cores.
+- **Arrow-native kernel libraries** — Arrow Acero/Compute (arrow-go has a `compute`
+  package), DataFusion, Velox, Polars: build-vs-borrow per op.
 
-The two to internalize most: **late materialization + operate-on-encoded-data**
-(the real answer to "stop transposing"), and **LegoBase-style source-transform
-generation** (the home of the lifter).
+The two to internalize most: **late materialization + operate-on-encoded-data** (the
+real answer to "stop transposing") and **LegoBase-style source-transform generation**
+(the home of the lifter).
+
+-------------------------------------------------------
+## Appendix D — reference: encodings & standing tensions
+
+**Column encodings**, cheap-to-adopt → fast-to-compute: (1) JSON-array text —
+lowest friction, but still parses (1.3× only); (2) **fixed-width native** (LE-packed
+`int64`/`float64`) — the SIMD-friendly one, needs known types (this is what Arrow
+buffers give us); (3) offset/length + payload (Arrow string/binary — borrow-friendly);
+(4) dictionary codes (low-cardinality strings → integer GROUP BY/joins); (5) validity
++ selection bitmaps (orthogonal; needed for nulls and vectorized filter).
+
+**Standing tensions** (still live):
+- **Schemaless JSON is the point of SQL++** — heterogeneous/missing/nested values
+  have no fixed width or single type. Fixed-width is opt-in-when-proven; the JSON
+  path is the always-available fallback. (This is why the workload-fit question,
+  Step 1, gates everything: columnar wins on flat/typed/large-scan data, the
+  *opposite* of selective/nested/point JSON — so the plan aims at the Parquet-files
+  segment specifically.)
+- **MISSING ≠ NULL ≠ value** is three-state, unlike Arrow's two-state validity — any
+  bitmap scheme must preserve the distinction.
+- **Garbage-avoidance cuts both ways** — column batches are *more* recyclable (one
+  buffer/column), but `stage.go` deep-copies rows on hand-off while a columnar batch
+  wants to *borrow* Arrow buffers; the borrow/lifetime contract must be explicit
+  (cf. the `-race` history).
+- **Batch width** — row-at-a-time favors latency, vectorized favors throughput;
+  reuse `stage.go`'s `batchSize`/`batchChSize` knobs, sized to a SIMD-lane multiple.
 
 -------------------------------------------------------
 ## One-line summary
 
-**`[]byte` is axis-agnostic, so a `Val` can hold a column** — and n1k1's compiler
-+ lifted-buffer + batching machinery are unusually well-suited to host a vectorized
-lane. Measured (arm64, no SIMD): fixed-width beats row-JSON 40–730×, and the win is
-*not parsing* + *touching one stripe*, not SIMD. Steps 1–4 shipped the columnar
-*source* (Parquet, projection pushdown reusing cbq's `EarlyProjection`, zero-alloc
-transpose). Step 5 is the frontier cbq itself hasn't crossed — vectorized execution
-— and it stays bounded (not whack-a-mole) via a *general columnarizable predicate*
-+ *generics* + *pointwise lifting*, with the untyped tail always falling back to the
-row engine and **codegen from the lz source as the north-star** that avoids a
-hand-maintained second tower. Prerequisite throughout: compile-time type inference.
+`base.Val` is axis-agnostic, so a `Val` can hold a column; n1k1's compiler +
+batching machinery are unusually suited to a vectorized lane. Measured (arm64, no
+SIMD): fixed-width beats row-JSON 40–730×, from *not-parsing* + *one-stripe*, not
+SIMD. Steps 1–4 shipped the columnar **source** (Parquet, projection pushdown
+reusing cbq's `EarlyProjection`, zero-alloc transpose). Step 5 is vectorized
+execution — the frontier cbq itself hasn't crossed — kept bounded (not whack-a-mole)
+by a general columnarizable predicate + generics + pointwise lifting, with the
+untyped tail always falling back to the row engine and **codegen from the lz source
+as the north-star.** Prerequisite throughout: compile-time type inference.
