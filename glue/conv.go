@@ -1132,6 +1132,15 @@ func (c *Conv) VisitInitialProject(o *plan.InitialProject) (interface{}, error) 
 			// fields -- WITH aliases (withScope) and outer correlated rows don't leak
 			// into *. (stripBindingNames still removes LET names, which live in the
 			// row itself.) Mirrors query's ResetParent(nil) for the star term.
+			// Stays boxed (exprTree), even for a bare SELECT *: the star value is
+			// the fully-assembled row object (e.g. {"alias": doc}), and cbq's
+			// value.WriteJSON emits object keys SORTED (sortedNames, recursively).
+			// A native byte-passthrough of the doc's own-order bytes would mismatch;
+			// a native self path would have to reproduce cbq's sorted-key canonical
+			// serialization byte-identically (blocked on encoder fidelity -- see
+			// TODO(encoder-fidelity) in base/compare.go and DESIGN-exprs.md "self-
+			// projection byte path"). The box delegates to cbq's serializer, so it's
+			// correct; cost is one Convert + WriteJSON/row, no sub-expression work.
 			op.Labels = append(op.Labels, ".*")
 			op.Params = append(op.Params,
 				[]interface{}{"exprTree", stripBindingNames(rt.Expression(), o.BindingNames()), exprResetScope})

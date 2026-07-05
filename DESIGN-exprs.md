@@ -252,6 +252,19 @@ emitted by:
    `expression.Self` (and not scoped), assemble the output JSON object directly from
    the input label bytes, skipping Convert+Evaluate+WriteJSON. Bounded; analogous to
    the existing `labelPath`/`json` fast paths.
+   **Not a byte-passthrough, and why it stays boxed (investigated 2026-07):** the star
+   value is the fully-assembled row object (`SELECT * FROM sales` → `{"sales": {doc}}`,
+   wrapped under the alias), and cbq's `value.objectValue.WriteJSON` emits object keys
+   **sorted** (`sortedNames` → `sort.Strings`, recursively). So the native path can't
+   pass the doc's own-order bytes through — it must reproduce cbq's *sorted-key*
+   canonical serialization of an arbitrary document, **byte-identical** to
+   `value.WriteJSON`. `base.ValComparer.CanonicalJSON` sorts keys too but is NOT
+   byte-identical to cbq yet — most concretely it hits the formfeed/backspace encoder
+   gap (see `TODO(encoder-fidelity)` in base/compare.go), plus unaudited float/escape
+   cases. So the prerequisite is a verified byte-identical canonical serializer (close
+   the encoder gap first); until then the box is what *guarantees* fidelity (it
+   delegates to cbq's own serializer). The `⟨boxed⟩` EXPLAIN marker on `self` reflects
+   this. Cost is low though: one Convert + WriteJSON per row, no sub-expression work.
 3. *Lazy/on-demand `Convert`* — return a `value.Value` that materializes a field
    only on access **and serializes JSON straight from the retained label bytes**
    (the probe shows WriteJSON needn't build the map). Most general (helps
