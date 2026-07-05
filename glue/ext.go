@@ -122,13 +122,20 @@ func RegisterExtensionFile(path string) (string, error) {
 // etc.). The directory IS the catalog (DESIGN-extensions.md); `git pull` to
 // update. Returns the registered names (sorted). Opt-in, per the security note
 // above.
+//
+// Files are registered in **sorted filename order** (os.ReadDir is already
+// name-sorted; we re-sort explicitly so the guarantee is the code's, not the
+// OS's). Because all loaded JS shares one runtime scope, this gives authors
+// deterministic collision control: when two files define the same top-level
+// name, the alphabetically-later file wins (last definition wins in JS), so a
+// `zz_overrides.js` reliably shadows an earlier `base.js`.
 func RegisterExtensionDir(dir string) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, fmt.Errorf("RegisterExtensionDir %q: %w", dir, err)
 	}
 
-	var names []string
+	files := make([]string, 0, len(entries))
 	for _, e := range entries {
 		if e.IsDir() {
 			continue
@@ -136,7 +143,13 @@ func RegisterExtensionDir(dir string) ([]string, error) {
 		if _, ok := extensionLoaders[strings.ToLower(filepath.Ext(e.Name()))]; !ok {
 			continue // not a recognized extension file
 		}
-		name, err := RegisterExtensionFile(filepath.Join(dir, e.Name()))
+		files = append(files, e.Name())
+	}
+	sort.Strings(files) // deterministic load order -> later file wins on name clash
+
+	var names []string
+	for _, f := range files {
+		name, err := RegisterExtensionFile(filepath.Join(dir, f))
 		if err != nil {
 			return names, err
 		}

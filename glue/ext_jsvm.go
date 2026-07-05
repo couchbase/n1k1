@@ -162,7 +162,11 @@ func (s *jsSharedRuntime) call(name string, operands expression.Expressions,
 	if callErr != nil {
 		return value.NULL_VALUE, fmt.Errorf("JS UDF %q: %w", name, callErr), false
 	}
-	return fromGoja(res), nil, false
+	out, convErr := fromGoja(res)
+	if convErr != nil {
+		return value.NULL_VALUE, fmt.Errorf("JS UDF %q %w", name, convErr), false
+	}
+	return out, nil, false
 }
 
 // installJSConsole defines a minimal console object (log/error/warn/info/debug)
@@ -235,14 +239,24 @@ func toGoja(rt *goja.Runtime, v value.Value) goja.Value {
 }
 
 // fromGoja marshals a goja return value back to a cbq value. undefined -> MISSING.
-func fromGoja(res goja.Value) value.Value {
+// A Promise return (the tell-tale of an accidental async function / await / a
+// returned Promise) is rejected with a clear message: n1k1 drives no event loop,
+// so a Promise would never resolve — UDFs must be synchronous and return a plain
+// value. (Without this it surfaces as an opaque "cannot create value for type
+// *goja.Promise" panic from value.NewValue.)
+func fromGoja(res goja.Value) (value.Value, error) {
 	if res == nil || goja.IsUndefined(res) {
-		return value.MISSING_VALUE
+		return value.MISSING_VALUE, nil
 	}
 	if goja.IsNull(res) {
-		return value.NULL_VALUE
+		return value.NULL_VALUE, nil
 	}
-	return value.NewValue(res.Export())
+	exported := res.Export()
+	if _, isPromise := exported.(*goja.Promise); isPromise {
+		return value.NULL_VALUE, fmt.Errorf(
+			"returned a Promise: async/await and Promises are not supported (n1k1 runs no JS event loop) — make the function synchronous and return a plain value")
+	}
+	return value.NewValue(exported), nil
 }
 
 // --------------------------------------------------------

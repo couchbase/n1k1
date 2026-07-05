@@ -100,6 +100,20 @@ installs a `console`. Consequences (all covered by `test/ext_test.go`):
 - Cost: one `goja.New()` + re-running all UDF programs per query/actor (amortized
   over the query's rows; fine for n1k1's scan-heavy analytical profile — measured
   JS boundary ≈ 1 µs/row, dominated by the boxed `ConvertVals`, not goja itself).
+- **Heap lifecycle: the whole runtime dies with the query.** `jsRT` hangs off the
+  per-`Session.Run` `GlueContext` and is referenced nowhere else, so when the
+  query returns the runtime — and *every* JS object, closure, and module global
+  it holds — becomes unreachable and is GC'd. A UDF *can* pile up heap *within* a
+  single query (e.g. a module-scope array that grows each row), but that memory is
+  bounded by the query's lifetime and fully reclaimed at its end; there is **no
+  process-lifetime accumulation or leak across queries** (unlike the earlier
+  per-process pooled-runtime design). A panic/timeout also drops the runtime
+  mid-query, and each UNION ALL actor's runtime is freed independently.
+- **`async`/`await`/Promises are rejected** (n1k1 drives no event loop). An
+  accidental `async function` (or any Promise return) fails the call with a clear
+  message — "returned a Promise: async/await … not supported … return a plain
+  value" — rather than hanging (the Promise stays pending) or an opaque
+  `value.NewValue` panic. Make UDFs synchronous; see "Sync vs async" below.
 
 The design/roadmap below is the fuller picture (WASM, streaming sources,
 document shredding, a registry); the rest of this doc is forward-looking.
@@ -529,7 +543,11 @@ Basic reuse **already works**: every loaded UDF is defined in one shared per-que
 runtime (see "JS UDF runtime & state"), so a `_lib.js` that defines helper
 functions is automatically visible to every other file's functions — that's how a
 UDF calls another UDF today. The catch is it's one flat global namespace (two
-files defining `helper` collide, last-wins). For hygienic reuse, add an explicit
+files defining `helper` collide) — but the collision is **deterministic and
+author-controllable**: `RegisterExtensionDir` loads files in **sorted filename
+order**, and JS "last top-level definition wins", so a `zz_overrides.js` reliably
+shadows an earlier `base.js`'s helper (verified by `TestExtJSDirLoadOrder`). Name
+your files to encode precedence. For hygienic reuse, add an explicit
 module system: a host-provided `require("./util")` that resolves *within the
 `-ext` dirs*, evaluates a file once, and returns its exports (memoized) — goja has
 no built-in module loader, but a CommonJS-style `require` registry (à la
@@ -552,6 +570,13 @@ calls first; offer an event-loop + `await` lane later only if authors demand the
 `await fetch()` idiom. (Concurrency *within* one source — fan-out many HTTP gets —
 is better served by a host `http_get_all([urls])` that parallelizes in Go and
 returns when all are done than by an in-goja event loop.)
+
+**Today** async isn't merely unsupported, it's *rejected cleanly*: a UDF that
+returns a Promise (the tell-tale of `async function` / `await` / an explicit
+`Promise`) fails the call with a clear "async/await … not supported … return a
+plain value" error instead of hanging or panicking (see the runtime-state notes
+above). So an accidental `async` is a fast, legible failure, not a mystery — and
+the door stays open to add a real `await` lane behind an event loop later.
 
 ### The "full-power" operator API (emit + stats + cancel)
 

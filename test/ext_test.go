@@ -137,6 +137,42 @@ func TestExtJSUDFGuards(t *testing.T) {
 		`function count(x) { return x; }`); err == nil {
 		t.Fatalf("registering UDF named 'count' should be refused (aggregate collision)")
 	}
+
+	// (d) async / Promise: unsupported (no event loop). A UDF that returns a
+	// Promise must fail with a clear message, not an opaque panic or a hang.
+	if err := glue.RegisterJSFunc("asyncudf", `async function asyncudf(x){ return x+1; }`); err != nil {
+		t.Fatalf("RegisterJSFunc asyncudf: %v", err)
+	}
+	_, err := sess.Run(`SELECT RAW asyncudf(1)`)
+	if err == nil || !strings.Contains(err.Error(), "Promise") {
+		t.Fatalf("async UDF: want a clear Promise-unsupported error, got %v", err)
+	}
+}
+
+// TestExtJSDirLoadOrder confirms directory loads are sorted by filename, so a
+// shared top-level helper defined in two files resolves to the alphabetically
+// LAST file's version (deterministic collision control by naming).
+func TestExtJSDirLoadOrder(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a_first.js"),
+		[]byte("function ldhelper(){return \"from-a\";}\nfunction a_first(x){return ldhelper();}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "z_last.js"),
+		[]byte("function ldhelper(){return \"from-z\";}\nfunction z_last(x){return ldhelper();}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := glue.RegisterExtensionDir(dir); err != nil {
+		t.Fatalf("RegisterExtensionDir: %v", err)
+	}
+	sess := extSession(t)
+	// z_last.js loads last, so its ldhelper() wins for BOTH callers.
+	for _, fn := range []string{"a_first", "z_last"} {
+		got := extRawRows(t, sess, `SELECT RAW `+fn+`(0)`)
+		if len(got) != 1 || got[0] != `"from-z"` {
+			t.Fatalf("%s() = %v, want [\"from-z\"] (last-loaded helper wins)", fn, got)
+		}
+	}
 }
 
 // TestExtJSRuntimeModel covers the per-query/per-actor shared-runtime model:
