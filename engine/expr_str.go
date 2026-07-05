@@ -212,7 +212,7 @@ func exprSubstr2(lzVars *base.Vars, labels base.Labels, params []interface{},
 				lzVal = base.ValMissing
 			} else {
 				lzStr, _, lzStrOk := base.StrDecode(lzValStr)
-				lzPos, lzPosOk := base.SubstrNum(lzValPos)
+				lzPos, lzPosOk := base.IntOperand(lzValPos)
 				if !lzStrOk || !lzPosOk {
 					lzVal = base.ValNull
 				} else {
@@ -258,8 +258,8 @@ func exprSubstr3(lzVars *base.Vars, labels base.Labels, params []interface{},
 				lzVal = base.ValMissing
 			} else {
 				lzStr, _, lzStrOk := base.StrDecode(lzValStr)
-				lzPos, lzPosOk := base.SubstrNum(lzValPos)
-				lzLen, lzLenOk := base.SubstrNum(lzValLen)
+				lzPos, lzPosOk := base.IntOperand(lzValPos)
+				lzLen, lzLenOk := base.IntOperand(lzValLen)
 				if !lzStrOk || !lzPosOk || !lzLenOk {
 					lzVal = base.ValNull
 				} else {

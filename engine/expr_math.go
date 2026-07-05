@@ -43,6 +43,11 @@ func init() {
 	ExprCatalog["atan"] = ExprAtan
 	ExprCatalog["power"] = ExprPower
 	ExprCatalog["atan2"] = ExprAtan2
+	// ROUND/TRUNC: 1-arg (prec 0) / 2-arg (explicit prec), arity-dispatched.
+	ExprCatalog["round_1"] = ExprRound1
+	ExprCatalog["round_2"] = ExprRound2
+	ExprCatalog["trunc_1"] = ExprTrunc1
+	ExprCatalog["trunc_2"] = ExprTrunc2
 }
 
 func ExprAbs(lzVars *base.Vars, labels base.Labels,
@@ -133,6 +138,99 @@ func ExprPower(lzVars *base.Vars, labels base.Labels,
 func ExprAtan2(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) base.ExprFunc {
 	return exprMathBi(lzVars, labels, params, path, math.Atan2)
+}
+
+// ROUND / TRUNC: numeric, into the reused buffer. 1-arg uses precision 0; the
+// 2-arg form takes an integral precision (any sign). cbq skeleton: MISSING if any
+// operand MISSING; NULL if the value is non-number or the precision non-integral;
+// else base.RoundFloat/TruncFloat (passed by name) formatted via AppendNum. round
+// is round-half-to-even (cbq ROUND / ROUND_EVEN).
+
+func ExprRound1(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string) base.ExprFunc {
+	return exprRoundTrunc1(lzVars, labels, params, path, base.RoundFloat)
+}
+
+func ExprTrunc1(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string) base.ExprFunc {
+	return exprRoundTrunc1(lzVars, labels, params, path, base.TruncFloat)
+}
+
+func ExprRound2(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string) base.ExprFunc {
+	return exprRoundTrunc2(lzVars, labels, params, path, base.RoundFloat)
+}
+
+func ExprTrunc2(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string) base.ExprFunc {
+	return exprRoundTrunc2(lzVars, labels, params, path, base.TruncFloat)
+}
+
+// exprRoundTrunc1 is the 1-arg ROUND/TRUNC harness (precision 0).
+func exprRoundTrunc1(lzVars *base.Vars, labels base.Labels, params []interface{},
+	path string, roundFn func(x float64, prec int) float64) (lzExprFunc base.ExprFunc) {
+	exprA := params[0].([]interface{})
+
+	var lzBufPre []byte // <== varLift: lzBufPre by path
+
+	lzExprFunc =
+		MakeExprFunc(lzVars, labels, exprA, path, "A") // !lz
+	lzA := lzExprFunc
+
+	lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
+		lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
+
+		if base.ValKind(lzVal) == base.ValKindValue {
+			lzNum, lzOk := base.ParseNum(lzVal)
+			if !lzOk {
+				lzVal = base.ValNull // non-number operand
+			} else {
+				lzBufPre = base.AppendNum(lzBufPre[:0], base.FloatNum(roundFn(lzNum.Float64(), 0)))
+				lzVal = base.Val(lzBufPre)
+			}
+		}
+
+		return lzVal
+	}
+
+	return lzExprFunc
+}
+
+// exprRoundTrunc2 is the 2-arg ROUND/TRUNC harness (value, precision).
+func exprRoundTrunc2(lzVars *base.Vars, labels base.Labels, params []interface{},
+	path string, roundFn func(x float64, prec int) float64) (lzExprFunc base.ExprFunc) {
+	var lzBufPre []byte // <== varLift: lzBufPre by path
+
+	biExprFunc := func(lzA, lzB base.ExprFunc, lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) { // !lz
+		if LzScope {
+			lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
+			lzValNum := lzVal
+
+			lzVal = lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B"
+			lzValPrec := lzVal
+
+			if base.ValKind(lzValNum) == base.ValKindMissing ||
+				base.ValKind(lzValPrec) == base.ValKindMissing {
+				lzVal = base.ValMissing
+			} else {
+				lzNum, lzNumOk := base.ParseNum(lzValNum)
+				lzPrec, lzPrecOk := base.IntOperand(lzValPrec)
+				if !lzNumOk || !lzPrecOk {
+					lzVal = base.ValNull // non-number value / non-integral precision
+				} else {
+					lzBufPre = base.AppendNum(lzBufPre[:0], base.FloatNum(roundFn(lzNum.Float64(), lzPrec)))
+					lzVal = base.Val(lzBufPre)
+				}
+			}
+		}
+
+		return lzVal
+	} // !lz
+
+	lzExprFunc =
+		MakeBiExprFunc(lzVars, labels, params, path, biExprFunc) // !lz
+
+	return lzExprFunc
 }
 
 // exprMathBi is the shared two-operand harness for binary math funcs

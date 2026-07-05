@@ -126,10 +126,11 @@ func strEncodeStrArray(c *ValComparer, parts [][]byte, bufPre []byte) []byte {
 	return append(out, ']')
 }
 
-// SubstrNum reads a SUBSTR position/length operand as an integer: ok=false (the
-// caller yields NULL) if v is not a number or not integral -- mirroring cbq's
-// `int(v.Actual().(float64))` guarded by `vf != math.Trunc(vf)`.
-func SubstrNum(v Val) (int, bool) {
+// IntOperand reads a numeric operand as an integer: ok=false (the caller yields
+// NULL) if v is not a number or not integral -- mirroring cbq's
+// `int(v.Actual().(float64))` guarded by `vf != math.Trunc(vf)`. Used for a
+// SUBSTR position/length and a ROUND/TRUNC precision (any sign).
+func IntOperand(v Val) (int, bool) {
 	n, ok := ParseNum(v)
 	if !ok {
 		return 0, false

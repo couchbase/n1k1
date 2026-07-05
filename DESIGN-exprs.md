@@ -117,6 +117,7 @@ type/collation semantics.
 | `split` | `engine/expr_str.go` + `base.StrSplit*` | SPLIT (1-arg whitespace / 2-arg sep), arity-dispatched to `split_{1,2}`. **First structure-building native expr** — emits a JSON array of strings into the reused buffer via `EncodeAsString` (which appends, unlike `EncodeStr`) |
 | `lpad` `rpad` | `engine/expr_str.go` + `base.StrPad*` | LPAD/RPAD (byte-based, cbq `inRunes=false`), 2-arg (default space pad) & 3-arg, arity-dispatched to `{l,r}pad_{2,3}`. `l <= len(s)` truncates to first `l` bytes; else pad-fill. Rune-based `mb_*pad` fall back |
 | `abs` `ceil` `floor` `sqrt` `exp` `ln` `log` `sign` `degrees` `radians` `sin` `cos` `tan` `asin` `acos` `atan` `power` `atan2` | `engine/expr_math.go` + `base/math.go` | numeric math (func-passing: stdlib `math.*` / `base.Math*`) |
+| `round` `trunc` | `engine/expr_math.go` + `base.RoundFloat`/`TruncFloat` | ROUND (half-to-even) / TRUNC, 1-arg (prec 0) & 2-arg (integral prec), arity-dispatched to `{round,trunc}_{1,2}`; the per-op float func is passed by name. `round_nearest` falls back |
 | `to_boolean` `to_string` `to_number` | `engine/expr_type.go` + `base/type.go` | scalar type conversions |
 | `array_length` `array_count` `array_sum` `array_avg` `array_min` `array_max` `array_contains` `array_position` | `engine/expr_array.go` + `base/array.go` | reader array ops (no materialization) |
 | `window-partition-row-number`, `window-frame-*` | `engine/expr_window.go` | window helpers (FIRST/LAST/NTH/LEAD/LAG) |

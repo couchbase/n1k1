@@ -41,6 +41,36 @@ func MathBinApply(fn func(a, b float64) float64, a, b Num) Num {
 	return FloatNum(fn(a.Float64(), b.Float64()))
 }
 
+// RoundFloat rounds x to prec decimal places, round-half-to-even -- a
+// byte-for-byte port of cbq's roundFloat(x, prec, to_even=true)
+// (expression/func_num.go), so ROUND() matches exactly. NaN/Inf pass through.
+// Signature func(float64, int) float64 so it can be passed to the shared
+// ROUND/TRUNC harness and emitted by name (see base/lzfmt.go).
+func RoundFloat(x float64, prec int) float64 {
+	if math.IsNaN(x) || math.IsInf(x, 0) {
+		return x
+	}
+	sign := 1.0
+	if x < 0 {
+		sign = -1.0
+		x = -x
+	}
+	pow := math.Pow(10, float64(prec))
+	intermed := (x * pow) + 0.5
+	rounder := math.Floor(intermed)
+	if rounder == intermed && math.Mod(rounder, 2) != 0 {
+		rounder-- // round half to even
+	}
+	return sign * rounder / pow
+}
+
+// TruncFloat truncates x toward zero to prec decimal places -- a port of cbq's
+// truncateFloat(x, prec). Same func(float64, int) float64 shape as RoundFloat.
+func TruncFloat(x float64, prec int) float64 {
+	pow := math.Pow(10, float64(prec))
+	return math.Trunc(x*pow) / pow
+}
+
 // MathApply applies a unary math func to n, returning the result as a Num (a
 // float64). The caller (engine/expr_math.go) handles the cbq skeleton around it
 // -- MISSING -> MISSING, non-number -> NULL -- and formats via AppendNum, which

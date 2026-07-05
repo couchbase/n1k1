@@ -41,6 +41,7 @@ func init() {
 		"split",        // SPLIT, arity-dispatched below (expr_str.go)
 		"lpad", "rpad", // LPAD/RPAD, arity-dispatched below (expr_str.go)
 		"power", "atan2", // binary math (expr_math.go)
+		"round", "trunc", // ROUND/TRUNC, arity-dispatched below (expr_math.go)
 		"to_boolean", "to_string", "to_number", // type conversions (expr_type.go)
 		"array_length", "array_count", "array_sum", "array_avg", // array readers (expr_array.go)
 		"array_min", "array_max", "array_contains", "array_position", // (expr_array.go)
@@ -276,6 +277,19 @@ func ExprTreeOptimize(labels base.Labels, e expression.Expression,
 			name += "_2"
 		case 3:
 			name += "_3"
+		default:
+			return nil, false
+		}
+	}
+
+	// ROUND/TRUNC are 1-arg (precision 0) or 2-arg (explicit precision); dispatch
+	// to a fixed-arity native name.
+	if name == "round" || name == "trunc" {
+		switch len(operands) {
+		case 1:
+			name += "_1"
+		case 2:
+			name += "_2"
 		default:
 			return nil, false
 		}
