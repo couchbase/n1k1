@@ -58,46 +58,46 @@ type Agg struct {
 
 // -----------------------------------------------------
 
-func RegisterAgg(name string, agg *Agg) {
+func AggRegister(name string, agg *Agg) {
 	AggCatalog[name] = len(Aggs)
 	Aggs = append(Aggs, agg)
 }
 
 func init() {
-	RegisterAgg("count", AggCount)
+	AggRegister("count", AggCount)
 
-	RegisterAgg("sum", AggSum)
+	AggRegister("sum", AggSum)
 
 	// Vectorized SUM variants (DESIGN-col.md Step 5); chosen at plan-rewrite time
 	// by the source column's type. Reuse AggSum's accumulator + Result.
-	RegisterAgg("sum_v_float64", AggSumVFloat64)
+	AggRegister("sum_v_float64", AggSumVFloat64)
 
-	RegisterAgg("sum_v_int64", AggSumVInt64)
+	AggRegister("sum_v_int64", AggSumVInt64)
 
-	RegisterAgg("count_v", AggCountV)
+	AggRegister("count_v", AggCountV)
 
-	RegisterAgg("avg", AggAvg)
+	AggRegister("avg", AggAvg)
 
-	RegisterAgg("avg_v_float64", AggAvgVFloat64)
+	AggRegister("avg_v_float64", AggAvgVFloat64)
 
-	RegisterAgg("avg_v_int64", AggAvgVInt64)
+	AggRegister("avg_v_int64", AggAvgVInt64)
 
-	RegisterAgg("min", AggMin)
+	AggRegister("min", AggMin)
 
-	RegisterAgg("max", AggMax)
+	AggRegister("max", AggMax)
 
-	RegisterAgg("array_agg", AggArrayAgg)
+	AggRegister("array_agg", AggArrayAgg)
 
 	// DISTINCT variants: e.g. COUNT(DISTINCT x), ARRAY_AGG(DISTINCT x). They
 	// share aggDistinctUpdate (accumulate unique canonical values) and differ
 	// only in Result.
-	RegisterAgg("count_distinct", AggCountDistinct)
+	AggRegister("count_distinct", AggCountDistinct)
 
-	RegisterAgg("array_agg_distinct", AggArrayAggDistinct)
+	AggRegister("array_agg_distinct", AggArrayAggDistinct)
 
 	// COUNTN counts only NUMBER-typed values (COUNT counts all non-MISSING).
-	RegisterAgg("countn", &Agg{Init: AggU64Init, Update: AggCountNUpdate, Result: AggU64Result})
-	RegisterAgg("countn_distinct", &Agg{
+	AggRegister("countn", &Agg{Init: AggU64Init, Update: AggCountNUpdate, Result: AggU64Result})
+	AggRegister("countn_distinct", &Agg{
 		Init: AggU64Init, Update: AggNumDistinctUpdate, Result: AggDistinctCountResult})
 
 	// MEDIAN / STDDEV / VARIANCE family. Each accumulates the group's NUMBER
@@ -113,12 +113,12 @@ func init() {
 		{"variance", true, false}, {"var_samp", true, false}, {"var_pop", false, false},
 		{"stddev", true, true}, {"stddev_samp", true, true}, {"stddev_pop", false, true},
 	} {
-		RegisterAgg(v.name, makeVarianceAgg(false, v.samp, v.sqrtIt))
-		RegisterAgg(v.name+"_distinct", makeVarianceAgg(true, v.samp, v.sqrtIt))
+		AggRegister(v.name, AggMakeVariance(false, v.samp, v.sqrtIt))
+		AggRegister(v.name+"_distinct", AggMakeVariance(true, v.samp, v.sqrtIt))
 	}
 
-	RegisterAgg("median", makeMedianAgg(false))
-	RegisterAgg("median_distinct", makeMedianAgg(true))
+	AggRegister("median", AggMakeMedian(false))
+	AggRegister("median_distinct", AggMakeMedian(true))
 }
 
 // -----------------------------------------------------
@@ -536,10 +536,10 @@ func AggNumListUpdate(vars *Vars, v Val, aggNew, agg []byte, vc *ValComparer) (
 	return append(aggNew, agg[:end]...), agg[end:], false
 }
 
-// aggFloats extracts the accumulated float64 values (and the trailing aggRest)
+// AggFloats extracts the accumulated float64 values (and the trailing aggRest)
 // from either a numeric-list state (distinct==false) or a distinct canonical
 // set (distinct==true).
-func aggFloats(distinct bool, agg []byte) (vals []float64, aggRest []byte) {
+func AggFloats(distinct bool, agg []byte) (vals []float64, aggRest []byte) {
 	n := binary.LittleEndian.Uint64(agg[:8])
 	off := 8
 	if !distinct {
@@ -547,7 +547,7 @@ func aggFloats(distinct bool, agg []byte) (vals []float64, aggRest []byte) {
 		// keep the two decoders in step if the layout ever changes.
 		vals = make([]float64, 0, n)
 		for i := uint64(0); i < n; i++ {
-			vals = append(vals, aggNumListAt(agg, i))
+			vals = append(vals, AggNumListAt(agg, i))
 		}
 		return vals, agg[8+int(n)*8:]
 	}
@@ -564,9 +564,9 @@ func aggFloats(distinct bool, agg []byte) (vals []float64, aggRest []byte) {
 	return vals, agg[8+total:]
 }
 
-// makeVarianceAgg builds a VARIANCE/STDDEV handler. samp selects sample (delta=1)
+// AggMakeVariance builds a VARIANCE/STDDEV handler. samp selects sample (delta=1)
 // vs population (delta=0); sqrtIt takes the square root (STDDEV vs VARIANCE).
-func makeVarianceAgg(distinct, samp, sqrtIt bool) *Agg {
+func AggMakeVariance(distinct, samp, sqrtIt bool) *Agg {
 	update := AggNumListUpdate
 	if distinct {
 		update = AggNumDistinctUpdate
@@ -579,7 +579,7 @@ func makeVarianceAgg(distinct, samp, sqrtIt bool) *Agg {
 		Init:   AggU64Init,
 		Update: update,
 		Result: func(vars *Vars, agg, buf []byte) (v Val, aggRest, bufOut []byte) {
-			vals, rest := aggFloats(distinct, agg)
+			vals, rest := AggFloats(distinct, agg)
 			count := len(vals)
 			if count == 0 { // Empty group -> NULL.
 				return ValNull, rest, buf
@@ -611,9 +611,9 @@ func makeVarianceAgg(distinct, samp, sqrtIt bool) *Agg {
 	}
 }
 
-// makeMedianAgg builds a MEDIAN handler (sort the values; for an even count,
+// AggMakeMedian builds a MEDIAN handler (sort the values; for an even count,
 // average the two middle values), matching couchbase/query.
-func makeMedianAgg(distinct bool) *Agg {
+func AggMakeMedian(distinct bool) *Agg {
 	update := AggNumListUpdate
 	if distinct {
 		update = AggNumDistinctUpdate
@@ -622,7 +622,7 @@ func makeMedianAgg(distinct bool) *Agg {
 		Init:   AggU64Init,
 		Update: update,
 		Result: func(vars *Vars, agg, buf []byte) (v Val, aggRest, bufOut []byte) {
-			vals, rest := aggFloats(distinct, agg)
+			vals, rest := AggFloats(distinct, agg)
 			if len(vals) == 0 {
 				return ValNull, rest, buf
 			}
