@@ -214,9 +214,16 @@ row count). A menu, fastest first:
   the footer min/max (so the two shortcuts compose). The hot loop stays branch-free:
   the "pad with identity" tail-trick (Appendix B) applied to nulls, moving null
   handling to a one-time bitmap pass instead of a per-element check.
-- **Masked kernel (validity bitmap) — the general case.** For SUM/AVG over a borrowed
-  buffer we can't rewrite, read the validity bitmap and skip null lanes — the same
-  masking AVX-512/SVE use for the tail. Always applicable, slower than the two above.
+- **Masked kernel (Arrow validity bitmap) — the general case.** Arrow keeps nulls
+  out-of-band: `Data().Buffers()[0]` is the validity bitmap (1 bit/elem, 1=valid),
+  separate from the values `Buffers()[1]`. The masked kernel reads *both* (still
+  borrowed, zero-copy) and skips null lanes — `for i { if valid(i) { s += v[i] } }`,
+  or word-at-a-time. Necessary because Arrow leaves null slots *undefined* (can't be
+  summed blindly). Bit-exact vs the row engine, which skips nulls too (the transpose
+  emits `null`, `AggSum` skips non-numbers). Needs `NextColumns` to also hand back
+  the bitmap + masked kernel variants. Always applicable (the general SUM/AVG null
+  path; COUNT/MIN/MAX already dodge nulls via the footer); the same masking AVX-512/
+  SVE use for the tail.
 
 -------------------------------------------------------
 ## Key design decisions (settled)
