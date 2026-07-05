@@ -440,7 +440,6 @@ func TestParquetSumVectorizedDifferential(t *testing.T) {
 	}{
 		{"sum-float", `SELECT SUM(price) AS s FROM sales3`, true},
 		{"sum-int", `SELECT SUM(id) AS s FROM sales3`, true},
-		{"count-field", `SELECT COUNT(price) AS c FROM sales3`, true},
 		{"avg-float", `SELECT AVG(price) AS a FROM sales3`, true},
 		{"avg-int", `SELECT AVG(id) AS a FROM sales3`, true},
 		{"multi-agg", `SELECT SUM(price) AS sp, SUM(id) AS si FROM sales3`, true},
@@ -469,6 +468,63 @@ func TestParquetSumVectorizedDifferential(t *testing.T) {
 			}
 			if !q.vectorizes && applied != 0 {
 				t.Errorf("expected the row path, but the columnar-agg lane fired %d times", applied)
+			}
+		})
+	}
+	glue.DisableVectorizedAgg = false
+}
+
+// TestParquetMetadataAggDifferential guards the metadata-agg lane (COUNT/MIN/MAX
+// answered from footer stats, zero scan): results must equal the row path, the
+// lane fires when it should, and it bails (row path) for non-numeric MIN/MAX or
+// when any aggregate needs a scan.
+func TestParquetMetadataAggDifferential(t *testing.T) {
+	dir := t.TempDir()
+	ks := filepath.Join(dir, "default", "sales4")
+	if err := os.MkdirAll(ks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	pqWrite(t, filepath.Join(ks, "part-0.parquet"), 30, 1)       // id 0..29,     price i+0.5
+	pqWriteBase(t, filepath.Join(ks, "part-1.parquet"), 1000, 30, 1) // id 1000..1029, price 1000+i+0.5
+
+	sess, err := glue.OpenSession(dir, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	queries := []struct {
+		name string
+		stmt string
+		meta bool
+	}{
+		{"count-star", `SELECT COUNT(*) AS c FROM sales4`, true},
+		{"count-field", `SELECT COUNT(id) AS c FROM sales4`, true},
+		{"min-float", `SELECT MIN(price) AS m FROM sales4`, true},
+		{"max-float", `SELECT MAX(price) AS m FROM sales4`, true},
+		{"min-int", `SELECT MIN(id) AS m FROM sales4`, true},
+		{"max-int", `SELECT MAX(id) AS m FROM sales4`, true},
+		{"count-min-max", `SELECT COUNT(*) AS c, MIN(price) AS mn, MAX(id) AS mx FROM sales4`, true},
+		{"min-string", `SELECT MIN(f0) AS m FROM sales4`, false},              // non-numeric → row path
+		{"sum-plus-min", `SELECT SUM(price) AS s, MIN(price) AS m FROM sales4`, false}, // needs scan + min → row path
+	}
+
+	for _, q := range queries {
+		t.Run(q.name, func(t *testing.T) {
+			glue.DisableVectorizedAgg = true
+			base := runSortedRows(t, sess, q.stmt)
+			glue.DisableVectorizedAgg = false
+			before := atomic.LoadInt64(&glue.MetadataAggApplied)
+			got := runSortedRows(t, sess, q.stmt)
+			applied := atomic.LoadInt64(&glue.MetadataAggApplied) - before
+
+			if strings.Join(base, "\n") != strings.Join(got, "\n") {
+				t.Fatalf("metadata-agg changed results!\n OFF: %v\n ON:  %v", base, got)
+			}
+			if q.meta && applied == 0 {
+				t.Errorf("expected the metadata-agg lane to fire, but it didn't")
+			}
+			if !q.meta && applied != 0 {
+				t.Errorf("expected the row path, but the metadata-agg lane fired %d times", applied)
 			}
 		})
 	}

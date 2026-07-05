@@ -30,6 +30,8 @@ func DatastoreOp(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 	yieldVals = countingYield(o, vars, yieldVals)
 
 	switch o.Kind {
+	case "metadata-agg":
+		DatastoreMetadataAgg(o, vars, yieldVals, yieldErr)
 	case "columnar-agg":
 		DatastoreColumnarAgg(o, vars, yieldVals, yieldErr)
 	case "datastore-scan-records":

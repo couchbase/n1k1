@@ -21,7 +21,10 @@ package glue
 // it only fires when it can prove a numeric, non-null column of a records scan.
 
 import (
+	"encoding/binary"
 	"fmt"
+	"math"
+	"strconv"
 	"sync/atomic"
 
 	"github.com/couchbase/query/expression"
@@ -30,13 +33,16 @@ import (
 	"github.com/couchbase/n1k1/records"
 )
 
-// DisableVectorizedAgg forces the row path (no columnar-agg rewrite). The
-// differential test flips it to prove vectorized == scalar.
+// DisableVectorizedAgg forces the row path (no columnar-agg / metadata-agg
+// rewrite). The differential tests flip it to prove vectorized == scalar.
 var DisableVectorizedAgg bool
 
-// VectorizedAggApplied counts how many columnar-agg ops actually executed (test
-// observability).
-var VectorizedAggApplied int64
+// VectorizedAggApplied / MetadataAggApplied count how many of each fused op
+// actually executed (test observability).
+var (
+	VectorizedAggApplied int64
+	MetadataAggApplied   int64
+)
 
 // vectorizeColumnarAggs walks the finished op tree and rewrites each qualifying
 // ungrouped-SUM-over-a-Parquet-column `group` op into a fused `columnar-agg` op.
@@ -92,37 +98,106 @@ func maybeVectorizeGroup(op *base.Op, temps []interface{}) {
 		colByName[c.Name] = c
 	}
 
-	// Every aggregate must be a supported vectorizable SUM of a bare, numeric,
-	// non-null column -- else bail entirely (conservative; keep the row path).
+	// Rewrite in place: the group op BECOMES a fused op. Its Labels (the
+	// "^aggregates|..." ones) are kept verbatim so the downstream project reads
+	// results identically; the scan child is absorbed (the op opens the source
+	// itself via scanTemp). Prefer metadata-agg (zero scan) over columnar-agg
+	// (scan kernels); fall through to the row path if neither applies.
+	if specs, ok := metadataAggSpecs(aggExprs, aggCalcs, colByName); ok {
+		op.Kind = "metadata-agg"
+		op.Params = []interface{}{scanTemp, specs}
+		op.Children = nil
+		return
+	}
+	if specs, ok := columnarAggSpecs(aggExprs, aggCalcs, colByName); ok {
+		op.Kind = "columnar-agg"
+		op.Params = []interface{}{scanTemp, specs}
+		op.Children = nil
+		return
+	}
+}
+
+// metadataAggSpecs returns per-agg specs when EVERY aggregate can be answered from
+// the footer stats alone -- COUNT(*), COUNT(x), MIN(x), MAX(x) -- so the query
+// needs zero data-page reads. ok=false if any aggregate needs a scan (SUM/AVG) or a
+// stat it lacks. Each spec: [kind, field, type], kind in count-star/count/min/max.
+func metadataAggSpecs(aggExprs, aggCalcs []interface{}, colByName map[string]records.ColumnMeta) ([]interface{}, bool) {
 	specs := make([]interface{}, 0, len(aggCalcs))
 	for i := range aggCalcs {
 		calc, ok := aggCalcs[i].([]interface{})
 		if !ok || len(calc) != 1 {
-			return
+			return nil, false
+		}
+		switch name, _ := calc[0].(string); name {
+		case "count":
+			if isStarOperand(aggExprs[i]) {
+				specs = append(specs, []interface{}{"count-star", "", ""})
+				continue
+			}
+			field, ok := bareAggField(aggExprs[i])
+			if !ok {
+				return nil, false
+			}
+			cm, ok := colByName[field]
+			if !ok || cm.Count < 0 || cm.NullCount < 0 {
+				return nil, false
+			}
+			specs = append(specs, []interface{}{"count", field, ""})
+		case "min", "max":
+			field, ok := bareAggField(aggExprs[i])
+			if !ok {
+				return nil, false
+			}
+			cm, ok := colByName[field]
+			if !ok || (cm.Type != "INT64" && cm.Type != "DOUBLE") {
+				return nil, false
+			}
+			if (name == "min" && cm.Min == nil) || (name == "max" && cm.Max == nil) {
+				return nil, false
+			}
+			specs = append(specs, []interface{}{name, field, cm.Type})
+		default:
+			return nil, false // sum/avg/... need a scan
+		}
+	}
+	return specs, true
+}
+
+// columnarAggSpecs returns per-agg specs when EVERY aggregate is a vectorizable
+// SUM/AVG/COUNT of a bare, numeric, non-null column (scan kernels). ok=false else.
+func columnarAggSpecs(aggExprs, aggCalcs []interface{}, colByName map[string]records.ColumnMeta) ([]interface{}, bool) {
+	specs := make([]interface{}, 0, len(aggCalcs))
+	for i := range aggCalcs {
+		calc, ok := aggCalcs[i].([]interface{})
+		if !ok || len(calc) != 1 {
+			return nil, false
 		}
 		aggName, _ := calc[0].(string)
 		field, ok := bareAggField(aggExprs[i])
 		if !ok {
-			return
+			return nil, false
 		}
 		cm, ok := colByName[field]
 		if !ok || cm.NullCount != 0 {
-			return
+			return nil, false
 		}
 		key, ok := vecAggCatalogKey(aggName, cm.Type)
 		if !ok {
-			return
+			return nil, false
 		}
 		specs = append(specs, []interface{}{key, field})
 	}
+	return specs, true
+}
 
-	// Rewrite in place: the group op BECOMES the fused columnar-agg op. Its Labels
-	// (the "^aggregates|..." ones) are kept verbatim, so the downstream project op
-	// reads the results identically. The scan child is absorbed (the op opens the
-	// source itself via scanTemp).
-	op.Kind = "columnar-agg"
-	op.Params = []interface{}{scanTemp, specs}
-	op.Children = nil
+// isStarOperand reports whether an aggregate operand is COUNT(*)'s ["json","true"].
+func isStarOperand(aggExpr interface{}) bool {
+	e, ok := aggExpr.([]interface{})
+	if !ok || len(e) < 1 {
+		return false
+	}
+	k, _ := e[0].(string)
+	return k == "json"
 }
 
 // bareAggField returns the field name if aggExpr is ["exprTree", <alias.field>]
@@ -302,4 +377,88 @@ func DatastoreColumnarAgg(o *base.Op, vars *base.Vars,
 	yieldVals(out)
 
 	yieldErr(nil)
+}
+
+// DatastoreMetadataAgg answers COUNT/MIN/MAX from the keyspace's footer statistics
+// alone -- no data pages read. It reads the aggregate ColumnsSource stats (summed
+// counts, min-of-mins, max-of-maxs across parts) and emits one result row.
+func DatastoreMetadataAgg(o *base.Op, vars *base.Vars,
+	yieldVals base.YieldVals, yieldErr base.YieldErr) {
+	atomic.AddInt64(&MetadataAggApplied, 1)
+
+	context := vars.Temps[0].(*GlueContext)
+	scanTemp := o.Params[0].(int)
+	scan, ok := vars.Temps[scanTemp].(recordsScanPlan)
+	if !ok {
+		yieldErr(fmt.Errorf("DatastoreMetadataAgg: unexpected plan %T", vars.Temps[scanTemp]))
+		return
+	}
+	keyspace := scan.Keyspace()
+
+	opts := ScanWalkOptions
+	opts.PathPrefix = metaPathPrefix(keyspace)
+	src, err := openKeyspaceRecords(keyspace, opts, context)
+	if err != nil {
+		yieldErr(fmt.Errorf("DatastoreMetadataAgg, open %q: %v", keyspace.Name(), err))
+		return
+	}
+	defer src.Close()
+
+	cs, ok := src.(records.ColumnsSource)
+	if !ok {
+		yieldErr(fmt.Errorf("DatastoreMetadataAgg: %q source exposes no schema", keyspace.Name()))
+		return
+	}
+	cols := cs.Columns()
+	colByName := map[string]records.ColumnMeta{}
+	for _, c := range cols {
+		colByName[c.Name] = c
+	}
+	var rowCount int64
+	if len(cols) > 0 {
+		rowCount = cols[0].Count // any flat column's value count == the row count
+	}
+
+	specs := o.Params[1].([]interface{})
+	out := make(base.Vals, 0, len(specs))
+	for _, sp := range specs {
+		s := sp.([]interface{})
+		kind, field, typ := s[0].(string), s[1].(string), s[2].(string)
+		var v base.Val
+		switch kind {
+		case "count-star":
+			v = base.Val(strconv.AppendInt(nil, rowCount, 10))
+		case "count":
+			cm := colByName[field]
+			v = base.Val(strconv.AppendInt(nil, cm.Count-cm.NullCount, 10))
+		case "min":
+			v = formatStat(typ, colByName[field].Min)
+		case "max":
+			v = formatStat(typ, colByName[field].Max)
+		}
+		out = append(out, v)
+	}
+	yieldVals(out)
+
+	yieldErr(nil)
+}
+
+// formatStat renders an encoded (8-byte LE) numeric stat as JSON, matching how the
+// transpose/row path would render the same value (AppendInt / 'g' float), so a
+// metadata MIN/MAX is byte-identical to the scalar one.
+func formatStat(typ string, enc []byte) base.Val {
+	if len(enc) != 8 {
+		return base.ValMissing
+	}
+	switch typ {
+	case "INT64":
+		return base.Val(strconv.AppendInt(nil, int64(binary.LittleEndian.Uint64(enc)), 10))
+	case "DOUBLE":
+		f := math.Float64frombits(binary.LittleEndian.Uint64(enc))
+		if math.IsNaN(f) || math.IsInf(f, 0) {
+			return base.ValNull
+		}
+		return base.Val(strconv.AppendFloat(nil, f, 'g', -1, 64))
+	}
+	return base.ValMissing
 }

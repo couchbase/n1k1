@@ -110,17 +110,22 @@ func (s *parquetSource) Columns() []ColumnMeta {
 	sch := md.Schema
 	out := make([]ColumnMeta, 0, sch.NumColumns())
 	for c := 0; c < sch.NumColumns(); c++ {
-		cm := ColumnMeta{Name: sch.Column(c).Name(), Type: sch.Column(c).PhysicalType().String(), NullCount: -1}
-		// Aggregate stats across row groups: null count sums; min/max from RG 0
-		// (a coarse zone-map bound -- adequate for the column-meta contract).
+		typ := sch.Column(c).PhysicalType().String()
+		cm := ColumnMeta{Name: sch.Column(c).Name(), Type: typ, Count: md.NumRows, NullCount: -1}
+		// Aggregate stats across row groups: null count sums; Min-of-mins,
+		// Max-of-maxs. A row group missing min/max makes the whole column's
+		// min/max unknown (nil) -- so a metadata-only MIN/MAX can't be trusted.
 		var haveNull bool
+		minMaxOK := md.NumRowGroups() > 0
 		for rg := 0; rg < md.NumRowGroups(); rg++ {
 			cc, err := md.RowGroup(rg).ColumnChunk(c)
 			if err != nil {
+				minMaxOK = false
 				continue
 			}
 			st, err := cc.Statistics()
 			if err != nil || st == nil {
+				minMaxOK = false
 				continue
 			}
 			if st.HasNullCount() {
@@ -129,9 +134,20 @@ func (s *parquetSource) Columns() []ColumnMeta {
 				}
 				cm.NullCount += st.NullCount()
 			}
-			if rg == 0 && st.HasMinMax() {
-				cm.Min, cm.Max = st.EncodeMin(), st.EncodeMax()
+			if !st.HasMinMax() {
+				minMaxOK = false
+				continue
 			}
+			emin, emax := st.EncodeMin(), st.EncodeMax()
+			if cm.Min == nil {
+				cm.Min, cm.Max = emin, emax
+			} else {
+				cm.Min = pickStat(typ, cm.Min, emin, true)
+				cm.Max = pickStat(typ, cm.Max, emax, false)
+			}
+		}
+		if !minMaxOK {
+			cm.Min, cm.Max = nil, nil
 		}
 		out = append(out, cm)
 	}

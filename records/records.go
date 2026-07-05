@@ -26,6 +26,7 @@ import (
 	"bufio"
 	"bytes"
 	"compress/gzip"
+	"encoding/binary"
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
@@ -78,13 +79,68 @@ type ColumnsSource interface {
 }
 
 // ColumnMeta describes one column of a ColumnsSource. Min/Max are the format's
-// encoded stat bounds (zone-map inputs), or nil when unavailable. NullCount is
-// -1 when unknown; 0 means the column has no nulls (no validity bitmap needed).
+// encoded little-endian stat bounds (zone-map inputs), or nil when unavailable.
+// NullCount is -1 when unknown; 0 means the column has no nulls (no validity
+// bitmap needed). Count is the total value count incl. nulls (= the row count for
+// a flat column), -1 when unknown. For a multi-file keyspace these are the
+// AGGREGATE across parts (Count/NullCount summed, Min-of-mins, Max-of-maxs).
 type ColumnMeta struct {
 	Name      string
 	Type      string // physical/logical type name, e.g. "INT64", "DOUBLE"
+	Count     int64
 	NullCount int64
 	Min, Max  []byte
+}
+
+// statLess compares two encoded (8-byte LE) stat values for a fixed-width numeric
+// type; ok=false for unsupported types (min/max then treated as unknown).
+func statLess(typ string, a, b []byte) (less, ok bool) {
+	if len(a) != 8 || len(b) != 8 {
+		return false, false
+	}
+	switch typ {
+	case "DOUBLE":
+		return math.Float64frombits(binary.LittleEndian.Uint64(a)) <
+			math.Float64frombits(binary.LittleEndian.Uint64(b)), true
+	case "INT64":
+		return int64(binary.LittleEndian.Uint64(a)) < int64(binary.LittleEndian.Uint64(b)), true
+	}
+	return false, false
+}
+
+// mergeColumnMeta combines two ColumnMetas for the same column across parts/row-
+// groups: Count and NullCount sum (either -1 => -1); Min keeps the smaller, Max
+// the larger (nil on either side, or an unmergeable type, => unknown/nil).
+func mergeColumnMeta(a, b ColumnMeta) ColumnMeta {
+	out := ColumnMeta{Name: a.Name, Type: a.Type}
+	out.Count = addCount(a.Count, b.Count)
+	out.NullCount = addCount(a.NullCount, b.NullCount)
+	out.Min = pickStat(a.Type, a.Min, b.Min, true)
+	out.Max = pickStat(a.Type, a.Max, b.Max, false)
+	return out
+}
+
+func addCount(a, b int64) int64 {
+	if a < 0 || b < 0 {
+		return -1
+	}
+	return a + b
+}
+
+// pickStat returns the smaller (wantMin) or larger encoded stat, or nil if either
+// is missing or the type is unmergeable.
+func pickStat(typ string, a, b []byte, wantMin bool) []byte {
+	if a == nil || b == nil {
+		return nil
+	}
+	less, ok := statLess(typ, a, b)
+	if !ok {
+		return nil
+	}
+	if less == wantMin { // a<b & wantMin => a ; a>=b & wantMax => a
+		return a
+	}
+	return b
 }
 
 // ColumnBatchSource is a Source that can yield its (projected) columns directly as
@@ -1219,25 +1275,40 @@ type walkSource struct {
 	iCB      int
 }
 
-// Columns implements ColumnsSource for a multi-file keyspace by delegating to the
-// FIRST file's schema. This assumes homogeneous parts (the normal partitioned-
-// export case); divergent schemas (union_by_name) and cross-part stat aggregation
-// (null-count sum, min-of-mins) are a later refinement. Returns nil if there are
-// no files or the first file exposes no schema.
+// Columns implements ColumnsSource for a multi-file keyspace by AGGREGATING each
+// part's stats: Count/NullCount sum, Min-of-mins, Max-of-maxs (per mergeColumnMeta).
+// Assumes homogeneous parts (the normal partitioned-export case); a part with a
+// differing column set makes the result nil (bail). Returns nil if there are no
+// files or a part exposes no schema.
 func (w *walkSource) Columns() []ColumnMeta {
-	if len(w.files) == 0 {
-		return nil
+	var merged []ColumnMeta
+	for fi, f := range w.files {
+		s, err := OpenFile(f, "")
+		if err != nil {
+			return nil
+		}
+		cs, ok := s.(ColumnsSource)
+		if !ok {
+			s.Close()
+			return nil
+		}
+		cols := cs.Columns()
+		s.Close()
+		if fi == 0 {
+			merged = cols
+			continue
+		}
+		if len(cols) != len(merged) {
+			return nil // heterogeneous parts -- bail (union_by_name is later)
+		}
+		for i := range merged {
+			if cols[i].Name != merged[i].Name {
+				return nil
+			}
+			merged[i] = mergeColumnMeta(merged[i], cols[i])
+		}
 	}
-	s, err := OpenFile(w.files[0], "")
-	if err != nil {
-		return nil
-	}
-	defer s.Close()
-	cs, ok := s.(ColumnsSource)
-	if !ok {
-		return nil
-	}
-	return cs.Columns()
+	return merged
 }
 
 // NextColumns implements ColumnBatchSource across the part files: it opens each
