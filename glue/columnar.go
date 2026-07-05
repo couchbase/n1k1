@@ -762,7 +762,7 @@ func DatastoreColumnarAgg(o *base.Op, vars *base.Vars,
 		default:
 			arithVal = resizeBytes(arithVal, (rows+7)/8)
 			copy(arithVal, lv)
-			base.AndBitmap(arithVal, rv)
+			base.BitmapAnd(arithVal, rv)
 			av = arithVal
 		}
 		return arithDst, av
@@ -780,7 +780,7 @@ func DatastoreColumnarAgg(o *base.Op, vars *base.Vars,
 			base.FilterInt64(dst, cols[ci], rows, cl.op, int64(cl.c))
 		}
 		if v := valids[ci]; v != nil {
-			base.AndBitmap(dst, v)
+			base.BitmapAnd(dst, v)
 		}
 	}
 
@@ -808,9 +808,9 @@ func DatastoreColumnarAgg(o *base.Op, vars *base.Vars,
 				clauseMask = resize(clauseMask, rows)
 				evalClause(clauseMask, pred.clauses[k], clauseCol[k], cols, valids, rows)
 				if pred.mode == "or" {
-					base.OrBitmap(predMask, clauseMask)
+					base.BitmapOr(predMask, clauseMask)
 				} else {
-					base.AndBitmap(predMask, clauseMask)
+					base.BitmapAnd(predMask, clauseMask)
 				}
 			}
 			sel = predMask
@@ -834,7 +834,7 @@ func DatastoreColumnarAgg(o *base.Op, vars *base.Vars,
 			default:
 				combined = resize(combined, rows)
 				copy(combined, sel)
-				base.AndBitmap(combined, av)
+				base.BitmapAnd(combined, av)
 				sum = combined
 			}
 			applyMaskedAgg(keys[i], accs[i], colBytes, sel, sum, rows)
@@ -888,15 +888,15 @@ func resize(buf []byte, n int) []byte {
 func applyMaskedAgg(key string, acc, col, sel, sum []byte, n int) {
 	switch key {
 	case "sum_v_float64":
-		base.SumMaskedFloat64(acc, col, sum, n)
+		base.MaskedSumFloat64(acc, col, sum, n)
 	case "sum_v_int64":
-		base.SumMaskedInt64(acc, col, sum, n)
+		base.MaskedSumInt64(acc, col, sum, n)
 	case "count_v":
-		base.CountMasked(acc, sel, n)
+		base.MaskedCount(acc, sel, n)
 	case "avg_v_float64":
-		base.AvgMaskedFloat64(acc, col, sel, sum, n)
+		base.MaskedAvgFloat64(acc, col, sel, sum, n)
 	case "avg_v_int64":
-		base.AvgMaskedInt64(acc, col, sel, sum, n)
+		base.MaskedAvgInt64(acc, col, sel, sum, n)
 	}
 }
 

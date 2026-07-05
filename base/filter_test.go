@@ -101,14 +101,14 @@ func TestAndOrBitmap(t *testing.T) {
 
 	and := make([]byte, len(a))
 	copy(and, a)
-	AndBitmap(and, b)
+	BitmapAnd(and, b)
 	if !bitmapsEqual(and, wantAnd, n) {
 		t.Errorf("AndBitmap mismatch\n got %08b\nwant %08b", and, wantAnd)
 	}
 
 	or := make([]byte, len(a))
 	copy(or, a)
-	OrBitmap(or, b)
+	BitmapOr(or, b)
 	if !bitmapsEqual(or, wantOr, n) {
 		t.Errorf("OrBitmap mismatch\n got %08b\nwant %08b", or, wantOr)
 	}

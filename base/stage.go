@@ -216,6 +216,7 @@ func (stage *Stage) RecycleBatch(batch []Vals) {
 		stage.Vars.Ctx.RecycleBatch(batch)
 		return
 	}
+
 	stage.M.Lock()
 	stage.Recycled = append(stage.Recycled, batch)
 	stage.M.Unlock()
@@ -227,6 +228,7 @@ func (stage *Stage) AcquireBatch() (rv []Vals) {
 	if stage.Vars != nil && stage.Vars.Ctx != nil && stage.Vars.Ctx.AllocBatch != nil {
 		return stage.Vars.Ctx.AllocBatch()
 	}
+
 	stage.M.Lock()
 	n := len(stage.Recycled)
 	if n > 0 {

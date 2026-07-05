@@ -35,8 +35,8 @@ const (
 	CmpGE
 )
 
-// clearBits zeroes the first n bits' bytes of mask.
-func clearBits(mask []byte, n int) {
+// BitsClear zeroes the first n bits' bytes of mask.
+func BitsClear(mask []byte, n int) {
 	nb := (n + 7) >> 3
 	if nb > len(mask) {
 		nb = len(mask)
@@ -49,7 +49,7 @@ func clearBits(mask []byte, n int) {
 // FilterFloat64 (re)writes mask so bit i is set iff values[i] OP c, where values
 // is n little-endian float64s. mask must have >= (n+7)/8 bytes.
 func FilterFloat64(mask, values []byte, n int, op CmpOp, c float64) {
-	clearBits(mask, n)
+	BitsClear(mask, n)
 	switch op {
 	case CmpEQ:
 		for i := 0; i < n; i++ {
@@ -92,7 +92,7 @@ func FilterFloat64(mask, values []byte, n int, op CmpOp, c float64) {
 
 // FilterInt64 is FilterFloat64 for an int64 column vs an int64 constant.
 func FilterInt64(mask, values []byte, n int, op CmpOp, c int64) {
-	clearBits(mask, n)
+	BitsClear(mask, n)
 	switch op {
 	case CmpEQ:
 		for i := 0; i < n; i++ {
@@ -133,9 +133,9 @@ func FilterInt64(mask, values []byte, n int, op CmpOp, c int64) {
 	}
 }
 
-// AndBitmap sets dst &= src (conjunction of predicates); OrBitmap sets dst |= src.
+// BitmapAnd sets dst &= src (conjunction of predicates); OrBitmap sets dst |= src.
 // Operate over dst's length (masks are same-sized in a batch).
-func AndBitmap(dst, src []byte) {
+func BitmapAnd(dst, src []byte) {
 	for i := range dst {
 		if i < len(src) {
 			dst[i] &= src[i]
@@ -145,7 +145,7 @@ func AndBitmap(dst, src []byte) {
 	}
 }
 
-func OrBitmap(dst, src []byte) {
+func BitmapOr(dst, src []byte) {
 	for i := range dst {
 		if i < len(src) {
 			dst[i] |= src[i]

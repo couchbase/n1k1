@@ -126,8 +126,8 @@ func MaskedAvgFloat64(acc, values, sel, sum []byte, n int) {
 	binary.LittleEndian.PutUint64(acc[8:16], math.Float64bits(s))
 }
 
-// AvgMaskedInt64 is AvgMaskedFloat64 for an int64 column.
-func AvgMaskedInt64(acc, values, sel, sum []byte, n int) {
+// MaskedAvgInt64 is AvgMaskedFloat64 for an int64 column.
+func MaskedAvgInt64(acc, values, sel, sum []byte, n int) {
 	c := binary.LittleEndian.Uint64(acc[:8])
 	s := math.Float64frombits(binary.LittleEndian.Uint64(acc[8:16]))
 	if sel == nil {
