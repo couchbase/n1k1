@@ -1,9 +1,8 @@
 # n1k1 — columnar & SIMD design notes
 
 Design analysis and running record for **columnar (vectorized) execution** and
-**SIMD** in n1k1, organized around a **six-step plan** (Steps 1–4 shipped, Step 5
-next). Longer measured detail, the SIMD deep-dive, and prior art live in the
-appendices.
+**SIMD** in n1k1, organized around a **six-step plan**. Longer measured
+details, the SIMD deep-dive, and prior art live in the appendices.
 
 See also: `DESIGN.md` (row engine + the lz compiler), `DESIGN-data.md`
 (§ Parquet/Arrow scan sources), `DESIGN-exprs.md` (the no-boxing expression
@@ -32,40 +31,35 @@ plan is source-first and evidence-gated, with SIMD as a last, optional leaf.
   one scalar:
 
   ```
-  row batch:  Vals = [ "alice"       42          {"x":1}    ]   <- ONE row, 3 cols
-  col batch:  Vals = [ ["alice",      [42,         [{"x":1}, ]   <- MANY rows
-                        "bob","cara"]  43,44]       ...]
+  row batch:  Vals = [ "alice",       42,       {"x":1}   ]   <- ONE row, 3 cols
+  col batch:  Vals = [ ["alice",      [42,      [{"x":1},  
+                        "bob","cara"]  43,44]    ...]     ]   <- MANY rows
   ```
   The container, push plumbing, recycling, and Labels alignment all survive; the
   row count M is the new hidden dimension.
 
-- **The compiler is the leverage.** `intermed_build` already projects lz
+- **The compiler provides leverage.** `intermed_build` already projects lz
   `engine/*.go` into specialized Go (Futamura/LMS). The same type inference
   `TODO.md:250` wants ("`sales < 1000` is numeric") is the precondition for a
   fixed-width column encoding — so columnar and static-typing are one project.
-  Precedent that a slot's bytes can carry a non-JSON interpretation chosen early:
+  Precedent that a slot's bytes can carry a non-JSON interpretation:
   `engine/expr.go:ExprLabelUint64` already reads a slot as a packed LE `uint64`.
-  The vectorized lane can be **compile-time-only** (interpreter stays row; mirrors
-  the interpreter-only stats split).
 
 - **The tension: schemaless JSON.** A JSON column is variable-width, untyped, and
   three-state (`MISSING` ≠ `NULL` ≠ value; `base/base.go`). So the fixed-width fast
-  path is an **opt-in specialization the compiler proves**; the row/JSON path is
-  always the correctness fallback.
+  path is an **opt-in specialization**; the row/JSON path is the correctness fallback.
 
 -------------------------------------------------------
 ## The plan: Steps 1–6
 
 Evidence-gated, source-first, kill-early: prove the ceiling *and* the workload fit
 before building, and let columnar bytes enter from a columnar **source** rather
-than synthesizing them from rows. The row engine is already push-based, compiled,
-and garbage-free — a fast baseline the columnar lane must beat, not a slow one.
+than synthesizing them from rows. The row engine is already push-based, compilable,
+and garbage-free — a fast baseline the columnar lane must beat.
 
 - **Step 1 — Characterize the workload. ✅** Target: local directories of mixed
   files incl. Parquet/Iceberg (a DuckDB-style "query your files in place" niche) —
-  a real analytical-scan segment, so columnar is justified. (Were the workload only
-  selective/point/nested JSON queries, columnar would be a solution seeking a
-  problem — see Appendix D.)
+  a real analytical-scan segment, so columnar is justified.
 
 - **Step 2 — Spike the ceiling. ✅** arm64, pure Go, no SIMD: fixed-width SUM/filter
   beats the row-JSON path **40× (narrow docs) to 730× (50-field docs)**, sitting at
@@ -76,7 +70,7 @@ and garbage-free — a fast baseline the columnar lane must beat, not a slow one
 - **Step 3 — Ship a Parquet source (transpose-to-rows). ✅** `records/parquet.go`
   (arrow-go) decodes Parquet → JSON rows, wired into `records.OpenFile`; a
   `.parquet` file is now a queryable keyspace (`TestParquetQueryEndToEnd`;
-  `examples/warehouse/`). `!js`-guarded so arrow-go stays out of the wasm build. A
+  `examples/warehouse/`). `!js`-guarded so arrow-go stays out of wasm builds. A
   correctness feature with no engine change. Numbers: Appendix A.
 
 - **Step 4 — Projection pushdown via sidecar interfaces. ✅** Optional
@@ -84,18 +78,16 @@ and garbage-free — a fast baseline the columnar lane must beat, not a slow one
   type-asserts (the `SubPathser` idiom) — the core `Source` stays `{Next, Close}`
   and non-implementers fall back to the full transpose. The wanted-column set is
   **reused from cbq's planner** (`plan.Fetch.EarlyProjection()`, computed via
-  `expr.FieldNames` + a full `expression.IsCovered` check) — no hand-rolled field
-  analysis. `walkSource` forwards the projection to each per-file source. The
-  transpose was made **zero-alloc** (`appendRecordsNDJSON`: 526K→2.1K allocs/op,
-  2.9× faster, replacing `array.RecordToJSON`'s `interface{}`/`encoding/json`
-  boxing). Guarded by `TestParquetProjectionDifferential` (results ON==OFF, incl.
-  aliases) and `TestParquetFastTransposeEquivalence`. See § Key decisions +
+  `expr.FieldNames` + a full `expression.IsCovered` check). `walkSource` forwards
+  the projection to each per-file source. The transpose was made **zero-alloc**
+  (`appendRecordsNDJSON`: 526K→2.1K allocs/op, 2.9× faster, replacing arrow-go's
+  `array.RecordToJSON`'s `interface{}`/`encoding/json` boxing). See § Key decisions +
   Appendix A.
 
 - **Step 5 — First vectorized op: aggregation, no transpose. ◀ NEXT.** A fused
   Parquet-scan→agg over a proven-typed, non-null column, reusing `AggSum`'s
-  accumulator via `AggCatalog["sum_v_float64"]`, fed the borrowed Arrow buffer as a
-  `base.Val`. **Aggregation is first because its output is one row** — it rejoins
+  accumulator via `AggCatalog["sum_v_float64"]`, feeding the borrowed Arrow buffer
+  as a `base.Val`. **Aggregation is first because its output is one row** — it rejoins
   the row engine transpose-free. Full design (decision flow, scalability, prereqs)
   below in § Step 5.
 
@@ -118,16 +110,16 @@ type-vector + selection vectors → GROUP BY (dictionary keys) → codegen north
 `ColumnBatchSource` on `parquetSource` yielding borrowed Arrow columns.
 
 **How the system decides to vectorize (`sum` → `sum_v_float64`).** A *two-input*
-decision, and half the info isn't in the plan:
+decision:
 1. *Plan shape* (base.Op / cbq plan): ungrouped, agg is SUM/etc. of a **bare
    field**, single Parquet-capable keyspace.
 2. *Column type + `null_count`* — from `ColumnsSource` (the Parquet footer). The
-   plan is **schemaless**; cbq has no type for `x`, only the footer does. So this
-   can't be a pure planner decision.
+   plan is **schemaless**; cbq has no type for `x`, only the Parquet footer
+   does.
 
-It lives in a **post-conv rewrite pass** (like `addColumnProjections`): gate on
-plan-shape; consult `ColumnsSource`; if the column is a supported fixed-width type
-with `null_count==0`, swap the `group` op's `aggCalcs[i][0]` from `"sum"` to
+The decision lives in a **post-conv rewrite pass** (like `addColumnProjections`):
+gate on plan-shape; consult `ColumnsSource`; if the column is a supported fixed-width
+type with `null_count==0`, swap the `group` op's `aggCalcs[i][0]` from `"sum"` to
 `"sum_v_"+kernelType` and mark the columnar feed; **else leave the row path**
 (conservative fallback — the same empty→read-all discipline as projection
 pushdown). Multi-agg `SUM(x),SUM(y)` is an N-tuple in one scan pass; `SUM(x+y)`
@@ -141,20 +133,20 @@ is exact string equality. Not a widened `Agg` interface (no `UpdateColumnXYZ`
 method explosion). Generalizes: MIN/MAX reuse their accumulators, AVG the 16-byte
 sum+count, COUNT the counter.
 
-**Zero-copy from Arrow.** `array.Float64.Float64Values()` is an unsafe reinterpret
+**Zero-copy from Arrow.** arrow's `array.Float64.Float64Values()` is an unsafe reinterpret
 of the underlying buffer (no parse/copy), and `arr.Data().Buffers()[1].Bytes()` is
 that same packed little-endian buffer — **already a `base.Val`**, borrowed. So the
 column flows through the standard `Update(val Val, …)` signature with zero re-encode;
 `sum_v_float64.Update` reinterprets via `binary.LittleEndian` + `math.Float64frombits`
 (keeping `base` arrow-free), summing float64 **in scan order** ⇒ bit-exact vs the
 row fold. `int64` columns → `float64(v)` per slot, matching the row path's
-`ParseFloat64`. (Borrow lifetime: valid until `batch.Release()`; Update-then-Release,
-one call per batch.)
+`ParseFloat64`. Borrow lifetime: valid until `batch.Release()`; Update-then-Release,
+one call per batch.
 
-**No label sigils.** Columnar shape is carried by a **parallel `[]ColKind`** aligned
+*No label sigils at first.** Columnar shape is carried by a **parallel `[]ColKind`** aligned
 with `Labels` (StatsBase-style; not a `@col.f64:` label prefix, which would force
-every `IndexOf` to strip it). Deferred until 5.4, when columns flow *between* ops;
-fused 5.1–5.3 ops know their own inputs and need none.
+every `IndexOf` to strip it). Deferred label sigils until 5.4, when columns flow
+*between* ops; fused 5.1–5.3 ops know their own inputs and need none.
 
 **Traps to pre-empt.** `COUNT(col)` ≠ `COUNT(*)` on nulls (null_count=0 sidesteps
 v1); multi-file partial-aggregate combine (Σ / min / max associative, AVG carries
@@ -169,8 +161,8 @@ Done naively it **is** whack-a-mole — a detector per query shape × a kernel p
 1. **A general "columnarizable?" predicate, not per-shape matching.** A recursive
    bottom-up question over the op/expr tree: each node answers "can I run columnar
    given my children's shapes and the source column types?" Query shapes fall out
-   of *composition* — you never enumerate them. (StatsBase discipline applied to
-   shape: one inference pass, not N cases.)
+   of *composition* — you never enumerate them. It's the StatsBase approach applied to
+   shape: one inference pass, not N cases.
 2. **Generics kill the type combinatorics** — `sumV[T Numeric]`, one kernel per
    operation, the compiler instantiates per type (Go 1.25).
 3. **Pointwise lifting** — a *typed* scalar `f(a,b)` becomes `for i {
@@ -179,11 +171,11 @@ Done naively it **is** whack-a-mole — a detector per query shape × a kernel p
 
 **Honest boundary (what doesn't fall out for free):** reductions (a fixed ~5) and
 reshaping relational ops (filter+selection, group-by, join, sort — the bounded
-~dozen) are hand-authored once; the untyped/string/date long tail **explodes to
-the row engine** — a graceful fallback, not a hole. So coverage = *pointwise
+~dozen) are hand-authored once; the untyped/string/date long tail **defers to
+the row engine** as a graceful fallback. So coverage = *pointwise
 (≈free via lifting)* + *fixed reductions* + *fixed relational ops* + *everything
 else → row engine*. Any composition of vectorized primitives over typed columns
-works; that is **not** whack-a-mole.
+works; that is not whack-a-mole.
 
 **The codegen way out (the north-star).** Rather than hand-maintain a second tower,
 teach `intermed_build` to project a **column-batch target** from the *same* lz
@@ -208,13 +200,13 @@ Appendix C for the LMS/LegoBase lineage.
   packed fixed-width column (`base.Val`, zero-copy) — no re-encode. The JSON-array
   encoding barely helps (1.3×, Appendix A) — skip it. Arrow offsets+payload (strings)
   and dictionary codes (GROUP BY) come later.
-- **Shape carried as a parallel `[]ColKind`** (StatsBase-style), not label sigils;
-  introduced only at 5.4 when columns flow between ops.
+- **Shape carried as a parallel `[]ColKind`** (StatsBase-style), not label sigils,
+  which might be introduced only at 5.4 when columns flow between ops.
 - **`null_count == 0` fast path first** — no validity bitmap ⇒ unmasked kernel;
   nulls/selection bitmaps come with the relational ops.
 - **Reuse existing accumulators** (`AggSum` etc.) via typed catalog keys
   (`sum_v_float64`); do not widen the `Agg` interface.
-- **Differential testing from line one** — the row lane is the oracle; scalar-Go
+- **Differential testing from the start** — the row lane is the oracle; scalar-Go
   kernels sum in scan order ⇒ *exact* equality (SIMD would force epsilon compares,
   another reason SIMD is last).
 - **Reuse cbq's plan analysis, don't hand-roll** — the recurring Step-4 lesson
@@ -302,7 +294,7 @@ The kernel hits the fixed-width ceiling with *no parse to build the column*. The
 full path's allocs are Arrow's decode/materialization (per batch); the zero-copy
 end-to-end path (0.93, not 3.0) is Step 5.
 
-### Step 4 zero-alloc transpose
+### Step 4's zero-alloc transpose
 
 `appendRecordsNDJSON` (type-switch per Arrow column into a reused buffer; RFC-8259
 escaping; NaN/Inf→null; zero-copy `String.Value`) replaced `array.RecordToJSON`
@@ -419,10 +411,9 @@ buffers give us); (3) offset/length + payload (Arrow string/binary — borrow-fr
 
 `base.Val` is axis-agnostic, so a `Val` can hold a column; n1k1's compiler +
 batching machinery are unusually suited to a vectorized lane. Measured (arm64, no
-SIMD): fixed-width beats row-JSON 40–730×, from *not-parsing* + *one-stripe*, not
-SIMD. Steps 1–4 shipped the columnar **source** (Parquet, projection pushdown
+SIMD): fixed-width beats row-JSON 40–730×, from *not-parsing* + *one-vertical-stripe*,
+not SIMD. Steps 1–4 shipped the columnar **source** (Parquet, projection pushdown
 reusing cbq's `EarlyProjection`, zero-alloc transpose). Step 5 is vectorized
-execution — the frontier cbq itself hasn't crossed — kept bounded (not whack-a-mole)
-by a general columnarizable predicate + generics + pointwise lifting, with the
-untyped tail always falling back to the row engine and **codegen from the lz source
-as the north-star.** Prerequisite throughout: compile-time type inference.
+execution — kept bounded (not whack-a-mole) by a general columnarizable predicate +
+generics + pointwise lifting, with the untyped tail falling back to the row engine
+and **codegen from the lz source as the north-star.**
