@@ -32,6 +32,8 @@ func init() {
 	ExprCatalog["trim"] = ExprTrim
 	ExprCatalog["ltrim"] = ExprLTrim
 	ExprCatalog["rtrim"] = ExprRTrim
+	ExprCatalog["reverse"] = ExprReverse
+	ExprCatalog["replace"] = ExprReplace
 	ExprCatalog["length"] = ExprLength
 	ExprCatalog["contains"] = ExprContains
 	ExprCatalog["position0"] = ExprPosition0
@@ -68,6 +70,11 @@ func ExprRTrim(lzVars *base.Vars, labels base.Labels,
 	return exprStrTransform(lzVars, labels, params, path, base.StrTrimRight)
 }
 
+func ExprReverse(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string) base.ExprFunc {
+	return exprStrTransform(lzVars, labels, params, path, base.StrReverse)
+}
+
 // exprStrTransform is the shared unary string-transform harness. base.StrDecode
 // guards + decodes; transform maps the decoded bytes and base.EncodeStr re-encodes
 // into lzBufPre on a single line -- the transform func value and the varLift buffer
@@ -95,6 +102,54 @@ func exprStrTransform(lzVars *base.Vars, labels base.Labels, params []interface{
 
 		return lzVal
 	}
+
+	return lzExprFunc
+}
+
+// ExprReplace handles REPLACE(str, old, repl) -- replace all occurrences. cbq
+// skeleton (expression/func_str.go): MISSING if any operand is MISSING; else NULL
+// if any is non-string; else base.StrReplaceAll into the reused buffer. The 4-arg
+// count form is variadic and falls back to cbq per the optimizer arity guard. Each
+// operand is captured FROM lzVal (emitCaptured writes lzVal; a direct
+// lzValX := lzX(...) bind is dropped in the compiled path -- mirrors ExprArithBi).
+func ExprReplace(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
+	var lzBufPre []byte // <== varLift: lzBufPre by path
+
+	triExprFunc := func(lzA, lzB, lzC base.ExprFunc, lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) { // !lz
+		if LzScope {
+			lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
+			lzValA := lzVal
+
+			lzVal = lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B"
+			lzValB := lzVal
+
+			lzVal = lzC(lzVals, lzYieldErr) // <== emitCaptured: path "C"
+			lzValC := lzVal
+
+			if base.ValKind(lzValA) == base.ValKindMissing ||
+				base.ValKind(lzValB) == base.ValKindMissing ||
+				base.ValKind(lzValC) == base.ValKindMissing {
+				lzVal = base.ValMissing
+			} else {
+				lzStrA, _, lzOkA := base.StrDecode(lzValA)
+				lzStrB, _, lzOkB := base.StrDecode(lzValB)
+				lzStrC, _, lzOkC := base.StrDecode(lzValC)
+				if !lzOkA || !lzOkB || !lzOkC {
+					lzVal = base.ValNull // a non-string operand
+				} else {
+					lzRaw := base.StrReplaceAll(lzStrA, lzStrB, lzStrC)
+					lzBufPre = base.EncodeStr(lzVars.Ctx.ValComparer, lzRaw, lzBufPre)
+					lzVal = base.Val(lzBufPre)
+				}
+			}
+		}
+
+		return lzVal
+	} // !lz
+
+	lzExprFunc =
+		MakeTriExprFunc(lzVars, labels, params, path, triExprFunc) // !lz
 
 	return lzExprFunc
 }

@@ -14,6 +14,8 @@ package base
 import (
 	"bytes"
 	"strconv"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/buger/jsonparser"
 )
@@ -57,6 +59,42 @@ const strWhitespace = " \t\n\f\r"
 func StrTrim(decoded []byte) []byte      { return bytes.Trim(decoded, strWhitespace) }
 func StrTrimLeft(decoded []byte) []byte  { return bytes.TrimLeft(decoded, strWhitespace) }
 func StrTrimRight(decoded []byte) []byte { return bytes.TrimRight(decoded, strWhitespace) }
+
+// StrReverse reverses the decoded string, preserving combining-character
+// sequences (a base rune keeps its following Mn/Me/Mc marks in order) and quietly
+// skipping invalid UTF-8 -- a byte-for-byte port of cbq's
+// util.ReversePreservingCombiningCharacters, so REVERSE() matches exactly. Same
+// func([]byte) []byte shape as the case funcs, so it shares the harness.
+func StrReverse(decoded []byte) []byte {
+	if len(decoded) == 0 {
+		return decoded
+	}
+	p := []rune(string(decoded))
+	r := make([]rune, len(p))
+	start := len(r)
+	for i := 0; i < len(p); {
+		if p[i] == utf8.RuneError { // quietly skip invalid UTF-8
+			i++
+			continue
+		}
+		j := i + 1
+		for j < len(p) && (unicode.Is(unicode.Mn, p[j]) ||
+			unicode.Is(unicode.Me, p[j]) || unicode.Is(unicode.Mc, p[j])) {
+			j++
+		}
+		for k := j - 1; k >= i; k-- {
+			start--
+			r[start] = p[k]
+		}
+		i = j
+	}
+	return []byte(string(r[start:]))
+}
+
+// StrReplaceAll replaces every occurrence of old in s with repl (REPLACE()'s
+// 3-arg form; cbq strings.Replace(s, old, repl, -1)). The 4-arg count form is
+// variadic and falls back to cbq per the optimizer arity guard.
+func StrReplaceAll(s, old, repl []byte) []byte { return bytes.Replace(s, old, repl, -1) }
 
 // StrDecode returns the operand's decoded string bytes and ok=true for a JSON
 // string; for MISSING/non-string it returns the sentinel Val to yield and

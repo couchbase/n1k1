@@ -796,13 +796,14 @@ func TestStrUnaryDifferentialVsCBQ(t *testing.T) {
 	c := func(v interface{}) expression.Expression { return expression.NewConstant(v) }
 
 	mk := map[string]func(expression.Expression) expression.Expression{
-		"upper":  func(e expression.Expression) expression.Expression { return expression.NewUpper(e) },
-		"lower":  func(e expression.Expression) expression.Expression { return expression.NewLower(e) },
-		"length": func(e expression.Expression) expression.Expression { return expression.NewLength(e) },
-		"title":  func(e expression.Expression) expression.Expression { return expression.NewTitle(e) },
-		"trim":   func(e expression.Expression) expression.Expression { return expression.NewTrim(e) },
-		"ltrim":  func(e expression.Expression) expression.Expression { return expression.NewLTrim(e) },
-		"rtrim":  func(e expression.Expression) expression.Expression { return expression.NewRTrim(e) },
+		"upper":   func(e expression.Expression) expression.Expression { return expression.NewUpper(e) },
+		"lower":   func(e expression.Expression) expression.Expression { return expression.NewLower(e) },
+		"length":  func(e expression.Expression) expression.Expression { return expression.NewLength(e) },
+		"title":   func(e expression.Expression) expression.Expression { return expression.NewTitle(e) },
+		"trim":    func(e expression.Expression) expression.Expression { return expression.NewTrim(e) },
+		"ltrim":   func(e expression.Expression) expression.Expression { return expression.NewLTrim(e) },
+		"rtrim":   func(e expression.Expression) expression.Expression { return expression.NewRTrim(e) },
+		"reverse": func(e expression.Expression) expression.Expression { return expression.NewReverse(e) },
 	}
 	// Strings spanning case, unicode, escapes, empty; whitespace at each end
 	// (space/tab/newline/carriage-return -- see the \f note below); plus
@@ -838,6 +839,44 @@ func TestStrUnaryDifferentialVsCBQ(t *testing.T) {
 			if got != want {
 				t.Errorf("%s(%s): native=%q, cbq=%q", fn, on, got, want)
 			}
+		}
+	}
+}
+
+func TestStrReplaceDifferentialVsCBQ(t *testing.T) {
+	c := func(v interface{}) expression.Expression { return expression.NewConstant(v) }
+	null := c(value.NULL_VALUE)
+	miss := c(value.MISSING_VALUE)
+
+	cases := []struct {
+		name         string
+		s, old, repl expression.Expression
+	}{
+		{"all", c("banana"), c("a"), c("o")},       // "bonono"
+		{"none", c("abc"), c("x"), c("y")},         // unchanged
+		{"del", c("a-b-c"), c("-"), c("")},         // remove sep -> "abc"
+		{"empty-old", c("ab"), c(""), c("-")},      // insert between every char (Go semantics)
+		{"multichar", c("aXbXc"), c("X"), c("__")}, // "a__b__c"
+		{"unicode", c("café"), c("é"), c("e")},     // "cafe"
+		{"empty-str", c(""), c("a"), c("b")},       // "" stays ""
+		{"miss-s", miss, c("a"), c("b")},           // MISSING
+		{"miss-old", c("ab"), miss, c("b")},        // MISSING dominant
+		{"null-s", null, c("a"), c("b")},           // NULL
+		{"null-repl", c("ab"), c("a"), null},       // NULL
+		{"num-old", c("ab"), c(5), c("b")},         // non-string -> NULL
+		{"miss-over-null", miss, null, c("b")},     // MISSING dominates NULL
+	}
+
+	for _, tc := range cases {
+		expr := expression.NewReplace(tc.s, tc.old, tc.repl)
+		want := cbqEval(t, expr)
+		got, ok := nativeEval(t, expr)
+		if !ok {
+			t.Errorf("replace(%s): did not optimize", tc.name)
+			continue
+		}
+		if got != want {
+			t.Errorf("replace(%s): native=%q, cbq=%q", tc.name, got, want)
 		}
 	}
 }

@@ -34,8 +34,9 @@ func init() {
 		"add", "sub", "mult", "div", "mod", "idiv", "imod", "neg", // arithmetic (expr_arith.go)
 		"abs", "ceil", "floor", "sqrt", "exp", "ln", "log", "sign", // unary math (expr_math.go)
 		"degrees", "radians", "sin", "cos", "tan", "asin", "acos", "atan",
-		"upper", "lower", "length", "title", "trim", "ltrim", "rtrim", // unary string (expr_str.go)
+		"upper", "lower", "length", "title", "trim", "ltrim", "rtrim", "reverse", // unary string (expr_str.go)
 		"contains", "position0", "position1", // binary string (expr_str.go)
+		"replace",        // ternary string, 3-arg form (expr_str.go)
 		"power", "atan2", // binary math (expr_math.go)
 		"to_boolean", "to_string", "to_number", // type conversions (expr_type.go)
 		"array_length", "array_count", "array_sum", "array_avg", // array readers (expr_array.go)
@@ -251,7 +252,7 @@ func ExprTreeOptimize(labels base.Labels, e expression.Expression,
 	case "neg",
 		"abs", "ceil", "floor", "sqrt", "exp", "ln", "log", "sign",
 		"degrees", "radians", "sin", "cos", "tan", "asin", "acos", "atan",
-		"upper", "lower", "length", "title", "trim", "ltrim", "rtrim",
+		"upper", "lower", "length", "title", "trim", "ltrim", "rtrim", "reverse",
 		"to_boolean", "to_string", "to_number",
 		"array_length", "array_count", "array_sum", "array_avg",
 		"array_min", "array_max",
@@ -261,7 +262,9 @@ func ExprTreeOptimize(labels base.Labels, e expression.Expression,
 		if len(operands) != 1 {
 			return nil, false
 		}
-	case "between":
+	case "between", "replace":
+		// between is exactly ternary; replace's native harness is the 3-arg form
+		// (str, old, repl) -- the 4-arg count form falls back to cbq.
 		if len(operands) != 3 {
 			return nil, false
 		}
