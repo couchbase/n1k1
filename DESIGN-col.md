@@ -241,6 +241,45 @@ copy, which defeats zero-copy). Options, best-fit first:
    pairs them.
    Recommended: (1) now (zero-copy, no `Agg` change), evolving into (3).
 
+### Selection-vector `WHERE` (Step 5.4)
+
+Today a `WHERE` forces the row path (the rewrite bails on the filter op between the
+group and the scan). Vectorizing predicated aggregation introduces the **selection
+vector** — the primitive the whole vectorized model leans on.
+
+- **Selection = a dense bitmap** (1 bit/row, LSB-first) — the *same layout as
+  Arrow's validity bitmap*, so a null lane and an unselected lane combine by a plain
+  byte-wise `AND` (`effective = predicate AND validity`), and one **masked-reduce**
+  kernel serves *both* null-masking (§ Beyond null_count==0) and `WHERE`. (An
+  index-list selection — DuckDB-style, better at low selectivity — is a later
+  refinement.)
+- **Predicate → selection:** a vectorized compare kernel (`gt_v`/`lt_v`/`eq_v`/…
+  over a borrowed column vs a constant) emits the bitmap; `AND`/`OR` of predicates
+  are byte-wise bitmap ops. Null lanes aren't selected (`null > k` isn't true) —
+  i.e. AND the column's validity.
+- **Masked reduce:** the agg folds only set lanes (`for i { if bit(mask,i) { s +=
+  v[i] } }`), shared with the null path.
+- **Fused scan→filter→agg:** the rewrite extends `group→scan` to `group(vectorizable
+  aggs) → filter(vectorizable predicate) → records-scan`, projecting predicate ∪ agg
+  columns and, per batch, evaluating the predicate → mask, then folding the aggs over
+  the mask. Gate: predicate = bare-column-vs-constant comparisons combined with
+  AND/OR; else row path. Bit-exact vs the row engine (same survivors, same order).
+
+**Bitmap library — roll our own.** A dense `[]byte` bitmap (Arrow-validity-compatible
+LSB-first), a handful of helpers over `math/bits`: zero-dep, zero-alloc (reused
+scratch), wasm-trivially-safe, and the right shape for a small per-batch selection.
+*Not* roaring (`RoaringBitmap/roaring`, bleve's): built for *large/sparse/persistent*
+sets (posting lists), whose container/compression overhead is wasted on a dense
+≤batch selection — and bleve/roaring is build-tag-guarded *out* of n1k1's wasm build,
+so wasm-untested here. `bits-and-blooms/bitset` is pure-Go/wasm-safe but an
+unnecessary dep for ~20 lines; and our bitmap must be byte-compatible with Arrow's
+validity anyway (to AND them), so bespoke is the natural fit.
+
+Build order: **5.4a** dense bitmap + masked reduce kernels (base; shared with the
+null path) → **5.4b** compare kernels (predicate → selection) + AND/OR → **5.4c**
+the fused scan→filter→agg op + rewrite (constant extraction from the cbq filter) +
+end-to-end differential test.
+
 -------------------------------------------------------
 ## Key design decisions (settled)
 
