@@ -11,7 +11,7 @@
 
 package base
 
-// Selection (predicate) kernels for vectorized WHERE (DESIGN-col.md Step 5.4b):
+// Filter (predicate) kernels for vectorized WHERE (DESIGN-col.md Step 5.4b):
 // compare a packed column against a constant to produce a dense selection bitmap
 // (same LSB-first layout as the masked-reduce kernels + Arrow validity), and
 // combine predicates with byte-wise AND/OR. The comparison operator is chosen
@@ -23,7 +23,7 @@ import (
 	"math"
 )
 
-// CmpOp is a comparison operator for a selection kernel.
+// CmpOp is a comparison operator for a filter kernel.
 type CmpOp int
 
 const (
@@ -46,9 +46,9 @@ func clearBits(mask []byte, n int) {
 	}
 }
 
-// SelectFloat64 (re)writes mask so bit i is set iff values[i] OP c, where values
+// FilterFloat64 (re)writes mask so bit i is set iff values[i] OP c, where values
 // is n little-endian float64s. mask must have >= (n+7)/8 bytes.
-func SelectFloat64(mask, values []byte, n int, op CmpOp, c float64) {
+func FilterFloat64(mask, values []byte, n int, op CmpOp, c float64) {
 	clearBits(mask, n)
 	switch op {
 	case CmpEQ:
@@ -90,8 +90,8 @@ func SelectFloat64(mask, values []byte, n int, op CmpOp, c float64) {
 	}
 }
 
-// SelectInt64 is SelectFloat64 for an int64 column vs an int64 constant.
-func SelectInt64(mask, values []byte, n int, op CmpOp, c int64) {
+// FilterInt64 is FilterFloat64 for an int64 column vs an int64 constant.
+func FilterInt64(mask, values []byte, n int, op CmpOp, c int64) {
 	clearBits(mask, n)
 	switch op {
 	case CmpEQ:

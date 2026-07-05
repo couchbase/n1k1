@@ -24,9 +24,9 @@ package glue
 //
 // Step 5.4c fuses a single-comparison WHERE into that path: `SELECT SUM(x) FROM data
 // WHERE y > c` matches group->filter->scan, extracts (field, op, const) from the
-// filter's cbq predicate, and per batch evaluates the selection kernel (base.Select*)
-// into a dense bitmap, then folds via the masked reducers (base.SumMasked* etc.).
-// The predicate column must be numeric + non-null (SelectFloat64/Int64 don't consult
+// filter's cbq predicate, and per batch evaluates the filter kernel (base.Filter*)
+// into a dense selection bitmap, then folds via the masked reducers (base.SumMasked*).
+// The predicate column must be numeric + non-null (FilterFloat64/Int64 don't consult
 // validity); any predicate we can't prove numeric-single-comparison stays on the row
 // path. cbq normalizes >/>= to LT/LE with swapped operands, so we match only LT/LE/Eq.
 
@@ -541,9 +541,9 @@ func DatastoreColumnarAgg(o *base.Op, vars *base.Vars,
 		}
 		switch pred.colType {
 		case "DOUBLE":
-			base.SelectFloat64(mask, cols[predCol], rows, pred.op, pred.c)
+			base.FilterFloat64(mask, cols[predCol], rows, pred.op, pred.c)
 		case "INT64":
-			base.SelectInt64(mask, cols[predCol], rows, pred.op, int64(pred.c))
+			base.FilterInt64(mask, cols[predCol], rows, pred.op, int64(pred.c))
 		}
 		for i := range aggs {
 			applyMaskedAgg(keys[i], accs[i], cols[aggCol[i]], mask, rows)

@@ -48,7 +48,7 @@ func bitmapsEqual(a, b []byte, n int) bool {
 	return true
 }
 
-func TestSelectFloat64MatchesManual(t *testing.T) {
+func TestFilterFloat64MatchesManual(t *testing.T) {
 	// Includes a value equal to the constant to exercise ==/!=/<=/>= boundaries.
 	vals := []float64{1, 2.5, -3, 4, 5.5, 6, -7.25, 8, 5.5, 10, 11, -12.5, 5.5}
 	col := packF64(vals)
@@ -57,11 +57,11 @@ func TestSelectFloat64MatchesManual(t *testing.T) {
 
 	for op := CmpEQ; op <= CmpGE; op++ {
 		mask := make([]byte, (n+7)/8)
-		// Pre-dirty mask to prove SelectFloat64 fully rewrites it.
+		// Pre-dirty mask to prove FilterFloat64 fully rewrites it.
 		for i := range mask {
 			mask[i] = 0xFF
 		}
-		SelectFloat64(mask, col, n, op, c)
+		FilterFloat64(mask, col, n, op, c)
 
 		want := bitmap(n, func(i int) bool { return cmpF(vals[i], c, op) })
 		if !bitmapsEqual(mask, want, n) {
@@ -73,7 +73,7 @@ func TestSelectFloat64MatchesManual(t *testing.T) {
 	}
 }
 
-func TestSelectInt64MatchesManual(t *testing.T) {
+func TestFilterInt64MatchesManual(t *testing.T) {
 	ints := []int64{-5, 10, 0, 7, 1000, -1, 42, 3, 7, 7}
 	col := make([]byte, len(ints)*8)
 	for i, v := range ints {
@@ -84,7 +84,7 @@ func TestSelectInt64MatchesManual(t *testing.T) {
 
 	for op := CmpEQ; op <= CmpGE; op++ {
 		mask := make([]byte, (n+7)/8)
-		SelectInt64(mask, col, n, op, c)
+		FilterInt64(mask, col, n, op, c)
 		want := bitmap(n, func(i int) bool { return cmpF(float64(ints[i]), float64(c), op) })
 		if !bitmapsEqual(mask, want, n) {
 			t.Errorf("int op %s: mask mismatch\n got %08b\nwant %08b", opName(op), mask, want)
@@ -114,16 +114,16 @@ func TestAndOrBitmap(t *testing.T) {
 	}
 }
 
-// TestSelectThenMaskedReduce chains a predicate into a masked reducer: the fused
+// TestFilterThenMaskedReduce chains a predicate into a masked reducer: the fused
 // WHERE+agg path. SUM over vals where vals > c must equal the manual filtered sum.
-func TestSelectThenMaskedReduce(t *testing.T) {
+func TestFilterThenMaskedReduce(t *testing.T) {
 	vals := []float64{1, 2.5, -3, 4, 5.5, 6, -7.25, 8, 9.5, 10, 11, -12.5, 13}
 	col := packF64(vals)
 	n := len(vals)
 	const c = 4.0
 
 	mask := make([]byte, (n+7)/8)
-	SelectFloat64(mask, col, n, CmpGT, c)
+	FilterFloat64(mask, col, n, CmpGT, c)
 
 	acc := AggSum.Init(nil, nil)
 	SumMaskedFloat64(acc, col, mask, n)
@@ -136,6 +136,6 @@ func TestSelectThenMaskedReduce(t *testing.T) {
 		}
 	}
 	if got != want {
-		t.Errorf("fused select>%.1f then sum = %v, want %v", c, got, want)
+		t.Errorf("fused filter>%.1f then sum = %v, want %v", c, got, want)
 	}
 }

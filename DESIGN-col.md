@@ -279,7 +279,7 @@ validity anyway (to AND them), so bespoke is the natural fit.
 
 Build order (all landed): **5.4a** dense bitmap + masked reduce kernels
 (`base/agg_masked.go`; shared with the null path) → **5.4b** compare kernels
-(`base/select.go`: `SelectFloat64/Int64` predicate→selection, `AndBitmap`/`OrBitmap`)
+(`base/filter.go`: `FilterFloat64/Int64` predicate→selection, `AndBitmap`/`OrBitmap`)
 → **5.4c** the fused scan→filter→agg op + rewrite (`extractColPredicate` pulls
 (field, op, const) from the cbq filter; cbq normalizes `>`/`>=` to `LT`/`LE` with
 swapped operands, so only `LT`/`LE`/`Eq` are matched, reading operand order for
