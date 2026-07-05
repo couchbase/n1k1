@@ -242,9 +242,12 @@ doesn't need it).
 
 A `WHERE` used to force the row path (the rewrite bailed on the filter op between the
 group and the scan). Vectorizing predicated aggregation introduces the **selection
-vector** — the primitive the whole vectorized model leans on. Now landed: a single
-field-vs-constant comparison fuses into the columnar-agg lane; anything else (AND/OR,
-field-vs-field, non-numeric, nullable predicate column) still takes the row path.
+vector** — the primitive the whole vectorized model leans on. Now landed: a flat
+AND/OR of numeric field-vs-constant comparisons fuses into the columnar-agg lane
+(each clause → a bitmap, combined byte-wise; nullable predicate columns handled via
+three-valued logic — a null clause row is 0, the right identity for both AND and OR).
+Anything we can't reduce to that (nested boolean, field-vs-field, non-numeric column)
+still takes the row path.
 
 - **Selection = a dense bitmap** (1 bit/row, LSB-first) — the *same layout as
   Arrow's validity bitmap*, so a null lane and an unselected lane combine by a plain
@@ -283,11 +286,14 @@ swapped operands, so only `LT`/`LE`/`Eq` are matched, reading operand order for
 direction). Differential-tested: 9 WHERE variants (all 6 ops × both column types,
 flipped operands, count+filter routing to columnar not metadata, multi-agg) each fire
 the fused lane and match the row path bit-exactly; 4 bail cases stay on the row path.
+→ **5.4d** flat AND/OR of comparisons: `extractColPredicate` recursively flattens a
+same-mode boolean tree (cbq nests `a AND b AND c` as `And(And(a,b),c)`) into clauses;
+per batch each clause → a bitmap (`Filter*`, then AND its column validity), combined
+with `AndBitmap`/`OrBitmap`. Bails on nested mixed boolean, field-vs-field, non-numeric.
 
-Deferred to later: AND/OR of comparisons (the byte-wise `AndBitmap`/`OrBitmap` exist,
-but the rewrite doesn't yet decompose a conjunction into per-clause masks); nullable
-predicate columns (needs validity threaded to AND with the selection — the § Beyond
-null_count==0 companion-slot work); non-fixed-width predicate columns.
+Deferred to later: an index-list (rather than bitmap) selection for very low
+selectivity; non-fixed-width (string/decimal) predicate columns; the long-term
+validity-as-companion-slot generic row-plumbing (the fused op doesn't need it).
 
 -------------------------------------------------------
 ## Key design decisions (settled)

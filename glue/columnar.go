@@ -22,12 +22,14 @@ package glue
 // row lane (TestParquetSumVectorizedDifferential), and the pass is conservative --
 // it only fires when it can prove a numeric column of a records scan.
 //
-// Step 5.4c fuses a single-comparison WHERE into that path: `SELECT SUM(x) FROM data
-// WHERE y > c` matches group->filter->scan, extracts (field, op, const) from the
-// filter's cbq predicate, and per batch evaluates the filter kernel (base.Filter*)
-// into a dense selection bitmap, then folds via the masked reducers (base.SumMasked*).
-// Any predicate we can't prove a numeric single comparison stays on the row path.
-// cbq normalizes >/>= to LT/LE with swapped operands, so we match only LT/LE/Eq.
+// Step 5.4c/5.4d fuse a WHERE into that path: `SELECT SUM(x) FROM data WHERE y > c`
+// matches group->filter->scan; extractColPredicate reduces the cbq condition to a
+// flat AND/OR of numeric field-vs-constant comparisons; per batch each clause's
+// filter kernel (base.Filter*) makes a dense bitmap, the clauses AND/OR-combine
+// (base.And/OrBitmap) into one selection, and the masked reducers fold over it. Any
+// predicate we can't reduce to that form (nested boolean, field-vs-field, non-numeric)
+// stays on the row path. cbq normalizes >/>= to LT/LE with swapped operands (match
+// only LT/LE/Eq) and nests `a AND b AND c` as And(And(a,b),c) (flattened recursively).
 //
 // Nulls (DESIGN-col.md "Beyond null_count==0"): a column's null_count no longer
 // forces the row path. Each batch carries its Arrow validity bitmap (same LSB-first
@@ -127,25 +129,28 @@ func maybeVectorizeGroup(op *base.Op, temps []interface{}) {
 		colByName[c.Name] = c
 	}
 
-	// A predicate's column must be numeric; nulls are fine (the executor ANDs the
-	// batch validity into the selection, so a null predicate row isn't selected).
+	// Every predicate clause's column must be numeric; nulls are fine (the executor
+	// ANDs the batch validity into each clause, so a null clause row isn't selected).
 	// An INT64 column requires an integer constant so the int64 kernel is exact.
 	// Otherwise keep the row path.
 	if pred != nil {
-		cm, ok := colByName[pred.field]
-		if !ok {
-			return
-		}
-		switch cm.Type {
-		case "DOUBLE":
-			pred.colType = "DOUBLE"
-		case "INT64":
-			if pred.c != math.Trunc(pred.c) || math.IsInf(pred.c, 0) {
-				return // non-integer constant vs int column -- row path
+		for k := range pred.clauses {
+			cl := &pred.clauses[k]
+			cm, ok := colByName[cl.field]
+			if !ok {
+				return
 			}
-			pred.colType = "INT64"
-		default:
-			return
+			switch cm.Type {
+			case "DOUBLE":
+				cl.colType = "DOUBLE"
+			case "INT64":
+				if cl.c != math.Trunc(cl.c) || math.IsInf(cl.c, 0) {
+					return // non-integer constant vs int column -- row path
+				}
+				cl.colType = "INT64"
+			default:
+				return
+			}
 		}
 	}
 
@@ -171,12 +176,20 @@ func maybeVectorizeGroup(op *base.Op, temps []interface{}) {
 	}
 }
 
-// colPredicate is a single vectorizable comparison `field <op> c`.
-type colPredicate struct {
+// colClause is one vectorizable comparison `field <op> c`.
+type colClause struct {
 	field   string
 	op      base.CmpOp
 	c       float64
 	colType string // "DOUBLE" | "INT64", filled once the column is resolved
+}
+
+// colPredicate is a flat conjunction or disjunction of comparison clauses (a single
+// comparison is mode "and" with one clause). Nested/mixed boolean structure isn't
+// handled -- such predicates keep the row path.
+type colPredicate struct {
+	mode    string // "and" | "or"
+	clauses []colClause
 }
 
 // predSpec flattens a predicate to plain interface{} for op.Params, or nil.
@@ -184,13 +197,17 @@ func predSpec(p *colPredicate) interface{} {
 	if p == nil {
 		return nil
 	}
-	return []interface{}{p.field, int(p.op), p.c, p.colType}
+	cls := make([]interface{}, len(p.clauses))
+	for i, cl := range p.clauses {
+		cls[i] = []interface{}{cl.field, int(cl.op), cl.c, cl.colType}
+	}
+	return []interface{}{p.mode, cls}
 }
 
-// extractColPredicate reduces a `filter` op's cbq condition to a single numeric
-// comparison of a bare keyspace field against a constant. cbq rewrites >/>= to
-// LT/LE with swapped operands, so we handle LT/LE/Eq and read operand order to get
-// the effective op. Anything else (AND/OR, field-to-field, non-numeric) -> false.
+// extractColPredicate reduces a `filter` op's cbq condition to a flat AND/OR of
+// numeric field-vs-constant comparisons. A top-level And/Or contributes its
+// operands as clauses (each must itself be a bare comparison); anything else (a
+// lone comparison aside) -- nested boolean, field-to-field, non-numeric -> false.
 func extractColPredicate(filter *base.Op) (colPredicate, bool) {
 	if len(filter.Params) != 2 {
 		return colPredicate{}, false
@@ -199,6 +216,64 @@ func extractColPredicate(filter *base.Op) (colPredicate, bool) {
 	if !ok {
 		return colPredicate{}, false
 	}
+	var mode string
+	switch cond.(type) {
+	case *expression.And:
+		mode = "and"
+	case *expression.Or:
+		mode = "or"
+	default:
+		cl, ok := extractComparison(cond)
+		if !ok {
+			return colPredicate{}, false
+		}
+		return colPredicate{mode: "and", clauses: []colClause{cl}}, true
+	}
+	clauses, ok := flattenClauses(cond, mode)
+	if !ok || len(clauses) < 2 {
+		return colPredicate{}, false
+	}
+	return colPredicate{mode: mode, clauses: clauses}, true
+}
+
+// flattenClauses collects comparison clauses from a tree of same-mode boolean
+// nodes (cbq nests `a AND b AND c` as And(And(a,b),c)). A different-mode node or a
+// non-comparison leaf -> ok=false (that predicate keeps the row path).
+func flattenClauses(e expression.Expression, mode string) ([]colClause, bool) {
+	var ops expression.Expressions
+	switch n := e.(type) {
+	case *expression.And:
+		if mode != "and" {
+			return nil, false
+		}
+		ops = n.Operands()
+	case *expression.Or:
+		if mode != "or" {
+			return nil, false
+		}
+		ops = n.Operands()
+	default:
+		cl, ok := extractComparison(e)
+		if !ok {
+			return nil, false
+		}
+		return []colClause{cl}, true
+	}
+	var out []colClause
+	for _, o := range ops {
+		sub, ok := flattenClauses(o, mode)
+		if !ok {
+			return nil, false
+		}
+		out = append(out, sub...)
+	}
+	return out, true
+}
+
+// extractComparison reduces a single cbq comparison to (field, op, const). cbq
+// rewrites >/>= to LT/LE with swapped operands, so we handle LT/LE/Eq and read
+// operand order to get the effective op.
+func extractComparison(cond expression.Expression) (colClause, bool) {
 	var a, b expression.Expression
 	var lt, le bool // else Eq
 	switch e := cond.(type) {
@@ -209,13 +284,13 @@ func extractColPredicate(filter *base.Op) (colPredicate, bool) {
 	case *expression.Eq:
 		a, b = e.First(), e.Second()
 	default:
-		return colPredicate{}, false
+		return colClause{}, false
 	}
 
 	// Orient: exactly one side a bare field, the other a numeric constant.
 	field, fieldFirst, c, ok := orientComparison(a, b)
 	if !ok {
-		return colPredicate{}, false
+		return colClause{}, false
 	}
 	var op base.CmpOp
 	switch {
@@ -230,7 +305,7 @@ func extractColPredicate(filter *base.Op) (colPredicate, bool) {
 	default:
 		op = base.CmpEQ
 	}
-	return colPredicate{field: field, op: op, c: c}, true
+	return colClause{field: field, op: op, c: c}, true
 }
 
 // orientComparison returns (field, fieldIsFirst, const) when one operand is a bare
@@ -486,19 +561,27 @@ func DatastoreColumnarAgg(o *base.Op, vars *base.Vars,
 		aggCol[i] = addCol(s[1].(string))
 	}
 
-	// Optional WHERE predicate (5.4c): also project its column and evaluate it into
-	// a per-batch selection bitmap that gates the masked reducers.
+	// Optional WHERE predicate (5.4c/5.4d): project each clause's column and, per
+	// batch, evaluate the clauses into one selection bitmap (AND/OR-combined) that
+	// gates the masked reducers.
 	var pred *colPredicate
-	predCol := -1
+	var clauseCol []int // projected column index per clause
 	if len(o.Params) > 2 && o.Params[2] != nil {
 		ps := o.Params[2].([]interface{})
-		pred = &colPredicate{
-			field:   ps[0].(string),
-			op:      base.CmpOp(ps[1].(int)),
-			c:       ps[2].(float64),
-			colType: ps[3].(string),
+		rawCls := ps[1].([]interface{})
+		clauses := make([]colClause, len(rawCls))
+		clauseCol = make([]int, len(rawCls))
+		for i, rc := range rawCls {
+			c := rc.([]interface{})
+			clauses[i] = colClause{
+				field:   c[0].(string),
+				op:      base.CmpOp(c[1].(int)),
+				c:       c[2].(float64),
+				colType: c[3].(string),
+			}
+			clauseCol[i] = addCol(clauses[i].field)
 		}
-		predCol = addCol(pred.field)
+		pred = &colPredicate{mode: ps[0].(string), clauses: clauses}
 	}
 
 	cp, ok := src.(records.ColumnsProjector)
@@ -521,10 +604,27 @@ func DatastoreColumnarAgg(o *base.Op, vars *base.Vars,
 		accs[i] = aggs[i].Init(vars, nil)
 	}
 
-	// Scratch bitmaps reused across batches: predMask holds the predicate's
-	// selected-and-valid rows (WHERE), combined holds predMask AND an agg column's
-	// validity when both a filter and nulls are in play.
-	var predMask, combined []byte
+	// Scratch bitmaps reused across batches: predMask accumulates the combined WHERE
+	// selection, clauseMask holds one clause's mask while combining, and combined
+	// holds sel AND an agg column's validity when both a filter and nulls apply.
+	var predMask, clauseMask, combined []byte
+
+	// evalClause writes clause cl's selected-and-valid rows into dst (compare ->
+	// bitmap, then AND the clause column's validity so a null clause row is 0 --
+	// which is the right identity for both AND- and OR-combining under N1QL's
+	// three-valued logic: NULL never makes WHERE true).
+	evalClause := func(dst []byte, cl colClause, ci int, cols, valids [][]byte, rows int) {
+		switch cl.colType {
+		case "DOUBLE":
+			base.FilterFloat64(dst, cols[ci], rows, cl.op, cl.c)
+		case "INT64":
+			base.FilterInt64(dst, cols[ci], rows, cl.op, int64(cl.c))
+		}
+		if v := valids[ci]; v != nil {
+			base.AndBitmap(dst, v)
+		}
+	}
+
 	for {
 		cols, valids, rows, ok, err := cbs.NextColumns()
 		if err != nil {
@@ -539,20 +639,20 @@ func DatastoreColumnarAgg(o *base.Op, vars *base.Vars,
 			return
 		}
 
-		// Batch selection mask P (WHERE): compare -> bitmap, then AND the predicate
-		// column's validity so a null predicate row is never selected. sel stays nil
-		// (== all rows) when there's no WHERE.
+		// Batch selection mask (WHERE): evaluate clause 0, then AND/OR each further
+		// clause's mask into it. sel stays nil (== all rows) when there's no WHERE.
 		var sel []byte
 		if pred != nil {
 			predMask = resize(predMask, rows)
-			switch pred.colType {
-			case "DOUBLE":
-				base.FilterFloat64(predMask, cols[predCol], rows, pred.op, pred.c)
-			case "INT64":
-				base.FilterInt64(predMask, cols[predCol], rows, pred.op, int64(pred.c))
-			}
-			if pv := valids[predCol]; pv != nil {
-				base.AndBitmap(predMask, pv)
+			evalClause(predMask, pred.clauses[0], clauseCol[0], cols, valids, rows)
+			for k := 1; k < len(pred.clauses); k++ {
+				clauseMask = resize(clauseMask, rows)
+				evalClause(clauseMask, pred.clauses[k], clauseCol[k], cols, valids, rows)
+				if pred.mode == "or" {
+					base.OrBitmap(predMask, clauseMask)
+				} else {
+					base.AndBitmap(predMask, clauseMask)
+				}
 			}
 			sel = predMask
 		}

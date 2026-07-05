@@ -455,10 +455,16 @@ func TestParquetSumVectorizedDifferential(t *testing.T) {
 		{"where-const-first", `SELECT SUM(price) AS s FROM sales3 WHERE 10 < price`, true}, // flipped operand order
 		{"where-count", `SELECT COUNT(price) AS c FROM sales3 WHERE price > 10`, true},     // count+filter → columnar, not metadata
 		{"where-multi", `SELECT SUM(price) AS sp, COUNT(id) AS c FROM sales3 WHERE price > 10`, true},
-		// Bails to the row path: predicate not a single numeric field-vs-const compare.
+		// 5.4d: flat AND/OR of comparisons combine per-clause masks.
+		{"where-and", `SELECT SUM(price) AS s FROM sales3 WHERE price > 10 AND id < 20`, true},
+		{"where-or", `SELECT SUM(price) AS s FROM sales3 WHERE price > 100 OR id < 5`, true},
+		{"where-and3", `SELECT SUM(price) AS s FROM sales3 WHERE price > 5 AND price < 100 AND id < 25`, true},
+		{"where-and-same", `SELECT SUM(price) AS s FROM sales3 WHERE price > 5 AND price < 20`, true}, // same col twice (range)
+		// Bails to the row path: predicate not a numeric field-vs-const comparison.
 		{"where-noninteger-int", `SELECT SUM(price) AS s FROM sales3 WHERE id > 10.5`, false}, // non-int const vs int col
 		{"where-field-field", `SELECT SUM(price) AS s FROM sales3 WHERE price > id`, false},   // field vs field
-		{"where-and", `SELECT SUM(price) AS s FROM sales3 WHERE price > 10 AND id < 20`, false}, // conjunction
+		{"where-and-nested", `SELECT SUM(price) AS s FROM sales3 WHERE price > 10 AND (id < 5 OR id > 20)`, false}, // nested boolean
+		{"where-and-field", `SELECT SUM(price) AS s FROM sales3 WHERE price > 10 AND price > id`, false},           // a clause isn't field-vs-const
 		{"where-string", `SELECT SUM(price) AS s FROM sales3 WHERE f0 = "x"`, false},           // non-numeric predicate col
 		{"count-star", `SELECT COUNT(*) AS c FROM sales3`, false},                              // not SUM
 		{"sum-string", `SELECT SUM(f0) AS s FROM sales3`, false},                               // non-numeric column
@@ -567,6 +573,8 @@ func TestParquetNullableAggDifferential(t *testing.T) {
 		{"where-null-same", `SELECT SUM(price) AS s FROM sales5 WHERE price > 50`, true},
 		{"avg-where-null", `SELECT AVG(price) AS a FROM sales5 WHERE id > 20`, true}, // count over survivors, sum over non-null survivors
 		{"count-where-null", `SELECT COUNT(price) AS c FROM sales5 WHERE id > 20`, true}, // filter forces columnar; counts all survivors
+		{"and-null", `SELECT SUM(price) AS s FROM sales5 WHERE id > 20 AND price < 500`, true}, // AND over two nullable cols (3-valued logic)
+		{"or-null", `SELECT SUM(price) AS s FROM sales5 WHERE id < 10 OR price > 900`, true},   // OR over two nullable cols
 		{"count-null-alone", `SELECT COUNT(price) AS c FROM sales5`, false}, // footer → metadata-agg, not columnar
 	}
 
