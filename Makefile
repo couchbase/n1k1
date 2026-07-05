@@ -99,7 +99,7 @@ easy-to-read:
 
 # cloc emits lines of code stats.
 cloc:
-	find . | grep go | grep -v test | grep -v generated | grep -v tmp | grep -v claude | \
+	find . | grep go | grep -v test | grep -v generated | grep -v tmp | grep -v wasm-mods | grep -v claude | \
        xargs cloc --by-file
 
 # ------------------------------------------------------------------
