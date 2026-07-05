@@ -703,7 +703,11 @@ walk it.)
   change).** Wire a pure-Go Parquet/Arrow `RecordSource` yielding borrowed column
   buffers, initially transposed to JSON rows (the `DESIGN-data.md` correctness
   path). Delivers "query Parquet at all" — user value independent of
-  vectorization — and creates the substrate.
+  vectorization — and creates the substrate. **✅ Prototyped
+  (`test/parquet_test.go`, arrow-go) — see § *Parquet prototype results*: reads one
+  column of a 14-col file in 0.2% of the bytes / 80–137× faster, the footer yields
+  types + null_count + min/max for free, and the borrowed Arrow `[]float64` sums at
+  the 0.9 ns/value fixed-width ceiling.**
 - **Step 4 — Widen the `Source` interface (the missing wire).** Add the projection
   input + `Schema()`/`ColumnStats()` output (§ *Pushdown*). Source now reads only
   wanted columns and declares type + `null_count`; still row-transposed
@@ -794,6 +798,72 @@ to build), columnar wins unconditionally.**
   over JSONL with no reuse is a wash (you paid the parse to build). The measured
   win is real precisely for the reuse / wide-doc / columnar-source cases — which
   is the target workload, not a coincidence.
+
+-------------------------------------------------------
+## Parquet prototype results — a columnar source, measured (arrow-go, arm64)
+
+Step 3's prototype (`test/parquet_test.go`, `apache/arrow-go/v18` — already an
+n1k1 indirect dep, the same library `glue`'s `iceberg_reader` builds on). It
+writes a Parquet file of `{id int64, price float64, f0..fN string}` — a *wide*
+record where a query wants one numeric column — then exercises the three things a
+columnar source is supposed to buy us. All on the same arm64 MacBook, pure Go.
+
+**(1) Projection pushdown — read only the column you want.** Materializing just
+`price` vs the whole 14-column file:
+
+| read | time | column-chunk bytes |
+|---|---|---|
+| `price` only (1 of 14 cols) | 0.6 ms | ~0.02 MB |
+| all 14 columns | 50 ms | ~10.3 MB |
+
+→ the projection touches **0.2% of the bytes and is ~80× faster to materialize**
+(~137× at 1M rows). This is the "only these fields wanted" wire from § *Pushdown*,
+working at the storage layer — and it's the file format doing it, not n1k1.
+
+**(2) Schema + stats from the footer, free.** With **no data pages read**, the
+footer yields physical types and per-column statistics:
+
+```
+col[0] id     type=INT64      null_count=0
+col[1] price  type=DOUBLE     null_count=0 min=0.5 max=999.5
+col[2] f0     type=BYTE_ARRAY null_count=0
+```
+
+→ "metadata up" (§ *Pushdown*) is real and free: the type picks the fixed-width
+kernel, and **`null_count=0` means no validity bitmap → the unmasked kernel**
+(§ *the tail problem*). `min`/`max` are exactly the zone-map inputs for later
+partition/row-group pruning.
+
+**(3) A parse-free fixed-width column.** Arrow hands back the price column as a
+borrowed contiguous `[]float64`; the SUM kernel runs straight over it:
+
+| SUM path | ns/value | vs row-JSON | allocs |
+|---|---|---|---|
+| Arrow column, kernel only | 0.93 | ~56× | 0 |
+| Arrow column, full open+project+decode+sum | 3.0 | ~17× | 2800 / ~18 MB |
+| row-JSON baseline (n1k1 today) | 52 | 1× | 0 |
+
+→ the kernel sits at the **same ~0.9 ns/value fixed-width ceiling the § Spike
+results measured — but now with NO JSON parse to build the column**, because the
+bytes arrived columnar. Even the *full* path (re-open + Snappy-decode + Arrow
+materialize + sum, every iteration — worst case) is ~17× the row path.
+
+**Honest caveats:**
+- The full path allocates (~18 MB / 2800 allocs/op) — that's Arrow's
+  decode/materialization, i.e. the *transpose/copy* the `DESIGN-data.md` columnar
+  caveat named. A real integration reuses the `memory.Allocator` and `Release()`s
+  each batch to amortize it; the prototype doesn't bother.
+- This reads Arrow's *materialized* column — it does **not** yet carry the borrowed
+  buffer all the way into a n1k1 op with `@col` markers. That zero-copy,
+  end-to-end path is Step 5, and it's where the 0.93 (not 3.0) becomes the number
+  that matters.
+- Requires the `DESIGN-testing.md` worktree bootstrap (arrow-go pulls the EE
+  module graph like everything else under `-tags n1ql`).
+
+**Net:** the columnar-source half of the plan is de-risked. Projection pushdown
+and free typed/null metadata work today through arrow-go; the parse-free column
+hits the fixed-width ceiling. The remaining work is *integration* (Source
+interface widening, then the `@col` in-op path), not *feasibility*.
 
 -------------------------------------------------------
 ## One-line summary
