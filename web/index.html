@@ -136,6 +136,7 @@
       </div>
       <div id="source" style="font-size:12.5px;color:var(--muted);margin-bottom:8px">
         Source: <span id="sourceName" class="mono">built-in sample</span>
+        <button id="resetSource" title="Forget the saved dataset and load the built-in sample" style="display:none;font-size:11.5px;padding:2px 8px;margin-left:8px">&#8635; Use built-in sample</button>
       </div>
       <textarea id="sql" spellcheck="false" placeholder="Loading engine&hellip;"></textarea>
 
@@ -547,7 +548,8 @@
     } catch (e) { setStatus('<span class="err">Read failed: ' + escapeHtml(String(e)) + "</span>"); return; }
 
     const mount = "/dropdata-" + (++mountSeq);
-    const m = await engine.loadFiles(files, mount);
+    const srcName = fileObjs.length === 1 ? fileObjs[0].name : fileObjs.length + " files";
+    const m = await engine.loadFiles(files, mount, srcName);
     if (!m.ok) { setStatus('<span class="err">Load failed: ' + escapeHtml(m.error) + "</span>"); return; }
     const resp = m.result, stats = (resp && resp.stats) || {};
     if (!resp.ok) {
@@ -556,9 +558,9 @@
       return;
     }
     const note = stats.truncated ? " (truncated at cap)" : "";
-    const label = fileObjs.length === 1 ? fileObjs[0].name : fileObjs.length + " files";
-    await activateFromOpen(m, label + "  ·  " + (stats.docs || 0) + " docs" + note, null,
-      () => engine.loadFiles(files, mount));
+    await activateFromOpen(m, srcName + "  ·  " + (stats.docs || 0) + " docs" + note, null,
+      () => engine.loadFiles(files, mount, srcName));
+    showResetSource(true);
   }
 
   async function openFolder() {
@@ -588,10 +590,11 @@
     // Mount under a fresh path so it doesn't collide with the built-in sample,
     // then have the worker open it and report the keyspaces it exposes.
     const mount = "/userdata-" + (openFolder._n = (openFolder._n || 0) + 1);
-    const m = await engine.openTree(mount, { default: keyspaces });
+    const m = await engine.openTree(mount, { default: keyspaces }, dirHandle.name);
     const note = stats.truncated ? " (truncated at the size/file cap)" : "";
     await activateFromOpen(m, dirHandle.name + "  ·  " + stats.count + " file(s)" + note, null,
-      () => engine.openTree(mount, { default: keyspaces }));
+      () => engine.openTree(mount, { default: keyspaces }, dirHandle.name));
+    showResetSource(true);
   }
 
   // ---- Engine: the n1k1 wasm runs in a Web Worker (off the main thread) -------
@@ -641,19 +644,46 @@
       ready: readyP,
       terminate: () => worker.terminate(),
       openBuiltin: () => rpc("openBuiltin"),
-      loadFiles: (files, mount) => rpc("loadFiles", { files, mount }),
-      openTree: (mount, tree) => rpc("openTree", { mount, tree }),
+      loadFiles: (files, mount, label) => rpc("loadFiles", { files, mount, label }),
+      openTree: (mount, tree, label) => rpc("openTree", { mount, tree, label }),
+      restoreSource: () => rpc("restoreSource"),
+      forgetSource: () => rpc("forgetSource"),
       query: query,
     };
   }
   let engine = makeEngine();
 
+  // Reset the persisted dataset and go back to the built-in sample.
+  const resetSourceBtn = $("resetSource");
+  function showResetSource(on) { resetSourceBtn.style.display = on ? "" : "none"; }
+  resetSourceBtn.addEventListener("click", async () => {
+    if (!ready) return;
+    await engine.forgetSource();
+    showResetSource(false);
+    await activateFromOpen(await engine.openBuiltin(), "built-in sample", SAMPLE_QUERIES,
+      () => engine.openBuiltin());
+  });
+
+  // Open the built-in sample as the active source.
+  async function openBuiltinSource() {
+    await activateFromOpen(await engine.openBuiltin(), "built-in sample", SAMPLE_QUERIES,
+      () => engine.openBuiltin());
+  }
+
   engine.ready.then(async () => {
     ready = true;
     runBtn.disabled = false;
     sqlEl.placeholder = "";
-    await activateFromOpen(await engine.openBuiltin(), "built-in sample", SAMPLE_QUERIES,
-      () => engine.openBuiltin());
+    // Restore the last user dataset from OPFS if one was saved; else the sample.
+    const m = await engine.restoreSource();
+    const r = m && m.ok && m.result;
+    if (r && r.ok && r.source) {
+      currentSource = { reopen: () => engine.restoreSource() };
+      showResetSource(true);
+      await activateSource(r.keyspaces, r.label + "  ·  restored", null);
+    } else {
+      await openBuiltinSource();
+    }
   }).catch((e) => {
     setStatus('<span class="err">Failed to start engine: ' + escapeHtml(String((e && e.message) || e)) +
               '</span><br><span class="spin">(serve over HTTP, not file://; needs a browser with Web Workers)</span>');

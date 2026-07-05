@@ -53,21 +53,43 @@ const ops = {
   },
 
   // Ingest dropped/picked files, mount, and open. files: [{name, bytes}].
-  async loadFiles({ files, mount }) {
+  async loadFiles({ files, mount, label }) {
     const { tree, stats } = await self.n1k1Ingest.filesToDatastore(files);
     if (!stats.keyspaces) return { ok: false, stats, error: "no documents found" };
     self.n1k1MountTree(mount, tree);
     const resp = JSON.parse(self.n1k1OpenDir(mount));
-    if (resp.ok) await self.n1k1OPFS.preload(resp.cachePlan);
+    if (resp.ok) {
+      await self.n1k1OPFS.preload(resp.cachePlan);
+      self.n1k1OPFS.saveSource({ label: label || "dataset", mount, tree }); // persist (best-effort)
+    }
     return { ...resp, stats };
   },
 
   // Mount an already-built tree (e.g. the folder picker's keyspace map) + open.
-  async openTree({ mount, tree }) {
+  async openTree({ mount, tree, label }) {
     self.n1k1MountTree(mount, tree);
     const resp = JSON.parse(self.n1k1OpenDir(mount));
-    if (resp.ok) await self.n1k1OPFS.preload(resp.cachePlan);
+    if (resp.ok) {
+      await self.n1k1OPFS.preload(resp.cachePlan);
+      self.n1k1OPFS.saveSource({ label: label || "folder", mount, tree });
+    }
     return resp;
+  },
+
+  // Restore the last user dataset persisted in OPFS (if any) and open it.
+  async restoreSource() {
+    const src = await self.n1k1OPFS.loadSource();
+    if (!src || !src.tree || !src.mount) return { ok: true, source: false };
+    self.n1k1MountTree(src.mount, src.tree);
+    const resp = JSON.parse(self.n1k1OpenDir(src.mount));
+    if (resp.ok) await self.n1k1OPFS.preload(resp.cachePlan);
+    return { ...resp, source: true, label: src.label || "restored dataset" };
+  },
+
+  // Forget the persisted dataset (back to just the built-in sample next time).
+  async forgetSource() {
+    await self.n1k1OPFS.forgetSource();
+    return { ok: true };
   },
 
   // Run a query; persist any freshly-built index blobs afterward.

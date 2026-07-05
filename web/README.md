@@ -48,6 +48,10 @@ onto the page — or click **📤 Load files…**. They're read in the browser
 Then query away. This path works in every browser (no picker API). `.zst` and
 `.zip` aren't supported yet; caps: 200k docs / 64 MB.
 
+Your loaded dataset is **remembered across reloads** (saved to the browser's
+private OPFS storage), so you don't have to re-drop it. Click **↺ Use built-in
+sample** in the Source line to forget it and go back to the sample.
+
 ### Query your own local folder
 
 In a Chromium browser (Chrome / Edge), click **📁 Open folder…** to point n1k1 at

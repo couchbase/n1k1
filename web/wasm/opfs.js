@@ -95,5 +95,29 @@
     return saved;
   }
 
-  g.n1k1OPFS = { available, preload, persist };
+  // ---- Source persistence: remember the last user-loaded dataset -------------
+  // Persist the mounted datastore tree so a page reload can restore it without
+  // re-dropping. Single slot (the most recent). Best-effort + evictable, like
+  // the index cache. Payload: { label, mount, tree }.
+  const SOURCE_KEY = "source.json";
+  async function saveSource(payload) {
+    if (!available) return false;
+    try { return await put(SOURCE_KEY, new TextEncoder().encode(JSON.stringify(payload))); }
+    catch (e) { return false; } // quota/serialize failure -> skip (persistence is optional)
+  }
+  async function loadSource() {
+    if (!available) return null;
+    const bytes = await get(SOURCE_KEY);
+    if (!bytes || !bytes.length) return null;
+    try { return JSON.parse(new TextDecoder().decode(bytes)); } catch (e) { return null; }
+  }
+  async function forgetSource() {
+    if (!available) return;
+    try {
+      const root = await navigator.storage.getDirectory();
+      await root.removeEntry(SOURCE_KEY);
+    } catch (e) { /* absent already / unsupported */ }
+  }
+
+  g.n1k1OPFS = { available, preload, persist, saveSource, loadSource, forgetSource };
 })(typeof globalThis !== "undefined" ? globalThis : this);

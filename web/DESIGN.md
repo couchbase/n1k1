@@ -95,8 +95,18 @@ The reason we can't just recompile bbolt/bleve is mmap. Realistic path:
   OPFS is absent (Firefox private mode, etc.). Tests: cache round-trip + tamper-proof
   "cache is actually used" (`idx_mem_test.go`), and the openDir-cachePlan / blob-drain
   boundary (`e2e.test.mjs`); the browser `opfsGet`/`opfsPut` themselves are browser-verified
-  (node has no OPFS). Not yet: OPFS *source* persistence (re-open a dropped dataset without
-  re-dropping) — the natural companion.
+  (node has no OPFS).
+
+**OPFS source persistence (DONE)** — `wasm/opfs.js` + `wasm/worker.js`. After a
+drop/pick, the worker saves the mounted datastore tree to OPFS (`source.json`:
+`{label, mount, tree}`, best-effort/fire-and-forget). On the next load the boot path
+calls `restoreSource` — if a saved dataset exists it's re-mounted + opened (no re-drop,
+no re-ingest) and activated, with a "↺ Use built-in sample" button that `forgetSource`s
+and returns to the sample. Single slot (most recent); evictable; no Go change (rides the
+existing MountTree/OpenDir path). Browser-only, so untested in node — but the mount/open/
+query behavior underneath is covered by e2e. Persists the post-ingest *tree* (simpler
+restore than re-ingesting raw files; costs more OPFS space for compressed inputs — fine
+under the 200k-doc / 64 MB caps).
 - **Phase 3** — sync-handle + worker only if an index must exceed RAM (bbolt-style
   paging), or for FTS. bleve *can* run in-memory via its `gtreap` store (no mmap) — worth
   a spike, but scorch/zap/boltdb must stay out of the graph; a hand-rolled inverted index
