@@ -1,6 +1,6 @@
 # Example JavaScript extensions (drop-in functions)
 
-Two kinds of file live here, both keyed by file name:
+Three kinds of file live here, all keyed by file name:
 
 - **`*.js` — a scalar function.** The SQL++ function name is the file's base name
   (minus `.js`), and the file must define a JavaScript function of that **same
@@ -10,11 +10,15 @@ Two kinds of file live here, both keyed by file name:
   `NAME_final(state)`; the accumulator `state` is any JSON-serializable value.
   `NAME(expr)` then works in `GROUP BY` (or as a bare aggregate). E.g.
   `geomean.agg.js` → `SELECT host, geomean(latency) FROM … GROUP BY host`.
+- **`*.stream.js` — a streaming table-valued source** used in a `FROM` clause. For
+  base name `NAME`, the file defines `function NAME(emit, ...args)` and pushes
+  rows via `emit(row)` (one row per argument, so `emit(a, b)` yields two) — no
+  array is built, so a huge source stays bounded-memory. E.g. `series.stream.js`
+  → `SELECT x.n FROM series(1, 1000000) AS x WHERE x.n % 7 = 0`. (A plain `*.js`
+  that *returns* an array also works in `FROM`, but materializes it first.)
 
 The directory *is* the catalog — add a file (or `git pull` a repo of them) and
-the function is available; no `CREATE FUNCTION` DDL, no rebuild. (A JS function
-that **returns an array** also works directly in a `FROM` clause as a
-table-valued source: `SELECT x.* FROM myfunc(…) AS x`.)
+the function is available; no `CREATE FUNCTION` DDL, no rebuild.
 
 ## Loading them
 

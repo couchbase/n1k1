@@ -46,6 +46,8 @@ func DatastoreOp(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 		DatastoreFetch(o, vars, yieldVals, yieldErr, path, pathNext)
 	case "expr-scan":
 		ExprScanOp(o, vars, yieldVals, yieldErr)
+	case "js-stream":
+		JSStreamOp(o, vars, yieldVals, yieldErr)
 	case "with-recursive":
 		WithRecursiveOp(o, vars, yieldVals, yieldErr)
 	case "project-exclude":

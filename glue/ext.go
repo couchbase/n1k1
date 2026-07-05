@@ -89,6 +89,21 @@ var extensionLoaders = map[string]struct {
 func RegisterExtensionFile(path string) (string, error) {
 	base := filepath.Base(path)
 
+	// "<name>.stream.js" is a JS STREAMING TABLE-VALUED SOURCE (emit protocol; see
+	// ext_stream_jsvm.go), checked before the generic ".js" scalar loader.
+	if lower := strings.ToLower(base); strings.HasSuffix(lower, ".stream.js") {
+		name := strings.TrimSuffix(lower, ".stream.js")
+		src, err := os.ReadFile(path)
+		if err != nil {
+			return "", err
+		}
+		if err := RegisterJSStream(name, string(src)); err != nil {
+			return "", err
+		}
+		extLoaded[name] = ExtensionInfo{Name: name, Kind: "javascript-stream", Source: path}
+		return name, nil
+	}
+
 	// "<name>.agg.js" is a JS AGGREGATE (3-callback protocol; see ext_agg_jsvm.go),
 	// checked before the generic ".js" scalar loader since it also ends in ".js".
 	if lower := strings.ToLower(base); strings.HasSuffix(lower, ".agg.js") {

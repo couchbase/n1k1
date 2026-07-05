@@ -415,8 +415,9 @@ func TestExtShippedJSExamples(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RegisterExtensionDir(shipped): %v", err)
 	}
-	// Scalar UDFs (*.js) plus the geomean aggregate (*.agg.js), sorted.
-	want := []string{"add_two_numbers", "celsius_to_fahrenheit", "geomean", "slugify"}
+	// Scalar UDFs (*.js), the geomean aggregate (*.agg.js), the series streaming
+	// source (*.stream.js), sorted.
+	want := []string{"add_two_numbers", "celsius_to_fahrenheit", "geomean", "series", "slugify"}
 	if strings.Join(names, ",") != strings.Join(want, ",") {
 		t.Fatalf("shipped extension names = %v, want %v", names, want)
 	}
@@ -427,11 +428,50 @@ func TestExtShippedJSExamples(t *testing.T) {
 		{`SELECT RAW celsius_to_fahrenheit(100)`, `212`},
 		{`SELECT RAW slugify("Hello, World!")`, `"hello-world"`},
 		{`SELECT RAW ROUND(geomean(v), 4) FROM [1,2,4,8] AS v`, `2.8284`}, // 64^(1/4)
+		{`SELECT RAW SUM(x.n) FROM series(1, 5) AS x`, `15`},              // streaming source
 	}
 	for _, c := range cases {
 		got := extRawRows(t, sess, c.stmt)
 		if len(got) != 1 || got[0] != c.want {
 			t.Fatalf("%s => %v, want [%s]", c.stmt, got, c.want)
 		}
+	}
+}
+
+// TestExtJSStream exercises a JS streaming table-valued source (*.stream.js): a
+// function that emits rows used in a FROM clause, composing with WHERE/aggregates,
+// the batch (multi-arg emit) form, and a clear error when misused outside FROM.
+func TestExtJSStream(t *testing.T) {
+	if err := glue.RegisterJSStream("streamgen",
+		`function streamgen(emit, n){ for (var i=1;i<=n;i++) emit({i:i, sq:i*i}); }`); err != nil {
+		t.Fatalf("RegisterJSStream: %v", err)
+	}
+	if err := glue.RegisterJSStream("streamtwins",
+		`function streamtwins(emit, n){ for (var i=1;i<=n;i++) emit({a:i},{a:i*10}); }`); err != nil {
+		t.Fatalf("RegisterJSStream twins: %v", err)
+	}
+	sess := extSession(t)
+
+	// Basic table-valued source in FROM.
+	if got := extRawRows(t, sess, `SELECT x.i, x.sq FROM streamgen(4) AS x`); len(got) != 4 ||
+		got[0] != `{"i":1,"sq":1}` || got[3] != `{"i":4,"sq":16}` {
+		t.Fatalf("streamgen(4) = %v", got)
+	}
+	// Composes with WHERE + aggregate.
+	if got := extRawRows(t, sess, `SELECT RAW SUM(x.sq) FROM streamgen(4) AS x WHERE x.i > 1`); len(got) != 1 || got[0] != `29` {
+		t.Fatalf("SUM(sq) i>1 over 1..4 = %v, want [29]", got) // 4+9+16
+	}
+	// Batch form: emit(a, b) yields two rows per call.
+	if got := extRawRows(t, sess, `SELECT RAW x.a FROM streamtwins(2) AS x`); len(got) != 4 ||
+		got[0] != `1` || got[1] != `10` || got[2] != `2` || got[3] != `20` {
+		t.Fatalf("streamtwins(2) = %v, want [1 10 2 20]", got)
+	}
+	// LIMIT yields the right rows (dropped downstream; source still finite here).
+	if got := extRawRows(t, sess, `SELECT RAW x.i FROM streamgen(1000) AS x LIMIT 3`); len(got) != 3 {
+		t.Fatalf("streamgen(1000) LIMIT 3 = %d rows, want 3", len(got))
+	}
+	// Misuse outside FROM -> clear error, not a crash.
+	if _, err := sess.Run(`SELECT streamgen(3)`); err == nil || !strings.Contains(err.Error(), "FROM clause") {
+		t.Fatalf("streamgen() outside FROM: want a 'FROM clause' error, got %v", err)
 	}
 }

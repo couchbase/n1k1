@@ -433,6 +433,18 @@ func (c *Conv) VisitExpressionScan(o *plan.ExpressionScan) (interface{}, error) 
 		}
 	}
 
+	// A JS streaming table-valued source (FROM gen(...) AS x, where gen is a
+	// *.stream.js): route to the js-stream op, which calls the JS with an emit
+	// callback and yields rows as they're produced -- no materialization. Plain
+	// (array-returning) functions and subqueries/CTEs fall through to expr-scan.
+	if sf, ok := expr.(*jsStreamFunc); ok {
+		return c.TopPush(o, &base.Op{
+			Kind:   "js-stream",
+			Labels: base.Labels{"." + LabelSuffix(o.Alias())},
+			Params: []interface{}{c.AddTemp(sf)},
+		})
+	}
+
 	// Evaluate the expression at runtime (via the "expr-scan" glue op) rather
 	// than at convert time: a subquery / CTE binding needs the engine + the
 	// datastore, which only exist at runtime. The live expression is passed

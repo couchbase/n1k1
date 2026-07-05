@@ -68,13 +68,19 @@ when the baked `exprTree`/`exprStr` string is re-parsed at runtime).
   native `base.Agg`: state round-trips through JSON per Update (not zero-garbage)
   and the callbacks have no error channel (a throw/NaN is contained → null).
   Ships `extensions/functions/js/geomean.agg.js` as an example.
-- **Table-valued JS functions in FROM** — a JS UDF that *returns an array* is
-  already a set-returning source: `SELECT x.* FROM gen(5) AS x` streams one row
-  per element (the existing `plan.ExpressionScan` → `expr-scan` → `base.ArrayYield`
-  path — no new code), composing with WHERE / GROUP BY / aggregates. Caveat: the
-  array is fully materialized first (Evaluate → one value → marshal → yield); a
-  truly *streaming* `emit(row)` source protocol (no materialization) is the
-  roadmap item below (step 3 / "Streaming JS/goja functions").
+- **Table-valued JS functions in FROM** — two forms. (1) A JS UDF that *returns
+  an array* is a set-returning source via the existing `plan.ExpressionScan` →
+  `expr-scan` → `base.ArrayYield` path (materializes the array first). (2)
+  **Streaming sources (`*.stream.js` / `glue.RegisterJSStream`)** — a
+  `function NAME(emit, ...args)` that pushes rows via `emit(row)` (one row per
+  argument = a batch form); `VisitExpressionScan` routes `FROM NAME(...)` to the
+  `js-stream` op (`glue/ext_stream_jsvm.go`), which yields as rows are produced —
+  **no materialization, bounded memory** — composing with WHERE/GROUP BY/LIMIT.
+  Ships `extensions/functions/js/series.stream.js`. Caveat (matches every n1k1
+  source today): no per-producer early-exit yet, so `LIMIT k` drops extras
+  downstream while the source still runs to completion — fine for a huge *finite*
+  source, but an *unbounded* one hangs under `LIMIT`. See "Streaming JS/goja
+  functions" below.
 
 ### JS UDF runtime & state (the goja execution model)
 
@@ -466,15 +472,28 @@ plain array-returner to `expr-scan`:
 
 ```sql
 SELECT x.i, x.sq
-FROM gen_stream(1000000) AS x     -- never materializes a 1e6 array...
+FROM gen_stream(1000000) AS x     -- never materializes a 1e6 array (bounded memory)
 WHERE x.sq > 10
-LIMIT 5                            -- ...LIMIT stops the JS loop after ~5 rows
+LIMIT 5                            -- correct 5 rows; see the early-exit note below
 ```
 
-(How `emit`/host iteration bridges to the op's `func(base.Vals) bool` yield and
-propagates the boolean back into JS is the runtime side above; a real I/O source —
-`shred_lines(path)` over `read_lines(path)` — is the same shape with a host-
+(How `emit` bridges to the op's yield is the runtime side above; a real I/O source
+— `shred_lines(path)` over `read_lines(path)` — is the same shape with a host-
 provided lazy iterator instead of a counter.)
+
+**Implemented (v1, `*.stream.js`).** The per-row `emit(row)` form ships:
+`glue.RegisterJSStream` / a `NAME.stream.js` file registers a `jsStreamFunc`, the
+converter routes `FROM NAME(...)` to the `js-stream` op (`glue/ext_stream_jsvm.go`),
+and rows flow one at a time — **no materialization, bounded memory** — composing
+with WHERE/GROUP BY/aggregates. `emit(a, b, …)` yields one row per argument (the
+batch form). What v1 does *not* do: **early-terminate the source on `LIMIT`.** No
+n1k1 source early-exits today (the `YieldStats` LIMIT hook is still inert —
+`op_order.go`), so `LIMIT k` returns the right rows by dropping extras downstream
+while the JS loop still runs to completion. Practical upshot: a huge *finite*
+source is fine (bounded memory, just runs the loop); an **unbounded** source
+(`for(;;) emit(...)`) will hang under a `LIMIT` — bound your source until
+engine-wide producer early-exit lands (at which point `emit` returns `false` and
+the loop can stop, for free).
 
 ### Advanced: can JS participate in n1k1's reusable-slice discipline?
 
