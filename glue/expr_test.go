@@ -482,10 +482,10 @@ func TestLogicAndOrDifferentialVsCBQ(t *testing.T) {
 	fls := c(false)
 	null := c(value.NULL_VALUE)
 	miss := c(value.MISSING_VALUE)
-	num := c(5)    // a real, truthy non-boolean
-	zero := c(0)   // a real, non-truthy non-boolean
-	str := c("x")  // truthy string
-	estr := c("")  // non-truthy (empty) string
+	num := c(5)   // a real, truthy non-boolean
+	zero := c(0)  // a real, non-truthy non-boolean
+	str := c("x") // truthy string
+	estr := c("") // non-truthy (empty) string
 
 	cases := []struct {
 		name string
@@ -737,9 +737,9 @@ func TestTypeConvDifferentialVsCBQ(t *testing.T) {
 		"int": c(42), "negint": c(-7), "float": c(2.5), "wholefloat": c(5.0), "zero": c(0),
 		"str": c("hi"), "emptystr": c(""), "numstr": c("42"), "floatstr": c("2.5"),
 		"leadzero": c("007"), "junkstr": c("abc"),
-		"arr": expression.NewConstant([]interface{}{1, 2}),
+		"arr":      expression.NewConstant([]interface{}{1, 2}),
 		"emptyarr": expression.NewConstant([]interface{}{}),
-		"obj": expression.NewConstant(map[string]interface{}{"a": 1}),
+		"obj":      expression.NewConstant(map[string]interface{}{"a": 1}),
 	}
 
 	for fn, ctor := range mk {
@@ -800,15 +800,30 @@ func TestStrUnaryDifferentialVsCBQ(t *testing.T) {
 		"lower":  func(e expression.Expression) expression.Expression { return expression.NewLower(e) },
 		"length": func(e expression.Expression) expression.Expression { return expression.NewLength(e) },
 		"title":  func(e expression.Expression) expression.Expression { return expression.NewTitle(e) },
+		"trim":   func(e expression.Expression) expression.Expression { return expression.NewTrim(e) },
+		"ltrim":  func(e expression.Expression) expression.Expression { return expression.NewLTrim(e) },
+		"rtrim":  func(e expression.Expression) expression.Expression { return expression.NewRTrim(e) },
 	}
-	// Strings spanning case, unicode, escapes, empty; plus non-string operands
-	// (NULL/number/bool/array) which must yield NULL, and MISSING via a c(MISSING).
+	// Strings spanning case, unicode, escapes, empty; whitespace at each end
+	// (space/tab/newline/carriage-return -- see the \f note below); plus
+	// non-string operands (NULL/number/bool/array) which must yield NULL, and
+	// MISSING via a c(MISSING).
+	//
+	// NB: the operands deliberately avoid a SURVIVING formfeed (\f) / backspace
+	// (\b) in trimmed output: n1k1's EncodeStr (stdlib encoding/json) escapes them
+	// as the two-char \f / \b, whereas cbq's value encoder emits the six-char
+	// \u000c / \u0008 form -- a
+	// pre-existing, cosmetic encoder difference (both are valid JSON), unrelated to
+	// trim. \f IS still in the cbq cutset (base.strWhitespace) and is trimmed
+	// correctly; we just can't byte-compare a surviving one here.
 	operands := map[string]expression.Expression{
 		"mixed": c("Hello World"), "upperstr": c("ABC"), "lowerstr": c("abc"),
 		"empty": c(""), "unicode": c("café ☃"), "escapes": c("a\"b\n\tc"),
 		"digits": c("12ab"), "null": c(value.NULL_VALUE), "num": c(5),
 		"bool": c(true), "arr": expression.NewConstant([]interface{}{1}),
 		"missing": c(value.MISSING_VALUE),
+		"padded":  c("  hi  "), "tabnl": c("\t\n hi \r"),
+		"innerkeep": c("  a b  "), "allws": c(" \t\r\n"),
 	}
 
 	for fn, ctor := range mk {

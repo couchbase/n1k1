@@ -16,17 +16,22 @@ import (
 )
 
 // Unary string functions on JSON-string bytes into a reused buffer -- no boxing.
-// The case-transform family (UPPER/LOWER/TITLE) shares exprStrCase, selected by
-// a case-transform FUNC (base.StrCaseUpper/Lower/Title) emitted by name (see
-// base/lzfmt.go). The func and the reused lzBufPre buffer now co-exist on one
-// emitted line -- the generator preserves fmt-arg order across a func placeholder
-// and a varLift buffer placeholder (see cmd/intermed_build, DESIGN-exprs.md).
-// LENGTH yields a number, not a re-encoded string, so it has its own harness.
+// The transform family (UPPER/LOWER/TITLE/TRIM/LTRIM/RTRIM) shares
+// exprStrTransform, selected by a transform FUNC (base.StrCase*/StrTrim*) emitted
+// by name (see base/lzfmt.go). The func and the reused lzBufPre buffer co-exist on
+// one emitted line -- the generator preserves fmt-arg order across a func
+// placeholder and a varLift buffer placeholder (see cmd/intermed_build,
+// DESIGN-exprs.md). LENGTH yields a number, not a re-encoded string, so it has its
+// own harness. TRIM/LTRIM/RTRIM's 2-arg (explicit cutset) forms are variadic and
+// fall back to cbq per the optimizer arity guard.
 
 func init() {
 	ExprCatalog["upper"] = ExprUpper
 	ExprCatalog["lower"] = ExprLower
 	ExprCatalog["title"] = ExprTitle
+	ExprCatalog["trim"] = ExprTrim
+	ExprCatalog["ltrim"] = ExprLTrim
+	ExprCatalog["rtrim"] = ExprRTrim
 	ExprCatalog["length"] = ExprLength
 	ExprCatalog["contains"] = ExprContains
 	ExprCatalog["position0"] = ExprPosition0
@@ -35,24 +40,40 @@ func init() {
 
 func ExprUpper(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) base.ExprFunc {
-	return exprStrCase(lzVars, labels, params, path, base.StrCaseUpper)
+	return exprStrTransform(lzVars, labels, params, path, base.StrCaseUpper)
 }
 
 func ExprLower(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) base.ExprFunc {
-	return exprStrCase(lzVars, labels, params, path, base.StrCaseLower)
+	return exprStrTransform(lzVars, labels, params, path, base.StrCaseLower)
 }
 
 func ExprTitle(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) base.ExprFunc {
-	return exprStrCase(lzVars, labels, params, path, base.StrCaseTitle)
+	return exprStrTransform(lzVars, labels, params, path, base.StrCaseTitle)
 }
 
-// exprStrCase is the shared case-transform harness. base.StrDecode guards +
-// decodes; caseFn transforms and base.EncodeStr re-encodes into lzBufPre on a
-// single line -- the caseFn func value and the varLift buffer now co-exist.
-func exprStrCase(lzVars *base.Vars, labels base.Labels, params []interface{},
-	path string, caseFn func([]byte) []byte) (lzExprFunc base.ExprFunc) {
+func ExprTrim(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string) base.ExprFunc {
+	return exprStrTransform(lzVars, labels, params, path, base.StrTrim)
+}
+
+func ExprLTrim(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string) base.ExprFunc {
+	return exprStrTransform(lzVars, labels, params, path, base.StrTrimLeft)
+}
+
+func ExprRTrim(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string) base.ExprFunc {
+	return exprStrTransform(lzVars, labels, params, path, base.StrTrimRight)
+}
+
+// exprStrTransform is the shared unary string-transform harness. base.StrDecode
+// guards + decodes; transform maps the decoded bytes and base.EncodeStr re-encodes
+// into lzBufPre on a single line -- the transform func value and the varLift buffer
+// co-exist.
+func exprStrTransform(lzVars *base.Vars, labels base.Labels, params []interface{},
+	path string, transform func([]byte) []byte) (lzExprFunc base.ExprFunc) {
 	exprA := params[0].([]interface{})
 
 	var lzBufPre []byte // <== varLift: lzBufPre by path
@@ -68,7 +89,7 @@ func exprStrCase(lzVars *base.Vars, labels base.Labels, params []interface{},
 		if !lzOk {
 			lzVal = lzSentinel
 		} else {
-			lzBufPre = base.EncodeStr(lzVars.Ctx.ValComparer, caseFn(lzDecoded), lzBufPre)
+			lzBufPre = base.EncodeStr(lzVars.Ctx.ValComparer, transform(lzDecoded), lzBufPre)
 			lzVal = base.Val(lzBufPre)
 		}
 

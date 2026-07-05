@@ -34,21 +34,21 @@ func init() {
 		"add", "sub", "mult", "div", "mod", "idiv", "imod", "neg", // arithmetic (expr_arith.go)
 		"abs", "ceil", "floor", "sqrt", "exp", "ln", "log", "sign", // unary math (expr_math.go)
 		"degrees", "radians", "sin", "cos", "tan", "asin", "acos", "atan",
-		"upper", "lower", "length", "title", // unary string (expr_str.go)
+		"upper", "lower", "length", "title", "trim", "ltrim", "rtrim", // unary string (expr_str.go)
 		"contains", "position0", "position1", // binary string (expr_str.go)
 		"power", "atan2", // binary math (expr_math.go)
 		"to_boolean", "to_string", "to_number", // type conversions (expr_type.go)
 		"array_length", "array_count", "array_sum", "array_avg", // array readers (expr_array.go)
 		"array_min", "array_max", "array_contains", "array_position", // (expr_array.go)
 		"and", "or", // three-valued logical (expr_logic.go)
-		"not",                                            // unary predicate (expr_pred.go)
-		"ifnull", "ifmissing", "ifmissingornull", "nvl",  // conditional-unknown (expr_cond.go)
-		"between",                    // ternary (expr_between.go)
-		"in",                         // membership (expr_in.go)
-		"concat",                     // string concat `||` (expr_concat.go)
-		"nullif", "missingif",        // (expr_null.go)
-		"greatest", "least",          // (expr_greatest.go)
-		"element",                    // array element `arr[idx]` (expr_nav.go)
+		"not",                                           // unary predicate (expr_pred.go)
+		"ifnull", "ifmissing", "ifmissingornull", "nvl", // conditional-unknown (expr_cond.go)
+		"between",             // ternary (expr_between.go)
+		"in",                  // membership (expr_in.go)
+		"concat",              // string concat `||` (expr_concat.go)
+		"nullif", "missingif", // (expr_null.go)
+		"greatest", "least", // (expr_greatest.go)
+		"element",                                                                  // array element `arr[idx]` (expr_nav.go)
 		"is_array", "is_number", "is_string", "is_boolean", "is_object", "is_atom", // type checks (expr_type.go)
 	)
 
@@ -251,7 +251,7 @@ func ExprTreeOptimize(labels base.Labels, e expression.Expression,
 	case "neg",
 		"abs", "ceil", "floor", "sqrt", "exp", "ln", "log", "sign",
 		"degrees", "radians", "sin", "cos", "tan", "asin", "acos", "atan",
-		"upper", "lower", "length", "title",
+		"upper", "lower", "length", "title", "trim", "ltrim", "rtrim",
 		"to_boolean", "to_string", "to_number",
 		"array_length", "array_count", "array_sum", "array_avg",
 		"array_min", "array_max",

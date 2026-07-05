@@ -45,6 +45,19 @@ func StrCaseTitle(decoded []byte) []byte {
 	return bytes.Title(bytes.ToLower(decoded)) //nolint:staticcheck // match cbq strings.Title
 }
 
+// strWhitespace is cbq's default TRIM/LTRIM/RTRIM cutset (query
+// expression/func_str.go _WHITESPACE = " \t\n\f\r"). The 2-arg forms (explicit
+// cutset) are variadic and fall back to cbq per the optimizer arity guard.
+const strWhitespace = " \t\n\f\r"
+
+// StrTrim / StrTrimLeft / StrTrimRight strip cbq's default whitespace cutset from
+// both / the left / the right of the decoded bytes. bytes.Trim* return a subslice
+// (no allocation); EncodeStr then copies into the reused output buffer. Same
+// func([]byte) []byte shape as the case funcs, so they share the harness.
+func StrTrim(decoded []byte) []byte      { return bytes.Trim(decoded, strWhitespace) }
+func StrTrimLeft(decoded []byte) []byte  { return bytes.TrimLeft(decoded, strWhitespace) }
+func StrTrimRight(decoded []byte) []byte { return bytes.TrimRight(decoded, strWhitespace) }
+
 // StrDecode returns the operand's decoded string bytes and ok=true for a JSON
 // string; for MISSING/non-string it returns the sentinel Val to yield and
 // ok=false.
