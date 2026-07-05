@@ -251,7 +251,7 @@ func TestParquetQueryEndToEnd(t *testing.T) {
 
 // TestParquetSidecars exercises the Step-4 optional capability interfaces on the
 // Parquet source in isolation (no glue): ColumnsSource (schema/stats from the
-// footer) and ColumnProjector (only-these-columns pushdown).
+// footer) and ColumnsProjector (only-these-columns pushdown).
 func TestParquetSidecars(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "s.parquet")
 	pqWrite(t, path, 4, 1) // columns: id, price, f0
@@ -277,15 +277,15 @@ func TestParquetSidecars(t *testing.T) {
 	}
 	src.Close()
 
-	// ColumnProjector: only "price" is decoded and yielded.
+	// ColumnsProjector: only "price" is decoded and yielded.
 	src, err = records.OpenFile(path, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer src.Close()
-	pj, ok := src.(records.ColumnProjector)
+	pj, ok := src.(records.ColumnsProjector)
 	if !ok {
-		t.Fatal("parquet source should implement records.ColumnProjector")
+		t.Fatal("parquet source should implement records.ColumnsProjector")
 	}
 	if err := pj.ProjectColumns([]string{"price"}); err != nil {
 		t.Fatalf("ProjectColumns: %v", err)
@@ -313,10 +313,10 @@ func TestParquetSidecars(t *testing.T) {
 	// Unknown column is an error.
 	src3, _ := records.OpenFile(path, "")
 	defer src3.Close()
-	if err := src3.(records.ColumnProjector).ProjectColumns([]string{"nope"}); err == nil {
+	if err := src3.(records.ColumnsProjector).ProjectColumns([]string{"nope"}); err == nil {
 		t.Error("ProjectColumns(nope) should error on unknown column")
 	}
-	t.Log("OK: ColumnsSource schema + ColumnProjector projection verified")
+	t.Log("OK: ColumnsSource schema + ColumnsProjector projection verified")
 }
 
 func rowStrings(res *glue.Result) []string {

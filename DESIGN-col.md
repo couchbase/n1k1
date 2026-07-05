@@ -523,7 +523,7 @@ string }`). The core `Source` stays `{Next, Close}` — schemaless jsonl/csv/yam
 sources are untouched (no forced no-op methods), and a source that doesn't
 implement a capability simply falls back to the full transpose. Two capabilities:
 
-- **projection down** — `ColumnProjector interface { ProjectColumns(names
+- **projection down** — `ColumnsProjector interface { ProjectColumns(names
   []string) error }` (call before the first `Next`), so a columnar reader
   materializes only wanted columns — which is *also* what makes borrowing Arrow
   column buffers zero-copy (§ enc 3);
@@ -731,12 +731,12 @@ walk it.)
   fixed-width ceiling) are in § *Parquet prototype results*.**
 - **Step 4 — Optional sidecar interfaces on `Source` (the missing wire).** *Not*
   a wider `Source` — add capability interfaces the scan layer type-asserts, the
-  `SubPathser` idiom (§ *Pushdown*): `ColumnProjector{ ProjectColumns([]string) }`
+  `SubPathser` idiom (§ *Pushdown*): `ColumnsProjector{ ProjectColumns([]string) }`
   and `ColumnsSource{ Columns() []ColumnMeta }`. The Parquet source implements both;
   jsonl/csv/yaml stay `{Next, Close}` and fall back to the full transpose. The
   Parquet reader then reads only wanted columns and declares type + `null_count`;
   still row-transposed downstream, but pushdown cuts I/O and the schema populates
-  the label markers. **✅ Source side done** — `records.ColumnProjector` /
+  the label markers. **✅ Source side done** — `records.ColumnsProjector` /
   `records.ColumnsSource` (+ `ColumnMeta`) on the core `Source`; `records/parquet.go`
   implements both (lazy reader so `ProjectColumns` precedes iteration; `Columns()`
   reads footer types/null-count/min-max), proven by

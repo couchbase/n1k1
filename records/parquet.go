@@ -70,7 +70,7 @@ func newParquetSource(path, idPrefix string) (Source, error) {
 	return &parquetSource{pf: pf, pr: pr, idPrefix: idPrefix}, nil
 }
 
-// ProjectColumns implements ColumnProjector: read only the named columns. Must
+// ProjectColumns implements ColumnsProjector: read only the named columns. Must
 // be called before the first Next.
 func (s *parquetSource) ProjectColumns(names []string) error {
 	if s.rr != nil {

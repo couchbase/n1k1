@@ -63,11 +63,11 @@ type Source interface {
 // column. Today only the Parquet source (records/parquet.go) implements them.
 // See DESIGN-col.md § Pushdown / Step 4.
 
-// ColumnProjector is a Source that can restrict decoding to a subset of columns
+// ColumnsProjector is a Source that can restrict decoding to a subset of columns
 // (projection pushdown). ProjectColumns MUST be called before the first Next;
 // unknown column names are an error. Names not projected are absent from the
 // yielded record docs.
-type ColumnProjector interface {
+type ColumnsProjector interface {
 	ProjectColumns(names []string) error
 }
 
