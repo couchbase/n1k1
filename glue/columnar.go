@@ -385,9 +385,11 @@ func metadataAggSpecs(aggExprs, aggCalcs []interface{}, colByName map[string]rec
 }
 
 // columnarAggSpecs returns per-agg specs when EVERY aggregate is a vectorizable
-// SUM/AVG/COUNT of a bare, numeric column (scan kernels). Nulls are fine: the
-// executor folds over each batch's validity bitmap (SUM/AVG skip nulls, COUNT
-// counts non-null), so null_count>0 no longer forces the row path. ok=false else.
+// SUM/AVG/COUNT whose operand is a bare numeric column OR a binary +/-/* of
+// numeric column/constant terms (Step 5.5). Nulls are fine: the executor folds over
+// each batch's validity bitmap (SUM/AVG skip nulls, COUNT counts every row), so
+// null_count>0 no longer forces the row path. Each spec is [key, srcSpec] where
+// srcSpec is a field name (bare) or ["arith", op, leftTerm, rightTerm]. ok=false else.
 func columnarAggSpecs(aggExprs, aggCalcs []interface{}, colByName map[string]records.ColumnMeta) ([]interface{}, bool) {
 	specs := make([]interface{}, 0, len(aggCalcs))
 	for i := range aggCalcs {
@@ -396,21 +398,92 @@ func columnarAggSpecs(aggExprs, aggCalcs []interface{}, colByName map[string]rec
 			return nil, false
 		}
 		aggName, _ := calc[0].(string)
-		field, ok := bareAggField(aggExprs[i])
+		srcSpec, resultType, ok := parseAggOperandSpec(aggExprs[i], colByName)
 		if !ok {
 			return nil, false
 		}
-		cm, ok := colByName[field]
+		key, ok := vecAggCatalogKey(aggName, resultType)
 		if !ok {
 			return nil, false
 		}
-		key, ok := vecAggCatalogKey(aggName, cm.Type)
-		if !ok {
-			return nil, false
-		}
-		specs = append(specs, []interface{}{key, field})
+		specs = append(specs, []interface{}{key, srcSpec})
 	}
 	return specs, true
+}
+
+// parseAggOperandSpec resolves an aggregate's operand to (srcSpec, resultType).
+// A bare numeric column keeps its Parquet type (so SUM(int) stays int64); a binary
+// +/-/* of numeric column/constant terms materializes as float64 (matching the row
+// engine's JSON-number arithmetic). At least one term must be a column.
+func parseAggOperandSpec(aggExpr interface{}, colByName map[string]records.ColumnMeta) (interface{}, string, bool) {
+	e, ok := aggExpr.([]interface{})
+	if !ok || len(e) != 2 {
+		return nil, "", false
+	}
+	if k, _ := e[0].(string); k != "exprTree" {
+		return nil, "", false
+	}
+	expr, ok := e[1].(expression.Expression)
+	if !ok {
+		return nil, "", false
+	}
+	// Bare numeric column: SUM(x), keeps its physical type.
+	if field, ok := bareFieldOfExpr(expr); ok {
+		cm, ok := colByName[field]
+		if !ok || (cm.Type != "DOUBLE" && cm.Type != "INT64") {
+			return nil, "", false
+		}
+		return field, cm.Type, true
+	}
+	// Binary +/-/* of numeric column/const terms: SUM(price * qty), materialized f64.
+	op, a, b, ok := binaryArith(expr)
+	if !ok {
+		return nil, "", false
+	}
+	lTerm, lok := arithTermSpec(a, colByName)
+	rTerm, rok := arithTermSpec(b, colByName)
+	if !lok || !rok || (isConstTerm(lTerm) && isConstTerm(rTerm)) {
+		return nil, "", false
+	}
+	return []interface{}{"arith", string(op), lTerm, rTerm}, "DOUBLE", true
+}
+
+// binaryArith matches a two-operand +, -, or * (cbq: Add/Mult are commutative with
+// Operands(), Sub is binary). Div/Neg/>2-operand/nested aren't handled.
+func binaryArith(expr expression.Expression) (op byte, a, b expression.Expression, ok bool) {
+	switch e := expr.(type) {
+	case *expression.Add:
+		if ops := e.Operands(); len(ops) == 2 {
+			return '+', ops[0], ops[1], true
+		}
+	case *expression.Mult:
+		if ops := e.Operands(); len(ops) == 2 {
+			return '*', ops[0], ops[1], true
+		}
+	case *expression.Sub:
+		return '-', e.First(), e.Second(), true
+	}
+	return 0, nil, nil, false
+}
+
+// arithTermSpec resolves one arithmetic operand to ["col", field, type] (numeric
+// column) or ["const", val] (numeric constant).
+func arithTermSpec(e expression.Expression, colByName map[string]records.ColumnMeta) ([]interface{}, bool) {
+	if field, ok := bareFieldOfExpr(e); ok {
+		cm, ok := colByName[field]
+		if !ok || (cm.Type != "DOUBLE" && cm.Type != "INT64") {
+			return nil, false
+		}
+		return []interface{}{"col", field, cm.Type}, true
+	}
+	if c, ok := numericConst(e); ok {
+		return []interface{}{"const", c}, true
+	}
+	return nil, false
+}
+
+func isConstTerm(term []interface{}) bool {
+	return len(term) > 0 && term[0].(string) == "const"
 }
 
 // isStarOperand reports whether an aggregate operand is COUNT(*)'s ["json","true"].
@@ -511,6 +584,41 @@ func scanKeyspaceColumns(temps []interface{}, scanTemp int) []records.ColumnMeta
 	return cs.Columns()
 }
 
+// aggOperandRT is the runtime source for one aggregate: a bare projected column, or
+// a binary arithmetic of two column/constant terms materialized as float64.
+type aggOperandRT struct {
+	arith          bool
+	col            int // bare: projected column index
+	op             byte
+	lCol, rCol     int     // arith term column index, or -1 for a constant
+	lConst, rConst float64 // used when the corresponding col index is -1
+	lIsInt, rIsInt bool    // widen an int64 term to float64 before arithmetic
+}
+
+// parseAggOperandRT decodes a spec's srcSpec (a field name or an ["arith", ...]
+// form) into runtime form, projecting each referenced column via addCol.
+func parseAggOperandRT(src interface{}, addCol func(string) int) aggOperandRT {
+	if field, ok := src.(string); ok {
+		return aggOperandRT{col: addCol(field)}
+	}
+	a := src.([]interface{}) // ["arith", op, leftTerm, rightTerm]
+	lCol, lConst, lIsInt := parseTermRT(a[2], addCol)
+	rCol, rConst, rIsInt := parseTermRT(a[3], addCol)
+	return aggOperandRT{
+		arith: true, op: a[1].(string)[0],
+		lCol: lCol, lConst: lConst, lIsInt: lIsInt,
+		rCol: rCol, rConst: rConst, rIsInt: rIsInt,
+	}
+}
+
+func parseTermRT(t interface{}, addCol func(string) int) (col int, c float64, isInt bool) {
+	term := t.([]interface{})
+	if term[0].(string) == "col" {
+		return addCol(term[1].(string)), 0, term[2].(string) == "INT64"
+	}
+	return -1, term[1].(float64), false
+}
+
 // DatastoreColumnarAgg executes a fused columnar aggregation: open the keyspace,
 // project the aggregated columns, and fold each Arrow column batch directly into
 // the vectorized accumulators (no transpose), emitting one result row.
@@ -540,11 +648,11 @@ func DatastoreColumnarAgg(o *base.Op, vars *base.Vars,
 	specs := o.Params[1].([]interface{})
 	aggs := make([]*base.Agg, len(specs))
 	keys := make([]string, len(specs)) // catalog key per agg, for masked dispatch
-	// Project the DISTINCT agg fields (several aggs may share one, e.g.
-	// SUM(x),COUNT(x),AVG(x)); aggCol[i] maps agg i to its column in each batch.
+	// Project the DISTINCT referenced fields (several aggs/operands may share one,
+	// e.g. SUM(x),COUNT(x),AVG(x) or SUM(x*y),SUM(x)); operands[i] maps agg i to its
+	// bare column or arithmetic terms in each batch.
 	pos := map[string]int{}
 	var proj []string
-	aggCol := make([]int, len(specs))
 	addCol := func(field string) int {
 		p, seen := pos[field]
 		if !seen {
@@ -554,11 +662,12 @@ func DatastoreColumnarAgg(o *base.Op, vars *base.Vars,
 		}
 		return p
 	}
+	operands := make([]aggOperandRT, len(specs))
 	for i, sp := range specs {
 		s := sp.([]interface{})
 		keys[i] = s[0].(string)
 		aggs[i] = base.Aggs[base.AggCatalog[keys[i]]]
-		aggCol[i] = addCol(s[1].(string))
+		operands[i] = parseAggOperandRT(s[1], addCol)
 	}
 
 	// Optional WHERE predicate (5.4c/5.4d): project each clause's column and, per
@@ -604,10 +713,60 @@ func DatastoreColumnarAgg(o *base.Op, vars *base.Vars,
 		accs[i] = aggs[i].Init(vars, nil)
 	}
 
-	// Scratch bitmaps reused across batches: predMask accumulates the combined WHERE
-	// selection, clauseMask holds one clause's mask while combining, and combined
-	// holds sel AND an agg column's validity when both a filter and nulls apply.
+	// Scratch buffers reused across batches: predMask accumulates the combined WHERE
+	// selection, clauseMask holds one clause's mask while combining, combined holds
+	// sel AND an agg source's validity; arithDst holds a materialized arithmetic
+	// column, lWiden/rWiden hold int64->float64 widened operands, and arithVal holds
+	// a combined operand validity.
 	var predMask, clauseMask, combined []byte
+	var arithDst, lWiden, rWiden, arithVal []byte
+
+	// f64View returns a float64 view of column ci: the borrowed bytes when it's
+	// already DOUBLE, else the int64 column widened into scratch.
+	f64View := func(ci int, isInt bool, scratch *[]byte, cols [][]byte, rows int) []byte {
+		if !isInt {
+			return cols[ci]
+		}
+		*scratch = resizeBytes(*scratch, rows*8)
+		base.LoadFloat64FromInt64(*scratch, cols[ci], rows)
+		return *scratch
+	}
+
+	// aggSource returns the column bytes an aggregate folds over (a borrowed column
+	// or a materialized arithmetic result) and that source's validity (nil = all
+	// valid). Arithmetic materializes into arithDst as float64; its validity is the
+	// AND of the term columns' validities (a constant term is always valid).
+	aggSource := func(op aggOperandRT, cols, valids [][]byte, rows int) (colBytes, av []byte) {
+		if !op.arith {
+			return cols[op.col], valids[op.col]
+		}
+		arithDst = resizeBytes(arithDst, rows*8)
+		switch {
+		case op.lCol >= 0 && op.rCol >= 0:
+			base.ArithFloat64(arithDst,
+				f64View(op.lCol, op.lIsInt, &lWiden, cols, rows),
+				f64View(op.rCol, op.rIsInt, &rWiden, cols, rows), rows, op.op)
+		case op.lCol >= 0: // right is the constant
+			base.ScaleFloat64(arithDst, f64View(op.lCol, op.lIsInt, &lWiden, cols, rows),
+				op.rConst, op.op, true, rows)
+		default: // left is the constant
+			base.ScaleFloat64(arithDst, f64View(op.rCol, op.rIsInt, &rWiden, cols, rows),
+				op.lConst, op.op, false, rows)
+		}
+		lv, rv := colValidity(op.lCol, valids), colValidity(op.rCol, valids)
+		switch {
+		case lv == nil:
+			av = rv
+		case rv == nil:
+			av = lv
+		default:
+			arithVal = resizeBytes(arithVal, (rows+7)/8)
+			copy(arithVal, lv)
+			base.AndBitmap(arithVal, rv)
+			av = arithVal
+		}
+		return arithDst, av
+	}
 
 	// evalClause writes clause cl's selected-and-valid rows into dst (compare ->
 	// bitmap, then AND the clause column's validity so a null clause row is 0 --
@@ -658,13 +817,13 @@ func DatastoreColumnarAgg(o *base.Op, vars *base.Vars,
 		}
 
 		for i := range aggs {
-			av := valids[aggCol[i]]
+			colBytes, av := aggSource(operands[i], cols, valids, rows)
 			if sel == nil && av == nil {
 				// No filter, no nulls: the unmasked fast path (all rows).
-				accs[i], _, _ = aggs[i].Update(vars, base.Val(cols[aggCol[i]]), nil, accs[i], nil)
+				accs[i], _, _ = aggs[i].Update(vars, base.Val(colBytes), nil, accs[i], nil)
 				continue
 			}
-			// sum mask = selection ∧ this column's validity (nil-aware): SUM/AVG-sum
+			// sum mask = selection ∧ this source's validity (nil-aware): SUM/AVG-sum
 			// skip nulls; COUNT/AVG-count use sel alone (see applyMaskedAgg).
 			var sum []byte
 			switch {
@@ -678,7 +837,7 @@ func DatastoreColumnarAgg(o *base.Op, vars *base.Vars,
 				base.AndBitmap(combined, av)
 				sum = combined
 			}
-			applyMaskedAgg(keys[i], accs[i], cols[aggCol[i]], sel, sum, rows)
+			applyMaskedAgg(keys[i], accs[i], colBytes, sel, sum, rows)
 		}
 	}
 
@@ -693,6 +852,22 @@ func DatastoreColumnarAgg(o *base.Op, vars *base.Vars,
 	yieldVals(out)
 
 	yieldErr(nil)
+}
+
+// resizeBytes returns buf reused (or freshly grown) to hold exactly nBytes.
+func resizeBytes(buf []byte, nBytes int) []byte {
+	if cap(buf) < nBytes {
+		return make([]byte, nBytes)
+	}
+	return buf[:nBytes]
+}
+
+// colValidity returns column col's validity, or nil for a constant term (col < 0).
+func colValidity(col int, valids [][]byte) []byte {
+	if col < 0 {
+		return nil
+	}
+	return valids[col]
 }
 
 // resize returns buf reused (or freshly grown) to hold a dense bitmap for n rows.

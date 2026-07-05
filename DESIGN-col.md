@@ -291,9 +291,24 @@ same-mode boolean tree (cbq nests `a AND b AND c` as `And(And(a,b),c)`) into cla
 per batch each clause → a bitmap (`Filter*`, then AND its column validity), combined
 with `AndBitmap`/`OrBitmap`. Bails on nested mixed boolean, field-vs-field, non-numeric.
 
-Deferred to later: an index-list (rather than bitmap) selection for very low
-selectivity; non-fixed-width (string/decimal) predicate columns; the long-term
-validity-as-companion-slot generic row-plumbing (the fused op doesn't need it).
+### Arithmetic-expression operands (Step 5.5 — DONE)
+
+`SUM(price * qty)`, `SUM(price * 1.08)`, `AVG(a + b)` — the canonical analytics
+shape. An aggregate operand is now either a bare column *or* a binary `+`/`-`/`*` of
+two numeric column/constant terms. `parseAggOperandSpec` recognizes cbq's
+`Add`/`Mult` (commutative, 2 operands) and `Sub` (binary); per batch the executor
+materializes the result into a reused float64 scratch column (`base.ArithFloat64` /
+`ScaleFloat64`; an int64 term is widened via `LoadFloat64FromInt64`), then the SUM/AVG
+masked reducers fold it. Everything is float64 (matching the row engine's JSON-number
+arithmetic → bit-exact); the materialized column's validity is the **AND of the term
+columns' validities** (a null operand ⇒ null product ⇒ skipped). Bails to the row
+path: `/` (would need x/0→NULL), unary `-`, >2 operands, nested arithmetic,
+non-numeric operand. Composes with WHERE and with EXPLAIN (shows `columnar-agg`).
+
+Deferred to later: division / richer expressions (nested, unary, `n`-ary); an
+index-list (rather than bitmap) selection for very low selectivity; non-fixed-width
+(string/decimal) columns; the long-term validity-as-companion-slot generic
+row-plumbing (the fused op doesn't need it).
 
 -------------------------------------------------------
 ## Key design decisions (settled)
