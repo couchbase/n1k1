@@ -308,6 +308,15 @@ func (c *ValComparer) CompareWithType(aValue, bValue []byte,
 
 // EncodeAsString appends the JSON encoded string to the optional out
 // slice and returns the append()'ed out.
+//
+// TODO(encoder-fidelity): this uses stdlib encoding/json, which escapes formfeed
+// (0x0C) and backspace (0x08) as the two-char \f / \b, whereas cbq's value
+// encoder emits the six-char \u000c / \u0008. Both are valid JSON for the same
+// character, but the bytes differ -- so a native string function whose output
+// contains a literal formfeed/backspace is NOT byte-identical to the cbq
+// fallback. Cosmetic (re-parsing yields the same value) but it breaks the
+// byte-level differential vs cbq. A faithful fix routes this through cbq's
+// encoder (or post-escapes \f/\b -> \u000c/\u0008). See DESIGN-exprs.md.
 func (c *ValComparer) EncodeAsString(s []byte, out []byte) ([]byte, error) {
 	c.Buffer.Reset()
 
