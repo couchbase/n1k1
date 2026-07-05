@@ -128,28 +128,21 @@ func ExprToBoolean(lzVars *base.Vars, labels base.Labels,
 }
 
 func ExprToString(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	exprA := params[0].([]interface{})
-
-	var lzBufPre []byte // <== varLift: lzBufPre by path
-
-	lzExprFunc =
-		MakeExprFunc(lzVars, labels, exprA, path, "A") // !lz
-	lzA := lzExprFunc
-
-	lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
-		lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
-
-		lzVal, lzBufPre = base.ToString(lzVal, lzBufPre)
-
-		return lzVal
-	}
-
-	return lzExprFunc
+	params []interface{}, path string) base.ExprFunc {
+	return exprToBuf(lzVars, labels, params, path, base.ToString)
 }
 
 func ExprToNumber(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
+	params []interface{}, path string) base.ExprFunc {
+	return exprToBuf(lzVars, labels, params, path, base.ToNumber)
+}
+
+// exprToBuf is the shared TO_STRING / TO_NUMBER harness: convert the operand via
+// conv (base.ToString/ToNumber, emitted by name) into the reused lzBufPre. conv
+// shares an emitted line with the buffer (the codegen preserves fmt-arg order
+// across a func placeholder and a varLift buffer -- see cmd/intermed_build).
+func exprToBuf(lzVars *base.Vars, labels base.Labels, params []interface{},
+	path string, conv func(v base.Val, bufPre []byte) (base.Val, []byte)) (lzExprFunc base.ExprFunc) {
 	exprA := params[0].([]interface{})
 
 	var lzBufPre []byte // <== varLift: lzBufPre by path
@@ -161,7 +154,7 @@ func ExprToNumber(lzVars *base.Vars, labels base.Labels,
 	lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
 		lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
 
-		lzVal, lzBufPre = base.ToNumber(lzVal, lzBufPre)
+		lzVal, lzBufPre = conv(lzVal, lzBufPre)
 
 		return lzVal
 	}
