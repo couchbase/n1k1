@@ -993,11 +993,22 @@ universal fallback.
   project a **column-batch target** from the *same* lz source: the generated
   program loops over column batches (inner element loop, exprs inlined) instead of
   over rows. Then there is no hand-maintained parallel tower — you write each
-  kernel once (scalar, lz-annotated) and the compiler emits *both* the row and the
-  column projection, chosen per query by type inference. The interpreter can stay
-  row-only (mirroring the interpreter-only stats split). Prerequisite: compile-time
-  type inference (`TODO.md:250`) — you can only project the typed column loop once
-  you know the column types.
+  kernel once (scalar) and the compiler emits *both* the row and the column
+  projection, chosen per query by type inference. Prerequisite: compile-time type
+  inference (`TODO.md:250`) — you can only project the typed column loop once you
+  know the column types.
+  - **Pointwise lifting as its own source-transform pass** (the LegoBase/LMS move):
+    a pass reads a *typed* scalar kernel `f(a,b float64) float64` marked
+    `// <== pointwise` and mechanically emits the column loop
+    `for i { out[i]=f(a[i],b[i]) }`. Its output is ordinary engine-level Go, so it
+    feeds **both** consumers: the **interpreter** (which then gets vectorized
+    kernels too — and lets us differential-test vector-vs-scalar *before* the
+    compiler is involved) *and* `intermed_build` (which fuses/specializes them).
+    One source of truth, no second tower. Scope: only *pure pointwise* kernels
+    auto-lift (reductions/reshaping stay hand-authored); it needs a typed scalar
+    form (not `base.Val`-JSON, else the loop still parses) and a column-kernel ABI
+    (input/output columns + count + optional validity/selection mask). Not needed
+    until 5.3 (the expression surface); the ~5 reductions are hand-written first.
 
 **Layered end-vision:**
 - **Pragmatic (5.1–5.3):** hand-written generic reductions + fused agg ops behind
@@ -1022,6 +1033,47 @@ type-vector + selection vectors → GROUP BY (dictionary keys) → codegen north
 analytic core without covering all of SQL++**, grow coverage by adding bounded
 primitives, and hold the codegen north-star as the way to avoid a hand-maintained
 second tower entirely.
+
+-------------------------------------------------------
+## Prior art & inspiration (columnar / vectorized engines)
+
+Techniques from leading engines worth stealing, each with the n1k1 tie-in:
+
+- **DuckDB** — the closest reference: embedded, vectorized push-based, reads
+  Parquet directly, selection vectors + dictionary + late materialization + morsel
+  parallelism. Basically the target this columnar path walks toward; study it.
+- **Compiled vs vectorized — and "both"** (Kersten/Leis et al., VLDB 2018,
+  *"Everything You Always Wanted to Know About Compiled and Vectorized Queries…"*):
+  neither dominates. n1k1 is unusually placed to be a **hybrid** (interpreter +
+  Futamura compiler); the § pointwise-lifting pass is the bridge. HyPer/Umbra
+  (Neumann) = compiled camp; MonetDB/X100 → VectorWise = vectorized camp.
+- **LegoBase / DBLAB** (Klonatos & Koch, VLDB 2014) + LMS (Rompf/Odersky): build
+  the engine in a high-level language, apply optimizations as **source-to-source
+  transforms**. This *is* the home of the lifting-as-a-codegen-step idea and of
+  n1k1's whole `intermed_build` approach.
+- **Late materialization** (C-Store/Vertica; Abadi, *"Materialization
+  Strategies…"*, ICDE 2007): carry column positions/IDs as long as possible;
+  materialize tuple values last, or never (aggregates). The deep generalization of
+  "aggregation output is tiny" — the frontier *beyond* Step 5 for cutting the
+  transpose.
+- **Operate on compressed/encoded data** (Abadi et al., *"Integrating Compression
+  and Execution"*, SIGMOD 2006): `SUM` over RLE = value×runlength; GROUP BY on
+  dictionary codes; predicates on bit-packed data — *without decoding*. Parquet
+  pages are RLE/dict/bit-packed and we currently fully decode them via Arrow;
+  computing on encoded pages would skip the decode — the real "stop transposing."
+- **Micro-adaptivity** (Răducanu/Boncz/Zukowski, SIGMOD 2013): keep several kernel
+  flavors and profile per batch to pick the fastest — runtime extension of our
+  compile-time kernel dispatch.
+- **Morsel-driven parallelism** (Leis et al., SIGMOD 2014): the mature form of
+  n1k1's `Stage`/actor batching — NUMA-aware work-stealing over chunks — for
+  scaling the columnar path across cores.
+- **Arrow-native kernel libraries** — Arrow Acero/Compute (arrow-go *has* a
+  `compute` package), DataFusion, Velox, Polars: build-vs-borrow per op rather than
+  hand-writing every kernel.
+
+The two to internalize most: **late materialization + operate-on-encoded-data**
+(the real answer to "stop transposing"), and **LegoBase-style source-transform
+generation** (the home of the lifter).
 
 -------------------------------------------------------
 ## One-line summary
