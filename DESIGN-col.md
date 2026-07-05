@@ -935,6 +935,50 @@ hits the fixed-width ceiling. The remaining work is *integration* (Source
 interface widening, then the `@col` in-op path), not *feasibility*.
 
 -------------------------------------------------------
+## What Steps 1–4 taught us for Step 5 (the first vectorized op)
+
+Concrete takeaways from building the spike + Parquet source + pushdown, carried
+into Step 5 (borrowed Arrow column → `@col` aggregation, no transpose):
+
+1. **Reuse cbq's plan analysis — don't hand-roll.** The Step-4 win was reading
+   `plan.Fetch.EarlyProjection()` instead of writing a fragile field collector.
+   Step 5's analog: read the aggregate kind + column + `GROUP BY`/`WHERE` presence
+   off the cbq plan to detect the vectorizable shape; conservatively fall back to
+   the row lane otherwise (the empty→read-all discipline, applied to op selection).
+2. **Aggregation rejoins the row world for free — that's why it's first.** The
+   "vectorized island surrounded by explode-costs" worry (§ critical Q3) evaporates
+   for agg: `SUM` over 1e6 rows yields *one* row. A fused Parquet-scan→agg stays
+   columnar end-to-end and emits a scalar result the row engine consumes with zero
+   transpose. Pick the op whose output is tiny.
+3. **Differential-test the new lane from line one.** Every risky step was de-risked
+   by an ON==OFF / fast==slow oracle. Build a `DisableVectorizedAgg` knob and a
+   scalar-vs-vector equality test *before* the kernel.
+4. **Scalar Go first (arm64 finding).** The win is *no transpose*, not SIMD. And a
+   left-to-right scalar sum over the Arrow column matches the row engine's
+   scan-order fold **bit-for-bit** → the differential test asserts exact equality.
+   (SIMD tree-reduction reorders floats → epsilon compares; another reason SIMD is
+   last.)
+5. **Sidecar idiom + free footer metadata are the tools.** Add a `ColumnBatchSource`
+   the vectorized op type-asserts (row fallback if absent) — same pattern as
+   `ColumnsProjector`. Start with the `null_count == 0` single-numeric-type case:
+   type picks the kernel, no validity bitmap, unmasked loop (simplest *and*
+   fastest).
+
+**Prerequisites this surfaces:** (a) `walkSource.Columns()` — the multi-file
+`ColumnsSource` gap — so Step 5 can read keyspace type/`null_count`; (b) a
+`ColumnBatchSource` on `parquetSource` yielding borrowed Arrow columns (the inverse
+of the transpose we just optimized).
+
+**Traps to pre-empt:** `COUNT(col)` ≠ `COUNT(*)` on nulls (null_count=0 sidesteps
+v1); multi-file partial-aggregate combine (Σ / min / max associative; AVG carries
+count); and the fused path bypasses the row engine's `Stage`/stats/`YieldStats` —
+preserve scan stats, LIMIT, and cancellation.
+
+**Land-small order:** `walkSource.Columns()` → `ColumnBatchSource` → SUM-only
+scan→agg (null_count=0 numeric, narrow plan shape, differential-tested) →
+COUNT/MIN/MAX/AVG → GROUP BY (dictionary) → SIMD (if ever).
+
+-------------------------------------------------------
 ## One-line summary
 
 The user's instinct is right: **`[]byte` is axis-agnostic, so a `Val` can encode
