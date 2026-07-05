@@ -729,9 +729,10 @@ Step 2's ceiling spike, run on an M-series MacBook (arm64) with **scalar Go only
 no SIMD, no amd64 asm** — so these numbers are the **floor** of the columnar win,
 not the ceiling. SUM and filter-count over N float64 `price` values, comparing
 n1k1's faithful row path (whole JSON doc per record, `jsonparser.GetFloat` per
-row) against the columnar encodings. All paths zero-alloc. Reproduce:
-`DESIGN-col-spike/` (self-contained module — `cd DESIGN-col-spike && GOTOOLCHAIN=
-local GOPROXY=off go test -bench=. -benchmem`).
+row) against the columnar encodings. All paths zero-alloc. Reproduce (benchmark
+lives in `test/col_test.go`; needs the `DESIGN-testing.md` worktree bootstrap):
+`CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -tags n1ql ./test/
+-run='^$' -bench=BenchmarkCol -benchmem`.
 
 **SUM, per-value cost (ns/value), narrow 1-field doc:**
 
