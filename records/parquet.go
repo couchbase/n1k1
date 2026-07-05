@@ -71,7 +71,11 @@ func newParquetSource(path, idPrefix string) (Source, error) {
 }
 
 // ProjectColumns implements ColumnsProjector: read only the named columns. Must
-// be called before the first Next.
+// be called before the first Next. Unknown names are skipped, not errors: a
+// field absent from this file reads as MISSING downstream whether or not we
+// projected it, so dropping it from the read is safe (and correct for SQL++'s
+// schemaless model). If none of the names resolve, the projection is left off
+// (read all columns) rather than reading an empty, zero-column batch.
 func (s *parquetSource) ProjectColumns(names []string) error {
 	if s.rr != nil {
 		return fmt.Errorf("records: ProjectColumns must be called before Next")
@@ -79,13 +83,13 @@ func (s *parquetSource) ProjectColumns(names []string) error {
 	sch := s.pf.MetaData().Schema
 	proj := make([]int, 0, len(names))
 	for _, n := range names {
-		i := sch.ColumnIndexByName(n)
-		if i < 0 {
-			return fmt.Errorf("records: parquet has no column %q", n)
+		if i := sch.ColumnIndexByName(n); i >= 0 {
+			proj = append(proj, i)
 		}
-		proj = append(proj, i)
 	}
-	s.proj = proj
+	if len(proj) > 0 {
+		s.proj = proj
+	}
 	return nil
 }
 

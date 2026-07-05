@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 
 	"github.com/couchbase/n1k1/base"
 	"github.com/couchbase/n1k1/records"
@@ -308,6 +309,29 @@ type limiter interface {
 	Limit() expression.Expression
 }
 
+// DisableColumnProjection forces the full-read path (VisitFetch attaches no
+// projection). The differential test flips it to prove projected == unprojected.
+var DisableColumnProjection bool
+
+// ColumnProjectionApplied counts how many scans actually pushed a projection into
+// a projection-capable source (test observability).
+var ColumnProjectionApplied int64
+
+// scanProjectColumns returns the pushdown field set VisitFetch attached to a
+// datastore-scan-records op, or nil if none.
+func scanProjectColumns(o *base.Op) []string {
+	for _, p := range o.Params {
+		if pp, ok := p.([]interface{}); ok && len(pp) == 2 {
+			if k, _ := pp[0].(string); k == "project-columns" {
+				if names, ok := pp[1].([]string); ok {
+					return names
+				}
+			}
+		}
+	}
+	return nil
+}
+
 // DatastoreScanRecords reads a file keyspace's directory n1k1-native via the
 // records package (union of files, recurse subdirs, decode JSONL /
 // multi-doc / single-doc JSON, transparent gzip) and yields whole documents
@@ -349,6 +373,18 @@ func DatastoreScanRecords(o *base.Op, vars *base.Vars,
 		return
 	}
 	defer src.Close()
+
+	// Column-projection pushdown (DESIGN-col.md Step 4): if the planner determined
+	// the exact fields this query reads (attached by VisitFetch) and the source can
+	// project (e.g. Parquet), decode only those columns. A source that can't project
+	// ignores it and reads everything -- always safe.
+	if names := scanProjectColumns(o); names != nil {
+		if cp, ok := src.(records.ColumnsProjector); ok {
+			if err := cp.ProjectColumns(names); err == nil {
+				atomic.AddInt64(&ColumnProjectionApplied, 1)
+			}
+		}
+	}
 
 	var vals base.Vals
 	var idBuf []byte

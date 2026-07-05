@@ -39,8 +39,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -65,7 +67,11 @@ func pqPrice(i int) float64 { return float64(i%1000) + 0.5 }
 // pqWrite writes n rows of {id int64, price float64, f0..f{width-1} string}
 // (Snappy + dictionary, one row group) -- a "wide" record where a query wants
 // only the one numeric column.
-func pqWrite(t testing.TB, path string, n, width int) {
+func pqWrite(t testing.TB, path string, n, width int) { pqWriteBase(t, path, 0, n, width) }
+
+// pqWriteBase is pqWrite with an id/base offset, so multiple part files get
+// disjoint ids (id = base+i, price = pqPrice(base+i)).
+func pqWriteBase(t testing.TB, path string, base, n, width int) {
 	mem := memory.NewGoAllocator()
 	fields := []arrow.Field{
 		{Name: "id", Type: arrow.PrimitiveTypes.Int64},
@@ -79,10 +85,11 @@ func pqWrite(t testing.TB, path string, n, width int) {
 	b := array.NewRecordBuilder(mem, schema)
 	defer b.Release()
 	for i := 0; i < n; i++ {
-		b.Field(0).(*array.Int64Builder).Append(int64(i))
-		b.Field(1).(*array.Float64Builder).Append(pqPrice(i))
+		id := base + i
+		b.Field(0).(*array.Int64Builder).Append(int64(id))
+		b.Field(1).(*array.Float64Builder).Append(pqPrice(id))
 		for f := 0; f < width; f++ {
-			b.Field(2 + f).(*array.StringBuilder).Append("v" + strconv.Itoa(i) + "_" + strconv.Itoa(f))
+			b.Field(2 + f).(*array.StringBuilder).Append("v" + strconv.Itoa(id) + "_" + strconv.Itoa(f))
 		}
 	}
 	rec := b.NewRecord()
@@ -310,13 +317,94 @@ func TestParquetSidecars(t *testing.T) {
 		t.Fatalf("projected rows = %d, want 4", rows)
 	}
 
-	// Unknown column is an error.
+	// Unknown columns are tolerated (skipped), not errors: a field absent from the
+	// file reads as MISSING downstream anyway. A mix keeps the known one.
 	src3, _ := records.OpenFile(path, "")
 	defer src3.Close()
-	if err := src3.(records.ColumnsProjector).ProjectColumns([]string{"nope"}); err == nil {
-		t.Error("ProjectColumns(nope) should error on unknown column")
+	if err := src3.(records.ColumnsProjector).ProjectColumns([]string{"price", "nope"}); err != nil {
+		t.Fatalf("ProjectColumns(price,nope): %v", err)
 	}
-	t.Log("OK: ColumnsSource schema + ColumnsProjector projection verified")
+	var r3 records.Record
+	if ok, err := src3.Next(&r3); err != nil || !ok {
+		t.Fatalf("Next: ok=%v err=%v", ok, err)
+	}
+	if doc := string(r3.Doc); !strings.Contains(doc, `"price"`) ||
+		strings.Contains(doc, `"nope"`) || strings.Contains(doc, `"id"`) {
+		t.Fatalf("mixed projection doc = %s, want only price", doc)
+	}
+	t.Log("OK: ColumnsSource schema + ColumnsProjector projection (incl. tolerant unknown)")
+}
+
+// TestParquetProjectionDifferential is the correctness guardrail for Step-4
+// caller-side pushdown: for a battery of query shapes, results with column
+// projection ON must exactly equal results with it forced OFF. It also asserts
+// the projection actually fires (and is correctly absent for SELECT *).
+func TestParquetProjectionDifferential(t *testing.T) {
+	dir := t.TempDir()
+	ks := filepath.Join(dir, "default", "sales2")
+	if err := os.MkdirAll(ks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Two part files (exercises the walkSource projection forwarding); cols:
+	// id, price, f0, f1.  ids 0..9 and 100..109.
+	pqWrite(t, filepath.Join(ks, "part-0.parquet"), 10, 2)
+	pqWriteBase(t, filepath.Join(ks, "part-1.parquet"), 100, 10, 2)
+
+	sess, err := glue.OpenSession(dir, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	queries := []struct {
+		name    string
+		stmt    string
+		projects bool // whether pushdown should fire (a determinable field subset)
+	}{
+		{"project-order", `SELECT id, price FROM sales2 ORDER BY id`, true},
+		{"filter-agg", `SELECT COUNT(*) AS c, SUM(price) AS s FROM sales2 WHERE price > 3`, true},
+		{"one-field", `SELECT f0 FROM sales2 ORDER BY id`, true},
+		// A field set IS pushed (the planner names it), but the Parquet source finds
+		// no such column and harmlessly falls back to read-all -- so the request
+		// still "fires" at the source. Correctness is proven by the ON==OFF compare.
+		{"absent-field", `SELECT nonexistent FROM sales2 ORDER BY id`, true},
+		{"star", `SELECT * FROM sales2 ORDER BY id`, false}, // whole doc => no pushdown attached
+	}
+
+	for _, q := range queries {
+		t.Run(q.name, func(t *testing.T) {
+			glue.DisableColumnProjection = true
+			base := runSortedRows(t, sess, q.stmt)
+			glue.DisableColumnProjection = false
+			before := atomic.LoadInt64(&glue.ColumnProjectionApplied)
+			got := runSortedRows(t, sess, q.stmt)
+			applied := atomic.LoadInt64(&glue.ColumnProjectionApplied) - before
+
+			if strings.Join(base, "\n") != strings.Join(got, "\n") {
+				t.Fatalf("projection changed results!\n OFF: %v\n ON:  %v", base, got)
+			}
+			if q.projects && applied == 0 {
+				t.Errorf("expected projection to fire, but it didn't")
+			}
+			if !q.projects && applied != 0 {
+				t.Errorf("expected NO projection, but %d fired", applied)
+			}
+		})
+	}
+	glue.DisableColumnProjection = false
+}
+
+func runSortedRows(t *testing.T, sess *glue.Session, stmt string) []string {
+	t.Helper()
+	res, err := sess.Run(stmt)
+	if err != nil {
+		t.Fatalf("Run(%q): %v", stmt, err)
+	}
+	out := make([]string, len(res.Rows))
+	for i, r := range res.Rows {
+		out[i] = string(r)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func rowStrings(res *glue.Result) []string {

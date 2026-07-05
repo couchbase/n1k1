@@ -1198,6 +1198,15 @@ type walkSource struct {
 	opts  WalkOptions
 	i     int
 	cur   Source
+	proj  []string // optional column projection, forwarded to each per-file source
+}
+
+// ProjectColumns implements ColumnsProjector for a multi-file keyspace: it
+// records the wanted columns and forwards them to each per-file source (that
+// supports projection) as it is opened. Must be called before the first Next.
+func (w *walkSource) ProjectColumns(names []string) error {
+	w.proj = names
+	return nil
 }
 
 func (w *walkSource) Next(rec *Record) (bool, error) {
@@ -1215,6 +1224,13 @@ func (w *walkSource) Next(rec *Record) (bool, error) {
 			s, err := OpenFile(path, rel)
 			if err != nil {
 				return false, err
+			}
+			// Forward an optional column projection to the per-file source before it
+			// is wrapped/iterated (Parquet uses it to decode only wanted columns).
+			if w.proj != nil {
+				if cp, ok := s.(ColumnsProjector); ok {
+					_ = cp.ProjectColumns(w.proj)
+				}
 			}
 			// Opt-in per-file metadata (_meta): extracted docs under auto, or all
 			// records under -meta=on. Silently skipped if the file can't be stat'd.

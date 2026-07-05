@@ -736,13 +736,25 @@ walk it.)
   jsonl/csv/yaml stay `{Next, Close}` and fall back to the full transpose. The
   Parquet reader then reads only wanted columns and declares type + `null_count`;
   still row-transposed downstream, but pushdown cuts I/O and the schema populates
-  the label markers. **✅ Source side done** — `records.ColumnsProjector` /
-  `records.ColumnsSource` (+ `ColumnMeta`) on the core `Source`; `records/parquet.go`
-  implements both (lazy reader so `ProjectColumns` precedes iteration; `Columns()`
-  reads footer types/null-count/min-max), proven by
-  `test/parquet_test.go:TestParquetSidecars`. **Remaining = caller-side**: the glue
-  scan layer must mine the wanted-column set from the plan (`project` exprs /
-  `Covers()` / label vector) and call `ProjectColumns` — the harder 80%.
+  the label markers. **✅ DONE — both sides.**
+  - *Source side*: `records.ColumnsProjector` / `records.ColumnsSource`
+    (+ `ColumnMeta`) on the core `Source`; `records/parquet.go` implements both
+    (lazy reader so `ProjectColumns` precedes iteration; `Columns()` reads footer
+    types/null-count/min-max); `walkSource` forwards a projection to each per-file
+    source so multi-file keyspaces benefit. Unknown columns are *tolerated*
+    (skipped, not errors) — a field absent from a file is correctly MISSING.
+  - *Caller side*: **cbq's planner already computes the field set** — it does
+    `expr.FieldNames(ident, …)` over the query and a full `expression.IsCovered`
+    cover-check, exposing the result as `plan.Fetch.EarlyProjection()`
+    (`planner/build_select_from.go:checkEarlyProjection`). So n1k1 *reuses* it:
+    `VisitFetch` reads `EarlyProjection()` off the records-scan's fetch and attaches
+    it; `DatastoreScanRecords` hands it to the source's `ColumnsProjector`. No
+    hand-rolled field analysis — cbq's is battle-tested and correct (handles
+    `SELECT *` → empty → read-all, `ORDER BY`/`WHERE`/agg fields, correlation).
+  - *Correctness guardrail*: `TestParquetProjectionDifferential` — results with
+    projection ON must equal OFF across a battery (project, filter+agg, star,
+    absent-field); a `DisableColumnProjection` knob forces OFF. All pass; projecting
+    a superset is always safe, and the empty/all-unknown cases fall back to read-all.
 - **Step 5 — First true vectorized op, compile-time-only.** Aggregation over a
   proven-typed, non-null column straight from Parquet — end-to-end, no transpose.
   Introduce column batches + the `@col` markers (§ *Marking a slot*) here.

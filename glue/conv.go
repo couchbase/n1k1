@@ -489,6 +489,16 @@ func (c *Conv) VisitFetch(o *plan.Fetch) (interface{}, error) {
 	// don't exist -- and META().id already rides the scan's "^id" label. So for a
 	// whole-doc scan the subpaths are simply irrelevant and safely ignored.
 	if c.TopOp != nil && c.TopOp.Kind == "datastore-scan-records" {
+		// Column-projection pushdown (DESIGN-col.md Step 4): the planner already
+		// computed the complete set of top-level fields this query reads from the
+		// keyspace (with a cover-check), exposed as Fetch.EarlyProjection(). Attach
+		// it so DatastoreScanRecords can hand it to a records.ColumnsProjector (e.g.
+		// the Parquet source) and decode only those columns. Empty => read all.
+		if !DisableColumnProjection {
+			if proj := o.EarlyProjection(); len(proj) > 0 {
+				c.TopOp.Params = append(c.TopOp.Params, []interface{}{"project-columns", proj})
+			}
+		}
 		return c.TopOp, nil
 	}
 
