@@ -317,6 +317,14 @@ validity-as-companion-slot generic row-plumbing (the fused op doesn't need it).
   another reason SIMD is last).
 - **Reuse cbq's plan analysis, don't hand-roll** — the recurring Step-4 lesson
   (EarlyProjection), reapplied to Step 5's vectorizability detection.
+- **EXPLAIN shows the rewrite.** The columnar rewrite is a post-plan pass on n1k1's
+  own op tree (invisible to cbq's `EXPLAIN` JSON, which is the planner's plan). To
+  keep the displayed plan honest, `convForDisplay` (the EXPLAIN/`-v` path) runs the
+  same `vectorizeColumnarAggs` the executor does — so `EXPLAIN SELECT SUM(x) …` shows
+  a `columnar-agg`/`metadata-agg` node, and it honors `DisableVectorizedAgg` (stays
+  consistent with what runs). The op-tree renderer (`FormatConvPlan`) is *generic* —
+  it prints each op's `Kind` + `Labels`, so any future columnar op-kind surfaces with
+  no per-kind renderer code.
 
 -------------------------------------------------------
 ## Still-open questions

@@ -130,6 +130,15 @@ func convForDisplay(inner plan.Operator) (op *base.Op) {
 	if DiscardElision {
 		elideDiscarded(c.TopOp)
 	}
+	// Apply the same Step-5 columnar rewrite the execution path does, so EXPLAIN
+	// shows columnar-agg / metadata-agg exactly where a real run would fire them
+	// (it peeks the keyspace footer, same as at run time, and honors
+	// DisableVectorizedAgg). Best effort: a rewrite panic leaves the un-rewritten
+	// tree rather than nilling the whole display plan.
+	func() {
+		defer func() { recover() }()
+		vectorizeColumnarAggs(c.TopOp, c.Temps)
+	}()
 	return c.TopOp
 }
 

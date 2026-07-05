@@ -674,6 +674,62 @@ func rowStrings(res *glue.Result) []string {
 	return out
 }
 
+// TestParquetExplainShowsColumnarRewrite proves EXPLAIN's displayed op tree reflects
+// the Step-5 columnar rewrite (so a user can see whether a query vectorizes), that
+// the generic op-tree renderer surfaces the op-kind string with no per-kind code,
+// and that EXPLAIN honors DisableVectorizedAgg -- i.e. it stays consistent with what
+// the execution path would actually run.
+func TestParquetExplainShowsColumnarRewrite(t *testing.T) {
+	dir := t.TempDir()
+	ks := filepath.Join(dir, "default", "sales6")
+	if err := os.MkdirAll(ks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	pqWrite(t, filepath.Join(ks, "part-0.parquet"), 50, 1)
+
+	sess, err := glue.OpenSession(dir, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name, stmt, wantKind string
+	}{
+		{"sum", `EXPLAIN SELECT SUM(price) AS s FROM sales6`, "columnar-agg"},
+		{"sum-where", `EXPLAIN SELECT SUM(price) AS s FROM sales6 WHERE price > 10`, "columnar-agg"},
+		{"metadata", `EXPLAIN SELECT COUNT(*) AS c, MIN(price) AS m FROM sales6`, "metadata-agg"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			res, err := sess.Run(c.stmt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.Plan == nil {
+				t.Fatal("EXPLAIN returned a nil display Plan")
+			}
+			if !hasKind(res.Plan, c.wantKind) {
+				t.Errorf("EXPLAIN op-tree kinds %v, want a %q node", opKinds(res.Plan), c.wantKind)
+			}
+			// The generic renderer must surface the kind string with no per-kind code.
+			if rendered := glue.FormatConvPlan(res.Plan); !strings.Contains(rendered, c.wantKind) {
+				t.Errorf("FormatConvPlan did not render %q:\n%s", c.wantKind, rendered)
+			}
+		})
+	}
+
+	// EXPLAIN must track execution: with vectorization disabled, no columnar node.
+	glue.DisableVectorizedAgg = true
+	defer func() { glue.DisableVectorizedAgg = false }()
+	res, err := sess.Run(`EXPLAIN SELECT SUM(price) AS s FROM sales6`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasKind(res.Plan, "columnar-agg") {
+		t.Errorf("with DisableVectorizedAgg, EXPLAIN should show the row path, got %v", opKinds(res.Plan))
+	}
+}
+
 // ---- hand-rolled zero-alloc transpose: equivalence + allocation guard --------
 
 // pqWriteVaried writes one row group covering the fast writer's type range plus
