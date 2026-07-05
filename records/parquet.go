@@ -1,0 +1,131 @@
+//go:build !js
+
+//  Copyright (c) 2026 Couchbase, Inc.
+//  Licensed under the Apache License, Version 2.0 (the "License");
+//  you may not use this file except in compliance with the
+//  License. You may obtain a copy of the License at
+//  http://www.apache.org/licenses/LICENSE-2.0
+//  Unless required by applicable law or agreed to in writing,
+//  software distributed under the License is distributed on an "AS
+//  IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
+//  express or implied. See the License for the specific language
+//  governing permissions and limitations under the License.
+
+package records
+
+// Parquet record source -- "transpose to rows": each Parquet row becomes one
+// JSON object built from the file's columns, so n1k1 can *query* a .parquet file
+// at all. This is DESIGN-col.md's Step 3 (the correctness path); it deliberately
+// does NOT exploit columnar/vectorized execution yet (that's the column-batch
+// roadmap in DESIGN-col.md). Built on apache/arrow-go/v18 -- the same library
+// glue's iceberg_reader uses.
+//
+// Guarded !js: arrow-go's Parquet reader (assembly, large surface) does not build
+// for GOOS=js/wasm, so the browser build gets the stub in parquet_js.go, matching
+// how idx_si/idx_fts are build-tag-guarded for wasm.
+
+import (
+	"bytes"
+	"context"
+	"io"
+
+	"github.com/apache/arrow-go/v18/arrow/array"
+	"github.com/apache/arrow-go/v18/arrow/memory"
+	"github.com/apache/arrow-go/v18/parquet/file"
+	"github.com/apache/arrow-go/v18/parquet/pqarrow"
+)
+
+// parquetSource streams a Parquet file as JSON records. It reads one Arrow
+// record batch at a time, renders it to newline-delimited JSON (one object per
+// row via array.RecordToJSON), and yields each line. Doc borrows the render
+// buffer and is valid only until the batch is exhausted and the next one loads.
+type parquetSource struct {
+	pf       *file.Reader
+	rr       pqarrow.RecordReader
+	idPrefix string
+	row      int
+
+	buf   bytes.Buffer // current batch rendered as NDJSON
+	lines [][]byte     // per-row slices into buf
+	li    int          // next line index
+	idBuf []byte
+	done  bool
+}
+
+func newParquetSource(path, idPrefix string) (Source, error) {
+	pf, err := file.OpenParquetFile(path, false)
+	if err != nil {
+		return nil, err
+	}
+	pr, err := pqarrow.NewFileReader(pf, pqarrow.ArrowReadProperties{}, memory.DefaultAllocator)
+	if err != nil {
+		pf.Close()
+		return nil, err
+	}
+	// nil colIndices / nil rowGroups => all columns, all row groups.
+	rr, err := pr.GetRecordReader(context.Background(), nil, nil)
+	if err != nil {
+		pf.Close()
+		return nil, err
+	}
+	return &parquetSource{pf: pf, rr: rr, idPrefix: idPrefix}, nil
+}
+
+func (s *parquetSource) Next(rec *Record) (bool, error) {
+	for s.li >= len(s.lines) {
+		if s.done {
+			return false, nil
+		}
+		batch, err := s.rr.Read()
+		if err == io.EOF {
+			s.done = true
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		s.buf.Reset()
+		err = array.RecordToJSON(batch, &s.buf)
+		batch.Release()
+		if err != nil {
+			return false, err
+		}
+		s.lines = splitNDJSON(s.buf.Bytes(), s.lines[:0])
+		s.li = 0
+	}
+
+	rec.Doc = s.lines[s.li]
+	s.idBuf = appendRecordID(s.idBuf[:0], s.idPrefix, s.row)
+	rec.ID = s.idBuf
+	s.li++
+	s.row++
+	return true, nil
+}
+
+func (s *parquetSource) Close() error {
+	if s.rr != nil {
+		s.rr.Release()
+	}
+	if s.pf != nil {
+		return s.pf.Close()
+	}
+	return nil
+}
+
+// splitNDJSON slices b into its non-empty newline-delimited lines, reusing dst.
+func splitNDJSON(b []byte, dst [][]byte) [][]byte {
+	for len(b) > 0 {
+		i := bytes.IndexByte(b, '\n')
+		if i < 0 {
+			if len(bytes.TrimSpace(b)) > 0 {
+				dst = append(dst, b)
+			}
+			break
+		}
+		if line := b[:i]; len(bytes.TrimSpace(line)) > 0 {
+			dst = append(dst, line)
+		}
+		b = b[i+1:]
+	}
+	return dst
+}

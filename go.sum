@@ -3101,6 +3101,7 @@ github.com/MarvinJWendt/testza v0.5.2/go.mod h1:xu53QFE5sCdjtMCKk8YMQ2MnymimEctc
 github.com/Masterminds/semver/v3 v3.1.1/go.mod h1:VPu/7SZ7ePZ3QOrcuXROw5FAcLl4a0cBrbBpGY/8hQs=
 github.com/Masterminds/semver/v3 v3.2.1 h1:RN9w6+7QoMeJVGyfmbcgs28Br8cvmnucEXnY0rYXWg0=
 github.com/Masterminds/semver/v3 v3.2.1/go.mod h1:qvl/7zhW3nngYb5+80sSMF+FG2BjYrf8m9wsX0PNOMQ=
+github.com/Masterminds/semver/v3 v3.5.0/go.mod h1:4V+yj/TJE1HU9XfppCwVMZq3I84lprf4nC11bSS5beM=
 github.com/Microsoft/cosesign1go v0.0.1/go.mod h1:fj1svfAxQeQNJ2SLaQu8mHx2rtPIsloZl065GqLF3io=
 github.com/Microsoft/cosesign1go v1.1.0/go.mod h1:o+sw7nhlGE6twhfjXQDWmBJO8zmfQXEmCcXEi3zha8I=
 github.com/Microsoft/cosesign1go v1.2.0/go.mod h1:1La/HcGw19rRLhPW0S6u55K6LKfti+GQSgGCtrfhVe8=
@@ -3968,6 +3969,7 @@ github.com/couchbase/gocbcoreps v0.1.5-0.20260107140814-1c3a03f888f8 h1:WwGhY3TY
 github.com/couchbase/gocbcoreps v0.1.5-0.20260107140814-1c3a03f888f8/go.mod h1:AUR8DPPmvM+uMkb+Q01Y0mMXINdEY/jUL/qE+kPJ67s=
 github.com/couchbase/gocbcrypto v0.0.0-20260312210123-066b00fd5492 h1:8vRf0lfXN4p/rxCEQRzjXUOK8w2amn20MlyxVgL6wo0=
 github.com/couchbase/gocbcrypto v0.0.0-20260312210123-066b00fd5492/go.mod h1:hr+yoHRPDNT/iLrzk890lUQm7e8oyYE2uofAs93Braw=
+github.com/couchbase/godbc v0.0.0-20210615212222-79da1b49cb4d/go.mod h1:kxcbSjRRwXYcmaOaA5oHOtwHfZq7NUyKFtcyC4NbjQU=
 github.com/couchbase/godbc v0.0.0-20260618052033-fcd013c8cda1/go.mod h1:uYDbNVxCVPG3e+XicpdfPmRcup2teTPj/wKwUlwd9nQ=
 github.com/couchbase/goforestdb v0.0.0-20161215171854-0b501227de0e/go.mod h1:QrrCwm7zmrkx0PXqGue29VBMbBo3DAQ3oAGamrrUAkQ=
 github.com/couchbase/gomemcached v0.2.1/go.mod h1:mxliKQxOv84gQ0bJWbI+w9Wxdpt9HjDvgW9MjCym5Vo=
@@ -4041,6 +4043,7 @@ github.com/couchbase/tools-common/utils/v3 v3.0.0/go.mod h1:3hsaJwSI1FhAc6PK0Ygs
 github.com/couchbase/tools-common/utils/v3 v3.1.1 h1:+3VYQ97ar06gkP0uJQUmog+QHdUdfigAFXnqy3TT12Y=
 github.com/couchbase/tools-common/utils/v3 v3.1.1/go.mod h1:v3antVA5WhgNLLosy859pfYZ2Xl97bAXQNFZe8+nKik=
 github.com/couchbase/vellum v1.0.2/go.mod h1:FcwrEivFpNi24R3jLOs3n+fs5RnuQnQqCLBJ1uAg1W4=
+github.com/couchbasedeps/go-curl v0.0.0-20190830233031-f0b2afc926ec/go.mod h1:ZLaSGBNRCwL1Kd8Ka/bJ3NspTmFcEeis2mr7vflJS7M=
 github.com/couchbaselabs/c-forestdb v0.0.0-20160212203508-1b1267468faa/go.mod h1:ll4REgnm8wqvbTtgLDa2Htwa82EJsh/NSHGVarbLNuo=
 github.com/couchbaselabs/c-snappy v0.0.0-20160212203049-a52f87e8ffc5/go.mod h1:vM+1kXEoTFLyu0JoMHO8AgNos7SBXWmbPP9fkTb1bjE=
 github.com/couchbaselabs/gocaves/client v0.0.0-20220223122017-22859b310bd2/go.mod h1:AVekAZwIY2stsJOMWLAS/0uA/+qdp7pjO8EHnl61QkY=
@@ -4180,6 +4183,7 @@ github.com/docker/spdystream v0.0.0-20160310174837-449fdfce4d96/go.mod h1:Qh8CwZ
 github.com/docopt/docopt-go v0.0.0-20180111231733-ee0de3bc6815/go.mod h1:WwZ+bS3ebgob9U8Nd0kOddGdZWjyMGR8Wziv+TBNwSE=
 github.com/dop251/goja v0.0.0-20260701091749-b07b74453ea9 h1:q33zakIx+wEp1Ko5NpDyDBICuXL4JeHUaHbhPowcMEk=
 github.com/dop251/goja v0.0.0-20260701091749-b07b74453ea9/go.mod h1:Sc+QOu1WruvaaeT/cxFez/pXHpI9ZDjg/E8QNfSVveI=
+github.com/dop251/goja_nodejs v0.0.0-20211022123610-8dd9abb0616d/go.mod h1:DngW8aVqWbuLRMHItjPUyqdj+HWPvnQe8V8y1nDpIbM=
 github.com/dsnet/compress v0.0.2-0.20210315054119-f66993602bf5 h1:iFaUwBSo5Svw6L7HYpRu/0lE3e0BaElwnNO1qkNQxBY=
 github.com/dsnet/compress v0.0.2-0.20210315054119-f66993602bf5/go.mod h1:qssHWj60/X5sZFNxpG4HBPDHVqxNm4DfnCKgrbZOT+s=
 github.com/dsnet/golib v0.0.0-20171103203638-1ea166775780/go.mod h1:Lj+Z9rebOhdfkVLjJ8T6VcRQv3SXugXy999NBtR9aFY=
@@ -4831,6 +4835,7 @@ github.com/ianlancetaylor/demangle v0.0.0-20210905161508-09a460cdf81d/go.mod h1:
 github.com/ianlancetaylor/demangle v0.0.0-20220319035150-800ac71e25c2/go.mod h1:aYm2/VgdVmcIU8iMfdMvDMsRAQjcfZSKFby6HOFvi/w=
 github.com/ianlancetaylor/demangle v0.0.0-20220517205856-0058ec4f073c/go.mod h1:aYm2/VgdVmcIU8iMfdMvDMsRAQjcfZSKFby6HOFvi/w=
 github.com/ianlancetaylor/demangle v0.0.0-20240312041847-bd984b5ce465/go.mod h1:gx7rwoVhcfuVKG5uya9Hs3Sxj7EIvldVofAWIUtGouw=
+github.com/ianlancetaylor/demangle v0.0.0-20250417193237-f615e6bd150b/go.mod h1:gx7rwoVhcfuVKG5uya9Hs3Sxj7EIvldVofAWIUtGouw=
 github.com/imdario/mergo v0.3.5/go.mod h1:2EnlNZ0deacrJVfApfmtdGgDfMuh/nq6Ok1EcJh5FfA=
 github.com/imdario/mergo v0.3.6/go.mod h1:2EnlNZ0deacrJVfApfmtdGgDfMuh/nq6Ok1EcJh5FfA=
 github.com/imdario/mergo v0.3.8/go.mod h1:2EnlNZ0deacrJVfApfmtdGgDfMuh/nq6Ok1EcJh5FfA=
@@ -5294,6 +5299,7 @@ github.com/onsi/ginkgo/v2 v2.17.1/go.mod h1:llBI3WDLL9Z6taip6f33H76YcWtJv+7R3Hig
 github.com/onsi/ginkgo/v2 v2.17.2/go.mod h1:nP2DPOQoNsQmsVyv5rDA8JkXQoCs6goXIvr/PRJ1eCc=
 github.com/onsi/ginkgo/v2 v2.19.0/go.mod h1:rlwLi9PilAFJ8jCg9UE1QP6VBpd6/xj3SRC0d6TU0To=
 github.com/onsi/ginkgo/v2 v2.19.1/go.mod h1:O3DtEWQkPa/F7fBMgmZQKKsluAy8pd3rEQdrjkPb9zA=
+github.com/onsi/ginkgo/v2 v2.27.2/go.mod h1:ArE1D/XhNXBXCBkKOLkbsb2c81dQHCRcF5zwn/ykDRo=
 github.com/onsi/gomega v0.0.0-20151007035656-2152b45fa28a/go.mod h1:C1qb7wdrVGGVU+Z6iS04AVkA3Q65CEZX59MT0QO5uiA=
 github.com/onsi/gomega v0.0.0-20170829124025-dcabb60a477c/go.mod h1:C1qb7wdrVGGVU+Z6iS04AVkA3Q65CEZX59MT0QO5uiA=
 github.com/onsi/gomega v1.2.0/go.mod h1:C1qb7wdrVGGVU+Z6iS04AVkA3Q65CEZX59MT0QO5uiA=
@@ -5331,6 +5337,7 @@ github.com/onsi/gomega v1.33.0/go.mod h1:+925n5YtiFsLzzafLUHzVMBpvvRAzrydIBiSIxj
 github.com/onsi/gomega v1.33.1/go.mod h1:U4R44UsT+9eLIaYRB2a5qajjtQYn0hauxvRm16AVYg0=
 github.com/onsi/gomega v1.34.0 h1:eSSPsPNp6ZpsG8X1OVmOTxig+CblTc4AxpPBykhe2Os=
 github.com/onsi/gomega v1.34.0/go.mod h1:MIKI8c+f+QLWk+hxbePD4i0LMJSExPaZOVfkoex4cAo=
+github.com/onsi/gomega v1.38.2/go.mod h1:W2MJcYxRGV63b418Ai34Ud0hEdTVXq9NW9+Sx6uXf3k=
 github.com/op/go-logging v0.0.0-20160315200505-970db520ece7/go.mod h1:HzydrMdWErDVzsI23lYNej1Htcns9BCg93Dk0bBINWk=
 github.com/open-policy-agent/opa v0.42.2/go.mod h1:MrmoTi/BsKWT58kXlVayBb+rYVeaMwuBm3nYAN3923s=
 github.com/open-policy-agent/opa v0.68.0/go.mod h1:5E5SvaPwTpwt2WM177I9Z3eT7qUpmOGjk1ZdHs+TZ4w=

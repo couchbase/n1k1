@@ -703,11 +703,15 @@ walk it.)
   change).** Wire a pure-Go Parquet/Arrow `RecordSource` yielding borrowed column
   buffers, initially transposed to JSON rows (the `DESIGN-data.md` correctness
   path). Delivers "query Parquet at all" — user value independent of
-  vectorization — and creates the substrate. **✅ Prototyped
-  (`test/parquet_test.go`, arrow-go) — see § *Parquet prototype results*: reads one
-  column of a 14-col file in 0.2% of the bytes / 80–137× faster, the footer yields
-  types + null_count + min/max for free, and the borrowed Arrow `[]float64` sums at
-  the 0.9 ns/value fixed-width ceiling.**
+  vectorization — and creates the substrate. **✅ Shipped — `records/parquet.go`
+  (arrow-go, transpose-to-rows via `array.RecordToJSON`) wired into
+  `records.OpenFile`; a `.parquet` file is now a queryable keyspace end-to-end
+  (`SELECT … FROM orders` over `orders.parquet`, proven by
+  `test/parquet_test.go:TestParquetQueryEndToEnd`). Guarded `!js` (the wasm/browser
+  build gets a stub — arrow-go stays out of it, verified by `go list -deps`). The
+  *feasibility* measurements (projection pushdown 80–137× / 0.2% bytes, free footer
+  types+null_count+min/max, parse-free Arrow `[]float64` at the 0.9 ns/value
+  fixed-width ceiling) are in § *Parquet prototype results*.**
 - **Step 4 — Widen the `Source` interface (the missing wire).** Add the projection
   input + `Schema()`/`ColumnStats()` output (§ *Pushdown*). Source now reads only
   wanted columns and declares type + `null_count`; still row-transposed

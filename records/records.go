@@ -65,6 +65,7 @@ var recordExts = map[string]bool{
 	".json": true, ".jsons": true, ".jsonl": true, ".ndjson": true,
 	".csv": true, ".tsv": true,
 	".yaml": true, ".yml": true,
+	".parquet": true,
 }
 
 // IsRecordFile reports whether path (by extension, ignoring a .gz/.zst suffix)
@@ -162,6 +163,11 @@ func OpenFile(path, idPrefix string) (Source, error) {
 	// not through the streaming decompression layer.
 	if isExtractExt(innerExt(path)) {
 		return newExtractSource(path)
+	}
+	// Parquet is opened by path (arrow-go needs random access; it's a
+	// self-describing container, not a stream through the decompression layer).
+	if innerExt(path) == ".parquet" {
+		return newParquetSource(path, idPrefix)
 	}
 	r, closers, err := openDecompressed(path)
 	if err != nil {

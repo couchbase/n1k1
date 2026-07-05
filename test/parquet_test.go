@@ -52,6 +52,8 @@ import (
 	"github.com/apache/arrow-go/v18/parquet/metadata"
 	"github.com/apache/arrow-go/v18/parquet/pqarrow"
 	"github.com/buger/jsonparser"
+
+	"github.com/couchbase/n1k1/glue"
 )
 
 const pqPriceCol = 1 // leaf index: id=0, price=1, then f0..f{width-1}.
@@ -196,6 +198,61 @@ func TestParquetReport(t *testing.T) {
 	if got := pqSumColumn(projTbl); got == 0 {
 		t.Fatal("unexpected zero sum")
 	}
+}
+
+// ---- end-to-end: run a real SQL++ query against a .parquet keyspace --------
+// This is the actual Step-3 feature (not a benchmark): a .parquet file dropped
+// into a keyspace dir is queryable through n1k1's normal FileStore/scan path,
+// via the records.parquetSource transpose-to-rows.
+
+func TestParquetQueryEndToEnd(t *testing.T) {
+	dir := t.TempDir()
+	ks := filepath.Join(dir, "default", "orders")
+	if err := os.MkdirAll(ks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// 6 rows of {id, price, f0}; id=i, price=i+0.5.
+	pqWrite(t, filepath.Join(ks, "orders.parquet"), 6, 1)
+
+	sess, err := glue.OpenSession(dir, "default")
+	if err != nil {
+		t.Fatalf("OpenSession: %v", err)
+	}
+
+	// (a) projection + ORDER BY over the parquet-sourced rows.
+	res, err := sess.Run(`SELECT id, price FROM orders ORDER BY id`)
+	if err != nil {
+		t.Fatalf("Run select: %v", err)
+	}
+	if res.Count != 6 {
+		t.Fatalf("row count = %d, want 6; rows=%v", res.Count, rowStrings(res))
+	}
+	if got := string(res.Rows[0]); got != `{"id":0,"price":0.5}` {
+		t.Errorf("row[0] = %s, want {\"id\":0,\"price\":0.5}", got)
+	}
+	if got := string(res.Rows[5]); got != `{"id":5,"price":5.5}` {
+		t.Errorf("row[5] = %s, want {\"id\":5,\"price\":5.5}", got)
+	}
+
+	// (b) filter + aggregate: proves the values are real numbers, not strings.
+	res, err = sess.Run(`SELECT COUNT(*) AS c, SUM(price) AS s FROM orders WHERE price > 2`)
+	if err != nil {
+		t.Fatalf("Run agg: %v", err)
+	}
+	// price>2 keeps 2.5,3.5,4.5,5.5 => c=4, s=16.
+	if got := string(res.Rows[0]); got != `{"c":4,"s":16}` {
+		t.Errorf("agg = %s, want {\"c\":4,\"s\":16}", got)
+	}
+	t.Logf("OK: SELECT over orders.parquet -> %d rows; agg over WHERE price>2 -> %s",
+		6, string(res.Rows[0]))
+}
+
+func rowStrings(res *glue.Result) []string {
+	out := make([]string, len(res.Rows))
+	for i, r := range res.Rows {
+		out[i] = string(r)
+	}
+	return out
 }
 
 // ---- (3) SUM kernel: arrow column (parse-free) vs row-JSON baseline ----
