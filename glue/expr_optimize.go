@@ -38,6 +38,7 @@ func init() {
 		"contains", "position0", "position1", // binary string (expr_str.go)
 		"replace",            // ternary string, 3-arg form (expr_str.go)
 		"substr0", "substr1", // SUBSTR, arity-dispatched below (expr_str.go)
+		"split",          // SPLIT, arity-dispatched below (expr_str.go)
 		"power", "atan2", // binary math (expr_math.go)
 		"to_boolean", "to_string", "to_number", // type conversions (expr_type.go)
 		"array_length", "array_count", "array_sum", "array_avg", // array readers (expr_array.go)
@@ -248,6 +249,19 @@ func ExprTreeOptimize(labels base.Labels, e expression.Expression,
 			name += "_2"
 		case 3:
 			name += "_3"
+		default:
+			return nil, false
+		}
+	}
+
+	// SPLIT is 1-arg (whitespace) or 2-arg (explicit sep); dispatch to a
+	// fixed-arity native name. Any other arity falls back.
+	if name == "split" {
+		switch len(operands) {
+		case 1:
+			name = "split_1"
+		case 2:
+			name = "split_2"
 		default:
 			return nil, false
 		}

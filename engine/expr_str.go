@@ -40,6 +40,9 @@ func init() {
 	ExprCatalog["substr0_3"] = ExprSubstr03
 	ExprCatalog["substr1_2"] = ExprSubstr12
 	ExprCatalog["substr1_3"] = ExprSubstr13
+	// SPLIT: 1-arg (whitespace) / 2-arg (explicit sep), arity-dispatched.
+	ExprCatalog["split_1"] = ExprSplit1
+	ExprCatalog["split_2"] = ExprSplit2
 	ExprCatalog["length"] = ExprLength
 	ExprCatalog["contains"] = ExprContains
 	ExprCatalog["position0"] = ExprPosition0
@@ -271,6 +274,74 @@ func exprSubstr3(lzVars *base.Vars, labels base.Labels, params []interface{},
 
 	lzExprFunc =
 		MakeTriExprFunc(lzVars, labels, params, path, triExprFunc) // !lz
+
+	return lzExprFunc
+}
+
+// SPLIT(str [, sep]) -> array of substrings. cbq skeleton: MISSING if any
+// operand MISSING; NULL if any non-string; else a JSON array built into the
+// reused buffer (the first structure-building native expr). Two arities, each a
+// fixed-arity harness: 1-arg splits on whitespace (strings.Fields), 2-arg on sep.
+
+func ExprSplit1(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
+	exprA := params[0].([]interface{})
+
+	var lzBufPre []byte // <== varLift: lzBufPre by path
+
+	lzExprFunc =
+		MakeExprFunc(lzVars, labels, exprA, path, "A") // !lz
+	lzA := lzExprFunc
+
+	lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
+		lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
+
+		lzDecoded, lzSentinel, lzOk := base.StrDecode(lzVal)
+		if !lzOk {
+			lzVal = lzSentinel
+		} else {
+			lzBufPre = base.StrSplitFields(lzVars.Ctx.ValComparer, lzDecoded, lzBufPre)
+			lzVal = base.Val(lzBufPre)
+		}
+
+		return lzVal
+	}
+
+	return lzExprFunc
+}
+
+func ExprSplit2(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
+	var lzBufPre []byte // <== varLift: lzBufPre by path
+
+	biExprFunc := func(lzA, lzB base.ExprFunc, lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) { // !lz
+		if LzScope {
+			lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
+			lzValStr := lzVal
+
+			lzVal = lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B"
+			lzValSep := lzVal
+
+			if base.ValKind(lzValStr) == base.ValKindMissing ||
+				base.ValKind(lzValSep) == base.ValKindMissing {
+				lzVal = base.ValMissing
+			} else {
+				lzStr, _, lzStrOk := base.StrDecode(lzValStr)
+				lzSep, _, lzSepOk := base.StrDecode(lzValSep)
+				if !lzStrOk || !lzSepOk {
+					lzVal = base.ValNull
+				} else {
+					lzBufPre = base.StrSplitSep(lzVars.Ctx.ValComparer, lzStr, lzSep, lzBufPre)
+					lzVal = base.Val(lzBufPre)
+				}
+			}
+		}
+
+		return lzVal
+	} // !lz
+
+	lzExprFunc =
+		MakeBiExprFunc(lzVars, labels, params, path, biExprFunc) // !lz
 
 	return lzExprFunc
 }

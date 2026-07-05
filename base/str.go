@@ -97,6 +97,35 @@ func StrReverse(decoded []byte) []byte {
 // variadic and falls back to cbq per the optimizer arity guard.
 func StrReplaceAll(s, old, repl []byte) []byte { return bytes.Replace(s, old, repl, -1) }
 
+// StrSplitFields builds the SPLIT(str) 1-arg result -- a JSON array of the
+// whitespace-delimited fields (cbq strings.Fields), encoded into bufPre.
+func StrSplitFields(c *ValComparer, s, bufPre []byte) []byte {
+	return strEncodeStrArray(c, bytes.Fields(s), bufPre)
+}
+
+// StrSplitSep builds the SPLIT(str, sep) 2-arg result -- a JSON array of the
+// sep-delimited parts (cbq strings.Split; an empty sep splits into UTF-8
+// sequences), encoded into bufPre.
+func StrSplitSep(c *ValComparer, s, sep, bufPre []byte) []byte {
+	return strEncodeStrArray(c, bytes.Split(s, sep), bufPre)
+}
+
+// strEncodeStrArray serializes parts as a JSON array of strings into bufPre[:0].
+// EncodeAsString APPENDS the encoded string to its out arg (unlike EncodeStr,
+// which resets to bufPre[:0]), so elements accumulate. The parts alias s (no
+// content copy); the [][]byte header from bytes.Split/Fields is the only alloc.
+func strEncodeStrArray(c *ValComparer, parts [][]byte, bufPre []byte) []byte {
+	c.PrepareEncoder()
+	out := append(bufPre[:0], '[')
+	for i, p := range parts {
+		if i > 0 {
+			out = append(out, ',')
+		}
+		out, _ = c.EncodeAsString(p, out)
+	}
+	return append(out, ']')
+}
+
 // SubstrNum reads a SUBSTR position/length operand as an integer: ok=false (the
 // caller yields NULL) if v is not a number or not integral -- mirroring cbq's
 // `int(v.Actual().(float64))` guarded by `vf != math.Trunc(vf)`.

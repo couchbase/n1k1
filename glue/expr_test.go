@@ -934,6 +934,52 @@ func TestStrSubstrDifferentialVsCBQ(t *testing.T) {
 	}
 }
 
+func TestStrSplitDifferentialVsCBQ(t *testing.T) {
+	c := func(v interface{}) expression.Expression { return expression.NewConstant(v) }
+	null := c(value.NULL_VALUE)
+	miss := c(value.MISSING_VALUE)
+
+	cases := []struct {
+		name string
+		expr expression.Expression
+	}{
+		// 1-arg: split on whitespace (strings.Fields).
+		{"f-words", expression.NewSplit(c("a b  c"))}, // ["a","b","c"] (runs collapse)
+		{"f-lead", expression.NewSplit(c("  x y "))},  // ["x","y"]
+		{"f-one", expression.NewSplit(c("hello"))},    // ["hello"]
+		{"f-empty", expression.NewSplit(c(""))},       // []
+		{"f-allws", expression.NewSplit(c("  \t "))},  // []
+		{"f-null", expression.NewSplit(null)},         // NULL
+		{"f-miss", expression.NewSplit(miss)},         // MISSING
+		{"f-num", expression.NewSplit(c(5))},          // NULL (non-string)
+		// 2-arg: split on explicit sep (strings.Split).
+		{"s-comma", expression.NewSplit(c("a,b,c"), c(","))},        // ["a","b","c"]
+		{"s-adjacent", expression.NewSplit(c("a,,b"), c(","))},      // ["a","","b"]
+		{"s-nosep", expression.NewSplit(c("abc"), c("-"))},          // ["abc"]
+		{"s-empty-str", expression.NewSplit(c(""), c(","))},         // [""]
+		{"s-empty-sep", expression.NewSplit(c("abc"), c(""))},       // ["a","b","c"] (per-rune)
+		{"s-multichar", expression.NewSplit(c("aXXbXXc"), c("XX"))}, // ["a","b","c"]
+		{"s-miss", expression.NewSplit(miss, c(","))},               // MISSING
+		{"s-sepmiss", expression.NewSplit(c("a,b"), miss)},          // MISSING
+		{"s-null", expression.NewSplit(null, c(","))},               // NULL
+		{"s-sepnull", expression.NewSplit(c("a,b"), null)},          // NULL
+		{"s-sepnum", expression.NewSplit(c("a,b"), c(5))},           // NULL (non-string)
+		{"s-miss-over-null", expression.NewSplit(null, miss)},       // MISSING dominates
+	}
+
+	for _, tc := range cases {
+		want := cbqEval(t, tc.expr)
+		got, ok := nativeEval(t, tc.expr)
+		if !ok {
+			t.Errorf("%s: did not optimize", tc.name)
+			continue
+		}
+		if got != want {
+			t.Errorf("%s: native=%q, cbq=%q", tc.name, got, want)
+		}
+	}
+}
+
 func TestPredicateDifferentialVsCBQ(t *testing.T) {
 	c := func(v interface{}) expression.Expression { return expression.NewConstant(v) }
 
