@@ -96,9 +96,9 @@ func init() {
 	RegisterAgg("array_agg_distinct", AggArrayAggDistinct)
 
 	// COUNTN counts only NUMBER-typed values (COUNT counts all non-MISSING).
-	RegisterAgg("countn", &Agg{Init: aggU64Init, Update: aggCountNUpdate, Result: aggU64Result})
+	RegisterAgg("countn", &Agg{Init: AggU64Init, Update: AggCountNUpdate, Result: AggU64Result})
 	RegisterAgg("countn_distinct", &Agg{
-		Init: aggU64Init, Update: aggNumDistinctUpdate, Result: aggDistinctCountResult})
+		Init: AggU64Init, Update: AggNumDistinctUpdate, Result: AggDistinctCountResult})
 
 	// MEDIAN / STDDEV / VARIANCE family. Each accumulates the group's NUMBER
 	// values (a numeric list, or a distinct canonical set for DISTINCT) and
@@ -123,9 +123,9 @@ func init() {
 
 // -----------------------------------------------------
 
-// aggDistinctWalk returns the byte length of the n length-prefixed elements
+// AggDistinctWalk returns the byte length of the n length-prefixed elements
 // that begin at agg[8:] (i.e. this distinct-agg's portion, excluding the count).
-func aggDistinctWalk(n uint64, agg []byte) (total int) {
+func AggDistinctWalk(n uint64, agg []byte) (total int) {
 	for i := uint64(0); i < n; i++ {
 		l := binary.LittleEndian.Uint64(agg[8+total : 8+total+8])
 		total += 8 + int(l)
@@ -133,12 +133,12 @@ func aggDistinctWalk(n uint64, agg []byte) (total int) {
 	return total
 }
 
-// aggDistinctUpdate adds v's canonical form to the distinct set if not already
+// AggDistinctUpdate adds v's canonical form to the distinct set if not already
 // present. State: count(uint64) + count*(len-prefixed canonical val).
-func aggDistinctUpdate(v Val, aggNew, agg []byte, vc *ValComparer) (
+func AggDistinctUpdate(v Val, aggNew, agg []byte, vc *ValComparer) (
 	[]byte, []byte, bool) {
 	n := binary.LittleEndian.Uint64(agg[:8])
-	total := aggDistinctWalk(n, agg)
+	total := AggDistinctWalk(n, agg)
 
 	if len(v) <= 0 { // DISTINCT aggregates ignore MISSING.
 		return append(aggNew, agg[:8+total]...), agg[8+total:], false
@@ -170,11 +170,11 @@ func aggDistinctUpdate(v Val, aggNew, agg []byte, vc *ValComparer) (
 var AggCountDistinct = &Agg{
 	Init: func(vars *Vars, agg []byte) []byte { return append(agg, Zero8[:8]...) },
 	Update: func(vars *Vars, v Val, aggNew, agg []byte, vc *ValComparer) ([]byte, []byte, bool) {
-		return aggDistinctUpdate(v, aggNew, agg, vc)
+		return AggDistinctUpdate(v, aggNew, agg, vc)
 	},
 	Result: func(vars *Vars, agg, buf []byte) (v Val, aggRest, bufOut []byte) {
 		n := binary.LittleEndian.Uint64(agg[:8])
-		total := aggDistinctWalk(n, agg)
+		total := AggDistinctWalk(n, agg)
 		vBuf := strconv.AppendUint(buf[:0], n, 10)
 		return Val(vBuf), agg[8+total:], BufUnused(buf, len(vBuf))
 	},
@@ -183,7 +183,7 @@ var AggCountDistinct = &Agg{
 var AggArrayAggDistinct = &Agg{
 	Init: func(vars *Vars, agg []byte) []byte { return append(agg, Zero8[:8]...) },
 	Update: func(vars *Vars, v Val, aggNew, agg []byte, vc *ValComparer) ([]byte, []byte, bool) {
-		return aggDistinctUpdate(v, aggNew, agg, vc)
+		return AggDistinctUpdate(v, aggNew, agg, vc)
 	},
 	Result: func(vars *Vars, agg, buf []byte) (v Val, aggRest, bufOut []byte) {
 		n := binary.LittleEndian.Uint64(agg[:8])
@@ -272,20 +272,20 @@ var AggSum = &Agg{
 
 var AggSumVFloat64 = &Agg{
 	Init:   AggSum.Init,
-	Update: aggSumVFloat64Update,
+	Update: AggSumVFloat64Update,
 	Result: AggSum.Result,
 }
 
 var AggSumVInt64 = &Agg{
 	Init:   AggSum.Init,
-	Update: aggSumVInt64Update,
+	Update: AggSumVInt64Update,
 	Result: AggSum.Result,
 }
 
 // Two dedicated, branchless loops rather than one loop with a per-element type
 // switch -- these are the hot kernels, and the type is fixed for the whole call.
 
-func aggSumVFloat64Update(vars *Vars, v Val, aggNew, agg []byte, vc *ValComparer) (
+func AggSumVFloat64Update(vars *Vars, v Val, aggNew, agg []byte, vc *ValComparer) (
 	[]byte, []byte, bool) {
 	s := math.Float64frombits(binary.LittleEndian.Uint64(agg[:8]))
 	n := len(v) / 8
@@ -295,7 +295,7 @@ func aggSumVFloat64Update(vars *Vars, v Val, aggNew, agg []byte, vc *ValComparer
 	return BinaryAppendUint64(aggNew, math.Float64bits(s)), agg[8:], n > 0
 }
 
-func aggSumVInt64Update(vars *Vars, v Val, aggNew, agg []byte, vc *ValComparer) (
+func AggSumVInt64Update(vars *Vars, v Val, aggNew, agg []byte, vc *ValComparer) (
 	[]byte, []byte, bool) {
 	s := math.Float64frombits(binary.LittleEndian.Uint64(agg[:8]))
 	n := len(v) / 8
@@ -323,10 +323,10 @@ var AggCountV = &Agg{
 // avg_v: vectorized AVG, reusing AggAvg's [count][sum] accumulator + Result. The
 // count adds len(v)/8; the sum folds the column in buffer order -- same as scalar
 // AVG, so bit-exact. Branchless per-type, like the sum kernels.
-var AggAvgVFloat64 = &Agg{Init: AggAvg.Init, Update: aggAvgVFloat64Update, Result: AggAvg.Result}
-var AggAvgVInt64 = &Agg{Init: AggAvg.Init, Update: aggAvgVInt64Update, Result: AggAvg.Result}
+var AggAvgVFloat64 = &Agg{Init: AggAvg.Init, Update: AggAvgVFloat64Update, Result: AggAvg.Result}
+var AggAvgVInt64 = &Agg{Init: AggAvg.Init, Update: AggAvgVInt64Update, Result: AggAvg.Result}
 
-func aggAvgVFloat64Update(vars *Vars, v Val, aggNew, agg []byte, vc *ValComparer) (
+func AggAvgVFloat64Update(vars *Vars, v Val, aggNew, agg []byte, vc *ValComparer) (
 	[]byte, []byte, bool) {
 	n := len(v) / 8
 	c := binary.LittleEndian.Uint64(agg[:8])
@@ -338,7 +338,7 @@ func aggAvgVFloat64Update(vars *Vars, v Val, aggNew, agg []byte, vc *ValComparer
 	return BinaryAppendUint64(aggNew, math.Float64bits(s)), agg[16:], n > 0
 }
 
-func aggAvgVInt64Update(vars *Vars, v Val, aggNew, agg []byte, vc *ValComparer) (
+func AggAvgVInt64Update(vars *Vars, v Val, aggNew, agg []byte, vc *ValComparer) (
 	[]byte, []byte, bool) {
 	n := len(v) / 8
 	c := binary.LittleEndian.Uint64(agg[:8])
@@ -479,54 +479,48 @@ var AggArrayAgg = &Agg{
 // -----------------------------------------------------
 // COUNTN / MEDIAN / STDDEV / VARIANCE support.
 
-// aggU64Init / aggU64Result handle a bare 8-byte uint64 counter state.
-func aggU64Init(vars *Vars, agg []byte) []byte { return append(agg, Zero8[:8]...) }
+// AggU64Init / aggU64Result handle a bare 8-byte uint64 counter state.
+func AggU64Init(vars *Vars, agg []byte) []byte { return append(agg, Zero8[:8]...) }
 
-func aggU64Result(vars *Vars, agg, buf []byte) (v Val, aggRest, bufOut []byte) {
+func AggU64Result(vars *Vars, agg, buf []byte) (v Val, aggRest, bufOut []byte) {
 	c := binary.LittleEndian.Uint64(agg[:8])
 	vBuf := strconv.AppendUint(buf[:0], c, 10)
 	return Val(vBuf), agg[8:], BufUnused(buf, len(vBuf))
 }
 
-// isNumberVal reports whether v parses as a JSON number.
-func isNumberVal(v Val) bool {
-	_, pt := Parse(v)
-	return ParseTypeToValType[pt] == ValTypeNumber
-}
-
-// aggCountNUpdate increments the counter only for NUMBER-typed values.
-func aggCountNUpdate(vars *Vars, v Val, aggNew, agg []byte, vc *ValComparer) (
+// AggCountNUpdate increments the counter only for NUMBER-typed values.
+func AggCountNUpdate(vars *Vars, v Val, aggNew, agg []byte, vc *ValComparer) (
 	[]byte, []byte, bool) {
 	c := binary.LittleEndian.Uint64(agg[:8])
-	if isNumberVal(v) {
+	if ValIsNumber(v) {
 		return BinaryAppendUint64(aggNew, c+1), agg[8:], true
 	}
 	return append(aggNew, agg[:8]...), agg[8:], false
 }
 
-// aggNumDistinctUpdate is aggDistinctUpdate restricted to NUMBER values (others
+// AggNumDistinctUpdate is aggDistinctUpdate restricted to NUMBER values (others
 // are ignored), used by COUNTN(DISTINCT ...) and the DISTINCT statistical aggs.
-func aggNumDistinctUpdate(vars *Vars, v Val, aggNew, agg []byte, vc *ValComparer) (
+func AggNumDistinctUpdate(vars *Vars, v Val, aggNew, agg []byte, vc *ValComparer) (
 	[]byte, []byte, bool) {
-	if isNumberVal(v) {
-		return aggDistinctUpdate(v, aggNew, agg, vc)
+	if ValIsNumber(v) {
+		return AggDistinctUpdate(v, aggNew, agg, vc)
 	}
 	n := binary.LittleEndian.Uint64(agg[:8])
-	total := aggDistinctWalk(n, agg)
+	total := AggDistinctWalk(n, agg)
 	return append(aggNew, agg[:8+total]...), agg[8+total:], false
 }
 
-// aggDistinctCountResult returns the size of a distinct set (for COUNTN DISTINCT).
-func aggDistinctCountResult(vars *Vars, agg, buf []byte) (v Val, aggRest, bufOut []byte) {
+// AggDistinctCountResult returns the size of a distinct set (for COUNTN DISTINCT).
+func AggDistinctCountResult(vars *Vars, agg, buf []byte) (v Val, aggRest, bufOut []byte) {
 	n := binary.LittleEndian.Uint64(agg[:8])
-	total := aggDistinctWalk(n, agg)
+	total := AggDistinctWalk(n, agg)
 	vBuf := strconv.AppendUint(buf[:0], n, 10)
 	return Val(vBuf), agg[8+total:], BufUnused(buf, len(vBuf))
 }
 
-// aggNumListUpdate appends v's float64 to a numeric-list state (an 8-byte count
+// AggNumListUpdate appends v's float64 to a numeric-list state (an 8-byte count
 // followed by that many 8-byte float64s). Non-numbers are ignored.
-func aggNumListUpdate(vars *Vars, v Val, aggNew, agg []byte, vc *ValComparer) (
+func AggNumListUpdate(vars *Vars, v Val, aggNew, agg []byte, vc *ValComparer) (
 	[]byte, []byte, bool) {
 	n := binary.LittleEndian.Uint64(agg[:8])
 	end := 8 + int(n)*8
@@ -557,7 +551,7 @@ func aggFloats(distinct bool, agg []byte) (vals []float64, aggRest []byte) {
 		}
 		return vals, agg[8+int(n)*8:]
 	}
-	total := aggDistinctWalk(n, agg)
+	total := AggDistinctWalk(n, agg)
 	vals = make([]float64, 0, n)
 	for i := uint64(0); i < n; i++ {
 		l := int(binary.LittleEndian.Uint64(agg[off : off+8]))
@@ -573,16 +567,16 @@ func aggFloats(distinct bool, agg []byte) (vals []float64, aggRest []byte) {
 // makeVarianceAgg builds a VARIANCE/STDDEV handler. samp selects sample (delta=1)
 // vs population (delta=0); sqrtIt takes the square root (STDDEV vs VARIANCE).
 func makeVarianceAgg(distinct, samp, sqrtIt bool) *Agg {
-	update := aggNumListUpdate
+	update := AggNumListUpdate
 	if distinct {
-		update = aggNumDistinctUpdate
+		update = AggNumDistinctUpdate
 	}
 	delta := 0.0
 	if samp {
 		delta = 1.0
 	}
 	return &Agg{
-		Init:   aggU64Init,
+		Init:   AggU64Init,
 		Update: update,
 		Result: func(vars *Vars, agg, buf []byte) (v Val, aggRest, bufOut []byte) {
 			vals, rest := aggFloats(distinct, agg)
@@ -620,12 +614,12 @@ func makeVarianceAgg(distinct, samp, sqrtIt bool) *Agg {
 // makeMedianAgg builds a MEDIAN handler (sort the values; for an even count,
 // average the two middle values), matching couchbase/query.
 func makeMedianAgg(distinct bool) *Agg {
-	update := aggNumListUpdate
+	update := AggNumListUpdate
 	if distinct {
-		update = aggNumDistinctUpdate
+		update = AggNumDistinctUpdate
 	}
 	return &Agg{
-		Init:   aggU64Init,
+		Init:   AggU64Init,
 		Update: update,
 		Result: func(vars *Vars, agg, buf []byte) (v Val, aggRest, bufOut []byte) {
 			vals, rest := aggFloats(distinct, agg)

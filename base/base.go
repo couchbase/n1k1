@@ -108,6 +108,12 @@ func ValHasValue(val Val) bool {
 	return len(val) != 0 && val[0] != 'n'
 }
 
+// ValIsNumber reports whether v parses as a JSON number.
+func ValIsNumber(v Val) bool {
+	_, pt := Parse(v)
+	return ParseTypeToValType[pt] == ValTypeNumber
+}
+
 // -----------------------------------------------------
 
 // ValPathGet navigates through the JSON val using the given path and

@@ -94,8 +94,8 @@ func TestFilterInt64MatchesManual(t *testing.T) {
 
 func TestAndOrBitmap(t *testing.T) {
 	n := 20
-	a := bitmap(n, func(i int) bool { return i%2 == 0 })  // even
-	b := bitmap(n, func(i int) bool { return i%3 == 0 })  // multiples of 3
+	a := bitmap(n, func(i int) bool { return i%2 == 0 }) // even
+	b := bitmap(n, func(i int) bool { return i%3 == 0 }) // multiples of 3
 	wantAnd := bitmap(n, func(i int) bool { return i%2 == 0 && i%3 == 0 })
 	wantOr := bitmap(n, func(i int) bool { return i%2 == 0 || i%3 == 0 })
 

@@ -16,6 +16,6 @@ var EnvAbout = map[string]string{}
 
 // DefEnv meant to be friendly to `git grep base.DefEnv` to find all env vars.
 func DefEnv(name, about string) string {
-     EnvAbout[name] = about
-     return name
+	EnvAbout[name] = about
+	return name
 }

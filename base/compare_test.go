@@ -422,11 +422,11 @@ func TestArrayCompareIsAntisymmetric(t *testing.T) {
 	vc := &ValComparer{}
 
 	cases := [][2]string{
-		{`["2011","zzz"]`, `["2015","zzz"]`},         // strings, decide on elem 0
-		{`[2011,9]`, `[2015,9]`},                     // numbers, decide on elem 0
-		{`["x","a"]`, `["x","b"]`},                   // decide on elem 1
+		{`["2011","zzz"]`, `["2015","zzz"]`}, // strings, decide on elem 0
+		{`[2011,9]`, `[2015,9]`},             // numbers, decide on elem 0
+		{`["x","a"]`, `["x","b"]`},           // decide on elem 1
 		{`[{"n":"a","v":"1"},{"n":"b","v":"x"}]`, `[{"n":"a","v":"2"},{"n":"b","v":"x"}]`}, // objects
-		{`["x"]`, `["x","y"]`},                       // equal prefix, a shorter -> a < b
+		{`["x"]`, `["x","y"]`}, // equal prefix, a shorter -> a < b
 	}
 	for _, c := range cases {
 		a, b := Val(c[0]), Val(c[1])

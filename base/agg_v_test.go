@@ -67,12 +67,12 @@ func sumVec(t *testing.T, aggName string, vals []float64, asInt bool) string {
 
 func TestAggSumVectorizedMatchesScalar(t *testing.T) {
 	floatCases := [][]float64{
-		{},                                       // empty -> "0"
-		{0.5},                                    // single
-		{1, 2, 3, 4, 5},                          // clean ints as floats
-		{-1.5, 2.25, 1000.125, 3.14159, -0.0},    // signs, fractions, -0
-		{0.1, 0.2, 0.3},                          // classic fp non-exactness
-		{1e18, 1, -1e18},                         // magnitude spread (order matters)
+		{},                                    // empty -> "0"
+		{0.5},                                 // single
+		{1, 2, 3, 4, 5},                       // clean ints as floats
+		{-1.5, 2.25, 1000.125, 3.14159, -0.0}, // signs, fractions, -0
+		{0.1, 0.2, 0.3},                       // classic fp non-exactness
+		{1e18, 1, -1e18},                      // magnitude spread (order matters)
 	}
 	// a larger deterministic case to exercise many slots
 	big := make([]float64, 4096)
