@@ -414,6 +414,63 @@ func runSortedRows(t *testing.T, sess *glue.Session, stmt string) []string {
 	return out
 }
 
+// TestParquetSumVectorizedDifferential is the Step-5.1 correctness guardrail: a
+// battery of SUM queries over a Parquet keyspace must return identical results
+// with the vectorized columnar-agg lane ON vs forced OFF (row path). It also
+// checks the vectorized lane fires when it should and correctly bails otherwise.
+func TestParquetSumVectorizedDifferential(t *testing.T) {
+	dir := t.TempDir()
+	ks := filepath.Join(dir, "default", "sales3")
+	if err := os.MkdirAll(ks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Two part files, cols id(int64), price(float64), f0(string); disjoint ids.
+	pqWrite(t, filepath.Join(ks, "part-0.parquet"), 30, 1)
+	pqWriteBase(t, filepath.Join(ks, "part-1.parquet"), 1000, 30, 1)
+
+	sess, err := glue.OpenSession(dir, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	queries := []struct {
+		name       string
+		stmt       string
+		vectorizes bool
+	}{
+		{"sum-float", `SELECT SUM(price) AS s FROM sales3`, true},
+		{"sum-int", `SELECT SUM(id) AS s FROM sales3`, true},
+		{"multi-agg", `SELECT SUM(price) AS sp, SUM(id) AS si FROM sales3`, true},
+		{"aliased", `SELECT SUM(o.price) AS s FROM sales3 AS o`, true},
+		{"with-where", `SELECT SUM(price) AS s FROM sales3 WHERE price > 10`, false}, // filter → row path (5.4)
+		{"count-star", `SELECT COUNT(*) AS c FROM sales3`, false},                    // not SUM
+		{"sum-string", `SELECT SUM(f0) AS s FROM sales3`, false},                     // non-numeric column
+		{"grouped", `SELECT f0, SUM(price) AS s FROM sales3 GROUP BY f0`, false},     // has GROUP BY
+	}
+
+	for _, q := range queries {
+		t.Run(q.name, func(t *testing.T) {
+			glue.DisableVectorizedAgg = true
+			base := runSortedRows(t, sess, q.stmt)
+			glue.DisableVectorizedAgg = false
+			before := atomic.LoadInt64(&glue.VectorizedAggApplied)
+			got := runSortedRows(t, sess, q.stmt)
+			applied := atomic.LoadInt64(&glue.VectorizedAggApplied) - before
+
+			if strings.Join(base, "\n") != strings.Join(got, "\n") {
+				t.Fatalf("vectorized changed results!\n OFF: %v\n ON:  %v", base, got)
+			}
+			if q.vectorizes && applied == 0 {
+				t.Errorf("expected the columnar-agg lane to fire, but it didn't")
+			}
+			if !q.vectorizes && applied != 0 {
+				t.Errorf("expected the row path, but the columnar-agg lane fired %d times", applied)
+			}
+		})
+	}
+	glue.DisableVectorizedAgg = false
+}
+
 func rowStrings(res *glue.Result) []string {
 	out := make([]string, len(res.Rows))
 	for i, r := range res.Rows {

@@ -86,6 +86,10 @@ func ExecConv(p plan.Operator) (*base.Op, []interface{}, error) {
 		elideDiscarded(c.TopOp) // drop dead projections under count(*)-style groups
 	}
 
+	if err == nil && c.TopOp != nil {
+		vectorizeColumnarAggs(c.TopOp, c.Temps) // fuse ungrouped SUM over a Parquet column
+	}
+
 	return c.TopOp, c.Temps, err
 }
 

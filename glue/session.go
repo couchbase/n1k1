@@ -204,6 +204,8 @@ func (s *Session) Run(stmt string) (res *Result, err error) {
 		elideDiscarded(conv.TopOp) // drop dead projections under count(*)-style groups
 	}
 
+	vectorizeColumnarAggs(conv.TopOp, conv.Temps) // fuse ungrouped SUM over a Parquet column
+
 	cv, err := NewConvertVals(conv.TopOp.Labels)
 	if err != nil {
 		return nil, &ErrUnsupported{Reason: err.Error()}
