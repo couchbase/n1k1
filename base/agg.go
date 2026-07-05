@@ -65,6 +65,14 @@ func init() {
 	AggCatalog["sum"] = len(Aggs)
 	Aggs = append(Aggs, AggSum)
 
+	// Vectorized SUM variants (DESIGN-col.md Step 5); chosen at plan-rewrite time
+	// by the source column's type. Reuse AggSum's accumulator + Result.
+	AggCatalog["sum_v_float64"] = len(Aggs)
+	Aggs = append(Aggs, AggSumVFloat64)
+
+	AggCatalog["sum_v_int64"] = len(Aggs)
+	Aggs = append(Aggs, AggSumVInt64)
+
 	AggCatalog["avg"] = len(Aggs)
 	Aggs = append(Aggs, AggAvg)
 
@@ -247,6 +255,54 @@ var AggSum = &Agg{
 
 		return Val(vBuf), agg[8:], BufUnused(buf, len(vBuf))
 	},
+}
+
+// -----------------------------------------------------
+
+// Vectorized SUM over a packed, fixed-width column (DESIGN-col.md Step 5). Unlike
+// the scalar AggSum, whose Update folds one JSON Val, these fold a whole COLUMN in
+// one Update call: the incoming Val is the raw little-endian value buffer of a
+// numeric column -- e.g. an Arrow Float64/Int64 buffer, borrowed -- holding
+// len(v)/8 values, and there is no JSON parse. They reuse AggSum's 8-byte float64
+// accumulator and Result verbatim, so their output is byte-identical to "sum";
+// only the Update differs. The type lives in the catalog key (sum_v_float64 vs
+// sum_v_int64), chosen at plan-rewrite time from the source column's type.
+//
+// Contract: the caller guarantees a numeric, non-null column (null_count==0); a
+// column with nulls needs a companion validity mask (a later step). Values are
+// summed left-to-right in buffer order, matching the scalar row fold bit-for-bit
+// (every slot is added as a float64, as scalar SUM does via ParseFloat64).
+
+var AggSumVFloat64 = &Agg{
+	Init:   AggSum.Init,
+	Update: aggSumVUpdate(false),
+	Result: AggSum.Result,
+}
+
+var AggSumVInt64 = &Agg{
+	Init:   AggSum.Init,
+	Update: aggSumVUpdate(true),
+	Result: AggSum.Result,
+}
+
+func aggSumVUpdate(asInt bool) func(*Vars, Val, []byte, []byte, *ValComparer) (
+	[]byte, []byte, bool) {
+	return func(vars *Vars, v Val, aggNew, agg []byte, vc *ValComparer) (
+		[]byte, []byte, bool) {
+		s := math.Float64frombits(binary.LittleEndian.Uint64(agg[:8]))
+
+		n := len(v) / 8
+		for i := 0; i < n; i++ {
+			bits := binary.LittleEndian.Uint64(v[i*8:])
+			if asInt {
+				s += float64(int64(bits))
+			} else {
+				s += math.Float64frombits(bits)
+			}
+		}
+
+		return BinaryAppendUint64(aggNew, math.Float64bits(s)), agg[8:], n > 0
+	}
 }
 
 // -----------------------------------------------------
