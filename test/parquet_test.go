@@ -40,6 +40,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -54,6 +55,7 @@ import (
 	"github.com/buger/jsonparser"
 
 	"github.com/couchbase/n1k1/glue"
+	"github.com/couchbase/n1k1/records"
 )
 
 const pqPriceCol = 1 // leaf index: id=0, price=1, then f0..f{width-1}.
@@ -245,6 +247,76 @@ func TestParquetQueryEndToEnd(t *testing.T) {
 	}
 	t.Logf("OK: SELECT over orders.parquet -> %d rows; agg over WHERE price>2 -> %s",
 		6, string(res.Rows[0]))
+}
+
+// TestParquetSidecars exercises the Step-4 optional capability interfaces on the
+// Parquet source in isolation (no glue): ColumnsSource (schema/stats from the
+// footer) and ColumnProjector (only-these-columns pushdown).
+func TestParquetSidecars(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "s.parquet")
+	pqWrite(t, path, 4, 1) // columns: id, price, f0
+
+	// ColumnsSource: types + null_count + min/max, no data pages read.
+	src, err := records.OpenFile(path, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cs, ok := src.(records.ColumnsSource)
+	if !ok {
+		t.Fatal("parquet source should implement records.ColumnsSource")
+	}
+	byName := map[string]records.ColumnMeta{}
+	for _, c := range cs.Columns() {
+		byName[c.Name] = c
+	}
+	if c := byName["id"]; c.Type != "INT64" || c.NullCount != 0 {
+		t.Errorf("id meta = %+v, want INT64 null_count=0", c)
+	}
+	if c := byName["price"]; c.Type != "DOUBLE" || c.NullCount != 0 || c.Min == nil {
+		t.Errorf("price meta = %+v, want DOUBLE null_count=0 with min/max", c)
+	}
+	src.Close()
+
+	// ColumnProjector: only "price" is decoded and yielded.
+	src, err = records.OpenFile(path, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer src.Close()
+	pj, ok := src.(records.ColumnProjector)
+	if !ok {
+		t.Fatal("parquet source should implement records.ColumnProjector")
+	}
+	if err := pj.ProjectColumns([]string{"price"}); err != nil {
+		t.Fatalf("ProjectColumns: %v", err)
+	}
+	var rec records.Record
+	rows := 0
+	for {
+		more, err := src.Next(&rec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !more {
+			break
+		}
+		rows++
+		if doc := string(rec.Doc); !strings.Contains(doc, `"price"`) ||
+			strings.Contains(doc, `"id"`) || strings.Contains(doc, `"f0"`) {
+			t.Fatalf("projected doc = %s, want only price", doc)
+		}
+	}
+	if rows != 4 {
+		t.Fatalf("projected rows = %d, want 4", rows)
+	}
+
+	// Unknown column is an error.
+	src3, _ := records.OpenFile(path, "")
+	defer src3.Close()
+	if err := src3.(records.ColumnProjector).ProjectColumns([]string{"nope"}); err == nil {
+		t.Error("ProjectColumns(nope) should error on unknown column")
+	}
+	t.Log("OK: ColumnsSource schema + ColumnProjector projection verified")
 }
 
 func rowStrings(res *glue.Result) []string {

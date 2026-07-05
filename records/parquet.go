@@ -27,6 +27,7 @@ package records
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 
 	"github.com/apache/arrow-go/v18/arrow/array"
@@ -41,7 +42,9 @@ import (
 // buffer and is valid only until the batch is exhausted and the next one loads.
 type parquetSource struct {
 	pf       *file.Reader
+	pr       *pqarrow.FileReader
 	rr       pqarrow.RecordReader
+	proj     []int // leaf column indices to read; nil => all columns
 	idPrefix string
 	row      int
 
@@ -62,16 +65,74 @@ func newParquetSource(path, idPrefix string) (Source, error) {
 		pf.Close()
 		return nil, err
 	}
-	// nil colIndices / nil rowGroups => all columns, all row groups.
-	rr, err := pr.GetRecordReader(context.Background(), nil, nil)
-	if err != nil {
-		pf.Close()
-		return nil, err
+	// The RecordReader is created lazily on the first Next so an optional
+	// ProjectColumns (which must precede iteration) can restrict its columns.
+	return &parquetSource{pf: pf, pr: pr, idPrefix: idPrefix}, nil
+}
+
+// ProjectColumns implements ColumnProjector: read only the named columns. Must
+// be called before the first Next.
+func (s *parquetSource) ProjectColumns(names []string) error {
+	if s.rr != nil {
+		return fmt.Errorf("records: ProjectColumns must be called before Next")
 	}
-	return &parquetSource{pf: pf, rr: rr, idPrefix: idPrefix}, nil
+	sch := s.pf.MetaData().Schema
+	proj := make([]int, 0, len(names))
+	for _, n := range names {
+		i := sch.ColumnIndexByName(n)
+		if i < 0 {
+			return fmt.Errorf("records: parquet has no column %q", n)
+		}
+		proj = append(proj, i)
+	}
+	s.proj = proj
+	return nil
+}
+
+// Columns implements ColumnsSource: describe columns from the footer (types,
+// null counts, min/max) with no data pages read.
+func (s *parquetSource) Columns() []ColumnMeta {
+	md := s.pf.MetaData()
+	sch := md.Schema
+	out := make([]ColumnMeta, 0, sch.NumColumns())
+	for c := 0; c < sch.NumColumns(); c++ {
+		cm := ColumnMeta{Name: sch.Column(c).Name(), Type: sch.Column(c).PhysicalType().String(), NullCount: -1}
+		// Aggregate stats across row groups: null count sums; min/max from RG 0
+		// (a coarse zone-map bound -- adequate for the column-meta contract).
+		var haveNull bool
+		for rg := 0; rg < md.NumRowGroups(); rg++ {
+			cc, err := md.RowGroup(rg).ColumnChunk(c)
+			if err != nil {
+				continue
+			}
+			st, err := cc.Statistics()
+			if err != nil || st == nil {
+				continue
+			}
+			if st.HasNullCount() {
+				if !haveNull {
+					cm.NullCount, haveNull = 0, true
+				}
+				cm.NullCount += st.NullCount()
+			}
+			if rg == 0 && st.HasMinMax() {
+				cm.Min, cm.Max = st.EncodeMin(), st.EncodeMax()
+			}
+		}
+		out = append(out, cm)
+	}
+	return out
 }
 
 func (s *parquetSource) Next(rec *Record) (bool, error) {
+	if s.rr == nil {
+		// nil rowGroups => all row groups; s.proj (nil => all columns).
+		rr, err := s.pr.GetRecordReader(context.Background(), s.proj, nil)
+		if err != nil {
+			return false, err
+		}
+		s.rr = rr
+	}
 	for s.li >= len(s.lines) {
 		if s.done {
 			return false, nil

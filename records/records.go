@@ -56,6 +56,37 @@ type Source interface {
 	Close() error
 }
 
+// The two interfaces below are OPTIONAL "sidecar" capabilities a Source may also
+// implement; a caller type-asserts for them (the SubPathser idiom in glue) and
+// falls back gracefully when they're absent. This keeps the core Source tiny --
+// schemaless jsonl/csv/yaml sources implement neither and just transpose every
+// column. Today only the Parquet source (records/parquet.go) implements them.
+// See DESIGN-col.md § Pushdown / Step 4.
+
+// ColumnProjector is a Source that can restrict decoding to a subset of columns
+// (projection pushdown). ProjectColumns MUST be called before the first Next;
+// unknown column names are an error. Names not projected are absent from the
+// yielded record docs.
+type ColumnProjector interface {
+	ProjectColumns(names []string) error
+}
+
+// ColumnsSource is a Source that can describe its columns up front (e.g. from a
+// footer/header) without a full scan -- the "metadata up" direction.
+type ColumnsSource interface {
+	Columns() []ColumnMeta
+}
+
+// ColumnMeta describes one column of a SchemaSource. Min/Max are the format's
+// encoded stat bounds (zone-map inputs), or nil when unavailable. NullCount is
+// -1 when unknown; 0 means the column has no nulls (no validity bitmap needed).
+type ColumnMeta struct {
+	Name      string
+	Type      string // physical/logical type name, e.g. "INT64", "DOUBLE"
+	NullCount int64
+	Min, Max  []byte
+}
+
 // Supported record-file extensions (after any compression suffix is stripped).
 // jsonl/ndjson are line-delimited (streaming); json/jsons are a value stream or
 // a top-level array; csv/tsv are header + delimited rows decoded into JSON

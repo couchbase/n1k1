@@ -527,7 +527,7 @@ implement a capability simply falls back to the full transpose. Two capabilities
   []string) error }` (call before the first `Next`), so a columnar reader
   materializes only wanted columns — which is *also* what makes borrowing Arrow
   column buffers zero-copy (§ enc 3);
-- **schema/stats up** — `SchemaSource interface { Columns() []ColumnMeta }` where
+- **schema/stats up** — `ColumnsSource interface { Columns() []ColumnMeta }` where
   `ColumnMeta` carries `{Name, Type, NullCount, Min, Max}`. This **populates the
   columnar labels/markers** of § *Marking a slot as columnar*: a Parquet footer is
   the natural *source* of a `@col.i64` / no-nulls marker, the marker its
@@ -539,7 +539,7 @@ Caveat: the interface is the easy part — the *caller* (the glue scan layer) mu
 mine the wanted-column set from the plan (`project` exprs / `Covers()` / the label
 vector, which already know it) and push it down; and the richest consumer of
 types/stats is the **planner** (pruning + type specialization) running *before* a
-scan-time `Source` exists, so `SchemaSource` serves the scan-time need while
+scan-time `Source` exists, so `ColumnsSource` serves the scan-time need while
 plan-time stats stay a catalog/zone-map concern (`DESIGN-data.md`/`DESIGN-stats.md`).
 
 The payoff is concrete and compounding: **`null_count == 0` means the column needs
@@ -732,11 +732,17 @@ walk it.)
 - **Step 4 — Optional sidecar interfaces on `Source` (the missing wire).** *Not*
   a wider `Source` — add capability interfaces the scan layer type-asserts, the
   `SubPathser` idiom (§ *Pushdown*): `ColumnProjector{ ProjectColumns([]string) }`
-  and `SchemaSource{ Columns() []ColumnMeta }`. The Parquet source implements both;
+  and `ColumnsSource{ Columns() []ColumnMeta }`. The Parquet source implements both;
   jsonl/csv/yaml stay `{Next, Close}` and fall back to the full transpose. The
   Parquet reader then reads only wanted columns and declares type + `null_count`;
   still row-transposed downstream, but pushdown cuts I/O and the schema populates
-  the label markers. Real work is caller-side (mine wanted columns from the plan).
+  the label markers. **✅ Source side done** — `records.ColumnProjector` /
+  `records.ColumnsSource` (+ `ColumnMeta`) on the core `Source`; `records/parquet.go`
+  implements both (lazy reader so `ProjectColumns` precedes iteration; `Columns()`
+  reads footer types/null-count/min-max), proven by
+  `test/parquet_test.go:TestParquetSidecars`. **Remaining = caller-side**: the glue
+  scan layer must mine the wanted-column set from the plan (`project` exprs /
+  `Covers()` / label vector) and call `ProjectColumns` — the harder 80%.
 - **Step 5 — First true vectorized op, compile-time-only.** Aggregation over a
   proven-typed, non-null column straight from Parquet — end-to-end, no transpose.
   Introduce column batches + the `@col` markers (§ *Marking a slot*) here.
