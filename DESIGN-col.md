@@ -153,6 +153,74 @@ Realistic read: **(1) is a free warm-up, (3)+(5) unlock the Parquet/Arrow win,
 need all five.
 
 -------------------------------------------------------
+## Marking a slot as columnar via the label/register system
+
+An attractive idea: rather than change the container type, let a **`Labels`
+entry carry a marker prefix** signaling that its positionally-aligned `Val` is a
+*column* (a packed vector), not a scalar. This is more idiomatic than it first
+sounds — **n1k1 already does the scalar version of exactly this.**
+
+**Existing precedent.** `engine/expr.go:ExprLabelUint64` reads a slot whose `Val`
+is *not JSON* but a little-endian `uint64` (`binary.LittleEndian.Uint64(
+lzVals[idx])`), converting to JSON only on demand. So "a labeled register whose
+bytes carry a special, non-JSON interpretation, dispatched at compile time" is
+already in the codebase. A columnar marker is the natural generalization: from
+*"this slot is a packed scalar uint64"* to *"this slot is a packed vector of
+uint64."* The label→reader dispatch happens via the expr catalog
+(`base.ExprCatalogFunc`) at setup, so it costs **nothing per row** — which is the
+whole point.
+
+**Why labels are the right carrier.** They are **early-bound and positional**
+(`Labels.IndexOf` runs at plan setup, expr.go:66/108, never per row), so a
+vectorized kernel can be selected at codegen with zero runtime dispatch — exactly
+the "compile-time-only vectorized lane" this doc argues for (§ *The compiler is
+the leverage*). And the marker can encode *which* encoding a slot uses, turning
+the § encodings list into one propagatable vocabulary:
+
+| Marker | Meaning | Encoding |
+|---|---|---|
+| `@col.json` | column as a JSON array | § enc 1 |
+| `@col.i64` / `@col.f64` | fixed-width packed numeric column | § enc 2 |
+| `@col.str` | offsets + contiguous payload | § enc 3 |
+| `@col.dict` | dictionary codes + dict slot | § enc 4 |
+| `@valid` / `@sel` | validity / selection bitmap slot | § enc 5 |
+| `@const` | one scalar broadcast across the batch | (constant vector) |
+
+**Two ways to carry it (a real tradeoff):**
+- **(a) Sigil in the label string** (`@col.f64:.["price"]`). Reuses
+  `Labels []string`, no struct change, and the marker **rides along automatically**
+  wherever labels are copied/derived through the op tree. Cost: `IndexOf` is
+  exact-match, so every consumer matching the *logical* name must strip the prefix
+  first — pervasive marker-awareness.
+- **(b) A parallel shape vector** — a `[]ColKind` positionally aligned with
+  `Labels`, the way `Op.StatsBase` / `Ctx.Stats.Counters` are aligned (see
+  `DESIGN-stats.md`). Keeps `IndexOf` pure; costs one slice; still free at runtime
+  since it's early-bound. More n1k1-idiomatic (positional parallel arrays are the
+  established pattern). A **hybrid** also works: the sigil is the source of truth,
+  parsed once into the `ColKind` enum at setup.
+
+**What the marker does *not* solve (it's a signal, not the whole model):**
+1. **Where the row-count M lives.** Every columnar slot in one `Vals` must share
+   M. That count needs a home — a batch-header field, or derivation from a
+   designated column's `len / elemWidth`. The marker says "column," not "how many."
+2. **Nulls / selection.** A marker can *name* a companion `@valid`/`@sel` slot,
+   but the bitmap must still exist as its own slot (§ enc 5).
+3. **Coherence.** Mixed scalar+column in one batch is only sound if the scalars
+   are `@const` (broadcast); otherwise M is ambiguous. That invariant must be
+   enforced at plan-build.
+4. **Propagation & explode rules.** Output labels are derived from input labels
+   per op, so the marker must flow through label-derivation — and any op that
+   *can't* vectorize a marked column must **explode** it back to rows and drop the
+   marker. Those rules are the operator-fusion / lane-selection logic.
+
+**Correctness boundary.** A marked slot must never reach an op that assumes
+scalar JSON (it would misread packed bytes). The safe stance — consistent with
+how `ExprLabelUint64` is *plan-selected*, not automatic — is that markers appear
+only in **compiler-generated plans** where the compiler has proved every consumer
+will vectorize-or-explode. Markers are an internal compiler artifact, not
+something an interpreter-mode plan ever hand-writes.
+
+-------------------------------------------------------
 ## SIMD — where it actually helps (and where it can't)
 
 SIMD is only worth wiring where data is **fixed-stride, typed, and contiguous**.
