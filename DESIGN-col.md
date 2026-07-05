@@ -729,7 +729,7 @@ walk it.)
     it doesn't handle (timestamps/decimals/lists/structs). Measured (65 K rows,
     6 cols): **526 K → 2.1 K allocs/op (~248×, ~0.03 allocs/row), 2.9× faster**;
     the residual ~2 K allocs are per-*batch* Arrow column-buffer decode (only
-    Step 5's zero-copy `@col` borrow removes those). Proven byte-for-value
+    Step 5's zero-copy columnar borrow removes those). Proven byte-for-value
     equivalent to `RecordToJSON` by
     `test/parquet_test.go:TestParquetFastTransposeEquivalence` (ints/uints/floats/
     escaped-strings/bools/nulls all unmarshal-equal); `BenchmarkParquetTransposeDrain`
@@ -889,7 +889,7 @@ materialize + sum, every iteration — worst case) is ~17× the row path.
   caveat named. A real integration reuses the `memory.Allocator` and `Release()`s
   each batch to amortize it; the prototype doesn't bother.
 - This reads Arrow's *materialized* column — it does **not** yet carry the borrowed
-  buffer all the way into a n1k1 op with `@col` markers. That zero-copy,
+  buffer all the way into a n1k1 op with columnar markers. That zero-copy,
   end-to-end path is Step 5, and it's where the 0.93 (not 3.0) becomes the number
   that matters.
 - Requires the `DESIGN-testing.md` worktree bootstrap (arrow-go pulls the EE
@@ -898,7 +898,7 @@ materialize + sum, every iteration — worst case) is ~17× the row path.
 **Net:** the columnar-source half of the plan is de-risked. Projection pushdown
 and free typed/null metadata work today through arrow-go; the parse-free column
 hits the fixed-width ceiling. The remaining work is *integration* (Source
-interface widening, then the `@col` in-op path), not *feasibility*.
+interface widening, then the columnar in-op path), not *feasibility*.
 
 -------------------------------------------------------
 ## Step 5 — takeaways from Steps 1–4
