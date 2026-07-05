@@ -58,54 +58,46 @@ type Agg struct {
 
 // -----------------------------------------------------
 
-func init() {
-	AggCatalog["count"] = len(Aggs)
-	Aggs = append(Aggs, AggCount)
+func RegisterAgg(name string, agg *Agg) {
+	AggCatalog[name] = len(Aggs)
+	Aggs = append(Aggs, agg)
+}
 
-	AggCatalog["sum"] = len(Aggs)
-	Aggs = append(Aggs, AggSum)
+func init() {
+	RegisterAgg("count", AggCount)
+
+	RegisterAgg("sum", AggSum)
 
 	// Vectorized SUM variants (DESIGN-col.md Step 5); chosen at plan-rewrite time
 	// by the source column's type. Reuse AggSum's accumulator + Result.
-	AggCatalog["sum_v_float64"] = len(Aggs)
-	Aggs = append(Aggs, AggSumVFloat64)
+	RegisterAgg("sum_v_float64", AggSumVFloat64)
 
-	AggCatalog["sum_v_int64"] = len(Aggs)
-	Aggs = append(Aggs, AggSumVInt64)
+	RegisterAgg("sum_v_int64", AggSumVInt64)
 
-	AggCatalog["count_v"] = len(Aggs)
-	Aggs = append(Aggs, AggCountV)
+	RegisterAgg("count_v", AggCountV)
 
-	AggCatalog["avg_v_float64"] = len(Aggs)
-	Aggs = append(Aggs, AggAvgVFloat64)
+	RegisterAgg("avg", AggAvg)
 
-	AggCatalog["avg_v_int64"] = len(Aggs)
-	Aggs = append(Aggs, AggAvgVInt64)
+	RegisterAgg("avg_v_float64", AggAvgVFloat64)
 
-	AggCatalog["avg"] = len(Aggs)
-	Aggs = append(Aggs, AggAvg)
+	RegisterAgg("avg_v_int64", AggAvgVInt64)
 
-	AggCatalog["min"] = len(Aggs)
-	Aggs = append(Aggs, AggMin)
+	RegisterAgg("min", AggMin)
 
-	AggCatalog["max"] = len(Aggs)
-	Aggs = append(Aggs, AggMax)
+	RegisterAgg("max", AggMax)
 
-	AggCatalog["array_agg"] = len(Aggs)
-	Aggs = append(Aggs, AggArrayAgg)
+	RegisterAgg("array_agg", AggArrayAgg)
 
 	// DISTINCT variants: e.g. COUNT(DISTINCT x), ARRAY_AGG(DISTINCT x). They
 	// share aggDistinctUpdate (accumulate unique canonical values) and differ
 	// only in Result.
-	AggCatalog["count_distinct"] = len(Aggs)
-	Aggs = append(Aggs, AggCountDistinct)
+	RegisterAgg("count_distinct", AggCountDistinct)
 
-	AggCatalog["array_agg_distinct"] = len(Aggs)
-	Aggs = append(Aggs, AggArrayAggDistinct)
+	RegisterAgg("array_agg_distinct", AggArrayAggDistinct)
 
 	// COUNTN counts only NUMBER-typed values (COUNT counts all non-MISSING).
-	registerAgg("countn", &Agg{Init: aggU64Init, Update: aggCountNUpdate, Result: aggU64Result})
-	registerAgg("countn_distinct", &Agg{
+	RegisterAgg("countn", &Agg{Init: aggU64Init, Update: aggCountNUpdate, Result: aggU64Result})
+	RegisterAgg("countn_distinct", &Agg{
 		Init: aggU64Init, Update: aggNumDistinctUpdate, Result: aggDistinctCountResult})
 
 	// MEDIAN / STDDEV / VARIANCE family. Each accumulates the group's NUMBER
@@ -121,16 +113,12 @@ func init() {
 		{"variance", true, false}, {"var_samp", true, false}, {"var_pop", false, false},
 		{"stddev", true, true}, {"stddev_samp", true, true}, {"stddev_pop", false, true},
 	} {
-		registerAgg(v.name, makeVarianceAgg(false, v.samp, v.sqrtIt))
-		registerAgg(v.name+"_distinct", makeVarianceAgg(true, v.samp, v.sqrtIt))
+		RegisterAgg(v.name, makeVarianceAgg(false, v.samp, v.sqrtIt))
+		RegisterAgg(v.name+"_distinct", makeVarianceAgg(true, v.samp, v.sqrtIt))
 	}
-	registerAgg("median", makeMedianAgg(false))
-	registerAgg("median_distinct", makeMedianAgg(true))
-}
 
-func registerAgg(name string, agg *Agg) {
-	AggCatalog[name] = len(Aggs)
-	Aggs = append(Aggs, agg)
+	RegisterAgg("median", makeMedianAgg(false))
+	RegisterAgg("median_distinct", makeMedianAgg(true))
 }
 
 // -----------------------------------------------------

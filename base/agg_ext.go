@@ -31,8 +31,8 @@ import (
 // n1k1's zero-garbage discipline (DESIGN.md).
 
 func init() {
-	registerAgg("sparkline", &Agg{Init: aggU64Init, Update: aggNumListUpdate, Result: aggSparklineResult})
-	registerAgg("histogram", &Agg{Init: aggU64Init, Update: aggNumListUpdate, Result: aggHistogramResult})
+	RegisterAgg("sparkline", &Agg{Init: aggU64Init, Update: aggNumListUpdate, Result: aggSparklineResult})
+	RegisterAgg("histogram", &Agg{Init: aggU64Init, Update: aggNumListUpdate, Result: aggHistogramResult})
 }
 
 // The eight vertical "block" runes ▁▂▃▄▅▆▇█ (U+2581..U+2588), used to draw the
