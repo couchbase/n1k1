@@ -61,6 +61,8 @@ type parquetSource struct {
 	li    int      // next line index
 	idBuf []byte
 	done  bool
+
+	curBatch arrow.RecordBatch // held for the column-batch path; released on next NextColumns/Close
 }
 
 func newParquetSource(path, idPrefix string) (Source, error) {
@@ -184,7 +186,62 @@ func (s *parquetSource) Next(rec *Record) (bool, error) {
 	return true, nil
 }
 
+// NextColumns implements ColumnBatchSource: read one Arrow record batch and hand
+// back each projected column's raw little-endian value buffer, borrowed from the
+// batch (valid until the next NextColumns/Close). The vectorized aggregates
+// consume these directly -- no transpose, no JSON. Only fixed-width 8-byte numeric
+// columns are supported for now; anything else errors (caller falls back to rows).
+func (s *parquetSource) NextColumns() (cols [][]byte, rows int, ok bool, err error) {
+	if s.rr == nil {
+		rr, e := s.pr.GetRecordReader(context.Background(), s.proj, nil)
+		if e != nil {
+			return nil, 0, false, e
+		}
+		s.rr = rr
+	}
+	if s.curBatch != nil {
+		s.curBatch.Release() // free the previous batch; its buffers were borrowed
+		s.curBatch = nil
+	}
+	batch, e := s.rr.Read()
+	if e == io.EOF {
+		return nil, 0, false, nil
+	}
+	if e != nil {
+		return nil, 0, false, e
+	}
+	s.curBatch = batch
+	rows = int(batch.NumRows())
+	for _, c := range batch.Columns() {
+		b, e := arrowValueBytes(c)
+		if e != nil {
+			return nil, 0, false, e
+		}
+		cols = append(cols, b)
+	}
+	return cols, rows, true, nil
+}
+
+// arrowValueBytes returns the raw little-endian value buffer of a fixed-width
+// 8-byte numeric column, sliced to the array's [offset, offset+len) window (no
+// copy). Errors for any other type. (float32/int32 (4-byte) etc. come later.)
+func arrowValueBytes(a arrow.Array) ([]byte, error) {
+	switch a.DataType().ID() {
+	case arrow.FLOAT64, arrow.INT64, arrow.UINT64:
+		const w = 8
+		buf := a.Data().Buffers()[1].Bytes()
+		off := a.Data().Offset() * w
+		return buf[off : off+a.Len()*w], nil
+	default:
+		return nil, fmt.Errorf("records: column type %s is not a fixed 8-byte numeric column", a.DataType())
+	}
+}
+
 func (s *parquetSource) Close() error {
+	if s.curBatch != nil {
+		s.curBatch.Release()
+		s.curBatch = nil
+	}
 	if s.rr != nil {
 		s.rr.Release()
 	}

@@ -77,7 +77,7 @@ type ColumnsSource interface {
 	Columns() []ColumnMeta
 }
 
-// ColumnMeta describes one column of a SchemaSource. Min/Max are the format's
+// ColumnMeta describes one column of a ColumnsSource. Min/Max are the format's
 // encoded stat bounds (zone-map inputs), or nil when unavailable. NullCount is
 // -1 when unknown; 0 means the column has no nulls (no validity bitmap needed).
 type ColumnMeta struct {
@@ -85,6 +85,19 @@ type ColumnMeta struct {
 	Type      string // physical/logical type name, e.g. "INT64", "DOUBLE"
 	NullCount int64
 	Min, Max  []byte
+}
+
+// ColumnBatchSource is a Source that can yield its (projected) columns directly as
+// raw little-endian value buffers, skipping the transpose to JSON rows -- the
+// vectorized path (DESIGN-col.md Step 5). NextColumns advances one batch at a
+// time; cols holds, per projected column (in ProjectColumns order), that column's
+// packed value buffer, BORROWED (valid only until the next NextColumns/Close), and
+// rows is the batch's row count. ok=false marks end-of-stream. Buffers are
+// 8-byte-per-element (float64/int64/uint64) for now, and the caller must have
+// selected only such non-null columns (via ProjectColumns) -- else NextColumns
+// errors and the caller falls back to the row path.
+type ColumnBatchSource interface {
+	NextColumns() (cols [][]byte, rows int, ok bool, err error)
 }
 
 // Supported record-file extensions (after any compression suffix is stripped).
@@ -1199,6 +1212,69 @@ type walkSource struct {
 	i     int
 	cur   Source
 	proj  []string // optional column projection, forwarded to each per-file source
+
+	// column-batch iteration state (parallel to cur/i, used only via NextColumns)
+	curCB    ColumnBatchSource
+	curCBSrc Source
+	iCB      int
+}
+
+// Columns implements ColumnsSource for a multi-file keyspace by delegating to the
+// FIRST file's schema. This assumes homogeneous parts (the normal partitioned-
+// export case); divergent schemas (union_by_name) and cross-part stat aggregation
+// (null-count sum, min-of-mins) are a later refinement. Returns nil if there are
+// no files or the first file exposes no schema.
+func (w *walkSource) Columns() []ColumnMeta {
+	if len(w.files) == 0 {
+		return nil
+	}
+	s, err := OpenFile(w.files[0], "")
+	if err != nil {
+		return nil
+	}
+	defer s.Close()
+	cs, ok := s.(ColumnsSource)
+	if !ok {
+		return nil
+	}
+	return cs.Columns()
+}
+
+// NextColumns implements ColumnBatchSource across the part files: it opens each
+// file, forwards the projection, and drains its column batches before advancing.
+func (w *walkSource) NextColumns() (cols [][]byte, rows int, ok bool, err error) {
+	for {
+		if w.curCB == nil {
+			if w.iCB >= len(w.files) {
+				return nil, 0, false, nil
+			}
+			s, e := OpenFile(w.files[w.iCB], "")
+			if e != nil {
+				return nil, 0, false, e
+			}
+			if w.proj != nil {
+				if cp, ok := s.(ColumnsProjector); ok {
+					_ = cp.ProjectColumns(w.proj)
+				}
+			}
+			cb, ok2 := s.(ColumnBatchSource)
+			if !ok2 {
+				s.Close()
+				return nil, 0, false, fmt.Errorf("records: %s is not a ColumnBatchSource", w.files[w.iCB])
+			}
+			w.curCB, w.curCBSrc = cb, s
+		}
+		cols, rows, ok, err = w.curCB.NextColumns()
+		if err != nil {
+			return nil, 0, false, err
+		}
+		if ok {
+			return cols, rows, true, nil
+		}
+		w.curCBSrc.Close()
+		w.curCB, w.curCBSrc = nil, nil
+		w.iCB++
+	}
 }
 
 // ProjectColumns implements ColumnsProjector for a multi-file keyspace: it
@@ -1255,10 +1331,16 @@ func (w *walkSource) Next(rec *Record) (bool, error) {
 }
 
 func (w *walkSource) Close() error {
+	var err error
 	if w.cur != nil {
-		err := w.cur.Close()
+		err = w.cur.Close()
 		w.cur = nil
-		return err
 	}
-	return nil
+	if w.curCBSrc != nil {
+		if e := w.curCBSrc.Close(); e != nil && err == nil {
+			err = e
+		}
+		w.curCB, w.curCBSrc = nil, nil
+	}
+	return err
 }
