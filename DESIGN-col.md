@@ -748,8 +748,9 @@ walk it.)
     a superset is always safe, and the empty/all-unknown cases fall back to read-all.
 - **Step 5 — First true vectorized op, compile-time-only.** Aggregation over a
   proven-typed, non-null column straight from Parquet — end-to-end, no transpose.
-  Introduce column batches + the `@col` markers (§ *Marking a slot*) here.
-  Differential-test against the row lane from line one. Measure on real data.
+  Fused scan→agg reusing `AggSum`'s accumulator (see § *Does Step 5 scale?* for the
+  full plan and the whack-a-mole analysis). Differential-test against the row lane
+  from line one. Measure on real data.
 - **Step 6 — Expand only on measured wins.** Selection vectors for filter, more
   aggregates, dictionary encoding for GROUP BY — each gated on a benchmark that
   beats row-at-a-time on a real workload.
