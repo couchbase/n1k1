@@ -29,12 +29,20 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
+	"strconv"
 
+	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/apache/arrow-go/v18/parquet/file"
 	"github.com/apache/arrow-go/v18/parquet/pqarrow"
 )
+
+// DisableFastTranspose forces the allocating array.RecordToJSON fallback instead
+// of the hand-rolled zero-alloc writer. Used by the equivalence test to prove the
+// two paths produce semantically identical JSON.
+var DisableFastTranspose bool
 
 // parquetSource streams a Parquet file as JSON records. It reads one Arrow
 // record batch at a time, renders it to newline-delimited JSON (one object per
@@ -48,9 +56,9 @@ type parquetSource struct {
 	idPrefix string
 	row      int
 
-	buf   bytes.Buffer // current batch rendered as NDJSON
-	lines [][]byte     // per-row slices into buf
-	li    int          // next line index
+	buf   []byte   // current batch rendered as NDJSON (reused across batches)
+	lines [][]byte // per-row slices into buf
+	li    int      // next line index
 	idBuf []byte
 	done  bool
 }
@@ -149,13 +157,22 @@ func (s *parquetSource) Next(rec *Record) (bool, error) {
 		if err != nil {
 			return false, err
 		}
-		s.buf.Reset()
-		err = array.RecordToJSON(batch, &s.buf)
+		if !DisableFastTranspose && fastRenderable(batch) {
+			// Hand-rolled, zero-alloc render: append typed column values straight
+			// into the reused buf; no interface{} boxing, no encoding/json.
+			s.buf = appendRecordsNDJSON(s.buf[:0], batch)
+		} else {
+			// Fallback for column types the fast path doesn't handle
+			// (timestamps, decimals, lists, structs, ...): correct but allocating.
+			bb := bytes.NewBuffer(s.buf[:0])
+			err = array.RecordToJSON(batch, bb)
+			s.buf = bb.Bytes()
+		}
 		batch.Release()
 		if err != nil {
 			return false, err
 		}
-		s.lines = splitNDJSON(s.buf.Bytes(), s.lines[:0])
+		s.lines = splitNDJSON(s.buf, s.lines[:0])
 		s.li = 0
 	}
 
@@ -175,6 +192,129 @@ func (s *parquetSource) Close() error {
 		return s.pf.Close()
 	}
 	return nil
+}
+
+// fastRenderable reports whether every column is a type appendArrowValueJSON
+// handles directly. If not (timestamps, decimals, nested lists/structs, binary,
+// ...), the caller falls back to the allocating array.RecordToJSON.
+func fastRenderable(rec arrow.RecordBatch) bool {
+	for _, c := range rec.Columns() {
+		switch c.(type) {
+		case *array.Boolean,
+			*array.Int8, *array.Int16, *array.Int32, *array.Int64,
+			*array.Uint8, *array.Uint16, *array.Uint32, *array.Uint64,
+			*array.Float32, *array.Float64,
+			*array.String, *array.LargeString:
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// appendRecordsNDJSON renders every row of rec as a JSON object on its own line,
+// appending into dst. Keys are in column order (downstream reads by name, so
+// order is irrelevant). Zero allocation: numbers/bools/strings append directly,
+// and arrow's String.Value is a zero-copy substring.
+func appendRecordsNDJSON(dst []byte, rec arrow.RecordBatch) []byte {
+	fields := rec.Schema().Fields()
+	cols := rec.Columns()
+	n := int(rec.NumRows())
+	for i := 0; i < n; i++ {
+		dst = append(dst, '{')
+		for j, c := range cols {
+			if j > 0 {
+				dst = append(dst, ',')
+			}
+			dst = appendJSONString(dst, fields[j].Name)
+			dst = append(dst, ':')
+			dst = appendArrowValueJSON(dst, c, i)
+		}
+		dst = append(dst, '}', '\n')
+	}
+	return dst
+}
+
+// appendArrowValueJSON appends arr[i] as a JSON value. A null becomes JSON null
+// (SQL++ NULL, distinct from a missing/absent field). Assumes arr's type passed
+// fastRenderable.
+func appendArrowValueJSON(dst []byte, arr arrow.Array, i int) []byte {
+	if arr.IsNull(i) {
+		return append(dst, "null"...)
+	}
+	switch a := arr.(type) {
+	case *array.Boolean:
+		if a.Value(i) {
+			return append(dst, "true"...)
+		}
+		return append(dst, "false"...)
+	case *array.Int8:
+		return strconv.AppendInt(dst, int64(a.Value(i)), 10)
+	case *array.Int16:
+		return strconv.AppendInt(dst, int64(a.Value(i)), 10)
+	case *array.Int32:
+		return strconv.AppendInt(dst, int64(a.Value(i)), 10)
+	case *array.Int64:
+		return strconv.AppendInt(dst, a.Value(i), 10)
+	case *array.Uint8:
+		return strconv.AppendUint(dst, uint64(a.Value(i)), 10)
+	case *array.Uint16:
+		return strconv.AppendUint(dst, uint64(a.Value(i)), 10)
+	case *array.Uint32:
+		return strconv.AppendUint(dst, uint64(a.Value(i)), 10)
+	case *array.Uint64:
+		return strconv.AppendUint(dst, a.Value(i), 10)
+	case *array.Float32:
+		return appendJSONFloat(dst, float64(a.Value(i)))
+	case *array.Float64:
+		return appendJSONFloat(dst, a.Value(i))
+	case *array.String:
+		return appendJSONString(dst, a.Value(i))
+	case *array.LargeString:
+		return appendJSONString(dst, a.Value(i))
+	}
+	return append(dst, "null"...) // unreachable when gated by fastRenderable
+}
+
+// appendJSONFloat appends f as JSON. NaN/±Inf aren't representable in JSON, so
+// they become null (matching n1k1's number handling; see TODO.md).
+func appendJSONFloat(dst []byte, f float64) []byte {
+	if math.IsNaN(f) || math.IsInf(f, 0) {
+		return append(dst, "null"...)
+	}
+	return strconv.AppendFloat(dst, f, 'g', -1, 64)
+}
+
+// appendJSONString appends s as a JSON string literal (RFC 8259 escaping: ",
+// \, and control chars < 0x20; raw UTF-8 bytes pass through). No allocation.
+func appendJSONString(dst []byte, s string) []byte {
+	dst = append(dst, '"')
+	start := 0
+	for i := 0; i < len(s); i++ {
+		b := s[i]
+		if b >= 0x20 && b != '"' && b != '\\' {
+			continue
+		}
+		dst = append(dst, s[start:i]...)
+		switch b {
+		case '"':
+			dst = append(dst, '\\', '"')
+		case '\\':
+			dst = append(dst, '\\', '\\')
+		case '\n':
+			dst = append(dst, '\\', 'n')
+		case '\r':
+			dst = append(dst, '\\', 'r')
+		case '\t':
+			dst = append(dst, '\\', 't')
+		default:
+			const hex = "0123456789abcdef"
+			dst = append(dst, '\\', 'u', '0', '0', hex[b>>4], hex[b&0xf])
+		}
+		start = i + 1
+	}
+	dst = append(dst, s[start:]...)
+	return append(dst, '"')
 }
 
 // splitNDJSON slices b into its non-empty newline-delimited lines, reusing dst.

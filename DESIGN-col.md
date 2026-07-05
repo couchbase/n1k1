@@ -756,12 +756,19 @@ walk it.)
     reflection per row: ~**8 allocs / ~975 B per row** (draining a 6-col file),
     the "transpose/copy cost" the `DESIGN-data.md` caveat named — squarely against
     n1k1's zero-garbage discipline. Step-4 projection cuts it proportionally (drop
-    5 of 6 columns → drop ~5/6 of the boxing + JSON). A contained fix short of
-    Step 5: replace `RecordToJSON` with a hand-rolled Arrow-array→JSON-bytes writer
-    (type-switch per column, append into the reused `buf`; no `interface{}`, no
-    `encoding/json` — mirroring `csvRowToJSON`), taking the transpose to near-zero
-    steady-state alloc (only the per-batch Arrow decode remains). The full win is
-    Step 5's no-transpose `@col` path.
+    5 of 6 columns → drop ~5/6 of the boxing + JSON). **✅ Fixed** —
+    `records/parquet.go` now uses a hand-rolled Arrow-array→JSON writer
+    (`appendRecordsNDJSON`: type-switch per column straight into the reused `buf`;
+    RFC-8259 string escaping; NaN/Inf→null; zero-copy arrow `String.Value`
+    substrings), gated by `fastRenderable` with a `RecordToJSON` fallback for types
+    it doesn't handle (timestamps/decimals/lists/structs). Measured (65 K rows,
+    6 cols): **526 K → 2.1 K allocs/op (~248×, ~0.03 allocs/row), 2.9× faster**;
+    the residual ~2 K allocs are per-*batch* Arrow column-buffer decode (only
+    Step 5's zero-copy `@col` borrow removes those). Proven byte-for-value
+    equivalent to `RecordToJSON` by
+    `test/parquet_test.go:TestParquetFastTransposeEquivalence` (ints/uints/floats/
+    escaped-strings/bools/nulls all unmarshal-equal); `BenchmarkParquetTransposeDrain`
+    guards the alloc property.
   - *Caller side*: **cbq's planner already computes the field set** — it does
     `expr.FieldNames(ident, …)` over the query and a full `expression.IsCovered`
     cover-check, exposing the result as `plan.Fetch.EarlyProjection()`

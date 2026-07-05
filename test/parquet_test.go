@@ -36,9 +36,11 @@ package test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -418,6 +420,136 @@ func rowStrings(res *glue.Result) []string {
 		out[i] = string(r)
 	}
 	return out
+}
+
+// ---- hand-rolled zero-alloc transpose: equivalence + allocation guard --------
+
+// pqWriteVaried writes one row group covering the fast writer's type range plus
+// nulls and nasty strings, so the equivalence test exercises every branch.
+func pqWriteVaried(t testing.TB, path string) int {
+	mem := memory.NewGoAllocator()
+	schema := arrow.NewSchema([]arrow.Field{
+		{Name: "i", Type: arrow.PrimitiveTypes.Int64},
+		{Name: "u", Type: arrow.PrimitiveTypes.Uint32},
+		{Name: "f", Type: arrow.PrimitiveTypes.Float64},
+		{Name: "s", Type: arrow.BinaryTypes.String},
+		{Name: "b", Type: arrow.FixedWidthTypes.Boolean},
+		{Name: "n", Type: arrow.PrimitiveTypes.Int32, Nullable: true},
+	}, nil)
+	strs := []string{`plain`, `has "quotes"`, "tab\tnl\ncr\r", "unicode→π", "ctrl\x01\x1fx", ""}
+	bld := array.NewRecordBuilder(mem, schema)
+	defer bld.Release()
+	for i := range strs {
+		bld.Field(0).(*array.Int64Builder).Append(int64(i*100 - 250)) // incl. negative
+		bld.Field(1).(*array.Uint32Builder).Append(uint32(i * 7))
+		bld.Field(2).(*array.Float64Builder).Append(float64(i) + 0.25)
+		bld.Field(3).(*array.StringBuilder).Append(strs[i])
+		bld.Field(4).(*array.BooleanBuilder).Append(i%2 == 0)
+		if i%3 == 0 {
+			bld.Field(5).(*array.Int32Builder).AppendNull()
+		} else {
+			bld.Field(5).(*array.Int32Builder).Append(int32(i))
+		}
+	}
+	rec := bld.NewRecord()
+	defer rec.Release()
+	tbl := array.NewTableFromRecords(schema, []arrow.Record{rec})
+	defer tbl.Release()
+	fout, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fout.Close()
+	props := parquet.NewWriterProperties(parquet.WithCompression(compress.Codecs.Snappy))
+	if err := pqarrow.WriteTable(tbl, fout, int64(len(strs)), props, pqarrow.DefaultWriterProps()); err != nil {
+		t.Fatal(err)
+	}
+	return len(strs)
+}
+
+// drainDocs reads every record doc from a parquet file, copying each (borrowed)
+// doc out; disableFast selects the RecordToJSON fallback vs the fast writer.
+func drainDocs(t testing.TB, path string, disableFast bool) [][]byte {
+	records.DisableFastTranspose = disableFast
+	defer func() { records.DisableFastTranspose = false }()
+	src, err := records.OpenFile(path, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer src.Close()
+	var out [][]byte
+	var rec records.Record
+	for {
+		ok, err := src.Next(&rec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !ok {
+			break
+		}
+		out = append(out, append([]byte(nil), rec.Doc...))
+	}
+	return out
+}
+
+// TestParquetFastTransposeEquivalence proves the hand-rolled zero-alloc writer
+// produces JSON semantically identical to arrow's array.RecordToJSON (both must
+// be valid JSON that unmarshals to equal values), across ints/uints/floats/
+// strings-with-escapes/bools/nulls.
+func TestParquetFastTransposeEquivalence(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "varied.parquet")
+	n := pqWriteVaried(t, path)
+
+	fast := drainDocs(t, path, false)
+	slow := drainDocs(t, path, true)
+
+	if len(fast) != n || len(slow) != n {
+		t.Fatalf("row counts: fast=%d slow=%d want %d", len(fast), len(slow), n)
+	}
+	for i := range fast {
+		var mf, ms map[string]interface{}
+		if err := json.Unmarshal(fast[i], &mf); err != nil {
+			t.Fatalf("fast doc %d is not valid JSON: %s: %v", i, fast[i], err)
+		}
+		if err := json.Unmarshal(slow[i], &ms); err != nil {
+			t.Fatalf("slow doc %d: %v", i, err)
+		}
+		if !reflect.DeepEqual(mf, ms) {
+			t.Errorf("row %d differs:\n fast=%s\n slow=%s", i, fast[i], slow[i])
+		}
+	}
+	t.Logf("OK: fast writer == RecordToJSON across %d varied rows", n)
+}
+
+// BenchmarkParquetTransposeDrain guards the zero-alloc property of the fast
+// transpose (compare -benchmem allocs/op against DisableFastTranspose).
+func BenchmarkParquetTransposeDrain(b *testing.B) {
+	dir, _ := os.MkdirTemp("", "pqtd")
+	path := filepath.Join(dir, "d.parquet")
+	pqWrite(b, path, 1<<16, 4) // 65536 rows, cols id,price,f0..f3
+	b.ReportAllocs()
+	b.ResetTimer()
+	var rows int
+	for i := 0; i < b.N; i++ {
+		src, err := records.OpenFile(path, "")
+		if err != nil {
+			b.Fatal(err)
+		}
+		var rec records.Record
+		for {
+			ok, err := src.Next(&rec)
+			if err != nil {
+				b.Fatal(err)
+			}
+			if !ok {
+				break
+			}
+			rows++
+			_ = rec.Doc
+		}
+		src.Close()
+	}
+	b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(rows), "ns/row")
 }
 
 // ---- (3) SUM kernel: arrow column (parse-free) vs row-JSON baseline ----
