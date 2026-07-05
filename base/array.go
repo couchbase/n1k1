@@ -127,7 +127,7 @@ func arrayMinMax(vc *ValComparer, v Val, wantMax bool, bufPre []byte) (Val, []by
 // MISSING (either) -> MISSING; non-array arr OR NULL x -> NULL; else true iff some
 // element equals x by value (CompareWithType == 0, matching cbq Equals).
 func ArrayContains(vc *ValComparer, arr, x Val) Val {
-	idx, sentinel, ok := arrayFind(vc, arr, x)
+	idx, sentinel, ok := ArrayPositionIndex(vc, arr, x)
 	if !ok {
 		return sentinel
 	}
@@ -140,10 +140,6 @@ func ArrayContains(vc *ValComparer, arr, x Val) Val {
 // ArrayPositionIndex is the 0-based index of x in arr, or -1 if absent; the
 // MISSING/non-array/NULL-x guard is the same as ArrayContains (sentinel/ok).
 func ArrayPositionIndex(vc *ValComparer, arr, x Val) (idx int, sentinel Val, ok bool) {
-	return arrayFind(vc, arr, x)
-}
-
-func arrayFind(vc *ValComparer, arr, x Val) (idx int, sentinel Val, ok bool) {
 	if len(arr) == 0 || len(x) == 0 {
 		return 0, ValMissing, false
 	}
