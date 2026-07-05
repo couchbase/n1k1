@@ -357,6 +357,32 @@ bounded memory, spillable consumers, early termination. A JS function that simpl
 `return`s a value keeps the materializing `expr-scan` path; only ones that call
 `emit` (or return an iterator) take the streaming source path.
 
+### Emitting a *batch* of rows per crossing (not just one)
+
+Per-row `emit(row)` is the simple contract, but the engine is already
+**batch-oriented one layer down**, so a source can yield many rows at once. The
+per-op yield callback is per-row (`base.YieldVals func(base.Vals)`, one row =
+one `base.Vals`), but the cross-actor transport is a channel of *batches*:
+`base.Stage.BatchCh chan []base.Vals`, filled by `StartActor(…, batchSize)` and
+recycled back to producers (see DESIGN.md "data-staging, pipeline breakers").
+So "a batch of multiple Vals" is the engine's native currency between goroutines,
+not a new concept — a streaming source just feeds rows in and the Stage groups
+them into `[]base.Vals` for the exchange.
+
+For a **JS** source this batching is not just nice, it's the throughput lever.
+Crossing the goja↔Go boundary and marshaling has real per-call cost (measured
+~1 µs/row for the boundary, dominated by the boxed `ConvertVals` round-trip — see
+the JS-UDF perf notes), so a source that returns/`emit`s an **array of rows per
+call** — `emit_batch([r1, r2, …])`, or a JS generator that `yield`s chunks —
+amortizes one boundary crossing over many rows. The goja host then either loops
+`YieldVals` per row, or (better) hands the decoded chunk straight through as one
+`[]base.Vals` to the Stage exchange, matching `BatchCh`'s shape exactly.
+Backpressure/early-stop still applies at batch granularity (a `false` return, or
+a short final chunk). So the source-op protocol admits both shapes: `emit(row)`
+is the ergonomic default; `emit_batch([rows])` (or an iterator of chunks) is the
+performance variant, and it lines up with n1k1's existing batched staging rather
+than fighting it.
+
 ### Advanced: can JS participate in n1k1's reusable-slice discipline?
 
 n1k1's zero-garbage design reuses byte buffers (`varLift`, `[]byte` recycled per
