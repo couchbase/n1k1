@@ -14,7 +14,7 @@ package base
 // EnvAbout maps an env name to a short description. See DefEnv().
 var EnvAbout = map[string]string{}
 
-// DefEnv meant to be friendly to `git grep base.DevEnv` to find all env vars.
+// DefEnv meant to be friendly to `git grep base.DefEnv` to find all env vars.
 func DefEnv(name, about string) string {
      EnvAbout[name] = about
      return name

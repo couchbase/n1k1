@@ -34,13 +34,13 @@ import (
 
 func init() {
 	// Escape hatches for A/B profiling and debugging.
-	if os.Getenv(base.DefEnv("N1K1_FETCH_CBQ", "use cbq keyspace.Fetch (value boxing + encoding/json)")) != "" {
+	if os.Getenv(base.DefEnv("N1K1_FETCH_CBQ", "set to use cbq keyspace.Fetch (value boxing + encoding/json)")) != "" {
 		DatastoreFetchCBQ = false
 	}
-	if os.Getenv(base.DefEnv("N1K1_FETCH_NOCACHE", "no per-request caching when fetching from data store")) != "" {
+	if os.Getenv(base.DefEnv("N1K1_FETCH_NOCACHE", "set for no per-request caching when fetching from data store")) != "" {
 		DatastoreFetchCache = false
 	}
-	if os.Getenv(base.DefEnv("N1K1_FETCH_ACTOR", "use concurrent actor-based fetching from data store")) != "" {
+	if os.Getenv(base.DefEnv("N1K1_FETCH_ACTOR", "set to use concurrent actor-based fetching from data store")) != "" {
 		DatastoreFetchActor = true
 	}
 }
