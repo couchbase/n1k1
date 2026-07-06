@@ -65,11 +65,12 @@ const (
 // used, set from the CLI's -index flag (see DESIGN-indexing.md "CLI control"):
 //
 //	"lazy"  (default) advertise indexes; each builds on first use (first query
-//	         over its keyspace, or the .indexes command).
-//	"eager"  advertise indexes and build them all up front
-//	         (EagerBuildSecondaryIndexes) so the first query pays no build cost.
-//	"off"    ignore the catalog entirely -- advertise no secondary index, so the
-//	         planner always does a primary/records scan (useful for A/B timing).
+//	        over its keyspace, or the .indexes command).
+//	"eager" advertise indexes and build them all up front
+//	        (EagerBuildSecondaryIndexes) so the first query pays no build cost.
+//	"mem"   memory only indexing.
+//	"off"   ignore the catalog entirely -- advertise no secondary index, so the
+//	        planner always does a primary/records scan (useful for A/B timing).
 //
 // Process-global to match the engine.ExecOpEx / ScanWalkOptions style -- fine for
 // the single-process CLI. Read on each maybeSecondaryIndexes call, so a mid-session
