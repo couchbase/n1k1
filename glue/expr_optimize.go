@@ -19,6 +19,7 @@ import (
 
 	"github.com/couchbase/n1k1/base"
 
+	"github.com/couchbase/query/algebra"
 	"github.com/couchbase/query/expression"
 	"github.com/couchbase/query/value"
 )
@@ -87,6 +88,27 @@ func optSelf(names ...string) {
 // field reference provably resolves to a local label. See ExprTree's scoped gate.
 func ExprTreeOptimize(labels base.Labels, e expression.Expression,
 	buf *bytes.Buffer, strict bool) (params []interface{}, ok bool) {
+	if agg, ok := e.(algebra.Aggregate); ok {
+		// A grouped aggregate (count(*), sum(x), ...) is already computed by the
+		// group op, which appends each finalized Result as JSON bytes under the
+		// label "^aggregates|"+agg.String() (see VisitGroup / op_group.go). Read
+		// that value natively instead of boxing the grouped row to re-invoke
+		// cbq's Aggregate.Evaluate -- which just fetches the same precomputed
+		// value from the row's aggregates attachment. This also makes
+		// aggregate-containing expressions (e.g. count(*)+1, sum(a)/count(*)) go
+		// native, since the surrounding operators recurse through here.
+		//
+		// Only when that label is actually present in the input: an aggregate
+		// referenced where it isn't materialized (no matching label) keeps the
+		// boxed path. Must precede the *expression.Function case below, since
+		// aggregates also satisfy that interface.
+		aggLabel := "^aggregates|" + agg.String()
+		if labels.IndexOf(aggLabel) >= 0 {
+			return []interface{}{"labelPath", aggLabel}, true
+		}
+		return nil, false
+	}
+
 	if c, ok := e.(*expression.Constant); ok {
 		// A MISSING constant has no JSON form -- value.WriteJSON emits "null",
 		// which would wrongly become NULL. Emit an empty json constant instead;

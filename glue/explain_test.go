@@ -57,6 +57,14 @@ func TestExplainConvPlan(t *testing.T) {
 			wantAbsent: []string{boxedMarker},
 		},
 		{
+			// A grouped aggregate reads the group's precomputed
+			// "^aggregates|count(*)" value natively (labelPath), instead of boxing
+			// the grouped row to re-invoke cbq's Aggregate.Evaluate.
+			q:          `EXPLAIN SELECT COUNT(*) AS c FROM orders o`,
+			wantSub:    []string{"count(*)"},
+			wantAbsent: []string{boxedMarker},
+		},
+		{
 			// A non-optimizable scalar fn boxes; the sibling arithmetic stays native
 			// (unmarked). Exactly one boxed marker in the projection. (REPEAT is not
 			// ported -- its RANGE_LIMIT/size-limit error paths need request context.)
