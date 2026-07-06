@@ -51,22 +51,22 @@ import (
 	"github.com/couchbase/n1k1/records"
 )
 
-// DisableVectorizedAgg forces the row path (no agg-columnar / agg-metadata
-// rewrite). The differential tests flip it to prove vectorized == scalar.
-var DisableVectorizedAgg bool
+// DisableColumnarOptimize forces the row path (no agg-columnar / agg-metadata
+// rewrite). The differential tests flip it to prove columnar optimizations == scalar.
+var DisableColumnarOptimize bool
 
-// VectorizedAggApplied / MetadataAggApplied count how many of each fused op
+// AggColumnarApplied / AggMetadataApplied count how many of each fused op
 // actually executed (test observability).
 var (
-	VectorizedAggApplied int64
-	MetadataAggApplied   int64
+	AggColumnarApplied int64
+	AggMetadataApplied int64
 )
 
 // vectorizeColumnarAggs walks the finished op tree and rewrites each qualifying
 // ungrouped-SUM-over-a-Parquet-column `group` op into a fused `agg-columnar` op.
 // temps is Conv.Temps (so the scan's keyspace can be resolved to peek its schema).
 func vectorizeColumnarAggs(op *base.Op, temps []interface{}) {
-	if op == nil || DisableVectorizedAgg {
+	if op == nil || DisableColumnarOptimize {
 		return
 	}
 	maybeVectorizeGroup(op, temps)
@@ -624,7 +624,7 @@ func parseTermRT(t interface{}, addCol func(string) int) (col int, c float64, is
 // the vectorized accumulators (no transpose), emitting one result row.
 func DatastoreColumnarAgg(o *base.Op, vars *base.Vars,
 	yieldVals base.YieldVals, yieldErr base.YieldErr) {
-	atomic.AddInt64(&VectorizedAggApplied, 1)
+	atomic.AddInt64(&AggColumnarApplied, 1)
 
 	context := vars.Temps[0].(*GlueContext)
 
@@ -905,7 +905,7 @@ func applyMaskedAgg(key string, acc, col, sel, sum []byte, n int) {
 // counts, min-of-mins, max-of-maxs across parts) and emits one result row.
 func DatastoreMetadataAgg(o *base.Op, vars *base.Vars,
 	yieldVals base.YieldVals, yieldErr base.YieldErr) {
-	atomic.AddInt64(&MetadataAggApplied, 1)
+	atomic.AddInt64(&AggMetadataApplied, 1)
 
 	context := vars.Temps[0].(*GlueContext)
 	scanTemp := o.Params[0].(int)

@@ -336,7 +336,7 @@ row-plumbing (the fused op doesn't need it).
   own op tree (invisible to cbq's `EXPLAIN` JSON, which is the planner's plan). To
   keep the displayed plan honest, `convForDisplay` (the EXPLAIN/`-v` path) runs the
   same `vectorizeColumnarAggs` the executor does — so `EXPLAIN SELECT SUM(x) …` shows
-  a `agg-columnar`/`agg-metadata` node, and it honors `DisableVectorizedAgg` (stays
+  a `agg-columnar`/`agg-metadata` node, and it honors `DisableColumnarOptimize` (stays
   consistent with what runs). The op-tree renderer (`FormatConvPlan`) is *generic* —
   it prints each op's `Kind` + `Labels`, so any future columnar op-kind surfaces with
   no per-kind renderer code.

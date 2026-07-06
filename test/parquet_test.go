@@ -485,12 +485,12 @@ func TestParquetSumVectorizedDifferential(t *testing.T) {
 
 	for _, q := range queries {
 		t.Run(q.name, func(t *testing.T) {
-			glue.DisableVectorizedAgg = true
+			glue.DisableColumnarOptimize = true
 			base := runSortedRows(t, sess, q.stmt)
-			glue.DisableVectorizedAgg = false
-			before := atomic.LoadInt64(&glue.VectorizedAggApplied)
+			glue.DisableColumnarOptimize = false
+			before := atomic.LoadInt64(&glue.AggColumnarApplied)
 			got := runSortedRows(t, sess, q.stmt)
-			applied := atomic.LoadInt64(&glue.VectorizedAggApplied) - before
+			applied := atomic.LoadInt64(&glue.AggColumnarApplied) - before
 
 			if strings.Join(base, "\n") != strings.Join(got, "\n") {
 				t.Fatalf("vectorized changed results!\n OFF: %v\n ON:  %v", base, got)
@@ -503,7 +503,7 @@ func TestParquetSumVectorizedDifferential(t *testing.T) {
 			}
 		})
 	}
-	glue.DisableVectorizedAgg = false
+	glue.DisableColumnarOptimize = false
 }
 
 // pqWriteNullable writes id(int64)/price(float64) with DISTINCT null patterns --
@@ -594,12 +594,12 @@ func TestParquetNullableAggDifferential(t *testing.T) {
 
 	for _, q := range queries {
 		t.Run(q.name, func(t *testing.T) {
-			glue.DisableVectorizedAgg = true
+			glue.DisableColumnarOptimize = true
 			baseRows := runSortedRows(t, sess, q.stmt)
-			glue.DisableVectorizedAgg = false
-			before := atomic.LoadInt64(&glue.VectorizedAggApplied)
+			glue.DisableColumnarOptimize = false
+			before := atomic.LoadInt64(&glue.AggColumnarApplied)
 			got := runSortedRows(t, sess, q.stmt)
-			applied := atomic.LoadInt64(&glue.VectorizedAggApplied) - before
+			applied := atomic.LoadInt64(&glue.AggColumnarApplied) - before
 
 			if strings.Join(baseRows, "\n") != strings.Join(got, "\n") {
 				t.Fatalf("vectorized changed results!\n OFF: %v\n ON:  %v", baseRows, got)
@@ -614,13 +614,13 @@ func TestParquetNullableAggDifferential(t *testing.T) {
 	}
 
 	// Absolute check: SUM(price) over the two files must equal the hand sum.
-	glue.DisableVectorizedAgg = false
+	glue.DisableColumnarOptimize = false
 	got := runSortedRows(t, sess, `SELECT SUM(price) AS s FROM sales5`)
 	want := fmt.Sprintf(`{"s":%v}`, wantSumPrice)
 	if len(got) != 1 || got[0] != want {
 		t.Errorf("SUM(price) skipping nulls = %v, want %s", got, want)
 	}
-	glue.DisableVectorizedAgg = false
+	glue.DisableColumnarOptimize = false
 }
 
 // TestParquetMetadataAggDifferential guards the agg-metadata lane (COUNT/MIN/MAX
@@ -659,12 +659,12 @@ func TestParquetMetadataAggDifferential(t *testing.T) {
 
 	for _, q := range queries {
 		t.Run(q.name, func(t *testing.T) {
-			glue.DisableVectorizedAgg = true
+			glue.DisableColumnarOptimize = true
 			base := runSortedRows(t, sess, q.stmt)
-			glue.DisableVectorizedAgg = false
-			before := atomic.LoadInt64(&glue.MetadataAggApplied)
+			glue.DisableColumnarOptimize = false
+			before := atomic.LoadInt64(&glue.AggMetadataApplied)
 			got := runSortedRows(t, sess, q.stmt)
-			applied := atomic.LoadInt64(&glue.MetadataAggApplied) - before
+			applied := atomic.LoadInt64(&glue.AggMetadataApplied) - before
 
 			if strings.Join(base, "\n") != strings.Join(got, "\n") {
 				t.Fatalf("agg-metadata changed results!\n OFF: %v\n ON:  %v", base, got)
@@ -677,7 +677,7 @@ func TestParquetMetadataAggDifferential(t *testing.T) {
 			}
 		})
 	}
-	glue.DisableVectorizedAgg = false
+	glue.DisableColumnarOptimize = false
 }
 
 func rowStrings(res *glue.Result) []string {
@@ -691,7 +691,7 @@ func rowStrings(res *glue.Result) []string {
 // TestParquetExplainShowsColumnarRewrite proves EXPLAIN's displayed op tree reflects
 // the Step-5 columnar rewrite (so a user can see whether a query vectorizes), that
 // the generic op-tree renderer surfaces the op-kind string with no per-kind code,
-// and that EXPLAIN honors DisableVectorizedAgg -- i.e. it stays consistent with what
+// and that EXPLAIN honors DisableColumnarOptimize -- i.e. it stays consistent with what
 // the execution path would actually run.
 func TestParquetExplainShowsColumnarRewrite(t *testing.T) {
 	dir := t.TempDir()
@@ -733,14 +733,14 @@ func TestParquetExplainShowsColumnarRewrite(t *testing.T) {
 	}
 
 	// EXPLAIN must track execution: with vectorization disabled, no columnar node.
-	glue.DisableVectorizedAgg = true
-	defer func() { glue.DisableVectorizedAgg = false }()
+	glue.DisableColumnarOptimize = true
+	defer func() { glue.DisableColumnarOptimize = false }()
 	res, err := sess.Run(`EXPLAIN SELECT SUM(price) AS s FROM sales6`)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if hasKind(res.Plan, "agg-columnar") {
-		t.Errorf("with DisableVectorizedAgg, EXPLAIN should show the row path, got %v", opKinds(res.Plan))
+		t.Errorf("with DisableColumnarOptimize, EXPLAIN should show the row path, got %v", opKinds(res.Plan))
 	}
 }
 
