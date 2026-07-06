@@ -76,11 +76,11 @@ const (
 // .open re-applies the current mode.
 var SecondaryIndexMode = "lazy"
 
-// maybeSecondaryIndexes wraps ds so keyspaces advertise the catalog's secondary
+// siIndexesMaybe wraps ds so keyspaces advertise the catalog's secondary
 // indexes. It returns ds unchanged when SecondaryIndexMode is "off", there's no
 // .n1k1/catalog.json, or it defines no indexes (the common case -- no metadata,
 // behave exactly as before).
-func maybeSecondaryIndexes(dataRoot string, ds datastore.Datastore) (datastore.Datastore, error) {
+func siIndexesMaybe(dataRoot string, ds datastore.Datastore) (datastore.Datastore, error) {
 	if SecondaryIndexMode == "off" {
 		return ds, nil
 	}
@@ -273,6 +273,7 @@ func countSourceFiles(dir string) int {
 		if d.IsDir() {
 			if d.Name() == sidecarDir {
 				return filepath.SkipDir
+				// TODO: We should skip well-known dirs like .git, etc.
 			}
 			return nil
 		}
