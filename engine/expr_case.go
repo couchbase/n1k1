@@ -23,11 +23,7 @@ func init() {
 	ExprCatalog["case"] = ExprCase
 }
 
-func naryCase(children []base.ExprFunc, vals base.Vals, yieldErr base.YieldErr) base.Val {
-	return base.CaseReduce(children, vals, yieldErr)
-}
-
 func ExprCase(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	return MakeNaryExprFunc(lzVars, labels, params, path, naryCase)
+	return MakeNaryExprFunc(lzVars, labels, params, path, base.CaseReduce)
 }
