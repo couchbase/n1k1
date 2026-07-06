@@ -130,6 +130,8 @@ func ServiceRequestEx(p plan.Operator,
 }
 
 func MakeVars(dir, prefix string) (string, *base.Vars) {
+	// TODO: Use os.MkdirTemp()?
+	// TODO: Need err propagation & cleanup of temp dir?
 	tmpDir, _ := ioutil.TempDir(dir, prefix)
 
 	var counter uint64
