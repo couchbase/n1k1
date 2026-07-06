@@ -562,7 +562,7 @@ func scanKeyspaceColumns(temps []interface{}, scanTemp int) []records.ColumnMeta
 	if scanTemp < 0 || scanTemp >= len(temps) {
 		return nil
 	}
-	scan, ok := temps[scanTemp].(recordsScanPlan)
+	scan, ok := temps[scanTemp].(keyspacer)
 	if !ok {
 		return nil
 	}
@@ -629,7 +629,7 @@ func DatastoreColumnarAgg(o *base.Op, vars *base.Vars,
 	context := vars.Temps[0].(*GlueContext)
 
 	scanTemp := o.Params[0].(int)
-	scan, ok := vars.Temps[scanTemp].(recordsScanPlan)
+	scan, ok := vars.Temps[scanTemp].(keyspacer)
 	if !ok {
 		yieldErr(fmt.Errorf("DatastoreColumnarAgg: unexpected plan %T", vars.Temps[scanTemp]))
 		return
@@ -909,7 +909,7 @@ func DatastoreMetadataAgg(o *base.Op, vars *base.Vars,
 
 	context := vars.Temps[0].(*GlueContext)
 	scanTemp := o.Params[0].(int)
-	scan, ok := vars.Temps[scanTemp].(recordsScanPlan)
+	scan, ok := vars.Temps[scanTemp].(keyspacer)
 	if !ok {
 		yieldErr(fmt.Errorf("DatastoreMetadataAgg: unexpected plan %T", vars.Temps[scanTemp]))
 		return

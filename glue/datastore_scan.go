@@ -296,11 +296,11 @@ func DatastoreScanKeys(o *base.Op, vars *base.Vars,
 // per-store field is the cleaner future form (see DESIGN-data.md).
 var ScanWalkOptions = records.AllModes()
 
-// recordsScanPlan is the subset of the plan scan ops the n1k1-native records
+// keyspacer is the subset of the plan scan ops the n1k1-native records
 // scan needs -- just the target keyspace. plan.PrimaryScan/PrimaryScan3 and
 // plan.CountScan all satisfy it. A LIMIT (present on PrimaryScan*, absent on
 // CountScan) is read via the optional limiter interface below.
-type recordsScanPlan interface {
+type keyspacer interface {
 	Keyspace() datastore.Keyspace
 }
 
@@ -344,7 +344,7 @@ func DatastoreScanRecords(o *base.Op, vars *base.Vars,
 	yieldVals base.YieldVals, yieldErr base.YieldErr) {
 	context := vars.Temps[0].(*GlueContext)
 
-	scan, ok := vars.Temps[o.Params[0].(int)].(recordsScanPlan)
+	scan, ok := vars.Temps[o.Params[0].(int)].(keyspacer)
 	if !ok {
 		yieldErr(fmt.Errorf("DatastoreScanRecords: unexpected plan %T",
 			vars.Temps[o.Params[0].(int)]))
