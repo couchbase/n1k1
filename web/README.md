@@ -12,7 +12,9 @@ Build the wasm binary, then serve the `web/` directory over HTTP (wasm can't be
 loaded from `file://`):
 
 ```sh
+rm -rf ./.wasm-mods/
 sh web/wasm/build.sh                 # produces web/n1k1.wasm + web/wasm_exec.js
+git checkout go.mod
 cd web && python3 -m http.server 8080
 open http://localhost:8080/
 ```

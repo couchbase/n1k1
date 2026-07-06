@@ -66,6 +66,7 @@ echo ">> building web/n1k1.wasm"
 GOOS=js GOARCH=wasm CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' \
   go build -tags n1ql -ldflags="-s -w" -o "$ROOT/web/n1k1.wasm" ./web/wasm/
 
+rm -f "$ROOT/web/wasm_exec.js"
 cp "$(go env GOROOT)/lib/wasm/wasm_exec.js" "$ROOT/web/wasm_exec.js"
 
 echo ">> done:"
