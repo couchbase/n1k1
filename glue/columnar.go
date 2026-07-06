@@ -69,20 +69,22 @@ func maybeColumnarOptimize(op *base.Op, temps []interface{}) {
 	if op == nil || DisableColumnarOptimize {
 		return
 	}
-	maybeColumnarOptimizeGroup(op, temps)
+	maybeColumnarOptimizeChild(op, temps)
 	for _, c := range op.Children {
 		maybeColumnarOptimize(c, temps)
 	}
 }
 
-func maybeColumnarOptimizeGroup(op *base.Op, temps []interface{}) {
+func maybeColumnarOptimizeChild(op *base.Op, temps []interface{}) {
 	if op.Kind != "group" || len(op.Params) != 3 {
 		return
 	}
+
 	// Ungrouped only (no GROUP BY keys) -- so the group yields exactly one row.
 	if groups, ok := op.Params[0].([]interface{}); !ok || len(groups) != 0 {
 		return
 	}
+
 	// Child is either the records scan directly, or a single-comparison WHERE
 	// filter over it (5.4c). A filter we can't reduce to (field, op, const) keeps
 	// the row path -- we must NOT silently drop it.
@@ -168,6 +170,7 @@ func maybeColumnarOptimizeGroup(op *base.Op, temps []interface{}) {
 			return
 		}
 	}
+
 	if specs, ok := aggColumnarSpecs(aggExprs, aggCalcs, colByName); ok {
 		op.Kind = "agg-columnar"
 		op.Params = []interface{}{scanTemp, specs, predSpec(pred)}
