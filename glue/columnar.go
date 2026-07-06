@@ -41,6 +41,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
+	"os"
 	"strconv"
 	"sync/atomic"
 
@@ -50,6 +51,12 @@ import (
 	"github.com/couchbase/n1k1/base"
 	"github.com/couchbase/n1k1/records"
 )
+
+func init() {
+	if os.Getenv(base.DefEnv("N1K1_COLUMNAR_NOOPTIMIZE", "set to disable columnar optimizations")) != "" {
+		DisableColumnarOptimize = true
+	}
+}
 
 // DisableColumnarOptimize forces the row path (no agg-columnar / agg-metadata
 // rewrite). The differential tests flip it to prove columnar optimizations == scalar.
