@@ -229,7 +229,7 @@ row count). A menu, fastest first:
 returns validity as a **parallel `[][]byte`** (nil when `null_count==0`, and the
 byte-aligned Arrow buffer is borrowed zero-copy; a rare unaligned array offset is
 normalized once). When present the executor ANDs it into the selection and calls a
-**masked reducer** (`base.SumMasked*`/`CountMasked`/`AvgMasked*`) writing `AggSum`/
+**masked reducer** (`base.MaskedSum*`/`MaskedCount`/`MaskedAvg*`) writing `AggSum`/
 `AggAvg`'s accumulator, *instead of* `Agg.Update` — which is left untouched (masking
 lives outside it, so every scalar+vector agg is unchanged). The non-null, no-WHERE
 lane still takes the plain `Agg.Update` fast path. Alternatives considered but not
@@ -254,7 +254,7 @@ still takes the row path.
   byte-wise `AND` (`effective = predicate AND validity`), and one **masked-reduce**
   kernel serves *both* null-masking (§ Beyond null_count==0) and `WHERE`. (An
   index-list selection — DuckDB-style, better at low selectivity — is a later
-  refinement.)
+  TODO refinement.)
 - **Predicate → selection:** a vectorized compare kernel (`gt_v`/`lt_v`/`eq_v`/…
   over a borrowed column vs a constant) emits the bitmap; `AND`/`OR` of predicates
   are byte-wise bitmap ops. Null lanes aren't selected (`null > k` isn't true) —
@@ -280,13 +280,13 @@ validity anyway (to AND them), so bespoke is the natural fit.
 Build order (all landed): **5.4a** dense bitmap + masked reduce kernels
 (`base/agg_masked.go`; shared with the null path) → **5.4b** compare kernels
 (`base/filter.go`: `FilterFloat64/Int64` predicate→selection, `AndBitmap`/`OrBitmap`)
-→ **5.4c** the fused scan→filter→agg op + rewrite (`extractColPredicate` pulls
+→ **5.4c** the fused scan→filter→agg op + rewrite (`colPredicateExtract` pulls
 (field, op, const) from the cbq filter; cbq normalizes `>`/`>=` to `LT`/`LE` with
 swapped operands, so only `LT`/`LE`/`Eq` are matched, reading operand order for
 direction). Differential-tested: 9 WHERE variants (all 6 ops × both column types,
 flipped operands, count+filter routing to columnar not metadata, multi-agg) each fire
 the fused lane and match the row path bit-exactly; 4 bail cases stay on the row path.
-→ **5.4d** flat AND/OR of comparisons: `extractColPredicate` recursively flattens a
+→ **5.4d** flat AND/OR of comparisons: `colPredicateExtract` recursively flattens a
 same-mode boolean tree (cbq nests `a AND b AND c` as `And(And(a,b),c)`) into clauses;
 per batch each clause → a bitmap (`Filter*`, then AND its column validity), combined
 with `AndBitmap`/`OrBitmap`. Bails on nested mixed boolean, field-vs-field, non-numeric.
@@ -344,9 +344,6 @@ row-plumbing (the fused op doesn't need it).
 -------------------------------------------------------
 ## Still-open questions
 
-- **Compile-time-only lane forever?** (interpreter stays row, compiler emits
-  row-or-column). Leaning yes; the lifting pass would hand the interpreter
-  vectorized kernels anyway if we ever want them for its own testing.
 - **String/dictionary encoding layout.** Numeric is settled (use Arrow's LE buffer
   directly). Variable-width strings: Arrow-compatible offsets+payload vs n1k1-native?
   Lean Arrow-compatible (near-free Parquet interop).
