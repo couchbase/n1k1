@@ -335,7 +335,7 @@ row-plumbing (the fused op doesn't need it).
 - **EXPLAIN shows the rewrite.** The columnar rewrite is a post-plan pass on n1k1's
   own op tree (invisible to cbq's `EXPLAIN` JSON, which is the planner's plan). To
   keep the displayed plan honest, `convForDisplay` (the EXPLAIN/`-v` path) runs the
-  same `vectorizeColumnarAggs` the executor does — so `EXPLAIN SELECT SUM(x) …` shows
+  same `maybeColumnarOptimize` the executor does — so `EXPLAIN SELECT SUM(x) …` shows
   a `agg-columnar`/`agg-metadata` node, and it honors `DisableColumnarOptimize` (stays
   consistent with what runs). The op-tree renderer (`FormatConvPlan`) is *generic* —
   it prints each op's `Kind` + `Labels`, so any future columnar op-kind surfaces with

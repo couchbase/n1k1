@@ -16,7 +16,7 @@ package glue
 // Vectorized aggregation, DESIGN-col.md Step 5.1: `SELECT SUM(x) FROM data` over a
 // Parquet keyspace runs a fused scan->agg that reads the borrowed Arrow column
 // buffer directly (no transpose), reusing base.AggSum's accumulator via the
-// sum_v_* catalog keys. A post-conv rewrite pass (vectorizeColumnarAggs) rewrites a
+// sum_v_* catalog keys. A post-conv rewrite pass (maybeColumnarOptimize) rewrites a
 // qualifying `group` op in place into a `agg-columnar` op; anything that doesn't
 // qualify keeps the ordinary row path. Correctness bound: results must match the
 // row lane (TestParquetSumVectorizedDifferential), and the pass is conservative --
@@ -62,16 +62,16 @@ var (
 	AggMetadataApplied int64
 )
 
-// vectorizeColumnarAggs walks the finished op tree and rewrites each qualifying
+// maybeColumnarOptimize walks the finished op tree and rewrites each qualifying
 // ungrouped-SUM-over-a-Parquet-column `group` op into a fused `agg-columnar` op.
 // temps is Conv.Temps (so the scan's keyspace can be resolved to peek its schema).
-func vectorizeColumnarAggs(op *base.Op, temps []interface{}) {
+func maybeColumnarOptimize(op *base.Op, temps []interface{}) {
 	if op == nil || DisableColumnarOptimize {
 		return
 	}
 	maybeVectorizeGroup(op, temps)
 	for _, c := range op.Children {
-		vectorizeColumnarAggs(c, temps)
+		maybeColumnarOptimize(c, temps)
 	}
 }
 

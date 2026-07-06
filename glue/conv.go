@@ -87,7 +87,7 @@ func ExecConv(p plan.Operator) (*base.Op, []interface{}, error) {
 	}
 
 	if err == nil && c.TopOp != nil {
-		vectorizeColumnarAggs(c.TopOp, c.Temps) // fuse ungrouped SUM over a Parquet column
+		maybeColumnarOptimize(c.TopOp, c.Temps) // fuse ungrouped SUM over a Parquet column
 	}
 
 	return c.TopOp, c.Temps, err
