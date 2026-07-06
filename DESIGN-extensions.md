@@ -1,331 +1,244 @@
 # Extending n1k1 — functions, drop-in extensions, dynamic loading, and table-valued/streaming
 
-## Why
+## Overview
 
-n1k1 runs SQL++ by reusing cbq's parser + planner and evaluating expressions
-(natively where ported, otherwise via the embedded cbq evaluator). A natural next
-question: how do we grow the engine's *surface* — add builtins, let users drop in
-their own functions/extensions (JS or Go), load extensions dynamically, and
-support functions that return whole tables (e.g. shred a PDF/PPT/DOC/XLSX into
-many JSON rows) — ideally **streaming** so a huge result doesn't have to be
-materialized in memory?
+n1k1 runs SQL++ via cbq's parser + planner, evaluating expressions natively where
+ported (else via the embedded cbq evaluator). This doc grows the engine's *surface*:
+builtins, drop-in user functions (JS or Go), dynamic loading, and table-valued
+functions that return whole tables (e.g. shred a PDF/PPT/DOC/XLSX into many JSON
+rows) — ideally **streaming** so a huge result never materializes. Yes to all, in
+tiers with different trade-offs. Most plumbing exists (the UDF-resolution seam,
+`FROM <expr>` scans, a push-based streaming engine, spill-to-disk); the work is
+wiring plus one new streaming source-function protocol. One hard constraint frames
+everything: n1k1 builds `CGO_ENABLED=0`.
 
-Short answer: yes to all, in tiers with different effort/trade-offs. The
-enabling plumbing (the UDF resolution seam, `FROM <expr>` scans, a push-based
-streaming engine, spill-to-disk) already exists; the work is wiring and one small
-new "streaming source function" protocol.
+## Contents
+
+- [Status (implemented 2026-07)](#status-implemented-2026-07)
+- [The function-name resolution seam](#the-function-name-resolution-seam)
+- [Hard constraint: CGO_ENABLED=0](#hard-constraint-cgo_enabled0)
+- [Extensibility tiers](#extensibility-tiers)
+- [JS UDF runtime & state (the goja execution model)](#js-udf-runtime--state-the-goja-execution-model)
+- [Extension aggregates](#extension-aggregates)
+- [Table-valued / streaming sources in FROM](#table-valued--streaming-sources-in-from)
+- [Dynamic loading in Go](#dynamic-loading-in-go)
+- [JS extension power tiers](#js-extension-power-tiers)
+- [Streaming CTEs / subqueries](#streaming-ctes--subqueries)
+- [Scanning a corpus (a directory of documents)](#scanning-a-corpus-a-directory-of-documents)
+- [Namespacing & versioning of extensions](#namespacing--versioning-of-extensions)
+- [Licensing shortlist (document parsers)](#licensing-shortlist-document-parsers)
+- [Caveats](#caveats)
+- [Vision: a sandboxed extension registry](#vision-a-sandboxed-extension-registry)
+- [Roadmap (suggested phasing)](#roadmap-suggested-phasing)
 
 ## Status (implemented 2026-07)
 
-The first slice is **live and tested** end-to-end in the interpreter
-(`test/ext_test.go`); the full suite (interpreter + compiler) shows no
-regressions. Compiler-mode notes: the extension aggregates dispatch through the
-same `base.AggCatalog[name]` runtime lookup the group-op codegen already emits
-for built-ins, so they compile by construction; a compiled JS UDF requires its
-`Register*` call to have run in the executing process (the name must re-resolve
-when the baked `exprTree`/`exprStr` string is re-parsed at runtime).
+First slice is **live and tested** end-to-end in the interpreter (`test/ext_test.go`);
+full suite (interpreter + compiler) shows no regressions. Compiler mode: extension
+aggregates dispatch through the same `base.AggCatalog[name]` runtime lookup group-op
+codegen already emits, so they compile by construction; a compiled JS UDF needs its
+`Register*` call to have run in the executing process (the name must re-resolve when the
+baked `exprTree`/`exprStr` is re-parsed).
 
-- **Two tiny fork setters** unlock parser resolution of new names without a
-  grammar change: `expression.RegisterFunction(name, fn)` (patch-05) and
-  `algebra.RegisterAggregate(name, property, agg)` (patch-06). See
-  `glue/patches/README.md`. They just expose the otherwise package-private
-  `_FUNCTIONS` / `_AGGREGATES` maps.
-- **Tier-2 JavaScript scalar UDFs** — a general, extension-agnostic loader:
-  `glue.RegisterExtensionDir(dir)` scans a directory and `RegisterExtensionFile
-  (path)` loads one file, each **dispatching by file extension** (today `.js`;
-  `.wasm`/etc. slot into `extensionLoaders` later). `glue.RegisterJSFunc(name,
-  source)` registers inline JS. The "directory *is* the catalog." A `.js` file
-  becomes an `expression.Function` (`glue/ext_jsvm.go`) resolved as `NAME(args)`
-  and evaluated through the existing interpreted/boxed lane (ExprTree →
-  `Expression.Evaluate`). The JS runtime is pure-Go/MIT/cgo-free (goja),
-  preserving the `CGO_ENABLED=0` static binary; runtimes are pooled per
-  goroutine, object/array args are deep-copied in (no source mutation), a
-  runaway script is interrupted (`glue.JSCallTimeout`), and a name that would
-  shadow a builtin/aggregate is refused. Loading is opt-in (embedder, or the CLI
-  `-ext`/`-extensions` flag -- repeatable, comma-friendly -- and the
-  `.extensions` REPL command with `list`/`load`/`unload` sub-commands) since
-  in-process user code is an attack surface. A loaded-extensions registry backs
-  `glue.ListExtensions()` and `glue.UnloadExtension(name)` (unload installs a
-  stub that errors on call, since cbq's function registry has no delete; a reload
-  re-enables). Example UDFs ship in `extensions/functions/js/`.
-- **Extension AGGREGATES `sparkline()` / `histogram()`** — native and
-  **zero-garbage**, implemented against the `base.Agg` byte-slice
-  Init/Update/Result protocol (`base/agg_ext.go`): Update only appends bytes
-  (reusing the MEDIAN/VARIANCE numeric-list state); Result renders a unicode
-  inline chart (▁▂▃▄▅▆▇█) by walking the byte state directly into the reusable
-  buffer — no intermediate `[]float64`, fixed stack scratch. A generic
-  parse/plan-only `algebra.Aggregate` shim (`glue/ext_agg.go`) makes the parser
-  accept them; conv.go routes computation to the native handler via
-  `base.AggCatalog[name]`, so the cbq Cumulate*/ComputeFinal machinery is never
-  run. Work in GROUP BY and as bare aggregates; auto-registered at glue init.
-- **JS aggregates (3-callback protocol)** — a UDF *aggregate* written in
-  JavaScript: `NAME_init()`, `NAME_update(state, value)`, `NAME_final(state)`
-  (`glue/ext_agg_jsvm.go`, `glue.RegisterJSAggregate`, or a `NAME.agg.js` file for
-  `-ext`). A `base.Agg` bridge threads the accumulator `state` as JSON bytes in
-  the group's (spillable) buffer and drives the JS callbacks on the same
-  per-query/per-actor runtime as scalar UDFs. Same parse/plan `algebra.Aggregate`
-  shim as the native aggs, so `NAME(expr)` works in GROUP BY. Trade-off vs a
-  native `base.Agg`: state round-trips through JSON per Update (not zero-garbage)
-  and the callbacks have no error channel (a throw/NaN is contained → null).
-  Ships `extensions/functions/js/geomean.agg.js` as an example.
-- **Table-valued JS functions in FROM** — two forms. (1) A JS UDF that *returns
-  an array* is a set-returning source via the existing `plan.ExpressionScan` →
-  `expr-scan` → `base.ArrayYield` path (materializes the array first). (2)
-  **Streaming sources (`*.stream.js` / `glue.RegisterJSStream`)** — a
-  `function NAME(emit, ...args)` that pushes rows via `emit(row)` (one row per
-  argument = a batch form); `VisitExpressionScan` routes `FROM NAME(...)` to the
-  `js-stream` op (`glue/ext_stream_jsvm.go`), which yields as rows are produced —
-  **no materialization, bounded memory** — composing with WHERE/GROUP BY/LIMIT.
-  Ships `extensions/functions/js/series.stream.js`. Caveat (matches every n1k1
-  source today): no per-producer early-exit yet, so `LIMIT k` drops extras
-  downstream while the source still runs to completion — fine for a huge *finite*
-  source, but an *unbounded* one hangs under `LIMIT`. See "Streaming JS/goja
-  functions" below.
+### Parser-resolution setters
 
-### JS UDF runtime & state (the goja execution model)
+Two tiny fork setters unlock parser resolution of new names without a grammar change:
+`expression.RegisterFunction(name, fn)` (patch-05) and
+`algebra.RegisterAggregate(name, property, agg)` (patch-06, `glue/patches/README.md`).
+They expose the package-private `_FUNCTIONS`/`_AGGREGATES` maps.
 
-The live `goja.Runtime` is scoped **per query, per actor**, not per process or per
-UDF (`glue/ext_jsvm.go`): programs compile once at registration, but the runtime
-is built lazily on the eval context (`GlueContext.jsRT`) — a fresh `GlueContext`
-per `Session.Run`, and `ChainExtend`'s per-actor context clone gives each
-concurrent UNION ALL branch (and future parallel scan/GROUP-BY shard) its own.
-One `goja.Runtime` isn't goroutine-safe, so this scoping keeps each single-
-threaded with **no pool and no lock** (aligning with DESIGN.md: avoid `sync.Pool`
-+ locking). Each runtime defines *all* loaded UDFs in one shared JS scope and
-installs a `console`. Consequences (all covered by `test/ext_test.go`):
+### Tier-2 JavaScript scalar UDFs
 
-- **Module-scope JS globals persist across calls within a query and RESET on the
-  next query** — good for per-query caches (hoisted compiled regexes, memo
-  tables); a "global counter" is per-actor and resets per query, so it is *not*
-  a reliable running total — use SQL aggregates (or a `base.Agg` extension) for
-  cross-row accumulation. No cross-query state leakage.
-- **A UDF can call another loaded UDF** (e.g. `foobar()` calling `slugify()`) —
-  they share the runtime's global scope.
-- **`console.log` / `.error` / `.warn` / `.info` / `.debug` work** for debugging,
-  writing to `glue.JSConsoleWriter` (default `os.Stderr`).
-- Cost: one `goja.New()` + re-running all UDF programs per query/actor (amortized
-  over the query's rows; fine for n1k1's scan-heavy analytical profile — measured
-  JS boundary ≈ 1 µs/row, dominated by the boxed `ConvertVals`, not goja itself).
-- **Heap lifecycle: the whole runtime dies with the query.** `jsRT` hangs off the
-  per-`Session.Run` `GlueContext` and is referenced nowhere else, so when the
-  query returns the runtime — and *every* JS object, closure, and module global
-  it holds — becomes unreachable and is GC'd. A UDF *can* pile up heap *within* a
-  single query (e.g. a module-scope array that grows each row), but that memory is
-  bounded by the query's lifetime and fully reclaimed at its end; there is **no
-  process-lifetime accumulation or leak across queries** (unlike the earlier
-  per-process pooled-runtime design). A panic/timeout also drops the runtime
-  mid-query, and each UNION ALL actor's runtime is freed independently.
-- **`async`/`await`/Promises are rejected** (n1k1 drives no event loop). An
-  accidental `async function` (or any Promise return) fails the call with a clear
-  message — "returned a Promise: async/await … not supported … return a plain
-  value" — rather than hanging (the Promise stays pending) or an opaque
-  `value.NewValue` panic. Make UDFs synchronous; see "Sync vs async" below.
+Extension-agnostic loader dispatching **by file extension** (today `.js`; `.wasm`/etc.
+slot into `extensionLoaders` later):
 
-The design/roadmap below is the fuller picture (WASM, streaming sources,
-document shredding, a registry); the rest of this doc is forward-looking.
+- `glue.RegisterExtensionDir(dir)` scans a directory; `glue.RegisterExtensionFile(path)`
+  loads one file; `glue.RegisterJSFunc(name, source)` registers inline JS. The
+  directory *is* the catalog.
+- A `.js` file becomes an `expression.Function` (`glue/ext_jsvm.go`) resolved as
+  `NAME(args)`, evaluated through the interpreted/boxed lane (ExprTree →
+  `Expression.Evaluate`).
+- Runtime is pure-Go/MIT goja, preserving `CGO_ENABLED=0`. Object/array args
+  deep-copied in (no source mutation); a runaway script is interrupted
+  (`glue.JSCallTimeout`); a name shadowing a builtin/aggregate is refused.
+- Loading is **opt-in** (in-process user code is an attack surface): embedder,
+  CLI `-ext`/`-extensions` (repeatable, comma-friendly), or `.extensions` REPL command
+  (`list`/`load`/`unload`). `glue.ListExtensions()` / `glue.UnloadExtension(name)`
+  back a registry (unload installs a stub that errors on call, since cbq's registry has
+  no delete; reload re-enables). Examples in `extensions/functions/js/`.
 
-**One hard constraint frames every option below:** n1k1 builds **`CGO_ENABLED=0`**
-— a pure-Go static binary (Makefile makes this explicit and every build/test uses
-it). That rules out anything needing cgo, most notably Go's own `plugin` package
-(see "Dynamic loading in Go"). Everything recommended here stays cgo-free.
+### Extension aggregates
 
-## How cbq resolves a function name (the seam)
+- **Native `sparkline()` / `histogram()`** — **zero-garbage**, against the `base.Agg`
+  byte-slice Init/Update/Result protocol (`base/agg_ext.go`): Update only appends bytes
+  (reusing MEDIAN/VARIANCE numeric-list state); Result renders a unicode inline chart
+  (▁▂▃▄▅▆▇█) by walking the byte state into the reusable buffer — no intermediate
+  `[]float64`. A parse/plan-only `algebra.Aggregate` shim (`glue/ext_agg.go`) makes the
+  parser accept them; conv.go routes computation to `base.AggCatalog[name]`, so cbq's
+  Cumulate*/ComputeFinal never runs. Auto-registered at glue init.
+- **JS aggregates (3-callback protocol)** — `NAME_init()` / `NAME_update(state, value)`
+  / `NAME_final(state)` (`glue/ext_agg_jsvm.go`, `glue.RegisterJSAggregate`, or a
+  `NAME.agg.js` file). A `base.Agg` bridge threads `state` as JSON bytes in the group's
+  spillable buffer, driving the callbacks on the same per-query/per-actor runtime as
+  scalar UDFs. Same `algebra.Aggregate` shim. Trade-off vs native: state round-trips
+  through JSON per Update (not zero-garbage) and callbacks have no error channel
+  (throw/NaN → null). Ships `extensions/functions/js/geomean.agg.js`.
 
-At parse time `NAME(args)` resolves in this order
-(`parser/n1ql/n1ql.y:5740`):
+Both reuse the same shim, so `NAME(expr)` works in GROUP BY and as a bare aggregate.
 
-1. `expression.GetFunction(name)` — the static **builtin** registry
-   (`expression/func_registry.go`, an unexported `_FUNCTIONS` map).
+### Table-valued JS functions in FROM
+
+1. A JS UDF that *returns an array* is a set-returning source via the existing
+   `plan.ExpressionScan` → `expr-scan` → `base.ArrayYield` path (materializes first).
+2. **Streaming sources (`*.stream.js` / `glue.RegisterJSStream`)** — a
+   `function NAME(emit, ...args)` pushes rows via `emit(row)` (one row per argument = a
+   batch form); `VisitExpressionScan` routes `FROM NAME(...)` to the `js-stream` op
+   (`glue/ext_stream_jsvm.go`), yielding as rows are produced — **no materialization,
+   bounded memory** — composing with WHERE/GROUP BY/LIMIT. Ships
+   `extensions/functions/js/series.stream.js`. Caveat (matches every n1k1 source): no
+   per-producer early-exit yet, so `LIMIT k` drops extras downstream while the source
+   runs to completion — fine for a huge *finite* source, but an *unbounded* one hangs
+   under `LIMIT`.
+
+Everything below Status is the fuller forward-looking design/roadmap (WASM, streaming
+sources, document shredding, a registry).
+
+## The function-name resolution seam
+
+At parse time `NAME(args)` resolves in this order (`parser/n1ql/n1ql.y:5740`):
+
+1. `expression.GetFunction(name)` — static **builtin** registry
+   (`expression/func_registry.go`, unexported `_FUNCTIONS`).
 2. `search.GetSearchFunction(name)` — FTS.
 3. `algebra.GetAggregate(name, …)` — aggregates.
 4. `expression.GetUserDefinedFunction(name, …)` → `functions.PreLoad(name)` — the
    **UDF** subsystem (pluggable storage + language runtimes).
 5. else → `FatalError("Invalid function …")`.
 
-So there are two extension points: the builtin registry (step 1) and the UDF
-resolver (step 4). Since **n1k1 owns the fork**, both are open to us.
+Two extension points: the builtin registry (step 1) and the UDF resolver (step 4).
+n1k1 owns the fork, so both are open.
 
-**Current n1k1 state:** the UDF bridge is *not* wired — `glue/conv.go`'s
-`VisitExecuteFunction` returns `NA()` and no functions storage/language is
-initialized, so unknown/UDF names error at parse today. Wiring that bridge is the
-one-time prerequisite for the drop-in tiers below.
+**Current state:** the UDF bridge is *not* wired — `glue/conv.go`'s
+`VisitExecuteFunction` returns `NA()` and no functions storage/language is initialized,
+so unknown/UDF names error at parse today. Wiring that bridge is the one-time
+prerequisite for the drop-in tiers below (and for `CREATE FUNCTION` DDL).
 
-## Tier 1 — Native Go builtins (best for heavy/binary work like shredding)
+## Hard constraint: CGO_ENABLED=0
 
-Builtins are `expression.Function` implementations in the static map. There's no
-public `RegisterFunction`, so today adding one is a fork edit. Cleanest change:
-add `expression.RegisterFunction(name, fn)` to the fork, then **register from
-n1k1's own `glue` package at init** — keeping the implementations in n1k1 (the
-cbq-aware bridge layer) so `base`/`engine` stay cbq-free, consistent with the
-project's layering.
+n1k1 builds **`CGO_ENABLED=0`** — a pure-Go static binary (the Makefile and every
+build/test enforce it). That rules out anything needing cgo, notably Go's `plugin`
+package (see [Dynamic loading in Go](#dynamic-loading-in-go)). Everything here stays
+cgo-free.
+
+## Extensibility tiers
+
+### Tier 1 — Native Go builtins (best for heavy/binary work like shredding)
+
+`expression.Function` implementations in the static map. Register via
+`expression.RegisterFunction(name, fn)` (patch-05) from n1k1's own `glue` package at
+init — keeping implementations in n1k1 so `base`/`engine` stay cbq-free.
 
 - Good for: functions needing Go libraries or real I/O (file loaders, parsers).
-- Runs in the interpreted/boxed lane (via cbq `Evaluate`, or a native
-  `ExprCatalog` handler) — not the zero-alloc byte fast-path or the compiler
-  codegen path. Fine for I/O-bound enrichment; not for tight numeric loops.
+- Runs in the interpreted/boxed lane (cbq `Evaluate` or a native `ExprCatalog`
+  handler) — not the zero-alloc byte fast-path or compiler codegen. Fine for I/O-bound
+  enrichment; not tight numeric loops.
 
-## Tier 2 — "A bunch of JS in a directory / git repo" (drop-in UDFs)
+### Tier 2 — "A bunch of JS in a directory / git repo" (drop-in UDFs)
 
-No formal `CREATE FUNCTION` DDL required. n1k1 supplies its *own* implementation
-of the UDF resolver instead of cbq's metakv/Enterprise machinery:
+No `CREATE FUNCTION` DDL required. n1k1 supplies its *own* UDF resolver instead of
+cbq's metakv/Enterprise machinery:
 
 - **Registry = the filesystem.** Scan a directory or cloned git repo
-  (e.g. `.n1k1/functions/*.js`); each exported function → a resolvable UDF name.
-  `git pull` to update. The directory *is* the catalog.
-- **Runtime = embedded pure-Go JS.** Use **goja** (MIT) — no V8, no cgo, no
-  Enterprise dependency. The bridge's `Execute()` marshals args → runs the JS →
-  returns JSON. (cbq's own golang/JS UDF paths are Enterprise-only:
-  `functions/golang/golang.go:78` uses `plugin.Open` on `.so` files —
-  toolchain-locked and Linux-mostly — and the Community build is a stub returning
-  "not supported". So n1k1's goja approach is *lighter* than what cbq ships.)
-- **Optionally streaming.** A JS UDF used in FROM can stream its rows via an
-  `emit(row)` callback instead of returning one big array — see "Streaming
-  JS/goja functions" below.
+  (`.n1k1/functions/*.js`); each exported function → a resolvable UDF name. `git pull`
+  to update.
+- **Runtime = goja** (MIT, pure-Go, no V8/cgo/Enterprise dep). The bridge's `Execute()`
+  marshals args → runs JS → returns JSON. (cbq's own golang/JS UDF paths are
+  Enterprise-only: `functions/golang/golang.go:78` uses `plugin.Open` on `.so` files —
+  toolchain-locked, Linux-mostly — and Community is a stub. goja is *lighter*.)
+- **Optionally streaming** in FROM via an `emit(row)` callback (see streaming sources).
 
-## Tier 3 — Inline N1QL UDFs (`CREATE FUNCTION … { expr }`)
+### Tier 3 — Inline N1QL UDFs (`CREATE FUNCTION … { expr }`)
 
-Pure SQL++, trivial to wire (it's just an expression bound to a name), but limited
-to expressions — can't touch a PDF. A nice-to-have that composes with Tiers 1–2.
+Pure SQL++, trivial to wire (an expression bound to a name), but expression-only —
+can't touch a PDF. Composes with Tiers 1–2.
 
-## Dynamic loading in Go — what's viable (and the cgo question)
+## JS UDF runtime & state (the goja execution model)
 
-Can extensions be loaded dynamically — old-school DLLs, `.so` files, or pure-Go
-modules — and what does cgo cost?
+The live `goja.Runtime` is scoped **per query, per actor** (`glue/ext_jsvm.go`):
+programs compile once at registration, but the runtime builds lazily on the eval context
+(`GlueContext.jsRT`) — a fresh `GlueContext` per `Session.Run`, and `ChainExtend`'s
+per-actor context clone gives each concurrent UNION ALL branch (and future parallel
+scan/GROUP-BY shard) its own. One `goja.Runtime` isn't goroutine-safe, so this keeps
+each single-threaded with **no pool and no lock** (per DESIGN.md). Each runtime defines
+*all* loaded UDFs in one shared JS scope and installs a `console`. Consequences (covered
+by `test/ext_test.go`):
 
-### Go's `plugin` package (`.so`) — a non-starter for n1k1
+- **Module-scope globals persist across calls within a query, RESET on the next query**
+  — good for per-query caches (hoisted regexes, memo tables); a "global counter" resets
+  per query, so use SQL aggregates (or a `base.Agg` extension) for cross-row
+  accumulation. No cross-query leakage.
+- **A UDF can call another loaded UDF** — shared global scope.
+- **`console.log`/`.error`/`.warn`/`.info`/`.debug`** write to `glue.JSConsoleWriter`
+  (default `os.Stderr`).
+- Cost: one `goja.New()` + re-running all UDF programs per query/actor, amortized over
+  the query's rows (fine for n1k1's scan-heavy profile — measured JS boundary ≈
+  **1 µs/row**, dominated by the boxed `ConvertVals`, not goja).
+- **The whole runtime dies with the query.** `jsRT` hangs off the per-`Session.Run`
+  `GlueContext`, referenced nowhere else, so at query return the runtime and every JS
+  object it holds becomes unreachable and GC'd. A UDF can pile up heap *within* one query
+  (bounded by the query's lifetime, reclaimed at its end); **no process-lifetime
+  accumulation or leak across queries.** A panic/timeout drops the runtime mid-query;
+  each UNION ALL actor's runtime frees independently.
+- **`async`/`await`/Promises are rejected** (no event loop); a Promise return fails with
+  a clear message rather than hanging. See
+  [Sync vs async](#sync-vs-async--do-we-need-asyncawait).
 
-`plugin.Open()` loads a `-buildmode=plugin` shared object and `Lookup`s Go symbols.
-It sounds ideal but is disqualified here:
+## Extension aggregates
 
-- **Requires cgo.** The `plugin` package is built on `dlopen`, so the *host*
-  binary must be `CGO_ENABLED=1`. n1k1 is `CGO_ENABLED=0` by design — enabling cgo
-  would forfeit the pure-Go static binary (the whole point). Under
-  `CGO_ENABLED=0`, `plugin.Open` isn't even implemented.
-- **No Windows.** Supported only on Linux/FreeBSD/macOS — there is no Go
-  equivalent of loading a DLL for *Go* code. (You can FFI into a C DLL via
-  `golang.org/x/sys/windows` `LoadLibrary`/`GetProcAddress`, but that's the C ABI —
-  cgo-style marshaling, not pure-Go extensions.)
-- **Brittle even where it works.** Plugin and host must be built with the *exact*
-  same Go toolchain version, the same versions of every shared dependency, and
-  matching build flags — any drift is a runtime load error. Plugins can't be
-  unloaded.
+Two styles ship — native zero-garbage `base.Agg` (`sparkline()`/`histogram()`) and JS
+(`NAME_init`/`NAME_update`/`NAME_final`), both reusing the same `algebra.Aggregate` shim.
+Full detail in [Status](#extension-aggregates).
 
-Worth noting on cost: *once loaded*, calling a Go plugin symbol is an ordinary Go
-call — there is **no per-call cgo cost** (the cgo cost is only at `dlopen`/link
-time, and in the host having cgo enabled at all). So the problem isn't call
-speed; it's that the mechanism is fundamentally incompatible with a cgo-free,
-cross-platform, version-independent binary.
+## Table-valued / streaming sources in FROM
 
-### cgo cost, in general
+A **table-valued** (set-returning) function returns a JSON array used in FROM —
+`SELECT x.* FROM my_func(…) AS x` — each element a row. (Sibling: `UNNEST` over an
+array field.)
 
-- **Pure Go compiled normally, or interpreted/Wasm runtimes below:** *zero* cgo —
-  no boundary, native or near-native calls.
-- **Calling actual C via cgo:** ~tens of ns of overhead per call, plus the
-  pointer-passing rules (can't hand Go-managed pointers to C freely). Only
-  relevant if an extension is C — which we're avoiding.
-- **Go `plugin`:** forces host cgo (loses the static binary); per-call is free.
-
-### Pure-Go, cgo-free ways to load/run extensions (recommended)
-
-| Mechanism | What it is | Cost | Fit |
-|---|---|---|---|
-| **Compile-time registry** | Extensions are Go packages built into the binary via an `init()`-registration map (or build tags). | Native speed, zero overhead. | Best for a curated set (e.g. the document shredders). Adding one needs a rebuild. |
-| **wazero (Wasm)** | Embed WebAssembly modules via `tetratelabs/wazero` (Apache-2, **pure Go, no cgo**, cross-platform incl. Windows). Extensions compiled to Wasm from Go (`GOOS=wasip1`), Rust, C, AssemblyScript, … | Boundary marshaling + slower-than-native execution; sandboxed. Linear memory *is* an ArrayBuffer → can pass bytes with minimal copying. | The modern "load an untrusted binary extension at runtime" answer; true sandbox. |
-| **yaegi (Go interpreter)** | `traefik/yaegi` (Apache-2, pure Go, no cgo) interprets Go *source* at runtime. | Interpreted (slower than native); supports a large Go subset. | The "Go in a directory/repo" analog of the JS-in-a-directory idea — no build step, cross-platform. |
-| **goja (JS)** | Tier-2 above. | Interpreted JS. | Drop-in scripts from a directory/repo. |
-| **subprocess / gRPC** | e.g. `hashicorp/go-plugin`: extension runs as a separate process. | IPC serialization per call — heavy for per-row work. | Strong isolation / any language; good for coarse-grained, not hot loops. |
-
-Net: for n1k1, **dynamic native `.so`/DLL loading is out** (cgo + platform +
-version lock-in). The viable spectrum is compile-time registration (fastest) →
-yaegi/goja (drop-in source, no build) → wazero (sandboxed binary extensions) →
-subprocess (isolation). All are cgo-free and keep the static-binary property.
-
-### WASM memory: zero-copy reach and bounded pools
-
-Two properties make Wasm especially interesting for n1k1's zero-garbage,
-bounded-memory design.
-
-**Zero-copy is nuanced — ~1 copy in, 0 copies out.** A Wasm module has exactly one
-**linear memory**: a contiguous byte array that *is* the guest's whole address
-space. The guest can only address *its* linear memory — it can't hold a pointer
-into n1k1's Go heap, so you cannot hand an extension a pointer to an arbitrary
-n1k1 `[]byte` (that's the isolation the "no shared buffer" warnings refer to).
-*But* the host side is zero-copy: wazero exposes the guest's linear memory to n1k1
-as a Go `[]byte` **view** (`api.Memory.Read` aliases the backing array, not a
-copy). So:
-
-- **Input** must live in linear memory → n1k1 writes the row bytes in (one write).
-- **Output** is read back as an aliased view → no copy.
-- **The reuse trick:** make n1k1's reusable row buffer a *fixed window of the
-  guest's linear memory*. The per-row marshal n1k1 does anyway becomes the "copy
-  in"; the guest reads in place and writes results into another window that n1k1
-  reads in place — no *extra* copies beyond materializing the row somewhere. Far
-  cheaper than gRPC/subprocess (which serialize both ways).
-- **Caveat:** `memory.grow` can move the backing array, invalidating aliased
-  views — hold them only across a grow-free call, or re-fetch. Bounded
-  (non-growable) memory keeps the array stable, so views stay valid.
-
-The browser `SharedArrayBuffer` story people recall is a *different axis*: it
-shares Wasm linear memory across **Worker threads** (the threads proposal), not
-host↔guest copying, and doesn't apply to a single-threaded host embedding.
-
-**Bounded memory is first-class.** A Wasm `memory` declares initial + optional
-**max** pages (64 KiB each); the runtime refuses `memory.grow` past the max, and
-wazero also caps at the runtime level (`RuntimeConfig.WithMemoryLimitPages`). So
-"here is a fixed pool — that's it" is native: set min=max (or the limit) and
-growth fails. Core Wasm has **no `malloc`** — allocation is entirely the guest's
-toolchain, so a guest compiled with a bump/arena allocator (or none) does no
-dynamic allocation at all; a TinyGo/Rust/C guest that *does* allocate does so only
-*within* the fixed pool, and exhausting it **traps and is contained** (it can't
-touch n1k1's heap). The call/operand stack is runtime-managed and also boundable,
-so deep recursion traps rather than corrupts. This isolation — a runaway guest
-OOMs/overflows inside its own pool — is the key advantage over goja (in-process,
-shares the Go heap + GC) and Go plugins (share everything).
-
-## Table-valued (set-returning) functions in FROM
-
-"Table-valued function" is the right term (a.k.a. *set-returning function*). The
-N1QL-native idiom: a function that returns a **JSON array** used in the FROM
-clause — `SELECT x.* FROM my_func(…) AS x` — where each array element becomes a
-row. (The sibling construct is `UNNEST` over an array field.)
-
-**This already works in n1k1.** `FROM <expr>` is `plan.ExpressionScan`, handled by
-`glue/conv.go:VisitExpressionScan` → the `expr-scan` op
-(`glue/datastore.go:ExprScanOp`). If the expression yields an array, `ArrayYield`
-(`base/base.go:324`) streams each element as a row into the pipeline; a non-array
-value becomes a single row.
+**Already works.** `FROM <expr>` is `plan.ExpressionScan`, handled by
+`glue/conv.go:VisitExpressionScan` → the `expr-scan` op (`glue/datastore.go:ExprScanOp`).
+An array yields each element as a row via `ArrayYield` (`base/base.go:324`); a non-array
+becomes one row.
 
 ### How the plan gets there (cbq planner → n1k1)
 
-The node is produced by **cbq's own planner**, not by n1k1 — n1k1 only *converts*
-what the planner emits. `planner/build_select_from.go` creates a
-`plan.ExpressionScan` in two cases:
+The node is produced by **cbq's own planner**; n1k1 only converts it.
+`planner/build_select_from.go` creates a `plan.ExpressionScan` in two cases:
 
 - `FROM <expr> AS x` — an `algebra.ExpressionTerm` (covers `FROM my_func(...)`,
   `FROM [array]`, `FROM cte`): `plan.NewExpressionScan(node.ExpressionTerm(), …)`
   (~line 765).
-- `FROM (SELECT …) AS x` — a subquery term:
-  `plan.NewExpressionScan(algebra.NewSubquery(subquery), …)` (~line 677), and it
-  **also builds the subquery's full sub-plan** and attaches it via
+- `FROM (SELECT …) AS x` — a subquery term
+  (`plan.NewExpressionScan(algebra.NewSubquery(subquery), …)`, ~line 677), which **also
+  builds the subquery's full sub-plan** and attaches it via
   `exprScan.SetSubqueryPlan(selOp)`.
 
-So the chain is: SQL FROM term → cbq planner → `plan.ExpressionScan` →
-`VisitExpressionScan` → `expr-scan` → `ExprScanOp`. Two takeaways:
+Chain: SQL FROM term → cbq planner → `plan.ExpressionScan` → `VisitExpressionScan` →
+`expr-scan` → `ExprScanOp`. Two takeaways:
 
-1. To make a specific function a *streaming* table-valued source, n1k1 branches at
-   the **converter** (`VisitExpressionScan`): recognize the function and route it
-   to a streaming source op instead of `expr-scan`. No grammar/planner change —
-   the planner already hands us the call as the FROM expression.
-2. For subqueries/CTEs, `SetSubqueryPlan(selOp)` means **the planner already
-   handed us a ready-to-run child operator tree** for the subquery. n1k1 currently
-   ignores it and re-evaluates the subquery *expression* via `Evaluate` (which
-   materializes). Converting `selOp` into a child op and piping it is the concrete
-   hook for streaming subqueries/CTEs (see below).
+1. To make a function *streaming*, n1k1 branches at the **converter**
+   (`VisitExpressionScan`): recognize it, route to a streaming source op. No
+   grammar/planner change.
+2. For subqueries/CTEs, `SetSubqueryPlan(selOp)` means **the planner already handed us a
+   ready-to-run child operator tree**. n1k1 currently ignores it and re-evaluates the
+   subquery expression via `Evaluate` (materializes). Converting `selOp` into a piped
+   child op is the hook for streaming subqueries/CTEs (see
+   [Streaming CTEs / subqueries](#streaming-ctes--subqueries)).
 
 ### The materialization problem (and the fix)
 
-Downstream is streamed and spillable, but the **source is fully materialized
-first**. `ExprScanOp` today does:
+Downstream is streamed and spillable, but the **source is fully materialized first**.
+`ExprScanOp` today:
 
 ```
 v, _  := expr.Evaluate(item, ctx)   // whole result built as one value.Value (in memory)
@@ -333,89 +246,57 @@ jv, _ := json.Marshal(v)            // whole result serialized again (in memory)
 base.ArrayYield(jv, yieldVals, …)   // only now streamed row-by-row
 ```
 
-So a table-valued function that produces a huge array is built (and marshaled)
-in full before a single row flows. For big outputs (shredding a 500-page PDF, a
-large XLSX) that's the memory blow-up you're worried about.
+So a huge array is built and marshaled in full before a single row flows — the memory
+blow-up (shredding a 500-page PDF, a large XLSX).
 
-The fix is a **streaming source-function protocol** distinct from the scalar
-expression contract. The cbq `expression.Expression` contract is fundamentally
-"evaluate → one value", which is why it materializes. Instead:
+The fix is a **streaming source-function protocol** distinct from the scalar contract
+(which is "evaluate → one value", hence it materializes):
 
-- Add a **source op** (like the existing `scan`/`csvData`/`datastore-scan`
-  yielders in `engine/op_scan.go`) that calls a Go *generator* — a function with
-  signature roughly `func(args, yield func(base.Vals) bool) error` — pushing rows
-  as it produces them. The engine is already **push-based with backpressure**
-  (the consumer drives the drain via `YieldVals`), so a generator yielding into
-  it streams with bounded memory automatically.
-- The planner still sees `FROM func(...)`; the converter routes *known streaming
-  source functions* to this op instead of `expr-scan`. Unknown/scalar ones keep
+- Add a **source op** (like `scan`/`csvData`/`datastore-scan` in `engine/op_scan.go`)
+  calling a Go *generator*, signature ~`func(args, yield func(base.Vals) bool) error`,
+  pushing rows as produced. The engine is already **push-based with backpressure**, so a
+  generator yielding into it streams with bounded memory automatically.
+- The converter routes *known streaming source functions* here; unknown/scalar ones keep
   the materializing path.
 
-### Streaming JS/goja functions (callback fashion, mirroring the engine)
-
-The same generator shape extends cleanly to Tier-2 JS functions, so a drop-in JS
-function can *also* be a streaming table-valued source rather than returning one
-giant array. Give the JS an **`emit(row)` callback** (or let it `return` a JS
-generator / async iterator) that the goja host bridges straight to the source
-op's `yield`:
+The same generator shape extends to Tier-2 JS: give it an **`emit(row)` callback** (first
+argument) instead of returning a giant array. The goja host wires `emit` to the op's
+`func(base.Vals) bool` yield — each `emit` marshals to a `base.Val` row and pushes
+downstream; the boolean return propagates backpressure/early-stop (e.g. `LIMIT`) into the
+JS loop. A JS function that just `return`s a value keeps the `expr-scan` path; only ones
+calling `emit` (or returning an iterator) take the streaming path.
 
 ```js
-// docs/functions/shred_lines.js  — streams one row per line, never builds an array
+// shred_lines.js — streams one row per line, never builds an array
 function shred_lines(path) {
-  for (const line of read_lines(path)) {   // host-provided lazy iterator
-    emit({ line });                          // -> engine yield (backpressure applies)
-  }
+  for (const line of read_lines(path)) emit({ line });   // host-provided lazy iterator
 }
 ```
 
-The goja host wires `emit` to the op's `func(base.Vals) bool` yield: each `emit`
-marshals the JS value to a `base.Val` row and pushes it downstream, and the
-boolean return propagates consumer backpressure/early-stop (e.g. a `LIMIT`) back
-into the JS loop. This mirrors exactly how n1k1's native operators yield, so a JS
-UDF and a Go generator source behave identically to the rest of the pipeline —
-bounded memory, spillable consumers, early termination. A JS function that simply
-`return`s a value keeps the materializing `expr-scan` path; only ones that call
-`emit` (or return an iterator) take the streaming source path.
+### Emitting a *batch* of rows per crossing
 
-### Emitting a *batch* of rows per crossing (not just one)
+The engine is **batch-oriented one layer down**: the per-op yield is per-row
+(`base.YieldVals func(base.Vals)`), but cross-actor transport is a channel of batches —
+`base.Stage.BatchCh chan []base.Vals`, filled by `StartActor(…, batchSize)`. So
+`[]base.Vals` is native currency.
 
-Per-row `emit(row)` is the simple contract, but the engine is already
-**batch-oriented one layer down**, so a source can yield many rows at once. The
-per-op yield callback is per-row (`base.YieldVals func(base.Vals)`, one row =
-one `base.Vals`), but the cross-actor transport is a channel of *batches*:
-`base.Stage.BatchCh chan []base.Vals`, filled by `StartActor(…, batchSize)` and
-recycled back to producers (see DESIGN.md "data-staging, pipeline breakers").
-So "a batch of multiple Vals" is the engine's native currency between goroutines,
-not a new concept — a streaming source just feeds rows in and the Stage groups
-them into `[]base.Vals` for the exchange.
+For **JS** this is the throughput lever: since the goja↔Go boundary costs ~1 µs/row, a
+source that `emit`s an **array of rows per call** (`emit_batch([r1, r2, …])`, or a
+generator yielding chunks) amortizes one crossing over many rows. The host hands the
+decoded chunk straight through as one `[]base.Vals` to the Stage exchange, matching
+`BatchCh`; backpressure applies at batch granularity. So the protocol admits both:
+`emit(row)` (ergonomic default) and `emit_batch([rows])` (performance variant).
 
-For a **JS** source this batching is not just nice, it's the throughput lever.
-Crossing the goja↔Go boundary and marshaling has real per-call cost (measured
-~1 µs/row for the boundary, dominated by the boxed `ConvertVals` round-trip — see
-the JS-UDF perf notes), so a source that returns/`emit`s an **array of rows per
-call** — `emit_batch([r1, r2, …])`, or a JS generator that `yield`s chunks —
-amortizes one boundary crossing over many rows. The goja host then either loops
-`YieldVals` per row, or (better) hands the decoded chunk straight through as one
-`[]base.Vals` to the Stage exchange, matching `BatchCh`'s shape exactly.
-Backpressure/early-stop still applies at batch granularity (a `false` return, or
-a short final chunk). So the source-op protocol admits both shapes: `emit(row)`
-is the ergonomic default; `emit_batch([rows])` (or an iterator of chunks) is the
-performance variant, and it lines up with n1k1's existing batched staging rather
-than fighting it.
+### What the JS looks like (worked example)
 
-### What the JS actually looks like (worked example)
+Three ways to author the same source — `n` rows `{i, sq}`.
 
-Concretely, contrast the three ways to author the same table-valued source — a
-generator of `n` rows `{i, sq}`. Only the first works today; the other two are the
-proposed streaming protocol.
-
-**(a) Materializing — works today.** A plain scalar UDF that `return`s an array;
-`FROM gen(n)` streams its elements via the existing `expr-scan`/`ArrayYield` path.
-Simple, but the whole array is built (and JSON-marshaled) before any row flows, so
-`gen(1000000)` allocates a million-element array even under a `LIMIT 5`.
+**(a) Materializing — works today.** A scalar UDF `return`ing an array; `FROM gen(n)`
+streams elements via `expr-scan`/`ArrayYield`. But the whole array is built and marshaled
+before any row flows, so `gen(1000000)` allocates a million-element array even under
+`LIMIT 5`.
 
 ```js
-// gen.js  — returns the whole array (materializes)
 function gen(n) {
   var rows = [];
   for (var i = 1; i <= n; i++) rows.push({ i: i, sq: i * i });
@@ -423,39 +304,23 @@ function gen(n) {
 }
 ```
 
-**(b) Streaming, one row at a time — the `emit` protocol.** The host passes an
-`emit(row)` callback as the FIRST argument; the function pushes rows as it makes
-them and never builds an array. `emit` returns `false` when the consumer wants no
-more (e.g. a `LIMIT` upstream is satisfied), so the loop can stop early — the
-million-row call below yields exactly 5 rows and then returns.
+**(b) Streaming, one row — the `emit` protocol.** `emit` returns `false` when the
+consumer wants no more (e.g. `LIMIT` satisfied), so the loop stops early. The idiomatic
+ES form is a **generator** (host drives `.next()`, stops when full — no explicit
+backpressure check).
 
 ```js
-// gen_stream.js  — emits one row at a time, with backpressure
 function gen_stream(emit, n) {
-  for (var i = 1; i <= n; i++) {
-    if (!emit({ i: i, sq: i * i })) return;   // consumer is done (e.g. LIMIT hit)
-  }
+  for (var i = 1; i <= n; i++)
+    if (!emit({ i: i, sq: i * i })) return;   // consumer done (e.g. LIMIT hit)
 }
+function* gen_gen(n) { for (var i = 1; i <= n; i++) yield { i: i, sq: i * i }; }
 ```
 
-The idiomatic ES equivalent is a **generator** — the host drives `.next()` and
-stops iterating when downstream is full, so backpressure needs no explicit check:
+**(c) Streaming in batches — amortize the boundary.** `emit` a chunk per call; the host
+hands each to the Stage exchange as one `[]base.Vals`. Same backpressure.
 
 ```js
-// gen_gen.js  — a JS generator; the host pulls values and stops when full
-function* gen_gen(n) {
-  for (var i = 1; i <= n; i++) yield { i: i, sq: i * i };
-}
-```
-
-**(c) Streaming in batches — amortize the JS↔Go boundary.** For hot sources,
-`emit` a chunk of rows per call (or `yield` arrays from the generator); the host
-hands each chunk straight to the Stage exchange as one `[]base.Vals`. Fewer
-boundary crossings, same backpressure (stop when a chunk's `emit` returns
-`false`).
-
-```js
-// gen_batch.js  — emits rows in chunks of BATCH
 function gen_batch(emit, n) {
   var BATCH = 256, chunk = [];
   for (var i = 1; i <= n; i++) {
@@ -466,220 +331,337 @@ function gen_batch(emit, n) {
 }
 ```
 
-All three are used identically in SQL — the converter routes a streaming source
-(one that takes `emit` / returns an iterator) to the streaming source op, and a
-plain array-returner to `expr-scan`:
+All three are used identically in SQL — the converter routes a streaming source to the
+streaming op, an array-returner to `expr-scan`:
 
 ```sql
 SELECT x.i, x.sq
 FROM gen_stream(1000000) AS x     -- never materializes a 1e6 array (bounded memory)
 WHERE x.sq > 10
-LIMIT 5                            -- correct 5 rows; see the early-exit note below
+LIMIT 5
 ```
 
-(How `emit` bridges to the op's yield is the runtime side above; a real I/O source
-— `shred_lines(path)` over `read_lines(path)` — is the same shape with a host-
-provided lazy iterator instead of a counter.)
+(A real I/O source — `shred_lines(path)` over `read_lines(path)` — is the same shape with
+a host-provided lazy iterator instead of a counter.)
+
+### v1 shipped, and the LIMIT early-exit caveat
 
 **Implemented (v1, `*.stream.js`).** The per-row `emit(row)` form ships:
 `glue.RegisterJSStream` / a `NAME.stream.js` file registers a `jsStreamFunc`, the
-converter routes `FROM NAME(...)` to the `js-stream` op (`glue/ext_stream_jsvm.go`),
-and rows flow one at a time — **no materialization, bounded memory** — composing
-with WHERE/GROUP BY/aggregates. `emit(a, b, …)` yields one row per argument (the
-batch form). What v1 does *not* do: **early-terminate the source on `LIMIT`.** No
-n1k1 source early-exits today (the `YieldStats` LIMIT hook is still inert —
-`op_order.go`), so `LIMIT k` returns the right rows by dropping extras downstream
-while the JS loop still runs to completion. Practical upshot: a huge *finite*
-source is fine (bounded memory, just runs the loop); an **unbounded** source
-(`for(;;) emit(...)`) will hang under a `LIMIT` — bound your source until
-engine-wide producer early-exit lands (at which point `emit` returns `false` and
-the loop can stop, for free).
+converter routes `FROM NAME(...)` to the `js-stream` op (`glue/ext_stream_jsvm.go`), and
+rows flow one at a time — bounded memory — composing with WHERE/GROUP BY/aggregates.
+`emit(a, b, …)` yields one row per argument.
 
-### Advanced: can JS participate in n1k1's reusable-slice discipline?
+v1 does *not* early-terminate the source on `LIMIT` (the `YieldStats` LIMIT hook is
+inert — `op_order.go`): `LIMIT k` returns the right rows by dropping extras downstream
+while the JS loop runs to completion. Upshot: a huge *finite* source is fine; an
+**unbounded** source (`for(;;) emit(...)`) hangs under `LIMIT`. Bound your source until
+engine-wide producer early-exit lands (then `emit` returns `false` and the loop stops,
+for free).
 
-n1k1's zero-garbage design reuses byte buffers (`varLift`, `[]byte` recycled per
-row). Could an expert JS author avoid copies and hook into that discipline via
-`ArrayBuffer`? Partly — with real limits:
+### Advanced: can JS participate in the reusable-slice discipline?
 
-- **`SharedArrayBuffer` isn't the relevant primitive.** It exists for *cross-agent*
-  (Web Worker) shared memory. A goja `Runtime` is single-threaded — one instance
-  per goroutine, not goroutine-safe — so there's no second agent to share with.
-  The primitive that matters is plain **`ArrayBuffer`** + typed-array views
-  (`Uint8Array`, `DataView`).
-- **Near-zero-copy IN.** goja can back an `ArrayBuffer` with a Go `[]byte`
-  (`Runtime.NewArrayBuffer([]byte)`) and hand the JS a `Uint8Array` *view* over
-  n1k1's current row buffer — no copy. The JS reads/parses through typed arrays.
-- **Near-zero-copy OUT.** The JS writes results into a **preallocated**
-  `ArrayBuffer` whose bytes n1k1 reads back (`ArrayBuffer.Bytes()`), instead of
-  returning JS objects that goja would marshal (allocate) on the way out.
-- **The hard limits.** (1) *Lifetime*: n1k1 recycles the row buffer on the next
-  iteration, so a view into it is valid only *within* the callback — the JS must
-  consume (or copy out) before the pipeline advances. The push/callback model
-  makes that window well-defined. (2) goja still GC-manages all ordinary JS
-  values; only the `ArrayBuffer` backing store is under manual control, and typed
-  arrays created *inside* JS still allocate. So the discipline holds for the
-  buffers you explicitly thread through, not for arbitrary JS. (3) It's an
-  expert-only path — most JS functions will just take the ordinary
-  marshal-a-value route and pay the copy.
+n1k1 recycles byte buffers (`varLift`, `[]byte` per row). An expert author can hook in
+via `ArrayBuffer` — with limits:
 
-So: yes, a sophisticated author can operate on `ArrayBuffer`-backed views to stay
-allocation-light and honor the reuse contract *for the byte buffers they manage*,
-valid within the callback window — but it's an opt-in fast lane, not the default,
-and `SharedArrayBuffer` specifically doesn't apply to the single-threaded runtime.
+- **`SharedArrayBuffer` isn't relevant** — it's for cross-agent (Web Worker) memory; a
+  goja `Runtime` is single-threaded. Plain **`ArrayBuffer`** + typed-array views is what
+  matters.
+- **Near-zero-copy IN.** goja backs an `ArrayBuffer` with a Go `[]byte`
+  (`Runtime.NewArrayBuffer([]byte)`), handing JS a `Uint8Array` *view* over n1k1's row
+  buffer.
+- **Near-zero-copy OUT.** JS writes into a preallocated `ArrayBuffer` n1k1 reads back
+  (`ArrayBuffer.Bytes()`), instead of returning JS objects goja must marshal.
+- **Limits.** (1) *Lifetime*: the row buffer recycles next iteration, so a view is valid
+  only *within* the callback — consume/copy out first; the push model makes that window
+  well-defined. (2) goja GC-manages ordinary values; only the `ArrayBuffer` backing store
+  is manual, and typed arrays made inside JS still allocate. (3) Expert-only — most
+  functions marshal a value and pay the copy.
 
-This is exactly why **document shredding belongs at the source/scan layer, not as
-a scalar expression** (see DESIGN-data.md): shredding is one-to-many, I/O- and
-memory-heavy, and streams naturally. `SELECT … FROM shred("docs/*.pdf") AS d`
-then composes with WHERE/GROUP BY/indexing like any other scan, and spills like
-any other operator — instead of materializing a giant array inside one
-expression call.
+This is why **document shredding belongs at the source/scan layer, not a scalar
+expression** (DESIGN-data.md): one-to-many, I/O- and memory-heavy, streams naturally.
+`SELECT … FROM shred("docs/*.pdf") AS d` composes with WHERE/GROUP BY and spills like any
+operator.
 
-## JS extension power tiers: file markers, reuse, async, and calling out
+## Dynamic loading in Go
 
-Forward-looking design for how far the JS extension surface can grow. The through
--line: **goja has no ambient authority** — a bare runtime can't touch the network,
-filesystem, clock-beyond-Now, or spawn processes unless *n1k1 injects a host
-function for it*. So every capability below is an explicit, opt-in grant layered
-on the sandbox, and the file-suffix marker + `-ext` flags are where the operator
-says "yes, this dir may do that."
+Can extensions load dynamically — DLLs, `.so`, or pure-Go modules — and what does cgo
+cost?
+
+### Go's `plugin` package (`.so`) — a non-starter
+
+`plugin.Open()` loads a `-buildmode=plugin` shared object and `Lookup`s symbols.
+Disqualified:
+
+- **Requires cgo.** Built on `dlopen`, so the host must be `CGO_ENABLED=1`; under
+  `CGO_ENABLED=0` `plugin.Open` isn't implemented. Enabling cgo forfeits the static
+  binary.
+- **No Windows.** Linux/FreeBSD/macOS only; no Go equivalent of loading a DLL for *Go*
+  code.
+- **Brittle.** Plugin and host must match Go toolchain version, all shared dependency
+  versions, and build flags exactly — any drift is a load error. Can't unload.
+
+*Once loaded*, calling a plugin symbol is an ordinary Go call — **no per-call cgo cost**
+(cgo cost is only at `dlopen`/link time). The problem is incompatibility with a cgo-free,
+cross-platform, version-independent binary, not speed.
+
+### cgo cost, in general
+
+- **Pure Go, or the interpreted/Wasm runtimes below:** *zero* cgo.
+- **Actual C via cgo:** ~tens of ns/call plus pointer-passing rules. Only if an
+  extension is C — which we avoid.
+- **Go `plugin`:** forces host cgo (loses the static binary); per-call free.
+
+### Pure-Go, cgo-free ways to load/run extensions (recommended)
+
+| Mechanism | What it is | Cost | Fit |
+|---|---|---|---|
+| **Compile-time registry** | Go packages built in via `init()`-registration (or build tags). | Native, zero overhead. | Best for a curated set (the doc shredders). Adding one needs a rebuild. |
+| **wazero (Wasm)** | WebAssembly via `tetratelabs/wazero` (Apache-2, **pure Go, no cgo**, cross-platform incl. Windows). Guests compiled from Go (`GOOS=wasip1`), Rust, C, AssemblyScript. | Boundary marshaling + slower-than-native; sandboxed. Linear memory *is* an ArrayBuffer → pass bytes with minimal copy. | The modern "load an untrusted binary extension at runtime" answer; true sandbox. |
+| **yaegi (Go interpreter)** | `traefik/yaegi` (Apache-2, pure Go, no cgo) interprets Go *source* at runtime. | Interpreted; large Go subset. | "Go in a directory/repo" analog of the JS idea — no build step. |
+| **goja (JS)** | Tier-2 above. | Interpreted JS. | Drop-in scripts from a directory/repo. |
+| **subprocess / gRPC** | `hashicorp/go-plugin`: extension is a separate process. | IPC serialization per call — heavy for per-row. | Strong isolation / any language; coarse-grained, not hot loops. |
+
+Net: native `.so`/DLL loading is **out** (cgo + platform + version lock-in). Viable
+spectrum: compile-time registration (fastest) → yaegi/goja (drop-in source, no build) →
+wazero (sandboxed binary) → subprocess (isolation). All cgo-free, all keep the static
+binary.
+
+### WASM memory: zero-copy reach and bounded pools
+
+**Zero-copy is nuanced — ~1 copy in, 0 out.** A module has one **linear memory** (a
+contiguous byte array = the guest's whole address space). The guest can't hold a pointer
+into n1k1's Go heap, so you can't hand it an arbitrary `[]byte`. But the host side is
+zero-copy: wazero exposes the guest's linear memory as an aliased Go `[]byte` view
+(`api.Memory.Read`). So:
+
+- **Input** lives in linear memory → n1k1 writes row bytes in (one write).
+- **Output** read back as an aliased view → no copy.
+- **Reuse trick:** make n1k1's reusable row buffer a *fixed window of the guest's linear
+  memory* — the per-row marshal becomes the "copy in"; guest reads/writes in place. No
+  *extra* copies. Far cheaper than gRPC/subprocess.
+- **Caveat:** `memory.grow` can move the backing array, invalidating views — hold only
+  across a grow-free call, or re-fetch. Bounded (non-growable) memory keeps them stable.
+
+(Browser `SharedArrayBuffer` shares linear memory across Worker *threads* — a different
+axis, N/A to a single-threaded host embedding.)
+
+**Bounded memory is first-class.** A `memory` declares initial + optional **max** pages
+(64 KiB each); the runtime refuses `memory.grow` past max, and wazero also caps at
+runtime level (`RuntimeConfig.WithMemoryLimitPages`). Set min=max → growth fails. Core
+Wasm has **no `malloc`** (allocation is the guest's toolchain), so a guest that allocates
+does so only *within* the fixed pool — exhaustion **traps and is contained**. The call
+stack is boundable too, so deep recursion traps rather than corrupts. This isolation is
+the key advantage over goja (shares the Go heap + GC) and Go plugins (share everything).
+
+## JS extension power tiers
+
+How far the JS surface can grow. Through-line: **goja has no ambient authority** — a
+bare runtime can't touch network, filesystem, clock-beyond-Now, or spawn processes
+unless *n1k1 injects a host function*. So every capability below is opt-in; the
+file-suffix marker + `-ext` flags are where the operator says "yes, this dir may do
+that."
 
 ### Marking a table-valued / streaming source (`*.source.js`)
 
-We already dispatch by suffix: `*.js` = scalar UDF, `*.agg.js` = aggregate. A
-streaming table-valued source (the `emit`/generator protocol above) wants its own
-marker so the converter routes `FROM name(...)` to the streaming source op rather
-than guessing from the function's arity. Candidates: **`*.source.js`**
-(recommended — it names the FROM-clause role and reads well: "a source"),
-`*.stream.js` (emphasizes streaming), or `*.table.js`/`*.tvf.js`. A plain array-
-returning `*.js` still works in FROM via the materializing `expr-scan` path; the
-suffix is specifically the opt-in into the row-at-a-time `emit` contract. This
-slots into the same `extensionLoaders`/`RegisterExtensionFile` dispatch as
-`.agg.js` (a new branch → a new register path).
+We already dispatch by suffix: `*.js` = scalar UDF, `*.agg.js` = aggregate. A streaming
+source wants its own marker so the converter routes `FROM name(...)` to the streaming op
+rather than guessing from arity. Candidates: **`*.source.js`** (recommended — names the
+FROM-clause role), `*.stream.js`, `*.table.js`/`*.tvf.js`. A plain array-returning
+`*.js` still works via `expr-scan`. Slots into the same
+`extensionLoaders`/`RegisterExtensionFile` dispatch as `.agg.js`.
 
 ### Reuse across files: shared scope now, `require()` later
 
-Basic reuse **already works**: every loaded UDF is defined in one shared per-query
-runtime (see "JS UDF runtime & state"), so a `_lib.js` that defines helper
-functions is automatically visible to every other file's functions — that's how a
-UDF calls another UDF today. The catch is it's one flat global namespace (two
-files defining `helper` collide) — but the collision is **deterministic and
-author-controllable**: `RegisterExtensionDir` loads files in **sorted filename
-order**, and JS "last top-level definition wins", so a `zz_overrides.js` reliably
-shadows an earlier `base.js`'s helper (verified by `TestExtJSDirLoadOrder`). Name
-your files to encode precedence. For hygienic reuse, add an explicit
-module system: a host-provided `require("./util")` that resolves *within the
-`-ext` dirs*, evaluates a file once, and returns its exports (memoized) — goja has
-no built-in module loader, but a CommonJS-style `require` registry (à la
-`goja_nodejs`) or goja's evolving ESM `import` support both fit. `require`
-scoped-to-the-ext-dirs also doubles as a safety boundary (can't `require`
-arbitrary host paths).
+Basic reuse **already works**: every loaded UDF sits in one shared per-query runtime, so
+a `_lib.js` of helpers is visible to every file (that's how a UDF calls another today).
+Catch: one flat global namespace (two files defining `helper` collide) — but
+deterministic and author-controllable: `RegisterExtensionDir` loads in **sorted filename
+order** and JS "last top-level definition wins", so `zz_overrides.js` reliably shadows
+`base.js` (verified by `TestExtJSDirLoadOrder`). Name files to encode precedence.
+
+For hygienic reuse, add a host-provided `require("./util")` resolving *within the `-ext`
+dirs*, evaluating once and returning memoized exports — goja has no built-in loader, but
+a CommonJS registry (à la `goja_nodejs`) or goja's ESM `import` both fit. Dir-scoped
+`require` also doubles as a safety boundary (can't `require` arbitrary host paths).
 
 ### Sync vs async — do we need `async`/`await`?
 
-Mostly no, and that's a feature. n1k1 runs each operator on its own goroutine and
-is happy for a producer to **block** (a native file scan blocks on `read()`; the
-push pipeline applies backpressure around it). So the simplest, most robust model
-is **synchronous host functions**: `http_get(url)` / `s3_get(bucket,key)` /
-`run(...)` block the source goroutine, return bytes, and the JS parses and
-`emit`s — no event loop, no Promise plumbing. goja *does* accept `async`/`await`
-syntax, but resolving a Promise requires draining goja's job queue (an event
-loop), which n1k1 would have to pump and bridge back to the synchronous `yield` —
-real machinery for mostly ergonomic gain. Recommendation: ship blocking host
-calls first; offer an event-loop + `await` lane later only if authors demand the
-`await fetch()` idiom. (Concurrency *within* one source — fan-out many HTTP gets —
-is better served by a host `http_get_all([urls])` that parallelizes in Go and
-returns when all are done than by an in-goja event loop.)
+Mostly no, and that's a feature. n1k1 runs each operator on its own goroutine and is
+happy for a producer to **block** (a file scan blocks on `read()`; the pipeline applies
+backpressure). So the model is **synchronous host functions**: `http_get(url)` /
+`s3_get(bucket,key)` / `run(...)` block the source goroutine, return bytes, and the JS
+parses and `emit`s — no event loop.
 
-**Today** async isn't merely unsupported, it's *rejected cleanly*: a UDF that
-returns a Promise (the tell-tale of `async function` / `await` / an explicit
-`Promise`) fails the call with a clear "async/await … not supported … return a
-plain value" error instead of hanging or panicking (see the runtime-state notes
-above). So an accidental `async` is a fast, legible failure, not a mystery — and
-the door stays open to add a real `await` lane behind an event loop later.
+goja accepts `async`/`await` syntax, but resolving a Promise needs an event loop n1k1
+would pump and bridge to synchronous `yield` — real machinery for ergonomic gain.
+**Rejected** for now; ship blocking host calls first, offer an `await` lane later only
+if demanded. (Fan-out concurrency is better served by a host `http_get_all([urls])`
+than an in-goja event loop.) **Today** a Promise return fails cleanly with an
+"async/await … not supported … return a plain value" error — a fast, legible failure,
+door open to a real `await` lane later.
 
 ### The "full-power" operator API (emit + stats + cancel)
 
-Beyond `emit(row)`, a power-tier source is essentially *authoring a native
-operator in JS*, so give it the operator's context object:
+A power-tier source is essentially *authoring a native operator in JS*, so give it the
+operator's context object:
 
 ```js
-// metrics.source.js — the full-power shape
+// metrics.source.js
 function metrics(ctx, args) {
   for (const row of ctx.rows(args)) {          // host-provided lazy input
-    ctx.stats.inc("rows_in");                   // -> feeds n1k1's -stats footer
+    ctx.stats.inc("rows_in");                   // -> n1k1's -stats footer
     if (ctx.cancelled()) return;                // downstream LIMIT / timeout
     ctx.emit(transform(row));                   // or ctx.emitBatch([...])
   }
 }
 ```
 
-`ctx` bundles `emit`/`emitBatch` (→ the op's `func(base.Vals) bool` yield and the
-`[]base.Vals` Stage batch), `stats` (bump per-op counters — DESIGN-stats.md, so a
-JS source shows up in the runtime footer like any operator), `cancelled()`
-(backpressure/timeout/`LIMIT` as a poll instead of an `emit` return), and `log`.
-This is the "I know what I'm doing" tier: more surface, more responsibility, same
-push/backpressure/spill contract as the engine's own ops.
+`ctx` bundles `emit`/`emitBatch` (→ the op's yield and Stage batch), `stats` (per-op
+counters — DESIGN-stats.md), `cancelled()` (backpressure/timeout/`LIMIT` as a poll), and
+`log`. The "I know what I'm doing" tier: more surface, same push/backpressure/spill
+contract as native ops.
 
 ### Reaching outside: HTTP/S3, and `system()` to allowlisted programs
 
-Because the sandbox grants nothing by default, "drag data off S3 or an HTTPS
-endpoint" is just a host function the operator opts into — gated by a capability
-flag (e.g. `-ext-allow-net`, ideally with a host/bucket allowlist to blunt SSRF
-and exfiltration, the classic in-process-JS risks the Caveats call out). A
-`shred("s3://…")` or `fetch_ndjson(url)` **streaming source** then pulls bytes and
-`emit`s rows as they arrive — bounded memory, backpressure throttling the fetch.
+Since the sandbox grants nothing, "drag data off S3 or HTTPS" is a host function gated by
+a capability flag (`-ext-allow-net`, ideally with a host/bucket allowlist to blunt
+SSRF/exfiltration). A `shred("s3://…")` / `fetch_ndjson(url)` streaming source pulls bytes
+and `emit`s rows as they arrive — bounded memory, backpressure throttling the fetch.
 
-Shelling out is the most powerful (and most dangerous) grant: a host
-`run(cmd, args, stdin?)` that executes **only programs found in the `-ext` dirs**
-— the extension directory doubles as the sanctioned `bin/`, so the operator vets
-exactly what's runnable (arbitrary `/bin/sh` isn't, unless placed/symlinked
-there). The JS reads the child's stdout as a **lazy line/record iterator**,
-transforms, and `emit`s — i.e. wrap any external tool (a `pdftotext`, a Python
-munger) as a streaming table-valued source. This is the "subprocess/IPC" row of
-the dynamic-loading table, and it must be a distinct opt-in (`-ext-allow-exec`):
-a subprocess runs with the engine's privileges, so allowlist-by-directory is the
-containment, not a true sandbox. Streaming from the pipe keeps memory bounded and
-lets `LIMIT` early-terminate (close the pipe → SIGPIPE the child).
+Shelling out is the most powerful/dangerous grant: a host `run(cmd, args, stdin?)`
+executing **only programs found in the `-ext` dirs** — the extension dir doubles as the
+sanctioned `bin/`. The JS reads the child's stdout as a lazy iterator, transforms, and
+`emit`s — wrapping any external tool (`pdftotext`, a Python munger) as a streaming source.
+Distinct opt-in (`-ext-allow-exec`): a subprocess runs with the engine's privileges, so
+allowlist-by-directory is the containment, not a true sandbox. Streaming from the pipe
+keeps memory bounded and lets `LIMIT` early-terminate (close pipe → SIGPIPE child).
 
 ### Turtles all the way down: `system()`-ing n1k1 itself
 
-A delightful special case of the above: one of the allowlisted programs is `n1k1`
-itself. A JS source that runs `n1k1 -c "SELECT …" other/dataRoot` and ingests its
-JSONL output becomes a **federation / fan-out** primitive — query a second
-datastore (or host) from inside the first, map-reduce across shards, or use n1k1
-as its own remote subquery engine, each child a *separate process* (crash- and
-memory-isolated — a stronger boundary than in-process goja). Two things to carry
-forward as requirements: (1) a **recursion guard** — pass a depth counter via env
-to the child and refuse past N, or a query that shells to n1k1 that runs the same
-query is a fork bomb; (2) it composes with the streaming contract, so a parent can
-start consuming a child's rows before the child finishes. Same shape as any
-subprocess source — n1k1 just happens to be the program on the other end.
+A special case: one allowlisted program is `n1k1` itself. A JS source running
+`n1k1 -c "SELECT …" other/dataRoot` and ingesting its JSONL becomes a **federation /
+fan-out** primitive — query a second datastore/host from inside the first, map-reduce
+across shards, each child a *separate process* (crash- and memory-isolated). Requirements:
+a **recursion guard** (depth counter via env, refuse past N — else a query that shells to
+n1k1 running itself is a fork bomb), and it composes with streaming (a parent consumes a
+child's rows before the child finishes).
 
-## Streaming CTEs / subqueries (avoiding materialization)
+## Streaming CTEs / subqueries
 
-Same materialization shape appears with CTEs. `VisitWith` records each WITH
-binding; a non-recursive `FROM cte` is **inlined** as its subquery expression and
-run through `expr-scan` — i.e. evaluated to a full value, then streamed. Recursive
-CTEs (`with-recursive`) materialize each working set per fixpoint iteration.
-(cbq itself materializes subqueries/CTEs too, so this matches upstream.)
+Same materialization shape as subqueries. `VisitWith` records each WITH binding; a
+non-recursive `FROM cte` is **inlined** as its subquery expression, run through
+`expr-scan` — evaluated to a full value, then streamed. Recursive CTEs materialize each
+working set per fixpoint iteration. (cbq materializes these too.)
 
-Two improvements, in increasing ambition:
+Two improvements, relying on existing yield + spill primitives (new work is in the
+converter/planner-bridge, not the runtime):
 
-1. **Single-use CTE → pure pipe.** If a CTE is referenced exactly once, run its
-   SELECT as a **child operator feeding the consumer directly** rather than
-   inlining-and-evaluating to a full value. No materialization at all — pure
-   streaming. The planner already gives us the raw material: the subquery's
-   `plan.ExpressionScan` carries its sub-plan via `SetSubqueryPlan(selOp)` (see
-   above), so the converter can convert `selOp` into a child op and wire it in,
-   instead of routing to the materializing `expr-scan` temp.
-2. **Multi-use CTE → materialize/spill once, re-scan.** When referenced N>1
-   times, evaluate once into a **spill-backed buffer** (the same temp-file
-   machinery `ORDER BY`/join/group already use — `base/heap.go` auto-spills when a
-   buffer grows too large) and re-scan it per reference. Bounded memory, computed
-   once. This goes *beyond* cbq's always-materialize-in-RAM behavior.
+1. **Single-use CTE → pure pipe.** If referenced once, run its SELECT as a **child
+   operator feeding the consumer directly** — no materialization. The subquery's
+   `plan.ExpressionScan` carries its sub-plan via `SetSubqueryPlan(selOp)`, so the
+   converter converts `selOp` into a child op instead of routing to `expr-scan`.
+2. **Multi-use CTE → materialize/spill once, re-scan.** When referenced N>1 times,
+   evaluate once into a **spill-backed buffer** (the temp-file machinery ORDER
+   BY/join/group use — `base/heap.go` auto-spills) and re-scan per reference. Bounded
+   memory, computed once — beyond cbq's always-materialize-in-RAM.
 
-Both rely on the engine's existing yield + spill primitives; the new work is in
-the converter/planner-bridge (choosing pipe vs spill) rather than the runtime.
+## Scanning a corpus (a directory of documents)
+
+Single-file `shred("report.pdf", …)` doesn't scale to a Drive/Box/SharePoint tree of
+thousands of docs, where the *directory* drives and `shred` runs per file. Three
+spellings, increasingly n1k1-native:
+
+**A — Composable: a `files()` crawler + per-file `UNNEST shred()` (recommended)**
+
+```sql
+SELECT f.path, f.size, d.page, d.text
+FROM files("/mnt/drive", {"glob": "**/*.{pdf,docx,xlsx}"}) AS f
+UNNEST shred(f, {"want": ["text", "tables"], "pages": "1-20"}) AS d
+WHERE f.modified > "2024-01-01"
+  AND d.text LIKE "%invoice%"
+```
+
+`files()` streams one row per document (path, size, mtime, mime, bytes/handle);
+`UNNEST shred(f, …)` runs the extension per file and flattens output into rows. Powerful
+because it **separates crawling from parsing**, so cheap file-level predicates filter
+*before* the expensive shred. n1k1's `UNNEST` is implemented (`conv.go:VisitUnnest` →
+`unnest-inner`, a nested-loop streaming each element correlated to the left), so
+`UNNEST <array-returning-fn>` composes today — extension resolution is the only new
+piece.
+
+**B — Convenience: a combined directory shredder**
+
+```sql
+SELECT d.path, d.page, d.text
+FROM shred_dir("/mnt/drive", {"glob": "**/*.pdf", "want": ["text"]}) AS d
+```
+
+One function walks *and* shreds, streaming rows tagged with source path. Less
+composable, a nice shorthand.
+
+**C — Directory-as-keyspace (most n1k1-native)**
+
+```sql
+SELECT meta(f).id AS path, d.page, d.text
+FROM `drive` AS f                      -- a keyspace = the directory of docs
+UNNEST shred(f, {"want": ["text"]}) AS d
+```
+
+n1k1 already treats a subdirectory as a keyspace; here "documents" are file entries
+(metadata + bytes accessor) and `META().id` is the path. Slots into the file-source
+direction in DESIGN-data.md.
+
+### Why it executes well
+
+- **Parallel, one file per Wasm instance.** A directory is embarrassingly parallel;
+  parallel scan fans out, each worker grabbing a pooled bounded Wasm instance for a
+  *different* file.
+- **Corpus-level streaming, bounded memory.** `files()` streams entries (millions of
+  files); only *one document per worker* is resident, and `UNNEST` materializes just that
+  file's shred array. Downstream GROUP BY/ORDER BY spill.
+- **Predicate/column pushdown.** Form A skips parsing for files failing a cheap
+  predicate, and passes `{"want":…, "pages":…}` in so the extension does less work.
+- **Metadata-only queries for free.** `SELECT mime, count(*), sum(size) FROM
+  files("/mnt/drive") GROUP BY mime` — zero shredding.
+- **Incremental / caching.** With per-file content hashes (DESIGN-data.md), a re-run
+  skips unchanged files, caching shred output keyed on `hash + config`.
+
+## Namespacing & versioning of extensions
+
+cbq's function names are already **path-structured**, and since n1k1 owns the resolver it
+can layer its own scheme.
+
+**Native cbq model (path-based).** The grammar builds names via
+`functionsBridge.NewFunctionName([]parts, …)`: 1-part (`pdf_shred`), 2-part global
+(`namespace:func`), or 4-part scoped (`namespace:bucket.scope.func`) — `:` separates
+namespace, `.` the scope path. (3-part names have an explicit guard.) So `:` already
+means *namespace*; a bare `name:version` would clash.
+
+**The flexible path (recommended for a registry).** Since n1k1 supplies its own
+resolver, **backtick-quote the name** to hand the parser one literal identifier and let
+n1k1's registry interpret it:
+
+```sql
+FROM `pdf_shred:v2`(f, {...}) AS d           -- (name=pdf_shred, version=v2)
+SELECT `lean:mathlib:bozeman`(42)            -- (org=lean, pkg=mathlib, fn=bozeman)
+```
+
+Backticks stop N1QL splitting on `:`/`.`, so the resolver receives the exact string.
+Without them, `a:b:c` collides with the namespace/scope grammar.
+
+**Versioning — three levels, in preference order:**
+
+1. **Content-hash pinning (best).** Registry maps `pdf_shred:v2` → a specific Wasm
+   module *by hash*; the name is an alias, the hash is truth. Makes pipelines
+   reproducible.
+2. **Version in the (backtick-quoted) name** — simple, human-readable.
+3. **Version in config/args** — `shred(f, {"impl":"pdf_shred","version":"v2"})` — keeps
+   the SQL name stable.
+
+So `` `lean:mathlib:bozeman`(42) `` is plausible: backtick-quote → resolver reads
+`org:pkg:fn`, fetches the hash-pinned Wasm module, instantiates (bounded, pooled), runs
+— namespaced *and* versioned *and* sandboxed.
 
 ## Licensing shortlist (document parsers)
 
@@ -697,231 +679,98 @@ Verify each at adoption time (transitive deps included).
 
 ## Caveats
 
-- **Security / sandboxing.** File-reading and JS-executing functions are a real
-  attack surface for an embeddable engine. Gate behind a capability/flag, restrict
-  accessible paths, and cap goja's reach (it's in-process).
-- **Determinism.** Streaming sources and user JS can be non-deterministic and
-  can't be cheaply re-read; a re-scan means re-run or spill. Keep the suite's
-  determinism rules (see DESIGN-testing.md) in mind if these ever appear in tests.
+- **Security / sandboxing.** File-reading and JS-executing functions are a real attack
+  surface. Gate behind a capability/flag, restrict paths, cap goja's reach (it's
+  in-process).
+- **Determinism.** Streaming sources and user JS can be non-deterministic and can't be
+  cheaply re-read; a re-scan means re-run or spill. Keep DESIGN-testing.md's determinism
+  rules in mind if these appear in tests.
 - **Fast-path exclusion.** All of these run in the interpreted/boxed lane, not the
-  byte-native fast path or the compiler codegen path.
-
-## Roadmap (suggested phasing)
-
-0. **DONE — parser-resolution setters + first extensions.** Rather than wire the
-   full cbq `functions` subsystem (storage + metadata + `ParkableContext` +
-   `Language` runner), two tiny fork setters (`expression.RegisterFunction`,
-   `algebra.RegisterAggregate` — patch-05/06) open the builtin + aggregate
-   registries directly. On top of them: **Tier-2 JavaScript scalar UDFs** (step 2) and
-   the **`sparkline()`/`histogram()` extension aggregates** (a variant of step 4,
-   as native zero-garbage `base.Agg`s rather than scalar builtins). See the
-   Status section above. The heavier UDF-subsystem bridge (below) is still the
-   path for `CREATE FUNCTION` DDL / metakv-style catalogs if ever wanted.
-1. **Wire the UDF bridge** (init functions subsystem; implement
-   `VisitExecuteFunction`; provide n1k1's resolver + storage). Would add
-   `CREATE FUNCTION` DDL (Tier 3) and a metadata-backed catalog; NOT required for
-   the directory-registry Tier-2 UDFs already shipped via step 0.
-2. **DONE — Tier 2 JavaScript + a general extension loader** — the "code in a
-   repo" feature: `glue.RegisterExtensionDir`/`RegisterExtensionFile` dispatch by
-   file extension (`.js` today), CLI `-ext`/`.ext`; JS impl in `glue/ext_jsvm.go`.
-3. **Streaming source-function op** + route `FROM shred(...)`/loaders to it;
-   pair with the DESIGN-data.md file-source work.
-4. **Native Go builtins** via `expression.RegisterFunction` (fork, patch-05, now
-   available) for the document parsers, or expose them as sources per step 3.
-   (The `sparkline`/`histogram` aggregates already exercise the aggregate side of
-   this via patch-06.)
-5. **Streaming CTEs** — single-use pipe first, then multi-use spill-and-rescan.
-6. **wazero (Wasm) sandboxed extensions** — for untrusted/binary extensions where
-   goja and native builtins don't fit. Add `tetratelabs/wazero` (Apache-2, pure
-   Go, cgo-free — keeps the `CGO_ENABLED=0` static binary) as an extension host:
-   resolve a Wasm module (from the same directory/repo registry as Tier 2) to a
-   function name, instantiate it with a **bounded linear memory** (min=max pages /
-   `WithMemoryLimitPages`) so a runaway guest traps inside its own pool. Reuse the
-   step-3 streaming source-op protocol: place n1k1's recycled row buffer in a
-   fixed window of the guest's linear memory (copy-in doubles as the normal
-   marshal) and read outputs back as zero-copy `[]byte` views (re-fetch after any
-   `memory.grow`). A guest ABI convention — `alloc(n)`/`process(ptr,len)`/an
-   `emit`-style host callback for streaming — lets Wasm functions behave like both
-   scalar and table-valued/streaming sources. Extensions compile to Wasm from Go
-   (`GOOS=wasip1`), Rust, C, etc. Highest isolation, at the cost of boundary
-   marshaling + slower-than-native execution.
+  byte-native fast path or compiler codegen.
 
 ## Vision: a sandboxed extension registry
 
-The end state the Wasm path enables: an **online registry of extensions**
-(e.g. a PDF/PPTX/DOCX/XLSX shredder compiled from Go/Rust to Wasm) that a query
-pulls in and runs *safely*, because isolation is enforced by the Wasm machinery
-rather than by trusting the code. A query like:
+The end state the Wasm path enables: an **online registry** (e.g. a PDF/PPTX/DOCX/XLSX
+shredder compiled from Go/Rust to Wasm) that a query pulls in and runs *safely* —
+isolation enforced by Wasm, not by trusting the code:
 
 ```sql
 SELECT d.page, d.text
   FROM shred("report.pdf", {"want": ["text", "tables"], "pages": "1-20"}) AS d
 ```
 
-resolves `shred` to a registry Wasm module, feeds it the raw PDF bytes plus a
-config, and streams back whatever JSON the extension chooses to emit.
+resolves `shred` to a registry Wasm module, feeds it the raw PDF bytes + config, and
+streams back whatever JSON it emits.
 
-**Why this is the sweet spot (not a stretch).** "Raw bytes in → pure transform →
-stream chunks out, *no ambient authority*" is the ideal Wasm shape: a shredder
-needs **zero I/O capabilities** (no filesystem, no network), so "safe by design"
-is literally true — the sandbox confines memory *and* nothing is granted to
-exfiltrate or escape. Precedent for exactly this model: Extism (app-extensibility
-via Wasm plugins + a hub), Shopify Functions, Redpanda Data Transforms,
-Envoy/Istio proxy-wasm, Fastly Compute. This is "Extism for a SQL++ engine."
+**Why it's the sweet spot.** "Raw bytes in → pure transform → stream chunks out, *no
+ambient authority*" is the ideal Wasm shape: a shredder needs **zero I/O**, so "safe by
+design" is literally true. Precedent: Extism, Shopify Functions, Redpanda Data
+Transforms, Envoy/Istio proxy-wasm, Fastly Compute. This is "Extism for a SQL++ engine."
 
-**Architecture (maps onto n1k1's existing shapes).**
+**Architecture (maps onto n1k1's shapes).**
 
-- **Compile once, instantiate per worker.** wazero compiles the module once
-  (`CompiledModule`, shareable across goroutines); each concurrent worker gets its
-  **own instance** with its own linear memory. That is both mandatory (an instance
-  is single-threaded) and exactly how n1k1's parallel scans/joins already fan out
-  — pool instances, one per goroutine.
-- **Config prepared once.** Two amortization layers: the module compiles once; and
-  a guest `init(config)` export can parse "what do we want from this PDF" into
-  linear memory once per instance, then many documents flow through that
-  configured instance.
-- **Stream out with free backpressure.** The guest calls a host `emit(ptr,len)`
-  per chunk; the host reads it as a zero-copy linear-memory view and yields into
-  the push pipeline. Since the guest runs synchronously, `emit` can block until
-  the downstream consumer is ready — so a 500-page PDF shreds without
-  materializing the whole output.
-- **Reproducibility bonus.** A no-capabilities transform is deterministic
-  (well-defined FP, no wall clock unless granted); pinning an extension by content
-  hash makes the whole pipeline reproducible and its outputs cacheable.
+- **Compile once, instantiate per worker.** wazero compiles once (`CompiledModule`,
+  shareable across goroutines); each worker gets its **own instance** with its own linear
+  memory — mandatory (single-threaded instance) and how n1k1's parallel scans/joins fan
+  out.
+- **Config prepared once.** A guest `init(config)` export parses "what do we want from
+  this PDF" into linear memory once per instance, then many docs flow through.
+- **Stream out with free backpressure.** The guest calls a host `emit(ptr,len)` per
+  chunk; the host reads it as a zero-copy view and yields into the pipeline. The guest
+  runs synchronously, so `emit` blocks until downstream is ready — a 500-page PDF shreds
+  without materializing the whole output.
+- **Reproducibility bonus.** A no-capabilities transform is deterministic; content-hash
+  pinning makes the pipeline reproducible and outputs cacheable.
 
-**Design constraints / gotchas (carry these forward as requirements).**
+**Constraints / gotchas (carry forward as requirements).**
 
 1. **DoS ≠ memory safety.** Cap *both* memory (bounded pages) *and* CPU per call
    (`WithCloseOnContextDone` interrupts a runaway guest on context timeout).
-2. **Large-input residency vs bounded memory.** PDF parsing needs random access
-   (xref is at the end), so the whole input is usually resident — a small pool and
-   a multi-GB file conflict. Either size the pool per document or add a host
-   `read_range(off,len)` callback so the guest pulls input incrementally.
-   MB-scale docs are a non-issue.
-3. **ETL lane, not a hot loop.** Wasm parsing + boundary marshaling is slower than
-   native; this is an enrichment/ingest path (I/O-bound anyway), never an inner
-   numeric loop.
-4. **Guest toolchain heft.** Standard Go→`wasip1` modules are large and GC-heavy;
-   prefer TinyGo (smaller, Go subset) or Rust (leanest) and guide authors
-   accordingly.
-5. **Registry hygiene.** An online registry runs third-party code, so sign, record
-   provenance, and pin by version/hash. The payoff: the sandbox caps the blast
-   radius at "bad output or throttled DoS," never data exfiltration or shell — a
-   far better supply-chain story than npm/pip.
+2. **Large-input residency.** PDF parsing needs random access (xref is at the end), so
+   the whole input is usually resident — size the pool per document or add a host
+   `read_range(off,len)` for incremental pull. MB-scale docs are a non-issue.
+3. **ETL lane, not a hot loop.** Wasm parsing + marshaling is slower than native; an
+   I/O-bound enrichment path, never an inner numeric loop.
+4. **Guest toolchain heft.** Standard Go→`wasip1` modules are large and GC-heavy; prefer
+   TinyGo or Rust.
+5. **Registry hygiene.** An online registry runs third-party code — sign, record
+   provenance, pin by version/hash. Payoff: the sandbox caps blast radius at "bad output
+   or throttled DoS," never exfiltration or shell.
 
-**Sequencing** (the registry is the last, most ambitious piece): (1) a local
-single Wasm source function; (2) instance pool + `init(config)` + memory/CPU
-limits; (3) the online registry with signing and hash-pinning. The valuable core
-is step 2 — `FROM shred('x.pdf', {...})` backed by a pooled, bounded,
-capability-free Wasm instance that streams JSON; it fuses the wazero host
-(above), shred-as-a-streaming-source (DESIGN-data.md), and the emit/backpressure
-protocol.
+**Sequencing** (registry last): (1) a local single Wasm source function; (2) instance
+pool + `init(config)` + memory/CPU limits; (3) online registry with signing and
+hash-pinning. Valuable core is step 2 — `FROM shred('x.pdf', {...})` backed by a pooled,
+bounded, capability-free Wasm instance that streams JSON.
 
-## Scanning a corpus (a directory of documents)
+## Roadmap (suggested phasing)
 
-The single-file `shred("report.pdf", …)` doesn't scale to a Drive/Box/SharePoint
-tree of thousands of office docs. There the *directory* is the driver and `shred`
-runs per file. Three spellings, increasingly n1k1-native:
-
-**A — Composable: a `files()` crawler + per-file `UNNEST shred()` (recommended)**
-
-```sql
-SELECT f.path, f.size, d.page, d.text
-FROM files("/mnt/drive", {"glob": "**/*.{pdf,docx,xlsx}"}) AS f
-UNNEST shred(f, {"want": ["text", "tables"], "pages": "1-20"}) AS d
-WHERE f.modified > "2024-01-01"
-  AND d.text LIKE "%invoice%"
-```
-
-`files()` streams one row per document (path, size, mtime, mime, a bytes/handle);
-`UNNEST shred(f, …)` runs the extension per file and flattens its output into
-rows. This is the powerful form because it **separates crawling from parsing**, so
-cheap file-level predicates (`glob`, `modified`, `size`, `mime`) filter *before*
-the expensive shred. n1k1's `UNNEST` is implemented (`conv.go:VisitUnnest` →
-`unnest-inner`, a nested-loop that streams each element correlated to the left),
-so `UNNEST <array-returning-fn>` composes structurally today — the extension
-resolution is the only new piece.
-
-**B — Convenience: a combined directory shredder**
-
-```sql
-SELECT d.path, d.page, d.text
-FROM shred_dir("/mnt/drive", {"glob": "**/*.pdf", "want": ["text"]}) AS d
-```
-
-One source function walks the tree *and* shreds, streaming rows tagged with their
-source path. Less composable, but a nice shorthand.
-
-**C — Directory-as-keyspace (most n1k1-native)**
-
-```sql
-SELECT meta(f).id AS path, d.page, d.text
-FROM `drive` AS f                      -- a keyspace = the directory of docs
-UNNEST shred(f, {"want": ["text"]}) AS d
-```
-
-n1k1 already treats a subdirectory as a keyspace; here the "documents" are file
-entries (metadata + a bytes accessor) and `META().id` is the path. This slots into
-the file-source direction explored in DESIGN-data.md.
-
-### Why it executes well
-
-- **Parallel, one file per Wasm instance.** A directory is embarrassingly
-  parallel; n1k1's parallel scan fans out and each worker grabs a pooled, bounded
-  Wasm instance to shred a *different* file — the "concurrent threads, own
-  instance" model above.
-- **Corpus-level streaming, bounded memory.** `files()` streams entries (fine for
-  millions of files); only *one document per worker* is resident at a time, and
-  `UNNEST` materializes just that file's shred array, not the corpus. Downstream
-  GROUP BY/ORDER BY spill as usual.
-- **Predicate/column pushdown.** Form A skips parsing entirely for files failing a
-  cheap file-level predicate, and passes `{"want":…, "pages":…}` into the
-  extension so it does less work — the difference between minutes and hours at
-  corpus scale.
-- **Metadata-only queries for free.** `SELECT mime, count(*), sum(size) FROM
-  files("/mnt/drive") GROUP BY mime` answers "what's in here" with zero shredding.
-- **Incremental / caching.** With per-file content hashes (see the metadata/merkle
-  ideas in DESIGN-data.md), a re-run can skip unchanged files by caching shred
-  output keyed on `hash + config` — a big win for a slowly-changing corpus.
-
-## Namespacing & versioning of extensions
-
-Extension names can be namespaced and versioned. cbq's function names are already
-**path-structured**, and because n1k1 owns the UDF resolver it can layer its own
-scheme on top.
-
-**Native cbq model (path-based).** The grammar builds names via
-`functionsBridge.NewFunctionName([]parts, …)`: 1-part (`pdf_shred`), 2-part global
-(`namespace:func`), or 4-part scoped (`namespace:bucket.scope.func`) — where `:`
-separates the **namespace** and `.` the scope path. (3-part names aren't a native
-shape — there's an explicit "cannot deal with 3 part names" guard.) So namespacing
-exists natively, but `:` already means *namespace*, so a bare `name:version` would
-clash with that meaning.
-
-**The flexible path (recommended for a registry).** Because n1k1 supplies its own
-resolver, **backtick-quote the name** to hand the parser a single literal
-identifier and let n1k1's registry resolver interpret it however you define:
-
-```sql
-FROM `pdf_shred:v2`(f, {...}) AS d           -- (name=pdf_shred, version=v2)
-SELECT `lean:mathlib:bozeman`(42)            -- (org=lean, pkg=mathlib, fn=bozeman)
-```
-
-Backticks stop N1QL from splitting on `:`/`.`, so the resolver receives the exact
-string and maps it to a registry coordinate. Without backticks, `a:b:c` collides
-with the namespace/scope grammar — so backticks are the enabler for any custom
-scheme.
-
-**Versioning — three levels, in preference order:**
-
-1. **Content-hash pinning (best).** The registry maps `pdf_shred:v2` → a specific
-   Wasm module *by hash*; the name is a human alias, the hash is the truth. This
-   makes pipelines reproducible (ties to the determinism point in the Vision).
-2. **Version in the (backtick-quoted) name** — simple and human-readable.
-3. **Version in config/args** — `shred(f, {"impl":"pdf_shred","version":"v2"})` —
-   keeps the SQL name stable and pins in params.
-
-So `` `lean:mathlib:bozeman`(42) `` is entirely plausible: backtick-quote it → the
-resolver reads `org:pkg:fn`, fetches the hash-pinned Wasm module from the registry,
-instantiates it (bounded, pooled), and runs it — namespaced *and* versioned *and*
-sandboxed.
+0. **DONE — parser-resolution setters + first extensions.** Two tiny fork setters
+   (`expression.RegisterFunction`, `algebra.RegisterAggregate` — patch-05/06) open the
+   builtin + aggregate registries directly, instead of wiring the full cbq `functions`
+   subsystem (storage + metadata + `ParkableContext` + `Language` runner). On top:
+   **Tier-2 JS scalar UDFs** (step 2) and the **`sparkline()`/`histogram()` aggregates**
+   (native `base.Agg`s). The heavier bridge (step 1) is still the path for
+   `CREATE FUNCTION` DDL / metakv catalogs if wanted.
+1. **Wire the UDF bridge** (init functions subsystem; implement `VisitExecuteFunction`;
+   provide n1k1's resolver + storage). Adds `CREATE FUNCTION` DDL (Tier 3) + a metadata
+   catalog; NOT required for the Tier-2 UDFs already shipped via step 0.
+2. **DONE — Tier 2 JavaScript + a general extension loader** — "code in a repo":
+   `glue.RegisterExtensionDir`/`RegisterExtensionFile` dispatch by extension (`.js`
+   today), CLI `-ext`/`.ext`; impl in `glue/ext_jsvm.go`.
+3. **Streaming source-function op** + route `FROM shred(...)`/loaders to it; pair with
+   DESIGN-data.md file-source work.
+4. **Native Go builtins** via `expression.RegisterFunction` (patch-05) for doc parsers,
+   or expose them as sources per step 3. (`sparkline`/`histogram` already exercise the
+   aggregate side via patch-06.)
+5. **Streaming CTEs** — single-use pipe first, then multi-use spill-and-rescan.
+6. **wazero (Wasm) sandboxed extensions** — for untrusted/binary extensions where goja
+   and native builtins don't fit. Add `tetratelabs/wazero` (Apache-2, pure Go, cgo-free,
+   keeps `CGO_ENABLED=0`): resolve a Wasm module (from the same directory/repo registry
+   as Tier 2), instantiate with a **bounded linear memory** (min=max /
+   `WithMemoryLimitPages`) so a runaway guest traps in its own pool. Reuse the step-3
+   streaming source-op protocol: place n1k1's recycled row buffer in a fixed window of the
+   guest's linear memory (copy-in doubles as the marshal), read outputs back as zero-copy
+   `[]byte` views (re-fetch after `memory.grow`). A guest ABI —
+   `alloc(n)`/`process(ptr,len)`/an `emit`-style host callback — lets Wasm functions be
+   scalar and streaming sources. Compile from Go (`GOOS=wasip1`), Rust, C. Highest
+   isolation, at the cost of boundary marshaling + slower-than-native.
