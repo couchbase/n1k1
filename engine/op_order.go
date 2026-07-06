@@ -73,18 +73,18 @@ func OpOrderOffsetLimit(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVal
 
 		_, _, _, _ = lzEncoded, lzExamined, lzValsPre, lzValsMax
 
-		lzStats := statsOf(lzVars)                      // stats (live) // <== genCompiler:hide
-		lzStatsBase := o.StatsBase                      // <== genCompiler:hide
-		statZero(lzStats, lzStatsBase+StatOrderRowsIn)  // <== genCompiler:hide
-		statZero(lzStats, lzStatsBase+StatOrderRowsOut) // <== genCompiler:hide
-		if lzStats != nil && limit < math.MaxInt64 {    // A LIMIT is a real output-row denominator. // <== genCompiler:hide
+		lzStats := StatsFromVars(lzVars)                        // stats (live) // <== genCompiler:hide
+		lzStatsBase := o.StatsBase                              // <== genCompiler:hide
+		StatsCounterZero(lzStats, lzStatsBase+StatOrderRowsIn)  // <== genCompiler:hide
+		StatsCounterZero(lzStats, lzStatsBase+StatOrderRowsOut) // <== genCompiler:hide
+		if lzStats != nil && limit < math.MaxInt64 {            // A LIMIT is a real output-row denominator. // <== genCompiler:hide
 			lzStats.Totals[lzStatsBase+StatOrderRowsOut] = limit // <== genCompiler:hide
 		} // <== genCompiler:hide
 
 		lzYieldValsOrig := lzYieldVals
 
 		lzYieldVals = func(lzVals base.Vals) {
-			statBump(lzStats, lzStatsBase+StatOrderRowsIn) // stats: live // <== genCompiler:hide
+			StatsCounterBump(lzStats, lzStatsBase+StatOrderRowsIn) // stats: live // <== genCompiler:hide
 
 			if len(orders) > 0 { // !lz
 				// If there were ORDER BY exprs, we use the lzHeap.
@@ -134,7 +134,7 @@ func OpOrderOffsetLimit(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVal
 				}
 			} else { // !lz
 				if lzExamined >= offset && lzExamined < offsetPlusLimit {
-					statBump(lzStats, lzStatsBase+StatOrderRowsOut) // stats: live // <== genCompiler:hide
+					StatsCounterBump(lzStats, lzStatsBase+StatOrderRowsOut) // stats: live // <== genCompiler:hide
 
 					lzYieldValsOrig(lzVals)
 				}
@@ -181,7 +181,7 @@ func OpOrderOffsetLimit(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVal
 
 						lzValsPre = base.ValsProjectedDecodeVals(lzItem, lzValsPre[:0])
 
-						statBump(lzStats, lzStatsBase+StatOrderRowsOut) // stats: live // <== genCompiler:hide
+						StatsCounterBump(lzStats, lzStatsBase+StatOrderRowsOut) // stats: live // <== genCompiler:hide
 
 						lzYieldValsOrig(lzValsPre)
 					}

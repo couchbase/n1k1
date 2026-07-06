@@ -77,15 +77,15 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 		_, _, _, _, _ = lzValOut, lzGroupValNew, lzGroupValReuse, lzAgg, lzGroupValPrev
 
-		lzStats := statsOf(lzVars)                        // stats (live) // <== genCompiler:hide
-		lzStatsBase := o.StatsBase                        // <== genCompiler:hide
-		statZero(lzStats, lzStatsBase+StatGroupRowsIn)    // <== genCompiler:hide
-		statZero(lzStats, lzStatsBase+StatGroupGroupsOut) // <== genCompiler:hide
+		lzStats := StatsFromVars(lzVars)                          // stats (live) // <== genCompiler:hide
+		lzStatsBase := o.StatsBase                                // <== genCompiler:hide
+		StatsCounterZero(lzStats, lzStatsBase+StatGroupRowsIn)    // <== genCompiler:hide
+		StatsCounterZero(lzStats, lzStatsBase+StatGroupGroupsOut) // <== genCompiler:hide
 
 		lzYieldValsOrig := lzYieldVals
 
 		lzYieldVals = func(lzVals base.Vals) {
-			statBump(lzStats, lzStatsBase+StatGroupRowsIn) // stats: live // <== genCompiler:hide
+			StatsCounterBump(lzStats, lzStatsBase+StatGroupRowsIn) // stats: live // <== genCompiler:hide
 
 			// Compute the group key. With no GROUP BY (empty groupExprs), this
 			// is the canonical encoding of zero vals -- one constant key -- so
@@ -214,7 +214,7 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 						}
 					} // !lz
 
-					statBump(lzStats, lzStatsBase+StatGroupGroupsOut) // stats: live // <== genCompiler:hide
+					StatsCounterBump(lzStats, lzStatsBase+StatGroupGroupsOut) // stats: live // <== genCompiler:hide
 
 					lzYieldValsOrig(lzValsOut)
 

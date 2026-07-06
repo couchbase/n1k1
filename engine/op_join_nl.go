@@ -93,10 +93,10 @@ func OpJoinNestedLoop(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 		lzValsJoin := make(base.Vals, lenLabelsAB)
 
-		lzStats := statsOf(lzVars)                        // stats (live) // <== genCompiler:hide
-		lzStatsBase := o.StatsBase                        // <== genCompiler:hide
-		statZero(lzStats, lzStatsBase+StatJoinNLRowsLeft) // <== genCompiler:hide
-		statZero(lzStats, lzStatsBase+StatJoinNLProbes)   // <== genCompiler:hide
+		lzStats := StatsFromVars(lzVars)                          // stats (live) // <== genCompiler:hide
+		lzStatsBase := o.StatsBase                                // <== genCompiler:hide
+		StatsCounterZero(lzStats, lzStatsBase+StatJoinNLRowsLeft) // <== genCompiler:hide
+		StatsCounterZero(lzStats, lzStatsBase+StatJoinNLProbes)   // <== genCompiler:hide
 
 		lzYieldValsOrig := lzYieldVals
 
@@ -105,7 +105,7 @@ func OpJoinNestedLoop(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 				return
 			}
 
-			statBump(lzStats, lzStatsBase+StatJoinNLRowsLeft) // stats: live // <== genCompiler:hide
+			StatsCounterBump(lzStats, lzStatsBase+StatJoinNLRowsLeft) // stats: live // <== genCompiler:hide
 
 			lzValsJoin = lzValsJoin[:0]
 			lzValsJoin = append(lzValsJoin, lzValsA...)
@@ -122,7 +122,7 @@ func OpJoinNestedLoop(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 			var lzVal base.Val
 
 			lzYieldVals := func(lzValsB base.Vals) {
-				statBump(lzStats, lzStatsBase+StatJoinNLProbes) // stats: live, one inner-loop visit // <== genCompiler:hide
+				StatsCounterBump(lzStats, lzStatsBase+StatJoinNLProbes) // stats: live, one inner-loop visit // <== genCompiler:hide
 
 				lzValsJoin = lzValsJoin[0:lenLabelsA]
 				lzValsJoin = append(lzValsJoin, lzValsB...)

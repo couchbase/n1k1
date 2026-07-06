@@ -42,44 +42,44 @@ var (
 	// joinNL family: Probes counts inner-loop row visits (|left| x
 	// |right-per-left|) -- the "exploding join" work signal that spins even when
 	// RowsOut stays small. See DESIGN-stats.md.
-	StatJoinNLRowsLeft = base.DefStat("RowsLeft", "outer (left) rows driving a nested-loop join", joinNLKinds...)
-	StatJoinNLProbes   = base.DefStat("Probes", "inner-loop row visits -- join work (|left|x|right|)", joinNLKinds...)
+	StatJoinNLRowsLeft = base.DefStat("RowsLeft", "outer (left) rows driving a nested-loop join", StatsJoinNLKinds...)
+	StatJoinNLProbes   = base.DefStat("Probes", "inner-loop row visits -- join work (|left|x|right|)", StatsJoinNLKinds...)
 )
 
-// statsOf returns the request's shared *Stats for live, per-row counter updates,
+// StatsJoinNLKinds are the op Kinds handled by OpJoinNestedLoop; they share a stats layout.
+var StatsJoinNLKinds = []string{
+	"joinNL-inner", "joinNL-leftOuter",
+	"joinKeys-inner", "joinKeys-leftOuter",
+	"nestNL-inner", "nestNL-leftOuter",
+	"nestKeys-inner", "nestKeys-leftOuter",
+	"unnest-inner", "unnest-leftOuter",
+}
+
+// StatsFromVars returns the request's shared *Stats for live, per-row counter updates,
 // or nil when stats are off. Ops bump their counters as rows flow (so the CLI's
 // live display animates instead of only showing final totals). These live updates
 // are interpreter-only for now: their call sites are marked genCompiler:hide, so
 // the compiled path is unaffected (see DESIGN-stats.md's KNOWN LIMITATION).
-func statsOf(lzVars *base.Vars) *base.Stats {
+func StatsFromVars(lzVars *base.Vars) *base.Stats {
 	if lzVars != nil && lzVars.Ctx != nil {
 		return lzVars.Ctx.Stats
 	}
 	return nil
 }
 
-// statBump increments counter i (a no-op when stats are off). statZero resets it
-// to 0 -- called at an op's setup so a re-run op (e.g. a nested-loop join's inner
-// subtree, re-executed per outer row) restarts its counters each invocation,
+// StatsCounterBump increments counter i (a no-op when stats are off). StatsCounterZero
+// resets it to 0 -- called at an op's setup so a re-run op (e.g. a nested-loop join's
+// inner subtree, re-executed per outer row) restarts its counters each invocation,
 // matching the datastore scan's per-invocation semantics and giving a live bar
 // that resets. Single-writer per op instance, so no atomics.
-func statBump(s *base.Stats, i int) {
+func StatsCounterBump(s *base.Stats, i int) {
 	if s != nil {
 		s.Counters[i]++
 	}
 }
 
-func statZero(s *base.Stats, i int) {
+func StatsCounterZero(s *base.Stats, i int) {
 	if s != nil {
 		s.Counters[i] = 0
 	}
-}
-
-// joinNLKinds are the op Kinds handled by OpJoinNestedLoop; they share a layout.
-var joinNLKinds = []string{
-	"joinNL-inner", "joinNL-leftOuter",
-	"joinKeys-inner", "joinKeys-leftOuter",
-	"nestNL-inner", "nestNL-leftOuter",
-	"nestKeys-inner", "nestKeys-leftOuter",
-	"unnest-inner", "unnest-leftOuter",
 }

@@ -27,22 +27,22 @@ func OpFilter(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 		// display animates; they are genCompiler:hide'd -> interpreter-only for now
 		// (the compiled path collects no stats -- see DESIGN-stats.md's KNOWN
 		// LIMITATION). statZero resets at setup so a re-run filter restarts.
-		lzStats := statsOf(lzVars)                       // <== genCompiler:hide
-		lzStatsBase := o.StatsBase                       // <== genCompiler:hide
-		statZero(lzStats, lzStatsBase+StatFilterRowsIn)  // <== genCompiler:hide
-		statZero(lzStats, lzStatsBase+StatFilterRowsOut) // <== genCompiler:hide
+		lzStats := StatsFromVars(lzVars)                         // <== genCompiler:hide
+		lzStatsBase := o.StatsBase                               // <== genCompiler:hide
+		StatsCounterZero(lzStats, lzStatsBase+StatFilterRowsIn)  // <== genCompiler:hide
+		StatsCounterZero(lzStats, lzStatsBase+StatFilterRowsOut) // <== genCompiler:hide
 
 		lzYieldValsOrig := lzYieldVals
 
 		lzYieldVals = func(lzVals base.Vals) {
-			statBump(lzStats, lzStatsBase+StatFilterRowsIn) // stats: live // <== genCompiler:hide
+			StatsCounterBump(lzStats, lzStatsBase+StatFilterRowsIn) // stats: live // <== genCompiler:hide
 
 			var lzVal base.Val
 
 			lzVal = exprFunc(lzVals, lzYieldErr) // <== emitCaptured: pathNextF "FF"
 
 			if base.ValTruthy(lzVal) {
-				statBump(lzStats, lzStatsBase+StatFilterRowsOut) // stats: live // <== genCompiler:hide
+				StatsCounterBump(lzStats, lzStatsBase+StatFilterRowsOut) // stats: live // <== genCompiler:hide
 
 				lzYieldValsOrig(lzVals) // <== emitCaptured: path ""
 			}
