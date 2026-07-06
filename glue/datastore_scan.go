@@ -104,6 +104,7 @@ func listDocKeys(dir string) ([]string, error) {
 // scanKeys returns dir's doc keys, memoized per request (read + cached on the first
 // full scan; a map hit on every re-scan). Past the key cap it lists fresh without
 // caching. First writer wins under a race.
+// TODO: Or should it eject oldest or least popular entries and cache the freshest one?
 func (c *GlueContext) scanKeys(dir string) ([]string, error) {
 	c = c.getRoot() // the cache lives on the root, shared across UNION ALL clones
 	c.scanKeyCacheMu.Lock()
@@ -139,6 +140,7 @@ func (c *GlueContext) scanKeys(dir string) ([]string, error) {
 // re-walking the tree (a readdir + an lstat + path building per entry). Gated by
 // DatastoreScanCache (env N1K1_SCAN_NOCACHE); keyed by dir + the walk spec so a
 // different -scan filter can't collide. First writer wins under a race.
+// TODO: Or should it eject oldest or least popular entries and cache the freshest one?
 func (c *GlueContext) walkFiles(dir string, opts records.WalkOptions) ([]string, error) {
 	if !DatastoreScanCache {
 		return records.WalkFiles(dir, opts)
@@ -196,6 +198,9 @@ func (c *GlueContext) scanContainerKeys(ks datastore.Keyspace) ([]string, error)
 
 	opts := ScanWalkOptions
 	opts.PathPrefix = metaPathPrefix(ks)
+
+	// TODO: Ask records for just the id, don't need the doc?
+
 	src, err := openKeyspaceRecords(ks, opts, c)
 	if err != nil {
 		return nil, err
@@ -684,6 +689,8 @@ func DatastoreScanIndexCovering(o *base.Op, vars *base.Vars,
 // [["region"],["address","city"]] + keys [v0,v1] -> {"region":v0,"address":{"city":v1}}).
 // A MISSING/absent key value leaves the field out (matching a doc that lacked it).
 // The buffer is reused across rows (the drain consumes each yield synchronously).
+//
+// TODO: reconstructCoverDoc() without memory allocs / boxing.
 func reconstructCoverDoc(paths [][]string, keys value.Values,
 	buf *bytes.Buffer) (base.Val, error) {
 	doc := value.NewValue(map[string]interface{}{})
@@ -729,6 +736,9 @@ func reconstructCoverDoc(paths [][]string, keys value.Values,
 // because the hit score is only available at the scan and would be lost across a
 // separate fetch op -- so VisitIndexFtsSearch emits no synth fetch and VisitFetch
 // passes through after this op.
+//
+// TODO: FTS streaming that doesn't materialize hits?
+// TODO: FTS hits aren't boxed / less memory allocs?
 func DatastoreScanFTS(o *base.Op, vars *base.Vars,
 	yieldVals base.YieldVals, yieldErr base.YieldErr) {
 	context := vars.Temps[0].(*GlueContext)
@@ -829,6 +839,8 @@ func DatastoreScanFTS(o *base.Op, vars *base.Vars,
 // {score, id}} -- which ConvertVals binds under value.ATT_SMETA on the alias value.
 // SEARCH_META(alias) reads outname's object off that attachment and SEARCH_SCORE
 // reads its `.score` (see the search package's SearchMeta/SearchScore).
+//
+// TODO: writeSmetaJSON() without boxing / memory allocs.
 func writeSmetaJSON(buf *bytes.Buffer, outName string, score value.Value, id string) error {
 	meta := map[string]interface{}{"id": id}
 	if score != nil {
@@ -855,6 +867,8 @@ func DatastoreScan(o *base.Op, vars *base.Vars,
 // AnnotatedValue.SetCover -- is not used: n1k1 has no cover slots on base.Val, so
 // covering is answered by reconstructing the doc and letting stripCovers peel the
 // covers back to plain field accesses; see conv.go/expr.go.)
+//
+// TODO: datastoreScanDrain() that avoids mem allocs / boxing?
 func datastoreScanDrain(o *base.Op, vars *base.Vars,
 	yieldVals base.YieldVals, yieldErr base.YieldErr,
 	cb func(*GlueContext, *datastore.IndexConnection),
@@ -926,6 +940,8 @@ func EvalSpan(context *GlueContext, ps *plan.Span, parent value.Value) (
 
 // -------------------------------------------------------------------
 
+// TODO: EvalExprs() has optional prealloc'ed results / no mem allocs,
+// or is it not called in the hot loop per record?
 func EvalExprs(context *GlueContext, cx expression.Expressions,
 	parent value.Value) (cv value.Values, empty bool, err error) {
 	if len(cx) > 0 {
@@ -944,6 +960,8 @@ func EvalExprs(context *GlueContext, cx expression.Expressions,
 
 // -------------------------------------------------------------------
 
+// TODO: Can EvalExpr() be unboxed / no mem allocs,
+// or is it not called in the hot loop per record?
 func EvalExpr(context *GlueContext, expr expression.Expression,
 	parent value.Value) (v value.Value, empty bool, err error) {
 	if expr != nil {
