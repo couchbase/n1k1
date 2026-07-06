@@ -13,7 +13,7 @@
 
 package glue
 
-// Vectorized aggregation, DESIGN-col.md Step 5.1: `SELECT SUM(x) FROM data` over a
+// Columnar aggregation, DESIGN-col.md Step 5.1: `SELECT SUM(x) FROM data` over a
 // Parquet keyspace runs a fused scan->agg that reads the borrowed Arrow column
 // buffer directly (no transpose), reusing base.AggSum's accumulator via the
 // sum_v_* catalog keys. A post-conv rewrite pass (maybeColumnarOptimize) rewrites a
@@ -69,13 +69,13 @@ func maybeColumnarOptimize(op *base.Op, temps []interface{}) {
 	if op == nil || DisableColumnarOptimize {
 		return
 	}
-	maybeVectorizeGroup(op, temps)
+	maybeColumnarOptimizeGroup(op, temps)
 	for _, c := range op.Children {
 		maybeColumnarOptimize(c, temps)
 	}
 }
 
-func maybeVectorizeGroup(op *base.Op, temps []interface{}) {
+func maybeColumnarOptimizeGroup(op *base.Op, temps []interface{}) {
 	if op.Kind != "group" || len(op.Params) != 3 {
 		return
 	}
