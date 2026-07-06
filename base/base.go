@@ -255,7 +255,39 @@ type YieldErr func(error)
 // Labels represent names for a related instance of Vals. Usually, the
 // related Vals has the same size: len(vals) == len(labels), which
 // enables optimizations through slice positional lookups.
-type Labels []string // Ex: [`.`, `.["address","city"]`].
+//
+// A label names what its Vals[i] slot holds. The engine treats labels as
+// opaque strings (positional lookup via IndexOf -- see ExprLabelPath); their
+// SEMANTICS are assigned by the glue conversion (conv.go) and interpreted when
+// a row is materialized (glue ConvertVals.Convert / ConvertBytes). The first
+// character selects the namespace:
+//
+//	"."  -- the row/value body (what a projection serializes to JSON):
+//	  "."              the whole current value/row -- the slot IS the value.
+//	                   Used by RAW/ELEMENT projections and whole-doc scans.
+//	  `.["city"]`      a field: the value at top-level key "city".
+//	  `.["a","b"]`     a nested field path a.b (a JSON-encoded []string, one
+//	                   element per path step). Built via LabelSuffix (conv.go).
+//	  ".*"             star-spread (SELECT *, SELECT path.*): the slot holds an
+//	                   object whose fields are MERGED into the row, not nested
+//	                   under a key. Multiple ".*" (and ".*" mixed with fields)
+//	                   combine into one object.
+//	  (Synthetic field names may appear inside the path, e.g. `.["$group0"]`
+//	   for a computed GROUP BY key column -- still ordinary "." fields.)
+//
+//	"^"  -- an attachment: out-of-band metadata that rides ALONGSIDE the row
+//	        but is NOT emitted in the serialized body (it becomes a value.Value
+//	        annotation, dropped by WriteJSON / v.Actual()). Attached to the
+//	        preceding "."-set doc so META(alias)/SEARCH_META(alias) resolve.
+//	  "^id"            the document id            -> AnnotatedValue.SetId (META().id).
+//	  "^smeta"         FTS search-meta {score,id} -> ATT_SMETA (SEARCH_META/SCORE).
+//	  `^name`          a generic named attachment.
+//	  `^name|key`      an attachment that is a map, with sub-key "key". E.g.
+//	                   `^aggregates|count(*)` -- the group op stores each
+//	                   finalized aggregate's JSON value here, keyed by the
+//	                   aggregate's expression text (read natively by labelPath;
+//	                   see glue/expr_optimize.go).
+type Labels []string // Ex: [`.`, `.["address","city"]`, `^id`, `^aggregates|count(*)`].
 
 func (a Labels) IndexOf(s string) int {
 	for i, v := range a {
