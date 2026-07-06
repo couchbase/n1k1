@@ -45,6 +45,9 @@ var (
 // level/doc limit is hit). Honors UNION dedup, the CYCLE clause (w.CycleFields),
 // and OPTIONS limits (w.Config: "levels" / "documents"); implicit caps bound the
 // loop when a limit isn't set.
+//
+// TODO: Recursive CTE currently evaluated entirely through cbq's evaluate and
+// boxed values instead of n1k1's exprs and zero-copy Val's.
 func WithRecursiveOp(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 	yieldErr base.YieldErr) {
 	idx, ok := o.Params[0].(int)
@@ -120,6 +123,7 @@ func WithRecursiveOp(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 	// bound to it, until it produces nothing new (or a limit trips).
 	var final []interface{}
 	var idoc, ilevel int64
+
 	for len(workRes) > 0 {
 		// Level limit (recursion depth): explicit OPTIONS wins, else implicit cap.
 		if level > -1 && ilevel > level {
@@ -178,6 +182,7 @@ func WithRecursiveOp(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 			yieldErr(err)
 			return
 		}
+
 		yieldVals(base.Vals{base.Val(b)})
 	}
 
@@ -239,6 +244,7 @@ func recurDedupCycleRestrict(items []interface{}, cycleFields expression.Express
 func recurDedupCycleKey(item value.Value, cycleFields expression.Expressions,
 	ctx expression.Context) (map[string]interface{}, error) {
 	val := map[string]interface{}{}
+
 	for _, exp := range cycleFields {
 		fval, err := exp.Evaluate(item, ctx)
 		if err != nil {
@@ -248,6 +254,7 @@ func recurDedupCycleKey(item value.Value, cycleFields expression.Expressions,
 			val[exp.String()] = fval.Actual()
 		}
 	}
+
 	return val, nil
 }
 
@@ -262,11 +269,13 @@ func recurConfig(config value.Value) (level, document int64, err error) {
 	if config.Type() != value.OBJECT {
 		return -1, -1, fmt.Errorf("with-recursive: OPTIONS is not an object (%v)", config.Type())
 	}
+
 	for field := range config.Fields() {
 		fv, _ := config.Field(field)
 		if fv.Type() != value.NUMBER {
 			return -1, -1, fmt.Errorf("with-recursive: OPTIONS %q must be numeric", field)
 		}
+
 		v, _ := fv.Actual().(float64)
 		switch field {
 		case "levels":
@@ -277,5 +286,6 @@ func recurConfig(config value.Value) (level, document int64, err error) {
 			return -1, -1, errors.NewInvalidConfigOptions(field)
 		}
 	}
+
 	return level, document, nil
 }
