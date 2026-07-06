@@ -19,6 +19,8 @@ import (
 	"path/filepath"
 	"sort"
 	"testing"
+
+	"github.com/couchbase/n1k1/base"
 )
 
 // selfTestSession writes a small two-keyspace fixture (orders + items) and opens
@@ -120,6 +122,61 @@ func TestSelfProjectNativeDifferential(t *testing.T) {
 				t.Errorf("%q: native self changed results\n native=%v\n boxed=%v", q, on, off)
 				break
 			}
+		}
+	}
+}
+
+// TestConvertBytesParity asserts ConvertVals.ConvertBytes (the boxing-free row
+// encoder) is value-equal to the boxed Convert + json.Marshal(v.Actual()) path
+// across label shapes, and reports handled=false only for shapes it defers.
+func TestConvertBytesParity(t *testing.T) {
+	boxed := func(cv *ConvertVals, vals base.Vals) string {
+		v, err := cv.Convert(vals)
+		if err != nil {
+			t.Fatalf("Convert: %v", err)
+		}
+		var b []byte
+		if v != nil {
+			b, _ = json.Marshal(v.Actual())
+		} else {
+			b = []byte("null")
+		}
+		return canonRow(string(b))
+	}
+
+	cases := []struct {
+		name        string
+		labels      base.Labels
+		vals        base.Vals
+		wantHandled bool
+	}{
+		{"fields", base.Labels{`.["a"]`, `.["b"]`}, base.Vals{base.Val(`1`), base.Val(`"x"`)}, true},
+		{"field+attachment", base.Labels{`.["o"]`, "^id"}, base.Vals{base.Val(`{"id":1,"c":{"n":"a"}}`), base.Val(`"k1"`)}, true},
+		{"missing-omitted", base.Labels{`.["a"]`, `.["b"]`}, base.Vals{base.ValMissing, base.Val(`"x"`)}, true},
+		{"null-kept", base.Labels{`.["a"]`, `.["b"]`}, base.Vals{base.Val(`null`), base.Val(`2`)}, true},
+		{"whole-row", base.Labels{"."}, base.Vals{base.Val(`{"z":9,"a":1}`)}, true},
+		{"whole-raw-scalar", base.Labels{"."}, base.Vals{base.Val(`42`)}, true},
+		{"star-object", base.Labels{".*"}, base.Vals{base.Val(`{"o":{"id":1}}`)}, true},
+		{"star-nonobject", base.Labels{".*"}, base.Vals{base.Val(`5`)}, true},
+		{"multipath-boxed", base.Labels{`.["a","b"]`}, base.Vals{base.Val(`7`)}, false},
+	}
+
+	for _, c := range cases {
+		cv, err := NewConvertVals(c.labels)
+		if err != nil {
+			t.Fatalf("%s: NewConvertVals: %v", c.name, err)
+		}
+
+		got, handled := cv.ConvertBytes(c.vals, nil)
+		if handled != c.wantHandled {
+			t.Errorf("%s: handled = %v, want %v", c.name, handled, c.wantHandled)
+			continue
+		}
+		if !handled {
+			continue // boxed fallback: parity is by construction (caller boxes).
+		}
+		if g, w := canonRow(string(got)), boxed(cv, c.vals); g != w {
+			t.Errorf("%s: ConvertBytes %s != boxed %s", c.name, g, w)
 		}
 	}
 }

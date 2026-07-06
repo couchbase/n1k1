@@ -15,6 +15,7 @@ package benchmark
 
 import (
 	"bytes"
+	"encoding/json"
 	"testing"
 
 	"github.com/couchbase/n1k1/base"
@@ -72,5 +73,49 @@ func BenchmarkSelfBoxed(b *testing.B) {
 		if err := v.WriteJSON(nil, &buf, "", "", true); err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+// The Session.OnRow / Result.Rows encoding path: ConvertVals.ConvertBytes
+// (boxing-free, reused buffer) vs the former Convert -> json.Marshal(v.Actual())
+// -- a per-projected-column row (SELECT a, b, c), the common result shape.
+var benchRowLabels = base.Labels{`.["id"]`, `.["name"]`, `.["tags"]`}
+
+var benchRowVals = base.Vals{
+	base.Val(`123`),
+	base.Val(`"widget"`),
+	base.Val(`["a","b","c"]`),
+}
+
+func BenchmarkConvertBytesNative(b *testing.B) {
+	cv, err := glue.NewConvertVals(benchRowLabels)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	var buf []byte
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		buf, _ = cv.ConvertBytes(benchRowVals, buf[:0])
+	}
+	_ = buf
+}
+
+func BenchmarkConvertBytesBoxed(b *testing.B) {
+	cv, err := glue.NewConvertVals(benchRowLabels)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		v, err := cv.Convert(benchRowVals)
+		if err != nil {
+			b.Fatal(err)
+		}
+		_, _ = json.Marshal(v.Actual())
 	}
 }

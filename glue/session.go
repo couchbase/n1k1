@@ -54,8 +54,10 @@ type Session struct {
 	// per-field skew mid-run -- fine for progress.
 	OnStats func(*base.Stats)
 
-	// OnRow, if set, is invoked with each result row's canonical JSON as it is
+	// OnRow, if set, is invoked with each result row's JSON as it is
 	// produced, instead of accumulating into Result.Rows (which stays nil).
+	// (Object keys are in projection order, not sorted -- the boxing-free
+	// encoder passes value bytes through; see ConvertVals.ConvertBytes.)
 	// Result.Count still reports the total. This is the streaming path: it lets a
 	// caller render/forward rows incrementally rather than waiting for -- and
 	// holding -- the whole result set (the WASM demo's Web Worker streams batches
@@ -270,7 +272,26 @@ func (s *Session) Run(stmt string) (res *Result, err error) {
 	var rowCount int
 	var execErr error
 
+	// rowBuf is reused across rows for the boxing-free ConvertBytes encoding;
+	// the OnRow contract already forbids retaining the passed slice.
+	var rowBuf []byte
+
 	yieldVals := func(vals base.Vals) {
+		// Fast path: render the row's JSON straight from the label bytes, with
+		// no value.Value boxing (see ConvertVals.ConvertBytes). The label set is
+		// fixed, so this either handles every row or none.
+		if b, ok := cv.ConvertBytes(vals, rowBuf[:0]); ok {
+			rowBuf = b
+			rowCount++
+			if s.OnRow != nil {
+				s.OnRow(rowBuf) // reused buffer; OnRow must copy to retain (see doc)
+			} else {
+				rows = append(rows, append(json.RawMessage(nil), rowBuf...)) // copy to keep
+			}
+			return
+		}
+
+		// Boxed fallback for shapes ConvertBytes can't encode natively.
 		v, e := cv.Convert(vals)
 		if e != nil {
 			if execErr == nil {

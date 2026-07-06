@@ -213,6 +213,13 @@ func ExprTree(vars *base.Vars, labels base.Labels,
 type ConvertVals struct {
 	Labels     base.Labels
 	LabelPaths [][]string // The len(LabelPaths) == len(Labels).
+
+	// byteMode + byte{KeyTokens,Indices} are the precomputed plan for
+	// ConvertBytes, the boxing-free JSON encoder (see self.go). Derived once
+	// from Labels, since the label set is fixed for a result.
+	byteMode      byteMode
+	byteKeyTokens [][]byte // For byteFields: one `"key":` token per emitted field.
+	byteIndices   []int    // For byteFields: the val index feeding each field.
 }
 
 func NewConvertVals(labels base.Labels) (*ConvertVals, error) {
@@ -234,7 +241,10 @@ func NewConvertVals(labels base.Labels) (*ConvertVals, error) {
 		paths = append(paths, path)
 	}
 
-	return &ConvertVals{Labels: labels, LabelPaths: paths}, nil
+	cv := &ConvertVals{Labels: labels, LabelPaths: paths}
+	cv.planBytes()
+
+	return cv, nil
 }
 
 // --------------------------------------------------------
