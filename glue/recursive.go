@@ -29,9 +29,9 @@ import (
 // an unbounded recursion (e.g. a missing termination predicate) from looping
 // forever. An explicit OPTIONS {"levels":..} / {"documents":..} replaces the
 // corresponding implicit cap (as in query).
-const (
-	maxRecurDepth = 100
-	maxRecurDocs  = 10000
+var (
+	RecurDepthMax = int64(100)
+	RecurDocsMax  = int64(10000)
 )
 
 // WithRecursiveOp runs a WITH RECURSIVE CTE's fixpoint and yields the accumulated
@@ -73,20 +73,20 @@ func WithRecursiveOp(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 	}
 	implicitMaxDepth := int64(-1)
 	if level == -1 {
-		implicitMaxDepth = maxRecurDepth
+		implicitMaxDepth = RecurDepthMax
 	}
 	implicitMaxDocs := int64(-1)
 	if document == -1 {
-		implicitMaxDocs = maxRecurDocs
+		implicitMaxDocs = RecurDocsMax
 	}
 
 	cycleFields := w.CycleFields() // CYCLE clause (may be nil)
 	union := w.IsUnion()
-	trackSet := map[string]bool{}   // UNION dedup (full item)
 	trackCycle := map[string]bool{} // CYCLE detection (cycle-field key)
+	trackSet := map[string]bool{}   // UNION dedup (full item)
 
 	dedup := func(items []interface{}) ([]interface{}, error) {
-		return dedupCycleRestrict(items, cycleFields, union, trackCycle, trackSet, gctx)
+		return recurDedupCycleRestrict(items, cycleFields, union, trackCycle, trackSet, gctx)
 	}
 
 	asArray := func(v value.Value) ([]interface{}, error) {
@@ -151,6 +151,7 @@ func WithRecursiveOp(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 		// `FROM <cte>` (an expr-scan) reads it via corrParent.
 		scope := value.NewScopeValue(
 			map[string]interface{}{alias: value.NewValue(workRes)}, nil)
+
 		prev := gctx.corrParent
 		gctx.corrParent = scope
 		sv, serr := w.RecursiveExpression().Evaluate(scope, gctx)
@@ -179,15 +180,16 @@ func WithRecursiveOp(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 		}
 		yieldVals(base.Vals{base.Val(b)})
 	}
+
 	yieldErr(nil)
 }
 
-// dedupCycleRestrict filters items in place: for UNION it drops items already
+// recurDedupCycleRestrict filters items in place: for UNION it drops items already
 // seen (trackSet, by canonical JSON); for a CYCLE clause it drops items whose
 // cycle-field key (hopVal) was already seen (trackCycle) -- cycle detection.
 // Both tracking maps persist across iterations. Ports query's
 // execution/with.go dedupAndCycleRestrict.
-func dedupCycleRestrict(items []interface{}, cycleFields expression.Expressions,
+func recurDedupCycleRestrict(items []interface{}, cycleFields expression.Expressions,
 	union bool, trackCycle, trackSet map[string]bool, ctx expression.Context) ([]interface{}, error) {
 	if !union && cycleFields == nil {
 		return items, nil
@@ -208,7 +210,7 @@ func dedupCycleRestrict(items []interface{}, cycleFields expression.Expressions,
 		}
 
 		if cycleFields != nil {
-			hv, err := hopVal(value.NewValue(item), cycleFields, ctx)
+			hv, err := recurDedupCycleKey(value.NewValue(item), cycleFields, ctx)
 			if err != nil {
 				return nil, fmt.Errorf("with-recursive: cycle key eval: %v", err)
 			}
@@ -232,9 +234,9 @@ func dedupCycleRestrict(items []interface{}, cycleFields expression.Expressions,
 	return items[:end:end], nil
 }
 
-// hopVal builds the cycle-detection key for an item: a map of each CYCLE field's
-// text -> its value (skipping MISSING). Ports query's execution/with.go hopVal.
-func hopVal(item value.Value, cycleFields expression.Expressions,
+// recurDedupCycleKey builds the cycle-detection key for an item: a map of each CYCLE field's
+// text -> its value (skipping MISSING). Ports query's execution/with.go recurDedupCycleKey.
+func recurDedupCycleKey(item value.Value, cycleFields expression.Expressions,
 	ctx expression.Context) (map[string]interface{}, error) {
 	val := map[string]interface{}{}
 	for _, exp := range cycleFields {
