@@ -152,6 +152,15 @@ func ExprCoverage(op *base.Op) (native, boxed int) {
 			} else {
 				boxed++
 			}
+			return
+		}
+		// An already-native catalog param (self, labelPath, add, ...) has no
+		// cbq expression to box -- it evaluates on the byte path, so it counts
+		// as native (matching writeExprVerdict, which marks it unboxed).
+		if pl, ok := param.([]interface{}); ok && len(pl) > 0 {
+			if name, _ := pl[0].(string); name != "" {
+				native++
+			}
 		}
 	}
 	switch op.Kind {

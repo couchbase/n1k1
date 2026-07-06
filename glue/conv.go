@@ -1141,23 +1141,38 @@ func (c *Conv) VisitInitialProject(o *plan.InitialProject) (interface{}, error) 
 			// in the row as fields (see VisitLet) but must not appear in *, so
 			// strip them -- matching query, which UnsetFields the binding names
 			// from the star value (execution/project_initial.go).
-			// The exprResetScope marker makes ExprTree evaluate this star row
-			// WITHOUT the corrParent/withScope wrap, so it spreads only the row's own
-			// fields -- WITH aliases (withScope) and outer correlated rows don't leak
-			// into *. (stripBindingNames still removes LET names, which live in the
-			// row itself.) Mirrors query's ResetParent(nil) for the star term.
-			// Stays boxed (exprTree), even for a bare SELECT *: the star value is
-			// the fully-assembled row object (e.g. {"alias": doc}), and cbq's
-			// value.WriteJSON emits object keys SORTED (sortedNames, recursively).
-			// A native byte-passthrough of the doc's own-order bytes would mismatch;
-			// a native self path would have to reproduce cbq's sorted-key canonical
-			// serialization byte-identically (blocked on encoder fidelity -- see
-			// TODO(encoder-fidelity) in base/compare.go and DESIGN-exprs.md "self-
-			// projection byte path"). The box delegates to cbq's serializer, so it's
-			// correct; cost is one Convert + WriteJSON/row, no sub-expression work.
+			//
+			// The star value is the fully-assembled row object (e.g.
+			// {"alias": doc}). The native byte path (engine.ExprSelf, gated by
+			// selfNativeSpecFor) assembles it straight from the input label
+			// vals -- zero per-row garbage -- for the common shapes (bare
+			// expression.Self over plain .["name"] field labels). It emits keys
+			// in label order, whereas cbq's value.WriteJSON emits them SORTED
+			// (sortedNames, recursively); that is a byte-level, not value-level,
+			// difference, and n1k1's result comparison is key-order-insensitive
+			// (see the test harness canonJSON / rowsMatch). Byte-identical
+			// output would additionally need a verified canonical serializer
+			// (blocked on encoder fidelity -- TODO(encoder-fidelity) in
+			// base/compare.go; see DESIGN-exprs.md "self-projection byte path").
+			//
+			// Shapes ExprSelf can't reproduce (path stars like SELECT p.*,
+			// whole-row ".", nested paths, ".*" spreads) fall back to the boxed
+			// exprTree, which delegates to cbq's serializer (one Convert +
+			// WriteJSON/row). The exprResetScope marker makes that box evaluate
+			// the star row WITHOUT the corrParent/withScope wrap, so it spreads
+			// only the row's own fields -- WITH aliases (withScope) and outer
+			// correlated rows don't leak into * (stripBindingNames still removes
+			// LET names, which live in the row itself). Mirrors query's
+			// ResetParent(nil). ExprSelf gets the same effect for free: it
+			// iterates only the row's own labels (which exclude withScope /
+			// corrParent) and selfNativeSpec drops the binding names.
 			op.Labels = append(op.Labels, ".*")
-			op.Params = append(op.Params,
-				[]interface{}{"exprTree", stripBindingNames(rt.Expression(), o.BindingNames()), exprResetScope})
+			if selfParam, ok := selfNativeSpecFor(c, o, rt.Expression()); ok {
+				op.Params = append(op.Params, selfParam)
+			} else {
+				op.Params = append(op.Params,
+					[]interface{}{"exprTree", stripBindingNames(rt.Expression(), o.BindingNames()), exprResetScope})
+			}
 			continue
 		}
 

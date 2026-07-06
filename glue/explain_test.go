@@ -22,8 +22,8 @@ import (
 
 // TestExplainConvPlan: an EXPLAIN statement populates Result.Plan (n1k1's converted
 // op tree) alongside the cbq plan row, and FormatConvPlan tags each expression's
-// eval lane -- native for byte-path exprs, boxed for the SELECT * self-projection
-// and a non-optimizable scalar function.
+// eval lane -- native for byte-path exprs (including the SELECT * self-
+// projection), boxed for a non-optimizable scalar function.
 func TestExplainConvPlan(t *testing.T) {
 	dir := t.TempDir()
 	ks := filepath.Join(dir, "default", "orders")
@@ -50,9 +50,11 @@ func TestExplainConvPlan(t *testing.T) {
 			wantAbsent: []string{boxedMarker},
 		},
 		{
-			// SELECT * is a self-projection n1k1 can't reduce -> boxed marker.
-			q:       `EXPLAIN SELECT * FROM orders o`,
-			wantSub: []string{"self " + boxedMarker},
+			// SELECT * self-projection now runs on the native byte path
+			// (engine.ExprSelf) -> rendered as "self", no boxed marker.
+			q:          `EXPLAIN SELECT * FROM orders o`,
+			wantSub:    []string{"self"},
+			wantAbsent: []string{boxedMarker},
 		},
 		{
 			// A non-optimizable scalar fn boxes; the sibling arithmetic stays native
@@ -121,15 +123,16 @@ func TestExprCoverageAndBoxedEvals(t *testing.T) {
 		t.Errorf("native query BoxedEvals = %d, want 0", res.BoxedEvals)
 	}
 
-	// SELECT * self-projection: 1 boxed expr, boxed once per row.
+	// SELECT * self-projection now runs on the native byte path
+	// (engine.ExprSelf): 1 native expr, zero boxed evals.
 	res, err = sess.Run(`SELECT * FROM items i`)
 	if err != nil {
 		t.Fatalf("star run: %v", err)
 	}
-	if nat, box := ExprCoverage(res.Plan); nat != 0 || box != 1 {
-		t.Errorf("star coverage = %d/%d, want 0 native / 1 boxed", nat, box)
+	if nat, box := ExprCoverage(res.Plan); nat != 1 || box != 0 {
+		t.Errorf("star coverage = %d/%d, want 1 native / 0 boxed", nat, box)
 	}
-	if res.BoxedEvals != n {
-		t.Errorf("SELECT * BoxedEvals = %d, want %d (one per row)", res.BoxedEvals, n)
+	if res.BoxedEvals != 0 {
+		t.Errorf("SELECT * BoxedEvals = %d, want 0 (native self)", res.BoxedEvals)
 	}
 }
