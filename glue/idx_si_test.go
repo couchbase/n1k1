@@ -152,10 +152,10 @@ func TestSuggestIndexesSmallSampleNote(t *testing.T) {
 	}
 }
 
-// TestOpenKeyspaceRecords: the shared resolver opens the right records for both a
+// TestKeyspaceRecordsOpen: the shared resolver opens the right records for both a
 // single-file and a directory keyspace -- the one seam both the scan op and the
 // suggest sampler depend on.
-func TestOpenKeyspaceRecords(t *testing.T) {
+func TestKeyspaceRecordsOpen(t *testing.T) {
 	// Single file.
 	fdir := t.TempDir()
 	fpath := filepath.Join(fdir, "events.jsonl")
@@ -191,9 +191,9 @@ func TestOpenKeyspaceRecords(t *testing.T) {
 		if err != nil {
 			t.Fatalf("KeyspaceByName: %v", err)
 		}
-		src, err := openKeyspaceRecords(ks, records.AllModes(), nil)
+		src, err := KeyspaceRecordsOpen(ks, records.AllModes(), nil)
 		if err != nil {
-			t.Fatalf("openKeyspaceRecords(%q): %v", tc.path, err)
+			t.Fatalf("KeyspaceRecordsOpen(%q): %v", tc.path, err)
 		}
 		got := drainCount(t, src)
 		src.Close()

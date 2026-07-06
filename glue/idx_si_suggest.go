@@ -107,7 +107,7 @@ type pathStat struct {
 // small to judge cardinality, or fields that just weren't selective enough), so
 // the CLI can say something more useful than "nothing found". Sampling itself is
 // correct for every layout/format (single-file, flat-root, multi-record, gzip,
-// ...) because it goes through openKeyspaceRecords, the shared scan resolver.
+// ...) because it goes through KeyspaceRecordsOpen, the shared scan resolver.
 func SuggestIndexes(store *Store, namespace, only string, sampleN int) ([]IndexSuggestion, string, error) {
 	if sampleN <= 0 {
 		sampleN = suggestDefaultSample
@@ -133,7 +133,7 @@ func SuggestIndexes(store *Store, namespace, only string, sampleN int) ([]IndexS
 		if kerr != nil {
 			continue
 		}
-		stats, sampled, err := sampleKeyspace(ks, sampleN)
+		stats, sampled, err := KeyspaceSample(ks, sampleN)
 		if err != nil {
 			return nil, "", fmt.Errorf("sampling %s: %v", ksName, err)
 		}
@@ -179,11 +179,11 @@ func emptySuggestNote(sampled, keyspaces int) string {
 	}
 }
 
-// sampleKeyspace walks up to sampleN docs, accumulating per-path stats.
-func sampleKeyspace(ks datastore.Keyspace, sampleN int) (map[string]*pathStat, int, error) {
+// KeyspaceSample walks up to sampleN docs, accumulating per-path stats.
+func KeyspaceSample(ks datastore.Keyspace, sampleN int) (map[string]*pathStat, int, error) {
 	opts := ScanWalkOptions
 	opts.PathPrefix = ""
-	src, err := openKeyspaceRecords(ks, opts, nil) // one-shot sampler; no request cache
+	src, err := KeyspaceRecordsOpen(ks, opts, nil) // one-shot sampler; no request cache
 	if err != nil {
 		return nil, 0, err
 	}

@@ -141,7 +141,7 @@ func DatastoreFetch(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 	keyspace := plan.Keyspace()
 	// A `FROM $1 AS d USE KEYS ...` (a positional/named-parameter keyspace) leaves
 	// the plan's keyspace nil -- n1k1 can't resolve a keyspace name at runtime.
-	// Fail cleanly rather than nil-deref down in keyspaceDir/openKeyspaceRecords.
+	// Fail cleanly rather than nil-deref down in KeyspaceDir/KeyspaceRecordsOpen.
 	if keyspace == nil {
 		yieldErr(fmt.Errorf("DatastoreFetch: unresolved keyspace (parameterized FROM not supported)"))
 		return
@@ -169,7 +169,7 @@ func DatastoreFetch(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 	//     flat/single-file keyspace has no <key>.json files, so it stays "".
 	//   - containerDir (multi-doc records): the keyspace's data directory, for any
 	//     keyspace -- flat (RecordsDir / the RecordsFile's dir) or classic
-	//     (keyspaceDir). Set regardless of subpaths: cbq can't fetch a container
+	//     (KeyspaceDir). Set regardless of subpaths: cbq can't fetch a container
 	//     record at all, so yielding the whole doc is the only correct option.
 	nativeDir := ""
 	containerDir := ""
@@ -177,7 +177,7 @@ func DatastoreFetch(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 		_, isFlat := keyspace.(interface{ RecordsDir() string })
 		_, isFile := keyspace.(interface{ RecordsFile() string })
 		if !isFlat && !isFile {
-			if dir, err := keyspaceDir(keyspace); err == nil {
+			if dir, err := KeyspaceDir(keyspace); err == nil {
 				if len(subPaths) == 0 {
 					nativeDir = dir
 				}

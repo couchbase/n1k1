@@ -82,10 +82,10 @@ func dirKeyspace(ks datastore.Keyspace) bool {
 	return true
 }
 
-// listDocKeys lists dir's document keys the same way cbq's file primaryIndex.Scan
+// DirDocKeys lists dir's document keys the same way cbq's file primaryIndex.Scan
 // does: every non-dir entry, mapped by documentPathToId (strip the last extension),
 // in os.ReadDir's name-sorted order (matching cbq's ioutil.ReadDir order).
-func listDocKeys(dir string) ([]string, error) {
+func DirDocKeys(dir string) ([]string, error) {
 	ents, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err
@@ -101,11 +101,11 @@ func listDocKeys(dir string) ([]string, error) {
 	return keys, nil
 }
 
-// scanKeys returns dir's doc keys, memoized per request (read + cached on the first
+// ScanKeys returns dir's doc keys, memoized per request (read + cached on the first
 // full scan; a map hit on every re-scan). Past the key cap it lists fresh without
 // caching. First writer wins under a race.
 // TODO: Or should it eject oldest or least popular entries and cache the freshest one?
-func (c *GlueContext) scanKeys(dir string) ([]string, error) {
+func (c *GlueContext) ScanKeys(dir string) ([]string, error) {
 	c = c.getRoot() // the cache lives on the root, shared across UNION ALL clones
 	c.scanKeyCacheMu.Lock()
 	if keys, ok := c.scanKeyCache[dir]; ok {
@@ -114,7 +114,7 @@ func (c *GlueContext) scanKeys(dir string) ([]string, error) {
 	}
 	c.scanKeyCacheMu.Unlock()
 
-	keys, err := listDocKeys(dir)
+	keys, err := DirDocKeys(dir)
 	if err != nil {
 		return nil, err
 	}
@@ -136,7 +136,7 @@ func (c *GlueContext) scanKeys(dir string) ([]string, error) {
 }
 
 // walkFiles returns dir's sorted eligible record-file listing, memoized per request
-// (like scanKeys) so a nested-loop re-scan replays the cached list instead of
+// (like ScanKeys) so a nested-loop re-scan replays the cached list instead of
 // re-walking the tree (a readdir + an lstat + path building per entry). Gated by
 // DatastoreScanCache (env N1K1_SCAN_NOCACHE); keyed by dir + the walk spec so a
 // different -scan filter can't collide. First writer wins under a race.
@@ -145,6 +145,7 @@ func (c *GlueContext) walkFiles(dir string, opts records.WalkOptions) ([]string,
 	if !DatastoreScanCache {
 		return records.WalkFiles(dir, opts)
 	}
+
 	c = c.getRoot() // the cache lives on the root, shared across UNION ALL clones
 	key := dir + "\x00" + opts.Spec
 	c.walkFileCacheMu.Lock()
@@ -175,9 +176,9 @@ func (c *GlueContext) walkFiles(dir string, opts records.WalkOptions) ([]string,
 	return files, nil
 }
 
-// scanContainerKeys returns a container keyspace's record ids -- the SAME ids the
+// ScanKeysContainer returns a container keyspace's record ids -- the SAME ids the
 // records scan assigns (<relpath>#<line>[@<offset>]) -- memoized per request like
-// scanKeys. It answers a full #primary IndexScan over a flat/container keyspace
+// ScanKeys. It answers a full #primary IndexScan over a flat/container keyspace
 // (a *.jsonl / multi-doc file): cbq's IndexConnection can't scan such a keyspace's
 // virtual primary index (its Scan never feeds the sender, so the drain's GetEntry
 // deadlocks -- see DatastoreScanIndex), and unlike a directory of <key>.json files
@@ -185,7 +186,7 @@ func (c *GlueContext) walkFiles(dir string, opts records.WalkOptions) ([]string,
 // the records source. The ids let a following Fetch resolve each record (via the
 // baked-in byte offset). Cache key is prefixed so it can't collide with a classic
 // dir listing.
-func (c *GlueContext) scanContainerKeys(ks datastore.Keyspace) ([]string, error) {
+func (c *GlueContext) ScanKeysContainer(ks datastore.Keyspace) ([]string, error) {
 	c = c.getRoot()
 	cacheKey := "\x00container\x00" + containerBaseDir(ks)
 
@@ -197,11 +198,11 @@ func (c *GlueContext) scanContainerKeys(ks datastore.Keyspace) ([]string, error)
 	c.scanKeyCacheMu.Unlock()
 
 	opts := ScanWalkOptions
-	opts.PathPrefix = metaPathPrefix(ks)
+	opts.PathPrefix = KeyspaceMetaPathPrefix(ks)
 
 	// TODO: Ask records for just the id, don't need the doc?
 
-	src, err := openKeyspaceRecords(ks, opts, c)
+	src, err := KeyspaceRecordsOpen(ks, opts, c)
 	if err != nil {
 		return nil, err
 	}
@@ -366,13 +367,13 @@ func DatastoreScanRecords(o *base.Op, vars *base.Vars,
 	// Per-scan: set the _meta.path prefix to this keyspace's dir-relative
 	// location, so metadata paths read like "default/orders/order-1001.json".
 	opts := ScanWalkOptions
-	opts.PathPrefix = metaPathPrefix(keyspace)
+	opts.PathPrefix = KeyspaceMetaPathPrefix(keyspace)
 
 	// Resolve the keyspace to a records.Source (a single flat file if it advertises
 	// RecordsFile, else its directory walked + unioned). openKeyspaceRecords is the
 	// one place this resolution lives, shared with the .index suggest advisor so the
 	// scan and the sampler can never disagree about where a keyspace's data is.
-	src, err := openKeyspaceRecords(keyspace, opts, context)
+	src, err := KeyspaceRecordsOpen(keyspace, opts, context)
 	if err != nil {
 		yieldErr(fmt.Errorf("DatastoreScanRecords, open %q: %v", keyspace.Name(), err))
 		return
@@ -421,10 +422,10 @@ func DatastoreScanRecords(o *base.Op, vars *base.Vars,
 	yieldErr(nil)
 }
 
-// metaPathPrefix is the keyspace's location relative to the datastore dir, used
+// KeyspaceMetaPathPrefix is the keyspace's location relative to the datastore dir, used
 // to prefix records' _meta.path. For a flat root the files sit directly under the
 // datastore dir, so there's no prefix.
-func metaPathPrefix(keyspace datastore.Keyspace) string {
+func KeyspaceMetaPathPrefix(keyspace datastore.Keyspace) string {
 	if _, ok := keyspace.(interface{ RecordsDir() string }); ok {
 		return "" // flat root
 	}
@@ -434,11 +435,11 @@ func metaPathPrefix(keyspace datastore.Keyspace) string {
 	return keyspace.Name()
 }
 
-// keyspaceDir resolves a file-datastore keyspace to its on-disk directory,
+// KeyspaceDir resolves a file-datastore keyspace to its on-disk directory,
 // <root>/<namespace>/<keyspace>, from the datastore's file:// URL. n1k1 owns
 // scan/fetch execution, so it reads the directory itself rather than routing
 // through cbq's ScanEntries/Fetch.
-func keyspaceDir(keyspace datastore.Keyspace) (string, error) {
+func KeyspaceDir(keyspace datastore.Keyspace) (string, error) {
 	// A synthetic flat-root keyspace knows its own directory (the root itself),
 	// which isn't <root>/<ns>/<keyspace>. See flat.go.
 	if rd, ok := keyspace.(interface{ RecordsDir() string }); ok {
@@ -456,18 +457,18 @@ func keyspaceDir(keyspace datastore.Keyspace) (string, error) {
 	return filepath.Join(root, ns.Name(), keyspace.Name()), nil
 }
 
-// openKeyspaceRecords opens a records.Source for a keyspace: a single flat file
+// KeyspaceRecordsOpen opens a records.Source for a keyspace: a single flat file
 // when it advertises RecordsFile (DESIGN-data.md scenario B2), otherwise its
 // directory (flat-root or <root>/<ns>/<keyspace>) walked and unioned. This is the
 // single resolver for "where does a keyspace's data live", used by both the scan
 // op (DatastoreScanRecords) and the .index suggest sampler (sampleKeyspace) so
 // they can never diverge -- the class of bug that once made .schema, which sampled
 // the filesystem on its own, report 0 docs for these layouts.
-func openKeyspaceRecords(ks datastore.Keyspace, opts records.WalkOptions, gctx *GlueContext) (records.Source, error) {
+func KeyspaceRecordsOpen(ks datastore.Keyspace, opts records.WalkOptions, gctx *GlueContext) (records.Source, error) {
 	if rf, ok := ks.(interface{ RecordsFile() string }); ok && rf.RecordsFile() != "" {
 		return records.File(rf.RecordsFile(), opts)
 	}
-	dir, err := keyspaceDir(ks)
+	dir, err := KeyspaceDir(ks)
 	if err != nil {
 		return nil, err
 	}
@@ -519,10 +520,10 @@ func DatastoreScanIndex(o *base.Op, vars *base.Vars,
 	// Native key-listing fast-path for a full (unbounded) #primary scan. Two cases,
 	// both yielding the keyspace's ids directly (bypassing cbq's IndexConnection),
 	// each memoized per request so a nested-loop join's re-scans are cache hits:
-	//   - a directory of <key>.json files: list them via readdir (scanKeys) -- also
+	//   - a directory of <key>.json files: list them via readdir (ScanKeys) -- also
 	//     the O(N^2)-readdir win.
 	//   - a flat/container keyspace (a *.jsonl / multi-doc file): read the record ids
-	//     from the records source (scanContainerKeys). REQUIRED, not just an
+	//     from the records source (ScanKeysContainer). REQUIRED, not just an
 	//     optimization -- cbq's IndexConnection can't scan such a keyspace's virtual
 	//     primary index (its Scan never feeds the sender, so the drain deadlocks).
 	// Ranged/seeked spans and n1k1 secondary indexes keep the cbq path below.
@@ -535,11 +536,11 @@ func DatastoreScanIndex(o *base.Op, vars *base.Vars,
 			var keys []string
 			var keyErr error
 			listed := false
-			if dir, err := keyspaceDir(ks); err == nil && dirKeyspace(ks) {
-				keys, keyErr = gctx.scanKeys(dir)
+			if dir, err := KeyspaceDir(ks); err == nil && dirKeyspace(ks) {
+				keys, keyErr = gctx.ScanKeys(dir)
 				listed = true
 			} else if containerBaseDir(ks) != "" {
-				keys, keyErr = gctx.scanContainerKeys(ks)
+				keys, keyErr = gctx.ScanKeysContainer(ks)
 				listed = true
 			}
 
@@ -571,7 +572,7 @@ func DatastoreScanIndex(o *base.Op, vars *base.Vars,
 			scan := vars.Temps[o.Params[0].(int)].(*plan.IndexScan)
 
 			if si, isSI := scan.Index().(index); isSI {
-				scanSISpans(context, conn, scan, si, false)
+				SISpansScan(context, conn, scan, si, false)
 				return
 			}
 
@@ -605,7 +606,7 @@ func DatastoreScanIndex(o *base.Op, vars *base.Vars,
 		})
 }
 
-// scanSISpans launches the n1k1 secondary index scan for all of an IndexScan's
+// SISpansScan launches the n1k1 secondary index scan for all of an IndexScan's
 // spans in ONE goroutine sharing a single sender, closing it exactly once at the
 // end. (A predicate can produce several spans -- an IN list, a same-field OR, a
 // DistinctScan. A goroutine-per-span, each Close-ing the shared sender, would let
@@ -613,7 +614,7 @@ func DatastoreScanIndex(o *base.Op, vars *base.Vars,
 // doesn't close; docIDs are deduped across spans so overlapping ranges never
 // double-emit. projectKeys threads through to decode key values for a covering
 // scan (DatastoreScanIndexCovering).
-func scanSISpans(context *GlueContext, conn *datastore.IndexConnection,
+func SISpansScan(context *GlueContext, conn *datastore.IndexConnection,
 	scan *plan.IndexScan, si index, projectKeys bool) {
 	limit := EvalExprInt64(context, scan.Limit(), nil, math.MaxInt64)
 
@@ -680,7 +681,7 @@ func DatastoreScanIndexCovering(o *base.Op, vars *base.Vars,
 
 	datastoreScanDrain(o, vars, yieldVals, yieldErr,
 		func(context *GlueContext, conn *datastore.IndexConnection) {
-			scanSISpans(context, conn, scan, si, true)
+			SISpansScan(context, conn, scan, si, true)
 		}, buildRow)
 }
 

@@ -581,8 +581,8 @@ func scanKeyspaceColumns(temps []interface{}, scanTemp int) []records.ColumnMeta
 		return nil
 	}
 	opts := ScanWalkOptions
-	opts.PathPrefix = metaPathPrefix(ks)
-	src, err := openKeyspaceRecords(ks, opts, nil)
+	opts.PathPrefix = KeyspaceMetaPathPrefix(ks)
+	src, err := KeyspaceRecordsOpen(ks, opts, nil)
 	if err != nil {
 		return nil
 	}
@@ -647,8 +647,8 @@ func DatastoreAggColumnar(o *base.Op, vars *base.Vars,
 	keyspace := scan.Keyspace()
 
 	opts := ScanWalkOptions
-	opts.PathPrefix = metaPathPrefix(keyspace)
-	src, err := openKeyspaceRecords(keyspace, opts, context)
+	opts.PathPrefix = KeyspaceMetaPathPrefix(keyspace)
+	src, err := KeyspaceRecordsOpen(keyspace, opts, context)
 	if err != nil {
 		yieldErr(fmt.Errorf("DatastoreColumnarAgg, open %q: %v", keyspace.Name(), err))
 		return
@@ -927,8 +927,8 @@ func DatastoreAggMetadata(o *base.Op, vars *base.Vars,
 	keyspace := scan.Keyspace()
 
 	opts := ScanWalkOptions
-	opts.PathPrefix = metaPathPrefix(keyspace)
-	src, err := openKeyspaceRecords(keyspace, opts, context)
+	opts.PathPrefix = KeyspaceMetaPathPrefix(keyspace)
+	src, err := KeyspaceRecordsOpen(keyspace, opts, context)
 	if err != nil {
 		yieldErr(fmt.Errorf("DatastoreMetadataAgg, open %q: %v", keyspace.Name(), err))
 		return
