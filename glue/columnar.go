@@ -95,7 +95,7 @@ func maybeColumnarOptimizeGroup(op *base.Op, temps []interface{}) {
 		if len(scan.Children) != 1 || scan.Children[0].Kind != "datastore-scan-records" {
 			return
 		}
-		p, ok := extractColPredicate(scan)
+		p, ok := colPredicateExtract(scan)
 		if !ok {
 			return
 		}
@@ -161,19 +161,31 @@ func maybeColumnarOptimizeGroup(op *base.Op, temps []interface{}) {
 	// otherwise agg-columnar carries the optional predicate. Fall through to the
 	// row path if neither applies.
 	if pred == nil {
-		if specs, ok := metadataAggSpecs(aggExprs, aggCalcs, colByName); ok {
+		if specs, ok := aggMetadataSpecs(aggExprs, aggCalcs, colByName); ok {
 			op.Kind = "agg-metadata"
 			op.Params = []interface{}{scanTemp, specs}
 			op.Children = nil
 			return
 		}
 	}
-	if specs, ok := columnarAggSpecs(aggExprs, aggCalcs, colByName); ok {
+	if specs, ok := aggColumnarSpecs(aggExprs, aggCalcs, colByName); ok {
 		op.Kind = "agg-columnar"
 		op.Params = []interface{}{scanTemp, specs, predSpec(pred)}
 		op.Children = nil
 		return
 	}
+}
+
+// predSpec flattens a predicate to plain interface{} for op.Params, or nil.
+func predSpec(p *colPredicate) interface{} {
+	if p == nil {
+		return nil
+	}
+	cls := make([]interface{}, len(p.clauses))
+	for i, cl := range p.clauses {
+		cls[i] = []interface{}{cl.field, int(cl.op), cl.c, cl.colType}
+	}
+	return []interface{}{p.mode, cls}
 }
 
 // colClause is one vectorizable comparison `field <op> c`.
@@ -192,23 +204,11 @@ type colPredicate struct {
 	clauses []colClause
 }
 
-// predSpec flattens a predicate to plain interface{} for op.Params, or nil.
-func predSpec(p *colPredicate) interface{} {
-	if p == nil {
-		return nil
-	}
-	cls := make([]interface{}, len(p.clauses))
-	for i, cl := range p.clauses {
-		cls[i] = []interface{}{cl.field, int(cl.op), cl.c, cl.colType}
-	}
-	return []interface{}{p.mode, cls}
-}
-
-// extractColPredicate reduces a `filter` op's cbq condition to a flat AND/OR of
+// colPredicateExtract reduces a `filter` op's cbq condition to a flat AND/OR of
 // numeric field-vs-constant comparisons. A top-level And/Or contributes its
 // operands as clauses (each must itself be a bare comparison); anything else (a
 // lone comparison aside) -- nested boolean, field-to-field, non-numeric -> false.
-func extractColPredicate(filter *base.Op) (colPredicate, bool) {
+func colPredicateExtract(filter *base.Op) (colPredicate, bool) {
 	if len(filter.Params) != 2 {
 		return colPredicate{}, false
 	}
@@ -223,7 +223,7 @@ func extractColPredicate(filter *base.Op) (colPredicate, bool) {
 	case *expression.Or:
 		mode = "or"
 	default:
-		cl, ok := extractComparison(cond)
+		cl, ok := comparisonExtract(cond)
 		if !ok {
 			return colPredicate{}, false
 		}
@@ -253,7 +253,7 @@ func flattenClauses(e expression.Expression, mode string) ([]colClause, bool) {
 		}
 		ops = n.Operands()
 	default:
-		cl, ok := extractComparison(e)
+		cl, ok := comparisonExtract(e)
 		if !ok {
 			return nil, false
 		}
@@ -270,10 +270,10 @@ func flattenClauses(e expression.Expression, mode string) ([]colClause, bool) {
 	return out, true
 }
 
-// extractComparison reduces a single cbq comparison to (field, op, const). cbq
+// comparisonExtract reduces a single cbq comparison to (field, op, const). cbq
 // rewrites >/>= to LT/LE with swapped operands, so we handle LT/LE/Eq and read
 // operand order to get the effective op.
-func extractComparison(cond expression.Expression) (colClause, bool) {
+func comparisonExtract(cond expression.Expression) (colClause, bool) {
 	var a, b expression.Expression
 	var lt, le bool // else Eq
 	switch e := cond.(type) {
@@ -288,7 +288,7 @@ func extractComparison(cond expression.Expression) (colClause, bool) {
 	}
 
 	// Orient: exactly one side a bare field, the other a numeric constant.
-	field, fieldFirst, c, ok := orientComparison(a, b)
+	field, fieldFirst, c, ok := comparisonOrient(a, b)
 	if !ok {
 		return colClause{}, false
 	}
@@ -308,9 +308,9 @@ func extractComparison(cond expression.Expression) (colClause, bool) {
 	return colClause{field: field, op: op, c: c}, true
 }
 
-// orientComparison returns (field, fieldIsFirst, const) when one operand is a bare
+// comparisonOrient returns (field, fieldIsFirst, const) when one operand is a bare
 // keyspace field and the other a numeric constant.
-func orientComparison(a, b expression.Expression) (string, bool, float64, bool) {
+func comparisonOrient(a, b expression.Expression) (string, bool, float64, bool) {
 	if field, ok := bareFieldOfExpr(a); ok {
 		if c, ok := numericConst(b); ok {
 			return field, true, c, true
@@ -338,11 +338,11 @@ func numericConst(e expression.Expression) (float64, bool) {
 	return f, ok
 }
 
-// metadataAggSpecs returns per-agg specs when EVERY aggregate can be answered from
+// aggMetadataSpecs returns per-agg specs when EVERY aggregate can be answered from
 // the footer stats alone -- COUNT(*), COUNT(x), MIN(x), MAX(x) -- so the query
 // needs zero data-page reads. ok=false if any aggregate needs a scan (SUM/AVG) or a
 // stat it lacks. Each spec: [kind, field, type], kind in count-star/count/min/max.
-func metadataAggSpecs(aggExprs, aggCalcs []interface{}, colByName map[string]records.ColumnMeta) ([]interface{}, bool) {
+func aggMetadataSpecs(aggExprs, aggCalcs []interface{}, colByName map[string]records.ColumnMeta) ([]interface{}, bool) {
 	specs := make([]interface{}, 0, len(aggCalcs))
 	for i := range aggCalcs {
 		calc, ok := aggCalcs[i].([]interface{})
@@ -384,13 +384,13 @@ func metadataAggSpecs(aggExprs, aggCalcs []interface{}, colByName map[string]rec
 	return specs, true
 }
 
-// columnarAggSpecs returns per-agg specs when EVERY aggregate is a vectorizable
+// aggColumnarSpecs returns per-agg specs when EVERY aggregate is a vectorizable
 // SUM/AVG/COUNT whose operand is a bare numeric column OR a binary +/-/* of
 // numeric column/constant terms (Step 5.5). Nulls are fine: the executor folds over
 // each batch's validity bitmap (SUM/AVG skip nulls, COUNT counts every row), so
 // null_count>0 no longer forces the row path. Each spec is [key, srcSpec] where
 // srcSpec is a field name (bare) or ["arith", op, leftTerm, rightTerm]. ok=false else.
-func columnarAggSpecs(aggExprs, aggCalcs []interface{}, colByName map[string]records.ColumnMeta) ([]interface{}, bool) {
+func aggColumnarSpecs(aggExprs, aggCalcs []interface{}, colByName map[string]records.ColumnMeta) ([]interface{}, bool) {
 	specs := make([]interface{}, 0, len(aggCalcs))
 	for i := range aggCalcs {
 		calc, ok := aggCalcs[i].([]interface{})
@@ -402,7 +402,7 @@ func columnarAggSpecs(aggExprs, aggCalcs []interface{}, colByName map[string]rec
 		if !ok {
 			return nil, false
 		}
-		key, ok := vecAggCatalogKey(aggName, resultType)
+		key, ok := aggColumnarCatalogKey(aggName, resultType)
 		if !ok {
 			return nil, false
 		}
@@ -436,7 +436,7 @@ func parseAggOperandSpec(aggExpr interface{}, colByName map[string]records.Colum
 		return field, cm.Type, true
 	}
 	// Binary +/-/* of numeric column/const terms: SUM(price * qty), materialized f64.
-	op, a, b, ok := binaryArith(expr)
+	op, a, b, ok := arithBinaryMatch(expr)
 	if !ok {
 		return nil, "", false
 	}
@@ -448,9 +448,9 @@ func parseAggOperandSpec(aggExpr interface{}, colByName map[string]records.Colum
 	return []interface{}{"arith", string(op), lTerm, rTerm}, "DOUBLE", true
 }
 
-// binaryArith matches a two-operand +, -, or * (cbq: Add/Mult are commutative with
+// arithBinaryMatch matches a two-operand +, -, or * (cbq: Add/Mult are commutative with
 // Operands(), Sub is binary). Div/Neg/>2-operand/nested aren't handled.
-func binaryArith(expr expression.Expression) (op byte, a, b expression.Expression, ok bool) {
+func arithBinaryMatch(expr expression.Expression) (op byte, a, b expression.Expression, ok bool) {
 	switch e := expr.(type) {
 	case *expression.Add:
 		if ops := e.Operands(); len(ops) == 2 {
@@ -531,11 +531,11 @@ func bareFieldOfExpr(expr expression.Expression) (string, bool) {
 	return fn.Alias(), true
 }
 
-// vecAggCatalogKey maps (aggregate name, Parquet physical type) to the vectorized
+// aggColumnarCatalogKey maps (aggregate name, Parquet physical type) to the vectorized
 // aggregate's catalog key, or ok=false when not vectorizable. Only fixed-width
 // 8-byte numeric columns (DOUBLE/INT64) are supported; SUM/AVG are typed, COUNT is
 // type-agnostic (element count) but still requires a supported column.
-func vecAggCatalogKey(aggName, colType string) (string, bool) {
+func aggColumnarCatalogKey(aggName, colType string) (string, bool) {
 	var suffix string
 	switch colType {
 	case "DOUBLE":
