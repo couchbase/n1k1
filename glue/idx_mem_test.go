@@ -98,10 +98,10 @@ func TestMemIndexRangeScanResults(t *testing.T) {
 		sql  string
 		want int
 	}{
-		{"SELECT b.name FROM beers b WHERE b.abv >= 7", 3},   // 7.0, 8.2, 10.0
-		{"SELECT b.name FROM beers b WHERE b.abv > 7", 2},    // exclusive low
-		{"SELECT b.name FROM beers b WHERE b.abv < 6", 2},    // 4.0, 5.5
-		{"SELECT b.name FROM beers b WHERE b.abv = 8.2", 1},  // point lookup
+		{"SELECT b.name FROM beers b WHERE b.abv >= 7", 3},            // 7.0, 8.2, 10.0
+		{"SELECT b.name FROM beers b WHERE b.abv > 7", 2},             // exclusive low
+		{"SELECT b.name FROM beers b WHERE b.abv < 6", 2},             // 4.0, 5.5
+		{"SELECT b.name FROM beers b WHERE b.abv = 8.2", 1},           // point lookup
 		{"SELECT b.name FROM beers b WHERE b.abv BETWEEN 5 AND 8", 2}, // 5.5, 7.0
 	}
 	for _, c := range cases {
@@ -118,7 +118,7 @@ func TestMemIndexRangeScanResults(t *testing.T) {
 func TestMemBlobRoundTrip(t *testing.T) {
 	sig := "abc123"
 	entries := [][]byte{[]byte("alpha"), []byte(""), []byte("a longer entry \x00 with a NUL")}
-	sig2, got, ok := decodeMemBlob(encodeMemBlob(sig, entries))
+	sig2, got, ok := memBlobDecode(memBlobEncode(sig, entries))
 	if !ok || sig2 != sig || len(got) != len(entries) {
 		t.Fatalf("round-trip failed: ok=%v sig=%q n=%d", ok, sig2, len(got))
 	}
@@ -127,7 +127,7 @@ func TestMemBlobRoundTrip(t *testing.T) {
 			t.Errorf("entry %d: got %q want %q", i, got[i], entries[i])
 		}
 	}
-	if _, _, ok := decodeMemBlob([]byte{0xff, 0xff}); ok {
+	if _, _, ok := memBlobDecode([]byte{0xff, 0xff}); ok {
 		t.Error("truncated blob should decode as not-ok (cache miss), not panic")
 	}
 }
@@ -160,18 +160,18 @@ func TestMemIndexUsesCacheFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sig, _, ok := decodeMemBlob(blob)
+	sig, _, ok := memBlobDecode(blob)
 	if !ok {
 		t.Fatal("could not decode the written cache blob")
 	}
 	entry := append(encodeValue(nil, value.NewValue(10.0)), []byte("b4")...)
-	if err := os.WriteFile(caches[0], encodeMemBlob(sig, [][]byte{entry}), 0o644); err != nil {
+	if err := os.WriteFile(caches[0], memBlobEncode(sig, [][]byte{entry}), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
 	// Drop the in-process (Tier 1) cache so the next open must consult the file.
 	memIndexCache.Lock()
-	memIndexCache.m = map[string]*memSlot{}
+	memIndexCache.m = map[string]*memIndexCacheSlot{}
 	memIndexCache.Unlock()
 
 	sess2, err := OpenSession(root, "default")

@@ -46,12 +46,12 @@ import (
 	"github.com/couchbase/n1k1/records"
 )
 
-// maybeMemIndexes wraps ds so keyspaces with catalog-declared (non-FTS) indexes
+// memIndexesMaybe wraps ds so keyspaces with catalog-declared (non-FTS) indexes
 // advertise in-memory secondary indexes to the planner. Mirrors
 // maybeSecondaryIndexes (idx_si.go) but with the mem backend; it's the only
 // secondary-index path in the WASM build (see idx_wasm.go) and the opt-in
 // SecondaryIndexMode="mem" path natively.
-func maybeMemIndexes(dataRoot string, ds datastore.Datastore) (datastore.Datastore, error) {
+func memIndexesMaybe(dataRoot string, ds datastore.Datastore) (datastore.Datastore, error) {
 	cat, err := loadCatalog(dataRoot)
 	if err != nil {
 		return ds, err
@@ -138,7 +138,7 @@ func (k *memKeyspace) indexer() *memIndexer {
 	k.once.Do(func() {
 		ix := &memIndexer{ks: k}
 		for _, def := range k.defs {
-			mi, err := openMemIndex(k, def)
+			mi, err := memIndexOpen(k, def)
 			if err != nil {
 				// Don't fail the query -- just don't advertise this index, so the
 				// planner falls back to a primary scan.
@@ -358,34 +358,34 @@ func (mi *memIndex) scanSpan(span *datastore.Span, limit int64,
 // index; a changed source signature triggers a rebuild.
 var memIndexCache = struct {
 	sync.Mutex
-	m map[string]*memSlot
-}{m: map[string]*memSlot{}}
+	m map[string]*memIndexCacheSlot
+}{m: map[string]*memIndexCacheSlot{}}
 
-type memSlot struct {
+type memIndexCacheSlot struct {
 	mu  sync.Mutex
 	mi  *memIndex
 	sig string
 }
 
-func memSlotFor(key string) *memSlot {
+func memIndexCacheSlotFor(key string) *memIndexCacheSlot {
 	memIndexCache.Lock()
 	defer memIndexCache.Unlock()
 	s := memIndexCache.m[key]
 	if s == nil {
-		s = &memSlot{}
+		s = &memIndexCacheSlot{}
 		memIndexCache.m[key] = s
 	}
 	return s
 }
 
-// openMemIndex returns a built, ready-to-scan in-memory index for def on ks,
+// memIndexOpen returns a built, ready-to-scan in-memory index for def on ks,
 // rebuilding (once, cached) when the keyspace source changed.
-func openMemIndex(ks *memKeyspace, def *indexDef) (*memIndex, error) {
+func memIndexOpen(ks *memKeyspace, def *indexDef) (*memIndex, error) {
 	ns := ks.Namespace().Name()
 	srcDir := filepath.Join(ks.mds.root, ns, ks.Name())
 	key := ks.mds.root + "|" + ns + "|" + ks.Name() + "|" + def.defHash()
 
-	slot := memSlotFor(key)
+	slot := memIndexCacheSlotFor(key)
 	slot.mu.Lock()
 	defer slot.mu.Unlock()
 
@@ -405,7 +405,7 @@ func openMemIndex(ks *memKeyspace, def *indexDef) (*memIndex, error) {
 	// signature) lets us skip the full keyspace scan.
 	cachePath := memCachePath(ks.mds.root, ns, ks.Name(), def.defHash())
 	if blob, e := os.ReadFile(cachePath); e == nil {
-		if cs, entries, ok := decodeMemBlob(blob); ok && cs == sig {
+		if cs, entries, ok := memBlobDecode(blob); ok && cs == sig {
 			slot.mi = &memIndex{ks: ks, def: def, entries: entries}
 			slot.sig = sig
 			return slot.mi, nil
@@ -413,11 +413,11 @@ func openMemIndex(ks *memKeyspace, def *indexDef) (*memIndex, error) {
 	}
 
 	// Tier 3: build by scanning the keyspace, then persist the blob for next time.
-	entries, err := buildMemEntries(srcDir, def)
+	entries, err := memEntriesBuild(srcDir, def)
 	if err != nil {
 		return nil, err
 	}
-	persistMemBlob(cachePath, encodeMemBlob(sig, entries))
+	memBlobPersist(cachePath, memBlobEncode(sig, entries))
 	slot.mi = &memIndex{ks: ks, def: def, entries: entries}
 	slot.sig = sig
 	return slot.mi, nil
@@ -427,11 +427,11 @@ func openMemIndex(ks *memKeyspace, def *indexDef) (*memIndex, error) {
 // the datastore's sidecar. defHash already encodes the index definition, so a
 // changed def lands on a different path (and stale ones are simply ignored).
 func memCachePath(root, ns, ks, defHash string) string {
-	name := sanitizeSeg(ns) + "__" + sanitizeSeg(ks) + "__" + defHash + ".idx"
+	name := segSanitize(ns) + "__" + segSanitize(ks) + "__" + defHash + ".idx"
 	return filepath.Join(root, sidecarDir, "cache", name)
 }
 
-func sanitizeSeg(s string) string {
+func segSanitize(s string) string {
 	var b []byte
 	for i := 0; i < len(s); i++ {
 		c := s[i]
@@ -443,10 +443,10 @@ func sanitizeSeg(s string) string {
 	return string(b)
 }
 
-// encodeMemBlob serializes an index's source signature and sorted entries into a
+// memBlobEncode serializes an index's source signature and sorted entries into a
 // self-delimiting byte blob: uvarint(len(sig))+sig, uvarint(count), then per
 // entry uvarint(len)+bytes.
-func encodeMemBlob(sig string, entries [][]byte) []byte {
+func memBlobEncode(sig string, entries [][]byte) []byte {
 	var out []byte
 	var tmp [binary.MaxVarintLen64]byte
 	putUv := func(v uint64) {
@@ -463,9 +463,9 @@ func encodeMemBlob(sig string, entries [][]byte) []byte {
 	return out
 }
 
-// decodeMemBlob is the inverse of encodeMemBlob; ok is false for a truncated or
+// memBlobDecode is the inverse of encodeMemBlob; ok is false for a truncated or
 // malformed blob (treated as a cache miss, never fatal).
-func decodeMemBlob(blob []byte) (sig string, entries [][]byte, ok bool) {
+func memBlobDecode(blob []byte) (sig string, entries [][]byte, ok bool) {
 	p := 0
 	readUv := func() (uint64, bool) {
 		v, n := binary.Uvarint(blob[p:])
@@ -508,40 +508,40 @@ func IndexCachePlan(dataRoot string) []map[string]string { return memCachePlan(d
 // whose on-disk write failed -- i.e. the WASM read-only fs. The host persists
 // these (e.g. to OPFS) and mounts them back on a later open so the cache hits.
 // Keyed by cache path. Empty in the native build (writes succeed on disk).
-func TakeIndexBlobs() map[string][]byte { return takePendingMemBlobs() }
+func TakeIndexBlobs() map[string][]byte { return memBlobsTakePending() }
 
-// pendingMemBlobs holds freshly-built index blobs whose on-disk write failed --
+// memBlobsPending holds freshly-built index blobs whose on-disk write failed --
 // i.e. the WASM build, whose in-memory fs is read-only. JS drains these (see
 // main_wasm.go's n1k1TakeIndexBlobs) and persists them to OPFS, mounting them
 // back into the fs on a later open so openMemIndex's Tier-2 cache hits. In the
 // native build the write succeeds, so nothing accumulates here.
-var pendingMemBlobs = struct {
+var memBlobsPending = struct {
 	sync.Mutex
 	m map[string][]byte // cachePath -> blob
 }{m: map[string][]byte{}}
 
-// persistMemBlob writes a built index blob to its cache path. On disk (native)
+// memBlobPersist writes a built index blob to its cache path. On disk (native)
 // that's the durable cache; when the write fails (WASM's read-only fs) the blob
 // is queued for JS to persist to OPFS instead. Best-effort: a failure never
 // fails the query (the index is already built in memory).
-func persistMemBlob(cachePath string, blob []byte) {
+func memBlobPersist(cachePath string, blob []byte) {
 	if err := os.MkdirAll(filepath.Dir(cachePath), 0o755); err == nil {
 		if err := os.WriteFile(cachePath, blob, 0o644); err == nil {
 			return
 		}
 	}
-	pendingMemBlobs.Lock()
-	pendingMemBlobs.m[cachePath] = blob
-	pendingMemBlobs.Unlock()
+	memBlobsPending.Lock()
+	memBlobsPending.m[cachePath] = blob
+	memBlobsPending.Unlock()
 }
 
-// takePendingMemBlobs returns and clears the queued (path -> blob) index blobs
+// memBlobsTakePending returns and clears the queued (path -> blob) index blobs
 // for the caller (JS/OPFS) to persist. Exposed to JS via main_wasm.go.
-func takePendingMemBlobs() map[string][]byte {
-	pendingMemBlobs.Lock()
-	defer pendingMemBlobs.Unlock()
-	out := pendingMemBlobs.m
-	pendingMemBlobs.m = map[string][]byte{}
+func memBlobsTakePending() map[string][]byte {
+	memBlobsPending.Lock()
+	defer memBlobsPending.Unlock()
+	out := memBlobsPending.m
+	memBlobsPending.m = map[string][]byte{}
 	return out
 }
 
@@ -575,10 +575,10 @@ func memCachePlan(dataRoot string) []map[string]string {
 	return plan
 }
 
-// buildMemEntries scans the keyspace's record files, evaluates the key/where
+// memEntriesBuild scans the keyspace's record files, evaluates the key/where
 // expressions per doc, and returns the sorted encode(keys)+docID entries -- the
 // in-memory analogue of idx_si.go's buildIndex.
-func buildMemEntries(srcDir string, def *indexDef) ([][]byte, error) {
+func memEntriesBuild(srcDir string, def *indexDef) ([][]byte, error) {
 	ctx := NewGlueContext(time.Now())
 
 	opts := ScanWalkOptions

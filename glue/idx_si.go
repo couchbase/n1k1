@@ -87,7 +87,7 @@ func maybeSecondaryIndexes(dataRoot string, ds datastore.Datastore) (datastore.D
 	// Opt-in mmap-free in-memory backend (the default, and only, backend in the
 	// WASM build -- see idx_wasm.go). See idx_mem.go.
 	if SecondaryIndexMode == "mem" {
-		return maybeMemIndexes(dataRoot, ds)
+		return memIndexesMaybe(dataRoot, ds)
 	}
 	cat, err := loadCatalog(dataRoot)
 	if err != nil {
