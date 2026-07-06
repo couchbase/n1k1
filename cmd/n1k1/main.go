@@ -191,7 +191,7 @@ func main() {
 
 	// Colors/emojis only for an interactive stdout, and honoring NO_COLOR.
 	fancy := isTTY(os.Stdout) &&
-	      os.Getenv(base.DefEnv("NO_COLOR", "disable colored terminal output")) == ""
+		os.Getenv(base.DefEnv("NO_COLOR", "disable colored terminal output")) == ""
 
 	c := &cli{
 		prog:      prog,
@@ -352,13 +352,20 @@ flags:
 	flag.PrintDefaults()
 
 	fmt.Fprintf(os.Stderr, "\nenv vars:\n")
+	kMaxLen := 0
+	for k, _ := range base.EnvAbout {
+		if kMaxLen < len(k) {
+			kMaxLen = len(k)
+		}
+	}
 	var lines []string
 	for k, about := range base.EnvAbout {
-	    lines = append(lines, "  " + k + ":\t" + about + "\n")
+		lines = append(lines, fmt.Sprintf("  %s:%s %s\n", k,
+			strings.Repeat(" ", kMaxLen-len(k)), about))
 	}
 	sort.Strings(lines)
 	for _, line := range lines {
-	    fmt.Fprintf(os.Stderr, line)
+		fmt.Fprintf(os.Stderr, line)
 	}
 }
 
