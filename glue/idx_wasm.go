@@ -27,5 +27,5 @@ import (
 // maybeSecondaryIndexes uses the in-memory backend under WASM (bbolt is absent).
 // Mirrors the !wasm signature in idx_si.go.
 func maybeSecondaryIndexes(dataRoot string, ds datastore.Datastore) (datastore.Datastore, error) {
-	return maybeMemIndexes(dataRoot, ds)
+	return memIndexesMaybe(dataRoot, ds)
 }

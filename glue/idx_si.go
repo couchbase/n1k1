@@ -76,11 +76,11 @@ const (
 // .open re-applies the current mode.
 var SecondaryIndexMode = "lazy"
 
-// siIndexesMaybe wraps ds so keyspaces advertise the catalog's secondary
+// maybeSecondaryIndexes wraps ds so keyspaces advertise the catalog's secondary
 // indexes. It returns ds unchanged when SecondaryIndexMode is "off", there's no
 // .n1k1/catalog.json, or it defines no indexes (the common case -- no metadata,
 // behave exactly as before).
-func siIndexesMaybe(dataRoot string, ds datastore.Datastore) (datastore.Datastore, error) {
+func maybeSecondaryIndexes(dataRoot string, ds datastore.Datastore) (datastore.Datastore, error) {
 	if SecondaryIndexMode == "off" {
 		return ds, nil
 	}
