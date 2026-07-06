@@ -7,18 +7,7 @@ Status: modernization + a pure-Go N1QL (SQL++) engine (CGO_ENABLED=0,
 cross-compiles) are done. Remaining work:
 
 ## Conformance (SQL++ suite corpus)
-- [ ] Raise the TestSuiteCases pass rate (currently ~671/691 = 97.1%: 661 that
-      produce the expected results + 10 that correctly error on error-expecting
-      cases). The pass-floor in test/suite_test.go ratchets on the 661 (results).
-      Remaining gaps: COUNT(*) over a bare keyspace (CountScan) + index-union
-      scans unsupported. Ratchet the pass-floor in test/suite_test.go as fixed.
-      NOT-FIXABLE: array_position(array_agg(...)) depends on the array_agg
-      element order, which N1QL leaves undefined -- n1k1's scan order differs
-      from the corpus's, so the position differs (same multiset). 1 case. This
-      is the ONLY remaining FAIL; the rest are UNSUPPORTED (unconverted
-      plans: index/union/count scans).
-      (DONE and moved to TODO-done.md: EXPLAIN, LET/LETTING, WITH-basic,
-      correlated + uncorrelated subqueries.)
+- [ ] Raise the TestSuiteCases pass rate.
 
 ## Keeping current with SQL++
 n1k1's SQL++ support tracks couchbase/query (parser/algebra/expression/plan/
@@ -49,9 +38,10 @@ in glue/patches/README.md.
   - sometimes keyspace terms aren't converted to label names correctly,
     like when there aren't keyspace aliases, which can lead to
     projections to not being able to access expressions
-    like (`travel-sample`.`id`) correctly?
-  - scan of COVERS needs support?
-  - scan tracks "setBit()" for intersect scan support?
+    like (`travel-sample`.`id`) correctly? FIXED already?
+  - scan of COVERS needs support? FIXED already?
+  - scan tracks "setBit()" for intersect scan support? Not needed anymore?
+  - scan related bit filters in cbq need revisit?
   - scan expression (ExpressionScan, i.e. FROM (subquery)/FROM cte) only handles
     non-correlated right now. (Expression subqueries -- IN (SELECT), scalar,
     etc. -- DO handle correlation now in the interpreter; see above. This item is
@@ -61,9 +51,6 @@ in glue/patches/README.md.
     - stage already provides some concurrency between producer & consumer.
   - classic N1QL engine uses recover() -- revisit this?
     - recover() might lead to dangling, unrecoverable resources?
-
-- numbers
-  - need to treat float's different than int's?
 
 - leveraging multiple cores?
   - scans of different partitions can be on separate cores?
@@ -79,7 +66,7 @@ in glue/patches/README.md.
     so for example first fetch can be more concurrent?
 
 - aggregate functions, advanced features?
-  - count(*) or COUNT_ALL is different than count(expr),
+  - count() or COUNT_ALL is different than count(expr) vs count(ALL expr),
     w.r.t. missing/null handling?
   - IGNORE NULL's? (RESPECT NULLS is default)
   - FROM LAST? (FROM FIRST is default)
@@ -195,14 +182,14 @@ in glue/patches/README.md.
     - JOIN can ignore attachments based on ON clause expression,
       and correctly propagate attachments.
     - ORDER BY can ignore attachments based on projected exprs,
-      and correctly propagate attachments.  Based on HeapValsProjected.
+      and correctly propagate attachments. Based on HeapValsProjected.
     - GROUP BY can ignore attachments based on group by exprs,
       and does not propagate attachments based on aggregate exprs.
     - DISTINCT might correctly ignore attachments,
       depending on how it's called with the group-by expression,
       and does not propagate attachments?
 
-EXCEPT ALL - tuple should appear MAX(m - n, 0) times in the result,
+- EXCEPT ALL - tuple should appear MAX(m - n, 0) times in the result,
   given that a tuple appears m times in the left side
   and n times in the right side, where m >= 0 and n >= 0.
 
@@ -238,9 +225,9 @@ EXCEPT ALL - tuple should appear MAX(m - n, 0) times in the result,
   - data-staging / pipeline-breaking should be helpful here?
     - but, we don't want to race too far ahead?
 
-- SIMD optimizations possible?  see: SIMD-json articles?
+- SIMD optimizations possible? see: SIMD-json articles / DESIGN-col.md?
 
-- col versus row optimizations?
+- col versus row optimizations? see: DESIGN-colmd.
   - if columns are fixed size or fixed width, then
     a Val in the Vals can be interpreted as having multiple
     values in contiguous sequence.
@@ -257,6 +244,8 @@ EXCEPT ALL - tuple should appear MAX(m - n, 0) times in the result,
 - compiled accessor(s) to a given JSON-path in a raw []byte value?
   - compiled accessor code versus generic jsonparser.Get() navigation?
 
+- compiled SQL++ might have FastCGI-like child worker processes?
+
 - divide by 0 at compile time should be checked instead of
   panic/recover that can leave unclosed, unreclaimable unresources?
 
@@ -269,9 +258,9 @@ EXCEPT ALL - tuple should appear MAX(m - n, 0) times in the result,
 - scan should have a lookup table of file suffix handlers?
 
 - advanced scans of indexes?
-  - only basic Index.Scan glue works right now.
+  - only basic Index.Scan glue works right now. <== OUTDATED?
 
-- PrimaryScan3 Scan3 does not support advanced pushdown right now...
+- PrimaryScan3 Scan3 has advanced pushdowns that we might support...
   - indexProjection, indexOrder, indexGroupAggs?
 
 - integration with scorch TermFieldReaders as a Scan source or operator?
@@ -317,7 +306,9 @@ EXCEPT ALL - tuple should appear MAX(m - n, 0) times in the result,
   - PRIOR operator / CONNECT_BY_ROOT operator?
 
 - PIVOT aggregate-funcs FOR expression IN expected-values?
-  - PIVOT count(*) FOR (time, category rating) IN ((1, "movie", 5), ...)?
+  - PIVOT count(*) FOR (time, category, rating) IN ((1, "movie", 5), ...)?
+
+- UNPIVOT?
 
 - SQL 2011 temporal features?
   - transaction time vs effective time?
@@ -340,7 +331,7 @@ EXCEPT ALL - tuple should appear MAX(m - n, 0) times in the result,
     so it might be ok.
 
 - (perhaps this is unneeded?) temporary, but reused (recyclable) raw
-  []bytes buf as a per-tuple working area might be associated with...
+  []bytes buf as a per-tuple working area...
   - perhaps the base.Vals could have a hidden labeled "^tmp"?
     - but, unlike other Val's, it would be mutated!
       so, this is not highly favored.
