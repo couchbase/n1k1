@@ -17,7 +17,7 @@ package glue
 // Parquet keyspace runs a fused scan->agg that reads the borrowed Arrow column
 // buffer directly (no transpose), reusing base.AggSum's accumulator via the
 // sum_v_* catalog keys. A post-conv rewrite pass (vectorizeColumnarAggs) rewrites a
-// qualifying `group` op in place into a `columnar-agg` op; anything that doesn't
+// qualifying `group` op in place into a `agg-columnar` op; anything that doesn't
 // qualify keeps the ordinary row path. Correctness bound: results must match the
 // row lane (TestParquetSumVectorizedDifferential), and the pass is conservative --
 // it only fires when it can prove a numeric column of a records scan.
@@ -51,7 +51,7 @@ import (
 	"github.com/couchbase/n1k1/records"
 )
 
-// DisableVectorizedAgg forces the row path (no columnar-agg / metadata-agg
+// DisableVectorizedAgg forces the row path (no agg-columnar / agg-metadata
 // rewrite). The differential tests flip it to prove vectorized == scalar.
 var DisableVectorizedAgg bool
 
@@ -63,7 +63,7 @@ var (
 )
 
 // vectorizeColumnarAggs walks the finished op tree and rewrites each qualifying
-// ungrouped-SUM-over-a-Parquet-column `group` op into a fused `columnar-agg` op.
+// ungrouped-SUM-over-a-Parquet-column `group` op into a fused `agg-columnar` op.
 // temps is Conv.Temps (so the scan's keyspace can be resolved to peek its schema).
 func vectorizeColumnarAggs(op *base.Op, temps []interface{}) {
 	if op == nil || DisableVectorizedAgg {
@@ -157,19 +157,19 @@ func maybeVectorizeGroup(op *base.Op, temps []interface{}) {
 	// Rewrite in place: the group op BECOMES a fused op. Its Labels (the
 	// "^aggregates|..." ones) are kept verbatim so the downstream project reads
 	// results identically; the scan child is absorbed (the op opens the source
-	// itself via scanTemp). metadata-agg (zero scan) only applies unfiltered;
-	// otherwise columnar-agg carries the optional predicate. Fall through to the
+	// itself via scanTemp). agg-metadata (zero scan) only applies unfiltered;
+	// otherwise agg-columnar carries the optional predicate. Fall through to the
 	// row path if neither applies.
 	if pred == nil {
 		if specs, ok := metadataAggSpecs(aggExprs, aggCalcs, colByName); ok {
-			op.Kind = "metadata-agg"
+			op.Kind = "agg-metadata"
 			op.Params = []interface{}{scanTemp, specs}
 			op.Children = nil
 			return
 		}
 	}
 	if specs, ok := columnarAggSpecs(aggExprs, aggCalcs, colByName); ok {
-		op.Kind = "columnar-agg"
+		op.Kind = "agg-columnar"
 		op.Params = []interface{}{scanTemp, specs, predSpec(pred)}
 		op.Children = nil
 		return

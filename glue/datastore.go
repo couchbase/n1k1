@@ -30,10 +30,6 @@ func DatastoreOp(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 	yieldVals = countingYield(o, vars, yieldVals)
 
 	switch o.Kind {
-	case "metadata-agg":
-		DatastoreMetadataAgg(o, vars, yieldVals, yieldErr)
-	case "columnar-agg":
-		DatastoreColumnarAgg(o, vars, yieldVals, yieldErr)
 	case "datastore-scan-records":
 		DatastoreScanRecords(o, vars, yieldVals, yieldErr)
 	case "datastore-scan-primary":
@@ -56,6 +52,10 @@ func DatastoreOp(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 		WithRecursiveOp(o, vars, yieldVals, yieldErr)
 	case "project-exclude":
 		ProjectExcludeOp(o, vars, yieldVals, yieldErr, path, pathNext)
+	case "agg-metadata":
+		DatastoreMetadataAgg(o, vars, yieldVals, yieldErr)
+	case "agg-columnar":
+		DatastoreColumnarAgg(o, vars, yieldVals, yieldErr)
 	}
 
 	// Live progress pulse: a scan invocation just finished. Each pass yields far

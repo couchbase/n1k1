@@ -358,8 +358,8 @@ func TestParquetProjectionDifferential(t *testing.T) {
 	}
 
 	queries := []struct {
-		name    string
-		stmt    string
+		name     string
+		stmt     string
 		projects bool // whether pushdown should fire (a determinable field subset)
 	}{
 		{"project-order", `SELECT id, price FROM sales2 ORDER BY id`, true},
@@ -416,7 +416,7 @@ func runSortedRows(t *testing.T, sess *glue.Session, stmt string) []string {
 
 // TestParquetSumVectorizedDifferential is the Step-5.1 correctness guardrail: a
 // battery of SUM queries over a Parquet keyspace must return identical results
-// with the vectorized columnar-agg lane ON vs forced OFF (row path). It also
+// with the vectorized agg-columnar lane ON vs forced OFF (row path). It also
 // checks the vectorized lane fires when it should and correctly bails otherwise.
 func TestParquetSumVectorizedDifferential(t *testing.T) {
 	dir := t.TempDir()
@@ -445,7 +445,7 @@ func TestParquetSumVectorizedDifferential(t *testing.T) {
 		{"multi-agg", `SELECT SUM(price) AS sp, SUM(id) AS si FROM sales3`, true},
 		{"mixed-agg", `SELECT SUM(price) AS s, COUNT(price) AS c, AVG(price) AS a FROM sales3`, true},
 		{"aliased", `SELECT SUM(o.price) AS s FROM sales3 AS o`, true},
-		// 5.4c: single-comparison WHERE fuses into the columnar-agg lane.
+		// 5.4c: single-comparison WHERE fuses into the agg-columnar lane.
 		{"where-gt-float", `SELECT SUM(price) AS s FROM sales3 WHERE price > 10`, true},
 		{"where-ge-float", `SELECT SUM(price) AS s FROM sales3 WHERE price >= 10`, true},
 		{"where-lt-float", `SELECT SUM(price) AS s FROM sales3 WHERE price < 50`, true},
@@ -461,26 +461,26 @@ func TestParquetSumVectorizedDifferential(t *testing.T) {
 		{"where-and3", `SELECT SUM(price) AS s FROM sales3 WHERE price > 5 AND price < 100 AND id < 25`, true},
 		{"where-and-same", `SELECT SUM(price) AS s FROM sales3 WHERE price > 5 AND price < 20`, true}, // same col twice (range)
 		// 5.5: arithmetic-expression operands (materialized float64, then reduced).
-		{"sum-mul-cols", `SELECT SUM(price * id) AS s FROM sales3`, true},          // double * int64 (widen)
-		{"sum-mul-const", `SELECT SUM(price * 2) AS s FROM sales3`, true},          // double * const
-		{"sum-add-cols", `SELECT SUM(price + price) AS s FROM sales3`, true},       // same col twice
-		{"sum-sub-const", `SELECT SUM(price - 1.5) AS s FROM sales3`, true},        // order matters
-		{"sum-const-sub", `SELECT SUM(100 - price) AS s FROM sales3`, true},        // const on left
-		{"sum-mul-ints", `SELECT SUM(id * id) AS s FROM sales3`, true},             // int * int
-		{"avg-arith", `SELECT AVG(price * id) AS a FROM sales3`, true},             // arith AVG
+		{"sum-mul-cols", `SELECT SUM(price * id) AS s FROM sales3`, true},              // double * int64 (widen)
+		{"sum-mul-const", `SELECT SUM(price * 2) AS s FROM sales3`, true},              // double * const
+		{"sum-add-cols", `SELECT SUM(price + price) AS s FROM sales3`, true},           // same col twice
+		{"sum-sub-const", `SELECT SUM(price - 1.5) AS s FROM sales3`, true},            // order matters
+		{"sum-const-sub", `SELECT SUM(100 - price) AS s FROM sales3`, true},            // const on left
+		{"sum-mul-ints", `SELECT SUM(id * id) AS s FROM sales3`, true},                 // int * int
+		{"avg-arith", `SELECT AVG(price * id) AS a FROM sales3`, true},                 // arith AVG
 		{"arith-where", `SELECT SUM(price * id) AS s FROM sales3 WHERE id > 10`, true}, // arith + WHERE
 		// Bails to the row path: predicate not a numeric field-vs-const comparison.
-		{"sum-div", `SELECT SUM(price / id) AS s FROM sales3`, false},              // division not vectorized
-		{"sum-arith-string", `SELECT SUM(price * f0) AS s FROM sales3`, false},     // non-numeric operand
-		{"sum-neg", `SELECT SUM(-price) AS s FROM sales3`, false},                  // unary negation
-		{"where-noninteger-int", `SELECT SUM(price) AS s FROM sales3 WHERE id > 10.5`, false}, // non-int const vs int col
-		{"where-field-field", `SELECT SUM(price) AS s FROM sales3 WHERE price > id`, false},   // field vs field
+		{"sum-div", `SELECT SUM(price / id) AS s FROM sales3`, false},                                              // division not vectorized
+		{"sum-arith-string", `SELECT SUM(price * f0) AS s FROM sales3`, false},                                     // non-numeric operand
+		{"sum-neg", `SELECT SUM(-price) AS s FROM sales3`, false},                                                  // unary negation
+		{"where-noninteger-int", `SELECT SUM(price) AS s FROM sales3 WHERE id > 10.5`, false},                      // non-int const vs int col
+		{"where-field-field", `SELECT SUM(price) AS s FROM sales3 WHERE price > id`, false},                        // field vs field
 		{"where-and-nested", `SELECT SUM(price) AS s FROM sales3 WHERE price > 10 AND (id < 5 OR id > 20)`, false}, // nested boolean
 		{"where-and-field", `SELECT SUM(price) AS s FROM sales3 WHERE price > 10 AND price > id`, false},           // a clause isn't field-vs-const
-		{"where-string", `SELECT SUM(price) AS s FROM sales3 WHERE f0 = "x"`, false},           // non-numeric predicate col
-		{"count-star", `SELECT COUNT(*) AS c FROM sales3`, false},                              // not SUM
-		{"sum-string", `SELECT SUM(f0) AS s FROM sales3`, false},                               // non-numeric column
-		{"grouped", `SELECT f0, SUM(price) AS s FROM sales3 GROUP BY f0`, false},               // has GROUP BY
+		{"where-string", `SELECT SUM(price) AS s FROM sales3 WHERE f0 = "x"`, false},                               // non-numeric predicate col
+		{"count-star", `SELECT COUNT(*) AS c FROM sales3`, false},                                                  // not SUM
+		{"sum-string", `SELECT SUM(f0) AS s FROM sales3`, false},                                                   // non-numeric column
+		{"grouped", `SELECT f0, SUM(price) AS s FROM sales3 GROUP BY f0`, false},                                   // has GROUP BY
 	}
 
 	for _, q := range queries {
@@ -496,10 +496,10 @@ func TestParquetSumVectorizedDifferential(t *testing.T) {
 				t.Fatalf("vectorized changed results!\n OFF: %v\n ON:  %v", base, got)
 			}
 			if q.vectorizes && applied == 0 {
-				t.Errorf("expected the columnar-agg lane to fire, but it didn't")
+				t.Errorf("expected the agg-columnar lane to fire, but it didn't")
 			}
 			if !q.vectorizes && applied != 0 {
-				t.Errorf("expected the row path, but the columnar-agg lane fired %d times", applied)
+				t.Errorf("expected the row path, but the agg-columnar lane fired %d times", applied)
 			}
 		})
 	}
@@ -583,13 +583,13 @@ func TestParquetNullableAggDifferential(t *testing.T) {
 		{"sum-count-null", `SELECT SUM(price) AS s, COUNT(price) AS c FROM sales5`, true},
 		{"where-null-cross", `SELECT SUM(price) AS s FROM sales5 WHERE id > 20`, true}, // pred=id, agg=price, distinct null patterns
 		{"where-null-same", `SELECT SUM(price) AS s FROM sales5 WHERE price > 50`, true},
-		{"avg-where-null", `SELECT AVG(price) AS a FROM sales5 WHERE id > 20`, true}, // count over survivors, sum over non-null survivors
-		{"count-where-null", `SELECT COUNT(price) AS c FROM sales5 WHERE id > 20`, true}, // filter forces columnar; counts all survivors
+		{"avg-where-null", `SELECT AVG(price) AS a FROM sales5 WHERE id > 20`, true},           // count over survivors, sum over non-null survivors
+		{"count-where-null", `SELECT COUNT(price) AS c FROM sales5 WHERE id > 20`, true},       // filter forces columnar; counts all survivors
 		{"and-null", `SELECT SUM(price) AS s FROM sales5 WHERE id > 20 AND price < 500`, true}, // AND over two nullable cols (3-valued logic)
 		{"or-null", `SELECT SUM(price) AS s FROM sales5 WHERE id < 10 OR price > 900`, true},   // OR over two nullable cols
-		{"arith-null", `SELECT SUM(price * id) AS s FROM sales5`, true},   // arith over two nullable cols: validity = AND
-		{"arith-null-where", `SELECT SUM(price * id) AS s FROM sales5 WHERE id > 20`, true}, // arith + WHERE + nulls
-		{"count-null-alone", `SELECT COUNT(price) AS c FROM sales5`, false}, // footer → metadata-agg, not columnar
+		{"arith-null", `SELECT SUM(price * id) AS s FROM sales5`, true},                        // arith over two nullable cols: validity = AND
+		{"arith-null-where", `SELECT SUM(price * id) AS s FROM sales5 WHERE id > 20`, true},    // arith + WHERE + nulls
+		{"count-null-alone", `SELECT COUNT(price) AS c FROM sales5`, false},                    // footer → agg-metadata, not columnar
 	}
 
 	for _, q := range queries {
@@ -605,10 +605,10 @@ func TestParquetNullableAggDifferential(t *testing.T) {
 				t.Fatalf("vectorized changed results!\n OFF: %v\n ON:  %v", baseRows, got)
 			}
 			if q.vectorizes && applied == 0 {
-				t.Errorf("expected the columnar-agg lane to fire, but it didn't")
+				t.Errorf("expected the agg-columnar lane to fire, but it didn't")
 			}
 			if !q.vectorizes && applied != 0 {
-				t.Errorf("expected the row path, but the columnar-agg lane fired %d times", applied)
+				t.Errorf("expected the row path, but the agg-columnar lane fired %d times", applied)
 			}
 		})
 	}
@@ -623,7 +623,7 @@ func TestParquetNullableAggDifferential(t *testing.T) {
 	glue.DisableVectorizedAgg = false
 }
 
-// TestParquetMetadataAggDifferential guards the metadata-agg lane (COUNT/MIN/MAX
+// TestParquetMetadataAggDifferential guards the agg-metadata lane (COUNT/MIN/MAX
 // answered from footer stats, zero scan): results must equal the row path, the
 // lane fires when it should, and it bails (row path) for non-numeric MIN/MAX or
 // when any aggregate needs a scan.
@@ -633,7 +633,7 @@ func TestParquetMetadataAggDifferential(t *testing.T) {
 	if err := os.MkdirAll(ks, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	pqWrite(t, filepath.Join(ks, "part-0.parquet"), 30, 1)       // id 0..29,     price i+0.5
+	pqWrite(t, filepath.Join(ks, "part-0.parquet"), 30, 1)           // id 0..29,     price i+0.5
 	pqWriteBase(t, filepath.Join(ks, "part-1.parquet"), 1000, 30, 1) // id 1000..1029, price 1000+i+0.5
 
 	sess, err := glue.OpenSession(dir, "default")
@@ -653,7 +653,7 @@ func TestParquetMetadataAggDifferential(t *testing.T) {
 		{"min-int", `SELECT MIN(id) AS m FROM sales4`, true},
 		{"max-int", `SELECT MAX(id) AS m FROM sales4`, true},
 		{"count-min-max", `SELECT COUNT(*) AS c, MIN(price) AS mn, MAX(id) AS mx FROM sales4`, true},
-		{"min-string", `SELECT MIN(f0) AS m FROM sales4`, false},              // non-numeric → row path
+		{"min-string", `SELECT MIN(f0) AS m FROM sales4`, false},                       // non-numeric → row path
 		{"sum-plus-min", `SELECT SUM(price) AS s, MIN(price) AS m FROM sales4`, false}, // needs scan + min → row path
 	}
 
@@ -667,13 +667,13 @@ func TestParquetMetadataAggDifferential(t *testing.T) {
 			applied := atomic.LoadInt64(&glue.MetadataAggApplied) - before
 
 			if strings.Join(base, "\n") != strings.Join(got, "\n") {
-				t.Fatalf("metadata-agg changed results!\n OFF: %v\n ON:  %v", base, got)
+				t.Fatalf("agg-metadata changed results!\n OFF: %v\n ON:  %v", base, got)
 			}
 			if q.meta && applied == 0 {
-				t.Errorf("expected the metadata-agg lane to fire, but it didn't")
+				t.Errorf("expected the agg-metadata lane to fire, but it didn't")
 			}
 			if !q.meta && applied != 0 {
-				t.Errorf("expected the row path, but the metadata-agg lane fired %d times", applied)
+				t.Errorf("expected the row path, but the agg-metadata lane fired %d times", applied)
 			}
 		})
 	}
@@ -709,9 +709,9 @@ func TestParquetExplainShowsColumnarRewrite(t *testing.T) {
 	cases := []struct {
 		name, stmt, wantKind string
 	}{
-		{"sum", `EXPLAIN SELECT SUM(price) AS s FROM sales6`, "columnar-agg"},
-		{"sum-where", `EXPLAIN SELECT SUM(price) AS s FROM sales6 WHERE price > 10`, "columnar-agg"},
-		{"metadata", `EXPLAIN SELECT COUNT(*) AS c, MIN(price) AS m FROM sales6`, "metadata-agg"},
+		{"sum", `EXPLAIN SELECT SUM(price) AS s FROM sales6`, "agg-columnar"},
+		{"sum-where", `EXPLAIN SELECT SUM(price) AS s FROM sales6 WHERE price > 10`, "agg-columnar"},
+		{"metadata", `EXPLAIN SELECT COUNT(*) AS c, MIN(price) AS m FROM sales6`, "agg-metadata"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -739,7 +739,7 @@ func TestParquetExplainShowsColumnarRewrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if hasKind(res.Plan, "columnar-agg") {
+	if hasKind(res.Plan, "agg-columnar") {
 		t.Errorf("with DisableVectorizedAgg, EXPLAIN should show the row path, got %v", opKinds(res.Plan))
 	}
 }

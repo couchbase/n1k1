@@ -32,7 +32,7 @@ plan is source-first and evidence-gated, with SIMD as a last, optional leaf.
 
   ```
   row batch:  Vals = [ "alice",       42,       {"x":1}   ]   <- ONE row, 3 cols
-  col batch:  Vals = [ ["alice",      [42,      [{"x":1},  
+  col batch:  Vals = [ ["alice",      [42,      [{"x":1},
                         "bob","cara"]  43,44]    ...]     ]   <- MANY rows
   ```
   The container, push plumbing, recycling, and Labels alignment all survive; the
@@ -199,7 +199,7 @@ row count). A menu, fastest first:
 - **Aggregates from stats — *zero scan*.** `COUNT(*)` = `num_rows`; `COUNT(x)` =
   `num_rows − null_count` (correct for *any* null_count → supersedes `count_v`,
   reads no data pages); `MIN(x)`/`MAX(x)` = the footer min/max. Multi-file
-  aggregates associatively (Σ counts, min-of-mins, max-of-maxs). A `metadata-agg`
+  aggregates associatively (Σ counts, min-of-mins, max-of-maxs). A `agg-metadata`
   op the rewrite emits when every agg is COUNT/MIN/MAX (mixed with SUM/AVG → scan,
   or a hybrid). Caveats: stats may be absent → fall back; **float MIN/MAX has a
   NaN/signed-zero subtlety** (Parquet excludes NaN by convention, which matches our
@@ -243,7 +243,7 @@ doesn't need it).
 A `WHERE` used to force the row path (the rewrite bailed on the filter op between the
 group and the scan). Vectorizing predicated aggregation introduces the **selection
 vector** — the primitive the whole vectorized model leans on. Now landed: a flat
-AND/OR of numeric field-vs-constant comparisons fuses into the columnar-agg lane
+AND/OR of numeric field-vs-constant comparisons fuses into the agg-columnar lane
 (each clause → a bitmap, combined byte-wise; nullable predicate columns handled via
 three-valued logic — a null clause row is 0, the right identity for both AND and OR).
 Anything we can't reduce to that (nested boolean, field-vs-field, non-numeric column)
@@ -303,7 +303,7 @@ masked reducers fold it. Everything is float64 (matching the row engine's JSON-n
 arithmetic → bit-exact); the materialized column's validity is the **AND of the term
 columns' validities** (a null operand ⇒ null product ⇒ skipped). Bails to the row
 path: `/` (would need x/0→NULL), unary `-`, >2 operands, nested arithmetic,
-non-numeric operand. Composes with WHERE and with EXPLAIN (shows `columnar-agg`).
+non-numeric operand. Composes with WHERE and with EXPLAIN (shows `agg-columnar`).
 
 Deferred to later: division / richer expressions (nested, unary, `n`-ary); an
 index-list (rather than bitmap) selection for very low selectivity; non-fixed-width
@@ -336,7 +336,7 @@ row-plumbing (the fused op doesn't need it).
   own op tree (invisible to cbq's `EXPLAIN` JSON, which is the planner's plan). To
   keep the displayed plan honest, `convForDisplay` (the EXPLAIN/`-v` path) runs the
   same `vectorizeColumnarAggs` the executor does — so `EXPLAIN SELECT SUM(x) …` shows
-  a `columnar-agg`/`metadata-agg` node, and it honors `DisableVectorizedAgg` (stays
+  a `agg-columnar`/`agg-metadata` node, and it honors `DisableVectorizedAgg` (stays
   consistent with what runs). The op-tree renderer (`FormatConvPlan`) is *generic* —
   it prints each op's `Kind` + `Labels`, so any future columnar op-kind surfaces with
   no per-kind renderer code.
