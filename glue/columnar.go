@@ -402,7 +402,7 @@ func aggColumnarSpecs(aggExprs, aggCalcs []interface{}, colByName map[string]rec
 		if !ok {
 			return nil, false
 		}
-		key, ok := aggColumnarCatalogKey(aggName, resultType)
+		key, ok := aggCatalogKeyForColumnar(aggName, resultType)
 		if !ok {
 			return nil, false
 		}
@@ -531,11 +531,11 @@ func bareFieldOfExpr(expr expression.Expression) (string, bool) {
 	return fn.Alias(), true
 }
 
-// aggColumnarCatalogKey maps (aggregate name, Parquet physical type) to the vectorized
+// aggCatalogKeyForColumnar maps (aggregate name, Parquet physical type) to the vectorized
 // aggregate's catalog key, or ok=false when not vectorizable. Only fixed-width
 // 8-byte numeric columns (DOUBLE/INT64) are supported; SUM/AVG are typed, COUNT is
 // type-agnostic (element count) but still requires a supported column.
-func aggColumnarCatalogKey(aggName, colType string) (string, bool) {
+func aggCatalogKeyForColumnar(aggName, colType string) (string, bool) {
 	var suffix string
 	switch colType {
 	case "DOUBLE":
@@ -595,9 +595,9 @@ type aggOperandRT struct {
 	lIsInt, rIsInt bool    // widen an int64 term to float64 before arithmetic
 }
 
-// parseAggOperandRT decodes a spec's srcSpec (a field name or an ["arith", ...]
+// aggOperandRTParse decodes a spec's srcSpec (a field name or an ["arith", ...]
 // form) into runtime form, projecting each referenced column via addCol.
-func parseAggOperandRT(src interface{}, addCol func(string) int) aggOperandRT {
+func aggOperandRTParse(src interface{}, addCol func(string) int) aggOperandRT {
 	if field, ok := src.(string); ok {
 		return aggOperandRT{col: addCol(field)}
 	}
@@ -619,10 +619,10 @@ func parseTermRT(t interface{}, addCol func(string) int) (col int, c float64, is
 	return -1, term[1].(float64), false
 }
 
-// DatastoreColumnarAgg executes a fused columnar aggregation: open the keyspace,
+// DatastoreAggColumnar executes a fused columnar aggregation: open the keyspace,
 // project the aggregated columns, and fold each Arrow column batch directly into
 // the vectorized accumulators (no transpose), emitting one result row.
-func DatastoreColumnarAgg(o *base.Op, vars *base.Vars,
+func DatastoreAggColumnar(o *base.Op, vars *base.Vars,
 	yieldVals base.YieldVals, yieldErr base.YieldErr) {
 	atomic.AddInt64(&AggColumnarApplied, 1)
 
@@ -667,7 +667,7 @@ func DatastoreColumnarAgg(o *base.Op, vars *base.Vars,
 		s := sp.([]interface{})
 		keys[i] = s[0].(string)
 		aggs[i] = base.Aggs[base.AggCatalog[keys[i]]]
-		operands[i] = parseAggOperandRT(s[1], addCol)
+		operands[i] = aggOperandRTParse(s[1], addCol)
 	}
 
 	// Optional WHERE predicate (5.4c/5.4d): project each clause's column and, per
@@ -802,10 +802,10 @@ func DatastoreColumnarAgg(o *base.Op, vars *base.Vars,
 		// clause's mask into it. sel stays nil (== all rows) when there's no WHERE.
 		var sel []byte
 		if pred != nil {
-			predMask = resize(predMask, rows)
+			predMask = bitmapResize(predMask, rows)
 			evalClause(predMask, pred.clauses[0], clauseCol[0], cols, valids, rows)
 			for k := 1; k < len(pred.clauses); k++ {
-				clauseMask = resize(clauseMask, rows)
+				clauseMask = bitmapResize(clauseMask, rows)
 				evalClause(clauseMask, pred.clauses[k], clauseCol[k], cols, valids, rows)
 				if pred.mode == "or" {
 					base.BitmapOr(predMask, clauseMask)
@@ -832,12 +832,12 @@ func DatastoreColumnarAgg(o *base.Op, vars *base.Vars,
 			case av == nil:
 				sum = sel // filter only
 			default:
-				combined = resize(combined, rows)
+				combined = bitmapResize(combined, rows)
 				copy(combined, sel)
 				base.BitmapAnd(combined, av)
 				sum = combined
 			}
-			applyMaskedAgg(keys[i], accs[i], colBytes, sel, sum, rows)
+			AggMaskedApply(keys[i], accs[i], colBytes, sel, sum, rows)
 		}
 	}
 
@@ -870,8 +870,8 @@ func colValidity(col int, valids [][]byte) []byte {
 	return valids[col]
 }
 
-// resize returns buf reused (or freshly grown) to hold a dense bitmap for n rows.
-func resize(buf []byte, n int) []byte {
+// bitmapResize returns buf reused (or freshly grown) to hold a dense bitmap for n rows.
+func bitmapResize(buf []byte, n int) []byte {
 	nb := (n + 7) / 8
 	if cap(buf) < nb {
 		return make([]byte, nb)
@@ -879,13 +879,13 @@ func resize(buf []byte, n int) []byte {
 	return buf[:nb]
 }
 
-// applyMaskedAgg folds a column into acc, dispatched by the same catalog key
+// AggMaskedApply folds a column into acc, dispatched by the same catalog key
 // columnarAggSpecs assigned -- so the masked path reuses the exact accumulators
 // (and thus Result formatting) as the unmasked lane. sel is the row SELECTION
 // (predicate; nil = all rows); sum is sel∧validity (nil = all lanes). SUM folds
 // over sum (skips nulls); COUNT counts sel (n1k1 COUNT(x) counts every selected
 // row, null or not); AVG divides sum-over-sum by count-over-sel.
-func applyMaskedAgg(key string, acc, col, sel, sum []byte, n int) {
+func AggMaskedApply(key string, acc, col, sel, sum []byte, n int) {
 	switch key {
 	case "sum_v_float64":
 		base.MaskedSumFloat64(acc, col, sum, n)
@@ -900,10 +900,10 @@ func applyMaskedAgg(key string, acc, col, sel, sum []byte, n int) {
 	}
 }
 
-// DatastoreMetadataAgg answers COUNT/MIN/MAX from the keyspace's footer statistics
+// DatastoreAggMetadata answers COUNT/MIN/MAX from the keyspace's footer statistics
 // alone -- no data pages read. It reads the aggregate ColumnsSource stats (summed
 // counts, min-of-mins, max-of-maxs across parts) and emits one result row.
-func DatastoreMetadataAgg(o *base.Op, vars *base.Vars,
+func DatastoreAggMetadata(o *base.Op, vars *base.Vars,
 	yieldVals base.YieldVals, yieldErr base.YieldErr) {
 	atomic.AddInt64(&AggMetadataApplied, 1)
 

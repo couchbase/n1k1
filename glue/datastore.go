@@ -53,9 +53,9 @@ func DatastoreOp(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 	case "project-exclude":
 		ProjectExcludeOp(o, vars, yieldVals, yieldErr, path, pathNext)
 	case "agg-metadata":
-		DatastoreMetadataAgg(o, vars, yieldVals, yieldErr)
+		DatastoreAggMetadata(o, vars, yieldVals, yieldErr)
 	case "agg-columnar":
-		DatastoreColumnarAgg(o, vars, yieldVals, yieldErr)
+		DatastoreAggColumnar(o, vars, yieldVals, yieldErr)
 	}
 
 	// Live progress pulse: a scan invocation just finished. Each pass yields far
