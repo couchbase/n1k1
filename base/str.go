@@ -126,25 +126,9 @@ func strEncodeStrArray(c *ValComparer, parts [][]byte, bufPre []byte) []byte {
 	return append(out, ']')
 }
 
-// IntOperand reads a numeric operand as an integer: ok=false (the caller yields
-// NULL) if v is not a number or not integral -- mirroring cbq's
-// `int(v.Actual().(float64))` guarded by `vf != math.Trunc(vf)`. Used for a
-// SUBSTR position/length and a ROUND/TRUNC precision (any sign).
-func IntOperand(v Val) (int, bool) {
-	n, ok := ParseNum(v)
-	if !ok {
-		return 0, false
-	}
-	f := n.Float64()
-	if f != math.Trunc(f) {
-		return 0, false
-	}
-	return int(f), true
-}
-
-// PadLen reads an LPAD/RPAD length operand: ok=false (-> NULL) if not a number,
+// StrPadLen reads an LPAD/RPAD length operand: ok=false (-> NULL) if not a number,
 // not integral, or negative (cbq `num < 0.0 || num != math.Trunc(num)`).
-func PadLen(v Val) (int, bool) {
+func StrPadLen(v Val) (int, bool) {
 	n, ok := ParseNum(v)
 	if !ok {
 		return 0, false
@@ -240,8 +224,8 @@ func StrDecode(v Val) (decoded []byte, sentinel Val, ok bool) {
 	return d, nil, true
 }
 
-// EncodeStr re-encodes raw bytes as a JSON string into the reused bufPre.
-func EncodeStr(c *ValComparer, raw []byte, bufPre []byte) []byte {
+// StrEncode re-encodes raw bytes as a JSON string into the reused bufPre.
+func StrEncode(c *ValComparer, raw []byte, bufPre []byte) []byte {
 	c.PrepareEncoder() // lazily wires c.Encoder to c.Buffer (idempotent)
 	out, _ := c.EncodeAsString(raw, bufPre[:0])
 	return out
@@ -302,4 +286,22 @@ func StrPositionIndex(a, b Val, startPos int) (idx int, sentinel Val, ok bool) {
 		return 0, s, false
 	}
 	return bytes.Index(da, db) + startPos, nil, true // byte offset, no alloc
+}
+
+// --------------------------------
+
+// IntOperand reads a numeric operand as an integer: ok=false (the caller yields
+// NULL) if v is not a number or not integral -- mirroring cbq's
+// `int(v.Actual().(float64))` guarded by `vf != math.Trunc(vf)`. Used for a
+// SUBSTR position/length and a ROUND/TRUNC precision (any sign).
+func IntOperand(v Val) (int, bool) {
+	n, ok := ParseNum(v)
+	if !ok {
+		return 0, false
+	}
+	f := n.Float64()
+	if f != math.Trunc(f) {
+		return 0, false
+	}
+	return int(f), true
 }

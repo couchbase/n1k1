@@ -25,8 +25,8 @@ import (
 // -9999-01-01 .. 9999-12-31 accounting for max TZ offsets); outside this cbq warns
 // and yields NULL.
 const (
-	minDateMillis = -377705073600000
-	maxDateMillis = +253402250399999
+	DateMinMillis = -377705073600000
+	DateMaxMillis = +253402250399999
 )
 
 // DatePartMillis extracts a date/time component from epoch millis, mirroring cbq's
@@ -36,7 +36,7 @@ const (
 // arithmetic are a byte-for-byte port of cbq's datePart, so results are identical
 // within a process. The 3-arg named-timezone form is left to the cbq fallback.
 func DatePartMillis(millis float64, part []byte) (int, bool) {
-	if millis < minDateMillis || millis > maxDateMillis {
+	if millis < DateMinMillis || millis > DateMaxMillis {
 		return 0, false
 	}
 

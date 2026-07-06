@@ -110,7 +110,7 @@ func exprStrTransform(lzVars *base.Vars, labels base.Labels, params []interface{
 		if !lzOk {
 			lzVal = lzSentinel
 		} else {
-			lzBufPre = base.EncodeStr(lzVars.Ctx.ValComparer, transform(lzDecoded), lzBufPre)
+			lzBufPre = base.StrEncode(lzVars.Ctx.ValComparer, transform(lzDecoded), lzBufPre)
 			lzVal = base.Val(lzBufPre)
 		}
 
@@ -153,7 +153,7 @@ func ExprReplace(lzVars *base.Vars, labels base.Labels,
 					lzVal = base.ValNull // a non-string operand
 				} else {
 					lzRaw := base.StrReplaceAll(lzStrA, lzStrB, lzStrC)
-					lzBufPre = base.EncodeStr(lzVars.Ctx.ValComparer, lzRaw, lzBufPre)
+					lzBufPre = base.StrEncode(lzVars.Ctx.ValComparer, lzRaw, lzBufPre)
 					lzVal = base.Val(lzBufPre)
 				}
 			}
@@ -220,7 +220,7 @@ func exprSubstr2(lzVars *base.Vars, labels base.Labels, params []interface{},
 					if !lzInRange {
 						lzVal = base.ValNull
 					} else {
-						lzBufPre = base.EncodeStr(lzVars.Ctx.ValComparer, lzSub, lzBufPre)
+						lzBufPre = base.StrEncode(lzVars.Ctx.ValComparer, lzSub, lzBufPre)
 						lzVal = base.Val(lzBufPre)
 					}
 				}
@@ -267,7 +267,7 @@ func exprSubstr3(lzVars *base.Vars, labels base.Labels, params []interface{},
 					if !lzInRange {
 						lzVal = base.ValNull
 					} else {
-						lzBufPre = base.EncodeStr(lzVars.Ctx.ValComparer, lzSub, lzBufPre)
+						lzBufPre = base.StrEncode(lzVars.Ctx.ValComparer, lzSub, lzBufPre)
 						lzVal = base.Val(lzBufPre)
 					}
 				}
@@ -395,11 +395,11 @@ func exprPad2(lzVars *base.Vars, labels base.Labels, params []interface{},
 				lzVal = base.ValMissing
 			} else {
 				lzStr, _, lzStrOk := base.StrDecode(lzValStr)
-				lzL, lzLOk := base.PadLen(lzValLen)
+				lzL, lzLOk := base.StrPadLen(lzValLen)
 				if !lzStrOk || !lzLOk {
 					lzVal = base.ValNull
 				} else {
-					lzBufPre = base.EncodeStr(lzVars.Ctx.ValComparer, base.StrPadSpace(lzStr, lzL, right), lzBufPre)
+					lzBufPre = base.StrEncode(lzVars.Ctx.ValComparer, base.StrPadSpace(lzStr, lzL, right), lzBufPre)
 					lzVal = base.Val(lzBufPre)
 				}
 			}
@@ -436,12 +436,12 @@ func exprPad3(lzVars *base.Vars, labels base.Labels, params []interface{},
 				lzVal = base.ValMissing
 			} else {
 				lzStr, _, lzStrOk := base.StrDecode(lzValStr)
-				lzL, lzLOk := base.PadLen(lzValLen)
+				lzL, lzLOk := base.StrPadLen(lzValLen)
 				lzPad, _, lzPadOk := base.StrDecode(lzValPad)
 				if !lzStrOk || !lzLOk || !lzPadOk || len(lzPad) < 1 {
 					lzVal = base.ValNull // non-string / bad len / empty pad
 				} else {
-					lzBufPre = base.EncodeStr(lzVars.Ctx.ValComparer, base.StrPad(lzStr, lzL, lzPad, right), lzBufPre)
+					lzBufPre = base.StrEncode(lzVars.Ctx.ValComparer, base.StrPad(lzStr, lzL, lzPad, right), lzBufPre)
 					lzVal = base.Val(lzBufPre)
 				}
 			}
