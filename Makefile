@@ -28,8 +28,12 @@ build: build-intermed
 
 # build-glue builds the n1ql-engine (cbq-engine) integrations (glue/ +
 # test/) pure-Go. Regenerates intermed/ first so a fresh checkout
-# (where intermed/*.go is gitignored) builds.
+# (where intermed/*.go is gitignored) builds. Also ensures test/tmp/
+# exists: it's gitignored (absent on a fresh checkout), but the
+# *WithCompiler generators WriteFile their emitted Go source into it and
+# won't create the parent dir, so the suite/compiler targets need it here.
 build-glue: build-intermed
+	mkdir -p test/tmp
 	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go build -tags n1ql ./glue/... ./test/...
 
 # intermed regenerates the gitignored intermed/ package (the compiled-query
