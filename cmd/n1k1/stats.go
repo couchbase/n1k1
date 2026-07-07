@@ -138,11 +138,80 @@ func (v *statsView) runtimeLine() string {
 		now.goroutines)
 }
 
-// bodyLines are the live-updating footer lines: the per-op table plus the process
-// runtime line (both animate). The glossary (renderFinal only) is a static legend
-// appended after.
+// bodyLines are the live-updating footer lines: the per-op table, the in-flight
+// running-aggregate block (COUNT/SUM/AVG/MIN/MAX climbing toward their finals),
+// then the process runtime line (all animate). The glossary (renderFinal only) is
+// a static legend appended after.
 func (v *statsView) bodyLines(s *base.Stats) []string {
-	return append(statsLines(s), v.runtimeLine())
+	lines := statsLines(s)
+	lines = append(lines, runningAggLines(s)...)
+	return append(lines, v.runtimeLine())
+}
+
+// runningAggDisplayMax bounds how many running-aggregate group rows the footer
+// shows (the snapshot itself is already bounded at base.RunningAggMaxGroups); any
+// extra groups collapse into a trailing "… N more" line so the live footer stays
+// compact and its in-place redraw doesn't scroll.
+const runningAggDisplayMax = 12
+
+// runningAggLines renders the in-flight aggregate partials as a compact footer
+// block: one line per group (sorted for a stable order across live frames), each a
+// group-by key followed by name=partial pairs -- the same bytes that will land in
+// the finalized result, shown climbing toward it. Returns nil when no op published
+// running aggregates (only the cheap fixed-width aggregates do; see
+// base.IsRunningAggCapable). Values are read under the checkpoint lock via
+// RunningAggsRange and copied into strings in the callback, so nothing is retained
+// past the (buffer-reusing) row.
+func runningAggLines(s *base.Stats) []string {
+	var all []string
+	s.RunningAggsRange(func(r *base.RunningAggRow) {
+		var b strings.Builder
+		for i, k := range r.Key {
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			b.Write(k) // decoded group-by key val (JSON bytes)
+		}
+		if len(r.Key) > 0 {
+			b.WriteString("  ")
+		}
+		for i, name := range r.Names {
+			if i > 0 {
+				b.WriteByte(' ')
+			}
+			b.WriteString(runningAggDisplayName(name))
+			b.WriteByte('=')
+			b.Write(r.Aggs[i]) // partial value (JSON bytes)
+		}
+		all = append(all, b.String())
+	})
+	if len(all) == 0 {
+		return nil
+	}
+	sort.Strings(all) // stable order so groups don't jump between live frames
+
+	out := []string{"running:"}
+	shown := all
+	if len(shown) > runningAggDisplayMax {
+		shown = shown[:runningAggDisplayMax]
+	}
+	for _, r := range shown {
+		out = append(out, "  "+r)
+	}
+	if len(all) > len(shown) {
+		out = append(out, fmt.Sprintf("  … %d more", len(all)-len(shown)))
+	}
+	return out
+}
+
+// runningAggDisplayName strips the vectorized-representation suffix from an
+// aggregate handler name so the footer shows the SQL-level name (count/sum/avg),
+// not its columnar encoding variant (count_v, sum_v_float64, ...).
+func runningAggDisplayName(name string) string {
+	if i := strings.Index(name, "_v"); i > 0 {
+		return name[:i]
+	}
+	return name
 }
 
 // humanCount abbreviates a large count as K/M/G (distinct from humanBytes's

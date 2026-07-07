@@ -365,7 +365,7 @@ flags:
 	}
 	sort.Strings(lines)
 	for _, line := range lines {
-		fmt.Fprintf(os.Stderr, line)
+		fmt.Fprint(os.Stderr, line)
 	}
 }
 

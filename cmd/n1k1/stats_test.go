@@ -193,3 +193,47 @@ func TestExprStatsLine(t *testing.T) {
 		}
 	}
 }
+
+// TestRunningAggLines checks the in-flight running-aggregate footer block: the
+// "running:" header, name=partial formatting, the vectorized-name strip
+// (sum_v_float64 -> sum), a no-op for a Stats with no running aggregates, and the
+// "... N more" cap. Rows are built via the exported RunningAggs.Next/AddAgg/
+// FinishRow so the test needs no live query.
+func TestRunningAggLines(t *testing.T) {
+	if got := runningAggLines(nil); got != nil {
+		t.Fatalf("nil Stats: got %q, want nil", got)
+	}
+	if got := runningAggLines(&base.Stats{}); got != nil {
+		t.Fatalf("empty Stats: got %q, want nil", got)
+	}
+
+	// One ungrouped row (no key): header + one line; sum_v_float64 renders as "sum".
+	s := &base.Stats{RunningAggs: make([]base.RunningAggs, 1)}
+	r := s.RunningAggs[0].Next("0")
+	r.AddAgg("count", base.Val("5"))
+	r.AddAgg("sum_v_float64", base.Val("34.7"))
+	r.AddAgg("avg", base.Val("6.94"))
+	s.RunningAggs[0].FinishRow(r)
+
+	got := strings.Join(runningAggLines(s), "\n")
+	want := "running:\n  count=5 sum=34.7 avg=6.94"
+	if got != want {
+		t.Fatalf("ungrouped:\n got %q\nwant %q", got, want)
+	}
+
+	// More than runningAggDisplayMax rows collapse into a trailing "... N more".
+	s2 := &base.Stats{RunningAggs: make([]base.RunningAggs, 1)}
+	extra := 3
+	for i := 0; i < runningAggDisplayMax+extra; i++ {
+		rr := s2.RunningAggs[0].Next("0")
+		rr.AddAgg("count", base.Val("1"))
+		s2.RunningAggs[0].FinishRow(rr)
+	}
+	lines := runningAggLines(s2)
+	if len(lines) != 1+runningAggDisplayMax+1 { // header + capped rows + "more"
+		t.Fatalf("cap: got %d lines, want %d: %q", len(lines), 1+runningAggDisplayMax+1, lines)
+	}
+	if last := lines[len(lines)-1]; !strings.Contains(last, "3 more") {
+		t.Fatalf("cap: last line = %q, want a '3 more' summary", last)
+	}
+}
