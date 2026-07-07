@@ -22,9 +22,9 @@ import (
 	"github.com/couchbase/n1k1/glue"
 )
 
-// codegenTestCLI opens a tiny file datastore and returns a cli wired to it, with
+// prepareTestCLI opens a tiny file datastore and returns a cli wired to it, with
 // stdout/stderr captured into the returned buffers.
-func codegenTestCLI(t *testing.T, out, errb *strings.Builder) *cli {
+func prepareTestCLI(t *testing.T, out, errb *strings.Builder) *cli {
 	t.Helper()
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "d.jsonl"), []byte(`{"a":1}`+"\n"), 0o644); err != nil {
@@ -37,17 +37,17 @@ func codegenTestCLI(t *testing.T, out, errb *strings.Builder) *cli {
 	return &cli{sess: sess, mode: "jsonlines", out: out, stderr: errb}
 }
 
-// TestDotCodegenBoxedFallsBack: `.codegen <boxed-stmt>` prints the not-compilable
+// TestDotPrepareBoxedFallsBack: `.prepare <boxed-stmt>` prints the not-compilable
 // reason (to stderr) and still runs the statement through the interpreter (its
 // result reaches stdout). This is the key fallback: a query needing cbq is
 // executed interpreter-only, never failing.
-func TestDotCodegenBoxedFallsBack(t *testing.T) {
+func TestDotPrepareBoxedFallsBack(t *testing.T) {
 	var out, errb strings.Builder
-	c := codegenTestCLI(t, &out, &errb)
+	c := prepareTestCLI(t, &out, &errb)
 
 	// REPEAT is a non-native scalar fn (boxed -> needs cbq), so it can't be
 	// compiled; the CLI must say so and fall back to interpreting it.
-	c.dot(`.codegen SELECT REPEAT("z", 4) AS r`)
+	c.dot(`.prepare SELECT REPEAT("z", 4) AS r`)
 
 	if !strings.Contains(errb.String(), "not compilable") {
 		t.Errorf("stderr should note not-compilable; got %q", errb.String())
@@ -59,21 +59,21 @@ func TestDotCodegenBoxedFallsBack(t *testing.T) {
 		t.Errorf("interpreter result must reach stdout; got %q", out.String())
 	}
 	// It fell back, so it did NOT emit Go source.
-	if strings.Contains(out.String(), "func "+glue.CodegenFuncName+"(") {
+	if strings.Contains(out.String(), "func "+glue.PrepareFuncName+"(") {
 		t.Errorf("boxed query should not emit Go; stdout=%q", out.String())
 	}
 }
 
-// TestDotCodegenNativeEmits: `.codegen <native-stmt>` prints generated Go (to
+// TestDotPrepareNativeEmits: `.prepare <native-stmt>` prints generated Go (to
 // stdout) AND still runs the statement so the user gets results too.
-func TestDotCodegenNativeEmits(t *testing.T) {
+func TestDotPrepareNativeEmits(t *testing.T) {
 	var out, errb strings.Builder
-	c := codegenTestCLI(t, &out, &errb)
+	c := prepareTestCLI(t, &out, &errb)
 
-	c.dot(`.codegen SELECT 6*7 AS x`)
+	c.dot(`.prepare SELECT 6*7 AS x`)
 
-	if !strings.Contains(out.String(), "func "+glue.CodegenFuncName+"(") {
-		t.Errorf("native query should emit Go with a %s func; stdout=%q", glue.CodegenFuncName, out.String())
+	if !strings.Contains(out.String(), "func "+glue.PrepareFuncName+"(") {
+		t.Errorf("native query should emit Go with a %s func; stdout=%q", glue.PrepareFuncName, out.String())
 	}
 	if !strings.Contains(out.String(), "package n1k1gen") {
 		t.Errorf("emitted Go should be a package; stdout=%q", out.String())
@@ -84,34 +84,34 @@ func TestDotCodegenNativeEmits(t *testing.T) {
 	}
 }
 
-// TestDotCodegenToggle: `.codegen on` makes subsequent normal statements emit Go
-// (or a fallback note), and `.codegen off` restores plain execution.
-func TestDotCodegenToggle(t *testing.T) {
+// TestDotPrepareToggle: `.prepare on` makes subsequent normal statements emit Go
+// (or a fallback note), and `.prepare off` restores plain execution.
+func TestDotPrepareToggle(t *testing.T) {
 	var out, errb strings.Builder
-	c := codegenTestCLI(t, &out, &errb)
+	c := prepareTestCLI(t, &out, &errb)
 
-	c.dot(".codegen on")
-	if !c.codegen {
-		t.Fatal(".codegen on should set the toggle")
+	c.dot(".prepare on")
+	if !c.prepare {
+		t.Fatal(".prepare on should set the toggle")
 	}
 	out.Reset()
 	errb.Reset()
 	c.exec(`SELECT 2+3 AS s`)
-	if !strings.Contains(out.String(), "func "+glue.CodegenFuncName+"(") {
-		t.Errorf("with codegen on, a native query should emit Go; stdout=%q", out.String())
+	if !strings.Contains(out.String(), "func "+glue.PrepareFuncName+"(") {
+		t.Errorf("with prepare on, a native query should emit Go; stdout=%q", out.String())
 	}
 	if !strings.Contains(out.String(), `"s":5`) {
 		t.Errorf("result should still be produced; stdout=%q", out.String())
 	}
 
-	c.dot(".codegen off")
-	if c.codegen {
-		t.Fatal(".codegen off should clear the toggle")
+	c.dot(".prepare off")
+	if c.prepare {
+		t.Fatal(".prepare off should clear the toggle")
 	}
 	out.Reset()
 	c.exec(`SELECT 9 AS n`)
-	if strings.Contains(out.String(), "func "+glue.CodegenFuncName+"(") {
-		t.Errorf("with codegen off, no Go should be emitted; stdout=%q", out.String())
+	if strings.Contains(out.String(), "func "+glue.PrepareFuncName+"(") {
+		t.Errorf("with prepare off, no Go should be emitted; stdout=%q", out.String())
 	}
 	if !strings.Contains(out.String(), `"n":9`) {
 		t.Errorf("result should still be produced; stdout=%q", out.String())

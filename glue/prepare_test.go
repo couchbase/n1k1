@@ -20,11 +20,11 @@ import (
 	"testing"
 )
 
-// TestCodegenNativeEmitsParseableGo asserts that a fully-native, datastore-free
-// query is Codegenable and that Session.Codegen emits non-empty Go source which
+// TestPrepareNativeEmitsParseableGo asserts that a fully-native, datastore-free
+// query is Preparable and that Session.Prepare emits non-empty Go source which
 // the go/parser accepts (so the emit path produces syntactically valid Go, not
-// just some string). See DESIGN-extensions-codegen.md.
-func TestCodegenNativeEmitsParseableGo(t *testing.T) {
+// just some string). See DESIGN-extensions-prepare.md.
+func TestPrepareNativeEmitsParseableGo(t *testing.T) {
 	root := writePlainBeers(t, 3)
 	s, err := OpenSession(root, "default")
 	if err != nil {
@@ -39,37 +39,37 @@ func TestCodegenNativeEmitsParseableGo(t *testing.T) {
 		`SELECT abs(-5) AS a, 1 < 2 AS b`,
 	}
 	for _, q := range native {
-		src, ok, reason, err := s.Codegen(q)
+		src, ok, reason, err := s.Prepare(q)
 		if err != nil {
-			t.Fatalf("Codegen(%q) err: %v", q, err)
+			t.Fatalf("Prepare(%q) err: %v", q, err)
 		}
 		if !ok {
-			t.Fatalf("Codegen(%q) not ok, reason: %q (want codegenable)", q, reason)
+			t.Fatalf("Prepare(%q) not ok, reason: %q (want prepareable)", q, reason)
 		}
 		if strings.TrimSpace(src) == "" {
-			t.Fatalf("Codegen(%q) emitted empty source", q)
+			t.Fatalf("Prepare(%q) emitted empty source", q)
 		}
 		// It must be parseable Go.
 		if _, perr := parser.ParseFile(token.NewFileSet(), "gen.go", src, parser.AllErrors); perr != nil {
-			t.Fatalf("Codegen(%q) emitted unparseable Go: %v\n---\n%s", q, perr, src)
+			t.Fatalf("Prepare(%q) emitted unparseable Go: %v\n---\n%s", q, perr, src)
 		}
 		// Sanity: the emitted file exposes the documented Run entry point and the
 		// projection labels.
-		if !strings.Contains(src, "func "+CodegenFuncName+"(") {
-			t.Errorf("Codegen(%q): emitted source lacks a %s func", q, CodegenFuncName)
+		if !strings.Contains(src, "func "+PrepareFuncName+"(") {
+			t.Errorf("Prepare(%q): emitted source lacks a %s func", q, PrepareFuncName)
 		}
-		if !strings.Contains(src, "CodegenLabels") {
-			t.Errorf("Codegen(%q): emitted source lacks CodegenLabels", q)
+		if !strings.Contains(src, "PrepareLabels") {
+			t.Errorf("Prepare(%q): emitted source lacks PrepareLabels", q)
 		}
 	}
 }
 
-// TestCodegenBoxedFallsBackToInterp asserts that a query with a boxed expression
-// (one using a non-native scalar fn, or LIKE) is NOT Codegenable -- reported with
+// TestPrepareBoxedFallsBackToInterp asserts that a query with a boxed expression
+// (one using a non-native scalar fn, or LIKE) is NOT Preparable -- reported with
 // a sensible reason and WITHOUT emitting -- yet still runs correctly through the
-// interpreter (Session.Run). This is the codegen fallback contract: a query that
+// interpreter (Session.Run). This is the prepare fallback contract: a query that
 // needs cbq is executed interpreter-only, never failing.
-func TestCodegenBoxedFallsBackToInterp(t *testing.T) {
+func TestPrepareBoxedFallsBackToInterp(t *testing.T) {
 	root := writePlainBeers(t, 3)
 	s, err := OpenSession(root, "default")
 	if err != nil {
@@ -87,18 +87,18 @@ func TestCodegenBoxedFallsBackToInterp(t *testing.T) {
 		{`SELECT ("beer-1" LIKE "beer%") AS m`, "boxed expression", `{"m":true}`},
 	}
 	for _, c := range cases {
-		src, ok, reason, err := s.Codegen(c.stmt)
+		src, ok, reason, err := s.Prepare(c.stmt)
 		if err != nil {
-			t.Fatalf("Codegen(%q) err: %v", c.stmt, err)
+			t.Fatalf("Prepare(%q) err: %v", c.stmt, err)
 		}
 		if ok {
-			t.Fatalf("Codegen(%q) unexpectedly ok (want boxed -> not codegenable)", c.stmt)
+			t.Fatalf("Prepare(%q) unexpectedly ok (want boxed -> not prepareable)", c.stmt)
 		}
 		if src != "" {
-			t.Errorf("Codegen(%q) emitted source despite not being ok", c.stmt)
+			t.Errorf("Prepare(%q) emitted source despite not being ok", c.stmt)
 		}
 		if !strings.Contains(reason, c.wantIn) {
-			t.Errorf("Codegen(%q) reason %q, want substring %q", c.stmt, reason, c.wantIn)
+			t.Errorf("Prepare(%q) reason %q, want substring %q", c.stmt, reason, c.wantIn)
 		}
 
 		// The fallback: the interpreter still runs the query and returns results.
@@ -115,13 +115,13 @@ func TestCodegenBoxedFallsBackToInterp(t *testing.T) {
 	}
 }
 
-// TestCodegenableNilAndReasons exercises Codegenable's reason strings on the two
+// TestPreparableNilAndReasons exercises Preparable's reason strings on the two
 // gate conditions directly (nil tree, and a non-bakeable datastore op via a
 // FROM-scan pushdown), so the gate's human-readable reasons are covered without
 // depending on the CLI.
-func TestCodegenableReasons(t *testing.T) {
-	if ok, reason := Codegenable(nil); ok || !strings.Contains(reason, "nil op") {
-		t.Errorf("Codegenable(nil) = (%v, %q), want (false, ...nil op...)", ok, reason)
+func TestPreparableReasons(t *testing.T) {
+	if ok, reason := Preparable(nil); ok || !strings.Contains(reason, "nil op") {
+		t.Errorf("Preparable(nil) = (%v, %q), want (false, ...nil op...)", ok, reason)
 	}
 
 	root := writePlainBeers(t, 3)
@@ -131,14 +131,14 @@ func TestCodegenableReasons(t *testing.T) {
 	}
 	// A FROM query bottoms out in a datastore-scan-records op whose params carry a
 	// non-bakeable pushdown ([]string project-columns) and a live-plan Temps index
-	// -- not compilable this milestone. Codegen must report that and (via the CLI)
+	// -- not compilable this milestone. Prepare must report that and (via the CLI)
 	// fall back; here we assert the gate verdict + reason directly.
-	_, ok, reason, err := s.Codegen(`SELECT b.i FROM beers b`)
+	_, ok, reason, err := s.Prepare(`SELECT b.i FROM beers b`)
 	if err != nil {
-		t.Fatalf("Codegen err: %v", err)
+		t.Fatalf("Prepare err: %v", err)
 	}
 	if ok {
-		t.Fatalf("Codegen(FROM scan) unexpectedly ok")
+		t.Fatalf("Prepare(FROM scan) unexpectedly ok")
 	}
 	if !strings.Contains(reason, "datastore op not bakeable") {
 		t.Errorf("reason = %q, want ...datastore op not bakeable...", reason)

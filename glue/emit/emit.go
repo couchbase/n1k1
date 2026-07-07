@@ -11,15 +11,15 @@
 //  express or implied. See the License for the specific language
 //  governing permissions and limitations under the License.
 
-// Package emit holds the n1k1-compiler codegen helpers: OpToLines runs the
+// Package emit holds the n1k1-compiler prepare helpers: OpToLines runs the
 // compiler (intermed.ExecOp with the Emit hooks captured) over a base.Op tree
 // and returns the generated Go source lines; BakeOp renders a base.Op subtree
 // as a Go literal (for the datastore-scan "island"); OptionalImports is the
 // import set the generated `package tmp` files pull in on demand.
 //
 // It lives under glue/ (rather than test/) so it can be reused as PRODUCTION
-// code -- glue.Codegen wraps OpToLines into a compilable .go file for the
-// user-facing .codegen surface (see DESIGN-extensions-codegen.md), while the
+// code -- glue.Prepare wraps OpToLines into a compilable .go file for the
+// user-facing .prepare surface (see DESIGN-extensions-prepare.md), while the
 // compiler differential generators in test/ (and the Phase-2 bench generator in
 // test/benchmark/) continue to use the same emitter as their oracle.
 package emit
@@ -58,7 +58,7 @@ var OptionalImports = []struct{ Qualifier, Path string }{
 
 // OpToLines runs the n1k1 *compiler* (intermed.ExecOp with the Emit hooks
 // captured) over a single base.Op tree and returns the generated Go source
-// lines for that query. This is the core codegen step shared by the
+// lines for that query. This is the core prepare step shared by the
 // TestCasesSimple generator, the suite-corpus generator and the bench generator.
 func OpToLines(o *base.Op) []string {
 	outStack := [][]string{nil}
