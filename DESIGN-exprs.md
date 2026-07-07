@@ -45,7 +45,11 @@ there is delegated. Every op is validated by a **differential test against cbq**
 **Done recently:** (a) native exprs run under an active scope (correlated subqueries /
 WITH / recursive CTEs) when every field ref is provably local — `strict` optimize
 (lever #4); (b) logical `and`/`or` optimizer-wired with three-valued semantics (lever
-#5), so `WHERE`/`JOIN`/`ON` conjunctions avoid boxing.
+#5), so `WHERE`/`JOIN`/`ON` conjunctions avoid boxing; (c) the whole-row `self` /
+`SELECT *` projection now assembles JSON from label bytes instead of boxing (lever #2);
+(d) grouped aggregates (`count(*)`, `sum(x)`, incl. `count(*)+1`) read the group's
+`^aggregates|…` value natively (lever #6); (e) result-row output (`OnRow` / `Result.Rows`)
+encodes boxing-free via `ConvertBytes` (lever #7).
 
 **Next:** `slice` navigation (blocked); `is [not] distinct from` (binary, low
 priority); Tier B (string/numeric/date). `LIKE`/`REGEXP_*` deferred.
@@ -205,9 +209,9 @@ retained label bytes — lever 3 is viable.)
 ### Where the Converts come from: the `self` projection
 
 **The 16.8M Converts came from a whole-row `self` projection.** `expression.Self` =
-the entire current row as one value. `ExprTreeOptimize` can't reduce it to a label
-path, so a `self` projection always falls to Convert and rebuilds the full object per
-row. Emitted by:
+the entire current row as one value. It has no label path to reduce to, so a `self`
+projection *fell* to Convert and rebuilt the full object per row — now assembled
+natively from label bytes for the common case (lever #2 below). Emitted by:
 - **`SELECT *`** — projects `self`.
 - **`FROM (subquery) AS x`** — the derived-table row-wrap (`VisitAlias`, the only
   source of `expression.NewSelf()`) packages each subquery row under its alias via a
@@ -241,18 +245,25 @@ floor), result unchanged. Toggle `glue.DiscardElision`; a differential test asse
 on/off parity. v1 is narrow; a general field-pruning liveness pass is future work.
 (These `self` projections come from cbq's planner — a further fix could be upstream.)
 
-**2. A `self`-projection byte path** — when a projection is exactly `expression.Self`
-(unscoped), assemble output JSON directly from input label bytes, skipping
-Convert+Evaluate+WriteJSON. *Why it stays boxed (2026-07):* the star value is the
-fully-assembled row object (`SELECT * FROM sales` → `{"sales":{doc}}`), and cbq's
-`objectValue.WriteJSON` emits keys **sorted** (recursively), so the native path can't
-pass own-order bytes through — it must reproduce cbq's *sorted-key* serialization
-**byte-identical**. `ValComparer.CanonicalJSON` sorts keys but is NOT yet
-byte-identical (the formfeed/backspace encoder gap — `TODO(encoder-fidelity)` in
-`base/compare.go` — plus unaudited float/escape cases). Prerequisite: a verified
-byte-identical canonical serializer. Until then the box guarantees fidelity (the
-`⟨boxed⟩` EXPLAIN marker reflects this). Cost is low: one Convert + WriteJSON per row,
-no sub-expr work.
+**2. A `self`-projection byte path — DONE (`engine/expr_self.go`, `base/self.go`,
+`glue/self.go`).** When a projection is exactly `expression.Self` (unscoped) over
+plain `.["name"]` field labels, `engine.ExprSelf` assembles the row object's JSON
+straight from the input label bytes into a reused buffer (`base.ValsSelfObject`),
+skipping Convert+Evaluate+WriteJSON — zero steady-state garbage, in both the
+interpreter and compiled paths. Gated by `selfNativeSpec` / `glue.SelfProjectNative`;
+path stars (`SELECT p.*`), whole-row `.`, nested paths and `.*` stay boxed.
+
+*Why the old blocker dissolved:* the star value is the assembled row object
+(`SELECT * FROM sales` → `{"sales":{doc}}`), and cbq's `objectValue.WriteJSON` emits
+keys **sorted** (recursively). ExprSelf emits them in **label order** — a byte-level,
+not value-level, difference. That was thought to require reproducing cbq's sorted-key
+serialization byte-identically, but n1k1's result comparison is key-order-insensitive
+(the test harness `canonJSON` / `rowsMatch` re-normalize both sides), so the suite +
+compiler differential pass unchanged. Byte-identical output (to match Couchbase's exact
+wire bytes) would still need a verified canonical serializer — the formfeed/backspace
+encoder gap, `TODO(encoder-fidelity)` in `base/compare.go`, plus unaudited float/escape
+cases — tracked separately. Bench (`test/benchmark/bench_self_test.go`): native
+6.6 ns/op, 0 allocs vs boxed 784 ns/op, 25 allocs/op.
 
 **3. Lazy/on-demand `Convert`** — return a `value.Value` that materializes a field
 only on access and serializes JSON straight from retained label bytes. Most general
@@ -288,6 +299,32 @@ Reimplemented as correct three-valued binary AND/OR on bytes (`base.LogicAnd2`/
 highest per-row frequency, so this is broad. Differential-tested over the full truth
 table incl. MISSING/NULL (`TestLogicAndOrDifferentialVsCBQ`). Binary route because the
 n-ary harness's compiled path is broken — see Lessons.
+
+**6. Read grouped aggregates natively — DONE (`glue/expr_optimize.go`).** A projected
+aggregate (`SELECT count(*)`, `sum(x)`, …) used to box once per group: the term stayed
+an `["exprTree", <agg>]` param, so cbq's `Aggregate.Evaluate` ran against the grouped
+`AnnotatedValue` just to fetch the value it already holds. But the group op appends each
+finalized `Agg.Result` as JSON bytes under the label `^aggregates|<agg.String()>`
+(`op_group.go`). `ExprTreeOptimize` now recognizes an `algebra.Aggregate` leaf and emits
+`["labelPath", "^aggregates|…"]` when that label is present — a native byte read, no box
+(mirrors the ORDER-BY aggregate→labelPath rewrite in `conv.go`). Because the optimizer
+recurses, aggregate-containing expressions go native too: `count(*)+1` →
+`add(labelPath, json)`, `sum(a)/count(*)` → `div(labelPath, labelPath)`. These cases
+also become compiler-bakeable once they no longer box. Falls back to the box when the
+aggregate isn't materialized (no matching label).
+
+**7. Boxing-free output encoding — DONE (`glue/self.go` `ConvertVals.ConvertBytes`).**
+The *output* side had the same waste: `session.yieldVals` rendered each result row via
+`cv.Convert(vals)` → `v.Actual()` → `json.Marshal` (box, unbox to maps, re-serialize).
+`ConvertBytes` renders the row's JSON straight from the label bytes into a reused buffer
+(reusing `base.ValsSelfObject`), for the common shapes — all-`.["name"]` fields, a lone
+`.` (RAW), a lone `.*` — falling back to the box otherwise. The plan is computed once
+from the labels (fixed per result). Feeds `OnRow` (reused buffer; the contract already
+forbids retaining) and `Result.Rows`. Keys in projection order, not sorted (value-equal;
+`TestConvertBytesParity`). Bench (`SELECT a,b,c` row): native 12.7 ns/op, 0 allocs vs
+boxed 776 ns/op, 22 allocs/op. This is the row-lifecycle counterpart to lever #2 (the
+projection side) — the remaining `Convert` call sites (`exec.go`, `subquery.go`,
+`expr.go`) genuinely need a `value.Value` for cbq interop, so they stay boxed.
 
 ## The universe & the gap
 
