@@ -67,8 +67,6 @@ in glue/patches/README.md.
     so for example first fetch can be more concurrent?
 
 - aggregate functions, advanced features?
-  - count() or COUNT_ALL is different than count(expr) vs count(ALL expr),
-    w.r.t. missing/null handling?
   - IGNORE NULL's? (RESPECT NULLS is default)
   - FROM LAST? (FROM FIRST is default)
   - filter-where clauses?
@@ -182,10 +180,6 @@ in glue/patches/README.md.
     - DISTINCT might correctly ignore attachments,
       depending on how it's called with the group-by expression,
       and does not propagate attachments?
-
-- EXCEPT ALL - tuple should appear MAX(m - n, 0) times in the result,
-  given that a tuple appears m times in the left side
-  and n times in the right side, where m >= 0 and n >= 0.
 
 - standalone Op for data-staging / pipeline breaking?
 

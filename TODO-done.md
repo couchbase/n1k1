@@ -383,3 +383,23 @@ implemented by earlier commits and TODO.md had drifted.
 - COUNTN and COUNT(DISTINCT) ("COUNTN versus COUNT?", "DISTINCT? COUNT(DISTINCT
   productId)?"): DONE -- base/agg.go registers countn / countn_distinct
   (AggCountNUpdate, NUMBER-only) and count_distinct (AggCountDistinct).
+
+## 2026/07 -- two aggregate/set-op correctness bugs (found during the reconciliation)
+The reconciliation above flagged these as genuinely NOT done (left in TODO.md with
+failing probes); now fixed.
+
+- COUNT(expr) MISSING/NULL handling ("count(expr) vs count(ALL expr) w.r.t.
+  missing/null"): DONE -- COUNT(expr) now counts only non-NULL, non-MISSING values
+  (matches cbq's agg_count.go, which skips item.Type() <= value.NULL); COUNT(*) still
+  counts every row via its constant-true operand. The bug spanned three lanes built on
+  the same wrong "COUNT(x) counts every row" assumption: base/agg.go AggCount.Update
+  (skip via ValHasValue; AggAvg reuses it, so AVG(x)'s denominator is fixed too);
+  glue/columnar.go footer-metadata count (Count-NullCount) and AggMaskedApply (count_v /
+  AVG-count fold over selection∧validity). DESIGN-col.md self-contradiction corrected.
+  Test: test/cases.go CountExprSkipsMissingAndNull; guarded by
+  TestParquetNullableAggDifferential (row vs vectorized).
+- EXCEPT ALL multiplicity: DONE -- a value m times on the left and n times on the right
+  now survives MAX(m-n, 0) times (was dropped entirely whenever n>=1). engine/op_join_hash.go
+  final probe-map visitor: the except-all branch loops lzJoinCount..lzLeftCount instead of
+  gating on lzJoinCount==0 (which stays for except-distinct / leftOuter). Test:
+  test/cases.go ExceptAllMultiplicity.
