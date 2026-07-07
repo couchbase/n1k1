@@ -33,9 +33,10 @@ package glue
 //
 // Nulls (DESIGN-col.md "Beyond null_count==0"): a column's null_count no longer
 // forces the row path. Each batch carries its Arrow validity bitmap (same LSB-first
-// layout as the selection), and the executor folds through it -- SUM/AVG-sum over
-// selection∧validity (skip nulls), COUNT/AVG-count over the selection alone (n1k1
-// COUNT(x) counts every row, like COUNT(*)).
+// layout as the selection), and the executor folds through it -- SUM, COUNT, and
+// AVG's count/sum all over selection∧validity (skip nulls), since COUNT(x)/AVG(x)
+// count only non-NULL, non-MISSING values (matching cbq). COUNT(*) is separate (a
+// constant-true operand counts every selected row).
 
 import (
 	"encoding/binary"
@@ -397,7 +398,7 @@ func aggMetadataSpecs(aggExprs, aggCalcs []interface{}, colByName map[string]rec
 // aggColumnarSpecs returns per-agg specs when EVERY aggregate is a vectorizable
 // SUM/AVG/COUNT whose operand is a bare numeric column OR a binary +/-/* of
 // numeric column/constant terms (Step 5.5). Nulls are fine: the executor folds over
-// each batch's validity bitmap (SUM/AVG skip nulls, COUNT counts every row), so
+// each batch's validity bitmap (SUM, COUNT, and AVG's count/sum all skip nulls), so
 // null_count>0 no longer forces the row path. Each spec is [key, srcSpec] where
 // srcSpec is a field name (bare) or ["arith", op, leftTerm, rightTerm]. ok=false else.
 func aggColumnarSpecs(aggExprs, aggCalcs []interface{}, colByName map[string]records.ColumnMeta) ([]interface{}, bool) {
@@ -892,9 +893,11 @@ func bitmapResize(buf []byte, n int) []byte {
 // AggMaskedApply folds a column into acc, dispatched by the same catalog key
 // columnarAggSpecs assigned -- so the masked path reuses the exact accumulators
 // (and thus Result formatting) as the unmasked lane. sel is the row SELECTION
-// (predicate; nil = all rows); sum is sel∧validity (nil = all lanes). SUM folds
-// over sum (skips nulls); COUNT counts sel (n1k1 COUNT(x) counts every selected
-// row, null or not); AVG divides sum-over-sum by count-over-sel.
+// (predicate; nil = all rows); sum is sel∧validity (never nil here -- at least
+// one of the filter or a validity bitmap is present, else the caller took the
+// unmasked fast path). COUNT(x) and AVG(x) count only non-NULL selected rows
+// (matches cbq and the scalar AggCount), so both SUM and the COUNT/AVG-count
+// fold over sum (sel∧validity), not sel.
 func AggMaskedApply(key string, acc, col, sel, sum []byte, n int) {
 	switch key {
 	case "sum_v_float64":
@@ -902,11 +905,11 @@ func AggMaskedApply(key string, acc, col, sel, sum []byte, n int) {
 	case "sum_v_int64":
 		base.MaskedSumInt64(acc, col, sum, n)
 	case "count_v":
-		base.MaskedCount(acc, sel, n)
+		base.MaskedCount(acc, sum, n)
 	case "avg_v_float64":
-		base.MaskedAvgFloat64(acc, col, sel, sum, n)
+		base.MaskedAvgFloat64(acc, col, sum, sum, n)
 	case "avg_v_int64":
-		base.MaskedAvgInt64(acc, col, sel, sum, n)
+		base.MaskedAvgInt64(acc, col, sum, sum, n)
 	}
 }
 
@@ -960,10 +963,10 @@ func DatastoreAggMetadata(o *base.Op, vars *base.Vars,
 		case "count-star":
 			v = base.Val(strconv.AppendInt(nil, rowCount, 10))
 		case "count":
-			// n1k1 COUNT(x) counts every row (null/missing included), like COUNT(*),
-			// so it's the row count -- NOT Count-NullCount.
-			_ = field
-			v = base.Val(strconv.AppendInt(nil, rowCount, 10))
+			// COUNT(x) counts only non-NULL, non-MISSING values (matches cbq and
+			// the scalar AggCount): the column's value count minus its nulls.
+			cm := colByName[field]
+			v = base.Val(strconv.AppendInt(nil, cm.Count-cm.NullCount, 10))
 		case "min":
 			v = formatStat(typ, colByName[field].Min)
 		case "max":

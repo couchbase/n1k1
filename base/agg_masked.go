@@ -100,9 +100,11 @@ func MaskedCount(acc, mask []byte, n int) {
 	binary.LittleEndian.PutUint64(acc[:8], c)
 }
 
-// MaskedAvgFloat64 folds into AggAvg's [count][sum] accumulator: count += selected
-// rows (sel; nil = n), sum += values where the sum mask is set (nil = all n). Pass
-// sel = the selection and sum = selection∧validity so AVG = sum(non-null)/count(rows).
+// MaskedAvgFloat64 folds into AggAvg's [count][sum] accumulator: count += set bits
+// of the count mask (nil = n), sum += values where the sum mask is set (nil = all n).
+// For AVG(x), which averages only non-NULL values, pass BOTH masks =
+// selection∧validity so AVG = sum(non-null)/count(non-null). (The two masks stay
+// separate for flexibility; the caller decides.)
 func MaskedAvgFloat64(acc, values, sel, sum []byte, n int) {
 	c := binary.LittleEndian.Uint64(acc[:8])
 	s := math.Float64frombits(binary.LittleEndian.Uint64(acc[8:16]))

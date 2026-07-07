@@ -95,7 +95,8 @@ func init() {
 
 	AggRegister("array_agg_distinct", AggArrayAggDistinct)
 
-	// COUNTN counts only NUMBER-typed values (COUNT counts all non-MISSING).
+	// COUNTN counts only NUMBER-typed values (COUNT counts all non-MISSING,
+	// non-NULL values; COUNT(*) counts every row via a constant operand).
 	AggRegister("countn", &Agg{Init: AggU64Init, Update: AggCountNUpdate, Result: AggU64Result})
 	AggRegister("countn_distinct", &Agg{
 		Init: AggU64Init, Update: AggNumDistinctUpdate, Result: AggDistinctCountResult})
@@ -213,6 +214,15 @@ var AggCount = &Agg{
 
 	Update: func(vars *Vars, v Val, aggNew, agg []byte, vc *ValComparer) (
 		[]byte, []byte, bool) {
+		// COUNT(expr) counts only non-NULL, non-MISSING values -- matching cbq's
+		// agg_count.go, which skips when item.Type() <= value.NULL. COUNT(*) has
+		// no operand and feeds a constant true (VisitGroup), so it still counts
+		// every row. A skipped row leaves the counter unchanged (append the old
+		// bytes, report changed=false), like AggSum's non-number path.
+		if !ValHasValue(v) {
+			return append(aggNew, agg[:8]...), agg[8:], false
+		}
+
 		c := binary.LittleEndian.Uint64(agg[:8])
 		return BinaryAppendUint64(aggNew, c+1), agg[8:], true
 	},

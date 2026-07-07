@@ -6651,6 +6651,28 @@ var queryCases = []queryCase{
 			}
 		},
 	},
+	{
+		// COUNT(expr) counts only non-NULL, non-MISSING values (matches cbq);
+		// COUNT(*) counts every row. `shipped-on` is a value on 1200, null on
+		// 1236, and missing on 1234/1235 -> COUNT(*)=4, COUNT(shipped-on)=1,
+		// COUNT(nosuchfield)=0.
+		name: "CountExprSkipsMissingAndNull",
+		stmt: "SELECT COUNT(*) AS n_all, " +
+			"COUNT(a.`shipped-on`) AS n_ship, " +
+			"COUNT(a.nosuchfield) AS n_none " +
+			"FROM data:orders AS a",
+		rows: 1,
+		check: func(t *testing.T, rows []base.Vals) {
+			if len(rows[0]) != 3 {
+				t.Fatalf("expected 3 cols, got %+v", rows[0])
+			}
+			nAll, nShip, nNone := string(rows[0][0]), string(rows[0][1]), string(rows[0][2])
+			if nAll != "4" || nShip != "1" || nNone != "0" {
+				t.Fatalf("COUNT(*)=%s COUNT(`shipped-on`)=%s COUNT(nosuchfield)=%s; want 4 1 0",
+					nAll, nShip, nNone)
+			}
+		},
+	},
 }
 
 // rowObj unmarshals a single-label result row (a JSON object) into a map.

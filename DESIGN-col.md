@@ -198,10 +198,13 @@ reads (`ColumnMeta.{Min,Max,NullCount}` + file row count). Menu, fastest first:
   is the validity bitmap (1 bit/elem, 1=valid), separate from values `Buffers()[1]`.
   The masked kernel reads both (borrowed, zero-copy) and skips null lanes — `for i {
   if valid(i) { s += v[i] } }`. Necessary because Arrow leaves null slots undefined.
-  Bit-exact vs the row engine. **Key semantic:** n1k1's `COUNT(x)` and `AVG`'s
-  denominator count *every* row (null/missing included, like `COUNT(*)`), so COUNT
-  folds over the **selection** while SUM/AVG-sum fold over **selection∧validity** —
-  masked kernels take the two masks separately.
+  Bit-exact vs the row engine. **Key semantic:** `COUNT(x)` and `AVG`'s denominator
+  count only **non-NULL, non-MISSING** values (matching cbq and the scalar
+  `AggCount`), so COUNT, SUM, and the AVG count/sum all fold over
+  **selection∧validity** — a null lane is skipped by every kernel. (`COUNT(*)` is a
+  separate op: it counts every selected row via a constant-true operand, not this
+  column path.) The masked kernels still take the selection and selection∧validity
+  masks separately, but for `COUNT(x)`/`AVG(x)` the count uses selection∧validity.
 
 ### How validity threads to the kernel
 

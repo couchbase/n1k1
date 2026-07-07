@@ -113,7 +113,9 @@ func TestAggSumVectorizedMatchesScalar(t *testing.T) {
 func countScalar(n int) string {
 	agg := AggCount.Init(nil, nil)
 	for i := 0; i < n; i++ {
-		agg, _, _ = AggCount.Update(nil, Val("null"), nil, agg, nil) // count ignores the value
+		// count_v counts a null-free column (null_count==0), so drive the scalar
+		// reference with a non-NULL value per element -- COUNT skips NULL/MISSING.
+		agg, _, _ = AggCount.Update(nil, Val("1"), nil, agg, nil)
 	}
 	v, _, _ := AggCount.Result(nil, agg, nil)
 	return string(v)
