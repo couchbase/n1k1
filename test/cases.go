@@ -6699,6 +6699,28 @@ var queryCases = []queryCase{
 			}
 		},
 	},
+	{
+		// OBJECT_LENGTH / POLY_LENGTH native readers (engine/expr_object.go),
+		// composed over native element/field navigation. orderlines[0] is a
+		// {qty,productId} object (2 pairs); orderlines is a 2-element array;
+		// custId "abc" is 3 bytes.
+		name: "ObjectPolyLength",
+		stmt: `SELECT OBJECT_LENGTH(a.orderlines[0]) AS ol, ` +
+			`POLY_LENGTH(a.orderlines) AS pl, ` +
+			`POLY_LENGTH(a.custId) AS cl ` +
+			`FROM data:orders AS a WHERE a.id="1200"`,
+		rows: 1,
+		check: func(t *testing.T, rows []base.Vals) {
+			if len(rows[0]) != 3 {
+				t.Fatalf("expected 3 cols, got %+v", rows[0])
+			}
+			ol, pl, cl := string(rows[0][0]), string(rows[0][1]), string(rows[0][2])
+			if ol != "2" || pl != "2" || cl != "3" {
+				t.Fatalf("OBJECT_LENGTH(orderlines[0])=%s POLY_LENGTH(orderlines)=%s POLY_LENGTH(custId)=%s; want 2 2 3",
+					ol, pl, cl)
+			}
+		},
+	},
 }
 
 // rowObj unmarshals a single-label result row (a JSON object) into a map.

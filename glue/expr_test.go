@@ -663,6 +663,48 @@ func TestArrayReduceDifferentialVsCBQ(t *testing.T) {
 	}
 }
 
+func TestObjectPolyLengthDifferentialVsCBQ(t *testing.T) {
+	c := func(v interface{}) expression.Expression { return expression.NewConstant(v) }
+
+	mk := map[string]func(expression.Expression) expression.Expression{
+		"object_length": func(e expression.Expression) expression.Expression { return expression.NewObjectLength(e) },
+		"poly_length":   func(e expression.Expression) expression.Expression { return expression.NewPolyLength(e) },
+	}
+	// Objects, arrays, strings (incl. escapes / multi-byte), plus non-matching
+	// types and MISSING/NULL. OBJECT_LENGTH -> NULL on non-objects; POLY_LENGTH
+	// -> decoded byte length of a string / element count / pair count.
+	operands := map[string]expression.Expression{
+		"obj3":     c(map[string]interface{}{"a": 1, "b": 2, "c": 3}),
+		"obj0":     c(map[string]interface{}{}),
+		"objnest":  c(map[string]interface{}{"a": map[string]interface{}{"x": 1}, "b": []interface{}{1, 2}}),
+		"arr4":     c([]interface{}{1, 2, 3, 4}),
+		"arr0":     c([]interface{}{}),
+		"str":      c("hello"),
+		"stresc":   c("a\tb\nc"), // escapes: decoded length (5), not the escaped bytes
+		"struni":   c("café"),    // multi-byte: cbq's len(ToString()) is the BYTE length (5)
+		"strempty": c(""),
+		"num":      c(5),
+		"boolt":    c(true),
+		"null":     c(value.NULL_VALUE),
+		"missing":  c(value.MISSING_VALUE),
+	}
+
+	for fn, ctor := range mk {
+		for on, operand := range operands {
+			expr := ctor(operand)
+			want := cbqEval(t, expr)
+			got, ok := nativeEval(t, expr)
+			if !ok {
+				t.Errorf("%s(%s): did not optimize", fn, on)
+				continue
+			}
+			if got != want {
+				t.Errorf("%s(%s): native=%q, cbq=%q", fn, on, got, want)
+			}
+		}
+	}
+}
+
 func TestArrayMinMaxContainsDifferentialVsCBQ(t *testing.T) {
 	c := func(v interface{}) expression.Expression { return expression.NewConstant(v) }
 	arr := func(xs ...interface{}) expression.Expression {

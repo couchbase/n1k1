@@ -47,6 +47,7 @@ func init() {
 		"to_boolean", "to_string", "to_number", // type conversions (expr_type.go)
 		"array_length", "array_count", "array_sum", "array_avg", // array readers (expr_array.go)
 		"array_min", "array_max", "array_contains", "array_position", // (expr_array.go)
+		"object_length", "poly_length", // object/collection readers (expr_object.go)
 		"and", "or", // three-valued logical (expr_logic.go)
 		"not",                                           // unary predicate (expr_pred.go)
 		"ifnull", "ifmissing", "ifmissingornull", "nvl", // conditional-unknown (expr_cond.go)

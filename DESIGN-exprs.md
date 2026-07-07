@@ -137,6 +137,7 @@ place encoding "empty==MISSING, leading-n==null"), `CondUnknownKeep`/`NaryFirstK
 | `date_part_millis` | `engine/expr_date.go` + `base.DatePartMillis` | DATE_PART_MILLIS 2-arg — component from epoch millis in process-local zone (port of cbq `millisToTime`+`datePart`). 3-arg named-TZ and other date funcs fall back |
 | `to_boolean` `to_string` `to_number` | `engine/expr_type.go` + `base/type.go` | scalar type conversions |
 | `array_length` `array_count` `array_sum` `array_avg` `array_min` `array_max` `array_contains` `array_position` | `engine/expr_array.go` + `base/array.go` | reader array ops (no materialization) |
+| `object_length` `poly_length` | `engine/expr_object.go` + `base/object.go` | object/collection reader ops (unary; op-code dispatch; count via `jsonparser.ObjectEach`/`ArrayEach`, no materialization) |
 | `window-partition-row-number`, `window-frame-*` | `engine/expr_window.go` | window helpers (FIRST/LAST/NTH/LEAD/LAG) |
 | `exprStr` / `exprTree` | `glue/expr.go` | **the fallback** (parse / delegate to cbq) |
 
@@ -377,8 +378,11 @@ byte/register/lz model.
 
 ### Tier C — structure-building (doable in bytes, higher cost)
 - **Reader ops (no output build)** — `array_length/contains/position`,
-  `array_min/max/sum/avg`, `object_length/names`, `poly_length` — iterate via
-  `jsonparser.ArrayEach`/`ObjectEach`, compute a scalar without materializing. Good ROI.
+  `array_min/max/sum/avg`, `object_length`, `poly_length` **done** (iterate via
+  `jsonparser.ArrayEach`/`ObjectEach`, compute a scalar without materializing — good
+  ROI). Remaining readers: `object_names` (builds a sorted array — structure), the
+  bare-identifier / whole-row operand case (e.g. `OBJECT_LENGTH(o)` still boxes because
+  `o` isn't recognized as a native labelPath).
 - **Ops that DO build output** — `array_append/concat/sort/…`, `object_put/…`,
   literals — emit JSON into a lifted buffer (sort/dedup may need `ValComparer`
   scratch). Port common ones by frequency.
