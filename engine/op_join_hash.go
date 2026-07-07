@@ -316,41 +316,51 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 						lzRightSuffix := make(base.Vals, rightLabelsLen)
 						_ = lzRightSuffix
 
-						// Callback for entries in the probe map.
+						// Callback for entries in the probe map. lzJoinCount (n) is the
+						// number of RHS rows that matched this key; the tracked
+						// leftCount (m) is the LHS multiplicity.
 						lzMapVisitor := func(lzProbeKey store.Key, lzProbeVal store.Val) bool {
 							lzJoinCount := binary.LittleEndian.Uint64(lzProbeVal[:8])
-							if lzJoinCount == 0 { // Entry was not visited by RHS.
-								lzProbeVal = lzProbeVal[8:]
+							lzProbeVal = lzProbeVal[8:]
 
-								if leftCount { // !lz
-									// Ex: except-all.
-									lzLeftCount := binary.LittleEndian.Uint64(lzProbeVal[:8])
+							if leftCount { // !lz
+								// Ex: except-all. A key present m times on the LHS and
+								// matched n times on the RHS survives MAX(m-n, 0) times
+								// (n >= m => not at all) -- NOT just the n==0 case.
+								lzLeftCount := binary.LittleEndian.Uint64(lzProbeVal[:8])
 
+								if lzLeftCount > lzJoinCount {
 									lzValsOut = base.ValsDecode(lzProbeKey, lzValsOut[:0])
 
-									for lzI := uint64(0); lzI < lzLeftCount; lzI++ {
+									for lzI := lzJoinCount; lzI < lzLeftCount; lzI++ {
 										lzYieldValsOrig(lzValsOut)
 									}
+								}
 
-									lzProbeVal = lzProbeVal[8:]
-								} // !lz
+								lzProbeVal = lzProbeVal[8:]
+							} // !lz
 
-								if leftVals { // !lz
-									// Ex: joinHash-leftOuter.
+							if leftVals { // !lz
+								// Ex: joinHash-leftOuter -- yield the UNJOINED (n==0)
+								// left rows.
+								if lzJoinCount == 0 {
 									lzValsOut, lzErr = base.YieldChainedVals(lzYieldValsOrig,
 										lzRightSuffix, lzChunks, lzProbeVal, lzValsOut)
 									if lzErr != nil {
 										lzYieldErrOrig(lzErr)
 									}
-								} // !lz
+								}
+							} // !lz
 
-								if !leftCount && !leftVals { // !lz
-									// Ex: except-distinct.
+							if !leftCount && !leftVals { // !lz
+								// Ex: except-distinct -- a key absent from the RHS
+								// (n==0) appears once.
+								if lzJoinCount == 0 {
 									lzValsOut = base.ValsDecode(lzProbeKey, lzValsOut[:0])
 
 									lzYieldValsOrig(lzValsOut)
-								} // !lz
-							}
+								}
+							} // !lz
 
 							return true
 						}

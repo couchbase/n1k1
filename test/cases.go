@@ -6673,6 +6673,32 @@ var queryCases = []queryCase{
 			}
 		},
 	},
+	{
+		// EXCEPT ALL multiplicity: a value present m times on the left and n
+		// times on the right survives MAX(m-n, 0) times. custId is
+		// {abc,bbb,ccc,ccc} on the left; removing one ccc leaves {abc,bbb,ccc}
+		// (ccc: 2-1=1), NOT dropping both ccc.
+		name: "ExceptAllMultiplicity",
+		stmt: `SELECT a.custId AS c FROM data:orders AS a ` +
+			`EXCEPT ALL ` +
+			`SELECT b.custId AS c FROM data:orders AS b WHERE b.id="1235"`,
+		rows: 3,
+		check: func(t *testing.T, rows []base.Vals) {
+			counts := map[string]int{}
+			for _, row := range rows {
+				counts[trimQ(string(row[0]))]++
+			}
+			want := map[string]int{"abc": 1, "bbb": 1, "ccc": 1}
+			if len(counts) != len(want) {
+				t.Fatalf("got %+v, want %+v", counts, want)
+			}
+			for k, v := range want {
+				if counts[k] != v {
+					t.Fatalf("count[%s]=%d, want %d (full: %+v)", k, counts[k], v, counts)
+				}
+			}
+		},
+	},
 }
 
 // rowObj unmarshals a single-label result row (a JSON object) into a map.
