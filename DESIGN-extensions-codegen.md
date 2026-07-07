@@ -86,7 +86,7 @@ those leaves. Who provides it is the whole design space.
 
 ## Design principle: abstract the datastore leaves behind one interface <a name="design-principle"></a>
 
-Generalize the process-global `engine.ExecOpEx` into a small **`DatastoreClient`**
+Generalize the process-global `engine.ExecOpEx` into a small **`DatastorePipe`**
 interface the generated query calls, e.g. `Scan(spec) → batches`, `Fetch(keys) →
 docs`, `IndexScan(spec) → ids`, `Meta(...)`. The *linkage* picks the implementation;
 the generated query is identical across them. The codebase already hints this is the
@@ -100,7 +100,7 @@ the emitted code portable across in-process, child-process, and WASM providers.
 
 Just write the file. Two immediate uses: (a) **inspection/learning** — see the
 compiled plan; (b) **library** — a dev imports `engine`+`base`, supplies a
-`DatastoreClient` (e.g. an in-memory one that yields their own `base.Vals`), and calls
+`DatastorePipe` (e.g. an in-memory one that yields their own `base.Vals`), and calls
 `Run`. For inline / in-memory data this needs **zero datastore dependencies**. No Go
 toolchain beyond the dev's own build.
 
@@ -120,7 +120,7 @@ binary*, and the clean way for the running parent to use it is to spawn it and t
 over pipes. Process separation is how you run generated Go — and it also buys the
 isolation/safety the request mentions.
 
-- **The child** = `engine` + `base` + a pipe `DatastoreClient`. Small, **public** deps,
+- **The child** = `engine` + `base` + a pipe `DatastorePipe`. Small, **public** deps,
   CGO-free, `go build`-able anywhere — crucially **without the private fork** (parse
   and plan already happened in the parent).
 - **The parent** (n1k1) becomes a **data server**: it keeps cbq/glue/records/datastore/
@@ -142,31 +142,60 @@ already points this way.
 
 ## The pipe protocol (concrete) <a name="the-pipe-protocol"></a>
 
-- **Transport:** length-prefixed binary frames over the child's **stdin/stdout**
-  (stderr = logs/diagnostics). Dependency-free; no gRPC/protobuf (which would re-add
-  the deps the thin child avoids).
-- **Row framing reuses `base.ValsEncode`/`ValsDecode`.** `base.Val` is already `[]byte`,
-  so a batch is length-prefixed blobs — the exact encoding the engine already uses for
-  map keys and spill files. Near-zero bespoke serialization for row data.
-- **Messages** (with request/**cursor IDs** for multiplexing):
-  - *Child → Parent (data):* `OpenScan{kind, keyspace, spans, filter, projection,
-    limit}`, `IndexScan{index, spans}`, `Fetch{keyspace, keys}`, `Meta{keyspace|index}`,
-    `NextBatch{cursor}`, `CloseCursor{cursor}`.
-  - *Parent → Child:* `Run{params, namedArgs}`, `Batch{cursor, Vals…}`, `ScanDone{cursor}`,
-    `Doc{…}`, `MetaResp{…}`, `Cancel`, `Err`.
-  - *Child → Parent (results):* `ResultBatch{Vals…}`, `ResultDone`, `Warning`, `Err`.
-- **Re-entrancy is the crux.** A nested-loop join holds an outer cursor open and opens
-  an inner cursor per outer row; correlated subqueries the same. So the protocol is
-  **multiplexed by cursor ID**, not a strict ping-pong — the child may have several
-  scan streams and a fetch in flight at once.
-- **Pushdowns must cross the boundary.** The plan's scan op already carries spans /
-  residual filter / projection / limit; send them so the parent does sargable/covered
-  index scans instead of streaming whole keyspaces. This is what keeps the split from
-  being a full-table-shipping disaster.
-- **Backpressure:** batch-at-a-time with a bounded in-flight window — the engine's
-  data-staging `batchCh` flow-control maps onto pipe windowing.
-- **Cancel/teardown:** parent→child `Cancel`, or child exit → parent reaps; either side
-  closing the pipe ends the query.
+**Frame envelope.** Every message is a length-prefixed binary frame with a small
+header — `{type: u8, cursor/req id: u32, flags: u8, len: u32}` then payload — over the
+child's **stdin/stdout** (stderr = logs). Dependency-free; no gRPC/protobuf (which
+would re-add the deps the thin child avoids). A leading **`Hello{protoVer, engineVer}`**
+both ways guards parent↔child version skew before anything runs.
+
+**Row framing reuses `base.ValsEncode`/`ValsDecode`.** `base.Val` is already `[]byte`,
+so a batch payload is `count` + length-prefixed blobs — the exact encoding the engine
+uses for map keys and spill files. Near-zero bespoke serialization for row data.
+
+The message set has explicit room for the four things any real data pipe needs —
+**batching, errors, warnings, and stats** — as first-class frame types, not
+afterthoughts:
+
+- **Control (parent → child):** `Run{params, namedArgs}`, `Cancel`, and flow-control
+  `Credit{cursor, n}` (see backpressure).
+- **Data requests (child → parent):** `OpenScan{kind, keyspace, spans, filter,
+  projection, limit}`, `IndexScan{index, spans}`, `Fetch{keyspace, keys}`,
+  `Meta{keyspace|index}`, `CloseCursor{cursor}`.
+- **Data responses (parent → child):** `Batch{cursor, count, Vals…}`,
+  `CursorDone{cursor}`, `MetaResp{…}` — a scan/fetch is a *stream of `Batch` frames*
+  terminated by `CursorDone`.
+- **Results (child → parent):** `ResultBatch{count, Vals…}`, `ResultDone` — the query's
+  output, batched the same way.
+- **Errors (either direction):** `Err{origin: parent|child, cursor?, code, severity:
+  fatal|retryable, msg}`. A per-`cursor` error fails just that scan; a cursor-less fatal
+  ends the query. Kept distinct from warnings so the caller can react to each.
+- **Warnings (either direction):** `Warn{cursor?, msg}` — non-fatal advisories (e.g.
+  divide-by-zero → null), the same stream the request's warning collector gathers today.
+- **Stats (either direction, throttled):** `Stats{snapshot}` — a periodic push of the
+  `DESIGN-stats.md` counters (rows in/out, bytes, files pruned, per-op) so the **parent
+  can render live progress** for a child-run query. Both sides contribute: the parent
+  reports scan/fetch-side I/O, the child reports compute-side rows/ops. Coarse cadence
+  (piggyback on batch boundaries or ~10 Hz), off the hot path — matching the two-cadence
+  model in `DESIGN-stats.md`.
+
+**Batching + backpressure.** Everything that carries rows is batched (`Batch`,
+`ResultBatch`) at a negotiated max batch size; a **credit/window** scheme
+(`Credit{cursor, n}`) bounds in-flight batches per cursor so a fast producer can't
+flood a slow consumer. This is the engine's data-staging `batchCh` flow-control
+projected onto the pipe.
+
+**Re-entrancy is the crux.** A nested-loop join holds an outer cursor open and opens an
+inner cursor per outer row; correlated subqueries the same. So frames are **multiplexed
+by cursor id** — several scan streams and a fetch may be in flight at once — not a
+strict ping-pong.
+
+**Pushdowns must cross the boundary.** The plan's scan op already carries spans /
+residual filter / projection / limit; send them so the parent does sargable/covered
+index scans instead of streaming whole keyspaces — this is what keeps the split from
+being a full-table-shipping disaster.
+
+**Cancel/teardown.** Parent→child `Cancel` (or per-cursor `CloseCursor`); child exit or
+either side closing the pipe ends the query and reaps.
 
 ## What the parent provides — the "data server" <a name="the-data-server"></a>
 
@@ -201,7 +230,7 @@ the "single-process is a simplification" seam the code already calls out.)
 
 1. **`CODEGEN` / `.codegen` emit-only** — write the `*.go`, no toolchain. Immediately
    useful (inspection; library over in-memory data). Reuses `OpToLines`.
-2. **A `DatastoreClient` interface + an in-memory provider** — so an emitted query runs
+2. **A `DatastorePipe` interface + an in-memory provider** — so an emitted query runs
    standalone over inline `base.Vals` with zero datastore deps; enables `-codegen -run`
    for datastore-free queries.
 3. **Thin child + pipe protocol**, with the parent's existing `glue.DatastoreOp` as the
@@ -223,5 +252,6 @@ the "single-process is a simplification" seam the code already calls out.)
 - **Toolchain policy** — when is `go build` permitted (sandbox/permission), and how to
   pin the `engine`/`base` module version the child builds against (a prebuilt "thin
   runtime" module would make child builds fast + hermetic)?
-- **Stats/observability** — surface `DESIGN-stats.md` counters across the pipe so the
-  parent can render progress for a child-run query.
+- **Stats aggregation** — the `Stats` frame carries `DESIGN-stats.md` counters both
+  ways; open question is how to *merge* parent-side (scan/fetch I/O) and child-side
+  (compute) snapshots into one coherent progress view without double-counting.
