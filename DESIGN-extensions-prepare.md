@@ -26,6 +26,7 @@ datastore source itself** and only takes connectivity + auth over the pipe.
 - [Self-contained prepared programs — embed the datastore source](#embed-source)
 - [Boxed expressions — the cbq fallback across the boundary](#boxed-exprs)
 - [When this pays off — and when not](#motivation)
+- [Is codegen worth it? — the crossover](#worth-it)
 - [Recommendation / phasing](#phasing)
 - [Open questions](#open-questions)
 
@@ -91,13 +92,13 @@ So `glue.Preparable(op)` returns a **`PrepareLevel`**, not a bool:
   provider**. This is the *widest* compiled level: only native exprs are required, so the
   datastore leaves — and the heavy record providers behind them — can stay parent-side
   (see below).
-- **`PrepareCompiledStandalone`** — native exprs AND every datastore op bakes into the
+- **`PrepareCompiledFull`** — native exprs AND every datastore op bakes into the
   emitted Go. A self-contained program (a datastore-free query needs only `engine`+`base`;
   a datastore one links the datastore runtime). Phase-1 `.prepare` emit requires this.
 
 PREPARE = "produce the best executable artifact, and always keep the interpreter Op tree
 as the fallback"; EXECUTE runs whatever level was reached. The Phase-1 CLI already reports
-it — emit at Standalone, else print the reason (distinguishing "needs cbq" from "needs a
+it — emit at Full, else print the reason (distinguishing "needs cbq" from "needs a
 data provider") and interpret.
 
 **PREPARE runs in the parent — it is inherently cbq-having.** parse → plan → convert use
@@ -387,6 +388,37 @@ exactly why the native lane exists in the first place.
   buffers that need copies.
 - **Parent↔child protocol/version coupling** to manage.
 - **Fat standalone** drags in the private fork + heavy deps — prefer thin+pipe.
+
+## Is codegen worth it? — the crossover <a name="worth-it"></a>
+
+Codegen trades a **fixed compile cost** for a **per-row speedup**, so it only pays past a
+break-even. Measured on this machine:
+
+- **Compile cost (warm):** ~0.1 s to `go build` one generated package with deps cached.
+  (The *first* build of a runtime — engine+base, or the fat glue+cbq closure — is the
+  tens-of-seconds cold tax, paid once and cached.)
+- **Per-row speedup:** the compiler benchmark (`make bench-compiler`) shows compiled
+  beating interpreted by only **~1.07× (scan/filter/project) to ~1.22× (group-by)** — a
+  **~9–11 ns/row** saving. n1k1's interpreter is *already* fast (byte-oriented, native
+  exprs, push-based closures), so codegen mostly just inlines the closure calls; the
+  boxing/allocation wins were already banked by the native lane, which both paths share.
+
+Crossover for a **one-shot** query ≈ `0.1 s / 10 ns ≈ 10 million rows` (and ~100M–1B if it
+triggers the cold first build). So `SELECT 1+1` (one row) is ~7 orders of magnitude short
+— compiling it is pure overhead. Where codegen *does* pay:
+
+- **Prepared statements (PREPARE-once / EXECUTE-many)** — amortize the compile over K
+  executions: break-even ≈ `10M / K` rows *per execution* (≈10k rows at K=1000). This is
+  codegen's real value: hot, repeated queries.
+- **Very large one-shot scans** — tens of millions of rows and up.
+
+**So "can compile" ≠ "should compile."** `Preparable` answers *can* (a level); a separate
+**worth-it heuristic** answers *should*: `est_rows × executions × ~10 ns/row > compile_cost`.
+Absent cardinality, crude signals suffice — datastore-free/constant → never; explicit
+`EXECUTE`/reuse → yes; a big keyspace scan → maybe (cardinality would come from
+`DESIGN-stats.md`). And note the surface split: **emitting** the `.go` (Phase 1) is cheap
+and always fine on an explicit `.prepare` (inspection, like `EXPLAIN`); it's **compiling**
+— the seconds — that the worth-it gate guards.
 
 ## Recommendation / phasing <a name="phasing"></a>
 

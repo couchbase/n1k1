@@ -43,8 +43,8 @@ func TestPrepareNativeEmitsParseableGo(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Prepare(%q) err: %v", q, err)
 		}
-		if level != PrepareCompiledStandalone {
-			t.Fatalf("Prepare(%q) level %d, reason: %q (want PrepareCompiledStandalone)", q, level, reason)
+		if level != PrepareCompiledFull {
+			t.Fatalf("Prepare(%q) level %d, reason: %q (want PrepareCompiledFull)", q, level, reason)
 		}
 		if strings.TrimSpace(src) == "" {
 			t.Fatalf("Prepare(%q) emitted empty source", q)

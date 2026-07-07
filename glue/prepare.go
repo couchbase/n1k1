@@ -66,11 +66,11 @@ const (
 	// (parquet/pdf/...) stay parent-side.
 	PrepareCompiledData
 
-	// PrepareCompiledStandalone: every expression is native AND every datastore op
+	// PrepareCompiledFull: every expression is native AND every datastore op
 	// bakes into the emitted Go -- a self-contained program (a datastore-free query
 	// needs only engine/base; a datastore one links the datastore runtime). This is
 	// what Phase-1 emit requires.
-	PrepareCompiledStandalone
+	PrepareCompiledFull
 )
 
 // Preparable classifies a converted base.Op tree (see PrepareLevel). reason is a
@@ -92,7 +92,7 @@ func Preparable(op *base.Op) (level PrepareLevel, reason string) {
 	if r, bad := firstUnbakeableDatastoreOp(op); bad {
 		return PrepareCompiledData, r // native, but needs a runtime data provider
 	}
-	return PrepareCompiledStandalone, ""
+	return PrepareCompiledFull, ""
 }
 
 // firstUnbakeableDatastoreOp walks the tree and returns a reason for the first
@@ -339,7 +339,7 @@ func (s *Session) Prepare(stmt string) (goSource string, level PrepareLevel, rea
 	// distinction.) Phase-1 emit needs the top level; a lower level returns its
 	// reason so the caller interprets (all-interpreter always works).
 	level, reason = Preparable(conv.TopOp)
-	if level != PrepareCompiledStandalone {
+	if level != PrepareCompiledFull {
 		return "", level, reason, nil
 	}
 
@@ -350,5 +350,5 @@ func (s *Session) Prepare(stmt string) (goSource string, level PrepareLevel, rea
 		return "", PrepareInterpreted, "expression not serializable to text", nil
 	}
 
-	return wrapPrepare(conv.TopOp.Labels, emit.OpToLines(conv.TopOp)), PrepareCompiledStandalone, "", nil
+	return wrapPrepare(conv.TopOp.Labels, emit.OpToLines(conv.TopOp)), PrepareCompiledFull, "", nil
 }

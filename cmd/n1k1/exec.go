@@ -214,7 +214,7 @@ func (c *cli) prepareStmt(stmt string) {
 		fmt.Fprintf(c.stderr, "%sprepare: %s\n", c.icon("🚧 "), c.style.Yellow(tidyMsg(err.Error())))
 		return
 	}
-	if level != glue.PrepareCompiledStandalone {
+	if level != glue.PrepareCompiledFull {
 		note := "not compilable, running interpreted" // PrepareInterpreted
 		if level == glue.PrepareCompiledData {
 			note = "compilable but needs a runtime data provider (not yet supported), running interpreted"
