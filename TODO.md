@@ -352,3 +352,4 @@ in glue/patches/README.md.
     the window partition won't work because the order-by heap is a
     real heap, which is different than the heap-as-chunk-sequence used
     by a window partition.
+    - perhaps can have a different sorted data structure based on rhstore?
