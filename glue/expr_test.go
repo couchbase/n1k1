@@ -663,6 +663,42 @@ func TestArrayReduceDifferentialVsCBQ(t *testing.T) {
 	}
 }
 
+func TestDistinctFromDifferentialVsCBQ(t *testing.T) {
+	c := func(v interface{}) expression.Expression { return expression.NewConstant(v) }
+
+	mk := map[string]func(a, b expression.Expression) expression.Expression{
+		"is_distinct_from":     func(a, b expression.Expression) expression.Expression { return expression.NewIsDistinctFrom(a, b) },
+		"is_not_distinct_from": func(a, b expression.Expression) expression.Expression { return expression.NewIsNotDistinctFrom(a, b) },
+	}
+	// Every pair over {equal/unequal numbers, strings, arrays, objects, bools,
+	// NULL, MISSING} -- covers the null-safe branches (both-MISSING, one-MISSING,
+	// both-NULL, one-NULL, MISSING-vs-NULL) and value equality across types.
+	vals := map[string]expression.Expression{
+		"i1": c(1.0), "i1b": c(1.0), "i2": c(2.0), "f15": c(1.5),
+		"sa": c("a"), "sb": c("b"),
+		"arr": c([]interface{}{1.0, 2.0}), "arr2": c([]interface{}{1.0, 2.0}),
+		"obj": c(map[string]interface{}{"x": 1.0}), "tt": c(true), "ff": c(false),
+		"null": c(value.NULL_VALUE), "missing": c(value.MISSING_VALUE),
+	}
+
+	for fn, ctor := range mk {
+		for an, a := range vals {
+			for bn, b := range vals {
+				expr := ctor(a, b)
+				want := cbqEval(t, expr)
+				got, ok := nativeEval(t, expr)
+				if !ok {
+					t.Errorf("%s(%s,%s): did not optimize", fn, an, bn)
+					continue
+				}
+				if got != want {
+					t.Errorf("%s(%s,%s): native=%q, cbq=%q", fn, an, bn, got, want)
+				}
+			}
+		}
+	}
+}
+
 func TestObjectPolyLengthDifferentialVsCBQ(t *testing.T) {
 	c := func(v interface{}) expression.Expression { return expression.NewConstant(v) }
 

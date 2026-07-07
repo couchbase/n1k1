@@ -52,8 +52,8 @@ WITH / recursive CTEs) when every field ref is provably local — `strict` optim
 `^aggregates|…` value natively (lever #6); (e) result-row output (`OnRow` / `Result.Rows`)
 encodes boxing-free via `ConvertBytes` (lever #7).
 
-**Next:** `slice` navigation (blocked); `is [not] distinct from` (binary, low
-priority); Tier B (string/numeric/date). `LIKE`/`REGEXP_*` deferred.
+**Next:** `slice` navigation (blocked); Tier B (string/numeric/date; bitwise; JSON
+`encoded_size`). `LIKE`/`REGEXP_*` deferred.
 
 ## Why native matters (the fallback's cost)
 
@@ -128,6 +128,7 @@ place encoding "empty==MISSING, leading-n==null"), `CondUnknownKeep`/`NaryFirstK
 | `concat` (`\|\|`) | `engine/expr_concat.go` + `base.NaryConcat` | string concatenation (n-ary) |
 | `between` | `engine/expr_between.go` | BETWEEN (ternary; collation-order bounds) |
 | `in` | `engine/expr_in.go` + `base.ValIn` | IN (array membership; 2-operand) |
+| `is_distinct_from` `is_not_distinct_from` | `engine/expr_distinct.go` + `base/distinct.go` | IS [NOT] DISTINCT FROM (binary null-safe (in)equality; MISSING/NULL-aware, then `ValComparer.Compare`) |
 | `upper` `lower` `title` `trim` `ltrim` `rtrim` `reverse` `length` `contains` `position0` `position1` | `engine/expr_str.go` + `base/str.go` | unary string transforms (shared `exprStrTransform`: decode → `func([]byte)[]byte` → re-encode). TRIM/LTRIM/RTRIM 2-arg (cutset) fall back |
 | `replace` | `engine/expr_str.go` + `base.StrReplaceAll` | REPLACE 3-arg (ternary → buffer); 4-arg count form falls back |
 | `substr` (`substr0` `substr1`) | `engine/expr_str.go` + `base.StrSubstr` | SUBSTR (byte-based, `inRunes=false`), 2/3-arg, arity-dispatched to `substr{0,1}_{2,3}`. Rune-based `mb_substr*` fall back |
@@ -142,7 +143,7 @@ place encoding "empty==MISSING, leading-n==null"), `CondUnknownKeep`/`NaryFirstK
 | `window-partition-row-number`, `window-frame-*` | `engine/expr_window.go` | window helpers (FIRST/LAST/NTH/LEAD/LAG) |
 | `exprStr` / `exprTree` | `glue/expr.go` | **the fallback** (parse / delegate to cbq) |
 
-Still **delegated:** `LIKE`/`REGEXP_*`, `is [not] distinct from`, `slice`
+Still **delegated:** `LIKE`/`REGEXP_*`, `slice`
 navigation, `TYPE()`/`IS_BINARY`, and the ~320 remaining scalar functions.
 
 ### Known-broken & caveats
@@ -360,7 +361,8 @@ byte/register/lz model.
 
 ### Tier A — remaining scalar, byte-friendly, high per-row frequency
 - **`slice` navigation `arr[start:end]`** — blocked on cbq internals (see Lessons).
-- **`is [not] distinct from`** (binary, low priority) — null-safe equality via `ValComparer`.
+- **`is [not] distinct from`** — **done** (`engine/expr_distinct.go`): binary null-safe
+  (in)equality, MISSING/NULL-aware then `ValComparer.Compare`.
 
 ### Tier B — scalar but needs parse+format into a reused buffer
 - **String funcs** (upper/lower/trim/substr/…) — Go `strings.*` into a lifted buffer;

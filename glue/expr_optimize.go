@@ -68,6 +68,10 @@ func init() {
 	OptimizableFuncs["isnotmissing"] = "is_not_missing"
 	OptimizableFuncs["isvalued"] = "is_valued"
 	OptimizableFuncs["isnotvalued"] = "is_not_valued"
+
+	// IS [NOT] DISTINCT FROM: cbq Function.Name() is the no-underscore form.
+	OptimizableFuncs["isdistinctfrom"] = "is_distinct_from"
+	OptimizableFuncs["isnotdistinctfrom"] = "is_not_distinct_from"
 }
 
 // optSelf registers each name as optimizable to a native ExprCatalog func of the

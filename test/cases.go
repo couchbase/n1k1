@@ -6721,6 +6721,38 @@ var queryCases = []queryCase{
 			}
 		},
 	},
+	{
+		// IS [NOT] DISTINCT FROM -- null-safe (in)equality. custId IS DISTINCT
+		// FROM "ccc": abc/bbb -> true, ccc -> false. shipped-on IS NOT DISTINCT
+		// FROM null: only the explicit-null 1236 -> true (a value -> false;
+		// MISSING is distinct from NULL -> false).
+		name: "DistinctFrom",
+		stmt: `SELECT a.id, ` +
+			`a.custId IS DISTINCT FROM "ccc" AS dc, ` +
+			"a.`shipped-on` IS NOT DISTINCT FROM null AS isnull " +
+			`FROM data:orders AS a ORDER BY a.id`,
+		rows: 4,
+		check: func(t *testing.T, rows []base.Vals) {
+			want := []struct{ id, dc, isnull string }{
+				{"1200", "true", "false"},
+				{"1234", "true", "false"},
+				{"1235", "false", "false"},
+				{"1236", "false", "true"},
+			}
+			if len(rows) != 4 {
+				t.Fatalf("got %d rows, want 4", len(rows))
+			}
+			for i, w := range want {
+				if len(rows[i]) != 3 {
+					t.Fatalf("row %d: expected 3 cols, got %+v", i, rows[i])
+				}
+				id, dc, isnull := trimQ(string(rows[i][0])), string(rows[i][1]), string(rows[i][2])
+				if id != w.id || dc != w.dc || isnull != w.isnull {
+					t.Fatalf("row %d: got (%s,%s,%s), want (%s,%s,%s)", i, id, dc, isnull, w.id, w.dc, w.isnull)
+				}
+			}
+		},
+	},
 }
 
 // rowObj unmarshals a single-label result row (a JSON object) into a map.
