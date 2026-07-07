@@ -20,6 +20,7 @@ compute child that asks the parent n1k1 for data.
 - [Pathways (a ladder)](#pathways)
 - [The pipe protocol (concrete)](#the-pipe-protocol)
 - [What the parent provides — the "data server"](#the-data-server)
+- [Boxed expressions — the cbq fallback across the boundary](#boxed-exprs)
 - [When this pays off — and when not](#motivation)
 - [Recommendation / phasing](#phasing)
 - [Open questions](#open-questions)
@@ -160,7 +161,9 @@ afterthoughts:
   `Credit{cursor, n}` (see backpressure).
 - **Data requests (child → parent):** `OpenScan{kind, keyspace, spans, filter,
   projection, limit}`, `IndexScan{index, spans}`, `Fetch{keyspace, keys}`,
-  `Meta{keyspace|index}`, `CloseCursor{cursor}`.
+  `Meta{keyspace|index}`, `CloseCursor{cursor}`, and — only when a query keeps a boxed
+  expression — `EvalExpr{exprText, Vals…}` (see
+  [Boxed expressions](#boxed-exprs); a reluctant, batched compute-delegation).
 - **Data responses (parent → child):** `Batch{cursor, count, Vals…}`,
   `CursorDone{cursor}`, `MetaResp{…}` — a scan/fetch is a *stream of `Batch` frames*
   terminated by `CursorDone`.
@@ -204,6 +207,56 @@ that yields `base.Vals`; the data server is that same dispatch wrapped in a
 request/response loop over the pipe instead of an in-process `ExecOpEx` call. The new
 surface is the framing + cursor bookkeeping, not the datastore logic. (This is exactly
 the "single-process is a simplification" seam the code already calls out.)
+
+## Boxed expressions — the cbq fallback across the boundary <a name="boxed-exprs"></a>
+
+n1k1 evaluates a **growing native set** of expressions on bytes; everything else
+**delegates to cbq's `Evaluate()`** via the `exprTree` / `exprStr` fallback
+(`glue/expr.go`; `DESIGN-exprs.md`). `exprStr` is "parse a cbq expression's *text* →
+cbq `Evaluate`." The thin child has **no cbq**, so it cannot evaluate a boxed
+expression by itself — the sharpest limit on what can be codegen'd.
+
+**Subtlety: serialize vs evaluate.** The compiler already rewrites a live
+`["exprTree", <expression>]` into `["exprStr", "<text>"]` (`stringifyExprTrees`,
+`suite_compiler_test.go`) so the plan *serializes* into Go — the boxed expr can be
+**carried** in generated code as a string; what it can't do without cbq is **evaluate**
+it. (A few exprs don't even stringify → "exprTree not serializable" → not compilable at
+all.) So a boxed expr is a **runtime dependency, not a serialization blocker**.
+
+Options, best first:
+
+1. **Gate: the thin child runs fully-native queries only (default).** If any per-row
+   expr is boxed, don't target the thin child — run it interpreted in the parent (or use
+   the fat child). **Codegen coverage then rides native-expr coverage**: every port in
+   `DESIGN-exprs.md` widens the set of compilable queries. Simple and honest, and it's
+   already how the compiler tests behave.
+2. **Const-fold boxed sub-exprs at codegen time (free).** Many boxed exprs are constant
+   / early-bound (e.g. `REPEAT('x', 2)`). The parent evaluates them **once** during
+   codegen and bakes the result as a `["json", …]` constant — no cbq in the child, no
+   pipe traffic. Removes a real slice of the tail; only *per-row* boxed exprs remain.
+3. **`EvalExpr` over the pipe (opt-in, reluctant).** The child carries the boxed
+   `exprStr` text, batches the operand `Vals`, and sends `EvalExpr{exprText, Vals…}`; the
+   parent evaluates via its existing `ExprStr` (cbq) and returns result `Vals`. So **yes,
+   cbq eval can traverse the pipe** — but mind the asymmetry: **datastore requests are
+   coarse and batched (many rows per scan), whereas expression eval is per-tuple — the
+   hot path.** Putting per-row boxing on a pipe is the *opposite* of what native exprs
+   are for — it's the existing slow boxed lane *plus* serialization. Only worth it when
+   the boxed expr is a small fraction on an already-filtered stream, and always
+   **batched**, never a round-trip per row. Not a general answer.
+4. **Fat child** — link glue → cbq present → no pipe eval. Self-contained but heavy +
+   private-fork (see the ladder).
+5. **Plan partitioning (future).** Rather than ship a boxed *expression* per row, keep
+   the boxed *operator(s)* in the parent's interpreter and exchange **batched row
+   streams** over the same pipe: the native subtree compiles into the child, the boxed
+   subtree stays parent-side. Moves whole operators, not per-row exprs, so it avoids
+   hot-path pipe traffic — the cost is choosing the cut (and a projection mixing one
+   boxed + several native terms can't split cleanly without duplicating it).
+
+**Bottom line.** The right investment is native-expr coverage (shrink the boxed set);
+const-folding mops up the constant tail for free; `EvalExpr`-over-pipe is a reluctant
+escape for mostly-native queries; the fat child or plan-partitioning cover the rest. The
+pipe is great for *data* (batched, coarse) and poor for *per-row expressions* — which is
+exactly why the native lane exists in the first place.
 
 ## When this pays off — and when not <a name="motivation"></a>
 
