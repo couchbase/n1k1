@@ -68,6 +68,7 @@ func main() {
 		fFlag       = flag.String("f", "", "run statements from a file and exit")
 		modeFlag    = flag.String("mode", "", "output mode: "+strings.Join(cmd.OutputModes, "|")+" (append |pretty to indent JSON; default box|pretty at a TTY, else jsonlines)")
 		timerFlag   = flag.Bool("timer", false, "print row count + elapsed after each statement")
+		codegenFlag = flag.Bool("codegen", false, "print generated Go for each query (compilable ones); falls back to the interpreter otherwise. See .codegen")
 		initFlag    = flag.String("init", "", "startup file of dot-commands/SQL++ (default ~/."+prog+"rc; use \"\", \"-\" or \"none\" to skip)")
 		formatsFlag = flag.String("formats", "", "restrict files scanned to a comma-separated set (all|json|jsonl|csv|tsv|extract|doc|text|image|video|gzip|recurse); empty or 'all' = everything")
 		metaFlag    = flag.String("meta", "auto", "add a _meta sub-object (path/name/ext/size/mtime) to records: on|off|auto (auto = extracted docs only)")
@@ -200,6 +201,7 @@ func main() {
 		mode:      mode,
 		indexMode: *indexFlag,
 		timer:     *timerFlag,
+		codegen:   *codegenFlag,
 		statsMode: statsMode,
 		verbose:   int(vLevel),
 		maxRows:   0,
@@ -380,6 +382,7 @@ type cli struct {
 	timer     bool
 	verbose   int // 0=off, 1=show query plans, 2=+timing (see .verbose)
 	explain   bool
+	codegen   bool // .codegen/-codegen: print generated Go per query (falls back to interp; see .codegen)
 	echo      bool   // echo each input line as it's read (see .echo)
 	bail      bool   // stop the input loop on the first statement error (see .bail)
 	failed    bool   // transient: the last exec'd statement errored (drives .bail)

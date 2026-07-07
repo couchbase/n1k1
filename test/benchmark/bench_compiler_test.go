@@ -27,7 +27,7 @@ import (
 	"testing"
 
 	"github.com/couchbase/n1k1/base"
-	"github.com/couchbase/n1k1/test/emit"
+	"github.com/couchbase/n1k1/glue/emit"
 )
 
 func benchScanFilterProjectOp(data string, reps int) *base.Op {

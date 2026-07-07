@@ -11,13 +11,17 @@
 //  express or implied. See the License for the specific language
 //  governing permissions and limitations under the License.
 
-// Package emit holds the n1k1-compiler codegen helpers shared by the compiler
-// test/benchmark generators: OpToLines runs the compiler (intermed.ExecOp with
-// the Emit hooks captured) over a base.Op tree and returns the generated Go
-// source lines; BakeOp renders a base.Op subtree as a Go literal (for the
-// datastore-scan "island"); OptionalImports is the import set the generated
-// `package tmp` files pull in on demand. Used by test/ (the differential
-// generators) and test/benchmark/ (the Phase-2 bench generator).
+// Package emit holds the n1k1-compiler codegen helpers: OpToLines runs the
+// compiler (intermed.ExecOp with the Emit hooks captured) over a base.Op tree
+// and returns the generated Go source lines; BakeOp renders a base.Op subtree
+// as a Go literal (for the datastore-scan "island"); OptionalImports is the
+// import set the generated `package tmp` files pull in on demand.
+//
+// It lives under glue/ (rather than test/) so it can be reused as PRODUCTION
+// code -- glue.Codegen wraps OpToLines into a compilable .go file for the
+// user-facing .codegen surface (see DESIGN-extensions-codegen.md), while the
+// compiler differential generators in test/ (and the Phase-2 bench generator in
+// test/benchmark/) continue to use the same emitter as their oracle.
 package emit
 
 import (

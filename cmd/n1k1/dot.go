@@ -137,6 +137,28 @@ func (c *cli) dot(line string) bool {
 		default:
 			fmt.Fprintf(c.stderr, "usage: .explain [on|off] (currently %s)\n", onOff(c.explain))
 		}
+	case ".codegen":
+		// .codegen [on|off]     toggle: print generated Go per subsequent query.
+		// .codegen <statement>  one-shot: print the generated Go for <statement>,
+		//                       then run it (interpreter) so you also get results.
+		// Either way, a statement that needs cbq (a boxed expression, or a
+		// non-bakeable datastore op) can't be compiled: we print the reason and
+		// FALL BACK to the interpreter, so the query never fails (see
+		// DESIGN-extensions-codegen.md).
+		switch a := strings.TrimSpace(arg); strings.ToLower(a) {
+		case "":
+			fmt.Fprintf(c.stderr, "codegen %s\n", onOff(c.codegen))
+		case "on":
+			c.codegen = true
+			fmt.Fprintf(c.stderr, "codegen %s\n", onOff(c.codegen))
+		case "off":
+			c.codegen = false
+			fmt.Fprintf(c.stderr, "codegen %s\n", onOff(c.codegen))
+		default:
+			// Treat the arg as a one-shot statement: emit its Go, then run it.
+			c.codegenStmt(a)
+			c.exec(a)
+		}
 	case ".stats":
 		switch a := strings.ToLower(strings.TrimSpace(arg)); a {
 		case "":
@@ -244,6 +266,7 @@ func (c *cli) printHelp() {
 		".timer " + c.helpOpts(onOff(c.timer), "on", "off") + "       elapsed-time reporting (no arg shows the current setting)",
 		".stats " + c.helpOpts(c.statsMode, "on", "off", "final", "about") + " query stats: on=live footer, final=totals at end only (about=glossary)",
 		".explain " + c.helpOpts(onOff(c.explain), "on", "off") + "     print " + prog + "'s converted plan per query",
+		".codegen [on|off | <stmt>]  emit generated Go for a query (falls back to the interpreter if it needs cbq)",
 		".verbose " + c.helpOpts(vcur, "off", "on", "debug", "n") + "  diagnostics level (n>1 provides more info; no arg shows current)",
 		".maxrows <n>          box: cap rows shown (0 = all; negative = last |n| rows)",
 		".maxwidth <n|auto>    box: cap column width (0 = uncapped; auto = fit terminal)",

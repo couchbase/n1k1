@@ -35,6 +35,13 @@ func (c *cli) exec(stmt string) {
 	stmt = strings.TrimSpace(stmt)
 	c.failed = false // reset; set below if this statement errors (drives .bail)
 
+	// .codegen / -codegen on: print the generated Go for this statement first (or
+	// the reason it can't be compiled), then fall through to run it as usual.
+	// EXPLAIN is handled by the normal path below, not codegen'd.
+	if c.codegen && !isExplainStmt(stmt) {
+		c.codegenStmt(stmt)
+	}
+
 	// .stats / -stats: collect per-operator counters. `on` also draws them live on a
 	// TTY (throttled, in place, to stderr); `final` collects but shows only the grand
 	// totals at the end -- no live footer, so you can measure a query without the
@@ -186,4 +193,35 @@ func orderedJSONRow(pairs ...[2]interface{}) json.RawMessage {
 // n1k1's converted plan even without the .explain toggle).
 func isExplainStmt(stmt string) bool {
 	return strings.HasPrefix(strings.ToUpper(strings.TrimSpace(stmt)), "EXPLAIN")
+}
+
+// codegenStmt runs the SQL++ -> Go compiler (glue.Session.Codegen) for stmt and,
+// when the query is compilable, prints the generated Go source to stdout (so it's
+// copy-paste/pipe-friendly, like EXPLAIN's plan JSON). When the query can't be
+// compiled -- a boxed expression that needs cbq, or a non-bakeable datastore op
+// -- it prints the reason to stderr and DOES NOT emit; the caller then runs the
+// statement through the interpreter as usual, so the query still returns results.
+// This is the codegen fallback (see DESIGN-extensions-codegen.md).
+func (c *cli) codegenStmt(stmt string) {
+	if c.sess == nil {
+		fmt.Fprintln(c.stderr, "codegen: no datastore open (.open <dir>)")
+		return
+	}
+	src, ok, reason, err := c.sess.Codegen(stmt)
+	if err != nil {
+		// A parse/plan error: the statement is wrong. The normal run below will
+		// report it with a caret; here just note codegen couldn't proceed.
+		fmt.Fprintf(c.stderr, "%scodegen: %s\n", c.icon("🚧 "), c.style.Yellow(tidyMsg(err.Error())))
+		return
+	}
+	if !ok {
+		fmt.Fprintf(c.stderr, "%scodegen: not compilable, running interpreted -- %s\n",
+			c.icon("🚧 "), c.style.Yellow(reason))
+		return
+	}
+	fmt.Fprintln(c.stderr, "generated Go:")
+	fmt.Fprint(c.out, src)
+	if !strings.HasSuffix(src, "\n") {
+		fmt.Fprintln(c.out)
+	}
 }
