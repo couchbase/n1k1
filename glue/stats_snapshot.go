@@ -25,9 +25,13 @@ import (
 // every ScanYieldStatsEvery rows) and posts the result to the UI thread, so a
 // long query shows live progress while the worker is busy. See web/wasm/worker.js.
 //
-// Shape: {"ops":[{"id","kind","stats":{<name>:<count>,...}}]}. Counters are
-// monotonic per field but may show mild cross-field skew mid-run (a re-run inner
-// op resets) -- fine for progress. Returns "{}" for a nil Stats.
+// Shape: {"ops":[{"id","kind","stats":{<name>:<count>,...}}],"aggs":[{"op","key",
+// "vals":{<aggName>:<partialJSON>,...}}]}. Counters are monotonic per field but
+// may show mild cross-field skew mid-run (a re-run inner op resets) -- fine for
+// progress. The optional "aggs" array carries in-flight partial aggregate values
+// (COUNT/SUM/AVG/MIN/MAX climbing toward their finals; see DESIGN-stats.md "Live
+// aggregates"), present only when an OpGroup registered a preview and a checkpoint
+// filled it. Returns "{}" for a nil Stats.
 func StatsSnapshotJSON(s *base.Stats) string {
 	if s == nil {
 		return "{}"
@@ -36,6 +40,11 @@ func StatsSnapshotJSON(s *base.Stats) string {
 		Id    string           `json:"id"`
 		Kind  string           `json:"kind"`
 		Stats map[string]int64 `json:"stats"`
+	}
+	type aggView struct {
+		Op   string            `json:"op"`
+		Key  []string          `json:"key,omitempty"`
+		Vals map[string]string `json:"vals"`
 	}
 	ops := make([]opView, 0, len(s.Ops))
 	for _, op := range s.Ops {
@@ -48,8 +57,25 @@ func StatsSnapshotJSON(s *base.Stats) string {
 		}
 		ops = append(ops, opView{Id: op.Id, Kind: op.Kind, Stats: m})
 	}
+
+	var aggs []aggView
+	for _, r := range s.Preview.Rows() {
+		vals := make(map[string]string, len(r.Names))
+		for i, name := range r.Names {
+			if i < len(r.Aggs) {
+				vals[name] = string(r.Aggs[i]) // partial as JSON text (Agg.Result bytes)
+			}
+		}
+		var key []string
+		for _, k := range r.Key {
+			key = append(key, string(k))
+		}
+		aggs = append(aggs, aggView{Op: r.Op, Key: key, Vals: vals})
+	}
+
 	b, _ := json.Marshal(struct {
-		Ops []opView `json:"ops"`
-	}{ops})
+		Ops  []opView  `json:"ops"`
+		Aggs []aggView `json:"aggs,omitempty"`
+	}{ops, aggs})
 	return string(b)
 }

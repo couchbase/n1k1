@@ -25,7 +25,7 @@ import (
 
 // writeMemFixture lays out a classic <root>/default/beers/<k>.json datastore plus
 // a .n1k1/catalog.json declaring a gsi index on `abv`, and returns the root.
-func writeMemFixture(t *testing.T, indexKeys string) string {
+func writeMemFixture(t testing.TB, indexKeys string) string {
 	t.Helper()
 	root := t.TempDir()
 	ksDir := filepath.Join(root, "default", "beers")

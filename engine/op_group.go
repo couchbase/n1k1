@@ -82,6 +82,28 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 		StatsCounterZero(lzStats, lzStatsBase+StatGroupRowsIn)    // <== genCompiler:hide
 		StatsCounterZero(lzStats, lzStatsBase+StatGroupGroupsOut) // <== genCompiler:hide
 
+		// Live-aggregate preview (DESIGN-stats.md "Live aggregates"): register a
+		// source that, at each synchronous YieldStats checkpoint, snapshots a
+		// bounded sample of the in-flight group map -- decoding each partial via
+		// the same base.Agg.Result byte-path the final result uses -- so the CLI /
+		// a library reader can watch COUNT/SUM/AVG/MIN/MAX climb. Interpreter-only
+		// (genCompiler:hide), zero hot-path cost (the per-row loop is untouched),
+		// and only when EVERY projected aggregate is cheaply previewable (else
+		// StatsGroupAggNames returns nil -> progress-only). lzPreviewLive is flipped
+		// off before RecycleMap so a later checkpoint can never walk a reclaimed map.
+		// (base.GroupPreviewSnapshot does the store-walk; base imports store, engine
+		// intermed does not, so no store symbol leaks into the compiled builder.)
+		lzPreviewNames := StatsGroupAggNames(aggCalcs) // <== genCompiler:hide
+		lzPreviewLive := false                         // <== genCompiler:hide
+		if lzStats != nil && lzPreviewNames != nil {   // <== genCompiler:hide
+			lzPreviewLive = true                                // <== genCompiler:hide
+			lzStats.RegisterPreview(func(lzDst *base.Preview) { // <== genCompiler:hide
+				if lzPreviewLive { // <== genCompiler:hide
+					base.GroupPreviewSnapshot(lzDst, path, lzSet, lzPreviewNames, lzVars) // <== genCompiler:hide
+				} // <== genCompiler:hide
+			}) // <== genCompiler:hide
+		} // <== genCompiler:hide
+
 		lzYieldValsOrig := lzYieldVals
 
 		lzYieldVals = func(lzVals base.Vals) {
@@ -232,6 +254,8 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 		if lzErr == nil {
 			ExecOp(o.Children[0], lzVars, lzYieldVals, lzYieldErr, pathNext, "GO") // !lz
 		}
+
+		lzPreviewLive = false // stats: disable preview before the map is reclaimed // <== genCompiler:hide
 
 		lzVars.Ctx.RecycleMap(lzSet)
 	}

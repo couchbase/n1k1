@@ -125,6 +125,51 @@ type Stats struct {
 	// child. Because a counter may reset (a re-run op) while its total holds, a
 	// bar here is NOT necessarily monotonic.
 	Totals []int64
+
+	// Previews holds the live-aggregate preview sources registered by blocking
+	// ops (OpGroup) at setup; nil when no op previews. Preview is the reused
+	// buffer the sources fill at each YieldStats checkpoint (see preview.go and
+	// DESIGN-stats.md "Live aggregates"). Both are interpreter-only: registration
+	// is genCompiler:hide, so the compiled path never touches them (matching the
+	// stats counters' KNOWN LIMITATION).
+	//
+	// Single-writer note: like Counters, these ride the request-shared *Stats. A
+	// non-concurrent pipeline (scan->filter->group) registers from its one
+	// goroutine. The unhandled edge is same-op fan-out registering concurrently
+	// (e.g. a GROUP BY inside each UNION ALL branch) racing the Previews append --
+	// the same per-(op,actor) caveat the counter core carries; deferred.
+	Previews []PreviewSource
+	Preview  *Preview
+}
+
+// RegisterPreview adds a live-aggregate preview source (called once, at an op's
+// setup, off the hot path). A nil *Stats or nil src is ignored.
+func (s *Stats) RegisterPreview(src PreviewSource) {
+	if s == nil || src == nil {
+		return
+	}
+	s.Previews = append(s.Previews, src)
+}
+
+// RefreshPreview re-fills Preview from the registered sources. It is called at the
+// synchronous YieldStats checkpoint (on the exec goroutine, between row yields),
+// so the sources read coherent, non-mutating accumulator bytes. Cheap and
+// allocation-free in steady state (the sources and Preview reuse their buffers).
+// A no-op when no source registered.
+func (s *Stats) RefreshPreview() {
+	if s == nil || len(s.Previews) == 0 {
+		return
+	}
+	if s.Preview == nil {
+		s.Preview = &Preview{}
+	}
+	s.Preview.reset()
+	for _, src := range s.Previews {
+		if s.Preview.Full() {
+			break
+		}
+		src(s.Preview)
+	}
 }
 
 // LayoutStats walks the op tree once (pre-order), assigns each op the base
