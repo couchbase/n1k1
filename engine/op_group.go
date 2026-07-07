@@ -96,13 +96,13 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 		// flipped off before RecycleMap so a later checkpoint can't walk a reclaimed
 		// map. (base.GroupRunningAggs does the store-walk; base imports store,
 		// engine intermed does not, so no store symbol leaks into the compiled build.)
-		lzRunningAggNames := StatsGroupAggNames(aggCalcs)                     // <== genCompiler:hide
-		lzRunningAggLive := false                                             // <== genCompiler:hide
+		lzRunningAggNames := StatsGroupAggNames(aggCalcs)                        // <== genCompiler:hide
+		lzRunningAggLive := false                                                // <== genCompiler:hide
 		if lzStats != nil && lzRunningAggNames != nil && o.RunningAggSlot >= 0 { // <== genCompiler:hide
-			lzRunningAggLive = true                                                  // <== genCompiler:hide
-			lzVars.Ctx.RegisterRunningAgg(o.RunningAggSlot, func(lzDst *base.RunningAggs) { // <== genCompiler:hide
+			lzRunningAggLive = true                                                         // <== genCompiler:hide
+			lzVars.Ctx.RunningAggRegister(o.RunningAggSlot, func(lzDst *base.RunningAggs) { // <== genCompiler:hide
 				if lzRunningAggLive { // <== genCompiler:hide
-					base.GroupRunningAggs(lzDst, path, lzSet, lzRunningAggNames, lzVars) // <== genCompiler:hide
+					base.RunningAggsGroup(lzDst, path, lzSet, lzRunningAggNames, lzVars) // <== genCompiler:hide
 				} // <== genCompiler:hide
 			}) // <== genCompiler:hide
 		} // <== genCompiler:hide

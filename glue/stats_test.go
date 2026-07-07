@@ -38,9 +38,9 @@ func TestStatsRunningAggsUnionRace(t *testing.T) {
 	var fires int64
 	sess.CollectStats = true
 	// Read the live RUNNING-AGGREGATE partials the way a consumer does -- via the fenced
-	// RangeRunningAggs -- while the two branch actors concurrently register and refresh
+	// RunningAggsRange -- while the two branch actors concurrently register and refresh
 	// their own running-aggregate slots. The reader runs on whichever actor's checkpoint
-	// fired it, so it reads slots owned by the OTHER actor too; RangeRunningAggs's lock
+	// fired it, so it reads slots owned by the OTHER actor too; RunningAggsRange's lock
 	// fences that against the owner's concurrent refresh. (We deliberately read only
 	// running aggregates here, not the full StatsSnapshotJSON: the counter core it also reads
 	// carries a SEPARATE, pre-existing, design-accepted advisory read race --
@@ -48,7 +48,7 @@ func TestStatsRunningAggsUnionRace(t *testing.T) {
 	// the running-aggregate races this fix targets and unchanged by it.)
 	sess.OnStats = func(s *base.Stats) {
 		atomic.AddInt64(&fires, 1)
-		s.RangeRunningAggs(func(r *base.RunningAggRow) {
+		s.RunningAggsRange(func(r *base.RunningAggRow) {
 			// Touch the row's fields to force real reads the detector can catch.
 			_ = r.Op
 			for _, a := range r.Aggs {

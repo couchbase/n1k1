@@ -120,13 +120,13 @@ type Ctx struct {
 	// stats.go and DESIGN-stats.md.
 	Stats *Stats
 
-	// runningAggJobs are this actor's live-aggregate refreshers: one per GROUP op in
+	// RunningAggJobs are this actor's live-aggregate refreshers: one per GROUP op in
 	// THIS actor's branch, registered at op setup (RegisterRunningAgg) and run at this
 	// actor's checkpoint (RefreshRunningAggs). Because Ctx is cloned per actor (Clone
 	// resets this to nil) and a job writes only its op's own fixed Stats.RunningAggs
 	// slot, each running-aggregate buffer has exactly ONE writer goroutine even when a
 	// GROUP BY runs inside each parallel UNION ALL branch. Interpreter-only.
-	runningAggJobs []runningAggJob
+	RunningAggJobs []RunningAggJob
 
 	// Warn records a non-fatal advisory (e.g. divide-by-zero) during
 	// evaluation. It is cbq-free by design (a plain string), so engine/base
@@ -177,45 +177,47 @@ func (ctx *Ctx) Clone() (ctxCopy *Ctx) {
 	// Each actor tracks only its OWN branch's running-aggregate refreshers, so it refreshes
 	// (and thus single-writes) only its own ops' Stats.RunningAggs slots. Starting
 	// empty avoids sharing the parent's job slice across goroutines.
-	ctxCopy.runningAggJobs = nil
+	ctxCopy.RunningAggJobs = nil
 
 	return ctxCopy
 }
 
-// runningAggJob is one op's live-aggregate refresher, bound to that op's fixed
+// -----------------------------------------------------
+
+// RunningAggJob is one op's live-aggregate refresher, bound to that op's fixed
 // Stats.RunningAggs slot. fill re-decodes the op's current accumulators into the
 // given (reused) per-op buffer; it runs on the owning actor's goroutine only.
-type runningAggJob struct {
+type RunningAggJob struct {
 	slot int
 	fill func(*RunningAggs)
 }
 
-// RegisterRunningAgg records a live-aggregate refresher for one op (slot =
+// RunningAggRegister records a live-aggregate refresher for one op (slot =
 // Op.RunningAggSlot), called once at the op's setup on the owning actor's goroutine.
-// Appends to the per-actor runningAggJobs (no cross-goroutine sharing, so no lock).
+// Appends to the per-actor RunningAggJobs (no cross-goroutine sharing, so no lock).
 // A negative slot or nil fill is ignored.
-func (ctx *Ctx) RegisterRunningAgg(slot int, fill func(*RunningAggs)) {
+func (ctx *Ctx) RunningAggRegister(slot int, fill func(*RunningAggs)) {
 	if ctx == nil || slot < 0 || fill == nil {
 		return
 	}
-	ctx.runningAggJobs = append(ctx.runningAggJobs, runningAggJob{slot: slot, fill: fill})
+	ctx.RunningAggJobs = append(ctx.RunningAggJobs, RunningAggJob{slot: slot, fill: fill})
 }
 
-// RefreshRunningAggs re-fills THIS actor's running-aggregate slots from its registered jobs. It
+// RunningAggsRefresh re-fills THIS actor's running-aggregate slots from its registered jobs. It
 // is called at the synchronous YieldStats checkpoint (on this actor's goroutine,
 // between row yields), so each job reads coherent, non-mutating accumulator bytes
 // from its own group map. It writes only this actor's own slots (single writer per
 // slot); runningAggsMu is held only to fence a concurrent snapshot reader, and only at
 // this ~10 Hz checkpoint -- never on the per-row hot path. Allocation-free in
 // steady state (the per-op buffers are reused). A no-op when stats/running-aggregate is off.
-func (ctx *Ctx) RefreshRunningAggs() {
-	if ctx == nil || ctx.Stats == nil || len(ctx.runningAggJobs) == 0 {
+func (ctx *Ctx) RunningAggsRefresh() {
+	if ctx == nil || ctx.Stats == nil || len(ctx.RunningAggJobs) == 0 {
 		return
 	}
 
 	s := ctx.Stats
 	s.runningAggsMu.Lock()
-	for _, j := range ctx.runningAggJobs {
+	for _, j := range ctx.RunningAggJobs {
 		if j.slot < 0 || j.slot >= len(s.RunningAggs) {
 			continue
 		}

@@ -39,26 +39,26 @@ import (
 // exactly one group, so they are always fully covered.
 var RunningAggMaxGroups = 64
 
-// runningCapableAggs is the set of aggregate handler names whose partial value is
+// RunningAggsCapable is the set of aggregate handler names whose partial value is
 // cheap to decode live: fixed-width (or trivially self-describing) accumulators
 // whose Agg.Result is O(1)/O(value-len) and allocation-free. DISTINCT-based aggs,
 // ARRAY_AGG, MEDIAN, VARIANCE/STDDEV are deliberately excluded -- their Result
 // re-walks or allocates a []float64, so they stay progress-only (see
 // DESIGN-stats.md's per-aggregate table). The vectorized _v forms reuse the
 // scalar Result verbatim, so they are runningCapable too.
-var runningCapableAggs = map[string]bool{
+var RunningAggsCapable = map[string]bool{
 	"count": true, "countn": true, "count_v": true,
 	"sum": true, "sum_v_float64": true, "sum_v_int64": true,
 	"avg": true, "avg_v_float64": true, "avg_v_int64": true,
 	"min": true, "max": true,
 }
 
-// AggRunningCapable reports whether the named aggregate's partial value can be shown
+// IsRunningAggCapable reports whether the named aggregate's partial value can be shown
 // live cheaply (fixed-width, no per-snapshot alloc). OpGroup only registers a
 // running-aggregate refresher when every aggregate in the group is runningCapable -- a clean
 // carve-out that also avoids having to walk past a costly agg's variable-width
 // bytes just to reach a later cheap one.
-func AggRunningCapable(name string) bool { return runningCapableAggs[name] }
+func IsRunningAggCapable(name string) bool { return RunningAggsCapable[name] }
 
 // A blocking op's live partial-aggregate state is snapshotted by a refresher
 // (Ctx.runningAggJob.fill, a func(*RunningAggs)) registered at op setup via
@@ -135,7 +135,7 @@ func (r *RunningAggRow) finish() {
 // Next(), so steady-state re-decoding allocates nothing. Held on Stats.RunningAggs.
 type RunningAggs struct {
 	rows []RunningAggRow // backing pool, reused across checkpoints
-	n    int          // number of live rows filled this snapshot
+	n    int             // number of live rows filled this snapshot
 }
 
 // Next returns the next reusable RunningAggRow for a source to fill (its buffers
@@ -170,7 +170,7 @@ func (p *RunningAggs) Rows() []RunningAggRow {
 	return p.rows[:p.n]
 }
 
-// GroupRunningAggs copies out a bounded, coherent sample of an OpGroup's live
+// RunningAggsGroup copies out a bounded, coherent sample of an OpGroup's live
 // accumulators into dst, decoding each partial via the same Agg.Result byte-path
 // the finalized result uses. It runs synchronously at the YieldStats checkpoint
 // (the map is not mutating), and retains no pointer into the map -- every key and
@@ -182,7 +182,7 @@ func (p *RunningAggs) Rows() []RunningAggRow {
 //
 // This lives in base (not engine) because it references *store.RHStore, and base
 // -- unlike the engine intermed builder -- already imports rhmap/store.
-func GroupRunningAggs(dst *RunningAggs, op string, set *store.RHStore, aggNames []string, vars *Vars) {
+func RunningAggsGroup(dst *RunningAggs, op string, set *store.RHStore, aggNames []string, vars *Vars) {
 	if dst == nil || set == nil || len(aggNames) == 0 {
 		return
 	}

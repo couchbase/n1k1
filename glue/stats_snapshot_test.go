@@ -128,9 +128,9 @@ func TestStatsSnapshotNil(t *testing.T) {
 		t.Error("nil Stats should snapshot to {}")
 	}
 	// A Stats with no running-aggregate slots must snapshot cleanly (no "aggs"), and
-	// RangeRunningAggs on it is a safe no-op.
+	// RunningAggsRange on it is a safe no-op.
 	s := &base.Stats{}
-	s.RangeRunningAggs(func(*base.RunningAggRow) { t.Error("no rows expected") })
+	s.RunningAggsRange(func(*base.RunningAggRow) { t.Error("no rows expected") })
 	if js := StatsSnapshotJSON(s); js != `{"ops":[]}` {
 		t.Errorf("empty Stats snapshot = %q, want no aggs", js)
 	}
@@ -328,7 +328,7 @@ func buildGroupVal(t testing.TB, vars *base.Vars, names []string, rows []string)
 
 // BenchmarkLiveAggSnapshot is the zero-allocation proof for the live-aggregate
 // checkpoint decode: repeatedly snapshotting a group's fixed-width accumulators
-// (COUNT/SUM/AVG/MIN/MAX) through base.GroupRunningAggs into a REUSED
+// (COUNT/SUM/AVG/MIN/MAX) through base.RunningAggsGroup into a REUSED
 // base.RunningAggs must be 0 allocs/op once warmed up. (The per-row accumulate hot path
 // is untouched by this feature, so this checkpoint decode is the only new work that
 // could allocate.)
@@ -357,15 +357,15 @@ func BenchmarkLiveAggSnapshot(b *testing.B) {
 	// reused per-op buffer) at each checkpoint.
 	stats := &base.Stats{RunningAggs: make([]base.RunningAggs, 1)}
 	vars.Ctx.Stats = stats
-	vars.Ctx.RegisterRunningAgg(0, func(dst *base.RunningAggs) {
-		base.GroupRunningAggs(dst, "0", set, names, vars)
+	vars.Ctx.RunningAggRegister(0, func(dst *base.RunningAggs) {
+		base.RunningAggsGroup(dst, "0", set, names, vars)
 	})
-	vars.Ctx.RefreshRunningAggs() // warm up the reused buffers
+	vars.Ctx.RunningAggsRefresh() // warm up the reused buffers
 
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		vars.Ctx.RefreshRunningAggs()
+		vars.Ctx.RunningAggsRefresh()
 	}
 	b.StopTimer()
 
@@ -402,7 +402,7 @@ func BenchmarkAggQueryStatsOnVsOff(b *testing.B) {
 			// Read the live partials (as a real consumer would), without the JSON
 			// rendering, so the measurement reflects counting + RefreshRunningAggs only.
 			sess.OnStats = func(s *base.Stats) {
-				s.RangeRunningAggs(func(r *base.RunningAggRow) { _ = r.Aggs })
+				s.RunningAggsRange(func(r *base.RunningAggRow) { _ = r.Aggs })
 			}
 		}
 		b.ReportAllocs()

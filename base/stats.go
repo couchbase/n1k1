@@ -150,13 +150,13 @@ type Stats struct {
 	runningAggsMu sync.Mutex
 }
 
-// RangeRunningAggs calls fn for every live running-aggregate row across all ops, holding the
+// RunningAggsRange calls fn for every live running-aggregate row across all ops, holding the
 // checkpoint lock so a concurrently-refreshing actor goroutine cannot tear the
 // read (a variable-width MIN/MAX buffer being re-appended). It is a report-time /
 // checkpoint-cadence call, never on the per-row hot path. fn must not retain the
 // row past the call (the buffers are reused); copy out what you keep. A nil or
 // running-aggregate-less Stats is a no-op.
-func (s *Stats) RangeRunningAggs(fn func(*RunningAggRow)) {
+func (s *Stats) RunningAggsRange(fn func(*RunningAggRow)) {
 	if s == nil || len(s.RunningAggs) == 0 || fn == nil {
 		return
 	}

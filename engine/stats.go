@@ -100,7 +100,7 @@ func StatsGroupAggNames(aggCalcs []interface{}) []string {
 	for _, aggCalc := range aggCalcs {
 		for _, aggName := range aggCalc.([]interface{}) {
 			name := aggName.(string)
-			if !base.AggRunningCapable(name) {
+			if !base.IsRunningAggCapable(name) {
 				return nil // A non-runningCapable agg -> progress-only for the whole group.
 			}
 			names = append(names, name)

@@ -151,7 +151,7 @@ func ScanReaderAsCsv(lzReader io.Reader, labels base.Labels, lzVars *base.Vars,
 			}
 
 			if lzVars != nil && lzVars.Ctx != nil { // <== genCompiler:hide
-				lzVars.Ctx.RefreshRunningAggs() // stats: refresh this actor's live aggregate partials // <== genCompiler:hide
+				lzVars.Ctx.RunningAggsRefresh() // stats: refresh this actor's live aggregate partials // <== genCompiler:hide
 			} // <== genCompiler:hide
 
 			if lzVars != nil && lzVars.Ctx != nil && lzVars.Ctx.YieldStats != nil {
@@ -208,7 +208,7 @@ func ScanReaderAsJsons(lzReader io.Reader, labels base.Labels, lzVars *base.Vars
 			}
 
 			if lzVars != nil && lzVars.Ctx != nil { // <== genCompiler:hide
-				lzVars.Ctx.RefreshRunningAggs() // stats: refresh this actor's live aggregate partials // <== genCompiler:hide
+				lzVars.Ctx.RunningAggsRefresh() // stats: refresh this actor's live aggregate partials // <== genCompiler:hide
 			} // <== genCompiler:hide
 
 			if lzVars != nil && lzVars.Ctx != nil && lzVars.Ctx.YieldStats != nil {

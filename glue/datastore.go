@@ -65,7 +65,8 @@ func DatastoreOp(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 	// receiver throttles to ~10 Hz, so pulsing per invocation is cheap. Gated to
 	// counter-contributing scans (StatsBase >= 0) and to stats being on.
 	if o.StatsBase >= 0 && vars.Ctx != nil && vars.Ctx.Stats != nil && vars.Ctx.YieldStats != nil {
-		vars.Ctx.RefreshRunningAggs() // refresh THIS actor's live aggregate partials
+		vars.Ctx.RunningAggsRefresh() // refresh THIS actor's live aggregate partials
+
 		_ = vars.Ctx.YieldStats(vars.Ctx.Stats)
 	}
 }

@@ -58,10 +58,10 @@ func StatsSnapshotJSON(s *base.Stats) string {
 		ops = append(ops, opView{Id: op.Id, Kind: op.Kind, Stats: m})
 	}
 
-	// RangeRunningAggs holds the checkpoint lock while we read, so a concurrently
+	// RunningAggsRange holds the checkpoint lock while we read, so a concurrently
 	// refreshing actor (a GROUP BY in another UNION ALL branch) can't tear the read.
 	var aggs []aggView
-	s.RangeRunningAggs(func(r *base.RunningAggRow) {
+	s.RunningAggsRange(func(r *base.RunningAggRow) {
 		vals := make(map[string]string, len(r.Names))
 		for i, name := range r.Names {
 			if i < len(r.Aggs) {
