@@ -496,6 +496,8 @@ richer payload: `Stats` (or a sibling `Preview`) carries an optional bounded
 
 ## Live aggregates: partials that climb (zero per-row alloc)
 
+Status: the cheap fixed-width core (COUNT/SUM/AVG/MIN/MAX + `_v`) is implemented, interpreter-only — see `base/preview.go`, `OpGroup`'s registration, `Stats.RefreshPreview`, and the `TestStatsSnapshotLiveAggregates*` tests + `BenchmarkLiveAggSnapshot` (0 allocs/op).
+
 The previous section covers previewing *result rows* generically. This section
 zooms into the highest-value, trickiest case — **aggregate values climbing toward
 their finals** (`AVG`/`SUM`/`COUNT`/`MIN`/`MAX` visibly converging while the query
