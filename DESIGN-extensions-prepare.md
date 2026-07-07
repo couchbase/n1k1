@@ -5,9 +5,11 @@ Status: proposal (Phase 1 — `.prepare` emit + gate + interpreter fallback — 
 n1k1 **compiles** a SQL++ query plan into Go source (the `intermed/` compiler +
 `glue/emit.OpToLines`). `PREPARE` exposes that as a **Go-based preparation** of a
 statement — the right word, mirroring SQL/N1QL `PREPARE` (and a future `EXECUTE`) —
-with an **interpreter fallback** whenever a query needs cbq. Phase 1 (the `.prepare` /
-`-prepare` surface: emit the `*.go`, gate on compilability, else interpret) is
-implemented (`glue.Prepare`, `cmd/n1k1`). This doc also explores the harder half: how
+with an **interpreter fallback** whenever a query needs cbq. The surface is cbq-compatible
+`PREPARE [name] AS <stmt>` / `EXECUTE <name> [USING args]`, governed by a `-prepare=<level>`
+**ceiling** (default `interpreted` — cache Op trees, no codegen) and inspected via an
+`EXPLAIN`-like `.prepare` dot-command. Phase 1 (`.prepare` emit + compilability gate + else
+interpret) is implemented (`glue.Prepare`, `cmd/n1k1`). This doc also explores the harder half: how
 to *run* the prepared program — the process-separated ("FastCGI-inspired") models where
 a prepared child either **asks the parent for data** over a pipe, or **carries the
 datastore source itself** and only takes connectivity + auth over the pipe.
@@ -15,7 +17,7 @@ datastore source itself** and only takes connectivity + auth over the pipe.
 ## Contents
 
 - [Background: what the compiler already does, and the one boundary](#background)
-- [The surface: `PREPARE` / `EXECUTE`](#the-surface)
+- [The surface: `PREPARE` / `EXECUTE`, and a max-level knob](#the-surface)
 - [Preparation is a level, not a yes/no](#levels)
 - [What gets emitted](#what-gets-emitted)
 - [The one thing the generated code can't do alone: data access](#data-access)
@@ -58,24 +60,55 @@ datastore source itself** and only takes connectivity + auth over the pipe.
 These three facts shape everything below: the compiled query is small + public +
 CGO-free, and the *only* thing it can't do by itself is reach a datastore.
 
-## The surface: `PREPARE` / `EXECUTE` <a name="the-surface"></a>
+## The surface: `PREPARE` / `EXECUTE`, and a max-level knob <a name="the-surface"></a>
 
-Model it on `EXPLAIN`. **`PREPARE <stmt>`** (or `.prepare`, or a `-prepare` flag) runs
-`parse → plan → convert`, gates on compilability, and — when Go-friendly — emits the
-`*.go`; otherwise it prepares the plan for the interpreter. **`EXECUTE`** runs a
-prepared statement (with params) — for a Go-prepared one, run the compiled program
-(see the run models below); for an interpreter-prepared one, run the cached plan. This
-mirrors SQL/N1QL PREPARE/EXECUTE, but the "prepared" artifact is compiled Go rather
-than a cached plan.
+Three things, kept distinct: the **statements** (cbq-compatible), the **ceiling knob**
+(how far PREPARE may go), and an **inspection** dot-command (show the emitted Go).
 
-**No separate `n1k1-prepare` binary is needed to *emit*.** The CLI already links the
-whole compiler (glue's `conv`, `glue/emit.OpToLines`, `intermed/`). Emitting the `*.go`
-needs **no Go toolchain**; only *compiling* it into a runnable prepared program does
-(external `go`, opt-in and permission-gated).
+**Statements — cbq-compatible `PREPARE` / `EXECUTE`.** Follow N1QL/cbq so the surface is
+familiar and existing scripts port:
 
-Phase 1 (implemented) is emit + gate + fallback: `.prepare <stmt>` prints the generated
-Go when compilable, else prints the reason and **runs the statement interpreted** so it
-never fails. `EXECUTE` and the run models below are future phases.
+- **`PREPARE [<name>] AS <stmt>`** runs `parse → plan → convert`, gates on compilability
+  ([levels](#levels)), and **caches** the prepared artifact under `<name>` (or a
+  plan-derived hash when unnamed). The artifact is whatever level was reached — a cached
+  Op tree at the interpreter floor, or a compiled program at a compiled level.
+- **`EXECUTE <name> [USING <args>]`** runs a previously-prepared statement, binding `args`
+  as positional/named params — the cached Op tree through the interpreter, or the compiled
+  program via a run model (below).
+
+Semantics track cbq (naming, `USING` params, re-prepare on cache miss); the only
+*difference* is that n1k1's prepared artifact **may be compiled Go**, not just a cached
+plan.
+
+**The knob — `-prepare=<level>` is a ceiling, not a switch.** It caps *how far* PREPARE
+may go and **defaults to interpreter-only** (`interpreted`): PREPARE caches the converted
+Op tree and never invokes codegen. Raising the ceiling opts into compilation up to that
+level:
+
+- **`-prepare=interpreted`** (default) — cache Op trees only; EXECUTE always interprets.
+  Zero toolchain, zero surprise.
+- **`-prepare=data`** — allow up to `PrepareCompiledData` (native exprs; datastore leaves
+  served by a runtime data provider).
+- **`-prepare=full`** — allow `PrepareCompiledFull` (self-contained emitted Go).
+
+PREPARE produces **the best artifact at or below the ceiling** the query supports, and —
+because [preparation is a level](#levels) — silently settles *lower* when a query can't
+reach the ceiling (a boxed expr caps it at `interpreted` regardless of the flag). The knob
+sets the *maximum* n1k1 will attempt; the query's own compilability sets the *actual*.
+
+**Inspection — `.prepare <stmt>` is `EXPLAIN`-like, orthogonal to the ceiling.** To *see*
+the generated Go without a run — for learning or debugging — `.prepare <stmt>` emits the
+`*.go` when the query reaches `full`, else prints the reason and runs it interpreted. This
+is the Phase-1 surface (implemented); like `EXPLAIN` shows a plan, `.prepare` just *shows*.
+Emitting needs **no Go toolchain**; only a compiled `EXECUTE` (ceiling at `data`/`full`)
+shells out to `go build` (opt-in, permission-gated).
+
+**No separate `n1k1-prepare` binary is needed to emit, and no import cycle results.** The
+CLI already links the whole compiler (glue's `conv`, `glue/emit.OpToLines`, `intermed/`).
+The dependency graph is acyclic: `intermed` imports only `base`, `glue/emit` imports
+`base`+`intermed`, and `cmd/intermed_build` imports neither — so a clean checkout
+bootstraps `intermed_build → intermed → glue/emit → base` with no back-edge. `glue/emit`
+does **not** need to move to a top-level package.
 
 ## Preparation is a level, not a yes/no <a name="levels"></a>
 
@@ -422,13 +455,15 @@ and always fine on an explicit `.prepare` (inspection, like `EXPLAIN`); it's **c
 
 ## Recommendation / phasing <a name="phasing"></a>
 
-1. **`PREPARE` / `.prepare` emit + gate + interpreter fallback — DONE.** Emits the
-   `*.go`, no toolchain; a boxed-expr query runs interpreted. Reuses `glue/emit.OpToLines`
-   + the existing bakeability/native gate (`glue.Preparable`).
+1. **`.prepare` inspection emit + gate + interpreter fallback — DONE.** The `EXPLAIN`-like
+   dot-command emits the `*.go`, no toolchain; a boxed-expr query runs interpreted. Reuses
+   `glue/emit.OpToLines` + the existing bakeability/native gate (`glue.Preparable`).
 2. **Make datastore scans bakeable + a `DatastorePipe` interface + an in-memory
    provider** — so an emitted query runs standalone over inline `base.Vals` (zero
    datastore deps) and real `FROM` queries stop falling back on the datastore-op gate.
-3. **`EXECUTE` + a run model.** Pick per goal:
+3. **cbq `PREPARE ... AS` / `EXECUTE ... USING` + the `-prepare=<level>` ceiling + a run
+   model.** Land the SQL statements (named artifact cache) and the ceiling knob (default
+   `interpreted`; `data`/`full` opt into `go build`). Pick a run model per goal:
    - **embed-source (fat child, direct datastore)** — the headline for throughput:
      `//go:embed` a tightened datastore-runtime library, `go build` a self-contained
      prepared program, pipe carries only config/auth + results. Amortize compile +
