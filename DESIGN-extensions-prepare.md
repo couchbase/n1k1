@@ -1,25 +1,29 @@
-# Design: SQL++ → Go codegen, and running the generated code
+# Design: PREPARE — SQL++ → Go, and running the prepared program
 
-Status: proposal / for discussion
+Status: proposal (Phase 1 — `.prepare` emit + gate + interpreter fallback — implemented)
 
-n1k1 already **compiles** a SQL++ query plan into Go source (the `intermed/`
-compiler + `test/emit.OpToLines`); today that only feeds the differential compiler
-tests. This doc explores *exposing* that — a `CODEGEN` statement prefix / `.codegen`
-dot-command / `-codegen` flag, mirroring `EXPLAIN` — to emit a `*.go` file for a
-query, and then the harder question: how to *run* that generated code, including the
-process-separated ("FastCGI-inspired") model where the compiled query is a thin
-compute child that asks the parent n1k1 for data.
+n1k1 **compiles** a SQL++ query plan into Go source (the `intermed/` compiler +
+`glue/emit.OpToLines`). `PREPARE` exposes that as a **Go-based preparation** of a
+statement — the right word, mirroring SQL/N1QL `PREPARE` (and a future `EXECUTE`) —
+with an **interpreter fallback** whenever a query needs cbq. Phase 1 (the `.prepare` /
+`-prepare` surface: emit the `*.go`, gate on compilability, else interpret) is
+implemented (`glue.Prepare`, `cmd/n1k1`). This doc also explores the harder half: how
+to *run* the prepared program — the process-separated ("FastCGI-inspired") models where
+a prepared child either **asks the parent for data** over a pipe, or **carries the
+datastore source itself** and only takes connectivity + auth over the pipe.
 
 ## Contents
 
 - [Background: what the compiler already does, and the one boundary](#background)
-- [The surface: `CODEGEN` / `.codegen` / `-codegen`](#the-surface)
+- [The surface: `PREPARE` / `EXECUTE`](#the-surface)
+- [Preparation is a level, not a yes/no](#levels)
 - [What gets emitted](#what-gets-emitted)
 - [The one thing the generated code can't do alone: data access](#data-access)
 - [Design principle: abstract the datastore leaves behind one interface](#design-principle)
 - [Pathways (a ladder)](#pathways)
 - [The pipe protocol (concrete)](#the-pipe-protocol)
 - [What the parent provides — the "data server"](#the-data-server)
+- [Self-contained prepared programs — embed the datastore source](#embed-source)
 - [Boxed expressions — the cbq fallback across the boundary](#boxed-exprs)
 - [When this pays off — and when not](#motivation)
 - [Recommendation / phasing](#phasing)
@@ -53,17 +57,54 @@ compute child that asks the parent n1k1 for data.
 These three facts shape everything below: the compiled query is small + public +
 CGO-free, and the *only* thing it can't do by itself is reach a datastore.
 
-## The surface: `CODEGEN` / `.codegen` / `-codegen` <a name="the-surface"></a>
+## The surface: `PREPARE` / `EXECUTE` <a name="the-surface"></a>
 
-Model it on `EXPLAIN`. `CODEGEN <stmt>` (or `.codegen`, or a `-codegen` flag) runs
-`parse → plan → convert → emit` and writes/prints a `*.go` for the statement.
+Model it on `EXPLAIN`. **`PREPARE <stmt>`** (or `.prepare`, or a `-prepare` flag) runs
+`parse → plan → convert`, gates on compilability, and — when Go-friendly — emits the
+`*.go`; otherwise it prepares the plan for the interpreter. **`EXECUTE`** runs a
+prepared statement (with params) — for a Go-prepared one, run the compiled program
+(see the run models below); for an interpreter-prepared one, run the cached plan. This
+mirrors SQL/N1QL PREPARE/EXECUTE, but the "prepared" artifact is compiled Go rather
+than a cached plan.
 
-**No separate `n1k1-codegen` binary is needed to *emit*.** The CLI already links the
-whole compiler (glue's `conv`, `emit.OpToLines`, `intermed/`). A standalone
-`n1k1-codegen` tool would just be the same code with a thinner main — worth having
-only as a headless/CI build step, not as a dependency the CLI must "find." Emitting a
-`*.go` needs **no Go toolchain**; only *compiling* it does (external `go`, opt-in and
-permission-gated).
+**No separate `n1k1-prepare` binary is needed to *emit*.** The CLI already links the
+whole compiler (glue's `conv`, `glue/emit.OpToLines`, `intermed/`). Emitting the `*.go`
+needs **no Go toolchain**; only *compiling* it into a runnable prepared program does
+(external `go`, opt-in and permission-gated).
+
+Phase 1 (implemented) is emit + gate + fallback: `.prepare <stmt>` prints the generated
+Go when compilable, else prints the reason and **runs the statement interpreted** so it
+never fails. `EXECUTE` and the run models below are future phases.
+
+## Preparation is a level, not a yes/no <a name="levels"></a>
+
+PREPARE never fails: every statement prepares to at least the **interpreter**, and the
+compiled tiers are ordered by *how much runtime support the compiled program still needs*.
+So `glue.Preparable(op)` returns a **`PrepareLevel`**, not a bool:
+
+- **`PrepareInterpreted`** — a per-row expression is **boxed** (needs cbq's `Evaluate`;
+  see [Boxed expressions](#boxed-exprs)) or the plan didn't convert. PREPARE keeps the
+  converted Op tree ready; EXECUTE runs it through the in-process interpreter.
+  **All-interpreter always works** — the universal floor, never a failure.
+- **`PrepareCompiledData`** — every expression is native, but the plan reads a datastore
+  whose op can't be baked into a Go literal. The compiled program needs a **runtime data
+  provider**. This is the *widest* compiled level: only native exprs are required, so the
+  datastore leaves — and the heavy record providers behind them — can stay parent-side
+  (see below).
+- **`PrepareCompiledStandalone`** — native exprs AND every datastore op bakes into the
+  emitted Go. A self-contained program (a datastore-free query needs only `engine`+`base`;
+  a datastore one links the datastore runtime). Phase-1 `.prepare` emit requires this.
+
+PREPARE = "produce the best executable artifact, and always keep the interpreter Op tree
+as the fallback"; EXECUTE runs whatever level was reached. The Phase-1 CLI already reports
+it — emit at Standalone, else print the reason (distinguishing "needs cbq" from "needs a
+data provider") and interpret.
+
+**PREPARE runs in the parent — it is inherently cbq-having.** parse → plan → convert use
+cbq's parser/planner/`value`; and const-folding a boxed *constant* sub-expr (a cheap way
+to lift a query's level — see [Boxed expressions](#boxed-exprs)) uses cbq's
+`Evaluate`/`Value`. That's fine — the parent always has cbq. Only the *prepared program*
+may or may not, by level.
 
 ## What gets emitted <a name="what-gets-emitted"></a>
 
@@ -105,12 +146,14 @@ compiled plan; (b) **library** — a dev imports `engine`+`base`, supplies a
 `Run`. For inline / in-memory data this needs **zero datastore dependencies**. No Go
 toolchain beyond the dev's own build.
 
-### 2. Fat standalone — link glue + records (self-contained, heavy)
+### 2. Fat standalone — link glue + records (self-contained, direct datastore access)
 
-`go build` the `.go` + a `main` + glue → a binary that reaches files/indexes directly.
-*Pro:* no parent. *Cons:* it pulls the **private `n1k1-query` fork** (the SAML/SSO
-build-auth pain), plus bleve/cloud SDKs — a large binary per query, CGO-free but
-heavy. Usually the wrong trade; listed for completeness.
+`go build` the `.go` + a `main` + glue → a binary that reaches files/indexes directly,
+**no parent needed for data**. The naive form pulls the **private `n1k1-query` fork**
+(the SAML/SSO build-auth pain) + bleve/cloud SDKs at build time. But *that blocker
+dissolves* if n1k1 **embeds its own datastore source** and builds the prepared program
+from it, offline — which turns this from "the wrong trade" into a first-class run model.
+See [Self-contained prepared programs](#embed-source).
 
 ### 3. Thin child + pipe — parent as data server (the recommended novel path)
 
@@ -208,6 +251,70 @@ request/response loop over the pipe instead of an in-process `ExecOpEx` call. Th
 surface is the framing + cursor bookkeeping, not the datastore logic. (This is exactly
 the "single-process is a simplification" seam the code already calls out.)
 
+## Self-contained prepared programs — embed the datastore source <a name="embed-source"></a>
+
+The thin-child + pipe model keeps the child minimal by shipping *every* scan/fetch
+batch over the pipe — the hardest, deadlock-prone part of the protocol, and pure
+per-batch serialization overhead. A better shape for the datastore case: **give the
+prepared program the datastore source itself.**
+
+By the time the n1k1 CLI is built, all the datastore code (glue + records + the cbq
+runtime it uses) was on the machine — it had to be, to build the CLI. So the CLI can
+**`//go:embed` a gzip'd snapshot of that source** as a static blob. When `PREPARE`
+finds a query Go-friendly, it extracts the embedded source + a generated `main` +
+scaffolding and `go build`s a **self-contained prepared program** that reads datastores
+*directly* — the same code as the parent.
+
+**What this buys:**
+- **No data-hopping.** The prepared program does its own scans/fetches/index reads; the
+  pipe carries only **connectivity + auth at startup** (file paths; Couchbase connstrings
+  + creds) and **results / stats / errors** back. The whole multiplexed scan/fetch cursor
+  protocol — and its re-entrancy / deadlock risk — disappears.
+- **Offline / hermetic build — sidesteps the private fork.** The build-auth pain
+  (fetching the private `n1k1-query` fork over SSH/SSO) is a *module-resolution* problem
+  at build time. Embedding the source means `PREPARE` compiles against a **local,
+  self-contained** tree with local `replace`s — no network, no SSO, no private-fork
+  fetch. The source that built the CLI *is* the source the child builds from, so it's
+  always in sync.
+- **Same engine, compiled.** The prepared program is "n1k1 for this one query," with the
+  plan baked as fused Go instead of interpreted.
+
+**Costs / caveats (honest):**
+- **Compile time balloons.** Compiling glue + records + the cbq runtime closure per
+  prepared query is far slower than the thin child (engine+base only) — tens of seconds
+  the first time. Mitigated by the **Go build cache** (the datastore packages compile
+  once; only the query `.go` changes run-to-run) and by **PREPARE-once / EXECUTE-many**.
+- **The dependency closure is large — and grows with record providers.** `glue.DatastoreOp`
+  pulls cbq's `value`, `datastore`, `expression` packages (+ bleve/bbolt for indexes). And
+  the **record providers** balloon it further: Parquet drags in Arrow, PDF/office
+  extraction pulls its own libraries, etc. — embedding *all* of them into *every* prepared
+  program is a lot of blob + compile. The **"tighter, more reusable" refactor** — carving a
+  minimal runtime datastore library out of glue/records/cbq (no parser/planner; no
+  `expression` at all for Go-friendly queries; ideally only the record providers a given
+  query touches) — is the real enabling work, and bounds it. How small it can get is an
+  open question.
+- **Trust shifts.** The prepared program holds credentials and does I/O — it is *not* the
+  sandboxable thin child. It's the parent's own code (not "untrusted"), but the
+  process-isolation/safety story is weaker.
+
+**So the thin+pipe model earns its keep after all.** It isn't just the sandboxing
+alternative — when a query scans **Parquet** or extracts **PDFs/office docs**, keeping
+those heavy providers *parent-side* and shipping only rows over the pipe avoids compiling
+(and embedding) the whole provider stack into the child. Two ends of the `DatastorePipe`
+abstraction, picked per query:
+- **thin child + data-over-pipe** — minimal + fixed child deps regardless of provider
+  weight, sandboxable, slower per-batch IPC. Favored for heavy/varied record providers.
+- **fat child + embedded source** — direct datastore access, faster, config/auth-only
+  pipe, heavier build. Favored for light providers (plain JSON) + throughput.
+
+`PREPARE` picks — or the user flags — based on provider weight, isolation, and throughput.
+(This is the run-model choice *within* `PrepareCompiledData`.)
+
+**Fits PREPARE/EXECUTE.** `PREPARE` = compile (+ cache the binary keyed by plan) +
+optionally spawn + open datastore connections; `EXECUTE` = run with params, reusing a
+**warm** prepared process so the compile *and* the connection setup amortize across many
+EXECUTEs.
+
 ## Boxed expressions — the cbq fallback across the boundary <a name="boxed-exprs"></a>
 
 n1k1 evaluates a **growing native set** of expressions on bytes; everything else
@@ -243,8 +350,10 @@ Options, best first:
    are for — it's the existing slow boxed lane *plus* serialization. Only worth it when
    the boxed expr is a small fraction on an already-filtered stream, and always
    **batched**, never a round-trip per row. Not a general answer.
-4. **Fat child** — link glue → cbq present → no pipe eval. Self-contained but heavy +
-   private-fork (see the ladder).
+4. **Fat / embed-source child** — the [self-contained](#embed-source) program links the
+   datastore runtime, so cbq is present and boxed exprs evaluate in-child — no pipe eval.
+   (But if the goal was a *thin* child, embedding cbq to serve a rare boxed expr defeats
+   it — prefer options 1–2.)
 5. **Plan partitioning (future).** Rather than ship a boxed *expression* per row, keep
    the boxed *operator(s)* in the parent's interpreter and exchange **batched row
    streams** over the same pipe: the native subtree compiles into the child, the boxed
@@ -281,18 +390,27 @@ exactly why the native lane exists in the first place.
 
 ## Recommendation / phasing <a name="phasing"></a>
 
-1. **`CODEGEN` / `.codegen` emit-only** — write the `*.go`, no toolchain. Immediately
-   useful (inspection; library over in-memory data). Reuses `OpToLines`.
-2. **A `DatastorePipe` interface + an in-memory provider** — so an emitted query runs
-   standalone over inline `base.Vals` with zero datastore deps; enables `-codegen -run`
-   for datastore-free queries.
-3. **Thin child + pipe protocol**, with the parent's existing `glue.DatastoreOp` as the
-   data server. The headline architecture.
-4. *(optional)* **WASM/wazero** as an in-process sandboxed alternative to #3.
-- **Defer/avoid:** the fat standalone, unless a concrete need appears.
+1. **`PREPARE` / `.prepare` emit + gate + interpreter fallback — DONE.** Emits the
+   `*.go`, no toolchain; a boxed-expr query runs interpreted. Reuses `glue/emit.OpToLines`
+   + the existing bakeability/native gate (`glue.Preparable`).
+2. **Make datastore scans bakeable + a `DatastorePipe` interface + an in-memory
+   provider** — so an emitted query runs standalone over inline `base.Vals` (zero
+   datastore deps) and real `FROM` queries stop falling back on the datastore-op gate.
+3. **`EXECUTE` + a run model.** Pick per goal:
+   - **embed-source (fat child, direct datastore)** — the headline for throughput:
+     `//go:embed` a tightened datastore-runtime library, `go build` a self-contained
+     prepared program, pipe carries only config/auth + results. Amortize compile +
+     connections across `EXECUTE`s.
+   - **thin child + data-over-pipe** — for sandboxing / minimal deps, with the parent's
+     existing `glue.DatastoreOp` as the data server.
+4. *(optional)* **WASM/wazero** — an in-process sandboxed alternative to the thin child.
 
 ## Open questions <a name="open-questions"></a>
 
+- **Embed-runtime size** — how small can the "tighter, more reusable" datastore-runtime
+  library be carved from glue/records/cbq (drop parser/planner; drop `expression`
+  entirely for Go-friendly queries)? That bounds both the embedded blob and the
+  per-prepare compile time, and decides whether embed-source is practical.
 - **Multiplex vs nested request/response** for cursors — which fits the push engine
   with the least deadlock risk under nested-loop joins and correlated subqueries?
 - **Framing:** reuse `ValsEncode` verbatim, or a versioned envelope carrying types/
