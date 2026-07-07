@@ -341,6 +341,25 @@ and the `lz`-marked lines become `printf`s that **emit Go source** — a
 logic. No second implementation to keep in sync. (See
 [DESIGN.md](DESIGN.md), "The way the n1k1 compiler works".)
 
+`.prepare` makes it visible — ask n1k1 to *prepare* a query and it prints the
+generated Go for that plan:
+
+```sh
+$ ./n1k1 -prepare -c "SELECT 1 + 2*3 AS x, ABS(-4) AS y" .
+generated Go:
+package n1k1gen
+...
+var PrepareLabels = base.Labels{".[\"x\"]", ".[\"y\"]"}
+func Run(lzVars *base.Vars, lzYieldVals base.YieldVals, lzYieldErr base.YieldErr) {
+    ...   // the same fused plan the interpreter walks, as standalone Go
+}
+```
+
+A query that needs a datastore reports its preparability instead of emitting —
+n1k1 keeps the interpreter as the always-available fallback. (Codegen is a
+research path: n1k1's interpreter is already fast, so compiling mainly pays off
+for hot, repeated queries — see [DESIGN-extensions-prepare.md](DESIGN-extensions-prepare.md).)
+
 **Spill to disk.** Joins, `DISTINCT`, `GROUP BY` (hashmaps), and `ORDER BY`
 (max-heaps) spill from memory to temporary files when a working set gets too
 big, so a query bigger than RAM still completes.
