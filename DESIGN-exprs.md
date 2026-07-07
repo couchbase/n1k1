@@ -26,6 +26,7 @@ correctness backstop.
 - [Roadmap: supportability tiers](#roadmap-supportability-tiers)
 - [How porting works — cbq's two-layer structure](#how-porting-works--cbqs-two-layer-structure)
 - [Lessons learned](#lessons-learned)
+- [Codegen ergonomics — reducing lz boilerplate](#codegen-ergonomics--reducing-lz-boilerplate)
 - [Prioritization](#prioritization)
 - [Open questions](#open-questions)
 - [Sources / references](#sources--references)
@@ -533,6 +534,164 @@ MISSING-constant bugs below.
   detection; `NaryFirstKept`/`NaryConcat`/`CaseReduce` are plain `base` helpers the lz
   harness calls in one line (so intermed doesn't fuse them).
 
+## Codegen ergonomics — reducing lz boilerplate
+
+Native exprs are written twice-over: the same lz source is run by the interpreter
+*and* scraped line-by-line by `intermed_build` to emit the compiled path. That
+double duty forces the verbose `lzA/lzB` shape and blocks the natural fix (HOFs /
+closures that factor the MISSING-dominant→parse→NULL skeleton once). This section
+records why, and ranked ways to cut the repetition.
+
+### The core constraint (why HOFs/closures are hard here)
+
+`intermed_build` is a **line-oriented text translator**, not a compiler
+(`cmd/intermed_build/build.go`). Each lz source line becomes an `Emit`/`EmitLift`
+printf of that line's text (`EmitBlock`, build.go:234): live (setup-time) sub-exprs
+are rendered by value via `base.LzExprFmt` (build.go:378 — `%#v`, but a *named*
+func by qualified Go name), `lz*` tokens are passed through as compiled-path
+variables. The translator only ever sees **text**; it cannot look *inside* a
+runtime `func` value passed as an argument.
+
+Operand evaluation is spliced by the `// <== emitCaptured:` marker: it *replaces
+the whole marked line* with the child expr's already-emitted code block
+(`emit.go:EmitCaptured` scans back to the last `func(` and inlines its body). This
+is why an operand must be written `lzVal = lzX(...) // <== emitCaptured: path "X"`
+then read out on the next line (`lzValX := lzVal`) — a direct `lzValX := lzX(...)`
+bind is silently dropped (Lessons › Compiled codegen). `emitCaptured` handles a
+**fixed, statically-named** set of children (`"A"`,`"B"`,`"C"`), planted one marker
+per operand.
+
+Two hard consequences:
+- **No closure introspection.** A HOF that takes `leaf func([]byte,[]byte)base.Val`
+  and calls it inside a per-row loop works in the interpreter, but the translator
+  emits a *call to the closure value*, not the closure's body — the leaf logic
+  never reaches the compiled output unless the leaf is a **named** `base` func
+  (`LzExprFmt`) called on ONE emitted line. Multi-statement leaves can't be inlined.
+- **No variable-arity capture.** `emitCaptured` has no loop form. An n-ary op needs
+  a runtime-sized `[]lzChildren` built once + a per-row reduce loop, and there's no
+  marker that iterates captured child-code chunks. Verified still-broken (POC,
+  2026-07): generating a compiled `ifnull`/`greatest`/`concat` project **panics at
+  generation time** — `MakeNaryExprFunc`'s reduce line is a plain `// !lz` call, so
+  it runs at gen-time over nil children (`NaryFirstKept` → nil-func SIGSEGV). The
+  binary `add` by contrast inlines cleanly: `lzValA := lzVals[0]`,
+  `lzValB := lzValJson…`, arithmetic inline. This is the sharpest illustration of
+  the constraint.
+
+Contrast the **working** variable-arity pattern: `ExprValsEncode`/`ExprSelf` put
+the loop *inside a runtime `base` helper called ONCE* (`base.ValsEncode(lzVals,…)`,
+`base.ValsSelfObject`) — one emitted line, no per-child capture. The loop is data
+(runtime `lzVals`), not code the translator must unroll.
+
+### What the harnesses abstract — and don't
+
+`MakeBiExprFunc`/`MakeTriExprFunc` (`expr_bi.go`, `expr_between.go`) factor the
+**outer shape**: build children (`MakeExprFunc` at `"A"`/`"B"`/`"C"`), declare the
+`lz*` dummies, wrap the per-row closure. What they *don't* factor is the
+**propagation skeleton** — the `if len(A)==0||len(B)==0 { MISSING } else { parse;
+NULL-on-non-value; compute }` branch is re-expanded inline in every op's
+`biExprFunc` leaf (`ExprArithBi`, `exprMathBi`, `ExprBetween`, `exprRoundTrunc2`,
+…). That inline skeleton is exactly the boilerplate, and it's inline *because* the
+translator can only inline a leaf that is one `LzExprFmt`-named-func line — the
+`ParseNum`/`ValKind`/branch logic is several statements, so it can't move into a
+generic wrapper closure without breaking the compiled path.
+
+So today: harnesses remove the operand-plumbing repetition; the 3-valued skeleton
+repetition remains. `array_contains`/`array_position` use `MakeBiExprFunc` but their
+bespoke leaf still hand-captures `lzA`/`lzB` inline; the unary ops (`neg`,
+`exprMathUnary`, `exprArrayReduce`) have no unary harness at all.
+
+### Ranked ideas
+
+**1. Add a unary harness `MakeUnExprFunc` + adopt it (no codegen change; low
+risk).** Every unary op re-types the same `MakeExprFunc(…,"A")` + closure preamble
+(`ExprNeg`, `exprMathUnary`, `exprArrayReduce`, `exprArrayMinMax`,
+`exprRoundTrunc1`, the `expr_str`/`expr_type` unaries). A `MakeUnExprFunc(…, leaf
+func(lzA base.ExprFunc, vals, yieldErr) base.Val)` mirrors `MakeBiExprFunc`
+exactly (fixed-shape body, one `// !lz` leaf call) so it's codegen-safe by the same
+argument the bi/tri harnesses already are. *Removes:* ~6 lines of preamble per
+unary op (~15 ops). *Effort:* small. *Keeps both paths:* yes (identical mechanism).
+
+**2. A propagation-class combinator that wraps a NAMED leaf (codegen-safe only for
+1-line leaves).** Push the MISSING-dominant / unknown-passthrough branch into a
+`base` helper that takes the operand *values* (already captured) + a named leaf:
+`base.MissingDominantBi(a, b Val, buf []byte, leaf func(a,b Num)(Num,bool)) (Val,
+[]byte)`. The lz leaf collapses to one line: `lzVal, lzBufPre =
+base.MissingDominantBi(lzValA, lzValB, lzBufPre, base.ArithAdd)`. Because the
+*whole* skeleton now lives in a `base` func and the per-op leaf is a named func
+emitted by `LzExprFmt`, the compiled path emits one real call — codegen-safe. This
+is the biggest DRY win and is just an extension of the func-value pattern already
+proven for `is_*`/`upper`/arith (Lessons › Func-value params). *Removes:* the
+~12-line 3-valued branch from `ExprArithBi`/`exprMathBi`/`exprMathUnary`/round/…
+(~20 ops). *Effort:* medium (design 3-4 combinators: MISSING-dominant-num,
+unknown-passthrough-num, unknown-passthrough-str-into-buf; thread the reused buf).
+*Risk:* low-medium — must keep buffer ownership (`lzBufPre[:0]`) correct; each
+combinator differential-tested once covers all its ops. *Keeps both paths:* yes.
+This subsumes much of what idea 1 leaves behind.
+
+**3. Fix the compiled n-ary path by folding to binary (medium; unblocks
+`ifnull`/`greatest`/`least`/`concat`).** These four are associative/right-reducible,
+so the optimizer can right-nest them into `MakeBiExprFunc` applications exactly as
+`and`/`or` already do (Lessons › n-ary→binary fold) — giving them the proven
+binary compiled path and letting them keep the n-ary interpreter path (or drop it).
+Sketch: in `ExprTreeOptimize`, when lowering an n-ary conditional/greatest/concat
+with k>2 operands, emit `op(x0, op(x1, op(x2, …)))`; supply a `base.*2` binary leaf
+(`base.CondIfNull2`, `base.GreatestLeast2`, `base.Concat2`) with the same 3-valued
+rule as the reducer. `case` is **not** foldable (needs ordered when/then capture) —
+leave it n-ary-interpreter-only or do idea 4. *Removes:* the compiled n-ary
+breakage for 4 ops; lets them re-enter compiled queries safely. *Effort:* medium
+(3 binary leaves + optimizer nesting + `naryProjectCase` compiled coverage).
+*Risk:* medium — fold must be exact under 3-valued logic (concat's MISSING/NULL
+skip semantics differ from arithmetic; verify per-op). *Needs codegen change:* no.
+
+**4. A capture-stack rework so `emitCaptured` supports variable arity (large;
+highest leverage but riskiest).** Teach `EmitCaptured` (+ a new `// <==
+emitCapturedLoop:` marker) to inline a *sequence* of captured child chunks under a
+generated `for`-like unrolling, so an n-ary reduce compiles directly without
+folding. This is the only path that makes `case` (and any future non-foldable
+n-ary) compile. *Effort:* large (touches `emit.go` capture bookkeeping + build.go
+marker parsing; the capture stack currently keys children by fixed pathItem).
+*Risk:* high — the capture/`clearFuncLines` machinery is subtle. *Needs codegen
+change:* yes. Recommend only if a non-foldable n-ary (`case`) becomes hot; until
+then idea 3 covers the foldable majority.
+
+**5. A spec-table generator for thin stdlib-wrapper ops (medium; removes whole
+files).** Many ops are "decode → call a `func` → re-encode" with a propagation
+class and arity. A sibling generator (or `intermed_build` pre-pass) could emit the
+`ExprFunc` + `init()` registration from a declarative table:
+
+```go
+{Name: "abs",   Arity: 1, Class: UnknownPassthrough, Leaf: "math.Abs"},
+{Name: "add",   Arity: 2, Class: MissingDominantNum, Leaf: "base.ArithAdd"},
+{Name: "upper", Arity: 1, Class: UnknownPassthroughStr, Leaf: "base.StrCaseUpper"},
+{Name: "power", Arity: 2, Class: MissingDominantNum, Leaf: "math.Pow"},
+```
+
+It generates the same lz source a human would write (feeding idea 2's combinators),
+so the generated `.go` still flows through `intermed_build` unchanged — both paths
+stay live and differential-tested. *Removes:* most of `expr_math.go`/`expr_str.go`/
+`expr_arith.go` hand-writing; new stdlib-wrapper funcs become one table row.
+*Effort:* medium (build the generator once). *Risk:* low-medium (generated code is
+mechanical; the generator itself needs tests). *Best combined with idea 2* — the
+table's `Class`+`Leaf` map directly onto a combinator + named leaf. Answers the
+"Auto-generation" open question below.
+
+**6. Teach the translator to trace a passed func literal (rejected — too costly).**
+In principle build.go could, when it sees `leaf(x, y)` where `leaf` is a param bound
+to a `func(){…}` literal at the call site, inline the literal's body. In practice
+this means the line-oriented translator would need real Go scope/def-use analysis
+(track which param binds which literal across `MakeBiExprFunc` boundaries, alpha-
+rename `lz*`, re-thread `emitCaptured`) — i.e. becoming a compiler. High effort,
+high risk, and it fights the whole "text passthrough" design. **Not worth it**; the
+named-`base`-func route (ideas 2/5) gets ~all the benefit at a fraction of the cost.
+
+### Recommendation
+
+Do **2 then 5** (combinators, then generate from a table) for the scalar bulk — no
+codegen changes, biggest boilerplate cut, both paths preserved. Do **1** as a cheap
+warm-up. Do **3** to unblock the foldable n-ary ops in the compiled path (retire the
+Known-broken caveat for `ifnull`/`greatest`/`least`/`concat`). Defer **4** until a
+non-foldable n-ary (`case`) is worth compiling; reject **6**.
+
 ## Prioritization
 
 Rank by **per-row frequency × allocation-avoided × ease**. Predicate-side operators
@@ -547,7 +706,8 @@ find the dominant `ExprTree`/`Convert`/`Evaluate`/`WriteJSON` sites; port those 
 - **A shared JSON array/object builder** over a lifted buffer (with `ValComparer`
   scratch for sort/dedup) so `array_*`/`object_*` share one allocation-free emitter.
 - **Auto-generation:** could codegen emit boilerplate native `ExprFunc`s for the thin
-  stdlib-wrapper string/num/date funcs from a spec table?
+  stdlib-wrapper string/num/date funcs from a spec table? (Sketched — see
+  [Codegen ergonomics](#codegen-ergonomics--reducing-lz-boilerplate), idea 5.)
 - **Coverage metric:** track "% of a workload's per-row expression evaluations served
   natively", not raw function count.
 
