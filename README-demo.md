@@ -1,8 +1,8 @@
-# n1k1 — a five-minute demo
+# n1k1 demo
 
-You have a pile of JSON files on your drive — plus some CSV, YAML, and a
-couple of gzipped logs. How do you slice and dice them? `jq` incantations?
-Spin up DuckDB? Load a database?
+You have a pile of JSON files on your drive — maybe some CSV, YAML, logs,
+gzipped stuff, and/or some office PDF/XLSX/PPT/DOCX files. How do you slice
+and dice them? `jq` incantations? Load a database?
 
 **Meet `n1k1`:** a single pure-Go binary. Point it at a directory and query
 your files with SQL++ (N1QL) — à la `sqlite` / `duckdb`, but for the JSON (and
