@@ -164,7 +164,7 @@ func exprMathBi(lzVars *base.Vars, labels base.Labels, params []interface{},
 			lzVal = lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B"
 			lzValB := lzVal
 
-			lzVal, lzBufPre = base.MissingDominantBiNum(lzValA, lzValB, lzBufPre, fn, false, lzVars)
+			lzVal, lzBufPre = base.ArithBiMissingDominant(lzValA, lzValB, lzBufPre, fn, false, lzVars)
 		}
 
 		return lzVal

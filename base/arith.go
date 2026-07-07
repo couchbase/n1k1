@@ -222,14 +222,14 @@ const WarnDivideByZero = "Division by 0."
 // "Codegen ergonomics", idea 2). Each returns the (possibly re-grown) buffer so
 // the caller can keep reusing it.
 
-// MissingDominantBiNum applies the binary-numeric three-valued rule: if either
+// ArithBiMissingDominant applies the binary-numeric three-valued rule: if either
 // operand is MISSING (empty) the result is MISSING; else if either operand is not
 // a JSON number the result is NULL; else op(a, b) formatted into buf[:0]. op
 // returns ok=false only for a divide/mod-by-zero, which yields NULL and -- when
 // warnZero is set and a warner is installed -- emits the divide-by-zero advisory.
 // Mirrors cbq's arith_*.go Evaluate(). Used by ExprArithBi (+ - * / % DIV MOD)
 // and the binary math funcs (POWER/ATAN2, via always-ok Num leaves).
-func MissingDominantBiNum(a, b Val, buf []byte,
+func ArithBiMissingDominant(a, b Val, buf []byte,
 	op func(a, b Num) (Num, bool), warnZero bool, vars *Vars) (Val, []byte) {
 	if len(a) == 0 || len(b) == 0 {
 		return ValMissing, buf // MISSING dominant.
@@ -250,11 +250,11 @@ func MissingDominantBiNum(a, b Val, buf []byte,
 	return Val(out), out
 }
 
-// UnknownPassthroughUnNum applies the unary-numeric rule with a Num->Num leaf:
+// ArithUnaryUnknownPassthrough applies the unary-numeric rule with a Num->Num leaf:
 // MISSING and NULL (any non-value) pass through unchanged; a non-number value
 // becomes NULL; else op(num) formatted into buf[:0]. Used by ExprNeg, whose leaf
 // (base.Num.Neg) must stay Num-based to preserve the int64/float64 distinction.
-func UnknownPassthroughUnNum(v Val, buf []byte, op func(Num) Num) (Val, []byte) {
+func ArithUnaryUnknownPassthrough(v Val, buf []byte, op func(Num) Num) (Val, []byte) {
 	if ValKind(v) != ValKindValue {
 		return v, buf // MISSING/NULL pass through.
 	}

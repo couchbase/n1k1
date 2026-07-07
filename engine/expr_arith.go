@@ -82,7 +82,7 @@ func ExprArithBi(lzVars *base.Vars, labels base.Labels, params []interface{},
 			lzVal = lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B"
 			lzValB := lzVal
 
-			lzVal, lzBufPre = base.MissingDominantBiNum(lzValA, lzValB, lzBufPre, arith, warnZero, lzVars)
+			lzVal, lzBufPre = base.ArithBiMissingDominant(lzValA, lzValB, lzBufPre, arith, warnZero, lzVars)
 		}
 
 		return lzVal
@@ -111,7 +111,7 @@ func ExprNeg(lzVars *base.Vars, labels base.Labels,
 	lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
 		lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
 
-		lzVal, lzBufPre = base.UnknownPassthroughUnNum(lzVal, lzBufPre, base.Num.Neg)
+		lzVal, lzBufPre = base.ArithUnaryUnknownPassthrough(lzVal, lzBufPre, base.Num.Neg)
 
 		return lzVal
 	}
