@@ -536,207 +536,83 @@ MISSING-constant bugs below.
 
 ## Codegen ergonomics — reducing lz boilerplate
 
-Native exprs are written twice-over: the same lz source is run by the interpreter
-*and* scraped line-by-line by `intermed_build` to emit the compiled path. That
-double duty forces the verbose `lzA/lzB` shape and blocks the natural fix (HOFs /
-closures that factor the MISSING-dominant→parse→NULL skeleton once). This section
-records why, and ranked ways to cut the repetition.
+Native exprs are written twice-over: the same lz source runs in the interpreter
+*and* is scraped line-by-line by `intermed_build` to emit the compiled path. That
+double duty forces the verbose `lz*` shape and blocks the obvious fix — HOFs /
+closures that factor the repeated MISSING→parse→NULL skeleton. Two moves cut most
+of the boilerplate anyway, **without touching the codegen**: base propagation-class
+combinators, and name→leaf tables.
 
-### The core constraint (why HOFs/closures are hard here)
+### The core constraint
 
 `intermed_build` is a **line-oriented text translator**, not a compiler
-(`cmd/intermed_build/build.go`). Each lz source line becomes an `Emit`/`EmitLift`
-printf of that line's text (`EmitBlock`, build.go:234): live (setup-time) sub-exprs
-are rendered by value via `base.LzExprFmt` (build.go:378 — `%#v`, but a *named*
-func by qualified Go name), `lz*` tokens are passed through as compiled-path
-variables. The translator only ever sees **text**; it cannot look *inside* a
-runtime `func` value passed as an argument.
+(`cmd/intermed_build/build.go`). Each lz line becomes an `Emit`/`EmitLift` printf of
+its text (`EmitBlock`, build.go:234); a setup-time value is rendered by
+`base.LzExprFmt` (`%#v`, but a *named* func by its qualified Go name). Operand
+evaluation is spliced by the `// <== emitCaptured:` marker, which replaces the whole
+marked line with the child's already-emitted code (so an operand must be written
+`lzVal = lzX(...) // <== emitCaptured: path "X"` then read out on the next line).
 
-Operand evaluation is spliced by the `// <== emitCaptured:` marker: it *replaces
-the whole marked line* with the child expr's already-emitted code block
-(`emit.go:EmitCaptured` scans back to the last `func(` and inlines its body). This
-is why an operand must be written `lzVal = lzX(...) // <== emitCaptured: path "X"`
-then read out on the next line (`lzValX := lzVal`) — a direct `lzValX := lzX(...)`
-bind is silently dropped (Lessons › Compiled codegen). `emitCaptured` handles a
-**fixed, statically-named** set of children (`"A"`,`"B"`,`"C"`), planted one marker
-per operand.
+The translator only ever sees **text** — it cannot look *inside* a runtime `func`
+value. A HOF that takes `leaf func(...)Val` and calls it in a per-row loop works in
+the interpreter, but the compiled path emits a *call to the closure value*, not its
+body — so the leaf reaches compiled output only if it is a **named** func emitted on
+one `LzExprFmt` line. (And `emitCaptured` has no loop form, which is why the compiled
+n-ary path stays broken — see Known-broken & caveats.)
 
-Two hard consequences:
-- **No closure introspection.** A HOF that takes `leaf func([]byte,[]byte)base.Val`
-  and calls it inside a per-row loop works in the interpreter, but the translator
-  emits a *call to the closure value*, not the closure's body — the leaf logic
-  never reaches the compiled output unless the leaf is a **named** `base` func
-  (`LzExprFmt`) called on ONE emitted line. Multi-statement leaves can't be inlined.
-- **No variable-arity capture.** `emitCaptured` has no loop form. An n-ary op needs
-  a runtime-sized `[]lzChildren` built once + a per-row reduce loop, and there's no
-  marker that iterates captured child-code chunks. Verified still-broken (POC,
-  2026-07): generating a compiled `ifnull`/`greatest`/`concat` project **panics at
-  generation time** — `MakeNaryExprFunc`'s reduce line is a plain `// !lz` call, so
-  it runs at gen-time over nil children (`NaryFirstKept` → nil-func SIGSEGV). The
-  binary `add` by contrast inlines cleanly: `lzValA := lzVals[0]`,
-  `lzValB := lzValJson…`, arithmetic inline. This is the sharpest illustration of
-  the constraint.
+### The chosen approach
 
-Contrast the **working** variable-arity pattern: `ExprValsEncode`/`ExprSelf` put
-the loop *inside a runtime `base` helper called ONCE* (`base.ValsEncode(lzVals,…)`,
-`base.ValsSelfObject`) — one emitted line, no per-child capture. The loop is data
-(runtime `lzVals`), not code the translator must unroll.
+Keep everything the translator must inline as a **fixed-shape shared harness with a
+named leaf**; let only the leaf vary per op, emitted by name. Two layers exploit that:
 
-### What the harnesses abstract — and don't
+- **Propagation-class combinators (`base`).** The 3-valued skeleton (`MISSING →
+  MISSING; else non-value → NULL; else compute`) used to be re-expanded inline in
+  every op's leaf. It now lives in a few `base` combinators — `MissingDominantBiNum`,
+  `UnknownPassthroughUnNum`, `UnknownPassthroughMathUn`, `UnknownPassthroughRound1` /
+  `MissingDominantRound2`, `StrTransformInto` — each taking the captured operand
+  *values* plus a **named** leaf (`base.ArithAdd`, `math.Abs`, `base.StrCaseUpper`,
+  …). The lz leaf collapses to one line, so ~40 numeric/string ops shed their
+  ~12-line branch.
 
-`MakeBiExprFunc`/`MakeTriExprFunc` (`expr_bi.go`, `expr_between.go`) factor the
-**outer shape**: build children (`MakeExprFunc` at `"A"`/`"B"`/`"C"`), declare the
-`lz*` dummies, wrap the per-row closure. What they *don't* factor is the
-**propagation skeleton** — the `if len(A)==0||len(B)==0 { MISSING } else { parse;
-NULL-on-non-value; compute }` branch is re-expanded inline in every op's
-`biExprFunc` leaf (`ExprArithBi`, `exprMathBi`, `ExprBetween`, `exprRoundTrunc2`,
-…). That inline skeleton is exactly the boilerplate, and it's inline *because* the
-translator can only inline a leaf that is one `LzExprFmt`-named-func line — the
-`ParseNum`/`ValKind`/branch logic is several statements, so it can't move into a
-generic wrapper closure without breaking the compiled path.
+- **Name→leaf tables + one adapter per family.** A per-op constructor that only
+  passed a leaf to a shared harness (`ExprAbs`/`ExprAdd`/`ExprIsNull`/…) collapses
+  into a `map[string]<leaf>` table plus one `xxxOp` adapter that closes over the leaf
+  and defers to the harness; `init()` registers each row in a `for`-range loop.
+  Shipped tables: math (`mathUnaryFuncs`, `mathBiFuncs`, `roundTruncFuncs`),
+  `arithOps`, `strTransformFuncs`, IS predicates (`isPredicateFuncs`), IS type-checks
+  (`isTypeFuncs`), array readers (`arrayReduceFuncs`), conditional-unknown
+  (`condFuncs`), and comparisons (`cmpFuncs`, with a `swap` flag so GT/GE reuse
+  LT/LE).
 
-So historically: harnesses removed the operand-plumbing repetition but the 3-valued
-skeleton repetition remained inline in each leaf. Idea 2 (below, **now done**) moved
-that skeleton into `base` propagation-class combinators, so the numeric + unary
-string leaves are one line each; `array_contains`/`array_position` still hand-capture
-`lzA`/`lzB` inline, and `exprArrayReduce`/`exprArrayMinMax` remain without a unary
-harness (candidates for the same treatment).
+**Why it needs no `intermed_build` change.** The tables, `for`-range `init()` loops,
+and adapters are all plain (non-lz) Go, so the translator copies them through
+verbatim; the leaf value still rides the closure into the shared harness, where the
+existing `LzExprFmt`-by-name emission fires. Verified: the generated compiled queries
+emit the exact named leaf (`math.Abs`, `base.RoundFloat`, `base.ArithDiv`,
+`base.TypeIsArray`, `base.CondIfNull`, …), and interpreter + compiled + cbq agree
+across `test-suite` / `test-compiler` / `test-suite-all`.
 
-### Ranked ideas
+**When to table.** Only for a family of *several* single-line-body constructors —
+the table + adapter carries a fixed cost, so a 1–2-entry table isn't worth it (kept
+`nullif`/`missingif`, `to_*`, `array_min`/`max`/`contains`/`position`, and the
+arity-split `substr`/`pad` families as direct funcs). The multi-operand string
+builders (REPLACE/SUBSTR/LPAD/RPAD/SPLIT) also stay hand-written: their leaves thread
+`ValComparer` and aren't a single named leaf.
 
-**1. Add a unary harness `MakeUnExprFunc` + adopt it (no codegen change; low
-risk).** Every unary op re-types the same `MakeExprFunc(…,"A")` + closure preamble
-(`ExprNeg`, `exprMathUnary`, `exprArrayReduce`, `exprArrayMinMax`,
-`exprRoundTrunc1`, the `expr_str`/`expr_type` unaries). A `MakeUnExprFunc(…, leaf
-func(lzA base.ExprFunc, vals, yieldErr) base.Val)` mirrors `MakeBiExprFunc`
-exactly (fixed-shape body, one `// !lz` leaf call) so it's codegen-safe by the same
-argument the bi/tri harnesses already are. *Removes:* ~6 lines of preamble per
-unary op (~15 ops). *Effort:* small. *Keeps both paths:* yes (identical mechanism).
+### Considered, not pursued
 
-**2. A propagation-class combinator that wraps a NAMED leaf (codegen-safe only for
-1-line leaves). — DONE (2026-07).** Push the MISSING-dominant / unknown-passthrough
-branch into a `base` helper that takes the operand *values* (already captured) + a
-named leaf. The lz leaf collapses to one line: `lzVal, lzBufPre =
-base.MissingDominantBiNum(lzValA, lzValB, lzBufPre, arith, warnZero, lzVars)`.
-Because the *whole* skeleton now lives in a `base` func and the per-op leaf is a
-named func emitted by `LzExprFmt`, the compiled path emits one real call —
-codegen-safe. This was the biggest DRY win and extends the func-value pattern
-already proven for `is_*`/`upper`/arith (Lessons › Func-value params).
+- **Fold the foldable n-ary ops (`ifnull`/`greatest`/`least`/`concat`) to right-nested
+  binary** (as `and`/`or` already do) to give them the working compiled path — viable
+  and codegen-free, not yet done. `case` can't fold (ordered when/then capture).
+- **A capture-stack rework so `emitCaptured` supports variable arity** — the only way
+  to compile `case`; large, touches the codegen, deferred.
+- **A spec-table *generator*** that emits the harness source from a declarative
+  `{name, arity, class, leaf}` table — a superset of the runtime tables above; worth
+  it only once the hand-written families grow further.
+- **Teaching the translator to trace closures** — rejected; it would turn the
+  line-oriented translator into a real compiler for benefit the named-leaf route
+  already gives.
 
-Shipped combinators (five numeric + one string): `base.MissingDominantBiNum`
-(binary MISSING-dominant-num — arith `+ - * / % DIV MOD`, plus POWER/ATAN2 via the
-new always-ok Num leaves `base.MathPow`/`base.MathAtan2`; carries the
-divide-by-zero `warnZero`/`lzVars` warn), `base.UnknownPassthroughUnNum` (unary
-Num-leaf — `neg`, passing the `base.Num.Neg` method expression to preserve
-int64/float64), `base.UnknownPassthroughMathUn` (unary float64-leaf — ABS/CEIL/
-SQRT/… keep passing `math.Abs` directly), `base.UnknownPassthroughRound1` /
-`base.MissingDominantRound2` (ROUND/TRUNC 1- and 2-arg), and `base.StrTransformInto`
-(unknown-passthrough-str-into-buf — UPPER/LOWER/TITLE/TRIM/LTRIM/RTRIM/REVERSE).
-Removed the now-subsumed `base.MathBinApply`. This cut the ~12-line 3-valued branch
-from `ExprArithBi`/`exprMathBi`/`exprMathUnary`/`exprRoundTrunc1`/`exprRoundTrunc2`/
-`ExprNeg`/`exprStrTransform` (≈40 ops fed by those harnesses) down to one line
-each; net ‑95 engine lines. *Kept both paths:* yes — interpreter, the generated
-compiled path, and cbq all agree across `test-suite`, `test-compiler`, and the
-data-backed `test-suite-all` corpus. This subsumed much of what idea 1 leaves behind
-(the unary skeleton repetition is gone even without a `MakeUnExprFunc` harness).
-
-Not yet folded into a combinator: the multi-operand string ops (REPLACE, SUBSTR,
-LPAD/RPAD, SPLIT2) — their leaves are per-op `Str*` builders that thread the
-`ValComparer`, so each would need its own builder-shaped combinator; `exprRoundTrunc2`
-already rides `MissingDominantRound2`. These are candidates for idea 5's spec table.
-
-**3. Fix the compiled n-ary path by folding to binary (medium; unblocks
-`ifnull`/`greatest`/`least`/`concat`).** These four are associative/right-reducible,
-so the optimizer can right-nest them into `MakeBiExprFunc` applications exactly as
-`and`/`or` already do (Lessons › n-ary→binary fold) — giving them the proven
-binary compiled path and letting them keep the n-ary interpreter path (or drop it).
-Sketch: in `ExprTreeOptimize`, when lowering an n-ary conditional/greatest/concat
-with k>2 operands, emit `op(x0, op(x1, op(x2, …)))`; supply a `base.*2` binary leaf
-(`base.CondIfNull2`, `base.GreatestLeast2`, `base.Concat2`) with the same 3-valued
-rule as the reducer. `case` is **not** foldable (needs ordered when/then capture) —
-leave it n-ary-interpreter-only or do idea 4. *Removes:* the compiled n-ary
-breakage for 4 ops; lets them re-enter compiled queries safely. *Effort:* medium
-(3 binary leaves + optimizer nesting + `naryProjectCase` compiled coverage).
-*Risk:* medium — fold must be exact under 3-valued logic (concat's MISSING/NULL
-skip semantics differ from arithmetic; verify per-op). *Needs codegen change:* no.
-
-**4. A capture-stack rework so `emitCaptured` supports variable arity (large;
-highest leverage but riskiest).** Teach `EmitCaptured` (+ a new `// <==
-emitCapturedLoop:` marker) to inline a *sequence* of captured child chunks under a
-generated `for`-like unrolling, so an n-ary reduce compiles directly without
-folding. This is the only path that makes `case` (and any future non-foldable
-n-ary) compile. *Effort:* large (touches `emit.go` capture bookkeeping + build.go
-marker parsing; the capture stack currently keys children by fixed pathItem).
-*Risk:* high — the capture/`clearFuncLines` machinery is subtle. *Needs codegen
-change:* yes. Recommend only if a non-foldable n-ary (`case`) becomes hot; until
-then idea 3 covers the foldable majority.
-
-**5. A spec-table generator for thin stdlib-wrapper ops (medium; removes whole
-files).** Many ops are "decode → call a `func` → re-encode" with a propagation
-class and arity. A sibling generator (or `intermed_build` pre-pass) could emit the
-`ExprFunc` + `init()` registration from a declarative table:
-
-```go
-{Name: "abs",   Arity: 1, Class: UnknownPassthrough, Leaf: "math.Abs"},
-{Name: "add",   Arity: 2, Class: MissingDominantNum, Leaf: "base.ArithAdd"},
-{Name: "upper", Arity: 1, Class: UnknownPassthroughStr, Leaf: "base.StrCaseUpper"},
-{Name: "power", Arity: 2, Class: MissingDominantNum, Leaf: "math.Pow"},
-```
-
-It generates the same lz source a human would write (feeding idea 2's combinators),
-so the generated `.go` still flows through `intermed_build` unchanged — both paths
-stay live and differential-tested. *Removes:* most of `expr_math.go`/`expr_str.go`/
-`expr_arith.go` hand-writing; new stdlib-wrapper funcs become one table row.
-*Effort:* medium (build the generator once). *Risk:* low-medium (generated code is
-mechanical; the generator itself needs tests). *Best combined with idea 2* — the
-table's `Class`+`Leaf` map directly onto a combinator + named leaf. Answers the
-"Auto-generation" open question below.
-
-**5a. A runtime `name → leaf` table (no generator) — DONE (2026-07).** A lighter
-variant of 5 that captures most of the readability win without building a code
-generator. Each per-op constructor (`ExprAbs`/`ExprAdd`/`ExprUpper`/… — a 3-line
-func that only passed a leaf to a shared harness) collapsed into a `map[string]<leaf>`
-table plus one `xxxOp` adapter per family that closes over the leaf and defers to the
-harness; `init()` registers each row in a `for`-range loop. Shipped tables:
-`mathUnaryFuncs` (16), `mathBiFuncs` (POWER/ATAN2), `roundTrunc1Funcs`/
-`roundTrunc2Funcs`, `arithOps` (`name → {leaf, warnZero}`), `strTransformFuncs`
-(UPPER/LOWER/TITLE/TRIM/LTRIM/RTRIM/REVERSE); adapters `exprMathUnaryOp`/
-`exprMathBiOp`/`exprRoundTrunc1Op`/`exprRoundTrunc2Op`/`exprArithOp`/
-`exprStrTransformOp`. Removed ~36 constructor funcs; net ‑100 lines.
-
-**Key finding — this needed NO `intermed_build` change.** The tables, the `for`-range
-`init()` loops, and the adapters are all plain (non-lz) Go, so the line-oriented
-translator copies them through verbatim; the leaf value still rides the closure into
-the shared harness, where the existing `LzExprFmt`-by-name emission fires. Verified:
-the generated compiled queries emit the exact named leaf (`math.Abs`, `base.MathSign`,
-`base.RoundFloat`, `base.ArithDiv`, `base.StrCaseUpper`, …). Both paths agree with cbq
-across `test-suite`/`test-compiler`/`test-suite-all`. What 5a does *not* do (and full
-5 still would): generate the *harness source* itself, and fold the remaining
-multi-operand string ops (REPLACE/SUBSTR/LPAD/RPAD/SPLIT2), whose per-op `Str*`
-builders aren't a single named leaf.
-
-**6. Teach the translator to trace a passed func literal (rejected — too costly).**
-In principle build.go could, when it sees `leaf(x, y)` where `leaf` is a param bound
-to a `func(){…}` literal at the call site, inline the literal's body. In practice
-this means the line-oriented translator would need real Go scope/def-use analysis
-(track which param binds which literal across `MakeBiExprFunc` boundaries, alpha-
-rename `lz*`, re-thread `emitCaptured`) — i.e. becoming a compiler. High effort,
-high risk, and it fights the whole "text passthrough" design. **Not worth it**; the
-named-`base`-func route (ideas 2/5) gets ~all the benefit at a fraction of the cost.
-
-### Recommendation
-
-Do **2 then 5** (combinators, then generate from a table) for the scalar bulk — no
-codegen changes, biggest boilerplate cut, both paths preserved. **2 is now done**
-(six combinators; see above) — and because it removed the unary skeleton too, **1**
-(a `MakeUnExprFunc` harness) is largely moot for the numeric/string leaves and would
-now only save the `MakeExprFunc(…,"A")` + closure preamble. **5a (the runtime
-`name → leaf` table) is now done too** — it turned out to need no `intermed_build`
-change, so the remaining value in full **5** (a code generator) is narrower: generate
-the harness *source* and fold the multi-operand string ops. Do **3** to unblock the
-foldable n-ary ops in the compiled path (retire the Known-broken caveat for
-`ifnull`/`greatest`/`least`/`concat`). Defer **4** until a non-foldable n-ary (`case`)
-is worth compiling; reject **6**.
 
 ## Prioritization
 
@@ -754,8 +630,8 @@ find the dominant `ExprTree`/`Convert`/`Evaluate`/`WriteJSON` sites; port those 
 - **Auto-generation:** could codegen emit boilerplate native `ExprFunc`s for the thin
   stdlib-wrapper string/num/date funcs from a spec table? (Partly answered — the thin
   wrappers are now runtime `name → leaf` tables, no generator needed; see
-  [Codegen ergonomics](#codegen-ergonomics--reducing-lz-boilerplate), idea 5a. A full
-  generator would still remove the shared-harness source itself — idea 5.)
+  [Codegen ergonomics](#codegen-ergonomics--reducing-lz-boilerplate). A full generator
+  would additionally emit the shared-harness source itself.)
 - **Coverage metric:** track "% of a workload's per-row expression evaluations served
   natively", not raw function count.
 
