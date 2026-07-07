@@ -30,6 +30,7 @@ visualization, DVR/replay, and `EXPLAIN PRICE`/`EXPLAIN COST`.
 - [Rendering stays out of the core](#rendering-stays-out-of-the-core)
 - [CLI control surface: `-progress` & `.stats`](#cli-control-surface--progress--stats)
 - [In-flight / partial results (the "spinning numbers")](#in-flight--partial-results-the-spinning-numbers)
+- [Live aggregates: partials that climb (zero per-row alloc)](#live-aggregates-partials-that-climb-zero-per-row-alloc)
 - [Visualizing the plan with live data-flow](#visualizing-the-plan-with-live-data-flow)
 - [Record & playback: a DVR / TiVo for queries](#record--playback-a-dvr--tivo-for-queries)
 - [Parallel progress: racing bars](#parallel-progress-racing-bars)
@@ -492,6 +493,219 @@ richer payload: `Stats` (or a sibling `Preview`) carries an optional bounded
 `[]PartialRow` marked `Partial: true`. Animation is **render-side**: the core emits
 *real* numbers at ~10 Hz; the "spinning" tween (easing) is a pure TUI concern
 (pterm/mpb). Solidify/undim at 100 %.
+
+## Live aggregates: partials that climb (zero per-row alloc)
+
+The previous section covers previewing *result rows* generically. This section
+zooms into the highest-value, trickiest case — **aggregate values climbing toward
+their finals** (`AVG`/`SUM`/`COUNT`/`MIN`/`MAX` visibly converging while the query
+runs) — and pins down how to do it with the overriding constraint: **no per-row
+allocation and no per-row division/boxing.** Turning `-stats` on (or taking a live
+snapshot) must not add steady-state garbage.
+
+### UX and semantics
+
+When `-stats` is `on` (live footer) — or any library reader takes a live snapshot —
+an ungrouped `SELECT COUNT(*), SUM(abv), AVG(abv) FROM beers` shows the three
+numbers *ticking upward* (COUNT and SUM monotone up, AVG wandering toward its mean)
+instead of snapping from blank to final. With `GROUP BY`, a bounded sample of groups
+animates (`SUM`/`MAX` rise, `MIN` falls). The contract mirrors the rest of this doc:
+a live aggregate is an **advisory partial**, explicitly *not* the answer — the payload
+is flagged `Partial: true` and undims/solidifies only at 100%. It is the
+perception-level version of Online Aggregation (Hellerstein et al.; see
+[Prior art](#prior-art)), not a statistical estimator.
+
+### Where the partial state lives today — and whether it already avoids allocs
+
+Grouped aggregates accumulate as **encoded bytes inside the group map's value**, not
+as boxed Go values. `OpGroup` (`engine/op_group.go`) keys an rhmap (`Ctx.AllocMap`)
+by the canonical group key; the value is the concatenation of each agg's state, laid
+out by `base.Agg.Init`/`Update`/`Result` (`base/agg.go`). The state widths are:
+
+- **`count`/`countn` — 8 bytes** (a `uint64`; `AggCount`).
+- **`sum` — 8 bytes** (a `float64`'s bits; `AggSum`), likewise the vectorized
+  `sum_v_float64`/`sum_v_int64`.
+- **`avg` — 16 bytes** (`[count uint64][sum float64]`; `AggAvg`). Crucially,
+  **`AggAvg.Result` computes `s/float64(c)` at Result time** — the division is
+  *already* deferred to the read, never done per row.
+- **`min`/`max` — 8-byte length prefix + the current extreme's bytes** (`AggMin`/
+  `AggMax` via `AggCompareUpdate`/`AggCompareResult`) — *variable width*.
+- **`count_distinct`/`array_agg`/`median`/`variance`/`stddev` — a growing set/list**
+  (an 8-byte count then length-prefixed elements, or packed `float64`s) — *variable
+  width, unbounded*.
+
+The fixed-width aggs are **already allocation-free per row**: `OpGroup`'s in-place
+branch does `copy(lzGroupValPrev, lzGroupValNew)` when
+`len(lzGroupValPrev) == len(lzGroupValNew)` (always true for count/sum/avg), writing
+back into the map's own value bytes rather than re-`Set`'ing into its append-only
+value heap (guarded and tested by `TestGroupInPlaceUpdate` in `glue/stmt_test.go`).
+The variable-width aggs fall back to `lzSet.Set` when the size changes (string
+`min`/`max` crossing a length boundary, every `array_agg` append) — those *do* churn
+the value heap, independent of any preview.
+
+So the partial values a reader wants **already exist, already update allocation-free
+(for the fixed-width aggs), and already keep the division on the read side** — the
+raw material is sitting in the group map mid-flight. What is missing is (a) a way for
+a snapshot reader to *reach* that live map, and (b) doing the byte→JSON decode
+without allocating.
+
+### The zero/low-cost mechanism
+
+The hot path does **not change at all** — it keeps folding bytes into fixed-width
+accumulators exactly as today. Everything below is read-side, at the existing coarse
+checkpoint.
+
+**1. Decode partials at the synchronous checkpoint, reusing `Agg.Result`.** The
+finalized aggregate that a normal query yields is exactly `Agg.Result(vars, aggBytes,
+buf)` decoded into the `^aggregates|<agg.String()>` label (DESIGN-exprs.md lever #6;
+`glue/conv.go:931`, read natively by `glue/expr_optimize.go`). A live partial is the
+**same `Result` call against the *current* accumulator bytes** — run early. Because
+`OpScan`/`countingYield` fire `Ctx.YieldStats` on the exec goroutine *between* row
+yields (`engine/op_scan.go:146`, `glue/stats.go`), at that instant no `Agg.Update` is
+mid-flight and the group value bytes are coherent — the same free-lunch snapshot point
+the [In-flight results](#in-flight--partial-results-the-spinning-numbers) section
+relies on. No hot-path lock, O(sampled groups × aggs) work at ~10 Hz.
+
+**2. `Result`'s `buf` argument is the zero-alloc seam.** Every `Agg.Result` takes and
+returns a caller-owned scratch buffer (`v, aggRest, bufOut := agg.Result(vars, agg,
+buf)`); it appends the formatted number into `buf` and hands back the unused tail
+(`BufUnused`). A snapshot reader keeps **one lifted `previewBuf []byte` and one
+`[]PartialRow` on `Ctx` (or a sibling `Preview`), reused across every checkpoint** —
+so after warm-up, decoding count/sum/avg/min/max costs zero allocations, just
+`binary.LittleEndian.Uint64` loads, a `float64` divide for AVG, and a
+`strconv.AppendFloat` into the reused buffer. This is the same reuse discipline
+`OpGroup` already applies to `lzValOut`/`lzGroupValReuse`.
+
+**3. Ungrouped fast path — flush scalars into reserved `Counters` slots.** For the
+single-group case (no `GROUP BY`, one accumulator set — the best demo), we can skip
+the map walk entirely: reserve two slots via `DefStat` (a `SumCur`/`CountCur` gauge
+pair) and have `OpGroup` write the raw `count` (int64) and `sum` (as
+`int64(math.Float64bits(s))`) into `Ctx.Stats.Counters` — either per row (two aligned
+8-byte stores, same order as the existing `StatsCounterBump(RowsIn)`, no alloc, no
+divide) or once at the checkpoint. The reader reconstructs `AVG = frombits(sum)/count`.
+This rides the existing monotonic-skew `Counters` snapshot model with **no new
+machinery beyond two slots** — but it needs the `StatKind` gauge marker the doc
+already foreshadows plus a "these bits are a float64" flag, so it is an *optional*
+optimization, not the general path.
+
+Net: the general mechanism is **map-walk-at-checkpoint into a reused buffer via the
+existing `Agg.Result`**; the ungrouped case has a slot-flush fast path. Neither adds a
+per-row allocation, and AVG's divide stays where it already is — in `Result`, off the
+hot path.
+
+### Snapshot consistency & concurrency
+
+The accumulators are **single-writer** (the group op runs in one goroutine; see
+[Concurrency](#concurrency-single-writer-no-atomics)), so *when the reader shares that
+goroutine there is no tearing at all.* Two reader models:
+
+- **Checkpoint-sourced (recommended).** Decode inside the `YieldStats`/`OnStats`
+  callback, which runs synchronously on the exec goroutine. Coherent by construction,
+  and it is where `StatsSnapshotJSON` (`glue/stats_snapshot.go`) already produces the
+  WASM demo's live payload — the aggregate partials ride the same call.
+- **Pull / separate reporter goroutine.** Delivery model (a) reads while the writer
+  runs. For the plain `Counters` this doc already accepts *per-field monotonic skew*.
+  Aggregate bytes are worse: an in-place `copy` of an 8-byte `sum` is a single aligned
+  store (no torn read on Go's targets), but AVG reads two slots (`count`, `sum`) that
+  can skew, and a *variable-width* `min`/`max` `Set` moves the value to a new heap
+  offset — a cross-goroutine walker can read a stale or half-relinked entry. So for a
+  pull reader, **the checkpoint must first copy the sampled raw agg bytes into an
+  immutable reused snapshot buffer** (O(sampled bytes), off hot path); the reporter
+  decodes from that copy. Skew across fields remains advisory-acceptable; garbage does
+  not, and this removes it.
+
+No seqlock or atomics are warranted — this is an advisory stat, and the synchronous
+checkpoint already gives a clean read for free.
+
+### Per-aggregate treatment
+
+| Aggregate | Live? | Cost per snapshot | Notes |
+|---|---|---|---|
+| `count`, `count(*)`, `countn`, `count_v` | yes | O(1), no alloc | one `uint64` load |
+| `sum`, `sum_v_*` | yes | O(1), no alloc | one `float64` bits load |
+| `avg`, `avg_v_*` | yes (derived) | O(1), no alloc | `Result` divides `sum/count` — already read-side |
+| `min`, `max` | yes | O(value len), no alloc | copies the current extreme into the reused buf; extreme's heap offset moves on `Set` |
+| `count_distinct`, `countn_distinct` | yes (count only) | O(1) to read `n` | the *set* still grows unbounded in memory; only the cardinality is cheap |
+| `array_agg`, `array_agg_distinct` | costly | O(total bytes) + buffer growth | `Result` rebuilds the whole array each snapshot; bound N and cadence, or show only element-count progress |
+| `median`, `variance`, `stddev`, `*_distinct` | not cheaply | **allocates** | `Result` calls `AggFloats` → `make([]float64, n)` + sort / two-pass; a live value forces a per-snapshot alloc |
+
+For the bottom two rows the honest options are: (a) publish only **progress** (rows/
+elements accumulated so far), not the value; (b) accept a *bounded, ~10 Hz*
+allocation for the value (it is 10/s, not per-row — but it is not zero, so it must be
+opt-in, e.g. only in `.stats rich`/`debug`); or (c) an approximate online form (HLL
+for distinct counts, streaming quantiles for median) as later work. **Window
+aggregates** (`engine/op_window.go`) are frame-relative and recomputed per frame;
+they are deferred and out of scope here.
+
+`GROUP BY` vs ungrouped: ungrouped is one accumulator set — publish every checkpoint
+(cheapest, best demo). Grouped publishes a **bounded sample** (first-N or
+top-N-by-current-value, N≈10–50) via a capped `rhmap` `Visit`; top-N costs an O(groups)
+scan per checkpoint (a "live leaderboard"), first-N is O(N).
+
+### Internal machinery to add (ranked by effort/risk)
+
+1. **Reach the live group map from the checkpoint reader** *(medium effort, low–med
+   risk).* Today `lzSet` is a local in `OpGroup`, invisible to `YieldStats`/`OnStats`.
+   Add a per-request preview registry on `base.Ctx` (e.g. `Ctx.Previews []PreviewSource`
+   or a callback slice) that `OpGroup` populates **once at setup** (non-`lz`, off the
+   hot path) with a closure capturing `lzSet`, `aggCalcs`, and the group/agg label
+   layout. The checkpoint walks registered sources. Risk: lifetime — must be
+   deregistered before `RecycleMap` (a snapshot must never outlive the map); and it
+   must stay interpreter-only (`genCompiler:hide`) like today's counters.
+2. **A reusable `Preview` payload + scratch buffer** *(low effort, low risk).* A
+   lifted `[]PartialRow` and `previewBuf []byte` on `Ctx`/`Stats`, reused across
+   checkpoints; `Agg.Result`'s existing `buf` seam feeds it. Carries `Partial: true`.
+3. **Bounded-sample helper** *(low–med effort, low risk).* A capped `Visit` (first-N)
+   and an optional top-N-by-value pass over the group map, decoding into (2).
+4. **Ungrouped reserved-slot fast path** *(low effort, low risk, optional).*
+   `DefStat` a `CountCur`/`SumCur` gauge pair; flush at the checkpoint. Requires the
+   `StatKind` gauge marker (already foreshadowed) and a float-in-int64 convention.
+5. **Compiled path** *(deferred).* Same `genCompiler:hide` limitation as the existing
+   counters — the CLI's live display runs on the interpreter, so no user-visible loss
+   until that broader codegen work lands (see the KNOWN LIMITATION note above).
+
+### What's cheap vs. what's not (honest tally)
+
+Cheap and truly zero-alloc live: **COUNT, COUNT(\*), COUNTN, SUM, AVG, MIN, MAX** (and
+their vectorized/`_v` forms), plus **COUNT(DISTINCT)** cardinality. These cover the
+common dashboards. Not cheaply live: **ARRAY_AGG, MEDIAN, VARIANCE/STDDEV** and all
+DISTINCT-materializing variants — their `Result` re-walks or allocates, so a live
+value costs either a coarse-cadence allocation or an approximation; ship them as
+progress-only by default. DISTINCT-family accumulators also grow unbounded in memory
+regardless of preview — a pre-existing property, not caused by live stats.
+
+### Testing
+
+- **Extend the live-snapshot tests.** Add an aggregate query to the
+  `TestStatsSnapshotLiveDuringQuery` pattern (`glue/stats_snapshot_test.go`) with
+  `engine.ScanYieldStatsEvery = 1` so many checkpoints fire on a tiny fixture; assert
+  `OnStats` delivers a partial whose COUNT/SUM climb.
+- **Convergence invariant (the key test).** The **last live partial must equal the
+  finalized result** — decode-early and decode-at-drain call the identical
+  `Agg.Result`, so this also guards that no partial ever diverges from the real
+  `^aggregates|…` value. Reuse `TestGroupInPlaceUpdate`'s fixtures/expected values.
+- **Monotonicity.** Across successive snapshots: COUNT and SUM(of ≥0) non-decreasing,
+  MAX non-decreasing, MIN non-increasing.
+- **Nil-safety.** As `TestStatsSnapshotNil` — a nil `Stats`/preview yields an empty
+  payload and the zero-cost off path is unchanged.
+- **Alloc guard.** A `testing.AllocsPerRun` (or `-benchmem`) check that the fixed-width
+  aggregates add **zero allocations per row** with previews enabled vs. off, isolating
+  any regression to the (opt-in, coarse-cadence) heavy aggregates.
+
+### Open questions
+
+- Ungrouped reserved-slot flush (float-bits-in-`int64` gauge) vs. map-walk-only — is
+  the `StatKind`/float-flag complexity worth skipping the map handle for the one-group
+  case?
+- Grouped sample policy: first-N (O(N)) vs. top-N-by-current-value (O(groups)/
+  checkpoint) as the default "leaderboard."
+- Heavy aggregates (median/variance/array_agg/distinct sets): value-with-coarse-alloc
+  vs. progress-only vs. approximate (HLL / streaming quantile) — how firmly to forbid
+  the alloc.
+- Pull-reader tearing on variable-width `min`/`max` relink — is the checkpoint
+  raw-bytes copy sufficient, or is a per-group generation counter warranted?
+- Preview-source lifetime vs. `RecycleMap`: how to guarantee a delivered snapshot
+  never dereferences a recycled map (copy-out at the checkpoint is the safe default).
 
 ## Visualizing the plan with live data-flow
 
