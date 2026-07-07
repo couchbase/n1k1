@@ -45,30 +45,54 @@ import (
 	"github.com/couchbase/n1k1/glue/emit"
 )
 
-// Preparable reports whether a converted base.Op tree can be lowered to
-// standalone Go source (emit-only). When it can't, ok is false and reason is a
-// human-readable explanation (e.g. a boxed expression's SQL text, or a
-// non-bakeable datastore op kind) suitable for showing the user before the
-// caller falls back to the interpreter.
+// PrepareLevel classifies how far PREPARE can take a statement -- from the
+// interpreter (always available) up to self-contained compiled Go. Preparation is
+// not boolean: every query prepares to at least PrepareInterpreted, and the
+// compiled levels are ordered by how much runtime support the compiled program
+// still needs.
+type PrepareLevel int
+
+const (
+	// PrepareInterpreted: a per-row expression is boxed (needs cbq's Evaluate), or
+	// the plan didn't convert. Run it through the in-process interpreter -- always
+	// available, so PREPARE keeps the Op tree ready for EXECUTE. All-interpreter
+	// always works.
+	PrepareInterpreted PrepareLevel = iota
+
+	// PrepareCompiledData: every expression is native, but the plan reads a
+	// datastore whose op can't be baked into a Go literal -- the compiled program
+	// needs a runtime data provider (the thin child + DatastorePipe). The widest
+	// compiled level; only native exprs are required, so the heavy record providers
+	// (parquet/pdf/...) stay parent-side.
+	PrepareCompiledData
+
+	// PrepareCompiledStandalone: every expression is native AND every datastore op
+	// bakes into the emitted Go -- a self-contained program (a datastore-free query
+	// needs only engine/base; a datastore one links the datastore runtime). This is
+	// what Phase-1 emit requires.
+	PrepareCompiledStandalone
+)
+
+// Preparable classifies a converted base.Op tree (see PrepareLevel). reason is a
+// human-readable note for why it is not higher -- a boxed expression's SQL text, or
+// a non-bakeable datastore op kind -- suitable for showing the user before falling
+// back. Non-mutating (unlike the suite's stringifyExprTrees), so a caller can
+// gate-check first and emit -- via Prepare -- only at the top level.
 //
-// It reuses the exact conditions the compiler suite gates on:
-//   - allDatastoreOpsBakeable (here: datastoreOpsBakeable, via emit.BakeOp), and
-//   - no boxed expression (here: exprIsNative over each ["exprTree", <expr>] param;
-//     an ["exprStr", ...] param is itself the boxed fallback).
-//
-// It does NOT mutate op (unlike the suite's stringifyExprTrees), so a caller can
-// gate-check first and only emit -- via Prepare -- when ok.
-func Preparable(op *base.Op) (ok bool, reason string) {
+// The two axes reuse the exact conditions the compiler suite gates on: no boxed
+// expression (exprIsNative over each ["exprTree", <expr>] param; an ["exprStr", ...]
+// param is itself the boxed fallback), and datastore-op bakeability (emit.BakeOp).
+func Preparable(op *base.Op) (level PrepareLevel, reason string) {
 	if op == nil {
-		return false, "nil op tree (unconverted plan)"
-	}
-	if r, bad := firstUnbakeableDatastoreOp(op); bad {
-		return false, r
+		return PrepareInterpreted, "nil op tree (unconverted plan)"
 	}
 	if r, bad := firstBoxedExpr(op); bad {
-		return false, r
+		return PrepareInterpreted, r // boxed expr: needs cbq per row -> interpreter only
 	}
-	return true, ""
+	if r, bad := firstUnbakeableDatastoreOp(op); bad {
+		return PrepareCompiledData, r // native, but needs a runtime data provider
+	}
+	return PrepareCompiledStandalone, ""
 }
 
 // firstUnbakeableDatastoreOp walks the tree and returns a reason for the first
@@ -271,36 +295,36 @@ func wrapPrepare(labels base.Labels, lines []string) string {
 // cmd/n1k1). It reuses the SAME emitter (emit.OpToLines) the compiler
 // differential tests use to build test/tmp, so what it prints is exactly what the
 // compiler would compile.
-func (s *Session) Prepare(stmt string) (goSource string, ok bool, reason string, err error) {
+func (s *Session) Prepare(stmt string) (goSource string, level PrepareLevel, reason string, err error) {
 	// Recover from the panics some unsupported plans raise (mirrors Run).
 	defer func() {
 		if r := recover(); r != nil {
-			goSource, ok, reason, err = "", false, fmt.Sprintf("panic: %v", r), nil
+			goSource, level, reason, err = "", PrepareInterpreted, fmt.Sprintf("panic: %v", r), nil
 		}
 	}()
 
 	parsed, err := ParseStatement(stmt, s.Namespace, true)
 	if err != nil {
-		return "", false, "", err
+		return "", PrepareInterpreted, "", err
 	}
 
 	qp, err := s.Store.PlanStatementQP(parsed, s.Namespace, s.NamedArgs, nil)
 	if err != nil {
-		return "", false, "", err
+		return "", PrepareInterpreted, "", err
 	}
 	p := qp.PlanOp()
 
 	// EXPLAIN doesn't execute -- it has no runnable plan to compile.
 	if ex := findExplain(p); ex != nil {
-		return "", false, "EXPLAIN statement (nothing to compile)", nil
+		return "", PrepareInterpreted, "EXPLAIN statement (nothing to compile)", nil
 	}
 
 	conv := &Conv{Temps: []interface{}{nil}}
 	if _, err = p.Accept(conv); err != nil {
-		return "", false, "unconvertible plan: " + err.Error(), nil
+		return "", PrepareInterpreted, "unconvertible plan: " + err.Error(), nil
 	}
 	if conv.TopOp == nil {
-		return "", false, "nil TopOp (unconverted plan)", nil
+		return "", PrepareInterpreted, "nil TopOp (unconverted plan)", nil
 	}
 
 	// Apply the same optimizations the execution path (Run) does, so the emitted
@@ -310,19 +334,21 @@ func (s *Session) Prepare(stmt string) (goSource string, ok bool, reason string,
 	}
 	maybeColumnarOptimize(conv.TopOp, conv.Temps)
 
-	// Gate on the UN-stringified tree: Preparable inspects ["exprTree", <expr>]
+	// Classify the UN-stringified tree: Preparable inspects ["exprTree", <expr>]
 	// params to decide native vs boxed. (stringifyExprTrees below would erase that
-	// distinction by turning every expr into text.)
-	if ok, reason = Preparable(conv.TopOp); !ok {
-		return "", false, reason, nil
+	// distinction.) Phase-1 emit needs the top level; a lower level returns its
+	// reason so the caller interprets (all-interpreter always works).
+	level, reason = Preparable(conv.TopOp)
+	if level != PrepareCompiledStandalone {
+		return "", level, reason, nil
 	}
 
 	// Rewrite live exprTree objects to exprStr text so the tree is expressible as
 	// generated source. Preparable already proved every expr is native, so an
 	// unserializable exprTree here is unexpected -- treat it as not-prepareable.
 	if !stringifyExprTrees(conv.TopOp) {
-		return "", false, "expression not serializable to text", nil
+		return "", PrepareInterpreted, "expression not serializable to text", nil
 	}
 
-	return wrapPrepare(conv.TopOp.Labels, emit.OpToLines(conv.TopOp)), true, "", nil
+	return wrapPrepare(conv.TopOp.Labels, emit.OpToLines(conv.TopOp)), PrepareCompiledStandalone, "", nil
 }

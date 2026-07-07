@@ -39,12 +39,12 @@ func TestPrepareNativeEmitsParseableGo(t *testing.T) {
 		`SELECT abs(-5) AS a, 1 < 2 AS b`,
 	}
 	for _, q := range native {
-		src, ok, reason, err := s.Prepare(q)
+		src, level, reason, err := s.Prepare(q)
 		if err != nil {
 			t.Fatalf("Prepare(%q) err: %v", q, err)
 		}
-		if !ok {
-			t.Fatalf("Prepare(%q) not ok, reason: %q (want prepareable)", q, reason)
+		if level != PrepareCompiledStandalone {
+			t.Fatalf("Prepare(%q) level %d, reason: %q (want PrepareCompiledStandalone)", q, level, reason)
 		}
 		if strings.TrimSpace(src) == "" {
 			t.Fatalf("Prepare(%q) emitted empty source", q)
@@ -87,15 +87,15 @@ func TestPrepareBoxedFallsBackToInterp(t *testing.T) {
 		{`SELECT ("beer-1" LIKE "beer%") AS m`, "boxed expression", `{"m":true}`},
 	}
 	for _, c := range cases {
-		src, ok, reason, err := s.Prepare(c.stmt)
+		src, level, reason, err := s.Prepare(c.stmt)
 		if err != nil {
 			t.Fatalf("Prepare(%q) err: %v", c.stmt, err)
 		}
-		if ok {
-			t.Fatalf("Prepare(%q) unexpectedly ok (want boxed -> not prepareable)", c.stmt)
+		if level != PrepareInterpreted {
+			t.Fatalf("Prepare(%q) level %d (want PrepareInterpreted -- boxed needs cbq)", c.stmt, level)
 		}
 		if src != "" {
-			t.Errorf("Prepare(%q) emitted source despite not being ok", c.stmt)
+			t.Errorf("Prepare(%q) emitted source despite not being standalone", c.stmt)
 		}
 		if !strings.Contains(reason, c.wantIn) {
 			t.Errorf("Prepare(%q) reason %q, want substring %q", c.stmt, reason, c.wantIn)
@@ -120,8 +120,8 @@ func TestPrepareBoxedFallsBackToInterp(t *testing.T) {
 // FROM-scan pushdown), so the gate's human-readable reasons are covered without
 // depending on the CLI.
 func TestPreparableReasons(t *testing.T) {
-	if ok, reason := Preparable(nil); ok || !strings.Contains(reason, "nil op") {
-		t.Errorf("Preparable(nil) = (%v, %q), want (false, ...nil op...)", ok, reason)
+	if level, reason := Preparable(nil); level != PrepareInterpreted || !strings.Contains(reason, "nil op") {
+		t.Errorf("Preparable(nil) = (%d, %q), want (PrepareInterpreted, ...nil op...)", level, reason)
 	}
 
 	root := writePlainBeers(t, 3)
@@ -133,12 +133,14 @@ func TestPreparableReasons(t *testing.T) {
 	// non-bakeable pushdown ([]string project-columns) and a live-plan Temps index
 	// -- not compilable this milestone. Prepare must report that and (via the CLI)
 	// fall back; here we assert the gate verdict + reason directly.
-	_, ok, reason, err := s.Prepare(`SELECT b.i FROM beers b`)
+	_, level, reason, err := s.Prepare(`SELECT b.i FROM beers b`)
 	if err != nil {
 		t.Fatalf("Prepare err: %v", err)
 	}
-	if ok {
-		t.Fatalf("Prepare(FROM scan) unexpectedly ok")
+	// Native exprs (b.i is a field access) but a non-bakeable scan -> the compiled
+	// level that needs a runtime data provider, NOT the boxed/interpreter level.
+	if level != PrepareCompiledData {
+		t.Fatalf("Prepare(FROM scan) level %d, want PrepareCompiledData", level)
 	}
 	if !strings.Contains(reason, "datastore op not bakeable") {
 		t.Errorf("reason = %q, want ...datastore op not bakeable...", reason)

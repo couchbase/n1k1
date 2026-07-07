@@ -207,16 +207,20 @@ func (c *cli) prepareStmt(stmt string) {
 		fmt.Fprintln(c.stderr, "prepare: no datastore open (.open <dir>)")
 		return
 	}
-	src, ok, reason, err := c.sess.Prepare(stmt)
+	src, level, reason, err := c.sess.Prepare(stmt)
 	if err != nil {
 		// A parse/plan error: the statement is wrong. The normal run below will
 		// report it with a caret; here just note prepare couldn't proceed.
 		fmt.Fprintf(c.stderr, "%sprepare: %s\n", c.icon("🚧 "), c.style.Yellow(tidyMsg(err.Error())))
 		return
 	}
-	if !ok {
-		fmt.Fprintf(c.stderr, "%sprepare: not compilable, running interpreted -- %s\n",
-			c.icon("🚧 "), c.style.Yellow(reason))
+	if level != glue.PrepareCompiledStandalone {
+		note := "not compilable, running interpreted" // PrepareInterpreted
+		if level == glue.PrepareCompiledData {
+			note = "compilable but needs a runtime data provider (not yet supported), running interpreted"
+		}
+		fmt.Fprintf(c.stderr, "%sprepare: %s -- %s\n",
+			c.icon("🚧 "), note, c.style.Yellow(reason))
 		return
 	}
 	fmt.Fprintln(c.stderr, "generated Go:")
