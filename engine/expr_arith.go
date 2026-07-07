@@ -97,27 +97,7 @@ func ExprArithBi(lzVars *base.Vars, labels base.Labels, params []interface{},
 			lzVal = lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B"
 			lzValB := lzVal
 
-			if len(lzValA) == 0 || len(lzValB) == 0 {
-				lzVal = base.ValMissing // MISSING dominant.
-			} else {
-				lzNumA, lzOkA := base.ParseNum(lzValA)
-				lzNumB, lzOkB := base.ParseNum(lzValB)
-				if !lzOkA || !lzOkB {
-					lzVal = base.ValNull // Non-number operand.
-				} else {
-					lzNumR, lzOkR := arith(lzNumA, lzNumB)
-					if !lzOkR {
-						lzVal = base.ValNull // Divide/mod by zero.
-						if warnZero && lzVars.Ctx.Warn != nil {
-							lzVars.Ctx.Warn(base.WarnDivideByZero)
-						}
-					} else {
-						lzOut := base.AppendNum(lzBufPre[:0], lzNumR)
-						lzBufPre = lzOut
-						lzVal = base.Val(lzOut)
-					}
-				}
-			}
+			lzVal, lzBufPre = base.MissingDominantBiNum(lzValA, lzValB, lzBufPre, arith, warnZero, lzVars)
 		}
 
 		return lzVal
@@ -146,17 +126,7 @@ func ExprNeg(lzVars *base.Vars, labels base.Labels,
 	lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
 		lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
 
-		if len(lzVal) == 0 {
-			lzVal = base.ValMissing
-		} else {
-			lzNum, lzOk := base.ParseNum(lzVal)
-			if !lzOk {
-				lzVal = base.ValNull
-			} else {
-				lzBufPre = base.AppendNum(lzBufPre[:0], lzNum.Neg())
-				lzVal = base.Val(lzBufPre)
-			}
-		}
+		lzVal, lzBufPre = base.UnknownPassthroughUnNum(lzVal, lzBufPre, base.Num.Neg)
 
 		return lzVal
 	}

@@ -16,8 +16,8 @@ import "math"
 // The per-op math for the unary/binary math funcs is a real func value passed
 // into the engine harness and emitted by name (see LzExprFmt): a stdlib
 // math.Abs/Ceil/... (a func(float64) float64) directly, or one of the three
-// named funcs below for the ops that aren't a bare stdlib call. POWER/ATAN2 use
-// math.Pow/math.Atan2 (func(float64, float64) float64) via MathBinApply.
+// named funcs below for the ops that aren't a bare stdlib call. POWER/ATAN2 wrap
+// math.Pow/math.Atan2 as the always-ok Num leaves MathPow/MathAtan2 (below).
 
 // MathSign returns -1, 0, or +1 for a negative, zero, or positive f (SIGN()).
 func MathSign(f float64) float64 {
@@ -34,12 +34,12 @@ func MathSign(f float64) float64 {
 func MathDegrees(f float64) float64 { return f * 180.0 / math.Pi }
 func MathRadians(f float64) float64 { return f * math.Pi / 180.0 }
 
-// MathBinApply applies a binary math func to (a, b), returning the result as a
-// Num. Same skeleton as MathApply -- the engine harness handles MISSING ->
-// MISSING / non-number -> NULL around it.
-func MathBinApply(fn func(a, b float64) float64, a, b Num) Num {
-	return FloatNum(fn(a.Float64(), b.Float64()))
-}
+// MathPow / MathAtan2 are the binary math ops (POWER/ATAN2) as always-ok Num
+// leaves, so they ride the shared MissingDominantBiNum combinator by name (the
+// three-valued skeleton lives there). ok is always true -- these never fail like
+// a divide-by-zero. cbq reads both operands as float64 (numberValue.Actual()).
+func MathPow(a, b Num) (Num, bool)   { return FloatNum(math.Pow(a.Float64(), b.Float64())), true }
+func MathAtan2(a, b Num) (Num, bool) { return FloatNum(math.Atan2(a.Float64(), b.Float64())), true }
 
 // RoundFloat rounds x to prec decimal places, round-half-to-even -- a
 // byte-for-byte port of cbq's roundFloat(x, prec, to_even=true)
@@ -78,4 +78,61 @@ func TruncFloat(x float64, prec int) float64 {
 // "-Infinity" sentinels (matching cbq), so e.g. sqrt(-1) and ln(0) agree.
 func MathApply(fn func(f float64) float64, n Num) Num {
 	return FloatNum(fn(n.Float64()))
+}
+
+// -----------------------------------------------------
+
+// The unary/round propagation combinators mirror the numeric ones in arith.go
+// (MissingDominantBiNum / UnknownPassthroughUnNum) but keep each op's native
+// stdlib leaf shape (float64->float64, or the (float64,int)->float64 round leaf)
+// so the leaf is still passed and emitted by name -- e.g. math.Abs, base.RoundFloat
+// (see LzExprFmt). Each folds the cbq skeleton once and returns the reused buffer.
+
+// UnknownPassthroughMathUn is the unary math-func rule (ABS/CEIL/SQRT/...):
+// MISSING and NULL (any non-value) pass through; a non-number value becomes NULL;
+// else fn(value) formatted into buf[:0]. fn is a stdlib math.Abs/... or a base
+// named func (SIGN/DEGREES/RADIANS), emitted by name.
+func UnknownPassthroughMathUn(v Val, buf []byte, fn func(f float64) float64) (Val, []byte) {
+	if ValKind(v) != ValKindValue {
+		return v, buf // MISSING/NULL pass through.
+	}
+	num, ok := ParseNum(v)
+	if !ok {
+		return ValNull, buf // Non-number operand.
+	}
+	out := AppendNum(buf[:0], MathApply(fn, num))
+	return Val(out), out
+}
+
+// UnknownPassthroughRound1 is the 1-arg ROUND/TRUNC rule (precision 0): same
+// unknown-passthrough shape as UnknownPassthroughMathUn, but the leaf is the
+// (float64,int)->float64 round func (base.RoundFloat/TruncFloat) applied at prec 0.
+func UnknownPassthroughRound1(v Val, buf []byte,
+	roundFn func(x float64, prec int) float64) (Val, []byte) {
+	if ValKind(v) != ValKindValue {
+		return v, buf // MISSING/NULL pass through.
+	}
+	num, ok := ParseNum(v)
+	if !ok {
+		return ValNull, buf // Non-number operand.
+	}
+	out := AppendNum(buf[:0], FloatNum(roundFn(num.Float64(), 0)))
+	return Val(out), out
+}
+
+// MissingDominantRound2 is the 2-arg ROUND/TRUNC rule (value, precision): MISSING
+// if either operand is MISSING; else NULL if the value is non-number or the
+// precision is non-integral; else roundFn(value, precision) into buf[:0].
+func MissingDominantRound2(valNum, valPrec Val, buf []byte,
+	roundFn func(x float64, prec int) float64) (Val, []byte) {
+	if ValKind(valNum) == ValKindMissing || ValKind(valPrec) == ValKindMissing {
+		return ValMissing, buf
+	}
+	num, numOk := ParseNum(valNum)
+	prec, precOk := IntOperand(valPrec)
+	if !numOk || !precOk {
+		return ValNull, buf // non-number value / non-integral precision
+	}
+	out := AppendNum(buf[:0], FloatNum(roundFn(num.Float64(), prec)))
+	return Val(out), out
 }

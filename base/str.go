@@ -231,6 +231,23 @@ func StrEncode(c *ValComparer, raw []byte, bufPre []byte) []byte {
 	return out
 }
 
+// StrTransformInto is the unknown-passthrough-str-into-buf combinator for the
+// unary string-transform funcs (UPPER/LOWER/TITLE/TRIM/LTRIM/RTRIM/REVERSE):
+// MISSING/non-string yield the StrDecode sentinel; else transform maps the decoded
+// bytes and the result is re-encoded as a JSON string into the reused bufPre.
+// transform is a NAMED base func (base.StrCaseUpper/StrTrim/...) emitted by name.
+// Mirrors the numeric propagation combinators (see arith.go), collapsing the
+// per-op lz leaf to one line -- codegen-safe (DESIGN-exprs.md, idea 2).
+func StrTransformInto(v Val, c *ValComparer, bufPre []byte,
+	transform func([]byte) []byte) (Val, []byte) {
+	decoded, sentinel, ok := StrDecode(v)
+	if !ok {
+		return sentinel, bufPre
+	}
+	bufPre = StrEncode(c, transform(decoded), bufPre)
+	return Val(bufPre), bufPre
+}
+
 // StrLength: the byte length of the decoded string as a JSON int; MISSING ->
 // MISSING, non-string -> NULL. Mirrors cbq len(arg.ToString()).
 func StrLength(v Val, bufPre []byte) (Val, []byte) {

@@ -106,13 +106,7 @@ func exprStrTransform(lzVars *base.Vars, labels base.Labels, params []interface{
 	lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
 		lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
 
-		lzDecoded, lzSentinel, lzOk := base.StrDecode(lzVal)
-		if !lzOk {
-			lzVal = lzSentinel
-		} else {
-			lzBufPre = base.StrEncode(lzVars.Ctx.ValComparer, transform(lzDecoded), lzBufPre)
-			lzVal = base.Val(lzBufPre)
-		}
+		lzVal, lzBufPre = base.StrTransformInto(lzVal, lzVars.Ctx.ValComparer, lzBufPre, transform)
 
 		return lzVal
 	}

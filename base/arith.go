@@ -210,6 +210,62 @@ func ArithIMod(a, b Num) (Num, bool) { return a.IMod(b) }
 // codegen emits an identifier reference rather than an inline string literal.
 const WarnDivideByZero = "Division by 0."
 
+// -----------------------------------------------------
+
+// Propagation-class combinators. These fold the N1QL three-valued skeleton (the
+// MISSING-dominant / unknown-passthrough branch that used to be re-expanded
+// inline in every numeric expr's lz leaf) into one named base func that takes the
+// already-captured operand value(s), the reused buffer, and a NAMED leaf func
+// emitted by name (see LzExprFmt). Because the whole skeleton now lives here and
+// the per-op leaf is a single named-func arg, the lz leaf collapses to one line
+// and the compiled path emits one real call -- codegen-safe (see DESIGN-exprs.md
+// "Codegen ergonomics", idea 2). Each returns the (possibly re-grown) buffer so
+// the caller can keep reusing it.
+
+// MissingDominantBiNum applies the binary-numeric three-valued rule: if either
+// operand is MISSING (empty) the result is MISSING; else if either operand is not
+// a JSON number the result is NULL; else op(a, b) formatted into buf[:0]. op
+// returns ok=false only for a divide/mod-by-zero, which yields NULL and -- when
+// warnZero is set and a warner is installed -- emits the divide-by-zero advisory.
+// Mirrors cbq's arith_*.go Evaluate(). Used by ExprArithBi (+ - * / % DIV MOD)
+// and the binary math funcs (POWER/ATAN2, via always-ok Num leaves).
+func MissingDominantBiNum(a, b Val, buf []byte,
+	op func(a, b Num) (Num, bool), warnZero bool, vars *Vars) (Val, []byte) {
+	if len(a) == 0 || len(b) == 0 {
+		return ValMissing, buf // MISSING dominant.
+	}
+	numA, okA := ParseNum(a)
+	numB, okB := ParseNum(b)
+	if !okA || !okB {
+		return ValNull, buf // Non-number operand.
+	}
+	numR, okR := op(numA, numB)
+	if !okR {
+		if warnZero && vars.Ctx.Warn != nil {
+			vars.Ctx.Warn(WarnDivideByZero)
+		}
+		return ValNull, buf // Divide/mod by zero.
+	}
+	out := AppendNum(buf[:0], numR)
+	return Val(out), out
+}
+
+// UnknownPassthroughUnNum applies the unary-numeric rule with a Num->Num leaf:
+// MISSING and NULL (any non-value) pass through unchanged; a non-number value
+// becomes NULL; else op(num) formatted into buf[:0]. Used by ExprNeg, whose leaf
+// (base.Num.Neg) must stay Num-based to preserve the int64/float64 distinction.
+func UnknownPassthroughUnNum(v Val, buf []byte, op func(Num) Num) (Val, []byte) {
+	if ValKind(v) != ValKindValue {
+		return v, buf // MISSING/NULL pass through.
+	}
+	num, ok := ParseNum(v)
+	if !ok {
+		return ValNull, buf // Non-number operand.
+	}
+	out := AppendNum(buf[:0], op(num))
+	return Val(out), out
+}
+
 // AppendNum formats a Num as JSON into out, matching cbq's value serialization
 // (value/integer.go, value/float.go MarshalJSON): FormatInt for ints; for floats
 // FormatFloat('f', -1, 64) with -0 normalized to 0, and NaN/+Inf/-Inf emitted as

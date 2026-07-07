@@ -595,10 +595,12 @@ translator can only inline a leaf that is one `LzExprFmt`-named-func line — th
 `ParseNum`/`ValKind`/branch logic is several statements, so it can't move into a
 generic wrapper closure without breaking the compiled path.
 
-So today: harnesses remove the operand-plumbing repetition; the 3-valued skeleton
-repetition remains. `array_contains`/`array_position` use `MakeBiExprFunc` but their
-bespoke leaf still hand-captures `lzA`/`lzB` inline; the unary ops (`neg`,
-`exprMathUnary`, `exprArrayReduce`) have no unary harness at all.
+So historically: harnesses removed the operand-plumbing repetition but the 3-valued
+skeleton repetition remained inline in each leaf. Idea 2 (below, **now done**) moved
+that skeleton into `base` propagation-class combinators, so the numeric + unary
+string leaves are one line each; `array_contains`/`array_position` still hand-capture
+`lzA`/`lzB` inline, and `exprArrayReduce`/`exprArrayMinMax` remain without a unary
+harness (candidates for the same treatment).
 
 ### Ranked ideas
 
@@ -612,21 +614,36 @@ argument the bi/tri harnesses already are. *Removes:* ~6 lines of preamble per
 unary op (~15 ops). *Effort:* small. *Keeps both paths:* yes (identical mechanism).
 
 **2. A propagation-class combinator that wraps a NAMED leaf (codegen-safe only for
-1-line leaves).** Push the MISSING-dominant / unknown-passthrough branch into a
-`base` helper that takes the operand *values* (already captured) + a named leaf:
-`base.MissingDominantBi(a, b Val, buf []byte, leaf func(a,b Num)(Num,bool)) (Val,
-[]byte)`. The lz leaf collapses to one line: `lzVal, lzBufPre =
-base.MissingDominantBi(lzValA, lzValB, lzBufPre, base.ArithAdd)`. Because the
-*whole* skeleton now lives in a `base` func and the per-op leaf is a named func
-emitted by `LzExprFmt`, the compiled path emits one real call — codegen-safe. This
-is the biggest DRY win and is just an extension of the func-value pattern already
-proven for `is_*`/`upper`/arith (Lessons › Func-value params). *Removes:* the
-~12-line 3-valued branch from `ExprArithBi`/`exprMathBi`/`exprMathUnary`/round/…
-(~20 ops). *Effort:* medium (design 3-4 combinators: MISSING-dominant-num,
-unknown-passthrough-num, unknown-passthrough-str-into-buf; thread the reused buf).
-*Risk:* low-medium — must keep buffer ownership (`lzBufPre[:0]`) correct; each
-combinator differential-tested once covers all its ops. *Keeps both paths:* yes.
-This subsumes much of what idea 1 leaves behind.
+1-line leaves). — DONE (2026-07).** Push the MISSING-dominant / unknown-passthrough
+branch into a `base` helper that takes the operand *values* (already captured) + a
+named leaf. The lz leaf collapses to one line: `lzVal, lzBufPre =
+base.MissingDominantBiNum(lzValA, lzValB, lzBufPre, arith, warnZero, lzVars)`.
+Because the *whole* skeleton now lives in a `base` func and the per-op leaf is a
+named func emitted by `LzExprFmt`, the compiled path emits one real call —
+codegen-safe. This was the biggest DRY win and extends the func-value pattern
+already proven for `is_*`/`upper`/arith (Lessons › Func-value params).
+
+Shipped combinators (five numeric + one string): `base.MissingDominantBiNum`
+(binary MISSING-dominant-num — arith `+ - * / % DIV MOD`, plus POWER/ATAN2 via the
+new always-ok Num leaves `base.MathPow`/`base.MathAtan2`; carries the
+divide-by-zero `warnZero`/`lzVars` warn), `base.UnknownPassthroughUnNum` (unary
+Num-leaf — `neg`, passing the `base.Num.Neg` method expression to preserve
+int64/float64), `base.UnknownPassthroughMathUn` (unary float64-leaf — ABS/CEIL/
+SQRT/… keep passing `math.Abs` directly), `base.UnknownPassthroughRound1` /
+`base.MissingDominantRound2` (ROUND/TRUNC 1- and 2-arg), and `base.StrTransformInto`
+(unknown-passthrough-str-into-buf — UPPER/LOWER/TITLE/TRIM/LTRIM/RTRIM/REVERSE).
+Removed the now-subsumed `base.MathBinApply`. This cut the ~12-line 3-valued branch
+from `ExprArithBi`/`exprMathBi`/`exprMathUnary`/`exprRoundTrunc1`/`exprRoundTrunc2`/
+`ExprNeg`/`exprStrTransform` (≈40 ops fed by those harnesses) down to one line
+each; net ‑95 engine lines. *Kept both paths:* yes — interpreter, the generated
+compiled path, and cbq all agree across `test-suite`, `test-compiler`, and the
+data-backed `test-suite-all` corpus. This subsumed much of what idea 1 leaves behind
+(the unary skeleton repetition is gone even without a `MakeUnExprFunc` harness).
+
+Not yet folded into a combinator: the multi-operand string ops (REPLACE, SUBSTR,
+LPAD/RPAD, SPLIT2) — their leaves are per-op `Str*` builders that thread the
+`ValComparer`, so each would need its own builder-shaped combinator; `exprRoundTrunc2`
+already rides `MissingDominantRound2`. These are candidates for idea 5's spec table.
 
 **3. Fix the compiled n-ary path by folding to binary (medium; unblocks
 `ifnull`/`greatest`/`least`/`concat`).** These four are associative/right-reducible,
@@ -687,9 +704,13 @@ named-`base`-func route (ideas 2/5) gets ~all the benefit at a fraction of the c
 ### Recommendation
 
 Do **2 then 5** (combinators, then generate from a table) for the scalar bulk — no
-codegen changes, biggest boilerplate cut, both paths preserved. Do **1** as a cheap
-warm-up. Do **3** to unblock the foldable n-ary ops in the compiled path (retire the
-Known-broken caveat for `ifnull`/`greatest`/`least`/`concat`). Defer **4** until a
+codegen changes, biggest boilerplate cut, both paths preserved. **2 is now done**
+(six combinators; see above) — and because it removed the unary skeleton too, **1**
+(a `MakeUnExprFunc` harness) is largely moot for the numeric/string leaves and would
+now only save the `MakeExprFunc(…,"A")` + closure preamble. Next up: **5** (spec-table
+generator, feeding the idea-2 combinators — also folds the remaining multi-operand
+string ops). Do **3** to unblock the foldable n-ary ops in the compiled path (retire
+the Known-broken caveat for `ifnull`/`greatest`/`least`/`concat`). Defer **4** until a
 non-foldable n-ary (`case`) is worth compiling; reject **6**.
 
 ## Prioritization

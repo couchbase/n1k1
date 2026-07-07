@@ -132,12 +132,12 @@ func ExprAtan(lzVars *base.Vars, labels base.Labels,
 
 func ExprPower(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) base.ExprFunc {
-	return exprMathBi(lzVars, labels, params, path, math.Pow)
+	return exprMathBi(lzVars, labels, params, path, base.MathPow)
 }
 
 func ExprAtan2(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) base.ExprFunc {
-	return exprMathBi(lzVars, labels, params, path, math.Atan2)
+	return exprMathBi(lzVars, labels, params, path, base.MathAtan2)
 }
 
 // ROUND / TRUNC: numeric, into the reused buffer. 1-arg uses precision 0; the
@@ -180,15 +180,7 @@ func exprRoundTrunc1(lzVars *base.Vars, labels base.Labels, params []interface{}
 	lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
 		lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
 
-		if base.ValKind(lzVal) == base.ValKindValue {
-			lzNum, lzOk := base.ParseNum(lzVal)
-			if !lzOk {
-				lzVal = base.ValNull // non-number operand
-			} else {
-				lzBufPre = base.AppendNum(lzBufPre[:0], base.FloatNum(roundFn(lzNum.Float64(), 0)))
-				lzVal = base.Val(lzBufPre)
-			}
-		}
+		lzVal, lzBufPre = base.UnknownPassthroughRound1(lzVal, lzBufPre, roundFn)
 
 		return lzVal
 	}
@@ -209,19 +201,7 @@ func exprRoundTrunc2(lzVars *base.Vars, labels base.Labels, params []interface{}
 			lzVal = lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B"
 			lzValPrec := lzVal
 
-			if base.ValKind(lzValNum) == base.ValKindMissing ||
-				base.ValKind(lzValPrec) == base.ValKindMissing {
-				lzVal = base.ValMissing
-			} else {
-				lzNum, lzNumOk := base.ParseNum(lzValNum)
-				lzPrec, lzPrecOk := base.IntOperand(lzValPrec)
-				if !lzNumOk || !lzPrecOk {
-					lzVal = base.ValNull // non-number value / non-integral precision
-				} else {
-					lzBufPre = base.AppendNum(lzBufPre[:0], base.FloatNum(roundFn(lzNum.Float64(), lzPrec)))
-					lzVal = base.Val(lzBufPre)
-				}
-			}
+			lzVal, lzBufPre = base.MissingDominantRound2(lzValNum, lzValPrec, lzBufPre, roundFn)
 		}
 
 		return lzVal
@@ -239,7 +219,7 @@ func exprRoundTrunc2(lzVars *base.Vars, labels base.Labels, params []interface{}
 // Mirrors ExprArithBi. Each operand is captured FROM lzVal (emitCaptured writes
 // lzVal).
 func exprMathBi(lzVars *base.Vars, labels base.Labels, params []interface{},
-	path string, fn func(a, b float64) float64) (lzExprFunc base.ExprFunc) {
+	path string, fn func(a, b base.Num) (base.Num, bool)) (lzExprFunc base.ExprFunc) {
 	var lzBufPre []byte // <== varLift: lzBufPre by path
 
 	biExprFunc := func(lzA, lzB base.ExprFunc, lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) { // !lz
@@ -250,20 +230,7 @@ func exprMathBi(lzVars *base.Vars, labels base.Labels, params []interface{},
 			lzVal = lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B"
 			lzValB := lzVal
 
-			if len(lzValA) == 0 || len(lzValB) == 0 {
-				lzVal = base.ValMissing // MISSING dominant.
-			} else {
-				lzNumA, lzOkA := base.ParseNum(lzValA)
-				lzNumB, lzOkB := base.ParseNum(lzValB)
-				if !lzOkA || !lzOkB {
-					lzVal = base.ValNull // non-number operand
-				} else {
-					lzNumR := base.MathBinApply(fn, lzNumA, lzNumB)
-					lzOut := base.AppendNum(lzBufPre[:0], lzNumR)
-					lzBufPre = lzOut
-					lzVal = base.Val(lzOut)
-				}
-			}
+			lzVal, lzBufPre = base.MissingDominantBiNum(lzValA, lzValB, lzBufPre, fn, false, lzVars)
 		}
 
 		return lzVal
@@ -292,17 +259,7 @@ func exprMathUnary(lzVars *base.Vars, labels base.Labels, params []interface{},
 	lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
 		lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
 
-		if base.ValKind(lzVal) == base.ValKindValue {
-			lzNum, lzOk := base.ParseNum(lzVal)
-			if !lzOk {
-				lzVal = base.ValNull // non-number operand
-			} else {
-				lzNumR := base.MathApply(fn, lzNum)
-				lzOut := base.AppendNum(lzBufPre[:0], lzNumR)
-				lzBufPre = lzOut
-				lzVal = base.Val(lzOut)
-			}
-		}
+		lzVal, lzBufPre = base.UnknownPassthroughMathUn(lzVal, lzBufPre, fn)
 
 		return lzVal
 	}
