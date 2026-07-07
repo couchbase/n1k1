@@ -24,9 +24,9 @@ import (
 // The hot path is untouched: aggregates keep folding bytes into their fixed-width
 // accumulators exactly as before (base/agg.go, engine/op_group.go). A blocking op
 // (OpGroup) registers a refresher on its actor's Ctx once at setup
-// (Ctx.RegisterRunningAgg); at the existing synchronous YieldStats checkpoint
+// (Ctx.RunningAggRegister); at the existing synchronous YieldStats checkpoint
 // (op_scan.go / glue countingYield, on the exec goroutine, between row yields so no
-// Agg.Update is mid-flight) that actor calls Ctx.RefreshRunningAggs, walking a bounded
+// Agg.Update is mid-flight) that actor calls Ctx.RunningAggsRefresh, walking a bounded
 // sample of ITS OWN live group map and decoding each partial via the SAME
 // base.Agg.Result byte-path that produces the finalized "^aggregates|..." value --
 // into ONE reused buffer per row, in this op's own fixed Stats.RunningAggs slot (so

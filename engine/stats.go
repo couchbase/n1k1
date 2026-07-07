@@ -90,7 +90,7 @@ func StatsCounterZero(s *base.Stats, i int) {
 // otherwise it returns nil so OpGroup registers no live-aggregate running-aggregate (the
 // group stays progress-only). Kept store-free so it can be copied verbatim into the
 // intermed compiled-builder package (which does not import rhmap/store); the actual
-// map walk lives in base.GroupRunningAggs. See DESIGN-stats.md "Live aggregates".
+// map walk lives in base.RunningAggsGroup. See DESIGN-stats.md "Live aggregates".
 func StatsGroupAggNames(aggCalcs []interface{}) []string {
 	if len(aggCalcs) == 0 {
 		return nil
