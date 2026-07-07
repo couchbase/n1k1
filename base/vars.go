@@ -120,6 +120,14 @@ type Ctx struct {
 	// stats.go and DESIGN-stats.md.
 	Stats *Stats
 
+	// previewJobs are this actor's live-aggregate refreshers: one per GROUP op in
+	// THIS actor's branch, registered at op setup (RegisterPreview) and run at this
+	// actor's checkpoint (RefreshPreviews). Because Ctx is cloned per actor (Clone
+	// resets this to nil) and a job writes only its op's own fixed Stats.Previews
+	// slot, each preview buffer has exactly ONE writer goroutine even when a
+	// GROUP BY runs inside each parallel UNION ALL branch. Interpreter-only.
+	previewJobs []previewJob
+
 	// Warn records a non-fatal advisory (e.g. divide-by-zero) during
 	// evaluation. It is cbq-free by design (a plain string), so engine/base
 	// stay decoupled from couchbase/query; glue wires it to the request's
@@ -166,5 +174,54 @@ func (ctx *Ctx) Clone() (ctxCopy *Ctx) {
 	*ctxCopy = *ctx
 	ctxCopy.ValComparer = NewValComparer()
 
+	// Each actor tracks only its OWN branch's preview refreshers, so it refreshes
+	// (and thus single-writes) only its own ops' Stats.Previews slots. Starting
+	// empty avoids sharing the parent's job slice across goroutines.
+	ctxCopy.previewJobs = nil
+
 	return ctxCopy
+}
+
+// previewJob is one op's live-aggregate refresher, bound to that op's fixed
+// Stats.Previews slot. fill re-decodes the op's current accumulators into the
+// given (reused) per-op buffer; it runs on the owning actor's goroutine only.
+type previewJob struct {
+	slot int
+	fill func(*Preview)
+}
+
+// RegisterPreview records a live-aggregate refresher for one op (slot =
+// Op.PreviewSlot), called once at the op's setup on the owning actor's goroutine.
+// Appends to the per-actor previewJobs (no cross-goroutine sharing, so no lock).
+// A negative slot or nil fill is ignored.
+func (ctx *Ctx) RegisterPreview(slot int, fill func(*Preview)) {
+	if ctx == nil || slot < 0 || fill == nil {
+		return
+	}
+	ctx.previewJobs = append(ctx.previewJobs, previewJob{slot: slot, fill: fill})
+}
+
+// RefreshPreviews re-fills THIS actor's preview slots from its registered jobs. It
+// is called at the synchronous YieldStats checkpoint (on this actor's goroutine,
+// between row yields), so each job reads coherent, non-mutating accumulator bytes
+// from its own group map. It writes only this actor's own slots (single writer per
+// slot); previewMu is held only to fence a concurrent snapshot reader, and only at
+// this ~10 Hz checkpoint -- never on the per-row hot path. Allocation-free in
+// steady state (the per-op buffers are reused). A no-op when stats/preview is off.
+func (ctx *Ctx) RefreshPreviews() {
+	if ctx == nil || ctx.Stats == nil || len(ctx.previewJobs) == 0 {
+		return
+	}
+
+	s := ctx.Stats
+	s.previewMu.Lock()
+	for _, j := range ctx.previewJobs {
+		if j.slot < 0 || j.slot >= len(s.Previews) {
+			continue
+		}
+		p := &s.Previews[j.slot]
+		p.reset()
+		j.fill(p)
+	}
+	s.previewMu.Unlock()
 }

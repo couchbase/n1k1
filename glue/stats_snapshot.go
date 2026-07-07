@@ -58,8 +58,10 @@ func StatsSnapshotJSON(s *base.Stats) string {
 		ops = append(ops, opView{Id: op.Id, Kind: op.Kind, Stats: m})
 	}
 
+	// RangePreview holds the checkpoint lock while we read, so a concurrently
+	// refreshing actor (a GROUP BY in another UNION ALL branch) can't tear the read.
 	var aggs []aggView
-	for _, r := range s.Preview.Rows() {
+	s.RangePreview(func(r *base.PreviewRow) {
 		vals := make(map[string]string, len(r.Names))
 		for i, name := range r.Names {
 			if i < len(r.Aggs) {
@@ -71,7 +73,7 @@ func StatsSnapshotJSON(s *base.Stats) string {
 			key = append(key, string(k))
 		}
 		aggs = append(aggs, aggView{Op: r.Op, Key: key, Vals: vals})
-	}
+	})
 
 	b, _ := json.Marshal(struct {
 		Ops  []opView  `json:"ops"`

@@ -127,10 +127,10 @@ func TestStatsSnapshotNil(t *testing.T) {
 	if StatsSnapshotJSON(nil) != "{}" {
 		t.Error("nil Stats should snapshot to {}")
 	}
-	// A Stats with no registered preview must snapshot cleanly (no "aggs"), and
-	// RefreshPreview on it is a safe no-op (nil Preview).
+	// A Stats with no preview slots must snapshot cleanly (no "aggs"), and
+	// RangePreview on it is a safe no-op.
 	s := &base.Stats{}
-	s.RefreshPreview()
+	s.RangePreview(func(*base.PreviewRow) { t.Error("no rows expected") })
 	if js := StatsSnapshotJSON(s); js != `{"ops":[]}` {
 		t.Errorf("empty Stats snapshot = %q, want no aggs", js)
 	}
@@ -351,24 +351,26 @@ func BenchmarkLiveAggSnapshot(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	// Drive the exact production path: a Stats with one registered PreviewSource,
-	// re-snapshotted via RefreshPreview (which resets then re-fills the reused
-	// Preview) at each checkpoint.
-	stats := &base.Stats{}
-	stats.RegisterPreview(func(dst *base.Preview) {
+	// Drive the exact production path: a Stats with one per-op preview slot, an
+	// actor Ctx with one registered refresher, re-snapshotted via
+	// Ctx.RefreshPreviews (which takes the checkpoint lock, resets, and re-fills the
+	// reused per-op buffer) at each checkpoint.
+	stats := &base.Stats{Previews: make([]base.Preview, 1)}
+	vars.Ctx.Stats = stats
+	vars.Ctx.RegisterPreview(0, func(dst *base.Preview) {
 		base.GroupPreviewSnapshot(dst, "0", set, names, vars)
 	})
-	stats.RefreshPreview() // warm up the reused buffers
+	vars.Ctx.RefreshPreviews() // warm up the reused buffers
 
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		stats.RefreshPreview()
+		vars.Ctx.RefreshPreviews()
 	}
 	b.StopTimer()
 
 	// Sanity: the reused snapshot still decodes correctly (one group, count == 5).
-	rows := stats.Preview.Rows()
+	rows := stats.Previews[0].Rows()
 	if len(rows) != 1 || string(rows[0].Aggs[0]) != "5" {
 		b.Fatalf("unexpected snapshot: %+v", rows)
 	}
@@ -400,9 +402,7 @@ func BenchmarkAggQueryStatsOnVsOff(b *testing.B) {
 			// Read the live partials (as a real consumer would), without the JSON
 			// rendering, so the measurement reflects counting + RefreshPreview only.
 			sess.OnStats = func(s *base.Stats) {
-				for _, r := range s.Preview.Rows() {
-					_ = r.Aggs
-				}
+				s.RangePreview(func(r *base.PreviewRow) { _ = r.Aggs })
 			}
 		}
 		b.ReportAllocs()

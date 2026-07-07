@@ -83,21 +83,24 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 		StatsCounterZero(lzStats, lzStatsBase+StatGroupGroupsOut) // <== genCompiler:hide
 
 		// Live-aggregate preview (DESIGN-stats.md "Live aggregates"): register a
-		// source that, at each synchronous YieldStats checkpoint, snapshots a
+		// refresher that, at each synchronous YieldStats checkpoint, snapshots a
 		// bounded sample of the in-flight group map -- decoding each partial via
 		// the same base.Agg.Result byte-path the final result uses -- so the CLI /
 		// a library reader can watch COUNT/SUM/AVG/MIN/MAX climb. Interpreter-only
 		// (genCompiler:hide), zero hot-path cost (the per-row loop is untouched),
 		// and only when EVERY projected aggregate is cheaply previewable (else
-		// StatsGroupAggNames returns nil -> progress-only). lzPreviewLive is flipped
-		// off before RecycleMap so a later checkpoint can never walk a reclaimed map.
-		// (base.GroupPreviewSnapshot does the store-walk; base imports store, engine
-		// intermed does not, so no store symbol leaks into the compiled builder.)
-		lzPreviewNames := StatsGroupAggNames(aggCalcs) // <== genCompiler:hide
-		lzPreviewLive := false                         // <== genCompiler:hide
-		if lzStats != nil && lzPreviewNames != nil {   // <== genCompiler:hide
-			lzPreviewLive = true                                // <== genCompiler:hide
-			lzStats.RegisterPreview(func(lzDst *base.Preview) { // <== genCompiler:hide
+		// StatsGroupAggNames returns nil -> progress-only). Registered on THIS
+		// actor's own Ctx, keyed to this op's fixed Stats.Previews slot
+		// (o.PreviewSlot), so a GROUP BY inside each parallel UNION ALL branch is a
+		// single writer of its own slot -- no cross-actor race. lzPreviewLive is
+		// flipped off before RecycleMap so a later checkpoint can't walk a reclaimed
+		// map. (base.GroupPreviewSnapshot does the store-walk; base imports store,
+		// engine intermed does not, so no store symbol leaks into the compiled build.)
+		lzPreviewNames := StatsGroupAggNames(aggCalcs)                     // <== genCompiler:hide
+		lzPreviewLive := false                                             // <== genCompiler:hide
+		if lzStats != nil && lzPreviewNames != nil && o.PreviewSlot >= 0 { // <== genCompiler:hide
+			lzPreviewLive = true                                                  // <== genCompiler:hide
+			lzVars.Ctx.RegisterPreview(o.PreviewSlot, func(lzDst *base.Preview) { // <== genCompiler:hide
 				if lzPreviewLive { // <== genCompiler:hide
 					base.GroupPreviewSnapshot(lzDst, path, lzSet, lzPreviewNames, lzVars) // <== genCompiler:hide
 				} // <== genCompiler:hide

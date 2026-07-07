@@ -150,6 +150,10 @@ func ScanReaderAsCsv(lzReader io.Reader, labels base.Labels, lzVars *base.Vars,
 				lzVars.Ctx.Stats.Counters[lzStatsBase+StatScanRowsOut] = int64(lzStatRowsOut)
 			}
 
+			if lzVars != nil && lzVars.Ctx != nil { // <== genCompiler:hide
+				lzVars.Ctx.RefreshPreviews() // stats: refresh this actor's live aggregate partials // <== genCompiler:hide
+			} // <== genCompiler:hide
+
 			if lzVars != nil && lzVars.Ctx != nil && lzVars.Ctx.YieldStats != nil {
 				lzErr := lzVars.Ctx.YieldStats(lzVars.Ctx.Stats)
 				if lzErr != nil { // Also used for early exit (e.g., LIMIT).
@@ -202,6 +206,10 @@ func ScanReaderAsJsons(lzReader io.Reader, labels base.Labels, lzVars *base.Vars
 			if lzVars != nil && lzVars.Ctx != nil && lzVars.Ctx.Stats != nil {
 				lzVars.Ctx.Stats.Counters[lzStatsBase+StatScanRowsOut] = int64(lzStatRowsOut)
 			}
+
+			if lzVars != nil && lzVars.Ctx != nil { // <== genCompiler:hide
+				lzVars.Ctx.RefreshPreviews() // stats: refresh this actor's live aggregate partials // <== genCompiler:hide
+			} // <== genCompiler:hide
 
 			if lzVars != nil && lzVars.Ctx != nil && lzVars.Ctx.YieldStats != nil {
 				lzErr := lzVars.Ctx.YieldStats(lzVars.Ctx.Stats)

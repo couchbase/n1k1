@@ -23,12 +23,14 @@ import (
 //
 // The hot path is untouched: aggregates keep folding bytes into their fixed-width
 // accumulators exactly as before (base/agg.go, engine/op_group.go). A blocking op
-// (OpGroup) registers a PreviewSource once at setup; at the existing synchronous
-// YieldStats checkpoint (op_scan.go / glue countingYield, on the exec goroutine,
-// between row yields so no Agg.Update is mid-flight) the reader walks a bounded
-// sample of the live group map and decodes each partial via the SAME
+// (OpGroup) registers a refresher on its actor's Ctx once at setup
+// (Ctx.RegisterPreview); at the existing synchronous YieldStats checkpoint
+// (op_scan.go / glue countingYield, on the exec goroutine, between row yields so no
+// Agg.Update is mid-flight) that actor calls Ctx.RefreshPreviews, walking a bounded
+// sample of ITS OWN live group map and decoding each partial via the SAME
 // base.Agg.Result byte-path that produces the finalized "^aggregates|..." value --
-// into ONE reused buffer per row. So the last live partial is bit-identical to the
+// into ONE reused buffer per row, in this op's own fixed Stats.Previews slot (so
+// parallel UNION ALL branches never collide). So the last live partial is bit-identical to the
 // final result (they are the same Result call), and after warm-up a snapshot of
 // fixed-width aggregates allocates nothing.
 
@@ -53,19 +55,19 @@ var previewableAggs = map[string]bool{
 
 // AggPreviewable reports whether the named aggregate's partial value can be shown
 // live cheaply (fixed-width, no per-snapshot alloc). OpGroup only registers a
-// PreviewSource when every aggregate in the group is previewable -- a clean
+// preview refresher when every aggregate in the group is previewable -- a clean
 // carve-out that also avoids having to walk past a costly agg's variable-width
 // bytes just to reach a later cheap one.
 func AggPreviewable(name string) bool { return previewableAggs[name] }
 
-// PreviewSource captures a blocking op's live partial-aggregate state so a stats
-// checkpoint can snapshot it. It is registered on Stats at op setup and invoked
-// synchronously at the YieldStats checkpoint on the exec goroutine, so it reads
-// coherent (non-mutating) accumulator bytes. It copies out / decodes a bounded
-// sample into dst (whose buffers are reused across checkpoints), appending rows
-// via dst.Next(); it must retain no reference to the live group map after it
-// returns (copy-out for RecycleMap safety).
-type PreviewSource func(dst *Preview)
+// A blocking op's live partial-aggregate state is snapshotted by a refresher
+// (Ctx.previewJob.fill, a func(*Preview)) registered at op setup via
+// Ctx.RegisterPreview and invoked synchronously at the op's actor's YieldStats
+// checkpoint (Ctx.RefreshPreviews), so it reads coherent (non-mutating)
+// accumulator bytes. It copies out / decodes a bounded sample into its per-op
+// Preview buffer (reused across checkpoints), appending rows via dst.Next(), and
+// retains no reference to the live group map after it returns (copy-out for
+// RecycleMap safety). GroupPreviewSnapshot below is the OpGroup refresher.
 
 // PreviewRow is one group's in-flight partial aggregate values, captured at a
 // checkpoint: the decoded group-by key vals (empty for an ungrouped aggregate)

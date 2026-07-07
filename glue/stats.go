@@ -82,6 +82,7 @@ func countingYield(o *base.Op, vars *base.Vars, yieldVals base.YieldVals) base.Y
 		}
 
 		if yieldStats != nil && n%every == 0 {
+			vars.Ctx.RefreshPreviews() // refresh THIS actor's live aggregate partials
 			_ = yieldStats(stats)
 		}
 

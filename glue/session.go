@@ -258,12 +258,12 @@ func (s *Session) Run(stmt string) (res *Result, err error) {
 		if stats != nil && s.OnStats != nil {
 			onStats := s.OnStats
 			vars.Ctx.YieldStats = func(st *base.Stats) error {
-				// Refresh live in-flight aggregate partials (COUNT/SUM/AVG/MIN/MAX
-				// climbing) before handing the snapshot to the callback. Runs on the
-				// exec goroutine at the checkpoint, so it reads coherent accumulator
-				// bytes; a no-op (and alloc-free) when no op registered a preview.
-				// See base.RefreshPreview and DESIGN-stats.md "Live aggregates".
-				st.RefreshPreview()
+				// The live in-flight aggregate partials (COUNT/SUM/AVG/MIN/MAX
+				// climbing) are refreshed by each actor at its own checkpoint
+				// (Ctx.RefreshPreviews, called just before this YieldStats fires), so
+				// they are already current here. onStats reads them via st.RangePreview
+				// / StatsSnapshotJSON, which fences the read against a concurrently
+				// refreshing actor. See DESIGN-stats.md "Live aggregates".
 				onStats(st)
 				return nil
 			}

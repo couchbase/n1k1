@@ -13,6 +13,7 @@ package base
 
 import (
 	"strconv"
+	"sync"
 )
 
 // This file implements the counter core described in DESIGN-stats.md
@@ -126,49 +127,46 @@ type Stats struct {
 	// bar here is NOT necessarily monotonic.
 	Totals []int64
 
-	// Previews holds the live-aggregate preview sources registered by blocking
-	// ops (OpGroup) at setup; nil when no op previews. Preview is the reused
-	// buffer the sources fill at each YieldStats checkpoint (see preview.go and
-	// DESIGN-stats.md "Live aggregates"). Both are interpreter-only: registration
-	// is genCompiler:hide, so the compiled path never touches them (matching the
-	// stats counters' KNOWN LIMITATION).
+	// Previews is a flat, pre-sized array of per-op live-aggregate snapshot buffers
+	// (COUNT/SUM/AVG/MIN/MAX partials climbing toward their finals; see preview.go
+	// and DESIGN-stats.md "Live aggregates"), indexed by Op.PreviewSlot. It is
+	// sized once by LayoutStats at request setup (single goroutine, before any
+	// actor forks), so no slice-header mutation ever races -- exactly like the
+	// Counters core.
 	//
-	// Single-writer note: like Counters, these ride the request-shared *Stats. A
-	// non-concurrent pipeline (scan->filter->group) registers from its one
-	// goroutine. The unhandled edge is same-op fan-out registering concurrently
-	// (e.g. a GROUP BY inside each UNION ALL branch) racing the Previews append --
-	// the same per-(op,actor) caveat the counter core carries; deferred.
-	Previews []PreviewSource
-	Preview  *Preview
+	// Concurrency (this is the crux for parallel UNION ALL branches, each on its
+	// own actor goroutine but sharing this one *Stats):
+	//   - Each op is the SINGLE WRITER of its own slot Previews[PreviewSlot]. An op
+	//     is refreshed only at ITS actor's checkpoint, on that actor's goroutine
+	//     (Ctx.RefreshPreviews, driven from Ctx.previewJobs which are per-actor), so
+	//     distinct-op branches never write the same slot.
+	//   - previewMu guards a slot buffer against a concurrent snapshot READER
+	//     (RangePreview / StatsSnapshotJSON), which may run on a different goroutine
+	//     than the owning actor. It is taken ONLY at the ~10 Hz checkpoint and at
+	//     report time -- NEVER on the per-row hot path -- so it costs nothing there.
+	// Interpreter-only: registration/refresh are genCompiler:hide, so the compiled
+	// path never touches them (matching the counters' KNOWN LIMITATION).
+	Previews  []Preview
+	previewMu sync.Mutex
 }
 
-// RegisterPreview adds a live-aggregate preview source (called once, at an op's
-// setup, off the hot path). A nil *Stats or nil src is ignored.
-func (s *Stats) RegisterPreview(src PreviewSource) {
-	if s == nil || src == nil {
+// RangePreview calls fn for every live preview row across all ops, holding the
+// checkpoint lock so a concurrently-refreshing actor goroutine cannot tear the
+// read (a variable-width MIN/MAX buffer being re-appended). It is a report-time /
+// checkpoint-cadence call, never on the per-row hot path. fn must not retain the
+// row past the call (the buffers are reused); copy out what you keep. A nil or
+// preview-less Stats is a no-op.
+func (s *Stats) RangePreview(fn func(*PreviewRow)) {
+	if s == nil || len(s.Previews) == 0 || fn == nil {
 		return
 	}
-	s.Previews = append(s.Previews, src)
-}
-
-// RefreshPreview re-fills Preview from the registered sources. It is called at the
-// synchronous YieldStats checkpoint (on the exec goroutine, between row yields),
-// so the sources read coherent, non-mutating accumulator bytes. Cheap and
-// allocation-free in steady state (the sources and Preview reuse their buffers).
-// A no-op when no source registered.
-func (s *Stats) RefreshPreview() {
-	if s == nil || len(s.Previews) == 0 {
-		return
-	}
-	if s.Preview == nil {
-		s.Preview = &Preview{}
-	}
-	s.Preview.reset()
-	for _, src := range s.Previews {
-		if s.Preview.Full() {
-			break
+	s.previewMu.Lock()
+	defer s.previewMu.Unlock()
+	for i := range s.Previews {
+		p := &s.Previews[i]
+		for k := 0; k < p.n; k++ {
+			fn(&p.rows[k])
 		}
-		src(s.Preview)
 	}
 }
 
@@ -179,6 +177,8 @@ func (s *Stats) RefreshPreview() {
 // op in the tree contributes any counter (stats then stay off).
 func LayoutStats(root *Op) *Stats {
 	s := &Stats{Index: map[string]int{}}
+
+	previewCount := 0 // Number of ops that get a live-aggregate preview slot.
 
 	var walk func(o *Op, id string)
 
@@ -204,6 +204,17 @@ func LayoutStats(root *Op) *Stats {
 			o.StatsBase = -1 // Contributes no counters.
 		}
 
+		// Assign a fixed, single-writer preview slot to the ops that can carry live
+		// aggregates (OpGroup handles "group" and "distinct"). Done here at setup on
+		// one goroutine, before any actor forks, so the per-op slot -- like
+		// StatsBase -- is collision-free across parallel UNION ALL branches.
+		if o.Kind == "group" || o.Kind == "distinct" {
+			o.PreviewSlot = previewCount
+			previewCount++
+		} else {
+			o.PreviewSlot = -1
+		}
+
 		for ci, child := range o.Children {
 			walk(child, id+"/"+strconv.Itoa(ci))
 		}
@@ -216,6 +227,10 @@ func LayoutStats(root *Op) *Stats {
 	}
 
 	s.Totals = make([]int64, len(s.Counters)) // Denominators; 0 = no estimate.
+
+	if previewCount > 0 {
+		s.Previews = make([]Preview, previewCount) // Per-op live-aggregate buffers.
+	}
 
 	return s
 }
