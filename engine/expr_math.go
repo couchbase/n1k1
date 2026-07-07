@@ -22,148 +22,82 @@ import (
 // reused buffer -- no boxing. cbq's func_num.go skeleton is uniform (MISSING ->
 // MISSING, non-number -> NULL, else math result), so all share exprMathUnary; the
 // per-op math is a real func value (a stdlib math.Abs/... or a base.Math* named
-// func) passed in and emitted by name (see base/lzfmt.go).
+// func) passed in and emitted by name (see base.LzExprFmt).
+
+// The per-op leaf for each math family is a real func value emitted by name (see
+// LzExprFmt), so each op is just a (name -> leaf) table row rather than a
+// hand-written constructor. init() registers each row via the matching xxxOp
+// adapter (below), which closes over the leaf and defers to the shared harness.
+// Because the adapter + the table + init are all plain (non-lz) Go, intermed_build
+// passes them through untouched and the leaf still reaches the harness's LzExprFmt
+// emission site -- so both the interpreter and the compiled path stay identical to
+// the old per-op funcs. See DESIGN-exprs.md "Codegen ergonomics".
+
+// mathUnaryFuncs: ABS/CEIL/... -- a stdlib math.Abs/... or a base.Math* named func.
+var mathUnaryFuncs = map[string]func(float64) float64{
+	"abs": math.Abs, "ceil": math.Ceil, "floor": math.Floor, "sqrt": math.Sqrt,
+	"exp": math.Exp, "ln": math.Log, "log": math.Log10, "sign": base.MathSign,
+	"degrees": base.MathDegrees, "radians": base.MathRadians,
+	"sin": math.Sin, "cos": math.Cos, "tan": math.Tan,
+	"asin": math.Asin, "acos": math.Acos, "atan": math.Atan,
+}
+
+// mathBiFuncs: the binary math funcs, as always-ok Num leaves (POWER/ATAN2).
+var mathBiFuncs = map[string]func(a, b base.Num) (base.Num, bool){
+	"power": base.MathPow, "atan2": base.MathAtan2,
+}
+
+// ROUND/TRUNC: 1-arg (prec 0) / 2-arg (explicit prec), arity-dispatched; each
+// leaf is the (float64,int)->float64 rounder. round is round-half-to-even.
+var roundTrunc1Funcs = map[string]func(x float64, prec int) float64{
+	"round_1": base.RoundFloat, "trunc_1": base.TruncFloat,
+}
+
+var roundTrunc2Funcs = map[string]func(x float64, prec int) float64{
+	"round_2": base.RoundFloat, "trunc_2": base.TruncFloat,
+}
 
 func init() {
-	ExprCatalog["abs"] = ExprAbs
-	ExprCatalog["ceil"] = ExprCeil
-	ExprCatalog["floor"] = ExprFloor
-	ExprCatalog["sqrt"] = ExprSqrt
-	ExprCatalog["exp"] = ExprExp
-	ExprCatalog["ln"] = ExprLn
-	ExprCatalog["log"] = ExprLog
-	ExprCatalog["sign"] = ExprSign
-	ExprCatalog["degrees"] = ExprDegrees
-	ExprCatalog["radians"] = ExprRadians
-	ExprCatalog["sin"] = ExprSin
-	ExprCatalog["cos"] = ExprCos
-	ExprCatalog["tan"] = ExprTan
-	ExprCatalog["asin"] = ExprAsin
-	ExprCatalog["acos"] = ExprAcos
-	ExprCatalog["atan"] = ExprAtan
-	ExprCatalog["power"] = ExprPower
-	ExprCatalog["atan2"] = ExprAtan2
-	// ROUND/TRUNC: 1-arg (prec 0) / 2-arg (explicit prec), arity-dispatched.
-	ExprCatalog["round_1"] = ExprRound1
-	ExprCatalog["round_2"] = ExprRound2
-	ExprCatalog["trunc_1"] = ExprTrunc1
-	ExprCatalog["trunc_2"] = ExprTrunc2
+	for name, fn := range mathUnaryFuncs {
+		ExprCatalog[name] = exprMathUnaryOp(fn)
+	}
+	for name, fn := range mathBiFuncs {
+		ExprCatalog[name] = exprMathBiOp(fn)
+	}
+	for name, fn := range roundTrunc1Funcs {
+		ExprCatalog[name] = exprRoundTrunc1Op(fn)
+	}
+	for name, fn := range roundTrunc2Funcs {
+		ExprCatalog[name] = exprRoundTrunc2Op(fn)
+	}
 }
 
-func ExprAbs(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string) base.ExprFunc {
-	return exprMathUnary(lzVars, labels, params, path, math.Abs)
+// The xxxOp adapters turn a per-op leaf into an ExprCatalogFunc by closing over
+// the leaf and deferring to the shared harness. Plain Go (no lz), so intermed_build
+// emits them verbatim and the leaf flows unchanged to the harness emission site.
+
+func exprMathUnaryOp(fn func(float64) float64) base.ExprCatalogFunc {
+	return func(lzVars *base.Vars, labels base.Labels, params []interface{}, path string) base.ExprFunc {
+		return exprMathUnary(lzVars, labels, params, path, fn)
+	}
 }
 
-func ExprCeil(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string) base.ExprFunc {
-	return exprMathUnary(lzVars, labels, params, path, math.Ceil)
+func exprMathBiOp(fn func(a, b base.Num) (base.Num, bool)) base.ExprCatalogFunc {
+	return func(lzVars *base.Vars, labels base.Labels, params []interface{}, path string) base.ExprFunc {
+		return exprMathBi(lzVars, labels, params, path, fn)
+	}
 }
 
-func ExprFloor(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string) base.ExprFunc {
-	return exprMathUnary(lzVars, labels, params, path, math.Floor)
+func exprRoundTrunc1Op(roundFn func(x float64, prec int) float64) base.ExprCatalogFunc {
+	return func(lzVars *base.Vars, labels base.Labels, params []interface{}, path string) base.ExprFunc {
+		return exprRoundTrunc1(lzVars, labels, params, path, roundFn)
+	}
 }
 
-func ExprSqrt(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string) base.ExprFunc {
-	return exprMathUnary(lzVars, labels, params, path, math.Sqrt)
-}
-
-func ExprExp(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string) base.ExprFunc {
-	return exprMathUnary(lzVars, labels, params, path, math.Exp)
-}
-
-func ExprLn(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string) base.ExprFunc {
-	return exprMathUnary(lzVars, labels, params, path, math.Log)
-}
-
-func ExprLog(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string) base.ExprFunc {
-	return exprMathUnary(lzVars, labels, params, path, math.Log10)
-}
-
-func ExprSign(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string) base.ExprFunc {
-	return exprMathUnary(lzVars, labels, params, path, base.MathSign)
-}
-
-func ExprDegrees(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string) base.ExprFunc {
-	return exprMathUnary(lzVars, labels, params, path, base.MathDegrees)
-}
-
-func ExprRadians(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string) base.ExprFunc {
-	return exprMathUnary(lzVars, labels, params, path, base.MathRadians)
-}
-
-func ExprSin(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string) base.ExprFunc {
-	return exprMathUnary(lzVars, labels, params, path, math.Sin)
-}
-
-func ExprCos(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string) base.ExprFunc {
-	return exprMathUnary(lzVars, labels, params, path, math.Cos)
-}
-
-func ExprTan(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string) base.ExprFunc {
-	return exprMathUnary(lzVars, labels, params, path, math.Tan)
-}
-
-func ExprAsin(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string) base.ExprFunc {
-	return exprMathUnary(lzVars, labels, params, path, math.Asin)
-}
-
-func ExprAcos(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string) base.ExprFunc {
-	return exprMathUnary(lzVars, labels, params, path, math.Acos)
-}
-
-func ExprAtan(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string) base.ExprFunc {
-	return exprMathUnary(lzVars, labels, params, path, math.Atan)
-}
-
-func ExprPower(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string) base.ExprFunc {
-	return exprMathBi(lzVars, labels, params, path, base.MathPow)
-}
-
-func ExprAtan2(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string) base.ExprFunc {
-	return exprMathBi(lzVars, labels, params, path, base.MathAtan2)
-}
-
-// ROUND / TRUNC: numeric, into the reused buffer. 1-arg uses precision 0; the
-// 2-arg form takes an integral precision (any sign). cbq skeleton: MISSING if any
-// operand MISSING; NULL if the value is non-number or the precision non-integral;
-// else base.RoundFloat/TruncFloat (passed by name) formatted via AppendNum. round
-// is round-half-to-even (cbq ROUND / ROUND_EVEN).
-
-func ExprRound1(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string) base.ExprFunc {
-	return exprRoundTrunc1(lzVars, labels, params, path, base.RoundFloat)
-}
-
-func ExprTrunc1(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string) base.ExprFunc {
-	return exprRoundTrunc1(lzVars, labels, params, path, base.TruncFloat)
-}
-
-func ExprRound2(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string) base.ExprFunc {
-	return exprRoundTrunc2(lzVars, labels, params, path, base.RoundFloat)
-}
-
-func ExprTrunc2(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string) base.ExprFunc {
-	return exprRoundTrunc2(lzVars, labels, params, path, base.TruncFloat)
+func exprRoundTrunc2Op(roundFn func(x float64, prec int) float64) base.ExprCatalogFunc {
+	return func(lzVars *base.Vars, labels base.Labels, params []interface{}, path string) base.ExprFunc {
+		return exprRoundTrunc2(lzVars, labels, params, path, roundFn)
+	}
 }
 
 // exprRoundTrunc1 is the 1-arg ROUND/TRUNC harness (precision 0).

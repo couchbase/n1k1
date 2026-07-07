@@ -21,56 +21,41 @@ import (
 // file adds the N1QL three-valued propagation harness (MISSING dominant, then
 // NULL for any non-number operand), matching cbq's arith_*.go Evaluate() exactly.
 
+// arithOps is the (name -> base.Arith* leaf + divide-by-zero-warning flag) table
+// for the binary arithmetic operators. Each leaf has the uniform (a, b Num) (Num,
+// bool) shape, emitted by name in the compiled path (see LzExprFmt). '/' and DIV
+// request the divide-by-zero advisory (warnZero); '%'/MOD stay silent. neg is a
+// unary op with its own body, registered directly.
+var arithOps = map[string]struct {
+	op       func(a, b base.Num) (base.Num, bool)
+	warnZero bool
+}{
+	"add":  {base.ArithAdd, false},
+	"sub":  {base.ArithSub, false},
+	"mult": {base.ArithMult, false},
+	"div":  {base.ArithDiv, true},
+	"mod":  {base.ArithMod, false},
+	"idiv": {base.ArithIDiv, true},
+	"imod": {base.ArithIMod, false},
+}
+
 func init() {
-	ExprCatalog["add"] = ExprAdd
-	ExprCatalog["sub"] = ExprSub
-	ExprCatalog["mult"] = ExprMult
-	ExprCatalog["div"] = ExprDiv
-	ExprCatalog["mod"] = ExprMod
-	ExprCatalog["idiv"] = ExprIDiv
-	ExprCatalog["imod"] = ExprIMod
+	for name, a := range arithOps {
+		ExprCatalog[name] = exprArithOp(a.op, a.warnZero)
+	}
 	ExprCatalog["neg"] = ExprNeg
 }
 
 // -----------------------------------------------------
 
-// Each operator passes its base.Arith* func (uniform (a, b Num) (Num, bool)) to
-// the shared harness, emitted by name in the compiled path (see base/lzfmt.go).
-
-func ExprAdd(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	return ExprArithBi(lzVars, labels, params, path, base.ArithAdd, false)
-}
-
-func ExprSub(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	return ExprArithBi(lzVars, labels, params, path, base.ArithSub, false)
-}
-
-func ExprMult(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	return ExprArithBi(lzVars, labels, params, path, base.ArithMult, false)
-}
-
-// '/' and DIV emit a divide-by-zero warning (last arg); '%'/MOD stay silent.
-func ExprDiv(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	return ExprArithBi(lzVars, labels, params, path, base.ArithDiv, true)
-}
-
-func ExprMod(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	return ExprArithBi(lzVars, labels, params, path, base.ArithMod, false)
-}
-
-func ExprIDiv(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	return ExprArithBi(lzVars, labels, params, path, base.ArithIDiv, true)
-}
-
-func ExprIMod(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	return ExprArithBi(lzVars, labels, params, path, base.ArithIMod, false)
+// exprArithOp adapts an arith leaf + warnZero into an ExprCatalogFunc by closing
+// over them and deferring to the shared ExprArithBi harness. Plain Go (no lz), so
+// intermed_build emits it verbatim and the leaf flows unchanged to the emission
+// site.
+func exprArithOp(op func(a, b base.Num) (base.Num, bool), warnZero bool) base.ExprCatalogFunc {
+	return func(lzVars *base.Vars, labels base.Labels, params []interface{}, path string) base.ExprFunc {
+		return ExprArithBi(lzVars, labels, params, path, op, warnZero)
+	}
 }
 
 // -----------------------------------------------------

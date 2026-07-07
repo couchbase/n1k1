@@ -16,23 +16,29 @@ import (
 )
 
 // Unary string functions on JSON-string bytes into a reused buffer -- no boxing.
-// The transform family (UPPER/LOWER/TITLE/TRIM/LTRIM/RTRIM) shares
-// exprStrTransform, selected by a transform FUNC (base.StrCase*/StrTrim*) emitted
-// by name (see base/lzfmt.go). The func and the reused lzBufPre buffer co-exist on
+// The transform family (UPPER/LOWER/TITLE/TRIM/LTRIM/RTRIM/REVERSE) shares
+// exprStrTransform via the strTransformFuncs table, selected by a transform FUNC
+// (base.StrCase*/StrTrim*) emitted by name (see base.LzExprFmt). The func and the
+// reused lzBufPre buffer co-exist on
 // one emitted line -- the generator preserves fmt-arg order across a func
 // placeholder and a varLift buffer placeholder (see cmd/intermed_build,
 // DESIGN-exprs.md). LENGTH yields a number, not a re-encoded string, so it has its
 // own harness. TRIM/LTRIM/RTRIM's 2-arg (explicit cutset) forms are variadic and
 // fall back to cbq per the optimizer arity guard.
 
+// strTransformFuncs is the (name -> []byte->[]byte transform leaf) table for the
+// unary string-transform funcs, emitted by name in the compiled path (see
+// LzExprFmt). All share exprStrTransform via the exprStrTransformOp adapter.
+var strTransformFuncs = map[string]func([]byte) []byte{
+	"upper": base.StrCaseUpper, "lower": base.StrCaseLower, "title": base.StrCaseTitle,
+	"trim": base.StrTrim, "ltrim": base.StrTrimLeft, "rtrim": base.StrTrimRight,
+	"reverse": base.StrReverse,
+}
+
 func init() {
-	ExprCatalog["upper"] = ExprUpper
-	ExprCatalog["lower"] = ExprLower
-	ExprCatalog["title"] = ExprTitle
-	ExprCatalog["trim"] = ExprTrim
-	ExprCatalog["ltrim"] = ExprLTrim
-	ExprCatalog["rtrim"] = ExprRTrim
-	ExprCatalog["reverse"] = ExprReverse
+	for name, transform := range strTransformFuncs {
+		ExprCatalog[name] = exprStrTransformOp(transform)
+	}
 	ExprCatalog["replace"] = ExprReplace
 	// SUBSTR0/SUBSTR1, 2-arg and 3-arg -- the optimizer dispatches to an
 	// arity-specific name so each rides a fixed-arity harness (no variadic).
@@ -54,39 +60,14 @@ func init() {
 	ExprCatalog["position1"] = ExprPosition1
 }
 
-func ExprUpper(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string) base.ExprFunc {
-	return exprStrTransform(lzVars, labels, params, path, base.StrCaseUpper)
-}
-
-func ExprLower(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string) base.ExprFunc {
-	return exprStrTransform(lzVars, labels, params, path, base.StrCaseLower)
-}
-
-func ExprTitle(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string) base.ExprFunc {
-	return exprStrTransform(lzVars, labels, params, path, base.StrCaseTitle)
-}
-
-func ExprTrim(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string) base.ExprFunc {
-	return exprStrTransform(lzVars, labels, params, path, base.StrTrim)
-}
-
-func ExprLTrim(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string) base.ExprFunc {
-	return exprStrTransform(lzVars, labels, params, path, base.StrTrimLeft)
-}
-
-func ExprRTrim(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string) base.ExprFunc {
-	return exprStrTransform(lzVars, labels, params, path, base.StrTrimRight)
-}
-
-func ExprReverse(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string) base.ExprFunc {
-	return exprStrTransform(lzVars, labels, params, path, base.StrReverse)
+// exprStrTransformOp adapts a []byte->[]byte transform into an ExprCatalogFunc by
+// closing over it and deferring to the shared exprStrTransform harness. Plain Go
+// (no lz), so intermed_build emits it verbatim and the transform flows unchanged
+// to the emission site.
+func exprStrTransformOp(transform func([]byte) []byte) base.ExprCatalogFunc {
+	return func(lzVars *base.Vars, labels base.Labels, params []interface{}, path string) base.ExprFunc {
+		return exprStrTransform(lzVars, labels, params, path, transform)
+	}
 }
 
 // exprStrTransform is the shared unary string-transform harness. base.StrDecode
