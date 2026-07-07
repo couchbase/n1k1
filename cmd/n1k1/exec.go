@@ -201,7 +201,7 @@ func isExplainStmt(stmt string) bool {
 // compiled -- a boxed expression that needs cbq, or a non-bakeable datastore op
 // -- it prints the reason to stderr and DOES NOT emit; the caller then runs the
 // statement through the interpreter as usual, so the query still returns results.
-// This is the prepare fallback (see DESIGN-extensions-prepare.md).
+// This is the prepare fallback (see DESIGN-prepare.md).
 func (c *cli) prepareStmt(stmt string) {
 	if c.sess == nil {
 		fmt.Fprintln(c.stderr, "prepare: no datastore open (.open <dir>)")

@@ -19,7 +19,7 @@
 //
 // It lives under glue/ (rather than test/) so it can be reused as PRODUCTION
 // code -- glue.Prepare wraps OpToLines into a compilable .go file for the
-// user-facing .prepare surface (see DESIGN-extensions-prepare.md), while the
+// user-facing .prepare surface (see DESIGN-prepare.md), while the
 // compiler differential generators in test/ (and the Phase-2 bench generator in
 // test/benchmark/) continue to use the same emitter as their oracle.
 package emit

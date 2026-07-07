@@ -358,7 +358,7 @@ func Run(lzVars *base.Vars, lzYieldVals base.YieldVals, lzYieldErr base.YieldErr
 A query that needs a datastore reports its preparability instead of emitting —
 n1k1 keeps the interpreter as the always-available fallback. (Codegen is a
 research path: n1k1's interpreter is already fast, so compiling mainly pays off
-for hot, repeated queries — see [DESIGN-extensions-prepare.md](DESIGN-extensions-prepare.md).)
+for hot, repeated queries — see [DESIGN-prepare.md](DESIGN-prepare.md).)
 
 **Spill to disk.** Joins, `DISTINCT`, `GROUP BY` (hashmaps), and `ORDER BY`
 (max-heaps) spill from memory to temporary files when a working set gets too

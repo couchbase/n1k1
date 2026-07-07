@@ -144,7 +144,7 @@ func (c *cli) dot(line string) bool {
 		// Either way, a statement that needs cbq (a boxed expression, or a
 		// non-bakeable datastore op) can't be compiled: we print the reason and
 		// FALL BACK to the interpreter, so the query never fails (see
-		// DESIGN-extensions-prepare.md).
+		// DESIGN-prepare.md).
 		switch a := strings.TrimSpace(arg); strings.ToLower(a) {
 		case "":
 			fmt.Fprintf(c.stderr, "prepare %s\n", onOff(c.prepare))

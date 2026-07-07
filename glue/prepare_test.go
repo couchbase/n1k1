@@ -23,7 +23,7 @@ import (
 // TestPrepareNativeEmitsParseableGo asserts that a fully-native, datastore-free
 // query is Preparable and that Session.Prepare emits non-empty Go source which
 // the go/parser accepts (so the emit path produces syntactically valid Go, not
-// just some string). See DESIGN-extensions-prepare.md.
+// just some string). See DESIGN-prepare.md.
 func TestPrepareNativeEmitsParseableGo(t *testing.T) {
 	root := writePlainBeers(t, 3)
 	s, err := OpenSession(root, "default")

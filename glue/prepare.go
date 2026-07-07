@@ -16,7 +16,7 @@ package glue
 // This file exposes n1k1's SQL++ -> Go source compiler as a production surface
 // (the .prepare dot-command / Session.Prepare), reusing the same emitter the
 // compiler differential tests use to build test/tmp. See
-// DESIGN-extensions-prepare.md.
+// DESIGN-prepare.md.
 //
 // It is emit-only + gated + with an interpreter fallback: Prepare decides, via
 // Preparable, whether a converted base.Op tree can be lowered to standalone Go,
@@ -31,7 +31,7 @@ package glue
 //      cbq's Evaluate() at run time, which the generated (engine+base only) code
 //      cannot do -- so the caller must fall back to the interpreter.
 //
-// OUT OF SCOPE (documented future work in DESIGN-extensions-prepare.md): the pipe
+// OUT OF SCOPE (documented future work in DESIGN-prepare.md): the pipe
 // protocol / thin child, DatastorePipe/EvalExpr, WASM, const-folding, and
 // actually `go build`-ing (or running) the emitted source.
 
@@ -228,7 +228,7 @@ func stringifyExprTrees(o *base.Op) (ok bool) {
 }
 
 // PrepareFuncName is the name of the entry-point function in the emitted .go
-// source. It matches DESIGN-extensions-prepare.md's Run(vars, yield, yieldErr).
+// source. It matches DESIGN-prepare.md's Run(vars, yield, yieldErr).
 const PrepareFuncName = "Run"
 
 // wrapPrepare assembles emit.OpToLines' body into a complete, parseable Go file:
