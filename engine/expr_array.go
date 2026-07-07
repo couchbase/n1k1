@@ -22,35 +22,29 @@ import (
 // the harness formats into the reused lzBufPre on a separate line (op-code %#v and
 // buffer varLift %s never share a line).
 
+// arrayReduceFuncs maps each unary array reader to its base.ArrayOp* op-code,
+// passed to the shared exprArrayReduce harness (one ArrayEach pass -> a scalar).
+var arrayReduceFuncs = map[string]int{
+	"array_length": base.ArrayOpLength, "array_count": base.ArrayOpCount,
+	"array_sum": base.ArrayOpSum, "array_avg": base.ArrayOpAvg,
+}
+
 func init() {
-	ExprCatalog["array_length"] = ExprArrayLength
-	ExprCatalog["array_count"] = ExprArrayCount
-	ExprCatalog["array_sum"] = ExprArraySum
-	ExprCatalog["array_avg"] = ExprArrayAvg
+	for name, op := range arrayReduceFuncs {
+		ExprCatalog[name] = exprArrayReduceOp(op)
+	}
 	ExprCatalog["array_min"] = ExprArrayMin
 	ExprCatalog["array_max"] = ExprArrayMax
 	ExprCatalog["array_contains"] = ExprArrayContains
 	ExprCatalog["array_position"] = ExprArrayPosition
 }
 
-func ExprArrayLength(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string) base.ExprFunc {
-	return exprArrayReduce(lzVars, labels, params, path, base.ArrayOpLength)
-}
-
-func ExprArrayCount(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string) base.ExprFunc {
-	return exprArrayReduce(lzVars, labels, params, path, base.ArrayOpCount)
-}
-
-func ExprArraySum(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string) base.ExprFunc {
-	return exprArrayReduce(lzVars, labels, params, path, base.ArrayOpSum)
-}
-
-func ExprArrayAvg(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string) base.ExprFunc {
-	return exprArrayReduce(lzVars, labels, params, path, base.ArrayOpAvg)
+// exprArrayReduceOp closes over an array reader's op-code and defers to the
+// shared harness -- plain (non-lz) Go, codegen-transparent.
+func exprArrayReduceOp(op int) base.ExprCatalogFunc {
+	return func(lzVars *base.Vars, labels base.Labels, params []interface{}, path string) base.ExprFunc {
+		return exprArrayReduce(lzVars, labels, params, path, op)
+	}
 }
 
 func exprArrayReduce(lzVars *base.Vars, labels base.Labels, params []interface{},

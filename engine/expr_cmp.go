@@ -15,39 +15,40 @@ import (
 	"github.com/couchbase/n1k1/base"
 )
 
+// cmpFuncs maps each comparison to its ExprCmp spec: the cmps table, the value
+// returned on equality, whether it's the eq test, and whether to swap operands.
+// GT/GE reuse LT/LE with operands swapped (a > b == b < a).
+type cmpSpec struct {
+	cmps  []base.Val
+	eqRes base.Val
+	isEQ  bool
+	swap  bool
+}
+
+var cmpFuncs = map[string]cmpSpec{
+	"eq": {EQCmps, base.ValTrue, true, false},
+	"lt": {LTCmps, base.ValFalse, false, false},
+	"le": {LTCmps, base.ValTrue, false, false},
+	"gt": {LTCmps, base.ValFalse, false, true}, // = lt, operands swapped
+	"ge": {LTCmps, base.ValTrue, false, true},  // = le, operands swapped
+}
+
 func init() {
-	ExprCatalog["eq"] = ExprEQ
-	ExprCatalog["lt"] = ExprLT
-	ExprCatalog["le"] = ExprLE
-	ExprCatalog["gt"] = ExprGT
-	ExprCatalog["ge"] = ExprGE
+	for name, spec := range cmpFuncs {
+		ExprCatalog[name] = exprCmpOp(spec)
+	}
 }
 
-// -----------------------------------------------------
-
-func ExprEQ(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	return ExprCmp(lzVars, labels, params, path, EQCmps, base.ValTrue, true)
-}
-
-func ExprLT(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	return ExprCmp(lzVars, labels, params, path, LTCmps, base.ValFalse, false)
-}
-
-func ExprLE(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	return ExprCmp(lzVars, labels, params, path, LTCmps, base.ValTrue, false)
-}
-
-func ExprGT(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	return ExprLT(lzVars, labels, []interface{}{params[1], params[0]}, path)
-}
-
-func ExprGE(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	return ExprLE(lzVars, labels, []interface{}{params[1], params[0]}, path)
+// exprCmpOp closes over a comparison spec and defers to ExprCmp; the operand swap
+// (a setup-time param reorder, matching the old ExprGT/ExprGE) is plain (non-lz)
+// Go, so intermed_build sees the already-swapped params -- both paths unchanged.
+func exprCmpOp(spec cmpSpec) base.ExprCatalogFunc {
+	return func(lzVars *base.Vars, labels base.Labels, params []interface{}, path string) base.ExprFunc {
+		if spec.swap {
+			params = []interface{}{params[1], params[0]}
+		}
+		return ExprCmp(lzVars, labels, params, path, spec.cmps, spec.eqRes, spec.isEQ)
+	}
 }
 
 // -----------------------------------------------------

@@ -24,51 +24,33 @@ import (
 // Also the scalar type-CONVERSION functions TO_BOOLEAN / TO_STRING / TO_NUMBER
 // (see the second half of this file); logic in base.ToBoolean/ToString/ToNumber.
 
-func init() {
-	ExprCatalog["is_array"] = ExprIsArray
-	ExprCatalog["is_number"] = ExprIsNumber
-	ExprCatalog["is_string"] = ExprIsString
-	ExprCatalog["is_boolean"] = ExprIsBoolean
-	ExprCatalog["is_object"] = ExprIsObject
-	ExprCatalog["is_atom"] = ExprIsAtom
+// isTypeFuncs maps each IS <type> check to its base.TypeIs* predicate (a real
+// func value emitted by name via LzExprFmt), passed to the shared ExprIsType
+// harness. MISSING/NULL pass through.
+var isTypeFuncs = map[string]func(valType int) bool{
+	"is_array": base.TypeIsArray, "is_number": base.TypeIsNumber,
+	"is_string": base.TypeIsString, "is_boolean": base.TypeIsBoolean,
+	"is_object": base.TypeIsObject, "is_atom": base.TypeIsAtom,
+}
 
+func init() {
+	for name, match := range isTypeFuncs {
+		ExprCatalog[name] = exprIsTypeOp(match)
+	}
+
+	// TO_* conversions: only 2 of 3 share a harness, so register directly.
 	ExprCatalog["to_boolean"] = ExprToBoolean
 	ExprCatalog["to_string"] = ExprToString
 	ExprCatalog["to_number"] = ExprToNumber
 }
 
-// Each predicate passes its type test as a real func value (base.TypeIs*) into
-// the shared harness -- the codegen emits it by name via LzExprFmt, so no int
-// op-code + switch is needed. This is the func-passing spike; extend the pattern
-// as the codegen supports it (see DESIGN-exprs.md).
-func ExprIsArray(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	return ExprIsType(lzVars, labels, params, path, base.TypeIsArray)
-}
-
-func ExprIsNumber(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	return ExprIsType(lzVars, labels, params, path, base.TypeIsNumber)
-}
-
-func ExprIsString(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	return ExprIsType(lzVars, labels, params, path, base.TypeIsString)
-}
-
-func ExprIsBoolean(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	return ExprIsType(lzVars, labels, params, path, base.TypeIsBoolean)
-}
-
-func ExprIsObject(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	return ExprIsType(lzVars, labels, params, path, base.TypeIsObject)
-}
-
-func ExprIsAtom(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	return ExprIsType(lzVars, labels, params, path, base.TypeIsAtom)
+// exprIsTypeOp closes over a type predicate and defers to the shared harness --
+// plain (non-lz) Go, codegen-transparent (see DESIGN-exprs.md "Codegen
+// ergonomics"): the predicate still reaches the harness's emission site.
+func exprIsTypeOp(match func(valType int) bool) base.ExprCatalogFunc {
+	return func(lzVars *base.Vars, labels base.Labels, params []interface{}, path string) base.ExprFunc {
+		return ExprIsType(lzVars, labels, params, path, match)
+	}
 }
 
 // -----------------------------------------------------

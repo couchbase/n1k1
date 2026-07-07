@@ -47,14 +47,11 @@ var mathBiFuncs = map[string]func(a, b base.Num) (base.Num, bool){
 	"power": base.MathPow, "atan2": base.MathAtan2,
 }
 
-// ROUND/TRUNC: 1-arg (prec 0) / 2-arg (explicit prec), arity-dispatched; each
-// leaf is the (float64,int)->float64 rounder. round is round-half-to-even.
-var roundTrunc1Funcs = map[string]func(x float64, prec int) float64{
-	"round_1": base.RoundFloat, "trunc_1": base.TruncFloat,
-}
-
-var roundTrunc2Funcs = map[string]func(x float64, prec int) float64{
-	"round_2": base.RoundFloat, "trunc_2": base.TruncFloat,
+// ROUND/TRUNC share one (name -> rounder) table; init registers both arities per
+// rounder (_1 = 1-arg, precision 0; _2 = 2-arg, explicit precision -- the conv
+// layer arity-dispatches). round is round-half-to-even.
+var roundTruncFuncs = map[string]func(x float64, prec int) float64{
+	"round": base.RoundFloat, "trunc": base.TruncFloat,
 }
 
 func init() {
@@ -64,11 +61,9 @@ func init() {
 	for name, fn := range mathBiFuncs {
 		ExprCatalog[name] = exprMathBiOp(fn)
 	}
-	for name, fn := range roundTrunc1Funcs {
-		ExprCatalog[name] = exprRoundTrunc1Op(fn)
-	}
-	for name, fn := range roundTrunc2Funcs {
-		ExprCatalog[name] = exprRoundTrunc2Op(fn)
+	for name, fn := range roundTruncFuncs {
+		ExprCatalog[name+"_1"] = exprRoundTrunc1Op(fn)
+		ExprCatalog[name+"_2"] = exprRoundTrunc2Op(fn)
 	}
 }
 

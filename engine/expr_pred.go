@@ -21,63 +21,33 @@ import (
 // mirror cbq's logic_not.go / comp_null.go / comp_missing.go / comp_valued.go
 // exactly.
 
-func init() {
-	// IS predicates, keyed by result for (missing, null, value) operand kinds.
-	ExprCatalog["is_null"] = ExprIsNull
-	ExprCatalog["is_not_null"] = ExprIsNotNull
-	ExprCatalog["is_missing"] = ExprIsMissing
-	ExprCatalog["is_not_missing"] = ExprIsNotMissing
-	ExprCatalog["is_valued"] = ExprIsValued
-	ExprCatalog["is_not_valued"] = ExprIsNotValued
+// isPredicateFuncs maps each IS predicate to its 3-element result table, indexed
+// by base.ValKind {value, null, missing} -- the shared ExprIsPredicate harness
+// classifies the operand and returns the matching constant Val.
+var isPredicateFuncs = map[string][]base.Val{
+	"is_null":        {base.ValFalse, base.ValTrue, base.ValMissing}, // NULL->true, MISSING->MISSING, else false
+	"is_not_null":    {base.ValTrue, base.ValFalse, base.ValMissing}, // NULL->false, MISSING->MISSING, else true
+	"is_missing":     {base.ValFalse, base.ValFalse, base.ValTrue},   // MISSING->true, else false
+	"is_not_missing": {base.ValTrue, base.ValTrue, base.ValFalse},    // MISSING->false, else true
+	"is_valued":      {base.ValTrue, base.ValFalse, base.ValFalse},   // NULL/MISSING->false, else true
+	"is_not_valued":  {base.ValFalse, base.ValTrue, base.ValTrue},    // NULL/MISSING->true, else false
+}
 
+func init() {
+	for name, byKind := range isPredicateFuncs {
+		ExprCatalog[name] = exprIsPredicateOp(byKind)
+	}
 	ExprCatalog["not"] = ExprNot
 }
 
-// -----------------------------------------------------
-
-// Each IS predicate is a 3-element result table indexed by base.ValKind
-// ({value, null, missing}); the shared ExprIsPredicate harness just looks up.
-
-// IS NULL:        NULL -> true,  MISSING -> MISSING, else false.
-func ExprIsNull(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	return ExprIsPredicate(lzVars, labels, params, path,
-		[]base.Val{base.ValFalse, base.ValTrue, base.ValMissing})
-}
-
-// IS NOT NULL:    NULL -> false, MISSING -> MISSING, else true.
-func ExprIsNotNull(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	return ExprIsPredicate(lzVars, labels, params, path,
-		[]base.Val{base.ValTrue, base.ValFalse, base.ValMissing})
-}
-
-// IS MISSING:     MISSING -> true, else false.
-func ExprIsMissing(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	return ExprIsPredicate(lzVars, labels, params, path,
-		[]base.Val{base.ValFalse, base.ValFalse, base.ValTrue})
-}
-
-// IS NOT MISSING: MISSING -> false, else true.
-func ExprIsNotMissing(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	return ExprIsPredicate(lzVars, labels, params, path,
-		[]base.Val{base.ValTrue, base.ValTrue, base.ValFalse})
-}
-
-// IS VALUED:      NULL/MISSING -> false, else true.
-func ExprIsValued(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	return ExprIsPredicate(lzVars, labels, params, path,
-		[]base.Val{base.ValTrue, base.ValFalse, base.ValFalse})
-}
-
-// IS NOT VALUED:  NULL/MISSING -> true, else false.
-func ExprIsNotValued(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	return ExprIsPredicate(lzVars, labels, params, path,
-		[]base.Val{base.ValFalse, base.ValTrue, base.ValTrue})
+// exprIsPredicateOp closes over an IS predicate's result table and defers to the
+// shared harness. Plain (non-lz) Go, so intermed_build passes it through and the
+// table still reaches the harness's emission site -- both paths stay identical to
+// the old per-op funcs (see DESIGN-exprs.md "Codegen ergonomics").
+func exprIsPredicateOp(byKind []base.Val) base.ExprCatalogFunc {
+	return func(lzVars *base.Vars, labels base.Labels, params []interface{}, path string) base.ExprFunc {
+		return ExprIsPredicate(lzVars, labels, params, path, byKind)
+	}
 }
 
 // -----------------------------------------------------

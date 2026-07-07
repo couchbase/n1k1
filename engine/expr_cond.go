@@ -21,40 +21,29 @@ import (
 // (zero-copy). Mirrors cbq expression/func_cond_unknown.go. N-ary (any operand
 // count) via MakeNaryExprFunc.
 
+// condFuncs maps each conditional-unknown selector to its base.CondIf* mode
+// (passed to base.NaryFirstKept). NVL(a, b) returns b when a is NULL *or* MISSING
+// (cbq NVL.Evaluate: `first.Type() > NULL ? first : second`), i.e. it's 2-arg
+// IFMISSINGORNULL -- not IFNULL, which keeps a MISSING first operand.
+var condFuncs = map[string]int{
+	"ifnull": base.CondIfNull, "ifmissing": base.CondIfMissing,
+	"ifmissingornull": base.CondIfMissingOrNull, "nvl": base.CondIfMissingOrNull,
+}
+
 func init() {
-	ExprCatalog["ifnull"] = ExprIfNull
-	ExprCatalog["ifmissing"] = ExprIfMissing
-	ExprCatalog["ifmissingornull"] = ExprIfMissingOrNull
-	// NVL(a, b) returns b when a is NULL *or* MISSING (cbq NVL.Evaluate:
-	// `first.Type() > NULL ? first : second`), i.e. it's 2-arg IFMISSINGORNULL --
-	// not IFNULL, which keeps a MISSING first operand.
-	ExprCatalog["nvl"] = ExprIfMissingOrNull
+	for name, mode := range condFuncs {
+		ExprCatalog[name] = exprCondOp(mode)
+	}
 }
 
-// Per-mode reducers, passed directly to the n-ary harness.
-func naryIfNull(children []base.ExprFunc, vals base.Vals, yieldErr base.YieldErr) base.Val {
-	return base.NaryFirstKept(children, vals, yieldErr, base.CondIfNull)
-}
-
-func naryIfMissing(children []base.ExprFunc, vals base.Vals, yieldErr base.YieldErr) base.Val {
-	return base.NaryFirstKept(children, vals, yieldErr, base.CondIfMissing)
-}
-
-func naryIfMissingOrNull(children []base.ExprFunc, vals base.Vals, yieldErr base.YieldErr) base.Val {
-	return base.NaryFirstKept(children, vals, yieldErr, base.CondIfMissingOrNull)
-}
-
-func ExprIfNull(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	return MakeNaryExprFunc(lzVars, labels, params, path, naryIfNull)
-}
-
-func ExprIfMissing(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	return MakeNaryExprFunc(lzVars, labels, params, path, naryIfMissing)
-}
-
-func ExprIfMissingOrNull(lzVars *base.Vars, labels base.Labels,
-	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	return MakeNaryExprFunc(lzVars, labels, params, path, naryIfMissingOrNull)
+// exprCondOp closes over a conditional-unknown mode: it builds the n-ary reducer
+// (base.NaryFirstKept with that mode) and defers to MakeNaryExprFunc. Plain
+// (non-lz) Go, so the interpreter path is unchanged from the old per-op funcs.
+func exprCondOp(mode int) base.ExprCatalogFunc {
+	reduce := func(children []base.ExprFunc, vals base.Vals, yieldErr base.YieldErr) base.Val {
+		return base.NaryFirstKept(children, vals, yieldErr, mode)
+	}
+	return func(lzVars *base.Vars, labels base.Labels, params []interface{}, path string) base.ExprFunc {
+		return MakeNaryExprFunc(lzVars, labels, params, path, reduce)
+	}
 }
