@@ -348,3 +348,38 @@ Gist only -- details live in commit messages, README, and code comments.
 - Tests: test/cases.go CteRefCte (b scans a) + CteChain3 (a->b->c), run by both
   TestQueryCases and the compiler differential (emitted 32, skipped 0). test-all
   green (suite 661/671, PANIC 0).
+
+## 2026/07 -- TODO reconciliation: items already implemented (moved from TODO.md)
+Verified by reading the code and/or a targeted regression case in test/cases.go
+(runs in BOTH interpreter and compiler modes). No new engine code -- these were
+implemented by earlier commits and TODO.md had drifted.
+
+- UNION ALL of two SELECTs (was noted "still NA" in the subquery/CTE gaps):
+  DONE -- glue/conv.go VisitUnionAll converts each child branch and wires the
+  union-all engine op; plain UNION is VisitDistinct wrapping it. Test:
+  test/cases.go UnionAllTwoSelects + UnionDistinctTwoSelects.
+- Correlated subquery that CONTAINS an aggregate (was noted to PANIC
+  "*value.ScopeValue is not value.AnnotatedValue"): DONE -- no longer panics and
+  returns correct counts. Test: test/cases.go CorrelatedSubqueryWithAggregate
+  (SELECT (SELECT RAW COUNT(*) ... WHERE b.custId=a.custId)[0]).
+- Divide-by-zero at runtime -> JSON null (was "leads to +Inf ... should be
+  converted into JSON null. Also handle -Inf and NaN"): DONE -- engine/expr_arith.go
+  arithBinary sets base.ValNull on divide/mod-by-zero (Num.Div/IDiv return ok=false)
+  and emits base.WarnDivideByZero; base.AppendNum serializes NaN/+Inf/-Inf as the
+  quoted "NaN"/"+Infinity"/"-Infinity" sentinels for the math funcs (SQRT/LN).
+  Test: test/cases.go DivideByZeroIsNull (1/0 -> null, kept not omitted).
+- Hash-join build/probe side ("fills the probe map with LHS but planner might
+  think RHS is the probe map -- need to double-check"): DONE / verified -- 
+  glue/conv.go VisitHashJoin reads the planner's o.BuildExprs()/o.ProbeExprs():
+  INNER fills the map from the right (build) branch and probes with the left;
+  LEFT OUTER makes the preserved (left) side the build/map side. Composite keys
+  or a residual ON filter fall back to the correct nested-loop join.
+- CROSS / comma-join (part of "JOIN types: CROSS, ..."): DONE -- glue/conv.go
+  VisitNLJoin converts a nil ON clause to a constant-TRUE nested-loop join
+  (a cross product). (FULL / RIGHT OUTER / LATERAL remain -- left in TODO.md.)
+- Covering index scan ("scan of COVERS needs support? FIXED already?"): DONE --
+  glue/conv.go VisitIndexScan + coverableIndexScan lower a covering IndexScan to
+  the datastore-scan-index-cover op (see DESIGN-indexing.md).
+- COUNTN and COUNT(DISTINCT) ("COUNTN versus COUNT?", "DISTINCT? COUNT(DISTINCT
+  productId)?"): DONE -- base/agg.go registers countn / countn_distinct
+  (AggCountNUpdate, NUMBER-only) and count_distinct (AggCountDistinct).

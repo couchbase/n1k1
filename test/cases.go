@@ -6596,6 +6596,61 @@ var queryCases = []queryCase{
 			`WHERE d.text LIKE "%vacation%"`,
 		rows: 2, // handbook.pdf + q1-report.docx mention "vacation"
 	},
+
+	// ---- set ops + subquery gaps that were once TODO but now work ------
+	{
+		name: "UnionAllTwoSelects", // UNION ALL of two SELECTs (was noted NA in TODO)
+		stmt: `SELECT a.id FROM data:orders AS a WHERE a.id="1200" ` +
+			`UNION ALL SELECT a.id FROM data:orders AS a WHERE a.id="1234"`,
+		rows: 2, // one row per branch, no dedup
+		check: func(t *testing.T, rows []base.Vals) {
+			got := map[string]bool{}
+			for _, row := range rows {
+				got[trimQ(string(row[0]))] = true
+			}
+			if !got["1200"] || !got["1234"] {
+				t.Fatalf("expected {1200,1234}, got %+v", got)
+			}
+		},
+	},
+	{
+		name: "UnionDistinctTwoSelects", // plain UNION dedups (VisitUnionAll under Distinct)
+		stmt: `SELECT a.custId AS c FROM data:orders AS a ` +
+			`UNION SELECT a.custId AS c FROM data:orders AS a`,
+		rows: 3, // abc, bbb, ccc (ccc appears twice in each branch, deduped)
+	},
+	{
+		name: "CorrelatedSubqueryWithAggregate", // was noted to PANIC in TODO; now works
+		stmt: `SELECT a.id, ` +
+			`(SELECT RAW COUNT(*) FROM data:orders AS b WHERE b.custId = a.custId)[0] AS n ` +
+			`FROM data:orders AS a`,
+		rows: 4,
+		check: func(t *testing.T, rows []base.Vals) {
+			// custId counts: abc=1 (1200), bbb=1 (1234), ccc=2 (1235,1236).
+			// Row is two labels: [id, n].
+			want := map[string]string{"1200": "1", "1234": "1", "1235": "2", "1236": "2"}
+			for _, row := range rows {
+				if len(row) != 2 {
+					t.Fatalf("expected 2 labels, got %+v", row)
+				}
+				id, n := trimQ(string(row[0])), string(row[1])
+				if want[id] != n {
+					t.Fatalf("id %s: expected n=%s, got %s", id, want[id], n)
+				}
+			}
+		},
+	},
+	{
+		name: "DivideByZeroIsNull", // '/' by zero -> JSON null (was a TODO item)
+		stmt: `SELECT 1/0 AS r FROM data:orders AS a WHERE a.id="1200"`,
+		rows: 1,
+		check: func(t *testing.T, rows []base.Vals) {
+			// A proper null is KEPT (the label yields "null"); MISSING would omit it.
+			if len(rows[0]) != 1 || string(rows[0][0]) != "null" {
+				t.Fatalf("expected r=null, got %+v", rows[0])
+			}
+		},
+	},
 }
 
 // rowObj unmarshals a single-label result row (a JSON object) into a map.

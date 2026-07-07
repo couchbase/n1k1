@@ -39,7 +39,8 @@ in glue/patches/README.md.
     like when there aren't keyspace aliases, which can lead to
     projections to not being able to access expressions
     like (`travel-sample`.`id`) correctly? FIXED already?
-  - scan of COVERS needs support? FIXED already?
+  - scan of COVERS: DONE -- covering IndexScan lowers to datastore-scan-index-cover
+    (glue/conv.go VisitIndexScan + coverableIndexScan; see DESIGN-indexing.md).
   - scan tracks "setBit()" for intersect scan support? Not needed anymore?
   - scan related bit filters in cbq need revisit?
   - scan expression (ExpressionScan, i.e. FROM (subquery)/FROM cte) only handles
@@ -71,9 +72,10 @@ in glue/patches/README.md.
   - IGNORE NULL's? (RESPECT NULLS is default)
   - FROM LAST? (FROM FIRST is default)
   - filter-where clauses?
-  - DISTINCT? e.g., COUNT(DISTINCT productId)?
-  - COUNTN versus COUNT?
-    - COUNTN is only used by index scans?
+  - DISTINCT? e.g., COUNT(DISTINCT productId)? -- DONE (base.AggCountDistinct,
+    count_distinct; see TODO-done.md).
+  - COUNTN versus COUNT? -- DONE (base/agg.go registers countn / countn_distinct
+    via AggCountNUpdate; COUNTN counts only NUMBER-typed values).
 
 - ORDER BY ... NULLS FIRST vs NULLS LAST?
 
@@ -110,11 +112,8 @@ in glue/patches/README.md.
     value.NUMBER during every Evaluate()?
     - see the ExprCmp() implementation to see one kind of approach on this.
 
-- hash join in n1k1 fills the probe map with the left-hand-side values,
-  but N1QL planner might think the right-hand-side is the probe map?
-  - need to double-check this.
-
-- JOIN types: CROSS, FULL, RIGHT OUTER, LATERAL.
+- JOIN types: FULL, RIGHT OUTER, LATERAL. (CROSS / comma-join DONE: a nil ON
+  clause converts to a constant-TRUE nested-loop join -- glue/conv.go VisitNLJoin.)
 
 - NEST via hash-join?
 - NEST via index scan?
@@ -133,11 +132,6 @@ in glue/patches/README.md.
   in interpreter + compiler.
 
 - subquery / CTE known gaps (found while stretch-testing; see test/cases.go):
-  - a correlated subquery that CONTAINS an aggregate (e.g. SELECT (SELECT RAW
-    COUNT(*) ... WHERE x = o.y)) panics: "*value.ScopeValue is not
-    value.AnnotatedValue" -- the correlated ScopeValue wrap collides with the
-    aggregate op's AnnotatedValue expectation.
-  - UNION ALL of two SELECTs (plan.UnionAll) is still NA.
   - a NON-recursive CTE that references a RECURSIVE CTE's full result (WITH
     RECURSIVE r ..., b AS (SELECT .. FROM r) ... FROM b) isn't supported:
     sub-conversions exclude recursive bindings (so a recursive step's FROM r
@@ -249,16 +243,15 @@ in glue/patches/README.md.
 - divide by 0 at compile time should be checked instead of
   panic/recover that can leave unclosed, unreclaimable unresources?
 
-- divide by 0 at runtime leads to +Inf, with strconv.AppendFloat()
-  converts to "+Inf", which is not JSON -- should be converted into
-  JSON null. Also, need to handle -Inf and NaN.
-
 - operator might optionally declare how its output Vals are sorted?
 
 - scan should have a lookup table of file suffix handlers?
 
 - advanced scans of indexes?
-  - only basic Index.Scan glue works right now. <== OUTDATED?
+  - basic + covering secondary-index scans and FTS work now (glue/idx_si.go
+    secondaryIndex.Scan, glue/idx_fts.go, glue/conv.go VisitIndexScan). Still
+    open: the IndexScan2/IndexScan3 pushdowns below (indexProjection / indexOrder
+    / indexGroupAggs), which stay NA (VisitIndexScan2/3 in glue/conv.go).
 
 - PrimaryScan3 Scan3 has advanced pushdowns that we might support...
   - indexProjection, indexOrder, indexGroupAggs?
