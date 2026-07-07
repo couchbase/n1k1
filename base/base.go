@@ -322,13 +322,13 @@ type Op struct {
 	// from StatsDescs each run. See stats.go and DESIGN-stats.md.
 	StatsBase int `json:"-"`
 
-	// PreviewSlot is this op's fixed index into Ctx.Stats.Previews (the per-op
+	// RunningAggSlot is this op's fixed index into Ctx.Stats.RunningAggs (the per-op
 	// live-aggregate snapshot buffers), assigned once by LayoutStats at request
-	// setup (-1 if the op never previews). Like StatsBase it gives each op a
+	// setup (-1 if the op never running aggregates). Like StatsBase it gives each op a
 	// private, single-writer slot so parallel actors (e.g. a GROUP BY inside each
-	// UNION ALL branch) never collide -- see stats.go / vars.go RefreshPreviews and
+	// UNION ALL branch) never collide -- see stats.go / vars.go RefreshRunningAggs and
 	// DESIGN-stats.md "Live aggregates". Not serialized.
-	PreviewSlot int `json:"-"`
+	RunningAggSlot int `json:"-"`
 }
 
 // -----------------------------------------------------

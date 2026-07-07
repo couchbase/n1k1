@@ -24,7 +24,7 @@ import (
 	"github.com/couchbase/rhmap/store"
 )
 
-// snapAgg is the JSON shape of one live-aggregate preview row (see
+// snapAgg is the JSON shape of one live-aggregate running-aggregate row (see
 // StatsSnapshotJSON's "aggs" array).
 type snapAgg struct {
 	Op   string            `json:"op"`
@@ -127,10 +127,10 @@ func TestStatsSnapshotNil(t *testing.T) {
 	if StatsSnapshotJSON(nil) != "{}" {
 		t.Error("nil Stats should snapshot to {}")
 	}
-	// A Stats with no preview slots must snapshot cleanly (no "aggs"), and
-	// RangePreview on it is a safe no-op.
+	// A Stats with no running-aggregate slots must snapshot cleanly (no "aggs"), and
+	// RangeRunningAggs on it is a safe no-op.
 	s := &base.Stats{}
-	s.RangePreview(func(*base.PreviewRow) { t.Error("no rows expected") })
+	s.RangeRunningAggs(func(*base.RunningAggRow) { t.Error("no rows expected") })
 	if js := StatsSnapshotJSON(s); js != `{"ops":[]}` {
 		t.Errorf("empty Stats snapshot = %q, want no aggs", js)
 	}
@@ -139,7 +139,7 @@ func TestStatsSnapshotNil(t *testing.T) {
 // TestStatsSnapshotLiveAggregates proves the "Live aggregates" design end to end
 // for an ungrouped aggregate: the partials (COUNT/SUM/AVG/MIN/MAX) climb
 // monotonically toward their finals, and the LAST live snapshot is byte-identical
-// to the finalized result -- because the preview decode and the final result use
+// to the finalized result -- because the running-aggregate decode and the final result use
 // the same base.Agg.Result call.
 func TestStatsSnapshotLiveAggregates(t *testing.T) {
 	forceLiveCheckpoints(t)
@@ -160,7 +160,7 @@ func TestStatsSnapshotLiveAggregates(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Gather the preview rows that actually carried aggregates (early checkpoints,
+	// Gather the running-aggregate rows that actually carried aggregates (early checkpoints,
 	// before the first row is folded, have an empty group -> no aggs).
 	var withAggs []map[string]string
 	for _, sp := range snaps {
@@ -198,7 +198,7 @@ func TestStatsSnapshotLiveAggregates(t *testing.T) {
 	}
 
 	// Convergence: the LAST live partial equals the finalized result byte-for-byte.
-	// The final result row is JSON like {"count":5,"sum":34.7,...}; the preview
+	// The final result row is JSON like {"count":5,"sum":34.7,...}; the running-aggregate
 	// carries each value as the same Agg.Result text ("5","34.7",...).
 	last := withAggs[len(withAggs)-1]
 	var final map[string]json.RawMessage
@@ -264,7 +264,7 @@ func TestStatsSnapshotLiveAggregatesGrouped(t *testing.T) {
 		}
 		fm, ok := finalByStyle[style]
 		if !ok {
-			t.Fatalf("preview group %q not in final result", style)
+			t.Fatalf("running-aggregate group %q not in final result", style)
 		}
 		for _, k := range []string{"count", "sum", "min", "max"} {
 			if got, want := ag.Vals[k], string(fm[k]); got != want {
@@ -274,10 +274,10 @@ func TestStatsSnapshotLiveAggregatesGrouped(t *testing.T) {
 	}
 }
 
-// TestStatsSnapshotNoPreviewForCostlyAgg checks the carve-out: a group containing a
-// non-cheap aggregate (ARRAY_AGG / COUNT(DISTINCT)) registers no live-value preview
+// TestStatsSnapshotNoRunningAggsForCostlyAgg checks the carve-out: a group containing a
+// non-cheap aggregate (ARRAY_AGG / COUNT(DISTINCT)) registers no live-value running-aggregate
 // (progress-only), so snapshots carry counters but no "aggs" payload.
-func TestStatsSnapshotNoPreviewForCostlyAgg(t *testing.T) {
+func TestStatsSnapshotNoRunningAggsForCostlyAgg(t *testing.T) {
 	forceLiveCheckpoints(t)
 
 	root := writeMemFixture(t, `"abv"`)
@@ -302,7 +302,7 @@ func TestStatsSnapshotNoPreviewForCostlyAgg(t *testing.T) {
 			t.Fatalf("%s: %v", q, err)
 		}
 		if sawAggs {
-			t.Errorf("%s: expected progress-only (no live aggs), but a preview appeared", q)
+			t.Errorf("%s: expected progress-only (no live aggs), but a running-aggregate appeared", q)
 		}
 	}
 }
@@ -328,8 +328,8 @@ func buildGroupVal(t testing.TB, vars *base.Vars, names []string, rows []string)
 
 // BenchmarkLiveAggSnapshot is the zero-allocation proof for the live-aggregate
 // checkpoint decode: repeatedly snapshotting a group's fixed-width accumulators
-// (COUNT/SUM/AVG/MIN/MAX) through base.GroupPreviewSnapshot into a REUSED
-// base.Preview must be 0 allocs/op once warmed up. (The per-row accumulate hot path
+// (COUNT/SUM/AVG/MIN/MAX) through base.GroupRunningAggs into a REUSED
+// base.RunningAggs must be 0 allocs/op once warmed up. (The per-row accumulate hot path
 // is untouched by this feature, so this checkpoint decode is the only new work that
 // could allocate.)
 func BenchmarkLiveAggSnapshot(b *testing.B) {
@@ -351,39 +351,39 @@ func BenchmarkLiveAggSnapshot(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	// Drive the exact production path: a Stats with one per-op preview slot, an
+	// Drive the exact production path: a Stats with one per-op running-aggregate slot, an
 	// actor Ctx with one registered refresher, re-snapshotted via
-	// Ctx.RefreshPreviews (which takes the checkpoint lock, resets, and re-fills the
+	// Ctx.RefreshRunningAggs (which takes the checkpoint lock, resets, and re-fills the
 	// reused per-op buffer) at each checkpoint.
-	stats := &base.Stats{Previews: make([]base.Preview, 1)}
+	stats := &base.Stats{RunningAggs: make([]base.RunningAggs, 1)}
 	vars.Ctx.Stats = stats
-	vars.Ctx.RegisterPreview(0, func(dst *base.Preview) {
-		base.GroupPreviewSnapshot(dst, "0", set, names, vars)
+	vars.Ctx.RegisterRunningAgg(0, func(dst *base.RunningAggs) {
+		base.GroupRunningAggs(dst, "0", set, names, vars)
 	})
-	vars.Ctx.RefreshPreviews() // warm up the reused buffers
+	vars.Ctx.RefreshRunningAggs() // warm up the reused buffers
 
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		vars.Ctx.RefreshPreviews()
+		vars.Ctx.RefreshRunningAggs()
 	}
 	b.StopTimer()
 
 	// Sanity: the reused snapshot still decodes correctly (one group, count == 5).
-	rows := stats.Previews[0].Rows()
+	rows := stats.RunningAggs[0].Rows()
 	if len(rows) != 1 || string(rows[0].Aggs[0]) != "5" {
 		b.Fatalf("unexpected snapshot: %+v", rows)
 	}
 }
 
 // BenchmarkAggQueryStatsOnVsOff reports allocs/op for the same aggregate query with
-// live stats+preview OFF vs ON, forcing a checkpoint every row. The per-row hot
+// live stats+running-aggregate OFF vs ON, forcing a checkpoint every row. The per-row hot
 // path (the accumulate loop) is unchanged by this feature and the checkpoint
 // decode is allocation-free (see BenchmarkLiveAggSnapshot), so enabling stats must
-// not materially inflate allocations. The ON callback reads the live preview but
+// not materially inflate allocations. The ON callback reads the live running-aggregate but
 // does NOT serialize it -- StatsSnapshotJSON's map/JSON building is a separate,
 // off-hot-path rendering concern (throttled to ~10 Hz in production), so leaving it
-// out isolates the cost of counting + RefreshPreview itself. Compare with -benchmem.
+// out isolates the cost of counting + RefreshRunningAggs itself. Compare with -benchmem.
 func BenchmarkAggQueryStatsOnVsOff(b *testing.B) {
 	root := writeMemFixture(b, `"abv"`)
 	stmt := `SELECT count(*) AS c, sum(abv) AS s, avg(abv) AS a, min(abv) AS mn, max(abv) AS mx FROM beers`
@@ -400,9 +400,9 @@ func BenchmarkAggQueryStatsOnVsOff(b *testing.B) {
 		if collect {
 			sess.CollectStats = true
 			// Read the live partials (as a real consumer would), without the JSON
-			// rendering, so the measurement reflects counting + RefreshPreview only.
+			// rendering, so the measurement reflects counting + RefreshRunningAggs only.
 			sess.OnStats = func(s *base.Stats) {
-				s.RangePreview(func(r *base.PreviewRow) { _ = r.Aggs })
+				s.RangeRunningAggs(func(r *base.RunningAggRow) { _ = r.Aggs })
 			}
 		}
 		b.ReportAllocs()

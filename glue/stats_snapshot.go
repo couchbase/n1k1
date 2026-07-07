@@ -30,7 +30,7 @@ import (
 // may show mild cross-field skew mid-run (a re-run inner op resets) -- fine for
 // progress. The optional "aggs" array carries in-flight partial aggregate values
 // (COUNT/SUM/AVG/MIN/MAX climbing toward their finals; see DESIGN-stats.md "Live
-// aggregates"), present only when an OpGroup registered a preview and a checkpoint
+// aggregates"), present only when an OpGroup registered a running-aggregate and a checkpoint
 // filled it. Returns "{}" for a nil Stats.
 func StatsSnapshotJSON(s *base.Stats) string {
 	if s == nil {
@@ -58,10 +58,10 @@ func StatsSnapshotJSON(s *base.Stats) string {
 		ops = append(ops, opView{Id: op.Id, Kind: op.Kind, Stats: m})
 	}
 
-	// RangePreview holds the checkpoint lock while we read, so a concurrently
+	// RangeRunningAggs holds the checkpoint lock while we read, so a concurrently
 	// refreshing actor (a GROUP BY in another UNION ALL branch) can't tear the read.
 	var aggs []aggView
-	s.RangePreview(func(r *base.PreviewRow) {
+	s.RangeRunningAggs(func(r *base.RunningAggRow) {
 		vals := make(map[string]string, len(r.Names))
 		for i, name := range r.Names {
 			if i < len(r.Aggs) {

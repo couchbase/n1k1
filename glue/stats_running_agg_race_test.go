@@ -20,13 +20,13 @@ import (
 	"github.com/couchbase/n1k1/base"
 )
 
-// TestStatsPreviewUnionRace exercises the concurrency the earlier single-goroutine
+// TestStatsRunningAggsUnionRace exercises the concurrency the earlier single-goroutine
 // tests missed: a parallel UNION ALL whose EACH branch has a GROUP BY with cheap
 // aggregates, with live stats ON and snapshots taken at every checkpoint. Each
 // branch runs on its OWN actor goroutine sharing ONE *base.Stats, so the live
-// preview registration + refresh + read must be goroutine-safe. Run under
+// running-aggregate registration + refresh + read must be goroutine-safe. Run under
 // `go test -race` -- it must be clean.
-func TestStatsPreviewUnionRace(t *testing.T) {
+func TestStatsRunningAggsUnionRace(t *testing.T) {
 	forceLiveCheckpoints(t)
 
 	root := writeMemFixture(t, `"abv"`)
@@ -37,18 +37,18 @@ func TestStatsPreviewUnionRace(t *testing.T) {
 
 	var fires int64
 	sess.CollectStats = true
-	// Read the live PREVIEW partials the way a consumer does -- via the fenced
-	// RangePreview -- while the two branch actors concurrently register and refresh
-	// their own preview slots. The reader runs on whichever actor's checkpoint
-	// fired it, so it reads slots owned by the OTHER actor too; RangePreview's lock
+	// Read the live RUNNING-AGGREGATE partials the way a consumer does -- via the fenced
+	// RangeRunningAggs -- while the two branch actors concurrently register and refresh
+	// their own running-aggregate slots. The reader runs on whichever actor's checkpoint
+	// fired it, so it reads slots owned by the OTHER actor too; RangeRunningAggs's lock
 	// fences that against the owner's concurrent refresh. (We deliberately read only
-	// previews here, not the full StatsSnapshotJSON: the counter core it also reads
+	// running aggregates here, not the full StatsSnapshotJSON: the counter core it also reads
 	// carries a SEPARATE, pre-existing, design-accepted advisory read race --
 	// lock-free monotonic counters, DESIGN-stats.md Open Questions -- orthogonal to
-	// the preview races this fix targets and unchanged by it.)
+	// the running-aggregate races this fix targets and unchanged by it.)
 	sess.OnStats = func(s *base.Stats) {
 		atomic.AddInt64(&fires, 1)
-		s.RangePreview(func(r *base.PreviewRow) {
+		s.RangeRunningAggs(func(r *base.RunningAggRow) {
 			// Touch the row's fields to force real reads the detector can catch.
 			_ = r.Op
 			for _, a := range r.Aggs {
@@ -76,6 +76,6 @@ func TestStatsPreviewUnionRace(t *testing.T) {
 		}
 	}
 	if fires == 0 {
-		t.Fatal("OnStats never fired; the concurrent preview path was not exercised")
+		t.Fatal("OnStats never fired; the concurrent running-aggregate path was not exercised")
 	}
 }

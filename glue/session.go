@@ -260,8 +260,8 @@ func (s *Session) Run(stmt string) (res *Result, err error) {
 			vars.Ctx.YieldStats = func(st *base.Stats) error {
 				// The live in-flight aggregate partials (COUNT/SUM/AVG/MIN/MAX
 				// climbing) are refreshed by each actor at its own checkpoint
-				// (Ctx.RefreshPreviews, called just before this YieldStats fires), so
-				// they are already current here. onStats reads them via st.RangePreview
+				// (Ctx.RefreshRunningAggs, called just before this YieldStats fires), so
+				// they are already current here. onStats reads them via st.RangeRunningAggs
 				// / StatsSnapshotJSON, which fences the read against a concurrently
 				// refreshing actor. See DESIGN-stats.md "Live aggregates".
 				onStats(st)

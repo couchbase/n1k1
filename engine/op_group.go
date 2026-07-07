@@ -82,27 +82,27 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 		StatsCounterZero(lzStats, lzStatsBase+StatGroupRowsIn)    // <== genCompiler:hide
 		StatsCounterZero(lzStats, lzStatsBase+StatGroupGroupsOut) // <== genCompiler:hide
 
-		// Live-aggregate preview (DESIGN-stats.md "Live aggregates"): register a
+		// Live-aggregate running-aggregate (DESIGN-stats.md "Live aggregates"): register a
 		// refresher that, at each synchronous YieldStats checkpoint, snapshots a
 		// bounded sample of the in-flight group map -- decoding each partial via
 		// the same base.Agg.Result byte-path the final result uses -- so the CLI /
 		// a library reader can watch COUNT/SUM/AVG/MIN/MAX climb. Interpreter-only
 		// (genCompiler:hide), zero hot-path cost (the per-row loop is untouched),
-		// and only when EVERY projected aggregate is cheaply previewable (else
+		// and only when EVERY projected aggregate is cheaply runningCapable (else
 		// StatsGroupAggNames returns nil -> progress-only). Registered on THIS
-		// actor's own Ctx, keyed to this op's fixed Stats.Previews slot
-		// (o.PreviewSlot), so a GROUP BY inside each parallel UNION ALL branch is a
-		// single writer of its own slot -- no cross-actor race. lzPreviewLive is
+		// actor's own Ctx, keyed to this op's fixed Stats.RunningAggs slot
+		// (o.RunningAggSlot), so a GROUP BY inside each parallel UNION ALL branch is a
+		// single writer of its own slot -- no cross-actor race. lzRunningAggLive is
 		// flipped off before RecycleMap so a later checkpoint can't walk a reclaimed
-		// map. (base.GroupPreviewSnapshot does the store-walk; base imports store,
+		// map. (base.GroupRunningAggs does the store-walk; base imports store,
 		// engine intermed does not, so no store symbol leaks into the compiled build.)
-		lzPreviewNames := StatsGroupAggNames(aggCalcs)                     // <== genCompiler:hide
-		lzPreviewLive := false                                             // <== genCompiler:hide
-		if lzStats != nil && lzPreviewNames != nil && o.PreviewSlot >= 0 { // <== genCompiler:hide
-			lzPreviewLive = true                                                  // <== genCompiler:hide
-			lzVars.Ctx.RegisterPreview(o.PreviewSlot, func(lzDst *base.Preview) { // <== genCompiler:hide
-				if lzPreviewLive { // <== genCompiler:hide
-					base.GroupPreviewSnapshot(lzDst, path, lzSet, lzPreviewNames, lzVars) // <== genCompiler:hide
+		lzRunningAggNames := StatsGroupAggNames(aggCalcs)                     // <== genCompiler:hide
+		lzRunningAggLive := false                                             // <== genCompiler:hide
+		if lzStats != nil && lzRunningAggNames != nil && o.RunningAggSlot >= 0 { // <== genCompiler:hide
+			lzRunningAggLive = true                                                  // <== genCompiler:hide
+			lzVars.Ctx.RegisterRunningAgg(o.RunningAggSlot, func(lzDst *base.RunningAggs) { // <== genCompiler:hide
+				if lzRunningAggLive { // <== genCompiler:hide
+					base.GroupRunningAggs(lzDst, path, lzSet, lzRunningAggNames, lzVars) // <== genCompiler:hide
 				} // <== genCompiler:hide
 			}) // <== genCompiler:hide
 		} // <== genCompiler:hide
@@ -258,7 +258,7 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 			ExecOp(o.Children[0], lzVars, lzYieldVals, lzYieldErr, pathNext, "GO") // !lz
 		}
 
-		lzPreviewLive = false // stats: disable preview before the map is reclaimed // <== genCompiler:hide
+		lzRunningAggLive = false // stats: disable running-aggregate before the map is reclaimed // <== genCompiler:hide
 
 		lzVars.Ctx.RecycleMap(lzSet)
 	}

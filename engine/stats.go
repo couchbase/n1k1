@@ -86,11 +86,11 @@ func StatsCounterZero(s *base.Stats, i int) {
 
 // StatsGroupAggNames flattens an OpGroup's aggCalcs (a list of lists of aggregate
 // handler names, in the same order the group value bytes are laid out) into a flat
-// []string -- but ONLY if every aggregate is cheaply previewable (base.AggPreviewable);
-// otherwise it returns nil so OpGroup registers no live-aggregate preview (the
+// []string -- but ONLY if every aggregate is cheaply runningCapable (base.AggRunningCapable);
+// otherwise it returns nil so OpGroup registers no live-aggregate running-aggregate (the
 // group stays progress-only). Kept store-free so it can be copied verbatim into the
 // intermed compiled-builder package (which does not import rhmap/store); the actual
-// map walk lives in base.GroupPreviewSnapshot. See DESIGN-stats.md "Live aggregates".
+// map walk lives in base.GroupRunningAggs. See DESIGN-stats.md "Live aggregates".
 func StatsGroupAggNames(aggCalcs []interface{}) []string {
 	if len(aggCalcs) == 0 {
 		return nil
@@ -100,8 +100,8 @@ func StatsGroupAggNames(aggCalcs []interface{}) []string {
 	for _, aggCalc := range aggCalcs {
 		for _, aggName := range aggCalc.([]interface{}) {
 			name := aggName.(string)
-			if !base.AggPreviewable(name) {
-				return nil // A non-previewable agg -> progress-only for the whole group.
+			if !base.AggRunningCapable(name) {
+				return nil // A non-runningCapable agg -> progress-only for the whole group.
 			}
 			names = append(names, name)
 		}

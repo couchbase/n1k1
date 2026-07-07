@@ -496,7 +496,14 @@ richer payload: `Stats` (or a sibling `Preview`) carries an optional bounded
 
 ## Live aggregates: partials that climb (zero per-row alloc)
 
-Status: the cheap fixed-width core (COUNT/SUM/AVG/MIN/MAX + `_v`) is implemented, interpreter-only — see `base/preview.go`, `OpGroup`'s registration, `Stats.RefreshPreview`, and the `TestStatsSnapshotLiveAggregates*` tests + `BenchmarkLiveAggSnapshot` (0 allocs/op).
+Status: the cheap fixed-width core (COUNT/SUM/AVG/MIN/MAX + `_v`) is implemented,
+interpreter-only, and concurrency-safe across parallel `UNION ALL` branches (per-op
+fixed slots + a checkpoint-only lock) — see `base/running_agg.go`, `OpGroup`'s
+registration (`Ctx.RegisterRunningAgg`), `Ctx.RefreshRunningAggs`, and the
+`TestStatsSnapshotLiveAggregates*` / `TestStatsRunningAggsUnionRace` tests +
+`BenchmarkLiveAggSnapshot` (0 allocs/op). (The machinery was named "preview" in an
+earlier draft; it is now "running aggregates" — a value that keeps climbing, not a
+one-shot render.)
 
 The previous section covers previewing *result rows* generically. This section
 zooms into the highest-value, trickiest case — **aggregate values climbing toward

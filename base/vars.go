@@ -120,13 +120,13 @@ type Ctx struct {
 	// stats.go and DESIGN-stats.md.
 	Stats *Stats
 
-	// previewJobs are this actor's live-aggregate refreshers: one per GROUP op in
-	// THIS actor's branch, registered at op setup (RegisterPreview) and run at this
-	// actor's checkpoint (RefreshPreviews). Because Ctx is cloned per actor (Clone
-	// resets this to nil) and a job writes only its op's own fixed Stats.Previews
-	// slot, each preview buffer has exactly ONE writer goroutine even when a
+	// runningAggJobs are this actor's live-aggregate refreshers: one per GROUP op in
+	// THIS actor's branch, registered at op setup (RegisterRunningAgg) and run at this
+	// actor's checkpoint (RefreshRunningAggs). Because Ctx is cloned per actor (Clone
+	// resets this to nil) and a job writes only its op's own fixed Stats.RunningAggs
+	// slot, each running-aggregate buffer has exactly ONE writer goroutine even when a
 	// GROUP BY runs inside each parallel UNION ALL branch. Interpreter-only.
-	previewJobs []previewJob
+	runningAggJobs []runningAggJob
 
 	// Warn records a non-fatal advisory (e.g. divide-by-zero) during
 	// evaluation. It is cbq-free by design (a plain string), so engine/base
@@ -174,54 +174,54 @@ func (ctx *Ctx) Clone() (ctxCopy *Ctx) {
 	*ctxCopy = *ctx
 	ctxCopy.ValComparer = NewValComparer()
 
-	// Each actor tracks only its OWN branch's preview refreshers, so it refreshes
-	// (and thus single-writes) only its own ops' Stats.Previews slots. Starting
+	// Each actor tracks only its OWN branch's running-aggregate refreshers, so it refreshes
+	// (and thus single-writes) only its own ops' Stats.RunningAggs slots. Starting
 	// empty avoids sharing the parent's job slice across goroutines.
-	ctxCopy.previewJobs = nil
+	ctxCopy.runningAggJobs = nil
 
 	return ctxCopy
 }
 
-// previewJob is one op's live-aggregate refresher, bound to that op's fixed
-// Stats.Previews slot. fill re-decodes the op's current accumulators into the
+// runningAggJob is one op's live-aggregate refresher, bound to that op's fixed
+// Stats.RunningAggs slot. fill re-decodes the op's current accumulators into the
 // given (reused) per-op buffer; it runs on the owning actor's goroutine only.
-type previewJob struct {
+type runningAggJob struct {
 	slot int
-	fill func(*Preview)
+	fill func(*RunningAggs)
 }
 
-// RegisterPreview records a live-aggregate refresher for one op (slot =
-// Op.PreviewSlot), called once at the op's setup on the owning actor's goroutine.
-// Appends to the per-actor previewJobs (no cross-goroutine sharing, so no lock).
+// RegisterRunningAgg records a live-aggregate refresher for one op (slot =
+// Op.RunningAggSlot), called once at the op's setup on the owning actor's goroutine.
+// Appends to the per-actor runningAggJobs (no cross-goroutine sharing, so no lock).
 // A negative slot or nil fill is ignored.
-func (ctx *Ctx) RegisterPreview(slot int, fill func(*Preview)) {
+func (ctx *Ctx) RegisterRunningAgg(slot int, fill func(*RunningAggs)) {
 	if ctx == nil || slot < 0 || fill == nil {
 		return
 	}
-	ctx.previewJobs = append(ctx.previewJobs, previewJob{slot: slot, fill: fill})
+	ctx.runningAggJobs = append(ctx.runningAggJobs, runningAggJob{slot: slot, fill: fill})
 }
 
-// RefreshPreviews re-fills THIS actor's preview slots from its registered jobs. It
+// RefreshRunningAggs re-fills THIS actor's running-aggregate slots from its registered jobs. It
 // is called at the synchronous YieldStats checkpoint (on this actor's goroutine,
 // between row yields), so each job reads coherent, non-mutating accumulator bytes
 // from its own group map. It writes only this actor's own slots (single writer per
-// slot); previewMu is held only to fence a concurrent snapshot reader, and only at
+// slot); runningAggsMu is held only to fence a concurrent snapshot reader, and only at
 // this ~10 Hz checkpoint -- never on the per-row hot path. Allocation-free in
-// steady state (the per-op buffers are reused). A no-op when stats/preview is off.
-func (ctx *Ctx) RefreshPreviews() {
-	if ctx == nil || ctx.Stats == nil || len(ctx.previewJobs) == 0 {
+// steady state (the per-op buffers are reused). A no-op when stats/running-aggregate is off.
+func (ctx *Ctx) RefreshRunningAggs() {
+	if ctx == nil || ctx.Stats == nil || len(ctx.runningAggJobs) == 0 {
 		return
 	}
 
 	s := ctx.Stats
-	s.previewMu.Lock()
-	for _, j := range ctx.previewJobs {
-		if j.slot < 0 || j.slot >= len(s.Previews) {
+	s.runningAggsMu.Lock()
+	for _, j := range ctx.runningAggJobs {
+		if j.slot < 0 || j.slot >= len(s.RunningAggs) {
 			continue
 		}
-		p := &s.Previews[j.slot]
+		p := &s.RunningAggs[j.slot]
 		p.reset()
 		j.fill(p)
 	}
-	s.previewMu.Unlock()
+	s.runningAggsMu.Unlock()
 }
