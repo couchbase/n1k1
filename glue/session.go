@@ -292,6 +292,11 @@ func PlanConvert(qp *plan.QueryPlan) (*PreparedPlan, error) {
 		elideDiscarded(conv.TopOp) // drop dead projections under count(*)-style groups
 	}
 	maybeColumnarOptimize(conv.TopOp, conv.Temps) // fuse ungrouped SUM over a Parquet column
+	// A -> B wiring (DESIGN-merging.md §3): lower order(union-all) -> merge-scan when
+	// Track A's SortedSourceMeta proves the ORDER BY key is a normalized int64 sorted
+	// source (real per-branch sortedness/disorder/zone-map Params); no-op otherwise.
+	// gctx is nil here (plan-time); SortedSourceMetasForKeyspace then walks fresh.
+	conv.TopOp = WireTemporalMergeMeta(conv.TopOp, conv.Temps, nil)
 	cv, err := NewConvertVals(conv.TopOp.Labels)
 	if err != nil {
 		return nil, &ErrUnsupported{Reason: err.Error()}

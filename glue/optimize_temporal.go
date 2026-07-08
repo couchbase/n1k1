@@ -50,19 +50,26 @@ package glue
 // firing unconditionally could turn a string-keyed UNION ALL...ORDER BY into a
 // merge-scan that errors on the non-int key. So the pass is OPT-IN via
 // EnableMergeRewrite (default off), exactly like DisableColumnarOptimize gates
-// the columnar path. Once Track A wires SortedSourceMeta through glue, this gate
-// becomes "fire when the branches carry a proven int64 sort key", and the
-// per-branch sortedness/zone-map Params below are read from that meta rather than
-// defaulted.
+// the columnar path.
+//
+// UPDATE (A->B wiring landed): that "fire when the branches carry a proven int64
+// sort key" path now exists as WireTemporalMergeMeta (below), run from PlanConvert
+// (the s.Run path) and ServiceRequestEx where Temps are in hand. It consults Track
+// A's SortedSourceMetasForKeyspace per branch and fires -- with the branches' REAL
+// sortedness/disorder/zone-map Params -- only when the ORDER BY key is a proven
+// normalized sort key. EnableMergeRewrite remains the no-metadata opt-in fallback
+// (e.g. the compiler differential) for when that metadata isn't available.
 
 import (
 	"encoding/json"
 	"strings"
 
 	"github.com/couchbase/query/algebra"
+	"github.com/couchbase/query/datastore"
 	"github.com/couchbase/query/expression"
 
 	"github.com/couchbase/n1k1/base"
+	"github.com/couchbase/n1k1/records"
 )
 
 // EnableMergeRewrite opts the temporal merge rewrite (UNION ALL of sorted
@@ -712,4 +719,196 @@ func constInt64(e expression.Expression) (int64, bool) {
 		return int64(v), true
 	}
 	return 0, false
+}
+
+// -------------------------------------------------------------------
+// A -> B wiring: fire UNION-ALL -> merge from Track A's SortedSourceMeta.
+//
+// rewriteTemporal (above) is the no-metadata, opt-in (EnableMergeRewrite) pass
+// that runs in ExecConv where no datastore is reachable. WireTemporalMergeMeta is
+// its metadata-aware counterpart: it runs at exec time (ServiceRequestEx), where
+// the GlueContext + Temps are available, so it can consult Track A's memoized
+// SortedSourceMeta (via each union branch's scan keyspace) and FIRE the rewrite --
+// with REAL per-branch sortedness / disorder-bound / zone-map Params -- but ONLY
+// when the ORDER BY key is a PROVEN normalized int64 sort key (SortKeyLabel) across
+// every branch. Safe by construction: any branch whose key isn't a proven sorted
+// source leaves order(union-all) untouched (the correct heap-sort path). The
+// watermarked-near merge validates monotonicity (policy "error"), so even an
+// optimistic sortedness aggregation fails loudly rather than mis-orders.
+
+// MergeMetaRewriteApplied counts order(union-all) subtrees WireTemporalMergeMeta
+// lowered to a metadata-driven merge-scan (test observability).
+var MergeMetaRewriteApplied int64
+
+// WireTemporalMergeMeta walks the op tree (root included) replacing each recognized
+// order(union-all) whose sort key is a proven sorted source with a merge-scan whose
+// Params come from Track A's SortedSourceMeta. Returns the (possibly new) root.
+// gctx may be nil (SortedSourceMetasForKeyspace then walks fresh instead of using
+// the per-request walk-file cache) -- so this is safe to call from PlanConvert,
+// which runs before any GlueContext exists.
+func WireTemporalMergeMeta(root *base.Op, temps []interface{}, gctx *GlueContext) *base.Op {
+	if root == nil {
+		return root
+	}
+	if ms := mergeScanWithMeta(root, temps, gctx); ms != nil {
+		wireTemporalMetaWalk(ms, temps, gctx)
+		return ms
+	}
+	wireTemporalMetaWalk(root, temps, gctx)
+	return root
+}
+
+func wireTemporalMetaWalk(op *base.Op, temps []interface{}, gctx *GlueContext) {
+	for i, child := range op.Children {
+		if ms := mergeScanWithMeta(child, temps, gctx); ms != nil {
+			op.Children[i] = ms
+			child = ms
+		}
+		wireTemporalMetaWalk(child, temps, gctx)
+	}
+}
+
+// mergeScanWithMeta recognizes an order(union-all) (reusing mergeScanFromOrderUnion
+// for the shape + keyIdx) and, iff the ORDER BY key is a proven normalized sort key
+// across every branch, returns a merge-scan carrying the branches' real sortedness,
+// disorder-bound and zone-map Params. Returns nil (no rewrite) otherwise.
+func mergeScanWithMeta(op *base.Op, temps []interface{}, gctx *GlueContext) *base.Op {
+	ms := mergeScanFromOrderUnion(op)
+	if ms == nil {
+		return nil
+	}
+	keyName := mergeOrderKeyName(op)
+	if keyName == "" {
+		return nil
+	}
+	union := op.Children[0]
+	n := len(union.Children)
+	sortedness := make([]interface{}, n)
+	minKeys := make([]interface{}, n)
+	maxKeys := make([]interface{}, n)
+	bounds := make([]interface{}, n)
+	haveZone := true
+	for i, branch := range union.Children {
+		ks := branchScanKeyspace(branch, temps)
+		if ks == nil {
+			return nil // a branch we can't resolve to a keyspace: don't fire
+		}
+		metas, err := SortedSourceMetasForKeyspace(ks, gctx)
+		if err != nil || len(metas) == 0 {
+			return nil // no proven sorted source for this branch
+		}
+		s, minK, maxK, boundNs, zoneOK, ok := aggregateBranchMeta(metas, keyName)
+		if !ok {
+			return nil // key isn't the proven normalized sort key for this branch
+		}
+		sortedness[i], bounds[i] = s, boundNs
+		if zoneOK {
+			minKeys[i], maxKeys[i] = minK, maxK
+		} else {
+			haveZone = false
+		}
+	}
+	if !haveZone {
+		minKeys, maxKeys = nil, nil // "auto" can't prove disjointness without a full zone map
+	}
+	// Params layout: engine/op_merge_scan.go MergeScanExec
+	// [0]keyIdx [1]regime [2]sortedness [3]minKeys [4]maxKeys [5]bounds [6]policy.
+	ms.Params = []interface{}{ms.Params[0], "auto", sortedness, minKeys, maxKeys, bounds, "error"}
+	MergeMetaRewriteApplied++
+	return ms
+}
+
+// mergeOrderKeyName returns the leaf column name of the single ORDER BY term (or "").
+func mergeOrderKeyName(op *base.Op) string {
+	if op == nil || len(op.Params) < 1 {
+		return ""
+	}
+	exprs, ok := op.Params[0].([]interface{})
+	if !ok || len(exprs) != 1 {
+		return ""
+	}
+	term, ok := exprs[0].([]interface{})
+	if !ok || len(term) != 2 {
+		return ""
+	}
+	switch term[0].(string) {
+	case "labelPath":
+		if l, ok := term[1].(string); ok {
+			if leaf, ok := mergeLabelLeaf(l); ok {
+				return leaf
+			}
+		}
+	case "exprTree":
+		if e, ok := term[1].(expression.Expression); ok {
+			if name, ok := mergeExprLeafName(e); ok {
+				return name
+			}
+		}
+	}
+	return ""
+}
+
+// branchScanKeyspace finds the first datastore-scan op under branch and returns the
+// keyspace it scans (the plan op sits in Temps[Params[0]], implementing keyspacer),
+// or nil if the branch has no resolvable scan keyspace.
+func branchScanKeyspace(op *base.Op, temps []interface{}) datastore.Keyspace {
+	if op == nil {
+		return nil
+	}
+	if strings.HasPrefix(op.Kind, "datastore-scan") && len(op.Params) > 0 {
+		if idx, ok := op.Params[0].(int); ok && idx >= 0 && idx < len(temps) {
+			if ks, ok := temps[idx].(keyspacer); ok {
+				return ks.Keyspace()
+			}
+		}
+	}
+	for _, c := range op.Children {
+		if ks := branchScanKeyspace(c, temps); ks != nil {
+			return ks
+		}
+	}
+	return nil
+}
+
+// aggregateBranchMeta collapses a branch's per-file SortedSourceMetas into the
+// branch's single merge input: it requires every file's SortKeyLabel to equal
+// keyName (the proven normalized key) and no file to be unsorted. sortedness is
+// "near" if any file is near; boundNs is the max disorder window; the zone map is
+// [min(minKey), max(maxKey)] over files that have one (zoneOK=false if any file
+// lacks a record-count/zone, disabling the concatenate optimization for safety).
+func aggregateBranchMeta(metas []FileSortedSourceMeta, keyName string) (
+	sortedness string, minK, maxK, boundNs int64, zoneOK, ok bool) {
+	sortedness = records.SortedStrict
+	zoneOK = true
+	haveZone := false
+	for _, fm := range metas {
+		m := fm.Meta
+		if m.SortKeyLabel != keyName {
+			return "", 0, 0, 0, false, false // not the normalized sort key
+		}
+		switch m.Sortedness {
+		case records.SortedNone:
+			return "", 0, 0, 0, false, false // unsorted: can't merge without a sort
+		case records.SortedNear:
+			sortedness = records.SortedNear
+		}
+		if m.Disorder.WindowNanos > boundNs {
+			boundNs = m.Disorder.WindowNanos
+		}
+		if m.RecordCount > 0 {
+			if !haveZone || m.MinKey < minK {
+				minK = m.MinKey
+			}
+			if !haveZone || m.MaxKey > maxK {
+				maxK = m.MaxKey
+			}
+			haveZone = true
+		} else {
+			zoneOK = false
+		}
+	}
+	if !haveZone {
+		zoneOK = false
+	}
+	return sortedness, minK, maxK, boundNs, zoneOK, true
 }
