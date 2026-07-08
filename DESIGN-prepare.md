@@ -1,6 +1,9 @@
 # Design: PREPARE — SQL++ → Go, and running the prepared program
 
-Status: proposal (Phase 1 — `.prepare` emit + gate + interpreter fallback — implemented)
+Status: proposal (Phases 1–3 implemented — `.prepare` emit + gate + interpreter fallback;
+datastore `DatastorePipe`/MemPipe; cbq `PREPARE`/`EXECUTE` statements + `-prepare` ceiling +
+compiled `EXECUTE` end-to-end via the thin-child + data-over-pipe run model. Remaining:
+embed-source fat child, the full cursor pipe protocol, WASM, and native-expr coverage.)
 
 n1k1 **compiles** a SQL++ query plan into Go source (the `intermed/` compiler +
 `glue/emit.OpToLines`). `PREPARE` exposes that as a **Go-based preparation** of a
@@ -481,14 +484,26 @@ and always fine on an explicit `.prepare` (inspection, like `EXPLAIN`); it's **c
    provider** — so an emitted query runs standalone over inline `base.Vals` (zero
    datastore deps) and real `FROM` queries stop falling back on the datastore-op gate.
 3. **cbq `PREPARE ... AS` / `EXECUTE ... USING` + the `-prepare=<level>` ceiling + a run
-   model.** Land the SQL statements (named artifact cache) and the ceiling knob (default
-   `interpreted`; `data`/`full` opt into `go build`). Pick a run model per goal:
+   model — statements, ceiling, and the thin-child run model DONE (end-to-end).** The SQL
+   statements (named artifact cache) and the ceiling knob (default `interpreted`;
+   `data`/`full` opt into `go build`) are landed, and compiled `EXECUTE` runs end-to-end via
+   the thin child + data-over-pipe model (below): `glue.executeCompiled` lowers exprs
+   natively (`ExprTreesOptimize`, so field-access / arithmetic / nary / const-folded
+   projections compile, not just `SELECT *`), `go build`s a cbq-free child (engine+base),
+   ships the scanned records over its stdin, and the child streams **positional `base.Vals`**
+   back (`ValsEncode` frames); the parent assembles each into the row JSON with its existing
+   `ConvertVals`, so multi-column / nested projections come back correctly. A genuinely
+   per-row boxed expr degrades to the interpreter. (`TestExecuteCompiledFull`; CLI:
+   `n1k1 -prepare=full -c 'PREPARE p AS ...; EXECUTE p'`.) Remaining run-model work:
    - **embed-source (fat child, direct datastore)** — the headline for throughput:
      `//go:embed` a tightened datastore-runtime library, `go build` a self-contained
      prepared program, pipe carries only config/auth + results. Amortize compile +
-     connections across `EXECUTE`s.
-   - **thin child + data-over-pipe** — for sandboxing / minimal deps, with the parent's
-     existing `glue.DatastoreOp` as the data server.
+     connections across `EXECUTE`s. (The thin child ships every record over the pipe; this
+     avoids that for light providers — not yet built.)
+   - **thin child + data-over-pipe — DONE (above).** For sandboxing / minimal deps, with
+     the parent's existing `glue.DatastoreOp` as the data server. (Records are shipped over
+     stdin as a simplified frame today; the full multiplexed cursor protocol with pushdowns
+     — §"The pipe protocol" — is future work.)
 4. *(optional)* **WASM/wazero** — an in-process sandboxed alternative to the thin child.
 
 # PREPARE++ — the detector-corpus use case

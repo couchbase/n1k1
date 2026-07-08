@@ -14,8 +14,8 @@
 package glue
 
 import (
-	"bufio"
 	"bytes"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -72,10 +72,41 @@ func (s *Session) executeCompiled(ps *preparedStmt) (*Result, bool, error) {
 	if err != nil {
 		return nil, false, err
 	}
-	rows, err := runCompiledChild(ps.compiledBin, inputs)
+	// The child returns positional base.Vals (aligned to the query's result
+	// labels); the parent assembles each into the row's JSON here, reusing the same
+	// ConvertVals path the interpreter uses -- so multi-column / nested projections
+	// come back correctly, not just SELECT *. (Row assembly is glue's job, so the
+	// child stays thin: engine+base compute only.)
+	valsList, err := runCompiledChild(ps.compiledBin, inputs)
 	if err != nil {
 		return nil, false, err
 	}
+
+	cv, err := NewConvertVals(ps.compiled.topOp.Labels)
+	if err != nil {
+		return nil, false, err
+	}
+
+	rows := make([]json.RawMessage, 0, len(valsList))
+	var rowBuf []byte
+	for _, vals := range valsList {
+		if b, ok := cv.ConvertBytes(vals, rowBuf[:0]); ok { // boxing-free fast path
+			rowBuf = b
+			rows = append(rows, append(json.RawMessage(nil), rowBuf...))
+			continue
+		}
+		v, e := cv.Convert(vals) // boxed fallback (nested paths, ".*" mixes, ...)
+		if e != nil {
+			return nil, false, e
+		}
+		if v != nil {
+			b, _ := json.Marshal(v.Actual())
+			rows = append(rows, json.RawMessage(b))
+		} else {
+			rows = append(rows, json.RawMessage("null"))
+		}
+	}
+
 	return &Result{Labels: ps.compiled.topOp.Labels, Rows: rows, Count: len(rows)}, true, nil
 }
 
@@ -94,7 +125,7 @@ func (s *Session) buildCompiled(ps *preparedStmt) (bin string, cleanup func(), e
 		return "", func() {}, nil // no n1k1 source to build against
 	}
 
-	// Re-convert the statement into a FRESH tree so stringifyExprTrees (which
+	// Re-convert the statement into a FRESH tree so ExprTreesOptimize (which
 	// mutates) doesn't disturb ps.compiled (reused by the interpreter/scan path).
 	qp, err := s.Store.PlanStatementQP(ps.stmt, s.Namespace, nil, nil)
 	if err != nil {
@@ -104,7 +135,12 @@ func (s *Session) buildCompiled(ps *preparedStmt) (bin string, cleanup func(), e
 	if err != nil {
 		return "", func() {}, err
 	}
-	stringifyExprTrees(pp.topOp)
+	// Lower each exprTree to its NATIVE inline form where possible (the same
+	// optimizer the Preparable gate uses via exprIsNative), boxing to an exprStr
+	// island otherwise. So field-access / arithmetic / nary / const-folded
+	// projections compile cbq-free -- not just SELECT *; only a genuinely boxed
+	// (per-row cbq) expr trips the interpreter fallback below.
+	ExprTreesOptimize(pp.topOp)
 
 	emit.PipeMode = true
 	body := strings.Join(emit.OpToLines(pp.topOp), "")
@@ -217,9 +253,12 @@ func scanRecordLeaves(o *base.Op) []*base.Op {
 }
 
 // runCompiledChild spawns the compiled child, streams the scanned records to its
-// stdin (one JSON object per line), and reads the result rows from its stdout (one
-// JSON row per line).
-func runCompiledChild(bin string, inputs []compiledInput) ([]json.RawMessage, error) {
+// stdin (one JSON object per line), and reads the result rows back from its stdout
+// as length-framed base.ValsEncode blobs -- each row is a uint64 little-endian
+// length followed by that many ValsEncode bytes (the same Vals framing the pipe
+// protocol uses; see DESIGN-prepare.md). Returns the decoded positional Vals; the
+// caller assembles them into JSON rows.
+func runCompiledChild(bin string, inputs []compiledInput) ([]base.Vals, error) {
 	cmd := exec.Command(bin)
 	var stdin bytes.Buffer
 	for i := range inputs {
@@ -234,17 +273,20 @@ func runCompiledChild(bin string, inputs []compiledInput) ([]json.RawMessage, er
 		return nil, fmt.Errorf("compiled EXECUTE: child failed: %v\n%s", err, stderr.String())
 	}
 
-	var rows []json.RawMessage
-	sc := bufio.NewScanner(&stdout)
-	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
-	for sc.Scan() {
-		line := sc.Bytes()
-		if len(line) == 0 {
-			continue
+	// stdout is a stable buffer, so ValsDecode's Val slices (into each frame) stay
+	// valid without copying.
+	var rows []base.Vals
+	b := stdout.Bytes()
+	for len(b) >= 8 {
+		n := binary.LittleEndian.Uint64(b[:8])
+		b = b[8:]
+		if uint64(len(b)) < n {
+			return nil, fmt.Errorf("compiled EXECUTE: truncated result frame (want %d, have %d)", n, len(b))
 		}
-		rows = append(rows, append(json.RawMessage(nil), line...))
+		rows = append(rows, base.ValsDecode(b[:n], nil))
+		b = b[n:]
 	}
-	return rows, sc.Err()
+	return rows, nil
 }
 
 // compiledGoMod is the child module's go.mod: a throwaway module that resolves
@@ -264,9 +306,11 @@ func compiledGoMod(srcDir string) string {
 
 // compiledMain wraps an emitted cbq-free query body in a runnable child: it reads
 // the parent's records from stdin into an engine.MemPipe, runs the compiled Run,
-// and writes each result row's JSON to stdout. (Result rows are single-value today
-// -- SELECT * / RAW -- since a field-access projection still boxes; a multi-column
-// native projection would need a base-level Vals->JSON assembler here.)
+// and writes each result row's POSITIONAL base.Vals back to stdout as a
+// length-framed base.ValsEncode blob (uint64 LE length + encoded bytes). The
+// parent (glue) assembles those vals into the row JSON with ConvertVals -- so the
+// child needs no label/JSON logic and works for any projection shape, not just
+// SELECT *.
 func compiledMain(body, provStamp string) string {
 	return "// Code generated for a compiled n1k1 EXECUTE. DO NOT EDIT.\n" +
 		"// " + provStamp + "\n" +
@@ -288,7 +332,9 @@ func compiledMain(body, provStamp string) string {
 		"\tvars := &base.Vars{Ctx: &base.Ctx{Pipe: &engine.MemPipe{Data: data}}}\n" +
 		"\tout := bufio.NewWriter(os.Stdout)\n\tdefer out.Flush()\n" +
 		"\tRun(vars, func(vals base.Vals) {\n" +
-		"\t\tif len(vals) > 0 { out.Write(vals[0]); out.WriteByte('\\n') }\n" +
+		"\t\tenc := base.ValsEncode(vals, nil)\n" +
+		"\t\tout.Write(base.BinaryAppendUint64(nil, uint64(len(enc))))\n" +
+		"\t\tout.Write(enc)\n" +
 		"\t}, func(err error) {\n" +
 		"\t\tif err != nil { fmt.Fprintln(os.Stderr, err); os.Exit(1) }\n" +
 		"\t})\n}\n"

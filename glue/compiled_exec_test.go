@@ -79,16 +79,55 @@ func TestExecuteCompiledFull(t *testing.T) {
 		t.Error("SELECT * should have compiled to a standalone child binary")
 	}
 
-	// A field-access projection still boxes (glue.ExprStr) -> not standalone-
-	// compilable -> falls back to the interpreter, still correct.
-	if _, err := s.Run(`PREPARE pbox AS SELECT b.name FROM beers b WHERE b.i = 1`); err != nil {
+	// A field-access projection is native (ExprTreesOptimize) -> compiles + runs as
+	// a child; the parent assembles the {"name":...} row from the child's positional
+	// vals via ConvertVals.
+	if _, err := s.Run(`PREPARE pfield AS SELECT b.name FROM beers b WHERE b.i = 1`); err != nil {
+		t.Fatal(err)
+	}
+	gotField := rowsOf(`EXECUTE pfield`)
+	if len(gotField) != 1 || gotField[0] != `{"name":"beer-001"}` {
+		t.Errorf(`EXECUTE pfield = %v, want [{"name":"beer-001"}]`, gotField)
+	}
+	if s.prepareds["pfield"].compiledBin == "" {
+		t.Error("a native field-access query should compile to a standalone child binary")
+	}
+
+	// A multi-column projection: the child yields two positional vals per row; the
+	// parent assembles {"i":..,"name":..} -- proving compiled EXECUTE goes beyond
+	// single-value SELECT *.
+	if _, err := s.Run(`PREPARE pmulti AS SELECT b.i, b.name FROM beers b`); err != nil {
+		t.Fatal(err)
+	}
+	gotMulti := rowsOf(`EXECUTE pmulti`)
+	wantMulti := []string{
+		`{"i":0,"name":"beer-000"}`,
+		`{"i":1,"name":"beer-001"}`,
+		`{"i":2,"name":"beer-002"}`,
+	}
+	if len(gotMulti) != len(wantMulti) {
+		t.Fatalf("EXECUTE pmulti rows = %v, want %v", gotMulti, wantMulti)
+	}
+	for i := range wantMulti {
+		if gotMulti[i] != wantMulti[i] {
+			t.Errorf("EXECUTE pmulti row %d = %s, want %s", i, gotMulti[i], wantMulti[i])
+		}
+	}
+	if s.prepareds["pmulti"].compiledBin == "" {
+		t.Error("a native multi-column query should compile to a standalone child binary")
+	}
+
+	// A genuinely per-row BOXED expr (non-native REPEAT over a field) can't be
+	// cbq-free -> must NOT compile standalone -> falls back to the interpreter,
+	// still correct.
+	if _, err := s.Run(`PREPARE pbox AS SELECT REPEAT(b.name, 2) AS r FROM beers b WHERE b.i = 1`); err != nil {
 		t.Fatal(err)
 	}
 	gotBox := rowsOf(`EXECUTE pbox`)
-	if len(gotBox) != 1 || gotBox[0] != `{"name":"beer-001"}` {
-		t.Errorf(`EXECUTE pbox = %v, want [{"name":"beer-001"}]`, gotBox)
+	if len(gotBox) != 1 || gotBox[0] != `{"r":"beer-001beer-001"}` {
+		t.Errorf(`EXECUTE pbox = %v, want [{"r":"beer-001beer-001"}]`, gotBox)
 	}
 	if s.prepareds["pbox"].compiledBin != "" {
-		t.Error("a boxed (field-access) query must NOT compile standalone; expected interpreter fallback")
+		t.Error("a boxed (per-row cbq) query must NOT compile standalone; expected interpreter fallback")
 	}
 }
