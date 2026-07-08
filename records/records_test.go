@@ -1029,3 +1029,63 @@ func TestSplitJSONValuesReuse(t *testing.T) {
 		t.Errorf("expected leaf buffers to be reused across calls")
 	}
 }
+
+// TestExtractSpecRoundTrip pins the Phase-0 extract/sorted-source contract
+// (records/spec.go): the shared types serialize to the .n1k1 sidecar and back
+// without losing fields, so the parallel extract/merge tracks agree on shapes.
+func TestExtractSpecRoundTrip(t *testing.T) {
+	spec := ExtractSpec{
+		Format:  "ns_server_log",
+		Framing: Framing{Kind: FramingMultiline, Continuation: `^\s|^\[`},
+		Fields:  Fields{Pattern: `\[(?P<module>\w+):(?P<level>\w+),(?P<ts>[^,]+),(?P<node>[^:]+):`},
+		Time:    &TimeSpec{Field: "ts", Layout: TimeLayoutRFC3339, TZDefault: "+02:00"},
+		Order: OrderSpec{
+			By:       "ts",
+			Sorted:   SortedNear,
+			Disorder: DisorderBound{WindowNanos: 2_000_000_000},
+		},
+		Provenance: map[string]string{"command": "cbbrowse_logs info.log", "node": "ns_1@host"},
+	}
+
+	b, err := json.Marshal(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got ExtractSpec
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Format != spec.Format ||
+		got.Framing != spec.Framing ||
+		got.Fields != spec.Fields ||
+		got.Time == nil || *got.Time != *spec.Time ||
+		got.Order != spec.Order ||
+		got.Provenance["command"] != spec.Provenance["command"] ||
+		got.Provenance["node"] != spec.Provenance["node"] {
+		t.Fatalf("ExtractSpec round-trip mismatch:\n got %+v\nwant %+v", got, spec)
+	}
+
+	meta := SortedSourceMeta{
+		SortKeyLabel: "ts",
+		Sortedness:   SortedNear,
+		Disorder:     DisorderBound{WindowNanos: 2_000_000_000},
+		MinKey:       1779000000000000000,
+		MaxKey:       1779150134812159000,
+		RecordCount:  128034,
+		SyncPoints:   []SyncPoint{{Key: 1779000000000000000, Offset: 0}, {Key: 1779100000000000000, Offset: 4210}},
+	}
+	mb, err := json.Marshal(meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mgot SortedSourceMeta
+	if err := json.Unmarshal(mb, &mgot); err != nil {
+		t.Fatal(err)
+	}
+	if mgot.SortKeyLabel != meta.SortKeyLabel || mgot.Sortedness != meta.Sortedness ||
+		mgot.Disorder != meta.Disorder || mgot.MinKey != meta.MinKey || mgot.MaxKey != meta.MaxKey ||
+		mgot.RecordCount != meta.RecordCount || len(mgot.SyncPoints) != len(meta.SyncPoints) ||
+		mgot.SyncPoints[1] != meta.SyncPoints[1] {
+		t.Fatalf("SortedSourceMeta round-trip mismatch:\n got %+v\nwant %+v", mgot, meta)
+	}
+}
