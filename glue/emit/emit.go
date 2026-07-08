@@ -227,15 +227,26 @@ func OpToLines(o *base.Op) []string {
 
 	// TODO: Need to handle exprTree when in compiled mode?
 
-	// Datastore ops hit ExecOp's default branch (ExecOpEx). In compiled mode we
-	// emit them as an interpreted "island": a glue.DatastoreOp(<baked op>, ...)
-	// call. The op node is bakeable as a Go literal (its Params are int Temps
-	// indices, not live objects); the live query-plan objects are supplied at
-	// the generated program's runtime via lzVars.Temps (see SetupCompiledSuite).
-	// This is the datastore-scan bridge: compiled operators above, interpreted
-	// scan/fetch below, runtime data passed in through lzVars.
+	// Datastore ops hit ExecOp's default branch (ExecOpEx). We emit them one of two
+	// ways:
+	//
+	//   - Default ("island") mode: glue.DatastoreOp(<baked op>, ...). The op bakes
+	//     as a Go literal whose Params are int Temps indices; the live query-plan
+	//     objects are supplied at the generated program's runtime via lzVars.Temps
+	//     (see SetupCompiledSuite). Compiled operators above, interpreted scan/fetch
+	//     below, runtime data through lzVars -- but it links glue/cbq.
+	//   - PipeMode: lzVars.Ctx.Pipe.Op(<minimal op>, ...). The leaf is served by the
+	//     request's base.DatastorePipe (e.g. engine.MemPipe over inline data), which
+	//     reads only the op's Kind + Labels -- so the minimal literal is cbq-free and
+	//     the generated program links engine+base only. This is the standalone path
+	//     (DESIGN-prepare.md phase 2).
 	intermed.ExecOpEx = func(o *base.Op, lzVars *base.Vars,
 		lzYieldVals base.YieldVals, lzYieldErr base.YieldErr, path, pathItem string) {
+		if PipeMode {
+			intermed.Emit("lzVars.Ctx.Pipe.Op(%s, lzVars, lzYieldVals, lzYieldErr, %q, %q)\n",
+				bakeOpForPipe(o), path, pathItem)
+			return
+		}
 		lit, ok := BakeOp(o)
 		if !ok {
 			intermed.Emit("UNBAKEABLE_DATASTORE_OP_%s // forces a compile error\n", o.Kind)
@@ -256,6 +267,32 @@ func OpToLines(o *base.Op) []string {
 	}
 
 	return outStack[len(outStack)-1]
+}
+
+// PipeMode makes OpToLines emit datastore leaf ops as lzVars.Ctx.Pipe.Op(<minimal
+// op>, ...) calls served by the request's base.DatastorePipe, instead of the
+// default glue.DatastoreOp(...) island. In PipeMode the generated code's datastore
+// path is cbq-free (engine+base only) -- the standalone-program path. Off by
+// default (the compiler suite + the emit-only .prepare inspector keep the island).
+var PipeMode bool
+
+// bakeOpForPipe renders a datastore leaf op as a MINIMAL Go literal for a
+// DatastorePipe: Kind + Labels only. A pipe (e.g. engine.MemPipe) resolves the
+// keyspace from the `.["alias"]` output label and ignores Params/Children, so the
+// literal carries no int Temps indices or non-bakeable pushdowns ([]string project
+// columns) -- it is always bakeable and links no cbq. Children are dropped (a scan
+// leaf has none the pipe needs).
+func bakeOpForPipe(o *base.Op) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "&base.Op{Kind: %q, Labels: base.Labels{", o.Kind)
+	for i, l := range o.Labels {
+		if i > 0 {
+			sb.WriteString(", ")
+		}
+		fmt.Fprintf(&sb, "%q", l)
+	}
+	sb.WriteString("}}")
+	return sb.String()
 }
 
 // bakeParam renders a single op param as a Go literal expression. Datastore op
