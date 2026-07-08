@@ -117,6 +117,29 @@ func TestExecuteCompiledFull(t *testing.T) {
 		t.Error("a native multi-column query should compile to a standalone child binary")
 	}
 
+	// ORDER BY ... LIMIT compiles to a standalone child: its emitted body uses
+	// heap.Push/heap.Pop, so the child's main.go must import container/heap. It
+	// previously did not -> "undefined: heap" build failure -> silent fallback.
+	// This proves compiledMainImports adds the emit.OptionalImports the body needs.
+	// (rowsOf sorts, so we assert the SELECTED top-2 set, which also proves the
+	// max-heap ORDER BY DESC + LIMIT ran correctly in the child.)
+	if _, err := s.Run(`PREPARE porder AS SELECT b.i FROM beers b ORDER BY b.i DESC LIMIT 2`); err != nil {
+		t.Fatal(err)
+	}
+	gotOrder := rowsOf(`EXECUTE porder`)
+	wantOrder := []string{`{"i":1}`, `{"i":2}`}
+	if len(gotOrder) != len(wantOrder) {
+		t.Fatalf("EXECUTE porder rows = %v, want %v", gotOrder, wantOrder)
+	}
+	for i := range wantOrder {
+		if gotOrder[i] != wantOrder[i] {
+			t.Errorf("EXECUTE porder row %d = %s, want %s", i, gotOrder[i], wantOrder[i])
+		}
+	}
+	if s.prepareds["porder"].compiledBin == "" {
+		t.Error("ORDER BY should compile to a standalone child binary (needs container/heap import)")
+	}
+
 	// A genuinely per-row BOXED expr (non-native REPEAT over a field) can't be
 	// cbq-free -> must NOT compile standalone -> falls back to the interpreter,
 	// still correct.

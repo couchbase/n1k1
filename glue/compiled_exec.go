@@ -304,6 +304,30 @@ func compiledGoMod(srcDir string) string {
 		gover, srcDir)
 }
 
+// compiledMainImports builds the child main.go import block. Beyond the fixed
+// imports the main() wrapper always needs (bufio/encoding-json/fmt/os + base/
+// engine), it adds each emit.OptionalImports entry the emitted BODY actually
+// references -- e.g. an ORDER BY body uses `heap.` so it needs container/heap,
+// a spilling op uses `store.`, etc. Without this the standalone child failed to
+// build ("undefined: heap") for any op whose codegen pulls an optional import;
+// this mirrors what OpToLines/the .prepare path already does. The `strings.
+// Contains(qualifier)` heuristic matches that path exactly (an optional import
+// is added only when its qualifier appears, so no unused-import errors).
+func compiledMainImports(body string) string {
+	have := map[string]bool{"bufio": true, "encoding/json": true, "fmt": true, "os": true}
+
+	var b strings.Builder
+	b.WriteString("import (\n\t\"bufio\"\n\t\"encoding/json\"\n\t\"fmt\"\n\t\"os\"\n")
+	for _, oi := range emit.OptionalImports {
+		if !have[oi.Path] && strings.Contains(body, oi.Qualifier) {
+			have[oi.Path] = true
+			b.WriteString("\t\"" + oi.Path + "\"\n")
+		}
+	}
+	b.WriteString("\n\t\"github.com/couchbase/n1k1/base\"\n\t\"github.com/couchbase/n1k1/engine\"\n)\n\n")
+	return b.String()
+}
+
 // compiledMain wraps an emitted cbq-free query body in a runnable child: it reads
 // the parent's records from stdin into an engine.MemPipe, runs the compiled Run,
 // and writes each result row's POSITIONAL base.Vals back to stdout as a
@@ -315,8 +339,7 @@ func compiledMain(body, provStamp string) string {
 	return "// Code generated for a compiled n1k1 EXECUTE. DO NOT EDIT.\n" +
 		"// " + provStamp + "\n" +
 		"package main\n\n" +
-		"import (\n\t\"bufio\"\n\t\"encoding/json\"\n\t\"fmt\"\n\t\"os\"\n\n" +
-		"\t\"github.com/couchbase/n1k1/base\"\n\t\"github.com/couchbase/n1k1/engine\"\n)\n\n" +
+		compiledMainImports(body) +
 		"var _ = base.Labels(nil)\n\n" +
 		"func Run(lzVars *base.Vars, lzYieldVals base.YieldVals, lzYieldErr base.YieldErr) {\n" +
 		"\t_ = lzVars\n\t_ = lzYieldVals\n\t_ = lzYieldErr\n\n" + body + "\n}\n\n" +
