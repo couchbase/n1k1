@@ -261,6 +261,27 @@ func OpenFile(path, idPrefix string) (Source, error) {
 	if !IsRecordFile(path) {
 		return nil, fmt.Errorf("records: unsupported file: %s", path)
 	}
+	// An open extractor recipe (regexp+ext matched, priority-resolved) claims some
+	// files ahead of the extension-keyed extractors -- e.g. a specific ns_server
+	// multiline log recipe beats the generic whole-file .log text extractor. When one
+	// matches, describe() (cheap, sampled) yields the declarative ExtractSpec and
+	// SpecApply runs it natively (or the recipe's imperative Extract, if any). The
+	// measured SortedSourceMeta is memoized in the .n1k1 sidecar by glue (deferred);
+	// here describe just produces the spec. See recipe.go / DESIGN-data.md §4.
+	matchPath := idPrefix
+	if matchPath == "" {
+		matchPath = filepath.Base(path)
+	}
+	if rp := RecipeFor(matchPath); rp != nil {
+		spec, _, err := rp.Describe(path)
+		if err != nil {
+			return nil, err
+		}
+		if rp.Extract != nil {
+			return rp.Extract(path, idPrefix, spec)
+		}
+		return SpecApply(spec, path, idPrefix)
+	}
 	// PDF/DOCX/XLSX documents are opened by path (zip / whole-file readers),
 	// not through the streaming decompression layer.
 	if isExtractExt(innerExt(path)) {

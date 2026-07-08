@@ -24,6 +24,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // collect drains a Source into copied (id, doc) pairs, validating that each Doc
@@ -1087,5 +1088,252 @@ func TestExtractSpecRoundTrip(t *testing.T) {
 		mgot.RecordCount != meta.RecordCount || len(mgot.SyncPoints) != len(meta.SyncPoints) ||
 		mgot.SyncPoints[1] != meta.SyncPoints[1] {
 		t.Fatalf("SortedSourceMeta round-trip mismatch:\n got %+v\nwant %+v", mgot, meta)
+	}
+}
+
+// ---------------------------------------------------------------- recipe / describe / extract
+//
+// The two-phase describe/extract seam (records/recipe.go), driven natively by the
+// Phase-0 ExtractSpec, over the built-in ns_server_log multiline recipe.
+
+// nsLogFixture is a small ns_server-style multiline log: each record is a
+// [module:level,RFC3339ts,node:...]msg lead line plus continuation lines (an indented
+// detail line and an Erlang-term dump line that begins with '[' but is NOT a lead).
+// The stats line at 12.100 arrives 400ms behind the preceding 12.500 line, making the
+// source near-sorted with a measurable 400ms disorder bound.
+const nsLogFixture = `[ns_server:info,2026-05-17T15:36:11.198+02:00,ns_1@host:normal]started rebalance
+  moving vbucket 42 to node ns_2@host
+[{some,erlang,term},{more,stuff}] internal dump
+[ns_server:warn,2026-05-17T15:36:12.500+02:00,ns_1@host:normal]slow operation detected
+[stats:info,2026-05-17T15:36:12.100+02:00,ns_1@host:normal]late stats flush
+[ns_server:error,2026-05-17T15:36:13.750+02:00,ns_1@host:default]connection failure
+[couch_log:info,2026-05-17T15:36:14.000+02:00,ns_1@host:normal]compaction complete
+`
+
+// nanosOf parses an RFC3339 timestamp to int64 epoch-nanos (the normalized sort key),
+// so tests assert against real time math rather than hard-coded 19-digit constants.
+func nanosOf(t *testing.T, s string) int64 {
+	t.Helper()
+	tt, err := time.Parse(time.RFC3339Nano, s)
+	if err != nil {
+		t.Fatalf("parse %q: %v", s, err)
+	}
+	return tt.UnixNano()
+}
+
+// decodeLogDoc unmarshals a record doc with number precision preserved (json.Number),
+// so the int64 epoch-nanos timestamp survives (a plain interface{} decode would lose
+// precision to float64).
+func decodeLogDoc(t *testing.T, doc string) map[string]interface{} {
+	t.Helper()
+	dec := json.NewDecoder(strings.NewReader(doc))
+	dec.UseNumber()
+	var m map[string]interface{}
+	if err := dec.Decode(&m); err != nil {
+		t.Fatalf("record not JSON: %v\n  %s", err, doc)
+	}
+	return m
+}
+
+func docInt64(t *testing.T, m map[string]interface{}, key string) int64 {
+	t.Helper()
+	num, ok := m[key].(json.Number)
+	if !ok {
+		t.Fatalf("field %q is %T, want a JSON number", key, m[key])
+	}
+	n, err := num.Int64()
+	if err != nil {
+		t.Fatalf("field %q not int64: %v", key, err)
+	}
+	return n
+}
+
+// TestRecipeFor pins the priority-resolved, ext+regexp matcher: the built-in
+// ns_server_log recipe claims ns_server-family logs but leaves generic .log / .json
+// files to the extension-keyed extractors, and a strictly-higher priority wins overlap.
+func TestRecipeFor(t *testing.T) {
+	if r := RecipeFor("ns_server.info.log"); r == nil || r.Name != "ns_server_log" {
+		t.Errorf("ns_server.info.log should match ns_server_log recipe, got %v", r)
+	}
+	if r := RecipeFor("babysitter/diag.log"); r == nil || r.Name != "ns_server_log" {
+		t.Errorf("diag.log should match ns_server_log recipe, got %v", r)
+	}
+	if r := RecipeFor("server.log"); r != nil {
+		t.Errorf("generic server.log should NOT match a recipe (falls to text extractor), got %q", r.Name)
+	}
+	if r := RecipeFor("orders/order.json"); r != nil {
+		t.Errorf(".json should not match a log recipe, got %q", r.Name)
+	}
+
+	// Priority resolution over a private ext, so this doesn't perturb other tests.
+	lo := &Recipe{Name: "lo", Match: ExtractMatch{Exts: []string{".zzzx"}, Priority: 1}, Describe: NSLogDescribe}
+	hi := &Recipe{Name: "hi", Match: ExtractMatch{Exts: []string{".zzzx"}, Priority: 5}, Describe: NSLogDescribe}
+	RecipeRegister(lo)
+	RecipeRegister(hi)
+	if r := RecipeFor("x.zzzx"); r == nil || r.Name != "hi" {
+		t.Errorf("higher-priority recipe should win, got %v", r)
+	}
+}
+
+// TestNSLogDescribe checks that describe() returns the expected declarative
+// ExtractSpec AND the measured SortedSourceMeta (min/max normalized key, near-sorted
+// classification with the 400ms disorder bound, record count) from a sampled read.
+func TestNSLogDescribe(t *testing.T) {
+	path := writeFile(t, filepath.Join(t.TempDir(), "ns_server.info.log"), []byte(nsLogFixture))
+
+	spec, meta, err := NSLogDescribe(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if spec.Format != "ns_server_log" {
+		t.Errorf("Format = %q, want ns_server_log", spec.Format)
+	}
+	if spec.Framing.Kind != FramingMultiline {
+		t.Errorf("Framing.Kind = %q, want %q", spec.Framing.Kind, FramingMultiline)
+	}
+	if spec.Fields.Pattern == "" {
+		t.Errorf("Fields.Pattern is empty")
+	}
+	if spec.Time == nil || spec.Time.Field != "ts" || spec.Time.Layout != TimeLayoutRFC3339 {
+		t.Errorf("Time = %+v, want field=ts layout=RFC3339", spec.Time)
+	}
+	if spec.Order.Sorted != SortedNear {
+		t.Errorf("Order.Sorted = %q, want %q", spec.Order.Sorted, SortedNear)
+	}
+
+	wantMin := nanosOf(t, "2026-05-17T15:36:11.198+02:00")
+	wantMax := nanosOf(t, "2026-05-17T15:36:14.000+02:00")
+	wantDisorder := int64(400 * time.Millisecond) // 12.500 -> 12.100 inversion
+	if meta.SortKeyLabel != "ts" {
+		t.Errorf("SortKeyLabel = %q, want ts", meta.SortKeyLabel)
+	}
+	if meta.Sortedness != SortedNear {
+		t.Errorf("Sortedness = %q, want %q", meta.Sortedness, SortedNear)
+	}
+	if meta.Disorder.WindowNanos != wantDisorder {
+		t.Errorf("Disorder.WindowNanos = %d, want %d", meta.Disorder.WindowNanos, wantDisorder)
+	}
+	if meta.MinKey != wantMin {
+		t.Errorf("MinKey = %d, want %d", meta.MinKey, wantMin)
+	}
+	if meta.MaxKey != wantMax {
+		t.Errorf("MaxKey = %d, want %d", meta.MaxKey, wantMax)
+	}
+	if meta.RecordCount != 5 {
+		t.Errorf("RecordCount = %d, want 5", meta.RecordCount)
+	}
+	// describe reflects the measured order back into the spec it returns.
+	if spec.Order.Disorder.WindowNanos != wantDisorder {
+		t.Errorf("spec.Order.Disorder.WindowNanos = %d, want %d", spec.Order.Disorder.WindowNanos, wantDisorder)
+	}
+}
+
+// TestNSLogExtract checks native spec execution end-to-end through OpenFile (recipe
+// matched by name): correct multiline grouping, named-capture fields, and the
+// timestamp normalized to int64 epoch-nanos, timezone-normalized.
+func TestNSLogExtract(t *testing.T) {
+	path := writeFile(t, filepath.Join(t.TempDir(), "ns_server.info.log"), []byte(nsLogFixture))
+
+	s, err := OpenFile(path, "ns_server.info.log")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids, docs := collect(t, s)
+	if len(docs) != 5 {
+		t.Fatalf("want 5 framed records, got %d: %v", len(docs), ids)
+	}
+
+	// Record 0: multiline grouping folds the indented detail line AND the '['-led
+	// Erlang dump into this record's msg (they are continuations, not lead lines).
+	r0 := decodeLogDoc(t, docs[0])
+	if r0["module"] != "ns_server" || r0["level"] != "info" || r0["node"] != "ns_1@host" {
+		t.Errorf("rec0 fields wrong: %v", r0)
+	}
+	if got := docInt64(t, r0, "ts"); got != nanosOf(t, "2026-05-17T15:36:11.198+02:00") {
+		t.Errorf("rec0 ts = %d, want normalized nanos", got)
+	}
+	msg0, _ := r0["msg"].(string)
+	for _, want := range []string{"started rebalance", "moving vbucket 42", "erlang,term"} {
+		if !strings.Contains(msg0, want) {
+			t.Errorf("rec0 msg missing %q; got %q", want, msg0)
+		}
+	}
+
+	// Record 2 is the late stats line (near-sorted): file order is preserved and its
+	// normalized ts is behind record 1's, as measured by describe.
+	r1 := decodeLogDoc(t, docs[1])
+	r2 := decodeLogDoc(t, docs[2])
+	if r2["module"] != "stats" {
+		t.Errorf("rec2 module = %v, want stats", r2["module"])
+	}
+	ts1, ts2 := docInt64(t, r1, "ts"), docInt64(t, r2, "ts")
+	if ts2 != nanosOf(t, "2026-05-17T15:36:12.100+02:00") {
+		t.Errorf("rec2 ts = %d, want normalized nanos", ts2)
+	}
+	if !(ts2 < ts1) {
+		t.Errorf("expected the late record (rec2=%d) to sort before rec1=%d", ts2, ts1)
+	}
+
+	// IDs follow the <prefix>#<n> convention of the other sources.
+	if ids[0] != "ns_server.info.log#0" {
+		t.Errorf("id[0] = %q, want ns_server.info.log#0", ids[0])
+	}
+}
+
+// TestSpecApplyDirect exercises SpecApply on an arbitrary spec (line framing, no
+// timestamp) so the native executor is covered independent of the built-in recipe,
+// and does a borrowed-slice / allocation sanity check.
+func TestSpecApplyDirect(t *testing.T) {
+	path := writeFile(t, filepath.Join(t.TempDir(), "app.log"),
+		[]byte("2026 alpha\n2026 beta\n2026 gamma\n"))
+	spec := ExtractSpec{
+		Framing: Framing{Kind: FramingLine},
+		Fields:  Fields{Pattern: `^(?P<year>\d+) (?P<word>\w+)`},
+	}
+	s, err := SpecApply(spec, path, "app.log")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids, docs := collect(t, s)
+	if len(docs) != 3 {
+		t.Fatalf("want 3 line records, got %d", len(docs))
+	}
+	r0 := decodeLogDoc(t, docs[0])
+	if r0["year"] != "2026" || r0["word"] != "alpha" {
+		t.Errorf("rec0 = %v, want year=2026 word=alpha", r0)
+	}
+	if ids[2] != "app.log#2" {
+		t.Errorf("id[2] = %q, want app.log#2", ids[2])
+	}
+
+	// Borrowed-slice contract: rec.Doc is reused across Next (valid only until the
+	// next call). A copy taken before advancing stays intact after it.
+	s2, _ := SpecApply(spec, path, "app.log")
+	defer s2.Close()
+	var rec Record
+	s2.Next(&rec)
+	saved := append([]byte(nil), rec.Doc...)
+	s2.Next(&rec) // may overwrite the borrowed buffer
+	if !json.Valid(saved) {
+		t.Fatalf("copied doc corrupted after advance: %s", saved)
+	}
+
+	// Allocation sanity: a steady drain stays bounded (buffers are reused, not grown
+	// per record). Re-open per run since a Source is single-pass.
+	run := func() {
+		src, _ := SpecApply(spec, path, "app.log")
+		var r Record
+		for {
+			ok, _ := src.Next(&r)
+			if !ok {
+				break
+			}
+		}
+		src.Close()
+	}
+	run()
+	if avg := testing.AllocsPerRun(20, run); avg > 60 {
+		t.Errorf("allocs/run = %.0f, higher than expected for a 3-line spec apply", avg)
 	}
 }
