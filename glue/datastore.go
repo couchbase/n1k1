@@ -25,6 +25,15 @@ import (
 
 func DatastoreOp(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 	yieldErr base.YieldErr, path, pathNext string) {
+	// A per-request Pipe overrides the datastore source: route the leaf op to it
+	// (e.g. an in-memory provider serving inline data) instead of the file
+	// datastore. The generalized seam of DESIGN-prepare.md phase 2; see
+	// base.DatastorePipe.
+	if vars.Ctx != nil && vars.Ctx.Pipe != nil {
+		vars.Ctx.Pipe.Op(o, vars, yieldVals, yieldErr, path, pathNext)
+		return
+	}
+
 	// Count rows out of a datastore scan (and drive live progress checkpoints);
 	// a no-op when stats are off or the kind isn't a counter-contributing scan.
 	yieldVals = countingYield(o, vars, yieldVals)

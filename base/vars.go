@@ -141,6 +141,13 @@ type Ctx struct {
 
 	ExecOp func(*Op, *Vars, YieldVals, YieldErr, string, string)
 
+	// Pipe, when non-nil, serves this request's datastore leaf ops (scans,
+	// fetches) instead of the process-global datastore dispatch -- so a query can
+	// read inline in-memory data (engine.MemPipe) or a remote source without
+	// changing its plan. Copied by pointer in Clone (shared across UNION ALL
+	// actors, read-only during a run). See base.DatastorePipe.
+	Pipe DatastorePipe
+
 	AllocMap   func() (*store.RHStore, error)
 	RecycleMap func(*store.RHStore)
 

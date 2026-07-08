@@ -49,6 +49,12 @@ type Session struct {
 	// EXECUTE ... USING [...] clause supplies these instead (see ExecuteRun).
 	PositionalArgs value.Values
 
+	// Pipe, when set, serves this session's datastore leaf ops (scans/fetches) --
+	// e.g. an engine.MemPipe reading inline in-memory data instead of the file
+	// datastore. The plan is still built against Store (schema resolution); only the
+	// data source is redirected at run time. nil = read files. See base.DatastorePipe.
+	Pipe base.DatastorePipe
+
 	// prepareds is this session's prepared-statement store (PREPARE ... AS <stmt> /
 	// EXECUTE <name>), keyed by name. Lazily created. Interpreter-only: PREPARE
 	// parses + caches the inner statement; EXECUTE re-plans and runs it with the
@@ -307,6 +313,11 @@ func (s *Session) PlanExec(pp *PreparedPlan,
 
 	tmpDir, vars := MakeVars("", "n1k1")
 	defer os.RemoveAll(tmpDir)
+
+	// A per-session DatastorePipe overrides where datastore leaves read from (e.g.
+	// inline in-memory data instead of files); nil keeps the file datastore. See
+	// base.DatastorePipe / DatastoreOp.
+	vars.Ctx.Pipe = s.Pipe
 
 	gctx := NewGlueContext(time.Now())
 	gctx.InitSubqueries(s.Store, s.Namespace, pp.withBindings, pp.subqueries) // enable expression subqueries
