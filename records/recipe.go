@@ -133,6 +133,40 @@ func matchClaims(m ExtractMatch, relPath string) bool {
 	return true
 }
 
+// MeasureSortedSource samples path through spec's native framing/time path and
+// returns the SortedSourceMeta the K-way merge consumes (min/max epoch-nanos key,
+// record count, sortedness + disorder bound). It is the exported wrapper around the
+// same describeMeasure the built-in recipes use, so a NON-Go recipe author -- e.g.
+// glue's *.extract.js loader, whose describe() runs in goja -- can reuse the exact
+// native measurement rather than reimplementing it in JS. Cheap: it samples the
+// file's head, not a full scan. Keeping this on the native side is what lets a JS
+// recipe stay JS-only for describe() while per-row extract stays on the byte lane.
+func MeasureSortedSource(spec ExtractSpec, path string) (SortedSourceMeta, error) {
+	return describeMeasure(spec, path)
+}
+
+// HeadSample returns up to max bytes of path's DECOMPRESSED head as a string, for a
+// describe() that content-sniffs (e.g. a *.extract.js recipe choosing a pattern by
+// peeking at the first lines). It reuses SpecApply's transparent decompression so a
+// .gz/.zst log samples its real text, not compressed bytes. Cheap and once-per-file
+// (planning phase), so a string copy here is fine -- NOT the per-row hot path.
+func HeadSample(path string, max int) (string, error) {
+	r, closers, err := openDecompressed(path)
+	if err != nil {
+		return "", err
+	}
+	defer closeAll(closers)
+	if max <= 0 {
+		max = describeSampleBytes
+	}
+	buf := make([]byte, max)
+	n, err := io.ReadFull(r, buf)
+	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+		return "", err
+	}
+	return string(buf[:n]), nil
+}
+
 // -------------------------------------------------------------- native spec exec
 
 // SpecApply returns a streaming Source that applies spec natively to path: it frames

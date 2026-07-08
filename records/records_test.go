@@ -1337,3 +1337,58 @@ func TestSpecApplyDirect(t *testing.T) {
 		t.Errorf("allocs/run = %.0f, higher than expected for a 3-line spec apply", avg)
 	}
 }
+
+// TestMeasureSortedSource exercises the exported measurement helper a non-Go recipe
+// (glue's *.extract.js loader) reuses: given a describe-produced spec, it samples the
+// file and reports the same SortedSourceMeta the built-in ns_server_log recipe does.
+func TestMeasureSortedSource(t *testing.T) {
+	path := writeFile(t, filepath.Join(t.TempDir(), "ns_server.info.log"), []byte(nsLogFixture))
+
+	spec := nsLogSpec() // the declarative spec a JS describe() would also return.
+	meta, err := MeasureSortedSource(spec, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.SortKeyLabel != "ts" {
+		t.Errorf("SortKeyLabel = %q, want ts", meta.SortKeyLabel)
+	}
+	if meta.Sortedness != SortedNear {
+		t.Errorf("Sortedness = %q, want %q", meta.Sortedness, SortedNear)
+	}
+	if meta.Disorder.WindowNanos != int64(400*time.Millisecond) {
+		t.Errorf("Disorder.WindowNanos = %d, want 400ms", meta.Disorder.WindowNanos)
+	}
+	if meta.MinKey != nanosOf(t, "2026-05-17T15:36:11.198+02:00") ||
+		meta.MaxKey != nanosOf(t, "2026-05-17T15:36:14.000+02:00") {
+		t.Errorf("Min/Max key = %d/%d, want normalized nanos", meta.MinKey, meta.MaxKey)
+	}
+	if meta.RecordCount != 5 {
+		t.Errorf("RecordCount = %d, want 5", meta.RecordCount)
+	}
+}
+
+// TestHeadSample checks the decompressed head-sampling helper a describe() uses to
+// content-sniff: it returns up to max bytes of the file's real (decompressed) head.
+func TestHeadSample(t *testing.T) {
+	path := writeFile(t, filepath.Join(t.TempDir(), "ns_server.info.log"), []byte(nsLogFixture))
+
+	head, err := HeadSample(path, 40)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(head) != 40 {
+		t.Errorf("len(head) = %d, want 40 (capped)", len(head))
+	}
+	if !strings.HasPrefix(nsLogFixture, head) {
+		t.Errorf("head %q is not a prefix of the fixture", head)
+	}
+
+	// max<=0 => the default sample cap; the whole small fixture fits.
+	full, err := HeadSample(path, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if full != nsLogFixture {
+		t.Errorf("full head mismatch:\n got %q\nwant %q", full, nsLogFixture)
+	}
+}
