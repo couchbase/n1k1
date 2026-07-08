@@ -344,7 +344,9 @@ type TriExprFunc func(a, b, c ExprFunc, vals Vals, yieldErr YieldErr) Val
 
 // A NaryExprFunc represents a variadic expression: it is handed the already-built
 // child ExprFuncs and reduces them to a result. The child slice is built once at
-// setup; the reduce runs per row.
+// setup; the reduce runs per row. (Used by the lazy CASE via MakeNaryExprFunc;
+// the eager variadic exprs instead pre-evaluate each operand and reduce over the
+// values -- see engine.CaptureNaryChildren and base.NaryConcatVals et al.)
 type NaryExprFunc func(children []ExprFunc, vals Vals, yieldErr YieldErr) Val
 
 // A ProjectFunc projects (in relational parlance) the given vals into

@@ -111,6 +111,61 @@ func NaryConcat(children []ExprFunc, vals Vals, yieldErr YieldErr, out []byte) (
 	return Val(out), out
 }
 
+// NaryFirstKeptVals is NaryFirstKept over already-evaluated operand values: it
+// returns the first childVal "kept" under the mode, else NULL. (NaryFirstKept
+// evaluates every operand regardless, so pre-evaluating them all changes nothing.)
+func NaryFirstKeptVals(childVals Vals, mode int) Val {
+	for _, cv := range childVals {
+		if CondUnknownKeep(mode, cv) {
+			return cv
+		}
+	}
+	return ValNull
+}
+
+// NaryConcatVals is NaryConcat over already-evaluated operand values. See
+// NaryConcat for the concatenation semantics and the raw-content caveat.
+func NaryConcatVals(childVals Vals, out []byte) (Val, []byte) {
+	null := false
+	out = append(out[:0], '"')
+	for _, cv := range childVals {
+		if len(cv) == 0 { // MISSING dominant.
+			return ValMissing, out
+		}
+		inner, parseType := Parse(cv)
+		if ParseTypeToValType[parseType] == ValTypeString {
+			if !null {
+				out = append(out, inner...) // raw (escaped) string content
+			}
+		} else {
+			null = true // non-string operand.
+		}
+	}
+	if null {
+		return ValNull, out
+	}
+	out = append(out, '"')
+	return Val(out), out
+}
+
+// GreatestLeastVals is GreatestLeast over already-evaluated operand values: the
+// max/min by N1QL collation, skipping MISSING/NULL; NULL if all are MISSING/NULL.
+func GreatestLeastVals(vc *ValComparer, childVals Vals, greater bool) Val {
+	rv := ValNull
+	rvSet := false
+	for _, a := range childVals {
+		if ValKind(a) != ValKindValue {
+			continue // skip MISSING/NULL
+		}
+		if !rvSet {
+			rv, rvSet = a, true
+		} else if cmp := vc.Compare(a, rv); (greater && cmp > 0) || (!greater && cmp < 0) {
+			rv = a
+		}
+	}
+	return rv
+}
+
 // CaseReduce evaluates a CASE as a flat child list [cond, then, cond, then, ...,
 // else?]: it returns the first `then` whose `cond` is truthy, else the trailing
 // `else` (present when the list has odd length), else NULL. It short-circuits

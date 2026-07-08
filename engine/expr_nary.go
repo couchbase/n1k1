@@ -53,3 +53,35 @@ func MakeNaryExprFunc(lzVars *base.Vars, labels base.Labels,
 
 	return lzExprFunc
 }
+
+// CaptureNaryChildren builds the child ExprFuncs for an eager variadic expr. It
+// runs entirely at build time (`// !lz`): for the compiler its role is the
+// per-operand EmitPush/EmitPop captures (so each operand can later be inlined by
+// `// <== emitCaptured`); for the interpreter it returns the real child slice.
+//
+// The eager nary exprs (ExprConcat, ExprGreatest/ExprLeast, the ifnull/coalesce
+// family) share this, then each writes its own eval closure inline: evaluate
+// each operand ONE AT A TIME into the shared lzVal register (emitCaptured, the
+// mechanism the binary/ternary exprs use), append it to lzValsReduce (the
+// per-expr reused buffer of evaluated operand values), then a plain (lazy) call
+// to a cbq-free base reducer (base.NaryConcatVals, ...) over lzValsReduce.
+// Keeping that reduce line -- and lzValsReduce's varLift -- IN the expr's own
+// function is deliberate: varLift renames per function+path, so each nary gets a
+// distinct hoisted buffer and nested/sibling narys never clobber each other.
+//
+// Why eager (evaluate every operand, unlike CASE's lazy MakeNaryExprFunc): these
+// exprs evaluate all operands anyway (see base.NaryConcat / GreatestLeast /
+// NaryFirstKept), so pre-evaluating each operand into a value -- instead of
+// handing child closures to the reducer -- is semantics-preserving AND lets the
+// compiler inline each operand with no nested func literal for a parent expr's
+// emitCaptured to trip over. CASE, being lazy, keeps the closure form.
+func CaptureNaryChildren(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string) (lzChildren []base.ExprFunc) {
+	for lzI := range params { // !lz
+		lzChild := MakeExprFunc(lzVars, labels, params[lzI].([]interface{}), path, strconv.Itoa(lzI)) // !lz
+
+		lzChildren = append(lzChildren, lzChild) // !lz
+	} // !lz
+
+	return lzChildren // !lz
+}

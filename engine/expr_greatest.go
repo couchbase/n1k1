@@ -26,28 +26,52 @@ func init() {
 
 func ExprGreatest(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	naryExprFunc := func(lzChildren []base.ExprFunc, lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) { // !lz
-		lzVal = base.GreatestLeast(lzVars.Ctx.ValComparer, lzChildren, lzVals, lzYieldErr, true)
+	var lzValsReduce base.Vals // <== varLift: lzValsReduce by path
 
-		return lzVal
-	} // !lz
+	lzChildren := CaptureNaryChildren(lzVars, labels, params, path) // !lz
 
-	lzExprFunc =
-		MakeNaryExprFunc(lzVars, labels, params, path, naryExprFunc) // !lz
+	if LzScope {
+		lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
+			lzValsReduce = lzValsReduce[:0]
+
+			for lzI := range lzChildren { // !lz
+				lzVal =
+					lzChildren[lzI](lzVals, lzYieldErr) // <== emitCaptured: path strconv.Itoa(lzI)
+
+				lzValsReduce = append(lzValsReduce, lzVal)
+			} // !lz
+
+			lzVal = base.GreatestLeastVals(lzVars.Ctx.ValComparer, lzValsReduce, true)
+
+			return lzVal
+		}
+	}
 
 	return lzExprFunc
 }
 
 func ExprLeast(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	naryExprFunc := func(lzChildren []base.ExprFunc, lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) { // !lz
-		lzVal = base.GreatestLeast(lzVars.Ctx.ValComparer, lzChildren, lzVals, lzYieldErr, false)
+	var lzValsReduce base.Vals // <== varLift: lzValsReduce by path
 
-		return lzVal
-	} // !lz
+	lzChildren := CaptureNaryChildren(lzVars, labels, params, path) // !lz
 
-	lzExprFunc =
-		MakeNaryExprFunc(lzVars, labels, params, path, naryExprFunc) // !lz
+	if LzScope {
+		lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
+			lzValsReduce = lzValsReduce[:0]
+
+			for lzI := range lzChildren { // !lz
+				lzVal =
+					lzChildren[lzI](lzVals, lzYieldErr) // <== emitCaptured: path strconv.Itoa(lzI)
+
+				lzValsReduce = append(lzValsReduce, lzVal)
+			} // !lz
+
+			lzVal = base.GreatestLeastVals(lzVars.Ctx.ValComparer, lzValsReduce, false)
+
+			return lzVal
+		}
+	}
 
 	return lzExprFunc
 }

@@ -25,16 +25,30 @@ func init() {
 
 func ExprConcat(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	var lzBufPre []byte // <== varLift: lzBufPre by path
+	var lzBufPre []byte        // <== varLift: lzBufPre by path
+	var lzValsReduce base.Vals // <== varLift: lzValsReduce by path
 
-	naryExprFunc := func(lzChildren []base.ExprFunc, lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) { // !lz
-		lzVal, lzBufPre = base.NaryConcat(lzChildren, lzVals, lzYieldErr, lzBufPre)
+	lzChildren := CaptureNaryChildren(lzVars, labels, params, path) // !lz
 
-		return lzVal
-	} // !lz
+	if LzScope {
+		lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
+			// Evaluate every operand into lzValsReduce (eager -- concat needs all
+			// operands anyway), then reduce over the evaluated values. See
+			// CaptureNaryChildren for why this is inlined per-expr.
+			lzValsReduce = lzValsReduce[:0]
 
-	lzExprFunc =
-		MakeNaryExprFunc(lzVars, labels, params, path, naryExprFunc) // !lz
+			for lzI := range lzChildren { // !lz
+				lzVal =
+					lzChildren[lzI](lzVals, lzYieldErr) // <== emitCaptured: path strconv.Itoa(lzI)
+
+				lzValsReduce = append(lzValsReduce, lzVal)
+			} // !lz
+
+			lzVal, lzBufPre = base.NaryConcatVals(lzValsReduce, lzBufPre)
+
+			return lzVal
+		}
+	}
 
 	return lzExprFunc
 }
