@@ -104,6 +104,12 @@ func usesUnbridgedOp(o *base.Op) bool {
 		// specialized code. Skip it in the compiler suite; the temporal rewrite
 		// that emits it is opt-in (glue.EnableMergeRewrite) and off here anyway.
 		return true
+	case "merge-join":
+		// The sorted merge JOIN (Track B, DESIGN-merging.md §2: equi / ASOF / soft
+		// ASOF) is interpreter-only for now, exactly like merge-scan: MergeJoinExec
+		// is copied VERBATIM into the compiler package (codegen-safe) but
+		// orchestrates its two child streams at run time rather than fusing them.
+		return true
 	}
 	for _, c := range o.Children {
 		if usesUnbridgedOp(c) {

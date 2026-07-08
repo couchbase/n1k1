@@ -96,6 +96,12 @@ func ExecConv(p plan.Operator) (*base.Op, []interface{}, error) {
 		// read-only post-plan pass (opt-in via EnableMergeRewrite); may replace
 		// the root itself, so it returns the (possibly new) root.
 		c.TopOp = rewriteTemporalRoot(c.TopOp)
+
+		// Track B (DESIGN-merging.md §3): recognize the correlated argmax subquery
+		// (nearest-preceding ASOF) shape. Read-only + opt-in (EnableASOFRecognize);
+		// the merge-join LOWERING is gated on the normalized sort-key wiring, so
+		// this pass only classifies/counts for now (see optimize_temporal.go).
+		recognizeASOFRoot(c.TopOp)
 	}
 
 	return c.TopOp, c.Temps, err
