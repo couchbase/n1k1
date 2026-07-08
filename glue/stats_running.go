@@ -19,10 +19,10 @@ import (
 	"github.com/couchbase/n1k1/base"
 )
 
-// aggregatesLabelPrefix marks a group op's aggregate output labels
+// LabelPrefixAggregates marks a group op's aggregate output labels
 // ("^aggregates|<expr>"); the text after it is the aggregate's expression, in the
 // same order as base.RunningAggRow.Aggs. See glue/conv.go VisitGroup.
-const aggregatesLabelPrefix = "^aggregates|"
+const LabelPrefixAggregates = "^aggregates|"
 
 // RunningAggLabels walks a converted plan and returns, for each group op that
 // publishes running aggregates (a "group" op carrying "^aggregates|<expr>"
@@ -45,7 +45,7 @@ func RunningAggLabels(plan *base.Op) [][]base.RunningAggLabel {
 			return
 		}
 		if op.Kind == "group" {
-			if labels := groupAggLabels(op, nearestProject); labels != nil {
+			if labels := GroupAggLabels(op, nearestProject); labels != nil {
 				out = append(out, labels)
 			}
 		}
@@ -63,15 +63,15 @@ func RunningAggLabels(plan *base.Op) [][]base.RunningAggLabel {
 	return out
 }
 
-// groupAggLabels pairs a group op's aggregate expressions (from its
+// GroupAggLabels pairs a group op's aggregate expressions (from its
 // "^aggregates|<expr>" labels) with the SQL alias of any projection term that is
 // exactly that aggregate. project may be nil (no enclosing projection found), in
 // which case every Alias is "".
-func groupAggLabels(group, project *base.Op) []base.RunningAggLabel {
+func GroupAggLabels(group, project *base.Op) []base.RunningAggLabel {
 	var exprs []string
 	for _, l := range group.Labels {
-		if strings.HasPrefix(l, aggregatesLabelPrefix) {
-			exprs = append(exprs, l[len(aggregatesLabelPrefix):])
+		if strings.HasPrefix(l, LabelPrefixAggregates) {
+			exprs = append(exprs, l[len(LabelPrefixAggregates):])
 		}
 	}
 	if len(exprs) == 0 {
@@ -87,7 +87,7 @@ func groupAggLabels(group, project *base.Op) []base.RunningAggLabel {
 			if k >= len(project.Params) {
 				break
 			}
-			alias := labelAlias(lbl)
+			alias := LabelAlias(lbl)
 			if alias == "" {
 				continue // "." (RAW), ".*" (star), or a non-alias attachment.
 			}
@@ -104,11 +104,11 @@ func groupAggLabels(group, project *base.Op) []base.RunningAggLabel {
 	return out
 }
 
-// labelAlias decodes a projection output label -- built as "." + LabelSuffix(alias)
+// LabelAlias decodes a projection output label -- built as "." + LabelSuffix(alias)
 // == `.["<alias>"]` -- back to the bare alias. Returns "" for the whole-row "."
 // (SELECT RAW), the ".*" star spread, or any "^"-attachment, none of which name a
 // single output column.
-func labelAlias(label string) string {
+func LabelAlias(label string) string {
 	if strings.HasPrefix(label, `.["`) && strings.HasSuffix(label, `"]`) {
 		return label[3 : len(label)-2]
 	}
