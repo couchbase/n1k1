@@ -132,7 +132,16 @@ func (c *GlueContext) NamedArg(name string) (value.Value, bool) {
 	v, ok := c.namedArgs[name]
 	return v, ok
 }
-func (c *GlueContext) PositionalArg(position int) (value.Value, bool) { return nil, false }
+
+// PositionalArg resolves a positional query parameter ($1, $2, ...) at eval time.
+// cbq positions are 1-based ($1 -> positionalArgs[0]); an out-of-range position is
+// unresolved (false), matching an absent parameter.
+func (c *GlueContext) PositionalArg(position int) (value.Value, bool) {
+	if position >= 1 && position <= len(c.positionalArgs) {
+		return c.positionalArgs[position-1], true
+	}
+	return nil, false
+}
 
 // EvaluateStatement runs a nested SQL++ statement string for functions that need
 // one (e.g. EXTRACTDDL queries `system:keyspaces`). n1k1 has no such executor

@@ -19,6 +19,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/couchbase/query/algebra"
 	"github.com/couchbase/query/datastore"
 	"github.com/couchbase/query/errors"
 	"github.com/couchbase/query/plan"
@@ -40,6 +41,18 @@ type Session struct {
 	// request; they flow to the planner and to eval-time NamedParameter lookups
 	// (see GlueContext.NamedArg). nil when the statement uses none.
 	NamedArgs map[string]value.Value
+
+	// PositionalArgs are optional positional query parameters ($1, $2, ...) supplied
+	// with the request; they flow to the planner and to eval-time PositionalParameter
+	// lookups (see GlueContext.PositionalArg). nil when the statement uses none. An
+	// EXECUTE ... USING [...] clause supplies these instead (see runExecute).
+	PositionalArgs value.Values
+
+	// prepareds is this session's prepared-statement store (PREPARE ... AS <stmt> /
+	// EXECUTE <name>), keyed by name. Lazily created. Interpreter-only: PREPARE
+	// parses + caches the inner statement; EXECUTE re-plans and runs it with the
+	// bound args. See runPrepare / runExecute and DESIGN-prepare.md.
+	prepareds map[string]*preparedStmt
 
 	// CollectStats opts a run into the per-operator counter core: Run lays out a
 	// base.Stats over the op tree (see base.LayoutStats), points Ctx.Stats at it,
@@ -179,7 +192,28 @@ func (s *Session) Run(stmt string) (res *Result, err error) {
 		return nil, err
 	}
 
-	qp, err := s.Store.PlanStatementQP(parsed, s.Namespace, s.NamedArgs, nil)
+	// PREPARE / EXECUTE are handled in-session (a per-Session prepared-statement
+	// store), not by the cbq planner -- which has no home for them in n1k1's CE
+	// build (PlanStatementQP rejects PREPARE; EXECUTE would hit an unsupported
+	// plan.Discard). See runPrepare / runExecute and DESIGN-prepare.md.
+	switch st := parsed.(type) {
+	case *algebra.Prepare:
+		return s.runPrepare(st)
+	case *algebra.Execute:
+		return s.runExecute(st)
+	}
+
+	return s.runStatement(parsed, s.NamedArgs, s.PositionalArgs)
+}
+
+// runStatement plans, converts, and executes an already-parsed statement with the
+// given query parameters. It is the shared core of Run (a top-level statement) and
+// of EXECUTE (a prepared inner statement run with bound args). Its panics are
+// recovered by Run's deferred handler -- runStatement is only ever called within
+// Run's dynamic extent (directly, or via runExecute).
+func (s *Session) runStatement(parsed algebra.Statement,
+	namedArgs map[string]value.Value, positionalArgs value.Values) (res *Result, err error) {
+	qp, err := s.Store.PlanStatementQP(parsed, s.Namespace, namedArgs, positionalArgs)
 	if err != nil {
 		return nil, err
 	}
@@ -234,7 +268,8 @@ func (s *Session) Run(stmt string) (res *Result, err error) {
 
 	gctx := NewGlueContext(time.Now())
 	gctx.InitSubqueries(s.Store, s.Namespace, conv.WithBindings(), qp.Subqueries()) // enable expression subqueries
-	gctx.SetNamedArgs(s.NamedArgs)                                                  // resolve $name at eval time
+	gctx.SetNamedArgs(namedArgs)                                                    // resolve $name at eval time
+	gctx.SetPositionalArgs(positionalArgs)                                          // resolve $1,$2 at eval time
 	gctx.SetWithScopeFrom(conv.WithScopeBindings())                                 // resolve `x IN cte` etc.
 
 	// Route native-expression advisories (e.g. divide-by-zero) into the
@@ -348,4 +383,81 @@ func (s *Session) Run(stmt string) (res *Result, err error) {
 		Stats:      stats,
 		BoxedEvals: gctx.BoxedEvals(),
 	}, nil
+}
+
+// preparedStmt is one entry in a Session's prepared-statement store: the inner
+// statement PREPARE parsed, its original text, and a use counter. Interpreter-only
+// -- the statement is re-planned per EXECUTE with the bound args (caching the
+// converted op tree is a later optimization; see DESIGN-prepare.md "Preparation is
+// a level").
+type preparedStmt struct {
+	name string
+	text string
+	stmt algebra.Statement
+	uses int64
+}
+
+// runPrepare handles `PREPARE [name] AS <stmt>` (cbq also spells it `PREPARE [name]
+// FROM <stmt>`): it caches the inner statement in the session's prepared-statement
+// store so a later EXECUTE can run it. An unnamed PREPARE keys on the inner
+// statement's text. It does NOT execute the inner statement, and returns an empty
+// result -- interpreter-only PREPARE is a cache, not a compile, so there is no
+// encoded-plan row to hand back (cf. cbq).
+func (s *Session) runPrepare(p *algebra.Prepare) (*Result, error) {
+	name := p.Name()
+	if name == "" {
+		name = p.Statement().String() // unnamed PREPARE: key on the inner statement text
+	}
+	if s.prepareds == nil {
+		s.prepareds = map[string]*preparedStmt{}
+	}
+	s.prepareds[name] = &preparedStmt{name: name, text: p.Text(), stmt: p.Statement()}
+	return &Result{}, nil
+}
+
+// runExecute handles `EXECUTE <name> [USING <args>]`: it looks up the prepared
+// statement, binds its query parameters, and runs it via runStatement. Args come
+// from EITHER the USING clause (a constant array -> positional, object -> named) OR
+// the request's Session.NamedArgs / PositionalArgs -- never both (cbq rejects that
+// combination). See case_prepare.json.
+func (s *Session) runExecute(e *algebra.Execute) (*Result, error) {
+	ps := s.prepareds[e.Prepared()]
+	if ps == nil {
+		return nil, fmt.Errorf("No such prepared statement: %s", e.Prepared())
+	}
+	ps.uses++
+
+	namedArgs, positionalArgs := s.NamedArgs, s.PositionalArgs
+
+	if u := e.Using(); u != nil {
+		// USING and request-level parameters are mutually exclusive.
+		if len(s.NamedArgs) > 0 || len(s.PositionalArgs) > 0 {
+			return nil, fmt.Errorf(
+				"Execution parameter error: cannot have both USING clause and request parameters")
+		}
+		uv, err := u.Evaluate(nil, convEvalContext)
+		if err != nil {
+			return nil, err
+		}
+		namedArgs, positionalArgs = nil, nil
+		switch uv.Type() {
+		case value.ARRAY: // USING [ ... ]  -> positional $1, $2, ...
+			act, _ := uv.Actual().([]interface{})
+			positionalArgs = make(value.Values, len(act))
+			for i, a := range act {
+				positionalArgs[i] = value.NewValue(a)
+			}
+		case value.OBJECT: // USING { "k": ... } -> named $k
+			act, _ := uv.Actual().(map[string]interface{})
+			namedArgs = make(map[string]value.Value, len(act))
+			for k, a := range act {
+				namedArgs[k] = value.NewValue(a)
+			}
+		default:
+			return nil, fmt.Errorf(
+				"EXECUTE USING must be an array (positional) or object (named), got %s", uv.Type())
+		}
+	}
+
+	return s.runStatement(ps.stmt, namedArgs, positionalArgs)
 }

@@ -72,6 +72,12 @@ type GlueContext struct {
 	// nil when the statement uses none. See Session.NamedArgs.
 	namedArgs map[string]value.Value
 
+	// positionalArgs holds the request's positional query parameters ($1, $2, ...),
+	// resolved by PositionalArg at eval time (1-based: $1 is positionalArgs[0]). nil
+	// when the statement uses none. Fed by EXECUTE ... USING [...] and by
+	// Session.PositionalArgs. See runExecute.
+	positionalArgs value.Values
+
 	// withScope holds the query's WITH (CTE) aliases as fields, so an expression
 	// that references a CTE by name (e.g. `x IN cte`, `FIRST v FOR v IN cte`)
 	// resolves it: Identifier.Evaluate reads item.Field(name), and ExprTree scopes
@@ -181,19 +187,24 @@ func (c *GlueContext) getRoot() *GlueContext {
 // the root, so the clone never uses them (and we avoid copying a live lock).
 func (c *GlueContext) ChainClone() interface{} {
 	return &GlueContext{
-		IndexContext: c.IndexContext,
-		now:          c.now,
-		subq:         c.subq,
-		namedArgs:    c.namedArgs,
-		corrParent:   c.corrParent, // snapshot; the clone mutates its own copy
-		withScope:    c.withScope,
-		root:         c.getRoot(), // caches + errs delegate here
+		IndexContext:   c.IndexContext,
+		now:            c.now,
+		subq:           c.subq,
+		namedArgs:      c.namedArgs,
+		positionalArgs: c.positionalArgs,
+		corrParent:     c.corrParent, // snapshot; the clone mutates its own copy
+		withScope:      c.withScope,
+		root:           c.getRoot(), // caches + errs delegate here
 	}
 }
 
 // SetNamedArgs installs the request's named query parameters ($name), so
 // NamedArg can resolve them during expression evaluation.
 func (c *GlueContext) SetNamedArgs(args map[string]value.Value) { c.namedArgs = args }
+
+// SetPositionalArgs installs the request's positional query parameters ($1, $2,
+// ...), so PositionalArg can resolve them during expression evaluation.
+func (c *GlueContext) SetPositionalArgs(args value.Values) { c.positionalArgs = args }
 
 // SetWithScope installs the WITH-alias scope (see the withScope field).
 func (c *GlueContext) SetWithScope(v value.Value) { c.withScope = v }
