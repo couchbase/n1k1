@@ -148,3 +148,43 @@ func TestPipeStandaloneCompileRun(t *testing.T) {
 		t.Errorf("standalone program output:\n%s\nwant:\n%s", got, want)
 	}
 }
+
+// TestExprTreesOptimizeInline asserts that after ExprTreesOptimize a fully-native
+// FROM query (field access + filter + arithmetic) emits cbq-free native inline (no
+// glue.ExprStr island), while a denylisted-cluster expr (CASE) stays boxed -- the
+// safe-landing contract until the nary/case/json emitters are fixed.
+func TestExprTreesOptimizeInline(t *testing.T) {
+	root := writePlainBeers(t, 3)
+	s, err := OpenSession(root, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	emitPipe := func(q string) string {
+		parsed, _ := ParseStatement(q, "default", true)
+		qp, _ := s.Store.PlanStatementQP(parsed, "default", nil, nil)
+		pp, cerr := PlanConvert(qp)
+		if cerr != nil {
+			t.Fatalf("%s: %v", q, cerr)
+		}
+		ExprTreesOptimize(pp.topOp)
+		emit.PipeMode = true
+		defer func() { emit.PipeMode = false }()
+		src := func() (s string) { defer func() { recover() }(); return strings.Join(emit.OpToLines(pp.topOp), "") }()
+		return src
+	}
+	for _, q := range []string{
+		`SELECT b.i FROM beers b`,
+		`SELECT b.i FROM beers b WHERE b.i >= 1`,
+		`SELECT b.i + 10 AS x FROM beers b`,
+	} {
+		if src := emitPipe(q); strings.Contains(src, "glue.") {
+			t.Errorf("%q should emit cbq-free native inline; found a glue ref", q)
+		}
+	}
+	// A CASE (denylisted cluster) stays boxed as a glue.ExprStr island -- correct,
+	// just not standalone -- so nothing breaks pending the emitter fix.
+	cq := `SELECT CASE WHEN b.i > 0 THEN "pos" ELSE "zero" END AS c FROM beers b`
+	if src := emitPipe(cq); !strings.Contains(src, "glue.ExprStr") {
+		t.Errorf("CASE should stay boxed (denylisted); expected a glue.ExprStr island")
+	}
+}

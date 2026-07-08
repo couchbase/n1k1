@@ -43,63 +43,16 @@ import (
 	"github.com/couchbase/n1k1/base"
 	"github.com/couchbase/n1k1/glue"
 	"github.com/couchbase/n1k1/glue/emit"
-
-	"github.com/couchbase/query/expression"
 )
 
-// stringifyExprTrees rewrites, in place, every ["exprTree", <expression>] param
-// in an Op tree to ["exprStr", <expression>.String()]. The glue conv emits
-// expressions as live query/expression.Expression objects (exprTree), which the
-// compiler cannot bake into generated source. Serializing each back to its N1QL
-// text lets the existing exprStr codegen path emit a glue.ExprStr(...) call that
-// re-parses the text at the compiled program's runtime -- the same hybrid the
-// hand-written TestCasesSimple cases already use. Returns false if any exprTree
-// param can't be serialized (so the caller can skip the case).
+// stringifyExprTrees prepares an Op tree's ["exprTree", <expr>] params for the
+// compiler. It delegates to glue.ExprTreesOptimize, which lowers each expr to its
+// NATIVE catalog form (inline codegen) where possible and falls back to
+// ["exprStr", text] (a glue.ExprStr island) otherwise -- so this differential suite
+// exercises the native expr emitters, not just the boxed lane. Returns false if
+// some exprTree can't be serialized (so the caller skips the case).
 func stringifyExprTrees(o *base.Op) (ok bool) {
-	ok = true
-	var rewrite func(v interface{}) interface{}
-	rewrite = func(v interface{}) interface{} {
-		arr, isArr := v.([]interface{})
-		if !isArr {
-			return v
-		}
-		if len(arr) >= 2 {
-			if name, _ := arr[0].(string); name == "exprTree" {
-				e, isExpr := arr[1].(expression.Expression)
-				if !isExpr || e == nil {
-					ok = false
-					return v
-				}
-				rest := []interface{}{"exprStr", e.String()}
-				return append(rest, arr[2:]...)
-			}
-		}
-		out := make([]interface{}, len(arr))
-		for i, e := range arr {
-			out[i] = rewrite(e)
-		}
-		return out
-	}
-	var walk func(op *base.Op)
-	walk = func(op *base.Op) {
-		if op == nil {
-			return
-		}
-		// Rewrite op.Params as a whole, not element-wise: some ops carry the
-		// exprTree pair AS their Params slice (e.g. filter: ["exprTree", cond]),
-		// while others nest pairs inside it (e.g. project: [[exprTree,e1], ...]).
-		// rewrite() handles both -- it rewrites a pair in place and recurses.
-		if len(op.Params) > 0 {
-			if rw, isArr := rewrite(op.Params).([]interface{}); isArr {
-				op.Params = rw
-			}
-		}
-		for _, c := range op.Children {
-			walk(c)
-		}
-	}
-	walk(o)
-	return ok
+	return glue.ExprTreesOptimize(o)
 }
 
 // convOf parses, plans and converts a statement to a n1k1 Op tree, recovering

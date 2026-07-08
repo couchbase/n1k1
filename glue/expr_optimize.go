@@ -385,3 +385,102 @@ func fieldChainCaseInsensitive(e expression.Expression) bool {
 	}
 	return false
 }
+
+// compiledExprDenylist names native expr catalog kinds whose AUTO-GENERATED
+// compiler emitters are known-broken (they were dead code until native-inline
+// codegen landed, so never debugged). They share one root cause: a "captured
+// operand" codegen mechanism (the emitter reads named operand vars -- lzChildren
+// for the nary family, lzValItem/Low/High for between, lzValArr/Idx for element --
+// that the generated code never declares). ExprTreesOptimize keeps any expr tree
+// that CONTAINS one of these BOXED (exprStr) so the compiled code stays correct;
+// each entry is removed as its emitter is fixed. Binary ops (arithmetic,
+// comparison), field access (labelPath), and/or/in, and json constants emit fine.
+// See DESIGN-prepare.md.
+var compiledExprDenylist = map[string]bool{
+	// nary family (MakeNaryExprFunc -> undefined lzChildren)
+	"case": true, "concat": true, "greatest": true, "least": true,
+	"ifnull": true, "ifmissing": true, "ifmissingornull": true, "nvl": true,
+	// other captured-operand emitters
+	"between": true, // undefined lzValItem/lzValLow/lzValHigh
+	"element": true, // undefined lzValArr/lzValIdx (array indexing)
+}
+
+// exprParamsHasDenylisted reports whether a native optimized param tree contains a
+// catalog op whose compiler emitter is denylisted (so the whole expr must stay
+// boxed rather than emit broken code).
+func exprParamsHasDenylisted(v interface{}) bool {
+	arr, ok := v.([]interface{})
+	if !ok || len(arr) == 0 {
+		return false
+	}
+	if name, _ := arr[0].(string); compiledExprDenylist[name] {
+		return true
+	}
+	for _, e := range arr[1:] {
+		if exprParamsHasDenylisted(e) {
+			return true
+		}
+	}
+	return false
+}
+
+// ExprTreesOptimize rewrites each ["exprTree", <expr>] op param, in place, to the
+// NATIVE catalog form ExprTreeOptimize produces (e.g. ["labelPath",...], ["add",...])
+// so the compiler emits it INLINE (cbq-free) instead of a glue.ExprStr island; an
+// expr that can't be lowered -- or that lowers to a tree touching a denylisted
+// (known-broken) emitter -- falls back to ["exprStr", <text>]. Each op's exprs are
+// optimized against its input labels (its first child's output labels) with strict
+// matching, so an outer/correlated field ref that can't resolve locally stays boxed
+// rather than mis-navigating the local row. Returns false if some exprTree isn't a
+// serializable expression.
+//
+// This is the compile-time analogue of the interpreter's per-eval ExprTree ->
+// ExprTreeOptimize lowering (glue/expr.go), so native exprs compile cbq-free. It
+// replaces stringifyExprTrees (which boxed everything). See DESIGN-prepare.md.
+func ExprTreesOptimize(o *base.Op) (ok bool) {
+	ok = true
+	var walk func(op *base.Op)
+	walk = func(op *base.Op) {
+		if op == nil {
+			return
+		}
+		labels := inputLabels(op)
+		var rewrite func(v interface{}) interface{}
+		rewrite = func(v interface{}) interface{} {
+			arr, isArr := v.([]interface{})
+			if !isArr {
+				return v
+			}
+			if len(arr) >= 2 {
+				if name, _ := arr[0].(string); name == "exprTree" {
+					e, isExpr := arr[1].(expression.Expression)
+					if !isExpr || e == nil {
+						ok = false
+						return v
+					}
+					var buf bytes.Buffer
+					if params, opt := ExprTreeOptimize(labels, stripCovers(e), &buf, true); opt &&
+						!exprParamsHasDenylisted(params) {
+						return params // native inline
+					}
+					return append([]interface{}{"exprStr", e.String()}, arr[2:]...) // boxed fallback
+				}
+			}
+			out := make([]interface{}, len(arr))
+			for i, e := range arr {
+				out[i] = rewrite(e)
+			}
+			return out
+		}
+		if len(op.Params) > 0 {
+			if rw, isArr := rewrite(op.Params).([]interface{}); isArr {
+				op.Params = rw
+			}
+		}
+		for _, c := range op.Children {
+			walk(c)
+		}
+	}
+	walk(o)
+	return ok
+}
