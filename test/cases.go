@@ -6074,6 +6074,21 @@ var TestCasesSimple = []TestCaseSimple{
 	naryProjectCase("array_position-absent", []interface{}{"array_position",
 		[]interface{}{"json", `[1,2]`}, []interface{}{"json", `9`}}, `-1`),
 
+	// OBJECT_NAMES (structure-building reader) in the COMPILED path -- proves the
+	// generated code emits base.ObjectNames into the reused buffer, sorted by name.
+	naryProjectCase("object_names", []interface{}{"object_names",
+		[]interface{}{"json", `{"c":1,"a":2,"b":3}`}}, `["a","b","c"]`),
+	naryProjectCase("object_names-caps", []interface{}{"object_names",
+		[]interface{}{"json", `{"b":1,"A":2,"a":3}`}}, `["A","a","b"]`),
+	naryProjectCase("object_names-empty", []interface{}{"object_names",
+		[]interface{}{"json", `{}`}}, `[]`),
+	naryProjectCase("object_names-one", []interface{}{"object_names",
+		[]interface{}{"json", `{"only":1}`}}, `["only"]`),
+	naryProjectCase("object_names-nonobj", []interface{}{"object_names",
+		[]interface{}{"json", `5`}}, `null`),
+	naryProjectCase("object_names-null", []interface{}{"object_names",
+		[]interface{}{"json", `null`}}, `null`),
+
 	// is-type predicates in the COMPILED path -- exercises func-value params
 	// emitted by name (base.TypeIs*) via LzExprFmt (previously un-compilable).
 	naryProjectCase("is_number-yes", []interface{}{"is_number", []interface{}{"json", `5`}}, `true`),

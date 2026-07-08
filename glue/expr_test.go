@@ -777,6 +777,66 @@ func TestObjectPolyLengthDifferentialVsCBQ(t *testing.T) {
 	}
 }
 
+// TestObjectNamesDifferentialVsCBQ proves OBJECT_NAMES native lowering: the sorted
+// JSON string-array of an object's field names is byte-identical to cbq, MISSING ->
+// MISSING, and any non-object -> NULL. The sort must match cbq's byte-order name
+// sort exactly (base.ObjectNames reuses the ValComparer KeyVals sort), so the
+// operands mix unsorted / reverse-sorted / escaped / unicode / numeric keys.
+func TestObjectNamesDifferentialVsCBQ(t *testing.T) {
+	c := func(v interface{}) expression.Expression { return expression.NewConstant(v) }
+	ctor := func(e expression.Expression) expression.Expression { return expression.NewObjectNames(e) }
+
+	operands := map[string]expression.Expression{
+		"sorted":    c(map[string]interface{}{"a": 1, "b": 2, "c": 3}),
+		"reverse":   c(map[string]interface{}{"c": 1, "b": 2, "a": 3}),
+		"mixedlen":  c(map[string]interface{}{"ab": 1, "a": 2, "abc": 3}),
+		"caps":      c(map[string]interface{}{"B": 1, "a": 2, "A": 3, "b": 4}), // uppercase sorts before lowercase (byte order)
+		"digits":    c(map[string]interface{}{"1": 1, "10": 2, "2": 3}),       // lexical, not numeric
+		"nested":    c(map[string]interface{}{"z": map[string]interface{}{"x": 1}, "a": []interface{}{1, 2}}),
+		"unicode":   c(map[string]interface{}{"café": 1, "abc": 2}),
+		"one":       c(map[string]interface{}{"only": 1}),
+		"empty":     c(map[string]interface{}{}),
+		"valuekind": c(map[string]interface{}{"n": nil, "s": "x", "b": true, "num": 3}),
+		"arr":       c([]interface{}{1, 2}),
+		"str":       c("hello"),
+		"num":       c(5),
+		"boolt":     c(true),
+		"null":      c(value.NULL_VALUE),
+		"missing":   c(value.MISSING_VALUE),
+	}
+
+	for on, operand := range operands {
+		expr := ctor(operand)
+		want := cbqEval(t, expr)
+		got, ok := nativeEval(t, expr)
+		if !ok {
+			t.Errorf("object_names(%s): did not optimize to native", on)
+			continue
+		}
+		if got != want {
+			t.Errorf("object_names(%s): native=%q, cbq=%q", on, got, want)
+		}
+	}
+}
+
+// TestObjectNamesZeroAlloc asserts the per-row native OBJECT_NAMES build allocates
+// nothing after warmup: the ValComparer's KeyVals pool reuses the key backing and
+// the output goes into the reused bufPre buffer (the GARBAGE MANDATE).
+func TestObjectNamesZeroAlloc(t *testing.T) {
+	cmp := base.NewValComparer()
+	val := base.Val([]byte(`{"gamma":1,"alpha":2,"beta":3,"delta":4}`))
+
+	var buf []byte
+	buf, _, _ = base.ObjectNames(cmp, val, buf) // warm up the KeyVals pool + buffer
+
+	n := testing.AllocsPerRun(2000, func() {
+		buf, _, _ = base.ObjectNames(cmp, val, buf)
+	})
+	if n != 0 {
+		t.Errorf("base.ObjectNames: %v allocs/row after warmup; want 0", n)
+	}
+}
+
 func TestArrayMinMaxContainsDifferentialVsCBQ(t *testing.T) {
 	c := func(v interface{}) expression.Expression { return expression.NewConstant(v) }
 	arr := func(xs ...interface{}) expression.Expression {

@@ -27,6 +27,9 @@ import (
 func init() {
 	ExprCatalog["object_length"] = ExprObjectLength
 	ExprCatalog["poly_length"] = ExprPolyLength
+	// OBJECT_NAMES: builds a sorted JSON string-array of the object's field names
+	// into the reused buffer (a structure-building reader); see base.ObjectNames.
+	ExprCatalog["object_names"] = ExprObjectNames
 }
 
 func ExprObjectLength(lzVars *base.Vars, labels base.Labels,
@@ -57,6 +60,38 @@ func exprLenReader(lzVars *base.Vars, labels base.Labels, params []interface{},
 			lzVal = lzSentinel
 		} else {
 			lzOut := strconv.AppendInt(lzBufPre[:0], int64(lzN), 10)
+			lzBufPre = lzOut
+			lzVal = base.Val(lzOut)
+		}
+
+		return lzVal
+	}
+
+	return lzExprFunc
+}
+
+// ExprObjectNames is OBJECT_NAMES(obj): unary, builds the sorted JSON string-array
+// of the operand object's field names into the reused buffer (or a MISSING/NULL
+// sentinel for a MISSING / non-object operand) -- no boxing. Mirrors the SPLIT
+// structure-builders (expr_str.go): the whole build lives in one base call so the
+// reused buffer varLift placeholder stays on its own emitted line.
+func ExprObjectNames(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
+	exprA := params[0].([]interface{})
+
+	var lzBufPre []byte // <== varLift: lzBufPre by path
+
+	lzExprFunc =
+		MakeExprFunc(lzVars, labels, exprA, path, "A") // !lz
+	lzA := lzExprFunc
+
+	lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
+		lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
+
+		lzOut, lzSentinel, lzOk := base.ObjectNames(lzVars.Ctx.ValComparer, lzVal, lzBufPre)
+		if !lzOk {
+			lzVal = lzSentinel
+		} else {
 			lzBufPre = lzOut
 			lzVal = base.Val(lzOut)
 		}

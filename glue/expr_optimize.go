@@ -53,6 +53,7 @@ func init() {
 		"array_length", "array_count", "array_sum", "array_avg", // array readers (expr_array.go)
 		"array_min", "array_max", "array_contains", "array_position", // (expr_array.go)
 		"object_length", "poly_length", // object/collection readers (expr_object.go)
+		"object_names", // OBJECT_NAMES: sorted name array builder (expr_object.go)
 		"and", "or", // three-valued logical (expr_logic.go)
 		"not",                                           // unary predicate (expr_pred.go)
 		"ifnull", "ifmissing", "ifmissingornull", "nvl", // conditional-unknown (expr_cond.go)
@@ -431,6 +432,7 @@ func exprTreeOptimizeNative(labels base.Labels, e expression.Expression,
 		"to_boolean", "to_string", "to_number",
 		"array_length", "array_count", "array_sum", "array_avg",
 		"array_min", "array_max",
+		"object_names",
 		"not", "is_null", "is_not_null",
 		"is_missing", "is_not_missing", "is_valued", "is_not_valued",
 		"is_array", "is_number", "is_string", "is_boolean", "is_object", "is_atom":

@@ -11,7 +11,11 @@
 
 package base
 
-import "github.com/buger/jsonparser"
+import (
+	"bytes"
+
+	"github.com/buger/jsonparser"
+)
 
 // Length reader op-codes for LengthReader.
 const (
@@ -79,4 +83,73 @@ func arrayElemCount(inner []byte) int {
 		n++
 	})
 	return n
+}
+
+// ObjectNames builds the OBJECT_NAMES(obj) result -- a JSON array of the object's
+// field names, SORTED ascending by byte order -- into the reused buffer bufPre,
+// returning (out, nil, true). It mirrors cbq's ObjectNames.Evaluate: MISSING ->
+// MISSING, a non-object -> NULL (returned as the sentinel with ok=false), else the
+// sorted name array. cbq sorts the DECODED key strings with Go's `a < b` (byte
+// order); this reuses the ValComparer's pooled KeyVals machinery (as
+// CanonicalJSON does) -- ObjectEach hands back each name already unescaped, the
+// names are copied into the pool's reused key backing (ReuseNextKey, so no
+// per-row key allocation after warmup), sorted by bytes.Compare (identical
+// ordering), and re-encoded as JSON strings via EncodeAsString. Only the names
+// are read, so the values are ignored (no value-serialization fidelity concern).
+//
+// Note the EncodeStr formfeed/backspace encoder caveat (see EncodeAsString /
+// DESIGN-exprs.md) applies to any name containing a literal 0x0C / 0x08.
+func ObjectNames(c *ValComparer, v Val, bufPre []byte) (out []byte, sentinel Val, ok bool) {
+	if len(v) == 0 {
+		return nil, ValMissing, false
+	}
+
+	inner, pt := Parse(v)
+	if ParseTypeToValType[pt] != ValTypeObject {
+		return nil, ValNull, false
+	}
+
+	kvs := c.KeyValsAcquire(0)
+
+	iterErr := jsonparser.ObjectEach(inner,
+		func(k []byte, _ []byte, _ jsonparser.ValueType, _ int) error {
+			kCopy := append(ReuseNextKey(kvs), k...)
+			kvs = append(kvs, KeyVal{Key: kCopy})
+			return nil
+		})
+	if iterErr != nil {
+		c.KeyValsRelease(0, kvs)
+		return nil, ValNull, false
+	}
+
+	c.PrepareEncoder()
+
+	// Insertion sort the names ascending by byte order (matching cbq's `a < b`
+	// name sort). A concrete in-place sort avoids the sort.Interface boxing that
+	// sort.Sort(kvs) would heap-allocate every row -- object field counts are
+	// small, so insertion sort is both allocation-free and fast here.
+	for i := 1; i < len(kvs); i++ {
+		kv := kvs[i]
+		j := i - 1
+		for j >= 0 && bytes.Compare(kvs[j].Key, kv.Key) > 0 {
+			kvs[j+1] = kvs[j]
+			j--
+		}
+		kvs[j+1] = kv
+	}
+
+	out = append(bufPre[:0], '[')
+
+	for i := 0; i < len(kvs); i++ {
+		if i > 0 {
+			out = append(out, ',')
+		}
+		out, _ = c.EncodeAsString(kvs[i].Key, out)
+	}
+
+	out = append(out, ']')
+
+	c.KeyValsRelease(0, kvs)
+
+	return out, nil, true
 }
