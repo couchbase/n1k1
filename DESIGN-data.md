@@ -114,8 +114,9 @@ Landed n1k1-side (all `records/` + `glue/`, `//go:build n1ql`):
 Still proposal / not built: catalog/sidecar (`.n1k1/catalog.json`), manifests &
 zone maps (§5), Parquet/ORC/Avro, `.zip` containers, zstd decode, composite
 offset doc-IDs & seekable-fetch for compressed containers, query-defined VIEWs
-(needs `VisitUnionAll`), object-store backend, encryption-at-rest, inline table
-functions (needs a grammar fork). **Also proposal (this rework):** the two-phase
+(the `UNION ALL` prerequisite has since landed — remaining gap is predicate pushdown
+through the view), object-store backend, encryption-at-rest, inline table functions
+(needs a grammar fork). **Also proposal (this rework):** the two-phase
 `describe`/`extract` provider with pluggable JS extractors + ext/regexp matching
 (§4); the sorted-source contract (normalized time key, `disorder_bound`, time zone
 maps) and the K-way near-sorted **merge join** that consumes it
@@ -578,7 +579,7 @@ Consequences: **pure glue-layer** (no fork change for expansion); **views over
 views** compose via CTE-ref threading; **recursive views** ride `WITH RECURSIVE`;
 **compiler-safe** (expansion before `conv`).
 
-### The one real blocker: UNION ALL (TODO)
+### UNION ALL — landed (was the one blocker)
 The normalizing view is a union of per-era projections:
 ```sql
   SELECT ts,               user_id,        action, "era1" AS _era FROM events_era1
@@ -587,14 +588,18 @@ The normalizing view is a union of per-era projections:
   UNION ALL
   SELECT meta.ts,          meta.user AS user_id, kind AS action, "era3" FROM events_era3
 ```
-**`plan.UnionAll` is `NA()` in `glue/conv.go` today** (parser and planner accept
-`UNION ALL`, but conv rejects it). Blocked until `VisitUnionAll` (and likely
-`VisitUnion`/distinct) lands — a **bounded** task, since the recursive-CTE work
-already built the union *execution* substrate (data-staging batches + `trackSet`
-dedup in `glue/recursive.go`); what's missing is mainly the top-level
-`plan.UnionAll` → `base.Op` conversion. The single prerequisite for the morphing
-case. (Views that *don't* union — a single reshaping `SELECT` — work as soon as
-catalog-view expansion lands.)
+**This once-blocking case now works: `VisitUnionAll` has landed** (`glue/conv.go`,
+kind `union-all`) — each child is a self-contained SELECT sub-plan converted as its
+own branch, run concurrently by `OpUnionAll` with each branch's vals **remapped to a
+by-name union of labels** (so differently-shaped era projections reconcile). The
+recursive-CTE work had already built the union *execution* substrate (data-staging
+batches + `trackSet` dedup in `glue/recursive.go`); this wired the top-level
+`plan.UnionAll` → `base.Op` conversion on top. `INTERSECT`/`EXCEPT` (`[ALL|DISTINCT]`)
+landed too (`setOp` → hash set-op). What *remains* for the morphing view is not the
+union itself but **predicate pushdown through the view** (below, and the open
+question) — so a `WHERE`/partition predicate prunes whole eras rather than the view
+reading all history. (Views that *don't* union — a single reshaping `SELECT` — work as
+soon as catalog-view expansion lands.)
 
 ### S3 / object store: orthogonal, deps already here
 The VIEW idea is independent of *where* bytes live. That's a separable backend
@@ -633,8 +638,9 @@ slow on morphing histories; materialization or pushdown makes it practical.
 ### Recommendation & sequencing
 Model views as **catalog entries with a `query` field**, expanded as implicit WITH
 bindings before planning. Sequencing: (1) single-source reshaping views land with
-catalog-view expansion; (2) union/normalize views unblock once `VisitUnionAll`
-lands; (3) object-store backend + generated/Glue catalogs are a separable track;
+catalog-view expansion; (2) union/normalize views are unblocked now that
+`VisitUnionAll` has landed — the remaining gap is predicate pushdown into the branches;
+(3) object-store backend + generated/Glue catalogs are a separable track;
 (4) materialization + pushdown are the perf follow-ups (§5). See example O.
 
 **Rejected: the fork's `datastore/virtual` package for views.** It's a
@@ -1016,7 +1022,8 @@ Meta}` (the seam the bleve FTS indexer consumes — `DESIGN-indexing.md` Phase 2
 per spreadsheet row) — those want the optional Tika/extractous+Tesseract backend
 (§4). `-formats` groups: `doc`, `text`, `image`, `video`, or `extract`.
 
-**O. Query-defined VIEW over a morphed-over-time source 🟣 (needs UNION ALL)**
+**O. Query-defined VIEW over a morphed-over-time source 🟣 (UNION ALL landed; needs
+view expansion + pushdown)**
 ```
 s3-events/  events_era1/2019/*.json  events_era2/2021/*.jsonl.gz
             events_era3/year=2023/*.parquet  .n1k1/catalog.json
@@ -1029,9 +1036,11 @@ s3-events/  events_era1/2019/*.json  events_era2/2021/*.jsonl.gz
    UNION ALL SELECT meta.ts, meta.user AS user_id, kind AS action, 'era3' FROM events_era3" } } }
 ```
 `FROM events WHERE ts >= '2023-01-01' GROUP BY _era` → `events` expands as an
-implicit WITH binding (CTE machinery); the eras present as one keyspace. **Blocked on
-`VisitUnionAll`**; the `WHERE` also wants pushdown into the era sub-scans (the open
-question). A single-source reshaping view (no UNION) works without that blocker.
+implicit WITH binding (CTE machinery); the eras present as one keyspace. The `UNION
+ALL` itself now converts (`VisitUnionAll`); what remains is **catalog-view expansion**
+(seed the binding from `.n1k1/catalog.json`) and **predicate pushdown** so the `WHERE`
+prunes whole era sub-scans instead of the view reading all history (the open question).
+A single-source reshaping view (no UNION) needs only the expansion half.
 
 **P. Support bundle (`cbcollect_info`) — heterogeneous logs via describe/extract +
 merge 🟡 (the driving `DESIGN-prepare.md` case)**
@@ -1076,8 +1085,9 @@ and `node` came from the declarative `fields`/`provenance` — no per-row JS. Th
    **partition virtual-columns (F/G)** — not CSV.
 4. Partition pruning (F/G) is the first feature needing the predicate pushed to the
    scan layer (links to the indexing doc's zone-map tier).
-5. The VIEW case (O) reuses WITH/CTE for free but is gated on `VisitUnionAll` and
-   predicate-pushdown — the highest-leverage feature for "morphed-over-time."
+5. The VIEW case (O) reuses WITH/CTE for free; with `VisitUnionAll` now landed, the
+   remaining gate is catalog-view expansion + predicate-pushdown — the highest-leverage
+   feature for "morphed-over-time."
 6. The support-bundle case (P) is a *different* kind of hard: not schema morphing but
    **format heterogeneity + irregular framing + per-source timestamp normalization**.
    It's why extract splits into cheap-`describe` (pluggable, format-specific) and
@@ -1421,9 +1431,10 @@ E5. ⬜ **K-way merge source op** — disjoint→concat, strict→heap, near→w
 
 Separable tracks:
 - **Query-defined VIEWs:** (i) single-source reshaping views land with catalog-view
-  expansion (WITH/CTE machinery); (ii) union/normalize views unblock once
-  **`VisitUnionAll`** lands in `glue/conv.go`; (iii) materialized views + predicate
-  pushdown are perf follow-ups (§5).
+  expansion (WITH/CTE machinery); (ii) union/normalize views are now unblocked on the
+  union itself — **`VisitUnionAll` has landed** in `glue/conv.go` (`union-all`, by-name
+  label union) — so what remains for them is catalog-view expansion + branch pushdown;
+  (iii) materialized views + predicate pushdown are perf follow-ups (§5).
 - **Object-store backend** (S3/GCS/Azure via `gocloud.dev/blob` or `aws-sdk`, both
   indirect deps) — lets any catalog `root`/glob point at `s3://…`. Reading an existing
   **Glue Data Catalog** (`aws-sdk-go-v2/service/glue`, present) is the "generated
