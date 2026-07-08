@@ -108,6 +108,7 @@ func main() {
 		"max prepare/codegen level: interpreted (default) | data | full; bare -prepare = full. See .prepare")
 
 	flag.Usage = usage
+
 	flag.CommandLine.Parse(normalizeVerbose(os.Args[1:]))
 
 	// The sidecar dir (catalog.json, built indexes) is named after this binary --
@@ -119,6 +120,8 @@ func main() {
 		printVersion(os.Stdout)
 		return
 	}
+
+	base.LogLevel = int(vLevel)
 
 	// -index selects when catalog-declared secondary indexes are built (lazy on
 	// first use, eager up front, or off = ignore the catalog). See DESIGN-indexing.md.
@@ -153,12 +156,14 @@ func main() {
 			formatsGiven = true
 		}
 	})
+
 	formatsStr := *formatsFlag
 	if !formatsGiven {
 		if cf, cerr := glue.CatalogFormats(dir); cerr == nil {
 			formatsStr = cf
 		}
 	}
+
 	scanOpts, serr := records.ParseModes(formatsStr)
 	if serr != nil {
 		if formatsGiven {
@@ -174,9 +179,7 @@ func main() {
 	// Register extensions (JS UDFs + *.extract.js recipes) BEFORE opening the store:
 	// resolveSession -> FileStore decides which files become keyspaces, and a
 	// recipe-matched file is auto-exposed as a keyspace (glue/flat.go), so the recipes
-	// must be registered first. base.LogLevel is set here too so recipe-load / describe
-	// diagnostics honor -v/-verbose from the very first file.
-	base.LogLevel = int(vLevel)
+	// must be registered first.
 	if len(extPaths) > 0 {
 		if _, lerr := loadExtensions(extPaths); lerr != nil {
 			fmt.Fprintf(os.Stderr, "%s: -ext: %v\n", prog, lerr)
