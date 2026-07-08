@@ -397,10 +397,12 @@ func fieldChainCaseInsensitive(e expression.Expression) bool {
 // comparison), field access (labelPath), and/or/in, and json constants emit fine.
 // See DESIGN-prepare.md.
 var compiledExprDenylist = map[string]bool{
-	// nary family (MakeNaryExprFunc -> undefined lzChildren)
+	// The nary family (MakeNaryExprFunc): reducers are runtime base funcs taking
+	// []ExprFunc, called at build time -> undefined lzChildren / CaseReduce panic;
+	// CASE is also lazy. A codegen redesign, not the fixed-operand capture fix.
+	// Boxed (correct) meanwhile -- tracked follow-up.
 	"case": true, "concat": true, "greatest": true, "least": true,
 	"ifnull": true, "ifmissing": true, "ifmissingornull": true, "nvl": true,
-	// other captured-operand emitters
 }
 
 // exprParamsHasDenylisted reports whether a native optimized param tree contains a
