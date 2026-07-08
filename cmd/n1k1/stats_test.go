@@ -237,3 +237,50 @@ func TestRunningAggLines(t *testing.T) {
 		t.Fatalf("cap: last line = %q, want a '3 more' summary", last)
 	}
 }
+
+// TestRunningAggLinesLabeled checks the labeled form (live footer + final block):
+// one "alias (expr): value" line per aggregate, the alias omitted when empty, and
+// numeric values aligned on their decimal point. Labels ride on
+// Stats.RunningAggLabels (filled by glue.RunningAggLabels); here they're set
+// directly so the test needs no plan.
+func TestRunningAggLinesLabeled(t *testing.T) {
+	s := &base.Stats{RunningAggs: make([]base.RunningAggs, 1)}
+	r := s.RunningAggs[0].Next("0")
+	r.AddAgg("count", base.Val("5"))            // -> aliased "c", integer
+	r.AddAgg("sum_v_float64", base.Val("34.7")) // -> no alias (wrapped), fractional
+	s.RunningAggs[0].FinishRow(r)
+	s.RunningAggLabels = [][]base.RunningAggLabel{{
+		{Alias: "c", Expr: "count(*)"},
+		{Alias: "", Expr: "sum(x)"},
+	}}
+
+	lines := runningAggLines(s)
+	if len(lines) != 3 || lines[0] != "running:" {
+		t.Fatalf("got %d lines, want header + 2 aggs: %q", len(lines), lines)
+	}
+	cLine, sLine := lines[1], lines[2]
+
+	// Aliased aggregate shows "alias (expr):"; unaliased shows the bare expr (no
+	// parens wrapper, no alias).
+	if !strings.Contains(cLine, "c (count(*)):") {
+		t.Errorf("count line = %q, want it to contain \"c (count(*)):\"", cLine)
+	}
+	if !strings.Contains(sLine, "sum(x):") || strings.Contains(sLine, "(sum(x))") {
+		t.Errorf("sum line = %q, want a bare \"sum(x):\" with no alias wrap", sLine)
+	}
+
+	// Decimal-point alignment: the integer "5" has no dot and is trimmed of trailing
+	// pad, while "34.7"'s dot sits one past its units digit. The "5" must land in the
+	// units column -- exactly left of where the sum's decimal point is -- so the two
+	// numbers align on the (implicit) decimal point.
+	dot := strings.IndexByte(sLine, '.')
+	if dot < 1 {
+		t.Fatalf("sum line has no decimal point: %q", sLine)
+	}
+	if strings.ContainsRune(cLine, '.') {
+		t.Errorf("integer count line should have no decimal point: %q", cLine)
+	}
+	if dot-1 >= len(cLine) || cLine[dot-1] != '5' || sLine[dot-1] != '4' {
+		t.Errorf("values not decimal-aligned: count=%q sum=%q (dot at %d)", cLine, sLine, dot)
+	}
+}

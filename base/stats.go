@@ -115,6 +115,15 @@ type Stats struct {
 	Index    map[string]int // "opId:statName" -> index into Counters.
 	Ops      []StatsOpInfo  // Per-op sections, in layout (pre-order) order.
 
+	// RunningAggLabels, when populated (by the glue layer at request setup, which
+	// has the plan + cbq to correlate), gives each running-aggregate group op's
+	// per-aggregate (alias, expr) labels in that op's aggregate layout order
+	// (aligned with RunningAggRow.Aggs). Display-only: the CLI labels the running
+	// block "alias (expr): value", matching a running row to an entry by aggregate
+	// count. nil = no labels available (render bare handler names). See
+	// glue.RunningAggLabels.
+	RunningAggLabels [][]RunningAggLabel
+
 	// Totals is a parallel denominator/estimate for each counter (same length
 	// and indexing as Counters), used to drive progress bars: a bar for slot i is
 	// Counters[i] / Totals[i]. A Totals[i] of 0 means "no estimate" -> render a

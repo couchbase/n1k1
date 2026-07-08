@@ -69,6 +69,19 @@ func IsRunningAggCapable(name string) bool { return RunningAggsCapable[name] }
 // retains no reference to the live group map after it returns (copy-out for
 // RecycleMap safety). GroupRunningAggs below is the OpGroup refresher.
 
+// RunningAggLabel names one running aggregate for display: its expression text
+// (always present, e.g. "count(*)" or "sum((`b`.`i`))") and the SQL alias of the
+// result column that is EXACTLY that aggregate ("" when the aggregate is nested in
+// a larger projection term, e.g. ROUND(SUM(x),2), so no single column equals the
+// running partial). The glue layer fills these -- it needs the plan + cbq to
+// correlate expression to alias -- and base only holds the resulting strings, so
+// the display path can label the running block without a plan. See
+// glue.RunningAggLabels and cmd/n1k1 stats.go.
+type RunningAggLabel struct {
+	Alias string
+	Expr  string
+}
+
 // RunningAggRow is one group's in-flight partial aggregate values, captured at a
 // checkpoint: the decoded group-by key vals (empty for an ungrouped aggregate)
 // and each projected aggregate's current partial rendered by Agg.Result -- the

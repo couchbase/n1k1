@@ -255,6 +255,12 @@ func (s *Session) Run(stmt string) (res *Result, err error) {
 	if s.CollectStats {
 		stats = base.LayoutStats(conv.TopOp)
 		vars.Ctx.Stats = stats
+		if stats != nil {
+			// Label each running-aggregate group op's partials with (alias, expr) so
+			// the display path can show "alias (expr): value" -- for the live footer
+			// (which sees only *base.Stats, not the plan) as well as the final block.
+			stats.RunningAggLabels = RunningAggLabels(conv.TopOp)
+		}
 		if stats != nil && s.OnStats != nil {
 			onStats := s.OnStats
 			vars.Ctx.YieldStats = func(st *base.Stats) error {

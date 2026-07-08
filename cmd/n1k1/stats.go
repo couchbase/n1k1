@@ -154,15 +154,26 @@ func (v *statsView) bodyLines(s *base.Stats) []string {
 // compact and its in-place redraw doesn't scroll.
 const runningAggDisplayMax = 12
 
-// runningAggLines renders the in-flight aggregate partials as a compact footer
-// block: one line per group (sorted for a stable order across live frames), each a
-// group-by key followed by name=partial pairs -- the same bytes that will land in
-// the finalized result, shown climbing toward it. Returns nil when no op published
-// running aggregates (only the cheap fixed-width aggregates do; see
-// base.IsRunningAggCapable). Values are read under the checkpoint lock via
-// RunningAggsRange and copied into strings in the callback, so nothing is retained
-// past the (buffer-reusing) row.
+// runningAggLines renders the in-flight aggregate partials as a footer block --
+// the same bytes that will land in the finalized result, shown climbing toward it.
+// When the plan supplied running-aggregate labels (s.RunningAggLabels, filled by
+// glue for both the live footer and the final block) each aggregate gets its own
+// "alias (expr): value" line with decimal-aligned numbers; otherwise it stays
+// compact, one line per group with bare handler names. Returns nil when no op
+// published running aggregates (only the cheap fixed-width aggregates do; see
+// base.IsRunningAggCapable).
 func runningAggLines(s *base.Stats) []string {
+	if s == nil || len(s.RunningAggLabels) == 0 {
+		return runningAggLinesCompact(s)
+	}
+	return runningAggLinesLabeled(s, s.RunningAggLabels)
+}
+
+// runningAggLinesCompact is the live footer form: one line per group (sorted for a
+// stable order across live frames), a group-by key followed by name=partial pairs.
+// Values are read under the checkpoint lock via RunningAggsRange and copied into
+// strings in the callback, so nothing is retained past the (buffer-reusing) row.
+func runningAggLinesCompact(s *base.Stats) []string {
 	var all []string
 	s.RunningAggsRange(func(r *base.RunningAggRow) {
 		var b strings.Builder
@@ -202,6 +213,158 @@ func runningAggLines(s *base.Stats) []string {
 		out = append(out, fmt.Sprintf("  … %d more", len(all)-len(shown)))
 	}
 	return out
+}
+
+// rAgg is one aggregate's decoded partial for the labeled render: the SQL alias
+// (may be ""), the aggregate expression, the value bytes as a string, and whether
+// the value is numeric (so it right-aligns into the value column).
+type rAgg struct {
+	alias, expr, val string
+	numeric          bool
+}
+
+// rGroup is one running group's decoded partials (its group-by key, blank when
+// ungrouped, and its aggregates in layout order).
+type rGroup struct {
+	key  string
+	aggs []rAgg
+}
+
+// runningAggLinesLabeled is the labeled form (live footer + final block): each
+// aggregate on its own "alias (expr): value" line (alias omitted when the
+// aggregate is nested in a larger projection term, e.g. ROUND(SUM..)), aliases
+// padded to a column, numeric values aligned on their decimal point. labels[i] is
+// one group op's per-aggregate labels; a group row is matched to the entry with
+// the same aggregate count (the common query has one group op). Falls back to the
+// handler name when no label is available.
+func runningAggLinesLabeled(s *base.Stats, labels [][]base.RunningAggLabel) []string {
+	pick := func(nAggs int) []base.RunningAggLabel {
+		for _, e := range labels {
+			if len(e) == nAggs {
+				return e
+			}
+		}
+		return nil
+	}
+
+	var groups []rGroup
+	s.RunningAggsRange(func(r *base.RunningAggRow) {
+		le := pick(len(r.Aggs))
+		var keyB strings.Builder
+		for i, k := range r.Key {
+			if i > 0 {
+				keyB.WriteByte(',')
+			}
+			keyB.Write(k)
+		}
+		g := rGroup{key: keyB.String()}
+		for i := range r.Aggs {
+			var a rAgg
+			if le != nil && i < len(le) {
+				a.alias, a.expr = le[i].Alias, le[i].Expr
+			}
+			if a.expr == "" { // no plan label -> fall back to the handler name
+				a.expr = runningAggDisplayName(r.Names[i])
+			}
+			a.val = string(r.Aggs[i])
+			a.numeric = looksNumeric(a.val)
+			g.aggs = append(g.aggs, a)
+		}
+		groups = append(groups, g)
+	})
+	if len(groups) == 0 {
+		return nil
+	}
+	sort.Slice(groups, func(i, j int) bool { return groups[i].key < groups[j].key })
+
+	// Column widths. Aliases pad so the exprs line up; the label column pads so the
+	// values line up. Numeric values align on the decimal point: split each into
+	// integer and fractional (".frac", or "" when none) parts, right-pad the widest
+	// integer part and left-pad the widest fractional part so the dots stack.
+	aliasW, intW, fracW := 0, 0, 0
+	for _, g := range groups {
+		for _, a := range g.aggs {
+			if a.alias != "" && len(a.alias) > aliasW {
+				aliasW = len(a.alias)
+			}
+			if a.numeric {
+				ip, fp := splitNumber(a.val)
+				if len(ip) > intW {
+					intW = len(ip)
+				}
+				if len(fp) > fracW {
+					fracW = len(fp)
+				}
+			}
+		}
+	}
+	label := func(a rAgg) string {
+		if a.alias == "" {
+			return a.expr
+		}
+		return fmt.Sprintf("%-*s (%s)", aliasW, a.alias, a.expr)
+	}
+	value := func(a rAgg) string {
+		if !a.numeric {
+			return a.val
+		}
+		ip, fp := splitNumber(a.val)
+		// Right-align the integer part, left-pad the fraction, then trim the
+		// trailing pad so a whole number doesn't drag blanks to end-of-line.
+		return strings.TrimRight(fmt.Sprintf("%*s%-*s", intW, ip, fracW, fp), " ")
+	}
+	labelW := 0
+	for _, g := range groups {
+		for _, a := range g.aggs {
+			if w := len(label(a)) + 1; w > labelW { // +1 for the ':'
+				labelW = w
+			}
+		}
+	}
+
+	out := []string{"running:"}
+	shown, extra := groups, 0
+	if len(shown) > runningAggDisplayMax {
+		extra = len(shown) - runningAggDisplayMax
+		shown = shown[:runningAggDisplayMax]
+	}
+	for _, g := range shown {
+		indent := "  "
+		if g.key != "" {
+			out = append(out, "  ["+g.key+"]")
+			indent = "    "
+		}
+		for _, a := range g.aggs {
+			out = append(out, strings.TrimRight(
+				fmt.Sprintf("%s%-*s %s", indent, labelW, label(a)+":", value(a)), " "))
+		}
+	}
+	if extra > 0 {
+		out = append(out, fmt.Sprintf("  … %d more", extra))
+	}
+	return out
+}
+
+// splitNumber splits a numeric string into its integer part and fractional part
+// (the "." and everything after, or "" when there is no dot), for decimal-point
+// alignment. Scientific notation ("1.5e+07") splits at its first dot, which is
+// good enough for the fixed-width partials the running aggregates emit.
+func splitNumber(s string) (intPart, fracPart string) {
+	if i := strings.IndexByte(s, '.'); i >= 0 {
+		return s[:i], s[i:]
+	}
+	return s, ""
+}
+
+// looksNumeric reports whether a JSON value's bytes are a number (so the running
+// block decimal-aligns it): a leading '-' or digit is enough for the partials the
+// running aggregates emit (COUNT/SUM/AVG/MIN/MAX).
+func looksNumeric(s string) bool {
+	if s == "" {
+		return false
+	}
+	c := s[0]
+	return c == '-' || (c >= '0' && c <= '9')
 }
 
 // runningAggDisplayName strips the vectorized-representation suffix from an
