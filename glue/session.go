@@ -49,6 +49,13 @@ type Session struct {
 	// EXECUTE ... USING [...] clause supplies these instead (see ExecuteRun).
 	PositionalArgs value.Values
 
+	// PrepareLevel is the MAX level EXECUTE will compile a prepared statement to (a
+	// ceiling; default PrepareInterpreted). At PrepareCompiledFull, a standalone-
+	// compilable (fully-native) prepared statement is compiled to a cbq-free program
+	// and run as a child process (see executeCompiled), with the interpreter as the
+	// fallback for anything that can't compile or when no toolchain/source is present.
+	PrepareLevel PrepareLevel
+
 	// Pipe, when set, serves this session's datastore leaf ops (scans/fetches) --
 	// e.g. an engine.MemPipe reading inline in-memory data instead of the file
 	// datastore. The plan is still built against Store (schema resolution); only the
@@ -449,6 +456,14 @@ type preparedStmt struct {
 	stmt     algebra.Statement
 	uses     int64
 	compiled *PreparedPlan // cached converted plan (params deferred to eval); nil until first EXECUTE
+
+	// compiledBin is the built standalone binary for the compiled-full EXECUTE path
+	// (cached across EXECUTEs -- PREPARE-once / run-many). compiledTried records that
+	// a build was attempted so a non-compilable statement (or a missing toolchain/
+	// source) doesn't retry every EXECUTE. See executeCompiled.
+	compiledBin     string
+	compiledTried   bool
+	compiledCleanup func()
 }
 
 // PrepareRun handles `PREPARE [name] AS <stmt>` (cbq also spells it `PREPARE [name]
@@ -538,6 +553,19 @@ func (s *Session) ExecuteRun(e *algebra.Execute) (*Result, error) {
 			return nil, err
 		}
 		ps.compiled = pp
+	}
+
+	// At the compiled-full ceiling, try running EXECUTE as a compiled standalone
+	// program; fall back to the interpreter when the statement can't compile (a
+	// boxed expr), the toolchain/source isn't available, or args are in play (the
+	// compiled path doesn't bind params yet).
+	if s.PrepareLevel >= PrepareCompiledFull &&
+		len(namedArgs) == 0 && len(positionalArgs) == 0 {
+		if res, ok, err := s.executeCompiled(ps); err != nil {
+			return nil, err
+		} else if ok {
+			return res, nil
+		}
 	}
 
 	return s.PlanExec(ps.compiled, namedArgs, positionalArgs)

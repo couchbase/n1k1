@@ -35,6 +35,10 @@ func (c *cli) exec(stmt string) {
 	stmt = strings.TrimSpace(stmt)
 	c.failed = false // reset; set below if this statement errors (drives .bail)
 
+	// -prepare/.prepare ceiling: at 'full', a standalone-compilable EXECUTE compiles
+	// + runs a child program (interpreter fallback otherwise). See glue.ExecuteRun.
+	c.sess.PrepareLevel = c.prepareLevel
+
 	// .stats / -stats: collect per-operator counters. `on` also draws them live on a
 	// TTY (throttled, in place, to stderr); `final` collects but shows only the grand
 	// totals at the end -- no live footer, so you can measure a query without the
