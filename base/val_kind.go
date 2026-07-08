@@ -56,64 +56,11 @@ func CondUnknownKeep(mode int, v Val) bool {
 	return false
 }
 
-// NaryFirstKept is the reducer for the variadic IFNULL/IFMISSING/IFMISSINGORNULL
-// (and COALESCE) selectors: it returns the first operand "kept" under the mode,
-// else NULL. Like cbq, all operands are evaluated (only the first keeper is
-// captured), so error behavior matches too. Plain Go (not lz) -- the engine
-// harness calls it in a single line, so intermed_build emits that call verbatim.
-func NaryFirstKept(children []ExprFunc, vals Vals, yieldErr YieldErr, mode int) Val {
-	rv := ValNull
-	found := false
-	for _, child := range children {
-		cv := child(vals, yieldErr)
-		if !found && CondUnknownKeep(mode, cv) {
-			rv = cv
-			found = true
-		}
-	}
-	return rv
-}
-
-// NaryConcat is the reducer for the `||` string concatenation operator (cbq
-// expression/concat.go): MISSING if any operand is MISSING; NULL if any operand
-// is a non-string value; else the concatenation of all string operands. The
-// result is built into out[:0] (reused); returns the result Val and the grown
-// buffer.
-//
-// It concatenates each operand's *raw JSON string content* (jsonparser leaves
-// escapes intact) between one pair of quotes. That is byte-identical to cbq's
-// unescape-then-reescape for every ordinary escape (\n \t \" \\ etc.); it
-// differs only for a redundant \uXXXX escape of a printable char (e.g. "A"
-// vs "A"), which is vanishingly rare in practice. (A fully faithful version
-// would unescape via jsonparser.Unescape and re-encode via
-// ValComparer.EncodeAsString, at the cost of extra scratch buffers.)
-func NaryConcat(children []ExprFunc, vals Vals, yieldErr YieldErr, out []byte) (Val, []byte) {
-	null := false
-	out = append(out[:0], '"')
-	for _, child := range children {
-		cv := child(vals, yieldErr)
-		if len(cv) == 0 { // MISSING dominant.
-			return ValMissing, out
-		}
-		inner, parseType := Parse(cv)
-		if ParseTypeToValType[parseType] == ValTypeString {
-			if !null {
-				out = append(out, inner...) // raw (escaped) string content
-			}
-		} else {
-			null = true // non-string operand.
-		}
-	}
-	if null {
-		return ValNull, out
-	}
-	out = append(out, '"')
-	return Val(out), out
-}
-
-// NaryFirstKeptVals is NaryFirstKept over already-evaluated operand values: it
-// returns the first childVal "kept" under the mode, else NULL. (NaryFirstKept
-// evaluates every operand regardless, so pre-evaluating them all changes nothing.)
+// NaryFirstKeptVals is the reducer for the variadic IFNULL / IFMISSING /
+// IFMISSINGORNULL (and COALESCE / NVL) selectors over already-evaluated operand
+// values: it returns the first childVal "kept" under the mode, else NULL. Like
+// cbq, every operand is evaluated (the engine evaluates them all into childVals
+// before calling), so error behavior matches too.
 func NaryFirstKeptVals(childVals Vals, mode int) Val {
 	for _, cv := range childVals {
 		if CondUnknownKeep(mode, cv) {
@@ -123,8 +70,19 @@ func NaryFirstKeptVals(childVals Vals, mode int) Val {
 	return ValNull
 }
 
-// NaryConcatVals is NaryConcat over already-evaluated operand values. See
-// NaryConcat for the concatenation semantics and the raw-content caveat.
+// NaryConcatVals is the reducer for the `||` string concatenation operator (cbq
+// expression/concat.go) over already-evaluated operand values: MISSING if any
+// operand is MISSING; NULL if any operand is a non-string value; else the
+// concatenation of all string operands. The result is built into out[:0]
+// (reused); returns the result Val and the grown buffer.
+//
+// It concatenates each operand's *raw JSON string content* (jsonparser leaves
+// escapes intact) between one pair of quotes. That is byte-identical to cbq's
+// unescape-then-reescape for every ordinary escape (\n \t \" \\ etc.); it
+// differs only for a redundant \uXXXX escape of a printable char (e.g. "A"
+// vs "A"), which is vanishingly rare in practice. (A fully faithful version
+// would unescape via jsonparser.Unescape and re-encode via
+// ValComparer.EncodeAsString, at the cost of extra scratch buffers.)
 func NaryConcatVals(childVals Vals, out []byte) (Val, []byte) {
 	null := false
 	out = append(out[:0], '"')
@@ -148,8 +106,10 @@ func NaryConcatVals(childVals Vals, out []byte) (Val, []byte) {
 	return Val(out), out
 }
 
-// GreatestLeastVals is GreatestLeast over already-evaluated operand values: the
-// max/min by N1QL collation, skipping MISSING/NULL; NULL if all are MISSING/NULL.
+// GreatestLeastVals implements GREATEST (greater=true) and LEAST (greater=false)
+// over already-evaluated operand values, per cbq func_comp.go: the max/min operand
+// by N1QL collation, skipping MISSING/NULL operands; NULL if every operand is
+// MISSING/NULL. The winning operand's bytes are returned verbatim.
 func GreatestLeastVals(vc *ValComparer, childVals Vals, greater bool) Val {
 	rv := ValNull
 	rvSet := false
@@ -164,27 +124,6 @@ func GreatestLeastVals(vc *ValComparer, childVals Vals, greater bool) Val {
 		}
 	}
 	return rv
-}
-
-// CaseReduce evaluates a CASE as a flat child list [cond, then, cond, then, ...,
-// else?]: it returns the first `then` whose `cond` is truthy, else the trailing
-// `else` (present when the list has odd length), else NULL. It short-circuits
-// like cbq (later conds/thens are not evaluated). Simple CASE is desugared to
-// this searched form (each cond an eq) by the optimizer, so one reducer serves
-// both. Mirrors cbq expression/case_searched.go + case_simple.go.
-func CaseReduce(children []ExprFunc, vals Vals, yieldErr YieldErr) Val {
-	n := len(children)
-	i := 0
-	for i+1 < n { // (cond, then) pairs
-		if ValTruthy(children[i](vals, yieldErr)) {
-			return children[i+1](vals, yieldErr)
-		}
-		i += 2
-	}
-	if i < n { // trailing else (odd length)
-		return children[i](vals, yieldErr)
-	}
-	return ValNull
 }
 
 // NullMissingIf implements NULLIF (whenEqual=ValNull) and MISSINGIF
@@ -205,23 +144,3 @@ func NullMissingIf(vc *ValComparer, a, b, whenEqual Val) Val {
 	return a
 }
 
-// GreatestLeast implements GREATEST (greater=true) and LEAST (greater=false), per
-// cbq func_comp.go: the max/min operand by N1QL collation, skipping MISSING/NULL
-// operands; NULL if every operand is MISSING/NULL. The winning operand's bytes are
-// returned verbatim.
-func GreatestLeast(vc *ValComparer, children []ExprFunc, vals Vals, yieldErr YieldErr, greater bool) Val {
-	rv := ValNull
-	rvSet := false
-	for _, child := range children {
-		a := child(vals, yieldErr)
-		if ValKind(a) != ValKindValue {
-			continue // skip MISSING/NULL
-		}
-		if !rvSet {
-			rv, rvSet = a, true
-		} else if cmp := vc.Compare(a, rv); (greater && cmp > 0) || (!greater && cmp < 0) {
-			rv = a
-		}
-	}
-	return rv
-}

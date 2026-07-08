@@ -17,7 +17,7 @@ import (
 
 // GREATEST(...) / LEAST(...): the max / min operand by N1QL collation, skipping
 // MISSING/NULL operands; NULL if all are MISSING/NULL. N-ary; logic in
-// base.GreatestLeast.
+// base.GreatestLeastVals.
 
 func init() {
 	ExprCatalog["greatest"] = ExprGreatest

@@ -19,10 +19,10 @@ import (
 // COALESCE == IFMISSINGORNULL). All variadic: return the first operand "kept"
 // under the mode, else NULL; the result is the chosen operand's bytes verbatim
 // (zero-copy). Mirrors cbq expression/func_cond_unknown.go. N-ary (any operand
-// count) via MakeNaryExprFunc.
+// count) via the eager-Vals harness (see ExprCondUnknown).
 
 // condFuncs maps each conditional-unknown selector to its base.CondIf* mode
-// (passed to base.NaryFirstKept). NVL(a, b) returns b when a is NULL *or* MISSING
+// (passed to base.NaryFirstKeptVals). NVL(a, b) returns b when a is NULL *or* MISSING
 // (cbq NVL.Evaluate: `first.Type() > NULL ? first : second`), i.e. it's 2-arg
 // IFMISSINGORNULL -- not IFNULL, which keeps a MISSING first operand.
 var condFuncs = map[string]int{

@@ -17,7 +17,7 @@ import (
 
 // ExprConcat handles the `||` string concatenation operator (n-ary). MISSING if
 // any operand is MISSING; NULL if any is a non-string value; else the strings
-// concatenated. Logic in base.NaryConcat; result built into a reused buffer.
+// concatenated. Logic in base.NaryConcatVals; result built into a reused buffer.
 
 func init() {
 	ExprCatalog["concat"] = ExprConcat

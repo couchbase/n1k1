@@ -152,7 +152,7 @@ func TestCondUnknownDifferentialVsCBQ(t *testing.T) {
 		{"ifmon-null-null", expression.NewIfMissingOrNull(null, null)},
 		{"ifmon-null-str", expression.NewIfMissingOrNull(null, str)},
 		{"nvl-null-num", expression.NewNVL(null, num)},
-		// N-ary (>2 operands) now optimizes natively via MakeNaryExprFunc.
+		// N-ary (>2 operands) now optimizes natively via the eager-Vals harness.
 		{"ifnull-3", expression.NewIfNull(null, null, num)},
 		{"ifmissing-3", expression.NewIfMissing(null, num, num5)},
 		{"ifmon-3", expression.NewIfMissingOrNull(null, null, str)},
