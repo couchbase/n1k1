@@ -402,7 +402,6 @@ var compiledExprDenylist = map[string]bool{
 	"ifnull": true, "ifmissing": true, "ifmissingornull": true, "nvl": true,
 	// other captured-operand emitters
 	"between": true, // undefined lzValItem/lzValLow/lzValHigh
-	"element": true, // undefined lzValArr/lzValIdx (array indexing)
 }
 
 // exprParamsHasDenylisted reports whether a native optimized param tree contains a

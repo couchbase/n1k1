@@ -30,8 +30,16 @@ func ExprElement(lzVars *base.Vars, labels base.Labels,
 
 	biExprFunc := func(lzA, lzB base.ExprFunc, lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) { // !lz
 		if LzScope {
-			lzValArr := lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
-			lzValIdx := lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B"
+			// Capture each operand FROM the shared lzVal register: emitCaptured
+			// replaces the marked line with the child's code (which writes lzVal),
+			// then a plain lzValX := lzVal copies it out. A direct
+			// lzValX := lzX(...) bind is DROPPED in the compiled path. Mirrors
+			// ExprArithBi.
+			lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
+			lzValArr := lzVal
+
+			lzVal = lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B"
+			lzValIdx := lzVal
 
 			lzVal, lzBufPre = base.ValElement(lzValArr, lzValIdx, lzBufPre)
 		}
