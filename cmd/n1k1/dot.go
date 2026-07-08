@@ -138,22 +138,20 @@ func (c *cli) dot(line string) bool {
 			fmt.Fprintf(c.stderr, "usage: .explain [on|off] (currently %s)\n", onOff(c.explain))
 		}
 	case ".prepare":
-		// .prepare [on|off]     toggle: print generated Go per subsequent query.
-		// .prepare <statement>  one-shot: print the generated Go for <statement>,
-		//                       then run it (interpreter) so you also get results.
-		// Either way, a statement that needs cbq (a boxed expression, or a
-		// non-bakeable datastore op) can't be compiled: we print the reason and
-		// FALL BACK to the interpreter, so the query never fails (see
-		// DESIGN-prepare.md).
-		switch a := strings.TrimSpace(arg); strings.ToLower(a) {
-		case "":
-			fmt.Fprintf(c.stderr, "prepare %s\n", onOff(c.prepare))
-		case "on":
-			c.prepare = true
-			fmt.Fprintf(c.stderr, "prepare %s\n", onOff(c.prepare))
-		case "off":
-			c.prepare = false
-			fmt.Fprintf(c.stderr, "prepare %s\n", onOff(c.prepare))
+		// .prepare               show the current -prepare ceiling level.
+		// .prepare <level>       set it: interpreted | data | full (on=full, off=interpreted).
+		// .prepare <statement>   one-shot: emit the generated Go for <statement> (like
+		//                        EXPLAIN, orthogonal to the ceiling), then run it. A
+		//                        statement that needs cbq (a boxed expression, or a
+		//                        non-bakeable datastore op) can't compile: it prints the
+		//                        reason and falls back to the interpreter, never failing.
+		// (PREPARE/EXECUTE are also plain SQL statements -- just run them directly.)
+		switch a := strings.TrimSpace(arg); {
+		case a == "":
+			fmt.Fprintf(c.stderr, "prepare %s\n", c.prepareLevel)
+		case isPrepareLevelToken(a):
+			c.prepareLevel, _ = glue.ParsePrepareLevel(a)
+			fmt.Fprintf(c.stderr, "prepare %s\n", c.prepareLevel)
 		default:
 			// Treat the arg as a one-shot statement: emit its Go, then run it.
 			c.prepareStmt(a)
@@ -266,7 +264,7 @@ func (c *cli) printHelp() {
 		".timer " + c.helpOpts(onOff(c.timer), "on", "off") + "       elapsed-time reporting (no arg shows the current setting)",
 		".stats " + c.helpOpts(c.statsMode, "on", "off", "final", "about") + " query stats: on=live footer, final=totals at end only (about=glossary)",
 		".explain " + c.helpOpts(onOff(c.explain), "on", "off") + "     print " + prog + "'s converted plan per query",
-		".prepare [on|off | <stmt>]  emit generated Go for a query (falls back to the interpreter if it needs cbq)",
+		".prepare [interpreted|data|full | <stmt>]  set the max compile level, or emit generated Go for a one-shot <stmt>",
 		".verbose " + c.helpOpts(vcur, "off", "on", "debug", "n") + "  diagnostics level (n>1 provides more info; no arg shows current)",
 		".maxrows <n>          box: cap rows shown (0 = all; negative = last |n| rows)",
 		".maxwidth <n|auto>    box: cap column width (0 = uncapped; auto = fit terminal)",

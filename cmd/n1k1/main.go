@@ -68,7 +68,6 @@ func main() {
 		fFlag       = flag.String("f", "", "run statements from a file and exit")
 		modeFlag    = flag.String("mode", "", "output mode: "+strings.Join(cmd.OutputModes, "|")+" (append |pretty to indent JSON; default box|pretty at a TTY, else jsonlines)")
 		timerFlag   = flag.Bool("timer", false, "print row count + elapsed after each statement")
-		prepareFlag = flag.Bool("prepare", false, "print generated Go for each query (compilable ones); falls back to the interpreter otherwise. See .prepare")
 		initFlag    = flag.String("init", "", "startup file of dot-commands/SQL++ (default ~/."+prog+"rc; use \"\", \"-\" or \"none\" to skip)")
 		formatsFlag = flag.String("formats", "", "restrict files scanned to a comma-separated set (all|json|jsonl|csv|tsv|extract|doc|text|image|video|gzip|recurse); empty or 'all' = everything")
 		metaFlag    = flag.String("meta", "auto", "add a _meta sub-object (path/name/ext/size/mtime) to records: on|off|auto (auto = extracted docs only)")
@@ -99,6 +98,13 @@ func main() {
 	statsMode := statsOff
 	flag.Var(statsModeFlag{&statsMode}, "stats",
 		"per-operator counters + a runtime footer: on (live) | off | final (totals at end only); see .stats")
+
+	// -prepare=<level>: the MAX level PREPARE may compile a statement to (a ceiling).
+	// Default interpreted (cache op trees, no codegen); data/full opt into codegen.
+	// PREPARE/EXECUTE work as SQL statements regardless; see .prepare and DESIGN-prepare.md.
+	prepareLevel := glue.PrepareInterpreted
+	flag.Var(prepareLevelFlag{&prepareLevel}, "prepare",
+		"max prepare/codegen level: interpreted (default) | data | full; bare -prepare = full. See .prepare")
 
 	flag.Usage = usage
 	flag.CommandLine.Parse(normalizeVerbose(os.Args[1:]))
@@ -195,22 +201,22 @@ func main() {
 		os.Getenv(base.DefEnv("NO_COLOR", "disable colored terminal output")) == ""
 
 	c := &cli{
-		prog:      prog,
-		sess:      sess,
-		dir:       dir,
-		mode:      mode,
-		indexMode: *indexFlag,
-		timer:     *timerFlag,
-		prepare:   *prepareFlag,
-		statsMode: statsMode,
-		verbose:   int(vLevel),
-		maxRows:   0,
-		maxWidth:  -1,
-		listSep:   "|",
-		out:       os.Stdout,
-		stderr:    os.Stderr,
-		fancyTTY:  fancy,
-		style:     cmd.Style{On: fancy},
+		prog:         prog,
+		sess:         sess,
+		dir:          dir,
+		mode:         mode,
+		indexMode:    *indexFlag,
+		timer:        *timerFlag,
+		prepareLevel: prepareLevel,
+		statsMode:    statsMode,
+		verbose:      int(vLevel),
+		maxRows:      0,
+		maxWidth:     -1,
+		listSep:      "|",
+		out:          os.Stdout,
+		stderr:       os.Stderr,
+		fancyTTY:     fancy,
+		style:        cmd.Style{On: fancy},
 	}
 
 	// -ext/-extensions: register query extensions (e.g. JavaScript UDFs) before
@@ -377,19 +383,19 @@ type cli struct {
 	sess *glue.Session
 	dir  string
 
-	mode      string
-	indexMode string // -index: eager|lazy|off (drives eager build on open)
-	timer     bool
-	verbose   int // 0=off, 1=show query plans, 2=+timing (see .verbose)
-	explain   bool
-	prepare   bool   // .prepare/-prepare: print generated Go per query (falls back to interp; see .prepare)
-	echo      bool   // echo each input line as it's read (see .echo)
-	bail      bool   // stop the input loop on the first statement error (see .bail)
-	failed    bool   // transient: the last exec'd statement errored (drives .bail)
-	statsMode string // "off" | "on" (live) | "final" (totals at end); see .stats, DESIGN-stats.md
-	maxRows   int    // box: 0 = all; >0 = head+tail; <0 = last |n| rows
-	maxWidth  int    // box: per-column cap; 0 = uncapped; <0 = auto (fit terminal)
-	listSep   string
+	mode         string
+	indexMode    string // -index: eager|lazy|off (drives eager build on open)
+	timer        bool
+	verbose      int // 0=off, 1=show query plans, 2=+timing (see .verbose)
+	explain      bool
+	prepareLevel glue.PrepareLevel // -prepare/.prepare: max compile level ceiling (interpreted|data|full)
+	echo         bool              // echo each input line as it's read (see .echo)
+	bail         bool              // stop the input loop on the first statement error (see .bail)
+	failed       bool              // transient: the last exec'd statement errored (drives .bail)
+	statsMode    string            // "off" | "on" (live) | "final" (totals at end); see .stats, DESIGN-stats.md
+	maxRows      int               // box: 0 = all; >0 = head+tail; <0 = last |n| rows
+	maxWidth     int               // box: per-column cap; 0 = uncapped; <0 = auto (fit terminal)
+	listSep      string
 
 	out     io.Writer // result destination (stdout, or a .output file)
 	outFile *os.File  // non-nil when .output redirected to a file

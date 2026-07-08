@@ -73,6 +73,35 @@ const (
 	PrepareCompiledFull
 )
 
+// String renders a PrepareLevel as its CLI/flag name (interpreted|data|full).
+func (l PrepareLevel) String() string {
+	switch l {
+	case PrepareCompiledData:
+		return "data"
+	case PrepareCompiledFull:
+		return "full"
+	default:
+		return "interpreted"
+	}
+}
+
+// ParsePrepareLevel parses a -prepare=<level> / .prepare <level> value into a
+// PrepareLevel ceiling. It accepts the canonical names (interpreted|data|full),
+// alias forms (interp; on -> full, off -> interpreted for the old boolean flag),
+// and an empty string (-> the interpreted default). An unknown value is an error
+// naming the accepted set.
+func ParsePrepareLevel(s string) (PrepareLevel, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", "interpreted", "interp", "off":
+		return PrepareInterpreted, nil
+	case "data":
+		return PrepareCompiledData, nil
+	case "full", "on":
+		return PrepareCompiledFull, nil
+	}
+	return PrepareInterpreted, fmt.Errorf("want interpreted|data|full")
+}
+
 // Preparable classifies a converted base.Op tree (see PrepareLevel). reason is a
 // human-readable note for why it is not higher -- a boxed expression's SQL text, or
 // a non-bakeable datastore op kind -- suitable for showing the user before falling

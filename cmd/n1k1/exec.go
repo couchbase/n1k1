@@ -35,13 +35,6 @@ func (c *cli) exec(stmt string) {
 	stmt = strings.TrimSpace(stmt)
 	c.failed = false // reset; set below if this statement errors (drives .bail)
 
-	// .prepare / -prepare on: print the generated Go for this statement first (or
-	// the reason it can't be compiled), then fall through to run it as usual.
-	// EXPLAIN is handled by the normal path below, not prepare'd.
-	if c.prepare && !isExplainStmt(stmt) {
-		c.prepareStmt(stmt)
-	}
-
 	// .stats / -stats: collect per-operator counters. `on` also draws them live on a
 	// TTY (throttled, in place, to stderr); `final` collects but shows only the grand
 	// totals at the end -- no live footer, so you can measure a query without the
@@ -80,6 +73,13 @@ func (c *cli) exec(stmt string) {
 			// Point a caret at the offending column when the parser gives one.
 			fmt.Fprint(c.stderr, errorCaret(stmt, err.Error(), c.style))
 		}
+		return
+	}
+
+	// A PREPARE statement cached a plan and yields no rows: confirm it (and, at a
+	// compile ceiling, show how far it compiles), then stop -- nothing to render.
+	if res.Prepared != "" {
+		c.reportPrepared(res.Prepared)
 		return
 	}
 
@@ -227,5 +227,37 @@ func (c *cli) prepareStmt(stmt string) {
 	fmt.Fprint(c.out, src)
 	if !strings.HasSuffix(src, "\n") {
 		fmt.Fprintln(c.out)
+	}
+}
+
+// reportPrepared confirms a PREPARE (which cached a plan under name) and, when the
+// -prepare ceiling opts into codegen, shows how far the prepared statement
+// compiles: the generated Go at the full ceiling, else a note of the level it
+// reaches and why. At the default interpreted ceiling it just confirms the cache
+// -- EXECUTE runs it through the interpreter. See DESIGN-prepare.md.
+func (c *cli) reportPrepared(name string) {
+	fmt.Fprintf(c.stderr, "%sprepared %q\n", c.icon("🔧 "), name)
+	if c.prepareLevel == glue.PrepareInterpreted || c.sess == nil {
+		return
+	}
+	inner, ok := c.sess.PreparedInner(name)
+	if !ok {
+		return
+	}
+	src, level, reason, err := c.sess.Prepare(inner)
+	if err != nil {
+		return
+	}
+	switch {
+	case level == glue.PrepareCompiledFull && c.prepareLevel >= glue.PrepareCompiledFull:
+		fmt.Fprintln(c.stderr, "generated Go:")
+		fmt.Fprint(c.out, src)
+		if !strings.HasSuffix(src, "\n") {
+			fmt.Fprintln(c.out)
+		}
+	case level == glue.PrepareCompiledFull:
+		fmt.Fprintf(c.stderr, "  compiles to full (raise -prepare=full to emit the Go)\n")
+	default:
+		fmt.Fprintf(c.stderr, "  max level %s -- %s\n", level, c.style.Yellow(reason))
 	}
 }

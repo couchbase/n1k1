@@ -23,6 +23,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/couchbase/n1k1/base"
+	"github.com/couchbase/n1k1/glue"
 )
 
 // ---- helpers --------------------------------------------------------------
@@ -113,6 +114,48 @@ func (f statsModeFlag) Set(s string) error {
 }
 
 func (f statsModeFlag) IsBoolFlag() bool { return true }
+
+// prepareLevelFlag is the -prepare=<level> flag: the MAX preparation level n1k1
+// will take a statement to (a ceiling), interpreted|data|full. Bare -prepare
+// (flag value "true") means full -- compile as far as the statement allows. Like
+// -stats, the space form (-prepare full) isn't supported; use -prepare=full.
+type prepareLevelFlag struct{ p *glue.PrepareLevel }
+
+func (f prepareLevelFlag) String() string {
+	if f.p == nil {
+		return glue.PrepareInterpreted.String()
+	}
+	return f.p.String()
+}
+
+func (f prepareLevelFlag) Set(s string) error {
+	if s == "true" { // bare -prepare -> the maximum level
+		s = "full"
+	}
+	l, err := glue.ParsePrepareLevel(s)
+	if err != nil {
+		return err
+	}
+	*f.p = l
+	return nil
+}
+
+func (f prepareLevelFlag) IsBoolFlag() bool { return true }
+
+// isPrepareLevelToken reports whether s is a single-word level name that `.prepare
+// <arg>` should treat as setting the ceiling (rather than as a one-shot statement
+// to inspect). None of these are valid statements on their own, so the overlap is
+// harmless.
+func isPrepareLevelToken(s string) bool {
+	if strings.ContainsAny(s, " \t\n") {
+		return false
+	}
+	switch strings.ToLower(s) {
+	case "interpreted", "interp", "data", "full", "on", "off":
+		return true
+	}
+	return false
+}
 
 // isVerboseLevelToken reports whether s is a value -v/-verbose accepts as its
 // level, so the space form "-v <level>" can be rewritten to "-v=<level>".

@@ -84,36 +84,53 @@ func TestDotPrepareNativeEmits(t *testing.T) {
 	}
 }
 
-// TestDotPrepareToggle: `.prepare on` makes subsequent normal statements emit Go
-// (or a fallback note), and `.prepare off` restores plain execution.
-func TestDotPrepareToggle(t *testing.T) {
+// TestDotPrepareLevel: `.prepare <level>` sets the compile-ceiling. At the full
+// ceiling, PREPARE of a native statement emits its generated Go (and confirms);
+// at the interpreted ceiling it just caches. EXECUTE runs the prepared statement
+// either way. (PREPARE/EXECUTE are ordinary SQL statements, not a per-query mode.)
+func TestDotPrepareLevel(t *testing.T) {
 	var out, errb strings.Builder
 	c := prepareTestCLI(t, &out, &errb)
 
-	c.dot(".prepare on")
-	if !c.prepare {
-		t.Fatal(".prepare on should set the toggle")
+	// Setting the ceiling.
+	c.dot(".prepare full")
+	if c.prepareLevel != glue.PrepareCompiledFull {
+		t.Fatalf(".prepare full should set the ceiling to full, got %v", c.prepareLevel)
+	}
+
+	// PREPARE at the full ceiling confirms and emits Go for a native statement.
+	out.Reset()
+	errb.Reset()
+	c.exec(`PREPARE p AS SELECT 2+3 AS s`)
+	if !strings.Contains(errb.String(), "prepared") {
+		t.Errorf("PREPARE should confirm 'prepared'; stderr=%q", errb.String())
+	}
+	if !strings.Contains(out.String(), "func "+glue.PrepareFuncName+"(") {
+		t.Errorf("PREPARE at full should emit Go; stdout=%q", out.String())
+	}
+
+	// EXECUTE runs it through the interpreter, producing the result.
+	out.Reset()
+	errb.Reset()
+	c.exec(`EXECUTE p`)
+	if !strings.Contains(out.String(), `"s":5`) {
+		t.Errorf("EXECUTE p should produce {s:5}; stdout=%q", out.String())
+	}
+
+	// At the interpreted ceiling, PREPARE just caches -- no Go emitted.
+	c.dot(".prepare interpreted")
+	if c.prepareLevel != glue.PrepareInterpreted {
+		t.Fatalf(".prepare interpreted should set the ceiling to interpreted, got %v", c.prepareLevel)
 	}
 	out.Reset()
 	errb.Reset()
-	c.exec(`SELECT 2+3 AS s`)
-	if !strings.Contains(out.String(), "func "+glue.PrepareFuncName+"(") {
-		t.Errorf("with prepare on, a native query should emit Go; stdout=%q", out.String())
-	}
-	if !strings.Contains(out.String(), `"s":5`) {
-		t.Errorf("result should still be produced; stdout=%q", out.String())
-	}
-
-	c.dot(".prepare off")
-	if c.prepare {
-		t.Fatal(".prepare off should clear the toggle")
+	c.exec(`PREPARE q AS SELECT 9 AS n`)
+	if strings.Contains(out.String(), "func "+glue.PrepareFuncName+"(") {
+		t.Errorf("PREPARE at interpreted should NOT emit Go; stdout=%q", out.String())
 	}
 	out.Reset()
-	c.exec(`SELECT 9 AS n`)
-	if strings.Contains(out.String(), "func "+glue.PrepareFuncName+"(") {
-		t.Errorf("with prepare off, no Go should be emitted; stdout=%q", out.String())
-	}
+	c.exec(`EXECUTE q`)
 	if !strings.Contains(out.String(), `"n":9`) {
-		t.Errorf("result should still be produced; stdout=%q", out.String())
+		t.Errorf("EXECUTE q should produce {n:9}; stdout=%q", out.String())
 	}
 }

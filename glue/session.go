@@ -111,6 +111,11 @@ type Result struct {
 	// cbq lane during execution (the GC-heavy Convert->Evaluate->WriteJSON path);
 	// 0 means every evaluated expression stayed native. See GlueContext.boxedEvals.
 	BoxedEvals int64
+
+	// Prepared is the name a PREPARE statement cached under (empty for any other
+	// statement), so a caller can confirm the prepare without the result carrying
+	// rows. See runPrepare.
+	Prepared string
 }
 
 // findExplain returns the *plan.Explain node in a plan tree (it sits under the
@@ -412,7 +417,19 @@ func (s *Session) runPrepare(p *algebra.Prepare) (*Result, error) {
 		s.prepareds = map[string]*preparedStmt{}
 	}
 	s.prepareds[name] = &preparedStmt{name: name, text: p.Text(), stmt: p.Statement()}
-	return &Result{}, nil
+	return &Result{Prepared: name}, nil
+}
+
+// PreparedInner returns the inner statement text of the prepared statement cached
+// under name (what EXECUTE <name> would run), or ("", false) if there is no such
+// prepared statement. The CLI uses it to analyze/emit a prepared statement's
+// compile level at a -prepare ceiling. See reportPrepared.
+func (s *Session) PreparedInner(name string) (string, bool) {
+	ps := s.prepareds[name]
+	if ps == nil {
+		return "", false
+	}
+	return ps.stmt.String(), true
 }
 
 // runExecute handles `EXECUTE <name> [USING <args>]`: it looks up the prepared
