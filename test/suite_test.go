@@ -110,6 +110,114 @@ func caseNamedArgs(c map[string]interface{}) map[string]value.Value {
 	return args
 }
 
+// casePositionalArgs extracts a case's "positionalArgs" array as query positional
+// parameters ($1, $2, ...). nil when absent.
+func casePositionalArgs(c map[string]interface{}) value.Values {
+	raw, ok := c["positionalArgs"].([]interface{})
+	if !ok || len(raw) == 0 {
+		return nil
+	}
+	args := make(value.Values, len(raw))
+	for i, v := range raw {
+		args[i] = value.NewValue(v)
+	}
+	return args
+}
+
+// casePrepared reports whether a corpus case exercises prepared statements -- its
+// statement is a PREPARE/EXECUTE, or it carries preStatements/postStatements (which
+// set up / tear down a prepared statement). Such cases run on the per-file
+// persistent session so a PREPARE and a later EXECUTE share the prepared-statement
+// store. NOTE: a bare positionalArgs is deliberately NOT enough -- plenty of
+// corpus cases pass $1/$2 into an ordinary (unsupported) parameterized FROM/INSERT
+// without any prepared statement, and those must stay exotic-skipped, not attempted.
+func casePrepared(c map[string]interface{}) bool {
+	for _, k := range []string{"preStatements", "postStatements"} {
+		if _, ok := c[k]; ok {
+			return true
+		}
+	}
+	s, _ := c["statements"].(string)
+	up := strings.ToUpper(strings.TrimSpace(s))
+	return strings.HasPrefix(up, "PREPARE ") || strings.HasPrefix(up, "EXECUTE ")
+}
+
+// preparedOutcome is one prepared-statement case's result: a status ("PASS",
+// "ERRPASS", or "" for a non-pass) and, when non-pass, the outcome to record.
+type preparedOutcome struct {
+	status  string
+	outcome caseOutcome
+}
+
+// runPreparedCase runs one prepared-statement corpus case on the persistent
+// session: its preStatements (PREPARE ...), then the main statement with the
+// case's positional/named args bound, checked against `results` or an expected
+// `error`, then its postStatements best-effort (cleanup like "delete from
+// system:prepareds" has no home in n1k1, so its error is ignored). The bound args
+// are reset afterwards so they don't leak to the next case.
+func runPreparedCase(sess *glue.Session, c map[string]interface{}, loc string) preparedOutcome {
+	// preStatements set up the prepared statements; a hard error there fails the case.
+	if err := runCaseStatements(sess, c["preStatements"], false); err != nil {
+		return preparedOutcome{"", errOutcome(loc, oneLine(fmt.Sprint(c["preStatements"])), err)}
+	}
+
+	sess.NamedArgs = caseNamedArgs(c)
+	sess.PositionalArgs = casePositionalArgs(c)
+	defer func() { sess.NamedArgs, sess.PositionalArgs = nil, nil }()
+	defer runCaseStatements(sess, c["postStatements"], true) // best-effort cleanup
+
+	stmt, _ := c["statements"].(string)
+
+	if expErr, ok := c["error"].(string); ok {
+		_, err := sess.Run(stmt)
+		switch {
+		case err == nil:
+			return preparedOutcome{"", caseOutcome{loc, stmt, "FAIL", "expected error, got rows"}}
+		case errMatches(err.Error(), expErr):
+			return preparedOutcome{"ERRPASS", caseOutcome{}}
+		default:
+			return preparedOutcome{"", errOutcome(loc, stmt, err)}
+		}
+	}
+
+	results, _ := c["results"].([]interface{})
+	res, err := sess.Run(stmt)
+	if err != nil {
+		return preparedOutcome{"", errOutcome(loc, stmt, err)}
+	}
+	got := make([]string, len(res.Rows))
+	for i, r := range res.Rows {
+		got[i] = string(r)
+	}
+	if rowsMatch(got, results) {
+		return preparedOutcome{"PASS", caseOutcome{}}
+	}
+	return preparedOutcome{"", caseOutcome{loc, stmt, "FAIL", "results differ"}}
+}
+
+// runCaseStatements runs a case's preStatements/postStatements value -- a single
+// statement string or an array of them -- on the session. When ignoreErr, errors
+// are swallowed (best-effort cleanup); otherwise the first error is returned.
+func runCaseStatements(sess *glue.Session, v interface{}, ignoreErr bool) error {
+	var stmts []string
+	switch t := v.(type) {
+	case string:
+		stmts = []string{t}
+	case []interface{}:
+		for _, s := range t {
+			if str, ok := s.(string); ok {
+				stmts = append(stmts, str)
+			}
+		}
+	}
+	for _, s := range stmts {
+		if _, err := sess.Run(s); err != nil && !ignoreErr {
+			return err
+		}
+	}
+	return nil
+}
+
 // NOTE on "resultset": a few cases carried a "resultset" block instead of
 // "results". No couchbase/query test harness reads that key (it compares only
 // against "results"), so upstream runs the statement but never validates its
@@ -273,7 +381,7 @@ func rowsEqualStrings(a, b []string) bool {
 
 // TestSuiteCases runs the original tuqtng-era + imported no-FROM gsi corpus.
 func TestSuiteCases(t *testing.T) {
-	runSuiteCases(t, suiteRoot, expectedNonPass, groupWhy, 1041, nil)
+	runSuiteCases(t, suiteRoot, expectedNonPass, groupWhy, 1045, nil)
 }
 
 // TestGsiSuiteCases runs the data-backed gsi corpus (isolated root so its shared
@@ -316,6 +424,12 @@ func runSuiteCases(t *testing.T, suiteRoot string, expectedNonPass, groupWhy map
 			continue
 		}
 
+		// A per-file persistent session for prepared-statement cases: PREPARE in one
+		// case must be visible to EXECUTE in a later case within the same file (the
+		// cbq prepared-statement corpus builds state across cases). Fresh per file, so
+		// prepared names don't leak between files. See casePrepared.
+		psess := &glue.Session{Store: store, Namespace: "default"}
+
 		for ci, c := range cases {
 			loc := fmt.Sprintf("%s[%d]", filepath.Base(f), ci)
 
@@ -323,6 +437,21 @@ func runSuiteCases(t *testing.T, suiteRoot string, expectedNonPass, groupWhy map
 			if why, ok := skipRun[loc]; ok {
 				skipped++
 				exotic = append(exotic, exoticCase{loc, why, oneLine(fmt.Sprint(c["statements"]))})
+				continue
+			}
+
+			// Prepared-statement case (PREPARE/EXECUTE, or carrying preStatements /
+			// positionalArgs / postStatements): run on the persistent session so a
+			// prepare and its later execute share the prepared-statement store + args.
+			if casePrepared(c) {
+				switch st := runPreparedCase(psess, c, loc); st.status {
+				case "PASS":
+					pass++
+				case "ERRPASS":
+					errPass++
+				default:
+					nonPass = append(nonPass, st.outcome)
+				}
 				continue
 			}
 
@@ -735,10 +864,11 @@ var expectedNonPass = map[string]string{
 	"case_system_prepareds.json[3]": "system-namespace",
 	"case_system_prepareds.json[4]": "system-namespace",
 
-	// Prepared-statement EXECUTE.
-	"case_system_prepareds.json[0]": "prepared", // PREPARE ... (rejected in PlanStatementQP)
-	"case_system_prepareds.json[2]": "prepared",
-	"case_prepare.json[4]":          "prepared",
+	// Prepared statements: PREPARE now caches and EXECUTE runs them (all of
+	// case_prepare.json passes), but these two still can't -- they need the
+	// system:prepareds keyspace / the cbq encoded-plan row, which n1k1 lacks.
+	"case_system_prepareds.json[0]": "prepared", // PREPARE returns no encoded-plan row (interpreter cache, not compile)
+	"case_system_prepareds.json[2]": "prepared", // EXECUTE of a statement that reads system:prepareds (no systemstore)
 
 	// The one FAIL: ARRAY_AGG element order is undefined in N1QL.
 	"case_func_array.json[34]": "arrayagg-order",
@@ -748,7 +878,7 @@ var expectedNonPass = map[string]string{
 var groupWhy = map[string]string{
 	"resource-guard":   "engine refuses huge generator builtins (ARRAY_RANGE/REPEAT ~1e10)",
 	"system-namespace": "system: namespace needs a systemstore (intentionally nil; see FileStore)",
-	"prepared":         "prepared statements not supported (no prepared-statement store): PREPARE is rejected in PlanStatementQP -- planner.Build nil-derefs on it; EXECUTE (plan.Discard) also unsupported",
+	"prepared":         "PREPARE/EXECUTE work (case_prepare.json passes); these remaining two need system:prepareds / the cbq encoded-plan row, which n1k1 has no store for",
 	"arrayagg-order":   "ARRAY_AGG element order is undefined in N1QL; ordering differs (not fixable)",
 }
 
