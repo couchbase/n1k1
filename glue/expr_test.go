@@ -27,6 +27,7 @@ import (
 	"github.com/couchbase/n1k1/engine"
 
 	"github.com/couchbase/query/expression"
+	"github.com/couchbase/query/expression/parser"
 	"github.com/couchbase/query/value"
 )
 
@@ -240,6 +241,41 @@ func TestNullMissingIfDifferentialVsCBQ(t *testing.T) {
 		got, ok := nativeEval(t, tc.expr)
 		if !ok {
 			t.Errorf("%s: did not optimize", tc.name)
+			continue
+		}
+		if got != want {
+			t.Errorf("%s: native=%q, cbq=%q", tc.name, got, want)
+		}
+	}
+}
+
+// TestExprConstFoldVsCBQ covers const-folding (glue.exprConstFold): a
+// runtime-constant expression that has NO native handler (REPEAT, LIKE,
+// DATE_FORMAT_STR) must still optimize to a native ["json", value] leaf
+// (nativeEval ok=true, i.e. not boxed) AND match cbq's runtime Evaluate. It also
+// pins two subtleties: the fold VALUE comes from Evaluate() not the static
+// Value() (SIGN(NaN())==0, not Value()'s answer), and a non-finite NaN() subtree
+// stays boxed so the enclosing native op isn't corrupted -- yet SIGN(NaN()) as a
+// whole still folds to a finite 0.
+func TestExprConstFoldVsCBQ(t *testing.T) {
+	cases := []struct{ name, expr string }{
+		{"repeat", `REPEAT("x", 3)`},
+		{"like-true", `"beer-1" LIKE "beer%"`},
+		{"like-false", `"a" LIKE "%zz%"`},
+		{"date", `DATE_FORMAT_STR("2020-01-01", "1111")`},
+		{"upper-const", `UPPER("hello")`},
+		{"sign-nan-folds-finite", `SIGN(NaN())`},
+		{"nested-const", `SUBSTR(REPEAT("ab", 3), 2)`},
+	}
+	for _, tc := range cases {
+		e, err := parser.Parse(tc.expr)
+		if err != nil {
+			t.Fatalf("%s: parse %q: %v", tc.name, tc.expr, err)
+		}
+		want := cbqEval(t, e)
+		got, ok := nativeEval(t, e)
+		if !ok {
+			t.Errorf("%s: %q did not optimize (still boxed); const-fold should make it native", tc.name, tc.expr)
 			continue
 		}
 		if got != want {

@@ -382,10 +382,18 @@ Options, best first:
    the fat child). **Codegen coverage then rides native-expr coverage**: every port in
    `DESIGN-exprs.md` widens the set of compilable queries. Simple and honest, and it's
    already how the compiler tests behave.
-2. **Const-fold boxed sub-exprs at codegen time (free).** Many boxed exprs are constant
-   / early-bound (e.g. `REPEAT('x', 2)`). The parent evaluates them **once** during
-   codegen and bakes the result as a `["json", …]` constant — no cbq in the child, no
-   pipe traffic. Removes a real slice of the tail; only *per-row* boxed exprs remain.
+2. **Const-fold boxed sub-exprs at codegen time (free) — IMPLEMENTED.** Many boxed exprs
+   are constant / early-bound (e.g. `REPEAT('x', 2)`, `"a" LIKE "%b%"`, `DATE_FORMAT_STR`
+   over literals). `glue.exprConstFold` (the fallback in `ExprTreeOptimize`) evaluates any
+   row-independent, non-volatile expression **once** during codegen and bakes the result as
+   a `["json", …]` constant — no cbq in the child, no pipe traffic. Because the optimizer
+   recurses, a constant *subtree* folds wherever it appears, lifting an otherwise-boxed
+   enclosing expr to native (e.g. the `LENGTH(SUFFIXES("abc"))` in `b.i + LENGTH(…)`).
+   Native handlers are tried first (a constant `GREATEST(1,2)` keeps its tested handler),
+   and the fold value comes from `Evaluate()` — not cbq's static `Value()`, which disagrees
+   with runtime eval for some functions (`GREATEST(9,null).Value()==null` vs `Evaluate()==9`)
+   — with non-finite `NaN`/`Inf` results left boxed (JSON can't represent them). Removes a
+   real slice of the tail; only *per-row* boxed exprs remain.
 3. **`EvalExpr` over the pipe (opt-in, reluctant).** The child carries the boxed
    `exprStr` text, batches the operand `Vals`, and sends `EvalExpr{exprText, Vals…}`; the
    parent evaluates via its existing `ExprStr` (cbq) and returns result `Vals`. So **yes,

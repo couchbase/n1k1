@@ -31,9 +31,12 @@ package glue
 //      cbq's Evaluate() at run time, which the generated (engine+base only) code
 //      cannot do -- so the caller must fall back to the interpreter.
 //
-// OUT OF SCOPE (documented future work in DESIGN-prepare.md): the pipe
-// protocol / thin child, DatastorePipe/EvalExpr, WASM, const-folding, and
-// actually `go build`-ing (or running) the emitted source.
+// Const-folding of row-independent boxed sub-exprs (REPEAT("x",2), LIKE over
+// literals, ...) IS handled -- glue.exprConstFold bakes them to native ["json",...]
+// leaves at codegen time, shrinking the boxed set (DESIGN-prepare.md "Boxed
+// expressions" option 2). OUT OF SCOPE (documented future work in
+// DESIGN-prepare.md): the pipe protocol / thin child, DatastorePipe/EvalExpr,
+// WASM, and actually `go build`-ing (or running) the emitted source.
 
 import (
 	"fmt"

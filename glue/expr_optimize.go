@@ -15,7 +15,9 @@ package glue
 
 import (
 	"bytes"
+	"math"
 	"strings"
+	"time"
 
 	"github.com/couchbase/n1k1/base"
 
@@ -82,8 +84,13 @@ func optSelf(names ...string) {
 	}
 }
 
-// ExprTreeOptimize attempts to optimize a N1QL
-// query/expression.Expression tree into a n1k1 expr params tree.
+// ExprTreeOptimize attempts to optimize a N1QL query/expression.Expression tree
+// into a n1k1 expr params tree. It tries the native lowering first
+// (exprTreeOptimizeNative); if native can't express e but e is a runtime-constant
+// (row-independent, non-volatile) expression, it folds e to a ["json", value] leaf
+// (exprConstFold). Native is tried first so a constant with a native handler
+// (e.g. GREATEST(1,2)) keeps its tested handler rather than cbq's static fold.
+//
 // strict, when true, makes a Field reference that does NOT match a real label
 // prefix (i.e. one that would fall back to the whole-row "." / ".*" default) a
 // hard failure rather than a local-row navigation. Callers pass strict=true when
@@ -92,6 +99,66 @@ func optSelf(names ...string) {
 // the native path can't see the parent -- so we must only take it when every
 // field reference provably resolves to a local label. See ExprTree's scoped gate.
 func ExprTreeOptimize(labels base.Labels, e expression.Expression,
+	buf *bytes.Buffer, strict bool) (params []interface{}, ok bool) {
+	if params, ok := exprTreeOptimizeNative(labels, e, buf, strict); ok {
+		return params, true
+	}
+
+	return exprConstFold(e, buf)
+}
+
+// exprConstFold bakes a runtime-constant expression's value as a native
+// ["json", ...] leaf, evaluated once here at codegen time -- so no cbq is needed
+// in the emitted program, and (because ExprTreeOptimize recurses) a constant
+// SUBTREE folds wherever it appears, lifting an otherwise-boxed enclosing expr to
+// native (e.g. the LENGTH(SUFFIXES("abc")) in b.i + LENGTH(SUFFIXES("abc"))).
+//
+// e.Value() != nil is the constant DETECTOR: cbq returns nil for anything
+// row-dependent OR volatile (NOW/CLOCK/UUID/RANDOM), so we never fold a per-row or
+// non-deterministic expr. But the VALUE comes from Evaluate(), NOT Value(): cbq's
+// static Value() folding disagrees with runtime Evaluate() for some functions
+// (e.g. GREATEST(9,null).Value()==null but Evaluate()==9), and only Evaluate()
+// matches what the boxed lane would compute per row. e being non-volatile, the
+// context's clock is irrelevant. See DESIGN-prepare.md "const-fold".
+func exprConstFold(e expression.Expression, buf *bytes.Buffer) (params []interface{}, ok bool) {
+	if e.Value() == nil {
+		return nil, false // row-dependent or volatile -- not a constant
+	}
+
+	v, err := e.Evaluate(value.NULL_VALUE, NewExprGlueContext(time.Time{}))
+	if err != nil || v == nil {
+		return nil, false
+	}
+
+	// Refuse a non-finite number (NaN / +-Inf, e.g. from NaN()/PosInf()). JSON has
+	// no such literal, so cbq's WriteJSON emits it as the STRING "NaN"/"+Inf" --
+	// changing its type from number to string. Baking that would corrupt an
+	// enclosing native op (e.g. sign(NaN()): folding the NaN() SUBTREE to "NaN"
+	// makes the native sign see a string). Keeping it boxed lets cbq's runtime
+	// evaluate the whole expression as it does today -- and the enclosing expr can
+	// still fold if IT evaluates to a finite value (sign(NaN()) -> 0).
+	if v.Type() == value.NUMBER {
+		if f, ok := v.Actual().(float64); ok && (math.IsNaN(f) || math.IsInf(f, 0)) {
+			return nil, false
+		}
+	}
+
+	// MISSING has no JSON form -- WriteJSON emits "null", which would wrongly
+	// become NULL. Emit an empty json constant; ExprJson yields a zero-length Val.
+	if v.Type() == value.MISSING {
+		return []interface{}{"json", ""}, true
+	}
+
+	buf.Reset()
+
+	if v.WriteJSON(nil, buf, "", "", true) != nil {
+		return nil, false
+	}
+
+	return []interface{}{"json", buf.String()}, true
+}
+
+func exprTreeOptimizeNative(labels base.Labels, e expression.Expression,
 	buf *bytes.Buffer, strict bool) (params []interface{}, ok bool) {
 	if agg, ok := e.(algebra.Aggregate); ok {
 		// A grouped aggregate (count(*), sum(x), ...) is already computed by the
