@@ -297,6 +297,12 @@ func PlanConvert(qp *plan.QueryPlan) (*PreparedPlan, error) {
 	// source (real per-branch sortedness/disorder/zone-map Params); no-op otherwise.
 	// gctx is nil here (plan-time); SortedSourceMetasForKeyspace then walks fresh.
 	conv.TopOp = WireTemporalMergeMeta(conv.TopOp, conv.Temps, nil)
+	// A -> B wiring (DESIGN-merging.md §3, piece 2): lower a proven correlated argmax
+	// subquery -> a streaming ASOF merge-join. Runs alongside WireTemporalMergeMeta,
+	// with the Conv (to register the fresh right-scan keyspace into the same Temps
+	// execution reads) and the QueryPlan (whose Subqueries() hold the right sub-plan).
+	// A no-op unless both keyspaces carry a proven normalized int64 sort key.
+	WireASOFJoin(conv, qp)
 	cv, err := NewConvertVals(conv.TopOp.Labels)
 	if err != nil {
 		return nil, &ErrUnsupported{Reason: err.Error()}

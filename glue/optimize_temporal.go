@@ -67,6 +67,7 @@ import (
 	"github.com/couchbase/query/algebra"
 	"github.com/couchbase/query/datastore"
 	"github.com/couchbase/query/expression"
+	"github.com/couchbase/query/plan"
 
 	"github.com/couchbase/n1k1/base"
 	"github.com/couchbase/n1k1/records"
@@ -911,4 +912,354 @@ func aggregateBranchMeta(metas []FileSortedSourceMeta, keyName string) (
 		zoneOK = false
 	}
 	return sortedness, minK, maxK, boundNs, zoneOK, true
+}
+
+// -------------------------------------------------------------------
+// argmax -> ASOF merge-JOIN lowering (DESIGN-merging.md §3, "the argmax-subquery
+// -> ASOF rewrite"; Track B round 4 piece 2).
+//
+// The RECOGNIZER above (MatchArgmaxAsof) classifies the canonical nearest-
+// preceding correlated subquery. This section LOWERS a matched one -- when the
+// normalized-int64-sort-key contract is PROVEN for both keyspaces -- into a
+// streaming merge-join, replacing the O(N*M) per-outer-row correlated re-drive
+// (EvaluateSubquery) with the single linear ASOF pass of engine/op_merge_join.go.
+//
+// It rewrites the INITIAL project that carries the boxed argmax subquery term
+// (child = the outer keyspace E's records scan):
+//
+//	project[ .ts=e.ts, .state_at=<SUBQUERY>, .e ]        // child = scan(E)
+//
+// into:
+//
+//	project[ .ts=e.ts, .state_at=IFMISSING(asofresult, null), .e ]
+//	  merge-join asof/soft [leftKey=E.key, rightKey=R.key, left, tol, partIdxs]
+//	    merge-scan(E)   over  project[ .e, ^ekey=e.key, <ePart...> ] over scan(E)
+//	    merge-scan(R)   over  project[ ^rkey=r.key,
+//	                                   asofresult=[{ProjAlias: r.ProjField}],
+//	                                   <rPart...> ] over a PLAIN scan(R)
+//
+// Why the right side carries `[{ProjAlias: r.ProjField}]` per R row: the argmax
+// subquery is LIMIT 1, so its result for a matched outer row is exactly the array-
+// wrap of the single nearest-preceding R row's projection. Precomputing that value
+// per R row means the ASOF-selected right row's column IS the subquery result --
+// byte-for-byte -- so the lowered output matches the correlated baseline. A no-
+// preceding-row outer (left-outer -> MISSING right) maps to null via IFMISSING,
+// matching the empty subquery's value.NewValue(nil) -> NULL.
+//
+// GATING (the safety net, identical in spirit to WireTemporalMergeMeta): fire ONLY
+// when BOTH E and R are recipe-matched with SortedSourceMeta.SortKeyLabel ==
+// AsofMatch.KeyField (a proven normalized int64 sort key). Otherwise the correlated
+// subquery is left UNTOUCHED (the correct, if slower, fallback). Every merge-scan /
+// merge-join also validates ascending order at runtime (policy "error"), so an
+// optimistic sortedness aggregation fails loudly rather than mis-orders.
+
+// EnableASOFRewrite gates the argmax->ASOF merge-join LOWERING (this pass MUTATES
+// the tree, unlike the read-only EnableASOFRecognize). Default ON: the lowering is
+// guarded by proven SortedSourceMeta (both keyspaces' int64 sort key == the argmax
+// key) exactly like the UNION-ALL->merge rewrite, so it fires only where
+// correctness is provable and is a safe no-op everywhere else.
+var EnableASOFRewrite = true
+
+// AsofRewriteApplied counts argmax subqueries this pass lowered into a merge-join
+// (test observability, mirroring MergeMetaRewriteApplied / AsofRecognized).
+var AsofRewriteApplied int64
+
+// asofKeyspacer is the minimal keyspacer (a datastore.Keyspace holder) that backs
+// the fresh, PLAIN full ordered scan of the subquery's right keyspace R. The
+// correlated argmax sub-plan carries a correlated span (r.key <= e.key); the ASOF
+// join enforces that inequality itself, so the right input is rebuilt as an
+// unfiltered records scan of R -- not the correlated sub-plan. DatastoreScanRecords
+// needs only Keyspace() off its Temps entry (no Limit -> unbounded full scan).
+type asofKeyspacer struct{ ks datastore.Keyspace }
+
+func (a asofKeyspacer) Keyspace() datastore.Keyspace { return a.ks }
+
+// WireASOFJoin lowers each proven correlated argmax subquery in the converted tree
+// into a streaming merge-join. It is called from PlanConvert with the Conv (to
+// register the fresh R scan's keyspace into the SAME Temps execution reads) and the
+// QueryPlan (whose Subqueries() hold R's pre-planned sub-plan, from which R's
+// keyspace is resolved). A no-op unless EnableASOFRewrite is set; each candidate is
+// lowered only when the metadata gate proves both E and R int64 sort keys.
+func WireASOFJoin(conv *Conv, qp *plan.QueryPlan) {
+	if conv == nil || conv.TopOp == nil || !EnableASOFRewrite || qp == nil {
+		return
+	}
+	// Re-key the pointer-keyed sub-plan map by canonical String() so a lookup by the
+	// tree's subquery (same object, but be robust to a re-parsed pointer) hits.
+	var byKey map[string]plan.Operator
+	if subs := qp.Subqueries(); len(subs) > 0 {
+		byKey = make(map[string]plan.Operator, len(subs))
+		for sel, op := range subs {
+			byKey[subqKey(sel)] = op
+		}
+	}
+	asofWalk(conv.TopOp, conv, byKey)
+}
+
+// asofWalk visits every op, trying to lower a project that carries an argmax
+// subquery term. It recurses AFTER a lowering (into the new merge-join subtree),
+// which contains no further argmax terms, so no re-processing occurs.
+func asofWalk(op *base.Op, conv *Conv, byKey map[string]plan.Operator) {
+	if op == nil {
+		return
+	}
+	if op.Kind == "project" {
+		tryLowerASOFProject(op, conv, byKey)
+	}
+	for _, c := range op.Children {
+		asofWalk(c, conv, byKey)
+	}
+}
+
+// tryLowerASOFProject attempts the argmax->ASOF lowering on one project op. It is
+// paranoid: any deviation from the exact expected shape, or an unproven sort key on
+// either keyspace, leaves the project (and its correlated subquery) UNTOUCHED.
+func tryLowerASOFProject(p *base.Op, conv *Conv, byKey map[string]plan.Operator) {
+	// Safety net: this runs inside PlanConvert (inside Run's recover), so a panic
+	// here would fail the WHOLE query -- worse than the correlated baseline. The
+	// tree is mutated only at the very end (after all fallible work), so on any
+	// panic the project is left untouched and the correct correlated path runs.
+	defer func() { _ = recover() }()
+
+	// The project's single child must be exactly the outer keyspace E's records
+	// scan: any intermediate op (filter, join, another project) would change the
+	// rows the subquery correlates against, so bail to the safe correlated path.
+	if len(p.Children) != 1 {
+		return
+	}
+	scanE := p.Children[0]
+	if scanE.Kind != "datastore-scan-records" || len(scanE.Labels) == 0 {
+		return
+	}
+	outerAlias, ok := mergeLabelLeaf(scanE.Labels[0])
+	if !ok {
+		return
+	}
+
+	// Find the ONE projection term that is EXACTLY a bare argmax subquery. Requiring
+	// it be the bare subquery (not e.g. `(SELECT ...)[0]`) means replacing the term
+	// reproduces the subquery's value precisely.
+	termIdx := -1
+	var match *AsofMatch
+	var sel *algebra.Select
+	for i, prm := range p.Params {
+		term, ok := prm.([]interface{})
+		if !ok || len(term) < 2 {
+			continue
+		}
+		if k, _ := term[0].(string); k != "exprTree" {
+			continue
+		}
+		sq, ok := term[1].(*algebra.Subquery)
+		if !ok {
+			continue
+		}
+		if m, matched := MatchArgmaxAsof(sq); matched {
+			termIdx, match, sel = i, m, sq.Select()
+			break
+		}
+	}
+	if termIdx < 0 || sel == nil {
+		return
+	}
+
+	// --- GATE: prove E's int64 sort key == the argmax key. -----------------------
+	eKS := branchScanKeyspace(scanE, conv.Temps)
+	if eKS == nil {
+		return
+	}
+	eMetas, err := SortedSourceMetasForKeyspace(eKS, nil)
+	if err != nil || len(eMetas) == 0 {
+		return
+	}
+	eSorted, eMin, eMax, eBound, eZone, eOK := aggregateBranchMeta(eMetas, match.KeyField)
+	if !eOK {
+		return
+	}
+
+	// --- resolve R's keyspace from the subquery's pre-planned sub-plan. ----------
+	subPlan := byKey[subqKey(sel)]
+	if subPlan == nil {
+		return
+	}
+	subConv := &Conv{Temps: []interface{}{nil}}
+	if _, cerr := subPlan.Accept(subConv); cerr != nil || subConv.TopOp == nil {
+		return
+	}
+	rKS := branchScanKeyspace(subConv.TopOp, subConv.Temps)
+	if rKS == nil {
+		return
+	}
+	rMetas, rerr := SortedSourceMetasForKeyspace(rKS, nil)
+	if rerr != nil || len(rMetas) == 0 {
+		return
+	}
+	rSorted, rMin, rMax, rBound, rZone, rOK := aggregateBranchMeta(rMetas, match.KeyField)
+	if !rOK {
+		return
+	}
+
+	// --- build the LEFT (probe) input: merge-scan(E) over a key-materializing ----
+	// project over scan(E). Keeps the whole E doc (.e) so the outer project's other
+	// terms (e.ts, .e) resolve unchanged; adds ^ekey = e.<KeyField> (int64) and one
+	// column per partition-eq outer field.
+	eKeyLabel := "^ekey"
+	leftProj := &base.Op{
+		Kind:     "project",
+		Labels:   base.Labels{scanE.Labels[0], eKeyLabel},
+		Params:   []interface{}{[]interface{}{"labelPath", scanE.Labels[0]}, exprTerm(fieldRef(outerAlias, match.KeyField))},
+		Children: []*base.Op{scanE},
+	}
+	var leftParts []interface{}
+	for i, eq := range match.PartitionEq {
+		lbl := "^epart" + itoa(i)
+		leftProj.Labels = append(leftProj.Labels, lbl)
+		leftProj.Params = append(leftProj.Params, exprTerm(fieldRef(outerAlias, eq.OuterField)))
+		leftParts = append(leftParts, len(leftProj.Labels)-1)
+	}
+	leftKeyIdx := 1 // position of ^ekey in leftProj.Labels
+	msE := &base.Op{
+		Kind:     "merge-scan",
+		Labels:   append(base.Labels{}, leftProj.Labels...),
+		Params:   mergeScanParams(leftKeyIdx, eSorted, eMin, eMax, eBound, eZone),
+		Children: []*base.Op{leftProj},
+	}
+
+	// --- build the RIGHT (build) input: merge-scan(R) over a project over a fresh --
+	// PLAIN scan(R). Produces ^rkey = r.<KeyField> (int64) and asofresult =
+	// [{ProjAlias: r.ProjField}] -- the array-wrapped single-row subquery projection.
+	rScanIdx := conv.AddTemp(asofKeyspacer{ks: rKS})
+	scanR := &base.Op{
+		Kind:   "datastore-scan-records",
+		Labels: base.Labels{"." + LabelSuffix(match.RightAlias), "^id"},
+		Params: []interface{}{rScanIdx},
+	}
+	rKeyLabel := "^rkey"
+	asofResultLabel := ".[\"" + asofResultField + "\"]"
+	rightProj := &base.Op{
+		Kind:   "project",
+		Labels: base.Labels{rKeyLabel, asofResultLabel},
+		Params: []interface{}{
+			exprTerm(fieldRef(match.RightAlias, match.KeyField)),
+			exprTerm(asofResultExpr(match)),
+		},
+		Children: []*base.Op{scanR},
+	}
+	var rightParts []interface{}
+	for i, eq := range match.PartitionEq {
+		lbl := "^rpart" + itoa(i)
+		rightProj.Labels = append(rightProj.Labels, lbl)
+		rightProj.Params = append(rightProj.Params, exprTerm(fieldRef(match.RightAlias, eq.RightField)))
+		rightParts = append(rightParts, len(rightProj.Labels)-1)
+	}
+	rightKeyIdx := 0 // position of ^rkey in rightProj.Labels
+	msR := &base.Op{
+		Kind:     "merge-scan",
+		Labels:   append(base.Labels{}, rightProj.Labels...),
+		Params:   mergeScanParams(rightKeyIdx, rSorted, rMin, rMax, rBound, rZone),
+		Children: []*base.Op{rightProj},
+	}
+
+	// --- build the merge-join. Left-outer so a no-preceding outer row survives with
+	// MISSING right cols (mapped to null by the outer term below), matching the empty
+	// subquery. asof mode "soft" iff a look-back guard was recognized.
+	asofMode := "asof"
+	var tolerance interface{}
+	if match.Soft {
+		asofMode = "soft"
+		tolerance = match.ToleranceNanos
+	}
+	mj := &base.Op{
+		Kind:     "merge-join",
+		Labels:   append(append(base.Labels{}, msE.Labels...), msR.Labels...),
+		Params:   []interface{}{leftKeyIdx, rightKeyIdx, "left", asofMode, tolerance, leftParts, rightParts},
+		Children: []*base.Op{msE, msR},
+	}
+
+	// --- rewire the project: child = merge-join; the argmax term now reads the joined
+	// right asofresult column, mapping MISSING (no preceding row) -> null.
+	p.Children[0] = mj
+	p.Params[termIdx] = exprTerm(expression.NewIfMissing(
+		fieldRef("", asofResultField), expression.NewConstant(nil)))
+
+	AsofRewriteApplied++
+}
+
+// asofResultField is the synthetic field name the right side carries the array-
+// wrapped subquery projection under; the outer project reads it back by this name.
+const asofResultField = "asofresult"
+
+// mergeScanParams builds a single-branch merge-scan's Params (engine layout
+// [keyIdx, regime, sortedness, minKeys, maxKeys, bounds, policy]) from the branch's
+// aggregated SortedSourceMeta. A "near" branch forces the "heap" regime so the op
+// escalates to the watermarked-near reorder (which normalizes near -> strict for the
+// downstream merge-join); a "strict" branch uses "concatenate" (pass-through with a
+// monotonicity tripwire). Zone maps ride only the strict/concatenate case.
+func mergeScanParams(keyIdx int, sorted string, minK, maxK, bound int64, zoneOK bool) []interface{} {
+	regime := "concatenate"
+	var minKeys, maxKeys []interface{}
+	if sorted == records.SortedNear {
+		regime = "heap" // -> watermarked-near (a single near source still reorders).
+	} else if zoneOK {
+		minKeys = []interface{}{minK}
+		maxKeys = []interface{}{maxK}
+	}
+	return []interface{}{
+		keyIdx, regime,
+		[]interface{}{sorted},
+		minKeys, maxKeys,
+		[]interface{}{bound},
+		"error",
+	}
+}
+
+// exprTerm wraps a cbq expression as a project op's ["exprTree", expr] param term.
+func exprTerm(e expression.Expression) []interface{} {
+	return []interface{}{"exprTree", e}
+}
+
+// fieldRef builds a field-access expression alias.field, or a bare identifier when
+// alias is "" (used for the synthetic asofresult column, which the outer project
+// resolves as a plain field of the joined row).
+func fieldRef(alias, field string) expression.Expression {
+	if alias == "" {
+		return expression.NewIdentifier(field)
+	}
+	return expression.NewField(expression.NewIdentifier(alias),
+		expression.NewFieldName(field, false))
+}
+
+// asofResultExpr builds the per-R-row array-wrapped projection [{ProjAlias:
+// r.ProjField}] -- exactly the value the LIMIT 1 argmax subquery yields for the
+// outer row this R row is the nearest-preceding of. Built via cbq's object/array
+// constructors so its serialization matches the correlated baseline byte-for-byte.
+func asofResultExpr(m *AsofMatch) expression.Expression {
+	obj := expression.NewObjectConstruct(map[expression.Expression]expression.Expression{
+		expression.NewConstant(m.ProjAlias): fieldRef(m.RightAlias, m.ProjField),
+	})
+	return expression.NewArrayConstruct(obj)
+}
+
+// itoa is a tiny int->string for building distinct synthetic partition labels
+// without pulling strconv into this file's cold path.
+func itoa(i int) string {
+	if i == 0 {
+		return "0"
+	}
+	var b [20]byte
+	pos := len(b)
+	neg := i < 0
+	if neg {
+		i = -i
+	}
+	for i > 0 {
+		pos--
+		b[pos] = byte('0' + i%10)
+		i /= 10
+	}
+	if neg {
+		pos--
+		b[pos] = '-'
+	}
+	return string(b[pos:])
 }
