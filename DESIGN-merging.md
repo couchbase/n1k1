@@ -752,6 +752,67 @@ tripwire deserves a dedicated test, as it is the subtlest failure mode.
 
 ---
 
+# Multi-bundle / cross-node clusters (the canonical K-way case) <a name="cross-node"></a>
+
+A customer rarely sends one bundle: they send **one `cbcollect` per node**, unzipped
+into sibling dirs (`bundle-01/`, `bundle-02/`, …), each with the *same* file layout
+(`ns_server.info.log`, `memcached.log`, `master_events.log`, …). Because the nodes ran
+**concurrently, their time ranges overlap** — and correlating events *across* nodes by
+time is the whole point of cluster debugging ("node A errored at T — what were B and C
+doing at T?"). This is precisely **K sorted streams merged by time** — the case K-way
+merge exists for. So the multi-bundle scenario doesn't stress the design; it *is* the
+design's headline. What it sharpens:
+
+**1. It reframes per-file child scans from a nicety to the enabler.** There are two
+ways to express a cross-node timeline:
+
+- **Explicit `UNION ALL` of per-node single-file keyspaces — works TODAY.** Each branch
+  is one node's file (a single ordered stream); K branches under `ORDER BY ts` fire the
+  A→B `UNION ALL → merge-scan` wiring and interleave correctly:
+  ```sql
+  SELECT ev.ts, ev.src, ev.msg FROM (
+      SELECT e.ts AS ts, "node1" AS src, e.msg AS msg FROM `bundle-01/ns_server.info.*` e
+    UNION ALL
+      SELECT e.ts, "node2", e.msg FROM `bundle-02/ns_server.info.*` e
+    /* … one branch per node … */
+  ) ev ORDER BY ev.ts
+  ```
+- **A single `**/ns_server.info.log` glob keyspace — needs per-file child scans.** The
+  ergonomic form (don't spell out K branches) makes the keyspace a *union of the K
+  per-node files*, which today concatenates them; overlapping node ranges then trip the
+  monotonicity tripwire. The fix — already the deferred item ([§1](#merge-scan)) — is to
+  scan **each file as its own merge input** (the K cursors *are* the K nodes), turning a
+  multi-file keyspace into a K-way merge instead of a concat. This same gap blocks
+  **cross-node ASOF**, whose build (right) side must be the K-node-merged state stream
+  (e.g. cluster-wide `master_events`) — so per-file child scans is the single change that
+  unlocks the ergonomic timeline *and* cross-node ASOF. **Promote it accordingly.**
+
+**2. Clock skew is a real cross-node correctness factor.** Merging by `ts` across nodes
+assumes comparable clocks. Each node's log is near-sorted within its own clock, but the
+*effective* disorder of the merged stream is `max(per-node disorder_bound) +
+inter-node clock skew`. So a cross-node merge's watermark/`disorder_bound` must be
+widened by the expected skew; unbounded skew → no bounded merge is correct → fall back
+to a full spill-sort (the `none` path). The extract layer already timezone-normalizes
+(removing the easy error); genuine NTP skew remains and should be surfaced (a detector
+could even *measure* it — the same log line seen via two nodes' clocks). The
+validate-or-widen late-record policy is the guardrail: a cross-node record arriving
+below the watermark means skew exceeded the bound, caught not silently mis-ordered.
+
+**3. Provenance becomes a required column, and it's already available.** A merged
+cross-node row is meaningless without "which node". Two sources, both present: the
+**bundle dir** (`_meta.path`'s leading segment — `bundle-02/…`) and the **node id
+parsed from the log** (ns_server's `node` field / a recipe `provenance` constant). The
+extract `describe` should stamp the node into `provenance` so every merged row is
+attributable; a cross-node merge/ASOF projection carries it (the `src`/`node` column
+above).
+
+**Layout.** Point the data-root at the *parent* of the sibling bundles and address per
+node via `bundle-NN/<file>` keyspaces (works today) or `**/<file>` (needs per-file
+scans). A catalog **view** (`DESIGN-data.md`) could name the cluster-wide stream once —
+`cluster_ns_info` = the UNION ALL over `bundle-*/ns_server.info.log` — so detectors
+`FROM cluster_ns_info` without spelling out nodes; that rides the same `UNION ALL →
+merge` path.
+
 # Open questions <a name="open-questions"></a>
 
 - **Measuring `disorder_bound`.** Declared-by-author vs measured-by-sampling — how
@@ -783,6 +844,12 @@ tripwire deserves a dedicated test, as it is the subtlest failure mode.
   partitioned by node × bucket × index), the `partition → held row` map can grow —
   what eviction policy is correct (a partition can always receive a later left row)?
   Frontier-based eviction assumes partitions don't reappear far apart; is that safe?
+- **Cross-node clock-skew budget ([multi-bundle](#cross-node)).** For a cross-node
+  merge the effective disorder is `per-node bound + inter-node clock skew`. How is the
+  skew allowance set — a fixed default, *measured* from records seen via two nodes'
+  clocks, or user-declared per cluster? And what's the give-up threshold past which the
+  merge must spill-sort instead? Getting this wrong is the cross-node silent-corruption
+  risk (mitigated, not removed, by validate-or-widen).
 - **Band merge-join (the NEST alternative).** If demand appears, is all-within-Δt best
   expressed as a merge-join variant feeding `ARRAY_AGG`, or does it want its own op?
   ([§4](#nest) recommends the former — revisit with real detectors.)
