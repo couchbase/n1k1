@@ -1379,3 +1379,97 @@ func TestPredicateDifferentialVsCBQ(t *testing.T) {
 		}
 	}
 }
+
+// TestRegexpDifferentialVsCBQ proves REGEXP_CONTAINS / REGEXP_LIKE native
+// lowering: a CONSTANT, compilable pattern lowers to the native regexp head
+// (base.StrRegexpMatch), matching cbq byte-for-byte; a DYNAMIC or INVALID-constant
+// pattern must stay BOXED (not lowered), so cbq's per-row-recompile / runtime-error
+// behavior is preserved. Both operands here are constants -- native lowering is
+// tried before const-fold, so these hit the regexp handler (asserted via the tree
+// head), not cbq's static fold.
+func TestRegexpDifferentialVsCBQ(t *testing.T) {
+	parse := func(s string) expression.Expression {
+		e, err := parser.Parse(s)
+		if err != nil {
+			t.Fatalf("parse %q: %v", s, err)
+		}
+		return e
+	}
+
+	native := []struct{ name, head, expr string }{
+		{"contains-digits", "regexp_contains", `REGEXP_CONTAINS("hello123", "[0-9]+")`},
+		{"contains-no", "regexp_contains", `REGEXP_CONTAINS("hello", "[0-9]+")`},
+		{"contains-anchor", "regexp_contains", `REGEXP_CONTAINS("abcxyz", "^abc")`},
+		{"contains-alt", "regexp_contains", `REGEXP_CONTAINS("warn: disk", "error|warn")`},
+		{"contains-backslash", "regexp_contains", `REGEXP_CONTAINS("a.b", "a\\.b")`},
+		{"contains-backslash-no", "regexp_contains", `REGEXP_CONTAINS("axb", "a\\.b")`},
+		{"contains-empty-pat", "regexp_contains", `REGEXP_CONTAINS("anything", "")`},
+		{"contains-null-src", "regexp_contains", `REGEXP_CONTAINS(null, "x")`},
+		{"contains-num-src", "regexp_contains", `REGEXP_CONTAINS(5, "[0-9]")`},
+		{"like-full-yes", "regexp_like", `REGEXP_LIKE("12345", "[0-9]+")`},
+		{"like-full-no", "regexp_like", `REGEXP_LIKE("a12345", "[0-9]+")`},
+		{"like-literal", "regexp_like", `REGEXP_LIKE("abc", "abc")`},
+		{"like-partial-no", "regexp_like", `REGEXP_LIKE("xabcx", "abc")`},
+		{"like-null-src", "regexp_like", `REGEXP_LIKE(null, ".*")`},
+		{"like-num-src", "regexp_like", `REGEXP_LIKE(5, ".*")`},
+	}
+	for _, tc := range native {
+		e := parse(tc.expr)
+		var buf bytes.Buffer
+		params, ok := ExprTreeOptimize(nil, e, &buf, false)
+		if !ok {
+			t.Errorf("%s: %q did not optimize to native", tc.name, tc.expr)
+			continue
+		}
+		if head, _ := params[0].(string); head != tc.head {
+			t.Errorf("%s: expected native head %q, got %v (const-folded/boxed, not the regexp handler)",
+				tc.name, tc.head, params[0])
+			continue
+		}
+		want := cbqEval(t, e)
+		got, gotOk := nativeEval(t, e)
+		if !gotOk {
+			t.Errorf("%s: nativeEval boxed unexpectedly", tc.name)
+			continue
+		}
+		if got != want {
+			t.Errorf("%s: native=%q, cbq=%q", tc.name, got, want)
+		}
+	}
+
+	// A dynamic pattern (row-dependent identifier) or an invalid constant pattern
+	// must NOT lower -- ExprTreeOptimize returns ok=false (boxed to cbq).
+	boxed := []struct{ name, expr string }{
+		{"dynamic-pattern", `REGEXP_CONTAINS("hello", p)`},
+		{"dynamic-pattern-like", `REGEXP_LIKE("hello", p)`},
+		{"invalid-const-pattern", `REGEXP_CONTAINS("hello", "[")`},
+		{"invalid-const-like", `REGEXP_LIKE("hello", "(")`},
+		{"nonstring-const-pattern", `REGEXP_CONTAINS("hello", 5)`},
+	}
+	for _, tc := range boxed {
+		e := parse(tc.expr)
+		var buf bytes.Buffer
+		if params, ok := ExprTreeOptimize(nil, e, &buf, false); ok {
+			if head, _ := params[0].(string); head == "regexp_contains" || head == "regexp_like" {
+				t.Errorf("%s: %q should stay boxed, but lowered to native %q", tc.name, tc.expr, head)
+			}
+		}
+	}
+}
+
+// TestRegexpMatchZeroAlloc asserts the per-row native regexp eval allocates
+// nothing after the one-time (first-row) pattern compile -- the GARBAGE MANDATE.
+func TestRegexpMatchZeroAlloc(t *testing.T) {
+	val := base.Val([]byte(`"2026-07-08T10:34:39 error: disk full"`))
+	src := "error|warn|fatal"
+
+	var re base.Regexp
+	_ = base.StrRegexpMatch(val, src, &re) // warm up: compiles once
+
+	n := testing.AllocsPerRun(2000, func() {
+		_ = base.StrRegexpMatch(val, src, &re)
+	})
+	if n != 0 {
+		t.Errorf("StrRegexpMatch: %v allocs/row after warmup; want 0", n)
+	}
+}

@@ -16,6 +16,7 @@ package glue
 import (
 	"bytes"
 	"math"
+	"regexp"
 	"strings"
 	"time"
 
@@ -39,6 +40,7 @@ func init() {
 		"degrees", "radians", "sin", "cos", "tan", "asin", "acos", "atan",
 		"upper", "lower", "length", "title", "trim", "ltrim", "rtrim", "reverse", // unary string (expr_str.go)
 		"contains", "position0", "position1", // binary string (expr_str.go)
+		"regexp_contains", "regexp_like", // regexp predicates, constant-pattern only (expr_str.go)
 		"replace",            // ternary string, 3-arg form (expr_str.go)
 		"substr0", "substr1", // SUBSTR, arity-dispatched below (expr_str.go)
 		"split",        // SPLIT, arity-dispatched below (expr_str.go)
@@ -387,6 +389,25 @@ func exprTreeOptimizeNative(labels base.Labels, e expression.Expression,
 		case 2:
 			name += "_2"
 		default:
+			return nil, false
+		}
+	}
+
+	// REGEXP_CONTAINS / REGEXP_LIKE: native only when the pattern (2nd operand) is
+	// a compile-time-constant string that COMPILES. A dynamic pattern would force a
+	// per-row recompile (allocating), and cbq raises a runtime ERROR on a bad
+	// pattern -- so a dynamic OR invalid-constant pattern stays boxed, preserving
+	// cbq's semantics. The native handler bakes the constant pattern and compiles
+	// it once (see engine.exprRegexpMatch / base.StrRegexpMatch).
+	if name == "regexp_contains" || name == "regexp_like" {
+		if len(operands) != 2 {
+			return nil, false
+		}
+		pv := operands[1].Value()
+		if pv == nil || pv.Type() != value.STRING {
+			return nil, false
+		}
+		if _, err := regexp.Compile(pv.ToString()); err != nil {
 			return nil, false
 		}
 	}

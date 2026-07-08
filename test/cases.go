@@ -6026,6 +6026,26 @@ var TestCasesSimple = []TestCaseSimple{
 	naryProjectCase("contains-null", []interface{}{"contains",
 		[]interface{}{"json", `null`}, []interface{}{"json", `"x"`}}, `null`),
 
+	// Regexp predicates (value-producing bool, CONSTANT pattern) in the COMPILED
+	// path -- exercises the pattern baked as a varLift'd string + the once-compiled
+	// base.Regexp cache. The pattern operand is always a ["json", ...] constant.
+	naryProjectCase("regexp_contains-yes", []interface{}{"regexp_contains",
+		[]interface{}{"json", `"hello123"`}, []interface{}{"json", `"[0-9]+"`}}, `true`),
+	naryProjectCase("regexp_contains-no", []interface{}{"regexp_contains",
+		[]interface{}{"json", `"hello"`}, []interface{}{"json", `"[0-9]+"`}}, `false`),
+	naryProjectCase("regexp_contains-anchor", []interface{}{"regexp_contains",
+		[]interface{}{"json", `"abcxyz"`}, []interface{}{"json", `"^abc"`}}, `true`),
+	naryProjectCase("regexp_contains-esc", []interface{}{"regexp_contains",
+		[]interface{}{"json", `"a.b"`}, []interface{}{"json", `"a\\.b"`}}, `true`),
+	naryProjectCase("regexp_contains-num", []interface{}{"regexp_contains",
+		[]interface{}{"json", `5`}, []interface{}{"json", `"[0-9]"`}}, `null`),
+	naryProjectCase("regexp_like-full-yes", []interface{}{"regexp_like",
+		[]interface{}{"json", `"12345"`}, []interface{}{"json", `"[0-9]+"`}}, `true`),
+	naryProjectCase("regexp_like-full-no", []interface{}{"regexp_like",
+		[]interface{}{"json", `"a12345"`}, []interface{}{"json", `"[0-9]+"`}}, `false`),
+	naryProjectCase("regexp_like-null", []interface{}{"regexp_like",
+		[]interface{}{"json", `null`}, []interface{}{"json", `".*"`}}, `null`),
+
 	// Type conversions (value-producing) in the COMPILED path.
 	naryProjectCase("to_bool-num", []interface{}{"to_boolean", []interface{}{"json", `5`}}, `true`),
 	naryProjectCase("to_bool-zero", []interface{}{"to_boolean", []interface{}{"json", `0`}}, `false`),

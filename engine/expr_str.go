@@ -58,6 +58,11 @@ func init() {
 	ExprCatalog["contains"] = ExprContains
 	ExprCatalog["position0"] = ExprPosition0
 	ExprCatalog["position1"] = ExprPosition1
+	// REGEXP_CONTAINS (partial match) / REGEXP_LIKE (full ^...$ match). Both are
+	// boolean predicates over a CONSTANT pattern (the optimizer keeps a dynamic or
+	// invalid pattern boxed); see exprRegexpMatch and base.StrRegexpMatch.
+	ExprCatalog["regexp_contains"] = ExprRegexpContains
+	ExprCatalog["regexp_like"] = ExprRegexpLike
 }
 
 // exprStrTransformOp adapts a []byte->[]byte transform into an ExprCatalogFunc by
@@ -518,4 +523,70 @@ func exprStrPosition(lzVars *base.Vars, labels base.Labels, params []interface{}
 		MakeBiExprFunc(lzVars, labels, params, path, biExprFunc) // !lz
 
 	return lzExprFunc
+}
+
+// REGEXP_CONTAINS(str, pattern) / REGEXP_LIKE(str, pattern) -> bool. Both take a
+// CONSTANT pattern: the glue optimizer only lowers these when the 2nd operand is a
+// compile-time-constant string that COMPILES, keeping a dynamic or invalid pattern
+// BOXED so cbq's per-row-recompile / runtime-error behavior is preserved. So the
+// pattern operand is NOT a per-row child ExprFunc -- it's decoded from the params
+// tree at CONSTRUCTION time (codegen / query setup), baked as a varLift'd string,
+// and compiled ONCE (lazily, on the first row) into the varLift'd base.Regexp
+// cache. Only the source operand (params[0]) rides a per-row leaf, so this is a
+// UNARY harness (like LENGTH). full selects REGEXP_LIKE's ^...$ anchoring.
+
+func ExprRegexpContains(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string) base.ExprFunc {
+	return exprRegexpMatch(lzVars, labels, params, path, false)
+}
+
+func ExprRegexpLike(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string) base.ExprFunc {
+	return exprRegexpMatch(lzVars, labels, params, path, true)
+}
+
+// exprRegexpMatch is the shared REGEXP_CONTAINS/REGEXP_LIKE harness. exprA is the
+// source operand's per-row leaf; the constant pattern (params[1]) is decoded and
+// (for REGEXP_LIKE) anchored at construction, baked into lzPat, and compiled once
+// per row-stream into lzRe by base.StrRegexpMatch.
+func exprRegexpMatch(lzVars *base.Vars, labels base.Labels, params []interface{},
+	path string, full bool) (lzExprFunc base.ExprFunc) {
+	exprA := params[0].([]interface{})
+
+	pat := regexpPatternFrom(params[1].([]interface{}), full)
+
+	var lzPat string = pat // <== varLift: lzPat by path
+
+	var lzRe base.Regexp // <== varLift: lzRe by path
+
+	lzExprFunc =
+		MakeExprFunc(lzVars, labels, exprA, path, "A") // !lz
+	lzA := lzExprFunc
+
+	lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
+		lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
+
+		lzVal = base.StrRegexpMatch(lzVal, lzPat, &lzRe)
+
+		return lzVal
+	}
+
+	return lzExprFunc
+}
+
+// regexpPatternFrom decodes the constant pattern operand -- a ["json", <text>]
+// leaf holding a JSON string -- into its raw regexp source, anchored as "^...$"
+// for REGEXP_LIKE (full). Runs at construction only (never per row), so its
+// allocations don't count against the eval path. The optimizer guarantees a
+// json-string pattern, so StrDecode succeeds.
+func regexpPatternFrom(patParam []interface{}, full bool) string {
+	decoded, _, ok := base.StrDecode(base.Val(patParam[1].(string)))
+	if !ok {
+		return ""
+	}
+	s := string(decoded)
+	if full {
+		s = "^" + s + "$"
+	}
+	return s
 }
