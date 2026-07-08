@@ -15,6 +15,8 @@ import (
 	"fmt"
 	"strconv"
 
+	"github.com/buger/jsonparser"
+
 	"github.com/couchbase/n1k1/base"
 )
 
@@ -372,6 +374,11 @@ func mergeChooseRegime(numChildren int, regime string, minKeys, maxKeys []int64)
 // mergeParseKey reads the int64 epoch-nanos sort key from vals[keyIdx]. The
 // extract layer normalizes the key to a bare JSON integer, so a plain
 // ParseInt suffices; a missing or non-integer key returns ok=false.
+//
+// Hot path: this runs once per row, so it must NOT allocate. jsonparser.ParseInt
+// parses the digits straight out of the []byte (no string() conversion) -- the
+// same zero-garbage primitive base/arith.go uses. (Garbage in the planning /
+// preparation / extract phases is fine; the merge steady state is not.)
 func mergeParseKey(vals base.Vals, keyIdx int) (int64, bool) {
 	if keyIdx < 0 || keyIdx >= len(vals) {
 		return 0, false
@@ -382,7 +389,7 @@ func mergeParseKey(vals base.Vals, keyIdx int) (int64, bool) {
 		return 0, false
 	}
 
-	n, err := strconv.ParseInt(string(v), 10, 64)
+	n, err := jsonparser.ParseInt(v)
 	if err != nil {
 		return 0, false
 	}
