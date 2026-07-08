@@ -346,7 +346,7 @@ func TestExtractCacheMemoizesDescribe(t *testing.T) {
 	cacheFile := extractCacheFile(t, root, logPath)
 
 	// First open: cache miss -> describe runs once, cache file written.
-	if _, _, err := describeMemoized(logPath, counting); err != nil {
+	if _, _, err := describeMemoized(logPath, counting, "fp-A"); err != nil {
 		t.Fatalf("describeMemoized #1: %v", err)
 	}
 	if got := atomic.LoadInt32(&calls); got != 1 {
@@ -361,7 +361,7 @@ func TestExtractCacheMemoizesDescribe(t *testing.T) {
 	}
 
 	// Second open of the UNCHANGED file: cache hit -> describe NOT re-run.
-	if _, _, err := describeMemoized(logPath, counting); err != nil {
+	if _, _, err := describeMemoized(logPath, counting, "fp-A"); err != nil {
 		t.Fatalf("describeMemoized #2: %v", err)
 	}
 	if got := atomic.LoadInt32(&calls); got != 1 {
@@ -385,7 +385,7 @@ func TestExtractCacheMemoizesDescribe(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, _, err := describeMemoized(logPath, counting); err != nil {
+	if _, _, err := describeMemoized(logPath, counting, "fp-A"); err != nil {
 		t.Fatalf("describeMemoized #3 (changed): %v", err)
 	}
 	if got := atomic.LoadInt32(&calls); got != 2 {
@@ -400,6 +400,70 @@ func TestExtractCacheMemoizesDescribe(t *testing.T) {
 	}
 	if ent2.Meta.RecordCount != 4 {
 		t.Errorf("re-described record count = %d, want 4", ent2.Meta.RecordCount)
+	}
+}
+
+// TestExtractCacheInvalidatesOnProducerChange proves the config_fingerprint guard
+// (DESIGN-data.md §5): an UNCHANGED file (same size/mtime) whose CLAIMING RECIPE
+// changed -- a different recipe fingerprint, or equivalently a bumped engine producer
+// version -- re-describes rather than serving the stale spec. This is what caught the
+// framing:json staleness: identical (relpath,size,mtime) but describe now produces a
+// different spec, so the fingerprint alone must not be trusted.
+func TestExtractCacheInvalidatesOnProducerChange(t *testing.T) {
+	root, logPath := writeNSLogKeyspace(t)
+
+	var calls int32
+	counting := func(path string) (records.ExtractSpec, records.SortedSourceMeta, error) {
+		atomic.AddInt32(&calls, 1)
+		return records.NSLogDescribe(path)
+	}
+	cacheFile := extractCacheFile(t, root, logPath)
+
+	// First open with recipe fingerprint "fp-old": describe runs, cache written with
+	// its producer fingerprint.
+	if _, _, err := describeMemoized(logPath, counting, "fp-old"); err != nil {
+		t.Fatalf("describeMemoized #1: %v", err)
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("after first open, describe calls = %d, want 1", got)
+	}
+	ent1 := readExtractCacheEntry(t, cacheFile)
+	if ent1.Producer != producerFingerprint("fp-old") {
+		t.Errorf("cached producer = %q, want %q", ent1.Producer, producerFingerprint("fp-old"))
+	}
+
+	// Re-open the UNCHANGED file but with a DIFFERENT recipe fingerprint (a recipe
+	// edit): the fingerprint (relpath,size,mtime) still matches, but the producer does
+	// not -> re-describe, and the cache is rewritten with the new producer.
+	if _, _, err := describeMemoized(logPath, counting, "fp-new"); err != nil {
+		t.Fatalf("describeMemoized #2 (changed recipe): %v", err)
+	}
+	if got := atomic.LoadInt32(&calls); got != 2 {
+		t.Fatalf("changed recipe fingerprint should re-describe; calls = %d, want 2", got)
+	}
+	ent2 := readExtractCacheEntry(t, cacheFile)
+	if ent2.Producer != producerFingerprint("fp-new") {
+		t.Errorf("rewritten producer = %q, want %q", ent2.Producer, producerFingerprint("fp-new"))
+	}
+
+	// Re-open again with the new fingerprint: now it is a hit (describe not re-run).
+	if _, _, err := describeMemoized(logPath, counting, "fp-new"); err != nil {
+		t.Fatalf("describeMemoized #3: %v", err)
+	}
+	if got := atomic.LoadInt32(&calls); got != 2 {
+		t.Fatalf("stable recipe fingerprint should hit the cache; calls = %d, want still 2", got)
+	}
+
+	// A pre-invalidation entry (no producer field) must not be trusted: simulate one by
+	// writing an entry with a matching fingerprint but an empty producer.
+	stale := ent2
+	stale.Producer = ""
+	writeExtractCache(cacheFile, stale)
+	if _, _, err := describeMemoized(logPath, counting, "fp-new"); err != nil {
+		t.Fatalf("describeMemoized #4 (legacy entry): %v", err)
+	}
+	if got := atomic.LoadInt32(&calls); got != 3 {
+		t.Fatalf("a producer-less legacy entry should re-describe; calls = %d, want 3", got)
 	}
 }
 

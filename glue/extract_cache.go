@@ -39,6 +39,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -53,6 +54,16 @@ import (
 // memoized describe results, one JSON file per source file. Sibling of catalog.json
 // and cache/ (the in-memory index blobs); see DESIGN-indexing.md "Sidecar layout".
 const extractSidecarSub = "extract"
+
+// extractCacheVersion is the engine's extract PRODUCER version: a monotonically
+// increasing integer bumped whenever the describe/measure/SpecApply logic that
+// SHAPES a cached result changes (e.g. adding framing:json changed what describe
+// produces for a JSONL file). It is folded into every cache entry's producer
+// fingerprint, so an engine upgrade that changes extraction re-describes rather than
+// serving a result shaped by the old logic (DESIGN-data.md §5 "producer_version").
+// The recipe's own Fingerprint is folded in alongside it, so a changed recipe
+// invalidates too -- see producerFingerprint. Bump this on any such logic change.
+const extractCacheVersion = 1
 
 // ExtractDescribeRuns counts how many times describe() ACTUALLY ran (a cache miss or
 // a changed file) since process start; ExtractCacheHits counts memoized reuses (a
@@ -86,11 +97,12 @@ var (
 // (<root>/.n1k1/). Idempotent; called from FileStore. A relative path is absolutized
 // so it matches the absolutized file paths the walk yields.
 func registerDataRoot(root string) {
-	abs, err := filepath.Abs(root)
-	if err != nil {
-		abs = root
-	}
-	abs = filepath.Clean(abs)
+	// Symlink-resolve so the registered root is in the SAME canonical space as the
+	// per-file resolveAbs() lookups (a symlinked bundle root would otherwise never
+	// prefix-match its own files -- see resolveAbs). stmt.go already resolves before
+	// calling, but a direct caller (e.g. a unit test) may not; doing it here is the
+	// single source of truth.
+	abs := resolveAbs(root)
 	dataRootsMu.Lock()
 	defer dataRootsMu.Unlock()
 	for _, r := range dataRoots {
@@ -119,6 +131,24 @@ func dataRootFor(absPath string) string {
 	return best
 }
 
+// resolveAbs returns path as an absolute, symlink-resolved path -- the canonical form
+// used for both the registered data roots and the per-file cache key. FileStore
+// EvalSymlinks-resolves a data root before registerDataRoot (cbcollect bundles are
+// commonly symlinked: `support-bundle-ex01 -> cbcollect_info_...`), so a file opened
+// via the SYMLINK path must be resolved the same way here or dataRootFor won't
+// prefix-match it and the describe silently runs uncached. Best-effort: a stat/resolve
+// failure falls back to the plain absolute path (still correct, just possibly uncached).
+func resolveAbs(path string) string {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		abs = path
+	}
+	if resolved, rerr := filepath.EvalSymlinks(abs); rerr == nil {
+		return resolved
+	}
+	return abs
+}
+
 // -------------------------------------------------------------- the memoized describe
 
 // extractCacheEntry is the JSON persisted per source file under
@@ -129,8 +159,19 @@ type extractCacheEntry struct {
 	Relpath    string                   `json:"relpath"`
 	Size       int64                    `json:"size"`
 	MtimeNanos int64                    `json:"mtime_nanos"`
+	Producer   string                   `json:"producer"` // engine version + recipe fingerprint
 	Spec       records.ExtractSpec      `json:"spec"`
 	Meta       records.SortedSourceMeta `json:"meta"`
+}
+
+// producerFingerprint folds the engine's extract producer version and the claiming
+// recipe's Fingerprint into one string stored in (and checked against) each cache
+// entry. A mismatch on read -- a bumped engine version OR a changed/swapped recipe --
+// is treated as a miss, so the file re-describes instead of serving a stale spec
+// (DESIGN-data.md §5 "config_fingerprint"). Pre-invalidation entries (no producer
+// field) decode to "" and never match, so an upgrade naturally re-describes them.
+func producerFingerprint(recipeFP string) string {
+	return "v" + strconv.Itoa(extractCacheVersion) + "|" + recipeFP
 }
 
 // describeMemoized is the records.DescribeMemo seam: it wraps a recipe's describe()
@@ -139,11 +180,8 @@ type extractCacheEntry struct {
 // writes the cache. A reader tolerates a concurrently-updating sidecar -- a missing,
 // truncated, unparseable, or fingerprint-mismatched cache file is simply a miss, never
 // fatal (DESIGN-data.md §5 "readers must tolerate a concurrently-updating sidecar").
-func describeMemoized(path string, describe records.DescribeFunc) (records.ExtractSpec, records.SortedSourceMeta, error) {
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		abs = path
-	}
+func describeMemoized(path string, describe records.DescribeFunc, recipeFP string) (records.ExtractSpec, records.SortedSourceMeta, error) {
+	abs := resolveAbs(path)
 	root := dataRootFor(abs)
 	fi, statErr := os.Stat(abs)
 	if root == "" || statErr != nil {
@@ -160,19 +198,22 @@ func describeMemoized(path string, describe records.DescribeFunc) (records.Extra
 		rel = filepath.Base(abs)
 	}
 	size, mtime := fi.Size(), fi.ModTime().UnixNano()
+	producer := producerFingerprint(recipeFP)
 	cachePath := extractCachePath(root, rel)
 
 	if blob, e := os.ReadFile(cachePath); e == nil {
 		var ent extractCacheEntry
 		if json.Unmarshal(blob, &ent) == nil &&
-			ent.Relpath == rel && ent.Size == size && ent.MtimeNanos == mtime {
+			ent.Relpath == rel && ent.Size == size && ent.MtimeNanos == mtime &&
+			ent.Producer == producer {
 			atomic.AddInt64(&ExtractCacheHits, 1)
 			logDescribe("cached", path, ent.Spec, ent.Meta, nil)
 			return ent.Spec, ent.Meta, nil
 		}
 	}
 
-	// Miss or changed file: describe, then persist for the next query/process.
+	// Miss, changed file, or a stale producer (bumped engine version / changed recipe):
+	// describe, then persist for the next query/process.
 	atomic.AddInt64(&ExtractDescribeRuns, 1)
 	spec, meta, derr := describe(path)
 	if derr != nil {
@@ -180,7 +221,7 @@ func describeMemoized(path string, describe records.DescribeFunc) (records.Extra
 	}
 	logDescribe("fresh", path, spec, meta, nil)
 	writeExtractCache(cachePath, extractCacheEntry{
-		Relpath: rel, Size: size, MtimeNanos: mtime, Spec: spec, Meta: meta,
+		Relpath: rel, Size: size, MtimeNanos: mtime, Producer: producer, Spec: spec, Meta: meta,
 	})
 	return spec, meta, nil
 }
@@ -260,15 +301,12 @@ func writeExtractCache(cachePath string, ent extractCacheEntry) {
 // keyspace has no sorted-source contract). Cold path (planning); safe to call before
 // or independently of a scan.
 func SortedSourceMetaFor(path string) (meta records.SortedSourceMeta, ok bool, err error) {
-	abs, aerr := filepath.Abs(path)
-	if aerr != nil {
-		abs = path
-	}
+	abs := resolveAbs(path)
 	rp := records.RecipeFor(recipeMatchPath(abs))
 	if rp == nil {
 		return records.SortedSourceMeta{}, false, nil
 	}
-	_, meta, err = describeMemoized(abs, rp.Describe)
+	_, meta, err = describeMemoized(abs, rp.Describe, rp.Fingerprint)
 	return meta, true, err
 }
 
@@ -303,15 +341,12 @@ func SortedSourceMetasForKeyspace(ks datastore.Keyspace, gctx *GlueContext) ([]F
 
 	var out []FileSortedSourceMeta
 	for _, f := range files {
-		abs, aerr := filepath.Abs(f)
-		if aerr != nil {
-			abs = f
-		}
+		abs := resolveAbs(f)
 		rp := records.RecipeFor(recipeMatchPath(abs))
 		if rp == nil {
 			continue // a plain structured file: no sorted-source contract.
 		}
-		_, meta, derr := describeMemoized(abs, rp.Describe)
+		_, meta, derr := describeMemoized(abs, rp.Describe, rp.Fingerprint)
 		if derr != nil {
 			return out, derr
 		}

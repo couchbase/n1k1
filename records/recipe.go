@@ -69,6 +69,15 @@ type Recipe struct {
 	Match    ExtractMatch // extension AND/OR path-regexp claim (priority-resolved)
 	Describe DescribeFunc // required: sample -> ExtractSpec + SortedSourceMeta
 	Extract  ExtractFunc  // optional: nil => SpecApply runs the spec natively
+
+	// Fingerprint identifies this recipe's describe LOGIC for cache invalidation: a
+	// memoized describe result (the .n1k1 sidecar) is keyed partly by it, so swapping
+	// in a recipe with a different Fingerprint re-describes rather than serving a stale
+	// spec (DESIGN-data.md §5 "config_fingerprint"). Built-in Go recipes leave it ""
+	// (RecipeRegister defaults it to Name -- their logic versions with the engine's
+	// producer version); a JS recipe sets it to a hash of its source so an edited
+	// *.extract.js invalidates. Empty is fine for an uncached (bare-import) path.
+	Fingerprint string
 }
 
 // recipes is the open, priority-resolved recipe registry -- the regexp-capable
@@ -81,7 +90,12 @@ var recipes []*Recipe
 
 // RecipeRegister adds a recipe to the registry. Later registrations do NOT displace
 // an equal-priority earlier one at match time (RecipeFor keeps load order on ties).
-func RecipeRegister(r *Recipe) { recipes = append(recipes, r) }
+func RecipeRegister(r *Recipe) {
+	if r.Fingerprint == "" {
+		r.Fingerprint = r.Name // built-in recipes version with the engine; Name identifies them.
+	}
+	recipes = append(recipes, r)
+}
 
 // RecipeFor returns the highest-priority recipe claiming relPath (its dataset-
 // relative path), or nil when none match. Extension and path-regexp are ANDed within
@@ -144,7 +158,9 @@ func matchClaims(m ExtractMatch, relPath string) bool {
 // through this seam when set, else runs describe() directly (the default for a bare
 // `records` import or a records-package test). A changed file (fingerprint mismatch)
 // re-describes only that file; that logic lives entirely on the glue side.
-var DescribeMemo func(path string, describe DescribeFunc) (ExtractSpec, SortedSourceMeta, error)
+// recipeFP is the claiming recipe's Fingerprint, folded into the cache key so a
+// changed recipe (or a bumped engine producer version) invalidates a stale entry.
+var DescribeMemo func(path string, describe DescribeFunc, recipeFP string) (ExtractSpec, SortedSourceMeta, error)
 
 // runDescribe applies a recipe's describe() to path, routing through DescribeMemo
 // when a memoization layer is installed (the sidecar cache), else calling describe()
@@ -153,7 +169,7 @@ var DescribeMemo func(path string, describe DescribeFunc) (ExtractSpec, SortedSo
 // covers every recipe-matched open.
 func runDescribe(rp *Recipe, path string) (ExtractSpec, SortedSourceMeta, error) {
 	if DescribeMemo != nil {
-		return DescribeMemo(path, rp.Describe)
+		return DescribeMemo(path, rp.Describe, rp.Fingerprint)
 	}
 	return rp.Describe(path)
 }

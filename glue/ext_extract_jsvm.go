@@ -14,6 +14,8 @@
 package glue
 
 import (
+	"crypto/sha1"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
@@ -120,11 +122,23 @@ func RegisterJSExtractRecipe(name, source string) error {
 		Match:    match,
 		Describe: describe,
 		// Extract nil: SpecApply runs the JS-produced spec natively (no per-row JS).
+		// Fingerprint from the source hash: an edited *.extract.js changes describe's
+		// output, so it must invalidate any memoized describe result (extract_cache.go).
+		Fingerprint: name + "@" + jsSourceHash(source),
 	})
 	base.Logf(1, "glue/recipe", "loaded JS extract recipe, name: %s, exts: %v, names: %v, priority: %d",
 		name, match.Exts, match.Names, match.Priority)
 	extractRecipesLoaded = append(extractRecipesLoaded, ExtractRecipeInfo{Name: name, Source: "(inline)"})
 	return nil
+}
+
+// jsSourceHash returns a short hex digest of a recipe's JS source, used as the
+// recipe Fingerprint (extract_cache.go) so editing an *.extract.js re-describes its
+// files instead of serving a spec shaped by the old source. 12 hex chars (48 bits) is
+// ample to distinguish edits; this runs once at registration, never in a hot loop.
+func jsSourceHash(source string) string {
+	sum := sha1.Sum([]byte(source))
+	return hex.EncodeToString(sum[:])[:12]
 }
 
 // ListExtractRecipes returns the loaded JS extract recipes in load order.
