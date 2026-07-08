@@ -47,6 +47,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/buger/jsonparser"
 )
 
 // DescribeFunc is a recipe's cheap once-per-file pass: it samples path and returns
@@ -199,8 +201,9 @@ func HeadSample(path string, max int) (string, error) {
 // the synthetic record IDs ("<prefix>#<n>"), matching the jsonl/csv sources.
 //
 // This is the hot per-record path and stays entirely in Go (byte-oriented regex +
-// time parse) -- no JS. Framing kinds handled: multiline, line, whole. Others
-// (section/json) are left to their dedicated decoders and error here.
+// time parse, or jsonparser for json framing) -- no JS. Framing kinds handled:
+// multiline, line, whole, json (JSONL: one JSON object per line, whose time field
+// is normalized in place to the int64 sort key). Others (section) error here.
 func SpecApply(spec ExtractSpec, path, idPrefix string) (Source, error) {
 	r, closers, err := openDecompressed(path)
 	if err != nil {
@@ -219,7 +222,10 @@ func SpecApply(spec ExtractSpec, path, idPrefix string) (Source, error) {
 			return nil, err
 		}
 		s.whole = all
-	case FramingMultiline, FramingLine, "":
+	case FramingMultiline, FramingLine, FramingJSON, "":
+		// json framing is line-oriented too (one JSON object per line = one record),
+		// so it shares the scanner path; only buildDoc/recordNanos differ (they read
+		// the JSON directly instead of a field regex).
 		sc := bufio.NewScanner(r)
 		sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
 		s.sc = sc
@@ -245,6 +251,7 @@ type specSource struct {
 	fieldRe *regexp.Regexp // spec.Fields.Pattern (named captures); nil if none
 	tsIdx   int            // index of the timestamp subexp in fieldRe, or -1
 	multi   bool           // multiline framing (else one record per line)
+	json    bool           // json framing: each line is a JSON object (JSONL)
 
 	cur      []byte // the record currently being assembled
 	leadBuf  []byte // lookahead: the next record's lead line (when haveLead)
@@ -260,6 +267,7 @@ type specSource struct {
 func (s *specSource) compile() error {
 	s.tsIdx = -1
 	s.multi = s.spec.Framing.Kind == FramingMultiline
+	s.json = s.spec.Framing.Kind == FramingJSON
 	if pat := s.spec.Fields.Pattern; pat != "" {
 		re, err := regexp.Compile(pat)
 		if err != nil {
@@ -368,6 +376,9 @@ func (s *specSource) emit(rec *Record, recBytes []byte) (bool, error) {
 }
 
 func (s *specSource) buildDoc(dst, recBytes []byte) []byte {
+	if s.json {
+		return s.buildDocJSON(dst, recBytes)
+	}
 	dst = append(dst, '{')
 	wrote := false
 	comma := func() {
@@ -413,6 +424,44 @@ func (s *specSource) buildDoc(dst, recBytes []byte) []byte {
 		dst = strconv.AppendQuote(dst, v)
 	}
 	return append(dst, '}')
+}
+
+// buildDocJSON emits a JSONL record: the JSON line itself, with its time field
+// rewritten IN PLACE to the normalized int64 epoch-nanos sort key (so r.<ts> is a
+// bare int64 the merge/ASOF can compare), plus any provenance constants. The record
+// is already structured JSON, so there's no field-regex step. (jsonparser.Set
+// allocates a rewritten copy per record -- fine on the extract/enrichment path; a
+// record with a missing/unparseable ts is passed through unchanged so nothing drops.)
+func (s *specSource) buildDocJSON(dst, recBytes []byte) []byte {
+	doc := recBytes
+	if s.spec.Time != nil {
+		if ns, ok := s.jsonFieldNanos(doc); ok {
+			if set, err := jsonparser.Set(doc, strconv.AppendInt(nil, ns, 10), s.spec.Time.Field); err == nil {
+				doc = set
+			}
+		}
+	}
+	for k, v := range s.spec.Provenance {
+		if set, err := jsonparser.Set(doc, strconv.AppendQuote(nil, v), k); err == nil {
+			doc = set
+		}
+	}
+	return append(dst, doc...)
+}
+
+// jsonFieldNanos reads spec.Time.Field out of a JSON record and normalizes it to an
+// int64 epoch-nanos key (shared by buildDocJSON's per-row emit and describeMeasure's
+// recordNanos sampling). A number value hands timeToNanos the raw digits (epoch_*);
+// a string hands it the text (RFC3339/layout).
+func (s *specSource) jsonFieldNanos(recBytes []byte) (int64, bool) {
+	if s.spec.Time == nil {
+		return 0, false
+	}
+	val, typ, _, err := jsonparser.Get(recBytes, s.spec.Time.Field)
+	if err != nil || typ == jsonparser.NotExist {
+		return 0, false
+	}
+	return timeToNanos(s.spec.Time, string(val))
 }
 
 // -------------------------------------------------------------- time normalization
@@ -600,6 +649,9 @@ func describeMeasure(spec ExtractSpec, path string) (SortedSourceMeta, error) {
 // recordNanos extracts and normalizes the timestamp of one framed record to int64
 // epoch-nanos (used by describe's measurement pass).
 func (s *specSource) recordNanos(recBytes []byte) (int64, bool) {
+	if s.json {
+		return s.jsonFieldNanos(recBytes)
+	}
 	if s.fieldRe == nil || s.tsIdx < 0 || s.spec.Time == nil {
 		return 0, false
 	}

@@ -1105,6 +1105,49 @@ func TestGlobMatchAndFiles(t *testing.T) {
 	}
 }
 
+// TestSpecApplyFramingJSON: framing:json decodes JSONL (one JSON object per line) and
+// normalizes the time field IN PLACE to an int64 epoch-nanos sort key, leaving other
+// fields intact -- what makes a JSONL event log (e.g. master_events.log) a first-class
+// ASOF/merge time source. describeMeasure over the same spec measures the zone map.
+func TestSpecApplyFramingJSON(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "events.jsonl")
+	body := `{"type":"a","ts":1000.5}` + "\n" + `{"type":"b","ts":1002.25}` + "\n"
+	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	spec := ExtractSpec{
+		Framing: Framing{Kind: FramingJSON},
+		Time:    &TimeSpec{Field: "ts", Layout: TimeLayoutEpochS},
+		Order:   OrderSpec{By: "ts", Sorted: SortedNear},
+	}
+
+	src, err := SpecApply(spec, p, "events.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, docs := collect(t, src)
+	if len(docs) != 2 {
+		t.Fatalf("want 2 JSONL records, got %d: %v", len(docs), docs)
+	}
+	// ts normalized to int64 epoch-nanos (1000.5s -> 1000500000000ns), type preserved.
+	if !strings.Contains(docs[0], `"ts":1000500000000`) || !strings.Contains(docs[0], `"type":"a"`) {
+		t.Errorf("record 0 = %s, want ts=1000500000000 (int64) + type a", docs[0])
+	}
+	if !strings.Contains(docs[1], `"ts":1002250000000`) {
+		t.Errorf("record 1 = %s, want ts=1002250000000", docs[1])
+	}
+
+	meta, err := MeasureSortedSource(spec, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.SortKeyLabel != "ts" || meta.RecordCount != 2 ||
+		meta.MinKey != 1000500000000 || meta.MaxKey != 1002250000000 {
+		t.Errorf("meta = %+v, want {SortKeyLabel:ts, RecordCount:2, MinKey:1000500000000, MaxKey:1002250000000}", meta)
+	}
+}
+
 // TestExtractSpecRoundTrip pins the Phase-0 extract/sorted-source contract
 // (records/spec.go): the shared types serialize to the .n1k1 sidecar and back
 // without losing fields, so the parallel extract/merge tracks agree on shapes.
