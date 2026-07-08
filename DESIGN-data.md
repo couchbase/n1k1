@@ -520,11 +520,20 @@ new `maybeGlob` sibling of `maybeFlat`/`maybeFlatFile` (`glue/flat.go`) backing 
 `records.Walk`: `**` = the recursive walk, `*.json` = the format filter). No fork
 change; still a `PrimaryScan` → `datastore-scan` op, so it **compiles** like any FROM.
 Decisions: (a) a name is a glob **only if it contains glob metacharacters**
-(`*`/`?`/`[`/`**`) — a plain `` `orders` `` stays an ordinary keyspace; (b) globs
-resolve **relative to CWD** (`./…` and absolute unambiguous, DuckDB-parity), not the
-data-root; (c) `-formats` lockdown still governs what the matched files may decode.
-`**` needs a doublestar matcher (Go's `filepath.Glob` lacks it) or just root+recurse.
-This settles the open question below in favor of the convention over a grammar fork.
+(`*`/`?`/`[`/`**`) — a plain `` `orders` `` stays an ordinary keyspace; (b) the base
+directory follows a **prefix convention** (no ugly `$ROOT` sigil), mirroring shell
+intuition *and* n1k1's existing "bare name = under the datastore root" rule:
+- `` `./data/**/*.json` `` or `../…` → **CWD-relative** (explicit, DuckDB-parity);
+- `` `/var/log/**/*.json` `` → **absolute**;
+- `` `foo/bar/**/*.json` `` (bare, no leading `./`·`../`·`/`) → **datastore-root-
+  relative**, consistent with how bare keyspace names already resolve under the root
+  (falling back to CWD when no data-root is set).
+
+(c) `-formats` lockdown still governs what the matched files may decode; absolute/`../`
+globs can read outside the root, which for a local CLI is the user's own files (note
+it, but not blocked). `**` needs a doublestar matcher (Go's `filepath.Glob` lacks it)
+or just root+recurse+pattern-filter over `records.Walk`. This settles the open
+question below in favor of the convention over a grammar fork.
 
 **Mode 3 — Catalog / sidecar mapping** (`.n1k1/catalog.json`) — **the realistic
 power path.** A per-root config maps a keyspace name to a root glob, format,
