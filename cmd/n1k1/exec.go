@@ -240,6 +240,13 @@ func (c *cli) reportPrepared(name string) {
 	if c.prepareLevel == glue.PrepareInterpreted || c.sess == nil {
 		return
 	}
+	// Compiled EXECUTE (data/full) needs the `go` toolchain to build the emitted
+	// program; without it, EXECUTE degrades to the interpreter. Say so, and don't
+	// bother analyzing/emitting.
+	if glue.PrepareLevelAchievable(c.prepareLevel) == glue.PrepareInterpreted {
+		fmt.Fprintf(c.stderr, "  %s\n", c.style.Yellow("no go toolchain -- compiled EXECUTE unavailable, running interpreted"))
+		return
+	}
 	inner, ok := c.sess.PreparedInner(name)
 	if !ok {
 		return
