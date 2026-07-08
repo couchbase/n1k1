@@ -221,6 +221,8 @@ func main() {
 		style:        cmd.Style{On: fancy},
 	}
 
+	base.LogLevel = c.verbose // route base.Logf (extract/describe diagnostics etc.) through -v/-verbose
+
 	// -ext/-extensions: register query extensions (e.g. JavaScript UDFs) before
 	// running any statements so the parser resolves their names. (The
 	// sparkline/histogram aggregates are always available -- glue registers them

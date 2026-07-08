@@ -23,6 +23,7 @@ import (
 
 	"github.com/dop251/goja"
 
+	"github.com/couchbase/n1k1/base"
 	"github.com/couchbase/n1k1/records"
 )
 
@@ -120,6 +121,8 @@ func RegisterJSExtractRecipe(name, source string) error {
 		Describe: describe,
 		// Extract nil: SpecApply runs the JS-produced spec natively (no per-row JS).
 	})
+	base.Logf(1, "glue/recipe", "loaded JS extract recipe, name: %s, exts: %v, names: %v, priority: %d",
+		name, match.Exts, match.Names, match.Priority)
 	extractRecipesLoaded = append(extractRecipesLoaded, ExtractRecipeInfo{Name: name, Source: "(inline)"})
 	return nil
 }

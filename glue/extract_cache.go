@@ -43,6 +43,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/couchbase/n1k1/base"
 	"github.com/couchbase/n1k1/records"
 
 	"github.com/couchbase/query/datastore"
@@ -149,7 +150,9 @@ func describeMemoized(path string, describe records.DescribeFunc) (records.Extra
 		// No sidecar location, or we can't fingerprint the file -> run uncached (any
 		// real open error surfaces at SpecApply/records.OpenFile time).
 		atomic.AddInt64(&ExtractDescribeRuns, 1)
-		return describe(path)
+		spec, meta, derr := describe(path)
+		logDescribe("uncached", path, spec, meta, derr)
+		return spec, meta, derr
 	}
 
 	rel, relErr := filepath.Rel(root, abs)
@@ -164,6 +167,7 @@ func describeMemoized(path string, describe records.DescribeFunc) (records.Extra
 		if json.Unmarshal(blob, &ent) == nil &&
 			ent.Relpath == rel && ent.Size == size && ent.MtimeNanos == mtime {
 			atomic.AddInt64(&ExtractCacheHits, 1)
+			logDescribe("cached", path, ent.Spec, ent.Meta, nil)
 			return ent.Spec, ent.Meta, nil
 		}
 	}
@@ -174,10 +178,31 @@ func describeMemoized(path string, describe records.DescribeFunc) (records.Extra
 	if derr != nil {
 		return spec, meta, derr
 	}
+	logDescribe("fresh", path, spec, meta, nil)
 	writeExtractCache(cachePath, extractCacheEntry{
 		Relpath: rel, Size: size, MtimeNanos: mtime, Spec: spec, Meta: meta,
 	})
 	return spec, meta, nil
+}
+
+// logDescribe emits a per-file extract-describe diagnostic (base.Logf, level 1) --
+// which recipe/format claimed the file and the sorted-source metadata describe()
+// produced (or cache hit/miss) -- the main handle for debugging extract recipes.
+// Cold path (once per file at plan time), so the string work is fine.
+func logDescribe(how, path string, spec records.ExtractSpec, meta records.SortedSourceMeta, err error) {
+	if !base.LogEnabled(1) {
+		return
+	}
+	if err != nil {
+		base.Logf(1, "glue/extract", "describe FAILED (%s), file: %s, err: %v", how, path, err)
+		return
+	}
+	framing := spec.Framing.Kind
+	if framing == "" {
+		framing = "line"
+	}
+	base.Logf(1, "glue/extract", "describe (%s), file: %s, format: %s, framing: %s, sort_key: %s, sorted: %s, min_ts: %d, max_ts: %d, records: %d",
+		how, path, spec.Format, framing, meta.SortKeyLabel, meta.Sortedness, meta.MinKey, meta.MaxKey, meta.RecordCount)
 }
 
 // extractCachePath is where a file's memoized describe result lives:

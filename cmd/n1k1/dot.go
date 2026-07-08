@@ -21,6 +21,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/couchbase/n1k1/base"
 	"github.com/couchbase/n1k1/cmd"
 	"github.com/couchbase/n1k1/glue"
 	"github.com/couchbase/n1k1/records"
@@ -106,8 +107,9 @@ func (c *cli) dot(line string) bool {
 			}
 		}
 	case ".verbose":
-		// Check/set the verbose diagnostics level: 0=off, 1=show query plans,
-		// 2=+timing. Accepts off|on|debug or a number; no arg shows the current.
+		// Check/set the verbose diagnostics level: 0=off; >0 logs info (query plans,
+		// extract/describe diagnostics via base.Logf); >1 logs more detail. Accepts
+		// off|on|debug or a number; no arg shows the current.
 		switch a := strings.ToLower(strings.TrimSpace(arg)); a {
 		case "":
 			// show only
@@ -125,6 +127,7 @@ func (c *cli) dot(line string) bool {
 				return false
 			}
 		}
+		base.LogLevel = c.verbose // route base.Logf through the same knob
 		fmt.Fprintf(c.stderr, "verbose %s\n", verboseName(c.verbose))
 	case ".explain":
 		switch strings.ToLower(arg) {
