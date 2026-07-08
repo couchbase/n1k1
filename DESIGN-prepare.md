@@ -14,9 +14,10 @@ to *run* the prepared program — the process-separated ("FastCGI-inspired") mod
 a prepared child either **asks the parent for data** over a pipe, or **carries the
 datastore source itself** and only takes connectivity + auth over the pipe.
 
-For the motivating large-scale use case — compiling a **corpus** of thousands of SQL++
-detectors and applying them to support bundles with a single shared scan (multi-query
-optimization) — see [DESIGN-detect.md](DESIGN-detect.md) ("PREPARE++").
+And it has a **driving use case** beyond one-off prepared queries: compiling a **corpus** of
+thousands of SQL++ detectors and applying them to support bundles with a single shared scan
+(multi-query optimization) — **PREPARE++**, the second half of this doc
+([the use case](#prepare-plus-plus)).
 
 ## Contents
 
@@ -34,6 +35,12 @@ optimization) — see [DESIGN-detect.md](DESIGN-detect.md) ("PREPARE++").
 - [When this pays off — and when not](#motivation)
 - [Is codegen worth it? — the crossover](#worth-it)
 - [Recommendation / phasing](#phasing)
+- **PREPARE++ — the detector-corpus use case:**
+  - [The driving use case: a detector corpus over support bundles](#prepare-plus-plus)
+  - [Shared scan / multi-query optimization](#mqo)
+  - [Detectors stay in stock SQL++ — no grammar changes](#stock-sqlpp)
+  - [Compiling & running the corpus](#compile-corpus)
+  - [PREPARE++ phasing](#detect-phasing)
 - [Open questions](#open-questions)
 
 ## Background: what the compiler already does, and the one boundary <a name="background"></a>
@@ -476,6 +483,149 @@ and always fine on an explicit `.prepare` (inspection, like `EXPLAIN`); it's **c
      existing `glue.DatastoreOp` as the data server.
 4. *(optional)* **WASM/wazero** — an in-process sandboxed alternative to the thin child.
 
+# PREPARE++ — the detector-corpus use case
+
+## The driving use case: a detector corpus over support bundles <a name="prepare-plus-plus"></a>
+
+Support engineers receive **support bundles**: big `*.zip`s a cluster-management tool
+gathers on a customer's site — subtrees of log files, JSON, config, stat dumps, mixed
+formats. Years of tickets (e.g. `ET-12345`) recur across customers and clusters. The vision:
+a **growing, git-maintained repository of SQL++ "detectors"** — filters / scans /
+correlations that report *"this bundle shows evidence of ET-12345 and ET-111222"* — and an
+engine that applies **thousands** of them to an incoming bundle **without** scanning it
+thousands of times.
+
+This is why PREPARE is worth building: it hits **both** of codegen's payoff regimes at once
+([Is codegen worth it?](#worth-it)). The corpus is compiled **once** and run against **every**
+incoming bundle (PREPARE-once / run-many), and each bundle is a **large scan** (GBs of logs).
+The example that looked absurd for the compiler — `SELECT 1+1 → emit Go` — inverts here: a
+detector corpus is the compiler's reason to exist.
+
+- **Input:** a `*.zip` = a tree of heterogeneous files. n1k1's record providers already read
+  these formats (`DESIGN-data.md`); a **zip datastore** presents the archive as keyspaces
+  (`<subdir>/<file>` → keyspace), decompressed on the fly like the existing `.gz` path.
+- **Corpus:** thousands of **detectors**, each = a SQL++ query + metadata (target ticket,
+  target sources, severity) + a golden fixture (below). Maintained in git.
+- **Output:** per bundle, a ranked **findings** table — which tickets the bundle shows
+  evidence for, with the evidence: `{ticket, confidence, source_file, line_range,
+  evidence_rows, summary}`. `UNION ALL` across detectors → one table, ordinary SELECT
+  projection over matched rows; de-dup / rank is `GROUP BY` / `ORDER BY`.
+
+## Shared scan / multi-query optimization <a name="mqo"></a>
+
+Push-based execution is the right substrate. A scan already *pushes* each row (a `base.Val`
+= `[]byte`) into a yield function; multi-query = make that yield a **fan-out (tee)** into K
+detector pipelines. Native exprs read the shared bytes with **zero boxing**, so a row is
+decoded once and every detector evaluates against the same buffer.
+
+- **MVP — broadcast op.** One `broadcast`/`tee` operator: scan once, push each row to K
+  detector predicate pipelines. Beats N separate runs (one scan, one decode per row);
+  build + measure this first.
+- **The real win — don't evaluate most detectors on most rows.** Naive fan-out is still
+  `K × rows`; with thousands of detectors the bottleneck is per-row predicate work, not I/O.
+  Three levers, increasing effort:
+  - **Source routing (cheap, big).** A detector's target (`indexer.log`, `*.json`) is
+    inferable from its `FROM`; a file only fans out to detectors that target it. Prune before
+    any evaluation.
+  - **Corpus CSE.** Detectors share sub-predicates (`level="ERROR"`, `line LIKE '%panic%'`).
+    The compiler already stringifies exprs; a **global common-subexpression pass over the
+    corpus** computes each shared term once per row, not once per detector (same expr-identity
+    the [boxed-expr stringify](#boxed-exprs) relies on).
+  - **Predicate index (the scale trick).** Borrow from pub/sub matching and SIEM rule
+    engines: index detectors by their cheapest discriminating literal — an **Aho-Corasick**
+    token scan over each log line, or an equality index over structured fields — so a row only
+    *wakes* the few detectors whose prefilter hits. Thousands of rules, a handful evaluated
+    per row. A natural n1k1 operator: a filter-index node feeding a sparse fan-out.
+
+## Detectors stay in stock SQL++ — no grammar changes <a name="stock-sqlpp"></a>
+
+**Hard constraint: don't touch the dialect.** n1k1 parses via the private `n1k1-query`
+fork; adding SQL++ syntax (a new `ASOF` keyword, a bespoke clause) means editing the fork's
+grammar/lexer — fork divergence and perpetual maintenance. So **detectors use only stock
+SQL++ the existing parser already accepts**, and AI agents author in a dialect any SQL++
+tooling understands. New capability lands **not** as syntax but as three grammar-free forms:
+
+1. **Engine/planner optimizations over stock idioms.** The temporal join support engineers
+   want — **ASOF** (join each row to the nearest-preceding row of another stream by time) —
+   is already expressible in stock SQL++ as a correlated "argmax" subquery:
+
+   ```sql
+   SELECT e.*, (SELECT r.state FROM rebalance r
+                WHERE r.ts <= e.ts ORDER BY r.ts DESC LIMIT 1) AS state_at
+   FROM errors e
+   ```
+
+   That parses today (correlated subquery + `ORDER BY` + `LIMIT 1`). ASOF is then an
+   **execution optimization**, not a language feature: the planner recognizes the
+   nearest-preceding pattern and runs it as an `O(n)` **merge** over time-sorted streams
+   (which fit push-based execution, and logs are usually near-sorted / cheaply spill-sorted)
+   instead of the `O(n²)` naive correlate. The user writes stock SQL; the speedup is
+   transparent.
+2. **Window functions — already stock.** Rate / burst / streak / gap detection ride on
+   standard `... OVER (PARTITION BY … ORDER BY ts …)` (`DESIGN.md`): "N errors within 10s",
+   inter-arrival gaps, streak length. No new syntax.
+3. **Scalar extensions / UDFs.** Detector-specific parsing/matching (grok-style log-line
+   extraction, a normalizer) lands as **scalar functions** — a native expr (widening
+   `DESIGN-exprs.md` coverage) or a **JS UDF via `-ext`** (`DESIGN-cli.md`) — invoked with
+   ordinary `func(args)` call syntax the parser already accepts.
+
+The one gap: n1k1's extension mechanism today gives **scalar** UDFs, not **table-valued**
+(set-returning) functions, and a TVF-in-`FROM` *would* need parser support — so prefer the
+subquery / `UNNEST` / self-join idioms above over inventing a `FROM asof_join(…)` form. See
+[open questions](#open-questions).
+
+**Payoff for codegen coverage.** Regex / complex-string / time exprs currently **box** (fall
+back to cbq — [boxed expressions](#boxed-exprs)), which caps a detector at `interpreted` and
+blocks fusing it into the corpus. So this use case is the sharpest motivation for the
+[`DESIGN-exprs.md`](DESIGN-exprs.md) native-coverage work: every **string / regex / time**
+expr ported to the native byte lane widens what the detector corpus can compile to
+`PrepareCompiledFull`. That coupling — not grammar — is the real lever.
+
+## Compiling & running the corpus <a name="compile-corpus"></a>
+
+PREPARE++ is [PREPARE](#the-surface) applied to a **repository**, not a statement: compile
+the corpus into one (or a few) fused programs with the shared-scan fan-out, corpus CSE, and
+predicate index baked in.
+
+- **Where it runs — embed-source, and that's now the easy target.** The
+  [self-contained prepared program](#embed-source) ships a **support-bundle analyzer binary**
+  with **no `n1k1-query` fork** (parse/plan happened at corpus-build time), runnable in the
+  support pipeline or on-site; the zip is a datastore behind the
+  [`DatastorePipe`](#design-principle). Its one cost — needing a **local Go toolchain to
+  build** — is an acceptable ask for our own engineers as users ("have Go installed"), which
+  de-risks the whole embed-source path.
+- **Git-awareness.** Detectors are versioned artifacts; lean in.
+  - **Provenance:** a finding cites the exact rule — `ET-12345 detected by
+    recipes/indexer/panic.sql++@<sha>`.
+  - **Build cache keyed by tree SHA:** the compiled corpus is content-addressed by the recipe
+    repo's git tree SHA; only changed detectors recompile — the same content-addressed cache
+    sketched for [embed-source](#embed-source), now bounding the "thousands of detectors"
+    compile cost.
+  - **Reproducibility:** re-run an old ticket's analysis with the recipe versions current then.
+- **AI-authored recipes need a test harness first.** If agents write thousands of detectors,
+  the **recipe format must be testable**: each recipe = SQL++ + metadata + a **golden fixture**
+  (a tiny sample bundle fragment + the expected finding). **CI runs the whole corpus** against
+  a labelled bundle library on every change — what keeps false-positives bounded and lets an
+  agent propose a recipe from a freshly-solved ticket with confidence (mirrors the
+  differential-test discipline in `DESIGN-testing.md`).
+
+## PREPARE++ phasing <a name="detect-phasing"></a>
+
+1. **Zip datastore + source routing** — scan a bundle's tree as keyspaces; infer each
+   detector's target sources from its `FROM`.
+2. **Shared-scan fan-out op (MVP MQO)** — one scan, N predicates, native byte eval; measure
+   vs N separate runs.
+3. **Predicate index + corpus CSE** — the scale win (Aho-Corasick / equality prefilter +
+   shared-subexpression factoring).
+4. **Temporal as optimizations** — recognize the nearest-preceding idiom → merge (ASOF);
+   windowed rate/burst/streak (both grammar-free).
+5. **PREPARE++ corpus compiler** — fuse the corpus; SHA-keyed build cache; evidence/findings
+   output; embed-source analyzer binary.
+6. **Recipe format + golden-fixture CI** — the AI-authoring flywheel.
+
+Each phase is independently useful: (1)-(2) already let a human run the recipe book cheaply;
+(3)-(4) make it scale and correlate; (5)-(6) make it a maintained product.
+
 ## Open questions <a name="open-questions"></a>
 
 - **Embed-runtime size** — how small can the "tighter, more reusable" datastore-runtime
@@ -497,3 +647,25 @@ and always fine on an explicit `.prepare` (inspection, like `EXPLAIN`); it's **c
 - **Stats aggregation** — the `Stats` frame carries `DESIGN-stats.md` counters both
   ways; open question is how to *merge* parent-side (scan/fetch I/O) and child-side
   (compute) snapshots into one coherent progress view without double-counting.
+
+PREPARE++ (detector corpus):
+
+- **Corpus granularity — genuinely unsettled.** One giant fused program per bundle, or
+  **sharded** by source/subsystem (indexer detectors, query detectors, …) compiled + cached
+  independently? Sharding bounds compile time and lets an agent ship one rule without
+  rebuilding the world (with the predicate index *within* each shard); one program maximizes
+  cross-detector CSE. Tradeoffs not yet clear.
+- **Set-returning extensions without grammar changes** — scalar UDFs exist today; a
+  table-valued function in `FROM` would need parser support (which we're avoiding). Can the
+  temporal/expansion needs stay inside stock subquery / `UNNEST` / self-join idioms, or is a
+  grammar-free TVF hook worth it?
+- **Recognizing the ASOF idiom** — how robustly can the planner detect the
+  nearest-preceding correlated-subquery / windowed pattern and rewrite it to a merge, without
+  false matches? What canonical form should detector authors (and agents) be told to write?
+- **Log time model** — how to normalize wildly different log timestamp formats / timezones
+  into one sortable key for the merge-based ASOF: a per-source parse spec, or inferred?
+- **Native-coverage ordering** — which string / regex / time exprs (`DESIGN-exprs.md`) to
+  port first to unblock the most common detector shapes for full codegen?
+- **Predicate-index structure** — Aho-Corasick over raw log lines, an equality/range index
+  over parsed fields, or a hybrid BE-tree — which fits the structured + unstructured mix with
+  least per-row overhead?
