@@ -34,6 +34,7 @@ thousands of SQL++ detectors and applying them to support bundles with a single 
 - [The pipe protocol (concrete)](#the-pipe-protocol)
 - [What the parent provides — the "data server"](#the-data-server)
 - [Self-contained prepared programs — embed the datastore source](#embed-source)
+- [Public deps vs. the fork — native queries keep the child cbq-free](#fork-free)
 - [Boxed expressions — the cbq fallback across the boundary](#boxed-exprs)
 - [When this pays off — and when not](#motivation)
 - [Is codegen worth it? — the crossover](#worth-it)
@@ -43,6 +44,7 @@ thousands of SQL++ detectors and applying them to support bundles with a single 
   - [Shared scan / multi-query optimization](#mqo)
   - [Detectors stay in stock SQL++ — no grammar changes](#stock-sqlpp)
   - [Compiling & running the corpus](#compile-corpus)
+  - [Late binding: a prepared corpus over a new, differently-named bundle](#late-binding)
   - [PREPARE++ phasing](#detect-phasing)
 - [Open questions](#open-questions)
 
@@ -363,6 +365,46 @@ optionally spawn + open datastore connections; `EXECUTE` = run with params, reus
 **warm** prepared process so the compile *and* the connection setup amortize across many
 EXECUTEs.
 
+## Public deps vs. the fork — native queries keep the child cbq-free <a name="fork-free"></a>
+
+Every run model turns on ONE dependency question: does the prepared program need cbq (the
+`n1k1-query` fork) at all? The design stance is to make the answer *no* wherever possible —
+not because the fork is unreachable (it may be a public repo), but because a child that
+avoids it stays **small and hermetic**: no version-pinning against a large build graph, no
+`go get` of cbq's transitive deps per prepared program, and a smaller embed blob. The line:
+
+- **Parse + plan already happened in the parent.** The child never needs the
+  parser/planner — only *runtime* support — so the fork's larger half is never a child
+  dependency regardless (Fact 3, [Background](#background)).
+- **A fully-native query needs NO cbq in the child.** Its exprs compile to inline
+  `engine`+`base` code; its datastore leaves reach a record provider. Both `engine`/`base`
+  and the record providers (file, and the format libraries — Parquet/Arrow, PDF/office) are
+  **public** Go packages, so such a child links public deps only.
+- **Only a boxed expression pulls cbq in** (per-row `Evaluate`; [Boxed
+  expressions](#boxed-exprs)). So **native-expr coverage is the same investment as a
+  fork-free child**: every expression moved to the native byte lane keeps the compiled
+  program off the fork. Box-avoidance and compiled-throughput are one effort, not two.
+
+**Data-locality and cbq-presence are separable axes.** Avoiding data-shipping does NOT
+force embedding cbq. A fat child can read its data directly (no shipping) AND still delegate
+the occasional boxed expression back to the parent over a thin control pipe (`EvalExpr` —
+the parent always has cbq): the GBs stay local, only the rare per-row boxed batch crosses.
+Embed cbq into the child only when boxed exprs are common AND full child autonomy is wanted
+— the exception, not the default.
+
+**Provider selection.** Don't compile every record provider into every program:
+Arrow/Parquet/PDF are heavy. Include only the providers a query's `FROM` touches — which
+needs the record layer factored so providers are separable (the "minimal runtime library"
+carve-out; [open questions](#open-questions)). This bounds both blob size and compile time.
+
+**Embed vs. fetch, and the one ask.** For parts we control (the runtime library, and cbq if
+ever truly needed), prefer `//go:embed` — hermetic (no network, no auth, always in-sync with
+the CLI that built it). For the public format libraries, `go get` is fine. Either way a
+**local Go toolchain is the single ask** — reasonable for our own support engineers ("have
+Go installed"), and best surfaced as an env-doctor / prep step that detects the toolchain,
+warms the build cache (the heavy providers compile once), and prints the exact fix for
+anything missing, rather than a wall of copy-paste.
+
 ## Boxed expressions — the cbq fallback across the boundary <a name="boxed-exprs"></a>
 
 n1k1 evaluates a **growing native set** of expressions on bytes; everything else
@@ -560,6 +602,23 @@ decoded once and every detector evaluates against the same buffer.
     *wakes* the few detectors whose prefilter hits. Thousands of rules, a handful evaluated
     per row. A natural n1k1 operator: a filter-index node feeding a sparse fan-out.
 
+**Shared scans are keyed by the LOGICAL keyspace.** The fan-out is "one scan per logical
+keyspace → the K detectors that target it," decided at prepare time over a stable keyspace
+vocabulary — so it is [bind-invariant](#late-binding). A new bundle resolves each logical
+keyspace to physical file(s) *underneath* that key (one logical keyspace may bind to several
+rotated files, concatenated, or to a glob); the fan-out, source routing, CSE and predicate
+index are all logical and untouched. **Compile the MQO structure once; rebind the leaves per
+bundle.**
+
+**Growing the corpus without recompiling the world.** As detectors accrue, the cost is
+per-row predicate work (K × rows), not I/O — so the predicate index is the load-bearing
+piece: adding a detector is *insert one rule into the index + compile one predicate*, not
+rebuild the corpus. Shard by source/subsystem so a new rule recompiles only its shard (with
+the index local to it), and content-address each compiled shard by the recipe repo's git
+tree SHA so unchanged shards are cache hits ([Compiling & running](#compile-corpus)). One
+fused program maximizes CSE; sharded programs bound recompile scope — the
+[granularity tradeoff](#open-questions) stays open.
+
 ## Detectors stay in stock SQL++ — no grammar changes <a name="stock-sqlpp"></a>
 
 **Hard constraint: don't touch the dialect.** n1k1 parses via the private `n1k1-query`
@@ -632,22 +691,78 @@ predicate index baked in.
   agent propose a recipe from a freshly-solved ticket with confidence (mirrors the
   differential-test discipline in `DESIGN-testing.md`).
 
+## Late binding: a prepared corpus over a new, differently-named bundle <a name="late-binding"></a>
+
+The whole payoff is compile the corpus **once** (MQO + shared scans baked in) and run it
+against **every** incoming bundle. But parse+plan bakes the `FROM` keyspace into the plan at
+prepare time, and the next bundle rarely matches: a new customer's tree is laid out
+differently, logs are rotated/suffixed (`indexer.log.3`, `indexer_2024.log`), a quarterly
+dump is `2024Q4_results.parquet` not `2024Q3`. The prepared program refers to names that
+aren't there verbatim — and recompiling per bundle throws away the amortization that
+justified compiling at all.
+
+The fix is ordinary prepared-statement **late binding**, applied to files: *compile against
+LOGICAL keyspaces; resolve LOGICAL → PHYSICAL per bundle at EXECUTE time.* Two drift axes,
+two layers:
+
+- **Keyspace / file drift — a per-bundle binding manifest (resolver).** Detectors `FROM` a
+  stable *logical* vocabulary (`indexer_log`, `orders`, `quarterly_results`), never a
+  filename. At EXECUTE a small manifest maps each logical keyspace to how to find it in THIS
+  bundle, on a robustness ladder:
+  - **Explicit** — `indexer_log → glob("**/indexer*.log")`; copy-pasteable, versioned.
+  - **Convention** — a logical name resolves through a glob/regex tolerant of version
+    suffixes and layout drift.
+  - **Content / schema sniffing** — resolve by WHAT a file is, not its name: a structured
+    keyspace by column schema (Parquet), a log keyspace by a line-shape / grok signature.
+    This is auto-cataloging the bundle — the robust-but-harder end.
+  Because the compiled program reaches data through the [`DatastorePipe` / the datastore it
+  opens at startup](#design-principle), the binding is exactly the "connectivity + config at
+  startup" the pipe already carries. It is **data, not code** — so rebinding needs **no
+  recompilation**. That is the property that makes recompile-once / rebind-per-bundle work.
+
+- **Field / schema drift — per-source adapters.** The new bundle may name a field `severity`
+  where the detector reads `level`, or nest it differently. A thin **adapter** per logical
+  keyspace (a SQL++ view / small extract spec, versioned in the recipe repo alongside the
+  detectors) normalizes raw records into the logical keyspace's **canonical schema**. So the
+  pipeline is: bundle files → *(binding: which files)* → *(adapter: normalize fields/shape)*
+  → logical keyspace with a stable schema → detectors. Detectors stay fixed; the **adapters +
+  manifest absorb the per-bundle / per-customer variability**. (The [log time
+  model](#open-questions) — normalizing timestamp formats/timezones into one sortable key for
+  the merge-based ASOF — is one adapter concern.)
+
+So the recipe repo versions, per logical keyspace: the **detectors**, the **adapter**
+(canonical schema), and optionally a **source spec** (expected filename patterns + schema
+signature) that drives content-based resolution — with a bundle-specific manifest overriding
+only where names genuinely differ. Binding is logical-keyspace-scoped, so the baked
+[shared-scan / MQO structure](#mqo) is **bind-invariant**: only the leaf resolution changes.
+The same machinery serves the non-support case — a fresh quarterly financial drop is just a
+new bundle bound to the same logical keyspaces.
+
+A binding must **fail loudly**, not silently: a logical keyspace that resolves to nothing (a
+renamed file the manifest missed) should error at EXECUTE, not quietly yield an empty
+findings table that reads as "clean."
+
 ## PREPARE++ phasing <a name="detect-phasing"></a>
 
-1. **Zip datastore + source routing** — scan a bundle's tree as keyspaces; infer each
-   detector's target sources from its `FROM`.
-2. **Shared-scan fan-out op (MVP MQO)** — one scan, N predicates, native byte eval; measure
-   vs N separate runs.
-3. **Predicate index + corpus CSE** — the scale win (Aho-Corasick / equality prefilter +
+1. **Zip datastore + LOGICAL keyspaces + source routing** — scan a bundle's tree as
+   keyspaces addressed by a stable *logical* vocabulary (not filenames); infer each detector's
+   target sources from its `FROM`.
+2. **Late binding (manifest + adapters)** — resolve logical → physical per bundle (explicit
+   manifest → glob convention → content sniffing), with per-source adapters normalizing to
+   each keyspace's canonical schema; fail loudly on an unresolved keyspace. This is what lets
+   a prepared corpus run against the *next* bundle without recompiling.
+3. **Shared-scan fan-out op (MVP MQO)** — one scan per logical keyspace, N predicates, native
+   byte eval; measure vs N separate runs.
+4. **Predicate index + corpus CSE** — the scale win (Aho-Corasick / equality prefilter +
    shared-subexpression factoring).
-4. **Temporal as optimizations** — recognize the nearest-preceding idiom → merge (ASOF);
+5. **Temporal as optimizations** — recognize the nearest-preceding idiom → merge (ASOF);
    windowed rate/burst/streak (both grammar-free).
-5. **PREPARE++ corpus compiler** — fuse the corpus; SHA-keyed build cache; evidence/findings
+6. **PREPARE++ corpus compiler** — fuse the corpus; SHA-keyed build cache; evidence/findings
    output; embed-source analyzer binary.
-6. **Recipe format + golden-fixture CI** — the AI-authoring flywheel.
+7. **Recipe format + golden-fixture CI** — the AI-authoring flywheel.
 
-Each phase is independently useful: (1)-(2) already let a human run the recipe book cheaply;
-(3)-(4) make it scale and correlate; (5)-(6) make it a maintained product.
+Each phase is independently useful: (1)-(2) already let a human run the recipe book against
+any bundle; (3)-(5) make it scale and correlate; (6)-(7) make it a maintained product.
 
 ## Open questions <a name="open-questions"></a>
 
@@ -673,6 +788,13 @@ Each phase is independently useful: (1)-(2) already let a human run the recipe b
 
 PREPARE++ (detector corpus):
 
+- **Binding robustness & authorship** — how far up the explicit → convention → content-sniffing
+  ladder is worth building, and who authors the manifest/adapter: a human per bundle, an
+  auto-cataloger, or a source spec in the recipe repo? How is a binding validated *before* a
+  run so a mis-resolved keyspace fails loudly rather than reading as a clean bundle?
+- **Adapter cost & the zero-copy read** — are adapters cheap SQL++ views fused into the scan
+  (so normalization stays on the native byte path), or a separate pass? Does field renaming /
+  reshaping force a re-encode that breaks the decode-once/evaluate-many shared-scan win?
 - **Corpus granularity — genuinely unsettled.** One giant fused program per bundle, or
   **sharded** by source/subsystem (indexer detectors, query detectors, …) compiled + cached
   independently? Sharding bounds compile time and lets an agent ship one rule without
