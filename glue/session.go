@@ -22,6 +22,7 @@ import (
 	"github.com/couchbase/query/algebra"
 	"github.com/couchbase/query/datastore"
 	"github.com/couchbase/query/errors"
+	"github.com/couchbase/query/expression"
 	"github.com/couchbase/query/plan"
 	"github.com/couchbase/query/value"
 
@@ -242,25 +243,61 @@ func (s *Session) runStatement(parsed algebra.Statement,
 		return &Result{Rows: []json.RawMessage{b}, Plan: convForDisplay(ex.Plan())}, nil
 	}
 
+	pp, err := convertPlan(qp)
+	if err != nil {
+		return nil, err
+	}
+	return s.execPlan(pp, namedArgs, positionalArgs)
+}
+
+// preparedPlan is a converted, reusable query plan: the op tree plus the per-conv
+// state execution needs, built once (with no args baked in, so $params stay
+// deferred to eval) and re-run with fresh Vars per EXECUTE. Sharing topOp/temps
+// across runs is safe -- the mutable per-run state lives in the fresh Vars, not
+// here -- exactly as the subquery evaluator re-runs a cached sub-plan once per
+// outer row (see subCompiled / EvaluateSubquery).
+type preparedPlan struct {
+	topOp        *base.Op
+	temps        []interface{}
+	cv           *ConvertVals
+	withBindings map[string]expression.With
+	withScope    map[string]expression.With
+	subqueries   map[*algebra.Select]plan.Operator
+}
+
+// convertPlan converts a planned QueryPlan into a reusable preparedPlan (op tree +
+// conv state), applying the same optimizations the execution path relies on.
+func convertPlan(qp *plan.QueryPlan) (*preparedPlan, error) {
 	conv := &Conv{Temps: []interface{}{nil}}
-	if _, err = p.Accept(conv); err != nil {
+	if _, err := qp.PlanOp().Accept(conv); err != nil {
 		return nil, &ErrUnsupported{Reason: err.Error()}
 	}
 	if conv.TopOp == nil {
 		return nil, &ErrUnsupported{Reason: "nil TopOp (unconverted plan)"}
 	}
-
 	if DiscardElision {
 		elideDiscarded(conv.TopOp) // drop dead projections under count(*)-style groups
 	}
-
 	maybeColumnarOptimize(conv.TopOp, conv.Temps) // fuse ungrouped SUM over a Parquet column
-
 	cv, err := NewConvertVals(conv.TopOp.Labels)
 	if err != nil {
 		return nil, &ErrUnsupported{Reason: err.Error()}
 	}
+	return &preparedPlan{
+		topOp:        conv.TopOp,
+		temps:        conv.Temps,
+		cv:           cv,
+		withBindings: conv.WithBindings(),
+		withScope:    conv.WithScopeBindings(),
+		subqueries:   qp.Subqueries(),
+	}, nil
+}
 
+// execPlan runs a converted preparedPlan with the given query args bound at eval
+// time, collecting the result rows. Shared by runStatement (a freshly converted
+// plan) and EXECUTE (a cached one). Panics propagate to Run's deferred recover.
+func (s *Session) execPlan(pp *preparedPlan,
+	namedArgs map[string]value.Value, positionalArgs value.Values) (*Result, error) {
 	if engine.ExprCatalog["exprStr"] == nil {
 		engine.ExprCatalog["exprStr"] = ExprStr
 	}
@@ -272,10 +309,10 @@ func (s *Session) runStatement(parsed algebra.Statement,
 	defer os.RemoveAll(tmpDir)
 
 	gctx := NewGlueContext(time.Now())
-	gctx.InitSubqueries(s.Store, s.Namespace, conv.WithBindings(), qp.Subqueries()) // enable expression subqueries
-	gctx.SetNamedArgs(namedArgs)                                                    // resolve $name at eval time
-	gctx.SetPositionalArgs(positionalArgs)                                          // resolve $1,$2 at eval time
-	gctx.SetWithScopeFrom(conv.WithScopeBindings())                                 // resolve `x IN cte` etc.
+	gctx.InitSubqueries(s.Store, s.Namespace, pp.withBindings, pp.subqueries) // enable expression subqueries
+	gctx.SetNamedArgs(namedArgs)                                              // resolve $name at eval time
+	gctx.SetPositionalArgs(positionalArgs)                                    // resolve $1,$2 at eval time
+	gctx.SetWithScopeFrom(pp.withScope)                                       // resolve `x IN cte` etc.
 
 	// Route native-expression advisories (e.g. divide-by-zero) into the
 	// request's warning collector; kept cbq-free on the engine side.
@@ -283,7 +320,7 @@ func (s *Session) runStatement(parsed algebra.Statement,
 
 	vars.Temps = vars.Temps[:0]
 	vars.Temps = append(vars.Temps, gctx)
-	vars.Temps = append(vars.Temps, conv.Temps[1:]...)
+	vars.Temps = append(vars.Temps, pp.temps[1:]...)
 	for i := 0; i < 16; i++ {
 		vars.Temps = append(vars.Temps, nil)
 	}
@@ -293,13 +330,13 @@ func (s *Session) runStatement(parsed algebra.Statement,
 	// stats checkpoints to it. Off by default, so the hot path pays nothing.
 	var stats *base.Stats
 	if s.CollectStats {
-		stats = base.LayoutStats(conv.TopOp)
+		stats = base.LayoutStats(pp.topOp)
 		vars.Ctx.Stats = stats
 		if stats != nil {
 			// Label each running-aggregate group op's partials with (alias, expr) so
 			// the display path can show "alias (expr): value" -- for the live footer
 			// (which sees only *base.Stats, not the plan) as well as the final block.
-			stats.RunningAggLabels = RunningAggLabels(conv.TopOp)
+			stats.RunningAggLabels = RunningAggLabels(pp.topOp)
 		}
 		if stats != nil && s.OnStats != nil {
 			onStats := s.OnStats
@@ -332,7 +369,7 @@ func (s *Session) runStatement(parsed algebra.Statement,
 		// Fast path: render the row's JSON straight from the label bytes, with
 		// no value.Value boxing (see ConvertVals.ConvertBytes). The label set is
 		// fixed, so this either handles every row or none.
-		if b, ok := cv.ConvertBytes(vals, rowBuf[:0]); ok {
+		if b, ok := pp.cv.ConvertBytes(vals, rowBuf[:0]); ok {
 			rowBuf = b
 			rowCount++
 			if s.OnRow != nil {
@@ -344,7 +381,7 @@ func (s *Session) runStatement(parsed algebra.Statement,
 		}
 
 		// Boxed fallback for shapes ConvertBytes can't encode natively.
-		v, e := cv.Convert(vals)
+		v, e := pp.cv.Convert(vals)
 		if e != nil {
 			if execErr == nil {
 				execErr = e
@@ -371,7 +408,7 @@ func (s *Session) runStatement(parsed algebra.Statement,
 	}
 
 	start := time.Now()
-	engine.ExecOp(conv.TopOp, vars, yieldVals, yieldErr, "", "")
+	engine.ExecOp(pp.topOp, vars, yieldVals, yieldErr, "", "")
 	elapsed := time.Since(start)
 
 	if execErr != nil {
@@ -379,27 +416,28 @@ func (s *Session) runStatement(parsed algebra.Statement,
 	}
 
 	return &Result{
-		Labels:     conv.TopOp.Labels,
+		Labels:     pp.topOp.Labels,
 		Rows:       rows,
 		Count:      rowCount,
 		Warnings:   gctx.GetErrors(),
 		Elapsed:    elapsed,
-		Plan:       conv.TopOp,
+		Plan:       pp.topOp,
 		Stats:      stats,
 		BoxedEvals: gctx.BoxedEvals(),
 	}, nil
 }
 
 // preparedStmt is one entry in a Session's prepared-statement store: the inner
-// statement PREPARE parsed, its original text, and a use counter. Interpreter-only
-// -- the statement is re-planned per EXECUTE with the bound args (caching the
-// converted op tree is a later optimization; see DESIGN-prepare.md "Preparation is
-// a level").
+// statement PREPARE parsed, its original text, a use counter, and (lazily, on the
+// first EXECUTE) the converted op tree cached for reuse. Interpreter-only: EXECUTE
+// runs the cached plan through the interpreter, binding its args at eval time. See
+// DESIGN-prepare.md "Preparation is a level".
 type preparedStmt struct {
-	name string
-	text string
-	stmt algebra.Statement
-	uses int64
+	name     string
+	text     string
+	stmt     algebra.Statement
+	uses     int64
+	compiled *preparedPlan // cached converted plan (params deferred to eval); nil until first EXECUTE
 }
 
 // runPrepare handles `PREPARE [name] AS <stmt>` (cbq also spells it `PREPARE [name]
@@ -476,5 +514,20 @@ func (s *Session) runExecute(e *algebra.Execute) (*Result, error) {
 		}
 	}
 
-	return s.runStatement(ps.stmt, namedArgs, positionalArgs)
+	// Build + cache the converted plan on the first EXECUTE, planned with NO args so
+	// $params stay deferred to eval; every EXECUTE then reuses it and binds its own
+	// args -- the PREPARE-once / EXECUTE-many win (skips cbq's planner.Build per run).
+	if ps.compiled == nil {
+		qp, err := s.Store.PlanStatementQP(ps.stmt, s.Namespace, nil, nil)
+		if err != nil {
+			return nil, err
+		}
+		pp, err := convertPlan(qp)
+		if err != nil {
+			return nil, err
+		}
+		ps.compiled = pp
+	}
+
+	return s.execPlan(ps.compiled, namedArgs, positionalArgs)
 }

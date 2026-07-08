@@ -94,6 +94,33 @@ func TestPrepareExecute(t *testing.T) {
 	}
 }
 
+// TestExecuteReusesCachedPlan runs one prepared statement many times with
+// different positional args, asserting each EXECUTE returns the arg-specific
+// result. This exercises the cached op tree (built once on first EXECUTE, with
+// $params deferred to eval): it must bind fresh args each run, not bake in the
+// first execute's values.
+func TestExecuteReusesCachedPlan(t *testing.T) {
+	root := writePlainBeers(t, 6) // i = 0..5, keyed b000..b005
+	s, err := OpenSession(root, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Run(`PREPARE pk FROM SELECT b.i FROM beers b USE KEYS $1`); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ key, want string }{
+		{"b000", `{"i":0}`}, {"b003", `{"i":3}`}, {"b001", `{"i":1}`}, {"b005", `{"i":5}`},
+	} {
+		res, err := s.Run(`EXECUTE pk USING ["` + tc.key + `"]`)
+		if err != nil {
+			t.Fatalf("EXECUTE pk USING [%q]: %v", tc.key, err)
+		}
+		if len(res.Rows) != 1 || string(res.Rows[0]) != tc.want {
+			t.Errorf("EXECUTE pk USING [%q] = %v, want [%s]", tc.key, res.Rows, tc.want)
+		}
+	}
+}
+
 // TestPrepareAsSpelling checks that the `PREPARE <name> AS <stmt>` spelling parses
 // and works, alongside the `FROM` spelling the cbq corpus uses -- confirming the
 // cbq-compatible `AS` surface DESIGN-prepare.md advertises.
