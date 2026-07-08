@@ -14,6 +14,10 @@ to *run* the prepared program — the process-separated ("FastCGI-inspired") mod
 a prepared child either **asks the parent for data** over a pipe, or **carries the
 datastore source itself** and only takes connectivity + auth over the pipe.
 
+For the motivating large-scale use case — compiling a **corpus** of thousands of SQL++
+detectors and applying them to support bundles with a single shared scan (multi-query
+optimization) — see [DESIGN-detect.md](DESIGN-detect.md) ("PREPARE++").
+
 ## Contents
 
 - [Background: what the compiler already does, and the one boundary](#background)
