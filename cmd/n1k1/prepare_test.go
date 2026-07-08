@@ -27,7 +27,14 @@ import (
 func prepareTestCLI(t *testing.T, out, errb *strings.Builder) *cli {
 	t.Helper()
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "d.jsonl"), []byte(`{"a":1}`+"\n"), 0o644); err != nil {
+	// Classic <ns>/<keyspace> layout gives a deterministic `d` keyspace (the flat-root
+	// name would be the random t.TempDir basename). The string field lets a per-row
+	// REPEAT(d.a, 2) box (the boxed-fallback case).
+	kd := filepath.Join(dir, "default", "d")
+	if err := os.MkdirAll(kd, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(kd, "doc1.json"), []byte(`{"a":"x"}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	sess, err := glue.OpenSession(dir, "default")
@@ -41,13 +48,16 @@ func prepareTestCLI(t *testing.T, out, errb *strings.Builder) *cli {
 // reason (to stderr) and still runs the statement through the interpreter (its
 // result reaches stdout). This is the key fallback: a query needing cbq is
 // executed interpreter-only, never failing.
+//
+// The boxed expr must be genuinely PER-ROW: REPEAT over a doc field (repeat(d.a, 2))
+// boxes per row and can't compile. (A CONSTANT boxed expr like REPEAT("z", 4) is now
+// lifted to a once-evaluated var and DOES compile -- see TestDotPrepareConstBoxedEmits
+// -- so it is no longer the fallback case.)
 func TestDotPrepareBoxedFallsBack(t *testing.T) {
 	var out, errb strings.Builder
 	c := prepareTestCLI(t, &out, &errb)
 
-	// REPEAT is a non-native scalar fn (boxed -> needs cbq), so it can't be
-	// compiled; the CLI must say so and fall back to interpreting it.
-	c.dot(`.prepare SELECT REPEAT("z", 4) AS r`)
+	c.dot(`.prepare SELECT REPEAT(d.a, 2) AS r FROM d`)
 
 	if !strings.Contains(errb.String(), "not compilable") {
 		t.Errorf("stderr should note not-compilable; got %q", errb.String())
@@ -55,12 +65,31 @@ func TestDotPrepareBoxedFallsBack(t *testing.T) {
 	if !strings.Contains(errb.String(), "boxed expression") {
 		t.Errorf("stderr should give the boxed-expression reason; got %q", errb.String())
 	}
-	if !strings.Contains(out.String(), `"r":"zzzz"`) {
+	if !strings.Contains(out.String(), `"r":"xx"`) {
 		t.Errorf("interpreter result must reach stdout; got %q", out.String())
 	}
 	// It fell back, so it did NOT emit Go source.
 	if strings.Contains(out.String(), "func "+glue.PrepareFuncName+"(") {
 		t.Errorf("boxed query should not emit Go; stdout=%q", out.String())
+	}
+}
+
+// TestDotPrepareConstBoxedEmits: a CONSTANT (row-independent) boxed expr -- e.g.
+// REPEAT("z", 4) -- is lifted to a once-evaluated var, so it no longer blocks
+// compilation: `.prepare` emits Go (carrying a single glue.ExprStr call outside the
+// row loop) rather than falling back. This pins the intended improvement that
+// distinguishes it from the per-row boxed case above.
+func TestDotPrepareConstBoxedEmits(t *testing.T) {
+	var out, errb strings.Builder
+	c := prepareTestCLI(t, &out, &errb)
+
+	c.dot(`.prepare SELECT REPEAT("z", 4) AS r`)
+
+	if !strings.Contains(out.String(), "func "+glue.PrepareFuncName+"(") {
+		t.Errorf("a constant boxed expr should compile + emit Go; stdout=%q", out.String())
+	}
+	if !strings.Contains(out.String(), `"r":"zzzz"`) {
+		t.Errorf("interpreter result must also reach stdout; got %q", out.String())
 	}
 }
 

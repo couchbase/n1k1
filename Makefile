@@ -46,7 +46,7 @@ build-intermed:
 test: test-core test-suite
 
 # test-all is the full sweep -- many minutes total.
-test-all: test-core test-glue test-suite-all
+test-all: test-core test-glue test-cli test-suite-all
 
 # test-core runs the self-contained core build + vet + tests (no external
 # setup, no n1ql tag).
@@ -57,6 +57,13 @@ test-core: build
 # test-glue runs the glue package unit tests.
 test-glue: build-glue
 	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -tags n1ql -v ./glue
+
+# test-cli runs the CLI (cmd/n1k1) tests. Every cmd/n1k1 file is //go:build n1ql,
+# so test-core's untagged `go test ./...` SILENTLY skips the package (build
+# constraints exclude all files -- it isn't even listed). Run them explicitly with
+# the tag so CLI regressions (flags, dot-commands, .prepare) are actually caught.
+test-cli: build-glue
+	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -tags n1ql -v ./cmd/n1k1
 
 # test-compiler exercises the n1k1 *compiler* end to end. The first
 # step runs the two generators -- TestCasesSimpleWithCompiler
