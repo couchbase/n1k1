@@ -36,14 +36,49 @@ func init() {
 	}
 }
 
-// exprCondOp closes over a conditional-unknown mode: it builds the n-ary reducer
-// (base.NaryFirstKept with that mode) and defers to MakeNaryExprFunc. Plain
-// (non-lz) Go, so the interpreter path is unchanged from the old per-op funcs.
+// exprCondOp closes over a conditional-unknown mode and dispatches to
+// ExprCondUnknown. Plain (non-lz) Go.
 func exprCondOp(mode int) base.ExprCatalogFunc {
-	reduce := func(children []base.ExprFunc, vals base.Vals, yieldErr base.YieldErr) base.Val {
-		return base.NaryFirstKept(children, vals, yieldErr, mode)
-	}
 	return func(lzVars *base.Vars, labels base.Labels, params []interface{}, path string) base.ExprFunc {
-		return MakeNaryExprFunc(lzVars, labels, params, path, reduce)
+		return ExprCondUnknown(lzVars, labels, params, path, mode)
 	}
+}
+
+// ExprCondUnknown is the eager-Vals handler for the conditional-unknown selectors
+// (see CaptureNaryChildren). Every operand IS evaluated (base.NaryFirstKept does
+// too), so pre-evaluating them all into lzValsReduce and reducing over the values
+// is semantics-preserving and compiles natively. The mode selects the base
+// reducer's keep-test; a build-time `if mode == ...` chain (`// !lz`, taken once
+// at codegen) picks it so the compiled reduce line carries a literal
+// base.CondIf* constant rather than an undefined runtime `mode`.
+func ExprCondUnknown(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string, mode int) (lzExprFunc base.ExprFunc) {
+	var lzValsReduce base.Vals // <== varLift: lzValsReduce by path
+
+	lzChildren := CaptureNaryChildren(lzVars, labels, params, path) // !lz
+
+	if LzScope {
+		lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
+			lzValsReduce = lzValsReduce[:0]
+
+			for lzI := range lzChildren { // !lz
+				lzVal =
+					lzChildren[lzI](lzVals, lzYieldErr) // <== emitCaptured: path strconv.Itoa(lzI)
+
+				lzValsReduce = append(lzValsReduce, lzVal)
+			} // !lz
+
+			if mode == base.CondIfNull { // !lz
+				lzVal = base.NaryFirstKeptVals(lzValsReduce, base.CondIfNull)
+			} else if mode == base.CondIfMissing { // !lz
+				lzVal = base.NaryFirstKeptVals(lzValsReduce, base.CondIfMissing)
+			} else { // !lz
+				lzVal = base.NaryFirstKeptVals(lzValsReduce, base.CondIfMissingOrNull)
+			} // !lz
+
+			return lzVal
+		}
+	}
+
+	return lzExprFunc
 }
