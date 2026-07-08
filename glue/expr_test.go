@@ -1253,6 +1253,86 @@ func TestDatePartMillisDifferentialVsCBQ(t *testing.T) {
 	}
 }
 
+func TestDateAddMillisDifferentialVsCBQ(t *testing.T) {
+	c := func(v interface{}) expression.Expression { return expression.NewConstant(v) }
+	null := c(value.NULL_VALUE)
+	miss := c(value.MISSING_VALUE)
+	// A fixed epoch-millis with a non-zero millisecond component. Native and cbq
+	// both read time.Unix in the SAME process-local zone -- cbq is the oracle.
+	ms := c(1500000000123)
+
+	// All known components (case-insensitive) crossed with a few interval counts
+	// (incl. 0, negative, and a large n) + an unknown component (-> NULL).
+	parts := []string{
+		"millennium", "century", "decade", "year", "quarter", "month",
+		"calendar_month", "week", "day", "hour", "minute", "second",
+		"millisecond", "YEAR", "Calendar_Month", "bogus_part",
+	}
+	ns := []interface{}{0, 1, -1, 3, -13, 400, 1000000}
+	for _, p := range parts {
+		for _, n := range ns {
+			expr := expression.NewDateAddMillis(ms, c(n), c(p))
+			want := cbqEval(t, expr)
+			got, ok := nativeEval(t, expr)
+			if !ok {
+				t.Errorf("date_add_millis(_, %v, %q): did not optimize", n, p)
+				continue
+			}
+			if got != want {
+				t.Errorf("date_add_millis(_, %v, %q): native=%q, cbq=%q", n, p, got, want)
+			}
+		}
+	}
+
+	// calendar_month last-day-of-month rounding: a date on the 31st, +/- months.
+	// (1612051200000 ~ 2021-01-31 UTC; the local-zone day may differ but cbq is
+	// still the oracle so parity holds regardless.)
+	jan31 := c(1612051200000)
+	for _, n := range []interface{}{1, 2, -1, 12, 13} {
+		expr := expression.NewDateAddMillis(jan31, c(n), c("calendar_month"))
+		want := cbqEval(t, expr)
+		got, ok := nativeEval(t, expr)
+		if !ok {
+			t.Errorf("date_add_millis(jan31, %v, calendar_month): did not optimize", n)
+			continue
+		}
+		if got != want {
+			t.Errorf("date_add_millis(jan31, %v, calendar_month): native=%q, cbq=%q", n, got, want)
+		}
+	}
+
+	// Edge operands.
+	edges := []struct {
+		name string
+		expr expression.Expression
+	}{
+		{"neg-millis", expression.NewDateAddMillis(c(-1000), c(1), c("year"))},
+		{"frac-n", expression.NewDateAddMillis(ms, c(1.5), c("year"))},              // non-integral -> NULL
+		{"oor-millis", expression.NewDateAddMillis(c(999999999999999.0), c(1), c("year"))}, // > max -> NULL
+		{"overflow", expression.NewDateAddMillis(ms, c(1000000000), c("year"))},     // result overflow -> NULL
+		{"millis-str", expression.NewDateAddMillis(c("x"), c(1), c("year"))},        // NULL
+		{"n-str", expression.NewDateAddMillis(ms, c("x"), c("year"))},               // NULL
+		{"part-num", expression.NewDateAddMillis(ms, c(1), c(5))},                   // NULL
+		{"millis-null", expression.NewDateAddMillis(null, c(1), c("year"))},         // NULL
+		{"n-null", expression.NewDateAddMillis(ms, null, c("year"))},                // NULL
+		{"part-null", expression.NewDateAddMillis(ms, c(1), null)},                  // NULL
+		{"millis-miss", expression.NewDateAddMillis(miss, c(1), c("year"))},         // MISSING
+		{"n-miss", expression.NewDateAddMillis(ms, miss, c("year"))},                // MISSING
+		{"part-miss", expression.NewDateAddMillis(ms, c(1), miss)},                  // MISSING
+	}
+	for _, tc := range edges {
+		want := cbqEval(t, tc.expr)
+		got, ok := nativeEval(t, tc.expr)
+		if !ok {
+			t.Errorf("%s: did not optimize", tc.name)
+			continue
+		}
+		if got != want {
+			t.Errorf("%s: native=%q, cbq=%q", tc.name, got, want)
+		}
+	}
+}
+
 func TestPredicateDifferentialVsCBQ(t *testing.T) {
 	c := func(v interface{}) expression.Expression { return expression.NewConstant(v) }
 

@@ -21,6 +21,7 @@ import (
 
 func init() {
 	ExprCatalog["date_part_millis"] = ExprDatePartMillis
+	ExprCatalog["date_add_millis"] = ExprDateAddMillis
 }
 
 // ExprDatePartMillis handles DATE_PART_MILLIS(millis, part) -- the 2-arg form
@@ -65,6 +66,59 @@ func ExprDatePartMillis(lzVars *base.Vars, labels base.Labels,
 
 	lzExprFunc =
 		MakeBiExprFunc(lzVars, labels, params, path, biExprFunc) // !lz
+
+	return lzExprFunc
+}
+
+// ExprDateAddMillis handles DATE_ADD_MILLIS(millis, n, part) -- always 3-arg
+// (TernaryFunctionBase). cbq skeleton (expression/func_date.go): MISSING if any
+// operand MISSING; NULL if millis non-number, n non-number, part non-string,
+// millis out of range, n non-integral, part an unknown component, or the result
+// overflows; else the resulting epoch millis (integer) into the reused buffer.
+// Each operand is captured FROM lzVal (emitCaptured writes lzVal; read out on the
+// next line -- mirrors ExprReplace).
+func ExprDateAddMillis(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
+	var lzBufPre []byte // <== varLift: lzBufPre by path
+
+	triExprFunc := func(lzA, lzB, lzC base.ExprFunc, lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) { // !lz
+		if LzScope {
+			lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
+			lzValMillis := lzVal
+
+			lzVal = lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B"
+			lzValN := lzVal
+
+			lzVal = lzC(lzVals, lzYieldErr) // <== emitCaptured: path "C"
+			lzValPart := lzVal
+
+			if base.ValKind(lzValMillis) == base.ValKindMissing ||
+				base.ValKind(lzValN) == base.ValKindMissing ||
+				base.ValKind(lzValPart) == base.ValKindMissing {
+				lzVal = base.ValMissing
+			} else {
+				lzMillis, lzMillisOk := base.ParseNum(lzValMillis)
+				lzN, lzNOk := base.ParseNum(lzValN)
+				lzPart, _, lzPartOk := base.StrDecode(lzValPart)
+				if !lzMillisOk || !lzNOk || !lzPartOk {
+					lzVal = base.ValNull // non-number millis|n / non-string part
+				} else {
+					lzR, lzROk := base.DateAddMillis(lzMillis.Float64(), lzN.Float64(), lzPart)
+					if !lzROk {
+						lzVal = base.ValNull // out-of-range / non-integral n / unknown component / overflow
+					} else {
+						lzBufPre = base.AppendNum(lzBufPre[:0], base.IntNum(int64(lzR)))
+						lzVal = base.Val(lzBufPre)
+					}
+				}
+			}
+		}
+
+		return lzVal
+	} // !lz
+
+	lzExprFunc =
+		MakeTriExprFunc(lzVars, labels, params, path, triExprFunc) // !lz
 
 	return lzExprFunc
 }

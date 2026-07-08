@@ -45,7 +45,8 @@ func init() {
 		"lpad", "rpad", // LPAD/RPAD, arity-dispatched below (expr_str.go)
 		"power", "atan2", // binary math (expr_math.go)
 		"round", "trunc", // ROUND/TRUNC, arity-dispatched below (expr_math.go)
-		"date_part_millis",                     // DATE_PART_MILLIS 2-arg (expr_date.go); 3-arg (tz) falls back
+		"date_part_millis", // DATE_PART_MILLIS 2-arg (expr_date.go); 3-arg (tz) falls back
+		"date_add_millis",  // DATE_ADD_MILLIS 3-arg (expr_date.go)
 		"to_boolean", "to_string", "to_number", // type conversions (expr_type.go)
 		"array_length", "array_count", "array_sum", "array_avg", // array readers (expr_array.go)
 		"array_min", "array_max", "array_contains", "array_position", // (expr_array.go)
@@ -415,9 +416,10 @@ func exprTreeOptimizeNative(labels base.Labels, e expression.Expression,
 		if len(operands) != 1 {
 			return nil, false
 		}
-	case "between", "replace":
+	case "between", "replace", "date_add_millis":
 		// between is exactly ternary; replace's native harness is the 3-arg form
-		// (str, old, repl) -- the 4-arg count form falls back to cbq.
+		// (str, old, repl) -- the 4-arg count form falls back to cbq;
+		// date_add_millis is always 3-arg (millis, n, part).
 		if len(operands) != 3 {
 			return nil, false
 		}

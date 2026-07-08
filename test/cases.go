@@ -5974,6 +5974,26 @@ var TestCasesSimple = []TestCaseSimple{
 		[]interface{}{"json", `1500000000123`}, []interface{}{"json", `"bogus"`}}, `null`),
 	naryProjectCase("datepart-strmillis", []interface{}{"date_part_millis",
 		[]interface{}{"json", `"x"`}, []interface{}{"json", `"year"`}}, `null`),
+	// DATE_ADD_MILLIS (ternary) in the COMPILED path. Duration-based parts
+	// (hour/minute/second/millisecond) and n==0 are process-zone independent, so
+	// the expected millis are literal; year/month/day go through the local zone
+	// and are covered by the differential-vs-cbq interpreter test instead.
+	naryProjectCase("dateadd-hour", []interface{}{"date_add_millis",
+		[]interface{}{"json", `1500000000123`}, []interface{}{"json", `1`}, []interface{}{"json", `"hour"`}}, `1500003600123`),
+	naryProjectCase("dateadd-sec", []interface{}{"date_add_millis",
+		[]interface{}{"json", `1500000000123`}, []interface{}{"json", `1`}, []interface{}{"json", `"second"`}}, `1500000001123`),
+	naryProjectCase("dateadd-ms", []interface{}{"date_add_millis",
+		[]interface{}{"json", `1500000000123`}, []interface{}{"json", `877`}, []interface{}{"json", `"millisecond"`}}, `1500000001000`),
+	naryProjectCase("dateadd-zero", []interface{}{"date_add_millis",
+		[]interface{}{"json", `1500000000123`}, []interface{}{"json", `0`}, []interface{}{"json", `"year"`}}, `1500000000123`),
+	naryProjectCase("dateadd-bogus", []interface{}{"date_add_millis",
+		[]interface{}{"json", `1500000000123`}, []interface{}{"json", `1`}, []interface{}{"json", `"bogus"`}}, `null`),
+	naryProjectCase("dateadd-strmillis", []interface{}{"date_add_millis",
+		[]interface{}{"json", `"x"`}, []interface{}{"json", `1`}, []interface{}{"json", `"hour"`}}, `null`),
+	naryProjectCase("dateadd-fracn", []interface{}{"date_add_millis",
+		[]interface{}{"json", `1500000000123`}, []interface{}{"json", `1.5`}, []interface{}{"json", `"hour"`}}, `null`),
+	naryProjectCase("dateadd-nulln", []interface{}{"date_add_millis",
+		[]interface{}{"json", `1500000000123`}, []interface{}{"json", `null`}, []interface{}{"json", `"hour"`}}, `null`),
 	naryProjectCase("sin-zero", []interface{}{"sin", []interface{}{"json", `0`}}, `0`),
 	naryProjectCase("cos-zero", []interface{}{"cos", []interface{}{"json", `0`}}, `1`),
 	naryProjectCase("atan-zero", []interface{}{"atan", []interface{}{"json", `0`}}, `0`),
