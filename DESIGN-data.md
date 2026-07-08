@@ -775,6 +775,33 @@ highest-priority match wins. **This is the same matcher `DESIGN-prepare.md`'s
 source-routing uses** to decide which detectors fan out to which file — one mechanism,
 two consumers.
 
+### This *is* `DESIGN-prepare.md`'s late binding — from the data side
+`DESIGN-prepare.md`'s "Late binding" section frames the same machinery from the corpus
+side: a prepared detector corpus `FROM`s **logical** keyspaces (`indexer_log`,
+`orders`), and each bundle resolves logical → physical at EXECUTE time — because the
+next bundle's files are named/laid out differently (`indexer.log.3`,
+`2024Q4_results.parquet`). The two halves line up exactly:
+
+- **The binding resolver = this matcher.** Its robustness ladder — *explicit* glob →
+  *convention* (regex tolerant of version suffixes / layout drift) → *content/schema
+  sniffing* — is precisely an extractor's `{names (regexps), exts}` plus what `describe`
+  learns by sampling. Resolving `indexer_log → glob("**/indexer*.log")` is a
+  higher-priority `match` entry.
+- **The adapter = the `ExtractSpec` `describe` returns.** `DESIGN-prepare.md`'s "thin
+  adapter (a SQL++ view / small **extract spec**) normalizing raw records into the
+  logical keyspace's canonical schema" *is* `describe`'s `fields`/`time`/`provenance`
+  spec — including "the log time model … one sortable key for the merge-based ASOF is
+  one adapter concern," which is exactly the `time` → int64 epoch-nanos normalization
+  ([sorted sources](#sorted-sources), `DESIGN-merging.md`).
+- **Data, not code → no recompile.** Both the binding manifest and the memoized
+  `describe` result are *data* the datastore opens/reads at run time, so rebinding a
+  compiled corpus to a new bundle needs no recompilation — the property that makes
+  PREPARE-once / rebind-per-bundle pay off.
+
+So the recipe repo versions, per logical keyspace, three coupled things: the
+**detectors** (`DESIGN-prepare.md`), the **adapter/extract recipe** (this §4 +
+`DESIGN-extensions.md`), and the per-bundle **binding manifest**.
+
 ### Built-in extractors stay; the seam becomes open
 The pure-Go office/PDF/media extractors (`records/extract.go`, shipped — ex. L)
 remain the **built-in baseline**, re-expressed as extractors that return an

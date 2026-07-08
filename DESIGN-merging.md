@@ -672,13 +672,16 @@ band-join + `ARRAY_AGG` idiom can't serve.
   temporal detectors. The "recognizing the ASOF idiom" open question there is
   answered by [§3](#argmax-rewrite)'s canonical form + conservative recognizer; the
   "log time model" open question is answered by the normalized int64 key from the
-  extract layer.
+  extract layer — which is, in `DESIGN-prepare.md`'s late-binding terms, "one adapter
+  concern": the extract recipe's `time` spec *is* the per-source adapter that yields the
+  merge's sort key.
 - **`DESIGN-data.md`** — the [sorted-source contract](#contract) (§4 extract provider,
   §5 manifest zone maps / sync points, sortedness classification, `disorder_bound`) is
-  the input this doc consumes; the merge ops are its downstream consumer. Two
-  cross-doc corrections/links: **`plan.UnionAll` is no longer `NA()`** (its note is
-  stale — `VisitUnionAll` landed), which un-blocks the UNION-ALL→merge trigger; and
-  the **"predicate must reach the scan"** prerequisite (§5 caveat) is the same one
+  the input this doc consumes; the merge ops are its downstream consumer.
+  **`VisitUnionAll` has landed** (`glue/conv.go`, kind `union-all`) — the
+  UNION-ALL→merge trigger builds on `OpUnionAll`'s branch fan-in, and `DESIGN-data.md`'s
+  once-"blocked" notes have been corrected to match. The
+  **"predicate must reach the scan"** prerequisite (§5 caveat) is the same one
   gating seek-by-time merge pruning ([§1 cursors](#cursors)). The TVF verdict here
   matches §2 mode 2's "defer the grammar fork."
 - **`DESIGN-extensions.md`** — the `*.extract.js` extract functions produce the

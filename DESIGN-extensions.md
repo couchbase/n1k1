@@ -493,6 +493,15 @@ adds formats. n1k1 ships **built-in** extractors for the common cbcollect format
 the office/PDF baseline (`records/extract.go`, re-expressed as `{framing: whole}`
 specs — `DESIGN-data.md` §4); the repo *extends*, never having to touch Go.
 
+This repo is one leg of `DESIGN-prepare.md`'s **late binding** triad: per *logical*
+keyspace it versions the **detectors** (the corpus), the **adapter** (this recipe's
+`describe`/`extract` — what normalizes a bundle's raw records into the logical
+keyspace's canonical schema), and the per-bundle **binding manifest** (logical → the
+files in *this* bundle, resolved by the `match` glob/regex, exactly the "convention /
+content-sniffing" rungs of that section's ladder). Because a recipe is *data* the
+datastore loads at run time, rebinding a prepared corpus to a new, differently-named
+bundle needs **no recompilation** (`DESIGN-data.md` §4 "This *is* late binding").
+
 ### Why this shape (recap of the split)
 
 - **`describe` is pluggable & cheap; `extract` is native & hot.** The format-specific
