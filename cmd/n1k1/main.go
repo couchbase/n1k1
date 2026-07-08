@@ -171,6 +171,19 @@ func main() {
 	scanOpts.Meta = mm
 	glue.ScanWalkOptions = scanOpts
 
+	// Register extensions (JS UDFs + *.extract.js recipes) BEFORE opening the store:
+	// resolveSession -> FileStore decides which files become keyspaces, and a
+	// recipe-matched file is auto-exposed as a keyspace (glue/flat.go), so the recipes
+	// must be registered first. base.LogLevel is set here too so recipe-load / describe
+	// diagnostics honor -v/-verbose from the very first file.
+	base.LogLevel = int(vLevel)
+	if len(extPaths) > 0 {
+		if _, lerr := loadExtensions(extPaths); lerr != nil {
+			fmt.Fprintf(os.Stderr, "%s: -ext: %v\n", prog, lerr)
+			os.Exit(1)
+		}
+	}
+
 	sess, dir, cleanup, err := resolveSession(dir, explicit)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s: %v\n", prog, err)
@@ -219,20 +232,6 @@ func main() {
 		stderr:       os.Stderr,
 		fancyTTY:     fancy,
 		style:        cmd.Style{On: fancy},
-	}
-
-	base.LogLevel = c.verbose // route base.Logf (extract/describe diagnostics etc.) through -v/-verbose
-
-	// -ext/-extensions: register query extensions (e.g. JavaScript UDFs) before
-	// running any statements so the parser resolves their names. (The
-	// sparkline/histogram aggregates are always available -- glue registers them
-	// at init.)
-	if len(extPaths) > 0 {
-		_, err := loadExtensions(extPaths)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "%s: -ext: %v\n", prog, err)
-			os.Exit(1)
-		}
 	}
 
 	c.eagerBuildIndexes() // -index=eager: build all catalog indexes up front

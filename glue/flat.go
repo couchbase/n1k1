@@ -82,12 +82,16 @@ func maybeFlat(path string, ds datastore.Datastore) datastore.Datastore {
 			keyspaces[base] = &flatKeyspace{dir: abs}
 		}
 	} else {
-		// Scenario B3: one keyspace per top-level *structured* file, by stem
-		// (first-seen wins on a stem collision, e.g. a.json + a.csv). Extracted
-		// documents (PDF/DOCX/XLSX) are skipped so a folder of documents doesn't
-		// flood the keyspace list -- query one explicitly with `n1k1 <file.pdf>`.
+		// Scenario B3: one keyspace per top-level file, by stem (first-seen wins on a
+		// stem collision, e.g. a.json + a.csv). Exposed: *structured* files (JSON/CSV),
+		// AND any file an extract recipe claims (records.RecipeFor -- e.g. a memcached/
+		// ns_server log once its recipe is loaded via -ext, so it shows up in .tables
+		// and `FROM memcached` works). Plain extracted documents (PDF/DOCX with no
+		// recipe) are still skipped so a folder of docs doesn't flood the list -- query
+		// one explicitly with `n1k1 <file.pdf>`. (Recipes must be registered before
+		// FileStore runs; the CLI loads -ext extensions first -- see cmd/n1k1/main.go.)
 		for _, name := range files {
-			if !records.IsStructuredFile(name) {
+			if !records.IsStructuredFile(name) && records.RecipeFor(name) == nil {
 				continue
 			}
 			ks := records.Stem(name)
