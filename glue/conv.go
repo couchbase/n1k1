@@ -90,6 +90,14 @@ func ExecConv(p plan.Operator) (*base.Op, []interface{}, error) {
 		maybeColumnarOptimize(c.TopOp, c.Temps) // fuse ungrouped SUM over a Parquet column
 	}
 
+	if err == nil && c.TopOp != nil {
+		// Track B (DESIGN-merging.md §3): recognize UNION ALL of sorted streams
+		// wrapped by ORDER BY <key> and lower it to a streaming merge-scan. A
+		// read-only post-plan pass (opt-in via EnableMergeRewrite); may replace
+		// the root itself, so it returns the (possibly new) root.
+		c.TopOp = rewriteTemporalRoot(c.TopOp)
+	}
+
 	return c.TopOp, c.Temps, err
 }
 

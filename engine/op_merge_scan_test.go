@@ -214,39 +214,153 @@ func TestMergeScanNoChildren(t *testing.T) {
 	}
 }
 
-// TestMergeScanNearRejected checks the deferred watermarked-near regime raises
-// a clear error rather than silently producing an out-of-order stream.
-func TestMergeScanNearRejected(t *testing.T) {
-	children := []*base.Op{
-		mergeKeyChild([]int64{10, 30}),
-		mergeKeyChild([]int64{20, 40}),
-	}
-	sortedness := []interface{}{"strict", "near"}
-	op := mergeScanOp("heap", children, sortedness)
+// runMergeScanErr executes a merge-scan and returns (yielded keys, error, warns).
+func runMergeScanErr(t *testing.T, root *base.Op) ([]int64, error, []string) {
+	t.Helper()
 
+	var warns []string
 	vars := &base.Vars{
 		Temps: make([]interface{}, 16),
 		Ctx: &base.Ctx{
 			ExprCatalog: ExprCatalog,
 			ValComparer: base.NewValComparer(),
+			Warn:        func(w string) { warns = append(warns, w) },
 		},
 	}
 
+	var got []int64
 	var gotErr error
-	ExecOp(op, vars,
-		func(vals base.Vals) {},
+	ExecOp(root, vars,
+		func(vals base.Vals) {
+			n, err := strconv.ParseInt(string(vals[1]), 10, 64)
+			if err != nil {
+				t.Fatalf("row key %q not an int64: %v", string(vals[1]), err)
+			}
+			got = append(got, n)
+		},
 		func(err error) {
 			if err != nil {
 				gotErr = err
 			}
 		}, "", "")
 
-	if gotErr == nil {
-		t.Fatal("expected a not-implemented error for a near source, got nil")
+	return got, gotErr, warns
+}
+
+// TestMergeScanWatermarkedNear covers regime (c): near-sorted children whose
+// within-bound reorders are corrected by the watermark/reorder buffer into a
+// globally ordered output stream.
+func TestMergeScanWatermarkedNear(t *testing.T) {
+	// Two near-sorted streams. Each has a local inversion within a disorder bound
+	// of 5: child 0 emits 30 before 28 (a 2-nanos lag); child 1 emits 45 before
+	// 42 (a 3-nanos lag). Neither exceeds the declared bound of 5.
+	children := []*base.Op{
+		mergeKeyChild([]int64{10, 30, 28, 50}),
+		mergeKeyChild([]int64{20, 45, 42, 60}),
 	}
-	if !strings.Contains(gotErr.Error(), "watermarked-near") {
-		t.Fatalf("unexpected error: %v", gotErr)
+	want := []int64{10, 20, 28, 30, 42, 45, 50, 60}
+
+	sortedness := []interface{}{"near", "near"}
+	bounds := []interface{}{int64(5), int64(5)}
+	op := mergeScanOp("heap", children, sortedness, nil, nil, bounds, "error")
+
+	got, err, warns := runMergeScanErr(t, op)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
+	if len(warns) != 0 {
+		t.Fatalf("unexpected warns for within-bound input: %v", warns)
+	}
+	assertSameMultiset(t, got, want)
+	assertAscending(t, got)
+}
+
+// TestMergeScanWatermarkedNearMixed mixes a strict child with a near child.
+func TestMergeScanWatermarkedNearMixed(t *testing.T) {
+	children := []*base.Op{
+		mergeKeyChild([]int64{5, 15, 25, 35}),       // strict
+		mergeKeyChild([]int64{10, 22, 18, 40}),      // near: 22 before 18 (bound 4)
+	}
+	want := []int64{5, 10, 15, 18, 22, 25, 35, 40}
+
+	sortedness := []interface{}{"strict", "near"}
+	bounds := []interface{}{int64(0), int64(4)}
+	op := mergeScanOp("heap", children, sortedness, nil, nil, bounds, "error")
+
+	got, err, _ := runMergeScanErr(t, op)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	assertSameMultiset(t, got, want)
+	assertAscending(t, got)
+}
+
+// TestMergeScanBeyondBoundErrors verifies the bound-validation tripwire fires
+// under the default "error" policy when a record arrives further out of order
+// than the declared disorder_bound (the bound was too small).
+func TestMergeScanBeyondBoundErrors(t *testing.T) {
+	// Child 0 claims a bound of 3 but emits 40 then 20 -- a 20-nanos lag, far
+	// beyond 3. By the time 20 arrives the watermark has advanced past it and
+	// smaller keys from child 1 have been emitted, so 20 is a true violation.
+	children := []*base.Op{
+		mergeKeyChild([]int64{10, 40, 20}),
+		mergeKeyChild([]int64{25, 30, 35}),
+	}
+	sortedness := []interface{}{"near", "near"}
+	bounds := []interface{}{int64(3), int64(3)}
+	op := mergeScanOp("heap", children, sortedness, nil, nil, bounds, "error")
+
+	_, err, _ := runMergeScanErr(t, op)
+	if err == nil {
+		t.Fatal("expected a disorder_bound violation error, got nil")
+	}
+	if !strings.Contains(err.Error(), "disorder_bound") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestMergeScanBeyondBoundWiden verifies the "widen" late-record policy: a
+// beyond-bound record does NOT fail the query -- the op widens, warns, and
+// keeps producing output rather than silently mis-ordering.
+func TestMergeScanBeyondBoundWiden(t *testing.T) {
+	children := []*base.Op{
+		mergeKeyChild([]int64{10, 40, 20}),
+		mergeKeyChild([]int64{25, 30, 35}),
+	}
+	sortedness := []interface{}{"near", "near"}
+	bounds := []interface{}{int64(3), int64(3)}
+	op := mergeScanOp("heap", children, sortedness, nil, nil, bounds, "widen")
+
+	got, err, warns := runMergeScanErr(t, op)
+	if err != nil {
+		t.Fatalf("widen policy should not error, got: %v", err)
+	}
+	if len(warns) == 0 {
+		t.Fatal("widen policy must emit a Warn about the late record")
+	}
+	// All six rows are still delivered (best-effort, never silently dropped).
+	assertSameMultiset(t, got, []int64{10, 20, 25, 30, 35, 40})
+}
+
+// TestMergeScanNearAllArrivesInOrder checks a degenerate near source that is in
+// fact perfectly ordered: the watermark path must reproduce the strict output.
+func TestMergeScanNearAllArrivesInOrder(t *testing.T) {
+	children := []*base.Op{
+		mergeKeyChild([]int64{10, 30, 50}),
+		mergeKeyChild([]int64{20, 40, 60}),
+	}
+	want := []int64{10, 20, 30, 40, 50, 60}
+
+	sortedness := []interface{}{"near", "near"}
+	bounds := []interface{}{int64(100), int64(100)}
+	op := mergeScanOp("heap", children, sortedness, nil, nil, bounds, "error")
+
+	got, err, _ := runMergeScanErr(t, op)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	assertSameMultiset(t, got, want)
+	assertAscending(t, got)
 }
 
 // TestMergeScanOutOfOrderTripwire verifies the monotonicity tripwire fires

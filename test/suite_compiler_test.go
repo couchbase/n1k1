@@ -96,6 +96,14 @@ func usesUnbridgedOp(o *base.Op) bool {
 		// reuse-var declarations (lzValsReuseTop_<path> for both branches) -- correct
 		// in the interpreter, but not yet compilable. Skip generating these.
 		return true
+	case "merge-scan":
+		// The K-way sorted merge-scan (Track B, DESIGN-merging.md) is an
+		// interpreter-only op: MergeScanExec is copied VERBATIM into the compiler
+		// package (so it compiles cleanly -- "codegen-safe"), but it orchestrates
+		// its children at run time rather than fusing them, so it does not emit
+		// specialized code. Skip it in the compiler suite; the temporal rewrite
+		// that emits it is opt-in (glue.EnableMergeRewrite) and off here anyway.
+		return true
 	}
 	for _, c := range o.Children {
 		if usesUnbridgedOp(c) {

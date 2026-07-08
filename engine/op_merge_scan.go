@@ -39,10 +39,18 @@ import (
 //     key: pop the smallest head, yield it, advance that cursor, re-push its
 //     new head. O(N log K).
 //
-//   - watermarked-near -- DEFERRED in this slice (see MergeScanExec). A
-//     child declared "near" or "none" that would need the reorder buffer
-//     raises a clear "not yet implemented" error rather than silently
-//     producing a mis-ordered stream.
+//   - watermarked-near -- when a child is declared "near" (bounded disorder)
+//     the strict-heap invariant no longer holds: a child's head key is not a
+//     lower bound on its remaining keys (a record up to disorder_bound out of
+//     order may still arrive). A bounded, REUSED reorder buffer (a small
+//     min-heap over keys) holds each row until the WATERMARK -- min over live
+//     cursors(frontier_key) - max disorder_bound -- passes its key, at which
+//     point nothing smaller can still arrive and the row is safe to emit in
+//     order (the Flink/Dataflow watermark model, applied to a bounded offline
+//     stream; DESIGN-merging.md §1c). The op VALIDATES the declared bound: a
+//     record arriving below a watermark we have already emitted past means the
+//     bound was too small, and rather than silently mis-order the op either
+//     errors or widens+warns per the late-record policy Param.
 //
 // The op reads only SCALAR, codegen-friendly choices from o.Params (see
 // MergeScanExec for the layout) plus the K child ops in o.Children; glue will
@@ -74,9 +82,21 @@ func OpMergeScan(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 //	                             "none" (absent => assumed "strict").
 //	Params[3] []interface{}   -- per-child min_key (int64 zone map).
 //	Params[4] []interface{}   -- per-child max_key (int64 zone map).
+//	Params[5] []interface{}   -- per-child disorder_bound window-nanos (int64):
+//	                             how far behind an already-seen key a "near"
+//	                             child's row may still arrive. Absent / 0 => the
+//	                             child is treated as strict (no reorder needed).
+//	Params[6] string          -- late-record policy / strictness knob:
+//	                             "error" (default, the correctness-critical safe
+//	                             default): a record below an already-emitted
+//	                             watermark FAILS the query. "widen": widen the
+//	                             effective bound, emit a Warn, and keep going
+//	                             (best-effort, for exploratory use) -- never
+//	                             silent (DESIGN-merging.md §1 soft options).
 //
 // The min/max zone maps are what let the "auto" regime PROVE disjointness
-// without opening a single child (DESIGN-merging.md §1(a)).
+// without opening a single child (DESIGN-merging.md §1(a)). A child declared
+// "near"/"none" forces the "heap" regime up into "watermarked-near".
 func MergeScanExec(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 	yieldErr base.YieldErr, path, pathNext string) {
 	keyIdx := 0
@@ -96,20 +116,27 @@ func MergeScanExec(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 	sortedness := mergeStringSlice(o.Params, 2)
 	minKeys := mergeInt64Slice(o.Params, 3)
 	maxKeys := mergeInt64Slice(o.Params, 4)
+	bounds := mergeInt64Slice(o.Params, 5)
+
+	policy := "error"
+	if len(o.Params) > 6 {
+		if v, ok := o.Params[6].(string); ok && v != "" {
+			policy = v
+		}
+	}
 
 	regime = mergeChooseRegime(len(o.Children), regime, minKeys, maxKeys)
 
-	// The watermarked-near regime is deferred in this slice: a source that is
-	// not strictly ordered would violate the heap invariant, so reject it with
-	// a clear error rather than emit an out-of-order stream.
-	if regime == "heap" {
-		for i, s := range sortedness {
-			if s == "near" || s == "none" {
-				yieldErr(fmt.Errorf("merge-scan: child %d sortedness %q needs"+
-					" the watermarked-near regime, not yet implemented", i, s))
-				return
-			}
-		}
+	// A child declared "near"/"none" violates the strict-heap invariant, so the
+	// merge must run the watermarked-near reorder buffer rather than the strict
+	// heap -- otherwise it could emit a row before a smaller-keyed row that has
+	// not surfaced yet. (Concatenate stays valid: disjoint ordered ranges never
+	// interleave, so within-child disorder never crosses a child boundary.)
+	if regime == "heap" && mergeHasNear(sortedness) {
+		maxBound := mergeMaxBound(sortedness, bounds)
+		mergeScanWatermarked(o, vars, yieldVals, yieldErr, keyIdx, pathNext,
+			maxBound, policy)
+		return
 	}
 
 	if regime == "concatenate" {
@@ -260,6 +287,254 @@ func mergeScanHeap(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 	yieldErr(nil)
 }
 
+// mergeScanWatermarked runs the watermarked-near K-way merge (DESIGN-merging.md
+// §1c). Near sources are near-sorted: within a child a row may arrive up to
+// maxBound nanos behind an already-seen key, so a child's head key is NOT a
+// lower bound on its remaining keys and the strict heap could emit too early.
+//
+// The fix is a WATERMARK plus a bounded, REUSED reorder buffer:
+//
+//   - A K-entry cursor min-heap (MergeHeap) pops rows in near-sorted order --
+//     the frontier is min over live cursors(head_key) (the cursor-heap top).
+//   - watermark = frontier - maxBound. A buffered row is safe to emit once its
+//     key <= watermark, because no live child can still produce a smaller key
+//     (each child's future keys are >= its head_key - its_bound >= watermark).
+//   - Safe rows drain out of the reorder buffer (a min-heap over keys) in key
+//     order. When all cursors exhaust, the frontier is +inf and the buffer
+//     flushes entirely.
+//
+// Zero-alloc steady state: the reorder buffer is a struct-of-arrays min-heap
+// whose backing slices grow ONCE to the (bounded) live-buffer size and are then
+// reused across every row (pop shrinks with [:n], push reuses the freed slot);
+// it stores references to rows already deep-copied at drain time, so no per-row
+// allocation happens in the merge loop. Keys are parsed with the zero-alloc
+// mergeParseKey. The materialize-at-drain stands in for resumable cursors, same
+// as mergeScanHeap.
+//
+// Bound validation (DESIGN-merging.md §1 soft options): a row entering the
+// buffer with a key below a watermark we have ALREADY emitted past means the
+// declared bound was too small. Under policy "error" (default) the query fails
+// with a precise message; under "widen" the op widens the effective bound,
+// emits a Warn, and continues best-effort -- never a silent mis-order. As a
+// final backstop the op also validates its own OUTPUT monotonicity per row.
+func mergeScanWatermarked(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
+	yieldErr base.YieldErr, keyIdx int, pathNext string,
+	maxBound int64, policy string) {
+	cursors := make([]*MergeCursor, 0, len(o.Children))
+
+	var execErr error
+
+	for i := range o.Children {
+		cursor := &MergeCursor{}
+
+		childYield := func(vals base.Vals) {
+			if execErr != nil {
+				return
+			}
+
+			k, ok := mergeParseKey(vals, keyIdx)
+			if !ok {
+				execErr = fmt.Errorf("merge-scan: child %d has a missing or"+
+					" non-int64 sort key at index %d", i, keyIdx)
+				return
+			}
+
+			cursor.rows = append(cursor.rows, mergeCopyVals(vals))
+			cursor.keys = append(cursor.keys, k)
+		}
+
+		childErr := func(err error) {
+			if err != nil && execErr == nil {
+				execErr = err
+			}
+		}
+
+		ExecOp(o.Children[i], vars, childYield, childErr, pathNext, strconv.Itoa(i))
+
+		if execErr != nil {
+			yieldErr(execErr)
+			return
+		}
+
+		cursors = append(cursors, cursor)
+	}
+
+	frontier := &MergeHeap{cursors: cursors}
+	for ci, cursor := range cursors {
+		if cursor.Valid() {
+			frontier.Push(ci)
+		}
+	}
+
+	var buf MergeReorderBuffer
+
+	strict := policy != "widen" // "error" (default) is strict; "widen" tolerates.
+	effBound := maxBound        // "widen" grows this so a late row can't recur.
+
+	var lastKey int64
+	emitted := false
+
+	// emitSafe pops and yields every buffered row whose key <= watermark, in key
+	// order, validating output monotonicity as the final tripwire.
+	emitSafe := func(watermark int64) bool {
+		for buf.Len() > 0 && buf.MinKey() <= watermark {
+			k, row := buf.PopMin()
+
+			if emitted && k < lastKey {
+				// Should be unreachable given the insert-time check below, but the
+				// output tripwire stays paranoid (DESIGN-merging.md: a wrong bound
+				// is silent corruption -- never pass an out-of-order stream on).
+				if strict {
+					yieldErr(mergeOutOfOrderErr(-1, k, lastKey))
+					return false
+				}
+				mergeWarnLate(vars, -1, k, lastKey)
+			}
+
+			yieldVals(row)
+			lastKey = k
+			emitted = true
+		}
+		return true
+	}
+
+	for frontier.Len() > 0 {
+		ci := frontier.Pop()
+		cursor := cursors[ci]
+
+		k := cursor.HeadKey()
+		row := cursor.rows[cursor.pos]
+		cursor.pos++
+		if cursor.Valid() {
+			frontier.Push(ci)
+		}
+
+		// Bound validation at ingestion: a row below what we have already emitted
+		// past means the declared disorder_bound was too small.
+		if emitted && k < lastKey {
+			if strict {
+				yieldErr(mergeBoundViolationErr(ci, k, lastKey))
+				return
+			}
+			// widen: grow the effective bound past the shortfall so subsequent
+			// watermarks are conservative enough to avoid recurrence, and warn.
+			if grow := lastKey - k; grow > effBound {
+				effBound = grow
+			}
+			mergeWarnLate(vars, ci, k, lastKey)
+		}
+
+		buf.Push(k, row)
+
+		// frontier_key = min over live cursors(head_key) = the cursor-heap top.
+		watermark := mergeWatermark(frontier, cursors, effBound)
+
+		if !emitSafe(watermark) {
+			return
+		}
+	}
+
+	// All cursors exhausted: nothing smaller can arrive, so flush the buffer.
+	if !emitSafe(mergeMaxInt64) {
+		return
+	}
+
+	yieldErr(nil)
+}
+
+// mergeWatermark returns min over live cursors(head_key) - effBound, i.e. the
+// key below which no live child can still produce a row (so buffered rows at or
+// below it are safe to emit). With no live cursors the watermark is +inf (flush
+// everything). Guards against int64 underflow on the subtraction.
+func mergeWatermark(frontier *MergeHeap, cursors []*MergeCursor, effBound int64) int64 {
+	if frontier.Len() == 0 {
+		return mergeMaxInt64
+	}
+	fk := cursors[frontier.Peek()].HeadKey()
+	wm := fk - effBound
+	if effBound > 0 && wm > fk { // underflowed past MinInt64
+		return mergeMinInt64
+	}
+	return wm
+}
+
+const (
+	mergeMaxInt64 = int64(^uint64(0) >> 1)
+	mergeMinInt64 = -mergeMaxInt64 - 1
+)
+
+// -----------------------------------------------------
+
+// MergeReorderBuffer is the bounded, REUSED reorder buffer for the
+// watermarked-near regime (DESIGN-merging.md §1c). It is a struct-of-arrays
+// binary min-heap over (key, row): parallel keys[]/rows[] slices grow ONCE to
+// the (bounded) live-buffer size, then are reused for every subsequent row (Push
+// reuses a freed tail slot via append's retained capacity; PopMin shrinks with
+// [:n]). The rows are references to Vals already deep-copied at drain time, so
+// the buffer itself allocates nothing per row in steady state. Hand-rolled (like
+// MergeHeap) to avoid container/heap's per-op interface boxing.
+type MergeReorderBuffer struct {
+	keys []int64
+	rows []base.Vals
+}
+
+// Len returns the number of buffered rows.
+func (b *MergeReorderBuffer) Len() int { return len(b.keys) }
+
+// MinKey returns the smallest buffered key (the heap root).
+func (b *MergeReorderBuffer) MinKey() int64 { return b.keys[0] }
+
+// Push inserts a (key, row) pair and restores the min-heap order.
+func (b *MergeReorderBuffer) Push(key int64, row base.Vals) {
+	b.keys = append(b.keys, key)
+	b.rows = append(b.rows, row)
+	i := len(b.keys) - 1
+	for i > 0 {
+		parent := (i - 1) / 2
+		if b.keys[parent] <= b.keys[i] {
+			break
+		}
+		b.swap(i, parent)
+		i = parent
+	}
+}
+
+// PopMin removes and returns the (key, row) with the smallest key.
+func (b *MergeReorderBuffer) PopMin() (int64, base.Vals) {
+	k, row := b.keys[0], b.rows[0]
+	n := len(b.keys) - 1
+	b.swap(0, n)
+	b.rows[n] = nil // drop the row reference so it can be GC'd once emitted
+	b.keys = b.keys[:n]
+	b.rows = b.rows[:n]
+	b.down(0)
+	return k, row
+}
+
+func (b *MergeReorderBuffer) swap(i, j int) {
+	b.keys[i], b.keys[j] = b.keys[j], b.keys[i]
+	b.rows[i], b.rows[j] = b.rows[j], b.rows[i]
+}
+
+func (b *MergeReorderBuffer) down(i int) {
+	n := len(b.keys)
+	for {
+		left := 2*i + 1
+		if left >= n {
+			break
+		}
+		child := left
+		if right := left + 1; right < n && b.keys[right] < b.keys[left] {
+			child = right
+		}
+		if b.keys[i] <= b.keys[child] {
+			break
+		}
+		b.swap(i, child)
+		i = child
+	}
+}
+
 // -----------------------------------------------------
 
 // MergeCursor is one child source drained into memory: parallel rows/keys
@@ -292,6 +567,10 @@ type MergeHeap struct {
 
 // Len returns the number of live cursors currently in the heap.
 func (h *MergeHeap) Len() int { return len(h.idx) }
+
+// Peek returns the cursor index with the smallest head key without removing it
+// (the frontier cursor). Callers must check Len() > 0 first.
+func (h *MergeHeap) Peek() int { return h.idx[0] }
 
 func (h *MergeHeap) less(a, b int) bool {
 	return h.cursors[h.idx[a]].HeadKey() < h.cursors[h.idx[b]].HeadKey()
@@ -419,6 +698,62 @@ func mergeCopyVals(vals base.Vals) base.Vals {
 func mergeOutOfOrderErr(child int, key, lastKey int64) error {
 	return fmt.Errorf("merge-scan: child %d yielded out-of-order key %d < %d"+
 		" (source violated its declared sort order)", child, key, lastKey)
+}
+
+// mergeBoundViolationErr is the watermarked-near bound-validation error: a near
+// child produced a row whose key is below a watermark we already emitted past,
+// so its declared disorder_bound was too small (DESIGN-merging.md §1 soft
+// options, "error" policy). Distinct message from the generic out-of-order
+// tripwire so the operator can point at the bound as the cause.
+func mergeBoundViolationErr(child int, key, lastKey int64) error {
+	return fmt.Errorf("merge-scan: child %d violated its disorder_bound at key"+
+		" %d (already emitted past %d) -- widen the bound or use the 'widen'"+
+		" late-record policy", child, key, lastKey)
+}
+
+// mergeWarnLate emits the non-fatal advisory for the "widen" late-record policy
+// (the same Ctx.Warn stream divide-by-zero uses). Never silent: a widened bound
+// changes memory behavior, so the query must surface it.
+func mergeWarnLate(vars *base.Vars, child int, key, lastKey int64) {
+	if vars != nil && vars.Ctx != nil && vars.Ctx.Warn != nil {
+		vars.Ctx.Warn(fmt.Sprintf("merge-scan: child %d late record key %d <"+
+			" already-emitted %d; widened disorder_bound", child, key, lastKey))
+	}
+}
+
+// mergeHasNear reports whether any child is declared "near" or "none" -- i.e.
+// not strictly sorted, so the heap regime must escalate to watermarked-near.
+func mergeHasNear(sortedness []string) bool {
+	for _, s := range sortedness {
+		if s == "near" || s == "none" {
+			return true
+		}
+	}
+	return false
+}
+
+// mergeMaxBound returns the largest disorder_bound (window-nanos) among the
+// near/none children -- the conservative watermark lag. Using the global max
+// (rather than recomputing per live-cursor set) over-approximates the lag, which
+// only ever buffers MORE, never emits too early, and keeps the hot loop simple.
+// A strict child contributes 0. When no per-child bound is supplied but a child
+// is near, the caller still runs the watermarked path with bound 0 (which
+// degrades to a strict heap that tolerates equal keys) plus the tripwire.
+func mergeMaxBound(sortedness []string, bounds []int64) int64 {
+	var max int64
+	for i := range bounds {
+		s := ""
+		if i < len(sortedness) {
+			s = sortedness[i]
+		}
+		if s == "strict" {
+			continue
+		}
+		if bounds[i] > max {
+			max = bounds[i]
+		}
+	}
+	return max
 }
 
 // mergeStringSlice reads o.Params[i] as a []string (from a []interface{}).
