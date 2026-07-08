@@ -14,7 +14,7 @@
 package test
 
 // TestMergeRewriteDifferential proves the Track B grammar-free surfacing pass
-// (glue/rewrite_temporal.go, DESIGN-merging.md §3): a UNION ALL of two
+// (glue/optimize_temporal.go, DESIGN-merging.md §3): a UNION ALL of two
 // time-ordered sources wrapped by ORDER BY <key> is recognized and lowered to
 // the streaming merge-scan op (engine/op_merge_scan.go), and that op produces
 // globally time-ordered output.

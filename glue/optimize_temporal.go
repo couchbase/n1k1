@@ -13,7 +13,7 @@
 
 package glue
 
-// rewrite_temporal.go is the Track B (merge & ASOF) grammar-free surfacing pass
+// optimize_temporal.go is the Track B (merge & ASOF) grammar-free surfacing pass
 // (DESIGN-merging.md §3). It is a READ-ONLY, POST-plan rewrite over the finished
 // base.Op tree -- run downstream of the cbq fork's plan output, never touching
 // the fork's grammar/planner (the unifying principle shared with DESIGN-data.md:
