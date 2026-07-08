@@ -396,16 +396,13 @@ func fieldChainCaseInsensitive(e expression.Expression) bool {
 // each entry is removed as its emitter is fixed. Binary ops (arithmetic,
 // comparison), field access (labelPath), and/or/in, and json constants emit fine.
 // See DESIGN-prepare.md.
-var compiledExprDenylist = map[string]bool{
-	// Only the LAZY nary expr remains boxed: CASE runs just the matched branch, a
-	// laziness the eager-Vals harness can't express (and children-as-closures
-	// can't emit -- the capture machinery can't unwrap a nested func literal). The
-	// eager variadic exprs (concat, greatest/least, the ifnull/coalesce family)
-	// now compile natively via that harness (CaptureNaryChildren + inline
-	// per-operand evaluation + a cbq-free base reducer over the evaluated values).
-	// See CaptureNaryChildren and DESIGN-prepare.md.
-	"case": true,
-}
+// compiledExprDenylist holds native ExprCatalog funcs that ExprTreesOptimize must
+// still keep BOXED (as an exprStr island) because their compiled emitters aren't
+// correct yet. Empty now: the whole nary family compiles natively -- the eager
+// exprs (concat, greatest/least, ifnull/coalesce) via the eager-Vals harness, and
+// the lazy CASE via a flat lzMatched-guarded short-circuit (see engine.ExprCase
+// and CaptureNaryChildren). Kept as the seam for the next emitter that needs it.
+var compiledExprDenylist = map[string]bool{}
 
 // exprParamsHasDenylisted reports whether a native optimized param tree contains a
 // catalog op whose compiler emitter is denylisted (so the whole expr must stay

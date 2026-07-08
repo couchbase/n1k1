@@ -202,9 +202,10 @@ func TestPipeStandaloneCompileRun(t *testing.T) {
 }
 
 // TestExprTreesOptimizeInline asserts that after ExprTreesOptimize a fully-native
-// FROM query (field access + filter + arithmetic) emits cbq-free native inline (no
-// glue.ExprStr island), while a denylisted-cluster expr (CASE) stays boxed -- the
-// safe-landing contract until the nary/case/json emitters are fixed.
+// FROM query emits cbq-free native inline (no glue.ExprStr island). This now covers
+// the whole nary family -- the eager exprs (concat, greatest/least, ifnull/coalesce)
+// via the eager-Vals harness, and the lazy CASE via its flat lzMatched-guarded
+// short-circuit -- so nothing here should fall back to a boxed glue.ExprStr island.
 func TestExprTreesOptimizeInline(t *testing.T) {
 	root := writePlainBeers(t, 3)
 	s, err := OpenSession(root, "default")
@@ -228,15 +229,16 @@ func TestExprTreesOptimizeInline(t *testing.T) {
 		`SELECT b.i FROM beers b`,
 		`SELECT b.i FROM beers b WHERE b.i >= 1`,
 		`SELECT b.i + 10 AS x FROM beers b`,
+		// The whole nary family now emits cbq-free native inline: the eager exprs
+		// (concat, greatest/least, ifnull/coalesce) via the eager-Vals harness, and
+		// the lazy CASE via its flat lzMatched-guarded short-circuit.
+		`SELECT b.name || "!" AS c FROM beers b`,
+		`SELECT GREATEST(b.i, 10) AS g FROM beers b`,
+		`SELECT IFMISSING(b.x, b.i) AS f FROM beers b`,
+		`SELECT CASE WHEN b.i > 0 THEN "pos" ELSE "zero" END AS c FROM beers b`,
 	} {
 		if src := emitPipe(q); strings.Contains(src, "glue.") {
 			t.Errorf("%q should emit cbq-free native inline; found a glue ref", q)
 		}
-	}
-	// A CASE (denylisted cluster) stays boxed as a glue.ExprStr island -- correct,
-	// just not standalone -- so nothing breaks pending the emitter fix.
-	cq := `SELECT CASE WHEN b.i > 0 THEN "pos" ELSE "zero" END AS c FROM beers b`
-	if src := emitPipe(cq); !strings.Contains(src, "glue.ExprStr") {
-		t.Errorf("CASE should stay boxed (denylisted); expected a glue.ExprStr island")
 	}
 }
