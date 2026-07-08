@@ -56,7 +56,11 @@ func ServiceRequestEx(p plan.Operator,
 	// UNION-ALL -> merge-scan rewrite for any order(union-all) whose sort key Track A's
 	// SortedSourceMeta proves is a normalized int64 sorted source, with real per-branch
 	// sortedness/disorder/zone-map Params. A no-op (leaves order(union-all)) otherwise.
-	op = WireTemporalMergeMeta(op, temps, ctx)
+	// Wrap the bare temps in a throwaway Conv so the per-file merge expansion can
+	// register single-file keyspacers via AddTemp; read temps back afterwards.
+	mergeConv := &Conv{Temps: temps}
+	op = WireTemporalMergeMeta(op, mergeConv, ctx)
+	temps = mergeConv.Temps
 
 	cv, err := NewConvertVals(op.Labels)
 	if err != nil {

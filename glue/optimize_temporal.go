@@ -62,7 +62,9 @@ package glue
 
 import (
 	"encoding/json"
+	"sort"
 	"strings"
+	"sync/atomic"
 
 	"github.com/couchbase/query/algebra"
 	"github.com/couchbase/query/datastore"
@@ -747,25 +749,31 @@ var MergeMetaRewriteApplied int64
 // gctx may be nil (SortedSourceMetasForKeyspace then walks fresh instead of using
 // the per-request walk-file cache) -- so this is safe to call from PlanConvert,
 // which runs before any GlueContext exists.
-func WireTemporalMergeMeta(root *base.Op, temps []interface{}, gctx *GlueContext) *base.Op {
+//
+// conv supplies both the Temps the branch scans resolve their keyspaces from AND the
+// AddTemp seam the per-file expansion registers each single-file keyspacer into (so a
+// K-file branch becomes K per-file merge children -- see perFileScans). Callers that
+// only have a bare temps slice (ServiceRequestEx) wrap it in a throwaway *Conv and
+// read conv.Temps back afterwards.
+func WireTemporalMergeMeta(root *base.Op, conv *Conv, gctx *GlueContext) *base.Op {
 	if root == nil {
 		return root
 	}
-	if ms := mergeScanWithMeta(root, temps, gctx); ms != nil {
-		wireTemporalMetaWalk(ms, temps, gctx)
+	if ms := mergeScanWithMeta(root, conv, gctx); ms != nil {
+		wireTemporalMetaWalk(ms, conv, gctx)
 		return ms
 	}
-	wireTemporalMetaWalk(root, temps, gctx)
+	wireTemporalMetaWalk(root, conv, gctx)
 	return root
 }
 
-func wireTemporalMetaWalk(op *base.Op, temps []interface{}, gctx *GlueContext) {
+func wireTemporalMetaWalk(op *base.Op, conv *Conv, gctx *GlueContext) {
 	for i, child := range op.Children {
-		if ms := mergeScanWithMeta(child, temps, gctx); ms != nil {
+		if ms := mergeScanWithMeta(child, conv, gctx); ms != nil {
 			op.Children[i] = ms
 			child = ms
 		}
-		wireTemporalMetaWalk(child, temps, gctx)
+		wireTemporalMetaWalk(child, conv, gctx)
 	}
 }
 
@@ -773,7 +781,15 @@ func wireTemporalMetaWalk(op *base.Op, temps []interface{}, gctx *GlueContext) {
 // for the shape + keyIdx) and, iff the ORDER BY key is a proven normalized sort key
 // across every branch, returns a merge-scan carrying the branches' real sortedness,
 // disorder-bound and zone-map Params. Returns nil (no rewrite) otherwise.
-func mergeScanWithMeta(op *base.Op, temps []interface{}, gctx *GlueContext) *base.Op {
+//
+// Per-file expansion (DESIGN-merging.md "Multi-bundle / cross-node clusters"): a
+// branch that is a single project(scan) over a keyspace resolving to K recipe files
+// is expanded into K per-file merge children -- the branch's projection cloned over
+// each single-file scan -- so the merge sees each file as its own globally-ordered
+// cursor instead of one CONCATENATED (and thus non-monotonic, tripwire-tripping)
+// stream. A branch that is not so expandable (0/1 files, an unproven key, or a
+// non-single-scan subtree) keeps the single whole-keyspace child.
+func mergeScanWithMeta(op *base.Op, conv *Conv, gctx *GlueContext) *base.Op {
 	ms := mergeScanFromOrderUnion(op)
 	if ms == nil {
 		return nil
@@ -783,14 +799,13 @@ func mergeScanWithMeta(op *base.Op, temps []interface{}, gctx *GlueContext) *bas
 		return nil
 	}
 	union := op.Children[0]
-	n := len(union.Children)
-	sortedness := make([]interface{}, n)
-	minKeys := make([]interface{}, n)
-	maxKeys := make([]interface{}, n)
-	bounds := make([]interface{}, n)
+
+	var children []*base.Op
+	var sortedness, minKeys, maxKeys, bounds []interface{}
 	haveZone := true
-	for i, branch := range union.Children {
-		ks := branchScanKeyspace(branch, temps)
+
+	for _, branch := range union.Children {
+		ks := branchScanKeyspace(branch, conv.Temps)
 		if ks == nil {
 			return nil // a branch we can't resolve to a keyspace: don't fire
 		}
@@ -798,22 +813,49 @@ func mergeScanWithMeta(op *base.Op, temps []interface{}, gctx *GlueContext) *bas
 		if err != nil || len(metas) == 0 {
 			return nil // no proven sorted source for this branch
 		}
+
+		// Try per-file expansion for a simple single-scan branch: clone the branch's
+		// projection over each per-file scan, one merge child per file.
+		if leaf, cnt := branchScanLeaf(branch); leaf != nil && cnt == 1 {
+			if scans, sPer, minPer, maxPer, bndPer, ok :=
+				perFileScans(metas, leaf.Labels, keyName, conv); ok {
+				for _, sc := range scans {
+					children = append(children, cloneBranchWithScan(branch, sc))
+				}
+				sortedness = append(sortedness, sPer...)
+				bounds = append(bounds, bndPer...)
+				if len(minPer) == len(sPer) {
+					minKeys = append(minKeys, minPer...)
+					maxKeys = append(maxKeys, maxPer...)
+				} else {
+					haveZone = false
+				}
+				continue
+			}
+		}
+
+		// Single whole-keyspace child fallback for this branch.
 		s, minK, maxK, boundNs, zoneOK, ok := aggregateBranchMeta(metas, keyName)
 		if !ok {
 			return nil // key isn't the proven normalized sort key for this branch
 		}
-		sortedness[i], bounds[i] = s, boundNs
+		children = append(children, branch)
+		sortedness = append(sortedness, s)
+		bounds = append(bounds, boundNs)
 		if zoneOK {
-			minKeys[i], maxKeys[i] = minK, maxK
+			minKeys = append(minKeys, minK)
+			maxKeys = append(maxKeys, maxK)
 		} else {
 			haveZone = false
 		}
 	}
+
 	if !haveZone {
 		minKeys, maxKeys = nil, nil // "auto" can't prove disjointness without a full zone map
 	}
 	// Params layout: engine/op_merge_scan.go MergeScanExec
 	// [0]keyIdx [1]regime [2]sortedness [3]minKeys [4]maxKeys [5]bounds [6]policy.
+	ms.Children = children
 	ms.Params = []interface{}{ms.Params[0], "auto", sortedness, minKeys, maxKeys, bounds, "error"}
 	MergeMetaRewriteApplied++
 	return ms
@@ -912,6 +954,160 @@ func aggregateBranchMeta(metas []FileSortedSourceMeta, keyName string) (
 		zoneOK = false
 	}
 	return sortedness, minK, maxK, boundNs, zoneOK, true
+}
+
+// -------------------------------------------------------------------
+// Per-file child scans (DESIGN-merging.md "Multi-bundle / cross-node clusters").
+//
+// A merge/ASOF input keyspace that resolves to MULTIPLE recipe files (a **/*.log
+// glob, a classic keyspace of many files, or K per-node cbcollect bundles with
+// OVERLAPPING time ranges) is scanned by default as ONE CONCATENATED stream (records
+// walks + unions the files into a single cursor). Concatenated overlapping files are
+// not globally key-ordered, so the merge's monotonicity tripwire rejects them. The
+// fix here turns such a keyspace into K per-file ORDERED child inputs to the K-way
+// merge -- each file its own cursor with its own SortedSourceMeta zone map -- so the
+// engine's "auto" regime concatenates disjoint daily files and heap/watermarks
+// overlapping cross-node files. This is the enabler for cross-node ASOF and the
+// single-glob timeline.
+
+// EnablePerFileMergeScans gates the per-file expansion (default on). Off, a multi-
+// file merge/ASOF keyspace stays a single concatenated child (the pre-existing
+// behavior) -- which trips the tripwire on overlapping files. The differential
+// tests toggle it to prove the fix both fires and is required.
+var EnablePerFileMergeScans = true
+
+// PerFileMergeApplied counts how many multi-file keyspaces perFileScans expanded into
+// per-file merge children (test observability, mirroring MergeMetaRewriteApplied).
+var PerFileMergeApplied int64
+
+// perFileScans expands a multi-file, recipe-matched keyspace into K per-file
+// datastore-scan-records leaf ops (each backed by a single-file flatKeyspace) plus
+// the per-child merge-scan Params (sortedness/minKeys/maxKeys/bounds) derived from
+// each file's memoized SortedSourceMeta. metas is the keyspace's per-file metadata
+// (from SortedSourceMetasForKeyspace); scanLabels is the label set each leaf scan
+// advertises (the branch/asof leaf's own [".alias","^id"]); keyName is the proven
+// normalized sort-key field every file must carry. conv.AddTemp registers each
+// single-file keyspacer into the SAME Temps the execution reads.
+//
+// ok=false (the caller keeps its single whole-keyspace child) when: the feature is
+// gated off, there are < 2 recipe files, or any file is unsorted / not keyed by
+// keyName. When EVERY file carries a zone map (RecordCount > 0) the children are
+// returned sorted by MinKey (aligned arrays) so the engine's "auto" regime can prove
+// disjoint files concatenate; if any file lacks a zone the zone map is dropped
+// (minKeys/maxKeys returned empty -> heap/watermark), matching aggregateBranchMeta.
+//
+// Cold path (plan time): the per-file ops + Temps entries are fine to allocate; the
+// merge steady state stays zero-alloc, and each single-file scan lazy-opens its file.
+func perFileScans(metas []FileSortedSourceMeta, scanLabels base.Labels, keyName string,
+	conv *Conv) (scans []*base.Op, sortedness, minKeys, maxKeys, bounds []interface{}, ok bool) {
+	if !EnablePerFileMergeScans || len(metas) < 2 || conv == nil {
+		return nil, nil, nil, nil, nil, false
+	}
+
+	type perFile struct {
+		scan              *base.Op
+		sorted            string
+		minK, maxK, bound int64
+		hasZone           bool
+	}
+	files := make([]perFile, 0, len(metas))
+	zoneOK := true
+
+	for _, fm := range metas {
+		m := fm.Meta
+		if m.SortKeyLabel != keyName || m.Sortedness == records.SortedNone {
+			return nil, nil, nil, nil, nil, false // not the proven sorted source
+		}
+		sorted := records.SortedStrict
+		if m.Sortedness == records.SortedNear {
+			sorted = records.SortedNear
+		}
+		idx := conv.AddTemp(asofKeyspacer{ks: &flatKeyspace{file: fm.Path}})
+		scan := &base.Op{
+			Kind:   "datastore-scan-records",
+			Labels: append(base.Labels{}, scanLabels...),
+			Params: []interface{}{idx},
+		}
+		pf := perFile{scan: scan, sorted: sorted, bound: m.Disorder.WindowNanos}
+		if m.RecordCount > 0 {
+			pf.minK, pf.maxK, pf.hasZone = m.MinKey, m.MaxKey, true
+		} else {
+			zoneOK = false
+		}
+		files = append(files, pf)
+	}
+
+	// A full zone map lets "auto" prove disjointness only if the children are ordered
+	// by min key (the consecutive max<=min test); sort them so disjoint daily files
+	// concatenate regardless of walk order. Overlapping files still fall to heap.
+	if zoneOK {
+		sort.SliceStable(files, func(i, j int) bool { return files[i].minK < files[j].minK })
+	}
+
+	for _, pf := range files {
+		scans = append(scans, pf.scan)
+		sortedness = append(sortedness, pf.sorted)
+		bounds = append(bounds, pf.bound)
+		if zoneOK {
+			minKeys = append(minKeys, pf.minK)
+			maxKeys = append(maxKeys, pf.maxK)
+		}
+	}
+	atomic.AddInt64(&PerFileMergeApplied, 1)
+	return scans, sortedness, minKeys, maxKeys, bounds, true
+}
+
+// branchScanLeaf returns the single datastore-scan leaf under op and the TOTAL number
+// of scan leaves in the subtree. The count lets the caller expand only a branch with
+// exactly one scan (a plain project(scan)); a branch with a join/two scans is left as
+// a single concatenated child (cloneBranchWithScan would mis-replace both leaves).
+func branchScanLeaf(op *base.Op) (leaf *base.Op, count int) {
+	if op == nil {
+		return nil, 0
+	}
+	if strings.HasPrefix(op.Kind, "datastore-scan") {
+		return op, 1
+	}
+	for _, c := range op.Children {
+		l, n := branchScanLeaf(c)
+		count += n
+		if l != nil && leaf == nil {
+			leaf = l
+		}
+	}
+	return leaf, count
+}
+
+// cloneBranchWithScan deep-clones a union branch's op subtree, substituting newScan
+// for the (single) datastore-scan leaf -- so a branch's projection is reproduced K
+// times, once per per-file scan. Labels/Params are copied at the slice level; their
+// elements (label strings, ["exprTree", expr] terms, project-columns) are read-only
+// at exec time, so sharing them across clones is safe.
+func cloneBranchWithScan(branch, newScan *base.Op) *base.Op {
+	if branch == nil {
+		return nil
+	}
+	if strings.HasPrefix(branch.Kind, "datastore-scan") {
+		return newScan
+	}
+	c := &base.Op{
+		Kind:   branch.Kind,
+		Labels: append(base.Labels{}, branch.Labels...),
+		Params: append([]interface{}{}, branch.Params...),
+	}
+	for _, ch := range branch.Children {
+		c.Children = append(c.Children, cloneBranchWithScan(ch, newScan))
+	}
+	return c
+}
+
+// mergeScanParamsMulti builds a K-child merge-scan's Params (engine layout
+// [keyIdx, regime, sortedness, minKeys, maxKeys, bounds, policy]) from the aligned
+// per-child arrays perFileScans returns. Regime "auto": concatenate when the zone
+// maps prove disjoint, else heap (escalating to watermarked-near for a near child).
+// Policy "error": a wrong zone-map / disorder-bound claim fails loudly, never mis-orders.
+func mergeScanParamsMulti(keyIdx int, sortedness, minKeys, maxKeys, bounds []interface{}) []interface{} {
+	return []interface{}{keyIdx, "auto", sortedness, minKeys, maxKeys, bounds, "error"}
 }
 
 // -------------------------------------------------------------------
@@ -1102,62 +1298,106 @@ func tryLowerASOFProject(p *base.Op, conv *Conv, byKey map[string]plan.Operator)
 	// --- build the LEFT (probe) input: merge-scan(E) over a key-materializing ----
 	// project over scan(E). Keeps the whole E doc (.e) so the outer project's other
 	// terms (e.ts, .e) resolve unchanged; adds ^ekey = e.<KeyField> (int64) and one
-	// column per partition-eq outer field.
+	// column per partition-eq outer field. mkLeft wraps ONE E scan (the whole-keyspace
+	// scanE, or a per-file scan when E resolves to multiple files -- see perFileScans).
 	eKeyLabel := "^ekey"
-	leftProj := &base.Op{
-		Kind:     "project",
-		Labels:   base.Labels{scanE.Labels[0], eKeyLabel},
-		Params:   []interface{}{[]interface{}{"labelPath", scanE.Labels[0]}, exprTerm(fieldRef(outerAlias, match.KeyField))},
-		Children: []*base.Op{scanE},
+	mkLeft := func(sc *base.Op) *base.Op {
+		lp := &base.Op{
+			Kind:     "project",
+			Labels:   base.Labels{sc.Labels[0], eKeyLabel},
+			Params:   []interface{}{[]interface{}{"labelPath", sc.Labels[0]}, exprTerm(fieldRef(outerAlias, match.KeyField))},
+			Children: []*base.Op{sc},
+		}
+		for i, eq := range match.PartitionEq {
+			lp.Labels = append(lp.Labels, "^epart"+itoa(i))
+			lp.Params = append(lp.Params, exprTerm(fieldRef(outerAlias, eq.OuterField)))
+		}
+		return lp
 	}
+	leftKeyIdx := 1 // position of ^ekey in the left project's Labels
 	var leftParts []interface{}
-	for i, eq := range match.PartitionEq {
-		lbl := "^epart" + itoa(i)
-		leftProj.Labels = append(leftProj.Labels, lbl)
-		leftProj.Params = append(leftProj.Params, exprTerm(fieldRef(outerAlias, eq.OuterField)))
-		leftParts = append(leftParts, len(leftProj.Labels)-1)
+	for i := range match.PartitionEq {
+		leftParts = append(leftParts, 2+i) // ^epart_i sits after .e(0), ^ekey(1)
 	}
-	leftKeyIdx := 1 // position of ^ekey in leftProj.Labels
-	msE := &base.Op{
-		Kind:     "merge-scan",
-		Labels:   append(base.Labels{}, leftProj.Labels...),
-		Params:   mergeScanParams(leftKeyIdx, eSorted, eMin, eMax, eBound, eZone),
-		Children: []*base.Op{leftProj},
+	var msE *base.Op
+	if scans, sPer, minPer, maxPer, bndPer, okE :=
+		perFileScans(eMetas, scanE.Labels, match.KeyField, conv); okE {
+		children := make([]*base.Op, len(scans))
+		for i, sc := range scans {
+			children[i] = mkLeft(sc)
+		}
+		msE = &base.Op{
+			Kind:     "merge-scan",
+			Labels:   append(base.Labels{}, children[0].Labels...),
+			Params:   mergeScanParamsMulti(leftKeyIdx, sPer, minPer, maxPer, bndPer),
+			Children: children,
+		}
+	} else {
+		lp := mkLeft(scanE)
+		msE = &base.Op{
+			Kind:     "merge-scan",
+			Labels:   append(base.Labels{}, lp.Labels...),
+			Params:   mergeScanParams(leftKeyIdx, eSorted, eMin, eMax, eBound, eZone),
+			Children: []*base.Op{lp},
+		}
 	}
 
 	// --- build the RIGHT (build) input: merge-scan(R) over a project over a fresh --
 	// PLAIN scan(R). Produces ^rkey = r.<KeyField> (int64) and asofresult =
 	// [{ProjAlias: r.ProjField}] -- the array-wrapped single-row subquery projection.
-	rScanIdx := conv.AddTemp(asofKeyspacer{ks: rKS})
-	scanR := &base.Op{
-		Kind:   "datastore-scan-records",
-		Labels: base.Labels{"." + LabelSuffix(match.RightAlias), "^id"},
-		Params: []interface{}{rScanIdx},
-	}
+	// mkRight wraps ONE R scan; R also per-file-expands when it resolves to K files
+	// (the cross-node state keyspace case).
+	rScanLabels := base.Labels{"." + LabelSuffix(match.RightAlias), "^id"}
 	rKeyLabel := "^rkey"
 	asofResultLabel := ".[\"" + asofResultField + "\"]"
-	rightProj := &base.Op{
-		Kind:   "project",
-		Labels: base.Labels{rKeyLabel, asofResultLabel},
-		Params: []interface{}{
-			exprTerm(fieldRef(match.RightAlias, match.KeyField)),
-			exprTerm(asofResultExpr(match)),
-		},
-		Children: []*base.Op{scanR},
+	mkRight := func(sc *base.Op) *base.Op {
+		rp := &base.Op{
+			Kind:   "project",
+			Labels: base.Labels{rKeyLabel, asofResultLabel},
+			Params: []interface{}{
+				exprTerm(fieldRef(match.RightAlias, match.KeyField)),
+				exprTerm(asofResultExpr(match)),
+			},
+			Children: []*base.Op{sc},
+		}
+		for i, eq := range match.PartitionEq {
+			rp.Labels = append(rp.Labels, "^rpart"+itoa(i))
+			rp.Params = append(rp.Params, exprTerm(fieldRef(match.RightAlias, eq.RightField)))
+		}
+		return rp
 	}
+	rightKeyIdx := 0 // position of ^rkey in the right project's Labels
 	var rightParts []interface{}
-	for i, eq := range match.PartitionEq {
-		lbl := "^rpart" + itoa(i)
-		rightProj.Labels = append(rightProj.Labels, lbl)
-		rightProj.Params = append(rightProj.Params, exprTerm(fieldRef(match.RightAlias, eq.RightField)))
-		rightParts = append(rightParts, len(rightProj.Labels)-1)
+	for i := range match.PartitionEq {
+		rightParts = append(rightParts, 2+i) // ^rpart_i sits after ^rkey(0), asofresult(1)
 	}
-	rightKeyIdx := 0 // position of ^rkey in rightProj.Labels
-	msR := &base.Op{
-		Kind:     "merge-scan",
-		Labels:   append(base.Labels{}, rightProj.Labels...),
-		Params:   mergeScanParams(rightKeyIdx, rSorted, rMin, rMax, rBound, rZone),
-		Children: []*base.Op{rightProj},
+	var msR *base.Op
+	if scans, sPer, minPer, maxPer, bndPer, okR :=
+		perFileScans(rMetas, rScanLabels, match.KeyField, conv); okR {
+		children := make([]*base.Op, len(scans))
+		for i, sc := range scans {
+			children[i] = mkRight(sc)
+		}
+		msR = &base.Op{
+			Kind:     "merge-scan",
+			Labels:   append(base.Labels{}, children[0].Labels...),
+			Params:   mergeScanParamsMulti(rightKeyIdx, sPer, minPer, maxPer, bndPer),
+			Children: children,
+		}
+	} else {
+		rScanIdx := conv.AddTemp(asofKeyspacer{ks: rKS})
+		scanR := &base.Op{
+			Kind:   "datastore-scan-records",
+			Labels: append(base.Labels{}, rScanLabels...),
+			Params: []interface{}{rScanIdx},
+		}
+		rp := mkRight(scanR)
+		msR = &base.Op{
+			Kind:     "merge-scan",
+			Labels:   append(base.Labels{}, rp.Labels...),
+			Params:   mergeScanParams(rightKeyIdx, rSorted, rMin, rMax, rBound, rZone),
+			Children: []*base.Op{rp},
+		}
 	}
 
 	// --- build the merge-join. Left-outer so a no-preceding outer row survives with

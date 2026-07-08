@@ -296,7 +296,7 @@ func PlanConvert(qp *plan.QueryPlan) (*PreparedPlan, error) {
 	// Track A's SortedSourceMeta proves the ORDER BY key is a normalized int64 sorted
 	// source (real per-branch sortedness/disorder/zone-map Params); no-op otherwise.
 	// gctx is nil here (plan-time); SortedSourceMetasForKeyspace then walks fresh.
-	conv.TopOp = WireTemporalMergeMeta(conv.TopOp, conv.Temps, nil)
+	conv.TopOp = WireTemporalMergeMeta(conv.TopOp, conv, nil)
 	// A -> B wiring (DESIGN-merging.md §3, piece 2): lower a proven correlated argmax
 	// subquery -> a streaming ASOF merge-join. Runs alongside WireTemporalMergeMeta,
 	// with the Conv (to register the fresh right-scan keyspace into the same Temps

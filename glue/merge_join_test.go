@@ -16,6 +16,7 @@ package glue
 import (
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 )
 
@@ -218,6 +219,65 @@ func TestASOFLoweringPartitionedDifferential(t *testing.T) {
 	// partition is respected.
 	if on[1] != `{"ts":1779024973500000000,"node":"n2","state_at":null}` {
 		t.Fatalf("partitioned row1 should be null (no same-node preceding), got: %s", on[1])
+	}
+}
+
+// TestASOFLoweringCrossNodeDifferential is the cross-node ASOF net (DESIGN-merging.md
+// "Multi-bundle / cross-node clusters"): the argmax state keyspace R resolves to TWO
+// recipe files (two nodes) whose ts ranges INTERLEAVE. The default single concatenated
+// R scan is not globally ts-ordered, so the merge-join's build side would trip its
+// monotonicity tripwire; per-file expansion turns R into two ordered cursors the ASOF
+// merge consumes. ON (lowered, per-file R) must be BYTE-IDENTICAL to the correlated
+// baseline (OFF), and the per-file expansion must actually fire.
+func TestASOFLoweringCrossNodeDifferential(t *testing.T) {
+	root := t.TempDir()
+	// E (outer) = a single-file errors log.
+	asofWriteKS(t, root, "elog", "ns_server.error.log",
+		nsLine("2026-05-17T15:36:11.100+02:00", "n1", "e-100")+ // no preceding R
+			nsLine("2026-05-17T15:36:13.300+02:00", "n1", "e-300")+
+			nsLine("2026-05-17T15:36:15.500+02:00", "n1", "e-500"))
+	// R (state) = TWO files whose ts ranges INTERLEAVE across files: file r1 spans
+	// 12.2..15.0, file r2 spans 13.0..14.4, so the concatenated (r1 then r2) stream
+	// is out of order (15.0 then 13.0) -> requires per-file cursors to merge.
+	asofWriteKS(t, root, "rlog", "ns_server.r1.log",
+		nsLine("2026-05-17T15:36:12.200+02:00", "nA", "r-a")+
+			nsLine("2026-05-17T15:36:15.000+02:00", "nA", "r-d"))
+	asofWriteKS(t, root, "rlog", "ns_server.r2.log",
+		nsLine("2026-05-17T15:36:13.000+02:00", "nB", "r-b")+
+			nsLine("2026-05-17T15:36:14.400+02:00", "nB", "r-c"))
+
+	s, err := OpenSession(root, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	stmt := "SELECT e.ts AS ts, " +
+		"(SELECT r.msg FROM default:rlog r WHERE r.ts <= e.ts ORDER BY r.ts DESC LIMIT 1) AS state_at " +
+		"FROM default:elog e ORDER BY e.ts"
+
+	beforePF := atomic.LoadInt64(&PerFileMergeApplied)
+	off, _, fired := runBoth(t, s, stmt)
+	if !fired {
+		t.Fatalf("expected the cross-node ASOF lowering to FIRE; it did not")
+	}
+	if atomic.LoadInt64(&PerFileMergeApplied) == beforePF {
+		t.Fatalf("expected per-file expansion of the 2-file R keyspace to fire")
+	}
+	// e@11.1 -> no preceding R (null); e@13.3 -> nearest preceding is R@13.0 (r-b);
+	// e@15.5 -> nearest preceding is R@15.0 (r-d). runBoth already asserted ON==OFF.
+	want := []string{
+		`{"ts":1779024971100000000,"state_at":null}`,
+		`{"ts":1779024973300000000,"state_at":[{"msg":"r-b"}]}`,
+		`{"ts":1779024975500000000,"state_at":[{"msg":"r-d"}]}`,
+	}
+	if len(off) != len(want) {
+		t.Fatalf("want %d rows, got %d: %v", len(want), len(off), off)
+	}
+	for i := range want {
+		if off[i] != want[i] {
+			t.Fatalf("row[%d]: want %s got %s", i, want[i], off[i])
+		}
 	}
 }
 
