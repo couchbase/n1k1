@@ -69,9 +69,18 @@ func ExprBetween(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
 	triExprFunc := func(lzA, lzB, lzC base.ExprFunc, lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) { // !lz
 		if LzScope {
-			lzValItem := lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
-			lzValLow := lzB(lzVals, lzYieldErr)  // <== emitCaptured: path "B"
-			lzValHigh := lzC(lzVals, lzYieldErr) // <== emitCaptured: path "C"
+			// Capture each operand FROM the shared lzVal register (emitCaptured
+			// replaces the marked line with the child's code, which writes lzVal);
+			// a direct lzValX := lzX(...) bind is DROPPED in the compiled path.
+			// Mirrors ExprArithBi.
+			lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
+			lzValItem := lzVal
+
+			lzVal = lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B"
+			lzValLow := lzVal
+
+			lzVal = lzC(lzVals, lzYieldErr) // <== emitCaptured: path "C"
+			lzValHigh := lzVal
 
 			if base.ValKind(lzValItem) == base.ValKindMissing ||
 				base.ValKind(lzValLow) == base.ValKindMissing ||

@@ -401,7 +401,6 @@ var compiledExprDenylist = map[string]bool{
 	"case": true, "concat": true, "greatest": true, "least": true,
 	"ifnull": true, "ifmissing": true, "ifmissingornull": true, "nvl": true,
 	// other captured-operand emitters
-	"between": true, // undefined lzValItem/lzValLow/lzValHigh
 }
 
 // exprParamsHasDenylisted reports whether a native optimized param tree contains a
