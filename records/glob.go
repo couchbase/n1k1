@@ -38,6 +38,15 @@ func HasGlobMeta(s string) bool {
 // leading directory, used as the dir-relative synthetic-ID root by WalkPrelisted.
 func GlobFiles(absGlob string, opts WalkOptions) (base string, files []string, err error) {
 	base = GlobBase(absGlob)
+	pattern := absGlob
+	// filepath.Walk does NOT descend a symlinked ROOT, so a symlinked base directory
+	// (commonly a symlinked data-root, e.g. `support-bundle-ex01 -> cbcollect_info_...`)
+	// would silently yield zero matches. Resolve the base to its real path and re-anchor
+	// the pattern on it, so the walked (real) paths still line up with globMatch.
+	if real, rerr := filepath.EvalSymlinks(base); rerr == nil && real != base {
+		pattern = real + strings.TrimPrefix(absGlob, base)
+		base = real
+	}
 	err = filepath.Walk(base, func(path string, info os.FileInfo, e error) error {
 		if e != nil {
 			return e
@@ -45,7 +54,7 @@ func GlobFiles(absGlob string, opts WalkOptions) (base string, files []string, e
 		if info.IsDir() {
 			return nil
 		}
-		if opts.eligible(path) && globMatch(absGlob, path) {
+		if opts.eligible(path) && globMatch(pattern, path) {
 			files = append(files, path)
 		}
 		return nil

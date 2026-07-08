@@ -1072,8 +1072,12 @@ func TestGlobMatchAndFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if base != filepath.Join(dir, "a") {
-		t.Errorf("base = %q, want %q", base, filepath.Join(dir, "a"))
+	// GlobFiles resolves symlinks in the base (a symlinked data-root wouldn't be
+	// walked otherwise); t.TempDir() on macOS lives under /var -> /private/var, so
+	// compare against the resolved expected base.
+	wantBase, _ := filepath.EvalSymlinks(filepath.Join(dir, "a"))
+	if base != wantBase {
+		t.Errorf("base = %q, want %q", base, wantBase)
 	}
 	if len(files) != 3 {
 		t.Fatalf("**/*.json want 3 files, got %d: %v", len(files), files)
@@ -1084,6 +1088,20 @@ func TestGlobMatchAndFiles(t *testing.T) {
 		t.Fatal(err)
 	} else if len(files1) != 1 {
 		t.Fatalf("a/*.json want 1 file, got %d: %v", len(files1), files1)
+	}
+
+	// Regression: a SYMLINKED base must still be walked. filepath.Walk won't descend a
+	// symlinked ROOT, so a symlinked data-root (the common cbcollect case,
+	// `support-bundle-ex01 -> cbcollect_info_...`) once yielded zero matches; GlobFiles
+	// resolves the base symlink and re-anchors the pattern.
+	link := filepath.Join(dir, "alink")
+	if err := os.Symlink(filepath.Join(dir, "a"), link); err != nil {
+		t.Skipf("symlink unsupported here: %v", err)
+	}
+	if _, lf, err := GlobFiles(filepath.Join(link, "**", "*.json"), AllModes()); err != nil {
+		t.Fatal(err)
+	} else if len(lf) != 3 {
+		t.Fatalf("glob over a symlinked base: want 3 files, got %d: %v", len(lf), lf)
 	}
 }
 

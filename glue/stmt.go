@@ -187,6 +187,15 @@ func FileStore(path string) (*Store, error) {
 		dsPath, flatFile = filepath.Dir(path), path
 	}
 
+	// Resolve a symlinked data-root to its real path. cbcollect bundles are commonly
+	// symlinked (`support-bundle-ex01 -> cbcollect_info_...`), and filepath.Walk (used
+	// by records glob/flat-root scans) won't descend a symlinked ROOT -- so an
+	// unresolved symlink root silently yields zero rows. Resolving here makes every
+	// downstream path (file datastore URL, flat-root RecordsDir, glob base) real.
+	if resolved, rerr := filepath.EvalSymlinks(dsPath); rerr == nil {
+		dsPath = resolved
+	}
+
 	ds, err := file.NewDatastore(dsPath)
 	if err != nil {
 		return nil, err
