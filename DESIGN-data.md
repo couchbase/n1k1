@@ -14,6 +14,23 @@ and the `.n1k1/` sidecar (`catalog.json`, `manifest.json`) that keeps derived
 artifacts (indexes, caches, zone maps) in sync with changing sources. It takes
 inspiration from DuckDB, Spark, AWS Athena/Glue, ClickHouse, and Iceberg.
 
+A reworked **§4 extract provider** and a new **[sorted-source contract](#sorted-sources)**
+generalize how n1k1 ingests any tree of **heterogeneous, messy, domain-specific
+files**: a two-phase `describe`/`extract` model with **pluggable extract recipes**
+(matched by extension/regexp, loaded from a git repo) that turn irregular inputs into
+typed rows plus the **timestamp-normalization + sortedness metadata** a **K-way
+near-sorted merge join** (and ASOF temporal correlation) needs. See
+`DESIGN-extensions.md` for the extract-function surface.
+
+**n1k1 core stays domain-agnostic.** It knows nothing about any particular file
+family; *all* format/domain knowledge lives in the pluggable recipes. One motivating
+example — the one that drove `DESIGN-prepare.md`'s **PREPARE++** detector corpus — is
+Couchbase `cbcollect_info` support bundles (a tree of a dozen log formats, JSON dumps,
+and blobs), and it recurs as a concrete worked example ([P](#extract-bundle)). But the
+*same* mechanism serves any such tree: SEC/financial filings, tax records,
+astronomical survey catalogs, IoT/sensor streams, genomics runs, web/access logs. The
+support bundle is an *example*, not a built-in.
+
 The load-bearing decision: **new datastore behavior lives entirely n1k1-side in
 thin glue seams over `[]byte`, not in the forked `couchbase/query` (cbq)
 runtime** — and everything shipped so far needed **zero fork changes**. The two
@@ -33,8 +50,9 @@ artifacts, each independently pluggable) and *allocation discipline*
 8. [§2 Directory layouts & FROM-term resolution](#2-directory-layouts--from-term-resolution)
 9. [§2 Query-defined virtual datasources (VIEWs & generated catalogs)](#2-query-defined-virtual-datasources-views--generated-catalogs)
 10. [§3 Compression & containers](#3-compression--containers)
-11. [§4 The `extract` provider — unstructured documents](#4-the-extract-provider--unstructured-documents)
-12. [Worked examples: sample trees and their FROM clauses](#worked-examples-sample-trees-and-their-from-clauses)
+11. [§4 The `extract` provider — unstructured & semi-structured sources](#4-the-extract-provider--unstructured--semi-structured-sources)
+12. [Sorted & near-sorted sources: the merge-join contract](#sorted-sources)
+13. [Worked examples: sample trees and their FROM clauses](#worked-examples-sample-trees-and-their-from-clauses)
 13. [§5 Indexes & derived artifacts: storage + change detection](#5-indexes--derived-artifacts-storage--change-detection)
 14. [§6 Primary keys / document IDs (`META().id`) & `_meta`](#6-primary-keys--document-ids-metaid--_meta)
 15. [Dependency licensing (permissive only)](#dependency-licensing-permissive-only)
@@ -97,7 +115,12 @@ Still proposal / not built: catalog/sidecar (`.n1k1/catalog.json`), manifests &
 zone maps (§5), Parquet/ORC/Avro, `.zip` containers, zstd decode, composite
 offset doc-IDs & seekable-fetch for compressed containers, query-defined VIEWs
 (needs `VisitUnionAll`), object-store backend, encryption-at-rest, inline table
-functions (needs a grammar fork).
+functions (needs a grammar fork). **Also proposal (this rework):** the two-phase
+`describe`/`extract` provider with pluggable JS extractors + ext/regexp matching
+(§4); the sorted-source contract (normalized time key, `disorder_bound`, time zone
+maps) and the K-way near-sorted **merge join** that consumes it
+([sorted sources](#sorted-sources)) — the PREPARE++ enabler. The shipped extract
+provider (ex. L) is the built-in baseline the rework generalizes.
 
 ## Relationship to `DESIGN-indexing.md`
 
@@ -640,18 +663,123 @@ not a single stream).
 - Caveat: gzip/zstd streams aren't seekable, so columnar formats (Parquet) lose
   random-access/pushdown when gzipped — fine for row formats.
 
-## §4 The `extract` provider — unstructured documents
+## §4 The `extract` provider — unstructured & semi-structured sources
 
-Crack open unstructured files, extract content as queryable rows, optionally
-full-text index them (ties to FTS/bleve in `DESIGN-indexing.md`).
+Crack open files that aren't clean rows — office/PDF documents **and** the messy
+semi-structured bulk of the real world: log files, command-output dumps, config
+concatenations, opaque binary blobs, domain-specific record dumps. Turn each into
+queryable rows **plus** the file-level **metadata** that makes the rest of the engine
+work (pruning, `_meta`, doc-IDs, and — the load-bearing new consumer — the
+[sorted-source merge](#sorted-sources)).
 
-### Model
-An **extractor** kind of `RecordSource`: input is one document file, output is one
-row (`filename`, extracted `text`, metadata) — or *many* rows for tabular docs (one
-per spreadsheet row / slide / page). Extracted rows flow through the normal pipeline
-and can feed a bleve FTS index.
+**Domain knowledge lives in recipes, never in n1k1 core.** The engine provides the
+generic *seam* (match a file → describe it → extract rows); a user brings a git repo
+of recipes carrying the knowledge of *their* files. A support engineer's recipes
+understand `cbcollect_info` logs; a fintech's understand SEC EDGAR filings; an
+astronomer's understand FITS headers or survey catalogs. The concrete worked example
+throughout this doc ([P](#extract-bundle)) is a `cbcollect_info` bundle because it
+drove the design (`DESIGN-prepare.md` PREPARE++), but read it as *one instance* of the
+generic mechanism — nothing about bundles is baked in.
 
-### Libraries (well-tested **and** permissively licensed)
+> **Status: proposal (rework).** The *shipped* extract provider (`records/extract.go`,
+> ex. L) does one narrow thing — one file → one `{filename, kind, text, …}` record,
+> keyed by extension, pure-Go. Everything below **re-examines and reworks** that seam
+> to serve the bundle use case: two-phase (describe/extract), pluggable (JS
+> extractors from a git repo), matched by extension **or** regexp, streaming, and
+> metadata-rich. The shipped office/PDF/media extractors become the *built-in
+> baseline* under the new model.
+
+### Two things an extractor produces — and why they split
+A real extractor produces **two** outputs on two very different cadences:
+
+1. **`describe(file) → metadata`** — a *cheap, once-per-file* pass that may only
+   **sample** (head/tail/a few KB), returning what the planner and manifest need
+   *before* a full scan: the format, how records are framed, the **timestamp / sort
+   key contract**, sortedness + zone maps on that key, provenance, record count. This
+   is the new load-bearing output — it feeds §5 (manifest/zone maps), §6 (doc-IDs),
+   source-routing (`DESIGN-prepare.md` MQO), and the [merge join](#sorted-sources).
+   Memoized in `.n1k1/` keyed by the file fingerprint (§5), so it runs once per bundle.
+
+2. **`extract(file, meta) → records`** — the *streaming, per-record* pass at scan
+   time: frame the file into records and emit typed rows (a log line's `ts`/`level`/
+   `node`/`msg`; a doc's page text). Crucially it is **handed the earlier `describe`
+   result** (`meta`) rather than re-deriving it — no re-sniffing the format, no
+   re-scanning to find the timestamp column or record boundaries. Streams with bounded
+   memory (reusing the push-based source op — `DESIGN-extensions.md` streaming
+   sources), so a 400 MB log never materializes.
+
+**`describe` feeds `extract`, and the sidecar makes it once-ever.** The `describe`
+result is memoized in `.n1k1/` keyed by the file fingerprint (§5), so the *expensive,
+format-specific* work happens **once per file across all queries** — the first scan (or
+an explicit pre-scan pass) runs `describe`; every later `extract` (this query and every
+future one) reads the cached `ExtractSpec` + measured metadata (zone maps, sync points,
+`disorder_bound`) straight from the sidecar and just executes it. On a re-scan of an
+unchanged file, `describe` doesn't even re-run. So the split isn't only "cheap vs hot"
+— it's "compute the description once, reuse it forever." A changed file (fingerprint
+mismatch) re-describes only that file.
+
+Splitting them is the whole point. **Description is where the hard, format- and
+use-case-specific knowledge lives** — what a `cbcollect` banner means, which regex
+pulls the timestamp out of *this* log, how near-sorted it is — and it is cheap and
+runs once. **Extraction is hot** (GB of lines) and must stay fast. So description is
+the pluggable seam, and extraction, wherever possible, runs **natively from a
+declarative spec** the describe pass returns — keeping per-row work off the JS/boxed
+lane.
+
+### Declarative spec (fast) vs imperative extract (flexible)
+Most log formats are *regular*: a line regex, a timestamp regex, a multiline
+continuation rule. So the preferred contract is **`describe` returns a declarative
+`ExtractSpec`, and n1k1 applies it natively** (byte-oriented, per-record, zero JS on
+the hot path). Only formats too irregular for a spec — crack a binary blob, stateful
+multiline assembly, a format that genuinely needs code — fall back to an **imperative
+`extract(file, meta, emit)`** (handed this file's cached describe result as `meta`)
+that runs per-record in the chosen runtime (JS today; a Go
+builtin or Wasm later) through the streaming source op — flexible, but paying the
+boundary cost. The spec covers the bundle's logs; the imperative escape hatch covers
+`event_log`-style blobs and `users.dets`.
+
+`ExtractSpec` (the declarative core — see `DESIGN-extensions.md` for the JS surface
+that *produces* it):
+
+- **`framing`** — how bytes split into records: `line` (one per line); `multiline`
+  (a lead line plus continuation lines matching a `continuation` regex — the
+  ns_server/diag Erlang term dumps span lines); `json` (JSONL — `master_events.log`);
+  `section` (one record per `====`-banner block — `couchbase.log` is **302**
+  concatenated command outputs); or `whole` (one record — the office/PDF baseline).
+- **`fields`** — how to lift typed columns out of each framed record: named regex
+  captures or a grok-style pattern (`ts`, `level`, `node`, `module`, `msg`). Native,
+  reusing the byte-regex work (`DESIGN-exprs.md`) so it stays on the fast lane.
+- **`time`** — the sort-key contract: which field is the timestamp, its `layout`
+  (`RFC3339` / `epoch_s` / `epoch_ms` / a strftime), default timezone → normalized to
+  one sortable **int64 epoch-nanos** key. The single field the merge join requires.
+- **`order`** — `sorted: strict|near|none`, and for `near` a **`disorder_bound`**
+  (see [sorted sources](#sorted-sources)).
+- **`provenance`** — constants lifted from the file once (the banner `command`; the
+  `node` id parsed from log content, e.g. `ns_1@MXCPD1001814944.eci.geci`) that ride
+  every record's `_meta`.
+
+### Matching a file to an extractor — extension **and** regexp
+The shipped registry is keyed by extension alone (`.pdf`, `.log`). The bundle breaks
+that: nearly everything is `.log`, yet `ns_server.info.log`, `diag.log`,
+`memcached.log`, and `cbcollect_info.log` are four *different* formats, and
+`master_events.log` is JSONL. So matching gains a **regexp over the bundle-relative
+path**, plus a **priority** to resolve overlap (a specific `ns_server\..*\.log` beats
+a generic `\.log$`). An extractor declares `{exts, names (regexps), priority}`; the
+highest-priority match wins. **This is the same matcher `DESIGN-prepare.md`'s
+source-routing uses** to decide which detectors fan out to which file — one mechanism,
+two consumers.
+
+### Built-in extractors stay; the seam becomes open
+The pure-Go office/PDF/media extractors (`records/extract.go`, shipped — ex. L)
+remain the **built-in baseline**, re-expressed as extractors that return an
+`ExtractSpec{framing: whole}`. What's new is that the registry is **open**: an
+extractor can also come from a **git-cloned repo of JS** — the "recipe repo" sibling
+of the detector corpus (`DESIGN-prepare.md`, `DESIGN-extensions.md`) — matched by
+ext/regexp, contributing `describe`/`extract`. n1k1 ships built-ins for the common
+cbcollect formats; users `git pull` more. Because describe output is content-addressed
+into the sidecar (§5), a new extractor version invalidates only the files it matches.
+
+### Libraries (built-in document extractors; permissive only)
 Document extraction is where the licensing landmines are — MIT/Apache-2.0/BSD only.
 - **Breadth/OCR:** Apache **Tika** (Apache-2.0, 60+ formats; Java sidecar) or
   **`extractous`** (core Apache-2.0; Rust wrapping Tika + Tesseract OCR; Go
@@ -663,6 +791,81 @@ Document extraction is where the licensing landmines are — MIT/Apache-2.0/BSD 
 - **Recommendation:** a pluggable backend — a pure-Go default (excelize +
   ledongthuc/pdf or pdfcpu) and an optional Tika/extractous build-tag backend for
   breadth + OCR. Office docs being zip-based dovetails with §3.
+
+## Sorted & near-sorted sources: the merge-join contract <a name="sorted-sources"></a>
+
+This is the payoff of the describe metadata, and the enabler for temporal correlation
+over any time-ordered records — log lines, trades, sensor readings, telescope
+observations, transactions. (`DESIGN-prepare.md`'s support engineers phrase it as ASOF:
+*"what was the rebalance state when this error fired?"*; a fintech user asks the same
+of a quote stream vs a trade stream.) Such records are **sorted or near-sorted by
+time**; a K-way **merge** across many files is O(N log K) and streams — vastly cheaper
+than sorting the whole corpus, and than the O(n²) naive correlated subquery. But a merge is correct only if the
+extract layer hands it a trustworthy **sort key + sortedness contract**. That contract
+is `ExtractSpec`'s `time` + `order`, materialized into the manifest (§5).
+
+### The normalized sort key
+`describe`'s `time` spec normalizes each source's wildly different timestamps —
+`2026-05-17T15:36:11.198+02:00` (ns_server, ms), `2026-05-20T08:50:17.593648+02:00`
+(memcached, µs), `1779150134.812159` (master_events, epoch float), `[2026-…]`
+(cbcollect) — into **one comparable int64 epoch-nanos** key, timezone-normalized (the
+bundle spans `+02:00`). Only then are streams from different files and nodes directly
+comparable. Without this the merge cannot order across sources at all; it is the
+single most important extract output.
+
+### Sortedness, classified
+- **`strict`** — every record's key ≥ its predecessor. Merge is a plain K-way
+  min-heap.
+- **`near`** — mostly sorted, **bounded** disorder. Real logs are near-sorted: threads
+  flush buffers slightly out of order, µs ties reorder, an occasional late line. A
+  merge still yields globally-sorted output *if the disorder is bounded* — buffer a
+  small reordering window and gate emission on a **watermark**.
+- **`none`** — unsorted; must be spill-sorted before merging (falls back to the
+  existing ORDER BY / `base/heap.go` machinery).
+
+### The `disorder_bound` (the load-bearing number)
+For `near`, describe states *how* out-of-order the file can be, as either:
+- **`{window: Δt}`** — a record's key is never more than Δt behind an already-seen
+  key (bounded lateness — the Flink/Dataflow watermark model). Natural for time.
+- **`{span: N}`** — a record is never more than N positions from its sorted place.
+
+Where the bound comes from: **declared** by the format author (they know the logger's
+buffering), or **measured** by describe from its sample (count/size the inversions in
+a head/tail window, take a conservative max). Either way it is a *claim*, and a wrong
+claim silently corrupts a merge — so the merge operator must **validate** it (below).
+
+### The merge operator (a separate task — designed-for here)
+A K-way merge source op, one cursor per file/stream:
+- **Disjoint ranges → concatenate, no heap.** If the zone maps show
+  `max_key(fᵢ) ≤ min_key(fᵢ₊₁)` (daily logs rarely overlap), stream files in order —
+  the cheapest case, common for dated partitions (ex. E/G).
+- **Strict → min-heap merge.** Pop the smallest key, advance that cursor. O(N log K).
+- **Near → watermarked buffer.** Hold a record until the **watermark** —
+  `min over live cursors(frontier_key) − max disorder_bound` — passes its key,
+  guaranteeing no earlier record can still arrive; then emit in order. Buffer size is
+  bounded by `disorder_bound × arrival rate`, so memory stays bounded (spill if not).
+- **Validate the claim.** If a record arrives with a key *older than the current
+  watermark* (the `disorder_bound` was too small), the merge must NOT silently emit
+  out of order: it **widens the buffer and warns**, or errors, per a strictness knob;
+  a source whose bound can't be trusted falls back to a full spill-sort. Honesty here
+  is non-negotiable — a wrong bound is a *correctness* bug, not a perf one.
+
+### ASOF / temporal join rides the merge
+`DESIGN-prepare.md`'s ASOF ("join each error to the nearest-preceding rebalance
+state") is the merge with a join twist: advance both key-ordered streams together,
+keeping the latest left-of-key row from the other stream. The stock-SQL++ correlated
+"argmax" subquery the planner recognizes then runs as this O(n) merge instead of
+O(n²). Windowed rate/burst/streak detectors ride the same ordered stream. So the
+throughline is: **extract's `time`+`order` metadata → merge op → ASOF/window
+temporal detectors** — from raw bundle bytes to the correlations engineers write.
+
+### What the manifest stores (feeds §5)
+Per sorted source, alongside the change-detection fields: `sort_key` (the normalized
+field + how to derive it), `sortedness`, `disorder_bound`, `min_key`/`max_key` (the
+**time zone map** — powers both merge concatenation *and* `WHERE ts BETWEEN`
+pruning), `record_count`, and periodic **key→offset sync points** (every N records)
+that double as the §6 seekable doc-ID index and let a merge cursor *seek* to a start
+time rather than scan from the top. See §5 "Manifest contents."
 
 ## Worked examples: sample trees and their FROM clauses
 
@@ -830,6 +1033,40 @@ implicit WITH binding (CTE machinery); the eras present as one keyspace. **Block
 `VisitUnionAll`**; the `WHERE` also wants pushdown into the era sub-scans (the open
 question). A single-source reshaping view (no UNION) works without that blocker.
 
+**P. Support bundle (`cbcollect_info`) — heterogeneous logs via describe/extract +
+merge 🟡 (the driving `DESIGN-prepare.md` case)**
+```
+support-bundle-ex01/
+  ns_server.info.log  diag.log  memcached.log  cbcollect_info.log  # 4 log formats, all *.log
+  master_events.log                                                # JSONL, epoch-float ts
+  couchbase.log                                                    # 302 ====-banner sections
+  rebalance_report_*.json  goxdcr_*.json                           # JSON dumps
+  event_log  users.dets  stats_snapshot/                          # opaque blobs
+```
+An extractor recipe repo, matched by **regexp** (not just extension, since all are
+`.log`), describes each format via `describe(file) → ExtractSpec`:
+- `ns_server\..*\.log`, `diag.log` → `{framing: multiline, continuation: /^\s|^\[/,
+  fields: {ts, level, node, module, msg}, time: {field: ts, layout: RFC3339,
+  tz: "+02:00"}, order: {near, {window: "2s"}}, provenance: {command, node}}`
+- `master_events.log` → `{framing: json, time: {field: ts, layout: epoch_s}}`
+- `couchbase.log` → `{framing: section}` (each `====` block a record tagged with the
+  shell command that produced it — provenance for free)
+- `event_log`, `users.dets` → imperative `extract(file, meta, emit)` (crack the blob), or
+  skipped via `-formats`.
+
+Then a detector reads clean, time-ordered rows across nodes:
+```sql
+-- errors across all node logs, globally time-ordered via a K-way near-sorted merge
+SELECT l._meta.node, l.ts, l.msg
+FROM ns_logs l                    -- keyspace = union of ns_server.*.log, MERGED by ts
+WHERE l.level = 'error'
+  AND l.ts BETWEEN '2026-05-17T00:00' AND '2026-05-18T00:00'
+```
+`WHERE ts BETWEEN` prunes files by the time zone map; the union scans as a
+**watermarked near-sorted merge** (globally time-ordered, bounded memory); `level`
+and `node` came from the declarative `fields`/`provenance` — no per-row JS. This is
+**one** detector; PREPARE++ runs thousands over the same single merged scan (MQO).
+
 ### What the examples reveal
 1. Flat-root naming (B) resolved to *basename* and shipped.
 2. The cheap cases (A/B/C/D/E/H-gzip/J/L) all stay on the opaque-document path — why
@@ -841,6 +1078,11 @@ question). A single-source reshaping view (no UNION) works without that blocker.
    scan layer (links to the indexing doc's zone-map tier).
 5. The VIEW case (O) reuses WITH/CTE for free but is gated on `VisitUnionAll` and
    predicate-pushdown — the highest-leverage feature for "morphed-over-time."
+6. The support-bundle case (P) is a *different* kind of hard: not schema morphing but
+   **format heterogeneity + irregular framing + per-source timestamp normalization**.
+   It's why extract splits into cheap-`describe` (pluggable, format-specific) and
+   fast-`extract` (native from a spec), and why the sortedness/time metadata is
+   first-class — it's the input to the merge join and to PREPARE++ source-routing.
 
 ## §5 Indexes & derived artifacts: storage + change detection
 
@@ -936,6 +1178,13 @@ The richer the manifest, the more we can *skip* — change detection, partition
 it (Parquet/Iceberg do this); `schema_fingerprint` (drives `union_by_name`);
 `partition_values` (from the path); per-index `built_through_offset`/`built?`;
 `status`+`error` (failed files recorded, not dropped); `last_scanned_at`.
+**Extract/sorted-source fields (§4):** the memoized `ExtractSpec` (or its hash) —
+`format`/`framing`/`fields`/`provenance`; and the **sorted-source contract** —
+`sort_key`, `sortedness` (`strict`/`near`/`none`), `disorder_bound`, the **time zone
+map** `min_key`/`max_key` (int64 epoch-nanos), and periodic **key→offset sync points**
+(double as the §6 seekable doc-ID index and let a merge cursor seek to a start time).
+These are what the [K-way merge / ASOF](#sorted-sources) reads; computed by `describe`,
+so they cost one sampling pass per file, not a full scan.
 
 **Per partition / subdirectory (Merkle rollup):** `merkle_hash` (subtree-skip);
 aggregates `doc_count`/`byte_count`/`file_count` + rolled `min_id`/`max_id` + column
@@ -1152,6 +1401,24 @@ discovery was done by wrapping the fork's datastore with `datastore/virtual`
 9. ⬜ Encryption-at-rest: transparent decrypt layer (Tink/age segmented), envelope keys
    via `gocloud.dev/secrets`, and **encrypted sidecar artifacts**.
 
+**Extract rework + sorted-source track (the PREPARE++ enabler — §4, [sorted
+sources](#sorted-sources); JS surface in `DESIGN-extensions.md`):**
+
+E1. ⬜ **Two-phase extract seam** — `describe(file) → ExtractSpec` + `extract` (native
+    from spec; imperative fallback); generalize the shipped extractor registry to
+    ext-**and**-regexp matching with priority. Built-in office/PDF become `{whole}` specs.
+E2. ⬜ **Native declarative execution** — `framing` (line/multiline/json/section/whole) +
+    `fields` (byte-regex/grok) + `time` (normalize to int64 epoch-nanos) applied
+    per-record on the fast lane, no per-row JS.
+E3. ⬜ **Pluggable JS extractors** — `*.extract.js` from a git-cloned recipe repo,
+    describe-returns-spec keeps JS off the hot path (`DESIGN-extensions.md`); memoized
+    into the sidecar (§5), content-addressed.
+E4. ⬜ **Sorted-source manifest fields** — `sort_key`/`sortedness`/`disorder_bound`/time
+    zone map/sync points (§5), produced by `describe`.
+E5. ⬜ **K-way merge source op** — disjoint→concat, strict→heap, near→watermarked buffer
+    with bound-validation; feeds ASOF + windowed temporal detectors. *(Separate task;
+    the metadata E4 produces is its precondition.)*
+
 Separable tracks:
 - **Query-defined VIEWs:** (i) single-source reshaping views land with catalog-view
   expansion (WITH/CTE machinery); (ii) union/normalize views unblock once
@@ -1207,6 +1474,26 @@ Separable tracks:
 - **Encryption scope & seekability.** Which segmented-encryption format (Tink vs age),
   and whether to require seekable compression/encryption for large encrypted sources vs
   accepting rescan-from-checkpoint.
+- **`disorder_bound`: declared, measured, or both — and what happens when it's wrong.**
+  A sampled bound can under-estimate; the merge must validate (widen+warn / error /
+  spill-sort fallback). How conservative should the default be, and is a per-source
+  strictness knob the right surface? (§4, [sorted sources](#sorted-sources).)
+- **`ExtractSpec` expressiveness vs the imperative escape hatch.** How much do the
+  declarative `framing`/`fields`/`time` primitives cover before a format forces
+  imperative `extract(file, meta, emit)` (and the per-row JS/boxed cost)? Grok-completeness,
+  stateful multiline, nested framing (a `section` whose body is itself `multiline`).
+- **Log time model.** Normalizing wildly different timestamp formats/timezones/precision
+  into one int64 epoch-nanos key — per-source `time` spec (chosen here) vs inference; how
+  to handle missing/renamed/rolled-over timezones and clock skew across nodes (the merge
+  compares keys *across* nodes, so skew is a correctness risk). (Mirrors
+  `DESIGN-prepare.md`'s open question.)
+- **Extract-recipe repo governance.** The JS extractor repo is a trusted-code surface
+  (like the detector corpus). Signing/pinning, golden-fixture CI per extractor
+  (`DESIGN-testing.md`), and how describe-spec invalidation interacts with the
+  content-addressed sidecar cache.
+- **Concatenate vs merge threshold.** Disjoint time ranges → concatenate (no heap); but
+  near-boundary overlap within `disorder_bound` still needs a merge at the seam. Detect
+  and localize the merge to just the overlapping tail/head?
 
 ## Sources
 
@@ -1235,3 +1522,14 @@ Separable tracks:
   https://developers.google.com/tink/streaming-aead
 - age STREAM / `DecryptReaderAt` (chunked, random-access decryption):
   https://github.com/FiloSottile/age
+- Watermarks / bounded out-of-orderness (the `disorder_bound` model for near-sorted
+  merge): Apache Flink event-time & watermarks
+  https://nightlies.apache.org/flink/flink-docs-stable/docs/concepts/time/ ;
+  Google Dataflow — The world beyond batch: Streaming 102 (watermarks, allowed lateness)
+  https://www.oreilly.com/radar/the-world-beyond-batch-streaming-102/
+- ASOF joins (nearest-preceding temporal join as an ordered merge): DuckDB ASOF JOIN
+  https://duckdb.org/docs/current/guides/sql_features/asof_join
+- grok / logfmt log-line field extraction (the `fields` primitive): Elastic grok
+  https://www.elastic.co/guide/en/elasticsearch/reference/current/grok-processor.html
+- lnav — log-format definitions & auto-detection (prior art for per-format extract
+  specs): https://docs.lnav.org/en/latest/formats.html

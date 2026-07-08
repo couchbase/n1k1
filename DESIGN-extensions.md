@@ -21,6 +21,7 @@ everything: n1k1 builds `CGO_ENABLED=0`.
 - [JS UDF runtime & state (the goja execution model)](#js-udf-runtime--state-the-goja-execution-model)
 - [Extension aggregates](#extension-aggregates)
 - [Table-valued / streaming sources in FROM](#table-valued--streaming-sources-in-from)
+- [Extract functions (`*.extract.js`) — file-matched, scan-layer extensions](#extract-functions)
 - [Dynamic loading in Go](#dynamic-loading-in-go)
 - [JS extension power tiers](#js-extension-power-tiers)
 - [Streaming CTEs / subqueries](#streaming-ctes--subqueries)
@@ -122,6 +123,12 @@ n1k1 owns the fork, so both are open.
 `VisitExecuteFunction` returns `NA()` and no functions storage/language is initialized,
 so unknown/UDF names error at parse today. Wiring that bridge is the one-time
 prerequisite for the drop-in tiers below (and for `CREATE FUNCTION` DDL).
+
+**Off this seam entirely: [extract functions](#extract-functions).** They are matched
+to *files* (by extension/regexp), not invoked by *name* in SQL, so they never go
+through steps 1–4 and need no parser resolution — they register into a separate
+scan-layer extract registry (`DESIGN-data.md` §4). Keep the two dispatch axes distinct:
+name→function (this seam) vs file→extractor (the extract registry).
 
 ## Hard constraint: CGO_ENABLED=0
 
@@ -382,6 +389,137 @@ This is why **document shredding belongs at the source/scan layer, not a scalar
 expression** (DESIGN-data.md): one-to-many, I/O- and memory-heavy, streams naturally.
 `SELECT … FROM shred("docs/*.pdf") AS d` composes with WHERE/GROUP BY and spills like any
 operator.
+
+## Extract functions (`*.extract.js`) — file-matched, scan-layer extensions <a name="extract-functions"></a>
+
+Everything above is **name-invoked**: `NAME(args)` in SQL, resolved through the
+[function-name seam](#the-function-name-resolution-seam). **Extract functions are a
+different class**, on a different dispatch axis: they are *implicit*, **matched to
+files** by extension/regexp and run by the **scan/extract layer** (`DESIGN-data.md`
+§4) to turn messy inputs into typed rows **plus** the file-level metadata the engine
+prunes and merges by. They never appear in SQL and never touch the parser seam; they
+register into a separate **extract registry** (`DESIGN-data.md` §4 owns the seam &
+metadata schema — this section owns the *JS authoring surface* that plugs into it).
+
+**n1k1 core is domain-agnostic — all file knowledge lives in the recipes.** A user
+brings a git-cloned repo of JS extract recipes that understand *their* files: log
+formats, financial-filing dumps, astronomical catalogs, sensor streams — whatever they
+have. The engine only provides the generic match→describe→extract seam. The recurring
+example here is `DESIGN-prepare.md`'s **PREPARE++** (recipes cracking a `cbcollect_info`
+support bundle into clean, time-sortable keyspaces a detector corpus queries) because it
+drove the design — but nothing about bundles, or Couchbase, is baked in; swap the recipe
+repo and the same machinery serves SEC filings or FITS files. The extract repo is the
+*sibling* of the detector repo: both versioned in git, both content-addressed, both
+consumed by the corpus compiler.
+
+### The contract: `match`, `describe`, `extract`
+
+A `*.extract.js` file (new suffix, slotting into the same `extensionLoaders` dispatch
+as `*.agg.js`/`*.stream.js`) exports up to three things:
+
+```js
+// cb_ns_server.extract.js — ns_server-style Couchbase logs
+
+// (1) match — which files this recipe claims. Extension list and/or regexps over the
+//     bundle-relative path; higher `priority` wins on overlap (a specific pattern
+//     beats a generic `\.log$`). This is ALSO DESIGN-prepare.md's source-routing key.
+export const match = {
+  exts:     [".log"],
+  names:    [/ns_server\..*\.log$/, /^diag\.log$/, /^info\.log$/],
+  priority: 10,
+};
+
+// (2) describe(file) -> ExtractSpec (+ measured metadata). CHEAP: runs ONCE per file,
+//     may only sample (file.head/tail/slice), memoized into the .n1k1 sidecar keyed by
+//     the file fingerprint. Returns a DECLARATIVE spec n1k1 executes natively, so no
+//     JS runs on the per-record hot path. This is where the hard, format-specific
+//     knowledge lives.
+export function describe(file) {
+  const banner = file.head(4096);                    // parse the ==== cbcollect banner
+  return {
+    format:  "ns_server_log",
+    framing: { kind: "multiline", continuation: /^\s|^\[/ }, // Erlang dumps span lines
+    fields:  { pattern: /\[(?<module>\w+):(?<level>\w+),(?<ts>[^,]+),(?<node>[^:]+):/ },
+    time:    { field: "ts", layout: "RFC3339", tz_default: "+02:00" }, // -> int64 ns
+    order:   { sorted: "near", disorder_bound: { window: "2s" } },
+    provenance: { command: bannerCommand(banner), node: bannerNode(banner) },
+  };
+}
+
+// (3) extract(file, meta, emit) -> records. OPTIONAL imperative escape hatch for
+//     formats too irregular for a spec (crack a binary blob, stateful assembly).
+//     `meta` is THIS FILE'S earlier describe() result (spec + measured metadata),
+//     handed in from the .n1k1 sidecar cache — so extract never re-sniffs: it reads
+//     meta.framing/meta.time/meta.provenance and gets to work. Streams via emit()
+//     (bounded memory, backpressure) — but pays the per-record JS boundary (~1 µs/row),
+//     so prefer a declarative describe wherever the format is regular.
+export function extract(file, meta, emit) {
+  for (const rec of file.records(meta.framing)) emit({ ts: rec.ts, msg: rec.text });
+}
+```
+
+**Preferred path: `describe` returns a spec, n1k1 executes it natively.** Because GB
+of log lines can't afford the ~1 µs/row goja boundary, the *default* is that JS runs
+**only in `describe`** (once per file), returning a declarative `ExtractSpec`
+(`framing`/`fields`/`time`/`order`/`provenance` — `DESIGN-data.md` §4). n1k1 applies
+that spec on the **byte-native fast lane** (regex field capture, timestamp
+normalization), so the hot per-record path never enters JS. `extract(file, meta, emit)` is
+the fallback for the irregular tail, on the existing streaming `js-stream` op.
+
+### The `file` host object (read-only, single-file capability)
+
+`describe`/`extract` get a `file` handle whose authority is **exactly one file** — no
+network, no other paths, no exec (unlike the power-tier sources' `-ext-allow-net/exec`).
+Members:
+
+- `file.path`, `file.size`, `file.name`, `file.ext` — identity (bundle-relative path).
+- `file.head(n)` / `file.tail(n)` / `file.slice(off, len)` — sampling reads for a
+  cheap `describe` (don't read a 400 MB log to sniff its format).
+- `file.lines()` / `file.records(framing?)` — lazy iterators for `extract` (bounded
+  memory; the host frames per `framing` or per line).
+
+Keeping the capability to one read-only file makes an extract recipe the *ideal Wasm
+shape* later ("bytes in → transform → rows/spec out, no ambient authority" — the
+[registry vision](#vision-a-sandboxed-extension-registry)); the JS tier is the pure-Go
+`CGO_ENABLED=0` starting point.
+
+### The registry = a git repo, matched by file (not by name)
+
+Reuse the Tier-2 loader machinery, one axis changed: instead of *name → function*, the
+extract registry is *file-matcher → describe/extract*. `RegisterExtractDir(dir)` scans
+`.n1k1/extractors/*.extract.js` (or a `-extractors` flag / cloned repo); each file's
+`match` block indexes it. Overlap resolves by `priority` then load order. `git pull`
+adds formats. n1k1 ships **built-in** extractors for the common cbcollect formats and
+the office/PDF baseline (`records/extract.go`, re-expressed as `{framing: whole}`
+specs — `DESIGN-data.md` §4); the repo *extends*, never having to touch Go.
+
+### Why this shape (recap of the split)
+
+- **`describe` is pluggable & cheap; `extract` is native & hot.** The format-specific
+  intelligence (which regex, how near-sorted, what a header means) is JS that runs
+  once; the GB-scale row production is native from the returned spec. Best of both.
+- **Describe once, reuse forever.** The describe result is memoized in `.n1k1/` keyed
+  by file fingerprint (`DESIGN-data.md` §5), and handed to every later `extract` as its
+  `meta` argument — across this query and all future ones. An unchanged file never
+  re-describes; a changed file re-describes only itself. The expensive, format-specific
+  pass is paid once per file, not once per scan.
+- **The metadata is first-class, not a side effect.** `describe`'s `time`+`order` is
+  precisely the [sorted-source contract](DESIGN-data.md) the **K-way near-sorted merge
+  join** and **ASOF** temporal correlation consume — the reason support engineers can
+  ask "what was the rebalance state when this error fired?" over unsorted-looking logs.
+- **One matcher, two consumers.** The `match` regexp that selects an extractor is the
+  same signal `DESIGN-prepare.md`'s MQO uses to route a detector's `FROM` to the files
+  it targets — so building extract recipes also builds the source-routing index.
+
+### Testing (golden fixtures, mirrors the detector corpus)
+
+Each recipe ships a golden fixture: a **tiny file fragment → expected `ExtractSpec` +
+expected first-N records** (and, for sorted sources, the expected `min_key`/`max_key`/
+`disorder_bound`). CI runs every recipe against the fixture library on change — the
+same differential/golden discipline as detectors (`DESIGN-testing.md`,
+`DESIGN-prepare.md`), so an AI agent can propose a recipe for a newly-seen log format
+with confidence, and a wrong `disorder_bound` (a silent merge-corruption risk) is
+caught before it ships.
 
 ## Dynamic loading in Go
 
@@ -759,6 +897,15 @@ bounded, capability-free Wasm instance that streams JSON.
    today), CLI `-ext`/`.ext`; impl in `glue/ext_jsvm.go`.
 3. **Streaming source-function op** + route `FROM shred(...)`/loaders to it; pair with
    DESIGN-data.md file-source work.
+   - **3b. Extract functions (`*.extract.js`) — the PREPARE++ enabler.** A new
+     extension class on the *file→extractor* axis (not the name seam): `match` +
+     `describe(file) → ExtractSpec` (native execution, JS off the hot path) +
+     imperative `extract(file, meta, emit)` fallback (reuses the step-3 streaming op). A
+     read-only single-file `file` host object; a git-repo registry matched by
+     ext/regexp; golden-fixture CI. Produces the timestamp-normalization + sortedness
+     metadata the **K-way merge join / ASOF** consume (`DESIGN-data.md`
+     [sorted sources](DESIGN-data.md), §4/§5). Built-in office/PDF extractors become
+     `{framing: whole}` specs under the same seam.
 4. **Native Go builtins** via `expression.RegisterFunction` (patch-05) for doc parsers,
    or expose them as sources per step 3. (`sparkline`/`histogram` already exercise the
    aggregate side via patch-06.)
