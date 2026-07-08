@@ -133,6 +133,29 @@ func matchClaims(m ExtractMatch, relPath string) bool {
 	return true
 }
 
+// DescribeMemo, when non-nil, wraps a recipe's per-file describe() pass with a
+// caller-supplied memoization layer. glue installs one backed by the .n1k1 sidecar
+// (DESIGN-data.md §4 "Describe once, reuse forever"; §5 per-file fingerprint), so a
+// second open of an UNCHANGED file skips the expensive describe() and reads the
+// cached ExtractSpec + SortedSourceMeta straight back -- once per file across queries
+// AND processes. records itself stays pure-Go and sidecar-unaware: runDescribe calls
+// through this seam when set, else runs describe() directly (the default for a bare
+// `records` import or a records-package test). A changed file (fingerprint mismatch)
+// re-describes only that file; that logic lives entirely on the glue side.
+var DescribeMemo func(path string, describe DescribeFunc) (ExtractSpec, SortedSourceMeta, error)
+
+// runDescribe applies a recipe's describe() to path, routing through DescribeMemo
+// when a memoization layer is installed (the sidecar cache), else calling describe()
+// directly. It returns the declarative spec (the scan path's input to SpecApply) and
+// the measured SortedSourceMeta. This is the single seam OpenFile uses so the cache
+// covers every recipe-matched open.
+func runDescribe(rp *Recipe, path string) (ExtractSpec, SortedSourceMeta, error) {
+	if DescribeMemo != nil {
+		return DescribeMemo(path, rp.Describe)
+	}
+	return rp.Describe(path)
+}
+
 // MeasureSortedSource samples path through spec's native framing/time path and
 // returns the SortedSourceMeta the K-way merge consumes (min/max epoch-nanos key,
 // record count, sortedness + disorder bound). It is the exported wrapper around the

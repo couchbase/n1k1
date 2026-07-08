@@ -266,14 +266,17 @@ func OpenFile(path, idPrefix string) (Source, error) {
 	// multiline log recipe beats the generic whole-file .log text extractor. When one
 	// matches, describe() (cheap, sampled) yields the declarative ExtractSpec and
 	// SpecApply runs it natively (or the recipe's imperative Extract, if any). The
-	// measured SortedSourceMeta is memoized in the .n1k1 sidecar by glue (deferred);
-	// here describe just produces the spec. See recipe.go / DESIGN-data.md §4.
+	// describe result (spec + measured SortedSourceMeta) is memoized in the .n1k1
+	// sidecar by glue via the DescribeMemo seam (see runDescribe / recipe.go), so an
+	// unchanged file's describe() runs once across queries and processes; a bare
+	// records import (no seam installed) just runs describe() every open. See
+	// recipe.go / DESIGN-data.md §4-§5.
 	matchPath := idPrefix
 	if matchPath == "" {
 		matchPath = filepath.Base(path)
 	}
 	if rp := RecipeFor(matchPath); rp != nil {
-		spec, _, err := rp.Describe(path)
+		spec, _, err := runDescribe(rp, path)
 		if err != nil {
 			return nil, err
 		}

@@ -19,7 +19,9 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/couchbase/n1k1/records"
 )
@@ -271,4 +273,205 @@ func writeAppLog(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return p
+}
+
+// nsLogKeyspaceFixture ts values normalized to int64 epoch-nanos (see the
+// differential test above): error@15:36:10.000 is the min, warn@15:36:12.500 the max,
+// and the file order (info, warn, error) puts the min LAST -- so the source is
+// near-sorted with a ~2.5s disorder window.
+const (
+	nsMinKeyNanos = int64(1779024970000000000) // 2026-05-17T15:36:10.000+02:00
+	nsMaxKeyNanos = int64(1779024972500000000) // 2026-05-17T15:36:12.500+02:00
+)
+
+// writeNSLogKeyspace lays out a datastore root with one ns_server-style .log keyspace
+// (default/logs) claimed by the built-in records recipe, and registers the root so
+// describe results memoize under <root>/.n1k1/. Returns the root and the log path.
+func writeNSLogKeyspace(t *testing.T) (root, logPath string) {
+	t.Helper()
+	root = t.TempDir()
+	ks := filepath.Join(root, "default", "logs")
+	if err := os.MkdirAll(ks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	logPath = filepath.Join(ks, "ns_server.debug.log")
+	if err := os.WriteFile(logPath, []byte(nsLogKeyspaceFixture), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	registerDataRoot(root) // OpenSession would do this; do it directly for the unit path.
+	return root, logPath
+}
+
+// extractCacheFile is the sidecar JSON path a file's memoized describe lands at.
+func extractCacheFile(t *testing.T, root, logPath string) string {
+	t.Helper()
+	absRoot, _ := filepath.Abs(root)
+	absLog, _ := filepath.Abs(logPath)
+	rel, err := filepath.Rel(absRoot, absLog)
+	if err != nil {
+		t.Fatalf("Rel(%s,%s): %v", absRoot, absLog, err)
+	}
+	return extractCachePath(absRoot, rel)
+}
+
+func readExtractCacheEntry(t *testing.T, path string) extractCacheEntry {
+	t.Helper()
+	blob, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read cache %s: %v", path, err)
+	}
+	var ent extractCacheEntry
+	if err := json.Unmarshal(blob, &ent); err != nil {
+		t.Fatalf("decode cache %s: %v", path, err)
+	}
+	return ent
+}
+
+// TestExtractCacheMemoizesDescribe proves the .n1k1 sidecar makes describe() run
+// ONCE per file: the first open runs describe (a cache miss, cache file written); a
+// second open of the UNCHANGED file reads the cache and skips describe; and a CHANGED
+// file (size/mtime bumped) re-describes and rewrites the cache with the new
+// fingerprint. Uses a counting DescribeFunc so the run/skip is observed directly,
+// independent of the global counters.
+func TestExtractCacheMemoizesDescribe(t *testing.T) {
+	root, logPath := writeNSLogKeyspace(t)
+
+	var calls int32
+	counting := func(path string) (records.ExtractSpec, records.SortedSourceMeta, error) {
+		atomic.AddInt32(&calls, 1)
+		return records.NSLogDescribe(path)
+	}
+
+	hits0 := atomic.LoadInt64(&ExtractCacheHits)
+	cacheFile := extractCacheFile(t, root, logPath)
+
+	// First open: cache miss -> describe runs once, cache file written.
+	if _, _, err := describeMemoized(logPath, counting); err != nil {
+		t.Fatalf("describeMemoized #1: %v", err)
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("after first open, describe calls = %d, want 1", got)
+	}
+	ent1 := readExtractCacheEntry(t, cacheFile)
+	if ent1.Relpath != filepath.Join("default", "logs", "ns_server.debug.log") {
+		t.Errorf("cached relpath = %q", ent1.Relpath)
+	}
+	if ent1.Spec.Format != "ns_server_log" || ent1.Meta.SortKeyLabel != "ts" {
+		t.Errorf("cached spec/meta unexpected: spec=%+v meta=%+v", ent1.Spec, ent1.Meta)
+	}
+
+	// Second open of the UNCHANGED file: cache hit -> describe NOT re-run.
+	if _, _, err := describeMemoized(logPath, counting); err != nil {
+		t.Fatalf("describeMemoized #2: %v", err)
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("after second (unchanged) open, describe calls = %d, want still 1", got)
+	}
+	if hits := atomic.LoadInt64(&ExtractCacheHits); hits <= hits0 {
+		t.Errorf("ExtractCacheHits did not advance on the unchanged re-open (%d -> %d)", hits0, hits)
+	}
+
+	// Change the file (append a record -> size AND mtime differ): fingerprint mismatch
+	// forces a re-describe and a cache rewrite.
+	changed := nsLogKeyspaceFixture +
+		"[ns_server:info,2026-05-17T15:36:13.000+02:00,n3@host:normal]added record\n"
+	if err := os.WriteFile(logPath, []byte(changed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Bump mtime explicitly too, so the mtime half of the fingerprint is exercised
+	// even on a filesystem with coarse mtime resolution.
+	future := time.Now().Add(2 * time.Second)
+	if err := os.Chtimes(logPath, future, future); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, _, err := describeMemoized(logPath, counting); err != nil {
+		t.Fatalf("describeMemoized #3 (changed): %v", err)
+	}
+	if got := atomic.LoadInt32(&calls); got != 2 {
+		t.Fatalf("after changed open, describe calls = %d, want 2 (re-described)", got)
+	}
+	ent2 := readExtractCacheEntry(t, cacheFile)
+	if ent2.Size == ent1.Size {
+		t.Errorf("cache size not rewritten: still %d", ent2.Size)
+	}
+	if ent2.MtimeNanos == ent1.MtimeNanos {
+		t.Errorf("cache mtime not rewritten: still %d", ent2.MtimeNanos)
+	}
+	if ent2.Meta.RecordCount != 4 {
+		t.Errorf("re-described record count = %d, want 4", ent2.Meta.RecordCount)
+	}
+}
+
+// TestSortedSourceMetaFor proves the Track-B lookup seam returns the normalized
+// sorted-source contract for a recipe-matched file: the int64 epoch-nanos min/max key
+// zone map, the sort-key label, and the measured near-sorted classification. It also
+// checks the keyspace-level helper and that a non-recipe file yields ok=false.
+func TestSortedSourceMetaFor(t *testing.T) {
+	root, logPath := writeNSLogKeyspace(t)
+
+	meta, ok, err := SortedSourceMetaFor(logPath)
+	if err != nil {
+		t.Fatalf("SortedSourceMetaFor: %v", err)
+	}
+	if !ok {
+		t.Fatal("SortedSourceMetaFor: recipe-matched .log reported ok=false")
+	}
+	if meta.SortKeyLabel != "ts" {
+		t.Errorf("SortKeyLabel = %q, want ts", meta.SortKeyLabel)
+	}
+	if meta.MinKey != nsMinKeyNanos || meta.MaxKey != nsMaxKeyNanos {
+		t.Errorf("zone map = [%d,%d], want [%d,%d]",
+			meta.MinKey, meta.MaxKey, nsMinKeyNanos, nsMaxKeyNanos)
+	}
+	if meta.RecordCount != 3 {
+		t.Errorf("RecordCount = %d, want 3", meta.RecordCount)
+	}
+	// File order (info, warn, error) puts the min-key record last -> near-sorted with a
+	// ~2.5s disorder window (the max lateness measured off the sample).
+	if meta.Sortedness != records.SortedNear {
+		t.Errorf("Sortedness = %q, want %q", meta.Sortedness, records.SortedNear)
+	}
+	if meta.Disorder.WindowNanos != nsMaxKeyNanos-nsMinKeyNanos {
+		t.Errorf("Disorder.WindowNanos = %d, want %d",
+			meta.Disorder.WindowNanos, nsMaxKeyNanos-nsMinKeyNanos)
+	}
+
+	// A file no recipe claims (plain JSON) has no sorted-source contract.
+	plain := filepath.Join(filepath.Dir(logPath), "plain.json")
+	if err := os.WriteFile(plain, []byte(`{"a":1}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := SortedSourceMetaFor(plain); err != nil || ok {
+		t.Errorf("SortedSourceMetaFor(plain.json) = ok %v err %v, want ok=false", ok, err)
+	}
+
+	// The keyspace-level helper resolves the same file + meta from the store keyspace.
+	sess, err := OpenSession(root, "default")
+	if err != nil {
+		t.Fatalf("OpenSession: %v", err)
+	}
+	defer sess.Close()
+	ns, err := sess.Store.Datastore.NamespaceByName("default")
+	if err != nil {
+		t.Fatalf("NamespaceByName: %v", err)
+	}
+	logsKS, err := ns.KeyspaceByName("logs")
+	if err != nil {
+		t.Fatalf("KeyspaceByName(logs): %v", err)
+	}
+	metas, err := SortedSourceMetasForKeyspace(logsKS, nil)
+	if err != nil {
+		t.Fatalf("SortedSourceMetasForKeyspace: %v", err)
+	}
+	if len(metas) != 1 {
+		t.Fatalf("keyspace metas = %d, want 1", len(metas))
+	}
+	if metas[0].Meta.MinKey != nsMinKeyNanos || metas[0].Meta.MaxKey != nsMaxKeyNanos {
+		t.Errorf("keyspace meta zone map = [%d,%d], want [%d,%d]",
+			metas[0].Meta.MinKey, metas[0].Meta.MaxKey, nsMinKeyNanos, nsMaxKeyNanos)
+	}
+	if metas[0].Relpath != filepath.Join("default", "logs", "ns_server.debug.log") {
+		t.Errorf("keyspace meta relpath = %q", metas[0].Relpath)
+	}
 }
