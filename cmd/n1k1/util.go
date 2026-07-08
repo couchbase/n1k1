@@ -132,7 +132,7 @@ func (f prepareLevelFlag) Set(s string) error {
 	if s == "true" { // bare -prepare -> the maximum level
 		s = "full"
 	}
-	l, err := glue.ParsePrepareLevel(s)
+	l, err := glue.PrepareLevelParse(s)
 	if err != nil {
 		return err
 	}

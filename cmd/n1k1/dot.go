@@ -150,7 +150,7 @@ func (c *cli) dot(line string) bool {
 		case a == "":
 			fmt.Fprintf(c.stderr, "prepare %s\n", c.prepareLevel)
 		case isPrepareLevelToken(a):
-			c.prepareLevel, _ = glue.ParsePrepareLevel(a)
+			c.prepareLevel, _ = glue.PrepareLevelParse(a)
 			fmt.Fprintf(c.stderr, "prepare %s\n", c.prepareLevel)
 		default:
 			// Treat the arg as a one-shot statement: emit its Go, then run it.

@@ -75,7 +75,7 @@ type GlueContext struct {
 	// positionalArgs holds the request's positional query parameters ($1, $2, ...),
 	// resolved by PositionalArg at eval time (1-based: $1 is positionalArgs[0]). nil
 	// when the statement uses none. Fed by EXECUTE ... USING [...] and by
-	// Session.PositionalArgs. See runExecute.
+	// Session.PositionalArgs. See ExecuteRun.
 	positionalArgs value.Values
 
 	// withScope holds the query's WITH (CTE) aliases as fields, so an expression

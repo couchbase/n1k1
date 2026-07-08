@@ -46,13 +46,13 @@ type Session struct {
 	// PositionalArgs are optional positional query parameters ($1, $2, ...) supplied
 	// with the request; they flow to the planner and to eval-time PositionalParameter
 	// lookups (see GlueContext.PositionalArg). nil when the statement uses none. An
-	// EXECUTE ... USING [...] clause supplies these instead (see runExecute).
+	// EXECUTE ... USING [...] clause supplies these instead (see ExecuteRun).
 	PositionalArgs value.Values
 
 	// prepareds is this session's prepared-statement store (PREPARE ... AS <stmt> /
 	// EXECUTE <name>), keyed by name. Lazily created. Interpreter-only: PREPARE
 	// parses + caches the inner statement; EXECUTE re-plans and runs it with the
-	// bound args. See runPrepare / runExecute and DESIGN-prepare.md.
+	// bound args. See PrepareRun / ExecuteRun and DESIGN-prepare.md.
 	prepareds map[string]*preparedStmt
 
 	// CollectStats opts a run into the per-operator counter core: Run lays out a
@@ -115,7 +115,7 @@ type Result struct {
 
 	// Prepared is the name a PREPARE statement cached under (empty for any other
 	// statement), so a caller can confirm the prepare without the result carrying
-	// rows. See runPrepare.
+	// rows. See PrepareRun.
 	Prepared string
 }
 
@@ -201,23 +201,23 @@ func (s *Session) Run(stmt string) (res *Result, err error) {
 	// PREPARE / EXECUTE are handled in-session (a per-Session prepared-statement
 	// store), not by the cbq planner -- which has no home for them in n1k1's CE
 	// build (PlanStatementQP rejects PREPARE; EXECUTE would hit an unsupported
-	// plan.Discard). See runPrepare / runExecute and DESIGN-prepare.md.
+	// plan.Discard). See PrepareRun / ExecuteRun and DESIGN-prepare.md.
 	switch st := parsed.(type) {
 	case *algebra.Prepare:
-		return s.runPrepare(st)
+		return s.PrepareRun(st)
 	case *algebra.Execute:
-		return s.runExecute(st)
+		return s.ExecuteRun(st)
 	}
 
-	return s.runStatement(parsed, s.NamedArgs, s.PositionalArgs)
+	return s.StatementRun(parsed, s.NamedArgs, s.PositionalArgs)
 }
 
-// runStatement plans, converts, and executes an already-parsed statement with the
+// StatementRun plans, converts, and executes an already-parsed statement with the
 // given query parameters. It is the shared core of Run (a top-level statement) and
 // of EXECUTE (a prepared inner statement run with bound args). Its panics are
-// recovered by Run's deferred handler -- runStatement is only ever called within
-// Run's dynamic extent (directly, or via runExecute).
-func (s *Session) runStatement(parsed algebra.Statement,
+// recovered by Run's deferred handler -- StatementRun is only ever called within
+// Run's dynamic extent (directly, or via ExecuteRun).
+func (s *Session) StatementRun(parsed algebra.Statement,
 	namedArgs map[string]value.Value, positionalArgs value.Values) (res *Result, err error) {
 	qp, err := s.Store.PlanStatementQP(parsed, s.Namespace, namedArgs, positionalArgs)
 	if err != nil {
@@ -243,20 +243,20 @@ func (s *Session) runStatement(parsed algebra.Statement,
 		return &Result{Rows: []json.RawMessage{b}, Plan: convForDisplay(ex.Plan())}, nil
 	}
 
-	pp, err := convertPlan(qp)
+	pp, err := PlanConvert(qp)
 	if err != nil {
 		return nil, err
 	}
-	return s.execPlan(pp, namedArgs, positionalArgs)
+	return s.PlanExec(pp, namedArgs, positionalArgs)
 }
 
-// preparedPlan is a converted, reusable query plan: the op tree plus the per-conv
+// PreparedPlan is a converted, reusable query plan: the op tree plus the per-conv
 // state execution needs, built once (with no args baked in, so $params stay
 // deferred to eval) and re-run with fresh Vars per EXECUTE. Sharing topOp/temps
 // across runs is safe -- the mutable per-run state lives in the fresh Vars, not
 // here -- exactly as the subquery evaluator re-runs a cached sub-plan once per
 // outer row (see subCompiled / EvaluateSubquery).
-type preparedPlan struct {
+type PreparedPlan struct {
 	topOp        *base.Op
 	temps        []interface{}
 	cv           *ConvertVals
@@ -265,9 +265,9 @@ type preparedPlan struct {
 	subqueries   map[*algebra.Select]plan.Operator
 }
 
-// convertPlan converts a planned QueryPlan into a reusable preparedPlan (op tree +
+// PlanConvert converts a planned QueryPlan into a reusable PreparedPlan (op tree +
 // conv state), applying the same optimizations the execution path relies on.
-func convertPlan(qp *plan.QueryPlan) (*preparedPlan, error) {
+func PlanConvert(qp *plan.QueryPlan) (*PreparedPlan, error) {
 	conv := &Conv{Temps: []interface{}{nil}}
 	if _, err := qp.PlanOp().Accept(conv); err != nil {
 		return nil, &ErrUnsupported{Reason: err.Error()}
@@ -283,7 +283,7 @@ func convertPlan(qp *plan.QueryPlan) (*preparedPlan, error) {
 	if err != nil {
 		return nil, &ErrUnsupported{Reason: err.Error()}
 	}
-	return &preparedPlan{
+	return &PreparedPlan{
 		topOp:        conv.TopOp,
 		temps:        conv.Temps,
 		cv:           cv,
@@ -293,10 +293,10 @@ func convertPlan(qp *plan.QueryPlan) (*preparedPlan, error) {
 	}, nil
 }
 
-// execPlan runs a converted preparedPlan with the given query args bound at eval
-// time, collecting the result rows. Shared by runStatement (a freshly converted
+// PlanExec runs a converted PreparedPlan with the given query args bound at eval
+// time, collecting the result rows. Shared by StatementRun (a freshly converted
 // plan) and EXECUTE (a cached one). Panics propagate to Run's deferred recover.
-func (s *Session) execPlan(pp *preparedPlan,
+func (s *Session) PlanExec(pp *PreparedPlan,
 	namedArgs map[string]value.Value, positionalArgs value.Values) (*Result, error) {
 	if engine.ExprCatalog["exprStr"] == nil {
 		engine.ExprCatalog["exprStr"] = ExprStr
@@ -437,16 +437,16 @@ type preparedStmt struct {
 	text     string
 	stmt     algebra.Statement
 	uses     int64
-	compiled *preparedPlan // cached converted plan (params deferred to eval); nil until first EXECUTE
+	compiled *PreparedPlan // cached converted plan (params deferred to eval); nil until first EXECUTE
 }
 
-// runPrepare handles `PREPARE [name] AS <stmt>` (cbq also spells it `PREPARE [name]
+// PrepareRun handles `PREPARE [name] AS <stmt>` (cbq also spells it `PREPARE [name]
 // FROM <stmt>`): it caches the inner statement in the session's prepared-statement
 // store so a later EXECUTE can run it. An unnamed PREPARE keys on the inner
 // statement's text. It does NOT execute the inner statement, and returns an empty
 // result -- interpreter-only PREPARE is a cache, not a compile, so there is no
 // encoded-plan row to hand back (cf. cbq).
-func (s *Session) runPrepare(p *algebra.Prepare) (*Result, error) {
+func (s *Session) PrepareRun(p *algebra.Prepare) (*Result, error) {
 	name := p.Name()
 	if name == "" {
 		name = p.Statement().String() // unnamed PREPARE: key on the inner statement text
@@ -470,12 +470,12 @@ func (s *Session) PreparedInner(name string) (string, bool) {
 	return ps.stmt.String(), true
 }
 
-// runExecute handles `EXECUTE <name> [USING <args>]`: it looks up the prepared
-// statement, binds its query parameters, and runs it via runStatement. Args come
+// ExecuteRun handles `EXECUTE <name> [USING <args>]`: it looks up the prepared
+// statement, binds its query parameters, and runs it via StatementRun. Args come
 // from EITHER the USING clause (a constant array -> positional, object -> named) OR
 // the request's Session.NamedArgs / PositionalArgs -- never both (cbq rejects that
 // combination). See case_prepare.json.
-func (s *Session) runExecute(e *algebra.Execute) (*Result, error) {
+func (s *Session) ExecuteRun(e *algebra.Execute) (*Result, error) {
 	ps := s.prepareds[e.Prepared()]
 	if ps == nil {
 		return nil, fmt.Errorf("No such prepared statement: %s", e.Prepared())
@@ -522,12 +522,12 @@ func (s *Session) runExecute(e *algebra.Execute) (*Result, error) {
 		if err != nil {
 			return nil, err
 		}
-		pp, err := convertPlan(qp)
+		pp, err := PlanConvert(qp)
 		if err != nil {
 			return nil, err
 		}
 		ps.compiled = pp
 	}
 
-	return s.execPlan(ps.compiled, namedArgs, positionalArgs)
+	return s.PlanExec(ps.compiled, namedArgs, positionalArgs)
 }

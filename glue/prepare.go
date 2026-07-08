@@ -85,12 +85,12 @@ func (l PrepareLevel) String() string {
 	}
 }
 
-// ParsePrepareLevel parses a -prepare=<level> / .prepare <level> value into a
+// PrepareLevelParse parses a -prepare=<level> / .prepare <level> value into a
 // PrepareLevel ceiling. It accepts the canonical names (interpreted|data|full),
 // alias forms (interp; on -> full, off -> interpreted for the old boolean flag),
 // and an empty string (-> the interpreted default). An unknown value is an error
 // naming the accepted set.
-func ParsePrepareLevel(s string) (PrepareLevel, error) {
+func PrepareLevelParse(s string) (PrepareLevel, error) {
 	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "", "interpreted", "interp", "off":
 		return PrepareInterpreted, nil
