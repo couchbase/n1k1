@@ -192,6 +192,12 @@ func FileStore(path string) (*Store, error) {
 		return nil, err
 	}
 
+	// Innermost: recognize inline glob keyspace names (DESIGN-data.md Mode 2b,
+	// `FROM `./data/**/*.json``). Sits below the flat/secondary-index wrappers so
+	// their type identities survive; they delegate unknown names down to it. Bare
+	// (root-relative) globs anchor at dsPath (the data-root dir). See glob.go.
+	ds = maybeGlob(dsPath, ds)
+
 	if flatFile != "" {
 		// Single file: fake a synthetic default:<stem> keyspace reading just it.
 		ds = maybeFlatFile(flatFile, ds)

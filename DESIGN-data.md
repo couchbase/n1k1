@@ -508,7 +508,7 @@ we avoid. **Verdict: defer; make the catalog (mode 3) the power path.** The chea
 inline-glob surface would be a `read_csv(...)`-shaped keyspace-name *convention*, not
 a grammar extension.
 
-**Mode 2b — Backtick-quoted glob as a keyspace name (DECIDED — the fork-free inline
+**Mode 2b — Backtick-quoted glob as a keyspace name (✅ SHIPPED — the fork-free inline
 glob).** DuckDB's `FROM 'data/**/*.json'` translates to n1k1, no grammar/parser change,
 by **always backtick-quoting** the glob: `` FROM `./data/**/*.json` ``. Backticks make
 it a single quoted *identifier* (a keyspace name), and — per `DESIGN-extensions.md`'s

@@ -465,6 +465,19 @@ func KeyspaceDir(keyspace datastore.Keyspace) (string, error) {
 // they can never diverge -- the class of bug that once made .schema, which sampled
 // the filesystem on its own, report 0 docs for these layouts.
 func KeyspaceRecordsOpen(ks datastore.Keyspace, opts records.WalkOptions, gctx *GlueContext) (records.Source, error) {
+	// A glob keyspace (DESIGN-data.md Mode 2b) expands its pattern to just the
+	// matching files here, at scan time, so the -formats lockdown (opts) applies
+	// and freshly-added files are picked up. Checked before the directory walk
+	// because a glob keyspace also advertises RecordsDir (its walk base).
+	if g, ok := ks.(interface{ RecordsGlob() (string, bool) }); ok {
+		if pattern, has := g.RecordsGlob(); has {
+			base, files, err := records.GlobFiles(pattern, opts)
+			if err != nil {
+				return nil, err
+			}
+			return records.WalkPrelisted(base, files, opts), nil
+		}
+	}
 	if rf, ok := ks.(interface{ RecordsFile() string }); ok && rf.RecordsFile() != "" {
 		return records.File(rf.RecordsFile(), opts)
 	}

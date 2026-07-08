@@ -16,6 +16,7 @@ package glue
 import (
 	"os"
 	"path/filepath"
+	"sort"
 	"testing"
 )
 
@@ -179,5 +180,69 @@ func TestMaybeFlatMergesRealDefault(t *testing.T) {
 	got := keyspaceSet(t, store)
 	if !got["orders"] || !got["extra"] {
 		t.Errorf("expected merged real 'orders' + synthetic 'extra', got %v", got)
+	}
+}
+
+// TestGlobKeyspace: an inline glob as a backtick-quoted keyspace name (DESIGN-data.md
+// Mode 2b) resolves to the union of its matches -- no cbq grammar change. Covers the
+// bare (root-relative) form, that ** recurses while a single * does not, that the
+// *.json pattern excludes the .csv, and the absolute form.
+func TestGlobKeyspace(t *testing.T) {
+	root := t.TempDir()
+	write := func(p, body string) {
+		full := filepath.Join(root, p)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("a/1.json", `{"v":1}`)
+	write("a/b/2.json", `{"v":2}`)
+	write("a/b/c/3.json", `{"v":3}`)
+	write("a/b/skip.csv", "h\n1\n")
+
+	s, err := OpenSession(root, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	rowsOf := func(stmt string) []string {
+		t.Helper()
+		res, err := s.Run(stmt)
+		if err != nil {
+			t.Fatalf("Run(%q): %v", stmt, err)
+		}
+		got := make([]string, len(res.Rows))
+		for i, r := range res.Rows {
+			got[i] = string(r)
+		}
+		sort.Strings(got)
+		return got
+	}
+
+	// Bare, root-relative ** recurses all subdirs; *.json excludes the .csv.
+	got := rowsOf("SELECT x.v FROM `**/*.json` AS x")
+	want := []string{`{"v":1}`, `{"v":2}`, `{"v":3}`}
+	if len(got) != len(want) {
+		t.Fatalf("`**/*.json` rows = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("`**/*.json` row %d = %s, want %s", i, got[i], want[i])
+		}
+	}
+
+	// A single * is one directory level: only a/1.json.
+	if g := rowsOf("SELECT x.v FROM `a/*.json` AS x"); len(g) != 1 || g[0] != `{"v":1}` {
+		t.Errorf("`a/*.json` = %v, want [{\"v\":1}]", g)
+	}
+
+	// The absolute form resolves too.
+	absGlob := filepath.Join(root, "a", "**", "*.json")
+	if g := rowsOf("SELECT x.v FROM `" + absGlob + "` AS x"); len(g) != 3 {
+		t.Errorf("absolute `%s` rows = %v, want 3", absGlob, g)
 	}
 }

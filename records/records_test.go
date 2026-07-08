@@ -1031,6 +1031,62 @@ func TestSplitJSONValuesReuse(t *testing.T) {
 	}
 }
 
+// TestGlobMatchAndFiles covers the pure-Go glob matcher + lister backing the
+// inline glob keyspace (DESIGN-data.md Mode 2b): ** crosses directory boundaries,
+// a single * does not, and GlobFiles honors the format filter.
+func TestGlobMatchAndFiles(t *testing.T) {
+	for _, c := range []struct {
+		pat, path string
+		want      bool
+	}{
+		{"/a/*.json", "/a/x.json", true},
+		{"/a/*.json", "/a/b/x.json", false}, // * stays within one segment
+		{"/a/**/*.json", "/a/x.json", true}, // ** matches zero segments
+		{"/a/**/*.json", "/a/b/x.json", true},
+		{"/a/**/*.json", "/a/b/c/x.json", true},
+		{"/a/**/*.json", "/a/b/x.csv", false},
+		{"/a/**", "/a/b/c", true}, // trailing ** matches the rest
+		{"/a/*", "/a/b/c", false},
+	} {
+		if got := globMatch(c.pat, c.path); got != c.want {
+			t.Errorf("globMatch(%q, %q) = %v, want %v", c.pat, c.path, got, c.want)
+		}
+	}
+
+	dir := t.TempDir()
+	write := func(p, body string) {
+		full := filepath.Join(dir, p)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("a/1.json", `{"x":1}`)
+	write("a/b/2.json", `{"x":2}`)
+	write("a/b/c/3.json", `{"x":3}`)
+	write("a/b/skip.csv", "h\n1\n")
+
+	base, files, err := GlobFiles(filepath.Join(dir, "a", "**", "*.json"), AllModes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if base != filepath.Join(dir, "a") {
+		t.Errorf("base = %q, want %q", base, filepath.Join(dir, "a"))
+	}
+	if len(files) != 3 {
+		t.Fatalf("**/*.json want 3 files, got %d: %v", len(files), files)
+	}
+
+	// A single * is one level only: just a/1.json.
+	if _, files1, err := GlobFiles(filepath.Join(dir, "a", "*.json"), AllModes()); err != nil {
+		t.Fatal(err)
+	} else if len(files1) != 1 {
+		t.Fatalf("a/*.json want 1 file, got %d: %v", len(files1), files1)
+	}
+}
+
 // TestExtractSpecRoundTrip pins the Phase-0 extract/sorted-source contract
 // (records/spec.go): the shared types serialize to the .n1k1 sidecar and back
 // without losing fields, so the parallel extract/merge tracks agree on shapes.

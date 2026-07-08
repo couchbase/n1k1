@@ -296,19 +296,29 @@ func (p *flatNamespace) Objects(creds *auth.Credentials, filter func(string) boo
 // for a per-file keyspace, the one file). Exactly one of dir/file is set.
 type flatKeyspace struct {
 	datastore.Keyspace
-	dir     string // flat root: keyspace = union of files under this dir
+	dir     string // flat root: keyspace = union of files under this dir; also the
+	//                 walk base for a glob keyspace
 	file    string // single file (scenario B2/B3): keyspace = this one file
+	glob    string // glob (Mode 2b): absolute doublestar pattern (base = dir)
 	indexer datastore.Indexer
 }
 
 // RecordsDir is consulted by DatastoreScanRecords to locate the physical
 // directory: for a flat root the keyspace's data lives at the root itself, not
-// at <root>/<ns>/<keyspace>. Empty in single-file mode (see RecordsFile).
+// at <root>/<ns>/<keyspace>. For a glob keyspace it is the walk base (the longest
+// metacharacter-free prefix), which makes synthetic IDs base-relative and lets the
+// native byte-path fetch read <base>/<relpath>. Empty in single-file mode.
 func (k *flatKeyspace) RecordsDir() string { return k.dir }
 
 // RecordsFile, when non-empty, points DatastoreScanRecords at a single record
 // file rather than a directory to walk (scenarios B2/B3).
 func (k *flatKeyspace) RecordsFile() string { return k.file }
+
+// RecordsGlob, when ok, gives an absolute doublestar pattern to expand INSTEAD of
+// walking the whole directory -- how a glob keyspace (Mode 2b) restricts the scan
+// to just the pattern's matches. Resolved at scan time (KeyspaceRecordsOpen) so the
+// query's -formats lockdown applies and freshly-added files are picked up.
+func (k *flatKeyspace) RecordsGlob() (string, bool) { return k.glob, k.glob != "" }
 
 func (k *flatKeyspace) Indexer(name datastore.IndexType) (datastore.Indexer, errors.Error) {
 	return k.indexer, nil
