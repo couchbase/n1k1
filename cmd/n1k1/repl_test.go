@@ -38,6 +38,18 @@ func TestFeedCommentThenDot(t *testing.T) {
 	}
 }
 
+// TestFeedEchoPreset: the -echo CLI flag presets c.echo (main.go sets echo:
+// *echoFlag), so a -f script echoes from its very first line without a `.echo on`.
+// This mirrors `n1k1 -echo -f file`.
+func TestFeedEchoPreset(t *testing.T) {
+	var b strings.Builder
+	c := &cli{stderr: &b, echo: true} // exactly what -echo does
+	c.feed(".print hello")
+	if got := b.String(); strings.Count(got, "hello") < 2 {
+		t.Errorf("-echo preset should echo the input line AND emit it; got %q", got)
+	}
+}
+
 // TestFeedEcho: with .echo on, each non-blank input line is echoed as it's read,
 // so a subsequent .print both echoes its input line and emits its text.
 func TestFeedEcho(t *testing.T) {

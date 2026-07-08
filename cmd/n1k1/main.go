@@ -68,6 +68,7 @@ func main() {
 		fFlag       = flag.String("f", "", "run statements from a file and exit")
 		modeFlag    = flag.String("mode", "", "output mode: "+strings.Join(cmd.OutputModes, "|")+" (append |pretty to indent JSON; default box|pretty at a TTY, else jsonlines)")
 		timerFlag   = flag.Bool("timer", false, "print row count + elapsed after each statement")
+		echoFlag    = flag.Bool("echo", false, "echo each input line (SQL++ / dot-commands) as it's read; like .echo on (handy with -f)")
 		initFlag    = flag.String("init", "", "startup file of dot-commands/SQL++ (default ~/."+prog+"rc; use \"\", \"-\" or \"none\" to skip)")
 		formatsFlag = flag.String("formats", "", "restrict files scanned to a comma-separated set (all|json|jsonl|csv|tsv|extract|doc|text|image|video|gzip|recurse); empty or 'all' = everything")
 		metaFlag    = flag.String("meta", "auto", "add a _meta sub-object (path/name/ext/size/mtime) to records: on|off|auto (auto = extracted docs only)")
@@ -207,6 +208,7 @@ func main() {
 		mode:         mode,
 		indexMode:    *indexFlag,
 		timer:        *timerFlag,
+		echo:         *echoFlag,
 		prepareLevel: prepareLevel,
 		statsMode:    statsMode,
 		verbose:      int(vLevel),
