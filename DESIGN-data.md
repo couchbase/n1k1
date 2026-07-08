@@ -508,6 +508,24 @@ we avoid. **Verdict: defer; make the catalog (mode 3) the power path.** The chea
 inline-glob surface would be a `read_csv(...)`-shaped keyspace-name *convention*, not
 a grammar extension.
 
+**Mode 2b — Backtick-quoted glob as a keyspace name (DECIDED — the fork-free inline
+glob).** DuckDB's `FROM 'data/**/*.json'` translates to n1k1, no grammar/parser change,
+by **always backtick-quoting** the glob: `` FROM `./data/**/*.json` ``. Backticks make
+it a single quoted *identifier* (a keyspace name), and — per `DESIGN-extensions.md`'s
+namespacing note — stop the parser splitting on `:`/`.`, so `.`/`/`/`*` don't disturb
+the namespace/scope grammar; the parser just hands n1k1 the literal string. n1k1 then
+**recognizes a glob-shaped keyspace name and expands it in the datastore wrapper** — a
+new `maybeGlob` sibling of `maybeFlat`/`maybeFlatFile` (`glue/flat.go`) backing a
+`virtual.NewVirtualKeyspace` whose records-scan unions the matches (reusing
+`records.Walk`: `**` = the recursive walk, `*.json` = the format filter). No fork
+change; still a `PrimaryScan` → `datastore-scan` op, so it **compiles** like any FROM.
+Decisions: (a) a name is a glob **only if it contains glob metacharacters**
+(`*`/`?`/`[`/`**`) — a plain `` `orders` `` stays an ordinary keyspace; (b) globs
+resolve **relative to CWD** (`./…` and absolute unambiguous, DuckDB-parity), not the
+data-root; (c) `-formats` lockdown still governs what the matched files may decode.
+`**` needs a doublestar matcher (Go's `filepath.Glob` lacks it) or just root+recurse.
+This settles the open question below in favor of the convention over a grammar fork.
+
 **Mode 3 — Catalog / sidecar mapping** (`.n1k1/catalog.json`) — **the realistic
 power path.** A per-root config maps a keyspace name to a root glob, format,
 partition columns (hive or **projected** date templates à la Athena), and
@@ -1473,12 +1491,13 @@ Separable tracks:
   Shipped decoders use `Next(rec *Record) (bool, error)`; CSV is on `encoding/csv`
   (correctness-first), which allocates field strings per row. **Open:** replace with a
   `[]byte`-oriented zero-copy reader and add the §1 allocation benchmark gate.
-- **SQL++ surface for table functions / globs. (RESOLVED — no.)** The parser rejects
-  both `FROM read_csv('foo.csv')` and bare `FROM 'foo.csv'`; no
-  table-valued-function machinery in `algebra/`. Mode 2 needs a goyacc grammar +
-  algebra + planner fork (deferred); the **catalog (mode 3) is the power path**.
-  Remaining: whether we ever pay for the grammar fork, or settle for a
-  datastore-recognized keyspace-name convention.
+- **SQL++ surface for table functions / globs. (RESOLVED.)** The parser rejects both
+  `FROM read_csv('foo.csv')` and bare `FROM 'foo.csv'`; no table-valued-function
+  machinery in `algebra/`. Mode 2 (`read_csv(...)`) needs a goyacc grammar + algebra +
+  planner fork — **not paid.** Instead: **inline globs land as the backtick-quoted
+  keyspace-name convention (Mode 2b above) — no fork** (`` FROM `./data/**/*.json` ``,
+  CWD-relative, expanded by a `maybeGlob` datastore wrapper); the catalog (mode 3)
+  remains the power path for named/partitioned sources.
 - **Fork divergence budget. (RESOLVED — zero.)** Everything shipped — flat-root,
   multi-file union, JSONL/JSON/CSV/YAML/office decoders, gzip, `COUNT(*)`, `_meta`,
   native byte-path fetch — landed **without a single datasource change to the fork**
