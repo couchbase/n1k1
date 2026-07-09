@@ -71,6 +71,47 @@ type Conv struct {
 	// VisitFilter knows to strip the (already-satisfied) SEARCH() term from the
 	// residual filter -- n1k1 can't re-evaluate SEARCH() outside the index.
 	sawFTS bool
+
+	// cteFromRefs records the expr-scan ops emitted for each `FROM <cte>`
+	// reference of a non-recursive CTE, keyed by the CTE's Expression() IDENTITY
+	// (not its alias). A CTE referenced >=2 times can be materialized once (see
+	// materializeMultiRefCTEs). Keying by expression identity -- not alias -- is
+	// essential: two independent WITH scopes can share an alias but have different
+	// definitions (e.g. `(WITH cte AS ([1,2,3]) ...) EXCEPT ALL (WITH cte AS
+	// ([3,4,5]) ...)`), and must NOT be conflated into one materialized temp. The
+	// self-join target (`FROM x o1, x o2, ...`) is one WITH clause, so all its refs
+	// share one Expression pointer and DO group. cteFromRefOrder preserves
+	// first-encounter order for deterministic rewriting. Populated by
+	// VisitExpressionScan via recordCTEFromRef.
+	cteFromRefs     map[expression.Expression]*cteFromRef
+	cteFromRefOrder []expression.Expression
+}
+
+// cteFromRef accumulates the expr-scan ops for one FROM-used non-recursive CTE
+// (identified by its Expression), plus the vars.Temps slot holding that
+// expression, so materializeMultiRefCTEs can rewrite a multiply-referenced CTE
+// into a single temp-capture + per-reference temp-yields.
+type cteFromRef struct {
+	alias    string // an alias the CTE was referenced under (for the capture label)
+	with     expression.With
+	exprSlot int        // vars.Temps slot holding the CTE's Expression()
+	ops      []*base.Op // the "expr-scan" ops, one per `FROM <cte>` reference
+}
+
+// recordCTEFromRef notes one `FROM <cte>` expr-scan for the materialize pass,
+// grouped by the CTE's Expression identity.
+func (c *Conv) recordCTEFromRef(alias string, w expression.With, expr expression.Expression,
+	exprSlot int, op *base.Op) {
+	if c.cteFromRefs == nil {
+		c.cteFromRefs = map[expression.Expression]*cteFromRef{}
+	}
+	r := c.cteFromRefs[expr]
+	if r == nil {
+		r = &cteFromRef{alias: alias, with: w, exprSlot: exprSlot}
+		c.cteFromRefs[expr] = r
+		c.cteFromRefOrder = append(c.cteFromRefOrder, expr)
+	}
+	r.ops = append(r.ops, op)
 }
 
 // -------------------------------------------------------------------
@@ -102,6 +143,11 @@ func ExecConv(p plan.Operator) (*base.Op, []interface{}, error) {
 		// the merge-join LOWERING is gated on the normalized sort-key wiring, so
 		// this pass only classifies/counts for now (see optimize_temporal.go).
 		recognizeASOFRoot(c.TopOp)
+
+		// Materialize a multiply-referenced, non-recursive, non-correlated WITH CTE
+		// ONCE into a spillable temp (opt-in via EnableCTEMaterialize); may wrap the
+		// root in a sequence, so run it last. See optimize_cte.go.
+		c.materializeMultiRefCTEs()
 	}
 
 	return c.TopOp, c.Temps, err
@@ -432,6 +478,8 @@ func (c *Conv) VisitExpressionScan(o *plan.ExpressionScan) (interface{}, error) 
 	// (FROM (SELECT ...) AS x), or a WITH CTE reference (FROM cte AS x, an
 	// identifier).
 	expr := o.FromExpr()
+	var cteAlias string         // set iff this scan resolves a non-recursive WITH CTE
+	var cteWith expression.With // the resolved CTE binding (for the materialize pass)
 	if id, ok := expr.(*expression.Identifier); ok {
 		if w, ok := c.withBindings[id.Identifier()]; ok {
 			if c.withFromUsed == nil {
@@ -448,6 +496,7 @@ func (c *Conv) VisitExpressionScan(o *plan.ExpressionScan) (interface{}, error) 
 				})
 			}
 			expr = w.Expression() // non-recursive CTE: inline the binding
+			cteAlias, cteWith = id.Identifier(), w
 		}
 	}
 
@@ -467,11 +516,25 @@ func (c *Conv) VisitExpressionScan(o *plan.ExpressionScan) (interface{}, error) 
 	// than at convert time: a subquery / CTE binding needs the engine + the
 	// datastore, which only exist at runtime. The live expression is passed
 	// through a vars.Temps slot (like datastore ops carry their plan objects).
-	return c.TopPush(o, &base.Op{
+	exprSlot := c.AddTemp(expr)
+	op := &base.Op{
 		Kind:   "expr-scan",
 		Labels: base.Labels{"." + LabelSuffix(o.Alias())},
-		Params: []interface{}{c.AddTemp(expr)},
-	})
+		Params: []interface{}{exprSlot},
+	}
+	if _, err := c.TopPush(o, op); err != nil {
+		return nil, err
+	}
+
+	// Record a FROM-used non-recursive CTE reference so a CTE referenced from
+	// FROM more than once can be materialized ONCE into a spillable temp instead
+	// of being re-evaluated (re-read + re-boxed) per reference and per nested-loop
+	// rescan. See materializeMultiRefCTEs (optimize_cte.go).
+	if cteAlias != "" {
+		c.recordCTEFromRef(cteAlias, cteWith, expr, exprSlot, op)
+	}
+
+	return c.TopOp, nil
 }
 
 // FTS Search

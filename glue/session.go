@@ -313,6 +313,11 @@ func PlanConvert(qp *plan.QueryPlan) (*PreparedPlan, error) {
 	// execution reads) and the QueryPlan (whose Subqueries() hold the right sub-plan).
 	// A no-op unless both keyspaces carry a proven normalized int64 sort key.
 	WireASOFJoin(conv, qp)
+	// Materialize a multiply-referenced, non-recursive, non-correlated WITH CTE
+	// ONCE into a spillable temp (opt-in via EnableCTEMaterialize); may wrap the
+	// root in a sequence, so run it after the other post-conv passes. See
+	// optimize_cte.go.
+	conv.materializeMultiRefCTEs()
 	cv, err := NewConvertVals(conv.TopOp.Labels)
 	if err != nil {
 		return nil, &ErrUnsupported{Reason: err.Error()}
