@@ -34,6 +34,36 @@ thousands of SQL++ detectors and applying them to support bundles with a single 
 (multi-query optimization) — **PREPARE++**, the second half of this doc
 ([the use case](#prepare-plus-plus)).
 
+## Key design decisions (build log, 2026-07)
+
+Non-obvious calls made while building the PREPARE++ substrate (the *what's built* is in the
+status header + [phasing](#detect-phasing); this records *why*):
+
+- **MQO is interpreter-first; codegen is optional on top.** The `broadcast`/route/CSE/index
+  stack runs over expr-trees natively (zero-boxing), so MQO needs no `go build`; the compiled
+  tier only adds fusion. Corollary: "weaving detectors into one program" is just **inlining**
+  ([compile-corpus note](#compile-corpus)) — separate compilation *units* matter for build-cache
+  economics + CSE, not for combining.
+- **Predicate index = Aho-Corasick over raw row bytes, not `regexp`.** Each detector's cheapest
+  *necessary* literal is extracted; one AC pass wakes only detectors whose literal is present.
+  Chosen over a single RE2 alternation because we need per-pattern *presence incl. overlaps/
+  nesting* (RE2's non-overlapping leftmost matches would UNDER-report → under-wake → missed
+  detections), plus zero-alloc/row and K-independence over a pure-literal set. Invariant:
+  over-wake is safe, under-wake is a bug.
+- **ASOF / temporal / complex detectors run standalone, not fused.** The single-source broadcast
+  fans filter+project detectors; a correlated ASOF (or window / group / join) detector runs via
+  its OWN already-optimized plan (the merge-join `WireASOFJoin` lowers) with findings unioned in.
+  The corpus compiler classifies each detector **fuse / standalone / reject** (reject = surfaced,
+  never silently dropped).
+- **Fusion is keyed by LOGICAL keyspace identity.** A bound keyspace reports its logical name, so
+  binding (file-drift resolution) and shared-scan fusion compose: all `FROM indexer_log` detectors
+  share one scan regardless of the physical files behind it this bundle.
+- **Field-shape drift is a CORPUS concern, not a normalization adapter** ([why](#late-binding)):
+  a bundle carries several co-deployed software versions, so version-aware / version-tolerant
+  detectors (evolving in the git corpus) beat a per-record normalizer.
+- **MVP evidence = the whole matched row** (per-detector SELECT-projection envelope deferred); a
+  detector's essence is its predicate, the finding is the matching evidence row.
+
 ## Contents
 
 - [Background: what the compiler already does, and the one boundary](#background)
@@ -775,20 +805,28 @@ two layers:
   startup" the pipe already carries. It is **data, not code** — so rebinding needs **no
   recompilation**. That is the property that makes recompile-once / rebind-per-bundle work.
 
-- **Field / schema drift — per-source adapters.** The new bundle may name a field `severity`
-  where the detector reads `level`, or nest it differently. A thin **adapter** per logical
-  keyspace (a SQL++ view / small extract spec, versioned in the recipe repo alongside the
-  detectors) normalizes raw records into the logical keyspace's **canonical schema**. So the
-  pipeline is: bundle files → *(binding: which files)* → *(adapter: normalize fields/shape)*
-  → logical keyspace with a stable schema → detectors. Detectors stay fixed; the **adapters +
-  manifest absorb the per-bundle / per-customer variability**. (The [log time
-  model](#open-questions) — normalizing timestamp formats/timezones into one sortable key for
-  the merge-based ASOF — is one adapter concern.)
+- **Field / schema drift — a CORPUS concern, not a normalization adapter (design decision,
+  2026-07).** When a new release of the log-generating software renames or reshapes fields
+  (`level` → `severity`, a new nesting), the answer is that **the detector corpus changes too** —
+  new/updated detectors that look for the new field names, or **version-tolerant** detectors that
+  accept both (stock SQL++: `COALESCE(l.level, l.severity)`, an `OR` over old+new shapes — no
+  adapter, no grammar change). The corpus is naturally *versioned* (a git repo of detectors), so
+  it evolves alongside the software: think **detectors-per-software-version**, plus tolerance for
+  the common case where a single support bundle carries logs from **several co-deployed versions
+  at once** (a cluster mid-upgrade, mixed-version nodes). That heterogeneity is exactly why a
+  per-keyspace *normalization adapter* is the wrong primary tool here: it would need to detect
+  each record's originating version to normalize it, which is fragile — whereas version-aware /
+  version-tolerant detectors handle the mix directly, and findings can be provenance-tagged by
+  the detector's target version. A thin rename-adapter may still be a convenience for a trivial
+  one-field difference, but it is NOT a required layer; the load-bearing binding is the *file*
+  resolver above. (Timestamp normalization — many log time formats/zones → one sortable key for
+  the ASOF merge — is a separate, real concern, but it belongs to the per-source *extract recipe*
+  / parse-spec layer, `DESIGN-data.md`, not a field adapter.)
 
-So the recipe repo versions, per logical keyspace: the **detectors**, the **adapter**
-(canonical schema), and optionally a **source spec** (expected filename patterns + schema
-signature) that drives content-based resolution — with a bundle-specific manifest overriding
-only where names genuinely differ. Binding is logical-keyspace-scoped, so the baked
+So the recipe repo versions, per logical keyspace: the **detectors** (evolving with the software
+they target) and optionally a **source spec** (expected filename patterns + schema signature)
+that drives content-based resolution — with a bundle-specific manifest overriding only where
+file names genuinely differ. Binding is logical-keyspace-scoped, so the baked
 [shared-scan / MQO structure](#mqo) is **bind-invariant**: only the leaf resolution changes.
 The same machinery serves the non-support case — a fresh quarterly financial drop is just a
 new bundle bound to the same logical keyspaces.
@@ -799,18 +837,21 @@ findings table that reads as "clean."
 
 ## PREPARE++ phasing <a name="detect-phasing"></a>
 
-1. **Zip datastore + LOGICAL keyspaces + source routing** — *partial.* The extract-recipe data
-   layer (`DESIGN-data.md`) already presents a bundle's files as keyspaces (recipe-matched files
-   auto-expose; glob keyspaces; a symlinked/unzipped tree scans today), and source *routing* is
-   DONE at the engine level (`BroadcastRoute`). Still missing: a stable *logical* vocabulary
-   (detectors `FROM` a logical name, not a filename) and inferring a detector's target from its
-   `FROM` (needs the corpus compiler, phase 6). A true zip-as-datastore is optional (engineers
-   unzip).
-2. **Late binding (manifest + adapters)** — *not built.* Resolve logical → physical per bundle
-   (explicit manifest → glob convention → content sniffing), with per-source adapters normalizing
-   to each keyspace's canonical schema; fail loudly on an unresolved keyspace. This is what lets
-   a prepared corpus run against the *next* bundle without recompiling. (The extract recipes are a
-   proto-adapter; the logical→physical *resolver* is the missing piece.)
+1. **Zip datastore + LOGICAL keyspaces + source routing** — **mostly DONE.** The extract-recipe
+   data layer (`DESIGN-data.md`) presents a bundle's files as keyspaces (recipe-matched files
+   auto-expose; glob keyspaces; a symlinked/unzipped tree scans today); a stable *logical*
+   vocabulary is built (phase 2's binding, `glue.Binding`); source *routing* is done
+   (`BroadcastRoute`); and the corpus compiler infers a detector's target keyspace from its `FROM`
+   (`branchScanKeyspace`) to group + fuse. A true zip-as-datastore is optional (engineers unzip).
+2. **Late binding — manifest DONE; adapters reframed.** The logical→physical *resolver* is built
+   (`glue.Binding` / `OpenSessionBound`, `glue/binding.go`): a per-bundle manifest maps each
+   logical keyspace to a glob, resolved at bind time, so the same corpus runs against the *next*,
+   differently-named bundle by pointing at its root — no detector edits; a bound keyspace reports
+   its LOGICAL name so same-logical detectors fuse into one shared scan; an unresolved/empty-glob
+   keyspace **fails loudly** (`TestBindingTwoBundles` etc.). The convention/content-sniffing rungs
+   of the resolver ladder remain future work. Per the field-drift [design decision](#late-binding),
+   schema/field *adapters* are NOT a required layer — field-shape drift is handled by evolving the
+   (version-aware) corpus, not by normalizing records.
 3. **Shared-scan fan-out op (MVP MQO)** — **DONE** (`engine.OpBroadcast`; scans once, N native
    predicates; measured vs N separate runs — see [Shared scan / MQO](#mqo)).
 4. **Predicate index + corpus CSE** — **DONE** (`engine.OpBroadcastIndexed` + `base.AhoCorasick`;
@@ -835,11 +876,14 @@ findings table that reads as "clean."
    not yet sharing scans among themselves.
 7. **Recipe format + golden-fixture CI** — *not built.* The AI-authoring flywheel.
 
-Each phase is independently useful. The **engine substrate for MQO + temporal (phases 3–5) AND
-the corpus compiler that feeds it (phase 6, MVP) are now in place** — proven by benchmarks plus a
-differential corpus test; the remaining work (phases 1–2, phase 7, and phase-6's tail — build
-cache / embed-source binary / projection envelope) is the *binding / caching / authoring* layer
-that turns these primitives into a maintained detector product.
+Each phase is independently useful, and the **core pipeline is now end-to-end**: logical-keyspace
+binding (phases 1–2 core) → corpus compiler (phase 6 MVP) → the MQO + temporal engine substrate
+(phases 3–5) → findings, all proven by benchmarks + a differential corpus test. The remaining
+work is the *authoring / caching / packaging* layer that turns these primitives into a maintained
+detector product: phase 7 (recipe format + golden-fixture CI), phase-6's tail (SHA-keyed build
+cache, embed-source binary, projection envelope, standalone-scan sharing), the upper rungs of the
+binding resolver ladder (convention / content-sniffing), and organizing the version-aware corpus
+(the field-drift decision above).
 
 ## Open questions <a name="open-questions"></a>
 
@@ -865,13 +909,19 @@ that turns these primitives into a maintained detector product.
 
 PREPARE++ (detector corpus):
 
-- **Binding robustness & authorship** — how far up the explicit → convention → content-sniffing
-  ladder is worth building, and who authors the manifest/adapter: a human per bundle, an
-  auto-cataloger, or a source spec in the recipe repo? How is a binding validated *before* a
-  run so a mis-resolved keyspace fails loudly rather than reading as a clean bundle?
-- **Adapter cost & the zero-copy read** — are adapters cheap SQL++ views fused into the scan
-  (so normalization stays on the native byte path), or a separate pass? Does field renaming /
-  reshaping force a re-encode that breaks the decode-once/evaluate-many shared-scan win?
+- **Binding robustness & authorship** — the explicit (glob) rung is built + fail-loud; how far up
+  the → convention → content-sniffing ladder is worth building, and who authors the manifest: a
+  human per bundle, an auto-cataloger, or a source spec in the recipe repo? (Pre-run validation
+  is partly answered: an empty-glob logical keyspace already errors at bind, before any findings.)
+- **Version-aware corpus (supersedes "field adapters").** DECIDED (see the field-drift
+  [design decision](#late-binding)): field-shape drift is handled by evolving the corpus
+  (version-specific and/or `COALESCE`/`OR`-tolerant detectors), not a normalization adapter —
+  because one bundle can carry several co-deployed software versions, which a per-record
+  normalizer can't cleanly disambiguate. Open: how best to ORGANIZE a version-aware corpus —
+  version tags / directories per software release, a tolerance idiom the authoring guide
+  standardizes, and provenance-tagging a finding by the detector's target version — and how the
+  [shared-scan MQO](#mqo) folds many near-identical per-version detectors (corpus CSE should
+  factor their shared terms; the predicate index should keep per-version literals cheap).
 - **Corpus granularity — genuinely unsettled.** One giant fused program per bundle, or
   **sharded** by source/subsystem (indexer detectors, query detectors, …) compiled + cached
   independently? Sharding bounds compile time and lets an agent ship one rule without
