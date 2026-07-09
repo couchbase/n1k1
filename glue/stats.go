@@ -19,10 +19,11 @@ import (
 	"github.com/couchbase/n1k1/base"
 )
 
-// Checkpoint-cadence pacing bounds (see base.YieldStatsControl.NextEvery). A
-// YieldStats callback firing faster than YieldPaceFast apart backs its checkpoint
-// interval off; slower than YieldPaceSlow eases it back toward the floor; YieldPaceMax
-// caps it. Tuned for a live progress display -- a few updates per second is plenty.
+// Default checkpoint-cadence pacing bounds (see base.YieldStatsControl.NextEvery).
+// A YieldStats callback firing faster than Fast apart backs its checkpoint interval
+// off; slower than Slow eases it back toward the floor; Max caps it. These seed a
+// YieldPacer's per-instance Fast/Slow/Max (NewYieldPacer), which the app may then
+// override. Tuned for a live progress display -- a few updates per second is plenty.
 const (
 	YieldPaceFast = 40 * time.Millisecond
 	YieldPaceSlow = 400 * time.Millisecond
@@ -30,51 +31,64 @@ const (
 )
 
 // YieldPacer adapts a YieldStats checkpoint interval to hold the callback at a
-// display-friendly rate: a source racing past (checkpoints arriving faster than a UI
-// can absorb) has its interval backed off (1024 -> 2048 -> ...), a slowing source
-// eases it back toward the floor. It is exported so an embedder wiring its own
-// Ctx.YieldStats can reuse the policy: construct one with NewYieldPacer, and on each
-// checkpoint return base.YieldStatsControl{NextEvery: pacer.Next(time.Now())}. Not
-// safe for concurrent use -- drive it from the single goroutine that sinks the
+// display-friendly rate: a source racing past (checkpoints arriving faster than Fast
+// apart) has its interval backed off (1024 -> 2048 -> ...), a slowing source (gaps
+// longer than Slow) eases it back toward the floor. It is exported so an embedder
+// wiring its own Ctx.YieldStats can reuse the policy: construct one with
+// NewYieldPacer, optionally retune Fast/Slow/Max for its query's fast-vs-slow band,
+// and on each checkpoint return base.YieldStatsControl{NextEvery: pacer.Next(now)}.
+// Not safe for concurrent use -- drive it from the single goroutine that sinks the
 // live-stats callback (as glue does). For a stateless rule, call YieldPace directly.
 type YieldPacer struct {
+	// Tunables, seeded from the package YieldPace* defaults by NewYieldPacer. An app
+	// that knows its query's timing (rows/sec, how bursty) may override them before
+	// the first Next -- e.g. a wider Fast for a slow remote source, a bigger Max for a
+	// firehose scan. Read every Next, so a change takes effect on the next checkpoint.
+	Fast time.Duration // back off when checkpoints arrive closer than this
+	Slow time.Duration // ease toward the floor when they arrive farther apart than this
+	Max  int           // upper bound on the interval
+
 	floor int       // the source's initial interval (the lower bound)
 	every int       // current suggested interval
 	last  time.Time // wall-clock of the previous checkpoint (zero until the first)
 }
 
 // NewYieldPacer returns a YieldPacer whose interval starts at (and never drops below)
-// floor -- typically the source's initial engine.ScanYieldStatsEvery.
+// floor -- typically the source's initial engine.ScanYieldStatsEvery -- with its
+// Fast/Slow/Max seeded from the package defaults for the caller to override.
 func NewYieldPacer(floor int) *YieldPacer {
 	if floor < 1 {
 		floor = 1
 	}
-	return &YieldPacer{floor: floor, every: floor}
+	return &YieldPacer{
+		Fast: YieldPaceFast, Slow: YieldPaceSlow, Max: YieldPaceMax,
+		floor: floor, every: floor,
+	}
 }
 
 // Next records a checkpoint at time now and returns the interval the source should
-// adopt next (rows until the following checkpoint). The first call only seeds the
-// clock, returning the unchanged interval.
+// adopt next (rows until the following checkpoint), applying this pacer's Fast/Slow/
+// Max. The first call only seeds the clock, returning the unchanged interval.
 func (p *YieldPacer) Next(now time.Time) int {
 	if !p.last.IsZero() {
-		p.every = YieldPace(p.every, p.floor, now.Sub(p.last))
+		p.every = YieldPace(p.every, p.floor, p.Max, now.Sub(p.last), p.Fast, p.Slow)
 	}
 	p.last = now
 	return p.every
 }
 
-// YieldPace is the pure re-pacing rule: double cur (capped at YieldPaceMax) when the
-// gap dt since the last checkpoint is shorter than YieldPaceFast, halve it toward
-// floor when longer than YieldPaceSlow, else keep it. Split out so it unit-tests
-// without a clock and an embedder can apply the rule statelessly.
-func YieldPace(cur, floor int, dt time.Duration) int {
+// YieldPace is the pure re-pacing rule with explicit bounds: double cur (capped at
+// max) when the gap dt since the last checkpoint is shorter than fast, halve it
+// toward floor when longer than slow, else keep it. Split out so it unit-tests
+// without a clock and an embedder can apply the rule statelessly with its own band.
+func YieldPace(cur, floor, max int, dt, fast, slow time.Duration) int {
 	switch {
-	case dt < YieldPaceFast:
-		if n := cur * 2; n <= YieldPaceMax {
+	case dt < fast:
+		if n := cur * 2; n <= max {
 			return n
 		}
-		return YieldPaceMax
-	case dt > YieldPaceSlow:
+		return max
+	case dt > slow:
 		if n := cur / 2; n >= floor {
 			return n
 		}

@@ -44,9 +44,19 @@ func TestYieldPace(t *testing.T) {
 		{"slow floors", floor, 1 * time.Second, floor},
 	}
 	for _, c := range cases {
-		if got := YieldPace(c.cur, floor, c.dt); got != c.want {
+		if got := YieldPace(c.cur, floor, YieldPaceMax, c.dt, YieldPaceFast, YieldPaceSlow); got != c.want {
 			t.Errorf("%s: YieldPace(%d,%d,%v) = %d, want %d", c.name, c.cur, floor, c.dt, got, c.want)
 		}
+	}
+
+	// The bounds are explicit, so a caller's own band changes the outcome: with a
+	// wider fast threshold a 100ms gap now counts as "fast" and doubles (vs holding
+	// under the default 40ms), and a smaller max caps sooner.
+	if got := YieldPace(1024, floor, 4096, 100*time.Millisecond, 200*time.Millisecond, time.Second); got != 2048 {
+		t.Errorf("custom-band fast: got %d, want 2048", got)
+	}
+	if got := YieldPace(4096, floor, 4096, 1*time.Millisecond, YieldPaceFast, YieldPaceSlow); got != 4096 {
+		t.Errorf("custom max cap: got %d, want 4096", got)
 	}
 }
 
@@ -73,6 +83,19 @@ func TestYieldPacer(t *testing.T) {
 	// A tiny floor is clamped to 1 (never a zero/negative interval).
 	if p := NewYieldPacer(0); p.Next(t0) != 1 {
 		t.Errorf("NewYieldPacer(0) floor should clamp to 1")
+	}
+
+	// Per-instance overrides take effect: NewYieldPacer seeds the package defaults,
+	// which an app can retune. Here a bigger floor + a small Max cap the ramp.
+	q := NewYieldPacer(1024)
+	if q.Fast != YieldPaceFast || q.Slow != YieldPaceSlow || q.Max != YieldPaceMax {
+		t.Fatalf("NewYieldPacer should seed the package defaults, got Fast=%v Slow=%v Max=%d", q.Fast, q.Slow, q.Max)
+	}
+	q.Max = 2048 // cap the interval low
+	q.Next(t0)
+	q.Next(t0.Add(1 * time.Millisecond))                          // fast -> 2048 (== Max)
+	if got := q.Next(t0.Add(2 * time.Millisecond)); got != 2048 { // fast again, but capped
+		t.Fatalf("overridden Max should cap the interval at 2048, got %d", got)
 	}
 }
 
