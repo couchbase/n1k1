@@ -6156,6 +6156,40 @@ var TestCasesSimple = []TestCaseSimple{
 	naryProjectCase("array_concat-nonarr", []interface{}{"array_concat",
 		[]interface{}{"json", `[1]`}, []interface{}{"json", `5`}}, `null`),
 
+	// OBJECT mutating builders (ADD/PUT ternary, REMOVE/CONCAT 2-arg) in the
+	// COMPILED path: key-sorted re-emit with one field added/set/removed or two
+	// objects merged. A non-object -> null.
+	naryProjectCase("object_add", []interface{}{"object_add",
+		[]interface{}{"json", `{"a":1}`}, []interface{}{"json", `"b"`}, []interface{}{"json", `2`}},
+		`{"a":1,"b":2}`),
+	naryProjectCase("object_add-nooverwrite", []interface{}{"object_add",
+		[]interface{}{"json", `{"a":1}`}, []interface{}{"json", `"a"`}, []interface{}{"json", `9`}},
+		`{"a":1}`),
+	naryProjectCase("object_add-nonobj", []interface{}{"object_add",
+		[]interface{}{"json", `5`}, []interface{}{"json", `"a"`}, []interface{}{"json", `1`}}, `null`),
+
+	naryProjectCase("object_put", []interface{}{"object_put",
+		[]interface{}{"json", `{"z":1,"a":2}`}, []interface{}{"json", `"m"`}, []interface{}{"json", `3`}},
+		`{"a":2,"m":3,"z":1}`),
+	naryProjectCase("object_put-overwrite", []interface{}{"object_put",
+		[]interface{}{"json", `{"a":1}`}, []interface{}{"json", `"a"`}, []interface{}{"json", `"x"`}},
+		`{"a":"x"}`),
+
+	naryProjectCase("object_remove", []interface{}{"object_remove",
+		[]interface{}{"json", `{"a":1,"b":2}`}, []interface{}{"json", `"a"`}}, `{"b":2}`),
+	naryProjectCase("object_remove-absent", []interface{}{"object_remove",
+		[]interface{}{"json", `{"a":1}`}, []interface{}{"json", `"z"`}}, `{"a":1}`),
+	naryProjectCase("object_remove-last", []interface{}{"object_remove",
+		[]interface{}{"json", `{"a":1}`}, []interface{}{"json", `"a"`}}, `{}`),
+
+	naryProjectCase("object_concat", []interface{}{"object_concat",
+		[]interface{}{"json", `{"a":1}`}, []interface{}{"json", `{"b":2}`}}, `{"a":1,"b":2}`),
+	naryProjectCase("object_concat-overlap", []interface{}{"object_concat",
+		[]interface{}{"json", `{"a":1,"b":2}`}, []interface{}{"json", `{"b":9,"c":3}`}},
+		`{"a":1,"b":9,"c":3}`),
+	naryProjectCase("object_concat-nonobj", []interface{}{"object_concat",
+		[]interface{}{"json", `{"a":1}`}, []interface{}{"json", `5`}}, `null`),
+
 	// is-type predicates in the COMPILED path -- exercises func-value params
 	// emitted by name (base.TypeIs*) via LzExprFmt (previously un-compilable).
 	naryProjectCase("is_number-yes", []interface{}{"is_number", []interface{}{"json", `5`}}, `true`),

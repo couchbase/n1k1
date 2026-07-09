@@ -996,6 +996,128 @@ func TestArrayBuildersZeroAlloc(t *testing.T) {
 	}
 }
 
+// TestObjectMutatorsDifferentialVsCBQ proves OBJECT_ADD / OBJECT_PUT (ternary) and
+// OBJECT_REMOVE / OBJECT_CONCAT (2-arg) native lowering is byte-identical to cbq:
+// the KEY-SORTED re-emit, ADD's no-overwrite, PUT's set (and MISSING-val removal),
+// REMOVE's drop, CONCAT's obj2-wins merge, and every MISSING/NULL/non-object edge.
+func TestObjectMutatorsDifferentialVsCBQ(t *testing.T) {
+	c := func(v interface{}) expression.Expression { return expression.NewConstant(v) }
+	obj := func(kvs map[string]interface{}) expression.Expression { return expression.NewConstant(kvs) }
+	miss := c(value.MISSING_VALUE)
+	null := c(value.NULL_VALUE)
+
+	// --- ternary ADD / PUT: (obj, key, val) ---
+	triCtors := map[string]func(a, b, d expression.Expression) expression.Expression{
+		"object_add": func(a, b, d expression.Expression) expression.Expression { return expression.NewObjectAdd(a, b, d) },
+		"object_put": func(a, b, d expression.Expression) expression.Expression { return expression.NewObjectPut(a, b, d) },
+	}
+	triCases := map[string][3]expression.Expression{
+		"add-new":       {obj(map[string]interface{}{"a": 1}), c("b"), c(2)},
+		"add-existing":  {obj(map[string]interface{}{"a": 1, "z": 9}), c("a"), c(3)},
+		"into-empty":    {obj(map[string]interface{}{}), c("k"), c("x")},
+		"str-val":       {obj(map[string]interface{}{"a": 1}), c("b"), c("hi")},
+		"null-val":      {obj(map[string]interface{}{"a": 1}), c("b"), null},
+		"nested-val":    {obj(map[string]interface{}{"a": 1}), c("b"), obj(map[string]interface{}{"n": 2})},
+		"unsorted-keys": {obj(map[string]interface{}{"z": 1, "a": 2, "m": 3}), c("b"), c(4)},
+		"missing-val":   {obj(map[string]interface{}{"a": 1}), c("a"), miss}, // PUT removes; ADD no-ops
+		"missing-obj":   {miss, c("b"), c(2)},
+		"missing-key":   {obj(map[string]interface{}{"a": 1}), miss, c(2)},
+		"nonobj":        {c(5), c("b"), c(2)},
+		"nonstr-key":    {obj(map[string]interface{}{"a": 1}), c(7), c(2)},
+		"null-obj":      {null, c("b"), c(2)},
+	}
+	for fn, ctor := range triCtors {
+		for on, args := range triCases {
+			expr := ctor(args[0], args[1], args[2])
+			want := cbqEval(t, expr)
+			got, ok := nativeEval(t, expr)
+			if !ok {
+				t.Errorf("%s(%s): did not optimize to native", fn, on)
+				continue
+			}
+			if got != want {
+				t.Errorf("%s(%s): native=%q, cbq=%q", fn, on, got, want)
+			}
+		}
+	}
+
+	// --- 2-arg REMOVE (obj, key) / CONCAT (obj1, obj2) ---
+	remCases := map[string][2]expression.Expression{
+		"present":     {obj(map[string]interface{}{"a": 1, "b": 2}), c("a")},
+		"absent":      {obj(map[string]interface{}{"a": 1}), c("z")},
+		"last":        {obj(map[string]interface{}{"a": 1}), c("a")},
+		"unsorted":    {obj(map[string]interface{}{"z": 1, "a": 2}), c("z")},
+		"missing-obj": {miss, c("a")},
+		"missing-key": {obj(map[string]interface{}{"a": 1}), miss},
+		"nonobj":      {c(5), c("a")},
+		"null-key":    {obj(map[string]interface{}{"a": 1}), null},
+		"nonstr-key":  {obj(map[string]interface{}{"a": 1}), c(7)},
+	}
+	for on, args := range remCases {
+		expr := expression.NewObjectRemove(args[0], args[1])
+		want := cbqEval(t, expr)
+		got, ok := nativeEval(t, expr)
+		if !ok {
+			t.Errorf("object_remove(%s): did not optimize to native", on)
+			continue
+		}
+		if got != want {
+			t.Errorf("object_remove(%s): native=%q, cbq=%q", on, got, want)
+		}
+	}
+
+	concatCases := map[string][2]expression.Expression{
+		"disjoint":   {obj(map[string]interface{}{"a": 1}), obj(map[string]interface{}{"b": 2})},
+		"overlap":    {obj(map[string]interface{}{"a": 1, "b": 2}), obj(map[string]interface{}{"b": 9, "c": 3})},
+		"l-empty":    {obj(map[string]interface{}{}), obj(map[string]interface{}{"a": 1})},
+		"r-empty":    {obj(map[string]interface{}{"a": 1}), obj(map[string]interface{}{})},
+		"both-empty": {obj(map[string]interface{}{}), obj(map[string]interface{}{})},
+		"missing":    {obj(map[string]interface{}{"a": 1}), miss},
+		"nonobj":     {obj(map[string]interface{}{"a": 1}), c(5)},
+		"null-r":     {obj(map[string]interface{}{"a": 1}), null},
+	}
+	for on, args := range concatCases {
+		expr := expression.NewObjectConcat(args[0], args[1])
+		want := cbqEval(t, expr)
+		got, ok := nativeEval(t, expr)
+		if !ok {
+			t.Errorf("object_concat(%s): did not optimize to native", on)
+			continue
+		}
+		if got != want {
+			t.Errorf("object_concat(%s): native=%q, cbq=%q", on, got, want)
+		}
+	}
+}
+
+// TestObjectMutatorsZeroAlloc asserts the per-row native OBJECT mutating builds
+// allocate nothing after warmup (pooled KeyVals + reused bufPre; GARBAGE MANDATE).
+func TestObjectMutatorsZeroAlloc(t *testing.T) {
+	cmp := base.NewValComparer()
+	o1 := base.Val([]byte(`{"gamma":1,"alpha":"x","beta":[1,2]}`))
+	o2 := base.Val([]byte(`{"beta":9,"delta":{"k":1}}`))
+	key := base.Val([]byte(`"gamma"`))
+	nkey := base.Val([]byte(`"epsilon"`))
+	val := base.Val([]byte(`42`))
+
+	for _, tc := range []struct {
+		name string
+		run  func(buf []byte) []byte
+	}{
+		{"ObjectPut-overwrite", func(buf []byte) []byte { o, _, _ := base.ObjectPut(cmp, o1, key, val, buf); return o }},
+		{"ObjectPut-new", func(buf []byte) []byte { o, _, _ := base.ObjectPut(cmp, o1, nkey, val, buf); return o }},
+		{"ObjectAdd", func(buf []byte) []byte { o, _, _ := base.ObjectAdd(cmp, o1, nkey, val, buf); return o }},
+		{"ObjectRemove", func(buf []byte) []byte { o, _, _ := base.ObjectRemove(cmp, o1, key, buf); return o }},
+		{"ObjectConcat", func(buf []byte) []byte { o, _, _ := base.ObjectConcat(cmp, o1, o2, buf); return o }},
+	} {
+		buf := tc.run(nil) // warm up pool + buffer
+		n := testing.AllocsPerRun(2000, func() { buf = tc.run(buf) })
+		if n != 0 {
+			t.Errorf("base.%s: %v allocs/row after warmup; want 0", tc.name, n)
+		}
+	}
+}
+
 func TestArrayMinMaxContainsDifferentialVsCBQ(t *testing.T) {
 	c := func(v interface{}) expression.Expression { return expression.NewConstant(v) }
 	arr := func(xs ...interface{}) expression.Expression {

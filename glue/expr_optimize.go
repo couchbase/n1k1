@@ -55,8 +55,10 @@ func init() {
 		"array_append", "array_prepend", "array_concat", // array builders, 2-arg forms (expr_array.go)
 		"object_length", "poly_length", // object/collection readers (expr_object.go)
 		"object_names", "object_values", // sorted name/value array builders (expr_object.go)
-		"object_pairs", // OBJECT_PAIRS: 1-arg form; the 2-arg `types` option falls back
-		"and", "or",    // three-valued logical (expr_logic.go)
+		"object_pairs",             // OBJECT_PAIRS: 1-arg form; the 2-arg `types` option falls back
+		"object_add", "object_put", // object mutating builders, ternary (expr_object.go)
+		"object_remove", "object_concat", // object mutating builders, 2-arg forms (variadic >2 falls back)
+		"and", "or", // three-valued logical (expr_logic.go)
 		"not",                                           // unary predicate (expr_pred.go)
 		"ifnull", "ifmissing", "ifmissingornull", "nvl", // conditional-unknown (expr_cond.go)
 		"between",             // ternary (expr_between.go)
@@ -421,6 +423,7 @@ func exprTreeOptimizeNative(labels base.Labels, e expression.Expression,
 		"contains", "position0", "position1",
 		"array_contains", "array_position",
 		"array_append", "array_prepend", "array_concat", // 2-arg forms; variadic >2 falls back
+		"object_remove", "object_concat", // 2-arg forms; variadic >2 falls back
 		"date_part_millis", // 2-arg form only; the 3-arg (timezone) form falls back
 		"nullif", "missingif", "element":
 		// These native harnesses are two-operand; cbq's n-ary forms fall back.
@@ -442,10 +445,11 @@ func exprTreeOptimizeNative(labels base.Labels, e expression.Expression,
 		if len(operands) != 1 {
 			return nil, false
 		}
-	case "between", "replace", "date_add_millis":
+	case "between", "replace", "date_add_millis", "object_add", "object_put":
 		// between is exactly ternary; replace's native harness is the 3-arg form
 		// (str, old, repl) -- the 4-arg count form falls back to cbq;
-		// date_add_millis is always 3-arg (millis, n, part).
+		// date_add_millis is always 3-arg (millis, n, part); OBJECT_ADD/OBJECT_PUT
+		// are always 3-arg (obj, key, val).
 		if len(operands) != 3 {
 			return nil, false
 		}

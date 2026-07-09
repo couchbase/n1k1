@@ -32,6 +32,150 @@ func init() {
 	ExprCatalog["object_names"] = ExprObjectNames
 	ExprCatalog["object_values"] = ExprObjectValues
 	ExprCatalog["object_pairs"] = ExprObjectPairs
+	// Object mutating builders: key-sorted re-emit with one field added/set/removed
+	// or two objects merged. ADD/PUT are ternary (obj,key,val); REMOVE/CONCAT are the
+	// 2-arg forms (variadic >2 falls back). See base.Object{Add,Put,Remove,Concat}.
+	ExprCatalog["object_add"] = ExprObjectAdd
+	ExprCatalog["object_put"] = ExprObjectPut
+	ExprCatalog["object_remove"] = ExprObjectRemove
+	ExprCatalog["object_concat"] = ExprObjectConcat
+}
+
+// ExprObjectAdd is OBJECT_ADD(obj, key, val): ternary, adds a NEW field (never
+// overwrites) and re-emits key-sorted into the reused buffer -- no boxing. See
+// base.ObjectAdd.
+func ExprObjectAdd(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
+	var lzBufPre []byte // <== varLift: lzBufPre by path
+
+	triExprFunc := func(lzA, lzB, lzC base.ExprFunc, lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) { // !lz
+		if LzScope {
+			lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
+			lzValObj := lzVal
+
+			lzVal = lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B"
+			lzValKey := lzVal
+
+			lzVal = lzC(lzVals, lzYieldErr) // <== emitCaptured: path "C"
+			lzValElem := lzVal
+
+			lzOut, lzSentinel, lzOk := base.ObjectAdd(lzVars.Ctx.ValComparer, lzValObj, lzValKey, lzValElem, lzBufPre)
+			if !lzOk {
+				lzVal = lzSentinel
+			} else {
+				lzBufPre = lzOut
+				lzVal = base.Val(lzOut)
+			}
+		}
+
+		return lzVal
+	} // !lz
+
+	lzExprFunc =
+		MakeTriExprFunc(lzVars, labels, params, path, triExprFunc) // !lz
+
+	return lzExprFunc
+}
+
+// ExprObjectPut is OBJECT_PUT(obj, key, val): ternary, sets field key to val (a
+// MISSING val removes the field) and re-emits key-sorted into the reused buffer --
+// no boxing. See base.ObjectPut.
+func ExprObjectPut(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
+	var lzBufPre []byte // <== varLift: lzBufPre by path
+
+	triExprFunc := func(lzA, lzB, lzC base.ExprFunc, lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) { // !lz
+		if LzScope {
+			lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
+			lzValObj := lzVal
+
+			lzVal = lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B"
+			lzValKey := lzVal
+
+			lzVal = lzC(lzVals, lzYieldErr) // <== emitCaptured: path "C"
+			lzValElem := lzVal
+
+			lzOut, lzSentinel, lzOk := base.ObjectPut(lzVars.Ctx.ValComparer, lzValObj, lzValKey, lzValElem, lzBufPre)
+			if !lzOk {
+				lzVal = lzSentinel
+			} else {
+				lzBufPre = lzOut
+				lzVal = base.Val(lzOut)
+			}
+		}
+
+		return lzVal
+	} // !lz
+
+	lzExprFunc =
+		MakeTriExprFunc(lzVars, labels, params, path, triExprFunc) // !lz
+
+	return lzExprFunc
+}
+
+// ExprObjectRemove is OBJECT_REMOVE(obj, key) (2-arg): binary, drops field key and
+// re-emits key-sorted into the reused buffer -- no boxing. See base.ObjectRemove.
+func ExprObjectRemove(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
+	var lzBufPre []byte // <== varLift: lzBufPre by path
+
+	biExprFunc := func(lzA, lzB base.ExprFunc, lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) { // !lz
+		if LzScope {
+			lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
+			lzValObj := lzVal
+
+			lzVal = lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B"
+			lzValKey := lzVal
+
+			lzOut, lzSentinel, lzOk := base.ObjectRemove(lzVars.Ctx.ValComparer, lzValObj, lzValKey, lzBufPre)
+			if !lzOk {
+				lzVal = lzSentinel
+			} else {
+				lzBufPre = lzOut
+				lzVal = base.Val(lzOut)
+			}
+		}
+
+		return lzVal
+	} // !lz
+
+	lzExprFunc =
+		MakeBiExprFunc(lzVars, labels, params, path, biExprFunc) // !lz
+
+	return lzExprFunc
+}
+
+// ExprObjectConcat is OBJECT_CONCAT(obj1, obj2) (2-arg): binary, merges the two
+// objects (obj2 wins) and re-emits key-sorted into the reused buffer -- no boxing.
+// See base.ObjectConcat.
+func ExprObjectConcat(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
+	var lzBufPre []byte // <== varLift: lzBufPre by path
+
+	biExprFunc := func(lzA, lzB base.ExprFunc, lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) { // !lz
+		if LzScope {
+			lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
+			lzValObj1 := lzVal
+
+			lzVal = lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B"
+			lzValObj2 := lzVal
+
+			lzOut, lzSentinel, lzOk := base.ObjectConcat(lzVars.Ctx.ValComparer, lzValObj1, lzValObj2, lzBufPre)
+			if !lzOk {
+				lzVal = lzSentinel
+			} else {
+				lzBufPre = lzOut
+				lzVal = base.Val(lzOut)
+			}
+		}
+
+		return lzVal
+	} // !lz
+
+	lzExprFunc =
+		MakeBiExprFunc(lzVars, labels, params, path, biExprFunc) // !lz
+
+	return lzExprFunc
 }
 
 func ExprObjectLength(lzVars *base.Vars, labels base.Labels,

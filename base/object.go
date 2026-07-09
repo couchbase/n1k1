@@ -189,20 +189,38 @@ func objectSortedKVs(c *ValComparer, v Val) (kvs KeyVals, sentinel Val, ok bool)
 
 	kvs = c.KeyValsAcquire(0)
 
-	iterErr := jsonparser.ObjectEach(inner,
-		func(k []byte, val []byte, dt jsonparser.ValueType, _ int) error {
-			kCopy := append(ReuseNextKey(kvs), k...)
-			kvs = append(kvs, KeyVal{Key: kCopy, Val: val, ValType: int(dt)})
-			return nil
-		})
+	var iterErr error
+	kvs, iterErr = objectPairsInto(kvs, inner)
 	if iterErr != nil {
 		c.KeyValsRelease(0, kvs)
 		return nil, ValNull, false
 	}
 
-	// Insertion sort ascending by name (byte order), matching cbq's `a < b` name
-	// sort (nameList/mapList Less). Object field counts are small, so this is both
-	// allocation-free (no sort.Interface boxing) and fast -- see ObjectNames.
+	kvsSortByName(kvs)
+
+	return kvs, nil, true
+}
+
+// objectPairsInto appends v's object (name, value, type) pairs to kvs via one
+// ObjectEach pass -- names copied into the pool's reused key backing (ReuseNextKey,
+// no per-row key alloc after warmup), value slices pointing into inner (valid for
+// the caller's single-pass emit). Does NOT sort. inner must be object bytes. Shared
+// by objectSortedKVs (OBJECT_VALUES/PAIRS) and the mutating builders.
+func objectPairsInto(kvs KeyVals, inner []byte) (KeyVals, error) {
+	err := jsonparser.ObjectEach(inner,
+		func(k []byte, val []byte, dt jsonparser.ValueType, _ int) error {
+			kCopy := append(ReuseNextKey(kvs), k...)
+			kvs = append(kvs, KeyVal{Key: kCopy, Val: val, ValType: int(dt)})
+			return nil
+		})
+	return kvs, err
+}
+
+// kvsSortByName insertion-sorts kvs ascending by name (byte order), matching cbq's
+// `a < b` name sort (nameList/mapList Less) and the key-sorted JSON serialization
+// cbq emits for every object. Object field counts are small, so insertion sort is
+// both allocation-free (no sort.Interface boxing) and fast.
+func kvsSortByName(kvs KeyVals) {
 	for i := 1; i < len(kvs); i++ {
 		kv := kvs[i]
 		j := i - 1
@@ -212,8 +230,38 @@ func objectSortedKVs(c *ValComparer, v Val) (kvs KeyVals, sentinel Val, ok bool)
 		}
 		kvs[j+1] = kv
 	}
+}
 
-	return kvs, nil, true
+// objectEmit serializes kvs (name/value pairs) as a JSON object `{"k":v,...}` into
+// bufPre, sorted by name first (so the output is key-sorted exactly like cbq's
+// object serialization). The name is re-encoded via EncodeAsString (kvs names are
+// decoded); each value is re-emitted verbatim via appendJSONElem. The shared back
+// half of the OBJECT mutating builders.
+func objectEmit(c *ValComparer, kvs KeyVals, bufPre []byte) []byte {
+	kvsSortByName(kvs)
+	c.PrepareEncoder()
+
+	out := append(bufPre[:0], '{')
+	for i := 0; i < len(kvs); i++ {
+		if i > 0 {
+			out = append(out, ',')
+		}
+		out, _ = c.EncodeAsString(kvs[i].Key, out)
+		out = append(out, ':')
+		out = appendJSONElem(out, kvs[i].Val, jsonparser.ValueType(kvs[i].ValType))
+	}
+	out = append(out, '}')
+	return out
+}
+
+// kvsFind returns the index of the pair named key (decoded) in kvs, or -1.
+func kvsFind(kvs KeyVals, key []byte) int {
+	for i := range kvs {
+		if bytes.Equal(kvs[i].Key, key) {
+			return i
+		}
+	}
+	return -1
 }
 
 // ObjectValues builds OBJECT_VALUES(obj) -- a JSON array of the object's values,
@@ -272,5 +320,162 @@ func ObjectPairs(c *ValComparer, v Val, bufPre []byte) (out []byte, sentinel Val
 
 	c.KeyValsRelease(0, kvs)
 
+	return out, nil, true
+}
+
+// objectMutateStart is the shared front half of the mutating builders: it validates
+// obj (MISSING -> MISSING sentinel, non-object -> NULL) and collects its pairs into
+// a freshly-acquired pooled KeyVals. On ok=false the pool is already released; on
+// ok=true the caller MUST objectEmit + KeyValsRelease(0, kvs).
+func objectMutateStart(c *ValComparer, obj Val) (kvs KeyVals, sentinel Val, ok bool) {
+	if len(obj) == 0 {
+		return nil, ValMissing, false
+	}
+	inner, pt := Parse(obj)
+	if ParseTypeToValType[pt] != ValTypeObject {
+		return nil, ValNull, false
+	}
+	kvs = c.KeyValsAcquire(0)
+	var err error
+	kvs, err = objectPairsInto(kvs, inner)
+	if err != nil {
+		c.KeyValsRelease(0, kvs)
+		return nil, ValNull, false
+	}
+	return kvs, nil, true
+}
+
+// ObjectPut builds OBJECT_PUT(obj, key, val) -- obj with field key set to val --
+// into the reused buffer bufPre, key-sorted. Mirrors cbq's ObjectPut: obj OR key
+// MISSING -> MISSING; a non-object obj OR non-string key -> NULL; else obj with key
+// set. A MISSING val REMOVES the field (cbq's SetField-removes-on-missing); an
+// existing key is overwritten in place, a new key is appended.
+func ObjectPut(c *ValComparer, obj, key, val Val, bufPre []byte) (out []byte, sentinel Val, ok bool) {
+	if len(obj) == 0 || len(key) == 0 {
+		return nil, ValMissing, false
+	}
+	keyDec, keySentinel, keyOk := StrDecode(key)
+	if !keyOk {
+		return nil, keySentinel, false // non-string key -> NULL (MISSING already handled above).
+	}
+	kvs, sentinel, ok := objectMutateStart(c, obj)
+	if !ok {
+		return nil, sentinel, false
+	}
+
+	i := kvsFind(kvs, keyDec)
+	if len(val) == 0 { // MISSING val -> remove the field (SetField semantics).
+		if i >= 0 {
+			copy(kvs[i:], kvs[i+1:])
+			kvs = kvs[:len(kvs)-1]
+		}
+	} else {
+		pv, pt := Parse(val)
+		if i >= 0 {
+			kvs[i].Val, kvs[i].ValType = pv, pt // overwrite in place.
+		} else {
+			kCopy := append(ReuseNextKey(kvs), keyDec...)
+			kvs = append(kvs, KeyVal{Key: kCopy, Val: pv, ValType: pt})
+		}
+	}
+
+	out = objectEmit(c, kvs, bufPre)
+	c.KeyValsRelease(0, kvs)
+	return out, nil, true
+}
+
+// ObjectAdd builds OBJECT_ADD(obj, key, val) -- obj with a NEW field key=val --
+// into bufPre, key-sorted. Mirrors cbq's ObjectAdd: obj OR key MISSING -> MISSING;
+// a non-object obj OR non-string key -> NULL. Unlike PUT it does NOT overwrite: if
+// key already exists (or val is MISSING) obj is returned unchanged (re-emitted
+// key-sorted, matching cbq's re-serialization).
+func ObjectAdd(c *ValComparer, obj, key, val Val, bufPre []byte) (out []byte, sentinel Val, ok bool) {
+	if len(obj) == 0 || len(key) == 0 {
+		return nil, ValMissing, false
+	}
+	keyDec, keySentinel, keyOk := StrDecode(key)
+	if !keyOk {
+		return nil, keySentinel, false
+	}
+	kvs, sentinel, ok := objectMutateStart(c, obj)
+	if !ok {
+		return nil, sentinel, false
+	}
+
+	// Add only when the key is absent AND a (non-MISSING) value was supplied; else
+	// leave obj unchanged (cbq never overwrites and skips a MISSING value).
+	if len(val) > 0 && kvsFind(kvs, keyDec) < 0 {
+		pv, pt := Parse(val)
+		kCopy := append(ReuseNextKey(kvs), keyDec...)
+		kvs = append(kvs, KeyVal{Key: kCopy, Val: pv, ValType: pt})
+	}
+
+	out = objectEmit(c, kvs, bufPre)
+	c.KeyValsRelease(0, kvs)
+	return out, nil, true
+}
+
+// ObjectRemove builds OBJECT_REMOVE(obj, key) (2-arg form) -- obj without field key
+// -- into bufPre, key-sorted. Mirrors cbq's ObjectRemove: obj OR key MISSING ->
+// MISSING; a NULL / non-object obj OR NULL / non-string key -> NULL; else obj with
+// key removed (a no-op when key is absent).
+func ObjectRemove(c *ValComparer, obj, key Val, bufPre []byte) (out []byte, sentinel Val, ok bool) {
+	if len(obj) == 0 || len(key) == 0 {
+		return nil, ValMissing, false
+	}
+	keyDec, keySentinel, keyOk := StrDecode(key)
+	if !keyOk {
+		return nil, keySentinel, false
+	}
+	kvs, sentinel, ok := objectMutateStart(c, obj)
+	if !ok {
+		return nil, sentinel, false
+	}
+
+	if i := kvsFind(kvs, keyDec); i >= 0 {
+		copy(kvs[i:], kvs[i+1:])
+		kvs = kvs[:len(kvs)-1]
+	}
+
+	out = objectEmit(c, kvs, bufPre)
+	c.KeyValsRelease(0, kvs)
+	return out, nil, true
+}
+
+// ObjectConcat builds OBJECT_CONCAT(obj1, obj2) (2-arg form) -- the two objects
+// merged, obj2's fields winning on a name clash -- into bufPre, key-sorted. Mirrors
+// cbq's ObjectConcat: a MISSING operand -> MISSING; a non-object operand -> NULL;
+// else the union with obj2 overwriting obj1.
+func ObjectConcat(c *ValComparer, obj1, obj2 Val, bufPre []byte) (out []byte, sentinel Val, ok bool) {
+	if len(obj1) == 0 || len(obj2) == 0 {
+		return nil, ValMissing, false
+	}
+	inner2, pt2 := Parse(obj2)
+	if ParseTypeToValType[pt2] != ValTypeObject {
+		return nil, ValNull, false
+	}
+	kvs, sentinel, ok := objectMutateStart(c, obj1)
+	if !ok {
+		return nil, sentinel, false
+	}
+
+	// Merge obj2: overwrite a matching name in place, else append (obj2 wins).
+	mergeErr := jsonparser.ObjectEach(inner2,
+		func(k []byte, val []byte, dt jsonparser.ValueType, _ int) error {
+			if i := kvsFind(kvs, k); i >= 0 {
+				kvs[i].Val, kvs[i].ValType = val, int(dt)
+			} else {
+				kCopy := append(ReuseNextKey(kvs), k...)
+				kvs = append(kvs, KeyVal{Key: kCopy, Val: val, ValType: int(dt)})
+			}
+			return nil
+		})
+	if mergeErr != nil {
+		c.KeyValsRelease(0, kvs)
+		return nil, ValNull, false
+	}
+
+	out = objectEmit(c, kvs, bufPre)
+	c.KeyValsRelease(0, kvs)
 	return out, nil, true
 }
