@@ -12,12 +12,69 @@
 package engine
 
 import (
+	"fmt"
 	"reflect"
 	"strconv"
 	"testing"
 
 	"github.com/couchbase/n1k1/base"
 )
+
+// BenchmarkBroadcastScaling sweeps K (detectors) to show HOW the shared-scan win
+// scales: broadcast = 1 scan + K predicates, vs separate = K scans + K predicates.
+// The gap is the (K-1) scans broadcast removes; because the per-detector predicate
+// work is O(K x rows) in BOTH, broadcast's own cost still grows linearly in K --
+// the evidence for whether a predicate index (Phase 4) is the next lever. Narrow
+// rows here are the CHEAPEST scan (worst case for the win); a real recipe-extracted
+// keyspace (gzip + multiline SpecApply) has a far heavier per-row scan, so the win
+// there is larger -- a glue-level follow-up would quantify it.
+func BenchmarkBroadcastScaling(b *testing.B) {
+	const n = 2000
+	data := makeJsons(n)
+	scan := func() *base.Op {
+		return &base.Op{Kind: "scan", Labels: base.Labels{"."}, Params: []interface{}{"jsonsData", data}}
+	}
+	sink := func(base.Vals) {}
+	noErr := func(err error) {
+		if err != nil {
+			b.Fatalf("yieldErr: %v", err)
+		}
+	}
+
+	for _, k := range []int{1, 4, 16, 64, 256} {
+		detParams := benchDetectorParams(k)
+
+		b.Run(fmt.Sprintf("broadcast/K=%d", k), func(b *testing.B) {
+			bc := &base.Op{Kind: "broadcast", Labels: base.Labels{"tag", "a"},
+				Params: []interface{}{detParams}, Children: []*base.Op{scan()}}
+			vars := broadcastVars()
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				ExecOp(bc, vars, sink, noErr, "", "")
+			}
+		})
+
+		b.Run(fmt.Sprintf("separate/K=%d", k), func(b *testing.B) {
+			pipelines := make([]*base.Op, k)
+			for j := 0; j < k; j++ {
+				det := detParams[j].([]interface{})
+				pipelines[j] = &base.Op{Kind: "project", Labels: base.Labels{"a"},
+					Params: det[2].([]interface{}),
+					Children: []*base.Op{{Kind: "filter", Labels: base.Labels{"."},
+						Params: det[1].([]interface{}), Children: []*base.Op{scan()}}}}
+			}
+			vars := broadcastVars()
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				for _, p := range pipelines {
+					ExecOp(p, vars, sink, noErr, "", "")
+				}
+			}
+		})
+	}
+}
 
 // broadcastVars builds a Vars with a full-enough Ctx (expr catalog + comparer)
 // so predicate / projection expr-trees evaluate.
