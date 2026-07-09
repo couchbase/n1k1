@@ -139,14 +139,14 @@ func ArrayContains(vc *ValComparer, arr, x Val) Val {
 	return ValFalse
 }
 
-// arrayElems returns the element-list bytes of a JSON array (the content between
+// ArrayTrimSpace returns the element-list bytes of a JSON array (the content between
 // the outer '[' and ']', outer whitespace trimmed) -- e.g. `[1, 2]` -> `1, 2`, and
 // an empty array -> empty. arr must be array bytes (a `[...]` token from Parse; callers guard the
 // type first). The returned slice points into arr (no copy). Note this preserves any
 // INNER element formatting; the builders assume canonical-ish JSON input (the same
 // assumption as ArrayMinMax's element re-emit), so the spliced result matches cbq's
 // canonical serialization for canonical inputs.
-func arrayElems(arr []byte) []byte {
+func ArrayTrimSpace(arr []byte) []byte {
 	return bytes.TrimSpace(arr[1 : len(arr)-1])
 }
 
@@ -164,7 +164,7 @@ func ArrayAppend(arr, val Val, bufPre []byte) (out []byte, sentinel Val, ok bool
 	if ParseTypeToValType[pt] != ValTypeArray {
 		return nil, ValNull, false
 	}
-	elems := arrayElems(pv)
+	elems := ArrayTrimSpace(pv)
 
 	out = append(bufPre[:0], '[')
 	out = append(out, elems...)
@@ -188,7 +188,7 @@ func ArrayPrepend(val, arr Val, bufPre []byte) (out []byte, sentinel Val, ok boo
 	if ParseTypeToValType[pt] != ValTypeArray {
 		return nil, ValNull, false
 	}
-	elems := arrayElems(pv)
+	elems := ArrayTrimSpace(pv)
 
 	out = append(bufPre[:0], '[')
 	out = append(out, val...)
@@ -212,7 +212,7 @@ func ArrayConcat(arr1, arr2 Val, bufPre []byte) (out []byte, sentinel Val, ok bo
 	if ParseTypeToValType[t1] != ValTypeArray || ParseTypeToValType[t2] != ValTypeArray {
 		return nil, ValNull, false
 	}
-	e1, e2 := arrayElems(p1), arrayElems(p2)
+	e1, e2 := ArrayTrimSpace(p1), ArrayTrimSpace(p2)
 
 	out = append(bufPre[:0], '[')
 	out = append(out, e1...)
