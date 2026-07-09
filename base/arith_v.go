@@ -24,62 +24,62 @@ import (
 	"math"
 )
 
-func ldF64(b []byte, i int) float64 {
+func VFloat64Load(b []byte, i int) float64 {
 	return math.Float64frombits(binary.LittleEndian.Uint64(b[i*8:]))
 }
 
-func stF64(b []byte, i int, v float64) {
+func VFloat64Store(b []byte, i int, v float64) {
 	binary.LittleEndian.PutUint64(b[i*8:], math.Float64bits(v))
 }
 
 // LoadFloat64FromInt64 writes n float64s into dst from an int64 column (widening
 // each 8-byte little-endian int64 to float64), giving arithmetic a uniform float64
 // view of an integer source. dst must hold n*8 bytes.
-func LoadFloat64FromInt64(dst, src []byte, n int) {
+func VFloat64LoadFromVInt64(dst, src []byte, n int) {
 	for i := 0; i < n; i++ {
-		stF64(dst, i, float64(int64(binary.LittleEndian.Uint64(src[i*8:]))))
+		VFloat64Store(dst, i, float64(int64(binary.LittleEndian.Uint64(src[i*8:]))))
 	}
 }
 
-// ArithFloat64 writes dst[i] = a[i] <op> b[i] over two float64 columns; op is one
+// ArithVFloat64 writes dst[i] = a[i] <op> b[i] over two float64 columns; op is one
 // of '+', '-', '*'. dst must hold n*8 bytes (may alias a or b).
-func ArithFloat64(dst, a, b []byte, n int, op byte) {
+func ArithVFloat64(dst, a, b []byte, n int, op byte) {
 	switch op {
 	case '+':
 		for i := 0; i < n; i++ {
-			stF64(dst, i, ldF64(a, i)+ldF64(b, i))
+			VFloat64Store(dst, i, VFloat64Load(a, i)+VFloat64Load(b, i))
 		}
 	case '-':
 		for i := 0; i < n; i++ {
-			stF64(dst, i, ldF64(a, i)-ldF64(b, i))
+			VFloat64Store(dst, i, VFloat64Load(a, i)-VFloat64Load(b, i))
 		}
 	case '*':
 		for i := 0; i < n; i++ {
-			stF64(dst, i, ldF64(a, i)*ldF64(b, i))
+			VFloat64Store(dst, i, VFloat64Load(a, i)*VFloat64Load(b, i))
 		}
 	}
 }
 
-// ScaleFloat64 writes dst[i] = a[i] <op> c (constRight) or c <op> a[i] (else), for a
+// ArithVFloat64Scale writes dst[i] = a[i] <op> c (constRight) or c <op> a[i] (else), for a
 // float64 column a and scalar c; op is one of '+', '-', '*'.
-func ScaleFloat64(dst, a []byte, c float64, op byte, constRight bool, n int) {
+func ArithVFloat64Scale(dst, a []byte, c float64, op byte, constRight bool, n int) {
 	switch op {
 	case '+':
 		for i := 0; i < n; i++ {
-			stF64(dst, i, ldF64(a, i)+c)
+			VFloat64Store(dst, i, VFloat64Load(a, i)+c)
 		}
 	case '*':
 		for i := 0; i < n; i++ {
-			stF64(dst, i, ldF64(a, i)*c)
+			VFloat64Store(dst, i, VFloat64Load(a, i)*c)
 		}
 	case '-':
 		if constRight {
 			for i := 0; i < n; i++ {
-				stF64(dst, i, ldF64(a, i)-c)
+				VFloat64Store(dst, i, VFloat64Load(a, i)-c)
 			}
 		} else {
 			for i := 0; i < n; i++ {
-				stF64(dst, i, c-ldF64(a, i))
+				VFloat64Store(dst, i, c-VFloat64Load(a, i))
 			}
 		}
 	}

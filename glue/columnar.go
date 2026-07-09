@@ -739,7 +739,7 @@ func DatastoreAggColumnar(o *base.Op, vars *base.Vars,
 			return cols[ci]
 		}
 		*scratch = resizeBytes(*scratch, rows*8)
-		base.LoadFloat64FromInt64(*scratch, cols[ci], rows)
+		base.VFloat64LoadFromVInt64(*scratch, cols[ci], rows)
 		return *scratch
 	}
 
@@ -754,14 +754,14 @@ func DatastoreAggColumnar(o *base.Op, vars *base.Vars,
 		arithDst = resizeBytes(arithDst, rows*8)
 		switch {
 		case op.lCol >= 0 && op.rCol >= 0:
-			base.ArithFloat64(arithDst,
+			base.ArithVFloat64(arithDst,
 				f64View(op.lCol, op.lIsInt, &lWiden, cols, rows),
 				f64View(op.rCol, op.rIsInt, &rWiden, cols, rows), rows, op.op)
 		case op.lCol >= 0: // right is the constant
-			base.ScaleFloat64(arithDst, f64View(op.lCol, op.lIsInt, &lWiden, cols, rows),
+			base.ArithVFloat64Scale(arithDst, f64View(op.lCol, op.lIsInt, &lWiden, cols, rows),
 				op.rConst, op.op, true, rows)
 		default: // left is the constant
-			base.ScaleFloat64(arithDst, f64View(op.rCol, op.rIsInt, &rWiden, cols, rows),
+			base.ArithVFloat64Scale(arithDst, f64View(op.rCol, op.rIsInt, &rWiden, cols, rows),
 				op.lConst, op.op, false, rows)
 		}
 		lv, rv := colValidity(op.lCol, valids), colValidity(op.rCol, valids)

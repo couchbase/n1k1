@@ -41,7 +41,7 @@ func TestArithFloat64MatchesManual(t *testing.T) {
 
 	for _, op := range []byte{'+', '-', '*'} {
 		dst := make([]byte, n*8)
-		ArithFloat64(dst, ab, bb, n, op)
+		ArithVFloat64(dst, ab, bb, n, op)
 		got := unpackF64(dst, n)
 		for i := range a {
 			var want float64
@@ -69,7 +69,7 @@ func TestScaleFloat64MatchesManual(t *testing.T) {
 	for _, op := range []byte{'+', '-', '*'} {
 		for _, constRight := range []bool{true, false} {
 			dst := make([]byte, n*8)
-			ScaleFloat64(dst, ab, c, op, constRight, n)
+			ArithVFloat64Scale(dst, ab, c, op, constRight, n)
 			got := unpackF64(dst, n)
 			for i := range a {
 				var want float64
@@ -96,7 +96,7 @@ func TestLoadFloat64FromInt64(t *testing.T) {
 	src := packI64(ints)
 	n := len(ints)
 	dst := make([]byte, n*8)
-	LoadFloat64FromInt64(dst, src, n)
+	VFloat64LoadFromVInt64(dst, src, n)
 	got := unpackF64(dst, n)
 	for i, v := range ints {
 		if got[i] != float64(v) {
@@ -112,7 +112,7 @@ func TestArithThenSum(t *testing.T) {
 	b := []float64{10, -2, 3.5, 4, 2, 0.5}
 	n := len(a)
 	prod := make([]byte, n*8)
-	ArithFloat64(prod, packF64(a), packF64(b), n, '*')
+	ArithVFloat64(prod, packF64(a), packF64(b), n, '*')
 
 	acc := AggSum.Init(nil, nil)
 	MaskedSumFloat64(acc, prod, nil, n) // nil mask = all rows
