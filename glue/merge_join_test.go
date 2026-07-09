@@ -18,6 +18,8 @@ import (
 	"path/filepath"
 	"sync/atomic"
 	"testing"
+
+	"github.com/couchbase/n1k1/records"
 )
 
 // The argmax -> ASOF merge-join lowering's correctness net (DESIGN-merging.md §3;
@@ -270,6 +272,68 @@ func TestASOFLoweringCrossNodeDifferential(t *testing.T) {
 		`{"ts":1779024971100000000,"state_at":null}`,
 		`{"ts":1779024973300000000,"state_at":[{"msg":"r-b"}]}`,
 		`{"ts":1779024975500000000,"state_at":[{"msg":"r-d"}]}`,
+	}
+	if len(off) != len(want) {
+		t.Fatalf("want %d rows, got %d: %v", len(want), len(off), off)
+	}
+	for i := range want {
+		if off[i] != want[i] {
+			t.Fatalf("row[%d]: want %s got %s", i, want[i], off[i])
+		}
+	}
+}
+
+// TestASOFLoweringNearSortedR is the near-sorted build-side net. The state keyspace
+// R is a genuinely NEAR-sorted file (a later line carries an earlier ts, the shape
+// real logs exhibit). The lowering wraps R in a watermarked-near merge-scan that must
+// REORDER it to strictly-ascending BEFORE the merge-join's build side consumes it --
+// otherwise the raw out-of-order R would trip the merge-join's monotonicity tripwire.
+// The test is arranged so the nearest-preceding match for one E row is precisely the
+// OUT-OF-ORDER R record (r-400 below), so a broken reorder can't accidentally pass.
+// ON (lowered) must be byte-identical to the correlated baseline (OFF).
+func TestASOFLoweringNearSortedR(t *testing.T) {
+	root := t.TempDir()
+	asofWriteKS(t, root, "elog", "ns_server.error.log",
+		nsLine("2026-05-17T15:36:11.000+02:00", "n1", "e-1100")+ // no preceding R -> null
+			nsLine("2026-05-17T15:36:12.500+02:00", "n1", "e-2500")+ // nearest <=12.5 is R@12.4 (r-400)
+			nsLine("2026-05-17T15:36:12.700+02:00", "n1", "e-2700")+ // nearest is R@12.6 (r-600)
+			nsLine("2026-05-17T15:36:13.500+02:00", "n1", "e-3500")) // nearest is R@13.0 (r-1000)
+	// R is NEAR-sorted: r-400 (@12.4) arrives AFTER r-600 (@12.6) -- a 200ms
+	// out-of-order displacement. The raw stream 200,600,400,1000 is not ascending.
+	asofWriteKS(t, root, "rlog", "ns_server.rebalance.log",
+		nsLine("2026-05-17T15:36:12.200+02:00", "n1", "r-200")+
+			nsLine("2026-05-17T15:36:12.600+02:00", "n1", "r-600")+
+			nsLine("2026-05-17T15:36:12.400+02:00", "n1", "r-400")+ // 200ms late
+			nsLine("2026-05-17T15:36:13.000+02:00", "n1", "r-1000"))
+
+	s, err := OpenSession(root, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	// Sanity: R really is near-sorted (else the watermark path isn't exercised).
+	rMetas, merr := SortedSourceMetasForKeyspace(mustKeyspace(t, s, "rlog"), nil)
+	if merr != nil || len(rMetas) != 1 || rMetas[0].Meta.Sortedness != records.SortedNear {
+		t.Fatalf("rlog not near-sorted (err=%v metas=%+v) -- test data invalid", merr, rMetas)
+	}
+
+	stmt := "SELECT e.ts AS ts, " +
+		"(SELECT r.msg FROM default:rlog r WHERE r.ts <= e.ts ORDER BY r.ts DESC LIMIT 1) AS state_at " +
+		"FROM default:elog e ORDER BY e.ts"
+
+	off, _, fired := runBoth(t, s, stmt)
+	if !fired {
+		t.Fatalf("expected the near-sorted-R ASOF lowering to FIRE; it did not")
+	}
+	// The e@12.5 row's nearest preceding is the OUT-OF-ORDER r-400 -- proving the
+	// watermark reordered R correctly (a raw near stream would either trip the
+	// build-side tripwire or mismatch here). runBoth already asserted ON == OFF.
+	want := []string{
+		`{"ts":1779024971000000000,"state_at":null}`,
+		`{"ts":1779024972500000000,"state_at":[{"msg":"r-400"}]}`,
+		`{"ts":1779024972700000000,"state_at":[{"msg":"r-600"}]}`,
+		`{"ts":1779024973500000000,"state_at":[{"msg":"r-1000"}]}`,
 	}
 	if len(off) != len(want) {
 		t.Fatalf("want %d rows, got %d: %v", len(want), len(off), off)

@@ -19,7 +19,25 @@ import (
 	"path/filepath"
 	"sync/atomic"
 	"testing"
+
+	"github.com/couchbase/n1k1/records"
+
+	"github.com/couchbase/query/datastore"
 )
+
+// mustKeyspace resolves keyspace ks in the default namespace of s's store.
+func mustKeyspace(t *testing.T, s *Session, ks string) datastore.Keyspace {
+	t.Helper()
+	ns, err := s.Store.Datastore.NamespaceByName("default")
+	if err != nil {
+		t.Fatalf("NamespaceByName: %v", err)
+	}
+	k, err := ns.KeyspaceByName(ks)
+	if err != nil {
+		t.Fatalf("KeyspaceByName(%s): %v", ks, err)
+	}
+	return k
+}
 
 // TestWireTemporalMergeMetaE2E proves the A->B integration end-to-end: a
 // `... UNION ALL ... ORDER BY ts` over two recipe-matched (ns_server_log)
@@ -171,6 +189,83 @@ func TestPerFileMergeOverlapping(t *testing.T) {
 	if offErr == nil {
 		t.Fatalf("without per-file expansion the concatenated overlapping files must" +
 			" trip the monotonicity tripwire, but the query succeeded")
+	}
+}
+
+// TestMergeNearSortedE2E is the near-sorted real-file net. Every other merge/ASOF
+// E2E test uses strictly-ascending files, but real logs are NEAR-sorted (records
+// arrive slightly out of order within a bounded disorder window). This proves the
+// full pipeline over genuinely near-sorted *.log files: describe classifies each
+// file SortedNear with a measured disorder bound, WireTemporalMergeMeta selects the
+// watermarked-near regime and threads that bound, and the merge-scan REORDERS each
+// near branch to a globally-ascending stream -- byte-identical to a plain-ORDER-BY
+// oracle over all rows. A regression that mis-threads the bound (or feeds the raw
+// near stream to a strict heap) would mis-order or trip the monotonicity tripwire.
+func TestMergeNearSortedE2E(t *testing.T) {
+	root := t.TempDir()
+	// Each file is INTERNALLY near-sorted: a later line carries an earlier ts than
+	// the line before it (a ~200ms out-of-order displacement), the shape real logs
+	// exhibit. describe must measure this disorder and classify the file SortedNear.
+	asofWriteKS(t, root, "nearA", "ns_server.a.log",
+		nsLine("2026-05-17T15:36:10.100+02:00", "n1", "a-100")+
+			nsLine("2026-05-17T15:36:10.500+02:00", "n1", "a-500")+
+			nsLine("2026-05-17T15:36:10.300+02:00", "n1", "a-300")+ // 200ms late
+			nsLine("2026-05-17T15:36:10.900+02:00", "n1", "a-900")+
+			nsLine("2026-05-17T15:36:10.700+02:00", "n1", "a-700")) // 200ms late
+	asofWriteKS(t, root, "nearB", "ns_server.b.log",
+		nsLine("2026-05-17T15:36:10.200+02:00", "n2", "b-200")+
+			nsLine("2026-05-17T15:36:10.600+02:00", "n2", "b-600")+
+			nsLine("2026-05-17T15:36:10.400+02:00", "n2", "b-400")+ // 200ms late
+			nsLine("2026-05-17T15:36:10.800+02:00", "n2", "b-800"))
+	// Oracle: all nine rows in one file, ordered by a plain ORDER BY (no merge).
+	asofWriteKS(t, root, "nearAll", "ns_server.all.log",
+		nsLine("2026-05-17T15:36:10.100+02:00", "n1", "a-100")+
+			nsLine("2026-05-17T15:36:10.200+02:00", "n2", "b-200")+
+			nsLine("2026-05-17T15:36:10.300+02:00", "n1", "a-300")+
+			nsLine("2026-05-17T15:36:10.400+02:00", "n2", "b-400")+
+			nsLine("2026-05-17T15:36:10.500+02:00", "n1", "a-500")+
+			nsLine("2026-05-17T15:36:10.600+02:00", "n2", "b-600")+
+			nsLine("2026-05-17T15:36:10.700+02:00", "n1", "a-700")+
+			nsLine("2026-05-17T15:36:10.800+02:00", "n2", "b-800")+
+			nsLine("2026-05-17T15:36:10.900+02:00", "n1", "a-900"))
+
+	s, err := OpenSession(root, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	// Sanity: each near file really is classified SortedNear (not strict) -- otherwise
+	// the test would prove nothing about the watermark path.
+	for _, ks := range []string{"nearA", "nearB"} {
+		metas, merr := SortedSourceMetasForKeyspace(mustKeyspace(t, s, ks), nil)
+		if merr != nil || len(metas) != 1 {
+			t.Fatalf("%s: SortedSourceMetasForKeyspace err=%v n=%d", ks, merr, len(metas))
+		}
+		if metas[0].Meta.Sortedness != records.SortedNear {
+			t.Fatalf("%s: sortedness = %q, want near (test data not near-sorted?)",
+				ks, metas[0].Meta.Sortedness)
+		}
+	}
+
+	mergeStmt := "SELECT e.ts AS ts, e.msg AS msg FROM default:nearA e " +
+		"UNION ALL SELECT w.ts AS ts, w.msg AS msg FROM default:nearB w ORDER BY ts"
+	oracleStmt := "SELECT a.ts AS ts, a.msg AS msg FROM default:nearAll a ORDER BY a.ts"
+
+	want := rowsAsStrings(mustRows(t, s, oracleStmt))
+	before := atomic.LoadInt64(&MergeMetaRewriteApplied)
+	got := rowsAsStrings(mustRows(t, s, mergeStmt))
+	if atomic.LoadInt64(&MergeMetaRewriteApplied) == before {
+		t.Fatalf("the near-sorted UNION-ALL merge did not fire")
+	}
+	if len(got) != len(want) {
+		t.Fatalf("row count merged=%d oracle=%d\n merged=%v\n oracle=%v", len(got), len(want), got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("near-sorted merge mis-ordered at row[%d]:\n merged=%s\n oracle=%s\n full=%v",
+				i, got[i], want[i], got)
+		}
 	}
 }
 
