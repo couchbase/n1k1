@@ -43,17 +43,24 @@ there is delegated. Every op is validated by a **differential test against cbq**
 `a+b` is `0 B/op, 0 allocs/op` (31 ns) vs cbq fallback `384 B/op, 8 allocs/op`
 (190 ns) — ~6× faster, zero per-eval garbage.
 
-**Done recently:** (a) native exprs run under an active scope (correlated subqueries /
-WITH / recursive CTEs) when every field ref is provably local — `strict` optimize
-(lever #4); (b) logical `and`/`or` optimizer-wired with three-valued semantics (lever
-#5), so `WHERE`/`JOIN`/`ON` conjunctions avoid boxing; (c) the whole-row `self` /
+**Done recently — perf levers:** (a) native exprs run under an active scope (correlated
+subqueries / WITH / recursive CTEs) when every field ref is provably local — `strict`
+optimize (lever #4); (b) logical `and`/`or` optimizer-wired with three-valued semantics
+(lever #5), so `WHERE`/`JOIN`/`ON` conjunctions avoid boxing; (c) the whole-row `self` /
 `SELECT *` projection now assembles JSON from label bytes instead of boxing (lever #2);
 (d) grouped aggregates (`count(*)`, `sum(x)`, incl. `count(*)+1`) read the group's
 `^aggregates|…` value natively (lever #6); (e) result-row output (`OnRow` / `Result.Rows`)
 encodes boxing-free via `ConvertBytes` (lever #7).
 
-**Next:** `slice` navigation (blocked); Tier B (string/numeric/date; bitwise; JSON
-`encoded_size`). `LIKE`/`REGEXP_*` deferred.
+**Done recently — new families** (PREPARE++ log-extraction workloads lean on string /
+object / array funcs): constant-pattern `regexp_contains`/`regexp_like`; `date_add_millis`;
+the object structure builders `object_names`/`object_values`/`object_pairs`; the object
+mutators `object_add`/`object_put`/`object_remove`/`object_concat`; and the array builders
+`array_append`/`array_prepend`/`array_concat`. All are in the inventory table.
+
+**Next:** `slice` navigation (blocked); the remaining Tier C builders (comprehensions,
+more `array_*`/`object_*`); Tier B (more string/numeric; the date-STRING funcs; bitwise;
+JSON `encoded_size`). `LIKE` and dynamic-pattern `REGEXP_*` deferred.
 
 ## Why native matters (the fallback's cost)
 
@@ -134,17 +141,22 @@ place encoding "empty==MISSING, leading-n==null"), `CondUnknownKeep`/`NaryFirstK
 | `substr` (`substr0` `substr1`) | `engine/expr_str.go` + `base.StrSubstr` | SUBSTR (byte-based, `inRunes=false`), 2/3-arg, arity-dispatched to `substr{0,1}_{2,3}`. Rune-based `mb_substr*` fall back |
 | `split` | `engine/expr_str.go` + `base.StrSplit*` | SPLIT (1-arg whitespace / 2-arg sep), arity-dispatched. **First structure-building native expr** — emits a JSON array via `EncodeAsString` (appends, unlike `EncodeStr`) |
 | `lpad` `rpad` | `engine/expr_str.go` + `base.StrPad*` | LPAD/RPAD (byte-based), 2/3-arg, arity-dispatched. `l <= len(s)` truncates; else pad-fill. Rune-based `mb_*pad` fall back |
+| `regexp_contains` `regexp_like` | `engine/expr_str.go` + `base.StrRegexpMatch` | regexp predicates over a **constant** pattern (compiled once at setup); a dynamic or invalid-constant pattern falls back |
 | `abs` `ceil` `floor` `sqrt` `exp` `ln` `log` `sign` `degrees` `radians` `sin` `cos` `tan` `asin` `acos` `atan` `power` `atan2` | `engine/expr_math.go` + `base/math.go` | numeric math (func-passing: stdlib `math.*` / `base.Math*`) |
 | `round` `trunc` | `engine/expr_math.go` + `base.RoundFloat`/`TruncFloat` | ROUND (half-to-even) / TRUNC, 1/2-arg, arity-dispatched. `round_nearest` falls back |
-| `date_part_millis` | `engine/expr_date.go` + `base.DatePartMillis` | DATE_PART_MILLIS 2-arg — component from epoch millis in process-local zone (port of cbq `millisToTime`+`datePart`). 3-arg named-TZ and other date funcs fall back |
+| `date_part_millis` `date_add_millis` | `engine/expr_date.go` + `base/datetime.go` | DATE_PART_MILLIS (2-arg component) / DATE_ADD_MILLIS (3-arg) — millis math in the process-local zone (ports of cbq `millisToTime`/`datePart`/`dateAdd`). 3-arg named-TZ and the date-STRING funcs fall back |
 | `to_boolean` `to_string` `to_number` | `engine/expr_type.go` + `base/type.go` | scalar type conversions |
 | `array_length` `array_count` `array_sum` `array_avg` `array_min` `array_max` `array_contains` `array_position` | `engine/expr_array.go` + `base/array.go` | reader array ops (no materialization) |
+| `array_append` `array_prepend` `array_concat` | `engine/expr_array.go` + `base/array.go` | array builders (2-arg): splice element bytes into a lifted buffer — the value operand is a complete Val, spliced verbatim. Variadic >2-arg falls back |
 | `object_length` `poly_length` | `engine/expr_object.go` + `base/object.go` | object/collection reader ops (unary; op-code dispatch; count via `jsonparser.ObjectEach`/`ArrayEach`, no materialization) |
+| `object_names` `object_values` `object_pairs` | `engine/expr_object.go` + `base/object.go` | name-sorted structure builders (field names / values / `{name,val}` pairs; pooled `KeyVals` + reused buffer). OBJECT_PAIRS 1-arg only (2-arg `types` option falls back) |
+| `object_add` `object_put` `object_remove` `object_concat` | `engine/expr_object.go` + `base/object.go` | object mutating builders — key-sorted re-emit (add-new / set (a MISSING value removes) / remove / merge). ADD/PUT ternary; REMOVE/CONCAT 2-arg (variadic >2 falls back) |
 | `window-partition-row-number`, `window-frame-*` | `engine/expr_window.go` | window helpers (FIRST/LAST/NTH/LEAD/LAG) |
 | `exprStr` / `exprTree` | `glue/expr.go` | **the fallback** (parse / delegate to cbq) |
 
-Still **delegated:** `LIKE`/`REGEXP_*`, `slice`
-navigation, `TYPE()`/`IS_BINARY`, and the ~320 remaining scalar functions.
+Still **delegated:** `LIKE`, dynamic-pattern `REGEXP_*`, `slice` navigation,
+`TYPE()`/`IS_BINARY`, and the bulk of the remaining scalar functions (see the roadmap
+tiers).
 
 ### Known-broken & caveats
 
@@ -361,34 +373,42 @@ byte/register/lz model.
 
 ### Tier A — remaining scalar, byte-friendly, high per-row frequency
 - **`slice` navigation `arr[start:end]`** — blocked on cbq internals (see Lessons).
-- **`is [not] distinct from`** — **done** (`engine/expr_distinct.go`): binary null-safe
-  (in)equality, MISSING/NULL-aware then `ValComparer.Compare`.
+  (The rest of this tier — arithmetic, comparisons, `between`, `in`, `is-*`,
+  `is [not] distinct from` — is done; see the inventory.)
 
 ### Tier B — scalar but needs parse+format into a reused buffer
-- **String funcs** (upper/lower/trim/substr/…) — Go `strings.*` into a lifted buffer;
-  watch multi-byte variants.
-- **Numeric/math** (abs/ceil/floor/round/sqrt/pow/…) — `math.*` + `strconv.AppendFloat`.
-- **Date/time (non-volatile)** — millis↔string into a buffer. `date_part_millis`
-  (2-arg) **done** (no string parsing). The rest hinge on cbq's date-STRING parser
-  (`strToTime`'s large `_DATE_FORMATS` list) and named-TZ loading (`loadLocation`) — a
-  fiddly port where any mismatch breaks the differential, so delegated:
-  `str_to_millis`/`millis_to_str`/`date_part_str`/`date_add_*`/`date_diff_*`/
-  `date_trunc_*`/`weekday_*`. `now_*`/`clock_*` are volatile (Tier D). Next tractable:
-  the millis-only funcs (`date_add_millis`/etc.) — no string parsing.
-- **Bitwise, `to_*` conversions, JSON `encode/poly_length/encoded_size`** — scalar.
-- **`LIKE`/`REGEXP_*` do NOT fit here** — compile to `regexp`, outside byte-reuse
-  (see Lessons). Delegated until a bespoke zero-alloc glob matcher is worthwhile.
+- **String funcs** — upper/lower/title/trim/reverse/length/contains/position, plus
+  replace/substr/split/lpad/rpad and constant-pattern `regexp_contains`/`regexp_like`,
+  **done** (Go `strings.*`/`regexp` into a lifted buffer). Remaining: multi-byte (`mb_*`)
+  variants, the cutset/4-arg forms, `repeat`, `mask`, tokenizers.
+- **Numeric/math** (abs/ceil/floor/round/sqrt/pow/…) — **done** (`math.*` +
+  `strconv.AppendFloat`).
+- **Date/time (non-volatile)** — the millis-only funcs `date_part_millis` /
+  `date_add_millis` are **done** (no string parsing). The rest hinge on cbq's date-STRING
+  parser (`strToTime`'s large `_DATE_FORMATS` list) and named-TZ loading (`loadLocation`)
+  — a fiddly port where any mismatch breaks the differential, so delegated:
+  `str_to_millis`/`millis_to_str`/`date_part_str`/`date_add_str`/`date_diff_*`/
+  `date_trunc_*`/`weekday_*`. `now_*`/`clock_*` are volatile (Tier D). Next tractable
+  millis-only: `date_diff_millis`, `date_trunc_millis`.
+- **Bitwise, JSON `encoded_size`** — scalar; `to_boolean`/`to_string`/`to_number` done.
+- **`LIKE` / dynamic-pattern `REGEXP_*` do NOT fit here** — compile to `regexp` per
+  tuple, outside byte-reuse (see Lessons). A *constant* `regexp_*` pattern is native
+  (compiled once); the rest wait on a bespoke zero-alloc glob matcher.
 
 ### Tier C — structure-building (doable in bytes, higher cost)
 - **Reader ops (no output build)** — `array_length/contains/position`,
   `array_min/max/sum/avg`, `object_length`, `poly_length` **done** (iterate via
   `jsonparser.ArrayEach`/`ObjectEach`, compute a scalar without materializing — good
-  ROI). Remaining readers: `object_names` (builds a sorted array — structure), the
-  bare-identifier / whole-row operand case (e.g. `OBJECT_LENGTH(o)` still boxes because
-  `o` isn't recognized as a native labelPath).
-- **Ops that DO build output** — `array_append/concat/sort/…`, `object_put/…`,
-  literals — emit JSON into a lifted buffer (sort/dedup may need `ValComparer`
-  scratch). Port common ones by frequency.
+  ROI). Remaining: the bare-identifier / whole-row operand case (e.g. `OBJECT_LENGTH(o)`
+  still boxes because `o` isn't recognized as a native labelPath).
+- **Ops that DO build output** — `array_append/prepend/concat`, the object structure
+  builders `object_names/values/pairs`, and the object mutators
+  `object_add/put/remove/concat` are **done** (emit JSON into a lifted buffer; mutators
+  re-emit key-sorted via a pooled `KeyVals`; array builders splice element bytes
+  verbatim). Remaining: `array_sort/distinct/reverse/flatten`, array/object literals,
+  and the variadic >2-arg forms of the builders above (currently 2-arg only). `ValComparer`
+  scratch covers sort/dedup. Skip `array_distinct` — cbq's set-based order is
+  nondeterministic (no stable differential).
 - **Comprehensions `ANY/EVERY/ARRAY/MAP/OBJECT/FIRST/WITHIN`** — bind a variable,
   evaluate a sub-expr per element (feed element bytes into a temp register, invoke the
   child `ExprFunc`). Highest-complexity portable set — needs sub-expr binding plumbing.
@@ -629,6 +649,9 @@ find the dominant `ExprTree`/`Convert`/`Evaluate`/`WriteJSON` sites; port those 
   mechanism to feed per-element bytes into a child `ExprFunc`?
 - **A shared JSON array/object builder** over a lifted buffer (with `ValComparer`
   scratch for sort/dedup) so `array_*`/`object_*` share one allocation-free emitter.
+  (Partial: the object builders share `objectPairsInto`/`kvsSortByName`/`objectEmit`/
+  `appendJSONElem`, and array builders share `arrayElems`, but there is no single
+  cross-family emitter yet.)
 - **Auto-generation:** could codegen emit boilerplate native `ExprFunc`s for the thin
   stdlib-wrapper string/num/date funcs from a spec table? (Partly answered — the thin
   wrappers are now runtime `name → leaf` tables, no generator needed; see
