@@ -39,7 +39,7 @@ import (
 // is IDENTICAL to a plain broadcast (TestOpBroadcastIndexedEquivalence proves
 // byte-identical findings). Under-waking would be a correctness bug and is
 // avoided by falling back to always-wake whenever no necessary literal is
-// provable (see prefilterLiteral).
+// provable (see PrefilterLiteral).
 //
 // The Aho-Corasick pass runs over the whole raw row bytes (base.Val slots), not
 // per-field: if a detector requires contains(field,"panic") and the row is true,
@@ -98,7 +98,7 @@ func BroadcastIndexedExec(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 			projFunc: projFunc,
 		})
 
-		lit, ok := prefilterLiteral(spec.pred)
+		lit, ok := PrefilterLiteral(spec.pred)
 		if !ok {
 			alwaysWake = append(alwaysWake, di)
 			continue
@@ -192,12 +192,14 @@ func BroadcastIndexedExec(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 
 // regexMetaChars are the regexp metacharacters. A "regexp_contains" / "regexp_like"
 // pattern containing ANY of these is NOT a plain literal, so no required
-// substring can be extracted from it (see prefilterLiteral).
+// substring can be extracted from it (see PrefilterLiteral).
 const regexMetaChars = `.*+?()[]{}|^$\`
 
-// prefilterLiteral returns a REQUIRED plain-substring literal of pred -- one that
+// PrefilterLiteral returns a REQUIRED plain-substring literal of pred -- one that
 // MUST appear in the row bytes whenever pred is true -- or ("", false) if none is
-// provable (=> the detector must always-wake). This is the correctness heart of
+// provable (=> the detector must always-wake). Exported so the glue-level corpus
+// lint ("detect lint") can report, per detector, whether its predicate is
+// index-pruned by a necessary literal or is always-wake. This is the correctness heart of
 // the predicate index: it extracts ONLY when the literal is a necessary
 // condition (never under-wake). Supported necessary forms:
 //
@@ -211,7 +213,7 @@ const regexMetaChars = `.*+?()[]{}|^$\`
 //
 // Anything else (or, comparisons, non-string constants, unrecognized) yields no
 // literal -> always-wake. Conservative by design: when in doubt, always-wake.
-func prefilterLiteral(pred []interface{}) (string, bool) {
+func PrefilterLiteral(pred []interface{}) (string, bool) {
 	if len(pred) == 0 {
 		return "", false
 	}
@@ -263,7 +265,7 @@ func prefilterLiteral(pred []interface{}) (string, bool) {
 			if !ok {
 				continue
 			}
-			if lit, ok := prefilterLiteral(ct); ok {
+			if lit, ok := PrefilterLiteral(ct); ok {
 				return lit, true
 			}
 		}
