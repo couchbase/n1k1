@@ -95,7 +95,17 @@ type Session struct {
 
 // OpenSession opens a file-datastore directory and prepares it for queries.
 func OpenSession(datastoreDir, namespace string) (*Session, error) {
-	store, err := FileStore(datastoreDir)
+	return OpenSessionBound(datastoreDir, namespace, nil)
+}
+
+// OpenSessionBound opens a file-datastore directory with a per-bundle late-binding
+// manifest (binding.go): a detector corpus authored against a stable LOGICAL
+// vocabulary (`FROM indexer_log`) runs against THIS bundle by resolving each logical
+// name to the manifest's glob pattern at bind time. To run the same corpus against
+// the NEXT bundle, OpenSessionBound its root with the same manifest and re-run (or
+// re-CorpusCompile) -- no detector edits. A nil/empty manifest is exactly OpenSession.
+func OpenSessionBound(datastoreDir, namespace string, b Binding) (*Session, error) {
+	store, err := FileStoreBound(datastoreDir, b)
 	if err != nil {
 		return nil, err
 	}

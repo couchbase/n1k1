@@ -178,6 +178,15 @@ func (g *Store) PlanStatementQP(s algebra.Statement, namespace string,
 // query/server -> indexing (cgo) via query/aus, which we drop to keep n1k1
 // pure-Go. Queries that don't reference the system: namespace don't need it.
 func FileStore(path string) (*Store, error) {
+	return FileStoreBound(path, nil)
+}
+
+// FileStoreBound is FileStore with a per-bundle late-binding manifest installed: a
+// logical keyspace name a detector corpus references (`FROM <logical>`) resolves to
+// the manifest's glob pattern at bind time, so the SAME corpus runs against a new,
+// differently-named bundle by re-binding to its root (DESIGN-prepare.md late binding;
+// see binding.go). A nil/empty manifest is exactly FileStore (the wrapper is a no-op).
+func FileStoreBound(path string, b Binding) (*Store, error) {
 	// Single-file arg (DESIGN-data.md scenario B2): `n1k1 events.jsonl`. The fork's
 	// file datastore ReadDir's its root, so it can't be a file -- build it against
 	// the file's parent dir and remember the file to wrap below.
@@ -210,6 +219,12 @@ func FileStore(path string) (*Store, error) {
 	// their type identities survive; they delegate unknown names down to it. Bare
 	// (root-relative) globs anchor at dsPath (the data-root dir). See glob.go.
 	ds = maybeGlob(dsPath, ds)
+
+	// Late binding: layer the manifest just above the glob wrapper (still innermost
+	// of the flat/si wrappers, so their type identities survive). A logical name in
+	// the manifest resolves to its glob pattern; every other name delegates straight
+	// down to the glob/real chain. No-op when b is empty. See binding.go.
+	ds = maybeBind(dsPath, b, ds)
 
 	if flatFile != "" {
 		// Single file: fake a synthetic default:<stem> keyspace reading just it.
