@@ -107,7 +107,15 @@ func TestExplainConvPlan(t *testing.T) {
 // row⟩. A native `datastore-scan-*` leaf must NOT get the boxed-source marker, and
 // the existing project ⟨boxed⟩ expression marker is unaffected. ConvPlanLegendFor
 // returns exactly the keys for the markers a given plan uses.
+//
+// This exercises the UN-materialized shape (the expr-scan leaves + per-row rescan
+// the markers describe), so it disables EnableCTEMaterialize -- otherwise the
+// multiply-referenced CTE is materialized into temp-capture/temp-yield (there are
+// then no expr-scan CTE leaves to mark). The materialized display is covered by
+// TestExplainDisplayMatchesExec.
 func TestConvPlanSourceAndRescanMarkers(t *testing.T) {
+	defer func(prev bool) { EnableCTEMaterialize = prev }(EnableCTEMaterialize)
+	EnableCTEMaterialize = false
 	dir := t.TempDir()
 	ks := filepath.Join(dir, "default", "orders")
 	if err := os.MkdirAll(ks, 0o755); err != nil {
@@ -242,5 +250,75 @@ func TestExprCoverageAndBoxedEvals(t *testing.T) {
 	}
 	if res.BoxedEvals != 0 {
 		t.Errorf("SELECT * BoxedEvals = %d, want 0 (native self)", res.BoxedEvals)
+	}
+}
+
+// TestExplainDisplayMatchesExec is the regression guard for the EXPLAIN/exec drift:
+// `EXPLAIN <stmt>` must display the SAME optimized op tree the statement actually
+// executes. Both paths now run the shared post-conversion passes (session.go
+// applyPostConvPasses), so convForDisplay (EXPLAIN) and PlanConvert (exec) produce
+// the same tree. Concretely, for a multiply-referenced non-correlated WITH CTE the
+// display must show the materialize rewrite (temp-capture + temp-yield), not the
+// stale un-materialized expr-scan leaves it used to show.
+func TestExplainDisplayMatchesExec(t *testing.T) {
+	dir := t.TempDir()
+	ks := filepath.Join(dir, "default", "orders")
+	if err := os.MkdirAll(ks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	docs := map[string]string{
+		"o1.json": `{"custId":"c1","total":5}`,
+		"o2.json": `{"custId":"c2","total":7}`,
+	}
+	for name, d := range docs {
+		if err := os.WriteFile(filepath.Join(ks, name), []byte(d), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sess, err := OpenSession(dir, "default")
+	if err != nil {
+		t.Fatalf("OpenSession: %v", err)
+	}
+
+	// A CTE referenced 4x under a chain of nested-loop joins: materialize-once fires.
+	const body = `WITH x AS (SELECT * FROM orders) ` +
+		`SELECT count(1) AS c, sum(o1.total) AS s FROM x o1, x o2, x o3, x o4`
+
+	// EXPLAIN: Result.Plan is convForDisplay's output.
+	exRes, err := sess.Run("EXPLAIN " + body)
+	if err != nil {
+		t.Fatalf("EXPLAIN run: %v", err)
+	}
+	if exRes.Plan == nil {
+		t.Fatalf("EXPLAIN: Result.Plan is nil (conv tree not populated)")
+	}
+	explainTree := FormatConvPlan(exRes.Plan)
+
+	// The display must now show the materialized shape (the exec path's shape), not
+	// the old un-materialized expr-scan-per-reference tree.
+	if !strings.Contains(explainTree, "temp-capture") || !strings.Contains(explainTree, "temp-yield") {
+		t.Errorf("EXPLAIN display missing materialize rewrite (temp-capture/temp-yield):\n%s", explainTree)
+	}
+	// The 4 FROM refs must be temp-yields, not re-evaluated expr-scans; only the ONE
+	// captured CTE source stays an expr-scan (fed into the temp-capture).
+	if n := strings.Count(explainTree, "temp-yield"); n != 4 {
+		t.Errorf("EXPLAIN display temp-yield count = %d, want 4 (one per FROM ref)\n%s", n, explainTree)
+	}
+	if n := strings.Count(explainTree, "expr-scan"); n != 1 {
+		t.Errorf("EXPLAIN display expr-scan count = %d, want 1 (the captured CTE source)\n%s", n, explainTree)
+	}
+
+	// Now run the SAME statement for real (non-EXPLAIN): Result.Plan is the exec
+	// path's pp.topOp (PlanConvert). Its rendered shape must equal the EXPLAIN one.
+	execRes, err := sess.Run(body)
+	if err != nil {
+		t.Fatalf("exec run: %v", err)
+	}
+	if execRes.Plan == nil {
+		t.Fatalf("exec: Result.Plan is nil")
+	}
+	execTree := FormatConvPlan(execRes.Plan)
+	if explainTree != execTree {
+		t.Errorf("EXPLAIN display tree != exec tree\n--- EXPLAIN ---\n%s\n--- exec ---\n%s", explainTree, execTree)
 	}
 }

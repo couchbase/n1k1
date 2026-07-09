@@ -154,11 +154,57 @@ func findExplain(op plan.Operator) *plan.Explain {
 	return nil
 }
 
+// applyPostConvPasses runs the post-conversion optimization passes that shape the
+// op tree the engine actually executes, so every consumer of the converted tree --
+// execution AND EXPLAIN display -- sees the same optimized plan. It is the single
+// home for this sequence: PlanConvert (the exec path) and convForDisplay (EXPLAIN
+// display) both call it, so the two can no longer silently drift -- the drift that
+// made `EXPLAIN <stmt>` show a stale, un-materialized tree while the query really
+// ran the materialized one.
+//
+// qp may be nil. Every pass here is runnable from a Conv alone EXCEPT WireASOFJoin,
+// which needs the *plan.QueryPlan (its Subqueries() hold the ASOF right sub-plan);
+// when the caller can supply the qp it is threaded through so that pass runs too,
+// and when qp is nil it is skipped while every Conv-only pass still runs (which is
+// what fixes the observed CTE-materialize discrepancy). The passes mutate
+// conv.TopOp in place -- materialize may swap the root into a sequence -- so callers
+// re-read conv.TopOp afterward.
+func applyPostConvPasses(conv *Conv, qp *plan.QueryPlan) {
+	if conv == nil || conv.TopOp == nil {
+		return
+	}
+	if DiscardElision {
+		elideDiscarded(conv.TopOp) // drop dead projections under count(*)-style groups
+	}
+	maybeColumnarOptimize(conv.TopOp, conv.Temps) // fuse ungrouped SUM over a Parquet column
+	// A -> B wiring (DESIGN-merging.md §3): lower order(union-all) -> merge-scan when
+	// Track A's SortedSourceMeta proves the ORDER BY key is a normalized int64 sorted
+	// source; no-op otherwise (and unless EnableMergeRewrite). gctx is nil here
+	// (plan-time); SortedSourceMetasForKeyspace then walks fresh.
+	conv.TopOp = WireTemporalMergeMeta(conv.TopOp, conv, nil)
+	// A -> B wiring (DESIGN-merging.md §3, piece 2): lower a proven correlated argmax
+	// subquery -> a streaming ASOF merge-join. It needs the QueryPlan (whose
+	// Subqueries() hold the right sub-plan), so it is skipped when qp is nil -- the
+	// only qp-gated pass. A no-op unless both keyspaces carry a proven normalized
+	// int64 sort key.
+	if qp != nil {
+		WireASOFJoin(conv, qp)
+	}
+	// Materialize a multiply-referenced, non-recursive, non-correlated WITH CTE ONCE
+	// into a spillable temp (opt-in via EnableCTEMaterialize); may wrap the root in a
+	// sequence, so run it last. See optimize_cte.go.
+	conv.materializeMultiRefCTEs()
+}
+
 // convForDisplay best-effort converts a cbq plan sub-tree into n1k1's op tree for
-// EXPLAIN display, mirroring Run's convert + discard-elision. It never fails the
-// caller: EXPLAIN shows the cbq plan regardless, so an unconvertible plan or a
-// convert panic just yields a nil tree (no n1k1 plan shown).
-func convForDisplay(inner plan.Operator) (op *base.Op) {
+// EXPLAIN display, mirroring the execution path's convert + post-conversion
+// optimization passes so the displayed plan is the one a real run would execute
+// (CTE materialize, columnar-agg fusion, temporal merge-scan) rather than the raw
+// pre-optimization tree. It never fails the caller: EXPLAIN shows the cbq plan
+// regardless, so an unconvertible plan or a convert/pass panic just yields a nil (or
+// partially optimized) tree, never a statement error. qp is the EXPLAIN statement's
+// QueryPlan, threaded so the qp-gated WireASOFJoin runs here too (nil-safe).
+func convForDisplay(inner plan.Operator, qp *plan.QueryPlan) (op *base.Op) {
 	if inner == nil {
 		return nil
 	}
@@ -171,17 +217,14 @@ func convForDisplay(inner plan.Operator) (op *base.Op) {
 	if _, err := inner.Accept(c); err != nil || c.TopOp == nil {
 		return nil
 	}
-	if DiscardElision {
-		elideDiscarded(c.TopOp)
-	}
-	// Apply the same Step-5 columnar rewrite the execution path does, so EXPLAIN
-	// shows agg-columnar / agg-metadata exactly where a real run would fire them
-	// (it peeks the keyspace footer, same as at run time, and honors
-	// DisableVectorizedAgg). Best effort: a rewrite panic leaves the un-rewritten
-	// tree rather than nilling the whole display plan.
+	// Run the SAME post-conversion passes the execution path applies (PlanConvert ->
+	// applyPostConvPasses), so EXPLAIN matches reality. Best effort: a pass panic
+	// leaves the tree as of before it (rather than nilling the whole display plan),
+	// preserving the never-fail contract -- an isolated inner recover, so the outer
+	// recover above still guards the Accept convert itself.
 	func() {
 		defer func() { recover() }()
-		maybeColumnarOptimize(c.TopOp, c.Temps)
+		applyPostConvPasses(c, qp)
 	}()
 	return c.TopOp
 }
@@ -263,7 +306,7 @@ func (s *Session) StatementRun(parsed algebra.Statement,
 		// display (the CLI's EXPLAIN / .explain rendering shows what n1k1 would
 		// actually run, and which expressions evaluate natively vs boxed). EXPLAIN
 		// doesn't execute, so a convert failure/panic just leaves Plan nil.
-		return &Result{Rows: []json.RawMessage{b}, Plan: convForDisplay(ex.Plan())}, nil
+		return &Result{Rows: []json.RawMessage{b}, Plan: convForDisplay(ex.Plan(), qp)}, nil
 	}
 
 	pp, err := PlanConvert(qp)
@@ -298,26 +341,10 @@ func PlanConvert(qp *plan.QueryPlan) (*PreparedPlan, error) {
 	if conv.TopOp == nil {
 		return nil, &ErrUnsupported{Reason: "nil TopOp (unconverted plan)"}
 	}
-	if DiscardElision {
-		elideDiscarded(conv.TopOp) // drop dead projections under count(*)-style groups
-	}
-	maybeColumnarOptimize(conv.TopOp, conv.Temps) // fuse ungrouped SUM over a Parquet column
-	// A -> B wiring (DESIGN-merging.md §3): lower order(union-all) -> merge-scan when
-	// Track A's SortedSourceMeta proves the ORDER BY key is a normalized int64 sorted
-	// source (real per-branch sortedness/disorder/zone-map Params); no-op otherwise.
-	// gctx is nil here (plan-time); SortedSourceMetasForKeyspace then walks fresh.
-	conv.TopOp = WireTemporalMergeMeta(conv.TopOp, conv, nil)
-	// A -> B wiring (DESIGN-merging.md §3, piece 2): lower a proven correlated argmax
-	// subquery -> a streaming ASOF merge-join. Runs alongside WireTemporalMergeMeta,
-	// with the Conv (to register the fresh right-scan keyspace into the same Temps
-	// execution reads) and the QueryPlan (whose Subqueries() hold the right sub-plan).
-	// A no-op unless both keyspaces carry a proven normalized int64 sort key.
-	WireASOFJoin(conv, qp)
-	// Materialize a multiply-referenced, non-recursive, non-correlated WITH CTE
-	// ONCE into a spillable temp (opt-in via EnableCTEMaterialize); may wrap the
-	// root in a sequence, so run it after the other post-conv passes. See
-	// optimize_cte.go.
-	conv.materializeMultiRefCTEs()
+	// Apply the shared post-conversion optimization passes (the SAME sequence
+	// EXPLAIN display runs via convForDisplay, so the two can't drift). qp is
+	// passed so the qp-gated WireASOFJoin fires here. See applyPostConvPasses.
+	applyPostConvPasses(conv, qp)
 	cv, err := NewConvertVals(conv.TopOp.Labels)
 	if err != nil {
 		return nil, &ErrUnsupported{Reason: err.Error()}
