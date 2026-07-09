@@ -226,6 +226,43 @@ func TestRenderJSONLines(t *testing.T) {
 	}
 }
 
+// TestRenderJSONLine covers the single-row streaming primitive: byte-identical to
+// one RenderJSONLines iteration (compact and pretty), and surfacing the writer error.
+func TestRenderJSONLine(t *testing.T) {
+	var b strings.Builder
+	if err := RenderJSONLine(&b, json.RawMessage(`{"a": 1}`), false); err != nil {
+		t.Fatalf("RenderJSONLine err: %v", err)
+	}
+	if b.String() != "{\"a\":1}\n" {
+		t.Errorf("compact = %q", b.String())
+	}
+
+	b.Reset()
+	if err := RenderJSONLine(&b, json.RawMessage(`{"a":1}`), true); err != nil {
+		t.Fatalf("pretty err: %v", err)
+	}
+	if b.String() != "{\n  \"a\": 1\n}\n" {
+		t.Errorf("pretty = %q", b.String())
+	}
+
+	// A failing writer's error propagates (so a streaming caller can stop on a
+	// closed pipe).
+	if err := RenderJSONLine(errWriter{}, json.RawMessage(`{"a":1}`), false); err == nil {
+		t.Error("RenderJSONLine should return the writer error")
+	}
+}
+
+// errWriter fails every write.
+type errWriter struct{}
+
+func (errWriter) Write([]byte) (int, error) { return 0, errTestWrite }
+
+var errTestWrite = &testWriteErr{}
+
+type testWriteErr struct{}
+
+func (*testWriteErr) Error() string { return "write failed" }
+
 func TestRenderJSON(t *testing.T) {
 	var b strings.Builder
 	RenderJSON(&b, raws(`{"a":1}`, `{"b":2}`), false)

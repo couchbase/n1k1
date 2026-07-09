@@ -262,12 +262,23 @@ func rightAlignable(s string) bool { return isNumeric(s) || isByteSize(s) }
 // When pretty, each value is 2-space-indented and so spans multiple lines.
 func RenderJSONLines(w io.Writer, rows []json.RawMessage, pretty bool) {
 	for _, r := range rows {
-		if pretty {
-			fmt.Fprintln(w, indentJSON(r, ""))
-		} else {
-			fmt.Fprintln(w, compactJSON(r))
-		}
+		RenderJSONLine(w, r, pretty)
 	}
+}
+
+// RenderJSONLine renders ONE row as a JSON line (compact, or 2-space-indented when
+// pretty) followed by a newline -- the per-row unit of RenderJSONLines, exposed so a
+// caller can STREAM rows one at a time (via glue.Session.OnRow) without buffering the
+// whole result set in memory. It returns the writer error (e.g. a broken pipe when
+// the consumer -- `... | head` -- has closed the pipe) so the caller can stop early.
+func RenderJSONLine(w io.Writer, r json.RawMessage, pretty bool) error {
+	var err error
+	if pretty {
+		_, err = fmt.Fprintln(w, indentJSON(r, ""))
+	} else {
+		_, err = fmt.Fprintln(w, compactJSON(r))
+	}
+	return err
 }
 
 // RenderJSON prints all rows as one JSON array, one row per element. Rows are

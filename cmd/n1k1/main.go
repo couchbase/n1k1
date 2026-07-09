@@ -405,6 +405,7 @@ type cli struct {
 
 	out     io.Writer // result destination (stdout, or a .output file)
 	outFile *os.File  // non-nil when .output redirected to a file
+	outErr  error     // transient: last streaming-write error (e.g. a closed output pipe)
 	stderr  io.Writer
 
 	fancyTTY bool      // stdout is an interactive TTY (drives colors/emojis)

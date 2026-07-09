@@ -34,6 +34,7 @@ func (c *cli) exec(stmt string) {
 	}
 	stmt = strings.TrimSpace(stmt)
 	c.failed = false // reset; set below if this statement errors (drives .bail)
+	c.outErr = nil   // reset; set by a streaming-write failure (closed output pipe)
 
 	// -prepare/.prepare ceiling: at 'full', a standalone-compilable EXECUTE compiles
 	// + runs a child program (interpreter fallback otherwise). See glue.ExecuteRun.
@@ -56,6 +57,33 @@ func (c *cli) exec(stmt string) {
 		}
 	}
 
+	// Streaming output: in jsonlines mode, emit each row via Session.OnRow the moment
+	// it is produced, instead of accumulating the whole result set into Result.Rows and
+	// rendering after. First results reach the consumer ASAP -- what an AI agent or a
+	// `... | head` pipeline wants, and what a k-way scan-and-filter (PREPARE++) query
+	// benefits from. Only jsonlines (each row an independent newline-delimited value)
+	// streams; the aggregating renderers (box/json-array/csv/markdown) need all rows for
+	// column widths / framing, so they stay buffered. EXPLAIN has its own render path.
+	base, pretty, _ := cmd.ParseMode(c.mode)
+	streaming := base == "jsonlines" && !isExplainStmt(stmt)
+	if streaming {
+		c.sess.OnRow = func(row []byte) {
+			// os.Stdout is unbuffered here, so each row reaches the fd immediately.
+			// If the downstream consumer closes the pipe (`... | head`), the common
+			// stdout case is handled by the runtime's default SIGPIPE (n1k1 exits once
+			// the pipe buffer fills). For a redirected .output (a file/pipe that returns
+			// EPIPE rather than raising SIGPIPE), record the first write error and stop
+			// attempting further writes. Cooperatively HALTING the running query on that
+			// signal is future work (needs an always-on checkpoint; see the design note).
+			if c.outErr != nil {
+				return
+			}
+			if werr := cmd.RenderJSONLine(c.out, row, pretty); werr != nil {
+				c.outErr = werr
+			}
+		}
+	}
+
 	res, err := c.sess.Run(stmt)
 
 	if sv != nil {
@@ -63,6 +91,7 @@ func (c *cli) exec(stmt string) {
 	}
 	c.sess.CollectStats = false
 	c.sess.OnStats = nil
+	c.sess.OnRow = nil
 	if sv != nil {
 		sv.finish()
 	}
@@ -101,6 +130,10 @@ func (c *cli) exec(stmt string) {
 		// so a redirect/pipe of stdout gets only the JSON.
 		fmt.Fprintln(c.stderr, "cbq plan:")
 		cmd.RenderJSONLines(c.out, res.Rows, true)
+	} else if streaming {
+		// Rows were already emitted by OnRow during Run (Result.Rows is nil); only the
+		// row-count/elapsed footer remains. Report a broken output pipe if one occurred.
+		c.renderStreamFooter(res)
 	} else {
 		c.renderResult(res)
 	}
@@ -122,11 +155,28 @@ func (c *cli) exec(stmt string) {
 }
 
 func (c *cli) renderResult(res *glue.Result) {
-	// Show the row-count/elapsed footer when .timer is on, at verbose >= 2 (debug),
-	// or whenever stats are being collected -- elapsed time is the denominator for
-	// the stats (rows/s, alloc/s), so it belongs with them.
-	footer := c.timer || c.verbose >= 2 || c.statsMode != statsOff
-	c.renderRows(res.Rows, res.Elapsed.String(), footer)
+	c.renderRows(res.Rows, res.Elapsed.String(), c.wantFooter())
+}
+
+// wantFooter reports whether to show the row-count/elapsed footer: when .timer is
+// on, at verbose >= 2 (debug), or whenever stats are being collected -- elapsed time
+// is the denominator for the stats (rows/s, alloc/s), so it belongs with them.
+func (c *cli) wantFooter() bool {
+	return c.timer || c.verbose >= 2 || c.statsMode != statsOff
+}
+
+// renderStreamFooter finishes a streamed (jsonlines) result: the rows already went
+// out row-by-row via OnRow, so only the footer (using the streamed Result.Count) and
+// a closed-pipe note remain. A broken output pipe goes to stderr (a separate fd, so
+// still writable when stdout's consumer -- `... | head` -- has gone away).
+func (c *cli) renderStreamFooter(res *glue.Result) {
+	if c.wantFooter() && c.outErr == nil {
+		fmt.Fprintf(c.stderr, "%s%d row(s) in %s\n", c.icon("⏱ "), res.Count, res.Elapsed)
+	}
+	if c.outErr != nil {
+		fmt.Fprintf(c.stderr, "%s%s\n", c.icon("⚠️  "),
+			c.style.Yellow("output write failed (consumer closed?): "+tidyMsg(c.outErr.Error())))
+	}
 }
 
 // renderRows renders JSON-object rows in the current output mode -- used both for
