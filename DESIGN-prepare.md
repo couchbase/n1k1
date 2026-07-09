@@ -1,9 +1,18 @@
 # Design: PREPARE — SQL++ → Go, and running the prepared program
 
-Status: proposal (Phases 1–3 implemented — `.prepare` emit + gate + interpreter fallback;
-datastore `DatastorePipe`/MemPipe; cbq `PREPARE`/`EXECUTE` statements + `-prepare` ceiling +
-compiled `EXECUTE` end-to-end via the thin-child + data-over-pipe run model. Remaining:
-embed-source fat child, the full cursor pipe protocol, WASM, and native-expr coverage.)
+Status: proposal.
+**PREPARE (first half)** — phases 1–3 implemented: `.prepare` emit + gate + interpreter
+fallback; datastore `DatastorePipe`/MemPipe; cbq `PREPARE`/`EXECUTE` statements + `-prepare`
+ceiling + compiled `EXECUTE` end-to-end via the thin-child + data-over-pipe run model.
+Remaining: embed-source fat child, the full cursor pipe protocol, WASM.
+**PREPARE++ (second half)** — the temporal optimizations (phase 5: ASOF / K-way merge) and the
+multi-query-optimization engine substrate (phases 3–4: shared-scan `broadcast`, source routing,
+corpus CSE, predicate index) are **implemented and benchmarked** over hand-built detectors. What
+remains: the corpus compiler (phase 6) that feeds those levers from a SQL++ detector repo, the
+logical-keyspace / late-binding resolver (phases 1–2, partly enabled by the extract-recipe data
+layer in `DESIGN-data.md`), and the recipe-format + golden-fixture CI (phase 7). Native-expr
+coverage (the codegen lever that lets a detector compile to `PrepareCompiledFull`) is ongoing
+(`DESIGN-exprs.md`).
 
 n1k1 **compiles** a SQL++ query plan into Go source (the `intermed/` compiler +
 `glue/emit.OpToLines`). `PREPARE` exposes that as a **Go-based preparation** of a
@@ -583,24 +592,45 @@ Push-based execution is the right substrate. A scan already *pushes* each row (a
 detector pipelines. Native exprs read the shared bytes with **zero boxing**, so a row is
 decoded once and every detector evaluates against the same buffer.
 
-- **MVP — broadcast op.** One `broadcast`/`tee` operator: scan once, push each row to K
-  detector predicate pipelines. Beats N separate runs (one scan, one decode per row);
-  build + measure this first.
-- **The real win — don't evaluate most detectors on most rows.** Naive fan-out is still
-  `K × rows`; with thousands of detectors the bottleneck is per-row predicate work, not I/O.
-  Three levers, increasing effort:
-  - **Source routing (cheap, big).** A detector's target (`indexer.log`, `*.json`) is
-    inferable from its `FROM`; a file only fans out to detectors that target it. Prune before
-    any evaluation.
-  - **Corpus CSE.** Detectors share sub-predicates (`level="ERROR"`, `line LIKE '%panic%'`).
-    The compiler already stringifies exprs; a **global common-subexpression pass over the
-    corpus** computes each shared term once per row, not once per detector (same expr-identity
-    the [boxed-expr stringify](#boxed-exprs) relies on).
-  - **Predicate index (the scale trick).** Borrow from pub/sub matching and SIEM rule
-    engines: index detectors by their cheapest discriminating literal — an **Aho-Corasick**
-    token scan over each log line, or an equality index over structured fields — so a row only
-    *wakes* the few detectors whose prefilter hits. Thousands of rules, a handful evaluated
-    per row. A natural n1k1 operator: a filter-index node feeding a sparse fan-out.
+The four levers below are **implemented** as engine primitives + pure build-helpers over
+hand-built detectors (a `Detector` = `{tag, predicate expr-tree, projection expr-trees}`),
+each with a committed benchmark; they are orthogonal and compose (route partitions by source →
+CSE hoists shared terms → the index wakes a handful of the survivors per row). What is NOT yet
+built is the corpus compiler ([below](#compile-corpus)) that produces `Detector`s from a SQL++
+repo and wires the levers together — so today they run from hand-built params, not real queries.
+
+- **MVP — broadcast op — DONE (`engine.OpBroadcast`, kind `broadcast`).** One `broadcast`/`tee`
+  operator: scan once, fan each shared-byte row to K detectors (each an inlined filter+project),
+  yielding tag-stamped findings up one stream. Beats N separate runs by decoding each row once
+  (`TestOpBroadcastScansOnce`). Measured vs K separate scan+filter+project runs: modest time win
+  on cheap in-memory rows (~1.1–1.18×, larger as the per-row scan gets heavier — gzip/multiline
+  extract) but up to **6.3× fewer allocations** at K=256. `BenchmarkBroadcastScaling` confirmed
+  the design's premise directly: broadcast removes the redundant scans but is still **O(K × rows)**
+  in predicate work — the bottleneck is per-row predicate work, not I/O — which is what the next
+  three levers attack.
+  - **Source routing (cheap, big) — DONE (`engine.BroadcastRoute`).** A detector's target source
+    is declared (inferred from its `FROM` by the future corpus compiler); a source's scan only
+    fans out to detectors that target it (pure composition: one `broadcast` per source under a
+    `union-all`; orphan detectors whose source is absent are pruned and RETURNED, never silently
+    dropped). ~**M× less** per-row predicate work for M sources (measured ~3.4× at M=4).
+  - **Corpus CSE — DONE (`engine.BroadcastCSE`).** Sub-predicates shared across detectors
+    (`level="ERROR"`, a `regexp_contains(line,"panic")`) are computed **once per row** via a
+    precompute `project` inserted below the broadcast (whole-row passthrough + one `^cseN` column
+    per shared term; detectors rewritten to read the slot). Pure composition, byte-identical
+    findings. Measured **~2.5×** at K=32 sharing one regexp; the win grows with K and the shared
+    term's cost. (Expr-identity via canonical `json.Marshal` of the sub-tree — the same
+    stringify the [boxed-expr path](#boxed-exprs) relies on.)
+  - **Predicate index (the scale trick) — DONE (`engine.OpBroadcastIndexed`, kind
+    `broadcast-indexed`; `base.AhoCorasick`).** Detectors are indexed by a **necessary**
+    discriminating literal extracted from their predicate (`contains`/`eq`/plain-literal
+    `regexp_*`/first `and` conjunct → a required substring; anything unprovable →
+    "always-wake"). One **Aho-Corasick** pass over the raw row bytes per row wakes only the
+    detectors whose literal is present; only those full predicates run. The correctness
+    invariant: the literal must be NECESSARY (absent ⇒ predicate false), so over-waking is safe
+    and under-waking never happens — guarded by a byte-identical differential test. Turns
+    O(K × rows) into ~**O(hits × rows)**: measured evals/row = `(matches + always-wake)`, not K,
+    and **~60× faster at K=1000** (roughly flat in K while broadcast is linear). An equality/range
+    index over parsed fields (vs whole-row substring) is a future refinement.
 
 **Shared scans are keyed by the LOGICAL keyspace.** The fan-out is "one scan per logical
 keyspace → the K detectors that target it," decided at prepare time over a stable keyspace
@@ -668,6 +698,24 @@ expr ported to the native byte lane widens what the detector corpus can compile 
 PREPARE++ is [PREPARE](#the-surface) applied to a **repository**, not a statement: compile
 the corpus into one (or a few) fused programs with the shared-scan fan-out, corpus CSE, and
 predicate index baked in.
+
+**On emitting "parts" — weaving is inlining; packages are for build economics.** A natural
+question is whether the codegen must emit each detector (or its filter/projection) as a
+separable library/package that a larger MQO program weaves together. Two layers of answer:
+(1) *For correctness/weaving, no.* The MQO substrate above already runs interpreted (the
+`broadcast`/index ops take detector expr-trees and evaluate them natively) — MQO needs no
+codegen at all; the decode-once + zero-boxing win is the shared native lane's, which interp
+and compiler share. And *if* compiled, `emit.OpToLines` already fuses a whole op tree by
+inlining, so a compiled broadcast is just one scan loop with K inlined `if pred_k { emit
+proj_k }` blocks — siblings in one function; you don't need separate packages to *combine*
+them. (2) *For corpus scale, yes — but driven by build-cache economics, not composition.* Go
+has no runtime dynamic linking (`plugin` is rejected, `DESIGN-extensions.md`), so "parts" means
+separate **compilation units**: emit each detector (or shard) behind a uniform sink signature —
+essentially `func(vars, row, emit)` (the push-based dual of a scan; the MVP's `(predicate,
+projection)` pair is its inlined degenerate case) — so `go build`'s package cache recompiles
+only the changed unit (SHA-keyed, below) and CSE fragments are emitted once and imported by
+many. So the compiler's shape is *a shared scan/broadcast harness + one cached unit per detector
+or shard + shared CSE fragments*, not a "can we combine them" problem.
 
 - **Where it runs — embed-source, and that's now the easy target.** The
   [self-contained prepared program](#embed-source) ships a **support-bundle analyzer binary**
@@ -744,25 +792,37 @@ findings table that reads as "clean."
 
 ## PREPARE++ phasing <a name="detect-phasing"></a>
 
-1. **Zip datastore + LOGICAL keyspaces + source routing** — scan a bundle's tree as
-   keyspaces addressed by a stable *logical* vocabulary (not filenames); infer each detector's
-   target sources from its `FROM`.
-2. **Late binding (manifest + adapters)** — resolve logical → physical per bundle (explicit
-   manifest → glob convention → content sniffing), with per-source adapters normalizing to
-   each keyspace's canonical schema; fail loudly on an unresolved keyspace. This is what lets
-   a prepared corpus run against the *next* bundle without recompiling.
-3. **Shared-scan fan-out op (MVP MQO)** — one scan per logical keyspace, N predicates, native
-   byte eval; measure vs N separate runs.
-4. **Predicate index + corpus CSE** — the scale win (Aho-Corasick / equality prefilter +
-   shared-subexpression factoring).
-5. **Temporal as optimizations** — recognize the nearest-preceding idiom → merge (ASOF);
-   windowed rate/burst/streak (both grammar-free).
-6. **PREPARE++ corpus compiler** — fuse the corpus; SHA-keyed build cache; evidence/findings
-   output; embed-source analyzer binary.
-7. **Recipe format + golden-fixture CI** — the AI-authoring flywheel.
+1. **Zip datastore + LOGICAL keyspaces + source routing** — *partial.* The extract-recipe data
+   layer (`DESIGN-data.md`) already presents a bundle's files as keyspaces (recipe-matched files
+   auto-expose; glob keyspaces; a symlinked/unzipped tree scans today), and source *routing* is
+   DONE at the engine level (`BroadcastRoute`). Still missing: a stable *logical* vocabulary
+   (detectors `FROM` a logical name, not a filename) and inferring a detector's target from its
+   `FROM` (needs the corpus compiler, phase 6). A true zip-as-datastore is optional (engineers
+   unzip).
+2. **Late binding (manifest + adapters)** — *not built.* Resolve logical → physical per bundle
+   (explicit manifest → glob convention → content sniffing), with per-source adapters normalizing
+   to each keyspace's canonical schema; fail loudly on an unresolved keyspace. This is what lets
+   a prepared corpus run against the *next* bundle without recompiling. (The extract recipes are a
+   proto-adapter; the logical→physical *resolver* is the missing piece.)
+3. **Shared-scan fan-out op (MVP MQO)** — **DONE** (`engine.OpBroadcast`; scans once, N native
+   predicates; measured vs N separate runs — see [Shared scan / MQO](#mqo)).
+4. **Predicate index + corpus CSE** — **DONE** (`engine.OpBroadcastIndexed` + `base.AhoCorasick`;
+   `engine.BroadcastCSE`). The scale win: a row wakes ~O(hits) detectors, and shared sub-exprs
+   compute once/row. ~60× at K=1000 / ~2.5× CSE — see [Shared scan / MQO](#mqo).
+5. **Temporal as optimizations** — **DONE** (`DESIGN-merging.md`): the nearest-preceding argmax
+   idiom is recognized and lowered to a K-way merge-join (ASOF, incl. soft / partitioned /
+   cross-node / near-sorted), all differential-tested; windowed rate/burst/streak ride stock
+   `OVER (…)`. Both grammar-free.
+6. **PREPARE++ corpus compiler** — *not built (the next real build).* Turn a repo of SQL++
+   detectors into `Detector`s (parse each `FROM` → target source for routing; extract
+   predicate/projection trees), compose route → CSE → index into one runnable plan; SHA-keyed
+   build cache; evidence/findings output; embed-source analyzer binary. This is what makes the
+   levers usable from real detectors rather than hand-built params.
+7. **Recipe format + golden-fixture CI** — *not built.* The AI-authoring flywheel.
 
-Each phase is independently useful: (1)-(2) already let a human run the recipe book against
-any bundle; (3)-(5) make it scale and correlate; (6)-(7) make it a maintained product.
+Each phase is independently useful. The **engine substrate for MQO + temporal is now in place**
+(phases 3–5), proven by benchmarks; the remaining work (1–2, 6–7) is the *compiler/binding/
+authoring* layer that turns those primitives into a maintained detector product.
 
 ## Open questions <a name="open-questions"></a>
 
@@ -804,13 +864,21 @@ PREPARE++ (detector corpus):
   table-valued function in `FROM` would need parser support (which we're avoiding). Can the
   temporal/expansion needs stay inside stock subquery / `UNNEST` / self-join idioms, or is a
   grammar-free TVF hook worth it?
-- **Recognizing the ASOF idiom** — how robustly can the planner detect the
-  nearest-preceding correlated-subquery / windowed pattern and rewrite it to a merge, without
-  false matches? What canonical form should detector authors (and agents) be told to write?
+- **Recognizing the ASOF idiom** — *RESOLVED* (`DESIGN-merging.md`). A paranoid recognizer
+  (`glue.WireASOFJoin` / `MatchArgmaxAsof`, golden near-miss tests) detects the canonical
+  correlated argmax — `(SELECT r.<f> FROM R r WHERE r.<key> <= e.<key> [AND r.<eq>=e.<eq>]*
+  [AND r.<key> >= e.<key> - Δt] ORDER BY r.<key> DESC LIMIT 1)` — and lowers it to a streaming
+  K-way merge-join (soft / partitioned / cross-node / near-sorted all covered, differential-
+  tested). Authors write that stock correlated subquery; the merge is transparent. Remaining
+  nuance: the log time model below (normalizing timestamps into one sortable key).
 - **Log time model** — how to normalize wildly different log timestamp formats / timezones
   into one sortable key for the merge-based ASOF: a per-source parse spec, or inferred?
 - **Native-coverage ordering** — which string / regex / time exprs (`DESIGN-exprs.md`) to
   port first to unblock the most common detector shapes for full codegen?
-- **Predicate-index structure** — Aho-Corasick over raw log lines, an equality/range index
-  over parsed fields, or a hybrid BE-tree — which fits the structured + unstructured mix with
-  least per-row overhead?
+- **Predicate-index structure** — *ANSWERED for the MVP* (`engine.OpBroadcastIndexed` +
+  `base.AhoCorasick`): a single **Aho-Corasick** pass over the raw row bytes, keyed by each
+  detector's necessary discriminating substring (a sound over-approximation — presence in a
+  wrong field only over-wakes; never under-wakes), giving ~O(hits × rows). An **equality/range
+  index over parsed fields** (for structured `field = const` / range predicates, avoiding the
+  substring over-wake) and a hybrid BE-tree remain the natural refinement for the
+  structured-heavy case — still open which blend is worth it.
