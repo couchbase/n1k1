@@ -87,6 +87,7 @@ status header + [phasing](#detect-phasing); this records *why*):
   - [Detectors stay in stock SQL++ — no grammar changes](#stock-sqlpp)
   - [Compiling & running the corpus](#compile-corpus)
   - [Late binding: a prepared corpus over a new, differently-named bundle](#late-binding)
+  - [Detector authoring & ops — the AI-agent affordances](#authoring-ops)
   - [PREPARE++ phasing](#detect-phasing)
 - [Open questions](#open-questions)
 
@@ -835,6 +836,68 @@ A binding must **fail loudly**, not silently: a logical keyspace that resolves t
 renamed file the manifest missed) should error at EXECUTE, not quietly yield an empty
 findings table that reads as "clean."
 
+## Detector authoring & ops — the AI-agent affordances <a name="authoring-ops"></a>
+
+The corpus is meant to be authored and maintained by an **AI support agent** (from tickets / KB
+articles / bug fixes) and run by tech-support teams. That makes *feedback and reporting* first-
+class, not an afterthought. The load-bearing insight: **n1k1 already computes almost every signal
+an author needs — it just needs surfacing.** `CorpusCompile` knows fuse/standalone/reject; the
+native optimizer + `ExprCoverage` know native-vs-boxed per expression; the predicate index knows
+literal-keyed-vs-always-wake; CSE knows the shared terms; the stats core (`DESIGN-stats.md`) counts rows in/out
+per op (broadcast already exposes `RowsIn`/`FindingsOut`). So most of the below is *reporting what
+exists*, not new machinery.
+
+**The detector / corpus "report card" (a `detect lint`).** Per detector, surface: does it FUSE or
+run STANDALONE (and why — "has a window function", "correlated subquery → ASOF merge") or get
+REJECTED (with the parse/plan reason); does its predicate lower NATIVE or BOX (which caps its
+compile level); is it INDEX-pruned by a necessary literal or ALWAYS-WAKE; which shared terms it
+contributes to CSE; a rough cost class; and whether its golden fixture is present. Plus **advice**,
+which is mechanical: a boxed sub-expr names its native alternative (`UPPER(msg) LIKE …` → boxes,
+suggest a case-tolerant literal / `regexp_contains`); an always-wake detector is told "no necessary
+literal — add a discriminating one as a top-level AND conjunct so the index can prune." And a
+corpus-level **score**: `% fused / native / index-pruned`, CSE terms folded, est. predicate-evals
+per row. This turns "write SQL and hope" into a tight loop AND is the guardrail that stops an
+AI-authored corpus from silently bloating (all-always-wake) or lying (rejected → no findings).
+
+**Debugging.** Extend `EXPLAIN`/`.explain` to the corpus plan (the `union-all(broadcast-indexed(
+cse(scan)))` shape, the index literals, per-expr lane). A **per-detector hit report** —
+`scanned / woken / matched` (the stats core already counts) — localizes a dud fast: `0 woken` = my
+literal never appears (wrong field/bundle); `woken≫0, matched 0` = predicate-logic bug; `matched`
+huge = too broad. **Evidence sampling** (`--sample N`) surfaces the rows behind a suspected false
+positive. A **golden-fixture diff** (expected vs actual on the fixture) is the detector's unit
+test. **Deterministic replay** via content-addressing (bundle fingerprint + corpus git SHA) lets
+me reproduce and diff a past ticket's run after editing a detector.
+
+**Per-bundle reports — and especially on RE-RUN.** The findings table
+(`{ticket, confidence, source_file, line_range, evidence, summary, detector@sha}`, GROUP BY tag to
+de-dup/rank) in two renderings: **jsonlines** for the agent/pipeline (streaming, already built) and
+a **markdown/box** summary for humans. Bundles get re-run as the corpus grows or more logs arrive,
+so a **delta report** is the killer feature: keyed by (bundle-fingerprint, corpus-SHA), "*since the
+last run: ET-999 now fires (detector@abc added); ET-12345 evidence grew 2→9 lines.*" A
+**coverage/health** block that is **fail-loud**: which logical keyspaces resolved vs. errored
+(an unresolved `indexer_log` is a *gap*, never a clean bundle — see [binding](#late-binding)),
+which detectors ran/errored, the corpus version, and which software-version detectors applied
+(the [version-aware corpus](#late-binding)).
+
+**Shaping SQL++ for fusion + authoring.** A **recipe format** = SQL++ + front-matter (ticket,
+severity, `source:` logical keyspace, `versions:` for the version-aware corpus, tags) + a **golden
+fixture** (sample rows + expected findings) — the front-matter is exactly what the corpus compiler
+needs (Tag, routing target, version) plus what makes CI possible. And **fusion-friendly idioms**
+the authoring guide standardizes (and the report card nudges toward): lead a predicate with a
+discriminating literal as a top-level `AND` conjunct (so the index prunes); version-tolerance via
+stock `COALESCE(l.level, l.severity)`/`OR` (no adapter — [field-drift decision](#late-binding));
+ASOF as the canonical argmax subquery; rate/burst via stock `OVER (…)`; a uniform findings
+projection (`… AS evidence`) once the projection envelope lands.
+
+**Dev/ops / CI.** A `n1k1 detect` subcommand family — `run` (corpus→findings over a bound bundle),
+`lint`/`explain` (the report card), `test` (golden fixtures), `bind` (dry-run the manifest: does
+every logical keyspace resolve against this bundle?). **Golden-fixture CI** over a labelled bundle
+library on every corpus commit (mirroring n1k1's own differential-test discipline) bounds false
+positives. A **corpus lint gate** (every detector parses, targets a known logical keyspace, has a
+fixture, and either fuses+indexes or justifies standalone; CI fails on `rejected`). Plus the
+[SHA-keyed build cache + provenance](#compile-corpus) so findings cite `detector@sha` and only
+changed detectors recompile.
+
 ## PREPARE++ phasing <a name="detect-phasing"></a>
 
 1. **Zip datastore + LOGICAL keyspaces + source routing** — **mostly DONE.** The extract-recipe
@@ -874,7 +937,13 @@ findings table that reads as "clean."
    a corpus. *Remaining tail:* SHA-keyed build cache, embed-source analyzer binary, per-detector
    projection envelope (fused evidence is the whole matched row today), and standalone detectors
    not yet sharing scans among themselves.
-7. **Recipe format + golden-fixture CI** — *not built.* The AI-authoring flywheel.
+7. **Recipe format + golden-fixture CI + agent ops** — *not built.* The AI-authoring flywheel and
+   the tech-support surface: the recipe format (SQL++ + front-matter + golden fixture), golden-
+   fixture CI, and the [authoring/ops affordances](#authoring-ops) — the `detect lint` report card
+   (fuse/native/index/advice), per-detector hit stats, the findings + **re-run delta** + fail-loud
+   coverage reports, and the `n1k1 detect run|lint|test|bind` subcommands. Most of the report-card
+   / hit-stats signals are *surfacing* what `CorpusCompile` / `ExprCoverage` / the index / the
+   stats core already compute — the cheapest, highest-leverage first slice.
 
 Each phase is independently useful, and the **core pipeline is now end-to-end**: logical-keyspace
 binding (phases 1–2 core) → corpus compiler (phase 6 MVP) → the MQO + temporal engine substrate
