@@ -104,6 +104,13 @@ func usesUnbridgedOp(o *base.Op) bool {
 		// them, so it emits no specialized code. No SQL plan produces it yet, so it
 		// never actually reaches the differential -- this guard is defensive.
 		return true
+	case "broadcast-indexed":
+		// The predicate-index sparse fan-out (PREPARE++, DESIGN-prepare.md
+		// "Predicate index") is interpreter-only exactly like "broadcast":
+		// BroadcastIndexedExec is copied VERBATIM into the compiler package (so it
+		// compiles cleanly) but orchestrates an Aho-Corasick probe + sparse detector
+		// evaluation at run time rather than fusing them. No SQL plan emits it yet.
+		return true
 	case "merge-scan":
 		// The K-way sorted merge-scan (Track B, DESIGN-merging.md) is an
 		// interpreter-only op: MergeScanExec is copied VERBATIM into the compiler
