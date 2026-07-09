@@ -29,15 +29,34 @@ package glue
 // waking only detectors whose necessary literal is present) instead of K separate
 // scan+decode passes.
 //
-// THE PIPELINE (CorpusCompile):
+// THE PIPELINE (CorpusCompile) classifies every detector into one of THREE classes:
+//
+//   - FUSABLE  -- the canonical single-source shape below; folded into the shared-
+//                 scan broadcast/CSE/index plan (Plan) and run by that plan.
+//   - STANDALONE -- parse+plan+convert SUCCEEDED but the shape is not fusable
+//                 (an ASOF/argmax correlated subquery, a window, GROUP BY, a join,
+//                 a datastore-scan-index leaf, multiple sources, ...). These are
+//                 VALID queries n1k1 runs end-to-end; CorpusCompile keeps the
+//                 detector's Tag+Stmt and, at Run() time, executes each through the
+//                 FULL normal pipeline (s.Run) -- so WireASOFJoin / window / group
+//                 all fire and each detector is individually optimized -- then tags
+//                 its result rows into the uniform Finding shape, UNION'd with the
+//                 fused findings. (Standalone detectors do NOT share a scan among
+//                 themselves -- each is an independent run; sharing standalone scans
+//                 is a future step. Their evidence is the detector's real SELECT
+//                 projection, vs. the fused path's whole-row evidence -- see Finding.)
+//   - REJECTED -- parse/plan/convert FAILED (a genuinely broken detector). Surfaced
+//                 with a reason and NOT run; it never aborts the corpus.
 //
 //  1. RECOGNIZE. Each detector is parsed/planned/converted (the normal glue path)
 //     and matched against the canonical fusable shape
 //     project(filter(datastore-scan-records)) -- or a bare
 //     project(datastore-scan-records) for a no-WHERE detector (predicate =
-//     always-true). Anything else (joins, group/order/distinct, subqueries,
-//     multiple sources, or a non-records leaf such as an index scan) is appended to
-//     Unfused with a reason and skipped -- surfaced, never silently dropped.
+//     always-true). A detector whose parse/plan/convert FAILS is Rejected. A
+//     detector that converts fine but is NOT the fusable shape (joins,
+//     group/order/distinct, subqueries, multiple sources, or a non-records leaf such
+//     as an index scan) is Standalone -- run individually at Run() time, never
+//     silently dropped.
 //
 //  2. EXTRACT. Per fused detector: its keyspace (branchScanKeyspace), its predicate
 //     (the filter's expr, or always-true), and its alias (mergeLabelLeaf of the
@@ -75,8 +94,10 @@ package glue
 //     op -- its child/Params layout is byte-identical to what BroadcastIndexed
 //     builds. The per-keyspace plans combine under a single union-all.
 //
-//  6. RUN. CompiledCorpus.Run mirrors Session.PlanExec's vars/GlueContext/ExecOpEx
-//     setup and drives engine.ExecOp, collecting the tagged findings.
+//  6. RUN. CompiledCorpus.Run first runs each STANDALONE detector through the full
+//     s.Run pipeline (so ASOF/window/group lowerings fire) and tags its rows, then
+//     mirrors Session.PlanExec's vars/GlueContext/ExecOpEx setup and drives
+//     engine.ExecOp over the fused Plan -- the UNION of both is the findings set.
 //
 // DELIBERATELY DEFERRED (noted, not built): a SHA-keyed / content-addressed build
 // cache; the embed-source analyzer binary; per-detector SELECT projection into an
@@ -87,8 +108,10 @@ package glue
 // RECOGNIZER NARROWNESS (known): the fusable shape is exactly
 // project([filter,]datastore-scan-records). A detector that the planner answers
 // with an INDEX scan (a secondary index exists and is sargable) converts to a
-// datastore-scan-index leaf, not datastore-scan-records, and is reported Unfused --
-// even though it is semantically a single-keyspace filter. Fusing indexed leaves
+// datastore-scan-index leaf, not datastore-scan-records, and is classified Standalone
+// (run individually) even though it is semantically a single-keyspace filter. It
+// still produces its findings; it just does not share the fused scan. Fusing indexed
+// leaves
 // (and per-detector projection, and META().id predicates under CSE, whose ^id slot
 // the CSE precompute currently drops) are future refinements.
 
@@ -116,32 +139,38 @@ type CorpusDetector struct {
 	Stmt string
 }
 
-// UnfusedDetector reports a detector that could NOT be folded into the shared-scan
-// plan, with a human-readable Reason. Surfaced (never silently dropped) so a
-// caller can decide whether an unfusable detector is a hard error or a fall-back-
-// to-standalone-run.
-type UnfusedDetector struct {
+// RejectedDetector reports a detector whose parse/plan/convert FAILED (a genuinely
+// broken query), with a human-readable Reason. Surfaced (never silently dropped) and
+// NOT run. Distinct from a Standalone detector, which converts fine but is not the
+// fusable shape -- that one still runs and produces findings.
+type RejectedDetector struct {
 	Tag    string
 	Reason string
 }
 
-// Finding is one tagged evidence row produced by running the compiled corpus:
-// the detector's Tag plus the whole matched row as canonical JSON (the MVP
-// whole-row evidence -- see the file header).
+// Finding is one tagged evidence row produced by running the compiled corpus: the
+// detector's Tag plus its evidence as canonical JSON. NOTE the (acceptable) evidence
+// asymmetry between the two run paths: a FUSED detector emits the WHOLE matched row
+// (the MVP's deferred-projection choice -- see the file header), while a STANDALONE
+// detector emits its real SELECT projection (whatever s.Run of its statement yields).
+// Both are the same Finding{Tag, Evidence} envelope, so they union cleanly.
 type Finding struct {
 	Tag      string
 	Evidence json.RawMessage
 }
 
 // CompiledCorpus is the output of CorpusCompile: the fused MQO plan (Plan) plus the
-// Temps it resolves its shared-scan keyspaces from, the detectors that could not be
-// fused (Unfused), the uniform findings schema (FindingsLabels), and enough of the
-// originating session to Run it. Plan is nil when no detector fused (empty corpus,
-// or all unfusable) -- an honestly empty plan, not one that "reads as clean".
+// Temps it resolves its shared-scan keyspaces from, the STANDALONE detectors (valid
+// but non-fusable -- run individually at Run() time), the REJECTED detectors (parse/
+// plan/convert failed -- surfaced, not run), the uniform findings schema
+// (FindingsLabels), and enough of the originating session to Run it. Plan is nil when
+// no detector fused (empty corpus, or all standalone/rejected) -- an honestly empty
+// fused plan; Run() still produces the standalone detectors' findings.
 type CompiledCorpus struct {
 	Plan           *base.Op
 	Temps          []interface{}
-	Unfused        []UnfusedDetector
+	Standalone     []CorpusDetector
+	Rejected       []RejectedDetector
 	FindingsLabels base.Labels
 
 	session *Session
@@ -155,9 +184,11 @@ func corpusFindingsLabels() base.Labels {
 }
 
 // CorpusCompile turns a set of stock SQL++ detectors into ONE fused shared-scan
-// plan (see the file header for the full pipeline). It never returns a hard error
-// for an individual unfusable detector -- those land in the returned
-// CompiledCorpus.Unfused; err is non-nil only for a setup-level failure.
+// plan (see the file header for the full pipeline) plus a list of Standalone
+// detectors (valid but non-fusable, run individually at Run() time) and Rejected
+// detectors (parse/plan/convert failed). It never returns a hard error for an
+// individual detector -- those are classified into the returned CompiledCorpus; err
+// is non-nil only for a setup-level failure.
 func (s *Session) CorpusCompile(dets []CorpusDetector) (*CompiledCorpus, error) {
 	// Correlated/keyspace resolution in the planner reads the process-global
 	// datastore; point it at this session's store (idempotent), exactly as
@@ -182,19 +213,26 @@ func (s *Session) CorpusCompile(dets []CorpusDetector) (*CompiledCorpus, error) 
 
 	byKeyspace := map[string][]fusedDet{}
 	keyspacerFor := map[string]interface{}{}
-	var unfused []UnfusedDetector
+	var standalone []CorpusDetector
+	var rejected []RejectedDetector
 
 	for _, d := range dets {
-		info, reason := s.analyzeCorpusDetector(d.Stmt)
-		if reason != "" {
-			unfused = append(unfused, UnfusedDetector{Tag: d.Tag, Reason: reason})
-			continue
+		info, fusable, rejectReason := s.analyzeCorpusDetector(d.Stmt)
+		switch {
+		case rejectReason != "":
+			// Parse/plan/convert failed -- a broken detector. Surfaced, not run.
+			rejected = append(rejected, RejectedDetector{Tag: d.Tag, Reason: rejectReason})
+		case !fusable:
+			// Valid but not the fusable shape (ASOF/window/group/join/index-scan/...).
+			// Keep it verbatim; Run() executes it through the full s.Run pipeline.
+			standalone = append(standalone, CorpusDetector{Tag: d.Tag, Stmt: d.Stmt})
+		default:
+			if _, seen := keyspacerFor[info.keyspaceName]; !seen {
+				keyspacerFor[info.keyspaceName] = info.keyspacer
+			}
+			byKeyspace[info.keyspaceName] = append(byKeyspace[info.keyspaceName],
+				fusedDet{tag: d.Tag, pred: info.pred})
 		}
-		if _, seen := keyspacerFor[info.keyspaceName]; !seen {
-			keyspacerFor[info.keyspaceName] = info.keyspacer
-		}
-		byKeyspace[info.keyspaceName] = append(byKeyspace[info.keyspaceName],
-			fusedDet{tag: d.Tag, pred: info.pred})
 	}
 
 	// Deterministic keyspace order so the emitted plan is stable regardless of map
@@ -240,7 +278,7 @@ func (s *Session) CorpusCompile(dets []CorpusDetector) (*CompiledCorpus, error) 
 	var planOp *base.Op
 	switch len(perKeyspace) {
 	case 0:
-		planOp = nil // empty corpus or all unfusable.
+		planOp = nil // no fusable detector (empty corpus, or all standalone/rejected).
 	case 1:
 		planOp = perKeyspace[0] // a single keyspace needs no union-all wrapper.
 	default:
@@ -254,7 +292,8 @@ func (s *Session) CorpusCompile(dets []CorpusDetector) (*CompiledCorpus, error) 
 	return &CompiledCorpus{
 		Plan:           planOp,
 		Temps:          unified.Temps,
-		Unfused:        unfused,
+		Standalone:     standalone,
+		Rejected:       rejected,
 		FindingsLabels: findingsLabels,
 		session:        s,
 	}, nil
@@ -267,23 +306,31 @@ type corpusDetInfo struct {
 	pred         []interface{} // predicate expr-tree, field refs rooted at ".".
 }
 
-// analyzeCorpusDetector parses/plans/converts one detector's SQL++ and, if it is
-// the canonical fusable shape, extracts its keyspace + normalized predicate. A
-// non-empty reason means the detector is unfusable (the caller records it in
-// Unfused); info is then zero.
-func (s *Session) analyzeCorpusDetector(stmt string) (info corpusDetInfo, reason string) {
+// analyzeCorpusDetector parses/plans/converts one detector's SQL++ and classifies it
+// (see the file header's three classes). It returns:
+//
+//   - rejectReason != ""            -> REJECTED (parse/plan/convert failed).
+//   - rejectReason == "", fusable   -> FUSABLE; info carries keyspace + normalized pred.
+//   - rejectReason == "", !fusable  -> STANDALONE (converts fine, not the fusable
+//     shape -- or a post-convert extraction step declined); the caller runs it
+//     individually via s.Run. info is then zero.
+//
+// The crucial split: only a genuine parse/plan/convert FAILURE is a reject. Once the
+// statement converts, an unrecognized shape (or a normalize step that can't extract
+// the shared-scan bits) is Standalone -- still a valid, runnable query, never dropped.
+func (s *Session) analyzeCorpusDetector(stmt string) (info corpusDetInfo, fusable bool, rejectReason string) {
 	parsed, err := ParseStatement(stmt, s.Namespace, true)
 	if err != nil {
-		return corpusDetInfo{}, "parse error: " + err.Error()
+		return corpusDetInfo{}, false, "parse error: " + err.Error()
 	}
 	qp, err := s.Store.PlanStatementQP(parsed, s.Namespace, nil, nil)
 	if err != nil {
-		return corpusDetInfo{}, "plan error: " + err.Error()
+		return corpusDetInfo{}, false, "plan error: " + err.Error()
 	}
 
 	// Convert with a per-detector Conv (a plain Accept -- no post-plan rewrites; we
 	// only need the raw project/filter/scan shape). A convert panic (an unsupported
-	// op) is caught and reported as unfusable, never crashing the compile.
+	// op) is caught and reported as REJECTED, never crashing the compile.
 	conv := &Conv{Temps: []interface{}{nil}}
 	var convErr error
 	func() {
@@ -295,36 +342,48 @@ func (s *Session) analyzeCorpusDetector(stmt string) (info corpusDetInfo, reason
 		_, convErr = qp.PlanOp().Accept(conv)
 	}()
 	if convErr != nil {
-		return corpusDetInfo{}, "convert error: " + convErr.Error()
+		return corpusDetInfo{}, false, "convert error: " + convErr.Error()
 	}
 	if conv.TopOp == nil {
-		return corpusDetInfo{}, "unconverted plan (nil TopOp)"
+		return corpusDetInfo{}, false, "unconverted plan (nil TopOp)"
 	}
 
+	// From here parse/plan/convert has SUCCEEDED: any shape/extraction miss below is
+	// STANDALONE (fusable=false, no reject reason), so the detector still runs.
 	scan, filter, ok := recognizeCorpusDetector(conv.TopOp)
 	if !ok {
-		return corpusDetInfo{}, "not a fusable project([filter,]datastore-scan-records) shape"
+		return corpusDetInfo{}, false, ""
+	}
+
+	// The recognizer intentionally ignores the projection (MVP whole-row evidence),
+	// which is fine for a plain field/`*` projection. But a projection carrying a
+	// (correlated) SUBQUERY -- e.g. the ASOF nearest-preceding argmax -- has an OUTER
+	// shape (project -> scan) that LOOKS fusable while its real value comes from the
+	// subquery per row. Fusing it would silently drop that subquery. Such a detector
+	// must run STANDALONE (so WireASOFJoin / EvaluateSubquery fire); route it there.
+	if projectionHasSubquery(conv.TopOp) {
+		return corpusDetInfo{}, false, ""
 	}
 
 	// The alias the detector's field refs are rooted at (from the scan's `.["alias"]`
 	// row label).
 	if len(scan.Labels) == 0 {
-		return corpusDetInfo{}, "scan has no row label"
+		return corpusDetInfo{}, false, ""
 	}
 	alias, ok := mergeLabelLeaf(scan.Labels[0])
 	if !ok {
-		return corpusDetInfo{}, "scan alias not resolvable from label " + scan.Labels[0]
+		return corpusDetInfo{}, false, ""
 	}
 	aliasLabel := "." + LabelSuffix(alias)
 
 	ks := branchScanKeyspace(conv.TopOp, conv.Temps)
 	if ks == nil {
-		return corpusDetInfo{}, "keyspace not resolvable"
+		return corpusDetInfo{}, false, ""
 	}
 
 	scanTempIdx, ok := scan.Params[0].(int)
 	if !ok || scanTempIdx < 0 || scanTempIdx >= len(conv.Temps) {
-		return corpusDetInfo{}, "scan temp index not resolvable"
+		return corpusDetInfo{}, false, ""
 	}
 
 	pred := normalizeCorpusPred(filter, scan.Labels, alias, aliasLabel)
@@ -333,7 +392,7 @@ func (s *Session) analyzeCorpusDetector(stmt string) (info corpusDetInfo, reason
 		keyspaceName: ks.QualifiedName(),
 		keyspacer:    conv.Temps[scanTempIdx],
 		pred:         pred,
-	}, ""
+	}, true, ""
 }
 
 // recognizeCorpusDetector matches the canonical fusable detector shape and returns
@@ -363,6 +422,34 @@ func recognizeCorpusDetector(top *base.Op) (scan, filter *base.Op, ok bool) {
 		return nil, nil, false
 	}
 	return scan, filter, true
+}
+
+// projectionHasSubquery reports whether the project op's boxed ["exprTree", expr]
+// projection terms embed any correlated/scalar subquery. Mirrors the temporal
+// recognizer's projection walk (recognizeASOFWalk in optimize_temporal.go): a fusable
+// detector's outer shape can hide a subquery in its SELECT list, which the whole-row
+// fused path would drop -- so such a detector is routed to a standalone run instead.
+func projectionHasSubquery(project *base.Op) bool {
+	if project == nil {
+		return false
+	}
+	for _, p := range project.Params {
+		term, ok := p.([]interface{})
+		if !ok || len(term) < 2 {
+			continue
+		}
+		if kind, _ := term[0].(string); kind != "exprTree" {
+			continue
+		}
+		e, ok := term[1].(expression.Expression)
+		if !ok || e == nil {
+			continue
+		}
+		if len(collectSubqueries(e)) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // normalizeCorpusPred returns the detector's predicate as an expr-tree rooted at
@@ -488,17 +575,30 @@ func broadcastCSEIndexed(scan *base.Op, dets []engine.Detector,
 	return op
 }
 
-// Run executes the compiled corpus plan and returns the tagged findings. It mirrors
-// Session.PlanExec's vars / GlueContext / ExecOpEx setup, but reads each finding's
-// [tag, evidence] straight from the yielded row slots (no ConvertVals). Findings
-// order across the union-all / interleaved fan-out is NOT guaranteed (compare as a
-// set). A nil Plan (no detector fused) yields no findings.
+// Run executes the compiled corpus and returns the UNION of its tagged findings:
+// first each STANDALONE detector via the full s.Run pipeline (so ASOF/window/group
+// lowerings fire and each is individually optimized), then the fused Plan. It mirrors
+// Session.PlanExec's vars / GlueContext / ExecOpEx setup for the fused plan, reading
+// each finding's [tag, evidence] straight from the yielded row slots (no ConvertVals).
+// Findings order (across standalone runs, the union-all, and the interleaved fan-out)
+// is NOT guaranteed (compare as a set). A nil Plan with no standalone detectors yields
+// no findings; standalone-only corpora still produce their findings.
 func (cc *CompiledCorpus) Run() ([]Finding, error) {
-	if cc.Plan == nil {
-		return nil, nil
+	s := cc.session
+
+	// (A) Standalone detectors: run each verbatim through the full normal pipeline and
+	// tag its real SELECT-projection rows as evidence (the evidence asymmetry noted on
+	// Finding). s.Run is self-contained (it does its own datastore + ExecOpEx setup),
+	// so this must happen BEFORE the fused block's global ExecOpEx swap below.
+	findings, err := cc.runStandalone()
+	if err != nil {
+		return nil, err
 	}
 
-	s := cc.session
+	if cc.Plan == nil {
+		return findings, nil // standalone-only (or empty) corpus.
+	}
+
 	if s.Store != nil && s.Store.Datastore != nil {
 		datastore.SetDatastore(s.Store.Datastore)
 	}
@@ -532,7 +632,6 @@ func (cc *CompiledCorpus) Run() ([]Finding, error) {
 	defer func() { engine.ExecOpEx = origExecOpEx }()
 	engine.ExecOpEx = DatastoreOp
 
-	var findings []Finding
 	var execErr error
 
 	yieldVals := func(vals base.Vals) {
@@ -560,6 +659,33 @@ func (cc *CompiledCorpus) Run() ([]Finding, error) {
 
 	if execErr != nil {
 		return nil, execErr
+	}
+	return findings, nil
+}
+
+// runStandalone runs each Standalone detector through the FULL normal pipeline
+// (Session.Run -- so its ASOF/window/group/join lowerings all fire and each is
+// individually optimized) and wraps every result row as a Finding tagged with the
+// detector's id. Evidence is the detector's REAL SELECT projection (not the fused
+// path's whole-row evidence -- the asymmetry documented on Finding). A run-time error
+// from any standalone detector is returned (it converted at compile time, so a
+// failure here is a genuine execution error worth surfacing).
+func (cc *CompiledCorpus) runStandalone() ([]Finding, error) {
+	if len(cc.Standalone) == 0 {
+		return nil, nil
+	}
+	var findings []Finding
+	for _, d := range cc.Standalone {
+		res, err := cc.session.Run(d.Stmt)
+		if err != nil {
+			return nil, fmt.Errorf("standalone detector %q: %w", d.Tag, err)
+		}
+		for _, row := range res.Rows {
+			findings = append(findings, Finding{
+				Tag:      d.Tag,
+				Evidence: append(json.RawMessage(nil), row...),
+			})
+		}
 	}
 	return findings, nil
 }

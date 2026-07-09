@@ -80,10 +80,11 @@ func canonJSON(t *testing.T, raw []byte) string {
 //   - T3 keys on a distinct rare string literal -> the Aho-Corasick index.
 //   - T4 has no WHERE -> the always-true predicate.
 //   - T5 targets a SECOND keyspace -> the per-keyspace union-all.
-//   - T6 is a GROUP BY -> must land in Unfused, not silently dropped.
+//   - T6 is a GROUP BY -> must land in Standalone (valid but non-fusable) and RUN,
+//     producing its findings via the full pipeline -- not silently dropped.
 //
-// Findings are compared as SORTED SETS (order across the union-all / interleaved
-// fan-out is not guaranteed).
+// Findings are compared as SORTED SETS (order across the standalone runs, the
+// union-all, and the interleaved fan-out is not guaranteed).
 func TestCorpusCompileDifferential(t *testing.T) {
 	sess := corpusTestSession(t)
 
@@ -106,26 +107,30 @@ func TestCorpusCompileDifferential(t *testing.T) {
 		{"T5_login", `SELECT * FROM events e WHERE e.act = "login"`,
 			`SELECT RAW e FROM events e WHERE e.act = "login"`},
 	}
-	unfusableTag := "T6_group"
-	unfusableStmt := `SELECT sev, count(*) AS n FROM logs GROUP BY sev`
+	standaloneTag := "T6_group"
+	standaloneStmt := `SELECT sev, count(*) AS n FROM logs GROUP BY sev`
 
 	// Assemble the corpus (fusable + the one non-canonical detector).
 	corpus := make([]CorpusDetector, 0, len(fused)+1)
 	for _, d := range fused {
 		corpus = append(corpus, CorpusDetector{Tag: d.tag, Stmt: d.stmt})
 	}
-	corpus = append(corpus, CorpusDetector{Tag: unfusableTag, Stmt: unfusableStmt})
+	corpus = append(corpus, CorpusDetector{Tag: standaloneTag, Stmt: standaloneStmt})
 
 	cc, err := sess.CorpusCompile(corpus)
 	if err != nil {
 		t.Fatalf("CorpusCompile: %v", err)
 	}
 
-	// (1) The non-canonical detector must be reported unfused, not dropped.
-	if len(cc.Unfused) != 1 || cc.Unfused[0].Tag != unfusableTag {
-		t.Fatalf("expected exactly 1 unfused (%s), got %+v", unfusableTag, cc.Unfused)
+	// (1) The GROUP BY detector must be classified STANDALONE (valid but non-fusable),
+	// not Rejected and not silently dropped -- it will RUN and produce findings.
+	if len(cc.Standalone) != 1 || cc.Standalone[0].Tag != standaloneTag {
+		t.Fatalf("expected exactly 1 standalone (%s), got %+v", standaloneTag, cc.Standalone)
 	}
-	t.Logf("unfused: %+v", cc.Unfused)
+	if len(cc.Rejected) != 0 {
+		t.Fatalf("expected no rejected detectors, got %+v", cc.Rejected)
+	}
+	t.Logf("standalone: %+v", cc.Standalone)
 
 	// (2) Structural sanity: two keyspaces -> a union-all of two broadcast-indexed
 	// fan-outs, and the logs group carries a CSE precompute project (T1/T2 share).
@@ -152,8 +157,9 @@ func TestCorpusCompileDifferential(t *testing.T) {
 		t.Errorf("expected a CSE precompute (^cse column) in the logs broadcast; plan=%s", dumpPlan(cc.Plan))
 	}
 
-	// (3) Equivalence: the fused findings set == the union of each fused detector's
-	// baseline rows tagged with its id.
+	// (3) Equivalence: the corpus findings set == the union of each fused detector's
+	// baseline rows PLUS the standalone detector's own SELECT rows, each tagged with
+	// its id.
 	gotFindings, err := cc.Run()
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -174,6 +180,19 @@ func TestCorpusCompileDifferential(t *testing.T) {
 			want = append(want, d.tag+"\t"+canonJSON(t, row))
 		}
 	}
+	// The standalone GROUP BY detector runs its own SQL; its evidence is that SELECT's
+	// REAL projection (the evidence asymmetry vs. the fused whole-row path), so its
+	// expected rows come straight from running standaloneStmt.
+	saRes, err := sess.Run(standaloneStmt)
+	if err != nil {
+		t.Fatalf("standalone baseline %q: %v", standaloneStmt, err)
+	}
+	if len(saRes.Rows) == 0 {
+		t.Fatal("standalone GROUP BY produced no rows -- fixture invalid")
+	}
+	for _, row := range saRes.Rows {
+		want = append(want, standaloneTag+"\t"+canonJSON(t, row))
+	}
 	sort.Strings(want)
 
 	if len(got) != len(want) {
@@ -185,7 +204,7 @@ func TestCorpusCompileDifferential(t *testing.T) {
 				i, got[i], want[i], got, want)
 		}
 	}
-	t.Logf("matched %d fused findings across %d detectors", len(got), len(fused))
+	t.Logf("matched %d findings across %d fused + 1 standalone detector", len(got), len(fused))
 }
 
 // TestCorpusCompileSingleKeyspace: a corpus confined to one keyspace returns the
@@ -204,8 +223,8 @@ func TestCorpusCompileSingleKeyspace(t *testing.T) {
 	if cc.Plan == nil || cc.Plan.Kind != "broadcast-indexed" {
 		t.Fatalf("single-keyspace plan = %v, want a bare broadcast-indexed", cc.Plan)
 	}
-	if len(cc.Unfused) != 0 {
-		t.Fatalf("unexpected unfused: %+v", cc.Unfused)
+	if len(cc.Standalone) != 0 || len(cc.Rejected) != 0 {
+		t.Fatalf("unexpected non-fused: standalone=%+v rejected=%+v", cc.Standalone, cc.Rejected)
 	}
 	findings, err := cc.Run()
 	if err != nil {
@@ -245,8 +264,8 @@ func TestCorpusCompileBoxedPredicate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CorpusCompile: %v", err)
 	}
-	if len(cc.Unfused) != 0 {
-		t.Fatalf("boxed detector unexpectedly unfused: %+v", cc.Unfused)
+	if len(cc.Standalone) != 0 || len(cc.Rejected) != 0 {
+		t.Fatalf("boxed detector unexpectedly non-fused: standalone=%+v rejected=%+v", cc.Standalone, cc.Rejected)
 	}
 	findings, err := cc.Run()
 	if err != nil {
@@ -266,6 +285,236 @@ func TestCorpusCompileBoxedPredicate(t *testing.T) {
 	for i := range findings {
 		if canonJSON(t, findings[i].Evidence) != canonJSON(t, res.Rows[i]) {
 			t.Fatalf("boxed evidence mismatch: %s vs %s", findings[i].Evidence, res.Rows[i])
+		}
+	}
+}
+
+// TestCorpusCompileASOFStandalone is the headline for the standalone class: a corpus
+// that mixes fusable single-source detectors with a NON-fusable ASOF/argmax
+// correlated-subquery detector. The ASOF detector must be classified STANDALONE (not
+// fused, not rejected) and, at Run() time, execute through the FULL pipeline so its
+// nearest-preceding merge-join lowering FIRES -- producing findings identical to
+// running that SQL alone, unioned with the fused findings.
+func TestCorpusCompileASOFStandalone(t *testing.T) {
+	root := t.TempDir()
+
+	// A plain 'logs' keyspace for the fusable detectors (proven to fuse -- see the
+	// differential test), PLUS recipe-matched elog/rlog ns_server_log keyspaces (with
+	// a normalized int64 `ts`) for the ASOF correlated subquery.
+	logsDir := filepath.Join(root, "default", "logs")
+	if err := os.MkdirAll(logsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(logsDir, "l.jsonl"),
+		[]byte(`{"id":"a","sev":"ERROR","code":5}`+"\n"+
+			`{"id":"b","sev":"ERROR","code":1}`+"\n"+
+			`{"id":"c","sev":"INFO","code":2}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	asofWriteKS(t, root, "elog", "ns_server.error.log",
+		nsLine("2026-05-17T15:36:11.100+02:00", "n1", "e-100")+
+			nsLine("2026-05-17T15:36:13.300+02:00", "n1", "e-300")+
+			nsLine("2026-05-17T15:36:15.500+02:00", "n1", "e-500"))
+	asofWriteKS(t, root, "rlog", "ns_server.rebalance.log",
+		nsLine("2026-05-17T15:36:12.200+02:00", "n1", "r-200")+
+			nsLine("2026-05-17T15:36:14.400+02:00", "n1", "r-400"))
+
+	sess, err := OpenSession(root, "default")
+	if err != nil {
+		t.Fatalf("OpenSession: %v", err)
+	}
+	defer sess.Close()
+
+	// Keep the ASOF lowering enabled (default on) -- isolated so we can assert it fired.
+	prev := EnableASOFRewrite
+	EnableASOFRewrite = true
+	defer func() { EnableASOFRewrite = prev }()
+
+	asofStmt := "SELECT e.ts AS ts, " +
+		"(SELECT r.msg FROM default:rlog r WHERE r.ts <= e.ts ORDER BY r.ts DESC LIMIT 1) AS state " +
+		"FROM default:elog e"
+	corpus := []CorpusDetector{
+		{Tag: "F_err", Stmt: `SELECT * FROM logs l WHERE l.sev = "ERROR"`},
+		{Tag: "F_hot", Stmt: `SELECT * FROM logs l WHERE l.sev = "ERROR" AND l.code > 3`},
+		{Tag: "ASOF", Stmt: asofStmt},
+	}
+
+	cc, err := sess.CorpusCompile(corpus)
+	if err != nil {
+		t.Fatalf("CorpusCompile: %v", err)
+	}
+
+	// (a) The ASOF detector is STANDALONE -- not fused, not rejected.
+	if len(cc.Rejected) != 0 {
+		t.Fatalf("unexpected rejected: %+v", cc.Rejected)
+	}
+	if len(cc.Standalone) != 1 || cc.Standalone[0].Tag != "ASOF" {
+		t.Fatalf("expected ASOF as the sole standalone detector, got %+v", cc.Standalone)
+	}
+	// The two fusable logs detectors folded into a single-keyspace broadcast plan.
+	if cc.Plan == nil || cc.Plan.Kind != "broadcast-indexed" {
+		t.Fatalf("expected a fused broadcast-indexed plan for the 2 fusable detectors, got %v", cc.Plan)
+	}
+
+	// (c) The ASOF lowering must FIRE during the corpus Run (proving the standalone
+	// detector ran the merge-join, not nothing).
+	before := AsofRewriteApplied
+	got, err := cc.Run()
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if AsofRewriteApplied <= before {
+		t.Fatalf("ASOF lowering did not fire during the corpus Run (AsofRewriteApplied did not advance from %d)", before)
+	}
+
+	// (b) The corpus's ASOF findings == running the ASOF SQL alone (its real
+	// projection as evidence), compared as sorted sets.
+	var asofGot []string
+	fusedCount := 0
+	for _, f := range got {
+		switch f.Tag {
+		case "ASOF":
+			asofGot = append(asofGot, canonJSON(t, f.Evidence))
+		case "F_err", "F_hot":
+			fusedCount++
+		}
+	}
+	sort.Strings(asofGot)
+
+	res, err := sess.Run(asofStmt)
+	if err != nil {
+		t.Fatalf("standalone ASOF Run: %v", err)
+	}
+	var asofWant []string
+	for _, row := range res.Rows {
+		asofWant = append(asofWant, canonJSON(t, row))
+	}
+	sort.Strings(asofWant)
+
+	if len(asofGot) == 0 {
+		t.Fatal("no ASOF findings produced by the corpus")
+	}
+	if len(asofGot) != len(asofWant) {
+		t.Fatalf("ASOF findings count: got %d want %d\n got=%v\n want=%v", len(asofGot), len(asofWant), asofGot, asofWant)
+	}
+	for i := range asofGot {
+		if asofGot[i] != asofWant[i] {
+			t.Fatalf("ASOF finding[%d]: got %s want %s", i, asofGot[i], asofWant[i])
+		}
+	}
+	// Spot-check the nearest-preceding semantics reached the findings: e-300 (@13.3)
+	// should carry r-200 as its state.
+	sawNearest := false
+	for _, e := range asofGot {
+		if e == `{"state":[{"msg":"r-200"}],"ts":1779024973300000000}` {
+			sawNearest = true
+		}
+	}
+	if !sawNearest {
+		t.Fatalf("expected a nearest-preceding ASOF finding (e@13.3 -> r-200); got=%v", asofGot)
+	}
+
+	// And the fusable detectors still produce their findings.
+	if fusedCount == 0 {
+		t.Fatal("expected the fusable logs detectors to also produce findings")
+	}
+	t.Logf("ASOF-in-corpus: %d ASOF findings + %d fused findings", len(asofGot), fusedCount)
+}
+
+// TestCorpusCompileStandaloneOnly: a corpus of ONLY non-fusable detectors (a GROUP BY)
+// has a nil fused Plan yet STILL produces findings -- run individually via the full
+// pipeline -- matching the detector's own SELECT rows.
+func TestCorpusCompileStandaloneOnly(t *testing.T) {
+	sess := corpusTestSession(t)
+
+	stmt := `SELECT sev, count(*) AS n FROM logs GROUP BY sev`
+	cc, err := sess.CorpusCompile([]CorpusDetector{{Tag: "grp", Stmt: stmt}})
+	if err != nil {
+		t.Fatalf("CorpusCompile: %v", err)
+	}
+	if cc.Plan != nil {
+		t.Fatalf("standalone-only corpus should have a nil fused Plan, got %v", cc.Plan)
+	}
+	if len(cc.Rejected) != 0 || len(cc.Standalone) != 1 || cc.Standalone[0].Tag != "grp" {
+		t.Fatalf("expected 1 standalone (grp), 0 rejected; got standalone=%+v rejected=%+v", cc.Standalone, cc.Rejected)
+	}
+
+	got, err := cc.Run()
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	var gotRows []string
+	for _, f := range got {
+		if f.Tag != "grp" {
+			t.Fatalf("unexpected finding tag %q", f.Tag)
+		}
+		gotRows = append(gotRows, canonJSON(t, f.Evidence))
+	}
+	sort.Strings(gotRows)
+
+	res, err := sess.Run(stmt)
+	if err != nil {
+		t.Fatalf("baseline: %v", err)
+	}
+	var wantRows []string
+	for _, row := range res.Rows {
+		wantRows = append(wantRows, canonJSON(t, row))
+	}
+	sort.Strings(wantRows)
+
+	if len(gotRows) == 0 {
+		t.Fatal("standalone-only corpus produced no findings")
+	}
+	if len(gotRows) != len(wantRows) {
+		t.Fatalf("count: got %d want %d\n got=%v\n want=%v", len(gotRows), len(wantRows), gotRows, wantRows)
+	}
+	for i := range gotRows {
+		if gotRows[i] != wantRows[i] {
+			t.Fatalf("row[%d]: got %s want %s", i, gotRows[i], wantRows[i])
+		}
+	}
+}
+
+// TestCorpusCompileRejected: a genuinely broken detector (a parse error) is classified
+// REJECTED with a reason and NOT run -- and it does NOT abort the corpus: the other
+// (fusable) detector still compiles and produces its findings.
+func TestCorpusCompileRejected(t *testing.T) {
+	sess := corpusTestSession(t)
+
+	cc, err := sess.CorpusCompile([]CorpusDetector{
+		{Tag: "good", Stmt: `SELECT * FROM logs l WHERE l.sev = "ERROR"`},
+		{Tag: "broken", Stmt: `SELECT FROM WHERE GROUP nonsense (((`},
+	})
+	if err != nil {
+		t.Fatalf("CorpusCompile: %v", err)
+	}
+
+	// The broken detector is rejected (with a reason), not standalone, not fused.
+	if len(cc.Rejected) != 1 || cc.Rejected[0].Tag != "broken" {
+		t.Fatalf("expected 'broken' rejected, got %+v", cc.Rejected)
+	}
+	if cc.Rejected[0].Reason == "" {
+		t.Fatal("rejected detector must carry a reason")
+	}
+	t.Logf("rejected: %+v", cc.Rejected)
+	if len(cc.Standalone) != 0 {
+		t.Fatalf("unexpected standalone: %+v", cc.Standalone)
+	}
+
+	// The good detector still fused and still produces findings (corpus not aborted).
+	if cc.Plan == nil {
+		t.Fatal("expected a fused plan for the good detector")
+	}
+	got, err := cc.Run()
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(got) == 0 {
+		t.Fatal("expected the good detector's findings despite the broken sibling")
+	}
+	for _, f := range got {
+		if f.Tag != "good" {
+			t.Fatalf("unexpected finding tag %q (broken detector must not run)", f.Tag)
 		}
 	}
 }
