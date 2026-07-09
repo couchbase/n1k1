@@ -33,8 +33,8 @@ import (
 // emission site -- so both the interpreter and the compiled path stay identical to
 // the old per-op funcs. See DESIGN-exprs.md "Codegen ergonomics".
 
-// mathUnaryFuncs: ABS/CEIL/... -- a stdlib math.Abs/... or a base.Math* named func.
-var mathUnaryFuncs = map[string]func(float64) float64{
+// ExprMathUnaryFuncs: ABS/CEIL/... -- a stdlib math.Abs/... or a base.Math* named func.
+var ExprMathUnaryFuncs = map[string]func(float64) float64{
 	"abs": math.Abs, "ceil": math.Ceil, "floor": math.Floor, "sqrt": math.Sqrt,
 	"exp": math.Exp, "ln": math.Log, "log": math.Log10, "sign": base.MathSign,
 	"degrees": base.MathDegrees, "radians": base.MathRadians,
@@ -42,28 +42,28 @@ var mathUnaryFuncs = map[string]func(float64) float64{
 	"asin": math.Asin, "acos": math.Acos, "atan": math.Atan,
 }
 
-// mathBiFuncs: the binary math funcs, as always-ok Num leaves (POWER/ATAN2).
-var mathBiFuncs = map[string]func(a, b base.Num) (base.Num, bool){
+// ExprMathBiFuncs: the binary math funcs, as always-ok Num leaves (POWER/ATAN2).
+var ExprMathBiFuncs = map[string]func(a, b base.Num) (base.Num, bool){
 	"power": base.MathPow, "atan2": base.MathAtan2,
 }
 
 // ROUND/TRUNC share one (name -> rounder) table; init registers both arities per
 // rounder (_1 = 1-arg, precision 0; _2 = 2-arg, explicit precision -- the conv
 // layer arity-dispatches). round is round-half-to-even.
-var roundTruncFuncs = map[string]func(x float64, prec int) float64{
+var ExprMathRoundTruncFuncs = map[string]func(x float64, prec int) float64{
 	"round": base.RoundFloat, "trunc": base.TruncFloat,
 }
 
 func init() {
-	for name, fn := range mathUnaryFuncs {
-		ExprCatalog[name] = exprMathUnaryOp(fn)
+	for name, fn := range ExprMathUnaryFuncs {
+		ExprCatalog[name] = ExprMathUnaryOp(fn)
 	}
-	for name, fn := range mathBiFuncs {
-		ExprCatalog[name] = exprMathBiOp(fn)
+	for name, fn := range ExprMathBiFuncs {
+		ExprCatalog[name] = ExprMathBiOp(fn)
 	}
-	for name, fn := range roundTruncFuncs {
-		ExprCatalog[name+"_1"] = exprRoundTrunc1Op(fn)
-		ExprCatalog[name+"_2"] = exprRoundTrunc2Op(fn)
+	for name, fn := range ExprMathRoundTruncFuncs {
+		ExprCatalog[name+"_1"] = ExprRoundTrunc1Op(fn)
+		ExprCatalog[name+"_2"] = ExprRoundTrunc2Op(fn)
 	}
 }
 
@@ -71,32 +71,32 @@ func init() {
 // the leaf and deferring to the shared harness. Plain Go (no lz), so intermed_build
 // emits them verbatim and the leaf flows unchanged to the harness emission site.
 
-func exprMathUnaryOp(fn func(float64) float64) base.ExprCatalogFunc {
+func ExprMathUnaryOp(fn func(float64) float64) base.ExprCatalogFunc {
 	return func(lzVars *base.Vars, labels base.Labels, params []interface{}, path string) base.ExprFunc {
-		return exprMathUnary(lzVars, labels, params, path, fn)
+		return ExprMathUnary(lzVars, labels, params, path, fn)
 	}
 }
 
-func exprMathBiOp(fn func(a, b base.Num) (base.Num, bool)) base.ExprCatalogFunc {
+func ExprMathBiOp(fn func(a, b base.Num) (base.Num, bool)) base.ExprCatalogFunc {
 	return func(lzVars *base.Vars, labels base.Labels, params []interface{}, path string) base.ExprFunc {
-		return exprMathBi(lzVars, labels, params, path, fn)
+		return ExprMathBi(lzVars, labels, params, path, fn)
 	}
 }
 
-func exprRoundTrunc1Op(roundFn func(x float64, prec int) float64) base.ExprCatalogFunc {
+func ExprRoundTrunc1Op(roundFn func(x float64, prec int) float64) base.ExprCatalogFunc {
 	return func(lzVars *base.Vars, labels base.Labels, params []interface{}, path string) base.ExprFunc {
-		return exprRoundTrunc1(lzVars, labels, params, path, roundFn)
+		return ExprRoundTrunc1(lzVars, labels, params, path, roundFn)
 	}
 }
 
-func exprRoundTrunc2Op(roundFn func(x float64, prec int) float64) base.ExprCatalogFunc {
+func ExprRoundTrunc2Op(roundFn func(x float64, prec int) float64) base.ExprCatalogFunc {
 	return func(lzVars *base.Vars, labels base.Labels, params []interface{}, path string) base.ExprFunc {
-		return exprRoundTrunc2(lzVars, labels, params, path, roundFn)
+		return ExprRoundTrunc2(lzVars, labels, params, path, roundFn)
 	}
 }
 
-// exprRoundTrunc1 is the 1-arg ROUND/TRUNC harness (precision 0).
-func exprRoundTrunc1(lzVars *base.Vars, labels base.Labels, params []interface{},
+// ExprRoundTrunc1 is the 1-arg ROUND/TRUNC harness (precision 0).
+func ExprRoundTrunc1(lzVars *base.Vars, labels base.Labels, params []interface{},
 	path string, roundFn func(x float64, prec int) float64) (lzExprFunc base.ExprFunc) {
 	exprA := params[0].([]interface{})
 
@@ -117,8 +117,8 @@ func exprRoundTrunc1(lzVars *base.Vars, labels base.Labels, params []interface{}
 	return lzExprFunc
 }
 
-// exprRoundTrunc2 is the 2-arg ROUND/TRUNC harness (value, precision).
-func exprRoundTrunc2(lzVars *base.Vars, labels base.Labels, params []interface{},
+// ExprRoundTrunc2 is the 2-arg ROUND/TRUNC harness (value, precision).
+func ExprRoundTrunc2(lzVars *base.Vars, labels base.Labels, params []interface{},
 	path string, roundFn func(x float64, prec int) float64) (lzExprFunc base.ExprFunc) {
 	var lzBufPre []byte // <== varLift: lzBufPre by path
 
@@ -142,12 +142,12 @@ func exprRoundTrunc2(lzVars *base.Vars, labels base.Labels, params []interface{}
 	return lzExprFunc
 }
 
-// exprMathBi is the shared two-operand harness for binary math funcs
+// ExprMathBi is the shared two-operand harness for binary math funcs
 // (POWER/ATAN2). cbq skeleton: either operand MISSING -> MISSING, either
 // non-number -> NULL, else the func result formatted into the reused lzBufPre.
 // Mirrors ExprArithBi. Each operand is captured FROM lzVal (emitCaptured writes
 // lzVal).
-func exprMathBi(lzVars *base.Vars, labels base.Labels, params []interface{},
+func ExprMathBi(lzVars *base.Vars, labels base.Labels, params []interface{},
 	path string, fn func(a, b base.Num) (base.Num, bool)) (lzExprFunc base.ExprFunc) {
 	var lzBufPre []byte // <== varLift: lzBufPre by path
 
@@ -171,11 +171,11 @@ func exprMathBi(lzVars *base.Vars, labels base.Labels, params []interface{},
 	return lzExprFunc
 }
 
-// exprMathUnary is the shared single-child harness for the unary math funcs.
+// ExprMathUnary is the shared single-child harness for the unary math funcs.
 // cbq's skeleton: MISSING passes through, a non-number operand -> NULL, else the
 // func result formatted into the reused lzBufPre. NULL also passes through (it
 // isn't a ValKindValue).
-func exprMathUnary(lzVars *base.Vars, labels base.Labels, params []interface{},
+func ExprMathUnary(lzVars *base.Vars, labels base.Labels, params []interface{},
 	path string, fn func(f float64) float64) (lzExprFunc base.ExprFunc) {
 	exprA := params[0].([]interface{})
 
