@@ -33,6 +33,13 @@ var (
 	StatFilterRowsIn  = base.DefStat("RowsIn", "input rows the operator consumed", "filter")
 	StatFilterRowsOut = base.DefStat("RowsOut", "rows emitted to the parent", "filter")
 
+	// broadcast (shared-scan fan-out): RowsIn counts the SHARED rows fanned in
+	// (scanned + decoded ONCE); FindingsOut counts tagged findings emitted across
+	// all K detectors. RowsIn stays at N no matter how many detectors run -- that
+	// flat decode cost is the whole point of the op.
+	StatBroadcastRowsIn      = base.DefStat("RowsIn", "shared rows fanned in (scanned+decoded once)", "broadcast")
+	StatBroadcastFindingsOut = base.DefStat("FindingsOut", "tagged findings emitted across all detectors", "broadcast")
+
 	StatGroupRowsIn    = base.DefStat("RowsIn", "input rows the operator consumed", "group", "distinct")
 	StatGroupGroupsOut = base.DefStat("GroupsOut", "distinct groups (or DISTINCT rows) emitted", "group", "distinct")
 

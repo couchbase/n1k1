@@ -96,6 +96,14 @@ func usesUnbridgedOp(o *base.Op) bool {
 		// reuse-var declarations (lzValsReuseTop_<path> for both branches) -- correct
 		// in the interpreter, but not yet compilable. Skip generating these.
 		return true
+	case "broadcast":
+		// The shared-scan fan-out (PREPARE++ MVP, DESIGN-prepare.md phase 3) is an
+		// interpreter-only op just like merge-scan: BroadcastExec is copied VERBATIM
+		// into the compiler package (so it compiles cleanly), but it orchestrates
+		// its child scan and K detector ExprFuncs at run time rather than fusing
+		// them, so it emits no specialized code. No SQL plan produces it yet, so it
+		// never actually reaches the differential -- this guard is defensive.
+		return true
 	case "merge-scan":
 		// The K-way sorted merge-scan (Track B, DESIGN-merging.md) is an
 		// interpreter-only op: MergeScanExec is copied VERBATIM into the compiler

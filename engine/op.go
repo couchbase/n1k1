@@ -51,6 +51,9 @@ func ExecOp(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	case "union-all":
 		OpUnionAll(o, lzVars, lzYieldVals, lzYieldErr, path, pathNext) // !lz
 
+	case "broadcast":
+		OpBroadcast(o, lzVars, lzYieldVals, lzYieldErr, path, pathNext) // !lz
+
 	case "merge-scan":
 		OpMergeScan(o, lzVars, lzYieldVals, lzYieldErr, path, pathNext) // !lz
 
