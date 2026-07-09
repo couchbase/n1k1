@@ -7,12 +7,15 @@ ceiling + compiled `EXECUTE` end-to-end via the thin-child + data-over-pipe run 
 Remaining: embed-source fat child, the full cursor pipe protocol, WASM.
 **PREPARE++ (second half)** — the temporal optimizations (phase 5: ASOF / K-way merge) and the
 multi-query-optimization engine substrate (phases 3–4: shared-scan `broadcast`, source routing,
-corpus CSE, predicate index) are **implemented and benchmarked** over hand-built detectors. What
-remains: the corpus compiler (phase 6) that feeds those levers from a SQL++ detector repo, the
-logical-keyspace / late-binding resolver (phases 1–2, partly enabled by the extract-recipe data
-layer in `DESIGN-data.md`), and the recipe-format + golden-fixture CI (phase 7). Native-expr
-coverage (the codegen lever that lets a detector compile to `PrepareCompiledFull`) is ongoing
-(`DESIGN-exprs.md`).
+corpus CSE, predicate index) are **implemented and benchmarked**, and the **corpus compiler
+(phase 6) that feeds them from SQL++ detectors is built (MVP)** — `Session.CorpusCompile` fuses
+single-source detectors into the shared-scan plan, runs correlated/complex ones (ASOF, window,
+GROUP BY, join) standalone via their own optimized plans, and rejects only the broken. What
+remains: the phase-6 tail (SHA-keyed build cache, embed-source analyzer binary, per-detector
+projection envelope), the logical-keyspace / late-binding resolver (phases 1–2, partly enabled by
+the extract-recipe data layer in `DESIGN-data.md`), and the recipe-format + golden-fixture CI
+(phase 7). Native-expr coverage (the codegen lever that lets a detector compile to
+`PrepareCompiledFull`) is ongoing (`DESIGN-exprs.md`).
 
 n1k1 **compiles** a SQL++ query plan into Go source (the `intermed/` compiler +
 `glue/emit.OpToLines`). `PREPARE` exposes that as a **Go-based preparation** of a
@@ -595,9 +598,10 @@ decoded once and every detector evaluates against the same buffer.
 The four levers below are **implemented** as engine primitives + pure build-helpers over
 hand-built detectors (a `Detector` = `{tag, predicate expr-tree, projection expr-trees}`),
 each with a committed benchmark; they are orthogonal and compose (route partitions by source →
-CSE hoists shared terms → the index wakes a handful of the survivors per row). What is NOT yet
-built is the corpus compiler ([below](#compile-corpus)) that produces `Detector`s from a SQL++
-repo and wires the levers together — so today they run from hand-built params, not real queries.
+CSE hoists shared terms → the index wakes a handful of the survivors per row). The corpus
+compiler ([below](#compile-corpus), `glue.CorpusCompile`) now produces `Detector`s from SQL++
+statements and wires the levers together, so these helpers can be driven from a real detector set
+(or from hand-built params, as the benchmarks do).
 
 - **MVP — broadcast op — DONE (`engine.OpBroadcast`, kind `broadcast`).** One `broadcast`/`tee`
   operator: scan once, fan each shared-byte row to K detectors (each an inlined filter+project),
@@ -697,7 +701,10 @@ expr ported to the native byte lane widens what the detector corpus can compile 
 
 PREPARE++ is [PREPARE](#the-surface) applied to a **repository**, not a statement: compile
 the corpus into one (or a few) fused programs with the shared-scan fan-out, corpus CSE, and
-predicate index baked in.
+predicate index baked in. The MVP `glue.CorpusCompile` does this at the **plan** level today
+(fuse single-source detectors, run correlated/complex ones standalone, reject the broken — see
+[phase 6](#detect-phasing)); the SHA-keyed build cache and the embed-source *binary* are the
+codegen/packaging tail on top of that.
 
 **On emitting "parts" — weaving is inlining; packages are for build economics.** A natural
 question is whether the codegen must emit each detector (or its filter/projection) as a
@@ -813,16 +820,26 @@ findings table that reads as "clean."
    idiom is recognized and lowered to a K-way merge-join (ASOF, incl. soft / partitioned /
    cross-node / near-sorted), all differential-tested; windowed rate/burst/streak ride stock
    `OVER (…)`. Both grammar-free.
-6. **PREPARE++ corpus compiler** — *not built (the next real build).* Turn a repo of SQL++
-   detectors into `Detector`s (parse each `FROM` → target source for routing; extract
-   predicate/projection trees), compose route → CSE → index into one runnable plan; SHA-keyed
-   build cache; evidence/findings output; embed-source analyzer binary. This is what makes the
-   levers usable from real detectors rather than hand-built params.
+6. **PREPARE++ corpus compiler** — **DONE (MVP)** (`glue.CorpusCompile` / `CompiledCorpus`).
+   Turns a set of SQL++ detectors into one runnable plan by classifying each: canonical
+   single-source filter+project detectors **fuse** into the shared-scan broadcast → CSE → index
+   (grouped per keyspace under `union-all`, field-refs alias-normalized to one canonical `.` row
+   against a single unified `Conv`/`Temps`); non-fusable-but-valid detectors (ASOF/argmax
+   subquery — routed via a projection-subquery check — plus window, GROUP BY, join, index-scan)
+   run **standalone** through the full pipeline (so `WireASOFJoin` etc. fire, each individually
+   optimized) with findings unioned in; parse/plan failures are **rejected** (surfaced with a
+   reason, never silently dropped). A differential test gates it (fused ∪ standalone findings ==
+   running each detector's own SQL) and proves `AsofRewriteApplied` fires for an ASOF detector in
+   a corpus. *Remaining tail:* SHA-keyed build cache, embed-source analyzer binary, per-detector
+   projection envelope (fused evidence is the whole matched row today), and standalone detectors
+   not yet sharing scans among themselves.
 7. **Recipe format + golden-fixture CI** — *not built.* The AI-authoring flywheel.
 
-Each phase is independently useful. The **engine substrate for MQO + temporal is now in place**
-(phases 3–5), proven by benchmarks; the remaining work (1–2, 6–7) is the *compiler/binding/
-authoring* layer that turns those primitives into a maintained detector product.
+Each phase is independently useful. The **engine substrate for MQO + temporal (phases 3–5) AND
+the corpus compiler that feeds it (phase 6, MVP) are now in place** — proven by benchmarks plus a
+differential corpus test; the remaining work (phases 1–2, phase 7, and phase-6's tail — build
+cache / embed-source binary / projection envelope) is the *binding / caching / authoring* layer
+that turns these primitives into a maintained detector product.
 
 ## Open questions <a name="open-questions"></a>
 
