@@ -48,18 +48,18 @@ func StrCaseTitle(decoded []byte) []byte {
 	return bytes.Title(bytes.ToLower(decoded)) //nolint:staticcheck // match cbq strings.Title
 }
 
-// strWhitespace is cbq's default TRIM/LTRIM/RTRIM cutset (query
+// StrWhitespace is cbq's default TRIM/LTRIM/RTRIM cutset (query
 // expression/func_str.go _WHITESPACE = " \t\n\f\r"). The 2-arg forms (explicit
 // cutset) are variadic and fall back to cbq per the optimizer arity guard.
-const strWhitespace = " \t\n\f\r"
+var StrWhitespace = " \t\n\f\r"
 
 // StrTrim / StrTrimLeft / StrTrimRight strip cbq's default whitespace cutset from
 // both / the left / the right of the decoded bytes. bytes.Trim* return a subslice
 // (no allocation); EncodeStr then copies into the reused output buffer. Same
 // func([]byte) []byte shape as the case funcs, so they share the harness.
-func StrTrim(decoded []byte) []byte      { return bytes.Trim(decoded, strWhitespace) }
-func StrTrimLeft(decoded []byte) []byte  { return bytes.TrimLeft(decoded, strWhitespace) }
-func StrTrimRight(decoded []byte) []byte { return bytes.TrimRight(decoded, strWhitespace) }
+func StrTrim(decoded []byte) []byte      { return bytes.Trim(decoded, StrWhitespace) }
+func StrTrimLeft(decoded []byte) []byte  { return bytes.TrimLeft(decoded, StrWhitespace) }
+func StrTrimRight(decoded []byte) []byte { return bytes.TrimRight(decoded, StrWhitespace) }
 
 // StrReverse reverses the decoded string, preserving combining-character
 // sequences (a base rune keeps its following Mn/Me/Mc marks in order) and quietly
@@ -100,21 +100,21 @@ func StrReplaceAll(s, old, repl []byte) []byte { return bytes.Replace(s, old, re
 // StrSplitFields builds the SPLIT(str) 1-arg result -- a JSON array of the
 // whitespace-delimited fields (cbq strings.Fields), encoded into bufPre.
 func StrSplitFields(c *ValComparer, s, bufPre []byte) []byte {
-	return strEncodeStrArray(c, bytes.Fields(s), bufPre)
+	return StrEncodeStrArray(c, bytes.Fields(s), bufPre)
 }
 
 // StrSplitSep builds the SPLIT(str, sep) 2-arg result -- a JSON array of the
 // sep-delimited parts (cbq strings.Split; an empty sep splits into UTF-8
 // sequences), encoded into bufPre.
 func StrSplitSep(c *ValComparer, s, sep, bufPre []byte) []byte {
-	return strEncodeStrArray(c, bytes.Split(s, sep), bufPre)
+	return StrEncodeStrArray(c, bytes.Split(s, sep), bufPre)
 }
 
-// strEncodeStrArray serializes parts as a JSON array of strings into bufPre[:0].
+// StrEncodeStrArray serializes parts as a JSON array of strings into bufPre[:0].
 // EncodeAsString APPENDS the encoded string to its out arg (unlike EncodeStr,
 // which resets to bufPre[:0]), so elements accumulate. The parts alias s (no
 // content copy); the [][]byte header from bytes.Split/Fields is the only alloc.
-func strEncodeStrArray(c *ValComparer, parts [][]byte, bufPre []byte) []byte {
+func StrEncodeStrArray(c *ValComparer, parts [][]byte, bufPre []byte) []byte {
 	c.PrepareEncoder()
 	out := append(bufPre[:0], '[')
 	for i, p := range parts {
@@ -307,11 +307,11 @@ func StrPositionIndex(a, b Val, startPos int) (idx int, sentinel Val, ok bool) {
 
 // --------------------------------
 
-// IntOperand reads a numeric operand as an integer: ok=false (the caller yields
+// ParseInt reads a numeric operand as an integer: ok=false (the caller yields
 // NULL) if v is not a number or not integral -- mirroring cbq's
 // `int(v.Actual().(float64))` guarded by `vf != math.Trunc(vf)`. Used for a
 // SUBSTR position/length and a ROUND/TRUNC precision (any sign).
-func IntOperand(v Val) (int, bool) {
+func ParseInt(v Val) (int, bool) {
 	n, ok := ParseNum(v)
 	if !ok {
 		return 0, false

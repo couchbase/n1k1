@@ -129,7 +129,7 @@ func MathMissingDominantRound2(valNum, valPrec Val, buf []byte,
 		return ValMissing, buf
 	}
 	num, numOk := ParseNum(valNum)
-	prec, precOk := IntOperand(valPrec)
+	prec, precOk := ParseInt(valPrec)
 	if !numOk || !precOk {
 		return ValNull, buf // non-number value / non-integral precision
 	}
