@@ -22,16 +22,16 @@ import (
 // the harness formats into the reused lzBufPre on a separate line (op-code %#v and
 // buffer varLift %s never share a line).
 
-// arrayReduceFuncs maps each unary array reader to its base.ArrayOp* op-code,
+// ExprArrayReduceFuncs maps each unary array reader to its base.ArrayOp* op-code,
 // passed to the shared exprArrayReduce harness (one ArrayEach pass -> a scalar).
-var arrayReduceFuncs = map[string]int{
+var ExprArrayReduceFuncs = map[string]int{
 	"array_length": base.ArrayOpLength, "array_count": base.ArrayOpCount,
 	"array_sum": base.ArrayOpSum, "array_avg": base.ArrayOpAvg,
 }
 
 func init() {
-	for name, op := range arrayReduceFuncs {
-		ExprCatalog[name] = exprArrayReduceOp(op)
+	for name, op := range ExprArrayReduceFuncs {
+		ExprCatalog[name] = ExprArrayReduceOp(op)
 	}
 	ExprCatalog["array_min"] = ExprArrayMin
 	ExprCatalog["array_max"] = ExprArrayMax
@@ -44,15 +44,15 @@ func init() {
 	ExprCatalog["array_concat"] = ExprArrayConcat
 }
 
-// exprArrayReduceOp closes over an array reader's op-code and defers to the
+// ExprArrayReduceOp closes over an array reader's op-code and defers to the
 // shared harness -- plain (non-lz) Go, codegen-transparent.
-func exprArrayReduceOp(op int) base.ExprCatalogFunc {
+func ExprArrayReduceOp(op int) base.ExprCatalogFunc {
 	return func(lzVars *base.Vars, labels base.Labels, params []interface{}, path string) base.ExprFunc {
-		return exprArrayReduce(lzVars, labels, params, path, op)
+		return ExprArrayReduce(lzVars, labels, params, path, op)
 	}
 }
 
-func exprArrayReduce(lzVars *base.Vars, labels base.Labels, params []interface{},
+func ExprArrayReduce(lzVars *base.Vars, labels base.Labels, params []interface{},
 	path string, op int) (lzExprFunc base.ExprFunc) {
 	exprA := params[0].([]interface{})
 
@@ -86,15 +86,15 @@ func exprArrayReduce(lzVars *base.Vars, labels base.Labels, params []interface{}
 // order across a func placeholder and a varLift buffer -- see cmd/intermed_build).
 func ExprArrayMin(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) base.ExprFunc {
-	return exprArrayMinMax(lzVars, labels, params, path, base.ArrayMin)
+	return ExprArrayMinMax(lzVars, labels, params, path, base.ArrayMin)
 }
 
 func ExprArrayMax(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) base.ExprFunc {
-	return exprArrayMinMax(lzVars, labels, params, path, base.ArrayMax)
+	return ExprArrayMinMax(lzVars, labels, params, path, base.ArrayMax)
 }
 
-func exprArrayMinMax(lzVars *base.Vars, labels base.Labels, params []interface{},
+func ExprArrayMinMax(lzVars *base.Vars, labels base.Labels, params []interface{},
 	path string, read func(vc *base.ValComparer, v base.Val, bufPre []byte) (base.Val, []byte)) (lzExprFunc base.ExprFunc) {
 	exprA := params[0].([]interface{})
 
