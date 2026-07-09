@@ -17,7 +17,7 @@ import (
 	"github.com/couchbase/n1k1/base"
 )
 
-// CaptureNaryChildren builds the child ExprFuncs for an eager variadic expr. It
+// NaryCaptureChildren builds the child ExprFuncs for an eager variadic expr. It
 // runs entirely at build time (`// !lz`): for the compiler its role is the
 // per-operand EmitPush/EmitPop captures (so each operand can later be inlined by
 // `// <== emitCaptured`); for the interpreter it returns the real child slice.
@@ -39,7 +39,7 @@ import (
 // AND lets the compiler inline each operand with no nested func literal for a
 // parent expr's emitCaptured to trip over. CASE, being lazy, can't pre-evaluate;
 // it emits a flat lzMatched-guarded short-circuit instead (see ExprCase).
-func CaptureNaryChildren(lzVars *base.Vars, labels base.Labels,
+func NaryCaptureChildren(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzChildren []base.ExprFunc) {
 	for lzI := range params { // !lz
 		lzChild := MakeExprFunc(lzVars, labels, params[lzI].([]interface{}), path, strconv.Itoa(lzI)) // !lz

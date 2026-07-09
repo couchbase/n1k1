@@ -180,15 +180,15 @@ func ExprObjectConcat(lzVars *base.Vars, labels base.Labels,
 
 func ExprObjectLength(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) base.ExprFunc {
-	return exprLenReader(lzVars, labels, params, path, base.LenObject)
+	return ExprLenReader(lzVars, labels, params, path, base.LenObject)
 }
 
 func ExprPolyLength(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) base.ExprFunc {
-	return exprLenReader(lzVars, labels, params, path, base.LenPoly)
+	return ExprLenReader(lzVars, labels, params, path, base.LenPoly)
 }
 
-func exprLenReader(lzVars *base.Vars, labels base.Labels, params []interface{},
+func ExprLenReader(lzVars *base.Vars, labels base.Labels, params []interface{},
 	path string, op int) (lzExprFunc base.ExprFunc) {
 	exprA := params[0].([]interface{})
 

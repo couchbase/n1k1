@@ -28,7 +28,7 @@ func ExprConcat(lzVars *base.Vars, labels base.Labels,
 	var lzBufPre []byte        // <== varLift: lzBufPre by path
 	var lzValsReduce base.Vals // <== varLift: lzValsReduce by path
 
-	lzChildren := CaptureNaryChildren(lzVars, labels, params, path) // !lz
+	lzChildren := NaryCaptureChildren(lzVars, labels, params, path) // !lz
 
 	if LzScope {
 		lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {

@@ -26,15 +26,15 @@ func init() {
 
 func ExprNullIf(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	return exprNullMissingIf(lzVars, labels, params, path, base.ValNull)
+	return ExprNullMissingIf(lzVars, labels, params, path, base.ValNull)
 }
 
 func ExprMissingIf(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	return exprNullMissingIf(lzVars, labels, params, path, base.ValMissing)
+	return ExprNullMissingIf(lzVars, labels, params, path, base.ValMissing)
 }
 
-func exprNullMissingIf(lzVars *base.Vars, labels base.Labels, params []interface{},
+func ExprNullMissingIf(lzVars *base.Vars, labels base.Labels, params []interface{},
 	path string, whenEqual base.Val) (lzExprFunc base.ExprFunc) {
 	var lzWhenEqual base.Val = whenEqual // <== varLift: lzWhenEqual by path
 

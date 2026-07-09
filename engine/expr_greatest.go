@@ -28,7 +28,7 @@ func ExprGreatest(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
 	var lzValsReduce base.Vals // <== varLift: lzValsReduce by path
 
-	lzChildren := CaptureNaryChildren(lzVars, labels, params, path) // !lz
+	lzChildren := NaryCaptureChildren(lzVars, labels, params, path) // !lz
 
 	if LzScope {
 		lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
@@ -54,7 +54,7 @@ func ExprLeast(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
 	var lzValsReduce base.Vals // <== varLift: lzValsReduce by path
 
-	lzChildren := CaptureNaryChildren(lzVars, labels, params, path) // !lz
+	lzChildren := NaryCaptureChildren(lzVars, labels, params, path) // !lz
 
 	if LzScope {
 		lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
