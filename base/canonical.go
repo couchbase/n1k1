@@ -91,7 +91,7 @@ func (c *ValComparer) CanonicalJSONWithType(v []byte, vType int,
 
 		err := jsonparser.ObjectEach(v,
 			func(k []byte, v []byte, vT jsonparser.ValueType, o int) error {
-				kCopy := append(ReuseNextKey(kvs), k...)
+				kCopy := append(KeyValsReuseNextKey(kvs), k...)
 				kvs = append(kvs, KeyVal{kCopy, v, int(vT), 0})
 				return nil
 			})

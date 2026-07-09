@@ -113,7 +113,7 @@ func ObjectNames(c *ValComparer, v Val, bufPre []byte) (out []byte, sentinel Val
 
 	iterErr := jsonparser.ObjectEach(inner,
 		func(k []byte, _ []byte, _ jsonparser.ValueType, _ int) error {
-			kCopy := append(ReuseNextKey(kvs), k...)
+			kCopy := append(KeyValsReuseNextKey(kvs), k...)
 			kvs = append(kvs, KeyVal{Key: kCopy})
 			return nil
 		})
@@ -209,7 +209,7 @@ func objectSortedKVs(c *ValComparer, v Val) (kvs KeyVals, sentinel Val, ok bool)
 func objectPairsInto(kvs KeyVals, inner []byte) (KeyVals, error) {
 	err := jsonparser.ObjectEach(inner,
 		func(k []byte, val []byte, dt jsonparser.ValueType, _ int) error {
-			kCopy := append(ReuseNextKey(kvs), k...)
+			kCopy := append(KeyValsReuseNextKey(kvs), k...)
 			kvs = append(kvs, KeyVal{Key: kCopy, Val: val, ValType: int(dt)})
 			return nil
 		})
@@ -374,7 +374,7 @@ func ObjectPut(c *ValComparer, obj, key, val Val, bufPre []byte) (out []byte, se
 		if i >= 0 {
 			kvs[i].Val, kvs[i].ValType = pv, pt // overwrite in place.
 		} else {
-			kCopy := append(ReuseNextKey(kvs), keyDec...)
+			kCopy := append(KeyValsReuseNextKey(kvs), keyDec...)
 			kvs = append(kvs, KeyVal{Key: kCopy, Val: pv, ValType: pt})
 		}
 	}
@@ -406,7 +406,7 @@ func ObjectAdd(c *ValComparer, obj, key, val Val, bufPre []byte) (out []byte, se
 	// leave obj unchanged (cbq never overwrites and skips a MISSING value).
 	if len(val) > 0 && kvsFind(kvs, keyDec) < 0 {
 		pv, pt := Parse(val)
-		kCopy := append(ReuseNextKey(kvs), keyDec...)
+		kCopy := append(KeyValsReuseNextKey(kvs), keyDec...)
 		kvs = append(kvs, KeyVal{Key: kCopy, Val: pv, ValType: pt})
 	}
 
@@ -465,7 +465,7 @@ func ObjectConcat(c *ValComparer, obj1, obj2 Val, bufPre []byte) (out []byte, se
 			if i := kvsFind(kvs, k); i >= 0 {
 				kvs[i].Val, kvs[i].ValType = val, int(dt)
 			} else {
-				kCopy := append(ReuseNextKey(kvs), k...)
+				kCopy := append(KeyValsReuseNextKey(kvs), k...)
 				kvs = append(kvs, KeyVal{Key: kCopy, Val: val, ValType: int(dt)})
 			}
 			return nil

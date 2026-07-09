@@ -123,10 +123,10 @@ func (c *ValComparer) CompareWithType(aValue, bValue []byte,
 	case jsonparser.String:
 		kvs := c.KeyValsAcquire(depth)
 
-		aBuf := ReuseNextKey(kvs)
+		aBuf := KeyValsReuseNextKey(kvs)
 		kvs = append(kvs, KeyVal{Key: aBuf})
 
-		bBuf := ReuseNextKey(kvs)
+		bBuf := KeyValsReuseNextKey(kvs)
 		kvs = append(kvs, KeyVal{Key: bBuf})
 
 		av, aErr := jsonparser.Unescape(aValue, aBuf[:cap(aBuf)])
@@ -173,7 +173,7 @@ func (c *ValComparer) CompareWithType(aValue, bValue []byte,
 
 		_, bErr := jsonparser.ArrayEach(bValue,
 			func(v []byte, vT jsonparser.ValueType, o int, vErr error) {
-				kvs = append(kvs, KeyVal{ReuseNextKey(kvs), v, int(vT), 0})
+				kvs = append(kvs, KeyVal{KeyValsReuseNextKey(kvs), v, int(vT), 0})
 			})
 
 		bLen := len(kvs)
@@ -228,7 +228,7 @@ func (c *ValComparer) CompareWithType(aValue, bValue []byte,
 		var aLen int
 		aErr := jsonparser.ObjectEach(aValue,
 			func(k []byte, v []byte, vT jsonparser.ValueType, o int) error {
-				kCopy := append(ReuseNextKey(kvs), k...)
+				kCopy := append(KeyValsReuseNextKey(kvs), k...)
 				kvs = append(kvs, KeyVal{kCopy, v, int(vT), 1})
 				aLen++
 				return nil
@@ -237,7 +237,7 @@ func (c *ValComparer) CompareWithType(aValue, bValue []byte,
 		var bLen int
 		bErr := jsonparser.ObjectEach(bValue,
 			func(k []byte, v []byte, vT jsonparser.ValueType, o int) error {
-				kCopy := append(ReuseNextKey(kvs), k...)
+				kCopy := append(KeyValsReuseNextKey(kvs), k...)
 				kvs = append(kvs, KeyVal{kCopy, v, int(vT), -1})
 				bLen++
 				return nil
@@ -393,7 +393,7 @@ func (a KeyVals) Less(i, j int) bool {
 
 // When append()'ing to the kvs, the entry that we're going to
 // overwrite might have a Key []byte that we can reuse.
-func ReuseNextKey(kvs KeyVals) []byte {
+func KeyValsReuseNextKey(kvs KeyVals) []byte {
 	if cap(kvs) > len(kvs) {
 		return kvs[0 : len(kvs)+1][len(kvs)].Key[:0]
 	}
