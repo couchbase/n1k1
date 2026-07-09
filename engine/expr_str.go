@@ -566,7 +566,7 @@ func exprRegexpMatch(lzVars *base.Vars, labels base.Labels, params []interface{}
 	lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
 		lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
 
-		lzVal = base.StrRegexpMatch(lzVal, lzPat, &lzRe)
+		lzVal = base.RegexpMatchStr(lzVal, lzPat, &lzRe)
 
 		return lzVal
 	}

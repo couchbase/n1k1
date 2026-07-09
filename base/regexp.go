@@ -28,7 +28,7 @@ type Regexp struct {
 	set bool // whether the one-time compile of src has run
 }
 
-// StrRegexpMatch reports whether the JSON-string val matches src as a regular
+// RegexpMatchStr reports whether the JSON-string val matches src as a regular
 // expression -- REGEXP_CONTAINS (src is the raw pattern) or REGEXP_LIKE (src is
 // the caller-anchored "^pattern$" full-match form). MISSING -> MISSING, a
 // non-string val -> NULL (via StrDecode). src is a baked compile-time constant,
@@ -36,7 +36,7 @@ type Regexp struct {
 // fails to compile (unreachable -- the optimizer only lowers a src that already
 // compiled) yields NULL. re.Match runs on the decoded bytes directly; Go's regexp
 // pools its matching machine, so matching allocates nothing per row.
-func StrRegexpMatch(val Val, src string, r *Regexp) Val {
+func RegexpMatchStr(val Val, src string, r *Regexp) Val {
 	decoded, sentinel, ok := StrDecode(val)
 	if !ok {
 		return sentinel

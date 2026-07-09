@@ -1723,7 +1723,7 @@ func TestPredicateDifferentialVsCBQ(t *testing.T) {
 
 // TestRegexpDifferentialVsCBQ proves REGEXP_CONTAINS / REGEXP_LIKE native
 // lowering: a CONSTANT, compilable pattern lowers to the native regexp head
-// (base.StrRegexpMatch), matching cbq byte-for-byte; a DYNAMIC or INVALID-constant
+// (base.RegexpMatchStr), matching cbq byte-for-byte; a DYNAMIC or INVALID-constant
 // pattern must stay BOXED (not lowered), so cbq's per-row-recompile / runtime-error
 // behavior is preserved. Both operands here are constants -- native lowering is
 // tried before const-fold, so these hit the regexp handler (asserted via the tree
@@ -1805,12 +1805,12 @@ func TestRegexpMatchZeroAlloc(t *testing.T) {
 	src := "error|warn|fatal"
 
 	var re base.Regexp
-	_ = base.StrRegexpMatch(val, src, &re) // warm up: compiles once
+	_ = base.RegexpMatchStr(val, src, &re) // warm up: compiles once
 
 	n := testing.AllocsPerRun(2000, func() {
-		_ = base.StrRegexpMatch(val, src, &re)
+		_ = base.RegexpMatchStr(val, src, &re)
 	})
 	if n != 0 {
-		t.Errorf("StrRegexpMatch: %v allocs/row after warmup; want 0", n)
+		t.Errorf("RegexpMatchStr: %v allocs/row after warmup; want 0", n)
 	}
 }
