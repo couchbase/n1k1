@@ -88,11 +88,11 @@ func MathApply(fn func(f float64) float64, n Num) Num {
 // so the leaf is still passed and emitted by name -- e.g. math.Abs, base.RoundFloat
 // (see LzExprFmt). Each folds the cbq skeleton once and returns the reused buffer.
 
-// UnknownPassthroughMathUn is the unary math-func rule (ABS/CEIL/SQRT/...):
+// MathUnknownPassthroughUnary is the unary math-func rule (ABS/CEIL/SQRT/...):
 // MISSING and NULL (any non-value) pass through; a non-number value becomes NULL;
 // else fn(value) formatted into buf[:0]. fn is a stdlib math.Abs/... or a base
 // named func (SIGN/DEGREES/RADIANS), emitted by name.
-func UnknownPassthroughMathUn(v Val, buf []byte, fn func(f float64) float64) (Val, []byte) {
+func MathUnknownPassthroughUnary(v Val, buf []byte, fn func(f float64) float64) (Val, []byte) {
 	if ValKind(v) != ValKindValue {
 		return v, buf // MISSING/NULL pass through.
 	}
@@ -104,10 +104,10 @@ func UnknownPassthroughMathUn(v Val, buf []byte, fn func(f float64) float64) (Va
 	return Val(out), out
 }
 
-// UnknownPassthroughRound1 is the 1-arg ROUND/TRUNC rule (precision 0): same
+// MathUnknownPassthroughRound1 is the 1-arg ROUND/TRUNC rule (precision 0): same
 // unknown-passthrough shape as UnknownPassthroughMathUn, but the leaf is the
 // (float64,int)->float64 round func (base.RoundFloat/TruncFloat) applied at prec 0.
-func UnknownPassthroughRound1(v Val, buf []byte,
+func MathUnknownPassthroughRound1(v Val, buf []byte,
 	roundFn func(x float64, prec int) float64) (Val, []byte) {
 	if ValKind(v) != ValKindValue {
 		return v, buf // MISSING/NULL pass through.
@@ -120,10 +120,10 @@ func UnknownPassthroughRound1(v Val, buf []byte,
 	return Val(out), out
 }
 
-// MissingDominantRound2 is the 2-arg ROUND/TRUNC rule (value, precision): MISSING
+// MathMissingDominantRound2 is the 2-arg ROUND/TRUNC rule (value, precision): MISSING
 // if either operand is MISSING; else NULL if the value is non-number or the
 // precision is non-integral; else roundFn(value, precision) into buf[:0].
-func MissingDominantRound2(valNum, valPrec Val, buf []byte,
+func MathMissingDominantRound2(valNum, valPrec Val, buf []byte,
 	roundFn func(x float64, prec int) float64) (Val, []byte) {
 	if ValKind(valNum) == ValKindMissing || ValKind(valPrec) == ValKindMissing {
 		return ValMissing, buf

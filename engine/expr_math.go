@@ -109,7 +109,7 @@ func exprRoundTrunc1(lzVars *base.Vars, labels base.Labels, params []interface{}
 	lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
 		lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
 
-		lzVal, lzBufPre = base.UnknownPassthroughRound1(lzVal, lzBufPre, roundFn)
+		lzVal, lzBufPre = base.MathUnknownPassthroughRound1(lzVal, lzBufPre, roundFn)
 
 		return lzVal
 	}
@@ -130,7 +130,7 @@ func exprRoundTrunc2(lzVars *base.Vars, labels base.Labels, params []interface{}
 			lzVal = lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B"
 			lzValPrec := lzVal
 
-			lzVal, lzBufPre = base.MissingDominantRound2(lzValNum, lzValPrec, lzBufPre, roundFn)
+			lzVal, lzBufPre = base.MathMissingDominantRound2(lzValNum, lzValPrec, lzBufPre, roundFn)
 		}
 
 		return lzVal
@@ -188,7 +188,7 @@ func exprMathUnary(lzVars *base.Vars, labels base.Labels, params []interface{},
 	lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
 		lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
 
-		lzVal, lzBufPre = base.UnknownPassthroughMathUn(lzVal, lzBufPre, fn)
+		lzVal, lzBufPre = base.MathUnknownPassthroughUnary(lzVal, lzBufPre, fn)
 
 		return lzVal
 	}
