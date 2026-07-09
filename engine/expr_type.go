@@ -24,18 +24,18 @@ import (
 // Also the scalar type-CONVERSION functions TO_BOOLEAN / TO_STRING / TO_NUMBER
 // (see the second half of this file); logic in base.ToBoolean/ToString/ToNumber.
 
-// isTypeFuncs maps each IS <type> check to its base.TypeIs* predicate (a real
+// ExprIsTypeFuncs maps each IS <type> check to its base.TypeIs* predicate (a real
 // func value emitted by name via LzExprFmt), passed to the shared ExprIsType
 // harness. MISSING/NULL pass through.
-var isTypeFuncs = map[string]func(valType int) bool{
+var ExprIsTypeFuncs = map[string]func(valType int) bool{
 	"is_array": base.TypeIsArray, "is_number": base.TypeIsNumber,
 	"is_string": base.TypeIsString, "is_boolean": base.TypeIsBoolean,
 	"is_object": base.TypeIsObject, "is_atom": base.TypeIsAtom,
 }
 
 func init() {
-	for name, match := range isTypeFuncs {
-		ExprCatalog[name] = exprIsTypeOp(match)
+	for name, match := range ExprIsTypeFuncs {
+		ExprCatalog[name] = ExprIsTypeOp(match)
 	}
 
 	// TO_* conversions: only 2 of 3 share a harness, so register directly.
@@ -44,10 +44,10 @@ func init() {
 	ExprCatalog["to_number"] = ExprToNumber
 }
 
-// exprIsTypeOp closes over a type predicate and defers to the shared harness --
+// ExprIsTypeOp closes over a type predicate and defers to the shared harness --
 // plain (non-lz) Go, codegen-transparent (see DESIGN-exprs.md "Codegen
 // ergonomics"): the predicate still reaches the harness's emission site.
-func exprIsTypeOp(match func(valType int) bool) base.ExprCatalogFunc {
+func ExprIsTypeOp(match func(valType int) bool) base.ExprCatalogFunc {
 	return func(lzVars *base.Vars, labels base.Labels, params []interface{}, path string) base.ExprFunc {
 		return ExprIsType(lzVars, labels, params, path, match)
 	}
@@ -111,19 +111,19 @@ func ExprToBoolean(lzVars *base.Vars, labels base.Labels,
 
 func ExprToString(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) base.ExprFunc {
-	return exprToBuf(lzVars, labels, params, path, base.ToString)
+	return ExprToBuf(lzVars, labels, params, path, base.ToString)
 }
 
 func ExprToNumber(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) base.ExprFunc {
-	return exprToBuf(lzVars, labels, params, path, base.ToNumber)
+	return ExprToBuf(lzVars, labels, params, path, base.ToNumber)
 }
 
-// exprToBuf is the shared TO_STRING / TO_NUMBER harness: convert the operand via
+// ExprToBuf is the shared TO_STRING / TO_NUMBER harness: convert the operand via
 // conv (base.ToString/ToNumber, emitted by name) into the reused lzBufPre. conv
 // shares an emitted line with the buffer (the codegen preserves fmt-arg order
 // across a func placeholder and a varLift buffer -- see cmd/intermed_build).
-func exprToBuf(lzVars *base.Vars, labels base.Labels, params []interface{},
+func ExprToBuf(lzVars *base.Vars, labels base.Labels, params []interface{},
 	path string, conv func(v base.Val, bufPre []byte) (base.Val, []byte)) (lzExprFunc base.ExprFunc) {
 	exprA := params[0].([]interface{})
 
