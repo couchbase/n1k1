@@ -47,14 +47,15 @@ func init() {
 		"lpad", "rpad", // LPAD/RPAD, arity-dispatched below (expr_str.go)
 		"power", "atan2", // binary math (expr_math.go)
 		"round", "trunc", // ROUND/TRUNC, arity-dispatched below (expr_math.go)
-		"date_part_millis", // DATE_PART_MILLIS 2-arg (expr_date.go); 3-arg (tz) falls back
-		"date_add_millis",  // DATE_ADD_MILLIS 3-arg (expr_date.go)
+		"date_part_millis",                     // DATE_PART_MILLIS 2-arg (expr_date.go); 3-arg (tz) falls back
+		"date_add_millis",                      // DATE_ADD_MILLIS 3-arg (expr_date.go)
 		"to_boolean", "to_string", "to_number", // type conversions (expr_type.go)
 		"array_length", "array_count", "array_sum", "array_avg", // array readers (expr_array.go)
 		"array_min", "array_max", "array_contains", "array_position", // (expr_array.go)
 		"object_length", "poly_length", // object/collection readers (expr_object.go)
-		"object_names", // OBJECT_NAMES: sorted name array builder (expr_object.go)
-		"and", "or", // three-valued logical (expr_logic.go)
+		"object_names", "object_values", // sorted name/value array builders (expr_object.go)
+		"object_pairs", // OBJECT_PAIRS: 1-arg form; the 2-arg `types` option falls back
+		"and", "or",    // three-valued logical (expr_logic.go)
 		"not",                                           // unary predicate (expr_pred.go)
 		"ifnull", "ifmissing", "ifmissingornull", "nvl", // conditional-unknown (expr_cond.go)
 		"between",             // ternary (expr_between.go)
@@ -432,7 +433,7 @@ func exprTreeOptimizeNative(labels base.Labels, e expression.Expression,
 		"to_boolean", "to_string", "to_number",
 		"array_length", "array_count", "array_sum", "array_avg",
 		"array_min", "array_max",
-		"object_names",
+		"object_names", "object_values", "object_pairs",
 		"not", "is_null", "is_not_null",
 		"is_missing", "is_not_missing", "is_valued", "is_not_valued",
 		"is_array", "is_number", "is_string", "is_boolean", "is_object", "is_atom":

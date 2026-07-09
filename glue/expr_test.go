@@ -791,7 +791,7 @@ func TestObjectNamesDifferentialVsCBQ(t *testing.T) {
 		"reverse":   c(map[string]interface{}{"c": 1, "b": 2, "a": 3}),
 		"mixedlen":  c(map[string]interface{}{"ab": 1, "a": 2, "abc": 3}),
 		"caps":      c(map[string]interface{}{"B": 1, "a": 2, "A": 3, "b": 4}), // uppercase sorts before lowercase (byte order)
-		"digits":    c(map[string]interface{}{"1": 1, "10": 2, "2": 3}),       // lexical, not numeric
+		"digits":    c(map[string]interface{}{"1": 1, "10": 2, "2": 3}),        // lexical, not numeric
 		"nested":    c(map[string]interface{}{"z": map[string]interface{}{"x": 1}, "a": []interface{}{1, 2}}),
 		"unicode":   c(map[string]interface{}{"café": 1, "abc": 2}),
 		"one":       c(map[string]interface{}{"only": 1}),
@@ -834,6 +834,83 @@ func TestObjectNamesZeroAlloc(t *testing.T) {
 	})
 	if n != 0 {
 		t.Errorf("base.ObjectNames: %v allocs/row after warmup; want 0", n)
+	}
+}
+
+// TestObjectValuesPairsDifferentialVsCBQ proves OBJECT_VALUES / OBJECT_PAIRS native
+// lowering is byte-identical to cbq: the by-name-sorted value array (and the
+// {"name","val"} pair array) must match cbq's serialization exactly. This is the
+// real test of the value re-emit fidelity (base.appendJSONElem): each value --
+// string (re-quoted), null, boolean, number, nested array/object -- is copied
+// verbatim, so the operands deliberately mix every kind, plus escaped / unicode /
+// caps keys to exercise both the name sort and (for pairs) name re-encoding.
+func TestObjectValuesPairsDifferentialVsCBQ(t *testing.T) {
+	c := func(v interface{}) expression.Expression { return expression.NewConstant(v) }
+
+	operands := map[string]expression.Expression{
+		"sorted":    c(map[string]interface{}{"a": 1, "b": 2, "c": 3}),
+		"reverse":   c(map[string]interface{}{"c": 1, "b": 2, "a": 3}),
+		"mixedlen":  c(map[string]interface{}{"ab": 1, "a": 2, "abc": 3}),
+		"caps":      c(map[string]interface{}{"B": 1, "a": 2, "A": 3, "b": 4}),
+		"digits":    c(map[string]interface{}{"1": 1, "10": 2, "2": 3}),
+		"nested":    c(map[string]interface{}{"z": map[string]interface{}{"x": 1}, "a": []interface{}{1, 2}}),
+		"unicode":   c(map[string]interface{}{"café": 1, "abc": 2}),
+		"one":       c(map[string]interface{}{"only": 1}),
+		"empty":     c(map[string]interface{}{}),
+		"valuekind": c(map[string]interface{}{"n": nil, "s": "x", "b": true, "num": 3, "f": 2.5}),
+		"stresc":    c(map[string]interface{}{"a": "he\"llo\n", "b": "tab\tend"}),
+		"arr":       c([]interface{}{1, 2}),
+		"str":       c("hello"),
+		"num":       c(5),
+		"boolt":     c(true),
+		"null":      c(value.NULL_VALUE),
+		"missing":   c(value.MISSING_VALUE),
+	}
+
+	ctors := map[string]func(expression.Expression) expression.Expression{
+		"object_values": func(e expression.Expression) expression.Expression { return expression.NewObjectValues(e) },
+		"object_pairs":  func(e expression.Expression) expression.Expression { return expression.NewObjectPairs(e) },
+	}
+
+	for fn, ctor := range ctors {
+		for on, operand := range operands {
+			expr := ctor(operand)
+			want := cbqEval(t, expr)
+			got, ok := nativeEval(t, expr)
+			if !ok {
+				t.Errorf("%s(%s): did not optimize to native", fn, on)
+				continue
+			}
+			if got != want {
+				t.Errorf("%s(%s): native=%q, cbq=%q", fn, on, got, want)
+			}
+		}
+	}
+}
+
+// TestObjectValuesPairsZeroAlloc asserts the per-row native OBJECT_VALUES /
+// OBJECT_PAIRS builds allocate nothing after warmup: the KeyVals pool reuses the
+// key backing, value slices point into the operand, and output goes into the
+// reused bufPre (the GARBAGE MANDATE).
+func TestObjectValuesPairsZeroAlloc(t *testing.T) {
+	cmp := base.NewValComparer()
+	val := base.Val([]byte(`{"gamma":1,"alpha":"x","beta":[1,2],"delta":null}`))
+
+	for _, tc := range []struct {
+		name string
+		fn   func(*base.ValComparer, base.Val, []byte) ([]byte, base.Val, bool)
+	}{
+		{"ObjectValues", base.ObjectValues},
+		{"ObjectPairs", base.ObjectPairs},
+	} {
+		var buf []byte
+		buf, _, _ = tc.fn(cmp, val, buf) // warm up the pool + buffer
+		n := testing.AllocsPerRun(2000, func() {
+			buf, _, _ = tc.fn(cmp, val, buf)
+		})
+		if n != 0 {
+			t.Errorf("base.%s: %v allocs/row after warmup; want 0", tc.name, n)
+		}
 	}
 }
 
@@ -1367,18 +1444,18 @@ func TestDateAddMillisDifferentialVsCBQ(t *testing.T) {
 		expr expression.Expression
 	}{
 		{"neg-millis", expression.NewDateAddMillis(c(-1000), c(1), c("year"))},
-		{"frac-n", expression.NewDateAddMillis(ms, c(1.5), c("year"))},              // non-integral -> NULL
+		{"frac-n", expression.NewDateAddMillis(ms, c(1.5), c("year"))},                     // non-integral -> NULL
 		{"oor-millis", expression.NewDateAddMillis(c(999999999999999.0), c(1), c("year"))}, // > max -> NULL
-		{"overflow", expression.NewDateAddMillis(ms, c(1000000000), c("year"))},     // result overflow -> NULL
-		{"millis-str", expression.NewDateAddMillis(c("x"), c(1), c("year"))},        // NULL
-		{"n-str", expression.NewDateAddMillis(ms, c("x"), c("year"))},               // NULL
-		{"part-num", expression.NewDateAddMillis(ms, c(1), c(5))},                   // NULL
-		{"millis-null", expression.NewDateAddMillis(null, c(1), c("year"))},         // NULL
-		{"n-null", expression.NewDateAddMillis(ms, null, c("year"))},                // NULL
-		{"part-null", expression.NewDateAddMillis(ms, c(1), null)},                  // NULL
-		{"millis-miss", expression.NewDateAddMillis(miss, c(1), c("year"))},         // MISSING
-		{"n-miss", expression.NewDateAddMillis(ms, miss, c("year"))},                // MISSING
-		{"part-miss", expression.NewDateAddMillis(ms, c(1), miss)},                  // MISSING
+		{"overflow", expression.NewDateAddMillis(ms, c(1000000000), c("year"))},            // result overflow -> NULL
+		{"millis-str", expression.NewDateAddMillis(c("x"), c(1), c("year"))},               // NULL
+		{"n-str", expression.NewDateAddMillis(ms, c("x"), c("year"))},                      // NULL
+		{"part-num", expression.NewDateAddMillis(ms, c(1), c(5))},                          // NULL
+		{"millis-null", expression.NewDateAddMillis(null, c(1), c("year"))},                // NULL
+		{"n-null", expression.NewDateAddMillis(ms, null, c("year"))},                       // NULL
+		{"part-null", expression.NewDateAddMillis(ms, c(1), null)},                         // NULL
+		{"millis-miss", expression.NewDateAddMillis(miss, c(1), c("year"))},                // MISSING
+		{"n-miss", expression.NewDateAddMillis(ms, miss, c("year"))},                       // MISSING
+		{"part-miss", expression.NewDateAddMillis(ms, c(1), miss)},                         // MISSING
 	}
 	for _, tc := range edges {
 		want := cbqEval(t, tc.expr)

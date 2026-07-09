@@ -27,9 +27,11 @@ import (
 func init() {
 	ExprCatalog["object_length"] = ExprObjectLength
 	ExprCatalog["poly_length"] = ExprPolyLength
-	// OBJECT_NAMES: builds a sorted JSON string-array of the object's field names
-	// into the reused buffer (a structure-building reader); see base.ObjectNames.
+	// OBJECT_NAMES/OBJECT_VALUES/OBJECT_PAIRS: name-sorted structure builders over
+	// the operand object, each emitting into the reused buffer (see base.Object*).
 	ExprCatalog["object_names"] = ExprObjectNames
+	ExprCatalog["object_values"] = ExprObjectValues
+	ExprCatalog["object_pairs"] = ExprObjectPairs
 }
 
 func ExprObjectLength(lzVars *base.Vars, labels base.Labels,
@@ -89,6 +91,69 @@ func ExprObjectNames(lzVars *base.Vars, labels base.Labels,
 		lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
 
 		lzOut, lzSentinel, lzOk := base.ObjectNames(lzVars.Ctx.ValComparer, lzVal, lzBufPre)
+		if !lzOk {
+			lzVal = lzSentinel
+		} else {
+			lzBufPre = lzOut
+			lzVal = base.Val(lzOut)
+		}
+
+		return lzVal
+	}
+
+	return lzExprFunc
+}
+
+// ExprObjectValues is OBJECT_VALUES(obj): unary, builds the JSON array of the
+// operand object's values ordered by field name into the reused buffer (or a
+// MISSING/NULL sentinel for a MISSING / non-object operand) -- no boxing. Sibling
+// of ExprObjectNames; see base.ObjectValues.
+func ExprObjectValues(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
+	exprA := params[0].([]interface{})
+
+	var lzBufPre []byte // <== varLift: lzBufPre by path
+
+	lzExprFunc =
+		MakeExprFunc(lzVars, labels, exprA, path, "A") // !lz
+	lzA := lzExprFunc
+
+	lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
+		lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
+
+		lzOut, lzSentinel, lzOk := base.ObjectValues(lzVars.Ctx.ValComparer, lzVal, lzBufPre)
+		if !lzOk {
+			lzVal = lzSentinel
+		} else {
+			lzBufPre = lzOut
+			lzVal = base.Val(lzOut)
+		}
+
+		return lzVal
+	}
+
+	return lzExprFunc
+}
+
+// ExprObjectPairs is OBJECT_PAIRS(obj): unary, builds the JSON array of
+// {"name":k,"val":v} objects ordered by field name into the reused buffer (or a
+// MISSING/NULL sentinel for a MISSING / non-object operand) -- no boxing. Sibling
+// of ExprObjectNames; see base.ObjectPairs. (The 2-arg `types` option form stays
+// boxed -- the optimizer only lowers the 1-arg form.)
+func ExprObjectPairs(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
+	exprA := params[0].([]interface{})
+
+	var lzBufPre []byte // <== varLift: lzBufPre by path
+
+	lzExprFunc =
+		MakeExprFunc(lzVars, labels, exprA, path, "A") // !lz
+	lzA := lzExprFunc
+
+	lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
+		lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
+
+		lzOut, lzSentinel, lzOk := base.ObjectPairs(lzVars.Ctx.ValComparer, lzVal, lzBufPre)
 		if !lzOk {
 			lzVal = lzSentinel
 		} else {

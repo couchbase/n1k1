@@ -6089,6 +6089,39 @@ var TestCasesSimple = []TestCaseSimple{
 	naryProjectCase("object_names-null", []interface{}{"object_names",
 		[]interface{}{"json", `null`}}, `null`),
 
+	// OBJECT_VALUES: the value array ordered by field name ascending (byte order),
+	// each value re-emitted verbatim (strings re-quoted, null/nested copied raw).
+	naryProjectCase("object_values", []interface{}{"object_values",
+		[]interface{}{"json", `{"c":1,"a":2,"b":3}`}}, `[2,3,1]`),
+	naryProjectCase("object_values-caps", []interface{}{"object_values",
+		[]interface{}{"json", `{"b":1,"A":2,"a":3}`}}, `[2,3,1]`),
+	naryProjectCase("object_values-mixed", []interface{}{"object_values",
+		[]interface{}{"json", `{"z":"hi","a":null,"m":[1,2],"k":{"x":1}}`}},
+		`[null,{"x":1},[1,2],"hi"]`),
+	naryProjectCase("object_values-empty", []interface{}{"object_values",
+		[]interface{}{"json", `{}`}}, `[]`),
+	naryProjectCase("object_values-one", []interface{}{"object_values",
+		[]interface{}{"json", `{"only":7}`}}, `[7]`),
+	naryProjectCase("object_values-nonobj", []interface{}{"object_values",
+		[]interface{}{"json", `5`}}, `null`),
+	naryProjectCase("object_values-null", []interface{}{"object_values",
+		[]interface{}{"json", `null`}}, `null`),
+
+	// OBJECT_PAIRS: the {"name","val"} array ordered by name ascending; "name" is
+	// re-encoded and "val" re-emitted verbatim, keys emitted name-before-val.
+	naryProjectCase("object_pairs", []interface{}{"object_pairs",
+		[]interface{}{"json", `{"c":1,"a":2,"b":3}`}},
+		`[{"name":"a","val":2},{"name":"b","val":3},{"name":"c","val":1}]`),
+	naryProjectCase("object_pairs-mixed", []interface{}{"object_pairs",
+		[]interface{}{"json", `{"s":"hi","a":null}`}},
+		`[{"name":"a","val":null},{"name":"s","val":"hi"}]`),
+	naryProjectCase("object_pairs-empty", []interface{}{"object_pairs",
+		[]interface{}{"json", `{}`}}, `[]`),
+	naryProjectCase("object_pairs-nonobj", []interface{}{"object_pairs",
+		[]interface{}{"json", `5`}}, `null`),
+	naryProjectCase("object_pairs-null", []interface{}{"object_pairs",
+		[]interface{}{"json", `null`}}, `null`),
+
 	// is-type predicates in the COMPILED path -- exercises func-value params
 	// emitted by name (base.TypeIs*) via LzExprFmt (previously un-compilable).
 	naryProjectCase("is_number-yes", []interface{}{"is_number", []interface{}{"json", `5`}}, `true`),

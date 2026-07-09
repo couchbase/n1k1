@@ -153,3 +153,124 @@ func ObjectNames(c *ValComparer, v Val, bufPre []byte) (out []byte, sentinel Val
 
 	return out, nil, true
 }
+
+// appendJSONElem appends one jsonparser-yielded value (val, its dataType dt) to
+// out as valid JSON. jsonparser strips a string's surrounding quotes but leaves
+// its escapes intact, so a string is re-quoted (the escaped content is copied
+// verbatim -- no re-escape); every other type (number/boolean/null/array/object)
+// is already valid JSON and is copied as-is. Mirrors the re-quote branch in
+// ArrayMinMax (array.go); shared by the OBJECT_VALUES / OBJECT_PAIRS builders.
+func appendJSONElem(out, val []byte, dt jsonparser.ValueType) []byte {
+	if dt == jsonparser.String {
+		out = append(out, '"')
+		out = append(out, val...)
+		return append(out, '"')
+	}
+	return append(out, val...)
+}
+
+// objectSortedKVs parses an object Val, collects each (name, value, type) into the
+// ValComparer's pooled KeyVals, and insertion-sorts them ascending by name (byte
+// order) -- the shared front half of OBJECT_VALUES / OBJECT_PAIRS. It returns the
+// sorted kvs (still owned by the pool: the caller MUST KeyValsRelease it) plus the
+// MISSING/NULL sentinel + ok=false for a MISSING / non-object / malformed operand.
+// Names are copied into the pool's reused key backing (ReuseNextKey, no per-row
+// key alloc after warmup); value slices point into v and stay valid for the
+// caller's single-pass emit before it returns.
+func objectSortedKVs(c *ValComparer, v Val) (kvs KeyVals, sentinel Val, ok bool) {
+	if len(v) == 0 {
+		return nil, ValMissing, false
+	}
+
+	inner, pt := Parse(v)
+	if ParseTypeToValType[pt] != ValTypeObject {
+		return nil, ValNull, false
+	}
+
+	kvs = c.KeyValsAcquire(0)
+
+	iterErr := jsonparser.ObjectEach(inner,
+		func(k []byte, val []byte, dt jsonparser.ValueType, _ int) error {
+			kCopy := append(ReuseNextKey(kvs), k...)
+			kvs = append(kvs, KeyVal{Key: kCopy, Val: val, ValType: int(dt)})
+			return nil
+		})
+	if iterErr != nil {
+		c.KeyValsRelease(0, kvs)
+		return nil, ValNull, false
+	}
+
+	// Insertion sort ascending by name (byte order), matching cbq's `a < b` name
+	// sort (nameList/mapList Less). Object field counts are small, so this is both
+	// allocation-free (no sort.Interface boxing) and fast -- see ObjectNames.
+	for i := 1; i < len(kvs); i++ {
+		kv := kvs[i]
+		j := i - 1
+		for j >= 0 && bytes.Compare(kvs[j].Key, kv.Key) > 0 {
+			kvs[j+1] = kvs[j]
+			j--
+		}
+		kvs[j+1] = kv
+	}
+
+	return kvs, nil, true
+}
+
+// ObjectValues builds OBJECT_VALUES(obj) -- a JSON array of the object's values,
+// ordered by their field name ascending (so the result is deterministic) -- into
+// the reused buffer bufPre. Mirrors cbq's ObjectValues.Evaluate: MISSING ->
+// MISSING, a non-object -> NULL (the sentinel with ok=false), else the by-name
+// sorted values. Each value is re-emitted verbatim (appendJSONElem); only the
+// names drive the sort, so no value re-serialization happens.
+func ObjectValues(c *ValComparer, v Val, bufPre []byte) (out []byte, sentinel Val, ok bool) {
+	kvs, sentinel, ok := objectSortedKVs(c, v)
+	if !ok {
+		return nil, sentinel, false
+	}
+
+	out = append(bufPre[:0], '[')
+	for i := 0; i < len(kvs); i++ {
+		if i > 0 {
+			out = append(out, ',')
+		}
+		out = appendJSONElem(out, kvs[i].Val, jsonparser.ValueType(kvs[i].ValType))
+	}
+	out = append(out, ']')
+
+	c.KeyValsRelease(0, kvs)
+
+	return out, nil, true
+}
+
+// ObjectPairs builds OBJECT_PAIRS(obj) -- a JSON array of {"name":<k>,"val":<v>}
+// objects, one per field, ordered by name ascending -- into the reused buffer
+// bufPre. Mirrors cbq's ObjectPairs.Evaluate (1-arg form): MISSING -> MISSING, a
+// non-object -> NULL, else the by-name sorted pairs. The "name" key is re-encoded
+// via EncodeAsString (the name arrives decoded from ObjectEach, exactly as in
+// ObjectNames); the "val" is re-emitted verbatim (appendJSONElem). The object keys
+// are emitted "name" then "val" -- already the sorted order cbq serializes.
+func ObjectPairs(c *ValComparer, v Val, bufPre []byte) (out []byte, sentinel Val, ok bool) {
+	kvs, sentinel, ok := objectSortedKVs(c, v)
+	if !ok {
+		return nil, sentinel, false
+	}
+
+	c.PrepareEncoder()
+
+	out = append(bufPre[:0], '[')
+	for i := 0; i < len(kvs); i++ {
+		if i > 0 {
+			out = append(out, ',')
+		}
+		out = append(out, `{"name":`...)
+		out, _ = c.EncodeAsString(kvs[i].Key, out)
+		out = append(out, `,"val":`...)
+		out = appendJSONElem(out, kvs[i].Val, jsonparser.ValueType(kvs[i].ValType))
+		out = append(out, '}')
+	}
+	out = append(out, ']')
+
+	c.KeyValsRelease(0, kvs)
+
+	return out, nil, true
+}
