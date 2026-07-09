@@ -28,15 +28,15 @@ func init() {
 
 func ExprIsDistinctFrom(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) base.ExprFunc {
-	return exprDistinct(lzVars, labels, params, path, base.ValDistinctFrom)
+	return ExprDistinct(lzVars, labels, params, path, base.ValDistinctFrom)
 }
 
 func ExprIsNotDistinctFrom(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) base.ExprFunc {
-	return exprDistinct(lzVars, labels, params, path, base.ValNotDistinctFrom)
+	return ExprDistinct(lzVars, labels, params, path, base.ValNotDistinctFrom)
 }
 
-func exprDistinct(lzVars *base.Vars, labels base.Labels, params []interface{},
+func ExprDistinct(lzVars *base.Vars, labels base.Labels, params []interface{},
 	path string, cmp func(vc *base.ValComparer, a, b base.Val) base.Val) (lzExprFunc base.ExprFunc) {
 	biExprFunc := func(lzA, lzB base.ExprFunc, lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) { // !lz
 		if LzScope {

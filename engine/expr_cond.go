@@ -21,24 +21,24 @@ import (
 // (zero-copy). Mirrors cbq expression/func_cond_unknown.go. N-ary (any operand
 // count) via the eager-Vals harness (see ExprCondUnknown).
 
-// condFuncs maps each conditional-unknown selector to its base.CondIf* mode
+// ExprCondFuncs maps each conditional-unknown selector to its base.CondIf* mode
 // (passed to base.NaryFirstKeptVals). NVL(a, b) returns b when a is NULL *or* MISSING
 // (cbq NVL.Evaluate: `first.Type() > NULL ? first : second`), i.e. it's 2-arg
 // IFMISSINGORNULL -- not IFNULL, which keeps a MISSING first operand.
-var condFuncs = map[string]int{
+var ExprCondFuncs = map[string]int{
 	"ifnull": base.CondIfNull, "ifmissing": base.CondIfMissing,
 	"ifmissingornull": base.CondIfMissingOrNull, "nvl": base.CondIfMissingOrNull,
 }
 
 func init() {
-	for name, mode := range condFuncs {
-		ExprCatalog[name] = exprCondOp(mode)
+	for name, mode := range ExprCondFuncs {
+		ExprCatalog[name] = ExprCondOp(mode)
 	}
 }
 
-// exprCondOp closes over a conditional-unknown mode and dispatches to
+// ExprCondOp closes over a conditional-unknown mode and dispatches to
 // ExprCondUnknown. Plain (non-lz) Go.
-func exprCondOp(mode int) base.ExprCatalogFunc {
+func ExprCondOp(mode int) base.ExprCatalogFunc {
 	return func(lzVars *base.Vars, labels base.Labels, params []interface{}, path string) base.ExprFunc {
 		return ExprCondUnknown(lzVars, labels, params, path, mode)
 	}
