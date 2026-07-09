@@ -45,7 +45,7 @@ func ToString(v Val, bufPre []byte) (Val, []byte) {
 	if len(v) == 0 {
 		return ValMissing, bufPre
 	}
-	switch ParseTypeToValType[parseType(v)] {
+	switch ParseTypeToValType[ValParseType(v)] {
 	case ValTypeNull:
 		return ValNull, bufPre
 	case ValTypeString:
@@ -108,8 +108,8 @@ func ToNumber(v Val, bufPre []byte) (Val, []byte) {
 	}
 }
 
-// parseType returns just the jsonparser type of v (companion to Parse).
-func parseType(v Val) int {
+// ValParseType returns just the jsonparser type of v (companion to Parse).
+func ValParseType(v Val) int {
 	_, pt := Parse(v)
 	return pt
 }
