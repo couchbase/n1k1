@@ -56,6 +56,125 @@ func newLogsBundle(t *testing.T) string {
 	return root
 }
 
+// TestDetectList: the metadata-only inventory shows one row per recipe with its
+// tag / source / severity / versions and fixture?/golden? flags -- WITHOUT opening a
+// bundle (c.dir is empty) and without compiling.
+func TestDetectList(t *testing.T) {
+	corpus := writeCorpus(t, map[string]string{
+		"a_full": `-- ticket: ET-1
+-- source: logs
+-- severity: high
+-- versions: ["7.2","7.6"]
+SELECT * FROM logs l WHERE l.sev = "ERROR"
+-- @fixture
+{"sev":"ERROR","msg":"boom"}
+-- @expect
+{"tag":"ET-1","evidence":{"sev":"ERROR","msg":"boom"}}`,
+		"b_bare": `SELECT * FROM logs`,
+	})
+
+	var out, errb bytes.Buffer
+	c := &cli{prog: "n1k1", mode: "jsonlines", out: &out, stderr: &errb} // no c.dir: no bundle opened
+	c.cmdDetect("list --corpus " + corpus)
+
+	stdout := out.String()
+	// The rich recipe: tag/source/severity/versions + both flags "yes".
+	for _, want := range []string{
+		`"tag":"ET-1"`, `"source":"logs"`, `"severity":"high"`, `"versions":"7.2,7.6"`,
+		`"fixture?":"yes"`, `"golden?":"yes"`,
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("list inventory missing %s; stdout:\n%s", want, stdout)
+		}
+	}
+	// The bare recipe: tag is the filename stem, no source, both flags "no".
+	if !strings.Contains(stdout, `"tag":"b_bare"`) || !strings.Contains(stdout, `"fixture?":"no"`) {
+		t.Errorf("bare recipe row wrong; stdout:\n%s", stdout)
+	}
+	if !strings.Contains(errb.String(), "2 detector(s)") {
+		t.Errorf("inventory summary count wrong; stderr:\n%s", errb.String())
+	}
+	if c.failed {
+		t.Errorf("list must not fail (no bundle needed); stderr:\n%s", errb.String())
+	}
+}
+
+// TestDetectHelp: the embedded guide prints the key sections to stdout -- the recipe
+// format markers, an example score line, and the authoring tips.
+func TestDetectHelp(t *testing.T) {
+	var out, errb bytes.Buffer
+	c := &cli{prog: "n1k1", mode: "jsonlines", out: &out, stderr: &errb}
+	c.cmdDetect("help")
+
+	help := out.String()
+	for _, want := range []string{
+		"-- @fixture", "-- @expect", // the golden-fixture format
+		"ANNOTATED RECIPE", "CORPUS LAYOUT", // the doc structure
+		"score:", "% fused", // an example score line shape
+		"TIPS", "regexp_contains", // the tips (native-over-boxed nudge)
+		"--bind", "--update", // the flag one-liners
+	} {
+		if !strings.Contains(help, want) {
+			t.Errorf(".detect help missing %q; stdout:\n%s", want, help)
+		}
+	}
+}
+
+// TestDetectFixSnippets: every author-facing status carries its fix snippet. A boxed
+// detector, an always-wake detector, and a rejected one surface their snippets in the
+// lint advice column and (rejected) in the run health block; a fixture with no @expect
+// surfaces the "capture the golden" snippet in test output.
+func TestDetectFixSnippets(t *testing.T) {
+	root := newLogsBundle(t)
+	corpus := writeCorpus(t, map[string]string{
+		"boxed":  `SELECT * FROM logs l WHERE UPPER(l.msg) LIKE "%X%"`, // boxed + always-wake
+		"wake":   `SELECT * FROM logs l WHERE l.ts > 5`,                // fused, always-wake (no literal)
+		"broken": `SELECT * FROM logs l WHERE`,                         // rejected
+	})
+
+	// lint: the advice column carries the boxed, always-wake, and rejected snippets.
+	var lout, lerr bytes.Buffer
+	c := &cli{prog: "n1k1", dir: root, mode: "jsonlines", out: &lout, stderr: &lerr}
+	c.cmdDetect("lint --corpus " + corpus)
+	lintOut := lout.String()
+	for _, want := range []string{
+		"predicate boxes (falls back to cbq)", // boxed advice
+		"no discriminating literal",           // always-wake advice
+		"not a runnable detector",             // rejected advice
+		"msg LIKE '%X%'", "regexp_contains",   // the boxed native-form example
+	} {
+		if !strings.Contains(lintOut, want) {
+			t.Errorf("lint advice missing fix snippet %q; stdout:\n%s", want, lintOut)
+		}
+	}
+
+	// run: the rejected detector's fix snippet appears in the health block on stderr.
+	var rout, rerr bytes.Buffer
+	c2 := &cli{prog: "n1k1", dir: root, mode: "jsonlines", out: &rout, stderr: &rerr}
+	c2.cmdDetect("run --corpus " + corpus)
+	if !strings.Contains(rerr.String(), "not a runnable detector") {
+		t.Errorf("run health block missing the rejected fix snippet; stderr:\n%s", rerr.String())
+	}
+
+	// test: a fixture with no @expect surfaces the "capture the golden" snippet.
+	tc := writeCorpus(t, map[string]string{
+		"nogold": `-- ticket: G
+-- source: logs
+SELECT * FROM logs l WHERE l.sev = "ERROR"
+-- @fixture
+{"sev":"ERROR","msg":"boom"}`,
+	})
+	var tout, terr bytes.Buffer
+	c3 := &cli{prog: "n1k1", mode: "jsonlines", out: &tout, stderr: &terr}
+	c3.cmdDetect("test --corpus " + tc)
+	if !strings.Contains(terr.String(), "fixture has no expected findings recorded") {
+		t.Errorf("test missing the no-golden fix snippet; stderr:\n%s", terr.String())
+	}
+	if !strings.Contains(terr.String(), ".detect test --update") {
+		t.Errorf("no-golden snippet must point at --update; stderr:\n%s", terr.String())
+	}
+}
+
 // TestDetectRun: a corpus of one fusable filter, one correlated (standalone), and one
 // broken (rejected) detector. The fusable + standalone produce tagged findings; the
 // coverage summary reports 1 fused / 1 standalone / 1 rejected (with the reason); the
@@ -178,7 +297,7 @@ SELECT * FROM logs l WHERE l.sev = "ERROR"
 	if !strings.Contains(stderr, "F: FAIL") || !strings.Contains(stderr, "missing:") {
 		t.Errorf("failing recipe not reported FAIL with a diff; stderr:\n%s", stderr)
 	}
-	if !strings.Contains(stderr, "no golden recorded") {
+	if !strings.Contains(stderr, "no expected findings recorded") {
 		t.Errorf("fixture-without-expect not reported as no-golden FAIL; stderr:\n%s", stderr)
 	}
 	if !c.failed {

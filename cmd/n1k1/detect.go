@@ -61,10 +61,12 @@ import (
 	"github.com/couchbase/n1k1/glue"
 )
 
-// cmdDetect dispatches the .detect command family (run | lint | help).
+// cmdDetect dispatches the .detect command family (list | run | lint | test | help).
 func (c *cli) cmdDetect(arg string) {
 	sub, rest := splitFirst(arg)
 	switch strings.ToLower(sub) {
+	case "list", "ls":
+		c.cmdDetectList(rest)
 	case "run":
 		c.cmdDetectRun(rest)
 	case "lint":
@@ -76,32 +78,6 @@ func (c *cli) cmdDetect(arg string) {
 	default:
 		fmt.Fprintf(c.stderr, "unknown subcommand %q; try .detect help\n", sub)
 	}
-}
-
-func (c *cli) cmdDetectHelp() {
-	fmt.Fprint(c.stderr, `.detect commands (PREPARE++ detector corpus -- DESIGN-prepare.md):
-  .detect run  --corpus <dir> [--bind <manifest>]  run the corpus over the open bundle -> findings
-  .detect lint --corpus <dir> [--bind <manifest>]  authoring report card (compile, don't run)
-  .detect test [--corpus <dir>] [--update]         golden-fixture runner (CI): check each recipe's
-                                                    @fixture against its @expect (or --update records it)
-  .detect help                                      this help
-
-A corpus is a directory of *.sql++ RECIPE files. A recipe is SQL++ plus optional
-`+"`-- key: value`"+` front-matter (ticket -> Tag, source, severity, versions, tags) and an
-optional inline golden fixture (`+"`-- @fixture`"+` JSONL rows + `+"`-- @expect`"+` findings). A plain
-*.sql++ with none of these loads too (Tag = filename stem, body = the statement).
-
---bind <manifest> maps LOGICAL keyspace names (FROM <logical>) to per-bundle globs, so
-one corpus runs against differently-named bundles unchanged. Manifest format (one of):
-  line form:  logical = glob        (one per line; '#' comments and blanks ignored)
-  json  form: {"logical":"glob", ...}
-Globs are bundle-root-relative (bare), or ./ ../ (cwd) or / (absolute), like an inline
-glob. A logical keyspace that resolves to NO files is a hard error (fail-loud) -- never
-a silently "clean" bundle.
-
-Non-interactive (CI / agent):
-  n1k1 <bundle-dir> -c '.detect run --corpus ./detectors --bind ./manifest'
-`)
 }
 
 // detectArgs is the parsed flag set shared by run + lint + test: the corpus dir, an
@@ -240,6 +216,67 @@ func (c *cli) detectSession(bind string) (*glue.Session, glue.Binding, error) {
 	return sess, b, nil
 }
 
+// cmdDetectList implements `.detect list`: a metadata-only inventory of the corpus --
+// one row per recipe (tag / source / severity / versions / fixture? / golden? / path),
+// rendered in the current output mode (box at a TTY, jsonlines when piped). It is the
+// fast "what's in my corpus" landing page: it only reads recipe front-matter (pure
+// glue.LoadCorpus), so it needs NO open bundle and does NOT compile -- distinct from
+// `lint`, which compiles for a health report card.
+func (c *cli) cmdDetectList(arg string) {
+	args, err := parseDetectArgs(arg)
+	if err != nil {
+		fmt.Fprintf(c.stderr, "%s: .detect list: %v\n", c.prog, err)
+		c.failed = true
+		return
+	}
+	recipes, err := loadRecipes(args.corpus)
+	if err != nil {
+		fmt.Fprintf(c.stderr, "%s: .detect list: %v\n", c.prog, err)
+		c.failed = true
+		return
+	}
+	// LoadCorpus returns recipes sorted by path (deterministic); sort by tag with path
+	// as the tiebreak so the inventory reads in tag order regardless of file naming.
+	sort.SliceStable(recipes, func(i, j int) bool {
+		if recipes[i].Tag != recipes[j].Tag {
+			return recipes[i].Tag < recipes[j].Tag
+		}
+		return recipes[i].Path < recipes[j].Path
+	})
+
+	rows := make([]json.RawMessage, 0, len(recipes))
+	fixtures, goldens := 0, 0
+	for i := range recipes {
+		r := recipes[i]
+		if r.HasFixture {
+			fixtures++
+		}
+		if r.HasExpect {
+			goldens++
+		}
+		rows = append(rows, orderedJSONRow(
+			[2]interface{}{"tag", r.Tag},
+			[2]interface{}{"source", orEmptyDash(r.Source)},
+			[2]interface{}{"severity", orEmptyDash(r.Severity)},
+			[2]interface{}{"versions", orEmptyDash(strings.Join(r.Versions, ","))},
+			[2]interface{}{"fixture?", yesNo(r.HasFixture)},
+			[2]interface{}{"golden?", yesNo(r.HasExpect)},
+			[2]interface{}{"path", r.Path},
+		))
+	}
+	c.renderRows(rows, "", false)
+	fmt.Fprintf(c.stderr, "%s%d detector(s) in %s -- %d with a fixture, %d with a golden (run .detect lint for a health report)\n",
+		c.icon("📋 "), len(recipes), args.corpus, fixtures, goldens)
+}
+
+// yesNo renders a boolean flag column as "yes"/"no" (kept short so the box stays tight).
+func yesNo(b bool) string {
+	if b {
+		return "yes"
+	}
+	return "no"
+}
+
 // cmdDetectRun implements `.detect run`: compile the corpus over the open bundle,
 // print a fail-loud coverage/health summary to stderr, then render the tagged
 // findings to stdout in the current output mode.
@@ -327,6 +364,7 @@ func (c *cli) reportBindingCoverage(sess *glue.Session, binding glue.Binding) bo
 		if _, err := ns.KeyspaceByName(n); err != nil {
 			fmt.Fprintf(c.stderr, "  %s %s = %q -> %s\n", c.icon("✗"), n, binding[n],
 				c.style.Red("UNRESOLVED: "+tidyMsg(err.Error())))
+			fmt.Fprintf(c.stderr, "      %s\n", detectFix(fixUnresolved, n))
 			gap = true
 		} else {
 			fmt.Fprintf(c.stderr, "  %s %s = %q -> resolved\n", c.icon("✓"), n, binding[n])
@@ -342,8 +380,16 @@ func (c *cli) reportCorpusHealth(cc *glue.CompiledCorpus, total int) {
 	fused := total - len(cc.Standalone) - len(cc.Rejected)
 	fmt.Fprintf(c.stderr, "%scorpus: %d detector(s) -- %d fused, %d standalone, %d rejected\n",
 		c.icon("📋 "), total, fused, len(cc.Standalone), len(cc.Rejected))
+	// A rejected detector never runs, so it can never fire: surface it with the reason
+	// AND the fix snippet (what a runnable detector looks like), never silently drop it.
 	for _, r := range cc.Rejected {
 		fmt.Fprintf(c.stderr, "  %s %s: %s\n", c.icon("✗"), r.Tag, c.style.Yellow(r.Reason))
+		fmt.Fprintf(c.stderr, "      %s\n", detectFix(fixRejected, r.Reason))
+	}
+	// A standalone detector still runs (its own scan), just not fused into the shared
+	// scan -- name each so the author knows it opted out of fusion, with the why/how.
+	for _, d := range cc.Standalone {
+		fmt.Fprintf(c.stderr, "  %s %s: %s\n", c.icon("• "), d.Tag, detectFix(fixStandalone, ""))
 	}
 }
 
@@ -397,7 +443,7 @@ func (c *cli) cmdDetectLint(arg string) {
 			[2]interface{}{"lane", orEmptyDash(d.Lane)},
 			[2]interface{}{"index", index},
 			[2]interface{}{"reason", orEmptyDash(d.Reason)},
-			[2]interface{}{"advice", strings.Join(d.Advice, "; ")},
+			[2]interface{}{"advice", orEmptyDash(lintAdvice(d))},
 		))
 	}
 	c.renderRows(rows, "", false)
@@ -491,8 +537,8 @@ func (c *cli) cmdDetectTest(arg string) {
 
 		if !r.HasExpect {
 			failed++
-			fmt.Fprintf(c.stderr, "  %s %s: %s -- no golden recorded (run: .detect test --update)\n",
-				c.icon("✗ "), r.Tag, c.style.Red("FAIL"))
+			fmt.Fprintf(c.stderr, "  %s %s: %s -- %s\n",
+				c.icon("✗ "), r.Tag, c.style.Red("FAIL"), detectFix(fixNoGolden, ""))
 			continue
 		}
 
@@ -512,6 +558,7 @@ func (c *cli) cmdDetectTest(arg string) {
 		for _, f := range unexpected {
 			fmt.Fprintf(c.stderr, "      %s unexpected: %s\n", c.style.Cyan("+"), findingLine(f))
 		}
+		fmt.Fprintf(c.stderr, "      %s\n", detectFix(fixFixtureFail, ""))
 	}
 
 	// Summary + CI signal. --update mode never "fails" a diff (it is recording), but a

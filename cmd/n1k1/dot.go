@@ -273,7 +273,7 @@ func (c *cli) printHelp() {
 		".verbose " + c.helpOpts(vcur, "off", "on", "debug", "n") + "  diagnostics level (n>1 provides more info; no arg shows current)",
 		".maxrows <n>          box: cap rows shown (0 = all; negative = last |n| rows)",
 		".maxwidth <n|auto>    box: cap column width (0 = uncapped; auto = fit terminal)",
-		".detect [run|lint] --corpus <dir> [--bind <manifest>]  run/lint a PREPARE++ detector corpus",
+		".detect [list|run|lint|test|help] --corpus <dir>  PREPARE++ detector corpus (.detect help for details)",
 		".extensions [list | load <dir>... | unload <name>...]  extensions (*.js = JavaScript)",
 		".read <file>          run statements/dot-commands from a file",
 		".bail " + c.helpOpts(onOff(c.bail), "on", "off") + "        stop on the first statement error (handy for scripts)",
