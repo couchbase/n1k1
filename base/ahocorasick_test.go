@@ -19,7 +19,7 @@ import (
 
 // matchedSorted returns the sorted set of pattern ids present in b -- the order-
 // independent ground truth for these tests.
-func matchedSorted(ac *AhoCorasick, ms *MatchSet, b string) []int {
+func matchedSorted(ac *AhoCorasick, ms *AhoCorasickMatches, b string) []int {
 	ids := append([]int(nil), ac.Match([]byte(b), ms)...)
 	sort.Ints(ids)
 	return ids

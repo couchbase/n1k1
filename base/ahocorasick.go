@@ -51,20 +51,20 @@ type AhoCorasick struct {
 	emptyIDs []int
 }
 
-// MatchSet is a reusable, zero-garbage accumulator of matched pattern ids. Build
+// AhoCorasickMatches is a reusable, zero-garbage accumulator of matched pattern ids. Build
 // one with AhoCorasick.NewMatchSet and Reset it before each logical scan.
-type MatchSet struct {
+type AhoCorasickMatches struct {
 	seen []bool // seen[id] == true once id has been added this scan
 	ids  []int  // the ids added this scan, in first-seen order
 }
 
 // NewMatchSet returns a MatchSet sized for this automaton's patterns.
-func (ac *AhoCorasick) NewMatchSet() *MatchSet {
-	return &MatchSet{seen: make([]bool, ac.numPatterns)}
+func (ac *AhoCorasick) NewMatchSet() *AhoCorasickMatches {
+	return &AhoCorasickMatches{seen: make([]bool, ac.numPatterns)}
 }
 
 // Reset clears the set for a fresh scan without freeing its backing arrays.
-func (ms *MatchSet) Reset() {
+func (ms *AhoCorasickMatches) Reset() {
 	for _, id := range ms.ids {
 		ms.seen[id] = false
 	}
@@ -73,10 +73,10 @@ func (ms *MatchSet) Reset() {
 
 // IDs returns the matched pattern ids accumulated since the last Reset. The
 // slice aliases the set's reused backing array -- do not retain it across scans.
-func (ms *MatchSet) IDs() []int { return ms.ids }
+func (ms *AhoCorasickMatches) IDs() []int { return ms.ids }
 
 // add records id as present (idempotent within a scan).
-func (ms *MatchSet) add(id int) {
+func (ms *AhoCorasickMatches) add(id int) {
 	if id >= 0 && id < len(ms.seen) && !ms.seen[id] {
 		ms.seen[id] = true
 		ms.ids = append(ms.ids, id)
@@ -167,7 +167,7 @@ func BuildAhoCorasick(patterns []string) *AhoCorasick {
 //
 // Call ms.Reset() once before the first Advance of a scan; on that first call
 // pass state 0 so empty-pattern ids are emitted exactly once.
-func (ac *AhoCorasick) Advance(state int, b []byte, ms *MatchSet) int {
+func (ac *AhoCorasick) Advance(state int, b []byte, ms *AhoCorasickMatches) int {
 	if state == 0 {
 		for _, id := range ac.emptyIDs {
 			ms.add(id)
@@ -199,7 +199,7 @@ func (ac *AhoCorasick) Advance(state int, b []byte, ms *MatchSet) int {
 
 // Match is the one-shot convenience form: Reset ms, scan a single byte slice,
 // and return ms's matched ids. For a multi-slice input use Reset + Advance.
-func (ac *AhoCorasick) Match(b []byte, ms *MatchSet) []int {
+func (ac *AhoCorasick) Match(b []byte, ms *AhoCorasickMatches) []int {
 	ms.Reset()
 	ac.Advance(0, b, ms)
 	return ms.IDs()
