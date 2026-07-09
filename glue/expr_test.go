@@ -914,6 +914,88 @@ func TestObjectValuesPairsZeroAlloc(t *testing.T) {
 	}
 }
 
+// TestArrayBuildersDifferentialVsCBQ proves ARRAY_APPEND / ARRAY_PREPEND /
+// ARRAY_CONCAT (2-arg forms) native lowering is byte-identical to cbq: the spliced
+// result, MISSING short-circuit (a MISSING operand -> MISSING, precedence over
+// NULL), and non-array -> NULL all match. Operands mix element kinds (string/null/
+// nested), empty arrays, and non-array / MISSING operands.
+func TestArrayBuildersDifferentialVsCBQ(t *testing.T) {
+	c := func(v interface{}) expression.Expression { return expression.NewConstant(v) }
+	arr := func(xs ...interface{}) expression.Expression {
+		if xs == nil {
+			xs = []interface{}{}
+		}
+		return expression.NewConstant(xs)
+	}
+	miss := c(value.MISSING_VALUE)
+	null := c(value.NULL_VALUE)
+
+	// Each case is a (left, right) operand pair fed to all three builders. cbq's
+	// operand ORDER differs per builder (append: arr,val; prepend: val,arr; concat:
+	// arr,arr), but a differential just needs SAME order into cbq and native, so we
+	// pass (left,right) verbatim to each constructor and compare.
+	pairs := map[string][2]expression.Expression{
+		"arr+num":     {arr(1, 2), c(3)},
+		"arr+str":     {arr(1), c("x")},
+		"arr+null":    {arr(1), null},
+		"arr+arr":     {arr(1, 2), arr(3, 4)},
+		"arr+nested":  {arr(1), arr(9, 8)},
+		"empty+num":   {arr(), c(5)},
+		"empty+arr":   {arr(), arr(3)},
+		"arr+empty":   {arr(1), arr()},
+		"empty+empty": {arr(), arr()},
+		"nonarr+num":  {c(5), c(3)},
+		"num+arr":     {c(5), arr(1)},
+		"miss+num":    {miss, c(3)},
+		"arr+miss":    {arr(1), miss},
+		"nonarr+miss": {c(5), miss}, // missing must win over null
+		"null-l+arr":  {null, arr(1)},
+	}
+
+	ctors := map[string]func(a, b expression.Expression) expression.Expression{
+		"array_append":  func(a, b expression.Expression) expression.Expression { return expression.NewArrayAppend(a, b) },
+		"array_prepend": func(a, b expression.Expression) expression.Expression { return expression.NewArrayPrepend(a, b) },
+		"array_concat":  func(a, b expression.Expression) expression.Expression { return expression.NewArrayConcat(a, b) },
+	}
+
+	for fn, ctor := range ctors {
+		for on, pr := range pairs {
+			expr := ctor(pr[0], pr[1])
+			want := cbqEval(t, expr)
+			got, ok := nativeEval(t, expr)
+			if !ok {
+				t.Errorf("%s(%s): did not optimize to native", fn, on)
+				continue
+			}
+			if got != want {
+				t.Errorf("%s(%s): native=%q, cbq=%q", fn, on, got, want)
+			}
+		}
+	}
+}
+
+// TestArrayBuildersZeroAlloc asserts the per-row native array builds allocate
+// nothing after warmup (splice into the reused bufPre; the GARBAGE MANDATE).
+func TestArrayBuildersZeroAlloc(t *testing.T) {
+	arr := base.Val([]byte(`[1,"two",{"a":1},[9]]`))
+	elem := base.Val([]byte(`"x"`))
+
+	for _, tc := range []struct {
+		name string
+		run  func(buf []byte) []byte
+	}{
+		{"ArrayAppend", func(buf []byte) []byte { o, _, _ := base.ArrayAppend(arr, elem, buf); return o }},
+		{"ArrayPrepend", func(buf []byte) []byte { o, _, _ := base.ArrayPrepend(elem, arr, buf); return o }},
+		{"ArrayConcat", func(buf []byte) []byte { o, _, _ := base.ArrayConcat(arr, arr, buf); return o }},
+	} {
+		buf := tc.run(nil) // warm up the buffer
+		n := testing.AllocsPerRun(2000, func() { buf = tc.run(buf) })
+		if n != 0 {
+			t.Errorf("base.%s: %v allocs/row after warmup; want 0", tc.name, n)
+		}
+	}
+}
+
 func TestArrayMinMaxContainsDifferentialVsCBQ(t *testing.T) {
 	c := func(v interface{}) expression.Expression { return expression.NewConstant(v) }
 	arr := func(xs ...interface{}) expression.Expression {

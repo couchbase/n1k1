@@ -37,6 +37,11 @@ func init() {
 	ExprCatalog["array_max"] = ExprArrayMax
 	ExprCatalog["array_contains"] = ExprArrayContains
 	ExprCatalog["array_position"] = ExprArrayPosition
+	// Array structure builders (2-arg forms): splice element bytes into the reused
+	// buffer -- no boxing, no element re-encode. See base.Array{Append,Prepend,Concat}.
+	ExprCatalog["array_append"] = ExprArrayAppend
+	ExprCatalog["array_prepend"] = ExprArrayPrepend
+	ExprCatalog["array_concat"] = ExprArrayConcat
 }
 
 // exprArrayReduceOp closes over an array reader's op-code and defers to the
@@ -152,6 +157,105 @@ func ExprArrayPosition(lzVars *base.Vars, labels base.Labels,
 				lzVal = lzSentinel
 			} else {
 				lzOut := base.AppendNum(lzBufPre[:0], base.IntNum(int64(lzIdx)))
+				lzBufPre = lzOut
+				lzVal = base.Val(lzOut)
+			}
+		}
+
+		return lzVal
+	} // !lz
+
+	lzExprFunc =
+		MakeBiExprFunc(lzVars, labels, params, path, biExprFunc) // !lz
+
+	return lzExprFunc
+}
+
+// ExprArrayAppend is ARRAY_APPEND(arr, val) (2-arg): binary, splices val onto the
+// end of arr into the reused buffer (or a MISSING/NULL sentinel) -- no boxing. See
+// base.ArrayAppend. (cbq's variadic >2-arg form falls back to boxed.)
+func ExprArrayAppend(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
+	var lzBufPre []byte // <== varLift: lzBufPre by path
+
+	biExprFunc := func(lzA, lzB base.ExprFunc, lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) { // !lz
+		if LzScope {
+			lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
+			lzValArr := lzVal
+
+			lzVal = lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B"
+			lzValElem := lzVal
+
+			lzOut, lzSentinel, lzOk := base.ArrayAppend(lzValArr, lzValElem, lzBufPre)
+			if !lzOk {
+				lzVal = lzSentinel
+			} else {
+				lzBufPre = lzOut
+				lzVal = base.Val(lzOut)
+			}
+		}
+
+		return lzVal
+	} // !lz
+
+	lzExprFunc =
+		MakeBiExprFunc(lzVars, labels, params, path, biExprFunc) // !lz
+
+	return lzExprFunc
+}
+
+// ExprArrayPrepend is ARRAY_PREPEND(val, arr) (2-arg): binary, splices val onto the
+// FRONT of arr (val is the FIRST operand, arr the second) into the reused buffer (or
+// a MISSING/NULL sentinel) -- no boxing. See base.ArrayPrepend.
+func ExprArrayPrepend(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
+	var lzBufPre []byte // <== varLift: lzBufPre by path
+
+	biExprFunc := func(lzA, lzB base.ExprFunc, lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) { // !lz
+		if LzScope {
+			lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
+			lzValElem := lzVal
+
+			lzVal = lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B"
+			lzValArr := lzVal
+
+			lzOut, lzSentinel, lzOk := base.ArrayPrepend(lzValElem, lzValArr, lzBufPre)
+			if !lzOk {
+				lzVal = lzSentinel
+			} else {
+				lzBufPre = lzOut
+				lzVal = base.Val(lzOut)
+			}
+		}
+
+		return lzVal
+	} // !lz
+
+	lzExprFunc =
+		MakeBiExprFunc(lzVars, labels, params, path, biExprFunc) // !lz
+
+	return lzExprFunc
+}
+
+// ExprArrayConcat is ARRAY_CONCAT(arr1, arr2) (2-arg): binary, joins the two arrays'
+// elements into the reused buffer (or a MISSING/NULL sentinel) -- no boxing. See
+// base.ArrayConcat.
+func ExprArrayConcat(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
+	var lzBufPre []byte // <== varLift: lzBufPre by path
+
+	biExprFunc := func(lzA, lzB base.ExprFunc, lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) { // !lz
+		if LzScope {
+			lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
+			lzValArr1 := lzVal
+
+			lzVal = lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B"
+			lzValArr2 := lzVal
+
+			lzOut, lzSentinel, lzOk := base.ArrayConcat(lzValArr1, lzValArr2, lzBufPre)
+			if !lzOk {
+				lzVal = lzSentinel
+			} else {
 				lzBufPre = lzOut
 				lzVal = base.Val(lzOut)
 			}

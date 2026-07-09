@@ -6122,6 +6122,40 @@ var TestCasesSimple = []TestCaseSimple{
 	naryProjectCase("object_pairs-null", []interface{}{"object_pairs",
 		[]interface{}{"json", `null`}}, `null`),
 
+	// ARRAY_APPEND / ARRAY_PREPEND / ARRAY_CONCAT (2-arg builders) in the COMPILED
+	// path: elements are spliced verbatim into the reused buffer. A non-array first
+	// (for concat: either) operand -> null; the value operand is any JSON value.
+	naryProjectCase("array_append", []interface{}{"array_append",
+		[]interface{}{"json", `[1,2]`}, []interface{}{"json", `3`}}, `[1,2,3]`),
+	naryProjectCase("array_append-empty", []interface{}{"array_append",
+		[]interface{}{"json", `[]`}, []interface{}{"json", `9`}}, `[9]`),
+	naryProjectCase("array_append-str", []interface{}{"array_append",
+		[]interface{}{"json", `[1]`}, []interface{}{"json", `"x"`}}, `[1,"x"]`),
+	naryProjectCase("array_append-null-elem", []interface{}{"array_append",
+		[]interface{}{"json", `[1]`}, []interface{}{"json", `null`}}, `[1,null]`),
+	naryProjectCase("array_append-nonarr", []interface{}{"array_append",
+		[]interface{}{"json", `5`}, []interface{}{"json", `3`}}, `null`),
+
+	naryProjectCase("array_prepend", []interface{}{"array_prepend",
+		[]interface{}{"json", `0`}, []interface{}{"json", `[1,2]`}}, `[0,1,2]`),
+	naryProjectCase("array_prepend-empty", []interface{}{"array_prepend",
+		[]interface{}{"json", `0`}, []interface{}{"json", `[]`}}, `[0]`),
+	naryProjectCase("array_prepend-str", []interface{}{"array_prepend",
+		[]interface{}{"json", `"x"`}, []interface{}{"json", `[1]`}}, `["x",1]`),
+	naryProjectCase("array_prepend-nonarr", []interface{}{"array_prepend",
+		[]interface{}{"json", `1`}, []interface{}{"json", `5`}}, `null`),
+
+	naryProjectCase("array_concat", []interface{}{"array_concat",
+		[]interface{}{"json", `[1,2]`}, []interface{}{"json", `[3,4]`}}, `[1,2,3,4]`),
+	naryProjectCase("array_concat-lempty", []interface{}{"array_concat",
+		[]interface{}{"json", `[]`}, []interface{}{"json", `[3]`}}, `[3]`),
+	naryProjectCase("array_concat-rempty", []interface{}{"array_concat",
+		[]interface{}{"json", `[1]`}, []interface{}{"json", `[]`}}, `[1]`),
+	naryProjectCase("array_concat-bothempty", []interface{}{"array_concat",
+		[]interface{}{"json", `[]`}, []interface{}{"json", `[]`}}, `[]`),
+	naryProjectCase("array_concat-nonarr", []interface{}{"array_concat",
+		[]interface{}{"json", `[1]`}, []interface{}{"json", `5`}}, `null`),
+
 	// is-type predicates in the COMPILED path -- exercises func-value params
 	// emitted by name (base.TypeIs*) via LzExprFmt (previously un-compilable).
 	naryProjectCase("is_number-yes", []interface{}{"is_number", []interface{}{"json", `5`}}, `true`),

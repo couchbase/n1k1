@@ -12,6 +12,8 @@
 package base
 
 import (
+	"bytes"
+
 	"github.com/buger/jsonparser"
 )
 
@@ -135,6 +137,91 @@ func ArrayContains(vc *ValComparer, arr, x Val) Val {
 		return ValTrue
 	}
 	return ValFalse
+}
+
+// arrayElems returns the element-list bytes of a JSON array (the content between
+// the outer '[' and ']', outer whitespace trimmed) -- e.g. `[1, 2]` -> `1, 2`, and
+// an empty array -> empty. arr must be array bytes (a `[...]` token from Parse; callers guard the
+// type first). The returned slice points into arr (no copy). Note this preserves any
+// INNER element formatting; the builders assume canonical-ish JSON input (the same
+// assumption as ArrayMinMax's element re-emit), so the spliced result matches cbq's
+// canonical serialization for canonical inputs.
+func arrayElems(arr []byte) []byte {
+	return bytes.TrimSpace(arr[1 : len(arr)-1])
+}
+
+// ArrayAppend builds ARRAY_APPEND(arr, val) -- arr with val appended as its last
+// element -- into the reused buffer bufPre. cbq ARRAY_APPEND (2-arg form): MISSING
+// arr OR MISSING val -> MISSING; a non-array arr -> NULL; else arr+[val]. val is a
+// complete Val (already valid JSON, e.g. `"x"` keeps its quotes) and is spliced
+// verbatim -- a NULL val IS appended (only MISSING short-circuits). See the
+// arrayElems canonical-input note.
+func ArrayAppend(arr, val Val, bufPre []byte) (out []byte, sentinel Val, ok bool) {
+	if len(arr) == 0 || len(val) == 0 {
+		return nil, ValMissing, false // MISSING arr or val -> MISSING (precedence over NULL).
+	}
+	pv, pt := Parse(arr)
+	if ParseTypeToValType[pt] != ValTypeArray {
+		return nil, ValNull, false
+	}
+	elems := arrayElems(pv)
+
+	out = append(bufPre[:0], '[')
+	out = append(out, elems...)
+	if len(elems) > 0 {
+		out = append(out, ',')
+	}
+	out = append(out, val...)
+	out = append(out, ']')
+	return out, nil, true
+}
+
+// ArrayPrepend builds ARRAY_PREPEND(val, arr) -- arr with val inserted as its first
+// element -- into bufPre. cbq operand order puts val FIRST and the array LAST. cbq
+// ARRAY_PREPEND (2-arg form): MISSING val OR MISSING arr -> MISSING; a non-array arr
+// -> NULL; else [val]+arr. val is spliced verbatim (a NULL val IS prepended).
+func ArrayPrepend(val, arr Val, bufPre []byte) (out []byte, sentinel Val, ok bool) {
+	if len(val) == 0 || len(arr) == 0 {
+		return nil, ValMissing, false
+	}
+	pv, pt := Parse(arr)
+	if ParseTypeToValType[pt] != ValTypeArray {
+		return nil, ValNull, false
+	}
+	elems := arrayElems(pv)
+
+	out = append(bufPre[:0], '[')
+	out = append(out, val...)
+	if len(elems) > 0 {
+		out = append(out, ',')
+	}
+	out = append(out, elems...)
+	out = append(out, ']')
+	return out, nil, true
+}
+
+// ArrayConcat builds ARRAY_CONCAT(arr1, arr2) -- the two arrays' elements joined --
+// into bufPre. cbq ARRAY_CONCAT (2-arg form): a MISSING operand -> MISSING; a
+// non-array operand -> NULL; else arr1 ++ arr2 (missing takes precedence over null).
+func ArrayConcat(arr1, arr2 Val, bufPre []byte) (out []byte, sentinel Val, ok bool) {
+	if len(arr1) == 0 || len(arr2) == 0 {
+		return nil, ValMissing, false
+	}
+	p1, t1 := Parse(arr1)
+	p2, t2 := Parse(arr2)
+	if ParseTypeToValType[t1] != ValTypeArray || ParseTypeToValType[t2] != ValTypeArray {
+		return nil, ValNull, false
+	}
+	e1, e2 := arrayElems(p1), arrayElems(p2)
+
+	out = append(bufPre[:0], '[')
+	out = append(out, e1...)
+	if len(e1) > 0 && len(e2) > 0 {
+		out = append(out, ',')
+	}
+	out = append(out, e2...)
+	out = append(out, ']')
+	return out, nil, true
 }
 
 // ArrayPositionIndex is the 0-based index of x in arr, or -1 if absent; the
