@@ -70,7 +70,7 @@ type Session struct {
 	prepareds map[string]*preparedStmt
 
 	// CollectStats opts a run into the per-operator counter core: Run lays out a
-	// base.Stats over the op tree (see base.LayoutStats), points Ctx.Stats at it,
+	// base.Stats over the op tree (see base.StatsLayout), points Ctx.Stats at it,
 	// and returns it as Result.Stats. Off by default (zero cost). See
 	// DESIGN-stats.md.
 	CollectStats bool
@@ -402,7 +402,7 @@ func (s *Session) PlanExec(pp *PreparedPlan,
 	// stats checkpoints to it. Off by default, so the hot path pays nothing.
 	var stats *base.Stats
 	if s.CollectStats {
-		stats = base.LayoutStats(pp.topOp)
+		stats = base.StatsLayout(pp.topOp)
 		vars.Ctx.Stats = stats
 		if stats != nil {
 			// Label each running-aggregate group op's partials with (alias, expr) so

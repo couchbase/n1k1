@@ -45,7 +45,7 @@ func scanOp(n int) *base.Op {
 func runOpWithStats(t *testing.T, root *base.Op) (*base.Stats, int) {
 	t.Helper()
 
-	stats := base.LayoutStats(root)
+	stats := base.StatsLayout(root)
 	if stats == nil {
 		t.Fatal("LayoutStats returned nil; expected a counter-contributing op")
 	}
@@ -208,7 +208,7 @@ func TestLayoutStatsTree(t *testing.T) {
 		Children: []*base.Op{scan},
 	}
 
-	stats := base.LayoutStats(filter)
+	stats := base.StatsLayout(filter)
 	if stats == nil {
 		t.Fatal("LayoutStats returned nil")
 	}

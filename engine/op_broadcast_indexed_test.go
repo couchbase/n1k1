@@ -155,7 +155,7 @@ func TestOpBroadcastIndexedSparsity(t *testing.T) {
 
 	indexed := BroadcastIndexed(dataScan(data), dets, findings)
 
-	stats := base.LayoutStats(indexed)
+	stats := base.StatsLayout(indexed)
 	if stats == nil {
 		t.Fatal("LayoutStats returned nil")
 	}

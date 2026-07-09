@@ -235,7 +235,7 @@ func TestOpBroadcastScansOnce(t *testing.T) {
 		Children: []*base.Op{scanOp(n)},
 	}
 
-	stats := base.LayoutStats(broadcast)
+	stats := base.StatsLayout(broadcast)
 	if stats == nil {
 		t.Fatal("LayoutStats returned nil")
 	}

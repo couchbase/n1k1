@@ -155,7 +155,7 @@ type Stats struct {
 	//     report time -- NEVER on the per-row hot path -- so it costs nothing there.
 	// Interpreter-only: registration/refresh are genCompiler:hide, so the compiled
 	// path never touches them (matching the counters' KNOWN LIMITATION).
-	RunningAggs  []RunningAggs
+	RunningAggs   []RunningAggs
 	runningAggsMu sync.Mutex
 }
 
@@ -179,12 +179,12 @@ func (s *Stats) RunningAggsRange(fn func(*RunningAggRow)) {
 	}
 }
 
-// LayoutStats walks the op tree once (pre-order), assigns each op the base
+// StatsLayout walks the op tree once (pre-order), assigns each op the base
 // offset of its counter section (stored in Op.StatsBase), sizes the flat counter
 // array, and builds the attribution index. It runs at request setup, off the hot
 // path. Ops that contribute no counters get a StatsBase of -1. Returns nil if no
 // op in the tree contributes any counter (stats then stay off).
-func LayoutStats(root *Op) *Stats {
+func StatsLayout(root *Op) *Stats {
 	s := &Stats{Index: map[string]int{}}
 
 	runningAggCount := 0 // Number of ops that get a live-aggregate running-aggregate slot.
