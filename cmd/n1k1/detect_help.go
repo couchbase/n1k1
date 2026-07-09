@@ -29,24 +29,30 @@ func (c *cli) cmdDetectHelp() {
 
 // detectHelpText avoids backticks so it can be one clean raw string literal; inline
 // code is shown quoted or as indented blocks.
-const detectHelpText = `.detect -- PREPARE++ detector corpus (DESIGN-prepare.md phases 6-7)
+const detectHelpText = `.detect -- run a corpus of SQL++ detectors over a dataset
 
 A CORPUS is a directory of *.sql++ RECIPE files. Each recipe is a single SQL++ SELECT
 (a "detector") plus optional "-- key: value" front-matter and an optional inline golden
-fixture. Run a corpus over an open support bundle to get tagged findings; lint it for an
+fixture. Run a corpus over an open dataset to get tagged findings; lint it for an
 authoring report card; unit-test each detector against its golden fixture (CI).
 
+The same findings are also available directly in SQL++ as a composable FROM source --
+the RULE_MATCHES() table-valued function -- so they can be sliced with WHERE / GROUP BY /
+ORDER BY / JOIN and PREPARE'd / EXECUTE'd, e.g.:
+  SELECT f.tag, COUNT(*) AS hits FROM RULE_MATCHES('detectors/') AS f GROUP BY f.tag;
+(.detect run streams; RULE_MATCHES() materializes the whole result set as one array.)
+
 COMMANDS
-  .detect list  [--corpus <dir>]                     inventory the corpus (metadata only: no bundle, no compile)
-  .detect run   --corpus <dir> [--bind <manifest>]   compile the corpus over the open bundle -> findings
+  .detect list  [--corpus <dir>]                     inventory the corpus (metadata only: no dataset, no compile)
+  .detect run   --corpus <dir> [--bind <manifest>]   compile the corpus over the open dataset -> findings
   .detect lint  --corpus <dir> [--bind <manifest>]   authoring report card (compiles, does NOT run)
   .detect test  [--corpus <dir>] [--update]          golden-fixture runner (CI): check @fixture vs @expect
   .detect help                                        this guide
 
 FLAGS
   --corpus <dir>     the directory of *.sql++ recipe files (required)
-  --bind <manifest>  map LOGICAL keyspace names (FROM <logical>) to per-bundle globs, so one corpus
-                     runs across differently-named bundles unchanged (run / lint). Manifest is either
+  --bind <manifest>  map LOGICAL keyspace names (FROM <logical>) to per-dataset globs, so one corpus
+                     runs across differently-named datasets unchanged (run / lint). Manifest is either
                      "logical = glob" lines ('#' comments + blanks ignored), or a JSON object
                      {"logical":"glob", ...}. A logical keyspace matching 0 files is a hard error.
   --update           .detect test only: (re-)record each fixture's produced findings as its @expect golden
@@ -82,7 +88,7 @@ EXAMPLE: .detect list --corpus ./detectors   (box at a TTY; jsonlines when piped
   {"tag":"ET-30002","source":"logs","severity":"low","versions":"-","fixture?":"no","golden?":"no","path":".../warn_no_fixture.sql++"}
   3 detector(s) in ./detectors -- 2 with a fixture, 2 with a golden (run .detect lint for a health report)
 
-EXAMPLE: .detect run --corpus ./detectors   (over a bundle with a "logs" keyspace)
+EXAMPLE: .detect run --corpus ./detectors   (over a dataset with a "logs" keyspace)
   corpus: 3 detector(s) -- 2 fused, 0 standalone, 1 rejected
     ET-20001: plan error: Keyspace not found requests
         not a runnable detector: plan error: Keyspace not found requests. A detector is a single SELECT, ...
@@ -113,10 +119,10 @@ TIPS (get the best out of a corpus)
   - Give EVERY detector a golden fixture (-- @fixture / -- @expect) so CI (.detect test) protects it
     against a regression. Capture the first golden with ".detect test --update".
   - Author against LOGICAL keyspaces + a --bind manifest, so ONE corpus runs across differently-named
-    bundles (indexer.log vs projector.log) unchanged.
+    datasets (indexer.log vs projector.log) unchanged.
   - Version-tag detectors ("versions:") -- field-shape changes across releases are handled by evolving
     the corpus, not by writing per-version adapters.
 
 Non-interactive (CI / agent):
-  n1k1 -c '.detect run --corpus ./detectors --bind ./manifest' <bundle-dir>
+  n1k1 -c '.detect run --corpus ./detectors --bind ./manifest' <data-dir>
 `
