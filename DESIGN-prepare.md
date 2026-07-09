@@ -889,14 +889,19 @@ stock `COALESCE(l.level, l.severity)`/`OR` (no adapter — [field-drift decision
 ASOF as the canonical argmax subquery; rate/burst via stock `OVER (…)`; a uniform findings
 projection (`… AS evidence`) once the projection envelope lands.
 
-**Dev/ops / CI.** A `n1k1 detect` subcommand family — `run` (corpus→findings over a bound bundle),
-`lint`/`explain` (the report card), `test` (golden fixtures), `bind` (dry-run the manifest: does
-every logical keyspace resolve against this bundle?). **Golden-fixture CI** over a labelled bundle
-library on every corpus commit (mirroring n1k1's own differential-test discipline) bounds false
-positives. A **corpus lint gate** (every detector parses, targets a known logical keyspace, has a
-fixture, and either fuses+indexes or justifies standalone; CI fails on `rejected`). Plus the
-[SHA-keyed build cache + provenance](#compile-corpus) so findings cite `detector@sha` and only
-changed detectors recompile.
+**Dev/ops / CI.** The `.detect` dot-command family is built: `run` (corpus→findings + coverage),
+`lint` (the report card), `test` (golden fixtures, `--update` to record). Being added for the
+low-cognitive-load surface: **`.detect list`** (a metadata-only inventory — tag/source/severity/
+versions/has-fixture — that needs neither a compile nor a bundle, distinct from `lint`'s compiled
+health report), **`.detect help`** (embedded docs: a sample corpus directory layout, an annotated
+recipe showing the front-matter + fixture, example `run`/`lint`/`test` output, and short "get the
+best out of it" tips), and **fix-carrying messages** — every reject/standalone/always-wake/boxed/
+unresolved-keyspace status ships a mini snippet of the fix (e.g. always-wake → "add a literal:
+`… WHERE msg LIKE '%panic%' AND …`"), so an author or agent doesn't have to reason it out.
+**Golden-fixture CI** runs `.detect test` over the corpus on every commit (`make detect-test`;
+non-zero exit on FAIL) — mirroring n1k1's own differential-test discipline to bound false
+positives. Still ahead: a **corpus lint gate** (fail CI on `rejected` / missing fixture) and the
+[SHA-keyed build cache + provenance](#compile-corpus) so findings cite `detector@sha`.
 
 ## PREPARE++ phasing <a name="detect-phasing"></a>
 
@@ -937,13 +942,19 @@ changed detectors recompile.
    a corpus. *Remaining tail:* SHA-keyed build cache, embed-source analyzer binary, per-detector
    projection envelope (fused evidence is the whole matched row today), and standalone detectors
    not yet sharing scans among themselves.
-7. **Recipe format + golden-fixture CI + agent ops** — *not built.* The AI-authoring flywheel and
-   the tech-support surface: the recipe format (SQL++ + front-matter + golden fixture), golden-
-   fixture CI, and the [authoring/ops affordances](#authoring-ops) — the `detect lint` report card
-   (fuse/native/index/advice), per-detector hit stats, the findings + **re-run delta** + fail-loud
-   coverage reports, and the `n1k1 detect run|lint|test|bind` subcommands. Most of the report-card
-   / hit-stats signals are *surfacing* what `CorpusCompile` / `ExprCoverage` / the index / the
-   stats core already compute — the cheapest, highest-leverage first slice.
+7. **Recipe format + golden-fixture CI + agent ops** — **DONE (MVP)** + polish. The AI-authoring
+   flywheel and tech-support surface. Built: the **`.detect` dot-command** family (`cmd/n1k1/
+   detect.go`) — `run` (corpus → coverage + tagged findings), `lint` (the report card: fuse/native/
+   index/advice + corpus score), `test` (golden fixtures); the **recipe format** (single file:
+   `-- key: value` front-matter + SQL++ + inline `-- @fixture` / `-- @expect`, backward-compatible
+   with a bare `.sql++`; `glue.LoadCorpus`/`Recipe`); **golden-fixture CI** (`.detect test`
+   [`--update` records the golden], non-zero exit on FAIL, `make detect-test`). The report-card
+   signals are *surfaced* from what `CorpusCompile` / `ExprCoverage` / `engine.PrefilterLiteral`
+   already compute. Polish being added: a metadata-only **`.detect list`** inventory (no compile/
+   bundle needed), a **`.detect help`** with a sample layout + annotated recipe + example outputs +
+   tips, and **fix-snippet-carrying error/advice messages**. Remaining tail: per-detector hit
+   stats, the **re-run delta** report, multi-keyspace fixtures, version-selection from the parsed
+   `versions:` metadata, and `.detect bind` dry-run.
 
 Each phase is independently useful, and the **core pipeline is now end-to-end**: logical-keyspace
 binding (phases 1–2 core) → corpus compiler (phase 6 MVP) → the MQO + temporal engine substrate
