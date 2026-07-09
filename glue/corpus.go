@@ -575,28 +575,46 @@ func broadcastCSEIndexed(scan *base.Op, dets []engine.Detector,
 	return op
 }
 
-// Run executes the compiled corpus and returns the UNION of its tagged findings:
-// first each STANDALONE detector via the full s.Run pipeline (so ASOF/window/group
-// lowerings fire and each is individually optimized), then the fused Plan. It mirrors
-// Session.PlanExec's vars / GlueContext / ExecOpEx setup for the fused plan, reading
-// each finding's [tag, evidence] straight from the yielded row slots (no ConvertVals).
-// Findings order (across standalone runs, the union-all, and the interleaved fan-out)
-// is NOT guaranteed (compare as a set). A nil Plan with no standalone detectors yields
-// no findings; standalone-only corpora still produce their findings.
+// Run executes the compiled corpus and returns the UNION of its tagged findings.
+// It is the buffering wrapper over RunStream: collect every streamed finding into
+// a slice. Callers that want bounded memory should use RunStream directly.
 func (cc *CompiledCorpus) Run() ([]Finding, error) {
+	var findings []Finding
+	err := cc.RunStream(func(f Finding) error {
+		findings = append(findings, f)
+		return nil
+	})
+	return findings, err
+}
+
+// RunStream executes the compiled corpus and calls onFinding for EACH tagged
+// finding as it is produced -- so a consumer can stream at bounded memory instead
+// of materializing the whole result set. It runs first each STANDALONE detector via
+// the full s.Run pipeline (so ASOF/window/group lowerings fire and each is
+// individually optimized), then the fused Plan -- mirroring Session.PlanExec's
+// vars / GlueContext / ExecOpEx setup and reading each finding's [tag, evidence]
+// straight from the yielded row slots (no ConvertVals). Finding order (across
+// standalone runs, the union-all, and the interleaved fan-out) is NOT guaranteed.
+// An onFinding error aborts the run and is returned. A nil Plan with no standalone
+// detectors produces nothing; standalone-only corpora still produce their findings.
+//
+// NOTE: standalone detectors run via s.Run, which buffers that ONE detector's rows
+// before they stream out; the FUSED majority streams row-by-row from the shared
+// scan. So peak memory is bounded by the largest single standalone result, not the
+// whole corpus.
+func (cc *CompiledCorpus) RunStream(onFinding func(Finding) error) error {
 	s := cc.session
 
 	// (A) Standalone detectors: run each verbatim through the full normal pipeline and
 	// tag its real SELECT-projection rows as evidence (the evidence asymmetry noted on
 	// Finding). s.Run is self-contained (it does its own datastore + ExecOpEx setup),
 	// so this must happen BEFORE the fused block's global ExecOpEx swap below.
-	findings, err := cc.runStandalone()
-	if err != nil {
-		return nil, err
+	if err := cc.streamStandalone(onFinding); err != nil {
+		return err
 	}
 
 	if cc.Plan == nil {
-		return findings, nil // standalone-only (or empty) corpus.
+		return nil // standalone-only (or empty) corpus.
 	}
 
 	if s.Store != nil && s.Store.Datastore != nil {
@@ -635,7 +653,7 @@ func (cc *CompiledCorpus) Run() ([]Finding, error) {
 	var execErr error
 
 	yieldVals := func(vals base.Vals) {
-		if len(vals) < 2 {
+		if len(vals) < 2 || execErr != nil {
 			return
 		}
 		// Slot 0 = the tag (a JSON-quoted string placed by the broadcast op); slot 1
@@ -644,10 +662,12 @@ func (cc *CompiledCorpus) Run() ([]Finding, error) {
 		if err := json.Unmarshal([]byte(vals[0]), &tag); err != nil {
 			tag = string(vals[0]) // fall back to the raw bytes if not a JSON string.
 		}
-		findings = append(findings, Finding{
+		if e := onFinding(Finding{
 			Tag:      tag,
 			Evidence: append(json.RawMessage(nil), vals[1]...),
-		})
+		}); e != nil {
+			execErr = e
+		}
 	}
 	yieldErr := func(e error) {
 		if e != nil && execErr == nil {
@@ -657,35 +677,30 @@ func (cc *CompiledCorpus) Run() ([]Finding, error) {
 
 	engine.ExecOp(cc.Plan, vars, yieldVals, yieldErr, "", "")
 
-	if execErr != nil {
-		return nil, execErr
-	}
-	return findings, nil
+	return execErr
 }
 
-// runStandalone runs each Standalone detector through the FULL normal pipeline
+// streamStandalone runs each Standalone detector through the FULL normal pipeline
 // (Session.Run -- so its ASOF/window/group/join lowerings all fire and each is
-// individually optimized) and wraps every result row as a Finding tagged with the
+// individually optimized) and calls onFinding for every result row, tagged with the
 // detector's id. Evidence is the detector's REAL SELECT projection (not the fused
 // path's whole-row evidence -- the asymmetry documented on Finding). A run-time error
-// from any standalone detector is returned (it converted at compile time, so a
-// failure here is a genuine execution error worth surfacing).
-func (cc *CompiledCorpus) runStandalone() ([]Finding, error) {
-	if len(cc.Standalone) == 0 {
-		return nil, nil
-	}
-	var findings []Finding
+// from any standalone detector (or from onFinding) is returned. Note s.Run buffers a
+// single detector's rows before they stream out (see RunStream's NOTE).
+func (cc *CompiledCorpus) streamStandalone(onFinding func(Finding) error) error {
 	for _, d := range cc.Standalone {
 		res, err := cc.session.Run(d.Stmt)
 		if err != nil {
-			return nil, fmt.Errorf("standalone detector %q: %w", d.Tag, err)
+			return fmt.Errorf("standalone detector %q: %w", d.Tag, err)
 		}
 		for _, row := range res.Rows {
-			findings = append(findings, Finding{
+			if err := onFinding(Finding{
 				Tag:      d.Tag,
 				Evidence: append(json.RawMessage(nil), row...),
-			})
+			}); err != nil {
+				return err
+			}
 		}
 	}
-	return findings, nil
+	return nil
 }

@@ -500,15 +500,16 @@ func (c *Conv) VisitExpressionScan(o *plan.ExpressionScan) (interface{}, error) 
 		}
 	}
 
-	// A JS streaming table-valued source (FROM gen(...) AS x, where gen is a
-	// *.stream.js): route to the js-stream op, which calls the JS with an emit
+	// A streaming table-valued source (a JS *.stream.js source like FROM gen(...),
+	// or FROM rule_matches(...)): any FROM expression implementing StreamSource is
+	// routed to the generic stream-fn op, which drives its StreamRows with an emit
 	// callback and yields rows as they're produced -- no materialization. Plain
 	// (array-returning) functions and subqueries/CTEs fall through to expr-scan.
-	if sf, ok := expr.(*jsStreamFunc); ok {
+	if _, ok := expr.(StreamSource); ok {
 		return c.TopPush(o, &base.Op{
-			Kind:   "js-stream",
+			Kind:   "stream-fn",
 			Labels: base.Labels{"." + LabelSuffix(o.Alias())},
-			Params: []interface{}{c.AddTemp(sf)},
+			Params: []interface{}{c.AddTemp(expr)},
 		})
 	}
 

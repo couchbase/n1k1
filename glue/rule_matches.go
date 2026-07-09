@@ -14,30 +14,31 @@
 package glue
 
 // rule_matches.go exposes a detector corpus (corpus.go) as a plain, composable
-// SQL++ table-valued source WITHOUT any cbq grammar change: an
-// array-of-objects-returning scalar function used in a FROM expression-term.
+// SQL++ table-valued source WITHOUT any cbq grammar change: a set-returning function
+// used in a FROM expression-term.
 //
 //	SELECT f.tag, COUNT(*) AS hits
 //	FROM RULE_MATCHES('detectors/') AS f
 //	WHERE f.tag LIKE 'ET-%' GROUP BY f.tag ORDER BY hits DESC;
 //
-// cbq already accepts a function call that returns an array as a FROM source
-// (e.g. `FROM split("a,b,c", ",") AS t`): conv.go's VisitExpressionScan routes a
-// plain array-returning function through the MATERIALIZING "expr-scan" op, which
-// evaluates it once and yields one row per array element. So RULE_MATCHES is just
-// a scalar UDF whose Type() is ARRAY and whose Evaluate loads the corpus, runs it,
-// and returns `[{"tag":..,"evidence":..}, ...]`. Because the result is one plain
-// SELECT, RULE_MATCHES composes with WHERE / GROUP BY / ORDER BY / JOIN and is
-// PREPARE-able / EXECUTE-able for free. Each row carries a `tag` naming which
-// detector produced it, so the stream is a sliceable, discriminated union.
+// RULE_MATCHES is a set-returning function (Type() ARRAY) usable as a FROM source.
+// cbq accepts a FROM function-call term (e.g. `FROM split("a,b,c", ",") AS t`), and
+// because ruleMatchesFunc implements StreamSource, conv.go's VisitExpressionScan
+// routes `FROM rule_matches(...)` to the generic STREAMING stream-fn op
+// (op_stream_fn.go): each finding flows straight into the pipeline as the corpus
+// produces it, so memory stays BOUNDED and the source composes with WHERE / GROUP BY
+// / ORDER BY / JOIN and is PREPARE/EXECUTE-able for free. Each row carries a `tag`
+// naming which detector produced it, so the stream is a sliceable, discriminated
+// union. The streaming producer is StreamRows (below); the shared, spillable
+// compile+run machinery is CompiledCorpus.RunStream (corpus.go).
 //
-// MEMORY TRADEOFF: a scalar UDF returns ONE value, so RULE_MATCHES materializes
-// the WHOLE result set into a single array value in memory (vs. the streaming
-// `.detect run` CLI path). Fine for moderate corpora; for a huge result set prefer
-// the streaming path. A scalar UDF cannot stream, by construction.
+// SCALAR-CONTEXT FALLBACK: if rule_matches(...) is (mis)used OUTSIDE a FROM clause
+// -- as a scalar expression -- there is no pipeline to stream into, so Evaluate
+// MATERIALIZES the whole result set into one array value (runRuleMatches). That is
+// the only materializing path; the FROM path never builds the whole array.
 //
 // SESSION AT EVAL TIME (the spike): CorpusCompile is a method on *Session, which
-// needs a *Store (datastore + parser + PlanStatementQP). Evaluate runs during the
+// needs a *Store (datastore + parser + PlanStatementQP). The corpus runs during the
 // outer query's execution, at which point the PROCESS-GLOBAL datastore is the
 // current session's store (Session.Run's datastore.SetDatastore, mirrored by
 // CorpusCompile/Run). So we reconstruct a *Store around datastore.GetDatastore()
@@ -49,18 +50,21 @@ package glue
 // root (recovered from the datastore's file:// URL) with a manifest, so a corpus
 // authored against a logical vocabulary resolves against this data source.
 //
-// RE-ENTRANCY: running the corpus during Evaluate is a nested sub-pipeline, just
-// like GlueContext.EvaluateSubquery (which ExprScanOp already relies on):
-// CorpusCompile.Run uses its OWN MakeVars/tmpDir and save/restores engine.ExecOpEx.
+// RE-ENTRANCY: running the corpus during the outer query is a nested sub-pipeline,
+// just like GlueContext.EvaluateSubquery (which ExprScanOp already relies on):
+// RunStream uses its OWN MakeVars/tmpDir and save/restores engine.ExecOpEx.
 // We additionally save/restore the process-global datastore around the whole call
 // (the base case reconstructs from -- and thus re-sets -- the same datastore; the
 // bind case switches it), so the outer query's state is never left mutated.
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
+
+	"github.com/couchbase/n1k1/base"
 
 	"github.com/couchbase/query/datastore"
 	"github.com/couchbase/query/expression"
@@ -107,8 +111,9 @@ func (this *ruleMatchesFunc) Accept(visitor expression.Visitor) (interface{}, er
 	return visitor.VisitFunction(this)
 }
 
-// Type ARRAY: the array-of-objects return is what makes rule_matches(...) a valid,
-// composable FROM source (VisitExpressionScan -> materializing expr-scan).
+// Type ARRAY marks rule_matches(...) set-returning so cbq accepts it as a FROM
+// expression-term; conv.go routes the FROM to the streaming stream-fn op (via the
+// StreamSource impl below), and Evaluate is only the scalar-context fallback.
 func (this *ruleMatchesFunc) Type() value.Type { return value.ARRAY }
 
 func (this *ruleMatchesFunc) MinArgs() int { return 1 } // corpus dir
@@ -121,18 +126,17 @@ func (this *ruleMatchesFunc) Constructor() expression.FunctionConstructor {
 	}
 }
 
-// Evaluate loads the corpus at arg 0's directory, runs it against the current
-// session/store, and returns the tagged matches as an ARRAY of
-// {"tag":..,"evidence":..} objects (so f.tag / f.evidence are addressable).
-func (this *ruleMatchesFunc) Evaluate(item value.Value, context expression.Context) (value.Value, error) {
+// evalArgs evaluates the corpus-dir (arg 0, required string) and the optional opts
+// object (arg 1). Shared by the streaming StreamRows path and the scalar Evaluate.
+func (this *ruleMatchesFunc) evalArgs(item value.Value, context expression.Context) (string, ruleMatchesOpts, error) {
 	operands := this.Operands()
 
 	dirV, err := operands[0].Evaluate(item, context)
 	if err != nil {
-		return nil, err
+		return "", ruleMatchesOpts{}, err
 	}
 	if dirV.Type() != value.STRING {
-		return nil, fmt.Errorf("RULE_MATCHES: first argument (corpus dir) must be a string, got %s", dirV.Type())
+		return "", ruleMatchesOpts{}, fmt.Errorf("RULE_MATCHES: first argument (corpus dir) must be a string, got %s", dirV.Type())
 	}
 	dir, _ := dirV.Actual().(string)
 
@@ -140,13 +144,78 @@ func (this *ruleMatchesFunc) Evaluate(item value.Value, context expression.Conte
 	if len(operands) >= 2 {
 		optV, err := operands[1].Evaluate(item, context)
 		if err != nil {
-			return nil, err
+			return "", ruleMatchesOpts{}, err
 		}
 		opts = parseRuleMatchesOpts(optV)
 	}
+	return dir, opts, nil
+}
 
+// Evaluate is the SCALAR-context fallback (rule_matches(...) used OUTSIDE a FROM
+// clause): with no pipeline to stream into, it materializes the whole result set as
+// one ARRAY of {tag, evidence} objects. The FROM path never reaches here -- it
+// streams via StreamRows.
+func (this *ruleMatchesFunc) Evaluate(item value.Value, context expression.Context) (value.Value, error) {
+	dir, opts, err := this.evalArgs(item, context)
+	if err != nil {
+		return nil, err
+	}
 	return runRuleMatches(dir, opts)
 }
+
+// StreamRows is ruleMatchesFunc's StreamSource implementation: the STREAMING FROM
+// producer. It loads + compiles the corpus and emits each finding row as the corpus
+// produces it (bounded memory), instead of materializing the whole result set the
+// way the scalar Evaluate fallback does. Each row is a {"tag":..,"evidence":..}
+// object matching the materialized array's element shape, so f.tag / f.evidence
+// navigate identically whichever path ran.
+func (this *ruleMatchesFunc) StreamRows(vars *base.Vars, gc *GlueContext,
+	ctx expression.Context, item value.Value, emit func(base.Val) bool) error {
+	dir, opts, err := this.evalArgs(item, ctx)
+	if err != nil {
+		return err
+	}
+
+	// Save/restore the process-global datastore around the run: the bind path (and
+	// CorpusCompile/RunStream's idempotent SetDatastore) mutate it, so the outer
+	// query's datastore is never left changed when we return.
+	prevDS := datastore.GetDatastore()
+	defer datastore.SetDatastore(prevDS)
+
+	cc, err := ruleMatchesCorpus(dir, opts)
+	if err != nil {
+		return err
+	}
+
+	stopped := false
+	rerr := cc.RunStream(func(f Finding) error {
+		jv, e := json.Marshal(ruleMatchRow{Tag: f.Tag, Evidence: f.Evidence})
+		if e != nil {
+			return fmt.Errorf("RULE_MATCHES: marshaling finding: %w", e)
+		}
+		if !emit(base.Val(jv)) {
+			stopped = true
+			return errStreamStop // the consumer wants no more (e.g. LIMIT satisfied).
+		}
+		return nil
+	})
+	if stopped {
+		return nil // clean early-exit; errStreamStop was ours, not a real failure.
+	}
+	return rerr
+}
+
+// ruleMatchRow is the per-row shape RULE_MATCHES yields: the finding's tag plus its
+// evidence JSON, so `FROM rule_matches(...) AS f` exposes f.tag and f.evidence. It
+// marshals to the same {"tag":..,"evidence":..} object the materialized array uses.
+type ruleMatchRow struct {
+	Tag      string          `json:"tag"`
+	Evidence json.RawMessage `json:"evidence"`
+}
+
+// errStreamStop is the sentinel RunStream's callback returns to abort once the
+// consumer wants no more rows (emit returned false); StreamRows swallows it.
+var errStreamStop = errors.New("rule_matches: consumer requested stop")
 
 // ruleMatchesOpts is the leniently-parsed arg-1 options object. Unknown keys are
 // ignored; today only `bind` (a manifest path -> OpenSessionBound) changes
@@ -187,16 +256,12 @@ func parseRuleMatchesOpts(v value.Value) ruleMatchesOpts {
 	return o
 }
 
-// runRuleMatches loads the corpus at dir, compiles + runs it against the resolved
-// session, and returns its matches as one materialized ARRAY value. It
-// save/restores the process-global datastore around the whole run, since the bind
-// path (and CorpusCompile/Run's idempotent SetDatastore) mutate it -- so the outer
-// query's datastore is never left changed when we return.
-func runRuleMatches(dir string, opts ruleMatchesOpts) (value.Value, error) {
-	prevDS := datastore.GetDatastore()
-	defer datastore.SetDatastore(prevDS)
-
-	sess, err := ruleMatchesSession(opts, prevDS)
+// ruleMatchesCorpus resolves the target session (Option A, or `bind`), loads the
+// corpus at dir, and compiles it. The CALLER save/restores the process-global
+// datastore around the returned corpus's Run/RunStream (the bind path switches it).
+// Shared by the streaming StreamRows path and the materializing Evaluate fallback.
+func ruleMatchesCorpus(dir string, opts ruleMatchesOpts) (*CompiledCorpus, error) {
+	sess, err := ruleMatchesSession(opts, datastore.GetDatastore())
 	if err != nil {
 		return nil, err
 	}
@@ -216,6 +281,21 @@ func runRuleMatches(dir string, opts ruleMatchesOpts) (value.Value, error) {
 	cc, err := sess.CorpusCompile(dets)
 	if err != nil {
 		return nil, fmt.Errorf("RULE_MATCHES: compiling corpus %q: %w", dir, err)
+	}
+	return cc, nil
+}
+
+// runRuleMatches is the scalar-context fallback: compile + Run the corpus and return
+// its matches as one MATERIALIZED array value. It save/restores the process-global
+// datastore around the run (the bind path and CorpusCompile/Run's idempotent
+// SetDatastore mutate it) -- so the outer query's datastore is never left changed.
+func runRuleMatches(dir string, opts ruleMatchesOpts) (value.Value, error) {
+	prevDS := datastore.GetDatastore()
+	defer datastore.SetDatastore(prevDS)
+
+	cc, err := ruleMatchesCorpus(dir, opts)
+	if err != nil {
+		return nil, err
 	}
 	findings, err := cc.Run()
 	if err != nil {

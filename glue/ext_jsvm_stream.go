@@ -42,16 +42,14 @@ import (
 // consumer wants no more (e.g. a LIMIT is satisfied), so the JS loop can stop.
 //
 // The parser resolves NAME(args) via a jsStreamFunc registered in cbq's builtin
-// registry; conv.go's VisitExpressionScan recognizes that type and routes FROM to
-// the js-stream op (below) rather than the materializing expr-scan.
+// registry; jsStreamFunc implements StreamSource, so conv.go's VisitExpressionScan
+// routes FROM to the generic stream-fn op (op_stream_fn.go) rather than the
+// materializing expr-scan. All the fan-out/backpressure lives in that one op; here
+// we only produce rows (via StreamRows below).
 
 // jsStreamNames records registered streaming-source names (for reload idempotency
 // and diagnostics).
 var jsStreamNames = map[string]bool{}
-
-// jsStreamPollEvery is how often (in rows emitted) the source polls YieldStats
-// for an early-exit request (e.g. LIMIT satisfied), mirroring op_scan.
-const jsStreamPollEvery = 256
 
 // RegisterJSStream registers a streaming table-valued source NAME from source,
 // which must define `function NAME(emit, ...args)`. NAME(args) then works in a
@@ -127,86 +125,37 @@ func (this *jsStreamFunc) Evaluate(item value.Value, context expression.Context)
 }
 
 // --------------------------------------------------------
-// JSStreamOp: the FROM-clause streaming source operator.
+// StreamRows: jsStreamFunc's StreamSource implementation (the JS row producer).
 
-// JSStreamOp runs a streaming JS source (from a *.stream.js): it evaluates the
-// SQL args, calls the JS function with an injected emit callback, and yields one
-// row per emit. Rows flow as they're produced, so memory stays BOUNDED (no giant
-// array is ever built) and the source composes with WHERE/GROUP BY/LIMIT like any
-// scan. Unlike scalar/aggregate UDFs the whole-source call runs for the scan's
-// duration, so it is NOT bounded by JSCallTimeout.
-//
-// Caveat (matches every n1k1 source today): the source runs to completion --
-// there is no per-producer early-exit yet, so `LIMIT k` yields the right rows but
-// only by dropping extras downstream, not by stopping the JS loop. Don't hand an
-// *unbounded* source a query without a producer-side bound; when engine-wide
-// early-exit lands (the YieldStats hook below, currently inert), emit will start
-// returning false and the loop can stop.
-func JSStreamOp(o *base.Op, vars *base.Vars, yieldVals base.YieldVals, yieldErr base.YieldErr) {
-	idx, ok := o.Params[0].(int)
-	if !ok {
-		yieldErr(fmt.Errorf("js-stream: expected int Temps index, got %T", o.Params[0]))
-		return
-	}
-	sf, ok := vars.Temps[idx].(*jsStreamFunc)
-	if !ok {
-		yieldErr(fmt.Errorf("js-stream: no streaming source function at Temps[%d]", idx))
-		return
-	}
-
-	// Eval context + correlation scope, as ExprScanOp resolves them.
-	var ctx expression.Context
-	var item value.Value
-	var gc *GlueContext
-	if c, ok := vars.Temps[0].(*GlueContext); ok {
-		gc, ctx, item = c, c, c.corrParent
-	} else if c, ok := vars.Temps[0].(expression.Context); ok {
-		ctx = c
-	}
-
+// StreamRows evaluates the SQL args, calls the JS function with an injected emit
+// callback, and produces one row per emitted value. Rows flow as they're produced
+// (via the generic op's emit), so memory stays BOUNDED. Unlike scalar/aggregate
+// UDFs the whole-source call runs for the scan's duration, so it is NOT bounded by
+// JSCallTimeout. The JS `emit(a, b, c)` batch form yields one row per argument and
+// returns false once the consumer wants no more, so the JS loop can stop.
+func (this *jsStreamFunc) StreamRows(vars *base.Vars, gc *GlueContext,
+	ctx expression.Context, item value.Value, emit func(base.Val) bool) error {
 	sr := newJSSharedRuntime()
 	if gc != nil {
 		sr = gc.jsShared()
 	}
-	fn := sr.callable(sf.Name())
+	fn := sr.callable(this.Name())
 	if fn == nil {
-		yieldErr(fmt.Errorf("js-stream: %q is not callable", sf.Name()))
-		return
+		return fmt.Errorf("js-stream: %q is not callable", this.Name())
 	}
 
-	// stopErr carries an early-exit sentinel (from YieldStats, e.g. LIMIT), a
-	// marshal error, or stays nil for a clean end-of-stream.
-	var stopErr error
-	rowsOut := 0
+	var streamErr error
 
-	// pollStop asks whether a downstream consumer wants us to stop (LIMIT), the
-	// same YieldStats gate scans use. Only active when stats are on; otherwise the
-	// source runs to completion and LIMIT still drops extra rows downstream.
-	pollStop := func() bool {
-		if vars.Ctx != nil && vars.Ctx.YieldStats != nil && vars.Ctx.Stats != nil {
-			if ctl := vars.Ctx.YieldStats(vars.Ctx.Stats); ctl.Stop != nil {
-				stopErr = ctl.Stop
-				return true
-			}
-		}
-		return false
-	}
-
-	// emit(row[, row2, ...]) — one row per argument; returns false to tell the JS
-	// loop to stop (early-exit already signalled, or a marshal failure).
-	emit := func(call goja.FunctionCall) goja.Value {
-		if stopErr != nil {
-			return sr.rt.ToValue(false)
-		}
+	// gojaEmit(row[, row2, ...]) — one row per argument; returns false to tell the
+	// JS loop to stop (the consumer wants no more, or a marshal failure).
+	gojaEmit := func(call goja.FunctionCall) goja.Value {
 		for _, a := range call.Arguments {
 			jv, err := json.Marshal(a.Export())
 			if err != nil {
-				stopErr = fmt.Errorf("js-stream %q: cannot marshal emitted row: %w", sf.Name(), err)
+				streamErr = fmt.Errorf("js-stream %q: cannot marshal emitted row: %w", this.Name(), err)
 				return sr.rt.ToValue(false)
 			}
-			yieldVals(base.Vals{base.Val(jv)})
-			rowsOut++
-			if rowsOut%jsStreamPollEvery == 0 && pollStop() {
+			if !emit(base.Val(jv)) {
 				return sr.rt.ToValue(false)
 			}
 		}
@@ -214,13 +163,12 @@ func JSStreamOp(o *base.Op, vars *base.Vars, yieldVals base.YieldVals, yieldErr 
 	}
 
 	// Args: emit first, then the evaluated SQL operands.
-	jsArgs := make([]goja.Value, 0, len(sf.Operands())+1)
-	jsArgs = append(jsArgs, sr.rt.ToValue(emit))
-	for _, op := range sf.Operands() {
+	jsArgs := make([]goja.Value, 0, len(this.Operands())+1)
+	jsArgs = append(jsArgs, sr.rt.ToValue(gojaEmit))
+	for _, op := range this.Operands() {
 		v, e := op.Evaluate(item, ctx)
 		if e != nil {
-			yieldErr(e)
-			return
+			return e
 		}
 		jsArgs = append(jsArgs, toGoja(sr.rt, v))
 	}
@@ -230,17 +178,16 @@ func JSStreamOp(o *base.Op, vars *base.Vars, yieldVals base.YieldVals, yieldErr 
 	func() {
 		defer func() {
 			if r := recover(); r != nil {
-				stopErr = fmt.Errorf("js-stream %q panicked: %v", sf.Name(), r)
+				streamErr = fmt.Errorf("js-stream %q panicked: %v", this.Name(), r)
 				if gc != nil {
 					gc.dropJSShared()
 				}
 			}
 		}()
-		if _, callErr := fn(goja.Undefined(), jsArgs...); callErr != nil && stopErr == nil {
-			stopErr = fmt.Errorf("js-stream %q: %w", sf.Name(), callErr)
+		if _, callErr := fn(goja.Undefined(), jsArgs...); callErr != nil && streamErr == nil {
+			streamErr = fmt.Errorf("js-stream %q: %w", this.Name(), callErr)
 		}
 	}()
 
-	// Propagate the early-exit sentinel / error / clean nil, as scans do.
-	yieldErr(stopErr)
+	return streamErr
 }

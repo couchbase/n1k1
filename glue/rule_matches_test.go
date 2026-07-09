@@ -19,6 +19,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 )
 
@@ -121,6 +122,38 @@ func TestRuleMatchesFromSource(t *testing.T) {
 		}
 	}
 	t.Logf("FROM rule_matches() matched %d findings", len(gotKeys))
+}
+
+// TestRuleMatchesStreamsViaStreamFnOp proves FROM rule_matches(...) converts to the
+// generic STREAMING stream-fn op (op_stream_fn.go), NOT the materializing expr-scan
+// -- so findings flow into the pipeline at bounded memory. It also checks LIMIT
+// composes over the streaming source.
+func TestRuleMatchesStreamsViaStreamFnOp(t *testing.T) {
+	sess := corpusTestSession(t)
+	corpus := writeRuleMatchesCorpus(t)
+
+	q := fmt.Sprintf(`SELECT f.tag FROM rule_matches(%q) AS f`, corpus)
+	res, err := sess.Run(q)
+	if err != nil {
+		t.Fatalf("Run %q: %v", q, err)
+	}
+	tree := FormatConvPlan(res.Plan)
+	if !strings.Contains(tree, "stream-fn") {
+		t.Fatalf("FROM rule_matches() should convert to a stream-fn op (streaming); plan:\n%s", tree)
+	}
+	if strings.Contains(tree, "expr-scan") {
+		t.Fatalf("FROM rule_matches() must NOT materialize via expr-scan; plan:\n%s", tree)
+	}
+
+	// LIMIT composes with the streaming source (yields exactly the limited rows).
+	q = fmt.Sprintf(`SELECT f.tag FROM rule_matches(%q) AS f LIMIT 1`, corpus)
+	res, err = sess.Run(q)
+	if err != nil {
+		t.Fatalf("Run LIMIT %q: %v", q, err)
+	}
+	if len(res.Rows) != 1 {
+		t.Fatalf("LIMIT 1 over rule_matches(): got %d rows, want 1", len(res.Rows))
+	}
 }
 
 // TestRuleMatchesComposable: RULE_MATCHES composes with WHERE (filter) and GROUP BY
