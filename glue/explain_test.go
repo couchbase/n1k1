@@ -99,6 +99,106 @@ func TestExplainConvPlan(t *testing.T) {
 	}
 }
 
+// TestConvPlanSourceAndRescanMarkers: FormatConvPlan flags the two costs a bare op
+// tree hides -- a boxed row source and a nested-loop-rescanned inner subtree. For
+// `WITH x AS (SELECT * FROM orders) SELECT ... FROM x o1, x o2` the CTE `expr-scan`
+// leaves carry ⟨boxed source⟩ (served per-row via GlueContext.EvaluateSubquery),
+// and each nested-loop join's inner (right) child carries ⟨re-scanned per outer
+// row⟩. A native `datastore-scan-*` leaf must NOT get the boxed-source marker, and
+// the existing project ⟨boxed⟩ expression marker is unaffected. ConvPlanLegendFor
+// returns exactly the keys for the markers a given plan uses.
+func TestConvPlanSourceAndRescanMarkers(t *testing.T) {
+	dir := t.TempDir()
+	ks := filepath.Join(dir, "default", "orders")
+	if err := os.MkdirAll(ks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	docs := map[string]string{
+		"o1.json": `{"custId":"c1","total":5}`,
+		"o2.json": `{"custId":"c2","total":7}`,
+	}
+	for name, d := range docs {
+		if err := os.WriteFile(filepath.Join(ks, name), []byte(d), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sess, err := OpenSession(dir, "default")
+	if err != nil {
+		t.Fatalf("OpenSession: %v", err)
+	}
+
+	// (a) CTE expr-scan leaves are boxed sources; (c) NL join inners are re-scanned.
+	res, err := sess.Run(`EXPLAIN WITH x AS (SELECT * FROM orders) ` +
+		`SELECT count(1) AS c, sum(o1.total) AS s FROM x o1, x o2`)
+	if err != nil {
+		t.Fatalf("CTE-join run: %v", err)
+	}
+	got := FormatConvPlan(res.Plan)
+	if strings.Count(got, "expr-scan") != 2 {
+		t.Fatalf("expected two expr-scan CTE leaves\n%s", got)
+	}
+	// Both CTE sources are boxed; exactly one join, whose single inner child is
+	// re-scanned. (The outer expr-scan is not re-scanned.)
+	if n := strings.Count(got, boxedSourceMarker); n != 2 {
+		t.Errorf("boxed-source marker count = %d, want 2 (both CTE expr-scans)\n%s", n, got)
+	}
+	if n := strings.Count(got, rescanMarker); n != 1 {
+		t.Errorf("rescan marker count = %d, want 1 (the join's inner)\n%s", n, got)
+	}
+	// The re-scanned marker must sit on an expr-scan line (the inner CTE source),
+	// and one expr-scan line must be boxed WITHOUT the rescan marker (the outer).
+	sawOuterBoxed, sawInnerRescan := false, false
+	for _, ln := range strings.Split(got, "\n") {
+		if !strings.Contains(ln, "expr-scan") {
+			continue
+		}
+		if !strings.Contains(ln, boxedSourceMarker) {
+			t.Errorf("expr-scan line missing boxed-source marker: %q", ln)
+		}
+		if strings.Contains(ln, rescanMarker) {
+			sawInnerRescan = true
+		} else {
+			sawOuterBoxed = true
+		}
+	}
+	if !sawOuterBoxed || !sawInnerRescan {
+		t.Errorf("want one boxed-only (outer) and one boxed+rescan (inner) expr-scan; got outer=%v inner=%v\n%s",
+			sawOuterBoxed, sawInnerRescan, got)
+	}
+	// Legend lists exactly the two markers this plan uses (no ⟨boxed⟩ expr line:
+	// this plan's projection is native).
+	legend := ConvPlanLegendFor(got)
+	if !strings.Contains(legend, boxedSourceMarker) || !strings.Contains(legend, rescanMarker) {
+		t.Errorf("legend missing a used marker key:\n%s", legend)
+	}
+	if strings.Contains(legend, boxedMarker+" =") {
+		t.Errorf("legend should omit the ⟨boxed⟩ expr key (no boxed expr here):\n%s", legend)
+	}
+
+	// (b) A native datastore-scan join: the inner is re-scanned, but no leaf is a
+	// boxed source (datastore I/O is native).
+	res, err = sess.Run(`EXPLAIN SELECT count(1) AS c FROM orders o1, orders o2`)
+	if err != nil {
+		t.Fatalf("datastore-join run: %v", err)
+	}
+	got = FormatConvPlan(res.Plan)
+	if !strings.Contains(got, "datastore-scan") {
+		t.Fatalf("expected a datastore-scan leaf\n%s", got)
+	}
+	if strings.Contains(got, boxedSourceMarker) {
+		t.Errorf("native datastore-scan must NOT carry the boxed-source marker\n%s", got)
+	}
+	if n := strings.Count(got, rescanMarker); n != 1 {
+		t.Errorf("datastore-join rescan marker count = %d, want 1\n%s", n, got)
+	}
+	// The rescan marker sits on the inner datastore-scan line.
+	for _, ln := range strings.Split(got, "\n") {
+		if strings.Contains(ln, rescanMarker) && !strings.Contains(ln, "datastore-scan") {
+			t.Errorf("rescan marker not on the inner datastore-scan line: %q", ln)
+		}
+	}
+}
+
 // TestExprCoverageAndBoxedEvals: static ExprCoverage classifies project/filter
 // expressions, and Result.BoxedEvals counts per-row boxed evaluations at run time.
 func TestExprCoverageAndBoxedEvals(t *testing.T) {

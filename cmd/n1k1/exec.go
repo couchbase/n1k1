@@ -120,7 +120,10 @@ func (c *cli) exec(stmt string) {
 	// tree (what n1k1 actually runs), annotated with each expression's eval lane.
 	if res.Plan != nil && (c.explain || c.verbose >= 1 || isExplainStmt(stmt)) {
 		fmt.Fprintf(c.stderr, "%s plan / op tree:\n", prog)
-		fmt.Fprint(c.stderr, glue.FormatConvPlan(res.Plan))
+		planStr := glue.FormatConvPlan(res.Plan)
+		fmt.Fprint(c.stderr, planStr)
+		// Marker key: only the markers this plan actually uses (empty otherwise).
+		fmt.Fprint(c.stderr, glue.ConvPlanLegendFor(planStr))
 	}
 
 	if isExplainStmt(stmt) {

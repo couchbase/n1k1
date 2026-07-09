@@ -30,6 +30,24 @@ import (
 // non-ASCII marker so it stands out against the ASCII projection-list brackets.
 const boxedMarker = "⟨boxed⟩"
 
+// boxedSourceMarker flags a FROM-clause row *source* that the engine serves through
+// the boxed lane rather than native file/index I/O: an expr-scan (FROM a WITH CTE /
+// subquery / constant expression) evaluates a cbq expression and, for a CTE /
+// subquery, re-enters the engine + datastore via GlueContext.EvaluateSubquery, then
+// marshals every result value into JSON bytes. Heavy -- and, under a nested-loop
+// join (see rescanMarker), re-run once per outer row. A native datastore-scan-* is
+// NOT flagged. Note "⟨boxed⟩" is deliberately not a substring of this, so a legend
+// can test for each marker independently.
+const boxedSourceMarker = "⟨boxed source⟩"
+
+// rescanMarker flags the inner (right/build) subtree of a nested-loop-family join,
+// which OpJoinNestedLoop re-executes once per outer (left) row -- a cost multiplier
+// invisible in the bare op tree. A chain of such joins compounds it. Applies to
+// joinNL / joinKeys / nestNL / nestKeys (each re-drives Children[1] via ExecOp
+// inside its per-left-row yield); NOT to unnest (yields from an in-memory array, no
+// child re-drive) or joinHash (builds its probe table once).
+const rescanMarker = "⟨re-scanned per outer row⟩"
+
 // FormatConvPlan renders n1k1's converted op tree as an indented text tree. For
 // project and filter operators it flags each boxed expression with boxedMarker;
 // unmarked expressions are native.
@@ -41,11 +59,14 @@ const boxedMarker = "⟨boxed⟩"
 // view, not a runtime measurement.
 func FormatConvPlan(op *base.Op) string {
 	var b strings.Builder
-	formatConvOp(&b, op, 0)
+	formatConvOp(&b, op, 0, false)
 	return b.String()
 }
 
-func formatConvOp(b *strings.Builder, op *base.Op, depth int) {
+// formatConvOp renders one op (and its children). rescanned is set by a parent
+// nested-loop join for its inner (right/build) child, so that subtree's root is
+// annotated with rescanMarker.
+func formatConvOp(b *strings.Builder, op *base.Op, depth int, rescanned bool) {
 	if op == nil {
 		return
 	}
@@ -71,11 +92,71 @@ func formatConvOp(b *strings.Builder, op *base.Op, depth int) {
 			fmt.Fprintf(b, "  %v", op.Labels)
 		}
 	}
+
+	// A boxed row source (an expr-scan CTE / subquery / constant FROM-expr) and a
+	// nested-loop-rescanned inner subtree each carry a cost the bare op kind hides.
+	if isBoxedSource(op.Kind) {
+		b.WriteString(" " + boxedSourceMarker)
+	}
+	if rescanned {
+		b.WriteString(" " + rescanMarker)
+	}
 	b.WriteByte('\n')
 
-	for _, ch := range op.Children {
-		formatConvOp(b, ch, depth+1)
+	for i, ch := range op.Children {
+		formatConvOp(b, ch, depth+1, isNLRescanInner(op.Kind, i))
 	}
+}
+
+// isBoxedSource reports whether an op serves its rows through the boxed value.Value
+// lane (expr.Evaluate + json marshal, and for a CTE / subquery a full engine
+// re-entry via GlueContext.EvaluateSubquery) rather than native file/index I/O.
+// Only expr-scan does: it always Evaluate()s its FROM expression and marshals the
+// result (see glue.ExprScanOp). A datastore-scan-* / -index / -fts is native I/O and
+// is intentionally NOT flagged.
+func isBoxedSource(kind string) bool {
+	return kind == "expr-scan"
+}
+
+// isNLRescanInner reports whether child i of a parent of the given kind is the
+// nested-loop inner (right/build) subtree, which the parent re-executes once per
+// outer (left) row. OpJoinNestedLoop re-drives Children[1] via ExecOp inside its
+// per-left-row yield for joinNL / joinKeys / nestNL / nestKeys. unnest yields from
+// an in-memory array (no child re-drive) and joinHash builds its probe table once,
+// so neither multiplies -- both are excluded.
+func isNLRescanInner(kind string, childIdx int) bool {
+	if childIdx != 1 {
+		return false
+	}
+	return strings.HasPrefix(kind, "joinNL-") ||
+		strings.HasPrefix(kind, "joinKeys-") ||
+		strings.HasPrefix(kind, "nestNL-") ||
+		strings.HasPrefix(kind, "nestKeys-")
+}
+
+// ConvPlanLegendFor returns the marker key -- one line per marker -- for just the
+// annotations that actually appear in the given FormatConvPlan output, so a reader
+// (or agent) sees only relevant keys. Empty when the plan carries no markers. The
+// three marker strings are mutually non-substring, so each Contains test is
+// independent. Printed under the op tree by the CLI (-v / .explain / EXPLAIN).
+func ConvPlanLegendFor(plan string) string {
+	var lines []string
+	if strings.Contains(plan, boxedMarker) {
+		lines = append(lines, boxedMarker+
+			" = expression evaluated via cbq per row (converted to a value.Value; GC-heavy); unmarked = native byte path")
+	}
+	if strings.Contains(plan, boxedSourceMarker) {
+		lines = append(lines, boxedSourceMarker+
+			" = row source boxed via cbq per row (e.g. a WITH CTE / subquery FROM-source); heavy")
+	}
+	if strings.Contains(plan, rescanMarker) {
+		lines = append(lines, rescanMarker+
+			" = nested-loop inner: re-run once per outer row -- a big cost multiplier; consider materializing / a hash join")
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	return strings.Join(lines, "\n") + "\n"
 }
 
 // writeExprVerdict renders one expression param list as its SQL, appending
