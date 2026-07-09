@@ -369,7 +369,13 @@ func (s *Session) PlanExec(pp *PreparedPlan,
 		}
 		if stats != nil && s.OnStats != nil {
 			onStats := s.OnStats
-			vars.Ctx.YieldStats = func(st *base.Stats) error {
+			// pace re-tunes the checkpoint interval so onStats fires at a display-
+			// friendly rate: a scan racing past (checkpoints arriving faster than a UI
+			// can absorb) backs the interval off (1024 -> 2048 -> ...), a slowing scan
+			// eases it back down. It carries state across calls; the query runs on one
+			// goroutine at the top (OnStats is the single live-footer sink), so no lock.
+			pace := NewYieldPacer(engine.ScanYieldStatsEvery)
+			vars.Ctx.YieldStats = func(st *base.Stats) base.YieldStatsControl {
 				// The live in-flight aggregate partials (COUNT/SUM/AVG/MIN/MAX
 				// climbing) are refreshed by each actor at its own checkpoint
 				// (Ctx.RunningAggsRefresh, called just before this YieldStats fires), so
@@ -377,7 +383,7 @@ func (s *Session) PlanExec(pp *PreparedPlan,
 				// / StatsSnapshotJSON, which fences the read against a concurrently
 				// refreshing actor. See DESIGN-stats.md "Live aggregates".
 				onStats(st)
-				return nil
+				return base.YieldStatsControl{NextEvery: pace.Next(time.Now())}
 			}
 		}
 	}

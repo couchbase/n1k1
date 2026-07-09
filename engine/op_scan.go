@@ -112,6 +112,7 @@ func ScanReaderAsCsv(lzReader io.Reader, labels base.Labels, lzVars *base.Vars,
 	var lzValsScan base.Vals
 
 	lzYielded := 0
+	lzEvery := ScanYieldStatsEvery // local so a YieldStats NextEvery can re-pace it.
 
 	lzStatRowsOut := 0       // stats: rows yielded downstream (local, never reset).
 	lzStatsBase := statsBase // stats: baked as a literal in the compiled path.
@@ -143,7 +144,7 @@ func ScanReaderAsCsv(lzReader io.Reader, labels base.Labels, lzVars *base.Vars,
 		}
 
 		lzYielded++
-		if lzYielded >= ScanYieldStatsEvery {
+		if lzYielded >= lzEvery {
 			lzYielded = 0
 
 			if lzVars != nil && lzVars.Ctx != nil && lzVars.Ctx.Stats != nil {
@@ -155,10 +156,13 @@ func ScanReaderAsCsv(lzReader io.Reader, labels base.Labels, lzVars *base.Vars,
 			} // <== genCompiler:hide
 
 			if lzVars != nil && lzVars.Ctx != nil && lzVars.Ctx.YieldStats != nil {
-				lzErr := lzVars.Ctx.YieldStats(lzVars.Ctx.Stats)
-				if lzErr != nil { // Also used for early exit (e.g., LIMIT).
-					lzYieldErr(lzErr)
+				lzCtl := lzVars.Ctx.YieldStats(lzVars.Ctx.Stats)
+				if lzCtl.Stop != nil { // Early exit (e.g., LIMIT, closed pipe).
+					lzYieldErr(lzCtl.Stop)
 					return
+				}
+				if lzCtl.NextEvery > 0 { // Re-pace the checkpoint (dynamic cadence).
+					lzEvery = lzCtl.NextEvery
 				}
 			}
 		}
@@ -179,6 +183,7 @@ func ScanReaderAsJsons(lzReader io.Reader, labels base.Labels, lzVars *base.Vars
 	var lzValsScan base.Vals
 
 	lzYielded := 0
+	lzEvery := ScanYieldStatsEvery // local so a YieldStats NextEvery can re-pace it.
 
 	lzStatRowsOut := 0       // stats: rows yielded downstream (local, never reset).
 	lzStatsBase := statsBase // stats: baked as a literal in the compiled path.
@@ -200,7 +205,7 @@ func ScanReaderAsJsons(lzReader io.Reader, labels base.Labels, lzVars *base.Vars
 		}
 
 		lzYielded++
-		if lzYielded >= ScanYieldStatsEvery {
+		if lzYielded >= lzEvery {
 			lzYielded = 0
 
 			if lzVars != nil && lzVars.Ctx != nil && lzVars.Ctx.Stats != nil {
@@ -212,10 +217,13 @@ func ScanReaderAsJsons(lzReader io.Reader, labels base.Labels, lzVars *base.Vars
 			} // <== genCompiler:hide
 
 			if lzVars != nil && lzVars.Ctx != nil && lzVars.Ctx.YieldStats != nil {
-				lzErr := lzVars.Ctx.YieldStats(lzVars.Ctx.Stats)
-				if lzErr != nil { // Also used for early exit (e.g., LIMIT).
-					lzYieldErr(lzErr)
+				lzCtl := lzVars.Ctx.YieldStats(lzVars.Ctx.Stats)
+				if lzCtl.Stop != nil { // Early exit (e.g., LIMIT, closed pipe).
+					lzYieldErr(lzCtl.Stop)
 					return
+				}
+				if lzCtl.NextEvery > 0 { // Re-pace the checkpoint (dynamic cadence).
+					lzEvery = lzCtl.NextEvery
 				}
 			}
 		}

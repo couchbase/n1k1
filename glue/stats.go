@@ -14,8 +14,74 @@
 package glue
 
 import (
+	"time"
+
 	"github.com/couchbase/n1k1/base"
 )
+
+// Checkpoint-cadence pacing bounds (see base.YieldStatsControl.NextEvery). A
+// YieldStats callback firing faster than YieldPaceFast apart backs its checkpoint
+// interval off; slower than YieldPaceSlow eases it back toward the floor; YieldPaceMax
+// caps it. Tuned for a live progress display -- a few updates per second is plenty.
+const (
+	YieldPaceFast = 40 * time.Millisecond
+	YieldPaceSlow = 400 * time.Millisecond
+	YieldPaceMax  = 1 << 20 // ~1M rows between checkpoints
+)
+
+// YieldPacer adapts a YieldStats checkpoint interval to hold the callback at a
+// display-friendly rate: a source racing past (checkpoints arriving faster than a UI
+// can absorb) has its interval backed off (1024 -> 2048 -> ...), a slowing source
+// eases it back toward the floor. It is exported so an embedder wiring its own
+// Ctx.YieldStats can reuse the policy: construct one with NewYieldPacer, and on each
+// checkpoint return base.YieldStatsControl{NextEvery: pacer.Next(time.Now())}. Not
+// safe for concurrent use -- drive it from the single goroutine that sinks the
+// live-stats callback (as glue does). For a stateless rule, call YieldPace directly.
+type YieldPacer struct {
+	floor int       // the source's initial interval (the lower bound)
+	every int       // current suggested interval
+	last  time.Time // wall-clock of the previous checkpoint (zero until the first)
+}
+
+// NewYieldPacer returns a YieldPacer whose interval starts at (and never drops below)
+// floor -- typically the source's initial engine.ScanYieldStatsEvery.
+func NewYieldPacer(floor int) *YieldPacer {
+	if floor < 1 {
+		floor = 1
+	}
+	return &YieldPacer{floor: floor, every: floor}
+}
+
+// Next records a checkpoint at time now and returns the interval the source should
+// adopt next (rows until the following checkpoint). The first call only seeds the
+// clock, returning the unchanged interval.
+func (p *YieldPacer) Next(now time.Time) int {
+	if !p.last.IsZero() {
+		p.every = YieldPace(p.every, p.floor, now.Sub(p.last))
+	}
+	p.last = now
+	return p.every
+}
+
+// YieldPace is the pure re-pacing rule: double cur (capped at YieldPaceMax) when the
+// gap dt since the last checkpoint is shorter than YieldPaceFast, halve it toward
+// floor when longer than YieldPaceSlow, else keep it. Split out so it unit-tests
+// without a clock and an embedder can apply the rule statelessly.
+func YieldPace(cur, floor int, dt time.Duration) int {
+	switch {
+	case dt < YieldPaceFast:
+		if n := cur * 2; n <= YieldPaceMax {
+			return n
+		}
+		return YieldPaceMax
+	case dt > YieldPaceSlow:
+		if n := cur / 2; n >= floor {
+			return n
+		}
+		return floor
+	}
+	return cur
+}
 
 // datastoreScanKinds are the DatastoreOp kinds that read rows from the datastore
 // and so contribute a RowsOut counter. (Non-scan kinds handled by DatastoreOp --
@@ -84,7 +150,12 @@ func countingYield(o *base.Op, vars *base.Vars, yieldVals base.YieldVals) base.Y
 		if yieldStats != nil && n%every == 0 {
 			vars.Ctx.RunningAggsRefresh() // refresh THIS actor's live aggregate partials
 
-			_ = yieldStats(stats)
+			ctl := yieldStats(stats)
+			if ctl.NextEvery > 0 { // re-pace the checkpoint (dynamic cadence)
+				every = int64(ctl.NextEvery)
+			}
+			// ctl.Stop is ignored here: LIMIT is enforced by the scan's own limit, and
+			// a cooperative halt (closed output pipe) is future work.
 		}
 
 		yieldVals(vals)

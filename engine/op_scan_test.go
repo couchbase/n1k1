@@ -12,6 +12,7 @@
 package engine
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
@@ -55,7 +56,7 @@ func runOpWithStats(t *testing.T, root *base.Op) (*base.Stats, int) {
 			Stats:       stats,
 			ExprCatalog: ExprCatalog,
 			ValComparer: base.NewValComparer(),
-			YieldStats:  func(s *base.Stats) error { return nil },
+			YieldStats:  func(s *base.Stats) base.YieldStatsControl { return base.YieldStatsControl{} },
 		},
 	}
 
@@ -70,6 +71,64 @@ func runOpWithStats(t *testing.T, root *base.Op) (*base.Stats, int) {
 	ExecOp(root, vars, yieldVals, yieldErr, "", "")
 
 	return stats, rowsYielded
+}
+
+// TestScanYieldStatsControl proves a scan honors the YieldStatsControl its
+// YieldStats checkpoint returns: NextEvery re-paces the checkpoint interval (so a
+// callback fired too fast can back off), and Stop ends the scan early. The floor
+// interval is forced small so checkpoints fire over a modest scan.
+func TestScanYieldStatsControl(t *testing.T) {
+	prev := ScanYieldStatsEvery
+	ScanYieldStatsEvery = 2
+	defer func() { ScanYieldStatsEvery = prev }()
+
+	run := func(ys base.YieldStats) (rows int, stopErr error) {
+		vars := &base.Vars{
+			Temps: make([]interface{}, 16),
+			Ctx:   &base.Ctx{ExprCatalog: ExprCatalog, ValComparer: base.NewValComparer(), YieldStats: ys},
+		}
+		ExecOp(scanOp(100), vars,
+			func(base.Vals) { rows++ },
+			func(err error) {
+				if err != nil {
+					stopErr = err
+				}
+			}, "", "")
+		return
+	}
+
+	// Dynamic cadence: each checkpoint doubles the interval. Starting at 2 the
+	// checkpoints fall at cumulative rows 2,6,14,30,62 -> ~5 calls over 100 rows,
+	// vs ~50 at a fixed interval of 2. All 100 rows still yield.
+	calls, every := 0, 2
+	rows, _ := run(func(*base.Stats) base.YieldStatsControl {
+		calls++
+		every *= 2
+		return base.YieldStatsControl{NextEvery: every}
+	})
+	if rows != 100 {
+		t.Fatalf("dynamic-cadence scan yielded %d rows, want 100", rows)
+	}
+	if calls == 0 || calls > 10 {
+		t.Fatalf("dynamic-cadence checkpoint calls = %d, want a small count (backed off), <=10", calls)
+	}
+
+	// Stop: the first checkpoint (at row 2) returns Stop -> the scan ends early.
+	stopSentinel := fmt.Errorf("consumer went away")
+	n := 0
+	rows, stopErr := run(func(*base.Stats) base.YieldStatsControl {
+		n++
+		if n == 1 {
+			return base.YieldStatsControl{Stop: stopSentinel}
+		}
+		return base.YieldStatsControl{}
+	})
+	if stopErr != stopSentinel {
+		t.Fatalf("Stop should propagate as yieldErr; got %v", stopErr)
+	}
+	if rows >= 100 {
+		t.Fatalf("Stop should end the scan early; yielded %d rows (all)", rows)
+	}
 }
 
 // TestScanStatsRowsOut checks the flat-counter core end-to-end on a scan: the

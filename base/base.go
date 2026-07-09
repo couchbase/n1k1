@@ -355,13 +355,30 @@ type ExprCatalogFunc func(vars *Vars, labels Labels,
 
 // -----------------------------------------------------
 
-// An Op can occasionally yield stats and progress information,
-// and can return an error to abort further processing.
+// An Op can occasionally yield stats and progress information, and the callback
+// steers it back via a YieldStatsControl (abort, or re-pace the checkpoint).
 //
 // The YieldStats implementor must copy any incoming stats that it
 // wants to keep and should be implemented as concurrent safe. The argument
 // is the request's shared *Stats (see stats.go), or nil when stats are off.
-type YieldStats func(*Stats) error
+type YieldStats func(*Stats) YieldStatsControl
+
+// YieldStatsControl is what a YieldStats callback returns to steer the source
+// (e.g. a scan) that invoked it at its periodic checkpoint. The zero value means
+// "carry on unchanged", so a callback that only observes returns YieldStatsControl{}.
+type YieldStatsControl struct {
+	// Stop, when non-nil, tells the source to end iteration early -- LIMIT reached,
+	// the consumer's output pipe closed, the request was cancelled. The source
+	// propagates it as its yieldErr (the same early-exit the old error return drove).
+	Stop error
+
+	// NextEvery, when > 0, becomes the source's new checkpoint interval (rows between
+	// YieldStats calls). It lets a callback that is firing faster than a human or a UI
+	// can absorb back the cadence off (e.g. 1024 -> 10240), trading progress
+	// granularity for less per-row overhead; 0 keeps the current interval. The source
+	// seeds its interval from ScanYieldStatsEvery and adopts NextEvery when set.
+	NextEvery int
+}
 
 // -----------------------------------------------------
 

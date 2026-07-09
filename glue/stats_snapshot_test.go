@@ -17,12 +17,64 @@ import (
 	"encoding/json"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/couchbase/n1k1/base"
 	"github.com/couchbase/n1k1/engine"
 
 	"github.com/couchbase/rhmap/store"
 )
+
+// TestYieldPace covers the stateless re-pacing rule: back off (double, capped) when
+// checkpoints arrive faster than YieldPaceFast, ease down (halve, floored) when
+// slower than YieldPaceSlow, hold steady in between.
+func TestYieldPace(t *testing.T) {
+	const floor = 1024
+	cases := []struct {
+		name string
+		cur  int
+		dt   time.Duration
+		want int
+	}{
+		{"fast doubles", 1024, 10 * time.Millisecond, 2048},
+		{"fast again", 2048, 10 * time.Millisecond, 4096},
+		{"fast caps at max", YieldPaceMax, 1 * time.Millisecond, YieldPaceMax},
+		{"steady holds", 4096, 100 * time.Millisecond, 4096},
+		{"slow halves", 4096, 1 * time.Second, 2048},
+		{"slow floors", floor, 1 * time.Second, floor},
+	}
+	for _, c := range cases {
+		if got := YieldPace(c.cur, floor, c.dt); got != c.want {
+			t.Errorf("%s: YieldPace(%d,%d,%v) = %d, want %d", c.name, c.cur, floor, c.dt, got, c.want)
+		}
+	}
+}
+
+// TestYieldPacer covers the stateful pacer: the first Next only seeds the clock
+// (interval unchanged), then a run of fast checkpoints backs the interval off and a
+// slow one eases it back down -- never below the floor.
+func TestYieldPacer(t *testing.T) {
+	p := NewYieldPacer(1024)
+	t0 := time.Unix(1_000_000, 0) // non-zero (Next distinguishes the first call via IsZero)
+
+	if got := p.Next(t0); got != 1024 {
+		t.Fatalf("first Next = %d, want the floor 1024 (seed only)", got)
+	}
+	if got := p.Next(t0.Add(10 * time.Millisecond)); got != 2048 {
+		t.Fatalf("fast Next = %d, want 2048", got)
+	}
+	if got := p.Next(t0.Add(20 * time.Millisecond)); got != 4096 {
+		t.Fatalf("fast Next #2 = %d, want 4096", got)
+	}
+	// A long gap eases the interval back down toward the floor.
+	if got := p.Next(t0.Add(2 * time.Second)); got != 2048 {
+		t.Fatalf("slow Next = %d, want 2048 (halved)", got)
+	}
+	// A tiny floor is clamped to 1 (never a zero/negative interval).
+	if p := NewYieldPacer(0); p.Next(t0) != 1 {
+		t.Errorf("NewYieldPacer(0) floor should clamp to 1")
+	}
+}
 
 // snapAgg is the JSON shape of one live-aggregate running-aggregate row (see
 // StatsSnapshotJSON's "aggs" array).

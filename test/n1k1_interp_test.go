@@ -122,7 +122,7 @@ func benchmarkInterpNDocs(b *testing.B,
 		Ctx: &base.Ctx{
 			ValComparer: base.NewValComparer(),
 			ExprCatalog: engine.ExprCatalog,
-			YieldStats:  func(stats *base.Stats) error { return nil },
+			YieldStats:  func(stats *base.Stats) base.YieldStatsControl { return base.YieldStatsControl{} },
 		},
 	}
 

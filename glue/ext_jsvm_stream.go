@@ -184,8 +184,8 @@ func JSStreamOp(o *base.Op, vars *base.Vars, yieldVals base.YieldVals, yieldErr 
 	// source runs to completion and LIMIT still drops extra rows downstream.
 	pollStop := func() bool {
 		if vars.Ctx != nil && vars.Ctx.YieldStats != nil && vars.Ctx.Stats != nil {
-			if err := vars.Ctx.YieldStats(vars.Ctx.Stats); err != nil {
-				stopErr = err
+			if ctl := vars.Ctx.YieldStats(vars.Ctx.Stats); ctl.Stop != nil {
+				stopErr = ctl.Stop
 				return true
 			}
 		}

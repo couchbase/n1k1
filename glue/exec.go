@@ -165,7 +165,7 @@ func MakeVars(dir, prefix string) (string, *base.Vars) {
 		Ctx: &base.Ctx{
 			ValComparer: base.NewValComparer(),
 			ExprCatalog: engine.ExprCatalog,
-			YieldStats:  func(stats *base.Stats) error { return nil },
+			YieldStats:  func(stats *base.Stats) base.YieldStatsControl { return base.YieldStatsControl{} },
 			TempDir:     tmpDir,
 			ExecOp:      engine.ExecOp,
 			AllocMap: func() (*store.RHStore, error) {
