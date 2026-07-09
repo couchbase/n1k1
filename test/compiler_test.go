@@ -136,5 +136,5 @@ func TestQueryCasesWithCompiler(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	t.Logf("query-cases compiler: emitted=%d skipped=%v", len(gen), skipped)
+	// t.Logf("query-cases compiler: emitted=%d skipped=%v", len(gen), skipped)
 }

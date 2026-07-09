@@ -185,8 +185,8 @@ func TestOpBroadcastIndexedSparsity(t *testing.T) {
 	if predEvals >= broadcastEvals {
 		t.Fatalf("indexed PredEvals=%d not below broadcast's %d", predEvals, broadcastEvals)
 	}
-	t.Logf("sparsity: indexed %d predicate evals vs broadcast %d (%.1fx fewer) over %d rows, K=%d",
-		predEvals, broadcastEvals, float64(broadcastEvals)/float64(predEvals), n, k)
+	// t.Logf("sparsity: indexed %d predicate evals vs broadcast %d (%.1fx fewer) over %d rows, K=%d",
+	//	predEvals, broadcastEvals, float64(broadcastEvals)/float64(predEvals), n, k)
 }
 
 // -----------------------------------------------------

@@ -130,7 +130,7 @@ func TestCorpusCompileDifferential(t *testing.T) {
 	if len(cc.Rejected) != 0 {
 		t.Fatalf("expected no rejected detectors, got %+v", cc.Rejected)
 	}
-	t.Logf("standalone: %+v", cc.Standalone)
+	// t.Logf("standalone: %+v", cc.Standalone)
 
 	// (2) Structural sanity: two keyspaces -> a union-all of two broadcast-indexed
 	// fan-outs, and the logs group carries a CSE precompute project (T1/T2 share).
@@ -204,7 +204,7 @@ func TestCorpusCompileDifferential(t *testing.T) {
 				i, got[i], want[i], got, want)
 		}
 	}
-	t.Logf("matched %d findings across %d fused + 1 standalone detector", len(got), len(fused))
+	// t.Logf("matched %d findings across %d fused + 1 standalone detector", len(got), len(fused))
 }
 
 // TestCorpusCompileSingleKeyspace: a corpus confined to one keyspace returns the
@@ -418,7 +418,7 @@ func TestCorpusCompileASOFStandalone(t *testing.T) {
 	if fusedCount == 0 {
 		t.Fatal("expected the fusable logs detectors to also produce findings")
 	}
-	t.Logf("ASOF-in-corpus: %d ASOF findings + %d fused findings", len(asofGot), fusedCount)
+	// t.Logf("ASOF-in-corpus: %d ASOF findings + %d fused findings", len(asofGot), fusedCount)
 }
 
 // TestCorpusCompileStandaloneOnly: a corpus of ONLY non-fusable detectors (a GROUP BY)
@@ -496,7 +496,7 @@ func TestCorpusCompileRejected(t *testing.T) {
 	if cc.Rejected[0].Reason == "" {
 		t.Fatal("rejected detector must carry a reason")
 	}
-	t.Logf("rejected: %+v", cc.Rejected)
+	// t.Logf("rejected: %+v", cc.Rejected)
 	if len(cc.Standalone) != 0 {
 		t.Fatalf("unexpected standalone: %+v", cc.Standalone)
 	}

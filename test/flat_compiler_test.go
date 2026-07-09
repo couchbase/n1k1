@@ -129,5 +129,5 @@ func TestFlatRootWithCompiler(t *testing.T) {
 		[]byte(strings.Join(c, "\n")), 0644); err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("flat-root compiler: emitted=%d skipped=%v", len(gen), skipped)
+	// t.Logf("flat-root compiler: emitted=%d skipped=%v", len(gen), skipped)
 }

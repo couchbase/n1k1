@@ -254,8 +254,8 @@ func TestParquetQueryEndToEnd(t *testing.T) {
 	if got := string(res.Rows[0]); got != `{"c":4,"s":16}` {
 		t.Errorf("agg = %s, want {\"c\":4,\"s\":16}", got)
 	}
-	t.Logf("OK: SELECT over orders.parquet -> %d rows; agg over WHERE price>2 -> %s",
-		6, string(res.Rows[0]))
+	// t.Logf("OK: SELECT over orders.parquet -> %d rows; agg over WHERE price>2 -> %s",
+	//	6, string(res.Rows[0]))
 }
 
 // TestParquetSidecars exercises the Step-4 optional capability interfaces on the
@@ -334,7 +334,7 @@ func TestParquetSidecars(t *testing.T) {
 		strings.Contains(doc, `"nope"`) || strings.Contains(doc, `"id"`) {
 		t.Fatalf("mixed projection doc = %s, want only price", doc)
 	}
-	t.Log("OK: ColumnsSource schema + ColumnsProjector projection (incl. tolerant unknown)")
+	// t.Log("OK: ColumnsSource schema + ColumnsProjector projection (incl. tolerant unknown)")
 }
 
 // TestParquetProjectionDifferential is the correctness guardrail for Step-4
@@ -840,7 +840,7 @@ func TestParquetFastTransposeEquivalence(t *testing.T) {
 			t.Errorf("row %d differs:\n fast=%s\n slow=%s", i, fast[i], slow[i])
 		}
 	}
-	t.Logf("OK: fast writer == RecordToJSON across %d varied rows", n)
+	// t.Logf("OK: fast writer == RecordToJSON across %d varied rows", n)
 }
 
 // BenchmarkParquetTransposeDrain guards the zero-alloc property of the fast

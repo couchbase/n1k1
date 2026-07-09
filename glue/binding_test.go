@@ -151,7 +151,7 @@ func TestBindingTwoBundles(t *testing.T) {
 					t.Errorf("bundle %s: unexpected finding tag %q", bundle.name, tag)
 				}
 			}
-			t.Logf("bundle %s findings: %v", bundle.name, got)
+			// t.Logf("bundle %s findings: %v", bundle.name, got)
 		})
 	}
 }
@@ -196,7 +196,7 @@ func TestBindingFailLoudEmptyGlob(t *testing.T) {
 	if !strings.Contains(err.Error(), "orders") {
 		t.Errorf("empty-glob error should name the logical keyspace; got: %v", err)
 	}
-	t.Logf("fail-loud (empty glob): %v", err)
+	// t.Logf("fail-loud (empty glob): %v", err)
 
 	// The other bound keyspace still resolves fine (the empty one didn't poison it).
 	if _, err := sess.Run(`SELECT * FROM indexer_log l WHERE l.sev = "ERROR"`); err != nil {
@@ -221,7 +221,7 @@ func TestBindingFailLoudUnbound(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected an error for an unbound, non-existent keyspace, got nil")
 	}
-	t.Logf("fail-loud (unbound): %v", err)
+	// t.Logf("fail-loud (unbound): %v", err)
 }
 
 // TestBindingDelegationIntact: with a binding installed, NON-bound names still work
