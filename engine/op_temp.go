@@ -66,7 +66,13 @@ func OpTempYield(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 			if lzErr != nil {
 				lzYieldErr(lzErr)
 			} else {
-				lzYieldVals(base.ValsDecode(lzBytes, lzVals[:0]))
+				// Reuse lzVals' backing array across rows: assign the grown slice
+				// back (the decoded Vals are subslices of lzBytes / stable, and the
+				// yield is synchronous so downstream consumes each row before the
+				// next decode -- same reuse the other ValsDecode callers rely on).
+				// Without the assign-back lzVals stays nil and every row re-allocates.
+				lzVals = base.ValsDecode(lzBytes, lzVals[:0])
+				lzYieldVals(lzVals)
 			}
 		}
 	}
