@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/couchbase/query/algebra"
@@ -414,10 +415,18 @@ func (s *Session) PlanExec(pp *PreparedPlan,
 			// pace re-tunes the checkpoint interval so onStats fires at a display-
 			// friendly rate: a scan racing past (checkpoints arriving faster than a UI
 			// can absorb) backs the interval off (1024 -> 2048 -> ...), a slowing scan
-			// eases it back down. It carries state across calls; the query runs on one
-			// goroutine at the top (OnStats is the single live-footer sink), so no lock.
+			// eases it back down.
 			pace := NewYieldPacer(engine.ScanYieldStatsEvery)
+			// statsMu serializes the callback: UNION ALL (and other broadcast ops) run
+			// their branches as CONCURRENT actors (base/stage.go), and every actor's
+			// scan invokes this one shared YieldStats at its checkpoints -- so both the
+			// stateful pace.Next (read-modify-write of the pacer) and onStats (the single
+			// live-footer sink) would otherwise race across actor goroutines. Checkpoints
+			// are infrequent (every >=1024 rows, growing), so the lock is uncontended.
+			var statsMu sync.Mutex
 			vars.Ctx.YieldStats = func(st *base.Stats) base.YieldStatsControl {
+				statsMu.Lock()
+				defer statsMu.Unlock()
 				// The live in-flight aggregate partials (COUNT/SUM/AVG/MIN/MAX
 				// climbing) are refreshed by each actor at its own checkpoint
 				// (Ctx.RunningAggsRefresh, called just before this YieldStats fires), so
