@@ -20,9 +20,11 @@
 // interactively AND non-interactively (n1k1 <bundle> -c '.detect run --corpus ./det'),
 // so CI / an agent drives it the same way.
 //
-// A CORPUS is a flat directory of *.sql++ files: each file is one detector; its Tag
-// is the filename stem; its statement is the file contents. (Front-matter / golden
-// fixtures -- phase 7's recipe format -- are DEFERRED; a corpus is just SQL++ files.)
+// A CORPUS is a directory of *.sql++ RECIPE files (glue.LoadCorpus / glue.ParseRecipe).
+// A recipe is SQL++ plus optional `-- key: value` front-matter (ticket -> Tag, source,
+// severity, versions, tags) and an optional inline golden fixture (`-- @fixture` JSONL
+// input rows + `-- @expect` golden findings). A plain *.sql++ with none of these still
+// loads (Tag = filename stem, Stmt = whole body) -- backward compatible.
 //
 // SUBCOMMANDS:
 //
@@ -33,19 +35,26 @@
 //	    per-detector class (fused/standalone/rejected), target keyspace, eval lane
 //	    (native/boxed), predicate-index verdict (literal vs always-wake) and advice,
 //	    plus a corpus score (% fused / native / index-pruned).
+//	.detect test [--corpus <dir>] [--update]         -- the golden-fixture runner (CI):
+//	    for each recipe with a `-- @fixture`, build a temp keyspace from its input rows,
+//	    run JUST that detector, and (check mode) assert the produced findings equal the
+//	    recipe's `-- @expect` golden as a set -- or (--update) record the produced
+//	    findings back into the recipe's @expect block. Signals failure via c.failed so a
+//	    caller (make detect-test) exits non-zero on any FAIL. Hermetic: builds its own
+//	    temp datastores, so it needs no open bundle.
 //
-// DEFERRED (noted): .detect test (golden fixtures, phase 7); .detect bind (dry-run --
-// binding already fails loud at run); per-finding STREAMING (findings are batch-
-// rendered via the current output mode -- jsonlines still streams the row table; a
-// per-finding OnRow hook is a nice-to-have); the SHA-keyed build cache; and the
-// re-run delta report.
+// DEFERRED (noted): .detect bind (dry-run -- binding already fails loud at run);
+// per-finding STREAMING (findings are batch-rendered via the current output mode --
+// jsonlines still streams the row table; a per-finding OnRow hook is a nice-to-have);
+// the SHA-keyed build cache; the re-run delta report; and multi-keyspace / version-
+// specific fixtures (a fixture feeds the detector's single `source` keyspace).
 package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 
@@ -60,6 +69,8 @@ func (c *cli) cmdDetect(arg string) {
 		c.cmdDetectRun(rest)
 	case "lint":
 		c.cmdDetectLint(rest)
+	case "test":
+		c.cmdDetectTest(rest)
 	case "", "help":
 		c.cmdDetectHelp()
 	default:
@@ -71,10 +82,14 @@ func (c *cli) cmdDetectHelp() {
 	fmt.Fprint(c.stderr, `.detect commands (PREPARE++ detector corpus -- DESIGN-prepare.md):
   .detect run  --corpus <dir> [--bind <manifest>]  run the corpus over the open bundle -> findings
   .detect lint --corpus <dir> [--bind <manifest>]  authoring report card (compile, don't run)
+  .detect test [--corpus <dir>] [--update]         golden-fixture runner (CI): check each recipe's
+                                                    @fixture against its @expect (or --update records it)
   .detect help                                      this help
 
-A corpus is a flat directory of *.sql++ files: each file is one detector, its Tag is
-the filename stem, its body is the SQL++ statement.
+A corpus is a directory of *.sql++ RECIPE files. A recipe is SQL++ plus optional
+`+"`-- key: value`"+` front-matter (ticket -> Tag, source, severity, versions, tags) and an
+optional inline golden fixture (`+"`-- @fixture`"+` JSONL rows + `+"`-- @expect`"+` findings). A plain
+*.sql++ with none of these loads too (Tag = filename stem, body = the statement).
 
 --bind <manifest> maps LOGICAL keyspace names (FROM <logical>) to per-bundle globs, so
 one corpus runs against differently-named bundles unchanged. Manifest format (one of):
@@ -89,16 +104,18 @@ Non-interactive (CI / agent):
 `)
 }
 
-// detectArgs is the parsed flag set shared by run + lint: the corpus dir and an
-// optional bind manifest path.
+// detectArgs is the parsed flag set shared by run + lint + test: the corpus dir, an
+// optional bind manifest path (run/lint), and the --update boolean (test).
 type detectArgs struct {
 	corpus string
 	bind   string
+	update bool // .detect test: record produced findings back into each recipe's @expect
 }
 
-// parseDetectArgs parses `--corpus <dir> [--bind <file>]` (also accepting the
-// bare/`=` forms `-corpus=x`). Unknown tokens are an error so a typo fails loudly
-// rather than being silently ignored.
+// parseDetectArgs parses `--corpus <dir> [--bind <file>] [--update]` (also accepting
+// the bare/`=` forms `-corpus=x`). Unknown tokens are an error so a typo fails loudly
+// rather than being silently ignored. --corpus is validated by the caller (required for
+// run/lint; test errors on its absence too).
 func parseDetectArgs(arg string) (detectArgs, error) {
 	var a detectArgs
 	toks := strings.Fields(arg)
@@ -127,8 +144,11 @@ func parseDetectArgs(arg string) (detectArgs, error) {
 				val = toks[i]
 			}
 			a.bind = val
+		case "update":
+			// A boolean flag: bare `--update`, or `--update=true|false`.
+			a.update = !hasEq || val == "true" || val == "1"
 		default:
-			return a, fmt.Errorf("unknown flag %q (want --corpus <dir> [--bind <manifest>])", t)
+			return a, fmt.Errorf("unknown flag %q (want --corpus <dir> [--bind <manifest>] [--update])", t)
 		}
 	}
 	if a.corpus == "" {
@@ -137,27 +157,26 @@ func parseDetectArgs(arg string) (detectArgs, error) {
 	return a, nil
 }
 
-// loadCorpus reads every *.sql++ file in dir as one detector: Tag = filename stem,
-// Stmt = file contents. Returned sorted by Tag for deterministic output. An empty
-// corpus (no *.sql++ files) is an error -- a silent no-op corpus would falsely read
-// as a clean bundle.
+// loadRecipes loads a corpus dir as parsed recipes (front-matter + fixtures), the
+// reusable glue loader. loadCorpus below projects these onto the Tag+Stmt detectors
+// run/lint consume; .detect test needs the full recipe (source, fixture, expect).
+func loadRecipes(dir string) ([]glue.Recipe, error) {
+	return glue.LoadCorpus(dir)
+}
+
+// loadCorpus reads a corpus dir as the Tag+Stmt detectors run/lint consume: it loads
+// the recipes (front-matter + fixtures stripped from the SQL body) via loadRecipes and
+// projects each onto its CorpusDetector. Returned sorted by path for deterministic
+// output. An empty corpus (no *.sql++ files) is an error -- a silent no-op corpus would
+// falsely read as a clean bundle.
 func loadCorpus(dir string) ([]glue.CorpusDetector, error) {
-	paths, err := filepath.Glob(filepath.Join(dir, "*.sql++"))
+	recipes, err := loadRecipes(dir)
 	if err != nil {
-		return nil, fmt.Errorf("scanning corpus %q: %v", dir, err)
+		return nil, err
 	}
-	sort.Strings(paths)
-	var dets []glue.CorpusDetector
-	for _, p := range paths {
-		body, rerr := os.ReadFile(p)
-		if rerr != nil {
-			return nil, fmt.Errorf("reading %q: %v", p, rerr)
-		}
-		tag := strings.TrimSuffix(filepath.Base(p), ".sql++")
-		dets = append(dets, glue.CorpusDetector{Tag: tag, Stmt: string(body)})
-	}
-	if len(dets) == 0 {
-		return nil, fmt.Errorf("no *.sql++ detectors in %q", dir)
+	dets := make([]glue.CorpusDetector, 0, len(recipes))
+	for i := range recipes {
+		dets = append(dets, recipes[i].AsDetector())
 	}
 	return dets, nil
 }
@@ -401,4 +420,132 @@ func orEmptyDash(s string) string {
 		return "-"
 	}
 	return s
+}
+
+// cmdDetectTest implements `.detect test`: the golden-fixture runner (DESIGN-prepare.md
+// phase 7, "a golden-fixture diff ... is the detector's unit test"; the AI-authoring CI
+// point). For each recipe that carries a `-- @fixture`, it builds a temp keyspace from
+// the fixture's input rows, runs JUST that detector (glue.Recipe.RunFixture -> the same
+// CorpusCompile/Run path .detect run uses), and then:
+//
+//   - CHECK mode (default): asserts the produced findings equal the recipe's `-- @expect`
+//     golden as a SORTED SET (order isn't guaranteed). A fixture with no @expect is a
+//     FAIL ("no golden recorded"). A FAIL prints a compact missing/unexpected diff.
+//   - --update mode: writes the produced findings back into the recipe's @expect block
+//     (golden-master capture) so the author reviews the diff and commits.
+//
+// It is HERMETIC (each recipe runs over its own temp datastore), so it needs no open
+// bundle. On any FAIL it sets c.failed so a non-interactive caller (make detect-test)
+// exits non-zero. A recipe with no fixture is counted, never a hard failure; a fixture
+// whose keyspace can't resolve (a deferred multi-source fixture) is SKIPPED with a note.
+func (c *cli) cmdDetectTest(arg string) {
+	args, err := parseDetectArgs(arg)
+	if err != nil {
+		fmt.Fprintf(c.stderr, "%s: .detect test: %v\n", c.prog, err)
+		c.failed = true
+		return
+	}
+	recipes, err := loadRecipes(args.corpus)
+	if err != nil {
+		fmt.Fprintf(c.stderr, "%s: .detect test: %v\n", c.prog, err)
+		c.failed = true
+		return
+	}
+
+	var passed, failed, noFixture, skipped, updated int
+	for i := range recipes {
+		r := recipes[i]
+
+		if !r.HasFixture {
+			noFixture++
+			fmt.Fprintf(c.stderr, "  %s %s: no fixture\n", c.icon("• "), r.Tag)
+			continue
+		}
+
+		actual, rerr := r.RunFixture()
+		if rerr != nil {
+			var unresolved *glue.ErrFixtureUnresolved
+			if errors.As(rerr, &unresolved) {
+				skipped++
+				fmt.Fprintf(c.stderr, "  %s %s: %s -- %s\n", c.icon("⏭ "), r.Tag,
+					c.style.Yellow("SKIP"), tidyMsg(unresolved.Error()))
+				continue
+			}
+			failed++
+			fmt.Fprintf(c.stderr, "  %s %s: %s -- %s\n", c.icon("✗ "), r.Tag,
+				c.style.Red("FAIL"), tidyMsg(rerr.Error()))
+			continue
+		}
+
+		if args.update {
+			if uerr := updateRecipeExpect(r.Path, actual); uerr != nil {
+				failed++
+				fmt.Fprintf(c.stderr, "  %s %s: %s -- writing golden: %v\n", c.icon("✗ "), r.Tag,
+					c.style.Red("FAIL"), uerr)
+				continue
+			}
+			updated++
+			fmt.Fprintf(c.stderr, "  %s %s: recorded %d finding(s)\n", c.icon("📝 "), r.Tag, len(actual))
+			continue
+		}
+
+		if !r.HasExpect {
+			failed++
+			fmt.Fprintf(c.stderr, "  %s %s: %s -- no golden recorded (run: .detect test --update)\n",
+				c.icon("✗ "), r.Tag, c.style.Red("FAIL"))
+			continue
+		}
+
+		missing, unexpected := glue.DiffFindings(r.Fixture.Expect, actual)
+		if len(missing) == 0 && len(unexpected) == 0 {
+			passed++
+			fmt.Fprintf(c.stderr, "  %s %s: %s (%d finding(s))\n", c.icon("✓ "), r.Tag,
+				c.style.Cyan("PASS"), len(actual))
+			continue
+		}
+		failed++
+		fmt.Fprintf(c.stderr, "  %s %s: %s (%d missing, %d unexpected)\n", c.icon("✗ "), r.Tag,
+			c.style.Red("FAIL"), len(missing), len(unexpected))
+		for _, f := range missing {
+			fmt.Fprintf(c.stderr, "      %s missing:    %s\n", c.style.Red("-"), findingLine(f))
+		}
+		for _, f := range unexpected {
+			fmt.Fprintf(c.stderr, "      %s unexpected: %s\n", c.style.Cyan("+"), findingLine(f))
+		}
+	}
+
+	// Summary + CI signal. --update mode never "fails" a diff (it is recording), but a
+	// write error or an unresolved fixture still counts.
+	if args.update {
+		fmt.Fprintf(c.stderr, "%s%d recorded / %d no-fixture / %d skipped / %d failed\n",
+			c.icon("📋 "), updated, noFixture, skipped, failed)
+	} else {
+		fmt.Fprintf(c.stderr, "%s%d passed / %d failed / %d no-fixture / %d skipped\n",
+			c.icon("📋 "), passed, failed, noFixture, skipped)
+	}
+	if failed > 0 {
+		c.failed = true // non-interactive callers (make detect-test) exit non-zero.
+	}
+}
+
+// updateRecipeExpect rewrites path's `-- @expect` block in place with findings (leaving
+// everything before it byte-identical -- glue.RewriteExpect), the golden-master capture
+// for `.detect test --update`.
+func updateRecipeExpect(path string, findings []glue.Finding) error {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(glue.RewriteExpect(string(raw), findings)), 0o644)
+}
+
+// findingLine renders one finding as a compact {"tag":...,"evidence":...} line for the
+// check-mode diff.
+func findingLine(f glue.Finding) string {
+	tag, _ := json.Marshal(f.Tag)
+	ev := f.Evidence
+	if len(ev) == 0 {
+		ev = json.RawMessage("null")
+	}
+	return fmt.Sprintf(`{"tag":%s,"evidence":%s}`, tag, string(ev))
 }

@@ -143,7 +143,11 @@ func (c *cli) feed(line string) bool {
 	if c.buf.Len() == 0 {
 		// Dot-commands run immediately -- only at statement start.
 		if t := strings.TrimLeft(line, " \t"); strings.HasPrefix(t, ".") {
-			return c.dot(strings.TrimSpace(line))
+			quit := c.dot(strings.TrimSpace(line))
+			if c.failed {
+				c.sawError = true // latch for the non-interactive exit code (e.g. .detect test FAIL)
+			}
+			return quit
 		}
 		// Skip blank/comment-only lines (sqlite/duckdb: nothing to execute yet).
 		if cmd.IsBlankOrComment(line) {
@@ -157,6 +161,9 @@ func (c *cli) feed(line string) bool {
 	stmts, rest := cmd.SplitStatements(c.buf.String())
 	for _, s := range stmts {
 		c.exec(s)
+		if c.failed {
+			c.sawError = true // latch for the non-interactive exit code
+		}
 		if c.bail && c.failed { // .bail on: stop the input loop on first error
 			c.buf.Reset()
 			return true
@@ -176,6 +183,9 @@ func (c *cli) feed(line string) bool {
 func (c *cli) flush() {
 	if !cmd.IsBlankOrComment(c.buf.String()) {
 		c.exec(c.buf.String())
+		if c.failed {
+			c.sawError = true // latch for the non-interactive exit code
+		}
 	}
 	c.buf.Reset()
 }

@@ -1,0 +1,14 @@
+-- ticket: ET-20001
+-- severity: medium
+-- source: requests
+-- tags: ["latency"]
+-- A high-latency detector over a different logical keyspace (requests), showing that
+-- .detect test builds a per-recipe fixture keyspace named after `source`.
+SELECT r.route, r.ms FROM requests r WHERE r.ms > 1000
+-- @fixture
+{"route":"/a","ms":250}
+{"route":"/b","ms":1500}
+{"route":"/c","ms":3000}
+-- @expect
+{"tag":"ET-20001","evidence":{"ms":1500,"route":"/b"}}
+{"tag":"ET-20001","evidence":{"ms":3000,"route":"/c"}}

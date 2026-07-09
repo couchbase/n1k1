@@ -130,6 +130,114 @@ func TestDetectLint(t *testing.T) {
 	}
 }
 
+// TestDetectTest: the golden-fixture runner in check mode over a corpus of a PASSING
+// recipe (fixture + correct expect), a FAILING recipe (fixture + deliberately wrong
+// expect -> reported with a diff), a NO-FIXTURE recipe (counted, not a hard fail), and a
+// FIXTURE-WITHOUT-EXPECT recipe (a hard fail -- "no golden recorded"). The summary counts
+// are asserted and failure is signaled via c.failed (so a CI caller exits non-zero).
+// It needs no open bundle -- .detect test builds its own temp fixture keyspaces.
+func TestDetectTest(t *testing.T) {
+	corpus := writeCorpus(t, map[string]string{
+		"pass": `-- ticket: P
+-- source: logs
+SELECT * FROM logs l WHERE l.sev = "ERROR"
+-- @fixture
+{"sev":"ERROR","msg":"boom"}
+{"sev":"INFO","msg":"fine"}
+-- @expect
+{"tag":"P","evidence":{"sev":"ERROR","msg":"boom"}}`,
+		"fail": `-- ticket: F
+-- source: logs
+SELECT * FROM logs l WHERE l.sev = "ERROR"
+-- @fixture
+{"sev":"ERROR","msg":"boom"}
+-- @expect
+{"tag":"F","evidence":{"sev":"ERROR","msg":"NOT-THE-ROW"}}`,
+		"nofix": `-- ticket: N
+-- source: logs
+SELECT * FROM logs l WHERE l.sev = "WARN"`,
+		"nogold": `-- ticket: G
+-- source: logs
+SELECT * FROM logs l WHERE l.sev = "ERROR"
+-- @fixture
+{"sev":"ERROR","msg":"boom"}`,
+	})
+
+	var out, errb bytes.Buffer
+	c := &cli{prog: "n1k1", mode: "jsonlines", out: &out, stderr: &errb}
+	c.cmdDetect("test --corpus " + corpus)
+
+	stderr := errb.String()
+	// pass PASS, fail FAIL (with a diff), nogold FAIL (no golden), nofix counted.
+	if !strings.Contains(stderr, "1 passed / 2 failed / 1 no-fixture") {
+		t.Errorf("summary counts wrong; stderr:\n%s", stderr)
+	}
+	if !strings.Contains(stderr, "P: PASS") {
+		t.Errorf("passing recipe not reported PASS; stderr:\n%s", stderr)
+	}
+	if !strings.Contains(stderr, "F: FAIL") || !strings.Contains(stderr, "missing:") {
+		t.Errorf("failing recipe not reported FAIL with a diff; stderr:\n%s", stderr)
+	}
+	if !strings.Contains(stderr, "no golden recorded") {
+		t.Errorf("fixture-without-expect not reported as no-golden FAIL; stderr:\n%s", stderr)
+	}
+	if !c.failed {
+		t.Errorf("any FAIL must set c.failed (CI exit signal); stderr:\n%s", stderr)
+	}
+}
+
+// TestDetectTestUpdate: a recipe with a fixture and NO @expect -> --update records the
+// golden; re-running in check mode then PASSES; and everything before the @expect block
+// is left byte-identical.
+func TestDetectTestUpdate(t *testing.T) {
+	head := `-- ticket: U
+-- source: logs
+SELECT * FROM logs l WHERE l.sev = "ERROR"
+-- @fixture
+{"sev":"ERROR","msg":"boom"}
+{"sev":"INFO","msg":"fine"}
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "u.sql++")
+	if err := os.WriteFile(path, []byte(head), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// (1) --update records the golden; no failure.
+	var out, errb bytes.Buffer
+	c := &cli{prog: "n1k1", mode: "jsonlines", out: &out, stderr: &errb}
+	c.cmdDetect("test --corpus " + dir + " --update")
+	if c.failed {
+		t.Fatalf("--update must not fail on a runnable fixture; stderr:\n%s", errb.String())
+	}
+	if !strings.Contains(errb.String(), "U: recorded 1 finding") {
+		t.Errorf("--update did not record the golden; stderr:\n%s", errb.String())
+	}
+
+	// The head (front-matter + SQL + fixture) is byte-identical; an @expect was appended.
+	rewritten, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(rewritten), head) {
+		t.Errorf("--update altered the recipe head:\n%s", string(rewritten))
+	}
+	if !strings.Contains(string(rewritten), "-- @expect") {
+		t.Errorf("--update did not append an @expect block:\n%s", string(rewritten))
+	}
+
+	// (2) Re-run in check mode -> PASS now.
+	var out2, errb2 bytes.Buffer
+	c2 := &cli{prog: "n1k1", mode: "jsonlines", out: &out2, stderr: &errb2}
+	c2.cmdDetect("test --corpus " + dir)
+	if c2.failed {
+		t.Errorf("recorded golden should PASS on re-check; stderr:\n%s", errb2.String())
+	}
+	if !strings.Contains(errb2.String(), "1 passed / 0 failed") {
+		t.Errorf("re-check summary wrong; stderr:\n%s", errb2.String())
+	}
+}
+
 // TestDetectRunBind: a corpus written against a LOGICAL keyspace resolves via a
 // manifest and runs; an unresolved logical keyspace fails loud (coverage surfaces the
 // gap) rather than reporting a silently clean bundle.

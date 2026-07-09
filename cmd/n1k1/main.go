@@ -300,6 +300,13 @@ func main() {
 		}()
 	}
 
+	// A non-interactive run (-c / -f / a stdin pipe) signals failure via the process
+	// exit code so a script or CI step (e.g. `make detect-test`, which drives
+	// `-c '.detect test ...'`) fails the build on any statement / dot-command error.
+	// c.sawError latches across the whole run (feed/flush/batch set it -- see repl.go);
+	// reset it here so a failing startup init file doesn't poison the exit code. The
+	// interactive REPL never exits non-zero on a query error (you just see the error).
+	c.sawError = false
 	switch {
 	case *cFlag != "":
 		c.feed(*cFlag)
@@ -312,6 +319,10 @@ func main() {
 		c.batch(os.Stdin) // piped input
 	default:
 		c.repl()
+		return
+	}
+	if c.sawError {
+		os.Exit(1)
 	}
 }
 
@@ -397,7 +408,8 @@ type cli struct {
 	prepareLevel glue.PrepareLevel // -prepare/.prepare: max compile level ceiling (interpreted|data|full)
 	echo         bool              // echo each input line as it's read (see .echo)
 	bail         bool              // stop the input loop on the first statement error (see .bail)
-	failed       bool              // transient: the last exec'd statement errored (drives .bail)
+	failed       bool              // transient: the last exec'd statement / dot-command errored (drives .bail)
+	sawError     bool              // latched: ANY statement / dot-command errored during a non-interactive run (drives the process exit code)
 	statsMode    string            // "off" | "on" (live) | "final" (totals at end); see .stats, DESIGN-stats.md
 	maxRows      int               // box: 0 = all; >0 = head+tail; <0 = last |n| rows
 	maxWidth     int               // box: per-column cap; 0 = uncapped; <0 = auto (fit terminal)
