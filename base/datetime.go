@@ -128,7 +128,7 @@ func DateAddMillis(millis float64, n float64, part []byte) (float64, bool) {
 
 	t := time.Unix(int64(millis/1000), int64(math.Mod(millis, 1000)*1000000.0))
 
-	res, ok := dateAdd(t, int(n), part)
+	res, ok := TimeAdd(t, int(n), part)
 	if !ok {
 		return 0, false
 	}
@@ -136,12 +136,12 @@ func DateAddMillis(millis float64, n float64, part []byte) (float64, bool) {
 	return timeToMillis(res), true
 }
 
-// dateAdd is a byte-for-byte port of cbq's dateAdd (expression/func_date.go): add
+// TimeAdd is a byte-for-byte port of cbq's dateAdd (expression/func_date.go): add
 // n of the named part (case-insensitive) to t. ok=false on an unknown component or
 // on an overflow of the representable range (matching cbq's W_DATE_* warnings,
 // which the boxed lane surfaces as NULL). The calendar_month case reproduces cbq's
 // last-day-of-month rounding exactly.
-func dateAdd(t time.Time, n int, part []byte) (time.Time, bool) {
+func TimeAdd(t time.Time, n int, part []byte) (time.Time, bool) {
 	p := strings.ToLower(string(part))
 
 	if n == 0 {
