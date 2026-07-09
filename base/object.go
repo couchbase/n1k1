@@ -44,7 +44,7 @@ func LengthReader(op int, v Val) (n int, sentinel Val, ok bool) {
 		if vt != ValTypeObject {
 			return 0, ValNull, false
 		}
-		return objectPairCount(inner), nil, true
+		return ObjectPairCount(inner), nil, true
 	}
 
 	// LenPoly.
@@ -56,17 +56,17 @@ func LengthReader(op int, v Val) (n int, sentinel Val, ok bool) {
 		}
 		return len(decoded), nil, true
 	case ValTypeArray:
-		return arrayElemCount(inner), nil, true
+		return ArrayElemCount(inner), nil, true
 	case ValTypeObject:
-		return objectPairCount(inner), nil, true
+		return ObjectPairCount(inner), nil, true
 	}
 
 	return 0, ValNull, false
 }
 
-// objectPairCount returns the number of top-level name/value pairs in the object
+// ObjectPairCount returns the number of top-level name/value pairs in the object
 // bytes inner (a `{...}` from Parse).
-func objectPairCount(inner []byte) int {
+func ObjectPairCount(inner []byte) int {
 	n := 0
 	jsonparser.ObjectEach(inner, func(_, _ []byte, _ jsonparser.ValueType, _ int) error {
 		n++
@@ -75,9 +75,9 @@ func objectPairCount(inner []byte) int {
 	return n
 }
 
-// arrayElemCount returns the number of top-level elements in the array bytes
+// ArrayElemCount returns the number of top-level elements in the array bytes
 // inner (a `[...]` from Parse).
-func arrayElemCount(inner []byte) int {
+func ArrayElemCount(inner []byte) int {
 	n := 0
 	jsonparser.ArrayEach(inner, func(_ []byte, _ jsonparser.ValueType, _ int, _ error) {
 		n++
@@ -154,13 +154,13 @@ func ObjectNames(c *ValComparer, v Val, bufPre []byte) (out []byte, sentinel Val
 	return out, nil, true
 }
 
-// appendJSONElem appends one jsonparser-yielded value (val, its dataType dt) to
+// JSONElementAppend appends one jsonparser-yielded value (val, its dataType dt) to
 // out as valid JSON. jsonparser strips a string's surrounding quotes but leaves
 // its escapes intact, so a string is re-quoted (the escaped content is copied
 // verbatim -- no re-escape); every other type (number/boolean/null/array/object)
 // is already valid JSON and is copied as-is. Mirrors the re-quote branch in
 // ArrayMinMax (array.go); shared by the OBJECT_VALUES / OBJECT_PAIRS builders.
-func appendJSONElem(out, val []byte, dt jsonparser.ValueType) []byte {
+func JSONElementAppend(out, val []byte, dt jsonparser.ValueType) []byte {
 	if dt == jsonparser.String {
 		out = append(out, '"')
 		out = append(out, val...)
@@ -169,7 +169,7 @@ func appendJSONElem(out, val []byte, dt jsonparser.ValueType) []byte {
 	return append(out, val...)
 }
 
-// objectSortedKVs parses an object Val, collects each (name, value, type) into the
+// ObjectSortedKVs parses an object Val, collects each (name, value, type) into the
 // ValComparer's pooled KeyVals, and insertion-sorts them ascending by name (byte
 // order) -- the shared front half of OBJECT_VALUES / OBJECT_PAIRS. It returns the
 // sorted kvs (still owned by the pool: the caller MUST KeyValsRelease it) plus the
@@ -177,7 +177,7 @@ func appendJSONElem(out, val []byte, dt jsonparser.ValueType) []byte {
 // Names are copied into the pool's reused key backing (ReuseNextKey, no per-row
 // key alloc after warmup); value slices point into v and stay valid for the
 // caller's single-pass emit before it returns.
-func objectSortedKVs(c *ValComparer, v Val) (kvs KeyVals, sentinel Val, ok bool) {
+func ObjectSortedKVs(c *ValComparer, v Val) (kvs KeyVals, sentinel Val, ok bool) {
 	if len(v) == 0 {
 		return nil, ValMissing, false
 	}
@@ -196,7 +196,7 @@ func objectSortedKVs(c *ValComparer, v Val) (kvs KeyVals, sentinel Val, ok bool)
 		return nil, ValNull, false
 	}
 
-	kvsSortByName(kvs)
+	KeyValsSortByName(kvs)
 
 	return kvs, nil, true
 }
@@ -216,11 +216,11 @@ func objectPairsInto(kvs KeyVals, inner []byte) (KeyVals, error) {
 	return kvs, err
 }
 
-// kvsSortByName insertion-sorts kvs ascending by name (byte order), matching cbq's
+// KeyValsSortByName insertion-sorts kvs ascending by name (byte order), matching cbq's
 // `a < b` name sort (nameList/mapList Less) and the key-sorted JSON serialization
 // cbq emits for every object. Object field counts are small, so insertion sort is
 // both allocation-free (no sort.Interface boxing) and fast.
-func kvsSortByName(kvs KeyVals) {
+func KeyValsSortByName(kvs KeyVals) {
 	for i := 1; i < len(kvs); i++ {
 		kv := kvs[i]
 		j := i - 1
@@ -232,13 +232,13 @@ func kvsSortByName(kvs KeyVals) {
 	}
 }
 
-// objectEmit serializes kvs (name/value pairs) as a JSON object `{"k":v,...}` into
+// ObjectEmit serializes kvs (name/value pairs) as a JSON object `{"k":v,...}` into
 // bufPre, sorted by name first (so the output is key-sorted exactly like cbq's
 // object serialization). The name is re-encoded via EncodeAsString (kvs names are
 // decoded); each value is re-emitted verbatim via appendJSONElem. The shared back
 // half of the OBJECT mutating builders.
-func objectEmit(c *ValComparer, kvs KeyVals, bufPre []byte) []byte {
-	kvsSortByName(kvs)
+func ObjectEmit(c *ValComparer, kvs KeyVals, bufPre []byte) []byte {
+	KeyValsSortByName(kvs)
 	c.PrepareEncoder()
 
 	out := append(bufPre[:0], '{')
@@ -248,14 +248,14 @@ func objectEmit(c *ValComparer, kvs KeyVals, bufPre []byte) []byte {
 		}
 		out, _ = c.EncodeAsString(kvs[i].Key, out)
 		out = append(out, ':')
-		out = appendJSONElem(out, kvs[i].Val, jsonparser.ValueType(kvs[i].ValType))
+		out = JSONElementAppend(out, kvs[i].Val, jsonparser.ValueType(kvs[i].ValType))
 	}
 	out = append(out, '}')
 	return out
 }
 
-// kvsFind returns the index of the pair named key (decoded) in kvs, or -1.
-func kvsFind(kvs KeyVals, key []byte) int {
+// KeyValsFindKey returns the index of the pair named key (decoded) in kvs, or -1.
+func KeyValsFindKey(kvs KeyVals, key []byte) int {
 	for i := range kvs {
 		if bytes.Equal(kvs[i].Key, key) {
 			return i
@@ -271,7 +271,7 @@ func kvsFind(kvs KeyVals, key []byte) int {
 // sorted values. Each value is re-emitted verbatim (appendJSONElem); only the
 // names drive the sort, so no value re-serialization happens.
 func ObjectValues(c *ValComparer, v Val, bufPre []byte) (out []byte, sentinel Val, ok bool) {
-	kvs, sentinel, ok := objectSortedKVs(c, v)
+	kvs, sentinel, ok := ObjectSortedKVs(c, v)
 	if !ok {
 		return nil, sentinel, false
 	}
@@ -281,7 +281,7 @@ func ObjectValues(c *ValComparer, v Val, bufPre []byte) (out []byte, sentinel Va
 		if i > 0 {
 			out = append(out, ',')
 		}
-		out = appendJSONElem(out, kvs[i].Val, jsonparser.ValueType(kvs[i].ValType))
+		out = JSONElementAppend(out, kvs[i].Val, jsonparser.ValueType(kvs[i].ValType))
 	}
 	out = append(out, ']')
 
@@ -298,7 +298,7 @@ func ObjectValues(c *ValComparer, v Val, bufPre []byte) (out []byte, sentinel Va
 // ObjectNames); the "val" is re-emitted verbatim (appendJSONElem). The object keys
 // are emitted "name" then "val" -- already the sorted order cbq serializes.
 func ObjectPairs(c *ValComparer, v Val, bufPre []byte) (out []byte, sentinel Val, ok bool) {
-	kvs, sentinel, ok := objectSortedKVs(c, v)
+	kvs, sentinel, ok := ObjectSortedKVs(c, v)
 	if !ok {
 		return nil, sentinel, false
 	}
@@ -313,7 +313,7 @@ func ObjectPairs(c *ValComparer, v Val, bufPre []byte) (out []byte, sentinel Val
 		out = append(out, `{"name":`...)
 		out, _ = c.EncodeAsString(kvs[i].Key, out)
 		out = append(out, `,"val":`...)
-		out = appendJSONElem(out, kvs[i].Val, jsonparser.ValueType(kvs[i].ValType))
+		out = JSONElementAppend(out, kvs[i].Val, jsonparser.ValueType(kvs[i].ValType))
 		out = append(out, '}')
 	}
 	out = append(out, ']')
@@ -363,7 +363,7 @@ func ObjectPut(c *ValComparer, obj, key, val Val, bufPre []byte) (out []byte, se
 		return nil, sentinel, false
 	}
 
-	i := kvsFind(kvs, keyDec)
+	i := KeyValsFindKey(kvs, keyDec)
 	if len(val) == 0 { // MISSING val -> remove the field (SetField semantics).
 		if i >= 0 {
 			copy(kvs[i:], kvs[i+1:])
@@ -379,7 +379,7 @@ func ObjectPut(c *ValComparer, obj, key, val Val, bufPre []byte) (out []byte, se
 		}
 	}
 
-	out = objectEmit(c, kvs, bufPre)
+	out = ObjectEmit(c, kvs, bufPre)
 	c.KeyValsRelease(0, kvs)
 	return out, nil, true
 }
@@ -404,13 +404,13 @@ func ObjectAdd(c *ValComparer, obj, key, val Val, bufPre []byte) (out []byte, se
 
 	// Add only when the key is absent AND a (non-MISSING) value was supplied; else
 	// leave obj unchanged (cbq never overwrites and skips a MISSING value).
-	if len(val) > 0 && kvsFind(kvs, keyDec) < 0 {
+	if len(val) > 0 && KeyValsFindKey(kvs, keyDec) < 0 {
 		pv, pt := Parse(val)
 		kCopy := append(KeyValsReuseNextKey(kvs), keyDec...)
 		kvs = append(kvs, KeyVal{Key: kCopy, Val: pv, ValType: pt})
 	}
 
-	out = objectEmit(c, kvs, bufPre)
+	out = ObjectEmit(c, kvs, bufPre)
 	c.KeyValsRelease(0, kvs)
 	return out, nil, true
 }
@@ -432,12 +432,12 @@ func ObjectRemove(c *ValComparer, obj, key Val, bufPre []byte) (out []byte, sent
 		return nil, sentinel, false
 	}
 
-	if i := kvsFind(kvs, keyDec); i >= 0 {
+	if i := KeyValsFindKey(kvs, keyDec); i >= 0 {
 		copy(kvs[i:], kvs[i+1:])
 		kvs = kvs[:len(kvs)-1]
 	}
 
-	out = objectEmit(c, kvs, bufPre)
+	out = ObjectEmit(c, kvs, bufPre)
 	c.KeyValsRelease(0, kvs)
 	return out, nil, true
 }
@@ -462,7 +462,7 @@ func ObjectConcat(c *ValComparer, obj1, obj2 Val, bufPre []byte) (out []byte, se
 	// Merge obj2: overwrite a matching name in place, else append (obj2 wins).
 	mergeErr := jsonparser.ObjectEach(inner2,
 		func(k []byte, val []byte, dt jsonparser.ValueType, _ int) error {
-			if i := kvsFind(kvs, k); i >= 0 {
+			if i := KeyValsFindKey(kvs, k); i >= 0 {
 				kvs[i].Val, kvs[i].ValType = val, int(dt)
 			} else {
 				kCopy := append(KeyValsReuseNextKey(kvs), k...)
@@ -475,7 +475,7 @@ func ObjectConcat(c *ValComparer, obj1, obj2 Val, bufPre []byte) (out []byte, se
 		return nil, ValNull, false
 	}
 
-	out = objectEmit(c, kvs, bufPre)
+	out = ObjectEmit(c, kvs, bufPre)
 	c.KeyValsRelease(0, kvs)
 	return out, nil, true
 }
