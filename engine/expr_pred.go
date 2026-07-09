@@ -21,10 +21,10 @@ import (
 // mirror cbq's logic_not.go / comp_null.go / comp_missing.go / comp_valued.go
 // exactly.
 
-// isPredicateFuncs maps each IS predicate to its 3-element result table, indexed
+// ExprIsPredicateFuncs maps each IS predicate to its 3-element result table, indexed
 // by base.ValKind {value, null, missing} -- the shared ExprIsPredicate harness
 // classifies the operand and returns the matching constant Val.
-var isPredicateFuncs = map[string][]base.Val{
+var ExprIsPredicateFuncs = map[string][]base.Val{
 	"is_null":        {base.ValFalse, base.ValTrue, base.ValMissing}, // NULL->true, MISSING->MISSING, else false
 	"is_not_null":    {base.ValTrue, base.ValFalse, base.ValMissing}, // NULL->false, MISSING->MISSING, else true
 	"is_missing":     {base.ValFalse, base.ValFalse, base.ValTrue},   // MISSING->true, else false
@@ -34,17 +34,17 @@ var isPredicateFuncs = map[string][]base.Val{
 }
 
 func init() {
-	for name, byKind := range isPredicateFuncs {
-		ExprCatalog[name] = exprIsPredicateOp(byKind)
+	for name, byKind := range ExprIsPredicateFuncs {
+		ExprCatalog[name] = ExprIsPredicateOp(byKind)
 	}
 	ExprCatalog["not"] = ExprNot
 }
 
-// exprIsPredicateOp closes over an IS predicate's result table and defers to the
+// ExprIsPredicateOp closes over an IS predicate's result table and defers to the
 // shared harness. Plain (non-lz) Go, so intermed_build passes it through and the
 // table still reaches the harness's emission site -- both paths stay identical to
 // the old per-op funcs (see DESIGN-exprs.md "Codegen ergonomics").
-func exprIsPredicateOp(byKind []base.Val) base.ExprCatalogFunc {
+func ExprIsPredicateOp(byKind []base.Val) base.ExprCatalogFunc {
 	return func(lzVars *base.Vars, labels base.Labels, params []interface{}, path string) base.ExprFunc {
 		return ExprIsPredicate(lzVars, labels, params, path, byKind)
 	}

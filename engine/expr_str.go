@@ -26,18 +26,18 @@ import (
 // own harness. TRIM/LTRIM/RTRIM's 2-arg (explicit cutset) forms are variadic and
 // fall back to cbq per the optimizer arity guard.
 
-// strTransformFuncs is the (name -> []byte->[]byte transform leaf) table for the
+// ExprStrTransformFuncs is the (name -> []byte->[]byte transform leaf) table for the
 // unary string-transform funcs, emitted by name in the compiled path (see
 // LzExprFmt). All share exprStrTransform via the exprStrTransformOp adapter.
-var strTransformFuncs = map[string]func([]byte) []byte{
+var ExprStrTransformFuncs = map[string]func([]byte) []byte{
 	"upper": base.StrCaseUpper, "lower": base.StrCaseLower, "title": base.StrCaseTitle,
 	"trim": base.StrTrim, "ltrim": base.StrTrimLeft, "rtrim": base.StrTrimRight,
 	"reverse": base.StrReverse,
 }
 
 func init() {
-	for name, transform := range strTransformFuncs {
-		ExprCatalog[name] = exprStrTransformOp(transform)
+	for name, transform := range ExprStrTransformFuncs {
+		ExprCatalog[name] = ExprStrTransformOp(transform)
 	}
 	ExprCatalog["replace"] = ExprReplace
 	// SUBSTR0/SUBSTR1, 2-arg and 3-arg -- the optimizer dispatches to an
@@ -65,21 +65,21 @@ func init() {
 	ExprCatalog["regexp_like"] = ExprRegexpLike
 }
 
-// exprStrTransformOp adapts a []byte->[]byte transform into an ExprCatalogFunc by
+// ExprStrTransformOp adapts a []byte->[]byte transform into an ExprCatalogFunc by
 // closing over it and deferring to the shared exprStrTransform harness. Plain Go
 // (no lz), so intermed_build emits it verbatim and the transform flows unchanged
 // to the emission site.
-func exprStrTransformOp(transform func([]byte) []byte) base.ExprCatalogFunc {
+func ExprStrTransformOp(transform func([]byte) []byte) base.ExprCatalogFunc {
 	return func(lzVars *base.Vars, labels base.Labels, params []interface{}, path string) base.ExprFunc {
-		return exprStrTransform(lzVars, labels, params, path, transform)
+		return ExprStrTransform(lzVars, labels, params, path, transform)
 	}
 }
 
-// exprStrTransform is the shared unary string-transform harness. base.StrDecode
+// ExprStrTransform is the shared unary string-transform harness. base.StrDecode
 // guards + decodes; transform maps the decoded bytes and base.EncodeStr re-encodes
 // into lzBufPre on a single line -- the transform func value and the varLift buffer
 // co-exist.
-func exprStrTransform(lzVars *base.Vars, labels base.Labels, params []interface{},
+func ExprStrTransform(lzVars *base.Vars, labels base.Labels, params []interface{},
 	path string, transform func([]byte) []byte) (lzExprFunc base.ExprFunc) {
 	exprA := params[0].([]interface{})
 
@@ -156,26 +156,26 @@ func ExprReplace(lzVars *base.Vars, labels base.Labels,
 
 func ExprSubstr02(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) base.ExprFunc {
-	return exprSubstr2(lzVars, labels, params, path, 0)
+	return ExprSubstr2(lzVars, labels, params, path, 0)
 }
 
 func ExprSubstr03(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) base.ExprFunc {
-	return exprSubstr3(lzVars, labels, params, path, 0)
+	return ExprSubstr3(lzVars, labels, params, path, 0)
 }
 
 func ExprSubstr12(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) base.ExprFunc {
-	return exprSubstr2(lzVars, labels, params, path, 1)
+	return ExprSubstr2(lzVars, labels, params, path, 1)
 }
 
 func ExprSubstr13(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) base.ExprFunc {
-	return exprSubstr3(lzVars, labels, params, path, 1)
+	return ExprSubstr3(lzVars, labels, params, path, 1)
 }
 
-// exprSubstr2 is the 2-arg SUBSTR harness (str, pos) -> str[pos:].
-func exprSubstr2(lzVars *base.Vars, labels base.Labels, params []interface{},
+// ExprSubstr2 is the 2-arg SUBSTR harness (str, pos) -> str[pos:].
+func ExprSubstr2(lzVars *base.Vars, labels base.Labels, params []interface{},
 	path string, startPos int) (lzExprFunc base.ExprFunc) {
 	var lzBufPre []byte // <== varLift: lzBufPre by path
 
@@ -216,8 +216,8 @@ func exprSubstr2(lzVars *base.Vars, labels base.Labels, params []interface{},
 	return lzExprFunc
 }
 
-// exprSubstr3 is the 3-arg SUBSTR harness (str, pos, len) -> str[pos:pos+len].
-func exprSubstr3(lzVars *base.Vars, labels base.Labels, params []interface{},
+// ExprSubstr3 is the 3-arg SUBSTR harness (str, pos, len) -> str[pos:pos+len].
+func ExprSubstr3(lzVars *base.Vars, labels base.Labels, params []interface{},
 	path string, startPos int) (lzExprFunc base.ExprFunc) {
 	var lzBufPre []byte // <== varLift: lzBufPre by path
 
@@ -339,26 +339,26 @@ func ExprSplit2(lzVars *base.Vars, labels base.Labels,
 
 func ExprLPad2(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) base.ExprFunc {
-	return exprPad2(lzVars, labels, params, path, false)
+	return ExprPad2(lzVars, labels, params, path, false)
 }
 
 func ExprRPad2(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) base.ExprFunc {
-	return exprPad2(lzVars, labels, params, path, true)
+	return ExprPad2(lzVars, labels, params, path, true)
 }
 
 func ExprLPad3(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) base.ExprFunc {
-	return exprPad3(lzVars, labels, params, path, false)
+	return ExprPad3(lzVars, labels, params, path, false)
 }
 
 func ExprRPad3(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) base.ExprFunc {
-	return exprPad3(lzVars, labels, params, path, true)
+	return ExprPad3(lzVars, labels, params, path, true)
 }
 
-// exprPad2 is the 2-arg LPAD/RPAD harness (str, len) with the default space pad.
-func exprPad2(lzVars *base.Vars, labels base.Labels, params []interface{},
+// ExprPad2 is the 2-arg LPAD/RPAD harness (str, len) with the default space pad.
+func ExprPad2(lzVars *base.Vars, labels base.Labels, params []interface{},
 	path string, right bool) (lzExprFunc base.ExprFunc) {
 	var lzBufPre []byte // <== varLift: lzBufPre by path
 
@@ -394,8 +394,8 @@ func exprPad2(lzVars *base.Vars, labels base.Labels, params []interface{},
 	return lzExprFunc
 }
 
-// exprPad3 is the 3-arg LPAD/RPAD harness (str, len, pad).
-func exprPad3(lzVars *base.Vars, labels base.Labels, params []interface{},
+// ExprPad3 is the 3-arg LPAD/RPAD harness (str, len, pad).
+func ExprPad3(lzVars *base.Vars, labels base.Labels, params []interface{},
 	path string, right bool) (lzExprFunc base.ExprFunc) {
 	var lzBufPre []byte // <== varLift: lzBufPre by path
 
@@ -483,18 +483,18 @@ func ExprContains(lzVars *base.Vars, labels base.Labels,
 
 func ExprPosition0(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) base.ExprFunc {
-	return exprStrPosition(lzVars, labels, params, path, 0)
+	return ExprStrPosition(lzVars, labels, params, path, 0)
 }
 
 func ExprPosition1(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) base.ExprFunc {
-	return exprStrPosition(lzVars, labels, params, path, 1)
+	return ExprStrPosition(lzVars, labels, params, path, 1)
 }
 
-// exprStrPosition is the shared POSITION0/POSITION1 harness. base.StrPositionIndex
+// ExprStrPosition is the shared POSITION0/POSITION1 harness. base.StrPositionIndex
 // computes the int (startPos %#v, no buffer); the int is then formatted into the
 // reused lzBufPre (buffer %s, no startPos) -- kept on separate lines.
-func exprStrPosition(lzVars *base.Vars, labels base.Labels, params []interface{},
+func ExprStrPosition(lzVars *base.Vars, labels base.Labels, params []interface{},
 	path string, startPos int) (lzExprFunc base.ExprFunc) {
 	var lzBufPre []byte // <== varLift: lzBufPre by path
 
@@ -537,19 +537,19 @@ func exprStrPosition(lzVars *base.Vars, labels base.Labels, params []interface{}
 
 func ExprRegexpContains(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) base.ExprFunc {
-	return exprRegexpMatch(lzVars, labels, params, path, false)
+	return ExprRegexpMatch(lzVars, labels, params, path, false)
 }
 
 func ExprRegexpLike(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) base.ExprFunc {
-	return exprRegexpMatch(lzVars, labels, params, path, true)
+	return ExprRegexpMatch(lzVars, labels, params, path, true)
 }
 
-// exprRegexpMatch is the shared REGEXP_CONTAINS/REGEXP_LIKE harness. exprA is the
+// ExprRegexpMatch is the shared REGEXP_CONTAINS/REGEXP_LIKE harness. exprA is the
 // source operand's per-row leaf; the constant pattern (params[1]) is decoded and
 // (for REGEXP_LIKE) anchored at construction, baked into lzPat, and compiled once
 // per row-stream into lzRe by base.StrRegexpMatch.
-func exprRegexpMatch(lzVars *base.Vars, labels base.Labels, params []interface{},
+func ExprRegexpMatch(lzVars *base.Vars, labels base.Labels, params []interface{},
 	path string, full bool) (lzExprFunc base.ExprFunc) {
 	exprA := params[0].([]interface{})
 
