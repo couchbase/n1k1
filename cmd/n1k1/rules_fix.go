@@ -59,7 +59,8 @@ func rulesFix(situation, detail string) string {
 			"e.g. `... AND msg LIKE '%panic%'` (or `regexp_contains(msg,'panic')`)."
 	case fixBoxed:
 		return "predicate boxes (falls back to cbq) -- caps the compile level and can't be index-pruned. " +
-			"Prefer a native form, e.g. replace `UPPER(msg) LIKE '%X%'` with `msg LIKE '%X%'` or `regexp_contains(msg,'x')`."
+			"Prefer a native form, e.g. replace a multi-wildcard `msg LIKE '%a%b%'` with `regexp_contains(msg,'a.*b')` " +
+			"(a plain `msg LIKE '%lit%'` and CONTAINS are already native)."
 	case fixUnresolved:
 		return "logical keyspace `" + detail + "` matched 0 files in this bundle -- a GAP, not a clean result. " +
 			"Check the manifest glob, e.g. `" + detail + " = **/" + detail + "*.log`."

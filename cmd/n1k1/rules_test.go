@@ -127,7 +127,7 @@ func TestRulesHelp(t *testing.T) {
 func TestRulesFixSnippets(t *testing.T) {
 	root := newLogsBundle(t)
 	corpus := writeCorpus(t, map[string]string{
-		"boxed":  `SELECT * FROM logs l WHERE UPPER(l.msg) LIKE "%X%"`, // boxed + always-wake
+		"boxed":  `SELECT * FROM logs l WHERE l.msg LIKE "%a%b%"`, // boxed (interior wildcards) + always-wake
 		"wake":   `SELECT * FROM logs l WHERE l.ts > 5`,                // fused, always-wake (no literal)
 		"broken": `SELECT * FROM logs l WHERE`,                         // rejected
 	})
@@ -141,7 +141,7 @@ func TestRulesFixSnippets(t *testing.T) {
 		"predicate boxes (falls back to cbq)", // boxed advice
 		"no discriminating literal",           // always-wake advice
 		"not a runnable detector",             // rejected advice
-		"msg LIKE '%X%'", "regexp_contains",   // the boxed native-form example
+		"msg LIKE '%a%b%'", "regexp_contains", // the boxed native-form example
 	} {
 		if !strings.Contains(lintOut, want) {
 			t.Errorf("lint advice missing fix snippet %q; stdout:\n%s", want, lintOut)

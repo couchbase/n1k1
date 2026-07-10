@@ -114,8 +114,8 @@ TIPS (get the best out of a corpus)
     index prunes wake-ups, e.g. "... AND msg LIKE '%panic%'" -- otherwise the detector wakes on every row.
   - Keep a detector SINGLE-SOURCE filter+project (SELECT ... FROM one WHERE ...) so it FUSES into
     the shared scan. A GROUP BY / window / join / DISTINCT / ORDER-LIMIT / index-scan runs standalone.
-  - Prefer NATIVE expressions over boxed ones: "msg LIKE '%x%'" or "regexp_contains(msg,'x')" instead of
-    "UPPER(msg) LIKE '%X%'". A boxed expression falls back to cbq and caps the compile level.
+  - Prefer NATIVE expressions over boxed ones: "msg LIKE '%x%'", CONTAINS or "regexp_contains(msg,'x')" instead of
+    a multi-wildcard "msg LIKE '%a%b%'". A boxed expression falls back to cbq and caps the compile level.
   - Give EVERY detector a golden fixture (-- @fixture / -- @expect) so CI (.rules test) protects it
     against a regression. Capture the first golden with ".rules test --update".
   - Author against LOGICAL keyspaces + a --bind manifest, so ONE corpus runs across differently-named
