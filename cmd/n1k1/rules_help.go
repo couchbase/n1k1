@@ -147,9 +147,21 @@ merge-join instead of an O(n^2) scan. To QUALIFY, the subquery must be:
     a "time:" field (normalized to the int64 sort key) and an "order:" (.extract help).
 An outer WHERE on the driving stream is fine. If it does NOT lower, ".verbose on" prints
 "argmax subquery NOT lowered to ASOF ...: <the gate that stopped it>", e.g. an unproven
-sort key -- so you know before running a slow query. Example:
+sort key -- so you know before running a slow query. Examples:
+  -- PRECEDING: the last rebalance state in effect when each error was logged.
   SELECT e.ts, (SELECT r.msg FROM state r WHERE r.ts <= e.ts ORDER BY r.ts DESC LIMIT 1) AS prev
   FROM errors e WHERE regexp_contains(e.msg, "Terminate")
+
+  -- FOLLOWING + look-ahead + content residual: "XYZ then ABC within 5s after, same node"
+  -- (did an ABC recovery line follow each XYZ error soon after, on that node?). ASC + >=
+  -- is following; "r.ts <= e.ts + 5000000000" is the within-5s look-ahead; "r.node =
+  -- e.node" partitions; "r.msg LIKE ..." is a right-only residual pushed to the build.
+  SELECT e.ts, e.node,
+    (SELECT r.msg FROM recovery r
+     WHERE r.ts >= e.ts AND r.ts <= e.ts + 5000000000
+       AND r.node = e.node AND r.msg LIKE "%ABC%"
+     ORDER BY r.ts ASC LIMIT 1) AS abc_after
+  FROM errors e WHERE e.msg LIKE "%XYZ%"
 
 CONTEXT (grep -A/-B/-C) -- emit the matching line PLUS N lines of surrounding context, the
 way "grep -C2" does. A sliding window computes a "near a match" FLAG per line; a wrapping
