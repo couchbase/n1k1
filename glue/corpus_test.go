@@ -207,6 +207,126 @@ func TestCorpusCompileDifferential(t *testing.T) {
 	// t.Logf("matched %d findings across %d fused + 1 standalone detector", len(got), len(fused))
 }
 
+// TestCorpusFusedProjection is the IDEA-0004 gate: a FUSED detector's evidence must
+// be shaped by its SELECT projection -- matching the SAME statement run standalone --
+// not the whole matched row. Covers named-term (-> object), SELECT RAW (-> value),
+// and SELECT * (-> whole row) projections, plus a projection the fused envelope can't
+// reproduce (a star mixed with a term), which must route to standalone and still
+// honor the projection through the full pipeline.
+func TestCorpusFusedProjection(t *testing.T) {
+	sess := corpusTestSession(t)
+
+	// For each detector, `baseline` is the standalone SELECT whose rows the fused
+	// evidence must equal. Usually baseline == stmt (the projection reproduces
+	// exactly). SELECT * is the documented exception: fused evidence is the bare
+	// matched doc (whole-row), which equals `SELECT RAW l` -- NOT standalone
+	// `SELECT *`, which N1QL wraps as {"l": doc}. wantFused says whether it fuses.
+	cases := []struct {
+		tag       string
+		stmt      string
+		baseline  string
+		wantFused bool
+	}{
+		{"named", `SELECT l.id, l.sev FROM logs l WHERE l.sev = "ERROR"`,
+			`SELECT l.id, l.sev FROM logs l WHERE l.sev = "ERROR"`, true},
+		{"named_alias", `SELECT l.id AS ident, l.code AS c FROM logs l WHERE l.code > 3`,
+			`SELECT l.id AS ident, l.code AS c FROM logs l WHERE l.code > 3`, true},
+		{"raw_field", `SELECT RAW l.msg FROM logs l WHERE l.sev = "ERROR"`,
+			`SELECT RAW l.msg FROM logs l WHERE l.sev = "ERROR"`, true},
+		{"raw_expr", `SELECT RAW l.code + 1 FROM logs l WHERE l.sev = "ERROR"`,
+			`SELECT RAW l.code + 1 FROM logs l WHERE l.sev = "ERROR"`, true},
+		{"star", `SELECT * FROM logs l WHERE l.sev = "ERROR"`,
+			`SELECT RAW l FROM logs l WHERE l.sev = "ERROR"`, true},
+		// A star mixed with a named term can't be reproduced in the single-column
+		// envelope -> standalone (still honors the projection via s.Run).
+		{"star_plus_term", `SELECT l.*, l.id AS ident FROM logs l WHERE l.sev = "ERROR"`,
+			`SELECT l.*, l.id AS ident FROM logs l WHERE l.sev = "ERROR"`, false},
+	}
+
+	corpus := make([]CorpusDetector, 0, len(cases))
+	for _, c := range cases {
+		corpus = append(corpus, CorpusDetector{Tag: c.tag, Stmt: c.stmt})
+	}
+	cc, err := sess.CorpusCompile(corpus)
+	if err != nil {
+		t.Fatalf("CorpusCompile: %v", err)
+	}
+	if len(cc.Rejected) != 0 {
+		t.Fatalf("unexpected rejected detectors: %+v", cc.Rejected)
+	}
+
+	// Fusion classification per case.
+	standalone := map[string]bool{}
+	for _, d := range cc.Standalone {
+		standalone[d.Tag] = true
+	}
+	for _, c := range cases {
+		if c.wantFused && standalone[c.tag] {
+			t.Errorf("%s: expected FUSED, but classified standalone", c.tag)
+		}
+		if !c.wantFused && !standalone[c.tag] {
+			t.Errorf("%s: expected STANDALONE, but it fused", c.tag)
+		}
+	}
+
+	// Evidence set: every detector's findings must equal the identical SELECT run
+	// standalone (its own projected rows), tagged. This holds whether it fused or not.
+	gotFindings, err := cc.Run()
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	got := make([]string, 0, len(gotFindings))
+	for _, f := range gotFindings {
+		got = append(got, f.Tag+"\t"+canonJSON(t, f.Evidence))
+	}
+	sort.Strings(got)
+
+	var want []string
+	for _, c := range cases {
+		res, err := sess.Run(c.baseline)
+		if err != nil {
+			t.Fatalf("baseline %q: %v", c.baseline, err)
+		}
+		if len(res.Rows) == 0 {
+			t.Fatalf("%s: baseline produced no rows -- fixture invalid", c.tag)
+		}
+		for _, row := range res.Rows {
+			want = append(want, c.tag+"\t"+canonJSON(t, row))
+		}
+	}
+	sort.Strings(want)
+
+	if len(got) != len(want) {
+		t.Fatalf("finding count: got %d, want %d\n got=%v\n want=%v", len(got), len(want), got, want)
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Fatalf("finding[%d] mismatch:\n got=%q\n want=%q", i, got[i], want[i])
+		}
+	}
+
+	// Direct anti-regression: the "named" detector's evidence is the {id,sev} object,
+	// NOT the whole row (no "code"/"msg" keys leak through).
+	for _, f := range gotFindings {
+		if f.Tag != "named" {
+			continue
+		}
+		var obj map[string]interface{}
+		if err := json.Unmarshal(f.Evidence, &obj); err != nil {
+			t.Fatalf("named evidence not an object: %s", f.Evidence)
+		}
+		if _, leaked := obj["code"]; leaked {
+			t.Errorf("named evidence leaked whole row (has 'code'): %s", f.Evidence)
+		}
+		if _, leaked := obj["msg"]; leaked {
+			t.Errorf("named evidence leaked whole row (has 'msg'): %s", f.Evidence)
+		}
+		if _, ok := obj["id"]; !ok {
+			t.Errorf("named evidence missing projected 'id': %s", f.Evidence)
+		}
+	}
+}
+
 // TestCorpusCompileSingleKeyspace: a corpus confined to one keyspace returns the
 // per-keyspace broadcast directly (no union-all wrapper), and an empty / all-
 // unfusable corpus yields a nil plan (Run -> no findings).

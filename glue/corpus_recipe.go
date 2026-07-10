@@ -43,8 +43,11 @@ package glue
 //	{"sev":"WARN","msg":"ok","ts":5}
 //	{"sev":"ERROR","msg":"oom","ts":9}
 //	-- @expect
-//	{"tag":"ET-12345","evidence":{"sev":"ERROR","msg":"disk full","ts":3}}
-//	{"tag":"ET-12345","evidence":{"sev":"ERROR","msg":"oom","ts":9}}
+//	{"tag":"ET-12345","evidence":{"msg":"disk full","ts":3}}
+//	{"tag":"ET-12345","evidence":{"msg":"oom","ts":9}}
+//
+// (Evidence is the detector's SELECT projection -- here {msg, ts}, not the whole
+// matched row; a `SELECT *` detector's evidence is the whole matched doc.)
 //
 // BACKWARD COMPATIBLE: front-matter and both sections are OPTIONAL. A plain `.sql++`
 // file with none of them loads as a detector whose Tag is the filename stem and whose
