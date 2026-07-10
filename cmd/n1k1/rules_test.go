@@ -217,9 +217,10 @@ func TestRulesRunHitStats(t *testing.T) {
 	write("default/blob/dump.log", "just raw text\nnothing structured\n")
 
 	corpus := writeCorpus(t, map[string]string{
-		"hit":       `SELECT * FROM logs l WHERE l.sev = "ERROR"`,     // matches 2 of 3
-		"miss_pred": `SELECT * FROM logs l WHERE l.sev = "NOPE"`,      // 0 of 3 -> predicate miss
-		"miss_blob": `SELECT * FROM blob b WHERE b.text LIKE "%zzz%"`, // 0 of 1 -> blob
+		"hit":        `SELECT * FROM logs l WHERE l.sev = "ERROR"`,               // matches 2 of 3
+		"absent_lit": `SELECT * FROM logs l WHERE l.msg = "zzz_never"`,           // literal absent -> 0 woken
+		"woke_miss":  `SELECT * FROM logs l WHERE l.msg = "a" AND l.sev = "INFO"`, // "a" in 1 row, pred false -> woken>0, matched 0
+		"miss_blob":  `SELECT * FROM blob b WHERE b.text LIKE "%zzz%"`,           // 0 of 1 -> blob
 	})
 
 	var out, errb bytes.Buffer
@@ -229,9 +230,10 @@ func TestRulesRunHitStats(t *testing.T) {
 
 	for _, want := range []string{
 		"per-detector hits",
-		"hit", "matched=2",
-		"miss_pred", "predicate matched none of 3 scanned rows",
-		"miss_blob", "scanned 1 row", "whole-file blob",
+		"hit", "matched=2", "woken=", // the woken column is present
+		"absent_lit", "0 woken", "never appears", // absent-literal hint
+		"woke_miss", "never held", // predicate woke but never held
+		"miss_blob", "scanned 1 row", "whole-file blob", // blob hint
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf(".rules run hit-stats missing %q; stderr:\n%s", want, got)

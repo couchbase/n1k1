@@ -366,16 +366,17 @@ func (c *cli) reportDetectorHits(dets []glue.CorpusDetector, findings []glue.Fin
 	for _, f := range findings {
 		matched[f.Tag]++
 	}
-	fmt.Fprintf(c.stderr, "  %s\n", c.style.Dim("per-detector hits (scanned = rows its keyspace fanned; matched = findings):"))
+	fmt.Fprintf(c.stderr, "  %s\n", c.style.Dim("per-detector hits (scanned = keyspace rows; woken = rows that woke it; matched = findings):"))
 	for _, d := range dets {
 		ks, fused := cc.DetKeyspace[d.Tag]
 		m := matched[d.Tag]
 		var line string
 		if fused {
 			scanned := report.ScannedByKeyspace[ks]
-			line = fmt.Sprintf("%-24s matched=%-5d %s scanned=%d", d.Tag, m, ks, scanned)
+			woken := report.WokenByDetector[d.Tag]
+			line = fmt.Sprintf("%-24s matched=%-5d woken=%-7d %s scanned=%d", d.Tag, m, woken, ks, scanned)
 			if m == 0 {
-				line += "   " + zeroMatchHint(scanned)
+				line += "   " + zeroMatchHint(scanned, woken)
 			}
 		} else {
 			// Standalone (GROUP BY / window / ASOF / ...) or rejected: no shared scan.
@@ -386,17 +387,21 @@ func (c *cli) reportDetectorHits(dets []glue.CorpusDetector, findings []glue.Fin
 }
 
 // zeroMatchHint explains a 0-findings fused detector from its keyspace's scanned-row
-// count: ~0 rows means the data never reached the predicate (an empty scan, or a
-// whole-file blob that isn't framed into rows -- see .tables); many rows means the
-// predicate itself matched nothing.
-func zeroMatchHint(scanned int64) string {
+// count and how many rows woke it: ~0 scanned means the data never reached the
+// predicate (an empty scan, or a whole-file blob that isn't framed -- see .tables);
+// 0 woken over a scanned keyspace means the predicate-index literal never appears (a
+// typo, or genuinely absent); woken>0 with 0 matched means the predicate was evaluated
+// but never held (a predicate-logic bug).
+func zeroMatchHint(scanned, woken int64) string {
 	switch {
 	case scanned == 0:
 		return "← 0 matched: keyspace scanned 0 rows (empty or unresolved)"
 	case scanned == 1:
 		return "← 0 matched: keyspace scanned 1 row — likely a whole-file blob, not framed into rows (see .tables)"
+	case woken == 0:
+		return fmt.Sprintf("← 0 matched, 0 woken: the index literal never appears in %d scanned rows — a typo, or genuinely absent", scanned)
 	default:
-		return fmt.Sprintf("← 0 matched: predicate matched none of %d scanned rows — check the predicate", scanned)
+		return fmt.Sprintf("← 0 matched: predicate woke on %d row(s) but never held — check the predicate logic", woken)
 	}
 }
 

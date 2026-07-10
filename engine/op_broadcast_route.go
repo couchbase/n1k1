@@ -45,6 +45,12 @@ type Detector struct {
 	// Proj is the LIST of projection expr-trees (same shape as an OpProject
 	// Params); it becomes det[2] of a broadcast detector spec.
 	Proj []interface{}
+
+	// Woken, when non-nil, is a live per-detector counter the (interpreter-only)
+	// broadcast-indexed op increments once per row this detector is woken -- the
+	// substrate for the corpus per-detector hit report (woken vs scanned vs matched).
+	// It rides as the optional det[3] of the spec; nil = don't count (zero overhead).
+	Woken *int64
 }
 
 // BroadcastRoute is the source-routing plan builder: the cheapest, highest-

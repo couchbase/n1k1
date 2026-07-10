@@ -187,6 +187,11 @@ type CompiledCorpus struct {
 	// detector (IDEA-0015 hit stats). Standalone/rejected detectors are absent.
 	DetKeyspace map[string]string
 
+	// wokenByTag holds one live *int64 per FUSED detector (by Tag), wired into the
+	// broadcast op's engine.Detector.Woken so it counts the rows that woke each
+	// detector; RunReport reads them back (IDEA-0015-followup). Standalone absent.
+	wokenByTag map[string]*int64
+
 	// GatedSkipped lists the Tags of STANDALONE detectors that Run skipped because their
 	// `gate:` precondition matched no row in their Source keyspace (index-gating). Reset
 	// and populated on each Run; surfaced by the caller so a skip is visible, not silent.
@@ -205,6 +210,12 @@ type CorpusRunReport struct {
 	// ScannedByKeyspace maps a keyspace's qualified name to the rows its fused shared
 	// scan fanned in (== the broadcast-indexed op's RowsIn). Fused keyspaces only.
 	ScannedByKeyspace map[string]int64
+
+	// WokenByDetector maps a FUSED detector's Tag to how many rows woke it (its
+	// predicate was evaluated) -- the predicate index's effect per detector
+	// (IDEA-0015-followup): woken<<scanned means the literal is rare/absent, woken
+	// with 0 matched means the predicate ran but never held. Fused detectors only.
+	WokenByDetector map[string]int64
 }
 
 // corpusFindingsLabels is the uniform two-column findings schema every per-keyspace
@@ -246,6 +257,7 @@ func (s *Session) CorpusCompile(dets []CorpusDetector) (*CompiledCorpus, error) 
 	byKeyspace := map[string][]fusedDet{}
 	keyspacerFor := map[string]interface{}{}
 	detKeyspace := map[string]string{}
+	wokenByTag := map[string]*int64{}
 	var standalone []CorpusDetector
 	var rejected []RejectedDetector
 
@@ -294,12 +306,17 @@ func (s *Session) CorpusCompile(dets []CorpusDetector) (*CompiledCorpus, error) 
 		dets := byKeyspace[ks]
 		edets := make([]engine.Detector, 0, len(dets))
 		for _, fd := range dets {
+			// A live per-detector woken counter, wired into the broadcast op and read
+			// back by RunReport (IDEA-0015-followup).
+			w := new(int64)
+			wokenByTag[fd.tag] = w
 			edets = append(edets, engine.Detector{
 				Tag:  fd.tag,
 				Pred: fd.pred,
 				// Evidence shaped to the detector's SELECT projection (IDEA-0004):
 				// whole row for SELECT *, else the RAW value / assembled object.
-				Proj: fd.proj,
+				Proj:  fd.proj,
+				Woken: w,
 			})
 		}
 
@@ -333,6 +350,7 @@ func (s *Session) CorpusCompile(dets []CorpusDetector) (*CompiledCorpus, error) 
 		Rejected:       rejected,
 		FindingsLabels: findingsLabels,
 		DetKeyspace:    detKeyspace,
+		wokenByTag:     wokenByTag,
 		session:        s,
 	}, nil
 }
@@ -717,12 +735,24 @@ func (cc *CompiledCorpus) RunReport() ([]Finding, *CorpusRunReport, error) {
 	if cc.Plan != nil {
 		stats = base.StatsLayout(cc.Plan)
 	}
+	// Reset the per-detector woken counters so a repeated RunReport doesn't accumulate
+	// (the broadcast op bumps them live via the wired pointers during the run).
+	for _, w := range cc.wokenByTag {
+		*w = 0
+	}
 	var findings []Finding
 	err := cc.runStream(func(f Finding) error {
 		findings = append(findings, f)
 		return nil
 	}, stats)
-	return findings, &CorpusRunReport{ScannedByKeyspace: cc.scannedByKeyspace(stats)}, err
+	woken := make(map[string]int64, len(cc.wokenByTag))
+	for tag, w := range cc.wokenByTag {
+		woken[tag] = *w
+	}
+	return findings, &CorpusRunReport{
+		ScannedByKeyspace: cc.scannedByKeyspace(stats),
+		WokenByDetector:   woken,
+	}, err
 }
 
 // scannedByKeyspace reads each fused broadcast-indexed op's RowsIn (its shared scan's

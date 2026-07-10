@@ -67,6 +67,7 @@ type broadcastDetector struct {
 	predFunc base.ExprFunc
 	projFunc base.ProjectFunc
 	outReuse base.Vals
+	woken    *int64 // optional per-detector woken counter (see Detector.Woken); nil = off
 }
 
 // BroadcastExec holds the actual (non-lazy) fan-out logic. Its params are
@@ -150,11 +151,22 @@ func BroadcastExec(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 	ExecOp(o.Children[0], vars, childYield, yieldErr, pathNext, "0")
 }
 
+// bcBumpWoken increments a detector's optional woken counter (nil = off). It exists
+// as a ONE-LINE call so the gen-compiler's per-line `genCompiler:hide` strips it
+// cleanly at the call site -- a multi-line `if` block would survive gofmt as several
+// lines and leave a dangling brace in the compiled copy.
+func bcBumpWoken(d *broadcastDetector) {
+	if d.woken != nil {
+		*d.woken++
+	}
+}
+
 // broadcastDetectorSpec is the parsed, pre-setup description of one detector.
 type broadcastDetectorSpec struct {
-	tag  string
-	pred []interface{}
-	proj []interface{}
+	tag   string
+	pred  []interface{}
+	proj  []interface{}
+	woken *int64 // optional per-detector woken counter (det[3]); nil when absent
 }
 
 // broadcastDetectorSpecs parses o.Params[0] into per-detector specs. A malformed
@@ -185,7 +197,14 @@ func broadcastDetectorSpecs(params []interface{}) []broadcastDetectorSpec {
 			proj = p
 		}
 
-		specs = append(specs, broadcastDetectorSpec{tag: tag, pred: pred, proj: proj})
+		// Optional det[3]: a live *int64 the caller wants incremented once per row this
+		// detector is woken (per-detector observability, e.g. the corpus hit report).
+		var woken *int64
+		if len(det) >= 4 {
+			woken, _ = det[3].(*int64)
+		}
+
+		specs = append(specs, broadcastDetectorSpec{tag: tag, pred: pred, proj: proj, woken: woken})
 	}
 
 	return specs

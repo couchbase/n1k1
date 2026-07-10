@@ -96,6 +96,7 @@ func BroadcastIndexedExec(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 			tagVal:   base.Val(strconv.Quote(spec.tag)),
 			predFunc: predFunc,
 			projFunc: projFunc,
+			woken:    spec.woken,
 		})
 
 		lit, ok := PrefilterLiteral(spec.pred)
@@ -151,6 +152,7 @@ func BroadcastIndexedExec(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 				d := &detectors[di]
 
 				StatsCounterBump(stats, statsBase+StatBroadcastIndexedPredEvals) // stats: live // <== genCompiler:hide
+				bcBumpWoken(d)                                                   // stats: live // <== genCompiler:hide
 
 				predVal := d.predFunc(vals, yieldErr)
 				if base.ValTruthy(predVal) {
@@ -172,6 +174,7 @@ func BroadcastIndexedExec(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 			d := &detectors[di]
 
 			StatsCounterBump(stats, statsBase+StatBroadcastIndexedPredEvals) // stats: live // <== genCompiler:hide
+			bcBumpWoken(d)                                                   // stats: live // <== genCompiler:hide
 
 			predVal := d.predFunc(vals, yieldErr)
 			if base.ValTruthy(predVal) {

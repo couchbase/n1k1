@@ -359,6 +359,48 @@ func TestCorpusRunReport(t *testing.T) {
 	}
 }
 
+// TestCorpusRunReportWoken: RunReport reports per-detector WOKEN counts (the rows the
+// predicate index actually evaluated each detector on) -- IDEA-0015-followup. Uses
+// DISTINCT literals so no CSE sharing perturbs the counts: a detector keyed to a
+// literal present in one row wakes once; one keyed to an absent literal never wakes.
+func TestCorpusRunReportWoken(t *testing.T) {
+	sess := corpusTestSession(t) // logs: 4 rows; row b's msg is "rare_token_xyz"
+	cc, err := sess.CorpusCompile([]CorpusDetector{
+		{Tag: "rare", Stmt: `SELECT * FROM logs l WHERE l.msg = "rare_token_xyz"`},
+		{Tag: "absent", Stmt: `SELECT * FROM logs l WHERE l.msg = "zzz_never_present"`},
+	})
+	if err != nil {
+		t.Fatalf("CorpusCompile: %v", err)
+	}
+	findings, report, err := cc.RunReport()
+	if err != nil {
+		t.Fatalf("RunReport: %v", err)
+	}
+	// "rare" wakes on exactly the one row whose bytes contain its literal, and matches.
+	if report.WokenByDetector["rare"] != 1 {
+		t.Errorf("rare woken = %d, want 1 (its literal is in one row)", report.WokenByDetector["rare"])
+	}
+	// "absent" is index-pruned on every row -> never woken (and never matched).
+	if report.WokenByDetector["absent"] != 0 {
+		t.Errorf("absent woken = %d, want 0 (its literal appears in no row)", report.WokenByDetector["absent"])
+	}
+	matched := map[string]int{}
+	for _, f := range findings {
+		matched[f.Tag]++
+	}
+	if matched["rare"] != 1 || matched["absent"] != 0 {
+		t.Errorf("matched = %v, want rare=1 absent=0", matched)
+	}
+	// woken is a live counter; a second RunReport must NOT accumulate.
+	_, report2, err := cc.RunReport()
+	if err != nil {
+		t.Fatalf("RunReport (2nd): %v", err)
+	}
+	if report2.WokenByDetector["rare"] != 1 {
+		t.Errorf("2nd run rare woken = %d, want 1 (counters must reset per run)", report2.WokenByDetector["rare"])
+	}
+}
+
 // TestCorpusCompileSingleKeyspace: a corpus confined to one keyspace returns the
 // per-keyspace broadcast directly (no union-all wrapper), and an empty / all-
 // unfusable corpus yields a nil plan (Run -> no findings).

@@ -142,8 +142,13 @@ func cseBroadcast(child *base.Op, childLabels base.Labels,
 
 	detParams := make([]interface{}, 0, len(detectors))
 	for _, d := range detectors {
-		// The existing broadcast detector spec: []interface{}{tag, pred, proj}.
-		detParams = append(detParams, []interface{}{d.Tag, d.Pred, d.Proj})
+		// The broadcast detector spec: []interface{}{tag, pred, proj[, woken]}. The
+		// optional 4th element is a live per-detector woken counter (nil = omitted).
+		det := []interface{}{d.Tag, d.Pred, d.Proj}
+		if d.Woken != nil {
+			det = append(det, d.Woken)
+		}
+		detParams = append(detParams, det)
 	}
 
 	return &base.Op{
