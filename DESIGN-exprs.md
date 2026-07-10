@@ -288,6 +288,18 @@ re-fold):
   value buffers). Measured (4000 rows, 401-wide window): MIN/MAX 133→0.64 ms (~208×),
   SUM 77.7→0.48 ms (~163×) — both O(N), so the gap widens with window width.
 
+Separately from the aggregate fold, **frame-edge discovery** was itself O(N²): for a
+RANGE/GROUPS frame `CurrentUpdate` called `FindGroupEdge`, which walks outward from Pos
+to the group/range boundary each row — O(N·group) over a big peer group. The edges are
+monotone non-decreasing as Pos advances (values are sorted; thresholds only grow), so
+they now advance via **forward cursors** (`base.WindowFrame.edgeBeg/edgeEnd` for a RANGE
+frame's value/peer edges; `currentPeerGroup`, a monotone peer-group cache, for
+EXCLUDE GROUP/TIES and the GROUPS-stepping anchor), each visiting a row at most once per
+partition → **O(N)**, bit-equivalent to the `FindGroupEdge` result. Measured (4000 rows,
+one big peer group): RANGE running total 122→4.5 ms (~27×), GROUPS CURRENT ROW 235→4.6 ms
+(~51×), both now linear in N. (`FindGroupEdge` remains for `StepGroups`' n-group stepping,
+which isn't Pos-anchored.)
+
 Ranking is already O(1)/row (peer state maintained as rows stream); ROWS boundary math
 is O(1).
 
@@ -302,16 +314,15 @@ Perf (in rough priority):
 2. **General arbitrary-frame** O(N log N) — segment/aggregate trees (Leis et al., VLDB
    2015, *Efficient Processing of Window Functions in Analytical SQL Queries*). Only
    worth it if a workload hits large arbitrary frames that no fast path covers (e.g. an
-   EXCLUDE frame, or a non-invertible aggregate over a genuinely sliding frame).
-3. **Boundary advance instead of re-scan** — `FindGroupEdge` re-scans peers outward each
-   row; edges are monotone as Pos advances, so they could advance incrementally (worst
-   case, one big peer group, is another O(N²) inside CurrentUpdate).
-4. **Decode operand once per partition row** — `StepVals`/`RowVals` re-`Partition.Get` +
+   EXCLUDE frame, or a non-invertible aggregate over a genuinely sliding frame). Note an
+   EXCLUDE frame still re-folds the whole (minus-excluded) frame per row — O(N²) over a
+   big partition — since none of the incremental paths apply to it.
+3. **Decode operand once per partition row** — `StepVals`/`RowVals` re-`Partition.Get` +
    `ValsDecode` + re-eval the operand on every frame-row visit; a typed/columnar temp
    would decode once (overlaps `DESIGN-col.md`).
 
-(Done: the sliding MIN/MAX deque and the invertible sliding SUM/AVG — see the
-performance model above.)
+(Done: the sliding MIN/MAX deque and the invertible sliding SUM/AVG; and the
+monotone frame-edge cursors — see the performance model above.)
 
 Correctness gaps (small, several are deliberate non-matches of cbq quirks):
 - **cbq VAR_SAMP-of-a-single-value = 0** (window path) vs standard/GROUP-BY NULL — n1k1
