@@ -37,6 +37,14 @@ var ValFalse = Val([]byte("false"))
 
 var ValArrayEmpty = Val([]byte("[]"))
 
+// IsNullOrMissing reports whether v is JSON null or MISSING (the "null-ish" values
+// that ORDER BY ... NULLS FIRST/LAST positions). MISSING is the empty/nil encoding;
+// null is the only 4-byte JSON token starting with 'n' (a string is quoted, a number
+// never starts with 'n'), so the cheap length+first-byte check is exact.
+func IsNullOrMissing(v Val) bool {
+	return len(v) == 0 || (len(v) == 4 && v[0] == 'n')
+}
+
 // -----------------------------------------------------
 
 func ValEqualMissing(val Val) bool {

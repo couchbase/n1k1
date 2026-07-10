@@ -207,8 +207,11 @@ func OpOrderOffsetLimit(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVal
 
 // -----------------------------------------------------
 
-// MakeValsLessFunc returns a ValsLessFunc that compares based on the
-// given "asc" and "desc" directions.
+// MakeValsLessFunc returns a ValsLessFunc that compares based on the given
+// directions. Each direction is one of "asc"/"desc" (natural nulls collation, via
+// ValComparer) or a nulls-qualified form "asc-nulls-first" / "asc-nulls-last" /
+// "desc-nulls-first" / "desc-nulls-last" (explicit NULLS FIRST/LAST placement of
+// null/missing keys, independent of the sort direction).
 func MakeValsLessFunc(lzVars *base.Vars, directions []interface{},
 	path string) (lzValsLessFunc base.ValsLessFunc) {
 	// TODO: One day use eagerly discovered types to optimize?
@@ -216,23 +219,63 @@ func MakeValsLessFunc(lzVars *base.Vars, directions []interface{},
 	ndirections := len(directions)
 	if ndirections > 0 {
 		lzAscs := make([]bool, ndirections) // <== varLift: lzAscs by path
+		// lzNullsPos[i]: 0 = natural (let ValComparer place null/missing by collation),
+		// 1 = NULLS FIRST, 2 = NULLS LAST. Explicit only when the query asked for it, so
+		// natural ORDER BY keeps its exact prior behavior (incl. missing < null).
+		lzNullsPos := make([]int, ndirections) // <== varLift: lzNullsPos by path
 		for directioni, direction := range directions {
-			if direction.(string) == "asc" {
+			switch direction.(string) {
+			case "asc":
 				lzAscs[directioni] = true
+			case "desc":
+			case "asc-nulls-first":
+				lzAscs[directioni] = true
+				lzNullsPos[directioni] = 1
+			case "asc-nulls-last":
+				lzAscs[directioni] = true
+				lzNullsPos[directioni] = 2
+			case "desc-nulls-first":
+				lzNullsPos[directioni] = 1
+			case "desc-nulls-last":
+				lzNullsPos[directioni] = 2
 			}
 		}
 
 		lzValsLessFunc = func(lzValsA, lzValsB base.Vals) bool {
 			var lzCmp int
+			var lzANull, lzBNull bool
+
+			_, _ = lzANull, lzBNull
 
 			for idx := range directions { // !lz
-				lzCmp = lzVars.Ctx.ValComparer.Compare(lzValsA[idx], lzValsB[idx])
-				if lzCmp < 0 {
-					return lzAscs[idx]
-				}
-
-				if lzCmp > 0 {
-					return !lzAscs[idx]
+				if lzNullsPos[idx] != 0 {
+					// Explicit NULLS FIRST/LAST: place a null/missing key by request,
+					// independent of asc/desc. Both null-ish -> equal (fall to next term).
+					lzANull = base.IsNullOrMissing(lzValsA[idx])
+					lzBNull = base.IsNullOrMissing(lzValsB[idx])
+					if lzANull != lzBNull {
+						if lzANull {
+							return lzNullsPos[idx] == 1
+						}
+						return lzNullsPos[idx] == 2
+					}
+					if !lzANull {
+						lzCmp = lzVars.Ctx.ValComparer.Compare(lzValsA[idx], lzValsB[idx])
+						if lzCmp < 0 {
+							return lzAscs[idx]
+						}
+						if lzCmp > 0 {
+							return !lzAscs[idx]
+						}
+					}
+				} else {
+					lzCmp = lzVars.Ctx.ValComparer.Compare(lzValsA[idx], lzValsB[idx])
+					if lzCmp < 0 {
+						return lzAscs[idx]
+					}
+					if lzCmp > 0 {
+						return !lzAscs[idx]
+					}
 				}
 			} // !lz
 

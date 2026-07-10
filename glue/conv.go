@@ -1321,6 +1321,8 @@ func (c *Conv) VisitWindowAggregate(o *plan.WindowAggregate) (interface{}, error
 		endUnbounded := len(frameCfg) > 3 && frameCfg[3] == "unbounded"
 		frameNativeOK := frameType == "rows" || (begUnbounded && endUnbounded) || appendOrderBy
 
+		wired := false // did this window function map to a native ^aggregates column?
+
 		if isRankRowNumber || isRankNtile || (isRankPeer && appendOrderBy) {
 			// Ranking / partition-level: the frames op computes it from position + peer
 			// groups + partition count (no aggregate). ROW_NUMBER and NTILE need only the
@@ -1339,6 +1341,7 @@ func (c *Conv) VisitWindowAggregate(o *plan.WindowAggregate) (interface{}, error
 				framesParams = append(framesParams, k)
 			}
 			framesLabels = append(framesLabels, "^aggregates|"+agg.String())
+			wired = true
 		} else if isOffset && frameNativeOK {
 			// Offset/navigation: pass the operand + StepToOffset navigation (initial,
 			// asc, num); the frames op evaluates the operand at the target row.
@@ -1350,6 +1353,7 @@ func (c *Conv) VisitWindowAggregate(o *plan.WindowAggregate) (interface{}, error
 			}
 			framesParams = append(framesParams, winFuncName, operand, offInitial, offAsc, offNum)
 			framesLabels = append(framesLabels, "^aggregates|"+agg.String())
+			wired = true
 		} else {
 			aggName := winFuncName
 			if _, ok := base.AggCatalog[aggName+"_distinct"]; ok && agg.Distinct() {
@@ -1364,7 +1368,18 @@ func (c *Conv) VisitWindowAggregate(o *plan.WindowAggregate) (interface{}, error
 				}
 				framesParams = append(framesParams, aggName, operand)
 				framesLabels = append(framesLabels, "^aggregates|"+agg.String())
+				wired = true
 			}
+		}
+
+		if !wired {
+			// A window function n1k1 doesn't compute natively: an unlisted aggregate
+			// (RATIO_TO_REPORT / COUNTN / ...), a non-native offset or aggregate frame
+			// (e.g. a multi-column RANGE), or a peer ranking without a single ORDER BY.
+			// Leaving it boxed makes the projection invoke cbq's window Evaluate, which
+			// panics on n1k1's plain (non-AnnotatedValue) rows -- so reject the whole
+			// statement gracefully (NA) instead of emitting a landmine.
+			return NA(o)
 		}
 
 		framesOp := &base.Op{
@@ -1611,15 +1626,25 @@ func (c *Conv) VisitOrder(o *plan.Order) (interface{}, error) {
 	for _, term := range o.Terms() {
 		exprs = append(exprs, []interface{}{"exprTree", term.Expression()})
 
-		if term.Descending(nil, nil) { // nil item/context is fine for constant ASC/DESC.
-			dirs = append(dirs, "desc")
-		} else {
-			dirs = append(dirs, "asc")
+		// nil item/context is fine for constant ASC/DESC and NULLS FIRST/LAST literals.
+		dir := "asc"
+		if term.Descending(nil, nil) {
+			dir = "desc"
 		}
 
+		// Explicit NULLS FIRST/LAST -> encode into the direction so the order op places
+		// null/missing keys accordingly. Omitted when unspecified (the natural position
+		// -- ASC nulls first, DESC nulls last -- which the op's plain asc/desc handles
+		// via ValComparer's collation, preserving the exact prior behavior).
 		if term.NullsPosExpr() != nil {
-			return NA(o) // TODO: One day handle non-natural nulls ordering.
+			if term.NullsLast(nil, nil) {
+				dir += "-nulls-last"
+			} else {
+				dir += "-nulls-first"
+			}
 		}
+
+		dirs = append(dirs, dir)
 	}
 
 	params := []interface{}{exprs, dirs}
