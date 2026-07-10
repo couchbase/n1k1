@@ -132,6 +132,28 @@ func TestAggSumNullForNoNumericInput(t *testing.T) {
 	}
 }
 
+// TestAggAvgNullForEmpty: AVG over an empty group (count == 0) is NULL, not MISSING
+// (Val(nil)) -- the empty-window-frame case. (NOTE: a group with rows but no NUMERIC
+// values -- AVG(["a","b"]) -- still returns 0 here, not NULL; AggCount counts
+// non-numeric inputs. That's a separate pre-existing gap, not exercised by the window
+// corpus where the operand is always numeric.)
+func TestAggAvgNullForEmpty(t *testing.T) {
+	avg := func(jsons ...string) string {
+		agg := AggAvg.Init(nil, nil)
+		for _, js := range jsons {
+			agg, _, _ = AggAvg.Update(nil, Val(js), nil, agg, nil)
+		}
+		v, _, _ := AggAvg.Result(nil, agg, nil)
+		return string(v)
+	}
+	if got := avg(); got != "null" {
+		t.Errorf("empty: AVG=%q want %q", got, "null")
+	}
+	if got := avg("1", "3"); got != "2" {
+		t.Errorf("numeric: AVG=%q want %q", got, "2")
+	}
+}
+
 // sumVec folds vals through a vectorized aggregate (looked up by catalog name) as
 // a single packed little-endian column Val, and returns its formatted result.
 func sumVec(t *testing.T, aggName string, vals []float64, asInt bool) string {

@@ -279,9 +279,16 @@ func (wf *WindowFrame) CurrentUpdate(currentPos uint64) (err error) {
 		if wf.Type == WTokRows {
 			wf.Include.Beg = wf.Pos + wf.BegNum
 		} else if wf.Type == WTokGroups {
-			wf.Include.Beg, err = wf.StepGroups(wf.BegNum)
+			var steppedAll bool
+			wf.Include.Beg, steppedAll, err = wf.StepGroups(wf.BegNum)
 			if err != nil {
 				return err
+			}
+			if !steppedAll && wf.BegNum > 0 {
+				// BEG = n FOLLOWING stepped past the last group: the frame starts
+				// beyond the partition, so it's empty. Force Beg >= End (End is at most
+				// the partition length, set below).
+				wf.Include.Beg = int64(wf.Partition.Len())
 			}
 		} else { // wf.Type == WTokRange.
 			// TODO: Assumes ASC order-by.
@@ -306,9 +313,16 @@ func (wf *WindowFrame) CurrentUpdate(currentPos uint64) (err error) {
 		if wf.Type == WTokRows {
 			wf.Include.End = wf.Pos + wf.EndNum
 		} else if wf.Type == WTokGroups {
-			wf.Include.End, err = wf.StepGroups(wf.EndNum)
+			var steppedAll bool
+			wf.Include.End, steppedAll, err = wf.StepGroups(wf.EndNum)
 			if err != nil {
 				return err
+			}
+			if !steppedAll && wf.EndNum < 0 {
+				// END = n PRECEDING stepped past the first group: the frame ends before
+				// row 0, so it's empty. Set End = -1 (-> 0 after the +1 below), which is
+				// <= any Beg >= 0.
+				wf.Include.End = -1
 			}
 		} else { // wf.Type == WTokRange.
 			// TODO: Assumes ASC order-by.
@@ -361,7 +375,7 @@ func (wf *WindowFrame) CurrentUpdate(currentPos uint64) (err error) {
 // in the target group. A negative n means stepping in a descending
 // direction, and returns the position of the first entry in the
 // target group.
-func (wf *WindowFrame) StepGroups(n int64) (int64, error) {
+func (wf *WindowFrame) StepGroups(n int64) (int64, bool, error) {
 	dir := int64(1)
 	if n < 0 {
 		n, dir = -n, int64(-1)
@@ -373,24 +387,28 @@ func (wf *WindowFrame) StepGroups(n int64) (int64, error) {
 
 	curr, err := wf.FindGroupEdge(wf.Pos, dir, isRange)
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
 
 	for n > 0 {
 		next := curr + dir
 		if next < 0 || next >= end {
-			break
+			break // ran off the partition before stepping all n groups
 		}
 
 		curr, err = wf.FindGroupEdge(next, dir, isRange)
 		if err != nil {
-			return 0, err
+			return 0, false, err
 		}
 
 		n--
 	}
 
-	return curr, nil
+	// steppedAll is false when the offset ran past the partition edge. The caller uses
+	// it to tell "clamp toward the open side" (BEG preceding / END following -> extend
+	// to the partition edge) from "the boundary fell off the far side" (END preceding /
+	// BEG following -> the frame is empty).
+	return curr, n == 0, nil
 }
 
 // -------------------------------------------------------------------

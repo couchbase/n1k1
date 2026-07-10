@@ -327,6 +327,33 @@ func TestWindowOverGroupedAggregate(t *testing.T) {
 	}
 }
 
+// TestWindowEmptyFrame: a GROUPS frame that resolves to an empty range -- because a
+// PRECEDING boundary falls before the first group, or the bounds invert (1 PRECEDING
+// AND 2 PRECEDING) -- must yield the aggregate's empty result: NULL for SUM/AVG, 0
+// for COUNT. Previously the boundary was clamped into the partition, wrongly folding
+// a row (and SUM/AVG over no numeric input returned 0/MISSING instead of NULL).
+func TestWindowEmptyFrame(t *testing.T) {
+	sess := windowTestSession(t) // n=10,20,30,40,50 distinct -> each its own group
+
+	// GROUPS BETWEEN 2 PRECEDING AND 1 PRECEDING: the two groups just before the
+	// current. n=10 has none -> empty -> NULL; then {10}; {10,20}; {20,30}; {30,40}.
+	if got := winColAny(t, sess, `SELECT SUM(n) OVER (ORDER BY n GROUPS BETWEEN 2 PRECEDING AND 1 PRECEDING) AS s FROM nums ORDER BY n`, "s"); !reflect.DeepEqual(got, []interface{}{nil, 10.0, 30.0, 50.0, 70.0}) {
+		t.Errorf("GROUPS 2p-1p SUM: got %v, want [<nil> 10 30 50 70]", got)
+	}
+	// Inverted bounds (1 PRECEDING AND 2 PRECEDING) -> empty for every row: SUM NULL,
+	// COUNT 0.
+	if got := winColAny(t, sess, `SELECT SUM(n) OVER (ORDER BY n GROUPS BETWEEN 1 PRECEDING AND 2 PRECEDING) AS s FROM nums ORDER BY n`, "s"); !reflect.DeepEqual(got, []interface{}{nil, nil, nil, nil, nil}) {
+		t.Errorf("GROUPS 1p-2p SUM (empty): got %v", got)
+	}
+	if got := winCol(t, sess, `SELECT COUNT(n) OVER (ORDER BY n GROUPS BETWEEN 1 PRECEDING AND 2 PRECEDING) AS s FROM nums ORDER BY n`, "s"); !reflect.DeepEqual(got, []float64{0, 0, 0, 0, 0}) {
+		t.Errorf("GROUPS 1p-2p COUNT (empty): got %v", got)
+	}
+	// AVG over an empty frame is NULL (not 0 / MISSING).
+	if got := winColAny(t, sess, `SELECT AVG(n) OVER (ORDER BY n GROUPS BETWEEN 1 PRECEDING AND 2 PRECEDING) AS s FROM nums ORDER BY n`, "s"); !reflect.DeepEqual(got, []interface{}{nil, nil, nil, nil, nil}) {
+		t.Errorf("GROUPS 1p-2p AVG (empty): got %v", got)
+	}
+}
+
 // TestWindowNtile: NTILE(k) splits the ordered partition into k contiguous buckets;
 // the first (N mod k) buckets get one extra row. With N=5 rows: NTILE(2)=3+2,
 // NTILE(3)=2+2+1; k>=N gives one row per bucket.

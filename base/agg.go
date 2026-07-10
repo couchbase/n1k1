@@ -402,7 +402,7 @@ var AggAvg = &Agg{
 	Result: func(vars *Vars, agg, buf []byte) (v Val, aggRest, bufOut []byte) {
 		c := binary.LittleEndian.Uint64(agg[:8])
 		if c == 0 {
-			return Val(nil), agg[16:], buf
+			return ValNull, agg[16:], buf // no numeric input -> AVG is NULL, not MISSING
 		}
 
 		s := math.Float64frombits(binary.LittleEndian.Uint64(agg[8:16]))
