@@ -475,6 +475,22 @@ func KeyspaceRecordsOpen(ks datastore.Keyspace, opts records.WalkOptions, gctx *
 			if err != nil {
 				return nil, err
 			}
+			// IDEA-0001: a glob with no metacharacters (a bound single FILE, e.g.
+			// `--bind ns_error=ns_server.error.log`) has GlobBase == the file itself,
+			// so the per-file walk base IS the file and rel(base, file) collapses to
+			// ".". That makes the extract recipe's match-path "." -> RecipeFor misses
+			// -> the file falls back to a whole-file blob (0 framed records, a silent
+			// "clean" read). Binding must change WHICH files, never HOW they frame, so
+			// re-anchor the walk base at the corpus data root -- exactly what the auto
+			// keyspace and the describe path (recipeMatchPath) use -- when the base
+			// collapsed onto a file. Multi-file globs (base is a real dir) are untouched.
+			if fi, statErr := os.Stat(base); statErr == nil && !fi.IsDir() {
+				if root := dataRootFor(resolveAbs(base)); root != "" {
+					base = root
+				} else {
+					base = filepath.Dir(base)
+				}
+			}
 			return records.WalkPrelisted(base, files, opts), nil
 		}
 	}

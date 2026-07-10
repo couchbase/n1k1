@@ -539,3 +539,46 @@ func TestSortedSourceMetaFor(t *testing.T) {
 		t.Errorf("keyspace meta relpath = %q", metas[0].Relpath)
 	}
 }
+
+// TestBoundKeyspaceFramesLikeAuto is the regression for IDEA-0001: a late-bound
+// (--bind) single-file keyspace must frame through the SAME extract recipe as the
+// auto keyspace over that file -- binding changes WHICH files, never HOW they
+// frame. Before the fix the bound-glob scan framed each file relative to the glob
+// base (a single-file glob's base IS the file, so the recipe match-path collapsed
+// to "."), bypassing RecipeFor -> a whole-file blob -> 0 framed records.
+func TestBoundKeyspaceFramesLikeAuto(t *testing.T) {
+	dir := t.TempDir()
+	ks := filepath.Join(dir, "default", "logs")
+	if err := os.MkdirAll(ks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ks, "ns_server.debug.log"),
+		[]byte(nsLogKeyspaceFixture), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	const proj = "SELECT l.node, l.`level`, l.msg FROM %s l"
+
+	// AUTO keyspace: framed by the built-in ns_server recipe (3 typed records).
+	autoSess, err := OpenSession(dir, "default")
+	if err != nil {
+		t.Fatalf("OpenSession: %v", err)
+	}
+	defer autoSess.Close()
+	auto := runRows(t, autoSess, "SELECT l.node, l.`level`, l.msg FROM logs l")
+	if len(auto) != 3 {
+		t.Fatalf("auto keyspace should frame into 3 records, got %d: %v", len(auto), auto)
+	}
+
+	// BOUND keyspace: the same file bound to a logical name via a single-file glob.
+	b := Binding{"mylog": "default/logs/ns_server.debug.log"}
+	boundSess, err := OpenSessionBound(dir, "default", b)
+	if err != nil {
+		t.Fatalf("OpenSessionBound: %v", err)
+	}
+	defer boundSess.Close()
+	bound := runRows(t, boundSess, "SELECT l.node, l.`level`, l.msg FROM mylog l")
+
+	if strings.Join(bound, "|") != strings.Join(auto, "|") {
+		t.Fatalf("bound keyspace framed differently from auto (recipe bypassed?):\n auto  = %v\n bound = %v", auto, bound)
+	}
+}
