@@ -200,6 +200,25 @@ func WindowRatioValue(curr, frameSum Val, buf []byte) (Val, []byte) {
 	return Val(buf), buf
 }
 
+// WindowCountResult formats a COUNT as a JSON integer Val, byte-identical to
+// AggCount.Result -- used by the invertible sliding-window COUNT (which tracks the
+// count natively via add-entering/remove-leaving rather than folding the frame).
+func WindowCountResult(c int64, buf []byte) (Val, []byte) {
+	buf = strconv.AppendUint(buf[:0], uint64(c), 10)
+	return Val(buf), buf
+}
+
+// RowVals decodes the vals stored at position i in the partition (0-based). Unlike
+// StepVals it addresses a position directly (no Include/Excludes stepping), so the
+// invertible sliding fold can fetch the specific rows that entered/left the frame.
+func (wf *WindowFrame) RowVals(i int64, valsPre Vals) (Vals, error) {
+	buf, err := wf.Partition.Get(i)
+	if err != nil {
+		return nil, err
+	}
+	return ValsDecode(buf, valsPre[:0]), nil
+}
+
 // -------------------------------------------------------------------
 
 // WindowFrameCurr represents the current positions of entries of a

@@ -215,6 +215,53 @@ func TestWindowOffsetDefaultAndFromLast(t *testing.T) {
 	}
 }
 
+// TestWindowSlidingCount: COUNT over a fixed sliding ROWS frame -- the grep -A/-B/-C
+// "is this row near a match" idiom -- taking the invertible add-entering/remove-leaving
+// fast path. Results must match a brute-force count exactly (COUNT is integer, so no
+// float drift). PARTITION BY exercises the per-partition reset of the slide state.
+func TestWindowSlidingCount(t *testing.T) {
+	dir := t.TempDir()
+	ks := filepath.Join(dir, "default", "logs")
+	if err := os.MkdirAll(ks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// 8 rows in group "a", 4 in "b"; ERROR at a-pos 2,6 and b-pos 1.
+	var sb []byte
+	line := func(g string, pos int, err bool) {
+		sev := "info"
+		if err {
+			sev = "ERROR"
+		}
+		sb = append(sb, []byte(`{"g":"`+g+`","pos":`+strconv.Itoa(pos)+`,"sev":"`+sev+`"}`+"\n")...)
+	}
+	for i := 0; i < 8; i++ {
+		line("a", i, i == 2 || i == 6)
+	}
+	for i := 0; i < 4; i++ {
+		line("b", i, i == 1)
+	}
+	if err := os.WriteFile(filepath.Join(ks, "l.jsonl"), sb, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sess, err := OpenSession(dir, "default")
+	if err != nil {
+		t.Fatalf("OpenSession: %v", err)
+	}
+
+	errCase := `COUNT(CASE WHEN sev = 'ERROR' THEN 1 ELSE NULL END)`
+
+	// grep -C1 (1 PRECEDING AND 1 FOLLOWING), per group. a (errors at 2,6): rows 1,2,3
+	// and 5,6,7 are "near" -> [0,1,1,1,0,1,1,1]; b (error at 1): rows 0,1,2 -> [1,1,1,0].
+	if got := winCol(t, sess, `SELECT `+errCase+` OVER (PARTITION BY g ORDER BY pos ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING) AS near FROM logs ORDER BY g, pos`, "near"); !reflect.DeepEqual(got, []float64{0, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 0}) {
+		t.Errorf("grep -C1 near: got %v", got)
+	}
+	// grep -B2 (2 PRECEDING AND CURRENT ROW): a row is "after" an error within 2 lines.
+	// a: error at 2 -> rows 2,3,4; error at 6 -> rows 6,7. b: error at 1 -> rows 1,2,3.
+	if got := winCol(t, sess, `SELECT `+errCase+` OVER (PARTITION BY g ORDER BY pos ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) AS b FROM logs ORDER BY g, pos`, "b"); !reflect.DeepEqual(got, []float64{0, 0, 1, 1, 1, 0, 1, 1, 0, 1, 1, 1}) {
+		t.Errorf("grep -B2: got %v", got)
+	}
+}
+
 // TestWindowRatioAndDistinct: RATIO_TO_REPORT(x) = x / SUM(x over the frame), and
 // SUM/AVG(DISTINCT x) OVER a frame (which dedup the frame's values).
 func TestWindowRatioAndDistinct(t *testing.T) {

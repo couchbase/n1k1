@@ -336,6 +336,11 @@ func OpWindowFrames(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 		aggName = winFunc
 	}
 
+	// isCount gates the invertible sliding-COUNT fast path. A baked bool, not a literal
+	// `aggName == "count"` inside the emitted agg block -- a string literal there is
+	// mangled into a "%s" placeholder by the gen-compiler (the base.Val("null") landmine).
+	isCount := aggName == "count"
+
 	if LzScope {
 		var lzHeap *store.Heap
 
@@ -368,11 +373,17 @@ func OpWindowFrames(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 		var lzGrowAcc, lzGrowAccOther []byte
 		var lzGrowFolded int64
 
+		// Invertible sliding-window COUNT state (see the agg block): the running count
+		// and the previous frame edges, so a forward-sliding frame adjusts by the rows
+		// that entered/left rather than re-counting. Reset per partition.
+		var lzSlideCount, lzSlidePrevBeg, lzSlidePrevEnd int64
+
 		// Only the (interpreter-only) agg block below uses these; the gen-compiler
 		// strips that block via "// !lz", so keep them "used" in the compiled lane --
 		// same guard the rank buffers use above.
 		_, _, _, _ = lzAccA, lzAccB, lzResBuf, lzFrameVals
 		_, _, _ = lzGrowAcc, lzGrowAccOther, lzGrowFolded
+		_, _, _ = lzSlideCount, lzSlidePrevBeg, lzSlidePrevEnd
 
 		// Partition-level output buffer (row_number / rank / dense_rank / percent_rank /
 		// cume_dist / ntile). The peer-group state lives in base.WindowFrame
@@ -534,6 +545,47 @@ func OpWindowFrames(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 					}
 
 					lzResVal, _, lzResBuf = lzAgg.Result(lzVars, lzGrowAcc, lzResBuf[:0])
+				} else if isCount && lzFrame.Exclude == base.WTokNoOthers {
+					// Invertible sliding COUNT (Include.Beg finite -- not left-anchored --
+					// so the frame slides forward: Include.Beg and Include.End are both
+					// monotone non-decreasing). Instead of re-counting the whole frame each
+					// row, adjust a running count by the rows that entered/left. COUNT is
+					// an integer and exactly invertible (unlike a float SUM, which would
+					// drift), so add-entering/remove-leaving matches the brute-force fold
+					// bit-for-bit -- O(N) over the partition regardless of window size (the
+					// grep -A/-B/-C shape, ROWS BETWEEN N PRECEDING AND N FOLLOWING).
+					if lzCurrentPos == 0 {
+						lzSlideCount, lzSlidePrevBeg, lzSlidePrevEnd = 0, 0, 0
+					}
+
+					var lzSlideErr error
+
+					// Rows that ENTERED [prevEnd, End): +1 each if they count (a non-NULL,
+					// non-MISSING operand -- matching AggCount). Enter before leave so the
+					// running count never dips below zero.
+					for lzI := lzSlidePrevEnd; lzI < lzFrame.Include.End && lzSlideErr == nil; lzI++ {
+						lzFrameVals, lzSlideErr = lzFrame.RowVals(lzI, lzFrameVals[:0])
+						lzEnterVal := lzOperandFunc(lzFrameVals, lzYieldErr) // <== emitCaptured: pathNext "WFA"
+						if lzSlideErr == nil && base.ValHasValue(lzEnterVal) {
+							lzSlideCount++
+						}
+					}
+					// Rows that LEFT [prevBeg, Beg): -1 each if they had counted.
+					for lzI := lzSlidePrevBeg; lzI < lzFrame.Include.Beg && lzSlideErr == nil; lzI++ {
+						lzFrameVals, lzSlideErr = lzFrame.RowVals(lzI, lzFrameVals[:0])
+						lzLeaveVal := lzOperandFunc(lzFrameVals, lzYieldErr) // <== emitCaptured: pathNext "WFA"
+						if lzSlideErr == nil && base.ValHasValue(lzLeaveVal) {
+							lzSlideCount--
+						}
+					}
+					if lzSlideErr != nil {
+						lzYieldErr(lzSlideErr)
+					}
+
+					lzSlidePrevBeg = lzFrame.Include.Beg
+					lzSlidePrevEnd = lzFrame.Include.End
+
+					lzResVal, lzResBuf = base.WindowCountResult(lzSlideCount, lzResBuf[:0])
 				} else {
 					// General frame (fixed slide / arbitrary bounds / EXCLUDE): re-fold
 					// the whole frame from scratch each row. Ping-pong lzAcc/lzAccOther so
