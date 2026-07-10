@@ -17,6 +17,13 @@ correctness backstop.
   - [Catalog, conversion, recognition](#catalog-conversion-recognition)
   - [Native inventory (the authoritative "done" list)](#native-inventory-the-authoritative-done-list)
   - [Known-broken & caveats](#known-broken--caveats)
+- [Window functions](#window-functions)
+  - [Architecture](#window-architecture)
+  - [What works](#window-what-works)
+  - [Performance model](#window-performance-model)
+  - [What remains / what next](#window-what-remains--what-next)
+  - [gsi window corpus status](#gsi-window-corpus-status)
+  - [Codegen landmines specific to op_window](#codegen-landmines-specific-to-op_window)
 - [Profiling the fallback (2026-07)](#profiling-the-fallback-2026-07)
   - [Cost attribution](#cost-attribution)
   - [Where the Converts come from: the `self` projection](#where-the-converts-come-from-the-self-projection)
@@ -62,6 +69,11 @@ mutators `object_add`/`object_put`/`object_remove`/`object_concat`; and the arra
 **Next:** `slice` navigation (blocked); the remaining Tier C builders (comprehensions,
 more `array_*`/`object_*`); Tier B (more string/numeric; the date-STRING funcs; bitwise;
 JSON `encoded_size`). `LIKE` and dynamic-pattern `REGEXP_*` deferred.
+
+**Window functions** (`… OVER (…)`) are a separate op-based subsystem — now broadly
+complete (aggregates, ranking, offset, RATIO_TO_REPORT, DISTINCT-in-window, named
+WINDOW clause, NULLS ordering) and O(N) for the common frame shapes. See the dedicated
+[Window functions](#window-functions) section for status and what's next.
 
 ## Why native matters (the fallback's cost)
 
@@ -152,7 +164,6 @@ place encoding "empty==MISSING, leading-n==null"), `CondUnknownKeep`/`NaryFirstK
 | `object_length` `poly_length` | `engine/expr_object.go` + `base/object.go` | object/collection reader ops (unary; op-code dispatch; count via `jsonparser.ObjectEach`/`ArrayEach`, no materialization) |
 | `object_names` `object_values` `object_pairs` | `engine/expr_object.go` + `base/object.go` | name-sorted structure builders (field names / values / `{name,val}` pairs; pooled `KeyVals` + reused buffer). OBJECT_PAIRS 1-arg only (2-arg `types` option falls back) |
 | `object_add` `object_put` `object_remove` `object_concat` | `engine/expr_object.go` + `base/object.go` | object mutating builders — key-sorted re-emit (add-new / set (a MISSING value removes) / remove / merge). ADD/PUT ternary; REMOVE/CONCAT 2-arg (variadic >2 falls back) |
-| `window-partition-row-number`, `window-frame-*` | `engine/expr_window.go` | window helpers (FIRST/LAST/NTH/LEAD/LAG) |
 | `exprStr` / `exprTree` | `glue/expr.go` | **the fallback** (parse / delegate to cbq) |
 
 Still **delegated:** `LIKE`, dynamic-pattern `REGEXP_*`, `slice` navigation,
@@ -173,6 +184,162 @@ tiers).
   OUTPUT holds a literal formfeed/backspace won't be byte-identical. Cosmetic;
   differential tests avoid these chars. Fix routes `EncodeStr` through cbq's encoder
   (touches `ValComparer`) — deferred.
+
+## Window functions
+
+SQL++ window functions (`… OVER (PARTITION BY … ORDER BY … <frame>)`) are a distinct
+subsystem from the scalar exprs above: they are **ops** (`engine/op_window.go`), not
+`ExprCatalog` entries, and their values reach the projection through the **same
+`^aggregates|<agg.String()>` native label path** that GROUP BY aggregates use (lever
+#6). They were fully non-functional before this arc (the boxed cbq window `Evaluate`
+panics on n1k1's plain, non-`AnnotatedValue` rows); the subsystem is now broadly
+complete. (`engine/expr_window.go` — the old `window-partition-row-number` /
+`window-frame-*` `ExprCatalog` stubs — is **superseded and effectively dead**; the op
+computes everything.)
+
+<a name="window-architecture"></a>
+### Architecture
+
+Two chained ops per window function (`glue/conv.go:VisitWindowAggregate` builds one
+chain per function; chaining lets each `^aggregates|…` column accumulate):
+
+- **`OpWindowPartition`** (`window-partition`) — requires its child to deliver rows
+  sorted by PARTITION BY + ORDER BY (cbq's planner inserts the sort). Buffers **one
+  partition at a time** into a `store.Heap`; on a partition-boundary change (or
+  end-of-stream, via a `yieldErr(nil)` drain) it drains + resets. Memory is O(largest
+  partition) — necessary, since FOLLOWING / UNBOUNDED FOLLOWING frames need the whole
+  partition buffered for look-ahead. Optionally appends a trailing **`^worderby`**
+  column (Params[4] mode: `"value"` = the single numeric ORDER BY value for RANGE
+  arithmetic; `"tuple"` = the canonical ORDER BY tuple for GROUPS / peer / rank
+  bytes.Equal detection, any number of columns).
+- **`OpWindowFrames`** (`window-frames`) — per row: `CurrentUpdate` sets the frame
+  `[Include.Beg, Include.End)` (via `base.WindowFrame`), then computes the window value
+  and appends it under `^aggregates|<agg.String()>`. Four value kinds, dispatched by
+  the `winFunc`/`aggName` params: **aggregate** (fold a `base.Agg` over the frame),
+  **ranking** (`base.WindowFrame.WindowRankValue` from position + peer + partition
+  count), **offset** (`base.WindowFrame.StepToOffset` walks to the target row),
+  **ratio** (`RATIO_TO_REPORT` = current operand / frame SUM).
+
+Frame boundary math lives in `base/agg_window.go` (`base.WindowFrame`): `CurrentUpdate`,
+`StepGroups`, `FindGroupEdge`, `StepVals`, `RowVals`. A RANGE frame with only
+CURRENT ROW / UNBOUNDED bounds (no numeric offset) is rewritten by conv to **GROUPS**
+(peer semantics), so multi-column ORDER BY works; a numeric-offset RANGE stays single
+numeric column.
+
+<a name="window-what-works"></a>
+### What works
+
+Validated by the ORDER-sensitive oracle `glue/window_test.go` + `glue/order_nulls_test.go`
+(the default suite had zero `OVER (` cases, which is how the whole subsystem stayed
+broken unnoticed), and by the data-backed gsi window corpus (below).
+
+| Capability | Notes |
+|---|---|
+| Frame **aggregates** | SUM/COUNT/AVG/MIN/MAX + any `base.AggCatalog` agg, over ROWS / RANGE / GROUPS frames, incl. composite-key multi-column ORDER BY, empty/inverted frames (→ the agg's empty result), PARTITION BY, and multiple window funcs per query |
+| **Ranking** | ROW_NUMBER, RANK, DENSE_RANK, PERCENT_RANK, CUME_DIST, NTILE(k) — unified in `base.WindowFrame.WindowRankValue` |
+| **Offset / navigation** | LAG, LEAD (incl. the 3rd default-value arg, evaluated at the current row), FIRST_VALUE, LAST_VALUE, NTH_VALUE (incl. `FROM LAST`) |
+| **RATIO_TO_REPORT** | current operand / frame SUM (`base.WindowRatioValue`) |
+| **DISTINCT-in-window** | SUM/AVG/COUNT/COUNTN(DISTINCT), MEAN(DISTINCT) — needs `sum_distinct`/`avg_distinct` in `base.AggCatalog` |
+| **ORDER BY … NULLS FIRST/LAST** | per-term nulls-position in `order-offset-limit`; natural terms keep the collation path (missing < null) |
+| **ORDER BY / PARTITION BY / OVER an aggregate** | e.g. `ORDER BY COUNT(x)`, `SUM(COUNT(x)) OVER (… ORDER BY MAX(y))` — resolved via the group's `^aggregates|` columns passed through the ORDER-BY augmentation |
+| **Named WINDOW clause** | `… OVER w …` and `OVER (w <frame>)` (adds a frame to a named window) — `REWRITE_PHASE1` runs **before** the semantics check (`glue/stmt.go`), matching cbq's server order |
+| **RANGE over a mixed-type ORDER BY** | non-numeric (null/boolean) ORDER BY values fall back to peer semantics in `FindGroupEdge` instead of erroring on `ParseFloat64` |
+
+<a name="window-performance-model"></a>
+### Performance model
+
+The frame aggregate was originally brute-force — re-`Init` + re-fold the whole frame
+`[Beg,End)` per row, O(N·F), i.e. **O(N²)** for the dominant shapes. Two fast paths
+(both in the `OpWindowFrames` agg block; the general path keeps the per-row re-fold):
+
+- **Left-anchored incremental fold (whole-partition + running-total).** When the frame
+  begins at UNBOUNDED PRECEDING with no EXCLUDE, `Include.Beg` stays 0 and `Include.End`
+  is monotone, so the frame only grows: carry the accumulator (`lzGrowAcc`, reset per
+  partition) and fold only the newly-entered rows. Every `base.Agg` is add-only over a
+  growing frame, so exact. Whole-partition is the degenerate case (fold all at row 0,
+  reuse). **O(N).** Measured (4000-row partition): running total 630→22 ms (~29×),
+  whole partition 1169→2.4 ms (~497×).
+- **Invertible sliding COUNT (grep `-A/-B/-C`).** A fixed sliding frame
+  (`ROWS BETWEEN N PRECEDING AND M FOLLOWING`) slides forward (Beg, End both monotone),
+  so adjust a running count by rows that entered (+1) / left (−1). **COUNT only** — it
+  is integer-exact; a float SUM would drift under repeated `+=`/`−=` and diverge from
+  cbq's exact re-fold. Serves the "is this row near a match" idiom
+  `COUNT(CASE WHEN <pred> THEN 1 END) OVER (… ROWS BETWEEN B PRECEDING AND A FOLLOWING) > 0`.
+  **O(N)** regardless of window size (k=200/4000 rows: 90→16 ms).
+
+Ranking is already O(1)/row (peer state maintained as rows stream); ROWS boundary math
+is O(1).
+
+<a name="window-what-remains--what-next"></a>
+### What remains / what next
+
+Perf (in rough priority):
+1. **Sliding SUM/AVG** — invertible in principle but float drift makes naive add/remove
+   diverge from the oracle; needs Kahan-compensated running sums or periodic re-fold.
+2. **Sliding MIN/MAX** — not invertible; needs a monotonic deque (O(1) amortized).
+3. **General arbitrary-frame** O(N log N) — segment/aggregate trees (Leis et al., VLDB
+   2015, *Efficient Processing of Window Functions in Analytical SQL Queries*). Only
+   worth it if a workload hits large arbitrary frames that neither fast path covers.
+4. **Boundary advance instead of re-scan** — `FindGroupEdge` re-scans peers outward each
+   row; edges are monotone as Pos advances, so they could advance incrementally (worst
+   case, one big peer group, is another O(N²) inside CurrentUpdate).
+5. **Decode operand once per partition row** — `StepVals`/`RowVals` re-`Partition.Get` +
+   `ValsDecode` + re-eval the operand on every frame-row visit; a typed/columnar temp
+   would decode once (overlaps `DESIGN-col.md`).
+
+Correctness gaps (small, several are deliberate non-matches of cbq quirks):
+- **cbq VAR_SAMP-of-a-single-value = 0** (window path) vs standard/GROUP-BY NULL — n1k1
+  keeps the standard NULL; matching it would need a window-specific variance that
+  contradicts the GROUP BY path. (gsi window `results-differ`, with the RANGE-over-
+  non-numeric membership difference.)
+- **AVG over rows with no NUMERIC value** returns 0, not NULL (AggCount counts
+  non-numerics) — a general aggregate gap, not window-specific.
+- **Non-int64 RANGE numeric extents** are int-truncated (`conv.appendExtent` TODO);
+  multi-column *numeric* RANGE has no scalar to bound on (graceful NA).
+- **ORDER BY an aggregate over a `.*`-spread projection** (default-suite
+  `aggregate[1,2]`, the `order-agg` group) — a star projection's `.` label can't take a
+  sidecar `^aggregates|` column + strip; would need ordering below the star projection.
+- **Frame-position over ties is implementation-defined.** FIRST_VALUE/NTH_VALUE/ROW_NUMBER
+  over an ORDER BY that ties pick a specific row by scan order; n1k1 matches cbq's stored
+  order on the corpus but it isn't guaranteed (see the `window-nondeterministic` group).
+
+<a name="gsi-window-corpus-status"></a>
+### gsi window corpus status
+
+The fork's `test/gsi/test_cases/window` (31 cases, recording cbq's own results) is
+imported into the isolated gsi suite (`test/suite_gsi_test.go`; see the window block +
+group whys there). ~19 of 31 reliably pass; the rest are tracked in `gsiExpectedNonPass`:
+- **`window-nondeterministic`** — produce cbq-matching results but have a frame-position
+  function over tie-able keys (a pass shows as a stale-entry note, never a flaky fail).
+- **`window-results-differ`** — the cbq VAR_SAMP / RANGE-over-non-numeric quirks above.
+- The `window-unsupported` and `window-named-frame` groups are now **empty**.
+
+`gsiPassFloor` was raised step-by-step as cases flipped (see git history). Window cases
+are **not** emitted to the compiler differential (the agg block is `// !lz`), so the
+interpreter is the only lane that runs them; correctness rests on the gsi oracle + the
+`glue` window tests.
+
+<a name="codegen-landmines-specific-to-op_window"></a>
+### Codegen landmines specific to op_window
+
+`op_window.go` **is** scraped by `intermed_build` (the agg/ranking/offset blocks are
+`// !lz`, so stripped in the compiled lane — but the file must still translate cleanly),
+so the general lz rules apply, plus:
+- **Bind an indexed frame before calling a method/field.** `lzFrames[0].Method()` /
+  `.Field` is lifted to gen-time (`LzExprFmt`, "undefined"); write `lzFrame := &lzFrames[0]`
+  then `lzFrame.X`.
+- **No inner `// !lz` inside an `if X { // !lz … } // !lz` block** — the strip matches by
+  brace depth as one unit; a nested `} // !lz` mis-closes it. Use plain-Go inner branches
+  (the incremental-fold and sliding-COUNT branches are plain `if`/`for`).
+- **No string literal in an emitted comparison.** `aggName == "count"` mangles to a
+  `%s` placeholder (`undefined: count`); gate on a baked bool (`isCount`) computed at
+  param-parse. (Same class as `base.Val("null")` → named const.)
+- **`emitCaptured` operand calls must be lone statements.** `lzOperandFunc(...)` embedded
+  in a condition breaks the capture; assign to a var first (`lzV := lzOperandFunc(...); if base.ValHasValue(lzV)`).
+- **Register new `base` aggregates LAST in `agg.go` init().** `op_group`'s compiled path
+  bakes `base.AggCatalog[name]` as a **literal index** (`// !lz`), so inserting an
+  aggregate mid-`init()` shifts every later index and breaks the compiler differential
+  ("compiled rows mismatch" on unrelated aggregate cases).
 
 ## Profiling the fallback (2026-07)
 
