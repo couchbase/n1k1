@@ -58,6 +58,14 @@ type Agg struct {
 
 // -----------------------------------------------------
 
+// sumNaNBits is SUM's "no numeric input folded yet" sentinel, stored in the 8-byte
+// float64 accumulator by AggSum.Init. N1QL SUM over zero numeric inputs is NULL (not
+// 0), so Result reports NULL while the accumulator is still NaN; the first numeric
+// fold clears it to 0 before adding. A real sum of finite JSON numbers is never NaN,
+// so the sentinel is unambiguous. The columnar kernels (sum_v_*, MaskedSum*) only
+// ever see numeric input and reset the sentinel to 0 up front.
+var sumNaNBits = math.Float64bits(math.NaN())
+
 func AggRegister(name string, agg *Agg) {
 	AggCatalog[name] = len(Aggs)
 	Aggs = append(Aggs, agg)
@@ -239,7 +247,7 @@ var AggCount = &Agg{
 // -----------------------------------------------------
 
 var AggSum = &Agg{
-	Init: func(vars *Vars, agg []byte) []byte { return append(agg, Zero8[:8]...) },
+	Init: func(vars *Vars, agg []byte) []byte { return BinaryAppendUint64(agg, sumNaNBits) },
 
 	Update: func(vars *Vars, v Val, aggNew, agg []byte, vc *ValComparer) (
 		[]byte, []byte, bool) {
@@ -247,7 +255,11 @@ var AggSum = &Agg{
 		if ParseTypeToValType[parsedType] == ValTypeNumber {
 			f, err := ParseFloat64(parsedVal)
 			if err == nil {
-				s := math.Float64frombits(binary.LittleEndian.Uint64(agg[:8])) + f
+				s := math.Float64frombits(binary.LittleEndian.Uint64(agg[:8]))
+				if math.IsNaN(s) {
+					s = 0 // first numeric fold clears the "no numeric input" sentinel
+				}
+				s += f
 				return BinaryAppendUint64(aggNew, math.Float64bits(s)), agg[8:], true
 			}
 		}
@@ -257,6 +269,10 @@ var AggSum = &Agg{
 
 	Result: func(vars *Vars, agg, buf []byte) (v Val, aggRest, bufOut []byte) {
 		s := math.Float64frombits(binary.LittleEndian.Uint64(agg[:8]))
+
+		if math.IsNaN(s) {
+			return ValNull, agg[8:], buf // no numeric input -> SUM is NULL, not 0
+		}
 
 		vBuf := strconv.AppendFloat(buf[:0], s, 'f', -1, 64)
 
@@ -299,6 +315,9 @@ func AggSumVFloat64Update(vars *Vars, v Val, aggNew, agg []byte, vc *ValComparer
 	[]byte, []byte, bool) {
 	s := math.Float64frombits(binary.LittleEndian.Uint64(agg[:8]))
 	n := len(v) / 8
+	if n > 0 && math.IsNaN(s) {
+		s = 0 // clear AggSum's no-input sentinel before folding a numeric column
+	}
 	for i := 0; i < n; i++ {
 		s += math.Float64frombits(binary.LittleEndian.Uint64(v[i*8:]))
 	}
@@ -309,6 +328,9 @@ func AggSumVInt64Update(vars *Vars, v Val, aggNew, agg []byte, vc *ValComparer) 
 	[]byte, []byte, bool) {
 	s := math.Float64frombits(binary.LittleEndian.Uint64(agg[:8]))
 	n := len(v) / 8
+	if n > 0 && math.IsNaN(s) {
+		s = 0 // clear AggSum's no-input sentinel before folding a numeric column
+	}
 	for i := 0; i < n; i++ {
 		s += float64(int64(binary.LittleEndian.Uint64(v[i*8:])))
 	}
@@ -364,7 +386,10 @@ func AggAvgVInt64Update(vars *Vars, v Val, aggNew, agg []byte, vc *ValComparer) 
 
 var AggAvg = &Agg{
 	Init: func(vars *Vars, agg []byte) []byte {
-		return AggSum.Init(vars, AggCount.Init(vars, agg))
+		// [count][sum], both zero. AVG reports NULL via count == 0 (Result below), so
+		// its sum half must NOT use AggSum's NaN "no-input" sentinel -- that would
+		// poison the vectorized/masked AVG kernels that fold straight into agg[8:16].
+		return append(AggCount.Init(vars, agg), Zero8[:8]...)
 	},
 
 	Update: func(vars *Vars, v Val, aggNew, agg []byte, vc *ValComparer) (

@@ -10,7 +10,7 @@ const gsiSuiteRoot = "suite/json-gsi"
 
 // gsiPassFloor is the results-pass backstop for the gsi corpus (bump as coverage
 // grows), mirroring the default suite's floor.
-const gsiPassFloor = 828
+const gsiPassFloor = 830
 
 // gsiExpectedNonPass lists gsi cases n1k1 doesn't yet pass, keyed by loc
 // (case_gsi_<cat>.json[i]) -> group. Any non-pass NOT listed is a regression.
@@ -41,13 +41,13 @@ var gsiExpectedNonPass = map[string]string{
 	"case_gsi_unnest.json[7]":               "mega-order-limit",
 
 	// The window category (imported from the fork's test/gsi/test_cases/window) records
-	// cbq's own results for the FULL window surface. 14 of the 31 cases now pass: the 5
+	// cbq's own results for the FULL window surface. 16 of the 31 cases now pass: the 5
 	// non-OVER aggregate cases (0,1,2,3,5), 4 multi-column RANGE cases (7,8,24,25),
-	// window[4] (ORDER BY a non-projected aggregate), and 4 window-over-a-grouped-
-	// aggregate cases (9,10,26,27 -- SUM(COUNT(x)) OVER (PARTITION BY MIN(y) ORDER BY
-	// MAX(z))). The 17 OVER cases below are grouped by proximate blocker. The core window
-	// machinery (ROWS/RANGE/GROUPS aggregates + ranking + offset + NULLS ordering +
-	// multi-column peer frames + ORDER-BY/PARTITION-BY/OVER an aggregate) works -- see
+	// window[4] (ORDER BY a non-projected aggregate), 4 window-over-a-grouped-aggregate
+	// cases (9,10,26,27), and window[6,23] (SUM over a non-numeric column now yields
+	// NULL, not 0). The 15 OVER cases below are grouped by proximate blocker. The core
+	// window machinery (ROWS/RANGE/GROUPS aggregates + ranking + offset + NULLS ordering
+	// + multi-column peer frames + ORDER-BY/PARTITION-BY/OVER an aggregate) works -- see
 	// glue/window_test.go + glue/order_nulls_test.go; these gaps are unsupported window
 	// funcs / frames, output differences, or nondeterministic tie order. None panic (conv
 	// rejects an un-computable window function gracefully).
@@ -62,12 +62,10 @@ var gsiExpectedNonPass = map[string]string{
 	"case_gsi_window.json[20]": "window-unsupported",
 	"case_gsi_window.json[30]": "window-unsupported",
 
-	"case_gsi_window.json[6]":  "window-results-differ",
 	"case_gsi_window.json[11]": "window-results-differ",
 	"case_gsi_window.json[19]": "window-results-differ",
 	"case_gsi_window.json[21]": "window-results-differ",
 	"case_gsi_window.json[22]": "window-results-differ",
-	"case_gsi_window.json[23]": "window-results-differ",
 
 	"case_gsi_window.json[28]": "window-named-frame",
 	"case_gsi_window.json[29]": "window-named-frame",
@@ -94,7 +92,7 @@ var gsiGroupWhy = map[string]string{
 	"mega-order-limit":        "unnest[0,1,2,5,6,7]: UNNEST p.lineItems over the `purchase` MEGA keyspace with ORDER BY <unnested-elem> LIMIT n. The fork loads ~10,000 purchase docs; our corpus keeps a light sample (see MEGA_KEYSPACES), so the top-N after sorting the full unnested set can't be reproduced. UNNEST itself is correct (the specific-`product` unnest cases pass); only the full-set ordered LIMIT differs",
 	"prepared":                "inlist[11,12,14,15,17,18,20,21]: EXECUTE now runs (PREPARE/EXECUTE are supported), but these bind a mixed-type / parameterized IN-list ([1,2,3,$1,$2,$3,\"a\",...]) over a GSI index whose scan yields a different row SET than the corpus (verified: the same param binding gives correct rows on a plain scan -- see glue TestPrepareExecute -- so this is a GSI index-scan inlist limitation, not a prepared-statement one)",
 	"window-unsupported":      "window[12,14,15,16,17,18,20,30]: a window function/frame n1k1 doesn't compute natively, so conv rejects the statement (NA) rather than emit a boxed cbq window Evaluate (which panics on n1k1's plain rows). Covers RATIO_TO_REPORT, COUNTN, NTH_VALUE ... FROM LAST, a numeric-offset RANGE with multi-column ORDER BY, and DISTINCT-in-window over a non-catalog aggregate. Each bundles several window funcs across w1..w7, so one unsupported func gates the whole SELECT",
-	"window-results-differ":   "window[6,11,19,21,22,23]: the query runs (all its window funcs are wired, incl. ORDER BY a window function now) but the output differs from cbq's recorded results -- SUM over a non-numeric column, GROUPS-frame peer semantics, EXCLUDE GROUP/TIES, STDDEV/VARIANCE over an explicit frame, or DISTINCT-in-window, none of which n1k1 fully honors yet",
+	"window-results-differ":   "window[11,19,21,22]: the query runs (all its window funcs are wired) but the output differs from cbq's recorded results -- GROUPS-frame peer semantics, EXCLUDE GROUP/TIES, STDDEV/VARIANCE over an explicit frame, or DISTINCT-in-window, none of which n1k1 fully honors yet",
 	"window-nondeterministic": "window[13]: ROWS frames over an ORDER BY with ties (e.g. `ORDER BY d.c3, LOWER(d.c1)`) -- positional (ROWS) frame contents depend on the tie-break order, which n1k1 (scan order) and cbq resolve differently, so it passes intermittently. Listed non-pass so a lucky pass is a stale-entry note, never a flaky failure",
 	"window-named-frame":      "window[28,29]: a named WINDOW reference that ADDS a frame (e.g. `OVER (wn2 ROWS CURRENT ROW)`) must inherit wn2's ORDER BY, but n1k1's REWRITE_PHASE1 pass doesn't propagate it before the semantic check, so cbq's own guard fires (\"window frame is not allowed without ORDER BY\" / \"NTILE ... ORDER BY clause is required\") where the fork succeeds",
 }

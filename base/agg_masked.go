@@ -57,6 +57,9 @@ func PopCount(mask []byte, n int) int {
 // all n) into AggSum's 8-byte float64 accumulator, in place.
 func MaskedSumFloat64(acc, values, mask []byte, n int) {
 	s := math.Float64frombits(binary.LittleEndian.Uint64(acc[:8]))
+	if math.IsNaN(s) {
+		s = 0 // clear AggSum's no-input sentinel (this column is numeric)
+	}
 	if mask == nil {
 		for i := 0; i < n; i++ {
 			s += math.Float64frombits(binary.LittleEndian.Uint64(values[i*8:]))
@@ -74,6 +77,9 @@ func MaskedSumFloat64(acc, values, mask []byte, n int) {
 // MaskedSumInt64 is SumMaskedFloat64 for an int64 column (each slot added as float64).
 func MaskedSumInt64(acc, values, mask []byte, n int) {
 	s := math.Float64frombits(binary.LittleEndian.Uint64(acc[:8]))
+	if math.IsNaN(s) {
+		s = 0 // clear AggSum's no-input sentinel (this column is numeric)
+	}
 	if mask == nil {
 		for i := 0; i < n; i++ {
 			s += float64(int64(binary.LittleEndian.Uint64(values[i*8:])))

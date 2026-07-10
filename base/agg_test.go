@@ -104,6 +104,34 @@ func sumScalar(vals []float64, asInt bool) string {
 	return string(v)
 }
 
+// TestAggSumNullForNoNumericInput: N1QL SUM over zero numeric inputs is NULL, not 0
+// (AggSum's NaN "no-input" sentinel). A sum of numbers that happens to be 0 still
+// returns 0 -- the sentinel distinguishes "nothing summed" from "summed to zero".
+func TestAggSumNullForNoNumericInput(t *testing.T) {
+	sum := func(jsons ...string) string {
+		agg := AggSum.Init(nil, nil)
+		for _, js := range jsons {
+			agg, _, _ = AggSum.Update(nil, Val(js), nil, agg, nil)
+		}
+		v, _, _ := AggSum.Result(nil, agg, nil)
+		return string(v)
+	}
+	for _, c := range []struct {
+		name, want string
+		in         []string
+	}{
+		{"empty", "null", nil},
+		{"all-strings", "null", []string{`"a"`, `"b"`}},
+		{"all-null", "null", []string{"null", "null"}},
+		{"mixed", "6", []string{`"a"`, "1", "null", "2", "3"}},
+		{"sums-to-zero", "0", []string{"5", "-5"}},
+	} {
+		if got := sum(c.in...); got != c.want {
+			t.Errorf("%s: SUM=%q want %q", c.name, got, c.want)
+		}
+	}
+}
+
 // sumVec folds vals through a vectorized aggregate (looked up by catalog name) as
 // a single packed little-endian column Val, and returns its formatted result.
 func sumVec(t *testing.T, aggName string, vals []float64, asInt bool) string {
