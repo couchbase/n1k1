@@ -1545,20 +1545,28 @@ discovery was done by wrapping the fork's datastore with `datastore/virtual`
 **Extract rework + sorted-source track (the PREPARE++ enabler — §4, [sorted
 sources](#sorted-sources); JS surface in `DESIGN-extensions.md`):**
 
-E1. ⬜ **Two-phase extract seam** — `describe(file) → ExtractSpec` + `extract` (native
-    from spec; imperative fallback); generalize the shipped extractor registry to
-    ext-**and**-regexp matching with priority. Built-in office/PDF become `{whole}` specs.
-E2. ⬜ **Native declarative execution** — `framing` (line/multiline/json/section/whole) +
-    `fields` (byte-regex/grok) + `time` (normalize to int64 epoch-nanos) applied
-    per-record on the fast lane, no per-row JS.
-E3. ⬜ **Pluggable JS extractors** — `*.extract.js` from a git-cloned recipe repo,
-    describe-returns-spec keeps JS off the hot path (`DESIGN-extensions.md`); memoized
-    into the sidecar (§5), content-addressed.
-E4. ⬜ **Sorted-source manifest fields** — `sort_key`/`sortedness`/`disorder_bound`/time
-    zone map/sync points (§5), produced by `describe`.
-E5. ⬜ **K-way merge source op** — disjoint→concat, strict→heap, near→watermarked buffer
-    with bound-validation; feeds ASOF + windowed temporal detectors. *(Separate task;
-    the metadata E4 produces is its precondition.)*
+E1. ✅ **Two-phase extract seam** — `describe(file) → ExtractSpec` + native `extract`
+    from spec; extractor registry matches on ext **and** name-regexp with priority
+    (`records.ExtractMatch`/`RecipeRegister`/`RecipeFor`), whole-file office/PDF are
+    `{whole}` specs. LANDED (`records/recipe.go`, `records/spec.go`, `records/extract.go`).
+E2. ✅ **Native declarative execution** — `framing` (line/multiline/json/whole), `fields`
+    (byte-regex), and `time` (normalized to int64 epoch-nanos) applied per-record on the
+    fast lane, no per-row JS (`records/recipe.go` `SpecApply`). ONE gap: `section`
+    framing is declared but not yet dispatched (see the `couchbase.log` banner item) —
+    everything else is landed.
+E3. ✅ **Pluggable JS extractors** — `*.extract.js` recipes loaded from a `-ext` recipe
+    dir; module-scope `match={exts,names,priority}` + `describe(file)→ExtractSpec` keeps
+    JS off the hot path (`glue/ext_extract_jsvm.go`, `DESIGN-extensions.md`); the describe
+    result is memoized into the `.n1k1/` sidecar, content-addressed by a recipe
+    Fingerprint (`DescribeMemo`; JS recipes fingerprint on source hash). LANDED. (Only
+    auto-cloning the recipe repo from git remains a convenience wrapper.)
+E4. ✅ **Sorted-source manifest fields** — `SortedSourceMeta`
+    (`sort_key`/`sortedness`/`disorder_bound`/min-max time zone map/sync points/record
+    count) is produced by the recipe sample in `describe` (`records/spec.go`,
+    `records/recipe.go`). LANDED.
+E5. ✅ **K-way merge source op** — `OpMergeScan` with all three regimes (disjoint→concat,
+    strict→heap, near→watermarked buffer); feeds ASOF + windowed temporal detectors
+    (`engine/op_merge_scan.go`, wired via `glue/optimize_temporal.go`). LANDED.
 
 Separable tracks:
 - **Query-defined VIEWs:** (i) single-source reshaping views land with catalog-view
