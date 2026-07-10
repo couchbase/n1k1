@@ -82,3 +82,38 @@ func TestOrderNulls(t *testing.T) {
 		}
 	}
 }
+
+// TestOrderByAggregate: ORDER BY an aggregate that is NOT a projected column resolves
+// by reading the group's precomputed "^aggregates|..." value (passed through to the
+// order op above the projection), instead of NA-ing or re-evaluating the aggregate on
+// a row that lacks the aggregates attachment (which would panic).
+func TestOrderByAggregate(t *testing.T) {
+	sess := windowTestSession(t) // nums: n=10,20,30,40,50; g=a,b,a,b,a
+
+	// GROUP BY g -> a={10,30,50} (count 3, sum 90, min 10); b={20,40} (count 2, sum 60,
+	// min 20). Each ORDER BY key below is an aggregate that is NOT projected.
+	for _, c := range []struct {
+		name, stmt string
+		want       []float64
+	}{
+		{"count-asc", `SELECT SUM(n) AS s FROM nums GROUP BY g ORDER BY COUNT(n)`, []float64{60, 90}},             // b(2) < a(3)
+		{"min-asc", `SELECT SUM(n) AS s FROM nums GROUP BY g ORDER BY MIN(n)`, []float64{90, 60}},                 // a(10) < b(20)
+		{"nested-desc", `SELECT SUM(n) AS s FROM nums GROUP BY g ORDER BY COUNT(n) * 10 DESC`, []float64{90, 60}}, // a(30) > b(20)
+	} {
+		res, err := sess.Run(c.stmt)
+		if err != nil {
+			t.Fatalf("%s Run: %v", c.name, err)
+		}
+		got := make([]float64, 0, len(res.Rows))
+		for _, r := range res.Rows {
+			var m map[string]float64
+			if err := json.Unmarshal(r, &m); err != nil {
+				t.Fatalf("%s decode %q: %v", c.name, r, err)
+			}
+			got = append(got, m["s"])
+		}
+		if !reflect.DeepEqual(got, c.want) {
+			t.Errorf("%s: got %v, want %v\n  %s", c.name, got, c.want, c.stmt)
+		}
+	}
+}

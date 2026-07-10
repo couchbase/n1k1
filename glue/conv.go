@@ -14,6 +14,7 @@
 package glue
 
 import (
+	"bytes"
 	"fmt"
 	"math"
 	"sort"
@@ -1726,12 +1727,14 @@ func (c *Conv) VisitOrder(o *plan.Order) (interface{}, error) {
 			}
 		}
 
-		if orderReEvalsAggregate(exprs) {
-			return NA(o)
-		}
-
-		// Augmented projection: the projected terms, plus a pass-through of the
-		// source's doc (`.`-path) labels so the order keys can resolve them.
+		// Augmented projection: the projected terms, plus a pass-through of the source's
+		// doc (`.`-path) labels AND the group/window "^aggregates|..." columns. The
+		// former lets a source-qualified ORDER BY key resolve; the latter lets an ORDER
+		// BY term that references an aggregate/window function -- one that isn't itself a
+		// projected column (e.g. `ORDER BY COUNT(x)` with only SUM(x) projected, or
+		// `ORDER BY MAX(x)[1].f`, or `ORDER BY COUNT(x) OVER()`) -- read the precomputed
+		// aggregate value natively, instead of re-evaluating it above the group (cbq's
+		// Aggregate.Evaluate on a row without the aggregates attachment panics).
 		aug := &base.Op{
 			Kind:     "project",
 			Labels:   append(base.Labels{}, proj.Labels...),
@@ -1739,9 +1742,29 @@ func (c *Conv) VisitOrder(o *plan.Order) (interface{}, error) {
 			Children: proj.Children,
 		}
 		for _, srcLabel := range src.Labels {
-			if srcLabel[0] == '.' && aug.Labels.IndexOf(srcLabel) < 0 {
+			if (srcLabel[0] == '.' || strings.HasPrefix(srcLabel, "^aggregates|")) &&
+				aug.Labels.IndexOf(srcLabel) < 0 {
 				aug.Labels = append(aug.Labels, srcLabel)
 				aug.Params = append(aug.Params, []interface{}{"labelPath", srcLabel})
+			}
+		}
+
+		// Any ORDER BY term still carrying an aggregate (not bound to a projected column
+		// above) must lower to the native ^aggregates| path against the augmented labels
+		// -- the order op runs the same ExprTreeOptimize at emit time. If it can't (the
+		// aggregate isn't materialized here, or a surrounding op isn't natively
+		// expressible), boxing it would panic, so reject the statement gracefully (NA).
+		var obuf bytes.Buffer
+		for i, term := range o.Terms() {
+			xx, isTree := exprs[i].([]interface{})
+			if !isTree || len(xx) != 2 || xx[0] != "exprTree" {
+				continue // already a labelPath / native leaf
+			}
+			if !containsAggregate(term.Expression()) {
+				continue // non-aggregate keys resolve via the pass-through labels
+			}
+			if _, ok := ExprTreeOptimize(aug.Labels, term.Expression(), &obuf, false); !ok {
+				return NA(o)
 			}
 		}
 
