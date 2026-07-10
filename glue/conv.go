@@ -1201,7 +1201,13 @@ func (c *Conv) VisitWindowAggregate(o *plan.WindowAggregate) (interface{}, error
 			case isLastValue:
 				offInitial, offAsc, offNum = 1, false, 1
 			case isNthValue:
-				offInitial, offAsc, offNum = -1, true, nthArg()
+				if agg.HasFlags(algebra.AGGREGATE_FROMLAST) {
+					// NTH_VALUE(x, n) FROM LAST: the n-th row from the END of the frame --
+					// start past the end and step backward (like LAST_VALUE, n deep).
+					offInitial, offAsc, offNum = 1, false, nthArg()
+				} else {
+					offInitial, offAsc, offNum = -1, true, nthArg()
+				}
 			case isLag:
 				offInitial, offAsc, offNum = 0, false, nthArg()
 			case isLead:
@@ -1375,7 +1381,16 @@ func (c *Conv) VisitWindowAggregate(o *plan.WindowAggregate) (interface{}, error
 			} else {
 				operand = []interface{}{"json", "null"}
 			}
-			framesParams = append(framesParams, winFuncName, operand, offInitial, offAsc, offNum)
+			// Params[8]: the value yielded when the offset lands outside the partition
+			// (evaluated at the current row) -- LAG/LEAD's 3rd arg, else "null". Always
+			// present so the op can build one operand func unconditionally.
+			offDefault := []interface{}{"json", "null"}
+			if isLag || isLead {
+				if ops := agg.Operands(); len(ops) > 2 && ops[2] != nil {
+					offDefault = []interface{}{"exprTree", ops[2]}
+				}
+			}
+			framesParams = append(framesParams, winFuncName, operand, offInitial, offAsc, offNum, offDefault)
 			framesLabels = append(framesLabels, "^aggregates|"+agg.String())
 			wired = true
 		} else {

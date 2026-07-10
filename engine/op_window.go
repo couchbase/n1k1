@@ -287,6 +287,14 @@ func OpWindowFrames(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	if len(o.Params) > 4 {
 		aggOperand, _ = o.Params[4].([]interface{})
 	}
+
+	// The value an offset function yields when the target lands outside the partition
+	// (evaluated at the CURRENT row): LAG/LEAD's 3rd arg, else a "null" operand. Always
+	// present for an offset op (Params[8]).
+	var offDefaultOperand []interface{}
+	if len(o.Params) > 8 {
+		offDefaultOperand, _ = o.Params[8].([]interface{})
+	}
 	isRankRowNumber := winFunc == "row_number"
 	isRankRank := winFunc == "rank"
 	isRankDense := winFunc == "dense_rank"
@@ -328,15 +336,17 @@ func OpWindowFrames(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 		var lzFrames []base.WindowFrame
 
-		var lzAgg *base.Agg             // !lz
-		var lzOperandFunc base.ExprFunc // !lz
-		if aggName != "" {              // !lz
+		var lzAgg *base.Agg                // !lz
+		var lzOperandFunc base.ExprFunc    // !lz
+		var lzOffDefaultFunc base.ExprFunc // !lz
+		if aggName != "" {                 // !lz
 			lzAgg = base.Aggs[base.AggCatalog[aggName]]                                             // !lz
 			lzOperandFunc = MakeExprFunc(lzVars, o.Children[0].Labels, aggOperand, pathNext, "WFA") // !lz
 		} else if isOffset { // !lz  -- the offset block shares the operand func
-			lzOperandFunc = MakeExprFunc(lzVars, o.Children[0].Labels, aggOperand, pathNext, "WFA") // !lz
+			lzOperandFunc = MakeExprFunc(lzVars, o.Children[0].Labels, aggOperand, pathNext, "WFA")           // !lz
+			lzOffDefaultFunc = MakeExprFunc(lzVars, o.Children[0].Labels, offDefaultOperand, pathNext, "WFD") // !lz
 		} // !lz
-		_, _ = lzAgg, lzOperandFunc // !lz
+		_, _, _ = lzAgg, lzOperandFunc, lzOffDefaultFunc // !lz
 
 		// Reused accumulator ping-pong buffers + Result scratch + frame-row decode
 		// buffer, so a per-row frame aggregate allocates nothing steady-state.
@@ -450,7 +460,11 @@ func OpWindowFrames(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 					lzOffVal := lzOperandFunc(lzFrameVals, lzYieldErr) // <== emitCaptured: pathNext "WFA"
 					lzVals = append(lzVals, lzOffVal)
 				} else {
-					lzVals = append(lzVals, base.ValNull)
+					// Target outside the partition: yield the default, evaluated at the
+					// CURRENT row (lzVals). It is a "null" operand except for LAG/LEAD's
+					// 3rd arg, so this covers both NULL and an explicit default value.
+					lzOffDefVal := lzOffDefaultFunc(lzVals, lzYieldErr) // <== emitCaptured: pathNext "WFD"
+					lzVals = append(lzVals, lzOffDefVal)
 				}
 			} // !lz
 

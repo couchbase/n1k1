@@ -188,6 +188,33 @@ func TestWindowOffset(t *testing.T) {
 	}
 }
 
+// TestWindowOffsetDefaultAndFromLast: LAG/LEAD's 3rd arg (the default yielded when the
+// offset is out of range, evaluated at the current row), and NTH_VALUE ... FROM LAST
+// (counts from the end of the frame).
+func TestWindowOffsetDefaultAndFromLast(t *testing.T) {
+	sess := windowTestSession(t) // n = 10,20,30,40,50
+
+	for _, c := range []struct {
+		name, stmt string
+		want       []interface{}
+	}{
+		// LAG 2 with default -1: first two rows fall off the start -> -1, not NULL.
+		{"lag-default", `SELECT LAG(n, 2, -1) OVER (ORDER BY n) AS s FROM nums ORDER BY n`,
+			[]interface{}{-1.0, -1.0, 10.0, 20.0, 30.0}},
+		// LEAD 2 with default -1: last two rows fall off the end -> -1.
+		{"lead-default", `SELECT LEAD(n, 2, -1) OVER (ORDER BY n) AS s FROM nums ORDER BY n`,
+			[]interface{}{30.0, 40.0, 50.0, -1.0, -1.0}},
+		// NTH_VALUE(n,2) FROM LAST over the whole partition = 2nd from the end = 40
+		// (vs 20 counting from the front).
+		{"nth-from-last", `SELECT NTH_VALUE(n, 2) FROM LAST OVER (ORDER BY n ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS s FROM nums ORDER BY n`,
+			[]interface{}{40.0, 40.0, 40.0, 40.0, 40.0}},
+	} {
+		if got := winColAny(t, sess, c.stmt, "s"); !reflect.DeepEqual(got, c.want) {
+			t.Errorf("%s: got %v, want %v\n  %s", c.name, got, c.want, c.stmt)
+		}
+	}
+}
+
 // TestWindowRanking: ROW_NUMBER / RANK / DENSE_RANK. On distinct keys all three are
 // 1..N; ROW_NUMBER resets per PARTITION. (ROW_NUMBER over TIED keys is
 // non-deterministic -- the tie order is unspecified -- so it's asserted only on
