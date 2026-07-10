@@ -136,6 +136,50 @@ func TestASOFLoweringDifferential(t *testing.T) {
 	}
 }
 
+// TestASOFLoweringOuterFilterDifferential is the IDEA-0014 gate: a nearest-preceding
+// argmax with an OUTER WHERE (correlate only a filtered subset of E -- the common
+// real detector, e.g. only error rows) must STILL lower. Before the fix an outer
+// WHERE put a `filter` between the project and the scan, so the recognizer bailed to
+// the O(n^2) correlated path. The filter is now re-applied to the E probe stream, so
+// the lowering fires AND the output stays byte-identical to the correlated baseline.
+func TestASOFLoweringOuterFilterDifferential(t *testing.T) {
+	root := t.TempDir()
+	// E carries a mix of msgs; the outer WHERE keeps only the "boom" rows (mirrors a
+	// detector's `regexp_contains(e.msg, ...)` correlate-only-matching-rows filter).
+	asofWriteKS(t, root, "elog", "ns_server.error.log",
+		nsLine("2026-05-17T15:36:11.100+02:00", "n1", "boom-100")+ // kept; no preceding R -> null
+			nsLine("2026-05-17T15:36:12.500+02:00", "n1", "noise-250")+ // dropped by filter
+			nsLine("2026-05-17T15:36:13.300+02:00", "n1", "boom-300")) // kept; nearest R@12.200
+	asofWriteKS(t, root, "rlog", "ns_server.rebalance.log",
+		nsLine("2026-05-17T15:36:12.200+02:00", "n1", "r-200")+
+			nsLine("2026-05-17T15:36:14.400+02:00", "n1", "r-400"))
+
+	s, err := OpenSession(root, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	stmt := "SELECT e.ts AS ts, " +
+		"(SELECT r.msg FROM default:rlog r WHERE r.ts <= e.ts ORDER BY r.ts DESC LIMIT 1) AS state_at " +
+		"FROM default:elog e WHERE regexp_contains(e.msg, \"boom\") ORDER BY e.ts"
+
+	off, _, fired := runBoth(t, s, stmt)
+	if !fired {
+		t.Fatalf("expected the ASOF lowering to FIRE with an outer WHERE (IDEA-0014); it did not")
+	}
+	// The filter keeps exactly the two "boom" rows, correlated to the nearest R.
+	if len(off) != 2 {
+		t.Fatalf("want 2 filtered rows, got %d: %v", len(off), off)
+	}
+	if off[0] != `{"ts":1779024971100000000,"state_at":null}` {
+		t.Fatalf("row0 (kept, no preceding -> null) unexpected: %s", off[0])
+	}
+	if off[1] != `{"ts":1779024973300000000,"state_at":[{"msg":"r-200"}]}` {
+		t.Fatalf("row1 (kept, nearest preceding R@12.200) unexpected: %s", off[1])
+	}
+}
+
 // TestASOFLoweringSoftDifferential covers SOFT ASOF (a `r.ts >= e.ts - Δt`
 // look-back guard): ON == OFF byte-identical, AND the guard actually drops a match
 // whose nearest-preceding row is farther back than Δt (so the soft path is really
@@ -376,6 +420,7 @@ func TestASOFLoweringNonProvenDoesNotFire(t *testing.T) {
 		"FROM default:epv e ORDER BY e.ts"
 
 	before := AsofRewriteApplied
+	beforeSkip := AsofRewriteSkipped
 	prev := EnableASOFRewrite
 	EnableASOFRewrite = true
 	res, err := s.Run(stmt)
@@ -385,6 +430,12 @@ func TestASOFLoweringNonProvenDoesNotFire(t *testing.T) {
 	}
 	if AsofRewriteApplied != before {
 		t.Fatalf("lowering must NOT fire over a non-proven keyspace, but it did")
+	}
+	// IDEA-0014 observability: a recognized argmax that could not lower records WHY
+	// (here: the plain keyspace has no sorted-source metadata), rather than silently
+	// falling back -- so it's not an invisible O(n^2).
+	if AsofRewriteSkipped <= beforeSkip {
+		t.Fatalf("expected a skip to be recorded for the recognized-but-unlowered argmax")
 	}
 	got := rowsAsStrings(res.Rows)
 	want := []string{

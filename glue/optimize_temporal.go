@@ -1160,6 +1160,12 @@ var EnableASOFRewrite = true
 // (test observability, mirroring MergeMetaRewriteApplied / AsofRecognized).
 var AsofRewriteApplied int64
 
+// AsofRewriteSkipped counts recognized argmax subqueries this pass did NOT lower --
+// each logs the gate that stopped it (see tryLowerASOFProject's skip()), so an author
+// can tell WHY a temporal correlation stayed on the O(n^2) correlated path instead of
+// silently running a slow query (IDEA-0014 observability).
+var AsofRewriteSkipped int64
+
 // asofKeyspacer is the minimal keyspacer (a datastore.Keyspace holder) that backs
 // the fresh, PLAIN full ordered scan of the subquery's right keyspace R. The
 // correlated argmax sub-plan carries a correlated span (r.key <= e.key); the ASOF
@@ -1217,24 +1223,11 @@ func tryLowerASOFProject(p *base.Op, conv *Conv, byKey map[string]plan.Operator)
 	// panic the project is left untouched and the correct correlated path runs.
 	defer func() { _ = recover() }()
 
-	// The project's single child must be exactly the outer keyspace E's records
-	// scan: any intermediate op (filter, join, another project) would change the
-	// rows the subquery correlates against, so bail to the safe correlated path.
-	if len(p.Children) != 1 {
-		return
-	}
-	scanE := p.Children[0]
-	if scanE.Kind != "datastore-scan-records" || len(scanE.Labels) == 0 {
-		return
-	}
-	outerAlias, ok := mergeLabelLeaf(scanE.Labels[0])
-	if !ok {
-		return
-	}
-
-	// Find the ONE projection term that is EXACTLY a bare argmax subquery. Requiring
-	// it be the bare subquery (not e.g. `(SELECT ...)[0]`) means replacing the term
-	// reproduces the subquery's value precisely.
+	// Find the ONE projection term that is EXACTLY a bare argmax subquery matching the
+	// canonical nearest-preceding/-following shape (MatchArgmaxAsof). Requiring the
+	// bare subquery (not e.g. `(SELECT ...)[0]`) means replacing the term reproduces
+	// the subquery's value precisely. No such term => this project has nothing to
+	// lower; return silently.
 	termIdx := -1
 	var match *AsofMatch
 	var sel *algebra.Select
@@ -1259,39 +1252,88 @@ func tryLowerASOFProject(p *base.Op, conv *Conv, byKey map[string]plan.Operator)
 		return
 	}
 
+	// From here a lowerable argmax subquery EXISTS, so every bail is a missed ASOF an
+	// author would want to know about: skip() records the gate that stopped it (a -v
+	// log line + the AsofRewriteSkipped counter). The correlated baseline still runs
+	// correctly; this is the temporal rewrite's "report card" (IDEA-0014), not an error.
+	skip := func(reason string) {
+		AsofRewriteSkipped++
+		base.Logf(1, "glue/asof", "argmax subquery NOT lowered to ASOF (runs as a correlated subquery): %s", reason)
+	}
+
+	// The project's child must be the outer keyspace E's records scan, optionally
+	// behind ONE outer filter -- the common "correlate only a filtered subset" case
+	// (e.g. WHERE e.level="error"). The filter is re-applied to the E probe stream so
+	// exactly the same E rows flow through as the correlated baseline; it references
+	// only outer (E) fields, resolved against the same scan labels, so it moves down
+	// unchanged. Any OTHER intermediate op (a join, a second project, a group) would
+	// change the correlated rows -> bail to the safe correlated path.
+	if len(p.Children) != 1 {
+		skip("the project has multiple children")
+		return
+	}
+	scanE := p.Children[0]
+	var outerFilter *base.Op
+	if scanE.Kind == "filter" {
+		if len(scanE.Children) != 1 {
+			skip("outer filter has an unexpected shape")
+			return
+		}
+		outerFilter = scanE
+		scanE = scanE.Children[0]
+	}
+	if scanE.Kind != "datastore-scan-records" || len(scanE.Labels) == 0 {
+		skip("an op other than a single WHERE filter sits between the SELECT and its scan")
+		return
+	}
+	outerAlias, ok := mergeLabelLeaf(scanE.Labels[0])
+	if !ok {
+		return
+	}
+
 	// --- GATE: prove E's int64 sort key == the argmax key. -----------------------
 	eKS := branchScanKeyspace(scanE, conv.Temps)
 	if eKS == nil {
+		skip("the outer keyspace could not be resolved")
 		return
 	}
 	eMetas, err := SortedSourceMetasForKeyspace(eKS, nil)
 	if err != nil || len(eMetas) == 0 {
+		skip("the outer keyspace has no sorted-source metadata -- its recipe must frame a sorted time key")
 		return
 	}
 	eSorted, eMin, eMax, eBound, eZone, eOK := aggregateBranchMeta(eMetas, match.KeyField)
 	if !eOK {
+		skip("the outer keyspace's sort key is not the argmax key `" + match.KeyField +
+			"` (or it is unsorted) -- declare framing time/order on that field")
 		return
 	}
 
 	// --- resolve R's keyspace from the subquery's pre-planned sub-plan. ----------
 	subPlan := byKey[subqKey(sel)]
 	if subPlan == nil {
+		skip("the subquery's sub-plan was not found")
 		return
 	}
 	subConv := &Conv{Temps: []interface{}{nil}}
 	if _, cerr := subPlan.Accept(subConv); cerr != nil || subConv.TopOp == nil {
+		skip("the subquery's sub-plan did not convert")
 		return
 	}
 	rKS := branchScanKeyspace(subConv.TopOp, subConv.Temps)
 	if rKS == nil {
+		skip("the subquery keyspace could not be resolved")
 		return
 	}
 	rMetas, rerr := SortedSourceMetasForKeyspace(rKS, nil)
 	if rerr != nil || len(rMetas) == 0 {
+		skip("the subquery keyspace has no sorted-source metadata -- its recipe must frame a sorted time key")
 		return
 	}
 	rSorted, rMin, rMax, rBound, rZone, rOK := aggregateBranchMeta(rMetas, match.KeyField)
 	if !rOK {
+		skip("the subquery keyspace's sort key is not the argmax key `" + match.KeyField +
+			"` (or it is unsorted) -- declare framing time/order on that field")
 		return
 	}
 
@@ -1301,12 +1343,28 @@ func tryLowerASOFProject(p *base.Op, conv *Conv, byKey map[string]plan.Operator)
 	// column per partition-eq outer field. mkLeft wraps ONE E scan (the whole-keyspace
 	// scanE, or a per-file scan when E resolves to multiple files -- see perFileScans).
 	eKeyLabel := "^ekey"
+	// withFilter re-applies the outer WHERE (if any) to an E scan before the key-
+	// materializing project, so only the filtered E rows enter the merge-join -- the
+	// same rows the correlated baseline saw. The filter passes labels through, so the
+	// project's sc.Labels[0] reference is unchanged. A per-file E expansion clones the
+	// filter over each file scan (sharing the read-only predicate Params is safe).
+	withFilter := func(sc *base.Op) *base.Op {
+		if outerFilter == nil {
+			return sc
+		}
+		return &base.Op{
+			Kind:     "filter",
+			Labels:   append(base.Labels{}, sc.Labels...),
+			Params:   outerFilter.Params,
+			Children: []*base.Op{sc},
+		}
+	}
 	mkLeft := func(sc *base.Op) *base.Op {
 		lp := &base.Op{
 			Kind:     "project",
 			Labels:   base.Labels{sc.Labels[0], eKeyLabel},
 			Params:   []interface{}{[]interface{}{"labelPath", sc.Labels[0]}, exprTerm(fieldRef(outerAlias, match.KeyField))},
-			Children: []*base.Op{sc},
+			Children: []*base.Op{withFilter(sc)},
 		}
 		for i, eq := range match.PartitionEq {
 			lp.Labels = append(lp.Labels, "^epart"+itoa(i))
