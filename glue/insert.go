@@ -18,12 +18,14 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/couchbase/query/algebra"
+	"github.com/couchbase/query/expression"
 	"github.com/couchbase/query/value"
 )
 
@@ -31,6 +33,14 @@ import (
 // source-query producer and the writer goroutine (see InsertRun). Small: enough to
 // keep the writer fed across a flush syscall without materializing the result set.
 const insertWriterQueue = 256
+
+// INSERT write modes, chosen via the SQL++ OPTIONS clause -- e.g.
+// `INSERT INTO ks (KEY ..., VALUE ..., OPTIONS {"mode":"append"}) SELECT ...`.
+const (
+	insertModeNew       = "new"       // default: error if the target file exists
+	insertModeAppend    = "append"    // create-or-append to the target file
+	insertModeOverwrite = "overwrite" // atomically replace the target file
+)
 
 // InsertRun implements phase-1 INSERT INTO as a MATERIALIZE: it runs the INSERT's
 // source (a SELECT or a VALUES list), evaluates each row's VALUE expression, and
@@ -50,11 +60,12 @@ const insertWriterQueue = 256
 // hands each evaluated doc to a dedicated writer goroutine over a bounded channel,
 // so file encoding + I/O overlap with query compute (see the Select branch).
 //
-// Phase-1 scope (deliberately narrow): the target FILE must not already exist
-// (brand-new only); the VALUE of each source row is written verbatim, one JSON
-// object per line (KEY is not used -- record ids are positional, as for every flat
-// keyspace); no RETURNING, no options, no append/upsert. Later phases can add
-// append-to-existing, RETURNING, and the faithful cbq SendInsert path.
+// Write mode is chosen by the SQL++ OPTIONS clause (see insertWriteMode): "new"
+// (default) writes a brand-new file and errors if it already exists; "append"
+// creates-or-appends; "overwrite" atomically replaces. The VALUE of each source
+// row is written verbatim, one JSON object per line (KEY is not used -- record ids
+// are positional, as for every flat keyspace). Still unsupported: RETURNING and
+// the faithful cbq SendInsert path (later phases).
 func (s *Session) InsertRun(ins *algebra.Insert) (res *Result, err error) {
 	if ins.Returning() != nil {
 		return nil, fmt.Errorf("INSERT ... RETURNING is not supported yet (phase 1)")
@@ -68,12 +79,30 @@ func (s *Session) InsertRun(ins *algebra.Insert) (res *Result, err error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, statErr := os.Stat(path); statErr == nil {
+
+	ctx := NewExprGlueContext(time.Now())
+
+	mode, err := insertWriteMode(ins.Options(), ctx)
+	if err != nil {
+		return nil, err
+	}
+	_, statErr := os.Stat(path)
+	exists := statErr == nil
+	if exists && mode == insertModeNew {
 		return nil, fmt.Errorf("INSERT INTO %q: target file %q already exists "+
-			"(phase 1 writes brand-new files only)", ks, path)
+			`(mode "new"; use OPTIONS {"mode":"append"} or {"mode":"overwrite"})`, ks, path)
 	}
 
-	w, err := newJSONLWriter(path)
+	// "append" seeds the temp file with the existing file's bytes first, so the
+	// copy-then-rename stays crash-safe; "new"/"overwrite" start empty (at finish()
+	// the rename replaces any existing file atomically). Appending to a missing file
+	// is just a create -- same as "new".
+	seedFrom := ""
+	if mode == insertModeAppend && exists {
+		seedFrom = path
+	}
+
+	w, err := newJSONLWriter(path, seedFrom)
 	if err != nil {
 		return nil, err
 	}
@@ -83,8 +112,6 @@ func (s *Session) InsertRun(ins *algebra.Insert) (res *Result, err error) {
 			w.abort()
 		}
 	}()
-
-	ctx := NewExprGlueContext(time.Now())
 
 	if sel := ins.Select(); sel != nil {
 		// Stage breaker: the source query (producer) evaluates each row's VALUE expr
@@ -162,7 +189,7 @@ func (s *Session) InsertRun(ins *algebra.Insert) (res *Result, err error) {
 	}
 
 	// Report the mutation like a small result the CLI can render (or stream).
-	summary, _ := json.Marshal(map[string]interface{}{"inserted": w.n, "keyspace": ks})
+	summary, _ := json.Marshal(map[string]interface{}{"inserted": w.n, "keyspace": ks, "mode": mode})
 	if s.OnRow != nil {
 		s.OnRow(summary)
 		return &Result{Count: w.n}, nil
@@ -199,10 +226,45 @@ func (s *Session) insertTargetPath(ref *algebra.KeyspaceRef) (path, ks string, e
 	return filepath.Join(root, ns, clean), ks, nil
 }
 
-// jsonlWriter streams JSON documents, one compact line each, to a brand-new file.
-// It writes to a temp sibling and renames on finish(), so a mid-stream failure
-// never leaves a partial keyspace file. A MISSING doc is skipped ("no document").
-// The first write/encode error is latched in err and short-circuits later writes.
+// insertWriteMode reads the INSERT OPTIONS object's optional "mode" field, which
+// selects how the target file is written: "new" (default -- error if the file
+// already exists), "append" (create-or-append), or "overwrite" (atomic replace).
+// "replace" is accepted as a synonym for "overwrite". A nil/absent/NULL mode means
+// "new". OPTIONS is a normal expression; it is evaluated as a constant (against a
+// NULL row) -- the same clause cbq uses for e.g. {"expiration": ...} on Server.
+func insertWriteMode(opts expression.Expression, ctx expression.Context) (string, error) {
+	if opts == nil {
+		return insertModeNew, nil
+	}
+	ov, e := opts.Evaluate(value.NULL_VALUE, ctx)
+	if e != nil {
+		return "", fmt.Errorf("INSERT OPTIONS evaluation failed: %w", e)
+	}
+	m, ok := ov.Field("mode")
+	if !ok || m.Type() == value.MISSING || m.Type() == value.NULL {
+		return insertModeNew, nil
+	}
+	if m.Type() != value.STRING {
+		return "", fmt.Errorf(`INSERT OPTIONS: "mode" must be a string, got %v`, m.Type())
+	}
+	switch strings.ToLower(m.Actual().(string)) {
+	case "", insertModeNew:
+		return insertModeNew, nil
+	case insertModeAppend:
+		return insertModeAppend, nil
+	case insertModeOverwrite, "replace":
+		return insertModeOverwrite, nil
+	default:
+		return "", fmt.Errorf(`INSERT OPTIONS: unknown mode %q (want "new", "append", or "overwrite")`, m.Actual())
+	}
+}
+
+// jsonlWriter streams JSON documents, one compact line each, into a temp sibling
+// that is renamed over the target on finish() -- so a mid-stream failure never
+// leaves a partial keyspace file, and an "overwrite"/"append" rename replaces the
+// old file atomically. For "append" the temp is first seeded with the existing
+// file's bytes (copy-then-rename). A MISSING doc is skipped ("no document"). The
+// first write/encode error is latched in err and short-circuits later writes.
 type jsonlWriter struct {
 	path string
 	tmp  string
@@ -213,7 +275,9 @@ type jsonlWriter struct {
 	err  error
 }
 
-func newJSONLWriter(path string) (*jsonlWriter, error) {
+// newJSONLWriter opens the temp sibling. If seedFrom is non-empty, the temp is
+// pre-filled with that file's bytes (the append mode's copy) before any new rows.
+func newJSONLWriter(path, seedFrom string) (*jsonlWriter, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, fmt.Errorf("INSERT: creating %q: %w", filepath.Dir(path), err)
 	}
@@ -222,7 +286,52 @@ func newJSONLWriter(path string) (*jsonlWriter, error) {
 	if err != nil {
 		return nil, fmt.Errorf("INSERT: creating temp file: %w", err)
 	}
-	return &jsonlWriter{path: path, tmp: tmp, f: f, w: bufio.NewWriter(f)}, nil
+	jw := &jsonlWriter{path: path, tmp: tmp, f: f, w: bufio.NewWriter(f)}
+	if seedFrom != "" {
+		if err := jw.seed(seedFrom); err != nil {
+			jw.abort()
+			return nil, err
+		}
+	}
+	return jw, nil
+}
+
+// seed pre-fills the temp file with an existing file's bytes (append mode), then
+// guarantees a trailing newline so the first appended row starts on its own JSONL
+// line even if the seeded file did not end in one.
+func (jw *jsonlWriter) seed(src string) error {
+	in, e := os.Open(src)
+	if e != nil {
+		return fmt.Errorf("INSERT: opening %q to append: %w", src, e)
+	}
+	defer in.Close()
+	t := &lastByteWriter{w: jw.w}
+	if _, e := io.Copy(t, in); e != nil {
+		return fmt.Errorf("INSERT: copying %q for append: %w", src, e)
+	}
+	if t.n > 0 && t.last != '\n' {
+		if e := jw.w.WriteByte('\n'); e != nil {
+			return e
+		}
+	}
+	return nil
+}
+
+// lastByteWriter forwards writes and remembers the last byte written, so the append
+// seeder can tell whether the copied file already ended in a newline.
+type lastByteWriter struct {
+	w    io.Writer
+	last byte
+	n    int64
+}
+
+func (t *lastByteWriter) Write(p []byte) (int, error) {
+	nn, err := t.w.Write(p)
+	if nn > 0 {
+		t.last = p[nn-1]
+		t.n += int64(nn)
+	}
+	return nn, err
 }
 
 func (jw *jsonlWriter) setErr(e error) {

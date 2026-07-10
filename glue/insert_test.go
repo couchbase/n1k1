@@ -174,6 +174,126 @@ func TestInsertStreamManyRows(t *testing.T) {
 	}
 }
 
+// insertCount runs a COUNT(1) over a keyspace and returns it (round-trip helper).
+func insertCount(t *testing.T, dir, ks string) int {
+	t.Helper()
+	sess, err := OpenSession(dir, "default")
+	if err != nil {
+		t.Fatalf("OpenSession: %v", err)
+	}
+	r, err := sess.Run("SELECT COUNT(1) AS n FROM " + ks + " k")
+	if err != nil {
+		t.Fatalf("count %s: %v", ks, err)
+	}
+	var got struct {
+		N int `json:"n"`
+	}
+	if e := json.Unmarshal(r.Rows[0], &got); e != nil {
+		t.Fatalf("decoding count: %v", e)
+	}
+	return got.N
+}
+
+// TestInsertOptionsModes covers the OPTIONS {"mode": ...} write modes: "new"
+// (default, brand-new-only), "append" (create-or-append), and "overwrite" (atomic
+// replace), plus the error paths.
+func TestInsertOptionsModes(t *testing.T) {
+	dir := insertTestDir(t) // `logs` keyspace: 4 rows (2 ERROR)
+
+	// Seed a brand-new file (default mode "new") -> 2 ERROR rows.
+	sess, _ := OpenSession(dir, "default")
+	if _, err := sess.Run("INSERT INTO `m/x.jsonl` (KEY UUID(), VALUE self) " +
+		`SELECT l.code FROM logs l WHERE l.sev = "ERROR"`); err != nil {
+		t.Fatalf("seed INSERT: %v", err)
+	}
+	if n := insertCount(t, dir, "m"); n != 2 {
+		t.Fatalf("after seed, keyspace m has %d rows, want 2", n)
+	}
+
+	// mode "new" into an existing file errors (same as the default).
+	if _, err := sess.Run("INSERT INTO `m/x.jsonl` (KEY UUID(), VALUE self, OPTIONS {\"mode\":\"new\"}) " +
+		`SELECT l.code FROM logs l`); err == nil {
+		t.Error(`mode "new" into an existing file should error`)
+	}
+
+	// mode "append" adds a SECOND file's worth of rows into the same keyspace dir.
+	// Target a different file name so the keyspace `m` unions both; also append to
+	// the SAME file to exercise the copy-then-rename seed path.
+	if _, err := sess.Run("INSERT INTO `m/x.jsonl` (KEY UUID(), VALUE self, OPTIONS {\"mode\":\"append\"}) " +
+		`SELECT l.code FROM logs l WHERE l.sev = "WARN"`); err != nil {
+		t.Fatalf(`append INSERT: %v`, err)
+	}
+	if n := insertCount(t, dir, "m"); n != 3 { // 2 ERROR + 1 WARN appended into x.jsonl
+		t.Fatalf("after append, keyspace m has %d rows, want 3", n)
+	}
+
+	// mode "append" to a NOT-yet-existing file just creates it.
+	if _, err := sess.Run("INSERT INTO `m/y.jsonl` (KEY UUID(), VALUE self, OPTIONS {\"mode\":\"append\"}) " +
+		`SELECT l.code FROM logs l WHERE l.sev = "INFO"`); err != nil {
+		t.Fatalf(`append-create INSERT: %v`, err)
+	}
+	if n := insertCount(t, dir, "m"); n != 4 { // 3 + 1 INFO in the new y.jsonl
+		t.Fatalf("after append-create, keyspace m has %d rows, want 4", n)
+	}
+
+	// mode "overwrite" atomically replaces x.jsonl with just the INFO row (1),
+	// leaving y.jsonl (1) untouched -> keyspace m has 2.
+	if _, err := sess.Run("INSERT INTO `m/x.jsonl` (KEY UUID(), VALUE self, OPTIONS {\"mode\":\"overwrite\"}) " +
+		`SELECT l.code FROM logs l WHERE l.sev = "INFO"`); err != nil {
+		t.Fatalf(`overwrite INSERT: %v`, err)
+	}
+	if n := insertCount(t, dir, "m"); n != 2 {
+		t.Fatalf("after overwrite, keyspace m has %d rows, want 2", n)
+	}
+
+	// Unknown mode errors clearly.
+	if _, err := sess.Run("INSERT INTO `m/z.jsonl` (KEY UUID(), VALUE self, OPTIONS {\"mode\":\"clobber\"}) " +
+		`SELECT l.code FROM logs l`); err == nil {
+		t.Error("unknown OPTIONS mode should error")
+	}
+}
+
+// TestInsertAppendNoTrailingNewline guards the seed path: appending to a file that
+// does NOT end in a newline must not concatenate the first appended row onto the
+// last existing line (which would corrupt the JSONL).
+func TestInsertAppendNoTrailingNewline(t *testing.T) {
+	dir := insertTestDir(t)
+	// A brand-new keyspace file written by hand, deliberately WITHOUT a trailing \n.
+	kd := filepath.Join(dir, "default", "plain")
+	if err := os.MkdirAll(kd, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(kd, "a.jsonl"), []byte(`{"code":100}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	sess, _ := OpenSession(dir, "default")
+	if _, err := sess.Run("INSERT INTO `plain/a.jsonl` (KEY UUID(), VALUE self, OPTIONS {\"mode\":\"append\"}) " +
+		`SELECT l.code FROM logs l WHERE l.sev = "ERROR"`); err != nil {
+		t.Fatalf("append INSERT: %v", err)
+	}
+
+	// The file must have 3 clean lines (the hand-written one + 2 ERROR rows), each
+	// valid JSON -- no run-together first line.
+	raw, err := os.ReadFile(filepath.Join(kd, "a.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("appended file has %d lines, want 3:\n%s", len(lines), raw)
+	}
+	for _, ln := range lines {
+		var m map[string]interface{}
+		if e := json.Unmarshal([]byte(ln), &m); e != nil {
+			t.Fatalf("line is not valid JSON (newline seam bug?): %q (%v)", ln, e)
+		}
+	}
+	if n := insertCount(t, dir, "plain"); n != 3 {
+		t.Errorf("keyspace plain has %d rows, want 3", n)
+	}
+}
+
 // TestInsertValueConstruct confirms the VALUE expression is evaluated against each
 // SELECT OUTPUT row (cbq INSERT-SELECT semantics): a constructed object referencing
 // the projected field names materializes correctly.

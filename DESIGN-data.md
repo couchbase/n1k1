@@ -678,38 +678,34 @@ SELECT sev, COUNT(1) FROM analysis GROUP BY sev;
   (producer owns eval errors, writer owns write errors; combined only after join) so
   no field is touched concurrently — verified under `-race`. The retained doc is a
   **copy** of the reused `OnRow` buffer (the async path outlives the callback).
-- **Phase-1 scope (deliberately narrow)** — brand-new target file only (re-insert
-  errors); writes to a `.tmp` sibling and atomically renames on success (a mid-stream
-  failure never leaves a partial keyspace file); no RETURNING, no options, no
-  append/upsert; `KEY` is accepted but record ids stay positional (flat-keyspace rule).
-  Later phases: append-to-existing, RETURNING, and the faithful cbq `SendInsert` path.
+- **Scope** — `KEY` is accepted but record ids stay positional (flat-keyspace rule);
+  every write goes via a `.tmp` sibling renamed into place, so a mid-stream failure
+  never leaves a partial keyspace file. Still unsupported: RETURNING and the faithful
+  cbq `SendInsert` path (later phases).
 
-#### Phase-2 TODO: `OPTIONS` clause for write mode (low risk — hook already exists)
-The standard SQL++ `OPTIONS` clause is the idiomatic place to choose brand-new vs
-append vs overwrite — **no grammar or fork changes needed**. It's a first-class part
-of the insert spec (`INSERT INTO ks (KEY …, VALUE …, OPTIONS <objExpr>) …`), already
-*parses* in our `INSERT … SELECT` form, and already reaches `InsertRun` via
-`ins.Options()` — phase 1 simply ignores it. Wiring it up = evaluate the options
-object (constant-fold; cbq uses the same clause for `{"expiration": …}` on Server)
-and branch on a key. Confidence is high; this is a documented follow-up, not a
-speculative one.
-- **Vocabulary (pick one; leaning `mode` enum):**
-  - **`mode` enum** — one knob: `{"mode": "new"}` (default = today's brand-new-only),
-    `"append"` (create-or-append), `"overwrite"` (atomic replace). Extensible, no
-    conflicting-flag cases. *Preferred.*
-  - **boolean flags** — `{"append": true}` / `{"overwrite": true}`; familiar but two
-    flags can contradict (must error when both set).
-  - **append-only first** — ship just `{"append": true}` and defer overwrite.
-- **Atomicity / correctness per mode (the only real design content):**
-  - `new` / `overwrite` stay **atomic** — temp-write + rename (overwrite renames over
-    the existing file). No partial keyspace file on failure.
-  - `append` **can't** use temp-write+rename as-is. Two options: (a) copy original →
-    tmp, append, rename — crash-safe but O(existing) copy; (b) open `O_APPEND`
-    directly — no copy, but a mid-stream failure leaves a partly-appended file. Lean
-    (a) for the safety guarantee phase 1 established; revisit if copy cost bites.
-  - Appending to a JSONL keyspace file is otherwise clean: existing lines don't move,
-    so **positional record-ids stay stable** and the directory-union read path is
-    unaffected — new rows just get appended offsets.
+#### Write mode via the `OPTIONS` clause (landed)
+The standard SQL++ `OPTIONS` clause chooses brand-new vs append vs overwrite —
+**no grammar or fork changes**. It's a first-class part of the insert spec
+(`INSERT INTO ks (KEY …, VALUE …, OPTIONS <objExpr>) …`), parses in our
+`INSERT … SELECT` form, and reaches `InsertRun` via `ins.Options()`; `insertWriteMode`
+constant-folds it (`Evaluate` against a NULL row — the same clause cbq uses for
+`{"expiration": …}` on Server) and reads a `"mode"` key.
+- **`mode` enum** — one knob: `{"mode": "new"}` (**default** = brand-new-only, errors
+  if the file exists), `"append"` (create-or-append), `"overwrite"` (atomic replace).
+  `"replace"` is a synonym for overwrite; an absent/NULL mode is `"new"`; anything else
+  errors. (Chosen over boolean flags — `{"append":true}`/`{"overwrite":true}` — which
+  can contradict.) The mutation summary echoes the mode: `{"inserted":N,"keyspace":…,"mode":…}`.
+- **Atomicity per mode.**
+  - `new` / `overwrite` are **atomic** — write the temp, then rename (overwrite's rename
+    replaces the existing file). No partial keyspace file on failure.
+  - `append` uses **copy-then-rename** (`jsonlWriter.seed`): the temp is pre-filled with
+    the existing file's bytes, new rows are appended, then rename — crash-safe at an
+    O(existing) copy (chosen over a bare `O_APPEND`, which would leave a partly-appended
+    file on failure). The seeder forces a trailing newline (`lastByteWriter`) so the
+    first appended row can't run onto a seeded file that lacked one.
+  - Appending to a JSONL keyspace file is otherwise clean: existing lines don't move, so
+    **positional record-ids stay stable** and the directory-union read path is unaffected
+    — new rows just get appended offsets.
 - **Not `UPSERT INTO`.** `algebra.Upsert` exists, but its semantic is insert-or-replace
   *by key*; our file keys are positional, so overloading UPSERT for "overwrite ok" is a
   stretch. Reserve it for a genuine by-key upsert later.
