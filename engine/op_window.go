@@ -279,6 +279,11 @@ func OpWindowFrames(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 		var lzAccA, lzAccB, lzResBuf []byte
 		var lzFrameVals base.Vals
 
+		// Only the (interpreter-only) agg block below uses these; the gen-compiler
+		// strips that block via "// !lz", so keep them "used" in the compiled lane --
+		// same guard the rank buffers use above.
+		_, _, _, _ = lzAccA, lzAccB, lzResBuf, lzFrameVals
+
 		// lzPartitionId starts at a sentinel that no real partition id equals, so
 		// the FIRST row always takes the new-partition branch (lzCurrentPos = 0).
 		// Without this, an OVER() with no PARTITION BY keeps heap.Extra at 0 --
