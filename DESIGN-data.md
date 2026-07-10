@@ -645,7 +645,7 @@ and `gocloud.dev` (its `blob` abstracts S3/GCS/Azure). An object-store
   in `.n1k1/`, rebuilt via the §5 change-detection manifest when any sub-source
   changes. The answer for expensive normalization over huge, mostly-static trees.
 
-### `INSERT INTO` — user-driven materialization (phase 1, landed)
+### `INSERT INTO` — user-driven materialization (landed)
 The **explicit, user-driven** counterpart to the automatic materialized view: run a
 query *now* and write its rows to a keyspace file for later slicing & dicing. Drove
 by the PREPARE++ / `RULE_MATCHES()` flow (`DESIGN-prepare.md`) — materialize a
@@ -661,7 +661,7 @@ SELECT sev, COUNT(1) FROM analysis GROUP BY sev;
 - **Where it lives** — `glue/insert.go`, intercepted at the statement level in
   `Session.Run` (like PREPARE/EXECUTE), *before* the cbq planner. This sidesteps
   cbq's `plan.SendInsert`, which requires the target keyspace to already exist —
-  the whole point of phase 1 is writing a **brand-new** file. Zero fork changes.
+  whereas the default (`"new"`) mode writes a **brand-new** file. Zero fork changes.
 - **Keyspace layout (ties to §2 resolution)** — the file datastore makes a
   *directory* under the namespace a keyspace (its files unioned); a loose file is
   not. So `` INSERT INTO `analysis/x.jsonl` `` writes `<root>/<ns>/analysis/x.jsonl`
@@ -678,10 +678,22 @@ SELECT sev, COUNT(1) FROM analysis GROUP BY sev;
   (producer owns eval errors, writer owns write errors; combined only after join) so
   no field is touched concurrently — verified under `-race`. The retained doc is a
   **copy** of the reused `OnRow` buffer (the async path outlives the callback).
+- **`RETURNING` (landed)** — a `RETURNING` projection makes the statement return a
+  row per inserted doc *instead of* the mutation summary, streamed through the
+  caller's `OnRow` as each doc is written (so the returned rows honor the same stage
+  breaker) or handed back in `Result.Rows`. Since INSERT runs outside the planner
+  there is no projection operator, so `insertReturner` evaluates the
+  `*algebra.Projection` directly against the inserted doc, mirroring cbq's formalized
+  shape: a bare `RETURNING code` formalizes to `(alias.code)`, so exprs are evaluated
+  against a one-key wrapper `{alias: doc}`; `RETURNING *` is a star+self term → the
+  whole doc; `RETURNING RAW <expr>` yields the bare value, not an object. A RETURNING
+  eval failure aborts the whole insert (the temp file is discarded, nothing lands).
+  *Limitation:* `META().id` in RETURNING is not meaningful (ids are positional, not
+  content keys), and the doc carries no annotated metadata.
 - **Scope** — `KEY` is accepted but record ids stay positional (flat-keyspace rule);
   every write goes via a `.tmp` sibling renamed into place, so a mid-stream failure
-  never leaves a partial keyspace file. Still unsupported: RETURNING and the faithful
-  cbq `SendInsert` path (later phases).
+  never leaves a partial keyspace file. Still unsupported: the faithful cbq
+  `SendInsert` path (a later phase).
 
 #### Write mode via the `OPTIONS` clause (landed)
 The standard SQL++ `OPTIONS` clause chooses brand-new vs append vs overwrite —

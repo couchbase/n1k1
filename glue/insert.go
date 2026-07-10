@@ -64,12 +64,13 @@ const (
 // (default) writes a brand-new file and errors if it already exists; "append"
 // creates-or-appends; "overwrite" atomically replaces. The VALUE of each source
 // row is written verbatim, one JSON object per line (KEY is not used -- record ids
-// are positional, as for every flat keyspace). Still unsupported: RETURNING and
-// the faithful cbq SendInsert path (later phases).
+// are positional, as for every flat keyspace).
+//
+// A RETURNING projection (see insertReturner) makes the statement return a row per
+// inserted doc -- streamed through the caller's OnRow as each doc is written, or in
+// Result.Rows otherwise -- instead of the mutation summary. Still unsupported: the
+// faithful cbq SendInsert path (a later phase).
 func (s *Session) InsertRun(ins *algebra.Insert) (res *Result, err error) {
-	if ins.Returning() != nil {
-		return nil, fmt.Errorf("INSERT ... RETURNING is not supported yet (phase 1)")
-	}
 	valueExpr := ins.Value()
 	if valueExpr == nil && ins.Select() != nil {
 		return nil, fmt.Errorf("INSERT ... SELECT requires a VALUE expression")
@@ -81,6 +82,14 @@ func (s *Session) InsertRun(ins *algebra.Insert) (res *Result, err error) {
 	}
 
 	ctx := NewExprGlueContext(time.Now())
+
+	// RETURNING: project each inserted doc to a result row. sink is the caller's row
+	// callback captured up front (the Select branch reroutes s.OnRow to the writer),
+	// so RETURNING rows stream to the real output even while the source query runs.
+	var ret *insertReturner
+	if proj := ins.Returning(); proj != nil {
+		ret = &insertReturner{proj: proj, alias: ins.KeyspaceRef().Alias(), ctx: ctx, sink: s.OnRow}
+	}
 
 	mode, err := insertWriteMode(ins.Options(), ctx)
 	if err != nil {
@@ -131,6 +140,9 @@ func (s *Session) InsertRun(ins *algebra.Insert) (res *Result, err error) {
 			defer close(done)
 			for doc := range docs {
 				w.write(doc) // sole writer of w.err / w.n
+				if ret != nil {
+					ret.emit(doc) // sole writer of ret.* (this goroutine only)
+				}
 			}
 		}()
 
@@ -178,17 +190,33 @@ func (s *Session) InsertRun(ins *algebra.Insert) (res *Result, err error) {
 				return nil, err
 			}
 			w.write(doc)
+			if ret != nil {
+				ret.emit(doc)
+			}
 		}
 		if err = w.err; err != nil {
 			return nil, err
 		}
+	}
+	if ret != nil && ret.err != nil {
+		err = fmt.Errorf("INSERT RETURNING failed: %w", ret.err)
+		return nil, err
 	}
 
 	if err = w.finish(); err != nil {
 		return nil, err
 	}
 
-	// Report the mutation like a small result the CLI can render (or stream).
+	// RETURNING: the projected rows are the result -- already streamed via the
+	// caller's OnRow when set, else handed back in Result.Rows. No summary.
+	if ret != nil {
+		if ret.sink != nil {
+			return &Result{Count: ret.n}, nil
+		}
+		return &Result{Rows: ret.rows, Count: ret.n}, nil
+	}
+
+	// Otherwise report the mutation like a small result the CLI can render (or stream).
 	summary, _ := json.Marshal(map[string]interface{}{"inserted": w.n, "keyspace": ks, "mode": mode})
 	if s.OnRow != nil {
 		s.OnRow(summary)
@@ -257,6 +285,102 @@ func insertWriteMode(opts expression.Expression, ctx expression.Context) (string
 	default:
 		return "", fmt.Errorf(`INSERT OPTIONS: unknown mode %q (want "new", "append", or "overwrite")`, m.Actual())
 	}
+}
+
+// insertReturner projects a RETURNING clause over each inserted doc. INSERT is run
+// at the statement level (outside the planner), so there is no projection operator
+// -- this evaluates the *algebra.Projection directly, mirroring cbq's formalized
+// shape: a bare RETURNING field becomes `(alias.field)`, so exprs are evaluated
+// against a one-key wrapper {alias: doc}; RETURNING * is a star+self term whose
+// value is the whole doc; RETURNING RAW <expr> yields the bare value, not an object.
+//
+// emit is called from a single goroutine (the writer, in the Select branch, or the
+// main goroutine for VALUES), so no field needs synchronization; the first error is
+// latched in err. Each row is streamed to sink (the caller's OnRow) when set, else
+// accumulated in rows for Result.Rows.
+type insertReturner struct {
+	proj  *algebra.Projection
+	alias string
+	ctx   expression.Context
+	sink  func([]byte)
+	rows  []json.RawMessage
+	buf   bytes.Buffer
+	n     int
+	err   error
+}
+
+func (r *insertReturner) emit(doc value.Value) {
+	if r.err != nil {
+		return
+	}
+	b, ok, e := r.project(doc)
+	if e != nil {
+		r.err = e
+		return
+	}
+	if !ok { // e.g. RETURNING RAW <expr> that evaluated to MISSING
+		return
+	}
+	r.n++
+	if r.sink != nil {
+		r.sink(b) // reused buffer; OnRow must copy to retain (same contract as Session)
+		return
+	}
+	r.rows = append(r.rows, append(json.RawMessage(nil), b...))
+}
+
+// project builds one RETURNING row for doc, returning its compact JSON bytes (into
+// the reused buf), whether a row is present, and any evaluation error.
+func (r *insertReturner) project(doc value.Value) ([]byte, bool, error) {
+	wrapped := value.NewValue(map[string]interface{}{r.alias: doc})
+
+	if r.proj.Raw() { // RETURNING RAW <expr> -- a single bare value per row
+		v, e := r.proj.Terms()[0].Expression().Evaluate(wrapped, r.ctx)
+		if e != nil {
+			return nil, false, e
+		}
+		if v == nil || v.Type() == value.MISSING {
+			return nil, false, nil
+		}
+		return r.marshal(v)
+	}
+
+	out := value.NewValue(map[string]interface{}{})
+	for _, term := range r.proj.Terms() {
+		if term.Star() {
+			// `*` (self) projects the whole doc; `<expr>.*` projects that object's fields.
+			obj := doc
+			if !term.Self() && term.Expression() != nil {
+				o, e := term.Expression().Evaluate(wrapped, r.ctx)
+				if e != nil {
+					return nil, false, e
+				}
+				obj = o
+			}
+			if obj != nil && obj.Type() == value.OBJECT {
+				for k, fv := range obj.Fields() {
+					out.SetField(k, fv)
+				}
+			}
+			continue
+		}
+		v, e := term.Expression().Evaluate(wrapped, r.ctx)
+		if e != nil {
+			return nil, false, e
+		}
+		if v != nil && v.Type() != value.MISSING {
+			out.SetField(term.Alias(), v)
+		}
+	}
+	return r.marshal(out)
+}
+
+func (r *insertReturner) marshal(v value.Value) ([]byte, bool, error) {
+	r.buf.Reset()
+	if e := v.WriteJSON(nil, &r.buf, "", "", true); e != nil {
+		return nil, false, e
+	}
+	return r.buf.Bytes(), true, nil
 }
 
 // jsonlWriter streams JSON documents, one compact line each, into a temp sibling

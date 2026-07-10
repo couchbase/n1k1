@@ -294,6 +294,85 @@ func TestInsertAppendNoTrailingNewline(t *testing.T) {
 	}
 }
 
+// TestInsertReturning covers the RETURNING projection: selected fields (with an
+// AS alias), RETURNING * (whole doc), RETURNING RAW (bare values), and the VALUES
+// path -- each returns a row per inserted doc AND still writes the file.
+func TestInsertReturning(t *testing.T) {
+	dir := insertTestDir(t) // logs: ERROR/5, ERROR/1, INFO/2, WARN/9
+	sess, _ := OpenSession(dir, "default")
+
+	// RETURNING selected fields + AS alias. Two ERROR rows -> two returned rows.
+	r, err := sess.Run("INSERT INTO `r1/x.jsonl` (KEY UUID(), VALUE self) " +
+		`SELECT l.sev, l.code FROM logs l WHERE l.sev = "ERROR" RETURNING code, sev AS s`)
+	if err != nil {
+		t.Fatalf("RETURNING fields: %v", err)
+	}
+	if len(r.Rows) != 2 {
+		t.Fatalf("RETURNING fields: got %d rows, want 2", len(r.Rows))
+	}
+	codes := map[float64]bool{}
+	for _, row := range r.Rows {
+		var m map[string]interface{}
+		if e := json.Unmarshal(row, &m); e != nil {
+			t.Fatalf("row not JSON: %s (%v)", row, e)
+		}
+		if m["s"] != "ERROR" {
+			t.Errorf("row %s: s=%v, want ERROR", row, m["s"])
+		}
+		if _, ok := m["code"]; !ok {
+			t.Errorf("row %s: missing projected field code", row)
+		}
+		if len(m) != 2 { // exactly the projected fields, nothing else
+			t.Errorf("row %s: has %d fields, want 2 (code, s)", row, len(m))
+		}
+		codes[m["code"].(float64)] = true
+	}
+	if !codes[5] || !codes[1] {
+		t.Errorf("returned codes = %v, want {5,1}", codes)
+	}
+	// The file was still materialized (RETURNING doesn't replace the write).
+	if n := insertCount(t, dir, "r1"); n != 2 {
+		t.Errorf("keyspace r1 has %d rows, want 2", n)
+	}
+
+	// RETURNING * -> the whole inserted doc.
+	r2, err := sess.Run("INSERT INTO `r2/x.jsonl` (KEY UUID(), VALUE self) " +
+		`SELECT l.sev, l.code FROM logs l WHERE l.code = 9 RETURNING *`)
+	if err != nil {
+		t.Fatalf("RETURNING *: %v", err)
+	}
+	if len(r2.Rows) != 1 || canonJSON(t, r2.Rows[0]) != canonJSON(t, []byte(`{"code":9,"sev":"WARN"}`)) {
+		t.Errorf("RETURNING * got %v, want [{code:9,sev:WARN}]", r2.Rows)
+	}
+
+	// RETURNING RAW <expr> -> bare values, not objects.
+	r3, err := sess.Run("INSERT INTO `r3/x.jsonl` (KEY UUID(), VALUE self) " +
+		`SELECT l.code FROM logs l WHERE l.sev = "ERROR" RETURNING RAW code`)
+	if err != nil {
+		t.Fatalf("RETURNING RAW: %v", err)
+	}
+	if len(r3.Rows) != 2 {
+		t.Fatalf("RETURNING RAW: got %d rows, want 2", len(r3.Rows))
+	}
+	rawSet := map[string]bool{}
+	for _, row := range r3.Rows {
+		rawSet[strings.TrimSpace(string(row))] = true
+	}
+	if !rawSet["5"] || !rawSet["1"] {
+		t.Errorf("RETURNING RAW rows = %v, want bare 5 and 1", rawSet)
+	}
+
+	// VALUES path with RETURNING.
+	r4, err := sess.Run("INSERT INTO `r4/x.jsonl` (KEY, VALUE) VALUES (\"k1\", {\"a\": 1, \"b\": 2}) " +
+		`RETURNING RAW b`)
+	if err != nil {
+		t.Fatalf("VALUES RETURNING: %v", err)
+	}
+	if len(r4.Rows) != 1 || strings.TrimSpace(string(r4.Rows[0])) != "2" {
+		t.Errorf("VALUES RETURNING RAW b = %v, want [2]", r4.Rows)
+	}
+}
+
 // TestInsertValueConstruct confirms the VALUE expression is evaluated against each
 // SELECT OUTPUT row (cbq INSERT-SELECT semantics): a constructed object referencing
 // the projected field names materializes correctly.
