@@ -122,6 +122,23 @@ TIPS (get the best out of a corpus)
     datasets (indexer.log vs projector.log) unchanged.
   - Version-tag detectors ("versions:") -- field-shape changes across releases are handled by evolving
     the corpus, not by writing per-version adapters.
+  - RESERVED WORDS: field names that are SQL++ keywords must be BACKTICKED, or the detector fails to
+    parse. The built-in log recipe emits "level" (reserved: ISOLATION LEVEL) -- write WHERE l.` + "`level`" + ` = "error".
+    Common offenders: "level", "keys", and natural aliases like "prev" (... AS ` + "`prev`" + `).
+
+TEMPORAL (ASOF) -- nearest-preceding correlation across two log streams (correlate an
+error with the step that preceded it) lowers a correlated argmax subquery to a streaming
+merge-join instead of an O(n^2) scan. To QUALIFY, the subquery must be:
+  - a BARE subquery term (SELECT ... ), single keyspace, ONE scalar projection;
+  - ORDER BY <key> DESC (nearest-preceding) or ASC (following), LIMIT 1, no OFFSET;
+  - WHERE r.<key> <= e.<key> (preceding) with the direction matching the ORDER BY;
+  - and BOTH keyspaces must expose SORTED-SOURCE metadata -- i.e. an extract recipe with
+    a "time:" field (normalized to the int64 sort key) and an "order:" (.extract help).
+An outer WHERE on the driving stream is fine. If it does NOT lower, ".verbose on" prints
+"argmax subquery NOT lowered to ASOF ...: <the gate that stopped it>", e.g. an unproven
+sort key -- so you know before running a slow query. Example:
+  SELECT e.ts, (SELECT r.msg FROM state r WHERE r.ts <= e.ts ORDER BY r.ts DESC LIMIT 1) AS prev
+  FROM errors e WHERE regexp_contains(e.msg, "Terminate")
 
 Non-interactive (CI / agent):
   n1k1 -c '.rules run --corpus ./detectors --bind ./manifest' <data-dir>

@@ -19,6 +19,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/couchbase/n1k1/glue"
 )
 
 // writeCorpus writes each name->body entry as <dir>/<name>.sql++ and returns dir.
@@ -113,9 +115,58 @@ func TestRulesHelp(t *testing.T) {
 		"score:", "% fused", // an example score line shape
 		"TIPS", "regexp_contains", // the tips (native-over-boxed nudge)
 		"--bind", "--update", // the flag one-liners
+		"RESERVED WORDS", "`level`", // DOC-3: the reserved-word note
+		"TEMPORAL (ASOF)", "ORDER BY", "NOT lowered to ASOF", // DOC-2: the ASOF requirements
 	} {
 		if !strings.Contains(help, want) {
 			t.Errorf(".rules help missing %q; stdout:\n%s", want, help)
+		}
+	}
+}
+
+// TestExtractHelp: .extract help is a self-contained *.extract.js authoring reference
+// (DOC-1) -- it names the file object, every framing kind, the timestamp layouts, and
+// the match claim shape, so writing a recipe doesn't require reading records/spec.go.
+func TestExtractHelp(t *testing.T) {
+	var out, errb bytes.Buffer
+	c := &cli{prog: "n1k1", mode: "jsonlines", out: &out, stderr: &errb}
+	c.cmdExtract("help")
+
+	help := out.String()
+	for _, want := range []string{
+		"describe(file)", "{ path, name, ext, head }", // the file object
+		"var match =", "exts", "names", "priority", // the match claim
+		"FRAMING", "multiline", "section", "whole", "json", // framing kinds
+		"TIME", "RFC3339", "epoch_ms", "epoch-NANOS", // timestamp layouts
+		"FIELDS", "(?P<", // named-capture fields
+		"ANNOTATED EXAMPLE", // a full recipe
+	} {
+		if !strings.Contains(help, want) {
+			t.Errorf(".extract help missing %q; stdout:\n%s", want, help)
+		}
+	}
+}
+
+// TestExtractList: .extract list inventories the loaded recipes with what each claims.
+func TestExtractList(t *testing.T) {
+	repo, err := filepath.Abs("../..") // from cmd/n1k1 up to the repo root
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(repo, "extensions", "extract_recipes", "couchbase_log.extract.js")
+	if _, err := os.Stat(path); err != nil {
+		t.Skipf("example recipe not present: %v", err)
+	}
+	if _, err := glue.RegisterExtensionFile(path); err != nil {
+		t.Fatalf("RegisterExtensionFile: %v", err)
+	}
+	var out, errb bytes.Buffer
+	c := &cli{prog: "n1k1", mode: "jsonlines", out: &out, stderr: &errb}
+	c.cmdExtract("list")
+	got := errb.String()
+	for _, want := range []string{"couchbase_log", "couchbase", "priority="} {
+		if !strings.Contains(got, want) {
+			t.Errorf(".extract list missing %q; stderr:\n%s", want, got)
 		}
 	}
 }

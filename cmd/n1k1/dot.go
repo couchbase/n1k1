@@ -236,6 +236,8 @@ func (c *cli) dot(line string) bool {
 		c.cmdRules(arg)
 	case ".extensions", ".ext":
 		c.cmdExtensions(arg)
+	case ".extract":
+		c.cmdExtract(arg)
 	case ".output":
 		c.cmdOutput(arg)
 	default:
@@ -275,6 +277,7 @@ func (c *cli) printHelp() {
 		".maxwidth <n|auto>    box: cap column width (0 = uncapped; auto = fit terminal)",
 		".rules [list|run|lint|test|help] --corpus <dir>  PREPARE++ detector corpus (.rules help for details)",
 		".extensions [list | load <dir>... | unload <name>...]  extensions (*.js = JavaScript)",
+		".extract [help|list]  author *.extract.js recipes that frame files into rows (.extract help for details)",
 		".read <file>          run statements/dot-commands from a file",
 		".bail " + c.helpOpts(onOff(c.bail), "on", "off") + "        stop on the first statement error (handy for scripts)",
 		".echo " + c.helpOpts(onOff(c.echo), "on", "off") + "        echo each input line as it's read (handy for scripts)",

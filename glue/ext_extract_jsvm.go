@@ -73,8 +73,11 @@ const extractHeadSampleBytes = 64 * 1024
 // cbq function registry): a recipe lives in the records registry, which has no
 // delete, so recipes are load-only.
 type ExtractRecipeInfo struct {
-	Name   string // recipe/format label (the file's "<name>.extract.js" stem)
-	Source string // originating file path, or "(inline)"
+	Name     string   // recipe/format label (the file's "<name>.extract.js" stem)
+	Source   string   // originating file path, or "(inline)"
+	Exts     []string // file extensions the recipe claims (its match.exts)
+	Names    []string // path/name regexps the recipe claims (its match.names)
+	Priority int      // match priority (higher wins on overlap)
 }
 
 // extractRecipesLoaded tracks loaded JS extract recipes for ListExtractRecipes.
@@ -128,7 +131,10 @@ func RegisterJSExtractRecipe(name, source string) error {
 	})
 	base.Logf(1, "glue/recipe", "loaded JS extract recipe, name: %s, exts: %v, names: %v, priority: %d",
 		name, match.Exts, match.Names, match.Priority)
-	extractRecipesLoaded = append(extractRecipesLoaded, ExtractRecipeInfo{Name: name, Source: "(inline)"})
+	extractRecipesLoaded = append(extractRecipesLoaded, ExtractRecipeInfo{
+		Name: name, Source: "(inline)",
+		Exts: match.Exts, Names: match.Names, Priority: match.Priority,
+	})
 	return nil
 }
 
