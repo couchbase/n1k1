@@ -684,6 +684,36 @@ SELECT sev, COUNT(1) FROM analysis GROUP BY sev;
   append/upsert; `KEY` is accepted but record ids stay positional (flat-keyspace rule).
   Later phases: append-to-existing, RETURNING, and the faithful cbq `SendInsert` path.
 
+#### Phase-2 TODO: `OPTIONS` clause for write mode (low risk — hook already exists)
+The standard SQL++ `OPTIONS` clause is the idiomatic place to choose brand-new vs
+append vs overwrite — **no grammar or fork changes needed**. It's a first-class part
+of the insert spec (`INSERT INTO ks (KEY …, VALUE …, OPTIONS <objExpr>) …`), already
+*parses* in our `INSERT … SELECT` form, and already reaches `InsertRun` via
+`ins.Options()` — phase 1 simply ignores it. Wiring it up = evaluate the options
+object (constant-fold; cbq uses the same clause for `{"expiration": …}` on Server)
+and branch on a key. Confidence is high; this is a documented follow-up, not a
+speculative one.
+- **Vocabulary (pick one; leaning `mode` enum):**
+  - **`mode` enum** — one knob: `{"mode": "new"}` (default = today's brand-new-only),
+    `"append"` (create-or-append), `"overwrite"` (atomic replace). Extensible, no
+    conflicting-flag cases. *Preferred.*
+  - **boolean flags** — `{"append": true}` / `{"overwrite": true}`; familiar but two
+    flags can contradict (must error when both set).
+  - **append-only first** — ship just `{"append": true}` and defer overwrite.
+- **Atomicity / correctness per mode (the only real design content):**
+  - `new` / `overwrite` stay **atomic** — temp-write + rename (overwrite renames over
+    the existing file). No partial keyspace file on failure.
+  - `append` **can't** use temp-write+rename as-is. Two options: (a) copy original →
+    tmp, append, rename — crash-safe but O(existing) copy; (b) open `O_APPEND`
+    directly — no copy, but a mid-stream failure leaves a partly-appended file. Lean
+    (a) for the safety guarantee phase 1 established; revisit if copy cost bites.
+  - Appending to a JSONL keyspace file is otherwise clean: existing lines don't move,
+    so **positional record-ids stay stable** and the directory-union read path is
+    unaffected — new rows just get appended offsets.
+- **Not `UPSERT INTO`.** `algebra.Upsert` exists, but its semantic is insert-or-replace
+  *by key*; our file keys are positional, so overloading UPSERT for "overwrite ok" is a
+  stretch. Reserve it for a genuine by-key upsert later.
+
 ### The hard part: predicate pushdown through a view (open question)
 A `WHERE ts >= '2023-01-01'` on `events` must reach the *sub-source* scans —
 ideally pruning whole eras/partitions — or the view reads all history every time.
