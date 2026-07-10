@@ -306,6 +306,62 @@ func TestRuleMatchesEmptyCorpusErrors(t *testing.T) {
 	}
 }
 
+// TestRuleMatchesAllRejectedErrors is the IDEA-0017 gate: a corpus whose detectors
+// ALL fail to compile (here: an unresolvable keyspace, the "logical name without a
+// bind" case) must ERROR loudly from RULE_MATCHES, not return a silent empty array
+// that reads as a clean bundle.
+func TestRuleMatchesAllRejectedErrors(t *testing.T) {
+	sess := corpusTestSession(t)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "bad.sql++"),
+		[]byte("-- ticket: T_BAD\nSELECT * FROM nosuch_ks x WHERE x.a = 1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	q := fmt.Sprintf(`SELECT f.tag FROM rule_matches(%q) AS f`, dir)
+	_, err := sess.Run(q)
+	if err == nil {
+		t.Fatal("all-rejected corpus: expected an error, got nil (the silent-empty bug)")
+	}
+	msg := err.Error()
+	for _, want := range []string{"no detector", "rejected", "bind"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error should mention %q; got: %v", want, err)
+		}
+	}
+}
+
+// TestRuleMatchesPartialRejectWarns: when only SOME detectors reject, RULE_MATCHES
+// still streams the runnable rest AND records a warning naming the skipped ones.
+func TestRuleMatchesPartialRejectWarns(t *testing.T) {
+	sess := corpusTestSession(t)
+	dir := t.TempDir()
+	write := func(name, body string) {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("good.sql++", "-- ticket: T_GOOD\n"+`SELECT * FROM logs l WHERE l.sev = "ERROR"`)
+	write("bad.sql++", "-- ticket: T_BAD\n"+`SELECT * FROM nosuch_ks x WHERE x.a = 1`)
+
+	q := fmt.Sprintf(`SELECT f.tag FROM rule_matches(%q) AS f`, dir)
+	res, err := sess.Run(q)
+	if err != nil {
+		t.Fatalf("partial-reject corpus should still run the good detector: %v", err)
+	}
+	if len(res.Rows) == 0 {
+		t.Fatal("expected findings from the runnable detector")
+	}
+	warned := false
+	for _, w := range res.Warnings {
+		if strings.Contains(w.Error(), "T_BAD") && strings.Contains(w.Error(), "skipped") {
+			warned = true
+		}
+	}
+	if !warned {
+		t.Errorf("expected a warning naming the skipped T_BAD detector; warnings=%v", res.Warnings)
+	}
+}
+
 // dataRootOfSession recovers the on-disk root of a session's file datastore (the
 // same file:// URL trick ruleMatchesSession uses for the bind path).
 func dataRootOfSession(t *testing.T, sess *Session) string {

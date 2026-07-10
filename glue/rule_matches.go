@@ -160,7 +160,7 @@ func (this *ruleMatchesFunc) Evaluate(item value.Value, context expression.Conte
 	if err != nil {
 		return nil, err
 	}
-	return runRuleMatches(dir, opts)
+	return runRuleMatches(dir, opts, warnSink(context))
 }
 
 // StreamRows is ruleMatchesFunc's StreamSource implementation: the STREAMING FROM
@@ -182,7 +182,7 @@ func (this *ruleMatchesFunc) StreamRows(vars *base.Vars, gc *GlueContext,
 	prevDS := datastore.GetDatastore()
 	defer datastore.SetDatastore(prevDS)
 
-	cc, err := ruleMatchesCorpus(dir, opts)
+	cc, err := ruleMatchesCorpus(dir, opts, func(s string) { gc.Warnf("%s", s) })
 	if err != nil {
 		return err
 	}
@@ -260,7 +260,7 @@ func parseRuleMatchesOpts(v value.Value) ruleMatchesOpts {
 // corpus at dir, and compiles it. The CALLER save/restores the process-global
 // datastore around the returned corpus's Run/RunStream (the bind path switches it).
 // Shared by the streaming StreamRows path and the materializing Evaluate fallback.
-func ruleMatchesCorpus(dir string, opts ruleMatchesOpts) (*CompiledCorpus, error) {
+func ruleMatchesCorpus(dir string, opts ruleMatchesOpts, warn func(string)) (*CompiledCorpus, error) {
 	sess, err := ruleMatchesSession(opts, datastore.GetDatastore())
 	if err != nil {
 		return nil, err
@@ -282,18 +282,81 @@ func ruleMatchesCorpus(dir string, opts ruleMatchesOpts) (*CompiledCorpus, error
 	if err != nil {
 		return nil, fmt.Errorf("RULE_MATCHES: compiling corpus %q: %w", dir, err)
 	}
+	if err := reportCorpusRejects(cc, dir, opts, warn); err != nil {
+		return nil, err
+	}
 	return cc, nil
+}
+
+// reportCorpusRejects surfaces detectors that FAILED to compile (IDEA-0017): unlike
+// .rules run, the RULE_MATCHES TVF otherwise drops them silently, so a corpus whose
+// detectors don't resolve (e.g. LOGICAL keyspaces with no {"bind":...}) returned an
+// empty array indistinguishable from "ran, matched nothing." When EVERY detector
+// rejected (nothing runnable) that's a hard ERROR -- a misconfigured corpus must not
+// read as a clean bundle. When only SOME rejected, a WARNING lists them (the runnable
+// rest still stream). A keyspace-resolution reject with no bind gets a bind hint.
+func reportCorpusRejects(cc *CompiledCorpus, dir string, opts ruleMatchesOpts, warn func(string)) error {
+	if len(cc.Rejected) == 0 {
+		return nil
+	}
+	const cap = 6
+	parts := make([]string, 0, cap+1)
+	for i, r := range cc.Rejected {
+		if i == cap {
+			parts = append(parts, fmt.Sprintf("+%d more", len(cc.Rejected)-cap))
+			break
+		}
+		parts = append(parts, fmt.Sprintf("%s (%s)", r.Tag, r.Reason))
+	}
+	list := strings.Join(parts, "; ")
+
+	hint := ""
+	if opts.bind == "" && rejectsMentionKeyspace(cc.Rejected) {
+		hint = " -- detectors over LOGICAL keyspaces need a {\"bind\":\"<manifest>\"} option"
+	}
+
+	// Runnable iff something will actually execute: a fused plan or any standalone.
+	if cc.Plan == nil && len(cc.Standalone) == 0 {
+		return fmt.Errorf("RULE_MATCHES: no detector in %q compiled -- all %d rejected: %s%s",
+			dir, len(cc.Rejected), list, hint)
+	}
+	if warn != nil {
+		warn(fmt.Sprintf("RULE_MATCHES: %d detector(s) in %q skipped (did not compile): %s%s",
+			len(cc.Rejected), dir, list, hint))
+	}
+	return nil
+}
+
+// rejectsMentionKeyspace reports whether any reject reason looks like a keyspace-
+// resolution failure -- the signature of a LOGICAL-keyspace corpus run without a bind.
+func rejectsMentionKeyspace(rejected []RejectedDetector) bool {
+	for _, r := range rejected {
+		if strings.Contains(strings.ToLower(r.Reason), "keyspace") {
+			return true
+		}
+	}
+	return false
+}
+
+// warnSink returns a warning callback backed by the eval context's GlueContext (so a
+// RULE_MATCHES warning reaches the request's warning collector), or a no-op when the
+// context isn't a *GlueContext.
+func warnSink(context expression.Context) func(string) {
+	if gc, ok := context.(*GlueContext); ok {
+		return func(s string) { gc.Warnf("%s", s) }
+	}
+	return func(string) {}
 }
 
 // runRuleMatches is the scalar-context fallback: compile + Run the corpus and return
 // its matches as one MATERIALIZED array value. It save/restores the process-global
 // datastore around the run (the bind path and CorpusCompile/Run's idempotent
 // SetDatastore mutate it) -- so the outer query's datastore is never left changed.
-func runRuleMatches(dir string, opts ruleMatchesOpts) (value.Value, error) {
+func runRuleMatches(dir string, opts ruleMatchesOpts, warn func(string)) (value.Value, error) {
 	prevDS := datastore.GetDatastore()
 	defer datastore.SetDatastore(prevDS)
 
-	cc, err := ruleMatchesCorpus(dir, opts)
+	cc, err := ruleMatchesCorpus(dir, opts, warn)
 	if err != nil {
 		return nil, err
 	}

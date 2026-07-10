@@ -14,6 +14,7 @@
 package glue
 
 import (
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -309,6 +310,13 @@ func (c *GlueContext) MaxParallelism() int { return 1 }
 func (c *GlueContext) Fatal(e errors.Error)   { c.appendErr(e) }
 func (c *GlueContext) Error(e errors.Error)   { c.appendErr(e) }
 func (c *GlueContext) Warning(e errors.Error) { c.appendErr(e) }
+
+// Warnf records a query warning from a formatted message -- a convenience over
+// Warning for callers that don't import cbq errors. The warning is collected like
+// any other and surfaced to the client at end of request.
+func (c *GlueContext) Warnf(format string, args ...interface{}) {
+	c.Warning(errors.NewWarning(fmt.Sprintf(format, args...)))
+}
 
 func (c *GlueContext) appendErr(e errors.Error) {
 	s := c.getRoot()
