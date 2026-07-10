@@ -10,7 +10,7 @@ const gsiSuiteRoot = "suite/json-gsi"
 
 // gsiPassFloor is the results-pass backstop for the gsi corpus (bump as coverage
 // grows), mirroring the default suite's floor.
-const gsiPassFloor = 832
+const gsiPassFloor = 833
 
 // gsiExpectedNonPass lists gsi cases n1k1 doesn't yet pass, keyed by loc
 // (case_gsi_<cat>.json[i]) -> group. Any non-pass NOT listed is a regression.
@@ -41,23 +41,27 @@ var gsiExpectedNonPass = map[string]string{
 	"case_gsi_unnest.json[7]":               "mega-order-limit",
 
 	// The window category (imported from the fork's test/gsi/test_cases/window) records
-	// cbq's own results for the FULL window surface. 18 of the 31 cases reliably pass:
+	// cbq's own results for the FULL window surface. 19 of the 31 cases reliably pass:
 	// the 5 non-OVER aggregate cases (0,1,2,3,5), 4 multi-column RANGE cases (7,8,24,25),
 	// window[4] (ORDER BY a non-projected aggregate), 4 window-over-a-grouped-aggregate
-	// cases (9,10,26,27), window[6,23] (SUM over a non-numeric column -> NULL), and
-	// window[12,20] (RATIO_TO_REPORT + DISTINCT-in-window). 4 more (11,13,19,21) produce
-	// cbq-matching results too but are tracked non-pass because a frame-position function
+	// cases (9,10,26,27), window[6,23] (SUM over a non-numeric column -> NULL),
+	// window[12,20] (RATIO_TO_REPORT + DISTINCT-in-window), and window[29] (named-window
+	// reference that adds a frame, resolved now that REWRITE_PHASE1 runs before the
+	// semantics check). 6 more (11,13,19,21,28,30) produce cbq-matching results too but
+	// are tracked non-pass because a frame-position function (FIRST_VALUE / NTH_VALUE)
 	// picks an implementation-defined row within a tied group (window-nondeterministic).
 	// The core window machinery (ROWS/RANGE/GROUPS aggregates + ranking + offset + NULLS
 	// ordering + multi-column peer frames + ORDER-BY/PARTITION-BY/OVER an aggregate +
-	// empty frames + SUM/AVG NULL-on-no-numeric + RATIO_TO_REPORT + DISTINCT-in-window)
-	// works -- see glue/window_test.go + glue/order_nulls_test.go. The 9 OVER cases below
-	// are grouped by proximate blocker; none panic (conv rejects an un-computable window
-	// function gracefully, and RANGE over a mixed-type ORDER BY no longer errors).
+	// empty frames + SUM/AVG NULL-on-no-numeric + RATIO_TO_REPORT + DISTINCT-in-window +
+	// named-window reference frames) works -- see glue/window_test.go +
+	// glue/order_nulls_test.go. The 6 remaining OVER cases below all just differ on cbq
+	// STDDEV/VARIANCE quirks; none panic.
 	"case_gsi_window.json[11]": "window-nondeterministic",
 	"case_gsi_window.json[13]": "window-nondeterministic",
 	"case_gsi_window.json[19]": "window-nondeterministic",
 	"case_gsi_window.json[21]": "window-nondeterministic",
+	"case_gsi_window.json[28]": "window-nondeterministic",
+	"case_gsi_window.json[30]": "window-nondeterministic",
 
 	"case_gsi_window.json[14]": "window-results-differ",
 	"case_gsi_window.json[15]": "window-results-differ",
@@ -65,10 +69,6 @@ var gsiExpectedNonPass = map[string]string{
 	"case_gsi_window.json[17]": "window-results-differ",
 	"case_gsi_window.json[18]": "window-results-differ",
 	"case_gsi_window.json[22]": "window-results-differ",
-
-	"case_gsi_window.json[28]": "window-named-frame",
-	"case_gsi_window.json[29]": "window-named-frame",
-	"case_gsi_window.json[30]": "window-named-frame",
 }
 
 // gsiSkipRun names gsi cases n1k1 can parse+plan but must NOT execute. subqexp[1]
@@ -92,6 +92,5 @@ var gsiGroupWhy = map[string]string{
 	"mega-order-limit":        "unnest[0,1,2,5,6,7]: UNNEST p.lineItems over the `purchase` MEGA keyspace with ORDER BY <unnested-elem> LIMIT n. The fork loads ~10,000 purchase docs; our corpus keeps a light sample (see MEGA_KEYSPACES), so the top-N after sorting the full unnested set can't be reproduced. UNNEST itself is correct (the specific-`product` unnest cases pass); only the full-set ordered LIMIT differs",
 	"prepared":                "inlist[11,12,14,15,17,18,20,21]: EXECUTE now runs (PREPARE/EXECUTE are supported), but these bind a mixed-type / parameterized IN-list ([1,2,3,$1,$2,$3,\"a\",...]) over a GSI index whose scan yields a different row SET than the corpus (verified: the same param binding gives correct rows on a plain scan -- see glue TestPrepareExecute -- so this is a GSI index-scan inlist limitation, not a prepared-statement one)",
 	"window-results-differ":   "window[14,15,16,17,18,22]: run but differ from cbq, all on RANGE/GROUPS frames of STDDEV/VARIANCE/VAR_POP. Two causes, both cbq quirks n1k1 declines to match: (a) VARIANCE (VAR_SAMP) over a single-element frame -- cbq returns 0, but standard SQL + n1k1's GROUP BY (base TestStatisticalAggs) return NULL (n-1 = 0); (b) a numeric RANGE frame over an ORDER BY column with non-numeric values (null/boolean) -- n1k1 treats them as peers (no numeric distance), differing from cbq on which rows fall in the frame. (These once errored on ParseFloat64; now they run. RATIO_TO_REPORT / DISTINCT-in-window / LAG-LEAD-default / FROM-LAST are all fixed -- window[12,20] pass.)",
-	"window-nondeterministic": "window[11,13,19,21]: these now produce cbq-matching results, but each has a frame-position function -- FIRST_VALUE / NTH_VALUE / a positional ROWS frame -- that picks an implementation-defined row within a tied group (rows sharing the ORDER BY key). n1k1 (scan order) matches cbq's stored order here, but it isn't guaranteed across lanes/builds, so they're listed non-pass: a pass is a stale-entry note, never a flaky failure",
-	"window-named-frame":      "window[28,29,30]: a named WINDOW reference that ADDS a frame (e.g. `OVER (wn2 ROWS CURRENT ROW)`) must inherit wn2's ORDER BY, but n1k1's REWRITE_PHASE1 pass doesn't propagate it before the semantic check, so cbq's own guard fires (\"window frame is not allowed without ORDER BY\" / \"NTILE/NTH_VALUE ... ORDER BY clause is required\") where the fork succeeds",
+	"window-nondeterministic": "window[11,13,19,21,28,30]: these now produce cbq-matching results, but each has a frame-position function -- FIRST_VALUE / NTH_VALUE / a positional ROWS frame -- that picks an implementation-defined row within a tied group (rows sharing the ORDER BY key). n1k1 (scan order) matches cbq's stored order here, but it isn't guaranteed across lanes/builds, so they're listed non-pass: a pass is a stale-entry note, never a flaky failure. (28,30 are named-window references that add a frame, now resolvable -- see the REWRITE_PHASE1-before-semantics fix in glue/stmt.go.)",
 }

@@ -56,16 +56,20 @@ func ParseStatement(stmt, namespace string, ent bool) (algebra.Statement, error)
 
 	txn := false // TODO.
 
-	_, err = s.Accept(semantics.GetSemChecker(s.Type(), txn))
-	if err != nil {
+	// Standard pre-plan rewrite (REWRITE_PHASE1), run BEFORE the semantics check --
+	// mirroring cbq's server (server.go: rewrite then GetSemChecker). It resolves a
+	// named WINDOW clause reference (`... OVER w ...` / `OVER (w <frame>)` / WINDOW w
+	// AS (...)) by merging w's PARTITION/ORDER into the reference. That merge must
+	// precede semantics: a reference like `OVER (w ROWS CURRENT ROW)` inherits w's
+	// ORDER BY, and the window-frame validation ("window frame is not allowed without
+	// ORDER BY" / "ORDER BY clause is required") would otherwise fire on the not-yet-
+	// merged term.
+	if _, err = s.Accept(rewrite.NewRewrite(rewrite.REWRITE_PHASE1)); err != nil {
 		return nil, err
 	}
 
-	// Standard pre-plan rewrite (REWRITE_PHASE1) -- cbq's sanitizer/server always run
-	// this between semantics and planning. It resolves named WINDOW clause references
-	// (`... OVER w ... WINDOW w AS (...)`) into their partition/order/frame, so the
-	// frame applies instead of defaulting to the whole partition.
-	if _, err = s.Accept(rewrite.NewRewrite(rewrite.REWRITE_PHASE1)); err != nil {
+	_, err = s.Accept(semantics.GetSemChecker(s.Type(), txn))
+	if err != nil {
 		return nil, err
 	}
 

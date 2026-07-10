@@ -526,6 +526,14 @@ func TestWindowNamedClause(t *testing.T) {
 	if got := winCol(t, sess, `SELECT SUM(n) OVER w AS s FROM nums WINDOW w AS (ORDER BY n) ORDER BY n`, "s"); !reflect.DeepEqual(got, []float64{10, 30, 60, 100, 150}) {
 		t.Errorf("named-window running total: got %v", got)
 	}
+
+	// A named-window reference that ADDS a frame: `OVER (w ROWS BETWEEN 1 PRECEDING AND
+	// 1 FOLLOWING)` inherits w's ORDER BY and applies the added frame. This requires
+	// REWRITE_PHASE1 to merge w's ORDER BY BEFORE the semantic check (which would else
+	// reject "window frame ... without ORDER BY"). Matches the inline 1p-1f moving sum.
+	if got := winCol(t, sess, `SELECT SUM(n) OVER (w ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING) AS s FROM nums WINDOW w AS (ORDER BY n) ORDER BY n`, "s"); !reflect.DeepEqual(got, []float64{30, 60, 90, 120, 90}) {
+		t.Errorf("named-window add-frame: got %v", got)
+	}
 }
 
 // TestWindowMultipleAggregates: several window aggregates in one query each get their
