@@ -729,7 +729,22 @@ func (c *Conv) VisitNLJoin(o *plan.NLJoin) (interface{}, error) {
 	if err != nil {
 		return nil, err
 	}
-	return c.TopSet(o, c.ansiJoinOp("joinNL", o.Outer(), onclause, c.TopOp, right))
+	c.TopSet(o, c.ansiJoinOp("joinNL", o.Outer(), onclause, c.TopOp, right))
+
+	// The planner may push an extra predicate into the join's Filter -- most
+	// commonly a comma/cross join (FROM a, b WHERE p(a,b)) carries a nil ON clause
+	// and puts p in Filter(). cbq applies Filter to EVERY emitted row (both matched
+	// pairs and, for an outer join, null-extended left rows -- execution/join_nl.go's
+	// checkSendItem), which is exactly a filter on the join's output. Replicate that
+	// here; without it the predicate is silently dropped and a cross product leaks.
+	if f := o.Filter(); f != nil {
+		return c.TopPush(o, &base.Op{
+			Kind:   "filter",
+			Labels: c.TopOp.Labels,
+			Params: []interface{}{"exprTree", f},
+		})
+	}
+	return c.TopOp, nil
 }
 
 func (c *Conv) VisitNLNest(o *plan.NLNest) (interface{}, error)     { return NA(o) }
@@ -775,16 +790,26 @@ func (c *Conv) VisitHashJoin(o *plan.HashJoin) (interface{}, error) {
 		return c.TopOp, nil
 	}
 
-	// Use the real hash-join op (OpJoinHash: build a probe map from one side,
-	// probe with the other) for the common shape -- an equijoin on a single
-	// build/probe key pair with no residual filter. build[0] is the child (right)
-	// branch's key, probe[0] the outer (left/TopOp) branch's key. Anything else
-	// (composite keys, or a residual non-equi ON filter OpJoinHash can't apply)
-	// falls back to the nested-loop join, which is correct if slower.
+	// Use the real hash-join op (OpJoinHash: build a probe map from one side, probe
+	// with the other) for a single build/probe key pair. build[0] is the child
+	// (right) branch's key, probe[0] the outer (left/TopOp) branch's key. An INNER
+	// join with a residual ON term applies the full ON as a filter on the matched
+	// pairs; anything else the hash op can't express (composite keys, or a LEFT
+	// OUTER with a residual) falls back to the nested-loop join, correct if slower.
 	if o.Filter() == nil && len(build) == 1 && len(probe) == 1 {
+		// OpJoinHash matches ONLY the single equi key (build[0] == probe[0]). If the
+		// ON clause is an *expression.And it carries a RESIDUAL -- an extra ANDed term
+		// beyond that key (a band / non-equi predicate, e.g. `... AND ctx.pos BETWEEN
+		// m.pos-1 AND m.pos+1`) that the bare hash op cannot apply. For an INNER join
+		// we hash-match the key and then apply the full ON clause as a residual filter
+		// on the matched pairs (key-equality is a conjunct, so re-checking it is
+		// redundant-safe). For a LEFT OUTER join the residual can't be pushed off the
+		// join, so we fall through to the NL join (which evaluates the full Onclause).
+		_, residual := o.Onclause().(*expression.And)
+
 		if !o.Outer() {
 			// INNER: fill the map from the right branch, probe with the left.
-			return c.TopSet(o, &base.Op{
+			c.TopSet(o, &base.Op{
 				Kind:   "joinHash-inner",
 				Labels: append(append(base.Labels{}, right.Labels...), c.TopOp.Labels...),
 				Params: []interface{}{
@@ -793,15 +818,20 @@ func (c *Conv) VisitHashJoin(o *plan.HashJoin) (interface{}, error) {
 				},
 				Children: []*base.Op{right, c.TopOp},
 			})
+			if residual {
+				return c.TopPush(o, &base.Op{
+					Kind:   "filter",
+					Labels: c.TopOp.Labels,
+					Params: []interface{}{"exprTree", o.Onclause()},
+				})
+			}
+			return c.TopOp, nil
 		}
+
 		// LEFT OUTER: OpJoinHash's leftOuter path applies ONLY the equijoin key and
-		// preserves the *map/build* side. That's correct only when the ON clause is
-		// exactly that equijoin: a residual predicate (an extra ANDed term) on the
-		// non-preserved side can't be pushed off a LEFT JOIN and OpJoinHash won't
-		// apply it, so anything but a bare equijoin must fall back to the NL join
-		// (which evaluates the full Onclause). Unlike the inner case, we can't rely
-		// on residuals being pushed to the probe scan (the planner doesn't always).
-		if _, residual := o.Onclause().(*expression.And); !residual {
+		// preserves the *map/build* side -- correct only when the ON clause is exactly
+		// that equijoin. With a residual (see above), fall through to the NL join.
+		if !residual {
 			// Preserved outer side = left (TopOp) must be the build side: fill the
 			// map from the left using the left key (probe[0]), probe with the right
 			// using the right key (build[0]). Unmatched left rows -- including ones
