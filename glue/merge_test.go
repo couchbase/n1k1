@@ -233,6 +233,57 @@ func TestASOFLoweringSingleFileKeyspace(t *testing.T) {
 	}
 }
 
+// TestASOFLoweringScalarForms is the IDEA-0014-followup gate: the argmax lowering
+// accepts the scalar-extraction subquery forms -- (SELECT ...)[0] and SELECT RAW (and
+// their combination, the natural "give me the scalar" idiom) -- not just the bare
+// subquery. Each form must FIRE and stay byte-identical to its correlated baseline
+// (runBoth), so the reconstructed result reproduces the subquery's value exactly.
+func TestASOFLoweringScalarForms(t *testing.T) {
+	root := t.TempDir()
+	asofWriteKS(t, root, "elog", "ns_server.error.log",
+		nsLine("2026-05-17T15:36:11.100+02:00", "n1", "e-100")+ // no preceding R -> null
+			nsLine("2026-05-17T15:36:13.300+02:00", "n1", "e-300")) // nearest R@12.200 = r-200
+	asofWriteKS(t, root, "rlog", "ns_server.rebalance.log",
+		nsLine("2026-05-17T15:36:12.200+02:00", "n1", "r-200"))
+
+	s, err := OpenSession(root, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	const tail = " FROM default:rlog r WHERE r.ts <= e.ts ORDER BY r.ts DESC LIMIT 1)"
+	cases := []struct {
+		name string
+		proj string // the AS state_at projection term
+	}{
+		{"element0", "(SELECT r.msg" + tail + "[0]"},         // {"msg":"r-200"} / null
+		{"raw", "(SELECT RAW r.msg" + tail},                  // ["r-200"] / null
+		{"raw_element0", "(SELECT RAW r.msg" + tail + "[0]"}, // "r-200" (scalar) / null
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			stmt := "SELECT e.ts AS ts, " + tc.proj + " AS state_at FROM default:elog e ORDER BY e.ts"
+			off, _, fired := runBoth(t, s, stmt)
+			if !fired {
+				t.Fatalf("%s: expected the ASOF lowering to FIRE; it did not", tc.name)
+			}
+			if len(off) != 2 {
+				t.Fatalf("%s: want 2 rows, got %d: %v", tc.name, len(off), off)
+			}
+		})
+	}
+
+	// Spot-check the scalar idiom yields a bare scalar (not an array/object): the
+	// (SELECT RAW ...)[0] form's second row is the string "r-200".
+	stmt := "SELECT e.ts AS ts, (SELECT RAW r.msg FROM default:rlog r WHERE r.ts <= e.ts " +
+		"ORDER BY r.ts DESC LIMIT 1)[0] AS state_at FROM default:elog e ORDER BY e.ts"
+	off, _, _ := runBoth(t, s, stmt)
+	if off[1] != `{"ts":1779024973300000000,"state_at":"r-200"}` {
+		t.Fatalf("(SELECT RAW ...)[0] should give a bare scalar; got: %s", off[1])
+	}
+}
+
 // TestASOFLoweringSoftDifferential covers SOFT ASOF (a `r.ts >= e.ts - Δt`
 // look-back guard): ON == OFF byte-identical, AND the guard actually drops a match
 // whose nearest-preceding row is farther back than Δt (so the soft path is really

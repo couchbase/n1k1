@@ -356,6 +356,7 @@ type AsofMatch struct {
 	PartitionEq    []AsofEq // zero+ equality (partition) predicates.
 	ProjField      string   // the projected right field (the y value).
 	ProjAlias      string   // the y alias.
+	Raw            bool     // SELECT RAW r.f -> the subquery yields [scalar], not [{alias:scalar}].
 }
 
 // AsofEq is one equality (partition) predicate: right.RightField = outer.OuterField.
@@ -504,6 +505,7 @@ func MatchArgmaxAsof(subq *algebra.Subquery) (*AsofMatch, bool) {
 		KeyField:   keyField,
 		ProjField:  pField,
 		ProjAlias:  pt.Alias(),
+		Raw:        proj.Raw(), // SELECT RAW r.f -> [scalar] not [{alias:scalar}]
 	}
 
 	mainSeen := false
@@ -702,6 +704,29 @@ func splitFieldRef(e expression.Expression) (alias, field string, ok bool) {
 func isConstOne(e expression.Expression) bool {
 	n, ok := constInt64(e)
 	return ok && n == 1
+}
+
+// isConstZero reports whether e is the constant 0 (the [0] index of a first-element
+// subquery access).
+func isConstZero(e expression.Expression) bool {
+	n, ok := constInt64(e)
+	return ok && n == 0
+}
+
+// asofSubqueryOf unwraps a projection-term expression to the argmax subquery it
+// carries: a bare `(SELECT ...)`, or `(SELECT ...)[0]` (first-element access -- the
+// natural scalar idiom). elem0 reports the [0] form so the caller can re-apply it to
+// the reconstructed result. ok=false for any other expression.
+func asofSubqueryOf(e expression.Expression) (sq *algebra.Subquery, elem0 bool, ok bool) {
+	switch t := e.(type) {
+	case *algebra.Subquery:
+		return t, false, true
+	case *expression.Element:
+		if s, is := t.First().(*algebra.Subquery); is && isConstZero(t.Second()) {
+			return s, true, true
+		}
+	}
+	return nil, false, false
 }
 
 // constInt64 reads a numeric constant expression as an int64 (tolerating the
@@ -1223,14 +1248,17 @@ func tryLowerASOFProject(p *base.Op, conv *Conv, byKey map[string]plan.Operator)
 	// panic the project is left untouched and the correct correlated path runs.
 	defer func() { _ = recover() }()
 
-	// Find the ONE projection term that is EXACTLY a bare argmax subquery matching the
-	// canonical nearest-preceding/-following shape (MatchArgmaxAsof). Requiring the
-	// bare subquery (not e.g. `(SELECT ...)[0]`) means replacing the term reproduces
-	// the subquery's value precisely. No such term => this project has nothing to
-	// lower; return silently.
+	// Find the ONE projection term whose expression is an argmax subquery matching the
+	// canonical nearest-preceding/-following shape (MatchArgmaxAsof), either bare
+	// `(SELECT ...)` or first-element-indexed `(SELECT ...)[0]` -- the natural way to
+	// pull a scalar out of a subquery (a subquery expression is a 1-element array).
+	// The wrapper (bare vs [0]) is reproduced over the joined result column below, so
+	// the replacement's value matches the subquery's exactly. No such term => this
+	// project has nothing to lower; return silently.
 	termIdx := -1
 	var match *AsofMatch
 	var sel *algebra.Select
+	var elem0 bool // the term was (subq)[0], not a bare subquery
 	for i, prm := range p.Params {
 		term, ok := prm.([]interface{})
 		if !ok || len(term) < 2 {
@@ -1239,12 +1267,16 @@ func tryLowerASOFProject(p *base.Op, conv *Conv, byKey map[string]plan.Operator)
 		if k, _ := term[0].(string); k != "exprTree" {
 			continue
 		}
-		sq, ok := term[1].(*algebra.Subquery)
+		e, ok := term[1].(expression.Expression)
+		if !ok {
+			continue
+		}
+		sq, wrapElem0, ok := asofSubqueryOf(e)
 		if !ok {
 			continue
 		}
 		if m, matched := MatchArgmaxAsof(sq); matched {
-			termIdx, match, sel = i, m, sq.Select()
+			termIdx, match, sel, elem0 = i, m, sq.Select(), wrapElem0
 			break
 		}
 	}
@@ -1475,10 +1507,17 @@ func tryLowerASOFProject(p *base.Op, conv *Conv, byKey map[string]plan.Operator)
 	}
 
 	// --- rewire the project: child = merge-join; the argmax term now reads the joined
-	// right asofresult column, mapping MISSING (no preceding row) -> null.
+	// right asofresult column, mapping MISSING (no preceding row) -> null. This stands
+	// in for the subquery's own value (asofResultExpr reproduces its 1-element array).
+	// If the original term was (subq)[0], re-apply that [0] over the reconstructed
+	// value, so the lowered term yields the same scalar the correlated form did.
+	var repl expression.Expression = expression.NewIfMissing(
+		fieldRef("", asofResultField), expression.NewConstant(nil))
+	if elem0 {
+		repl = expression.NewElement(repl, expression.NewConstant(0.0))
+	}
 	p.Children[0] = mj
-	p.Params[termIdx] = exprTerm(expression.NewIfMissing(
-		fieldRef("", asofResultField), expression.NewConstant(nil)))
+	p.Params[termIdx] = exprTerm(repl)
 
 	AsofRewriteApplied++
 }
@@ -1532,8 +1571,14 @@ func fieldRef(alias, field string) expression.Expression {
 // outer row this R row is the nearest-preceding of. Built via cbq's object/array
 // constructors so its serialization matches the correlated baseline byte-for-byte.
 func asofResultExpr(m *AsofMatch) expression.Expression {
+	field := fieldRef(m.RightAlias, m.ProjField)
+	if m.Raw {
+		// SELECT RAW r.f: the subquery is an array of the bare scalar, e.g. ["error"].
+		return expression.NewArrayConstruct(field)
+	}
+	// SELECT r.f: an array of one {alias: value} object, e.g. [{"msg":"error"}].
 	obj := expression.NewObjectConstruct(map[expression.Expression]expression.Expression{
-		expression.NewConstant(m.ProjAlias): fieldRef(m.RightAlias, m.ProjField),
+		expression.NewConstant(m.ProjAlias): field,
 	})
 	return expression.NewArrayConstruct(obj)
 }
