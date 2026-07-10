@@ -87,7 +87,7 @@ func main() {
 	flag.Var(&extPaths, "extensions", "alias for -ext")
 	// -verbose / -v (synonyms sharing one value): a diagnostics level. A bare
 	// -verbose means on (level 1) and repeats accumulate (-v -v -v -> 3);
-	// -verbose=on|off|debug|<n> sets an explicit level. normalizeVerbose lets the
+	// -verbose=on|off|debug|<n> sets an explicit level. normalizeArgs lets the
 	// space form (-verbose 3, -v on) work too. See .verbose in the REPL.
 	var vLevel verboseLevel
 	flag.Var(&vLevel, "verbose", "verbose level: bare -verbose = on (repeat to raise); -verbose=on|off|debug|<n> sets it (see .verbose)")
@@ -109,7 +109,7 @@ func main() {
 
 	flag.Usage = usage
 
-	flag.CommandLine.Parse(normalizeVerbose(os.Args[1:]))
+	flag.CommandLine.Parse(normalizeArgs(os.Args[1:]))
 
 	// The sidecar dir (catalog.json, built indexes) is named after this binary --
 	// ".n1k1" by default, ".<alias>" when invoked under a symlinked name.

@@ -57,7 +57,7 @@ func onOff(b bool) string {
 // verboseLevel is the value of the -v / -verbose flag: a diagnostics level
 // (0=off, 1=show query plans, 2=+timing). It behaves like a boolean flag so a
 // bare -v works and repeats accumulate (-v -v -v -> 3), while -v=on|off|debug|<n>
-// sets an explicit level. normalizeVerbose rewrites the space form (-v <level>)
+// sets an explicit level. normalizeArgs rewrites the space form (-v <level>)
 // into the =-form before parsing so both spellings work.
 type verboseLevel int
 
@@ -93,8 +93,8 @@ func (v *verboseLevel) IsBoolFlag() bool { return true }
 
 // statsModeFlag parses the -stats flag into a mode constant (off|on|final). It
 // behaves like a boolean flag so a bare -stats means "on" (Set("true")), while
-// -stats=off / -stats=final set an explicit mode. (The space form -stats final is
-// not supported, as with other bool-like flags; use -stats=final or `.stats final`.)
+// -stats=off / -stats=final set an explicit mode. normalizeArgs also accepts the space
+// form -stats final (rewriting to =-form when the next arg is a mode token).
 type statsModeFlag struct{ p *string }
 
 func (f statsModeFlag) String() string {
@@ -117,8 +117,8 @@ func (f statsModeFlag) IsBoolFlag() bool { return true }
 
 // prepareLevelFlag is the -prepare=<level> flag: the MAX preparation level n1k1
 // will take a statement to (a ceiling), interpreted|data|full. Bare -prepare
-// (flag value "true") means full -- compile as far as the statement allows. Like
-// -stats, the space form (-prepare full) isn't supported; use -prepare=full.
+// (flag value "true") means full -- compile as far as the statement allows.
+// normalizeArgs also accepts the space form (-prepare full), like -stats.
 type prepareLevelFlag struct{ p *glue.PrepareLevel }
 
 func (f prepareLevelFlag) String() string {
@@ -168,26 +168,54 @@ func isVerboseLevelToken(s string) bool {
 	return err == nil && n >= 0
 }
 
-// normalizeVerbose rewrites a space-separated verbose level ("-v 3", "-verbose on")
-// into the =-form ("-v=3") the flag package needs, so both spellings work. A bare
-// -v not followed by a level token -- including repeats (-v -v -v) and "-v <dir>"
-// -- is left untouched. Tokens after a "--" end-of-flags marker pass through as-is.
-func normalizeVerbose(args []string) []string {
+// boolValueFlags are the bool-like flags that ALSO take an explicit value: bare (-v,
+// -stats, -prepare) toggles a default, and an explicit value tunes it. Go's flag
+// package makes a bool-like flag ignore the next token (so "-stats final" leaves
+// "final" as a positional -> "cannot open datastore final"), so normalizeArgs rewrites
+// the space form to the =-form when -- and only when -- the next token is a recognized
+// VALUE for that flag. A non-value next token (a dir, another flag) leaves the flag
+// bare, preserving the toggle. Keyed by every accepted flag spelling. (IDEA-0013.)
+var boolValueFlags = map[string]func(string) bool{
+	"-v":        isVerboseLevelToken,
+	"-verbose":  isVerboseLevelToken,
+	"--verbose": isVerboseLevelToken,
+	"-stats":    isStatsModeToken,
+	"--stats":   isStatsModeToken,
+	"-prepare":  isPrepareLevelToken,
+	"--prepare": isPrepareLevelToken,
+}
+
+// normalizeArgs rewrites the space form of a bool-like valued flag ("-v 3",
+// "-stats final", "-prepare full") into the =-form ("-v=3") the flag package needs,
+// so both spellings work. A bare flag not followed by a recognized value token --
+// including repeats (-v -v -v) and "-stats <dir>" -- is left untouched. Tokens after
+// a "--" end-of-flags marker pass through as-is.
+func normalizeArgs(args []string) []string {
 	out := make([]string, 0, len(args))
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		if a == "--" { // everything after is positional
 			return append(out, args[i:]...)
 		}
-		if (a == "-v" || a == "-verbose" || a == "--verbose") &&
-			i+1 < len(args) && isVerboseLevelToken(args[i+1]) {
+		if isValueTok, ok := boolValueFlags[a]; ok &&
+			i+1 < len(args) && isValueTok(args[i+1]) {
 			out = append(out, a+"="+args[i+1])
-			i++ // consume the level token
+			i++ // consume the value token
 			continue
 		}
 		out = append(out, a)
 	}
 	return out
+}
+
+// isStatsModeToken reports whether s is a value -stats accepts (so the space form
+// "-stats final" can be rewritten); a bare "-stats" or "-stats <dir>" is not one.
+func isStatsModeToken(s string) bool {
+	if s == "" {
+		return false
+	}
+	_, err := parseStatsMode(s)
+	return err == nil
 }
 
 // verboseName describes a verbose level for status output.

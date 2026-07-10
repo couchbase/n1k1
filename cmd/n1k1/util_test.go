@@ -76,11 +76,11 @@ func TestVerboseLevelSet(t *testing.T) {
 	}
 }
 
-func TestNormalizeVerbose(t *testing.T) {
+func TestNormalizeArgs(t *testing.T) {
 	cases := []struct {
 		in, want []string
 	}{
-		// space form rewritten to =-form
+		// -v space form rewritten to =-form
 		{[]string{"-v", "3"}, []string{"-v=3"}},
 		{[]string{"-v", "on", "dir"}, []string{"-v=on", "dir"}},
 		{[]string{"-verbose", "debug"}, []string{"-verbose=debug"}},
@@ -93,11 +93,21 @@ func TestNormalizeVerbose(t *testing.T) {
 		{[]string{"-v=2", "dir"}, []string{"-v=2", "dir"}},
 		// after "--", tokens pass through verbatim (a dir literally named "3")
 		{[]string{"-v", "--", "3"}, []string{"-v", "--", "3"}},
+		// -stats space form (IDEA-0013): a mode token is consumed, a dir is not.
+		{[]string{"-stats", "final", "dir"}, []string{"-stats=final", "dir"}},
+		{[]string{"-stats", "off"}, []string{"-stats=off"}},
+		{[]string{"--stats", "on"}, []string{"--stats=on"}},
+		{[]string{"-stats", "dir"}, []string{"-stats", "dir"}},       // bare toggle + positional
+		{[]string{"-stats", "-c", "x"}, []string{"-stats", "-c", "x"}}, // bare toggle before another flag
+		// -prepare space form: a level token is consumed, a dir is not.
+		{[]string{"-prepare", "full", "dir"}, []string{"-prepare=full", "dir"}},
+		{[]string{"-prepare", "data"}, []string{"-prepare=data"}},
+		{[]string{"-prepare", "dir"}, []string{"-prepare", "dir"}},
 	}
 	for _, tc := range cases {
-		got := normalizeVerbose(tc.in)
+		got := normalizeArgs(tc.in)
 		if strings.Join(got, "\x00") != strings.Join(tc.want, "\x00") {
-			t.Errorf("normalizeVerbose(%v) = %v, want %v", tc.in, got, tc.want)
+			t.Errorf("normalizeArgs(%v) = %v, want %v", tc.in, got, tc.want)
 		}
 	}
 }
