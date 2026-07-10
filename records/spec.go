@@ -70,6 +70,12 @@ type Framing struct {
 	// (e.g. `^={10,}$` for cbcollect banners). The command/title within a section
 	// is lifted into per-record provenance by the recipe.
 	Section string `json:"section,omitempty"`
+
+	// Banner (line/multiline framing): a regexp matching a NON-data separator line
+	// (e.g. cbbrowse_logs' `==== couchbase logs ====` header that precedes a framed
+	// log). A framed record whose lead line matches is DROPPED, not emitted -- so it
+	// doesn't inflate COUNT(*) or skew .schema with its banner-only {text} shape.
+	Banner string `json:"banner,omitempty"`
 }
 
 // Fields describes how to lift typed columns out of each framed record. Native,

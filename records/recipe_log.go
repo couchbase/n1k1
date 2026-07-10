@@ -46,7 +46,7 @@ const nsLogFields = `^\[(?P<module>\w+):(?P<level>\w+),(?P<ts>[^,]+),(?P<node>[^
 func nsLogSpec() ExtractSpec {
 	return ExtractSpec{
 		Format:  "ns_server_log",
-		Framing: Framing{Kind: FramingMultiline, Continuation: `^\s|^\[`},
+		Framing: Framing{Kind: FramingMultiline, Continuation: `^\s|^\[`, Banner: `^={3,}`},
 		Fields:  Fields{Pattern: nsLogFields},
 		Time:    &TimeSpec{Field: "ts", Layout: TimeLayoutRFC3339, TZDefault: "+02:00"},
 		Order:   OrderSpec{By: "ts", Sorted: SortedNear, Disorder: DisorderBound{WindowNanos: 2_000_000_000}},

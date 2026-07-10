@@ -272,6 +272,7 @@ type specSource struct {
 	json      bool           // json framing: each line is a JSON object (JSONL)
 	section   bool           // section framing: ====-banner command dumps
 	sectionRe *regexp.Regexp // spec.Framing.Section boundary regexp (section framing)
+	bannerRe  *regexp.Regexp // spec.Framing.Banner: framed records matching it are dropped
 
 	cur      []byte // the record currently being assembled (section: the body)
 	secTitle []byte // section framing: the current section's command/title line(s)
@@ -300,6 +301,13 @@ func (s *specSource) compile() error {
 			return fmt.Errorf("records: SpecApply: bad section regexp: %w", err)
 		}
 		s.sectionRe = re
+	}
+	if pat := s.spec.Framing.Banner; pat != "" {
+		re, err := regexp.Compile(pat)
+		if err != nil {
+			return fmt.Errorf("records: SpecApply: bad banner regexp: %w", err)
+		}
+		s.bannerRe = re
 	}
 	if pat := s.spec.Fields.Pattern; pat != "" {
 		re, err := regexp.Compile(pat)
@@ -347,11 +355,33 @@ func (s *specSource) Next(rec *Record) (bool, error) {
 			return s.emit(rec, s.cur)
 		}
 	}
-	rb, ok, err := s.frameNext()
-	if err != nil || !ok {
-		return false, err
+	// line / multiline / json framing. Skip any framed record whose lead line matches
+	// the recipe's banner regexp (a cbbrowse_logs `==== ... ====` separator), so it
+	// never reaches the output as a banner-only {text} row (IDEA-0011).
+	for {
+		rb, ok, err := s.frameNext()
+		if err != nil || !ok {
+			return false, err
+		}
+		if s.bannerRe != nil && s.bannerRe.Match(firstLine(rb)) {
+			if s.done {
+				return false, nil
+			}
+			continue
+		}
+		return s.emit(rec, rb)
 	}
-	return s.emit(rec, rb)
+}
+
+// firstLine returns rb up to (not including) the first newline -- the lead line of a
+// framed record, for banner matching.
+func firstLine(rb []byte) []byte {
+	for i, b := range rb {
+		if b == '\n' {
+			return rb[:i]
+		}
+	}
+	return rb
 }
 
 // frameNext assembles and returns the next complete record's bytes (borrowed from

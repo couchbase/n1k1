@@ -141,6 +141,37 @@ func TestWalkSkipsHiddenDirs(t *testing.T) {
 	assertNoHidden("GlobFiles", gf)
 }
 
+// TestSpecApplyDropsBanner: a framing.banner regexp drops a leading separator record
+// (cbbrowse_logs' `==== couchbase logs ====`) so it doesn't inflate COUNT(*) or skew
+// .schema with its banner-only {text} shape (IDEA-0011). Uses the built-in
+// ns_server_log recipe, which declares the banner.
+func TestSpecApplyDropsBanner(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "ns_server.error.log")
+	body := "==== couchbase logs (ns_server.error.log) ====\n" +
+		"[ns_server:error,2026-05-17T15:36:11.100+02:00,n1:x]boom one\n" +
+		"[ns_server:error,2026-05-17T15:36:13.300+02:00,n1:x]boom two\n"
+	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	src, err := SpecApply(nsLogSpec(), p, "ns")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, docs := collect(t, src)
+	if len(docs) != 2 {
+		t.Fatalf("want 2 records (banner dropped), got %d: %v", len(docs), docs)
+	}
+	for i, d := range docs {
+		if strings.Contains(d, "couchbase logs") || strings.Contains(d, `"text"`) {
+			t.Errorf("record %d leaked the banner: %s", i, d)
+		}
+		if !strings.Contains(d, `"level":"error"`) {
+			t.Errorf("record %d not a framed data row: %s", i, d)
+		}
+	}
+}
+
 func TestWalkGzip(t *testing.T) { // scenario H
 	s, err := Walk(ex("archive/default/orders"), AllModes())
 	if err != nil {
