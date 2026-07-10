@@ -361,6 +361,127 @@ func SortedSourceMetasForKeyspace(ks datastore.Keyspace, gctx *GlueContext) ([]F
 	return out, nil
 }
 
+// KeyspaceFramingKind classifies how a keyspace's files turn into records, for the
+// .tables/.schema listing (IDEA-0007): a whole-file text blob vs an inherently
+// multi-record structured format vs recipe-framed rows. Derived cheaply from the file
+// listing plus content-free recipe/extension matching -- no file content is read.
+type KeyspaceFramingKind int
+
+const (
+	KeyspaceEmpty      KeyspaceFramingKind = iota // no eligible record files
+	KeyspaceBlob                                  // whole-file: one record per file
+	KeyspaceStructured                            // jsonl/csv/json/...: multi-record
+	KeyspaceRecipe                                // an extract recipe frames the files
+	KeyspaceMixed                                 // files of differing kinds
+)
+
+// KeyspaceFraming is a keyspace's record-framing summary for display.
+type KeyspaceFraming struct {
+	Kind   KeyspaceFramingKind
+	Recipe string // recipe name, when Kind==KeyspaceRecipe
+	Format string // inner-ext, e.g. "jsonl"/"csv", when Kind==KeyspaceStructured
+	Files  int    // eligible record-file count
+}
+
+// Label is a short human tag: "recipe=<name>", a structured format ("jsonl"),
+// "whole-file" (a one-row-per-file blob), "mixed", or "empty".
+func (f KeyspaceFraming) Label() string {
+	switch f.Kind {
+	case KeyspaceRecipe:
+		return "recipe=" + f.Recipe
+	case KeyspaceStructured:
+		if f.Format != "" {
+			return f.Format
+		}
+		return "structured"
+	case KeyspaceBlob:
+		return "whole-file"
+	case KeyspaceMixed:
+		return "mixed"
+	default:
+		return "empty"
+	}
+}
+
+// KeyspaceFramingFor classifies a keyspace's record framing (IDEA-0007) so a listing
+// can tell a query-ready multi-record keyspace from a whole-file text blob. It lists
+// the keyspace's files (a directory read / glob expand, mirroring KeyspaceRecordsOpen's
+// resolution) and classifies each by the content-free recipe registry (RecipeFor) and
+// structured-extension test (IsStructuredFile). No file content is read -- safe on the
+// interactive listing path even over a huge (e.g. 240 MB log) keyspace.
+func KeyspaceFramingFor(ks datastore.Keyspace) (KeyspaceFraming, error) {
+	files, err := keyspaceFiles(ks)
+	if err != nil {
+		return KeyspaceFraming{}, err
+	}
+	kf := KeyspaceFraming{Files: len(files)}
+	recipes := map[string]bool{}
+	formats := map[string]bool{}
+	blobs := 0
+	for _, f := range files {
+		abs := resolveAbs(f)
+		if rp := records.RecipeFor(recipeMatchPath(abs)); rp != nil {
+			recipes[rp.Name] = true
+		} else if records.IsStructuredFile(abs) {
+			formats[formatExt(abs)] = true
+		} else {
+			blobs++
+		}
+	}
+	switch {
+	case len(files) == 0:
+		kf.Kind = KeyspaceEmpty
+	case len(recipes) == 1 && len(formats) == 0 && blobs == 0:
+		kf.Kind = KeyspaceRecipe
+		for n := range recipes {
+			kf.Recipe = n
+		}
+	case len(recipes) == 0 && len(formats) == 1 && blobs == 0:
+		kf.Kind = KeyspaceStructured
+		for f := range formats {
+			kf.Format = f
+		}
+	case len(recipes) == 0 && len(formats) == 0 && blobs > 0:
+		kf.Kind = KeyspaceBlob
+	default:
+		kf.Kind = KeyspaceMixed
+	}
+	return kf, nil
+}
+
+// keyspaceFiles lists a keyspace's eligible record files WITHOUT opening them,
+// mirroring KeyspaceRecordsOpen's glob -> single-file -> directory resolution.
+func keyspaceFiles(ks datastore.Keyspace) ([]string, error) {
+	opts := ScanWalkOptions
+	if g, ok := ks.(interface{ RecordsGlob() (string, bool) }); ok {
+		if pattern, has := g.RecordsGlob(); has {
+			_, files, err := records.GlobFiles(pattern, opts)
+			return files, err
+		}
+	}
+	if rf, ok := ks.(interface{ RecordsFile() string }); ok && rf.RecordsFile() != "" {
+		return []string{rf.RecordsFile()}, nil
+	}
+	dir, err := KeyspaceDir(ks)
+	if err != nil {
+		return nil, err
+	}
+	return records.WalkFiles(dir, opts)
+}
+
+// formatExt is the display format tag for a structured file: its inner extension
+// (seeing through one .gz/.zst), dot-stripped -- "events.jsonl.gz" -> "jsonl".
+func formatExt(path string) string {
+	name := filepath.Base(path)
+	for _, z := range []string{".gz", ".zst"} {
+		if strings.HasSuffix(name, z) {
+			name = name[:len(name)-len(z)]
+			break
+		}
+	}
+	return strings.TrimPrefix(filepath.Ext(name), ".")
+}
+
 // recipeMatchPath returns the path RecipeFor should match against: the dataset-root-
 // relative path when the file sits under a known store root (so path-anchored recipe
 // regexps like `(^|/)diag\.log$` behave), else the bare absolute path.

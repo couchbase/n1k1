@@ -260,7 +260,7 @@ func (c *cli) printHelp() {
 	lines := []string{
 		".help                 show this help",
 		".open <dir>           open a different file datastore directory",
-		".tables / .keyspaces  list keyspaces (with a copy-paste example each)",
+		".tables / .keyspaces  list keyspaces with framing (recipe/format vs whole-file blob) + example",
 		".index [list|show <name>|rebuild [<n>]|help]  secondary indexes (run .index help for details)",
 		".schema [<keyspace>]  sampled shape (keys + JSON types) of a keyspace",
 		".mode <m>             output mode (append |pretty to indent JSON): " + c.highlightCurrent(mode, " ", cmd.OutputModes...),

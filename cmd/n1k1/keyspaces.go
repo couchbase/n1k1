@@ -25,6 +25,8 @@ import (
 
 	"github.com/couchbase/n1k1/cmd"
 	"github.com/couchbase/n1k1/glue"
+
+	"github.com/couchbase/query/datastore"
 )
 
 func (c *cli) cmdKeyspaces() {
@@ -126,12 +128,32 @@ func (c *cli) printKeyspaces(w io.Writer) {
 	}
 	// Display names backticked when SQL++ needs it (e.g. "2026-01"), so the
 	// listed keyspace matches how it must be typed; pad on the displayed form.
+	// Alongside each, a FRAMING tag (IDEA-0007) says how the keyspace's files become
+	// rows -- a recipe / structured format (query-ready multi-record) vs a whole-file
+	// blob (one row per file) -- so a user can tell them apart without probing.
 	disp := make([]string, len(names))
-	width := 0
+	framing := make([]string, len(names))
+	width, fwidth := 0, 0
+	anyBlob := false
+	ns, _ := c.sess.Store.Datastore.NamespaceByName(defaultNamespace)
 	for i, n := range names {
 		disp[i] = quoteIdent(n)
 		if len(disp[i]) > width {
 			width = len(disp[i])
+		}
+		kf, ok := c.keyspaceFraming(ns, n)
+		if ok {
+			unit := "files"
+			if kf.Files == 1 {
+				unit = "file"
+			}
+			framing[i] = fmt.Sprintf("%s · %d %s", kf.Label(), kf.Files, unit)
+			if kf.Kind == glue.KeyspaceBlob {
+				anyBlob = true
+			}
+		}
+		if len(framing[i]) > fwidth {
+			fwidth = len(framing[i])
 		}
 	}
 	noun := "keyspaces"
@@ -142,8 +164,34 @@ func (c *cli) printKeyspaces(w io.Writer) {
 		c.icon("📚 "), len(names), noun)
 	for i, n := range names {
 		pad := disp[i] + strings.Repeat(" ", width-len(disp[i]))
-		fmt.Fprintf(w, "  %s   %s\n", c.style.Cyan(pad), c.style.Dim(exampleFor(n, i)))
+		fpad := framing[i] + strings.Repeat(" ", fwidth-len(framing[i]))
+		fmt.Fprintf(w, "  %s   %s   %s\n",
+			c.style.Cyan(pad), c.style.Dim(fpad), c.style.Dim(exampleFor(n, i)))
 	}
+	if anyBlob {
+		fmt.Fprintf(w, "  %s\n", c.style.Dim(
+			"whole-file = one row per file (a text blob); frame it into rows with a *.extract.js recipe."))
+	}
+}
+
+// keyspaceFraming resolves a keyspace's record-framing summary (IDEA-0007) for the
+// listing: how its files turn into rows (a recipe, a structured format, or a
+// whole-file blob). Content-free (a file listing + registry match), so it's safe to
+// call per keyspace on startup / .tables even over a huge log. ok is false when the
+// keyspace can't be resolved (reported as a blank framing cell, never fatal).
+func (c *cli) keyspaceFraming(ns datastore.Namespace, name string) (glue.KeyspaceFraming, bool) {
+	if ns == nil {
+		return glue.KeyspaceFraming{}, false
+	}
+	ks, kerr := ns.KeyspaceByName(name)
+	if kerr != nil || ks == nil {
+		return glue.KeyspaceFraming{}, false
+	}
+	kf, ferr := glue.KeyspaceFramingFor(ks)
+	if ferr != nil {
+		return glue.KeyspaceFraming{}, false
+	}
+	return kf, true
 }
 
 // dataLoc describes where n1k1 is currently reading from (the dir or file from
@@ -194,13 +242,20 @@ func (c *cli) cmdSchema(keyspace string) {
 	}
 	// Remind which datastore this shape is from (easy to forget across sessions).
 	fmt.Fprintf(c.out, "%sdatastore: %s\n", c.icon("📂 "), c.dataLoc())
+	ns, _ := c.sess.Store.Datastore.NamespaceByName(defaultNamespace)
 	for _, ks := range kss {
 		stats, n, err := c.sampleSchema(ks, 50)
 		if err != nil {
 			fmt.Fprintf(c.stderr, "%s%s\n", c.icon("✗ "), c.style.Red("Error: "+tidyMsg(err.Error())))
 			continue
 		}
-		fmt.Fprintf(c.out, "%s  (sampled %d docs):\n", ks, n)
+		// Framing tag (IDEA-0007): how the keyspace's files become rows -- so a
+		// 1-doc "sample" from a whole-file blob reads differently from a real sample.
+		tag := ""
+		if kf, ok := c.keyspaceFraming(ns, ks); ok {
+			tag = " [" + kf.Label() + "]"
+		}
+		fmt.Fprintf(c.out, "%s%s  (sampled %d docs):\n", ks, tag, n)
 
 		fields := make([]string, 0, len(stats))
 		for f := range stats {

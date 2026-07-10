@@ -135,6 +135,47 @@ func TestSchemaSamplesMultiRecordSingleFile(t *testing.T) {
 	}
 }
 
+// TestKeyspacesFramingTags: .tables tags each keyspace with how its files become
+// rows (IDEA-0007) -- a structured format, a whole-file blob, or a recipe -- and
+// prints the whole-file hint when a blob is present.
+func TestKeyspacesFramingTags(t *testing.T) {
+	root := t.TempDir()
+	write := func(ks, name, body string) {
+		d := filepath.Join(root, "default", ks)
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(d, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("events", "e.jsonl", `{"a":1}`+"\n"+`{"a":2}`+"\n") // structured (jsonl)
+	write("notes", "readme.log", "line one\nline two\n")       // whole-file blob
+	// A .log the built-in ns_server_log recipe claims -> recipe-framed.
+	write("nsl", "ns_server.error.log",
+		"[ns_server:error,2026-07-10T12:00:01.000Z,n1@h:<0.2>] boom\n")
+
+	sess, err := glue.OpenSession(root, "default")
+	if err != nil {
+		t.Fatalf("OpenSession: %v", err)
+	}
+	var buf bytes.Buffer
+	c := &cli{sess: sess, dir: root, out: &buf}
+	c.printKeyspaces(&buf)
+	out := buf.String()
+
+	for _, want := range []string{
+		"events", "jsonl",
+		"notes", "whole-file",
+		"nsl", "recipe=ns_server_log",
+		"whole-file = one row per file", // the blob hint
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf(".tables output missing %q; got:\n%s", want, out)
+		}
+	}
+}
+
 // TestSchemaFlatRootUnion: a flat-root dir samples the union of fields across its
 // files (the b.jsonl-only "z" field must appear).
 func TestSchemaFlatRootUnion(t *testing.T) {
