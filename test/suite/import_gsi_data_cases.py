@@ -28,6 +28,7 @@ CATEGORIES = [
     "date_functions", "aggregate_functions",
     "subqexp",
     "unnest", "inlist", "withs",
+    "window",
 ]
 # Keyspaces the fork loads with ~10,000 docs (~100 per INSERT statement). Too
 # large for a one-file-per-doc corpus + no-index primary scans, so only a light
@@ -154,6 +155,25 @@ def apply_scope_patch(cat, c):
             return c
     return c
 QUOTED = re.compile(r'"((?:[^"\\]|\\.)*)"')
+# Single-quoted string literals. Most fork inserts are double-quote JSON, but some
+# categories (e.g. window) write N1QL single-quote literals -- both for the doc KEY
+# (VALUES('window000', {...})) and inside the value object.
+SQUOTED = re.compile(r"'((?:[^'\\]|\\.)*)'")
+
+def load_obj(obj):
+    """Parse a VALUES object literal into a Python dict. Fork inserts are usually
+    strict double-quote JSON; some (window) use single-quote N1QL literals. Try
+    JSON first, then fall back to converting single quotes to double. The fallback
+    is safe for the fork's single-quote docs -- simple scalars, no embedded quotes
+    or backslashes (asserted below) -- and never runs for the double-quote docs."""
+    try:
+        return json.loads(obj)
+    except ValueError:
+        if '"' in obj or '\\' in obj:
+            # A mixed/escaped object we can't blindly requote -- surface it rather
+            # than silently corrupt a value.
+            raise
+        return json.loads(obj.replace("'", '"'))
 
 def brace_match(s, start):
     # s[start] == '{'; return index just past the matching '}', honoring strings/escapes.
@@ -191,7 +211,8 @@ def parse_inserts(stmt):
         b = stmt.find("{", i)
         if b < 0:
             return
-        keys = QUOTED.findall(stmt[i:b])
+        seg = stmt[i:b]
+        keys = QUOTED.findall(seg) or SQUOTED.findall(seg)
         e = brace_match(stmt, b)
         obj = stmt[b:e]
         key = keys[-1] if keys else "gen_" + hashlib.md5(obj.encode()).hexdigest()[:16]
@@ -364,7 +385,7 @@ def main(qf):
             docs_by_ks = {}     # ks -> [(key, val)], for boundary computation
             for c in json.load(open(ins)):
                 for ks, idx, key, obj in parse_inserts(c.get("statements", "")):
-                    val = json.loads(obj)  # validate + normalize
+                    val = load_obj(obj)  # validate + normalize (JSON or N1QL single-quote)
                     all_docs.append((ks, idx, key, val))
                     docs_by_ks.setdefault(ks, []).append((key, val))
             boundary = order_limit_boundary(cdir, docs_by_ks)
