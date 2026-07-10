@@ -1114,25 +1114,29 @@ func (c *Conv) VisitWindowAggregate(o *plan.WindowAggregate) (interface{}, error
 
 		partitionSlot := c.AddTemp(nil)
 
+		// Chain: the first aggregate's partition reads the window input; each
+		// subsequent one reads the PREVIOUS aggregate's frames op, so appended
+		// "^aggregates|..." columns accumulate down the chain and ALL reach the
+		// projection. (OpWindowPartition drives only Children[0] -- the prior
+		// 2-child form left earlier aggregates' output orphaned, so multi-aggregate
+		// windows lost all but the last one. Re-partitioning per aggregate keeps
+		// support for aggregates with differing PARTITION BY / ORDER BY windows.)
+		windowChild := c.TopOp
+		if rv != nil {
+			windowChild = rv
+		}
+
 		partitionOp := &base.Op{
 			Kind:   "window-partition",
-			Labels: c.TopOp.Labels,
+			Labels: append(base.Labels(nil), windowChild.Labels...),
 			Params: []interface{}{
 				partitionSlot,
 				partitionings,
 				len(partitionBys), // # of the partitioning exprs for PARTITION-BY.
 				"",                // TODO: Additional tracking ("rank,denseRank").
 			},
-			Children: []*base.Op{c.TopOp},
+			Children: []*base.Op{windowChild},
 		}
-
-		// Chain the window-partition to the previous round.
-		if rv != nil {
-			partitionOp.Children = append(partitionOp.Children, rv)
-		}
-
-		// TODO: Reuse of a window-partition by multiple
-		// aggregates and window-frame instances?
 
 		var wf *algebra.WindowFrame
 		if agg.WindowTerm() != nil {
@@ -1162,13 +1166,15 @@ func (c *Conv) VisitWindowAggregate(o *plan.WindowAggregate) (interface{}, error
 			if wfe.HasModifier(algebra.WINDOW_FRAME_CURRENT_ROW) {
 				frameCfg = append(frameCfg, "num", 0)
 			} else if wfe.HasModifier(algebra.WINDOW_FRAME_VALUE_PRECEDING) {
-				// TODO: Handle non-int64 RANGE extent.
+				// TODO: Handle non-int64 RANGE extent. int() cast is required:
+				// WindowFrame.Init does parts[N].(int), so an int64 (what
+				// EvalExprInt64 returns) would silently fall back to a 0 extent.
 				n := EvalExprInt64(nil, wfe.ValueExpression(), nil, 0)
-				frameCfg = append(frameCfg, "num", -n)
+				frameCfg = append(frameCfg, "num", int(-n))
 			} else if wfe.HasModifier(algebra.WINDOW_FRAME_VALUE_FOLLOWING) {
 				// TODO: Handle non-int64 RANGE extent.
 				n := EvalExprInt64(nil, wfe.ValueExpression(), nil, 0)
-				frameCfg = append(frameCfg, "num", n)
+				frameCfg = append(frameCfg, "num", int(n))
 			} else {
 				// Unbounded preceding or following.
 				frameCfg = append(frameCfg, "unbounded", 0)
@@ -1204,14 +1210,45 @@ func (c *Conv) VisitWindowAggregate(o *plan.WindowAggregate) (interface{}, error
 
 		framesSlot := c.AddTemp(nil)
 
+		framesLabels := append(base.Labels(nil), windowChild.Labels...)
+		framesParams := []interface{}{partitionSlot, framesSlot, []interface{}{frameCfg}}
+
+		// Native frame aggregate: SUM/COUNT/AVG/MIN/MAX/... OVER (...). When the
+		// window function maps to a base.AggCatalog aggregate, have the
+		// window-frames op compute it over each row's frame and append it under
+		// "^aggregates|"+agg.String(); the projection then reads it natively
+		// (exprTreeOptimizeNative), exactly as GROUP BY aggregates do. Non-aggregate
+		// window functions (ROW_NUMBER / RANK / LAG / FIRST_VALUE / ...) are left
+		// boxed for now -- ranking + offset wiring is a later step.
+		//
+		// Only ROWS frames (and all-unbounded frames, e.g. OVER () / OVER (PARTITION
+		// BY g)) are wired: a RANGE/GROUPS frame with a CURRENT ROW or value bound
+		// needs peer detection via WindowFrame.ValIdx pointing at the ORDER BY value
+		// column, which isn't wired yet (valIdx=0 above). Wiring those would silently
+		// mis-compute, so we leave them boxed until ValIdx lands (a follow-up).
+		begUnbounded := len(frameCfg) > 1 && frameCfg[1] == "unbounded"
+		endUnbounded := len(frameCfg) > 3 && frameCfg[3] == "unbounded"
+		frameNativeOK := frameType == "rows" || (begUnbounded && endUnbounded)
+
+		aggName := strings.ToLower(agg.Name())
+		if _, ok := base.AggCatalog[aggName+"_distinct"]; ok && agg.Distinct() {
+			aggName += "_distinct"
+		}
+		if _, ok := base.AggCatalog[aggName]; ok && frameNativeOK {
+			var operand []interface{}
+			if ops := agg.Operands(); len(ops) == 0 || ops[0] == nil {
+				operand = []interface{}{"json", "true"} // COUNT(*): non-MISSING per row.
+			} else {
+				operand = []interface{}{"exprTree", ops[0]}
+			}
+			framesParams = append(framesParams, aggName, operand)
+			framesLabels = append(framesLabels, "^aggregates|"+agg.String())
+		}
+
 		framesOp := &base.Op{
-			Kind:   "window-frames",
-			Labels: c.TopOp.Labels, // TODO: Handle extra trackings.
-			Params: []interface{}{
-				partitionSlot,
-				framesSlot,
-				[]interface{}{frameCfg},
-			},
+			Kind:     "window-frames",
+			Labels:   framesLabels,
+			Params:   framesParams,
 			Children: []*base.Op{partitionOp},
 		}
 

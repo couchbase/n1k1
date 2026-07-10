@@ -177,20 +177,34 @@ func OpWindowPartition(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals
 			}
 		}
 
+		// Drain the final (or only) partition on end-of-stream, BEFORE propagating
+		// yieldErr(nil): a downstream collect-then-emit op (ORDER BY / GROUP BY) emits
+		// its result when it sees nil, so the buffered last partition must reach it
+		// first -- otherwise it emits before our deferred rows arrive (empty output).
+		// Mirrors OpGroup's yieldErr(nil) drain. Mid-stream partitions already drained
+		// inside the yieldVals wrapper on each partition change.
+		lzYieldErrOrig := lzYieldErr
+
+		lzYieldErr = func(lzErrIn error) {
+			if lzErrIn == nil {
+				for lzI := int64(0); lzI < lzHeap.CurItems && lzErr == nil; lzI++ {
+					lzHeapBytes, lzErr = lzHeap.Get(lzI)
+					if lzErr != nil {
+						lzYieldErrOrig(lzErr)
+					} else {
+						lzValsOut = base.ValsDecode(lzHeapBytes, lzValsOut[:0])
+
+						lzYieldValsOrig(lzValsOut)
+					}
+				}
+			}
+
+			lzYieldErrOrig(lzErrIn)
+		}
+
 		EmitPop(pathNext, "WP") // !lz
 
 		ExecOp(o.Children[0], lzVars, lzYieldVals, lzYieldErr, pathNext, "WPC") // !lz
-
-		for lzI := int64(0); lzI < lzHeap.CurItems && lzErr == nil; lzI++ {
-			lzHeapBytes, lzErr = lzHeap.Get(lzI)
-			if lzErr != nil {
-				lzYieldErr(lzErr)
-			} else {
-				lzValsOut = base.ValsDecode(lzHeapBytes, lzValsOut[:0])
-
-				lzYieldValsOrig(lzValsOut)
-			}
-		}
 	}
 }
 
@@ -206,10 +220,35 @@ func OpWindowFrames(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	framesCfg := o.Params[2].([]interface{})
 	framesLen := len(framesCfg)
 
+	// Optional native frame aggregate: when Params[3] names a base.AggCatalog
+	// aggregate (sum/count/avg/min/max/...), this op computes it over each row's
+	// frame (frame 0) and appends the result as an extra val, which the projection
+	// reads natively under "^aggregates|<agg.String()>" (exprTreeOptimizeNative) --
+	// the same path GROUP BY uses. Absent means boundary-tracking only.
+	aggName := ""
+	var aggOperand []interface{}
+	if len(o.Params) > 4 {
+		aggName, _ = o.Params[3].(string)
+		aggOperand, _ = o.Params[4].([]interface{})
+	}
+
 	if LzScope {
 		var lzHeap *store.Heap
 
 		var lzFrames []base.WindowFrame
+
+		var lzAgg *base.Agg                // !lz
+		var lzAggOperandFunc base.ExprFunc // !lz
+		if aggName != "" {                 // !lz
+			lzAgg = base.Aggs[base.AggCatalog[aggName]]                                                // !lz
+			lzAggOperandFunc = MakeExprFunc(lzVars, o.Children[0].Labels, aggOperand, pathNext, "WFA") // !lz
+		} // !lz
+		_, _ = lzAgg, lzAggOperandFunc // !lz
+
+		// Reused accumulator ping-pong buffers + Result scratch + frame-row decode
+		// buffer, so a per-row frame aggregate allocates nothing steady-state.
+		var lzAccA, lzAccB, lzResBuf []byte
+		var lzFrameVals base.Vals
 
 		// lzPartitionId starts at a sentinel that no real partition id equals, so
 		// the FIRST row always takes the new-partition branch (lzCurrentPos = 0).
@@ -258,6 +297,45 @@ func OpWindowFrames(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 					lzYieldErr(lzErr)
 				}
 			}
+
+			if aggName != "" { // !lz
+				// Fold the native aggregate over frame 0's rows: Init a fresh
+				// accumulator, Update once per frame row (operand evaluated against
+				// that row), then Result. Ping-pong lzAcc/lzAccOther so Update reads
+				// the prior state and writes the next without allocating.
+				lzFrame := &lzFrames[0]
+
+				lzAcc := lzAgg.Init(lzVars, lzAccA[:0])
+				lzAccOther := lzAccB
+
+				lzStepPos := int64(-1)
+				lzStepOk := true
+				var lzStepErr error
+				for {
+					lzFrameVals, lzStepPos, lzStepOk, lzStepErr =
+						lzFrame.StepVals(true, lzStepPos, lzFrameVals[:0])
+					if !lzStepOk || lzStepErr != nil {
+						break
+					}
+
+					lzOperandVal := lzAggOperandFunc(lzFrameVals, lzYieldErr) // <== emitCaptured: pathNext "WFA"
+
+					lzAccOther, lzAcc, _ = lzAgg.Update(lzVars, lzOperandVal,
+						lzAccOther[:0], lzAcc, lzVars.Ctx.ValComparer)
+
+					lzAcc, lzAccOther = lzAccOther, lzAcc
+				}
+				if lzStepErr != nil {
+					lzYieldErr(lzStepErr)
+				}
+
+				var lzResVal base.Val
+				lzResVal, _, lzResBuf = lzAgg.Result(lzVars, lzAcc, lzResBuf[:0])
+
+				lzAccA, lzAccB = lzAcc, lzAccOther
+
+				lzVals = append(lzVals, lzResVal)
+			} // !lz
 
 			lzYieldValsOrig(lzVals)
 		}
