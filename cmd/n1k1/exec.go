@@ -105,6 +105,9 @@ func (c *cli) exec(stmt string) {
 			fmt.Fprintf(c.stderr, "%s%s\n", c.icon("✗ "), c.style.Red("Error: "+tidyMsg(err.Error())))
 			// Point a caret at the offending column when the parser gives one.
 			fmt.Fprint(c.stderr, errorCaret(stmt, err.Error(), c.style))
+			// Add a backtick hint when the offender is a reserved word (e.g. the
+			// recipe-emitted `level` field).
+			fmt.Fprint(c.stderr, reservedWordHint(err.Error(), c.style))
 		}
 		return
 	}

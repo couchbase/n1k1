@@ -81,6 +81,35 @@ func errorCaret(stmt, errText string, st cmd.Style) string {
 	return b.String()
 }
 
+// reservedWordHint returns a one-line hint when a syntax error is a bare use of a
+// reserved word where an identifier was meant. The N1QL parser appends
+// " (reserved word)" to the offending token (n1ql.go), e.g.
+//
+//	syntax error - line 1, column 21, near '...', at: level (reserved word)
+//
+// This bites naturally: n1k1's built-in log recipe emits a `level` field, but
+// `level` is reserved (ISOLATION LEVEL), so `WHERE l.level = "error"` fails to
+// parse -- the fix is to backtick it. Returns "" when the error isn't a
+// reserved-word case. Coloring follows st (no-op when st.On is false).
+func reservedWordHint(errText string, st cmd.Style) string {
+	const marker = " (reserved word)"
+	i := strings.Index(errText, marker)
+	if i < 0 {
+		return ""
+	}
+	// The reserved token is the last "at: <TOKEN>" segment before the marker.
+	before := errText[:i]
+	at := strings.LastIndex(before, "at: ")
+	if at < 0 {
+		return ""
+	}
+	tok := strings.TrimSpace(before[at+len("at: "):])
+	if tok == "" {
+		return ""
+	}
+	return "  " + st.Dim("hint: "+tok+" is a reserved word here — quote it as `"+tok+"`") + "\n"
+}
+
 // parseErrPos extracts the 1-based (line, column) from a parser error message.
 func parseErrPos(errText string) (line, col int, ok bool) {
 	// Find "line <n>, column <n>" without a regexp: locate "line " that is

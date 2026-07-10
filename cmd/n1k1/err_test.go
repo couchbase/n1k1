@@ -115,3 +115,26 @@ func TestErrorCaretTabAlignment(t *testing.T) {
 		t.Errorf("tab not preserved in caret pad: %q", caret)
 	}
 }
+
+func TestReservedWordHint(t *testing.T) {
+	plain := cmd.Style{}
+	cases := []struct {
+		errText, wantSub string
+	}{
+		{"syntax error - line 1, column 21, near 'SELECT l.', at: level (reserved word)", "`level`"},
+		{"syntax error - line 1, column 10, near 'x', at: FRM", ""},        // ordinary typo -> no hint
+		{"syntax error - at end of input", ""},                            // no token
+	}
+	for _, c := range cases {
+		got := reservedWordHint(c.errText, plain)
+		if c.wantSub == "" {
+			if got != "" {
+				t.Errorf("reservedWordHint(%q) = %q, want \"\"", c.errText, got)
+			}
+			continue
+		}
+		if !strings.Contains(got, c.wantSub) || !strings.Contains(got, "reserved word") {
+			t.Errorf("reservedWordHint(%q) = %q, want it to mention %q + \"reserved word\"", c.errText, got, c.wantSub)
+		}
+	}
+}
