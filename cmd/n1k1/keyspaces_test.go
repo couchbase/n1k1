@@ -224,6 +224,45 @@ func TestKeyspacesUnexposedFilesHint(t *testing.T) {
 
 // TestSchemaFlatRootUnion: a flat-root dir samples the union of fields across its
 // files (the b.jsonl-only "z" field must appear).
+// TestSchemaAcceptsBacktickedKeyspace: a dot-command keyspace arg may be backticked
+// exactly like the SQL spelling (IDEA-0009) -- `.schema `ns_server.error`` resolves
+// the same keyspace as the bare `.schema ns_server.error`, with no error.
+func TestSchemaAcceptsBacktickedKeyspace(t *testing.T) {
+	root := t.TempDir()
+	// Flat single-file keyspace by stem: ns_server.error.log -> "ns_server.error".
+	if err := os.WriteFile(filepath.Join(root, "ns_server.error.log"),
+		[]byte("[ns_server:info,2026-05-17T15:36:11.100+02:00,n1:x]hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "certs"), 0o755); err != nil { // subdir -> B3
+		t.Fatal(err)
+	}
+	sess, err := glue.OpenSession(root, "default")
+	if err != nil {
+		t.Fatalf("OpenSession: %v", err)
+	}
+
+	run := func(arg string) (string, string) {
+		var out, errb bytes.Buffer
+		c := &cli{prog: "n1k1", dir: root, sess: sess, out: &out, stderr: &errb}
+		c.cmdSchema(arg)
+		return out.String(), errb.String()
+	}
+	bareOut, bareErr := run("ns_server.error")
+	tickOut, tickErr := run("`ns_server.error`")
+
+	for _, tc := range []struct{ name, out, err string }{
+		{"bare", bareOut, bareErr}, {"backticked", tickOut, tickErr},
+	} {
+		if strings.Contains(tc.err, "Error") || strings.Contains(tc.err, "no keyspace") {
+			t.Errorf("%s: .schema errored: %s", tc.name, tc.err)
+		}
+		if !strings.Contains(tc.out, "ns_server.error") || !strings.Contains(tc.out, "sampled") {
+			t.Errorf("%s: .schema output unexpected:\n%s", tc.name, tc.out)
+		}
+	}
+}
+
 func TestSchemaFlatRootUnion(t *testing.T) {
 	base := "sd"
 	dir := filepath.Join(t.TempDir(), base)

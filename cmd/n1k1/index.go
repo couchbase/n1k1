@@ -267,6 +267,7 @@ func (c *cli) cmdIndexSuggest(keyspace string) {
 		fmt.Fprintln(c.stderr, "no datastore open")
 		return
 	}
+	keyspace = unquoteIdent(keyspace) // accept `ns_server.error` like SQL does (IDEA-0009)
 	sugg, note, err := glue.SuggestIndexes(c.sess.Store, defaultNamespace, keyspace, 0)
 	if err != nil {
 		fmt.Fprintf(c.stderr, "%s: index suggest: %v\n", c.prog, err)

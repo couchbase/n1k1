@@ -252,6 +252,7 @@ func (c *cli) exampleQuery() string {
 // SQL++ example that filters on the field using the values seen (= / IN / IS NOT
 // MISSING). Always box|pretty regardless of the -mode output setting.
 func (c *cli) cmdSchema(keyspace string) {
+	keyspace = unquoteIdent(strings.TrimSpace(keyspace)) // accept `ns_server.error` like SQL (IDEA-0009)
 	kss := []string{keyspace}
 	if keyspace == "" {
 		names, err := c.keyspaceNames()
