@@ -16,6 +16,8 @@ import (
 
 	"bytes" // <== genCompiler:hide
 
+	"strconv" // <== genCompiler:hide
+
 	"strings"
 
 	"github.com/couchbase/n1k1/base"
@@ -249,16 +251,28 @@ func OpWindowFrames(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	framesCfg := o.Params[2].([]interface{})
 	framesLen := len(framesCfg)
 
-	// Optional native frame aggregate: when Params[3] names a base.AggCatalog
-	// aggregate (sum/count/avg/min/max/...), this op computes it over each row's
-	// frame (frame 0) and appends the result as an extra val, which the projection
-	// reads natively under "^aggregates|<agg.String()>" (exprTreeOptimizeNative) --
-	// the same path GROUP BY uses. Absent means boundary-tracking only.
-	aggName := ""
+	// Params[3] optionally names the window function this op materializes as an extra
+	// "^aggregates|<agg.String()>" column, read natively by the projection via
+	// exprTreeOptimizeNative (the same path GROUP BY uses). It is either a
+	// base.AggCatalog aggregate (sum/count/avg/min/max/...; Params[4] is its operand
+	// expr, folded over each row's frame) OR a ranking function ("row_number" /
+	// "rank" / "dense_rank", computed from partition position + peer groups, no
+	// operand). Absent means boundary-tracking only.
+	winFunc := ""
 	var aggOperand []interface{}
+	if len(o.Params) > 3 {
+		winFunc, _ = o.Params[3].(string)
+	}
 	if len(o.Params) > 4 {
-		aggName, _ = o.Params[3].(string)
 		aggOperand, _ = o.Params[4].([]interface{})
+	}
+	isRankRowNumber := winFunc == "row_number"
+	isRankRank := winFunc == "rank"
+	isRankDense := winFunc == "dense_rank"
+	isRanking := isRankRowNumber || isRankRank || isRankDense
+	aggName := ""
+	if winFunc != "" && !isRanking {
+		aggName = winFunc
 	}
 
 	if LzScope {
@@ -283,6 +297,12 @@ func OpWindowFrames(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 		// strips that block via "// !lz", so keep them "used" in the compiled lane --
 		// same guard the rank buffers use above.
 		_, _, _, _ = lzAccA, lzAccB, lzResBuf, lzFrameVals
+
+		// Ranking output buffer (row_number / rank / dense_rank). The peer-group state
+		// lives in base.WindowFrame (StepRanking), so the op only calls a method +
+		// formats -- no field access that the gen-compiler would lift to gen-time.
+		var lzRankBuf []byte
+		_ = lzRankBuf
 
 		// lzPartitionId starts at a sentinel that no real partition id equals, so
 		// the FIRST row always takes the new-partition branch (lzCurrentPos = 0).
@@ -331,6 +351,27 @@ func OpWindowFrames(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 					lzYieldErr(lzErr)
 				}
 			}
+
+			if isRanking { // !lz
+				// StepRanking (a base.WindowFrame method -- runtime, no gen-time field
+				// lifting) maintains the peer-group state and returns all three; pick
+				// the one this op materializes and append it as JSON. No inner "// !lz":
+				// the whole block strips as one unit, like the agg block below. Bind
+				// lzFrame first (a plain var) -- a selector on lzFrames[0] (an indexed
+				// expr) would be lifted to gen-time by the compiler.
+				lzFrame := &lzFrames[0]
+				lzRowNum, lzRankV, lzDenseRankV := lzFrame.StepRanking()
+
+				lzRankOut := lzRowNum
+				if isRankDense {
+					lzRankOut = lzDenseRankV
+				} else if isRankRank {
+					lzRankOut = lzRankV
+				}
+
+				lzRankBuf = strconv.AppendUint(lzRankBuf[:0], lzRankOut, 10)
+				lzVals = append(lzVals, base.Val(lzRankBuf))
+			} // !lz
 
 			if aggName != "" { // !lz
 				// Fold the native aggregate over frame 0's rows: Init a fresh

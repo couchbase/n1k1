@@ -1134,13 +1134,21 @@ func (c *Conv) VisitWindowAggregate(o *plan.WindowAggregate) (interface{}, error
 			frameType = "groups"
 		}
 
-		// RANGE/GROUPS frames with a CURRENT ROW or value bound compare the ORDER BY
-		// value (peer detection for CURRENT ROW; numeric window for value bounds). So
-		// the window-partition stores that value as a trailing "^worderby" column and
-		// the frame's ValIdx points at it. Supported for a SINGLE ORDER BY expr (RANGE
-		// is single-column by definition; composite GROUPS peers are left boxed). ROWS
-		// frames don't need it.
-		appendOrderBy := (frameType == "range" || frameType == "groups") && len(orderByExprs) == 1
+		// Ranking window functions (computed from partition position + peer groups,
+		// not a frame aggregate). ROW_NUMBER needs only the position; RANK/DENSE_RANK
+		// need peer detection, i.e. the ORDER BY value column.
+		winFuncName := strings.ToLower(agg.Name())
+		isRankRowNumber := winFuncName == "row_number"
+		isRankRank := winFuncName == "rank"
+		isRankDense := winFuncName == "dense_rank"
+
+		// The ORDER BY value is stored as a trailing "^worderby" column (the frame's
+		// ValIdx) for peer/value detection -- needed by RANGE/GROUPS value/current-row
+		// frames AND by RANK/DENSE_RANK. Supported for a SINGLE ORDER BY expr (RANGE is
+		// single-column by definition; composite GROUPS peers are left boxed). ROWS
+		// aggregates and ROW_NUMBER don't need it.
+		appendOrderBy := ((frameType == "range" || frameType == "groups") || isRankRank || isRankDense) &&
+			len(orderByExprs) == 1
 
 		partitionSlot := c.AddTemp(nil)
 
@@ -1249,19 +1257,27 @@ func (c *Conv) VisitWindowAggregate(o *plan.WindowAggregate) (interface{}, error
 		endUnbounded := len(frameCfg) > 3 && frameCfg[3] == "unbounded"
 		frameNativeOK := frameType == "rows" || (begUnbounded && endUnbounded) || appendOrderBy
 
-		aggName := strings.ToLower(agg.Name())
-		if _, ok := base.AggCatalog[aggName+"_distinct"]; ok && agg.Distinct() {
-			aggName += "_distinct"
-		}
-		if _, ok := base.AggCatalog[aggName]; ok && frameNativeOK {
-			var operand []interface{}
-			if ops := agg.Operands(); len(ops) == 0 || ops[0] == nil {
-				operand = []interface{}{"json", "true"} // COUNT(*): non-MISSING per row.
-			} else {
-				operand = []interface{}{"exprTree", ops[0]}
-			}
-			framesParams = append(framesParams, aggName, operand)
+		if isRankRowNumber || ((isRankRank || isRankDense) && appendOrderBy) {
+			// Ranking: the frames op computes it from position / peer groups (no
+			// operand). RANK/DENSE_RANK need appendOrderBy (peer detection) -- without a
+			// single ORDER BY they fall through and stay boxed.
+			framesParams = append(framesParams, winFuncName)
 			framesLabels = append(framesLabels, "^aggregates|"+agg.String())
+		} else {
+			aggName := winFuncName
+			if _, ok := base.AggCatalog[aggName+"_distinct"]; ok && agg.Distinct() {
+				aggName += "_distinct"
+			}
+			if _, ok := base.AggCatalog[aggName]; ok && frameNativeOK {
+				var operand []interface{}
+				if ops := agg.Operands(); len(ops) == 0 || ops[0] == nil {
+					operand = []interface{}{"json", "true"} // COUNT(*): non-MISSING per row.
+				} else {
+					operand = []interface{}{"exprTree", ops[0]}
+				}
+				framesParams = append(framesParams, aggName, operand)
+				framesLabels = append(framesLabels, "^aggregates|"+agg.String())
+			}
 		}
 
 		framesOp := &base.Op{

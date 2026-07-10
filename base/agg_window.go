@@ -77,6 +77,43 @@ type WindowFrame struct {
 
 	// TempVals helps avoid memory allocations.
 	TempVals Vals
+
+	// Ranking state (ROW_NUMBER / RANK / DENSE_RANK), maintained by StepRanking and
+	// reset at each partition start (Pos == 0).
+	rankVal       uint64
+	denseRankVal  uint64
+	rankPrevOrder []byte
+	rankStarted   bool
+}
+
+// StepRanking returns the ROW_NUMBER, RANK, and DENSE_RANK for the current row
+// (wf.Pos, 0-based). It maintains peer-group state internally, self-resetting at each
+// partition start (Pos == 0). ROW_NUMBER is the 1-based position. RANK/DENSE_RANK
+// detect peer-group changes via the ValIdx column (the ORDER BY value): RANK is the
+// position of the current group's first row + 1; DENSE_RANK counts groups seen. (For
+// a ROW_NUMBER-only window ValIdx may be unset -- its rank/denseRank returns are then
+// meaningless, but the caller ignores them.)
+func (wf *WindowFrame) StepRanking() (rowNumber, rank, denseRank uint64) {
+	if wf.Pos == 0 {
+		wf.rankVal, wf.denseRankVal, wf.rankStarted = 0, 0, false
+		wf.rankPrevOrder = wf.rankPrevOrder[:0]
+	}
+
+	rowNumber = uint64(wf.Pos) + 1
+
+	var curOrder Val
+	if v, err := wf.GetValsVal(wf.Pos, wf.ValIdx); err == nil {
+		curOrder = v
+	}
+
+	if !wf.rankStarted || !bytes.Equal(curOrder, wf.rankPrevOrder) {
+		wf.rankVal = uint64(wf.Pos) + 1
+		wf.denseRankVal++
+		wf.rankPrevOrder = append(wf.rankPrevOrder[:0], curOrder...)
+		wf.rankStarted = true
+	}
+
+	return rowNumber, wf.rankVal, wf.denseRankVal
 }
 
 // -------------------------------------------------------------------

@@ -135,6 +135,63 @@ func TestWindowFrameAggregates(t *testing.T) {
 	}
 }
 
+// TestWindowRanking: ROW_NUMBER / RANK / DENSE_RANK. On distinct keys all three are
+// 1..N; ROW_NUMBER resets per PARTITION. (ROW_NUMBER over TIED keys is
+// non-deterministic -- the tie order is unspecified -- so it's asserted only on
+// distinct keys.)
+func TestWindowRanking(t *testing.T) {
+	sess := windowTestSession(t) // distinct n = 10,20,30,40,50; g = a,b,a,b,a
+
+	for _, c := range []struct {
+		name, stmt, field string
+		want              []float64
+	}{
+		{"row_number-distinct",
+			`SELECT ROW_NUMBER() OVER (ORDER BY n) AS s FROM nums ORDER BY n`, "s",
+			[]float64{1, 2, 3, 4, 5}},
+		{"rank-distinct",
+			`SELECT RANK() OVER (ORDER BY n) AS s FROM nums ORDER BY n`, "s",
+			[]float64{1, 2, 3, 4, 5}},
+		{"dense_rank-distinct",
+			`SELECT DENSE_RANK() OVER (ORDER BY n) AS s FROM nums ORDER BY n`, "s",
+			[]float64{1, 2, 3, 4, 5}},
+		{"row_number-partition-by-g",
+			// g=a rows (n=10,30,50) -> 1,2,3; g=b rows (n=20,40) -> 1,2. ORDER BY n
+			// interleaves them: a1,b1,a2,b2,a3.
+			`SELECT ROW_NUMBER() OVER (PARTITION BY g ORDER BY n) AS s FROM nums ORDER BY n`, "s",
+			[]float64{1, 1, 2, 2, 3}},
+	} {
+		if got := winCol(t, sess, c.stmt, c.field); !reflect.DeepEqual(got, c.want) {
+			t.Errorf("%s: got %v, want %v\n  %s", c.name, got, c.want, c.stmt)
+		}
+	}
+}
+
+// TestWindowRankingTies: RANK leaves gaps after a tie (1,1,3,...), DENSE_RANK does
+// not (1,1,2,...). Uses the tied-key fixture (n=10,10,20,30).
+func TestWindowRankingTies(t *testing.T) {
+	dir := t.TempDir()
+	ks := filepath.Join(dir, "default", "t")
+	if err := os.MkdirAll(ks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rows := `{"n":10,"x":1}` + "\n" + `{"n":10,"x":2}` + "\n" + `{"n":20,"x":3}` + "\n" + `{"n":30,"x":4}` + "\n"
+	if err := os.WriteFile(filepath.Join(ks, "t.jsonl"), []byte(rows), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sess, err := OpenSession(dir, "default")
+	if err != nil {
+		t.Fatalf("OpenSession: %v", err)
+	}
+
+	if got := winCol(t, sess, `SELECT RANK() OVER (ORDER BY n) AS s FROM t ORDER BY n, x`, "s"); !reflect.DeepEqual(got, []float64{1, 1, 3, 4}) {
+		t.Errorf("RANK ties: got %v, want [1 1 3 4]", got)
+	}
+	if got := winCol(t, sess, `SELECT DENSE_RANK() OVER (ORDER BY n) AS s FROM t ORDER BY n, x`, "s"); !reflect.DeepEqual(got, []float64{1, 1, 2, 3}) {
+		t.Errorf("DENSE_RANK ties: got %v, want [1 1 2 3]", got)
+	}
+}
+
 // TestWindowRangePeers: a RANGE frame groups tied ORDER BY keys into one peer group
 // (CURRENT ROW = all peers), so both n=10 rows see the same running SUM(x). A ROWS
 // frame would instead give 1 then 3 (and is non-deterministic under ties). This is
