@@ -324,17 +324,13 @@ type FileSortedSourceMeta struct {
 // contract) are skipped. Cold path (planning); describe results come from the sidecar
 // cache. gctx (optional) supplies the per-request walk-file cache; nil walks fresh.
 func SortedSourceMetasForKeyspace(ks datastore.Keyspace, gctx *GlueContext) ([]FileSortedSourceMeta, error) {
-	dir, err := KeyspaceDir(ks)
-	if err != nil {
-		return nil, err
-	}
-	opts := ScanWalkOptions
-	var files []string
-	if gctx != nil {
-		files, err = gctx.walkFiles(dir, opts)
-	} else {
-		files, err = records.WalkFiles(dir, opts)
-	}
+	// Resolve the keyspace to its files the SAME way the scan does (glob -> single
+	// file -> directory), NOT via KeyspaceDir alone: a flat single-FILE keyspace (a
+	// cbcollect bundle's top-level cbcollect_info.log / ns_server.error.log, exposed
+	// per-file) has no RecordsDir, so KeyspaceDir would point at a non-existent
+	// <root>/<ns>/<keyspace> dir and walk up EMPTY -- which is why the ASOF sort-key
+	// gate saw "no sorted-source metadata" over real recipe keyspaces (IDEA-0016).
+	files, err := keyspaceFiles(ks, gctx)
 	if err != nil {
 		return nil, err
 	}
@@ -410,7 +406,7 @@ func (f KeyspaceFraming) Label() string {
 // structured-extension test (IsStructuredFile). No file content is read -- safe on the
 // interactive listing path even over a huge (e.g. 240 MB log) keyspace.
 func KeyspaceFramingFor(ks datastore.Keyspace) (KeyspaceFraming, error) {
-	files, err := keyspaceFiles(ks)
+	files, err := keyspaceFiles(ks, nil)
 	if err != nil {
 		return KeyspaceFraming{}, err
 	}
@@ -450,8 +446,11 @@ func KeyspaceFramingFor(ks datastore.Keyspace) (KeyspaceFraming, error) {
 }
 
 // keyspaceFiles lists a keyspace's eligible record files WITHOUT opening them,
-// mirroring KeyspaceRecordsOpen's glob -> single-file -> directory resolution.
-func keyspaceFiles(ks datastore.Keyspace) ([]string, error) {
+// mirroring KeyspaceRecordsOpen's glob -> single-file -> directory resolution (so a
+// glob or single-file keyspace resolves correctly, not just a directory one). gctx
+// (optional) supplies the per-request walk cache for the directory case; nil walks
+// fresh.
+func keyspaceFiles(ks datastore.Keyspace, gctx *GlueContext) ([]string, error) {
 	opts := ScanWalkOptions
 	if g, ok := ks.(interface{ RecordsGlob() (string, bool) }); ok {
 		if pattern, has := g.RecordsGlob(); has {
@@ -465,6 +464,9 @@ func keyspaceFiles(ks datastore.Keyspace) ([]string, error) {
 	dir, err := KeyspaceDir(ks)
 	if err != nil {
 		return nil, err
+	}
+	if gctx != nil {
+		return gctx.walkFiles(dir, opts)
 	}
 	return records.WalkFiles(dir, opts)
 }

@@ -180,6 +180,59 @@ func TestASOFLoweringOuterFilterDifferential(t *testing.T) {
 	}
 }
 
+// TestASOFLoweringSingleFileKeyspace is the IDEA-0016 gate: ASOF must lower over
+// flat SINGLE-FILE recipe keyspaces (a cbcollect bundle exposes ns_server.error /
+// cbcollect_info as one top-level file each, not a <ns>/<keyspace>/ dir). The sort-key
+// gate resolves metadata via KeyspaceDir, which has no dir for a single-file keyspace
+// -> it saw "no sorted-source metadata" and bailed to the O(n^2) correlated path, even
+// though describe measures the file as sorted. keyspaceFiles now resolves the file
+// directly, so the gate sees the metadata and the rewrite fires.
+func TestASOFLoweringSingleFileKeyspace(t *testing.T) {
+	root := t.TempDir()
+	// Flat bundle layout: recipe log files at the TOP LEVEL (each its own single-file
+	// keyspace by stem) plus a subdir, which is what makes it the per-file (B3) layout.
+	writeTop := func(name, body string) {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeTop("ns_server.error.log",
+		nsLine("2026-05-17T15:36:11.100+02:00", "n1", "e-100")+ // no preceding R -> null
+			nsLine("2026-05-17T15:36:13.300+02:00", "n1", "e-300")) // nearest R@12.200
+	writeTop("ns_server.rebalance.log",
+		nsLine("2026-05-17T15:36:12.200+02:00", "n1", "r-200"))
+	if err := os.MkdirAll(filepath.Join(root, "certs"), 0o755); err != nil { // subdir -> B3
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "certs", "c.txt"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := OpenSession(root, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	stmt := "SELECT e.ts AS ts, " +
+		"(SELECT r.msg FROM `ns_server.rebalance` r WHERE r.ts <= e.ts ORDER BY r.ts DESC LIMIT 1) AS state_at " +
+		"FROM `ns_server.error` e ORDER BY e.ts"
+
+	off, _, fired := runBoth(t, s, stmt)
+	if !fired {
+		t.Fatalf("expected ASOF to FIRE over single-file recipe keyspaces (IDEA-0016); it did not")
+	}
+	if len(off) != 2 {
+		t.Fatalf("want 2 rows, got %d: %v", len(off), off)
+	}
+	if off[0] != `{"ts":1779024971100000000,"state_at":null}` {
+		t.Fatalf("row0 (no preceding -> null) unexpected: %s", off[0])
+	}
+	if off[1] != `{"ts":1779024973300000000,"state_at":[{"msg":"r-200"}]}` {
+		t.Fatalf("row1 (nearest preceding R@12.200) unexpected: %s", off[1])
+	}
+}
+
 // TestASOFLoweringSoftDifferential covers SOFT ASOF (a `r.ts >= e.ts - Δt`
 // look-back guard): ON == OFF byte-identical, AND the guard actually drops a match
 // whose nearest-preceding row is farther back than Δt (so the soft path is really
