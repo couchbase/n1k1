@@ -117,6 +117,7 @@ func TestRulesHelp(t *testing.T) {
 		"--bind", "--update", // the flag one-liners
 		"RESERVED WORDS", "`level`", // DOC-3: the reserved-word note
 		"TEMPORAL (ASOF)", "ORDER BY", "NOT lowered to ASOF", // DOC-2: the ASOF requirements
+		"CONTEXT (grep -A/-B/-C)", "PARTITION BY _meta.`path`", // the grep-context idiom + multi-file gotcha
 	} {
 		if !strings.Contains(help, want) {
 			t.Errorf(".rules help missing %q; stdout:\n%s", want, help)
@@ -215,8 +216,8 @@ func TestRulesRunHitStats(t *testing.T) {
 	write("default/blob/dump.log", "just raw text\nnothing structured\n")
 
 	corpus := writeCorpus(t, map[string]string{
-		"hit":       `SELECT * FROM logs l WHERE l.sev = "ERROR"`,   // matches 2 of 3
-		"miss_pred": `SELECT * FROM logs l WHERE l.sev = "NOPE"`,    // 0 of 3 -> predicate miss
+		"hit":       `SELECT * FROM logs l WHERE l.sev = "ERROR"`,     // matches 2 of 3
+		"miss_pred": `SELECT * FROM logs l WHERE l.sev = "NOPE"`,      // 0 of 3 -> predicate miss
 		"miss_blob": `SELECT * FROM blob b WHERE b.text LIKE "%zzz%"`, // 0 of 1 -> blob
 	})
 
@@ -241,8 +242,8 @@ func TestRulesFixSnippets(t *testing.T) {
 	root := newLogsBundle(t)
 	corpus := writeCorpus(t, map[string]string{
 		"boxed":  `SELECT * FROM logs l WHERE l.msg LIKE "%a%b%"`, // boxed (interior wildcards) + always-wake
-		"wake":   `SELECT * FROM logs l WHERE l.ts > 5`,                // fused, always-wake (no literal)
-		"broken": `SELECT * FROM logs l WHERE`,                         // rejected
+		"wake":   `SELECT * FROM logs l WHERE l.ts > 5`,           // fused, always-wake (no literal)
+		"broken": `SELECT * FROM logs l WHERE`,                    // rejected
 	})
 
 	// lint: the advice column carries the boxed, always-wake, and rejected snippets.

@@ -114,6 +114,9 @@ TIPS (get the best out of a collection)
     index prunes wake-ups, e.g. "... AND msg LIKE '%panic%'" -- otherwise the detector wakes on every row.
   - Keep a detector SINGLE-SOURCE filter+project (SELECT ... FROM one WHERE ...) so it FUSES into
     the shared scan. A GROUP BY / window / join / DISTINCT / ORDER-LIMIT / index-scan runs standalone.
+  - For grep -A/-B/-C style CONTEXT (the matching line + surrounding lines), use a sliding-window
+    match flag (see CONTEXT below) -- and PARTITION BY _meta.` + "`path`" + ` on a multi-file keyspace, or
+    context LEAKS across rotated files.
   - Prefer NATIVE expressions over boxed ones: "msg LIKE '%x%'", CONTAINS or "regexp_contains(msg,'x')" instead of
     a multi-wildcard "msg LIKE '%a%b%'". A boxed expression falls back to cbq and caps the compile level.
   - Give EVERY detector a golden fixture (-- @fixture / -- @expect) so CI (.rules test) protects it
@@ -139,6 +142,29 @@ An outer WHERE on the driving stream is fine. If it does NOT lower, ".verbose on
 sort key -- so you know before running a slow query. Example:
   SELECT e.ts, (SELECT r.msg FROM state r WHERE r.ts <= e.ts ORDER BY r.ts DESC LIMIT 1) AS prev
   FROM errors e WHERE regexp_contains(e.msg, "Terminate")
+
+CONTEXT (grep -A/-B/-C) -- emit the matching line PLUS N lines of surrounding context, the
+way "grep -C2" does. A sliding window computes a "near a match" FLAG per line; a wrapping
+query keeps the lit rows:
+  SELECT p, pos, line FROM (
+    SELECT _meta.` + "`path`" + ` AS p, _meta.pos AS pos, line,
+           MAX(CASE WHEN sev = "ERROR" THEN 1 ELSE 0 END)
+             OVER (PARTITION BY _meta.` + "`path`" + ` ORDER BY _meta.pos
+                   ROWS BETWEEN 2 PRECEDING AND 2 FOLLOWING) AS near
+    FROM logs) sub
+  WHERE sub.near = 1 ORDER BY p, pos
+The frame ends set the context width: "2 PRECEDING" = grep -B2, "2 FOLLOWING" = -A2, both
+= -C2. The line ordinal is _meta.pos (each record's 0-based position within its file; run
+with "-meta on", or it is present for extracted docs).
+  *** PARTITION BY _meta.` + "`path`" + ` IS REQUIRED for a multi-file keyspace (rotated logs:
+  indexer.log, indexer.log.1, ...). _meta.pos restarts at 0 per file, so a bare
+  ORDER BY _meta.pos INTERLEAVES the files -- a match near the top of one file then pulls
+  in unrelated lines from another, so context LEAKS across files (WRONG evidence).
+  Partitioning by _meta.` + "`path`" + ` isolates each file's context. ***
+("path" is a reserved word, hence backticked. A context detector has an OVER clause, so it
+runs standalone -- its own scan, not fused.) For CHRONOLOGICAL context that spans rotated
+files, order instead by an extract-recipe "time:" key (.extract help) -- one sortable
+timeline across the whole keyspace.
 
 Non-interactive (CI / agent):
   n1k1 -c '.rules run --queries ./detectors --bind ./manifest' <data-dir>

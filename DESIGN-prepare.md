@@ -887,7 +887,15 @@ the authoring guide standardizes (and the report card nudges toward): lead a pre
 discriminating literal as a top-level `AND` conjunct (so the index prunes); version-tolerance via
 stock `COALESCE(l.level, l.severity)`/`OR` (no adapter — [field-drift decision](#late-binding));
 ASOF as the canonical argmax subquery; rate/burst via stock `OVER (…)`; a uniform findings
-projection (`… AS evidence`) once the projection envelope lands.
+projection (`… AS evidence`) once the projection envelope lands; and **grep -A/-B/-C context**
+via a sliding-window match flag — `MAX(CASE WHEN <pred> THEN 1 END) OVER (PARTITION BY
+_meta.`path` ORDER BY _meta.pos ROWS BETWEEN B PRECEDING AND A FOLLOWING)` wrapped in a
+derived table filtered on the flag. The `PARTITION BY _meta.`path`` is load-bearing on a
+multi-file (rotated-log) keyspace: `_meta.pos` restarts per file, so without it context
+**leaks across files** — a partition-less `ORDER BY _meta.pos` interleaves them and pulls
+unrelated lines into a match's neighborhood (wrong evidence). For a timeline that spans
+rotated files, order by an extract-recipe `time:` key instead. (`.rules help` carries the
+full idiom + the gotcha.)
 
 **Dev/ops / CI.** The `.rules` dot-command family is built: `run` (corpus→findings + coverage),
 `lint` (the report card), `test` (golden fixtures, `--update` to record). Being added for the
