@@ -306,6 +306,47 @@ func exprTreeOptimizeNative(labels base.Labels, e expression.Expression,
 		return params, true
 	}
 
+	// LIKE with a constant "%lit%" pattern is exactly CONTAINS(str, "lit"):
+	// LikeCompile QuoteMeta's the literal and anchors it as `^.*lit.*$`, so the
+	// match is a plain substring test, and LIKE's MISSING/NULL/non-string rules
+	// (comp_like.go Evaluate) match base.StrContains bit-for-bit once the needle
+	// is a non-empty constant string. Rewriting to native ["contains", str,
+	// json("lit")] takes it off the boxed lane AND lets engine.PrefilterLiteral
+	// pull "lit" as the required substring for predicate-index pruning -- the two
+	// things IDEA-0003 asks for. NOT LIKE is NewNot(NewLike(...)), so it rides the
+	// same rewrite under a native ["not", ...].
+	//
+	// Guardrails keeping this exact: default escape only (a custom ESCAPE changes
+	// pattern parsing); a compile-time-constant STRING pattern; the form must be
+	// `%` + lit + `%` with lit non-empty and free of `%`/`_` (LIKE wildcards) and
+	// `\` (the default escape) -- so lit is unambiguously a literal substring. Any
+	// LIKE failing these stays boxed, exactly as before (LIKE was never in
+	// OptimizableFuncs), so there is no regression.
+	if lk, ok := e.(*expression.Like); ok {
+		if lk.IsDefaultEscape() {
+			if pv := lk.Second().Value(); pv != nil && pv.Type() == value.STRING {
+				pat := pv.ToString()
+				if len(pat) >= 3 && strings.HasPrefix(pat, "%") &&
+					strings.HasSuffix(pat, "%") {
+					lit := pat[1 : len(pat)-1]
+					if !strings.ContainsAny(lit, "%_\\") {
+						if strP, ok := ExprTreeOptimize(labels, lk.First(), buf,
+							strict); ok {
+							buf.Reset()
+							if value.NewValue(lit).WriteJSON(nil, buf, "", "",
+								true) == nil {
+								return []interface{}{"contains", strP,
+									[]interface{}{"json", buf.String()}}, true
+							}
+						}
+					}
+				}
+			}
+		}
+		// Non-rewritable LIKE keeps the boxed cbq path (unchanged behavior).
+		return nil, false
+	}
+
 	f, ok := e.(expression.Function)
 	if !ok {
 		return nil, false

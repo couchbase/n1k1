@@ -1819,3 +1819,130 @@ func TestRegexpMatchZeroAlloc(t *testing.T) {
 		t.Errorf("RegexpMatchStr: %v allocs/row after warmup; want 0", n)
 	}
 }
+
+// TestLikeContainsRewrite proves IDEA-0003: `x LIKE '%lit%'` with a constant
+// pattern lowers to the native CONTAINS head (off the boxed lane) and matches cbq
+// byte-for-byte, INCLUDING the MISSING/NULL/non-string rows; the rewritten needle
+// is also extractable by engine.PrefilterLiteral so the predicate index can prune.
+// Prefix/suffix/exact/interior-wildcard/underscore/empty/custom-escape/dynamic
+// forms must stay BOXED (no regression -- LIKE was never natively lowered before).
+func TestLikeContainsRewrite(t *testing.T) {
+	parse := func(s string) expression.Expression {
+		e, err := parser.Parse(s)
+		if err != nil {
+			t.Fatalf("parse %q: %v", s, err)
+		}
+		return e
+	}
+
+	// Lowers to native contains AND agrees with cbq. like-special proves the
+	// QuoteMeta equivalence: `.` `*` in the needle are literal, not regex metas.
+	native := []struct{ name, expr string }{
+		{"basic-yes", `"hello" LIKE "%ell%"`},
+		{"basic-no", `"hello" LIKE "%xyz%"`},
+		{"word", `"error: disk full" LIKE "%disk%"`},
+		{"edge-match", `"hello" LIKE "%hello%"`},
+		{"special-literal", `"a.b*c" LIKE "%.b*%"`},
+		{"null-src", `null LIKE "%x%"`},
+		{"num-src", `5 LIKE "%x%"`},
+		{"bool-src", `true LIKE "%x%"`},
+	}
+	for _, tc := range native {
+		e := parse(tc.expr)
+		var buf bytes.Buffer
+		params, ok := ExprTreeOptimize(nil, e, &buf, false)
+		if !ok {
+			t.Errorf("%s: %q did not optimize to native", tc.name, tc.expr)
+			continue
+		}
+		if head, _ := params[0].(string); head != "contains" {
+			t.Errorf("%s: expected native head %q, got %v", tc.name, "contains", params[0])
+			continue
+		}
+		want := cbqEval(t, e)
+		got, gotOk := nativeEval(t, e)
+		if !gotOk {
+			t.Errorf("%s: native eval failed", tc.name)
+			continue
+		}
+		if got != want {
+			t.Errorf("%s: native=%q, cbq=%q", tc.name, got, want)
+		}
+	}
+
+	// NOT LIKE = NewNot(NewLike(...)); rides the same rewrite under a native "not".
+	notLike := []struct{ name, expr string }{
+		{"not-basic-true", `"hello" NOT LIKE "%xyz%"`},
+		{"not-basic-false", `"hello" NOT LIKE "%ell%"`},
+		{"not-null", `null NOT LIKE "%x%"`},
+	}
+	for _, tc := range notLike {
+		e := parse(tc.expr)
+		want := cbqEval(t, e)
+		got, gotOk := nativeEval(t, e)
+		if !gotOk {
+			t.Errorf("%s: %q did not optimize to native", tc.name, tc.expr)
+			continue
+		}
+		if got != want {
+			t.Errorf("%s: native=%q, cbq=%q", tc.name, got, want)
+		}
+	}
+
+	// The rewritten needle is extractable for predicate-index pruning.
+	{
+		var buf bytes.Buffer
+		params, ok := ExprTreeOptimize(nil, parse(`l.msg LIKE "%ell%"`), &buf, false)
+		if !ok {
+			t.Fatal("index: field contains-pattern LIKE did not lower")
+		}
+		if lit, has := engine.PrefilterLiteral(params); !has || lit != "ell" {
+			t.Errorf("index: PrefilterLiteral = (%q,%v); want (%q,true)", lit, has, "ell")
+		}
+
+		// UPPER(msg) LIKE "%ELL%" lowers to contains(upper(field),"ELL") -- correct
+		// to evaluate, but "ELL" is NOT in the raw row bytes, so it must NOT be
+		// extracted as a required literal (soundness: always-wake instead).
+		params2, ok := ExprTreeOptimize(nil, parse(`UPPER(l.msg) LIKE "%ELL%"`), &buf, false)
+		if !ok {
+			t.Fatal("index: UPPER(field) LIKE did not lower")
+		}
+		if lit, has := engine.PrefilterLiteral(params2); has {
+			t.Errorf("index: transformed operand yielded literal %q; want no extraction", lit)
+		}
+	}
+
+	// These forms are NOT a plain substring test -> must stay boxed.
+	boxed := []struct{ name, expr string }{
+		{"prefix", `"hello" LIKE "abc%"`},
+		{"suffix", `"hello" LIKE "%abc"`},
+		{"exact", `"hello" LIKE "abc"`},
+		{"interior-wildcard", `"hello" LIKE "%a%b%"`},
+		{"underscore", `"hello" LIKE "%a_b%"`},
+		{"empty-middle", `"hello" LIKE "%%"`},
+		{"single-pct", `"hello" LIKE "%"`},
+		{"escaped-pct", `"hello" LIKE "%a\\%b%"`},
+		{"dynamic-pattern", `"hello" LIKE foo`},
+	}
+	for _, tc := range boxed {
+		e := parse(tc.expr)
+		var buf bytes.Buffer
+		if params, ok := ExprTreeOptimize(nil, e, &buf, false); ok {
+			if head, _ := params[0].(string); head == "contains" {
+				t.Errorf("%s: %q should stay boxed, but lowered to native contains", tc.name, tc.expr)
+			}
+		}
+	}
+
+	// Custom ESCAPE clause (built directly -- pattern parsing changes) stays boxed.
+	{
+		c := func(v interface{}) expression.Expression { return expression.NewConstant(value.NewValue(v)) }
+		e := expression.NewLike(c("hello"), c("%a%"), c("!"))
+		var buf bytes.Buffer
+		if params, ok := ExprTreeOptimize(nil, e, &buf, false); ok {
+			if head, _ := params[0].(string); head == "contains" {
+				t.Error("custom-escape: LIKE with ESCAPE should stay boxed, but lowered to native contains")
+			}
+		}
+	}
+}

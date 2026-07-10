@@ -255,10 +255,11 @@ func TestCorpusCompileSingleKeyspace(t *testing.T) {
 func TestCorpusCompileBoxedPredicate(t *testing.T) {
 	sess := corpusTestSession(t)
 
-	// UPPER(l.msg) LIKE '%LOAD%' -- a function + LIKE the native lowering declines,
-	// so the predicate stays boxed; alias `l` is remapped to SELF for the shared row.
-	stmt := `SELECT * FROM logs l WHERE UPPER(l.msg) LIKE "%LOAD%"`
-	baseline := `SELECT RAW l FROM logs l WHERE UPPER(l.msg) LIKE "%LOAD%"`
+	// l.msg LIKE '%high%load%' -- an interior-wildcard LIKE the native lowering
+	// declines (only the plain %lit% form lowers to CONTAINS), so the predicate
+	// stays boxed; alias `l` is remapped to SELF for the shared row.
+	stmt := `SELECT * FROM logs l WHERE l.msg LIKE "%high%load%"`
+	baseline := `SELECT RAW l FROM logs l WHERE l.msg LIKE "%high%load%"`
 
 	cc, err := sess.CorpusCompile([]CorpusDetector{{Tag: "boxed", Stmt: stmt}})
 	if err != nil {

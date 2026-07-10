@@ -223,8 +223,11 @@ func PrefilterLiteral(pred []interface{}) (string, bool) {
 	case "contains":
 		// contains(field, "LIT"): the NEEDLE (2nd operand) is the required
 		// substring. contains("LIT", field) gives no required row substring, so
-		// only the 2nd-operand-literal form qualifies.
-		if len(pred) >= 3 {
+		// only the 2nd-operand-literal form qualifies. The SEARCHED operand must be
+		// a raw field (labelPath): a transformed operand -- contains(UPPER(field),
+		// "LOAD") -- does NOT put "LOAD" in the row bytes (they hold "load"), so
+		// extracting it would UNDER-wake (wrongly prune). Then it stays always-wake.
+		if len(pred) >= 3 && isFieldOperand(pred[1]) {
 			if lit, ok := jsonStringLiteral(pred[2]); ok {
 				return lit, true
 			}
@@ -232,13 +235,15 @@ func PrefilterLiteral(pred []interface{}) (string, bool) {
 		return "", false
 
 	case "eq":
-		// Equality is symmetric: a string constant on either side is a required
-		// substring of the row (the field serializes to exactly that string).
+		// Equality is symmetric: a string constant equated to a raw FIELD is a
+		// required substring of the row (the field serializes to exactly that
+		// string). The non-literal side must be a field, for the same reason as
+		// contains -- eq(LOWER(field), "x") does not put "x" in the row bytes.
 		if len(pred) >= 3 {
-			if lit, ok := jsonStringLiteral(pred[2]); ok {
+			if lit, ok := jsonStringLiteral(pred[2]); ok && isFieldOperand(pred[1]) {
 				return lit, true
 			}
-			if lit, ok := jsonStringLiteral(pred[1]); ok {
+			if lit, ok := jsonStringLiteral(pred[1]); ok && isFieldOperand(pred[2]) {
 				return lit, true
 			}
 		}
@@ -247,8 +252,9 @@ func PrefilterLiteral(pred []interface{}) (string, bool) {
 	case "regexp_contains", "regexp_like":
 		// A regex whose pattern is a PLAIN literal (no metachars) matches iff that
 		// literal is a substring of the field -> required substring. A pattern with
-		// metachars is not a plain substring, so no literal is extractable.
-		if len(pred) >= 3 {
+		// metachars is not a plain substring, so no literal is extractable. As with
+		// contains, the searched operand must be a raw field.
+		if len(pred) >= 3 && isFieldOperand(pred[1]) {
 			if pat, ok := jsonStringLiteral(pred[2]); ok &&
 				pat != "" && !strings.ContainsAny(pat, regexMetaChars) {
 				return pat, true
@@ -273,6 +279,20 @@ func PrefilterLiteral(pred []interface{}) (string, bool) {
 	}
 
 	return "", false
+}
+
+// isFieldOperand reports whether node is a raw field reference -- a ["labelPath",
+// ...] navigation into the row. Only such an operand serializes verbatim into the
+// row bytes, which is what makes an extracted contains/eq/regexp literal a sound
+// NECESSARY substring. A transformed operand (UPPER/LOWER/SUBSTR/... over a field,
+// or any other computed expression) does not, so it must not yield a literal.
+func isFieldOperand(node interface{}) bool {
+	t, ok := node.([]interface{})
+	if !ok || len(t) == 0 {
+		return false
+	}
+	h, _ := t[0].(string)
+	return h == "labelPath"
 }
 
 // jsonStringLiteral returns the decoded string of a ["json","\"...\""] node whose
