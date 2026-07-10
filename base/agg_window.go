@@ -186,6 +186,20 @@ func ntileBucket(pos, n, tiles int64) uint64 {
 	return uint64(rem+(pos-big)/base) + 1
 }
 
+// WindowRatioValue computes RATIO_TO_REPORT: curr / frameSum, formatted as a JSON
+// Val (appended into buf). NULL when either is non-numeric (e.g. frameSum is the
+// SUM-of-no-numeric NULL) or frameSum is 0 -- the ratio isn't a finite number.
+// ParseFloat64 reads frameSum fully before buf is overwritten, so buf may alias it.
+func WindowRatioValue(curr, frameSum Val, buf []byte) (Val, []byte) {
+	c, cerr := ParseFloat64(curr)
+	s, serr := ParseFloat64(frameSum)
+	if cerr != nil || serr != nil || s == 0 {
+		return ValNull, buf
+	}
+	buf = strconv.AppendFloat(buf[:0], c/s, 'g', -1, 64)
+	return Val(buf), buf
+}
+
 // -------------------------------------------------------------------
 
 // WindowFrameCurr represents the current positions of entries of a
@@ -425,17 +439,20 @@ func (wf *WindowFrame) FindGroupEdge(i, dir int64, isRange bool) (int64, error) 
 		return i, err
 	}
 
+	// For a numeric RANGE frame the edge is where the ORDER BY value crosses
+	// valCurr +/- the offset. When valCurr isn't numeric -- a NULL / boolean / string
+	// ORDER BY value -- a numeric distance is undefined, so fall back to PEER
+	// semantics (byte-equal, like GROUPS), matching cbq; never error out.
+	rangeNumeric := false
 	var f64Edge float64
 	if wf.Type == WTokRange {
-		f64Curr, err := ParseFloat64(valCurr)
-		if err != nil {
-			return i, err
-		}
-
-		if dir < 0 {
-			f64Edge = f64Curr + wf.BegF64
-		} else {
-			f64Edge = f64Curr + wf.EndF64
+		if f64Curr, perr := ParseFloat64(valCurr); perr == nil {
+			rangeNumeric = true
+			if dir < 0 {
+				f64Edge = f64Curr + wf.BegF64
+			} else {
+				f64Edge = f64Curr + wf.EndF64
+			}
 		}
 	}
 
@@ -450,16 +467,16 @@ func (wf *WindowFrame) FindGroupEdge(i, dir int64, isRange bool) (int64, error) 
 			return i, err
 		}
 
-		if wf.Type == WTokGroups {
+		if wf.Type == WTokGroups || (wf.Type == WTokRange && !rangeNumeric) {
 			if !bytes.Equal(valCurr, valNext) {
-				return i, nil
+				return i, nil // peer group edge
 			}
-		} else { // wf.Type == WTokRange.
-			f64Next, err := ParseFloat64(valNext)
-			if err != nil ||
+		} else { // numeric wf.Type == WTokRange.
+			f64Next, perr := ParseFloat64(valNext)
+			if perr != nil || // a non-numeric neighbor is outside the numeric range
 				((dir < 0) && (f64Next < f64Edge)) ||
 				((dir > 0) && (f64Next > f64Edge)) {
-				return i, err
+				return i, nil
 			}
 		}
 

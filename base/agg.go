@@ -128,6 +128,16 @@ func init() {
 
 	AggRegister("median", AggMakeMedian(false))
 	AggRegister("median_distinct", AggMakeMedian(true))
+
+	// SUM(DISTINCT x) / AVG(DISTINCT x) (and MEAN(DISTINCT), which aliases AVG):
+	// reduce over the DISTINCT numeric values. conv reaches these for a window
+	// DISTINCT aggregate (aggName+"_distinct"); GROUP BY DISTINCT is pre-deduped
+	// upstream. Without them a windowed SUM/AVG(DISTINCT) silently ran plain SUM/AVG.
+	// Registered LAST so existing aggregates keep their Aggs-slice index (the compiled
+	// group op bakes base.AggCatalog[name] as a literal index -- see op_group.go).
+	AggRegister("sum_distinct", AggSumDistinct)
+
+	AggRegister("avg_distinct", AggAvgDistinct)
 }
 
 // -----------------------------------------------------
@@ -597,6 +607,44 @@ func AggFloats(distinct bool, agg []byte) (vals []float64, aggRest []byte) {
 		off += l
 	}
 	return vals, agg[8+total:]
+}
+
+// AggSumDistinct / AggAvgDistinct reduce SUM / AVG over the DISTINCT numeric values
+// in the group or window frame. They accumulate a canonical distinct set (like
+// count_distinct, via AggNumDistinctUpdate) and reduce it at Result time. SUM/AVG of
+// no distinct numeric value is NULL (matching plain SUM/AVG on no numeric input).
+var AggSumDistinct = &Agg{
+	Init:   AggU64Init,
+	Update: AggNumDistinctUpdate,
+	Result: func(vars *Vars, agg, buf []byte) (v Val, aggRest, bufOut []byte) {
+		vals, rest := AggFloats(true, agg)
+		if len(vals) == 0 {
+			return ValNull, rest, buf
+		}
+		sum := 0.0
+		for _, f := range vals {
+			sum += f
+		}
+		vBuf := strconv.AppendFloat(buf[:0], sum, 'f', -1, 64)
+		return Val(vBuf), rest, BufUnused(buf, len(vBuf))
+	},
+}
+
+var AggAvgDistinct = &Agg{
+	Init:   AggU64Init,
+	Update: AggNumDistinctUpdate,
+	Result: func(vars *Vars, agg, buf []byte) (v Val, aggRest, bufOut []byte) {
+		vals, rest := AggFloats(true, agg)
+		if len(vals) == 0 {
+			return ValNull, rest, buf
+		}
+		sum := 0.0
+		for _, f := range vals {
+			sum += f
+		}
+		vBuf := strconv.AppendFloat(buf[:0], sum/float64(len(vals)), 'f', -1, 64)
+		return Val(vBuf), rest, BufUnused(buf, len(vBuf))
+	},
 }
 
 // AggMakeVariance builds a VARIANCE/STDDEV handler. samp selects sample (delta=1)

@@ -215,6 +215,42 @@ func TestWindowOffsetDefaultAndFromLast(t *testing.T) {
 	}
 }
 
+// TestWindowRatioAndDistinct: RATIO_TO_REPORT(x) = x / SUM(x over the frame), and
+// SUM/AVG(DISTINCT x) OVER a frame (which dedup the frame's values).
+func TestWindowRatioAndDistinct(t *testing.T) {
+	sess := windowTestSession(t) // n = 10,20,30,40,50 (sum 150)
+
+	// RATIO_TO_REPORT over the whole partition: n / 150.
+	if got := winColAny(t, sess, `SELECT RATIO_TO_REPORT(n) OVER () AS s FROM nums ORDER BY n`, "s"); !reflect.DeepEqual(got, []interface{}{10.0 / 150, 20.0 / 150, 30.0 / 150, 40.0 / 150, 50.0 / 150}) {
+		t.Errorf("ratio-over-partition: got %v", got)
+	}
+	// Over just the current row: n / n = 1.
+	if got := winCol(t, sess, `SELECT RATIO_TO_REPORT(n) OVER (ORDER BY n ROWS BETWEEN CURRENT ROW AND CURRENT ROW) AS s FROM nums ORDER BY n`, "s"); !reflect.DeepEqual(got, []float64{1, 1, 1, 1, 1}) {
+		t.Errorf("ratio-current-row: got %v", got)
+	}
+
+	// DISTINCT-in-window dedups the frame's values: v = {5,5,10} -> SUM(DISTINCT)=15
+	// (not 20), AVG(DISTINCT)=7.5 (not 6.67).
+	dir := t.TempDir()
+	ks := filepath.Join(dir, "default", "dd")
+	if err := os.MkdirAll(ks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ks, "d.jsonl"), []byte(`{"v":5}`+"\n"+`{"v":5}`+"\n"+`{"v":10}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s2, err := OpenSession(dir, "default")
+	if err != nil {
+		t.Fatalf("OpenSession: %v", err)
+	}
+	if got := winCol(t, s2, `SELECT SUM(DISTINCT v) OVER () AS s FROM dd`, "s"); !reflect.DeepEqual(got, []float64{15, 15, 15}) {
+		t.Errorf("sum-distinct-window: got %v, want [15 15 15]", got)
+	}
+	if got := winCol(t, s2, `SELECT AVG(DISTINCT v) OVER () AS s FROM dd`, "s"); !reflect.DeepEqual(got, []float64{7.5, 7.5, 7.5}) {
+		t.Errorf("avg-distinct-window: got %v, want [7.5 7.5 7.5]", got)
+	}
+}
+
 // TestWindowRanking: ROW_NUMBER / RANK / DENSE_RANK. On distinct keys all three are
 // 1..N; ROW_NUMBER resets per PARTITION. (ROW_NUMBER over TIED keys is
 // non-deterministic -- the tie order is unspecified -- so it's asserted only on

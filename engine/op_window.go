@@ -326,8 +326,13 @@ func OpWindowFrames(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 		}
 	}
 
+	// RATIO_TO_REPORT(x) = x / SUM(x over the frame): folds SUM (like an aggregate) but
+	// divides the current row's operand by that sum. Handled by the agg block below with
+	// lzAgg = SUM; NOT an aggName (there's no "ratio_to_report" in AggCatalog).
+	isRatioToReport := winFunc == "ratio_to_report"
+
 	aggName := ""
-	if winFunc != "" && !isRanking && !isOffset {
+	if winFunc != "" && !isRanking && !isOffset && !isRatioToReport {
 		aggName = winFunc
 	}
 
@@ -345,6 +350,9 @@ func OpWindowFrames(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 		} else if isOffset { // !lz  -- the offset block shares the operand func
 			lzOperandFunc = MakeExprFunc(lzVars, o.Children[0].Labels, aggOperand, pathNext, "WFA")           // !lz
 			lzOffDefaultFunc = MakeExprFunc(lzVars, o.Children[0].Labels, offDefaultOperand, pathNext, "WFD") // !lz
+		} else if isRatioToReport { // !lz  -- fold SUM over the frame, divide the current row
+			lzAgg = base.Aggs[base.AggCatalog["sum"]]                                               // !lz
+			lzOperandFunc = MakeExprFunc(lzVars, o.Children[0].Labels, aggOperand, pathNext, "WFA") // !lz
 		} // !lz
 		_, _, _ = lzAgg, lzOperandFunc, lzOffDefaultFunc // !lz
 
@@ -468,11 +476,13 @@ func OpWindowFrames(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 				}
 			} // !lz
 
-			if aggName != "" { // !lz
+			if aggName != "" || isRatioToReport { // !lz
 				// Fold the native aggregate over frame 0's rows: Init a fresh
 				// accumulator, Update once per frame row (operand evaluated against
 				// that row), then Result. Ping-pong lzAcc/lzAccOther so Update reads
-				// the prior state and writes the next without allocating.
+				// the prior state and writes the next without allocating. For
+				// RATIO_TO_REPORT the aggregate is SUM; the result is then divided into
+				// the current row's operand below.
 				lzFrame := &lzFrames[0]
 
 				lzAcc := lzAgg.Init(lzVars, lzAccA[:0])
@@ -503,6 +513,15 @@ func OpWindowFrames(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 				lzResVal, _, lzResBuf = lzAgg.Result(lzVars, lzAcc, lzResBuf[:0])
 
 				lzAccA, lzAccB = lzAcc, lzAccOther
+
+				// RATIO_TO_REPORT: divide the CURRENT row's operand by the frame SUM
+				// (lzResVal). Plain Go (no inner "// !lz") -- this whole block is
+				// interpreter-only and strips as one unit. ParseFloat64 reads lzResVal
+				// before WindowRatioValue overwrites lzResBuf, so the alias is safe.
+				if isRatioToReport {
+					lzCurrVal := lzOperandFunc(lzVals, lzYieldErr) // <== emitCaptured: pathNext "WFA"
+					lzResVal, lzResBuf = base.WindowRatioValue(lzCurrVal, lzResVal, lzResBuf[:0])
+				}
 
 				lzVals = append(lzVals, lzResVal)
 			} // !lz

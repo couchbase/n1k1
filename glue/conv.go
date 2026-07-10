@@ -1393,6 +1393,19 @@ func (c *Conv) VisitWindowAggregate(o *plan.WindowAggregate) (interface{}, error
 			framesParams = append(framesParams, winFuncName, operand, offInitial, offAsc, offNum, offDefault)
 			framesLabels = append(framesLabels, "^aggregates|"+agg.String())
 			wired = true
+		} else if winFuncName == "ratio_to_report" && frameNativeOK {
+			// RATIO_TO_REPORT(x) = x / SUM(x over the frame). The op folds SUM and
+			// divides the current row's operand by it (winFuncName tells it apart from a
+			// plain aggregate). Same operand wiring as an aggregate.
+			var operand []interface{}
+			if ops := agg.Operands(); len(ops) > 0 && ops[0] != nil {
+				operand = []interface{}{"exprTree", ops[0]}
+			} else {
+				operand = []interface{}{"json", "null"}
+			}
+			framesParams = append(framesParams, winFuncName, operand)
+			framesLabels = append(framesLabels, "^aggregates|"+agg.String())
+			wired = true
 		} else {
 			aggName := winFuncName
 			if _, ok := base.AggCatalog[aggName+"_distinct"]; ok && agg.Distinct() {
