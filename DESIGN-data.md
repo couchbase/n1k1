@@ -645,6 +645,45 @@ and `gocloud.dev` (its `blob` abstracts S3/GCS/Azure). An object-store
   in `.n1k1/`, rebuilt via the §5 change-detection manifest when any sub-source
   changes. The answer for expensive normalization over huge, mostly-static trees.
 
+### `INSERT INTO` — user-driven materialization (phase 1, landed)
+The **explicit, user-driven** counterpart to the automatic materialized view: run a
+query *now* and write its rows to a keyspace file for later slicing & dicing. Drove
+by the PREPARE++ / `RULE_MATCHES()` flow (`DESIGN-prepare.md`) — materialize a
+scan/rule-match result once, then run many cheap analytic queries over it.
+
+```sql
+INSERT INTO `analysis/errors-20260609.jsonl` (KEY UUID(), VALUE self)
+  SELECT l.sev, l.code FROM logs l WHERE l.sev = "ERROR";
+-- later, over the new `analysis` keyspace (the directory):
+SELECT sev, COUNT(1) FROM analysis GROUP BY sev;
+```
+
+- **Where it lives** — `glue/insert.go`, intercepted at the statement level in
+  `Session.Run` (like PREPARE/EXECUTE), *before* the cbq planner. This sidesteps
+  cbq's `plan.SendInsert`, which requires the target keyspace to already exist —
+  the whole point of phase 1 is writing a **brand-new** file. Zero fork changes.
+- **Keyspace layout (ties to §2 resolution)** — the file datastore makes a
+  *directory* under the namespace a keyspace (its files unioned); a loose file is
+  not. So `` INSERT INTO `analysis/x.jsonl` `` writes `<root>/<ns>/analysis/x.jsonl`
+  and the queryable keyspace is `analysis`. Dated files accumulate into one keyspace.
+- **cbq INSERT-SELECT semantics** — the `VALUE` expression is evaluated against each
+  SELECT **output** row (the projection), not the `FROM` alias. `VALUE self` writes
+  the whole projected row; `VALUE {"k": projectedField}` constructs. A `VALUE` that
+  references a `FROM` alias resolves to MISSING — faithful to cbq, not a bug.
+- **Streaming + stage breaker** — rows are **never materialized in memory**. The
+  source query (producer) evaluates each row's `VALUE` and hands the doc to a
+  dedicated **writer goroutine** over a small bounded channel (`insertWriterQueue`),
+  so JSON encoding + file I/O overlap with query compute instead of blocking the
+  producer on each flush syscall. Error state is split across the two goroutines
+  (producer owns eval errors, writer owns write errors; combined only after join) so
+  no field is touched concurrently — verified under `-race`. The retained doc is a
+  **copy** of the reused `OnRow` buffer (the async path outlives the callback).
+- **Phase-1 scope (deliberately narrow)** — brand-new target file only (re-insert
+  errors); writes to a `.tmp` sibling and atomically renames on success (a mid-stream
+  failure never leaves a partial keyspace file); no RETURNING, no options, no
+  append/upsert; `KEY` is accepted but record ids stay positional (flat-keyspace rule).
+  Later phases: append-to-existing, RETURNING, and the faithful cbq `SendInsert` path.
+
 ### The hard part: predicate pushdown through a view (open question)
 A `WHERE ts >= '2023-01-01'` on `events` must reach the *sub-source* scans —
 ideally pruning whole eras/partitions — or the view reads all history every time.

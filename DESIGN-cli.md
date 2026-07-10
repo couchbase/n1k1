@@ -37,7 +37,10 @@ front-end.
 | **Syntax errors with a caret** | Partial — parse errors carry a renderable offset. |
 
 **Out of scope for v1:** persistent DB file format (store is read-only JSON
-dir), `INSERT`/DDL flows, extensions/`INSTALL`, HTTP/UI server.
+dir), general DDL flows, HTTP/UI server. (Since landed beyond v1: `INSERT INTO`
+phase-1 materialize-to-a-brand-new-keyspace-file — see `DESIGN-data.md` §2
+"`INSERT INTO` — user-driven materialization"; extensions/`INSTALL` — see
+`DESIGN-extensions.md`.)
 
 ------------------------------------------------------------------------
 ## 2. The core refactor: a reusable session

@@ -1,0 +1,278 @@
+//go:build n1ql
+
+//  Copyright (c) 2026 Couchbase, Inc.
+//  Licensed under the Apache License, Version 2.0 (the "License");
+//  you may not use this file except in compliance with the
+//  License. You may obtain a copy of the License at
+//  http://www.apache.org/licenses/LICENSE-2.0
+//  Unless required by applicable law or agreed to in writing,
+//  software distributed under the License is distributed on an "AS
+//  IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
+//  express or implied. See the License for the specific language
+//  governing permissions and limitations under the License.
+
+package glue
+
+import (
+	"bufio"
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/couchbase/query/algebra"
+	"github.com/couchbase/query/value"
+)
+
+// insertWriterQueue bounds how many evaluated docs may be in flight between the
+// source-query producer and the writer goroutine (see InsertRun). Small: enough to
+// keep the writer fed across a flush syscall without materializing the result set.
+const insertWriterQueue = 256
+
+// InsertRun implements phase-1 INSERT INTO as a MATERIALIZE: it runs the INSERT's
+// source (a SELECT or a VALUES list), evaluates each row's VALUE expression, and
+// writes the results as JSON Lines to a brand-new keyspace file. It is intercepted
+// at the statement level (Session.Run), before the cbq planner, so the target need
+// not pre-exist -- see the dispatch comment in session.go.
+//
+// Layout: n1k1's file datastore makes a *directory* under the namespace a keyspace
+// (its record files are unioned); a loose file directly under the namespace is not.
+// So `INSERT INTO `analysis/2026-06-09.jsonl“ writes <root>/<ns>/analysis/
+// 2026-06-09.jsonl and the queryable keyspace is `analysis` -- `SELECT * FROM
+// analysis` reads it, and later dated files accumulate into the same keyspace.
+//
+// The source SELECT streams straight into the output file (each row's VALUE is
+// evaluated and written as it is produced) -- no full-result buffering -- by
+// temporarily routing the session's row callback to the writer. A stage breaker
+// hands each evaluated doc to a dedicated writer goroutine over a bounded channel,
+// so file encoding + I/O overlap with query compute (see the Select branch).
+//
+// Phase-1 scope (deliberately narrow): the target FILE must not already exist
+// (brand-new only); the VALUE of each source row is written verbatim, one JSON
+// object per line (KEY is not used -- record ids are positional, as for every flat
+// keyspace); no RETURNING, no options, no append/upsert. Later phases can add
+// append-to-existing, RETURNING, and the faithful cbq SendInsert path.
+func (s *Session) InsertRun(ins *algebra.Insert) (res *Result, err error) {
+	if ins.Returning() != nil {
+		return nil, fmt.Errorf("INSERT ... RETURNING is not supported yet (phase 1)")
+	}
+	valueExpr := ins.Value()
+	if valueExpr == nil && ins.Select() != nil {
+		return nil, fmt.Errorf("INSERT ... SELECT requires a VALUE expression")
+	}
+
+	path, ks, err := s.insertTargetPath(ins.KeyspaceRef())
+	if err != nil {
+		return nil, err
+	}
+	if _, statErr := os.Stat(path); statErr == nil {
+		return nil, fmt.Errorf("INSERT INTO %q: target file %q already exists "+
+			"(phase 1 writes brand-new files only)", ks, path)
+	}
+
+	w, err := newJSONLWriter(path)
+	if err != nil {
+		return nil, err
+	}
+	// On any error, discard the partial temp file. On success, w.finish() renames.
+	defer func() {
+		if err != nil {
+			w.abort()
+		}
+	}()
+
+	ctx := NewExprGlueContext(time.Now())
+
+	if sel := ins.Select(); sel != nil {
+		// Stage breaker: the source query (producer) evaluates each row's VALUE expr
+		// and hands the resulting doc to a dedicated writer goroutine over a bounded
+		// channel, so JSON encoding + file I/O overlap with query compute rather than
+		// blocking the producer on every flush syscall. The channel's small capacity
+		// bounds memory to a few in-flight rows -- still streaming, not materializing.
+		//
+		// Error split (avoids sharing mutable state across the two goroutines): the
+		// producer latches VALUE-eval failures in evalErr; the writer owns w.err. They
+		// are combined only after the writer goroutine has joined (channel close ->
+		// range exit -> <-done establishes happens-before), so neither field is touched
+		// concurrently.
+		docs := make(chan value.Value, insertWriterQueue)
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			for doc := range docs {
+				w.write(doc) // sole writer of w.err / w.n
+			}
+		}()
+
+		var evalErr error
+		origOnRow := s.OnRow
+		s.OnRow = func(row []byte) {
+			if evalErr != nil {
+				return // stop feeding once a VALUE eval has failed (query still drains)
+			}
+			// Copy: OnRow's row buffer is reused by the producer for the next row, and
+			// the doc we build outlives this call (it crosses the channel to the writer).
+			item := value.NewValue(append([]byte(nil), row...))
+			doc, ev := valueExpr.Evaluate(item, ctx)
+			if ev != nil {
+				evalErr = fmt.Errorf("INSERT VALUE evaluation failed: %w", ev)
+				return
+			}
+			docs <- doc
+		}
+		_, runErr := s.StatementRun(sel, s.NamedArgs, s.PositionalArgs)
+		s.OnRow = origOnRow
+		close(docs)
+		<-done // writer has drained and finished touching w.*
+
+		if runErr != nil {
+			err = fmt.Errorf("INSERT source query failed: %w", runErr)
+			return nil, err
+		}
+		if evalErr != nil {
+			err = evalErr
+			return nil, err
+		}
+		if err = w.err; err != nil {
+			return nil, err
+		}
+	} else {
+		// VALUES (key, value), ... -- evaluate each pair's constant VALUE expression.
+		for _, pair := range ins.Values() {
+			if pair.Value() == nil {
+				continue
+			}
+			doc, evErr := pair.Value().Evaluate(value.NULL_VALUE, ctx)
+			if evErr != nil {
+				err = fmt.Errorf("INSERT VALUES evaluation failed: %w", evErr)
+				return nil, err
+			}
+			w.write(doc)
+		}
+		if err = w.err; err != nil {
+			return nil, err
+		}
+	}
+
+	if err = w.finish(); err != nil {
+		return nil, err
+	}
+
+	// Report the mutation like a small result the CLI can render (or stream).
+	summary, _ := json.Marshal(map[string]interface{}{"inserted": w.n, "keyspace": ks})
+	if s.OnRow != nil {
+		s.OnRow(summary)
+		return &Result{Count: w.n}, nil
+	}
+	return &Result{Rows: []json.RawMessage{summary}, Count: w.n}, nil
+}
+
+// insertTargetPath resolves the INSERT target keyspace name to an on-disk file path
+// under the file datastore's <root>/<namespace>/, mirroring the read-side resolver
+// (KeyspaceDir). The keyspace name may contain '/' (e.g. `analysis/2026-06-09.jsonl`),
+// which becomes a subpath; the first segment is the queryable keyspace directory.
+func (s *Session) insertTargetPath(ref *algebra.KeyspaceRef) (path, ks string, err error) {
+	if s.Store == nil || s.Store.Datastore == nil {
+		return "", "", fmt.Errorf("INSERT: no datastore")
+	}
+	url := s.Store.Datastore.URL()
+	root := strings.TrimPrefix(url, "file://")
+	if root == url {
+		return "", "", fmt.Errorf("INSERT: target is not a file datastore (%q)", url)
+	}
+	ns := ref.Namespace()
+	if ns == "" {
+		ns = s.Namespace
+	}
+	ks = ref.Keyspace()
+	if ks == "" {
+		return "", "", fmt.Errorf("INSERT: empty target keyspace")
+	}
+	// The keyspace name is a datastore-relative path; keep it within <root>/<ns>.
+	clean := filepath.Clean(ks)
+	if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) || filepath.IsAbs(clean) {
+		return "", "", fmt.Errorf("INSERT: target keyspace %q escapes the datastore", ks)
+	}
+	return filepath.Join(root, ns, clean), ks, nil
+}
+
+// jsonlWriter streams JSON documents, one compact line each, to a brand-new file.
+// It writes to a temp sibling and renames on finish(), so a mid-stream failure
+// never leaves a partial keyspace file. A MISSING doc is skipped ("no document").
+// The first write/encode error is latched in err and short-circuits later writes.
+type jsonlWriter struct {
+	path string
+	tmp  string
+	f    *os.File
+	w    *bufio.Writer
+	buf  bytes.Buffer
+	n    int
+	err  error
+}
+
+func newJSONLWriter(path string) (*jsonlWriter, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, fmt.Errorf("INSERT: creating %q: %w", filepath.Dir(path), err)
+	}
+	tmp := path + ".n1k1-insert.tmp"
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	if err != nil {
+		return nil, fmt.Errorf("INSERT: creating temp file: %w", err)
+	}
+	return &jsonlWriter{path: path, tmp: tmp, f: f, w: bufio.NewWriter(f)}, nil
+}
+
+func (jw *jsonlWriter) setErr(e error) {
+	if jw.err == nil {
+		jw.err = e
+	}
+}
+
+func (jw *jsonlWriter) write(doc value.Value) {
+	if jw.err != nil || doc == nil || doc.Type() == value.MISSING {
+		return
+	}
+	jw.buf.Reset()
+	// Compact, sorted-key JSON -- the same serialization a subsequent SELECT reads
+	// back (value.WriteJSON).
+	if e := doc.WriteJSON(nil, &jw.buf, "", "", true); e != nil {
+		jw.setErr(fmt.Errorf("INSERT: encoding row %d: %w", jw.n, e))
+		return
+	}
+	if _, e := jw.w.Write(jw.buf.Bytes()); e != nil {
+		jw.setErr(e)
+		return
+	}
+	if e := jw.w.WriteByte('\n'); e != nil {
+		jw.setErr(e)
+		return
+	}
+	jw.n++
+}
+
+// finish flushes, closes, and atomically renames the temp file into place.
+func (jw *jsonlWriter) finish() error {
+	if jw.err != nil {
+		return jw.err
+	}
+	if e := jw.w.Flush(); e != nil {
+		jw.f.Close()
+		return e
+	}
+	if e := jw.f.Close(); e != nil {
+		return e
+	}
+	if e := os.Rename(jw.tmp, jw.path); e != nil {
+		return fmt.Errorf("INSERT: finalizing %q: %w", jw.path, e)
+	}
+	return nil
+}
+
+// abort discards the temp file (best effort) after a failure.
+func (jw *jsonlWriter) abort() {
+	jw.f.Close()
+	os.Remove(jw.tmp)
+}

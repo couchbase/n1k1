@@ -274,6 +274,13 @@ func (s *Session) Run(stmt string) (res *Result, err error) {
 		return s.PrepareRun(st)
 	case *algebra.Execute:
 		return s.ExecuteRun(st)
+	case *algebra.Insert:
+		// INSERT INTO is handled in-session (phase-1 materialize), NOT by the cbq
+		// planner: the planner would require the target keyspace to already exist
+		// (SendInsert resolves it), which defeats writing a brand-new keyspace file.
+		// Intercepting the parsed statement before planning sidesteps that -- same
+		// pattern as PREPARE/EXECUTE. See InsertRun and DESIGN-data.md.
+		return s.InsertRun(st)
 	}
 
 	return s.StatementRun(parsed, s.NamedArgs, s.PositionalArgs)
