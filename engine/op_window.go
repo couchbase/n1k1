@@ -16,8 +16,6 @@ import (
 
 	"bytes" // <== genCompiler:hide
 
-	"strconv" // <== genCompiler:hide
-
 	"strings"
 
 	"github.com/couchbase/n1k1/base"
@@ -269,7 +267,17 @@ func OpWindowFrames(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	isRankRowNumber := winFunc == "row_number"
 	isRankRank := winFunc == "rank"
 	isRankDense := winFunc == "dense_rank"
-	isRanking := isRankRowNumber || isRankRank || isRankDense
+	isRankPercent := winFunc == "percent_rank"
+	isRankCume := winFunc == "cume_dist"
+	isRankNtile := winFunc == "ntile"
+	isRanking := isRankRowNumber || isRankRank || isRankDense ||
+		isRankPercent || isRankCume || isRankNtile
+	rankNtileN := int64(1) // NTILE(k): k in Params[4] (an int, not the operand slice).
+	if isRankNtile && len(o.Params) > 4 {
+		if nt, ok := o.Params[4].(int); ok {
+			rankNtileN = int64(nt)
+		}
+	}
 
 	// Offset / navigation functions (FIRST_VALUE / LAST_VALUE / NTH_VALUE / LAG /
 	// LEAD): Params[5..7] carry the StepToOffset navigation (initial, asc, num);
@@ -317,9 +325,10 @@ func OpWindowFrames(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 		// same guard the rank buffers use above.
 		_, _, _, _ = lzAccA, lzAccB, lzResBuf, lzFrameVals
 
-		// Ranking output buffer (row_number / rank / dense_rank). The peer-group state
-		// lives in base.WindowFrame (StepRanking), so the op only calls a method +
-		// formats -- no field access that the gen-compiler would lift to gen-time.
+		// Partition-level output buffer (row_number / rank / dense_rank / percent_rank /
+		// cume_dist / ntile). The peer-group state lives in base.WindowFrame
+		// (WindowRankValue), which also formats -- so the op only calls a method, no
+		// field access that the gen-compiler would lift to gen-time.
 		var lzRankBuf []byte
 		_ = lzRankBuf
 
@@ -372,24 +381,29 @@ func OpWindowFrames(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 			}
 
 			if isRanking { // !lz
-				// StepRanking (a base.WindowFrame method -- runtime, no gen-time field
-				// lifting) maintains the peer-group state and returns all three; pick
-				// the one this op materializes and append it as JSON. No inner "// !lz":
-				// the whole block strips as one unit, like the agg block below. Bind
-				// lzFrame first (a plain var) -- a selector on lzFrames[0] (an indexed
-				// expr) would be lifted to gen-time by the compiler.
+				// WindowRankValue (a base.WindowFrame method -- runtime, no gen-time
+				// field lifting) computes + formats the partition-level function. No
+				// inner "// !lz": the whole block strips as one unit, like the agg block
+				// below. Bind lzFrame first (a plain var) -- a selector on lzFrames[0]
+				// (an indexed expr) would be lifted to gen-time by the compiler.
 				lzFrame := &lzFrames[0]
-				lzRowNum, lzRankV, lzDenseRankV := lzFrame.StepRanking()
 
-				lzRankOut := lzRowNum
-				if isRankDense {
-					lzRankOut = lzDenseRankV
-				} else if isRankRank {
-					lzRankOut = lzRankV
+				lzRankKind := base.WRankRowNumber
+				if isRankRank {
+					lzRankKind = base.WRankRank
+				} else if isRankDense {
+					lzRankKind = base.WRankDenseRank
+				} else if isRankPercent {
+					lzRankKind = base.WRankPercentRank
+				} else if isRankCume {
+					lzRankKind = base.WRankCumeDist
+				} else if isRankNtile {
+					lzRankKind = base.WRankNtile
 				}
 
-				lzRankBuf = strconv.AppendUint(lzRankBuf[:0], lzRankOut, 10)
-				lzVals = append(lzVals, base.Val(lzRankBuf))
+				var lzRankVal base.Val
+				lzRankVal, lzRankBuf = lzFrame.WindowRankValue(lzRankKind, rankNtileN, lzRankBuf[:0])
+				lzVals = append(lzVals, lzRankVal)
 			} // !lz
 
 			if isOffset { // !lz

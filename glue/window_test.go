@@ -271,6 +271,68 @@ func TestWindowRangePeers(t *testing.T) {
 	}
 }
 
+// TestWindowPercentRankCumeDist: PERCENT_RANK = (rank-1)/(N-1); CUME_DIST =
+// (#rows whose ORDER BY value <= current)/N. Both are partition-level peer functions,
+// so ties (peers) share a value. Checked on distinct keys and the tied fixture.
+func TestWindowPercentRankCumeDist(t *testing.T) {
+	sess := windowTestSession(t) // distinct n = 10,20,30,40,50 (N=5), ranks 1..5
+
+	if got := winCol(t, sess, `SELECT PERCENT_RANK() OVER (ORDER BY n) AS s FROM nums ORDER BY n`, "s"); !reflect.DeepEqual(got, []float64{0, 0.25, 0.5, 0.75, 1}) {
+		t.Errorf("PERCENT_RANK distinct: got %v", got)
+	}
+	if got := winCol(t, sess, `SELECT CUME_DIST() OVER (ORDER BY n) AS s FROM nums ORDER BY n`, "s"); !reflect.DeepEqual(got, []float64{0.2, 0.4, 0.6, 0.8, 1}) {
+		t.Errorf("CUME_DIST distinct: got %v", got)
+	}
+
+	// Tied fixture (n=10,10,20,30, N=4): ranks 1,1,3,4 -> PERCENT_RANK (0,0,2,3)/3;
+	// CUME_DIST counts through the whole peer group -> both n=10 rows see 2/4.
+	dir := t.TempDir()
+	ks := filepath.Join(dir, "default", "t")
+	if err := os.MkdirAll(ks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rows := `{"n":10,"x":1}` + "\n" + `{"n":10,"x":2}` + "\n" + `{"n":20,"x":3}` + "\n" + `{"n":30,"x":4}` + "\n"
+	if err := os.WriteFile(filepath.Join(ks, "t.jsonl"), []byte(rows), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tsess, err := OpenSession(dir, "default")
+	if err != nil {
+		t.Fatalf("OpenSession: %v", err)
+	}
+
+	if got := winCol(t, tsess, `SELECT PERCENT_RANK() OVER (ORDER BY n) AS s FROM t ORDER BY n, x`, "s"); !reflect.DeepEqual(got, []float64{0, 0, 2.0 / 3.0, 1}) {
+		t.Errorf("PERCENT_RANK ties: got %v", got)
+	}
+	if got := winCol(t, tsess, `SELECT CUME_DIST() OVER (ORDER BY n) AS s FROM t ORDER BY n, x`, "s"); !reflect.DeepEqual(got, []float64{0.5, 0.5, 0.75, 1}) {
+		t.Errorf("CUME_DIST ties: got %v", got)
+	}
+}
+
+// TestWindowNtile: NTILE(k) splits the ordered partition into k contiguous buckets;
+// the first (N mod k) buckets get one extra row. With N=5 rows: NTILE(2)=3+2,
+// NTILE(3)=2+2+1; k>=N gives one row per bucket.
+func TestWindowNtile(t *testing.T) {
+	sess := windowTestSession(t) // n = 10,20,30,40,50 (N=5)
+
+	for _, c := range []struct {
+		name, stmt string
+		want       []float64
+	}{
+		{"ntile-1", `SELECT NTILE(1) OVER (ORDER BY n) AS s FROM nums ORDER BY n`, []float64{1, 1, 1, 1, 1}},
+		{"ntile-2", `SELECT NTILE(2) OVER (ORDER BY n) AS s FROM nums ORDER BY n`, []float64{1, 1, 1, 2, 2}},
+		{"ntile-3", `SELECT NTILE(3) OVER (ORDER BY n) AS s FROM nums ORDER BY n`, []float64{1, 1, 2, 2, 3}},
+		{"ntile-5", `SELECT NTILE(5) OVER (ORDER BY n) AS s FROM nums ORDER BY n`, []float64{1, 2, 3, 4, 5}},
+		{"ntile-more-than-rows", `SELECT NTILE(10) OVER (ORDER BY n) AS s FROM nums ORDER BY n`, []float64{1, 2, 3, 4, 5}},
+		// PARTITION BY g: g=a (n=10,30,50, N=3) NTILE(2)=2+1 -> 1,1,2; g=b (n=20,40,
+		// N=2) NTILE(2)=1+1 -> 1,2. ORDER BY n interleaves a,b,a,b,a.
+		{"ntile-2-partition-by-g", `SELECT NTILE(2) OVER (PARTITION BY g ORDER BY n) AS s FROM nums ORDER BY n`, []float64{1, 1, 1, 2, 2}},
+	} {
+		if got := winCol(t, sess, c.stmt, "s"); !reflect.DeepEqual(got, c.want) {
+			t.Errorf("%s: got %v, want %v\n  %s", c.name, got, c.want, c.stmt)
+		}
+	}
+}
+
 // TestWindowNamedClause: a named WINDOW clause (`... OVER w ... WINDOW w AS (...)`)
 // resolves to its frame/order (via the pre-plan rewrite), so it matches the inline
 // form and can be reused across several functions.

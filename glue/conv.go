@@ -1141,6 +1141,12 @@ func (c *Conv) VisitWindowAggregate(o *plan.WindowAggregate) (interface{}, error
 		isRankRowNumber := winFuncName == "row_number"
 		isRankRank := winFuncName == "rank"
 		isRankDense := winFuncName == "dense_rank"
+		isRankPercent := winFuncName == "percent_rank"
+		isRankCume := winFuncName == "cume_dist"
+		isRankNtile := winFuncName == "ntile"
+		// PERCENT_RANK/CUME_DIST need peer detection (like RANK/DENSE_RANK); NTILE and
+		// ROW_NUMBER need only the row position.
+		isRankPeer := isRankRank || isRankDense || isRankPercent || isRankCume
 
 		// Offset / navigation window functions -> StepToOffset (initial, asc, num).
 		// FIRST/LAST/NTH_VALUE respect the frame; LAG/LEAD are partition-relative, so
@@ -1186,7 +1192,7 @@ func (c *Conv) VisitWindowAggregate(o *plan.WindowAggregate) (interface{}, error
 		// whole-partition frame, so they don't need it; ROWS aggregates and ROW_NUMBER
 		// don't either.
 		appendOrderBy := (((frameType == "range" || frameType == "groups") && !isLag && !isLead) ||
-			isRankRank || isRankDense) && len(orderByExprs) == 1
+			isRankPeer) && len(orderByExprs) == 1
 
 		partitionSlot := c.AddTemp(nil)
 
@@ -1301,11 +1307,23 @@ func (c *Conv) VisitWindowAggregate(o *plan.WindowAggregate) (interface{}, error
 		endUnbounded := len(frameCfg) > 3 && frameCfg[3] == "unbounded"
 		frameNativeOK := frameType == "rows" || (begUnbounded && endUnbounded) || appendOrderBy
 
-		if isRankRowNumber || ((isRankRank || isRankDense) && appendOrderBy) {
-			// Ranking: the frames op computes it from position / peer groups (no
-			// operand). RANK/DENSE_RANK need appendOrderBy (peer detection) -- without a
-			// single ORDER BY they fall through and stay boxed.
+		if isRankRowNumber || isRankNtile || (isRankPeer && appendOrderBy) {
+			// Ranking / partition-level: the frames op computes it from position + peer
+			// groups + partition count (no aggregate). ROW_NUMBER and NTILE need only the
+			// position; RANK/DENSE_RANK/PERCENT_RANK/CUME_DIST need appendOrderBy (peer
+			// detection) -- without a single ORDER BY they fall through and stay boxed.
 			framesParams = append(framesParams, winFuncName)
+			if isRankNtile {
+				// NTILE(k): k is the first (constant) operand -> Params[4] (an int, so the
+				// op tells it apart from an aggregate/offset operand slice). Default 1.
+				k := 1
+				if ops := agg.Operands(); len(ops) > 0 && ops[0] != nil {
+					if n := int(EvalExprInt64(nil, ops[0], nil, 1)); n > 0 {
+						k = n
+					}
+				}
+				framesParams = append(framesParams, k)
+			}
 			framesLabels = append(framesLabels, "^aggregates|"+agg.String())
 		} else if isOffset && frameNativeOK {
 			// Offset/navigation: pass the operand + StepToOffset navigation (initial,

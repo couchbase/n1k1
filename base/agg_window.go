@@ -13,8 +13,20 @@ package base
 
 import (
 	"bytes"
+	"strconv"
 
 	"github.com/couchbase/rhmap/store"
+)
+
+// Partition-level window function kinds, computed by WindowRankValue from the
+// current row's position + peer group + partition count (no frame aggregate).
+const (
+	WRankRowNumber  = iota // ROW_NUMBER: 1-based position.
+	WRankRank              // RANK: first-peer position + 1 (gaps after ties).
+	WRankDenseRank         // DENSE_RANK: count of peer groups so far (no gaps).
+	WRankPercentRank       // PERCENT_RANK: (rank-1)/(N-1), in [0,1].
+	WRankCumeDist          // CUME_DIST: (#rows with ORDER BY value <= current)/N, in (0,1].
+	WRankNtile             // NTILE(k): 1-based bucket when the partition is split into k.
 )
 
 // WTok maps a window related configuration string to an internal
@@ -86,26 +98,25 @@ type WindowFrame struct {
 	rankStarted   bool
 }
 
-// StepRanking returns the ROW_NUMBER, RANK, and DENSE_RANK for the current row
-// (wf.Pos, 0-based). It maintains peer-group state internally, self-resetting at each
-// partition start (Pos == 0). ROW_NUMBER is the 1-based position. RANK/DENSE_RANK
-// detect peer-group changes via the ValIdx column (the ORDER BY value): RANK is the
-// position of the current group's first row + 1; DENSE_RANK counts groups seen. (For
-// a ROW_NUMBER-only window ValIdx may be unset -- its rank/denseRank returns are then
-// meaningless, but the caller ignores them.)
-func (wf *WindowFrame) StepRanking() (rowNumber, rank, denseRank uint64) {
+// WindowRankValue computes the partition-level window function of the given kind for
+// the current row (wf.Pos, 0-based) and returns it formatted as a JSON Val (appended
+// into buf, which is returned for reuse). It maintains peer-group state internally,
+// self-resetting at each partition start (Pos == 0). Peer detection compares the
+// ValIdx column (the ORDER BY value/tuple); ROW_NUMBER and NTILE don't need it. Kept
+// as a base method (not inline field access) so the gen-compiler treats it as runtime
+// -- see the codegen note in op_window.go.
+func (wf *WindowFrame) WindowRankValue(kind int, ntileN int64, buf []byte) (Val, []byte) {
 	if wf.Pos == 0 {
 		wf.rankVal, wf.denseRankVal, wf.rankStarted = 0, 0, false
 		wf.rankPrevOrder = wf.rankPrevOrder[:0]
 	}
 
-	rowNumber = uint64(wf.Pos) + 1
-
+	// Bump rank/denseRank at each new peer group (rank = first-peer position + 1,
+	// denseRank = group count). Harmless for kinds that ignore them (ROW_NUMBER/NTILE).
 	var curOrder Val
 	if v, err := wf.GetValsVal(wf.Pos, wf.ValIdx); err == nil {
 		curOrder = v
 	}
-
 	if !wf.rankStarted || !bytes.Equal(curOrder, wf.rankPrevOrder) {
 		wf.rankVal = uint64(wf.Pos) + 1
 		wf.denseRankVal++
@@ -113,7 +124,56 @@ func (wf *WindowFrame) StepRanking() (rowNumber, rank, denseRank uint64) {
 		wf.rankStarted = true
 	}
 
-	return rowNumber, wf.rankVal, wf.denseRankVal
+	n := int64(wf.Partition.Len())
+
+	switch kind {
+	case WRankRank:
+		buf = strconv.AppendUint(buf, wf.rankVal, 10)
+	case WRankDenseRank:
+		buf = strconv.AppendUint(buf, wf.denseRankVal, 10)
+	case WRankPercentRank:
+		pr := 0.0
+		if n > 1 {
+			pr = float64(wf.rankVal-1) / float64(n-1)
+		}
+		buf = strconv.AppendFloat(buf, pr, 'g', -1, 64)
+	case WRankCumeDist:
+		// (#rows with ORDER BY value <= current) / N = (last-peer position + 1) / N.
+		cd := 1.0
+		if n > 0 {
+			lastPeer, err := wf.FindGroupEdge(wf.Pos, 1, false)
+			if err == nil {
+				cd = float64(lastPeer+1) / float64(n)
+			}
+		}
+		buf = strconv.AppendFloat(buf, cd, 'g', -1, 64)
+	case WRankNtile:
+		buf = strconv.AppendUint(buf, ntileBucket(wf.Pos, n, ntileN), 10)
+	default: // WRankRowNumber
+		buf = strconv.AppendUint(buf, uint64(wf.Pos)+1, 10)
+	}
+
+	return Val(buf), buf
+}
+
+// ntileBucket returns the 1-based bucket for row pos in a partition of n rows split
+// into tiles buckets. The first (n % tiles) buckets get one extra row. When n <
+// tiles, each row is its own bucket (later buckets are empty) -- and base+1 == 1, so
+// there's no divide-by-zero.
+func ntileBucket(pos, n, tiles int64) uint64 {
+	if tiles < 1 {
+		tiles = 1
+	}
+	if n <= 0 {
+		return 1
+	}
+	base := n / tiles
+	rem := n % tiles
+	big := rem * (base + 1) // positions covered by the (base+1)-sized buckets.
+	if pos < big {
+		return uint64(pos/(base+1)) + 1
+	}
+	return uint64(rem+(pos-big)/base) + 1
 }
 
 // -------------------------------------------------------------------
