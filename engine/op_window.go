@@ -54,6 +54,13 @@ func OpWindowPartition(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals
 
 	trackDenseRank := strings.Index(track, "denseRank") >= 0
 
+	// appendOrderBy: store the ORDER BY value(s) as trailing column(s), so a
+	// downstream RANGE/GROUPS frame can compare peers/values via WindowFrame.ValIdx.
+	appendOrderBy := false
+	if len(o.Params) > 4 {
+		appendOrderBy, _ = o.Params[4].(bool)
+	}
+
 	// A heap data structure is allocated but is used merely as an
 	// appendable sequence of []byte items, without keeping the actual
 	// heap invariant.
@@ -79,6 +86,17 @@ func OpWindowPartition(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals
 		} // !lz
 
 		_ = partitionExprsFunc // !lz
+
+		// The ORDER BY exprs (partitionExprs after the PARTITION-BY prefix), projected
+		// and appended to the stored row when appendOrderBy, so a RANGE/GROUPS frame
+		// reads the ORDER BY value by index (WindowFrame.ValIdx).
+		var orderByProjectFunc base.ProjectFunc                     // !lz
+		if appendOrderBy && len(partitionExprs) > partitionPrefix { // !lz
+			orderByProjectFunc =
+				MakeProjectFunc(lzVars, o.Children[0].Labels, partitionExprs[partitionPrefix:], pathNextWP, "OF") // !lz
+		} // !lz
+
+		_ = orderByProjectFunc // !lz
 
 		var lzValsOut base.Vals
 
@@ -152,7 +170,14 @@ func OpWindowPartition(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals
 							lzDenseRank++
 						} // !lz
 					}
+				} // !lz
 
+				// Augment the stored row with trailing columns: rank/denseRank (when
+				// tracking) and/or the ORDER BY value (when appendOrderBy). Rebuild from
+				// lzVals (the current row) since the partition-change drain above reuses
+				// lzValsOut. The ORDER BY value goes LAST -- conv's ValIdx assumes it at
+				// len(inputLabels) (no ranking is combined with a native frame aggregate).
+				if trackOn || appendOrderBy { // !lz
 					lzValsOut = append(lzValsOut[:0], lzVals...)
 
 					if trackRank { // !lz
@@ -163,6 +188,10 @@ func OpWindowPartition(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals
 					if trackDenseRank { // !lz
 						binary.LittleEndian.PutUint64(lzBuf8DenseRank[:], lzDenseRank)
 						lzValsOut = append(lzValsOut, base.Val(lzBuf8DenseRank[:]))
+					} // !lz
+
+					if appendOrderBy { // !lz
+						lzValsOut = orderByProjectFunc(lzVals, lzValsOut, lzYieldErr) // <== emitCaptured: pathNextWP "OF"
 					} // !lz
 
 					lzVals = lzValsOut

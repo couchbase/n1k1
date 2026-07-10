@@ -115,6 +115,16 @@ func TestWindowFrameAggregates(t *testing.T) {
 		{"moving-max-1p-1f",
 			`SELECT MAX(n) OVER (ORDER BY n ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING) AS s FROM nums ORDER BY n`, "s",
 			[]float64{20, 30, 40, 50, 50}},
+
+		// RANGE frames (default OVER (ORDER BY x) running total + value bounds), via
+		// the ORDER BY value stored as the "^worderby" column that WindowFrame.ValIdx
+		// reads. Distinct keys here, so RANGE running total == row-by-row running total.
+		{"running-total-default-range",
+			`SELECT SUM(n) OVER (ORDER BY n) AS s FROM nums ORDER BY n`, "s",
+			[]float64{10, 30, 60, 100, 150}},
+		{"range-value-15p-15f",
+			`SELECT SUM(n) OVER (ORDER BY n RANGE BETWEEN 15 PRECEDING AND 15 FOLLOWING) AS s FROM nums ORDER BY n`, "s",
+			[]float64{30, 60, 90, 120, 90}}, // n=10:{10,20}=30; 20:{10,20,30}=60; 30:{20,30,40}=90; 40:{30,40,50}=120; 50:{40,50}=90
 	}
 
 	for _, c := range cases {
@@ -122,6 +132,32 @@ func TestWindowFrameAggregates(t *testing.T) {
 		if !reflect.DeepEqual(got, c.want) {
 			t.Errorf("%s: got %v, want %v\n  %s", c.name, got, c.want, c.stmt)
 		}
+	}
+}
+
+// TestWindowRangePeers: a RANGE frame groups tied ORDER BY keys into one peer group
+// (CURRENT ROW = all peers), so both n=10 rows see the same running SUM(x). A ROWS
+// frame would instead give 1 then 3 (and is non-deterministic under ties). This is
+// what ValIdx (the "^worderby" column) exists for.
+func TestWindowRangePeers(t *testing.T) {
+	dir := t.TempDir()
+	ks := filepath.Join(dir, "default", "t")
+	if err := os.MkdirAll(ks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rows := `{"n":10,"x":1}` + "\n" + `{"n":10,"x":2}` + "\n" + `{"n":20,"x":3}` + "\n" + `{"n":30,"x":4}` + "\n"
+	if err := os.WriteFile(filepath.Join(ks, "t.jsonl"), []byte(rows), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sess, err := OpenSession(dir, "default")
+	if err != nil {
+		t.Fatalf("OpenSession: %v", err)
+	}
+
+	got := winCol(t, sess, `SELECT SUM(x) OVER (ORDER BY n) AS s FROM t ORDER BY n, x`, "s")
+	want := []float64{3, 3, 6, 10} // n=10 peers both see {1,2}=3; then +3=6; +4=10
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("range peers: got %v, want %v", got, want)
 	}
 }
 

@@ -1101,51 +1101,25 @@ func (c *Conv) VisitWindowAggregate(o *plan.WindowAggregate) (interface{}, error
 	}
 
 	for _, agg := range o.Aggregates() {
-		// TODO: Perhaps only need to append order-by's when we have
-		// extra trackings, for rank, denseRank?
+		// PARTITION BY exprs are shared across the aggregates; append THIS aggregate's
+		// ORDER BY exprs (partitioning only needs val equality, so asc/desc is ignored).
 		partitionings := append([]interface{}(nil), partitionBys...) // Clone.
+		var orderByExprs []interface{}
 		if agg.WindowTerm().OrderBy() != nil {
 			for _, e := range agg.WindowTerm().OrderBy().Expressions() {
-				// The asc vs desc is ignored as equality of vals is all
-				// that we need to check.
-				partitionings = append(partitionings, []interface{}{"exprTree", e})
+				orderByExprs = append(orderByExprs, []interface{}{"exprTree", e})
 			}
+			partitionings = append(partitionings, orderByExprs...)
 		}
 
-		partitionSlot := c.AddTemp(nil)
-
-		// Chain: the first aggregate's partition reads the window input; each
-		// subsequent one reads the PREVIOUS aggregate's frames op, so appended
-		// "^aggregates|..." columns accumulate down the chain and ALL reach the
-		// projection. (OpWindowPartition drives only Children[0] -- the prior
-		// 2-child form left earlier aggregates' output orphaned, so multi-aggregate
-		// windows lost all but the last one. Re-partitioning per aggregate keeps
-		// support for aggregates with differing PARTITION BY / ORDER BY windows.)
-		windowChild := c.TopOp
-		if rv != nil {
-			windowChild = rv
-		}
-
-		partitionOp := &base.Op{
-			Kind:   "window-partition",
-			Labels: append(base.Labels(nil), windowChild.Labels...),
-			Params: []interface{}{
-				partitionSlot,
-				partitionings,
-				len(partitionBys), // # of the partitioning exprs for PARTITION-BY.
-				"",                // TODO: Additional tracking ("rank,denseRank").
-			},
-			Children: []*base.Op{windowChild},
-		}
-
+		// Resolve the frame: explicit, else the ORDER BY-dependent default (with an
+		// ORDER BY it's UNBOUNDED PRECEDING .. CURRENT ROW; without, the whole
+		// partition -- DefaultWindowFrameNoOrderBy).
 		var wf *algebra.WindowFrame
 		if agg.WindowTerm() != nil {
 			wf = agg.WindowTerm().WindowFrame()
 		}
 		if wf == nil {
-			// The default frame depends on whether the window has an ORDER BY: with
-			// one it's UNBOUNDED PRECEDING .. CURRENT ROW; without one it's the whole
-			// partition. See DefaultWindowFrameNoOrderBy.
 			if agg.WindowTerm() != nil && agg.WindowTerm().OrderBy() != nil {
 				wf = DefaultWindowFrame
 			} else {
@@ -1158,6 +1132,44 @@ func (c *Conv) VisitWindowAggregate(o *plan.WindowAggregate) (interface{}, error
 			frameType = "range"
 		} else if wf.HasModifier(algebra.WINDOW_FRAME_GROUPS) {
 			frameType = "groups"
+		}
+
+		// RANGE/GROUPS frames with a CURRENT ROW or value bound compare the ORDER BY
+		// value (peer detection for CURRENT ROW; numeric window for value bounds). So
+		// the window-partition stores that value as a trailing "^worderby" column and
+		// the frame's ValIdx points at it. Supported for a SINGLE ORDER BY expr (RANGE
+		// is single-column by definition; composite GROUPS peers are left boxed). ROWS
+		// frames don't need it.
+		appendOrderBy := (frameType == "range" || frameType == "groups") && len(orderByExprs) == 1
+
+		partitionSlot := c.AddTemp(nil)
+
+		// Chain: the first aggregate's partition reads the window input; each
+		// subsequent one reads the PREVIOUS aggregate's frames op, so appended
+		// "^aggregates|..." columns accumulate down the chain and ALL reach the
+		// projection. (OpWindowPartition drives only Children[0]; re-partitioning per
+		// aggregate supports aggregates with differing PARTITION BY / ORDER BY.)
+		windowChild := c.TopOp
+		if rv != nil {
+			windowChild = rv
+		}
+
+		partitionLabels := append(base.Labels(nil), windowChild.Labels...)
+		if appendOrderBy {
+			partitionLabels = append(partitionLabels, "^worderby")
+		}
+
+		partitionOp := &base.Op{
+			Kind:   "window-partition",
+			Labels: partitionLabels,
+			Params: []interface{}{
+				partitionSlot,
+				partitionings,
+				len(partitionBys), // # of the partitioning exprs for PARTITION-BY.
+				"",                // TODO: Additional tracking ("rank,denseRank").
+				appendOrderBy,     // store the ORDER BY value as a trailing "^worderby" col.
+			},
+			Children: []*base.Op{windowChild},
 		}
 
 		frameCfg := []interface{}{frameType}
@@ -1203,14 +1215,21 @@ func (c *Conv) VisitWindowAggregate(o *plan.WindowAggregate) (interface{}, error
 
 		frameCfg = append(frameCfg, frameExclude)
 
-		// TODO: Specify the val to compare for RANGE type.
+		// ValIdx points at the trailing "^worderby" column (the ORDER BY value) for
+		// RANGE/GROUPS peer/value comparisons; unused (0) for ROWS frames.
 		valIdx := 0
+		if appendOrderBy {
+			valIdx = len(windowChild.Labels)
+		}
 
 		frameCfg = append(frameCfg, valIdx)
 
 		framesSlot := c.AddTemp(nil)
 
 		framesLabels := append(base.Labels(nil), windowChild.Labels...)
+		if appendOrderBy {
+			framesLabels = append(framesLabels, "^worderby")
+		}
 		framesParams := []interface{}{partitionSlot, framesSlot, []interface{}{frameCfg}}
 
 		// Native frame aggregate: SUM/COUNT/AVG/MIN/MAX/... OVER (...). When the
@@ -1221,14 +1240,14 @@ func (c *Conv) VisitWindowAggregate(o *plan.WindowAggregate) (interface{}, error
 		// window functions (ROW_NUMBER / RANK / LAG / FIRST_VALUE / ...) are left
 		// boxed for now -- ranking + offset wiring is a later step.
 		//
-		// Only ROWS frames (and all-unbounded frames, e.g. OVER () / OVER (PARTITION
-		// BY g)) are wired: a RANGE/GROUPS frame with a CURRENT ROW or value bound
-		// needs peer detection via WindowFrame.ValIdx pointing at the ORDER BY value
-		// column, which isn't wired yet (valIdx=0 above). Wiring those would silently
-		// mis-compute, so we leave them boxed until ValIdx lands (a follow-up).
+		// Wired: ROWS frames; all-unbounded frames (OVER () / OVER (PARTITION BY g));
+		// and RANGE/GROUPS frames whose ORDER BY value column is stored (appendOrderBy,
+		// so ValIdx resolves peers/value-bounds). A RANGE/GROUPS frame WITHOUT that
+		// (multi-column ORDER BY) still needs a composite ValIdx, so it's left boxed
+		// rather than silently mis-computing.
 		begUnbounded := len(frameCfg) > 1 && frameCfg[1] == "unbounded"
 		endUnbounded := len(frameCfg) > 3 && frameCfg[3] == "unbounded"
-		frameNativeOK := frameType == "rows" || (begUnbounded && endUnbounded)
+		frameNativeOK := frameType == "rows" || (begUnbounded && endUnbounded) || appendOrderBy
 
 		aggName := strings.ToLower(agg.Name())
 		if _, ok := base.AggCatalog[aggName+"_distinct"]; ok && agg.Distinct() {
