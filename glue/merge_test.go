@@ -180,6 +180,89 @@ func TestASOFLoweringOuterFilterDifferential(t *testing.T) {
 	}
 }
 
+// TestASOFLoweringRightResidualDifferential: a CONTENT predicate on the inner (build)
+// stream -- `r.msg LIKE "%r-4%"`, referencing only r -- used to make the recognizer BAIL
+// to the O(n^2) correlated path (its WHERE loop's `default: return nil,false`). It is now
+// recognized as a right-only residual and pushed onto the build scan, so the merge finds
+// the nearest PRECEDING R row that ALSO matches -- byte-identical to the correlated
+// baseline. This is what unlocks "the nearest <content-matching> row of another stream".
+func TestASOFLoweringRightResidualDifferential(t *testing.T) {
+	root := t.TempDir()
+	asofWriteKS(t, root, "elog", "ns_server.error.log",
+		nsLine("2026-05-17T15:36:11.100+02:00", "n1", "e-100")+
+			nsLine("2026-05-17T15:36:13.300+02:00", "n1", "e-300")+
+			nsLine("2026-05-17T15:36:15.500+02:00", "n1", "e-500"))
+	asofWriteKS(t, root, "rlog", "ns_server.rebalance.log",
+		nsLine("2026-05-17T15:36:12.200+02:00", "n1", "r-200")+ // excluded by the residual
+			nsLine("2026-05-17T15:36:14.400+02:00", "n1", "r-400")) // the only candidate
+	s, err := OpenSession(root, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	stmt := "SELECT e.ts AS ts, " +
+		"(SELECT r.msg FROM default:rlog r WHERE r.ts <= e.ts AND r.msg LIKE \"%r-4%\" ORDER BY r.ts DESC LIMIT 1) AS state_at " +
+		"FROM default:elog e ORDER BY e.ts"
+
+	off, _, fired := runBoth(t, s, stmt)
+	if !fired {
+		t.Fatalf("expected the ASOF lowering to FIRE with a right-only content residual; it did not")
+	}
+	if len(off) != 3 {
+		t.Fatalf("want 3 rows, got %d: %v", len(off), off)
+	}
+	// Only r-400 (@14.400) survives the residual. e@11.100 and e@13.300 have no PRECEDING
+	// r-4* (r-400 is at 14.400) -> null; e@15.500 -> r-400.
+	if off[0] != `{"ts":1779024971100000000,"state_at":null}` {
+		t.Fatalf("row0 (no preceding r-4*) unexpected: %s", off[0])
+	}
+	if off[1] != `{"ts":1779024973300000000,"state_at":null}` {
+		t.Fatalf("row1 (r-400 is after, not preceding) unexpected: %s", off[1])
+	}
+	if off[2] != `{"ts":1779024975500000000,"state_at":[{"msg":"r-400"}]}` {
+		t.Fatalf("row2 (nearest preceding r-4* = r-400) unexpected: %s", off[2])
+	}
+}
+
+// TestASOFFollowingBailsToCorrelated guards the nearest-FOLLOWING gate: the merge-join
+// op is nearest-preceding only, so a following argmax (ASC + `r.ts >= e.ts`) must NOT
+// lower (it would compute the wrong rows). It bails to the correct correlated subquery,
+// so ON == OFF and the lowering does NOT fire. (When a following-direction merge lands,
+// this becomes a differential like the preceding cases; the residual already composes.)
+func TestASOFFollowingBailsToCorrelated(t *testing.T) {
+	root := t.TempDir()
+	asofWriteKS(t, root, "elog", "ns_server.error.log",
+		nsLine("2026-05-17T15:36:11.100+02:00", "n1", "e-100")+
+			nsLine("2026-05-17T15:36:13.300+02:00", "n1", "e-300")+
+			nsLine("2026-05-17T15:36:15.500+02:00", "n1", "e-500"))
+	asofWriteKS(t, root, "rlog", "ns_server.rebalance.log",
+		nsLine("2026-05-17T15:36:12.200+02:00", "n1", "r-200")+
+			nsLine("2026-05-17T15:36:14.400+02:00", "n1", "r-400"))
+	s, err := OpenSession(root, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	stmt := "SELECT e.ts AS ts, " +
+		"(SELECT r.msg FROM default:rlog r WHERE r.ts >= e.ts ORDER BY r.ts ASC LIMIT 1) AS nx " +
+		"FROM default:elog e ORDER BY e.ts"
+
+	off, _, fired := runBoth(t, s, stmt) // runBoth asserts ON == OFF (byte-identical)
+	if fired {
+		t.Fatalf("nearest-following must NOT lower (merge is preceding-only); it fired")
+	}
+	// The CORRECT nearest-following answers (the correlated baseline): e@11.100 -> r-200
+	// (first r at/after 11.100), e@13.300 -> r-400, e@15.500 -> none.
+	if off[0] != `{"ts":1779024971100000000,"nx":[{"msg":"r-200"}]}` {
+		t.Fatalf("row0 unexpected: %s", off[0])
+	}
+	if off[2] != `{"ts":1779024975500000000,"nx":null}` {
+		t.Fatalf("row2 unexpected: %s", off[2])
+	}
+}
+
 // TestASOFLoweringSingleFileKeyspace is the IDEA-0016 gate: ASOF must lower over
 // flat SINGLE-FILE recipe keyspaces (a cbcollect bundle exposes ns_server.error /
 // cbcollect_info as one top-level file each, not a <ns>/<keyspace>/ dir). The sort-key

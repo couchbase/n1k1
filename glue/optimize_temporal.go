@@ -357,6 +357,15 @@ type AsofMatch struct {
 	ProjField      string   // the projected right field (the y value).
 	ProjAlias      string   // the y alias.
 	Raw            bool     // SELECT RAW r.f -> the subquery yields [scalar], not [{alias:scalar}].
+
+	// RightResidual holds subquery WHERE conjuncts that reference ONLY the right alias
+	// -- a content/build-side filter such as `r.msg LIKE "%ABC%"` or `r.act = "X"`. They
+	// are NOT correlations (no outer ref), so they cannot break the merge's monotonicity:
+	// pushed onto the right scan, the merge finds the nearest right row that ALSO passes
+	// them -- exactly the subquery's own WHERE. This is what lets "nearest ABC after XYZ"
+	// (a content predicate on the inner stream) lower to an O(n+m) merge instead of a
+	// bailed-recognizer O(n*m) correlated subquery.
+	RightResidual []expression.Expression
 }
 
 // AsofEq is one equality (partition) predicate: right.RightField = outer.OuterField.
@@ -439,9 +448,11 @@ func collectSubqueries(e expression.Expression) []*algebra.Subquery {
 //  5. WHERE is a conjunction of: exactly one inequality r.<key> (<= | >=)
 //     outer.<key> whose direction AGREES with the ORDER BY (<= wants DESC =
 //     preceding; >= wants ASC = following) and whose key == the ORDER BY key;
-//     zero+ equality partition preds r.<eqk> = outer.<eqk>; and at most one
-//     look-back guard r.<key> >= outer.<key> - Δt (preceding) -> soft ASOF.
-//     Anything else in the WHERE -> bail.
+//     zero+ equality partition preds r.<eqk> = outer.<eqk>; at most one
+//     look-back guard r.<key> >= outer.<key> - Δt (preceding) -> soft ASOF; and
+//     zero+ RIGHT-ONLY residual conjuncts (referencing only r, no outer field --
+//     a content filter like r.msg LIKE "%ABC%") collected into RightResidual and
+//     pushed onto the build scan. Anything else in the WHERE -> bail.
 func MatchArgmaxAsof(subq *algebra.Subquery) (*AsofMatch, bool) {
 	if subq == nil || !subq.IsCorrelated() {
 		return nil, false
@@ -512,6 +523,17 @@ func MatchArgmaxAsof(subq *algebra.Subquery) (*AsofMatch, bool) {
 	lookbackSeen := false
 
 	for _, cj := range conjuncts {
+		// A conjunct that references ONLY the right alias (no outer field) is a
+		// content/build-side residual, not a correlation -- e.g. r.msg LIKE "%ABC%",
+		// r.act = "X", r.code > 5. Collect it (pushed onto the build scan by the
+		// lowering) so the merge finds the nearest right row that ALSO passes it, exactly
+		// the subquery's own WHERE. The main key inequality and partition equalities
+		// reference the outer too, so they are NOT caught here and fall to the cases below.
+		if refsOnlyAlias(cj, rightAlias) {
+			m.RightResidual = append(m.RightResidual, cj)
+			continue
+		}
+
 		switch cmp := cj.(type) {
 		case *expression.Eq:
 			eq, ok := classifyEq(cmp, rightAlias)
@@ -698,6 +720,46 @@ func splitFieldRef(e expression.Expression) (alias, field string, ok bool) {
 		}
 	}
 	return "", "", false
+}
+
+// refsOnlyAlias reports whether e references the given alias and NO other -- i.e. it is
+// a build-side-only predicate (safe to push onto the right scan), not a correlation. It
+// requires at least one reference to alias (a pure constant conjunct returns false, so
+// an odd shape stays on the conservative bail path). Aliases are the root identifiers of
+// field references (r in r.msg); FieldNames are not identifiers, so a field key is never
+// miscounted as an alias.
+func refsOnlyAlias(e expression.Expression, alias string) bool {
+	used := exprAliasesUsed(e)
+	if !used[alias] {
+		return false
+	}
+	for a := range used {
+		if a != alias {
+			return false
+		}
+	}
+	return true
+}
+
+// exprAliasesUsed collects the set of root identifier names an expression references
+// (walking the generic Children() tree). For `r.msg LIKE "%x%"` it yields {"r"}; for a
+// correlation `r.ts <= e.ts` it yields {"r","e"}.
+func exprAliasesUsed(e expression.Expression) map[string]bool {
+	out := map[string]bool{}
+	var walk func(expression.Expression)
+	walk = func(x expression.Expression) {
+		if x == nil {
+			return
+		}
+		if id, ok := x.(*expression.Identifier); ok {
+			out[id.Identifier()] = true
+		}
+		for _, c := range x.Children() {
+			walk(c)
+		}
+	}
+	walk(e)
+	return out
 }
 
 // isConstOne reports whether e is the numeric constant 1 (the LIMIT 1 guard).
@@ -1293,6 +1355,16 @@ func tryLowerASOFProject(p *base.Op, conv *Conv, byKey map[string]plan.Operator)
 		base.Logf(1, "glue/asof", "argmax subquery NOT lowered to ASOF (runs as a correlated subquery): %s", reason)
 	}
 
+	// Nearest-FOLLOWING is recognized (ASC + >=) but the merge-join op implements only
+	// nearest-preceding, so lowering it would compute the WRONG rows. Bail to the correct
+	// correlated subquery until a following-direction merge lands (DESIGN-mqo-sorted.md).
+	// The RightResidual content-filter composes with either direction, so it is ready for
+	// that follow-up; here it only takes effect on the working preceding path.
+	if match.Direction == "following" {
+		skip("nearest-following ASOF has no merge lowering yet (the merge-join op is nearest-preceding only) -- runs correctly as a correlated subquery")
+		return
+	}
+
 	// The project's child must be the outer keyspace E's records scan, optionally
 	// behind ONE outer filter -- the common "correlate only a filtered subset" case
 	// (e.g. WHERE e.level="error"). The filter is re-applied to the E probe stream so
@@ -1440,6 +1512,27 @@ func tryLowerASOFProject(p *base.Op, conv *Conv, byKey map[string]plan.Operator)
 	rScanLabels := base.Labels{"." + LabelSuffix(match.RightAlias), "^id"}
 	rKeyLabel := "^rkey"
 	asofResultLabel := ".[\"" + asofResultField + "\"]"
+	// withRightResidual re-applies the build-side content filter (RightResidual: WHERE
+	// conjuncts that reference only r) to an R scan BEFORE the key-materializing project,
+	// so only right rows passing it enter the merge -- the merge then finds the nearest
+	// right row that also matches (e.g. the nearest "ABC" line after each XYZ). References
+	// only r, resolved against the R scan's `.["r"]` label, exactly like the right
+	// project's own r.<field> reads; a per-file R expansion clones it over each file scan.
+	withRightResidual := func(sc *base.Op) *base.Op {
+		if len(match.RightResidual) == 0 {
+			return sc
+		}
+		pred := match.RightResidual[0]
+		if len(match.RightResidual) > 1 {
+			pred = expression.NewAnd(match.RightResidual...)
+		}
+		return &base.Op{
+			Kind:     "filter",
+			Labels:   append(base.Labels{}, sc.Labels...),
+			Params:   exprTerm(pred),
+			Children: []*base.Op{sc},
+		}
+	}
 	mkRight := func(sc *base.Op) *base.Op {
 		rp := &base.Op{
 			Kind:   "project",
@@ -1448,7 +1541,7 @@ func tryLowerASOFProject(p *base.Op, conv *Conv, byKey map[string]plan.Operator)
 				exprTerm(fieldRef(match.RightAlias, match.KeyField)),
 				exprTerm(asofResultExpr(match)),
 			},
-			Children: []*base.Op{sc},
+			Children: []*base.Op{withRightResidual(sc)},
 		}
 		for i, eq := range match.PartitionEq {
 			rp.Labels = append(rp.Labels, "^rpart"+itoa(i))

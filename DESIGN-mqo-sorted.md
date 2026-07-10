@@ -222,10 +222,23 @@ Each step is independently useful and benchmark-gated (like the DESIGN-col roadm
    window/merge path to skip the sort when the scan advertises `order:` matching the `ORDER
    BY` key. Benefit even before any sharing; foundation for the shared stream. *Measure:* a
    context detector over a pre-ordered keyspace vs today's forced sort.
-2. **ASOF residual content filter on the right stream** (Part B unlock). Extend
-   `MatchArgmaxAsof` + the merge input to accept a pushed-down content predicate on the inner
-   stream. Turns "XYZ → ABC" from O(n×m) into a merge. Standalone, no MQO yet. *Measure:*
-   correlated-subquery vs merge on a two-log fixture.
+2. **ASOF residual content filter on the right stream** (Part B unlock). **DONE (preceding).**
+   `MatchArgmaxAsof` now recognizes WHERE conjuncts that reference only the right alias
+   (`refsOnlyAlias`) as a residual (`AsofMatch.RightResidual`), and the lowering pushes them
+   as a filter onto the build scan (`withRightResidual`) so the merge finds the nearest row
+   that ALSO matches — byte-identical to the correlated baseline
+   (`TestASOFLoweringRightResidualDifferential`). This turns "the nearest <content-matching>
+   row of another stream" from O(n×m) into a merge, for the **nearest-preceding** direction.
+   *Surfaced while building this:* nearest-**following** (ASC + `r.key >= e.key`) is
+   recognized but the merge-join op is **preceding-only**, so following was lowering to the
+   WRONG rows — a latent correctness bug. It now **bails to the correct correlated subquery**
+   (`TestASOFFollowingBailsToCorrelated`). So the residual works today on preceding; the
+   flagship "XYZ → ABC soon after" is *following*, which needs step 2b.
+2b. **Nearest-following in the merge-join op** (the flagship's real unblock). A following
+   mode (a non-consuming forward cursor: first right row with key ≥ left key), a look-AHEAD
+   soft bound (`r.key <= e.key + Δt` → "within Δt after"), and its own differential suite
+   (following / +partition / +soft / +residual). The residual from step 2 already composes.
+   *Measure:* correlated-subquery vs merge on a two-log "XYZ then ABC within Δt" fixture.
 3. **The shared sorted broadcast** (the substrate). One scan+sort per `(keyspace, P, O)`
    signature, fanned to K stateful consumers. First consumer type: the **context extractor**
    (Part A), with the sparse-match/ring-buffer decomposition + AC index. *Measure:* K context
