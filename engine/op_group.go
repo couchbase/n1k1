@@ -77,6 +77,25 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 		_, _, _, _, _ = lzValOut, lzGroupValNew, lzGroupValReuse, lzAgg, lzGroupValPrev
 
+		// Pre-resolve each aggregate to its base.Aggs index once. aggCalcs is
+		// fixed for the query, so the base.AggCatalog[name] map lookup + the
+		// name.(string) type-assert the Init/Update loops below used to do PER
+		// INPUT ROW (here x an N-way cross-join) is pure overhead -- in the
+		// interp lane it ran on every one of the millions of rows. lzAggIdxs
+		// mirrors aggCalcs' [calc][name] shape and is consulted with a plain
+		// slice index instead. (!lz: gen-time in the compiled lane, which bakes
+		// the index in as a constant regardless, so the emitted per-row code is
+		// unchanged -- this only removes the interp lane's per-row map lookup.)
+		var lzAggIdxs [][]int              // !lz
+		for _, aggCalc := range aggCalcs { // !lz
+			var lzAggIdxRow []int                             // !lz
+			for _, aggName := range aggCalc.([]interface{}) { // !lz
+				lzAggIdxRow = append(lzAggIdxRow, base.AggCatalog[aggName.(string)]) // !lz
+			} // !lz
+			lzAggIdxs = append(lzAggIdxs, lzAggIdxRow) // !lz
+		} // !lz
+		_ = lzAggIdxs // !lz
+
 		lzStats := StatsFromVars(lzVars)                          // stats (live) // <== genCompiler:hide
 		lzStatsBase := o.StatsBase                                // <== genCompiler:hide
 		StatsCounterZero(lzStats, lzStatsBase+StatGroupRowsIn)    // <== genCompiler:hide
@@ -141,9 +160,9 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 						// structures for this new group key.
 						lzGroupVal = lzGroupValReuse[:0]
 
-						for _, aggCalc := range aggCalcs { // !lz
-							for _, aggName := range aggCalc.([]interface{}) { // !lz
-								aggIdx := base.AggCatalog[aggName.(string)] // !lz
+						for aggCalcI := range aggCalcs { // !lz
+							for aggNameI := range aggCalcs[aggCalcI].([]interface{}) { // !lz
+								aggIdx := lzAggIdxs[aggCalcI][aggNameI] // !lz
 								lzAgg = base.Aggs[aggIdx]
 
 								lzGroupVal = lzAgg.Init(lzVars, lzGroupVal)
@@ -164,9 +183,9 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 					// Use the projected aggregate exprs to update
 					// the agg data structures.
-					for aggCalcI, aggCalc := range aggCalcs { // !lz
-						for _, aggName := range aggCalc.([]interface{}) { // !lz
-							aggIdx := base.AggCatalog[aggName.(string)] // !lz
+					for aggCalcI := range aggCalcs { // !lz
+						for aggNameI := range aggCalcs[aggCalcI].([]interface{}) { // !lz
+							aggIdx := lzAggIdxs[aggCalcI][aggNameI] // !lz
 							lzAgg = base.Aggs[aggIdx]
 
 							lzGroupValNew, lzGroupVal, lzChanged = lzAgg.Update(lzVars,
