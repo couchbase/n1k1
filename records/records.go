@@ -1094,7 +1094,7 @@ func ParseModes(csv string) (WalkOptions, error) {
 		case "json":
 			opts.Formats[".json"], opts.Formats[".jsons"] = true, true
 			add("json")
-		case "jsonl", "ndjson":
+		case "jsonl", "jsonlines", "ndjson":
 			opts.Formats[".jsonl"], opts.Formats[".ndjson"] = true, true
 			add("jsonl")
 		case "csv":
@@ -1191,7 +1191,7 @@ type ModeInfo struct {
 func Modes() []ModeInfo {
 	return []ModeInfo{
 		{"json", nil, []string{".json", ".jsons"}, "structured", "one JSON value, or an array of values, per file"},
-		{"jsonl", []string{"ndjson"}, []string{".jsonl", ".ndjson"}, "structured", "JSON Lines: one JSON value per line"},
+		{"jsonl", []string{"jsonlines", "ndjson"}, []string{".jsonl", ".ndjson"}, "structured", "JSON Lines: one JSON value per line"},
 		{"csv", nil, []string{".csv"}, "structured", "comma-separated values (header row = field names)"},
 		{"tsv", nil, []string{".tsv"}, "structured", "tab-separated values (header row = field names)"},
 		{"yaml", []string{"yml"}, []string{".yaml", ".yml"}, "structured", "one YAML document, or a multi-doc (--- separated) stream, per file"},
