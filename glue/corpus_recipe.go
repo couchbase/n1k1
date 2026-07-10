@@ -50,7 +50,7 @@ package glue
 // file with none of them loads as a detector whose Tag is the filename stem and whose
 // Stmt is the whole body -- exactly the pre-phase-7 corpus loader's behavior.
 //
-// SCOPE (MVP, deferred -- noted here and honored by RunFixture / .detect test):
+// SCOPE (MVP, deferred -- noted here and honored by RunFixture / .rules test):
 //   - MULTI-KEYSPACE fixtures: a fixture feeds the detector's single `source` keyspace
 //     only. A detector that joins/correlates a second keyspace can't be fixtured yet.
 //   - VERSION-specific selection: `versions` is parsed + reported but not yet used to
@@ -105,7 +105,7 @@ func (r *Recipe) AsDetector() CorpusDetector {
 // LoadCorpus reads every *.sql++ file in dir as one Recipe (see ParseRecipe for the
 // format), returned sorted by Path for deterministic output. An empty corpus (no
 // *.sql++ files) is an error -- a silent no-op corpus would falsely read as a clean
-// bundle. This is the single reusable loader shared by the CLI (.detect run/lint/test),
+// bundle. This is the single reusable loader shared by the CLI (.rules run/lint/test),
 // the tests, and any future CI driver.
 func LoadCorpus(dir string) ([]Recipe, error) {
 	paths, err := filepath.Glob(filepath.Join(dir, "*.sql++"))
@@ -220,7 +220,7 @@ func ParseRecipe(path, text string) (Recipe, error) {
 	return r, nil
 }
 
-// findingJSON is the on-disk shape of an @expect / .detect run finding row.
+// findingJSON is the on-disk shape of an @expect / .rules run finding row.
 type findingJSON struct {
 	Tag      string          `json:"tag"`
 	Evidence json.RawMessage `json:"evidence"`

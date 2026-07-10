@@ -1,6 +1,6 @@
 default: test
 
-.PHONY: test test-all test-core test-glue test-compiler test-suite test-suite-all detect-test cli install-cli build build-glue build-intermed run-intermed-build
+.PHONY: test test-all test-core test-glue test-compiler test-suite test-suite-all rules-test cli install-cli build build-glue build-intermed run-intermed-build
 
 # VERSION is `git describe` of the source tree at build time, injected into the
 # CLI via -ldflags so `n1k1 -version` reports it. Falls back to "dev" outside a
@@ -93,18 +93,18 @@ test-suite-all: test-glue
 	cd test/tmp && go fmt
 	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -tags n1ql ./test/tmp
 
-# detect-test runs the PREPARE++ phase-7 GOLDEN-FIXTURE runner (`.detect test`) over the
+# rules-test runs the PREPARE++ phase-7 GOLDEN-FIXTURE runner (`.rules test`) over the
 # example recipe corpus (cmd/n1k1/testdata/detectors), failing the build on ANY recipe
 # FAIL -- the CI pattern a real detector-recipe repo copies (it drives the built binary,
-# exactly as an ops pipeline would). `.detect test` is HERMETIC: it builds its own temp
+# exactly as an ops pipeline would). `.rules test` is HERMETIC: it builds its own temp
 # fixture keyspaces per recipe, so the datastore dir argument is unused (the corpus dir
 # is passed only to satisfy the CLI's startup open; it is never queried). Kept STANDALONE
 # rather than wired into test-all: test-all is a pure `go test` sweep, whereas this drives
 # the built ./n1k1 binary; the same logic is also covered by `go test` in test-cli
-# (cmd/n1k1/detect_test.go's TestDetectTest*). The command exits non-zero on any FAIL
+# (cmd/n1k1/rules_test.go's TestRulesTest*). The command exits non-zero on any FAIL
 # (cli sawError -> exit 1), which fails this make target.
-detect-test: cli
-	./n1k1 -c '.detect test --corpus cmd/n1k1/testdata/detectors' cmd/n1k1/testdata/detectors
+rules-test: cli
+	./n1k1 -c '.rules test --corpus cmd/n1k1/testdata/detectors' cmd/n1k1/testdata/detectors
 
 # ------------------------------------------------------------------
 

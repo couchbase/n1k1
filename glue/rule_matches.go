@@ -351,7 +351,7 @@ func ruleMatchesSession(opts ruleMatchesOpts, ds datastore.Datastore) (*Session,
 }
 
 // loadRuleMatchesBinding reads a manifest into a Binding. Two minimal formats
-// (matching the CLI's .detect --bind loader): a JSON object {"logical":"glob", ...},
+// (matching the CLI's .rules --bind loader): a JSON object {"logical":"glob", ...},
 // or a line form `logical = glob` (one per line, '#' comments and blanks ignored).
 // An empty/malformed manifest is a hard error so a mistyped path is loud, never a
 // silently binding-free run.

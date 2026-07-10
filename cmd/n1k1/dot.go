@@ -232,8 +232,8 @@ func (c *cli) dot(line string) bool {
 		}
 	case ".read":
 		c.readFile(arg)
-	case ".detect":
-		c.cmdDetect(arg)
+	case ".rules":
+		c.cmdRules(arg)
 	case ".extensions", ".ext":
 		c.cmdExtensions(arg)
 	case ".output":
@@ -273,7 +273,7 @@ func (c *cli) printHelp() {
 		".verbose " + c.helpOpts(vcur, "off", "on", "debug", "n") + "  diagnostics level (n>1 provides more info; no arg shows current)",
 		".maxrows <n>          box: cap rows shown (0 = all; negative = last |n| rows)",
 		".maxwidth <n|auto>    box: cap column width (0 = uncapped; auto = fit terminal)",
-		".detect [list|run|lint|test|help] --corpus <dir>  PREPARE++ detector corpus (.detect help for details)",
+		".rules [list|run|lint|test|help] --corpus <dir>  PREPARE++ detector corpus (.rules help for details)",
 		".extensions [list | load <dir>... | unload <name>...]  extensions (*.js = JavaScript)",
 		".read <file>          run statements/dot-commands from a file",
 		".bail " + c.helpOpts(onOff(c.bail), "on", "off") + "        stop on the first statement error (handy for scripts)",

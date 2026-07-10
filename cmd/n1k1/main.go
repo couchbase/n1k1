@@ -302,7 +302,7 @@ func main() {
 
 	// A non-interactive run (-c / -f / a stdin pipe) signals failure via the process
 	// exit code so a script or CI step (e.g. `make detect-test`, which drives
-	// `-c '.detect test ...'`) fails the build on any statement / dot-command error.
+	// `-c '.rules test ...'`) fails the build on any statement / dot-command error.
 	// c.sawError latches across the whole run (feed/flush/batch set it -- see repl.go);
 	// reset it here so a failing startup init file doesn't poison the exit code. The
 	// interactive REPL never exits non-zero on a query error (you just see the error).

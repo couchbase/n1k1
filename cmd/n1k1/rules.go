@@ -11,13 +11,13 @@
 //  express or implied. See the License for the specific language
 //  governing permissions and limitations under the License.
 
-// cli .detect command family (PREPARE++ detector corpus: run + lint).
+// cli .rules command family (PREPARE++ detector corpus: run + lint).
 //
-// .detect brings the corpus machinery (glue.CorpusCompile / glue.CorpusLint;
+// .rules brings the corpus machinery (glue.CorpusCompile / glue.CorpusLint;
 // DESIGN-prepare.md phases 6-7) to the CLI so a tech-support team -- or an AI support
 // agent -- can run a corpus of SQL++ "detectors" over a support bundle (the open
 // datastore) and get findings, and lint the corpus for authoring feedback. It runs
-// interactively AND non-interactively (n1k1 <bundle> -c '.detect run --corpus ./det'),
+// interactively AND non-interactively (n1k1 <bundle> -c '.rules run --corpus ./det'),
 // so CI / an agent drives it the same way.
 //
 // A CORPUS is a directory of *.sql++ RECIPE files (glue.LoadCorpus / glue.ParseRecipe).
@@ -28,22 +28,22 @@
 //
 // SUBCOMMANDS:
 //
-//	.detect run  --corpus <dir> [--bind <manifest>]  -- compile the corpus over the
+//	.rules run  --corpus <dir> [--bind <manifest>]  -- compile the corpus over the
 //	    open bundle, print a fail-loud coverage/health summary to stderr, then render
 //	    the tagged findings to stdout in the current output mode.
-//	.detect lint --corpus <dir> [--bind <manifest>]  -- the authoring report card:
+//	.rules lint --corpus <dir> [--bind <manifest>]  -- the authoring report card:
 //	    per-detector class (fused/standalone/rejected), target keyspace, eval lane
 //	    (native/boxed), predicate-index verdict (literal vs always-wake) and advice,
 //	    plus a corpus score (% fused / native / index-pruned).
-//	.detect test [--corpus <dir>] [--update]         -- the golden-fixture runner (CI):
+//	.rules test [--corpus <dir>] [--update]         -- the golden-fixture runner (CI):
 //	    for each recipe with a `-- @fixture`, build a temp keyspace from its input rows,
 //	    run JUST that detector, and (check mode) assert the produced findings equal the
 //	    recipe's `-- @expect` golden as a set -- or (--update) record the produced
 //	    findings back into the recipe's @expect block. Signals failure via c.failed so a
-//	    caller (make detect-test) exits non-zero on any FAIL. Hermetic: builds its own
+//	    caller (make rules-test) exits non-zero on any FAIL. Hermetic: builds its own
 //	    temp datastores, so it needs no open bundle.
 //
-// DEFERRED (noted): .detect bind (dry-run -- binding already fails loud at run);
+// DEFERRED (noted): .rules bind (dry-run -- binding already fails loud at run);
 // per-finding STREAMING (findings are batch-rendered via the current output mode --
 // jsonlines still streams the row table; a per-finding OnRow hook is a nice-to-have);
 // the SHA-keyed build cache; the re-run delta report; and multi-keyspace / version-
@@ -61,39 +61,39 @@ import (
 	"github.com/couchbase/n1k1/glue"
 )
 
-// cmdDetect dispatches the .detect command family (list | run | lint | test | help).
-func (c *cli) cmdDetect(arg string) {
+// cmdRules dispatches the .rules command family (list | run | lint | test | help).
+func (c *cli) cmdRules(arg string) {
 	sub, rest := splitFirst(arg)
 	switch strings.ToLower(sub) {
 	case "list", "ls":
-		c.cmdDetectList(rest)
+		c.cmdRulesList(rest)
 	case "run":
-		c.cmdDetectRun(rest)
+		c.cmdRulesRun(rest)
 	case "lint":
-		c.cmdDetectLint(rest)
+		c.cmdRulesLint(rest)
 	case "test":
-		c.cmdDetectTest(rest)
+		c.cmdRulesTest(rest)
 	case "", "help":
-		c.cmdDetectHelp()
+		c.cmdRulesHelp()
 	default:
-		fmt.Fprintf(c.stderr, "unknown subcommand %q; try .detect help\n", sub)
+		fmt.Fprintf(c.stderr, "unknown subcommand %q; try .rules help\n", sub)
 	}
 }
 
-// detectArgs is the parsed flag set shared by run + lint + test: the corpus dir, an
+// rulesArgs is the parsed flag set shared by run + lint + test: the corpus dir, an
 // optional bind manifest path (run/lint), and the --update boolean (test).
-type detectArgs struct {
+type rulesArgs struct {
 	corpus string
 	bind   string
-	update bool // .detect test: record produced findings back into each recipe's @expect
+	update bool // .rules test: record produced findings back into each recipe's @expect
 }
 
-// parseDetectArgs parses `--corpus <dir> [--bind <file>] [--update]` (also accepting
+// parseRulesArgs parses `--corpus <dir> [--bind <file>] [--update]` (also accepting
 // the bare/`=` forms `-corpus=x`). Unknown tokens are an error so a typo fails loudly
 // rather than being silently ignored. --corpus is validated by the caller (required for
 // run/lint; test errors on its absence too).
-func parseDetectArgs(arg string) (detectArgs, error) {
-	var a detectArgs
+func parseRulesArgs(arg string) (rulesArgs, error) {
+	var a rulesArgs
 	toks := strings.Fields(arg)
 	for i := 0; i < len(toks); i++ {
 		t := toks[i]
@@ -135,7 +135,7 @@ func parseDetectArgs(arg string) (detectArgs, error) {
 
 // loadRecipes loads a corpus dir as parsed recipes (front-matter + fixtures), the
 // reusable glue loader. loadCorpus below projects these onto the Tag+Stmt detectors
-// run/lint consume; .detect test needs the full recipe (source, fixture, expect).
+// run/lint consume; .rules test needs the full recipe (source, fixture, expect).
 func loadRecipes(dir string) ([]glue.Recipe, error) {
 	return glue.LoadCorpus(dir)
 }
@@ -198,10 +198,10 @@ func loadBinding(path string) (glue.Binding, error) {
 	return b, nil
 }
 
-// detectSession opens a fresh session over the open bundle (c.dir), bound with the
-// manifest when --bind was given. It is separate from c.sess so .detect never
+// rulesSession opens a fresh session over the open bundle (c.dir), bound with the
+// manifest when --bind was given. It is separate from c.sess so .rules never
 // disturbs the interactive session's state.
-func (c *cli) detectSession(bind string) (*glue.Session, glue.Binding, error) {
+func (c *cli) rulesSession(bind string) (*glue.Session, glue.Binding, error) {
 	if c.dir == "" {
 		return nil, nil, fmt.Errorf("no bundle open -- open a datastore directory first (.open <dir>)")
 	}
@@ -216,22 +216,22 @@ func (c *cli) detectSession(bind string) (*glue.Session, glue.Binding, error) {
 	return sess, b, nil
 }
 
-// cmdDetectList implements `.detect list`: a metadata-only inventory of the corpus --
+// cmdRulesList implements `.rules list`: a metadata-only inventory of the corpus --
 // one row per recipe (tag / source / severity / versions / fixture? / golden? / path),
 // rendered in the current output mode (box at a TTY, jsonlines when piped). It is the
 // fast "what's in my corpus" landing page: it only reads recipe front-matter (pure
 // glue.LoadCorpus), so it needs NO open bundle and does NOT compile -- distinct from
 // `lint`, which compiles for a health report card.
-func (c *cli) cmdDetectList(arg string) {
-	args, err := parseDetectArgs(arg)
+func (c *cli) cmdRulesList(arg string) {
+	args, err := parseRulesArgs(arg)
 	if err != nil {
-		fmt.Fprintf(c.stderr, "%s: .detect list: %v\n", c.prog, err)
+		fmt.Fprintf(c.stderr, "%s: .rules list: %v\n", c.prog, err)
 		c.failed = true
 		return
 	}
 	recipes, err := loadRecipes(args.corpus)
 	if err != nil {
-		fmt.Fprintf(c.stderr, "%s: .detect list: %v\n", c.prog, err)
+		fmt.Fprintf(c.stderr, "%s: .rules list: %v\n", c.prog, err)
 		c.failed = true
 		return
 	}
@@ -265,7 +265,7 @@ func (c *cli) cmdDetectList(arg string) {
 		))
 	}
 	c.renderRows(rows, "", false)
-	fmt.Fprintf(c.stderr, "%s%d detector(s) in %s -- %d with a fixture, %d with a golden (run .detect lint for a health report)\n",
+	fmt.Fprintf(c.stderr, "%s%d detector(s) in %s -- %d with a fixture, %d with a golden (run .rules lint for a health report)\n",
 		c.icon("📋 "), len(recipes), args.corpus, fixtures, goldens)
 }
 
@@ -277,25 +277,25 @@ func yesNo(b bool) string {
 	return "no"
 }
 
-// cmdDetectRun implements `.detect run`: compile the corpus over the open bundle,
+// cmdRulesRun implements `.rules run`: compile the corpus over the open bundle,
 // print a fail-loud coverage/health summary to stderr, then render the tagged
 // findings to stdout in the current output mode.
-func (c *cli) cmdDetectRun(arg string) {
-	args, err := parseDetectArgs(arg)
+func (c *cli) cmdRulesRun(arg string) {
+	args, err := parseRulesArgs(arg)
 	if err != nil {
-		fmt.Fprintf(c.stderr, "%s: .detect run: %v\n", c.prog, err)
+		fmt.Fprintf(c.stderr, "%s: .rules run: %v\n", c.prog, err)
 		c.failed = true
 		return
 	}
 	dets, err := loadCorpus(args.corpus)
 	if err != nil {
-		fmt.Fprintf(c.stderr, "%s: .detect run: %v\n", c.prog, err)
+		fmt.Fprintf(c.stderr, "%s: .rules run: %v\n", c.prog, err)
 		c.failed = true
 		return
 	}
-	sess, binding, err := c.detectSession(args.bind)
+	sess, binding, err := c.rulesSession(args.bind)
 	if err != nil {
-		fmt.Fprintf(c.stderr, "%s: .detect run: %v\n", c.prog, err)
+		fmt.Fprintf(c.stderr, "%s: .rules run: %v\n", c.prog, err)
 		c.failed = true
 		return
 	}
@@ -304,14 +304,14 @@ func (c *cli) cmdDetectRun(arg string) {
 	// in the manifest against this bundle. An unresolved/empty-glob keyspace is a GAP
 	// -- surface it and refuse to render a (falsely clean) findings table.
 	if gap := c.reportBindingCoverage(sess, binding); gap {
-		fmt.Fprintf(c.stderr, "%s: .detect run: aborting -- unresolved logical keyspace(s) above (a bundle gap, not a clean run)\n", c.prog)
+		fmt.Fprintf(c.stderr, "%s: .rules run: aborting -- unresolved logical keyspace(s) above (a bundle gap, not a clean run)\n", c.prog)
 		c.failed = true
 		return
 	}
 
 	cc, err := sess.CorpusCompile(dets)
 	if err != nil {
-		fmt.Fprintf(c.stderr, "%s: .detect run: compile: %v\n", c.prog, err)
+		fmt.Fprintf(c.stderr, "%s: .rules run: compile: %v\n", c.prog, err)
 		c.failed = true
 		return
 	}
@@ -319,7 +319,7 @@ func (c *cli) cmdDetectRun(arg string) {
 
 	findings, err := cc.Run()
 	if err != nil {
-		fmt.Fprintf(c.stderr, "%s: .detect run: %v\n", c.prog, err)
+		fmt.Fprintf(c.stderr, "%s: .rules run: %v\n", c.prog, err)
 		c.failed = true
 		return
 	}
@@ -364,7 +364,7 @@ func (c *cli) reportBindingCoverage(sess *glue.Session, binding glue.Binding) bo
 		if _, err := ns.KeyspaceByName(n); err != nil {
 			fmt.Fprintf(c.stderr, "  %s %s = %q -> %s\n", c.icon("✗"), n, binding[n],
 				c.style.Red("UNRESOLVED: "+tidyMsg(err.Error())))
-			fmt.Fprintf(c.stderr, "      %s\n", detectFix(fixUnresolved, n))
+			fmt.Fprintf(c.stderr, "      %s\n", rulesFix(fixUnresolved, n))
 			gap = true
 		} else {
 			fmt.Fprintf(c.stderr, "  %s %s = %q -> resolved\n", c.icon("✓"), n, binding[n])
@@ -384,35 +384,35 @@ func (c *cli) reportCorpusHealth(cc *glue.CompiledCorpus, total int) {
 	// AND the fix snippet (what a runnable detector looks like), never silently drop it.
 	for _, r := range cc.Rejected {
 		fmt.Fprintf(c.stderr, "  %s %s: %s\n", c.icon("✗"), r.Tag, c.style.Yellow(r.Reason))
-		fmt.Fprintf(c.stderr, "      %s\n", detectFix(fixRejected, r.Reason))
+		fmt.Fprintf(c.stderr, "      %s\n", rulesFix(fixRejected, r.Reason))
 	}
 	// A standalone detector still runs (its own scan), just not fused into the shared
 	// scan -- name each so the author knows it opted out of fusion, with the why/how.
 	for _, d := range cc.Standalone {
-		fmt.Fprintf(c.stderr, "  %s %s: %s\n", c.icon("• "), d.Tag, detectFix(fixStandalone, ""))
+		fmt.Fprintf(c.stderr, "  %s %s: %s\n", c.icon("• "), d.Tag, rulesFix(fixStandalone, ""))
 	}
 }
 
-// cmdDetectLint implements `.detect lint`: the authoring report card. It compiles
+// cmdRulesLint implements `.rules lint`: the authoring report card. It compiles
 // (does not run) each detector via glue.CorpusLint and renders a per-detector table
 // in the current output mode (box at a TTY, jsonlines when piped), then a corpus
 // score line to stderr.
-func (c *cli) cmdDetectLint(arg string) {
-	args, err := parseDetectArgs(arg)
+func (c *cli) cmdRulesLint(arg string) {
+	args, err := parseRulesArgs(arg)
 	if err != nil {
-		fmt.Fprintf(c.stderr, "%s: .detect lint: %v\n", c.prog, err)
+		fmt.Fprintf(c.stderr, "%s: .rules lint: %v\n", c.prog, err)
 		c.failed = true
 		return
 	}
 	dets, err := loadCorpus(args.corpus)
 	if err != nil {
-		fmt.Fprintf(c.stderr, "%s: .detect lint: %v\n", c.prog, err)
+		fmt.Fprintf(c.stderr, "%s: .rules lint: %v\n", c.prog, err)
 		c.failed = true
 		return
 	}
-	sess, binding, err := c.detectSession(args.bind)
+	sess, binding, err := c.rulesSession(args.bind)
 	if err != nil {
-		fmt.Fprintf(c.stderr, "%s: .detect lint: %v\n", c.prog, err)
+		fmt.Fprintf(c.stderr, "%s: .rules lint: %v\n", c.prog, err)
 		c.failed = true
 		return
 	}
@@ -423,7 +423,7 @@ func (c *cli) cmdDetectLint(arg string) {
 
 	report, score, err := sess.CorpusLint(dets)
 	if err != nil {
-		fmt.Fprintf(c.stderr, "%s: .detect lint: %v\n", c.prog, err)
+		fmt.Fprintf(c.stderr, "%s: .rules lint: %v\n", c.prog, err)
 		c.failed = true
 		return
 	}
@@ -468,11 +468,11 @@ func orEmptyDash(s string) string {
 	return s
 }
 
-// cmdDetectTest implements `.detect test`: the golden-fixture runner (DESIGN-prepare.md
+// cmdRulesTest implements `.rules test`: the golden-fixture runner (DESIGN-prepare.md
 // phase 7, "a golden-fixture diff ... is the detector's unit test"; the AI-authoring CI
 // point). For each recipe that carries a `-- @fixture`, it builds a temp keyspace from
 // the fixture's input rows, runs JUST that detector (glue.Recipe.RunFixture -> the same
-// CorpusCompile/Run path .detect run uses), and then:
+// CorpusCompile/Run path .rules run uses), and then:
 //
 //   - CHECK mode (default): asserts the produced findings equal the recipe's `-- @expect`
 //     golden as a SORTED SET (order isn't guaranteed). A fixture with no @expect is a
@@ -481,19 +481,19 @@ func orEmptyDash(s string) string {
 //     (golden-master capture) so the author reviews the diff and commits.
 //
 // It is HERMETIC (each recipe runs over its own temp datastore), so it needs no open
-// bundle. On any FAIL it sets c.failed so a non-interactive caller (make detect-test)
+// bundle. On any FAIL it sets c.failed so a non-interactive caller (make rules-test)
 // exits non-zero. A recipe with no fixture is counted, never a hard failure; a fixture
 // whose keyspace can't resolve (a deferred multi-source fixture) is SKIPPED with a note.
-func (c *cli) cmdDetectTest(arg string) {
-	args, err := parseDetectArgs(arg)
+func (c *cli) cmdRulesTest(arg string) {
+	args, err := parseRulesArgs(arg)
 	if err != nil {
-		fmt.Fprintf(c.stderr, "%s: .detect test: %v\n", c.prog, err)
+		fmt.Fprintf(c.stderr, "%s: .rules test: %v\n", c.prog, err)
 		c.failed = true
 		return
 	}
 	recipes, err := loadRecipes(args.corpus)
 	if err != nil {
-		fmt.Fprintf(c.stderr, "%s: .detect test: %v\n", c.prog, err)
+		fmt.Fprintf(c.stderr, "%s: .rules test: %v\n", c.prog, err)
 		c.failed = true
 		return
 	}
@@ -538,7 +538,7 @@ func (c *cli) cmdDetectTest(arg string) {
 		if !r.HasExpect {
 			failed++
 			fmt.Fprintf(c.stderr, "  %s %s: %s -- %s\n",
-				c.icon("✗ "), r.Tag, c.style.Red("FAIL"), detectFix(fixNoGolden, ""))
+				c.icon("✗ "), r.Tag, c.style.Red("FAIL"), rulesFix(fixNoGolden, ""))
 			continue
 		}
 
@@ -558,7 +558,7 @@ func (c *cli) cmdDetectTest(arg string) {
 		for _, f := range unexpected {
 			fmt.Fprintf(c.stderr, "      %s unexpected: %s\n", c.style.Cyan("+"), findingLine(f))
 		}
-		fmt.Fprintf(c.stderr, "      %s\n", detectFix(fixFixtureFail, ""))
+		fmt.Fprintf(c.stderr, "      %s\n", rulesFix(fixFixtureFail, ""))
 	}
 
 	// Summary + CI signal. --update mode never "fails" a diff (it is recording), but a
@@ -571,13 +571,13 @@ func (c *cli) cmdDetectTest(arg string) {
 			c.icon("📋 "), passed, failed, noFixture, skipped)
 	}
 	if failed > 0 {
-		c.failed = true // non-interactive callers (make detect-test) exit non-zero.
+		c.failed = true // non-interactive callers (make rules-test) exit non-zero.
 	}
 }
 
 // updateRecipeExpect rewrites path's `-- @expect` block in place with findings (leaving
 // everything before it byte-identical -- glue.RewriteExpect), the golden-master capture
-// for `.detect test --update`.
+// for `.rules test --update`.
 func updateRecipeExpect(path string, findings []glue.Finding) error {
 	raw, err := os.ReadFile(path)
 	if err != nil {

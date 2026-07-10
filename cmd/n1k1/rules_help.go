@@ -15,21 +15,21 @@ package main
 
 import "fmt"
 
-// cmdDetectHelp prints the self-contained .detect guide to c.out: the subcommand +
+// cmdRulesHelp prints the self-contained .rules guide to c.out: the subcommand +
 // flag one-liners, a sample corpus directory layout, an annotated sample recipe (the
 // real front-matter / SQL / @fixture / @expect format), TRUTHFUL example outputs (the
-// exact shapes .detect list/run/lint/test produce over the shipped testdata corpus),
+// exact shapes .rules list/run/lint/test produce over the shipped testdata corpus),
 // and authoring tips for getting the best out of a corpus. It goes to stdout (not
 // stderr) so it can be piped/paged like any other document.
-func (c *cli) cmdDetectHelp() {
+func (c *cli) cmdRulesHelp() {
 	// Fprintf with "%s" (not Fprint) because the text embeds "%" tokens (e.g. LIKE
 	// '%panic%'), which vet's printf check would otherwise flag as format directives.
-	fmt.Fprintf(c.out, "%s", detectHelpText)
+	fmt.Fprintf(c.out, "%s", rulesHelpText)
 }
 
-// detectHelpText avoids backticks so it can be one clean raw string literal; inline
+// rulesHelpText avoids backticks so it can be one clean raw string literal; inline
 // code is shown quoted or as indented blocks.
-const detectHelpText = `.detect -- run a corpus of SQL++ detectors over a dataset
+const rulesHelpText = `.rules -- run a corpus of SQL++ detectors over a dataset
 
 A CORPUS is a directory of *.sql++ RECIPE files. Each recipe is a single SQL++ SELECT
 (a "detector") plus optional "-- key: value" front-matter and an optional inline golden
@@ -40,14 +40,14 @@ The same findings are also available directly in SQL++ as a composable FROM sour
 the RULE_MATCHES() table-valued function -- so they can be sliced with WHERE / GROUP BY /
 ORDER BY / JOIN and PREPARE'd / EXECUTE'd, e.g.:
   SELECT f.tag, COUNT(*) AS hits FROM RULE_MATCHES('detectors/') AS f GROUP BY f.tag;
-(.detect run streams; RULE_MATCHES() materializes the whole result set as one array.)
+(.rules run streams; RULE_MATCHES() materializes the whole result set as one array.)
 
 COMMANDS
-  .detect list  [--corpus <dir>]                     inventory the corpus (metadata only: no dataset, no compile)
-  .detect run   --corpus <dir> [--bind <manifest>]   compile the corpus over the open dataset -> findings
-  .detect lint  --corpus <dir> [--bind <manifest>]   authoring report card (compiles, does NOT run)
-  .detect test  [--corpus <dir>] [--update]          golden-fixture runner (CI): check @fixture vs @expect
-  .detect help                                        this guide
+  .rules list  [--corpus <dir>]                     inventory the corpus (metadata only: no dataset, no compile)
+  .rules run   --corpus <dir> [--bind <manifest>]   compile the corpus over the open dataset -> findings
+  .rules lint  --corpus <dir> [--bind <manifest>]   authoring report card (compiles, does NOT run)
+  .rules test  [--corpus <dir>] [--update]          golden-fixture runner (CI): check @fixture vs @expect
+  .rules help                                        this guide
 
 FLAGS
   --corpus <dir>     the directory of *.sql++ recipe files (required)
@@ -55,7 +55,7 @@ FLAGS
                      runs across differently-named datasets unchanged (run / lint). Manifest is either
                      "logical = glob" lines ('#' comments + blanks ignored), or a JSON object
                      {"logical":"glob", ...}. A logical keyspace matching 0 files is a hard error.
-  --update           .detect test only: (re-)record each fixture's produced findings as its @expect golden
+  --update           .rules test only: (re-)record each fixture's produced findings as its @expect golden
 
 CORPUS LAYOUT
   detectors/
@@ -82,13 +82,13 @@ ANNOTATED RECIPE (detectors/disk_full.sql++)
   {"tag":"ET-12345","evidence":{"msg":"disk full","sev":"ERROR","ts":3}}
   {"tag":"ET-12345","evidence":{"msg":"oom","sev":"ERROR","ts":9}}
 
-EXAMPLE: .detect list --corpus ./detectors   (box at a TTY; jsonlines when piped)
+EXAMPLE: .rules list --corpus ./detectors   (box at a TTY; jsonlines when piped)
   {"tag":"ET-12345","source":"logs","severity":"high","versions":"7.2,7.6","fixture?":"yes","golden?":"yes","path":".../disk_full.sql++"}
   {"tag":"ET-20001","source":"requests","severity":"medium","versions":"-","fixture?":"yes","golden?":"yes","path":".../slow_request.sql++"}
   {"tag":"ET-30002","source":"logs","severity":"low","versions":"-","fixture?":"no","golden?":"no","path":".../warn_no_fixture.sql++"}
-  3 detector(s) in ./detectors -- 2 with a fixture, 2 with a golden (run .detect lint for a health report)
+  3 detector(s) in ./detectors -- 2 with a fixture, 2 with a golden (run .rules lint for a health report)
 
-EXAMPLE: .detect run --corpus ./detectors   (over a dataset with a "logs" keyspace)
+EXAMPLE: .rules run --corpus ./detectors   (over a dataset with a "logs" keyspace)
   corpus: 3 detector(s) -- 2 fused, 0 standalone, 1 rejected
     ET-20001: plan error: Keyspace not found requests
         not a runnable detector: plan error: Keyspace not found requests. A detector is a single SELECT, ...
@@ -96,18 +96,18 @@ EXAMPLE: .detect run --corpus ./detectors   (over a dataset with a "logs" keyspa
   {"tag":"ET-12345","evidence":{"sev":"ERROR","msg":"timeout","ts":5}}
   2 finding(s) from 3 detector(s)
 
-EXAMPLE: .detect lint --corpus ./detectors   (a report-card row + the score line)
+EXAMPLE: .rules lint --corpus ./detectors   (a report-card row + the score line)
   {"detector":"ET-12345","class":"fused","keyspace":"default:logs","lane":"native","index":"literal \"ERROR\"","reason":"-","advice":"-"}
   ...
   score: 66% fused (2/3), 100% native (2/2 converted), 100% index-pruned (2/2 fused)  [0 standalone, 1 rejected]
 
-EXAMPLE: .detect test --corpus ./detectors
+EXAMPLE: .rules test --corpus ./detectors
   ET-12345: PASS (2 finding(s))
   ET-20001: PASS (2 finding(s))
   ET-30002: no fixture
   2 passed / 0 failed / 1 no-fixture / 0 skipped
-  # A mismatch prints a per-finding diff plus: "re-record the golden: .detect test --update".
-  # A fixture with no @expect FAILs with: "Capture them: .detect test --update".
+  # A mismatch prints a per-finding diff plus: "re-record the golden: .rules test --update".
+  # A fixture with no @expect FAILs with: "Capture them: .rules test --update".
 
 TIPS (get the best out of a corpus)
   - Lead a predicate with a DISCRIMINATING LITERAL as a top-level AND conjunct so the predicate
@@ -116,13 +116,13 @@ TIPS (get the best out of a corpus)
     the shared scan. A GROUP BY / window / join / DISTINCT / ORDER-LIMIT / index-scan runs standalone.
   - Prefer NATIVE expressions over boxed ones: "msg LIKE '%x%'" or "regexp_contains(msg,'x')" instead of
     "UPPER(msg) LIKE '%X%'". A boxed expression falls back to cbq and caps the compile level.
-  - Give EVERY detector a golden fixture (-- @fixture / -- @expect) so CI (.detect test) protects it
-    against a regression. Capture the first golden with ".detect test --update".
+  - Give EVERY detector a golden fixture (-- @fixture / -- @expect) so CI (.rules test) protects it
+    against a regression. Capture the first golden with ".rules test --update".
   - Author against LOGICAL keyspaces + a --bind manifest, so ONE corpus runs across differently-named
     datasets (indexer.log vs projector.log) unchanged.
   - Version-tag detectors ("versions:") -- field-shape changes across releases are handled by evolving
     the corpus, not by writing per-version adapters.
 
 Non-interactive (CI / agent):
-  n1k1 -c '.detect run --corpus ./detectors --bind ./manifest' <data-dir>
+  n1k1 -c '.rules run --corpus ./detectors --bind ./manifest' <data-dir>
 `

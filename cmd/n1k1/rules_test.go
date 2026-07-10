@@ -34,7 +34,7 @@ func writeCorpus(t *testing.T, files map[string]string) string {
 }
 
 // newLogsBundle builds a <root>/default/logs datastore of a few log docs and returns
-// the root (the bundle dir a .detect command opens as c.dir).
+// the root (the bundle dir a .rules command opens as c.dir).
 func newLogsBundle(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
@@ -56,10 +56,10 @@ func newLogsBundle(t *testing.T) string {
 	return root
 }
 
-// TestDetectList: the metadata-only inventory shows one row per recipe with its
+// TestRulesList: the metadata-only inventory shows one row per recipe with its
 // tag / source / severity / versions and fixture?/golden? flags -- WITHOUT opening a
 // bundle (c.dir is empty) and without compiling.
-func TestDetectList(t *testing.T) {
+func TestRulesList(t *testing.T) {
 	corpus := writeCorpus(t, map[string]string{
 		"a_full": `-- ticket: ET-1
 -- source: logs
@@ -75,7 +75,7 @@ SELECT * FROM logs l WHERE l.sev = "ERROR"
 
 	var out, errb bytes.Buffer
 	c := &cli{prog: "n1k1", mode: "jsonlines", out: &out, stderr: &errb} // no c.dir: no bundle opened
-	c.cmdDetect("list --corpus " + corpus)
+	c.cmdRules("list --corpus " + corpus)
 
 	stdout := out.String()
 	// The rich recipe: tag/source/severity/versions + both flags "yes".
@@ -99,12 +99,12 @@ SELECT * FROM logs l WHERE l.sev = "ERROR"
 	}
 }
 
-// TestDetectHelp: the embedded guide prints the key sections to stdout -- the recipe
+// TestRulesHelp: the embedded guide prints the key sections to stdout -- the recipe
 // format markers, an example score line, and the authoring tips.
-func TestDetectHelp(t *testing.T) {
+func TestRulesHelp(t *testing.T) {
 	var out, errb bytes.Buffer
 	c := &cli{prog: "n1k1", mode: "jsonlines", out: &out, stderr: &errb}
-	c.cmdDetect("help")
+	c.cmdRules("help")
 
 	help := out.String()
 	for _, want := range []string{
@@ -115,16 +115,16 @@ func TestDetectHelp(t *testing.T) {
 		"--bind", "--update", // the flag one-liners
 	} {
 		if !strings.Contains(help, want) {
-			t.Errorf(".detect help missing %q; stdout:\n%s", want, help)
+			t.Errorf(".rules help missing %q; stdout:\n%s", want, help)
 		}
 	}
 }
 
-// TestDetectFixSnippets: every author-facing status carries its fix snippet. A boxed
+// TestRulesFixSnippets: every author-facing status carries its fix snippet. A boxed
 // detector, an always-wake detector, and a rejected one surface their snippets in the
 // lint advice column and (rejected) in the run health block; a fixture with no @expect
 // surfaces the "capture the golden" snippet in test output.
-func TestDetectFixSnippets(t *testing.T) {
+func TestRulesFixSnippets(t *testing.T) {
 	root := newLogsBundle(t)
 	corpus := writeCorpus(t, map[string]string{
 		"boxed":  `SELECT * FROM logs l WHERE UPPER(l.msg) LIKE "%X%"`, // boxed + always-wake
@@ -135,7 +135,7 @@ func TestDetectFixSnippets(t *testing.T) {
 	// lint: the advice column carries the boxed, always-wake, and rejected snippets.
 	var lout, lerr bytes.Buffer
 	c := &cli{prog: "n1k1", dir: root, mode: "jsonlines", out: &lout, stderr: &lerr}
-	c.cmdDetect("lint --corpus " + corpus)
+	c.cmdRules("lint --corpus " + corpus)
 	lintOut := lout.String()
 	for _, want := range []string{
 		"predicate boxes (falls back to cbq)", // boxed advice
@@ -151,7 +151,7 @@ func TestDetectFixSnippets(t *testing.T) {
 	// run: the rejected detector's fix snippet appears in the health block on stderr.
 	var rout, rerr bytes.Buffer
 	c2 := &cli{prog: "n1k1", dir: root, mode: "jsonlines", out: &rout, stderr: &rerr}
-	c2.cmdDetect("run --corpus " + corpus)
+	c2.cmdRules("run --corpus " + corpus)
 	if !strings.Contains(rerr.String(), "not a runnable detector") {
 		t.Errorf("run health block missing the rejected fix snippet; stderr:\n%s", rerr.String())
 	}
@@ -166,20 +166,20 @@ SELECT * FROM logs l WHERE l.sev = "ERROR"
 	})
 	var tout, terr bytes.Buffer
 	c3 := &cli{prog: "n1k1", mode: "jsonlines", out: &tout, stderr: &terr}
-	c3.cmdDetect("test --corpus " + tc)
+	c3.cmdRules("test --corpus " + tc)
 	if !strings.Contains(terr.String(), "fixture has no expected findings recorded") {
 		t.Errorf("test missing the no-golden fix snippet; stderr:\n%s", terr.String())
 	}
-	if !strings.Contains(terr.String(), ".detect test --update") {
+	if !strings.Contains(terr.String(), ".rules test --update") {
 		t.Errorf("no-golden snippet must point at --update; stderr:\n%s", terr.String())
 	}
 }
 
-// TestDetectRun: a corpus of one fusable filter, one correlated (standalone), and one
+// TestRulesRun: a corpus of one fusable filter, one correlated (standalone), and one
 // broken (rejected) detector. The fusable + standalone produce tagged findings; the
 // coverage summary reports 1 fused / 1 standalone / 1 rejected (with the reason); the
 // broken detector does not abort the run.
-func TestDetectRun(t *testing.T) {
+func TestRulesRun(t *testing.T) {
 	root := newLogsBundle(t)
 	corpus := writeCorpus(t, map[string]string{
 		"errors":   `SELECT * FROM logs WHERE sev = "ERROR"`,
@@ -189,7 +189,7 @@ func TestDetectRun(t *testing.T) {
 
 	var out, errb bytes.Buffer
 	c := &cli{prog: "n1k1", dir: root, mode: "jsonlines", out: &out, stderr: &errb}
-	c.cmdDetect("run --corpus " + corpus)
+	c.cmdRules("run --corpus " + corpus)
 
 	stderr := errb.String()
 	if !strings.Contains(stderr, "1 fused, 1 standalone, 1 rejected") {
@@ -213,10 +213,10 @@ func TestDetectRun(t *testing.T) {
 	}
 }
 
-// TestDetectLint: the report card shows the three classes, an always-wake fused
+// TestRulesLint: the report card shows the three classes, an always-wake fused
 // detector gets the always-wake advice, a boxed one names its native alternative, and
 // the corpus score line is present.
-func TestDetectLint(t *testing.T) {
+func TestRulesLint(t *testing.T) {
 	root := newLogsBundle(t)
 	corpus := writeCorpus(t, map[string]string{
 		"errors":     `SELECT * FROM logs WHERE sev = "ERROR"`,           // fused, native, indexed
@@ -227,7 +227,7 @@ func TestDetectLint(t *testing.T) {
 
 	var out, errb bytes.Buffer
 	c := &cli{prog: "n1k1", dir: root, mode: "jsonlines", out: &out, stderr: &errb}
-	c.cmdDetect("lint --corpus " + corpus)
+	c.cmdRules("lint --corpus " + corpus)
 
 	stdout := out.String()
 	for _, want := range []string{`"class":"fused"`, `"class":"standalone"`, `"class":"rejected"`} {
@@ -249,13 +249,13 @@ func TestDetectLint(t *testing.T) {
 	}
 }
 
-// TestDetectTest: the golden-fixture runner in check mode over a corpus of a PASSING
+// TestRulesTest: the golden-fixture runner in check mode over a corpus of a PASSING
 // recipe (fixture + correct expect), a FAILING recipe (fixture + deliberately wrong
 // expect -> reported with a diff), a NO-FIXTURE recipe (counted, not a hard fail), and a
 // FIXTURE-WITHOUT-EXPECT recipe (a hard fail -- "no golden recorded"). The summary counts
 // are asserted and failure is signaled via c.failed (so a CI caller exits non-zero).
-// It needs no open bundle -- .detect test builds its own temp fixture keyspaces.
-func TestDetectTest(t *testing.T) {
+// It needs no open bundle -- .rules test builds its own temp fixture keyspaces.
+func TestRulesTest(t *testing.T) {
 	corpus := writeCorpus(t, map[string]string{
 		"pass": `-- ticket: P
 -- source: logs
@@ -284,7 +284,7 @@ SELECT * FROM logs l WHERE l.sev = "ERROR"
 
 	var out, errb bytes.Buffer
 	c := &cli{prog: "n1k1", mode: "jsonlines", out: &out, stderr: &errb}
-	c.cmdDetect("test --corpus " + corpus)
+	c.cmdRules("test --corpus " + corpus)
 
 	stderr := errb.String()
 	// pass PASS, fail FAIL (with a diff), nogold FAIL (no golden), nofix counted.
@@ -305,10 +305,10 @@ SELECT * FROM logs l WHERE l.sev = "ERROR"
 	}
 }
 
-// TestDetectTestUpdate: a recipe with a fixture and NO @expect -> --update records the
+// TestRulesTestUpdate: a recipe with a fixture and NO @expect -> --update records the
 // golden; re-running in check mode then PASSES; and everything before the @expect block
 // is left byte-identical.
-func TestDetectTestUpdate(t *testing.T) {
+func TestRulesTestUpdate(t *testing.T) {
 	head := `-- ticket: U
 -- source: logs
 SELECT * FROM logs l WHERE l.sev = "ERROR"
@@ -325,7 +325,7 @@ SELECT * FROM logs l WHERE l.sev = "ERROR"
 	// (1) --update records the golden; no failure.
 	var out, errb bytes.Buffer
 	c := &cli{prog: "n1k1", mode: "jsonlines", out: &out, stderr: &errb}
-	c.cmdDetect("test --corpus " + dir + " --update")
+	c.cmdRules("test --corpus " + dir + " --update")
 	if c.failed {
 		t.Fatalf("--update must not fail on a runnable fixture; stderr:\n%s", errb.String())
 	}
@@ -348,7 +348,7 @@ SELECT * FROM logs l WHERE l.sev = "ERROR"
 	// (2) Re-run in check mode -> PASS now.
 	var out2, errb2 bytes.Buffer
 	c2 := &cli{prog: "n1k1", mode: "jsonlines", out: &out2, stderr: &errb2}
-	c2.cmdDetect("test --corpus " + dir)
+	c2.cmdRules("test --corpus " + dir)
 	if c2.failed {
 		t.Errorf("recorded golden should PASS on re-check; stderr:\n%s", errb2.String())
 	}
@@ -357,10 +357,10 @@ SELECT * FROM logs l WHERE l.sev = "ERROR"
 	}
 }
 
-// TestDetectRunBind: a corpus written against a LOGICAL keyspace resolves via a
+// TestRulesRunBind: a corpus written against a LOGICAL keyspace resolves via a
 // manifest and runs; an unresolved logical keyspace fails loud (coverage surfaces the
 // gap) rather than reporting a silently clean bundle.
-func TestDetectRunBind(t *testing.T) {
+func TestRulesRunBind(t *testing.T) {
 	// A flat bundle of *.json at the root (the manifest globs them directly).
 	root := t.TempDir()
 	for i, d := range []string{
@@ -382,7 +382,7 @@ func TestDetectRunBind(t *testing.T) {
 	}
 	var out, errb bytes.Buffer
 	c := &cli{prog: "n1k1", dir: root, mode: "jsonlines", out: &out, stderr: &errb}
-	c.cmdDetect("run --corpus " + corpus + " --bind " + good)
+	c.cmdRules("run --corpus " + corpus + " --bind " + good)
 	if !strings.Contains(out.String(), `"tag":"oom"`) {
 		t.Errorf("bound run produced no findings; stdout:\n%s\nstderr:\n%s", out.String(), errb.String())
 	}
@@ -400,7 +400,7 @@ func TestDetectRunBind(t *testing.T) {
 	}
 	var out2, errb2 bytes.Buffer
 	c2 := &cli{prog: "n1k1", dir: root, mode: "jsonlines", out: &out2, stderr: &errb2}
-	c2.cmdDetect("run --corpus " + corpus + " --bind " + bad)
+	c2.cmdRules("run --corpus " + corpus + " --bind " + bad)
 	if !strings.Contains(errb2.String(), "UNRESOLVED") {
 		t.Errorf("an unresolved logical keyspace must fail loud; stderr:\n%s", errb2.String())
 	}

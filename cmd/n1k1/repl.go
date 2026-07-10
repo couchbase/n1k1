@@ -145,7 +145,7 @@ func (c *cli) feed(line string) bool {
 		if t := strings.TrimLeft(line, " \t"); strings.HasPrefix(t, ".") {
 			quit := c.dot(strings.TrimSpace(line))
 			if c.failed {
-				c.sawError = true // latch for the non-interactive exit code (e.g. .detect test FAIL)
+				c.sawError = true // latch for the non-interactive exit code (e.g. .rules test FAIL)
 			}
 			return quit
 		}

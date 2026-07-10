@@ -16,7 +16,7 @@ package glue
 // corpus_fixture.go runs a recipe's GOLDEN FIXTURE (DESIGN-prepare.md phase 7,
 // "a golden-fixture diff ... is the detector's unit test"). It builds a throwaway
 // single-keyspace datastore from the fixture's input rows, runs JUST that one detector
-// over it (through the exact CorpusCompile -> Run path .detect run uses, so the produced
+// over it (through the exact CorpusCompile -> Run path .rules run uses, so the produced
 // findings' shape matches a real run), and returns the findings for the caller to diff
 // against the recipe's @expect golden (DiffFindings) or record as the new golden
 // (RewriteExpect + --update).

@@ -19,14 +19,14 @@ import (
 	"github.com/couchbase/n1k1/glue"
 )
 
-// detect_fix.go centralizes the AUTHOR-facing fix snippets used across the .detect
+// rules_fix.go centralizes the AUTHOR-facing fix snippets used across the .rules
 // command family. Every status an author sees -- a rejected / standalone / always-wake
 // / boxed detector, an unresolved logical keyspace, a fixture FAIL or a fixture with no
 // golden -- carries not just WHAT it means but HOW to fix it, with a one-line example,
 // so a tech-support engineer (or an AI agent) never has to reason it out. Keeping the
 // text in one keyed helper means run / lint / test all speak with one voice.
 
-// Fix-snippet situations -- the keys into detectFix.
+// Fix-snippet situations -- the keys into rulesFix.
 const (
 	fixRejected    = "rejected"     // parse/plan/convert failed: it never runs, so it can never fire.
 	fixStandalone  = "standalone"   // valid but not fused into the shared scan (own scan).
@@ -37,10 +37,10 @@ const (
 	fixNoGolden    = "no-golden"    // a fixture with no @expect recorded.
 )
 
-// detectFix returns the one-line fix snippet for a situation: what it means and how to
+// rulesFix returns the one-line fix snippet for a situation: what it means and how to
 // fix it, with a mini example. detail is the situation-specific fill-in (a reject/
 // standalone reason, or the logical keyspace name); it is ignored where none applies.
-func detectFix(situation, detail string) string {
+func rulesFix(situation, detail string) string {
 	switch situation {
 	case fixRejected:
 		msg := "not a runnable detector"
@@ -64,9 +64,9 @@ func detectFix(situation, detail string) string {
 		return "logical keyspace `" + detail + "` matched 0 files in this bundle -- a GAP, not a clean result. " +
 			"Check the manifest glob, e.g. `" + detail + " = **/" + detail + "*.log`."
 	case fixFixtureFail:
-		return "if this change is intended, re-record the golden: `.detect test --update`."
+		return "if this change is intended, re-record the golden: `.rules test --update`."
 	case fixNoGolden:
-		return "fixture has no expected findings recorded. Capture them: `.detect test --update`, then review + commit."
+		return "fixture has no expected findings recorded. Capture them: `.rules test --update`, then review + commit."
 	}
 	return ""
 }
@@ -81,16 +81,16 @@ func lintAdvice(d glue.DetectorLint) string {
 	var adv []string
 	switch d.Class {
 	case glue.LintRejected:
-		adv = append(adv, detectFix(fixRejected, d.Reason))
+		adv = append(adv, rulesFix(fixRejected, d.Reason))
 	case glue.LintStandalone:
-		adv = append(adv, detectFix(fixStandalone, d.Reason))
+		adv = append(adv, rulesFix(fixStandalone, d.Reason))
 	case glue.LintFused:
 		if !d.Indexed {
-			adv = append(adv, detectFix(fixAlwaysWake, ""))
+			adv = append(adv, rulesFix(fixAlwaysWake, ""))
 		}
 	}
 	if d.Lane == "boxed" {
-		adv = append(adv, detectFix(fixBoxed, ""))
+		adv = append(adv, rulesFix(fixBoxed, ""))
 	}
 	return strings.Join(adv, "; ")
 }
