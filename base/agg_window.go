@@ -13,6 +13,7 @@ package base
 
 import (
 	"bytes"
+	"math"
 	"strconv"
 
 	"github.com/couchbase/rhmap/store"
@@ -96,6 +97,22 @@ type WindowFrame struct {
 	denseRankVal  uint64
 	rankPrevOrder []byte
 	rankStarted   bool
+
+	// Invertible sliding SUM/AVG state (see SlideSum* methods), reset per partition.
+	sSum        float64 // running numeric sum
+	sNumCount   int64   // # numeric values in the window (SUM is NULL when 0)
+	sHasCount   int64   // # non-NULL/non-MISSING values (the AVG denominator)
+	sEverUnsafe bool    // a non-integer / out-of-range numeric entered -> incremental sum untrusted
+
+	// Sliding MIN/MAX monotonic deque (see SlideMinMax* methods), reset per partition.
+	// mmIdx[mmHead:] are the live candidate positions (ascending); mmVal is the parallel
+	// operand-value copy. mmSpare recycles popped value buffers so the deque allocates
+	// nothing steady-state.
+	mmIdx         []int64
+	mmVal         [][]byte
+	mmHead        int
+	mmSpare       [][]byte
+	mmEverMissing bool // a MISSING operand entered -> deque can't match AggMin/AggMax
 }
 
 // WindowRankValue computes the partition-level window function of the given kind for
@@ -217,6 +234,163 @@ func (wf *WindowFrame) RowVals(i int64, valsPre Vals) (Vals, error) {
 		return nil, err
 	}
 	return ValsDecode(buf, valsPre[:0]), nil
+}
+
+// -------------------------------------------------------------------
+
+// slideSumSafeLimit is 2^53: the magnitude below which every integer is exactly
+// representable as a float64 and float64 addition is exact + associative. While every
+// value AND every partial sum stays strictly inside (-2^53, 2^53) and is integer-valued,
+// an incremental running sum (add on enter, subtract on leave) is bit-identical to a
+// fresh left-to-right fold -- so the sliding SUM/AVG fast path is exact. The moment a
+// non-integer or out-of-range numeric enters, sEverUnsafe latches and the op re-folds.
+const slideSumSafeLimit = float64(int64(1) << 53)
+
+// SlideSumReset clears the sliding SUM/AVG state at a partition start.
+func (wf *WindowFrame) SlideSumReset() {
+	wf.sSum, wf.sNumCount, wf.sHasCount, wf.sEverUnsafe = 0, 0, 0, false
+}
+
+// SlideSumEnter folds a newly-entered operand value into the running SUM/AVG state,
+// classifying it exactly as AggSum/AggCount/AggAvg do (numeric -> sum + numeric count;
+// any non-NULL/non-MISSING -> has-value count, the AVG denominator).
+func (wf *WindowFrame) SlideSumEnter(v Val) {
+	if ValHasValue(v) {
+		wf.sHasCount++
+	}
+	parsedVal, parsedType := Parse(v)
+	if ParseTypeToValType[parsedType] != ValTypeNumber {
+		return
+	}
+	f, err := ParseFloat64(parsedVal)
+	if err != nil {
+		return
+	}
+	wf.sSum += f
+	wf.sNumCount++
+	if f != math.Trunc(f) || f <= -slideSumSafeLimit || f >= slideSumSafeLimit ||
+		wf.sSum <= -slideSumSafeLimit || wf.sSum >= slideSumSafeLimit {
+		wf.sEverUnsafe = true
+	}
+}
+
+// SlideSumLeave removes a departed operand value from the running SUM/AVG state -- the
+// exact inverse of SlideSumEnter (the sEverUnsafe latch is intentionally not cleared).
+func (wf *WindowFrame) SlideSumLeave(v Val) {
+	if ValHasValue(v) {
+		wf.sHasCount--
+	}
+	parsedVal, parsedType := Parse(v)
+	if ParseTypeToValType[parsedType] != ValTypeNumber {
+		return
+	}
+	f, err := ParseFloat64(parsedVal)
+	if err != nil {
+		return
+	}
+	wf.sSum -= f
+	wf.sNumCount--
+}
+
+// SlideSumExact reports whether the incrementally-maintained running sum is bit-exact
+// versus a fresh fold. False once any non-integer / out-of-range numeric has entered
+// this partition, in which case the caller must re-fold the frame for this row.
+func (wf *WindowFrame) SlideSumExact() bool { return !wf.sEverUnsafe }
+
+// SlideSumResult formats the running SUM byte-identically to AggSum.Result (NULL when
+// no numeric value is in the frame; float format 'f').
+func (wf *WindowFrame) SlideSumResult(buf []byte) (Val, []byte) {
+	if wf.sNumCount == 0 {
+		return ValNull, buf
+	}
+	buf = strconv.AppendFloat(buf[:0], wf.sSum, 'f', -1, 64)
+	return Val(buf), buf
+}
+
+// SlideAvgResult formats the running AVG byte-identically to AggAvg.Result: the numeric
+// sum over the has-value count (NULL when that count is 0). Note the denominator counts
+// non-NULL/non-MISSING values, including non-numerics -- matching AggAvg's AggCount half.
+func (wf *WindowFrame) SlideAvgResult(buf []byte) (Val, []byte) {
+	if wf.sHasCount == 0 {
+		return ValNull, buf
+	}
+	buf = strconv.AppendFloat(buf[:0], wf.sSum/float64(wf.sHasCount), 'f', -1, 64)
+	return Val(buf), buf
+}
+
+// -------------------------------------------------------------------
+
+// SlideMinMaxReset clears the sliding MIN/MAX deque at a partition start, recycling any
+// live value buffers so the next partition reuses them.
+func (wf *WindowFrame) SlideMinMaxReset() {
+	for i := wf.mmHead; i < len(wf.mmVal); i++ {
+		wf.mmSpare = append(wf.mmSpare, wf.mmVal[i][:0])
+	}
+	wf.mmIdx = wf.mmIdx[:0]
+	wf.mmVal = wf.mmVal[:0]
+	wf.mmHead = 0
+	wf.mmEverMissing = false
+}
+
+// SlideMinMaxExact reports whether the deque can match a fresh AggMin/AggMax fold. It
+// returns false once a MISSING operand (an empty Val) has entered this partition:
+// AggMin/AggMax store the running value's length as their have-a-value count, so a
+// stored MISSING (length 0) makes the next value overwrite unconditionally -- an
+// order-dependent, non-associative quirk a monotonic deque can't reproduce. NULL is
+// fine (a normal length-4 comparable). When false, the caller must re-fold.
+func (wf *WindowFrame) SlideMinMaxExact() bool { return !wf.mmEverMissing }
+
+// SlideMinMaxEnter pushes a newly-entered row (position idx, ascending across calls)
+// onto the monotonic deque, maintaining MIN (isMax false: values ascending front->back,
+// front is the min) or MAX (isMax true: values descending, front is the max). It
+// compares raw Vals via vc -- matching AggMin/AggMax (AggCompareUpdate), which do NOT
+// skip NULL/MISSING -- so a dominated tail is popped before idx is appended. The value
+// bytes are copied (the caller's operand buffer is reused across rows).
+func (wf *WindowFrame) SlideMinMaxEnter(idx int64, v Val, isMax bool, vc *ValComparer) {
+	if len(v) == 0 { // MISSING -- latch; the caller re-folds this partition (see SlideMinMaxExact)
+		wf.mmEverMissing = true
+	}
+	for len(wf.mmVal) > wf.mmHead {
+		back := wf.mmVal[len(wf.mmVal)-1]
+		cmp := vc.Compare(back, v)
+		if (isMax && cmp > 0) || (!isMax && cmp < 0) {
+			break // back still dominates v; keep it
+		}
+		// back is dominated by (or ties) v -- v enters later and lasts at least as long,
+		// so back can never win while v is present. Pop + recycle its buffer.
+		wf.mmSpare = append(wf.mmSpare, back[:0])
+		wf.mmVal = wf.mmVal[:len(wf.mmVal)-1]
+		wf.mmIdx = wf.mmIdx[:len(wf.mmIdx)-1]
+	}
+
+	var buf []byte
+	if n := len(wf.mmSpare); n > 0 {
+		buf = wf.mmSpare[n-1][:0]
+		wf.mmSpare = wf.mmSpare[:n-1]
+	}
+	buf = append(buf, v...)
+	wf.mmVal = append(wf.mmVal, buf)
+	wf.mmIdx = append(wf.mmIdx, idx)
+}
+
+// SlideMinMaxExpire drops front deque entries whose position is left of beg (the frame's
+// current Include.Beg), recycling their buffers. Positions are ascending, so a prefix.
+func (wf *WindowFrame) SlideMinMaxExpire(beg int64) {
+	for wf.mmHead < len(wf.mmIdx) && wf.mmIdx[wf.mmHead] < beg {
+		wf.mmSpare = append(wf.mmSpare, wf.mmVal[wf.mmHead][:0])
+		wf.mmHead++
+	}
+}
+
+// SlideMinMaxResult returns the current MIN/MAX (the deque front's value) formatted
+// byte-identically to AggCompareResult. An empty deque (empty frame) yields the empty
+// MISSING Val, matching AggMin/AggMax over an empty frame.
+func (wf *WindowFrame) SlideMinMaxResult(buf []byte) (Val, []byte) {
+	if wf.mmHead >= len(wf.mmVal) {
+		return Val(buf[:0]), buf[:0]
+	}
+	buf = append(buf[:0], wf.mmVal[wf.mmHead]...)
+	return Val(buf), buf
 }
 
 // -------------------------------------------------------------------

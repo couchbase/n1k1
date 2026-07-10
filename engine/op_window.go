@@ -341,6 +341,20 @@ func OpWindowFrames(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	// mangled into a "%s" placeholder by the gen-compiler (the base.Val("null") landmine).
 	isCount := aggName == "count"
 
+	// isMin/isMax gate the sliding MIN/MAX monotonic-deque fast path; isSum/isAvg gate
+	// the invertible sliding SUM/AVG fast path. Same baked-bool discipline as isCount
+	// (no string literal inside the emitted agg block).
+	isMin := aggName == "min"
+	isMax := aggName == "max"
+	isSum := aggName == "sum"
+	isAvg := aggName == "avg"
+
+	// A single baked bool per emitted branch condition (like isCount): the gen-compiler
+	// LzExprFmt's it into a literal true/false. A compound `isMin || isMax` in the
+	// emitted `else if` is riskier to format, so collapse it here.
+	isMinMax := isMin || isMax
+	isSumAvg := isSum || isAvg
+
 	if LzScope {
 		var lzHeap *store.Heap
 
@@ -378,12 +392,22 @@ func OpWindowFrames(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 		// that entered/left rather than re-counting. Reset per partition.
 		var lzSlideCount, lzSlidePrevBeg, lzSlidePrevEnd int64
 
+		// Previous frame edges for the sliding MIN/MAX (deque) and SUM/AVG (invertible)
+		// fast paths -- so each row folds only the rows that entered/left since the last.
+		// The running deque + sum state itself lives in base.WindowFrame. Reset per
+		// partition (at lzCurrentPos == 0).
+		var lzMMPrevEnd int64
+		var lzSumPrevBeg, lzSumPrevEnd int64
+
 		// Only the (interpreter-only) agg block below uses these; the gen-compiler
 		// strips that block via "// !lz", so keep them "used" in the compiled lane --
 		// same guard the rank buffers use above.
 		_, _, _, _ = lzAccA, lzAccB, lzResBuf, lzFrameVals
 		_, _, _ = lzGrowAcc, lzGrowAccOther, lzGrowFolded
 		_, _, _ = lzSlideCount, lzSlidePrevBeg, lzSlidePrevEnd
+		_, _, _ = lzMMPrevEnd, lzSumPrevBeg, lzSumPrevEnd
+		_, _, _, _ = isMin, isMax, isSum, isAvg
+		_, _ = isMinMax, isSumAvg
 
 		// Partition-level output buffer (row_number / rank / dense_rank / percent_rank /
 		// cume_dist / ntile). The peer-group state lives in base.WindowFrame
@@ -504,6 +528,12 @@ func OpWindowFrames(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 				var lzResVal base.Val
 
+				// lzResDone: a fast path computed lzResVal. The sliding SUM/AVG and MIN/MAX
+				// paths maintain running state every row but can only trust it while it is
+				// bit-exact vs a fresh fold (SlideSumExact / SlideMinMaxExact); when not, they
+				// leave lzResDone false and the general re-fold below runs for this row.
+				lzResDone := false
+
 				// Left-anchored, no-EXCLUDE frame (UNBOUNDED PRECEDING AND <anything>): as
 				// Pos advances the frame only GROWS (Include.Beg stays 0; Include.End is
 				// monotone non-decreasing), so carry the accumulator across rows and fold
@@ -545,6 +575,7 @@ func OpWindowFrames(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 					}
 
 					lzResVal, _, lzResBuf = lzAgg.Result(lzVars, lzGrowAcc, lzResBuf[:0])
+					lzResDone = true
 				} else if isCount && lzFrame.Exclude == base.WTokNoOthers {
 					// Invertible sliding COUNT (Include.Beg finite -- not left-anchored --
 					// so the frame slides forward: Include.Beg and Include.End are both
@@ -586,10 +617,94 @@ func OpWindowFrames(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 					lzSlidePrevEnd = lzFrame.Include.End
 
 					lzResVal, lzResBuf = base.WindowCountResult(lzSlideCount, lzResBuf[:0])
-				} else {
-					// General frame (fixed slide / arbitrary bounds / EXCLUDE): re-fold
-					// the whole frame from scratch each row. Ping-pong lzAcc/lzAccOther so
-					// Update reads the prior state and writes the next without allocating.
+					lzResDone = true
+				} else if isMinMax && lzFrame.Exclude == base.WTokNoOthers {
+					// Sliding MIN/MAX via a monotonic deque (Include.Beg finite -- a forward
+					// slide, both edges monotone). Feed newly-entered rows into the deque (it
+					// pops dominated tail candidates) and expire the front past Include.Beg;
+					// the front is the running MIN/MAX -- O(N) amortized over the partition,
+					// unlike the re-fold's O(N*frame). The deque picks an actual element value
+					// (no arithmetic), so it is exact -- EXCEPT when a MISSING operand enters:
+					// AggMin/AggMax store the running value's length as their have-a-value
+					// count, so a stored MISSING flips the next compare, an order-dependent
+					// quirk the deque can't mirror (SlideMinMaxExact latches false -> re-fold).
+					if lzCurrentPos == 0 {
+						lzFrame.SlideMinMaxReset()
+						lzMMPrevEnd = 0
+					}
+
+					var lzMMErr error
+					for lzI := lzMMPrevEnd; lzI < lzFrame.Include.End && lzMMErr == nil; lzI++ {
+						lzFrameVals, lzMMErr = lzFrame.RowVals(lzI, lzFrameVals[:0])
+						lzMMEnterVal := lzOperandFunc(lzFrameVals, lzYieldErr) // <== emitCaptured: pathNext "WFA"
+						if lzMMErr == nil {
+							lzFrame.SlideMinMaxEnter(lzI, lzMMEnterVal, isMax, lzVars.Ctx.ValComparer)
+						}
+					}
+					if lzMMErr != nil {
+						lzYieldErr(lzMMErr)
+					}
+
+					lzMMPrevEnd = lzFrame.Include.End
+					lzFrame.SlideMinMaxExpire(lzFrame.Include.Beg)
+
+					if lzFrame.SlideMinMaxExact() {
+						lzResVal, lzResBuf = lzFrame.SlideMinMaxResult(lzResBuf[:0])
+						lzResDone = true
+					}
+				} else if isSumAvg && lzFrame.Exclude == base.WTokNoOthers {
+					// Invertible sliding SUM/AVG (Include.Beg finite -- a forward slide). Add
+					// entering rows / subtract leaving rows from a running float64 sum + counts,
+					// rather than re-folding. This is bit-exact vs a fresh fold ONLY while every
+					// operand (and partial sum) is an integer < 2^53, where float64 add/subtract
+					// is exact and order-independent (the common log-count shape); the moment a
+					// non-integer / large numeric enters, SlideSumExact latches false and this
+					// row (and the rest of the partition) re-folds. AVG's denominator counts
+					// non-NULL/non-MISSING values (incl. non-numerics), matching AggAvg.
+					if lzCurrentPos == 0 {
+						lzFrame.SlideSumReset()
+						lzSumPrevBeg, lzSumPrevEnd = 0, 0
+					}
+
+					var lzSumErr error
+					// Rows that ENTERED [prevEnd, End).
+					for lzI := lzSumPrevEnd; lzI < lzFrame.Include.End && lzSumErr == nil; lzI++ {
+						lzFrameVals, lzSumErr = lzFrame.RowVals(lzI, lzFrameVals[:0])
+						lzSumEnterVal := lzOperandFunc(lzFrameVals, lzYieldErr) // <== emitCaptured: pathNext "WFA"
+						if lzSumErr == nil {
+							lzFrame.SlideSumEnter(lzSumEnterVal)
+						}
+					}
+					// Rows that LEFT [prevBeg, Beg).
+					for lzI := lzSumPrevBeg; lzI < lzFrame.Include.Beg && lzSumErr == nil; lzI++ {
+						lzFrameVals, lzSumErr = lzFrame.RowVals(lzI, lzFrameVals[:0])
+						lzSumLeaveVal := lzOperandFunc(lzFrameVals, lzYieldErr) // <== emitCaptured: pathNext "WFA"
+						if lzSumErr == nil {
+							lzFrame.SlideSumLeave(lzSumLeaveVal)
+						}
+					}
+					if lzSumErr != nil {
+						lzYieldErr(lzSumErr)
+					}
+
+					lzSumPrevBeg = lzFrame.Include.Beg
+					lzSumPrevEnd = lzFrame.Include.End
+
+					if lzFrame.SlideSumExact() {
+						if isAvg {
+							lzResVal, lzResBuf = lzFrame.SlideAvgResult(lzResBuf[:0])
+						} else {
+							lzResVal, lzResBuf = lzFrame.SlideSumResult(lzResBuf[:0])
+						}
+						lzResDone = true
+					}
+				}
+
+				if !lzResDone {
+					// General frame (fixed slide / arbitrary bounds / EXCLUDE / an aggregate
+					// with no fast path / a sliding SUM-AVG-MIN-MAX that hit a non-exact
+					// value): re-fold the whole frame from scratch. Ping-pong lzAcc/lzAccOther
+					// so Update reads the prior state and writes the next without allocating.
 					lzAcc := lzAgg.Init(lzVars, lzAccA[:0])
 					lzAccOther := lzAccB
 

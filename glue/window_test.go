@@ -262,6 +262,60 @@ func TestWindowSlidingCount(t *testing.T) {
 	}
 }
 
+// TestWindowSlidingSumAvgMinMax exercises the sliding-frame fast paths for SUM/AVG
+// (invertible, integer-exact) and MIN/MAX (monotonic deque) over a finite-left ROWS
+// frame -- the shape whose brute-force re-fold was O(N*frame). Values are integers, so
+// the fast paths produce the result; a float column at the end confirms the SUM re-fold
+// fallback (SlideSumExact false) is still correct.
+func TestWindowSlidingSumAvgMinMax(t *testing.T) {
+	sess := windowTestSession(t) // n = 10,20,30,40,50 ordered
+
+	// ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING over ORDER BY n. Frames:
+	//   {10,20} {10,20,30} {20,30,40} {30,40,50} {40,50}
+	c1 := `OVER (ORDER BY n ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING)`
+	if got := winCol(t, sess, `SELECT SUM(n) `+c1+` AS s FROM nums ORDER BY n`, "s"); !reflect.DeepEqual(got, []float64{30, 60, 90, 120, 90}) {
+		t.Errorf("sliding SUM -C1: got %v", got)
+	}
+	if got := winCol(t, sess, `SELECT AVG(n) `+c1+` AS s FROM nums ORDER BY n`, "s"); !reflect.DeepEqual(got, []float64{15, 20, 30, 40, 45}) {
+		t.Errorf("sliding AVG -C1: got %v", got)
+	}
+	if got := winCol(t, sess, `SELECT MIN(n) `+c1+` AS s FROM nums ORDER BY n`, "s"); !reflect.DeepEqual(got, []float64{10, 10, 20, 30, 40}) {
+		t.Errorf("sliding MIN -C1: got %v", got)
+	}
+	if got := winCol(t, sess, `SELECT MAX(n) `+c1+` AS s FROM nums ORDER BY n`, "s"); !reflect.DeepEqual(got, []float64{20, 30, 40, 50, 50}) {
+		t.Errorf("sliding MAX -C1: got %v", got)
+	}
+
+	// Asymmetric grep -B2 shape (2 PRECEDING AND CURRENT ROW), SUM:
+	//   {10} {10,20} {10,20,30} {20,30,40} {30,40,50}
+	b2 := `OVER (ORDER BY n ROWS BETWEEN 2 PRECEDING AND CURRENT ROW)`
+	if got := winCol(t, sess, `SELECT SUM(n) `+b2+` AS s FROM nums ORDER BY n`, "s"); !reflect.DeepEqual(got, []float64{10, 30, 60, 90, 120}) {
+		t.Errorf("sliding SUM -B2: got %v", got)
+	}
+	if got := winCol(t, sess, `SELECT MAX(n) `+b2+` AS s FROM nums ORDER BY n`, "s"); !reflect.DeepEqual(got, []float64{10, 20, 30, 40, 50}) {
+		t.Errorf("sliding MAX -B2: got %v", got)
+	}
+
+	// A non-integer operand forces the SUM re-fold fallback (SlideSumExact latches
+	// false); the result must still be correct. v = 1.5, 2, 3 ordered; frame
+	// 1 PRECEDING AND CURRENT ROW: {1.5} {1.5,2} {2,3} -> 1.5, 3.5, 5.
+	dir := t.TempDir()
+	ks := filepath.Join(dir, "default", "fnums")
+	if err := os.MkdirAll(ks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ks, "f.jsonl"), []byte(`{"v":1.5}`+"\n"+`{"v":2}`+"\n"+`{"v":3}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s2, err := OpenSession(dir, "default")
+	if err != nil {
+		t.Fatalf("OpenSession: %v", err)
+	}
+	if got := winCol(t, s2, `SELECT SUM(v) OVER (ORDER BY v ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS s FROM fnums ORDER BY v`, "s"); !reflect.DeepEqual(got, []float64{1.5, 3.5, 5}) {
+		t.Errorf("sliding SUM float-fallback: got %v", got)
+	}
+}
+
 // TestWindowRatioAndDistinct: RATIO_TO_REPORT(x) = x / SUM(x over the frame), and
 // SUM/AVG(DISTINCT x) OVER a frame (which dedup the frame's values).
 func TestWindowRatioAndDistinct(t *testing.T) {
