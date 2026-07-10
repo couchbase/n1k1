@@ -24,6 +24,7 @@ import (
 	"github.com/couchbase/query/parser/n1ql"
 	"github.com/couchbase/query/plan"
 	"github.com/couchbase/query/planner"
+	"github.com/couchbase/query/rewrite"
 	"github.com/couchbase/query/semantics"
 	"github.com/couchbase/query/settings"
 	"github.com/couchbase/query/util"
@@ -57,6 +58,14 @@ func ParseStatement(stmt, namespace string, ent bool) (algebra.Statement, error)
 
 	_, err = s.Accept(semantics.GetSemChecker(s.Type(), txn))
 	if err != nil {
+		return nil, err
+	}
+
+	// Standard pre-plan rewrite (REWRITE_PHASE1) -- cbq's sanitizer/server always run
+	// this between semantics and planning. It resolves named WINDOW clause references
+	// (`... OVER w ... WINDOW w AS (...)`) into their partition/order/frame, so the
+	// frame applies instead of defaulting to the whole partition.
+	if _, err = s.Accept(rewrite.NewRewrite(rewrite.REWRITE_PHASE1)); err != nil {
 		return nil, err
 	}
 

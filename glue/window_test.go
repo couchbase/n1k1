@@ -271,6 +271,29 @@ func TestWindowRangePeers(t *testing.T) {
 	}
 }
 
+// TestWindowNamedClause: a named WINDOW clause (`... OVER w ... WINDOW w AS (...)`)
+// resolves to its frame/order (via the pre-plan rewrite), so it matches the inline
+// form and can be reused across several functions.
+func TestWindowNamedClause(t *testing.T) {
+	sess := windowTestSession(t)
+
+	// One named ROWS window reused by SUM + MIN.
+	stmt := `SELECT n, SUM(n) OVER w AS s, MIN(n) OVER w AS mn
+	         FROM nums WINDOW w AS (ORDER BY n ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING)
+	         ORDER BY n`
+	if got := winCol(t, sess, stmt, "s"); !reflect.DeepEqual(got, []float64{30, 60, 90, 120, 90}) {
+		t.Errorf("named-window SUM: got %v", got)
+	}
+	if got := winCol(t, sess, stmt, "mn"); !reflect.DeepEqual(got, []float64{10, 10, 20, 30, 40}) {
+		t.Errorf("named-window MIN: got %v", got)
+	}
+
+	// A named RANGE window -> running total (matches OVER (ORDER BY n)).
+	if got := winCol(t, sess, `SELECT SUM(n) OVER w AS s FROM nums WINDOW w AS (ORDER BY n) ORDER BY n`, "s"); !reflect.DeepEqual(got, []float64{10, 30, 60, 100, 150}) {
+		t.Errorf("named-window running total: got %v", got)
+	}
+}
+
 // TestWindowMultipleAggregates: several window aggregates in one query each get their
 // own "^aggregates|..." column down the chain (the multi-aggregate fix -- a
 // re-partitioning chain previously dropped all but the last).
