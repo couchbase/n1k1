@@ -172,6 +172,27 @@ func (c *cli) printKeyspaces(w io.Writer) {
 		fmt.Fprintf(w, "  %s\n", c.style.Dim(
 			"whole-file = one row per file (a text blob); frame it into rows with a *.extract.js recipe."))
 	}
+	// IDEA-0012: a bundle dir hides its big raw logs (memcached.log, couchbase.log,
+	// ...) -- they're present but no recipe frames them, so they're not keyspaces and
+	// otherwise leave no trace. Surface them so the user knows the data is there.
+	if unexposed := glue.UnexposedRecordFiles(c.dir); len(unexposed) > 0 {
+		shown, extra := unexposed, 0
+		if len(shown) > 6 {
+			extra, shown = len(shown)-6, shown[:6]
+		}
+		list := strings.Join(shown, ", ")
+		if extra > 0 {
+			list += fmt.Sprintf(", +%d more", extra)
+		}
+		noun := "files"
+		if len(unexposed) == 1 {
+			noun = "file"
+		}
+		fmt.Fprintf(w, "  %s\n", c.style.Dim(fmt.Sprintf(
+			"%d more %s here aren't keyspaces (no recipe frames them): %s", len(unexposed), noun, list)))
+		fmt.Fprintf(w, "  %s\n", c.style.Dim(
+			"→ query one directly (n1k1 <dir>/"+shown[0]+"), or add a *.extract.js recipe to frame it into rows."))
+	}
 }
 
 // keyspaceFraming resolves a keyspace's record-framing summary (IDEA-0007) for the

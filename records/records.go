@@ -1236,6 +1236,15 @@ func Walk(dir string, opts WalkOptions) (Source, error) {
 	return &walkSource{dir: dir, files: files, opts: opts}, nil
 }
 
+// isHiddenDir reports whether path is a dot-prefixed directory BELOW the walk root
+// (the root itself is never skipped, even if it happens to be dot-named). Every
+// record walk skips such dirs so VCS metadata (.git/.hg/.svn), the tool's own .n1k1
+// sidecar, and any other hidden .foobar/ never leak into a scan or get misread as a
+// data subdirectory.
+func isHiddenDir(path, root string) bool {
+	return path != root && strings.HasPrefix(filepath.Base(path), ".")
+}
+
 // WalkFiles returns the sorted list of eligible record-file paths under dir -- the
 // directory-listing half of Walk. Exposed so a caller can cache the listing across
 // repeated scans of the same keyspace (a nested-loop join re-scans O(N) times, and
@@ -1248,6 +1257,9 @@ func WalkFiles(dir string, opts WalkOptions) ([]string, error) {
 			return err
 		}
 		if info.IsDir() {
+			if isHiddenDir(path, dir) {
+				return filepath.SkipDir
+			}
 			if !opts.Recurse && path != dir {
 				return filepath.SkipDir
 			}

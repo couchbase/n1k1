@@ -176,6 +176,52 @@ func TestKeyspacesFramingTags(t *testing.T) {
 	}
 }
 
+// TestKeyspacesUnexposedFilesHint: a bundle-style dir (top-level files + a subdir)
+// hints the unframed top-level logs that aren't keyspaces (IDEA-0012), and never
+// exposes or mentions files inside a dot-dir (.git/.n1k1).
+func TestKeyspacesUnexposedFilesHint(t *testing.T) {
+	root := t.TempDir()
+	write := func(rel, body string) {
+		p := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("data.jsonl", `{"a":1}`+"\n")     // structured -> keyspace
+	write("memcached.log", "raw log\n")     // unframed -> hinted
+	write("couchbase.log", "more raw\n")    // unframed -> hinted
+	write("stats/x.txt", "x\n")             // a subdir -> bundle (B3) layout
+	write(".git/junk.jsonl", `{"j":1}`+"\n") // dot-dir -> never exposed nor mentioned
+
+	sess, err := glue.OpenSession(root, "default")
+	if err != nil {
+		t.Fatalf("OpenSession: %v", err)
+	}
+	var buf bytes.Buffer
+	c := &cli{sess: sess, dir: root, out: &buf}
+	c.printKeyspaces(&buf)
+	out := buf.String()
+
+	for _, want := range []string{
+		"data",                // the structured keyspace is listed
+		"aren't keyspaces",    // the unframed-files hint fired
+		"memcached.log", "couchbase.log",
+		"add a *.extract.js recipe",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf(".tables output missing %q; got:\n%s", want, out)
+		}
+	}
+	for _, bad := range []string{"junk", ".git"} {
+		if strings.Contains(out, bad) {
+			t.Errorf(".tables output leaked hidden-dir content %q; got:\n%s", bad, out)
+		}
+	}
+}
+
 // TestSchemaFlatRootUnion: a flat-root dir samples the union of fields across its
 // files (the b.jsonl-only "z" field must appear).
 func TestSchemaFlatRootUnion(t *testing.T) {

@@ -52,6 +52,9 @@ func GlobFiles(absGlob string, opts WalkOptions) (base string, files []string, e
 			return e
 		}
 		if info.IsDir() {
+			if isHiddenDir(path, base) {
+				return filepath.SkipDir // skip .git/.n1k1/.hidden dirs (never glob into them)
+			}
 			return nil
 		}
 		if opts.eligible(path) && globMatch(pattern, path) {

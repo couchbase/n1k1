@@ -168,6 +168,12 @@ func topLevelRecordFiles(dir string) (files []string, hasSubdir bool) {
 	}
 	for _, e := range entries {
 		if e.IsDir() {
+			// Ignore dot-prefixed dirs (.git/.n1k1 sidecar/.hidden): they're not data,
+			// and letting one flip hasSubdir would misread a flat dir of files (once its
+			// .n1k1 sidecar appears) as the per-file B3 layout.
+			if strings.HasPrefix(e.Name(), ".") {
+				continue
+			}
 			hasSubdir = true
 		} else if records.IsRecordFile(e.Name()) {
 			files = append(files, e.Name())
@@ -175,6 +181,29 @@ func topLevelRecordFiles(dir string) (files []string, hasSubdir bool) {
 	}
 	sort.Strings(files)
 	return files, hasSubdir
+}
+
+// UnexposedRecordFiles returns the top-level record-like files under dir that did NOT
+// become keyspaces: plain .log/.txt/document files that no extract recipe frames and
+// that aren't a structured format (the exact files topLevelRecordFiles' B3 branch
+// skips). On a cbcollect bundle these are the big raw logs (memcached.log,
+// couchbase.log, ...) -- present but query-hidden until a recipe frames them. The CLI
+// surfaces them as a .tables hint (IDEA-0012) so a user knows the data is there. Empty
+// unless dir is a bundle-style layout (top-level files alongside subdirs); a flat dir
+// with no subdirs unions all its files into one keyspace, so nothing is unexposed.
+func UnexposedRecordFiles(dir string) []string {
+	files, hasSubdir := topLevelRecordFiles(dir)
+	if !hasSubdir {
+		return nil
+	}
+	var out []string
+	for _, name := range files {
+		if records.IsStructuredFile(name) || records.RecipeFor(name) != nil {
+			continue // exposed as a keyspace already (structured or recipe-framed).
+		}
+		out = append(out, name)
+	}
+	return out
 }
 
 // --------------------------------------------------------- datastore wrapper

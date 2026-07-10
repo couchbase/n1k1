@@ -93,6 +93,54 @@ func TestWalkRecursiveUnion(t *testing.T) { // scenario E
 	}
 }
 
+// TestWalkSkipsHiddenDirs: every record walk (recursive WalkFiles and GlobFiles)
+// skips dot-prefixed subdirs -- .git / the .n1k1 sidecar / any .hidden -- so VCS
+// metadata and the tool's own cache never leak into a scan (IDEA-0012 sibling).
+func TestWalkSkipsHiddenDirs(t *testing.T) {
+	root := t.TempDir()
+	write := func(rel, body string) {
+		p := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("a.jsonl", `{"x":1}`+"\n")
+	write("sub/b.jsonl", `{"x":2}`+"\n")
+	write(".git/c.jsonl", `{"x":3}`+"\n")     // must be skipped
+	write(".n1k1/d.jsonl", `{"x":4}`+"\n")    // must be skipped (sidecar)
+	write("sub/.hidden/e.jsonl", `{"x":5}`+"\n") // nested dot-dir must be skipped
+
+	opts := AllModes()
+	opts.Recurse = true
+
+	assertNoHidden := func(what string, files []string) {
+		for _, f := range files {
+			if strings.Contains(f, "/.git/") || strings.Contains(f, "/.n1k1/") ||
+				strings.Contains(f, "/.hidden/") {
+				t.Errorf("%s returned a hidden-dir file: %s", what, f)
+			}
+		}
+		if len(files) != 2 { // a.jsonl + sub/b.jsonl
+			t.Errorf("%s returned %d files, want 2 (a.jsonl, sub/b.jsonl): %v", what, len(files), files)
+		}
+	}
+
+	wf, err := WalkFiles(root, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertNoHidden("WalkFiles", wf)
+
+	_, gf, err := GlobFiles(filepath.Join(root, "**", "*.jsonl"), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertNoHidden("GlobFiles", gf)
+}
+
 func TestWalkGzip(t *testing.T) { // scenario H
 	s, err := Walk(ex("archive/default/orders"), AllModes())
 	if err != nil {
