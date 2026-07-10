@@ -327,6 +327,38 @@ func TestCorpusFusedProjection(t *testing.T) {
 	}
 }
 
+// TestCorpusRunReport: RunReport returns per-keyspace scanned-row counts (the shared
+// scan's RowsIn) and CorpusCompile records each fused detector's keyspace -- the
+// substrate for .rules run's per-detector hit stats (IDEA-0015).
+func TestCorpusRunReport(t *testing.T) {
+	sess := corpusTestSession(t) // logs: 4 rows; events: 3 rows
+	cc, err := sess.CorpusCompile([]CorpusDetector{
+		{Tag: "err", Stmt: `SELECT * FROM logs l WHERE l.sev = "ERROR"`},
+		{Tag: "login", Stmt: `SELECT * FROM events e WHERE e.act = "login"`},
+	})
+	if err != nil {
+		t.Fatalf("CorpusCompile: %v", err)
+	}
+	if cc.DetKeyspace["err"] != "default:logs" || cc.DetKeyspace["login"] != "default:events" {
+		t.Fatalf("DetKeyspace = %v, want err->default:logs, login->default:events", cc.DetKeyspace)
+	}
+
+	findings, report, err := cc.RunReport()
+	if err != nil {
+		t.Fatalf("RunReport: %v", err)
+	}
+	if len(findings) == 0 {
+		t.Fatal("expected some findings")
+	}
+	// The shared scans fanned every row of each keyspace, independent of how many matched.
+	if got := report.ScannedByKeyspace["default:logs"]; got != 4 {
+		t.Errorf("scanned default:logs = %d, want 4 (all rows fanned)", got)
+	}
+	if got := report.ScannedByKeyspace["default:events"]; got != 3 {
+		t.Errorf("scanned default:events = %d, want 3", got)
+	}
+}
+
 // TestCorpusCompileSingleKeyspace: a corpus confined to one keyspace returns the
 // per-keyspace broadcast directly (no union-all wrapper), and an empty / all-
 // unfusable corpus yields a nil plan (Run -> no findings).

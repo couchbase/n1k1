@@ -124,6 +124,48 @@ func TestRulesHelp(t *testing.T) {
 // detector, an always-wake detector, and a rejected one surface their snippets in the
 // lint advice column and (rejected) in the run health block; a fixture with no @expect
 // surfaces the "capture the golden" snippet in test output.
+// TestRulesRunHitStats: .rules run prints per-detector hit stats (IDEA-0015) so a
+// 0-findings detector is debuggable -- a matched=0 over a scanned-many keyspace is a
+// predicate miss, while matched=0 over a scanned=1 whole-file blob is an upstream
+// framing problem, and the two carry different hints.
+func TestRulesRunHitStats(t *testing.T) {
+	root := t.TempDir()
+	write := func(rel, body string) {
+		p := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A framed keyspace (3 rows, 2 ERROR) and a whole-file blob keyspace (1 row).
+	write("default/logs/l.jsonl", `{"sev":"ERROR","msg":"a"}`+"\n"+`{"sev":"ERROR","msg":"b"}`+"\n"+`{"sev":"INFO","msg":"c"}`+"\n")
+	write("default/blob/dump.log", "just raw text\nnothing structured\n")
+
+	corpus := writeCorpus(t, map[string]string{
+		"hit":       `SELECT * FROM logs l WHERE l.sev = "ERROR"`,   // matches 2 of 3
+		"miss_pred": `SELECT * FROM logs l WHERE l.sev = "NOPE"`,    // 0 of 3 -> predicate miss
+		"miss_blob": `SELECT * FROM blob b WHERE b.text LIKE "%zzz%"`, // 0 of 1 -> blob
+	})
+
+	var out, errb bytes.Buffer
+	c := &cli{prog: "n1k1", dir: root, mode: "jsonlines", out: &out, stderr: &errb}
+	c.cmdRules("run --corpus " + corpus)
+	got := errb.String() // the per-detector block goes to stderr
+
+	for _, want := range []string{
+		"per-detector hits",
+		"hit", "matched=2",
+		"miss_pred", "predicate matched none of 3 scanned rows",
+		"miss_blob", "scanned 1 row", "whole-file blob",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf(".rules run hit-stats missing %q; stderr:\n%s", want, got)
+		}
+	}
+}
+
 func TestRulesFixSnippets(t *testing.T) {
 	root := newLogsBundle(t)
 	corpus := writeCorpus(t, map[string]string{

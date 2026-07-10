@@ -317,7 +317,7 @@ func (c *cli) cmdRulesRun(arg string) {
 	}
 	c.reportCorpusHealth(cc, len(dets))
 
-	findings, err := cc.Run()
+	findings, report, err := cc.RunReport()
 	if err != nil {
 		fmt.Fprintf(c.stderr, "%s: .rules run: %v\n", c.prog, err)
 		c.failed = true
@@ -337,6 +337,57 @@ func (c *cli) cmdRulesRun(arg string) {
 	}
 	c.renderRows(rows, "", false)
 	fmt.Fprintf(c.stderr, "%s%d finding(s) from %d detector(s)\n", c.icon("🔎 "), len(findings), len(dets))
+	c.reportDetectorHits(dets, findings, cc, report)
+}
+
+// reportDetectorHits prints the per-detector hit stats (IDEA-0015): for each detector,
+// how many findings it matched and -- for a fused detector -- how many rows its
+// keyspace scanned. The point is a debuggable 0-findings run: a detector that matched
+// 0 gets an annotation distinguishing "the keyspace scanned ~0 rows" (a whole-file
+// blob / empty scan -- the real cause is upstream framing) from "the predicate matched
+// none of N scanned rows" (a predicate bug). Goes to stderr so it never pollutes the
+// findings on stdout.
+func (c *cli) reportDetectorHits(dets []glue.CorpusDetector, findings []glue.Finding,
+	cc *glue.CompiledCorpus, report *glue.CorpusRunReport) {
+	if len(dets) == 0 {
+		return
+	}
+	matched := make(map[string]int, len(dets))
+	for _, f := range findings {
+		matched[f.Tag]++
+	}
+	fmt.Fprintf(c.stderr, "  %s\n", c.style.Dim("per-detector hits (scanned = rows its keyspace fanned; matched = findings):"))
+	for _, d := range dets {
+		ks, fused := cc.DetKeyspace[d.Tag]
+		m := matched[d.Tag]
+		var line string
+		if fused {
+			scanned := report.ScannedByKeyspace[ks]
+			line = fmt.Sprintf("%-24s matched=%-5d %s scanned=%d", d.Tag, m, ks, scanned)
+			if m == 0 {
+				line += "   " + zeroMatchHint(scanned)
+			}
+		} else {
+			// Standalone (GROUP BY / window / ASOF / ...) or rejected: no shared scan.
+			line = fmt.Sprintf("%-24s matched=%-5d (standalone/non-fused)", d.Tag, m)
+		}
+		fmt.Fprintf(c.stderr, "    %s\n", c.style.Dim(line))
+	}
+}
+
+// zeroMatchHint explains a 0-findings fused detector from its keyspace's scanned-row
+// count: ~0 rows means the data never reached the predicate (an empty scan, or a
+// whole-file blob that isn't framed into rows -- see .tables); many rows means the
+// predicate itself matched nothing.
+func zeroMatchHint(scanned int64) string {
+	switch {
+	case scanned == 0:
+		return "← 0 matched: keyspace scanned 0 rows (empty or unresolved)"
+	case scanned == 1:
+		return "← 0 matched: keyspace scanned 1 row — likely a whole-file blob, not framed into rows (see .tables)"
+	default:
+		return fmt.Sprintf("← 0 matched: predicate matched none of %d scanned rows — check the predicate", scanned)
+	}
 }
 
 // reportBindingCoverage probes each manifest logical keyspace against the bundle and

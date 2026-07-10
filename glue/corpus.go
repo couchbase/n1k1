@@ -173,7 +173,24 @@ type CompiledCorpus struct {
 	Rejected       []RejectedDetector
 	FindingsLabels base.Labels
 
+	// DetKeyspace maps a FUSED detector's Tag to the keyspace it scans (its qualified
+	// name), so a run report can attribute per-keyspace scanned-row counts to each
+	// detector (IDEA-0015 hit stats). Standalone/rejected detectors are absent.
+	DetKeyspace map[string]string
+
 	session *Session
+}
+
+// CorpusRunReport accompanies a RunReport run with the diagnostics an author needs to
+// debug a 0-findings detector (IDEA-0015): how many rows each fused keyspace scan
+// fanned (ScannedByKeyspace, the shared-scan RowsIn) alongside the per-detector match
+// count the caller tallies from the findings. It distinguishes "the keyspace scanned
+// ~0 rows" (a whole-file blob / empty scan -- the IDEA-0001 trap) from "the predicate
+// matched nothing of N scanned".
+type CorpusRunReport struct {
+	// ScannedByKeyspace maps a keyspace's qualified name to the rows its fused shared
+	// scan fanned in (== the broadcast-indexed op's RowsIn). Fused keyspaces only.
+	ScannedByKeyspace map[string]int64
 }
 
 // corpusFindingsLabels is the uniform two-column findings schema every per-keyspace
@@ -214,6 +231,7 @@ func (s *Session) CorpusCompile(dets []CorpusDetector) (*CompiledCorpus, error) 
 
 	byKeyspace := map[string][]fusedDet{}
 	keyspacerFor := map[string]interface{}{}
+	detKeyspace := map[string]string{}
 	var standalone []CorpusDetector
 	var rejected []RejectedDetector
 
@@ -233,6 +251,7 @@ func (s *Session) CorpusCompile(dets []CorpusDetector) (*CompiledCorpus, error) 
 			}
 			byKeyspace[info.keyspaceName] = append(byKeyspace[info.keyspaceName],
 				fusedDet{tag: d.Tag, pred: info.pred, proj: info.proj})
+			detKeyspace[d.Tag] = info.keyspaceName
 		}
 	}
 
@@ -297,6 +316,7 @@ func (s *Session) CorpusCompile(dets []CorpusDetector) (*CompiledCorpus, error) 
 		Standalone:     standalone,
 		Rejected:       rejected,
 		FindingsLabels: findingsLabels,
+		DetKeyspace:    detKeyspace,
 		session:        s,
 	}, nil
 }
@@ -671,6 +691,54 @@ func (cc *CompiledCorpus) Run() ([]Finding, error) {
 	return findings, err
 }
 
+// RunReport runs the corpus like Run and additionally returns per-keyspace scanned-row
+// counts (IDEA-0015): it lays a stats overlay over the fused Plan so each shared scan's
+// RowsIn is captured, letting a caller tell a 0-findings detector whose keyspace
+// scanned ~0 rows (a whole-file blob / empty scan) apart from one whose predicate
+// matched nothing. Findings are buffered like Run.
+func (cc *CompiledCorpus) RunReport() ([]Finding, *CorpusRunReport, error) {
+	var stats *base.Stats
+	if cc.Plan != nil {
+		stats = base.StatsLayout(cc.Plan)
+	}
+	var findings []Finding
+	err := cc.runStream(func(f Finding) error {
+		findings = append(findings, f)
+		return nil
+	}, stats)
+	return findings, &CorpusRunReport{ScannedByKeyspace: cc.scannedByKeyspace(stats)}, err
+}
+
+// scannedByKeyspace reads each fused broadcast-indexed op's RowsIn (its shared scan's
+// fanned-row count) out of a post-run stats overlay, keyed by the op's keyspace. Empty
+// when stats weren't collected. The op pointers walked here are the SAME ones
+// StatsLayout stamped with StatsBase and the engine bumped, so the read is exact.
+func (cc *CompiledCorpus) scannedByKeyspace(stats *base.Stats) map[string]int64 {
+	out := map[string]int64{}
+	if stats == nil || cc.Plan == nil {
+		return out
+	}
+	var walk func(op *base.Op)
+	walk = func(op *base.Op) {
+		if op == nil {
+			return
+		}
+		if op.Kind == "broadcast-indexed" && op.StatsBase >= 0 {
+			slot := op.StatsBase + engine.StatBroadcastIndexedRowsIn
+			if slot >= 0 && slot < len(stats.Counters) {
+				if ks := branchScanKeyspace(op, cc.Temps); ks != nil {
+					out[ks.QualifiedName()] = stats.Counters[slot]
+				}
+			}
+		}
+		for _, c := range op.Children {
+			walk(c)
+		}
+	}
+	walk(cc.Plan)
+	return out
+}
+
 // RunStream executes the compiled corpus and calls onFinding for EACH tagged
 // finding as it is produced -- so a consumer can stream at bounded memory instead
 // of materializing the whole result set. It runs first each STANDALONE detector via
@@ -687,6 +755,13 @@ func (cc *CompiledCorpus) Run() ([]Finding, error) {
 // scan. So peak memory is bounded by the largest single standalone result, not the
 // whole corpus.
 func (cc *CompiledCorpus) RunStream(onFinding func(Finding) error) error {
+	return cc.runStream(onFinding, nil)
+}
+
+// runStream is RunStream's body, optionally wiring a stats overlay (non-nil only from
+// RunReport) so the fused Plan's per-op counters (e.g. each shared scan's RowsIn) are
+// captured. stats == nil is the zero-overhead default path.
+func (cc *CompiledCorpus) runStream(onFinding func(Finding) error, stats *base.Stats) error {
 	s := cc.session
 
 	// (A) Standalone detectors: run each verbatim through the full normal pipeline and
@@ -718,6 +793,9 @@ func (cc *CompiledCorpus) RunStream(onFinding func(Finding) error) error {
 	defer os.RemoveAll(tmpDir)
 
 	vars.Ctx.Pipe = s.Pipe
+	if stats != nil {
+		vars.Ctx.Stats = stats // RunReport: capture per-keyspace scanned (RowsIn) etc.
+	}
 
 	gctx := NewGlueContext(time.Now())
 	gctx.InitSubqueries(s.Store, s.Namespace, nil, nil) // no subqueries in fusable detectors
