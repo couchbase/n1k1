@@ -22,6 +22,7 @@ correctness backstop.
   - [Where the Converts come from: the `self` projection](#where-the-converts-come-from-the-self-projection)
   - [Levers tried that did NOT help](#levers-tried-that-did-not-help)
   - [Levers that help (ranked)](#levers-that-help-ranked)
+  - [Materialized CTE / derived-table re-scan: the read-side re-parse](#materialized-cte--derived-table-re-scan-the-read-side-re-parse-2026-07)
 - [The universe & the gap](#the-universe--the-gap)
 - [Roadmap: supportability tiers](#roadmap-supportability-tiers)
 - [How porting works — cbq's two-layer structure](#how-porting-works--cbqs-two-layer-structure)
@@ -340,6 +341,57 @@ forbids retaining) and `Result.Rows`. Keys in projection order, not sorted (valu
 boxed 776 ns/op, 22 allocs/op. This is the row-lifecycle counterpart to lever #2 (the
 projection side) — the remaining `Convert` call sites (`exec.go`, `subquery.go`,
 `expr.go`) genuinely need a `value.Value` for cbq interop, so they stay boxed.
+
+### Materialized CTE / derived-table re-scan: the read-side re-parse (2026-07)
+
+A different profiled shape — a multiply-referenced CTE cross-joined with itself:
+`WITH x AS (SELECT total FROM orders) SELECT count(1), sum(o1.total), sum(o2.total)
+FROM x o1, x o2, x o3, x o4, x o5` over 20-doc `orders` → 20⁵ = 3.2M cross-join rows.
+This is the flip side of the levers above: the cost is **not** `Convert` on projection
+or output, but **re-parsing an already-materialized boxed row on every access**.
+
+**What is already handled (don't re-do):**
+- **Materialize-once** (`319f599`, `glue/optimize_cte.go`): a non-recursive,
+  non-correlated CTE referenced N times is captured *once* into a temp heap, not
+  re-executed per reference. The plan is a single `temp-capture` feeding the
+  `temp-yield`s (one per `FROM x` ref); the 5 refs re-scan the one materialized temp.
+- **Temp-yield buffer reuse** (`7612f56`, `engine/op_temp.go`): `OpTempYield` reuses
+  one `base.Vals` backing array across decoded rows.
+- The `⟨boxed source⟩` / `⟨re-scanned per outer row⟩` explain markers (`f9d2be4`)
+  flag both properties in the converted plan.
+
+**Why the CTE body is boxed:** a `WITH` CTE used as a `FROM` source is *not* compiled
+to native ops — `glue/conv.go` converts it to an **`expr-scan`** op, and `ExprScanOp`
+(`glue/datastore.go`) evaluates it via `expr.Evaluate(item, ctx)`, i.e. through cbq's
+boxed subquery evaluator (`GlueContext.EvaluateSubquery`). The result is a cbq
+`value.Value` array, `json.Marshal`ed back to bytes; `OpTempCapture` (`op_temp.go`)
+`ValsEncode`s each element and appends it. So each stored temp entry is the **JSON text
+of a whole one-field object** — e.g. `{"total":129.50}` (verified: the raw source text
+`129.50`, not a reparsed `129.5`, survives — it is stored as JSON bytes, as one opaque
+`Val`, not decomposed into a native `total` column).
+
+**The residual cost (read side):** on `OpTempYield`, `ValsDecode` hands back that object
+`Val`; downstream `o1.total`/`o2.total` then, **per cross-join tuple** (millions of
+times, over only 20 distinct values): `jsonparser.searchKeys("total")` to navigate into
+the object (~25% CPU) + `strconv.ParseFloat` on its value (~15%). Two independent,
+not-yet-done levers:
+
+1. **Decompose boxed CTE/derived-table rows into native label columns at capture
+   (~25%, contained).** `expr-scan` yields each element as a single opaque object `Val`;
+   splitting it into the alias's `.["name"]` columns (like a native scan row) makes a
+   later `o.total` a column *index* rather than a `searchKeys` navigation. Attacks the
+   `⟨boxed source⟩` shape directly; the parse cost (below) remains.
+2. **Typed / parsed temp materialization (~15%, columnar territory).** Even a native
+   `total` column stores JSON-text bytes (`129.50`), so `SUM` re-`ParseFloat`s per
+   access. Killing this means storing the parsed value once (20 values, reused
+   millions of times) — i.e. a typed/columnar temp. See DESIGN-col.md (columnar temp /
+   `@col` vectorized agg); not an expression-layer change.
+
+The interp-lane hot path for this shape was also tightened in the same pass, but those
+two wins are engine ops, not expressions: `EmitPush` op-path memoized per-actor
+(`3266236`) and `OpGroup`'s per-row aggregate resolution hoisted to a pre-resolved
+index slice (`50754bd`) — together ~25% fewer allocs, ~26% wall. Recorded here only as
+the provenance of this profiling pass.
 
 ## The universe & the gap
 
