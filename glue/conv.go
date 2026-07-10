@@ -1185,14 +1185,25 @@ func (c *Conv) VisitWindowAggregate(o *plan.WindowAggregate) (interface{}, error
 			}
 		}
 
-		// The ORDER BY value is stored as a trailing "^worderby" column (the frame's
-		// ValIdx) for peer/value detection -- needed by RANGE/GROUPS value/current-row
-		// frames (incl. FIRST/LAST/NTH_VALUE's default RANGE frame) AND by RANK/
-		// DENSE_RANK. Supported for a SINGLE ORDER BY expr. LAG/LEAD force a
-		// whole-partition frame, so they don't need it; ROWS aggregates and ROW_NUMBER
-		// don't either.
-		appendOrderBy := (((frameType == "range" || frameType == "groups") && !isLag && !isLead) ||
-			isRankPeer) && len(orderByExprs) == 1
+		// The ORDER BY is stored as a trailing "^worderby" column (the frame's ValIdx)
+		// for peer/value detection. Two modes:
+		//   "value" -- the single numeric ORDER BY value, for a RANGE frame's arithmetic
+		//              bounds (ParseFloat64). Single ORDER BY column only.
+		//   "tuple" -- the ORDER BY tuple canonically encoded into one column, for peer
+		//              detection by bytes.Equal -- GROUPS frames and RANK/DENSE_RANK/
+		//              PERCENT_RANK/CUME_DIST. Works for any number of ORDER BY columns.
+		// LAG/LEAD force a whole-partition frame, so they don't need it; ROWS aggregates,
+		// ROW_NUMBER, and NTILE don't either.
+		isRanking := isRankRowNumber || isRankNtile || isRankPeer
+		orderByMode := ""
+		if len(orderByExprs) >= 1 && !isLag && !isLead {
+			if isRankPeer || frameType == "groups" {
+				orderByMode = "tuple" // Composite-key peers OK (any # of ORDER BY columns).
+			} else if frameType == "range" && len(orderByExprs) == 1 {
+				orderByMode = "value" // Single numeric ORDER BY column.
+			}
+		}
+		appendOrderBy := orderByMode != ""
 
 		partitionSlot := c.AddTemp(nil)
 
@@ -1219,7 +1230,7 @@ func (c *Conv) VisitWindowAggregate(o *plan.WindowAggregate) (interface{}, error
 				partitionings,
 				len(partitionBys), // # of the partitioning exprs for PARTITION-BY.
 				"",                // TODO: Additional tracking ("rank,denseRank").
-				appendOrderBy,     // store the ORDER BY value as a trailing "^worderby" col.
+				orderByMode,       // "" | "value" | "tuple": how "^worderby" is stored.
 			},
 			Children: []*base.Op{windowChild},
 		}
@@ -1276,9 +1287,13 @@ func (c *Conv) VisitWindowAggregate(o *plan.WindowAggregate) (interface{}, error
 
 		frameCfg = append(frameCfg, valIdx)
 
-		// LAG/LEAD are partition-relative (frame-independent): force a whole-partition
-		// ROWS frame so StepToOffset's StepVals can reach any offset row.
-		if isLag || isLead {
+		// LAG/LEAD are partition-relative (frame-independent), and ranking functions
+		// (ROW_NUMBER/RANK/DENSE_RANK/PERCENT_RANK/CUME_DIST/NTILE) compute from position
+		// + peers, not a frame. Both force a whole-partition ROWS frame: StepToOffset can
+		// then reach any offset row, and -- crucially for the "tuple" ValIdx column --
+		// CurrentUpdate never runs FindGroupEdge/ParseFloat64 (which a RANGE frame would,
+		// failing on a canonical multi-column tuple).
+		if isLag || isLead || isRanking {
 			frameCfg = []interface{}{"rows", "unbounded", 0, "unbounded", 0, "no-others", valIdx}
 		}
 
@@ -1294,15 +1309,14 @@ func (c *Conv) VisitWindowAggregate(o *plan.WindowAggregate) (interface{}, error
 		// window function maps to a base.AggCatalog aggregate, have the
 		// window-frames op compute it over each row's frame and append it under
 		// "^aggregates|"+agg.String(); the projection then reads it natively
-		// (exprTreeOptimizeNative), exactly as GROUP BY aggregates do. Non-aggregate
-		// window functions (ROW_NUMBER / RANK / LAG / FIRST_VALUE / ...) are left
-		// boxed for now -- ranking + offset wiring is a later step.
+		// (exprTreeOptimizeNative), exactly as GROUP BY aggregates do. Ranking and
+		// offset functions take their own branches below, through the same label path.
 		//
 		// Wired: ROWS frames; all-unbounded frames (OVER () / OVER (PARTITION BY g));
-		// and RANGE/GROUPS frames whose ORDER BY value column is stored (appendOrderBy,
-		// so ValIdx resolves peers/value-bounds). A RANGE/GROUPS frame WITHOUT that
-		// (multi-column ORDER BY) still needs a composite ValIdx, so it's left boxed
-		// rather than silently mis-computing.
+		// RANGE frames whose single numeric ORDER BY value is stored ("value" mode); and
+		// GROUPS frames whose canonical ORDER BY tuple is stored ("tuple" mode, any # of
+		// ORDER BY columns). A RANGE frame with multi-column ORDER BY has no single
+		// numeric value to bound on, so it stays boxed rather than mis-computing.
 		begUnbounded := len(frameCfg) > 1 && frameCfg[1] == "unbounded"
 		endUnbounded := len(frameCfg) > 3 && frameCfg[3] == "unbounded"
 		frameNativeOK := frameType == "rows" || (begUnbounded && endUnbounded) || appendOrderBy

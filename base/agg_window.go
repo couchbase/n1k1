@@ -21,12 +21,12 @@ import (
 // Partition-level window function kinds, computed by WindowRankValue from the
 // current row's position + peer group + partition count (no frame aggregate).
 const (
-	WRankRowNumber  = iota // ROW_NUMBER: 1-based position.
-	WRankRank              // RANK: first-peer position + 1 (gaps after ties).
-	WRankDenseRank         // DENSE_RANK: count of peer groups so far (no gaps).
-	WRankPercentRank       // PERCENT_RANK: (rank-1)/(N-1), in [0,1].
-	WRankCumeDist          // CUME_DIST: (#rows with ORDER BY value <= current)/N, in (0,1].
-	WRankNtile             // NTILE(k): 1-based bucket when the partition is split into k.
+	WRankRowNumber   = iota // ROW_NUMBER: 1-based position.
+	WRankRank               // RANK: first-peer position + 1 (gaps after ties).
+	WRankDenseRank          // DENSE_RANK: count of peer groups so far (no gaps).
+	WRankPercentRank        // PERCENT_RANK: (rank-1)/(N-1), in [0,1].
+	WRankCumeDist           // CUME_DIST: (#rows with ORDER BY value <= current)/N, in (0,1].
+	WRankNtile              // NTILE(k): 1-based bucket when the partition is split into k.
 )
 
 // WTok maps a window related configuration string to an internal
@@ -139,12 +139,22 @@ func (wf *WindowFrame) WindowRankValue(kind int, ntileN int64, buf []byte) (Val,
 		buf = strconv.AppendFloat(buf, pr, 'g', -1, 64)
 	case WRankCumeDist:
 		// (#rows with ORDER BY value <= current) / N = (last-peer position + 1) / N.
+		// Walk forward while the stored ValIdx column equals the current one (peers).
+		// This is a direct bytes.Equal on the ORDER BY value/tuple -- independent of the
+		// frame type, so it works whether the column is a single numeric value or a
+		// canonical multi-column tuple (composite ORDER BY). FindGroupEdge can't serve
+		// here: it does ParseFloat64 for any non-GROUPS frame, which fails on a tuple.
 		cd := 1.0
 		if n > 0 {
-			lastPeer, err := wf.FindGroupEdge(wf.Pos, 1, false)
-			if err == nil {
-				cd = float64(lastPeer+1) / float64(n)
+			last := wf.Pos
+			for i := wf.Pos + 1; i < n; i++ {
+				v, gerr := wf.GetValsVal(i, wf.ValIdx)
+				if gerr != nil || !bytes.Equal(v, curOrder) {
+					break
+				}
+				last = i
 			}
+			cd = float64(last+1) / float64(n)
 		}
 		buf = strconv.AppendFloat(buf, cd, 'g', -1, 64)
 	case WRankNtile:

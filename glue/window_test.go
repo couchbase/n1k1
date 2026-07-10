@@ -333,6 +333,54 @@ func TestWindowNtile(t *testing.T) {
 	}
 }
 
+// TestWindowCompositeOrderBy: multi-column ORDER BY peer detection. Peers are rows
+// with an equal ORDER BY *tuple* (a,b), which only the canonical "tuple" ^worderby
+// column resolves -- comparing just the first column would merge (1,2) into (1,1)'s
+// group. Fixture rows (a,b,x): (1,1,1),(1,2,2),(1,2,3),(2,1,4).
+func TestWindowCompositeOrderBy(t *testing.T) {
+	dir := t.TempDir()
+	ks := filepath.Join(dir, "default", "c")
+	if err := os.MkdirAll(ks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rows := `{"a":1,"b":1,"x":1}` + "\n" + `{"a":1,"b":2,"x":2}` + "\n" +
+		`{"a":1,"b":2,"x":3}` + "\n" + `{"a":2,"b":1,"x":4}` + "\n"
+	if err := os.WriteFile(filepath.Join(ks, "c.jsonl"), []byte(rows), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sess, err := OpenSession(dir, "default")
+	if err != nil {
+		t.Fatalf("OpenSession: %v", err)
+	}
+
+	const ord = " FROM c ORDER BY a, b, x"
+	for _, c := range []struct {
+		name, fn string
+		want     []float64
+	}{
+		// Groups: {(1,1)}, {(1,2),(1,2)}, {(2,1)}. If only column a were compared, all
+		// three (1,*) rows would collapse into one group (rank 1,1,1) -- these expected
+		// values only hold with full-tuple peers.
+		{"rank", "RANK()", []float64{1, 2, 2, 4}},
+		{"dense_rank", "DENSE_RANK()", []float64{1, 2, 2, 3}},
+		{"percent_rank", "PERCENT_RANK()", []float64{0, 1.0 / 3.0, 1.0 / 3.0, 1}},
+		{"cume_dist", "CUME_DIST()", []float64{0.25, 0.75, 0.75, 1}},
+	} {
+		stmt := "SELECT " + c.fn + " OVER (ORDER BY a, b) AS s" + ord
+		if got := winCol(t, sess, stmt, "s"); !reflect.DeepEqual(got, c.want) {
+			t.Errorf("%s composite: got %v, want %v\n  %s", c.name, got, c.want, stmt)
+		}
+	}
+
+	// GROUPS frame aggregate over the composite ORDER BY: the running SUM steps whole
+	// peer groups. Comparing only column a would give [6,6,6,10]; the (a,b) tuple keeps
+	// (1,1) and (1,2) as separate groups -> [1,6,6,10].
+	stmt := `SELECT SUM(x) OVER (ORDER BY a, b GROUPS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS s` + ord
+	if got := winCol(t, sess, stmt, "s"); !reflect.DeepEqual(got, []float64{1, 6, 6, 10}) {
+		t.Errorf("GROUPS composite sum: got %v, want [1 6 6 10]\n  %s", got, stmt)
+	}
+}
+
 // TestWindowNamedClause: a named WINDOW clause (`... OVER w ... WINDOW w AS (...)`)
 // resolves to its frame/order (via the pre-plan rewrite), so it matches the inline
 // form and can be reused across several functions.

@@ -54,11 +54,25 @@ func OpWindowPartition(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals
 
 	trackDenseRank := strings.Index(track, "denseRank") >= 0
 
-	// appendOrderBy: store the ORDER BY value(s) as trailing column(s), so a
-	// downstream RANGE/GROUPS frame can compare peers/values via WindowFrame.ValIdx.
+	// appendOrderBy: store the ORDER BY as a trailing "^worderby" column, so a
+	// downstream RANGE/GROUPS frame or ranking function reads peers/values via
+	// WindowFrame.ValIdx. Two modes (Params[4]):
+	//   "value" -- the raw single ORDER BY value, for a RANGE frame's numeric bounds
+	//              (ParseFloat64). Single ORDER BY column.
+	//   "tuple" -- the ORDER BY tuple canonically encoded into ONE column, for peer
+	//              detection by bytes.Equal (GROUPS frames + RANK/DENSE_RANK/
+	//              PERCENT_RANK/CUME_DIST); works for any number of ORDER BY columns.
+	// (A plain bool is also accepted as "value" for back-compat.)
 	appendOrderBy := false
+	appendOrderByTuple := false
 	if len(o.Params) > 4 {
-		appendOrderBy, _ = o.Params[4].(bool)
+		switch m := o.Params[4].(type) {
+		case string:
+			appendOrderBy = m != ""
+			appendOrderByTuple = m == "tuple"
+		case bool:
+			appendOrderBy = m
+		}
 	}
 
 	// A heap data structure is allocated but is used merely as an
@@ -90,8 +104,10 @@ func OpWindowPartition(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals
 		// The ORDER BY exprs (partitionExprs after the PARTITION-BY prefix), projected
 		// and appended to the stored row when appendOrderBy, so a RANGE/GROUPS frame
 		// reads the ORDER BY value by index (WindowFrame.ValIdx).
-		var orderByProjectFunc base.ProjectFunc                     // !lz
-		if appendOrderBy && len(partitionExprs) > partitionPrefix { // !lz
+		// Only "value" mode projects the raw ORDER BY value(s); "tuple" mode reuses the
+		// already-computed canonical ORDER BY tuple (lzOrderNext) instead.
+		var orderByProjectFunc base.ProjectFunc                                            // !lz
+		if appendOrderBy && !appendOrderByTuple && len(partitionExprs) > partitionPrefix { // !lz
 			orderByProjectFunc =
 				MakeProjectFunc(lzVars, o.Children[0].Labels, partitionExprs[partitionPrefix:], pathNextWP, "OF") // !lz
 		} // !lz
@@ -190,8 +206,15 @@ func OpWindowPartition(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals
 						lzValsOut = append(lzValsOut, base.Val(lzBuf8DenseRank[:]))
 					} // !lz
 
-					if appendOrderBy { // !lz
+					if appendOrderBy && !appendOrderByTuple { // !lz
 						lzValsOut = orderByProjectFunc(lzVals, lzValsOut, lzYieldErr) // <== emitCaptured: pathNextWP "OF"
+					} // !lz
+
+					if appendOrderByTuple { // !lz
+						// The canonical ORDER BY tuple (any number of columns) as ONE
+						// column -- peer detection is bytes.Equal on it. ValsEncode below
+						// copies, so referencing lzOrderNext is safe.
+						lzValsOut = append(lzValsOut, base.Val(lzOrderNext))
 					} // !lz
 
 					lzVals = lzValsOut
