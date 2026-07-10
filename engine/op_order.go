@@ -46,7 +46,7 @@ func OpOrderOffsetLimit(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVal
 	}
 
 	if LzScope {
-		pathNextOOL := EmitPush(pathNext, "OOL") // !lz
+		pathNextOOL := EmitPush(lzVars, pathNext, "OOL") // !lz
 
 		var lzProjectFunc base.ProjectFunc
 

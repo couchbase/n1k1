@@ -21,7 +21,7 @@ import (
 func OpProject(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	lzYieldErr base.YieldErr, path, pathNext string) {
 	if LzScope {
-		pathNextP := EmitPush(pathNext, "P") // !lz
+		pathNextP := EmitPush(lzVars, pathNext, "P") // !lz
 
 		var lzValsReuse base.Vals // <== varLift: lzValsReuse by path
 
@@ -53,7 +53,7 @@ func OpProject(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 func MakeProjectFunc(lzVars *base.Vars, labels base.Labels,
 	projections []interface{}, path, pathItem string) (
 	lzProjectFunc base.ProjectFunc) {
-	pathNext := EmitPush(path, pathItem)
+	pathNext := EmitPush(lzVars, path, pathItem) // !lz
 
 	defer EmitPop(path, pathItem)
 

@@ -33,7 +33,7 @@ var ExprCatalog = map[string]base.ExprCatalogFunc{
 
 func MakeExprFunc(lzVars *base.Vars, labels base.Labels,
 	expr []interface{}, path, pathItem string) (lzExprFunc base.ExprFunc) {
-	pathNext := EmitPush(path, pathItem)
+	pathNext := EmitPush(lzVars, path, pathItem) // !lz
 
 	lzExprFunc =
 		lzVars.Ctx.ExprCatalog[expr[0].(string)](lzVars, labels, expr[1:], pathNext) // !lz

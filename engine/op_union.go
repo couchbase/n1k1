@@ -20,7 +20,7 @@ import (
 // OpUnionAll implements UNION ALL.
 func OpUnionAll(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	lzYieldErr base.YieldErr, path, pathNext string) {
-	pathNextU := EmitPush(pathNext, "U") // !lz
+	pathNextU := EmitPush(lzVars, pathNext, "U") // !lz
 
 	numChildren := len(o.Children)
 	numLabels := len(o.Labels)
@@ -38,7 +38,7 @@ func OpUnionAll(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 		lzStage := base.NewStage(numChildren, 0, lzVars, lzYieldVals, lzYieldErr)
 
 		for childi := range o.Children { // !lz
-			pathNextUC := EmitPush(pathNextU, strconv.Itoa(childi)) // !lz
+			pathNextUC := EmitPush(lzVars, pathNextU, strconv.Itoa(childi)) // !lz
 
 			if LzScope {
 				lzActorData = childi // !lz

@@ -24,7 +24,7 @@ func ExecOp(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 		return
 	}
 
-	pathNext := EmitPush(path, pathItem)
+	pathNext := EmitPush(lzVars, path, pathItem) // !lz
 
 	switch o.Kind {
 	case "scan":
@@ -135,8 +135,19 @@ const LzScope = true
 // -----------------------------------------------------
 
 // Marks the start of a nested "emit capture" area.
-var EmitPush = func(path, pathItem string) string {
-	return path + "_" + pathItem // Placeholder for compiler.
+//
+// In the compiled lane the generator overrides this (glue/emit) and resolves
+// paths at generation time -- pushing an emit-capture frame paired with EmitPop
+// -- so lzVars is ignored there and the compiled code carries baked-in path
+// constants (zero per-row cost). In the interp lane ExecOp calls this on EVERY
+// op invocation -- including a nested-loop inner re-scanned once per outer row,
+// always with the same (path, pathItem) for a given op -- so we memoize the
+// concatenation on the (per-actor) lzVars: lock-free and freed with the query,
+// no process-global cache. The ExecOp call site carries a `// !lz` marker so
+// the generator keeps that lzVars-referencing line as gen-time (its LzRE is
+// /[Ll]z/, which would otherwise force it to be runtime-emitted).
+var EmitPush = func(lzVars *base.Vars, path, pathItem string) string {
+	return lzVars.EmitPushPath(path, pathItem)
 }
 
 // Marks the end of a nested "emit capture" area.

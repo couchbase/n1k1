@@ -115,7 +115,7 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 		exprRightFunc :=
 			MakeExprFunc(lzVars, o.Children[1].Labels, exprRight, pathNext, "JHR") // !lz
 
-		EmitPush(pathNext, "JHF") // !lz
+		EmitPush(lzVars, pathNext, "JHF") // !lz
 
 		lzYieldValsOrig := lzYieldVals
 
@@ -241,7 +241,7 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 			// filled with left-side probe entries, and next we will
 			// visit the right-side.
 
-			EmitPush(pathNext, "JHP") // !lz
+			EmitPush(lzVars, pathNext, "JHP") // !lz
 
 			// Callback for right side, which probes the probe map.
 			lzYieldVals = func(lzVals base.Vals) {

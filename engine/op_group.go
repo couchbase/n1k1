@@ -44,7 +44,7 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	}
 
 	if LzScope {
-		pathNextG := EmitPush(pathNext, "G") // !lz
+		pathNextG := EmitPush(lzVars, pathNext, "G") // !lz
 
 		var groupProjectFunc, aggProjectFunc base.ProjectFunc // !lz
 

@@ -25,6 +25,32 @@ type Vars struct {
 	Temps []interface{}
 	Next  *Vars // The root Vars has nil Next.
 	Ctx   *Ctx
+
+	// emitPaths memoizes EmitPush's diagnostic op-path concatenation (see
+	// EmitPushPath / engine.EmitPush). It lives here, per-Vars, because
+	// ChainExtend mints a fresh Vars per concurrent actor -- so the cache is
+	// lock-free (a single goroutine owns each Vars) and dies with the query
+	// (no global growth, no cap). Interp lane only: the compiled lane resolves
+	// paths at generation time.
+	emitPaths map[[2]string]string
+}
+
+// EmitPushPath returns path + "_" + pathItem, memoized on this (per-actor) Vars.
+// ExecOp calls it on every op invocation -- including a nested-loop inner
+// re-scanned once per outer row -- always with the same (path, pathItem) for a
+// given op, so the concatenation is identical each time; memoizing stops the
+// re-scans from reallocating it. See engine.EmitPush.
+func (v *Vars) EmitPushPath(path, pathItem string) string {
+	k := [2]string{path, pathItem}
+	if s, ok := v.emitPaths[k]; ok {
+		return s
+	}
+	s := path + "_" + pathItem
+	if v.emitPaths == nil {
+		v.emitPaths = make(map[[2]string]string, 8)
+	}
+	v.emitPaths[k] = s
+	return s
 }
 
 // -----------------------------------------------------

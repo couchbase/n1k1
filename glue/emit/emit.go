@@ -99,7 +99,7 @@ func OpToLines(o *base.Op) []string {
 		return len(s), nil
 	}
 
-	intermed.EmitPush = func(path, pathItem string) string {
+	intermed.EmitPush = func(lzVars *base.Vars, path, pathItem string) string {
 		outStack = append(outStack, nil)
 
 		return path + "_" + pathItem

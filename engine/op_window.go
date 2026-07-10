@@ -68,7 +68,7 @@ func OpWindowPartition(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals
 
 		lzVars.TempSet(partitionSlot, lzHeap)
 
-		pathNextWP := EmitPush(pathNext, "WP") // !lz
+		pathNextWP := EmitPush(lzVars, pathNext, "WP") // !lz
 
 		// The partitioning exprs are treated as a projection.
 		var partitionExprsFunc base.ProjectFunc // !lz

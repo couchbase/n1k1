@@ -18,7 +18,7 @@ import (
 func OpFilter(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	lzYieldErr base.YieldErr, path, pathNext string) {
 	if LzScope {
-		pathNextF := EmitPush(pathNext, "F") // !lz
+		pathNextF := EmitPush(lzVars, pathNext, "F") // !lz
 
 		exprFunc :=
 			MakeExprFunc(lzVars, o.Children[0].Labels, o.Params, pathNextF, "FF") // !lz
