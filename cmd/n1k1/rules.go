@@ -339,6 +339,14 @@ func (c *cli) cmdRulesRun(arg string) {
 	}
 	c.renderRows(rows, "", false)
 	fmt.Fprintf(c.stderr, "%s%d finding(s) from %d detector(s)\n", c.icon("🔎 "), len(findings), len(dets))
+	if n := len(cc.GatedSkipped); n > 0 {
+		// A gated skip means the detector's `gate:` precondition matched no row in its
+		// keyspace, so its (expensive, standalone) sort/window was not run. Surfaced so
+		// the skip is visible -- a mis-declared gate reads as "0 findings", not silence.
+		fmt.Fprintf(c.stderr, "  %s\n", c.style.Dim(fmt.Sprintf(
+			"gated: %d standalone detector(s) skipped (gate precondition absent): %s",
+			n, strings.Join(cc.GatedSkipped, ", "))))
+	}
 	c.reportDetectorHits(dets, findings, cc, report)
 }
 

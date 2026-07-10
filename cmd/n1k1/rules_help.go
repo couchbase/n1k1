@@ -69,6 +69,7 @@ ANNOTATED RECIPE (detectors/disk_full.sql++)
   -- ticket:   ET-12345        # front-matter (leading -- key: value lines):
   -- severity: high            #   ticket   -> the finding Tag (else the filename stem)
   -- source:   logs            #   source   -> the LOGICAL keyspace this detector reads (FROM logs)
+  -- gate:     l.sev = "ERROR" #   gate     -> a cheap NECESSARY precondition (see GATE below)
   -- versions: ["7.2","7.6"]   #   severity -> advisory, reported by list / lint
   -- tags:     ["disk","io"]   #   versions -> software versions this detector targets
   -- A disk-full error detector.  # tags     -> freeform labels
@@ -162,9 +163,25 @@ with "-meta on", or it is present for extracted docs).
   in unrelated lines from another, so context LEAKS across files (WRONG evidence).
   Partitioning by _meta.` + "`path`" + ` isolates each file's context. ***
 ("path" is a reserved word, hence backticked. A context detector has an OVER clause, so it
-runs standalone -- its own scan, not fused.) For CHRONOLOGICAL context that spans rotated
-files, order instead by an extract-recipe "time:" key (.extract help) -- one sortable
-timeline across the whole keyspace.
+runs standalone -- its own scan, not fused; GATE it, below, so it only sorts keyspaces that
+can match.) For CHRONOLOGICAL context that spans rotated files, order instead by an
+extract-recipe "time:" key (.extract help) -- one sortable timeline across the whole keyspace.
+
+GATE (index-gate a standalone detector) -- a fused filter+project detector is pruned per
+row by the predicate index, but a STANDALONE detector (window / GROUP BY / join -- anything
+with its own scan) is not. A "gate:" front-matter line gives it a cheap NECESSARY
+precondition: a boolean SQL++ expression over its "source" keyspace that MUST hold for any
+finding. Before running the (expensive) detector, .rules run probes
+"SELECT 1 FROM <source> WHERE <gate> LIMIT 1"; if no row matches, the detector is SKIPPED --
+its sort/window never touches a keyspace that cannot produce a finding. Example, gating the
+CONTEXT detector above so it only sorts files that actually contain an ERROR:
+  -- source: logs
+  -- gate:   sev = "ERROR"
+Needs "source:". The gate must be NECESSARY (skipping is only correct if no finding is
+possible without it) -- e.g. do NOT gate an ABSENCE detector ("... HAVING COUNT(...) = 0")
+on the thing it counts. A skipped detector is reported ("gated: N skipped"), never silent;
+a gate that errors runs the detector anyway (safe). Gate literals are pushed to the probe's
+scan, so a discriminating gate is itself index-pruned.
 
 Non-interactive (CI / agent):
   n1k1 -c '.rules run --queries ./detectors --bind ./manifest' <data-dir>

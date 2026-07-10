@@ -897,6 +897,21 @@ unrelated lines into a match's neighborhood (wrong evidence). For a timeline tha
 rotated files, order by an extract-recipe `time:` key instead. (`.rules help` carries the
 full idiom + the gotcha.)
 
+**Index-gating a standalone detector — the `gate:` precondition.** A fused filter+project
+detector is pruned per row by the Aho-Corasick predicate index; a **standalone** detector
+(window / GROUP BY / join — its own scan) is not, so a context or rate detector otherwise
+sorts+windows *every* keyspace even ones that cannot match. A recipe `gate:` front-matter
+line declares a cheap **necessary precondition** (a boolean SQL++ expression over the
+detector's `source:` keyspace): before running the expensive detector, `Run` probes
+`SELECT 1 FROM <source> WHERE <gate> LIMIT 1`, and **skips** the detector when no row
+matches — the standalone analog of the predicate index. The probe stops at the first match
+and its own scan is literal-pruned, so present-gates cost ~nothing and absent-gates avoid
+the whole sort/window. Soundness is the author's assertion (skip only when no finding is
+possible without the gate — so an *absence* detector must not gate on the thing it counts);
+a skipped detector is reported (`gated: N skipped`), never silent, and a gate that errors
+runs the detector anyway. (`glue.CorpusDetector.{Source,Gate}` + `CompiledCorpus.GatedSkipped`;
+auto-deriving the gate from a window match-flag's inner predicate is a noted follow-up.)
+
 **Dev/ops / CI.** The `.rules` dot-command family is built: `run` (corpus→findings + coverage),
 `lint` (the report card), `test` (golden fixtures, `--update` to record). Being added for the
 low-cognitive-load surface: **`.rules list`** (a metadata-only inventory — tag/source/severity/

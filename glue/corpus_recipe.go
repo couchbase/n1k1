@@ -81,6 +81,12 @@ type Recipe struct {
 	Severity string   // `severity` front-matter (advisory, reported).
 	Versions []string // `versions` front-matter (software versions; parsed, reporting-only for now).
 	Tags     []string // `tags` front-matter (freeform labels).
+	Gate     string   // `gate` front-matter: a cheap NECESSARY precondition (a boolean SQL++
+	// expression over the Source keyspace). A STANDALONE detector (window / GROUP BY / join --
+	// one that gets its own scan, not the fused shared scan) is SKIPPED when its Source has no
+	// row satisfying Gate, so an expensive sort/window never runs over a keyspace that cannot
+	// possibly match. The author asserts necessity (no finding is possible unless some row
+	// satisfies Gate) -- it is the standalone analog of the fused predicate index. Needs Source.
 
 	Fixture    Fixture // the golden fixture: input rows + expected findings (empty if none).
 	HasFixture bool    // the `-- @fixture` marker was present.
@@ -102,7 +108,7 @@ type Fixture struct {
 // CorpusLint consume -- the bridge that lets the richer recipe format feed the existing
 // corpus machinery unchanged.
 func (r *Recipe) AsDetector() CorpusDetector {
-	return CorpusDetector{Tag: r.Tag, Stmt: r.Stmt}
+	return CorpusDetector{Tag: r.Tag, Stmt: r.Stmt, Source: r.Source, Gate: r.Gate}
 }
 
 // LoadCorpus reads every *.sql++ file in dir as one Recipe (see ParseRecipe for the
@@ -273,6 +279,8 @@ func (r *Recipe) applyFrontMatter(key, val string) {
 		}
 	case "source":
 		r.Source = val
+	case "gate":
+		r.Gate = val
 	case "severity":
 		r.Severity = val
 	case "versions":

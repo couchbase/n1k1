@@ -138,6 +138,15 @@ import (
 type CorpusDetector struct {
 	Tag  string
 	Stmt string
+
+	// Source + Gate drive index-gating of a STANDALONE detector (see CompiledCorpus.Run
+	// / gateAllows). Source is the detector's logical keyspace; Gate is a cheap NECESSARY
+	// precondition (boolean SQL++ over Source). When both are set and Source holds no row
+	// satisfying Gate, the standalone detector is SKIPPED (its expensive sort/window never
+	// runs). Empty Gate = never gated (always run). Populated from recipe front-matter by
+	// Recipe.AsDetector; a hand-built CorpusDetector leaves them empty (ungated).
+	Source string
+	Gate   string
 }
 
 // RejectedDetector reports a detector whose parse/plan/convert FAILED (a genuinely
@@ -177,6 +186,11 @@ type CompiledCorpus struct {
 	// name), so a run report can attribute per-keyspace scanned-row counts to each
 	// detector (IDEA-0015 hit stats). Standalone/rejected detectors are absent.
 	DetKeyspace map[string]string
+
+	// GatedSkipped lists the Tags of STANDALONE detectors that Run skipped because their
+	// `gate:` precondition matched no row in their Source keyspace (index-gating). Reset
+	// and populated on each Run; surfaced by the caller so a skip is visible, not silent.
+	GatedSkipped []string
 
 	session *Session
 }
@@ -243,8 +257,10 @@ func (s *Session) CorpusCompile(dets []CorpusDetector) (*CompiledCorpus, error) 
 			rejected = append(rejected, RejectedDetector{Tag: d.Tag, Reason: rejectReason})
 		case !fusable:
 			// Valid but not the fusable shape (ASOF/window/group/join/index-scan/...).
-			// Keep it verbatim; Run() executes it through the full s.Run pipeline.
-			standalone = append(standalone, CorpusDetector{Tag: d.Tag, Stmt: d.Stmt})
+			// Keep it verbatim (incl. its Source/Gate, so Run can index-gate it); Run()
+			// executes it through the full s.Run pipeline.
+			standalone = append(standalone, CorpusDetector{
+				Tag: d.Tag, Stmt: d.Stmt, Source: d.Source, Gate: d.Gate})
 		default:
 			if _, seen := keyspacerFor[info.keyspaceName]; !seen {
 				keyspacerFor[info.keyspaceName] = info.keyspacer
@@ -764,6 +780,8 @@ func (cc *CompiledCorpus) RunStream(onFinding func(Finding) error) error {
 func (cc *CompiledCorpus) runStream(onFinding func(Finding) error, stats *base.Stats) error {
 	s := cc.session
 
+	cc.GatedSkipped = nil // repopulated per run by streamStandalone's index-gating.
+
 	// (A) Standalone detectors: run each verbatim through the full normal pipeline and
 	// tag its SELECT-projection rows as evidence. s.Run is self-contained (it does its
 	// own datastore + ExecOpEx setup), so this must happen BEFORE the fused block's
@@ -850,7 +868,27 @@ func (cc *CompiledCorpus) runStream(onFinding func(Finding) error, stats *base.S
 // from any standalone detector (or from onFinding) is returned. Note s.Run buffers a
 // single detector's rows before they stream out (see RunStream's NOTE).
 func (cc *CompiledCorpus) streamStandalone(onFinding func(Finding) error) error {
+	// gateCache dedups the presence probe per (Source, Gate) so N detectors sharing a
+	// gate over one keyspace probe it once.
+	gateCache := map[string]bool{}
+
 	for _, d := range cc.Standalone {
+		if d.Gate != "" && d.Source != "" {
+			allow, err := cc.gateAllows(d.Source, d.Gate, gateCache)
+			if err != nil {
+				// A broken/erroring gate must not silently drop findings: fall through
+				// and RUN the detector (safe -- gating only ever SKIPS). The error rides
+				// out as a warning-shaped skip note so the author can fix the gate.
+				cc.GatedSkipped = append(cc.GatedSkipped,
+					fmt.Sprintf("%s (gate error, ran anyway: %v)", d.Tag, err))
+			} else if !allow {
+				// The precondition matched no row in the keyspace: the detector cannot
+				// produce a finding, so skip its expensive standalone sort/window.
+				cc.GatedSkipped = append(cc.GatedSkipped, d.Tag)
+				continue
+			}
+		}
+
 		res, err := cc.session.Run(d.Stmt)
 		if err != nil {
 			return fmt.Errorf("standalone detector %q: %w", d.Tag, err)
@@ -865,4 +903,24 @@ func (cc *CompiledCorpus) streamStandalone(onFinding func(Finding) error) error 
 		}
 	}
 	return nil
+}
+
+// gateAllows reports whether the Source keyspace holds at least one row satisfying the
+// gate precondition -- a cheap `SELECT 1 FROM <source> WHERE <gate> LIMIT 1` probe that
+// stops at the first match (and whose scan itself benefits from literal pushdown). false
+// => the standalone detector can be skipped. Results are cached per (source|gate) key.
+func (cc *CompiledCorpus) gateAllows(source, gate string, cache map[string]bool) (bool, error) {
+	key := source + "\x00" + gate
+	if v, ok := cache[key]; ok {
+		return v, nil
+	}
+	// The probe is a plain SELECT over the (possibly bound) logical keyspace, so it
+	// resolves exactly as the detector's own FROM does under this session's binding.
+	res, err := cc.session.Run("SELECT 1 FROM " + source + " WHERE " + gate + " LIMIT 1")
+	if err != nil {
+		return false, err
+	}
+	allow := len(res.Rows) > 0
+	cache[key] = allow
+	return allow, nil
 }

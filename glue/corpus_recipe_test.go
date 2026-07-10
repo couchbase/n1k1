@@ -29,6 +29,7 @@ func TestParseRecipeFull(t *testing.T) {
 	text := `-- ticket: ET-12345
 -- severity: high
 -- source: logs
+-- gate: l.sev = "ERROR"
 -- versions: ["7.2","7.6"]
 -- tags: ["disk","io"]
 SELECT l.msg, l.ts FROM logs l WHERE l.sev = "ERROR"
@@ -49,6 +50,12 @@ SELECT l.msg, l.ts FROM logs l WHERE l.sev = "ERROR"
 	}
 	if r.Source != "logs" || r.Severity != "high" {
 		t.Errorf("Source/Severity = %q/%q, want logs/high", r.Source, r.Severity)
+	}
+	if r.Gate != `l.sev = "ERROR"` {
+		t.Errorf("Gate = %q, want l.sev = \"ERROR\"", r.Gate)
+	}
+	if d := r.AsDetector(); d.Gate != r.Gate || d.Source != r.Source {
+		t.Errorf("AsDetector() dropped gate/source: %+v", d)
 	}
 	if !reflect.DeepEqual(r.Versions, []string{"7.2", "7.6"}) {
 		t.Errorf("Versions = %v, want [7.2 7.6]", r.Versions)

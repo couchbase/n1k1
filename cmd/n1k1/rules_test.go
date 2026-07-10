@@ -118,6 +118,7 @@ func TestRulesHelp(t *testing.T) {
 		"RESERVED WORDS", "`level`", // DOC-3: the reserved-word note
 		"TEMPORAL (ASOF)", "ORDER BY", "NOT lowered to ASOF", // DOC-2: the ASOF requirements
 		"CONTEXT (grep -A/-B/-C)", "PARTITION BY _meta.`path`", // the grep-context idiom + multi-file gotcha
+		"GATE (index-gate a standalone detector)", "gate:", // the standalone index-gate
 	} {
 		if !strings.Contains(help, want) {
 			t.Errorf(".rules help missing %q; stdout:\n%s", want, help)
