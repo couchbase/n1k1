@@ -521,6 +521,7 @@ func MatchArgmaxAsof(subq *algebra.Subquery) (*AsofMatch, bool) {
 
 	mainSeen := false
 	lookbackSeen := false
+	lookaheadSeen := false
 
 	for _, cj := range conjuncts {
 		// A conjunct that references ONLY the right alias (no outer field) is a
@@ -568,13 +569,24 @@ func MatchArgmaxAsof(subq *algebra.Subquery) (*AsofMatch, bool) {
 				}
 				continue
 			}
-			// An outer (key - Δt) subtraction => the look-back guard (soft ASOF).
+			// An outer (key - Δt) subtraction => the look-back guard (soft PRECEDING).
 			if of, delta, ok := splitLookback(outer, rightAlias); ok && of == keyField {
 				// Only nearest-preceding has a `>= outer.key - Δt` look-back.
 				if dir != "ge" || lookbackSeen {
 					return nil, false
 				}
 				lookbackSeen = true
+				m.Soft = true
+				m.ToleranceNanos = delta
+				continue
+			}
+			// An outer (key + Δt) addition => the look-AHEAD guard (soft FOLLOWING):
+			// r.key <= outer.key + Δt, i.e. "within Δt after". The `<=` side, so dir "le".
+			if of, delta, ok := splitLookahead(outer, rightAlias); ok && of == keyField {
+				if dir != "le" || lookaheadSeen {
+					return nil, false
+				}
+				lookaheadSeen = true
 				m.Soft = true
 				m.ToleranceNanos = delta
 				continue
@@ -589,8 +601,11 @@ func MatchArgmaxAsof(subq *algebra.Subquery) (*AsofMatch, bool) {
 	if !mainSeen {
 		return nil, false
 	}
-	// A look-back only makes sense for nearest-preceding (the documented shape).
+	// A look-back only makes sense for nearest-preceding; a look-ahead only for following.
 	if lookbackSeen && m.Direction != "preceding" {
+		return nil, false
+	}
+	if lookaheadSeen && m.Direction != "following" {
 		return nil, false
 	}
 	return m, true
@@ -693,6 +708,32 @@ func splitLookback(e expression.Expression, rightAlias string) (field string, de
 		return "", 0, false
 	}
 	return af, d, true
+}
+
+// splitLookahead matches an outer look-ahead expression `outer.<field> + <Δt>` (an Add
+// of a non-right field ref and a positive numeric constant, either operand order --
+// addition commutes), returning the outer field name and Δt. Anything else -> ok=false.
+// It is the following (soft) mirror of splitLookback.
+func splitLookahead(e expression.Expression, rightAlias string) (field string, delta int64, ok bool) {
+	add, ok := e.(*expression.Add)
+	if !ok {
+		return "", 0, false
+	}
+	ops := add.Operands()
+	if len(ops) != 2 {
+		return "", 0, false
+	}
+	if al, af, okA := splitFieldRef(ops[0]); okA && al != rightAlias {
+		if d, ok := constInt64(ops[1]); ok && d >= 0 {
+			return af, d, true
+		}
+	}
+	if bl, bf, okB := splitFieldRef(ops[1]); okB && bl != rightAlias {
+		if d, ok := constInt64(ops[0]); ok && d >= 0 {
+			return bf, d, true
+		}
+	}
+	return "", 0, false
 }
 
 // splitFieldRef decomposes `alias.field` into (alias, field). It handles a Field
@@ -1355,16 +1396,6 @@ func tryLowerASOFProject(p *base.Op, conv *Conv, byKey map[string]plan.Operator)
 		base.Logf(1, "glue/asof", "argmax subquery NOT lowered to ASOF (runs as a correlated subquery): %s", reason)
 	}
 
-	// Nearest-FOLLOWING is recognized (ASC + >=) but the merge-join op implements only
-	// nearest-preceding, so lowering it would compute the WRONG rows. Bail to the correct
-	// correlated subquery until a following-direction merge lands (DESIGN-mqo-sorted.md).
-	// The RightResidual content-filter composes with either direction, so it is ready for
-	// that follow-up; here it only takes effect on the working preceding path.
-	if match.Direction == "following" {
-		skip("nearest-following ASOF has no merge lowering yet (the merge-join op is nearest-preceding only) -- runs correctly as a correlated subquery")
-		return
-	}
-
 	// The project's child must be the outer keyspace E's records scan, optionally
 	// behind ONE outer filter -- the common "correlate only a filtered subset" case
 	// (e.g. WHERE e.level="error"). The filter is re-applied to the E probe stream so
@@ -1595,7 +1626,7 @@ func tryLowerASOFProject(p *base.Op, conv *Conv, byKey map[string]plan.Operator)
 	mj := &base.Op{
 		Kind:     "merge-join",
 		Labels:   append(append(base.Labels{}, msE.Labels...), msR.Labels...),
-		Params:   []interface{}{leftKeyIdx, rightKeyIdx, "left", asofMode, tolerance, leftParts, rightParts},
+		Params:   []interface{}{leftKeyIdx, rightKeyIdx, "left", asofMode, tolerance, leftParts, rightParts, match.Direction},
 		Children: []*base.Op{msE, msR},
 	}
 

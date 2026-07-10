@@ -234,11 +234,17 @@ Each step is independently useful and benchmark-gated (like the DESIGN-col roadm
    WRONG rows — a latent correctness bug. It now **bails to the correct correlated subquery**
    (`TestASOFFollowingBailsToCorrelated`). So the residual works today on preceding; the
    flagship "XYZ → ABC soon after" is *following*, which needs step 2b.
-2b. **Nearest-following in the merge-join op** (the flagship's real unblock). A following
-   mode (a non-consuming forward cursor: first right row with key ≥ left key), a look-AHEAD
-   soft bound (`r.key <= e.key + Δt` → "within Δt after"), and its own differential suite
-   (following / +partition / +soft / +residual). The residual from step 2 already composes.
-   *Measure:* correlated-subquery vs merge on a two-log "XYZ then ABC within Δt" fixture.
+2b. **Nearest-following in the merge-join op** (the flagship's real unblock). **DONE.**
+   `engine/op_merge_join.go` gained a following mode (Params[7] `direction`): a
+   non-consuming forward cursor (first right row with key ≥ left key), unpartitioned and
+   partitioned (a per-partition ascending index list + cursor, `mergeJoinStepAsofFollowing`);
+   the recognizer accepts the look-AHEAD soft bound `r.key <= e.key + Δt` (`splitLookahead`
+   → soft following, "within Δt after"); the lowering threads `AsofMatch.Direction` and no
+   longer bails on following. Differential suite: `TestASOFLoweringFollowing{,Residual,Soft,
+   Partitioned}Differential` — all byte-identical to the correlated baseline. So the flagship
+   "XYZ → ABC soon after" now lowers to an O(n+m) merge (with the step-2 content residual
+   composing). Still ahead: MQO across correlators (steps 3–5) — this is still a single
+   standalone detector's optimization, not yet scan/sort-shared across a corpus.
 3. **The shared sorted broadcast** (the substrate). One scan+sort per `(keyspace, P, O)`
    signature, fanned to K stateful consumers. First consumer type: the **context extractor**
    (Part A), with the sparse-match/ring-buffer decomposition + AC index. *Measure:* K context

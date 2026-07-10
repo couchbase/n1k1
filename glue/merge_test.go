@@ -225,12 +225,10 @@ func TestASOFLoweringRightResidualDifferential(t *testing.T) {
 	}
 }
 
-// TestASOFFollowingBailsToCorrelated guards the nearest-FOLLOWING gate: the merge-join
-// op is nearest-preceding only, so a following argmax (ASC + `r.ts >= e.ts`) must NOT
-// lower (it would compute the wrong rows). It bails to the correct correlated subquery,
-// so ON == OFF and the lowering does NOT fire. (When a following-direction merge lands,
-// this becomes a differential like the preceding cases; the residual already composes.)
-func TestASOFFollowingBailsToCorrelated(t *testing.T) {
+// TestASOFLoweringFollowingDifferential: nearest-FOLLOWING (ASC + `r.ts >= e.ts`) lowers
+// to a forward merge-join, byte-identical to the correlated baseline. This is the mirror
+// of the preceding case -- for each E row, the first R row at/after it.
+func TestASOFLoweringFollowingDifferential(t *testing.T) {
 	root := t.TempDir()
 	asofWriteKS(t, root, "elog", "ns_server.error.log",
 		nsLine("2026-05-17T15:36:11.100+02:00", "n1", "e-100")+
@@ -249,17 +247,143 @@ func TestASOFFollowingBailsToCorrelated(t *testing.T) {
 		"(SELECT r.msg FROM default:rlog r WHERE r.ts >= e.ts ORDER BY r.ts ASC LIMIT 1) AS nx " +
 		"FROM default:elog e ORDER BY e.ts"
 
-	off, _, fired := runBoth(t, s, stmt) // runBoth asserts ON == OFF (byte-identical)
-	if fired {
-		t.Fatalf("nearest-following must NOT lower (merge is preceding-only); it fired")
+	off, _, fired := runBoth(t, s, stmt)
+	if !fired {
+		t.Fatalf("expected nearest-following to lower to a merge; it did not")
 	}
-	// The CORRECT nearest-following answers (the correlated baseline): e@11.100 -> r-200
-	// (first r at/after 11.100), e@13.300 -> r-400, e@15.500 -> none.
+	// e@11.100 -> first r at/after = r-200@12.200; e@13.300 -> r-400@14.400;
+	// e@15.500 -> no following r -> null.
 	if off[0] != `{"ts":1779024971100000000,"nx":[{"msg":"r-200"}]}` {
 		t.Fatalf("row0 unexpected: %s", off[0])
 	}
+	if off[1] != `{"ts":1779024973300000000,"nx":[{"msg":"r-400"}]}` {
+		t.Fatalf("row1 unexpected: %s", off[1])
+	}
 	if off[2] != `{"ts":1779024975500000000,"nx":null}` {
 		t.Fatalf("row2 unexpected: %s", off[2])
+	}
+}
+
+// TestASOFLoweringFollowingResidualDifferential is the flagship "XYZ in log1, then ABC
+// soon after in log2": nearest FOLLOWING inner row that ALSO matches a content residual
+// (`r.msg LIKE "%r-4%"`), pushed onto the build scan. Byte-identical to the correlated
+// baseline.
+func TestASOFLoweringFollowingResidualDifferential(t *testing.T) {
+	root := t.TempDir()
+	asofWriteKS(t, root, "elog", "ns_server.error.log",
+		nsLine("2026-05-17T15:36:11.100+02:00", "n1", "e-100")+
+			nsLine("2026-05-17T15:36:13.300+02:00", "n1", "e-300")+
+			nsLine("2026-05-17T15:36:15.500+02:00", "n1", "e-500"))
+	asofWriteKS(t, root, "rlog", "ns_server.rebalance.log",
+		nsLine("2026-05-17T15:36:12.200+02:00", "n1", "r-200")+ // excluded by the residual
+			nsLine("2026-05-17T15:36:14.400+02:00", "n1", "r-400")) // the only candidate
+	s, err := OpenSession(root, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	stmt := "SELECT e.ts AS ts, " +
+		"(SELECT r.msg FROM default:rlog r WHERE r.ts >= e.ts AND r.msg LIKE \"%r-4%\" ORDER BY r.ts ASC LIMIT 1) AS next_state " +
+		"FROM default:elog e ORDER BY e.ts"
+
+	off, _, fired := runBoth(t, s, stmt)
+	if !fired {
+		t.Fatalf("expected following + residual to lower; it did not")
+	}
+	// Only r-400 survives the residual. e@11.100 & e@13.300 -> r-400 (following);
+	// e@15.500 -> none.
+	if off[0] != `{"ts":1779024971100000000,"next_state":[{"msg":"r-400"}]}` {
+		t.Fatalf("row0 unexpected: %s", off[0])
+	}
+	if off[1] != `{"ts":1779024973300000000,"next_state":[{"msg":"r-400"}]}` {
+		t.Fatalf("row1 unexpected: %s", off[1])
+	}
+	if off[2] != `{"ts":1779024975500000000,"next_state":null}` {
+		t.Fatalf("row2 unexpected: %s", off[2])
+	}
+}
+
+// TestASOFLoweringFollowingSoftDifferential: soft FOLLOWING -- "the nearest R within Δt
+// AFTER each E" (`r.ts >= e.ts AND r.ts <= e.ts + Δt`), the look-AHEAD guard. The merge
+// gates the nearest-following candidate by held.key - left.key <= Δt. Δt = 1.5s here, so
+// e@13.300 (nearest following r-400@14.400, 1.1s away) matches, but e@11.100 (nearest
+// r-200@12.200 is 1.1s -> matches) ... tuned below.
+func TestASOFLoweringFollowingSoftDifferential(t *testing.T) {
+	root := t.TempDir()
+	asofWriteKS(t, root, "elog", "ns_server.error.log",
+		nsLine("2026-05-17T15:36:11.100+02:00", "n1", "e-100")+ // nearest r-200@12.200 (1.1s) <= 1.5s -> match
+			nsLine("2026-05-17T15:36:12.500+02:00", "n1", "e-250")+ // nearest r-400@14.400 (1.9s) > 1.5s -> null
+			nsLine("2026-05-17T15:36:15.500+02:00", "n1", "e-500")) // no following r -> null
+	asofWriteKS(t, root, "rlog", "ns_server.rebalance.log",
+		nsLine("2026-05-17T15:36:12.200+02:00", "n1", "r-200")+
+			nsLine("2026-05-17T15:36:14.400+02:00", "n1", "r-400"))
+	s, err := OpenSession(root, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	// Δt = 1.5s = 1_500_000_000 ns.
+	stmt := "SELECT e.ts AS ts, " +
+		"(SELECT r.msg FROM default:rlog r WHERE r.ts >= e.ts AND r.ts <= e.ts + 1500000000 " +
+		"ORDER BY r.ts ASC LIMIT 1) AS nx FROM default:elog e ORDER BY e.ts"
+
+	off, _, fired := runBoth(t, s, stmt)
+	if !fired {
+		t.Fatalf("expected soft-following (look-ahead) to lower; it did not")
+	}
+	if off[0] != `{"ts":1779024971100000000,"nx":[{"msg":"r-200"}]}` {
+		t.Fatalf("row0 (within 1.5s) unexpected: %s", off[0])
+	}
+	if off[1] != `{"ts":1779024972500000000,"nx":null}` {
+		t.Fatalf("row1 (nearest following beyond 1.5s -> null) unexpected: %s", off[1])
+	}
+	if off[2] != `{"ts":1779024975500000000,"nx":null}` {
+		t.Fatalf("row2 (no following) unexpected: %s", off[2])
+	}
+}
+
+// TestASOFLoweringFollowingPartitionedDifferential: following + a partition equi-key
+// (r.node = e.node) -- each E row correlated to the nearest following R row OF THE SAME
+// NODE. Exercises the per-partition forward cursor.
+func TestASOFLoweringFollowingPartitionedDifferential(t *testing.T) {
+	root := t.TempDir()
+	// Two nodes interleaved by time; the following R must respect the node partition.
+	asofWriteKS(t, root, "elog", "ns_server.error.log",
+		nsLine("2026-05-17T15:36:11.000+02:00", "n1", "e-n1")+
+			nsLine("2026-05-17T15:36:11.500+02:00", "n2", "e-n2")+
+			nsLine("2026-05-17T15:36:16.000+02:00", "n1", "e-n1-late"))
+	asofWriteKS(t, root, "rlog", "ns_server.rebalance.log",
+		nsLine("2026-05-17T15:36:12.000+02:00", "n2", "r-n2")+ // only following for n2 rows
+			nsLine("2026-05-17T15:36:13.000+02:00", "n1", "r-n1")) // only following for early n1
+	s, err := OpenSession(root, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	stmt := "SELECT e.node AS node, e.ts AS ts, " +
+		"(SELECT r.msg FROM default:rlog r WHERE r.ts >= e.ts AND r.node = e.node ORDER BY r.ts ASC LIMIT 1) AS nx " +
+		"FROM default:elog e ORDER BY e.ts, e.node"
+
+	off, _, fired := runBoth(t, s, stmt)
+	if !fired {
+		t.Fatalf("expected following + partition to lower; it did not")
+	}
+	// e-n1@11.0 -> nearest following n1 = r-n1@13.0; e-n2@11.5 -> nearest following n2 =
+	// r-n2@12.0; e-n1-late@16.0 -> no following n1 -> null.
+	if len(off) != 3 {
+		t.Fatalf("want 3 rows, got %d: %v", len(off), off)
+	}
+	if off[0] != `{"node":"n1","ts":1779024971000000000,"nx":[{"msg":"r-n1"}]}` {
+		t.Fatalf("row0 (n1 -> r-n1) unexpected: %s", off[0])
+	}
+	if off[1] != `{"node":"n2","ts":1779024971500000000,"nx":[{"msg":"r-n2"}]}` {
+		t.Fatalf("row1 (n2 -> r-n2) unexpected: %s", off[1])
+	}
+	if off[2] != `{"node":"n1","ts":1779024976000000000,"nx":null}` {
+		t.Fatalf("row2 (n1 late -> no following) unexpected: %s", off[2])
 	}
 }
 

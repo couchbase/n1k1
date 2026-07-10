@@ -32,16 +32,23 @@ import (
 //     equality: for each left key, emit the cross-product with the right rows of
 //     the same key. Inner drops unmatched left rows; left-outer NULL-extends them.
 //
-//   - ASOF nearest-preceding (asof "asof") -- for each left row, the single right
-//     row with the GREATEST key <= the left key (DuckDB/kdb+ "backward" ASOF).
-//     One `held` right row is carried forward (per equality-partition when
-//     partition-key indices are supplied); the right cursor never rewinds. This is
-//     the linear-pass replacement for the O(N*M) correlated argmax subquery.
+//   - ASOF nearest-preceding (asof "asof", direction "preceding" -- the default) --
+//     for each left row, the single right row with the GREATEST key <= the left key
+//     (DuckDB/kdb+ "backward" ASOF). One `held` right row is carried forward (per
+//     equality-partition when partition-key indices are supplied); the right cursor
+//     never rewinds. The linear-pass replacement for the O(N*M) correlated argmax.
 //
-//   - SOFT ASOF (asof "soft") -- ASOF plus a max look-back tolerance Δt: the held
-//     row matches only if left.key - held.key <= Δt, else the row is treated as
-//     unmatched (NULL-extended for left-outer, dropped for inner) --
-//     within-tolerance-or-null. One subtraction-and-compare at emit time.
+//   - ASOF nearest-FOLLOWING (asof "asof"/"soft", direction "following") -- the
+//     mirror: for each left row, the SMALLEST-key right row with key >= the left key
+//     ("forward" ASOF). A forward cursor advances to the first key >= k but does NOT
+//     consume it (one right row can follow several left rows). Partitioned following
+//     keeps a per-partition ascending index list + cursor. Serves "the nearest
+//     <content-matching> row AFTER each left row" (e.g. XYZ then ABC soon after).
+//
+//   - SOFT ASOF (asof "soft") -- ASOF plus a max tolerance Δt: preceding matches
+//     only if left.key - held.key <= Δt (look-BACK); following matches only if
+//     held.key - left.key <= Δt (look-AHEAD -- "within Δt after"). Else the row is
+//     treated as unmatched (NULL-extended for left-outer, dropped for inner).
 //
 // Interpreter-oriented like OpMergeScan: OpMergeJoin delegates via a single
 // "// !lz" line to MergeJoinExec, whose body carries no "lz" tokens so the
@@ -63,6 +70,7 @@ func OpMergeJoin(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 //	Params[4] int64         -- toleranceNanos: max look-back Δt for asof "soft".
 //	Params[5] []interface{} -- left partition-key indices (equality partitions; ASOF).
 //	Params[6] []interface{} -- right partition-key indices (parallel to Params[5]).
+//	Params[7] string        -- direction: "preceding" (default) | "following" (ASOF only).
 //
 // The right (build) input is materialized once into an ordered, forward-only
 // cursor -- the same first-slice stand-in OpMergeScan uses for its cursors -- and
@@ -93,6 +101,9 @@ func MergeJoinExec(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 
 	leftParts := mergeInt64Slice(o.Params, 5)
 	rightParts := mergeInt64Slice(o.Params, 6)
+
+	direction := mergeJoinStr(o.Params, 7, "preceding")
+	following := asof != "off" && direction == "following"
 
 	leftOuter := joinType == "left"
 
@@ -126,10 +137,11 @@ func MergeJoinExec(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 		yieldVals(valsJoin)
 	}
 
-	// Per-left-row cursor / held state (see the two step functions below).
+	// Per-left-row cursor / held state (see the step functions below).
 	state := &mergeJoinState{
 		build:      build,
 		asof:       asof,
+		following:  following,
 		leftOuter:  leftOuter,
 		tolerance:  tolerance,
 		leftKeyIdx: leftKeyIdx,
@@ -138,6 +150,16 @@ func MergeJoinExec(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 	}
 	if asof != "off" && len(leftParts) > 0 {
 		state.held = map[string]int{}
+		if following {
+			// Following-partitioned needs each partition's ascending index list so the
+			// per-partition forward cursor (held[pk]) can advance to the first key >= k.
+			// The build is already ascending, so appending in order keeps each list sorted.
+			state.partIdx = map[string][]int{}
+			for j := range build.keys {
+				pk := build.part[j]
+				state.partIdx[pk] = append(state.partIdx[pk], j)
+			}
+		}
 	}
 
 	var lastKey int64
@@ -165,6 +187,8 @@ func MergeJoinExec(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 
 		if asof == "off" {
 			mergeJoinStepEqui(state, leftVals, k, leftOuter, emit)
+		} else if following {
+			mergeJoinStepAsofFollowing(state, leftVals, k, emit)
 		} else {
 			mergeJoinStepAsof(state, leftVals, k, emit)
 		}
@@ -189,15 +213,18 @@ type mergeJoinState struct {
 	build *mergeJoinSide
 
 	asof      string
+	following bool // nearest-following (forward) instead of nearest-preceding (backward).
 	leftOuter bool
 	tolerance int64
 
 	leftKeyIdx int
 	leftParts  []int64
 
-	rpos    int            // right absorb / group pointer (never rewinds).
-	heldOne int            // unpartitioned ASOF: index of the held right row, or -1.
-	held    map[string]int // partitioned ASOF: partition key -> held right index.
+	rpos    int            // right absorb / group / forward pointer (never rewinds).
+	heldOne int            // unpartitioned preceding ASOF: index of the held right row, or -1.
+	held    map[string]int // partitioned ASOF: partition key -> held right index (preceding)
+	// or the per-partition cursor into partIdx[pk] (following).
+	partIdx map[string][]int // following-partitioned: partition key -> ascending build indices.
 
 	partBuf []byte // reused scratch for building a left partition key.
 }
@@ -264,6 +291,49 @@ func mergeJoinStepAsof(s *mergeJoinState, leftVals base.Vals, k int64,
 	}
 }
 
+// mergeJoinStepAsofFollowing runs one left row through nearest-FOLLOWING ASOF: the
+// smallest-key right row with key >= the left key. The cursor advances to that row but
+// does NOT consume it (the same right row can follow several ascending left rows). Since
+// the nearest following is the smallest qualifying key, a soft look-ahead only has to
+// gate that one candidate. Unpartitioned uses the single forward pointer rpos;
+// partitioned advances a per-partition cursor over partIdx[pk] (both monotonic because
+// left keys are non-decreasing).
+func mergeJoinStepAsofFollowing(s *mergeJoinState, leftVals base.Vals, k int64,
+	emit func(base.Vals, base.Vals)) {
+	b := s.build
+
+	if s.held == nil {
+		// Unpartitioned: advance past right rows strictly below k; the first key >= k is
+		// the nearest following (do not step past it -- it may follow later left rows too).
+		for s.rpos < len(b.keys) && b.keys[s.rpos] < k {
+			s.rpos++
+		}
+		if s.rpos < len(b.keys) && mergeJoinWithinToleranceFwd(s, k, b.keys[s.rpos]) {
+			emit(leftVals, b.rows[s.rpos])
+			return
+		}
+	} else {
+		// Partitioned: advance this partition's cursor over its ascending index list to
+		// the first index whose key >= k.
+		pk := mergeJoinLeftPartKey(s, leftVals)
+		idxs := s.partIdx[pk]
+		c := s.held[pk]
+		for c < len(idxs) && b.keys[idxs[c]] < k {
+			c++
+		}
+		s.held[pk] = c
+		if c < len(idxs) && mergeJoinWithinToleranceFwd(s, k, b.keys[idxs[c]]) {
+			emit(leftVals, b.rows[idxs[c]])
+			return
+		}
+	}
+
+	// No following match (or it exceeded the look-ahead tolerance).
+	if s.leftOuter {
+		emit(leftVals, nil)
+	}
+}
+
 // mergeJoinWithinTolerance reports whether the held row satisfies soft ASOF's max
 // look-back: leftKey - heldKey <= tolerance. Plain ASOF ("asof") has no bound.
 func mergeJoinWithinTolerance(s *mergeJoinState, leftKey, heldKey int64) bool {
@@ -271,6 +341,15 @@ func mergeJoinWithinTolerance(s *mergeJoinState, leftKey, heldKey int64) bool {
 		return true
 	}
 	return leftKey-heldKey <= s.tolerance
+}
+
+// mergeJoinWithinToleranceFwd is the following (look-AHEAD) analog: the nearest following
+// row matches only if held.key - left.key <= Δt. Plain following ("asof") has no bound.
+func mergeJoinWithinToleranceFwd(s *mergeJoinState, leftKey, heldKey int64) bool {
+	if s.asof != "soft" {
+		return true
+	}
+	return heldKey-leftKey <= s.tolerance
 }
 
 // mergeJoinLeftPartKey builds the canonical partition key for a left row from its

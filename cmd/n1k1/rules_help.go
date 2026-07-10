@@ -134,14 +134,15 @@ TEMPORAL (ASOF) -- nearest-preceding correlation across two log streams (correla
 error with the step that preceded it) lowers a correlated argmax subquery to a streaming
 merge-join instead of an O(n^2) scan. To QUALIFY, the subquery must be:
   - a BARE subquery term (SELECT ... ), single keyspace, ONE scalar projection;
-  - ORDER BY <key> DESC, LIMIT 1, no OFFSET (nearest-PRECEDING; nearest-FOLLOWING / ASC is
-    recognized but not yet merged -- it runs correctly as a correlated subquery for now);
-  - WHERE r.<key> <= e.<key> (the preceding inequality on the ORDER BY key);
-  - optional partition equalities r.<eqk> = e.<eqk>, and a soft look-back r.<key> >=
-    e.<key> - Δt (a max age Δt in ns) -> soft ASOF;
+  - LIMIT 1, no OFFSET, and either PRECEDING (ORDER BY <key> DESC + WHERE r.<key> <= e.<key>)
+    or FOLLOWING (ORDER BY <key> ASC + WHERE r.<key> >= e.<key>) -- "the nearest R at/before"
+    or "at/after" each E row;
+  - optional partition equalities r.<eqk> = e.<eqk>; and a soft bound (a max gap Δt in ns):
+    preceding look-BACK r.<key> >= e.<key> - Δt, or following look-AHEAD r.<key> <= e.<key>
+    + Δt ("the nearest R within Δt after each E" -- the XYZ-then-ABC-soon-after shape);
   - optional CONTENT filter(s) on the inner stream referencing ONLY r (e.g.
     r.msg LIKE "%ABC%", r.state = "done") -- pushed onto the build scan so the merge finds
-    the nearest preceding row that ALSO matches ("the last <ABC> before this error");
+    the nearest matching row ("the last <ABC> before this error" / "the next <ABC> after");
   - and BOTH keyspaces must expose SORTED-SOURCE metadata -- i.e. an extract recipe with
     a "time:" field (normalized to the int64 sort key) and an "order:" (.extract help).
 An outer WHERE on the driving stream is fine. If it does NOT lower, ".verbose on" prints

@@ -382,6 +382,18 @@ DuckDB's planner materializes this as a specialized operator with a per-partitio
 sorted lookup ("Planning AsOf Joins"); we get the same asymptotics for free when the
 inputs already flow ordered out of a merge-scan — which, in the bundle case, they do.
 
+**Nearest-following (the forward mirror).** The `direction` param (`op_merge_join.go`
+Params[7]) also supports the mirror: for each left row, the **smallest-key right row
+with key ≥ the left key** — *"the next Y at or after X"*. A forward cursor advances to
+the first `right.key ≥ left.key` but does **not** consume it (one right row can be the
+"next" for several ascending left rows); partitioned following keeps a per-partition
+ascending index list + cursor (`mergeJoinStepAsofFollowing`). It answers the
+event-sequence question *"did ABC happen soon after XYZ?"* — the correlated argmax
+`(SELECT … FROM R r WHERE r.key >= e.key [AND r.key <= e.key + Δt] [AND <content>]
+ORDER BY r.key ASC LIMIT 1)`, recognized by the glue rewriter (ASC + `>=`, with the
+soft **look-ahead** bound `r.key <= e.key + Δt` and a right-only **content residual**
+pushed onto the build scan). Same O(N+M) linear pass.
+
 ## Soft ASOF — tolerance window / max look-back <a name="soft-asof"></a>
 
 Plain ASOF matches the nearest preceding row *however old*. For logs that is often
