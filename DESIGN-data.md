@@ -1549,11 +1549,12 @@ E1. ✅ **Two-phase extract seam** — `describe(file) → ExtractSpec` + native
     from spec; extractor registry matches on ext **and** name-regexp with priority
     (`records.ExtractMatch`/`RecipeRegister`/`RecipeFor`), whole-file office/PDF are
     `{whole}` specs. LANDED (`records/recipe.go`, `records/spec.go`, `records/extract.go`).
-E2. ✅ **Native declarative execution** — `framing` (line/multiline/json/whole), `fields`
-    (byte-regex), and `time` (normalized to int64 epoch-nanos) applied per-record on the
-    fast lane, no per-row JS (`records/recipe.go` `SpecApply`). ONE gap: `section`
-    framing is declared but not yet dispatched (see the `couchbase.log` banner item) —
-    everything else is landed.
+E2. ✅ **Native declarative execution** — `framing` (line/multiline/json/section/whole),
+    `fields` (byte-regex), and `time` (normalized to int64 epoch-nanos) applied
+    per-record on the fast lane, no per-row JS (`records/recipe.go` `SpecApply`).
+    `section` frames cbcollect ====-banner command dumps into one `{title,text}` record
+    per section (see `frameSection`); example recipe
+    `extensions/extract_recipes/couchbase_log.extract.js`. LANDED.
 E3. ✅ **Pluggable JS extractors** — `*.extract.js` recipes loaded from a `-ext` recipe
     dir; module-scope `match={exts,names,priority}` + `describe(file)→ExtractSpec` keeps
     JS off the hot path (`glue/ext_extract_jsvm.go`, `DESIGN-extensions.md`); the describe

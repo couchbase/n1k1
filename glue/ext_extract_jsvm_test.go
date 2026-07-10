@@ -232,6 +232,75 @@ func TestJSExtractRecipeEndToEnd(t *testing.T) {
 	}
 }
 
+// cbCollectLog is a cbcollect_info couchbase.log fragment: ====-banner command dumps
+// (a banner rule, the command, a banner rule, then the command's output).
+const cbCollectLog = `==============================================================================
+uname -a
+==============================================================================
+Linux host 5.4.0 x86_64
+
+==============================================================================
+ntpq -p
+==============================================================================
+     remote           refid      st
+*ntp1.example    10.0.0.1         2
+`
+
+// TestJSExtractRecipeSectionEndToEnd registers the SHIPPED couchbase_log.extract.js
+// example (section framing, IDEA-0006) and proves a SQL FROM over a couchbase.log
+// keyspace returns one {title,text} row per ====-delimited command dump -- the
+// flagship case that previously errored with "unsupported framing".
+func TestJSExtractRecipeSectionEndToEnd(t *testing.T) {
+	repo, err := filepath.Abs("..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(repo, "extensions", "extract_recipes", "couchbase_log.extract.js")
+	if _, err := os.Stat(path); err != nil {
+		t.Skipf("example recipe not present: %v", err)
+	}
+	if _, err := RegisterExtensionFile(path); err != nil {
+		t.Fatalf("RegisterExtensionFile(%s): %v", path, err)
+	}
+	if rp := records.RecipeFor("couchbase.log"); rp == nil {
+		t.Fatal("couchbase_log recipe did not claim couchbase.log")
+	}
+
+	dir := t.TempDir()
+	ks := filepath.Join(dir, "default", "sys")
+	if err := os.MkdirAll(ks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ks, "couchbase.log"), []byte(cbCollectLog), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sess, err := OpenSession(dir, "default")
+	if err != nil {
+		t.Fatalf("OpenSession: %v", err)
+	}
+	defer sess.Close()
+
+	got := runRows(t, sess, "SELECT c.title, c.text FROM sys c ORDER BY c.title")
+	want := []string{
+		`{"title":"ntpq -p","text":"     remote           refid      st\n*ntp1.example    10.0.0.1         2"}`,
+		`{"title":"uname -a","text":"Linux host 5.4.0 x86_64"}`,
+	}
+	if len(got) != len(want) {
+		t.Fatalf("rows = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("row %d = %s\n   want %s", i, got[i], want[i])
+		}
+	}
+
+	// A WHERE over the section body flows through the native scan.
+	one := runRows(t, sess, `SELECT c.title FROM sys c WHERE c.text LIKE "%ntp1%"`)
+	if len(one) != 1 || one[0] != `{"title":"ntpq -p"}` {
+		t.Errorf(`WHERE text LIKE '%%ntp1%%' = %v, want [{"title":"ntpq -p"}]`, one)
+	}
+}
+
 // TestRegisterExtractRecipeFile proves the ext.go file-loader branch: a "*.extract.js"
 // file is routed to RegisterJSExtractRecipe (not the generic scalar-UDF loader) and
 // registers a records.Recipe. It loads the shipped example so the example stays valid.

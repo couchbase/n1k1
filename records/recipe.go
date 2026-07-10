@@ -219,7 +219,8 @@ func HeadSample(path string, max int) (string, error) {
 // This is the hot per-record path and stays entirely in Go (byte-oriented regex +
 // time parse, or jsonparser for json framing) -- no JS. Framing kinds handled:
 // multiline, line, whole, json (JSONL: one JSON object per line, whose time field
-// is normalized in place to the int64 sort key). Others (section) error here.
+// is normalized in place to the int64 sort key), and section (====-banner command
+// dumps, one {title,text} record per section -- see frameSection).
 func SpecApply(spec ExtractSpec, path, idPrefix string) (Source, error) {
 	r, closers, err := openDecompressed(path)
 	if err != nil {
@@ -238,10 +239,11 @@ func SpecApply(spec ExtractSpec, path, idPrefix string) (Source, error) {
 			return nil, err
 		}
 		s.whole = all
-	case FramingMultiline, FramingLine, FramingJSON, "":
+	case FramingMultiline, FramingLine, FramingJSON, FramingSection, "":
 		// json framing is line-oriented too (one JSON object per line = one record),
 		// so it shares the scanner path; only buildDoc/recordNanos differ (they read
-		// the JSON directly instead of a field regex).
+		// the JSON directly instead of a field regex). Section framing also reads the
+		// scanner line-by-line, assembling one record per ====-delimited block.
 		sc := bufio.NewScanner(r)
 		sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
 		s.sc = sc
@@ -264,12 +266,15 @@ type specSource struct {
 	sc    *bufio.Scanner // line-based framing (multiline/line)
 	whole []byte         // whole-file framing: the entire file as one record
 
-	fieldRe *regexp.Regexp // spec.Fields.Pattern (named captures); nil if none
-	tsIdx   int            // index of the timestamp subexp in fieldRe, or -1
-	multi   bool           // multiline framing (else one record per line)
-	json    bool           // json framing: each line is a JSON object (JSONL)
+	fieldRe   *regexp.Regexp // spec.Fields.Pattern (named captures); nil if none
+	tsIdx     int            // index of the timestamp subexp in fieldRe, or -1
+	multi     bool           // multiline framing (else one record per line)
+	json      bool           // json framing: each line is a JSON object (JSONL)
+	section   bool           // section framing: ====-banner command dumps
+	sectionRe *regexp.Regexp // spec.Framing.Section boundary regexp (section framing)
 
-	cur      []byte // the record currently being assembled
+	cur      []byte // the record currently being assembled (section: the body)
+	secTitle []byte // section framing: the current section's command/title line(s)
 	leadBuf  []byte // lookahead: the next record's lead line (when haveLead)
 	haveLead bool   // leadBuf holds a pending lead line
 	done     bool
@@ -284,6 +289,18 @@ func (s *specSource) compile() error {
 	s.tsIdx = -1
 	s.multi = s.spec.Framing.Kind == FramingMultiline
 	s.json = s.spec.Framing.Kind == FramingJSON
+	s.section = s.spec.Framing.Kind == FramingSection
+	if s.section {
+		pat := s.spec.Framing.Section
+		if pat == "" {
+			return fmt.Errorf("records: SpecApply: section framing requires framing.section (the boundary regexp)")
+		}
+		re, err := regexp.Compile(pat)
+		if err != nil {
+			return fmt.Errorf("records: SpecApply: bad section regexp: %w", err)
+		}
+		s.sectionRe = re
+	}
 	if pat := s.spec.Fields.Pattern; pat != "" {
 		re, err := regexp.Compile(pat)
 		if err != nil {
@@ -311,6 +328,24 @@ func (s *specSource) Next(rec *Record) (bool, error) {
 	if s.spec.Framing.Kind == FramingWhole {
 		s.done = true
 		return s.emit(rec, s.whole)
+	}
+	if s.section {
+		// Assemble whole ====-banner sections, skipping any that are entirely blank
+		// (a leading preamble of blank lines, or back-to-back boundary lines).
+		for {
+			ok, err := s.frameSection()
+			if err != nil || !ok {
+				return false, err
+			}
+			if len(strings.TrimSpace(string(s.secTitle))) == 0 &&
+				len(strings.TrimSpace(string(s.cur))) == 0 {
+				if s.done {
+					return false, nil
+				}
+				continue
+			}
+			return s.emit(rec, s.cur)
+		}
 	}
 	rb, ok, err := s.frameNext()
 	if err != nil || !ok {
@@ -357,6 +392,97 @@ func (s *specSource) frameNext() (rec []byte, ok bool, err error) {
 	}
 }
 
+// frameSection assembles the next ====-banner section (cbcollect couchbase.log
+// shape: a boundary line, the command/title line(s), a boundary line, then the
+// section body up to the NEXT boundary). It fills s.secTitle (the title) and s.cur
+// (the body); buildDocSection turns them into one {title,text} record. A one-line
+// lookahead (leadBuf/haveLead) holds the next section's opening boundary. Degrades
+// losslessly: a leading preamble before the first boundary becomes a title-less body
+// record, and a header with no closing boundary (or an EOF mid-section) still emits.
+func (s *specSource) frameSection() (ok bool, err error) {
+	s.secTitle = s.secTitle[:0]
+	s.cur = s.cur[:0]
+
+	line, got := s.nextSectionLine()
+	if !got {
+		s.done = true
+		return false, s.sc.Err()
+	}
+
+	if s.sectionRe.Match(line) {
+		// Opening boundary consumed. Title = line(s) until the CLOSING boundary.
+		for {
+			l, got := s.nextSectionLine()
+			if !got {
+				s.done = true // header with no closing boundary: title-only record.
+				return true, s.sc.Err()
+			}
+			if s.sectionRe.Match(l) {
+				break // closing boundary consumed.
+			}
+			s.secTitle = appendSectionLine(s.secTitle, l)
+		}
+	} else {
+		// Preamble before the first boundary: no title, this line starts the body.
+		s.cur = appendSectionLine(s.cur, line)
+	}
+
+	// Body = lines up to (but not including) the next opening boundary, which we
+	// stash as the lookahead so the next call resumes there.
+	for {
+		l, got := s.nextSectionLine()
+		if !got {
+			s.done = true
+			return true, s.sc.Err()
+		}
+		if s.sectionRe.Match(l) {
+			s.leadBuf = append(s.leadBuf[:0], l...)
+			s.haveLead = true
+			return true, nil
+		}
+		s.cur = appendSectionLine(s.cur, l)
+	}
+}
+
+// nextSectionLine returns the next raw line (blank lines included, unlike
+// scanNonEmpty): the stashed lookahead if present, else the next scanned line. The
+// returned bytes are only valid until the following call (they alias the scanner /
+// leadBuf), so callers copy via appendSectionLine before advancing.
+func (s *specSource) nextSectionLine() ([]byte, bool) {
+	if s.haveLead {
+		s.haveLead = false
+		return s.leadBuf, true
+	}
+	if s.sc.Scan() {
+		return s.sc.Bytes(), true
+	}
+	return nil, false
+}
+
+// appendSectionLine appends line to dst, inserting a '\n' separator between lines.
+func appendSectionLine(dst, line []byte) []byte {
+	if len(dst) > 0 {
+		dst = append(dst, '\n')
+	}
+	return append(dst, line...)
+}
+
+// trimBlankLines drops leading and trailing whitespace-only lines (the blank
+// separators cbcollect leaves around a command's output) while preserving each
+// content line verbatim -- notably the leading spaces of aligned command output,
+// which a plain strings.TrimSpace over the whole block would eat.
+func trimBlankLines(s string) string {
+	lines := strings.Split(s, "\n")
+	i, j := 0, len(lines)
+	for i < j && strings.TrimSpace(lines[i]) == "" {
+		i++
+	}
+	for j > i && strings.TrimSpace(lines[j-1]) == "" {
+		j--
+	}
+	return strings.Join(lines[i:j], "\n")
+}
+
 // scanNonEmpty returns the next non-blank line (borrowed from the scanner).
 func (s *specSource) scanNonEmpty() ([]byte, bool) {
 	for s.sc.Scan() {
@@ -394,6 +520,9 @@ func (s *specSource) emit(rec *Record, recBytes []byte) (bool, error) {
 func (s *specSource) buildDoc(dst, recBytes []byte) []byte {
 	if s.json {
 		return s.buildDocJSON(dst, recBytes)
+	}
+	if s.section {
+		return s.buildDocSection(dst, recBytes)
 	}
 	dst = append(dst, '{')
 	wrote := false
@@ -435,6 +564,25 @@ func (s *specSource) buildDoc(dst, recBytes []byte) []byte {
 	// Provenance constants (lifted once by describe) ride every record.
 	for k, v := range s.spec.Provenance {
 		comma()
+		dst = strconv.AppendQuote(dst, k)
+		dst = append(dst, ':')
+		dst = strconv.AppendQuote(dst, v)
+	}
+	return append(dst, '}')
+}
+
+// buildDocSection emits one {title,text} record for a ====-banner section: title is
+// the command/banner line lifted from between the delimiters (the "command/title
+// lifted into provenance" the spec promises), text is the section body. Both are
+// whitespace-trimmed (cbcollect sections carry trailing blank lines before the next
+// banner). Any spec provenance constants ride along, matching buildDoc.
+func (s *specSource) buildDocSection(dst, body []byte) []byte {
+	dst = append(dst, `{"title":`...)
+	dst = strconv.AppendQuote(dst, strings.TrimSpace(string(s.secTitle)))
+	dst = append(dst, `,"text":`...)
+	dst = strconv.AppendQuote(dst, trimBlankLines(string(body)))
+	for k, v := range s.spec.Provenance {
+		dst = append(dst, ',')
 		dst = strconv.AppendQuote(dst, k)
 		dst = append(dst, ':')
 		dst = strconv.AppendQuote(dst, v)

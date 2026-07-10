@@ -1148,6 +1148,79 @@ func TestSpecApplyFramingJSON(t *testing.T) {
 	}
 }
 
+// TestSpecApplyFramingSection: framing:section frames a cbcollect-style
+// couchbase.log (====-delimited command dumps) into one {title,text} record per
+// section -- title lifted from the command line between the banner delimiters, text
+// the section body up to the next banner. Provenance constants ride every record. A
+// leading/preamble blank block and trailing blanks are dropped, not emitted.
+func TestSpecApplyFramingSection(t *testing.T) {
+	bar := strings.Repeat("=", 40)
+	dir := t.TempDir()
+	p := filepath.Join(dir, "couchbase.log")
+	body := "\n" + // leading blank preamble -> skipped
+		bar + "\n" +
+		"uname -a\n" +
+		bar + "\n" +
+		"Linux host 5.4.0\nx86_64\n" +
+		"\n" + // trailing blank inside section -> trimmed
+		bar + "\n" +
+		"date\n" +
+		bar + "\n" +
+		"Wed Jul 10 2026\n"
+	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	spec := ExtractSpec{
+		Framing:    Framing{Kind: FramingSection, Section: `^={10,}$`},
+		Provenance: map[string]string{"file": "couchbase.log"},
+	}
+	src, err := SpecApply(spec, p, "couchbase.log")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, docs := collect(t, src)
+	if len(docs) != 2 {
+		t.Fatalf("want 2 sections, got %d: %v", len(docs), docs)
+	}
+
+	type sec struct {
+		Title string `json:"title"`
+		Text  string `json:"text"`
+		File  string `json:"file"`
+	}
+	want := []sec{
+		{Title: "uname -a", Text: "Linux host 5.4.0\nx86_64", File: "couchbase.log"},
+		{Title: "date", Text: "Wed Jul 10 2026", File: "couchbase.log"},
+	}
+	for i, d := range docs {
+		var got sec
+		if err := json.Unmarshal([]byte(d), &got); err != nil {
+			t.Fatalf("section %d not valid JSON: %v\n  %s", i, err, d)
+		}
+		if got != want[i] {
+			t.Errorf("section %d = %+v, want %+v\n  raw=%s", i, got, want[i], d)
+		}
+	}
+}
+
+// TestSpecApplyFramingSectionErrors: section framing requires a boundary regexp, and
+// rejects an uncompilable one -- a mis-authored recipe fails loud at SpecApply, not
+// with silent zero records.
+func TestSpecApplyFramingSectionErrors(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "x.log")
+	if err := os.WriteFile(p, []byte("hi\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := SpecApply(ExtractSpec{Framing: Framing{Kind: FramingSection}}, p, "x"); err == nil {
+		t.Error("expected error for section framing with no boundary regexp")
+	}
+	if _, err := SpecApply(ExtractSpec{Framing: Framing{Kind: FramingSection, Section: `(`}}, p, "x"); err == nil {
+		t.Error("expected error for section framing with a bad boundary regexp")
+	}
+}
+
 // TestExtractSpecRoundTrip pins the Phase-0 extract/sorted-source contract
 // (records/spec.go): the shared types serialize to the .n1k1 sidecar and back
 // without losing fields, so the parallel extract/merge tracks agree on shapes.
