@@ -361,10 +361,18 @@ func OpWindowFrames(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 		var lzAccA, lzAccB, lzResBuf []byte
 		var lzFrameVals base.Vals
 
+		// Carried accumulator for the left-anchored incremental fold (the whole-partition
+		// / running-total fast path -- see the agg block). lzGrowFolded is how many
+		// leading partition rows have already been folded into lzGrowAcc; both reset at
+		// each partition start.
+		var lzGrowAcc, lzGrowAccOther []byte
+		var lzGrowFolded int64
+
 		// Only the (interpreter-only) agg block below uses these; the gen-compiler
 		// strips that block via "// !lz", so keep them "used" in the compiled lane --
 		// same guard the rank buffers use above.
 		_, _, _, _ = lzAccA, lzAccB, lzResBuf, lzFrameVals
+		_, _, _ = lzGrowAcc, lzGrowAccOther, lzGrowFolded
 
 		// Partition-level output buffer (row_number / rank / dense_rank / percent_rank /
 		// cume_dist / ntile). The peer-group state lives in base.WindowFrame
@@ -477,47 +485,91 @@ func OpWindowFrames(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 			} // !lz
 
 			if aggName != "" || isRatioToReport { // !lz
-				// Fold the native aggregate over frame 0's rows: Init a fresh
-				// accumulator, Update once per frame row (operand evaluated against
-				// that row), then Result. Ping-pong lzAcc/lzAccOther so Update reads
-				// the prior state and writes the next without allocating. For
-				// RATIO_TO_REPORT the aggregate is SUM; the result is then divided into
-				// the current row's operand below.
+				// Fold the native aggregate over frame 0's rows and append the Result
+				// (RATIO_TO_REPORT folds SUM, then divides the current row's operand by
+				// it below). This whole block is interpreter-only and strips as one unit,
+				// so the inner branches are plain Go (no nested "// !lz").
 				lzFrame := &lzFrames[0]
 
-				lzAcc := lzAgg.Init(lzVars, lzAccA[:0])
-				lzAccOther := lzAccB
+				var lzResVal base.Val
 
-				lzStepPos := int64(-1)
-				lzStepOk := true
-				var lzStepErr error
-				for {
-					lzFrameVals, lzStepPos, lzStepOk, lzStepErr =
-						lzFrame.StepVals(true, lzStepPos, lzFrameVals[:0])
-					if !lzStepOk || lzStepErr != nil {
-						break
+				// Left-anchored, no-EXCLUDE frame (UNBOUNDED PRECEDING AND <anything>): as
+				// Pos advances the frame only GROWS (Include.Beg stays 0; Include.End is
+				// monotone non-decreasing), so carry the accumulator across rows and fold
+				// only the rows that newly entered -- O(N) over the partition instead of
+				// re-folding [0,End) every row (O(N^2)). This is the common case: whole
+				// partition (OVER (PARTITION BY x)), running total (OVER (ORDER BY x)), and
+				// UNBOUNDED PRECEDING AND n FOLLOWING/PRECEDING. Every base aggregate is
+				// add-only over a growing frame, so the carried fold is exact.
+				//   lzGrowFolded = # leading rows already folded into lzGrowAcc (reset per
+				//   partition). StepVals(true, lzGrowFolded-1, ...) resumes at lzGrowFolded
+				//   and stops at Include.End, so each partition row is folded exactly once.
+				if lzFrame.BegBoundary != base.WTokNum && lzFrame.Exclude == base.WTokNoOthers {
+					if lzCurrentPos == 0 {
+						lzGrowAcc = lzAgg.Init(lzVars, lzGrowAcc[:0])
+						lzGrowFolded = 0
 					}
 
-					lzOperandVal := lzOperandFunc(lzFrameVals, lzYieldErr) // <== emitCaptured: pathNext "WFA"
+					lzStepPos := lzGrowFolded - 1
+					for {
+						var lzOk bool
+						var lzErr2 error
+						lzFrameVals, lzStepPos, lzOk, lzErr2 =
+							lzFrame.StepVals(true, lzStepPos, lzFrameVals[:0])
+						if lzErr2 != nil {
+							lzYieldErr(lzErr2)
+							break
+						}
+						if !lzOk {
+							break
+						}
 
-					lzAccOther, lzAcc, _ = lzAgg.Update(lzVars, lzOperandVal,
-						lzAccOther[:0], lzAcc, lzVars.Ctx.ValComparer)
+						lzOperandVal := lzOperandFunc(lzFrameVals, lzYieldErr) // <== emitCaptured: pathNext "WFA"
 
-					lzAcc, lzAccOther = lzAccOther, lzAcc
+						lzGrowAccOther, lzGrowAcc, _ = lzAgg.Update(lzVars, lzOperandVal,
+							lzGrowAccOther[:0], lzGrowAcc, lzVars.Ctx.ValComparer)
+						lzGrowAcc, lzGrowAccOther = lzGrowAccOther, lzGrowAcc
+
+						lzGrowFolded = lzStepPos + 1
+					}
+
+					lzResVal, _, lzResBuf = lzAgg.Result(lzVars, lzGrowAcc, lzResBuf[:0])
+				} else {
+					// General frame (fixed slide / arbitrary bounds / EXCLUDE): re-fold
+					// the whole frame from scratch each row. Ping-pong lzAcc/lzAccOther so
+					// Update reads the prior state and writes the next without allocating.
+					lzAcc := lzAgg.Init(lzVars, lzAccA[:0])
+					lzAccOther := lzAccB
+
+					lzStepPos := int64(-1)
+					lzStepOk := true
+					var lzStepErr error
+					for {
+						lzFrameVals, lzStepPos, lzStepOk, lzStepErr =
+							lzFrame.StepVals(true, lzStepPos, lzFrameVals[:0])
+						if !lzStepOk || lzStepErr != nil {
+							break
+						}
+
+						lzOperandVal := lzOperandFunc(lzFrameVals, lzYieldErr) // <== emitCaptured: pathNext "WFA"
+
+						lzAccOther, lzAcc, _ = lzAgg.Update(lzVars, lzOperandVal,
+							lzAccOther[:0], lzAcc, lzVars.Ctx.ValComparer)
+
+						lzAcc, lzAccOther = lzAccOther, lzAcc
+					}
+					if lzStepErr != nil {
+						lzYieldErr(lzStepErr)
+					}
+
+					lzResVal, _, lzResBuf = lzAgg.Result(lzVars, lzAcc, lzResBuf[:0])
+
+					lzAccA, lzAccB = lzAcc, lzAccOther
 				}
-				if lzStepErr != nil {
-					lzYieldErr(lzStepErr)
-				}
-
-				var lzResVal base.Val
-				lzResVal, _, lzResBuf = lzAgg.Result(lzVars, lzAcc, lzResBuf[:0])
-
-				lzAccA, lzAccB = lzAcc, lzAccOther
 
 				// RATIO_TO_REPORT: divide the CURRENT row's operand by the frame SUM
-				// (lzResVal). Plain Go (no inner "// !lz") -- this whole block is
-				// interpreter-only and strips as one unit. ParseFloat64 reads lzResVal
-				// before WindowRatioValue overwrites lzResBuf, so the alias is safe.
+				// (lzResVal). ParseFloat64 reads lzResVal before WindowRatioValue
+				// overwrites lzResBuf, so the alias is safe.
 				if isRatioToReport {
 					lzCurrVal := lzOperandFunc(lzVals, lzYieldErr) // <== emitCaptured: pathNext "WFA"
 					lzResVal, lzResBuf = base.WindowRatioValue(lzCurrVal, lzResVal, lzResBuf[:0])
