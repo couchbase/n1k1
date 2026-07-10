@@ -823,6 +823,7 @@ func TestObjectNamesDifferentialVsCBQ(t *testing.T) {
 // nothing after warmup: the ValComparer's KeyVals pool reuses the key backing and
 // the output goes into the reused bufPre buffer (the GARBAGE MANDATE).
 func TestObjectNamesZeroAlloc(t *testing.T) {
+	skipZeroAllocUnderRace(t)
 	cmp := base.NewValComparer()
 	val := base.Val([]byte(`{"gamma":1,"alpha":2,"beta":3,"delta":4}`))
 
@@ -893,6 +894,7 @@ func TestObjectValuesPairsDifferentialVsCBQ(t *testing.T) {
 // key backing, value slices point into the operand, and output goes into the
 // reused bufPre (the GARBAGE MANDATE).
 func TestObjectValuesPairsZeroAlloc(t *testing.T) {
+	skipZeroAllocUnderRace(t)
 	cmp := base.NewValComparer()
 	val := base.Val([]byte(`{"gamma":1,"alpha":"x","beta":[1,2],"delta":null}`))
 
@@ -977,6 +979,7 @@ func TestArrayBuildersDifferentialVsCBQ(t *testing.T) {
 // TestArrayBuildersZeroAlloc asserts the per-row native array builds allocate
 // nothing after warmup (splice into the reused bufPre; the GARBAGE MANDATE).
 func TestArrayBuildersZeroAlloc(t *testing.T) {
+	skipZeroAllocUnderRace(t)
 	arr := base.Val([]byte(`[1,"two",{"a":1},[9]]`))
 	elem := base.Val([]byte(`"x"`))
 
@@ -1093,6 +1096,7 @@ func TestObjectMutatorsDifferentialVsCBQ(t *testing.T) {
 // TestObjectMutatorsZeroAlloc asserts the per-row native OBJECT mutating builds
 // allocate nothing after warmup (pooled KeyVals + reused bufPre; GARBAGE MANDATE).
 func TestObjectMutatorsZeroAlloc(t *testing.T) {
+	skipZeroAllocUnderRace(t)
 	cmp := base.NewValComparer()
 	o1 := base.Val([]byte(`{"gamma":1,"alpha":"x","beta":[1,2]}`))
 	o2 := base.Val([]byte(`{"beta":9,"delta":{"k":1}}`))
@@ -1801,6 +1805,7 @@ func TestRegexpDifferentialVsCBQ(t *testing.T) {
 // TestRegexpMatchZeroAlloc asserts the per-row native regexp eval allocates
 // nothing after the one-time (first-row) pattern compile -- the GARBAGE MANDATE.
 func TestRegexpMatchZeroAlloc(t *testing.T) {
+	skipZeroAllocUnderRace(t)
 	val := base.Val([]byte(`"2026-07-08T10:34:39 error: disk full"`))
 	src := "error|warn|fatal"
 
