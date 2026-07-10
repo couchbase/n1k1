@@ -435,6 +435,84 @@ func TestWindowRangePeers(t *testing.T) {
 	}
 }
 
+// TestWindowRangeValueBounds exercises the monotone RANGE edge cursors (edgeBeg/edgeEnd)
+// that replaced FindGroupEdge's per-row outward re-scan: numeric value-distance frames
+// (v PRECEDING AND v FOLLOWING), a big peer group (RANGE CURRENT ROW), a non-numeric
+// ORDER BY (peer fallback), and EXCLUDE GROUP -- all must match the hand-computed frames.
+func TestWindowRangeValueBounds(t *testing.T) {
+	dir := t.TempDir()
+	ks := filepath.Join(dir, "default", "rv")
+	if err := os.MkdirAll(ks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// sorted v: 1,1,2,3,3,5 (idx 0..5), with distinct id for a stable ORDER BY tiebreak.
+	rows := ""
+	for i, v := range []int{1, 1, 2, 3, 3, 5} {
+		rows += `{"v":` + strconv.Itoa(v) + `,"id":` + strconv.Itoa(i) + "}\n"
+	}
+	if err := os.WriteFile(filepath.Join(ks, "rv.jsonl"), []byte(rows), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sess, err := OpenSession(dir, "default")
+	if err != nil {
+		t.Fatalf("OpenSession: %v", err)
+	}
+
+	// RANGE BETWEEN 1 PRECEDING AND 1 FOLLOWING: frame = rows with v in [v-1, v+1].
+	//   v=1 -> {1,1,2};  v=2 -> {1,1,2,3,3};  v=3 -> {2,3,3};  v=5 -> {5}.
+	vr := `OVER (ORDER BY v RANGE BETWEEN 1 PRECEDING AND 1 FOLLOWING)`
+	if got := winCol(t, sess, `SELECT COUNT(v) `+vr+` AS s FROM rv ORDER BY v, id`, "s"); !reflect.DeepEqual(got, []float64{3, 3, 5, 3, 3, 1}) {
+		t.Errorf("RANGE 1P1F COUNT: got %v", got)
+	}
+	if got := winCol(t, sess, `SELECT SUM(v) `+vr+` AS s FROM rv ORDER BY v, id`, "s"); !reflect.DeepEqual(got, []float64{4, 4, 10, 8, 8, 5}) {
+		t.Errorf("RANGE 1P1F SUM: got %v", got)
+	}
+
+	// RANGE BETWEEN CURRENT ROW AND 2 FOLLOWING: rows with v in [v, v+2].
+	//   v=1 -> {1,1,2,3,3};  v=2 -> {2,3,3};  v=3 -> {3,3,5};  v=5 -> {5}.
+	vf := `OVER (ORDER BY v RANGE BETWEEN CURRENT ROW AND 2 FOLLOWING)`
+	if got := winCol(t, sess, `SELECT COUNT(v) `+vf+` AS s FROM rv ORDER BY v, id`, "s"); !reflect.DeepEqual(got, []float64{5, 5, 3, 3, 3, 1}) {
+		t.Errorf("RANGE CR..2F COUNT: got %v", got)
+	}
+
+	// EXCLUDE GROUP removes the current row's whole peer group from the frame.
+	//   whole partition minus own v-group: v=1 -> {2,3,3,5}=13; v=2 -> {1,1,3,3,5}=13;
+	//   v=3 -> {1,1,2,5}=9; v=5 -> {1,1,2,3,3}=10.
+	eg := `OVER (ORDER BY v RANGE BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING EXCLUDE GROUP)`
+	if got := winCol(t, sess, `SELECT SUM(v) `+eg+` AS s FROM rv ORDER BY v, id`, "s"); !reflect.DeepEqual(got, []float64{13, 13, 13, 9, 9, 10}) {
+		t.Errorf("RANGE EXCLUDE GROUP SUM: got %v", got)
+	}
+}
+
+// TestWindowRangeNonNumericPeer: a RANGE frame over a NON-numeric ORDER BY column falls
+// back to peer (bytes.Equal) semantics in the edge cursors, matching FindGroupEdge.
+func TestWindowRangeNonNumericPeer(t *testing.T) {
+	dir := t.TempDir()
+	ks := filepath.Join(dir, "default", "sv")
+	if err := os.MkdirAll(ks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// sorted s: "a","a","b","c","c" -> peer groups {a,a},{b},{c,c}.
+	rows := ""
+	for i, s := range []string{"a", "a", "b", "c", "c"} {
+		rows += `{"s":"` + s + `","n":` + strconv.Itoa(i) + "}\n"
+	}
+	if err := os.WriteFile(filepath.Join(ks, "sv.jsonl"), []byte(rows), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sess, err := OpenSession(dir, "default")
+	if err != nil {
+		t.Fatalf("OpenSession: %v", err)
+	}
+	// A numeric-offset RANGE (stays RANGE -- not rewritten to GROUPS) over a string
+	// ORDER BY hits edgeBeg/edgeEnd's non-numeric fallback (ParseFloat64 fails on the
+	// string), which uses bytes.Equal = the current peer group.
+	//   a -> {a,a}=2; b -> {b}=1; c -> {c,c}=2.
+	if got := winCol(t, sess, `SELECT COUNT(n) OVER (ORDER BY s RANGE BETWEEN 1 PRECEDING AND 1 FOLLOWING) AS c FROM sv ORDER BY s, n`, "c"); !reflect.DeepEqual(got, []float64{2, 2, 1, 2, 2}) {
+		t.Errorf("RANGE non-numeric peer: got %v", got)
+	}
+}
+
 // TestWindowPercentRankCumeDist: PERCENT_RANK = (rank-1)/(N-1); CUME_DIST =
 // (#rows whose ORDER BY value <= current)/N. Both are partition-level peer functions,
 // so ties (peers) share a value. Checked on distinct keys and the tied fixture.

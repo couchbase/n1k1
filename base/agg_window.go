@@ -113,6 +113,18 @@ type WindowFrame struct {
 	mmHead        int
 	mmSpare       [][]byte
 	mmEverMissing bool // a MISSING operand entered -> deque can't match AggMin/AggMax
+
+	// Monotone frame-edge state, reset at CurrentUpdate's Pos==0 (Pos is monotone
+	// non-decreasing within a partition). It replaces FindGroupEdge's per-row outward
+	// re-scan -- O(N*group) -- with forward cursors -- O(N) over the partition:
+	//   - pgBeg/pgEnd/pgValid: the current PEER group [beg,end] inclusive (bytes.Equal on
+	//     the ValIdx column), used by GROUPS stepping + EXCLUDE GROUP/TIES.
+	//   - reBeg/reEnd + valid flags: forward cursors for a RANGE frame's Beg/End edges.
+	pgBeg, pgEnd int64
+	pgValid      bool
+	reBeg, reEnd int64
+	reBegValid   bool
+	reEndValid   bool
 }
 
 // WindowRankValue computes the partition-level window function of the given kind for
@@ -478,6 +490,11 @@ func (wf *WindowFrameCurr) PartitionStart() {
 func (wf *WindowFrame) CurrentUpdate(currentPos uint64) (err error) {
 	wf.Pos = int64(currentPos)
 
+	if currentPos == 0 {
+		// New partition: invalidate the monotone edge cursors (Pos restarts at 0).
+		wf.pgValid, wf.reBegValid, wf.reEndValid = false, false, false
+	}
+
 	// Default to unbounded preceding.
 	wf.Include.Beg = 0
 
@@ -499,7 +516,7 @@ func (wf *WindowFrame) CurrentUpdate(currentPos uint64) (err error) {
 			}
 		} else { // wf.Type == WTokRange.
 			// TODO: Assumes ASC order-by.
-			wf.Include.Beg, err = wf.FindGroupEdge(wf.Pos, -1, true)
+			wf.Include.Beg, err = wf.edgeBeg()
 			if err != nil {
 				return err
 			}
@@ -533,7 +550,7 @@ func (wf *WindowFrame) CurrentUpdate(currentPos uint64) (err error) {
 			}
 		} else { // wf.Type == WTokRange.
 			// TODO: Assumes ASC order-by.
-			wf.Include.End, err = wf.FindGroupEdge(wf.Pos, 1, true)
+			wf.Include.End, err = wf.edgeEnd()
 			if err != nil {
 				return err
 			}
@@ -553,12 +570,10 @@ func (wf *WindowFrame) CurrentUpdate(currentPos uint64) (err error) {
 	if wf.Exclude == WTokCurrentRow {
 		wf.Excludes = append(wf.Excludes, WindowSpan{wf.Pos, wf.Pos + 1})
 	} else if wf.Exclude == WTokGroup || wf.Exclude == WTokTies {
-		eBeg, err := wf.FindGroupEdge(wf.Pos, -1, false)
-		if err != nil {
-			return err
-		}
-
-		eEnd, err := wf.FindGroupEdge(wf.Pos, 1, false)
+		// The excluded rows are the current row's PEER group (bytes.Equal on ValIdx),
+		// which is exactly what FindGroupEdge(-1)/(+1) return -- served from the monotone
+		// cache instead of two outward re-scans per row.
+		eBeg, eEnd, err := wf.currentPeerGroup()
 		if err != nil {
 			return err
 		}
@@ -592,7 +607,24 @@ func (wf *WindowFrame) StepGroups(n int64) (int64, bool, error) {
 
 	end := int64(wf.Partition.Len())
 
-	curr, err := wf.FindGroupEdge(wf.Pos, dir, isRange)
+	// The starting group is the current row's group. StepGroups is only called for
+	// GROUPS frames (isRange is false here), so its edge is the current PEER group --
+	// take it from the monotone cache (dir<0: group start, dir>0: group end) rather than
+	// re-scanning outward every row. Keep the FindGroupEdge path for the (unused) RANGE
+	// case for safety.
+	var curr int64
+	var err error
+	if !isRange {
+		var pgBeg, pgEnd int64
+		pgBeg, pgEnd, err = wf.currentPeerGroup()
+		if dir < 0 {
+			curr = pgBeg
+		} else {
+			curr = pgEnd
+		}
+	} else {
+		curr, err = wf.FindGroupEdge(wf.Pos, dir, isRange)
+	}
 	if err != nil {
 		return 0, false, err
 	}
@@ -675,6 +707,144 @@ func (wf *WindowFrame) FindGroupEdge(i, dir int64, isRange bool) (int64, error) 
 
 		i = next
 	}
+}
+
+// -------------------------------------------------------------------
+
+// currentPeerGroup returns the [beg,end] (inclusive) PEER group -- rows byte-equal to
+// Pos on the ValIdx column -- containing the current Pos. It is the monotone-cached
+// equivalent of (FindGroupEdge(Pos,-1,false), FindGroupEdge(Pos,+1,false)): while Pos
+// stays inside the cached group it is O(1), and it recomputes only when Pos crosses into
+// a new group. Since Pos is monotone +1 within a partition (reset at CurrentUpdate's
+// Pos==0), a recompute always lands on a group's first row -- so its FindGroupEdge(-1)
+// is O(1) and its FindGroupEdge(+1) scans the new group once -> O(N) over the partition.
+func (wf *WindowFrame) currentPeerGroup() (int64, int64, error) {
+	if wf.pgValid && wf.Pos >= wf.pgBeg && wf.Pos <= wf.pgEnd {
+		return wf.pgBeg, wf.pgEnd, nil
+	}
+
+	beg, err := wf.FindGroupEdge(wf.Pos, -1, false)
+	if err != nil {
+		return wf.Pos, wf.Pos, err
+	}
+	end, err := wf.FindGroupEdge(wf.Pos, 1, false)
+	if err != nil {
+		return wf.Pos, wf.Pos, err
+	}
+
+	wf.pgBeg, wf.pgEnd, wf.pgValid = beg, end, true
+	return beg, end, nil
+}
+
+// edgeEnd returns the inclusive upper edge of a RANGE frame for the current Pos --
+// identical to FindGroupEdge(Pos,+1,true) but via a forward cursor (reEnd) instead of an
+// outward re-scan. The edge is monotone non-decreasing in Pos (values are sorted and the
+// threshold val(Pos)+EndF64 only grows), so the scan resumes from the previous edge; each
+// row is visited once across the partition -> O(N). A non-numeric val(Pos) falls back to
+// PEER semantics (bytes.Equal), matching FindGroupEdge.
+func (wf *WindowFrame) edgeEnd() (int64, error) {
+	n := int64(wf.Partition.Len())
+
+	valCurr, err := wf.GetValsVal(wf.Pos, wf.ValIdx)
+	if err != nil {
+		return wf.Pos, err
+	}
+
+	rangeNumeric := false
+	var f64Edge float64
+	if f64Curr, perr := ParseFloat64(valCurr); perr == nil {
+		rangeNumeric = true
+		f64Edge = f64Curr + wf.EndF64
+	}
+
+	// Rows (Pos, i] are already known in-edge: either i == Pos, or i == reEnd from a
+	// prior Pos whose (smaller) threshold those rows satisfied -- so they satisfy this
+	// row's threshold too (numeric) / are the same peer group (peer; reEnd < Pos when the
+	// group changed, so the resume is skipped then).
+	i := wf.Pos
+	if wf.reEndValid && wf.reEnd > i {
+		i = wf.reEnd
+	}
+
+	for {
+		next := i + 1
+		if next >= n {
+			break
+		}
+
+		valNext, gerr := wf.GetValsVal(next, wf.ValIdx)
+		if gerr != nil {
+			wf.reEnd, wf.reEndValid = i, true
+			return i, gerr
+		}
+
+		if rangeNumeric {
+			f64Next, perr := ParseFloat64(valNext)
+			if perr != nil || f64Next > f64Edge {
+				break
+			}
+		} else {
+			if !bytes.Equal(valCurr, valNext) {
+				break
+			}
+		}
+
+		i = next
+	}
+
+	wf.reEnd, wf.reEndValid = i, true
+	return i, nil
+}
+
+// edgeBeg returns the inclusive lower edge of a RANGE frame for the current Pos --
+// identical to FindGroupEdge(Pos,-1,true) but via a forward cursor (reBeg). The lower
+// edge is the smallest j (<= Pos) with row j in-edge (val(j) >= val(Pos)+BegF64, or peer
+// of Pos); it is monotone non-decreasing in Pos, so the cursor only advances forward,
+// skipping rows that have dropped out of the frame -> O(N) over the partition.
+func (wf *WindowFrame) edgeBeg() (int64, error) {
+	valCurr, err := wf.GetValsVal(wf.Pos, wf.ValIdx)
+	if err != nil {
+		return wf.Pos, err
+	}
+
+	rangeNumeric := false
+	var f64Edge float64
+	if f64Curr, perr := ParseFloat64(valCurr); perr == nil {
+		rangeNumeric = true
+		f64Edge = f64Curr + wf.BegF64
+	}
+
+	i := int64(0)
+	if wf.reBegValid && wf.reBeg > 0 {
+		i = wf.reBeg
+	}
+
+	// Advance forward over rows that are no longer in-edge, never past Pos (the edge is a
+	// contiguous block ending at/around Pos, so the first in-edge row is the lower edge).
+	for i < wf.Pos {
+		valI, gerr := wf.GetValsVal(i, wf.ValIdx)
+		if gerr != nil {
+			wf.reBeg, wf.reBegValid = i, true
+			return i, gerr
+		}
+
+		inEdge := false
+		if rangeNumeric {
+			if f64I, perr := ParseFloat64(valI); perr == nil && f64I >= f64Edge {
+				inEdge = true
+			}
+		} else {
+			inEdge = bytes.Equal(valCurr, valI)
+		}
+		if inEdge {
+			break
+		}
+
+		i++
+	}
+
+	wf.reBeg, wf.reBegValid = i, true
+	return i, nil
 }
 
 // -------------------------------------------------------------------
