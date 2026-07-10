@@ -259,8 +259,8 @@ func (c *cli) printHelp() {
 	// highlight is zero-width ANSI), so the description column stays aligned.
 	lines := []string{
 		".help                 show this help",
-		".open <dir>           open a different file datastore directory",
-		".tables / .keyspaces  list keyspaces with framing (recipe/format vs whole-file blob) + example",
+		".open <dir>           open a different datastore directory",
+		".tables / .keyspaces  list keyspaces + SQL++ example",
 		".index [list|show <name>|rebuild [<n>]|help]  secondary indexes (run .index help for details)",
 		".schema [<keyspace>]  sampled shape (keys + JSON types) of a keyspace",
 		".mode <m>             output mode (append |pretty to indent JSON): " + c.highlightCurrent(mode, " ", cmd.OutputModes...),
@@ -279,7 +279,7 @@ func (c *cli) printHelp() {
 		".bail " + c.helpOpts(onOff(c.bail), "on", "off") + "        stop on the first statement error (handy for scripts)",
 		".echo " + c.helpOpts(onOff(c.echo), "on", "off") + "        echo each input line as it's read (handy for scripts)",
 		".print <text>         emit text to stderr (e.g. for script progress / debugging)",
-		".output [<file>]      send results to a file, or back to stdout if omitted",
+		".output [<file>]      send results to a file, or to stdout if omitted",
 		".version              show version + build info",
 		".quit / .exit         leave",
 	}
