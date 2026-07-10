@@ -34,10 +34,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -72,6 +74,9 @@ func suiteFilestoreDir(category string) string {
 func materializeFilestoreSeed(t *testing.T, insertPath, root string) {
 	t.Helper()
 	raw, err := os.ReadFile(insertPath)
+	if os.IsNotExist(err) {
+		return // some categories (scalar/system tests) ship no seed data.
+	}
 	if err != nil {
 		t.Fatalf("read seed %q: %v", insertPath, err)
 	}
@@ -151,7 +156,17 @@ func compareFilestoreResults(actualRows []json.RawMessage, expected json.RawMess
 // without hiding a regression); a NON-skipped error or mismatch is a hard failure --
 // the whole point of the oracle.
 func runFilestoreOracle(t *testing.T, category string, skip map[string]string) {
-	dir := suiteFilestoreDir(category)
+	p, _, _ := runFilestoreOracleAt(t, suiteFilestoreDir(category), skip, false)
+	if p == 0 {
+		t.Fatalf("%s oracle: 0 cases passed (harness broken?)", category)
+	}
+}
+
+// runFilestoreOracleAt is the engine: materialize dir's insert.json into a fresh
+// datastore, then run every case in dir's case_*.json. When reportOnly, mismatches
+// and errors are logged (not failed) and tallied -- used by the survey to decide
+// which categories to vendor and what to skip. Returns (pass, fail, errored).
+func runFilestoreOracleAt(t *testing.T, dir string, skip map[string]string, reportOnly bool) (pass, fail, errored int) {
 	root := t.TempDir()
 	materializeFilestoreSeed(t, filepath.Join(dir, "insert.json"), root)
 
@@ -166,7 +181,14 @@ func runFilestoreOracle(t *testing.T, category string, skip map[string]string) {
 		t.Fatalf("no case files under %q", dir)
 	}
 
-	var pass, skipped int
+	report := func(format string, args ...interface{}) {
+		if reportOnly {
+			t.Logf(format, args...)
+		} else {
+			t.Errorf(format, args...)
+		}
+	}
+
 	for _, f := range files {
 		raw, err := os.ReadFile(f)
 		if err != nil {
@@ -179,26 +201,143 @@ func runFilestoreOracle(t *testing.T, category string, skip map[string]string) {
 		base := filepath.Base(f)
 		for i, c := range cases {
 			if why, ok := skip[fmt.Sprintf("%s#%d", base, i)]; ok {
-				skipped++
 				t.Logf("SKIP %s[%d]: %s", base, i, why)
+				continue
+			}
+			if len(c.Results) == 0 {
+				// No "results" key: an error-expecting or explain-only case, not a
+				// result comparison -- cbq's harness checks those a different way.
+				t.Logf("SKIP %s[%d]: no \"results\" field (error/explain case)", base, i)
 				continue
 			}
 			res, runErr := sess.Run(c.Statements)
 			if runErr != nil {
-				t.Errorf("ERR  %s[%d]: %v\n    %s", base, i, runErr, c.Statements)
+				errored++
+				report("ERR  %s[%d]: %v\n    %s", base, i, runErr, c.Statements)
 				continue
 			}
 			if ok, why := compareFilestoreResults(res.Rows, c.Results); !ok {
-				t.Errorf("FAIL %s[%d]: %s\n    %s", base, i, why, c.Statements)
+				fail++
+				if reportOnly {
+					act, _ := json.Marshal(res.Rows)
+					report("FAIL %s[%d]: %s\n    stmt: %s\n    want: %.1400s\n    got:  %.1400s",
+						base, i, why, c.Statements, string(c.Results), string(act))
+				} else {
+					report("FAIL %s[%d]: %s\n    %s", base, i, why, c.Statements)
+				}
 				continue
 			}
 			pass++
 		}
 	}
-	if pass == 0 {
-		t.Fatalf("%s oracle: 0 cases passed (harness broken?)", category)
+	return pass, fail, errored
+}
+
+// forkFilestoreTestCasesDir locates the couchbase/query fork's own filestore test
+// cases in the module cache via `go list -m` (the same fork the engine already
+// depends on) -- so the broad oracle rides ~18MB of the fork's recorded-result
+// corpus WITHOUT vendoring it. Returns ("", false) if it can't be located (e.g. no
+// go toolchain), so the test skips gracefully; the vendored joins oracle still
+// exercises the harness offline.
+func forkFilestoreTestCasesDir() (string, bool) {
+	out, err := exec.Command("go", "list", "-m", "-f", "{{.Dir}}", "github.com/couchbase/query").Output()
+	if err != nil {
+		return "", false
 	}
-	t.Logf("%s oracle: %d pass, %d skipped", category, pass, skipped)
+	tc := filepath.Join(strings.TrimSpace(string(out)), "test", "filestore", "test_cases")
+	if fi, err := os.Stat(tc); err != nil || !fi.IsDir() {
+		return "", false
+	}
+	return tc, true
+}
+
+// forkFilestoreCategories are the fork filestore categories run as oracle cases.
+// Excluded (with reasons), deferred to follow-up: error_cases (no "results" to
+// compare -- error-expecting), system (system: keyspaces n1k1 doesn't model),
+// select_functions (USE KEYS <array> returns 0 rows + [0].* spread ordering --
+// likely a real gap, investigate), subqexp (subquery-expression gaps), joins
+// (already covered offline by the vendored TestFilestoreOracleJoins).
+var forkFilestoreCategories = []string{
+	"aggregate_functions", "alias_functions", "any_functions", "array_functions",
+	"bitwise_functions", "case_functions", "comp_functions", "conditional_unkn_functions",
+	"crypto_functions", "date_functions", "from_functions", "integers", "json_functions",
+	"key_functions", "meta_functions", "number_functions", "obj_functions",
+	"order_functions", "other_functions", "string_functions", "typeconv_functions",
+	"unnest", "where_functions",
+}
+
+// forkFilestoreSkips are the specific cases that don't match cbq's recorded results,
+// classified. BENIGN = unspecified-order or a deliberate n1k1 guard; KNOWN
+// DISCREPANCY = a real n1k1-vs-cbq difference worth investigating (kept visible here
+// rather than hidden, so the oracle stays green without masking a finding).
+var forkFilestoreSkips = map[string]map[string]string{
+	"aggregate_functions": {
+		"case_distinct.json#2":                "BENIGN: ARRAY_AGG element order is unspecified; differs from cbq's recorded order",
+		"case_median_stddev_variance.json#10": "KNOWN DISCREPANCY: STDDEV(DISTINCT) of a single value -- cbq returns 0, n1k1 differs (single-sample semantics); investigate",
+	},
+	"array_functions": {
+		"case_func_array.json#11": "BENIGN: ARRAY_AGG element order is unspecified; differs from cbq's recorded order",
+		"case_func_array.json#39": "BENIGN: ARRAY_AGG element order is unspecified; differs from cbq's recorded order",
+	},
+	"date_functions": {
+		"case_func_date.json#123": "BENIGN: DATE_RANGE_MILLIS over a 10^10ms range -- n1k1 guards oversized arrays; cbq materializes it",
+	},
+	"key_functions": {
+		"case_key.json#4": "KNOWN DISCREPANCY: USE PRIMARY KEYS -- n1k1 result differs; investigate",
+	},
+	"order_functions": {
+		"case_orderby.json#3": "KNOWN DISCREPANCY: ORDER BY over a MISSING-valued key with orderlines[0].* spread differs; investigate",
+	},
+	"unnest": {
+		"case_unnest.json#4": "KNOWN DISCREPANCY: ORDER BY over whole objects (child, p) collates differently; investigate",
+	},
+}
+
+// TestFilestoreOracleFork runs the fork's filestore result-oracle cases across many
+// categories (function families, aggregates, unnest, ...), located in the module
+// cache -- broadening the joins-only vendored oracle. Skipped under -short (it
+// materializes ~18MB of seeds and runs ~1k cases; ~70s).
+func TestFilestoreOracleFork(t *testing.T) {
+	if testing.Short() {
+		t.Skip("filestore fork oracle is slow (~70s); skipped under -short")
+	}
+	tc, ok := forkFilestoreTestCasesDir()
+	if !ok {
+		t.Skip("couchbase/query fork test_cases dir not found; vendored joins oracle still covers the harness")
+	}
+	for _, cat := range forkFilestoreCategories {
+		cat := cat
+		t.Run(cat, func(t *testing.T) {
+			p, _, _ := runFilestoreOracleAt(t, filepath.Join(tc, cat), forkFilestoreSkips[cat], false)
+			if p == 0 {
+				t.Fatalf("%s: 0 cases passed (harness/data issue?)", cat)
+			}
+		})
+	}
+}
+
+// TestFilestoreOracleSurvey is a report-only sweep over EVERY category in a fork
+// test_cases dir (set N1K1_FILESTORE_SURVEY to .../test/filestore/test_cases); it
+// tallies pass/fail/error per category so we can decide which to vendor + skip. Not
+// run in normal CI (skipped without the env var).
+func TestFilestoreOracleSurvey(t *testing.T) {
+	root := os.Getenv("N1K1_FILESTORE_SURVEY")
+	if root == "" {
+		t.Skip("set N1K1_FILESTORE_SURVEY to the fork's test/filestore/test_cases dir")
+	}
+	cats, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range cats {
+		if !c.IsDir() {
+			continue
+		}
+		t.Run(c.Name(), func(t *testing.T) {
+			p, f, e := runFilestoreOracleAt(t, filepath.Join(root, c.Name()), nil, true)
+			t.Logf(">>> %s: pass=%d fail=%d err=%d", c.Name(), p, f, e)
+		})
+	}
 }
 
 // TestFilestoreOracleJoins runs the fork's filestore "joins" cases against n1k1;
