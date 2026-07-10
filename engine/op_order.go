@@ -249,8 +249,11 @@ func MakeValsLessFunc(lzVars *base.Vars, directions []interface{},
 
 			for idx := range directions { // !lz
 				if lzNullsPos[idx] != 0 {
-					// Explicit NULLS FIRST/LAST: place a null/missing key by request,
-					// independent of asc/desc. Both null-ish -> equal (fall to next term).
+					// Explicit NULLS FIRST/LAST moves ONLY the null-ish group to one side
+					// (independent of asc/desc). When exactly one key is null-ish, place it
+					// per request. Otherwise (both null-ish, or both non-null) fall through
+					// to the collation compare below -- so missing<null holds within the
+					// null group, exactly as it does in the natural (no-NULLS) branch.
 					lzANull = base.IsNullOrMissing(lzValsA[idx])
 					lzBNull = base.IsNullOrMissing(lzValsB[idx])
 					if lzANull != lzBNull {
@@ -259,23 +262,14 @@ func MakeValsLessFunc(lzVars *base.Vars, directions []interface{},
 						}
 						return lzNullsPos[idx] == 2
 					}
-					if !lzANull {
-						lzCmp = lzVars.Ctx.ValComparer.Compare(lzValsA[idx], lzValsB[idx])
-						if lzCmp < 0 {
-							return lzAscs[idx]
-						}
-						if lzCmp > 0 {
-							return !lzAscs[idx]
-						}
-					}
-				} else {
-					lzCmp = lzVars.Ctx.ValComparer.Compare(lzValsA[idx], lzValsB[idx])
-					if lzCmp < 0 {
-						return lzAscs[idx]
-					}
-					if lzCmp > 0 {
-						return !lzAscs[idx]
-					}
+				}
+
+				lzCmp = lzVars.Ctx.ValComparer.Compare(lzValsA[idx], lzValsB[idx])
+				if lzCmp < 0 {
+					return lzAscs[idx]
+				}
+				if lzCmp > 0 {
+					return !lzAscs[idx]
 				}
 			} // !lz
 

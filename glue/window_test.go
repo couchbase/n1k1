@@ -379,6 +379,21 @@ func TestWindowCompositeOrderBy(t *testing.T) {
 	if got := winCol(t, sess, stmt, "s"); !reflect.DeepEqual(got, []float64{1, 6, 6, 10}) {
 		t.Errorf("GROUPS composite sum: got %v, want [1 6 6 10]\n  %s", got, stmt)
 	}
+
+	// Multi-column RANGE (no numeric offset) is pure peer grouping -- executed as
+	// GROUPS, so it works over the (a,b) tuple where single-column RANGE arithmetic
+	// (ParseFloat64) can't. The default running-total frame and the explicit RANGE
+	// CURRENT ROW form both give the peer-group running total, matching the GROUPS
+	// result above.
+	for _, c := range []struct{ name, frame string }{
+		{"range-default", ``},
+		{"range-unbounded-current", ` RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW`},
+	} {
+		stmt := `SELECT SUM(x) OVER (ORDER BY a, b` + c.frame + `) AS s` + ord
+		if got := winCol(t, sess, stmt, "s"); !reflect.DeepEqual(got, []float64{1, 6, 6, 10}) {
+			t.Errorf("multi-col RANGE %s: got %v, want [1 6 6 10]\n  %s", c.name, got, stmt)
+		}
+	}
 }
 
 // TestWindowNamedClause: a named WINDOW clause (`... OVER w ... WINDOW w AS (...)`)

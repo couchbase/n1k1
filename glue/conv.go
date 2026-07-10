@@ -1134,6 +1134,29 @@ func (c *Conv) VisitWindowAggregate(o *plan.WindowAggregate) (interface{}, error
 			frameType = "groups"
 		}
 
+		// A RANGE frame with only CURRENT ROW / UNBOUNDED bounds (no numeric
+		// `v PRECEDING/FOLLOWING` offset) is pure peer grouping -- identical to the
+		// same-bounds GROUPS frame (RANGE CURRENT ROW = the current ORDER BY peer
+		// group). Execute it AS GROUPS so peer detection is bytes.Equal on the ORDER BY
+		// tuple (any number of columns, "tuple" mode below), instead of RANGE's
+		// single-column ParseFloat64 arithmetic. This is what makes multi-column
+		// `OVER (ORDER BY a, b)` (incl. the default running-total frame) work. A RANGE
+		// frame WITH a numeric offset still needs the single numeric value, so it stays
+		// "range" (single-column; a multi-column numeric RANGE has no scalar to bound on
+		// and falls through to a graceful NA).
+		if frameType == "range" {
+			numericOffset := false
+			for _, wfe := range wf.WindowFrameExtents() {
+				if wfe.HasModifier(algebra.WINDOW_FRAME_VALUE_PRECEDING) ||
+					wfe.HasModifier(algebra.WINDOW_FRAME_VALUE_FOLLOWING) {
+					numericOffset = true
+				}
+			}
+			if !numericOffset {
+				frameType = "groups"
+			}
+		}
+
 		// Ranking window functions (computed from partition position + peer groups,
 		// not a frame aggregate). ROW_NUMBER needs only the position; RANK/DENSE_RANK
 		// need peer detection, i.e. the ORDER BY value column.

@@ -66,9 +66,11 @@ func TestOrderNulls(t *testing.T) {
 		name, stmt string
 		want       []float64
 	}{
-		// non-null v ascending 10,20,30 -> k 2,5,1; null-ish (k=3,4) placed per clause.
-		{"asc-nulls-last", `SELECT k FROM t ORDER BY v ASC NULLS LAST, k`, []float64{2, 5, 1, 3, 4}},
-		{"asc-nulls-first", `SELECT k FROM t ORDER BY v ASC NULLS FIRST, k`, []float64{3, 4, 2, 5, 1}},
+		// non-null v ascending 10,20,30 -> k 2,5,1; the null-ish rows (k=3 null, k=4
+		// missing) are moved per the clause, and WITHIN the null group normal collation
+		// still applies (missing < null under ASC, reversed under DESC).
+		{"asc-nulls-last", `SELECT k FROM t ORDER BY v ASC NULLS LAST, k`, []float64{2, 5, 1, 4, 3}},
+		{"asc-nulls-first", `SELECT k FROM t ORDER BY v ASC NULLS FIRST, k`, []float64{4, 3, 2, 5, 1}},
 		{"desc-nulls-first", `SELECT k FROM t ORDER BY v DESC NULLS FIRST, k`, []float64{3, 4, 1, 5, 2}},
 		{"desc-nulls-last", `SELECT k FROM t ORDER BY v DESC NULLS LAST, k`, []float64{1, 5, 2, 3, 4}},
 		// Natural (no NULLS clause) is unchanged: ASC puts null-ish first, DESC last.
