@@ -308,6 +308,25 @@ func TestWindowPercentRankCumeDist(t *testing.T) {
 	}
 }
 
+// TestWindowOverGroupedAggregate: a window function whose operand / ORDER BY is
+// itself a grouped aggregate (SUM(COUNT(n)) OVER (...)) -- the window runs OVER the
+// GROUP BY rows, reading the group's precomputed "^aggregates|..." columns for its
+// operand and (via the ORDER-BY-aggregate path) its window ORDER BY.
+func TestWindowOverGroupedAggregate(t *testing.T) {
+	sess := windowTestSession(t) // nums: n=10,20,30,40,50; g=a,b,a,b,a
+
+	// GROUP BY g -> a (COUNT 3), b (COUNT 2). SUM(COUNT(n)) OVER() sums the per-group
+	// counts across both groups = 5, seen by every group row.
+	if got := winCol(t, sess, `SELECT SUM(COUNT(n)) OVER() AS w FROM nums GROUP BY g ORDER BY g`, "w"); !reflect.DeepEqual(got, []float64{5, 5}) {
+		t.Errorf("SUM(COUNT(n)) OVER(): got %v, want [5 5]", got)
+	}
+	// Window ORDER BY a grouped aggregate: OVER (ORDER BY MIN(n)) -> a (MIN 10) before
+	// b (MIN 20); running SUM(COUNT(n)) = a:3, b:3+2=5. ORDER BY g -> [a, b] -> [3, 5].
+	if got := winCol(t, sess, `SELECT SUM(COUNT(n)) OVER(ORDER BY MIN(n)) AS w FROM nums GROUP BY g ORDER BY g`, "w"); !reflect.DeepEqual(got, []float64{3, 5}) {
+		t.Errorf("SUM(COUNT(n)) OVER(ORDER BY MIN(n)): got %v, want [3 5]", got)
+	}
+}
+
 // TestWindowNtile: NTILE(k) splits the ordered partition into k contiguous buckets;
 // the first (N mod k) buckets get one extra row. With N=5 rows: NTILE(2)=3+2,
 // NTILE(3)=2+2+1; k>=N gives one row per bucket.

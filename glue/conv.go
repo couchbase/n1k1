@@ -1788,10 +1788,25 @@ func (c *Conv) VisitOrder(o *plan.Order) (interface{}, error) {
 		return c.TopSet(o, strip)
 	}
 
-	// No projection to bind against; an order term that re-evaluates an aggregate
-	// here would panic (see orderReEvalsAggregate / the proj-block above).
-	if orderReEvalsAggregate(exprs) {
-		return NA(o)
+	// No projection to bind against. An ORDER BY term carrying an aggregate is fine
+	// only if it lowers to the native ^aggregates| path against the child's labels --
+	// e.g. the child is a GROUP op whose output carries "^aggregates|min(c1)", as when
+	// a window's own ORDER BY sorts the group rows by MIN(c1)/MAX(c2) (SUM(COUNT(x))
+	// OVER (PARTITION BY MIN(c1) ORDER BY MAX(c2))). The order op reads those columns
+	// directly (nothing stripped them). Otherwise it would re-evaluate the aggregate on
+	// a row without the aggregates attachment (panic), so reject gracefully (NA).
+	var obuf bytes.Buffer
+	for i, term := range o.Terms() {
+		xx, isTree := exprs[i].([]interface{})
+		if !isTree || len(xx) != 2 || xx[0] != "exprTree" {
+			continue
+		}
+		if !containsAggregate(term.Expression()) {
+			continue
+		}
+		if _, ok := ExprTreeOptimize(c.TopOp.Labels, term.Expression(), &obuf, false); !ok {
+			return NA(o)
+		}
 	}
 
 	return c.TopPush(o, &base.Op{
@@ -1799,26 +1814,6 @@ func (c *Conv) VisitOrder(o *plan.Order) (interface{}, error) {
 		Labels: c.TopOp.Labels,
 		Params: params,
 	})
-}
-
-// orderReEvalsAggregate reports whether any ORDER BY term (as converted into
-// exprs) is still an "exprTree" carrying an aggregate -- i.e. it wasn't bound to
-// an already-projected column and would re-evaluate the aggregate above the
-// group/projection, which panics (the row lacks the "^aggregates" attachment).
-func orderReEvalsAggregate(exprs []interface{}) bool {
-	for _, x := range exprs {
-		xx, ok := x.([]interface{})
-		if !ok || len(xx) != 2 {
-			continue
-		}
-		if name, _ := xx[0].(string); name != "exprTree" {
-			continue
-		}
-		if e, ok := xx[1].(expression.Expression); ok && containsAggregate(e) {
-			return true
-		}
-	}
-	return false
 }
 
 // orderFoldTarget returns the order-offset-limit op that a separate
