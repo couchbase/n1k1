@@ -1142,13 +1142,51 @@ func (c *Conv) VisitWindowAggregate(o *plan.WindowAggregate) (interface{}, error
 		isRankRank := winFuncName == "rank"
 		isRankDense := winFuncName == "dense_rank"
 
+		// Offset / navigation window functions -> StepToOffset (initial, asc, num).
+		// FIRST/LAST/NTH_VALUE respect the frame; LAG/LEAD are partition-relative, so
+		// they force a whole-partition frame (below). num for NTH/LAG/LEAD is the 2nd
+		// operand (a constant), default 1.
+		isFirstValue := winFuncName == "first_value"
+		isLastValue := winFuncName == "last_value"
+		isNthValue := winFuncName == "nth_value"
+		isLag := winFuncName == "lag"
+		isLead := winFuncName == "lead"
+		isOffset := isFirstValue || isLastValue || isNthValue || isLag || isLead
+
+		offInitial, offNum := 0, 1
+		offAsc := false
+		if isOffset {
+			ops := agg.Operands()
+			nthArg := func() int {
+				if len(ops) > 1 && ops[1] != nil {
+					if n := int(EvalExprInt64(nil, ops[1], nil, 1)); n > 0 {
+						return n
+					}
+				}
+				return 1
+			}
+			switch {
+			case isFirstValue:
+				offInitial, offAsc, offNum = -1, true, 1
+			case isLastValue:
+				offInitial, offAsc, offNum = 1, false, 1
+			case isNthValue:
+				offInitial, offAsc, offNum = -1, true, nthArg()
+			case isLag:
+				offInitial, offAsc, offNum = 0, false, nthArg()
+			case isLead:
+				offInitial, offAsc, offNum = 0, true, nthArg()
+			}
+		}
+
 		// The ORDER BY value is stored as a trailing "^worderby" column (the frame's
 		// ValIdx) for peer/value detection -- needed by RANGE/GROUPS value/current-row
-		// frames AND by RANK/DENSE_RANK. Supported for a SINGLE ORDER BY expr (RANGE is
-		// single-column by definition; composite GROUPS peers are left boxed). ROWS
-		// aggregates and ROW_NUMBER don't need it.
-		appendOrderBy := ((frameType == "range" || frameType == "groups") || isRankRank || isRankDense) &&
-			len(orderByExprs) == 1
+		// frames (incl. FIRST/LAST/NTH_VALUE's default RANGE frame) AND by RANK/
+		// DENSE_RANK. Supported for a SINGLE ORDER BY expr. LAG/LEAD force a
+		// whole-partition frame, so they don't need it; ROWS aggregates and ROW_NUMBER
+		// don't either.
+		appendOrderBy := (((frameType == "range" || frameType == "groups") && !isLag && !isLead) ||
+			isRankRank || isRankDense) && len(orderByExprs) == 1
 
 		partitionSlot := c.AddTemp(nil)
 
@@ -1232,6 +1270,12 @@ func (c *Conv) VisitWindowAggregate(o *plan.WindowAggregate) (interface{}, error
 
 		frameCfg = append(frameCfg, valIdx)
 
+		// LAG/LEAD are partition-relative (frame-independent): force a whole-partition
+		// ROWS frame so StepToOffset's StepVals can reach any offset row.
+		if isLag || isLead {
+			frameCfg = []interface{}{"rows", "unbounded", 0, "unbounded", 0, "no-others", valIdx}
+		}
+
 		framesSlot := c.AddTemp(nil)
 
 		framesLabels := append(base.Labels(nil), windowChild.Labels...)
@@ -1262,6 +1306,17 @@ func (c *Conv) VisitWindowAggregate(o *plan.WindowAggregate) (interface{}, error
 			// operand). RANK/DENSE_RANK need appendOrderBy (peer detection) -- without a
 			// single ORDER BY they fall through and stay boxed.
 			framesParams = append(framesParams, winFuncName)
+			framesLabels = append(framesLabels, "^aggregates|"+agg.String())
+		} else if isOffset && frameNativeOK {
+			// Offset/navigation: pass the operand + StepToOffset navigation (initial,
+			// asc, num); the frames op evaluates the operand at the target row.
+			var operand []interface{}
+			if ops := agg.Operands(); len(ops) > 0 && ops[0] != nil {
+				operand = []interface{}{"exprTree", ops[0]}
+			} else {
+				operand = []interface{}{"json", "null"}
+			}
+			framesParams = append(framesParams, winFuncName, operand, offInitial, offAsc, offNum)
 			framesLabels = append(framesLabels, "^aggregates|"+agg.String())
 		} else {
 			aggName := winFuncName

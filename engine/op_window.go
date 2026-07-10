@@ -270,8 +270,25 @@ func OpWindowFrames(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	isRankRank := winFunc == "rank"
 	isRankDense := winFunc == "dense_rank"
 	isRanking := isRankRowNumber || isRankRank || isRankDense
+
+	// Offset / navigation functions (FIRST_VALUE / LAST_VALUE / NTH_VALUE / LAG /
+	// LEAD): Params[5..7] carry the StepToOffset navigation (initial, asc, num);
+	// Params[4] (aggOperand) is the operand evaluated at the target row.
+	isOffset := winFunc == "first_value" || winFunc == "last_value" ||
+		winFunc == "nth_value" || winFunc == "lag" || winFunc == "lead"
+	offsetInitial := 0
+	offsetAsc := false
+	offsetNum := uint64(1)
+	if isOffset && len(o.Params) > 7 {
+		offsetInitial, _ = o.Params[5].(int)
+		offsetAsc, _ = o.Params[6].(bool)
+		if n, ok := o.Params[7].(int); ok && n > 0 {
+			offsetNum = uint64(n)
+		}
+	}
+
 	aggName := ""
-	if winFunc != "" && !isRanking {
+	if winFunc != "" && !isRanking && !isOffset {
 		aggName = winFunc
 	}
 
@@ -280,13 +297,15 @@ func OpWindowFrames(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 		var lzFrames []base.WindowFrame
 
-		var lzAgg *base.Agg                // !lz
-		var lzAggOperandFunc base.ExprFunc // !lz
-		if aggName != "" {                 // !lz
-			lzAgg = base.Aggs[base.AggCatalog[aggName]]                                                // !lz
-			lzAggOperandFunc = MakeExprFunc(lzVars, o.Children[0].Labels, aggOperand, pathNext, "WFA") // !lz
+		var lzAgg *base.Agg             // !lz
+		var lzOperandFunc base.ExprFunc // !lz
+		if aggName != "" {              // !lz
+			lzAgg = base.Aggs[base.AggCatalog[aggName]]                                             // !lz
+			lzOperandFunc = MakeExprFunc(lzVars, o.Children[0].Labels, aggOperand, pathNext, "WFA") // !lz
+		} else if isOffset { // !lz  -- the offset block shares the operand func
+			lzOperandFunc = MakeExprFunc(lzVars, o.Children[0].Labels, aggOperand, pathNext, "WFA") // !lz
 		} // !lz
-		_, _ = lzAgg, lzAggOperandFunc // !lz
+		_, _ = lzAgg, lzOperandFunc // !lz
 
 		// Reused accumulator ping-pong buffers + Result scratch + frame-row decode
 		// buffer, so a per-row frame aggregate allocates nothing steady-state.
@@ -373,6 +392,31 @@ func OpWindowFrames(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 				lzVals = append(lzVals, base.Val(lzRankBuf))
 			} // !lz
 
+			if isOffset { // !lz
+				// Offset / navigation: StepToOffset (a base.WindowFrame method --
+				// runtime, no gen-time field lifting) walks to the target row; evaluate
+				// the operand there and append it. A target outside the frame (e.g. LAG
+				// at the partition start) yields NULL. No inner "// !lz" -- strips as one
+				// unit by brace depth. Bind lzFrame first (a plain var), like the agg
+				// block; the operand func (built above) is inlined at the emitCaptured
+				// call site "WFA".
+				lzFrame := &lzFrames[0]
+
+				var lzOffOk bool
+				var lzOffErr error
+				lzFrameVals, lzOffOk, lzOffErr = lzFrame.StepToOffset(offsetInitial, offsetAsc, offsetNum, lzFrameVals[:0])
+				if lzOffErr != nil {
+					lzYieldErr(lzOffErr)
+				}
+
+				if lzOffOk {
+					lzOffVal := lzOperandFunc(lzFrameVals, lzYieldErr) // <== emitCaptured: pathNext "WFA"
+					lzVals = append(lzVals, lzOffVal)
+				} else {
+					lzVals = append(lzVals, base.ValNull)
+				}
+			} // !lz
+
 			if aggName != "" { // !lz
 				// Fold the native aggregate over frame 0's rows: Init a fresh
 				// accumulator, Update once per frame row (operand evaluated against
@@ -393,7 +437,7 @@ func OpWindowFrames(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 						break
 					}
 
-					lzOperandVal := lzAggOperandFunc(lzFrameVals, lzYieldErr) // <== emitCaptured: pathNext "WFA"
+					lzOperandVal := lzOperandFunc(lzFrameVals, lzYieldErr) // <== emitCaptured: pathNext "WFA"
 
 					lzAccOther, lzAcc, _ = lzAgg.Update(lzVars, lzOperandVal,
 						lzAccOther[:0], lzAcc, lzVars.Ctx.ValComparer)

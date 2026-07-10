@@ -135,6 +135,59 @@ func TestWindowFrameAggregates(t *testing.T) {
 	}
 }
 
+// winColAny is like winCol but preserves NULL/absent (as nil) vs numbers (float64),
+// so LAG/LEAD boundary NULLs are distinguishable from a real 0.
+func winColAny(t *testing.T, sess *Session, stmt, field string) []interface{} {
+	t.Helper()
+	res, err := sess.Run(stmt)
+	if err != nil {
+		t.Fatalf("Run(%q): %v", stmt, err)
+	}
+	out := make([]interface{}, 0, len(res.Rows))
+	for _, r := range res.Rows {
+		var m map[string]interface{}
+		if err := json.Unmarshal(r, &m); err != nil {
+			t.Fatalf("decode %q from %q: %v", r, stmt, err)
+		}
+		out = append(out, m[field])
+	}
+	return out
+}
+
+// TestWindowOffset: FIRST_VALUE / LAST_VALUE / NTH_VALUE (frame-relative) and LAG /
+// LEAD (partition-relative; a whole-partition frame is forced). Out-of-range offsets
+// yield NULL (nil here).
+func TestWindowOffset(t *testing.T) {
+	sess := windowTestSession(t) // n = 10,20,30,40,50
+
+	for _, c := range []struct {
+		name, stmt, field string
+		want              []interface{}
+	}{
+		{"lag", `SELECT LAG(n) OVER (ORDER BY n) AS s FROM nums ORDER BY n`, "s",
+			[]interface{}{nil, 10.0, 20.0, 30.0, 40.0}},
+		{"lag-2", `SELECT LAG(n, 2) OVER (ORDER BY n) AS s FROM nums ORDER BY n`, "s",
+			[]interface{}{nil, nil, 10.0, 20.0, 30.0}},
+		{"lead", `SELECT LEAD(n) OVER (ORDER BY n) AS s FROM nums ORDER BY n`, "s",
+			[]interface{}{20.0, 30.0, 40.0, 50.0, nil}},
+		{"first_value", `SELECT FIRST_VALUE(n) OVER (ORDER BY n) AS s FROM nums ORDER BY n`, "s",
+			[]interface{}{10.0, 10.0, 10.0, 10.0, 10.0}},
+		{"last_value-default-frame", // default frame ends at CURRENT ROW -> current n
+			`SELECT LAST_VALUE(n) OVER (ORDER BY n) AS s FROM nums ORDER BY n`, "s",
+			[]interface{}{10.0, 20.0, 30.0, 40.0, 50.0}},
+		{"last_value-whole-partition",
+			`SELECT LAST_VALUE(n) OVER (ORDER BY n ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS s FROM nums ORDER BY n`, "s",
+			[]interface{}{50.0, 50.0, 50.0, 50.0, 50.0}},
+		{"nth_value-2-whole-partition",
+			`SELECT NTH_VALUE(n, 2) OVER (ORDER BY n ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS s FROM nums ORDER BY n`, "s",
+			[]interface{}{20.0, 20.0, 20.0, 20.0, 20.0}},
+	} {
+		if got := winColAny(t, sess, c.stmt, c.field); !reflect.DeepEqual(got, c.want) {
+			t.Errorf("%s: got %v, want %v\n  %s", c.name, got, c.want, c.stmt)
+		}
+	}
+}
+
 // TestWindowRanking: ROW_NUMBER / RANK / DENSE_RANK. On distinct keys all three are
 // 1..N; ROW_NUMBER resets per PARTITION. (ROW_NUMBER over TIED keys is
 // non-deterministic -- the tie order is unspecified -- so it's asserted only on

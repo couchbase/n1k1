@@ -399,6 +399,36 @@ func (wf *WindowFrame) GetValsVal(i int64, valIdx int) (Val, error) {
 
 // -------------------------------------------------------------------
 
+// StepToOffset navigates to the target row for the offset/navigation window
+// functions (FIRST_VALUE / LAST_VALUE / NTH_VALUE / LAG / LEAD) and returns its
+// decoded vals. It mirrors ExprWindowFrameStepValue's stepping:
+//   - initial == -1: start before the frame (StepVals then lands on the first row);
+//     num forward steps -> the num'th frame row (FIRST_VALUE=1, NTH_VALUE=n).
+//   - initial ==  0: start at the current row (wf.Pos); num steps back (LAG) or
+//     forward (LEAD) -> the row num away.
+//   - initial ==  1: start past the frame end; num backward steps -> the last row
+//     (LAST_VALUE=1).
+//
+// ok is false when the target falls outside the frame (e.g. LAG at the partition
+// start), so the caller yields NULL. Kept as a base method (not inline field access)
+// so the gen-compiler treats it as runtime -- see the codegen note in op_window.go.
+func (wf *WindowFrame) StepToOffset(initial int, asc bool, num uint64, valsPre Vals) (
+	vals Vals, ok bool, err error) {
+	pos := int64(-1)
+	if initial == 0 {
+		pos = wf.Pos
+	} else if initial == 1 {
+		pos = int64(^uint64(0) >> 1) // MaxInt64: past the end; StepVals clamps to last.
+	}
+
+	ok = true
+	for i := uint64(0); i < num && ok && err == nil; i++ {
+		vals, pos, ok, err = wf.StepVals(asc, pos, valsPre)
+	}
+
+	return vals, ok, err
+}
+
 // StepVals is used for iterating through the current window frame and
 // returns the next vals & position given the last seen position.
 func (wf *WindowFrame) StepVals(next bool, iLast int64, valsPre Vals) (
