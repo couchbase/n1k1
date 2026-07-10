@@ -77,7 +77,7 @@ SELECT * FROM logs l WHERE l.sev = "ERROR"
 
 	var out, errb bytes.Buffer
 	c := &cli{prog: "n1k1", mode: "jsonlines", out: &out, stderr: &errb} // no c.dir: no bundle opened
-	c.cmdRules("list --corpus " + corpus)
+	c.cmdRules("list --queries " + corpus)
 
 	stdout := out.String()
 	// The rich recipe: tag/source/severity/versions + both flags "yes".
@@ -111,7 +111,7 @@ func TestRulesHelp(t *testing.T) {
 	help := out.String()
 	for _, want := range []string{
 		"-- @fixture", "-- @expect", // the golden-fixture format
-		"ANNOTATED RECIPE", "CORPUS LAYOUT", // the doc structure
+		"ANNOTATED RECIPE", "COLLECTION LAYOUT", // the doc structure
 		"score:", "% fused", // an example score line shape
 		"TIPS", "regexp_contains", // the tips (native-over-boxed nudge)
 		"--bind", "--update", // the flag one-liners
@@ -121,6 +121,26 @@ func TestRulesHelp(t *testing.T) {
 		if !strings.Contains(help, want) {
 			t.Errorf(".rules help missing %q; stdout:\n%s", want, help)
 		}
+	}
+}
+
+// TestRulesQueriesFlag: the directory flag is --queries; --corpus is still accepted as
+// a hidden back-compat alias (both set the same field).
+func TestRulesQueriesFlag(t *testing.T) {
+	for _, tc := range []struct{ arg, want string }{
+		{"--queries ./x", "./x"},
+		{"--queries=./x", "./x"},
+		{"--corpus ./x", "./x"}, // hidden alias
+		{"--corpus=./x", "./x"},
+	} {
+		a, err := parseRulesArgs(tc.arg)
+		if err != nil || a.queries != tc.want {
+			t.Errorf("parseRulesArgs(%q) = {queries:%q} err %v; want queries=%q", tc.arg, a.queries, err, tc.want)
+		}
+	}
+	// The error message names the new flag, not the old one.
+	if _, err := parseRulesArgs("--bind m"); err == nil || !strings.Contains(err.Error(), "--queries") {
+		t.Errorf("missing-dir error should mention --queries; got %v", err)
 	}
 }
 
@@ -202,7 +222,7 @@ func TestRulesRunHitStats(t *testing.T) {
 
 	var out, errb bytes.Buffer
 	c := &cli{prog: "n1k1", dir: root, mode: "jsonlines", out: &out, stderr: &errb}
-	c.cmdRules("run --corpus " + corpus)
+	c.cmdRules("run --queries " + corpus)
 	got := errb.String() // the per-detector block goes to stderr
 
 	for _, want := range []string{
@@ -228,7 +248,7 @@ func TestRulesFixSnippets(t *testing.T) {
 	// lint: the advice column carries the boxed, always-wake, and rejected snippets.
 	var lout, lerr bytes.Buffer
 	c := &cli{prog: "n1k1", dir: root, mode: "jsonlines", out: &lout, stderr: &lerr}
-	c.cmdRules("lint --corpus " + corpus)
+	c.cmdRules("lint --queries " + corpus)
 	lintOut := lout.String()
 	for _, want := range []string{
 		"predicate boxes (falls back to cbq)", // boxed advice
@@ -244,7 +264,7 @@ func TestRulesFixSnippets(t *testing.T) {
 	// run: the rejected detector's fix snippet appears in the health block on stderr.
 	var rout, rerr bytes.Buffer
 	c2 := &cli{prog: "n1k1", dir: root, mode: "jsonlines", out: &rout, stderr: &rerr}
-	c2.cmdRules("run --corpus " + corpus)
+	c2.cmdRules("run --queries " + corpus)
 	if !strings.Contains(rerr.String(), "not a runnable detector") {
 		t.Errorf("run health block missing the rejected fix snippet; stderr:\n%s", rerr.String())
 	}
@@ -259,7 +279,7 @@ SELECT * FROM logs l WHERE l.sev = "ERROR"
 	})
 	var tout, terr bytes.Buffer
 	c3 := &cli{prog: "n1k1", mode: "jsonlines", out: &tout, stderr: &terr}
-	c3.cmdRules("test --corpus " + tc)
+	c3.cmdRules("test --queries " + tc)
 	if !strings.Contains(terr.String(), "fixture has no expected findings recorded") {
 		t.Errorf("test missing the no-golden fix snippet; stderr:\n%s", terr.String())
 	}
@@ -282,7 +302,7 @@ func TestRulesRun(t *testing.T) {
 
 	var out, errb bytes.Buffer
 	c := &cli{prog: "n1k1", dir: root, mode: "jsonlines", out: &out, stderr: &errb}
-	c.cmdRules("run --corpus " + corpus)
+	c.cmdRules("run --queries " + corpus)
 
 	stderr := errb.String()
 	if !strings.Contains(stderr, "1 fused, 1 standalone, 1 rejected") {
@@ -320,7 +340,7 @@ func TestRulesLint(t *testing.T) {
 
 	var out, errb bytes.Buffer
 	c := &cli{prog: "n1k1", dir: root, mode: "jsonlines", out: &out, stderr: &errb}
-	c.cmdRules("lint --corpus " + corpus)
+	c.cmdRules("lint --queries " + corpus)
 
 	stdout := out.String()
 	for _, want := range []string{`"class":"fused"`, `"class":"standalone"`, `"class":"rejected"`} {
@@ -377,7 +397,7 @@ SELECT * FROM logs l WHERE l.sev = "ERROR"
 
 	var out, errb bytes.Buffer
 	c := &cli{prog: "n1k1", mode: "jsonlines", out: &out, stderr: &errb}
-	c.cmdRules("test --corpus " + corpus)
+	c.cmdRules("test --queries " + corpus)
 
 	stderr := errb.String()
 	// pass PASS, fail FAIL (with a diff), nogold FAIL (no golden), nofix counted.
@@ -418,7 +438,7 @@ SELECT * FROM logs l WHERE l.sev = "ERROR"
 	// (1) --update records the golden; no failure.
 	var out, errb bytes.Buffer
 	c := &cli{prog: "n1k1", mode: "jsonlines", out: &out, stderr: &errb}
-	c.cmdRules("test --corpus " + dir + " --update")
+	c.cmdRules("test --queries " + dir + " --update")
 	if c.failed {
 		t.Fatalf("--update must not fail on a runnable fixture; stderr:\n%s", errb.String())
 	}
@@ -441,7 +461,7 @@ SELECT * FROM logs l WHERE l.sev = "ERROR"
 	// (2) Re-run in check mode -> PASS now.
 	var out2, errb2 bytes.Buffer
 	c2 := &cli{prog: "n1k1", mode: "jsonlines", out: &out2, stderr: &errb2}
-	c2.cmdRules("test --corpus " + dir)
+	c2.cmdRules("test --queries " + dir)
 	if c2.failed {
 		t.Errorf("recorded golden should PASS on re-check; stderr:\n%s", errb2.String())
 	}
@@ -475,7 +495,7 @@ func TestRulesRunBind(t *testing.T) {
 	}
 	var out, errb bytes.Buffer
 	c := &cli{prog: "n1k1", dir: root, mode: "jsonlines", out: &out, stderr: &errb}
-	c.cmdRules("run --corpus " + corpus + " --bind " + good)
+	c.cmdRules("run --queries " + corpus + " --bind " + good)
 	if !strings.Contains(out.String(), `"tag":"oom"`) {
 		t.Errorf("bound run produced no findings; stdout:\n%s\nstderr:\n%s", out.String(), errb.String())
 	}
@@ -493,7 +513,7 @@ func TestRulesRunBind(t *testing.T) {
 	}
 	var out2, errb2 bytes.Buffer
 	c2 := &cli{prog: "n1k1", dir: root, mode: "jsonlines", out: &out2, stderr: &errb2}
-	c2.cmdRules("run --corpus " + corpus + " --bind " + bad)
+	c2.cmdRules("run --queries " + corpus + " --bind " + bad)
 	if !strings.Contains(errb2.String(), "UNRESOLVED") {
 		t.Errorf("an unresolved logical keyspace must fail loud; stderr:\n%s", errb2.String())
 	}

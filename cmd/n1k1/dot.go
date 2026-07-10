@@ -275,7 +275,7 @@ func (c *cli) printHelp() {
 		".verbose " + c.helpOpts(vcur, "off", "on", "debug", "n") + "  diagnostics level (n>1 provides more info; no arg shows current)",
 		".maxrows <n>          box: cap rows shown (0 = all; negative = last |n| rows)",
 		".maxwidth <n|auto>    box: cap column width (0 = uncapped; auto = fit terminal)",
-		".rules [list|run|lint|test|help] --corpus <dir>  PREPARE++ detector corpus (.rules help for details)",
+		".rules [list|run|lint|test|help] --queries <dir>  run a collection of tagged *.sql++ queries over the datastore (.rules help)",
 		".extensions [list | load <dir>... | unload <name>...]  extensions (*.js = JavaScript)",
 		".extract [help|list]  author *.extract.js recipes that frame files into rows (.extract help for details)",
 		".read <file>          run statements/dot-commands from a file",

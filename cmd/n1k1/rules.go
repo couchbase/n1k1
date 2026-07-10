@@ -17,7 +17,7 @@
 // DESIGN-prepare.md phases 6-7) to the CLI so a tech-support team -- or an AI support
 // agent -- can run a corpus of SQL++ "detectors" over a support bundle (the open
 // datastore) and get findings, and lint the corpus for authoring feedback. It runs
-// interactively AND non-interactively (n1k1 <bundle> -c '.rules run --corpus ./det'),
+// interactively AND non-interactively (n1k1 <bundle> -c '.rules run --queries ./det'),
 // so CI / an agent drives it the same way.
 //
 // A CORPUS is a directory of *.sql++ RECIPE files (glue.LoadCorpus / glue.ParseRecipe).
@@ -28,14 +28,14 @@
 //
 // SUBCOMMANDS:
 //
-//	.rules run  --corpus <dir> [--bind <manifest>]  -- compile the corpus over the
+//	.rules run  --queries <dir> [--bind <manifest>]  -- compile the corpus over the
 //	    open bundle, print a fail-loud coverage/health summary to stderr, then render
 //	    the tagged findings to stdout in the current output mode.
-//	.rules lint --corpus <dir> [--bind <manifest>]  -- the authoring report card:
+//	.rules lint --queries <dir> [--bind <manifest>]  -- the authoring report card:
 //	    per-detector class (fused/standalone/rejected), target keyspace, eval lane
 //	    (native/boxed), predicate-index verdict (literal vs always-wake) and advice,
 //	    plus a corpus score (% fused / native / index-pruned).
-//	.rules test [--corpus <dir>] [--update]         -- the golden-fixture runner (CI):
+//	.rules test [--queries <dir>] [--update]         -- the golden-fixture runner (CI):
 //	    for each recipe with a `-- @fixture`, build a temp keyspace from its input rows,
 //	    run JUST that detector, and (check mode) assert the produced findings equal the
 //	    recipe's `-- @expect` golden as a set -- or (--update) record the produced
@@ -80,18 +80,20 @@ func (c *cli) cmdRules(arg string) {
 	}
 }
 
-// rulesArgs is the parsed flag set shared by run + lint + test: the corpus dir, an
-// optional bind manifest path (run/lint), and the --update boolean (test).
+// rulesArgs is the parsed flag set shared by run + lint + test: the queries dir (the
+// directory of *.sql++ files), an optional bind manifest path (run/lint), and the
+// --update boolean (test).
 type rulesArgs struct {
-	corpus string
-	bind   string
-	update bool // .rules test: record produced findings back into each recipe's @expect
+	queries string
+	bind    string
+	update  bool // .rules test: record produced findings back into each recipe's @expect
 }
 
-// parseRulesArgs parses `--corpus <dir> [--bind <file>] [--update]` (also accepting
-// the bare/`=` forms `-corpus=x`). Unknown tokens are an error so a typo fails loudly
-// rather than being silently ignored. --corpus is validated by the caller (required for
-// run/lint; test errors on its absence too).
+// parseRulesArgs parses `--queries <dir> [--bind <file>] [--update]` (also accepting
+// the bare/`=` forms `-queries=x`). `--corpus` is accepted as a hidden back-compat
+// alias for `--queries` (undocumented). Unknown tokens are an error so a typo fails
+// loudly rather than being silently ignored. --queries is validated by the caller
+// (required for run/lint; test errors on its absence too).
 func parseRulesArgs(arg string) (rulesArgs, error) {
 	var a rulesArgs
 	toks := strings.Fields(arg)
@@ -102,15 +104,15 @@ func parseRulesArgs(arg string) (rulesArgs, error) {
 			key, val, hasEq = t[:eq], t[eq+1:], true
 		}
 		switch strings.TrimLeft(key, "-") {
-		case "corpus":
+		case "queries", "corpus": // --corpus is a hidden back-compat alias
 			if !hasEq {
 				i++
 				if i >= len(toks) {
-					return a, fmt.Errorf("--corpus needs a directory")
+					return a, fmt.Errorf("--queries needs a directory")
 				}
 				val = toks[i]
 			}
-			a.corpus = val
+			a.queries = val
 		case "bind":
 			if !hasEq {
 				i++
@@ -124,11 +126,11 @@ func parseRulesArgs(arg string) (rulesArgs, error) {
 			// A boolean flag: bare `--update`, or `--update=true|false`.
 			a.update = !hasEq || val == "true" || val == "1"
 		default:
-			return a, fmt.Errorf("unknown flag %q (want --corpus <dir> [--bind <manifest>] [--update])", t)
+			return a, fmt.Errorf("unknown flag %q (want --queries <dir> [--bind <manifest>] [--update])", t)
 		}
 	}
-	if a.corpus == "" {
-		return a, fmt.Errorf("--corpus <dir> is required")
+	if a.queries == "" {
+		return a, fmt.Errorf("--queries <dir> is required")
 	}
 	return a, nil
 }
@@ -229,7 +231,7 @@ func (c *cli) cmdRulesList(arg string) {
 		c.failed = true
 		return
 	}
-	recipes, err := loadRecipes(args.corpus)
+	recipes, err := loadRecipes(args.queries)
 	if err != nil {
 		fmt.Fprintf(c.stderr, "%s: .rules list: %v\n", c.prog, err)
 		c.failed = true
@@ -266,7 +268,7 @@ func (c *cli) cmdRulesList(arg string) {
 	}
 	c.renderRows(rows, "", false)
 	fmt.Fprintf(c.stderr, "%s%d detector(s) in %s -- %d with a fixture, %d with a golden (run .rules lint for a health report)\n",
-		c.icon("📋 "), len(recipes), args.corpus, fixtures, goldens)
+		c.icon("📋 "), len(recipes), args.queries, fixtures, goldens)
 }
 
 // yesNo renders a boolean flag column as "yes"/"no" (kept short so the box stays tight).
@@ -287,7 +289,7 @@ func (c *cli) cmdRulesRun(arg string) {
 		c.failed = true
 		return
 	}
-	dets, err := loadCorpus(args.corpus)
+	dets, err := loadCorpus(args.queries)
 	if err != nil {
 		fmt.Fprintf(c.stderr, "%s: .rules run: %v\n", c.prog, err)
 		c.failed = true
@@ -429,7 +431,7 @@ func (c *cli) reportBindingCoverage(sess *glue.Session, binding glue.Binding) bo
 // silently dropped). total is the number of detectors loaded.
 func (c *cli) reportCorpusHealth(cc *glue.CompiledCorpus, total int) {
 	fused := total - len(cc.Standalone) - len(cc.Rejected)
-	fmt.Fprintf(c.stderr, "%scorpus: %d detector(s) -- %d fused, %d standalone, %d rejected\n",
+	fmt.Fprintf(c.stderr, "%sloaded: %d detector(s) -- %d fused, %d standalone, %d rejected\n",
 		c.icon("📋 "), total, fused, len(cc.Standalone), len(cc.Rejected))
 	// A rejected detector never runs, so it can never fire: surface it with the reason
 	// AND the fix snippet (what a runnable detector looks like), never silently drop it.
@@ -455,7 +457,7 @@ func (c *cli) cmdRulesLint(arg string) {
 		c.failed = true
 		return
 	}
-	dets, err := loadCorpus(args.corpus)
+	dets, err := loadCorpus(args.queries)
 	if err != nil {
 		fmt.Fprintf(c.stderr, "%s: .rules lint: %v\n", c.prog, err)
 		c.failed = true
@@ -542,7 +544,7 @@ func (c *cli) cmdRulesTest(arg string) {
 		c.failed = true
 		return
 	}
-	recipes, err := loadRecipes(args.corpus)
+	recipes, err := loadRecipes(args.queries)
 	if err != nil {
 		fmt.Fprintf(c.stderr, "%s: .rules test: %v\n", c.prog, err)
 		c.failed = true

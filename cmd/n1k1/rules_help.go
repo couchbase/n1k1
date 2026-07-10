@@ -16,10 +16,10 @@ package main
 import "fmt"
 
 // cmdRulesHelp prints the self-contained .rules guide to c.out: the subcommand +
-// flag one-liners, a sample corpus directory layout, an annotated sample recipe (the
+// flag one-liners, a sample collection directory layout, an annotated sample recipe (the
 // real front-matter / SQL / @fixture / @expect format), TRUTHFUL example outputs (the
-// exact shapes .rules list/run/lint/test produce over the shipped testdata corpus),
-// and authoring tips for getting the best out of a corpus. It goes to stdout (not
+// exact shapes .rules list/run/lint/test produce over the shipped testdata collection),
+// and authoring tips for getting the best out of a collection. It goes to stdout (not
 // stderr) so it can be piped/paged like any other document.
 func (c *cli) cmdRulesHelp() {
 	// Fprintf with "%s" (not Fprint) because the text embeds "%" tokens (e.g. LIKE
@@ -29,11 +29,11 @@ func (c *cli) cmdRulesHelp() {
 
 // rulesHelpText avoids backticks so it can be one clean raw string literal; inline
 // code is shown quoted or as indented blocks.
-const rulesHelpText = `.rules -- run a corpus of SQL++ detectors over a dataset
+const rulesHelpText = `.rules -- run a collection of SQL++ detectors over a dataset
 
-A CORPUS is a directory of *.sql++ RECIPE files. Each recipe is a single SQL++ SELECT
+A COLLECTION is a directory of *.sql++ RECIPE files. Each recipe is a single SQL++ SELECT
 (a "detector") plus optional "-- key: value" front-matter and an optional inline golden
-fixture. Run a corpus over an open dataset to get tagged findings; lint it for an
+fixture. Run a collection over an open dataset to get tagged findings; lint it for an
 authoring report card; unit-test each detector against its golden fixture (CI).
 
 The same findings are also available directly in SQL++ as a composable FROM source --
@@ -43,21 +43,21 @@ ORDER BY / JOIN and PREPARE'd / EXECUTE'd, e.g.:
 (.rules run streams; RULE_MATCHES() materializes the whole result set as one array.)
 
 COMMANDS
-  .rules list  [--corpus <dir>]                     inventory the corpus (metadata only: no dataset, no compile)
-  .rules run   --corpus <dir> [--bind <manifest>]   compile the corpus over the open dataset -> findings
-  .rules lint  --corpus <dir> [--bind <manifest>]   authoring report card (compiles, does NOT run)
-  .rules test  [--corpus <dir>] [--update]          golden-fixture runner (CI): check @fixture vs @expect
+  .rules list  [--queries <dir>]                     inventory the collection (metadata only: no dataset, no compile)
+  .rules run   --queries <dir> [--bind <manifest>]   compile the collection over the open dataset -> findings
+  .rules lint  --queries <dir> [--bind <manifest>]   authoring report card (compiles, does NOT run)
+  .rules test  [--queries <dir>] [--update]          golden-fixture runner (CI): check @fixture vs @expect
   .rules help                                        this guide
 
 FLAGS
-  --corpus <dir>     the directory of *.sql++ recipe files (required)
-  --bind <manifest>  map LOGICAL keyspace names (FROM <logical>) to per-dataset globs, so one corpus
+  --queries <dir>     the directory of *.sql++ recipe files (required)
+  --bind <manifest>  map LOGICAL keyspace names (FROM <logical>) to per-dataset globs, so one collection
                      runs across differently-named datasets unchanged (run / lint). Manifest is either
                      "logical = glob" lines ('#' comments + blanks ignored), or a JSON object
                      {"logical":"glob", ...}. A logical keyspace matching 0 files is a hard error.
   --update           .rules test only: (re-)record each fixture's produced findings as its @expect golden
 
-CORPUS LAYOUT
+COLLECTION LAYOUT
   detectors/
     disk_full.sql++      one recipe per file (the filename stem is the fallback tag)
     slow_request.sql++
@@ -82,26 +82,26 @@ ANNOTATED RECIPE (detectors/disk_full.sql++)
   {"tag":"ET-12345","evidence":{"msg":"disk full","sev":"ERROR","ts":3}}
   {"tag":"ET-12345","evidence":{"msg":"oom","sev":"ERROR","ts":9}}
 
-EXAMPLE: .rules list --corpus ./detectors   (box at a TTY; jsonlines when piped)
+EXAMPLE: .rules list --queries ./detectors   (box at a TTY; jsonlines when piped)
   {"tag":"ET-12345","source":"logs","severity":"high","versions":"7.2,7.6","fixture?":"yes","golden?":"yes","path":".../disk_full.sql++"}
   {"tag":"ET-20001","source":"requests","severity":"medium","versions":"-","fixture?":"yes","golden?":"yes","path":".../slow_request.sql++"}
   {"tag":"ET-30002","source":"logs","severity":"low","versions":"-","fixture?":"no","golden?":"no","path":".../warn_no_fixture.sql++"}
   3 detector(s) in ./detectors -- 2 with a fixture, 2 with a golden (run .rules lint for a health report)
 
-EXAMPLE: .rules run --corpus ./detectors   (over a dataset with a "logs" keyspace)
-  corpus: 3 detector(s) -- 2 fused, 0 standalone, 1 rejected
+EXAMPLE: .rules run --queries ./detectors   (over a dataset with a "logs" keyspace)
+  loaded: 3 detector(s) -- 2 fused, 0 standalone, 1 rejected
     ET-20001: plan error: Keyspace not found requests
         not a runnable detector: plan error: Keyspace not found requests. A detector is a single SELECT, ...
   {"tag":"ET-12345","evidence":{"sev":"ERROR","msg":"disk full","ts":3}}
   {"tag":"ET-12345","evidence":{"sev":"ERROR","msg":"timeout","ts":5}}
   2 finding(s) from 3 detector(s)
 
-EXAMPLE: .rules lint --corpus ./detectors   (a report-card row + the score line)
+EXAMPLE: .rules lint --queries ./detectors   (a report-card row + the score line)
   {"detector":"ET-12345","class":"fused","keyspace":"default:logs","lane":"native","index":"literal \"ERROR\"","reason":"-","advice":"-"}
   ...
   score: 66% fused (2/3), 100% native (2/2 converted), 100% index-pruned (2/2 fused)  [0 standalone, 1 rejected]
 
-EXAMPLE: .rules test --corpus ./detectors
+EXAMPLE: .rules test --queries ./detectors
   ET-12345: PASS (2 finding(s))
   ET-20001: PASS (2 finding(s))
   ET-30002: no fixture
@@ -109,7 +109,7 @@ EXAMPLE: .rules test --corpus ./detectors
   # A mismatch prints a per-finding diff plus: "re-record the golden: .rules test --update".
   # A fixture with no @expect FAILs with: "Capture them: .rules test --update".
 
-TIPS (get the best out of a corpus)
+TIPS (get the best out of a collection)
   - Lead a predicate with a DISCRIMINATING LITERAL as a top-level AND conjunct so the predicate
     index prunes wake-ups, e.g. "... AND msg LIKE '%panic%'" -- otherwise the detector wakes on every row.
   - Keep a detector SINGLE-SOURCE filter+project (SELECT ... FROM one WHERE ...) so it FUSES into
@@ -118,10 +118,10 @@ TIPS (get the best out of a corpus)
     a multi-wildcard "msg LIKE '%a%b%'". A boxed expression falls back to cbq and caps the compile level.
   - Give EVERY detector a golden fixture (-- @fixture / -- @expect) so CI (.rules test) protects it
     against a regression. Capture the first golden with ".rules test --update".
-  - Author against LOGICAL keyspaces + a --bind manifest, so ONE corpus runs across differently-named
+  - Author against LOGICAL keyspaces + a --bind manifest, so ONE collection runs across differently-named
     datasets (indexer.log vs projector.log) unchanged.
   - Version-tag detectors ("versions:") -- field-shape changes across releases are handled by evolving
-    the corpus, not by writing per-version adapters.
+    the collection, not by writing per-version adapters.
   - RESERVED WORDS: field names that are SQL++ keywords must be BACKTICKED, or the detector fails to
     parse. The built-in log recipe emits "level" (reserved: ISOLATION LEVEL) -- write WHERE l.` + "`level`" + ` = "error".
     Common offenders: "level", "keys", and natural aliases like "prev" (... AS ` + "`prev`" + `).
@@ -141,5 +141,5 @@ sort key -- so you know before running a slow query. Example:
   FROM errors e WHERE regexp_contains(e.msg, "Terminate")
 
 Non-interactive (CI / agent):
-  n1k1 -c '.rules run --corpus ./detectors --bind ./manifest' <data-dir>
+  n1k1 -c '.rules run --queries ./detectors --bind ./manifest' <data-dir>
 `
