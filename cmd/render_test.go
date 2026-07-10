@@ -37,6 +37,12 @@ func TestValidMode(t *testing.T) {
 			t.Errorf("ValidMode(%q-pretty) = false", m)
 		}
 	}
+	// jsonlines answers to the jsonl / ndjson synonyms too.
+	for _, m := range []string{"jsonl", "ndjson", "jsonl|pretty", "ndjson-pretty"} {
+		if !ValidMode(m) {
+			t.Errorf("ValidMode(%q) = false (jsonlines synonym)", m)
+		}
+	}
 	if ValidMode("nope") {
 		t.Errorf("ValidMode(nope) = true")
 	}
@@ -62,6 +68,11 @@ func TestParseMode(t *testing.T) {
 		{"box|nope", "box", false, false},
 		{"nope", "nope", false, false},
 		{"nope|pretty", "nope", true, false},
+		// jsonl / ndjson canonicalize to jsonlines (the output-mode synonyms).
+		{"jsonl", "jsonlines", false, true},
+		{"ndjson", "jsonlines", false, true},
+		{"jsonl|pretty", "jsonlines", true, true},
+		{"ndjson-pretty", "jsonlines", true, true},
 	}
 	for _, tc := range tests {
 		base, pretty, ok := ParseMode(tc.in)

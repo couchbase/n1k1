@@ -28,14 +28,26 @@ import (
 )
 
 // OutputModes are the supported renderers. "box" is the default at a TTY;
-// "jsonlines" for pipes / one-shot.
+// "jsonlines" for pipes / one-shot. jsonlines also answers to jsonl / ndjson (see
+// modeAliases), matching the .formats input-format spelling.
 var OutputModes = []string{"box", "jsonlines", "json", "csv", "markdown", "line", "list"}
+
+// modeAliases maps alternate output-mode spellings to their canonical OutputModes
+// entry, so a user can ask for jsonlines by the shorter jsonl / ndjson (the same
+// names .formats accepts for the JSON-Lines input format). ParseMode canonicalizes
+// the base before validating, so every downstream site (the renderer switch, the
+// streaming check, the help highlight) sees the canonical "jsonlines".
+var modeAliases = map[string]string{
+	"jsonl":  "jsonlines",
+	"ndjson": "jsonlines",
+}
 
 // ParseMode splits an output-mode string into its base mode and an optional
 // "pretty" modifier. The modifier is appended with a '|' or '-' separator (e.g.
 // "box|pretty" or "box-pretty") and, when present, indents nested JSON values by
-// 2 spaces — so in box mode a JSON cell prints across multiple lines. ok is
-// false when the base is unknown or the modifier is anything but "pretty".
+// 2 spaces — so in box mode a JSON cell prints across multiple lines. The base is
+// canonicalized through modeAliases (jsonl/ndjson -> jsonlines). ok is false when
+// the base is unknown or the modifier is anything but "pretty".
 func ParseMode(m string) (base string, pretty bool, ok bool) {
 	base = m
 	if i := strings.IndexAny(m, "|-"); i >= 0 {
@@ -44,6 +56,9 @@ func ParseMode(m string) (base string, pretty bool, ok bool) {
 			return base, false, false
 		}
 		pretty = true
+	}
+	if canon, isAlias := modeAliases[base]; isAlias {
+		base = canon
 	}
 	return base, pretty, isBaseMode(base)
 }

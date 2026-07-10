@@ -66,7 +66,7 @@ func main() {
 	var (
 		cFlag       = flag.String("c", "", "run statements and exit")
 		fFlag       = flag.String("f", "", "run statements from a file and exit")
-		modeFlag    = flag.String("mode", "", "output mode: "+strings.Join(cmd.OutputModes, "|")+" (append |pretty to indent JSON; default box|pretty at a TTY, else jsonlines)")
+		modeFlag    = flag.String("mode", "", "output mode: "+strings.Join(cmd.OutputModes, "|")+" (jsonlines also: jsonl/ndjson; append |pretty to indent JSON; default box|pretty at a TTY, else jsonlines)")
 		timerFlag   = flag.Bool("timer", false, "print row count + elapsed after each statement")
 		echoFlag    = flag.Bool("echo", false, "echo each input line (SQL++ / dot-commands) as it's read; like .echo on (handy with -f)")
 		initFlag    = flag.String("init", "", "startup file of dot-commands/SQL++ (default ~/."+prog+"rc; use \"\", \"-\" or \"none\" to skip)")
