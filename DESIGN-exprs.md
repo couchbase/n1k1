@@ -249,8 +249,10 @@ broken unnoticed), and by the data-backed gsi window corpus (below).
 ### Performance model
 
 The frame aggregate was originally brute-force — re-`Init` + re-fold the whole frame
-`[Beg,End)` per row, O(N·F), i.e. **O(N²)** for the dominant shapes. Two fast paths
-(both in the `OpWindowFrames` agg block; the general path keeps the per-row re-fold):
+`[Beg,End)` per row, O(N·F), i.e. **O(N²)** for the dominant shapes. Four fast paths
+now cover the common frames (all in the `OpWindowFrames` agg block; a row that no fast
+path can serve exactly sets `lzResDone = false` and falls to the general per-row
+re-fold):
 
 - **Left-anchored incremental fold (whole-partition + running-total).** When the frame
   begins at UNBOUNDED PRECEDING with no EXCLUDE, `Include.Beg` stays 0 and `Include.End`
@@ -266,6 +268,25 @@ The frame aggregate was originally brute-force — re-`Init` + re-fold the whole
   cbq's exact re-fold. Serves the "is this row near a match" idiom
   `COUNT(CASE WHEN <pred> THEN 1 END) OVER (… ROWS BETWEEN B PRECEDING AND A FOLLOWING) > 0`.
   **O(N)** regardless of window size (k=200/4000 rows: 90→16 ms).
+- **Invertible sliding SUM/AVG.** Same forward-slide shape: add-on-enter / subtract-on-
+  leave a running float64 sum + numeric-count + has-value-count (`base.WindowFrame.SlideSum*`).
+  Bit-exact vs a fresh fold **only while every operand and partial sum is an integer
+  < 2^53** — where float64 add/subtract is exact and associative (the common integer/
+  count shape). A non-integer or out-of-range numeric latches `SlideSumExact()` false
+  and that row (and the rest of the partition) re-folds — mirroring Postgres offering
+  inverse transitions for integer sums but not float. AVG's denominator is the has-value
+  count (incl. non-numerics), matching `AggAvg`. **O(N)** on the integer path.
+- **Sliding MIN/MAX monotonic deque.** A deque of candidate positions (front = current
+  MIN/MAX): pop dominated tail entries on enter, expire the front past `Include.Beg`
+  (`base.WindowFrame.SlideMinMax*`). Compares raw `Val`s via `ValComparer`, matching
+  `AggMin/AggMax` (which do **not** skip NULL/MISSING). Exact **except** when a MISSING
+  operand enters — `AggMin/AggMax` store the running value's byte length as their
+  have-a-value count, so a stored MISSING (length 0) makes the next value overwrite
+  unconditionally: an order-dependent, non-associative quirk a deque can't reproduce, so
+  `SlideMinMaxExact()` latches false and the op re-folds. NULL (length 4) is a normal
+  comparable, unaffected. **O(N)** amortized, allocation-free steady-state (recycled
+  value buffers). Measured (4000 rows, 401-wide window): MIN/MAX 133→0.64 ms (~208×),
+  SUM 77.7→0.48 ms (~163×) — both O(N), so the gap widens with window width.
 
 Ranking is already O(1)/row (peer state maintained as rows stream); ROWS boundary math
 is O(1).
@@ -274,18 +295,23 @@ is O(1).
 ### What remains / what next
 
 Perf (in rough priority):
-1. **Sliding SUM/AVG** — invertible in principle but float drift makes naive add/remove
-   diverge from the oracle; needs Kahan-compensated running sums or periodic re-fold.
-2. **Sliding MIN/MAX** — not invertible; needs a monotonic deque (O(1) amortized).
-3. **General arbitrary-frame** O(N log N) — segment/aggregate trees (Leis et al., VLDB
+1. **Sliding SUM/AVG over non-integer data** — the incremental path is exact only for
+   integers (see the performance model); float operands still re-fold. Kahan/Neumaier
+   compensation would narrow the drift but not obviously to a bit-exact match of the
+   oracle's index-order fold — deferred until a real float-window workload appears.
+2. **General arbitrary-frame** O(N log N) — segment/aggregate trees (Leis et al., VLDB
    2015, *Efficient Processing of Window Functions in Analytical SQL Queries*). Only
-   worth it if a workload hits large arbitrary frames that neither fast path covers.
-4. **Boundary advance instead of re-scan** — `FindGroupEdge` re-scans peers outward each
+   worth it if a workload hits large arbitrary frames that no fast path covers (e.g. an
+   EXCLUDE frame, or a non-invertible aggregate over a genuinely sliding frame).
+3. **Boundary advance instead of re-scan** — `FindGroupEdge` re-scans peers outward each
    row; edges are monotone as Pos advances, so they could advance incrementally (worst
    case, one big peer group, is another O(N²) inside CurrentUpdate).
-5. **Decode operand once per partition row** — `StepVals`/`RowVals` re-`Partition.Get` +
+4. **Decode operand once per partition row** — `StepVals`/`RowVals` re-`Partition.Get` +
    `ValsDecode` + re-eval the operand on every frame-row visit; a typed/columnar temp
    would decode once (overlaps `DESIGN-col.md`).
+
+(Done: the sliding MIN/MAX deque and the invertible sliding SUM/AVG — see the
+performance model above.)
 
 Correctness gaps (small, several are deliberate non-matches of cbq quirks):
 - **cbq VAR_SAMP-of-a-single-value = 0** (window path) vs standard/GROUP-BY NULL — n1k1
