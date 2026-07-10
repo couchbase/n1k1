@@ -964,7 +964,9 @@ positives. Still ahead: a **corpus lint gate** (fail CI on `rejected` / missing 
    running each detector's own SQL) and proves `AsofRewriteApplied` fires for an ASOF detector in
    a corpus. *Remaining tail:* SHA-keyed build cache, embed-source analyzer binary, per-detector
    projection envelope (fused evidence is the whole matched row today), and standalone detectors
-   not yet sharing scans among themselves.
+   not yet sharing scans among themselves — see `DESIGN-mqo-sorted.md` for a proposal to fuse
+   the two big standalone classes (window/context detectors and temporal cross-keyspace
+   correlation) onto a shared sorted-by-key stream substrate.
 7. **Recipe format + golden-fixture CI + agent ops** — **DONE (MVP)** + polish. The AI-authoring
    flywheel and tech-support surface. Built: the **`.rules` dot-command** family (`cmd/n1k1/
    rules.go`) — `run` (corpus → coverage + tagged findings), `lint` (the report card: fuse/native/
