@@ -329,7 +329,7 @@ func (p *flatNamespace) Objects(creds *auth.Credentials, filter func(string) boo
 // for a per-file keyspace, the one file). Exactly one of dir/file is set.
 type flatKeyspace struct {
 	datastore.Keyspace
-	dir     string // flat root: keyspace = union of files under this dir; also the
+	dir string // flat root: keyspace = union of files under this dir; also the
 	//                 walk base for a glob keyspace
 	file    string // single file (scenario B2/B3): keyspace = this one file
 	glob    string // glob (Mode 2b): absolute doublestar pattern (base = dir)
@@ -352,6 +352,37 @@ func (k *flatKeyspace) RecordsFile() string { return k.file }
 // to just the pattern's matches. Resolved at scan time (KeyspaceRecordsOpen) so the
 // query's -formats lockdown applies and freshly-added files are picked up.
 func (k *flatKeyspace) RecordsGlob() (string, bool) { return k.glob, k.glob != "" }
+
+// RawSizeHintBytes implements the scan-cache's OPTIONAL size hint (keyspaceSizeHinter): the
+// total byte size of this keyspace's backing file(s) via a cheap os.Stat (NO scan), so the
+// cache can skip caching an over-budget keyspace up front. Returns -1 ("unknown") for a
+// glob or a bundle-layout dir whose subdirs are walked only at scan time -- the cache then
+// treats it as un-estimable and falls back to attempt-and-maybe-abandon. Advisory only.
+func (k *flatKeyspace) RawSizeHintBytes() int64 {
+	if k.file != "" { // single-file keyspace (absolute path).
+		if fi, err := os.Stat(k.file); err == nil && !fi.IsDir() {
+			return fi.Size()
+		}
+		return -1
+	}
+	if k.glob != "" {
+		return -1 // glob expansion not resolved here.
+	}
+	if k.dir != "" {
+		files, hasSubdir := topLevelRecordFiles(k.dir)
+		if hasSubdir {
+			return -1 // bundle layout walks subdirs at scan time; don't under-count.
+		}
+		var total int64
+		for _, name := range files { // topLevelRecordFiles returns basenames.
+			if fi, err := os.Stat(filepath.Join(k.dir, name)); err == nil && !fi.IsDir() {
+				total += fi.Size()
+			}
+		}
+		return total
+	}
+	return -1
+}
 
 func (k *flatKeyspace) Indexer(name datastore.IndexType) (datastore.Indexer, errors.Error) {
 	return k.indexer, nil

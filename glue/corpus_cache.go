@@ -222,11 +222,12 @@ func (c *corpusScanCache) Op(o *base.Op, vars *base.Vars, yieldVals base.YieldVa
 		return
 	}
 
-	// Size-estimate GATE (first access): if the keyspace's raw file bytes, scaled by the
-	// assumed framing/encode expansion, already exceed the budget, SKIP caching up front --
-	// don't spill up to the budget only to abandon it (a wasteful RSS spike, since spill
-	// chunks are mmap-backed). Skipped keyspaces stream/re-scan. An unknown size (-1, e.g.
-	// a non-file keyspace) falls through to attempt-and-maybe-abandon as before.
+	// Size-estimate GATE (first access, OPTIONAL/ADVISORY): if the keyspace offers a raw-size
+	// hint (keyspaceSizeHinter) that, scaled by the assumed framing/encode expansion, already
+	// exceeds the budget, SKIP caching up front -- don't spill up to the budget only to
+	// abandon it (a wasteful RSS spike, since spill chunks are mmap-backed). A keyspace that
+	// offers NO hint (raw < 0 -- a datasource that can't cheaply size itself) is simply not
+	// gated: it falls through to attempt-and-maybe-abandon, which is always correct.
 	if raw := keyspaceRawBytes(o, vars); raw >= 0 &&
 		float64(raw)*CorpusScanCacheSizeFactor > float64(c.budget) {
 		c.mu.Lock()
@@ -363,10 +364,21 @@ func replayHeap(h *store.Heap, yieldVals base.YieldVals, yieldErr base.YieldErr)
 	}
 }
 
-// keyspaceRawBytes returns the total raw byte size of the scan's keyspace files (a cheap
-// os.Stat, NO scan), used by the size gate as a proxy for the encoded capture size. It
-// returns -1 when the size can't be determined cheaply (a non-flat keyspace, a glob, or a
-// bundle-layout dir with subdirs) -- the gate then falls back to attempt-and-maybe-abandon.
+// keyspaceSizeHinter is an OPTIONAL capability a datasource keyspace may implement so the
+// scan-cache's size gate can estimate a capture's size cheaply (no scan) and skip an
+// over-budget keyspace up front. It is purely advisory: a keyspace that does NOT implement
+// it -- or returns < 0 ("unknown") -- is simply not gated, and the cache falls back to
+// attempt-and-maybe-abandon, which is always correct. A future datasource (Parquet footer,
+// remote catalog stats, ...) opts into the optimization just by implementing this; one that
+// can't size itself needs to do nothing. The file datastore's *flatKeyspace implements it
+// via os.Stat.
+type keyspaceSizeHinter interface {
+	RawSizeHintBytes() int64 // approximate raw bytes, or < 0 when unknown.
+}
+
+// keyspaceRawBytes asks the scan's keyspace for its optional raw-size hint, or -1 when the
+// keyspace offers none. Advisory only (see keyspaceSizeHinter) -- never required for
+// correctness.
 func keyspaceRawBytes(o *base.Op, vars *base.Vars) int64 {
 	idx, ok := o.Params[0].(int)
 	if !ok || idx < 0 || idx >= len(vars.Temps) {
@@ -376,32 +388,8 @@ func keyspaceRawBytes(o *base.Op, vars *base.Vars) int64 {
 	if !ok {
 		return -1
 	}
-	fk, ok := ks.Keyspace().(*flatKeyspace)
-	if !ok {
-		return -1
-	}
-
-	if f := fk.RecordsFile(); f != "" { // single-file keyspace (absolute path).
-		if fi, err := os.Stat(f); err == nil && !fi.IsDir() {
-			return fi.Size()
-		}
-		return -1
-	}
-	if _, isGlob := fk.RecordsGlob(); isGlob {
-		return -1 // glob expansion not resolved here.
-	}
-	if d := fk.RecordsDir(); d != "" {
-		files, hasSubdir := topLevelRecordFiles(d)
-		if hasSubdir {
-			return -1 // bundle layout walks subdirs at scan time; don't under-count.
-		}
-		var total int64
-		for _, name := range files { // topLevelRecordFiles returns basenames.
-			if fi, err := os.Stat(filepath.Join(d, name)); err == nil && !fi.IsDir() {
-				total += fi.Size()
-			}
-		}
-		return total
+	if h, ok := ks.Keyspace().(keyspaceSizeHinter); ok {
+		return h.RawSizeHintBytes()
 	}
 	return -1
 }
