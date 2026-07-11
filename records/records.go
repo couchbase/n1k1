@@ -48,6 +48,23 @@ import (
 type Record struct {
 	ID  []byte
 	Doc []byte
+
+	// Loc (when Has) is the record's location in the ORIGINAL source stream (post-
+	// decompression, PRE-framing), so a finding stays externally locatable even after
+	// framing dropped or skipped content -- a dropped banner, blank lines, section
+	// delimiters (IDEA-0026). ByteStart/ByteLen and LineStart/LineEnd refer to the raw
+	// bytes/lines, so `dd`/`sed`/`rg` on the file land on this record. metaSource
+	// surfaces them into _meta; a source that doesn't track location leaves Has false.
+	Loc RecordLoc
+}
+
+// RecordLoc is a record's byte/line span in its original source (see Record.Loc).
+type RecordLoc struct {
+	Has       bool
+	ByteStart int64 // 0-based byte offset of the record's first line
+	ByteLen   int64 // bytes the record spans (its lines, incl. their terminators)
+	LineStart int   // 1-based line number of the record's first line
+	LineEnd   int   // 1-based line number of the record's last line (inclusive)
 }
 
 // Source yields a stream of records. Next reports false at end-of-stream (with

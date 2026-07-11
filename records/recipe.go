@@ -39,6 +39,7 @@ package records
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"io"
 	"math"
@@ -250,6 +251,7 @@ func SpecApply(spec ExtractSpec, path, idPrefix string) (Source, error) {
 		// scanner line-by-line, assembling one record per ====-delimited block.
 		sc := bufio.NewScanner(r)
 		sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
+		sc.Split(s.offsetSplit) // track byte offset + line number per line (IDEA-0026)
 		s.sc = sc
 	default:
 		closeAll(closers)
@@ -286,9 +288,45 @@ type specSource struct {
 	haveLead bool   // leadBuf holds a pending lead line
 	done     bool
 
+	// Original-source location tracking (IDEA-0026): byte offsets and line numbers
+	// into the ORIGINAL (decompressed) stream, so a framed record can be handed to an
+	// external tool (dd/sed/rg). offsetSplit maintains scanOff/scanLine/tokStart/
+	// tokLine as the scanner advances; the framing methods roll these into the
+	// per-record loc* span. A dropped banner/blank still advances the scanner, so
+	// later records stay byte-aligned (no desync).
+	scanOff   int64 // bytes consumed from the stream so far (start of the next line)
+	scanLine  int   // 1-based line number of the most recent scanned token
+	tokStart  int64 // byte offset of the current scanner token (line)
+	tokLine   int   // 1-based line number of the current scanner token
+	leadStart int64 // byte offset of the stashed lookahead line (when haveLead)
+	leadLine  int   // line number of the stashed lookahead line (when haveLead)
+
+	// per-record location, copied into rec.Loc by emit
+	locHas       bool
+	locStart     int64
+	locByteEnd   int64
+	locLineStart int
+	locLineEnd   int
+
 	row    int
 	docBuf []byte // borrowed record JSON (valid until next Next)
 	idBuf  []byte // borrowed record ID   (valid until next Next)
+}
+
+// offsetSplit wraps bufio.ScanLines to track, per scanned line, its byte offset
+// (tokStart) and 1-based line number (tokLine) in the original stream, and the
+// running offset just past it (scanOff). ScanLines returns advance>0 exactly once
+// per line (advance counts the line's terminator too), so byte accounting stays
+// exact for dd/sed slicing over [byte_offset, byte_offset+byte_len).
+func (s *specSource) offsetSplit(data []byte, atEOF bool) (advance int, token []byte, err error) {
+	advance, token, err = bufio.ScanLines(data, atEOF)
+	if advance > 0 {
+		s.tokStart = s.scanOff
+		s.scanOff += int64(advance)
+		s.scanLine++
+		s.tokLine = s.scanLine
+	}
+	return
 }
 
 // compile prepares the field regexp and locates the timestamp capture group.
@@ -348,10 +386,17 @@ func (s *specSource) Next(rec *Record) (bool, error) {
 	}
 	if s.spec.Framing.Kind == FramingWhole {
 		s.done = true
+		// The whole file is one record: it spans the entire (decompressed) stream.
+		s.locHas = true
+		s.locStart = 0
+		s.locByteEnd = int64(len(s.whole))
+		s.locLineStart = 1
+		s.locLineEnd = countLines(s.whole)
 		return s.emit(rec, s.whole)
 	}
 	if s.opaque {
 		s.done = true
+		s.locHas = false // content unread -- no meaningful byte span
 		return s.emit(rec, nil) // buildDoc emits the {kind:"opaque",note} record
 	}
 	if s.section {
@@ -407,10 +452,14 @@ func firstLine(rb []byte) []byte {
 // pattern anchored at its start (robust even when a continuation itself begins with
 // '[', unlike a bare continuation regexp). For line framing every line is a record.
 func (s *specSource) frameNext() (rec []byte, ok bool, err error) {
-	// Seed s.cur with this record's lead line.
+	// Seed s.cur with this record's lead line, capturing its origin (byte offset +
+	// line number). A stashed lead carries the origin saved when it was stashed; a
+	// fresh scan reads it from the split func's tokStart/tokLine. In both cases
+	// scanOff points just past the seed line, so it is the record's byte-end so far.
 	if s.haveLead {
 		s.cur = append(s.cur[:0], s.leadBuf...)
 		s.haveLead = false
+		s.tokStart, s.tokLine = s.leadStart, s.leadLine
 	} else {
 		l, got := s.scanNonEmpty()
 		if !got {
@@ -419,10 +468,17 @@ func (s *specSource) frameNext() (rec []byte, ok bool, err error) {
 		}
 		s.cur = append(s.cur[:0], l...)
 	}
+	s.locHas = true
+	s.locStart = s.tokStart
+	s.locLineStart = s.tokLine
+	s.locByteEnd = s.scanOff
+	s.locLineEnd = s.tokLine
 	if !s.multi {
 		return s.cur, true, nil // line framing: one line == one record
 	}
-	// Multiline: fold following continuation lines until the next lead (or EOF).
+	// Multiline: fold following continuation lines until the next lead (or EOF). Each
+	// folded line extends the record's span; the next lead is stashed (its origin
+	// saved) and does NOT extend this record.
 	for {
 		if !s.sc.Scan() {
 			s.done = true
@@ -432,10 +488,13 @@ func (s *specSource) frameNext() (rec []byte, ok bool, err error) {
 		if s.isLead(line) {
 			s.leadBuf = append(s.leadBuf[:0], line...)
 			s.haveLead = true
+			s.leadStart, s.leadLine = s.tokStart, s.tokLine
 			return s.cur, true, nil
 		}
 		s.cur = append(s.cur, '\n')
 		s.cur = append(s.cur, line...)
+		s.locByteEnd = s.scanOff
+		s.locLineEnd = s.tokLine
 	}
 }
 
@@ -455,6 +514,14 @@ func (s *specSource) frameSection() (ok bool, err error) {
 		s.done = true
 		return false, s.sc.Err()
 	}
+	// The section spans from its first consumed line (opening boundary or preamble)
+	// through its last body line; each consumed line extends the span, but the next
+	// section's stashed opening boundary does not.
+	s.locHas = true
+	s.locStart = s.tokStart
+	s.locLineStart = s.tokLine
+	s.locByteEnd = s.scanOff
+	s.locLineEnd = s.tokLine
 
 	if s.sectionRe.Match(line) {
 		// Opening boundary consumed. Title = line(s) until the CLOSING boundary.
@@ -464,6 +531,7 @@ func (s *specSource) frameSection() (ok bool, err error) {
 				s.done = true // header with no closing boundary: title-only record.
 				return true, s.sc.Err()
 			}
+			s.locByteEnd, s.locLineEnd = s.scanOff, s.tokLine
 			if s.sectionRe.Match(l) {
 				break // closing boundary consumed.
 			}
@@ -485,8 +553,10 @@ func (s *specSource) frameSection() (ok bool, err error) {
 		if s.sectionRe.Match(l) {
 			s.leadBuf = append(s.leadBuf[:0], l...)
 			s.haveLead = true
+			s.leadStart, s.leadLine = s.tokStart, s.tokLine
 			return true, nil
 		}
+		s.locByteEnd, s.locLineEnd = s.scanOff, s.tokLine
 		s.cur = appendSectionLine(s.cur, l)
 	}
 }
@@ -498,6 +568,9 @@ func (s *specSource) frameSection() (ok bool, err error) {
 func (s *specSource) nextSectionLine() ([]byte, bool) {
 	if s.haveLead {
 		s.haveLead = false
+		// scanOff still points just past the stashed line (no Scan since it was
+		// stashed); restore its origin so span tracking stays exact.
+		s.tokStart, s.tokLine = s.leadStart, s.leadLine
 		return s.leadBuf, true
 	}
 	if s.sc.Scan() {
@@ -560,8 +633,32 @@ func (s *specSource) emit(rec *Record, recBytes []byte) (bool, error) {
 	rec.Doc = s.docBuf
 	s.idBuf = appendRecordID(s.idBuf[:0], s.idPrefix, s.row)
 	rec.ID = s.idBuf
+	if s.locHas {
+		rec.Loc = RecordLoc{
+			Has:       true,
+			ByteStart: s.locStart,
+			ByteLen:   s.locByteEnd - s.locStart,
+			LineStart: s.locLineStart,
+			LineEnd:   s.locLineEnd,
+		}
+	} else {
+		rec.Loc = RecordLoc{}
+	}
 	s.row++
 	return true, nil
+}
+
+// countLines returns the number of lines in b (whole-file framing's line_end): the
+// count of '\n' terminators, plus one for a final unterminated line. Empty -> 0.
+func countLines(b []byte) int {
+	if len(b) == 0 {
+		return 0
+	}
+	n := bytes.Count(b, []byte{'\n'})
+	if b[len(b)-1] != '\n' {
+		n++
+	}
+	return n
 }
 
 func (s *specSource) buildDoc(dst, recBytes []byte) []byte {

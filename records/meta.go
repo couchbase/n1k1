@@ -121,6 +121,9 @@ type metaSource struct {
 }
 
 func (m *metaSource) Next(rec *Record) (bool, error) {
+	// rec is reused across files/records; clear any stale location so only a source
+	// that actually sets it (the native extract path) surfaces a location here.
+	rec.Loc = RecordLoc{}
 	ok, err := m.inner.Next(rec)
 	if !ok || err != nil {
 		return ok, err
@@ -131,6 +134,18 @@ func (m *metaSource) Next(rec *Record) (bool, error) {
 		// (Not "index"/"offset" -- both are SQL++ reserved words.)
 		m.frag = append(m.frag, `,"pos":`...)
 		m.frag = strconv.AppendInt(m.frag, int64(idx), 10)
+	}
+	if l := rec.Loc; l.Has {
+		// Original-source location (IDEA-0026): byte span + raw line range, so a
+		// finding is externally locatable (sed/dd/rg) despite framing.
+		m.frag = append(m.frag, `,"byte_offset":`...)
+		m.frag = strconv.AppendInt(m.frag, l.ByteStart, 10)
+		m.frag = append(m.frag, `,"byte_len":`...)
+		m.frag = strconv.AppendInt(m.frag, l.ByteLen, 10)
+		m.frag = append(m.frag, `,"line_start":`...)
+		m.frag = strconv.AppendInt(m.frag, int64(l.LineStart), 10)
+		m.frag = append(m.frag, `,"line_end":`...)
+		m.frag = strconv.AppendInt(m.frag, int64(l.LineEnd), 10)
 	}
 	m.frag = append(m.frag, '}')
 	m.buf = spliceMeta(m.buf[:0], rec.Doc, m.frag)

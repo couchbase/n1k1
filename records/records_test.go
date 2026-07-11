@@ -172,6 +172,130 @@ func TestSpecApplyDropsBanner(t *testing.T) {
 	}
 }
 
+// TestSpecApplyRecordLoc: each framed record carries a RecordLoc whose byte span
+// slices back to its EXACT original bytes and whose line range is the raw source
+// line numbers (IDEA-0026) -- despite multiline folding and a dropped banner shifting
+// the framed ordinal away from the source line number. The load-bearing invariant:
+// orig[ByteStart:ByteStart+ByteLen] == the record's raw lines, and a record after a
+// dropped banner has an offset PAST the banner (no desync).
+func TestSpecApplyRecordLoc(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "ns_server.error.log")
+	// line 1: banner (dropped). lines 2-3: record A (lead + one continuation).
+	// line 4: record B (single line). So framed record 0 starts at source line 2.
+	body := "==== couchbase logs (ns_server.error.log) ====\n" + // line 1
+		"[ns_server:error,2026-05-17T15:36:11.100+02:00,n1:x]boom one\n" + // line 2
+		"    stack frame detail\n" + // line 3 (continuation of A)
+		"[ns_server:error,2026-05-17T15:36:13.300+02:00,n1:x]boom two\n" // line 4
+	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	src, err := SpecApply(nsLogSpec(), p, "ns")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var locs []RecordLoc
+	var rec Record
+	for {
+		ok, err := src.Next(&rec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !ok {
+			break
+		}
+		locs = append(locs, rec.Loc)
+	}
+	src.Close()
+
+	if len(locs) != 2 {
+		t.Fatalf("want 2 records (banner dropped), got %d", len(locs))
+	}
+	want := []struct {
+		lineStart, lineEnd int
+		raw                string
+	}{
+		{2, 3, "[ns_server:error,2026-05-17T15:36:11.100+02:00,n1:x]boom one\n    stack frame detail\n"},
+		{4, 4, "[ns_server:error,2026-05-17T15:36:13.300+02:00,n1:x]boom two\n"},
+	}
+	for i, w := range want {
+		l := locs[i]
+		if !l.Has {
+			t.Errorf("record %d: Loc.Has = false, want a located record", i)
+			continue
+		}
+		if l.LineStart != w.lineStart || l.LineEnd != w.lineEnd {
+			t.Errorf("record %d: lines %d-%d, want %d-%d", i, l.LineStart, l.LineEnd, w.lineStart, w.lineEnd)
+		}
+		got := body[l.ByteStart : l.ByteStart+l.ByteLen]
+		if got != w.raw {
+			t.Errorf("record %d: sliced-back bytes\n  got:  %q\n  want: %q", i, got, w.raw)
+		}
+	}
+	// The first framed record must start PAST the dropped banner line (no desync).
+	if locs[0].ByteStart == 0 {
+		t.Errorf("record 0 ByteStart=0: dropped banner did not advance the offset")
+	}
+}
+
+// TestSpecApplySectionLoc: a section-framed record's Loc spans the whole ====-banner
+// block (boundary + title + body) and slices back to the original bytes (IDEA-0026).
+func TestSpecApplySectionLoc(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "couchbase.log")
+	// Real cbcollect shape: boundary, title, boundary, body, up to the NEXT boundary.
+	body := "====================\n" + // line 1  (section one: open boundary)
+		"command one\n" + // line 2  (title)
+		"====================\n" + // line 3  (close boundary)
+		"body line a\n" + // line 4  (body)
+		"body line b\n" + // line 5  (body)
+		"====================\n" + // line 6  (section two: open boundary)
+		"command two\n" + // line 7  (title)
+		"====================\n" + // line 8  (close boundary)
+		"body line c\n" // line 9  (body)
+	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	spec := ExtractSpec{Framing: Framing{Kind: FramingSection, Section: `^={3,}`}}
+	src, err := SpecApply(spec, p, "cb")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var locs []RecordLoc
+	var rec Record
+	for {
+		ok, err := src.Next(&rec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !ok {
+			break
+		}
+		locs = append(locs, rec.Loc)
+	}
+	src.Close()
+
+	if len(locs) != 2 {
+		t.Fatalf("want 2 sections, got %d", len(locs))
+	}
+	// Section one spans lines 1-5 (open boundary + title + close boundary + body),
+	// up to but not including section two's opening boundary.
+	if locs[0].LineStart != 1 || locs[0].LineEnd != 5 {
+		t.Errorf("section 0 lines %d-%d, want 1-5", locs[0].LineStart, locs[0].LineEnd)
+	}
+	wantSec0 := "====================\ncommand one\n====================\nbody line a\nbody line b\n"
+	if got := body[locs[0].ByteStart : locs[0].ByteStart+locs[0].ByteLen]; got != wantSec0 {
+		t.Errorf("section 0 sliced-back = %q, want %q", got, wantSec0)
+	}
+	// Section two starts exactly where section one ended (contiguous, no desync).
+	if locs[1].ByteStart != locs[0].ByteStart+locs[0].ByteLen {
+		t.Errorf("section 1 ByteStart=%d, want contiguous %d", locs[1].ByteStart, locs[0].ByteStart+locs[0].ByteLen)
+	}
+	if locs[1].LineStart != 6 || locs[1].LineEnd != 9 {
+		t.Errorf("section 1 lines %d-%d, want 6-9", locs[1].LineStart, locs[1].LineEnd)
+	}
+}
+
 // TestSpecApplyFramingOpaque: opaque framing emits ONE {kind:"opaque",note} record
 // WITHOUT reading the (binary) file content (IDEA-0020), so a known-unframable file is
 // a self-documenting keyspace instead of a mystery.
@@ -951,6 +1075,67 @@ func TestMetaPos(t *testing.T) {
 		if _, has := meta["pos"]; has {
 			t.Errorf("one-doc-per-file record should have no pos: %v", meta)
 		}
+	}
+}
+
+// TestMetaLoc: an extracted (multiline-log) record's _meta carries byte_offset,
+// byte_len, line_start and line_end that slice back to the record's raw bytes in the
+// ORIGINAL file (IDEA-0026) -- the missing link that makes a finding externally
+// chase-able with dd/sed/rg.
+func TestMetaLoc(t *testing.T) {
+	dir := t.TempDir()
+	name := "ns_server.error.log"
+	body := "[ns_server:error,2026-05-17T15:36:11.100+02:00,n1:x]alpha\n" +
+		"    continued\n" +
+		"[ns_server:error,2026-05-17T15:36:13.300+02:00,n1:x]beta\n"
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	on := AllModes()
+	on.Meta = MetaOn
+	s, err := Walk(dir, on)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, docs := collect(t, s)
+	if len(docs) != 2 {
+		t.Fatalf("want 2 extracted records, got %d: %v", len(docs), docs)
+	}
+	for i, d := range docs {
+		meta, ok := docHasMeta(t, d)
+		if !ok {
+			t.Fatalf("record %d missing _meta: %s", i, d)
+		}
+		for _, k := range []string{"byte_offset", "byte_len", "line_start", "line_end"} {
+			if _, has := meta[k]; !has {
+				t.Fatalf("record %d _meta missing %q: %v", i, k, meta)
+			}
+		}
+		off := int(meta["byte_offset"].(float64))
+		ln := int(meta["byte_len"].(float64))
+		if off < 0 || off+ln > len(body) {
+			t.Fatalf("record %d byte span [%d,%d) out of range %d", i, off, off+ln, len(body))
+		}
+		raw := body[off : off+ln]
+		// The raw slice must contain this record's message (native proof it points at
+		// the original source, not a reframed view).
+		wantMsg := []string{"alpha", "beta"}[i]
+		if !strings.Contains(raw, wantMsg) {
+			t.Errorf("record %d raw slice %q does not contain %q", i, raw, wantMsg)
+		}
+	}
+	// The second record's byte_offset must be past the first (offsets are monotonic in
+	// the original stream, so a downstream tool seeks correctly).
+	m0, _ := docHasMeta(t, docs[0])
+	m1, _ := docHasMeta(t, docs[1])
+	if m1["byte_offset"].(float64) <= m0["byte_offset"].(float64) {
+		t.Errorf("byte_offset not monotonic: %v then %v", m0["byte_offset"], m1["byte_offset"])
+	}
+	if m0["line_start"].(float64) != 1 {
+		t.Errorf("record 0 line_start = %v, want 1", m0["line_start"])
+	}
+	if m1["line_start"].(float64) != 3 {
+		t.Errorf("record 1 line_start = %v, want 3", m1["line_start"])
 	}
 }
 
