@@ -15,7 +15,7 @@ import (
 	"sync"
 )
 
-// BatchCursor is a pipeline-stage breaker in the shape Stage doesn't offer: a SINGLE actor
+// StageCursor is a pipeline-stage breaker in the shape Stage doesn't offer: a SINGLE actor
 // goroutine producing one ORDERED stream that a consumer PULLS at its own pace (NextBatch),
 // as opposed to Stage's many-actors-into-one-mixed-channel push-consumed model. It exists
 // for the sorted-merge family (op_merge_scan / op_merge_join), where the coordinator must
@@ -29,7 +29,7 @@ import (
 // goroutine park/unpark (pthread_cond_signal). Batches are NOT recycled (the consumer may
 // retain rows), so a fresh batch is allocated per flush (one small slice per batchSize
 // rows); ValsDeepCopy packs each row's Vals into a single contiguous allocation.
-type BatchCursor struct {
+type StageCursor struct {
 	ch       chan []Vals
 	done     chan struct{}
 	finished chan struct{}
@@ -39,16 +39,16 @@ type BatchCursor struct {
 	stopped bool
 }
 
-// NewBatchCursor starts actor on its own goroutine and returns a cursor its rows can be
+// NewStageCursor starts actor on its own goroutine and returns a cursor its rows can be
 // pulled from in batches. batchSize is rows per batch (amortizes the wakeup); chanCap is
 // the channel depth in batches (backpressure). The actor is handed a per-actor Vars clone
 // and the usual yield callbacks; a yielded error stops production and surfaces via Wait.
-func NewBatchCursor(vars *Vars, batchSize, chanCap int,
-	actor func(*Vars, YieldVals, YieldErr)) *BatchCursor {
+func NewStageCursor(vars *Vars, batchSize, chanCap int,
+	actor func(*Vars, YieldVals, YieldErr)) *StageCursor {
 	if batchSize < 1 {
 		batchSize = 1
 	}
-	bc := &BatchCursor{
+	bc := &StageCursor{
 		ch:       make(chan []Vals, chanCap),
 		done:     make(chan struct{}),
 		finished: make(chan struct{}),
@@ -110,14 +110,14 @@ func NewBatchCursor(vars *Vars, batchSize, chanCap int,
 // NextBatch pulls the next batch, blocking until one is available or the stream ends
 // (ok=false at end). The returned rows are stable (never recycled), so the consumer may
 // retain them across further NextBatch calls.
-func (bc *BatchCursor) NextBatch() ([]Vals, bool) {
+func (bc *StageCursor) NextBatch() ([]Vals, bool) {
 	b, ok := <-bc.ch
 	return b, ok
 }
 
 // Stop signals the actor to stop producing (it drops any unsent tail). Idempotent; safe
 // to call before Wait even if the stream was fully drained.
-func (bc *BatchCursor) Stop() {
+func (bc *StageCursor) Stop() {
 	bc.mu.Lock()
 	if !bc.stopped {
 		close(bc.done)
@@ -129,7 +129,7 @@ func (bc *BatchCursor) Stop() {
 // Wait blocks until the actor goroutine has exited and returns its first error. Call after
 // draining (or after Stop) so the producer is joined -- no goroutine leak -- and any
 // build-side error is surfaced.
-func (bc *BatchCursor) Wait() error {
+func (bc *StageCursor) Wait() error {
 	<-bc.finished
 	bc.mu.Lock()
 	defer bc.mu.Unlock()

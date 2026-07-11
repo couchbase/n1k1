@@ -456,10 +456,10 @@ func mergeJoinStreamAsof(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 		vars.Ctx.MergeStats.RecordStreamJoin()
 	}
 
-	// --- right (build) producer: a base.BatchCursor (goroutine + per-actor Vars clone +
+	// --- right (build) producer: a base.StageCursor (goroutine + per-actor Vars clone +
 	// deep-copy + batching + cancel/join, all shared). Its actor runs the build scan,
 	// dropping keyless rows and validating ascending order at the source. ---
-	bc := base.NewBatchCursor(vars, mergeStreamBatchRows, mergeJoinStreamChanCap,
+	bc := base.NewStageCursor(vars, mergeStreamBatchRows, mergeJoinStreamChanCap,
 		func(rVars *base.Vars, yieldVals base.YieldVals, yieldErr base.YieldErr) {
 			var lastKey int64
 			seen := false

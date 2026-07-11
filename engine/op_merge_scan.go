@@ -655,9 +655,9 @@ func mergeCursors(o *base.Op, vars *base.Vars, keyIdx int, pathNext string) (
 
 func mergeNoRelease() error { return nil }
 
-// mergeSpawnCursors runs one child per base.BatchCursor -- a per-actor, pull-consumed,
+// mergeSpawnCursors runs one child per base.StageCursor -- a per-actor, pull-consumed,
 // batched stream (the goroutine, per-actor Vars clone, deep-copy, batching, and cancel/join
-// all live in base.BatchCursor now) -- and returns K streaming MergeCursors reading from
+// all live in base.StageCursor now) -- and returns K streaming MergeCursors reading from
 // them, plus release() to Stop+Wait every producer (dropping any unconsumed tail, joining,
 // surfacing the first build-side error). Keyless rows are dropped in the producer, before
 // the deep-copy, so real logs' banner/continuation lines don't waste copies.
@@ -667,7 +667,7 @@ func mergeSpawnCursors(o *base.Op, vars *base.Vars, keyIdx int, pathNext string)
 
 	for i := range o.Children {
 		i := i
-		bc := base.NewBatchCursor(vars, mergeStreamBatchRows, mergeScanStreamChanCap,
+		bc := base.NewStageCursor(vars, mergeStreamBatchRows, mergeScanStreamChanCap,
 			func(cVars *base.Vars, yieldVals base.YieldVals, yieldErr base.YieldErr) {
 				childYield := func(vals base.Vals) {
 					if _, ok := mergeParseKey(vals, keyIdx); !ok {
@@ -699,7 +699,7 @@ func mergeSpawnCursors(o *base.Op, vars *base.Vars, keyIdx int, pathNext string)
 // MergeCursor is one child source, in one of two modes:
 //   - MATERIALIZED: the child was drained into parallel rows/keys slices (the
 //     original stand-in for a resumable cursor).
-//   - STREAMING: the child runs in a base.BatchCursor (its own goroutine); this cursor
+//   - STREAMING: the child runs in a base.StageCursor (its own goroutine); this cursor
 //     pulls batches of []Vals and peeks one row at a time, parsing its int64 sort key on
 //     each fill. This is the K-way pull-coordinator -- peak memory is one head per child +
 //     the reorder band, not the whole keyspace.
@@ -712,7 +712,7 @@ type MergeCursor struct {
 	pos  int         // materialized read position.
 
 	stream  bool              // streaming mode.
-	bc      *base.BatchCursor // per-actor batched producer (streaming).
+	bc      *base.StageCursor // per-actor batched producer (streaming).
 	keyIdx  int               // sort-key index, to parse a pulled row's key (streaming).
 	batch   []base.Vals       // current pulled batch (streaming); head = batch[bi].
 	bi      int               // index into batch (streaming).
