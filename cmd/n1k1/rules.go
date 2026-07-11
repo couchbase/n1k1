@@ -58,6 +58,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/couchbase/n1k1/base"
 	"github.com/couchbase/n1k1/glue"
 )
 
@@ -348,15 +349,44 @@ func (c *cli) cmdRulesRun(arg string) {
 			n, strings.Join(cc.GatedSkipped, ", "))))
 	}
 	if shareable, nDets := correlationShareable(cc.CorrelationGroups); shareable > 0 {
-		// A group of >1 correlation detector over the same (left,right,key) could share
-		// ONE sorted scan of each keyspace; today each runs standalone. Surface the
-		// opportunity (execution sharing is DESIGN-mqo-sorted.md Part B, next slice).
+		// A group of >1 correlation detector over the same (left,right,key) shares ONE
+		// sorted scan+decode of each keyspace via the corpus scan cache (Part B).
 		fmt.Fprintf(c.stderr, "  %s\n", c.style.Dim(fmt.Sprintf(
-			"correlation: %d detector(s) in %d shareable group(s) -- could share a sorted scan "+
-				"per keyspace (execution sharing is future work; each runs standalone for now)",
+			"correlation: %d detector(s) in %d shareable group(s) -- sharing a sorted scan per keyspace",
 			nDets, shareable)))
 	}
+	if line := mergeStatsLine(cc.MergeStats); line != "" {
+		fmt.Fprintf(c.stderr, "  %s\n", c.style.Dim(line))
+	}
 	c.reportDetectorHits(dets, findings, cc, report)
+}
+
+// mergeStatsLine summarizes the run's sorted-merge behavior for the user (memory-relevant:
+// which joins/scans streamed vs materialized, how much a materialized build spilled, and
+// how many keyless log lines were skipped). Empty when no merge ran. The full breakdown is
+// available via N1K1_MEM_STATS.
+func mergeStatsLine(m *base.MergeStats) string {
+	if m == nil || (m.JoinCount.Load() == 0 && m.ScanStreamed.Load() == 0 && m.ScanMaterialized.Load() == 0) {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("merge: ")
+	if j := m.JoinCount.Load(); j > 0 {
+		fmt.Fprintf(&b, "%d join(s) [%d streamed, %d materialized]", j, m.JoinStreamed.Load(), j-m.JoinStreamed.Load())
+		if sp := m.JoinSpillCount.Load(); sp > 0 {
+			fmt.Fprintf(&b, " (%d spilled build(s), peak %.0f MiB)", sp, float64(m.BuildBytesPeak.Load())/(1<<20))
+		}
+	}
+	if s := m.ScanStreamed.Load() + m.ScanMaterialized.Load(); s > 0 {
+		if m.JoinCount.Load() > 0 {
+			b.WriteString("; ")
+		}
+		fmt.Fprintf(&b, "%d sorted-scan(s) [%d streamed, %d materialized]", s, m.ScanStreamed.Load(), m.ScanMaterialized.Load())
+	}
+	if nk := m.NoKeySkipped.Load(); nk > 0 {
+		fmt.Fprintf(&b, "; %d keyless log line(s) skipped", nk)
+	}
+	return b.String()
 }
 
 // reportDetectorHits prints the per-detector hit stats (IDEA-0015): for each detector,
