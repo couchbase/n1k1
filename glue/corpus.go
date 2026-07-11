@@ -199,7 +199,7 @@ type CompiledCorpus struct {
 
 	// CorrelationGroups maps a temporal-correlation signature (left keyspace, right
 	// keyspace, key, direction) to the Tags of the correlation detectors that share it
-	// (DESIGN-mqo-sorted.md Part B). A group of >1 could share ONE sorted scan of each
+	// (DESIGN-sorting.md Part B). A group of >1 could share ONE sorted scan of each
 	// keyspace; today each still runs standalone -- this surfaces the opportunity.
 	CorrelationGroups map[string][]string
 
@@ -878,7 +878,7 @@ func (cc *CompiledCorpus) runStream(onFinding func(Finding) error, stats *base.S
 	}
 
 	// Part B execution sharing: install a shared-scan cache over the correlation
-	// keyspaces for this run (DESIGN-mqo-sorted.md). It reaches the standalone detectors'
+	// keyspaces for this run (DESIGN-sorting.md). It reaches the standalone detectors'
 	// own s.Run scans (PlanExec propagates s.Pipe) and the fused plan below, serving each
 	// keyspace's full scan+decode once. Transparent to everything else; removed after.
 	if qns := correlationKeyspaceQNs(cc.CorrelationGroups); len(qns) > 0 {

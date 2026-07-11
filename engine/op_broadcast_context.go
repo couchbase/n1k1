@@ -18,7 +18,7 @@ import (
 	"github.com/couchbase/n1k1/base"
 )
 
-// OpBroadcastContext is the SHARED SORTED-STREAM fan-out (DESIGN-mqo-sorted.md step 3,
+// OpBroadcastContext is the SHARED SORTED-STREAM fan-out (DESIGN-sorting.md step 3,
 // the "shared context operator" -- the first stateful consumer type of the shared
 // sorted substrate).
 //

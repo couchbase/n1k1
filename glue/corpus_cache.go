@@ -14,7 +14,7 @@
 package glue
 
 // Shared-scan cache for correlation detectors -- the EXECUTION half of Part B of the
-// shared sorted-stream substrate (DESIGN-mqo-sorted.md). K temporal-correlation detectors
+// shared sorted-stream substrate (DESIGN-sorting.md). K temporal-correlation detectors
 // over the same keyspaces each scan (and DECODE / re-extract) those keyspaces separately.
 // corpusScanCache captures each correlation keyspace's scan once into a spillable heap and
 // replays it for every later scan with the SAME key -- across the group's detectors -- so

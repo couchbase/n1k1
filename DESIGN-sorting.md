@@ -1,4 +1,4 @@
-# Design: MQO for stateful detectors — the shared sorted-stream substrate
+# Design: Shared sorted-stream substrate
 
 Status: **proposal** (no code yet). Companion to `DESIGN-prepare.md` (PREPARE++ /
 multi-query optimization), `DESIGN-merging.md` (the ASOF K-way merge), and

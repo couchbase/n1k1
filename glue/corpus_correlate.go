@@ -14,7 +14,7 @@
 package glue
 
 // Correlation-detector recognition + grouping -- the FOUNDATION of Part B of the shared
-// sorted-stream substrate (DESIGN-mqo-sorted.md, "correlation consumers on the shared
+// sorted-stream substrate (DESIGN-sorting.md, "correlation consumers on the shared
 // substrate"). A temporal cross-keyspace detector ("XYZ in log1, then ABC in log2") is a
 // correlated argmax subquery (the ASOF shape, MatchArgmaxAsof); K such detectors over the
 // SAME (left keyspace, right keyspace, time key, direction) all sort+scan those two

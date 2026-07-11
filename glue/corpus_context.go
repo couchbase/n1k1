@@ -13,8 +13,8 @@
 
 package glue
 
-// Context-detector recognition for the shared sorted-stream substrate (DESIGN-mqo-
-// sorted.md step 3, glue slice). A grep -A/-B/-C evidence detector -- the windowed
+// Context-detector recognition for the shared sorted-stream substrate (DESIGN-sorting.md
+// step 3, glue slice). A grep -A/-B/-C evidence detector -- the windowed
 // match-flag idiom
 //
 //	SELECT ... FROM (
