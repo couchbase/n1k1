@@ -136,6 +136,71 @@ func TestASOFLoweringDifferential(t *testing.T) {
 	}
 }
 
+// TestASOFLoweringRawElem0Native is the IDEA-0023 native-projection gate: the
+// `SELECT RAW r.f … [0]` argmax form (where the 1-element array wrap/unwrap cancels)
+// lowers to a merge-join whose matched value rides the NATIVE byte lane -- no boxed
+// ArrayConstruct on the build side, no per-row value.Value Convert. It must stay
+// byte-identical to the correlated baseline AND box zero per-row expressions.
+func TestASOFLoweringRawElem0Native(t *testing.T) {
+	root := t.TempDir()
+	asofWriteKS(t, root, "elog", "ns_server.error.log",
+		nsLine("2026-05-17T15:36:11.100+02:00", "n1", "e-100")+
+			nsLine("2026-05-17T15:36:13.300+02:00", "n1", "e-300")+
+			nsLine("2026-05-17T15:36:15.500+02:00", "n1", "e-500"))
+	asofWriteKS(t, root, "rlog", "ns_server.rebalance.log",
+		nsLine("2026-05-17T15:36:12.200+02:00", "n1", "r-200")+
+			nsLine("2026-05-17T15:36:14.400+02:00", "n1", "r-400"))
+	s, err := OpenSession(root, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	stmt := "SELECT e.ts AS ts, " +
+		"(SELECT RAW r.msg FROM default:rlog r WHERE r.ts <= e.ts ORDER BY r.ts DESC LIMIT 1)[0] AS state_at " +
+		"FROM default:elog e ORDER BY e.ts"
+
+	prev := EnableASOFRewrite
+	EnableASOFRewrite = true
+	defer func() { EnableASOFRewrite = prev }()
+
+	before := AsofRewriteApplied
+	res, rerr := s.Run(stmt)
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	if AsofRewriteApplied <= before {
+		t.Fatalf("expected the RAW/[0] ASOF lowering to FIRE; it did not")
+	}
+
+	// Ground-truth nearest-preceding: e@11.1 has none (state_at OMITTED, since [][0] is
+	// MISSING); e@13.3 -> r-200@12.2; e@15.5 -> r-400@14.4 (the LATEST r <= 15.5).
+	// (We assert ground truth rather than diffing the correlated baseline via runBoth:
+	// the correlated `SELECT RAW … ORDER BY … LIMIT 1` baseline itself returns the WRONG
+	// row here -- RAW+ORDER BY+LIMIT mis-composes the sort/limit, a separate pre-existing
+	// n1k1 bug; the ASOF merge co-advance is key-ordered, so the lowered path is correct.)
+	got := rowsAsStrings(res.Rows)
+	want := []string{
+		`{"ts":1779024971100000000}`,
+		`{"ts":1779024973300000000,"state_at":"r-200"}`,
+		`{"ts":1779024975500000000,"state_at":"r-400"}`,
+	}
+	if len(got) != len(want) {
+		t.Fatalf("want %d rows, got %d: %v", len(want), len(got), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("row[%d]:\n got  %s\n want %s", i, got[i], want[i])
+		}
+	}
+
+	// The perf win: the lowered run boxes ZERO per-row expressions -- the matched value
+	// rides the native byte lane end to end (no ArrayConstruct, no value.Value Convert).
+	if res.BoxedEvals != 0 {
+		t.Errorf("lowered RAW/[0] ASOF should be fully native, got BoxedEvals=%d", res.BoxedEvals)
+	}
+}
+
 // TestASOFLoweringOuterFilterDifferential is the IDEA-0014 gate: a nearest-preceding
 // argmax with an OUTER WHERE (correlate only a filtered subset of E -- the common
 // real detector, e.g. only error rows) must STILL lower. Before the fix an outer

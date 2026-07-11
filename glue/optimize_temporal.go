@@ -1543,6 +1543,24 @@ func tryLowerASOFProject(p *base.Op, conv *Conv, byKey map[string]plan.Operator)
 	rScanLabels := base.Labels{"." + LabelSuffix(match.RightAlias), "^id"}
 	rKeyLabel := "^rkey"
 	asofResultLabel := ".[\"" + asofResultField + "\"]"
+
+	// NATIVE fast path (IDEA-0023): for `(SELECT RAW r.f … LIMIT 1)[0]` the argmax
+	// result is exactly the scalar `r.f` -- the `[0]` unwraps the 1-element array the
+	// subquery yields, so the array wrap (right side) and unwrap (outer term) cancel.
+	// Carry `r.f` as a NATIVE labelPath into the `.["r"]` doc the R scan already
+	// produces, instead of the boxed `ArrayConstruct(r.f)` -- which is NOT in the
+	// native optimizer, so it boxes every build row through cbq value.Value + a
+	// per-row ArrayConstruct.Evaluate (the profiled 887k-row hot path). The outer term
+	// then reads `.["asofresult"]` as a plain native labelPath (no element/ifmissing):
+	// a matched row -> the scalar bytes; no match -> the merge-join's MISSING fill ->
+	// an omitted field, matching the correlated `[][0]` == MISSING baseline byte-for-
+	// byte. Scoped to RAW + `[0]`: the non-RAW `[0]` value is an object `{alias: r.f}`
+	// (still needs ObjectConstruct), and a bare (non-`[0]`) subquery value IS the array.
+	nativeResult := match.Raw && elem0
+	asofResultTerm := exprTerm(asofResultExpr(match))
+	if nativeResult {
+		asofResultTerm = []interface{}{"labelPath", "." + LabelSuffix(match.RightAlias), match.ProjField}
+	}
 	// withRightResidual re-applies the build-side content filter (RightResidual: WHERE
 	// conjuncts that reference only r) to an R scan BEFORE the key-materializing project,
 	// so only right rows passing it enter the merge -- the merge then finds the nearest
@@ -1570,7 +1588,7 @@ func tryLowerASOFProject(p *base.Op, conv *Conv, byKey map[string]plan.Operator)
 			Labels: base.Labels{rKeyLabel, asofResultLabel},
 			Params: []interface{}{
 				exprTerm(fieldRef(match.RightAlias, match.KeyField)),
-				exprTerm(asofResultExpr(match)),
+				asofResultTerm,
 			},
 			Children: []*base.Op{withRightResidual(sc)},
 		}
@@ -1635,13 +1653,19 @@ func tryLowerASOFProject(p *base.Op, conv *Conv, byKey map[string]plan.Operator)
 	// in for the subquery's own value (asofResultExpr reproduces its 1-element array).
 	// If the original term was (subq)[0], re-apply that [0] over the reconstructed
 	// value, so the lowered term yields the same scalar the correlated form did.
-	var repl expression.Expression = expression.NewIfMissing(
-		fieldRef("", asofResultField), expression.NewConstant(nil))
-	if elem0 {
-		repl = expression.NewElement(repl, expression.NewConstant(0.0))
-	}
 	p.Children[0] = mj
-	p.Params[termIdx] = exprTerm(repl)
+	if nativeResult {
+		// The build side already carries the unwrapped scalar under .["asofresult"];
+		// read it as a plain native labelPath (see the nativeResult note above).
+		p.Params[termIdx] = []interface{}{"labelPath", asofResultLabel}
+	} else {
+		var repl expression.Expression = expression.NewIfMissing(
+			fieldRef("", asofResultField), expression.NewConstant(nil))
+		if elem0 {
+			repl = expression.NewElement(repl, expression.NewConstant(0.0))
+		}
+		p.Params[termIdx] = exprTerm(repl)
+	}
 
 	AsofRewriteApplied++
 }
