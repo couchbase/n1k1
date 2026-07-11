@@ -597,9 +597,11 @@ func (b *MergeReorderBuffer) down(i int) {
 // files materialized. false => drain every child into memory first (the original path).
 var MergeScanStreamKway = true
 
-// mergeScanStreamChanCap bounds each child producer's channel (backpressure): a producer
-// blocks once this many rows are queued, so a fast child can't buffer unboundedly.
-const mergeScanStreamChanCap = 256
+// mergeScanStreamChanCap bounds each child producer's channel in BATCHES (backpressure).
+// Rows are sent in batches (mergeStreamBatchRows each), not row-by-row: a per-row channel
+// handoff spends most of its CPU in goroutine wakeups (pthread_cond_signal); batching
+// amortizes that. Total buffered rows per child = cap x batch, still bounded.
+const mergeScanStreamChanCap = 8
 
 // mergeStreamRow is one row carried over a producer channel: its int64 sort key and a
 // deep copy of its Vals (the child scan reuses its buffers, so the row must be copied
@@ -669,13 +671,24 @@ func mergeSpawnCursors(o *base.Op, vars *base.Vars, keyIdx int, pathNext string)
 	cursors := make([]*MergeCursor, k)
 
 	for i := range o.Children {
-		ch := make(chan mergeStreamRow, mergeScanStreamChanCap)
+		ch := make(chan []mergeStreamRow, mergeScanStreamChanCap)
 		cursors[i] = &MergeCursor{stream: true, ch: ch}
-		go func(i int, ch chan mergeStreamRow) {
+		go func(i int, ch chan []mergeStreamRow) {
 			defer func() { finished <- struct{}{} }()
-			defer close(ch)
 			cVars := vars.ChainExtend() // per-actor Ctx clone; shares MergeStats by pointer.
 			stop := false
+			batch := make([]mergeStreamRow, 0, mergeStreamBatchRows)
+			flush := func() { // hand the batch off; a fresh buffer next (consumer keeps it).
+				if len(batch) == 0 {
+					return
+				}
+				select {
+				case ch <- batch:
+					batch = make([]mergeStreamRow, 0, mergeStreamBatchRows)
+				case <-done: // coordinator gave up; stop feeding.
+					stop = true
+				}
+			}
 			childYield := func(vals base.Vals) {
 				if stop {
 					return
@@ -685,10 +698,9 @@ func mergeSpawnCursors(o *base.Op, vars *base.Vars, keyIdx int, pathNext string)
 					cVars.Ctx.MergeStats.AddNoKeySkipped(1)
 					return
 				}
-				select {
-				case ch <- mergeStreamRow{key: key, vals: mergeCopyVals(vals)}:
-				case <-done: // coordinator gave up; stop feeding.
-					stop = true
+				batch = append(batch, mergeStreamRow{key: key, vals: mergeCopyVals(vals)})
+				if len(batch) >= mergeStreamBatchRows {
+					flush()
 				}
 			}
 			childErr := func(err error) {
@@ -700,11 +712,13 @@ func mergeSpawnCursors(o *base.Op, vars *base.Vars, keyIdx int, pathNext string)
 				}
 			}
 			ExecOp(o.Children[i], cVars, childYield, childErr, pathNext, strconv.Itoa(i))
+			flush() // final partial batch.
+			close(ch)
 		}(i, ch)
 	}
 
 	for _, c := range cursors {
-		c.Advance() // pre-fill each head (blocks until the child's first row or close).
+		c.fill() // load each cursor's first batch (blocks until the child's first row or close).
 	}
 
 	released := false
@@ -741,16 +755,17 @@ type MergeCursor struct {
 	keys []int64     // materialized keys (parallel to rows).
 	pos  int         // materialized read position.
 
-	stream  bool                // streaming mode.
-	ch      chan mergeStreamRow // producer channel (streaming).
-	head    mergeStreamRow      // current peeked head (streaming).
-	hasHead bool                // whether head holds a live row (streaming).
+	stream bool                  // streaming mode.
+	ch     chan []mergeStreamRow // producer channel: BATCHES of rows (amortizes wakeups).
+	batch  []mergeStreamRow      // current batch (streaming); head = batch[bi].
+	bi     int                   // index into batch (streaming).
+	valid  bool                  // whether batch[bi] is a live head (streaming).
 }
 
 // Valid reports whether the cursor still has an unread head row.
 func (c *MergeCursor) Valid() bool {
 	if c.stream {
-		return c.hasHead
+		return c.valid
 	}
 	return c.pos < len(c.rows)
 }
@@ -758,7 +773,7 @@ func (c *MergeCursor) Valid() bool {
 // HeadKey returns the sort key of the cursor's current head row.
 func (c *MergeCursor) HeadKey() int64 {
 	if c.stream {
-		return c.head.key
+		return c.batch[c.bi].key
 	}
 	return c.keys[c.pos]
 }
@@ -766,17 +781,32 @@ func (c *MergeCursor) HeadKey() int64 {
 // HeadRow returns the cursor's current head row (yield it before Advance overwrites it).
 func (c *MergeCursor) HeadRow() base.Vals {
 	if c.stream {
-		return c.head.vals
+		return c.batch[c.bi].vals
 	}
 	return c.rows[c.pos]
 }
 
-// Advance moves to the next head: materialized bumps pos; streaming receives the next row
-// from the producer (clearing hasHead at end-of-stream, which blocks until a row or close).
+// fill positions the streaming cursor at the next live head, pulling the next batch from
+// the channel when the current one is exhausted (blocks until a batch or close). Sets
+// valid=false at end-of-stream. Called for the initial head and after each Advance.
+func (c *MergeCursor) fill() {
+	for c.bi >= len(c.batch) {
+		b, ok := <-c.ch
+		if !ok {
+			c.valid = false
+			return
+		}
+		c.batch, c.bi = b, 0
+	}
+	c.valid = true
+}
+
+// Advance moves to the next head: materialized bumps pos; streaming advances within the
+// current batch, pulling the next batch when exhausted.
 func (c *MergeCursor) Advance() {
 	if c.stream {
-		row, ok := <-c.ch
-		c.head, c.hasHead = row, ok
+		c.bi++
+		c.fill()
 		return
 	}
 	c.pos++

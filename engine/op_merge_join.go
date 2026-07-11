@@ -37,10 +37,16 @@ var MergeJoinBuildSpillBytes int64 = 64 << 20 // 64 MiB of resident row payloads
 // following-partitioned case still materializes (it needs a per-partition lookahead index).
 var MergeJoinStreamASOF = true
 
-// mergeJoinStreamChanCap bounds the right-stream channel (backpressure): the right
-// goroutine blocks once this many rows are queued, so a fast build can't buffer
-// unboundedly. Small -- the consumer only ever needs a one-row lookahead.
-const mergeJoinStreamChanCap = 256
+// The right build streams to the consumer in BATCHES, not row-by-row: a per-row channel
+// handoff spends most of its CPU in goroutine park/unpark (pthread_cond_signal) because
+// the consumer keeps pace and the channel ping-pongs near-empty. Batching amortizes the
+// wakeup over mergeStreamBatchRows rows (measured: ~55% of streaming CPU was cond_signal;
+// batching removes it). mergeJoinStreamChanCap bounds the channel in BATCHES (backpressure);
+// total buffered rows = cap x batch, still bounded.
+const (
+	mergeStreamBatchRows   = 128 // rows per channel batch.
+	mergeJoinStreamChanCap = 8   // batches buffered in the channel.
+)
 
 // OpMergeJoin is the sorted merge JOIN op of DESIGN-merging.md §2. Its two inputs
 // are ALREADY ordered by an int64 sort key sitting in a labeled register of each
@@ -450,7 +456,7 @@ func mergeJoinStreamAsof(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 		vars.Ctx.MergeStats.RecordStreamJoin()
 	}
 
-	ch := make(chan mergeJoinStreamRow, mergeJoinStreamChanCap)
+	ch := make(chan []mergeJoinStreamRow, mergeJoinStreamChanCap)
 	errCh := make(chan error, 1)
 	done := make(chan struct{})
 	finished := make(chan struct{})
@@ -463,6 +469,18 @@ func mergeJoinStreamAsof(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 		seen := false
 		stop := false
 		var partBuf []byte
+		batch := make([]mergeJoinStreamRow, 0, mergeStreamBatchRows)
+		flush := func() { // hand the batch to the consumer; a fresh buffer next (consumer keeps it).
+			if len(batch) == 0 {
+				return
+			}
+			select {
+			case ch <- batch:
+				batch = make([]mergeJoinStreamRow, 0, mergeStreamBatchRows)
+			case <-done: // the consumer gave up; stop feeding.
+				stop = true
+			}
+		}
 		ry := func(vals base.Vals) {
 			if stop {
 				return
@@ -486,10 +504,9 @@ func mergeJoinStreamAsof(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 				partBuf = mergeJoinPartKey(partBuf[:0], vals, mergeRightParts(o))
 				row.part = string(partBuf)
 			}
-			select {
-			case ch <- row:
-			case <-done: // the consumer gave up; stop feeding (drop the rest).
-				stop = true
+			batch = append(batch, row)
+			if len(batch) >= mergeStreamBatchRows {
+				flush()
 			}
 		}
 		rErr := func(err error) {
@@ -501,28 +518,31 @@ func mergeJoinStreamAsof(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 			}
 		}
 		ExecOp(o.Children[1], rVars, ry, rErr, pathNext, "MJR")
+		flush() // final partial batch.
 		close(ch)
 	}()
 
-	// --- right cursor with a one-row lookahead over the channel. ---
-	var pending *mergeJoinStreamRow
+	// --- right cursor with a one-row lookahead over the BATCHED channel. peek returns a
+	// pointer into the current batch (stable -- the producer allocates a fresh batch per
+	// flush, so held rows stay valid); consume advances within/across batches. ---
+	var batch []mergeJoinStreamRow
+	bi := 0
 	chClosed := false
 	peek := func() *mergeJoinStreamRow {
-		if pending != nil {
-			return pending
+		for bi >= len(batch) {
+			if chClosed {
+				return nil
+			}
+			b, ok := <-ch
+			if !ok {
+				chClosed = true
+				return nil
+			}
+			batch, bi = b, 0
 		}
-		if chClosed {
-			return nil
-		}
-		row, ok := <-ch
-		if !ok {
-			chClosed = true
-			return nil
-		}
-		pending = &row
-		return pending
+		return &batch[bi]
 	}
-	consume := func() { pending = nil }
+	consume := func() { bi++ }
 
 	// held: nearest-preceding row per partition ("" when unpartitioned). Bounded by the
 	// number of distinct partitions, not by rows.
