@@ -278,8 +278,8 @@ func TestMergeScanWatermarkedNear(t *testing.T) {
 // TestMergeScanWatermarkedNearMixed mixes a strict child with a near child.
 func TestMergeScanWatermarkedNearMixed(t *testing.T) {
 	children := []*base.Op{
-		mergeKeyChild([]int64{5, 15, 25, 35}),       // strict
-		mergeKeyChild([]int64{10, 22, 18, 40}),      // near: 22 before 18 (bound 4)
+		mergeKeyChild([]int64{5, 15, 25, 35}),  // strict
+		mergeKeyChild([]int64{10, 22, 18, 40}), // near: 22 before 18 (bound 4)
 	}
 	want := []int64{5, 10, 15, 18, 22, 25, 35, 40}
 
@@ -293,6 +293,50 @@ func TestMergeScanWatermarkedNearMixed(t *testing.T) {
 	}
 	assertSameMultiset(t, got, want)
 	assertAscending(t, got)
+}
+
+// TestMergeScanWatermarkedSingleStreams covers the single-child streaming path: one
+// near-sorted source is reordered into a globally ascending stream WITHOUT materializing
+// the whole child first (the memory fix for near-sorted ASOF build/probe). Multiple
+// within-bound inversions must all be corrected.
+func TestMergeScanWatermarkedSingleStreams(t *testing.T) {
+	// One near source: 30-before-28 (2 lag), 55-before-52-before-50 (within bound 8).
+	children := []*base.Op{
+		mergeKeyChild([]int64{10, 20, 30, 28, 40, 55, 52, 50, 70}),
+	}
+	want := []int64{10, 20, 28, 30, 40, 50, 52, 55, 70}
+
+	op := mergeScanOp("heap", children, []interface{}{"near"}, nil, nil, []interface{}{int64(8)}, "error")
+
+	got, err, warns := runMergeScanErr(t, op)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(warns) != 0 {
+		t.Fatalf("unexpected warns for within-bound input: %v", warns)
+	}
+	assertSameMultiset(t, got, want)
+	assertAscending(t, got)
+}
+
+// TestMergeScanWatermarkedSingleBeyondBound: the streaming path's ingestion tripwire
+// still fires when a single near source is disordered beyond its declared bound.
+func TestMergeScanWatermarkedSingleBeyondBound(t *testing.T) {
+	// Claims bound 3 but is wildly out of order: by the time 20 arrives, the running max
+	// (200) has driven the watermark past 100, which was already emitted -- so 20 is a
+	// true, unrecoverable violation the tripwire must catch.
+	children := []*base.Op{
+		mergeKeyChild([]int64{10, 100, 200, 20, 300}),
+	}
+	op := mergeScanOp("heap", children, []interface{}{"near"}, nil, nil, []interface{}{int64(3)}, "error")
+
+	_, err, _ := runMergeScanErr(t, op)
+	if err == nil {
+		t.Fatal("expected a disorder_bound violation error, got nil")
+	}
+	if !strings.Contains(err.Error(), "disorder_bound") {
+		t.Fatalf("unexpected error: %v", err)
+	}
 }
 
 // TestMergeScanBeyondBoundErrors verifies the bound-validation tripwire fires

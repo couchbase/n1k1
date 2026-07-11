@@ -340,6 +340,18 @@ func mergeScanHeap(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 func mergeScanWatermarked(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 	yieldErr base.YieldErr, keyIdx int, pathNext string,
 	maxBound int64, policy string) {
+	// A SINGLE near-sorted child (the common ASOF build/probe -- one log keyspace, one
+	// file) is STREAMED through the bounded reorder buffer instead of drained whole into
+	// a cursor first: peak memory becomes the reorder BAND (rows within the disorder
+	// bound of the running-max key), not the entire keyspace. This is the memory fix for
+	// near-sorted correlations. K-way still materializes (no lockstep pull over K push
+	// children yet -- the deferred resumable-cursor work).
+	if len(o.Children) == 1 {
+		mergeScanWatermarkedStream(o, vars, yieldVals, yieldErr, keyIdx, pathNext,
+			maxBound, policy)
+		return
+	}
+
 	cursors := make([]*MergeCursor, 0, len(o.Children))
 
 	var execErr error
@@ -459,6 +471,94 @@ func mergeScanWatermarked(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 	}
 
 	yieldErr(nil)
+}
+
+// mergeScanWatermarkedStream is the SINGLE-child watermarked-near path. It pushes each
+// yielded row straight into the bounded reorder buffer and emits everything the
+// running-max key now makes safe (key <= runningMax - effBound: the disorder model
+// guarantees no future row is more than effBound behind the max seen), so the buffer
+// holds only the near-sorted BAND -- not the whole keyspace as the materialized path
+// does. Output is identical to the materialized path (a fully ascending stream); the
+// same ingestion tripwire catches a source that is disordered beyond effBound (strict:
+// error; widen: grow the bound + Warn). This is what makes a near-sorted ASOF build/probe
+// memory-bounded.
+func mergeScanWatermarkedStream(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
+	yieldErr base.YieldErr, keyIdx int, pathNext string, maxBound int64, policy string) {
+	var buf MergeReorderBuffer
+
+	strict := policy != "widen"
+	effBound := maxBound
+	runningMax := mergeMinInt64
+	var lastKey int64
+	emitted := false
+	var execErr error
+
+	// emitSafe pops and yields every buffered row with key <= watermark, in key order,
+	// validating output monotonicity as the final tripwire.
+	emitSafe := func(watermark int64) {
+		for buf.Len() > 0 && buf.MinKey() <= watermark {
+			k, row := buf.PopMin()
+			if emitted && k < lastKey {
+				if strict {
+					execErr = mergeOutOfOrderErr(-1, k, lastKey)
+					return
+				}
+				mergeWarnLate(vars, -1, k, lastKey)
+			}
+			yieldVals(row)
+			lastKey = k
+			emitted = true
+		}
+	}
+
+	childYield := func(vals base.Vals) {
+		if execErr != nil {
+			return
+		}
+		k, ok := mergeParseKey(vals, keyIdx)
+		if !ok {
+			MergeNoKeySkipped++ // keyless row (banner / multiline continuation) -- skip.
+			return
+		}
+		if k > runningMax {
+			runningMax = k
+		}
+		// Everything at or below runningMax - effBound is now safe: no later row can
+		// arrive more than effBound behind the max key seen.
+		wm := runningMax - effBound
+		if effBound > 0 && wm > runningMax { // underflowed past MinInt64
+			wm = mergeMinInt64
+		}
+		emitSafe(wm)
+		if execErr != nil {
+			return
+		}
+		// A row below what we have already emitted means effBound was too small.
+		if emitted && k < lastKey {
+			if strict {
+				execErr = mergeBoundViolationErr(0, k, lastKey)
+				return
+			}
+			if grow := lastKey - k; grow > effBound {
+				effBound = grow
+			}
+			mergeWarnLate(vars, 0, k, lastKey)
+		}
+		buf.Push(k, mergeCopyVals(vals))
+	}
+
+	childErr := func(err error) {
+		if err != nil && execErr == nil {
+			execErr = err
+		}
+	}
+
+	ExecOp(o.Children[0], vars, childYield, childErr, pathNext, "0")
+
+	if execErr == nil {
+		emitSafe(mergeMaxInt64) // exhausted: flush the buffer's tail in order.
+	}
+	yieldErr(execErr)
 }
 
 // mergeWatermark returns min over live cursors(head_key) - effBound, i.e. the
