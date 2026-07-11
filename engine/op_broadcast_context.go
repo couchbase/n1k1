@@ -87,9 +87,10 @@ type contextExtractor struct {
 	predFunc base.ExprFunc
 	projFunc base.ProjectFunc
 
-	buf       []base.Vals // recent non-emitted rows (deep copies), len <= beforeMatch
-	afterLeft int
-	outReuse  base.Vals // reused projection output buffer
+	buf        []base.Vals // recent non-emitted rows (deep copies), len <= beforeMatch
+	afterLeft  int
+	outReuse   base.Vals // reused projection output buffer
+	alwaysWake bool      // no necessary literal -> its predicate is evaluated every row
 }
 
 // reset clears an extractor's context window at a partition boundary.
@@ -110,15 +111,47 @@ func BroadcastContextExec(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 
 	specs := contextExtractorSpecs(o.Params)
 
+	// Aho-Corasick sparse-match index (like OpBroadcastIndexed): each extractor's
+	// necessary prefilter literal keys it into one automaton; a per-row pass wakes only
+	// extractors whose literal is present, so their (boxed CASE / regexp) predicate is
+	// evaluated only where it could match. An extractor with no provable literal is
+	// always-wake. Matches are sparse in logs, so this skips most predicate evals.
 	extractors := make([]*contextExtractor, 0, len(specs))
+	litIDs := map[string]int{}
+	var literals []string
+	var litExtractors [][]int
 	for i, spec := range specs {
-		extractors = append(extractors, &contextExtractor{
+		e := &contextExtractor{
 			spec:     spec,
 			tagVal:   base.Val(strconv.Quote(spec.tag)),
 			predFunc: MakeExprFunc(vars, childLabels, spec.pred, pathNext, "cpred"+strconv.Itoa(i)),
 			projFunc: MakeProjectFunc(vars, childLabels, spec.proj, pathNext, "cproj"+strconv.Itoa(i)),
-		})
+		}
+		ei := len(extractors)
+		extractors = append(extractors, e)
+
+		lit, ok := PrefilterLiteral(spec.pred)
+		if !ok {
+			e.alwaysWake = true
+			continue
+		}
+		id, seen := litIDs[lit]
+		if !seen {
+			id = len(literals)
+			litIDs[lit] = id
+			literals = append(literals, lit)
+			litExtractors = append(litExtractors, nil)
+		}
+		litExtractors[id] = append(litExtractors[id], ei)
 	}
+
+	ac := base.BuildAhoCorasick(literals)
+	matched := ac.NewMatchSet()
+
+	// wokenGen[i] == gen marks extractor i woken THIS row (a gen stamp avoids clearing a
+	// bool slice per row). always-wake extractors bypass it.
+	wokenGen := make([]int64, len(extractors))
+	var gen int64
 
 	// Optional partition-key func: a new partition (its value differs from the prior
 	// row's) resets every extractor's window, so context never spans partitions.
@@ -157,8 +190,29 @@ func BroadcastContextExec(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 			}
 		}
 
-		for _, e := range extractors {
-			match := base.ValTruthy(e.predFunc(vals, yieldErr))
+		// One Aho-Corasick pass over the row bytes -> the present literals -> the woken
+		// extractors (stamped for this row). A non-woken extractor's literal is absent, so
+		// its predicate is necessarily false -- skip the eval, but still run its context
+		// bookkeeping below (a non-match row can be a neighbor's context).
+		gen++
+		matched.Reset()
+		acState := 0
+		for _, v := range vals {
+			acState = ac.Advance(acState, v, matched)
+		}
+		for _, litID := range matched.IDs() {
+			for _, ei := range litExtractors[litID] {
+				wokenGen[ei] = gen
+			}
+		}
+
+		for i, e := range extractors {
+			// Evaluate the predicate only when the extractor is woken (literal present) or
+			// always-wake; otherwise the row cannot be a match for it.
+			match := false
+			if e.alwaysWake || wokenGen[i] == gen {
+				match = base.ValTruthy(e.predFunc(vals, yieldErr))
+			}
 
 			switch {
 			case match:

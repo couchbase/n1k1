@@ -280,11 +280,22 @@ Each step is independently useful and benchmark-gated (like the DESIGN-col roadm
    O(N log N) + a full buffer/spill. Guarded narrowly to those exact `_meta` keys
    (`isDotMetaField`); any other (partition, order) keeps the explicit sort. (Subtlety:
    `renameAliasToSelf` mutates in place, so the elision test runs on the pristine
-   alias-rooted exprs before the sort terms are built.) *Remaining:* the AC-index /
-   sparse-match refinement over the shared stream; evidence shaped to the SELECT projection
-   (vs whole-row); multi-column PARTITION; a general "source advertises its order" contract
-   (beyond the `_meta` keys); per-detector hit stats for context ops. *Measure:* K context
-   detectors, shared vs standalone (expect ~K× on the sort).
+   alias-rooted exprs before the sort terms are built.)
+   **AC-index sparse-match DONE:** `BroadcastContextExec` now builds an Aho-Corasick index
+   over the extractors' necessary literals (reusing `PrefilterLiteral` + `base.AhoCorasick`,
+   like `OpBroadcastIndexed`); one AC pass per row wakes only the extractors whose literal
+   is present, and a non-woken extractor's (boxed CASE / regexp) predicate is NOT evaluated
+   (its literal is absent ⇒ necessarily not a match). Every extractor still runs its cheap
+   context bookkeeping (a non-match row can be a neighbour's context). For the AC to bite,
+   the glue lowers each match predicate to its NATIVE tree (`contextPredTree`, mirroring
+   `normalizeCorpusPred`) so a literal is extractable; a non-nativizable pred is always-wake
+   (safe). Since log matches are sparse, this skips the great majority of predicate evals.
+   Tests: engine `TestOpBroadcastContextAlwaysWake` (+ the grep differentials run through
+   the AC path); glue `TestCorpusContextPredNativized` (the pred is native, not boxed).
+   *Remaining:* evidence shaped to the SELECT projection (vs whole-row); multi-column
+   PARTITION; a general "source advertises its order" contract (beyond the `_meta` keys);
+   per-detector hit stats for context ops. *Measure:* K context detectors, shared vs
+   standalone (expect ~K× on the sort).
 4. **Correlation consumers on the shared substrate** (Part B MQO). Fuse per-stream filters
    (shared scan + index) and share the sorted streams feeding the merges.
 5. **(Stretch) shared merge** across correlators with a common `(left, right, key)`.

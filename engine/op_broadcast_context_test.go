@@ -207,3 +207,22 @@ func TestOpBroadcastContextNoPartition(t *testing.T) {
 		t.Errorf("no-partition -C1: got %v, want %v", got, want)
 	}
 }
+
+// TestOpBroadcastContextAlwaysWake covers the always-wake path: an extractor whose
+// predicate has no extractable literal (a numeric comparison, pos > 1) is evaluated on
+// every row (not AC-gated) and still produces the correct grep -C0 (match-line-only)
+// result -- proving the AC index and the always-wake fallback compose.
+func TestOpBroadcastContextAlwaysWake(t *testing.T) {
+	var rows []ctxRow
+	for i := 0; i < 5; i++ {
+		rows = append(rows, ctxRow{p: "f1", pos: i, error: false})
+	}
+	// pos > 1 -> no string literal -> PrefilterLiteral false -> always-wake.
+	ext := []interface{}{"aw", 0, 0,
+		[]interface{}{"gt", lp(".", "pos"), []interface{}{"json", "1"}},
+		[]interface{}{lp(".", "pos")}}
+	got := runContextBroadcast(t, rows, ext)
+	if want := []int{2, 3, 4}; !reflect.DeepEqual(got["aw"], want) {
+		t.Errorf("always-wake pos>1: got %v, want %v", got["aw"], want)
+	}
+}

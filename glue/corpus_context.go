@@ -35,6 +35,7 @@ package glue
 // each detector's own SQL (its standalone window result is the oracle).
 
 import (
+	"bytes"
 	"fmt"
 
 	"github.com/couchbase/query/expression"
@@ -87,6 +88,7 @@ type contextDetInfo struct {
 	keyspaceName string
 	keyspacer    interface{}
 	alias        string
+	scanLabels   base.Labels // the detector scan's labels, for native predicate lowering.
 
 	partExpr   expression.Expression   // single PARTITION BY column (MVP)
 	orderExprs []expression.Expression // ORDER BY columns (all ascending)
@@ -163,12 +165,12 @@ func recognizeContextDetector(top *base.Op, temps []interface{}) (contextDetInfo
 	if ks == nil || alias == "" {
 		return contextDetInfo{}, false
 	}
-	_ = scanLabels
 
 	info := contextDetInfo{
 		keyspaceName: ks.QualifiedName(),
 		keyspacer:    contextKeyspacer(ord, temps),
 		alias:        alias,
+		scanLabels:   scanLabels,
 		partExpr:     partExpr,
 		orderExprs:   orderExprs,
 		beforeMatch:  before,
@@ -437,14 +439,17 @@ func buildContextBroadcast(group []contextDetInfo, tags []string, unified *Conv)
 		}
 	}
 
-	// K context extractors. Evidence (MVP) = the whole scan row ("." labelPath).
+	// K context extractors. The match predicate is lowered to its NATIVE tree where
+	// possible (contextPredTree), so the engine op's Aho-Corasick index can extract a
+	// necessary literal and skip the predicate eval on rows that lack it (sparse-match).
+	// Evidence (MVP) = the whole scan row ("." labelPath).
 	exts := make([]interface{}, 0, len(group))
 	for i, d := range group {
 		exts = append(exts, []interface{}{
 			tags[i],
 			d.beforeMatch,
 			d.afterMatch,
-			[]interface{}{"exprTree", renameAliasToSelf(d.matchPred, d.alias)},
+			contextPredTree(d.matchPred, d.scanLabels, d.alias),
 			[]interface{}{[]interface{}{"labelPath", "."}},
 		})
 	}
@@ -458,6 +463,21 @@ func buildContextBroadcast(group []contextDetInfo, tags []string, unified *Conv)
 		},
 		Children: []*base.Op{child},
 	}
+}
+
+// contextPredTree lowers a context detector's match predicate to a native expr-tree
+// rooted at the shared "." row (so the engine op's Aho-Corasick index can extract a
+// necessary literal and prune), falling back to a boxed ["exprTree", ...] (always-wake)
+// when it doesn't lower natively. Mirrors normalizeCorpusPred's native/boxed split.
+func contextPredTree(pred expression.Expression, scanLabels base.Labels, alias string) []interface{} {
+	aliasLabel := "." + LabelSuffix(alias)
+	var buf bytes.Buffer
+	if out, ok := ExprTreeOptimize(scanLabels, pred, &buf, false); ok {
+		if rooted, ok := rewriteLabelRoot(out, aliasLabel, ".").([]interface{}); ok {
+			return rooted
+		}
+	}
+	return []interface{}{"exprTree", renameAliasToSelf(pred, alias)}
 }
 
 // isDotMetaField reports whether e is exactly `<ident>._meta.<leaf>` (e.g.

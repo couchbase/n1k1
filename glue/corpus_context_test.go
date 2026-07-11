@@ -262,3 +262,42 @@ func TestCorpusContextSortElision(t *testing.T) {
 		t.Errorf("(file,pos): expected sort RETAINED, got %d order ops", n)
 	}
 }
+
+// TestCorpusContextPredNativized: the recognized detector's match predicate is lowered
+// to its NATIVE tree (e.g. ["eq", ...] for sev="ERROR"), not left boxed ["exprTree",...],
+// so the engine op's Aho-Corasick index can extract a necessary literal and prune. A
+// boxed pred would head with "exprTree" (always-wake, no pruning).
+func TestCorpusContextPredNativized(t *testing.T) {
+	sess := ctxCorpusSession(t)
+	cc, err := sess.CorpusCompile([]CorpusDetector{{Tag: "c", Stmt: ctxStmt("ERROR", 1, 1)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// walk to the broadcast-context op.
+	var bc *base.Op
+	var walk func(*base.Op)
+	walk = func(op *base.Op) {
+		if op == nil {
+			return
+		}
+		if op.Kind == "broadcast-context" {
+			bc = op
+		}
+		for _, c := range op.Children {
+			walk(c)
+		}
+	}
+	walk(cc.Plan)
+	if bc == nil {
+		t.Fatal("no broadcast-context op in plan")
+	}
+	exts := bc.Params[0].([]interface{})
+	ext0 := exts[0].([]interface{})
+	pred := ext0[3].([]interface{}) // {tag, before, after, pred, proj}
+	if head, _ := pred[0].(string); head == "exprTree" {
+		t.Errorf("match pred left BOXED (%v) -- expected a native tree so the AC index can prune", pred[0])
+	}
+	if head, _ := pred[0].(string); head != "eq" {
+		t.Logf("note: pred head = %q (native, ok as long as PrefilterLiteral can read it)", head)
+	}
+}
