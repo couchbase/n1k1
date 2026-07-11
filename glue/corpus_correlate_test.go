@@ -14,6 +14,7 @@
 package glue
 
 import (
+	"github.com/couchbase/n1k1/base"
 	"os"
 	"path/filepath"
 	"sort"
@@ -228,7 +229,7 @@ func TestCorpusCorrelationScanBudget(t *testing.T) {
 	EnableASOFRewrite = true
 	defer func() { EnableASOFRewrite = prev }()
 	prevB := CorpusScanCacheBudgetBytes
-	CorpusScanCacheBudgetBytes = 1 // 1 byte: nothing fits -> everything abandoned.
+	CorpusScanCacheBudgetBytes = 1 // 1 byte: nothing fits.
 	defer func() { CorpusScanCacheBudgetBytes = prevB }()
 
 	root := t.TempDir()
@@ -265,16 +266,42 @@ func TestCorpusCorrelationScanBudget(t *testing.T) {
 	}
 	for _, tag := range []string{"c1", "c2"} {
 		if byTag[tag] != len(oracle.Rows) {
-			t.Errorf("%s: %d findings, oracle %d (abandoning caching changed results!)", tag, byTag[tag], len(oracle.Rows))
+			t.Errorf("%s: %d findings, oracle %d (skipping the cache changed results!)", tag, byTag[tag], len(oracle.Rows))
 		}
 	}
 	if cc.scanCache.captures != 0 {
 		t.Errorf("captures = %d, want 0 (budget too small to cache anything)", cc.scanCache.captures)
 	}
+	// These are standard default/<ks>/ keyspaces, so keyspaceRawBytes can't size them (-1)
+	// and the size gate doesn't fire -- the tiny budget is caught by the mid-capture ABANDON
+	// backstop instead. (The size gate, which needs flat-layout file sizes, is covered by
+	// TestKeyspaceRawBytes + verified on real flat bundles.)
 	if cc.scanCache.abandoned == 0 {
-		t.Errorf("abandoned = 0, want > 0 (the tiny budget should abandon at least one scan)")
+		t.Errorf("abandoned = 0, want > 0 (tiny budget should abandon; size unknown -> backstop)")
 	}
-	t.Logf("budget: %d captured, %d abandoned", cc.scanCache.captures, cc.scanCache.abandoned)
+	t.Logf("budget: captured=%d skipped-big=%d abandoned=%d", cc.scanCache.captures, cc.scanCache.skippedBig, cc.scanCache.abandoned)
+}
+
+// TestKeyspaceRawBytes covers the size gate's estimate source: for a flat-layout keyspace
+// (the cbcollect-bundle case) it returns the backing file's byte size (a cheap os.Stat),
+// which the gate scales by CorpusScanCacheSizeFactor to skip an over-budget keyspace up
+// front instead of spilling and abandoning it. A non-file keyspace returns -1 (no gate).
+func TestKeyspaceRawBytes(t *testing.T) {
+	dir := t.TempDir()
+	f := filepath.Join(dir, "data.jsonl")
+	if err := os.WriteFile(f, make([]byte, 5000), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	vars := &base.Vars{Temps: []interface{}{nil, asofKeyspacer{ks: &flatKeyspace{file: f}}}}
+	op := &base.Op{Params: []interface{}{1}} // Temps[1] is the keyspacer.
+
+	if got := keyspaceRawBytes(op, vars); got != 5000 {
+		t.Errorf("keyspaceRawBytes(single file) = %d, want 5000", got)
+	}
+	// The gate decision it feeds: raw*factor vs budget.
+	if !(float64(5000)*CorpusScanCacheSizeFactor > float64(4000)) {
+		t.Errorf("gate math wrong: 5000*%v should exceed a 4000 budget", CorpusScanCacheSizeFactor)
+	}
 }
 
 // TestCorrelationKeyspaceQNsSharedOnly: only keyspaces read by 2+ detectors are cached.

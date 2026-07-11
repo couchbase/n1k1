@@ -97,8 +97,9 @@ func (cc *CompiledCorpus) printMemStats() {
 	if cc.scanCache != nil {
 		c := cc.scanCache
 		fmt.Fprintf(os.Stderr, "mem-stats: scan-cache captured=%d (%s) replayed=%d "+
-			"abandoned=%d (budget %s)\n",
-			c.captures, mb(c.capturedBytes), c.replays, c.abandoned, mb(CorpusScanCacheBudgetBytes))
+			"skipped-big=%d abandoned=%d (budget %s)\n",
+			c.captures, mb(c.capturedBytes), c.replays, c.skippedBig, c.abandoned,
+			mb(CorpusScanCacheBudgetBytes))
 	} else {
 		fmt.Fprintf(os.Stderr, "mem-stats: scan-cache not installed (no correlation groups)\n")
 	}
@@ -152,14 +153,22 @@ func correlationKeyspaceQNs(groups map[string][]string) map[string]bool {
 }
 
 // CorpusScanCacheBudgetBytes caps how many bytes the shared-scan cache will spill for ONE
-// cached scan of a GENUINELY-SHARED keyspace (read by 2+ correlation detectors). A capture
-// exceeding it is abandoned (partial heap freed, re-scanned thereafter). NOTE: the spill
-// chunks are mmap-backed, so a capture counts toward RSS -- this cache trades MEMORY for
-// TIME (frame a shared keyspace once instead of per detector), so raise it only when the
-// shared keyspace is big AND reused by enough detectors to pay for the resident capture.
-// (A shared keyspace larger than the budget is abandoned mid-capture, which costs some
-// transient RSS for no benefit -- a size-estimate gate to skip it up front is a TODO.)
+// cached scan of a GENUINELY-SHARED keyspace (read by 2+ correlation detectors). NOTE: the
+// spill chunks are mmap-backed, so a capture counts toward RSS -- this cache trades MEMORY
+// for TIME (frame a shared keyspace once instead of per detector), so raise it only when
+// the shared keyspace is big AND reused by enough detectors to pay for the resident
+// capture. A keyspace estimated to exceed this is SKIPPED up front (see the size gate in
+// Op / keyspaceRawBytes); a keyspace that slips past the estimate but overflows mid-capture
+// is abandoned (partial heap freed) as a backstop.
 var CorpusScanCacheBudgetBytes int64 = 256 << 20 // 256 MiB per cached scan.
+
+// CorpusScanCacheSizeFactor is the assumed framing+encode EXPANSION of a keyspace's raw
+// file bytes into the cache's encoded spill (measured ~1.9x for a real log keyspace;
+// varies ~0.8-2.2x). The size gate skips caching when rawBytes*factor > budget, so it errs
+// toward NOT spilling a keyspace that would overflow -- a missed share is cheaper than a
+// wasted budget-sized spill. Raise it to be more conservative (skip more), lower to try
+// caching more aggressively (risking a mid-capture abandon).
+var CorpusScanCacheSizeFactor = 2.0
 
 // corpusScanCache is a caching DatastorePipe. The two-stream ASOF merge-join co-advance
 // runs its left probe and right build on SEPARATE goroutines, both hitting this shared
@@ -180,7 +189,8 @@ type corpusScanCache struct {
 
 	captures      int   // # scans captured (test observability)
 	replays       int   // # scans served from the cache (test observability)
-	abandoned     int   // # scans abandoned over budget (test observability)
+	abandoned     int   // # scans abandoned mid-capture over budget (test observability)
+	skippedBig    int   // # scans skipped up front by the size-estimate gate (never spilled)
 	capturedBytes int64 // total bytes captured into heaps (memory-stats evidence)
 }
 
@@ -202,11 +212,6 @@ func (c *corpusScanCache) Op(o *base.Op, vars *base.Vars, yieldVals base.YieldVa
 		return
 	}
 	h := c.captured[key]
-	var seq int
-	if h == nil {
-		c.seq++
-		seq = c.seq
-	}
 	c.mu.Unlock()
 
 	if h != nil {
@@ -216,6 +221,26 @@ func (c *corpusScanCache) Op(o *base.Op, vars *base.Vars, yieldVals base.YieldVa
 		replayHeap(h, yieldVals, yieldErr)
 		return
 	}
+
+	// Size-estimate GATE (first access): if the keyspace's raw file bytes, scaled by the
+	// assumed framing/encode expansion, already exceed the budget, SKIP caching up front --
+	// don't spill up to the budget only to abandon it (a wasteful RSS spike, since spill
+	// chunks are mmap-backed). Skipped keyspaces stream/re-scan. An unknown size (-1, e.g.
+	// a non-file keyspace) falls through to attempt-and-maybe-abandon as before.
+	if raw := keyspaceRawBytes(o, vars); raw >= 0 &&
+		float64(raw)*CorpusScanCacheSizeFactor > float64(c.budget) {
+		c.mu.Lock()
+		c.tooBig[key] = true
+		c.skippedBig++
+		c.mu.Unlock()
+		c.delegate(o, vars, yieldVals, yieldErr, path, pathNext)
+		return
+	}
+
+	c.mu.Lock()
+	c.seq++
+	seq := c.seq
+	c.mu.Unlock()
 
 	// First access: capture the scan into a corpus-scoped heap WHILE serving this caller
 	// (so the first scan isn't wasted). The heap spills to disk, so RAM is bounded; it
@@ -336,6 +361,49 @@ func replayHeap(h *store.Heap, yieldVals base.YieldVals, yieldErr base.YieldErr)
 		vals = base.ValsDecode(b, vals[:0])
 		yieldVals(vals)
 	}
+}
+
+// keyspaceRawBytes returns the total raw byte size of the scan's keyspace files (a cheap
+// os.Stat, NO scan), used by the size gate as a proxy for the encoded capture size. It
+// returns -1 when the size can't be determined cheaply (a non-flat keyspace, a glob, or a
+// bundle-layout dir with subdirs) -- the gate then falls back to attempt-and-maybe-abandon.
+func keyspaceRawBytes(o *base.Op, vars *base.Vars) int64 {
+	idx, ok := o.Params[0].(int)
+	if !ok || idx < 0 || idx >= len(vars.Temps) {
+		return -1
+	}
+	ks, ok := vars.Temps[idx].(keyspacer)
+	if !ok {
+		return -1
+	}
+	fk, ok := ks.Keyspace().(*flatKeyspace)
+	if !ok {
+		return -1
+	}
+
+	if f := fk.RecordsFile(); f != "" { // single-file keyspace (absolute path).
+		if fi, err := os.Stat(f); err == nil && !fi.IsDir() {
+			return fi.Size()
+		}
+		return -1
+	}
+	if _, isGlob := fk.RecordsGlob(); isGlob {
+		return -1 // glob expansion not resolved here.
+	}
+	if d := fk.RecordsDir(); d != "" {
+		files, hasSubdir := topLevelRecordFiles(d)
+		if hasSubdir {
+			return -1 // bundle layout walks subdirs at scan time; don't under-count.
+		}
+		var total int64
+		for _, name := range files { // topLevelRecordFiles returns basenames.
+			if fi, err := os.Stat(filepath.Join(d, name)); err == nil && !fi.IsDir() {
+				total += fi.Size()
+			}
+		}
+		return total
+	}
+	return -1
 }
 
 // scanCacheQN resolves the qualified keyspace name a records-scan op reads, or "".
