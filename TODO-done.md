@@ -3,6 +3,16 @@
 Gist only -- details live in commit messages, README, and code comments.
 
 ## 2026/07 -- temporal, MQO/corpus, materialization, records, columnar
+- ASOF native projection (perf): `(SELECT RAW r.f … LIMIT 1)[0]` lowers with the
+  matched value carried as a native labelPath into the build-side `.["r"]` doc
+  (not a boxed ArrayConstruct + value.Value Convert) -- the array wrap/unwrap
+  cancels for RAW+`[0]`. Kills the two dominant alloc-churn sources on the hot
+  path (differential test asserts BoxedEvals == 0). glue/optimize_temporal.go.
+- BUG FIX: `SELECT RAW <expr> … ORDER BY k <dir> LIMIT n` sorted the wrong row --
+  the RAW projection collapsed the row to the lone "." value BEFORE the order op,
+  dropping the source key so it resolved MISSING (no-op sort) and LIMIT took a
+  scan-order row. VisitOrder now applies the source-scope augmentation to a lone-"."
+  (RAW) projection too, so the key resolves, sorts, then strips back. glue/conv.go.
 - Temporal / ASOF: correlated-argmax subqueries lower to a streaming
   merge-join + merge-scan (engine/op_merge_join.go, op_merge_scan.go) -- a
   memory-bounded two-stream co-advance, no build materialization, over

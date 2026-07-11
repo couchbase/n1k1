@@ -26,11 +26,6 @@ _Last reviewed: 2026-07-11._
 
 ## Conformance (SQL++ suite corpus)
 - [ ] Raise the TestSuiteCases pass rate.
-- [ ] BUG: `SELECT RAW <expr> … ORDER BY k DESC LIMIT 1` returns the wrong row (the
-  first-scanned match, not the ordered one) — the RAW projection mis-composes with
-  order-offset-limit. Non-RAW is correct; RAW without LIMIT orders correctly. Surfaced
-  while landing the ASOF native projection (the ASOF merge co-advance is key-ordered, so
-  its lowered result is correct and disagrees with this buggy correlated baseline).
 
 ## Keeping current with SQL++
 n1k1's SQL++ support tracks couchbase/query (parser/algebra/expression/plan/

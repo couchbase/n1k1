@@ -1725,8 +1725,16 @@ func (c *Conv) VisitOrder(o *plan.Order) (interface{}, error) {
 	// Give the order op a row carrying BOTH the projected columns (so alias-
 	// based ORDER BY still resolves) AND the source doc columns (so source-
 	// qualified keys resolve), then strip back to just the projected columns.
+	// The lone "." case is a SELECT RAW <expr> (whole-value) projection: it collapses
+	// the row to the single raw value, dropping every source column -- so an ORDER BY
+	// key referencing a source field (r.ts) would resolve to MISSING and NOT sort,
+	// leaving LIMIT to take an arbitrary (scan-order) row. It needs the SAME source-doc
+	// augmentation as a multi-field projection; the strip-back to a lone "." is a plain
+	// labelPath, so it composes identically.
 	if proj := c.TopOp; proj != nil && proj.Kind == "project" &&
-		len(proj.Children) == 1 && projAllFieldPaths(proj.Labels) {
+		len(proj.Children) == 1 &&
+		(projAllFieldPaths(proj.Labels) ||
+			(len(proj.Labels) == 1 && proj.Labels[0] == ".")) {
 		src := proj.Children[0]
 
 		// ORDER BY an aggregate (e.g. count(*)) must sort by the already-

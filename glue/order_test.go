@@ -83,6 +83,57 @@ func TestOrderNulls(t *testing.T) {
 	}
 }
 
+// TestOrderRawSelectSortsBeforeLimit: `SELECT RAW <expr> … ORDER BY k <dir> LIMIT n`
+// must sort by the source key BEFORE applying LIMIT. The RAW projection collapses the
+// row to the lone whole-value "." label, dropping the source doc; without the source-
+// scope augmentation the ORDER key resolves to MISSING (no-op sort) and LIMIT takes an
+// arbitrary scan-order row. The fixture's file (scan) order deliberately differs from
+// every sorted order, so a regression returns the first-scanned row (v=20).
+func TestOrderRawSelectSortsBeforeLimit(t *testing.T) {
+	dir := t.TempDir()
+	ks := filepath.Join(dir, "default", "t")
+	if err := os.MkdirAll(ks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Scan order 20, 10, 30 -- not ascending, not descending.
+	rows := `{"k":2,"v":20}` + "\n" + `{"k":1,"v":10}` + "\n" + `{"k":3,"v":30}` + "\n"
+	if err := os.WriteFile(filepath.Join(ks, "t.jsonl"), []byte(rows), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sess, err := OpenSession(dir, "default")
+	if err != nil {
+		t.Fatalf("OpenSession: %v", err)
+	}
+
+	rowsOf := func(stmt string) []string {
+		res, err := sess.Run(stmt)
+		if err != nil {
+			t.Fatalf("Run(%q): %v", stmt, err)
+		}
+		out := make([]string, 0, len(res.Rows))
+		for _, r := range res.Rows {
+			out = append(out, string(r))
+		}
+		return out
+	}
+
+	for _, c := range []struct {
+		name, stmt string
+		want       []string
+	}{
+		{"asc-limit1", `SELECT RAW t.v FROM t ORDER BY t.v ASC LIMIT 1`, []string{`10`}},
+		{"desc-limit1", `SELECT RAW t.v FROM t ORDER BY t.v DESC LIMIT 1`, []string{`30`}},
+		{"asc-limit2", `SELECT RAW t.v FROM t ORDER BY t.v ASC LIMIT 2`, []string{`10`, `20`}},
+		{"asc-offset-limit", `SELECT RAW t.v FROM t ORDER BY t.v ASC OFFSET 1 LIMIT 1`, []string{`20`}},
+		// no LIMIT already worked; keep it green.
+		{"no-limit", `SELECT RAW t.v FROM t ORDER BY t.v DESC`, []string{`30`, `20`, `10`}},
+	} {
+		if got := rowsOf(c.stmt); !reflect.DeepEqual(got, c.want) {
+			t.Errorf("%s: got %v, want %v\n  %s", c.name, got, c.want, c.stmt)
+		}
+	}
+}
+
 // TestOrderByAggregate: ORDER BY an aggregate that is NOT a projected column resolves
 // by reading the group's precomputed "^aggregates|..." value (passed through to the
 // order op above the projection), instead of NA-ing or re-evaluating the aggregate on
