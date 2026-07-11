@@ -247,7 +247,19 @@ Each step is independently useful and benchmark-gated (like the DESIGN-col roadm
    standalone detector's optimization, not yet scan/sort-shared across a corpus.
 3. **The shared sorted broadcast** (the substrate). One scan+sort per `(keyspace, P, O)`
    signature, fanned to K stateful consumers. First consumer type: the **context extractor**
-   (Part A), with the sparse-match/ring-buffer decomposition + AC index. *Measure:* K context
+   (Part A). **Engine primitive DONE** (`engine/op_broadcast_context.go`, kind
+   `broadcast-context`, `OpBroadcastContext`/`BroadcastContextExec`): fans ONE pre-sorted,
+   partition-grouped child stream to K grep -B/-A extractors — per extractor a look-behind
+   buffer (deep-copied, capped at `beforeMatch`) + a `afterMatch` forward counter emits each
+   context row once, tagged; an optional partition-key expr resets the window per partition
+   so context never crosses files. Interpreter-oriented + copied verbatim into intermed
+   (compiler differential green), exactly like `OpBroadcast`. Tests
+   (`op_broadcast_context_test.go`): grep -C1/-B2/-A2 vs a brute-force reference,
+   cross-partition no-leak, no-partition. *Remaining (this step's glue slice):* the corpus
+   compiler recognizing the windowed match-flag idiom, grouping detectors by `(keyspace, P,
+   O)`, building `order(scan) → broadcast-context`, and mapping the window frame
+   (PRECEDING↔`afterMatch`, FOLLOWING↔`beforeMatch`) — plus sort-elision (step 1) and the AC
+   index / sparse-match refinement over the shared stream. *Measure (once glued):* K context
    detectors, shared vs standalone (expect ~K× on the sort).
 4. **Correlation consumers on the shared substrate** (Part B MQO). Fuse per-stream filters
    (shared scan + index) and share the sorted streams feeding the merges.
