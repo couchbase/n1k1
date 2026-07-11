@@ -261,7 +261,24 @@ func (s *Session) CorpusCompile(dets []CorpusDetector) (*CompiledCorpus, error) 
 	var standalone []CorpusDetector
 	var rejected []RejectedDetector
 
+	// Context detectors (grep -A/-B/-C windowed match-flag idiom) grouped by their
+	// (keyspace, partition, order) signature -- each group shares one scan + sort + a
+	// broadcast-context fan-out (corpus_context.go).
+	contextGroups := map[string][]contextGroupEntry{}
+	var contextSigOrder []string
+
 	for _, d := range dets {
+		// Try the context idiom first: a recognized context detector joins its shared-sort
+		// group instead of running standalone.
+		if ci, ok := s.analyzeContextDetector(d.Stmt); ok {
+			if _, seen := contextGroups[ci.sig]; !seen {
+				contextSigOrder = append(contextSigOrder, ci.sig)
+			}
+			contextGroups[ci.sig] = append(contextGroups[ci.sig], contextGroupEntry{tag: d.Tag, info: ci})
+			detKeyspace[d.Tag] = ci.keyspaceName
+			continue
+		}
+
 		info, fusable, rejectReason := s.analyzeCorpusDetector(d.Stmt)
 		switch {
 		case rejectReason != "":
@@ -327,6 +344,20 @@ func (s *Session) CorpusCompile(dets []CorpusDetector) (*CompiledCorpus, error) 
 		// re-kinding it composes "CSE precompute + Aho-Corasick predicate index" with
 		// no new engine op. See broadcastCSEIndexed.
 		perKeyspace = append(perKeyspace, broadcastCSEIndexed(scan, edets, findingsLabels))
+	}
+
+	// Context groups: one shared scan + sort + broadcast-context per (keyspace, P, O)
+	// signature (in recognition order for a stable plan). Findings share the same
+	// [tag, evidence] schema, so they union with the fused broadcasts.
+	for _, sig := range contextSigOrder {
+		entries := contextGroups[sig]
+		group := make([]contextDetInfo, len(entries))
+		tags := make([]string, len(entries))
+		for i, e := range entries {
+			group[i] = e.info
+			tags[i] = e.tag
+		}
+		perKeyspace = append(perKeyspace, buildContextBroadcast(group, tags, unified))
 	}
 
 	var planOp *base.Op

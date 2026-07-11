@@ -1,0 +1,439 @@
+//go:build n1ql
+
+//  Copyright (c) 2026 Couchbase, Inc.
+//  Licensed under the Apache License, Version 2.0 (the "License");
+//  you may not use this file except in compliance with the
+//  License. You may obtain a copy of the License at
+//  http://www.apache.org/licenses/LICENSE-2.0
+//  Unless required by applicable law or agreed to in writing,
+//  software distributed under the License is distributed on an "AS
+//  IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
+//  express or implied. See the License for the specific language
+//  governing permissions and limitations under the License.
+
+package glue
+
+// Context-detector recognition for the shared sorted-stream substrate (DESIGN-mqo-
+// sorted.md step 3, glue slice). A grep -A/-B/-C evidence detector -- the windowed
+// match-flag idiom
+//
+//	SELECT ... FROM (
+//	  SELECT ..., MAX(CASE WHEN <pred> THEN 1 ELSE 0 END)
+//	    OVER (PARTITION BY <P> ORDER BY <O> ROWS BETWEEN B PRECEDING AND A FOLLOWING) AS near
+//	  FROM <ks>) sub
+//	WHERE sub.near = 1
+//
+// -- is otherwise a STANDALONE detector (its own scan + sort + window). recognizeContext
+// Detector matches this canonical shape in the converted plan and extracts its context
+// parameters; CorpusCompile then groups all context detectors sharing the SAME
+// (keyspace, PARTITION, ORDER) signature onto ONE scan + ONE sort feeding a single
+// engine.OpBroadcastContext -- so K context detectors share the dominant cost (the sort).
+//
+// It is PARANOID (the ASOF playbook): any deviation from the exact shape returns ok=false
+// and the detector stays standalone (correct, just unshared), so a mis-match can never
+// produce wrong findings. The grouped fan-out's findings are differential-tested against
+// each detector's own SQL (its standalone window result is the oracle).
+
+import (
+	"fmt"
+
+	"github.com/couchbase/query/expression"
+
+	"github.com/couchbase/n1k1/base"
+)
+
+// contextGroupEntry is one detector's tag + extracted info within a context group.
+type contextGroupEntry struct {
+	tag  string
+	info contextDetInfo
+}
+
+// analyzeContextDetector parses/plans/converts one detector's SQL and, iff it is the
+// canonical context idiom, returns its extracted contextDetInfo. A parse/plan/convert
+// failure (or any non-context shape) returns ok=false -- the detector then falls through
+// to analyzeCorpusDetector (which surfaces a genuine reject or classifies it fusable /
+// standalone). Convert is done here with a plain per-detector Conv; the double convert (a
+// non-context detector converts again in analyzeCorpusDetector) is a one-time compile
+// cost, not a per-bundle-run cost.
+func (s *Session) analyzeContextDetector(stmt string) (contextDetInfo, bool) {
+	parsed, err := ParseStatement(stmt, s.Namespace, true)
+	if err != nil {
+		return contextDetInfo{}, false
+	}
+	qp, err := s.Store.PlanStatementQP(parsed, s.Namespace, nil, nil)
+	if err != nil {
+		return contextDetInfo{}, false
+	}
+	conv := &Conv{Temps: []interface{}{nil}}
+	var convErr error
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				convErr = fmt.Errorf("panic: %v", r)
+			}
+		}()
+		_, convErr = qp.PlanOp().Accept(conv)
+	}()
+	if convErr != nil || conv.TopOp == nil {
+		return contextDetInfo{}, false
+	}
+	return recognizeContextDetector(conv.TopOp, conv.Temps)
+}
+
+// contextDetInfo is the extracted description of one recognized context detector. All
+// exprs are still rooted at the detector's scan alias; the builder re-roots them to the
+// shared "." row via renameAliasToSelf.
+type contextDetInfo struct {
+	keyspaceName string
+	keyspacer    interface{}
+	alias        string
+
+	partExpr   expression.Expression   // single PARTITION BY column (MVP)
+	orderExprs []expression.Expression // ORDER BY columns (all ascending)
+
+	beforeMatch int // grep -B: rows emitted before a match  (= frame FOLLOWING count)
+	afterMatch  int // grep -A: rows emitted after a match   (= frame PRECEDING count)
+
+	matchPred expression.Expression // the CASE WHEN predicate
+
+	// sig is the grouping key: keyspace + the canonical (partition, order) column texts.
+	// Detectors with the same sig share one scan + sort + broadcast-context.
+	sig string
+}
+
+// recognizeContextDetector matches the canonical windowed match-flag idiom on a converted
+// plan and extracts a contextDetInfo, or ok=false. See the file header for the shape.
+func recognizeContextDetector(top *base.Op, temps []interface{}) (contextDetInfo, bool) {
+	// (1) descend from the top through the outer projection(s) and any PURE outer sort
+	// (order-offset-limit with Params = [terms, dirs], no OFFSET/LIMIT) to the `near`
+	// filter. Projections and a pure sort don't change the row SET (corpus findings are
+	// an unordered set), so skipping them is sound; a sort WITH an offset/limit, or any
+	// non-project/-sort op, stops the descent (and a non-filter there -> bail).
+	node := top
+	for node != nil && len(node.Children) == 1 &&
+		(node.Kind == "project" || (node.Kind == "order-offset-limit" && len(node.Params) == 2)) {
+		node = node.Children[0]
+	}
+	if node == nil || node.Kind != "filter" || len(node.Children) != 1 {
+		return contextDetInfo{}, false
+	}
+	filter := node
+	if !contextFilterIsPositive(filter) {
+		return contextDetInfo{}, false
+	}
+
+	// (2) descend through the derived-table projection wrapper(s) -- a `SELECT self`
+	// passthrough and the window-column project -- to the window-frames op. Only linear
+	// single-child projects are traversed (a branch is not the context shape).
+	node = filter.Children[0]
+	for node != nil && node.Kind == "project" && len(node.Children) == 1 {
+		node = node.Children[0]
+	}
+	if node == nil || node.Kind != "window-frames" || len(node.Children) != 1 {
+		return contextDetInfo{}, false
+	}
+	wf := node
+
+	// (3) window-frames: func MAX, a ROWS/no-others frame, operand = CASE WHEN <pred>.
+	before, after, pred, ok := contextFromWindowFrames(wf)
+	if !ok {
+		return contextDetInfo{}, false
+	}
+
+	// (4) window-partition (partition-column count) -> order-offset-limit (the (P,O) sort).
+	wp := wf.Children[0]
+	if wp.Kind != "window-partition" || len(wp.Children) != 1 {
+		return contextDetInfo{}, false
+	}
+	numPart, ok := contextInt(wp.Params, 2)
+	if !ok || numPart != 1 { // MVP: exactly one PARTITION BY column.
+		return contextDetInfo{}, false
+	}
+	ord := wp.Children[0]
+	if ord.Kind != "order-offset-limit" {
+		return contextDetInfo{}, false
+	}
+	partExpr, orderExprs, ok := contextSortExprs(ord, numPart)
+	if !ok {
+		return contextDetInfo{}, false
+	}
+
+	// (5) resolve the scan keyspace + alias.
+	scanLabels, alias, ks := contextScan(top, temps)
+	if ks == nil || alias == "" {
+		return contextDetInfo{}, false
+	}
+	_ = scanLabels
+
+	info := contextDetInfo{
+		keyspaceName: ks.QualifiedName(),
+		keyspacer:    contextKeyspacer(ord, temps),
+		alias:        alias,
+		partExpr:     partExpr,
+		orderExprs:   orderExprs,
+		beforeMatch:  before,
+		afterMatch:   after,
+		matchPred:    pred,
+	}
+	if info.keyspacer == nil {
+		return contextDetInfo{}, false
+	}
+
+	// Grouping signature: keyspace + the SELF-rooted (partition, order) column texts, so
+	// detectors that sort identically (regardless of their scan alias) group together.
+	sig := info.keyspaceName + "\x00" + renameAliasToSelf(partExpr, alias).String()
+	for _, oe := range orderExprs {
+		sig += "\x00" + renameAliasToSelf(oe, alias).String()
+	}
+	info.sig = sig
+	return info, true
+}
+
+// contextFilterIsPositive reports whether the outer WHERE selects "flag present" -- the
+// near column equated to a positive constant (WHERE near = 1). Anything else (an absence
+// test near = 0, a non-constant, an OR, ...) is NOT the context idiom -> bail. This
+// polarity check is what keeps an ABSENCE detector from being mis-lowered.
+func contextFilterIsPositive(filter *base.Op) bool {
+	expr, ok := corpusFilterExpr(filter)
+	if !ok {
+		return false
+	}
+	eq, ok := expr.(*expression.Eq)
+	if !ok {
+		return false
+	}
+	ops := eq.Operands()
+	if len(ops) != 2 {
+		return false
+	}
+	// One side a field (the near column), the other a numeric constant >= 1.
+	for _, side := range []expression.Expression{ops[0], ops[1]} {
+		if c, ok := side.(*expression.Constant); ok {
+			if f, ok := c.Value().Actual().(float64); ok && f >= 1 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// contextFromWindowFrames extracts (beforeMatch, afterMatch, matchPred) from the window-
+// frames op, or ok=false. Requires window func MAX, a ROWS frame with numeric bounds and
+// EXCLUDE no-others, and an operand of the form CASE WHEN <pred> THEN <nonzero> ELSE ...
+//
+// Frame->match mapping: on the flag, ROWS BETWEEN B PRECEDING AND A FOLLOWING means a
+// match at m makes rows [m-A, m+B] pass, i.e. A rows BEFORE + B rows AFTER the match. So
+// beforeMatch = A (the FOLLOWING count = endNum), afterMatch = B (the PRECEDING count =
+// -begNum).
+func contextFromWindowFrames(wf *base.Op) (before, after int, pred expression.Expression, ok bool) {
+	if len(wf.Params) < 5 {
+		return 0, 0, nil, false
+	}
+	if fn, _ := wf.Params[3].(string); fn != "max" {
+		return 0, 0, nil, false
+	}
+
+	// Frame cfg: Params[2] == [[type, begB, begN, endB, endN, exclude, valIdx]].
+	cfgs, ok := wf.Params[2].([]interface{})
+	if !ok || len(cfgs) != 1 {
+		return 0, 0, nil, false
+	}
+	cfg, ok := cfgs[0].([]interface{})
+	if !ok || len(cfg) < 7 {
+		return 0, 0, nil, false
+	}
+	if t, _ := cfg[0].(string); t != "rows" {
+		return 0, 0, nil, false
+	}
+	if ex, _ := cfg[5].(string); ex != "no-others" {
+		return 0, 0, nil, false
+	}
+	begB, _ := cfg[1].(string)
+	endB, _ := cfg[3].(string)
+	if begB != "num" || endB != "num" {
+		return 0, 0, nil, false // UNBOUNDED bounds are a whole-partition aggregate, not grep context.
+	}
+	begN, okA := asInt(cfg[2])
+	endN, okB := asInt(cfg[4])
+	if !okA || !okB {
+		return 0, 0, nil, false
+	}
+	before = endN // FOLLOWING count
+	after = -begN // PRECEDING count (begN is negative for "N PRECEDING")
+	if before < 0 || after < 0 {
+		return 0, 0, nil, false
+	}
+
+	// Operand: ["exprTree", CASE WHEN <pred> THEN ... ELSE ...]. The first child of a
+	// SearchedCase is its first WHEN predicate (children = when1,then1,...,else).
+	operand, ok := projTermExpr(wf.Params[4])
+	if !ok {
+		return 0, 0, nil, false
+	}
+	cse, ok := operand.(*expression.SearchedCase)
+	if !ok {
+		return 0, 0, nil, false
+	}
+	kids := cse.Children()
+	if len(kids) < 2 {
+		return 0, 0, nil, false
+	}
+	return before, after, kids[0], true
+}
+
+// contextSortExprs reads the order-offset-limit's sort columns, requiring all ASCending,
+// and splits the first numPart as the partition column(s) (MVP: exactly one) from the
+// remaining ORDER BY columns.
+func contextSortExprs(ord *base.Op, numPart int) (partExpr expression.Expression, orderExprs []expression.Expression, ok bool) {
+	if len(ord.Params) < 2 {
+		return nil, nil, false
+	}
+	terms, ok := ord.Params[0].([]interface{})
+	if !ok || len(terms) <= numPart {
+		return nil, nil, false
+	}
+	dirs, ok := ord.Params[1].([]interface{})
+	if !ok || len(dirs) != len(terms) {
+		return nil, nil, false
+	}
+	for _, d := range dirs {
+		if s, _ := d.(string); s != "asc" {
+			return nil, nil, false // context/merge assume an ascending stream.
+		}
+	}
+	exprs := make([]expression.Expression, 0, len(terms))
+	for _, t := range terms {
+		e, ok := projTermExpr(t)
+		if !ok {
+			return nil, nil, false
+		}
+		exprs = append(exprs, e)
+	}
+	return exprs[0], exprs[numPart:], true
+}
+
+// contextScan finds the detector's scan leaf and returns its labels, alias, and keyspace.
+func contextScan(top *base.Op, temps []interface{}) (base.Labels, string, contextKeyspaceRef) {
+	scan := contextFindScan(top)
+	if scan == nil || len(scan.Labels) == 0 {
+		return nil, "", nil
+	}
+	alias, ok := mergeLabelLeaf(scan.Labels[0])
+	if !ok {
+		return nil, "", nil
+	}
+	ks := branchScanKeyspace(top, temps)
+	if ks == nil {
+		return nil, "", nil
+	}
+	return scan.Labels, alias, ks
+}
+
+// contextKeyspaceRef is the subset of the keyspace interface we use (QualifiedName).
+type contextKeyspaceRef interface{ QualifiedName() string }
+
+// contextFindScan walks to the single datastore-scan-records leaf, or nil.
+func contextFindScan(op *base.Op) *base.Op {
+	if op == nil {
+		return nil
+	}
+	if op.Kind == "datastore-scan-records" {
+		return op
+	}
+	if len(op.Children) != 1 {
+		return nil // a branch (join/union) is not the linear context shape.
+	}
+	return contextFindScan(op.Children[0])
+}
+
+// contextKeyspacer returns the scan op's keyspacer (the Temps entry the scan reads) so
+// the shared scan can be rebuilt against it.
+func contextKeyspacer(op *base.Op, temps []interface{}) interface{} {
+	scan := contextFindScan(op)
+	if scan == nil || len(scan.Params) == 0 {
+		return nil
+	}
+	idx, ok := scan.Params[0].(int)
+	if !ok || idx < 0 || idx >= len(temps) {
+		return nil
+	}
+	return temps[idx]
+}
+
+// asInt reads an int/int64/float64 as an int.
+func asInt(v interface{}) (int, bool) {
+	switch n := v.(type) {
+	case int:
+		return n, true
+	case int64:
+		return int(n), true
+	case float64:
+		return int(n), true
+	}
+	return 0, false
+}
+
+// contextInt reads params[i] as an int (int/int64/float64), ok=false if absent/other.
+func contextInt(params []interface{}, i int) (int, bool) {
+	if i >= len(params) {
+		return 0, false
+	}
+	return asInt(params[i])
+}
+
+// buildContextBroadcast builds the shared plan for one context group (all detectors with
+// the same sig): a fresh scan -> order-offset-limit (sort by the SELF-rooted (partition,
+// order) columns, ascending) -> a single engine broadcast-context fanning to K context
+// extractors. Field refs are re-rooted to the shared "." row via renameAliasToSelf. The
+// evidence (MVP) is the whole matched/context row.
+func buildContextBroadcast(group []contextDetInfo, tags []string, unified *Conv) *base.Op {
+	first := group[0]
+
+	// Shared scan into the unified Temps, labeled "." + "^id" (the whole-row convention).
+	scan := &base.Op{
+		Kind:   "datastore-scan-records",
+		Labels: base.Labels{".", "^id"},
+		Params: []interface{}{unified.AddTemp(first.keyspacer)},
+	}
+
+	// The shared (partition, order) sort, self-rooted so it resolves against ".".
+	var terms []interface{}
+	var dirs []interface{}
+	selfExpr := func(e expression.Expression, alias string) []interface{} {
+		return []interface{}{"exprTree", renameAliasToSelf(e, alias)}
+	}
+	terms = append(terms, selfExpr(first.partExpr, first.alias))
+	dirs = append(dirs, "asc")
+	for _, oe := range first.orderExprs {
+		terms = append(terms, selfExpr(oe, first.alias))
+		dirs = append(dirs, "asc")
+	}
+	order := &base.Op{
+		Kind:     "order-offset-limit",
+		Labels:   base.Labels{".", "^id"},
+		Params:   []interface{}{terms, dirs},
+		Children: []*base.Op{scan},
+	}
+
+	// K context extractors. Evidence (MVP) = the whole scan row ("." labelPath).
+	exts := make([]interface{}, 0, len(group))
+	for i, d := range group {
+		exts = append(exts, []interface{}{
+			tags[i],
+			d.beforeMatch,
+			d.afterMatch,
+			[]interface{}{"exprTree", renameAliasToSelf(d.matchPred, d.alias)},
+			[]interface{}{[]interface{}{"labelPath", "."}},
+		})
+	}
+
+	return &base.Op{
+		Kind:   "broadcast-context",
+		Labels: corpusFindingsLabels(),
+		Params: []interface{}{
+			exts,
+			selfExpr(first.partExpr, first.alias), // partition key for boundary reset
+		},
+		Children: []*base.Op{order},
+	}
+}

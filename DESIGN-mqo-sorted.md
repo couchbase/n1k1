@@ -255,12 +255,25 @@ Each step is independently useful and benchmark-gated (like the DESIGN-col roadm
    so context never crosses files. Interpreter-oriented + copied verbatim into intermed
    (compiler differential green), exactly like `OpBroadcast`. Tests
    (`op_broadcast_context_test.go`): grep -C1/-B2/-A2 vs a brute-force reference,
-   cross-partition no-leak, no-partition. *Remaining (this step's glue slice):* the corpus
-   compiler recognizing the windowed match-flag idiom, grouping detectors by `(keyspace, P,
-   O)`, building `order(scan) → broadcast-context`, and mapping the window frame
-   (PRECEDING↔`afterMatch`, FOLLOWING↔`beforeMatch`) — plus sort-elision (step 1) and the AC
-   index / sparse-match refinement over the shared stream. *Measure (once glued):* K context
-   detectors, shared vs standalone (expect ~K× on the sort).
+   cross-partition no-leak, no-partition. **Glue recognition DONE** (`glue/corpus_context.go`):
+   `recognizeContextDetector` paranoidly matches the windowed match-flag idiom in the
+   converted plan — `SELECT … FROM (SELECT …, MAX(CASE WHEN <pred> THEN 1 ELSE 0 END) OVER
+   (PARTITION BY <P> ORDER BY <O> ROWS …) AS near …) WHERE near = <positive>` — extracting
+   the frame→match mapping (`beforeMatch`=FOLLOWING count, `afterMatch`=PRECEDING count), the
+   CASE predicate, the (P,O) sort, and the keyspace; it descends through passthrough projects
+   and a pure outer ORDER BY (cosmetic for a set of findings) and bails to standalone on any
+   deviation (an absence `near = 0` polarity, OFFSET/LIMIT, multi-column PARTITION, non-MAX,
+   …). `CorpusCompile` groups recognized detectors by their `(keyspace, P, O)` signature and
+   `buildContextBroadcast` emits ONE fresh scan → `order-offset-limit` → `broadcast-context`
+   per group (self-rooted exprs via `renameAliasToSelf`), unioned with the fused broadcasts;
+   evidence is the whole matched/context row (MVP). Differential-tested against each
+   detector's own SQL (`corpus_context_test.go`: same-signature detectors share ONE
+   scan+sort+broadcast-context and match the standalone window result; different signatures
+   split; absence stays standalone). Verified end-to-end via `.rules run`. *Remaining:*
+   sort-elision (step 1); the AC-index / sparse-match refinement over the shared stream;
+   evidence shaped to the SELECT projection (vs whole-row); multi-column PARTITION; per-
+   detector hit stats for context ops. *Measure:* K context detectors, shared vs standalone
+   (expect ~K× on the sort).
 4. **Correlation consumers on the shared substrate** (Part B MQO). Fuse per-stream filters
    (shared scan + index) and share the sorted streams feeding the merges.
 5. **(Stretch) shared merge** across correlators with a common `(left, right, key)`.
