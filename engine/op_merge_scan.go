@@ -144,8 +144,8 @@ func MergeScanExec(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 	// Concatenate's disjoint-ranges optimization is only sound for STRICTLY-sorted
 	// children (no within-child disorder to reorder), so near always takes this path.
 	if mergeHasNear(sortedness) {
-		// Single near source streams (bounded band); K-way materializes.
-		vars.Ctx.MergeStats.RecordScan(len(o.Children) == 1)
+		// A single near source always streams; K-way streams iff the pull-coordinator is on.
+		vars.Ctx.MergeStats.RecordScan(len(o.Children) == 1 || MergeScanStreamKway)
 		maxBound := mergeMaxBound(sortedness, bounds)
 		mergeScanWatermarked(o, vars, yieldVals, yieldErr, keyIdx, pathNext,
 			maxBound, policy)
@@ -158,7 +158,7 @@ func MergeScanExec(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 		return
 	}
 
-	vars.Ctx.MergeStats.RecordScan(false) // heap materializes each child cursor.
+	vars.Ctx.MergeStats.RecordScan(MergeScanStreamKway) // heap streams iff the pull-coordinator is on.
 	mergeScanHeap(o, vars, yieldVals, yieldErr, keyIdx, pathNext)
 }
 
@@ -217,53 +217,17 @@ func mergeScanConcatenate(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 	yieldErr(execErr)
 }
 
-// mergeScanHeap runs the classic K-way strict min-heap merge. Because n1k1's
-// push ops run to completion (a child scan cannot be paused mid-yield without
-// the actor-per-cursor machinery deferred to a later slice), each child is
-// first drained into an in-memory MergeCursor of deep-copied rows; the cursors
-// are then co-advanced through a K-entry binary min-heap keyed on the head
-// sort key. State is O(total rows) here only because materialization stands in
-// for resumable cursors; the heap itself is O(K). Output monotonicity is
-// validated per row (cheap int64 compare), catching a source that lied about
-// being strictly ordered.
+// mergeScanHeap runs the classic K-way strict min-heap merge. The K child cursors are
+// STREAMING (a producer goroutine per child, K-way pull-coordinator) or materialized (see
+// mergeCursors / MergeScanStreamKway); either way they co-advance through a K-entry binary
+// min-heap keyed on the head sort key (O(N log K)). Output monotonicity is validated per
+// row (cheap int64 compare), catching a source that lied about being strictly ordered.
 func mergeScanHeap(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 	yieldErr base.YieldErr, keyIdx int, pathNext string) {
-	cursors := make([]*MergeCursor, 0, len(o.Children))
-
-	var execErr error
-
-	for i := range o.Children {
-		cursor := &MergeCursor{}
-
-		childYield := func(vals base.Vals) {
-			if execErr != nil {
-				return
-			}
-
-			k, ok := mergeParseKey(vals, keyIdx)
-			if !ok {
-				vars.Ctx.MergeStats.AddNoKeySkipped(1) // keyless row (banner / multiline continuation) -- skip.
-				return
-			}
-
-			cursor.rows = append(cursor.rows, mergeCopyVals(vals))
-			cursor.keys = append(cursor.keys, k)
-		}
-
-		childErr := func(err error) {
-			if err != nil && execErr == nil {
-				execErr = err
-			}
-		}
-
-		ExecOp(o.Children[i], vars, childYield, childErr, pathNext, strconv.Itoa(i))
-
-		if execErr != nil {
-			yieldErr(execErr)
-			return
-		}
-
-		cursors = append(cursors, cursor)
+	cursors, release, err := mergeCursors(o, vars, keyIdx, pathNext)
+	if err != nil {
+		yieldErr(err)
+		return
 	}
 
 	frontier := &MergeHeap{cursors: cursors}
@@ -275,6 +239,7 @@ func mergeScanHeap(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 
 	var lastKey int64
 	emitted := false
+	var execErr error
 
 	for frontier.Len() > 0 {
 		ci := frontier.Pop()
@@ -282,22 +247,25 @@ func mergeScanHeap(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 
 		k := cursor.HeadKey()
 		if emitted && k < lastKey {
-			yieldErr(mergeOutOfOrderErr(ci, k, lastKey))
-			return
+			execErr = mergeOutOfOrderErr(ci, k, lastKey)
+			break
 		}
 
-		yieldVals(cursor.rows[cursor.pos])
+		yieldVals(cursor.HeadRow()) // yield before Advance overwrites a streaming head.
 
 		lastKey = k
 		emitted = true
 
-		cursor.pos++
+		cursor.Advance()
 		if cursor.Valid() {
 			frontier.Push(ci)
 		}
 	}
 
-	yieldErr(nil)
+	if e := release(); e != nil && execErr == nil {
+		execErr = e // a build-side (producer) error, surfaced after the merge loop.
+	}
+	yieldErr(execErr)
 }
 
 // mergeScanWatermarked runs the watermarked-near K-way merge (DESIGN-merging.md
@@ -345,42 +313,10 @@ func mergeScanWatermarked(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 		return
 	}
 
-	cursors := make([]*MergeCursor, 0, len(o.Children))
-
-	var execErr error
-
-	for i := range o.Children {
-		cursor := &MergeCursor{}
-
-		childYield := func(vals base.Vals) {
-			if execErr != nil {
-				return
-			}
-
-			k, ok := mergeParseKey(vals, keyIdx)
-			if !ok {
-				vars.Ctx.MergeStats.AddNoKeySkipped(1) // keyless row (banner / multiline continuation) -- skip.
-				return
-			}
-
-			cursor.rows = append(cursor.rows, mergeCopyVals(vals))
-			cursor.keys = append(cursor.keys, k)
-		}
-
-		childErr := func(err error) {
-			if err != nil && execErr == nil {
-				execErr = err
-			}
-		}
-
-		ExecOp(o.Children[i], vars, childYield, childErr, pathNext, strconv.Itoa(i))
-
-		if execErr != nil {
-			yieldErr(execErr)
-			return
-		}
-
-		cursors = append(cursors, cursor)
+	cursors, release, err := mergeCursors(o, vars, keyIdx, pathNext)
+	if err != nil {
+		yieldErr(err)
+		return
 	}
 
 	frontier := &MergeHeap{cursors: cursors}
@@ -397,9 +333,11 @@ func mergeScanWatermarked(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 
 	var lastKey int64
 	emitted := false
+	var execErr error
 
 	// emitSafe pops and yields every buffered row whose key <= watermark, in key
-	// order, validating output monotonicity as the final tripwire.
+	// order, validating output monotonicity as the final tripwire. Returns false (setting
+	// execErr) on a strict violation so the caller can break + release the producers.
 	emitSafe := func(watermark int64) bool {
 		for buf.Len() > 0 && buf.MinKey() <= watermark {
 			k, row := buf.PopMin()
@@ -409,7 +347,7 @@ func mergeScanWatermarked(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 				// output tripwire stays paranoid (DESIGN-merging.md: a wrong bound
 				// is silent corruption -- never pass an out-of-order stream on).
 				if strict {
-					yieldErr(mergeOutOfOrderErr(-1, k, lastKey))
+					execErr = mergeOutOfOrderErr(-1, k, lastKey)
 					return false
 				}
 				mergeWarnLate(vars, -1, k, lastKey)
@@ -427,8 +365,8 @@ func mergeScanWatermarked(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 		cursor := cursors[ci]
 
 		k := cursor.HeadKey()
-		row := cursor.rows[cursor.pos]
-		cursor.pos++
+		row := cursor.HeadRow() // capture before Advance overwrites a streaming head.
+		cursor.Advance()
 		if cursor.Valid() {
 			frontier.Push(ci)
 		}
@@ -437,8 +375,8 @@ func mergeScanWatermarked(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 		// past means the declared disorder_bound was too small.
 		if emitted && k < lastKey {
 			if strict {
-				yieldErr(mergeBoundViolationErr(ci, k, lastKey))
-				return
+				execErr = mergeBoundViolationErr(ci, k, lastKey)
+				break
 			}
 			// widen: grow the effective bound past the shortfall so subsequent
 			// watermarks are conservative enough to avoid recurrence, and warn.
@@ -454,16 +392,19 @@ func mergeScanWatermarked(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 		watermark := mergeWatermark(frontier, cursors, effBound)
 
 		if !emitSafe(watermark) {
-			return
+			break
 		}
 	}
 
 	// All cursors exhausted: nothing smaller can arrive, so flush the buffer.
-	if !emitSafe(mergeMaxInt64) {
-		return
+	if execErr == nil {
+		emitSafe(mergeMaxInt64)
 	}
 
-	yieldErr(nil)
+	if e := release(); e != nil && execErr == nil {
+		execErr = e
+	}
+	yieldErr(execErr)
 }
 
 // mergeScanWatermarkedStream is the SINGLE-child watermarked-near path. It pushes each
@@ -649,21 +590,197 @@ func (b *MergeReorderBuffer) down(i int) {
 
 // -----------------------------------------------------
 
-// MergeCursor is one child source drained into memory: parallel rows/keys
-// slices plus the current read position. It stands in for the resumable,
-// buffer-reusing cursor the streaming design (DESIGN-merging.md §1 cursors)
-// will introduce with the actor-per-cursor slice.
+// MergeScanStreamKway turns on the K-way pull-coordinator: for a multi-child merge-scan
+// (a keyspace resolving to K files -> K per-file children) each child runs in its own
+// producer goroutine feeding a bounded channel, and the merge co-advances over the K
+// channel heads -- so peak memory is one head per child + the reorder band, not all K
+// files materialized. false => drain every child into memory first (the original path).
+var MergeScanStreamKway = true
+
+// mergeScanStreamChanCap bounds each child producer's channel (backpressure): a producer
+// blocks once this many rows are queued, so a fast child can't buffer unboundedly.
+const mergeScanStreamChanCap = 256
+
+// mergeStreamRow is one row carried over a producer channel: its int64 sort key and a
+// deep copy of its Vals (the child scan reuses its buffers, so the row must be copied
+// before crossing to the coordinator goroutine).
+type mergeStreamRow struct {
+	key  int64
+	vals base.Vals
+}
+
+// mergeCursors builds the K child cursors for the heap/watermarked merge loops: streaming
+// (a producer goroutine per child) when MergeScanStreamKway, else materialized (drain each
+// child). Returns the cursors, a release() to stop+join the producers and surface a
+// build-side error (a no-op for the materialized path), and any immediate drain error.
+func mergeCursors(o *base.Op, vars *base.Vars, keyIdx int, pathNext string) (
+	[]*MergeCursor, func() error, error) {
+	if MergeScanStreamKway {
+		cursors, release := mergeSpawnCursors(o, vars, keyIdx, pathNext)
+		return cursors, release, nil
+	}
+
+	cursors := make([]*MergeCursor, 0, len(o.Children))
+	for i := range o.Children {
+		cursor := &MergeCursor{}
+		var e error
+		childYield := func(vals base.Vals) {
+			if e != nil {
+				return
+			}
+			k, ok := mergeParseKey(vals, keyIdx)
+			if !ok {
+				vars.Ctx.MergeStats.AddNoKeySkipped(1)
+				return
+			}
+			cursor.rows = append(cursor.rows, mergeCopyVals(vals))
+			cursor.keys = append(cursor.keys, k)
+		}
+		childErr := func(err error) {
+			if err != nil && e == nil {
+				e = err
+			}
+		}
+		ExecOp(o.Children[i], vars, childYield, childErr, pathNext, strconv.Itoa(i))
+		if e != nil {
+			return nil, mergeNoRelease, e
+		}
+		cursors = append(cursors, cursor)
+	}
+	return cursors, mergeNoRelease, nil
+}
+
+func mergeNoRelease() error { return nil }
+
+// mergeSpawnCursors starts one producer goroutine per child -- each on a CLONED Vars
+// (vars.ChainExtend, so it never races the coordinator over the shared Ctx) pushing
+// deep-copied rows into its own bounded channel -- and returns K streaming cursors with
+// their heads pre-filled, plus release() to stop the producers (they drop any unconsumed
+// tail via `done`), join them, and return the first build-side error. Keyless rows are
+// skipped in the producer (counted in MergeStats). Each channel is single-producer /
+// single-consumer, so a producer only ever blocks on its own full channel, which the
+// coordinator drains as it advances that cursor -- no deadlock.
+func mergeSpawnCursors(o *base.Op, vars *base.Vars, keyIdx int, pathNext string) (
+	[]*MergeCursor, func() error) {
+	k := len(o.Children)
+	done := make(chan struct{})
+	errCh := make(chan error, k)
+	finished := make(chan struct{}, k)
+	cursors := make([]*MergeCursor, k)
+
+	for i := range o.Children {
+		ch := make(chan mergeStreamRow, mergeScanStreamChanCap)
+		cursors[i] = &MergeCursor{stream: true, ch: ch}
+		go func(i int, ch chan mergeStreamRow) {
+			defer func() { finished <- struct{}{} }()
+			defer close(ch)
+			cVars := vars.ChainExtend() // per-actor Ctx clone; shares MergeStats by pointer.
+			stop := false
+			childYield := func(vals base.Vals) {
+				if stop {
+					return
+				}
+				key, ok := mergeParseKey(vals, keyIdx)
+				if !ok {
+					cVars.Ctx.MergeStats.AddNoKeySkipped(1)
+					return
+				}
+				select {
+				case ch <- mergeStreamRow{key: key, vals: mergeCopyVals(vals)}:
+				case <-done: // coordinator gave up; stop feeding.
+					stop = true
+				}
+			}
+			childErr := func(err error) {
+				if err != nil {
+					select {
+					case errCh <- err:
+					default:
+					}
+				}
+			}
+			ExecOp(o.Children[i], cVars, childYield, childErr, pathNext, strconv.Itoa(i))
+		}(i, ch)
+	}
+
+	for _, c := range cursors {
+		c.Advance() // pre-fill each head (blocks until the child's first row or close).
+	}
+
+	released := false
+	release := func() error {
+		if !released {
+			close(done)
+			released = true
+		}
+		for i := 0; i < k; i++ {
+			<-finished
+		}
+		select {
+		case err := <-errCh:
+			return err
+		default:
+			return nil
+		}
+	}
+	return cursors, release
+}
+
+// MergeCursor is one child source, in one of two modes:
+//   - MATERIALIZED: the child was drained into parallel rows/keys slices (the
+//     original stand-in for a resumable cursor).
+//   - STREAMING: the child runs in its own producer goroutine (mergeSpawnCursors) pushing
+//     rows over `ch`; the cursor peeks one `head` at a time. This is the K-way
+//     pull-coordinator -- peak memory is one head per child + the reorder band, not the
+//     whole keyspace.
+//
+// Valid/HeadKey/HeadRow/Advance abstract over the two modes, so the same MergeHeap +
+// reorder-buffer merge loop drives both.
 type MergeCursor struct {
-	rows []base.Vals
-	keys []int64
-	pos  int
+	rows []base.Vals // materialized rows.
+	keys []int64     // materialized keys (parallel to rows).
+	pos  int         // materialized read position.
+
+	stream  bool                // streaming mode.
+	ch      chan mergeStreamRow // producer channel (streaming).
+	head    mergeStreamRow      // current peeked head (streaming).
+	hasHead bool                // whether head holds a live row (streaming).
 }
 
 // Valid reports whether the cursor still has an unread head row.
-func (c *MergeCursor) Valid() bool { return c.pos < len(c.rows) }
+func (c *MergeCursor) Valid() bool {
+	if c.stream {
+		return c.hasHead
+	}
+	return c.pos < len(c.rows)
+}
 
 // HeadKey returns the sort key of the cursor's current head row.
-func (c *MergeCursor) HeadKey() int64 { return c.keys[c.pos] }
+func (c *MergeCursor) HeadKey() int64 {
+	if c.stream {
+		return c.head.key
+	}
+	return c.keys[c.pos]
+}
+
+// HeadRow returns the cursor's current head row (yield it before Advance overwrites it).
+func (c *MergeCursor) HeadRow() base.Vals {
+	if c.stream {
+		return c.head.vals
+	}
+	return c.rows[c.pos]
+}
+
+// Advance moves to the next head: materialized bumps pos; streaming receives the next row
+// from the producer (clearing hasHead at end-of-stream, which blocks until a row or close).
+func (c *MergeCursor) Advance() {
+	if c.stream {
+		row, ok := <-c.ch
+		c.head, c.hasHead = row, ok
+		return
+	}
+	c.pos++
+}
 
 // -----------------------------------------------------
 

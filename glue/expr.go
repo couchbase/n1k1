@@ -63,7 +63,13 @@ const exprResetScope = "^resetScope"
 // conversions.
 func ExprTree(vars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (exprFunc base.ExprFunc) {
-	expr := stripCovers(params[0].(expression.Expression))
+	// Copy the boxed expression before stripCovers rewrites it: stripCovers maps the tree
+	// IN PLACE (MapChildren writes operands[i]), and a cbq expression also caches during
+	// Evaluate -- neither is concurrency-safe. The K-way merge / co-advance run per-file
+	// (or per-branch) children on separate producer goroutines that SHARE this op's
+	// params[0] expression object, so each op-setup must own its tree. The copy is once
+	// per op-setup (not per row), so it stays off the hot path.
+	expr := stripCovers(params[0].(expression.Expression).Copy())
 
 	var buf bytes.Buffer
 

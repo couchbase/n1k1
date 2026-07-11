@@ -443,3 +443,68 @@ func TestMergeScanOutOfOrderTripwire(t *testing.T) {
 		t.Fatalf("unexpected error: %v", gotErr)
 	}
 }
+
+// TestMergeScanKwayStreamMatchesMaterialized is the correctness gate for the K-way
+// pull-coordinator: a multi-child merge (strict heap and near) must yield the SAME
+// globally-ascending multiset whether the children stream (a producer goroutine each) or
+// are materialized first. Runs each scenario with MergeScanStreamKway true and false.
+func TestMergeScanKwayStreamMatchesMaterialized(t *testing.T) {
+	scenarios := []struct {
+		name       string
+		children   []*base.Op
+		sortedness []interface{}
+		bounds     []interface{}
+	}{
+		{
+			name: "strict-heap-3way",
+			children: []*base.Op{
+				mergeKeyChild([]int64{10, 30, 50, 70}),
+				mergeKeyChild([]int64{20, 30, 40, 60}),
+				mergeKeyChild([]int64{15, 25, 35, 90}),
+			},
+		},
+		{
+			name: "near-3way",
+			children: []*base.Op{
+				mergeKeyChild([]int64{10, 30, 28, 50}),
+				mergeKeyChild([]int64{20, 45, 42, 60}),
+				mergeKeyChild([]int64{12, 14, 80}),
+			},
+			sortedness: []interface{}{"near", "near", "near"},
+			bounds:     []interface{}{int64(5), int64(5), int64(5)},
+		},
+		{
+			name: "near-with-empty-child",
+			children: []*base.Op{
+				mergeKeyChild([]int64{10, 22, 18, 40}),
+				mergeKeyChild(nil),
+				mergeKeyChild([]int64{5, 15, 35}),
+			},
+			sortedness: []interface{}{"near", "near", "near"},
+			bounds:     []interface{}{int64(4), int64(4), int64(4)},
+		},
+	}
+
+	for _, s := range scenarios {
+		t.Run(s.name, func(t *testing.T) {
+			mk := func() *base.Op {
+				return mergeScanOp("heap", s.children, s.sortedness, nil, nil, s.bounds, "error")
+			}
+
+			MergeScanStreamKway = false
+			materialized, err, _ := runMergeScanErr(t, mk())
+			if err != nil {
+				t.Fatalf("materialized: %v", err)
+			}
+			MergeScanStreamKway = true
+			streamed, err, _ := runMergeScanErr(t, mk())
+			if err != nil {
+				t.Fatalf("streamed: %v", err)
+			}
+			MergeScanStreamKway = true // restore default
+
+			assertAscending(t, streamed)
+			assertSameMultiset(t, streamed, materialized)
+		})
+	}
+}
