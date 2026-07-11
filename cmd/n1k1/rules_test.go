@@ -217,10 +217,10 @@ func TestRulesRunHitStats(t *testing.T) {
 	write("default/blob/dump.log", "just raw text\nnothing structured\n")
 
 	corpus := writeCorpus(t, map[string]string{
-		"hit":        `SELECT * FROM logs l WHERE l.sev = "ERROR"`,               // matches 2 of 3
-		"absent_lit": `SELECT * FROM logs l WHERE l.msg = "zzz_never"`,           // literal absent -> 0 woken
+		"hit":        `SELECT * FROM logs l WHERE l.sev = "ERROR"`,                // matches 2 of 3
+		"absent_lit": `SELECT * FROM logs l WHERE l.msg = "zzz_never"`,            // literal absent -> 0 woken
 		"woke_miss":  `SELECT * FROM logs l WHERE l.msg = "a" AND l.sev = "INFO"`, // "a" in 1 row, pred false -> woken>0, matched 0
-		"miss_blob":  `SELECT * FROM blob b WHERE b.text LIKE "%zzz%"`,           // 0 of 1 -> blob
+		"miss_blob":  `SELECT * FROM blob b WHERE b.text LIKE "%zzz%"`,            // 0 of 1 -> blob
 	})
 
 	var out, errb bytes.Buffer
@@ -419,6 +419,46 @@ SELECT * FROM logs l WHERE l.sev = "ERROR"
 	}
 	if !c.failed {
 		t.Errorf("any FAIL must set c.failed (CI exit signal); stderr:\n%s", stderr)
+	}
+}
+
+// TestRulesTestContextProjection (IDEA-0025): a CONTEXT (grep -C) detector's golden is
+// its SELECT projection {pos,msg}, and `.rules test` check-PASSES against it -- proving
+// the fused broadcast-context path honors the projection (not the whole framed row) and
+// that the golden shape matches what a real run emits. The golden would MISMATCH the old
+// whole-row evidence ({_meta,...,msg}), so a passing check locks in the fix.
+func TestRulesTestContextProjection(t *testing.T) {
+	corpus := writeCorpus(t, map[string]string{
+		"ctx": `-- ticket: CTX
+-- source: logs
+SELECT sub.pos AS pos, sub.msg AS msg
+FROM (
+  SELECT pos, msg,
+         MAX(CASE WHEN regexp_contains(msg, "boom") THEN 1 ELSE 0 END)
+           OVER (PARTITION BY file ORDER BY pos ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING) AS near
+  FROM logs) sub
+WHERE sub.near = 1
+-- @fixture
+{"file":"p","pos":0,"msg":"before the boom"}
+{"file":"p","pos":1,"msg":"boom happened"}
+{"file":"p","pos":2,"msg":"after"}
+{"file":"p","pos":3,"msg":"far away"}
+-- @expect
+{"tag":"CTX","evidence":{"msg":"before the boom","pos":0}}
+{"tag":"CTX","evidence":{"msg":"boom happened","pos":1}}
+{"tag":"CTX","evidence":{"msg":"after","pos":2}}`,
+	})
+
+	var out, errb bytes.Buffer
+	c := &cli{prog: "n1k1", mode: "jsonlines", out: &out, stderr: &errb}
+	c.cmdRules("test --queries " + corpus)
+
+	stderr := errb.String()
+	if c.failed || !strings.Contains(stderr, "CTX: PASS") {
+		t.Errorf("context detector golden (projected shape) should PASS; stderr:\n%s", stderr)
+	}
+	if !strings.Contains(stderr, "1 passed / 0 failed") {
+		t.Errorf("summary wrong; stderr:\n%s", stderr)
 	}
 }
 

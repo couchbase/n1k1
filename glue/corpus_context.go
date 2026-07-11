@@ -38,6 +38,7 @@ import (
 	"bytes"
 	"fmt"
 
+	"github.com/couchbase/query/algebra"
 	"github.com/couchbase/query/expression"
 
 	"github.com/couchbase/n1k1/base"
@@ -98,6 +99,13 @@ type contextDetInfo struct {
 
 	matchPred expression.Expression // the CASE WHEN predicate
 
+	// proj is the detector's SELECT projection shaped as fused evidence (engine
+	// extractor det[4]), re-rooted to the shared "." scan row -- so a fused context
+	// finding's shape matches the same SELECT run standalone (IDEA-0025), exactly as
+	// corpusDetInfo.proj does for the plain broadcast path (IDEA-0004). nil => the
+	// whole scan row (buildContextBroadcast's fallback).
+	proj []interface{}
+
 	// sig is the grouping key: keyspace + the canonical (partition, order) column texts.
 	// Detectors with the same sig share one scan + sort + broadcast-context.
 	sig string
@@ -112,8 +120,12 @@ func recognizeContextDetector(top *base.Op, temps []interface{}) (contextDetInfo
 	// an unordered set), so skipping them is sound; a sort WITH an offset/limit, or any
 	// non-project/-sort op, stops the descent (and a non-filter there -> bail).
 	node := top
+	var outerProject *base.Op // the detector's SELECT (IDEA-0025), captured to shape evidence.
 	for node != nil && len(node.Children) == 1 &&
 		(node.Kind == "project" || (node.Kind == "order-offset-limit" && len(node.Params) == 2)) {
+		if outerProject == nil && node.Kind == "project" {
+			outerProject = node
+		}
 		node = node.Children[0]
 	}
 	if node == nil || node.Kind != "filter" || len(node.Children) != 1 {
@@ -126,9 +138,14 @@ func recognizeContextDetector(top *base.Op, temps []interface{}) (contextDetInfo
 
 	// (2) descend through the derived-table projection wrapper(s) -- a `SELECT self`
 	// passthrough and the window-column project -- to the window-frames op. Only linear
-	// single-child projects are traversed (a branch is not the context shape).
+	// single-child projects are traversed (a branch is not the context shape). The LAST
+	// project (its child is window-frames) is the derived table's own projection, whose
+	// terms are rooted at the scan alias -- used to compose the outer SELECT into
+	// scan-row evidence (IDEA-0025).
 	node = filter.Children[0]
+	var innerProject *base.Op
 	for node != nil && node.Kind == "project" && len(node.Children) == 1 {
+		innerProject = node
 		node = node.Children[0]
 	}
 	if node == nil || node.Kind != "window-frames" || len(node.Children) != 1 {
@@ -166,6 +183,23 @@ func recognizeContextDetector(top *base.Op, temps []interface{}) (contextDetInfo
 		return contextDetInfo{}, false
 	}
 
+	// (6) shape the detector's SELECT projection into fused evidence over the shared
+	// "." scan row (IDEA-0025). The outer SELECT references the derived-table alias
+	// (`sub`), so its terms are composed through the derived table's own projection
+	// (rooted at the scan alias), then re-rooted to SELF -- reusing the plain-path
+	// corpusFusedProjection. A projection the fused envelope can't reproduce (it
+	// selects the window `near` flag, a computed column, ...) returns ok=false, so the
+	// detector runs STANDALONE where the full pipeline honors it -- same consistency
+	// guarantee IDEA-0004 gives the plain broadcast path.
+	derivedAlias := ""
+	if len(filter.Labels) > 0 {
+		derivedAlias, _ = mergeLabelLeaf(filter.Labels[0])
+	}
+	proj, ok := contextFusedProjection(outerProject, innerProject, derivedAlias, alias)
+	if !ok {
+		return contextDetInfo{}, false
+	}
+
 	info := contextDetInfo{
 		keyspaceName: ks.QualifiedName(),
 		keyspacer:    contextKeyspacer(ord, temps),
@@ -176,6 +210,7 @@ func recognizeContextDetector(top *base.Op, temps []interface{}) (contextDetInfo
 		beforeMatch:  before,
 		afterMatch:   after,
 		matchPred:    pred,
+		proj:         proj,
 	}
 	if info.keyspacer == nil {
 		return contextDetInfo{}, false
@@ -442,15 +477,22 @@ func buildContextBroadcast(group []contextDetInfo, tags []string, unified *Conv)
 	// K context extractors. The match predicate is lowered to its NATIVE tree where
 	// possible (contextPredTree), so the engine op's Aho-Corasick index can extract a
 	// necessary literal and skip the predicate eval on rows that lack it (sparse-match).
-	// Evidence (MVP) = the whole scan row ("." labelPath).
+	// Evidence is each detector's own SELECT projection (IDEA-0025), shaped over the
+	// shared "." scan row by recognizeContextDetector; a detector with no captured
+	// projection (e.g. a directly-constructed contextDetInfo) falls back to the whole row.
+	wholeRow := []interface{}{[]interface{}{"labelPath", "."}}
 	exts := make([]interface{}, 0, len(group))
 	for i, d := range group {
+		proj := d.proj
+		if proj == nil {
+			proj = wholeRow
+		}
 		exts = append(exts, []interface{}{
 			tags[i],
 			d.beforeMatch,
 			d.afterMatch,
 			contextPredTree(d.matchPred, d.scanLabels, d.alias),
-			[]interface{}{[]interface{}{"labelPath", "."}},
+			proj,
 		})
 	}
 
@@ -463,6 +505,133 @@ func buildContextBroadcast(group []contextDetInfo, tags []string, unified *Conv)
 		},
 		Children: []*base.Op{child},
 	}
+}
+
+// contextFusedProjection composes a context detector's outer SELECT (which references
+// the derived-table alias, e.g. `sub.pos`) into an evidence projection over the shared
+// "." scan row (IDEA-0025). Each `<derivedAlias>.<col>` reference is substituted with
+// the derived table's OWN projection term for <col> (already rooted at the scan alias),
+// EXCLUDING the window aggregate column (`near`) -- which isn't reproducible per scan
+// row. The rewritten terms are then handed to the plain-path corpusFusedProjection,
+// which re-roots the scan alias to SELF and builds the star / RAW / OBJECT_CONSTRUCT
+// evidence exactly as the broadcast path does.
+//
+// Returns (nil, true) when there is no outer projection to shape (whole-row fallback),
+// and (nil, false) when the projection can't be faithfully reproduced -- an outer term
+// still references the derived alias after substitution (e.g. SELECT sub.near, or a
+// computed column over the window flag), or corpusFusedProjection rejects the shape --
+// so the detector runs STANDALONE, where the full pipeline honors its SELECT.
+func contextFusedProjection(outer, inner *base.Op, derivedAlias, scanAlias string) ([]interface{}, bool) {
+	if outer == nil || outer.Kind != "project" || len(outer.Labels) == 0 {
+		return nil, true // no captured SELECT -> whole-row evidence (prior behavior).
+	}
+
+	// A lone star SELECT * over the DERIVED table is standalone `{<derivedAlias>:{...,
+	// near}}` -- the derived row (including the window flag), NOT the scan row -- so the
+	// fused whole-scan-row envelope can't reproduce it. Route to standalone rather than
+	// emit a shape that disagrees with the detector's own SQL (the IDEA-0025 contract).
+	// (This differs from the plain broadcast path, where SELECT * IS the scanned row.)
+	if len(outer.Labels) == 1 && outer.Labels[0] == ".*" {
+		return nil, false
+	}
+
+	// derived column name -> its expr over the scan alias. The window aggregate term
+	// (`near`) is skipped, so an outer reference to it stays unresolved and bails below.
+	innerMap := map[string]expression.Expression{}
+	if inner != nil {
+		for i, lbl := range inner.Labels {
+			if i >= len(inner.Params) {
+				break
+			}
+			name, ok := mergeLabelLeaf(lbl)
+			if !ok {
+				continue
+			}
+			e, ok := projTermExpr(inner.Params[i])
+			if !ok {
+				continue
+			}
+			if _, isAgg := e.(algebra.Aggregate); isAgg {
+				continue
+			}
+			innerMap[name] = e
+		}
+	}
+
+	rewritten := make([]interface{}, len(outer.Params))
+	for i, p := range outer.Params {
+		e, ok := projTermExpr(p)
+		if !ok {
+			rewritten[i] = p // a star's Self term (or non-expr): corpusFusedProjection handles it.
+			continue
+		}
+		sub := substituteDerivedFields(e, derivedAlias, innerMap)
+		if referencesIdentifier(sub, derivedAlias) {
+			return nil, false // unresolved `<derivedAlias>.X` -> can't reproduce -> standalone.
+		}
+		rewritten[i] = []interface{}{"exprTree", sub}
+	}
+
+	synthetic := &base.Op{Kind: "project", Labels: outer.Labels, Params: rewritten}
+	return corpusFusedProjection(synthetic, scanAlias)
+}
+
+// substituteDerivedFields returns a copy of expr with every `<alias>.<col>` field
+// access replaced by m[col] (the derived table's own term for that column), leaving
+// any column not in m (the window `near` flag) as-is so the caller can detect it.
+func substituteDerivedFields(expr expression.Expression, alias string,
+	m map[string]expression.Expression) expression.Expression {
+	if expr == nil || alias == "" {
+		return expr
+	}
+	s := &derivedFieldSubst{alias: alias, m: m}
+	s.SetMapper(s)
+	s.SetMapFunc(func(e expression.Expression) (expression.Expression, error) {
+		if f, ok := e.(*expression.Field); ok {
+			ops := f.Operands()
+			if len(ops) == 2 {
+				if id, ok := ops[0].(*expression.Identifier); ok && id.Identifier() == alias {
+					if repl, has := m[fieldNameOf(ops[1])]; has {
+						return repl, nil // substitute (don't recurse into the replacement).
+					}
+				}
+			}
+		}
+		return e, e.MapChildren(s)
+	})
+	out, err := s.Map(expr)
+	if err != nil {
+		return expr
+	}
+	return out
+}
+
+type derivedFieldSubst struct {
+	expression.MapperBase
+	alias string
+	m     map[string]expression.Expression
+}
+
+// referencesIdentifier reports whether expr contains an identifier named alias.
+func referencesIdentifier(expr expression.Expression, alias string) bool {
+	if expr == nil || alias == "" {
+		return false
+	}
+	found := false
+	r := &identRefFinder{}
+	r.SetMapper(r)
+	r.SetMapFunc(func(e expression.Expression) (expression.Expression, error) {
+		if id, ok := e.(*expression.Identifier); ok && id.Identifier() == alias {
+			found = true
+		}
+		return e, e.MapChildren(r)
+	})
+	_, _ = r.Map(expr)
+	return found
+}
+
+type identRefFinder struct {
+	expression.MapperBase
 }
 
 // contextPredTree lowers a context detector's match predicate to a native expr-tree

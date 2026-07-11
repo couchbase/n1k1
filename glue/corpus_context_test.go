@@ -166,6 +166,83 @@ func TestCorpusContextRecognitionDifferential(t *testing.T) {
 	}
 }
 
+// TestCorpusContextProjection (IDEA-0025): a fused context detector's evidence must be
+// its SELECT PROJECTION -- shape and all -- not the whole framed scan row. It compares
+// FULL evidence objects (not just the selected rows, as the differential test does)
+// against the SAME SELECT run standalone, so a passing test guarantees the fused
+// evidence shape matches what the detector's SQL produces.
+func TestCorpusContextProjection(t *testing.T) {
+	sess := ctxCorpusSession(t)
+
+	// grep -C1 for ERROR, projecting a SUBSET of columns (file, pos) -- deliberately NOT
+	// line, so whole-row evidence (the old bug) would differ from the projection.
+	stmt := `SELECT file, pos FROM (` +
+		`SELECT file, pos, line, MAX(CASE WHEN sev = "ERROR" THEN 1 ELSE 0 END) ` +
+		`OVER (PARTITION BY file ORDER BY pos ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING) AS near ` +
+		`FROM logs) sub WHERE sub.near = 1`
+
+	cc, err := sess.CorpusCompile([]CorpusDetector{{Tag: "proj", Stmt: stmt}})
+	if err != nil {
+		t.Fatalf("CorpusCompile: %v", err)
+	}
+	if len(cc.Standalone) != 0 || len(cc.Rejected) != 0 {
+		t.Fatalf("expected the projected context detector fused; standalone=%v rejected=%v",
+			cc.Standalone, cc.Rejected)
+	}
+	if n := countOpKind(cc.Plan, "broadcast-context"); n != 1 {
+		t.Fatalf("want 1 broadcast-context, got %d", n)
+	}
+
+	findings, err := cc.Run()
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	var got []string
+	for _, f := range findings {
+		// Evidence must be exactly the projection {file,pos} -- no line, no _meta, no near.
+		got = append(got, canonJSON(t, f.Evidence))
+	}
+	sort.Strings(got)
+
+	// Oracle: the SAME SELECT run standalone yields the projected {file,pos} rows.
+	res, err := sess.Run(stmt)
+	if err != nil {
+		t.Fatalf("oracle Run: %v", err)
+	}
+	var want []string
+	for _, r := range res.Rows {
+		want = append(want, canonJSON(t, r))
+	}
+	sort.Strings(want)
+
+	if len(want) == 0 {
+		t.Fatal("oracle produced no rows -- fixture too weak")
+	}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("fused context evidence != standalone SELECT shape\n got: %v\nwant: %v", got, want)
+	}
+	// Guard against a silent regression to whole-row evidence: no key beyond the projection.
+	for _, g := range got {
+		if len(g) == 0 || g[0] != '{' ||
+			// a whole-row leak would contain "line" or "sev"
+			containsAny(g, `"line"`, `"sev"`, `"near"`) {
+			t.Errorf("evidence %q leaks a non-projected column (whole-row regression)", g)
+		}
+	}
+}
+
+// containsAny reports whether s contains any of subs.
+func containsAny(s string, subs ...string) bool {
+	for _, sub := range subs {
+		for i := 0; i+len(sub) <= len(s); i++ {
+			if s[i:i+len(sub)] == sub {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // TestCorpusContextSeparateSignatures: context detectors with DIFFERENT (partition, order)
 // signatures do NOT share -- they land in separate groups (two broadcast-context ops),
 // while a same-signature pair shares one.
