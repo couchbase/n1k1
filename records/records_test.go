@@ -1139,28 +1139,6 @@ func TestMetaLoc(t *testing.T) {
 	}
 }
 
-// TestMemSource: NewMemSource serves a fixed in-memory record set in order (the
-// backing for a session TEMP KEYSPACE, IDEA-0027).
-func TestMemSource(t *testing.T) {
-	in := []Record{
-		{ID: []byte("k0"), Doc: []byte(`{"a":1}`)},
-		{ID: []byte("k1"), Doc: []byte(`{"a":2}`)},
-	}
-	s := NewMemSource(in)
-	ids, docs := collect(t, s)
-	if len(docs) != 2 || docs[0] != `{"a":1}` || docs[1] != `{"a":2}` {
-		t.Fatalf("docs = %v", docs)
-	}
-	if ids[0] != "k0" || ids[1] != "k1" {
-		t.Fatalf("ids = %v", ids)
-	}
-	// Exhausted: further Next reports end-of-stream.
-	var rec Record
-	if ok, err := s.Next(&rec); ok || err != nil {
-		t.Fatalf("post-exhaustion Next = (%v, %v), want (false, nil)", ok, err)
-	}
-}
-
 func TestSpliceMeta(t *testing.T) {
 	frag := []byte(`"_meta":{"size":1}`)
 	cases := map[string]string{

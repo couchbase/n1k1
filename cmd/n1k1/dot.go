@@ -301,7 +301,7 @@ func (c *cli) printHelp() {
 	// Materialization (staged/hierarchical analysis): keep a query's results as a
 	// queryable keyspace for later statements -- session-scoped in-memory, or a file.
 	fmt.Fprintln(c.stderr, "Materialize results into a keyspace you can query again:")
-	fmt.Fprintln(c.stderr, "  CREATE TEMP KEYSPACE <name> AS <select>   (session-scoped, in-memory; DROP TEMP KEYSPACE <name>)")
+	fmt.Fprintln(c.stderr, "  CREATE TEMP KEYSPACE <name> AS <select>   (session-scoped, in-memory + spills to disk if large; DROP TEMP KEYSPACE <name>)")
 	fmt.Fprintln(c.stderr, "  INSERT INTO `<name>/data.jsonl` (KEY UUID(), VALUE self) <select>   (persisted as a jsonl file)")
 }
 
@@ -379,6 +379,7 @@ func (c *cli) cmdOpen(dir string) {
 		fmt.Fprintf(c.stderr, "cannot open %q: %v\n", dir, err)
 		return
 	}
+	c.sess.Close() // release the previous datastore's TEMP KEYSPACE spill files
 	c.sess, c.dir = sess, dir
 	c.eagerBuildIndexes() // re-apply -index=eager to the newly opened datastore
 	fmt.Fprintf(c.stderr, "opened %s\n", dir)

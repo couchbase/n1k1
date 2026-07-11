@@ -369,7 +369,7 @@ const (
 	KeyspaceStructured                            // jsonl/csv/json/...: multi-record
 	KeyspaceRecipe                                // an extract recipe frames the files
 	KeyspaceMixed                                 // files of differing kinds
-	KeyspaceTemp                                  // session TEMP KEYSPACE (in-memory, no files)
+	KeyspaceTemp                                  // session TEMP KEYSPACE (in-memory, spills to disk if large)
 )
 
 // KeyspaceFraming is a keyspace's record-framing summary for display.
@@ -396,7 +396,7 @@ func (f KeyspaceFraming) Label() string {
 	case KeyspaceMixed:
 		return "mixed"
 	case KeyspaceTemp:
-		return "temp · in-memory"
+		return "temp · session" // in-memory, spills to disk if large
 	default:
 		return "empty"
 	}

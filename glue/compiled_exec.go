@@ -30,16 +30,20 @@ import (
 	"github.com/couchbase/n1k1/glue/emit"
 )
 
-// Close releases resources the session holds -- currently the temp dirs of any
-// compiled EXECUTE child binaries built by executeCompiled. Safe to call multiple
-// times; a session that never compiled needs no Close. A long-lived REPL/server
-// should Close when done with a session.
+// Close releases resources the session holds -- the temp dirs of any compiled
+// EXECUTE child binaries built by executeCompiled, and every TEMP KEYSPACE's heap +
+// on-disk spill files (IDEA-0027). Safe to call multiple times; a session that never
+// compiled or materialized needs no Close. A long-lived REPL/server should Close
+// when done with a session.
 func (s *Session) Close() {
 	for _, ps := range s.prepareds {
 		if ps.compiledCleanup != nil {
 			ps.compiledCleanup()
 			ps.compiledCleanup, ps.compiledBin = nil, ""
 		}
+	}
+	if s.Store != nil {
+		s.Store.Temp.Close() // Temp.Close nil-guards its receiver
 	}
 }
 

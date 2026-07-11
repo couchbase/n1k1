@@ -14,7 +14,10 @@
 package glue
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -84,6 +87,12 @@ func TestTempKeyspaceJoinAndChain(t *testing.T) {
 	if rows := runRows(t, sess, "SELECT COUNT(*) AS n FROM both"); !reflect.DeepEqual(rows, []string{`{"n":1}`}) {
 		t.Fatalf("chained temp count = %v, want 1", rows)
 	}
+
+	// Self-join: two independent cursors over the SAME heap (both ids a,b + one code<3
+	// id b -> the cartesian of errs x errs is 4 pairs; a self-join on id is 2).
+	if rows := runRows(t, sess, "SELECT COUNT(*) AS n FROM errs a JOIN errs b ON a.id = b.id"); !reflect.DeepEqual(rows, []string{`{"n":2}`}) {
+		t.Fatalf("self-join count = %v, want 2", rows)
+	}
 }
 
 // TestTempKeyspaceReplaceDropGuards covers CREATE-exists / OR REPLACE / DROP / DROP
@@ -125,6 +134,63 @@ func TestTempKeyspaceReplaceDropGuards(t *testing.T) {
 	}
 	if _, err := sess.Run("SELECT COUNT(*) FROM k"); err == nil {
 		t.Fatal("expected error querying dropped temp keyspace")
+	}
+}
+
+// TestTempKeyspaceSpillsToDisk forces the capture heap past its in-memory chunk 0
+// (by shrinking the chunk size) and confirms a large materialize (a) still reads back
+// exactly, and (b) actually wrote spill files to disk -- so a temp keyspace that
+// outgrows RAM degrades to disk instead of OOMing (IDEA-0027 follow-up).
+func TestTempKeyspaceSpillsToDisk(t *testing.T) {
+	// Shrink chunk 0 so a few KB of rows already overflow to a spill file.
+	savedData, savedHeap := tempHeapDataChunkBytes, tempHeapChunkBytes
+	tempHeapDataChunkBytes, tempHeapChunkBytes = 4096, 4096
+	defer func() { tempHeapDataChunkBytes, tempHeapChunkBytes = savedData, savedHeap }()
+
+	dir := insertTestDir(t)
+	sess, err := OpenSession(dir, "default")
+	if err != nil {
+		t.Fatalf("OpenSession: %v", err)
+	}
+
+	// UNNEST a 500-element array to materialize 500 rows -- well past a 4 KB chunk 0.
+	const n = 500
+	stmt := "CREATE TEMP KEYSPACE big AS SELECT g AS i FROM ARRAY_RANGE(0," +
+		strconv.Itoa(n) + ") AS g"
+	res, err := sess.Run(stmt)
+	if err != nil {
+		t.Fatalf("create big: %v", err)
+	}
+	if res.Rows[0] == nil || !strings.Contains(string(res.Rows[0]), `"rows":500`) {
+		t.Fatalf("create summary = %s, want rows:500", res.Rows[0])
+	}
+
+	// Spill files must exist on disk under the session temp dir.
+	spillDir := sess.Store.Temp.dir
+	if spillDir == "" {
+		t.Fatal("no session temp dir created")
+	}
+	var spillFiles int
+	filepath.Walk(spillDir, func(_ string, fi os.FileInfo, _ error) error {
+		if fi != nil && !fi.IsDir() {
+			spillFiles++
+		}
+		return nil
+	})
+	if spillFiles == 0 {
+		t.Fatalf("expected spill files under %s, found none", spillDir)
+	}
+
+	// Reads back exactly: 500 rows, correctly summed (0+1+...+499 = 124750).
+	if rows := runRows(t, sess, "SELECT COUNT(*) AS n, SUM(b.i) AS s FROM big b"); len(rows) != 1 ||
+		rows[0] != `{"n":500,"s":124750}` {
+		t.Fatalf("readback after spill = %v, want n=500 s=124750", rows)
+	}
+
+	// Close removes the spill dir.
+	sess.Close()
+	if _, err := os.Stat(spillDir); !os.IsNotExist(err) {
+		t.Errorf("spill dir %s not removed after Close (err=%v)", spillDir, err)
 	}
 }
 

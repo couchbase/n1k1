@@ -192,8 +192,8 @@ func main() {
 		fmt.Fprintf(os.Stderr, "%s: %v\n", prog, err)
 		os.Exit(1)
 	}
-	defer cleanup()
-	if dir == "" { // fell back to an empty store (no path was given)
+	defer cleanup() // removes an empty-store temp dir, if one was made
+	if dir == "" {  // fell back to an empty store (no path was given)
 		fmt.Fprintf(os.Stderr, "%s: no datastore; starting empty — use %s\n",
 			prog, ".open <dir>")
 	}
@@ -236,6 +236,9 @@ func main() {
 		fancyTTY:     fancy,
 		style:        cmd.Style{On: fancy},
 	}
+	// Close the current session at exit so any TEMP KEYSPACE spill files are removed
+	// (through c.sess, which .open may have re-pointed).
+	defer func() { c.sess.Close() }()
 
 	c.eagerBuildIndexes() // -index=eager: build all catalog indexes up front
 

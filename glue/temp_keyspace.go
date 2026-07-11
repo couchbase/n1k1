@@ -21,13 +21,21 @@ package glue
 // one SQL++ dialect, no shell-out to jsonl files (the layout trap of the manual
 // approach) and no re-parse across processes.
 //
-// It is an IN-MEMORY, ephemeral analogue of the file-backed INSERT INTO materialize
+// It is an ephemeral analogue of the file-backed INSERT INTO materialize
 // (insert.go): the rows live only for the session and vanish when it ends. The
 // keyspace is exposed exactly like the synthetic flat/glob keyspaces (flat.go /
 // glob.go) -- a metadata-only virtual keyspace advertising a primary index so the
 // planner emits a PrimaryScan -- but instead of pointing the records-scan at a
-// directory it advertises RecordsSource, served straight from the captured rows
-// (see KeyspaceRecordsOpen).
+// directory it advertises RecordsSource, served from the captured rows (see
+// KeyspaceRecordsOpen).
+//
+// The captured rows are held in a store.Heap (the same append-only, insertion-
+// ordered, spillable primitive the corpus shared-scan cache uses): chunk 0 stays
+// in memory, so a small findings set never touches disk, and a large one AUTOMATICALLY
+// spills its overflow to mmap'd temp files under a per-session dir -- so a materialize
+// that outgrows RAM degrades to disk rather than OOMing. CREATE streams each row
+// straight into the heap (bounded memory regardless of result size); DROP / OR REPLACE
+// / session close the heap, which removes its spill files.
 //
 // The datastore wrapper (tempDatastore/tempNamespace) sits INNERMOST in the chain
 // (below the flat/secondary-index wrappers), so those keep their concrete type
@@ -37,7 +45,10 @@ package glue
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -45,6 +56,7 @@ import (
 	"github.com/couchbase/query/datastore"
 	"github.com/couchbase/query/datastore/virtual"
 	"github.com/couchbase/query/errors"
+	"github.com/couchbase/rhmap/store"
 
 	"github.com/couchbase/n1k1/records"
 )
@@ -53,24 +65,58 @@ import (
 // so a bare `FROM <name>` resolves them.
 const tempNamespaceName = flatRootNamespace // "default"
 
-// TempKeyspaces is a session's registry of in-memory materialized keyspaces. It is
-// owned by the Store (so it shares the datastore's lifetime and is reachable from
-// the wrapper) and mutated by the CREATE/DROP TEMP KEYSPACE handlers. Concurrency-
-// safe: the wrapper reads it during planning/scanning while a handler may be
-// writing (a nested subquery run could resolve keyspaces mid-materialize).
+// TempKeyspaces is a session's registry of materialized keyspaces (each backed by a
+// spillable heap: chunk 0 in RAM, overflow on disk). It is owned by the Store (so it
+// shares the datastore's lifetime and is reachable from the wrapper) and mutated by
+// the CREATE/DROP TEMP KEYSPACE handlers. Concurrency-safe: the wrapper reads it
+// during planning/scanning while a handler may be writing (a nested subquery run
+// could resolve keyspaces mid-materialize).
 type TempKeyspaces struct {
-	mu sync.RWMutex
-	ks map[string]*tempKeyspace
-	ns *tempNamespace // parents the virtual keyspaces; set by wrapTempKeyspaces
+	mu  sync.RWMutex
+	ks  map[string]*tempKeyspace
+	ns  *tempNamespace // parents the virtual keyspaces; set by wrapTempKeyspaces
+	dir string         // lazily-created temp dir holding heap spill files
+	seq int            // unique per-heap prefix counter
 }
 
 func newTempKeyspaces() *TempKeyspaces {
 	return &TempKeyspaces{ks: map[string]*tempKeyspace{}}
 }
 
-// Put materializes name over recs, replacing any existing temp keyspace of that
-// name. recs is retained (not copied): the caller must treat it as immutable.
-func (t *TempKeyspaces) Put(name string, recs []records.Record) error {
+// NewHeap allocates an empty, append-only, insertion-ordered, spillable heap for a
+// temp keyspace's rows, under this registry's (lazily-created) session temp dir.
+// Chunk 0 is in-memory; overflow spills to mmap'd files there. The caller streams
+// rows in via PushBytes, then hands the heap to Put.
+func (t *TempKeyspaces) NewHeap() (*store.Heap, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.dir == "" {
+		d, err := os.MkdirTemp("", "n1k1-tempks-")
+		if err != nil {
+			return nil, fmt.Errorf("temp keyspace: creating spill dir: %w", err)
+		}
+		t.dir = d
+	}
+	t.seq++
+	prefix := filepath.Join(t.dir, strconv.Itoa(t.seq))
+	return &store.Heap{
+		Heap: &store.Chunks{PathPrefix: prefix, FileSuffix: ".heap", ChunkSizeBytes: tempHeapChunkBytes},
+		Data: &store.Chunks{PathPrefix: prefix, FileSuffix: ".data", ChunkSizeBytes: tempHeapDataChunkBytes},
+	}, nil
+}
+
+// Heap chunk sizes for a temp keyspace: chunk 0 lives in memory and holds this many
+// bytes before overflow spills to mmap'd files. Vars (not consts) only so a test can
+// shrink them to exercise the spill path without materializing 16 MiB of rows.
+var (
+	tempHeapChunkBytes     = 1024 * 1024      // per index-chunk (offset/size entries)
+	tempHeapDataChunkBytes = 16 * 1024 * 1024 // per data-chunk (row bytes)
+)
+
+// Put materializes name over the rows already pushed into heap, replacing (and
+// closing the spill files of) any existing temp keyspace of that name. The registry
+// takes ownership of heap.
+func (t *TempKeyspaces) Put(name string, heap *store.Heap) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.ns == nil {
@@ -80,21 +126,48 @@ func (t *TempKeyspaces) Put(name string, recs []records.Record) error {
 	if verr != nil {
 		return fmt.Errorf("temp keyspace %q: %v", name, verr)
 	}
-	k := &tempKeyspace{Keyspace: vks, recs: recs}
+	if prev, ok := t.ks[name]; ok && prev.heap != nil {
+		prev.heap.Close() // OR REPLACE: drop the old rows + spill files.
+	}
+	k := &tempKeyspace{Keyspace: vks, name: name, heap: heap}
 	k.indexer = newFlatIndexer(k)
 	t.ks[name] = k
 	return nil
 }
 
-// Drop removes name, reporting whether it existed.
+// Drop removes name (closing its heap + spill files), reporting whether it existed.
 func (t *TempKeyspaces) Drop(name string) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if _, ok := t.ks[name]; !ok {
+	k, ok := t.ks[name]
+	if !ok {
 		return false
+	}
+	if k.heap != nil {
+		k.heap.Close()
 	}
 	delete(t.ks, name)
 	return true
+}
+
+// Close drops every temp keyspace (closing all heaps + spill files) and removes the
+// session temp dir. Called when the session is closed / re-opened. Idempotent.
+func (t *TempKeyspaces) Close() {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, k := range t.ks {
+		if k.heap != nil {
+			k.heap.Close()
+		}
+	}
+	t.ks = map[string]*tempKeyspace{}
+	if t.dir != "" {
+		os.RemoveAll(t.dir)
+		t.dir = ""
+	}
 }
 
 func (t *TempKeyspaces) get(name string) (*tempKeyspace, bool) {
@@ -249,18 +322,20 @@ func (p *tempNamespace) Objects(creds *auth.Credentials, filter func(string) boo
 
 // tempKeyspace embeds a metadata-only virtual keyspace (promoting its Keyspace
 // methods), advertises a primary index (so the planner emits a PrimaryScan), and
-// serves its captured rows from memory via RecordsSource (see KeyspaceRecordsOpen).
+// serves its captured rows from the spillable heap via RecordsSource (see
+// KeyspaceRecordsOpen).
 type tempKeyspace struct {
 	datastore.Keyspace
-	recs    []records.Record
+	name    string      // for synthetic per-row ids ("<name><i>")
+	heap    *store.Heap // captured rows, insertion-ordered; chunk 0 in RAM, overflow on disk
 	indexer datastore.Indexer
 }
 
-// RecordsSource serves the captured rows straight from memory (no files). It is the
-// duck-typed hook KeyspaceRecordsOpen checks first. opts is ignored: the rows are
-// already framed/decoded JSON docs, not files to walk.
+// RecordsSource serves the captured rows from the heap (no files, no framing). It is
+// the duck-typed hook KeyspaceRecordsOpen checks first. Each RecordsSource is an
+// independent cursor (so a self-join gets two), all reading the same immutable heap.
 func (k *tempKeyspace) RecordsSource(_ records.WalkOptions) (records.Source, error) {
-	return records.NewMemSource(k.recs), nil
+	return &heapRecordsSource{heap: k.heap, name: k.name}, nil
 }
 
 func (k *tempKeyspace) Indexer(datastore.IndexType) (datastore.Indexer, errors.Error) {
@@ -269,3 +344,31 @@ func (k *tempKeyspace) Indexer(datastore.IndexType) (datastore.Indexer, errors.E
 func (k *tempKeyspace) Indexers() ([]datastore.Indexer, errors.Error) {
 	return []datastore.Indexer{k.indexer}, nil
 }
+
+// heapRecordsSource is a records.Source over a temp keyspace's store.Heap: it replays
+// the captured rows in insertion order (Get(i) for i in [0, CurItems)), synthesizing
+// a positional id per row. The Doc bytes are borrowed from the heap (an in-memory
+// chunk or an mmap'd spill file) and the id from a reused buffer -- both valid only
+// until the next Next, exactly the file sources' borrowed-slice contract.
+type heapRecordsSource struct {
+	heap  *store.Heap
+	name  string
+	i     int64
+	idBuf []byte
+}
+
+func (h *heapRecordsSource) Next(rec *records.Record) (bool, error) {
+	if h.heap == nil || h.i >= h.heap.CurItems {
+		return false, nil
+	}
+	b, err := h.heap.Get(h.i)
+	if err != nil {
+		return false, err
+	}
+	h.idBuf = strconv.AppendInt(append(h.idBuf[:0], h.name...), h.i, 10)
+	rec.ID, rec.Doc, rec.Loc = h.idBuf, b, records.RecordLoc{}
+	h.i++
+	return true, nil
+}
+
+func (h *heapRecordsSource) Close() error { return nil }

@@ -31,12 +31,9 @@ package glue
 import (
 	"encoding/json"
 	"fmt"
-	"strconv"
 	"strings"
 
 	"github.com/couchbase/query/algebra"
-
-	"github.com/couchbase/n1k1/records"
 )
 
 // tempKeyspaceStmt is a recognized CREATE/DROP TEMP KEYSPACE statement.
@@ -199,28 +196,41 @@ func (s *Session) createTempKeyspace(t *tempKeyspaceStmt) (*Result, error) {
 			t.name, parsed.Type())
 	}
 
-	var recs []records.Record
-	var idBuf []byte
+	// Stream each result row straight into a spillable heap (chunk 0 in RAM, overflow
+	// to disk), so memory stays bounded no matter how large the materialize is.
+	heap, err := s.Store.Temp.NewHeap()
+	if err != nil {
+		return nil, fmt.Errorf("CREATE TEMP KEYSPACE %q: %w", t.name, err)
+	}
+	var pushErr error
 	origOnRow := s.OnRow
 	s.OnRow = func(row []byte) {
-		// Copy: OnRow's buffer is reused for the next row; the temp keyspace holds
-		// these bytes for the session's lifetime.
-		idBuf = strconv.AppendInt(append(idBuf[:0], t.name...), int64(len(recs)), 10)
-		recs = append(recs, records.Record{
-			ID:  append([]byte(nil), idBuf...),
-			Doc: append([]byte(nil), row...),
-		})
+		if pushErr != nil {
+			return // stop feeding once a push has failed (query still drains)
+		}
+		// PushBytes copies row into the heap, so OnRow's reused buffer needn't be
+		// pre-copied.
+		if e := heap.PushBytes(row); e != nil {
+			pushErr = e
+		}
 	}
 	_, runErr := s.StatementRun(parsed, s.NamedArgs, s.PositionalArgs)
 	s.OnRow = origOnRow
 	if runErr != nil {
+		heap.Close()
 		return nil, fmt.Errorf("CREATE TEMP KEYSPACE %q source query failed: %w", t.name, runErr)
 	}
+	if pushErr != nil {
+		heap.Close()
+		return nil, fmt.Errorf("CREATE TEMP KEYSPACE %q: capturing rows: %w", t.name, pushErr)
+	}
 
-	if err := s.Store.Temp.Put(t.name, recs); err != nil {
+	rows := heap.CurItems
+	if err := s.Store.Temp.Put(t.name, heap); err != nil {
+		heap.Close()
 		return nil, err
 	}
-	return s.tempSummary(map[string]interface{}{"created": t.name, "rows": len(recs)})
+	return s.tempSummary(map[string]interface{}{"created": t.name, "rows": rows})
 }
 
 func (s *Session) dropTempKeyspace(t *tempKeyspaceStmt) (*Result, error) {
