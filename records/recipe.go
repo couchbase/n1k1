@@ -232,6 +232,10 @@ func SpecApply(spec ExtractSpec, path, idPrefix string) (Source, error) {
 		return nil, err
 	}
 	switch spec.Framing.Kind {
+	case FramingOpaque:
+		// Intentionally-unframed file (a binary profile, a compressed blob): emit ONE
+		// metadata-only {kind:"opaque",note} record; do NOT read the (possibly huge /
+		// binary) content. compile() set s.opaque.
 	case FramingWhole:
 		all, err := io.ReadAll(r)
 		if err != nil {
@@ -271,6 +275,7 @@ type specSource struct {
 	multi     bool           // multiline framing (else one record per line)
 	json      bool           // json framing: each line is a JSON object (JSONL)
 	section   bool           // section framing: ====-banner command dumps
+	opaque    bool           // opaque framing: one metadata-only {kind:"opaque",note} record
 	sectionRe *regexp.Regexp // spec.Framing.Section boundary regexp (section framing)
 	bannerRe  *regexp.Regexp // spec.Framing.Banner: framed records matching it are dropped
 
@@ -291,6 +296,7 @@ func (s *specSource) compile() error {
 	s.multi = s.spec.Framing.Kind == FramingMultiline
 	s.json = s.spec.Framing.Kind == FramingJSON
 	s.section = s.spec.Framing.Kind == FramingSection
+	s.opaque = s.spec.Framing.Kind == FramingOpaque
 	if s.section {
 		pat := s.spec.Framing.Section
 		if pat == "" {
@@ -336,6 +342,10 @@ func (s *specSource) Next(rec *Record) (bool, error) {
 	if s.spec.Framing.Kind == FramingWhole {
 		s.done = true
 		return s.emit(rec, s.whole)
+	}
+	if s.opaque {
+		s.done = true
+		return s.emit(rec, nil) // buildDoc emits the {kind:"opaque",note} record
 	}
 	if s.section {
 		// Assemble whole ====-banner sections, skipping any that are entirely blank
@@ -554,6 +564,9 @@ func (s *specSource) buildDoc(dst, recBytes []byte) []byte {
 	if s.section {
 		return s.buildDocSection(dst, recBytes)
 	}
+	if s.opaque {
+		return s.buildDocOpaque(dst)
+	}
 	dst = append(dst, '{')
 	wrote := false
 	comma := func() {
@@ -611,6 +624,25 @@ func (s *specSource) buildDocSection(dst, body []byte) []byte {
 	dst = strconv.AppendQuote(dst, strings.TrimSpace(string(s.secTitle)))
 	dst = append(dst, `,"text":`...)
 	dst = strconv.AppendQuote(dst, trimBlankLines(string(body)))
+	for k, v := range s.spec.Provenance {
+		dst = append(dst, ',')
+		dst = strconv.AppendQuote(dst, k)
+		dst = append(dst, ':')
+		dst = strconv.AppendQuote(dst, v)
+	}
+	return append(dst, '}')
+}
+
+// buildDocOpaque emits the single {kind:"opaque", note, ...provenance} record for an
+// intentionally-unframed file (IDEA-0020) -- no file content is read. It documents a
+// known-unframable file (a binary profile, a compressed blob) so it's a self-describing
+// keyspace rather than a mystery "unframed" entry.
+func (s *specSource) buildDocOpaque(dst []byte) []byte {
+	dst = append(dst, `{"kind":"opaque"`...)
+	if note := s.spec.Framing.Note; note != "" {
+		dst = append(dst, `,"note":`...)
+		dst = strconv.AppendQuote(dst, note)
+	}
 	for k, v := range s.spec.Provenance {
 		dst = append(dst, ',')
 		dst = strconv.AppendQuote(dst, k)

@@ -172,6 +172,34 @@ func TestSpecApplyDropsBanner(t *testing.T) {
 	}
 }
 
+// TestSpecApplyFramingOpaque: opaque framing emits ONE {kind:"opaque",note} record
+// WITHOUT reading the (binary) file content (IDEA-0020), so a known-unframable file is
+// a self-documenting keyspace instead of a mystery.
+func TestSpecApplyFramingOpaque(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "x_cprof.log")
+	// Non-text bytes that must NOT be parsed/framed.
+	if err := os.WriteFile(p, []byte{0x00, 0x01, 0x02, 0xff, 0xfe}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	spec := ExtractSpec{Framing: Framing{Kind: FramingOpaque, Note: "binary CPU profile"}}
+	src, err := SpecApply(spec, p, "x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, docs := collect(t, src)
+	if len(docs) != 1 {
+		t.Fatalf("opaque should yield exactly 1 record, got %d: %v", len(docs), docs)
+	}
+	var m struct{ Kind, Note string }
+	if err := json.Unmarshal([]byte(docs[0]), &m); err != nil {
+		t.Fatalf("opaque record not JSON: %v (%s)", err, docs[0])
+	}
+	if m.Kind != "opaque" || m.Note != "binary CPU profile" {
+		t.Errorf("opaque record = %+v, want {opaque, binary CPU profile}", m)
+	}
+}
+
 func TestWalkGzip(t *testing.T) { // scenario H
 	s, err := Walk(ex("archive/default/orders"), AllModes())
 	if err != nil {

@@ -56,6 +56,7 @@ const (
 	FramingJSON      = "json"      // JSONL / newline-delimited JSON
 	FramingSection   = "section"   // one record per banner/section block (see Section)
 	FramingWhole     = "whole"     // one record for the whole file (office/PDF baseline)
+	FramingOpaque    = "opaque"    // intentionally UNframed: one {kind:"opaque",note} record
 )
 
 // Framing describes how to cut a file into records.
@@ -76,6 +77,11 @@ type Framing struct {
 	// log). A framed record whose lead line matches is DROPPED, not emitted -- so it
 	// doesn't inflate COUNT(*) or skew .schema with its banner-only {text} shape.
 	Banner string `json:"banner,omitempty"`
+
+	// Note (Kind==opaque): a human description of WHY a file is unframable (e.g.
+	// "binary Go CPU profile (pprof protobuf)"). It rides the single opaque record so
+	// the file is self-documenting rather than a mystery "unframed" entry.
+	Note string `json:"note,omitempty"`
 }
 
 // Fields describes how to lift typed columns out of each framed record. Native,

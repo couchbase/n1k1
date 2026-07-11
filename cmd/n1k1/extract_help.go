@@ -104,6 +104,13 @@ FRAMING (how a file's bytes split into records) -- framing.kind is one of:
               is the command between banner rules.
   whole       one record for the whole file (office/PDF     { kind: "whole" }
               baseline; text under "text").
+  opaque      intentionally UNframable (a binary profile,    { kind: "opaque",
+              a compressed blob): ONE {kind:"opaque",note}     note: "binary CPU profile" }
+              row, no content read. Keeps the file out of
+              .tables' "add a recipe" nudge + documents it.
+
+An OPTIONAL framing.banner regexp (line/multiline) drops a non-data separator line
+(cbbrowse_logs' "==== couchbase logs ====" header) so it doesn't inflate COUNT(*)/.schema.
 
 FIELDS (lift typed columns out of each framed record) -- native byte-regex, off the
 boxed lane. One regexp with named captures; each (?P<name>...) becomes a field:

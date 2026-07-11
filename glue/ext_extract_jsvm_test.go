@@ -301,6 +301,54 @@ func TestJSExtractRecipeSectionEndToEnd(t *testing.T) {
 	}
 }
 
+// TestJSExtractRecipeOpaqueEndToEnd registers the shipped cpu_profile.extract.js
+// (opaque framing, IDEA-0020) and proves a binary CPU-profile log becomes a keyspace
+// yielding a single {kind:"opaque",note} row -- WITHOUT parsing its bytes -- so it's
+// documented, not a mystery "unframed" file.
+func TestJSExtractRecipeOpaqueEndToEnd(t *testing.T) {
+	repo, err := filepath.Abs("..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(repo, "extensions", "extract_recipes", "cpu_profile.extract.js")
+	if _, err := os.Stat(path); err != nil {
+		t.Skipf("example recipe not present: %v", err)
+	}
+	if _, err := RegisterExtensionFile(path); err != nil {
+		t.Fatalf("RegisterExtensionFile(%s): %v", path, err)
+	}
+	if rp := records.RecipeFor("goxdcr_cprof.log"); rp == nil {
+		t.Fatal("cpu_profile recipe did not claim goxdcr_cprof.log")
+	}
+
+	dir := t.TempDir()
+	// A binary-ish profile file at the bundle top level + a subdir (B3 per-file layout).
+	if err := os.WriteFile(filepath.Join(dir, "goxdcr_cprof.log"),
+		[]byte{0x1f, 0x8b, 0x08, 0x00, 0x00, 0x01, 0x02}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "certs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sess, err := OpenSession(dir, "default")
+	if err != nil {
+		t.Fatalf("OpenSession: %v", err)
+	}
+	defer sess.Close()
+
+	got := runRows(t, sess, "SELECT c.kind, c.note FROM goxdcr_cprof c")
+	if len(got) != 1 {
+		t.Fatalf("want 1 opaque row, got %d: %v", len(got), got)
+	}
+	var m struct{ Kind, Note string }
+	if err := json.Unmarshal([]byte(got[0]), &m); err != nil {
+		t.Fatalf("row not JSON: %v (%s)", err, got[0])
+	}
+	if m.Kind != "opaque" || !strings.Contains(m.Note, "CPU profile") {
+		t.Errorf("opaque row = %+v, want kind=opaque + a CPU-profile note", m)
+	}
+}
+
 // TestRegisterExtractRecipeFile proves the ext.go file-loader branch: a "*.extract.js"
 // file is routed to RegisterJSExtractRecipe (not the generic scalar-UDF loader) and
 // registers a records.Recipe. It loads the shipped example so the example stays valid.
