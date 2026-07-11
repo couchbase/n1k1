@@ -20,20 +20,12 @@ import (
 	"github.com/couchbase/n1k1/base"
 )
 
-// MergeNoKeySkipped counts rows a merge SCAN/JOIN dropped because they carried no int64
-// sort key at the key index. Real recipe-framed log keyspaces interleave ts-keyed data
-// rows with keyless lines -- cbcollect `====` banners, multiline stack-trace continuations
-// -- which are not independently time-orderable; the merge skips them rather than aborting
-// the whole ASOF (evidence: a real bundle's memcached.log = 887172 keyed / 4 keyless). A
-// caller reads this after a run (see glue's N1K1_MEM_STATS). Process-cumulative.
-var MergeNoKeySkipped int64
-
-// MergeScanLastRegime / MergeScanLastSortedness capture the last merge-scan's dispatch
-// choice + per-child sortedness (debug; surfaced via glue's N1K1_MEM_STATS).
-var (
-	MergeScanLastRegime     string
-	MergeScanLastSortedness []string
-)
+// Merge SCAN/JOIN rows dropped for a missing int64 sort key (real recipe-framed log
+// keyspaces interleave ts-keyed data with keyless lines -- cbcollect `====` banners,
+// multiline continuations -- which are not time-orderable, so the merge skips them
+// rather than aborting the ASOF) are counted in base.MergeStats.NoKeySkipped, a
+// per-request, race-safe counter on vars.Ctx (NOT a process global -- a streaming merge's
+// per-actor goroutines bump it concurrently). See base/merge_stats.go + glue N1K1_MEM_STATS.
 
 // OpMergeScan is the K-way sorted merge SCAN op described in
 // DESIGN-merging.md, §1 "The K-way sorted merge SCAN op". It presents N
@@ -142,9 +134,6 @@ func MergeScanExec(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 
 	regime = mergeChooseRegime(len(o.Children), regime, minKeys, maxKeys)
 
-	MergeScanLastRegime = regime // debug: last dispatch (see glue N1K1_MEM_STATS).
-	MergeScanLastSortedness = sortedness
-
 	// A child declared "near"/"none" has WITHIN-child disorder, so the merge must run
 	// the watermarked-near reorder buffer -- for ANY regime, not just "heap". The strict
 	// concatenate/heap paths validate ascending order per row and abort on the first
@@ -155,6 +144,8 @@ func MergeScanExec(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 	// Concatenate's disjoint-ranges optimization is only sound for STRICTLY-sorted
 	// children (no within-child disorder to reorder), so near always takes this path.
 	if mergeHasNear(sortedness) {
+		// Single near source streams (bounded band); K-way materializes.
+		vars.Ctx.MergeStats.RecordScan(len(o.Children) == 1)
 		maxBound := mergeMaxBound(sortedness, bounds)
 		mergeScanWatermarked(o, vars, yieldVals, yieldErr, keyIdx, pathNext,
 			maxBound, policy)
@@ -162,10 +153,12 @@ func MergeScanExec(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 	}
 
 	if regime == "concatenate" {
+		vars.Ctx.MergeStats.RecordScan(true) // concatenate forwards rows straight through.
 		mergeScanConcatenate(o, vars, yieldVals, yieldErr, keyIdx, pathNext)
 		return
 	}
 
+	vars.Ctx.MergeStats.RecordScan(false) // heap materializes each child cursor.
 	mergeScanHeap(o, vars, yieldVals, yieldErr, keyIdx, pathNext)
 }
 
@@ -193,7 +186,7 @@ func mergeScanConcatenate(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 
 			k, ok := mergeParseKey(vals, keyIdx)
 			if !ok {
-				MergeNoKeySkipped++ // keyless row (banner / multiline continuation) -- skip.
+				vars.Ctx.MergeStats.AddNoKeySkipped(1) // keyless row (banner / multiline continuation) -- skip.
 				return
 			}
 
@@ -249,7 +242,7 @@ func mergeScanHeap(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 
 			k, ok := mergeParseKey(vals, keyIdx)
 			if !ok {
-				MergeNoKeySkipped++ // keyless row (banner / multiline continuation) -- skip.
+				vars.Ctx.MergeStats.AddNoKeySkipped(1) // keyless row (banner / multiline continuation) -- skip.
 				return
 			}
 
@@ -366,7 +359,7 @@ func mergeScanWatermarked(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 
 			k, ok := mergeParseKey(vals, keyIdx)
 			if !ok {
-				MergeNoKeySkipped++ // keyless row (banner / multiline continuation) -- skip.
+				vars.Ctx.MergeStats.AddNoKeySkipped(1) // keyless row (banner / multiline continuation) -- skip.
 				return
 			}
 
@@ -517,7 +510,7 @@ func mergeScanWatermarkedStream(o *base.Op, vars *base.Vars, yieldVals base.Yiel
 		}
 		k, ok := mergeParseKey(vals, keyIdx)
 		if !ok {
-			MergeNoKeySkipped++ // keyless row (banner / multiline continuation) -- skip.
+			vars.Ctx.MergeStats.AddNoKeySkipped(1) // keyless row (banner / multiline continuation) -- skip.
 			return
 		}
 		if k > runningMax {

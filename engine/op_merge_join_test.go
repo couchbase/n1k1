@@ -523,10 +523,8 @@ func mjChildRaw(jsonl string) *base.Op {
 // data rows with keyless lines (cbcollect `====` banners, multiline continuations). The
 // merge-join must SKIP those (they're not time-orderable) rather than abort the ASOF.
 // Here both sides lead with a keyless row; the join proceeds over the keyed rows and the
-// keyless ones are counted in MergeNoKeySkipped.
+// keyless ones are counted in the per-request base.MergeStats.NoKeySkipped.
 func TestMergeJoinSkipsKeylessRows(t *testing.T) {
-	before := MergeNoKeySkipped
-
 	// Left probe: a keyless banner first, then two keyed rows.
 	left := mjChildRaw(`{"v":"BANNER"}` + "\n" +
 		`{"ts":15,"v":"L15"}` + "\n" + `{"ts":25,"v":"L25"}` + "\n")
@@ -534,16 +532,45 @@ func TestMergeJoinSkipsKeylessRows(t *testing.T) {
 	right := mjChildRaw(`{"v":"===="}` + "\n" +
 		`{"ts":10,"v":"R10"}` + "\n" + `{"ts":20,"v":"R20"}` + "\n")
 
-	got, err := runMergeJoin(t, mergeJoinOp(left, right, "inner", "asof", 0, nil, nil))
-	if err != nil {
-		t.Fatalf("unexpected error (keyless rows should skip, not abort): %v", err)
+	ms := &base.MergeStats{}
+	vars := &base.Vars{
+		Temps: make([]interface{}, 16),
+		Ctx: &base.Ctx{
+			ExprCatalog: ExprCatalog,
+			ValComparer: base.NewValComparer(),
+			MergeStats:  ms,
+		},
+	}
+
+	var got []mjOut
+	var gotErr error
+	ExecOp(mergeJoinOp(left, right, "inner", "asof", 0, nil, nil), vars,
+		func(vals base.Vals) {
+			o := mjOut{}
+			lk, _ := strconv.ParseInt(string(vals[1]), 10, 64)
+			o.lk, o.lv = lk, jsonUnquote(string(vals[2]))
+			if len(vals[5]) == 0 {
+				o.rightNull = true
+			} else {
+				rk, _ := strconv.ParseInt(string(vals[5]), 10, 64)
+				o.rk, o.rv = rk, jsonUnquote(string(vals[6]))
+			}
+			got = append(got, o)
+		},
+		func(err error) {
+			if err != nil {
+				gotErr = err
+			}
+		}, "", "")
+	if gotErr != nil {
+		t.Fatalf("unexpected error (keyless rows should skip, not abort): %v", gotErr)
 	}
 	// L15 -> nearest preceding R10; L25 -> R20. The banners are skipped on both sides.
 	assertOut(t, got, []mjOut{
 		{lk: 15, lv: "L15", rk: 10, rv: "R10"},
 		{lk: 25, lv: "L25", rk: 20, rv: "R20"},
 	})
-	if MergeNoKeySkipped-before < 2 {
-		t.Errorf("MergeNoKeySkipped rose by %d, want >= 2 (one keyless row per side)", MergeNoKeySkipped-before)
+	if n := ms.NoKeySkipped.Load(); n < 2 {
+		t.Errorf("NoKeySkipped = %d, want >= 2 (one keyless row per side)", n)
 	}
 }

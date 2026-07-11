@@ -79,13 +79,15 @@ func envBytes(name string) int64 {
 // bundle (and thus whether the bounded-band sweep-line is worth pursuing).
 func (cc *CompiledCorpus) printMemStats() {
 	mb := func(b int64) string { return fmt.Sprintf("%.1f MiB", float64(b)/(1<<20)) }
-	fmt.Fprintf(os.Stderr, "mem-stats: merge-join count=%d spilled=%d (budget %s) "+
-		"build rows=%d bytes=%s peak-build=%s no-key-skipped=%d\n",
-		engine.MergeJoinCount, engine.MergeJoinSpillCount, mb(engine.MergeJoinBuildSpillBytes),
-		engine.MergeJoinBuildRowsTotal, mb(engine.MergeJoinBuildBytesTotal),
-		mb(engine.MergeJoinBuildBytesPeak), engine.MergeNoKeySkipped)
-	fmt.Fprintf(os.Stderr, "mem-stats: merge-scan last-regime=%q last-sortedness=%v\n",
-		engine.MergeScanLastRegime, engine.MergeScanLastSortedness)
+	if m := cc.MergeStats; m != nil {
+		fmt.Fprintf(os.Stderr, "mem-stats: merge-join count=%d spilled=%d (budget %s) "+
+			"build rows=%d bytes=%s peak-build=%s no-key-skipped=%d\n",
+			m.JoinCount.Load(), m.JoinSpillCount.Load(), mb(engine.MergeJoinBuildSpillBytes),
+			m.BuildRows.Load(), mb(m.BuildBytes.Load()), mb(m.BuildBytesPeak.Load()),
+			m.NoKeySkipped.Load())
+		fmt.Fprintf(os.Stderr, "mem-stats: merge-scan streamed=%d materialized=%d\n",
+			m.ScanStreamed.Load(), m.ScanMaterialized.Load())
+	}
 	if cc.scanCache != nil {
 		c := cc.scanCache
 		fmt.Fprintf(os.Stderr, "mem-stats: scan-cache captured=%d (%s) replayed=%d "+

@@ -146,6 +146,11 @@ type Ctx struct {
 	// stats.go and DESIGN-stats.md.
 	Stats *Stats
 
+	// MergeStats is the request's shared, race-safe sorted-merge counter set (or nil when
+	// off). Cloned by pointer in Clone(), so the per-actor goroutines a streaming merge
+	// forks all bump the one struct atomically. See base/merge_stats.go.
+	MergeStats *MergeStats
+
 	// RunningAggJobs are this actor's live-aggregate refreshers: one per GROUP op in
 	// THIS actor's branch, registered at op setup (RegisterRunningAgg) and run at this
 	// actor's checkpoint (RefreshRunningAggs). Because Ctx is cloned per actor (Clone

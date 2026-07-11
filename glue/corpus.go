@@ -205,6 +205,10 @@ type CompiledCorpus struct {
 
 	session   *Session
 	scanCache *corpusScanCache // the last run's shared-scan cache (test observability), or nil
+
+	// MergeStats holds the last run's sorted-merge counters (merge/spill/skip/stream),
+	// race-safe across the streaming merge's actor goroutines. Set per run; nil before.
+	MergeStats *base.MergeStats
 }
 
 // CorpusRunReport accompanies a RunReport run with the diagnostics an author needs to
@@ -860,12 +864,16 @@ func (cc *CompiledCorpus) runStream(onFinding func(Finding) error, stats *base.S
 
 	cc.GatedSkipped = nil // repopulated per run by streamStandalone's index-gating.
 
-	// Memory-behavior knobs + evidence (env-tunable budgets; N1K1_MEM_STATS summary).
+	// Memory-behavior knobs + evidence. A fresh shared, race-safe merge-counter set is
+	// installed for this run (propagated to each detector Run's Ctx by PlanExec + the
+	// fused plan below), so a streaming merge's per-actor goroutines bump it without a
+	// data race. N1K1_MEM_STATS prints a summary; the counts are also on cc.MergeStats
+	// for a caller (e.g. RunReport) to surface.
 	applyMemEnv()
+	cc.MergeStats = &base.MergeStats{}
+	s.MergeStats = cc.MergeStats
+	defer func() { s.MergeStats = nil }()
 	if os.Getenv("N1K1_MEM_STATS") != "" {
-		engine.MergeJoinCount, engine.MergeJoinSpillCount = 0, 0
-		engine.MergeJoinBuildRowsTotal, engine.MergeJoinBuildBytesTotal, engine.MergeJoinBuildBytesPeak = 0, 0, 0
-		engine.MergeNoKeySkipped = 0
 		defer cc.printMemStats()
 	}
 
@@ -912,6 +920,7 @@ func (cc *CompiledCorpus) runStream(onFinding func(Finding) error, stats *base.S
 	defer os.RemoveAll(tmpDir)
 
 	vars.Ctx.Pipe = s.Pipe
+	vars.Ctx.MergeStats = s.MergeStats
 	if stats != nil {
 		vars.Ctx.Stats = stats // RunReport: capture per-keyspace scanned (RowsIn) etc.
 	}

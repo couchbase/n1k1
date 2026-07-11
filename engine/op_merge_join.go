@@ -28,17 +28,6 @@ import (
 // resumable-cursor work the whole merge family shares (see DESIGN-merging.md §2).
 var MergeJoinBuildSpillBytes int64 = 64 << 20 // 64 MiB of resident row payloads.
 
-// Merge-join build telemetry (process-cumulative; a caller resets before a run and reads
-// after -- see glue's N1K1_MEM_STATS). Plain ints so this verbatim-copied op names no
-// extra import. MergeJoinBuildBytesPeak is the largest single build's payload bytes seen.
-var (
-	MergeJoinCount           int   // # merge-joins executed.
-	MergeJoinSpillCount      int   // # whose build spilled (payloads > the budget).
-	MergeJoinBuildRowsTotal  int64 // total build rows materialized.
-	MergeJoinBuildBytesTotal int64 // total build row-payload bytes seen.
-	MergeJoinBuildBytesPeak  int64 // largest single build's payload bytes.
-)
-
 // OpMergeJoin is the sorted merge JOIN op of DESIGN-merging.md §2. Its two inputs
 // are ALREADY ordered by an int64 sort key sitting in a labeled register of each
 // row (produced by a merge-scan, or any sorted source) -- so the join
@@ -197,7 +186,7 @@ func MergeJoinExec(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 
 		k, ok := mergeParseKey(leftVals, leftKeyIdx)
 		if !ok {
-			MergeNoKeySkipped++ // keyless probe row (banner / multiline) -- can't correlate, skip.
+			vars.Ctx.MergeStats.AddNoKeySkipped(1) // keyless probe row (banner / multiline) -- can't correlate, skip.
 			return
 		}
 
@@ -495,7 +484,7 @@ func mergeJoinBuildRight(o *base.Op, vars *base.Vars, pathNext string,
 
 		k, ok := mergeParseKey(vals, rightKeyIdx)
 		if !ok {
-			MergeNoKeySkipped++ // keyless build row (banner / multiline) -- can't match, skip.
+			vars.Ctx.MergeStats.AddNoKeySkipped(1) // keyless build row (banner / multiline) -- can't match, skip.
 			return
 		}
 		if seen && k < lastKey {
@@ -554,15 +543,9 @@ func mergeJoinBuildRight(o *base.Op, vars *base.Vars, pathNext string,
 
 	ExecOp(o.Children[1], vars, rightYield, rightErr, pathNext, "MJR")
 
-	// Telemetry (see the package vars): one merge-join, its build size, whether it spilled.
-	MergeJoinCount++
-	MergeJoinBuildRowsTotal += int64(len(side.keys))
-	MergeJoinBuildBytesTotal += buildBytes
-	if buildBytes > MergeJoinBuildBytesPeak {
-		MergeJoinBuildBytesPeak = buildBytes
-	}
-	if side.getRow != nil {
-		MergeJoinSpillCount++
+	// Telemetry (base.MergeStats, race-safe & per-request): one merge-join build.
+	if vars.Ctx != nil {
+		vars.Ctx.MergeStats.RecordBuild(int64(len(side.keys)), buildBytes, side.getRow != nil)
 	}
 
 	return side, buildErr

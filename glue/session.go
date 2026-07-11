@@ -63,6 +63,11 @@ type Session struct {
 	// data source is redirected at run time. nil = read files. See base.DatastorePipe.
 	Pipe base.DatastorePipe
 
+	// MergeStats, when set, is the shared race-safe sorted-merge counter set that every
+	// Run of this session bumps (propagated to each Run's Ctx by PlanExec, like Pipe), so
+	// a corpus run can aggregate merge/spill/skip stats across its detectors. nil = off.
+	MergeStats *base.MergeStats
+
 	// prepareds is this session's prepared-statement store (PREPARE ... AS <stmt> /
 	// EXECUTE <name>), keyed by name. Lazily created. Interpreter-only: PREPARE
 	// parses + caches the inner statement; EXECUTE re-plans and runs it with the
@@ -386,6 +391,7 @@ func (s *Session) PlanExec(pp *PreparedPlan,
 	// inline in-memory data instead of files); nil keeps the file datastore. See
 	// base.DatastorePipe / DatastoreOp.
 	vars.Ctx.Pipe = s.Pipe
+	vars.Ctx.MergeStats = s.MergeStats // shared merge counters (nil = off).
 
 	gctx := NewGlueContext(time.Now())
 	gctx.InitSubqueries(s.Store, s.Namespace, pp.withBindings, pp.subqueries) // enable expression subqueries
