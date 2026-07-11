@@ -15,22 +15,24 @@ package glue
 
 // Shared-scan cache for correlation detectors -- the EXECUTION half of Part B of the
 // shared sorted-stream substrate (DESIGN-mqo-sorted.md). K temporal-correlation detectors
-// over the same keyspaces each scan (and DECODE / re-extract) those keyspaces separately;
-// a correlated-subquery detector additionally re-scans its inner keyspace ONCE PER OUTER
-// ROW. corpusScanCache captures each correlation keyspace's FULL scan once into a
-// spillable (memory-bounded) heap and replays it for every later full scan -- across the
-// re-scans of one detector AND across the group's detectors -- so the expensive record
-// extraction (gzip / multiline / regex) happens once per keyspace per corpus run.
+// over the same keyspaces each scan (and DECODE / re-extract) those keyspaces separately.
+// corpusScanCache captures each correlation keyspace's scan once into a spillable heap and
+// replays it for every later scan with the SAME key -- across the group's detectors -- so
+// the expensive record extraction (gzip / multiline / regex) happens once per (keyspace,
+// scan-shape) per corpus run.
 //
 // It is a base.DatastorePipe installed on the session for the corpus run (reaching the
-// standalone detectors' own s.Run scans, since PlanExec propagates s.Pipe): a FULL
-// datastore-scan-records (no pushdown) of a known correlation keyspace is served from the
-// cache; everything else delegates to the underlying provider unchanged, so it is
-// transparent to WireASOFJoin and to non-correlation detectors. Caching a FULL scan is
-// sound because every full scan of a keyspace yields the identical rows in the identical
-// order; a scan WITH a pushdown (project-columns, ...) has len(Params) > 1 and is NOT
-// cached (it would need different rows). Differential-tested: findings are identical to
-// running each detector standalone.
+// standalone detectors' own s.Run scans, since PlanExec propagates s.Pipe): a
+// datastore-scan-records of a known correlation keyspace is served from the cache;
+// everything else delegates to the underlying provider unchanged, so it is transparent to
+// WireASOFJoin and to non-correlation detectors. The cache key is the keyspace QN plus a
+// faithful serialization of every scan pushdown (see scanCacheKey), so two scans share a
+// heap ONLY when they yield identical rows: a FULL scan (build side of K merges) shares by
+// QN; a project-columns scan (driving side EarlyProjection) shares among detectors that
+// project it identically; an unrecognized pushdown is not cached. The per-scan capture is
+// byte-BUDGETED (CorpusScanCacheBudgetBytes): a keyspace larger than the budget is
+// abandoned (partial heap freed, re-scanned thereafter) rather than mirrored to disk in
+// full. Differential-tested: findings are identical to running each detector standalone.
 
 import (
 	"path/filepath"
@@ -47,8 +49,10 @@ func newCorpusScanCache(qns map[string]bool, dir string, inner base.DatastorePip
 	return &corpusScanCache{
 		sharedQNs: qns,
 		captured:  map[string]*store.Heap{},
+		tooBig:    map[string]bool{},
 		dir:       dir,
 		inner:     inner,
+		budget:    CorpusScanCacheBudgetBytes,
 	}
 }
 
@@ -72,61 +76,117 @@ func correlationKeyspaceQNs(groups map[string][]string) map[string]bool {
 	return out
 }
 
+// CorpusScanCacheBudgetBytes caps how many bytes the shared-scan cache will spill for ONE
+// cached scan. A keyspace whose capture exceeds this is abandoned (its partial heap freed,
+// future scans re-scanned) rather than mirrored to disk in full -- so a multi-GB keyspace
+// degrades to the no-sharing baseline instead of a giant spill. The heap spills to disk,
+// so this bounds disk (not RAM); raise it to trade disk for avoided re-decode on large
+// shared keyspaces. Package var so a caller can tune it before a corpus run.
+var CorpusScanCacheBudgetBytes int64 = 256 << 20 // 256 MiB per cached scan.
+
 // corpusScanCache is a caching DatastorePipe. It is single-goroutine within a corpus run
 // (the standalone detectors run sequentially), so the maps need no locking.
 type corpusScanCache struct {
 	sharedQNs map[string]bool        // keyspace QNs to cache (correlation keyspaces)
-	captured  map[string]*store.Heap // QN -> captured full-scan rows (lazy, corpus-dir backed)
+	captured  map[string]*store.Heap // scan-key -> captured rows (lazy, corpus-dir backed)
+	tooBig    map[string]bool        // scan-keys whose capture blew the budget (don't retry)
 	dir       string                 // corpus-scoped spill dir (outlives per-detector Runs)
 	inner     base.DatastorePipe     // underlying provider (nil -> the file datastore)
+	budget    int64                  // max bytes to spill per cached scan
 	seq       int                    // distinct heap path suffix
 
-	captures int // # keyspaces captured (test observability)
-	replays  int // # full scans served from the cache (test observability)
+	captures  int // # scans captured (test observability)
+	replays   int // # scans served from the cache (test observability)
+	abandoned int // # scans abandoned over budget (test observability)
 }
 
 // Op serves one datastore leaf op: a cacheable full correlation-keyspace scan from the
 // cache (capturing on first access), else delegates unchanged.
 func (c *corpusScanCache) Op(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 	yieldErr base.YieldErr, path, pathNext string) {
-	if o.Kind != "datastore-scan-records" || len(o.Params) != 1 {
-		c.delegate(o, vars, yieldVals, yieldErr, path, pathNext) // pushdown / non-scan: not cacheable.
-		return
-	}
-	qn := scanCacheQN(o, vars)
-	if qn == "" || !c.sharedQNs[qn] {
-		c.delegate(o, vars, yieldVals, yieldErr, path, pathNext)
+	key, ok := c.scanCacheKey(o, vars)
+	if !ok || c.tooBig[key] {
+		c.delegate(o, vars, yieldVals, yieldErr, path, pathNext) // uncacheable, or known over-budget.
 		return
 	}
 
-	if h := c.captured[qn]; h != nil {
+	if h := c.captured[key]; h != nil {
 		c.replays++
 		replayHeap(h, yieldVals, yieldErr)
 		return
 	}
 
-	// First access: capture the full scan into a corpus-scoped heap WHILE serving this
-	// caller (so the first scan isn't wasted). The heap spills, so memory is bounded; it
+	// First access: capture the scan into a corpus-scoped heap WHILE serving this caller
+	// (so the first scan isn't wasted). The heap spills to disk, so RAM is bounded; it
 	// lives under the corpus dir, not the per-detector Run's tmpDir (which is removed when
-	// that Run ends), so later Runs can replay it.
+	// that Run ends), so later Runs can replay it. If the capture exceeds the byte budget
+	// we ABANDON it (free the partial heap, poison the key) and keep serving -- so a huge
+	// keyspace falls back to re-scanning instead of a giant spill.
 	c.seq++
 	heap := c.newHeap(c.seq)
 	var buf []byte
 	var capErr error
+	var capBytes int64
+	over := false
 	capYield := func(vals base.Vals) {
-		if capErr == nil {
+		if capErr == nil && !over {
 			buf = base.ValsEncode(vals, buf[:0])
-			if e := heap.PushBytes(buf); e != nil {
+			capBytes += int64(len(buf))
+			if capBytes > c.budget {
+				over = true
+				c.tooBig[key] = true
+				c.abandoned++
+				heap.Close() // drop the partial spill immediately.
+			} else if e := heap.PushBytes(buf); e != nil {
 				capErr = e
 			}
 		}
 		yieldVals(vals)
 	}
 	c.delegate(o, vars, capYield, yieldErr, path, pathNext)
-	if capErr == nil {
-		c.captured[qn] = heap
+	if capErr == nil && !over {
+		c.captured[key] = heap
 		c.captures++
+	} else if capErr != nil {
+		heap.Close()
 	}
+}
+
+// scanCacheKey returns the cache key for a records-scan of a shared correlation keyspace,
+// or ok=false to bypass. The key is the keyspace QN PLUS a faithful serialization of every
+// scan pushdown, so two scans share a heap ONLY when they yield identical rows. A FULL scan
+// (keyspacer index only) keys on the QN alone -- so the build side of K merges shares. A
+// scan carrying a project-columns pushdown (EarlyProjection on the driving side) keys on
+// the QN + those columns -- so the driving side shares across detectors that project it the
+// same way. Any UNRECOGNIZED pushdown -> ok=false (its rows might differ in a way the key
+// wouldn't capture; correctness beats sharing).
+func (c *corpusScanCache) scanCacheKey(o *base.Op, vars *base.Vars) (string, bool) {
+	if o.Kind != "datastore-scan-records" || len(o.Params) == 0 {
+		return "", false
+	}
+	qn := scanCacheQN(o, vars)
+	if qn == "" || !c.sharedQNs[qn] {
+		return "", false
+	}
+	var b strings.Builder
+	b.WriteString(qn)
+	for _, p := range o.Params[1:] {
+		pp, ok := p.([]interface{})
+		if !ok || len(pp) != 2 {
+			return "", false // unknown pushdown shape.
+		}
+		k, _ := pp[0].(string)
+		names, ok := pp[1].([]string)
+		if k != "project-columns" || !ok {
+			return "", false // only projection pushdown is key-serializable so far.
+		}
+		b.WriteString("\x00pc")
+		for _, n := range names {
+			b.WriteByte(0)
+			b.WriteString(n)
+		}
+	}
+	return b.String(), true
 }
 
 // delegate runs the op via the underlying provider (the wrapped pipe, or the file

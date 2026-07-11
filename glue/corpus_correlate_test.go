@@ -172,3 +172,107 @@ func TestCorpusCorrelationScanSharing(t *testing.T) {
 	}
 	t.Logf("scan cache: %d captured, %d replayed", cc.scanCache.captures, cc.scanCache.replays)
 }
+
+// TestCorpusCorrelationSharesBothSides: when two detectors share the sig AND project the
+// DRIVING (left) keyspace identically (here they differ only by a constant projection
+// term, so both scans are byte-identical), the cache shares BOTH sides -- the build-side
+// (rlog) full scan and the driving-side (elog) projected scan are each captured once and
+// replayed for the second detector. captures == 2, replays == 2.
+func TestCorpusCorrelationSharesBothSides(t *testing.T) {
+	prev := EnableASOFRewrite
+	EnableASOFRewrite = true
+	defer func() { EnableASOFRewrite = prev }()
+
+	root := t.TempDir()
+	asofWriteKS(t, root, "elog", "ns_server.error.log",
+		nsLine("2026-05-17T15:36:11.100+02:00", "n1", "e-100")+
+			nsLine("2026-05-17T15:36:13.300+02:00", "n1", "e-300"))
+	asofWriteKS(t, root, "rlog", "ns_server.rebalance.log",
+		nsLine("2026-05-17T15:36:12.200+02:00", "n1", "r-200")+
+			nsLine("2026-05-17T15:36:14.400+02:00", "n1", "r-400"))
+	sess, err := OpenSession(root, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+
+	sub := "(SELECT r.msg FROM default:rlog r WHERE r.ts <= e.ts ORDER BY r.ts DESC LIMIT 1)"
+	d1 := "SELECT \"d1\" AS tag, e.ts AS ts, " + sub + " AS state_at FROM default:elog e ORDER BY e.ts"
+	d2 := "SELECT \"d2\" AS tag, e.ts AS ts, " + sub + " AS state_at FROM default:elog e ORDER BY e.ts"
+
+	cc, err := sess.CorpusCompile([]CorpusDetector{{Tag: "c1", Stmt: d1}, {Tag: "c2", Stmt: d2}})
+	if err != nil {
+		t.Fatalf("CorpusCompile: %v", err)
+	}
+	if _, err := cc.Run(); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if cc.scanCache == nil {
+		t.Fatal("no scan cache installed")
+	}
+	if cc.scanCache.captures != 2 {
+		t.Errorf("captures = %d, want 2 (elog + rlog each captured once)", cc.scanCache.captures)
+	}
+	if cc.scanCache.replays != 2 {
+		t.Errorf("replays = %d, want 2 (each side replayed for the 2nd detector)", cc.scanCache.replays)
+	}
+	t.Logf("both-side sharing: %d captured, %d replayed", cc.scanCache.captures, cc.scanCache.replays)
+}
+
+// TestCorpusCorrelationScanBudget: a tiny capture budget makes the cache ABANDON a
+// keyspace mid-capture (free the partial heap, re-scan thereafter) instead of spilling it
+// in full -- and the findings are STILL byte-identical to standalone (abandoning caching
+// never changes results).
+func TestCorpusCorrelationScanBudget(t *testing.T) {
+	prev := EnableASOFRewrite
+	EnableASOFRewrite = true
+	defer func() { EnableASOFRewrite = prev }()
+	prevB := CorpusScanCacheBudgetBytes
+	CorpusScanCacheBudgetBytes = 1 // 1 byte: nothing fits -> everything abandoned.
+	defer func() { CorpusScanCacheBudgetBytes = prevB }()
+
+	root := t.TempDir()
+	asofWriteKS(t, root, "elog", "ns_server.error.log",
+		nsLine("2026-05-17T15:36:11.100+02:00", "n1", "e-100"))
+	asofWriteKS(t, root, "rlog", "ns_server.rebalance.log",
+		nsLine("2026-05-17T15:36:10.000+02:00", "n1", "r-000"))
+	sess, err := OpenSession(root, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+
+	d := "SELECT e.ts AS ts, (SELECT r.msg FROM default:rlog r WHERE r.ts <= e.ts " +
+		"ORDER BY r.ts DESC LIMIT 1) AS state_at FROM default:elog e ORDER BY e.ts"
+
+	oracle, err := sess.Run(d)
+	if err != nil {
+		t.Fatalf("oracle: %v", err)
+	}
+
+	cc, err := sess.CorpusCompile([]CorpusDetector{{Tag: "c1", Stmt: d}, {Tag: "c2", Stmt: d}})
+	if err != nil {
+		t.Fatalf("CorpusCompile: %v", err)
+	}
+	findings, err := cc.Run()
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	// Findings unchanged despite no caching.
+	byTag := map[string]int{}
+	for _, f := range findings {
+		byTag[f.Tag]++
+	}
+	for _, tag := range []string{"c1", "c2"} {
+		if byTag[tag] != len(oracle.Rows) {
+			t.Errorf("%s: %d findings, oracle %d (abandoning caching changed results!)", tag, byTag[tag], len(oracle.Rows))
+		}
+	}
+	if cc.scanCache.captures != 0 {
+		t.Errorf("captures = %d, want 0 (budget too small to cache anything)", cc.scanCache.captures)
+	}
+	if cc.scanCache.abandoned == 0 {
+		t.Errorf("abandoned = 0, want > 0 (the tiny budget should abandon at least one scan)")
+	}
+	t.Logf("budget: %d captured, %d abandoned", cc.scanCache.captures, cc.scanCache.abandoned)
+}

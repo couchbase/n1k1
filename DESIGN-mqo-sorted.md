@@ -322,14 +322,23 @@ Each step is independently useful and benchmark-gated (like the DESIGN-col roadm
    Sharing`): two ASOF-lowered detectors sharing `(elog,rlog,ts,preceding)` -- the build-
    side `rlog` scan is captured once + replayed for the second detector, findings
    byte-identical to standalone.
-   *Scope / caveats:* only FULL scans (`len(Params)==1`, no pushdown) are cached -- so a
-   left scan carrying an EarlyProjection isn't shared (its build-side counterpart, the
-   costly re-materialization, is); and an UN-lowered correlated subquery evaluates its
-   inner scan via BOXED cbq (not an n1k1 `datastore-scan-records`), which neither the pipe
-   NOR `temp-capture`/`temp-yield` can intercept -- so the win needs ASOF lowering
-   (sorted-source metadata). QN match relies on stripping backticks from the algebra
-   `PathString` to equal the keyspace `QualifiedName`. Further: AC-index the shared left
-   scan's per-stream filters; cache-on-first-access stats.
+   Both sides share, keyed by `(QN + pushdown-spec)` (`scanCacheKey`): a FULL scan (the
+   build side of K merges) keys on the QN; a `project-columns` scan (the driving side's
+   EarlyProjection) keys on the QN + those columns, so K detectors that project the driving
+   keyspace identically share it too (`TestCorpusCorrelationSharesBothSides`: 2 captured, 2
+   replayed); an unrecognized pushdown isn't cached (correctness over sharing). Each
+   per-scan capture is byte-BUDGETED (`CorpusScanCacheBudgetBytes`, default 256 MiB): a
+   keyspace larger than the budget is ABANDONED mid-capture (partial heap freed, re-scanned
+   thereafter) rather than mirrored to disk in full, so a multi-GB keyspace degrades to the
+   no-sharing baseline instead of a giant spill, findings unchanged (`TestCorpusCorrelation
+   ScanBudget`).
+   *Scope / caveats:* an UN-lowered correlated subquery evaluates its inner scan via BOXED
+   cbq (not an n1k1 `datastore-scan-records`), which neither the pipe NOR
+   `temp-capture`/`temp-yield` can intercept -- so the win needs ASOF lowering
+   (sorted-source metadata). Detectors that project the driving keyspace DIFFERENTLY don't
+   share its scan (distinct specs); only the build side shares then. QN match relies on
+   stripping backticks from the algebra `PathString` to equal the keyspace `QualifiedName`.
+   Further: AC-index the shared left scan's per-stream filters; adaptive budget.
 5. **(Stretch) shared merge** across correlators with a common `(left, right, key)` -- one
    cursor advance over the two shared sorted streams feeding K predicate-pairs.
 
