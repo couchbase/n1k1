@@ -203,7 +203,8 @@ type CompiledCorpus struct {
 	// keyspace; today each still runs standalone -- this surfaces the opportunity.
 	CorrelationGroups map[string][]string
 
-	session *Session
+	session   *Session
+	scanCache *corpusScanCache // the last run's shared-scan cache (test observability), or nil
 }
 
 // CorpusRunReport accompanies a RunReport run with the diagnostics an author needs to
@@ -858,6 +859,20 @@ func (cc *CompiledCorpus) runStream(onFinding func(Finding) error, stats *base.S
 	s := cc.session
 
 	cc.GatedSkipped = nil // repopulated per run by streamStandalone's index-gating.
+
+	// Part B execution sharing: install a shared-scan cache over the correlation
+	// keyspaces for this run (DESIGN-mqo-sorted.md). It reaches the standalone detectors'
+	// own s.Run scans (PlanExec propagates s.Pipe) and the fused plan below, serving each
+	// keyspace's full scan+decode once. Transparent to everything else; removed after.
+	if qns := correlationKeyspaceQNs(cc.CorrelationGroups); len(qns) > 0 {
+		if dir, err := os.MkdirTemp("", "n1k1scancache"); err == nil {
+			orig := s.Pipe
+			cache := newCorpusScanCache(qns, dir, orig)
+			cc.scanCache = cache
+			s.Pipe = cache
+			defer func() { s.Pipe = orig; os.RemoveAll(dir) }()
+		}
+	}
 
 	// (A) Standalone detectors: run each verbatim through the full normal pipeline and
 	// tag its SELECT-projection rows as evidence. s.Run is self-contained (it does its

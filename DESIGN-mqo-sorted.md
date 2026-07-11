@@ -305,18 +305,31 @@ Each step is independently useful and benchmark-gated (like the DESIGN-col roadm
    the `(left, right, key, direction)` signature; `CorpusCompile` groups them into
    `CompiledCorpus.CorrelationGroups` (tested: two nearest-preceding errors→state-by-ts
    detectors share a group, a following one splits) and `.rules run` surfaces the shareable
-   groups. Execution is UNCHANGED -- each still runs standalone.
-   *Execution-sharing (the remaining, larger sub-slice, no clean small step -- it re-touches
-   the ASOF lowering):* materialize each correlation keyspace's sorted-by-key stream ONCE
-   (`temp-capture` over the ordered/merge scan, per `(keyspace, key)`), then rewrite each
-   detector in the group so its merge-join reads `temp-yield` of the shared temp (+ its own
-   per-side filter / residual) instead of re-scanning -- so K detectors share the
-   scan+decode(+sort). This threads a corpus-level "keyspace→shared temp" map into
-   `WireASOFJoin` (substitute `temp-yield` for its scan/merge-scan leaves), the biggest
-   open piece. Note: for ASOF-eligible keyspaces the sort is already elided (the merge-scan
-   passes through the sorted-source-metadata order), so the shared win is scan+decode, not
-   the sort. Per-stream filters (the driving XYZ on the left) could additionally AC-index
-   over the shared left scan (as the fused broadcast does), a further refinement.
+   groups.
+   **Execution-sharing DONE** (`glue/corpus_scancache.go`): rather than rewrite each
+   detector's plan to read a `temp-yield` (which would re-touch the ASOF lowering + need a
+   combined single-`vars` plan + temp-slot coordination), a `corpusScanCache` --
+   a `base.DatastorePipe` installed on the session for the corpus run -- intercepts at the
+   datastore-op boundary and serves each correlation keyspace's FULL scan from a captured,
+   spillable (memory-bounded) heap: the first full `datastore-scan-records` of a shared
+   keyspace is captured WHILE serving; every later full scan replays it. This is
+   TRANSPARENT (detector plans unchanged, so it reaches the standalone `s.Run` detectors
+   too -- `PlanExec` propagates `s.Pipe`), `DatastoreDispatch` handles delegation without
+   re-entering the pipe, and the heap lives under a corpus-scoped dir (the per-detector Run
+   tmpDirs are removed on Run exit). It is the SAME materialize-once + replay + spill
+   machinery as `temp-capture`/`temp-yield`, just hooked at the scan-op layer instead of
+   the plan layer -- so no plan surgery. Differential-tested (`TestCorpusCorrelationScan
+   Sharing`): two ASOF-lowered detectors sharing `(elog,rlog,ts,preceding)` -- the build-
+   side `rlog` scan is captured once + replayed for the second detector, findings
+   byte-identical to standalone.
+   *Scope / caveats:* only FULL scans (`len(Params)==1`, no pushdown) are cached -- so a
+   left scan carrying an EarlyProjection isn't shared (its build-side counterpart, the
+   costly re-materialization, is); and an UN-lowered correlated subquery evaluates its
+   inner scan via BOXED cbq (not an n1k1 `datastore-scan-records`), which neither the pipe
+   NOR `temp-capture`/`temp-yield` can intercept -- so the win needs ASOF lowering
+   (sorted-source metadata). QN match relies on stripping backticks from the algebra
+   `PathString` to equal the keyspace `QualifiedName`. Further: AC-index the shared left
+   scan's per-stream filters; cache-on-first-access stats.
 5. **(Stretch) shared merge** across correlators with a common `(left, right, key)` -- one
    cursor advance over the two shared sorted streams feeding K predicate-pairs.
 

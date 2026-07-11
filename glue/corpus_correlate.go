@@ -26,6 +26,8 @@ package glue
 // `.rules run` report).
 
 import (
+	"strings"
+
 	"github.com/couchbase/query/algebra"
 )
 
@@ -83,7 +85,10 @@ func (s *Session) analyzeCorrelationDetector(stmt string) (sig string, ok bool) 
 // source (not a plain-keyspace correlation).
 func fromKeyspaceName(from algebra.FromTerm) (string, bool) {
 	if kt, ok := from.(*algebra.KeyspaceTerm); ok {
-		if p := kt.PathString(); p != "" {
+		// PathString backtick-quotes each part (`default`:`errors`); strip the quotes so
+		// it matches a keyspace's QualifiedName() ("default:errors"), which the scan
+		// cache keys on.
+		if p := strings.ReplaceAll(kt.PathString(), "`", ""); p != "" {
 			return p, true
 		}
 	}
