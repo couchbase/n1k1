@@ -109,8 +109,8 @@ func TestWalkSkipsHiddenDirs(t *testing.T) {
 	}
 	write("a.jsonl", `{"x":1}`+"\n")
 	write("sub/b.jsonl", `{"x":2}`+"\n")
-	write(".git/c.jsonl", `{"x":3}`+"\n")     // must be skipped
-	write(".n1k1/d.jsonl", `{"x":4}`+"\n")    // must be skipped (sidecar)
+	write(".git/c.jsonl", `{"x":3}`+"\n")        // must be skipped
+	write(".n1k1/d.jsonl", `{"x":4}`+"\n")       // must be skipped (sidecar)
 	write("sub/.hidden/e.jsonl", `{"x":5}`+"\n") // nested dot-dir must be skipped
 
 	opts := AllModes()
@@ -1136,6 +1136,28 @@ func TestMetaLoc(t *testing.T) {
 	}
 	if m1["line_start"].(float64) != 3 {
 		t.Errorf("record 1 line_start = %v, want 3", m1["line_start"])
+	}
+}
+
+// TestMemSource: NewMemSource serves a fixed in-memory record set in order (the
+// backing for a session TEMP KEYSPACE, IDEA-0027).
+func TestMemSource(t *testing.T) {
+	in := []Record{
+		{ID: []byte("k0"), Doc: []byte(`{"a":1}`)},
+		{ID: []byte("k1"), Doc: []byte(`{"a":2}`)},
+	}
+	s := NewMemSource(in)
+	ids, docs := collect(t, s)
+	if len(docs) != 2 || docs[0] != `{"a":1}` || docs[1] != `{"a":2}` {
+		t.Fatalf("docs = %v", docs)
+	}
+	if ids[0] != "k0" || ids[1] != "k1" {
+		t.Fatalf("ids = %v", ids)
+	}
+	// Exhausted: further Next reports end-of-stream.
+	var rec Record
+	if ok, err := s.Next(&rec); ok || err != nil {
+		t.Fatalf("post-exhaustion Next = (%v, %v), want (false, nil)", ok, err)
 	}
 }
 

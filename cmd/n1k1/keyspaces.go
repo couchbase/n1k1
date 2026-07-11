@@ -143,11 +143,15 @@ func (c *cli) printKeyspaces(w io.Writer) {
 		}
 		kf, ok := c.keyspaceFraming(ns, n)
 		if ok {
-			unit := "files"
-			if kf.Files == 1 {
-				unit = "file"
+			if kf.Kind == glue.KeyspaceTemp {
+				framing[i] = kf.Label() // in-memory: no file count
+			} else {
+				unit := "files"
+				if kf.Files == 1 {
+					unit = "file"
+				}
+				framing[i] = fmt.Sprintf("%s · %d %s", kf.Label(), kf.Files, unit)
 			}
-			framing[i] = fmt.Sprintf("%s · %d %s", kf.Label(), kf.Files, unit)
 			if kf.Kind == glue.KeyspaceBlob {
 				anyBlob = true
 			}

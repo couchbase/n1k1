@@ -298,6 +298,11 @@ func (c *cli) printHelp() {
 	} else {
 		fmt.Fprintln(c.stderr, "Statements are SQL++; terminate with ';'. Open a datastore with .open <dir> to query it.")
 	}
+	// Materialization (staged/hierarchical analysis): keep a query's results as a
+	// queryable keyspace for later statements -- session-scoped in-memory, or a file.
+	fmt.Fprintln(c.stderr, "Materialize results into a keyspace you can query again:")
+	fmt.Fprintln(c.stderr, "  CREATE TEMP KEYSPACE <name> AS <select>   (session-scoped, in-memory; DROP TEMP KEYSPACE <name>)")
+	fmt.Fprintln(c.stderr, "  INSERT INTO `<name>/data.jsonl` (KEY UUID(), VALUE self) <select>   (persisted as a jsonl file)")
 }
 
 // highlightCurrent joins opts with sep, rendering the token equal to current in a

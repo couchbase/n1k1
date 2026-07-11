@@ -85,6 +85,11 @@ type Store struct {
 	Systemstore     datastore.Systemstore
 	IndexApiVersion int
 	FeatureControls uint64
+
+	// Temp is this store's session-scoped TEMP KEYSPACE registry (IDEA-0027): the
+	// live in-memory materialized keyspaces the datastore wrapper overlays. Shared
+	// by the wrapper (reads) and the CREATE/DROP TEMP KEYSPACE handlers (writes).
+	Temp *TempKeyspaces
 }
 
 // ------------------------------------------------------------------
@@ -227,6 +232,13 @@ func FileStoreBound(path string, b Binding) (*Store, error) {
 	// its .n1k1 sidecar to memoize the ExtractSpec/SortedSourceMeta (extract_cache.go).
 	registerDataRoot(dsPath)
 
+	// Session TEMP KEYSPACEs (IDEA-0027): overlay the in-memory materialized-keyspace
+	// registry at the VERY bottom of the chain, so the flat/secondary-index wrappers
+	// above keep their concrete type identity (the .index type-asserts) and delegate
+	// unknown names down to it. Starts empty; CREATE TEMP KEYSPACE fills it.
+	temp := newTempKeyspaces()
+	ds = wrapTempKeyspaces(ds, temp)
+
 	// Innermost: recognize inline glob keyspace names (DESIGN-data.md Mode 2b,
 	// `FROM `./data/**/*.json``). Sits below the flat/secondary-index wrappers so
 	// their type identities survive; they delegate unknown names down to it. Bare
@@ -266,5 +278,6 @@ func FileStoreBound(path string, b Binding) (*Store, error) {
 		Systemstore:     nil,
 		IndexApiVersion: datastore.INDEX_API_MAX,
 		FeatureControls: util.DEF_N1QL_FEAT_CTRL,
+		Temp:            temp,
 	}, nil
 }

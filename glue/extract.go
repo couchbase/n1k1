@@ -369,6 +369,7 @@ const (
 	KeyspaceStructured                            // jsonl/csv/json/...: multi-record
 	KeyspaceRecipe                                // an extract recipe frames the files
 	KeyspaceMixed                                 // files of differing kinds
+	KeyspaceTemp                                  // session TEMP KEYSPACE (in-memory, no files)
 )
 
 // KeyspaceFraming is a keyspace's record-framing summary for display.
@@ -394,6 +395,8 @@ func (f KeyspaceFraming) Label() string {
 		return "whole-file"
 	case KeyspaceMixed:
 		return "mixed"
+	case KeyspaceTemp:
+		return "temp · in-memory"
 	default:
 		return "empty"
 	}
@@ -406,6 +409,11 @@ func (f KeyspaceFraming) Label() string {
 // structured-extension test (IsStructuredFile). No file content is read -- safe on the
 // interactive listing path even over a huge (e.g. 240 MB log) keyspace.
 func KeyspaceFramingFor(ks datastore.Keyspace) (KeyspaceFraming, error) {
+	// A session TEMP KEYSPACE (temp_keyspace.go) has no files -- its rows live in
+	// memory -- so classify it directly rather than probing the filesystem.
+	if IsTempKeyspace(ks) {
+		return KeyspaceFraming{Kind: KeyspaceTemp}, nil
+	}
 	files, err := keyspaceFiles(ks, nil)
 	if err != nil {
 		return KeyspaceFraming{}, err

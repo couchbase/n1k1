@@ -265,6 +265,14 @@ func (s *Session) Run(stmt string) (res *Result, err error) {
 		datastore.SetDatastore(s.Store.Datastore)
 	}
 
+	// CREATE / DROP TEMP KEYSPACE (IDEA-0027) has no fork grammar, so recognize it at
+	// the text level BEFORE the parser (which would reject it) -- one rung earlier
+	// than the PREPARE/EXECUTE/INSERT statement-level intercepts below. Anything not
+	// matching this strict recognizer falls through to the normal parse path.
+	if t, ok := parseTempKeyspaceStmt(stmt); ok {
+		return s.TempKeyspaceRun(t)
+	}
+
 	parsed, err := ParseStatement(stmt, s.Namespace, true)
 	if err != nil {
 		return nil, err
