@@ -456,91 +456,59 @@ func mergeJoinStreamAsof(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 		vars.Ctx.MergeStats.RecordStreamJoin()
 	}
 
-	ch := make(chan []mergeJoinStreamRow, mergeJoinStreamChanCap)
-	errCh := make(chan error, 1)
-	done := make(chan struct{})
-	finished := make(chan struct{})
-
-	// --- right (build) producer: its own goroutine + cloned Vars (race-safe). ---
-	go func() {
-		defer close(finished)
-		rVars := vars.ChainExtend() // per-actor Ctx clone; shares MergeStats by pointer.
-		var lastKey int64
-		seen := false
-		stop := false
-		var partBuf []byte
-		batch := make([]mergeJoinStreamRow, 0, mergeStreamBatchRows)
-		flush := func() { // hand the batch to the consumer; a fresh buffer next (consumer keeps it).
-			if len(batch) == 0 {
-				return
-			}
-			select {
-			case ch <- batch:
-				batch = make([]mergeJoinStreamRow, 0, mergeStreamBatchRows)
-			case <-done: // the consumer gave up; stop feeding.
-				stop = true
-			}
-		}
-		ry := func(vals base.Vals) {
-			if stop {
-				return
-			}
-			k, ok := mergeParseKey(vals, rightKeyIdx)
-			if !ok {
-				rVars.Ctx.MergeStats.AddNoKeySkipped(1)
-				return
-			}
-			if seen && k < lastKey {
-				select {
-				case errCh <- mergeJoinOrderErr("right", k, lastKey):
-				default:
+	// --- right (build) producer: a base.BatchCursor (goroutine + per-actor Vars clone +
+	// deep-copy + batching + cancel/join, all shared). Its actor runs the build scan,
+	// dropping keyless rows and validating ascending order at the source. ---
+	bc := base.NewBatchCursor(vars, mergeStreamBatchRows, mergeJoinStreamChanCap,
+		func(rVars *base.Vars, yieldVals base.YieldVals, yieldErr base.YieldErr) {
+			var lastKey int64
+			seen := false
+			ry := func(vals base.Vals) {
+				k, ok := mergeParseKey(vals, rightKeyIdx)
+				if !ok {
+					mergeStats(rVars).AddNoKeySkipped(1)
+					return
 				}
-				stop = true
-				return
-			}
-			lastKey, seen = k, true
-			row := mergeJoinStreamRow{key: k, vals: mergeCopyVals(vals)}
-			if len(leftParts) > 0 {
-				partBuf = mergeJoinPartKey(partBuf[:0], vals, mergeRightParts(o))
-				row.part = string(partBuf)
-			}
-			batch = append(batch, row)
-			if len(batch) >= mergeStreamBatchRows {
-				flush()
-			}
-		}
-		rErr := func(err error) {
-			if err != nil {
-				select {
-				case errCh <- err:
-				default:
+				if seen && k < lastKey {
+					yieldErr(mergeJoinOrderErr("right", k, lastKey))
+					return
 				}
+				lastKey, seen = k, true
+				yieldVals(vals)
 			}
-		}
-		ExecOp(o.Children[1], rVars, ry, rErr, pathNext, "MJR")
-		flush() // final partial batch.
-		close(ch)
-	}()
+			ExecOp(o.Children[1], rVars, ry, yieldErr, pathNext, "MJR")
+		})
 
-	// --- right cursor with a one-row lookahead over the BATCHED channel. peek returns a
-	// pointer into the current batch (stable -- the producer allocates a fresh batch per
-	// flush, so held rows stay valid); consume advances within/across batches. ---
-	var batch []mergeJoinStreamRow
+	// --- right cursor with a one-row lookahead. Each pulled batch is parsed once into a
+	// fresh []mergeJoinStreamRow (key + partition key); peek returns a pointer into it,
+	// stable across further pulls (the slice stays alive while held/queues reference it),
+	// so consume advances within/across batches. ---
+	var parsed []mergeJoinStreamRow
 	bi := 0
 	chClosed := false
+	var partBuf []byte
 	peek := func() *mergeJoinStreamRow {
-		for bi >= len(batch) {
+		for bi >= len(parsed) {
 			if chClosed {
 				return nil
 			}
-			b, ok := <-ch
+			b, ok := bc.NextBatch()
 			if !ok {
 				chClosed = true
 				return nil
 			}
-			batch, bi = b, 0
+			p := make([]mergeJoinStreamRow, len(b))
+			for i, vals := range b {
+				k, _ := mergeParseKey(vals, rightKeyIdx)
+				p[i] = mergeJoinStreamRow{key: k, vals: vals}
+				if len(leftParts) > 0 {
+					partBuf = mergeJoinPartKey(partBuf[:0], vals, mergeRightParts(o))
+					p[i].part = string(partBuf)
+				}
+			}
+			parsed, bi = p, 0
 		}
-		return &batch[bi]
+		return &parsed[bi]
 	}
 	consume := func() { bi++ }
 
@@ -669,16 +637,11 @@ func mergeJoinStreamAsof(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 
 	ExecOp(o.Children[0], vars, leftYield, leftErr, pathNext, "MJL")
 
-	// Left drained: release the producer (it drops any unconsumed tail via <-done) and
-	// wait for it to finish so a build-side error surfaces and no goroutine leaks.
-	close(done)
-	<-finished
-	if execErr == nil {
-		select {
-		case err := <-errCh:
-			execErr = err
-		default:
-		}
+	// Left drained: Stop the producer (it drops any unconsumed tail) and Wait for it to
+	// exit so a build-side error surfaces and no goroutine leaks.
+	bc.Stop()
+	if e := bc.Wait(); e != nil && execErr == nil {
+		execErr = e
 	}
 	yieldErr(execErr)
 }
