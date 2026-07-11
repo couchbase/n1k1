@@ -269,11 +269,22 @@ Each step is independently useful and benchmark-gated (like the DESIGN-col roadm
    evidence is the whole matched/context row (MVP). Differential-tested against each
    detector's own SQL (`corpus_context_test.go`: same-signature detectors share ONE
    scan+sort+broadcast-context and match the standalone window result; different signatures
-   split; absence stays standalone). Verified end-to-end via `.rules run`. *Remaining:*
-   sort-elision (step 1); the AC-index / sparse-match refinement over the shared stream;
-   evidence shaped to the SELECT projection (vs whole-row); multi-column PARTITION; per-
-   detector hit stats for context ops. *Measure:* K context detectors, shared vs standalone
-   (expect ~K× on the sort).
+   split; absence stays standalone). Verified end-to-end via `.rules run`.
+   **Sort-elision DONE (step 1) for the flagship shape:** a group partitioned by
+   `_meta.`path`` and ordered by `_meta.pos` needs NO sort — the file datastore already
+   yields records grouped per file (filepath.Walk + sort.Strings, one file fully before the
+   next) and in ascending `_meta.pos` within each (the in-file ordinal), so the raw scan is
+   already in (partition, order) form (the context op needs only per-partition contiguity +
+   in-partition order; findings are an unordered set). `buildContextBroadcast` feeds the
+   scan straight to `broadcast-context` (no `order-offset-limit`), O(N) streaming instead of
+   O(N log N) + a full buffer/spill. Guarded narrowly to those exact `_meta` keys
+   (`isDotMetaField`); any other (partition, order) keeps the explicit sort. (Subtlety:
+   `renameAliasToSelf` mutates in place, so the elision test runs on the pristine
+   alias-rooted exprs before the sort terms are built.) *Remaining:* the AC-index /
+   sparse-match refinement over the shared stream; evidence shaped to the SELECT projection
+   (vs whole-row); multi-column PARTITION; a general "source advertises its order" contract
+   (beyond the `_meta` keys); per-detector hit stats for context ops. *Measure:* K context
+   detectors, shared vs standalone (expect ~K× on the sort).
 4. **Correlation consumers on the shared substrate** (Part B MQO). Fuse per-stream filters
    (shared scan + index) and share the sorted streams feeding the merges.
 5. **(Stretch) shared merge** across correlators with a common `(left, right, key)`.

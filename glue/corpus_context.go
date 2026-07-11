@@ -389,6 +389,13 @@ func contextInt(params []interface{}, i int) (int, bool) {
 func buildContextBroadcast(group []contextDetInfo, tags []string, unified *Conv) *base.Op {
 	first := group[0]
 
+	// Decide sort-elision on the PRISTINE alias-rooted exprs -- this must happen BEFORE
+	// any renameAliasToSelf call below, which mutates an expr in place (replacing its root
+	// identifier with SELF), after which isDotMetaField's root-Identifier check would fail.
+	// See SORT ELISION below.
+	elide := isDotMetaField(first.partExpr, "path") &&
+		len(first.orderExprs) == 1 && isDotMetaField(first.orderExprs[0], "pos")
+
 	// Shared scan into the unified Temps, labeled "." + "^id" (the whole-row convention).
 	scan := &base.Op{
 		Kind:   "datastore-scan-records",
@@ -408,11 +415,26 @@ func buildContextBroadcast(group []contextDetInfo, tags []string, unified *Conv)
 		terms = append(terms, selfExpr(oe, first.alias))
 		dirs = append(dirs, "asc")
 	}
-	order := &base.Op{
-		Kind:     "order-offset-limit",
-		Labels:   base.Labels{".", "^id"},
-		Params:   []interface{}{terms, dirs},
-		Children: []*base.Op{scan},
+	// SORT ELISION: the file scan already yields records grouped per file (each file's
+	// records contiguous -- filepath.Walk + sort.Strings, one file fully before the next)
+	// and, within a file, in ascending _meta.pos (the record's in-file ordinal). So for a
+	// group partitioned by _meta.path and ordered by _meta.pos the raw scan IS already in
+	// (partition, order) form: the context op needs only per-partition contiguity + in-
+	// partition order (findings are an unordered set, so the order of partitions is
+	// irrelevant), both of which hold by construction. Drop the O(N log N) sort + full
+	// buffer for an O(N) streaming pass. Any other (partition, order) keeps the explicit
+	// sort. (Guarded narrowly to these exact _meta keys, whose order the file datastore
+	// guarantees; a general "source advertises its order" contract is future work.)
+	child := (*base.Op)(nil)
+	if elide {
+		child = scan
+	} else {
+		child = &base.Op{
+			Kind:     "order-offset-limit",
+			Labels:   base.Labels{".", "^id"},
+			Params:   []interface{}{terms, dirs},
+			Children: []*base.Op{scan},
+		}
 	}
 
 	// K context extractors. Evidence (MVP) = the whole scan row ("." labelPath).
@@ -434,6 +456,44 @@ func buildContextBroadcast(group []contextDetInfo, tags []string, unified *Conv)
 			exts,
 			selfExpr(first.partExpr, first.alias), // partition key for boundary reset
 		},
-		Children: []*base.Op{order},
+		Children: []*base.Op{child},
 	}
+}
+
+// isDotMetaField reports whether e is exactly `<ident>._meta.<leaf>` (e.g.
+// alias._meta.path / alias._meta.pos) -- the file-metadata columns whose scan order the
+// file datastore guarantees, enabling sort elision.
+func isDotMetaField(e expression.Expression, leaf string) bool {
+	outer, ok := e.(*expression.Field)
+	if !ok {
+		return false
+	}
+	oo := outer.Operands()
+	if len(oo) != 2 || fieldNameOf(oo[1]) != leaf {
+		return false
+	}
+	inner, ok := oo[0].(*expression.Field)
+	if !ok {
+		return false
+	}
+	io := inner.Operands()
+	if len(io) != 2 || fieldNameOf(io[1]) != "_meta" {
+		return false
+	}
+	_, ok = io[0].(*expression.Identifier)
+	return ok
+}
+
+// fieldNameOf returns the field-name string of a Field's name operand, handling both the
+// FieldName and string-Constant forms (as splitFieldRef does), else "".
+func fieldNameOf(op expression.Expression) string {
+	switch n := op.(type) {
+	case *expression.FieldName:
+		return n.Alias()
+	case *expression.Constant:
+		if s, ok := n.Value().Actual().(string); ok {
+			return s
+		}
+	}
+	return ""
 }

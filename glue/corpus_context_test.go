@@ -21,6 +21,9 @@ import (
 	"sort"
 	"testing"
 
+	"github.com/couchbase/query/expression"
+	"github.com/couchbase/query/expression/parser"
+
 	"github.com/couchbase/n1k1/base"
 )
 
@@ -212,5 +215,50 @@ func TestCorpusContextAbsenceStaysStandalone(t *testing.T) {
 	}
 	if len(cc.Standalone) != 1 || cc.Standalone[0].Tag != "absent" {
 		t.Errorf("absence detector should be standalone; got standalone=%v", cc.Standalone)
+	}
+}
+
+// TestCorpusContextSortElision: a group ordered by (_meta.path, _meta.pos) needs NO sort
+// -- the file scan already yields those (the flagship rotated-log grep shape), so the
+// built plan is scan -> broadcast-context (no order-offset-limit). Any other (partition,
+// order) keeps the explicit sort.
+func TestCorpusContextSortElision(t *testing.T) {
+	mustParse := func(s string) expression.Expression {
+		e, err := parser.Parse(s)
+		if err != nil {
+			t.Fatalf("parse %q: %v", s, err)
+		}
+		return e
+	}
+	build := func(part, order string) *base.Op {
+		info := contextDetInfo{
+			keyspaceName: "default:logs",
+			keyspacer:    nil,
+			alias:        "x",
+			partExpr:     mustParse(part),
+			orderExprs:   []expression.Expression{mustParse(order)},
+			beforeMatch:  1, afterMatch: 1,
+			matchPred: mustParse(`x.sev = "ERROR"`),
+		}
+		return buildContextBroadcast([]contextDetInfo{info}, []string{"t"}, &Conv{Temps: []interface{}{nil}})
+	}
+
+	// _meta.path / _meta.pos -> sort ELIDED (scan feeds broadcast-context directly).
+	bt := "`" // "path" is a reserved word -> backtick it
+	elided := build("x._meta."+bt+"path"+bt, "x._meta.pos")
+	if n := countOpKind(elided, "order-offset-limit"); n != 0 {
+		t.Errorf("(_meta.path,_meta.pos): expected sort ELIDED, got %d order ops", n)
+	}
+	if n := countOpKind(elided, "datastore-scan-records"); n != 1 {
+		t.Errorf("elided plan: want 1 scan, got %d", n)
+	}
+	if n := countOpKind(elided, "broadcast-context"); n != 1 {
+		t.Errorf("elided plan: want 1 broadcast-context, got %d", n)
+	}
+
+	// A non-_meta partition/order -> sort RETAINED (the scan isn't grouped/ordered by it).
+	kept := build("x.file", "x.pos")
+	if n := countOpKind(kept, "order-offset-limit"); n != 1 {
+		t.Errorf("(file,pos): expected sort RETAINED, got %d order ops", n)
 	}
 }
