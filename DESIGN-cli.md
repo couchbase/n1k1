@@ -7,17 +7,39 @@ directory-as-database, query-focused). Key enabler: extract the engine's
 end-to-end driver into a reusable `glue.Session` so `cmd/n1k1` is a pure
 front-end.
 
+## Status & remaining TODOs
+
+_Last reviewed: 2026-07-11._
+
+**Done:** The CLI ships as a single-binary REPL + one-shot/`-c`/`-f`/pipe
+front-end over `glue.Session`, with `box`/`box|pretty`/`jsonlines`/`json`/`csv`/
+`markdown`/`line`/`list` output modes and a rich dot-command set (`.tables`/
+`.keyspaces`, `.schema`, `.index`, `.rules`, `.extract`, `.extensions`, `.mode`/
+`.meta`/`.formats`/`.timer`/`.stats`/`.explain`/`.prepare`/`.verbose`/`.maxrows`/
+`.maxwidth`/`.read`/`.output`/`.bail`/`.echo`/`.print`/`.open`/`.version`), a
+`~/.n1k1rc` init file, `peterh/liner` line editing, framing-tagged keyspace
+listings, reserved-word / shell-quoting hints, and materialization statements
+(`CREATE TEMP KEYSPACE`, `INSERT INTO … SELECT`) surfaced in `.help`.
+
+**Remaining (headline TODOs):**
+- [ ] `.schema` with no arg dumps giant box tables (ignores `.maxwidth`) on a real bundle — make it a compact one-line-per-keyspace summary, or redirect to `.tables`.
+- [ ] File-as-table (`FROM 'foo.csv'` / `read_json_auto(...)`): scans exist but aren't reachable through N1QL `FROM` via glue.
+- [ ] Query cancellation mid-run (Ctrl-C aborting `ExecOp` via ctx).
+- [ ] Tab completion of keywords / keyspaces / dot-commands.
+- [ ] Multi-line 2D cursor editing + mouse click-to-position (`reeflective/readline` or `bubbletea`) — deferred (§7).
+- [ ] `.import` / `COPY` / writes (engine is query-only); persistent settings / PRAGMA.
+
 ## Contents
 
 1. [DuckDB inspiration and n1k1 fit](#1-duckdb-inspiration-and-n1k1-fit)
 2. [The core refactor: a reusable session](#2-the-core-refactor-a-reusable-session)
 3. [Binary, build, and invocation](#3-binary-build-and-invocation)
 4. [The REPL](#4-the-repl)
-5. [Dot-commands (v1 set)](#5-dot-commands-v1-set)
+5. [Dot-commands](#5-dot-commands)
 6. [Output modes and the box renderer](#6-output-modes-and-the-box-renderer)
 7. [Line editing: emacs keys, multi-line, and mouse](#7-line-editing-emacs-keys-multi-line-and-mouse)
 8. [Resolved decisions](#8-resolved-decisions)
-9. [Build order](#9-build-order)
+9. [Build order (delivered)](#9-build-order-delivered)
 10. [Deferred / future work](#10-deferred--future-work)
 
 ------------------------------------------------------------------------
@@ -26,14 +48,14 @@ front-end.
 | DuckDB trait | n1k1 fit |
 |---|---|
 | **Single static binary**, no deps/server | **Perfect** — pure-Go, `CGO_ENABLED=0`, cross-compiles; `cmd/n1k1` is ~free. |
-| **REPL** (multiline-until-`;`, history, Ctrl-C/D) | New, small; engine call exists. |
-| **`-c "<sql>"`** one-shot + **stdin pipe** | New, thin. |
-| **Dot-commands** (`.help`, `.tables`, `.mode`, `.open`, `.read`, `.timer`…) | New; maps onto store/render state. |
-| **`box` renderer** (boxed table, footer, truncation) | New; column set is `conv.TopOp.Labels`. |
-| **Output modes** (`json`, `jsonlines`, `csv`, `markdown`, `line`, `list`) | New; canonical JSON rows, each mode a formatter. |
-| **`.timer on`** | New; wrap engine call with timing. |
-| **File-as-table** (`FROM 'data.csv'`) | **Partial** — CSV/NDJSON scans exist, but N1QL `FROM` resolves keyspaces in a dir. v1 opens a dir; file-tables later (§10). |
-| **`~/.duckdbrc` init**, `-init` | New, trivial. |
+| **REPL** (multiline-until-`;`, history, Ctrl-C/D) | Shipped; on `peterh/liner`. |
+| **`-c "<sql>"`** one-shot + **stdin pipe** | Shipped (`-c`, `-f`, stdin batch). |
+| **Dot-commands** (`.help`, `.tables`, `.mode`, `.open`, `.read`, `.timer`…) | Shipped; maps onto store/render state. |
+| **`box` renderer** (boxed table, footer, truncation) | Shipped; column set is `conv.TopOp.Labels`. |
+| **Output modes** (`json`, `jsonlines`, `csv`, `markdown`, `line`, `list`) | Shipped; canonical JSON rows, each mode a formatter. |
+| **`.timer on`** | Shipped; wraps the engine call with timing. |
+| **File-as-table** (`FROM 'data.csv'`) | **Partial** — CSV/NDJSON scans exist, but N1QL `FROM` resolves keyspaces in a dir. A single-file arg becomes a keyspace; bare `FROM 'file'` is later (§10). |
+| **`~/.duckdbrc` init**, `-init` | Shipped (`~/.n1k1rc`, `-init`). |
 | **Syntax errors with a caret** | Partial — parse errors carry a renderable offset. |
 
 **Out of scope for v1:** persistent DB file format (store is read-only JSON
@@ -45,9 +67,9 @@ phase-1 materialize-to-a-brand-new-keyspace-file — see `DESIGN-data.md` §2
 ------------------------------------------------------------------------
 ## 2. The core refactor: a reusable session
 
-Today the only end-to-end driver is `test/suite_test.go: n1k1RunStatement`,
-which hardcodes the pipeline. Extract it into `glue` as the shared engine for
-both test and CLI:
+The end-to-end driver, once hardcoded in `test/suite_test.go:
+n1k1RunStatement`, now lives in `glue` as the shared engine for both test and
+CLI:
 
 ```go
 // glue/session.go  (//go:build n1ql)
@@ -76,9 +98,9 @@ type ErrUnsupported struct{ Reason string }  // nil TopOp, convert failure, pani
 
 `Run` is the body of `n1k1RunStatement` minus test plumbing:
 `ParseStatement → store.PlanStatement → Conv.Accept → NewConvertVals → MakeVars
-→ ExecOp(DatastoreOp)`. The harness becomes a ~10-line caller of `Run`; if the
-pass count holds at **631**, the extraction is correct. Engine knowledge stays
-in `glue/`; `cmd/n1k1` is a pure front-end.
+→ ExecOp(DatastoreOp)`. The harness is now a thin caller of `Run` (the
+extraction held the pass count). Engine knowledge stays in `glue/`; `cmd/n1k1`
+is a pure front-end.
 
 ------------------------------------------------------------------------
 ## 3. Binary, build, and invocation
@@ -98,23 +120,32 @@ echo "SELECT ..." | n1k1     # stdin pipe (batch, no prompt)
 n1k1 -f script.n1ql          # run a file of ;-separated statements
 
 flags:
-  -c <stmt>      run one statement and exit
-  -f <file>      run statements from a file and exit
-  -ns <name>     namespace (default "default")
-  -mode <m>      box|json|jsonlines|csv|markdown|line|list
-                 (append |pretty, e.g. box|pretty, to indent JSON 2 spaces)
-  -timer         show timing
-  -init <file>   run dot-commands/SQL at startup (default ~/.n1k1rc)
-  -no-init       skip the init file
-  -readonly      no-op (store already read-only — reserved)
-  -index <mode>  secondary index build: eager|lazy|off (DESIGN-indexing.md)
-  -formats <set> restrict scanning to a format set (DESIGN-data.md)
-  -meta <mode>   per-record _meta injection: on|off|auto
-  -v             verbose (unsupported reasons, plan on error)
+  -c <stmt>       run one statement and exit
+  -f <file>       run statements from a file and exit
+  -mode <m>       box|json|jsonlines|csv|markdown|line|list
+                  (append |pretty, e.g. box|pretty, to indent JSON 2 spaces;
+                   jsonlines also accepts jsonl / ndjson)
+  -timer          show timing
+  -echo           echo each input line as read (like .echo on; handy with -f)
+  -init <file>    run dot-commands/SQL at startup (default ~/.n1k1rc;
+                  "", "-" or "none" skips it)
+  -index <mode>   secondary index build: eager|lazy|off (DESIGN-indexing.md)
+  -formats <set>  restrict scanning to a format set (DESIGN-data.md)
+  -meta <mode>    per-record _meta injection: on|off|auto
+  -verbose / -v   diagnostics level (bare = on; -verbose=on|off|debug|<n>)
+  -stats <mode>   per-op counters: on (live) | off | final
+  -prepare <lvl>  max compile level: interpreted | data | full (DESIGN-prepare.md)
+  -ext <path>     load extension(s) (dir/file, repeatable; .js = JS UDF)
+  -version        print version + build info and exit
+  -profile-cpu / -profile-mem <file>   pprof profiles
 ```
 
-`-index`/`.indexes` owned by **DESIGN-indexing.md "CLI control"**; `-formats`/
-`-meta` owned by **DESIGN-data.md**.
+Namespace isn't a flag — n1k1's file datastore only uses `default`, so it's the
+`defaultNamespace` const (a rare multi-namespace tree is still reachable via a
+`<ns>:<keyspace>` qualifier in SQL). `-index`/`.indexes` owned by
+**DESIGN-indexing.md "CLI control"**; `-formats`/`-meta` owned by
+**DESIGN-data.md**; `-stats` by **DESIGN-stats.md**; `-prepare` by
+**DESIGN-prepare.md**.
 
 **Default mode:** TTY → `box|pretty`; pipe/`-c` → `jsonlines` (compact) unless
 `-mode` overrides.
@@ -129,34 +160,44 @@ flags:
 - **Signals:** Ctrl-C cancels the input buffer (not the process); Ctrl-D /
   `.quit` / `.exit` exits. (Engine-level cancellation is later, §10.)
 
-**Line editing / history:** REPL runs on `github.com/peterh/liner` (MIT, pure
-Go) — arrow-key history + emacs editing from v1; history persists to
-`~/.n1k1_history` (§7, §8). Add via explicit `go get <pkg>@<ver>`, never
+**Line editing / history:** the REPL runs on `github.com/peterh/liner` (MIT,
+pure Go) — arrow-key history + emacs editing; history persists to
+`~/.n1k1_history` (§7, §8). Add deps via explicit `go get <pkg>@<ver>`, never
 `go mod tidy` (it prunes the n1ql-only `query` dep); verify `CGO_ENABLED=0`.
 
 ------------------------------------------------------------------------
-## 5. Dot-commands (v1 set)
+## 5. Dot-commands
 
-Match DuckDB names where the concept exists, so muscle memory carries.
+DuckDB names where the concept exists, so muscle memory carries. The shipped set
+(dispatched in `cmd/n1k1/dot.go`; every on/off-style setting shows its current
+value in `.help`):
 
 | Command | Behavior |
 |---|---|
-| `.help` | List commands. |
-| `.open <dir>` | Open a new file datastore dir (re-`FileStore`+`InitParser`). |
-| `.tables` / `.keyspaces` | List keyspaces under the namespace (subdirs of `<dir>/<ns>/`); accept both names, print "keyspaces". |
-| `.schema [<keyspace>]` | Sampled shape from first N docs (top-level keys + JSON types); labeled sampled, since no real schema exists. |
-| `.index [list\|show <name>\|rebuild [<name>]\|suggest [<ks>]\|help]` | Secondary-index family (`.indexes` = `.index list`): list/show from `.n1k1/catalog.json`, force-rebuild, suggest from a sample, create defs + build. Owned by DESIGN-indexing.md. |
-| `.mode <m>` | Set output mode (§6). |
-| `.meta [on\|off\|auto]` | Get/set `_meta` sub-object (path/name/ext/size/mtime/pos). Mirrors `-meta`; mutates `glue.ScanWalkOptions.Meta`. |
-| `.formats [<set>]` | Get/set which formats/modes (json,csv,gzip,recurse,…) scanning considers. Mirrors `-formats`; over `glue.ScanWalkOptions`. |
-| `.timer on\|off` | Toggle elapsed-time footer. |
-| `.maxrows <n>` | box: cap rows. `>0` = head+tail with `·` elision; `<0` = last `|n|` rows, elision at front; `0` = all. |
-| `.maxwidth <n\|auto>` | box: cap column width, truncate with `…`. `0` = uncapped; `auto` = fit box to terminal (max-min fair share). |
+| `.help` | List commands, plus the current datastore + a live example query. |
+| `.open <dir>` | Open a new file datastore dir (re-`FileStore`+`InitParser`); closes the prior session's TEMP KEYSPACE spills. |
+| `.tables` / `.keyspaces` | List keyspaces (via the datastore interface, so flattening/synthetic roots show), each tagged with its record framing + file count and a copy-paste example. |
+| `.schema [<keyspace>]` | Sampled shape from a 50-doc `SELECT x.*` sample (fields + JSON types + distinct values + a WHERE example), rendered as a box. No arg → every keyspace (giant on a real bundle — a compact summary is a TODO). |
+| `.index [list\|show <name>\|rebuild [<name>]\|suggest [<ks>]\|help]` | Secondary-index family (`.indexes` = `.index list`). Owned by DESIGN-indexing.md. |
+| `.mode <m>` | Set output mode (§6); `jsonl`/`ndjson` are synonyms for `jsonlines`. |
+| `.meta [on\|off\|auto]` | Get/set `_meta` sub-object (path/name/ext/size/mtime). Mirrors `-meta`; mutates `glue.ScanWalkOptions.Meta`. |
+| `.formats [<set>]` | Get/set which formats/modes scanning considers (persists to catalog.json for a dir). Mirrors `-formats`. |
+| `.timer [on\|off]` | Elapsed-time footer. |
+| `.stats [on\|off\|final\|about]` | Per-operator counters: live footer / totals-at-end / glossary. DESIGN-stats.md. |
+| `.explain [on\|off]` | Also print the converted `base.Op` plan tree (per-expr native vs boxed); shows *why* something is UNSUPPORTED. |
+| `.prepare [interpreted\|data\|full \| <stmt>]` | Set the compile-level ceiling, or one-shot emit the generated Go for `<stmt>` then run it. DESIGN-prepare.md. |
+| `.verbose [off\|on\|debug\|<n>]` | Diagnostics level; routes `base.Logf` through the same knob. |
+| `.maxrows <n>` | box: cap rows. `>0` = head+tail with `·` elision; `<0` = last `|n|` rows; `0` = all. |
+| `.maxwidth <n\|auto>` | box: cap column width, truncate with `…`. `0` = uncapped; `auto` = fit box to terminal. |
+| `.rules [list\|run\|lint\|test\|help]` | Run/lint/test a corpus of tagged `*.sql++` detector recipes over the open bundle (`--queries <dir>`). DESIGN-prepare.md. |
+| `.extensions [list\|load <dir>…\|unload <name>…]` (`.ext`) | Manage loaded extensions (`.js` = JavaScript UDF). |
+| `.extract [help\|list]` | Authoring reference + inventory for `*.extract.js` framing recipes. |
 | `.read <file>` | Execute statements/dot-commands from a file. |
-| `.output <file>` / `.output` | Redirect results to file / back to stdout. |
-| `.explain` | Toggle: also print the converted `base.Op` plan tree; shows *why* something is UNSUPPORTED. |
-| `.version` | Build version (`git describe` via `-ldflags -X main.version`), Go toolchain, VCS stamp, dep graph with go.sum hashes (from `runtime/debug.ReadBuildInfo`, honors `replace` pins). `-version` flag prints same and exits. |
-| `.shell <cmd>` / `.system <cmd>` | Run a shell command (gated, off by default). |
+| `.output [<file>]` | Redirect results to a file, or back to stdout. |
+| `.bail [on\|off]` | Stop the input loop on the first statement error (scripts). |
+| `.echo [on\|off]` | Echo each input line as it's read (scripts). |
+| `.print <text>` | Emit text to stderr (script progress markers). |
+| `.version` | Build version, Go toolchain, VCS stamp, dep graph with go.sum hashes (from `runtime/debug.ReadBuildInfo`, honors `replace` pins). `-version` flag prints the same and exits. |
 | `.quit` / `.exit` | Leave. |
 
 ------------------------------------------------------------------------
@@ -192,36 +233,20 @@ the csv writer quoting newlines.
 ------------------------------------------------------------------------
 ## 7. Line editing: emacs keys, multi-line, and mouse
 
-Some CLIs support emacs keys (`Ctrl-N`/`Ctrl-P` between lines, `Ctrl-A`/
-`Ctrl-E`) plus mouse click-to-position. What would n1k1 need, using non-viral
-libraries?
+**Shipped:** the REPL binds `peterh/liner`'s full single-line emacs set (`Ctrl-A`/
+`Ctrl-E`, `Ctrl-B`/`Ctrl-F` + arrows, `Ctrl-D`, `Ctrl-K`/`Ctrl-U`/`Ctrl-W`,
+`Ctrl-Y`, `Ctrl-T`, `Ctrl-L`, `Ctrl-R`/`Ctrl-S` search, `Ctrl-P`/`Ctrl-N` +
+arrows history, `Ctrl-C` abort). Statements are usually one line, so history
+walking covers most of the "emacs feel".
 
-### 7.1 What we have for free
+**Deferred** (two gaps, both requiring a step from readline-class blocking
+`Prompt()` to a TUI-class raw-mode event loop with a 2D buffer, not a drop-in
+swap): (1) multi-line 2D cursor nav — liner has no multi-row buffer; and
+(2) mouse click-to-position — liner has no Unix mouse support (needs xterm
+mouse reporting `ESC[?1000h`/SGR `ESC[?1006h` + `(col,row)`→offset mapping, and
+mouse mode breaks native select-to-copy so users hold Shift/Option to select).
 
-The REPL runs on **`github.com/peterh/liner`** (MIT, pure Go), binding the full
-single-line emacs set: `Ctrl-A`/`Ctrl-E` (line ends), `Ctrl-B`/`Ctrl-F` +
-arrows (move), `Ctrl-D` (delete char / EOF if empty), `Ctrl-K`/`Ctrl-U` (kill
-to end/start), `Ctrl-W` (delete word), `Ctrl-Y` (yank), `Ctrl-T` (transpose),
-`Ctrl-L` (clear), `Ctrl-R`/`Ctrl-S` (history search), `Ctrl-P`/`Ctrl-N` +
-arrows (prev/next history), `Ctrl-C` (abort line).
-
-Statements are usually one line, so `Ctrl-P`/`Ctrl-N` history walking covers
-most of the "emacs feel".
-
-### 7.2 What's genuinely missing
-
-1. **Multi-line cursor nav.** liner has no 2D buffer — `Ctrl-P`/`Ctrl-N` move
-   through history, not rows of a multi-row buffer. Claude-Code-style
-   up/down-a-line needs a 2D cursor over a multi-row buffer.
-2. **Mouse click-to-position.** liner has zero Unix mouse support. Needs xterm
-   mouse reporting (`ESC[?1000h` + SGR `ESC[?1006h`; terminal sends
-   `ESC[<btn;col;row;M/m`), event parsing, `(col,row)` → offset mapping.
-
-Both push from **readline-class** (blocking `Prompt()`) to **TUI-class** (own
-raw mode, render input, event loop, 2D buffer) — an architectural step change,
-not a swap.
-
-### 7.3 Library landscape (all permissive)
+Library options for that later step (all permissive; none GPL/viral):
 
 | Library | License | Multi-line | Mouse | Model | Notes |
 |---|---|---|---|---|---|
@@ -232,28 +257,12 @@ not a swap.
 | `charmbracelet/bubbletea` + `bubbles/textarea` | MIT | ✓ | ✓ | Elm loop | 2D nav + click + SGR — closes **both** gaps |
 | `gdamore/tcell` (+ `rivo/tview`) | Apache-2.0 | ✓ | ✓ | event loop | lowest level; full mouse + 2D |
 
-No mainstream Go line-editor is GPL/viral — the choice is architecture vs.
-feature.
-
-### 7.4 Mouse-mode caveat
-
-xterm mouse reporting takes clicks from the terminal, breaking native
-select-to-copy (users then hold **Shift**, or **Option/Alt** on macOS iTerm2).
-Mitigation: enable mouse only while the prompt is up, disable around output,
-document Shift-to-select.
-
-### 7.5 Recommendation
-
-- **Now:** keep **`peterh/liner`** — emacs single-line bindings incl. history,
-  ~zero-cost dep, blocking `Prompt()` fits the loop.
-- **If multi-line editing matters:** **`reeflective/readline`** (Apache-2.0) —
-  keeps the blocking model, adds true multi-row emacs editing, no TUI/mouse
-  tradeoff.
-- **If mouse click-to-position too (Claude-Code parity):** **`bubbletea` +
-  `bubbles/textarea`** (MIT). Cost: Elm event-loop, larger dep tree, §7.4
-  caveat. **Deferred** — revisit if long multi-line statements become common.
-- **Dependency hygiene:** add via `go get <pkg>@<ver>`, never `go mod tidy`;
-  verify `CGO_ENABLED=0` builds.
+**Recommendation:** keep `peterh/liner` (zero-cost, fits the blocking loop). If
+multi-line editing matters, `reeflective/readline` (Apache-2.0) adds true
+multi-row emacs editing while keeping the blocking model. Only if mouse
+click-to-position is also wanted, move to `bubbletea` + `bubbles/textarea`
+(MIT), paying the Elm-loop / larger-dep / select-to-copy cost. Add any dep via
+`go get <pkg>@<ver>`, never `go mod tidy`; verify `CGO_ENABLED=0`.
 
 ------------------------------------------------------------------------
 ## 8. Resolved decisions
@@ -261,23 +270,20 @@ document Shift-to-select.
 - **Binary name:** `n1k1` (`cmd/n1k1/main.go`); matches the module name.
 - **Default TTY mode:** `box|pretty`; pipes/`-c` default to compact
   `jsonlines`. (`.mode line` available for wide/nested docs.)
-- **Line editor:** `peterh/liner v1.2.0` (MIT, CGO-free) for history + editing
-  from v1; history persists to `~/.n1k1_history`. See §7.
+- **Line editor:** `peterh/liner v1.2.0` (MIT, CGO-free) for history + editing;
+  history persists to `~/.n1k1_history`. See §7.
 
 ------------------------------------------------------------------------
-## 9. Build order
+## 9. Build order (delivered)
 
-Each step independently shippable.
-
-0. **Extract `glue.Session`** from `n1k1RunStatement`; re-point the test. Gate:
-   pass count stays **631**. (No user-visible change; de-risks the rest.)
-1. **Minimal CLI:** `cmd/n1k1`, `-c` + stdin + naive REPL (read-until-`;`),
-   `jsonlines` only.
-2. **box renderer + `.mode`** (box/jsonlines/json/csv/markdown/line), `.timer`.
-3. **Navigation dot-commands:** `.open`, `.tables`/`.keyspaces`, `.schema`,
-   `.read`, `.output`, `.help`, `.quit`.
-4. **Niceties:** history + line editing, `~/.n1k1rc`, `.explain`, syntax-error
-   caret, `.maxrows`/`.maxwidth`.
+The staged plan, all shipped: (0) extract `glue.Session` from
+`n1k1RunStatement` and re-point the test (pass count held); (1) minimal CLI —
+`-c` + stdin + read-until-`;` REPL, `jsonlines`; (2) box renderer + `.mode` +
+`.timer`; (3) navigation dot-commands (`.open`, `.tables`/`.keyspaces`,
+`.schema`, `.read`, `.output`, `.help`, `.quit`); (4) niceties — history + line
+editing, `~/.n1k1rc`, `.explain`, `.maxrows`/`.maxwidth`. The dot-command set
+has since grown well past this (§5). Still partial from the original plan: the
+syntax-error caret (parse errors carry an offset but no rendered caret yet).
 
 ------------------------------------------------------------------------
 ## 10. Deferred / future work
@@ -287,7 +293,9 @@ Each step independently shippable.
 - **Query cancellation** mid-run (Ctrl-C aborting `ExecOp` via ctx).
 - **Tab completion** of keywords / keyspaces / dot-commands.
 - **`.import` / `COPY` / writes** — engine is query-only.
-- **Progress / live stats** (engine has `YieldStats` seam). Designed in
-  `DESIGN-stats.md`: `-progress` flag + `.stats`, a `pruning` view, `.rec`/
-  `.play` record-and-replay, `EXPLAIN PRICE`/`EXPLAIN COST` (`.price`/`.cost`).
+- **Live stats:** `.stats`/`-stats` (live footer + final totals) shipped;
+  still-designed extras in `DESIGN-stats.md` — a `pruning` view, `.rec`/`.play`
+  record-and-replay, and `EXPLAIN PRICE`/`EXPLAIN COST` (`.price`/`.cost`).
 - **Persistent settings / PRAGMA**.
+- **Syntax-error caret:** parse errors carry a renderable offset, but the CLI
+  doesn't yet draw the `^` under the offending token.

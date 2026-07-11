@@ -1,8 +1,35 @@
 # Design: Integrating Indexes into n1k1
 
-Status: **Phase 1 (secondary index) and Phase 2 (FTS) both shipped.** The
-"index everything", COUNT pushdown, and incremental-maintenance material is
-proposal / for review. Companion: `DESIGN-data.md`.
+## Status & remaining TODOs
+
+_Last reviewed: 2026-07-11._
+
+**Done:** GSI-like **secondary indexes** (bbolt-backed, plus an in-memory backend
+for the WASM/opt-in build), **covering scans**, and **FTS via embedded bleve**
+(`SEARCH()`, score/meta, declared mappings, flex path) all ship — declared in
+`.n1k1/catalog.json`, advertised to cbq's planner by **wrapping** the file
+datastore (zero fork edits), controlled by the `-index=lazy|eager|off` flag and
+the `.index` dot-command family.
+
+**Remaining (headline TODOs):**
+- [ ] Incremental index maintenance (insert/update/delete) — v1 is
+  rebuild-on-open, gated by a coarse file-count + newest-mtime freshness
+  signature (`.index rebuild` forces it).
+- [ ] Predicated `COUNT(*)` / `CountIndex` pushdown — blocked on exact-spans;
+  `Index2` proved necessary but not sufficient (two prototypes reverted).
+- [ ] Array/object index shapes (`ARRAY … FOR … END`, `ANY`/`UNNEST`) — not
+  supported; the advisor skips any path crossing an array.
+- [ ] Secondary indexes require the classic `<ns>/<keyspace>` directory layout;
+  flat / single-file / glob layouts advertise no secondary index (`.index
+  create` refuses a flat datastore).
+- [ ] Eager wildcard GSI + adaptive auto-index (`.index auto`) — need fork-side
+  planner work / workload logging (research items, §9).
+- [ ] Per-field FTS analyzers/types not configurable (all declared fields
+  mapped as text).
+- [ ] `CREATE`/`DROP INDEX` DDL unwired — define/edit via `catalog.json`.
+- [ ] Fingerprint / zone-map manifest + O(1) `COUNT` from `doc_count` metadata.
+
+Companion: `DESIGN-data.md`.
 
 ## Overview
 
@@ -84,6 +111,17 @@ predicate — correct, occasionally a slightly wider walk.
 `SELECT … WHERE SEARCH(ks, "query")` runs locally against a `kind: fts` bleve
 index (§7). Also shipped: `SEARCH_SCORE()`/`SEARCH_META()` surfacing, declared
 field mappings, and the `SargableFlex` implicit-predicate flex path.
+
+### In-memory secondary-index backend (shipped)
+
+`glue/idx_mem.go` is a bbolt-free alternative backend: it reuses everything
+storage-independent from the bbolt path (catalog defs, the order-preserving key
+encoding, the span-scan comparison, the engine dispatch interface) and swaps the
+B+tree for a sorted `[]entry` built by one keyspace scan and binary-searched per
+span. It is the **only** secondary-index path in the WASM/browser build (which
+excludes bbolt — `glue/idx_wasm.go`) and an opt-in native path via
+`SecondaryIndexMode = "mem"`. Same freshness model, process-wide cache
+(`TestMemIndex*`).
 
 ### Learnings that changed the plan
 
@@ -203,24 +241,17 @@ So cbft, cbgt, n1fty, and cbauth drop out.
 
 ---
 
-## 4. Where the code lives (thin hook seams)
+## 4. Where the code lives (fork-seam alternative — superseded)
 
-> **Superseded for Phase 1** by datastore wrapping (§1) — kept as the original
-> proposal and as a fallback if wrapping proves insufficient.
-
-`datastore.Index`/`Indexer`/`FTSIndex` are interfaces `glue` imports; Go
-interfaces are structural, so n1k1 implements them and the planner uses them
-polymorphically. The two proposed fork seams (in `datastore/file/file.go`):
-
-- **GSI/secondary:** `var SecondaryIndexes func(datastore.Keyspace)
-  []datastore.Index`, merged into `fileIndexer.Indexes()` +
-  `IndexNames`/`IndexById`/`IndexByName`/`IndexIds`.
-- **FTS:** `var ExtraIndexers func(datastore.Keyspace) []datastore.Indexer`,
-  appended in `keyspace.Indexers()` (a distinct `IndexType` — clean append).
-
-Everything else (index types, bbolt/bleve backing, build, catalog loading) is an
-ordinary n1k1 package registered at startup; `bbolt`/`bleve` become n1k1 direct
-deps. The wrapping approach eliminated even these seam edits.
+**Superseded by datastore wrapping (§1), which needs zero fork edits.** The
+original proposal instead added two `var` hook seams in the fork's
+`datastore/file/file.go`: `var SecondaryIndexes func(datastore.Keyspace)
+[]datastore.Index` (merged into `fileIndexer.Indexes()`/`IndexBy*`) and `var
+ExtraIndexers func(datastore.Keyspace) []datastore.Indexer` (appended in
+`keyspace.Indexers()` for FTS). Since `datastore.Index`/`Indexer`/`FTSIndex` are
+structural Go interfaces `glue` implements, all real logic still lived in n1k1;
+the seams only advertised them. Kept as a fallback if wrapping ever proves
+insufficient.
 
 ---
 
@@ -249,6 +280,10 @@ freshness-validated); they trade off build *timing*:
 - **`off`** — `maybeSecondaryIndexes` returns the datastore unwrapped; no index
   advertised, planner always primary/records-scans. The A/B baseline + escape
   hatch.
+- **`mem`** — same results as `lazy`, but backed by the in-memory index
+  (`idx_mem.go`) instead of bbolt. Not exposed via the `-index` flag; set
+  programmatically (the WASM build forces it; opt-in natively via
+  `glue.SecondaryIndexMode = "mem"`).
 
 ### `.index` command family
 
@@ -638,33 +673,19 @@ convert the resulting operators yet.
    `"datastore-count"` op carrying the keyspace; a glue op calls
    `keyspace.Count(context)` and yields a single row / one int64. Implement
    `VisitIndexCountProject` to shape the column. No datastore changes. Do first.
-2. **Predicated `COUNT(*)` via secondary index — BLOCKED on `Index2` (verified).**
-   The mechanical parts were prototyped: `secondaryIndex.Count(span)` (bbolt
-   cursor tally over the span), `conv.go:VisitIndexCountScan` (a
-   `datastore-index-count` op summing `index.Count`, yielding one int64 under a
-   `^count` label), `VisitIndexCountProject`. **All correct — but the cbq planner
-   never emits `plan.IndexCountScan` for a base `datastore.Index`.** Root cause:
-   count pushdown lives in the *covering* path
-   (`build_scan_covering.go:buildCoveringPushdDownIndexScan2` →
-   `build_scan_pushdowns.go:indexCoveringPushDownProperty`), gated on
-   **`_PUSHDOWN_EXACTSPANS`**. A base (API1) index's spans are never marked exact
-   — which is also why every base-`IndexScan` carries a residual `Filter`. No
-   exact spans ⇒ no `_PUSHDOWN_GROUPAGGS` ⇒ no `IndexCountScan`; the planner does
-   primary-scan + filter + aggregate instead. Confirmed empirically.
-   - **`Index2` is necessary but NOT sufficient (verified).** A second prototype
-     implemented `datastore.Index2` (`RangeKey2` + `Scan2` over `Spans2`) +
-     `conv.go:VisitIndexScan2` + a `datastore-scan-index2` op. This DID make the
-     planner emit `plan.IndexScan2` — but **the residual `Filter` still was not
-     dropped**, so spans still weren't treated as exact and count pushdown still
-     didn't fire. Neither `IK_MISSING` on the leading key nor the
-     `N1QL_INDEX_MISSING` feature control changed that (and `IK_MISSING` without
-     actually indexing MISSING values would be a correctness bug for `IS MISSING`).
-     `sarg_eq` builds the equality span exact (`NewSpan2(…, true)`), so exactness
-     is cleared/ignored somewhere further along that this pass didn't pin down.
-     Both prototypes reverted; **filter-elimination and count pushdown remain
-     open**, pending a deeper trace. Likely next probes: `useCBO=true`; the
-     `filterCovers`/`coveringScan` filter-retention path; whether
-     `Index3`/`IndexScan3` (group-agg pushdown) differs.
+2. **Predicated `COUNT(*)` via secondary index — BLOCKED on exact-spans (both
+   prototypes reverted).** Count pushdown lives in the *covering* path
+   (`build_scan_covering.go` → `build_scan_pushdowns.go`), gated on
+   **`_PUSHDOWN_EXACTSPANS`**; a base (API1) index's spans are never marked exact
+   (which is also why every base-`IndexScan` carries a residual `Filter`), so
+   `plan.IndexCountScan` is never emitted. A second prototype implementing
+   `datastore.Index2` (`RangeKey2`/`Scan2` + `conv.go:VisitIndexScan2`) *did* make
+   the planner emit `plan.IndexScan2` but still did not drop the residual `Filter`
+   or mark spans exact — so `Index2` is necessary but not sufficient. Both
+   prototypes (bbolt cursor tally `Count(span)`, `VisitIndexCountScan`,
+   `VisitIndexCountProject`) reverted; filter-elimination + count pushdown remain
+   open pending a deeper trace (likely probes: `useCBO=true`, the
+   `filterCovers`/`coveringScan` retention path, `Index3`/`IndexScan3`).
 3. **`COUNT(DISTINCT …)`.** Needs `CountIndex2.CountDistinct`; defer — the planner
    otherwise falls back to distinct+aggregate (works, slower).
 
@@ -732,7 +753,8 @@ and only scan boundary partitions.
 
 **n1k1 (all real logic — `glue`):**
 - `glue/idx_si.go`, `idx_si_encode.go`, `idx_si_catalog.go`, `idx_si_suggest.go`,
-  `idx_fts.go` — `secondaryIndex` (`datastore.Index` incl. `Scan()`/`CountIndex`),
+  `idx_mem.go`, `idx_wasm.go`, `idx_fts.go` — `secondaryIndex` (`datastore.Index`
+  incl. `Scan()`/`CountIndex`), the bbolt-free in-memory backend (WASM + opt-in),
   bleve-backed FTS `Indexer` + `FTSIndex`, catalog reader, build routine,
   hook/wrapping registration.
 - `glue/datastore_scan.go` — `DatastoreScanIndex`, `reconstructCoverDoc`

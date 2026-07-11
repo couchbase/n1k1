@@ -1,5 +1,19 @@
 # Growing n1k1's SQL++ test battery from the cbq corpus
 
+## Status & remaining TODOs
+
+_Last reviewed: 2026-07-11._
+
+**Done:** The recorded-cbq conformance oracle is live in both interpreter and compiler modes — `TestSuiteCases`/`TestGsiSuiteCases` (multiset `rowsMatch`, `passFloor` regression backstop; defaults floor 1045, gsi floor 833), fed by the constant-expression and data-backed gsi slices imported from the n1k1-query fork; the two-phase compiler-differential sweep (generate into `test/tmp/`, then compile+run) is wired through `make test-compiler`/`test-suite`/`test-suite-all`, `TestNoPanicRegress` guards hand-coded fuzz repros, `-race` is a periodic gate, and the fresh-worktree EE-stub bootstrap recipe below is verified.
+
+**Remaining (headline TODOs):**
+- [ ] Import more PURE gsi categories (aggregate/window/etc.).
+- [ ] Import PLAN categories, dropping plan/EXPLAIN-shape assertions.
+- [ ] Investigate `results-differ` non-passes for real fixes vs. tie-broken-LIMIT noise.
+- [ ] Add a guard test enumerating `OptimizableFuncs`, failing on any entry with no compiled-mode case.
+- [ ] Land a committed `make bootstrap` / `go.work` to automate fresh-worktree setup.
+- [ ] Fix `EXTRACTDDL(...)` panicking rather than erroring cleanly.
+
 ## Overview
 
 n1k1 reuses cbq's (`couchbase/query` / n1k1-query fork) parser and planner,
@@ -111,8 +125,8 @@ any/from/order/key/meta functions.
 
 ### Harness (DRY refactor)
 
-Interp and compiler suite bodies were factored into root-parameterized helpers —
-`runSuiteCases(root, expectedNonPass, groupWhy, passFloor)` and
+Interp and compiler suite bodies share root-parameterized helpers —
+`runSuiteCases(root, expectedNonPass, groupWhy, passFloor, skipRun)` and
 `runSuiteCompiler(root, outFile, funcPrefix, setupCall)` — so
 `TestSuiteCases`/`TestGsiSuiteCases` and
 `TestSuiteWithCompiler`/`TestGsiSuiteWithCompiler` share one implementation.
@@ -122,17 +136,25 @@ prefix to coexist with the default one in `test/tmp/` (`generated_by_*_test.go`)
 
 ### Results
 
-**465 / 493 pass in interp mode** (`gsiPassFloor=465`), green in compiler mode,
-no panics. `USE KEYS` / `USE PRIMARY KEYS` (incl. array / `ARRAY … FOR` /
-`FIRST … FOR` / `||` key exprs and `UNNEST`) work.
+The gsi corpus passes in both modes with no panics (`gsiPassFloor=833`, bumped as
+coverage grows; the window and subquery categories have since been imported too).
+`USE KEYS` / `USE PRIMARY KEYS` (incl. array / `ARRAY … FOR` / `FIRST … FOR` /
+`||` key exprs and `UNNEST`) work.
 
-Remaining `gsiExpectedNonPass` groups, each an explicit regression-guarded gap:
+The remaining non-passes are enumerated in `gsiExpectedNonPass`
+(`test/suite_gsi_test.go`) with a per-group rationale in `gsiGroupWhy` — each an
+explicit regression-guarded gap, none of which panic. The current groups:
 
 | Group | Reason |
 |---|---|
-| `any-every`, comp `results-differ` | Need full mega `purchase`/`review` datasets — aggregate / `ORDER BY … LIMIT` cases can't match cbq on the light sample. |
-| `json-funcs` | `JSON_ENCODE`(MISSING) semantics. |
-| `obj-funcs` | `ORDER BY` on array/object-valued keys. |
+| `mega-order-limit`, `fork-data-missing` | Depend on the full mega `purchase`/`review` datasets or fork-global setup docs our light-sample merged corpus doesn't carry, so `ORDER BY … LIMIT` / `USE KEYS` top-N can't match cbq. |
+| `order-agg` | `ORDER BY` an aggregate nested in a larger expr under a `.*`-spread projection (no projected column to bind). |
+| `results-differ`, `window-results-differ` | cbq STDDEV/VARIANCE quirks (single-element VAR_SAMP=0; numeric RANGE frame over non-numeric ORDER BY) n1k1 declines to match. |
+| `window-nondeterministic`, `nondeterministic` | Frame-position / aggregation-order picks an implementation-defined row within a tied group; matches cbq today but isn't guaranteed, so tracked as non-pass. |
+| `prepared` | Mixed-type / parameterized IN-list over a GSI index scan yields a different row set (a GSI index-scan limitation, not a PREPARE/EXECUTE one — those are supported). |
+
+`gsiSkipRun` additionally names cases n1k1 can parse/plan but must not execute
+(e.g. `subqexp[1]` would run an O(N²) unguarded correlated scan).
 
 ## Building the gsi suite in a fresh worktree
 

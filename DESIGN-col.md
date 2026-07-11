@@ -1,5 +1,40 @@
 # n1k1 — columnar & SIMD design notes
 
+## Status & remaining TODOs
+
+_Last reviewed: 2026-07-11._
+
+**Done:** Steps 1–5 have landed — the workload characterization, the ceiling spike
+(40–730× measured), the Parquet source, projection pushdown, and the first vectorized
+op (ungrouped `SUM`/`AVG`/`COUNT`/`MIN`/`MAX` aggregation over Parquet columns, fused
+with a selection-vector `WHERE` and `+`/`-`/`*` arithmetic operands, with null-masked
+kernels and zero-scan footer-stat shortcuts). What remains is Step 6: dictionary
+GROUP BY, more/vectorized kernels, and the optional SIMD leaf.
+
+Step roadmap:
+- [x] Step 1 — Characterize the workload (Parquet/Iceberg local-file scan niche).
+- [x] Step 2 — Spike the ceiling (fixed-width beats row-JSON 40–730×, no SIMD).
+- [x] Step 3 — Parquet source, transpose-to-rows (`records/parquet.go`, `!js`-guarded).
+- [x] Step 4 — Projection pushdown via `ColumnsProjector`/`ColumnsSource` sidecars,
+  reusing cbq's `plan.Fetch.EarlyProjection()`.
+- [x] Step 5 — Vectorized aggregation, no transpose (`agg-columnar` + zero-scan
+  `agg-metadata` ops; masked nulls; 5.4 selection-vector `WHERE`; 5.5 arithmetic operands).
+- [ ] Step 6 — Expand on measured wins: dictionary GROUP BY, vectorized arithmetic
+  kernels beyond agg operands, more aggregates, index-list selection, and the optional
+  amd64-only SIMD leaf.
+
+**Remaining (headline TODOs):**
+- [ ] Dictionary GROUP BY over low-cardinality string columns (integer key codes).
+- [ ] String / dictionary column encoding layout (numeric is settled; lean
+      Arrow-compatible offsets+payload).
+- [ ] Division / richer aggregate-operand expressions (nested, unary, n-ary).
+- [ ] Index-list selection vectors for very low selectivity.
+- [ ] Row/predicate pushdown at the Arrow level (`RowGroupPruner` sidecar, cf. cbq's
+      `iceberg_row_filter.go`) and operate-on-encoded-data (SUM over RLE, dict predicates).
+- [ ] The codegen north-star: project a column-batch target from the same lz source
+      (pointwise-lifting pass), gated on type inference (`TODO.md:250`).
+- [ ] Optional SIMD leaf on the columnar batch (amd64-only, mandatory scalar fallback).
+
 ## Overview
 
 Design record for **columnar (vectorized) execution** and **SIMD** in n1k1, a
@@ -18,7 +53,7 @@ See also: `DESIGN.md`, `DESIGN-data.md` (§ Parquet/Arrow), `DESIGN-exprs.md`,
 
 - [The core idea](#the-core-idea)
 - [The plan: Steps 1–6](#the-plan-steps-16)
-- [Step 5 — vectorized aggregation](#step-5--vectorized-aggregation)
+- [Step 5 — vectorized aggregation (DONE)](#step-5--vectorized-aggregation)
 - [Null handling & footer-stat shortcuts](#null-handling--footer-stat-shortcuts)
 - [Step 5.4 — selection-vector `WHERE` (DONE)](#step-54--selection-vector-where-done)
 - [Step 5.5 — arithmetic-expression operands (DONE)](#step-55--arithmetic-expression-operands-done)
@@ -87,13 +122,16 @@ baseline to beat.
   (`appendRecordsNDJSON`: **526K→2.1K allocs/op, 2.9× faster**, replacing
   `array.RecordToJSON` boxing).
 
-- **Step 5 — First vectorized op: aggregation, no transpose. ◀ NEXT.** Fused
-  Parquet-scan→agg over a typed, non-null column, reusing `AggSum`'s accumulator via
-  `AggCatalog["sum_v_float64"]`, feeding the borrowed Arrow buffer as a `base.Val`.
-  **Aggregation is first because its output is one row** — rejoins the row engine
-  transpose-free. See § Step 5.
+- **Step 5 — First vectorized op: aggregation, no transpose. ✅** A fused
+  Parquet-scan→agg lane over a typed column, reusing `AggSum`'s accumulator via
+  `AggCatalog["sum_v_float64"]`, feeds the borrowed Arrow buffer as a `base.Val`.
+  **Aggregation is first because its output is one row** — it rejoins the row engine
+  transpose-free. Ungrouped `SUM`/`AVG`/`COUNT`/`MIN`/`MAX` land, with masked nulls, a
+  zero-scan `agg-metadata` footer-stat path, selection-vector `WHERE` (5.4), and
+  `+`/`-`/`*` arithmetic operands (5.5). GROUP BY (dict keys) and the codegen north-star
+  remain. See § Step 5.
 
-- **Step 6 — Expand on measured wins.** More aggregates, vectorized arithmetic kernels,
+- **Step 6 — Expand on measured wins. ◀ NEXT.** More aggregates, vectorized arithmetic kernels,
   selection-vector filter, dictionary GROUP BY — each gated on a benchmark beating
   row-at-a-time. **SIMD lives here: last and optional** (amd64-only accelerator,
   mandatory scalar-Go path; batching alone carries the arm64/WASM win). Appendix B.
@@ -101,12 +139,13 @@ baseline to beat.
 -------------------------------------------------------
 ## Step 5 — vectorized aggregation
 
-Borrowed Arrow column → vectorized aggregation, no transpose. Land-small order:
-**5.1** `SUM(x)` fused scan→agg (null_count=0) → **5.2** multi-agg `SUM(x),SUM(y)`
-(N-tuple over one scan pass) → **5.3** `SUM(x+y)` (vectorized arithmetic kernel) →
-**5.4** chained ops + type-vector + selection vectors → GROUP BY (dict keys) → codegen
-north-star. **Prereqs:** `walkSource.Columns()` (multi-file schema) and a
-`ColumnBatchSource` on `parquetSource` yielding borrowed Arrow columns.
+Borrowed Arrow column → vectorized aggregation, no transpose. Landed in small
+increments: **5.1** `SUM(x)` fused scan→agg (null_count=0) → **5.2** multi-agg
+`SUM(x),SUM(y)` (N-tuple over one scan pass) → **5.3** `SUM(x+y)` (vectorized arithmetic
+kernel) → **5.4** chained ops + type-vector + selection vectors → **5.5** arithmetic
+operands. GROUP BY (dict keys) and the codegen north-star remain. **Prereqs met:**
+`walkSource.Columns()` (multi-file schema) and a `ColumnBatchSource` on `parquetSource`
+yielding borrowed Arrow columns.
 
 ### The vectorize decision (`sum` → `sum_v_float64`)
 

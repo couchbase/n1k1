@@ -1,5 +1,21 @@
 # Extending n1k1 — functions, drop-in extensions, dynamic loading, and table-valued/streaming
 
+## Status & remaining TODOs
+
+_Last reviewed: 2026-07-11._
+
+**Done:** The first extension slice is live and tested (interpreter + compiler): native zero-garbage aggregates `sparkline()`/`histogram()`, goja JavaScript scalar UDFs (opt-in dir/file/inline registry), JS aggregate UDFs (3-callback) and streaming table-valued sources (`emit` protocol, on one generic `stream-fn` op that `RULE_MATCHES` also rides), plus `*.extract.js` recipes whose `describe()` returns a declarative `ExtractSpec` applied on the native byte lane — all unlocked by two fork setters (`expression.RegisterFunction` / `algebra.RegisterAggregate`) that open the parser's builtin + aggregate registries without a grammar change.
+
+**Remaining (headline TODOs):**
+- [ ] Extract recipes are `describe()`-only; the imperative `extract(file, meta, emit)` escape hatch for irregular formats is not yet wired.
+- [ ] Streaming sources don't early-terminate on `LIMIT` (the `YieldStats` LIMIT hook is inert) — unbounded sources hang under `LIMIT`; needs engine-wide producer early-exit.
+- [ ] JS aggregate/streaming UDFs are v1: state round-trips through JSON per Update (not zero-garbage) and callbacks have no error channel (throw/NaN → null).
+- [ ] Full cbq UDF bridge unwired — `VisitExecuteFunction` returns `NA()`; no `CREATE FUNCTION` DDL / metadata catalog (Tier 3, roadmap step 1).
+- [ ] More native `base.Agg` aggregates beyond `sparkline`/`histogram`.
+- [ ] Streaming CTEs / subqueries: single-use pipe + multi-use spill-and-rescan (roadmap step 5) — not started.
+- [ ] wazero (Wasm) sandboxed extensions (roadmap step 6) — not started.
+- [ ] Hygienic JS reuse (`require()`/modules) + power-tier host functions (HTTP/S3, allowlisted `exec`); a complete extension-authoring guide.
+
 ## Overview
 
 n1k1 runs SQL++ via cbq's parser + planner, evaluating expressions natively where
@@ -14,7 +30,8 @@ everything: n1k1 builds `CGO_ENABLED=0`.
 
 ## Contents
 
-- [Status (implemented 2026-07)](#status-implemented-2026-07)
+- [Status & remaining TODOs](#status--remaining-todos)
+- [Implemented details (2026-07)](#implemented-details-2026-07)
 - [The function-name resolution seam](#the-function-name-resolution-seam)
 - [Hard constraint: CGO_ENABLED=0](#hard-constraint-cgo_enabled0)
 - [Extensibility tiers](#extensibility-tiers)
@@ -32,7 +49,7 @@ everything: n1k1 builds `CGO_ENABLED=0`.
 - [Vision: a sandboxed extension registry](#vision-a-sandboxed-extension-registry)
 - [Roadmap (suggested phasing)](#roadmap-suggested-phasing)
 
-## Status (implemented 2026-07)
+## Implemented details (2026-07)
 
 First slice is **live and tested** end-to-end in the interpreter (`test/ext_test.go`);
 full suite (interpreter + compiler) shows no regressions. Compiler mode: extension
@@ -78,7 +95,7 @@ slot into `extensionLoaders` later):
   parser accept them; conv.go routes computation to `base.AggCatalog[name]`, so cbq's
   Cumulate*/ComputeFinal never runs. Auto-registered at glue init.
 - **JS aggregates (3-callback protocol)** — `NAME_init()` / `NAME_update(state, value)`
-  / `NAME_final(state)` (`glue/ext_agg_jsvm.go`, `glue.RegisterJSAggregate`, or a
+  / `NAME_final(state)` (`glue/ext_jsvm_agg.go`, `glue.RegisterJSAggregate`, or a
   `NAME.agg.js` file). A `base.Agg` bridge threads `state` as JSON bytes in the group's
   spillable buffer, driving the callbacks on the same per-query/per-actor runtime as
   scalar UDFs. Same `algebra.Aggregate` shim. Trade-off vs native: state round-trips
@@ -93,9 +110,11 @@ Both reuse the same shim, so `NAME(expr)` works in GROUP BY and as a bare aggreg
    `plan.ExpressionScan` → `expr-scan` → `base.ArrayYield` path (materializes first).
 2. **Streaming sources (`*.stream.js` / `glue.RegisterJSStream`)** — a
    `function NAME(emit, ...args)` pushes rows via `emit(row)` (one row per argument = a
-   batch form); `VisitExpressionScan` routes `FROM NAME(...)` to the `js-stream` op
-   (`glue/ext_stream_jsvm.go`), yielding as rows are produced — **no materialization,
-   bounded memory** — composing with WHERE/GROUP BY/LIMIT. Ships
+   batch form). The producer lives in `glue/ext_jsvm_stream.go` and implements the
+   generic `StreamSource` interface; `VisitExpressionScan` recognizes any such FROM
+   expression and routes it to one shared `stream-fn` op (`glue/op_stream_fn.go`,
+   `StreamFnOp`) — the same op `RULE_MATCHES` rides — yielding as rows are produced,
+   **no materialization, bounded memory**, composing with WHERE/GROUP BY/LIMIT. Ships
    `extensions/functions/js/series.stream.js`. Caveat (matches every n1k1 source): no
    per-producer early-exit yet, so `LIMIT k` drops extras downstream while the source
    runs to completion — fine for a huge *finite* source, but an *unbounded* one hangs
@@ -354,9 +373,10 @@ a host-provided lazy iterator instead of a counter.)
 ### v1 shipped, and the LIMIT early-exit caveat
 
 **Implemented (v1, `*.stream.js`).** The per-row `emit(row)` form ships:
-`glue.RegisterJSStream` / a `NAME.stream.js` file registers a `jsStreamFunc`, the
-converter routes `FROM NAME(...)` to the `js-stream` op (`glue/ext_stream_jsvm.go`), and
-rows flow one at a time — bounded memory — composing with WHERE/GROUP BY/aggregates.
+`glue.RegisterJSStream` / a `NAME.stream.js` file registers a `jsStreamFunc` (its
+producer in `glue/ext_jsvm_stream.go` implements `StreamSource`), the converter routes
+`FROM NAME(...)` to the generic `stream-fn` op (`glue/op_stream_fn.go`), and rows flow
+one at a time — bounded memory — composing with WHERE/GROUP BY/aggregates.
 `emit(a, b, …)` yields one row per argument.
 
 v1 does *not* early-terminate the source on `LIMIT` (the `YieldStats` LIMIT hook is
@@ -463,8 +483,11 @@ of log lines can't afford the ~1 µs/row goja boundary, the *default* is that JS
 **only in `describe`** (once per file), returning a declarative `ExtractSpec`
 (`framing`/`fields`/`time`/`order`/`provenance` — `DESIGN-data.md` §4). n1k1 applies
 that spec on the **byte-native fast lane** (regex field capture, timestamp
-normalization), so the hot per-record path never enters JS. `extract(file, meta, emit)` is
-the fallback for the irregular tail, on the existing streaming `js-stream` op.
+normalization), so the hot per-record path never enters JS. **v1 ships exactly this
+`describe()`-only path** (`glue/ext_extract_jsvm.go` registers a `records.Recipe` with a
+`Describe` closure and `Extract` nil; native `records.SpecApply` runs the returned spec).
+`extract(file, meta, emit)` — the imperative fallback for the irregular tail, riding the
+`stream-fn` op — is **designed but not yet wired** (a headline TODO).
 
 ### The `file` host object (read-only, single-file capability)
 
@@ -904,12 +927,15 @@ bounded, capability-free Wasm instance that streams JSON.
 2. **DONE — Tier 2 JavaScript + a general extension loader** — "code in a repo":
    `glue.RegisterExtensionDir`/`RegisterExtensionFile` dispatch by extension (`.js`
    today), CLI `-ext`/`.ext`; impl in `glue/ext_jsvm.go`.
-3. **Streaming source-function op** + route `FROM shred(...)`/loaders to it; pair with
-   DESIGN-data.md file-source work.
+3. **DONE — Streaming source-function op** — a generic `stream-fn` op
+   (`glue/op_stream_fn.go`, `StreamFnOp`) driven by any `StreamSource`; `*.stream.js`
+   JS sources and `RULE_MATCHES` both ride it. `FROM shred(...)`/loaders slot in via the
+   same interface; pairs with DESIGN-data.md file-source work.
    - **3b. Extract functions (`*.extract.js`) — the PREPARE++ enabler.** A new
      extension class on the *file→extractor* axis (not the name seam): `match` +
-     `describe(file) → ExtractSpec` (native execution, JS off the hot path) +
-     imperative `extract(file, meta, emit)` fallback (reuses the step-3 streaming op). A
+     `describe(file) → ExtractSpec` **DONE** (native execution via `records.SpecApply`,
+     JS off the hot path); the imperative `extract(file, meta, emit)` fallback (would
+     reuse the step-3 streaming op) is **not yet wired**. A
      read-only single-file `file` host object; a git-repo registry matched by
      ext/regexp; golden-fixture CI. Produces the timestamp-normalization + sortedness
      metadata the **K-way merge join / ASOF** consume (`DESIGN-data.md`

@@ -3,8 +3,26 @@
 Forward-looking only. What's DONE is in TODO-done.md; internals + the
 design are in DESIGN.md; build/test commands are in README.md.
 
-Status: modernization + a pure-Go N1QL (SQL++) engine (CGO_ENABLED=0,
-cross-compiles) are done. Remaining work:
+Status: a working pure-Go SQL++ engine (CGO_ENABLED=0, cross-compiles;
+also GOOS=js/wasm in-browser). Beyond core query it now has temporal ASOF
+correlation (streaming merge-join / merge-scan), multi-query corpus fusion
+(PREPARE++ CorpusCompile + RULE_MATCHES), session materialization (TEMP
+KEYSPACE, spills to disk), extract recipes + a Parquet queryable keyspace,
+goja JS UDFs + native sparkline()/histogram() aggregates, and a rich CLI
+(cmd/n1k1). Remaining work:
+
+## Headline priorities
+
+_Last reviewed: 2026-07-11._
+
+- [ ] Fork-free standalone analyzer binary -- glue still doesn't codegen to fork-free *.go.
+- [ ] Native-lane ASOF / subquery projection -- kill boxed-value/JSON alloc churn (top perf lever).
+- [ ] Columnar step 6: dictionary GROUP BY + more vectorized kernels + optional SIMD leaf (DESIGN-col.md; steps 1-5 done).
+- [ ] Raise the SQL++ conformance (TestSuiteCases) pass rate.
+- [ ] Correlated FROM-clause subqueries / CTE-as-datasource edge cases.
+- [ ] IndexScan2/3 pushdowns: indexProjection / indexOrder / indexGroupAggs.
+- [ ] JOIN types: FULL / RIGHT OUTER / LATERAL.
+- [ ] GROUP BY ROLLUP / GROUPING SETS.
 
 ## Conformance (SQL++ suite corpus)
 - [ ] Raise the TestSuiteCases pass rate.
@@ -75,12 +93,15 @@ in glue/patches/README.md.
   - COUNTN versus COUNT? -- DONE (base/agg.go registers countn / countn_distinct
     via AggCountNUpdate; COUNTN counts only NUMBER-typed values).
 
-- ORDER BY ... NULLS FIRST vs NULLS LAST?
+- ORDER BY ... NULLS FIRST vs NULLS LAST? -- DONE (see TODO-done.md; per-term
+  nulls-position in the order-offset-limit op).
 
 - window partitions
-  - window frame RANGE only works now for ORDER BY ASC?
+  - window frame RANGE only works now for ORDER BY ASC? -- DONE (multi-column
+    RANGE, see TODO-done.md).
   - optimizations?
-    - inverse optimization on sliding window?
+    - inverse optimization on sliding window? -- DONE (invertible O(N) sliding
+      COUNT/SUM/AVG + MIN/MAX deque; see TODO-done.md).
     - not materializing partition if possible?
       - for example, when only a count is needed?
   - FILTER (WHERE expr) clause?
@@ -214,8 +235,13 @@ in glue/patches/README.md.
     - but, we don't want to race too far ahead?
 
 - SIMD optimizations possible? see: SIMD-json articles / DESIGN-col.md?
+  - UNDERWAY, see DESIGN-col.md: steps 1-4 DONE (fixed-width spike; Parquet
+    queryable keyspace; column-projection pushdown reusing plan.Fetch.
+    EarlyProjection). Step 5 (@col in-op vectorized aggregation) is the next
+    lever, partially started -- see headline priorities.
 
-- col versus row optimizations? see: DESIGN-colmd.
+- col versus row optimizations? see: DESIGN-col.md.
+  - UNDERWAY (steps 1-4 DONE; see above + DESIGN-col.md).
   - if columns are fixed size or fixed width, then
     a Val in the Vals can be interpreted as having multiple
     values in contiguous sequence.
@@ -238,6 +264,9 @@ in glue/patches/README.md.
   panic/recover that can leave unclosed, unreclaimable unresources?
 
 - operator might optionally declare how its output Vals are sorted?
+  - PARTIAL: SortedSourceMeta exists and drives the temporal ASOF merge
+    (sort-elision + sorted-source gating); a fully general "declared sort
+    order" contract across all operators is still open.
 
 - scan should have a lookup table of file suffix handlers?
 
@@ -262,13 +291,20 @@ in glue/patches/README.md.
     have a bounded expression tree, though?
     - this might be ok for keyword type indexed fields?
 
-- merge join - COMPLEX with push-based engine...
+- merge join - COMPLEX with push-based engine... -- substantially DONE (see
+  TODO-done.md). Correlated-argmax / ASOF subqueries lower to a streaming
+  merge-join + merge-scan (engine/op_merge_join.go, op_merge_scan.go): a
+  memory-bounded two-stream co-advance over near-sorted keyspaces, with a
+  K-way pull-coordinator for multi-file merge-scan.
   - merge join needs threading / locking / coroutines
     so that both children can feed the merge-joiner?
   - a variation on the concurrent data-staging that interweaves or
     zippers together batches from children might work?
 
 - merge join needs a skip-ahead ability as an optimization?
+  - PARTIAL: the merge co-advance skips/advances past non-matching rows
+    (tolerance-bounded), but a general SkipToHints seek pushed down to
+    children is still open.
   - idea: can introduce an optional lazy "SkipToHints" object or Vals
     that's available to operator's children?
     - an lzYieldVals callback can optionally provid skip hints via

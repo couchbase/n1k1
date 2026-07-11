@@ -1,6 +1,21 @@
 # Design: Live Stats & Progress Reporting
 
-Status: proposal / for review (counter core now implemented — see [Implementation status](#implementation-status)).
+## Status & remaining TODOs
+
+_Last reviewed: 2026-07-11._
+
+**Done:** The opt-in per-operator counter core is live — a flat `[]int64` keyed by op id (`base/stats.go`: `StatsDescs`/`DefStat`/`LayoutStats`/`Op.StatsBase`/`Ctx.Stats`), instrumented across scan/filter/group/distinct/order-offset-limit/join-nest-unnest plus the glue datastore scans, exposed by the CLI in three modes (`off`/`on`/`final`) with a throttled ~10 Hz columnar live footer, a process `runtime:` line, and a `YieldPacer` (`glue/stats.go`) pacing the redraw; live running-aggregate partials (COUNT/SUM/AVG/MIN/MAX and their `_v` forms) climb race-safe across concurrent `UNION ALL` actors with zero per-row/per-snapshot alloc (`base/stats_running.go`, `glue/stats_running.go`, `glue/stats_snapshot.go`); and the corpus `RunReport` reports per-keyspace scanned rows + per-detector woken counts (`glue/corpus.go`). All of the above is **interpreter-only** (the compiled path is `genCompiler:hide`).
+
+**Remaining (headline TODOs):**
+- [ ] Re-enable counters on the **compiled** path (they are `genCompiler:hide` today — see the KNOWN LIMITATION under [Codegen safety](#codegen-safety-dev-notes)).
+- [ ] Instrument the remaining ops: `project`/`union`/`window` and hash-join counters.
+- [ ] `BytesIn` + pruning counters (`FilesOpened`/`FilesPruned`, bytes skipped) — needs the `DESIGN-data.md §5` manifest / zone maps.
+- [ ] Richer denominators beyond `LIMIT` + self-observed peak (planner cardinality, manifest doc/byte counts).
+- [ ] `StatKind` (Counter/Gauge/Peak) marker in the descriptor.
+- [ ] Heavy running aggregates (MEDIAN/VARIANCE/STDDEV/ARRAY_AGG/DISTINCT sets) — progress-only, coarse-cadence alloc, or approximate (HLL / streaming quantile).
+- [ ] Generic partial result-row preview (`GROUP BY` sample, `ORDER BY … LIMIT` live leaderboard) beyond the running-aggregate scalars.
+- [ ] The detail-level dial (`off|auto|min|rich|debug`) + view selector (`line|bars|plan|pruning|preview`); today the CLI has only `off|on|final`.
+- [ ] Plan-flow visualization, racing bars, record/playback DVR, and `EXPLAIN PRICE`/`EXPLAIN COST`.
 
 ## Overview
 
@@ -15,6 +30,7 @@ visualization, DVR/replay, and `EXPLAIN PRICE`/`EXPLAIN COST`.
 
 ## Contents
 
+- [Status & remaining TODOs](#status--remaining-todos)
 - [Existing skeleton](#existing-skeleton)
 - [Core principle: two decoupled cadences](#core-principle-two-decoupled-cadences)
 - [What to measure — the `Stats` struct](#what-to-measure--the-stats-struct)
@@ -230,8 +246,8 @@ is read by `cmd/intermed_build` to emit the compiled path
 
 ## Implementation status
 
-Implemented (interpreter + compiled path, verified by the `n1ql` suite in both
-modes):
+Implemented on the interpreter (the compiled path collects nothing today except
+scans — see the KNOWN LIMITATION above; the `n1ql` suite exercises both modes):
 
 - **`base/stats.go`** — `Stats{Counters, Index, Ops}`, the `StatsDescs` registry
   (op Kind → ordered stat names), `LayoutStats(root)` (pre-order walk sizing the
@@ -498,8 +514,8 @@ richer payload: `Stats` (or a sibling `Preview`) carries an optional bounded
 
 Status: the cheap fixed-width core (COUNT/SUM/AVG/MIN/MAX + `_v`) is implemented,
 interpreter-only, and concurrency-safe across parallel `UNION ALL` branches (per-op
-fixed slots + a checkpoint-only lock) — see `base/running_agg.go`, `OpGroup`'s
-registration (`Ctx.RegisterRunningAgg`), `Ctx.RefreshRunningAggs`, and the
+fixed slots + a checkpoint-only lock) — see `base/stats_running.go`, `OpGroup`'s
+registration (`Ctx.RunningAggRegister`), `Ctx.RunningAggsRefresh`, and the
 `TestStatsSnapshotLiveAggregates*` / `TestStatsRunningAggsUnionRace` tests +
 `BenchmarkLiveAggSnapshot` (0 allocs/op). (The machinery was named "preview" in an
 earlier draft; it is now "running aggregates" — a value that keeps climbing, not a
@@ -651,24 +667,27 @@ they are deferred and out of scope here.
 top-N-by-current-value, N≈10–50) via a capped `rhmap` `Visit`; top-N costs an O(groups)
 scan per checkpoint (a "live leaderboard"), first-N is O(N).
 
-### Internal machinery to add (ranked by effort/risk)
+### Internal machinery — landed, and what remains
 
-1. **Reach the live group map from the checkpoint reader** *(medium effort, low–med
-   risk).* Today `lzSet` is a local in `OpGroup`, invisible to `YieldStats`/`OnStats`.
-   Add a per-request preview registry on `base.Ctx` (e.g. `Ctx.Previews []PreviewSource`
-   or a callback slice) that `OpGroup` populates **once at setup** (non-`lz`, off the
-   hot path) with a closure capturing `lzSet`, `aggCalcs`, and the group/agg label
-   layout. The checkpoint walks registered sources. Risk: lifetime — must be
-   deregistered before `RecycleMap` (a snapshot must never outlive the map); and it
-   must stay interpreter-only (`genCompiler:hide`) like today's counters.
-2. **A reusable `Preview` payload + scratch buffer** *(low effort, low risk).* A
-   lifted `[]PartialRow` and `previewBuf []byte` on `Ctx`/`Stats`, reused across
-   checkpoints; `Agg.Result`'s existing `buf` seam feeds it. Carries `Partial: true`.
-3. **Bounded-sample helper** *(low–med effort, low risk).* A capped `Visit` (first-N)
-   and an optional top-N-by-value pass over the group map, decoding into (2).
-4. **Ungrouped reserved-slot fast path** *(low effort, low risk, optional).*
-   `DefStat` a `CountCur`/`SumCur` gauge pair; flush at the checkpoint. Requires the
-   `StatKind` gauge marker (already foreshadowed) and a float-in-int64 convention.
+Items 1–3 are **done** (`base/stats_running.go`, `glue/stats_running.go`):
+
+1. **Reaching the live group map from the checkpoint reader** — `OpGroup` registers a
+   refresher once at setup via `Ctx.RunningAggRegister(slot, fill)` (non-`lz`, off the
+   hot path), capturing the live group map and the agg/label layout; the checkpoint
+   calls `Ctx.RunningAggsRefresh` to walk it. Lifetime is handled (the refresher is
+   torn down before `RecycleMap`), and it stays interpreter-only (`genCompiler:hide`).
+2. **A reusable payload + scratch buffer** — the per-op `Stats.RunningAggs[slot]` holds
+   the reused `[]RunningAggRow` + byte buffers, fed through `Agg.Result`'s `buf` seam,
+   read via `Stats.RunningAggsRange`; `BenchmarkLiveAggSnapshot` confirms 0 allocs/op.
+3. **Bounded sample** — `RunningAggMaxGroups` (=64) caps a first-N walk per checkpoint;
+   ungrouped queries (one group) are always fully covered.
+
+Remaining:
+
+4. **Ungrouped reserved-slot fast path** *(optional).* `DefStat` a `CountCur`/`SumCur`
+   gauge pair flushed at the checkpoint — superseded in practice by the general
+   map-walk path above; would only skip the map handle for the one-group case, and
+   needs the `StatKind` gauge marker + a float-in-int64 convention.
 5. **Compiled path** *(deferred).* Same `genCompiler:hide` limitation as the existing
    counters — the CLI's live display runs on the interpreter, so no user-visible loss
    until that broader codegen work lands (see the KNOWN LIMITATION note above).
@@ -685,10 +704,13 @@ regardless of preview — a pre-existing property, not caused by live stats.
 
 ### Testing
 
-- **Extend the live-snapshot tests.** Add an aggregate query to the
-  `TestStatsSnapshotLiveDuringQuery` pattern (`glue/stats_snapshot_test.go`) with
-  `engine.ScanYieldStatsEvery = 1` so many checkpoints fire on a tiny fixture; assert
-  `OnStats` delivers a partial whose COUNT/SUM climb.
+The tests below are in place (`glue/stats_snapshot_test.go`,
+`glue/stats_running_test.go`, `glue/stats_test.go`):
+
+- **Live-snapshot tests.** `TestStatsSnapshotLiveAggregates` /
+  `...Grouped` drive an aggregate query with `engine.ScanYieldStatsEvery = 1` so many
+  checkpoints fire on a tiny fixture, asserting `OnStats` delivers a partial whose
+  COUNT/SUM climb.
 - **Convergence invariant (the key test).** The **last live partial must equal the
   finalized result** — decode-early and decode-at-drain call the identical
   `Agg.Result`, so this also guards that no partial ever diverges from the real

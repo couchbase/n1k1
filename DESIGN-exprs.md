@@ -1,15 +1,48 @@
 # Design: Native Expression Coverage
 
-Status: proposal / for review
-
 n1k1 evaluates a growing set of SQL++/N1QL expressions **natively** (byte-oriented,
 allocation-avoiding, compiler-friendly) and **delegates the rest to the cbq-query
 (`n1k1-query`) engine**, whose `Evaluate()` boxes into `value.Value` and garbages per
 row. The native library grows incrementally; the cbq fallback stays **forever** as a
 correctness backstop.
 
+## Status & remaining TODOs
+
+_Last reviewed: 2026-07-11._
+
+**Done:** A large native byte-lane (zero steady-state garbage) covers arithmetic,
+comparisons, three-valued logical AND/OR, predicates/type-checks, CASE and
+conditional-unknown selectors, string/numeric/math funcs, constant-pattern REGEXP,
+array/object readers and builders, the `self` / `SELECT *` projection, grouped-aggregate
+reads, and boxing-free result output; window functions are a broadly-complete op
+subsystem (ROWS/RANGE/GROUPS frames, ranking, LAG/LEAD/FIRST/LAST/NTH_VALUE,
+RATIO_TO_REPORT, named WINDOW, NULLS ordering) with O(N) fast paths for the common frame
+shapes. The cbq boxed fallback remains as the correctness oracle for everything else.
+
+**Remaining (headline TODOs):**
+- [ ] **Native-lane projection for ASOF / subquery results** — carry the value on the
+  byte lane and skip the `Convert`→`value.Value` round-trip; boxed-value / JSON alloc
+  churn still dominates some workloads, and this cuts the bulk of it.
+- [ ] **Lazy/on-demand `Convert`** (profiling lever #3) — a `value.Value` that
+  materializes fields only on access, serializing straight from label bytes; helps
+  field-selective queries (`WHERE a.x > 5`).
+- [ ] **Decompose boxed CTE / derived-table rows into native label columns at capture**,
+  and a typed/parsed temp materialization (columnar territory, `DESIGN-col.md`).
+- [ ] **Port more boxed funcs off the fallback:** the date-STRING family
+  (`str_to_millis`/`millis_to_str`/`date_diff_*`/`date_trunc_*`), bare-identifier
+  object/array operands (`OBJECT_LENGTH(o)`), variadic >2-arg array/object builders,
+  `array_sort/distinct/reverse/flatten`, comprehensions (ANY/EVERY/ARRAY/MAP/FIRST),
+  and `slice` navigation (blocked on a cbq-fork accessor).
+- [ ] **`LIKE` / dynamic-pattern `REGEXP_*`** — need a hand-rolled zero-alloc byte glob
+  matcher; they don't fit the byte-reuse model as `regexp` compiles.
+- [ ] **Compiled-path n-ary ops broken** (`ifnull`/`greatest`/`least`/`concat`/`case`) —
+  fold the foldable ones to right-nested binary; a capture-stack rework for CASE.
+- [ ] **Window perf tail:** sliding SUM/AVG over non-integer data still re-folds;
+  general arbitrary-frame O(N log N) segment trees; decode operand once per partition row.
+
 ## Contents
 
+- [Status & remaining TODOs](#status--remaining-todos)
 - [Status at a glance](#status-at-a-glance)
 - [Why native matters (the fallback's cost)](#why-native-matters-the-fallbacks-cost)
 - [Design principles & the byte-level toolkit](#design-principles--the-byte-level-toolkit)
@@ -453,7 +486,7 @@ natively from label bytes for the common case (lever #2 below). Emitted by:
 
 Ranked for this count-over-join shape:
 
-**1. Discard-elision (dead-value elimination) — DONE (v1, `glue/discard_elision.go`).**
+**1. Discard-elision (dead-value elimination) — DONE (v1, `glue/optimize.go`).**
 A post-conversion pass over the `base.Op` tree: under a *value-agnostic group* (no
 GROUP BY keys + every aggregate operand a constant `["json",…]` term — the
 `COUNT(*)`/`COUNT(<const>)` family), splice out the `project` chain below it (their

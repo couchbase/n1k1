@@ -1,8 +1,49 @@
 # n1k1 — design & internals
 
-How n1k1 works internally, its performance approaches, and the running
-TODO / ideas list. For the feature list and build/test instructions, see
-README.md.
+How n1k1 works internally and its performance approaches. The forward-looking
+TODO / ideas list is in TODO.md (done items in TODO-done.md); the feature list
+and build/test instructions are in README.md.
+
+n1k1 is a working pure-Go SQL++ engine (CGO_ENABLED=0, cross-compiles; also
+GOOS=js/wasm in-browser). Beyond core query it has temporal ASOF correlation
+(streaming merge-join / merge-scan), multi-query corpus fusion (PREPARE++
+CorpusCompile + RULE_MATCHES), session materialization (TEMP KEYSPACE, spills to
+disk), extract recipes + a Parquet queryable keyspace, goja JS UDFs + native
+custom aggregates, secondary/FTS indexes, and a rich CLI (cmd/n1k1).
+
+-------------------------------------------------------
+## Headline TODOs (project-wide)
+
+_Last reviewed: 2026-07-11._ The canonical list lives in TODO.md; the biggest
+remaining items:
+
+- [ ] Fork-free standalone analyzer binary — glue still doesn't codegen to fork-free `*.go` (DESIGN-prepare.md).
+- [ ] Native-lane ASOF / subquery projection — kill boxed-value/JSON alloc churn, the top perf lever (DESIGN-exprs.md, DESIGN-benchmark.md).
+- [ ] Columnar step 6 — dictionary GROUP BY + more vectorized kernels + optional SIMD leaf (DESIGN-col.md; steps 1–5 done).
+- [ ] Raise the SQL++ conformance (TestSuiteCases) pass rate (DESIGN-testing.md).
+- [ ] Correlated FROM-clause subqueries / CTE-as-datasource edge cases.
+- [ ] IndexScan2/3 pushdowns: indexProjection / indexOrder / indexGroupAggs (DESIGN-indexing.md).
+- [ ] JOIN types FULL / RIGHT OUTER / LATERAL; GROUP BY ROLLUP / GROUPING SETS.
+
+Each design doc below opens with its own **`## Status & remaining TODOs`** section.
+
+-------------------------------------------------------
+## Design docs
+
+| doc | scope |
+|-----|-------|
+| [DESIGN-data.md](DESIGN-data.md#status--remaining-todos) | data / extract / framing: file datastore, discovery, `*.extract.js` recipes, `_meta`, sorted-source metadata, Parquet, TEMP KEYSPACE materialization |
+| [DESIGN-merging.md](DESIGN-merging.md#status--remaining-todos) | K-way sorted merge-scan + merge-join; ASOF temporal correlation lowering |
+| [DESIGN-sorting.md](DESIGN-sorting.md#status--remaining-todos) | shared sorted-stream substrate; the grep -A/-B/-C context fan-out |
+| [DESIGN-prepare.md](DESIGN-prepare.md#status--remaining-todos) | PREPARE/EXECUTE, codegen-to-standalone, PREPARE++ corpus fusion, late binding, the datastore-pipe seam |
+| [DESIGN-exprs.md](DESIGN-exprs.md#status--remaining-todos) | native byte-lane expression evaluation vs the boxed cbq fallback; window functions |
+| [DESIGN-extensions.md](DESIGN-extensions.md#status--remaining-todos) | extension system: goja JS UDFs, native custom aggregates, streaming/table functions, extract recipes |
+| [DESIGN-indexing.md](DESIGN-indexing.md#status--remaining-todos) | secondary indexes (catalog), covering scans, FTS/bleve `SEARCH()`, in-memory index |
+| [DESIGN-stats.md](DESIGN-stats.md#status--remaining-todos) | per-operator counters, the live runtime footer, running-aggregate display |
+| [DESIGN-col.md](DESIGN-col.md#status--remaining-todos) | columnar / SIMD roadmap: Parquet, projection pushdown, vectorized aggregation |
+| [DESIGN-cli.md](DESIGN-cli.md#status--remaining-todos) | the cmd/n1k1 CLI + REPL: dot-commands, output modes, flags, help |
+| [DESIGN-testing.md](DESIGN-testing.md#status--remaining-todos) | testing: recorded-cbq conformance suite, gsi corpus, compiler-differential sweep, EE-stub bootstrap |
+| [DESIGN-benchmark.md](DESIGN-benchmark.md#status--remaining-todos) | benchmarking approach + recorded numbers |
 
 -------------------------------------------------------
 ## The way the n1k1 compiler works...

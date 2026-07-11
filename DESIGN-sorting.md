@@ -1,8 +1,30 @@
 # Design: Shared sorted-stream substrate
 
-Status: **proposal** (no code yet). Companion to `DESIGN-prepare.md` (PREPARE++ /
-multi-query optimization), `DESIGN-merging.md` (the ASOF K-way merge), and
-`DESIGN-exprs.md` (the native window functions this builds on).
+Companion to `DESIGN-prepare.md` (PREPARE++ / multi-query optimization),
+`DESIGN-merging.md` (the ASOF K-way merge), and `DESIGN-exprs.md` (the native window
+functions this builds on). (Formerly `DESIGN-mqo-sorted.md`.)
+
+## Status & remaining TODOs
+
+_Last reviewed: 2026-07-11._
+
+**Done:** The shared sorted substrate exists and its first stateful consumer — the
+grep -A/-B/-C **context extractor** — ships: K context detectors sharing a
+`(keyspace, PARTITION, ORDER)` signature fuse onto ONE scan + ONE sort feeding a single
+`engine.OpBroadcastContext` (`recognizeContextDetector` + `buildContextBroadcast`), with
+AC-index sparse-match, sort-elision on `(_meta.path, _meta.pos)`, and evidence shaped to
+each detector's own SELECT projection. Part B's temporal-correlation path (ASOF) also
+lands: nearest-preceding **and** nearest-following merges with a right-stream residual
+content filter, plus a transparent datastore-pipe scan cache (`glue/corpus_cache.go`) that
+shares both sides of K correlators' scans (byte-budgeted, spillable).
+
+**Remaining (headline TODOs):**
+- [ ] Multi-column `PARTITION BY` for context detectors (MVP recognizes exactly one column).
+- [ ] A general "source advertises its order" contract for sort-elision beyond the hardcoded `_meta` keys.
+- [ ] Per-detector hit stats for context ops.
+- [ ] MQO across correlators (step 5, stretch): a K-way watermark / sweep-line coordinator over shared sorted bands — needs the resumable pull-cursor work (`DESIGN-merging.md` §2).
+- [ ] AC-index the shared left scan's per-stream filters; adaptive scan-cache budget.
+- [ ] The normalized int64 `time:` key (per-source parse-spec layer, `DESIGN-data.md`) — the load-bearing prerequisite for Part B on real bundles.
 
 ## TL;DR
 
@@ -17,10 +39,12 @@ no sharing):
 - **Temporal cross-keyspace correlation** — "XYZ happened in log1, then ABC happened soon
   after in log2" (an ASOF / band correlation across two streams by timestamp).
 
-Both are already **expressible in stock SQL++** and **correct** today; both are **not
-shared** across detectors. This note argues they share ONE missing substrate — a **shared,
-sorted-by-key stream per keyspace** — and that a modest set of recognizers/directives lets a
-whole class of stateful detectors fuse onto it. The unifying levers:
+Both are **expressible in stock SQL++** and **correct** today, and both originally ran
+standalone. This note argued they share ONE missing substrate — a **shared, sorted-by-key
+stream per keyspace** — and that a modest set of recognizers/directives lets a whole class
+of stateful detectors fuse onto it. That substrate is now built (see Status): context
+detectors fuse today, and the temporal-correlation path shares its scans. The unifying
+levers:
 
 1. **Share the sort**, not just the scan. Stateless MQO shares a row stream; stateful
    detectors need a stream *sorted+partitioned by a key*, and detectors overwhelmingly share
@@ -222,20 +246,18 @@ Each step is independently useful and benchmark-gated (like the DESIGN-col roadm
    window/merge path to skip the sort when the scan advertises `order:` matching the `ORDER
    BY` key. Benefit even before any sharing; foundation for the shared stream. *Measure:* a
    context detector over a pre-ordered keyspace vs today's forced sort.
-2. **ASOF residual content filter on the right stream** (Part B unlock). **DONE (preceding).**
-   `MatchArgmaxAsof` now recognizes WHERE conjuncts that reference only the right alias
+2. **ASOF residual content filter on the right stream** (Part B unlock). **DONE.**
+   `MatchArgmaxAsof` recognizes WHERE conjuncts that reference only the right alias
    (`refsOnlyAlias`) as a residual (`AsofMatch.RightResidual`), and the lowering pushes them
    as a filter onto the build scan (`withRightResidual`) so the merge finds the nearest row
    that ALSO matches — byte-identical to the correlated baseline
    (`TestASOFLoweringRightResidualDifferential`). This turns "the nearest <content-matching>
-   row of another stream" from O(n×m) into a merge, for the **nearest-preceding** direction.
-   *Surfaced while building this:* nearest-**following** (ASC + `r.key >= e.key`) is
-   recognized but the merge-join op is **preceding-only**, so following was lowering to the
-   WRONG rows — a latent correctness bug. It now **bails to the correct correlated subquery**
-   (`TestASOFFollowingBailsToCorrelated`). So the residual works today on preceding; the
-   flagship "XYZ → ABC soon after" is *following*, which needs step 2b.
+   row of another stream" from O(n×m) into a merge. (An intermediate landing surfaced a
+   latent bug — nearest-**following** is recognized but the merge-join op was preceding-only,
+   so following mis-lowered; it briefly bailed to the correlated subquery until step 2b added
+   real following support.)
 2b. **Nearest-following in the merge-join op** (the flagship's real unblock). **DONE.**
-   `engine/op_merge_join.go` gained a following mode (Params[7] `direction`): a
+   `engine/op_merge_join.go` has a following mode (Params[7] `direction`): a
    non-consuming forward cursor (first right row with key ≥ left key), unpartitioned and
    partitioned (a per-partition ascending index list + cursor, `mergeJoinStepAsofFollowing`);
    the recognizer accepts the look-AHEAD soft bound `r.key <= e.key + Δt` (`splitLookahead`
@@ -306,7 +328,7 @@ Each step is independently useful and benchmark-gated (like the DESIGN-col roadm
    `CompiledCorpus.CorrelationGroups` (tested: two nearest-preceding errors→state-by-ts
    detectors share a group, a following one splits) and `.rules run` surfaces the shareable
    groups.
-   **Execution-sharing DONE** (`glue/corpus_scancache.go`): rather than rewrite each
+   **Execution-sharing DONE** (`glue/corpus_cache.go`): rather than rewrite each
    detector's plan to read a `temp-yield` (which would re-touch the ASOF lowering + need a
    combined single-`vars` plan + temp-slot coordination), a `corpusScanCache` --
    a `base.DatastorePipe` installed on the session for the corpus run -- intercepts at the

@@ -1,21 +1,39 @@
 # Design: PREPARE — SQL++ → Go, and running the prepared program
 
-Status: proposal.
-**PREPARE (first half)** — phases 1–3 implemented: `.prepare` emit + gate + interpreter
-fallback; datastore `DatastorePipe`/MemPipe; cbq `PREPARE`/`EXECUTE` statements + `-prepare`
-ceiling + compiled `EXECUTE` end-to-end via the thin-child + data-over-pipe run model.
-Remaining: embed-source fat child, the full cursor pipe protocol, WASM.
-**PREPARE++ (second half)** — the temporal optimizations (phase 5: ASOF / K-way merge) and the
-multi-query-optimization engine substrate (phases 3–4: shared-scan `broadcast`, source routing,
-corpus CSE, predicate index) are **implemented and benchmarked**, and the **corpus compiler
-(phase 6) that feeds them from SQL++ detectors is built (MVP)** — `Session.CorpusCompile` fuses
-single-source detectors into the shared-scan plan, runs correlated/complex ones (ASOF, window,
-GROUP BY, join) standalone via their own optimized plans, and rejects only the broken. What
-remains: the phase-6 tail (SHA-keyed build cache, embed-source analyzer binary, per-detector
-projection envelope), the logical-keyspace / late-binding resolver (phases 1–2, partly enabled by
-the extract-recipe data layer in `DESIGN-data.md`), and the recipe-format + golden-fixture CI
-(phase 7). Native-expr coverage (the codegen lever that lets a detector compile to
-`PrepareCompiledFull`) is ongoing (`DESIGN-exprs.md`).
+## Status & remaining TODOs
+
+_Last reviewed: 2026-07-11._
+
+**Done:** PREPARE/EXECUTE work in-session (parse+cache, re-plan+run with bound args) under a
+`-prepare=<level>` ceiling (`interpreted`|`data`|`full`); at `full` a fully-native prepared
+statement compiles to a cbq-free child BINARY (engine+base only) that runs as a child process
+over stdin/stdout (`executeCompiled`), with the interpreter always the fallback. The PREPARE++
+corpus path is built and differential-tested, running interpreted: `CorpusCompile` classifies
+detectors fuse/standalone/reject and wires the MQO substrate (`broadcast` / source-route / corpus
+CSE / Aho-Corasick predicate index), ASOF/temporal lowers to a K-way merge, the late-binding
+manifest (`OpenSessionBound` / `binding.go`) resolves logical keyspace names to per-bundle globs
+(fail-loud), the datastore-pipe seam (`base.DatastorePipe` / `engine.MemPipe`) lets an emitted
+plan read inline data, and the `.rules` dot-command family (`run`/`lint`/`test`/`list`/`help`)
+drives authoring + golden-fixture CI.
+
+**Remaining (headline TODOs):**
+- [ ] A fully standalone, **fork-free analyzer binary** (`.rules build … -o analyzer` embedding a
+  minimal datastore runtime + baked plan + recipes). RULE_MATCHES codegens at
+  `-prepare=full` but STILL imports glue (`glue.DatastoreOp` islands), so it is NOT yet fork-free.
+- [ ] embed-source **fat child** (direct datastore access, config/auth-only pipe) + the full
+  multiplexed cursor pipe protocol with pushdowns; the WASM/wazero in-process alternative.
+- [ ] Phase-6 tail: SHA-keyed build cache, per-detector projection envelope (fused evidence is the
+  whole matched row today), and standalone-scan sharing among standalone detectors.
+- [ ] Upper rungs of the binding resolver ladder (convention / content-sniffing); organizing the
+  version-aware corpus.
+- [ ] Native-expr coverage widening (`DESIGN-exprs.md`) — the codegen lever that lets more
+  detectors compile to `PrepareCompiledFull`.
+
+---
+
+Status: the first half (PREPARE/EXECUTE + compiled thin-child) and the second half (PREPARE++
+corpus + MQO + temporal) are both built to the state above; this doc records the design and the
+build log.
 
 n1k1 **compiles** a SQL++ query plan into Go source (the `intermed/` compiler +
 `glue/emit.OpToLines`). `PREPARE` exposes that as a **Go-based preparation** of a
@@ -644,7 +662,7 @@ statements and wires the levers together, so these helpers can be driven from a 
   in predicate work — the bottleneck is per-row predicate work, not I/O — which is what the next
   three levers attack.
   - **Source routing (cheap, big) — DONE (`engine.BroadcastRoute`).** A detector's target source
-    is declared (inferred from its `FROM` by the future corpus compiler); a source's scan only
+    is declared (inferred from its `FROM` by the corpus compiler, `branchScanKeyspace`); a source's scan only
     fans out to detectors that target it (pure composition: one `broadcast` per source under a
     `union-all`; orphan detectors whose source is absent are pruned and RETURNED, never silently
     dropped). ~**M× less** per-row predicate work for M sources (measured ~3.4× at M=4).
@@ -913,7 +931,7 @@ runs the detector anyway. (`glue.CorpusDetector.{Source,Gate}` + `CompiledCorpus
 auto-deriving the gate from a window match-flag's inner predicate is a noted follow-up.)
 
 **Dev/ops / CI.** The `.rules` dot-command family is built: `run` (corpus→findings + coverage),
-`lint` (the report card), `test` (golden fixtures, `--update` to record). Being added for the
+`lint` (the report card), `test` (golden fixtures, `--update` to record). Also built for the
 low-cognitive-load surface: **`.rules list`** (a metadata-only inventory — tag/source/severity/
 versions/has-fixture — that needs neither a compile nor a bundle, distinct from `lint`'s compiled
 health report), **`.rules help`** (embedded docs: a sample corpus directory layout, an annotated
@@ -975,11 +993,13 @@ positives. Still ahead: a **corpus lint gate** (fail CI on `rejected` / missing 
    with a bare `.sql++`; `glue.LoadCorpus`/`Recipe`); **golden-fixture CI** (`.rules test`
    [`--update` records the golden], non-zero exit on FAIL, `make rules-test`). The report-card
    signals are *surfaced* from what `CorpusCompile` / `ExprCoverage` / `engine.PrefilterLiteral`
-   already compute. Polish being added: a metadata-only **`.rules list`** inventory (no compile/
+   already compute. Also built: a metadata-only **`.rules list`** inventory (no compile/
    bundle needed), a **`.rules help`** with a sample layout + annotated recipe + example outputs +
-   tips, and **fix-snippet-carrying error/advice messages**. Remaining tail: per-detector hit
-   stats, the **re-run delta** report, multi-keyspace fixtures, version-selection from the parsed
-   `versions:` metadata, and `.rules bind` dry-run.
+   tips, and **fix-snippet-carrying error/advice messages**. Per-detector hit stats (the
+   `scanned / woken` count per fused detector) are surfaced in `.rules run`
+   (`wokenByTag` / `RunReport`). Remaining tail: the **re-run delta** report, multi-keyspace
+   fixtures, version-selection from the parsed `versions:` metadata, and a `.rules bind` dry-run
+   (a `--bind <manifest>` flag already feeds the resolver).
 
 Each phase is independently useful, and the **core pipeline is now end-to-end**: logical-keyspace
 binding (phases 1–2 core) → corpus compiler (phase 6 MVP) → the MQO + temporal engine substrate

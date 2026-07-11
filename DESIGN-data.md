@@ -1,8 +1,46 @@
 # Design: Data Sources for n1k1
 
-Status: **partially implemented** (MVP + several post-MVP items shipped — see
-"Implementation status"); the rest is proposal. Companion: `DESIGN-indexing.md`
-(read together — see "Relationship"). Changelog lives in git history.
+Status: **substantially implemented** (MVP + most of the extract/sorted-source
+track shipped — see "Status & remaining TODOs" and "Implementation status"); the
+sidecar/manifest, object-store, and encryption tracks remain proposal. Companion:
+`DESIGN-indexing.md` (read together — see "Relationship"). Changelog lives in git
+history.
+
+## Status & remaining TODOs
+
+_Last reviewed: 2026-07-11._
+
+**Done:** The data/extract/framing layer is functional end to end and needed ZERO
+`n1k1-query` (cbq) fork changes. Landed: multi-file/flat-root/single-file/grab-bag
+discovery + backtick inline globs (`` FROM `./data/**/*.json` ``); JSONL, multi-doc
+JSON, CSV/TSV, YAML, office/PDF/media decoders on the opaque-document path;
+transparent gzip; native byte-path fetch + per-request caches; `_meta` injection
+(incl. original-source `byte_offset`/`byte_len`/`line_start`/`line_end`); the
+two-phase `describe`/`extract` recipe provider (`*.extract.js`, matched by
+ext+regexp) with framing `line`/`multiline`/`json`/`section`/`whole`/`opaque`,
+typed capture fields, banner-drop, and sidecar-memoized describe; the
+sorted-source contract (`SortedSourceMeta`) driving the K-way near-sorted merge +
+ASOF (`DESIGN-merging.md`/`DESIGN-sorting.md`); Parquet as a queryable keyspace
+with column-projection pushdown and footer-stats vectorized aggregates
+(`DESIGN-col.md`); and session materialization (`CREATE [OR REPLACE] TEMP KEYSPACE
+… AS <select>` + `DROP`, spilling via rhmap `store.Heap`) plus `INSERT INTO …
+SELECT` file-materialize (with `OPTIONS` write modes and `RETURNING`).
+
+**Remaining (headline TODOs):**
+- [ ] Catalog/sidecar (`.n1k1/catalog.json`) + change-detection manifest with
+      Merkle rollup, zone maps, and append-only tail offsets (§5).
+- [ ] Predicate/partition pushdown reaching the scan layer — lights up hive/
+      projected-date pruning (F/G) and predicate pushdown through a VIEW (§5 caveat).
+- [ ] Catalog-defined query VIEWs (expand as implicit WITH bindings; `UNION ALL`
+      already landed) + materialized views.
+- [ ] zstd decode (walker recognizes `.zst`; decode is still a stub) and `.zip`
+      as a container.
+- [ ] Object-store backend (S3/GCS/Azure) + generated/Glue catalogs (separable track).
+- [ ] Encryption-at-rest: transparent decrypt layer + encrypted sidecar artifacts.
+- [ ] Column-batch execution so Parquet/Arrow is a full perf win, not just
+      correctness + footer-stats aggs (`DESIGN-col.md`).
+- [ ] Convenience: auto-clone the extract-recipe repo from git; a `[]byte`-oriented
+      zero-copy CSV reader + the allocs/op benchmark gate.
 
 ## Overview
 
@@ -40,6 +78,7 @@ artifacts, each independently pluggable) and *allocation discipline*
 
 ## Contents
 
+0. [Status & remaining TODOs](#status--remaining-todos)
 1. [Implementation status](#implementation-status)
 2. [Relationship to `DESIGN-indexing.md`](#relationship-to-design-indexingmd)
 3. [Motivation, scope & starting point](#motivation-scope--starting-point)
@@ -110,18 +149,29 @@ Landed n1k1-side (all `records/` + `glue/`, `//go:build n1ql`):
   into the doc-ID (§1, §6).
 - **Compiler-differential + decoder-golden tests** — flat-root diff, decoder
   interp-vs-compiler proof, a 443-interp/439-compiler data-backed GSI suite.
+- **The two-phase `describe`/`extract` provider** — pluggable JS extractors
+  (`*.extract.js`) matched by ext + name-regexp with priority, native declarative
+  execution of framing/`fields`/`time`, sidecar-memoized describe (§4, E1–E5).
+- **The sorted-source contract** (`SortedSourceMeta`: normalized int64 epoch-nanos
+  key, `disorder_bound`, time zone maps, sync points) and the **K-way near-sorted
+  merge** (`OpMergeScan`, all three regimes) that consumes it — the PREPARE++
+  enabler ([sorted sources](#sorted-sources), `DESIGN-merging.md`).
+- **Parquet as a queryable keyspace** (`records/parquet.go`) — transpose-to-rows
+  correctness, plus column-projection pushdown and footer-stats vectorized
+  aggregates (`DESIGN-col.md`).
+- **Session materialization** — `CREATE [OR REPLACE] TEMP KEYSPACE … AS <select>`
+  (in-memory, spills to disk via rhmap `store.Heap`) + `DROP`
+  (`glue/temp_keyspace.go`, `glue/temp_stmt.go`); `INSERT INTO … SELECT`
+  file-materialize with `OPTIONS` write modes + `RETURNING`.
 
 Still proposal / not built: catalog/sidecar (`.n1k1/catalog.json`), manifests &
-zone maps (§5), Parquet/ORC/Avro, `.zip` containers, zstd decode, composite
-offset doc-IDs & seekable-fetch for compressed containers, query-defined VIEWs
-(the `UNION ALL` prerequisite has since landed — remaining gap is predicate pushdown
-through the view), object-store backend, encryption-at-rest, inline table functions
-(needs a grammar fork). **Also proposal (this rework):** the two-phase
-`describe`/`extract` provider with pluggable JS extractors + ext/regexp matching
-(§4); the sorted-source contract (normalized time key, `disorder_bound`, time zone
-maps) and the K-way near-sorted **merge join** that consumes it
-([sorted sources](#sorted-sources)) — the PREPARE++ enabler. The shipped extract
-provider (ex. L) is the built-in baseline the rework generalizes.
+zone maps (§5), ORC/Avro, `.zip` containers, zstd decode, composite offset doc-IDs
+& seekable-fetch for compressed containers, catalog-defined query VIEWs (the
+`UNION ALL` prerequisite has landed — remaining gap is view expansion + predicate
+pushdown through the view), object-store backend, encryption-at-rest, inline table
+functions (needs a grammar fork), and full column-batch Parquet execution
+(`DESIGN-col.md`). The shipped office/PDF extract provider (ex. L) is the built-in
+baseline the two-phase rework generalizes.
 
 ## Relationship to `DESIGN-indexing.md`
 
@@ -272,8 +322,9 @@ SQL++/JSON" value, additive to the fork, compiler-transparent.
 > extraction (L), flat-root keyspaces (B), and `COUNT(*)` pushdown — because CSV
 > and office both fit the *opaque-document path* (emit a JSON object per row/doc)
 > rather than needing typed-label work. The differential has flat-root + decoder
-> cases. **Still behind the line:** Parquet, catalog/sidecar, manifests/zone-maps,
-> `.zip`, zstd decode, encryption.
+> cases. Parquet has since landed too (queryable + projection pushdown + footer-stats
+> aggs). **Still behind the line:** catalog/sidecar, manifests/zone-maps, `.zip`,
+> zstd decode, encryption.
 
 ## Design principle: separate the concerns into layers
 
@@ -316,15 +367,20 @@ Each layer is independently pluggable. The rest of this doc designs each.
 - **Format selection:** by file extension, overridable by an explicit FROM-term
   option (§2); content sniffing only as a tiebreaker.
 
-### Why Parquet sits below the line
+### Parquet: correctness shipped, full vectorization ongoing
 n1k1's engine is row-at-a-time (`base.Vals` per row), built around
 garbage-avoidance. Feeding Arrow *columnar* RecordBatches in means transposing to
 rows and allocating per value — throwing away Parquet's columnar/pushdown
-advantage. So Parquet's win requires a vectorized/column-batch op path **the
-engine doesn't have today**. Treat Parquet as a *correctness* feature first
-(query it at all), defer the *performance* win until/unless the engine grows
-column-batch ops. (It's also the one format that genuinely forces real labels
-rather than the opaque-document path — §2.)
+advantage. So the *full* performance win requires a vectorized/column-batch op
+path the engine is still growing (`DESIGN-col.md`). We treated Parquet as a
+*correctness* feature first and it **shipped** (`records/parquet.go`: query a
+`.parquet` file at all, transpose-to-rows), then added the partial wins that don't
+need row-lane surgery — **column-projection pushdown** (read only referenced
+columns via `ColumnsProjector`/`ColumnsSource` sidecars, reusing cbq's
+`EarlyProjection`) and **footer-stats vectorized aggregates** (COUNT/MIN/MAX and
+SUM/AVG over nullable columns from Parquet metadata, zero data-page reads). Full
+column-batch execution is the remaining perf follow-up. (Parquet is also the one
+format that genuinely forces real labels rather than the opaque-document path — §2.)
 
 ## §1 Allocation model & the read/fetch path
 
@@ -427,28 +483,16 @@ All landed **inside n1k1** (no fork change):
   elements, top-level YAML sequence elements.
 
 ### mmap vs read-into — choose per file shape
-`blevesearch/mmap-go` is an (indirect) dep; mmap-ing a file as `[]byte` is
-zero-copy (jsonparser subslices into the mapping). But it only removes the ~120 MB
-read-copy (not boxing/parse/locate) and has sharp edges:
-
-- **Lifetime / SIGBUS — bounded by an existing contract.** A retained mmap
-  sub-slice dangles into unmapped memory (segfault). But n1k1's `YieldVals` contract
-  *already* says consumers must copy inputs they keep, and it's load-bearing today
-  (`Stage` deep-copies at actor boundaries). So a mapping need only outlive the
-  **scan of its own file**; unmap at end-of-scan is safe *if the contract is
-  honored*. A violation is a silent data-corruption bug today; under mmap it becomes
-  a delayed SIGBUS — same bug class, changed failure mode. Worth a hardening pass,
-  not a redesign.
-- **Bad for large/compressed/container/tiny files.** `*.jsonl.gz`/`.zst` hand you
-  *compressed* bytes (stream-decompress anyway); PDF/XLSX are *extracted*, not
-  sub-sliced; one-doc-per-file + 4 KB page granularity make mapping a 200-byte doc
-  cost more than reading it. mmap's payoff is coupled to a **packed/segment layout**.
-- **The portable alternative: read-into a reused buffer.** `io.ReaderAt.ReadAt(p,
-  off)` *is* the `ReadInto(prealloc, pos, numBytes)` API (`*os.File` implements it).
-  Paired with a pooled buffer, reads are amortized zero-alloc **without** mmap's
-  lifetime hazard, work for large files (read only the needed range), skip page
-  waste. **Rule of thumb: mmap for a packed segment of many docs; `ReadAt` + reused
-  buffer for everything else.**
+We considered mmap-ing files as `[]byte` (`blevesearch/mmap-go`, an indirect dep)
+for zero-copy jsonparser subslicing, but chose **read-into a reused buffer**
+(`io.ReaderAt.ReadAt(p, off)`, which `*os.File` implements): paired with a pooled
+buffer it is amortized zero-alloc **without** mmap's lifetime hazard (a retained
+mmap sub-slice dangles into unmapped memory → delayed SIGBUS), works for large
+files (read only the needed range), and skips 4 KB page waste on tiny one-doc
+files. mmap also only removes the read-copy, not boxing/parse/locate, and doesn't
+help compressed (`.gz`/`.zst` stream-decompress anyway) or extracted (PDF/XLSX)
+inputs. **Rule of thumb, held in reserve: mmap only for a packed segment of many
+docs; `ReadAt` + reused buffer for everything else.**
 
 ### Push down what the query needs
 The cheapest read is the one you skip. Thread referenced fields (and predicates)
@@ -645,11 +689,24 @@ and `gocloud.dev` (its `blob` abstracts S3/GCS/Azure). An object-store
   in `.n1k1/`, rebuilt via the §5 change-detection manifest when any sub-source
   changes. The answer for expensive normalization over huge, mostly-static trees.
 
+### `CREATE TEMP KEYSPACE` — session-scoped materialization (landed)
+The **in-memory, session-lifetime** counterpart to the materialized view:
+`CREATE [OR REPLACE] TEMP KEYSPACE <name> AS <select>` runs a query once and holds
+its rows as a queryable keyspace for the rest of the session; `DROP TEMP KEYSPACE
+<name>` releases it. Materialize a scan/rule-match result once, then run many cheap
+analytic queries over it without re-scanning the source tree. There is no fork
+grammar for it, so `Session.Run` recognizes the statement at the statement level
+(`parseTempKeyspaceStmt` → `TempKeyspaceRun`, like PREPARE/EXECUTE and INSERT) —
+zero fork changes. Rows live in an rhmap `store.Heap` that **spills to disk when
+large**, so a big materialization doesn't blow memory
+(`glue/temp_keyspace.go`, `glue/temp_stmt.go`). A TEMP KEYSPACE has no backing
+files: `DatastoreScanRecords` serves its rows straight from the heap.
+
 ### `INSERT INTO` — user-driven materialization (landed)
-The **explicit, user-driven** counterpart to the automatic materialized view: run a
-query *now* and write its rows to a keyspace file for later slicing & dicing. Drove
-by the PREPARE++ / `RULE_MATCHES()` flow (`DESIGN-prepare.md`) — materialize a
-scan/rule-match result once, then run many cheap analytic queries over it.
+The **explicit, on-disk** counterpart: run a query *now* and write its rows to a
+keyspace file for later slicing & dicing. Drove by the PREPARE++ / `RULE_MATCHES()`
+flow (`DESIGN-prepare.md`) — materialize a scan/rule-match result once, then run
+many cheap analytic queries over it.
 
 ```sql
 INSERT INTO `analysis/errors-20260609.jsonl` (KEY UUID(), VALUE self)
@@ -791,13 +848,14 @@ throughout this doc ([P](#extract-bundle)) is a `cbcollect_info` bundle because 
 drove the design (`DESIGN-prepare.md` PREPARE++), but read it as *one instance* of the
 generic mechanism — nothing about bundles is baked in.
 
-> **Status: proposal (rework).** The *shipped* extract provider (`records/extract.go`,
-> ex. L) does one narrow thing — one file → one `{filename, kind, text, …}` record,
-> keyed by extension, pure-Go. Everything below **re-examines and reworks** that seam
-> to serve the bundle use case: two-phase (describe/extract), pluggable (JS
-> extractors from a git repo), matched by extension **or** regexp, streaming, and
-> metadata-rich. The shipped office/PDF/media extractors become the *built-in
-> baseline* under the new model.
+> **Status: LANDED** (E1–E5 in Phasing). The original narrow provider
+> (`records/extract.go`, ex. L — one file → one `{filename, kind, text, …}` record,
+> keyed by extension) has been generalized exactly as designed below: two-phase
+> (`describe`/`extract`), pluggable (`*.extract.js` recipes matched by extension
+> **or** name-regexp with priority), streaming, and metadata-rich. The office/PDF/
+> media extractors remain the *built-in baseline* — now re-expressed as recipes that
+> return an `ExtractSpec{framing: whole}`. The sections below describe the shipped
+> model; only auto-cloning the recipe repo from git remains a convenience follow-up.
 
 ### Two things an extractor produces — and why they split
 A real extractor produces **two** outputs on two very different cadences:
@@ -869,13 +927,14 @@ that *produces* it):
   every record's `_meta`.
 
 ### Matching a file to an extractor — extension **and** regexp
-The shipped registry is keyed by extension alone (`.pdf`, `.log`). The bundle breaks
-that: nearly everything is `.log`, yet `ns_server.info.log`, `diag.log`,
+The original registry was keyed by extension alone (`.pdf`, `.log`). The bundle
+breaks that: nearly everything is `.log`, yet `ns_server.info.log`, `diag.log`,
 `memcached.log`, and `cbcollect_info.log` are four *different* formats, and
-`master_events.log` is JSONL. So matching gains a **regexp over the bundle-relative
-path**, plus a **priority** to resolve overlap (a specific `ns_server\..*\.log` beats
-a generic `\.log$`). An extractor declares `{exts, names (regexps), priority}`; the
-highest-priority match wins. **This is the same matcher `DESIGN-prepare.md`'s
+`master_events.log` is JSONL. So matching **now** also uses a **regexp over the
+bundle-relative path**, plus a **priority** to resolve overlap (a specific
+`ns_server\..*\.log` beats a generic `\.log$`). An extractor declares
+`{exts, names (regexps), priority}`; the highest-priority match wins
+(`records.ExtractMatch`). **This is the same matcher `DESIGN-prepare.md`'s
 source-routing uses** to decide which detectors fan out to which file — one mechanism,
 two consumers.
 
@@ -1008,7 +1067,7 @@ time rather than scan from the top. See §5 "Manifest contents."
 
 CLI: `n1k1 [-c "<stmt>"] [-ns <namespace>] <dataRoot>` (default `-ns default`).
 `FROM default:orders` reads `<dataRoot>/default/orders/`. Status legend (tied to
-Phasing): ✅ shipped · 🟡 not built, decoder/convention (Parquet, `.zip`, zstd) ·
+Phasing): ✅ shipped · 🟡 not built, decoder/convention (`.zip`, zstd) ·
 🟣 not built, needs `.n1k1/catalog.json` · 🔴 deferred, needs grammar fork.
 
 *(Representative subset. Merged/dropped as re-illustrations: **D** (mixed formats)
@@ -1126,13 +1185,16 @@ on Go's `encoding/csv` (quoting/escaping/embedded-newlines correct). **Allocatio
 caveat:** this cut allocates field strings per row; the zero-copy `[]byte`-borrow
 reader is a later optimization. Emitting JSON ⇒ opaque-document path (§2 reframe).
 
-**K. Parquet 🟡 (correctness-first)**
+**K. Parquet ✅ (correctness + partial vectorization)**
 ```
 warehouse/default/sales/  part-0.parquet  part-1.parquet
 ```
-`FROM default:sales` → read via `arrow-go` / `iceberg_reader.go`. Correctness-first:
-the columnar→row transpose (§1) means no vectorized speedup until column-batch ops.
-Footer min/max later feed §5 zone-map pruning.
+`FROM default:sales` → **shipped** (`records/parquet.go`, via `arrow-go`):
+transpose-to-rows so the file is queryable, plus **column-projection pushdown**
+(only referenced columns read) and **footer-stats vectorized aggregates**
+(COUNT/MIN/MAX + SUM/AVG over nullable columns from metadata, no data-page reads).
+Full column-batch execution and §5 zone-map pruning off the footer are the
+remaining wins (`DESIGN-col.md`).
 
 **L. Unstructured docs & media → `extract`-provider rows ✅ (pure-Go text + media
 metadata; OCR later)**
@@ -1519,8 +1581,9 @@ discovery was done by wrapping the fork's datastore with `datastore/virtual`
 1. ✅ Relax the file datastore: directory = keyspace = union of *all* supported files;
    recurse; keep `<ns>/<keyspace>` + flat-root auto-detect. Opaque-document path.
 2. Decoders: ✅ **JSONL + multi-doc JSON**, ✅ **CSV/TSV** (emit-JSON-per-row, stayed
-   opaque — no typed-label story needed), ✅ **YAML**; ⬜ *then* Parquet (arrow-go;
-   correctness-only until column-batch ops — the one decoder needing real labels).
+   opaque — no typed-label story needed), ✅ **YAML**, ✅ **Parquet** (arrow-go;
+   queryable + column-projection pushdown + footer-stats vectorized aggs — the one
+   decoder needing real labels; ⬜ full column-batch execution remains, `DESIGN-col.md`).
 3. ✅ **gzip**; ⬜ zstd decode (walker recognizes `.zst`, decode is a stub); ⬜ `.zip`
    as a container.
 

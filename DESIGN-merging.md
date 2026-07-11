@@ -1,7 +1,5 @@
 # Design: K-way sorted merge & merge joins (ASOF) for n1k1
 
-Status: proposal
-
 These operators are **generic over any time-ordered records** — log lines,
 trades/quotes, sensor/IoT streams, telescope observations, financial transactions,
 event streams. n1k1's core knows no specific file family; a "sorted source" is just
@@ -31,6 +29,33 @@ already accepts — recognized at conversion or plan-rewrite time and lowered to
 `base.Op`s. New runtime, no new syntax. This mirrors the position already taken in
 `DESIGN-prepare.md` ("Detectors stay in stock SQL++") and `DESIGN-data.md`
 ("everything shipped needed zero fork changes").
+
+## Status & remaining TODOs
+
+_Last reviewed: 2026-07-11._
+
+**Done:** The K-way sorted merge SCAN (all three regimes — concatenate, strict
+min-heap, watermarked-near with disorder-bound validation) and the sorted merge
+JOIN (equi, ASOF nearest-preceding and nearest-following, soft/tolerance-bounded,
+partitioned) both ship (`engine/op_merge_scan.go`, `op_merge_join.go`). The
+grammar-free surfacing landed: `UNION ALL … ORDER BY <key>` → `merge-scan`
+(metadata-driven `WireTemporalMergeMeta`, plus the opt-in `EnableMergeRewrite`
+fallback) and the correlated-argmax subquery → ASOF merge-join rewrite
+(`WireASOFJoin` + the conservative `MatchArgmaxAsof` recognizer), covering scalar
+`[0]`/RAW forms, right-only content residuals, and near-sorted keyspaces. Merge
+runs streaming (single-child watermarked and a K-way pull-coordinator), spills the
+build/reorder buffer past budget, exposes per-request `base.MergeStats` surfaced in
+the `.rules` run summary, and scans multi-file keyspaces per-file (the cross-node
+K-way enabler). Measured ~19× lower RSS vs. the correlated-subquery shape,
+speed-neutral.
+
+**Remaining (headline TODOs):**
+- [ ] Seek-by-time via sync points + predicate pushdown to the merge (§1 cursors, phasing step 5) — highest-leverage perf step for time-bounded detectors; still unbuilt.
+- [ ] Window-stream sort-sharing: feed a `WindowAggregate` over a sorted source / merge-scan directly, skipping its own sort (phasing step 9).
+- [ ] Equi merge-join *lowering* from conv (the engine op exists; the plan-shape recognition that would choose it over hash-join is unwired — phasing step 8, low priority).
+- [ ] Catalog-VIEW carried merges + optional `merge:` keyspace-name convention (phasing step 10) — the explicit grammar-free surface; depends on catalog work in `DESIGN-data.md`.
+- [ ] A fully general "source advertises its order" contract: extract-layer int64-key normalization is not yet wired end-to-end, so metadata-driven firing still leans on `SortedSourceMetasForKeyspace` per keyspace.
+- [ ] Secondary late-record policies (`drop`, `resort`) and `nearest` (either-side) soft ASOF — only `error`/`widen` and preceding/following/soft landed.
 
 ## Contents
 
@@ -172,12 +197,13 @@ child scans plus the per-source metadata from the contract; its output is a sing
 scans produce, with the normalized key available as a labeled register (so
 downstream ops sort/compare on the int64, never re-parse).
 
-Kind sketch: `merge-sorted` with `Params` = `{keyExpr, keyKind:int64, regime,
-disorder_bound, late_policy, validate}` and `Children` = the K child scan ops.
-Crucially it is a **new op kind added n1k1-side**, not a new plan op or scan kind —
-so it stays compiler-safe exactly like the data-source work (`DESIGN-data.md`,
-"Compiler compatibility"): the op carries only static choices in `Params` and live
-handles in `Temps`.
+The op ships as kind **`merge-scan`** (`engine/op_merge_scan.go`), carrying its
+static choices in `Params` — `Params[0]` keyIdx, `[1]` regime, `[2]` per-child
+sortedness, `[3]/[4]` per-child min/max zone maps, `[5]` per-child disorder-bound
+nanos, `[6]` late-record policy — and its live child cursors in `Temps`. Crucially
+it is a **new op kind added n1k1-side**, not a new plan op or scan kind — so it
+stays compiler-safe exactly like the data-source work (`DESIGN-data.md`, "Compiler
+compatibility").
 
 ## Three regimes: concatenate, min-heap, watermarked-near <a name="regimes"></a>
 
@@ -527,14 +553,16 @@ generalization.
 ## UNION ALL of sorted streams → merge <a name="unionall-merge"></a>
 
 `UNION ALL` of several time-ordered keyspaces, wrapped by `ORDER BY <key>`, is the
-natural "one global timeline" idiom — and, since `VisitUnionAll` landed
-([Background](#background)), it already *runs* (as `union-all` feeding a heap
-`order`). The optimization: when the recognizer sees `ORDER BY <key>` directly over a
-`union-all` whose branches are all **sorted/near-sorted on `<key>`** (per the
-contract), replace `order(union-all(…))` — which materializes and heap-sorts the
-whole concatenation — with a **`merge-sorted`** over the same branches. Same output,
-but O(N log K) streaming (or O(N) concatenate) instead of a full spill-sort of the
-entire bundle.
+natural "one global timeline" idiom. Before the merge landed it ran as `union-all`
+feeding a heap `order` (materialize the whole concatenation, then heap-sort). The
+rewrite (`rewriteTemporal` / `mergeScanFromOrderUnion`) now recognizes an
+`order-offset-limit` whose single child is `union-all` and whose ORDER BY key is a
+column common to the sorted/near-sorted branches, and replaces `order(union-all(…))`
+with a **`merge-scan`** over the same branches — same output, but O(N log K)
+streaming (or O(N) concatenate) instead of a full spill-sort of the entire bundle.
+It fires metadata-driven via `WireTemporalMergeMeta` (which seeds each branch's real
+sortedness / disorder / zone-map Params from Track A's `SortedSourceMetasForKeyspace`)
+and, without metadata, via the opt-in `EnableMergeRewrite` fallback.
 
 **Recognition predicate:** an `order` op whose single child is `union-all`, whose ORDER
 BY keys are a prefix of / equal to the branches' declared sort keys, and whose
@@ -595,21 +623,20 @@ verdict there is likewise "defer."
 
 ## Where recognition lives <a name="recognition-home"></a>
 
-Three candidate homes; the recommendation is a mix:
+Both landed as one dedicated pass, `glue/optimize_temporal.go` — a read-only,
+POST-plan rewrite over the finished `base.Op` tree, downstream of the fork's plan
+output (never touching its grammar/planner):
 
-- **`glue/conv.go` (`Visit*` lowering)** — for the *local, structural* rewrites that
-  are a property of the plan-op shape: `order` directly over `union-all` of sorted
-  branches → `merge-sorted`; a `WindowAggregate` over a sorted source skipping its
-  sort. These are pattern matches on the `plan.Operator` tree as it is lowered, and
-  conv is already where all lowering decisions live. **Recommended home for the
-  UNION-ALL→merge and window-stream cases.**
-- **A dedicated post-plan rewrite pass (n1k1-side, over the `plan.Operator` tree,
-  before conv)** — for the *non-local* ASOF recognition, which spans an outer query
-  and a correlated subquery and must inspect the subquery's WHERE/ORDER BY/LIMIT
-  together. This is cleaner than smearing the match across conv's per-op visits, is
-  independently testable (feed it plans, assert the rewritten shape), and keeps conv
-  simple. **Recommended home for the argmax → ASOF rewrite.** It operates on the
-  fork's plan output *without modifying the fork* — a read-only tree rewrite,
+- **The UNION-ALL→merge case** turned out to read more cleanly as a focused
+  subtree match (an `order-offset-limit` over a `union-all` of sorted branches →
+  `merge-scan`) than smeared across conv's per-op `Visit` methods, so it lives in
+  the pass (`rewriteTemporal` / `WireTemporalMergeMeta`), invoked from `ExecConv`
+  and `PlanConvert` via a single hook. (Window-stream sort-sharing — a conv-local
+  match — remains unbuilt; see the TODOs.)
+- **The ASOF argmax recognition** is *non-local* — it spans an outer query and a
+  correlated subquery and must inspect the subquery's WHERE/ORDER BY/LIMIT
+  together — so it is the conservative, independently-testable analysis half
+  (`MatchArgmaxAsof` / `recognizeASOFRoot`) feeding the `WireASOFJoin` lowering,
   exactly like the boxed-expr stringify pass in `DESIGN-prepare.md`.
 - **Catalog-expansion time (before planning)** — for VIEW-carried merges: the stored
   SQL is expanded as a WITH binding, then planned and lowered normally, so its merge
@@ -716,33 +743,35 @@ Each step is independently useful and evidence-gated (build the cheap high-value
 regime first, measure, then earn the next). Status legend: ⬜ not built · ◐ partial ·
 ✅ done.
 
-1. **⬜ Merge-scan, concatenate regime.** The disjoint-ranges case
+1. **✅ Merge-scan, concatenate regime.** The disjoint-ranges case
    (`max_key(fᵢ) ≤ min_key(fᵢ₊₁)`) — dated log rotations. Zero heap, zero buffering,
-   O(N). Needs only the manifest's `min_key`/`max_key` zone maps and a new
-   `merge-sorted` op. Delivers "read a month of rotated logs as one ordered stream"
-   immediately. *Prerequisite: manifest zone maps (`DESIGN-data.md` §5).*
-2. **⬜ Merge-scan, strict min-heap regime.** Overlapping strict sources (concurrent
-   per-node logs). K-entry min-heap over `base/heap.go`, lazy cursor opening. The
-   general ordered union.
-3. **⬜ UNION-ALL→merge recognition** (`conv`): `order(union-all(sorted…))` →
-   `merge-sorted`. Rides the already-landed `VisitUnionAll`. Makes the stock timeline
-   idiom fast with no new SQL.
-4. **⬜ Watermarked-near regime + soft options.** The reorder buffer, `disorder_bound`
-   enforcement, late-record policy, and monotonicity validation. The correctness-
-   critical step — the one that makes real (jittery) logs safe. Reuses `store.Heap`
-   spill.
+   O(N). Reads a month of rotated logs as one ordered stream. *(`merge-scan`
+   `"concatenate"` regime; `TestPerFileMergeDisjoint`.)*
+2. **✅ Merge-scan, strict min-heap regime.** Overlapping strict sources (concurrent
+   per-node logs). K-entry min-heap, `"auto"`/`"heap"` regime with per-file child
+   scans and a K-way pull-coordinator. The general ordered union.
+3. **✅ UNION-ALL→merge recognition**: `order(union-all(sorted…))` → `merge-scan`.
+   Rides `VisitUnionAll`; fires metadata-driven via `WireTemporalMergeMeta` (opt-in
+   `EnableMergeRewrite` fallback without metadata). Makes the stock timeline idiom
+   fast with no new SQL.
+4. **✅ Watermarked-near regime + soft options.** The reorder buffer, `disorder_bound`
+   enforcement, monotonicity validation, and the `error`/`widen` late-record policy.
+   The correctness-critical step. Reuses `store.Heap` spill. *(Secondary `drop` /
+   `resort` policies still TODO.)*
 5. **⬜ Seek-by-time via sync points + predicate pushdown to the merge.** Skip to a
    start key per file. Shares the "predicate reaches the scan" work with
    `DESIGN-data.md` §5 zone-map pruning — the highest-leverage perf step for
    time-bounded detectors.
-6. **⬜ ASOF merge-join** (nearest-preceding) + the **argmax-subquery → ASOF rewrite**
-   (post-plan pass). Turns the O(n²) correlated argmax into O(N+M). The temporal
-   headline.
-7. **⬜ Soft ASOF** — tolerance / max-look-back (within-tolerance-or-null, drop,
-   nearest). A small delta on step 6; recognized from the optional `>= e.key − Δt`
-   predicate.
-8. **⬜ Equi merge-join** for the already-sorted equijoin case (lower priority — less
-   common in bundles than ASOF).
+6. **✅ ASOF merge-join** (nearest-preceding) + the **argmax-subquery → ASOF rewrite**
+   (`WireASOFJoin` + `MatchArgmaxAsof`). Turns the O(n²) correlated argmax into
+   O(N+M), streaming two-cursor co-advance (no build materialization). The temporal
+   headline. Nearest-following (the forward mirror) also lands here.
+7. **◐ Soft ASOF** — tolerance / max-look-back. Within-tolerance-or-null + bounded
+   look-back/look-ahead recognized from the optional `>= e.key − Δt` predicate; the
+   `nearest` (either-side) variant is still TODO.
+8. **◐ Equi merge-join** for the already-sorted equijoin case — the engine op exists
+   (`asof "off"`); the conv-side recognition that would *choose* it over hash-join is
+   unwired (lower priority — less common in bundles than ASOF).
 9. **⬜ Window-stream sharing** — feed a `WindowAggregate` over a sorted source /
    merge-scan directly, skipping its own sort. Composes with steps 2–5.
 10. **⬜ Catalog-VIEW carried merges + optional `merge:` keyspace-name convention** —
@@ -789,15 +818,15 @@ ways to express a cross-node timeline:
     /* … one branch per node … */
   ) ev ORDER BY ev.ts
   ```
-- **A single `**/ns_server.info.log` glob keyspace — needs per-file child scans.** The
+- **A single `**/ns_server.info.log` glob keyspace — per-file child scans (LANDED).** The
   ergonomic form (don't spell out K branches) makes the keyspace a *union of the K
-  per-node files*, which today concatenates them; overlapping node ranges then trip the
-  monotonicity tripwire. The fix — already the deferred item ([§1](#merge-scan)) — is to
-  scan **each file as its own merge input** (the K cursors *are* the K nodes), turning a
-  multi-file keyspace into a K-way merge instead of a concat. This same gap blocks
-  **cross-node ASOF**, whose build (right) side must be the K-node-merged state stream
-  (e.g. cluster-wide `master_events`) — so per-file child scans is the single change that
-  unlocks the ergonomic timeline *and* cross-node ASOF. **Promote it accordingly.**
+  per-node files*. Scanning them as one concatenated stream would trip the monotonicity
+  tripwire on overlapping node ranges; the merge instead scans **each file as its own
+  merge input** (the K cursors *are* the K nodes), turning a multi-file keyspace into a
+  K-way merge (`perFileScans` in `optimize_temporal.go`; `TestPerFileMergeOverlapping` /
+  `TestPerFileMergeDisjoint`). This same wiring feeds **cross-node ASOF**, whose build
+  (right) side is the K-node-merged state stream (e.g. cluster-wide `master_events`) —
+  so the one change unlocked both the ergonomic timeline and cross-node ASOF.
 
 **2. Clock skew is a real cross-node correctness factor.** Merging by `ts` across nodes
 assumes comparable clocks. Each node's log is near-sorted within its own clock, but the
@@ -839,12 +868,14 @@ merge` path.
   subquery canonical form (Phase 1), or also the JOIN-shaped and `GROUP BY … having
   max` variants? Each added shape widens coverage but raises false-positive risk.
   Where's the line?
-- **Actor-per-cursor overhead vs a single stepping goroutine.** The design steps K
-  cursors as K `Stage` actors (reusing `OpUnionAll`'s fan-in). For large K (many small
-  files) the goroutine + `BatchCh` + deep-copy-per-row overhead may dominate the actual
-  merge work; a single goroutine holding K lightweight file readers (no channels,
-  no per-row copy) could be cheaper. Which wins likely depends on K and row size —
-  measure. Lazy cursor opening bounds K to the *overlapping* set regardless.
+- **Actor-per-cursor overhead vs a single stepping goroutine (RESOLVED).** We kept
+  one `base.StageCursor` actor per child but made the merge a **K-way pull-coordinator**
+  (`MergeScanStreamKway`) that peeks one head per child rather than crediting per row;
+  profiling showed the per-row channel handoff burned most of its CPU in goroutine
+  wakeups (`pthread_cond_signal`), so the handoff is now **batched**
+  (`0a10d154`). Lazy cursor opening still bounds K to the overlapping set. Remaining
+  nuance: for very large K of tiny files a single-goroutine reader could still be
+  cheaper — unmeasured, low priority.
 - **Key materialization on the hot path.** The `describe` spec (format, timezone,
   which field) is cached once per file — but the int64 key still has to be *produced
   per record* at scan time from each row's raw timestamp. Is it materialized into a

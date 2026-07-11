@@ -2,6 +2,45 @@
 
 Gist only -- details live in commit messages, README, and code comments.
 
+## 2026/07 -- temporal, MQO/corpus, materialization, records, columnar
+- Temporal / ASOF: correlated-argmax subqueries lower to a streaming
+  merge-join + merge-scan (engine/op_merge_join.go, op_merge_scan.go) -- a
+  memory-bounded two-stream co-advance, no build materialization, over
+  near-sorted AND recipe/single-file keyspaces. Scalar (subq)[0] / SELECT RAW
+  forms; nearest-following ASOF + residual content-filter on the inner stream;
+  SOFT tolerance-bounded following; K-way pull-coordinator for multi-file
+  merge-scan; spill-backed build; sort-key gate resolves single-file recipe
+  keyspaces; MergeStats de-globalized onto Ctx (race-safe).
+- SortedSourceMeta: sorted-source metadata drives sort-elision + the merge
+  gating (the (_meta.path, _meta.pos) substrate).
+- MQO / corpus (PREPARE++): CorpusCompile fuses detectors into a shared
+  broadcast scan (engine/op_broadcast*.go) -- Aho-Corasick sparse predicate
+  index, CSE precompute, grep -A/-B/-C broadcast-context fan-out
+  (OpBroadcastContext). RULE_MATCHES table-function surfaces rejected
+  detectors; per-detector scanned/woken/matched stats; fused SELECT
+  projection honored on broadcast + broadcast-context (golden fidelity).
+- Session materialization: CREATE [OR REPLACE] TEMP KEYSPACE ... AS <select>
+  + DROP -- session-scoped, in-memory, spills to disk via rhmap store.Heap
+ ; INSERT INTO ... SELECT file-materialize.
+- records / extract: *.extract.js recipes; framing kinds line/multiline/json/
+  section/whole/opaque; typed numeric/bool capture fields
+  (fields.types); leading-banner drop; _meta carries
+  original-source byte_offset/byte_len/line_start/line_end;
+  Parquet queryable keyspace.
+- Columnar (DESIGN-col.md): steps 1-4 DONE -- fixed-width spike, Parquet
+  keyspace, column-projection pushdown reusing plan.Fetch.EarlyProjection.
+  Step 5 (@col in-op vectorized aggregation) is next, partially started.
+- Window: broadly native -- multi-column RANGE (not just ASC), ORDER BY NULLS
+  FIRST/LAST, ranking + LAG/LEAD/FIRST/LAST/NTH_VALUE + named windows;
+  incremental O(N) frame fold; invertible sliding COUNT/SUM/AVG + MIN/MAX
+  deque; monotone frame-edge cursors.
+- Extensions: goja JS scalar UDFs (glue/ext_goja.go) + native zero-garbage
+  sparkline()/histogram() aggregates (base/agg_ext.go); streaming/table funcs.
+- CLI (cmd/n1k1): TEMP KEYSPACE; shell/backtick + reserved-word hints;
+  .rules/.extract/.tables/.schema dot-commands; output-mode synonyms
+  (jsonl/ndjson); space-form -stats/-prepare flags; bundle-file hints.
+- WASM: SQL++ runs client-side in-browser (GOOS=js/wasm).
+
 ## 2026/06 -- build modernization (dusted off after ~5 years)
 - Go 1.17 -> 1.25; GOTOOLCHAIN=auto fetches it.
 - go mod: dropped local-symlink replaces, pinned ~25 couchbase modules
