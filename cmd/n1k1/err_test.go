@@ -116,14 +116,51 @@ func TestErrorCaretTabAlignment(t *testing.T) {
 	}
 }
 
+func TestDottedKeyspaceHint(t *testing.T) {
+	plain := cmd.Style{}
+	names := []string{"events", "ns_server.error", "ns_server.debug"}
+
+	// The unquoted dotted keyspace `ns_server.error` parses as a field path ->
+	// "Ambiguous reference to field 'ns_server'"; a keyspace of that dotted name
+	// exists, so hint to backtick it + note the shell quoting (IDEA-0010).
+	got := dottedKeyspaceHint("Ambiguous reference to field 'ns_server' (near line 1, column 27).", names, plain)
+	for _, want := range []string{"`ns_server.error`", "single quotes", "-f"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("dottedKeyspaceHint missing %q; got %q", want, got)
+		}
+	}
+
+	// No matching keyspace for the ambiguous field -> no hint (don't mislead).
+	if h := dottedKeyspaceHint("Ambiguous reference to field 'foo' (near line 1, column 8).", names, plain); h != "" {
+		t.Errorf("expected no hint for a non-keyspace field; got %q", h)
+	}
+	// A non-ambiguous error -> no hint.
+	if h := dottedKeyspaceHint("syntax error - at end of input", names, plain); h != "" {
+		t.Errorf("expected no hint for a non-ambiguous error; got %q", h)
+	}
+	// nil keyspace list -> no hint (nil-safe).
+	if h := dottedKeyspaceHint("Ambiguous reference to field 'ns_server' (x).", nil, plain); h != "" {
+		t.Errorf("expected no hint with nil names; got %q", h)
+	}
+}
+
+func TestAmbiguousField(t *testing.T) {
+	if f, ok := ambiguousField("Ambiguous reference to field 'ns_server' (near line 1, column 27)."); !ok || f != "ns_server" {
+		t.Errorf("ambiguousField = (%q,%v), want (ns_server,true)", f, ok)
+	}
+	if _, ok := ambiguousField("some other error"); ok {
+		t.Errorf("ambiguousField should not match a non-ambiguous error")
+	}
+}
+
 func TestReservedWordHint(t *testing.T) {
 	plain := cmd.Style{}
 	cases := []struct {
 		errText, wantSub string
 	}{
 		{"syntax error - line 1, column 21, near 'SELECT l.', at: level (reserved word)", "`level`"},
-		{"syntax error - line 1, column 10, near 'x', at: FRM", ""},        // ordinary typo -> no hint
-		{"syntax error - at end of input", ""},                            // no token
+		{"syntax error - line 1, column 10, near 'x', at: FRM", ""}, // ordinary typo -> no hint
+		{"syntax error - at end of input", ""},                      // no token
 	}
 	for _, c := range cases {
 		got := reservedWordHint(c.errText, plain)

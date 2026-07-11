@@ -135,9 +135,13 @@ func (c *cli) printKeyspaces(w io.Writer) {
 	framing := make([]string, len(names))
 	width, fwidth := 0, 0
 	anyBlob := false
+	anyBacktick := false // a keyspace name needs backticks (dotted/hyphenated) -> shell-quoting note.
 	ns, _ := c.sess.Store.Datastore.NamespaceByName(defaultNamespace)
 	for i, n := range names {
 		disp[i] = quoteIdent(n)
+		if disp[i] != n {
+			anyBacktick = true
+		}
 		if len(disp[i]) > width {
 			width = len(disp[i])
 		}
@@ -175,6 +179,14 @@ func (c *cli) printKeyspaces(w io.Writer) {
 	if anyBlob {
 		fmt.Fprintf(w, "  %s\n", c.style.Dim(
 			"whole-file = one row per file (a text blob); frame it into rows with a *.extract.js recipe."))
+	}
+	// IDEA-0010: a backticked name (dotted keyspaces are the norm in a bundle) fights
+	// the shell -- backticks are command-substitution inside "double quotes". So a
+	// pasted `example` breaks under -c "...". Note the shell-safe ways to run it.
+	if anyBacktick {
+		fmt.Fprintf(w, "  %s\n", c.style.Dim(
+			"backticked name? in a shell wrap the -c arg in 'single quotes' (backticks are "+
+				"command-substitution in \"double quotes\"), or use -f <file>. In this REPL, paste as-is."))
 	}
 	// IDEA-0012: a bundle dir hides its big raw logs (memcached.log, couchbase.log,
 	// ...) -- they're present but no recipe frames them, so they're not keyspaces and

@@ -44,6 +44,43 @@ func TestDotFormatsPersists(t *testing.T) {
 	}
 }
 
+// TestKeyspacesBacktickHint (IDEA-0010): a listing that includes a keyspace needing
+// backticks (a dotted name, the norm in a bundle) appends the shell-quoting note; a
+// listing of only bare identifiers does not.
+func TestKeyspacesBacktickHint(t *testing.T) {
+	mkKS := func(t *testing.T, name string) *cli {
+		t.Helper()
+		root := t.TempDir()
+		ks := filepath.Join(root, "default", name)
+		if err := os.MkdirAll(ks, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(ks, "l.jsonl"), []byte(`{"a":1}`+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		sess, err := glue.OpenSession(root, "default")
+		if err != nil {
+			t.Fatalf("OpenSession: %v", err)
+		}
+		return &cli{prog: "n1k1", dir: root, sess: sess}
+	}
+
+	// A dotted keyspace -> the note appears (and names the shell-safe options).
+	var dotted bytes.Buffer
+	mkKS(t, "ns_server.error").printKeyspaces(&dotted)
+	out := dotted.String()
+	if !strings.Contains(out, "single quotes") || !strings.Contains(out, "-f") {
+		t.Errorf("dotted-keyspace listing missing the backtick/shell note:\n%s", out)
+	}
+
+	// A bare identifier -> no note.
+	var bare bytes.Buffer
+	mkKS(t, "events").printKeyspaces(&bare)
+	if strings.Contains(bare.String(), "single quotes") {
+		t.Errorf("bare-keyspace listing should not carry the backtick note:\n%s", bare.String())
+	}
+}
+
 // TestQuotePath: dotted field paths are backticked per-segment (only where SQL++
 // needs it), so a nested path stays a path expression.
 func TestQuotePath(t *testing.T) {
@@ -150,7 +187,7 @@ func TestKeyspacesFramingTags(t *testing.T) {
 		}
 	}
 	write("events", "e.jsonl", `{"a":1}`+"\n"+`{"a":2}`+"\n") // structured (jsonl)
-	write("notes", "readme.log", "line one\nline two\n")       // whole-file blob
+	write("notes", "readme.log", "line one\nline two\n")      // whole-file blob
 	// A .log the built-in ns_server_log recipe claims -> recipe-framed.
 	write("nsl", "ns_server.error.log",
 		"[ns_server:error,2026-07-10T12:00:01.000Z,n1@h:<0.2>] boom\n")
@@ -190,10 +227,10 @@ func TestKeyspacesUnexposedFilesHint(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	write("data.jsonl", `{"a":1}`+"\n")     // structured -> keyspace
-	write("memcached.log", "raw log\n")     // unframed -> hinted
-	write("couchbase.log", "more raw\n")    // unframed -> hinted
-	write("stats/x.txt", "x\n")             // a subdir -> bundle (B3) layout
+	write("data.jsonl", `{"a":1}`+"\n")      // structured -> keyspace
+	write("memcached.log", "raw log\n")      // unframed -> hinted
+	write("couchbase.log", "more raw\n")     // unframed -> hinted
+	write("stats/x.txt", "x\n")              // a subdir -> bundle (B3) layout
 	write(".git/junk.jsonl", `{"j":1}`+"\n") // dot-dir -> never exposed nor mentioned
 
 	sess, err := glue.OpenSession(root, "default")
@@ -206,8 +243,8 @@ func TestKeyspacesUnexposedFilesHint(t *testing.T) {
 	out := buf.String()
 
 	for _, want := range []string{
-		"data",                // the structured keyspace is listed
-		"aren't keyspaces",    // the unframed-files hint fired
+		"data",             // the structured keyspace is listed
+		"aren't keyspaces", // the unframed-files hint fired
 		"memcached.log", "couchbase.log",
 		"add a *.extract.js recipe",
 	} {
@@ -225,7 +262,7 @@ func TestKeyspacesUnexposedFilesHint(t *testing.T) {
 // TestSchemaFlatRootUnion: a flat-root dir samples the union of fields across its
 // files (the b.jsonl-only "z" field must appear).
 // TestSchemaAcceptsBacktickedKeyspace: a dot-command keyspace arg may be backticked
-// exactly like the SQL spelling (IDEA-0009) -- `.schema `ns_server.error`` resolves
+// exactly like the SQL spelling (IDEA-0009) -- `.schema `ns_server.error“ resolves
 // the same keyspace as the bare `.schema ns_server.error`, with no error.
 func TestSchemaAcceptsBacktickedKeyspace(t *testing.T) {
 	root := t.TempDir()

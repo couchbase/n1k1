@@ -110,6 +110,45 @@ func reservedWordHint(errText string, st cmd.Style) string {
 	return "  " + st.Dim("hint: "+tok+" is a reserved word here — quote it as `"+tok+"`") + "\n"
 }
 
+// dottedKeyspaceHint returns a one-line hint when a statement referenced a dotted
+// keyspace (e.g. `ns_server.error`, the norm in a bundle) WITHOUT backticks, so the
+// parser read it as a field path -- "Ambiguous reference to field 'ns_server'" -- yet a
+// keyspace of that dotted name exists. It suggests backticking it, and (IDEA-0010) the
+// shell-safe way to keep the backticks (single-quote the -c arg, or use -f), since
+// backticks are command-substitution inside "double quotes". Returns "" when it doesn't
+// apply. names is the datastore's keyspace list (nil-safe).
+func dottedKeyspaceHint(errText string, names []string, st cmd.Style) string {
+	field, ok := ambiguousField(errText)
+	if !ok || field == "" {
+		return ""
+	}
+	// A dotted keyspace whose FIRST segment is the ambiguous field is the culprit.
+	for _, n := range names {
+		if strings.HasPrefix(n, field+".") {
+			return "  " + st.Dim("hint: `"+n+"` is a dotted keyspace name — quote it: FROM `"+n+"`. "+
+				"In a shell wrap the -c arg in 'single quotes' (backticks are command-substitution "+
+				"in \"double quotes\"), or use -f <file>.") + "\n"
+		}
+	}
+	return ""
+}
+
+// ambiguousField extracts X from a `Ambiguous reference to field 'X'` parser error
+// (what an unquoted dotted keyspace `X.y` produces), or ("", false).
+func ambiguousField(errText string) (string, bool) {
+	const marker = "Ambiguous reference to field '"
+	i := strings.Index(errText, marker)
+	if i < 0 {
+		return "", false
+	}
+	rest := errText[i+len(marker):]
+	j := strings.IndexByte(rest, '\'')
+	if j <= 0 {
+		return "", false
+	}
+	return rest[:j], true
+}
+
 // parseErrPos extracts the 1-based (line, column) from a parser error message.
 func parseErrPos(errText string) (line, col int, ok bool) {
 	// Find "line <n>, column <n>" without a regexp: locate "line " that is

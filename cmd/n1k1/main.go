@@ -375,8 +375,14 @@ usage: %[1]s [flags] [datastore-dir | file]
   %[1]s -f script.sql++ path/to/datastore-dir
   echo "SELECT 1+1" | %[1]s
 
+  # dotted/hyphenated keyspaces need backticks -- and backticks are command-
+  # substitution inside "double quotes", so wrap the -c arg in 'single quotes'
+  # (backticks stay literal there), or use -f:
+  %[1]s -c 'SELECT COUNT(*) FROM %[2]sns_server.error%[2]s' path/to/bundle
+  %[1]s -f query.sql++ path/to/bundle
+
 flags:
-`, prog)
+`, prog, "`")
 	flag.PrintDefaults()
 
 	fmt.Fprintf(os.Stderr, "\nenv vars:\n")
