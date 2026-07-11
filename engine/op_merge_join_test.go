@@ -625,6 +625,14 @@ func TestMergeJoinStreamAsofMatchesMaterialized(t *testing.T) {
 			left:  []mjRow{{k: 10, v: "La", p: "x"}, {k: 11, v: "Lb", p: "y"}, {k: 20, v: "Lc", p: "x"}, {k: 22, v: "Ld", p: "z"}},
 			right: []mjRow{{k: 5, v: "Rx5", p: "x"}, {k: 6, v: "Ry6", p: "y"}, {k: 15, v: "Rx15", p: "x"}, {k: 18, v: "Rx18", p: "x"}},
 		},
+		{
+			// Soft following-partitioned: each left's follow is the first same-partition
+			// right >= its key within Δt, even when other-partition rows sit between them
+			// (e.g. Lx5 -> Rx6, with Ry4 in between; Rx20 is beyond the tolerance).
+			name: "soft-following-partitioned", join: "left", asof: "soft", tol: 5, dir: "following", parts: []interface{}{3},
+			left:  []mjRow{{k: 1, v: "Lx1", p: "x"}, {k: 2, v: "Ly2", p: "y"}, {k: 5, v: "Lx5", p: "x"}, {k: 8, v: "Ly8", p: "y"}, {k: 30, v: "Lx30", p: "x"}},
+			right: []mjRow{{k: 3, v: "Rx3", p: "x"}, {k: 4, v: "Ry4", p: "y"}, {k: 6, v: "Rx6", p: "x"}, {k: 9, v: "Ry9", p: "y"}, {k: 20, v: "Rx20", p: "x"}},
+		},
 	}
 
 	for _, c := range cases {

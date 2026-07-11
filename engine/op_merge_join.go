@@ -136,9 +136,12 @@ func MergeJoinExec(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 	lenLabelsB := len(o.Children[1].Labels)
 
 	// Two-stream ASOF: co-advance both sides, holding only the ASOF band -- no build
-	// materialization. Following-partitioned needs the materialized per-partition index,
-	// so it (and equi) fall through to the materialized path below.
-	if asof != "off" && MergeJoinStreamASOF && !(following && len(leftParts) > 0) {
+	// materialization. The one case that stays materialized is PLAIN (unbounded)
+	// following-partitioned: a partition's follow can be arbitrarily far ahead, so a
+	// streamed per-partition lookahead has no bound. SOFT following-partitioned IS
+	// streamable -- the tolerance caps the lookahead to [k, k+Δt] (see mergeJoinStreamAsof).
+	if asof != "off" && MergeJoinStreamASOF &&
+		!(following && len(leftParts) > 0 && asof != "soft") {
 		mergeJoinStreamAsof(o, vars, yieldVals, yieldErr, pathNext,
 			leftKeyIdx, rightKeyIdx, leftParts, following, asof, tolerance,
 			leftOuter, lenLabelsA, lenLabelsB)
@@ -434,9 +437,11 @@ type mergeJoinStreamRow struct {
 // it never races the left over the shared Ctx) that pushes deep-copied rows into a bounded
 // channel; the left streams in this goroutine and, per left row, pulls the right forward
 // just far enough to position the ASOF match. Resident state is the band only -- one held
-// row (nearest-preceding) or one per partition, plus a single lookahead row -- not the
-// keyspace. Handles preceding (unpartitioned + partitioned) and following (unpartitioned);
-// following-partitioned is routed to the materialized path by the caller.
+// row (nearest-preceding) or one per partition, plus a single lookahead row (or, for soft
+// following-partitioned, per-partition queues bounded to the tolerance window) -- not the
+// keyspace. Handles preceding (un/partitioned), following (unpartitioned), and SOFT
+// following-partitioned; only PLAIN (unbounded) following-partitioned is routed to the
+// materialized path by the caller.
 func mergeJoinStreamAsof(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 	yieldErr base.YieldErr, pathNext string, leftKeyIdx, rightKeyIdx int,
 	leftParts []int64, following bool, asof string, tolerance int64, leftOuter bool,
@@ -524,6 +529,13 @@ func mergeJoinStreamAsof(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 	held := map[string]*mergeJoinStreamRow{}
 	partitioned := len(leftParts) > 0
 
+	// pendByPart: SOFT following-partitioned only -- a per-partition FIFO of ascending
+	// right rows within the current tolerance window, so a partition's follow can be found
+	// even when other partitions' rows sit between it and the left row. Bounded to rows in
+	// [left key, left key + tolerance] (the advance stops past k+Δt, and every queue is
+	// pruned of keys < k as the monotone left advances).
+	pendByPart := map[string][]*mergeJoinStreamRow{}
+
 	valsJoin := make(base.Vals, 0, lenLabelsA+lenLabelsB)
 	emit := func(leftVals base.Vals, right *mergeJoinStreamRow) {
 		valsJoin = valsJoin[:0]
@@ -558,9 +570,45 @@ func mergeJoinStreamAsof(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 		}
 		lastLeftKey, leftEmitted = k, true
 
+		pk := ""
+		if partitioned {
+			partScratch = mergeJoinPartKey(partScratch[:0], leftVals, leftParts)
+			pk = string(partScratch)
+		}
+
+		if following && partitioned {
+			// SOFT following-partitioned: enqueue right rows within the tolerance window
+			// [k, k+tolerance] into their partitions' queues, then the front of pk's queue
+			// (after dropping keys < k) is the nearest follow within Δt.
+			limit := k + tolerance
+			for {
+				r := peek()
+				if r == nil || r.key > limit {
+					break
+				}
+				pendByPart[r.part] = append(pendByPart[r.part], r)
+				consume()
+			}
+			for p, q := range pendByPart { // prune keys now behind the (monotone) left.
+				i := 0
+				for i < len(q) && q[i].key < k {
+					i++
+				}
+				if i > 0 {
+					pendByPart[p] = q[i:]
+				}
+			}
+			if q := pendByPart[pk]; len(q) > 0 { // front is in [k, k+tolerance] by construction.
+				emit(leftVals, q[0])
+			} else if leftOuter {
+				emit(leftVals, nil)
+			}
+			return
+		}
+
 		if following {
-			// Advance past right rows strictly below k; the first >= k is the nearest
-			// following (kept as `pending` -- one right row can follow several lefts).
+			// Unpartitioned: advance past right rows strictly below k; the first >= k is the
+			// nearest following (kept as `pending` -- one right row can follow several lefts).
 			for {
 				r := peek()
 				if r == nil || r.key >= k {
@@ -585,11 +633,6 @@ func mergeJoinStreamAsof(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 			}
 			held[r.part] = r
 			consume()
-		}
-		pk := ""
-		if partitioned {
-			partScratch = mergeJoinPartKey(partScratch[:0], leftVals, leftParts)
-			pk = string(partScratch)
 		}
 		if h := held[pk]; h != nil && (asof != "soft" || k-h.key <= tolerance) {
 			emit(leftVals, h)
