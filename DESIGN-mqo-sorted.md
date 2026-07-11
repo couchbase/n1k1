@@ -339,8 +339,29 @@ Each step is independently useful and benchmark-gated (like the DESIGN-col roadm
    share its scan (distinct specs); only the build side shares then. QN match relies on
    stripping backticks from the algebra `PathString` to equal the keyspace `QualifiedName`.
    Further: AC-index the shared left scan's per-stream filters; adaptive budget.
-5. **(Stretch) shared merge** across correlators with a common `(left, right, key)` -- one
-   cursor advance over the two shared sorted streams feeding K predicate-pairs.
+5. **(Stretch) sweep-line / shared merge** across correlators with a common `(left, right,
+   key)` -- one watermark-driven cursor advance over the shared sorted streams feeding K
+   predicate-pairs, each keyspace holding only a bounded `[trailing, leading]` band (the
+   union of consumers' look-back/look-ahead) resident. This is the streaming interval-join
+   model; the building blocks already exist in fragments -- window FRAME monotone
+   edge-cursors + incremental enter/leave fold (`base/agg_window.go`), the pairwise pausing
+   ASOF cursors (`op_merge_join.go`), the bounded before/after buffer
+   (`OpBroadcastContext`), and sort-elision for the ordered streams. The missing piece is a
+   K-way watermark coordinator feeding N heterogeneous consumers off shared bands; because
+   the whole merge family is push-based and materializes its cursors, a truly streaming band
+   needs the deferred resumable-cursor (pull-coordinator) work (DESIGN-merging.md §2).
+   *First concrete step DONE -- spill-backed merge-join build* (`MergeJoinExec`,
+   `MergeJoinBuildSpillBytes`, default 64 MiB): the build no longer pins the whole right
+   keyspace's row payloads in RAM. ASOF/equi read build rows only at/near the cursor
+   (`heldOne` = last-absorbed; following = `rpos`; equi = current key-group), so once
+   resident payloads cross the budget they spill to a heap and are decoded on access, while
+   `keys[]`/`part[]` stay resident as the index (~25x smaller per log line). Differential-
+   gated (`TestMergeJoinBuildSpillMatchesResident`: spilled build byte-identical to resident
+   across equi / ASOF-preceding-partitioned / following, spill observably fires). Bounds the
+   ROW-payload RAM, NOT the O(N) key index -- evicting keys past the band (the pure
+   streaming sweep) is the resumable-cursor work above. Implemented via fully-INFERRED heap
+   closures so this verbatim-copied (non-lz) op never NAMES `rhmap/store` -- the gen-compiler
+   strips that import from `intermed` (verified: `make test-compiler` green).
 
 ## Open questions & honest caveats <a name="open"></a>
 

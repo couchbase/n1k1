@@ -16,6 +16,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/couchbase/rhmap/store"
+
 	"github.com/couchbase/n1k1/base"
 )
 
@@ -380,5 +382,119 @@ func TestMergeJoinRightOutOfOrder(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "out-of-order") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// runMergeJoinBudget runs a merge-join with a given build spill budget and a counting
+// in-memory heap allocator, returning the decoded rows plus how many times a spill heap
+// was allocated (0 = stayed resident, 1 = the build spilled). Mirrors runMergeJoin's decode.
+func runMergeJoinBudget(t *testing.T, op *base.Op, budget int64) ([]mjOut, int, error) {
+	t.Helper()
+	save := MergeJoinBuildSpillBytes
+	MergeJoinBuildSpillBytes = budget
+	defer func() { MergeJoinBuildSpillBytes = save }()
+
+	allocN := 0
+	vars := &base.Vars{
+		Temps: make([]interface{}, 16),
+		Ctx: &base.Ctx{
+			ExprCatalog: ExprCatalog,
+			ValComparer: base.NewValComparer(),
+			AllocHeap: func() (*store.Heap, error) {
+				allocN++
+				return &store.Heap{
+					Heap: &store.Chunks{ChunkSizeBytes: 1 << 20},
+					Data: &store.Chunks{ChunkSizeBytes: 16 << 20},
+				}, nil
+			},
+		},
+	}
+
+	var got []mjOut
+	var gotErr error
+	ExecOp(op, vars,
+		func(vals base.Vals) {
+			o := mjOut{}
+			lk, _ := strconv.ParseInt(string(vals[1]), 10, 64)
+			o.lk = lk
+			o.lv = jsonUnquote(string(vals[2]))
+			if len(vals[5]) == 0 {
+				o.rightNull = true
+			} else {
+				rk, _ := strconv.ParseInt(string(vals[5]), 10, 64)
+				o.rk = rk
+				o.rv = jsonUnquote(string(vals[6]))
+			}
+			got = append(got, o)
+		},
+		func(err error) {
+			if err != nil {
+				gotErr = err
+			}
+		}, "", "")
+	return got, allocN, gotErr
+}
+
+// TestMergeJoinBuildSpillMatchesResident is the differential gate for the spill-backed
+// build: a merge-join whose build spills (tiny budget) yields byte-identical rows to the
+// resident build (huge budget), across equi, ASOF-preceding-partitioned, and ASOF-
+// following -- the paths that read rows at the cursor via mergeJoinState.row. It also
+// asserts the spill actually fired (allocN==1) and the resident run never allocated a heap.
+func TestMergeJoinBuildSpillMatchesResident(t *testing.T) {
+	cases := []struct {
+		name        string
+		left, right []mjRow
+		asof        string
+		parts       []interface{}
+	}{
+		{
+			name:  "equi-with-dup-group",
+			left:  []mjRow{{k: 1, v: "L1"}, {k: 2, v: "L2"}, {k: 2, v: "L2b"}, {k: 4, v: "L4"}},
+			right: []mjRow{{k: 2, v: "R2a"}, {k: 2, v: "R2b"}, {k: 3, v: "R3"}, {k: 4, v: "R4"}, {k: 5, v: "R5"}},
+			asof:  "off",
+		},
+		{
+			name:  "asof-preceding-partitioned",
+			left:  []mjRow{{k: 10, v: "La", p: "x"}, {k: 11, v: "Lb", p: "y"}, {k: 20, v: "Lc", p: "x"}},
+			right: []mjRow{{k: 5, v: "Rx5", p: "x"}, {k: 6, v: "Ry6", p: "y"}, {k: 15, v: "Rx15", p: "x"}, {k: 18, v: "Rx18", p: "x"}},
+			asof:  "asof",
+			parts: []interface{}{3},
+		},
+		{
+			name:  "asof-following",
+			left:  []mjRow{{k: 1, v: "L1"}, {k: 7, v: "L7"}, {k: 12, v: "L12"}},
+			right: []mjRow{{k: 3, v: "R3"}, {k: 8, v: "R8"}, {k: 9, v: "R9"}, {k: 20, v: "R20"}},
+			asof:  "asof",
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			mk := func() *base.Op {
+				op := mergeJoinOp(mjChild(c.left), mjChild(c.right), "left", c.asof, 0, c.parts, c.parts)
+				if c.name == "asof-following" {
+					op.Params = append(op.Params, "following")
+				}
+				return op
+			}
+
+			resident, allocR, errR := runMergeJoinBudget(t, mk(), 1<<30)
+			if errR != nil {
+				t.Fatalf("resident: %v", errR)
+			}
+			if allocR != 0 {
+				t.Errorf("resident run allocated %d heaps, want 0", allocR)
+			}
+
+			spilled, allocS, errS := runMergeJoinBudget(t, mk(), 1)
+			if errS != nil {
+				t.Fatalf("spilled: %v", errS)
+			}
+			if allocS != 1 {
+				t.Errorf("spilled run allocated %d heaps, want 1 (build should spill)", allocS)
+			}
+
+			assertOut(t, spilled, resident)
+		})
 	}
 }

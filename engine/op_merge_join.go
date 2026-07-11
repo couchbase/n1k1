@@ -17,6 +17,17 @@ import (
 	"github.com/couchbase/n1k1/base"
 )
 
+// MergeJoinBuildSpillBytes caps how many bytes of right/build ROW PAYLOADS the merge-join
+// keeps resident before spilling them to a heap (disk-backed, bounded RAM). The key index
+// (keys[]/part[]) always stays resident -- it's ~25x smaller than the rows for a typical
+// log line -- and ASOF/equi read rows only at/near the cursor, so a spilled build decodes
+// just the active row(s) on access instead of pinning the whole (possibly multi-GB) right
+// keyspace in memory. 0 disables spilling (always resident). Package var so a caller can
+// tune it before a run. NOTE: this bounds the ROW payload RAM, not the O(N) key index --
+// fully streaming the build (evicting keys past the ASOF band) is the deferred
+// resumable-cursor work the whole merge family shares (see DESIGN-merging.md §2).
+var MergeJoinBuildSpillBytes int64 = 64 << 20 // 64 MiB of resident row payloads.
+
 // OpMergeJoin is the sorted merge JOIN op of DESIGN-merging.md §2. Its two inputs
 // are ALREADY ordered by an int64 sort key sitting in a labeled register of each
 // row (produced by a merge-scan, or any sorted source) -- so the join
@@ -118,6 +129,9 @@ func MergeJoinExec(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 		yieldErr(execErr)
 		return
 	}
+	if build.closeSpill != nil {
+		defer build.closeSpill()
+	}
 
 	// One reused join-row buffer (left cols ++ right cols) -- no per-row alloc.
 	valsJoin := make(base.Vals, 0, lenLabelsA+lenLabelsB)
@@ -192,6 +206,10 @@ func MergeJoinExec(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 		} else {
 			mergeJoinStepAsof(state, leftVals, k, emit)
 		}
+
+		if state.spillErr != nil && execErr == nil {
+			execErr = state.spillErr // a spill-heap read failed mid-join.
+		}
 	}
 
 	leftErr := func(err error) {
@@ -226,7 +244,20 @@ type mergeJoinState struct {
 	// or the per-partition cursor into partIdx[pk] (following).
 	partIdx map[string][]int // following-partitioned: partition key -> ascending build indices.
 
-	partBuf []byte // reused scratch for building a left partition key.
+	partBuf  []byte // reused scratch for building a left partition key.
+	spillErr error  // a build spill-heap read error, surfaced to the left pass.
+}
+
+// row fetches a build row (resident or decoded from the spill heap). On a spill read error
+// it latches s.spillErr (the left pass checks it and aborts) and returns ok=false so the
+// caller skips the emit.
+func (s *mergeJoinState) row(j int) (base.Vals, bool) {
+	r, err := s.build.rowAt(j)
+	if err != nil {
+		s.spillErr = err
+		return nil, false
+	}
+	return r, true
 }
 
 // mergeJoinStepEqui runs one left row through the equi (sort-merge) join: skip
@@ -245,7 +276,11 @@ func mergeJoinStepEqui(s *mergeJoinState, leftVals base.Vals, k int64,
 
 	matched := false
 	for j := s.rpos; j < len(b.keys) && b.keys[j] == k; j++ {
-		emit(leftVals, b.rows[j])
+		r, ok := s.row(j)
+		if !ok {
+			return
+		}
+		emit(leftVals, r)
 		matched = true
 	}
 
@@ -269,7 +304,9 @@ func mergeJoinStepAsof(s *mergeJoinState, leftVals base.Vals, k int64,
 			s.rpos++
 		}
 		if s.heldOne >= 0 && mergeJoinWithinTolerance(s, k, b.keys[s.heldOne]) {
-			emit(leftVals, b.rows[s.heldOne])
+			if r, ok := s.row(s.heldOne); ok {
+				emit(leftVals, r)
+			}
 			return
 		}
 	} else {
@@ -280,7 +317,9 @@ func mergeJoinStepAsof(s *mergeJoinState, leftVals base.Vals, k int64,
 		}
 		pk := mergeJoinLeftPartKey(s, leftVals)
 		if hj, ok := s.held[pk]; ok && mergeJoinWithinTolerance(s, k, b.keys[hj]) {
-			emit(leftVals, b.rows[hj])
+			if r, ok := s.row(hj); ok {
+				emit(leftVals, r)
+			}
 			return
 		}
 	}
@@ -309,7 +348,9 @@ func mergeJoinStepAsofFollowing(s *mergeJoinState, leftVals base.Vals, k int64,
 			s.rpos++
 		}
 		if s.rpos < len(b.keys) && mergeJoinWithinToleranceFwd(s, k, b.keys[s.rpos]) {
-			emit(leftVals, b.rows[s.rpos])
+			if r, ok := s.row(s.rpos); ok {
+				emit(leftVals, r)
+			}
 			return
 		}
 	} else {
@@ -323,7 +364,9 @@ func mergeJoinStepAsofFollowing(s *mergeJoinState, leftVals base.Vals, k int64,
 		}
 		s.held[pk] = c
 		if c < len(idxs) && mergeJoinWithinToleranceFwd(s, k, b.keys[idxs[c]]) {
-			emit(leftVals, b.rows[idxs[c]])
+			if r, ok := s.row(idxs[c]); ok {
+				emit(leftVals, r)
+			}
 			return
 		}
 	}
@@ -368,9 +411,24 @@ func mergeJoinLeftPartKey(s *mergeJoinState, leftVals base.Vals) string {
 // key per row. Same materialize-stand-in as MergeCursor (DESIGN-merging.md §2
 // spill / re-entrancy is a later slice).
 type mergeJoinSide struct {
-	rows []base.Vals
+	rows []base.Vals // resident row payloads; nil once spilled.
 	keys []int64
 	part []string
+
+	// When the resident rows exceed MergeJoinBuildSpillBytes the payloads move to a spill
+	// heap: getRow decodes row j from it on access, closeSpill frees it. keys[]/part[] stay
+	// resident as the index. Closures (not a *store.Heap field) so this verbatim-copied op
+	// never NAMES rhmap/store -- the gen-compiler strips that import from intermed.
+	getRow     func(int) (base.Vals, error)
+	closeSpill func()
+}
+
+// rowAt returns build row j, resident or decoded from the spill heap.
+func (b *mergeJoinSide) rowAt(j int) (base.Vals, error) {
+	if b.getRow != nil {
+		return b.getRow(j)
+	}
+	return b.rows[j], nil
 }
 
 // mergeJoinBuildRight drains o.Children[1] into an ordered mergeJoinSide, deep-
@@ -386,6 +444,38 @@ func mergeJoinBuildRight(o *base.Op, vars *base.Vars, pathNext string,
 	var lastKey int64
 	seen := false
 	var partBuf []byte
+
+	// Spill state, all func-typed so no *store.Heap is NAMED in this verbatim-copied op
+	// (the gen-compiler strips rhmap/store from intermed). spillPush is nil until the
+	// resident row payloads cross the budget, at which point startSpill flushes them to a
+	// heap and every later row goes straight to it; getRow/closeSpill drive rowAt.
+	var accum int64
+	var spillPush func(base.Vals) error
+	startSpill := func() error {
+		if vars.Ctx == nil || vars.Ctx.AllocHeap == nil {
+			return nil // no heap allocator (e.g. a bare test Vars): stay resident.
+		}
+		h, err := vars.Ctx.AllocHeap() // h inferred *store.Heap -- type name never written.
+		if err != nil {
+			return err
+		}
+		var encBuf []byte
+		spillPush = func(r base.Vals) error {
+			encBuf = base.ValsEncode(r, encBuf[:0])
+			return h.PushBytes(encBuf)
+		}
+		var decVals base.Vals
+		side.getRow = func(j int) (base.Vals, error) {
+			b, e := h.Get(int64(j))
+			if e != nil {
+				return nil, e
+			}
+			decVals = base.ValsDecode(b, decVals[:0]) // b stays valid post-build (heap frozen).
+			return decVals, nil
+		}
+		side.closeSpill = func() { h.Close() }
+		return nil
+	}
 
 	rightYield := func(vals base.Vals) {
 		if buildErr != nil {
@@ -404,9 +494,37 @@ func mergeJoinBuildRight(o *base.Op, vars *base.Vars, pathNext string,
 		lastKey = k
 		seen = true
 
-		side.rows = append(side.rows, mergeCopyVals(vals))
-		side.keys = append(side.keys, k)
+		if spillPush != nil {
+			// Already spilling: encode straight into the heap (ValsEncode copies).
+			if e := spillPush(vals); e != nil {
+				buildErr = e
+				return
+			}
+		} else {
+			side.rows = append(side.rows, mergeCopyVals(vals))
+			for _, v := range vals {
+				accum += int64(len(v))
+			}
+			if MergeJoinBuildSpillBytes > 0 && accum > MergeJoinBuildSpillBytes {
+				// Cross the budget: flush the resident payloads into the heap, then
+				// serve rows from it and drop the resident slice.
+				if e := startSpill(); e != nil {
+					buildErr = e
+					return
+				}
+				if spillPush != nil { // startSpill succeeded (an allocator was present).
+					for _, r := range side.rows {
+						if e := spillPush(r); e != nil {
+							buildErr = e
+							return
+						}
+					}
+					side.rows = nil
+				}
+			}
+		}
 
+		side.keys = append(side.keys, k)
 		if len(rightParts) > 0 {
 			partBuf = mergeJoinPartKey(partBuf[:0], vals, rightParts)
 			side.part = append(side.part, string(partBuf))
