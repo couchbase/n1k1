@@ -296,9 +296,29 @@ Each step is independently useful and benchmark-gated (like the DESIGN-col roadm
    PARTITION; a general "source advertises its order" contract (beyond the `_meta` keys);
    per-detector hit stats for context ops. *Measure:* K context detectors, shared vs
    standalone (expect ~K× on the sort).
-4. **Correlation consumers on the shared substrate** (Part B MQO). Fuse per-stream filters
-   (shared scan + index) and share the sorted streams feeding the merges.
-5. **(Stretch) shared merge** across correlators with a common `(left, right, key)`.
+4. **Correlation consumers on the shared substrate** (Part B MQO). A temporal-correlation
+   detector ("XYZ in log1 then ABC in log2") is a correlated argmax subquery (the ASOF
+   shape) that lowers to a merge-join; K over the same `(leftKS, rightKS, key, direction)`
+   each scan+sort those two keyspaces separately. **Foundation DONE**
+   (`glue/corpus_correlate.go`): `analyzeCorrelationDetector` recognizes the shape purely
+   from the parsed algebra (no plan/convert; independent of ASOF-lowerability) and returns
+   the `(left, right, key, direction)` signature; `CorpusCompile` groups them into
+   `CompiledCorpus.CorrelationGroups` (tested: two nearest-preceding errors→state-by-ts
+   detectors share a group, a following one splits) and `.rules run` surfaces the shareable
+   groups. Execution is UNCHANGED -- each still runs standalone.
+   *Execution-sharing (the remaining, larger sub-slice, no clean small step -- it re-touches
+   the ASOF lowering):* materialize each correlation keyspace's sorted-by-key stream ONCE
+   (`temp-capture` over the ordered/merge scan, per `(keyspace, key)`), then rewrite each
+   detector in the group so its merge-join reads `temp-yield` of the shared temp (+ its own
+   per-side filter / residual) instead of re-scanning -- so K detectors share the
+   scan+decode(+sort). This threads a corpus-level "keyspace→shared temp" map into
+   `WireASOFJoin` (substitute `temp-yield` for its scan/merge-scan leaves), the biggest
+   open piece. Note: for ASOF-eligible keyspaces the sort is already elided (the merge-scan
+   passes through the sorted-source-metadata order), so the shared win is scan+decode, not
+   the sort. Per-stream filters (the driving XYZ on the left) could additionally AC-index
+   over the shared left scan (as the fused broadcast does), a further refinement.
+5. **(Stretch) shared merge** across correlators with a common `(left, right, key)` -- one
+   cursor advance over the two shared sorted streams feeding K predicate-pairs.
 
 ## Open questions & honest caveats <a name="open"></a>
 

@@ -347,6 +347,15 @@ func (c *cli) cmdRulesRun(arg string) {
 			"gated: %d standalone detector(s) skipped (gate precondition absent): %s",
 			n, strings.Join(cc.GatedSkipped, ", "))))
 	}
+	if shareable, nDets := correlationShareable(cc.CorrelationGroups); shareable > 0 {
+		// A group of >1 correlation detector over the same (left,right,key) could share
+		// ONE sorted scan of each keyspace; today each runs standalone. Surface the
+		// opportunity (execution sharing is DESIGN-mqo-sorted.md Part B, next slice).
+		fmt.Fprintf(c.stderr, "  %s\n", c.style.Dim(fmt.Sprintf(
+			"correlation: %d detector(s) in %d shareable group(s) -- could share a sorted scan "+
+				"per keyspace (execution sharing is future work; each runs standalone for now)",
+			nDets, shareable)))
+	}
 	c.reportDetectorHits(dets, findings, cc, report)
 }
 
@@ -357,6 +366,18 @@ func (c *cli) cmdRulesRun(arg string) {
 // blob / empty scan -- the real cause is upstream framing) from "the predicate matched
 // none of N scanned rows" (a predicate bug). Goes to stderr so it never pollutes the
 // findings on stdout.
+// correlationShareable counts, over the correlation groups, the groups with >1 detector
+// (the ones that could share a scan) and the total detectors in those groups.
+func correlationShareable(groups map[string][]string) (shareableGroups, detectors int) {
+	for _, tags := range groups {
+		if len(tags) > 1 {
+			shareableGroups++
+			detectors += len(tags)
+		}
+	}
+	return shareableGroups, detectors
+}
+
 func (c *cli) reportDetectorHits(dets []glue.CorpusDetector, findings []glue.Finding,
 	cc *glue.CompiledCorpus, report *glue.CorpusRunReport) {
 	if len(dets) == 0 {

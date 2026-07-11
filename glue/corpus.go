@@ -197,6 +197,12 @@ type CompiledCorpus struct {
 	// and populated on each Run; surfaced by the caller so a skip is visible, not silent.
 	GatedSkipped []string
 
+	// CorrelationGroups maps a temporal-correlation signature (left keyspace, right
+	// keyspace, key, direction) to the Tags of the correlation detectors that share it
+	// (DESIGN-mqo-sorted.md Part B). A group of >1 could share ONE sorted scan of each
+	// keyspace; today each still runs standalone -- this surfaces the opportunity.
+	CorrelationGroups map[string][]string
+
 	session *Session
 }
 
@@ -260,6 +266,7 @@ func (s *Session) CorpusCompile(dets []CorpusDetector) (*CompiledCorpus, error) 
 	wokenByTag := map[string]*int64{}
 	var standalone []CorpusDetector
 	var rejected []RejectedDetector
+	var correlationGroups map[string][]string // Part B: correlation sig -> tags (foundation)
 
 	// Context detectors (grep -A/-B/-C windowed match-flag idiom) grouped by their
 	// (keyspace, partition, order) signature -- each group shares one scan + sort + a
@@ -290,6 +297,14 @@ func (s *Session) CorpusCompile(dets []CorpusDetector) (*CompiledCorpus, error) 
 			// executes it through the full s.Run pipeline.
 			standalone = append(standalone, CorpusDetector{
 				Tag: d.Tag, Stmt: d.Stmt, Source: d.Source, Gate: d.Gate})
+			// A temporal-correlation detector additionally records its shared-scan
+			// signature (Part B foundation) -- still standalone for now.
+			if sig, isCorr := s.analyzeCorrelationDetector(d.Stmt); isCorr {
+				if correlationGroups == nil {
+					correlationGroups = map[string][]string{}
+				}
+				correlationGroups[sig] = append(correlationGroups[sig], d.Tag)
+			}
 		default:
 			if _, seen := keyspacerFor[info.keyspaceName]; !seen {
 				keyspacerFor[info.keyspaceName] = info.keyspacer
@@ -375,14 +390,15 @@ func (s *Session) CorpusCompile(dets []CorpusDetector) (*CompiledCorpus, error) 
 	}
 
 	return &CompiledCorpus{
-		Plan:           planOp,
-		Temps:          unified.Temps,
-		Standalone:     standalone,
-		Rejected:       rejected,
-		FindingsLabels: findingsLabels,
-		DetKeyspace:    detKeyspace,
-		wokenByTag:     wokenByTag,
-		session:        s,
+		Plan:              planOp,
+		Temps:             unified.Temps,
+		Standalone:        standalone,
+		Rejected:          rejected,
+		FindingsLabels:    findingsLabels,
+		DetKeyspace:       detKeyspace,
+		CorrelationGroups: correlationGroups,
+		wokenByTag:        wokenByTag,
+		session:           s,
 	}, nil
 }
 
