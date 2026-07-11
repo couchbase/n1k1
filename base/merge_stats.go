@@ -23,7 +23,8 @@ import "sync/atomic"
 // no guard.
 type MergeStats struct {
 	JoinCount        atomic.Int64 // merge-joins executed.
-	JoinSpillCount   atomic.Int64 // merge-joins whose build spilled past the budget.
+	JoinStreamed     atomic.Int64 // merge-joins run via the two-stream co-advance (no build).
+	JoinSpillCount   atomic.Int64 // materialized merge-joins whose build spilled past the budget.
 	BuildRows        atomic.Int64 // total build (right-side) rows materialized.
 	BuildBytes       atomic.Int64 // total build row-payload bytes seen.
 	BuildBytesPeak   atomic.Int64 // largest single build's payload bytes.
@@ -49,6 +50,16 @@ func (m *MergeStats) RecordBuild(rows, bytes int64, spilled bool) {
 			break
 		}
 	}
+}
+
+// RecordStreamJoin counts one merge-join run via the two-stream co-advance (no build
+// materialization).
+func (m *MergeStats) RecordStreamJoin() {
+	if m == nil {
+		return
+	}
+	m.JoinCount.Add(1)
+	m.JoinStreamed.Add(1)
 }
 
 // AddNoKeySkipped counts a merge row dropped for lacking a sort key.

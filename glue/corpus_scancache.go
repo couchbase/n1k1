@@ -40,6 +40,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/couchbase/rhmap/store"
 
@@ -47,15 +48,20 @@ import (
 	"github.com/couchbase/n1k1/engine"
 )
 
-// applyMemEnv lets a run tune the memory budgets without a rebuild (evidence-gathering on
-// real corpora): N1K1_MERGEJOIN_SPILL_BYTES caps the merge-join's resident build payloads,
-// N1K1_SCANCACHE_BUDGET_BYTES caps a single shared-scan capture. Both accept a byte count.
+// applyMemEnv lets a run tune the memory behavior without a rebuild:
+// N1K1_MERGEJOIN_SPILL_BYTES caps the merge-join's resident build payloads,
+// N1K1_SCANCACHE_BUDGET_BYTES caps a single shared-scan capture (both byte counts),
+// N1K1_MERGEJOIN_STREAM_ASOF=0 turns off the two-stream ASOF co-advance (fall back to the
+// materialized build -- for A/B / debugging).
 func applyMemEnv() {
 	if v := envBytes("N1K1_MERGEJOIN_SPILL_BYTES"); v >= 0 {
 		engine.MergeJoinBuildSpillBytes = v
 	}
 	if v := envBytes("N1K1_SCANCACHE_BUDGET_BYTES"); v >= 0 {
 		CorpusScanCacheBudgetBytes = v
+	}
+	if s := os.Getenv("N1K1_MERGEJOIN_STREAM_ASOF"); s == "0" || s == "false" {
+		engine.MergeJoinStreamASOF = false
 	}
 }
 
@@ -80,11 +86,11 @@ func envBytes(name string) int64 {
 func (cc *CompiledCorpus) printMemStats() {
 	mb := func(b int64) string { return fmt.Sprintf("%.1f MiB", float64(b)/(1<<20)) }
 	if m := cc.MergeStats; m != nil {
-		fmt.Fprintf(os.Stderr, "mem-stats: merge-join count=%d spilled=%d (budget %s) "+
+		fmt.Fprintf(os.Stderr, "mem-stats: merge-join count=%d streamed=%d spilled=%d (budget %s) "+
 			"build rows=%d bytes=%s peak-build=%s no-key-skipped=%d\n",
-			m.JoinCount.Load(), m.JoinSpillCount.Load(), mb(engine.MergeJoinBuildSpillBytes),
-			m.BuildRows.Load(), mb(m.BuildBytes.Load()), mb(m.BuildBytesPeak.Load()),
-			m.NoKeySkipped.Load())
+			m.JoinCount.Load(), m.JoinStreamed.Load(), m.JoinSpillCount.Load(),
+			mb(engine.MergeJoinBuildSpillBytes), m.BuildRows.Load(), mb(m.BuildBytes.Load()),
+			mb(m.BuildBytesPeak.Load()), m.NoKeySkipped.Load())
 		fmt.Fprintf(os.Stderr, "mem-stats: merge-scan streamed=%d materialized=%d\n",
 			m.ScanStreamed.Load(), m.ScanMaterialized.Load())
 	}
@@ -139,16 +145,22 @@ func correlationKeyspaceQNs(groups map[string][]string) map[string]bool {
 // shared keyspaces. Package var so a caller can tune it before a corpus run.
 var CorpusScanCacheBudgetBytes int64 = 256 << 20 // 256 MiB per cached scan.
 
-// corpusScanCache is a caching DatastorePipe. It is single-goroutine within a corpus run
-// (the standalone detectors run sequentially), so the maps need no locking.
+// corpusScanCache is a caching DatastorePipe. The two-stream ASOF merge-join co-advance
+// runs its left probe and right build on SEPARATE goroutines, both hitting this shared
+// pipe concurrently (a detector's probe + build keyspaces are distinct, so they touch
+// distinct map keys but still write the maps/counters at the same time). mu guards all
+// shared state; the scan / replay / capture-serving happen OUTSIDE the lock (only the
+// short map + counter mutations are under it), so the two scans still run concurrently.
 type corpusScanCache struct {
-	sharedQNs map[string]bool        // keyspace QNs to cache (correlation keyspaces)
-	captured  map[string]*store.Heap // scan-key -> captured rows (lazy, corpus-dir backed)
-	tooBig    map[string]bool        // scan-keys whose capture blew the budget (don't retry)
-	dir       string                 // corpus-scoped spill dir (outlives per-detector Runs)
-	inner     base.DatastorePipe     // underlying provider (nil -> the file datastore)
-	budget    int64                  // max bytes to spill per cached scan
-	seq       int                    // distinct heap path suffix
+	sharedQNs map[string]bool    // keyspace QNs to cache (correlation keyspaces); read-only after ctor.
+	inner     base.DatastorePipe // underlying provider (nil -> the file datastore); read-only.
+	dir       string             // corpus-scoped spill dir (outlives per-detector Runs); read-only.
+	budget    int64              // max bytes to spill per cached scan; read-only.
+
+	mu       sync.Mutex             // guards everything below.
+	captured map[string]*store.Heap // scan-key -> captured rows (lazy, corpus-dir backed).
+	tooBig   map[string]bool        // scan-keys whose capture blew the budget (don't retry).
+	seq      int                    // distinct heap path suffix.
 
 	captures      int   // # scans captured (test observability)
 	replays       int   // # scans served from the cache (test observability)
@@ -161,13 +173,30 @@ type corpusScanCache struct {
 func (c *corpusScanCache) Op(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 	yieldErr base.YieldErr, path, pathNext string) {
 	key, ok := c.scanCacheKey(o, vars)
-	if !ok || c.tooBig[key] {
-		c.delegate(o, vars, yieldVals, yieldErr, path, pathNext) // uncacheable, or known over-budget.
+	if !ok {
+		c.delegate(o, vars, yieldVals, yieldErr, path, pathNext) // uncacheable.
 		return
 	}
 
-	if h := c.captured[key]; h != nil {
+	// Decide (under the lock) whether to replay, or reserve a fresh heap slot to capture.
+	c.mu.Lock()
+	if c.tooBig[key] {
+		c.mu.Unlock()
+		c.delegate(o, vars, yieldVals, yieldErr, path, pathNext) // known over-budget: re-scan.
+		return
+	}
+	h := c.captured[key]
+	var seq int
+	if h == nil {
+		c.seq++
+		seq = c.seq
+	}
+	c.mu.Unlock()
+
+	if h != nil {
+		c.mu.Lock()
 		c.replays++
+		c.mu.Unlock()
 		replayHeap(h, yieldVals, yieldErr)
 		return
 	}
@@ -177,9 +206,10 @@ func (c *corpusScanCache) Op(o *base.Op, vars *base.Vars, yieldVals base.YieldVa
 	// lives under the corpus dir, not the per-detector Run's tmpDir (which is removed when
 	// that Run ends), so later Runs can replay it. If the capture exceeds the byte budget
 	// we ABANDON it (free the partial heap, poison the key) and keep serving -- so a huge
-	// keyspace falls back to re-scanning instead of a giant spill.
-	c.seq++
-	heap := c.newHeap(c.seq)
+	// keyspace falls back to re-scanning instead of a giant spill. capYield touches only
+	// LOCALS (+ this call's own heap), so no lock is held on the hot path; the shared
+	// map/counter updates happen once, under the lock, after the scan finishes.
+	heap := c.newHeap(seq)
 	var buf []byte
 	var capErr error
 	var capBytes int64
@@ -190,24 +220,28 @@ func (c *corpusScanCache) Op(o *base.Op, vars *base.Vars, yieldVals base.YieldVa
 			capBytes += int64(len(buf))
 			if capBytes > c.budget {
 				over = true
-				c.tooBig[key] = true
-				c.abandoned++
 				heap.Close() // drop the partial spill immediately.
 			} else if e := heap.PushBytes(buf); e != nil {
 				capErr = e
-			} else {
-				c.capturedBytes += int64(len(buf))
 			}
 		}
 		yieldVals(vals)
 	}
 	c.delegate(o, vars, capYield, yieldErr, path, pathNext)
-	if capErr == nil && !over {
+
+	c.mu.Lock()
+	switch {
+	case over:
+		c.tooBig[key] = true
+		c.abandoned++
+	case capErr == nil:
 		c.captured[key] = heap
 		c.captures++
-	} else if capErr != nil {
+		c.capturedBytes += capBytes
+	default:
 		heap.Close()
 	}
+	c.mu.Unlock()
 }
 
 // scanCacheKey returns the cache key for a records-scan of a shared correlation keyspace,

@@ -441,6 +441,13 @@ func runMergeJoinBudget(t *testing.T, op *base.Op, budget int64) ([]mjOut, int, 
 // following -- the paths that read rows at the cursor via mergeJoinState.row. It also
 // asserts the spill actually fired (allocN==1) and the resident run never allocated a heap.
 func TestMergeJoinBuildSpillMatchesResident(t *testing.T) {
+	// The build spill lives on the MATERIALIZED path (equi always, and ASOF when
+	// streaming is off / following-partitioned). Force materialized so the ASOF cases
+	// exercise the spill too. (The streaming path is checked by the differential test.)
+	prev := MergeJoinStreamASOF
+	MergeJoinStreamASOF = false
+	defer func() { MergeJoinStreamASOF = prev }()
+
 	cases := []struct {
 		name        string
 		left, right []mjRow
@@ -572,5 +579,77 @@ func TestMergeJoinSkipsKeylessRows(t *testing.T) {
 	})
 	if n := ms.NoKeySkipped.Load(); n < 2 {
 		t.Errorf("NoKeySkipped = %d, want >= 2 (one keyless row per side)", n)
+	}
+}
+
+// TestMergeJoinStreamAsofMatchesMaterialized is the correctness gate for the two-stream
+// ASOF co-advance: for a range of ASOF scenarios, the streaming path (both sides
+// co-advanced, no build materialization) must yield BYTE-IDENTICAL output to the
+// materialized path. Runs each case with MergeJoinStreamASOF true and false and compares.
+func TestMergeJoinStreamAsofMatchesMaterialized(t *testing.T) {
+	cases := []struct {
+		name        string
+		left, right []mjRow
+		join, asof  string
+		tol         int64
+		dir         string
+		parts       []interface{}
+	}{
+		{
+			name: "preceding-inner", join: "inner", asof: "asof",
+			left:  []mjRow{{k: 5, v: "L5"}, {k: 15, v: "L15"}, {k: 25, v: "L25"}, {k: 30, v: "L30"}, {k: 55, v: "L55"}},
+			right: []mjRow{{k: 10, v: "R10"}, {k: 20, v: "R20"}, {k: 30, v: "R30"}},
+		},
+		{
+			name: "preceding-leftouter", join: "left", asof: "asof",
+			left:  []mjRow{{k: 5, v: "L5"}, {k: 15, v: "L15"}, {k: 60, v: "L60"}},
+			right: []mjRow{{k: 10, v: "R10"}, {k: 20, v: "R20"}},
+		},
+		{
+			name: "soft-preceding", join: "left", asof: "soft", tol: 5,
+			left:  []mjRow{{k: 12, v: "L12"}, {k: 18, v: "L18"}, {k: 40, v: "L40"}},
+			right: []mjRow{{k: 10, v: "R10"}, {k: 20, v: "R20"}}, // L40 -> R20 is 20 away > tol 5 -> null
+		},
+		{
+			name: "following", join: "left", asof: "asof", dir: "following",
+			left:  []mjRow{{k: 1, v: "L1"}, {k: 7, v: "L7"}, {k: 12, v: "L12"}, {k: 25, v: "L25"}},
+			right: []mjRow{{k: 3, v: "R3"}, {k: 8, v: "R8"}, {k: 9, v: "R9"}, {k: 20, v: "R20"}},
+		},
+		{
+			name: "soft-following", join: "left", asof: "soft", tol: 3, dir: "following",
+			left:  []mjRow{{k: 1, v: "L1"}, {k: 7, v: "L7"}},
+			right: []mjRow{{k: 3, v: "R3"}, {k: 20, v: "R20"}}, // L7 -> R20 is 13 > tol 3 -> null
+		},
+		{
+			name: "preceding-partitioned", join: "left", asof: "asof", parts: []interface{}{3},
+			left:  []mjRow{{k: 10, v: "La", p: "x"}, {k: 11, v: "Lb", p: "y"}, {k: 20, v: "Lc", p: "x"}, {k: 22, v: "Ld", p: "z"}},
+			right: []mjRow{{k: 5, v: "Rx5", p: "x"}, {k: 6, v: "Ry6", p: "y"}, {k: 15, v: "Rx15", p: "x"}, {k: 18, v: "Rx18", p: "x"}},
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			mk := func() *base.Op {
+				op := mergeJoinOp(mjChild(c.left), mjChild(c.right), c.join, c.asof, c.tol, c.parts, c.parts)
+				if c.dir != "" {
+					op.Params = append(op.Params, c.dir)
+				}
+				return op
+			}
+
+			MergeJoinStreamASOF = false
+			materialized, err := runMergeJoin(t, mk())
+			if err != nil {
+				t.Fatalf("materialized: %v", err)
+			}
+			MergeJoinStreamASOF = true
+			streamed, err := runMergeJoin(t, mk())
+			if err != nil {
+				t.Fatalf("streamed: %v", err)
+			}
+			MergeJoinStreamASOF = true // restore default
+
+			assertOut(t, streamed, materialized)
+		})
 	}
 }

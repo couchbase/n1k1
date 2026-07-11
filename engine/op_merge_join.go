@@ -28,6 +28,20 @@ import (
 // resumable-cursor work the whole merge family shares (see DESIGN-merging.md §2).
 var MergeJoinBuildSpillBytes int64 = 64 << 20 // 64 MiB of resident row payloads.
 
+// MergeJoinStreamASOF turns on the two-stream ASOF co-advance: instead of materializing
+// the whole build (right) side, the right runs in its own goroutine pushing rows into a
+// bounded channel while the left streams, so the join holds only the ASOF BAND resident
+// (one held row -- or one per partition -- plus a one-row lookahead), not the keyspace.
+// This is the memory fix that the build spill alone could not deliver (the build spill
+// bounds a materialization; this avoids it). false => the materialized build path. The
+// following-partitioned case still materializes (it needs a per-partition lookahead index).
+var MergeJoinStreamASOF = true
+
+// mergeJoinStreamChanCap bounds the right-stream channel (backpressure): the right
+// goroutine blocks once this many rows are queued, so a fast build can't buffer
+// unboundedly. Small -- the consumer only ever needs a one-row lookahead.
+const mergeJoinStreamChanCap = 256
+
 // OpMergeJoin is the sorted merge JOIN op of DESIGN-merging.md §2. Its two inputs
 // are ALREADY ordered by an int64 sort key sitting in a labeled register of each
 // row (produced by a merge-scan, or any sorted source) -- so the join
@@ -120,6 +134,16 @@ func MergeJoinExec(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 
 	lenLabelsA := len(o.Children[0].Labels)
 	lenLabelsB := len(o.Children[1].Labels)
+
+	// Two-stream ASOF: co-advance both sides, holding only the ASOF band -- no build
+	// materialization. Following-partitioned needs the materialized per-partition index,
+	// so it (and equi) fall through to the materialized path below.
+	if asof != "off" && MergeJoinStreamASOF && !(following && len(leftParts) > 0) {
+		mergeJoinStreamAsof(o, vars, yieldVals, yieldErr, pathNext,
+			leftKeyIdx, rightKeyIdx, leftParts, following, asof, tolerance,
+			leftOuter, lenLabelsA, lenLabelsB)
+		return
+	}
 
 	// Materialize the right/build input into an ordered, forward-only cursor. This
 	// stands in for a resumable actor-per-cursor right stream (DESIGN-merging.md
@@ -393,6 +417,213 @@ func mergeJoinWithinToleranceFwd(s *mergeJoinState, leftKey, heldKey int64) bool
 		return true
 	}
 	return heldKey-leftKey <= s.tolerance
+}
+
+// mergeJoinStreamRow is one build row carried over the right-stream channel: its int64
+// key, a deep copy of its Vals (the scan reuses its buffers, so we must copy before
+// handing the row to another goroutine), and -- when partitioned -- its canonical
+// partition key.
+type mergeJoinStreamRow struct {
+	key  int64
+	vals base.Vals
+	part string
+}
+
+// mergeJoinStreamAsof runs an ASOF join by CO-ADVANCING both sorted inputs, so neither
+// side is materialized: the build (right) is driven by a goroutine (on a cloned Ctx, so
+// it never races the left over the shared Ctx) that pushes deep-copied rows into a bounded
+// channel; the left streams in this goroutine and, per left row, pulls the right forward
+// just far enough to position the ASOF match. Resident state is the band only -- one held
+// row (nearest-preceding) or one per partition, plus a single lookahead row -- not the
+// keyspace. Handles preceding (unpartitioned + partitioned) and following (unpartitioned);
+// following-partitioned is routed to the materialized path by the caller.
+func mergeJoinStreamAsof(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
+	yieldErr base.YieldErr, pathNext string, leftKeyIdx, rightKeyIdx int,
+	leftParts []int64, following bool, asof string, tolerance int64, leftOuter bool,
+	lenLabelsA, lenLabelsB int) {
+	if vars.Ctx != nil {
+		vars.Ctx.MergeStats.RecordStreamJoin()
+	}
+
+	ch := make(chan mergeJoinStreamRow, mergeJoinStreamChanCap)
+	errCh := make(chan error, 1)
+	done := make(chan struct{})
+	finished := make(chan struct{})
+
+	// --- right (build) producer: its own goroutine + cloned Vars (race-safe). ---
+	go func() {
+		defer close(finished)
+		rVars := vars.ChainExtend() // per-actor Ctx clone; shares MergeStats by pointer.
+		var lastKey int64
+		seen := false
+		stop := false
+		var partBuf []byte
+		ry := func(vals base.Vals) {
+			if stop {
+				return
+			}
+			k, ok := mergeParseKey(vals, rightKeyIdx)
+			if !ok {
+				rVars.Ctx.MergeStats.AddNoKeySkipped(1)
+				return
+			}
+			if seen && k < lastKey {
+				select {
+				case errCh <- mergeJoinOrderErr("right", k, lastKey):
+				default:
+				}
+				stop = true
+				return
+			}
+			lastKey, seen = k, true
+			row := mergeJoinStreamRow{key: k, vals: mergeCopyVals(vals)}
+			if len(leftParts) > 0 {
+				partBuf = mergeJoinPartKey(partBuf[:0], vals, mergeRightParts(o))
+				row.part = string(partBuf)
+			}
+			select {
+			case ch <- row:
+			case <-done: // the consumer gave up; stop feeding (drop the rest).
+				stop = true
+			}
+		}
+		rErr := func(err error) {
+			if err != nil {
+				select {
+				case errCh <- err:
+				default:
+				}
+			}
+		}
+		ExecOp(o.Children[1], rVars, ry, rErr, pathNext, "MJR")
+		close(ch)
+	}()
+
+	// --- right cursor with a one-row lookahead over the channel. ---
+	var pending *mergeJoinStreamRow
+	chClosed := false
+	peek := func() *mergeJoinStreamRow {
+		if pending != nil {
+			return pending
+		}
+		if chClosed {
+			return nil
+		}
+		row, ok := <-ch
+		if !ok {
+			chClosed = true
+			return nil
+		}
+		pending = &row
+		return pending
+	}
+	consume := func() { pending = nil }
+
+	// held: nearest-preceding row per partition ("" when unpartitioned). Bounded by the
+	// number of distinct partitions, not by rows.
+	held := map[string]*mergeJoinStreamRow{}
+	partitioned := len(leftParts) > 0
+
+	valsJoin := make(base.Vals, 0, lenLabelsA+lenLabelsB)
+	emit := func(leftVals base.Vals, right *mergeJoinStreamRow) {
+		valsJoin = valsJoin[:0]
+		valsJoin = append(valsJoin, leftVals...)
+		if right != nil {
+			valsJoin = append(valsJoin, right.vals...)
+		} else {
+			for i := 0; i < lenLabelsB; i++ {
+				valsJoin = append(valsJoin, base.ValMissing)
+			}
+		}
+		yieldVals(valsJoin)
+	}
+
+	var execErr error
+	var partScratch []byte
+	var lastLeftKey int64
+	leftEmitted := false
+
+	leftYield := func(leftVals base.Vals) {
+		if execErr != nil {
+			return
+		}
+		k, ok := mergeParseKey(leftVals, leftKeyIdx)
+		if !ok {
+			vars.Ctx.MergeStats.AddNoKeySkipped(1) // keyless probe row -- can't correlate.
+			return
+		}
+		if leftEmitted && k < lastLeftKey {
+			execErr = mergeJoinOrderErr("left", k, lastLeftKey)
+			return
+		}
+		lastLeftKey, leftEmitted = k, true
+
+		if following {
+			// Advance past right rows strictly below k; the first >= k is the nearest
+			// following (kept as `pending` -- one right row can follow several lefts).
+			for {
+				r := peek()
+				if r == nil || r.key >= k {
+					break
+				}
+				consume()
+			}
+			if r := peek(); r != nil && (asof != "soft" || r.key-k <= tolerance) {
+				emit(leftVals, r)
+			} else if leftOuter {
+				emit(leftVals, nil)
+			}
+			return
+		}
+
+		// Preceding: absorb every right row with key <= k as its partition's held row;
+		// the first key > k stays as the lookahead.
+		for {
+			r := peek()
+			if r == nil || r.key > k {
+				break
+			}
+			held[r.part] = r
+			consume()
+		}
+		pk := ""
+		if partitioned {
+			partScratch = mergeJoinPartKey(partScratch[:0], leftVals, leftParts)
+			pk = string(partScratch)
+		}
+		if h := held[pk]; h != nil && (asof != "soft" || k-h.key <= tolerance) {
+			emit(leftVals, h)
+		} else if leftOuter {
+			emit(leftVals, nil)
+		}
+	}
+
+	leftErr := func(err error) {
+		if err != nil && execErr == nil {
+			execErr = err
+		}
+	}
+
+	ExecOp(o.Children[0], vars, leftYield, leftErr, pathNext, "MJL")
+
+	// Left drained: release the producer (it drops any unconsumed tail via <-done) and
+	// wait for it to finish so a build-side error surfaces and no goroutine leaks.
+	close(done)
+	<-finished
+	if execErr == nil {
+		select {
+		case err := <-errCh:
+			execErr = err
+		default:
+		}
+	}
+	yieldErr(execErr)
+}
+
+// mergeRightParts returns the right partition-key indices from the op params (Params[6]),
+// parallel to the left's -- used by the streaming producer to key each build row.
+func mergeRightParts(o *base.Op) []int64 {
+	return mergeInt64Slice(o.Params, 6)
 }
 
 // mergeJoinLeftPartKey builds the canonical partition key for a left row from its
