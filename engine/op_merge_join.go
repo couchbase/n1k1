@@ -28,6 +28,17 @@ import (
 // resumable-cursor work the whole merge family shares (see DESIGN-merging.md §2).
 var MergeJoinBuildSpillBytes int64 = 64 << 20 // 64 MiB of resident row payloads.
 
+// Merge-join build telemetry (process-cumulative; a caller resets before a run and reads
+// after -- see glue's N1K1_MEM_STATS). Plain ints so this verbatim-copied op names no
+// extra import. MergeJoinBuildBytesPeak is the largest single build's payload bytes seen.
+var (
+	MergeJoinCount           int   // # merge-joins executed.
+	MergeJoinSpillCount      int   // # whose build spilled (payloads > the budget).
+	MergeJoinBuildRowsTotal  int64 // total build rows materialized.
+	MergeJoinBuildBytesTotal int64 // total build row-payload bytes seen.
+	MergeJoinBuildBytesPeak  int64 // largest single build's payload bytes.
+)
+
 // OpMergeJoin is the sorted merge JOIN op of DESIGN-merging.md §2. Its two inputs
 // are ALREADY ordered by an int64 sort key sitting in a labeled register of each
 // row (produced by a merge-scan, or any sorted source) -- so the join
@@ -449,7 +460,7 @@ func mergeJoinBuildRight(o *base.Op, vars *base.Vars, pathNext string,
 	// (the gen-compiler strips rhmap/store from intermed). spillPush is nil until the
 	// resident row payloads cross the budget, at which point startSpill flushes them to a
 	// heap and every later row goes straight to it; getRow/closeSpill drive rowAt.
-	var accum int64
+	var accum, buildBytes int64
 	var spillPush func(base.Vals) error
 	startSpill := func() error {
 		if vars.Ctx == nil || vars.Ctx.AllocHeap == nil {
@@ -493,6 +504,10 @@ func mergeJoinBuildRight(o *base.Op, vars *base.Vars, pathNext string,
 		}
 		lastKey = k
 		seen = true
+
+		for _, v := range vals {
+			buildBytes += int64(len(v)) // telemetry: every row, resident or spilled.
+		}
 
 		if spillPush != nil {
 			// Already spilling: encode straight into the heap (ValsEncode copies).
@@ -538,6 +553,17 @@ func mergeJoinBuildRight(o *base.Op, vars *base.Vars, pathNext string,
 	}
 
 	ExecOp(o.Children[1], vars, rightYield, rightErr, pathNext, "MJR")
+
+	// Telemetry (see the package vars): one merge-join, its build size, whether it spilled.
+	MergeJoinCount++
+	MergeJoinBuildRowsTotal += int64(len(side.keys))
+	MergeJoinBuildBytesTotal += buildBytes
+	if buildBytes > MergeJoinBuildBytesPeak {
+		MergeJoinBuildBytesPeak = buildBytes
+	}
+	if side.getRow != nil {
+		MergeJoinSpillCount++
+	}
 
 	return side, buildErr
 }

@@ -35,13 +35,64 @@ package glue
 // full. Differential-tested: findings are identical to running each detector standalone.
 
 import (
+	"fmt"
+	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/couchbase/rhmap/store"
 
 	"github.com/couchbase/n1k1/base"
+	"github.com/couchbase/n1k1/engine"
 )
+
+// applyMemEnv lets a run tune the memory budgets without a rebuild (evidence-gathering on
+// real corpora): N1K1_MERGEJOIN_SPILL_BYTES caps the merge-join's resident build payloads,
+// N1K1_SCANCACHE_BUDGET_BYTES caps a single shared-scan capture. Both accept a byte count.
+func applyMemEnv() {
+	if v := envBytes("N1K1_MERGEJOIN_SPILL_BYTES"); v >= 0 {
+		engine.MergeJoinBuildSpillBytes = v
+	}
+	if v := envBytes("N1K1_SCANCACHE_BUDGET_BYTES"); v >= 0 {
+		CorpusScanCacheBudgetBytes = v
+	}
+}
+
+// envBytes parses an int64 byte count from the env var, or -1 if unset/invalid.
+func envBytes(name string) int64 {
+	s := os.Getenv(name)
+	if s == "" {
+		return -1
+	}
+	n, err := strconv.ParseInt(s, 10, 64)
+	if err != nil || n < 0 {
+		return -1
+	}
+	return n
+}
+
+// printMemStats writes a one-block memory-behavior summary to stderr after a corpus run
+// (gated by N1K1_MEM_STATS): how much the merge-join builds materialized and whether they
+// spilled, and what the shared-scan cache captured / replayed / abandoned. This is the
+// evidence for whether the build-spill and scan-cache budgets actually fire on a real
+// bundle (and thus whether the bounded-band sweep-line is worth pursuing).
+func (cc *CompiledCorpus) printMemStats() {
+	mb := func(b int64) string { return fmt.Sprintf("%.1f MiB", float64(b)/(1<<20)) }
+	fmt.Fprintf(os.Stderr, "mem-stats: merge-join count=%d spilled=%d (budget %s) "+
+		"build rows=%d bytes=%s peak-build=%s\n",
+		engine.MergeJoinCount, engine.MergeJoinSpillCount, mb(engine.MergeJoinBuildSpillBytes),
+		engine.MergeJoinBuildRowsTotal, mb(engine.MergeJoinBuildBytesTotal),
+		mb(engine.MergeJoinBuildBytesPeak))
+	if cc.scanCache != nil {
+		c := cc.scanCache
+		fmt.Fprintf(os.Stderr, "mem-stats: scan-cache captured=%d (%s) replayed=%d "+
+			"abandoned=%d (budget %s)\n",
+			c.captures, mb(c.capturedBytes), c.replays, c.abandoned, mb(CorpusScanCacheBudgetBytes))
+	} else {
+		fmt.Fprintf(os.Stderr, "mem-stats: scan-cache not installed (no correlation groups)\n")
+	}
+}
 
 // newCorpusScanCache builds a shared-scan cache over the given keyspace QNs, spilling
 // under dir, delegating uncached ops to inner (nil -> the file datastore).
@@ -95,9 +146,10 @@ type corpusScanCache struct {
 	budget    int64                  // max bytes to spill per cached scan
 	seq       int                    // distinct heap path suffix
 
-	captures  int // # scans captured (test observability)
-	replays   int // # scans served from the cache (test observability)
-	abandoned int // # scans abandoned over budget (test observability)
+	captures      int   // # scans captured (test observability)
+	replays       int   // # scans served from the cache (test observability)
+	abandoned     int   // # scans abandoned over budget (test observability)
+	capturedBytes int64 // total bytes captured into heaps (memory-stats evidence)
 }
 
 // Op serves one datastore leaf op: a cacheable full correlation-keyspace scan from the
@@ -139,6 +191,8 @@ func (c *corpusScanCache) Op(o *base.Op, vars *base.Vars, yieldVals base.YieldVa
 				heap.Close() // drop the partial spill immediately.
 			} else if e := heap.PushBytes(buf); e != nil {
 				capErr = e
+			} else {
+				c.capturedBytes += int64(len(buf))
 			}
 		}
 		yieldVals(vals)

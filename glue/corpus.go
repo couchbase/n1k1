@@ -860,6 +860,14 @@ func (cc *CompiledCorpus) runStream(onFinding func(Finding) error, stats *base.S
 
 	cc.GatedSkipped = nil // repopulated per run by streamStandalone's index-gating.
 
+	// Memory-behavior knobs + evidence (env-tunable budgets; N1K1_MEM_STATS summary).
+	applyMemEnv()
+	if os.Getenv("N1K1_MEM_STATS") != "" {
+		engine.MergeJoinCount, engine.MergeJoinSpillCount = 0, 0
+		engine.MergeJoinBuildRowsTotal, engine.MergeJoinBuildBytesTotal, engine.MergeJoinBuildBytesPeak = 0, 0, 0
+		defer cc.printMemStats()
+	}
+
 	// Part B execution sharing: install a shared-scan cache over the correlation
 	// keyspaces for this run (DESIGN-mqo-sorted.md). It reaches the standalone detectors'
 	// own s.Run scans (PlanExec propagates s.Pipe) and the fused plan below, serving each
