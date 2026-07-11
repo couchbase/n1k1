@@ -117,32 +117,48 @@ func newCorpusScanCache(qns map[string]bool, dir string, inner base.DatastorePip
 	}
 }
 
-// correlationKeyspaceQNs returns the set of keyspace names the correlation groups read
-// (both sides of each signature = the first two "\x00"-separated fields; see
-// analyzeCorrelationDetector). Caching applies to every correlation keyspace -- a group
-// of >1 shares across detectors, and a single correlated subquery still re-scans its
-// inner keyspace once per outer row, which the cache collapses to one.
+// correlationKeyspaceQNs returns the keyspaces worth caching: those read by 2+ correlation
+// detectors (both sides of each signature = the first two "\x00"-separated fields, counted
+// once per detector in the group). Caching a keyspace used by only ONE detector -- a
+// per-detector probe, say -- is pure waste: it spills to a heap that is never replayed. So
+// only GENUINELY-SHARED keyspaces are cached; the shared build of K correlators is framed
+// once, a lone probe is left to stream. (An ASOF-lowered detector scans each side once, so
+// cross-detector reuse is the only win; a boxed correlated subquery's inner re-scan never
+// reaches this pipe.)
 func correlationKeyspaceQNs(groups map[string][]string) map[string]bool {
 	if len(groups) == 0 {
 		return nil
 	}
-	out := map[string]bool{}
-	for sig := range groups {
+	uses := map[string]int{} // keyspace -> # detectors reading it.
+	for sig, tags := range groups {
 		parts := strings.Split(sig, "\x00")
-		if len(parts) >= 2 {
-			out[parts[0]] = true
-			out[parts[1]] = true
+		if len(parts) < 2 {
+			continue
 		}
+		for _, ks := range parts[:2] {
+			uses[ks] += len(tags)
+		}
+	}
+	out := map[string]bool{}
+	for ks, n := range uses {
+		if n >= 2 {
+			out[ks] = true
+		}
+	}
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }
 
 // CorpusScanCacheBudgetBytes caps how many bytes the shared-scan cache will spill for ONE
-// cached scan. A keyspace whose capture exceeds this is abandoned (its partial heap freed,
-// future scans re-scanned) rather than mirrored to disk in full -- so a multi-GB keyspace
-// degrades to the no-sharing baseline instead of a giant spill. The heap spills to disk,
-// so this bounds disk (not RAM); raise it to trade disk for avoided re-decode on large
-// shared keyspaces. Package var so a caller can tune it before a corpus run.
+// cached scan of a GENUINELY-SHARED keyspace (read by 2+ correlation detectors). A capture
+// exceeding it is abandoned (partial heap freed, re-scanned thereafter). NOTE: the spill
+// chunks are mmap-backed, so a capture counts toward RSS -- this cache trades MEMORY for
+// TIME (frame a shared keyspace once instead of per detector), so raise it only when the
+// shared keyspace is big AND reused by enough detectors to pay for the resident capture.
+// (A shared keyspace larger than the budget is abandoned mid-capture, which costs some
+// transient RSS for no benefit -- a size-estimate gate to skip it up front is a TODO.)
 var CorpusScanCacheBudgetBytes int64 = 256 << 20 // 256 MiB per cached scan.
 
 // corpusScanCache is a caching DatastorePipe. The two-stream ASOF merge-join co-advance
@@ -296,7 +312,11 @@ func (c *corpusScanCache) delegate(o *base.Op, vars *base.Vars, yieldVals base.Y
 // (mirrors MakeVars' AllocHeap construction; PushBytes/Get(i) give insertion order --
 // the same "appendable sequence" use as OpTempCapture).
 func (c *corpusScanCache) newHeap(seq int) *store.Heap {
-	prefix := filepath.Join(c.dir, "scancache", itoaCache(seq))
+	// Chunk files are <prefix>_chunk_N.<suffix>; their parent must exist. c.dir is a
+	// dedicated MkdirTemp dir, so prefix directly under it -- NO extra subdir, which
+	// (uncreated) previously made spill chunk files fail to open, silently dropping the
+	// capture of any keyspace bigger than the in-memory chunk-0 (~16 MiB).
+	prefix := filepath.Join(c.dir, itoaCache(seq))
 	return &store.Heap{
 		Heap: &store.Chunks{PathPrefix: prefix, FileSuffix: ".heap", ChunkSizeBytes: 1024 * 1024},
 		Data: &store.Chunks{PathPrefix: prefix, FileSuffix: ".data", ChunkSizeBytes: 16 * 1024 * 1024},

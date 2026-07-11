@@ -82,9 +82,19 @@ func (s *Session) analyzeCorrelationDetector(stmt string) (sig string, ok bool) 
 
 // fromKeyspaceName returns the qualified keyspace path of a single plain-keyspace FROM
 // term (the correlation grouping key), or ok=false for a join / derived-table / expression
-// source (not a plain-keyspace correlation).
+// source (not a plain-keyspace correlation). An unqualified keyspace (e.g. a recipe-framed
+// `FROM memcached r`) parses to an *algebra.ExpressionTerm that WRAPS a KeyspaceTerm
+// (isKeyspace), not a bare KeyspaceTerm -- so unwrap that too, else the correlation is
+// unrecognized and the shared-scan cache never fires (real bundles use unqualified names).
 func fromKeyspaceName(from algebra.FromTerm) (string, bool) {
-	if kt, ok := from.(*algebra.KeyspaceTerm); ok {
+	var kt *algebra.KeyspaceTerm
+	switch t := from.(type) {
+	case *algebra.KeyspaceTerm:
+		kt = t
+	case *algebra.ExpressionTerm:
+		kt = t.KeyspaceTerm() // non-nil iff the FROM expr is a keyspace reference.
+	}
+	if kt != nil {
 		// PathString backtick-quotes each part (`default`:`errors`); strip the quotes so
 		// it matches a keyspace's QualifiedName() ("default:errors"), which the scan
 		// cache keys on.

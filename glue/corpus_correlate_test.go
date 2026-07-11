@@ -276,3 +276,23 @@ func TestCorpusCorrelationScanBudget(t *testing.T) {
 	}
 	t.Logf("budget: %d captured, %d abandoned", cc.scanCache.captures, cc.scanCache.abandoned)
 }
+
+// TestCorrelationKeyspaceQNsSharedOnly: only keyspaces read by 2+ detectors are cached.
+// Two detectors with DIFFERENT probes but the SAME build keyspace -> only the build is
+// shared (caching a single-use probe would spill a heap that's never replayed).
+func TestCorrelationKeyspaceQNsSharedOnly(t *testing.T) {
+	groups := map[string][]string{
+		"default:master_events\x00default:memcached\x00ts\x00preceding":  {"c1"},
+		"default:cbcollect_info\x00default:memcached\x00ts\x00preceding": {"c2"},
+	}
+	qns := correlationKeyspaceQNs(groups)
+	if !qns["default:memcached"] {
+		t.Errorf("memcached (used by both detectors) should be shared; got %v", qns)
+	}
+	if qns["default:master_events"] || qns["default:cbcollect_info"] {
+		t.Errorf("single-use probes should NOT be cached; got %v", qns)
+	}
+	if len(qns) != 1 {
+		t.Errorf("expected exactly 1 shared keyspace (memcached), got %v", qns)
+	}
+}
