@@ -240,13 +240,63 @@ func runJSDescribe(prog *goja.Program, name, path string) (spec records.ExtractS
 	// Measure the sorted-source metadata natively (the same pass the built-in
 	// recipes use) and reflect it back into the spec, so a spec-only consumer sees
 	// this file's real sortedness/disorder bound.
+	declaredSorted := spec.Order.Sorted     // the recipe author's declaration.
+	declaredDisorder := spec.Order.Disorder //   (before measurement overwrites it).
 	meta, err = records.MeasureSortedSource(spec, path)
 	if err != nil {
 		return spec, meta, err
 	}
+
+	// FLOOR the measured sortedness at the declaration. describeMeasure reads only a
+	// HEAD SAMPLE, which can PROVE disorder (an inversion in the sample) but can NOT
+	// prove global strictness -- a real log's first out-of-order timestamp often sits
+	// past the sample (measured: a bundle's memcached.log sampled "strict" but inverts
+	// ~1µs at row 2638). So a "near"/"none" declaration must never be downgraded to a
+	// measured "strict"; take the MORE-disordered of the two, and keep the larger bound.
+	meta.Sortedness = moreDisordered(declaredSorted, meta.Sortedness)
+	if declaredDisorder.WindowNanos > meta.Disorder.WindowNanos {
+		meta.Disorder = declaredDisorder
+	}
+	// A "near" source with no measured/declared bound still needs a reorder window, or
+	// the watermarked merge degenerates to strict and aborts on the first deep inversion.
+	// Default to a conservative window (clock skew / concurrent-writer disorder in real
+	// logs is sub-second); the reorder buffer holds only rows within it, so RAM stays
+	// bounded. A recipe can declare a tighter/looser order.disorder to override.
+	if meta.Sortedness == records.SortedNear && meta.Disorder.WindowNanos == 0 {
+		meta.Disorder = records.DisorderBound{WindowNanos: defaultNearDisorderNanos}
+	}
+
 	spec.Order.Sorted = meta.Sortedness
 	spec.Order.Disorder = meta.Disorder
 	return spec, meta, nil
+}
+
+// defaultNearDisorderNanos is the reorder window assumed for a "near" source that
+// declares no explicit order.disorder and whose head sample measured no inversion. 5s
+// comfortably covers real-log clock-skew / concurrent-writer timestamp disorder.
+const defaultNearDisorderNanos = int64(5 * 1e9)
+
+// moreDisordered returns whichever of two sortedness labels is LESS ordered
+// (strict < near < none), so a measurement can raise disorder but never lower a
+// declaration below what its author promised.
+func moreDisordered(a, b string) string {
+	rank := func(s string) int {
+		switch s {
+		case records.SortedNone:
+			return 2
+		case records.SortedNear:
+			return 1
+		default:
+			return 0 // strict / unset
+		}
+	}
+	if rank(b) > rank(a) {
+		return b
+	}
+	if a == "" {
+		return records.SortedStrict
+	}
+	return a
 }
 
 // jsExportInto marshals a goja value into dst via a JSON round-trip. This reuses the

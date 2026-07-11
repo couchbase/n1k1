@@ -63,7 +63,7 @@ const extractSidecarSub = "extract"
 // serving a result shaped by the old logic (DESIGN-data.md §5 "producer_version").
 // The recipe's own Fingerprint is folded in alongside it, so a changed recipe
 // invalidates too -- see producerFingerprint. Bump this on any such logic change.
-const extractCacheVersion = 1
+const extractCacheVersion = 2 // bumped: describe now floors sortedness at the declaration.
 
 // ExtractDescribeRuns counts how many times describe() ACTUALLY ran (a cache miss or
 // a changed file) since process start; ExtractCacheHits counts memoized reuses (a

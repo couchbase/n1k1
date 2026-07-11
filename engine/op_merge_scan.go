@@ -28,6 +28,13 @@ import (
 // caller reads this after a run (see glue's N1K1_MEM_STATS). Process-cumulative.
 var MergeNoKeySkipped int64
 
+// MergeScanLastRegime / MergeScanLastSortedness capture the last merge-scan's dispatch
+// choice + per-child sortedness (debug; surfaced via glue's N1K1_MEM_STATS).
+var (
+	MergeScanLastRegime     string
+	MergeScanLastSortedness []string
+)
+
 // OpMergeScan is the K-way sorted merge SCAN op described in
 // DESIGN-merging.md, §1 "The K-way sorted merge SCAN op". It presents N
 // sorted child sources as ONE globally-ordered output stream, ordered by a
@@ -135,12 +142,19 @@ func MergeScanExec(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 
 	regime = mergeChooseRegime(len(o.Children), regime, minKeys, maxKeys)
 
-	// A child declared "near"/"none" violates the strict-heap invariant, so the
-	// merge must run the watermarked-near reorder buffer rather than the strict
-	// heap -- otherwise it could emit a row before a smaller-keyed row that has
-	// not surfaced yet. (Concatenate stays valid: disjoint ordered ranges never
-	// interleave, so within-child disorder never crosses a child boundary.)
-	if regime == "heap" && mergeHasNear(sortedness) {
+	MergeScanLastRegime = regime // debug: last dispatch (see glue N1K1_MEM_STATS).
+	MergeScanLastSortedness = sortedness
+
+	// A child declared "near"/"none" has WITHIN-child disorder, so the merge must run
+	// the watermarked-near reorder buffer -- for ANY regime, not just "heap". The strict
+	// concatenate/heap paths validate ascending order per row and abort on the first
+	// backstep; a near-sorted source (e.g. a log with sub-µs timestamp inversions from
+	// concurrent threads) trips that immediately. A single near-sorted source picks the
+	// "concatenate" regime (one child is trivially disjoint), so gating the reorder on
+	// "heap" left single sources -- the common ASOF build/probe -- on the strict path.
+	// Concatenate's disjoint-ranges optimization is only sound for STRICTLY-sorted
+	// children (no within-child disorder to reorder), so near always takes this path.
+	if mergeHasNear(sortedness) {
 		maxBound := mergeMaxBound(sortedness, bounds)
 		mergeScanWatermarked(o, vars, yieldVals, yieldErr, keyIdx, pathNext,
 			maxBound, policy)

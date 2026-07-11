@@ -84,6 +84,8 @@ func (cc *CompiledCorpus) printMemStats() {
 		engine.MergeJoinCount, engine.MergeJoinSpillCount, mb(engine.MergeJoinBuildSpillBytes),
 		engine.MergeJoinBuildRowsTotal, mb(engine.MergeJoinBuildBytesTotal),
 		mb(engine.MergeJoinBuildBytesPeak), engine.MergeNoKeySkipped)
+	fmt.Fprintf(os.Stderr, "mem-stats: merge-scan last-regime=%q last-sortedness=%v\n",
+		engine.MergeScanLastRegime, engine.MergeScanLastSortedness)
 	if cc.scanCache != nil {
 		c := cc.scanCache
 		fmt.Fprintf(os.Stderr, "mem-stats: scan-cache captured=%d (%s) replayed=%d "+
