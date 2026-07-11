@@ -80,10 +80,10 @@ func envBytes(name string) int64 {
 func (cc *CompiledCorpus) printMemStats() {
 	mb := func(b int64) string { return fmt.Sprintf("%.1f MiB", float64(b)/(1<<20)) }
 	fmt.Fprintf(os.Stderr, "mem-stats: merge-join count=%d spilled=%d (budget %s) "+
-		"build rows=%d bytes=%s peak-build=%s\n",
+		"build rows=%d bytes=%s peak-build=%s no-key-skipped=%d\n",
 		engine.MergeJoinCount, engine.MergeJoinSpillCount, mb(engine.MergeJoinBuildSpillBytes),
 		engine.MergeJoinBuildRowsTotal, mb(engine.MergeJoinBuildBytesTotal),
-		mb(engine.MergeJoinBuildBytesPeak))
+		mb(engine.MergeJoinBuildBytesPeak), engine.MergeNoKeySkipped)
 	if cc.scanCache != nil {
 		c := cc.scanCache
 		fmt.Fprintf(os.Stderr, "mem-stats: scan-cache captured=%d (%s) replayed=%d "+

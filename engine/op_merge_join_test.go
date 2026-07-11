@@ -498,3 +498,52 @@ func TestMergeJoinBuildSpillMatchesResident(t *testing.T) {
 		})
 	}
 }
+
+// mjChildRaw builds a scan+project child from raw JSONL (so a row can OMIT "ts" -- a
+// keyless row, like a cbcollect banner or a multiline log continuation).
+func mjChildRaw(jsonl string) *base.Op {
+	return &base.Op{
+		Kind:   "project",
+		Labels: base.Labels{".", "ts", "v", "p"},
+		Params: []interface{}{
+			[]interface{}{"labelPath", "."},
+			[]interface{}{"labelPath", ".", "ts"},
+			[]interface{}{"labelPath", ".", "v"},
+			[]interface{}{"labelPath", ".", "p"},
+		},
+		Children: []*base.Op{{
+			Kind:   "scan",
+			Labels: base.Labels{"."},
+			Params: []interface{}{"jsonsData", jsonl},
+		}},
+	}
+}
+
+// TestMergeJoinSkipsKeylessRows: real recipe-framed log keyspaces interleave ts-keyed
+// data rows with keyless lines (cbcollect `====` banners, multiline continuations). The
+// merge-join must SKIP those (they're not time-orderable) rather than abort the ASOF.
+// Here both sides lead with a keyless row; the join proceeds over the keyed rows and the
+// keyless ones are counted in MergeNoKeySkipped.
+func TestMergeJoinSkipsKeylessRows(t *testing.T) {
+	before := MergeNoKeySkipped
+
+	// Left probe: a keyless banner first, then two keyed rows.
+	left := mjChildRaw(`{"v":"BANNER"}` + "\n" +
+		`{"ts":15,"v":"L15"}` + "\n" + `{"ts":25,"v":"L25"}` + "\n")
+	// Right build: a keyless banner first, then two keyed rows.
+	right := mjChildRaw(`{"v":"===="}` + "\n" +
+		`{"ts":10,"v":"R10"}` + "\n" + `{"ts":20,"v":"R20"}` + "\n")
+
+	got, err := runMergeJoin(t, mergeJoinOp(left, right, "inner", "asof", 0, nil, nil))
+	if err != nil {
+		t.Fatalf("unexpected error (keyless rows should skip, not abort): %v", err)
+	}
+	// L15 -> nearest preceding R10; L25 -> R20. The banners are skipped on both sides.
+	assertOut(t, got, []mjOut{
+		{lk: 15, lv: "L15", rk: 10, rv: "R10"},
+		{lk: 25, lv: "L25", rk: 20, rv: "R20"},
+	})
+	if MergeNoKeySkipped-before < 2 {
+		t.Errorf("MergeNoKeySkipped rose by %d, want >= 2 (one keyless row per side)", MergeNoKeySkipped-before)
+	}
+}

@@ -865,6 +865,7 @@ func (cc *CompiledCorpus) runStream(onFinding func(Finding) error, stats *base.S
 	if os.Getenv("N1K1_MEM_STATS") != "" {
 		engine.MergeJoinCount, engine.MergeJoinSpillCount = 0, 0
 		engine.MergeJoinBuildRowsTotal, engine.MergeJoinBuildBytesTotal, engine.MergeJoinBuildBytesPeak = 0, 0, 0
+		engine.MergeNoKeySkipped = 0
 		defer cc.printMemStats()
 	}
 

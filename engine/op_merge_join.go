@@ -197,7 +197,7 @@ func MergeJoinExec(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 
 		k, ok := mergeParseKey(leftVals, leftKeyIdx)
 		if !ok {
-			execErr = mergeJoinKeyErr("left", leftKeyIdx)
+			MergeNoKeySkipped++ // keyless probe row (banner / multiline) -- can't correlate, skip.
 			return
 		}
 
@@ -495,7 +495,7 @@ func mergeJoinBuildRight(o *base.Op, vars *base.Vars, pathNext string,
 
 		k, ok := mergeParseKey(vals, rightKeyIdx)
 		if !ok {
-			buildErr = mergeJoinKeyErr("right", rightKeyIdx)
+			MergeNoKeySkipped++ // keyless build row (banner / multiline) -- can't match, skip.
 			return
 		}
 		if seen && k < lastKey {

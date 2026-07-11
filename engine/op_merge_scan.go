@@ -20,6 +20,14 @@ import (
 	"github.com/couchbase/n1k1/base"
 )
 
+// MergeNoKeySkipped counts rows a merge SCAN/JOIN dropped because they carried no int64
+// sort key at the key index. Real recipe-framed log keyspaces interleave ts-keyed data
+// rows with keyless lines -- cbcollect `====` banners, multiline stack-trace continuations
+// -- which are not independently time-orderable; the merge skips them rather than aborting
+// the whole ASOF (evidence: a real bundle's memcached.log = 887172 keyed / 4 keyless). A
+// caller reads this after a run (see glue's N1K1_MEM_STATS). Process-cumulative.
+var MergeNoKeySkipped int64
+
 // OpMergeScan is the K-way sorted merge SCAN op described in
 // DESIGN-merging.md, §1 "The K-way sorted merge SCAN op". It presents N
 // sorted child sources as ONE globally-ordered output stream, ordered by a
@@ -171,8 +179,7 @@ func mergeScanConcatenate(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 
 			k, ok := mergeParseKey(vals, keyIdx)
 			if !ok {
-				execErr = fmt.Errorf("merge-scan: child %d has a missing or"+
-					" non-int64 sort key at index %d", i, keyIdx)
+				MergeNoKeySkipped++ // keyless row (banner / multiline continuation) -- skip.
 				return
 			}
 
@@ -228,8 +235,7 @@ func mergeScanHeap(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 
 			k, ok := mergeParseKey(vals, keyIdx)
 			if !ok {
-				execErr = fmt.Errorf("merge-scan: child %d has a missing or"+
-					" non-int64 sort key at index %d", i, keyIdx)
+				MergeNoKeySkipped++ // keyless row (banner / multiline continuation) -- skip.
 				return
 			}
 
@@ -334,8 +340,7 @@ func mergeScanWatermarked(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 
 			k, ok := mergeParseKey(vals, keyIdx)
 			if !ok {
-				execErr = fmt.Errorf("merge-scan: child %d has a missing or"+
-					" non-int64 sort key at index %d", i, keyIdx)
+				MergeNoKeySkipped++ // keyless row (banner / multiline continuation) -- skip.
 				return
 			}
 
