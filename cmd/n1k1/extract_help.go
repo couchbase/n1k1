@@ -116,6 +116,9 @@ FIELDS (lift typed columns out of each framed record) -- native byte-regex, off 
 boxed lane. One regexp with named captures; each (?P<name>...) becomes a field:
   fields: { pattern: "^(?P<ts>\\S+) (?P<level>\\S+) (?P<node>\\S+) (?P<msg>.*)" }
 A record that doesn't match degrades to {"text": <raw>} so nothing is dropped.
+Captures are STRINGS by default; fields.types declares a numeric/bool field so it's a
+JSON number/bool -- "WHERE count > 1000" then compares numerically & stays native:
+  fields: { pattern: "...", types: { count: "int", inuse_bytes: "int", ratio: "float" } }
 
 TIME (normalize the timestamp field to one sortable int64 epoch-NANOS key, so ORDER BY
 / ASOF / merges work across files & nodes). time.field names the captured field;

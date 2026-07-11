@@ -272,6 +272,7 @@ type specSource struct {
 
 	fieldRe   *regexp.Regexp // spec.Fields.Pattern (named captures); nil if none
 	tsIdx     int            // index of the timestamp subexp in fieldRe, or -1
+	fieldType map[int]string // subexp index -> declared type ("int"/"float"/"bool"); nil = all strings
 	multi     bool           // multiline framing (else one record per line)
 	json      bool           // json framing: each line is a JSON object (JSONL)
 	section   bool           // section framing: ====-banner command dumps
@@ -321,12 +322,18 @@ func (s *specSource) compile() error {
 			return fmt.Errorf("records: SpecApply: bad fields pattern: %w", err)
 		}
 		s.fieldRe = re
-		if s.spec.Time != nil {
-			for i, name := range re.SubexpNames() {
-				if name != "" && name == s.spec.Time.Field {
-					s.tsIdx = i
-					break
+		for i, name := range re.SubexpNames() {
+			if name == "" {
+				continue
+			}
+			if s.spec.Time != nil && name == s.spec.Time.Field {
+				s.tsIdx = i
+			}
+			if t, ok := s.spec.Fields.Types[name]; ok && t != "" {
+				if s.fieldType == nil {
+					s.fieldType = map[int]string{}
 				}
+				s.fieldType[i] = t
 			}
 		}
 	}
@@ -592,6 +599,10 @@ func (s *specSource) buildDoc(dst, recBytes []byte) []byte {
 					}
 					// unparseable timestamp: keep the raw string so it's not lost.
 				}
+				if typ := s.fieldType[i]; typ != "" {
+					dst = appendTypedVal(dst, typ, val) // int/float/bool -> JSON number/bool
+					continue
+				}
 				dst = strconv.AppendQuote(dst, string(val))
 			}
 		} else {
@@ -631,6 +642,33 @@ func (s *specSource) buildDocSection(dst, body []byte) []byte {
 		dst = strconv.AppendQuote(dst, v)
 	}
 	return append(dst, '}')
+}
+
+// appendTypedVal appends a captured field to dst as the JSON form of its declared
+// type -- "int"/"float"/"bool" -> a JSON number/bool -- so numeric log fields compare
+// and sort numerically and stay native (IDEA-0019). A value that doesn't parse as the
+// declared type (or a non-finite float) falls back to a quoted string, so a mistyped
+// field is never dropped and the output is always valid JSON.
+func appendTypedVal(dst []byte, typ string, val []byte) []byte {
+	s := strings.TrimSpace(string(val))
+	switch typ {
+	case "int", "integer":
+		if n, err := strconv.ParseInt(s, 10, 64); err == nil {
+			return strconv.AppendInt(dst, n, 10)
+		}
+	case "float", "number", "double":
+		if f, err := strconv.ParseFloat(s, 64); err == nil && !math.IsNaN(f) && !math.IsInf(f, 0) {
+			return strconv.AppendFloat(dst, f, 'g', -1, 64)
+		}
+	case "bool", "boolean":
+		switch strings.ToLower(s) {
+		case "true":
+			return append(dst, "true"...)
+		case "false":
+			return append(dst, "false"...)
+		}
+	}
+	return strconv.AppendQuote(dst, string(val))
 }
 
 // buildDocOpaque emits the single {kind:"opaque", note, ...provenance} record for an

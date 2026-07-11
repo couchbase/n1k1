@@ -93,6 +93,14 @@ type Fields struct {
 
 	// Grok is an optional grok-style pattern as an alternative to a raw regexp.
 	Grok string `json:"grok,omitempty"`
+
+	// Types optionally declares the JSON type of a captured field by name --
+	// "int" | "float" | "bool" -- so a numeric log field (a count, a byte size, a
+	// status code) is emitted as a JSON NUMBER, not a string. Then `WHERE count >
+	// 1000` compares/sorts numerically and stays native (no TONUMBER box). A capture
+	// whose value doesn't parse as the declared type falls back to a string, so a
+	// mistyped field is never dropped. Unlisted captures stay strings (the default).
+	Types map[string]string `json:"types,omitempty"`
 }
 
 // Time-layout tags for TimeSpec.Layout. A recipe maps its source's timestamp

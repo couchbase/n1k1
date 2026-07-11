@@ -200,6 +200,59 @@ func TestSpecApplyFramingOpaque(t *testing.T) {
 	}
 }
 
+// TestSpecApplyTypedFields: fields.types emits a captured field as a JSON number/bool
+// (not a string), so numeric log fields compare/sort numerically (IDEA-0019). A value
+// that doesn't parse as the declared type falls back to a quoted string.
+func TestSpecApplyTypedFields(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "app.log")
+	body := "count=9 heap=1.5 ok=true msg=small\n" +
+		"count=3712 heap=0.25 ok=false msg=big\n" +
+		"count=NaNnum heap=x ok=maybe msg=bad\n" // unparseable -> string fallback
+	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	spec := ExtractSpec{
+		Framing: Framing{Kind: FramingLine},
+		Fields: Fields{
+			Pattern: `count=(?P<count>\S+) heap=(?P<heap>\S+) ok=(?P<ok>\S+) msg=(?P<msg>\S+)`,
+			Types:   map[string]string{"count": "int", "heap": "float", "ok": "bool"},
+		},
+	}
+	src, err := SpecApply(spec, p, "app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, docs := collect(t, src)
+	if len(docs) != 3 {
+		t.Fatalf("want 3 records, got %d: %v", len(docs), docs)
+	}
+
+	type row struct {
+		Count int64
+		Heap  float64
+		Ok    bool
+		Msg   string
+	}
+	var r0, r1 row
+	if err := json.Unmarshal([]byte(docs[0]), &r0); err != nil {
+		t.Fatalf("row0 typed decode failed (fields not numeric?): %v (%s)", err, docs[0])
+	}
+	if err := json.Unmarshal([]byte(docs[1]), &r1); err != nil {
+		t.Fatalf("row1 typed decode failed: %v (%s)", err, docs[1])
+	}
+	if r0.Count != 9 || r1.Count != 3712 || !(r0.Count < r1.Count) {
+		t.Errorf("count should be numeric (9 < 3712), got %d and %d", r0.Count, r1.Count)
+	}
+	if r0.Heap != 1.5 || r1.Heap != 0.25 || r0.Ok != true || r1.Ok != false {
+		t.Errorf("heap/ok typing wrong: %+v %+v", r0, r1)
+	}
+	// The unparseable row falls back to quoted strings -- valid JSON, nothing dropped.
+	if !strings.Contains(docs[2], `"count":"NaNnum"`) || !strings.Contains(docs[2], `"ok":"maybe"`) {
+		t.Errorf("bad row should fall back to string fields: %s", docs[2])
+	}
+}
+
 func TestWalkGzip(t *testing.T) { // scenario H
 	s, err := Walk(ex("archive/default/orders"), AllModes())
 	if err != nil {
@@ -1355,7 +1408,7 @@ func TestExtractSpecRoundTrip(t *testing.T) {
 	}
 	if got.Format != spec.Format ||
 		got.Framing != spec.Framing ||
-		got.Fields != spec.Fields ||
+		got.Fields.Pattern != spec.Fields.Pattern || got.Fields.Grok != spec.Fields.Grok ||
 		got.Time == nil || *got.Time != *spec.Time ||
 		got.Order != spec.Order ||
 		got.Provenance["command"] != spec.Provenance["command"] ||
