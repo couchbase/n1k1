@@ -36,10 +36,12 @@ function expand(args, ctx) {
   var sub = ctx.gensym("gc");    //   bare `SELECT *` would nest them under the keyspace)
   var hit = ctx.gensym("hit");   // the window "in a context window?" marker column
   var part = args.part ? ("PARTITION BY " + args.part + " ") : "";
-  // Frame bounds are SWAPPED vs before/after: MAX(match) OVER a frame keeps row r
-  // when a match lies in [r-PRECEDING, r+FOLLOWING], so relative to a match m the
-  // kept rows are [m-FOLLOWING, m+PRECEDING]. To make `before` = lines before the
-  // match and `after` = lines after it, use FOLLOWING=before and PRECEDING=after.
+  // Frame bounds are SWAPPED vs before/after -- a perspective duality, NOT an engine
+  // quirk. A window answers, per row r, "is a match in MY frame [r-PRECEDING,
+  // r+FOLLOWING]?". grep asks the mirror: "print the [before,after] frame of each
+  // MATCH". Row r is in match m's print-range [m-before, m+after] IFF match m is in
+  // r's frame [r-after, r+before]. So to keep `before` lines before a match, each row
+  // must look `before` lines FORWARD to see it: FOLLOWING=before, PRECEDING=after.
   return (
     "SELECT " + sub + ".* FROM (" +
       "SELECT " + s + ".*, MAX(CASE WHEN (" + args.when + ") THEN 1 ELSE 0 END) " +
