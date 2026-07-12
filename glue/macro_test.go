@@ -278,7 +278,7 @@ func TestShippedMacros(t *testing.T) {
 		{`@sessionize(logs, gap => 30000, part => node)`,
 			[]string{"LAG(ts) OVER", "> (30000)", "ROWS UNBOUNDED PRECEDING", "AS session_id", "PARTITION BY node"}},
 		{`@top_per_group(ops, part => node, order => dur DESC, n => 5)`,
-			[]string{"COUNT(1) OVER", "ORDER BY dur DESC", "ROWS UNBOUNDED PRECEDING", "<= 5"}},
+			[]string{"ROW_NUMBER() OVER", "ORDER BY dur DESC", "<= 5"}},
 		{`@transitions(st_log, of => state, part => node)`,
 			[]string{"LAG(state) OVER", "AS prev_val", "IS DISTINCT FROM", "IS NULL OR"}},
 	}

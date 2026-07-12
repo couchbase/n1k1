@@ -356,6 +356,16 @@ OUTER:
 			}
 
 		case '^': // The label is an attachment name for vals[i].
+			if label[1:] == "worderby" {
+				// "^worderby" is an INTERNAL window ORDER-BY column, consumed positionally
+				// by op_window (WindowFrame.ValIdx) in the byte lane -- it is never a boxed
+				// attachment. Skip it: boxing it would call attKey("worderby"), whose
+				// catch-all folds unknown names onto ATT_AGGREGATES, clobbering the real
+				// aggregates map. That collision panicked for `SELECT *` (whole-row) beside
+				// a NO-OPERAND window function (ROW_NUMBER/RANK/COUNT(*) OVER), which emit a
+				// "^worderby" column ahead of "^aggregates|..."; operand fns (LAG) don't.
+				continue OUTER
+			}
 			if len(vals[i]) > 0 {
 				// TODO: Is vals[i] always JSON encoded?
 				vv := value.NewParsedValue(vals[i], true)

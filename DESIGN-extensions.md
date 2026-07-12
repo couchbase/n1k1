@@ -787,13 +787,16 @@ AI proposing a new macro the same confidence loop.
   typing; `require()`/shared modules once that lands for JS extensions generally; more
   starter macros (`rate`, `time_bucket`, `error_burst`, `collapse_repeats`).
 
-**Engine bug surfaced while building the library (worked around, not yet fixed):**
-`SELECT *`/whole-row projection combined with a *no-operand* window function
-(`ROW_NUMBER()`/`RANK()`/`COUNT(*) OVER …`) panics in `glue/expr.go` `Convert` (a plain
-`^aggregates` binary attachment collides with `^aggregates|key`). Operand functions
-(`LAG(x)`, `COUNT(1)`) are fine, so `top_per_group` ranks via `COUNT(1) OVER (… ROWS
-UNBOUNDED PRECEDING)` (position-based == `ROW_NUMBER`). The underlying star+no-arg-window
-panic is a separate fix.
+**Engine bug surfaced while building the library — now FIXED.** `SELECT *`/whole-row
+projection combined with a *no-operand* window function (`ROW_NUMBER()`/`RANK()`/
+`COUNT(*) OVER …`) panicked in `glue/expr.go` `Convert`: those functions emit an internal
+`^worderby` ordering column, and `attKey`'s catch-all folded the name `worderby` onto
+`ATT_AGGREGATES`, so the binary worderby value clobbered the real `^aggregates|…` map
+(`interface conversion: binaryValue vs map`). Operand functions (`LAG(x)`) were unaffected
+(no `^worderby`). Fixed by having `Convert` **skip the `^worderby` label** — it is consumed
+positionally by `op_window` (`WindowFrame.ValIdx`) in the byte lane and is never a boxed
+attachment. `top_per_group` therefore uses plain `ROW_NUMBER()`. Regression: `test`'s
+`TestNoPanicRegress` (`star-row-number`/`star-rank`/`star-count-star-window`).
 
 ## Dynamic loading in Go
 

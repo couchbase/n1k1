@@ -28,15 +28,9 @@ function expand(args, ctx) {
   var sub  = ctx.gensym("top");  // inner-subquery alias
   var rn   = ctx.gensym("rn");   // per-partition rank
   var part = args.part ? ("PARTITION BY " + args.part + " ") : "";
-  // Rank via a running COUNT(1) over a ROWS-UNBOUNDED-PRECEDING frame -- position-based,
-  // so it is exactly ROW_NUMBER (distinct 1,2,3,... even across ties). NOTE: we do NOT
-  // use ROW_NUMBER()/RANK() here on purpose: a no-operand window function combined with
-  // a whole-row `t.*` projection currently trips an engine bug (star + no-arg window ->
-  // a value.binaryValue vs map attachment panic in glue Convert). COUNT(1) has an operand
-  // and dodges it while giving the same ranks.
   return "SELECT " + sub + ".* FROM (" +
     "SELECT " + t + ".*, " +
-      "COUNT(1) OVER (" + part + "ORDER BY " + args.order + " ROWS UNBOUNDED PRECEDING) AS " + rn + " " +
+      "ROW_NUMBER() OVER (" + part + "ORDER BY " + args.order + ") AS " + rn + " " +
     "FROM " + args.src + " AS " + t + ") AS " + sub + " " +
     "WHERE " + sub + "." + rn + " <= " + args.n;
 }

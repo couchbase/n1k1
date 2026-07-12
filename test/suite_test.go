@@ -948,6 +948,18 @@ func TestNoPanicRegress(t *testing.T) {
 		// state), so a runtime error is fine -- just never a crash.
 		{"window-agg-over-group", `SELECT d.c2, COUNT(d.c3) AS a1, SUM(COUNT(d.c3)) OVER() AS w1, SUM(COUNT(d.c2)) OVER(wn1) AS w2 FROM [{"c2":1,"c3":10,"c4":5},{"c2":1,"c3":20,"c4":6},{"c2":2,"c3":30,"c4":7}] AS d GROUP BY d.c2 WINDOW wn1 AS (PARTITION BY MIN(d.c3) ORDER BY MAX(d.c4))`, true},
 		{"window-sum-over-empty", `SELECT d.x, SUM(d.x) OVER() AS tot FROM [{"x":1},{"x":2},{"x":3}] AS d`, true},
+
+		// star-plus-no-operand-window: `SELECT *` (whole-row) beside a NO-OPERAND window
+		// function (ROW_NUMBER/RANK/COUNT(*) OVER) panicked in glue Convert -- these emit
+		// a "^worderby" ordering column ahead of "^aggregates|...", and attKey's catch-all
+		// folded "worderby" onto ATT_AGGREGATES, so the binary worderby value clobbered the
+		// aggregates map (interface conversion: binaryValue vs map). Operand fns (LAG) were
+		// unaffected. Fixed by skipping the internal "^worderby" label in Convert (it is
+		// consumed positionally by op_window, never as a boxed attachment). Must now run
+		// cleanly (correct rows), not just avoid a crash.
+		{"star-row-number", `SELECT d.*, ROW_NUMBER() OVER (ORDER BY d.x DESC) AS rn FROM [{"x":1},{"x":2},{"x":3}] AS d`, false},
+		{"star-rank", `SELECT d.*, RANK() OVER (PARTITION BY d.g ORDER BY d.x) AS rk FROM [{"g":"a","x":1},{"g":"a","x":2},{"g":"b","x":3}] AS d`, false},
+		{"star-count-star-window", `SELECT d.*, COUNT(*) OVER (ORDER BY d.x) AS c FROM [{"x":1},{"x":2},{"x":3}] AS d`, false},
 	}
 
 	for _, c := range cases {
