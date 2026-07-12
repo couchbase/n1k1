@@ -292,7 +292,7 @@ func (c *cli) printHelp() {
 	}
 	// Show the current datastore + a live example over a real keyspace, or a hint
 	// to open one when there's no datastore.
-	fmt.Fprintf(c.stderr, "\ndatastore: %s\n", c.dataLoc())
+	fmt.Fprintf(c.stderr, "\ndatastore: %s\n\n", c.dataLoc())
 	if ex := c.exampleQuery(); ex != "" {
 		fmt.Fprintf(c.stderr, "Statements are SQL++; terminate with ';'. Example: %s\n", ex)
 	} else {
