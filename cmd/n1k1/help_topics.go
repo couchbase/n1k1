@@ -44,6 +44,7 @@ var helpTopics = []helpTopic{
 	{name: "temp-keyspaces", blurb: "CREATE TEMP KEYSPACE staged pipelines"},
 	{name: "rules", blurb: "authoring & running a collection of SQL++ queries", alias: ".rules help"},
 	{name: "extract", blurb: "authoring *.extract.js recipes that frame files into rows", alias: ".extract help"},
+	{name: "macro", blurb: "authoring *.macro.js macros that expand @name(...) into SQL++", alias: ".macro help"},
 	{name: "index", blurb: "secondary/FTS indexes: the catalog + .index commands", alias: ".index help"},
 }
 
@@ -82,6 +83,8 @@ func (c *cli) cmdHelp(arg string) {
 		c.cmdRulesHelp()
 	case "extract":
 		c.cmdExtract("help")
+	case "macro", "macros":
+		c.cmdMacro("help")
 	case "index":
 		c.cmdIndexHelp()
 	default:

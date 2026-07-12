@@ -134,4 +134,26 @@ Invocation syntax (in any SQL++ statement):
 Authoring: see  .extract help  for the sibling *.extract.js surface;
 a *.macro.js defines  expand(args, ctx) -> SQL++ string  (optional module-scope
 "macro" object with "params"). Use ctx.gensym("x") to generate unique symbols so
-that expansions never collide.`
+that expansions never collide.
+
+Example -- the whole of a "recent.macro.js" (keeps rows at/after a time):
+
+  // @recent(logs, since => 1700000000)  ->  rows whose ts >= since
+  var macro = {
+    name: "recent",
+    params: [ { name: "src",   required: true },   // keyspace / subquery
+              { name: "ts",    default: "ts" },     // the time column
+              { name: "since", required: true } ]   // lower bound (raw SQL++)
+  };
+  function expand(args, ctx) {
+    var s = ctx.gensym("r");                        // unique alias (hygiene)
+    return "(SELECT " + s + ".* FROM " + args.src + " AS " + s +
+           " WHERE " + s + "." + args.ts + " >= (" + args.since + "))";
+  }
+
+  # load it and use it (the paren-wrapped expansion is a subquery -> alias it):
+  .ext ./recent.macro.js
+  SELECT r.* FROM @recent(logs, since => 1700000000) AS r;
+
+  # see exactly what it expands to:
+  .macro expand SELECT r.* FROM @recent(logs, since => 1700000000) AS r`
