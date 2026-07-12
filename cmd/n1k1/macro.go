@@ -111,12 +111,11 @@ func macroParamList(params []glue.MacroParam) string {
 }
 
 const macroHelpText = `
-.macro -- pre-parse SQL++ macros (DESIGN-extensions.md "Macros")
+.macro -- pre-parse and transform SQL++
 
 A macro is user-authored JS (a "*.macro.js" file, loaded via -ext / .extensions)
 that turns a compact @name(...) call into generated SQL++, expanded BEFORE the
-parser. It lets WINDOW-heavy shapes (grep -A/-B/-C context, top-per-group,
-sessionize) be written as one line.
+SQL++ parser.
 
   .macro                       list loaded macros
   .macro list                  same
@@ -134,5 +133,5 @@ Invocation syntax (in any SQL++ statement):
 
 Authoring: see  .extract help  for the sibling *.extract.js surface;
 a *.macro.js defines  expand(args, ctx) -> SQL++ string  (optional module-scope
-"macro" object with "params"). Use ctx.gensym("x") for every internal alias so
-expansions never collide.`
+"macro" object with "params"). Use ctx.gensym("x") to generate unique symbols so
+that expansions never collide.`
