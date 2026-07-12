@@ -243,6 +243,75 @@ func containsAny(s string, subs ...string) bool {
 	return false
 }
 
+// TestCorpusContextNestedProjection (IDEA-0029): a context detector whose windowed
+// subquery is wrapped in an EXTRA derived table -- exactly what the @grep_context macro
+// expands to (SELECT g.* FROM (SELECT sub.* FROM (<window>) sub WHERE sub.near=1) g) --
+// must still fuse AND project correctly. The outer SELECT references the OUTERMOST alias
+// (g), which differs from the innermost filter's alias (sub); the fused projection has to
+// compose through the star-passthrough middle to the scan row, not silently emit `{}`.
+func TestCorpusContextNestedProjection(t *testing.T) {
+	sess := ctxCorpusSession(t)
+
+	// The exact doubly-nested shape @grep_context expands to (verified via `.macro expand`):
+	// a `SELECT gc.*` star passthrough over a `SELECT src.*, MAX(...) AS near` star window-
+	// column project, all wrapped by the detector's `SELECT g.file, g.pos`. The outer refs
+	// the outermost alias (g); the projection has to compose g.file -> src.file THROUGH the
+	// star, not lose it. Projects a column SUBSET (file,pos) so a whole-row leak would show.
+	stmt := `SELECT g.file, g.pos FROM (` +
+		`SELECT gc.* FROM (` +
+		`SELECT src.*, MAX(CASE WHEN src.sev = "ERROR" THEN 1 ELSE 0 END) ` +
+		`OVER (PARTITION BY src.file ORDER BY src.pos ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING) AS near ` +
+		`FROM logs src) gc WHERE gc.near = 1) g`
+
+	cc, err := sess.CorpusCompile([]CorpusDetector{{Tag: "nested", Stmt: stmt}})
+	if err != nil {
+		t.Fatalf("CorpusCompile: %v", err)
+	}
+	// It must FUSE as a context detector (broadcast-context) -- that's the path where
+	// the projection was lost. If it fell to standalone the bug would be hidden (the
+	// standalone pipeline honors the SELECT), so pin the fused path explicitly.
+	if len(cc.Standalone) != 0 || len(cc.Rejected) != 0 {
+		t.Fatalf("nested context detector not fused; standalone=%v rejected=%v", cc.Standalone, cc.Rejected)
+	}
+	if n := countOpKind(cc.Plan, "broadcast-context"); n != 1 {
+		t.Fatalf("want 1 broadcast-context (fused), got %d", n)
+	}
+
+	findings, err := cc.Run()
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	var got []string
+	for _, f := range findings {
+		got = append(got, canonJSON(t, f.Evidence))
+	}
+	sort.Strings(got)
+
+	// Oracle: the SAME doubly-nested SELECT run standalone yields {file,pos} rows.
+	res, err := sess.Run(stmt)
+	if err != nil {
+		t.Fatalf("oracle Run: %v", err)
+	}
+	var want []string
+	for _, r := range res.Rows {
+		want = append(want, canonJSON(t, r))
+	}
+	sort.Strings(want)
+
+	if len(want) == 0 {
+		t.Fatal("oracle produced no rows -- fixture too weak")
+	}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("nested fused evidence != standalone SELECT\n got: %v\nwant: %v", got, want)
+	}
+	// The bug this pins: empty `{}` evidence from a lost projection.
+	for _, g := range got {
+		if g == "{}" {
+			t.Errorf("nested context detector emitted EMPTY evidence {} (IDEA-0029)")
+		}
+	}
+}
+
 // TestCorpusContextSeparateSignatures: context detectors with DIFFERENT (partition, order)
 // signatures do NOT share -- they land in separate groups (two broadcast-context ops),
 // while a same-signature pair shares one.

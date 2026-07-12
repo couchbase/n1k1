@@ -29,6 +29,13 @@ package glue
 // (keyspace, PARTITION, ORDER) signature onto ONE scan + ONE sort feeding a single
 // engine.OpBroadcastContext -- so K context detectors share the dominant cost (the sort).
 //
+// The windowed subquery may be wrapped in EXTRA star-passthrough derived tables -- the
+// @grep_context macro expands to two (`SELECT g.* FROM (SELECT gc.* FROM (<window>) gc
+// WHERE gc.near=1) g`) -- and the recognizer/projection compose through them (IDEA-0029):
+// the outer SELECT references the outermost alias, and the evidence projection maps its
+// columns through the star(s) to the scan row. A RENAMING middle wrapper can't compose,
+// so it bails to standalone (never emits wrong or empty evidence).
+//
 // It is PARANOID (the ASOF playbook): any deviation from the exact shape returns ok=false
 // and the detector stays standalone (correct, just unshared), so a mis-match can never
 // produce wrong findings. The grouped fan-out's findings are differential-tested against
@@ -141,10 +148,18 @@ func recognizeContextDetector(top *base.Op, temps []interface{}) (contextDetInfo
 	// single-child projects are traversed (a branch is not the context shape). The LAST
 	// project (its child is window-frames) is the derived table's own projection, whose
 	// terms are rooted at the scan alias -- used to compose the outer SELECT into
-	// scan-row evidence (IDEA-0025).
+	// scan-row evidence (IDEA-0025). Any project ABOVE it (the @grep_context macro's
+	// `SELECT sub.*` middle, IDEA-0029) must be a pure star passthrough: only then are
+	// column names preserved 1:1, so composing the outer terms straight onto the window-
+	// column project's scan-rooted terms is faithful. A middle that RENAMES columns could
+	// map evidence to the wrong scan field, so -- per this file's paranoid doctrine -- it
+	// bails to standalone, where the full pipeline honors the SELECT.
 	node = filter.Children[0]
 	var innerProject *base.Op
 	for node != nil && node.Kind == "project" && len(node.Children) == 1 {
+		if innerProject != nil && !isStarPassthrough(innerProject) {
+			return contextDetInfo{}, false // a renaming middle project -> can't fuse faithfully.
+		}
 		innerProject = node
 		node = node.Children[0]
 	}
@@ -191,8 +206,13 @@ func recognizeContextDetector(top *base.Op, temps []interface{}) (contextDetInfo
 	// selects the window `near` flag, a computed column, ...) returns ok=false, so the
 	// detector runs STANDALONE where the full pipeline honors it -- same consistency
 	// guarantee IDEA-0004 gives the plain broadcast path.
-	derivedAlias := ""
-	if len(filter.Labels) > 0 {
+	// The outer SELECT references the OUTERMOST derived-table alias -- which, when the
+	// windowed subquery is wrapped in more than one derived table (the @grep_context
+	// macro expands to two: `... ) sub) g`), differs from the innermost filter's alias.
+	// Substitute THAT alias (IDEA-0029); fall back to the filter's alias for the plain
+	// single-nested shape, where the two coincide.
+	derivedAlias := outerRefAlias(outerProject)
+	if derivedAlias == "" && len(filter.Labels) > 0 {
 		derivedAlias, _ = mergeLabelLeaf(filter.Labels[0])
 	}
 	proj, ok := contextFusedProjection(outerProject, innerProject, derivedAlias, alias)
@@ -507,14 +527,19 @@ func buildContextBroadcast(group []contextDetInfo, tags []string, unified *Conv)
 	}
 }
 
-// contextFusedProjection composes a context detector's outer SELECT (which references
-// the derived-table alias, e.g. `sub.pos`) into an evidence projection over the shared
-// "." scan row (IDEA-0025). Each `<derivedAlias>.<col>` reference is substituted with
-// the derived table's OWN projection term for <col> (already rooted at the scan alias),
-// EXCLUDING the window aggregate column (`near`) -- which isn't reproducible per scan
-// row. The rewritten terms are then handed to the plain-path corpusFusedProjection,
-// which re-roots the scan alias to SELF and builds the star / RAW / OBJECT_CONSTRUCT
-// evidence exactly as the broadcast path does.
+// contextFusedProjection composes a context detector's outer SELECT (which references the
+// OUTERMOST derived-table alias, e.g. `g.pos`) into an evidence projection over the shared
+// "." scan row (IDEA-0025). Each `<derivedAlias>.<col>` reference is substituted with the
+// derived table's OWN term for <col>: an explicit window-column projection term (rooted at
+// the scan alias), or -- when that projection is a `<scan>.*` star (the @grep_context
+// macro's `SELECT src.*, MAX(...) AS hit`, IDEA-0029) -- the identity scan column
+// `<scanAlias>.<col>`. The window aggregate column (`near`/`hit`) is EXCLUDED (not
+// reproducible per scan row). Star-passthrough middle wrappers between the outer SELECT
+// and that window-column project (the macro's `SELECT gc.*`) preserve names 1:1, so the
+// composition is direct (recognizeContextDetector rejects a RENAMING middle upstream). The
+// rewritten terms are then handed to the plain-path corpusFusedProjection, which re-roots
+// the scan alias to SELF and builds the star / RAW / OBJECT_CONSTRUCT evidence exactly as
+// the broadcast path does.
 //
 // Returns (nil, true) when there is no outer projection to shape (whole-row fallback),
 // and (nil, false) when the projection can't be faithfully reproduced -- an outer term
@@ -535,23 +560,40 @@ func contextFusedProjection(outer, inner *base.Op, derivedAlias, scanAlias strin
 		return nil, false
 	}
 
-	// derived column name -> its expr over the scan alias. The window aggregate term
-	// (`near`) is skipped, so an outer reference to it stays unresolved and bails below.
+	// Build the derived table's OWN column terms (rooted at the scan alias). The window
+	// aggregate term (`near`/`hit`) is recorded in aggCols -- NOT reproducible per scan
+	// row, so an outer reference to it stays unresolved and bails below. A `<scan>.*` star
+	// term (the @grep_context macro's `SELECT src.*, MAX(...) AS hit`) sets hasStar: it
+	// carries every scan column through under its own name, so any name not otherwise
+	// mapped composes as the identity scan column `<scanAlias>.<name>` (IDEA-0029).
 	innerMap := map[string]expression.Expression{}
+	aggCols := map[string]bool{}
+	hasStar := false
 	if inner != nil {
-		for i, lbl := range inner.Labels {
+		for i := range inner.Labels {
 			if i >= len(inner.Params) {
 				break
 			}
-			name, ok := mergeLabelLeaf(lbl)
-			if !ok {
+			// A star-spread column (label ".*", e.g. `SELECT src.*`) or a whole-row Self
+			// carries every scan column through under its own name -> identity composition.
+			if inner.Labels[i] == ".*" {
+				hasStar = true
 				continue
 			}
 			e, ok := projTermExpr(inner.Params[i])
 			if !ok {
 				continue
 			}
+			if _, isSelf := e.(*expression.Self); isSelf {
+				hasStar = true
+				continue
+			}
+			name, ok := mergeLabelLeaf(inner.Labels[i])
+			if !ok {
+				continue
+			}
 			if _, isAgg := e.(algebra.Aggregate); isAgg {
+				aggCols[name] = true // the window flag -- NOT reproducible per scan row.
 				continue
 			}
 			innerMap[name] = e
@@ -565,7 +607,7 @@ func contextFusedProjection(outer, inner *base.Op, derivedAlias, scanAlias strin
 			rewritten[i] = p // a star's Self term (or non-expr): corpusFusedProjection handles it.
 			continue
 		}
-		sub := substituteDerivedFields(e, derivedAlias, innerMap)
+		sub := substituteDerivedFields(e, derivedAlias, scanAlias, innerMap, aggCols, hasStar)
 		if referencesIdentifier(sub, derivedAlias) {
 			return nil, false // unresolved `<derivedAlias>.X` -> can't reproduce -> standalone.
 		}
@@ -576,24 +618,36 @@ func contextFusedProjection(outer, inner *base.Op, derivedAlias, scanAlias strin
 	return corpusFusedProjection(synthetic, scanAlias)
 }
 
-// substituteDerivedFields returns a copy of expr with every `<alias>.<col>` field
-// access replaced by m[col] (the derived table's own term for that column), leaving
-// any column not in m (the window `near` flag) as-is so the caller can detect it.
-func substituteDerivedFields(expr expression.Expression, alias string,
-	m map[string]expression.Expression) expression.Expression {
+// substituteDerivedFields returns a copy of expr with every `<alias>.<col>` field access
+// replaced by the derived table's own term for <col>: the explicit projection term m[col]
+// (already rooted at the scan alias) or, when the derived projection carries a `<scan>.*`
+// star (hasStar) and <col> is neither an explicit term nor the window aggregate (aggCols),
+// the identity scan column `<scanAlias>.<col>`. A name that resolves to neither -- the
+// window flag, or an absent column -- is left as `<alias>.<col>` so the caller detects it
+// (referencesIdentifier) and routes the detector to standalone.
+func substituteDerivedFields(expr expression.Expression, alias, scanAlias string,
+	m map[string]expression.Expression, aggCols map[string]bool, hasStar bool) expression.Expression {
 	if expr == nil || alias == "" {
 		return expr
 	}
-	s := &derivedFieldSubst{alias: alias, m: m}
+	s := &derivedFieldSubst{}
 	s.SetMapper(s)
 	s.SetMapFunc(func(e expression.Expression) (expression.Expression, error) {
 		if f, ok := e.(*expression.Field); ok {
 			ops := f.Operands()
 			if len(ops) == 2 {
 				if id, ok := ops[0].(*expression.Identifier); ok && id.Identifier() == alias {
-					if repl, has := m[fieldNameOf(ops[1])]; has {
-						return repl, nil // substitute (don't recurse into the replacement).
+					col := fieldNameOf(ops[1])
+					if repl, has := m[col]; has {
+						return repl, nil // explicit derived term (don't recurse into the replacement).
 					}
+					if hasStar && scanAlias != "" && !aggCols[col] {
+						// carried through `<scanAlias>.*` -> the identity scan column, same
+						// rooting as m's terms (corpusFusedProjection re-roots scan -> SELF).
+						return expression.NewField(expression.NewIdentifier(scanAlias),
+							expression.NewFieldName(col, false)), nil
+					}
+					// window flag / unknown: leave `<alias>.<col>` for the caller to detect.
 				}
 			}
 		}
@@ -608,8 +662,66 @@ func substituteDerivedFields(expr expression.Expression, alias string,
 
 type derivedFieldSubst struct {
 	expression.MapperBase
-	alias string
-	m     map[string]expression.Expression
+}
+
+// isStarPassthrough reports whether op is a `SELECT <alias>.*` project -- one term that
+// forwards its child's rows verbatim (column names preserved), encoded either as a whole-
+// row expression.Self (label `.["alias"]`) or as a star-spread (label ".*"). Such a
+// middle wrapper composes transparently in the fused projection; anything else (a rename
+// or computed column) does not, and the caller bails to standalone.
+func isStarPassthrough(op *base.Op) bool {
+	if op == nil || op.Kind != "project" || len(op.Params) != 1 {
+		return false
+	}
+	if len(op.Labels) == 1 && op.Labels[0] == ".*" {
+		return true
+	}
+	e, ok := projTermExpr(op.Params[0])
+	if !ok {
+		return false
+	}
+	_, isSelf := e.(*expression.Self)
+	return isSelf
+}
+
+// outerRefAlias returns the single table alias a context detector's outer SELECT
+// references in its field terms (e.g. "g" in SELECT g.file, g.pos). The @grep_context
+// macro expands to TWO derived-table wrappers, so this outermost alias (g) differs from
+// the innermost filter's alias (sub) -- and it, not filter.Labels, is what the fused
+// projection must substitute (IDEA-0029). Returns "" when the terms reference no single
+// alias (a bare star, or mixed aliases), leaving the caller's filter.Labels fallback in
+// charge (the single-nested case, where the two aliases coincide).
+func outerRefAlias(outer *base.Op) string {
+	if outer == nil {
+		return ""
+	}
+	seen := map[string]bool{}
+	for _, p := range outer.Params {
+		e, ok := projTermExpr(p)
+		if !ok {
+			continue
+		}
+		r := &identRefFinder{}
+		r.SetMapper(r)
+		r.SetMapFunc(func(x expression.Expression) (expression.Expression, error) {
+			if f, ok := x.(*expression.Field); ok {
+				ops := f.Operands()
+				if len(ops) == 2 {
+					if id, ok := ops[0].(*expression.Identifier); ok {
+						seen[id.Identifier()] = true
+					}
+				}
+			}
+			return x, x.MapChildren(r)
+		})
+		_, _ = r.Map(e)
+	}
+	if len(seen) == 1 {
+		for k := range seen {
+			return k
+		}
+	}
+	return ""
 }
 
 // referencesIdentifier reports whether expr contains an identifier named alias.
