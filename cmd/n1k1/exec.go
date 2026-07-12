@@ -19,7 +19,9 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 
+	"github.com/couchbase/n1k1/base"
 	"github.com/couchbase/n1k1/cmd"
 	"github.com/couchbase/n1k1/glue"
 )
@@ -64,8 +66,8 @@ func (c *cli) exec(stmt string) {
 	// benefits from. Only jsonlines (each row an independent newline-delimited value)
 	// streams; the aggregating renderers (box/json-array/csv/markdown) need all rows for
 	// column widths / framing, so they stay buffered. EXPLAIN has its own render path.
-	base, pretty, _ := cmd.ParseMode(c.mode)
-	streaming := base == "jsonlines" && !isExplainStmt(stmt)
+	outMode, pretty, _ := cmd.ParseMode(c.mode)
+	streaming := outMode == "jsonlines" && !isExplainStmt(stmt)
 	if streaming {
 		c.sess.OnRow = func(row []byte) {
 			// os.Stdout is unbuffered here, so each row reaches the fd immediately.
@@ -79,11 +81,17 @@ func (c *cli) exec(stmt string) {
 				return
 			}
 			if werr := cmd.RenderJSONLine(c.out, row, pretty); werr != nil {
+				// The downstream consumer closed the pipe (`... | head`): record it and
+				// cooperatively HALT the query so we don't keep scanning for output
+				// nobody will read. (SIGPIPE is ignored in main so the write returns
+				// EPIPE here instead of killing the process.)
 				c.outErr = werr
+				c.sess.Interrupt()
 			}
 		}
 	}
 
+	atomic.StoreInt32(&c.interruptN, 0) // reset per-query Ctrl-C count (see repl signals)
 	res, err := c.sess.Run(stmt)
 
 	if sv != nil {
@@ -97,6 +105,13 @@ func (c *cli) exec(stmt string) {
 	}
 
 	if err != nil {
+		// A cooperative halt (Ctrl-C, or a closed output pipe) is a user-initiated stop,
+		// not a query error: keep the session and don't trip the CI-failure latch. It's
+		// reported at the source -- the REPL's Ctrl-C handler already printed "^C", and a
+		// closed pipe means the consumer is gone -- so return quietly here.
+		if errors.Is(err, base.ErrHalted) {
+			return
+		}
 		c.failed = true // .bail on stops the input loop after this
 		var unsup *glue.ErrUnsupported
 		if errors.As(err, &unsup) {

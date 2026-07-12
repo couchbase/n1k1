@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/couchbase/query/algebra"
@@ -97,7 +98,20 @@ type Session struct {
 	// to the UI this way). It runs on the execution goroutine, so it must be fast
 	// and must not retain the passed slice (copy if kept).
 	OnRow func([]byte)
+
+	// halt is the cooperative-cancel flag threaded into each Run's Ctx.Halt: Interrupt
+	// sets it (from a signal goroutine, or when the output pipe closes); the datastore
+	// scans + the op_scan checkpoint see it and unwind with base.ErrHalted. Reset to 0
+	// at the start of every Run, so a stale interrupt never cancels the next query.
+	// Accessed with sync/atomic (the interrupter runs on another goroutine).
+	halt int32
 }
+
+// Interrupt requests the current Run halt as soon as it reaches its next cooperative
+// checkpoint (a scan yield). Safe to call from any goroutine and when nothing is
+// running (the next Run clears it). The Run returns base.ErrHalted. This is the engine
+// side of the CLI's Ctrl-C and of stopping a query whose output pipe has closed.
+func (s *Session) Interrupt() { atomic.StoreInt32(&s.halt, 1) }
 
 // OpenSession opens a file-datastore directory and prepares it for queries.
 func OpenSession(datastoreDir, namespace string) (*Session, error) {
@@ -401,6 +415,12 @@ func (s *Session) PlanExec(pp *PreparedPlan,
 	vars.Ctx.Pipe = s.Pipe
 	vars.Ctx.MergeStats = s.MergeStats // shared merge counters (nil = off).
 
+	// Cooperative cancel: clear any stale interrupt, then thread this Run's flag into
+	// Ctx so scans (and the op_scan checkpoint below) can halt on Interrupt / a closed
+	// output pipe. Reset FIRST so a signal that arrived between Runs never cancels this one.
+	atomic.StoreInt32(&s.halt, 0)
+	vars.Ctx.Halt = &s.halt
+
 	gctx := NewGlueContext(time.Now())
 	gctx.InitSubqueries(s.Store, s.Namespace, pp.withBindings, pp.subqueries) // enable expression subqueries
 	gctx.SetNamedArgs(namedArgs)                                              // resolve $name at eval time
@@ -446,6 +466,9 @@ func (s *Session) PlanExec(pp *PreparedPlan,
 			// are infrequent (every >=1024 rows, growing), so the lock is uncontended.
 			var statsMu sync.Mutex
 			vars.Ctx.YieldStats = func(st *base.Stats) base.YieldStatsControl {
+				if atomic.LoadInt32(&s.halt) != 0 {
+					return base.YieldStatsControl{Stop: base.ErrHalted}
+				}
 				statsMu.Lock()
 				defer statsMu.Unlock()
 				// The live in-flight aggregate partials (COUNT/SUM/AVG/MIN/MAX
@@ -457,6 +480,19 @@ func (s *Session) PlanExec(pp *PreparedPlan,
 				onStats(st)
 				return base.YieldStatsControl{NextEvery: pace.Next(time.Now())}
 			}
+		}
+	}
+
+	// Always-on cooperative-halt checkpoint when no live-stats callback set one above,
+	// so a Ctrl-C / closed-pipe interrupt stops op_scan (which honors Stop) even for a
+	// plain, stats-off query. Cheap: one atomic load per scan checkpoint (~every 1024
+	// rows). The datastore-records scan checks Ctx.Halt directly (it has no YieldStats).
+	if vars.Ctx.YieldStats == nil {
+		vars.Ctx.YieldStats = func(*base.Stats) base.YieldStatsControl {
+			if atomic.LoadInt32(&s.halt) != 0 {
+				return base.YieldStatsControl{Stop: base.ErrHalted}
+			}
+			return base.YieldStatsControl{}
 		}
 	}
 

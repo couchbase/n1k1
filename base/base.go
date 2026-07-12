@@ -15,6 +15,7 @@ package base
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"strconv"
 
@@ -362,6 +363,12 @@ type ExprCatalogFunc func(vars *Vars, labels Labels,
 	params []interface{}, path string) ExprFunc
 
 // -----------------------------------------------------
+
+// ErrHalted is the yieldErr a cooperative loop propagates when Ctx.Halt is set --
+// a Ctrl-C interrupt or a closed output pipe. It unwinds ExecOp cleanly (it is a
+// normal early-exit, not a failure); callers distinguish it via errors.Is to keep a
+// session alive / exit quietly rather than report a query error.
+var ErrHalted = errors.New("query halted (interrupted or output closed)")
 
 // An Op can occasionally yield stats and progress information, and the callback
 // steers it back via a YieldStatsControl (abort, or re-pace the checkpoint).

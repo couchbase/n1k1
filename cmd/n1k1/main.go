@@ -111,6 +111,11 @@ func main() {
 
 	flag.CommandLine.Parse(normalizeArgs(os.Args[1:]))
 
+	// A closed output pipe (`n1k1 -c ... | head`) should stop the query, not crash the
+	// process: ignore SIGPIPE so a broken-pipe write returns EPIPE (the row-writer then
+	// cooperatively halts the query). No-op on Windows.
+	ignoreSIGPIPE()
+
 	// The sidecar dir (catalog.json, built indexes) is named after this binary --
 	// ".n1k1" by default, ".<alias>" when invoked under a symlinked name.
 	glue.SetSidecarName("." + prog)
@@ -419,6 +424,7 @@ type cli struct {
 	bail         bool              // stop the input loop on the first statement error (see .bail)
 	failed       bool              // transient: the last exec'd statement / dot-command errored (drives .bail)
 	sawError     bool              // latched: ANY statement / dot-command errored during a non-interactive run (drives the process exit code)
+	interruptN   int32             // atomic: Ctrl-C presses during the CURRENT query; 2nd force-exits (see repl signals)
 	statsMode    string            // "off" | "on" (live) | "final" (totals at end); see .stats, DESIGN-stats.md
 	maxRows      int               // box: 0 = all; >0 = head+tail; <0 = last |n| rows
 	maxWidth     int               // box: per-column cap; 0 = uncapped; <0 = auto (fit terminal)

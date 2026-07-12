@@ -24,7 +24,9 @@ listings, reserved-word / shell-quoting hints, and materialization statements
 **Remaining (headline TODOs):**
 - [ ] `.schema` with no arg dumps giant box tables (ignores `.maxwidth`) on a real bundle — make it a compact one-line-per-keyspace summary, or redirect to `.tables`.
 - [ ] File-as-table (`FROM 'foo.csv'` / `read_json_auto(...)`): scans exist but aren't reachable through N1QL `FROM` via glue.
-- [ ] Query cancellation mid-run (Ctrl-C aborting `ExecOp` via ctx).
+- [x] Query cancellation mid-run — DONE: Ctrl-C during a query cooperatively halts it
+  (Session.Interrupt → Ctx.Halt → scans stop with base.ErrHalted), keeping the session; a
+  closed output pipe (`… | head`) halts the same way; Ctrl-D / double-Ctrl-C exit.
 - [ ] Tab completion of keywords / keyspaces / dot-commands.
 - [ ] Multi-line 2D cursor editing + mouse click-to-position (`reeflective/readline` or `bubbletea`) — deferred (§7).
 - [ ] `.import` / `COPY` / writes (engine is query-only); persistent settings / PRAGMA.
@@ -157,8 +159,11 @@ Namespace isn't a flag — n1k1's file datastore only uses `default`, so it's th
   Buffer accumulates lines; `;` flushes to `Session.Run`.
 - **Dot-commands:** recognized when a line starts with `.` and no SQL is
   buffered; execute immediately, no `;`.
-- **Signals:** Ctrl-C cancels the input buffer (not the process); Ctrl-D /
-  `.quit` / `.exit` exits. (Engine-level cancellation is later, §10.)
+- **Signals:** at the prompt, Ctrl-C clears the input buffer (a second Ctrl-C at an
+  empty prompt exits); during a query, Ctrl-C cooperatively HALTS it and keeps the
+  session (a second force-quits); a closed output pipe (`… | head`) halts the query
+  the same way (SIGPIPE ignored so the write returns EPIPE); Ctrl-D / `.quit` /
+  `.exit` exit. Engine side: Session.Interrupt → Ctx.Halt, checked at scan checkpoints.
 
 **Line editing / history:** the REPL runs on `github.com/peterh/liner` (MIT,
 pure Go) — arrow-key history + emacs editing; history persists to
@@ -290,7 +295,7 @@ syntax-error caret (parse errors carry an offset but no rendered caret yet).
 
 - **File-as-table** `FROM 'foo.csv'` / `read_json_auto(...)`: scans exist but
   aren't reachable through N1QL `FROM` via glue; its own project.
-- **Query cancellation** mid-run (Ctrl-C aborting `ExecOp` via ctx).
+- ~~Query cancellation mid-run~~ — DONE (cooperative `Ctx.Halt`; Ctrl-C / closed pipe).
 - **Tab completion** of keywords / keyspaces / dot-commands.
 - **`.import` / `COPY` / writes** — engine is query-only.
 - **Live stats:** `.stats`/`-stats` (live footer + final totals) shipped;

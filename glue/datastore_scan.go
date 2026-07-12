@@ -397,7 +397,18 @@ func DatastoreScanRecords(o *base.Op, vars *base.Vars,
 	var rec records.Record
 
 	var n int64
+	var halt *int32
+	if vars != nil && vars.Ctx != nil {
+		halt = vars.Ctx.Halt
+	}
 	for n < limit {
+		// Cooperative cancel (Ctrl-C / closed output pipe): check every ~1024 rows so
+		// a long scan over a GB bundle stops promptly with base.ErrHalted. One atomic
+		// load per 1024 rows is negligible against the per-row decode/yield.
+		if halt != nil && n&1023 == 0 && atomic.LoadInt32(halt) != 0 {
+			yieldErr(base.ErrHalted)
+			return
+		}
 		ok, err := src.Next(&rec)
 		if err != nil {
 			yieldErr(fmt.Errorf("DatastoreScanRecords, next: %v", err))

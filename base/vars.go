@@ -199,6 +199,14 @@ type Ctx struct {
 	AllocBatch   func() []Vals
 	RecycleBatch func([]Vals)
 
+	// Halt, when non-nil and holding a non-zero value, tells cooperative loops (the
+	// datastore scans, and the op_scan checkpoint via YieldStats) to stop early and
+	// unwind with ErrHalted -- the shared mechanism behind a Ctrl-C interrupt and a
+	// closed output pipe (`... | head`). Loaded with sync/atomic; a pointer so Clone
+	// shares the one flag across all actor goroutines (UNION ALL branches). nil => a
+	// query never halts (the batch / non-interactive default).
+	Halt *int32
+
 	// TODO: Other things that might appear here might be request ID,
 	// request-specific allocators or resources, etc.
 }

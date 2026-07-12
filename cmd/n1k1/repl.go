@@ -19,8 +19,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 
 	"github.com/peterh/liner"
 
@@ -39,12 +41,33 @@ func (c *cli) repl() {
 
 	ln := liner.NewLiner()
 	defer ln.Close()
-	ln.SetCtrlCAborts(true) // Ctrl-C aborts the current line, not the process
+	ln.SetCtrlCAborts(true) // Ctrl-C at the prompt aborts the current line (ErrPromptAborted)
 
 	hist := historyPath()
 	loadHistory(ln, hist)
 	defer saveHistory(ln, hist)
 
+	// Ctrl-C DURING a running query: liner holds the terminal in raw mode only while
+	// Prompt() is reading, so SIGINT reaches this handler only mid-query. First press
+	// cooperatively halts the query (keeps the session); a second press (query not
+	// stopping) force-quits. Ctrl-C AT the prompt is handled by liner below (ErrPrompt
+	// Aborted), where a double press exits. interruptN is reset per query in c.exec.
+	sigCh := make(chan os.Signal, 4)
+	signal.Notify(sigCh, os.Interrupt)
+	defer signal.Stop(sigCh)
+	go func() {
+		for range sigCh {
+			if atomic.AddInt32(&c.interruptN, 1) >= 2 {
+				fmt.Fprintln(c.stderr, "\n^C — force quit")
+				saveHistory(ln, hist) // best-effort: os.Exit skips deferred cleanup
+				os.Exit(130)
+			}
+			c.sess.Interrupt()
+			fmt.Fprintln(c.stderr, "\n^C — interrupting (Ctrl-C again to force-quit)")
+		}
+	}()
+
+	promptCtrlC := false // armed by a Ctrl-C at an empty prompt; a second one exits
 	for {
 		prompt := c.prog + "> "
 		if c.buf.Len() > 0 {
@@ -53,13 +76,24 @@ func (c *cli) repl() {
 
 		line, err := ln.Prompt(prompt)
 		switch err {
-		case liner.ErrPromptAborted: // Ctrl-C: discard the in-progress buffer
-			c.buf.Reset()
+		case liner.ErrPromptAborted: // Ctrl-C at the prompt
+			if c.buf.Len() > 0 {
+				c.buf.Reset() // discard a partial statement; not an exit intent
+				promptCtrlC = false
+				continue
+			}
+			if promptCtrlC { // second consecutive Ctrl-C at an empty prompt -> exit
+				fmt.Fprintln(c.stderr)
+				return
+			}
+			promptCtrlC = true
+			fmt.Fprintln(c.stderr, c.style.Dim("(^C — press Ctrl-C again, or Ctrl-D, to exit)"))
 			continue
 		case io.EOF: // Ctrl-D
 			fmt.Fprintln(c.stderr)
 			return
 		case nil:
+			promptCtrlC = false // any real input disarms the double-Ctrl-C exit
 		default:
 			fmt.Fprintf(c.stderr, "input error: %v\n", err)
 			return
