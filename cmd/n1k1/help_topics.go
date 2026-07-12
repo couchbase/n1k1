@@ -174,6 +174,9 @@ func (c *cli) helpExtensions() {
 	c.hline("  foo.extract.js  frame a file into rows        — see .help extract")
 	c.hline("  foo.macro.js    expand @foo(...) into SQL++   — see .help macro")
 	c.hline("")
+	c.hline("Inline examples ({in, out} in an `examples` array) self-document + golden-test:")
+	c.hline("  .extensions examples [name]  — print them;  .extensions test [name] — run + check")
+	c.hline("")
 	c.hline("See also: .help extract, .help macro, .help rules.")
 }
 
