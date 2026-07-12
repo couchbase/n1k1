@@ -294,7 +294,7 @@ func (c *cli) printHelp() {
 	if ex := c.exampleQuery(); ex != "" {
 		fmt.Fprintf(c.stderr, "Statements are SQL++; terminate with ';'. Example: %s\n\n", ex)
 	} else {
-		fmt.Fprintln(c.stderr, "Statements are SQL++; terminate with ';'. Open a datastore with .open <dir> to query it.\n")
+		fmt.Fprintf(c.stderr, "Statements are SQL++; terminate with ';'. Open a datastore with .open <dir> to query it.\n\n")
 	}
 	// Materialization (staged/hierarchical analysis): keep a query's results as a
 	// queryable keyspace for later statements -- session-scoped in-memory, or a file.
