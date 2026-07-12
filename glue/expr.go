@@ -433,12 +433,15 @@ OUTER:
 						var att map[string]value.Value
 
 						v := av.GetAttachment(attKey(kk[0]))
-						if v == nil {
-							att = map[string]value.Value{}
-
-							av.SetAttachment(attKey(kk[0]), att)
+						if m, isMap := v.(map[string]value.Value); isMap {
+							att = m
 						} else {
-							att = v.(map[string]value.Value)
+							// v == nil normally (first "^aggregates|" for this row). Defensive:
+							// if a non-map ever sits in ATT_AGGREGATES, start fresh rather than
+							// panic -- this assertion historically crashed when an internal
+							// "^name" label was mis-routed onto ATT_AGGREGATES (now gated above).
+							att = map[string]value.Value{}
+							av.SetAttachment(attKey(kk[0]), att)
 						}
 
 						att[kk[1]] = value.NewValue(vv)
