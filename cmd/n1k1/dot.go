@@ -290,13 +290,11 @@ func (c *cli) printHelp() {
 	for _, l := range lines {
 		fmt.Fprintln(c.stderr, l)
 	}
-	// Show the current datastore + a live example over a real keyspace, or a hint
-	// to open one when there's no datastore.
-	fmt.Fprintf(c.stderr, "\ndatastore: %s\n\n", c.dataLoc())
+	fmt.Fprintf(c.stderr, "\n")
 	if ex := c.exampleQuery(); ex != "" {
-		fmt.Fprintf(c.stderr, "Statements are SQL++; terminate with ';'. Example: %s\n", ex)
+		fmt.Fprintf(c.stderr, "Statements are SQL++; terminate with ';'. Example: %s\n\n", ex)
 	} else {
-		fmt.Fprintln(c.stderr, "Statements are SQL++; terminate with ';'. Open a datastore with .open <dir> to query it.")
+		fmt.Fprintln(c.stderr, "Statements are SQL++; terminate with ';'. Open a datastore with .open <dir> to query it.\n")
 	}
 	// Materialization (staged/hierarchical analysis): keep a query's results as a
 	// queryable keyspace for later statements -- session-scoped in-memory, or a file.

@@ -62,6 +62,10 @@ func (c *cli) cmdHelp(arg string) {
 			}
 			fmt.Fprintln(c.stderr, line)
 		}
+		// Show the current datastore + a live example over a real keyspace, or a hint
+		// to open one when there's no datastore.
+		fmt.Fprintf(c.stderr, "\ndatastore: %s\n", c.dataLoc())
+
 	case "reserved-words", "reserved", "keywords":
 		c.helpReserved(strings.TrimSpace(rest))
 	case "quoting", "quotes":
