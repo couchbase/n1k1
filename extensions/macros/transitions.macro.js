@@ -41,3 +41,11 @@ function expand(args, ctx) {
     "FROM " + args.src + " AS " + t + ") AS " + sub + " " +
     "WHERE " + firstClause + sub + "." + cur + " IS DISTINCT FROM " + sub + "." + args.prev_as;
 }
+
+macro.examples = [
+  {
+    desc: 'rows where state changes, per node',
+    in:  '@transitions(events, of => state, order => ts, part => node)',
+    out: '(SELECT tr__m2.* FROM (SELECT src__m1.*, (state) AS cur__m3, LAG(state) OVER (PARTITION BY node ORDER BY ts) AS prev_val FROM events AS src__m1) AS tr__m2 WHERE tr__m2.prev_val IS NULL OR tr__m2.cur__m3 IS DISTINCT FROM tr__m2.prev_val)'
+  }
+];

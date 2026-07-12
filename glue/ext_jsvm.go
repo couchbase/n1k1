@@ -327,6 +327,7 @@ func registerJSFunc(name, source string) error {
 	if _, ok := goja.AssertFunction(check.Get(name)); !ok {
 		return fmt.Errorf("JS UDF %q: source does not define a function named %q", name, name)
 	}
+	recordExtExamples("javascript", name, readJSExamples(check, name)) // inline goldens (ext_examples.go).
 
 	if _, exists := jsPrograms[name]; !exists {
 		jsProgramOrder = append(jsProgramOrder, name)

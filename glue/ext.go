@@ -253,10 +253,12 @@ func ListExtensions() []ExtensionInfo {
 // is not currently loaded.
 func UnloadExtension(name string) error {
 	name = strings.ToLower(name)
-	if _, ok := extLoaded[name]; !ok {
+	info, ok := extLoaded[name]
+	if !ok {
 		return fmt.Errorf("extension %q is not loaded", name)
 	}
 	unregisterJSFunc(name)
+	forgetExtExamples(info.Kind, name)
 	delete(extLoaded, name)
 	return nil
 }

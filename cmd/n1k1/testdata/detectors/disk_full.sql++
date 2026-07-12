@@ -6,9 +6,9 @@
 -- compiler folds into the shared scan and the predicate index prunes on "ERROR".
 SELECT l.msg, l.ts FROM logs l WHERE l.sev = "ERROR"
 -- @fixture
-{"sev":"ERROR","msg":"disk full","ts":3}
-{"sev":"WARN","msg":"ok","ts":5}
-{"sev":"ERROR","msg":"oom","ts":9}
+-- {"sev":"ERROR","msg":"disk full","ts":3}
+-- {"sev":"WARN","msg":"ok","ts":5}
+-- {"sev":"ERROR","msg":"oom","ts":9}
 -- @expect
-{"label":"ET-12345","result":{"msg":"disk full","sev":"ERROR","ts":3}}
-{"label":"ET-12345","result":{"msg":"oom","sev":"ERROR","ts":9}}
+-- {"label":"ET-12345","result":{"msg":"disk full","ts":3}}
+-- {"label":"ET-12345","result":{"msg":"oom","ts":9}}

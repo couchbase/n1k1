@@ -6,3 +6,9 @@ function slugify(s) {
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
 }
+
+slugify.examples = [
+  { in: ["Hello, World!"],        out: "hello-world" },
+  { in: ["  Trim -- Me  "],       out: "trim-me" },
+  { in: ["CamelCase_and_123"],    out: "camelcase-and-123" },
+];

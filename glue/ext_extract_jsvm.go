@@ -18,6 +18,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -135,7 +136,65 @@ func RegisterJSExtractRecipe(name, source string) error {
 		Name: name, Source: "(inline)",
 		Exts: match.Exts, Names: match.Names, Priority: match.Priority,
 	})
+
+	// Inline goldens (ext_examples.go): an extract example is {in:<sample text>, out:
+	// [<rows>]}. We capture the `examples` array from the registration runtime, and
+	// register an executor that FRAMES the sample through this recipe (describe ->
+	// records.SpecApply) exactly as a real file would be framed.
+	recordExtExamples("extract", name, readJSExamples(rt))
+	sampleExt := ".log"
+	if len(match.Exts) > 0 {
+		sampleExt = match.Exts[0]
+	}
+	extractExamplers[name] = func(sample string) (json.RawMessage, error) {
+		return frameExtractSample(name, prog, sampleExt, sample)
+	}
 	return nil
+}
+
+// frameExtractSample writes `sample` to a temp file (named with the recipe's primary
+// extension, so describe's ext/name sniffing behaves as it would for a real file),
+// runs describe() to obtain the ExtractSpec, then frames the file natively via
+// records.SpecApply -- the exact path a real bundle file takes -- and returns the
+// produced rows as one JSON array. Used by the inline extract examples (ext_examples.go).
+func frameExtractSample(name string, prog *goja.Program, ext, sample string) (json.RawMessage, error) {
+	f, err := os.CreateTemp("", "n1k1-extract-example-*"+ext)
+	if err != nil {
+		return nil, err
+	}
+	path := f.Name()
+	defer os.Remove(path)
+	if _, werr := f.WriteString(sample); werr != nil {
+		f.Close()
+		return nil, werr
+	}
+	if cerr := f.Close(); cerr != nil {
+		return nil, cerr
+	}
+
+	spec, _, err := runJSDescribe(prog, name, path)
+	if err != nil {
+		return nil, err
+	}
+	src, err := records.SpecApply(spec, path, "")
+	if err != nil {
+		return nil, err
+	}
+	defer src.Close()
+
+	var rows [][]byte
+	for {
+		var rec records.Record
+		ok, nerr := src.Next(&rec)
+		if nerr != nil {
+			return nil, nerr
+		}
+		if !ok {
+			break
+		}
+		rows = append(rows, append([]byte(nil), rec.Doc...))
+	}
+	return jsonArray(rows), nil
 }
 
 // jsSourceHash returns a short hex digest of a recipe's JS source, used as the

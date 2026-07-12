@@ -6,9 +6,9 @@
 -- .rules test builds a per-recipe fixture keyspace named after `source`.
 SELECT r.route, r.ms FROM requests r WHERE r.ms > 1000
 -- @fixture
-{"route":"/a","ms":250}
-{"route":"/b","ms":1500}
-{"route":"/c","ms":3000}
+-- {"route":"/a","ms":250}
+-- {"route":"/b","ms":1500}
+-- {"route":"/c","ms":3000}
 -- @expect
-{"label":"ET-20001","result":{"ms":1500,"route":"/b"}}
-{"label":"ET-20001","result":{"ms":3000,"route":"/c"}}
+-- {"label":"ET-20001","result":{"ms":1500,"route":"/b"}}
+-- {"label":"ET-20001","result":{"ms":3000,"route":"/c"}}

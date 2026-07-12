@@ -278,7 +278,7 @@ func (c *cli) printHelp() {
 		".maxrows <n>          box: cap rows shown (0 = all; negative = last |n| rows)",
 		".maxwidth <n|auto>    box: cap column width (0 = uncapped; auto = fit terminal)",
 		".rules [list|run|lint|test|help] --queries <dir>  run a collection of tagged *.sql++ queries over the datastore (.rules help)",
-		".extensions [list | load <dir>... | unload <name>...]  extensions (*.js = JavaScript)",
+		".extensions [list | load <dir>... | unload <name>... | examples | test]  extensions (*.js); test runs inline examples",
 		".extract [help|list]  author *.extract.js recipes that frame files into rows (.extract help for details)",
 		".macro [help|list|expand <stmt>]  pre-parse SQL++ macros: @name(...) -> generated SQL++ (.macro help for details)",
 		".read <file>          run statements/dot-commands from a file",

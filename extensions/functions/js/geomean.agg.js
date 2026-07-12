@@ -4,3 +4,9 @@
 function geomean_init()        { return { logsum: 0, n: 0 }; }
 function geomean_update(s, v)  { if (typeof v === "number" && v > 0) { s.logsum += Math.log(v); s.n++; } return s; }
 function geomean_final(s)      { return s.n ? Math.exp(s.logsum / s.n) : null; }
+
+// Inline goldens: the geometric mean of a value sequence (`in`) -> the final value.
+var examples = [
+  { desc: "geomean(1,10,100) = 10", in: [1, 10, 100], out: 10 },
+  { in: [2, 8], out: 4 },
+];

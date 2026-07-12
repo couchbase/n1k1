@@ -27,3 +27,16 @@ function describe(file) {
     order: { sorted: "none" }
   };
 }
+
+// Inline goldens: a sample file (`in`) -> the framed rows (`out`), verified by
+// `.extensions test`. Two ==== command sections become two {title, text} rows.
+var examples = [
+  {
+    desc: "two command sections -> one row each",
+    in: "==========\nuname -a\n==========\nLinux host 5.4.0\n==========\ndate\n==========\nMon Jan 1 2026\n",
+    out: [
+      { title: "uname -a", text: "Linux host 5.4.0" },
+      { title: "date",     text: "Mon Jan 1 2026" }
+    ]
+  }
+];

@@ -34,3 +34,11 @@ function expand(args, ctx) {
     "FROM " + args.src + " AS " + t + ") AS " + sub + " " +
     "WHERE " + sub + "." + rn + " <= " + args.n;
 }
+
+macro.examples = [
+  {
+    desc: 'top 2 requests per route by ms',
+    in:  '@top_per_group(requests, order => ms DESC, n => 2, part => route)',
+    out: '(SELECT top__m2.* FROM (SELECT src__m1.*, ROW_NUMBER() OVER (PARTITION BY route ORDER BY ms DESC) AS rn__m3 FROM requests AS src__m1) AS top__m2 WHERE top__m2.rn__m3 <= 2)'
+  }
+];

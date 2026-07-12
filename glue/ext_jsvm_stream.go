@@ -77,6 +77,7 @@ func RegisterJSStream(name, source string) error {
 	if _, ok := goja.AssertFunction(check.Get(name)); !ok {
 		return fmt.Errorf("JS streaming source %q: source must define a function named %q", name, name)
 	}
+	recordExtExamples("javascript-stream", name, readJSExamples(check, name)) // inline goldens.
 
 	key := "stream:" + name
 	if _, exists := jsPrograms[key]; !exists {

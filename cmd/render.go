@@ -95,6 +95,7 @@ const (
 	ansiBold   = "\x1b[1m"
 	ansiCyan   = "\x1b[36m"
 	ansiRed    = "\x1b[31m"
+	ansiGreen  = "\x1b[32m"
 	ansiYellow = "\x1b[33m"
 )
 
@@ -109,6 +110,7 @@ func (s Style) Dim(x string) string    { return s.wrap(ansiDim, x) }
 func (s Style) Bold(x string) string   { return s.wrap(ansiBold, x) }
 func (s Style) Cyan(x string) string   { return s.wrap(ansiCyan, x) }
 func (s Style) Red(x string) string    { return s.wrap(ansiRed, x) }
+func (s Style) Green(x string) string  { return s.wrap(ansiGreen, x) }
 func (s Style) Yellow(x string) string { return s.wrap(ansiYellow, x) }
 
 func (s Style) header(x string) string { return s.wrap(ansiBold+ansiCyan, x) }

@@ -6,3 +6,9 @@ function series(emit, start, stop, step) {
   step = step || 1;
   for (var n = start; n <= stop; n += step) emit({ n: n });
 }
+
+// Inline goldens: series(args) -> the emitted rows.
+series.examples = [
+  { in: [1, 3],       out: [{ n: 1 }, { n: 2 }, { n: 3 }] },
+  { desc: "step 2",   in: [0, 5, 2], out: [{ n: 0 }, { n: 2 }, { n: 4 }] },
+];

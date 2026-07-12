@@ -73,6 +73,7 @@ func RegisterJSAggregate(name, source string) error {
 			return fmt.Errorf("JS aggregate %q: source must define a function %q", name, name+suffix)
 		}
 	}
+	recordExtExamples("javascript-aggregate", name, readJSExamples(check, name+"_final")) // inline goldens.
 
 	// Make the callbacks available in every per-query runtime (keyed distinctly so
 	// it can't clash with a same-named scalar UDF's program).

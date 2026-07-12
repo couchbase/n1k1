@@ -52,3 +52,14 @@ function expand(args, ctx) {
     "WHERE " + sub + "." + hit + " = 1"
   );
 }
+
+// Inline goldens: a macro call (`in`) and the SQL++ it expands to (`out`) -- shown by
+// `.extensions examples` and verified by `.extensions test`. (The gensym'd aliases
+// src__mN/gc__mN are deterministic per expansion.)
+macro.examples = [
+  {
+    desc: 'grep -C1 around ERROR rows, ordered by pos',
+    in:  '@grep_context(logs, when => sev = "ERROR", before => 1, after => 1)',
+    out: '(SELECT gc__m2.* FROM (SELECT src__m1.*, MAX(CASE WHEN (sev = "ERROR") THEN 1 ELSE 0 END) OVER (ORDER BY pos ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING) AS hit__m3 FROM logs AS src__m1) gc__m2 WHERE gc__m2.hit__m3 = 1)'
+  }
+];

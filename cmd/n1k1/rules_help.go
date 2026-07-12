@@ -75,12 +75,12 @@ The front-matter of a *.sql++ file has leading '-- key: value' lines...
   SELECT l.msg, l.ts FROM logs l WHERE l.sev = "ERROR"   # the query: ONE SELECT
                                  # (the first non key:value line ends the front-matter)
   -- @fixture                    # golden test INPUT: one JSON doc per line (fed as the source keyspace)
-  {"sev":"ERROR","msg":"disk full","ts":3}
-  {"sev":"WARN","msg":"ok","ts":5}
-  {"sev":"ERROR","msg":"oom","ts":9}
+  -- {"sev":"ERROR","msg":"disk full","ts":3}   # data lines are SQL comments, so the
+  -- {"sev":"WARN","msg":"ok","ts":5}           # whole *.sql++ file stays valid SQL++
+  -- {"sev":"ERROR","msg":"oom","ts":9}
   -- @expect                     # golden findings the query MUST reproduce (compared as a set)
-  {"label":"ET-12345","result":{"msg":"disk full","sev":"ERROR","ts":3}}
-  {"label":"ET-12345","result":{"msg":"oom","sev":"ERROR","ts":9}}
+  -- {"label":"ET-12345","result":{"msg":"disk full","ts":3}}
+  -- {"label":"ET-12345","result":{"msg":"oom","ts":9}}
 
 EXAMPLE: .rules list --queries ./my-queries   (box at a TTY; jsonlines when piped)
   {"label":"ET-12345","source":"logs","description":"disk-full errors","tags":"disk,io","fixture?":"yes","golden?":"yes","path":".../disk_full.sql++"}

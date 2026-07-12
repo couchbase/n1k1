@@ -18,6 +18,8 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -82,8 +84,8 @@ func loadExtensions(paths []string) ([]string, error) {
 }
 
 // cmdExtensions implements the ".extensions [list | load <path...> | unload
-// <name...>]" dot-command (alias ".ext"). No argument (or "list") lists the
-// currently-loaded extensions.
+// <name...> | examples [name] | test [name]]" dot-command (alias ".ext"). No
+// argument (or "list") lists the currently-loaded extensions.
 func (c *cli) cmdExtensions(arg string) {
 	fields := strings.Fields(strings.TrimSpace(arg))
 	sub := ""
@@ -97,6 +99,10 @@ func (c *cli) cmdExtensions(arg string) {
 		c.extLoad(fields[1:])
 	case "unload":
 		c.extUnload(fields[1:])
+	case "examples", "example":
+		c.extExamples(strings.Join(fields[1:], " "))
+	case "test":
+		c.extTest(strings.Join(fields[1:], " "))
 	default:
 		// Friendly shorthand: ".extensions <dir-or-file>" == "... load <dir-or-file>".
 		c.extLoad(fields)
@@ -111,8 +117,107 @@ func (c *cli) extList() {
 	}
 	fmt.Fprintf(c.stderr, "%d loaded extension function(s):\n", len(exts))
 	for _, e := range exts {
-		fmt.Fprintf(c.stderr, "  %-20s %-11s %s\n", e.Name, e.Kind, e.Source)
+		ex := ""
+		if n := len(glue.ExtExamplesFor(e.Kind, e.Name)); n > 0 {
+			ex = fmt.Sprintf("  (%d example%s)", n, plural(n))
+		}
+		fmt.Fprintf(c.stderr, "  %-20s %-22s %s%s\n", e.Name, e.Kind, e.Source, ex)
 	}
+	fmt.Fprintln(c.stderr, c.style.Dim("(.extensions examples [name] to see them; .extensions test [name] to run them)"))
+}
+
+// extExamples prints the inline examples declared in the loaded extension files --
+// self-documenting: what each UDF / aggregate / stream source / macro / extract recipe
+// DOES, read straight from the file without running it. `only` filters to one name.
+func (c *cli) extExamples(only string) {
+	sets := glue.ListExtExampleSets()
+	shown := 0
+	for _, s := range sets {
+		if only != "" && !strings.EqualFold(only, s.Name) {
+			continue
+		}
+		shown++
+		fmt.Fprintf(c.stderr, "%s %s — %d example%s:\n",
+			c.style.Bold(s.Name), c.style.Dim("("+s.Kind+")"), len(s.Examples), plural(len(s.Examples)))
+		for _, ex := range s.Examples {
+			if d := exampleDesc(ex); d != "" {
+				fmt.Fprintf(c.stderr, "    %s\n", c.style.Dim("# "+d))
+			}
+			fmt.Fprintf(c.stderr, "    %s  =>  %s\n", compactJSON(ex.In), compactJSON(ex.Out))
+		}
+	}
+	if shown == 0 {
+		if only != "" {
+			fmt.Fprintf(c.stderr, "no examples for %q (loaded with -ext?)\n", only)
+		} else {
+			fmt.Fprintln(c.stderr, "no extension examples loaded (add an `examples` array to a *.js file; see .help extensions)")
+		}
+	}
+}
+
+// extTest runs every loaded extension's inline examples and checks each against its
+// expected output -- the JS analog of `.rules test`. A failure latches c.failed so a
+// non-interactive run exits non-zero (CI). `only` filters to one extension name.
+func (c *cli) extTest(only string) {
+	results := glue.RunExtensionExamples(only)
+	if len(results) == 0 {
+		if only != "" {
+			fmt.Fprintf(c.stderr, "no examples for %q to test\n", only)
+		} else {
+			fmt.Fprintln(c.stderr, "no extension examples to test")
+		}
+		return
+	}
+	pass, fail := 0, 0
+	for _, r := range results {
+		switch {
+		case r.Err != "":
+			fail++
+			fmt.Fprintf(c.stderr, "  %s %s/%s [%s]: %s\n",
+				c.style.Red("✗"), r.Kind, r.Name, r.Label, r.Err)
+		case r.Pass:
+			pass++
+			fmt.Fprintf(c.stderr, "  %s %s [%s]  %s => %s\n",
+				c.style.Green("✓"), r.Name, r.Label, r.In, r.Want)
+		default:
+			fail++
+			fmt.Fprintf(c.stderr, "  %s %s [%s]  %s\n      got:  %s\n      want: %s\n",
+				c.style.Red("✗"), r.Name, r.Label, r.In, r.Got, r.Want)
+		}
+	}
+	summary := fmt.Sprintf("%d/%d example(s) passed", pass, pass+fail)
+	if fail > 0 {
+		c.failed = true
+		fmt.Fprintf(c.stderr, "%s %s\n", c.icon("❌ "), c.style.Red(summary))
+	} else {
+		fmt.Fprintf(c.stderr, "%s %s\n", c.icon("✅ "), c.style.Green(summary))
+	}
+}
+
+// compactJSON renders raw JSON on a single line (whitespace removed) for display.
+func compactJSON(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return "null"
+	}
+	var b bytes.Buffer
+	if err := json.Compact(&b, raw); err != nil {
+		return string(raw)
+	}
+	return b.String()
+}
+
+func plural(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
+}
+
+func exampleDesc(ex glue.ExtExample) string {
+	if ex.Desc != "" {
+		return ex.Desc
+	}
+	return ex.Name
 }
 
 func (c *cli) extLoad(args []string) {

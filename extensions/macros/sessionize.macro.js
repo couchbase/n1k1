@@ -42,3 +42,12 @@ function expand(args, ctx) {
            "THEN 1 ELSE 0 END AS " + flag + " " +
       "FROM " + args.src + " AS " + s + ") AS " + sub;
 }
+
+// Inline goldens: a call (`in`) and the SQL++ it expands to (`out`).
+macro.examples = [
+  {
+    desc: 'gap-based sessions per node, 1800s idle timeout',
+    in:  '@sessionize(events, gap => 1800, order => ts, part => node)',
+    out: '(SELECT sess__m2.*, SUM(sess__m2.newsess__m3) OVER (PARTITION BY node ORDER BY ts ROWS UNBOUNDED PRECEDING) AS session_id FROM (SELECT src__m1.*, CASE WHEN LAG(ts) OVER (PARTITION BY node ORDER BY ts) IS NULL OR (ts - LAG(ts) OVER (PARTITION BY node ORDER BY ts)) > (1800) THEN 1 ELSE 0 END AS newsess__m3 FROM events AS src__m1) AS sess__m2)'
+  }
+];

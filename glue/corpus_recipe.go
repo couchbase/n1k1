@@ -26,7 +26,9 @@ package glue
 //        -- tags: ["disk","io"]   (scalar or inline JSON)
 //   2. The SQL++ QUERY statement itself (everything after the front-matter, up to
 //      the first section marker).
-//   3. A GOLDEN FIXTURE, inline, behind two markers:
+//   3. A GOLDEN FIXTURE, inline, behind two markers. The DATA lines are themselves
+//      SQL comments (`-- {...}`), so the whole file stays valid SQL++ -- a plain SQL
+//      reader/highlighter sees only comments plus the one SELECT:
 //        -- @fixture   -> JSONL input rows for the query's `source` keyspace
 //        -- @expect    -> the golden findings, one {"label":...,"result":...} per line
 //
@@ -38,15 +40,16 @@ package glue
 //	-- tags: ["disk","io"]
 //	SELECT l.msg, l.ts FROM logs l WHERE l.sev = "ERROR"
 //	-- @fixture
-//	{"sev":"ERROR","msg":"disk full","ts":3}
-//	{"sev":"WARN","msg":"ok","ts":5}
-//	{"sev":"ERROR","msg":"oom","ts":9}
+//	-- {"sev":"ERROR","msg":"disk full","ts":3}
+//	-- {"sev":"WARN","msg":"ok","ts":5}
+//	-- {"sev":"ERROR","msg":"oom","ts":9}
 //	-- @expect
-//	{"label":"ET-12345","result":{"msg":"disk full","ts":3}}
-//	{"label":"ET-12345","result":{"msg":"oom","ts":9}}
+//	-- {"label":"ET-12345","result":{"msg":"disk full","ts":3}}
+//	-- {"label":"ET-12345","result":{"msg":"oom","ts":9}}
 //
 // (Result is the query's SELECT projection -- here {msg, ts}, not the whole matched
-// row; a `SELECT *` query's result is the whole matched doc.)
+// row; a `SELECT *` query's result is the whole matched doc. The parser also still
+// accepts bare, un-commented JSON data lines.)
 //
 // Front-matter and both sections are OPTIONAL. A plain `.sql++` file with none of them
 // loads as a query whose Label is the filename stem and whose Stmt is the whole body.
@@ -200,27 +203,47 @@ func ParseRecipe(path, text string) (Recipe, error) {
 	r.HasFixture = sawFixture
 	r.HasExpect = sawExpect
 
-	// Fixture rows: each non-blank, non-comment line is one JSON document.
+	// Fixture rows: each data line is a JSON document written as an SQL comment
+	// (`-- {...}`), so the whole recipe file stays valid SQL++. uncommentFixtureJSON
+	// strips the comment prefix; blank lines and prose (non-JSON) comments are skipped.
 	for _, ln := range fixtureRaw {
-		if ln == "" || strings.HasPrefix(ln, "--") {
-			continue
+		if j, ok := uncommentFixtureJSON(ln); ok {
+			r.Fixture.Rows = append(r.Fixture.Rows, []byte(j))
 		}
-		r.Fixture.Rows = append(r.Fixture.Rows, []byte(ln))
 	}
 
-	// Expected findings: each non-blank, non-comment line is one {"label","result"}.
+	// Expected findings: each is one {"label","result"} JSON object, likewise written
+	// as an SQL comment line.
 	for _, ln := range expectRaw {
-		if ln == "" || strings.HasPrefix(ln, "--") {
+		j, ok := uncommentFixtureJSON(ln)
+		if !ok {
 			continue
 		}
 		var f findingJSON
-		if err := json.Unmarshal([]byte(ln), &f); err != nil {
-			return r, fmt.Errorf("@expect: bad finding %q: %v", ln, err)
+		if err := json.Unmarshal([]byte(j), &f); err != nil {
+			return r, fmt.Errorf("@expect: bad finding %q: %v", j, err)
 		}
 		r.Fixture.Expect = append(r.Fixture.Expect, Finding{Label: f.Label, Result: f.Result})
 	}
 
 	return r, nil
+}
+
+// uncommentFixtureJSON reads one @fixture / @expect line: it strips an optional leading
+// SQL comment prefix (`--`) plus surrounding space, and returns the remainder if it looks
+// like a JSON value (starts with `{` or `[`). This lets the fixture/expect DATA live in
+// SQL comments so the whole *.sql++ file is valid SQL++, while blank lines and prose
+// comments (`-- a note`) are skipped. A bare (un-commented) JSON line is still accepted.
+func uncommentFixtureJSON(ln string) (string, bool) {
+	s := strings.TrimSpace(ln)
+	s = strings.TrimSpace(strings.TrimPrefix(s, "--"))
+	if s == "" {
+		return "", false
+	}
+	if s[0] == '{' || s[0] == '[' {
+		return s, true
+	}
+	return "", false
 }
 
 // findingJSON is the on-disk shape of an @expect / .rules run finding row.
@@ -352,7 +375,7 @@ func serializeFindings(findings []Finding) string {
 	var b strings.Builder
 	for _, f := range sorted {
 		label, _ := json.Marshal(f.Label)
-		b.WriteString(`{"label":`)
+		b.WriteString(`-- {"label":`) // commented so the recipe file stays valid SQL++.
 		b.Write(label)
 		b.WriteString(`,"result":`)
 		b.WriteString(canonicalJSON(f.Result))

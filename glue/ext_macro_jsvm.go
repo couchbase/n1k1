@@ -93,6 +93,7 @@ func RegisterJSMacro(name, source string) error {
 			return fmt.Errorf("macro %q: bad `macro` metadata: %w", name, err)
 		}
 	}
+	recordExtExamples("macro", name, readJSExamples(rt, "macro")) // inline goldens (ext_examples.go).
 
 	params := meta.Params
 	RegisterMacro(name, params, func(a *MacroArgs, c *MacroCtx) (string, error) {

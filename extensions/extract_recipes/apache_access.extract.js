@@ -41,3 +41,15 @@ function describe(file) {
     order: { by: "ts", sorted: "near" }
   };
 }
+
+// Inline goldens: a sample log line (`in`) -> the framed, typed row (`out`), verified
+// by `.extensions test`. Note `ts` is normalized to epoch-nanos by the native layer.
+var examples = [
+  {
+    desc: "one combined-log line -> typed fields (ts as epoch-nanos)",
+    in: "127.0.0.1 - - [10/Oct/2000:13:55:36 -0700] \"GET /index.html HTTP/1.0\" 200 2326\n",
+    out: [
+      { ip: "127.0.0.1", method: "GET", path: "/index.html", status: "200", size: "2326", ts: 971211336000000000 }
+    ]
+  }
+];
