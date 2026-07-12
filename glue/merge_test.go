@@ -19,13 +19,218 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/couchbase/n1k1/base"
 	"github.com/couchbase/n1k1/records"
+
+	"github.com/couchbase/query/expression"
+	"github.com/couchbase/query/expression/parser"
 )
 
 // The argmax -> ASOF merge-join lowering's correctness net (DESIGN-merging.md §3;
 // Track B round 4 piece 2). Each test runs the EXACT same argmax-subquery query
 // TWICE -- once with the lowering OFF (the correlated-subquery baseline) and once
 // ON -- and asserts BYTE-IDENTICAL result rows. A wrong lowering fails here.
+
+// TestMergeKeyResolvers unit-tests the merge-scan/ASOF key-resolution helpers
+// directly -- the pure analysis half the design calls out as "independently
+// testable" (feed inputs, assert the resolved slot). The end-to-end differential
+// tests below only exercise the happy shapes; these hit the edge branches the
+// coverage audit flagged (exprTree keys, leaf-vs-exact matches, the ambiguous and
+// not-a-column rejections that keep the safe order(union-all) fallback).
+func TestMergeKeyResolvers(t *testing.T) {
+	parse := func(s string) expression.Expression {
+		e, err := parser.Parse(s)
+		if err != nil {
+			t.Fatalf("parse %q: %v", s, err)
+		}
+		return e
+	}
+
+	// mergeExprLeafName: a bare identifier or a field access resolves to its leaf
+	// column name; any other shape (function, arithmetic, index, constant) is not a
+	// plain column, so the merge rewrite leaves the order in place.
+	t.Run("exprLeafName", func(t *testing.T) {
+		for _, c := range []struct {
+			expr, want string
+			ok         bool
+		}{
+			{"a", "a", true},
+			{"e.ts", "ts", true},
+			{"e.meta.ts", "ts", true}, // nested -> leaf
+			{"UPPER(a)", "", false},   // function call
+			{"a + 1", "", false},      // arithmetic
+			{"a[0]", "", false},       // array index
+			{"5", "", false},          // constant
+		} {
+			got, ok := mergeExprLeafName(parse(c.expr))
+			if ok != c.ok || (ok && got != c.want) {
+				t.Errorf("mergeExprLeafName(%q) = %q,%v want %q,%v", c.expr, got, ok, c.want, c.ok)
+			}
+		}
+	})
+
+	// mergeLabelLeaf: a `.["...path..."]` label yields its leaf field; a non-path
+	// label (`.`, `^id`, an aggregate column) yields ok=false.
+	t.Run("labelLeaf", func(t *testing.T) {
+		for _, c := range []struct {
+			label, want string
+			ok          bool
+		}{
+			{`.["a"]`, "a", true},
+			{`.["x","a"]`, "a", true},
+			{".", "", false},
+			{"^id", "", false},
+			{"^aggregates|count(*)", "", false},
+			{`.[]`, "", false}, // empty path
+		} {
+			got, ok := mergeLabelLeaf(c.label)
+			if ok != c.ok || (ok && got != c.want) {
+				t.Errorf("mergeLabelLeaf(%q) = %q,%v want %q,%v", c.label, got, ok, c.want, c.ok)
+			}
+		}
+	})
+
+	// mergeLabelIdxByLeaf: a UNIQUE leaf match returns its slot; no match or an
+	// AMBIGUOUS match (two branches expose the same leaf) returns -1 -- the safety
+	// bail that keeps order(union-all).
+	t.Run("labelIdxByLeaf", func(t *testing.T) {
+		labs := base.Labels{`.["ts"]`, `.["x","node"]`, `.["a","node"]`} // node twice
+		if i := mergeLabelIdxByLeaf(labs, "ts"); i != 0 {
+			t.Errorf("unique ts -> %d, want 0", i)
+		}
+		if i := mergeLabelIdxByLeaf(labs, "node"); i != -1 {
+			t.Errorf("ambiguous node -> %d, want -1", i)
+		}
+		if i := mergeLabelIdxByLeaf(labs, "missing"); i != -1 {
+			t.Errorf("missing -> %d, want -1", i)
+		}
+	})
+
+	// mergeResolveKeyIdx: the ORDER BY term resolves to a union slot via an exact
+	// label, a leaf-name match, or an exprTree leaf; malformed terms return -1.
+	t.Run("resolveKeyIdx", func(t *testing.T) {
+		L := base.Labels{`.["ts"]`, `.["node"]`}
+		cases := []struct {
+			name string
+			term interface{}
+			want int
+		}{
+			{"labelPath-exact", []interface{}{"labelPath", `.["ts"]`}, 0},
+			{"labelPath-leaf", []interface{}{"labelPath", `.["x","ts"]`}, 0},
+			{"labelPath-node", []interface{}{"labelPath", `.["node"]`}, 1},
+			{"exprTree-field", []interface{}{"exprTree", parse("e.ts")}, 0},
+			{"exprTree-nonfield", []interface{}{"exprTree", parse("UPPER(e.ts)")}, -1},
+			{"labelPath-nomatch", []interface{}{"labelPath", `.["nope"]`}, -1},
+			{"not-a-slice", "labelPath", -1},
+			{"wrong-arity", []interface{}{"labelPath"}, -1},
+			{"unknown-kind", []interface{}{"weird", "x"}, -1},
+		}
+		for _, c := range cases {
+			if i := mergeResolveKeyIdx(c.term, L); i != c.want {
+				t.Errorf("%s: mergeResolveKeyIdx = %d, want %d", c.name, i, c.want)
+			}
+		}
+	})
+}
+
+// TestASOFConjunctClassifiers unit-tests the ASOF WHERE-conjunct analyzers that
+// decide whether a correlated subquery is the argmax/nearest shape: the equality
+// partition predicate, the band inequality, the soft look-back/look-ahead tolerance,
+// and the field-ref splitter. The differential suite exercises the positive shapes;
+// these add the NEAR-MISS rejections (wrong alias, wrong operator, right-side band,
+// negative delta, deep/non-field refs) -- the branches that keep a non-ASOF subquery
+// as a plain correlated subquery.
+func TestASOFConjunctClassifiers(t *testing.T) {
+	parse := func(s string) expression.Expression {
+		e, err := parser.Parse(s)
+		if err != nil {
+			t.Fatalf("parse %q: %v", s, err)
+		}
+		return e
+	}
+
+	t.Run("splitFieldRef", func(t *testing.T) {
+		if a, f, ok := splitFieldRef(parse("r.k")); !ok || a != "r" || f != "k" {
+			t.Errorf("r.k -> %q,%q,%v", a, f, ok)
+		}
+		if _, _, ok := splitFieldRef(parse("k")); ok {
+			t.Error("bare identifier is not alias.field")
+		}
+		if _, _, ok := splitFieldRef(parse("r.x.k")); ok {
+			t.Error("deep path r.x.k is not a simple field ref")
+		}
+		if _, _, ok := splitFieldRef(parse("5")); ok {
+			t.Error("constant is not a field ref")
+		}
+	})
+
+	t.Run("classifyEq", func(t *testing.T) {
+		eq := func(s string) *expression.Eq {
+			cmp, ok := parse(s).(*expression.Eq)
+			if !ok {
+				t.Fatalf("%q parsed to %T, not *expression.Eq", s, parse(s))
+			}
+			return cmp
+		}
+		for _, c := range []struct {
+			q, rf, of string
+			ok        bool
+		}{
+			{"r.node = e.node", "node", "node", true},
+			{"e.node = r.node", "node", "node", true}, // orientation flipped
+			{"r.a = r.b", "", "", false},              // both right
+			{"e.a = f.b", "", "", false},              // neither right
+			{"r.a = 5", "", "", false},                // non-field operand
+		} {
+			m, ok := classifyEq(eq(c.q), "r")
+			if ok != c.ok || (ok && (m.RightField != c.rf || m.OuterField != c.of)) {
+				t.Errorf("classifyEq(%q) = %+v,%v want rf=%q of=%q ok=%v", c.q, m, ok, c.rf, c.of, c.ok)
+			}
+		}
+	})
+
+	t.Run("classifyIneq", func(t *testing.T) {
+		for _, c := range []struct {
+			q, rf, dir string
+			ok         bool
+		}{
+			{"r.ts <= e.ts", "ts", "le", true},
+			{"e.ts <= r.ts", "ts", "ge", true}, // flipped -> right.field >= outer
+			{"r.ts >= e.ts", "ts", "ge", true}, // parser canonicalizes >= to <=-flipped
+			{"r.ts < e.ts", "", "", false},     // strict LT is not the (inclusive LE) band
+			{"e.a <= f.b", "", "", false},      // neither side is the right alias
+		} {
+			rf, _, dir, ok := classifyIneq(parse(c.q), "r")
+			if ok != c.ok || (ok && (rf != c.rf || dir != c.dir)) {
+				t.Errorf("classifyIneq(%q) = %q,%q,%v want %q,%q,%v", c.q, rf, dir, ok, c.rf, c.dir, c.ok)
+			}
+		}
+	})
+
+	t.Run("lookback", func(t *testing.T) {
+		if f, d, ok := splitLookback(parse("e.ts - 5000"), "r"); !ok || f != "ts" || d != 5000 {
+			t.Errorf("e.ts-5000 -> %q,%d,%v want ts,5000,true", f, d, ok)
+		}
+		if _, _, ok := splitLookback(parse("r.ts - 5000"), "r"); ok {
+			t.Error("look-back on the RIGHT field must not classify")
+		}
+		if _, _, ok := splitLookback(parse("e.ts + 5000"), "r"); ok {
+			t.Error("look-back needs a Sub, not an Add")
+		}
+	})
+
+	t.Run("lookahead", func(t *testing.T) {
+		if f, d, ok := splitLookahead(parse("e.ts + 5000"), "r"); !ok || f != "ts" || d != 5000 {
+			t.Errorf("e.ts+5000 -> %q,%d,%v want ts,5000,true", f, d, ok)
+		}
+		if f, d, ok := splitLookahead(parse("5000 + e.ts"), "r"); !ok || f != "ts" || d != 5000 {
+			t.Errorf("5000+e.ts (commuted) -> %q,%d,%v want ts,5000,true", f, d, ok)
+		}
+		if _, _, ok := splitLookahead(parse("e.ts - 5000"), "r"); ok {
+			t.Error("look-ahead needs an Add, not a Sub")
+		}
+	})
+}
 
 // asofWriteKS writes one file into <root>/default/<ks>/<name>.
 func asofWriteKS(t *testing.T, root, ks, name, body string) {

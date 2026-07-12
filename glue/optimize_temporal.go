@@ -19,7 +19,7 @@ package glue
 // the fork's grammar/planner (the unifying principle shared with DESIGN-data.md:
 // "the fork produces plans; all recognition happens n1k1-side").
 //
-// It is invoked from ExecConv via a single call-site hook (rewriteTemporal),
+// It is invoked from ExecConv via a single call-site hook (rewriteTemporalRoot),
 // deliberately NOT by editing conv.go's VisitUnionAll -- the recognition is a
 // structural property of the whole op subtree (an `order` sitting over a
 // `union-all` of sorted branches), which reads more cleanly as one focused pass
@@ -86,18 +86,6 @@ var EnableMergeRewrite bool
 // rewrote into a merge-scan (test observability, mirroring AggColumnarApplied).
 var MergeRewriteApplied int64
 
-// rewriteTemporal is the single post-plan call-site hook (from ExecConv). It
-// walks the finished op tree and rewrites every recognized order(union-all)-of-
-// sorted-streams subtree into a streaming merge-scan, in place. A no-op unless
-// EnableMergeRewrite is set. Safe fallback throughout: any subtree that does not
-// match the exact recognized shape is left untouched (keeps order(union-all)).
-func rewriteTemporal(op *base.Op) {
-	if op == nil || !EnableMergeRewrite {
-		return
-	}
-	rewriteTemporalWalk(op)
-}
-
 // rewriteTemporalWalk rewrites each child in place (so a matched child is
 // replaced by its merge-scan), then recurses. Rewriting children (not the node
 // itself) lets the pass replace an order(union-all) wherever it sits in the tree
@@ -111,9 +99,9 @@ func rewriteTemporalWalk(op *base.Op) {
 		}
 		rewriteTemporalWalk(child)
 	}
-	// The root itself may be an order(union-all): rewriteTemporal's caller keeps
-	// the same root pointer, so we cannot swap the root here. ExecConv handles the
-	// root case via rewriteTemporalRoot below.
+	// The root itself may be an order(union-all): the caller (conv.go's ExecConv)
+	// keeps the same root pointer, so we cannot swap the root here. That root case
+	// is handled by rewriteTemporalRoot below.
 }
 
 // rewriteTemporalRoot returns the merge-scan replacement for the tree ROOT when
