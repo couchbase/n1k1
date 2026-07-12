@@ -4,7 +4,7 @@
 
 _Last reviewed: 2026-07-11._
 
-**Done:** The first extension slice is live and tested (interpreter + compiler): native zero-garbage aggregates `sparkline()`/`histogram()`, goja JavaScript scalar UDFs (opt-in dir/file/inline registry), JS aggregate UDFs (3-callback) and streaming table-valued sources (`emit` protocol, on one generic `stream-fn` op that `RULE_MATCHES` also rides), plus `*.extract.js` recipes whose `describe()` returns a declarative `ExtractSpec` applied on the native byte lane — all unlocked by two fork setters (`expression.RegisterFunction` / `algebra.RegisterAggregate`) that open the parser's builtin + aggregate registries without a grammar change.
+**Done:** The first extension slice is live and tested (interpreter + compiler): native zero-garbage aggregates `sparkline()`/`histogram()`, goja JavaScript scalar UDFs (opt-in dir/file/inline registry), JS aggregate UDFs (3-callback) and streaming table-valued sources (`emit` protocol, on one generic `stream-fn` op that `RULE_MATCHES` also rides), plus `*.extract.js` recipes whose `describe()` returns a declarative `ExtractSpec` applied on the native byte lane — all unlocked by two fork setters (`expression.RegisterFunction` / `algebra.RegisterAggregate`) that open the parser's builtin + aggregate registries without a grammar change. And `*.macro.js` **pre-parse SQL++ macros** (`@name(...)` → generated SQL++ before cbq's parser; gensym hygiene, `.macro expand`) — `grep_context` ships as the first, turning grep `-A`/`-B`/`-C` into a one-liner.
 
 **Remaining (headline TODOs):**
 - [ ] Extract recipes are `describe()`-only; the imperative `extract(file, meta, emit)` escape hatch for irregular formats is not yet wired.
@@ -15,6 +15,7 @@ _Last reviewed: 2026-07-11._
 - [ ] Streaming CTEs / subqueries: single-use pipe + multi-use spill-and-rescan (roadmap step 5) — not started.
 - [ ] wazero (Wasm) sandboxed extensions (roadmap step 6) — not started.
 - [ ] Hygienic JS reuse (`require()`/modules) + power-tier host functions (HTTP/S3, allowlisted `exec`); a complete extension-authoring guide.
+- [x] **Macros (`*.macro.js`)** — DONE: pre-parse, text→text SQL++ generators expanded before cbq's parser (`@name(...)` sigil, `=>` named args, applicative-order + body-reemission nesting, gensym hygiene, `.macro list`/`help`/`expand`, parse-error annotation). `glue/macro.go` (scanner + registry), `glue/ext_macro_jsvm.go` (JS binding), hooked at the top of `ParseStatement`. `extensions/macros/grep_context.macro.js` ships. Later: AST-hygiene tier; `require()`/modules; more starter macros (top-per-group, sessionize).
 
 ## Overview
 
@@ -39,6 +40,7 @@ everything: n1k1 builds `CGO_ENABLED=0`.
 - [Extension aggregates](#extension-aggregates)
 - [Table-valued / streaming sources in FROM](#table-valued--streaming-sources-in-from)
 - [Extract functions (`*.extract.js`) — file-matched, scan-layer extensions](#extract-functions)
+- [Macros (`*.macro.js`) — pre-parse SQL++ generators](#macros)
 - [Dynamic loading in Go](#dynamic-loading-in-go)
 - [JS extension power tiers](#js-extension-power-tiers)
 - [Streaming CTEs / subqueries](#streaming-ctes--subqueries)
@@ -553,6 +555,235 @@ same differential/golden discipline as detectors (`DESIGN-testing.md`,
 with confidence, and a wrong `disorder_bound` (a silent merge-corruption risk) is
 caught before it ships.
 
+## Macros (`*.macro.js`) — pre-parse SQL++ generators <a name="macros"></a>
+
+### The problem: WINDOW syntax is a wall
+
+Grep's `-A`/`-B`/`-C` (print N lines of context around each match) is the single most
+natural log question — and expressing it in SQL++ means a windowed subquery most people
+(and, honestly, most AIs on the first try) can't write cold:
+
+```sql
+SELECT p, pos, line FROM (
+  SELECT _meta.`path` AS p, _meta.pos AS pos, line,
+         MAX(CASE WHEN sev = "ERROR" THEN 1 ELSE 0 END)
+           OVER (PARTITION BY _meta.`path` ORDER BY _meta.pos
+                 ROWS BETWEEN 2 PRECEDING AND 2 FOLLOWING) AS near
+  FROM logs) sub
+WHERE sub.near = 1;
+```
+
+A **JS UDF can't help here.** Scalar UDFs return one value per row; table-valued
+`*.stream.js` sources return rows — neither can *emit a `WINDOW` clause*, because a
+frame is **syntax**, not a value or a table. The hard thing the user wants sugar for is
+precisely the syntax they can't factor into a function.
+
+The answer is a **macro**: user-authored JS that takes a compact invocation and returns
+**SQL++ source text**, expanded *before* cbq's parser sees the statement. The detector
+author writes:
+
+```sql
+SELECT p, pos, line
+  FROM @grep_context(logs, when => sev = "ERROR", before => 2, after => 2);
+```
+
+and a `grep_context.macro.js` in the `-extensions` dir expands it into the windowed
+subquery above. This generalizes: `@top_per_group`, `@sessionize`, `@rate`,
+`@pivot` — any recurring shape becomes a one-liner, and the ugly SQL++ lives once, in a
+reviewed, golden-tested macro, instead of copy-pasted (and mis-edited) across detectors.
+
+### Why pre-parse text, not an AST rewrite
+
+Three layers could host this; only one fits a *user-authored, `WINDOW`-emitting* macro:
+
+1. **JS UDF (name seam).** Rejected above — can't produce syntax.
+2. **cbq AST rewrite** (like the `REWRITE_PHASE1` pass n1k1 already runs for named
+   `WINDOW` clauses, `glue/stmt.go:67`). Works only if the invocation is *already valid
+   SQL++* that parses to a node we then rewrite — but `@grep_context(...)` in `FROM`
+   position is not a table term cbq's grammar accepts, and authoring the transform means
+   writing Go AST visitors, not user JS. AST rewrites are the right tool for n1k1's *own*
+   built-in desugaring; they are the wrong tool for a drop-in extension surface.
+3. **Pre-parse text→text** (this design). The macro is a source-to-source generator that
+   runs *before* `n1ql.ParseStatement2`. The invocation syntax is ours to define (it need
+   not be valid SQL++), and the transform is ordinary JS returning a string. This is the
+   layer the user named ("expanded before cbq's parser is applied"), and it is correct.
+
+**The whole feature is invisible downstream.** Expansion happens at the top of
+`ParseStatement` — the single choke point every `.rules` detector *and* every ad-hoc
+query flows through (`glue/stmt.go:52`, right before `n1ql.ParseStatement2`). After
+expansion the statement is ordinary SQL++, so the planner, CSE/fusion, MQO, ASOF
+lowering, and the standalone-analyzer codegen (`IDEA-0018`) all see hand-written-shaped
+SQL and neither know nor care a macro produced it. Macros add **zero** complexity to the
+B/C engine: pure front-end sugar. (When no `@` appears in the statement — and when no
+macros are loaded — expansion is a single `strings.IndexByte` and returns the input
+untouched: no cost on the common path.)
+
+### The `@name(...)` invocation sigil
+
+Macro calls are marked with a leading `@`:
+
+```
+@macro_name(pos_arg, named => value, other = value)
+```
+
+`@` is chosen because n1ql's grammar does **not** use it — named/positional parameters
+are `$name` and `?`, so `@` is lexically free and cannot collide with a real query.
+(One thing to verify against the fork's lexer before shipping: that a bare `@` is a clean
+tokenizer error today, not silently accepted somewhere — the design assumes `@` is
+unambiguously "macro, not SQL".) The sigil also makes macros **greppable** and obvious to
+a reader: "this line is generated."
+
+The expander scans the statement for `@ident(`, reads a **balanced-paren** argument list
+— respecting `'...'` / `"..."` / `` `...` `` string literals and `--` / `/* */` comments
+so a paren or `@` inside a string is not miscounted — looks `ident` up in the macro
+registry, calls its `expand`, and **substitutes the returned text wrapped in parens**
+(safe in both expression and `FROM`-subquery position). An unknown `@name` is a clear
+"no such macro" error listing the loaded ones.
+
+**Composition — both directions work, and the evaluation order is nailed down:**
+
+- **A macro call as an argument** to another — `@outer(@inner(x), y)` — expands
+  **innermost-first (applicative order)**: `@inner` is fully expanded *before* `@outer`'s
+  `expand` runs, so `@outer` receives its arguments as already-expanded SQL++ text (its
+  arg inspection / `$lit` coercion sees real SQL, not the string `"@inner(x)"`). This
+  matches the function-call mental model.
+- **A macro call in a macro's body/output** — `expand()` returns text containing
+  `@another(...)` — is picked up by a **re-scan** of that output, so macros can be built
+  on top of macros.
+
+Both fall out of one rule: **repeatedly expand the leftmost `@name(...)` whose argument
+list contains no further `@`** (always an innermost call), substitute, re-scan, repeat.
+Argument nesting strictly *shrinks* the `@` count so it can't loop; only body-emission can
+grow it, so a **depth/rounds cap** (e.g. 16) bounds a macro that recursively emits itself,
+turning a runaway into a clean error rather than a hang. The **gensym counter is global to
+the whole expansion pass**, so inner, outer, and body-introduced expansions all draw
+disjoint names — no alias collision however they nest. (A "pass this argument
+*un*expanded" escape — an opaque-label macro — is a deliberate v1 omission; applicative
+order is the default.)
+
+### The JS contract: `expand(args, ctx) → string`
+
+Mirrors the `*.extract.js` shape (module-scope declaration + one function), and reuses
+the same goja lifetime/timeout/`console` plumbing (`glue/ext_jsvm.go`,
+`glue/ext_extract_jsvm.go`). `expand` is a **cold-path, once-per-parse** call returning a
+string — garbage is fine, exactly like `describe()` returning an `ExtractSpec`.
+
+```js
+// grep_context.macro.js
+var macro = {
+  name: "grep_context",
+  // Optional signature — enables arity/keyword checks + `.macro help`, like *.extract.js's match.
+  params: [ { name: "src",    required: true },
+            { name: "when",   required: true },
+            { name: "before", default: 2 },
+            { name: "after",  default: 2 } ],
+};
+
+function expand(args, ctx) {
+  // Hygiene: gensym every macro-introduced binding so two uses (or nesting) never collide.
+  var sub  = ctx.gensym("ctx");
+  var near = ctx.gensym("near");
+  return `(SELECT * FROM (
+            SELECT _meta.\`path\` AS p, _meta.pos AS pos, line,
+                   MAX(CASE WHEN (${args.when}) THEN 1 ELSE 0 END)
+                     OVER (PARTITION BY _meta.\`path\` ORDER BY _meta.pos
+                           ROWS BETWEEN ${args.before} PRECEDING
+                                    AND ${args.after}  FOLLOWING) AS ${near}
+            FROM ${args.src}) ${sub}
+          WHERE ${sub}.${near} = 1)`;
+}
+```
+
+- **`args`** — positional args in `args[0..n]`, named args as `args.<key>`. Each value
+  arrives as the **raw SQL++ source substring** of the argument (a macro manipulates
+  syntax, so `src` is the identifier text `logs`, and `when` is the *unparsed predicate*
+  `sev = "ERROR"` — spliced verbatim). A `literal` best-effort coercion is also offered
+  (`args.$lit.before === 2` as a JS number) for the common case of a numeric/quoted
+  arg used where a bare literal is wanted. Defaults from `macro.params` fill absent
+  keywords.
+- **`ctx`** — `{ gensym(prefix) → unique name, error(msg) → throw a mapped error,
+  version }`. `gensym` is the hygiene primitive (below).
+- **returns** a SQL++ string. A thrown JS error (or `ctx.error`) becomes a parse-time
+  diagnostic naming the macro.
+
+### Hygiene: gensym, honestly scoped
+
+Full Scheme-style hygiene needs a binding resolver over an AST; a *text* macro can't have
+that. What it **can** guarantee, and what solves the real bugs, is **gensym hygiene**:
+`ctx.gensym("ctx")` returns a name unique to this expansion (`ctx__m7`), so a macro's
+internal aliases never clash with the user's identifiers, nor with a second use of the
+same macro, nor with an outer macro when nested. This is the same discipline as C's
+`__COUNTER__` or Rust's pre-hygiene `paste!` — the 90% that matters.
+
+Be honest about the 10% it does **not** buy: because there is no scope tracking at the
+text level, a macro *could* reference a user column it never meant to (free-variable
+capture in the other direction). The authoring rule that keeps macros safe: **introduce
+every internal name via `gensym`, and only reference columns that were passed in as
+explicit args.** A future **AST-hygiene tier** — expand into cbq AST nodes and run a
+rename pass, reusing the `REWRITE_PHASE` visitor machinery — is the path to true hygiene
+if text macros prove too sharp; noted, not built.
+
+### Debuggability is not optional for a code generator
+
+A macro that expands to broken SQL++ must **not** dump a cbq parse error about code the
+user never wrote. So:
+
+- **`.macro expand <statement>`** (and a `-explain-macros` flag) prints the
+  fully-expanded SQL++ — the primary debugging tool. `.macro list` / `.macro help
+  <name>` show loaded macros and their `params` signature, mirroring `.extract help`.
+- On a post-expansion parse error, if expansion occurred, the error is **annotated**
+  with the responsible macro name and the offending expanded snippet, so the message
+  points at the generator, not its output.
+
+### Determinism (keep PREPARE++ plan-caching sound)
+
+`expand` should be **pure**: same args → same SQL++. It runs at parse time, upstream of
+plan caching and corpus fusion, so a non-deterministic expansion would poison a cached
+plan. Purity is documented as a contract (not enforced); v1 skips memoizing expansions
+(parse is cheap next to execution). Note the goja no-`Date.now()` discipline that guards
+the *codegen verbatim lane* does **not** apply here — macros run in the ordinary
+parse-time runtime, not the gen-compiler copy lane.
+
+### Trust
+
+Same posture as recipes and UDFs: JS runs in sandboxed goja, **opt-in** via `-ext`, no
+FS/network unless power-tier host functions are explicitly granted. The one thing to state
+plainly: a macro is a **code generator** — its output runs with full query authority. But
+this is not a *new* trust boundary, because the `.rules` detectors themselves are already
+trusted SQL++ authored by the same person who drops the macro in the extensions dir. A
+macro is exactly as trusted as the detector that calls it.
+
+### Registry & loading
+
+Slots straight into the existing seam: `RegisterExtensionFile`/`RegisterExtensionDir`
+(`glue/ext.go`) dispatch by suffix — add `.macro.js` next to `.extract.js` / `.stream.js`
+/ `.agg.js`. Registration mirrors `RegisterJSExtractRecipe`: compile once with
+`goja.Compile`, run once at registration to surface top-level errors and read the
+module-scope `macro` object, then store `{name, params, prog, sourceHash}` in a
+**load-only** macro registry (like extract recipes; no unload). The expander builds a
+throwaway `goja.Runtime` per `expand` call (goja runtimes aren't goroutine-safe;
+same pattern as `runJSDescribe`).
+
+### Testing (golden fixtures, like everything else)
+
+Each macro ships a golden fixture: **invocation → expected expanded SQL++** (checked
+literally, gensym counters seeded deterministically), plus at least one **end-to-end**
+case — invocation → expanded → parsed → run against a tiny keyspace → expected rows — so a
+macro that expands to *parseable-but-wrong* SQL is caught, not just a syntax slip. Same
+differential/golden discipline as detectors and recipes (`DESIGN-testing.md`), giving an
+AI proposing a new macro the same confidence loop.
+
+### Scope: v1 vs later
+
+- **v1** — `@name(...)` scanner (string/comment-aware, balanced parens, fixpoint re-scan
+  with a depth cap); positional + named args (raw text + `$lit` coercion) with
+  `params` defaults; `ctx.gensym`/`ctx.error`; `.macro list`/`help`/`expand` +
+  `-explain-macros`; parse-error annotation; load-only registry; golden + e2e fixtures.
+- **Later** — AST-hygiene tier (true hygiene via a rename visitor); richer `params`
+  typing for keyword/arity validation; `require()`/shared modules once that lands
+  generally for JS extensions; a starter macro library (`grep_context`, `top_per_group`,
+  `sessionize`, `rate`, `pivot`) shipped in the detector-repo sibling.
+
 ## Dynamic loading in Go
 
 Can extensions load dynamically — DLLs, `.so`, or pure-Go modules — and what does cgo
@@ -941,6 +1172,17 @@ bounded, capability-free Wasm instance that streams JSON.
      metadata the **K-way merge join / ASOF** consume (`DESIGN-data.md`
      [sorted sources](DESIGN-data.md), §4/§5). Built-in office/PDF extractors become
      `{framing: whole}` specs under the same seam.
+   - **3c. DONE — Macros (`*.macro.js`) — pre-parse SQL++ generators.** A fourth JS
+     extension class, on yet another axis: not the name seam, not the file→extractor
+     seam, but a **source-to-source** pass at the top of `ParseStatement` (before
+     `n1ql.ParseStatement2`). `@name(...)` invocations expand to SQL++ text via a JS
+     `expand(args, ctx)`, so users (and AIs) express `WINDOW`-heavy shapes — grep
+     `-A`/`-B`/`-C` context, top-per-group, sessionize — as one-liners. gensym hygiene,
+     leftmost-innermost (applicative) + body-reemission nesting with a runaway cap,
+     `.macro list`/`help`/`expand` + parse-error annotation. **Invisible downstream**
+     (planner/CSE/MQO/ASOF/analyzer codegen see only ordinary SQL++), so it adds zero
+     B/C-engine complexity. Impl `glue/macro.go` + `glue/ext_macro_jsvm.go`; shipped macro
+     `extensions/macros/grep_context.macro.js`. Design [above](#macros).
 4. **Native Go builtins** via `expression.RegisterFunction` (patch-05) for doc parsers,
    or expose them as sources per step 3. (`sparkline`/`histogram` already exercise the
    aggregate side via patch-06.)

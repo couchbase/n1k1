@@ -115,6 +115,25 @@ func RegisterExtensionFile(path string) (string, error) {
 		return name, nil
 	}
 
+	// "<name>.macro.js" is a JS PRE-PARSE MACRO (expand(args,ctx) -> SQL++ text; see
+	// ext_macro_jsvm.go), checked before the generic ".js" scalar loader since it
+	// also ends in ".js". It registers into the macro registry (macro.go), not a
+	// SQL function, so it is tracked there (ListMacros), not in extLoaded.
+	if lower := strings.ToLower(base); strings.HasSuffix(lower, ".macro.js") {
+		name := strings.TrimSuffix(lower, ".macro.js")
+		src, err := os.ReadFile(path)
+		if err != nil {
+			return "", err
+		}
+		if err := RegisterJSMacro(name, string(src)); err != nil {
+			return "", err
+		}
+		if e := macroRegistry[strings.ToLower(name)]; e != nil {
+			e.source = path // RegisterJSMacro recorded "(inline)".
+		}
+		return name, nil
+	}
+
 	// "<name>.stream.js" is a JS STREAMING TABLE-VALUED SOURCE (emit protocol; see
 	// ext_stream_jsvm.go), checked before the generic ".js" scalar loader.
 	if lower := strings.ToLower(base); strings.HasSuffix(lower, ".stream.js") {

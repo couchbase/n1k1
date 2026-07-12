@@ -14,6 +14,7 @@
 package glue
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 
@@ -49,8 +50,22 @@ func init() {
 func ParseStatement(stmt, namespace string, ent bool) (algebra.Statement, error) {
 	queryContext := "" // TODO.
 
-	s, err := n1ql.ParseStatement2(stmt, namespace, queryContext)
+	// Pre-parse MACRO expansion (macro.go, DESIGN-extensions.md "Macros"): replace
+	// any `@name(...)` invocation with generated SQL++ text BEFORE cbq's parser. A
+	// no-op (single byte scan) when no macros are loaded or the statement has no
+	// `@`, so it costs nothing on the common path.
+	expanded, err := ExpandMacros(stmt)
 	if err != nil {
+		return nil, err
+	}
+
+	s, err := n1ql.ParseStatement2(expanded, namespace, queryContext)
+	if err != nil {
+		if expanded != stmt {
+			// Point the error at the generator, not the SQL the user never wrote.
+			return nil, fmt.Errorf("%w\n(after macro expansion; use `.macro expand` "+
+				"to inspect the generated SQL++:\n%s)", err, expanded)
+		}
 		return nil, err
 	}
 

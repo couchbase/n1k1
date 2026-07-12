@@ -238,6 +238,8 @@ func (c *cli) dot(line string) bool {
 		c.cmdExtensions(arg)
 	case ".extract":
 		c.cmdExtract(arg)
+	case ".macro", ".macros":
+		c.cmdMacro(arg)
 	case ".output":
 		c.cmdOutput(arg)
 	default:
@@ -278,6 +280,7 @@ func (c *cli) printHelp() {
 		".rules [list|run|lint|test|help] --queries <dir>  run a collection of tagged *.sql++ queries over the datastore (.rules help)",
 		".extensions [list | load <dir>... | unload <name>...]  extensions (*.js = JavaScript)",
 		".extract [help|list]  author *.extract.js recipes that frame files into rows (.extract help for details)",
+		".macro [help|list|expand <stmt>]  pre-parse SQL++ macros: @name(...) -> generated SQL++ (.macro help for details)",
 		".read <file>          run statements/dot-commands from a file",
 		".bail " + c.helpOpts(onOff(c.bail), "on", "off") + "        stop on the first statement error (handy for scripts)",
 		".echo " + c.helpOpts(onOff(c.echo), "on", "off") + "        echo each input line as it's read (handy for scripts)",
