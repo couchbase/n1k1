@@ -268,7 +268,7 @@ func (c *cli) cmdRulesList(arg string) {
 		))
 	}
 	c.renderRows(rows, "", false)
-	fmt.Fprintf(c.stderr, "%s%d detector(s) in %s -- %d with a fixture, %d with a golden (run .rules lint for a health report)\n",
+	fmt.Fprintf(c.stderr, "%s%d query/queries in %s -- %d with a fixture, %d with a golden (run .rules lint for a health report)\n",
 		c.icon("📋 "), len(recipes), args.queries, fixtures, goldens)
 }
 
@@ -339,20 +339,20 @@ func (c *cli) cmdRulesRun(arg string) {
 		))
 	}
 	c.renderRows(rows, "", false)
-	fmt.Fprintf(c.stderr, "%s%d finding(s) from %d detector(s)\n", c.icon("🔎 "), len(findings), len(dets))
+	fmt.Fprintf(c.stderr, "%s%d finding(s) from %d query/queries\n", c.icon("🔎 "), len(findings), len(dets))
 	if n := len(cc.GatedSkipped); n > 0 {
 		// A gated skip means the detector's `gate:` precondition matched no row in its
 		// keyspace, so its (expensive, standalone) sort/window was not run. Surfaced so
 		// the skip is visible -- a mis-declared gate reads as "0 findings", not silence.
 		fmt.Fprintf(c.stderr, "  %s\n", c.style.Dim(fmt.Sprintf(
-			"gated: %d standalone detector(s) skipped (gate precondition absent): %s",
+			"gated: %d standalone query/queries skipped (gate precondition absent): %s",
 			n, strings.Join(cc.GatedSkipped, ", "))))
 	}
 	if shareable, nDets := correlationShareable(cc.CorrelationGroups); shareable > 0 {
 		// A group of >1 correlation detector over the same (left,right,key) shares ONE
 		// sorted scan+decode of each keyspace via the corpus scan cache (Part B).
 		fmt.Fprintf(c.stderr, "  %s\n", c.style.Dim(fmt.Sprintf(
-			"correlation: %d detector(s) in %d shareable group(s) -- sharing a sorted scan per keyspace",
+			"correlation: %d query/queries in %d shareable group(s) -- sharing a sorted scan per keyspace",
 			nDets, shareable)))
 	}
 	if line := mergeStatsLine(cc.MergeStats); line != "" {
@@ -495,7 +495,7 @@ func (c *cli) reportBindingCoverage(sess *glue.Session, binding glue.Binding) bo
 // silently dropped). total is the number of detectors loaded.
 func (c *cli) reportCorpusHealth(cc *glue.CompiledCorpus, total int) {
 	fused := total - len(cc.Standalone) - len(cc.Rejected)
-	fmt.Fprintf(c.stderr, "%sloaded: %d detector(s) -- %d fused, %d standalone, %d rejected\n",
+	fmt.Fprintf(c.stderr, "%sloaded: %d query/queries -- %d fused, %d standalone, %d rejected\n",
 		c.icon("📋 "), total, fused, len(cc.Standalone), len(cc.Rejected))
 	// A rejected detector never runs, so it can never fire: surface it with the reason
 	// AND the fix snippet (what a runnable detector looks like), never silently drop it.

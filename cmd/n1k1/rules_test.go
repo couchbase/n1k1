@@ -257,7 +257,7 @@ func TestRulesFixSnippets(t *testing.T) {
 	for _, want := range []string{
 		"predicate boxes (falls back to cbq)", // boxed advice
 		"no discriminating literal",           // always-wake advice
-		"not a runnable detector",             // rejected advice
+		"not a runnable query",                // rejected advice
 		"msg LIKE '%a%b%'", "regexp_contains", // the boxed native-form example
 	} {
 		if !strings.Contains(lintOut, want) {
@@ -269,7 +269,7 @@ func TestRulesFixSnippets(t *testing.T) {
 	var rout, rerr bytes.Buffer
 	c2 := &cli{prog: "n1k1", dir: root, mode: "jsonlines", out: &rout, stderr: &rerr}
 	c2.cmdRules("run --queries " + corpus)
-	if !strings.Contains(rerr.String(), "not a runnable detector") {
+	if !strings.Contains(rerr.String(), "not a runnable query") {
 		t.Errorf("run health block missing the rejected fix snippet; stderr:\n%s", rerr.String())
 	}
 

@@ -43,11 +43,11 @@ const (
 func rulesFix(situation, detail string) string {
 	switch situation {
 	case fixRejected:
-		msg := "not a runnable detector"
+		msg := "not a runnable query"
 		if detail != "" {
 			msg += ": " + detail
 		}
-		return msg + ". A detector is a single SELECT, e.g. `SELECT x.msg FROM logs x WHERE x.sev = \"ERROR\"`."
+		return msg + ". A query is a single SELECT, e.g. `SELECT x.msg FROM logs x WHERE x.sev = \"ERROR\"`."
 	case fixStandalone:
 		msg := "runs standalone -- its own scan, not fused into the shared scan"
 		if detail != "" {

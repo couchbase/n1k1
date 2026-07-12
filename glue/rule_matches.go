@@ -321,7 +321,7 @@ func reportCorpusRejects(cc *CompiledCorpus, dir string, opts ruleMatchesOpts, w
 			dir, len(cc.Rejected), list, hint)
 	}
 	if warn != nil {
-		warn(fmt.Sprintf("RULE_MATCHES: %d detector(s) in %q skipped (did not compile): %s%s",
+		warn(fmt.Sprintf("RULE_MATCHES: %d query/queries in %q skipped (did not compile): %s%s",
 			len(cc.Rejected), dir, list, hint))
 	}
 	return nil
