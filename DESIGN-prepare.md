@@ -22,7 +22,7 @@ drives authoring + golden-fixture CI.
   `-prepare=full` but STILL imports glue (`glue.DatastoreOp` islands), so it is NOT yet fork-free.
 - [ ] embed-source **fat child** (direct datastore access, config/auth-only pipe) + the full
   multiplexed cursor pipe protocol with pushdowns; the WASM/wazero in-process alternative.
-- [ ] Phase-6 tail: SHA-keyed build cache, per-detector projection envelope (fused evidence is the
+- [ ] Phase-6 tail: SHA-keyed build cache, per-detector projection envelope (fused result is the
   whole matched row today), and standalone-scan sharing among standalone detectors.
 - [ ] Upper rungs of the binding resolver ladder (convention / content-sniffing); organizing the
   version-aware corpus.
@@ -79,8 +79,8 @@ status header + [phasing](#detect-phasing); this records *why*):
 - **Field-shape drift is a CORPUS concern, not a normalization adapter** ([why](#late-binding)):
   a bundle carries several co-deployed software versions, so version-aware / version-tolerant
   detectors (evolving in the git corpus) beat a per-record normalizer.
-- **MVP evidence = the whole matched row** (per-detector SELECT-projection envelope deferred); a
-  detector's essence is its predicate, the finding is the matching evidence row.
+- **MVP result = the whole matched row** (per-detector SELECT-projection envelope deferred); a
+  detector's essence is its predicate, the finding is the matching result row.
 
 ## Contents
 
@@ -631,10 +631,10 @@ detector corpus is the compiler's reason to exist.
   these formats (`DESIGN-data.md`); a **zip datastore** presents the archive as keyspaces
   (`<subdir>/<file>` → keyspace), decompressed on the fly like the existing `.gz` path.
 - **Corpus:** thousands of **detectors**, each = a SQL++ query + metadata (target ticket,
-  target sources, severity) + a golden fixture (below). Maintained in git.
+  target sources, description) + a golden fixture (below). Maintained in git.
 - **Output:** per bundle, a ranked **findings** table — which tickets the bundle shows
-  evidence for, with the evidence: `{ticket, confidence, source_file, line_range,
-  evidence_rows, summary}`. `UNION ALL` across detectors → one table, ordinary SELECT
+  evidence for, with the result: `{ticket, confidence, source_file, line_range,
+  result_rows, summary}`. `UNION ALL` across detectors → one table, ordinary SELECT
   projection over matched rows; de-dup / rank is `GROUP BY` / `ORDER BY`.
 
 ## Shared scan / multi-query optimization <a name="mqo"></a>
@@ -881,37 +881,37 @@ AI-authored corpus from silently bloating (all-always-wake) or lying (rejected �
 cse(scan)))` shape, the index literals, per-expr lane). A **per-detector hit report** —
 `scanned / woken / matched` (the stats core already counts) — localizes a dud fast: `0 woken` = my
 literal never appears (wrong field/bundle); `woken≫0, matched 0` = predicate-logic bug; `matched`
-huge = too broad. **Evidence sampling** (`--sample N`) surfaces the rows behind a suspected false
+huge = too broad. **Result sampling** (`--sample N`) surfaces the rows behind a suspected false
 positive. A **golden-fixture diff** (expected vs actual on the fixture) is the detector's unit
 test. **Deterministic replay** via content-addressing (bundle fingerprint + corpus git SHA) lets
 me reproduce and diff a past ticket's run after editing a detector.
 
 **Per-bundle reports — and especially on RE-RUN.** The findings table
-(`{ticket, confidence, source_file, line_range, evidence, summary, detector@sha}`, GROUP BY tag to
+(`{ticket, confidence, source_file, line_range, result, summary, detector@sha}`, GROUP BY label to
 de-dup/rank) in two renderings: **jsonlines** for the agent/pipeline (streaming, already built) and
 a **markdown/box** summary for humans. Bundles get re-run as the corpus grows or more logs arrive,
 so a **delta report** is the killer feature: keyed by (bundle-fingerprint, corpus-SHA), "*since the
-last run: ET-999 now fires (detector@abc added); ET-12345 evidence grew 2→9 lines.*" A
+last run: ET-999 now fires (detector@abc added); ET-12345 result grew 2→9 lines.*" A
 **coverage/health** block that is **fail-loud**: which logical keyspaces resolved vs. errored
 (an unresolved `indexer_log` is a *gap*, never a clean bundle — see [binding](#late-binding)),
 which detectors ran/errored, the corpus version, and which software-version detectors applied
 (the [version-aware corpus](#late-binding)).
 
 **Shaping SQL++ for fusion + authoring.** A **recipe format** = SQL++ + front-matter (ticket,
-severity, `source:` logical keyspace, `versions:` for the version-aware corpus, tags) + a **golden
+`source:` logical keyspace, description, tags) + a **golden
 fixture** (sample rows + expected findings) — the front-matter is exactly what the corpus compiler
-needs (Tag, routing target, version) plus what makes CI possible. And **fusion-friendly idioms**
+needs (Tag, routing target) plus what makes CI possible. And **fusion-friendly idioms**
 the authoring guide standardizes (and the report card nudges toward): lead a predicate with a
 discriminating literal as a top-level `AND` conjunct (so the index prunes); version-tolerance via
 stock `COALESCE(l.level, l.severity)`/`OR` (no adapter — [field-drift decision](#late-binding));
 ASOF as the canonical argmax subquery; rate/burst via stock `OVER (…)`; a uniform findings
-projection (`… AS evidence`) once the projection envelope lands; and **grep -A/-B/-C context**
+projection (`… AS result`) once the projection envelope lands; and **grep -A/-B/-C context**
 via a sliding-window match flag — `MAX(CASE WHEN <pred> THEN 1 END) OVER (PARTITION BY
 _meta.`path` ORDER BY _meta.pos ROWS BETWEEN B PRECEDING AND A FOLLOWING)` wrapped in a
 derived table filtered on the flag. The `PARTITION BY _meta.`path`` is load-bearing on a
 multi-file (rotated-log) keyspace: `_meta.pos` restarts per file, so without it context
 **leaks across files** — a partition-less `ORDER BY _meta.pos` interleaves them and pulls
-unrelated lines into a match's neighborhood (wrong evidence). For a timeline that spans
+unrelated lines into a match's neighborhood (wrong result). For a timeline that spans
 rotated files, order by an extract-recipe `time:` key instead. (`.rules help` carries the
 full idiom + the gotcha.)
 
@@ -932,8 +932,8 @@ auto-deriving the gate from a window match-flag's inner predicate is a noted fol
 
 **Dev/ops / CI.** The `.rules` dot-command family is built: `run` (corpus→findings + coverage),
 `lint` (the report card), `test` (golden fixtures, `--update` to record). Also built for the
-low-cognitive-load surface: **`.rules list`** (a metadata-only inventory — tag/source/severity/
-versions/has-fixture — that needs neither a compile nor a bundle, distinct from `lint`'s compiled
+low-cognitive-load surface: **`.rules list`** (a metadata-only inventory — label/source/description/
+tags/has-fixture — that needs neither a compile nor a bundle, distinct from `lint`'s compiled
 health report), **`.rules help`** (embedded docs: a sample corpus directory layout, an annotated
 recipe showing the front-matter + fixture, example `run`/`lint`/`test` output, and short "get the
 best out of it" tips), and **fix-carrying messages** — every reject/standalone/always-wake/boxed/
@@ -981,7 +981,7 @@ positives. Still ahead: a **corpus lint gate** (fail CI on `rejected` / missing 
    reason, never silently dropped). A differential test gates it (fused ∪ standalone findings ==
    running each detector's own SQL) and proves `AsofRewriteApplied` fires for an ASOF detector in
    a corpus. *Remaining tail:* SHA-keyed build cache, embed-source analyzer binary, per-detector
-   projection envelope (fused evidence is the whole matched row today), and standalone detectors
+   projection envelope (fused result is the whole matched row today), and standalone detectors
    not yet sharing scans among themselves — see `DESIGN-sorting.md` for a proposal to fuse
    the two big standalone classes (window/context detectors and temporal cross-keyspace
    correlation) onto a shared sorted-by-key stream substrate.
@@ -998,7 +998,7 @@ positives. Still ahead: a **corpus lint gate** (fail CI on `rejected` / missing 
    tips, and **fix-snippet-carrying error/advice messages**. Per-detector hit stats (the
    `scanned / woken` count per fused detector) are surfaced in `.rules run`
    (`wokenByTag` / `RunReport`). Remaining tail: the **re-run delta** report, multi-keyspace
-   fixtures, version-selection from the parsed `versions:` metadata, and a `.rules bind` dry-run
+   fixtures, and a `.rules bind` dry-run
    (a `--bind <manifest>` flag already feeds the resolver).
 
 Each phase is independently useful, and the **core pipeline is now end-to-end**: logical-keyspace

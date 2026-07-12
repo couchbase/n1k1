@@ -12,7 +12,7 @@ _Last reviewed: 2026-07-11._
 grep -A/-B/-C **context extractor** — ships: K context detectors sharing a
 `(keyspace, PARTITION, ORDER)` signature fuse onto ONE scan + ONE sort feeding a single
 `engine.OpBroadcastContext` (`recognizeContextDetector` + `buildContextBroadcast`), with
-AC-index sparse-match, sort-elision on `(_meta.path, _meta.pos)`, and evidence shaped to
+AC-index sparse-match, sort-elision on `(_meta.path, _meta.pos)`, and the result shaped to
 each detector's own SELECT projection. Part B's temporal-correlation path (ASOF) also
 lands: nearest-preceding **and** nearest-following merges with a right-stream residual
 content filter, plus a transparent datastore-pipe scan cache (`glue/corpus_cache.go`) that
@@ -288,7 +288,7 @@ Each step is independently useful and benchmark-gated (like the DESIGN-col roadm
    …). `CorpusCompile` groups recognized detectors by their `(keyspace, P, O)` signature and
    `buildContextBroadcast` emits ONE fresh scan → `order-offset-limit` → `broadcast-context`
    per group (self-rooted exprs via `renameAliasToSelf`), unioned with the fused broadcasts;
-   evidence is the whole matched/context row (MVP). Differential-tested against each
+   the result is the whole matched/context row (MVP). Differential-tested against each
    detector's own SQL (`corpus_context_test.go`: same-signature detectors share ONE
    scan+sort+broadcast-context and match the standalone window result; different signatures
    split; absence stays standalone). Verified end-to-end via `.rules run`.
@@ -314,7 +314,7 @@ Each step is independently useful and benchmark-gated (like the DESIGN-col roadm
    (safe). Since log matches are sparse, this skips the great majority of predicate evals.
    Tests: engine `TestOpBroadcastContextAlwaysWake` (+ the grep differentials run through
    the AC path); glue `TestCorpusContextPredNativized` (the pred is native, not boxed).
-   *Remaining:* evidence shaped to the SELECT projection (vs whole-row); multi-column
+   *Remaining:* the result shaped to the SELECT projection (vs whole-row); multi-column
    PARTITION; a general "source advertises its order" contract (beyond the `_meta` keys);
    per-detector hit stats for context ops. *Measure:* K context detectors, shared vs
    standalone (expect ~K× on the sort).

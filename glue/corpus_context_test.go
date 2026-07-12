@@ -73,8 +73,8 @@ func ctxStmt(sev string, before, after int) string {
 		`FROM logs) sub WHERE sub.near = 1`, sev, before, after)
 }
 
-// filePosKeys extracts a sorted list of "file:pos" keys from evidence rows (each a JSON
-// object with file + pos), so context findings (whole-row evidence) and the standalone
+// filePosKeys extracts a sorted list of "file:pos" keys from result rows (each a JSON
+// object with file + pos), so context findings (whole-row result) and the standalone
 // SQL (projected {file,pos,line}) compare on the ROWS SELECTED regardless of shape.
 func filePosKeys(t *testing.T, raws []json.RawMessage) []string {
 	t.Helper()
@@ -115,8 +115,8 @@ func TestCorpusContextRecognitionDifferential(t *testing.T) {
 
 	// grep -C1 for ERROR, and grep -B2/-A0 for ERROR: same (file, pos) signature.
 	dets := []CorpusDetector{
-		{Tag: "ctxC1", Stmt: ctxStmt("ERROR", 1, 1)},
-		{Tag: "ctxB2", Stmt: ctxStmt("ERROR", 2, 0)},
+		{Label: "ctxC1", Stmt: ctxStmt("ERROR", 1, 1)},
+		{Label: "ctxB2", Stmt: ctxStmt("ERROR", 2, 0)},
 	}
 	cc, err := sess.CorpusCompile(dets)
 	if err != nil {
@@ -139,49 +139,49 @@ func TestCorpusContextRecognitionDifferential(t *testing.T) {
 		t.Errorf("one context group: got %d broadcast-context ops, want 1", n)
 	}
 
-	// Findings, grouped by tag.
+	// Findings, grouped by label.
 	findings, err := cc.Run()
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	byTag := map[string][]json.RawMessage{}
 	for _, f := range findings {
-		byTag[f.Tag] = append(byTag[f.Tag], f.Evidence)
+		byTag[f.Label] = append(byTag[f.Label], f.Result)
 	}
 
 	// Oracle: each detector's own SQL standalone.
 	for _, d := range dets {
 		res, err := sess.Run(d.Stmt)
 		if err != nil {
-			t.Fatalf("oracle Run(%s): %v", d.Tag, err)
+			t.Fatalf("oracle Run(%s): %v", d.Label, err)
 		}
 		want := filePosKeys(t, res.Rows)
-		got := filePosKeys(t, byTag[d.Tag])
+		got := filePosKeys(t, byTag[d.Label])
 		if fmt.Sprint(got) != fmt.Sprint(want) {
-			t.Errorf("%s: context findings rows %v != standalone SQL rows %v", d.Tag, got, want)
+			t.Errorf("%s: context findings rows %v != standalone SQL rows %v", d.Label, got, want)
 		}
 		if len(want) == 0 {
-			t.Errorf("%s: oracle produced no rows -- test fixture too weak", d.Tag)
+			t.Errorf("%s: oracle produced no rows -- test fixture too weak", d.Label)
 		}
 	}
 }
 
-// TestCorpusContextProjection (IDEA-0025): a fused context detector's evidence must be
+// TestCorpusContextProjection (IDEA-0025): a fused context detector's result must be
 // its SELECT PROJECTION -- shape and all -- not the whole framed scan row. It compares
-// FULL evidence objects (not just the selected rows, as the differential test does)
+// FULL result objects (not just the selected rows, as the differential test does)
 // against the SAME SELECT run standalone, so a passing test guarantees the fused
-// evidence shape matches what the detector's SQL produces.
+// result shape matches what the detector's SQL produces.
 func TestCorpusContextProjection(t *testing.T) {
 	sess := ctxCorpusSession(t)
 
 	// grep -C1 for ERROR, projecting a SUBSET of columns (file, pos) -- deliberately NOT
-	// line, so whole-row evidence (the old bug) would differ from the projection.
+	// line, so whole-row result (the old bug) would differ from the projection.
 	stmt := `SELECT file, pos FROM (` +
 		`SELECT file, pos, line, MAX(CASE WHEN sev = "ERROR" THEN 1 ELSE 0 END) ` +
 		`OVER (PARTITION BY file ORDER BY pos ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING) AS near ` +
 		`FROM logs) sub WHERE sub.near = 1`
 
-	cc, err := sess.CorpusCompile([]CorpusDetector{{Tag: "proj", Stmt: stmt}})
+	cc, err := sess.CorpusCompile([]CorpusDetector{{Label: "proj", Stmt: stmt}})
 	if err != nil {
 		t.Fatalf("CorpusCompile: %v", err)
 	}
@@ -199,8 +199,8 @@ func TestCorpusContextProjection(t *testing.T) {
 	}
 	var got []string
 	for _, f := range findings {
-		// Evidence must be exactly the projection {file,pos} -- no line, no _meta, no near.
-		got = append(got, canonJSON(t, f.Evidence))
+		// Result must be exactly the projection {file,pos} -- no line, no _meta, no near.
+		got = append(got, canonJSON(t, f.Result))
 	}
 	sort.Strings(got)
 
@@ -219,14 +219,14 @@ func TestCorpusContextProjection(t *testing.T) {
 		t.Fatal("oracle produced no rows -- fixture too weak")
 	}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
-		t.Errorf("fused context evidence != standalone SELECT shape\n got: %v\nwant: %v", got, want)
+		t.Errorf("fused context result != standalone SELECT shape\n got: %v\nwant: %v", got, want)
 	}
-	// Guard against a silent regression to whole-row evidence: no key beyond the projection.
+	// Guard against a silent regression to whole-row result: no key beyond the projection.
 	for _, g := range got {
 		if len(g) == 0 || g[0] != '{' ||
 			// a whole-row leak would contain "line" or "sev"
 			containsAny(g, `"line"`, `"sev"`, `"near"`) {
-			t.Errorf("evidence %q leaks a non-projected column (whole-row regression)", g)
+			t.Errorf("result %q leaks a non-projected column (whole-row regression)", g)
 		}
 	}
 }
@@ -263,7 +263,7 @@ func TestCorpusContextNestedProjection(t *testing.T) {
 		`OVER (PARTITION BY src.file ORDER BY src.pos ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING) AS near ` +
 		`FROM logs src) gc WHERE gc.near = 1) g`
 
-	cc, err := sess.CorpusCompile([]CorpusDetector{{Tag: "nested", Stmt: stmt}})
+	cc, err := sess.CorpusCompile([]CorpusDetector{{Label: "nested", Stmt: stmt}})
 	if err != nil {
 		t.Fatalf("CorpusCompile: %v", err)
 	}
@@ -283,7 +283,7 @@ func TestCorpusContextNestedProjection(t *testing.T) {
 	}
 	var got []string
 	for _, f := range findings {
-		got = append(got, canonJSON(t, f.Evidence))
+		got = append(got, canonJSON(t, f.Result))
 	}
 	sort.Strings(got)
 
@@ -302,12 +302,12 @@ func TestCorpusContextNestedProjection(t *testing.T) {
 		t.Fatal("oracle produced no rows -- fixture too weak")
 	}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
-		t.Errorf("nested fused evidence != standalone SELECT\n got: %v\nwant: %v", got, want)
+		t.Errorf("nested fused result != standalone SELECT\n got: %v\nwant: %v", got, want)
 	}
-	// The bug this pins: empty `{}` evidence from a lost projection.
+	// The bug this pins: empty `{}` result from a lost projection.
 	for _, g := range got {
 		if g == "{}" {
-			t.Errorf("nested context detector emitted EMPTY evidence {} (IDEA-0029)")
+			t.Errorf("nested context detector emitted EMPTY result {} (IDEA-0029)")
 		}
 	}
 }
@@ -318,10 +318,10 @@ func TestCorpusContextNestedProjection(t *testing.T) {
 func TestCorpusContextSeparateSignatures(t *testing.T) {
 	sess := ctxCorpusSession(t)
 
-	sameA := CorpusDetector{Tag: "a", Stmt: ctxStmt("ERROR", 1, 1)}
-	sameB := CorpusDetector{Tag: "b", Stmt: ctxStmt("info", 1, 1)} // same (file,pos) sig
+	sameA := CorpusDetector{Label: "a", Stmt: ctxStmt("ERROR", 1, 1)}
+	sameB := CorpusDetector{Label: "b", Stmt: ctxStmt("info", 1, 1)} // same (file,pos) sig
 	// Different ORDER key (pos vs line) -> a different signature.
-	diff := CorpusDetector{Tag: "c", Stmt: `SELECT file, pos, line FROM (` +
+	diff := CorpusDetector{Label: "c", Stmt: `SELECT file, pos, line FROM (` +
 		`SELECT file, pos, line, MAX(CASE WHEN sev = "ERROR" THEN 1 ELSE 0 END) ` +
 		`OVER (PARTITION BY file ORDER BY line ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING) AS near ` +
 		`FROM logs) sub WHERE sub.near = 1`}
@@ -348,7 +348,7 @@ func TestCorpusContextSeparateSignatures(t *testing.T) {
 // so it is never mis-lowered to the "present" fan-out.
 func TestCorpusContextAbsenceStaysStandalone(t *testing.T) {
 	sess := ctxCorpusSession(t)
-	absence := CorpusDetector{Tag: "absent", Stmt: `SELECT file, pos FROM (` +
+	absence := CorpusDetector{Label: "absent", Stmt: `SELECT file, pos FROM (` +
 		`SELECT file, pos, MAX(CASE WHEN sev = "ERROR" THEN 1 ELSE 0 END) ` +
 		`OVER (PARTITION BY file ORDER BY pos ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING) AS near ` +
 		`FROM logs) sub WHERE sub.near = 0`}
@@ -359,7 +359,7 @@ func TestCorpusContextAbsenceStaysStandalone(t *testing.T) {
 	if countOpKind(cc.Plan, "broadcast-context") != 0 {
 		t.Errorf("absence detector must NOT lower to broadcast-context")
 	}
-	if len(cc.Standalone) != 1 || cc.Standalone[0].Tag != "absent" {
+	if len(cc.Standalone) != 1 || cc.Standalone[0].Label != "absent" {
 		t.Errorf("absence detector should be standalone; got standalone=%v", cc.Standalone)
 	}
 }
@@ -415,7 +415,7 @@ func TestCorpusContextSortElision(t *testing.T) {
 // boxed pred would head with "exprTree" (always-wake, no pruning).
 func TestCorpusContextPredNativized(t *testing.T) {
 	sess := ctxCorpusSession(t)
-	cc, err := sess.CorpusCompile([]CorpusDetector{{Tag: "c", Stmt: ctxStmt("ERROR", 1, 1)}})
+	cc, err := sess.CorpusCompile([]CorpusDetector{{Label: "c", Stmt: ctxStmt("ERROR", 1, 1)}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -439,7 +439,7 @@ func TestCorpusContextPredNativized(t *testing.T) {
 	}
 	exts := bc.Params[0].([]interface{})
 	ext0 := exts[0].([]interface{})
-	pred := ext0[3].([]interface{}) // {tag, before, after, pred, proj}
+	pred := ext0[3].([]interface{}) // {label, before, after, pred, proj}
 	if head, _ := pred[0].(string); head == "exprTree" {
 		t.Errorf("match pred left BOXED (%v) -- expected a native tree so the AC index can prune", pred[0])
 	}

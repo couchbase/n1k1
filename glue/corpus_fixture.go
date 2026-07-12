@@ -52,11 +52,11 @@ func (e *ErrFixtureUnresolved) Error() string {
 // returning. Findings order is not guaranteed (compare as a set -- DiffFindings).
 func (r *Recipe) RunFixture() ([]Finding, error) {
 	if !r.HasFixture {
-		return nil, fmt.Errorf("recipe %q has no @fixture", r.Tag)
+		return nil, fmt.Errorf("recipe %q has no @fixture", r.Label)
 	}
 	if strings.TrimSpace(r.Source) == "" {
 		return nil, fmt.Errorf("recipe %q has a fixture but no `source:` front-matter "+
-			"(can't place fixture rows into a keyspace)", r.Tag)
+			"(can't place fixture rows into a keyspace)", r.Label)
 	}
 
 	tmp, err := os.MkdirTemp("", "n1k1fixture")

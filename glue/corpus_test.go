@@ -57,7 +57,7 @@ func corpusTestSession(t *testing.T) *Session {
 }
 
 // canonJSON canonicalizes a JSON value (sorted keys via json.Marshal of the
-// unmarshaled value) so evidence rows compare independent of field order.
+// unmarshaled value) so result rows compare independent of field order.
 func canonJSON(t *testing.T, raw []byte) string {
 	t.Helper()
 	var v interface{}
@@ -89,9 +89,9 @@ func TestCorpusCompileDifferential(t *testing.T) {
 	sess := corpusTestSession(t)
 
 	// Each fusable detector plus the equivalent standalone baseline that yields the
-	// raw matched row (SELECT RAW <alias>), i.e. the same whole-row evidence.
+	// raw matched row (SELECT RAW <alias>), i.e. the same whole-row result.
 	type det struct {
-		tag      string
+		label    string
 		stmt     string
 		baseline string
 	}
@@ -113,9 +113,9 @@ func TestCorpusCompileDifferential(t *testing.T) {
 	// Assemble the corpus (fusable + the one non-canonical detector).
 	corpus := make([]CorpusDetector, 0, len(fused)+1)
 	for _, d := range fused {
-		corpus = append(corpus, CorpusDetector{Tag: d.tag, Stmt: d.stmt})
+		corpus = append(corpus, CorpusDetector{Label: d.label, Stmt: d.stmt})
 	}
-	corpus = append(corpus, CorpusDetector{Tag: standaloneTag, Stmt: standaloneStmt})
+	corpus = append(corpus, CorpusDetector{Label: standaloneTag, Stmt: standaloneStmt})
 
 	cc, err := sess.CorpusCompile(corpus)
 	if err != nil {
@@ -124,7 +124,7 @@ func TestCorpusCompileDifferential(t *testing.T) {
 
 	// (1) The GROUP BY detector must be classified STANDALONE (valid but non-fusable),
 	// not Rejected and not silently dropped -- it will RUN and produce findings.
-	if len(cc.Standalone) != 1 || cc.Standalone[0].Tag != standaloneTag {
+	if len(cc.Standalone) != 1 || cc.Standalone[0].Label != standaloneTag {
 		t.Fatalf("expected exactly 1 standalone (%s), got %+v", standaloneTag, cc.Standalone)
 	}
 	if len(cc.Rejected) != 0 {
@@ -166,7 +166,7 @@ func TestCorpusCompileDifferential(t *testing.T) {
 	}
 	got := make([]string, 0, len(gotFindings))
 	for _, f := range gotFindings {
-		got = append(got, f.Tag+"\t"+canonJSON(t, f.Evidence))
+		got = append(got, f.Label+"\t"+canonJSON(t, f.Result))
 	}
 	sort.Strings(got)
 
@@ -177,11 +177,11 @@ func TestCorpusCompileDifferential(t *testing.T) {
 			t.Fatalf("baseline %q: %v", d.baseline, err)
 		}
 		for _, row := range res.Rows {
-			want = append(want, d.tag+"\t"+canonJSON(t, row))
+			want = append(want, d.label+"\t"+canonJSON(t, row))
 		}
 	}
-	// The standalone GROUP BY detector runs its own SQL; its evidence is that SELECT's
-	// REAL projection (the evidence asymmetry vs. the fused whole-row path), so its
+	// The standalone GROUP BY detector runs its own SQL; its result is that SELECT's
+	// REAL projection (the result asymmetry vs. the fused whole-row path), so its
 	// expected rows come straight from running standaloneStmt.
 	saRes, err := sess.Run(standaloneStmt)
 	if err != nil {
@@ -207,7 +207,7 @@ func TestCorpusCompileDifferential(t *testing.T) {
 	// t.Logf("matched %d findings across %d fused + 1 standalone detector", len(got), len(fused))
 }
 
-// TestCorpusFusedProjection is the IDEA-0004 gate: a FUSED detector's evidence must
+// TestCorpusFusedProjection is the IDEA-0004 gate: a FUSED detector's result must
 // be shaped by its SELECT projection -- matching the SAME statement run standalone --
 // not the whole matched row. Covers named-term (-> object), SELECT RAW (-> value),
 // and SELECT * (-> whole row) projections, plus a projection the fused envelope can't
@@ -217,12 +217,12 @@ func TestCorpusFusedProjection(t *testing.T) {
 	sess := corpusTestSession(t)
 
 	// For each detector, `baseline` is the standalone SELECT whose rows the fused
-	// evidence must equal. Usually baseline == stmt (the projection reproduces
-	// exactly). SELECT * is the documented exception: fused evidence is the bare
+	// result must equal. Usually baseline == stmt (the projection reproduces
+	// exactly). SELECT * is the documented exception: fused result is the bare
 	// matched doc (whole-row), which equals `SELECT RAW l` -- NOT standalone
 	// `SELECT *`, which N1QL wraps as {"l": doc}. wantFused says whether it fuses.
 	cases := []struct {
-		tag       string
+		label     string
 		stmt      string
 		baseline  string
 		wantFused bool
@@ -245,7 +245,7 @@ func TestCorpusFusedProjection(t *testing.T) {
 
 	corpus := make([]CorpusDetector, 0, len(cases))
 	for _, c := range cases {
-		corpus = append(corpus, CorpusDetector{Tag: c.tag, Stmt: c.stmt})
+		corpus = append(corpus, CorpusDetector{Label: c.label, Stmt: c.stmt})
 	}
 	cc, err := sess.CorpusCompile(corpus)
 	if err != nil {
@@ -258,18 +258,18 @@ func TestCorpusFusedProjection(t *testing.T) {
 	// Fusion classification per case.
 	standalone := map[string]bool{}
 	for _, d := range cc.Standalone {
-		standalone[d.Tag] = true
+		standalone[d.Label] = true
 	}
 	for _, c := range cases {
-		if c.wantFused && standalone[c.tag] {
-			t.Errorf("%s: expected FUSED, but classified standalone", c.tag)
+		if c.wantFused && standalone[c.label] {
+			t.Errorf("%s: expected FUSED, but classified standalone", c.label)
 		}
-		if !c.wantFused && !standalone[c.tag] {
-			t.Errorf("%s: expected STANDALONE, but it fused", c.tag)
+		if !c.wantFused && !standalone[c.label] {
+			t.Errorf("%s: expected STANDALONE, but it fused", c.label)
 		}
 	}
 
-	// Evidence set: every detector's findings must equal the identical SELECT run
+	// Result set: every detector's findings must equal the identical SELECT run
 	// standalone (its own projected rows), tagged. This holds whether it fused or not.
 	gotFindings, err := cc.Run()
 	if err != nil {
@@ -277,7 +277,7 @@ func TestCorpusFusedProjection(t *testing.T) {
 	}
 	got := make([]string, 0, len(gotFindings))
 	for _, f := range gotFindings {
-		got = append(got, f.Tag+"\t"+canonJSON(t, f.Evidence))
+		got = append(got, f.Label+"\t"+canonJSON(t, f.Result))
 	}
 	sort.Strings(got)
 
@@ -288,10 +288,10 @@ func TestCorpusFusedProjection(t *testing.T) {
 			t.Fatalf("baseline %q: %v", c.baseline, err)
 		}
 		if len(res.Rows) == 0 {
-			t.Fatalf("%s: baseline produced no rows -- fixture invalid", c.tag)
+			t.Fatalf("%s: baseline produced no rows -- fixture invalid", c.label)
 		}
 		for _, row := range res.Rows {
-			want = append(want, c.tag+"\t"+canonJSON(t, row))
+			want = append(want, c.label+"\t"+canonJSON(t, row))
 		}
 	}
 	sort.Strings(want)
@@ -305,24 +305,24 @@ func TestCorpusFusedProjection(t *testing.T) {
 		}
 	}
 
-	// Direct anti-regression: the "named" detector's evidence is the {id,sev} object,
+	// Direct anti-regression: the "named" detector's result is the {id,sev} object,
 	// NOT the whole row (no "code"/"msg" keys leak through).
 	for _, f := range gotFindings {
-		if f.Tag != "named" {
+		if f.Label != "named" {
 			continue
 		}
 		var obj map[string]interface{}
-		if err := json.Unmarshal(f.Evidence, &obj); err != nil {
-			t.Fatalf("named evidence not an object: %s", f.Evidence)
+		if err := json.Unmarshal(f.Result, &obj); err != nil {
+			t.Fatalf("named result not an object: %s", f.Result)
 		}
 		if _, leaked := obj["code"]; leaked {
-			t.Errorf("named evidence leaked whole row (has 'code'): %s", f.Evidence)
+			t.Errorf("named result leaked whole row (has 'code'): %s", f.Result)
 		}
 		if _, leaked := obj["msg"]; leaked {
-			t.Errorf("named evidence leaked whole row (has 'msg'): %s", f.Evidence)
+			t.Errorf("named result leaked whole row (has 'msg'): %s", f.Result)
 		}
 		if _, ok := obj["id"]; !ok {
-			t.Errorf("named evidence missing projected 'id': %s", f.Evidence)
+			t.Errorf("named result missing projected 'id': %s", f.Result)
 		}
 	}
 }
@@ -333,8 +333,8 @@ func TestCorpusFusedProjection(t *testing.T) {
 func TestCorpusRunReport(t *testing.T) {
 	sess := corpusTestSession(t) // logs: 4 rows; events: 3 rows
 	cc, err := sess.CorpusCompile([]CorpusDetector{
-		{Tag: "err", Stmt: `SELECT * FROM logs l WHERE l.sev = "ERROR"`},
-		{Tag: "login", Stmt: `SELECT * FROM events e WHERE e.act = "login"`},
+		{Label: "err", Stmt: `SELECT * FROM logs l WHERE l.sev = "ERROR"`},
+		{Label: "login", Stmt: `SELECT * FROM events e WHERE e.act = "login"`},
 	})
 	if err != nil {
 		t.Fatalf("CorpusCompile: %v", err)
@@ -366,8 +366,8 @@ func TestCorpusRunReport(t *testing.T) {
 func TestCorpusRunReportWoken(t *testing.T) {
 	sess := corpusTestSession(t) // logs: 4 rows; row b's msg is "rare_token_xyz"
 	cc, err := sess.CorpusCompile([]CorpusDetector{
-		{Tag: "rare", Stmt: `SELECT * FROM logs l WHERE l.msg = "rare_token_xyz"`},
-		{Tag: "absent", Stmt: `SELECT * FROM logs l WHERE l.msg = "zzz_never_present"`},
+		{Label: "rare", Stmt: `SELECT * FROM logs l WHERE l.msg = "rare_token_xyz"`},
+		{Label: "absent", Stmt: `SELECT * FROM logs l WHERE l.msg = "zzz_never_present"`},
 	})
 	if err != nil {
 		t.Fatalf("CorpusCompile: %v", err)
@@ -386,7 +386,7 @@ func TestCorpusRunReportWoken(t *testing.T) {
 	}
 	matched := map[string]int{}
 	for _, f := range findings {
-		matched[f.Tag]++
+		matched[f.Label]++
 	}
 	if matched["rare"] != 1 || matched["absent"] != 0 {
 		t.Errorf("matched = %v, want rare=1 absent=0", matched)
@@ -408,8 +408,8 @@ func TestCorpusCompileSingleKeyspace(t *testing.T) {
 	sess := corpusTestSession(t)
 
 	cc, err := sess.CorpusCompile([]CorpusDetector{
-		{Tag: "a", Stmt: `SELECT * FROM logs l WHERE l.sev = "ERROR"`},
-		{Tag: "b", Stmt: `SELECT * FROM logs l WHERE l.code > 3`},
+		{Label: "a", Stmt: `SELECT * FROM logs l WHERE l.sev = "ERROR"`},
+		{Label: "b", Stmt: `SELECT * FROM logs l WHERE l.code > 3`},
 	})
 	if err != nil {
 		t.Fatalf("CorpusCompile: %v", err)
@@ -455,7 +455,7 @@ func TestCorpusCompileBoxedPredicate(t *testing.T) {
 	stmt := `SELECT * FROM logs l WHERE l.msg LIKE "%high%load%"`
 	baseline := `SELECT RAW l FROM logs l WHERE l.msg LIKE "%high%load%"`
 
-	cc, err := sess.CorpusCompile([]CorpusDetector{{Tag: "boxed", Stmt: stmt}})
+	cc, err := sess.CorpusCompile([]CorpusDetector{{Label: "boxed", Stmt: stmt}})
 	if err != nil {
 		t.Fatalf("CorpusCompile: %v", err)
 	}
@@ -478,8 +478,8 @@ func TestCorpusCompileBoxedPredicate(t *testing.T) {
 		t.Fatal("expected at least one boxed finding (row d: 'high load')")
 	}
 	for i := range findings {
-		if canonJSON(t, findings[i].Evidence) != canonJSON(t, res.Rows[i]) {
-			t.Fatalf("boxed evidence mismatch: %s vs %s", findings[i].Evidence, res.Rows[i])
+		if canonJSON(t, findings[i].Result) != canonJSON(t, res.Rows[i]) {
+			t.Fatalf("boxed result mismatch: %s vs %s", findings[i].Result, res.Rows[i])
 		}
 	}
 }
@@ -529,9 +529,9 @@ func TestCorpusCompileASOFStandalone(t *testing.T) {
 		"(SELECT r.msg FROM default:rlog r WHERE r.ts <= e.ts ORDER BY r.ts DESC LIMIT 1) AS state " +
 		"FROM default:elog e"
 	corpus := []CorpusDetector{
-		{Tag: "F_err", Stmt: `SELECT * FROM logs l WHERE l.sev = "ERROR"`},
-		{Tag: "F_hot", Stmt: `SELECT * FROM logs l WHERE l.sev = "ERROR" AND l.code > 3`},
-		{Tag: "ASOF", Stmt: asofStmt},
+		{Label: "F_err", Stmt: `SELECT * FROM logs l WHERE l.sev = "ERROR"`},
+		{Label: "F_hot", Stmt: `SELECT * FROM logs l WHERE l.sev = "ERROR" AND l.code > 3`},
+		{Label: "ASOF", Stmt: asofStmt},
 	}
 
 	cc, err := sess.CorpusCompile(corpus)
@@ -543,7 +543,7 @@ func TestCorpusCompileASOFStandalone(t *testing.T) {
 	if len(cc.Rejected) != 0 {
 		t.Fatalf("unexpected rejected: %+v", cc.Rejected)
 	}
-	if len(cc.Standalone) != 1 || cc.Standalone[0].Tag != "ASOF" {
+	if len(cc.Standalone) != 1 || cc.Standalone[0].Label != "ASOF" {
 		t.Fatalf("expected ASOF as the sole standalone detector, got %+v", cc.Standalone)
 	}
 	// The two fusable logs detectors folded into a single-keyspace broadcast plan.
@@ -563,13 +563,13 @@ func TestCorpusCompileASOFStandalone(t *testing.T) {
 	}
 
 	// (b) The corpus's ASOF findings == running the ASOF SQL alone (its real
-	// projection as evidence), compared as sorted sets.
+	// projection as result), compared as sorted sets.
 	var asofGot []string
 	fusedCount := 0
 	for _, f := range got {
-		switch f.Tag {
+		switch f.Label {
 		case "ASOF":
-			asofGot = append(asofGot, canonJSON(t, f.Evidence))
+			asofGot = append(asofGot, canonJSON(t, f.Result))
 		case "F_err", "F_hot":
 			fusedCount++
 		}
@@ -623,14 +623,14 @@ func TestCorpusCompileStandaloneOnly(t *testing.T) {
 	sess := corpusTestSession(t)
 
 	stmt := `SELECT sev, count(*) AS n FROM logs GROUP BY sev`
-	cc, err := sess.CorpusCompile([]CorpusDetector{{Tag: "grp", Stmt: stmt}})
+	cc, err := sess.CorpusCompile([]CorpusDetector{{Label: "grp", Stmt: stmt}})
 	if err != nil {
 		t.Fatalf("CorpusCompile: %v", err)
 	}
 	if cc.Plan != nil {
 		t.Fatalf("standalone-only corpus should have a nil fused Plan, got %v", cc.Plan)
 	}
-	if len(cc.Rejected) != 0 || len(cc.Standalone) != 1 || cc.Standalone[0].Tag != "grp" {
+	if len(cc.Rejected) != 0 || len(cc.Standalone) != 1 || cc.Standalone[0].Label != "grp" {
 		t.Fatalf("expected 1 standalone (grp), 0 rejected; got standalone=%+v rejected=%+v", cc.Standalone, cc.Rejected)
 	}
 
@@ -640,10 +640,10 @@ func TestCorpusCompileStandaloneOnly(t *testing.T) {
 	}
 	var gotRows []string
 	for _, f := range got {
-		if f.Tag != "grp" {
-			t.Fatalf("unexpected finding tag %q", f.Tag)
+		if f.Label != "grp" {
+			t.Fatalf("unexpected finding label %q", f.Label)
 		}
-		gotRows = append(gotRows, canonJSON(t, f.Evidence))
+		gotRows = append(gotRows, canonJSON(t, f.Result))
 	}
 	sort.Strings(gotRows)
 
@@ -677,15 +677,15 @@ func TestCorpusCompileRejected(t *testing.T) {
 	sess := corpusTestSession(t)
 
 	cc, err := sess.CorpusCompile([]CorpusDetector{
-		{Tag: "good", Stmt: `SELECT * FROM logs l WHERE l.sev = "ERROR"`},
-		{Tag: "broken", Stmt: `SELECT FROM WHERE GROUP nonsense (((`},
+		{Label: "good", Stmt: `SELECT * FROM logs l WHERE l.sev = "ERROR"`},
+		{Label: "broken", Stmt: `SELECT FROM WHERE GROUP nonsense (((`},
 	})
 	if err != nil {
 		t.Fatalf("CorpusCompile: %v", err)
 	}
 
 	// The broken detector is rejected (with a reason), not standalone, not fused.
-	if len(cc.Rejected) != 1 || cc.Rejected[0].Tag != "broken" {
+	if len(cc.Rejected) != 1 || cc.Rejected[0].Label != "broken" {
 		t.Fatalf("expected 'broken' rejected, got %+v", cc.Rejected)
 	}
 	if cc.Rejected[0].Reason == "" {
@@ -708,8 +708,8 @@ func TestCorpusCompileRejected(t *testing.T) {
 		t.Fatal("expected the good detector's findings despite the broken sibling")
 	}
 	for _, f := range got {
-		if f.Tag != "good" {
-			t.Fatalf("unexpected finding tag %q (broken detector must not run)", f.Tag)
+		if f.Label != "good" {
+			t.Fatalf("unexpected finding label %q (broken detector must not run)", f.Label)
 		}
 	}
 }

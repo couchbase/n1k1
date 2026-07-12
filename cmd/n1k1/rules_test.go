@@ -59,19 +59,19 @@ func newLogsBundle(t *testing.T) string {
 }
 
 // TestRulesList: the metadata-only inventory shows one row per recipe with its
-// tag / source / severity / versions and fixture?/golden? flags -- WITHOUT opening a
+// label / source / description / tags and fixture?/golden? flags -- WITHOUT opening a
 // bundle (c.dir is empty) and without compiling.
 func TestRulesList(t *testing.T) {
 	corpus := writeCorpus(t, map[string]string{
 		"a_full": `-- label: ET-1
 -- source: logs
--- severity: high
--- versions: ["7.2","7.6"]
+-- description: disk errors
+-- tags: ["disk","io"]
 SELECT * FROM logs l WHERE l.sev = "ERROR"
 -- @fixture
 {"sev":"ERROR","msg":"boom"}
 -- @expect
-{"tag":"ET-1","evidence":{"sev":"ERROR","msg":"boom"}}`,
+{"label":"ET-1","result":{"sev":"ERROR","msg":"boom"}}`,
 		"b_bare": `SELECT * FROM logs`,
 	})
 
@@ -80,17 +80,17 @@ SELECT * FROM logs l WHERE l.sev = "ERROR"
 	c.cmdRules("list --queries " + corpus)
 
 	stdout := out.String()
-	// The rich recipe: tag/source/severity/versions + both flags "yes".
+	// The rich recipe: label/source/description/tags + both flags "yes".
 	for _, want := range []string{
-		`"tag":"ET-1"`, `"source":"logs"`, `"severity":"high"`, `"versions":"7.2,7.6"`,
+		`"label":"ET-1"`, `"source":"logs"`, `"description":"disk errors"`, `"tags":"disk,io"`,
 		`"fixture?":"yes"`, `"golden?":"yes"`,
 	} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("list inventory missing %s; stdout:\n%s", want, stdout)
 		}
 	}
-	// The bare recipe: tag is the filename stem, no source, both flags "no".
-	if !strings.Contains(stdout, `"tag":"b_bare"`) || !strings.Contains(stdout, `"fixture?":"no"`) {
+	// The bare recipe: label is the filename stem, no source, both flags "no".
+	if !strings.Contains(stdout, `"label":"b_bare"`) || !strings.Contains(stdout, `"fixture?":"no"`) {
 		t.Errorf("bare recipe row wrong; stdout:\n%s", stdout)
 	}
 	if !strings.Contains(errb.String(), "2 query/queries") {
@@ -312,17 +312,17 @@ func TestRulesRun(t *testing.T) {
 	if !strings.Contains(stderr, "1 fused, 1 standalone, 1 rejected") {
 		t.Errorf("coverage summary wrong; stderr:\n%s", stderr)
 	}
-	// The rejected detector is surfaced with its tag + a reason, and did not abort.
+	// The rejected detector is surfaced with its label + a reason, and did not abort.
 	if !strings.Contains(stderr, "broken_x") {
 		t.Errorf("rejected detector broken_x not surfaced; stderr:\n%s", stderr)
 	}
 	// Findings for the fusable (errors) and standalone (prev_ts) detectors appear,
 	// tagged. (2 ERROR rows fused + 4 standalone projection rows.)
 	stdout := out.String()
-	if !strings.Contains(stdout, `"tag":"errors"`) {
+	if !strings.Contains(stdout, `"label":"errors"`) {
 		t.Errorf("no fusable findings tagged errors; stdout:\n%s", stdout)
 	}
-	if !strings.Contains(stdout, `"tag":"prev_ts"`) {
+	if !strings.Contains(stdout, `"label":"prev_ts"`) {
 		t.Errorf("no standalone findings tagged prev_ts; stdout:\n%s", stdout)
 	}
 	if c.failed {
@@ -381,14 +381,14 @@ SELECT * FROM logs l WHERE l.sev = "ERROR"
 {"sev":"ERROR","msg":"boom"}
 {"sev":"INFO","msg":"fine"}
 -- @expect
-{"tag":"P","evidence":{"sev":"ERROR","msg":"boom"}}`,
+{"label":"P","result":{"sev":"ERROR","msg":"boom"}}`,
 		"fail": `-- label: F
 -- source: logs
 SELECT * FROM logs l WHERE l.sev = "ERROR"
 -- @fixture
 {"sev":"ERROR","msg":"boom"}
 -- @expect
-{"tag":"F","evidence":{"sev":"ERROR","msg":"NOT-THE-ROW"}}`,
+{"label":"F","result":{"sev":"ERROR","msg":"NOT-THE-ROW"}}`,
 		"nofix": `-- label: N
 -- source: logs
 SELECT * FROM logs l WHERE l.sev = "WARN"`,
@@ -426,7 +426,7 @@ SELECT * FROM logs l WHERE l.sev = "ERROR"
 // its SELECT projection {pos,msg}, and `.rules test` check-PASSES against it -- proving
 // the fused broadcast-context path honors the projection (not the whole framed row) and
 // that the golden shape matches what a real run emits. The golden would MISMATCH the old
-// whole-row evidence ({_meta,...,msg}), so a passing check locks in the fix.
+// whole-row result ({_meta,...,msg}), so a passing check locks in the fix.
 func TestRulesTestContextProjection(t *testing.T) {
 	corpus := writeCorpus(t, map[string]string{
 		"ctx": `-- label: CTX
@@ -444,9 +444,9 @@ WHERE sub.near = 1
 {"file":"p","pos":2,"msg":"after"}
 {"file":"p","pos":3,"msg":"far away"}
 -- @expect
-{"tag":"CTX","evidence":{"msg":"before the boom","pos":0}}
-{"tag":"CTX","evidence":{"msg":"boom happened","pos":1}}
-{"tag":"CTX","evidence":{"msg":"after","pos":2}}`,
+{"label":"CTX","result":{"msg":"before the boom","pos":0}}
+{"label":"CTX","result":{"msg":"boom happened","pos":1}}
+{"label":"CTX","result":{"msg":"after","pos":2}}`,
 	})
 
 	var out, errb bytes.Buffer
@@ -540,7 +540,7 @@ func TestRulesRunBind(t *testing.T) {
 	var out, errb bytes.Buffer
 	c := &cli{prog: "n1k1", dir: root, mode: "jsonlines", out: &out, stderr: &errb}
 	c.cmdRules("run --queries " + corpus + " --bind " + good)
-	if !strings.Contains(out.String(), `"tag":"oom"`) {
+	if !strings.Contains(out.String(), `"label":"oom"`) {
 		t.Errorf("bound run produced no findings; stdout:\n%s\nstderr:\n%s", out.String(), errb.String())
 	}
 	if !strings.Contains(errb.String(), "resolved") {

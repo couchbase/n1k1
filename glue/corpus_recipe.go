@@ -20,44 +20,40 @@ package glue
 //
 //   1. FRONT-MATTER metadata as leading `-- key: value` SQL comments (so it parses
 //      with no YAML/heavy dep and a plain reader still sees valid SQL comments):
-//        -- label: ET-12345       (becomes the detector Tag)
-//        -- severity: high
-//        -- source: logs          (the LOGICAL keyspace this detector targets)
-//        -- versions: ["7.2","7.6"]   (scalar or inline JSON)
-//        -- tags: ["disk","io"]
-//   2. The SQL++ DETECTOR statement itself (everything after the front-matter, up to
+//        -- label: ET-12345       (becomes the query Label)
+//        -- description: disk-full errors   (a free-form summary)
+//        -- source: logs          (the LOGICAL keyspace this query targets)
+//        -- tags: ["disk","io"]   (scalar or inline JSON)
+//   2. The SQL++ QUERY statement itself (everything after the front-matter, up to
 //      the first section marker).
 //   3. A GOLDEN FIXTURE, inline, behind two markers:
-//        -- @fixture   -> JSONL input rows for the detector's `source` keyspace
-//        -- @expect    -> the golden findings, one {"tag":...,"evidence":...} per line
+//        -- @fixture   -> JSONL input rows for the query's `source` keyspace
+//        -- @expect    -> the golden findings, one {"label":...,"result":...} per line
 //
 // Example (round-trips through ParseRecipe / RewriteExpect):
 //
 //	-- label: ET-12345
-//	-- severity: high
+//	-- description: disk-full errors
 //	-- source: logs
-//	-- versions: ["7.2","7.6"]
+//	-- tags: ["disk","io"]
 //	SELECT l.msg, l.ts FROM logs l WHERE l.sev = "ERROR"
 //	-- @fixture
 //	{"sev":"ERROR","msg":"disk full","ts":3}
 //	{"sev":"WARN","msg":"ok","ts":5}
 //	{"sev":"ERROR","msg":"oom","ts":9}
 //	-- @expect
-//	{"tag":"ET-12345","evidence":{"msg":"disk full","ts":3}}
-//	{"tag":"ET-12345","evidence":{"msg":"oom","ts":9}}
+//	{"label":"ET-12345","result":{"msg":"disk full","ts":3}}
+//	{"label":"ET-12345","result":{"msg":"oom","ts":9}}
 //
-// (Evidence is the detector's SELECT projection -- here {msg, ts}, not the whole
-// matched row; a `SELECT *` detector's evidence is the whole matched doc.)
+// (Result is the query's SELECT projection -- here {msg, ts}, not the whole matched
+// row; a `SELECT *` query's result is the whole matched doc.)
 //
-// BACKWARD COMPATIBLE: front-matter and both sections are OPTIONAL. A plain `.sql++`
-// file with none of them loads as a detector whose Tag is the filename stem and whose
-// Stmt is the whole body -- exactly the pre-phase-7 corpus loader's behavior.
+// Front-matter and both sections are OPTIONAL. A plain `.sql++` file with none of them
+// loads as a query whose Label is the filename stem and whose Stmt is the whole body.
 //
 // SCOPE (MVP, deferred -- noted here and honored by RunFixture / .rules test):
-//   - MULTI-KEYSPACE fixtures: a fixture feeds the detector's single `source` keyspace
-//     only. A detector that joins/correlates a second keyspace can't be fixtured yet.
-//   - VERSION-specific selection: `versions` is parsed + reported but not yet used to
-//     filter which detector/fixture applies to a bundle's software version.
+//   - MULTI-KEYSPACE fixtures: a fixture feeds the query's single `source` keyspace
+//     only. A query that joins/correlates a second keyspace can't be fixtured yet.
 //   - SHA-keyed cache / re-run delta: unrelated build-economics concerns.
 
 import (
@@ -69,19 +65,17 @@ import (
 	"strings"
 )
 
-// Recipe is one parsed detector recipe: the SQL++ statement plus its front-matter
-// metadata and (optional) golden fixture. Tag + Stmt are all CorpusCompile / CorpusLint
-// need (see AsDetector); the rest drives routing (Source), reporting (Severity,
-// Versions, Tags, Meta), and the golden-fixture test harness (Fixture / HasFixture /
-// HasExpect).
+// Recipe is one parsed query recipe: the SQL++ statement plus its front-matter
+// metadata and (optional) golden fixture. Label + Stmt are all CorpusCompile / CorpusLint
+// need (see AsDetector); the rest drives routing (Source), reporting (Description, Tags,
+// Meta), and the golden-fixture test harness (Fixture / HasFixture / HasExpect).
 type Recipe struct {
-	Tag      string   // detector id: the `label` front-matter (`ticket` alias), else the filename stem.
-	Stmt     string   // the SQL++ detector statement (front-matter + fixture/expect stripped).
-	Source   string   // `source` front-matter: the LOGICAL keyspace this detector targets.
-	Severity string   // `severity` front-matter (advisory, reported).
-	Versions []string // `versions` front-matter (software versions; parsed, reporting-only for now).
-	Tags     []string // `tags` front-matter (freeform labels).
-	Gate     string   // `gate` front-matter: a cheap NECESSARY precondition (a boolean SQL++
+	Label       string   // query id: the `label` front-matter, else the filename stem.
+	Stmt        string   // the SQL++ query statement (front-matter + fixture/expect stripped).
+	Source      string   // `source` front-matter: the LOGICAL keyspace this query targets.
+	Description string   // `description` front-matter: a free-form summary (advisory, reported).
+	Tags        []string // `tags` front-matter: freeform labels (a JSON array or comma-separated).
+	Gate        string   // `gate` front-matter: a cheap NECESSARY precondition (a boolean SQL++
 	// expression over the Source keyspace). A STANDALONE detector (window / GROUP BY / join --
 	// one that gets its own scan, not the fused shared scan) is SKIPPED when its Source has no
 	// row satisfying Gate, so an expensive sort/window never runs over a keyspace that cannot
@@ -101,14 +95,14 @@ type Recipe struct {
 // those rows must reproduce (compared as a set -- see DiffFindings).
 type Fixture struct {
 	Rows   [][]byte  // input rows (one raw-JSON document per fixture line).
-	Expect []Finding // golden findings ({tag, evidence}); empty when @expect is absent.
+	Expect []Finding // golden findings ({label, result}); empty when @expect is absent.
 }
 
-// AsDetector projects a Recipe onto the CorpusDetector{Tag,Stmt} that CorpusCompile /
+// AsDetector projects a Recipe onto the CorpusDetector{Label,Stmt} that CorpusCompile /
 // CorpusLint consume -- the bridge that lets the richer recipe format feed the existing
 // corpus machinery unchanged.
 func (r *Recipe) AsDetector() CorpusDetector {
-	return CorpusDetector{Tag: r.Tag, Stmt: r.Stmt, Source: r.Source, Gate: r.Gate}
+	return CorpusDetector{Label: r.Label, Stmt: r.Stmt, Source: r.Source, Gate: r.Gate}
 }
 
 // LoadCorpus reads every *.sql++ file in dir as one Recipe (see ParseRecipe for the
@@ -147,14 +141,14 @@ const (
 )
 
 // ParseRecipe parses one recipe file's text (see the file header for the format). path
-// supplies the fallback Tag (filename stem) and the recorded provenance. It never fails
+// supplies the fallback Label (filename stem) and the recorded provenance. It never fails
 // on a plain `.sql++` (no front-matter / no fixture); a parse error is returned only for
 // a malformed @expect finding (bad JSON) so a broken golden is loud, not silently empty.
 func ParseRecipe(path, text string) (Recipe, error) {
 	r := Recipe{
-		Path: path,
-		Tag:  strings.TrimSuffix(filepath.Base(path), ".sql++"),
-		Meta: map[string]string{},
+		Path:  path,
+		Label: strings.TrimSuffix(filepath.Base(path), ".sql++"),
+		Meta:  map[string]string{},
 	}
 
 	lines := strings.Split(text, "\n")
@@ -214,7 +208,7 @@ func ParseRecipe(path, text string) (Recipe, error) {
 		r.Fixture.Rows = append(r.Fixture.Rows, []byte(ln))
 	}
 
-	// Expected findings: each non-blank, non-comment line is one {"tag","evidence"}.
+	// Expected findings: each non-blank, non-comment line is one {"label","result"}.
 	for _, ln := range expectRaw {
 		if ln == "" || strings.HasPrefix(ln, "--") {
 			continue
@@ -223,7 +217,7 @@ func ParseRecipe(path, text string) (Recipe, error) {
 		if err := json.Unmarshal([]byte(ln), &f); err != nil {
 			return r, fmt.Errorf("@expect: bad finding %q: %v", ln, err)
 		}
-		r.Fixture.Expect = append(r.Fixture.Expect, Finding{Tag: f.Tag, Evidence: f.Evidence})
+		r.Fixture.Expect = append(r.Fixture.Expect, Finding{Label: f.Label, Result: f.Result})
 	}
 
 	return r, nil
@@ -231,8 +225,8 @@ func ParseRecipe(path, text string) (Recipe, error) {
 
 // findingJSON is the on-disk shape of an @expect / .rules run finding row.
 type findingJSON struct {
-	Tag      string          `json:"tag"`
-	Evidence json.RawMessage `json:"evidence"`
+	Label  string          `json:"label"`
+	Result json.RawMessage `json:"result"`
 }
 
 // frontMatterKV recognizes a `-- key: value` front-matter comment line, returning the
@@ -268,23 +262,20 @@ func isIdent(s string) bool {
 }
 
 // applyFrontMatter promotes a recognized front-matter key to its Recipe field; any
-// other key is stashed in Meta (reported, not interpreted). `label` becomes the Tag
-// (`ticket` is still accepted as a back-compat alias); `versions` / `tags` accept
-// either a JSON array (["7.2","7.6"]) or a comma-separated scalar (7.2, 7.6).
+// other key is stashed in Meta (reported, not interpreted). `label` becomes the Label;
+// `tags` accepts either a JSON array (["disk","io"]) or a comma-separated scalar.
 func (r *Recipe) applyFrontMatter(key, val string) {
 	switch strings.ToLower(key) {
-	case "label", "ticket": // `ticket` is the pre-rename alias for `label`.
+	case "label":
 		if val != "" {
-			r.Tag = val
+			r.Label = val
 		}
 	case "source":
 		r.Source = val
 	case "gate":
 		r.Gate = val
-	case "severity":
-		r.Severity = val
-	case "versions":
-		r.Versions = parseListValue(val)
+	case "description":
+		r.Description = val
 	case "tags":
 		r.Tags = parseListValue(val)
 	default:
@@ -322,7 +313,7 @@ func parseListValue(val string) []string {
 }
 
 // RewriteExpect returns raw (a recipe file's full text) with its `-- @expect` section
-// replaced by the given findings, serialized one canonical {"tag","evidence"} per line
+// replaced by the given findings, serialized one canonical {"label","result"} per line
 // (sorted for a stable, review-friendly diff). Everything before the expect block is
 // left BYTE-IDENTICAL. If the file has a `-- @fixture` but no `-- @expect`, the expect
 // block is appended after the fixture (the golden-master capture case). This is the
@@ -350,8 +341,8 @@ func RewriteExpect(raw string, findings []Finding) string {
 	return out + block
 }
 
-// serializeFindings renders findings as one canonical {"tag","evidence"} JSON object
-// per line, sorted by (tag, evidence) so the recorded golden is deterministic (findings
+// serializeFindings renders findings as one canonical {"label","result"} JSON object
+// per line, sorted by (label, result) so the recorded golden is deterministic (findings
 // order is not guaranteed at run time -- see CompiledCorpus.Run).
 func serializeFindings(findings []Finding) string {
 	sorted := make([]Finding, len(findings))
@@ -360,11 +351,11 @@ func serializeFindings(findings []Finding) string {
 
 	var b strings.Builder
 	for _, f := range sorted {
-		tag, _ := json.Marshal(f.Tag)
-		b.WriteString(`{"tag":`)
-		b.Write(tag)
-		b.WriteString(`,"evidence":`)
-		b.WriteString(canonicalJSON(f.Evidence))
+		label, _ := json.Marshal(f.Label)
+		b.WriteString(`{"label":`)
+		b.Write(label)
+		b.WriteString(`,"result":`)
+		b.WriteString(canonicalJSON(f.Result))
 		b.WriteString("}\n")
 	}
 	return b.String()
@@ -372,7 +363,7 @@ func serializeFindings(findings []Finding) string {
 
 // DiffFindings compares expected vs actual findings as SORTED SETS (findings order is
 // not guaranteed -- see CompiledCorpus.Run), returning the missing (expected but not
-// produced) and unexpected (produced but not expected) findings. Evidence is compared
+// produced) and unexpected (produced but not expected) findings. Result is compared
 // canonically (JSON re-serialized with sorted keys), so object key order / whitespace
 // differences never cause a spurious diff. A recipe PASSES iff both slices are empty.
 func DiffFindings(expected, actual []Finding) (missing, unexpected []Finding) {
@@ -405,10 +396,10 @@ func DiffFindings(expected, actual []Finding) (missing, unexpected []Finding) {
 	return missing, unexpected
 }
 
-// findingKey is a finding's canonical set-membership key: its tag joined to its
-// canonicalized evidence (sorted JSON keys), so semantically-equal findings collapse.
+// findingKey is a finding's canonical set-membership key: its label joined to its
+// canonicalized result (sorted JSON keys), so semantically-equal findings collapse.
 func findingKey(f Finding) string {
-	return f.Tag + "\x00" + canonicalJSON(f.Evidence)
+	return f.Label + "\x00" + canonicalJSON(f.Result)
 }
 
 // canonicalJSON re-serializes raw JSON into a canonical form (object keys sorted by

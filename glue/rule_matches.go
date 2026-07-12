@@ -17,9 +17,9 @@ package glue
 // SQL++ table-valued source WITHOUT any cbq grammar change: a set-returning function
 // used in a FROM expression-term.
 //
-//	SELECT f.tag, COUNT(*) AS hits
+//	SELECT f.label, COUNT(*) AS hits
 //	FROM RULE_MATCHES('detectors/') AS f
-//	WHERE f.tag LIKE 'ET-%' GROUP BY f.tag ORDER BY hits DESC;
+//	WHERE f.label LIKE 'ET-%' GROUP BY f.label ORDER BY hits DESC;
 //
 // RULE_MATCHES is a set-returning function (Type() ARRAY) usable as a FROM source.
 // cbq accepts a FROM function-call term (e.g. `FROM split("a,b,c", ",") AS t`), and
@@ -27,7 +27,7 @@ package glue
 // routes `FROM rule_matches(...)` to the generic STREAMING stream-fn op
 // (op_stream_fn.go): each finding flows straight into the pipeline as the corpus
 // produces it, so memory stays BOUNDED and the source composes with WHERE / GROUP BY
-// / ORDER BY / JOIN and is PREPARE/EXECUTE-able for free. Each row carries a `tag`
+// / ORDER BY / JOIN and is PREPARE/EXECUTE-able for free. Each row carries a `label`
 // naming which detector produced it, so the stream is a sliceable, discriminated
 // union. The streaming producer is StreamRows (below); the shared, spillable
 // compile+run machinery is CompiledCorpus.RunStream (corpus.go).
@@ -153,7 +153,7 @@ func (this *ruleMatchesFunc) evalArgs(item value.Value, context expression.Conte
 
 // Evaluate is the SCALAR-context fallback (rule_matches(...) used OUTSIDE a FROM
 // clause): with no pipeline to stream into, it materializes the whole result set as
-// one ARRAY of {tag, evidence} objects. The FROM path never reaches here -- it
+// one ARRAY of {label, result} objects. The FROM path never reaches here -- it
 // streams via StreamRows.
 func (this *ruleMatchesFunc) Evaluate(item value.Value, context expression.Context) (value.Value, error) {
 	dir, opts, err := this.evalArgs(item, context)
@@ -166,8 +166,8 @@ func (this *ruleMatchesFunc) Evaluate(item value.Value, context expression.Conte
 // StreamRows is ruleMatchesFunc's StreamSource implementation: the STREAMING FROM
 // producer. It loads + compiles the corpus and emits each finding row as the corpus
 // produces it (bounded memory), instead of materializing the whole result set the
-// way the scalar Evaluate fallback does. Each row is a {"tag":..,"evidence":..}
-// object matching the materialized array's element shape, so f.tag / f.evidence
+// way the scalar Evaluate fallback does. Each row is a {"label":..,"result":..}
+// object matching the materialized array's element shape, so f.label / f.result
 // navigate identically whichever path ran.
 func (this *ruleMatchesFunc) StreamRows(vars *base.Vars, gc *GlueContext,
 	ctx expression.Context, item value.Value, emit func(base.Val) bool) error {
@@ -189,7 +189,7 @@ func (this *ruleMatchesFunc) StreamRows(vars *base.Vars, gc *GlueContext,
 
 	stopped := false
 	rerr := cc.RunStream(func(f Finding) error {
-		jv, e := json.Marshal(ruleMatchRow{Tag: f.Tag, Evidence: f.Evidence})
+		jv, e := json.Marshal(ruleMatchRow{Label: f.Label, Result: f.Result})
 		if e != nil {
 			return fmt.Errorf("RULE_MATCHES: marshaling finding: %w", e)
 		}
@@ -205,12 +205,12 @@ func (this *ruleMatchesFunc) StreamRows(vars *base.Vars, gc *GlueContext,
 	return rerr
 }
 
-// ruleMatchRow is the per-row shape RULE_MATCHES yields: the finding's tag plus its
-// evidence JSON, so `FROM rule_matches(...) AS f` exposes f.tag and f.evidence. It
-// marshals to the same {"tag":..,"evidence":..} object the materialized array uses.
+// ruleMatchRow is the per-row shape RULE_MATCHES yields: the finding's label plus its
+// result JSON, so `FROM rule_matches(...) AS f` exposes f.label and f.result. It
+// marshals to the same {"label":..,"result":..} object the materialized array uses.
 type ruleMatchRow struct {
-	Tag      string          `json:"tag"`
-	Evidence json.RawMessage `json:"evidence"`
+	Label  string          `json:"label"`
+	Result json.RawMessage `json:"result"`
 }
 
 // errStreamStop is the sentinel RunStream's callback returns to abort once the
@@ -218,12 +218,9 @@ type ruleMatchRow struct {
 var errStreamStop = errors.New("rule_matches: consumer requested stop")
 
 // ruleMatchesOpts is the leniently-parsed arg-1 options object. Unknown keys are
-// ignored; today only `bind` (a manifest path -> OpenSessionBound) changes
-// behavior, while `versions` is accepted and recorded but not yet used to filter
-// which detectors apply (parity with Recipe.Versions -- reporting-only for now).
+// ignored; today only `bind` (a manifest path -> OpenSessionBound) changes behavior.
 type ruleMatchesOpts struct {
-	bind     string   // a manifest path (logical->glob); "" = current session.
-	versions []string // accepted, not yet applied (deferred, see corpus_recipe.go).
+	bind string // a manifest path (logical->glob); "" = current session.
 }
 
 // parseRuleMatchesOpts reads the arg-1 OBJECT leniently: a non-object (or MISSING/
@@ -239,19 +236,6 @@ func parseRuleMatchesOpts(v value.Value) ruleMatchesOpts {
 	}
 	if bv, ok := v.Field("bind"); ok && bv.Type() == value.STRING {
 		o.bind, _ = bv.Actual().(string)
-	}
-	if vv, ok := v.Field("versions"); ok && vv.Type() == value.ARRAY {
-		n := 0
-		if act, ok := vv.Actual().([]interface{}); ok {
-			n = len(act)
-		}
-		for i := 0; i < n; i++ {
-			if ev, ok := vv.Index(i); ok && ev.Type() == value.STRING {
-				if s, ok := ev.Actual().(string); ok {
-					o.versions = append(o.versions, s)
-				}
-			}
-		}
 	}
 	return o
 }
@@ -306,7 +290,7 @@ func reportCorpusRejects(cc *CompiledCorpus, dir string, opts ruleMatchesOpts, w
 			parts = append(parts, fmt.Sprintf("+%d more", len(cc.Rejected)-cap))
 			break
 		}
-		parts = append(parts, fmt.Sprintf("%s (%s)", r.Tag, r.Reason))
+		parts = append(parts, fmt.Sprintf("%s (%s)", r.Label, r.Reason))
 	}
 	list := strings.Join(parts, "; ")
 
@@ -365,13 +349,13 @@ func runRuleMatches(dir string, opts ruleMatchesOpts, warn func(string)) (value.
 		return nil, fmt.Errorf("RULE_MATCHES: running corpus %q: %w", dir, err)
 	}
 
-	// One materialized array of {tag, evidence} objects. Evidence is the match's
-	// raw JSON, re-parsed to a value so f.evidence navigates into it.
+	// One materialized array of {label, result} objects. Result is the match's
+	// raw JSON, re-parsed to a value so f.result navigates into it.
 	arr := make([]interface{}, 0, len(findings))
 	for _, f := range findings {
 		arr = append(arr, map[string]interface{}{
-			"tag":      f.Tag,
-			"evidence": value.NewValue([]byte(f.Evidence)),
+			"label":  f.Label,
+			"result": value.NewValue([]byte(f.Result)),
 		})
 	}
 	return value.NewValue(arr), nil

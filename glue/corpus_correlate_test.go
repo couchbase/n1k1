@@ -57,9 +57,9 @@ func TestCorpusCorrelationGrouping(t *testing.T) {
 		"ORDER BY r.ts ASC LIMIT 1) AS next_state FROM default:errors e"
 
 	dets := []CorpusDetector{
-		{Tag: "p1", Stmt: preceding()},
-		{Tag: "p2", Stmt: preceding() + " WHERE e.msg = \"x\""}, // same sig (outer WHERE doesn't change it)
-		{Tag: "f1", Stmt: following},                            // different direction -> different sig
+		{Label: "p1", Stmt: preceding()},
+		{Label: "p2", Stmt: preceding() + " WHERE e.msg = \"x\""}, // same sig (outer WHERE doesn't change it)
+		{Label: "f1", Stmt: following},                            // different direction -> different sig
 	}
 	cc, err := sess.CorpusCompile(dets)
 	if err != nil {
@@ -120,18 +120,18 @@ func TestCorpusCorrelationScanSharing(t *testing.T) {
 
 	// Oracle: each detector standalone (no corpus / no cache) FIRST.
 	oracle := map[string][]string{}
-	for tag, stmt := range map[string]string{"c1": d1, "c2": d2} {
+	for label, stmt := range map[string]string{"c1": d1, "c2": d2} {
 		res, rerr := sess.Run(stmt)
 		if rerr != nil {
-			t.Fatalf("oracle Run(%s): %v", tag, rerr)
+			t.Fatalf("oracle Run(%s): %v", label, rerr)
 		}
 		for _, r := range res.Rows {
-			oracle[tag] = append(oracle[tag], string(r))
+			oracle[label] = append(oracle[label], string(r))
 		}
-		sort.Strings(oracle[tag])
+		sort.Strings(oracle[label])
 	}
 
-	cc, err := sess.CorpusCompile([]CorpusDetector{{Tag: "c1", Stmt: d1}, {Tag: "c2", Stmt: d2}})
+	cc, err := sess.CorpusCompile([]CorpusDetector{{Label: "c1", Stmt: d1}, {Label: "c2", Stmt: d2}})
 	if err != nil {
 		t.Fatalf("CorpusCompile: %v", err)
 	}
@@ -145,16 +145,16 @@ func TestCorpusCorrelationScanSharing(t *testing.T) {
 	}
 	got := map[string][]string{}
 	for _, f := range findings {
-		got[f.Tag] = append(got[f.Tag], string(f.Evidence))
+		got[f.Label] = append(got[f.Label], string(f.Result))
 	}
-	for tag := range oracle {
-		sort.Strings(got[tag])
-		if len(got[tag]) != len(oracle[tag]) {
-			t.Fatalf("%s: %d findings, oracle %d\n got=%v\n oracle=%v", tag, len(got[tag]), len(oracle[tag]), got[tag], oracle[tag])
+	for label := range oracle {
+		sort.Strings(got[label])
+		if len(got[label]) != len(oracle[label]) {
+			t.Fatalf("%s: %d findings, oracle %d\n got=%v\n oracle=%v", label, len(got[label]), len(oracle[label]), got[label], oracle[label])
 		}
-		for i := range got[tag] {
-			if got[tag][i] != oracle[tag][i] {
-				t.Errorf("%s row %d: cached %s != oracle %s", tag, i, got[tag][i], oracle[tag][i])
+		for i := range got[label] {
+			if got[label][i] != oracle[label][i] {
+				t.Errorf("%s row %d: cached %s != oracle %s", label, i, got[label][i], oracle[label][i])
 			}
 		}
 	}
@@ -198,10 +198,10 @@ func TestCorpusCorrelationSharesBothSides(t *testing.T) {
 	defer sess.Close()
 
 	sub := "(SELECT r.msg FROM default:rlog r WHERE r.ts <= e.ts ORDER BY r.ts DESC LIMIT 1)"
-	d1 := "SELECT \"d1\" AS tag, e.ts AS ts, " + sub + " AS state_at FROM default:elog e ORDER BY e.ts"
-	d2 := "SELECT \"d2\" AS tag, e.ts AS ts, " + sub + " AS state_at FROM default:elog e ORDER BY e.ts"
+	d1 := "SELECT \"d1\" AS label, e.ts AS ts, " + sub + " AS state_at FROM default:elog e ORDER BY e.ts"
+	d2 := "SELECT \"d2\" AS label, e.ts AS ts, " + sub + " AS state_at FROM default:elog e ORDER BY e.ts"
 
-	cc, err := sess.CorpusCompile([]CorpusDetector{{Tag: "c1", Stmt: d1}, {Tag: "c2", Stmt: d2}})
+	cc, err := sess.CorpusCompile([]CorpusDetector{{Label: "c1", Stmt: d1}, {Label: "c2", Stmt: d2}})
 	if err != nil {
 		t.Fatalf("CorpusCompile: %v", err)
 	}
@@ -251,7 +251,7 @@ func TestCorpusCorrelationScanBudget(t *testing.T) {
 		t.Fatalf("oracle: %v", err)
 	}
 
-	cc, err := sess.CorpusCompile([]CorpusDetector{{Tag: "c1", Stmt: d}, {Tag: "c2", Stmt: d}})
+	cc, err := sess.CorpusCompile([]CorpusDetector{{Label: "c1", Stmt: d}, {Label: "c2", Stmt: d}})
 	if err != nil {
 		t.Fatalf("CorpusCompile: %v", err)
 	}
@@ -262,11 +262,11 @@ func TestCorpusCorrelationScanBudget(t *testing.T) {
 	// Findings unchanged despite no caching.
 	byTag := map[string]int{}
 	for _, f := range findings {
-		byTag[f.Tag]++
+		byTag[f.Label]++
 	}
-	for _, tag := range []string{"c1", "c2"} {
-		if byTag[tag] != len(oracle.Rows) {
-			t.Errorf("%s: %d findings, oracle %d (skipping the cache changed results!)", tag, byTag[tag], len(oracle.Rows))
+	for _, label := range []string{"c1", "c2"} {
+		if byTag[label] != len(oracle.Rows) {
+			t.Errorf("%s: %d findings, oracle %d (skipping the cache changed results!)", label, byTag[label], len(oracle.Rows))
 		}
 	}
 	if cc.scanCache.captures != 0 {

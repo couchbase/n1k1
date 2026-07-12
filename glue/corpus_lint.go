@@ -51,7 +51,7 @@ const (
 // native byte lane or box to cbq, whether its predicate is index-pruned by a
 // necessary literal (or always-wakes), and mechanical advice for the author.
 type DetectorLint struct {
-	Tag      string   // the detector id (its filename stem in the CLI).
+	Label    string   // the detector id (its filename stem in the CLI).
 	Class    string   // LintFused | LintStandalone | LintRejected.
 	Reason   string   // why standalone / why rejected; "" for a clean fused detector.
 	Keyspace string   // the target keyspace (a fused detector's grouping key; a standalone's FROM); "" if none.
@@ -139,7 +139,7 @@ func (s *Session) CorpusLint(dets []CorpusDetector) ([]DetectorLint, CorpusScore
 // on the eval-lane (ExprCoverage) and predicate-index (engine.PrefilterLiteral)
 // signals plus mechanical advice.
 func (s *Session) lintOne(d CorpusDetector) DetectorLint {
-	dl := DetectorLint{Tag: d.Tag}
+	dl := DetectorLint{Label: d.Label}
 
 	conv, rejectReason := s.convertCorpusDetector(d.Stmt)
 	if rejectReason != "" {

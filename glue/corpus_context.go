@@ -14,7 +14,7 @@
 package glue
 
 // Context-detector recognition for the shared sorted-stream substrate (DESIGN-sorting.md
-// step 3, glue slice). A grep -A/-B/-C evidence detector -- the windowed
+// step 3, glue slice). A grep -A/-B/-C result detector -- the windowed
 // match-flag idiom
 //
 //	SELECT ... FROM (
@@ -32,9 +32,9 @@ package glue
 // The windowed subquery may be wrapped in EXTRA star-passthrough derived tables -- the
 // @grep_context macro expands to two (`SELECT g.* FROM (SELECT gc.* FROM (<window>) gc
 // WHERE gc.near=1) g`) -- and the recognizer/projection compose through them (IDEA-0029):
-// the outer SELECT references the outermost alias, and the evidence projection maps its
+// the outer SELECT references the outermost alias, and the result projection maps its
 // columns through the star(s) to the scan row. A RENAMING middle wrapper can't compose,
-// so it bails to standalone (never emits wrong or empty evidence).
+// so it bails to standalone (never emits wrong or empty result).
 //
 // It is PARANOID (the ASOF playbook): any deviation from the exact shape returns ok=false
 // and the detector stays standalone (correct, just unshared), so a mis-match can never
@@ -51,10 +51,10 @@ import (
 	"github.com/couchbase/n1k1/base"
 )
 
-// contextGroupEntry is one detector's tag + extracted info within a context group.
+// contextGroupEntry is one detector's label + extracted info within a context group.
 type contextGroupEntry struct {
-	tag  string
-	info contextDetInfo
+	label string
+	info  contextDetInfo
 }
 
 // analyzeContextDetector parses/plans/converts one detector's SQL and, iff it is the
@@ -106,7 +106,7 @@ type contextDetInfo struct {
 
 	matchPred expression.Expression // the CASE WHEN predicate
 
-	// proj is the detector's SELECT projection shaped as fused evidence (engine
+	// proj is the detector's SELECT projection shaped as fused result (engine
 	// extractor det[4]), re-rooted to the shared "." scan row -- so a fused context
 	// finding's shape matches the same SELECT run standalone (IDEA-0025), exactly as
 	// corpusDetInfo.proj does for the plain broadcast path (IDEA-0004). nil => the
@@ -127,7 +127,7 @@ func recognizeContextDetector(top *base.Op, temps []interface{}) (contextDetInfo
 	// an unordered set), so skipping them is sound; a sort WITH an offset/limit, or any
 	// non-project/-sort op, stops the descent (and a non-filter there -> bail).
 	node := top
-	var outerProject *base.Op // the detector's SELECT (IDEA-0025), captured to shape evidence.
+	var outerProject *base.Op // the detector's SELECT (IDEA-0025), captured to shape result.
 	for node != nil && len(node.Children) == 1 &&
 		(node.Kind == "project" || (node.Kind == "order-offset-limit" && len(node.Params) == 2)) {
 		if outerProject == nil && node.Kind == "project" {
@@ -148,11 +148,11 @@ func recognizeContextDetector(top *base.Op, temps []interface{}) (contextDetInfo
 	// single-child projects are traversed (a branch is not the context shape). The LAST
 	// project (its child is window-frames) is the derived table's own projection, whose
 	// terms are rooted at the scan alias -- used to compose the outer SELECT into
-	// scan-row evidence (IDEA-0025). Any project ABOVE it (the @grep_context macro's
+	// scan-row result (IDEA-0025). Any project ABOVE it (the @grep_context macro's
 	// `SELECT sub.*` middle, IDEA-0029) must be a pure star passthrough: only then are
 	// column names preserved 1:1, so composing the outer terms straight onto the window-
 	// column project's scan-rooted terms is faithful. A middle that RENAMES columns could
-	// map evidence to the wrong scan field, so -- per this file's paranoid doctrine -- it
+	// map result to the wrong scan field, so -- per this file's paranoid doctrine -- it
 	// bails to standalone, where the full pipeline honors the SELECT.
 	node = filter.Children[0]
 	var innerProject *base.Op
@@ -198,7 +198,7 @@ func recognizeContextDetector(top *base.Op, temps []interface{}) (contextDetInfo
 		return contextDetInfo{}, false
 	}
 
-	// (6) shape the detector's SELECT projection into fused evidence over the shared "."
+	// (6) shape the detector's SELECT projection into fused result over the shared "."
 	// scan row (IDEA-0025), then re-root to SELF via the plain-path corpusFusedProjection
 	// -- same consistency guarantee IDEA-0004 gives the broadcast path. The outer SELECT
 	// references the OUTERMOST derived-table alias; with more than one wrapper (the
@@ -439,7 +439,7 @@ func contextInt(params []interface{}, i int) (int, bool) {
 // the same sig): a fresh scan -> order-offset-limit (sort by the SELF-rooted (partition,
 // order) columns, ascending) -> a single engine broadcast-context fanning to K context
 // extractors. Field refs are re-rooted to the shared "." row via renameAliasToSelf. The
-// evidence (MVP) is the whole matched/context row.
+// result (MVP) is the whole matched/context row.
 func buildContextBroadcast(group []contextDetInfo, tags []string, unified *Conv) *base.Op {
 	first := group[0]
 
@@ -494,7 +494,7 @@ func buildContextBroadcast(group []contextDetInfo, tags []string, unified *Conv)
 	// K context extractors. The match predicate is lowered to its NATIVE tree where
 	// possible (contextPredTree), so the engine op's Aho-Corasick index can extract a
 	// necessary literal and skip the predicate eval on rows that lack it (sparse-match).
-	// Evidence is each detector's own SELECT projection (IDEA-0025), shaped over the
+	// Result is each detector's own SELECT projection (IDEA-0025), shaped over the
 	// shared "." scan row by recognizeContextDetector; a detector with no captured
 	// projection (e.g. a directly-constructed contextDetInfo) falls back to the whole row.
 	wholeRow := []interface{}{[]interface{}{"labelPath", "."}}
@@ -525,11 +525,11 @@ func buildContextBroadcast(group []contextDetInfo, tags []string, unified *Conv)
 }
 
 // contextFusedProjection composes a context detector's outer SELECT (which references the
-// OUTERMOST derived-table alias, e.g. `g.pos`) into an evidence projection over the shared
+// OUTERMOST derived-table alias, e.g. `g.pos`) into an result projection over the shared
 // "." scan row (IDEA-0025): each `<derivedAlias>.<col>` is resolved to its scan-rooted
 // expression by derivedColumnResolver, then the rewritten terms are handed to the plain-
 // path corpusFusedProjection, which re-roots the scan alias to SELF and builds the star /
-// RAW / OBJECT_CONSTRUCT evidence exactly as the broadcast path does.
+// RAW / OBJECT_CONSTRUCT result exactly as the broadcast path does.
 //
 // Returns (nil, true) when there is no outer projection to shape (whole-row fallback), and
 // (nil, false) when the projection can't be faithfully reproduced -- an outer term still
@@ -538,7 +538,7 @@ func buildContextBroadcast(group []contextDetInfo, tags []string, unified *Conv)
 // detector runs STANDALONE, where the full pipeline honors its SELECT.
 func contextFusedProjection(outer, inner *base.Op, derivedAlias, scanAlias string) ([]interface{}, bool) {
 	if outer == nil || outer.Kind != "project" || len(outer.Labels) == 0 {
-		return nil, true // no captured SELECT -> whole-row evidence (prior behavior).
+		return nil, true // no captured SELECT -> whole-row result (prior behavior).
 	}
 
 	// A lone star SELECT * over the DERIVED table is standalone `{<derivedAlias>:{...,

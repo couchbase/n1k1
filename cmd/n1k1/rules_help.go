@@ -39,7 +39,7 @@ for a report card; unit-test each query against its golden fixture (such as for 
 The same feature is also available directly in SQL++ as a composable FROM source --
 the RULE_MATCHES() table-valued function -- so that results can be further queried with
 WHERE / GROUP BY / ORDER BY / JOIN and PREPARE'd / EXECUTE'd, e.g.:
-  SELECT f.tag, COUNT(*) AS hits FROM RULE_MATCHES('my-queries/') AS f GROUP BY f.tag;
+  SELECT f.label, COUNT(*) AS hits FROM RULE_MATCHES('my-queries/') AS f GROUP BY f.label;
 
 COMMANDS
   .rules list --queries <dir>                      inventory the queries (metadata only: no dataset, no compile)
@@ -58,7 +58,7 @@ FLAGS
 
 QUERIES DIRECTORY LAYOUT
   my-queries/
-    disk_full.sql++      one SQL++ per file (the filename stem is the fallback tag)
+    disk_full.sql++      one SQL++ per file (the filename stem is the fallback label)
     slow_request.sql++
     manifest             optional --bind map, e.g.:
                            logs     = **/*.log
@@ -66,13 +66,12 @@ QUERIES DIRECTORY LAYOUT
 
 ANNOTATED RECIPE (my-queries/disk_full.sql++)
 The front-matter of a *.sql++ file has leading '-- key: value' lines...
-  -- label:    ET-12345          # label    -> the finding Tag (else the filename stem)
-  -- severity: high              # severity -> advisory, reported by list / lint
-  -- source:   logs              # source   -> the LOGICAL keyspace this SQL++ reads (FROM logs)
-  -- gate:     l.sev = "ERROR"   # gate     -> a cheap NECESSARY precondition (see GATE below)
-  -- versions: ["7.2","7.6"]     # versions -> software versions this query targets
-  -- tags:     ["disk","io"]     # tags     -> freeform labels
-  -- A disk-full error query.    # free form comment lines
+  -- label:       ET-12345          # label       -> the finding Label (else the filename stem)
+  -- description: disk-full errors  # description -> a free-form summary, reported by list / lint
+  -- source:      logs              # source      -> the LOGICAL keyspace this SQL++ reads (FROM logs)
+  -- gate:        l.sev = "ERROR"   # gate        -> a cheap NECESSARY precondition (see GATE below)
+  -- tags:        ["disk","io"]     # tags        -> freeform labels (a JSON array or comma-separated)
+  -- A disk-full error query.       # free form comment lines (ignored)
   SELECT l.msg, l.ts FROM logs l WHERE l.sev = "ERROR"   # the query: ONE SELECT
                                  # (the first non key:value line ends the front-matter)
   -- @fixture                    # golden test INPUT: one JSON doc per line (fed as the source keyspace)
@@ -80,21 +79,21 @@ The front-matter of a *.sql++ file has leading '-- key: value' lines...
   {"sev":"WARN","msg":"ok","ts":5}
   {"sev":"ERROR","msg":"oom","ts":9}
   -- @expect                     # golden findings the query MUST reproduce (compared as a set)
-  {"tag":"ET-12345","evidence":{"msg":"disk full","sev":"ERROR","ts":3}}
-  {"tag":"ET-12345","evidence":{"msg":"oom","sev":"ERROR","ts":9}}
+  {"label":"ET-12345","result":{"msg":"disk full","sev":"ERROR","ts":3}}
+  {"label":"ET-12345","result":{"msg":"oom","sev":"ERROR","ts":9}}
 
 EXAMPLE: .rules list --queries ./my-queries   (box at a TTY; jsonlines when piped)
-  {"tag":"ET-12345","source":"logs","severity":"high","versions":"7.2,7.6","fixture?":"yes","golden?":"yes","path":".../disk_full.sql++"}
-  {"tag":"ET-20001","source":"requests","severity":"medium","versions":"-","fixture?":"yes","golden?":"yes","path":".../slow_request.sql++"}
-  {"tag":"ET-30002","source":"logs","severity":"low","versions":"-","fixture?":"no","golden?":"no","path":".../warn_no_fixture.sql++"}
+  {"label":"ET-12345","source":"logs","description":"disk-full errors","tags":"disk,io","fixture?":"yes","golden?":"yes","path":".../disk_full.sql++"}
+  {"label":"ET-20001","source":"requests","description":"-","tags":"-","fixture?":"yes","golden?":"yes","path":".../slow_request.sql++"}
+  {"label":"ET-30002","source":"logs","description":"-","tags":"-","fixture?":"no","golden?":"no","path":".../warn_no_fixture.sql++"}
   3 query/queries in ./my-queries -- 2 with a fixture, 2 with a golden (run .rules lint for a health report)
 
 EXAMPLE: .rules run --queries ./my-queries   (over a dataset with a "logs" keyspace)
   loaded: 3 query/queries -- 2 fused, 0 standalone, 1 rejected
     ET-20001: plan error: Keyspace not found requests
         not a runnable query: plan error: Keyspace not found requests. A query is a single SELECT, ...
-  {"tag":"ET-12345","evidence":{"sev":"ERROR","msg":"disk full","ts":3}}
-  {"tag":"ET-12345","evidence":{"sev":"ERROR","msg":"timeout","ts":5}}
+  {"label":"ET-12345","result":{"sev":"ERROR","msg":"disk full","ts":3}}
+  {"label":"ET-12345","result":{"sev":"ERROR","msg":"timeout","ts":5}}
   2 finding(s) from 3 query/queries
 
 EXAMPLE: .rules lint --queries ./my-queries   (a report-card row + the score line)
@@ -124,8 +123,8 @@ TIPS (get the best out of a collection)
     against a regression. Capture the first golden with ".rules test --update".
   - Author against LOGICAL keyspaces + a --bind manifest, so ONE collection of *.sql++ queries can run
     across differently-named datasets (indexer.log vs indexer.0023.log) unchanged.
-  - Version-tag ("versions:") -- field-shape changes across source data releases are handled by evolving
-    the queries, not by writing per-version adapters.
+  - Data drift -- field-shape changes across source data releases are handled by evolving the
+    queries (or the *.extract.js recipes), not by writing per-version adapters.
   - RESERVED WORDS: field names that are SQL++ keywords must be BACKTICKED, or the query fails to
     parse. The built-in log recipe emits "level" (reserved: ISOLATION LEVEL) -- write WHERE l.` + "`level`" + ` = "error".
     Common offenders: "level", "keys", and natural aliases like "prev" (... AS ` + "`prev`" + `).
@@ -179,7 +178,7 @@ with "-meta on", or it is present for extracted docs).
   *** PARTITION BY _meta.` + "`path`" + ` IS REQUIRED for a multi-file keyspace (rotated logs:
   indexer.log, indexer.log.1, ...). _meta.pos restarts at 0 per file, so a bare
   ORDER BY _meta.pos INTERLEAVES the files -- a match near the top of one file then pulls
-  in unrelated lines from another, so context LEAKS across files (WRONG evidence).
+  in unrelated lines from another, so context LEAKS across files (WRONG result).
   Partitioning by _meta.` + "`path`" + ` isolates each file's context. ***
 ("path" is a reserved word, hence backticked. A context query has an OVER clause, so it
 runs standalone -- its own scan, not fused; GATE it, below, so it only sorts keyspaces that

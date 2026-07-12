@@ -23,7 +23,7 @@ package glue
 //
 // A "detector" is a stock SELECT over a single keyspace: `SELECT ... FROM <ks>
 // <alias> [WHERE <pred>]`. Its ESSENCE is the PREDICATE; a "finding" is the
-// matching evidence row, tagged with the detector's id. Fusing K detectors on one
+// matching result row, tagged with the detector's id. Fusing K detectors on one
 // keyspace means: scan the keyspace ONCE, and per row evaluate the K predicates
 // (with corpus-CSE hoisting shared sub-terms and an Aho-Corasick predicate index
 // waking only detectors whose necessary literal is present) instead of K separate
@@ -37,13 +37,13 @@ package glue
 //                 (an ASOF/argmax correlated subquery, a window, GROUP BY, a join,
 //                 a datastore-scan-index leaf, multiple sources, ...). These are
 //                 VALID queries n1k1 runs end-to-end; CorpusCompile keeps the
-//                 detector's Tag+Stmt and, at Run() time, executes each through the
+//                 detector's Label+Stmt and, at Run() time, executes each through the
 //                 FULL normal pipeline (s.Run) -- so WireASOFJoin / window / group
 //                 all fire and each detector is individually optimized -- then tags
 //                 its result rows into the uniform Finding shape, UNION'd with the
 //                 fused findings. (Standalone detectors do NOT share a scan among
 //                 themselves -- each is an independent run; sharing standalone scans
-//                 is a future step. Their evidence is the detector's SELECT
+//                 is a future step. Their result is the detector's SELECT
 //                 projection -- as is the fused path's, so the two shapes agree.)
 //   - REJECTED -- parse/plan/convert FAILED (a genuinely broken detector). Surfaced
 //                 with a reason and NOT run; it never aborts the corpus.
@@ -81,9 +81,9 @@ package glue
 //         supported; they simply don't get indexed.
 //
 //  4. FINDINGS. A uniform findings schema across all detectors (FindingsLabels =
-//     [.["tag"], .["evidence"]]), so union-all funnels cleanly: slot 0 the tag, slot
-//     1 the single evidence value. Evidence is SHAPED to the detector's SELECT
-//     projection (corpusFusedProjection) so a fused detector's evidence matches the
+//     [.["label"], .["result"]]), so union-all funnels cleanly: slot 0 the label, slot
+//     1 the single result value. Result is SHAPED to the detector's SELECT
+//     projection (corpusFusedProjection) so a fused detector's result matches the
 //     SAME SELECT run standalone: SELECT * keeps the whole-row passthrough
 //     ["labelPath","."]; SELECT RAW yields the single value; SELECT a,b assembles a
 //     boxed OBJECT_CONSTRUCT {"a":..,"b":..}. A projection that can't be faithfully
@@ -103,8 +103,8 @@ package glue
 //
 // DELIBERATELY DEFERRED (noted, not built): a SHA-keyed / content-addressed build
 // cache; the embed-source analyzer binary; a logical-keyspace vocabulary +
-// late-binding manifest (detectors FROM the real keyspace name for now); and recipe
-// metadata (severity / ticket beyond the Tag).
+// late-binding manifest (detectors FROM the real keyspace name for now); and richer
+// recipe metadata (beyond the Label / description / tags reported today).
 //
 // RECOGNIZER NARROWNESS (known): the fusable shape is exactly
 // project([filter,]datastore-scan-records). A detector that the planner answers
@@ -132,12 +132,12 @@ import (
 	"github.com/couchbase/n1k1/engine"
 )
 
-// CorpusDetector is one SQL++ detector query plus its stable id (Tag). The Tag is
+// CorpusDetector is one SQL++ detector query plus its stable id (Label). The Label is
 // emitted in slot 0 of every finding this detector produces, so a consumer can
 // demultiplex the interleaved findings stream.
 type CorpusDetector struct {
-	Tag  string
-	Stmt string
+	Label string
+	Stmt  string
 
 	// Source + Gate drive index-gating of a STANDALONE detector (see CompiledCorpus.Run
 	// / gateAllows). Source is the detector's logical keyspace; Gate is a cheap NECESSARY
@@ -154,18 +154,18 @@ type CorpusDetector struct {
 // NOT run. Distinct from a Standalone detector, which converts fine but is not the
 // fusable shape -- that one still runs and produces findings.
 type RejectedDetector struct {
-	Tag    string
+	Label  string
 	Reason string
 }
 
-// Finding is one tagged evidence row produced by running the compiled corpus: the
-// detector's Tag plus its evidence as canonical JSON. Evidence is the detector's
+// Finding is one tagged result row produced by running the compiled corpus: the
+// detector's Label plus its result as canonical JSON. Result is the detector's
 // SELECT projection whether it ran FUSED (shaped by corpusFusedProjection) or
 // STANDALONE (whatever s.Run of its statement yields) -- the two paths agree on shape.
-// Both are the same Finding{Tag, Evidence} envelope, so they union cleanly.
+// Both are the same Finding{Label, Result} envelope, so they union cleanly.
 type Finding struct {
-	Tag      string
-	Evidence json.RawMessage
+	Label  string
+	Result json.RawMessage
 }
 
 // CompiledCorpus is the output of CorpusCompile: the fused MQO plan (Plan) plus the
@@ -182,12 +182,12 @@ type CompiledCorpus struct {
 	Rejected       []RejectedDetector
 	FindingsLabels base.Labels
 
-	// DetKeyspace maps a FUSED detector's Tag to the keyspace it scans (its qualified
+	// DetKeyspace maps a FUSED detector's Label to the keyspace it scans (its qualified
 	// name), so a run report can attribute per-keyspace scanned-row counts to each
 	// detector (IDEA-0015 hit stats). Standalone/rejected detectors are absent.
 	DetKeyspace map[string]string
 
-	// wokenByTag holds one live *int64 per FUSED detector (by Tag), wired into the
+	// wokenByTag holds one live *int64 per FUSED detector (by Label), wired into the
 	// broadcast op's engine.Detector.Woken so it counts the rows that woke each
 	// detector; RunReport reads them back (IDEA-0015-followup). Standalone absent.
 	wokenByTag map[string]*int64
@@ -222,7 +222,7 @@ type CorpusRunReport struct {
 	// scan fanned in (== the broadcast-indexed op's RowsIn). Fused keyspaces only.
 	ScannedByKeyspace map[string]int64
 
-	// WokenByDetector maps a FUSED detector's Tag to how many rows woke it (its
+	// WokenByDetector maps a FUSED detector's Label to how many rows woke it (its
 	// predicate was evaluated) -- the predicate index's effect per detector
 	// (IDEA-0015-followup): woken<<scanned means the literal is rare/absent, woken
 	// with 0 matched means the predicate ran but never held. Fused detectors only.
@@ -230,10 +230,10 @@ type CorpusRunReport struct {
 }
 
 // corpusFindingsLabels is the uniform two-column findings schema every per-keyspace
-// broadcast (and the union-all) shares: slot 0 the detector tag, slot 1 the whole
-// evidence row.
+// broadcast (and the union-all) shares: slot 0 the detector label, slot 1 the whole
+// result row.
 func corpusFindingsLabels() base.Labels {
-	return base.Labels{"." + LabelSuffix("tag"), "." + LabelSuffix("evidence")}
+	return base.Labels{"." + LabelSuffix("label"), "." + LabelSuffix("result")}
 }
 
 // CorpusCompile turns a set of stock SQL++ detectors into ONE fused shared-scan
@@ -260,9 +260,9 @@ func (s *Session) CorpusCompile(dets []CorpusDetector) (*CompiledCorpus, error) 
 	unified := &Conv{Temps: []interface{}{nil}}
 
 	type fusedDet struct {
-		tag  string
-		pred []interface{} // normalized: field refs rooted at "."
-		proj []interface{} // evidence projection, field refs rooted at "."
+		label string
+		pred  []interface{} // normalized: field refs rooted at "."
+		proj  []interface{} // result projection, field refs rooted at "."
 	}
 
 	byKeyspace := map[string][]fusedDet{}
@@ -286,8 +286,8 @@ func (s *Session) CorpusCompile(dets []CorpusDetector) (*CompiledCorpus, error) 
 			if _, seen := contextGroups[ci.sig]; !seen {
 				contextSigOrder = append(contextSigOrder, ci.sig)
 			}
-			contextGroups[ci.sig] = append(contextGroups[ci.sig], contextGroupEntry{tag: d.Tag, info: ci})
-			detKeyspace[d.Tag] = ci.keyspaceName
+			contextGroups[ci.sig] = append(contextGroups[ci.sig], contextGroupEntry{label: d.Label, info: ci})
+			detKeyspace[d.Label] = ci.keyspaceName
 			continue
 		}
 
@@ -295,28 +295,28 @@ func (s *Session) CorpusCompile(dets []CorpusDetector) (*CompiledCorpus, error) 
 		switch {
 		case rejectReason != "":
 			// Parse/plan/convert failed -- a broken detector. Surfaced, not run.
-			rejected = append(rejected, RejectedDetector{Tag: d.Tag, Reason: rejectReason})
+			rejected = append(rejected, RejectedDetector{Label: d.Label, Reason: rejectReason})
 		case !fusable:
 			// Valid but not the fusable shape (ASOF/window/group/join/index-scan/...).
 			// Keep it verbatim (incl. its Source/Gate, so Run can index-gate it); Run()
 			// executes it through the full s.Run pipeline.
 			standalone = append(standalone, CorpusDetector{
-				Tag: d.Tag, Stmt: d.Stmt, Source: d.Source, Gate: d.Gate})
+				Label: d.Label, Stmt: d.Stmt, Source: d.Source, Gate: d.Gate})
 			// A temporal-correlation detector additionally records its shared-scan
 			// signature (Part B foundation) -- still standalone for now.
 			if sig, isCorr := s.analyzeCorrelationDetector(d.Stmt); isCorr {
 				if correlationGroups == nil {
 					correlationGroups = map[string][]string{}
 				}
-				correlationGroups[sig] = append(correlationGroups[sig], d.Tag)
+				correlationGroups[sig] = append(correlationGroups[sig], d.Label)
 			}
 		default:
 			if _, seen := keyspacerFor[info.keyspaceName]; !seen {
 				keyspacerFor[info.keyspaceName] = info.keyspacer
 			}
 			byKeyspace[info.keyspaceName] = append(byKeyspace[info.keyspaceName],
-				fusedDet{tag: d.Tag, pred: info.pred, proj: info.proj})
-			detKeyspace[d.Tag] = info.keyspaceName
+				fusedDet{label: d.Label, pred: info.pred, proj: info.proj})
+			detKeyspace[d.Label] = info.keyspaceName
 		}
 	}
 
@@ -346,11 +346,11 @@ func (s *Session) CorpusCompile(dets []CorpusDetector) (*CompiledCorpus, error) 
 			// A live per-detector woken counter, wired into the broadcast op and read
 			// back by RunReport (IDEA-0015-followup).
 			w := new(int64)
-			wokenByTag[fd.tag] = w
+			wokenByTag[fd.label] = w
 			edets = append(edets, engine.Detector{
-				Tag:  fd.tag,
+				Tag:  fd.label, // engine's generic per-detector id (glue's `label`).
 				Pred: fd.pred,
-				// Evidence shaped to the detector's SELECT projection (IDEA-0004):
+				// Result shaped to the detector's SELECT projection (IDEA-0004):
 				// whole row for SELECT *, else the RAW value / assembled object.
 				Proj:  fd.proj,
 				Woken: w,
@@ -368,14 +368,14 @@ func (s *Session) CorpusCompile(dets []CorpusDetector) (*CompiledCorpus, error) 
 
 	// Context groups: one shared scan + sort + broadcast-context per (keyspace, P, O)
 	// signature (in recognition order for a stable plan). Findings share the same
-	// [tag, evidence] schema, so they union with the fused broadcasts.
+	// [label, result] schema, so they union with the fused broadcasts.
 	for _, sig := range contextSigOrder {
 		entries := contextGroups[sig]
 		group := make([]contextDetInfo, len(entries))
 		tags := make([]string, len(entries))
 		for i, e := range entries {
 			group[i] = e.info
-			tags[i] = e.tag
+			tags[i] = e.label
 		}
 		perKeyspace = append(perKeyspace, buildContextBroadcast(group, tags, unified))
 	}
@@ -412,7 +412,7 @@ type corpusDetInfo struct {
 	keyspaceName string        // keyspace.QualifiedName() -- the grouping key.
 	keyspacer    interface{}   // the plan scan op (a keyspacer) for the shared scan.
 	pred         []interface{} // predicate expr-tree, field refs rooted at ".".
-	proj         []interface{} // evidence projection (engine.Detector.Proj), rooted at ".".
+	proj         []interface{} // result projection (engine.Detector.Proj), rooted at ".".
 }
 
 // analyzeCorpusDetector parses/plans/converts one detector's SQL++ and classifies it
@@ -465,7 +465,7 @@ func (s *Session) analyzeCorpusDetector(stmt string) (info corpusDetInfo, fusabl
 	}
 
 	// The recognizer matches only the shape BELOW the project; the projection itself
-	// is shaped into evidence by corpusFusedProjection below. But a projection carrying
+	// is shaped into result by corpusFusedProjection below. But a projection carrying
 	// a (correlated) SUBQUERY -- e.g. the ASOF nearest-preceding argmax -- has an OUTER
 	// shape (project -> scan) that LOOKS fusable while its real value comes from the
 	// subquery per row. Fusing it would silently drop that subquery. Such a detector
@@ -497,9 +497,9 @@ func (s *Session) analyzeCorpusDetector(stmt string) (info corpusDetInfo, fusabl
 
 	pred := normalizeCorpusPred(filter, scan.Labels, alias, aliasLabel)
 
-	// Shape the fused evidence to match the detector's SELECT projection (IDEA-0004):
+	// Shape the fused result to match the detector's SELECT projection (IDEA-0004):
 	// a projection the fused envelope can't faithfully reproduce routes the detector
-	// to standalone, where the full pipeline runs its real projection -- so evidence
+	// to standalone, where the full pipeline runs its real projection -- so result
 	// shape is consistent whether a detector fuses or not.
 	proj, ok := corpusFusedProjection(conv.TopOp, alias)
 	if !ok {
@@ -522,7 +522,7 @@ func (s *Session) analyzeCorpusDetector(stmt string) (info corpusDetInfo, fusabl
 //
 // Everything else (a join/group/order/distinct/subquery op in the chain, multiple
 // sources, or a non-records leaf) returns ok=false. Only the shape below the project
-// matters here; the project op's own terms are shaped into evidence separately by
+// matters here; the project op's own terms are shaped into result separately by
 // corpusFusedProjection (called from analyzeCorpusDetector).
 func recognizeCorpusDetector(top *base.Op) (scan, filter *base.Op, ok bool) {
 	if top == nil || top.Kind != "project" || len(top.Children) != 1 {
@@ -572,11 +572,11 @@ func projectionHasSubquery(project *base.Op) bool {
 	return false
 }
 
-// corpusFusedProjection derives the fused-evidence projection (engine.Detector.Proj)
-// from a detector's converted `project` op, so a FUSED detector's evidence shape
+// corpusFusedProjection derives the fused-result projection (engine.Detector.Proj)
+// from a detector's converted `project` op, so a FUSED detector's result shape
 // matches the same SELECT run STANDALONE (IDEA-0004). The engine's projFunc emits one
-// output column per Proj term after the tag; the findings schema carries a single
-// evidence column, so every case here yields exactly ONE Proj term. Returns ok=false
+// output column per Proj term after the label; the findings schema carries a single
+// result column, so every case here yields exactly ONE Proj term. Returns ok=false
 // when the projection can't be faithfully reproduced in that single-column envelope,
 // so analyzeCorpusDetector routes the detector to standalone (which honors it via the
 // full pipeline). Field refs are re-rooted from the detector alias to SELF, resolving
@@ -591,7 +591,7 @@ func corpusFusedProjection(project *base.Op, alias string) ([]interface{}, bool)
 		return nil, false
 	}
 
-	// SELECT * -> the whole matched row (unchanged whole-row evidence). A lone star
+	// SELECT * -> the whole matched row (unchanged whole-row result). A lone star
 	// label may also be SELECT p.*, whose value is NOT the whole row; but the "." row
 	// IS the scanned doc and a bare `SELECT *` is overwhelmingly the case, so treat a
 	// lone star as whole-row and leave p.* refinement to a future step.
@@ -608,7 +608,7 @@ func corpusFusedProjection(project *base.Op, alias string) ([]interface{}, bool)
 		return []interface{}{[]interface{}{"exprTree", renameAliasToSelf(e, alias)}}, true
 	}
 
-	// All plain named terms -> assemble a {alias: value, ...} object so the evidence
+	// All plain named terms -> assemble a {alias: value, ...} object so the result
 	// matches the standalone SELECT's row. A star mixed in, or a non-exprTree term (a
 	// group-key labelPath), makes the leaf/expr unavailable -> route to standalone.
 	mapping := make(map[expression.Expression]expression.Expression, len(project.Labels))
@@ -798,8 +798,8 @@ func (cc *CompiledCorpus) RunReport() ([]Finding, *CorpusRunReport, error) {
 		return nil
 	}, stats)
 	woken := make(map[string]int64, len(cc.wokenByTag))
-	for tag, w := range cc.wokenByTag {
-		woken[tag] = *w
+	for label, w := range cc.wokenByTag {
+		woken[label] = *w
 	}
 	return findings, &CorpusRunReport{
 		ScannedByKeyspace: cc.scannedByKeyspace(stats),
@@ -842,7 +842,7 @@ func (cc *CompiledCorpus) scannedByKeyspace(stats *base.Stats) map[string]int64 
 // of materializing the whole result set. It runs first each STANDALONE detector via
 // the full s.Run pipeline (so ASOF/window/group lowerings fire and each is
 // individually optimized), then the fused Plan -- mirroring Session.PlanExec's
-// vars / GlueContext / ExecOpEx setup and reading each finding's [tag, evidence]
+// vars / GlueContext / ExecOpEx setup and reading each finding's [label, result]
 // straight from the yielded row slots (no ConvertVals). Finding order (across
 // standalone runs, the union-all, and the interleaved fan-out) is NOT guaranteed.
 // An onFinding error aborts the run and is returned. A nil Plan with no standalone
@@ -864,7 +864,7 @@ func (cc *CompiledCorpus) runStream(onFinding func(Finding) error, stats *base.S
 
 	cc.GatedSkipped = nil // repopulated per run by streamStandalone's index-gating.
 
-	// Memory-behavior knobs + evidence. A fresh shared, race-safe merge-counter set is
+	// Memory-behavior knobs + result. A fresh shared, race-safe merge-counter set is
 	// installed for this run (propagated to each detector Run's Ctx by PlanExec + the
 	// fused plan below), so a streaming merge's per-actor goroutines bump it without a
 	// data race. N1K1_MEM_STATS prints a summary; the counts are also on cc.MergeStats
@@ -892,7 +892,7 @@ func (cc *CompiledCorpus) runStream(onFinding func(Finding) error, stats *base.S
 	}
 
 	// (A) Standalone detectors: run each verbatim through the full normal pipeline and
-	// tag its SELECT-projection rows as evidence. s.Run is self-contained (it does its
+	// label its SELECT-projection rows as result. s.Run is self-contained (it does its
 	// own datastore + ExecOpEx setup), so this must happen BEFORE the fused block's
 	// global ExecOpEx swap below.
 	if err := cc.streamStandalone(onFinding); err != nil {
@@ -946,15 +946,15 @@ func (cc *CompiledCorpus) runStream(onFinding func(Finding) error, stats *base.S
 		if len(vals) < 2 || execErr != nil {
 			return
 		}
-		// Slot 0 = the tag (a JSON-quoted string placed by the broadcast op); slot 1
-		// = the evidence value shaped by the detector's projection (JSON bytes).
-		var tag string
-		if err := json.Unmarshal([]byte(vals[0]), &tag); err != nil {
-			tag = string(vals[0]) // fall back to the raw bytes if not a JSON string.
+		// Slot 0 = the label (a JSON-quoted string placed by the broadcast op); slot 1
+		// = the result value shaped by the detector's projection (JSON bytes).
+		var label string
+		if err := json.Unmarshal([]byte(vals[0]), &label); err != nil {
+			label = string(vals[0]) // fall back to the raw bytes if not a JSON string.
 		}
 		if e := onFinding(Finding{
-			Tag:      tag,
-			Evidence: append(json.RawMessage(nil), vals[1]...),
+			Label:  label,
+			Result: append(json.RawMessage(nil), vals[1]...),
 		}); e != nil {
 			execErr = e
 		}
@@ -973,8 +973,8 @@ func (cc *CompiledCorpus) runStream(onFinding func(Finding) error, stats *base.S
 // streamStandalone runs each Standalone detector through the FULL normal pipeline
 // (Session.Run -- so its ASOF/window/group/join lowerings all fire and each is
 // individually optimized) and calls onFinding for every result row, tagged with the
-// detector's id. Evidence is the detector's SELECT projection (the fused path shapes
-// the same projection into evidence via corpusFusedProjection). A run-time error
+// detector's id. Result is the detector's SELECT projection (the fused path shapes
+// the same projection into result via corpusFusedProjection). A run-time error
 // from any standalone detector (or from onFinding) is returned. Note s.Run buffers a
 // single detector's rows before they stream out (see RunStream's NOTE).
 func (cc *CompiledCorpus) streamStandalone(onFinding func(Finding) error) error {
@@ -990,23 +990,23 @@ func (cc *CompiledCorpus) streamStandalone(onFinding func(Finding) error) error 
 				// and RUN the detector (safe -- gating only ever SKIPS). The error rides
 				// out as a warning-shaped skip note so the author can fix the gate.
 				cc.GatedSkipped = append(cc.GatedSkipped,
-					fmt.Sprintf("%s (gate error, ran anyway: %v)", d.Tag, err))
+					fmt.Sprintf("%s (gate error, ran anyway: %v)", d.Label, err))
 			} else if !allow {
 				// The precondition matched no row in the keyspace: the detector cannot
 				// produce a finding, so skip its expensive standalone sort/window.
-				cc.GatedSkipped = append(cc.GatedSkipped, d.Tag)
+				cc.GatedSkipped = append(cc.GatedSkipped, d.Label)
 				continue
 			}
 		}
 
 		res, err := cc.session.Run(d.Stmt)
 		if err != nil {
-			return fmt.Errorf("standalone query %q: %w", d.Tag, err)
+			return fmt.Errorf("standalone query %q: %w", d.Label, err)
 		}
 		for _, row := range res.Rows {
 			if err := onFinding(Finding{
-				Tag:      d.Tag,
-				Evidence: append(json.RawMessage(nil), row...),
+				Label:  d.Label,
+				Result: append(json.RawMessage(nil), row...),
 			}); err != nil {
 				return err
 			}

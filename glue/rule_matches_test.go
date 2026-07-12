@@ -48,20 +48,20 @@ func writeRuleMatchesCorpus(t *testing.T) string {
 	return dir
 }
 
-// findingsFromRows turns `SELECT f.tag, f.evidence` result rows into the Finding
+// findingsFromRows turns `SELECT f.label, f.result` result rows into the Finding
 // set they represent (so it compares against CompiledCorpus.Run's findings).
 func findingsFromRows(t *testing.T, rows []json.RawMessage) []Finding {
 	t.Helper()
 	var out []Finding
 	for _, row := range rows {
 		var m struct {
-			Tag      string          `json:"tag"`
-			Evidence json.RawMessage `json:"evidence"`
+			Label  string          `json:"label"`
+			Result json.RawMessage `json:"result"`
 		}
 		if err := json.Unmarshal(row, &m); err != nil {
 			t.Fatalf("decoding matches row %q: %v", row, err)
 		}
-		out = append(out, Finding{Tag: m.Tag, Evidence: m.Evidence})
+		out = append(out, Finding{Label: m.Label, Result: m.Result})
 	}
 	return out
 }
@@ -70,13 +70,13 @@ func findingSetKeys(t *testing.T, fs []Finding) []string {
 	t.Helper()
 	keys := make([]string, 0, len(fs))
 	for _, f := range fs {
-		keys = append(keys, f.Tag+"\t"+canonJSON(t, f.Evidence))
+		keys = append(keys, f.Label+"\t"+canonJSON(t, f.Result))
 	}
 	sort.Strings(keys)
 	return keys
 }
 
-// TestRuleMatchesFromSource is the headline: `SELECT f.tag, f.evidence FROM
+// TestRuleMatchesFromSource is the headline: `SELECT f.label, f.result FROM
 // rule_matches('<corpus>') f` returns EXACTLY the same tagged matches as running
 // the corpus directly via CorpusCompile().Run() (compared as sorted sets).
 func TestRuleMatchesFromSource(t *testing.T) {
@@ -105,7 +105,7 @@ func TestRuleMatchesFromSource(t *testing.T) {
 	}
 
 	// Via the RULE_MATCHES FROM-source.
-	q := fmt.Sprintf("SELECT f.tag, f.evidence FROM rule_matches(%q) AS f", corpus)
+	q := fmt.Sprintf("SELECT f.label, f.result FROM rule_matches(%q) AS f", corpus)
 	res, err := sess.Run(q)
 	if err != nil {
 		t.Fatalf("Run %q: %v", q, err)
@@ -134,7 +134,7 @@ func TestRuleMatchesStreamsViaStreamFnOp(t *testing.T) {
 	sess := corpusTestSession(t)
 	corpus := writeRuleMatchesCorpus(t)
 
-	q := fmt.Sprintf(`SELECT f.tag FROM rule_matches(%q) AS f`, corpus)
+	q := fmt.Sprintf(`SELECT f.label FROM rule_matches(%q) AS f`, corpus)
 	res, err := sess.Run(q)
 	if err != nil {
 		t.Fatalf("Run %q: %v", q, err)
@@ -148,7 +148,7 @@ func TestRuleMatchesStreamsViaStreamFnOp(t *testing.T) {
 	}
 
 	// LIMIT composes with the streaming source (yields exactly the limited rows).
-	q = fmt.Sprintf(`SELECT f.tag FROM rule_matches(%q) AS f LIMIT 1`, corpus)
+	q = fmt.Sprintf(`SELECT f.label FROM rule_matches(%q) AS f LIMIT 1`, corpus)
 	res, err = sess.Run(q)
 	if err != nil {
 		t.Fatalf("Run LIMIT %q: %v", q, err)
@@ -164,30 +164,30 @@ func TestRuleMatchesComposable(t *testing.T) {
 	sess := corpusTestSession(t)
 	corpus := writeRuleMatchesCorpus(t)
 
-	// WHERE filter on the tag: only the login detector's matches survive.
-	q := fmt.Sprintf(`SELECT f.tag FROM rule_matches(%q) AS f WHERE f.tag = "T5_login"`, corpus)
+	// WHERE filter on the label: only the login detector's matches survive.
+	q := fmt.Sprintf(`SELECT f.label FROM rule_matches(%q) AS f WHERE f.label = "T5_login"`, corpus)
 	res, err := sess.Run(q)
 	if err != nil {
 		t.Fatalf("Run %q: %v", q, err)
 	}
 	if len(res.Rows) == 0 {
-		t.Fatal("WHERE f.tag=T5_login returned no rows")
+		t.Fatal("WHERE f.label=T5_login returned no rows")
 	}
 	for _, row := range res.Rows {
 		var m struct {
-			Tag string `json:"tag"`
+			Label string `json:"label"`
 		}
 		if err := json.Unmarshal(row, &m); err != nil {
 			t.Fatalf("decode %q: %v", row, err)
 		}
-		if m.Tag != "T5_login" {
-			t.Fatalf("WHERE filter leaked tag %q", m.Tag)
+		if m.Label != "T5_login" {
+			t.Fatalf("WHERE filter leaked label %q", m.Label)
 		}
 	}
 
-	// GROUP BY tag with COUNT(*): one row per detector that produced matches.
-	q = fmt.Sprintf(`SELECT f.tag, COUNT(*) AS hits FROM rule_matches(%q) AS f `+
-		`GROUP BY f.tag ORDER BY f.tag`, corpus)
+	// GROUP BY label with COUNT(*): one row per detector that produced matches.
+	q = fmt.Sprintf(`SELECT f.label, COUNT(*) AS hits FROM rule_matches(%q) AS f `+
+		`GROUP BY f.label ORDER BY f.label`, corpus)
 	res, err = sess.Run(q)
 	if err != nil {
 		t.Fatalf("Run %q: %v", q, err)
@@ -195,13 +195,13 @@ func TestRuleMatchesComposable(t *testing.T) {
 	counts := map[string]int{}
 	for _, row := range res.Rows {
 		var m struct {
-			Tag  string `json:"tag"`
-			Hits int    `json:"hits"`
+			Label string `json:"label"`
+			Hits  int    `json:"hits"`
 		}
 		if err := json.Unmarshal(row, &m); err != nil {
 			t.Fatalf("decode group row %q: %v", row, err)
 		}
-		counts[m.Tag] = m.Hits
+		counts[m.Label] = m.Hits
 	}
 	// The logs fixture has 2 ERROR rows and 1 with msg=rare_token_xyz; events has 2
 	// logins. (rare_token_xyz row is also sev=ERROR, so T1_error sees 2.)
@@ -222,14 +222,14 @@ func TestRuleMatchesPrepareExecute(t *testing.T) {
 	sess := corpusTestSession(t)
 	corpus := writeRuleMatchesCorpus(t)
 
-	direct := fmt.Sprintf(`SELECT f.tag, f.evidence FROM rule_matches(%q) AS f`, corpus)
+	direct := fmt.Sprintf(`SELECT f.label, f.result FROM rule_matches(%q) AS f`, corpus)
 	dres, err := sess.Run(direct)
 	if err != nil {
 		t.Fatalf("direct Run: %v", err)
 	}
 	wantKeys := findingSetKeys(t, findingsFromRows(t, dres.Rows))
 
-	prep := fmt.Sprintf(`PREPARE fp AS SELECT f.tag, f.evidence FROM rule_matches(%q) AS f`, corpus)
+	prep := fmt.Sprintf(`PREPARE fp AS SELECT f.label, f.result FROM rule_matches(%q) AS f`, corpus)
 	if _, err := sess.Run(prep); err != nil {
 		t.Fatalf("PREPARE: %v", err)
 	}
@@ -272,7 +272,7 @@ func TestRuleMatchesBindOpt(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	q := fmt.Sprintf(`SELECT f.tag, f.evidence FROM rule_matches(%q, {"bind": %q}) AS f`, corpus, manifest)
+	q := fmt.Sprintf(`SELECT f.label, f.result FROM rule_matches(%q, {"bind": %q}) AS f`, corpus, manifest)
 	res, err := sess.Run(q)
 	if err != nil {
 		t.Fatalf("Run bound %q: %v", q, err)
@@ -282,8 +282,8 @@ func TestRuleMatchesBindOpt(t *testing.T) {
 		t.Fatalf("bound RULE_MATCHES: got %d matches, want 2 (rows=%v)", len(got), res.Rows)
 	}
 	for _, f := range got {
-		if f.Tag != "B1_error" {
-			t.Fatalf("bound RULE_MATCHES: unexpected tag %q", f.Tag)
+		if f.Label != "B1_error" {
+			t.Fatalf("bound RULE_MATCHES: unexpected label %q", f.Label)
 		}
 	}
 }
@@ -295,14 +295,14 @@ func TestRuleMatchesEmptyCorpusErrors(t *testing.T) {
 
 	// A dir with no *.sql++ files.
 	empty := t.TempDir()
-	q := fmt.Sprintf(`SELECT f.tag FROM rule_matches(%q) AS f`, empty)
+	q := fmt.Sprintf(`SELECT f.label FROM rule_matches(%q) AS f`, empty)
 	if _, err := sess.Run(q); err == nil {
 		t.Fatal("empty corpus dir: expected an error, got nil")
 	}
 
 	// A missing dir.
 	missing := filepath.Join(t.TempDir(), "does-not-exist")
-	q = fmt.Sprintf(`SELECT f.tag FROM rule_matches(%q) AS f`, missing)
+	q = fmt.Sprintf(`SELECT f.label FROM rule_matches(%q) AS f`, missing)
 	if _, err := sess.Run(q); err == nil {
 		t.Fatal("missing corpus dir: expected an error, got nil")
 	}
@@ -319,7 +319,7 @@ func TestRuleMatchesAllRejectedErrors(t *testing.T) {
 		[]byte("-- label: T_BAD\nSELECT * FROM nosuch_ks x WHERE x.a = 1"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	q := fmt.Sprintf(`SELECT f.tag FROM rule_matches(%q) AS f`, dir)
+	q := fmt.Sprintf(`SELECT f.label FROM rule_matches(%q) AS f`, dir)
 	_, err := sess.Run(q)
 	if err == nil {
 		t.Fatal("all-rejected corpus: expected an error, got nil (the silent-empty bug)")
@@ -345,7 +345,7 @@ func TestRuleMatchesPartialRejectWarns(t *testing.T) {
 	write("good.sql++", "-- label: T_GOOD\n"+`SELECT * FROM logs l WHERE l.sev = "ERROR"`)
 	write("bad.sql++", "-- label: T_BAD\n"+`SELECT * FROM nosuch_ks x WHERE x.a = 1`)
 
-	q := fmt.Sprintf(`SELECT f.tag FROM rule_matches(%q) AS f`, dir)
+	q := fmt.Sprintf(`SELECT f.label FROM rule_matches(%q) AS f`, dir)
 	res, err := sess.Run(q)
 	if err != nil {
 		t.Fatalf("partial-reject corpus should still run the good detector: %v", err)
@@ -425,39 +425,32 @@ func TestLoadRuleMatchesBinding(t *testing.T) {
 	}
 }
 
-// TestParseRuleMatchesOpts covers the lenient arg-1 object reader: bind + versions,
-// non-object input, wrong-typed fields (ignored), and unknown keys (forward-compat).
+// TestParseRuleMatchesOpts covers the lenient arg-1 object reader: bind, non-object
+// input, a wrong-typed bind (ignored), and unknown keys (forward-compat).
 func TestParseRuleMatchesOpts(t *testing.T) {
 	o := parseRuleMatchesOpts(value.NewValue(map[string]interface{}{
-		"bind":     "manifest.txt",
-		"versions": []interface{}{"v1", "v2"},
+		"bind": "manifest.txt",
 	}))
-	if o.bind != "manifest.txt" || len(o.versions) != 2 || o.versions[0] != "v1" || o.versions[1] != "v2" {
+	if o.bind != "manifest.txt" {
 		t.Errorf("full opts = %+v", o)
 	}
 
 	// Non-object / nil -> zero opts.
-	if got := parseRuleMatchesOpts(value.NewValue("a string")); got.bind != "" || got.versions != nil {
+	if got := parseRuleMatchesOpts(value.NewValue("a string")); got.bind != "" {
 		t.Errorf("non-object -> %+v, want zero", got)
 	}
-	if got := parseRuleMatchesOpts(nil); got.bind != "" || got.versions != nil {
+	if got := parseRuleMatchesOpts(nil); got.bind != "" {
 		t.Errorf("nil -> %+v, want zero", got)
 	}
 
-	// Wrong-typed fields are ignored; non-string versions entries are skipped.
-	o = parseRuleMatchesOpts(value.NewValue(map[string]interface{}{
-		"bind":     123,
-		"versions": []interface{}{"keep", 5, "also"},
-	}))
+	// Wrong-typed bind is ignored.
+	o = parseRuleMatchesOpts(value.NewValue(map[string]interface{}{"bind": 123}))
 	if o.bind != "" {
 		t.Errorf("non-string bind should be ignored, got %q", o.bind)
 	}
-	if len(o.versions) != 2 || o.versions[0] != "keep" || o.versions[1] != "also" {
-		t.Errorf("versions filter = %v, want [keep also]", o.versions)
-	}
 
 	// Unknown key ignored (forward-compatible opts).
-	if got := parseRuleMatchesOpts(value.NewValue(map[string]interface{}{"future": "x"})); got.bind != "" || got.versions != nil {
+	if got := parseRuleMatchesOpts(value.NewValue(map[string]interface{}{"future": "x"})); got.bind != "" {
 		t.Errorf("unknown key -> %+v, want zero", got)
 	}
 }
@@ -465,10 +458,10 @@ func TestParseRuleMatchesOpts(t *testing.T) {
 // TestRejectsMentionKeyspace / warnSink: the bind-hint heuristic and the no-op warn
 // callback when the eval context isn't a *GlueContext.
 func TestRejectsMentionKeyspaceAndWarnSink(t *testing.T) {
-	if !rejectsMentionKeyspace([]RejectedDetector{{Tag: "d1", Reason: "no such KEYSPACE `logs`"}}) {
+	if !rejectsMentionKeyspace([]RejectedDetector{{Label: "d1", Reason: "no such KEYSPACE `logs`"}}) {
 		t.Error("a keyspace-resolution reason should trigger the bind hint")
 	}
-	if rejectsMentionKeyspace([]RejectedDetector{{Tag: "d1", Reason: "syntax error near FROM"}}) {
+	if rejectsMentionKeyspace([]RejectedDetector{{Label: "d1", Reason: "syntax error near FROM"}}) {
 		t.Error("a non-keyspace reason should not trigger the hint")
 	}
 	if rejectsMentionKeyspace(nil) {

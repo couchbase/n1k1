@@ -1,9 +1,8 @@
 -- label: ET-12345
--- severity: high
+-- description: disk-full errors
 -- source: logs
--- versions: ["7.2","7.6"]
 -- tags: ["disk","io"]
--- A disk-full error detector: a fusable single-keyspace predicate that the corpus
+-- A disk-full error query: a fusable single-keyspace predicate that the corpus
 -- compiler folds into the shared scan and the predicate index prunes on "ERROR".
 SELECT l.msg, l.ts FROM logs l WHERE l.sev = "ERROR"
 -- @fixture
@@ -11,5 +10,5 @@ SELECT l.msg, l.ts FROM logs l WHERE l.sev = "ERROR"
 {"sev":"WARN","msg":"ok","ts":5}
 {"sev":"ERROR","msg":"oom","ts":9}
 -- @expect
-{"tag":"ET-12345","evidence":{"msg":"disk full","sev":"ERROR","ts":3}}
-{"tag":"ET-12345","evidence":{"msg":"oom","sev":"ERROR","ts":9}}
+{"label":"ET-12345","result":{"msg":"disk full","sev":"ERROR","ts":3}}
+{"label":"ET-12345","result":{"msg":"oom","sev":"ERROR","ts":9}}

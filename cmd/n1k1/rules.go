@@ -21,10 +21,10 @@
 // so CI / an agent drives it the same way.
 //
 // A CORPUS is a directory of *.sql++ RECIPE files (glue.LoadCorpus / glue.ParseRecipe).
-// A recipe is SQL++ plus optional `-- key: value` front-matter (label -> Tag, source,
-// severity, versions, tags) and an optional inline golden fixture (`-- @fixture` JSONL
+// A recipe is SQL++ plus optional `-- key: value` front-matter (label -> Label, source,
+// description, tags) and an optional inline golden fixture (`-- @fixture` JSONL
 // input rows + `-- @expect` golden findings). A plain *.sql++ with none of these still
-// loads (Tag = filename stem, Stmt = whole body) -- backward compatible.
+// loads (Label = filename stem, Stmt = whole body) -- backward compatible.
 //
 // SUBCOMMANDS:
 //
@@ -137,13 +137,13 @@ func parseRulesArgs(arg string) (rulesArgs, error) {
 }
 
 // loadRecipes loads a corpus dir as parsed recipes (front-matter + fixtures), the
-// reusable glue loader. loadCorpus below projects these onto the Tag+Stmt detectors
+// reusable glue loader. loadCorpus below projects these onto the Label+Stmt detectors
 // run/lint consume; .rules test needs the full recipe (source, fixture, expect).
 func loadRecipes(dir string) ([]glue.Recipe, error) {
 	return glue.LoadCorpus(dir)
 }
 
-// loadCorpus reads a corpus dir as the Tag+Stmt detectors run/lint consume: it loads
+// loadCorpus reads a corpus dir as the Label+Stmt detectors run/lint consume: it loads
 // the recipes (front-matter + fixtures stripped from the SQL body) via loadRecipes and
 // projects each onto its CorpusDetector. Returned sorted by path for deterministic
 // output. An empty corpus (no *.sql++ files) is an error -- a silent no-op corpus would
@@ -220,7 +220,7 @@ func (c *cli) rulesSession(bind string) (*glue.Session, glue.Binding, error) {
 }
 
 // cmdRulesList implements `.rules list`: a metadata-only inventory of the corpus --
-// one row per recipe (tag / source / severity / versions / fixture? / golden? / path),
+// one row per recipe (label / source / description / tags / fixture? / golden? / path),
 // rendered in the current output mode (box at a TTY, jsonlines when piped). It is the
 // fast "what's in my corpus" landing page: it only reads recipe front-matter (pure
 // glue.LoadCorpus), so it needs NO open bundle and does NOT compile -- distinct from
@@ -238,11 +238,11 @@ func (c *cli) cmdRulesList(arg string) {
 		c.failed = true
 		return
 	}
-	// LoadCorpus returns recipes sorted by path (deterministic); sort by tag with path
-	// as the tiebreak so the inventory reads in tag order regardless of file naming.
+	// LoadCorpus returns recipes sorted by path (deterministic); sort by label with path
+	// as the tiebreak so the inventory reads in label order regardless of file naming.
 	sort.SliceStable(recipes, func(i, j int) bool {
-		if recipes[i].Tag != recipes[j].Tag {
-			return recipes[i].Tag < recipes[j].Tag
+		if recipes[i].Label != recipes[j].Label {
+			return recipes[i].Label < recipes[j].Label
 		}
 		return recipes[i].Path < recipes[j].Path
 	})
@@ -258,10 +258,10 @@ func (c *cli) cmdRulesList(arg string) {
 			goldens++
 		}
 		rows = append(rows, orderedJSONRow(
-			[2]interface{}{"tag", r.Tag},
+			[2]interface{}{"label", r.Label},
 			[2]interface{}{"source", orEmptyDash(r.Source)},
-			[2]interface{}{"severity", orEmptyDash(r.Severity)},
-			[2]interface{}{"versions", orEmptyDash(strings.Join(r.Versions, ","))},
+			[2]interface{}{"description", orEmptyDash(r.Description)},
+			[2]interface{}{"tags", orEmptyDash(strings.Join(r.Tags, ","))},
 			[2]interface{}{"fixture?", yesNo(r.HasFixture)},
 			[2]interface{}{"golden?", yesNo(r.HasExpect)},
 			[2]interface{}{"path", r.Path},
@@ -327,15 +327,15 @@ func (c *cli) cmdRulesRun(arg string) {
 		return
 	}
 
-	// Render findings as JSON rows {"tag":..., "evidence":...} in the current output
+	// Render findings as JSON rows {"label":..., "result":...} in the current output
 	// mode (box at a TTY, jsonlines when piped -- reusing renderRows). Streaming each
 	// finding as it is produced (Session.OnRow-style) is a noted nice-to-have; the
 	// MVP batch-renders the whole set.
 	rows := make([]json.RawMessage, 0, len(findings))
 	for _, f := range findings {
 		rows = append(rows, orderedJSONRow(
-			[2]interface{}{"tag", f.Tag},
-			[2]interface{}{"evidence", f.Evidence},
+			[2]interface{}{"label", f.Label},
+			[2]interface{}{"result", f.Result},
 		))
 	}
 	c.renderRows(rows, "", false)
@@ -415,23 +415,23 @@ func (c *cli) reportDetectorHits(dets []glue.CorpusDetector, findings []glue.Fin
 	}
 	matched := make(map[string]int, len(dets))
 	for _, f := range findings {
-		matched[f.Tag]++
+		matched[f.Label]++
 	}
 	fmt.Fprintf(c.stderr, "  %s\n", c.style.Dim("per-query hits (scanned = keyspace rows; woken = rows that woke it; matched = findings):"))
 	for _, d := range dets {
-		ks, fused := cc.DetKeyspace[d.Tag]
-		m := matched[d.Tag]
+		ks, fused := cc.DetKeyspace[d.Label]
+		m := matched[d.Label]
 		var line string
 		if fused {
 			scanned := report.ScannedByKeyspace[ks]
-			woken := report.WokenByDetector[d.Tag]
-			line = fmt.Sprintf("%-24s matched=%-5d woken=%-7d %s scanned=%d", d.Tag, m, woken, ks, scanned)
+			woken := report.WokenByDetector[d.Label]
+			line = fmt.Sprintf("%-24s matched=%-5d woken=%-7d %s scanned=%d", d.Label, m, woken, ks, scanned)
 			if m == 0 {
 				line += "   " + zeroMatchHint(scanned, woken)
 			}
 		} else {
 			// Standalone (GROUP BY / window / ASOF / ...) or rejected: no shared scan.
-			line = fmt.Sprintf("%-24s matched=%-5d (standalone/non-fused)", d.Tag, m)
+			line = fmt.Sprintf("%-24s matched=%-5d (standalone/non-fused)", d.Label, m)
 		}
 		fmt.Fprintf(c.stderr, "    %s\n", c.style.Dim(line))
 	}
@@ -491,7 +491,7 @@ func (c *cli) reportBindingCoverage(sess *glue.Session, binding glue.Binding) bo
 }
 
 // reportCorpusHealth prints the coverage/health summary to stderr: fused / standalone
-// / rejected counts, and each rejected detector's tag + reason (surfaced, never
+// / rejected counts, and each rejected detector's label + reason (surfaced, never
 // silently dropped). total is the number of detectors loaded.
 func (c *cli) reportCorpusHealth(cc *glue.CompiledCorpus, total int) {
 	fused := total - len(cc.Standalone) - len(cc.Rejected)
@@ -500,13 +500,13 @@ func (c *cli) reportCorpusHealth(cc *glue.CompiledCorpus, total int) {
 	// A rejected detector never runs, so it can never fire: surface it with the reason
 	// AND the fix snippet (what a runnable detector looks like), never silently drop it.
 	for _, r := range cc.Rejected {
-		fmt.Fprintf(c.stderr, "  %s %s: %s\n", c.icon("✗"), r.Tag, c.style.Yellow(r.Reason))
+		fmt.Fprintf(c.stderr, "  %s %s: %s\n", c.icon("✗"), r.Label, c.style.Yellow(r.Reason))
 		fmt.Fprintf(c.stderr, "      %s\n", rulesFix(fixRejected, r.Reason))
 	}
 	// A standalone detector still runs (its own scan), just not fused into the shared
 	// scan -- name each so the author knows it opted out of fusion, with the why/how.
 	for _, d := range cc.Standalone {
-		fmt.Fprintf(c.stderr, "  %s %s: %s\n", c.icon("• "), d.Tag, rulesFix(fixStandalone, ""))
+		fmt.Fprintf(c.stderr, "  %s %s: %s\n", c.icon("• "), d.Label, rulesFix(fixStandalone, ""))
 	}
 }
 
@@ -554,7 +554,7 @@ func (c *cli) cmdRulesLint(arg string) {
 			index = "-" // only a fused detector uses the predicate index
 		}
 		rows = append(rows, orderedJSONRow(
-			[2]interface{}{"query", d.Tag},
+			[2]interface{}{"query", d.Label},
 			[2]interface{}{"class", d.Class},
 			[2]interface{}{"keyspace", orEmptyDash(d.Keyspace)},
 			[2]interface{}{"lane", orEmptyDash(d.Lane)},
@@ -621,7 +621,7 @@ func (c *cli) cmdRulesTest(arg string) {
 
 		if !r.HasFixture {
 			noFixture++
-			fmt.Fprintf(c.stderr, "  %s %s: no fixture\n", c.icon("• "), r.Tag)
+			fmt.Fprintf(c.stderr, "  %s %s: no fixture\n", c.icon("• "), r.Label)
 			continue
 		}
 
@@ -630,12 +630,12 @@ func (c *cli) cmdRulesTest(arg string) {
 			var unresolved *glue.ErrFixtureUnresolved
 			if errors.As(rerr, &unresolved) {
 				skipped++
-				fmt.Fprintf(c.stderr, "  %s %s: %s -- %s\n", c.icon("⏭ "), r.Tag,
+				fmt.Fprintf(c.stderr, "  %s %s: %s -- %s\n", c.icon("⏭ "), r.Label,
 					c.style.Yellow("SKIP"), tidyMsg(unresolved.Error()))
 				continue
 			}
 			failed++
-			fmt.Fprintf(c.stderr, "  %s %s: %s -- %s\n", c.icon("✗ "), r.Tag,
+			fmt.Fprintf(c.stderr, "  %s %s: %s -- %s\n", c.icon("✗ "), r.Label,
 				c.style.Red("FAIL"), tidyMsg(rerr.Error()))
 			continue
 		}
@@ -643,31 +643,31 @@ func (c *cli) cmdRulesTest(arg string) {
 		if args.update {
 			if uerr := updateRecipeExpect(r.Path, actual); uerr != nil {
 				failed++
-				fmt.Fprintf(c.stderr, "  %s %s: %s -- writing golden: %v\n", c.icon("✗ "), r.Tag,
+				fmt.Fprintf(c.stderr, "  %s %s: %s -- writing golden: %v\n", c.icon("✗ "), r.Label,
 					c.style.Red("FAIL"), uerr)
 				continue
 			}
 			updated++
-			fmt.Fprintf(c.stderr, "  %s %s: recorded %d finding(s)\n", c.icon("📝 "), r.Tag, len(actual))
+			fmt.Fprintf(c.stderr, "  %s %s: recorded %d finding(s)\n", c.icon("📝 "), r.Label, len(actual))
 			continue
 		}
 
 		if !r.HasExpect {
 			failed++
 			fmt.Fprintf(c.stderr, "  %s %s: %s -- %s\n",
-				c.icon("✗ "), r.Tag, c.style.Red("FAIL"), rulesFix(fixNoGolden, ""))
+				c.icon("✗ "), r.Label, c.style.Red("FAIL"), rulesFix(fixNoGolden, ""))
 			continue
 		}
 
 		missing, unexpected := glue.DiffFindings(r.Fixture.Expect, actual)
 		if len(missing) == 0 && len(unexpected) == 0 {
 			passed++
-			fmt.Fprintf(c.stderr, "  %s %s: %s (%d finding(s))\n", c.icon("✓ "), r.Tag,
+			fmt.Fprintf(c.stderr, "  %s %s: %s (%d finding(s))\n", c.icon("✓ "), r.Label,
 				c.style.Cyan("PASS"), len(actual))
 			continue
 		}
 		failed++
-		fmt.Fprintf(c.stderr, "  %s %s: %s (%d missing, %d unexpected)\n", c.icon("✗ "), r.Tag,
+		fmt.Fprintf(c.stderr, "  %s %s: %s (%d missing, %d unexpected)\n", c.icon("✗ "), r.Label,
 			c.style.Red("FAIL"), len(missing), len(unexpected))
 		for _, f := range missing {
 			fmt.Fprintf(c.stderr, "      %s missing:    %s\n", c.style.Red("-"), findingLine(f))
@@ -703,13 +703,13 @@ func updateRecipeExpect(path string, findings []glue.Finding) error {
 	return os.WriteFile(path, []byte(glue.RewriteExpect(string(raw), findings)), 0o644)
 }
 
-// findingLine renders one finding as a compact {"tag":...,"evidence":...} line for the
+// findingLine renders one finding as a compact {"label":...,"result":...} line for the
 // check-mode diff.
 func findingLine(f glue.Finding) string {
-	tag, _ := json.Marshal(f.Tag)
-	ev := f.Evidence
+	label, _ := json.Marshal(f.Label)
+	ev := f.Result
 	if len(ev) == 0 {
 		ev = json.RawMessage("null")
 	}
-	return fmt.Sprintf(`{"tag":%s,"evidence":%s}`, tag, string(ev))
+	return fmt.Sprintf(`{"label":%s,"result":%s}`, label, string(ev))
 }

@@ -44,8 +44,8 @@ func gateSession(t *testing.T, logsJSONL string) *Session {
 func TestCorpusGateStandalone(t *testing.T) {
 	// grep -C1 style window flag: standalone (has OVER), findings only near an ERROR.
 	stmt := `SELECT line FROM (SELECT line, MAX(CASE WHEN sev = "ERROR" THEN 1 ELSE 0 END) OVER (ORDER BY code ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING) AS near FROM logs) sub WHERE sub.near = 1`
-	gated := CorpusDetector{Tag: "CTX", Stmt: stmt, Source: "logs", Gate: `sev = "ERROR"`}
-	ungated := CorpusDetector{Tag: "CTX", Stmt: stmt}
+	gated := CorpusDetector{Label: "CTX", Stmt: stmt, Source: "logs", Gate: `sev = "ERROR"`}
+	ungated := CorpusDetector{Label: "CTX", Stmt: stmt}
 
 	withErr := `{"sev":"ERROR","code":1,"line":"boom"}` + "\n" + `{"sev":"INFO","code":2,"line":"ok"}` + "\n"
 	noErr := `{"sev":"INFO","code":1,"line":"a"}` + "\n" + `{"sev":"WARN","code":2,"line":"b"}` + "\n"

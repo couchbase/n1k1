@@ -59,16 +59,16 @@ func theManifest() Binding {
 // keyspace `indexer_log` (must FUSE into one shared scan) plus one on `orders`.
 func theCorpus() []CorpusDetector {
 	return []CorpusDetector{
-		{Tag: "idx_error", Stmt: `SELECT * FROM indexer_log l WHERE l.sev = "ERROR"`},
-		{Tag: "idx_timeout", Stmt: `SELECT * FROM indexer_log l WHERE l.msg = "scan timeout"`},
-		{Tag: "big_order", Stmt: `SELECT * FROM orders o WHERE o.total > 100`},
+		{Label: "idx_error", Stmt: `SELECT * FROM indexer_log l WHERE l.sev = "ERROR"`},
+		{Label: "idx_timeout", Stmt: `SELECT * FROM indexer_log l WHERE l.msg = "scan timeout"`},
+		{Label: "big_order", Stmt: `SELECT * FROM orders o WHERE o.total > 100`},
 	}
 }
 
 func findingTags(fs []Finding) map[string]int {
 	m := map[string]int{}
 	for _, f := range fs {
-		m[f.Tag]++
+		m[f.Label]++
 	}
 	return m
 }
@@ -140,15 +140,15 @@ func TestBindingTwoBundles(t *testing.T) {
 			//   big_order   -> 2 rows (o1 total 150, o3 total 300)
 			got := findingTags(findings)
 			want := map[string]int{"idx_error": 2, "idx_timeout": 1, "big_order": 2}
-			for tag, n := range want {
-				if got[tag] != n {
-					t.Errorf("bundle %s: tag %q findings = %d, want %d (all=%v)",
-						bundle.name, tag, got[tag], n, got)
+			for label, n := range want {
+				if got[label] != n {
+					t.Errorf("bundle %s: label %q findings = %d, want %d (all=%v)",
+						bundle.name, label, got[label], n, got)
 				}
 			}
-			for tag := range got {
-				if _, ok := want[tag]; !ok {
-					t.Errorf("bundle %s: unexpected finding tag %q", bundle.name, tag)
+			for label := range got {
+				if _, ok := want[label]; !ok {
+					t.Errorf("bundle %s: unexpected finding label %q", bundle.name, label)
 				}
 			}
 			// t.Logf("bundle %s findings: %v", bundle.name, got)
@@ -276,9 +276,9 @@ func TestBindingSameLogicalFusesScanOnce(t *testing.T) {
 	defer sess.Close()
 
 	cc, err := sess.CorpusCompile([]CorpusDetector{
-		{Tag: "a", Stmt: `SELECT * FROM indexer_log l WHERE l.sev = "ERROR"`},
-		{Tag: "b", Stmt: `SELECT * FROM indexer_log l WHERE l.msg = "scan timeout"`},
-		{Tag: "c", Stmt: `SELECT * FROM indexer_log l`},
+		{Label: "a", Stmt: `SELECT * FROM indexer_log l WHERE l.sev = "ERROR"`},
+		{Label: "b", Stmt: `SELECT * FROM indexer_log l WHERE l.msg = "scan timeout"`},
+		{Label: "c", Stmt: `SELECT * FROM indexer_log l`},
 	})
 	if err != nil {
 		t.Fatalf("CorpusCompile: %v", err)
@@ -301,9 +301,9 @@ func TestBindingSameLogicalFusesScanOnce(t *testing.T) {
 	got := findingTags(findings)
 	// a: 2 ERROR, b: 1 timeout, c: all 3 rows.
 	want := map[string]int{"a": 2, "b": 1, "c": 3}
-	for tag, n := range want {
-		if got[tag] != n {
-			t.Errorf("tag %q = %d, want %d (all=%v)", tag, got[tag], n, got)
+	for label, n := range want {
+		if got[label] != n {
+			t.Errorf("label %q = %d, want %d (all=%v)", label, got[label], n, got)
 		}
 	}
 }
