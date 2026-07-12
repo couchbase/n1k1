@@ -27,18 +27,24 @@ import (
 	"github.com/couchbase/n1k1/glue"
 )
 
-// helpTopic is one deep-dive entry for the `.help` index.
+// helpTopic is one entry in the `.help` index. `alias`, when set, notes the
+// equivalent command-scoped help (e.g. `.help rules` == `.rules help`) -- those
+// topics DELEGATE to the same guide, so there is one source of truth and two ways in.
 type helpTopic struct {
-	name, blurb string
+	name, blurb, alias string
 }
 
-// helpTopics is the ordered topic index shown by `.help`.
+// helpTopics is the ordered topic index shown by `.help`: concept deep-dives first,
+// then the command guides (also reachable as `.<command> help`).
 var helpTopics = []helpTopic{
-	{"reserved-words", "the SQL++ keywords you must backtick as identifiers (full list)"},
-	{"quoting", "backticks vs the shell vs dot-command args"},
-	{"keyspaces", "how files/dirs become keyspaces; dotted names"},
-	{"meta", "the _meta record fields + external follow-up"},
-	{"temp-keyspaces", "CREATE TEMP KEYSPACE staged pipelines"},
+	{name: "reserved-words", blurb: "the SQL++ keywords you must backtick as identifiers (full list)"},
+	{name: "quoting", blurb: "backticks vs the shell vs dot-command args"},
+	{name: "keyspaces", blurb: "how files/dirs become keyspaces; dotted names"},
+	{name: "meta", blurb: "the _meta record fields + external follow-up"},
+	{name: "temp-keyspaces", blurb: "CREATE TEMP KEYSPACE staged pipelines"},
+	{name: "rules", blurb: "authoring & running a collection of SQL++ queries", alias: ".rules help"},
+	{name: "extract", blurb: "authoring *.extract.js recipes that frame files into rows", alias: ".extract help"},
+	{name: "index", blurb: "secondary/FTS indexes: the catalog + .index commands", alias: ".index help"},
 }
 
 // cmdHelp implements `.help [<topic> [<arg>]]`.
@@ -50,7 +56,11 @@ func (c *cli) cmdHelp(arg string) {
 		c.printHelp()
 		fmt.Fprintln(c.stderr, "\nDeep-dive topics — .help <topic>:")
 		for _, t := range helpTopics {
-			fmt.Fprintf(c.stderr, "  .help %-15s %s\n", t.name, t.blurb)
+			line := fmt.Sprintf("  .help %-15s %s", t.name, t.blurb)
+			if t.alias != "" {
+				line += " (= " + t.alias + ")"
+			}
+			fmt.Fprintln(c.stderr, line)
 		}
 	case "reserved-words", "reserved", "keywords":
 		c.helpReserved(strings.TrimSpace(rest))
@@ -62,6 +72,14 @@ func (c *cli) cmdHelp(arg string) {
 		c.helpMeta()
 	case "temp-keyspaces", "temp-keyspace", "temp", "materialize":
 		c.helpTempKeyspaces()
+	// Command guides: delegate to the SAME help the command-scoped form prints, so
+	// `.help rules` and `.rules help` are one guide reached two ways.
+	case "rules":
+		c.cmdRulesHelp()
+	case "extract":
+		c.cmdExtract("help")
+	case "index":
+		c.cmdIndexHelp()
 	default:
 		fmt.Fprintf(c.stderr, "unknown help topic %q — run %s for the topic list\n", topic, ".help")
 	}

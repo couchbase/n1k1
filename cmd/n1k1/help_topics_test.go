@@ -70,8 +70,9 @@ func TestHelpReservedWordsList(t *testing.T) {
 	}
 }
 
-// TestHelpTopics: each deep-dive topic prints (no panic) with recognizable content,
-// and an unknown topic is reported.
+// TestHelpTopics: each topic prints (no panic) recognizable content -- concept
+// deep-dives AND the delegated command guides (rules/extract/index) -- and an unknown
+// topic is reported.
 func TestHelpTopics(t *testing.T) {
 	cases := map[string]string{
 		"reserved-words": "reserved words",
@@ -79,13 +80,17 @@ func TestHelpTopics(t *testing.T) {
 		"keyspaces":      "keyspace",
 		"meta":           "_meta",
 		"temp-keyspaces": "CREATE",
+		"rules":          ".rules",   // delegated command guide
+		"extract":        ".extract", // delegated command guide
+		"index":          ".index",   // delegated command guide
 	}
 	for topic, want := range cases {
 		var out, errb bytes.Buffer
 		c := &cli{prog: "n1k1", mode: "jsonlines", out: &out, stderr: &errb}
 		c.cmdHelp(topic)
-		if !strings.Contains(errb.String(), want) {
-			t.Errorf(".help %s missing %q; got:\n%s", topic, want, errb.String())
+		got := out.String() + errb.String() // command guides print to stdout, topics to stderr
+		if !strings.Contains(got, want) {
+			t.Errorf(".help %s missing %q; got:\n%s", topic, want, got)
 		}
 	}
 
@@ -94,5 +99,28 @@ func TestHelpTopics(t *testing.T) {
 	c.cmdHelp("bogus-topic")
 	if !strings.Contains(errb.String(), "unknown help topic") {
 		t.Errorf("unknown topic not reported; got:\n%s", errb.String())
+	}
+}
+
+// TestHelpDelegatesToCommandGuides: `.help <cmd>` prints the SAME guide as `.<cmd>
+// help` -- one source of truth, two entry points (not duplicated text).
+func TestHelpDelegatesToCommandGuides(t *testing.T) {
+	both := func(run func(c *cli)) string {
+		var out, errb bytes.Buffer
+		c := &cli{prog: "n1k1", mode: "jsonlines", out: &out, stderr: &errb}
+		run(c)
+		return out.String() + errb.String()
+	}
+	for _, tc := range []struct{ topic, cmd, arg string }{
+		{"rules", ".rules", "help"},
+		{"extract", ".extract", "help"},
+		{"index", ".index", "help"},
+	} {
+		viaHelp := both(func(c *cli) { c.cmdHelp(tc.topic) })
+		viaCmd := both(func(c *cli) { c.dot(tc.cmd + " " + tc.arg) })
+		if viaHelp != viaCmd {
+			t.Errorf(".help %s != %s %s (delegation should be identical)\n--- .help %s ---\n%s\n--- %s %s ---\n%s",
+				tc.topic, tc.cmd, tc.arg, tc.topic, viaHelp, tc.cmd, tc.arg, viaCmd)
+		}
 	}
 }
