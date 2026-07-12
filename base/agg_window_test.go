@@ -117,18 +117,20 @@ func TestSlideSumAvgMatchesFold(t *testing.T) {
 }
 
 // TestSlideMinMaxMatchesFold drives the monotonic deque over sliding windows and checks
-// MIN/MAX equal the fresh AggMin/AggMax fold (which does NOT skip NULL/MISSING).
+// MIN/MAX equal the fresh AggMin/AggMax fold. Both now SKIP NULL/MISSING (SQL semantics);
+// a MISSING still latches a conservative re-fold in the deque (SlideMinMaxExact).
 func TestSlideMinMaxMatchesFold(t *testing.T) {
 	valSets := []struct {
 		vals       []string
-		hasMissing bool // AggMin/AggMax's length-as-count quirk on MISSING -> deque re-folds
+		hasMissing bool // a MISSING latches SlideMinMaxExact()==false -> caller re-folds
 	}{
 		{[]string{"3", "1", "4", "1", "5", "9", "2", "6"}, false},
 		{[]string{"5", "5", "5", "5"}, false},
 		{[]string{"1", "2", "3", "4", "5"}, false},    // ascending
 		{[]string{"5", "4", "3", "2", "1"}, false},    // descending
-		{[]string{"3", "null", "4", "1", "9"}, false}, // null: a normal comparable
-		{[]string{"3", "", "4", "1", "9"}, true},      // missing: order-dependent -> re-fold
+		{[]string{"3", "null", "4", "1", "9"}, false}, // null: skipped by MIN/MAX (deque still exact)
+		{[]string{"3", "", "4", "1", "9"}, true},      // missing: skipped + latches a re-fold
+		{[]string{"null", "null", "null"}, false},     // all-null: deque stays empty -> NULL
 		{[]string{`"b"`, `"a"`, `"c"`, `"a"`}, false}, // strings compare too
 		{[]string{"10", `"x"`, "2", "30"}, false},     // mixed number/string
 	}

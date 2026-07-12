@@ -344,23 +344,28 @@ func (wf *WindowFrame) SlideMinMaxReset() {
 	wf.mmEverMissing = false
 }
 
-// SlideMinMaxExact reports whether the deque can match a fresh AggMin/AggMax fold. It
-// returns false once a MISSING operand (an empty Val) has entered this partition:
-// AggMin/AggMax store the running value's length as their have-a-value count, so a
-// stored MISSING (length 0) makes the next value overwrite unconditionally -- an
-// order-dependent, non-associative quirk a monotonic deque can't reproduce. NULL is
-// fine (a normal length-4 comparable). When false, the caller must re-fold.
+// SlideMinMaxExact reports whether the deque result can be trusted without a re-fold.
+// The deque SKIPS NULL and MISSING (SlideMinMaxEnter), matching the fixed AggMin/AggMax
+// (which skip !ValHasValue), so it is exact even when NULLs are present. A MISSING still
+// latches false as a conservative fallback -- the engine then re-folds via AggMin/AggMax,
+// which now agree with the deque anyway; MISSING is rare in the numeric window columns
+// this fast path targets, so the extra re-fold costs little.
 func (wf *WindowFrame) SlideMinMaxExact() bool { return !wf.mmEverMissing }
 
 // SlideMinMaxEnter pushes a newly-entered row (position idx, ascending across calls)
 // onto the monotonic deque, maintaining MIN (isMax false: values ascending front->back,
-// front is the min) or MAX (isMax true: values descending, front is the max). It
-// compares raw Vals via vc -- matching AggMin/AggMax (AggCompareUpdate), which do NOT
-// skip NULL/MISSING -- so a dominated tail is popped before idx is appended. The value
-// bytes are copied (the caller's operand buffer is reused across rows).
+// front is the min) or MAX (isMax true: values descending, front is the max). NULL and
+// MISSING are IGNORED (matching the fixed AggMin/AggMax, which skip !ValHasValue): a
+// skipped value never enters the deque, so the front stays the true min/max of the
+// frame's real values. A MISSING additionally latches a conservative re-fold for the
+// partition (see SlideMinMaxExact). Comparisons use vc; the value bytes are copied (the
+// caller's operand buffer is reused across rows).
 func (wf *WindowFrame) SlideMinMaxEnter(idx int64, v Val, isMax bool, vc *ValComparer) {
-	if len(v) == 0 { // MISSING -- latch; the caller re-folds this partition (see SlideMinMaxExact)
-		wf.mmEverMissing = true
+	if !ValHasValue(v) { // NULL or MISSING -- skip (MIN/MAX ignore them)
+		if len(v) == 0 { // MISSING also latches a conservative re-fold
+			wf.mmEverMissing = true
+		}
+		return
 	}
 	for len(wf.mmVal) > wf.mmHead {
 		back := wf.mmVal[len(wf.mmVal)-1]
@@ -395,11 +400,12 @@ func (wf *WindowFrame) SlideMinMaxExpire(beg int64) {
 }
 
 // SlideMinMaxResult returns the current MIN/MAX (the deque front's value) formatted
-// byte-identically to AggCompareResult. An empty deque (empty frame) yields the empty
-// MISSING Val, matching AggMin/AggMax over an empty frame.
+// byte-identically to AggCompareResult. An empty deque -- an empty frame, or a frame
+// whose only values were NULL/MISSING (all skipped) -- yields NULL, matching the fixed
+// AggCompareResult (n == 0 -> NULL, not MISSING).
 func (wf *WindowFrame) SlideMinMaxResult(buf []byte) (Val, []byte) {
 	if wf.mmHead >= len(wf.mmVal) {
-		return Val(buf[:0]), buf[:0]
+		return ValNull, buf
 	}
 	buf = append(buf[:0], wf.mmVal[wf.mmHead]...)
 	return Val(buf), buf

@@ -443,7 +443,17 @@ func AggCompareUpdate(comparer func(int) bool) func(
 	vars *Vars, v Val, aggNew, agg []byte, vc *ValComparer) ([]byte, []byte, bool) {
 	return func(vars *Vars, v Val, aggNew, agg []byte, vc *ValComparer) ([]byte, []byte, bool) {
 		n := binary.LittleEndian.Uint64(agg[:8])
-		if n <= 0 || comparer(vc.Compare(v, agg[8:8+n])) {
+
+		// MIN/MAX ignore NULL and MISSING (cbq agg_min.go/agg_max.go skip
+		// item.Type() <= value.NULL). Without this, a NULL/MISSING -- which sorts
+		// BELOW every number -- would be taken as the running MIN; MAX escaped the bug
+		// only because a NULL never compares greater than a real value. A skipped value
+		// leaves the accumulator unchanged, like AggCount/AggSum's non-value path.
+		if !ValHasValue(v) {
+			return append(aggNew, agg[:8+n]...), agg[8+n:], false
+		}
+
+		if n == 0 || comparer(vc.Compare(v, agg[8:8+n])) {
 			aggNew = BinaryAppendUint64(aggNew, uint64(len(v)))
 			aggNew = append(aggNew, v...)
 			return aggNew, agg[8+n:], true
@@ -455,6 +465,12 @@ func AggCompareUpdate(comparer func(int) bool) func(
 
 func AggCompareResult(vars *Vars, agg, buf []byte) (v Val, aggRest, bufOut []byte) {
 	n := binary.LittleEndian.Uint64(agg[:8])
+
+	// No non-NULL/non-MISSING value was seen (empty group, or all NULL/MISSING) ->
+	// MIN/MAX is NULL, matching SUM/AVG and cbq (not MISSING).
+	if n == 0 {
+		return ValNull, agg[8:], buf
+	}
 
 	vBuf := append(buf[:0], agg[8:8+n]...)
 

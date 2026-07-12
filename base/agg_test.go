@@ -132,6 +132,42 @@ func TestAggSumNullForNoNumericInput(t *testing.T) {
 	}
 }
 
+// TestAggMinMaxSkipNullMissing: MIN/MAX must IGNORE NULL and MISSING inputs (SQL
+// semantics; cbq agg_min.go/agg_max.go skip item.Type() <= value.NULL). Regression
+// for a bug where NULL/MISSING -- which sort below every number -- were taken as the
+// running MIN (MAX escaped only by luck). An all-NULL/MISSING or empty group is NULL.
+func TestAggMinMaxSkipNullMissing(t *testing.T) {
+	fold := func(a *Agg, jsons ...string) string {
+		vc := &ValComparer{}
+		agg := a.Init(nil, nil)
+		for _, js := range jsons {
+			agg, _, _ = a.Update(nil, Val(js), nil, agg, vc) // Val("") == MISSING
+		}
+		v, _, _ := a.Result(nil, agg, nil)
+		return string(v)
+	}
+	for _, c := range []struct {
+		name, min, max string
+		in             []string
+	}{
+		{"leading-null", "5", "20", []string{"null", "10", "5", "20"}},
+		{"null-in-middle", "5", "20", []string{"10", "null", "5", "20"}},
+		{"missing-and-null", "5", "20", []string{"10", "", "null", "5", "20"}},
+		{"all-null", "null", "null", []string{"null", "null"}},
+		{"all-missing", "null", "null", []string{"", ""}},
+		{"empty", "null", "null", nil},
+		{"single", "7", "7", []string{"7"}},
+		{"negatives", "-9", "3", []string{"3", "-9", "0"}},
+	} {
+		if got := fold(AggMin, c.in...); got != c.min {
+			t.Errorf("%s: MIN=%q want %q", c.name, got, c.min)
+		}
+		if got := fold(AggMax, c.in...); got != c.max {
+			t.Errorf("%s: MAX=%q want %q", c.name, got, c.max)
+		}
+	}
+}
+
 // TestAggAvgNullForEmpty: AVG over an empty group (count == 0) is NULL, not MISSING
 // (Val(nil)) -- the empty-window-frame case. (NOTE: a group with rows but no NUMERIC
 // values -- AVG(["a","b"]) -- still returns 0 here, not NULL; AggCount counts
