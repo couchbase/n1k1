@@ -21,6 +21,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/couchbase/query/value"
 )
 
 // writeRuleMatchesCorpus writes a small detector corpus (recipe .sql++ files) into
@@ -372,4 +374,114 @@ func dataRootOfSession(t *testing.T, sess *Session) string {
 		t.Fatalf("unexpected datastore URL %q", url)
 	}
 	return url[len(p):]
+}
+
+// --- RULE_MATCHES manifest binding + option parsing (rule_matches.go) ---
+// These pure/file-based helpers were the thinnest part of the TVF (loadRuleMatchesBinding
+// 32%, parseRuleMatchesOpts 43%): the happy paths run via the corpus tests above, but the
+// manifest formats and the many rejection branches were unexercised. Test them directly.
+
+// TestLoadRuleMatchesBinding covers both manifest formats (JSON object and
+// `logical = glob` lines with comments/blanks) plus every error branch.
+func TestLoadRuleMatchesBinding(t *testing.T) {
+	write := func(name, body string) string {
+		p := filepath.Join(t.TempDir(), name)
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+
+	// JSON object form.
+	if b, err := loadRuleMatchesBinding(write("m.json", `{"logs":"logs/*.json","ev":"events/*"}`)); err != nil ||
+		b["logs"] != "logs/*.json" || b["ev"] != "events/*" {
+		t.Fatalf("json manifest: b=%v err=%v", b, err)
+	}
+	// `logical = glob` line form, with a comment and a blank line and stray whitespace.
+	if b, err := loadRuleMatchesBinding(write("m.txt", "# manifest\n\nlogs = logs/*.json\n  ev =  events/*  \n")); err != nil ||
+		b["logs"] != "logs/*.json" || b["ev"] != "events/*" {
+		t.Fatalf("line manifest: b=%v err=%v", b, err)
+	}
+
+	for _, c := range []struct {
+		name, body, wantErr string
+		missing             bool
+	}{
+		{name: "missing-file", missing: true, wantErr: "reading manifest"},
+		{name: "bad-json", body: `{ not valid`, wantErr: "(JSON)"},
+		{name: "no-equals", body: "logs logs/*.json", wantErr: "want `logical = glob`"},
+		{name: "empty-glob", body: "logs =", wantErr: "empty logical or glob"},
+		{name: "empty-logical", body: " = logs/*", wantErr: "empty logical or glob"},
+		{name: "no-bindings", body: "# only a comment\n\n", wantErr: "no bindings"},
+	} {
+		path := filepath.Join(t.TempDir(), "nope")
+		if !c.missing {
+			path = write(c.name+".txt", c.body)
+		}
+		_, err := loadRuleMatchesBinding(path)
+		if err == nil || !strings.Contains(err.Error(), c.wantErr) {
+			t.Errorf("%s: err = %v, want containing %q", c.name, err, c.wantErr)
+		}
+	}
+}
+
+// TestParseRuleMatchesOpts covers the lenient arg-1 object reader: bind + versions,
+// non-object input, wrong-typed fields (ignored), and unknown keys (forward-compat).
+func TestParseRuleMatchesOpts(t *testing.T) {
+	o := parseRuleMatchesOpts(value.NewValue(map[string]interface{}{
+		"bind":     "manifest.txt",
+		"versions": []interface{}{"v1", "v2"},
+	}))
+	if o.bind != "manifest.txt" || len(o.versions) != 2 || o.versions[0] != "v1" || o.versions[1] != "v2" {
+		t.Errorf("full opts = %+v", o)
+	}
+
+	// Non-object / nil -> zero opts.
+	if got := parseRuleMatchesOpts(value.NewValue("a string")); got.bind != "" || got.versions != nil {
+		t.Errorf("non-object -> %+v, want zero", got)
+	}
+	if got := parseRuleMatchesOpts(nil); got.bind != "" || got.versions != nil {
+		t.Errorf("nil -> %+v, want zero", got)
+	}
+
+	// Wrong-typed fields are ignored; non-string versions entries are skipped.
+	o = parseRuleMatchesOpts(value.NewValue(map[string]interface{}{
+		"bind":     123,
+		"versions": []interface{}{"keep", 5, "also"},
+	}))
+	if o.bind != "" {
+		t.Errorf("non-string bind should be ignored, got %q", o.bind)
+	}
+	if len(o.versions) != 2 || o.versions[0] != "keep" || o.versions[1] != "also" {
+		t.Errorf("versions filter = %v, want [keep also]", o.versions)
+	}
+
+	// Unknown key ignored (forward-compatible opts).
+	if got := parseRuleMatchesOpts(value.NewValue(map[string]interface{}{"future": "x"})); got.bind != "" || got.versions != nil {
+		t.Errorf("unknown key -> %+v, want zero", got)
+	}
+}
+
+// TestRejectsMentionKeyspace / warnSink: the bind-hint heuristic and the no-op warn
+// callback when the eval context isn't a *GlueContext.
+func TestRejectsMentionKeyspaceAndWarnSink(t *testing.T) {
+	if !rejectsMentionKeyspace([]RejectedDetector{{Tag: "d1", Reason: "no such KEYSPACE `logs`"}}) {
+		t.Error("a keyspace-resolution reason should trigger the bind hint")
+	}
+	if rejectsMentionKeyspace([]RejectedDetector{{Tag: "d1", Reason: "syntax error near FROM"}}) {
+		t.Error("a non-keyspace reason should not trigger the hint")
+	}
+	if rejectsMentionKeyspace(nil) {
+		t.Error("no rejects -> false")
+	}
+
+	// warnSink with a non-*GlueContext context returns a no-op that must not panic.
+	warnSink(nil)("this warning is dropped")
+
+	// warnSink with a real *GlueContext routes the message to its warning collector.
+	gc := &GlueContext{}
+	warnSink(gc)("a real warning")
+	if got := len(gc.GetErrors()); got != 1 {
+		t.Errorf("warnSink(*GlueContext) collected %d warnings, want 1", got)
+	}
 }
