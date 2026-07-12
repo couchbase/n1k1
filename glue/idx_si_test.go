@@ -14,6 +14,7 @@
 package glue
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -21,6 +22,8 @@ import (
 	"testing"
 
 	"github.com/couchbase/n1k1/records"
+
+	"github.com/couchbase/query/value"
 )
 
 // jsonlDocs builds n JSONL lines, each with a unique high-cardinality "sku" and a
@@ -200,5 +203,151 @@ func TestKeyspaceRecordsOpen(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("%q: opened %d records, want %d", tc.path, got, tc.want)
 		}
+	}
+}
+
+// --- Order-preserving secondary-index key codec (idx_si_encode.go) ---
+//
+// The codec's two contracts are (1) round-trip fidelity for scalars and (2) byte
+// order == N1QL collation order for scalars (so a bbolt Seek/Next walks in order).
+// These tests assert both directly, plus self-delimiting docID recovery and
+// malformed-input safety -- sweeping the encode/decode edge branches (containers,
+// escaped 0x00, truncated/garbage prefixes) the coverage audit flagged as thin.
+
+// TestSIEncodeRoundTripScalars: decode(encode(v)) collates equal to v, and decode
+// consumes exactly the encoded length (self-delimiting).
+func TestSIEncodeRoundTripScalars(t *testing.T) {
+	for _, v := range []value.Value{
+		value.MISSING_VALUE, value.NULL_VALUE, value.FALSE_VALUE, value.TRUE_VALUE,
+		value.NewValue(int64(0)), value.NewValue(int64(-7)), value.NewValue(int64(42)),
+		value.NewValue(3.14), value.NewValue(-2.5), value.NewValue(1e300), value.NewValue(-1e-300),
+		value.NewValue(""), value.NewValue("a"), value.NewValue("abc"),
+		value.NewValue("with\x00nul"), // exercises the 0x00 escape/unescape
+		value.NewValue("emoji-✓"),
+	} {
+		enc := encodeValue(nil, v)
+		got, n, ok := decodeValue(enc)
+		if !ok {
+			t.Errorf("%v: decode ok=false", v.Actual())
+			continue
+		}
+		if n != len(enc) {
+			t.Errorf("%v: consumed n=%d, want %d", v.Actual(), n, len(enc))
+		}
+		if got.Collate(v) != 0 {
+			t.Errorf("round-trip %v -> %v", v.Actual(), got.Actual())
+		}
+	}
+}
+
+// TestSIEncodeOrderPreserving: encoded bytes are STRICTLY increasing in N1QL
+// collation order -- cross-type (MISSING<NULL<FALSE<TRUE<number<string) and
+// within-type (numeric magnitude; string lexicographic incl. the prefix rule).
+func TestSIEncodeOrderPreserving(t *testing.T) {
+	ordered := []value.Value{
+		value.MISSING_VALUE, value.NULL_VALUE, value.FALSE_VALUE, value.TRUE_VALUE,
+		value.NewValue(-1e10), value.NewValue(-1.5), value.NewValue(int64(0)),
+		value.NewValue(int64(1)), value.NewValue(2.5), value.NewValue(1e10),
+		value.NewValue(""), value.NewValue("a"), value.NewValue("ab"), value.NewValue("b"),
+	}
+	for i := 1; i < len(ordered); i++ {
+		a := encodeValue(nil, ordered[i-1])
+		b := encodeValue(nil, ordered[i])
+		if bytes.Compare(a, b) >= 0 {
+			t.Errorf("order broken: %v (%x) not < %v (%x)",
+				ordered[i-1].Actual(), a, ordered[i].Actual(), b)
+		}
+	}
+}
+
+// TestSIEncodeSelfDelimiting: an encoded value followed by raw docID bytes decodes
+// back to the value AND leaves the docID suffix intact; encodeSeq + splitKey +
+// decodeKeyComponents recover a multi-component composite key.
+func TestSIEncodeSelfDelimiting(t *testing.T) {
+	docID := []byte("doc::abc\x00def") // includes a 0x00 to ensure no separator confusion
+	for _, v := range []value.Value{
+		value.NewValue(int64(5)), value.NewValue("k\x00ey"), value.NULL_VALUE,
+	} {
+		full := append(encodeValue(nil, v), docID...)
+		got, n, ok := decodeValue(full)
+		if !ok || got.Collate(v) != 0 {
+			t.Errorf("%v: decode ok=%v got=%v", v.Actual(), ok, got)
+		}
+		if !bytes.Equal(full[n:], docID) {
+			t.Errorf("%v: docID suffix = %q, want %q", v.Actual(), full[n:], docID)
+		}
+	}
+
+	if encodeSeq(nil) != nil {
+		t.Error("encodeSeq(nil) should be nil (no bound values)")
+	}
+	comp := encodeSeq(value.Values{value.NewValue("node1"), value.NewValue(int64(99))})
+	key := append(append([]byte{}, comp...), docID...)
+	ends, gotDoc, ok := splitKey(key, 2)
+	if !ok || len(ends) != 2 {
+		t.Fatalf("splitKey ok=%v ends=%v", ok, ends)
+	}
+	if !bytes.Equal(gotDoc, docID) {
+		t.Errorf("splitKey docID = %q, want %q", gotDoc, docID)
+	}
+	keys := decodeKeyComponents(key, ends)
+	if len(keys) != 2 || keys[0].Collate(value.NewValue("node1")) != 0 ||
+		keys[1].Collate(value.NewValue(int64(99))) != 0 {
+		t.Errorf("decodeKeyComponents = %v", keys)
+	}
+}
+
+// TestSIEncodeContainers: arrays/objects are stored (index completeness) via
+// canonicalBytes and stay self-delimiting so the docID is still recoverable, even
+// though their intra-type byte order is not collation order (a documented v1 caveat).
+func TestSIEncodeContainers(t *testing.T) {
+	docID := []byte("d1")
+	for _, v := range []value.Value{
+		value.NewValue([]interface{}{int64(1), "x"}),          // array -> MarshalJSON
+		value.NewValue(map[string]interface{}{"a": int64(1)}), // object -> MarshalJSON
+		value.NewBinaryValue([]byte("rawbytes")),              // Actual []byte -> raw path
+	} {
+		full := append(encodeValue(nil, v), docID...)
+		_, n, ok := decodeValue(full)
+		if !ok {
+			t.Errorf("%v: decode ok=false", v.Type())
+			continue
+		}
+		if !bytes.Equal(full[n:], docID) {
+			t.Errorf("%v: docID suffix lost: %q", v.Type(), full[n:])
+		}
+	}
+}
+
+// TestSIDecodeMalformed: a garbage/truncated prefix returns ok=false and never
+// panics (defensive decoding), including the string-escape error branches.
+func TestSIDecodeMalformed(t *testing.T) {
+	for _, b := range [][]byte{
+		{},                            // empty
+		{0x7f},                        // unknown type tag
+		{tagNumber, 1, 2, 3},          // number needs 8 payload bytes
+		{tagString, 0x00},             // 0x00 at end, no follow byte
+		{tagString, 'a', 0x00, 0x42},  // bad escape (0x00 then neither 0x00 nor 0xFF)
+		{tagString, 'a'},              // unterminated string (no 0x00 0x00)
+	} {
+		if _, _, ok := decodeValue(b); ok {
+			t.Errorf("decodeValue(%x) ok=true, want false", b)
+		}
+	}
+	if _, _, ok := splitKey([]byte{tagNumber, 1}, 1); ok {
+		t.Error("splitKey on a truncated component: ok=true, want false")
+	}
+}
+
+// TestSIToFloat64: number representations unwrap to float64; a non-number yields 0.
+func TestSIToFloat64(t *testing.T) {
+	if got := toFloat64(value.NewValue(int64(7))); got != 7 {
+		t.Errorf("int64 7 -> %v", got)
+	}
+	if got := toFloat64(value.NewValue(3.5)); got != 3.5 {
+		t.Errorf("float 3.5 -> %v", got)
+	}
+	if got := toFloat64(value.NewValue("not-a-number")); got != 0 {
+		t.Errorf("non-number -> %v, want 0", got)
 	}
 }
