@@ -356,14 +356,19 @@ OUTER:
 			}
 
 		case '^': // The label is an attachment name for vals[i].
-			if label[1:] == "worderby" {
-				// "^worderby" is an INTERNAL window ORDER-BY column, consumed positionally
-				// by op_window (WindowFrame.ValIdx) in the byte lane -- it is never a boxed
-				// attachment. Skip it: boxing it would call attKey("worderby"), whose
-				// catch-all folds unknown names onto ATT_AGGREGATES, clobbering the real
-				// aggregates map. That collision panicked for `SELECT *` (whole-row) beside
-				// a NO-OPERAND window function (ROW_NUMBER/RANK/COUNT(*) OVER), which emit a
-				// "^worderby" column ahead of "^aggregates|..."; operand fns (LAG) don't.
+			// Only THREE attachment kinds are boxed onto the value for downstream boxed
+			// consumers: "^id" (META().id), "^smeta" (SEARCH_META/SEARCH_SCORE), and
+			// "^aggregates|<fn>" (cbq Aggregate.Evaluate reads ATT_AGGREGATES). Every OTHER
+			// "^name" label is an INTERNAL byte-lane column consumed POSITIONALLY by its op
+			// -- "^worderby" (window ORDER BY, op_window ValIdx), "^ekey"/"^rkey"/"^epart"/
+			// "^rpart" (ASOF merge-join keys), "^cseN" (CSE slots), "^resetScope" -- and is
+			// NEVER a boxed attachment. Skip those. Boxing one routed through attKey's
+			// catch-all onto ATT_AGGREGATES, so a plain "^name" binary value clobbered the
+			// real "^aggregates|..." map (interface conversion: binaryValue vs map) whenever
+			// both were present -- e.g. `SELECT *` (whole-row) beside a no-operand window
+			// function (ROW_NUMBER/RANK/COUNT(*) OVER, which emit "^worderby"). Operand
+			// window fns (LAG) emit no "^worderby", which is why they slipped past.
+			if n := label[1:]; n != "id" && n != "smeta" && !strings.HasPrefix(n, "aggregates|") {
 				continue OUTER
 			}
 			if len(vals[i]) > 0 {
@@ -561,13 +566,19 @@ type searchStripper struct {
 // --------------------------------------------------------
 
 // attKey maps a n1k1 attachment label name to query's value-package int16
-// attachment key (attachments became int16-keyed since 2019). Only the
-// "aggregates" attachment is used by n1k1's generated ops today.
+// attachment key (attachments became int16-keyed since 2019). Convert now boxes only
+// the "aggregates" and "smeta" attachments (all other "^name" labels are internal
+// byte-lane columns it skips), so those are the only names that reach here. The old
+// catch-all that folded EVERY unknown name onto ATT_AGGREGATES was a footgun (it
+// silently aliased "^worderby"/"^ekey"/... onto the aggregates slot); the default now
+// exists only as a defensive fallback that should be unreachable.
 func attKey(name string) int16 {
 	switch name {
 	case "aggregates":
 		return value.ATT_AGGREGATES
+	case "smeta":
+		return value.ATT_SMETA
 	default:
-		return value.ATT_AGGREGATES // TODO: extend if other attachment names appear.
+		return value.ATT_AGGREGATES // unreachable: Convert skips non-boxed "^name" labels.
 	}
 }

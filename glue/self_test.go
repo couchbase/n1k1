@@ -21,6 +21,8 @@ import (
 	"testing"
 
 	"github.com/couchbase/n1k1/base"
+
+	"github.com/couchbase/query/value"
 )
 
 // selfTestSession writes a small two-keyspace fixture (orders + items) and opens
@@ -178,6 +180,58 @@ func TestConvertBytesParity(t *testing.T) {
 		if g, w := canonRow(string(got)), boxed(cv, c.vals); g != w {
 			t.Errorf("%s: ConvertBytes %s != boxed %s", c.name, g, w)
 		}
+	}
+}
+
+// TestConvertSkipsInternalAttachmentLabels guards the whole class of the star +
+// no-operand-window panic: Convert must SKIP internal "^name" byte-lane columns
+// (worderby/ekey/rkey/epart/rpart/cseN/resetScope) and box ONLY ^id, ^smeta, and
+// ^aggregates|<fn>. Before the fix, attKey's catch-all folded any "^name" onto
+// ATT_AGGREGATES, so a plain internal column stored a binary value there and a
+// following "^aggregates|..." merge asserted map -> panic.
+func TestConvertSkipsInternalAttachmentLabels(t *testing.T) {
+	aggOf := func(v value.Value) map[string]value.Value {
+		av, ok := v.(value.AnnotatedValue)
+		if !ok {
+			t.Fatalf("result is not AnnotatedValue: %T", v)
+		}
+		m, _ := av.GetAttachment(value.ATT_AGGREGATES).(map[string]value.Value)
+		return m
+	}
+
+	// Each internal label sits BEFORE a real "^aggregates|foo" -- the exact ordering
+	// that panicked. Convert must skip the internal column and still box foo.
+	for _, internal := range []string{"^worderby", "^ekey", "^rkey", "^epart0", "^rpart1", "^cse0", "^resetScope"} {
+		cv, err := NewConvertVals(base.Labels{`.["x"]`, internal, "^aggregates|foo"})
+		if err != nil {
+			t.Fatalf("%s: NewConvertVals: %v", internal, err)
+		}
+		v, err := cv.Convert(base.Vals{base.Val(`1`), base.Val(`42`), base.Val(`7`)})
+		if err != nil {
+			t.Fatalf("%s: Convert: %v", internal, err)
+		}
+		if xv, _ := v.Field("x"); xv == nil || xv.Actual() != 1.0 {
+			t.Errorf("%s: x field = %v, want 1", internal, xv)
+		}
+		agg := aggOf(v)
+		if agg["foo"] == nil || agg["foo"].Actual() != 7.0 {
+			t.Errorf("%s: aggregates[foo] = %v, want 7", internal, agg["foo"])
+		}
+		// The internal column must not have leaked as a field.
+		if _, ok := v.Field(internal[1:]); ok {
+			t.Errorf("%s: internal label leaked as a field", internal)
+		}
+	}
+
+	// Two window/aggregate columns merge into one ATT_AGGREGATES map (e.g. SELECT *,
+	// ROW_NUMBER() OVER(w), RANK() OVER(w)).
+	cv, _ := NewConvertVals(base.Labels{`.["x"]`, "^worderby", "^aggregates|rn", "^aggregates|rk"})
+	v, err := cv.Convert(base.Vals{base.Val(`1`), base.Val(`9`), base.Val(`1`), base.Val(`2`)})
+	if err != nil {
+		t.Fatalf("two-aggregates: Convert: %v", err)
+	}
+	if agg := aggOf(v); agg["rn"] == nil || agg["rk"] == nil {
+		t.Errorf("two-aggregates: want both rn and rk, got %v", agg)
 	}
 }
 
