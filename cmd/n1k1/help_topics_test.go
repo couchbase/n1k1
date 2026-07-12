@@ -47,6 +47,29 @@ func TestHelpReservedWordsLiveCheck(t *testing.T) {
 	}
 }
 
+// TestHelpReservedWordsList (IDEA-0028): `.help reserved-words` with no arg prints the
+// FULL reserved-word list -- an author reads it once instead of playing whack-a-mole.
+func TestHelpReservedWordsList(t *testing.T) {
+	var out, errb bytes.Buffer
+	c := &cli{prog: "n1k1", mode: "jsonlines", out: &out, stderr: &errb}
+	c.cmdHelp("reserved-words")
+
+	s := errb.String()
+	if !strings.Contains(s, "reserved words —") {
+		t.Errorf("missing the count header; got:\n%s", s)
+	}
+	// A spread of real reserved keywords must appear in the printed grid.
+	for _, w := range []string{"select", "where", "level", "keys", "groups", "window"} {
+		if !strings.Contains(s, w) {
+			t.Errorf(".help reserved-words list missing %q", w)
+		}
+	}
+	// It's the full list, not just a handful of examples.
+	if got := len(strings.Fields(s)); got < 200 {
+		t.Errorf(".help reserved-words printed only %d tokens; want the full list", got)
+	}
+}
+
 // TestHelpTopics: each deep-dive topic prints (no panic) with recognizable content,
 // and an unknown topic is reported.
 func TestHelpTopics(t *testing.T) {

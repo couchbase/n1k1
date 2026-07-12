@@ -30,16 +30,15 @@ import (
 // helpTopic is one deep-dive entry for the `.help` index.
 type helpTopic struct {
 	name, blurb string
-	print       func(c *cli)
 }
 
 // helpTopics is the ordered topic index shown by `.help`.
 var helpTopics = []helpTopic{
-	{"reserved-words", "SQL++ keywords you can't use unquoted (checked live)", (*cli).helpReservedIntro},
-	{"quoting", "backticks vs the shell vs dot-command args", (*cli).helpQuoting},
-	{"keyspaces", "how files/dirs become keyspaces; dotted names", (*cli).helpKeyspaces},
-	{"meta", "the _meta record fields + external follow-up", (*cli).helpMeta},
-	{"temp-keyspaces", "CREATE TEMP KEYSPACE staged pipelines", (*cli).helpTempKeyspaces},
+	{"reserved-words", "the SQL++ keywords you must backtick as identifiers (full list)"},
+	{"quoting", "backticks vs the shell vs dot-command args"},
+	{"keyspaces", "how files/dirs become keyspaces; dotted names"},
+	{"meta", "the _meta record fields + external follow-up"},
+	{"temp-keyspaces", "CREATE TEMP KEYSPACE staged pipelines"},
 }
 
 // cmdHelp implements `.help [<topic> [<arg>]]`.
@@ -70,37 +69,60 @@ func (c *cli) cmdHelp(arg string) {
 
 func (c *cli) hline(s string) { fmt.Fprintln(c.stderr, s) }
 
-// helpReserved handles `.help reserved-words [<name>...]`: with names, it live-checks
-// each against cbq's parser; without, it prints the intro.
+// helpReserved handles `.help reserved-words [<name>...]`: with no name it prints the
+// FULL reserved-word list (so an author reads it once, no whack-a-mole); with names it
+// live-checks just those. Both come from cbq's own parser -- never a hardcoded list.
 func (c *cli) helpReserved(rest string) {
-	if rest == "" {
-		c.helpReservedIntro()
+	if rest != "" {
+		for _, name := range strings.Fields(rest) {
+			n := strings.Trim(name, "`")
+			if glue.IsReserved(n) {
+				c.hline(fmt.Sprintf("  %-14s RESERVED — quote it as `%s` (and single-quote the -c arg in a shell)", n, n))
+			} else {
+				c.hline(fmt.Sprintf("  %-14s ok — usable unquoted as a field/alias/keyspace name", n))
+			}
+		}
 		return
 	}
-	for _, name := range strings.Fields(rest) {
-		n := strings.Trim(name, "`")
-		if glue.IsReserved(n) {
-			c.hline(fmt.Sprintf("  %-14s RESERVED — quote it as `%s` (and single-quote the -c arg in a shell)", n, n))
-		} else {
-			c.hline(fmt.Sprintf("  %-14s ok — usable unquoted as a field/alias/keyspace name", n))
-		}
-	}
+
+	words := glue.ReservedWords()
+	c.hline(fmt.Sprintf("reserved words — %d SQL++ keywords that must be backticked as identifiers", len(words)))
+	c.hline("")
+	c.hline("Using one as a field, alias, or temp-keyspace name is the most common authoring")
+	c.hline("error. Fix: backtick it — `level` — and in a shell single-quote the whole -c arg so")
+	c.hline("the backticks survive (see .help quoting). The built-in log recipe EMITS a `level`")
+	c.hline("field, so a detector writes  WHERE l.`level` = \"error\".")
+	c.hline("")
+	c.hline("This list is cbq's own (probed live from its parser, not hand-maintained). To check")
+	c.hline("one name:  .help reserved-words <name>")
+	c.hline("")
+	c.printWordGrid(words)
 }
 
-func (c *cli) helpReservedIntro() {
-	c.hline("reserved words — SQL++ keywords that can't be a bare identifier")
-	c.hline("")
-	c.hline("Using a reserved word as a field, alias, or temp-keyspace name is the most common")
-	c.hline("authoring error. Fix: backtick it — `level` — and in a shell single-quote the whole")
-	c.hline("-c arg so the backticks survive (see .help quoting).")
-	c.hline("")
-	c.hline("Check any name against cbq's LIVE parser (never a hardcoded list — always in sync):")
-	c.hline("  .help reserved-words <name> [<name>...]")
-	c.hline("e.g.  .help reserved-words level keys msg node")
-	c.hline("")
-	c.hline("Commonly hit on real bundles (not exhaustive — always check live):")
-	c.hline("  level  keys  groups  bucket  prev  probe  name  value  window  role  scope")
-	c.hline("(The built-in log recipe EMITS a `level` field — so `WHERE l.`level` = \"error\"`.)")
+// printWordGrid prints words in aligned columns sized to the terminal width cap.
+func (c *cli) printWordGrid(words []string) {
+	if len(words) == 0 {
+		return
+	}
+	col := 0
+	for _, w := range words { // widest word sets the column width
+		if len(w) > col {
+			col = len(w)
+		}
+	}
+	col += 2
+	perRow := 76 / col
+	if perRow < 1 {
+		perRow = 1
+	}
+	var b strings.Builder
+	for i, w := range words {
+		b.WriteString(fmt.Sprintf("%-*s", col, w))
+		if (i+1)%perRow == 0 || i == len(words)-1 {
+			c.hline("  " + strings.TrimRight(b.String(), " "))
+			b.Reset()
+		}
+	}
 }
 
 func (c *cli) helpQuoting() {
