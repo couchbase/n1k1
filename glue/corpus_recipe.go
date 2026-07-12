@@ -20,7 +20,7 @@ package glue
 //
 //   1. FRONT-MATTER metadata as leading `-- key: value` SQL comments (so it parses
 //      with no YAML/heavy dep and a plain reader still sees valid SQL comments):
-//        -- ticket: ET-12345      (becomes the detector Tag)
+//        -- label: ET-12345       (becomes the detector Tag)
 //        -- severity: high
 //        -- source: logs          (the LOGICAL keyspace this detector targets)
 //        -- versions: ["7.2","7.6"]   (scalar or inline JSON)
@@ -33,7 +33,7 @@ package glue
 //
 // Example (round-trips through ParseRecipe / RewriteExpect):
 //
-//	-- ticket: ET-12345
+//	-- label: ET-12345
 //	-- severity: high
 //	-- source: logs
 //	-- versions: ["7.2","7.6"]
@@ -75,7 +75,7 @@ import (
 // Versions, Tags, Meta), and the golden-fixture test harness (Fixture / HasFixture /
 // HasExpect).
 type Recipe struct {
-	Tag      string   // detector id: the `ticket` front-matter, else the filename stem.
+	Tag      string   // detector id: the `label` front-matter (`ticket` alias), else the filename stem.
 	Stmt     string   // the SQL++ detector statement (front-matter + fixture/expect stripped).
 	Source   string   // `source` front-matter: the LOGICAL keyspace this detector targets.
 	Severity string   // `severity` front-matter (advisory, reported).
@@ -135,7 +135,7 @@ func LoadCorpus(dir string) ([]Recipe, error) {
 		recipes = append(recipes, r)
 	}
 	if len(recipes) == 0 {
-		return nil, fmt.Errorf("no *.sql++ detectors in %q", dir)
+		return nil, fmt.Errorf("no *.sql++ queries in %q", dir)
 	}
 	return recipes, nil
 }
@@ -268,12 +268,12 @@ func isIdent(s string) bool {
 }
 
 // applyFrontMatter promotes a recognized front-matter key to its Recipe field; any
-// other key is stashed in Meta (reported, not interpreted). `ticket` becomes the Tag;
-// `versions` / `tags` accept either a JSON array (["7.2","7.6"]) or a comma-separated
-// scalar (7.2, 7.6).
+// other key is stashed in Meta (reported, not interpreted). `label` becomes the Tag
+// (`ticket` is still accepted as a back-compat alias); `versions` / `tags` accept
+// either a JSON array (["7.2","7.6"]) or a comma-separated scalar (7.2, 7.6).
 func (r *Recipe) applyFrontMatter(key, val string) {
 	switch strings.ToLower(key) {
-	case "ticket":
+	case "label", "ticket": // `ticket` is the pre-rename alias for `label`.
 		if val != "" {
 			r.Tag = val
 		}

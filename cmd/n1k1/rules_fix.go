@@ -53,7 +53,7 @@ func rulesFix(situation, detail string) string {
 		if detail != "" {
 			msg += " (" + detail + ")"
 		}
-		return msg + ". That's fine; only single-source filter+project detectors fuse."
+		return msg + ". That's fine; only single-source filter+project queries fuse."
 	case fixAlwaysWake:
 		return "evaluated on every row -- no discriminating literal. Add one as a top-level AND conjunct, " +
 			"e.g. `... AND msg LIKE '%panic%'` (or `regexp_contains(msg,'panic')`)."

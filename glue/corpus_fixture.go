@@ -94,7 +94,7 @@ func (r *Recipe) RunFixture() ([]Finding, error) {
 	// otherwise masquerade as a clean pass -- exactly the "rejected -> no findings" lie
 	// the report card guards against. Surface it as a hard error so the fixture FAILS.
 	if len(cc.Rejected) > 0 {
-		return nil, fmt.Errorf("detector rejected (never runs): %s", cc.Rejected[0].Reason)
+		return nil, fmt.Errorf("query rejected (never runs): %s", cc.Rejected[0].Reason)
 	}
 	findings, err := cc.Run()
 	if err != nil {

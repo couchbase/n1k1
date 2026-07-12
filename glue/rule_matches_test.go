@@ -31,11 +31,11 @@ func writeRuleMatchesCorpus(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	recipes := map[string]string{
-		"error.sql++": "-- ticket: T1_error\n" +
+		"error.sql++": "-- label: T1_error\n" +
 			`SELECT * FROM logs l WHERE l.sev = "ERROR"`,
-		"rare.sql++": "-- ticket: T3_rare\n" +
+		"rare.sql++": "-- label: T3_rare\n" +
 			`SELECT * FROM logs l WHERE l.msg = "rare_token_xyz"`,
-		"login.sql++": "-- ticket: T5_login\n" +
+		"login.sql++": "-- label: T5_login\n" +
 			`SELECT * FROM events e WHERE e.act = "login"`,
 	}
 	for name, body := range recipes {
@@ -257,7 +257,7 @@ func TestRuleMatchesBindOpt(t *testing.T) {
 	// A corpus authored against a LOGICAL keyspace name.
 	corpus := t.TempDir()
 	if err := os.WriteFile(filepath.Join(corpus, "logical.sql++"),
-		[]byte("-- ticket: B1_error\n"+`SELECT * FROM app_logs a WHERE a.sev = "ERROR"`),
+		[]byte("-- label: B1_error\n"+`SELECT * FROM app_logs a WHERE a.sev = "ERROR"`),
 		0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -314,7 +314,7 @@ func TestRuleMatchesAllRejectedErrors(t *testing.T) {
 	sess := corpusTestSession(t)
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "bad.sql++"),
-		[]byte("-- ticket: T_BAD\nSELECT * FROM nosuch_ks x WHERE x.a = 1"), 0o644); err != nil {
+		[]byte("-- label: T_BAD\nSELECT * FROM nosuch_ks x WHERE x.a = 1"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	q := fmt.Sprintf(`SELECT f.tag FROM rule_matches(%q) AS f`, dir)
@@ -323,7 +323,7 @@ func TestRuleMatchesAllRejectedErrors(t *testing.T) {
 		t.Fatal("all-rejected corpus: expected an error, got nil (the silent-empty bug)")
 	}
 	msg := err.Error()
-	for _, want := range []string{"no detector", "rejected", "bind"} {
+	for _, want := range []string{"no query", "rejected", "bind"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("error should mention %q; got: %v", want, err)
 		}
@@ -340,8 +340,8 @@ func TestRuleMatchesPartialRejectWarns(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	write("good.sql++", "-- ticket: T_GOOD\n"+`SELECT * FROM logs l WHERE l.sev = "ERROR"`)
-	write("bad.sql++", "-- ticket: T_BAD\n"+`SELECT * FROM nosuch_ks x WHERE x.a = 1`)
+	write("good.sql++", "-- label: T_GOOD\n"+`SELECT * FROM logs l WHERE l.sev = "ERROR"`)
+	write("bad.sql++", "-- label: T_BAD\n"+`SELECT * FROM nosuch_ks x WHERE x.a = 1`)
 
 	q := fmt.Sprintf(`SELECT f.tag FROM rule_matches(%q) AS f`, dir)
 	res, err := sess.Run(q)

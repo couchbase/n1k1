@@ -312,12 +312,12 @@ func reportCorpusRejects(cc *CompiledCorpus, dir string, opts ruleMatchesOpts, w
 
 	hint := ""
 	if opts.bind == "" && rejectsMentionKeyspace(cc.Rejected) {
-		hint = " -- detectors over LOGICAL keyspaces need a {\"bind\":\"<manifest>\"} option"
+		hint = " -- queries over LOGICAL keyspaces need a {\"bind\":\"<manifest>\"} option"
 	}
 
 	// Runnable iff something will actually execute: a fused plan or any standalone.
 	if cc.Plan == nil && len(cc.Standalone) == 0 {
-		return fmt.Errorf("RULE_MATCHES: no detector in %q compiled -- all %d rejected: %s%s",
+		return fmt.Errorf("RULE_MATCHES: no query in %q compiled -- all %d rejected: %s%s",
 			dir, len(cc.Rejected), list, hint)
 	}
 	if warn != nil {

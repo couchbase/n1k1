@@ -1,4 +1,4 @@
--- ticket: ET-12345
+-- label: ET-12345
 -- severity: high
 -- source: logs
 -- versions: ["7.2","7.6"]

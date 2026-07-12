@@ -1001,7 +1001,7 @@ func (cc *CompiledCorpus) streamStandalone(onFinding func(Finding) error) error 
 
 		res, err := cc.session.Run(d.Stmt)
 		if err != nil {
-			return fmt.Errorf("standalone detector %q: %w", d.Tag, err)
+			return fmt.Errorf("standalone query %q: %w", d.Tag, err)
 		}
 		for _, row := range res.Rows {
 			if err := onFinding(Finding{

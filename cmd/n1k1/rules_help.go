@@ -66,7 +66,7 @@ QUERIES DIRECTORY LAYOUT
 
 ANNOTATED RECIPE (my-queries/disk_full.sql++)
 The front-matter of a *.sql++ file has leading '-- key: value' lines...
-  -- ticket:   ET-12345          # ticket   -> the finding Tag (else the filename stem)
+  -- label:    ET-12345          # label    -> the finding Tag (else the filename stem)
   -- severity: high              # severity -> advisory, reported by list / lint
   -- source:   logs              # source   -> the LOGICAL keyspace this SQL++ reads (FROM logs)
   -- gate:     l.sev = "ERROR"   # gate     -> a cheap NECESSARY precondition (see GATE below)
@@ -98,7 +98,7 @@ EXAMPLE: .rules run --queries ./my-queries   (over a dataset with a "logs" keysp
   2 finding(s) from 3 query/queries
 
 EXAMPLE: .rules lint --queries ./my-queries   (a report-card row + the score line)
-  {"detector":"ET-12345","class":"fused","keyspace":"default:logs","lane":"native","index":"literal \"ERROR\"","reason":"-","advice":"-"}
+  {"query":"ET-12345","class":"fused","keyspace":"default:logs","lane":"native","index":"literal \"ERROR\"","reason":"-","advice":"-"}
   ...
   score: 66% fused (2/3), 100% native (2/2 converted), 100% index-pruned (2/2 fused)  [0 standalone, 1 rejected]
 

@@ -21,7 +21,7 @@
 // so CI / an agent drives it the same way.
 //
 // A CORPUS is a directory of *.sql++ RECIPE files (glue.LoadCorpus / glue.ParseRecipe).
-// A recipe is SQL++ plus optional `-- key: value` front-matter (ticket -> Tag, source,
+// A recipe is SQL++ plus optional `-- key: value` front-matter (label -> Tag, source,
 // severity, versions, tags) and an optional inline golden fixture (`-- @fixture` JSONL
 // input rows + `-- @expect` golden findings). A plain *.sql++ with none of these still
 // loads (Tag = filename stem, Stmt = whole body) -- backward compatible.
@@ -417,7 +417,7 @@ func (c *cli) reportDetectorHits(dets []glue.CorpusDetector, findings []glue.Fin
 	for _, f := range findings {
 		matched[f.Tag]++
 	}
-	fmt.Fprintf(c.stderr, "  %s\n", c.style.Dim("per-detector hits (scanned = keyspace rows; woken = rows that woke it; matched = findings):"))
+	fmt.Fprintf(c.stderr, "  %s\n", c.style.Dim("per-query hits (scanned = keyspace rows; woken = rows that woke it; matched = findings):"))
 	for _, d := range dets {
 		ks, fused := cc.DetKeyspace[d.Tag]
 		m := matched[d.Tag]
@@ -554,7 +554,7 @@ func (c *cli) cmdRulesLint(arg string) {
 			index = "-" // only a fused detector uses the predicate index
 		}
 		rows = append(rows, orderedJSONRow(
-			[2]interface{}{"detector", d.Tag},
+			[2]interface{}{"query", d.Tag},
 			[2]interface{}{"class", d.Class},
 			[2]interface{}{"keyspace", orEmptyDash(d.Keyspace)},
 			[2]interface{}{"lane", orEmptyDash(d.Lane)},

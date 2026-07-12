@@ -91,7 +91,7 @@ func (c *cli) helpReserved(rest string) {
 	c.hline("Using one as a field, alias, or temp-keyspace name is the most common authoring")
 	c.hline("error. Fix: backtick it — `level` — and in a shell single-quote the whole -c arg so")
 	c.hline("the backticks survive (see .help quoting). The built-in log recipe EMITS a `level`")
-	c.hline("field, so a detector writes  WHERE l.`level` = \"error\".")
+	c.hline("field, so a query writes  WHERE l.`level` = \"error\".")
 	c.hline("")
 	c.hline("This list is cbq's own (probed live from its parser, not hand-maintained). To check")
 	c.hline("one name:  .help reserved-words <name>")

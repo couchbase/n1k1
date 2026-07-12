@@ -289,7 +289,7 @@ func adviceFor(dl DetectorLint) []string {
 	}
 	if dl.Class == LintFused && !dl.Indexed {
 		adv = append(adv, "always-wake: no necessary literal -- add a discriminating literal as a top-level AND "+
-			"conjunct so the index can prune (the detector wakes on every row otherwise)")
+			"conjunct so the index can prune (the query wakes on every row otherwise)")
 	}
 	if dl.Class == LintStandalone {
 		adv = append(adv, "standalone: "+dl.Reason+" -- runs individually (does not share the fused scan)")

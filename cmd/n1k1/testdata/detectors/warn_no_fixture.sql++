@@ -1,4 +1,4 @@
--- ticket: ET-30002
+-- label: ET-30002
 -- severity: low
 -- source: logs
 -- A recipe WITHOUT a fixture: .detect test counts it as "no fixture" -- it is NOT a

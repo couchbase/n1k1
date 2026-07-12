@@ -63,7 +63,7 @@ func newLogsBundle(t *testing.T) string {
 // bundle (c.dir is empty) and without compiling.
 func TestRulesList(t *testing.T) {
 	corpus := writeCorpus(t, map[string]string{
-		"a_full": `-- ticket: ET-1
+		"a_full": `-- label: ET-1
 -- source: logs
 -- severity: high
 -- versions: ["7.2","7.6"]
@@ -93,7 +93,7 @@ SELECT * FROM logs l WHERE l.sev = "ERROR"
 	if !strings.Contains(stdout, `"tag":"b_bare"`) || !strings.Contains(stdout, `"fixture?":"no"`) {
 		t.Errorf("bare recipe row wrong; stdout:\n%s", stdout)
 	}
-	if !strings.Contains(errb.String(), "2 detector(s)") {
+	if !strings.Contains(errb.String(), "2 query/queries") {
 		t.Errorf("inventory summary count wrong; stderr:\n%s", errb.String())
 	}
 	if c.failed {
@@ -111,14 +111,14 @@ func TestRulesHelp(t *testing.T) {
 	help := out.String()
 	for _, want := range []string{
 		"-- @fixture", "-- @expect", // the golden-fixture format
-		"ANNOTATED RECIPE", "COLLECTION LAYOUT", // the doc structure
+		"ANNOTATED RECIPE", "QUERIES DIRECTORY LAYOUT", // the doc structure
 		"score:", "% fused", // an example score line shape
 		"TIPS", "regexp_contains", // the tips (native-over-boxed nudge)
 		"--bind", "--update", // the flag one-liners
 		"RESERVED WORDS", "`level`", // DOC-3: the reserved-word note
 		"TEMPORAL (ASOF)", "ORDER BY", "NOT lowered to ASOF", // DOC-2: the ASOF requirements
 		"CONTEXT (grep -A/-B/-C)", "PARTITION BY _meta.`path`", // the grep-context idiom + multi-file gotcha
-		"GATE (index-gate a standalone detector)", "gate:", // the standalone index-gate
+		"GATE (index-gate a standalone query)", "gate:", // the standalone index-gate
 	} {
 		if !strings.Contains(help, want) {
 			t.Errorf(".rules help missing %q; stdout:\n%s", want, help)
@@ -229,7 +229,7 @@ func TestRulesRunHitStats(t *testing.T) {
 	got := errb.String() // the per-detector block goes to stderr
 
 	for _, want := range []string{
-		"per-detector hits",
+		"per-query hits",
 		"hit", "matched=2", "woken=", // the woken column is present
 		"absent_lit", "0 woken", "never appears", // absent-literal hint
 		"woke_miss", "never held", // predicate woke but never held
@@ -275,7 +275,7 @@ func TestRulesFixSnippets(t *testing.T) {
 
 	// test: a fixture with no @expect surfaces the "capture the golden" snippet.
 	tc := writeCorpus(t, map[string]string{
-		"nogold": `-- ticket: G
+		"nogold": `-- label: G
 -- source: logs
 SELECT * FROM logs l WHERE l.sev = "ERROR"
 -- @fixture
@@ -374,7 +374,7 @@ func TestRulesLint(t *testing.T) {
 // It needs no open bundle -- .rules test builds its own temp fixture keyspaces.
 func TestRulesTest(t *testing.T) {
 	corpus := writeCorpus(t, map[string]string{
-		"pass": `-- ticket: P
+		"pass": `-- label: P
 -- source: logs
 SELECT * FROM logs l WHERE l.sev = "ERROR"
 -- @fixture
@@ -382,17 +382,17 @@ SELECT * FROM logs l WHERE l.sev = "ERROR"
 {"sev":"INFO","msg":"fine"}
 -- @expect
 {"tag":"P","evidence":{"sev":"ERROR","msg":"boom"}}`,
-		"fail": `-- ticket: F
+		"fail": `-- label: F
 -- source: logs
 SELECT * FROM logs l WHERE l.sev = "ERROR"
 -- @fixture
 {"sev":"ERROR","msg":"boom"}
 -- @expect
 {"tag":"F","evidence":{"sev":"ERROR","msg":"NOT-THE-ROW"}}`,
-		"nofix": `-- ticket: N
+		"nofix": `-- label: N
 -- source: logs
 SELECT * FROM logs l WHERE l.sev = "WARN"`,
-		"nogold": `-- ticket: G
+		"nogold": `-- label: G
 -- source: logs
 SELECT * FROM logs l WHERE l.sev = "ERROR"
 -- @fixture
@@ -429,7 +429,7 @@ SELECT * FROM logs l WHERE l.sev = "ERROR"
 // whole-row evidence ({_meta,...,msg}), so a passing check locks in the fix.
 func TestRulesTestContextProjection(t *testing.T) {
 	corpus := writeCorpus(t, map[string]string{
-		"ctx": `-- ticket: CTX
+		"ctx": `-- label: CTX
 -- source: logs
 SELECT sub.pos AS pos, sub.msg AS msg
 FROM (
@@ -466,7 +466,7 @@ WHERE sub.near = 1
 // golden; re-running in check mode then PASSES; and everything before the @expect block
 // is left byte-identical.
 func TestRulesTestUpdate(t *testing.T) {
-	head := `-- ticket: U
+	head := `-- label: U
 -- source: logs
 SELECT * FROM logs l WHERE l.sev = "ERROR"
 -- @fixture

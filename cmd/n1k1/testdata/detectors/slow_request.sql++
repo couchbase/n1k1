@@ -1,4 +1,4 @@
--- ticket: ET-20001
+-- label: ET-20001
 -- severity: medium
 -- source: requests
 -- tags: ["latency"]

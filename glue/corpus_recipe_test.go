@@ -23,10 +23,10 @@ import (
 )
 
 // TestParseRecipeFull: a recipe with front-matter + fixture + expect parses into all
-// the expected fields; the ticket becomes the Tag, the SQL body is stripped of front-
+// the expected fields; the label becomes the Tag, the SQL body is stripped of front-
 // matter and both sections, and the fixture rows + golden findings round-trip.
 func TestParseRecipeFull(t *testing.T) {
-	text := `-- ticket: ET-12345
+	text := `-- label: ET-12345
 -- severity: high
 -- source: logs
 -- gate: l.sev = "ERROR"
@@ -46,7 +46,7 @@ SELECT l.msg, l.ts FROM logs l WHERE l.sev = "ERROR"
 		t.Fatalf("ParseRecipe: %v", err)
 	}
 	if r.Tag != "ET-12345" {
-		t.Errorf("Tag = %q, want ET-12345 (from ticket)", r.Tag)
+		t.Errorf("Tag = %q, want ET-12345 (from label)", r.Tag)
 	}
 	if r.Source != "logs" || r.Severity != "high" {
 		t.Errorf("Source/Severity = %q/%q, want logs/high", r.Source, r.Severity)
@@ -77,6 +77,21 @@ SELECT l.msg, l.ts FROM logs l WHERE l.sev = "ERROR"
 	}
 	if canonicalJSON(r.Fixture.Expect[0].Evidence) != `{"msg":"disk full","sev":"ERROR","ts":3}` {
 		t.Errorf("expect[0].Evidence = %s", r.Fixture.Expect[0].Evidence)
+	}
+}
+
+// TestParseRecipeTicketAlias: `ticket` was renamed to `label`, but the old key is kept
+// as a back-compat alias so pre-rename recipes still set the Tag.
+func TestParseRecipeTicketAlias(t *testing.T) {
+	r, err := ParseRecipe("recipes/old.sql++", "-- ticket: LEGACY-1\nSELECT * FROM logs")
+	if err != nil {
+		t.Fatalf("ParseRecipe: %v", err)
+	}
+	if r.Tag != "LEGACY-1" {
+		t.Errorf("Tag = %q, want LEGACY-1 (from the `ticket` alias)", r.Tag)
+	}
+	if _, stashed := r.Meta["ticket"]; stashed {
+		t.Errorf("`ticket` should map to Tag, not be stashed in Meta: %v", r.Meta)
 	}
 }
 
@@ -114,7 +129,7 @@ func TestLoadCorpus(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	write("a_full.sql++", "-- ticket: ET-1\n-- source: logs\nSELECT * FROM logs\n-- @fixture\n{\"x\":1}\n")
+	write("a_full.sql++", "-- label: ET-1\n-- source: logs\nSELECT * FROM logs\n-- @fixture\n{\"x\":1}\n")
 	write("b_plain.sql++", "SELECT * FROM events\n")
 
 	recipes, err := LoadCorpus(dir)
@@ -140,7 +155,7 @@ func TestLoadCorpus(t *testing.T) {
 // (leaving everything before @expect byte-identical), and re-parsing yields exactly
 // those findings. A second RewriteExpect over an existing @expect replaces it in place.
 func TestRewriteExpectRoundTrip(t *testing.T) {
-	head := "-- ticket: ET-9\n-- source: logs\nSELECT * FROM logs l WHERE l.sev = \"ERROR\"\n-- @fixture\n{\"sev\":\"ERROR\"}\n"
+	head := "-- label: ET-9\n-- source: logs\nSELECT * FROM logs l WHERE l.sev = \"ERROR\"\n-- @fixture\n{\"sev\":\"ERROR\"}\n"
 
 	findings := []Finding{
 		{Tag: "ET-9", Evidence: json.RawMessage(`{"sev":"ERROR","n":1}`)},
@@ -209,7 +224,7 @@ func TestDiffFindings(t *testing.T) {
 // the matching rows. A rejected (broken-SQL) detector surfaces as an error (not a silent
 // zero-findings pass). A fixture without `source` errors.
 func TestRunFixture(t *testing.T) {
-	r, err := ParseRecipe("d.sql++", `-- ticket: ET-1
+	r, err := ParseRecipe("d.sql++", `-- label: ET-1
 -- source: logs
 SELECT * FROM logs l WHERE l.sev = "ERROR"
 -- @fixture
