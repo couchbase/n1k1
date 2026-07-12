@@ -14,6 +14,8 @@
 package glue
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -244,6 +246,64 @@ func TestJSMacroGrepContext(t *testing.T) {
 	if _, err := ExpandMacros(`@grep_context(logs, when => x, before => "oops")`); err == nil ||
 		!strings.Contains(err.Error(), "before must be numeric") {
 		t.Errorf("ctx.error not mapped: %v", err)
+	}
+}
+
+// TestShippedMacros loads the real extensions/macros/*.macro.js files and checks each
+// expands a representative call without error into SQL++ with the expected shape. It
+// guards the shipped starter library (grep_context, sessionize, top_per_group,
+// transitions) against regressions; end-to-end execution is exercised via the CLI.
+func TestShippedMacros(t *testing.T) {
+	dir := filepath.Join("..", "extensions", "macros")
+	load := func(name string) {
+		src, err := os.ReadFile(filepath.Join(dir, name+".macro.js"))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		if err := RegisterJSMacro(name, string(src)); err != nil {
+			t.Fatalf("register %s: %v", name, err)
+		}
+	}
+	resetMacroRegistry()
+	for _, n := range []string{"grep_context", "sessionize", "top_per_group", "transitions"} {
+		load(n)
+	}
+
+	cases := []struct {
+		call string
+		want []string // fragments the expansion must contain
+	}{
+		{`@grep_context(logs, when => sev = "ERROR", before => 1, after => 2)`,
+			[]string{"ROWS BETWEEN 2 PRECEDING", "AND 1 FOLLOWING", `sev = "ERROR"`, "FROM logs"}},
+		{`@sessionize(logs, gap => 30000, part => node)`,
+			[]string{"LAG(ts) OVER", "> (30000)", "ROWS UNBOUNDED PRECEDING", "AS session_id", "PARTITION BY node"}},
+		{`@top_per_group(ops, part => node, order => dur DESC, n => 5)`,
+			[]string{"COUNT(1) OVER", "ORDER BY dur DESC", "ROWS UNBOUNDED PRECEDING", "<= 5"}},
+		{`@transitions(st_log, of => state, part => node)`,
+			[]string{"LAG(state) OVER", "AS prev_val", "IS DISTINCT FROM", "IS NULL OR"}},
+	}
+	for _, c := range cases {
+		got, err := ExpandMacros("SELECT * FROM " + c.call + " AS x")
+		if err != nil {
+			t.Errorf("%s: expand error: %v", c.call, err)
+			continue
+		}
+		for _, w := range c.want {
+			if !strings.Contains(got, w) {
+				t.Errorf("%s: expansion missing %q in:\n%s", c.call, w, got)
+			}
+		}
+	}
+
+	// include_first => false flips the first-row clause.
+	got, err := ExpandMacros(`SELECT * FROM @transitions(st_log, of => state, include_first => false) AS x`)
+	if err != nil || !strings.Contains(got, "IS NOT NULL AND") {
+		t.Errorf("transitions include_first=>false: got err=%v out=%s", err, got)
+	}
+	// n must be numeric (ctx.error path).
+	if _, err := ExpandMacros(`SELECT * FROM @top_per_group(ops, order => x, n => "five") AS t`); err == nil ||
+		!strings.Contains(err.Error(), "n must be a numeric literal") {
+		t.Errorf("top_per_group non-numeric n: want error, got %v", err)
 	}
 }
 

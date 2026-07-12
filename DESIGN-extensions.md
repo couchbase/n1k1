@@ -775,14 +775,25 @@ AI proposing a new macro the same confidence loop.
 
 ### Scope: v1 vs later
 
-- **v1** — `@name(...)` scanner (string/comment-aware, balanced parens, fixpoint re-scan
-  with a depth cap); positional + named args (raw text + `$lit` coercion) with
-  `params` defaults; `ctx.gensym`/`ctx.error`; `.macro list`/`help`/`expand` +
-  `-explain-macros`; parse-error annotation; load-only registry; golden + e2e fixtures.
+- **v1 (shipped)** — `@name(...)` scanner (string/comment-aware, balanced parens,
+  leftmost-innermost re-scan with a runaway cap); positional + named args (raw text +
+  `$lit` coercion) with `params` defaults; `ctx.gensym`/`ctx.error`; `.macro
+  list`/`help`/`expand`; parse-error annotation; load-only registry. Starter library in
+  `extensions/macros/`: **`grep_context`** (grep `-A`/`-B`/`-C`), **`sessionize`**
+  (gap-based episode grouping), **`top_per_group`** (top-N per partition), **`transitions`**
+  (field-change edge detection). Each hides a real WINDOW/subquery wall and was validated
+  end-to-end, not just by expansion.
 - **Later** — AST-hygiene tier (true hygiene via a rename visitor); richer `params`
-  typing for keyword/arity validation; `require()`/shared modules once that lands
-  generally for JS extensions; a starter macro library (`grep_context`, `top_per_group`,
-  `sessionize`, `rate`, `pivot`) shipped in the detector-repo sibling.
+  typing; `require()`/shared modules once that lands for JS extensions generally; more
+  starter macros (`rate`, `time_bucket`, `error_burst`, `collapse_repeats`).
+
+**Engine bug surfaced while building the library (worked around, not yet fixed):**
+`SELECT *`/whole-row projection combined with a *no-operand* window function
+(`ROW_NUMBER()`/`RANK()`/`COUNT(*) OVER …`) panics in `glue/expr.go` `Convert` (a plain
+`^aggregates` binary attachment collides with `^aggregates|key`). Operand functions
+(`LAG(x)`, `COUNT(1)`) are fine, so `top_per_group` ranks via `COUNT(1) OVER (… ROWS
+UNBOUNDED PRECEDING)` (position-based == `ROW_NUMBER`). The underlying star+no-arg-window
+panic is a separate fix.
 
 ## Dynamic loading in Go
 
