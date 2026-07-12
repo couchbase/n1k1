@@ -156,31 +156,25 @@ func (c *cli) printWordGrid(words []string) {
 }
 
 func (c *cli) helpExtensions() {
-	c.hline("extensions — user functions loaded from files (opt-in; n1k1 stays CGO-free)")
+	c.hline("extensions — user functions loaded from files")
 	c.hline("")
 	c.hline("Load at startup with  -ext <dir-or-file>  (repeatable, comma-ok), or at the prompt")
 	c.hline("with  .extensions load <path>. A directory is scanned for every kind below.")
 	c.hline("  .extensions list             — what's loaded (name · kind · source)")
 	c.hline("  .extensions unload <name>    — drop one")
 	c.hline("")
-	c.hline("JavaScript (goja; interpreted — great as glue, not for tight inner loops). The")
-	c.hline("file's suffix picks the kind; the function name is the file's stem:")
-	c.hline("  foo.js         scalar UDF           function foo(a, b) { ... }")
-	c.hline("  foo.agg.js     aggregate           foo_init / foo_update(s,v) / foo_final(s)")
+	c.hline("Each file's suffix specifies its kind; the function name is the file's stem:")
+	c.hline("  foo.js         scalar UDF    function foo(a, b) { ... }")
+	c.hline("  foo.agg.js     aggregate     foo_init / foo_update(s,v) / foo_final(s)")
 	c.hline("  foo.stream.js  table-valued source function foo(emit, args) { emit({...}) }")
-	c.hline("     SELECT foo(x.a, x.b) ...          -- scalar / aggregate, called by stem")
-	c.hline("     FROM foo(1, 10) AS x              -- streaming source, one row at a time")
-	c.hline("Native, always on (no -ext needed): sparkline(), histogram() aggregates.")
+	c.hline("     SELECT foo(x.a, x.b) ...  -- scalar / aggregate, called by stem")
+	c.hline("     FROM foo(1, 10) AS x      -- streaming source, one row at a time")
 	c.hline("")
 	c.hline("Two more file kinds are extensions too, each with its own guide:")
 	c.hline("  foo.extract.js  frame a file into rows        — see .help extract")
 	c.hline("  foo.macro.js    expand @foo(...) into SQL++   — see .help macro")
 	c.hline("")
-	c.hline("Shipped examples under extensions/functions/js/ (add_two_numbers, slugify,")
-	c.hline("celsius_to_fahrenheit, geomean.agg, series.stream):")
-	c.hline("  n1k1 -ext extensions/functions/js -c 'SELECT celsius_to_fahrenheit(100)'")
-	c.hline("")
-	c.hline("See also: .help extract, .help macro, .help rules. Design: DESIGN-extensions.md.")
+	c.hline("See also: .help extract, .help macro, .help rules.")
 }
 
 func (c *cli) helpQuoting() {
