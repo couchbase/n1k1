@@ -42,6 +42,11 @@ func init() {
 	ExprCatalog["array_append"] = ExprArrayAppend
 	ExprCatalog["array_prepend"] = ExprArrayPrepend
 	ExprCatalog["array_concat"] = ExprArrayConcat
+	// Array reshaping builders: unary sort/reverse (share the unary-array-to-buffer
+	// harness) and the 2-arg flatten. See base.Array{Sort,Reverse,Flatten}.
+	ExprCatalog["array_sort"] = ExprArraySort
+	ExprCatalog["array_reverse"] = ExprArrayReverse
+	ExprCatalog["array_flatten"] = ExprArrayFlatten
 }
 
 // ExprArrayReduceOp closes over an array reader's op-code and defers to the
@@ -80,21 +85,36 @@ func ExprArrayReduce(lzVars *base.Vars, labels base.Labels, params []interface{}
 	return lzExprFunc
 }
 
-// ARRAY_MIN / ARRAY_MAX: unary, return the collation-min/-max element into the
-// reused buffer. read is the base func (base.ArrayMin/ArrayMax, emitted by name);
-// it shares an emitted line with the reused lzBufPre (the codegen preserves fmt-arg
-// order across a func placeholder and a varLift buffer -- see cmd/intermed_build).
+// ARRAY_MIN / ARRAY_MAX / ARRAY_SORT / ARRAY_REVERSE: unary array ops that read one
+// array and emit a value (an element, or a reshaped array) into the reused buffer.
+// read is the base func (emitted by name in the compiled path); it shares an emitted
+// line with the reused lzBufPre (the codegen preserves fmt-arg order across a func
+// placeholder and a varLift buffer -- see cmd/intermed_build).
 func ExprArrayMin(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) base.ExprFunc {
-	return ExprArrayMinMax(lzVars, labels, params, path, base.ArrayMin)
+	return ExprArrayUnaryBuf(lzVars, labels, params, path, base.ArrayMin)
 }
 
 func ExprArrayMax(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) base.ExprFunc {
-	return ExprArrayMinMax(lzVars, labels, params, path, base.ArrayMax)
+	return ExprArrayUnaryBuf(lzVars, labels, params, path, base.ArrayMax)
 }
 
-func ExprArrayMinMax(lzVars *base.Vars, labels base.Labels, params []interface{},
+// ExprArraySort is ARRAY_SORT(arr): unary, the array's elements in collation order
+// into the reused buffer (or a MISSING/NULL sentinel). See base.ArraySort.
+func ExprArraySort(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string) base.ExprFunc {
+	return ExprArrayUnaryBuf(lzVars, labels, params, path, base.ArraySort)
+}
+
+// ExprArrayReverse is ARRAY_REVERSE(arr): unary, the array's elements in reverse
+// order into the reused buffer (or a MISSING/NULL sentinel). See base.ArrayReverse.
+func ExprArrayReverse(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string) base.ExprFunc {
+	return ExprArrayUnaryBuf(lzVars, labels, params, path, base.ArrayReverse)
+}
+
+func ExprArrayUnaryBuf(lzVars *base.Vars, labels base.Labels, params []interface{},
 	path string, read func(vc *base.ValComparer, v base.Val, bufPre []byte) (base.Val, []byte)) (lzExprFunc base.ExprFunc) {
 	exprA := params[0].([]interface{})
 
@@ -253,6 +273,39 @@ func ExprArrayConcat(lzVars *base.Vars, labels base.Labels,
 			lzValArr2 := lzVal
 
 			lzOut, lzSentinel, lzOk := base.ArrayConcat(lzValArr1, lzValArr2, lzBufPre)
+			if !lzOk {
+				lzVal = lzSentinel
+			} else {
+				lzBufPre = lzOut
+				lzVal = base.Val(lzOut)
+			}
+		}
+
+		return lzVal
+	} // !lz
+
+	lzExprFunc =
+		MakeBiExprFunc(lzVars, labels, params, path, biExprFunc) // !lz
+
+	return lzExprFunc
+}
+
+// ExprArrayFlatten is ARRAY_FLATTEN(arr, depth) (2-arg): binary, splices nested
+// arrays into arr up to depth levels deep into the reused buffer (or a MISSING/NULL
+// sentinel) -- no boxing. See base.ArrayFlatten.
+func ExprArrayFlatten(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
+	var lzBufPre []byte // <== varLift: lzBufPre by path
+
+	biExprFunc := func(lzA, lzB base.ExprFunc, lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) { // !lz
+		if LzScope {
+			lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
+			lzValArr := lzVal
+
+			lzVal = lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B"
+			lzValDepth := lzVal
+
+			lzOut, lzSentinel, lzOk := base.ArrayFlatten(lzValArr, lzValDepth, lzBufPre)
 			if !lzOk {
 				lzVal = lzSentinel
 			} else {

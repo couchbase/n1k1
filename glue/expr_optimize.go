@@ -53,6 +53,7 @@ func init() {
 		"array_length", "array_count", "array_sum", "array_avg", // array readers (expr_array.go)
 		"array_min", "array_max", "array_contains", "array_position", // (expr_array.go)
 		"array_append", "array_prepend", "array_concat", // array builders, 2-arg forms (expr_array.go)
+		"array_sort", "array_reverse", "array_flatten", // array reshaping builders (expr_array.go)
 		"object_length", "poly_length", // object/collection readers (expr_object.go)
 		"object_names", "object_values", // sorted name/value array builders (expr_object.go)
 		"object_pairs",             // OBJECT_PAIRS: 1-arg form; the 2-arg `types` option falls back
@@ -464,6 +465,7 @@ func exprTreeOptimizeNative(labels base.Labels, e expression.Expression,
 		"contains", "position0", "position1",
 		"array_contains", "array_position",
 		"array_append", "array_prepend", "array_concat", // 2-arg forms; variadic >2 falls back
+		"array_flatten",                   // ARRAY_FLATTEN(arr, depth) is always 2-arg
 		"object_remove", "object_concat", // 2-arg forms; variadic >2 falls back
 		"date_part_millis", // 2-arg form only; the 3-arg (timezone) form falls back
 		"nullif", "missingif", "element":
@@ -479,6 +481,7 @@ func exprTreeOptimizeNative(labels base.Labels, e expression.Expression,
 		"to_boolean", "to_string", "to_number",
 		"array_length", "array_count", "array_sum", "array_avg",
 		"array_min", "array_max",
+		"array_sort", "array_reverse", // unary array reshaping (expr_array.go)
 		"object_names", "object_values", "object_pairs",
 		"not", "is_null", "is_not_null",
 		"is_missing", "is_not_missing", "is_valued", "is_not_valued",

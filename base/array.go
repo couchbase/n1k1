@@ -13,6 +13,7 @@ package base
 
 import (
 	"bytes"
+	"math"
 
 	"github.com/buger/jsonparser"
 )
@@ -222,6 +223,142 @@ func ArrayConcat(arr1, arr2 Val, bufPre []byte) (out []byte, sentinel Val, ok bo
 	out = append(out, e2...)
 	out = append(out, ']')
 	return out, nil, true
+}
+
+// arrayCollectElems appends each element of the array-token bytes inner into the
+// ValComparer's pooled KeyVals at depth 0 (Val = element bytes as jsonparser yields
+// them -- strings arrive unquoted -- ValType = its jsonparser type). The element
+// slices alias inner (valid for the row), so there is no per-element copy. The
+// caller MUST KeyValsRelease(0, kvs) the returned slice.
+func arrayCollectElems(c *ValComparer, inner []byte) KeyVals {
+	kvs := c.KeyValsAcquire(0)
+	jsonparser.ArrayEach(inner, func(e []byte, dt jsonparser.ValueType, _ int, _ error) {
+		kvs = append(kvs, KeyVal{Val: e, ValType: int(dt)})
+	})
+	return kvs
+}
+
+// arrayEmitKVs serializes kvs (in their current order) as a JSON array `[...]` into
+// bufPre; each element is re-emitted verbatim, re-quoting strings (JSONElementAppend).
+func arrayEmitKVs(kvs KeyVals, bufPre []byte) []byte {
+	out := append(bufPre[:0], '[')
+	for i := range kvs {
+		if i > 0 {
+			out = append(out, ',')
+		}
+		out = JSONElementAppend(out, kvs[i].Val, jsonparser.ValueType(kvs[i].ValType))
+	}
+	return append(out, ']')
+}
+
+// arraySortByCollation insertion-sorts kvs ascending by N1QL collation, matching
+// cbq ARRAY_SORT (value.Sorter over Collate). It compares at pool depth 1 so the
+// nested string/object compares (which acquire the pool) don't reuse the depth-0
+// slice that holds these very elements. Insertion sort is allocation-free (no
+// sort.Interface boxing); for canonical inputs the result is byte-identical to cbq's
+// (collation-equal elements are byte-equal, so tie order is immaterial).
+func arraySortByCollation(c *ValComparer, kvs KeyVals) {
+	for i := 1; i < len(kvs); i++ {
+		kv := kvs[i]
+		j := i - 1
+		for j >= 0 && c.CompareWithType(kvs[j].Val, kv.Val, kvs[j].ValType, kv.ValType, 1) > 0 {
+			kvs[j+1] = kvs[j]
+			j--
+		}
+		kvs[j+1] = kv
+	}
+}
+
+// ArraySort builds ARRAY_SORT(arr) -- arr's elements in N1QL collation order -- into
+// bufPre. cbq skeleton: MISSING -> MISSING, non-array -> NULL; else the sorted array
+// (NULL elements included, sorting below everything, as in cbq). Element bytes are
+// re-emitted verbatim (see the canonical-input note on ArrayAppend/ArrayTrimSpace).
+func ArraySort(c *ValComparer, v Val, bufPre []byte) (Val, []byte) {
+	if len(v) == 0 {
+		return ValMissing, bufPre
+	}
+	pv, pt := Parse(v)
+	if ParseTypeToValType[pt] != ValTypeArray {
+		return ValNull, bufPre
+	}
+	kvs := arrayCollectElems(c, pv)
+	arraySortByCollation(c, kvs)
+	out := arrayEmitKVs(kvs, bufPre)
+	c.KeyValsRelease(0, kvs)
+	return Val(out), out
+}
+
+// ArrayReverse builds ARRAY_REVERSE(arr) -- arr's elements in reverse order -- into
+// bufPre. cbq skeleton: MISSING -> MISSING, non-array -> NULL. Element bytes are
+// re-emitted verbatim (canonical-input note as above). The ValComparer is used only
+// for its pooled element scratch.
+func ArrayReverse(c *ValComparer, v Val, bufPre []byte) (Val, []byte) {
+	if len(v) == 0 {
+		return ValMissing, bufPre
+	}
+	pv, pt := Parse(v)
+	if ParseTypeToValType[pt] != ValTypeArray {
+		return ValNull, bufPre
+	}
+	kvs := arrayCollectElems(c, pv)
+	out := append(bufPre[:0], '[')
+	for i := len(kvs) - 1; i >= 0; i-- {
+		if i < len(kvs)-1 {
+			out = append(out, ',')
+		}
+		out = JSONElementAppend(out, kvs[i].Val, jsonparser.ValueType(kvs[i].ValType))
+	}
+	out = append(out, ']')
+	c.KeyValsRelease(0, kvs)
+	return Val(out), out
+}
+
+// ArrayFlatten builds ARRAY_FLATTEN(arr, depth) -- arr with nested arrays spliced in
+// up to depth levels deep -- into bufPre. cbq skeleton: MISSING arr OR depth ->
+// MISSING; a non-array arr OR non-number depth -> NULL; a non-integer depth -> NULL;
+// else the flattened array. depth 0 is a shallow copy; a NEGATIVE depth flattens
+// fully (cbq recurses whenever depth != 0, decrementing, so it never reaches the 0
+// stop). Element bytes are re-emitted verbatim (canonical-input note as above).
+func ArrayFlatten(arr, depth Val, bufPre []byte) (out []byte, sentinel Val, ok bool) {
+	if len(arr) == 0 || len(depth) == 0 {
+		return nil, ValMissing, false
+	}
+	pv, pt := Parse(arr)
+	if ParseTypeToValType[pt] != ValTypeArray {
+		return nil, ValNull, false
+	}
+	dv, dt := Parse(depth)
+	if ParseTypeToValType[dt] != ValTypeNumber {
+		return nil, ValNull, false
+	}
+	df, err := ParseFloat64(dv)
+	if err != nil || math.Trunc(df) != df { // depth must be an integer
+		return nil, ValNull, false
+	}
+
+	out = append(bufPre[:0], '[')
+	out, _ = arrayFlattenInto(out, pv, int(df), false)
+	out = append(out, ']')
+	return out, nil, true
+}
+
+// arrayFlattenInto appends the elements of the array-token bytes arrInner to out
+// (without the enclosing brackets), recursing into array elements while depth > 0
+// (mirroring cbq's arrayFlattenInto). wrote tracks whether a comma is needed; the
+// updated (out, wrote) are returned.
+func arrayFlattenInto(out, arrInner []byte, depth int, wrote bool) ([]byte, bool) {
+	jsonparser.ArrayEach(arrInner, func(e []byte, dt jsonparser.ValueType, _ int, _ error) {
+		if dt == jsonparser.Array && depth != 0 { // depth==0 stops; negative flattens fully (cbq)
+			out, wrote = arrayFlattenInto(out, e, depth-1, wrote)
+			return
+		}
+		if wrote {
+			out = append(out, ',')
+		}
+		out = JSONElementAppend(out, e, dt)
+		wrote = true
+	})
+	return out, wrote
 }
 
 // ArrayPositionIndex is the 0-based index of x in arr, or -1 if absent; the

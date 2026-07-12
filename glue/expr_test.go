@@ -976,12 +976,96 @@ func TestArrayBuildersDifferentialVsCBQ(t *testing.T) {
 	}
 }
 
+// TestArrayReshapersDifferentialVsCBQ proves ARRAY_SORT / ARRAY_REVERSE (unary) and
+// ARRAY_FLATTEN (2-arg) native lowering is byte-identical to cbq: collation-ordered
+// sort (mixed types, NULLs, nesting), reversal, depth-limited flatten, and every
+// MISSING/NULL/non-array (and non-integer depth) edge. Inputs are canonical so the
+// verbatim element re-emit matches cbq's serialization.
+func TestArrayReshapersDifferentialVsCBQ(t *testing.T) {
+	c := func(v interface{}) expression.Expression { return expression.NewConstant(v) }
+	arr := func(xs ...interface{}) expression.Expression {
+		if xs == nil {
+			xs = []interface{}{}
+		}
+		return expression.NewConstant(xs)
+	}
+	miss := c(value.MISSING_VALUE)
+	null := c(value.NULL_VALUE)
+
+	// --- unary SORT / REVERSE ---
+	unaryCtors := map[string]func(a expression.Expression) expression.Expression{
+		"array_sort":    func(a expression.Expression) expression.Expression { return expression.NewArraySort(a) },
+		"array_reverse": func(a expression.Expression) expression.Expression { return expression.NewArrayReverse(a) },
+	}
+	unaryCases := map[string]expression.Expression{
+		"nums":         arr(3, 1, 2),
+		"nums-dup":     arr(2, 2, 1, 3, 1),
+		"strs":         arr("banana", "apple", "cherry"),
+		"mixed-type":   arr(2, "a", true, 1), // cross-type collation order
+		"with-null":    arr(3, nil, 1),       // NULL sorts below numbers
+		"nested":       arr([]interface{}{2, 1}, []interface{}{1, 0}),
+		"single":       arr(7),
+		"empty":        arr(),
+		"nonarr":       c(5),
+		"missing":      miss,
+		"null-operand": null,
+	}
+	for fn, ctor := range unaryCtors {
+		for on, in := range unaryCases {
+			expr := ctor(in)
+			want := cbqEval(t, expr)
+			got, ok := nativeEval(t, expr)
+			if !ok {
+				t.Errorf("%s(%s): did not optimize to native", fn, on)
+				continue
+			}
+			if got != want {
+				t.Errorf("%s(%s): native=%q, cbq=%q", fn, on, got, want)
+			}
+		}
+	}
+
+	// --- 2-arg FLATTEN: (arr, depth) ---
+	flatCases := map[string][2]expression.Expression{
+		"depth0":        {arr(1, []interface{}{2, 3}, 4), c(0)},                     // shallow copy
+		"depth1":        {arr(1, []interface{}{2, 3}, 4), c(1)},                     // one level
+		"depth2":        {arr(1, []interface{}{2, []interface{}{3, 4}}), c(2)},      // two levels
+		"neg-full":      {arr(1, []interface{}{2, []interface{}{3, 4}}), c(-1)},     // negative -> flatten fully
+		"deep-shallow":  {arr([]interface{}{[]interface{}{[]interface{}{1}}}), c(1)}, // only outer level
+		"no-nesting":    {arr(1, 2, 3), c(2)},                                       // depth exceeds nesting
+		"empty":         {arr(), c(1)},                                              //
+		"mixed":         {arr("a", []interface{}{"b", "c"}, nil), c(1)},             // strings + null
+		"missing-arr":   {miss, c(1)},                                               // -> MISSING
+		"arr-missing-d": {arr(1), miss},                                             // -> MISSING
+		"nonarr":        {c(5), c(1)},                                               // -> NULL
+		"nonnum-depth":  {arr(1), c("x")},                                           // -> NULL
+		"frac-depth":    {arr(1, []interface{}{2}), c(1.5)},                         // non-integer -> NULL
+		"float-int-d":   {arr(1, []interface{}{2}), c(2.0)},                         // integral float OK
+	}
+	for on, pr := range flatCases {
+		expr := expression.NewArrayFlatten(pr[0], pr[1])
+		want := cbqEval(t, expr)
+		got, ok := nativeEval(t, expr)
+		if !ok {
+			t.Errorf("array_flatten(%s): did not optimize to native", on)
+			continue
+		}
+		if got != want {
+			t.Errorf("array_flatten(%s): native=%q, cbq=%q", on, got, want)
+		}
+	}
+}
+
 // TestArrayBuildersZeroAlloc asserts the per-row native array builds allocate
 // nothing after warmup (splice into the reused bufPre; the GARBAGE MANDATE).
 func TestArrayBuildersZeroAlloc(t *testing.T) {
 	skipZeroAllocUnderRace(t)
 	arr := base.Val([]byte(`[1,"two",{"a":1},[9]]`))
 	elem := base.Val([]byte(`"x"`))
+	vc := base.NewValComparer()
+	sortArr := base.Val([]byte(`[3,1,"b","a",2]`))
+	nestArr := base.Val([]byte(`[1,[2,[3,4]],5]`))
+	depth2 := base.Val([]byte(`2`))
 
 	for _, tc := range []struct {
 		name string
@@ -990,6 +1074,9 @@ func TestArrayBuildersZeroAlloc(t *testing.T) {
 		{"ArrayAppend", func(buf []byte) []byte { o, _, _ := base.ArrayAppend(arr, elem, buf); return o }},
 		{"ArrayPrepend", func(buf []byte) []byte { o, _, _ := base.ArrayPrepend(elem, arr, buf); return o }},
 		{"ArrayConcat", func(buf []byte) []byte { o, _, _ := base.ArrayConcat(arr, arr, buf); return o }},
+		{"ArraySort", func(buf []byte) []byte { o, _ := base.ArraySort(vc, sortArr, buf); return o }},
+		{"ArrayReverse", func(buf []byte) []byte { o, _ := base.ArrayReverse(vc, arr, buf); return o }},
+		{"ArrayFlatten", func(buf []byte) []byte { o, _, _ := base.ArrayFlatten(nestArr, depth2, buf); return o }},
 	} {
 		buf := tc.run(nil) // warm up the buffer
 		n := testing.AllocsPerRun(2000, func() { buf = tc.run(buf) })
