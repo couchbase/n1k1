@@ -14,11 +14,12 @@
 package main
 
 // `.help` topic system (IDEA-0028): `.help` lists the dot-commands (printHelp) plus an
-// index of deep-dive topics; `.help <topic>` prints a topic. The headline topic is
-// `reserved-words`, which checks a name against cbq's LIVE parser (glue.IsReserved) --
-// never a hardcoded list -- so `.help reserved-words <name>` tells an author (or an AI
-// agent authoring detectors) up front whether a field/alias/keyspace name needs
-// backticking, turning the reactive parse-error hint into a proactive lookup.
+// index of deep-dive topics; `.help <topic>` prints a topic. Concept topics come first
+// (each sorted A→Z), then the command guides that also answer to `.<command> help`.
+// One topic worth noting is `reserved-words`, which checks a name against cbq's LIVE
+// parser (glue.IsReserved) -- never a hardcoded list -- so `.help reserved-words <name>`
+// tells an author up front whether a field/alias/keyspace name needs backticking,
+// turning the reactive parse-error hint into a proactive lookup.
 
 import (
 	"fmt"
@@ -34,18 +35,20 @@ type helpTopic struct {
 	name, blurb, alias string
 }
 
-// helpTopics is the ordered topic index shown by `.help`: concept deep-dives first,
-// then the command guides (also reachable as `.<command> help`).
+// helpTopics is the topic index shown by `.help`: concept deep-dives first, then the
+// command guides (also reachable as `.<command> help`). Each group is sorted A→Z so
+// the list is scannable.
 var helpTopics = []helpTopic{
-	{name: "reserved-words", blurb: "the SQL++ keywords you must backtick as identifiers (full list)"},
-	{name: "quoting", blurb: "backticks vs the shell vs dot-command args"},
+	{name: "extensions", blurb: "user functions (*.js UDFs/aggregates/sources) loaded via -ext"},
 	{name: "keyspaces", blurb: "how files/dirs become keyspaces; dotted names"},
 	{name: "meta", blurb: "the _meta record fields + external follow-up"},
+	{name: "quoting", blurb: "backticks vs the shell vs dot-command args"},
+	{name: "reserved-words", blurb: "the SQL++ keywords you must backtick as identifiers (full list)"},
 	{name: "temp-keyspaces", blurb: "CREATE TEMP KEYSPACE staged pipelines"},
-	{name: "rules", blurb: "authoring & running a collection of SQL++ queries", alias: ".rules help"},
 	{name: "extract", blurb: "authoring *.extract.js recipes that frame files into rows", alias: ".extract help"},
-	{name: "macro", blurb: "authoring *.macro.js macros that expand @name(...) into SQL++", alias: ".macro help"},
 	{name: "index", blurb: "secondary/FTS indexes: the catalog + .index commands", alias: ".index help"},
+	{name: "macro", blurb: "authoring *.macro.js macros that expand @name(...) into SQL++", alias: ".macro help"},
+	{name: "rules", blurb: "authoring & running a collection of SQL++ queries", alias: ".rules help"},
 }
 
 // cmdHelp implements `.help [<topic> [<arg>]]`.
@@ -67,14 +70,16 @@ func (c *cli) cmdHelp(arg string) {
 		// to open one when there's no datastore.
 		fmt.Fprintf(c.stderr, "\ndatastore: %s\n", c.dataLoc())
 
-	case "reserved-words", "reserved", "keywords":
-		c.helpReserved(strings.TrimSpace(rest))
-	case "quoting", "quotes":
-		c.helpQuoting()
+	case "extensions", "ext", "udf", "udfs", "functions":
+		c.helpExtensions()
 	case "keyspaces", "tables":
 		c.helpKeyspaces()
 	case "meta", "_meta":
 		c.helpMeta()
+	case "quoting", "quotes":
+		c.helpQuoting()
+	case "reserved-words", "reserved", "keywords":
+		c.helpReserved(strings.TrimSpace(rest))
 	case "temp-keyspaces", "temp-keyspace", "temp", "materialize":
 		c.helpTempKeyspaces()
 	// Command guides: delegate to the SAME help the command-scoped form prints, so
@@ -148,6 +153,34 @@ func (c *cli) printWordGrid(words []string) {
 			b.Reset()
 		}
 	}
+}
+
+func (c *cli) helpExtensions() {
+	c.hline("extensions — user functions loaded from files (opt-in; n1k1 stays CGO-free)")
+	c.hline("")
+	c.hline("Load at startup with  -ext <dir-or-file>  (repeatable, comma-ok), or at the prompt")
+	c.hline("with  .extensions load <path>. A directory is scanned for every kind below.")
+	c.hline("  .extensions list             — what's loaded (name · kind · source)")
+	c.hline("  .extensions unload <name>    — drop one")
+	c.hline("")
+	c.hline("JavaScript (goja; interpreted — great as glue, not for tight inner loops). The")
+	c.hline("file's suffix picks the kind; the function name is the file's stem:")
+	c.hline("  foo.js         scalar UDF           function foo(a, b) { ... }")
+	c.hline("  foo.agg.js     aggregate           foo_init / foo_update(s,v) / foo_final(s)")
+	c.hline("  foo.stream.js  table-valued source function foo(emit, args) { emit({...}) }")
+	c.hline("     SELECT foo(x.a, x.b) ...          -- scalar / aggregate, called by stem")
+	c.hline("     FROM foo(1, 10) AS x              -- streaming source, one row at a time")
+	c.hline("Native, always on (no -ext needed): sparkline(), histogram() aggregates.")
+	c.hline("")
+	c.hline("Two more file kinds are extensions too, each with its own guide:")
+	c.hline("  foo.extract.js  frame a file into rows        — see .help extract")
+	c.hline("  foo.macro.js    expand @foo(...) into SQL++   — see .help macro")
+	c.hline("")
+	c.hline("Shipped examples under extensions/functions/js/ (add_two_numbers, slugify,")
+	c.hline("celsius_to_fahrenheit, geomean.agg, series.stream):")
+	c.hline("  n1k1 -ext extensions/functions/js -c 'SELECT celsius_to_fahrenheit(100)'")
+	c.hline("")
+	c.hline("See also: .help extract, .help macro, .help rules. Design: DESIGN-extensions.md.")
 }
 
 func (c *cli) helpQuoting() {
