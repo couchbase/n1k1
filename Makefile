@@ -74,10 +74,15 @@ test-cli: build-glue
 # TestGeneratedFS_N funcs execute the *compiled* query and compare its
 # results. The steps MUST stay ordered so ./test/tmp never compiles a
 # stale copy.
+#
+# It does NOT regenerate the data-backed gsi cases (TestGsiSuiteWithCompiler),
+# so the run SKIPS TestGeneratedGsiFS_* -- otherwise it would exercise a stale
+# gsi generated file against the current runtime and report phantom failures.
+# The gsi compiled differential is regenerated + run by test-suite-all.
 test-compiler: build-glue
 	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -tags n1ql -v -run 'TestCasesSimpleWithCompiler|TestSuiteWithCompiler|TestQueryCasesWithCompiler' ./test
 	cd test/tmp && go fmt
-	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -tags n1ql ./test/tmp
+	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -tags n1ql -skip TestGeneratedGsiFS ./test/tmp
 
 # test-suite runs the main SQL++ conformance suite (based on the
 # upstream couchbase/query corpus.
