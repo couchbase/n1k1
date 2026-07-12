@@ -37,7 +37,7 @@ func (c *cli) dot(line string) bool {
 	case ".quit", ".exit":
 		return true
 	case ".help":
-		c.printHelp()
+		c.cmdHelp(arg)
 	case ".version":
 		printVersion(c.stderr)
 	case ".open":
@@ -260,7 +260,7 @@ func (c *cli) printHelp() {
 	// them in command-name order. Choice lists keep a fixed visible width (the
 	// highlight is zero-width ANSI), so the description column stays aligned.
 	lines := []string{
-		".help                 show this help",
+		".help [<topic>]       show this help, or a deep-dive (reserved-words|quoting|keyspaces|meta|temp-keyspaces)",
 		".open <dir>           open a different datastore directory",
 		".tables / .keyspaces  list keyspaces + SQL++ example",
 		".index [list|show <name>|rebuild [<n>]|help]  secondary indexes (run .index help for details)",
