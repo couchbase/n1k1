@@ -108,9 +108,7 @@ func ExprCmpStatic(lzVars *base.Vars, labels base.Labels,
 		var lzCmpEQ base.Val = cmpEQ // <== varLift: lzCmpEQ by path
 		var lzCmpGT base.Val = cmpGT // <== varLift: lzCmpGT by path
 
-		lzExprFunc =
-			MakeExprFunc(lzVars, labels, exprX, path, "X") // !lz
-		lzX := lzExprFunc
+		lzX := MakeExprFunc(lzVars, labels, exprX, path, "X") // !lzRHS, via: lzExprFunc
 
 		var lzValStatic base.Val = base.Val(staticVal) // <== varLift: lzValStatic by path
 
@@ -215,8 +213,7 @@ func ExprCmpDynamic(lzVars *base.Vars, labels base.Labels,
 		return lzVal
 	} // !lz
 
-	lzExprFunc =
-		MakeBiExprFunc(lzVars, labels, params, path, biExprFunc) // !lz
+	lzExprFunc = MakeBiExprFunc(lzVars, labels, params, path, biExprFunc) // !lzRHS
 
 	return lzExprFunc
 }

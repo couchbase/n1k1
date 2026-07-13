@@ -85,9 +85,7 @@ func ExprStrTransform(lzVars *base.Vars, labels base.Labels, params []interface{
 
 	var lzBufPre []byte // <== varLift: lzBufPre by path
 
-	lzExprFunc =
-		MakeExprFunc(lzVars, labels, exprA, path, "A") // !lz
-	lzA := lzExprFunc
+	lzA := MakeExprFunc(lzVars, labels, exprA, path, "A") // !lzRHS, via: lzExprFunc
 
 	lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
 		lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
@@ -142,8 +140,7 @@ func ExprReplace(lzVars *base.Vars, labels base.Labels,
 		return lzVal
 	} // !lz
 
-	lzExprFunc =
-		MakeTriExprFunc(lzVars, labels, params, path, triExprFunc) // !lz
+	lzExprFunc = MakeTriExprFunc(lzVars, labels, params, path, triExprFunc) // !lzRHS
 
 	return lzExprFunc
 }
@@ -210,8 +207,7 @@ func ExprSubstr2(lzVars *base.Vars, labels base.Labels, params []interface{},
 		return lzVal
 	} // !lz
 
-	lzExprFunc =
-		MakeBiExprFunc(lzVars, labels, params, path, biExprFunc) // !lz
+	lzExprFunc = MakeBiExprFunc(lzVars, labels, params, path, biExprFunc) // !lzRHS
 
 	return lzExprFunc
 }
@@ -257,8 +253,7 @@ func ExprSubstr3(lzVars *base.Vars, labels base.Labels, params []interface{},
 		return lzVal
 	} // !lz
 
-	lzExprFunc =
-		MakeTriExprFunc(lzVars, labels, params, path, triExprFunc) // !lz
+	lzExprFunc = MakeTriExprFunc(lzVars, labels, params, path, triExprFunc) // !lzRHS
 
 	return lzExprFunc
 }
@@ -274,9 +269,7 @@ func ExprSplit1(lzVars *base.Vars, labels base.Labels,
 
 	var lzBufPre []byte // <== varLift: lzBufPre by path
 
-	lzExprFunc =
-		MakeExprFunc(lzVars, labels, exprA, path, "A") // !lz
-	lzA := lzExprFunc
+	lzA := MakeExprFunc(lzVars, labels, exprA, path, "A") // !lzRHS, via: lzExprFunc
 
 	lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
 		lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
@@ -325,8 +318,7 @@ func ExprSplit2(lzVars *base.Vars, labels base.Labels,
 		return lzVal
 	} // !lz
 
-	lzExprFunc =
-		MakeBiExprFunc(lzVars, labels, params, path, biExprFunc) // !lz
+	lzExprFunc = MakeBiExprFunc(lzVars, labels, params, path, biExprFunc) // !lzRHS
 
 	return lzExprFunc
 }
@@ -388,8 +380,7 @@ func ExprPad2(lzVars *base.Vars, labels base.Labels, params []interface{},
 		return lzVal
 	} // !lz
 
-	lzExprFunc =
-		MakeBiExprFunc(lzVars, labels, params, path, biExprFunc) // !lz
+	lzExprFunc = MakeBiExprFunc(lzVars, labels, params, path, biExprFunc) // !lzRHS
 
 	return lzExprFunc
 }
@@ -430,8 +421,7 @@ func ExprPad3(lzVars *base.Vars, labels base.Labels, params []interface{},
 		return lzVal
 	} // !lz
 
-	lzExprFunc =
-		MakeTriExprFunc(lzVars, labels, params, path, triExprFunc) // !lz
+	lzExprFunc = MakeTriExprFunc(lzVars, labels, params, path, triExprFunc) // !lzRHS
 
 	return lzExprFunc
 }
@@ -442,9 +432,7 @@ func ExprLength(lzVars *base.Vars, labels base.Labels,
 
 	var lzBufPre []byte // <== varLift: lzBufPre by path
 
-	lzExprFunc =
-		MakeExprFunc(lzVars, labels, exprA, path, "A") // !lz
-	lzA := lzExprFunc
+	lzA := MakeExprFunc(lzVars, labels, exprA, path, "A") // !lzRHS, via: lzExprFunc
 
 	lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
 		lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
@@ -475,8 +463,7 @@ func ExprContains(lzVars *base.Vars, labels base.Labels,
 		return lzVal
 	} // !lz
 
-	lzExprFunc =
-		MakeBiExprFunc(lzVars, labels, params, path, biExprFunc) // !lz
+	lzExprFunc = MakeBiExprFunc(lzVars, labels, params, path, biExprFunc) // !lzRHS
 
 	return lzExprFunc
 }
@@ -519,8 +506,7 @@ func ExprStrPosition(lzVars *base.Vars, labels base.Labels, params []interface{}
 		return lzVal
 	} // !lz
 
-	lzExprFunc =
-		MakeBiExprFunc(lzVars, labels, params, path, biExprFunc) // !lz
+	lzExprFunc = MakeBiExprFunc(lzVars, labels, params, path, biExprFunc) // !lzRHS
 
 	return lzExprFunc
 }
@@ -559,9 +545,7 @@ func ExprRegexpMatch(lzVars *base.Vars, labels base.Labels, params []interface{}
 
 	var lzRe base.Regexp // <== varLift: lzRe by path
 
-	lzExprFunc =
-		MakeExprFunc(lzVars, labels, exprA, path, "A") // !lz
-	lzA := lzExprFunc
+	lzA := MakeExprFunc(lzVars, labels, exprA, path, "A") // !lzRHS, via: lzExprFunc
 
 	lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
 		lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"

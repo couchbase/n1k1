@@ -88,8 +88,7 @@ func ExprArithBi(lzVars *base.Vars, labels base.Labels, params []interface{},
 		return lzVal
 	} // !lz
 
-	lzExprFunc =
-		MakeBiExprFunc(lzVars, labels, params, path, biExprFunc) // !lz
+	lzExprFunc = MakeBiExprFunc(lzVars, labels, params, path, biExprFunc) // !lzRHS
 
 	return lzExprFunc
 }
@@ -104,9 +103,7 @@ func ExprNeg(lzVars *base.Vars, labels base.Labels,
 
 	var lzBufPre []byte // <== varLift: lzBufPre by path
 
-	lzExprFunc =
-		MakeExprFunc(lzVars, labels, exprA, path, "A") // !lz
-	lzA := lzExprFunc
+	lzA := MakeExprFunc(lzVars, labels, exprA, path, "A") // !lzRHS, via: lzExprFunc
 
 	lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
 		lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"

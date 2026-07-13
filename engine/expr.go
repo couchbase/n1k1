@@ -35,8 +35,7 @@ func MakeExprFunc(lzVars *base.Vars, labels base.Labels,
 	expr []interface{}, path, pathItem string) (lzExprFunc base.ExprFunc) {
 	pathNext := EmitPush(lzVars, path, pathItem) // !lz
 
-	lzExprFunc =
-		lzVars.Ctx.ExprCatalog[expr[0].(string)](lzVars, labels, expr[1:], pathNext) // !lz
+	lzExprFunc = lzVars.Ctx.ExprCatalog[expr[0].(string)](lzVars, labels, expr[1:], pathNext) // !lzRHS
 
 	EmitPop(path, pathItem)
 

@@ -68,13 +68,9 @@ func ExprAny(lzVars *base.Vars, labels base.Labels,
 	var lzValsChild base.Vals // <== varLift: lzValsChild by path
 	var lzValsPre base.Vals   // <== varLift: lzValsPre by path
 
-	lzExprFunc =
-		MakeExprFunc(lzVars, labels, arrParam, path, "arr") // !lz
-	lzArr := lzExprFunc
+	lzArr := MakeExprFunc(lzVars, labels, arrParam, path, "arr") // !lzRHS, via: lzExprFunc
 
-	lzExprFunc =
-		MakeExprFunc(lzVars, childLabels, satParam, path, "sat") // !lz
-	lzSat := lzExprFunc
+	lzSat := MakeExprFunc(lzVars, childLabels, satParam, path, "sat") // !lzRHS, via: lzExprFunc
 
 	lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
 		lzValArr := lzArr(lzVals, lzYieldErr) // <== emitCaptured: path "arr"
@@ -137,13 +133,9 @@ func ExprEvery(lzVars *base.Vars, labels base.Labels,
 	var lzValsChild base.Vals // <== varLift: lzValsChild by path
 	var lzValsPre base.Vals   // <== varLift: lzValsPre by path
 
-	lzExprFunc =
-		MakeExprFunc(lzVars, labels, arrParam, path, "arr") // !lz
-	lzArr := lzExprFunc
+	lzArr := MakeExprFunc(lzVars, labels, arrParam, path, "arr") // !lzRHS, via: lzExprFunc
 
-	lzExprFunc =
-		MakeExprFunc(lzVars, childLabels, satParam, path, "sat") // !lz
-	lzSat := lzExprFunc
+	lzSat := MakeExprFunc(lzVars, childLabels, satParam, path, "sat") // !lzRHS, via: lzExprFunc
 
 	lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
 		lzValArr := lzArr(lzVals, lzYieldErr) // <== emitCaptured: path "arr"
@@ -207,17 +199,11 @@ func ExprFirst(lzVars *base.Vars, labels base.Labels,
 	var lzValsChild base.Vals // <== varLift: lzValsChild by path
 	var lzValsPre base.Vals   // <== varLift: lzValsPre by path
 
-	lzExprFunc =
-		MakeExprFunc(lzVars, labels, arrParam, path, "arr") // !lz
-	lzArr := lzExprFunc
+	lzArr := MakeExprFunc(lzVars, labels, arrParam, path, "arr") // !lzRHS, via: lzExprFunc
 
-	lzExprFunc =
-		MakeExprFunc(lzVars, childLabels, whenParam, path, "when") // !lz
-	lzWhen := lzExprFunc
+	lzWhen := MakeExprFunc(lzVars, childLabels, whenParam, path, "when") // !lzRHS, via: lzExprFunc
 
-	lzExprFunc =
-		MakeExprFunc(lzVars, childLabels, mapParam, path, "map") // !lz
-	lzMap := lzExprFunc
+	lzMap := MakeExprFunc(lzVars, childLabels, mapParam, path, "map") // !lzRHS, via: lzExprFunc
 
 	lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
 		lzValArr := lzArr(lzVals, lzYieldErr) // <== emitCaptured: path "arr"
@@ -281,17 +267,11 @@ func ExprArray(lzVars *base.Vars, labels base.Labels,
 	var lzValsPre base.Vals   // <== varLift: lzValsPre by path
 	var lzBufPre []byte       // <== varLift: lzBufPre by path
 
-	lzExprFunc =
-		MakeExprFunc(lzVars, labels, arrParam, path, "arr") // !lz
-	lzArr := lzExprFunc
+	lzArr := MakeExprFunc(lzVars, labels, arrParam, path, "arr") // !lzRHS, via: lzExprFunc
 
-	lzExprFunc =
-		MakeExprFunc(lzVars, childLabels, whenParam, path, "when") // !lz
-	lzWhen := lzExprFunc
+	lzWhen := MakeExprFunc(lzVars, childLabels, whenParam, path, "when") // !lzRHS, via: lzExprFunc
 
-	lzExprFunc =
-		MakeExprFunc(lzVars, childLabels, mapParam, path, "map") // !lz
-	lzMap := lzExprFunc
+	lzMap := MakeExprFunc(lzVars, childLabels, mapParam, path, "map") // !lzRHS, via: lzExprFunc
 
 	lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
 		lzValArr := lzArr(lzVals, lzYieldErr) // <== emitCaptured: path "arr"
@@ -366,21 +346,13 @@ func ExprObject(lzVars *base.Vars, labels base.Labels,
 	var lzBufPre []byte       // <== varLift: lzBufPre by path
 	var lzKVs base.KeyVals    // <== varLift: lzKVs by path
 
-	lzExprFunc =
-		MakeExprFunc(lzVars, labels, arrParam, path, "arr") // !lz
-	lzArr := lzExprFunc
+	lzArr := MakeExprFunc(lzVars, labels, arrParam, path, "arr") // !lzRHS, via: lzExprFunc
 
-	lzExprFunc =
-		MakeExprFunc(lzVars, childLabels, whenParam, path, "when") // !lz
-	lzWhen := lzExprFunc
+	lzWhen := MakeExprFunc(lzVars, childLabels, whenParam, path, "when") // !lzRHS, via: lzExprFunc
 
-	lzExprFunc =
-		MakeExprFunc(lzVars, childLabels, nameParam, path, "name") // !lz
-	lzName := lzExprFunc
+	lzName := MakeExprFunc(lzVars, childLabels, nameParam, path, "name") // !lzRHS, via: lzExprFunc
 
-	lzExprFunc =
-		MakeExprFunc(lzVars, childLabels, valueParam, path, "value") // !lz
-	lzValue := lzExprFunc
+	lzValue := MakeExprFunc(lzVars, childLabels, valueParam, path, "value") // !lzRHS, via: lzExprFunc
 
 	lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
 		lzValArr := lzArr(lzVals, lzYieldErr) // <== emitCaptured: path "arr"

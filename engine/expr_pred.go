@@ -62,9 +62,7 @@ func ExprIsPredicate(lzVars *base.Vars, labels base.Labels, params []interface{}
 
 	var lzByKind []base.Val = byKind // <== varLift: lzByKind by path
 
-	lzExprFunc =
-		MakeExprFunc(lzVars, labels, exprA, path, "A") // !lz
-	lzA := lzExprFunc
+	lzA := MakeExprFunc(lzVars, labels, exprA, path, "A") // !lzRHS, via: lzExprFunc
 
 	lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
 		lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
@@ -85,9 +83,7 @@ func ExprNot(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
 	exprA := params[0].([]interface{})
 
-	lzExprFunc =
-		MakeExprFunc(lzVars, labels, exprA, path, "A") // !lz
-	lzA := lzExprFunc
+	lzA := MakeExprFunc(lzVars, labels, exprA, path, "A") // !lzRHS, via: lzExprFunc
 
 	lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
 		lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"

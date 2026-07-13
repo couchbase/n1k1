@@ -888,6 +888,30 @@ body — so the leaf reaches compiled output only if it is a **named** func emit
 one `LzExprFmt` line. (And `emitCaptured` has no loop form, which is why the compiled
 n-ary path stays broken — see Known-broken & caveats.)
 
+### Source sugar: `// !lzRHS`
+
+Because a build-time call (`MakeBiExprFunc`, `MakeExprFunc`, …) must sit on its own
+`// !lz` line — emitted verbatim — while its assignment target is processed normally,
+the setup boilerplate was written as an ugly two/three-line split. `// !lzRHS` (a
+pre-pass in `expandLzRHS`, build.go) lets that stay **one source line**, expanding it
+back to the raw form before the normal per-line processing (so the generated code is
+**byte-identical** — verified by diffing intermed with and without the sugar):
+
+```
+lzExprFunc = MakeBiExprFunc(...)  // !lzRHS            -> "lzExprFunc ="
+                                                          "\tMakeBiExprFunc(...) // !lz"
+
+lzA := MakeExprFunc(...) // !lzRHS, via: lzExprFunc    -> "lzExprFunc ="
+                                                          "\tMakeExprFunc(...) // !lz"
+                                                          "lzA := lzExprFunc"
+```
+
+It is a plain string split on ` = ` / ` := ` (no AST); the RHS and indentation are
+copied verbatim. The `via:` form threads the result through an interim variable (the
+named return `lzExprFunc`) when the call feeds a captured child. Not yet applied to
+the analogous `emitCaptured` two-liner (`lzVal = lzX(...); lzValA := lzVal`), which
+could ride the same `via:` mechanism.
+
 ### The chosen approach
 
 Keep everything the translator must inline as a **fixed-shape shared harness with a

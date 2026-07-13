@@ -434,6 +434,60 @@ func LzPrefixREFunc(lzX string) string {
 
 // ---------------------------------------------------------------
 
+// expandLzRHS rewrites a single-line "!lzRHS" convenience form into the raw multi-
+// line form the codegen expects, so engine source can stay one line per assignment
+// instead of splitting the RHS onto its own "// !lz" line by hand:
+//
+//	LHS = RHS  // !lzRHS            ->  "LHS ="
+//	                                    "\tRHS // !lz"
+//
+//	LHS := RHS // !lzRHS, via: V    ->  "V ="
+//	                                    "\tRHS // !lz"
+//	                                    "LHS := V"
+//
+// Returns (expandedLines, true) when the line carried a !lzRHS marker, else (nil,
+// false). Indentation is preserved and the RHS is copied verbatim, so the emitted
+// output is byte-identical to hand-writing the multi-line form. Each expanded line
+// is then fed through the normal per-line processing (see VisitSourceLines).
+func expandLzRHS(line string) ([]string, bool) {
+	const marker = "// !lzRHS"
+	mi := strings.Index(line, marker)
+	if mi < 0 {
+		return nil, false
+	}
+	// Never touch a comment line that merely mentions the marker (e.g. this doc).
+	if strings.HasPrefix(strings.TrimLeft(line, " \t"), "//") {
+		return nil, false
+	}
+	code := strings.TrimRight(line[:mi], " ")        // "<indent>LHS <op> RHS"
+	tail := strings.TrimSpace(line[mi+len(marker):]) // "" or ", via: V"
+	via := ""
+	if t := strings.TrimSpace(strings.TrimPrefix(tail, ",")); strings.HasPrefix(t, "via:") {
+		via = strings.TrimSpace(strings.TrimPrefix(t, "via:"))
+	}
+	indent := code[:len(code)-len(strings.TrimLeft(code, " \t"))]
+	body := code[len(indent):] // "LHS <op> RHS"
+	var lhs, op, rhs string
+	if i := strings.Index(body, " := "); i >= 0 {
+		lhs, op, rhs = body[:i], ":=", body[i+len(" := "):]
+	} else if i := strings.Index(body, " = "); i >= 0 {
+		lhs, op, rhs = body[:i], "=", body[i+len(" = "):]
+	} else {
+		return nil, false // no assignment operator -- not an lzRHS assignment
+	}
+	if via == "" {
+		return []string{
+			indent + lhs + " " + op,
+			indent + "\t" + rhs + " // !lz",
+		}, true
+	}
+	return []string{
+		indent + via + " =",
+		indent + "\t" + rhs + " // !lz",
+		indent + lhs + " " + op + " " + via,
+	}, true
+}
+
 func VisitSourceLines(sourceDir, outDir string,
 	cbFileStart func(fileName string) error,
 	cbFileLine func(out []string, line string) ([]string, string, error),
@@ -459,17 +513,27 @@ func VisitSourceLines(sourceDir, outDir string,
 			}
 
 		case "fileLine":
-			line := data
-
-			line = strings.Replace(line, sourcePackage, outPackage, -1)
-
-			// Optional callback that can examine the incoming line,
-			// and modify the line and/or the out state.
-			if cbFileLine != nil {
-				out, line, err = cbFileLine(out, line)
+			// A one-line "// !lzRHS" assignment expands to the raw multi-line form
+			// first; each resulting line then goes through the normal processing.
+			srcLines, expanded := expandLzRHS(data)
+			if !expanded {
+				srcLines = []string{data}
 			}
 
-			out = append(out, line)
+			for _, line := range srcLines {
+				line = strings.Replace(line, sourcePackage, outPackage, -1)
+
+				// Optional callback that can examine the incoming line,
+				// and modify the line and/or the out state.
+				if cbFileLine != nil {
+					out, line, err = cbFileLine(out, line)
+					if err != nil {
+						break
+					}
+				}
+
+				out = append(out, line)
+			}
 
 		case "fileEnd":
 			fileName := data

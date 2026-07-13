@@ -64,8 +64,7 @@ func ExprDatePartMillis(lzVars *base.Vars, labels base.Labels,
 		return lzVal
 	} // !lz
 
-	lzExprFunc =
-		MakeBiExprFunc(lzVars, labels, params, path, biExprFunc) // !lz
+	lzExprFunc = MakeBiExprFunc(lzVars, labels, params, path, biExprFunc) // !lzRHS
 
 	return lzExprFunc
 }
@@ -117,8 +116,7 @@ func ExprDateAddMillis(lzVars *base.Vars, labels base.Labels,
 		return lzVal
 	} // !lz
 
-	lzExprFunc =
-		MakeTriExprFunc(lzVars, labels, params, path, triExprFunc) // !lz
+	lzExprFunc = MakeTriExprFunc(lzVars, labels, params, path, triExprFunc) // !lzRHS
 
 	return lzExprFunc
 }

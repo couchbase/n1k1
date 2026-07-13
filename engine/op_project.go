@@ -64,8 +64,7 @@ func MakeProjectFunc(lzVars *base.Vars, labels base.Labels,
 	for i, projection := range projections {
 		expr := projection.([]interface{})
 
-		lzExprFunc =
-			MakeExprFunc(lzVars, labels, expr, pathNext, strconv.Itoa(i)) // !lz
+		lzExprFunc = MakeExprFunc(lzVars, labels, expr, pathNext, strconv.Itoa(i)) // !lzRHS
 
 		exprFuncs = append(exprFuncs, lzExprFunc) // !lz
 	}

@@ -71,8 +71,7 @@ func ExprObjectAdd(lzVars *base.Vars, labels base.Labels,
 		return lzVal
 	} // !lz
 
-	lzExprFunc =
-		MakeTriExprFunc(lzVars, labels, params, path, triExprFunc) // !lz
+	lzExprFunc = MakeTriExprFunc(lzVars, labels, params, path, triExprFunc) // !lzRHS
 
 	return lzExprFunc
 }
@@ -107,8 +106,7 @@ func ExprObjectPut(lzVars *base.Vars, labels base.Labels,
 		return lzVal
 	} // !lz
 
-	lzExprFunc =
-		MakeTriExprFunc(lzVars, labels, params, path, triExprFunc) // !lz
+	lzExprFunc = MakeTriExprFunc(lzVars, labels, params, path, triExprFunc) // !lzRHS
 
 	return lzExprFunc
 }
@@ -139,8 +137,7 @@ func ExprObjectRemove(lzVars *base.Vars, labels base.Labels,
 		return lzVal
 	} // !lz
 
-	lzExprFunc =
-		MakeBiExprFunc(lzVars, labels, params, path, biExprFunc) // !lz
+	lzExprFunc = MakeBiExprFunc(lzVars, labels, params, path, biExprFunc) // !lzRHS
 
 	return lzExprFunc
 }
@@ -172,8 +169,7 @@ func ExprObjectConcat(lzVars *base.Vars, labels base.Labels,
 		return lzVal
 	} // !lz
 
-	lzExprFunc =
-		MakeBiExprFunc(lzVars, labels, params, path, biExprFunc) // !lz
+	lzExprFunc = MakeBiExprFunc(lzVars, labels, params, path, biExprFunc) // !lzRHS
 
 	return lzExprFunc
 }
@@ -194,9 +190,7 @@ func ExprLenReader(lzVars *base.Vars, labels base.Labels, params []interface{},
 
 	var lzBufPre []byte // <== varLift: lzBufPre by path
 
-	lzExprFunc =
-		MakeExprFunc(lzVars, labels, exprA, path, "A") // !lz
-	lzA := lzExprFunc
+	lzA := MakeExprFunc(lzVars, labels, exprA, path, "A") // !lzRHS, via: lzExprFunc
 
 	lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
 		lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
@@ -227,9 +221,7 @@ func ExprObjectNames(lzVars *base.Vars, labels base.Labels,
 
 	var lzBufPre []byte // <== varLift: lzBufPre by path
 
-	lzExprFunc =
-		MakeExprFunc(lzVars, labels, exprA, path, "A") // !lz
-	lzA := lzExprFunc
+	lzA := MakeExprFunc(lzVars, labels, exprA, path, "A") // !lzRHS, via: lzExprFunc
 
 	lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
 		lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
@@ -258,9 +250,7 @@ func ExprObjectValues(lzVars *base.Vars, labels base.Labels,
 
 	var lzBufPre []byte // <== varLift: lzBufPre by path
 
-	lzExprFunc =
-		MakeExprFunc(lzVars, labels, exprA, path, "A") // !lz
-	lzA := lzExprFunc
+	lzA := MakeExprFunc(lzVars, labels, exprA, path, "A") // !lzRHS, via: lzExprFunc
 
 	lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
 		lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
@@ -290,9 +280,7 @@ func ExprObjectPairs(lzVars *base.Vars, labels base.Labels,
 
 	var lzBufPre []byte // <== varLift: lzBufPre by path
 
-	lzExprFunc =
-		MakeExprFunc(lzVars, labels, exprA, path, "A") // !lz
-	lzA := lzExprFunc
+	lzA := MakeExprFunc(lzVars, labels, exprA, path, "A") // !lzRHS, via: lzExprFunc
 
 	lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
 		lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"

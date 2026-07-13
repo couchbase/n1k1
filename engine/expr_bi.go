@@ -31,13 +31,9 @@ func MakeBiExprFunc(lzVars *base.Vars, labels base.Labels,
 	_, _, _, _ = lzA, lzB, lzVals, lzYieldErr // !lz
 
 	if LzScope {
-		lzExprFunc =
-			MakeExprFunc(lzVars, labels, exprA, path, "A") // !lz
-		lzA := lzExprFunc
+		lzA := MakeExprFunc(lzVars, labels, exprA, path, "A") // !lzRHS, via: lzExprFunc
 
-		lzExprFunc =
-			MakeExprFunc(lzVars, labels, exprB, path, "B") // !lz
-		lzB := lzExprFunc
+		lzB := MakeExprFunc(lzVars, labels, exprB, path, "B") // !lzRHS, via: lzExprFunc
 
 		lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
 			lzVal =

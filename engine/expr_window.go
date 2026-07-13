@@ -146,9 +146,7 @@ func ExprWindowFrameStepValue(lzVars *base.Vars, labels base.Labels,
 	expr := params[5].([]interface{})
 
 	if LzScope {
-		lzExprFunc =
-			MakeExprFunc(lzVars, labels, expr, path, "E") // !lz
-		lzExprValFunc := lzExprFunc
+		lzExprValFunc := MakeExprFunc(lzVars, labels, expr, path, "E") // !lzRHS, via: lzExprFunc
 
 		var lzValsPre base.Vals // <== varLift: lzValsPre by path
 

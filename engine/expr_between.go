@@ -37,17 +37,11 @@ func MakeTriExprFunc(lzVars *base.Vars, labels base.Labels,
 	_, _, _, _, _ = lzA, lzB, lzC, lzVals, lzYieldErr // !lz
 
 	if LzScope {
-		lzExprFunc =
-			MakeExprFunc(lzVars, labels, exprA, path, "A") // !lz
-		lzA := lzExprFunc
+		lzA := MakeExprFunc(lzVars, labels, exprA, path, "A") // !lzRHS, via: lzExprFunc
 
-		lzExprFunc =
-			MakeExprFunc(lzVars, labels, exprB, path, "B") // !lz
-		lzB := lzExprFunc
+		lzB := MakeExprFunc(lzVars, labels, exprB, path, "B") // !lzRHS, via: lzExprFunc
 
-		lzExprFunc =
-			MakeExprFunc(lzVars, labels, exprC, path, "C") // !lz
-		lzC := lzExprFunc
+		lzC := MakeExprFunc(lzVars, labels, exprC, path, "C") // !lzRHS, via: lzExprFunc
 
 		lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
 			lzVal =
@@ -104,8 +98,7 @@ func ExprBetween(lzVars *base.Vars, labels base.Labels,
 		return lzVal
 	} // !lz
 
-	lzExprFunc =
-		MakeTriExprFunc(lzVars, labels, params, path, triExprFunc) // !lz
+	lzExprFunc = MakeTriExprFunc(lzVars, labels, params, path, triExprFunc) // !lzRHS
 
 	return lzExprFunc
 }
