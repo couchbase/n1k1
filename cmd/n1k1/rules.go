@@ -90,6 +90,7 @@ type rulesArgs struct {
 	queries []string
 	bind    string
 	update  bool // .multi test: record produced findings back into each recipe's @expect
+	sql     bool // .multi explain: render the pretty SQL++ + provenance view instead of the op tree
 }
 
 // parseRulesArgs parses `--queries <dir>... [--bind <file>] [--update]` (also accepting
@@ -133,8 +134,11 @@ func parseRulesArgs(arg string) (rulesArgs, error) {
 		case "update":
 			// A boolean flag: bare `--update`, or `--update=true|false`.
 			a.update = !hasEq || val == "true" || val == "1"
+		case "sql":
+			// A boolean flag (.multi explain): bare `--sql`, or `--sql=true|false`.
+			a.sql = !hasEq || val == "true" || val == "1"
 		default:
-			return a, fmt.Errorf("unknown flag %q (want --queries <dir> [--bind <manifest>] [--update])", t)
+			return a, fmt.Errorf("unknown flag %q (want --queries <dir> [--bind <manifest>] [--update] [--sql])", t)
 		}
 	}
 	if len(a.queries) == 0 {
@@ -635,6 +639,10 @@ func (c *cli) cmdRulesExplain(arg string) {
 		c.failed = true
 		return
 	}
+	if args.sql {
+		c.renderCorpusExplainSQL(dets, report, score)
+		return
+	}
 	c.renderCorpusExplain(cc, report, score)
 }
 
@@ -709,6 +717,68 @@ func (c *cli) renderCorpusExplain(cc *glue.CompiledCorpus, report []glue.Detecto
 				fmt.Fprintf(w, "  %s %-24s %s\n", c.icon("✗"), d.Label, c.style.Yellow(orEmptyDash(d.Reason)))
 			}
 		}
+	}
+}
+
+// renderCorpusExplainSQL is `.multi explain --sql` (IDEA-0037): the author-facing
+// companion to the op tree. For each query it prints a provenance header comment (how
+// CorpusCompile classifies it: fused into which shared-scan keyspace / standalone /
+// rejected, its eval lane, and the index literal it keys on), any mechanical lint hints
+// as `-- hint:` comments, then the query itself re-laid-out by PrettySQL so a
+// gensym-heavy / nested statement reads as a plan. The rendered SQL++ is the SAME
+// statement (whitespace only), so it stays copy-paste runnable. (Deeper per-expression
+// CSE-origin attribution -- which shared sub-expression came from which query -- is
+// noted future work in corpus_lint.go; this surfaces the provenance that already exists.)
+func (c *cli) renderCorpusExplainSQL(dets []glue.CorpusDetector, report []glue.DetectorLint, score glue.CorpusScore) {
+	w := c.out
+
+	byLabel := make(map[string]glue.DetectorLint, len(report))
+	nKS := 0
+	seenKS := map[string]bool{}
+	for _, d := range report {
+		byLabel[d.Label] = d
+		if d.Class == glue.LintFused && !seenKS[d.Keyspace] {
+			seenKS[d.Keyspace] = true
+			nKS++
+		}
+	}
+
+	fmt.Fprintf(w, "%s%d query/queries → %d fused across %d shared scan(s), %d standalone, %d rejected\n",
+		c.icon("\U0001F4CB "), score.Total, score.Fused, nKS, score.Standalone, score.Rejected)
+
+	for _, det := range dets {
+		d := byLabel[det.Label]
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, c.style.Cyan(explainProvenanceComment(d, det.Label)))
+		// Inline authoring hints, from the SAME centralized advice `.multi lint` shows
+		// (always-wake -> add a literal; boxed -> native alternative; standalone/rejected
+		// -> the shape fix). Rendered as `-- hint:` comments right above the query.
+		if adv := lintAdvice(d); adv != "" {
+			fmt.Fprintln(w, c.style.Dim("-- hint: "+adv))
+		}
+		fmt.Fprintln(w, glue.PrettySQL(det.Stmt))
+	}
+}
+
+// explainProvenanceComment is the one-line `--` header above a query in the --sql view:
+// how it is classified, the shared-scan keyspace it fuses into (or its own), its eval
+// lane, and its predicate-index literal (or always-wake). label is passed explicitly so
+// a detector missing from the lint report (should not happen) still prints its name.
+func explainProvenanceComment(d glue.DetectorLint, label string) string {
+	if label == "" {
+		label = orEmptyDash(d.Label)
+	}
+	switch d.Class {
+	case glue.LintFused:
+		return fmt.Sprintf("-- %s  ·  fused → shared scan %s  ·  %s  ·  %s",
+			label, orEmptyDash(d.Keyspace), orEmptyDash(d.Lane), explainIndexCell(d))
+	case glue.LintStandalone:
+		return fmt.Sprintf("-- %s  ·  standalone (own scan)  ·  %s  ·  %s",
+			label, orEmptyDash(d.Lane), orEmptyDash(d.Reason))
+	case glue.LintRejected:
+		return fmt.Sprintf("-- %s  ·  REJECTED (never runs) — %s", label, orEmptyDash(d.Reason))
+	default:
+		return "-- " + label
 	}
 }
 

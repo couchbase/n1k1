@@ -92,7 +92,10 @@ func (c *cli) macroExpand(stmt string) {
 		fmt.Fprintf(c.stderr, "%s: .macro expand: %v\n", c.prog, err)
 		return
 	}
-	fmt.Fprintln(c.out, out)
+	// Pretty-print the expansion: a macro produces a gensym-heavy nested-subquery wall
+	// on one line -- PrettySQL re-lays it out (whitespace only, same statement) so the
+	// generated shape is readable (IDEA-0037 "cheap first slice").
+	fmt.Fprintln(c.out, glue.PrettySQL(out))
 }
 
 // macroParamList renders a macro's params as a compact "src, when, before=2" hint.

@@ -431,6 +431,48 @@ func TestRulesExplain(t *testing.T) {
 	}
 }
 
+// TestRulesExplainSQL: `.multi explain --sql` renders each query as PRETTY SQL++ with a
+// provenance header comment (fused/standalone/rejected + keyspace + lane + index literal)
+// and inline `-- hint:` advice (IDEA-0037). The SQL body is re-laid-out multi-line.
+func TestRulesExplainSQL(t *testing.T) {
+	root := newLogsBundle(t)
+	corpus := writeCorpus(t, map[string]string{
+		"errors":     `SELECT * FROM logs WHERE sev = "ERROR"`,           // fused, indexed on "ERROR"
+		"everything": `SELECT * FROM logs`,                               // fused, always-wake -> a hint
+		"grouped":    `SELECT sev, COUNT(*) AS n FROM logs GROUP BY sev`, // standalone
+		"broken_x":   `SELECT * FROM logs WHERE`,                         // rejected
+	})
+
+	var out, errb bytes.Buffer
+	c := &cli{prog: "n1k1", dir: root, mode: "jsonlines", out: &out, stderr: &errb}
+	c.cmdRules("explain --sql --queries " + corpus)
+
+	got := out.String()
+	for _, want := range []string{
+		"-- errors",       // a provenance header comment
+		"fused",           //   ... classified fused
+		`literal "ERROR"`, //   ... keyed on its literal
+		"-- everything",   // the always-wake query
+		"-- hint:",        //   ... gets an inline authoring hint
+		"-- grouped",      // the standalone query
+		"standalone",      //
+		"-- broken_x",     // the rejected query
+		"REJECTED",        //
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf(".multi explain --sql missing %q; stdout:\n%s", want, got)
+		}
+	}
+	// The SQL body is pretty-printed multi-line: "SELECT *" and "FROM logs" each lead
+	// a line (not one wall).
+	if !strings.Contains(got, "SELECT *\nFROM logs") {
+		t.Errorf(".multi explain --sql should pretty-print the body multi-line; stdout:\n%s", got)
+	}
+	if c.failed {
+		t.Errorf("a rejected detector must not fail explain --sql; stderr:\n%s", errb.String())
+	}
+}
+
 // TestRulesTest: the golden-fixture runner in check mode over a corpus of a PASSING
 // recipe (fixture + correct expect), a FAILING recipe (fixture + deliberately wrong
 // expect -> reported with a diff), a NO-FIXTURE recipe (counted, not a hard fail), and a

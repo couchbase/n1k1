@@ -48,7 +48,7 @@ COMMANDS
   .multi list --queries <dir>                      inventory the queries (metadata only: no dataset, no compile)
   .multi run  --queries <dir> [--bind <manifest>]  compile & execute the queries over the open dataset
   .multi lint --queries <dir> [--bind <manifest>]  authoring report card (compiles, does NOT run)
-  .multi explain --queries <dir> [--bind <manifest>]  show the fused shared-scan plan + fusion map (compiles, does NOT run)
+  .multi explain --queries <dir> [--bind <manifest>] [--sql]  show the fused shared-scan plan + fusion map; --sql = pretty SQL++ w/ provenance + hints (does NOT run)
   .multi test --queries <dir> [--update]           golden-fixture runner (CI): check @fixture vs @expect
   .multi help                                      this guide
 
@@ -60,6 +60,9 @@ FLAGS
                      "logical = glob" lines ('#' comments + blanks ignored), or a JSON object
                      {"logical":"glob", ...}. A logical keyspace matching 0 files is a hard error.
   --update           .multi test only: (re-)record each fixture's produced findings as its @expect golden
+  --sql              .multi explain only: render each query as pretty SQL++ with a provenance comment
+                     (fused/standalone/rejected + keyspace + lane + index literal) and inline '-- hint:' advice,
+                     instead of the op tree
 
 QUERIES DIRECTORY LAYOUT
   my-queries/
