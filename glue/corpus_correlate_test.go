@@ -171,7 +171,7 @@ func TestCorpusCorrelationScanSharing(t *testing.T) {
 	if cc.scanCache.replays == 0 {
 		t.Errorf("replays = 0 -- the cache never served a shared scan (no sharing happened)")
 	}
-	t.Logf("scan cache: %d captured, %d replayed", cc.scanCache.captures, cc.scanCache.replays)
+	// t.Logf("scan cache: %d captured, %d replayed", cc.scanCache.captures, cc.scanCache.replays)
 }
 
 // TestCorpusCorrelationSharesBothSides: when two detectors share the sig AND project the
@@ -217,7 +217,7 @@ func TestCorpusCorrelationSharesBothSides(t *testing.T) {
 	if cc.scanCache.replays != 2 {
 		t.Errorf("replays = %d, want 2 (each side replayed for the 2nd detector)", cc.scanCache.replays)
 	}
-	t.Logf("both-side sharing: %d captured, %d replayed", cc.scanCache.captures, cc.scanCache.replays)
+	// t.Logf("both-side sharing: %d captured, %d replayed", cc.scanCache.captures, cc.scanCache.replays)
 }
 
 // TestCorpusCorrelationScanBudget: a tiny capture budget makes the cache ABANDON a
@@ -279,7 +279,7 @@ func TestCorpusCorrelationScanBudget(t *testing.T) {
 	if cc.scanCache.abandoned == 0 {
 		t.Errorf("abandoned = 0, want > 0 (tiny budget should abandon; size unknown -> backstop)")
 	}
-	t.Logf("budget: captured=%d skipped-big=%d abandoned=%d", cc.scanCache.captures, cc.scanCache.skippedBig, cc.scanCache.abandoned)
+	// t.Logf("budget: captured=%d skipped-big=%d abandoned=%d", cc.scanCache.captures, cc.scanCache.skippedBig, cc.scanCache.abandoned)
 }
 
 // TestKeyspaceRawBytes covers the size gate's estimate source: for a flat-layout keyspace

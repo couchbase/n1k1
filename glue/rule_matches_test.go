@@ -124,7 +124,7 @@ func TestRuleMatchesFromSource(t *testing.T) {
 			t.Fatalf("match[%d] mismatch:\n got=%q\n want=%q", i, gotKeys[i], wantKeys[i])
 		}
 	}
-	t.Logf("FROM multi_matches() matched %d findings", len(gotKeys))
+	// t.Logf("FROM multi_matches() matched %d findings", len(gotKeys))
 }
 
 // TestRuleMatchesMultipleDirs: multi_matches accepts several query dirs -- as an ARRAY
