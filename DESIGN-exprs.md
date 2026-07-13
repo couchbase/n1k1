@@ -32,7 +32,8 @@ shapes. The cbq boxed fallback remains as the correctness oracle for everything 
   (`str_to_millis`/`millis_to_str`/`date_diff_*`/`date_trunc_*`), bare-identifier
   object/array operands (`OBJECT_LENGTH(o)`), variadic >2-arg array/object builders,
   array/object literals (`array_sort/reverse/flatten` done; `array_distinct` skipped —
-  nondeterministic), comprehensions (ANY/EVERY/ARRAY/MAP/FIRST),
+  nondeterministic), comprehensions (ANY/EVERY/FIRST/ARRAY **done** single-binding;
+  MAP/OBJECT/WITHIN/multi-binding remain),
   and `slice` navigation (blocked on a cbq-fork accessor).
 - [ ] **`LIKE` / dynamic-pattern `REGEXP_*`** — need a hand-rolled zero-alloc byte glob
   matcher; they don't fit the byte-reuse model as `regexp` compiles.
@@ -702,9 +703,16 @@ byte/register/lz model.
   builders above (currently 2-arg only). `ValComparer`
   scratch covers sort/dedup. Skip `array_distinct` — cbq's set-based order is
   nondeterministic (no stable differential).
-- **Comprehensions `ANY/EVERY/ARRAY/MAP/OBJECT/FIRST/WITHIN`** — bind a variable,
-  evaluate a sub-expr per element (feed element bytes into a temp register, invoke the
-  child `ExprFunc`). Highest-complexity portable set — needs sub-expr binding plumbing.
+- **Comprehensions** — `ANY`/`EVERY` (predicate) and `FIRST`/`ARRAY` (mapping +
+  optional `WHEN`), single-binding plain-IN form, are **done** (`engine/expr_coll.go`):
+  the bound variable is an APPENDED register slot labeled like a LET var (`.["<var>"]`,
+  resolved by the normal Field/Identifier matcher), fed per element via
+  `base.ArrayYield` + a shadowed `lzVals` right before the captured child (the same
+  codegen-safe shape as UNNEST) — so they work in BOTH lanes (verified byte-identical
+  interpreter vs `-prepare=full` for flat, field-nav, correlated, and multi-level
+  NESTED forms). `ANY`/`EVERY`/`FIRST` early-exit; `WHEN` is synthesized to a constant
+  `true` when absent (no per-element branch). Remaining: `MAP`/`OBJECT` (name-mapping),
+  `WITHIN`/descend, multi-binding, and name-variable object iteration (all fall back).
 
 ### Tier D — delegate to cbq indefinitely
 - **Volatile / non-deterministic:** `now_*`, `clock_*`, `random`, `uuid`.

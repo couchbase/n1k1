@@ -1107,6 +1107,56 @@ func TestAnyComprehensionDifferentialVsCBQ(t *testing.T) {
 	}
 }
 
+// TestEveryFirstArrayDifferentialVsCBQ proves native EVERY (predicate),
+// FIRST/ARRAY (mapping + optional WHEN) are byte-identical to cbq over constant
+// arrays, including the vacuous-empty, no-match, and MISSING/NULL/non-array edges.
+func TestEveryFirstArrayDifferentialVsCBQ(t *testing.T) {
+	c := func(v interface{}) expression.Expression { return expression.NewConstant(v) }
+	arr := func(xs ...interface{}) expression.Expression {
+		if xs == nil {
+			xs = []interface{}{}
+		}
+		return expression.NewConstant(xs)
+	}
+	x := expression.NewIdentifier("x")
+	bind := func(arrE expression.Expression) expression.Bindings {
+		return expression.Bindings{expression.NewSimpleBinding("x", arrE)}
+	}
+
+	cases := map[string]expression.Expression{
+		// EVERY x IN arr SATISFIES x < 5
+		"every-all":     expression.NewEvery(bind(arr(1, 2, 3)), expression.NewLT(x, c(5))),   // true
+		"every-not-all": expression.NewEvery(bind(arr(1, 9)), expression.NewLT(x, c(5))),      // false
+		"every-empty":   expression.NewEvery(bind(arr()), expression.NewLT(x, c(5))),          // true (vacuous)
+		"every-nonarr":  expression.NewEvery(bind(c(7)), expression.NewLT(x, c(5))),           // null
+		"every-missing": expression.NewEvery(bind(c(value.MISSING_VALUE)), expression.NewLT(x, c(5))), // ""
+		// FIRST x FOR x IN arr WHEN x > 2
+		"first-hit":     expression.NewFirst(x, bind(arr(1, 2, 9, 4)), expression.NewGT(x, c(2))),  // 9
+		"first-nomatch": expression.NewFirst(x, bind(arr(1, 2)), expression.NewGT(x, c(2))),        // "" (MISSING)
+		"first-nowhen":  expression.NewFirst(x, bind(arr(7, 8)), nil),                              // 7
+		"first-empty":   expression.NewFirst(x, bind(arr()), nil),                                  // "" (MISSING)
+		"first-nonarr":  expression.NewFirst(x, bind(c(3)), nil),                                   // null
+		// ARRAY x*10 FOR x IN arr WHEN x > 1
+		"array-map":     expression.NewArray(expression.NewMult(x, c(10)), bind(arr(1, 2, 3)), expression.NewGT(x, c(1))), // [20,30]
+		"array-nowhen":  expression.NewArray(x, bind(arr(1, 2)), nil),                              // [1,2]
+		"array-empty":   expression.NewArray(x, bind(arr()), nil),                                  // []
+		"array-allfilt": expression.NewArray(x, bind(arr(1, 2)), expression.NewGT(x, c(9))),        // []
+		"array-nonarr":  expression.NewArray(x, bind(c(3)), nil),                                   // null
+		"array-missing": expression.NewArray(x, bind(c(value.MISSING_VALUE)), nil),                 // ""
+	}
+	for name, e := range cases {
+		want := cbqEval(t, e)
+		got, ok := nativeEval(t, e)
+		if !ok {
+			t.Errorf("%s: did not optimize to native", name)
+			continue
+		}
+		if got != want {
+			t.Errorf("%s: native=%q, cbq=%q", name, got, want)
+		}
+	}
+}
+
 // TestAnyComprehensionRowContext exercises the row-context cases the constant
 // differential can't reach: object-field navigation on the bound var, correlation
 // (predicate references the outer row), and nested ANY-in-ANY -- run through a real

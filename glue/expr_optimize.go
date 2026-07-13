@@ -85,6 +85,31 @@ func init() {
 	OptimizableFuncs["isnotdistinctfrom"] = "is_not_distinct_from"
 }
 
+// collLowerBinding validates a single-binding, plain-IN-form collection expr
+// (ANY/EVERY/FIRST/ARRAY) and lowers its array operand. It returns the lowered
+// array param, the bound variable's register label (.["<var>"], resolved by the
+// normal Field/Identifier matcher exactly like a LET var), and childLabels =
+// parent + binding for lowering the body. ok=false (caller falls back) on
+// multi-binding, a name-variable (object iteration), WITHIN/descend, or an array
+// operand that can't be lowered.
+func collLowerBinding(labels base.Labels, bindings expression.Bindings,
+	buf *bytes.Buffer, strict bool) (arrParam []interface{}, bindingLabel string, childLabels base.Labels, ok bool) {
+	if len(bindings) != 1 {
+		return nil, "", nil, false
+	}
+	b := bindings[0]
+	if b.NameVariable() != "" || b.Descend() {
+		return nil, "", nil, false
+	}
+	arrParam, ok = ExprTreeOptimize(labels, b.Expression(), buf, strict)
+	if !ok {
+		return nil, "", nil, false
+	}
+	bindingLabel = "." + LabelSuffix(b.Variable())
+	childLabels = append(append(base.Labels{}, labels...), bindingLabel)
+	return arrParam, bindingLabel, childLabels, true
+}
+
 // optSelf registers each name as optimizable to a native ExprCatalog func of the
 // same name -- the common case where cbq's Function.Name() equals the n1k1 name.
 func optSelf(names ...string) {
@@ -279,34 +304,73 @@ func exprTreeOptimizeNative(labels base.Labels, e expression.Expression,
 		return nil, false
 	}
 
-	// ANY <var> IN <arr> SATISFIES <pred> END (single-binding, plain IN form).
-	// Bind <var> as an appended register slot labeled like a LET var, lower <arr>
-	// against the parent labels and <pred> against parent+binding labels, and emit
-	// ["any", bindingLabel, arrParam, satParam] (engine.ExprAny). Other collection
+	// Collection comprehensions (single-binding, plain IN form): bind <var> as an
+	// appended register slot labeled like a LET var (.["<var>"]), lower <arr> against
+	// the parent labels and the body (satisfies / mapping / when) against parent +
+	// binding labels with strict matching, and emit the matching native op. Other
 	// forms (multi-binding, name-variable object iteration, WITHIN/descend) fall back.
-	if anyExpr, ok := e.(*expression.Any); ok {
-		bindings := anyExpr.Bindings()
-		if len(bindings) != 1 {
-			return nil, false
+	//
+	// ANY / EVERY -> a predicate over the binding: ["any"|"every", bindingLabel, arr, satisfies].
+	if pred, ok := e.(interface {
+		Bindings() expression.Bindings
+		Satisfies() expression.Expression
+	}); ok {
+		name := ""
+		switch e.(type) {
+		case *expression.Any:
+			name = "any"
+		case *expression.Every:
+			name = "every"
 		}
-		b := bindings[0]
-		if b.NameVariable() != "" || b.Descend() {
-			return nil, false
+		if name != "" {
+			arrParam, bindingLabel, childLabels, bok := collLowerBinding(labels, pred.Bindings(), buf, strict)
+			if !bok {
+				return nil, false
+			}
+			satParam, sok := ExprTreeOptimize(childLabels, pred.Satisfies(), buf, true)
+			if !sok {
+				return nil, false
+			}
+			return []interface{}{name, bindingLabel, arrParam, satParam}, true
 		}
-		arrParam, aok := ExprTreeOptimize(labels, b.Expression(), buf, strict)
-		if !aok {
-			return nil, false
+	}
+
+	// FIRST / ARRAY -> a mapping over the binding with an optional WHEN filter:
+	// ["first"|"array", bindingLabel, arr, map, when]. When is always supplied (a
+	// constant `true` when the source has no WHEN) so the engine op has no branch.
+	// A name-mapping (object comprehension key) falls back.
+	if m, ok := e.(interface {
+		Bindings() expression.Bindings
+		ValueMapping() expression.Expression
+		NameMapping() expression.Expression
+		When() expression.Expression
+	}); ok {
+		name := ""
+		switch e.(type) {
+		case *expression.First:
+			name = "first"
+		case *expression.Array:
+			name = "array"
 		}
-		bindingLabel := "." + LabelSuffix(b.Variable())
-		childLabels := append(append(base.Labels{}, labels...), bindingLabel)
-		// strict=true: every field in SATISFIES must resolve locally (to the binding
-		// slot or a parent register); an unresolvable ref stays boxed rather than
-		// mis-navigating.
-		satParam, sok := ExprTreeOptimize(childLabels, anyExpr.Satisfies(), buf, true)
-		if !sok {
-			return nil, false
+		if name != "" && m.NameMapping() == nil && m.ValueMapping() != nil {
+			arrParam, bindingLabel, childLabels, bok := collLowerBinding(labels, m.Bindings(), buf, strict)
+			if !bok {
+				return nil, false
+			}
+			mapParam, mok := ExprTreeOptimize(childLabels, m.ValueMapping(), buf, true)
+			if !mok {
+				return nil, false
+			}
+			whenParam := []interface{}{"json", "true"}
+			if w := m.When(); w != nil {
+				wp, wok := ExprTreeOptimize(childLabels, w, buf, true)
+				if !wok {
+					return nil, false
+				}
+				whenParam = wp
+			}
+			return []interface{}{name, bindingLabel, arrParam, mapParam, whenParam}, true
 		}
-		return []interface{}{"any", bindingLabel, arrParam, satParam}, true
 	}
 
 	// CASE is not an expression.Function; lower both forms to a flat native
