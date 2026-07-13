@@ -594,22 +594,22 @@ func ObjectAdd(c *ValComparer, obj, key, val Val, bufPre []byte) (out []byte, se
 // string keys. Mirrors cbq's ObjectRemove (variadic, MinArgs 2): a MISSING operand ->
 // MISSING; a NULL / non-object obj OR any NULL / non-string key -> NULL; else obj with
 // those keys removed (a no-op for an absent key).
-func ObjectRemoveVals(c *ValComparer, vals Vals, bufPre []byte) (out []byte, sentinel Val, ok bool) {
+func ObjectRemoveVals(c *ValComparer, vals Vals, bufPre []byte) (Val, []byte) {
 	for _, v := range vals { // MISSING anywhere dominates.
 		if len(v) == 0 {
-			return nil, ValMissing, false
+			return ValMissing, bufPre
 		}
 	}
 	kvs, sentinel, ok := objectMutateStart(c, vals[0])
 	if !ok {
-		return nil, sentinel, false
+		return sentinel, bufPre
 	}
 
 	for _, key := range vals[1:] {
 		keyDec, keySentinel, keyOk := StrDecode(key)
 		if !keyOk {
 			c.KeyValsRelease(0, kvs)
-			return nil, keySentinel, false
+			return keySentinel, bufPre
 		}
 		if i := KeyValsFindKey(kvs, keyDec); i >= 0 {
 			copy(kvs[i:], kvs[i+1:])
@@ -617,31 +617,31 @@ func ObjectRemoveVals(c *ValComparer, vals Vals, bufPre []byte) (out []byte, sen
 		}
 	}
 
-	out = ObjectEmit(c, kvs, bufPre)
+	out := ObjectEmit(c, kvs, bufPre)
 	c.KeyValsRelease(0, kvs)
-	return out, nil, true
+	return Val(out), out
 }
 
 // ObjectConcatVals builds OBJECT_CONCAT(obj1, obj2, ...) -- all the objects merged,
 // a later object's fields winning on a name clash -- into bufPre, key-sorted. Mirrors
 // cbq's ObjectConcat (variadic, MinArgs 2): a MISSING operand -> MISSING; any
 // non-object operand -> NULL; else the union with later objects overwriting earlier.
-func ObjectConcatVals(c *ValComparer, vals Vals, bufPre []byte) (out []byte, sentinel Val, ok bool) {
+func ObjectConcatVals(c *ValComparer, vals Vals, bufPre []byte) (Val, []byte) {
 	for _, v := range vals {
 		if len(v) == 0 {
-			return nil, ValMissing, false
+			return ValMissing, bufPre
 		}
 	}
 	kvs, sentinel, ok := objectMutateStart(c, vals[0])
 	if !ok {
-		return nil, sentinel, false
+		return sentinel, bufPre
 	}
 
 	for _, obj := range vals[1:] {
 		inner, pt := Parse(obj)
 		if ParseTypeToValType[pt] != ValTypeObject {
 			c.KeyValsRelease(0, kvs)
-			return nil, ValNull, false
+			return ValNull, bufPre
 		}
 		// Merge: overwrite a matching name in place, else append (this obj wins).
 		mergeErr := jsonparser.ObjectEach(inner,
@@ -656,11 +656,44 @@ func ObjectConcatVals(c *ValComparer, vals Vals, bufPre []byte) (out []byte, sen
 			})
 		if mergeErr != nil {
 			c.KeyValsRelease(0, kvs)
-			return nil, ValNull, false
+			return ValNull, bufPre
 		}
 	}
 
-	out = ObjectEmit(c, kvs, bufPre)
+	out := ObjectEmit(c, kvs, bufPre)
 	c.KeyValsRelease(0, kvs)
-	return out, nil, true
+	return Val(out), out
+}
+
+// ObjectConstructVals builds an OBJECT literal `{"k0":v0, ...}` from the evaluated
+// name/value operands into bufPre, key-sorted. vals is a FLAT alternating slice
+// [name0, val0, name1, val1, ...]. Mirrors cbq's ObjectConstruct: a MISSING or NULL
+// name SKIPS its pair; a non-string name -> the whole result NULL; a MISSING value
+// SKIPS its pair; a later duplicate name overwrites (last wins, via CollObjectPut).
+// The name Val keeps its JSON quotes and is emitted as the key. Pool-backed (zero
+// steady-state garbage), like ObjectConcatVals.
+func ObjectConstructVals(c *ValComparer, vals Vals, bufPre []byte) (Val, []byte) {
+	kvs := c.KeyValsAcquire(0)
+
+	for i := 0; i+1 < len(vals); i += 2 {
+		name, val := vals[i], vals[i+1]
+
+		switch ValKind(name) {
+		case ValKindMissing, ValKindNull: // MISSING/NULL name -> skip this pair.
+			continue
+		}
+		if !ValIsString(name) { // non-string name -> whole result NULL.
+			c.KeyValsRelease(0, kvs)
+			return ValNull, bufPre
+		}
+		if len(val) == 0 { // MISSING value -> skip this pair.
+			continue
+		}
+
+		kvs = CollObjectPut(kvs, name, val)
+	}
+
+	out := CollObjectEmit(kvs, bufPre)
+	c.KeyValsRelease(0, kvs)
+	return Val(out), out
 }

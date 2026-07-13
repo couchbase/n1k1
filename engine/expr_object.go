@@ -39,6 +39,9 @@ func init() {
 	ExprCatalog["object_put"] = ExprObjectPut
 	ExprCatalog["object_remove"] = ExprObjectRemove
 	ExprCatalog["object_concat"] = ExprObjectConcat
+	// Object literal `{"k0":v0, ...}` (ObjectConstruct): build key-sorted from the
+	// evaluated name/value pairs. See base.ObjectConstructVals.
+	ExprCatalog["object_construct"] = ExprObjectConstruct
 }
 
 // ExprObjectAdd is OBJECT_ADD(obj, key, val): ternary, adds a NEW field (never
@@ -127,13 +130,7 @@ func ExprObjectRemove(lzVars *base.Vars, labels base.Labels,
 				lzValsReduce = append(lzValsReduce, lzVal)
 			}
 
-			lzOut, lzSentinel, lzOk := base.ObjectRemoveVals(lzVars.Ctx.ValComparer, lzValsReduce, lzBufPre)
-			if !lzOk {
-				lzVal = lzSentinel
-			} else {
-				lzBufPre = lzOut
-				lzVal = base.Val(lzOut)
-			}
+			lzVal, lzBufPre = base.ObjectRemoveVals(lzVars.Ctx.ValComparer, lzValsReduce, lzBufPre)
 
 			return lzVal
 		}
@@ -163,13 +160,40 @@ func ExprObjectConcat(lzVars *base.Vars, labels base.Labels,
 				lzValsReduce = append(lzValsReduce, lzVal)
 			}
 
-			lzOut, lzSentinel, lzOk := base.ObjectConcatVals(lzVars.Ctx.ValComparer, lzValsReduce, lzBufPre)
-			if !lzOk {
-				lzVal = lzSentinel
-			} else {
-				lzBufPre = lzOut
-				lzVal = base.Val(lzOut)
+			lzVal, lzBufPre = base.ObjectConcatVals(lzVars.Ctx.ValComparer, lzValsReduce, lzBufPre)
+
+			return lzVal
+		}
+	}
+
+	return lzExprFunc
+}
+
+// ExprObjectConstruct is the OBJECT literal `{"k0":v0, ...}` (cbq ObjectConstruct):
+// builds the object key-sorted from the evaluated name/value operands. params (hence
+// lzChildren) is a FLAT alternating list [name0, val0, name1, val1, ...]; the reducer
+// strides by 2. A MISSING/NULL name skips its pair, a non-string name -> NULL, a
+// MISSING value skips its pair, later duplicate names win. Rides the eager-Vals harness;
+// see base.ObjectConstructVals.
+func ExprObjectConstruct(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
+	var lzBufPre []byte        // <== varLift: lzBufPre by path
+	var lzValsReduce base.Vals // <== varLift: lzValsReduce by path
+
+	lzChildren := NaryCaptureChildren(lzVars, labels, params, path) // !lz
+
+	if LzScope {
+		lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
+			lzValsReduce = lzValsReduce[:0]
+
+			for lzI := range lzChildren { // !lz
+				lzVal =
+					lzChildren[lzI](lzVals, lzYieldErr) // <== emitCaptured: path strconv.Itoa(lzI)
+
+				lzValsReduce = append(lzValsReduce, lzVal)
 			}
+
+			lzVal, lzBufPre = base.ObjectConstructVals(lzVars.Ctx.ValComparer, lzValsReduce, lzBufPre)
 
 			return lzVal
 		}

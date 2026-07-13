@@ -1498,9 +1498,9 @@ func TestArrayBuildersZeroAlloc(t *testing.T) {
 		name string
 		run  func(buf []byte) []byte
 	}{
-		{"ArrayAppendVals", func(buf []byte) []byte { o, _, _ := base.ArrayAppendVals(appendVals, buf); return o }},
-		{"ArrayPrependVals", func(buf []byte) []byte { o, _, _ := base.ArrayPrependVals(prependVals, buf); return o }},
-		{"ArrayConcatVals", func(buf []byte) []byte { o, _, _ := base.ArrayConcatVals(concatVals, buf); return o }},
+		{"ArrayAppendVals", func(buf []byte) []byte { _, b := base.ArrayAppendVals(appendVals, buf); return b }},
+		{"ArrayPrependVals", func(buf []byte) []byte { _, b := base.ArrayPrependVals(prependVals, buf); return b }},
+		{"ArrayConcatVals", func(buf []byte) []byte { _, b := base.ArrayConcatVals(concatVals, buf); return b }},
 		{"ArraySort", func(buf []byte) []byte { o, _ := base.ArraySort(vc, sortArr, buf); return o }},
 		{"ArrayReverse", func(buf []byte) []byte { o, _ := base.ArrayReverse(vc, arr, buf); return o }},
 		{"ArrayFlatten", func(buf []byte) []byte { o, _, _ := base.ArrayFlatten(nestArr, depth2, buf); return o }},
@@ -1642,6 +1642,81 @@ func TestObjectMutatorsDifferentialVsCBQ(t *testing.T) {
 	}
 }
 
+// TestArrayObjectConstructDifferentialVsCBQ proves ARRAY literal `[...]`
+// (ArrayConstruct) and OBJECT literal `{...}` (ObjectConstruct) evaluation is
+// byte-identical to cbq: arrays splice elements (MISSING/NULL element -> null); objects
+// re-emit key-sorted, dropping a MISSING/NULL name's pair and a MISSING value's pair,
+// with a non-string name -> NULL and later duplicate names winning.
+//
+// NOTE: these operands are all CONSTANT, so they defer to const-fold (a constant
+// literal is computed once, not per-row); the values are still cbq's, so this validates
+// the semantics. The per-row native `array_construct`/`object_construct` ops (for
+// DYNAMIC literals like `[o.id, o.total]`) are differential-tested by the suite corpus.
+func TestArrayObjectConstructDifferentialVsCBQ(t *testing.T) {
+	c := func(v interface{}) expression.Expression { return expression.NewConstant(v) }
+	miss := c(value.MISSING_VALUE)
+	null := c(value.NULL_VALUE)
+
+	// --- ARRAY literals ---
+	arrCases := map[string][]expression.Expression{
+		"nums":       {c(1), c(2), c(3)},
+		"mixed":      {c(1), c("x"), c(true)},
+		"single":     {c(7)},
+		"empty":      {},
+		"with-null":  {c(1), null, c(3)}, // NULL element kept as null
+		"with-miss":  {c(1), miss, c(3)}, // MISSING element -> null
+		"all-miss":   {miss, miss},       // -> [null,null]
+		"nested":     {expression.NewArrayConstruct(c(1), c(2)), c(3)},
+		"nested-obj": {objConstruct(c("k"), c(1)), c(2)},
+	}
+	for on, ops := range arrCases {
+		expr := expression.NewArrayConstruct(ops...)
+		want := cbqEval(t, expr)
+		got, ok := nativeEval(t, expr)
+		if !ok {
+			t.Errorf("array-construct(%s): did not optimize to native", on)
+			continue
+		}
+		if got != want {
+			t.Errorf("array-construct(%s): native=%q, cbq=%q", on, got, want)
+		}
+	}
+
+	// --- OBJECT literals ---
+	objCases := map[string]expression.Expression{
+		"sorted":       objConstruct(c("a"), c(1), c("b"), c(2)),
+		"unsorted":     objConstruct(c("z"), c(1), c("a"), c(2), c("m"), c(3)), // key-sorted out
+		"empty":        objConstruct(),
+		"null-val":     objConstruct(c("a"), null),               // NULL value kept
+		"missing-val":  objConstruct(c("a"), miss, c("b"), c(2)), // MISSING value drops "a"
+		"missing-name": objConstruct(miss, c(1), c("b"), c(2)),   // MISSING name skips pair
+		"null-name":    objConstruct(null, c(1), c("b"), c(2)),   // NULL name skips pair
+		"nonstr-name":  objConstruct(c(5), c(1), c("b"), c(2)),   // non-string name -> NULL
+		"nested-val":   objConstruct(c("a"), objConstruct(c("n"), c(2))),
+		"arr-val":      objConstruct(c("a"), expression.NewArrayConstruct(c(1), c(2))),
+	}
+	for on, expr := range objCases {
+		want := cbqEval(t, expr)
+		got, ok := nativeEval(t, expr)
+		if !ok {
+			t.Errorf("object-construct(%s): did not optimize to native", on)
+			continue
+		}
+		if got != want {
+			t.Errorf("object-construct(%s): native=%q, cbq=%q", on, got, want)
+		}
+	}
+}
+
+// objConstruct builds an ObjectConstruct from a flat (name, val, name, val, ...) list.
+func objConstruct(pairs ...expression.Expression) expression.Expression {
+	m := make(map[expression.Expression]expression.Expression, len(pairs)/2)
+	for i := 0; i+1 < len(pairs); i += 2 {
+		m[pairs[i]] = pairs[i+1]
+	}
+	return expression.NewObjectConstruct(m)
+}
+
 // TestObjectMutatorsZeroAlloc asserts the per-row native OBJECT mutating builds
 // allocate nothing after warmup (pooled KeyVals + reused bufPre; GARBAGE MANDATE).
 func TestObjectMutatorsZeroAlloc(t *testing.T) {
@@ -1663,8 +1738,8 @@ func TestObjectMutatorsZeroAlloc(t *testing.T) {
 		{"ObjectPut-overwrite", func(buf []byte) []byte { o, _, _ := base.ObjectPut(cmp, o1, key, val, buf); return o }},
 		{"ObjectPut-new", func(buf []byte) []byte { o, _, _ := base.ObjectPut(cmp, o1, nkey, val, buf); return o }},
 		{"ObjectAdd", func(buf []byte) []byte { o, _, _ := base.ObjectAdd(cmp, o1, nkey, val, buf); return o }},
-		{"ObjectRemoveVals", func(buf []byte) []byte { o, _, _ := base.ObjectRemoveVals(cmp, removeVals, buf); return o }},
-		{"ObjectConcatVals", func(buf []byte) []byte { o, _, _ := base.ObjectConcatVals(cmp, concatVals, buf); return o }},
+		{"ObjectRemoveVals", func(buf []byte) []byte { _, b := base.ObjectRemoveVals(cmp, removeVals, buf); return b }},
+		{"ObjectConcatVals", func(buf []byte) []byte { _, b := base.ObjectConcatVals(cmp, concatVals, buf); return b }},
 	} {
 		buf := tc.run(nil) // warm up pool + buffer
 		n := testing.AllocsPerRun(2000, func() { buf = tc.run(buf) })

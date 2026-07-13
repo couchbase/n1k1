@@ -47,6 +47,9 @@ func init() {
 	ExprCatalog["array_sort"] = ExprArraySort
 	ExprCatalog["array_reverse"] = ExprArrayReverse
 	ExprCatalog["array_flatten"] = ExprArrayFlatten
+	// Array literal `[e0, e1, ...]` (ArrayConstruct): build from the evaluated
+	// elements into the reused buffer (MISSING/NULL -> null). See base.ArrayConstructVals.
+	ExprCatalog["array_construct"] = ExprArrayConstruct
 }
 
 // ExprArrayReduceOp closes over an array reader's op-code and defers to the
@@ -203,13 +206,7 @@ func ExprArrayAppend(lzVars *base.Vars, labels base.Labels,
 				lzValsReduce = append(lzValsReduce, lzVal)
 			}
 
-			lzOut, lzSentinel, lzOk := base.ArrayAppendVals(lzValsReduce, lzBufPre)
-			if !lzOk {
-				lzVal = lzSentinel
-			} else {
-				lzBufPre = lzOut
-				lzVal = base.Val(lzOut)
-			}
+			lzVal, lzBufPre = base.ArrayAppendVals(lzValsReduce, lzBufPre)
 
 			return lzVal
 		}
@@ -239,13 +236,7 @@ func ExprArrayPrepend(lzVars *base.Vars, labels base.Labels,
 				lzValsReduce = append(lzValsReduce, lzVal)
 			}
 
-			lzOut, lzSentinel, lzOk := base.ArrayPrependVals(lzValsReduce, lzBufPre)
-			if !lzOk {
-				lzVal = lzSentinel
-			} else {
-				lzBufPre = lzOut
-				lzVal = base.Val(lzOut)
-			}
+			lzVal, lzBufPre = base.ArrayPrependVals(lzValsReduce, lzBufPre)
 
 			return lzVal
 		}
@@ -275,13 +266,39 @@ func ExprArrayConcat(lzVars *base.Vars, labels base.Labels,
 				lzValsReduce = append(lzValsReduce, lzVal)
 			}
 
-			lzOut, lzSentinel, lzOk := base.ArrayConcatVals(lzValsReduce, lzBufPre)
-			if !lzOk {
-				lzVal = lzSentinel
-			} else {
-				lzBufPre = lzOut
-				lzVal = base.Val(lzOut)
+			lzVal, lzBufPre = base.ArrayConcatVals(lzValsReduce, lzBufPre)
+
+			return lzVal
+		}
+	}
+
+	return lzExprFunc
+}
+
+// ExprArrayConstruct is the ARRAY literal `[e0, e1, ...]` (cbq ArrayConstruct): builds
+// the array from the evaluated elements into the reused buffer -- MISSING/NULL elements
+// become `null` (arrays can't hold MISSING), everything else spliced verbatim. Always
+// yields an array (no MISSING/NULL sentinel). Rides the eager-Vals harness like
+// ExprConcat; see base.ArrayConstructVals.
+func ExprArrayConstruct(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
+	var lzBufPre []byte        // <== varLift: lzBufPre by path
+	var lzValsReduce base.Vals // <== varLift: lzValsReduce by path
+
+	lzChildren := NaryCaptureChildren(lzVars, labels, params, path) // !lz
+
+	if LzScope {
+		lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
+			lzValsReduce = lzValsReduce[:0]
+
+			for lzI := range lzChildren { // !lz
+				lzVal =
+					lzChildren[lzI](lzVals, lzYieldErr) // <== emitCaptured: path strconv.Itoa(lzI)
+
+				lzValsReduce = append(lzValsReduce, lzVal)
 			}
+
+			lzVal, lzBufPre = base.ArrayConstructVals(lzValsReduce, lzBufPre)
 
 			return lzVal
 		}

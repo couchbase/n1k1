@@ -17,6 +17,7 @@ import (
 	"bytes"
 	"math"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -518,6 +519,72 @@ func exprTreeOptimizeNative(labels base.Labels, e expression.Expression,
 		}
 		// Non-rewritable LIKE keeps the boxed cbq path (unchanged behavior).
 		return nil, false
+	}
+
+	// ARRAY literal `[e0, e1, ...]` (ArrayConstruct) -> ["array_construct", e0, ...].
+	// ArrayConstruct is an expression.Function, so it must be handled BEFORE the
+	// generic Function block below. cbq's single-operand EXPR_CAN_FLATTEN form is a
+	// passthrough (Evaluate returns operand[0], NOT an array) used by the optimizer --
+	// keep that boxed. The normal form always yields an array (no MISSING/NULL sentinel).
+	if ac, ok := e.(*expression.ArrayConstruct); ok {
+		// A fully-constant literal (`[1,2,3]`) is better CONST-FOLDED: computed once
+		// (not rebuilt per row) and, as a `["json", ...]` leaf, it enables the static
+		// comparison path + predicate-index pushdown that the corpus relies on.
+		// exprTreeOptimize's const-fold handles it after we defer. Only a DYNAMIC
+		// literal (row-dependent element) rides the per-row native op.
+		if ac.Value() != nil {
+			return nil, false
+		}
+		ops := ac.Operands()
+		if len(ops) == 1 && ac.HasExprFlag(expression.EXPR_CAN_FLATTEN) {
+			return nil, false
+		}
+		params = []interface{}{"array_construct"}
+		for _, op := range ops {
+			child, cok := ExprTreeOptimize(labels, op, buf, strict)
+			if !cok {
+				return nil, false
+			}
+			params = append(params, child)
+		}
+		return params, true
+	}
+
+	// OBJECT literal `{"k0":v0, ...}` (ObjectConstruct) -> a FLAT alternating param
+	// list ["object_construct", name0, val0, name1, val1, ...]. The mapping is a Go
+	// map (randomized iteration), so sort the pairs by the name expression's string
+	// form for a STABLE param order -- the compiled build must be deterministic. Key
+	// sorting of the RESULT happens at emit time (base.ObjectConstructVals), so the
+	// pair order only affects last-wins on a runtime duplicate key (which cbq itself
+	// resolves by nondeterministic map order, so any stable order is faithful).
+	if oc, ok := e.(*expression.ObjectConstruct); ok {
+		// A fully-constant literal (`{"a":1}`) const-folds (see ArrayConstruct above):
+		// computed once and comparison/pushdown-friendly. Only a DYNAMIC object literal
+		// rides the per-row native op.
+		if oc.Value() != nil {
+			return nil, false
+		}
+		mapping := oc.Mapping()
+		names := make([]expression.Expression, 0, len(mapping))
+		for n := range mapping {
+			names = append(names, n)
+		}
+		sort.Slice(names, func(i, j int) bool {
+			return names[i].String() < names[j].String()
+		})
+		params = []interface{}{"object_construct"}
+		for _, n := range names {
+			nameP, nok := ExprTreeOptimize(labels, n, buf, strict)
+			if !nok {
+				return nil, false
+			}
+			valP, vok := ExprTreeOptimize(labels, mapping[n], buf, strict)
+			if !vok {
+				return nil, false
+			}
+			params = append(params, nameP, valP)
+		}
+		return params, true
 	}
 
 	f, ok := e.(expression.Function)

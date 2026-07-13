@@ -33,8 +33,10 @@ shapes. The cbq boxed fallback remains as the correctness oracle for everything 
   (bare-identifier object/array operands **done** — a bare field operand like
   `OBJECT_LENGTH(details)` now lowers native via `lowerNativeFieldPath`; variadic >2-arg
   array/object builders **done** — `array_append/prepend/concat`, `object_concat/remove`
-  now ride the eager-Vals reducers at any arity ≥2),
-  array/object literals (`array_sort/reverse/flatten` done; `array_distinct` skipped —
+  now ride the eager-Vals reducers at any arity ≥2; **array/object literals done** —
+  `[a,b,c]` (ArrayConstruct) and `{"k":v,...}` (ObjectConstruct) lower to native
+  `array_construct`/`object_construct` eager-Vals reducers),
+  (`array_sort/reverse/flatten` done; `array_distinct` skipped —
   nondeterministic), comprehensions (ANY/EVERY/FIRST/ARRAY/OBJECT **done natively in
   BOTH lanes**: IN/WITHIN/named-k:v single-binding — the compiled lane emits a plain
   for-loop over `base.CollElems` with the captured children inlined, no boxing;
@@ -209,6 +211,7 @@ place encoding "empty==MISSING, leading-n==null"), `CondUnknownKeep`/`NaryFirstK
 | `object_length` `poly_length` | `engine/expr_object.go` + `base/object.go` | object/collection reader ops (unary; op-code dispatch; count via `jsonparser.ObjectEach`/`ArrayEach`, no materialization) |
 | `object_names` `object_values` `object_pairs` | `engine/expr_object.go` + `base/object.go` | name-sorted structure builders (field names / values / `{name,val}` pairs; pooled `KeyVals` + reused buffer). OBJECT_PAIRS 1-arg only (2-arg `types` option falls back) |
 | `object_add` `object_put` `object_remove` `object_concat` | `engine/expr_object.go` + `base/object.go` | object mutating builders — key-sorted re-emit (add-new / set (a MISSING value removes) / remove / merge). ADD/PUT ternary; REMOVE/CONCAT **variadic** (MinArgs 2) via the eager-Vals reducers `base.Object{Remove,Concat}Vals` — REMOVE drops each key, CONCAT merges left-to-right (later object wins) |
+| `array_construct` `object_construct` | `engine/expr_array.go` `engine/expr_object.go` + `base` | ARRAY `[...]` / OBJECT `{...}` literals (cbq ArrayConstruct / ObjectConstruct) via the eager-Vals reducers `base.ArrayConstructVals` / `base.ObjectConstructVals`. Array: MISSING/NULL element → `null`. Object: key-sorted, MISSING/NULL name skips its pair, non-string name → NULL, MISSING value skips, last-wins. Recognized as non-Function construct types; the 1-operand `EXPR_CAN_FLATTEN` array passthrough stays boxed |
 | `exprStr` / `exprTree` | `glue/expr.go` | **the fallback** (parse / delegate to cbq) |
 
 Still **delegated:** `LIKE`, dynamic-pattern `REGEXP_*`, `slice` navigation,
@@ -713,8 +716,14 @@ byte/register/lz model.
   `array_append/prepend/concat` and `object_remove/concat` ride the eager-Vals reducer
   pattern (`NaryCaptureChildren` + `base.*Vals` — like `ExprConcat`), so they lower at
   any arity ≥2 in both lanes; the recognizer no longer arity-gates them to exactly 2.
-  Remaining: `array_distinct` (**skip** — cbq's set order is nondeterministic) and
-  array/object literals. `ValComparer` scratch covers sort/dedup.
+  **Array/object literals are done too**: `[e0,e1,...]` (cbq ArrayConstruct →
+  `base.ArrayConstructVals`; MISSING/NULL element → `null`) and `{"k0":v0,...}` (cbq
+  ObjectConstruct → `base.ObjectConstructVals`; MISSING/NULL name skips the pair,
+  non-string name → NULL, MISSING value skips, key-sorted, last-wins) ride the same
+  eager-Vals reducers via new recognizer cases for the (non-Function) construct types.
+  The single-operand `EXPR_CAN_FLATTEN` ArrayConstruct passthrough stays boxed.
+  Remaining: `array_distinct` (**skip** — cbq's set order is nondeterministic).
+  `ValComparer` scratch covers sort/dedup.
 - **Comprehensions** — `ANY`/`EVERY` (predicate), `FIRST`/`ARRAY` (mapping + optional
   `WHEN`), and `OBJECT` (name:value mapping + optional `WHEN`), single-binding, both
   `IN` and `WITHIN`, **and** the named `k:v IN` form (name = object field sorted / array

@@ -159,19 +159,19 @@ func ArrayTrimSpace(arr []byte) []byte {
 // Each value is a complete Val (already valid JSON, e.g. `"x"` keeps its quotes) and
 // is spliced verbatim -- a NULL value IS appended (only MISSING short-circuits). See
 // the arrayElems canonical-input note.
-func ArrayAppendVals(vals Vals, bufPre []byte) (out []byte, sentinel Val, ok bool) {
+func ArrayAppendVals(vals Vals, bufPre []byte) (Val, []byte) {
 	for _, v := range vals { // MISSING anywhere dominates.
 		if len(v) == 0 {
-			return nil, ValMissing, false
+			return ValMissing, bufPre
 		}
 	}
 	pv, pt := Parse(vals[0])
 	if ParseTypeToValType[pt] != ValTypeArray {
-		return nil, ValNull, false
+		return ValNull, bufPre
 	}
 	elems := ArrayTrimSpace(pv)
 
-	out = append(bufPre[:0], '[')
+	out := append(bufPre[:0], '[')
 	out = append(out, elems...)
 	wrote := len(elems) > 0
 	for _, v := range vals[1:] {
@@ -182,7 +182,7 @@ func ArrayAppendVals(vals Vals, bufPre []byte) (out []byte, sentinel Val, ok boo
 		wrote = true
 	}
 	out = append(out, ']')
-	return out, nil, true
+	return Val(out), out
 }
 
 // ArrayPrependVals builds ARRAY_PREPEND(val1, val2, ..., arr) -- arr with each valN
@@ -190,20 +190,20 @@ func ArrayAppendVals(vals Vals, bufPre []byte) (out []byte, sentinel Val, ok boo
 // array LAST (vals[len-1]); vals[:len-1] are the prepended values. cbq ARRAY_PREPEND
 // (variadic, MinArgs 2): a MISSING operand -> MISSING; a non-array last operand ->
 // NULL; else the values ++ arr. Values are spliced verbatim (a NULL value IS prepended).
-func ArrayPrependVals(vals Vals, bufPre []byte) (out []byte, sentinel Val, ok bool) {
+func ArrayPrependVals(vals Vals, bufPre []byte) (Val, []byte) {
 	for _, v := range vals {
 		if len(v) == 0 {
-			return nil, ValMissing, false
+			return ValMissing, bufPre
 		}
 	}
 	n := len(vals) - 1 // the array is the LAST operand.
 	pv, pt := Parse(vals[n])
 	if ParseTypeToValType[pt] != ValTypeArray {
-		return nil, ValNull, false
+		return ValNull, bufPre
 	}
 	elems := ArrayTrimSpace(pv)
 
-	out = append(bufPre[:0], '[')
+	out := append(bufPre[:0], '[')
 	wrote := false
 	for _, v := range vals[:n] {
 		if wrote {
@@ -217,26 +217,26 @@ func ArrayPrependVals(vals Vals, bufPre []byte) (out []byte, sentinel Val, ok bo
 	}
 	out = append(out, elems...)
 	out = append(out, ']')
-	return out, nil, true
+	return Val(out), out
 }
 
 // ArrayConcatVals builds ARRAY_CONCAT(arr1, arr2, ...) -- all the arrays' elements
 // joined in order -- into bufPre. cbq ARRAY_CONCAT (variadic, MinArgs 2): a MISSING
 // operand -> MISSING; ANY non-array operand -> NULL (missing takes precedence); else
 // the concatenation.
-func ArrayConcatVals(vals Vals, bufPre []byte) (out []byte, sentinel Val, ok bool) {
+func ArrayConcatVals(vals Vals, bufPre []byte) (Val, []byte) {
 	for _, v := range vals {
 		if len(v) == 0 {
-			return nil, ValMissing, false
+			return ValMissing, bufPre
 		}
 	}
 	for _, v := range vals { // ANY non-array -> NULL.
 		if _, pt := Parse(v); ParseTypeToValType[pt] != ValTypeArray {
-			return nil, ValNull, false
+			return ValNull, bufPre
 		}
 	}
 
-	out = append(bufPre[:0], '[')
+	out := append(bufPre[:0], '[')
 	wrote := false
 	for _, v := range vals {
 		pv, _ := Parse(v)
@@ -250,7 +250,29 @@ func ArrayConcatVals(vals Vals, bufPre []byte) (out []byte, sentinel Val, ok boo
 		}
 	}
 	out = append(out, ']')
-	return out, nil, true
+	return Val(out), out
+}
+
+// ArrayConstructVals builds an ARRAY literal `[e0, e1, ...]` from the evaluated element
+// values into bufPre. cbq's ArrayConstruct always yields an array (never MISSING/NULL
+// overall): a MISSING element serializes as `null` (arrays cannot hold MISSING --
+// missingValue.WriteJSON emits null), and a NULL element is its verbatim `null`. Every
+// other element is spliced verbatim (a complete Val). (The cbq single-operand
+// EXPR_CAN_FLATTEN passthrough is NOT this -- the optimizer keeps that boxed.)
+func ArrayConstructVals(vals Vals, bufPre []byte) (Val, []byte) {
+	out := append(bufPre[:0], '[')
+	for i, v := range vals {
+		if i > 0 {
+			out = append(out, ',')
+		}
+		if len(v) == 0 { // MISSING element -> null.
+			out = append(out, 'n', 'u', 'l', 'l')
+		} else {
+			out = append(out, v...)
+		}
+	}
+	out = append(out, ']')
+	return Val(out), out
 }
 
 // arrayCollectElems appends each element of the array-token bytes inner into the
