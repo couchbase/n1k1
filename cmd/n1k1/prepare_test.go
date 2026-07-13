@@ -29,7 +29,7 @@ func prepareTestCLI(t *testing.T, out, errb *strings.Builder) *cli {
 	dir := t.TempDir()
 	// Classic <ns>/<keyspace> layout gives a deterministic `d` keyspace (the flat-root
 	// name would be the random t.TempDir basename). The string field lets a per-row
-	// REPEAT(d.a, 2) box (the boxed-fallback case).
+	// MB_LENGTH(d.a) box (the boxed-fallback case; MB_LENGTH is delegated to cbq).
 	kd := filepath.Join(dir, "default", "d")
 	if err := os.MkdirAll(kd, 0o755); err != nil {
 		t.Fatal(err)
@@ -49,15 +49,15 @@ func prepareTestCLI(t *testing.T, out, errb *strings.Builder) *cli {
 // result reaches stdout). This is the key fallback: a query needing cbq is
 // executed interpreter-only, never failing.
 //
-// The boxed expr must be genuinely PER-ROW: REPEAT over a doc field (repeat(d.a, 2))
-// boxes per row and can't compile. (A CONSTANT boxed expr like REPEAT("z", 4) is now
-// lifted to a once-evaluated var and DOES compile -- see TestDotPrepareConstBoxedEmits
-// -- so it is no longer the fallback case.)
+// The boxed expr must be genuinely PER-ROW: MB_LENGTH over a doc field (mb_length(d.a))
+// boxes per row and can't compile. (A CONSTANT boxed expr like MB_LENGTH("zzzz") is
+// instead lifted to a once-evaluated var and DOES compile -- see
+// TestDotPrepareConstBoxedEmits -- so it is no longer the fallback case.)
 func TestDotPrepareBoxedFallsBack(t *testing.T) {
 	var out, errb strings.Builder
 	c := prepareTestCLI(t, &out, &errb)
 
-	c.dot(`.prepare SELECT REPEAT(d.a, 2) AS r FROM d`)
+	c.dot(`.prepare SELECT MB_LENGTH(d.a) AS r FROM d`)
 
 	if !strings.Contains(errb.String(), "not compilable") {
 		t.Errorf("stderr should note not-compilable; got %q", errb.String())
@@ -65,7 +65,7 @@ func TestDotPrepareBoxedFallsBack(t *testing.T) {
 	if !strings.Contains(errb.String(), "boxed expression") {
 		t.Errorf("stderr should give the boxed-expression reason; got %q", errb.String())
 	}
-	if !strings.Contains(out.String(), `"r":"xx"`) {
+	if !strings.Contains(out.String(), `"r":1`) {
 		t.Errorf("interpreter result must reach stdout; got %q", out.String())
 	}
 	// It fell back, so it did NOT emit Go source.
@@ -83,12 +83,12 @@ func TestDotPrepareConstBoxedEmits(t *testing.T) {
 	var out, errb strings.Builder
 	c := prepareTestCLI(t, &out, &errb)
 
-	c.dot(`.prepare SELECT REPEAT("z", 4) AS r`)
+	c.dot(`.prepare SELECT MB_LENGTH("zzzz") AS r`)
 
 	if !strings.Contains(out.String(), "func "+glue.PrepareFuncName+"(") {
 		t.Errorf("a constant boxed expr should compile + emit Go; stdout=%q", out.String())
 	}
-	if !strings.Contains(out.String(), `"r":"zzzz"`) {
+	if !strings.Contains(out.String(), `"r":4`) {
 		t.Errorf("interpreter result must also reach stdout; got %q", out.String())
 	}
 }
