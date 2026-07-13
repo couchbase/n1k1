@@ -311,61 +311,58 @@ func DescendantsAppend(c *ValComparer, v Val, bufPre []byte) []byte {
 	return append(out, ']')
 }
 
-// CollYield drives a comprehension binding's iteration. For named=false it is
-// exactly ArrayYield (value-only `x IN arr`: each array element yielded as a
-// one-element Vals). For named=true (the `k:v` form) it yields a TWO-element Vals
-// [name, value] per member: an OBJECT's fields in sorted-name order (name = the
-// field name as a JSON string), or an ARRAY's elements with name = the integer
-// index. Returns ok=false for a non-iterable (value-only: non-array; named: neither
-// object nor array), which the caller maps to NULL. Strings are re-quoted; object
-// field values alias coll (stable for the row).
-func CollYield(c *ValComparer, coll Val, named bool, yieldVals YieldVals, valsPre Vals) (Vals, bool) {
-	if !named {
-		return ArrayYield(coll, yieldVals, valsPre)
-	}
+// CollElems materializes a comprehension binding's members into dst as a flat Vals
+// with a stride, so a comprehension op can iterate with a plain indexed for-loop
+// (no per-element callback -- keeps the expr codegen able to emit it). Value-only
+// (named=false): each array element, stride 1. Named: [name, value] per member,
+// stride 2 -- object fields in sorted-name order (name = JSON string), array with
+// the integer index. Returns (dst, stride, ok); ok=false for a non-iterable (value-
+// only: non-array; named: neither object nor array) which the caller maps to NULL.
+// Element/value bytes alias coll (stable for the row); strings/names are re-quoted.
+func CollElems(c *ValComparer, coll Val, named bool, dst Vals) (Vals, int, bool) {
 	pv, pt := Parse(coll)
-	switch ParseTypeToValType[pt] {
+	vt := ParseTypeToValType[pt]
+	if !named {
+		if vt != ValTypeArray {
+			return dst, 1, false
+		}
+		jsonparser.ArrayEach(pv, func(e []byte, dt jsonparser.ValueType, _ int, _ error) {
+			if dt == jsonparser.String {
+				e = collQuote(e)
+			}
+			dst = append(dst, Val(e))
+		})
+		return dst, 1, true
+	}
+	switch vt {
 	case ValTypeObject:
-		// Collect + sort field (name, value) via the pool, copy the sorted pairs to
-		// local slices (names re-quoted; string values re-quoted; other values alias
-		// coll), release the pool, THEN yield -- so the per-element child evaluation
-		// (which uses the pool) can't clobber our sorted list.
 		kvs := c.KeyValsAcquire(0)
 		jsonparser.ObjectEach(pv, func(key []byte, e []byte, dt jsonparser.ValueType, _ int) error {
 			kvs = append(kvs, KeyVal{Key: key, Val: e, ValType: int(dt)})
 			return nil
 		})
 		KeyValsSortByName(kvs)
-		names := make([]Val, len(kvs))
-		vals := make([]Val, len(kvs))
 		for i := range kvs {
-			names[i] = collQuote(kvs[i].Key)
+			val := kvs[i].Val
 			if kvs[i].ValType == int(jsonparser.String) {
-				vals[i] = collQuote(kvs[i].Val)
-			} else {
-				vals[i] = kvs[i].Val
+				val = collQuote(kvs[i].Val)
 			}
+			dst = append(dst, collQuote(kvs[i].Key), Val(val))
 		}
 		c.KeyValsRelease(0, kvs)
-		for i := range names {
-			valsPre = append(valsPre[:0], names[i], vals[i])
-			yieldVals(valsPre)
-		}
-		return valsPre, true
+		return dst, 2, true
 	case ValTypeArray:
 		idx := 0
 		jsonparser.ArrayEach(pv, func(e []byte, dt jsonparser.ValueType, _ int, _ error) {
-			elem := e
 			if dt == jsonparser.String {
-				elem = collQuote(e)
+				e = collQuote(e)
 			}
-			valsPre = append(valsPre[:0], Val(strconv.AppendInt(nil, int64(idx), 10)), elem)
+			dst = append(dst, Val(strconv.AppendInt(nil, int64(idx), 10)), Val(e))
 			idx++
-			yieldVals(valsPre)
 		})
-		return valsPre, true
+		return dst, 2, true
 	}
-	return valsPre, false
+	return dst, 2, false
 }
 
 // collQuote returns a fresh JSON string Val `"s"` (s is the unquoted content).

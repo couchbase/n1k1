@@ -29,7 +29,7 @@ func init() {
 // comprehension op's params[0] -- a list of binding-label strings: one label for a
 // value-only `x IN` binding, or two ([nameLabel, valueLabel]) for the named `k:v IN`
 // form. named is a plain (non-lz) build-time value, so it bakes into the compiled
-// path as a constant handed to base.CollYield.
+// path as a constant handed to base.CollElems.
 func collBind(labels base.Labels, param0 interface{}) (childLabels base.Labels, named bool) {
 	bindLabels := param0.([]interface{})
 	childLabels = append(base.Labels{}, labels...)
@@ -81,45 +81,50 @@ func ExprAny(lzVars *base.Vars, labels base.Labels,
 	childLabels, named := collBind(labels, params[0])
 
 	var lzValsChild base.Vals // <== varLift: lzValsChild by path
-	var lzValsPre base.Vals   // <== varLift: lzValsPre by path
+	var lzElemsPre base.Vals  // <== varLift: lzElemsPre by path
 
 	lzArr := MakeExprFunc(lzVars, labels, arrParam, path, "arr") // !lzRHS, via: lzExprFunc
 
 	lzSat := MakeExprFunc(lzVars, childLabels, satParam, path, "sat") // !lzRHS, via: lzExprFunc
 
 	lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
-		lzValArr := lzArr(lzVals, lzYieldErr) // <== emitCaptured: path "arr"
+		lzValArr := lzArr(lzVals, lzYieldErr) // <== emitCaptured: path "arr", via: lzVal
 
 		if base.ValKind(lzValArr) == base.ValKindMissing {
 			lzVal = base.ValMissing
 		} else {
-			lzFound := false
+			// Materialize the binding's members (stride 1 value-only, 2 for k:v) and
+			// iterate with a plain for-loop -- no per-element callback closure, which
+			// the expr codegen can't emit; the captured child inlines in the loop body.
+			var lzStride int
+			var lzIsColl bool
+			lzElemsPre, lzStride, lzIsColl = base.CollElems(lzVars.Ctx.ValComparer, lzValArr, named, lzElemsPre[:0])
 
-			lzYieldElem := func(lzElemVals base.Vals) {
-				if !lzFound {
-					// Extend the row with the bound element in the appended slot.
-					lzValsChild = append(lzValsChild[:0], lzVals...)
-					lzValsChild = append(lzValsChild, lzElemVals...)
+			if !lzIsColl {
+				lzVal = base.ValNull
+			} else {
+				lzFound := false
 
-					lzVals := lzValsChild // shadow: the captured child reads the appended slot
+				for lzI := 0; lzI < len(lzElemsPre); lzI = lzI + lzStride {
+					if !lzFound {
+						lzValsChild = append(lzValsChild[:0], lzVals...)
+						lzValsChild = append(lzValsChild, lzElemsPre[lzI:lzI+lzStride]...)
 
-					lzValSat := lzSat(lzVals, lzYieldErr) // <== emitCaptured: path "sat"
+						lzVals := lzValsChild // shadow: the captured child reads the appended slot(s)
 
-					if base.ValTruthy(lzValSat) {
-						lzFound = true
+						lzValSat := lzSat(lzVals, lzYieldErr) // <== emitCaptured: path "sat", via: lzVal
+
+						if base.ValTruthy(lzValSat) {
+							lzFound = true
+						}
 					}
 				}
-			}
 
-			var lzIsArr bool
-			lzValsPre, lzIsArr = base.CollYield(lzVars.Ctx.ValComparer, lzValArr, named, lzYieldElem, lzValsPre[:0])
-
-			if !lzIsArr {
-				lzVal = base.ValNull
-			} else if lzFound {
-				lzVal = base.ValTrue
-			} else {
-				lzVal = base.ValFalse
+				if lzFound {
+					lzVal = base.ValTrue
+				} else {
+					lzVal = base.ValFalse
+				}
 			}
 		}
 
@@ -145,44 +150,47 @@ func ExprEvery(lzVars *base.Vars, labels base.Labels,
 	childLabels, named := collBind(labels, params[0])
 
 	var lzValsChild base.Vals // <== varLift: lzValsChild by path
-	var lzValsPre base.Vals   // <== varLift: lzValsPre by path
+	var lzElemsPre base.Vals  // <== varLift: lzElemsPre by path
 
 	lzArr := MakeExprFunc(lzVars, labels, arrParam, path, "arr") // !lzRHS, via: lzExprFunc
 
 	lzSat := MakeExprFunc(lzVars, childLabels, satParam, path, "sat") // !lzRHS, via: lzExprFunc
 
 	lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
-		lzValArr := lzArr(lzVals, lzYieldErr) // <== emitCaptured: path "arr"
+		lzValArr := lzArr(lzVals, lzYieldErr) // <== emitCaptured: path "arr", via: lzVal
 
 		if base.ValKind(lzValArr) == base.ValKindMissing {
 			lzVal = base.ValMissing
 		} else {
-			lzFailed := false
+			var lzStride int
+			var lzIsColl bool
+			lzElemsPre, lzStride, lzIsColl = base.CollElems(lzVars.Ctx.ValComparer, lzValArr, named, lzElemsPre[:0])
 
-			lzYieldElem := func(lzElemVals base.Vals) {
-				if !lzFailed {
-					lzValsChild = append(lzValsChild[:0], lzVals...)
-					lzValsChild = append(lzValsChild, lzElemVals...)
+			if !lzIsColl {
+				lzVal = base.ValNull
+			} else {
+				lzFailed := false
 
-					lzVals := lzValsChild // shadow: the captured child reads the appended slot
+				for lzI := 0; lzI < len(lzElemsPre); lzI = lzI + lzStride {
+					if !lzFailed {
+						lzValsChild = append(lzValsChild[:0], lzVals...)
+						lzValsChild = append(lzValsChild, lzElemsPre[lzI:lzI+lzStride]...)
 
-					lzValSat := lzSat(lzVals, lzYieldErr) // <== emitCaptured: path "sat"
+						lzVals := lzValsChild // shadow: the captured child reads the appended slot(s)
 
-					if !base.ValTruthy(lzValSat) {
-						lzFailed = true
+						lzValSat := lzSat(lzVals, lzYieldErr) // <== emitCaptured: path "sat", via: lzVal
+
+						if !base.ValTruthy(lzValSat) {
+							lzFailed = true
+						}
 					}
 				}
-			}
 
-			var lzIsArr bool
-			lzValsPre, lzIsArr = base.CollYield(lzVars.Ctx.ValComparer, lzValArr, named, lzYieldElem, lzValsPre[:0])
-
-			if !lzIsArr {
-				lzVal = base.ValNull
-			} else if lzFailed {
-				lzVal = base.ValFalse
-			} else {
-				lzVal = base.ValTrue
+				if lzFailed {
+					lzVal = base.ValFalse
+				} else {
+					lzVal = base.ValTrue
+				}
 			}
 		}
 
@@ -210,7 +218,7 @@ func ExprFirst(lzVars *base.Vars, labels base.Labels,
 	childLabels, named := collBind(labels, params[0])
 
 	var lzValsChild base.Vals // <== varLift: lzValsChild by path
-	var lzValsPre base.Vals   // <== varLift: lzValsPre by path
+	var lzElemsPre base.Vals  // <== varLift: lzElemsPre by path
 
 	lzArr := MakeExprFunc(lzVars, labels, arrParam, path, "arr") // !lzRHS, via: lzExprFunc
 
@@ -219,36 +227,37 @@ func ExprFirst(lzVars *base.Vars, labels base.Labels,
 	lzMap := MakeExprFunc(lzVars, childLabels, mapParam, path, "map") // !lzRHS, via: lzExprFunc
 
 	lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
-		lzValArr := lzArr(lzVals, lzYieldErr) // <== emitCaptured: path "arr"
+		lzValArr := lzArr(lzVals, lzYieldErr) // <== emitCaptured: path "arr", via: lzVal
 
 		if base.ValKind(lzValArr) == base.ValKindMissing {
 			lzVal = base.ValMissing
 		} else {
-			lzDone := false
-			var lzResult base.Val = base.ValMissing
+			var lzStride int
+			var lzIsColl bool
+			lzElemsPre, lzStride, lzIsColl = base.CollElems(lzVars.Ctx.ValComparer, lzValArr, named, lzElemsPre[:0])
 
-			lzYieldElem := func(lzElemVals base.Vals) {
-				if !lzDone {
-					lzValsChild = append(lzValsChild[:0], lzVals...)
-					lzValsChild = append(lzValsChild, lzElemVals...)
-
-					lzVals := lzValsChild // shadow: the captured children read the appended slot
-
-					lzValWhen := lzWhen(lzVals, lzYieldErr) // <== emitCaptured: path "when"
-
-					if base.ValTruthy(lzValWhen) {
-						lzResult = lzMap(lzVals, lzYieldErr) // <== emitCaptured: path "map"
-						lzDone = true
-					}
-				}
-			}
-
-			var lzIsArr bool
-			lzValsPre, lzIsArr = base.CollYield(lzVars.Ctx.ValComparer, lzValArr, named, lzYieldElem, lzValsPre[:0])
-
-			if !lzIsArr {
+			if !lzIsColl {
 				lzVal = base.ValNull
 			} else {
+				lzDone := false
+				var lzResult base.Val = base.ValMissing
+
+				for lzI := 0; lzI < len(lzElemsPre); lzI = lzI + lzStride {
+					if !lzDone {
+						lzValsChild = append(lzValsChild[:0], lzVals...)
+						lzValsChild = append(lzValsChild, lzElemsPre[lzI:lzI+lzStride]...)
+
+						lzVals := lzValsChild // shadow: the captured children read the appended slot(s)
+
+						lzValWhen := lzWhen(lzVals, lzYieldErr) // <== emitCaptured: path "when", via: lzVal
+
+						if base.ValTruthy(lzValWhen) {
+							lzResult = lzMap(lzVals, lzYieldErr) // <== emitCaptured: path "map", via: lzVal
+							lzDone = true
+						}
+					}
+				}
+
 				lzVal = lzResult
 			}
 		}
@@ -276,7 +285,7 @@ func ExprArray(lzVars *base.Vars, labels base.Labels,
 	childLabels, named := collBind(labels, params[0])
 
 	var lzValsChild base.Vals // <== varLift: lzValsChild by path
-	var lzValsPre base.Vals   // <== varLift: lzValsPre by path
+	var lzElemsPre base.Vals  // <== varLift: lzElemsPre by path
 	var lzBufPre []byte       // <== varLift: lzBufPre by path
 
 	lzArr := MakeExprFunc(lzVars, labels, arrParam, path, "arr") // !lzRHS, via: lzExprFunc
@@ -286,41 +295,42 @@ func ExprArray(lzVars *base.Vars, labels base.Labels,
 	lzMap := MakeExprFunc(lzVars, childLabels, mapParam, path, "map") // !lzRHS, via: lzExprFunc
 
 	lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
-		lzValArr := lzArr(lzVals, lzYieldErr) // <== emitCaptured: path "arr"
+		lzValArr := lzArr(lzVals, lzYieldErr) // <== emitCaptured: path "arr", via: lzVal
 
 		if base.ValKind(lzValArr) == base.ValKindMissing {
 			lzVal = base.ValMissing
 		} else {
-			lzOut := append(lzBufPre[:0], '[')
-			lzWrote := false
+			var lzStride int
+			var lzIsColl bool
+			lzElemsPre, lzStride, lzIsColl = base.CollElems(lzVars.Ctx.ValComparer, lzValArr, named, lzElemsPre[:0])
 
-			lzYieldElem := func(lzElemVals base.Vals) {
-				lzValsChild = append(lzValsChild[:0], lzVals...)
-				lzValsChild = append(lzValsChild, lzElemVals...)
-
-				lzVals := lzValsChild // shadow: the captured children read the appended slot
-
-				lzValWhen := lzWhen(lzVals, lzYieldErr) // <== emitCaptured: path "when"
-
-				if base.ValTruthy(lzValWhen) {
-					lzValMap := lzMap(lzVals, lzYieldErr) // <== emitCaptured: path "map"
-
-					if base.ValKind(lzValMap) != base.ValKindMissing {
-						if lzWrote {
-							lzOut = append(lzOut, ',')
-						}
-						lzOut = append(lzOut, lzValMap...)
-						lzWrote = true
-					}
-				}
-			}
-
-			var lzIsArr bool
-			lzValsPre, lzIsArr = base.CollYield(lzVars.Ctx.ValComparer, lzValArr, named, lzYieldElem, lzValsPre[:0])
-
-			if !lzIsArr {
+			if !lzIsColl {
 				lzVal = base.ValNull
 			} else {
+				lzOut := append(lzBufPre[:0], '[')
+				lzWrote := false
+
+				for lzI := 0; lzI < len(lzElemsPre); lzI = lzI + lzStride {
+					lzValsChild = append(lzValsChild[:0], lzVals...)
+					lzValsChild = append(lzValsChild, lzElemsPre[lzI:lzI+lzStride]...)
+
+					lzVals := lzValsChild // shadow: the captured children read the appended slot(s)
+
+					lzValWhen := lzWhen(lzVals, lzYieldErr) // <== emitCaptured: path "when", via: lzVal
+
+					if base.ValTruthy(lzValWhen) {
+						lzValMap := lzMap(lzVals, lzYieldErr) // <== emitCaptured: path "map", via: lzVal
+
+						if base.ValKind(lzValMap) != base.ValKindMissing {
+							if lzWrote {
+								lzOut = append(lzOut, ',')
+							}
+							lzOut = append(lzOut, lzValMap...)
+							lzWrote = true
+						}
+					}
+				}
+
 				lzOut = append(lzOut, ']')
 				lzBufPre = lzOut
 				lzVal = base.Val(lzOut)
@@ -353,7 +363,7 @@ func ExprObject(lzVars *base.Vars, labels base.Labels,
 	childLabels, named := collBind(labels, params[0])
 
 	var lzValsChild base.Vals // <== varLift: lzValsChild by path
-	var lzValsPre base.Vals   // <== varLift: lzValsPre by path
+	var lzElemsPre base.Vals  // <== varLift: lzElemsPre by path
 	var lzBufPre []byte       // <== varLift: lzBufPre by path
 	var lzKVs base.KeyVals    // <== varLift: lzKVs by path
 
@@ -366,54 +376,57 @@ func ExprObject(lzVars *base.Vars, labels base.Labels,
 	lzValue := MakeExprFunc(lzVars, childLabels, valueParam, path, "value") // !lzRHS, via: lzExprFunc
 
 	lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
-		lzValArr := lzArr(lzVals, lzYieldErr) // <== emitCaptured: path "arr"
+		lzValArr := lzArr(lzVals, lzYieldErr) // <== emitCaptured: path "arr", via: lzVal
 
 		if base.ValKind(lzValArr) == base.ValKindMissing {
 			lzVal = base.ValMissing
 		} else {
-			lzKVs = lzKVs[:0]
-			lzBad := 0 // 0 ok, 1 name MISSING (-> MISSING), 2 name non-string (-> NULL)
+			var lzStride int
+			var lzIsColl bool
+			lzElemsPre, lzStride, lzIsColl = base.CollElems(lzVars.Ctx.ValComparer, lzValArr, named, lzElemsPre[:0])
 
-			lzYieldElem := func(lzElemVals base.Vals) {
-				if lzBad == 0 {
-					lzValsChild = append(lzValsChild[:0], lzVals...)
-					lzValsChild = append(lzValsChild, lzElemVals...)
+			if !lzIsColl {
+				lzVal = base.ValNull
+			} else {
+				lzKVs = lzKVs[:0]
+				lzBad := 0 // 0 ok, 1 name MISSING (-> MISSING), 2 name non-string (-> NULL)
 
-					lzVals := lzValsChild // shadow: the captured children read the appended slot
+				for lzI := 0; lzI < len(lzElemsPre); lzI = lzI + lzStride {
+					if lzBad == 0 {
+						lzValsChild = append(lzValsChild[:0], lzVals...)
+						lzValsChild = append(lzValsChild, lzElemsPre[lzI:lzI+lzStride]...)
 
-					lzValWhen := lzWhen(lzVals, lzYieldErr) // <== emitCaptured: path "when"
+						lzVals := lzValsChild // shadow: the captured children read the appended slot(s)
 
-					if base.ValTruthy(lzValWhen) {
-						lzValName := lzName(lzVals, lzYieldErr) // <== emitCaptured: path "name"
+						lzValWhen := lzWhen(lzVals, lzYieldErr) // <== emitCaptured: path "when", via: lzVal
 
-						if base.ValKind(lzValName) == base.ValKindMissing {
-							lzBad = 1
-						} else if !base.ValIsString(lzValName) {
-							lzBad = 2
-						} else {
-							lzValValue := lzValue(lzVals, lzYieldErr) // <== emitCaptured: path "value"
+						if base.ValTruthy(lzValWhen) {
+							lzValName := lzName(lzVals, lzYieldErr) // <== emitCaptured: path "name", via: lzVal
 
-							if base.ValKind(lzValValue) != base.ValKindMissing {
-								lzKVs = base.CollObjectPut(lzKVs, lzValName, lzValValue)
+							if base.ValKind(lzValName) == base.ValKindMissing {
+								lzBad = 1
+							} else if !base.ValIsString(lzValName) {
+								lzBad = 2
+							} else {
+								lzValValue := lzValue(lzVals, lzYieldErr) // <== emitCaptured: path "value", via: lzVal
+
+								if base.ValKind(lzValValue) != base.ValKindMissing {
+									lzKVs = base.CollObjectPut(lzKVs, lzValName, lzValValue)
+								}
 							}
 						}
 					}
 				}
-			}
 
-			var lzIsArr bool
-			lzValsPre, lzIsArr = base.CollYield(lzVars.Ctx.ValComparer, lzValArr, named, lzYieldElem, lzValsPre[:0])
-
-			if !lzIsArr {
-				lzVal = base.ValNull
-			} else if lzBad == 1 {
-				lzVal = base.ValMissing
-			} else if lzBad == 2 {
-				lzVal = base.ValNull
-			} else {
-				lzOut := base.CollObjectEmit(lzKVs, lzBufPre)
-				lzBufPre = lzOut
-				lzVal = base.Val(lzOut)
+				if lzBad == 1 {
+					lzVal = base.ValMissing
+				} else if lzBad == 2 {
+					lzVal = base.ValNull
+				} else {
+					lzOut := base.CollObjectEmit(lzKVs, lzBufPre)
+					lzBufPre = lzOut
+					lzVal = base.Val(lzOut)
+				}
 			}
 		}
 

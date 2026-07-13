@@ -91,7 +91,7 @@ func init() {
 // two [.["<name>"], .["<var>"]] for the named `k:v IN` form -- each resolved by the
 // normal Field/Identifier matcher exactly like a LET var), and childLabels = parent
 // + binding for lowering the body. len(bindLabels) tells the engine op whether to
-// iterate value-only or named (see engine.collBind / base.CollYield). ok=false
+// iterate value-only or named (see engine.collBind / base.CollElems). ok=false
 // (caller falls back) on multi-binding, WITHIN over a name-variable (descendant
 // pairs), or an operand that can't be lowered.
 func collLowerBinding(labels base.Labels, bindings expression.Bindings,
@@ -118,7 +118,7 @@ func collLowerBinding(labels base.Labels, bindings expression.Bindings,
 	valueLabel := "." + LabelSuffix(b.Variable())
 	if b.NameVariable() != "" {
 		// Named `k:v IN`: two register slots -- name FIRST, then value -- matching
-		// the [name, value] pairs base.CollYield yields (object fields sorted by
+		// the [name, value] pairs base.CollElems materializes (object fields sorted by
 		// name; array index + element).
 		nameLabel := "." + LabelSuffix(b.NameVariable())
 		bindLabels = []interface{}{nameLabel, valueLabel}
@@ -702,21 +702,15 @@ func fieldChainCaseInsensitive(e expression.Expression) bool {
 //
 // Empty now: the nary family (concat, greatest/least, ifnull/coalesce via the
 // eager-Vals harness; CASE via a flat lzMatched short-circuit), between, element,
-// and -- most recently -- `in` (converted to the capture-from-lzVal form) all emit
-// correctly. Kept as the seam for the next emitter that needs it. See DESIGN-prepare.md.
-var compiledExprDenylist = map[string]bool{
-	// Collection comprehensions are NATIVE in the interpreter but boxed in the
-	// compiled lane: their engine ops iterate via a nested yield callback with a
-	// shadowed lzVals and captured children (base.CollYield / ArrayYield), a shape
-	// the EXPRESSION codegen (emit.OpToLines) can't emit correctly -- unlike the
-	// OP-level UNNEST that uses the same runtime shape (op codegen handles it). So
-	// keep any expr tree containing one BOXED (an exprStr island -> the compiled
-	// query falls back to the interpreter for that expr), which is what -prepare=full
-	// already did implicitly. Making the expr codegen emit callback iteration is a
-	// separate project; until then this keeps the compiled lane correct + building.
-	"any": true, "every": true, "first": true, "array": true,
-	"object": true, "descendants": true,
-}
+// `in` (converted to the capture-from-lzVal form), and -- most recently -- the
+// collection comprehensions (any/every/first/array/object + the WITHIN descendants
+// operand) all emit correctly. The comprehensions were unblocked by rewriting their
+// engine ops from a nested yield callback (base.CollYield, which the EXPRESSION
+// codegen can't emit) to a plain for-loop over base.CollElems (materialized members
+// with a stride), so the captured children inline into the loop body just like any
+// other emitCaptured. Kept as the seam for the next emitter that needs it. See
+// DESIGN-prepare.md and DESIGN-exprs.md.
+var compiledExprDenylist = map[string]bool{}
 
 // exprParamsHasDenylisted reports whether a native optimized param tree contains a
 // catalog op whose compiler emitter is denylisted (so the whole expr must stay

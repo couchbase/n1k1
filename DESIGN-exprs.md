@@ -32,8 +32,9 @@ shapes. The cbq boxed fallback remains as the correctness oracle for everything 
   (`str_to_millis`/`millis_to_str`/`date_diff_*`/`date_trunc_*`), bare-identifier
   object/array operands (`OBJECT_LENGTH(o)`), variadic >2-arg array/object builders,
   array/object literals (`array_sort/reverse/flatten` done; `array_distinct` skipped —
-  nondeterministic), comprehensions (ANY/EVERY/FIRST/ARRAY/OBJECT **done in the
-  interpreter**: IN/WITHIN/named-k:v single-binding — compiled lane boxes them;
+  nondeterministic), comprehensions (ANY/EVERY/FIRST/ARRAY/OBJECT **done natively in
+  BOTH lanes**: IN/WITHIN/named-k:v single-binding — the compiled lane emits a plain
+  for-loop over `base.CollElems` with the captured children inlined, no boxing;
   multi-binding and WITHIN-k:v remain),
   and `slice` navigation (blocked on a cbq-fork accessor).
 - [ ] **`LIKE` / dynamic-pattern `REGEXP_*`** — need a hand-rolled zero-alloc byte glob

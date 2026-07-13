@@ -197,7 +197,11 @@ func OpToLines(o *base.Op) []string {
 					curr := strings.Split(strings.TrimSpace(out[i]), " := ")
 					if len(curr) == 2 &&
 						prev[0] == curr[1] {
-						out[i-1] = curr[0] + " := " + prev[1]
+						// Keep a trailing newline: lines are later joined with "" (each
+						// must self-terminate), and a following statement (e.g. a
+						// captured child's first line, in a comprehension loop body)
+						// would otherwise fuse onto this one.
+						out[i-1] = curr[0] + " := " + prev[1] + "\n"
 						out[i] = ""
 					}
 				}
