@@ -24,6 +24,21 @@ func init() {
 	ExprCatalog["descendants"] = ExprDescendants
 }
 
+// collBind derives the per-element child scope labels (parent labels + one slot
+// per bound variable) and whether this is the named (k:v) form, from a
+// comprehension op's params[0] -- a list of binding-label strings: one label for a
+// value-only `x IN` binding, or two ([nameLabel, valueLabel]) for the named `k:v IN`
+// form. named is a plain (non-lz) build-time value, so it bakes into the compiled
+// path as a constant handed to base.CollYield.
+func collBind(labels base.Labels, param0 interface{}) (childLabels base.Labels, named bool) {
+	bindLabels := param0.([]interface{})
+	childLabels = append(base.Labels{}, labels...)
+	for _, b := range bindLabels {
+		childLabels = append(childLabels, b.(string))
+	}
+	return childLabels, len(bindLabels) == 2
+}
+
 // ExprDescendants is the WITHIN operand transform: it flattens an array/object to
 // its descendants (base.Descendants / cbq value.Descendants order) as a JSON array,
 // so a comprehension binding `x WITHIN v` reuses the ordinary element-iterating
@@ -44,8 +59,9 @@ func ExprDescendants(lzVars *base.Vars, labels base.Labels,
 // MISSING -> MISSING; a non-array (incl. NULL and the plain-IN-over-object case) ->
 // NULL; an empty array -> FALSE.
 //
-// params: [ bindingLabel(string), arrExpr, satisfiesExpr ]. The optimizer lowers
-// satisfiesExpr against the parent labels + bindingLabel, so a reference to <var>
+// params: [ bindLabels, arrExpr, satisfiesExpr ]. bindLabels is a label list -- one
+// [valueLabel] for `x IN`, two [nameLabel, valueLabel] for the named `k:v IN` form.
+// The optimizer lowers satisfiesExpr against the parent labels + bindLabels, so <var>
 // (as `x` or `x.field`) resolves to the appended slot via the normal labelPath
 // matcher -- exactly how LET-bound variables resolve (see glue/expr_optimize.go and
 // VisitLet). Correlated predicates work for free: the child sees the parent
@@ -56,14 +72,13 @@ func ExprDescendants(lzVars *base.Vars, labels base.Labels,
 // codegen-safe way to iterate array elements and invoke a captured child.
 func ExprAny(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	bindingLabel := params[0].(string)
 	arrParam := params[1].([]interface{})
 	satParam := params[2].([]interface{})
 
 	// The child predicate sees the parent registers plus one appended slot for the
 	// bound variable. The optimizer lowered satParam against these SAME labels, so
 	// the slot index it baked matches len(labels).
-	childLabels := append(append(base.Labels{}, labels...), bindingLabel)
+	childLabels, named := collBind(labels, params[0])
 
 	var lzValsChild base.Vals // <== varLift: lzValsChild by path
 	var lzValsPre base.Vals   // <== varLift: lzValsPre by path
@@ -84,7 +99,7 @@ func ExprAny(lzVars *base.Vars, labels base.Labels,
 				if !lzFound {
 					// Extend the row with the bound element in the appended slot.
 					lzValsChild = append(lzValsChild[:0], lzVals...)
-					lzValsChild = append(lzValsChild, lzElemVals[0])
+					lzValsChild = append(lzValsChild, lzElemVals...)
 
 					lzVals := lzValsChild // shadow: the captured child reads the appended slot
 
@@ -97,7 +112,7 @@ func ExprAny(lzVars *base.Vars, labels base.Labels,
 			}
 
 			var lzIsArr bool
-			lzValsPre, lzIsArr = base.ArrayYield(lzValArr, lzYieldElem, lzValsPre[:0])
+			lzValsPre, lzIsArr = base.CollYield(lzVars.Ctx.ValComparer, lzValArr, named, lzYieldElem, lzValsPre[:0])
 
 			if !lzIsArr {
 				lzVal = base.ValNull
@@ -121,14 +136,13 @@ func ExprAny(lzVars *base.Vars, labels base.Labels,
 // Same binding/skeleton as ExprAny, but returns FALSE on the first element whose
 // predicate is NOT truthy (skipping the rest), else TRUE. cbq: <arr> MISSING ->
 // MISSING; non-array -> NULL; an EMPTY array -> TRUE (vacuous). params match "any":
-// [ bindingLabel, arrExpr, satisfiesExpr ].
+// [ bindLabels, arrExpr, satisfiesExpr ].
 func ExprEvery(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	bindingLabel := params[0].(string)
 	arrParam := params[1].([]interface{})
 	satParam := params[2].([]interface{})
 
-	childLabels := append(append(base.Labels{}, labels...), bindingLabel)
+	childLabels, named := collBind(labels, params[0])
 
 	var lzValsChild base.Vals // <== varLift: lzValsChild by path
 	var lzValsPre base.Vals   // <== varLift: lzValsPre by path
@@ -148,7 +162,7 @@ func ExprEvery(lzVars *base.Vars, labels base.Labels,
 			lzYieldElem := func(lzElemVals base.Vals) {
 				if !lzFailed {
 					lzValsChild = append(lzValsChild[:0], lzVals...)
-					lzValsChild = append(lzValsChild, lzElemVals[0])
+					lzValsChild = append(lzValsChild, lzElemVals...)
 
 					lzVals := lzValsChild // shadow: the captured child reads the appended slot
 
@@ -161,7 +175,7 @@ func ExprEvery(lzVars *base.Vars, labels base.Labels,
 			}
 
 			var lzIsArr bool
-			lzValsPre, lzIsArr = base.ArrayYield(lzValArr, lzYieldElem, lzValsPre[:0])
+			lzValsPre, lzIsArr = base.CollYield(lzVars.Ctx.ValComparer, lzValArr, named, lzYieldElem, lzValsPre[:0])
 
 			if !lzIsArr {
 				lzVal = base.ValNull
@@ -184,17 +198,16 @@ func ExprEvery(lzVars *base.Vars, labels base.Labels,
 //
 // It returns <map> evaluated on the FIRST element for which <cond> is truthy
 // (skipping the rest). cbq: <arr> MISSING -> MISSING; non-array -> NULL; no
-// matching element -> MISSING. params: [ bindingLabel, arrExpr, mapExpr, whenExpr ]
+// matching element -> MISSING. params: [ bindLabels, arrExpr, mapExpr, whenExpr ]
 // -- the optimizer always supplies whenExpr (a constant `true` when the source has
 // no WHEN), so there is no per-element branch.
 func ExprFirst(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	bindingLabel := params[0].(string)
 	arrParam := params[1].([]interface{})
 	mapParam := params[2].([]interface{})
 	whenParam := params[3].([]interface{})
 
-	childLabels := append(append(base.Labels{}, labels...), bindingLabel)
+	childLabels, named := collBind(labels, params[0])
 
 	var lzValsChild base.Vals // <== varLift: lzValsChild by path
 	var lzValsPre base.Vals   // <== varLift: lzValsPre by path
@@ -217,7 +230,7 @@ func ExprFirst(lzVars *base.Vars, labels base.Labels,
 			lzYieldElem := func(lzElemVals base.Vals) {
 				if !lzDone {
 					lzValsChild = append(lzValsChild[:0], lzVals...)
-					lzValsChild = append(lzValsChild, lzElemVals[0])
+					lzValsChild = append(lzValsChild, lzElemVals...)
 
 					lzVals := lzValsChild // shadow: the captured children read the appended slot
 
@@ -231,7 +244,7 @@ func ExprFirst(lzVars *base.Vars, labels base.Labels,
 			}
 
 			var lzIsArr bool
-			lzValsPre, lzIsArr = base.ArrayYield(lzValArr, lzYieldElem, lzValsPre[:0])
+			lzValsPre, lzIsArr = base.CollYield(lzVars.Ctx.ValComparer, lzValArr, named, lzYieldElem, lzValsPre[:0])
 
 			if !lzIsArr {
 				lzVal = base.ValNull
@@ -252,16 +265,15 @@ func ExprFirst(lzVars *base.Vars, labels base.Labels,
 //
 // It builds a JSON array of <map> evaluated on each element for which <cond> is
 // truthy; a MISSING mapping value is skipped (cbq). <arr> MISSING -> MISSING;
-// non-array -> NULL; empty (or all-filtered) -> []. params: [ bindingLabel,
+// non-array -> NULL; empty (or all-filtered) -> []. params: [ bindLabels,
 // arrExpr, mapExpr, whenExpr ] (whenExpr always supplied, see ExprFirst).
 func ExprArray(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	bindingLabel := params[0].(string)
 	arrParam := params[1].([]interface{})
 	mapParam := params[2].([]interface{})
 	whenParam := params[3].([]interface{})
 
-	childLabels := append(append(base.Labels{}, labels...), bindingLabel)
+	childLabels, named := collBind(labels, params[0])
 
 	var lzValsChild base.Vals // <== varLift: lzValsChild by path
 	var lzValsPre base.Vals   // <== varLift: lzValsPre by path
@@ -284,7 +296,7 @@ func ExprArray(lzVars *base.Vars, labels base.Labels,
 
 			lzYieldElem := func(lzElemVals base.Vals) {
 				lzValsChild = append(lzValsChild[:0], lzVals...)
-				lzValsChild = append(lzValsChild, lzElemVals[0])
+				lzValsChild = append(lzValsChild, lzElemVals...)
 
 				lzVals := lzValsChild // shadow: the captured children read the appended slot
 
@@ -304,7 +316,7 @@ func ExprArray(lzVars *base.Vars, labels base.Labels,
 			}
 
 			var lzIsArr bool
-			lzValsPre, lzIsArr = base.ArrayYield(lzValArr, lzYieldElem, lzValsPre[:0])
+			lzValsPre, lzIsArr = base.CollYield(lzVars.Ctx.ValComparer, lzValArr, named, lzYieldElem, lzValsPre[:0])
 
 			if !lzIsArr {
 				lzVal = base.ValNull
@@ -329,17 +341,16 @@ func ExprArray(lzVars *base.Vars, labels base.Labels,
 // <arr> MISSING -> MISSING; non-array -> NULL; a <name> that evaluates to MISSING
 // aborts the whole result to MISSING; a non-string <name> aborts to NULL; a MISSING
 // <value> is skipped; duplicate names are last-wins; the object is key-sorted.
-// params: [ bindingLabel, arrExpr, nameExpr, valueExpr, whenExpr ] (whenExpr always
+// params: [ bindLabels, arrExpr, nameExpr, valueExpr, whenExpr ] (whenExpr always
 // supplied, a constant `true` when the source has no WHEN).
 func ExprObject(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	bindingLabel := params[0].(string)
 	arrParam := params[1].([]interface{})
 	nameParam := params[2].([]interface{})
 	valueParam := params[3].([]interface{})
 	whenParam := params[4].([]interface{})
 
-	childLabels := append(append(base.Labels{}, labels...), bindingLabel)
+	childLabels, named := collBind(labels, params[0])
 
 	var lzValsChild base.Vals // <== varLift: lzValsChild by path
 	var lzValsPre base.Vals   // <== varLift: lzValsPre by path
@@ -366,7 +377,7 @@ func ExprObject(lzVars *base.Vars, labels base.Labels,
 			lzYieldElem := func(lzElemVals base.Vals) {
 				if lzBad == 0 {
 					lzValsChild = append(lzValsChild[:0], lzVals...)
-					lzValsChild = append(lzValsChild, lzElemVals[0])
+					lzValsChild = append(lzValsChild, lzElemVals...)
 
 					lzVals := lzValsChild // shadow: the captured children read the appended slot
 
@@ -391,7 +402,7 @@ func ExprObject(lzVars *base.Vars, labels base.Labels,
 			}
 
 			var lzIsArr bool
-			lzValsPre, lzIsArr = base.ArrayYield(lzValArr, lzYieldElem, lzValsPre[:0])
+			lzValsPre, lzIsArr = base.CollYield(lzVars.Ctx.ValComparer, lzValArr, named, lzYieldElem, lzValsPre[:0])
 
 			if !lzIsArr {
 				lzVal = base.ValNull

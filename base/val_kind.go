@@ -149,4 +149,3 @@ func NullMissingIf(vc *ValComparer, a, b, whenEqual Val) Val {
 	}
 	return a
 }
-

@@ -32,8 +32,9 @@ shapes. The cbq boxed fallback remains as the correctness oracle for everything 
   (`str_to_millis`/`millis_to_str`/`date_diff_*`/`date_trunc_*`), bare-identifier
   object/array operands (`OBJECT_LENGTH(o)`), variadic >2-arg array/object builders,
   array/object literals (`array_sort/reverse/flatten` done; `array_distinct` skipped —
-  nondeterministic), comprehensions (ANY/EVERY/FIRST/ARRAY/OBJECT **done** single-binding;
-  WITHIN/descend/multi-binding/name-variable remain),
+  nondeterministic), comprehensions (ANY/EVERY/FIRST/ARRAY/OBJECT **done in the
+  interpreter**: IN/WITHIN/named-k:v single-binding — compiled lane boxes them;
+  multi-binding and WITHIN-k:v remain),
   and `slice` navigation (blocked on a cbq-fork accessor).
 - [ ] **`LIKE` / dynamic-pattern `REGEXP_*`** — need a hand-rolled zero-alloc byte glob
   matcher; they don't fit the byte-reuse model as `regexp` compiles.
@@ -704,20 +705,32 @@ byte/register/lz model.
   scratch covers sort/dedup. Skip `array_distinct` — cbq's set-based order is
   nondeterministic (no stable differential).
 - **Comprehensions** — `ANY`/`EVERY` (predicate), `FIRST`/`ARRAY` (mapping + optional
-  `WHEN`), and `OBJECT` (name:value mapping + optional `WHEN`), single-binding plain-IN
-  form, are **done** (`engine/expr_coll.go`): the bound variable is an APPENDED register
-  slot labeled like a LET var (`.["<var>"]`, resolved by the normal Field/Identifier
-  matcher), fed per element via `base.ArrayYield` + a shadowed `lzVals` right before the
-  captured child (the same codegen-safe shape as UNNEST) — so they work in BOTH lanes
-  (verified byte-identical interpreter vs `-prepare=full` for flat, field-nav,
-  correlated, and multi-level NESTED forms). `ANY`/`EVERY`/`FIRST` early-exit; `WHEN` is
-  synthesized to a constant `true` when absent (no per-element branch); `OBJECT`
-  accumulates last-wins key-sorted (string key required: MISSING-name → MISSING,
-  non-string → NULL). `WITHIN` (descend) is supported for every form by wrapping the
-  operand in a `descendants` transform (pre-order DFS, object fields sorted, containers
-  included; cbq `value.Descendants` order) and reusing the element-iterating op.
-  Remaining: multi-binding (`FOR x IN a, y IN b`) and name-variable object iteration
-  (`FOR k:v IN obj`), both fall back.
+  `WHEN`), and `OBJECT` (name:value mapping + optional `WHEN`), single-binding, both
+  `IN` and `WITHIN`, **and** the named `k:v IN` form (name = object field sorted / array
+  index), are **done in the INTERPRETER** (`engine/expr_coll.go`): the bound variable(s)
+  become APPENDED register slot(s) labeled like a LET var (`.["<var>"]`, resolved by the
+  normal Field/Identifier matcher), fed per element via `base.CollYield` (value-only =
+  `ArrayYield`; named yields `[name, value]`) with a shadowed `lzVals` before the
+  captured child. `ANY`/`EVERY`/`FIRST` early-exit; `WHEN` is synthesized to a constant
+  `true` when absent; `OBJECT` accumulates last-wins key-sorted (string key required:
+  MISSING-name → MISSING, non-string → NULL); `WITHIN` wraps the operand in a
+  `descendants` transform (pre-order DFS, object fields sorted; cbq `value.Descendants`
+  order); nesting/correlation fall out of the register model. Differential-tested vs cbq.
+
+  ⚠️ **Compiled lane: BOXED (falls back to the interpreter).** The comprehension ops
+  iterate via a nested yield callback (`CollYield` + a shadowed `lzVals` + captured
+  children) — a shape the *expression* codegen (`emit.OpToLines`) does not emit
+  correctly, unlike the *op*-level `UNNEST` that uses the same runtime shape (op codegen
+  handles it). So all comprehension ops are in `compiledExprDenylist`: `ExprTreesOptimize`
+  keeps any comprehension-containing expr as an `exprStr` island, and `-prepare=full`
+  runs it on the interpreter. (An earlier "byte-identical in both lanes" claim was
+  mistaken — `-prepare=full` was silently falling back to the interpreter, and the emit
+  differential filters/boxes the corpus comprehension cases, so native comprehension
+  emit was never actually exercised.) Making the expr codegen emit callback iteration —
+  the way op codegen already does for `UNNEST` — is the follow-up that would unbox them.
+
+  Remaining (fall back): multi-binding (`FOR x IN a, y IN b` — a zip) and `WITHIN k:v`
+  (descendant pairs).
 
 ### Tier D — delegate to cbq indefinitely
 - **Volatile / non-deterministic:** `now_*`, `clock_*`, `random`, `uuid`.

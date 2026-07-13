@@ -1031,20 +1031,20 @@ func TestArrayReshapersDifferentialVsCBQ(t *testing.T) {
 
 	// --- 2-arg FLATTEN: (arr, depth) ---
 	flatCases := map[string][2]expression.Expression{
-		"depth0":        {arr(1, []interface{}{2, 3}, 4), c(0)},                     // shallow copy
-		"depth1":        {arr(1, []interface{}{2, 3}, 4), c(1)},                     // one level
-		"depth2":        {arr(1, []interface{}{2, []interface{}{3, 4}}), c(2)},      // two levels
-		"neg-full":      {arr(1, []interface{}{2, []interface{}{3, 4}}), c(-1)},     // negative -> flatten fully
+		"depth0":        {arr(1, []interface{}{2, 3}, 4), c(0)},                      // shallow copy
+		"depth1":        {arr(1, []interface{}{2, 3}, 4), c(1)},                      // one level
+		"depth2":        {arr(1, []interface{}{2, []interface{}{3, 4}}), c(2)},       // two levels
+		"neg-full":      {arr(1, []interface{}{2, []interface{}{3, 4}}), c(-1)},      // negative -> flatten fully
 		"deep-shallow":  {arr([]interface{}{[]interface{}{[]interface{}{1}}}), c(1)}, // only outer level
-		"no-nesting":    {arr(1, 2, 3), c(2)},                                       // depth exceeds nesting
-		"empty":         {arr(), c(1)},                                              //
-		"mixed":         {arr("a", []interface{}{"b", "c"}, nil), c(1)},             // strings + null
-		"missing-arr":   {miss, c(1)},                                               // -> MISSING
-		"arr-missing-d": {arr(1), miss},                                             // -> MISSING
-		"nonarr":        {c(5), c(1)},                                               // -> NULL
-		"nonnum-depth":  {arr(1), c("x")},                                           // -> NULL
-		"frac-depth":    {arr(1, []interface{}{2}), c(1.5)},                         // non-integer -> NULL
-		"float-int-d":   {arr(1, []interface{}{2}), c(2.0)},                         // integral float OK
+		"no-nesting":    {arr(1, 2, 3), c(2)},                                        // depth exceeds nesting
+		"empty":         {arr(), c(1)},                                               //
+		"mixed":         {arr("a", []interface{}{"b", "c"}, nil), c(1)},              // strings + null
+		"missing-arr":   {miss, c(1)},                                                // -> MISSING
+		"arr-missing-d": {arr(1), miss},                                              // -> MISSING
+		"nonarr":        {c(5), c(1)},                                                // -> NULL
+		"nonnum-depth":  {arr(1), c("x")},                                            // -> NULL
+		"frac-depth":    {arr(1, []interface{}{2}), c(1.5)},                          // non-integer -> NULL
+		"float-int-d":   {arr(1, []interface{}{2}), c(2.0)},                          // integral float OK
 	}
 	for on, pr := range flatCases {
 		expr := expression.NewArrayFlatten(pr[0], pr[1])
@@ -1080,19 +1080,19 @@ func TestAnyComprehensionDifferentialVsCBQ(t *testing.T) {
 	}
 
 	cases := map[string]expression.Expression{
-		"has-gt":         anyGT(arr(1, 2, 9), 5),                // true
-		"none-gt":        anyGT(arr(1, 2, 3), 5),                // false
-		"boundary":       anyGT(arr(5, 5), 5),                   // false (strict >)
-		"empty":          anyGT(arr(), 5),                       // false
-		"nonarr-num":     anyGT(c(42), 5),                       // null
-		"nonarr-str":     anyGT(c("hi"), 5),                     // null
-		"null-arr":       anyGT(c(value.NULL_VALUE), 5),         // null
-		"missing-arr":    anyGT(c(value.MISSING_VALUE), 5),      // missing -> ""
-		"null-elem-hit":  anyGT(arr(nil, 9), 5),                 // true (9>5; null skipped)
-		"null-elem-miss": anyGT(arr(nil, 1), 5),                 // false
-		"strings":        anyGT(arr("a", "zz"), "m"),            // true ("zz" > "m")
-		"strings-none":   anyGT(arr("a", "b"), "m"),             // false
-		"mixed-type":     anyGT(arr("a", 9), 5),                 // true (9>5; "a" vs num by collation)
+		"has-gt":         anyGT(arr(1, 2, 9), 5),           // true
+		"none-gt":        anyGT(arr(1, 2, 3), 5),           // false
+		"boundary":       anyGT(arr(5, 5), 5),              // false (strict >)
+		"empty":          anyGT(arr(), 5),                  // false
+		"nonarr-num":     anyGT(c(42), 5),                  // null
+		"nonarr-str":     anyGT(c("hi"), 5),                // null
+		"null-arr":       anyGT(c(value.NULL_VALUE), 5),    // null
+		"missing-arr":    anyGT(c(value.MISSING_VALUE), 5), // missing -> ""
+		"null-elem-hit":  anyGT(arr(nil, 9), 5),            // true (9>5; null skipped)
+		"null-elem-miss": anyGT(arr(nil, 1), 5),            // false
+		"strings":        anyGT(arr("a", "zz"), "m"),       // true ("zz" > "m")
+		"strings-none":   anyGT(arr("a", "b"), "m"),        // false
+		"mixed-type":     anyGT(arr("a", 9), 5),            // true (9>5; "a" vs num by collation)
 	}
 	for name, e := range cases {
 		want := cbqEval(t, e)
@@ -1125,24 +1125,24 @@ func TestEveryFirstArrayDifferentialVsCBQ(t *testing.T) {
 
 	cases := map[string]expression.Expression{
 		// EVERY x IN arr SATISFIES x < 5
-		"every-all":     expression.NewEvery(bind(arr(1, 2, 3)), expression.NewLT(x, c(5))),   // true
-		"every-not-all": expression.NewEvery(bind(arr(1, 9)), expression.NewLT(x, c(5))),      // false
-		"every-empty":   expression.NewEvery(bind(arr()), expression.NewLT(x, c(5))),          // true (vacuous)
-		"every-nonarr":  expression.NewEvery(bind(c(7)), expression.NewLT(x, c(5))),           // null
+		"every-all":     expression.NewEvery(bind(arr(1, 2, 3)), expression.NewLT(x, c(5))),           // true
+		"every-not-all": expression.NewEvery(bind(arr(1, 9)), expression.NewLT(x, c(5))),              // false
+		"every-empty":   expression.NewEvery(bind(arr()), expression.NewLT(x, c(5))),                  // true (vacuous)
+		"every-nonarr":  expression.NewEvery(bind(c(7)), expression.NewLT(x, c(5))),                   // null
 		"every-missing": expression.NewEvery(bind(c(value.MISSING_VALUE)), expression.NewLT(x, c(5))), // ""
 		// FIRST x FOR x IN arr WHEN x > 2
-		"first-hit":     expression.NewFirst(x, bind(arr(1, 2, 9, 4)), expression.NewGT(x, c(2))),  // 9
-		"first-nomatch": expression.NewFirst(x, bind(arr(1, 2)), expression.NewGT(x, c(2))),        // "" (MISSING)
-		"first-nowhen":  expression.NewFirst(x, bind(arr(7, 8)), nil),                              // 7
-		"first-empty":   expression.NewFirst(x, bind(arr()), nil),                                  // "" (MISSING)
-		"first-nonarr":  expression.NewFirst(x, bind(c(3)), nil),                                   // null
+		"first-hit":     expression.NewFirst(x, bind(arr(1, 2, 9, 4)), expression.NewGT(x, c(2))), // 9
+		"first-nomatch": expression.NewFirst(x, bind(arr(1, 2)), expression.NewGT(x, c(2))),       // "" (MISSING)
+		"first-nowhen":  expression.NewFirst(x, bind(arr(7, 8)), nil),                             // 7
+		"first-empty":   expression.NewFirst(x, bind(arr()), nil),                                 // "" (MISSING)
+		"first-nonarr":  expression.NewFirst(x, bind(c(3)), nil),                                  // null
 		// ARRAY x*10 FOR x IN arr WHEN x > 1
 		"array-map":     expression.NewArray(expression.NewMult(x, c(10)), bind(arr(1, 2, 3)), expression.NewGT(x, c(1))), // [20,30]
-		"array-nowhen":  expression.NewArray(x, bind(arr(1, 2)), nil),                              // [1,2]
-		"array-empty":   expression.NewArray(x, bind(arr()), nil),                                  // []
-		"array-allfilt": expression.NewArray(x, bind(arr(1, 2)), expression.NewGT(x, c(9))),        // []
-		"array-nonarr":  expression.NewArray(x, bind(c(3)), nil),                                   // null
-		"array-missing": expression.NewArray(x, bind(c(value.MISSING_VALUE)), nil),                 // ""
+		"array-nowhen":  expression.NewArray(x, bind(arr(1, 2)), nil),                                                     // [1,2]
+		"array-empty":   expression.NewArray(x, bind(arr()), nil),                                                         // []
+		"array-allfilt": expression.NewArray(x, bind(arr(1, 2)), expression.NewGT(x, c(9))),                               // []
+		"array-nonarr":  expression.NewArray(x, bind(c(3)), nil),                                                          // null
+		"array-missing": expression.NewArray(x, bind(c(value.MISSING_VALUE)), nil),                                        // ""
 	}
 	for name, e := range cases {
 		want := cbqEval(t, e)
@@ -1179,16 +1179,16 @@ func TestObjectComprehensionDifferentialVsCBQ(t *testing.T) {
 	}
 
 	cases := map[string]expression.Expression{
-		"basic":       objTS(arr(3, 1, 2), x, nil),                                  // {"1":1,"2":2,"3":3} (key-sorted)
-		"when":        objTS(arr(1, 2, 3), x, expression.NewGT(x, c(1))),            // {"2":2,"3":3}
-		"dup-lastwin": objTS(arr(1, 1), expression.NewMult(x, c(10)), nil),          // {"1":10} (last wins, same here)
-		"empty":       objTS(arr(), x, nil),                                         // {}
-		"all-filt":    objTS(arr(1, 2), x, expression.NewGT(x, c(9))),               // {}
-		"nonarr":      objTS(c(5), x, nil),                                          // null
-		"missing":     objTS(c(value.MISSING_VALUE), x, nil),                        // "" (MISSING)
-		"nullarr":     objTS(c(value.NULL_VALUE), x, nil),                           // null
+		"basic":       objTS(arr(3, 1, 2), x, nil),                         // {"1":1,"2":2,"3":3} (key-sorted)
+		"when":        objTS(arr(1, 2, 3), x, expression.NewGT(x, c(1))),   // {"2":2,"3":3}
+		"dup-lastwin": objTS(arr(1, 1), expression.NewMult(x, c(10)), nil), // {"1":10} (last wins, same here)
+		"empty":       objTS(arr(), x, nil),                                // {}
+		"all-filt":    objTS(arr(1, 2), x, expression.NewGT(x, c(9))),      // {}
+		"nonarr":      objTS(c(5), x, nil),                                 // null
+		"missing":     objTS(c(value.MISSING_VALUE), x, nil),               // "" (MISSING)
+		"nullarr":     objTS(c(value.NULL_VALUE), x, nil),                  // null
 		// non-string NAME -> NULL: OBJECT x:x (name is the number x, not a string)
-		"nonstr-name": expression.NewObject(x, x, bind(arr(1, 2)), nil),             // null
+		"nonstr-name": expression.NewObject(x, x, bind(arr(1, 2)), nil), // null
 	}
 	for name, e := range cases {
 		want := cbqEval(t, e)
@@ -1228,15 +1228,15 @@ func TestWithinComprehensionDifferentialVsCBQ(t *testing.T) {
 	nested := arr(1, []interface{}{2, 9}, map[string]interface{}{"k": 7})
 
 	cases := map[string]expression.Expression{
-		"any-nested-hit":  anyW(nested, 8),                        // true (9 is a descendant)
-		"any-nested-miss": anyW(arr(1, []interface{}{2, 3}), 8),   // false
-		"any-flat":        anyW(arr(1, 2, 9), 5),                  // true (9)
-		"array-all":       arrW(arr(1, []interface{}{2, 3}), nil), // [1,[2,3],2,3]
+		"any-nested-hit":  anyW(nested, 8),                                        // true (9 is a descendant)
+		"any-nested-miss": anyW(arr(1, []interface{}{2, 3}), 8),                   // false
+		"any-flat":        anyW(arr(1, 2, 9), 5),                                  // true (9)
+		"array-all":       arrW(arr(1, []interface{}{2, 3}), nil),                 // [1,[2,3],2,3]
 		"array-obj":       arrW(arr(map[string]interface{}{"b": 4, "a": 5}), nil), // [{a:5,b:4},5,4] sorted
 		"array-when":      arrW(nested, expression.NewGT(x, c(6))),                // descendants > 6
-		"scalar":          anyW(c(5), 1),                          // null (WITHIN over non-collection)
-		"missing":         anyW(c(value.MISSING_VALUE), 1),        // "" (MISSING)
-		"null":            anyW(c(value.NULL_VALUE), 1),           // null
+		"scalar":          anyW(c(5), 1),                                          // null (WITHIN over non-collection)
+		"missing":         anyW(c(value.MISSING_VALUE), 1),                        // "" (MISSING)
+		"null":            anyW(c(value.NULL_VALUE), 1),                           // null
 	}
 	for name, e := range cases {
 		want := cbqEval(t, e)
@@ -1247,6 +1247,56 @@ func TestWithinComprehensionDifferentialVsCBQ(t *testing.T) {
 		}
 		if got != want {
 			t.Errorf("WITHIN(%s): native=%q, cbq=%q", name, got, want)
+		}
+	}
+}
+
+// TestNameVarComprehensionDifferentialVsCBQ proves the native name-variable form
+// (k:v IN coll) is byte-identical to cbq: over an OBJECT it binds (field-name,
+// value) in sorted-name order; over an ARRAY it binds (index, element). Covers ANY
+// (value + name predicates), ARRAY (map k / v), and MISSING/NULL/scalar edges.
+func TestNameVarComprehensionDifferentialVsCBQ(t *testing.T) {
+	c := func(v interface{}) expression.Expression { return expression.NewConstant(v) }
+	arr := func(xs ...interface{}) expression.Expression {
+		if xs == nil {
+			xs = []interface{}{}
+		}
+		return expression.NewConstant(xs)
+	}
+	obj := func(m map[string]interface{}) expression.Expression { return expression.NewConstant(m) }
+	k := expression.NewIdentifier("k")
+	v := expression.NewIdentifier("v")
+	// FOR k:v IN <coll>
+	nv := func(coll expression.Expression) expression.Bindings {
+		return expression.Bindings{expression.NewBinding("k", "v", coll, false)}
+	}
+
+	o := obj(map[string]interface{}{"b": 8, "a": 3, "c": 1})
+	cases := map[string]expression.Expression{
+		// ANY k:v IN obj SATISFIES v > 5  /  k = "a"
+		"any-val":      expression.NewAny(nv(o), expression.NewGT(v, c(5))),                                   // true (b:8)
+		"any-val-miss": expression.NewAny(nv(obj(map[string]interface{}{"a": 1})), expression.NewGT(v, c(5))), // false
+		"any-name":     expression.NewAny(nv(o), expression.NewGT(k, c("b"))),                                 // true ("c" > "b")
+		// ARRAY v FOR k:v IN obj  (sorted-by-name values)
+		"array-vals":  expression.NewArray(v, nv(o), nil), // [3,8,1]
+		"array-names": expression.NewArray(k, nv(o), nil), // ["a","b","c"]
+		// named over an ARRAY: k = index, v = element
+		"arr-idx-any":   expression.NewAny(nv(arr(10, 20, 30)), expression.NewGT(k, c(1))),  // true (index 2)
+		"arr-idx-pairs": expression.NewArray(v, nv(arr(10, 20)), expression.NewGT(k, c(0))), // [20] (index>0)
+		// edges
+		"empty-obj": expression.NewArray(v, nv(obj(map[string]interface{}{})), nil),           // []
+		"scalar":    expression.NewAny(nv(c(5)), expression.NewGT(v, c(0))),                   // null
+		"missing":   expression.NewAny(nv(c(value.MISSING_VALUE)), expression.NewGT(v, c(0))), // "" (MISSING)
+	}
+	for name, e := range cases {
+		want := cbqEval(t, e)
+		got, ok := nativeEval(t, e)
+		if !ok {
+			t.Errorf("namevar(%s): did not optimize to native", name)
+			continue
+		}
+		if got != want {
+			t.Errorf("namevar(%s): native=%q, cbq=%q", name, got, want)
 		}
 	}
 }

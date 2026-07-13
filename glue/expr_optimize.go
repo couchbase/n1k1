@@ -85,25 +85,27 @@ func init() {
 	OptimizableFuncs["isnotdistinctfrom"] = "is_not_distinct_from"
 }
 
-// collLowerBinding validates a single-binding, plain-IN-form collection expr
-// (ANY/EVERY/FIRST/ARRAY) and lowers its array operand. It returns the lowered
-// array param, the bound variable's register label (.["<var>"], resolved by the
-// normal Field/Identifier matcher exactly like a LET var), and childLabels =
-// parent + binding for lowering the body. ok=false (caller falls back) on
-// multi-binding, a name-variable (object iteration), WITHIN/descend, or an array
-// operand that can't be lowered.
+// collLowerBinding validates a single-binding collection expr (ANY/EVERY/FIRST/
+// ARRAY/OBJECT) and lowers its collection operand. It returns the lowered operand
+// param, the binding-label LIST (one .["<var>"] for a value-only `x IN` binding;
+// two [.["<name>"], .["<var>"]] for the named `k:v IN` form -- each resolved by the
+// normal Field/Identifier matcher exactly like a LET var), and childLabels = parent
+// + binding for lowering the body. len(bindLabels) tells the engine op whether to
+// iterate value-only or named (see engine.collBind / base.CollYield). ok=false
+// (caller falls back) on multi-binding, WITHIN over a name-variable (descendant
+// pairs), or an operand that can't be lowered.
 func collLowerBinding(labels base.Labels, bindings expression.Bindings,
-	buf *bytes.Buffer, strict bool) (arrParam []interface{}, bindingLabel string, childLabels base.Labels, ok bool) {
+	buf *bytes.Buffer, strict bool) (arrParam []interface{}, bindLabels []interface{}, childLabels base.Labels, ok bool) {
 	if len(bindings) != 1 {
-		return nil, "", nil, false
+		return nil, nil, nil, false
 	}
 	b := bindings[0]
-	if b.NameVariable() != "" { // name-variable object iteration (k:v IN obj) falls back
-		return nil, "", nil, false
+	if b.Descend() && b.NameVariable() != "" { // WITHIN k:v (descendant pairs) falls back
+		return nil, nil, nil, false
 	}
 	arrParam, ok = ExprTreeOptimize(labels, b.Expression(), buf, strict)
 	if !ok {
-		return nil, "", nil, false
+		return nil, nil, nil, false
 	}
 	// WITHIN (Descend): iterate the collection's descendants instead of its direct
 	// elements. Wrap the operand in ["descendants", ...] (engine.ExprDescendants /
@@ -112,9 +114,20 @@ func collLowerBinding(labels base.Labels, bindings expression.Bindings,
 	if b.Descend() {
 		arrParam = []interface{}{"descendants", arrParam}
 	}
-	bindingLabel = "." + LabelSuffix(b.Variable())
-	childLabels = append(append(base.Labels{}, labels...), bindingLabel)
-	return arrParam, bindingLabel, childLabels, true
+	childLabels = append(base.Labels{}, labels...)
+	valueLabel := "." + LabelSuffix(b.Variable())
+	if b.NameVariable() != "" {
+		// Named `k:v IN`: two register slots -- name FIRST, then value -- matching
+		// the [name, value] pairs base.CollYield yields (object fields sorted by
+		// name; array index + element).
+		nameLabel := "." + LabelSuffix(b.NameVariable())
+		bindLabels = []interface{}{nameLabel, valueLabel}
+		childLabels = append(childLabels, nameLabel, valueLabel)
+	} else {
+		bindLabels = []interface{}{valueLabel}
+		childLabels = append(childLabels, valueLabel)
+	}
+	return arrParam, bindLabels, childLabels, true
 }
 
 // optSelf registers each name as optimizable to a native ExprCatalog func of the
@@ -317,7 +330,7 @@ func exprTreeOptimizeNative(labels base.Labels, e expression.Expression,
 	// binding labels with strict matching, and emit the matching native op. Other
 	// forms (multi-binding, name-variable object iteration, WITHIN/descend) fall back.
 	//
-	// ANY / EVERY -> a predicate over the binding: ["any"|"every", bindingLabel, arr, satisfies].
+	// ANY / EVERY -> a predicate over the binding: ["any"|"every", bindLabels, arr, satisfies].
 	if pred, ok := e.(interface {
 		Bindings() expression.Bindings
 		Satisfies() expression.Expression
@@ -330,7 +343,7 @@ func exprTreeOptimizeNative(labels base.Labels, e expression.Expression,
 			name = "every"
 		}
 		if name != "" {
-			arrParam, bindingLabel, childLabels, bok := collLowerBinding(labels, pred.Bindings(), buf, strict)
+			arrParam, bindLabels, childLabels, bok := collLowerBinding(labels, pred.Bindings(), buf, strict)
 			if !bok {
 				return nil, false
 			}
@@ -338,12 +351,12 @@ func exprTreeOptimizeNative(labels base.Labels, e expression.Expression,
 			if !sok {
 				return nil, false
 			}
-			return []interface{}{name, bindingLabel, arrParam, satParam}, true
+			return []interface{}{name, bindLabels, arrParam, satParam}, true
 		}
 	}
 
 	// FIRST / ARRAY -> a mapping over the binding with an optional WHEN filter:
-	// ["first"|"array", bindingLabel, arr, map, when]. When is always supplied (a
+	// ["first"|"array", bindLabels, arr, map, when]. When is always supplied (a
 	// constant `true` when the source has no WHEN) so the engine op has no branch.
 	// A name-mapping (object comprehension key) falls back.
 	if m, ok := e.(interface {
@@ -360,7 +373,7 @@ func exprTreeOptimizeNative(labels base.Labels, e expression.Expression,
 			name = "array"
 		}
 		if name != "" && m.NameMapping() == nil && m.ValueMapping() != nil {
-			arrParam, bindingLabel, childLabels, bok := collLowerBinding(labels, m.Bindings(), buf, strict)
+			arrParam, bindLabels, childLabels, bok := collLowerBinding(labels, m.Bindings(), buf, strict)
 			if !bok {
 				return nil, false
 			}
@@ -376,17 +389,17 @@ func exprTreeOptimizeNative(labels base.Labels, e expression.Expression,
 				}
 				whenParam = wp
 			}
-			return []interface{}{name, bindingLabel, arrParam, mapParam, whenParam}, true
+			return []interface{}{name, bindLabels, arrParam, mapParam, whenParam}, true
 		}
 	}
 
 	// OBJECT <name>:<value> FOR <var> IN <arr> [WHEN <cond>] END -> a name+value
-	// mapping over the binding: ["object", bindingLabel, arr, name, value, when].
+	// mapping over the binding: ["object", bindLabels, arr, name, value, when].
 	if obj, ok := e.(*expression.Object); ok {
 		if obj.NameMapping() == nil || obj.ValueMapping() == nil {
 			return nil, false
 		}
-		arrParam, bindingLabel, childLabels, bok := collLowerBinding(labels, obj.Bindings(), buf, strict)
+		arrParam, bindLabels, childLabels, bok := collLowerBinding(labels, obj.Bindings(), buf, strict)
 		if !bok {
 			return nil, false
 		}
@@ -406,7 +419,7 @@ func exprTreeOptimizeNative(labels base.Labels, e expression.Expression,
 			}
 			whenParam = wp
 		}
-		return []interface{}{"object", bindingLabel, arrParam, nameParam, valueParam, whenParam}, true
+		return []interface{}{"object", bindLabels, arrParam, nameParam, valueParam, whenParam}, true
 	}
 
 	// CASE is not an expression.Function; lower both forms to a flat native
@@ -614,7 +627,7 @@ func exprTreeOptimizeNative(labels base.Labels, e expression.Expression,
 		"contains", "position0", "position1",
 		"array_contains", "array_position",
 		"array_append", "array_prepend", "array_concat", // 2-arg forms; variadic >2 falls back
-		"array_flatten",                   // ARRAY_FLATTEN(arr, depth) is always 2-arg
+		"array_flatten",                  // ARRAY_FLATTEN(arr, depth) is always 2-arg
 		"object_remove", "object_concat", // 2-arg forms; variadic >2 falls back
 		"date_part_millis", // 2-arg form only; the 3-arg (timezone) form falls back
 		"nullif", "missingif", "element":
@@ -691,7 +704,19 @@ func fieldChainCaseInsensitive(e expression.Expression) bool {
 // eager-Vals harness; CASE via a flat lzMatched short-circuit), between, element,
 // and -- most recently -- `in` (converted to the capture-from-lzVal form) all emit
 // correctly. Kept as the seam for the next emitter that needs it. See DESIGN-prepare.md.
-var compiledExprDenylist = map[string]bool{}
+var compiledExprDenylist = map[string]bool{
+	// Collection comprehensions are NATIVE in the interpreter but boxed in the
+	// compiled lane: their engine ops iterate via a nested yield callback with a
+	// shadowed lzVals and captured children (base.CollYield / ArrayYield), a shape
+	// the EXPRESSION codegen (emit.OpToLines) can't emit correctly -- unlike the
+	// OP-level UNNEST that uses the same runtime shape (op codegen handles it). So
+	// keep any expr tree containing one BOXED (an exprStr island -> the compiled
+	// query falls back to the interpreter for that expr), which is what -prepare=full
+	// already did implicitly. Making the expr codegen emit callback iteration is a
+	// separate project; until then this keeps the compiled lane correct + building.
+	"any": true, "every": true, "first": true, "array": true,
+	"object": true, "descendants": true,
+}
 
 // exprParamsHasDenylisted reports whether a native optimized param tree contains a
 // catalog op whose compiler emitter is denylisted (so the whole expr must stay
