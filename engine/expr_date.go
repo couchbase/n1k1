@@ -35,11 +35,9 @@ func ExprDatePartMillis(lzVars *base.Vars, labels base.Labels,
 
 	biExprFunc := func(lzA, lzB base.ExprFunc, lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) { // !lz
 		if LzScope {
-			lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
-			lzValMillis := lzVal
+			lzValMillis := lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A", via: lzVal
 
-			lzVal = lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B"
-			lzValPart := lzVal
+			lzValPart := lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B", via: lzVal
 
 			if base.ValKind(lzValMillis) == base.ValKindMissing ||
 				base.ValKind(lzValPart) == base.ValKindMissing {
@@ -82,14 +80,11 @@ func ExprDateAddMillis(lzVars *base.Vars, labels base.Labels,
 
 	triExprFunc := func(lzA, lzB, lzC base.ExprFunc, lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) { // !lz
 		if LzScope {
-			lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
-			lzValMillis := lzVal
+			lzValMillis := lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A", via: lzVal
 
-			lzVal = lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B"
-			lzValN := lzVal
+			lzValN := lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B", via: lzVal
 
-			lzVal = lzC(lzVals, lzYieldErr) // <== emitCaptured: path "C"
-			lzValPart := lzVal
+			lzValPart := lzC(lzVals, lzYieldErr) // <== emitCaptured: path "C", via: lzVal
 
 			if base.ValKind(lzValMillis) == base.ValKindMissing ||
 				base.ValKind(lzValN) == base.ValKindMissing ||

@@ -50,14 +50,11 @@ func ExprObjectAdd(lzVars *base.Vars, labels base.Labels,
 
 	triExprFunc := func(lzA, lzB, lzC base.ExprFunc, lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) { // !lz
 		if LzScope {
-			lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
-			lzValObj := lzVal
+			lzValObj := lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A", via: lzVal
 
-			lzVal = lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B"
-			lzValKey := lzVal
+			lzValKey := lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B", via: lzVal
 
-			lzVal = lzC(lzVals, lzYieldErr) // <== emitCaptured: path "C"
-			lzValElem := lzVal
+			lzValElem := lzC(lzVals, lzYieldErr) // <== emitCaptured: path "C", via: lzVal
 
 			lzOut, lzSentinel, lzOk := base.ObjectAdd(lzVars.Ctx.ValComparer, lzValObj, lzValKey, lzValElem, lzBufPre)
 			if !lzOk {
@@ -85,14 +82,11 @@ func ExprObjectPut(lzVars *base.Vars, labels base.Labels,
 
 	triExprFunc := func(lzA, lzB, lzC base.ExprFunc, lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) { // !lz
 		if LzScope {
-			lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
-			lzValObj := lzVal
+			lzValObj := lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A", via: lzVal
 
-			lzVal = lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B"
-			lzValKey := lzVal
+			lzValKey := lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B", via: lzVal
 
-			lzVal = lzC(lzVals, lzYieldErr) // <== emitCaptured: path "C"
-			lzValElem := lzVal
+			lzValElem := lzC(lzVals, lzYieldErr) // <== emitCaptured: path "C", via: lzVal
 
 			lzOut, lzSentinel, lzOk := base.ObjectPut(lzVars.Ctx.ValComparer, lzValObj, lzValKey, lzValElem, lzBufPre)
 			if !lzOk {
@@ -119,11 +113,9 @@ func ExprObjectRemove(lzVars *base.Vars, labels base.Labels,
 
 	biExprFunc := func(lzA, lzB base.ExprFunc, lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) { // !lz
 		if LzScope {
-			lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
-			lzValObj := lzVal
+			lzValObj := lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A", via: lzVal
 
-			lzVal = lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B"
-			lzValKey := lzVal
+			lzValKey := lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B", via: lzVal
 
 			lzOut, lzSentinel, lzOk := base.ObjectRemove(lzVars.Ctx.ValComparer, lzValObj, lzValKey, lzBufPre)
 			if !lzOk {
@@ -151,11 +143,9 @@ func ExprObjectConcat(lzVars *base.Vars, labels base.Labels,
 
 	biExprFunc := func(lzA, lzB base.ExprFunc, lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) { // !lz
 		if LzScope {
-			lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
-			lzValObj1 := lzVal
+			lzValObj1 := lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A", via: lzVal
 
-			lzVal = lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B"
-			lzValObj2 := lzVal
+			lzValObj2 := lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B", via: lzVal
 
 			lzOut, lzSentinel, lzOk := base.ObjectConcat(lzVars.Ctx.ValComparer, lzValObj1, lzValObj2, lzBufPre)
 			if !lzOk {

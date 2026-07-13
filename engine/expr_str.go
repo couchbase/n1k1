@@ -110,14 +110,11 @@ func ExprReplace(lzVars *base.Vars, labels base.Labels,
 
 	triExprFunc := func(lzA, lzB, lzC base.ExprFunc, lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) { // !lz
 		if LzScope {
-			lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
-			lzValA := lzVal
+			lzValA := lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A", via: lzVal
 
-			lzVal = lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B"
-			lzValB := lzVal
+			lzValB := lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B", via: lzVal
 
-			lzVal = lzC(lzVals, lzYieldErr) // <== emitCaptured: path "C"
-			lzValC := lzVal
+			lzValC := lzC(lzVals, lzYieldErr) // <== emitCaptured: path "C", via: lzVal
 
 			if base.ValKind(lzValA) == base.ValKindMissing ||
 				base.ValKind(lzValB) == base.ValKindMissing ||
@@ -178,11 +175,9 @@ func ExprSubstr2(lzVars *base.Vars, labels base.Labels, params []interface{},
 
 	biExprFunc := func(lzA, lzB base.ExprFunc, lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) { // !lz
 		if LzScope {
-			lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
-			lzValStr := lzVal
+			lzValStr := lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A", via: lzVal
 
-			lzVal = lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B"
-			lzValPos := lzVal
+			lzValPos := lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B", via: lzVal
 
 			if base.ValKind(lzValStr) == base.ValKindMissing ||
 				base.ValKind(lzValPos) == base.ValKindMissing {
@@ -219,14 +214,11 @@ func ExprSubstr3(lzVars *base.Vars, labels base.Labels, params []interface{},
 
 	triExprFunc := func(lzA, lzB, lzC base.ExprFunc, lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) { // !lz
 		if LzScope {
-			lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
-			lzValStr := lzVal
+			lzValStr := lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A", via: lzVal
 
-			lzVal = lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B"
-			lzValPos := lzVal
+			lzValPos := lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B", via: lzVal
 
-			lzVal = lzC(lzVals, lzYieldErr) // <== emitCaptured: path "C"
-			lzValLen := lzVal
+			lzValLen := lzC(lzVals, lzYieldErr) // <== emitCaptured: path "C", via: lzVal
 
 			if base.ValKind(lzValStr) == base.ValKindMissing ||
 				base.ValKind(lzValPos) == base.ValKindMissing ||
@@ -294,11 +286,9 @@ func ExprSplit2(lzVars *base.Vars, labels base.Labels,
 
 	biExprFunc := func(lzA, lzB base.ExprFunc, lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) { // !lz
 		if LzScope {
-			lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
-			lzValStr := lzVal
+			lzValStr := lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A", via: lzVal
 
-			lzVal = lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B"
-			lzValSep := lzVal
+			lzValSep := lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B", via: lzVal
 
 			if base.ValKind(lzValStr) == base.ValKindMissing ||
 				base.ValKind(lzValSep) == base.ValKindMissing {
@@ -356,11 +346,9 @@ func ExprPad2(lzVars *base.Vars, labels base.Labels, params []interface{},
 
 	biExprFunc := func(lzA, lzB base.ExprFunc, lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) { // !lz
 		if LzScope {
-			lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
-			lzValStr := lzVal
+			lzValStr := lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A", via: lzVal
 
-			lzVal = lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B"
-			lzValLen := lzVal
+			lzValLen := lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B", via: lzVal
 
 			if base.ValKind(lzValStr) == base.ValKindMissing ||
 				base.ValKind(lzValLen) == base.ValKindMissing {
@@ -392,14 +380,11 @@ func ExprPad3(lzVars *base.Vars, labels base.Labels, params []interface{},
 
 	triExprFunc := func(lzA, lzB, lzC base.ExprFunc, lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) { // !lz
 		if LzScope {
-			lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
-			lzValStr := lzVal
+			lzValStr := lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A", via: lzVal
 
-			lzVal = lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B"
-			lzValLen := lzVal
+			lzValLen := lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B", via: lzVal
 
-			lzVal = lzC(lzVals, lzYieldErr) // <== emitCaptured: path "C"
-			lzValPad := lzVal
+			lzValPad := lzC(lzVals, lzYieldErr) // <== emitCaptured: path "C", via: lzVal
 
 			if base.ValKind(lzValStr) == base.ValKindMissing ||
 				base.ValKind(lzValLen) == base.ValKindMissing ||
@@ -451,11 +436,9 @@ func ExprContains(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
 	biExprFunc := func(lzA, lzB base.ExprFunc, lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) { // !lz
 		if LzScope {
-			lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
-			lzValA := lzVal
+			lzValA := lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A", via: lzVal
 
-			lzVal = lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B"
-			lzValB := lzVal
+			lzValB := lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B", via: lzVal
 
 			lzVal = base.StrContains(lzValA, lzValB)
 		}
@@ -487,11 +470,9 @@ func ExprStrPosition(lzVars *base.Vars, labels base.Labels, params []interface{}
 
 	biExprFunc := func(lzA, lzB base.ExprFunc, lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) { // !lz
 		if LzScope {
-			lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
-			lzValA := lzVal
+			lzValA := lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A", via: lzVal
 
-			lzVal = lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B"
-			lzValB := lzVal
+			lzValB := lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B", via: lzVal
 
 			lzIdx, lzSentinel, lzOk := base.StrPositionIndex(lzValA, lzValB, startPos)
 			if !lzOk {

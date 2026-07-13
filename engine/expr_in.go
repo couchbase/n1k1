@@ -31,11 +31,9 @@ func ExprIn(lzVars *base.Vars, labels base.Labels,
 			// bind is DROPPED in the compiled path (only lzVal survives inlining), so
 			// its var ends up undefined -- the bug that kept `in` denylisted. Mirrors
 			// ExprBetween / ExprElement / ExprArithBi.
-			lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
-			lzValX := lzVal
+			lzValX := lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A", via: lzVal
 
-			lzVal = lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B"
-			lzValArr := lzVal
+			lzValArr := lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B", via: lzVal
 
 			lzVal = base.ValIn(lzVars.Ctx.ValComparer, lzValX, lzValArr)
 		}

@@ -76,11 +76,9 @@ func ExprArithBi(lzVars *base.Vars, labels base.Labels, params []interface{},
 			// replaces the marked line with the child's code, which writes lzVal);
 			// a direct lzValX := lzX(...) bind is dropped in the compiled path.
 			// Mirrors ExprCmp.
-			lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
-			lzValA := lzVal
+			lzValA := lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A", via: lzVal
 
-			lzVal = lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B"
-			lzValB := lzVal
+			lzValB := lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B", via: lzVal
 
 			lzVal, lzBufPre = base.ArithBiMissingDominant(lzValA, lzValB, lzBufPre, arith, warnZero, lzVars)
 		}

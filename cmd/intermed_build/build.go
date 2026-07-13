@@ -434,35 +434,57 @@ func LzPrefixREFunc(lzX string) string {
 
 // ---------------------------------------------------------------
 
-// expandLzRHS rewrites a single-line "!lzRHS" convenience form into the raw multi-
-// line form the codegen expects, so engine source can stay one line per assignment
-// instead of splitting the RHS onto its own "// !lz" line by hand:
+// expandLzRHS rewrites the single-line convenience forms into the raw multi-line
+// form the codegen expects, so engine source can stay one line per assignment.
+// Two markers, two shapes:
 //
-//	LHS = RHS  // !lzRHS            ->  "LHS ="
-//	                                    "\tRHS // !lz"
+//	// !lzRHS  -- a build-time call that must sit on its own verbatim "// !lz" line,
+//	while its target is processed normally, so the RHS is SPLIT onto its own line:
 //
-//	LHS := RHS // !lzRHS, via: V    ->  "V ="
-//	                                    "\tRHS // !lz"
-//	                                    "LHS := V"
+//	    LHS = RHS  // !lzRHS           ->  "LHS ="
+//	                                       "\tRHS // !lz"
+//	    LHS := RHS // !lzRHS, via: V   ->  "V ="
+//	                                       "\tRHS // !lz"
+//	                                       "LHS := V"
 //
-// Returns (expandedLines, true) when the line carried a !lzRHS marker, else (nil,
-// false). Indentation is preserved and the RHS is copied verbatim, so the emitted
-// output is byte-identical to hand-writing the multi-line form. Each expanded line
-// is then fed through the normal per-line processing (see VisitSourceLines).
+//	// <== emitCaptured: ... , via: V  -- the operand-capture idiom, whose "LHS = RHS"
+//	must stay on ONE line (EmitCaptured captures that whole line), so it is NOT split;
+//	only the read-out is threaded through the shared register V:
+//
+//	    LHS := RHS // <== emitCaptured: SPEC, via: V  ->  "V = RHS // <== emitCaptured: SPEC"
+//	                                                      "LHS := V"
+//
+// Returns (expandedLines, true) when the line carried a sugar marker, else (nil,
+// false). Indentation and RHS are copied verbatim, so the emitted output is byte-
+// identical to hand-writing the multi-line form; each expanded line then goes
+// through the normal per-line processing (see VisitSourceLines).
 func expandLzRHS(line string) ([]string, bool) {
-	const marker = "// !lzRHS"
-	mi := strings.Index(line, marker)
-	if mi < 0 {
-		return nil, false
-	}
-	// Never touch a comment line that merely mentions the marker (e.g. this doc).
+	// Never touch a comment line that merely mentions a marker (e.g. this doc).
 	if strings.HasPrefix(strings.TrimLeft(line, " \t"), "//") {
 		return nil, false
 	}
-	code := strings.TrimRight(line[:mi], " ")        // "<indent>LHS <op> RHS"
-	tail := strings.TrimSpace(line[mi+len(marker):]) // "" or ", via: V"
+
+	var mi int            // marker start index in line
+	var rhsComment string // comment to place on the RHS / assignment line
+	var afterMarker string
+	split := false // !lzRHS splits the RHS onto its own line; emitCaptured keeps it inline
+
+	if i := strings.Index(line, "// !lzRHS"); i >= 0 {
+		mi, rhsComment, afterMarker, split = i, "// !lz", line[i+len("// !lzRHS"):], true
+	} else if i := strings.Index(line, "// <== emitCaptured:"); i >= 0 {
+		// Only the ", via:" form is sugar; a bare emitCaptured line is already fine.
+		vi := strings.Index(line, ", via:")
+		if vi < 0 {
+			return nil, false
+		}
+		mi, rhsComment, afterMarker = i, strings.TrimRight(line[i:vi], " "), line[vi:]
+	} else {
+		return nil, false
+	}
+
+	code := strings.TrimRight(line[:mi], " ") // "<indent>LHS <op> RHS"
 	via := ""
-	if t := strings.TrimSpace(strings.TrimPrefix(tail, ",")); strings.HasPrefix(t, "via:") {
+	if t := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(afterMarker), ",")); strings.HasPrefix(t, "via:") {
 		via = strings.TrimSpace(strings.TrimPrefix(t, "via:"))
 	}
 	indent := code[:len(code)-len(strings.TrimLeft(code, " \t"))]
@@ -473,17 +495,27 @@ func expandLzRHS(line string) ([]string, bool) {
 	} else if i := strings.Index(body, " = "); i >= 0 {
 		lhs, op, rhs = body[:i], "=", body[i+len(" = "):]
 	} else {
-		return nil, false // no assignment operator -- not an lzRHS assignment
+		return nil, false // no assignment operator
+	}
+
+	if !split { // emitCaptured: keep "V = RHS // marker" on one line; add the read-out
+		if via == "" {
+			return nil, false
+		}
+		return []string{
+			indent + via + " = " + rhs + " " + rhsComment,
+			indent + lhs + " " + op + " " + via,
+		}, true
 	}
 	if via == "" {
 		return []string{
 			indent + lhs + " " + op,
-			indent + "\t" + rhs + " // !lz",
+			indent + "\t" + rhs + " " + rhsComment,
 		}, true
 	}
 	return []string{
 		indent + via + " =",
-		indent + "\t" + rhs + " // !lz",
+		indent + "\t" + rhs + " " + rhsComment,
 		indent + lhs + " " + op + " " + via,
 	}, true
 }

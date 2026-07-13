@@ -67,14 +67,11 @@ func ExprBetween(lzVars *base.Vars, labels base.Labels,
 			// replaces the marked line with the child's code, which writes lzVal);
 			// a direct lzValX := lzX(...) bind is DROPPED in the compiled path.
 			// Mirrors ExprArithBi.
-			lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
-			lzValItem := lzVal
+			lzValItem := lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A", via: lzVal
 
-			lzVal = lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B"
-			lzValLow := lzVal
+			lzValLow := lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B", via: lzVal
 
-			lzVal = lzC(lzVals, lzYieldErr) // <== emitCaptured: path "C"
-			lzValHigh := lzVal
+			lzValHigh := lzC(lzVals, lzYieldErr) // <== emitCaptured: path "C", via: lzVal
 
 			if base.ValKind(lzValItem) == base.ValKindMissing ||
 				base.ValKind(lzValLow) == base.ValKindMissing ||

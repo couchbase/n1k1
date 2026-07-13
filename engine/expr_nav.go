@@ -35,11 +35,9 @@ func ExprElement(lzVars *base.Vars, labels base.Labels,
 			// then a plain lzValX := lzVal copies it out. A direct
 			// lzValX := lzX(...) bind is DROPPED in the compiled path. Mirrors
 			// ExprArithBi.
-			lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
-			lzValArr := lzVal
+			lzValArr := lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A", via: lzVal
 
-			lzVal = lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B"
-			lzValIdx := lzVal
+			lzValIdx := lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B", via: lzVal
 
 			lzVal, lzBufPre = base.ValElement(lzValArr, lzValIdx, lzBufPre)
 		}

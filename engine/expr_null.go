@@ -43,11 +43,9 @@ func ExprNullMissingIf(lzVars *base.Vars, labels base.Labels, params []interface
 			// Capture each operand FROM the shared lzVal register (emitCaptured
 			// child code writes lzVal); a direct lzValX := lzX(...) bind is lost
 			// in the compiled path. Mirrors ExprCmp.
-			lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
-			lzValA := lzVal
+			lzValA := lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A", via: lzVal
 
-			lzVal = lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B"
-			lzValB := lzVal
+			lzValB := lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B", via: lzVal
 
 			lzVal = base.NullMissingIf(lzVars.Ctx.ValComparer, lzValA, lzValB, lzWhenEqual)
 		}

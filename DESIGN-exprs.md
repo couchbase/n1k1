@@ -908,9 +908,20 @@ lzA := MakeExprFunc(...) // !lzRHS, via: lzExprFunc    -> "lzExprFunc ="
 
 It is a plain string split on ` = ` / ` := ` (no AST); the RHS and indentation are
 copied verbatim. The `via:` form threads the result through an interim variable (the
-named return `lzExprFunc`) when the call feeds a captured child. Not yet applied to
-the analogous `emitCaptured` two-liner (`lzVal = lzX(...); lzValA := lzVal`), which
-could ride the same `via:` mechanism.
+named return `lzExprFunc`) when the call feeds a captured child.
+
+The same pre-pass also sugars the operand-capture two-liner via `emitCaptured`'s own
+`, via:` suffix -- but with the RHS kept INLINE (not split onto its own line), because
+`EmitCaptured` captures the whole `LHS = RHS` line:
+
+```
+lzValA := lzA(...) // <== emitCaptured: path "A", via: lzVal
+  ->  "lzVal = lzA(...) // <== emitCaptured: path \"A\""
+      "lzValA := lzVal"
+```
+
+Both markers are validated the same way: diff the generated intermed with and without
+the sugar -- byte-identical either way.
 
 ### The chosen approach
 

@@ -122,11 +122,9 @@ func ExprRoundTrunc2(lzVars *base.Vars, labels base.Labels, params []interface{}
 
 	biExprFunc := func(lzA, lzB base.ExprFunc, lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) { // !lz
 		if LzScope {
-			lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
-			lzValNum := lzVal
+			lzValNum := lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A", via: lzVal
 
-			lzVal = lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B"
-			lzValPrec := lzVal
+			lzValPrec := lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B", via: lzVal
 
 			lzVal, lzBufPre = base.MathMissingDominantRound2(lzValNum, lzValPrec, lzBufPre, roundFn)
 		}
@@ -150,11 +148,9 @@ func ExprMathBi(lzVars *base.Vars, labels base.Labels, params []interface{},
 
 	biExprFunc := func(lzA, lzB base.ExprFunc, lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) { // !lz
 		if LzScope {
-			lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
-			lzValA := lzVal
+			lzValA := lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A", via: lzVal
 
-			lzVal = lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B"
-			lzValB := lzVal
+			lzValB := lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B", via: lzVal
 
 			lzVal, lzBufPre = base.ArithBiMissingDominant(lzValA, lzValB, lzBufPre, fn, false, lzVars)
 		}
