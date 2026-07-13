@@ -254,6 +254,49 @@ func ObjectEmit(c *ValComparer, kvs KeyVals, bufPre []byte) []byte {
 	return out
 }
 
+// CollObjectPut accumulates one (name, value) pair for an OBJECT comprehension into
+// kvs with LAST-WINS dedup (matching cbq's map[key]=val overwrite). name is a raw
+// JSON string Val (WITH quotes) stored verbatim as the sort/emit key; value is any
+// JSON Val stored verbatim. Both are copied (they alias per-element reused buffers);
+// backing is reused across rows when kvs (reset via kvs[:0]) has spare cap.
+func CollObjectPut(kvs KeyVals, name, value Val) KeyVals {
+	for i := range kvs {
+		if bytes.Equal(kvs[i].Key, name) {
+			kvs[i].Val = append(kvs[i].Val[:0], value...)
+			return kvs
+		}
+	}
+	n := len(kvs)
+	if cap(kvs) > n { // reuse the next slot's backing (kvs was reset with kvs[:0])
+		kvs = kvs[:n+1]
+		kvs[n].Key = append(kvs[n].Key[:0], name...)
+		kvs[n].Val = append(kvs[n].Val[:0], value...)
+		return kvs
+	}
+	return append(kvs, KeyVal{
+		Key: append([]byte(nil), name...),
+		Val: append([]byte(nil), value...),
+	})
+}
+
+// CollObjectEmit serializes kvs as a key-sorted JSON object `{"name":value,...}`
+// into bufPre -- the back half of the OBJECT comprehension. Keys (raw JSON strings)
+// and values are emitted VERBATIM (both already valid JSON), sorted by key so the
+// output matches cbq's canonical key-sorted serialization (for canonical inputs).
+func CollObjectEmit(kvs KeyVals, bufPre []byte) []byte {
+	KeyValsSortByName(kvs) // sorts ascending by Key bytes (the raw "name")
+	out := append(bufPre[:0], '{')
+	for i := range kvs {
+		if i > 0 {
+			out = append(out, ',')
+		}
+		out = append(out, kvs[i].Key...)
+		out = append(out, ':')
+		out = append(out, kvs[i].Val...)
+	}
+	return append(out, '}')
+}
+
 // KeyValsFindKey returns the index of the pair named key (decoded) in kvs, or -1.
 func KeyValsFindKey(kvs KeyVals, key []byte) int {
 	for i := range kvs {

@@ -1157,6 +1157,52 @@ func TestEveryFirstArrayDifferentialVsCBQ(t *testing.T) {
 	}
 }
 
+// TestObjectComprehensionDifferentialVsCBQ proves the native OBJECT comprehension
+// is byte-identical to cbq over constant arrays: key-sorted output, last-wins
+// dedup, WHEN filter, MISSING-value skip, and the MISSING/NULL/non-array/non-string-
+// name/empty edges.
+func TestObjectComprehensionDifferentialVsCBQ(t *testing.T) {
+	c := func(v interface{}) expression.Expression { return expression.NewConstant(v) }
+	arr := func(xs ...interface{}) expression.Expression {
+		if xs == nil {
+			xs = []interface{}{}
+		}
+		return expression.NewConstant(xs)
+	}
+	x := expression.NewIdentifier("x")
+	bind := func(arrE expression.Expression) expression.Bindings {
+		return expression.Bindings{expression.NewSimpleBinding("x", arrE)}
+	}
+	// OBJECT TO_STRING(x) : <val> FOR x IN <arr> [WHEN <when>] END
+	objTS := func(arrE, val, when expression.Expression) expression.Expression {
+		return expression.NewObject(expression.NewToString(x), val, bind(arrE), when)
+	}
+
+	cases := map[string]expression.Expression{
+		"basic":       objTS(arr(3, 1, 2), x, nil),                                  // {"1":1,"2":2,"3":3} (key-sorted)
+		"when":        objTS(arr(1, 2, 3), x, expression.NewGT(x, c(1))),            // {"2":2,"3":3}
+		"dup-lastwin": objTS(arr(1, 1), expression.NewMult(x, c(10)), nil),          // {"1":10} (last wins, same here)
+		"empty":       objTS(arr(), x, nil),                                         // {}
+		"all-filt":    objTS(arr(1, 2), x, expression.NewGT(x, c(9))),               // {}
+		"nonarr":      objTS(c(5), x, nil),                                          // null
+		"missing":     objTS(c(value.MISSING_VALUE), x, nil),                        // "" (MISSING)
+		"nullarr":     objTS(c(value.NULL_VALUE), x, nil),                           // null
+		// non-string NAME -> NULL: OBJECT x:x (name is the number x, not a string)
+		"nonstr-name": expression.NewObject(x, x, bind(arr(1, 2)), nil),             // null
+	}
+	for name, e := range cases {
+		want := cbqEval(t, e)
+		got, ok := nativeEval(t, e)
+		if !ok {
+			t.Errorf("OBJECT(%s): did not optimize to native", name)
+			continue
+		}
+		if got != want {
+			t.Errorf("OBJECT(%s): native=%q, cbq=%q", name, got, want)
+		}
+	}
+}
+
 // TestAnyComprehensionRowContext exercises the row-context cases the constant
 // differential can't reach: object-field navigation on the bound var, correlation
 // (predicate references the outer row), and nested ANY-in-ANY -- run through a real

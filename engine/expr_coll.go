@@ -20,6 +20,7 @@ func init() {
 	ExprCatalog["every"] = ExprEvery
 	ExprCatalog["first"] = ExprFirst
 	ExprCatalog["array"] = ExprArray
+	ExprCatalog["object"] = ExprObject
 }
 
 // ExprAny implements the ANY collection predicate (single-binding, IN form):
@@ -319,6 +320,105 @@ func ExprArray(lzVars *base.Vars, labels base.Labels,
 				lzVal = base.ValNull
 			} else {
 				lzOut = append(lzOut, ']')
+				lzBufPre = lzOut
+				lzVal = base.Val(lzOut)
+			}
+		}
+
+		return lzVal
+	}
+
+	return lzExprFunc
+}
+
+// ExprObject implements the OBJECT comprehension (single-binding, IN form):
+//
+//	OBJECT <name> : <value> FOR <var> IN <arr> [WHEN <cond>] END
+//
+// It builds a JSON object from each WHEN-matching element's <name>:<value>. cbq:
+// <arr> MISSING -> MISSING; non-array -> NULL; a <name> that evaluates to MISSING
+// aborts the whole result to MISSING; a non-string <name> aborts to NULL; a MISSING
+// <value> is skipped; duplicate names are last-wins; the object is key-sorted.
+// params: [ bindingLabel, arrExpr, nameExpr, valueExpr, whenExpr ] (whenExpr always
+// supplied, a constant `true` when the source has no WHEN).
+func ExprObject(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
+	bindingLabel := params[0].(string)
+	arrParam := params[1].([]interface{})
+	nameParam := params[2].([]interface{})
+	valueParam := params[3].([]interface{})
+	whenParam := params[4].([]interface{})
+
+	childLabels := append(append(base.Labels{}, labels...), bindingLabel)
+
+	var lzValsChild base.Vals // <== varLift: lzValsChild by path
+	var lzValsPre base.Vals   // <== varLift: lzValsPre by path
+	var lzBufPre []byte       // <== varLift: lzBufPre by path
+	var lzKVs base.KeyVals    // <== varLift: lzKVs by path
+
+	lzExprFunc =
+		MakeExprFunc(lzVars, labels, arrParam, path, "arr") // !lz
+	lzArr := lzExprFunc
+
+	lzExprFunc =
+		MakeExprFunc(lzVars, childLabels, whenParam, path, "when") // !lz
+	lzWhen := lzExprFunc
+
+	lzExprFunc =
+		MakeExprFunc(lzVars, childLabels, nameParam, path, "name") // !lz
+	lzName := lzExprFunc
+
+	lzExprFunc =
+		MakeExprFunc(lzVars, childLabels, valueParam, path, "value") // !lz
+	lzValue := lzExprFunc
+
+	lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
+		lzValArr := lzArr(lzVals, lzYieldErr) // <== emitCaptured: path "arr"
+
+		if base.ValKind(lzValArr) == base.ValKindMissing {
+			lzVal = base.ValMissing
+		} else {
+			lzKVs = lzKVs[:0]
+			lzBad := 0 // 0 ok, 1 name MISSING (-> MISSING), 2 name non-string (-> NULL)
+
+			lzYieldElem := func(lzElemVals base.Vals) {
+				if lzBad == 0 {
+					lzValsChild = append(lzValsChild[:0], lzVals...)
+					lzValsChild = append(lzValsChild, lzElemVals[0])
+
+					lzVals := lzValsChild // shadow: the captured children read the appended slot
+
+					lzValWhen := lzWhen(lzVals, lzYieldErr) // <== emitCaptured: path "when"
+
+					if base.ValTruthy(lzValWhen) {
+						lzValName := lzName(lzVals, lzYieldErr) // <== emitCaptured: path "name"
+
+						if base.ValKind(lzValName) == base.ValKindMissing {
+							lzBad = 1
+						} else if !base.ValIsString(lzValName) {
+							lzBad = 2
+						} else {
+							lzValValue := lzValue(lzVals, lzYieldErr) // <== emitCaptured: path "value"
+
+							if base.ValKind(lzValValue) != base.ValKindMissing {
+								lzKVs = base.CollObjectPut(lzKVs, lzValName, lzValValue)
+							}
+						}
+					}
+				}
+			}
+
+			var lzIsArr bool
+			lzValsPre, lzIsArr = base.ArrayYield(lzValArr, lzYieldElem, lzValsPre[:0])
+
+			if !lzIsArr {
+				lzVal = base.ValNull
+			} else if lzBad == 1 {
+				lzVal = base.ValMissing
+			} else if lzBad == 2 {
+				lzVal = base.ValNull
+			} else {
+				lzOut := base.CollObjectEmit(lzKVs, lzBufPre)
 				lzBufPre = lzOut
 				lzVal = base.Val(lzOut)
 			}

@@ -373,6 +373,35 @@ func exprTreeOptimizeNative(labels base.Labels, e expression.Expression,
 		}
 	}
 
+	// OBJECT <name>:<value> FOR <var> IN <arr> [WHEN <cond>] END -> a name+value
+	// mapping over the binding: ["object", bindingLabel, arr, name, value, when].
+	if obj, ok := e.(*expression.Object); ok {
+		if obj.NameMapping() == nil || obj.ValueMapping() == nil {
+			return nil, false
+		}
+		arrParam, bindingLabel, childLabels, bok := collLowerBinding(labels, obj.Bindings(), buf, strict)
+		if !bok {
+			return nil, false
+		}
+		nameParam, nok := ExprTreeOptimize(childLabels, obj.NameMapping(), buf, true)
+		if !nok {
+			return nil, false
+		}
+		valueParam, vok := ExprTreeOptimize(childLabels, obj.ValueMapping(), buf, true)
+		if !vok {
+			return nil, false
+		}
+		whenParam := []interface{}{"json", "true"}
+		if w := obj.When(); w != nil {
+			wp, wok := ExprTreeOptimize(childLabels, w, buf, true)
+			if !wok {
+				return nil, false
+			}
+			whenParam = wp
+		}
+		return []interface{}{"object", bindingLabel, arrParam, nameParam, valueParam, whenParam}, true
+	}
+
 	// CASE is not an expression.Function; lower both forms to a flat native
 	// "case" param list [cond, then, cond, then, ..., else?]. Children() gives:
 	//   SearchedCase: [when1, then1, ..., else?]

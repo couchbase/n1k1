@@ -33,6 +33,12 @@ func ValKind(v Val) int {
 	return ValKindValue
 }
 
+// ValIsString reports whether v is a JSON string Val (starts with a quote). Valid
+// only on a real value (non-MISSING, non-NULL); callers classify with ValKind first.
+func ValIsString(v Val) bool {
+	return len(v) > 0 && v[0] == '"'
+}
+
 // Conditional-unknown selector modes (IFNULL / IFMISSING / IFMISSINGORNULL).
 const (
 	CondIfNull          = iota // keep operand unless it is NULL
