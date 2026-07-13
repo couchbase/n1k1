@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -124,6 +125,66 @@ func TestRuleMatchesFromSource(t *testing.T) {
 		}
 	}
 	t.Logf("FROM multi_matches() matched %d findings", len(gotKeys))
+}
+
+// TestRuleMatchesMultipleDirs: multi_matches accepts several query dirs -- as an ARRAY
+// arg or a comma-list string -- and fuses their recipes into one shared-scan pack, so
+// tiers stay organized on disk yet run as one detector set (IDEA-0034). Both spellings
+// must match exactly the same findings as running the tiers' union directly.
+func TestRuleMatchesMultipleDirs(t *testing.T) {
+	mkTier := func(name, body string) string {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, name+".sql++"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+	tierA := mkTier("error", "-- label: T1_error\n"+`SELECT * FROM logs l WHERE l.sev = "ERROR"`)
+	tierB := mkTier("login", "-- label: T5_login\n"+`SELECT * FROM events e WHERE e.act = "login"`)
+
+	// Baseline: both tiers loaded together.
+	baseKeys := func() []string {
+		recipes, err := LoadCorpusDirs([]string{tierA, tierB})
+		if err != nil {
+			t.Fatalf("LoadCorpusDirs: %v", err)
+		}
+		dets := make([]CorpusDetector, 0, len(recipes))
+		for i := range recipes {
+			dets = append(dets, recipes[i].AsDetector())
+		}
+		cc, err := corpusTestSession(t).CorpusCompile(dets)
+		if err != nil {
+			t.Fatalf("CorpusCompile: %v", err)
+		}
+		found, err := cc.Run()
+		if err != nil {
+			t.Fatalf("cc.Run: %v", err)
+		}
+		return findingSetKeys(t, found)
+	}()
+	if len(baseKeys) == 0 {
+		t.Fatal("baseline produced no findings -- fixtures invalid")
+	}
+
+	for _, tc := range []struct {
+		name string
+		arg  string
+	}{
+		{"array", fmt.Sprintf(`[%q, %q]`, tierA, tierB)},
+		{"comma", fmt.Sprintf(`%q`, tierA+","+tierB)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			q := fmt.Sprintf("SELECT f.label, f.result FROM multi_matches(%s) AS f", tc.arg)
+			res, err := corpusTestSession(t).Run(q)
+			if err != nil {
+				t.Fatalf("Run %q: %v", q, err)
+			}
+			gotKeys := findingSetKeys(t, findingsFromRows(t, res.Rows))
+			if !reflect.DeepEqual(gotKeys, baseKeys) {
+				t.Fatalf("%s-arg fused findings mismatch:\n got=%v\n want=%v", tc.name, gotKeys, baseKeys)
+			}
+		})
+	}
 }
 
 // TestRuleMatchesStreamsViaStreamFnOp proves FROM multi_matches(...) converts to the

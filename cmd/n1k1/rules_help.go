@@ -52,7 +52,8 @@ COMMANDS
   .multi help                                      this guide
 
 FLAGS
-  --queries <dir>    directory of *.sql++ query files (required)
+  --queries <dir>    directory of *.sql++ query files (required). REPEATABLE, and accepts a comma-list, so
+                     several tiers fuse into ONE shared-scan pack: --queries a --queries b, or --queries a,b
   --bind <manifest>  map LOGICAL keyspace names (FROM <logical>) to per-dataset globs, so one collection
                      runs across differently-named datasets unchanged (run / lint). Manifest is either
                      "logical = glob" lines ('#' comments + blanks ignored), or a JSON object

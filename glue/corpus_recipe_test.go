@@ -149,6 +149,36 @@ func TestLoadCorpus(t *testing.T) {
 	}
 }
 
+// TestLoadCorpusDirs: several tiers on disk fuse into one recipe list, in dir order
+// (IDEA-0034 -- tiers stay organized on disk yet feed one shared-scan pack).
+func TestLoadCorpusDirs(t *testing.T) {
+	mk := func(name, body string) string {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+	tier1 := mk("t1.sql++", "-- label: ET-1\nSELECT * FROM logs\n")
+	tier2 := mk("t2.sql++", "-- label: ET-2\nSELECT * FROM events\n")
+
+	recipes, err := LoadCorpusDirs([]string{tier1, tier2})
+	if err != nil {
+		t.Fatalf("LoadCorpusDirs: %v", err)
+	}
+	if len(recipes) != 2 || recipes[0].Label != "ET-1" || recipes[1].Label != "ET-2" {
+		t.Fatalf("fused recipes = %+v, want [ET-1 ET-2] in dir order", recipes)
+	}
+
+	if _, err := LoadCorpusDirs(nil); err == nil {
+		t.Error("no query dir should error")
+	}
+	// One bad tier fails the whole load (loud, not a silent partial).
+	if _, err := LoadCorpusDirs([]string{tier1, t.TempDir()}); err == nil {
+		t.Error("an empty tier among the dirs should error")
+	}
+}
+
 // TestRewriteExpectRoundTrip: RewriteExpect records a golden into a fixture-only recipe
 // (leaving everything before @expect byte-identical), and re-parsing yields exactly
 // those findings. A second RewriteExpect over an existing @expect replaces it in place.

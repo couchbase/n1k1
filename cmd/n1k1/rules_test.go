@@ -17,6 +17,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -126,16 +127,22 @@ func TestRulesHelp(t *testing.T) {
 	}
 }
 
-// TestRulesQueriesFlag: the directory flag is --queries. The former --corpus alias was
-// removed (hard cut) and now fails loudly as an unknown flag.
+// TestRulesQueriesFlag: the directory flag is --queries. It is REPEATABLE and accepts a
+// comma-list, so several tiers fuse into one pack (IDEA-0034). The former --corpus alias
+// was removed (hard cut) and now fails loudly as an unknown flag.
 func TestRulesQueriesFlag(t *testing.T) {
-	for _, tc := range []struct{ arg, want string }{
-		{"--queries ./x", "./x"},
-		{"--queries=./x", "./x"},
+	for _, tc := range []struct {
+		arg  string
+		want []string
+	}{
+		{"--queries ./x", []string{"./x"}},
+		{"--queries=./x", []string{"./x"}},
+		{"--queries ./a --queries ./b", []string{"./a", "./b"}}, // repeatable
+		{"--queries ./a,./b", []string{"./a", "./b"}},           // comma-list
 	} {
 		a, err := parseRulesArgs(tc.arg)
-		if err != nil || a.queries != tc.want {
-			t.Errorf("parseRulesArgs(%q) = {queries:%q} err %v; want queries=%q", tc.arg, a.queries, err, tc.want)
+		if err != nil || !reflect.DeepEqual(a.queries, tc.want) {
+			t.Errorf("parseRulesArgs(%q) = {queries:%v} err %v; want queries=%v", tc.arg, a.queries, err, tc.want)
 		}
 	}
 	// The removed --corpus alias is now an unknown flag, not silently accepted.

@@ -137,6 +137,26 @@ func LoadCorpus(dir string) ([]Recipe, error) {
 	return recipes, nil
 }
 
+// LoadCorpusDirs loads several corpus dirs and concatenates their recipes, so multiple
+// query tiers (e.g. an index-free `detectors/` and a `detectors-indexing/`) compile into
+// ONE multi-query pack that fuses over a shared scan -- the point of "multi" (IDEA-0034).
+// Each dir must contain at least one *.sql++ (LoadCorpus fails loudly on an empty/typo'd
+// dir); a single dir behaves exactly like LoadCorpus.
+func LoadCorpusDirs(dirs []string) ([]Recipe, error) {
+	if len(dirs) == 0 {
+		return nil, fmt.Errorf("no query directory given")
+	}
+	var all []Recipe
+	for _, dir := range dirs {
+		recipes, err := LoadCorpus(dir)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, recipes...)
+	}
+	return all, nil
+}
+
 // section markers -- recognized only as their own (trimmed) line.
 const (
 	markerFixture = "-- @fixture"

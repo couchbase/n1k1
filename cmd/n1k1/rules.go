@@ -81,19 +81,21 @@ func (c *cli) cmdRules(arg string) {
 	}
 }
 
-// rulesArgs is the parsed flag set shared by run + lint + test: the queries dir (the
-// directory of *.sql++ files), an optional bind manifest path (run/lint), and the
+// rulesArgs is the parsed flag set shared by run + lint + test: the queries dirs (each
+// a directory of *.sql++ files), an optional bind manifest path (run/lint), and the
 // --update boolean (test).
 type rulesArgs struct {
-	queries string
+	queries []string
 	bind    string
 	update  bool // .multi test: record produced findings back into each recipe's @expect
 }
 
-// parseRulesArgs parses `--queries <dir> [--bind <file>] [--update]` (also accepting
-// the bare/`=` forms `-queries=x`). Unknown tokens are an error so a typo fails loudly
-// rather than being silently ignored. --queries is validated by the caller (required
-// for run/lint; test errors on its absence too).
+// parseRulesArgs parses `--queries <dir>... [--bind <file>] [--update]` (also accepting
+// the bare/`=` forms `-queries=x`). --queries is REPEATABLE and accepts a comma-separated
+// list, so several query tiers (`--queries a --queries b`, or `--queries a,b`) compile
+// into one shared-scan multi-query pack (IDEA-0034). Unknown tokens are an error so a typo
+// fails loudly rather than being silently ignored. --queries is required (validated by the
+// caller for run/lint; test errors on its absence too).
 func parseRulesArgs(arg string) (rulesArgs, error) {
 	var a rulesArgs
 	toks := strings.Fields(arg)
@@ -112,7 +114,11 @@ func parseRulesArgs(arg string) (rulesArgs, error) {
 				}
 				val = toks[i]
 			}
-			a.queries = val
+			for _, d := range strings.Split(val, ",") {
+				if d = strings.TrimSpace(d); d != "" {
+					a.queries = append(a.queries, d)
+				}
+			}
 		case "bind":
 			if !hasEq {
 				i++
@@ -129,26 +135,27 @@ func parseRulesArgs(arg string) (rulesArgs, error) {
 			return a, fmt.Errorf("unknown flag %q (want --queries <dir> [--bind <manifest>] [--update])", t)
 		}
 	}
-	if a.queries == "" {
+	if len(a.queries) == 0 {
 		return a, fmt.Errorf("--queries <dir> is required")
 	}
 	return a, nil
 }
 
-// loadRecipes loads a corpus dir as parsed recipes (front-matter + fixtures), the
-// reusable glue loader. loadCorpus below projects these onto the Label+Stmt detectors
-// run/lint consume; .multi test needs the full recipe (source, fixture, expect).
-func loadRecipes(dir string) ([]glue.Recipe, error) {
-	return glue.LoadCorpus(dir)
+// loadRecipes loads one or more corpus dirs as parsed recipes (front-matter + fixtures),
+// the reusable glue loader. loadCorpus below projects these onto the Label+Stmt detectors
+// run/lint consume; .multi test needs the full recipe (source, fixture, expect). Multiple
+// dirs concatenate into one pack (IDEA-0034).
+func loadRecipes(dirs []string) ([]glue.Recipe, error) {
+	return glue.LoadCorpusDirs(dirs)
 }
 
-// loadCorpus reads a corpus dir as the Label+Stmt detectors run/lint consume: it loads
+// loadCorpus reads corpus dirs as the Label+Stmt detectors run/lint consume: it loads
 // the recipes (front-matter + fixtures stripped from the SQL body) via loadRecipes and
 // projects each onto its CorpusDetector. Returned sorted by path for deterministic
 // output. An empty corpus (no *.sql++ files) is an error -- a silent no-op corpus would
 // falsely read as a clean bundle.
-func loadCorpus(dir string) ([]glue.CorpusDetector, error) {
-	recipes, err := loadRecipes(dir)
+func loadCorpus(dirs []string) ([]glue.CorpusDetector, error) {
+	recipes, err := loadRecipes(dirs)
 	if err != nil {
 		return nil, err
 	}
@@ -268,7 +275,7 @@ func (c *cli) cmdRulesList(arg string) {
 	}
 	c.renderRows(rows, "", false)
 	fmt.Fprintf(c.stderr, "%s%d query/queries in %s -- %d with a fixture, %d with a golden (run .multi lint for a health report)\n",
-		c.icon("📋 "), len(recipes), args.queries, fixtures, goldens)
+		c.icon("📋 "), len(recipes), strings.Join(args.queries, ", "), fixtures, goldens)
 }
 
 // yesNo renders a boolean flag column as "yes"/"no" (kept short so the box stays tight).

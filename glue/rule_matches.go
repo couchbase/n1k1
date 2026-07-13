@@ -76,7 +76,9 @@ import (
 // function names, so "multi_matches" is the canonical spelling). "multi" is short for
 // multi-query -- the batch of related SQL++ queries this runs with shared execution
 // (MQO). Renamed from RULE_MATCHES in 2026 (a hard cut: no back-compat alias). Reads
-// naturally as a FROM source: `FROM multi_matches('detectors/') AS f`.
+// naturally as a FROM source: `FROM multi_matches('detectors/') AS f`. Arg-0 may name
+// SEVERAL query dirs -- a comma-list `'a,b'` or an array `['a','b']` -- which fuse into
+// one shared-scan pack, so tiers stay organized on disk yet run as one detector set.
 const RuleMatchesFuncName = "multi_matches"
 
 // registerRuleMatchesFunc wires MULTI_MATCHES into the cbq parser so
@@ -128,29 +130,70 @@ func (this *ruleMatchesFunc) Constructor() expression.FunctionConstructor {
 	}
 }
 
-// evalArgs evaluates the corpus-dir (arg 0, required string) and the optional opts
-// object (arg 1). Shared by the streaming StreamRows path and the scalar Evaluate.
-func (this *ruleMatchesFunc) evalArgs(item value.Value, context expression.Context) (string, ruleMatchesOpts, error) {
+// evalArgs evaluates the corpus dir(s) (arg 0) and the optional opts object (arg 1).
+// Shared by the streaming StreamRows path and the scalar Evaluate. Arg 0 is a query-dir
+// string, a comma-separated list, OR an array of dir strings -- multiple dirs concatenate
+// into one shared-scan multi-query pack (IDEA-0034).
+func (this *ruleMatchesFunc) evalArgs(item value.Value, context expression.Context) ([]string, ruleMatchesOpts, error) {
 	operands := this.Operands()
 
 	dirV, err := operands[0].Evaluate(item, context)
 	if err != nil {
-		return "", ruleMatchesOpts{}, err
+		return nil, ruleMatchesOpts{}, err
 	}
-	if dirV.Type() != value.STRING {
-		return "", ruleMatchesOpts{}, fmt.Errorf("MULTI_MATCHES: first argument (corpus dir) must be a string, got %s", dirV.Type())
+	dirs, err := ruleMatchesDirs(dirV)
+	if err != nil {
+		return nil, ruleMatchesOpts{}, err
 	}
-	dir, _ := dirV.Actual().(string)
 
 	var opts ruleMatchesOpts
 	if len(operands) >= 2 {
 		optV, err := operands[1].Evaluate(item, context)
 		if err != nil {
-			return "", ruleMatchesOpts{}, err
+			return nil, ruleMatchesOpts{}, err
 		}
 		opts = parseRuleMatchesOpts(optV)
 	}
-	return dir, opts, nil
+	return dirs, opts, nil
+}
+
+// ruleMatchesDirs reads MULTI_MATCHES's arg-0 into the list of corpus dirs: a STRING
+// (optionally comma-separated) or an ARRAY of strings. Blanks are dropped; an empty
+// result is an error. (Navigates an ARRAY via value.Index -- an evaluated array literal's
+// elements are themselves value.Value, so an .Actual() type-assert would miss them.)
+func ruleMatchesDirs(v value.Value) ([]string, error) {
+	var out []string
+	add := func(s string) {
+		for _, d := range strings.Split(s, ",") {
+			if d = strings.TrimSpace(d); d != "" {
+				out = append(out, d)
+			}
+		}
+	}
+	switch v.Type() {
+	case value.STRING:
+		s, _ := v.Actual().(string)
+		add(s)
+	case value.ARRAY:
+		n := 0
+		if act, ok := v.Actual().([]interface{}); ok {
+			n = len(act)
+		}
+		for i := 0; i < n; i++ {
+			ev, ok := v.Index(i)
+			if !ok || ev.Type() != value.STRING {
+				return nil, fmt.Errorf("MULTI_MATCHES: query-dir array must be all strings")
+			}
+			s, _ := ev.Actual().(string)
+			add(s)
+		}
+	default:
+		return nil, fmt.Errorf("MULTI_MATCHES: first argument (query dir) must be a string or array of strings, got %s", v.Type())
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("MULTI_MATCHES: first argument (query dir) is empty")
+	}
+	return out, nil
 }
 
 // Evaluate is the SCALAR-context fallback (rule_matches(...) used OUTSIDE a FROM
@@ -158,11 +201,11 @@ func (this *ruleMatchesFunc) evalArgs(item value.Value, context expression.Conte
 // one ARRAY of {label, result} objects. The FROM path never reaches here -- it
 // streams via StreamRows.
 func (this *ruleMatchesFunc) Evaluate(item value.Value, context expression.Context) (value.Value, error) {
-	dir, opts, err := this.evalArgs(item, context)
+	dirs, opts, err := this.evalArgs(item, context)
 	if err != nil {
 		return nil, err
 	}
-	return runRuleMatches(dir, opts, warnSink(context))
+	return runRuleMatches(dirs, opts, warnSink(context))
 }
 
 // StreamRows is ruleMatchesFunc's StreamSource implementation: the STREAMING FROM
@@ -173,7 +216,7 @@ func (this *ruleMatchesFunc) Evaluate(item value.Value, context expression.Conte
 // navigate identically whichever path ran.
 func (this *ruleMatchesFunc) StreamRows(vars *base.Vars, gc *GlueContext,
 	ctx expression.Context, item value.Value, emit func(base.Val) bool) error {
-	dir, opts, err := this.evalArgs(item, ctx)
+	dirs, opts, err := this.evalArgs(item, ctx)
 	if err != nil {
 		return err
 	}
@@ -184,7 +227,7 @@ func (this *ruleMatchesFunc) StreamRows(vars *base.Vars, gc *GlueContext,
 	prevDS := datastore.GetDatastore()
 	defer datastore.SetDatastore(prevDS)
 
-	cc, err := ruleMatchesCorpus(dir, opts, func(s string) { gc.Warnf("%s", s) })
+	cc, err := ruleMatchesCorpus(dirs, opts, func(s string) { gc.Warnf("%s", s) })
 	if err != nil {
 		return err
 	}
@@ -246,16 +289,17 @@ func parseRuleMatchesOpts(v value.Value) ruleMatchesOpts {
 // corpus at dir, and compiles it. The CALLER save/restores the process-global
 // datastore around the returned corpus's Run/RunStream (the bind path switches it).
 // Shared by the streaming StreamRows path and the materializing Evaluate fallback.
-func ruleMatchesCorpus(dir string, opts ruleMatchesOpts, warn func(string)) (*CompiledCorpus, error) {
+func ruleMatchesCorpus(dirs []string, opts ruleMatchesOpts, warn func(string)) (*CompiledCorpus, error) {
 	sess, err := ruleMatchesSession(opts, datastore.GetDatastore())
 	if err != nil {
 		return nil, err
 	}
 
-	// LoadCorpus fails loudly on an empty/missing corpus dir (no *.sql++ files) --
+	// LoadCorpusDirs fails loudly on an empty/missing corpus dir (no *.sql++ files) --
 	// a silent empty result would falsely read as "clean" (fail-loud, the same
-	// safety property as binding.go's empty-glob refusal).
-	recipes, err := LoadCorpus(dir)
+	// safety property as binding.go's empty-glob refusal). Multiple dirs concatenate
+	// into one shared-scan pack (IDEA-0034).
+	recipes, err := LoadCorpusDirs(dirs)
 	if err != nil {
 		return nil, fmt.Errorf("MULTI_MATCHES: %w", err)
 	}
@@ -264,11 +308,12 @@ func ruleMatchesCorpus(dir string, opts ruleMatchesOpts, warn func(string)) (*Co
 		dets = append(dets, recipes[i].AsDetector())
 	}
 
+	label := strings.Join(dirs, ", ")
 	cc, err := sess.CorpusCompile(dets)
 	if err != nil {
-		return nil, fmt.Errorf("MULTI_MATCHES: compiling corpus %q: %w", dir, err)
+		return nil, fmt.Errorf("MULTI_MATCHES: compiling corpus %q: %w", label, err)
 	}
-	if err := reportCorpusRejects(cc, dir, opts, warn); err != nil {
+	if err := reportCorpusRejects(cc, label, opts, warn); err != nil {
 		return nil, err
 	}
 	return cc, nil
@@ -281,7 +326,7 @@ func ruleMatchesCorpus(dir string, opts ruleMatchesOpts, warn func(string)) (*Co
 // rejected (nothing runnable) that's a hard ERROR -- a misconfigured corpus must not
 // read as a clean bundle. When only SOME rejected, a WARNING lists them (the runnable
 // rest still stream). A keyspace-resolution reject with no bind gets a bind hint.
-func reportCorpusRejects(cc *CompiledCorpus, dir string, opts ruleMatchesOpts, warn func(string)) error {
+func reportCorpusRejects(cc *CompiledCorpus, label string, opts ruleMatchesOpts, warn func(string)) error {
 	if len(cc.Rejected) == 0 {
 		return nil
 	}
@@ -304,11 +349,11 @@ func reportCorpusRejects(cc *CompiledCorpus, dir string, opts ruleMatchesOpts, w
 	// Runnable iff something will actually execute: a fused plan or any standalone.
 	if cc.Plan == nil && len(cc.Standalone) == 0 {
 		return fmt.Errorf("MULTI_MATCHES: no query in %q compiled -- all %d rejected: %s%s",
-			dir, len(cc.Rejected), list, hint)
+			label, len(cc.Rejected), list, hint)
 	}
 	if warn != nil {
 		warn(fmt.Sprintf("MULTI_MATCHES: %d query/queries in %q skipped (did not compile): %s%s",
-			len(cc.Rejected), dir, list, hint))
+			len(cc.Rejected), label, list, hint))
 	}
 	return nil
 }
@@ -338,17 +383,17 @@ func warnSink(context expression.Context) func(string) {
 // its matches as one MATERIALIZED array value. It save/restores the process-global
 // datastore around the run (the bind path and CorpusCompile/Run's idempotent
 // SetDatastore mutate it) -- so the outer query's datastore is never left changed.
-func runRuleMatches(dir string, opts ruleMatchesOpts, warn func(string)) (value.Value, error) {
+func runRuleMatches(dirs []string, opts ruleMatchesOpts, warn func(string)) (value.Value, error) {
 	prevDS := datastore.GetDatastore()
 	defer datastore.SetDatastore(prevDS)
 
-	cc, err := ruleMatchesCorpus(dir, opts, warn)
+	cc, err := ruleMatchesCorpus(dirs, opts, warn)
 	if err != nil {
 		return nil, err
 	}
 	findings, err := cc.Run()
 	if err != nil {
-		return nil, fmt.Errorf("MULTI_MATCHES: running corpus %q: %w", dir, err)
+		return nil, fmt.Errorf("MULTI_MATCHES: running corpus %q: %w", strings.Join(dirs, ", "), err)
 	}
 
 	// One materialized array of {label, result} objects. Result is the match's
