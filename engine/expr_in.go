@@ -25,8 +25,17 @@ func ExprIn(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
 	biExprFunc := func(lzA, lzB base.ExprFunc, lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) { // !lz
 		if LzScope {
-			lzValX := lzA(lzVals, lzYieldErr)   // <== emitCaptured: path "A"
-			lzValArr := lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B"
+			// Capture each operand FROM the shared lzVal register: emitCaptured
+			// replaces the marked line with the child's code (which writes lzVal),
+			// then a plain lzValX := lzVal copies it out. A direct lzValX := lzA(...)
+			// bind is DROPPED in the compiled path (only lzVal survives inlining), so
+			// its var ends up undefined -- the bug that kept `in` denylisted. Mirrors
+			// ExprBetween / ExprElement / ExprArithBi.
+			lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
+			lzValX := lzVal
+
+			lzVal = lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B"
+			lzValArr := lzVal
 
 			lzVal = base.ValIn(lzVars.Ctx.ValComparer, lzValX, lzValArr)
 		}

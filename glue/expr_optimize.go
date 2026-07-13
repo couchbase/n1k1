@@ -642,35 +642,20 @@ func fieldChainCaseInsensitive(e expression.Expression) bool {
 	return false
 }
 
-// compiledExprDenylist names native expr catalog kinds whose AUTO-GENERATED
-// compiler emitters are known-broken (they were dead code until native-inline
-// codegen landed, so never debugged). They share one root cause: a "captured
-// operand" codegen mechanism (the emitter reads named operand vars -- lzChildren
-// for the nary family, lzValItem/Low/High for between, lzValArr/Idx for element --
-// that the generated code never declares). ExprTreesOptimize keeps any expr tree
-// that CONTAINS one of these BOXED (exprStr) so the compiled code stays correct;
-// each entry is removed as its emitter is fixed. Binary ops (arithmetic,
-// comparison), field access (labelPath), and/or/in, and json constants emit fine.
-// See DESIGN-prepare.md.
-// compiledExprDenylist holds native ExprCatalog funcs that ExprTreesOptimize must
-// still keep BOXED (as an exprStr island) because their compiled emitters aren't
-// correct yet. Empty now: the whole nary family compiles natively -- the eager
-// exprs (concat, greatest/least, ifnull/coalesce) via the eager-Vals harness, and
-// the lazy CASE via a flat lzMatched-guarded short-circuit (see engine.ExprCase
-// and CaptureNaryChildren). Kept as the seam for the next emitter that needs it.
-var compiledExprDenylist = map[string]bool{
-	// These emit-path (emit.OpToLines) emitters reference custom operand var names
-	// that the generated code never declares (lzValX/lzValArr for `in`, lzValItem/
-	// Low/High for `between`, lzValArr/Idx for `element`). They were dormant until
-	// bare-identifier lowering (comprehension binding vars) started resolving
-	// whole-row identifiers, which pulls these ops onto the native compiled path
-	// for cases like `d IN [...]`. Keep them BOXED in the compiled lane until their
-	// emitters are fixed. (Their intermed/-prepare=full path is fine; only the
-	// per-case emit path is broken.)
-	"in":      true,
-	"between": true,
-	"element": true,
-}
+// compiledExprDenylist names native ExprCatalog funcs that ExprTreesOptimize must
+// keep BOXED (as an exprStr island) because their emit-path (emit.OpToLines)
+// emitter is not correct yet -- any expr tree CONTAINING one stays boxed in the
+// compiled lane so the generated code compiles and matches. The classic breakage
+// is a "captured operand" that binds directly (`lzValX := lzChild(...)`): the
+// emitCaptured codegen replaces the marked line with the child's body (which only
+// writes the shared lzVal), so the named var is never declared. The fix is to
+// capture FROM lzVal instead (`lzVal = lzChild(...); lzValX := lzVal`).
+//
+// Empty now: the nary family (concat, greatest/least, ifnull/coalesce via the
+// eager-Vals harness; CASE via a flat lzMatched short-circuit), between, element,
+// and -- most recently -- `in` (converted to the capture-from-lzVal form) all emit
+// correctly. Kept as the seam for the next emitter that needs it. See DESIGN-prepare.md.
+var compiledExprDenylist = map[string]bool{}
 
 // exprParamsHasDenylisted reports whether a native optimized param tree contains a
 // catalog op whose compiler emitter is denylisted (so the whole expr must stay
