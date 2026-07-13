@@ -21,6 +21,16 @@ func init() {
 	ExprCatalog["first"] = ExprFirst
 	ExprCatalog["array"] = ExprArray
 	ExprCatalog["object"] = ExprObject
+	ExprCatalog["descendants"] = ExprDescendants
+}
+
+// ExprDescendants is the WITHIN operand transform: it flattens an array/object to
+// its descendants (base.Descendants / cbq value.Descendants order) as a JSON array,
+// so a comprehension binding `x WITHIN v` reuses the ordinary element-iterating
+// comprehension ops over that array. Unary; rides the shared array harness.
+func ExprDescendants(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string) base.ExprFunc {
+	return ExprArrayUnaryBuf(lzVars, labels, params, path, base.Descendants)
 }
 
 // ExprAny implements the ANY collection predicate (single-binding, IN form):

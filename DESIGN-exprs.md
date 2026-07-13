@@ -713,8 +713,11 @@ byte/register/lz model.
   correlated, and multi-level NESTED forms). `ANY`/`EVERY`/`FIRST` early-exit; `WHEN` is
   synthesized to a constant `true` when absent (no per-element branch); `OBJECT`
   accumulates last-wins key-sorted (string key required: MISSING-name → MISSING,
-  non-string → NULL). Remaining: `WITHIN`/descend, multi-binding, and name-variable
-  object iteration (all fall back).
+  non-string → NULL). `WITHIN` (descend) is supported for every form by wrapping the
+  operand in a `descendants` transform (pre-order DFS, object fields sorted, containers
+  included; cbq `value.Descendants` order) and reusing the element-iterating op.
+  Remaining: multi-binding (`FOR x IN a, y IN b`) and name-variable object iteration
+  (`FOR k:v IN obj`), both fall back.
 
 ### Tier D — delegate to cbq indefinitely
 - **Volatile / non-deterministic:** `now_*`, `clock_*`, `random`, `uuid`.

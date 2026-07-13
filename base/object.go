@@ -297,6 +297,73 @@ func CollObjectEmit(kvs KeyVals, bufPre []byte) []byte {
 	return append(out, '}')
 }
 
+// DescendantsAppend emits v's descendants as a JSON array into bufPre, in cbq
+// value.Descendants order: a pre-order DFS where each child is emitted, then its own
+// descendants -- array elements in order, object field VALUES in sorted-name order,
+// and container children (arrays/objects) are included as descendants themselves.
+// Used by WITHIN comprehensions (the binding's Descend flag). Strings are re-quoted;
+// everything else is emitted verbatim. depth indexes the pooled KeyVals so nested
+// object sorts don't clobber an enclosing one.
+func DescendantsAppend(c *ValComparer, v Val, bufPre []byte) []byte {
+	out := append(bufPre[:0], '[')
+	_, out = descendChildren(c, v, out, false, 0)
+	return append(out, ']')
+}
+
+// Descendants is the WITHIN operand transform: MISSING -> MISSING; an array or
+// object -> its DescendantsAppend array; anything else (NULL / scalar) -> NULL --
+// so a comprehension binding `x WITHIN v` iterates v's descendants and inherits the
+// same MISSING/NULL/non-collection guards it would have for `x IN v`. Signature
+// matches the unary-array harness (engine.ExprArrayUnaryBuf).
+func Descendants(c *ValComparer, v Val, bufPre []byte) (Val, []byte) {
+	if len(v) == 0 {
+		return ValMissing, bufPre
+	}
+	_, pt := Parse(v)
+	vt := ParseTypeToValType[pt]
+	if vt != ValTypeArray && vt != ValTypeObject {
+		return ValNull, bufPre
+	}
+	out := DescendantsAppend(c, v, bufPre)
+	return Val(out), out
+}
+
+func descendChildren(c *ValComparer, v Val, out []byte, wrote bool, depth int) (bool, []byte) {
+	pv, pt := Parse(v)
+	switch ParseTypeToValType[pt] {
+	case ValTypeArray:
+		jsonparser.ArrayEach(pv, func(e []byte, dt jsonparser.ValueType, _ int, _ error) {
+			wrote, out = descendEmit(c, e, dt, out, wrote, depth)
+		})
+	case ValTypeObject:
+		kvs := c.KeyValsAcquire(depth)
+		jsonparser.ObjectEach(pv, func(key []byte, e []byte, dt jsonparser.ValueType, _ int) error {
+			kvs = append(kvs, KeyVal{Key: key, Val: e, ValType: int(dt)})
+			return nil
+		})
+		KeyValsSortByName(kvs)
+		for i := range kvs { // field VALUES, sorted by name; recurse a level deeper
+			wrote, out = descendEmit(c, kvs[i].Val, jsonparser.ValueType(kvs[i].ValType), out, wrote, depth+1)
+		}
+		c.KeyValsRelease(depth, kvs)
+	}
+	return wrote, out
+}
+
+// descendEmit appends one descendant e (re-quoting a string) then, if e is a
+// container, recurses into ITS descendants (the pre-order "child, then subtree").
+func descendEmit(c *ValComparer, e []byte, dt jsonparser.ValueType, out []byte, wrote bool, depth int) (bool, []byte) {
+	if wrote {
+		out = append(out, ',')
+	}
+	out = JSONElementAppend(out, e, dt)
+	wrote = true
+	if dt == jsonparser.Array || dt == jsonparser.Object {
+		wrote, out = descendChildren(c, e, out, wrote, depth)
+	}
+	return wrote, out
+}
+
 // KeyValsFindKey returns the index of the pair named key (decoded) in kvs, or -1.
 func KeyValsFindKey(kvs KeyVals, key []byte) int {
 	for i := range kvs {

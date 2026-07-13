@@ -98,12 +98,19 @@ func collLowerBinding(labels base.Labels, bindings expression.Bindings,
 		return nil, "", nil, false
 	}
 	b := bindings[0]
-	if b.NameVariable() != "" || b.Descend() {
+	if b.NameVariable() != "" { // name-variable object iteration (k:v IN obj) falls back
 		return nil, "", nil, false
 	}
 	arrParam, ok = ExprTreeOptimize(labels, b.Expression(), buf, strict)
 	if !ok {
 		return nil, "", nil, false
+	}
+	// WITHIN (Descend): iterate the collection's descendants instead of its direct
+	// elements. Wrap the operand in ["descendants", ...] (engine.ExprDescendants /
+	// cbq value.Descendants order); the comprehension op then iterates that flattened
+	// array exactly as it would the direct elements -- same MISSING/NULL guards.
+	if b.Descend() {
+		arrParam = []interface{}{"descendants", arrParam}
 	}
 	bindingLabel = "." + LabelSuffix(b.Variable())
 	childLabels = append(append(base.Labels{}, labels...), bindingLabel)

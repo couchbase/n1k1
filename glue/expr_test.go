@@ -1203,6 +1203,54 @@ func TestObjectComprehensionDifferentialVsCBQ(t *testing.T) {
 	}
 }
 
+// TestWithinComprehensionDifferentialVsCBQ proves native WITHIN (descend) is
+// byte-identical to cbq: the operand is flattened to its recursive descendants
+// (pre-order; object fields sorted; containers included) and then iterated like IN.
+func TestWithinComprehensionDifferentialVsCBQ(t *testing.T) {
+	c := func(v interface{}) expression.Expression { return expression.NewConstant(v) }
+	arr := func(xs ...interface{}) expression.Expression {
+		if xs == nil {
+			xs = []interface{}{}
+		}
+		return expression.NewConstant(xs)
+	}
+	x := expression.NewIdentifier("x")
+	within := func(arrE expression.Expression) expression.Bindings { // x WITHIN arrE
+		return expression.Bindings{expression.NewBinding("", "x", arrE, true)}
+	}
+	// ANY x WITHIN arr SATISFIES x > k END  /  ARRAY x FOR x WITHIN arr END
+	anyW := func(arrE expression.Expression, k interface{}) expression.Expression {
+		return expression.NewAny(within(arrE), expression.NewGT(x, c(k)))
+	}
+	arrW := func(arrE, when expression.Expression) expression.Expression {
+		return expression.NewArray(x, within(arrE), when)
+	}
+	nested := arr(1, []interface{}{2, 9}, map[string]interface{}{"k": 7})
+
+	cases := map[string]expression.Expression{
+		"any-nested-hit":  anyW(nested, 8),                        // true (9 is a descendant)
+		"any-nested-miss": anyW(arr(1, []interface{}{2, 3}), 8),   // false
+		"any-flat":        anyW(arr(1, 2, 9), 5),                  // true (9)
+		"array-all":       arrW(arr(1, []interface{}{2, 3}), nil), // [1,[2,3],2,3]
+		"array-obj":       arrW(arr(map[string]interface{}{"b": 4, "a": 5}), nil), // [{a:5,b:4},5,4] sorted
+		"array-when":      arrW(nested, expression.NewGT(x, c(6))),                // descendants > 6
+		"scalar":          anyW(c(5), 1),                          // null (WITHIN over non-collection)
+		"missing":         anyW(c(value.MISSING_VALUE), 1),        // "" (MISSING)
+		"null":            anyW(c(value.NULL_VALUE), 1),           // null
+	}
+	for name, e := range cases {
+		want := cbqEval(t, e)
+		got, ok := nativeEval(t, e)
+		if !ok {
+			t.Errorf("WITHIN(%s): did not optimize to native", name)
+			continue
+		}
+		if got != want {
+			t.Errorf("WITHIN(%s): native=%q, cbq=%q", name, got, want)
+		}
+	}
+}
+
 // TestAnyComprehensionRowContext exercises the row-context cases the constant
 // differential can't reach: object-field navigation on the bound var, correlation
 // (predicate references the outer row), and nested ANY-in-ANY -- run through a real
