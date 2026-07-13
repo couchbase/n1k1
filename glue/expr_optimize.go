@@ -636,14 +636,20 @@ func exprTreeOptimizeNative(labels base.Labels, e expression.Expression,
 		"power", "atan2",
 		"contains", "position0", "position1",
 		"array_contains", "array_position",
-		"array_append", "array_prepend", "array_concat", // 2-arg forms; variadic >2 falls back
-		"array_flatten",                  // ARRAY_FLATTEN(arr, depth) is always 2-arg
-		"object_remove", "object_concat", // 2-arg forms; variadic >2 falls back
+		"array_flatten",    // ARRAY_FLATTEN(arr, depth) is always 2-arg
 		"date_part_millis", // 2-arg form only; the 3-arg (timezone) form falls back
 		"nullif", "missingif", "element":
 		// These native harnesses are two-operand; cbq's n-ary forms fall back.
 		// (ifnull/ifmissing/ifmissingornull/nvl and greatest/least are n-ary.)
 		if len(operands) != 2 {
+			return nil, false
+		}
+	case "array_append", "array_prepend", "array_concat", // variadic (MinArgs 2)
+		"object_remove", "object_concat":
+		// These builders are variadic (cbq MaxArgs = MaxInt16); the native harness is
+		// the eager-Vals reducer (engine ExprArray*/ExprObject*), so any arity >= 2
+		// lowers. cbq's MinArgs is 2, so a <2 form can't parse -- guard defensively.
+		if len(operands) < 2 {
 			return nil, false
 		}
 	case "neg",

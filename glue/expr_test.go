@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -1063,6 +1064,42 @@ func TestArrayBuildersDifferentialVsCBQ(t *testing.T) {
 			}
 		}
 	}
+
+	// Variadic (>2-arg) forms: these used to box; now native via the eager-Vals
+	// reducers. APPEND's op[0] is the array (rest appended); PREPEND's LAST op is the
+	// array (rest prepended); CONCAT takes all-arrays (any non-array -> NULL). MISSING
+	// anywhere -> MISSING (dominates NULL).
+	variadic := map[string][]expression.Expression{
+		"append-3vals":     {arr(1, 2), c(3), c("x")},
+		"append-4vals":     {arr(), c(1), null, arr(9)}, // null & array values append verbatim
+		"append-nonarr0":   {c(5), c(1), c(2)},          // op0 not array -> NULL
+		"append-miss-mid":  {arr(1), miss, c(2)},        // MISSING dominates
+		"prepend-3vals":    {c(1), c(2), arr(3, 4)},     // array is LAST
+		"prepend-4vals":    {c("a"), null, c(1), arr(9)},
+		"prepend-nonarr":   {c(1), c(2), c(5)}, // last not array -> NULL
+		"concat-3arr":      {arr(1), arr(2, 3), arr(4)},
+		"concat-empties":   {arr(), arr(1), arr()},
+		"concat-nonarr":    {arr(1), c(5), arr(2)}, // any non-array -> NULL
+		"concat-miss-null": {arr(1), miss, c(5)},   // MISSING dominates NULL
+	}
+	varCtors := map[string]func(...expression.Expression) expression.Function{
+		"append":  expression.NewArrayAppend,
+		"prepend": expression.NewArrayPrepend,
+		"concat":  expression.NewArrayConcat,
+	}
+	for on, ops := range variadic {
+		fn := strings.SplitN(on, "-", 2)[0]
+		expr := varCtors[fn](ops...)
+		want := cbqEval(t, expr)
+		got, ok := nativeEval(t, expr)
+		if !ok {
+			t.Errorf("array-%s(%s): did not optimize to native", fn, on)
+			continue
+		}
+		if got != want {
+			t.Errorf("array-%s(%s): native=%q, cbq=%q", fn, on, got, want)
+		}
+	}
 }
 
 // TestArrayReshapersDifferentialVsCBQ proves ARRAY_SORT / ARRAY_REVERSE (unary) and
@@ -1451,14 +1488,19 @@ func TestArrayBuildersZeroAlloc(t *testing.T) {
 	sortArr := base.Val([]byte(`[3,1,"b","a",2]`))
 	nestArr := base.Val([]byte(`[1,[2,[3,4]],5]`))
 	depth2 := base.Val([]byte(`2`))
+	// Reused operand slices for the variadic eager-Vals reducers (built once, so the
+	// per-row measure sees only the reducer's buffer splicing).
+	appendVals := base.Vals{arr, elem, elem}
+	prependVals := base.Vals{elem, elem, arr} // array LAST
+	concatVals := base.Vals{arr, arr, arr}
 
 	for _, tc := range []struct {
 		name string
 		run  func(buf []byte) []byte
 	}{
-		{"ArrayAppend", func(buf []byte) []byte { o, _, _ := base.ArrayAppend(arr, elem, buf); return o }},
-		{"ArrayPrepend", func(buf []byte) []byte { o, _, _ := base.ArrayPrepend(elem, arr, buf); return o }},
-		{"ArrayConcat", func(buf []byte) []byte { o, _, _ := base.ArrayConcat(arr, arr, buf); return o }},
+		{"ArrayAppendVals", func(buf []byte) []byte { o, _, _ := base.ArrayAppendVals(appendVals, buf); return o }},
+		{"ArrayPrependVals", func(buf []byte) []byte { o, _, _ := base.ArrayPrependVals(prependVals, buf); return o }},
+		{"ArrayConcatVals", func(buf []byte) []byte { o, _, _ := base.ArrayConcatVals(concatVals, buf); return o }},
 		{"ArraySort", func(buf []byte) []byte { o, _ := base.ArraySort(vc, sortArr, buf); return o }},
 		{"ArrayReverse", func(buf []byte) []byte { o, _ := base.ArrayReverse(vc, arr, buf); return o }},
 		{"ArrayFlatten", func(buf []byte) []byte { o, _, _ := base.ArrayFlatten(nestArr, depth2, buf); return o }},
@@ -1563,6 +1605,41 @@ func TestObjectMutatorsDifferentialVsCBQ(t *testing.T) {
 			t.Errorf("object_concat(%s): native=%q, cbq=%q", on, got, want)
 		}
 	}
+
+	// Variadic (>2-arg) REMOVE(obj, key1, key2, ...) and CONCAT(o1, o2, o3, ...):
+	// used to box; now native. REMOVE drops each key (absent is a no-op, any non-
+	// string/NULL key -> NULL); CONCAT merges left-to-right (later object wins), any
+	// non-object -> NULL; MISSING anywhere -> MISSING.
+	o := func(kvs map[string]interface{}) expression.Expression { return expression.NewConstant(kvs) }
+	variadic := map[string][]expression.Expression{
+		"remove-2keys":     {o(map[string]interface{}{"a": 1, "b": 2, "c": 3}), c("a"), c("c")},
+		"remove-absent":    {o(map[string]interface{}{"a": 1}), c("z"), c("a")},
+		"remove-nonstr":    {o(map[string]interface{}{"a": 1}), c("a"), c(7)}, // non-string key -> NULL
+		"remove-miss":      {o(map[string]interface{}{"a": 1}), c("a"), miss}, // MISSING dominates
+		"concat-3obj":      {o(map[string]interface{}{"a": 1}), o(map[string]interface{}{"b": 2}), o(map[string]interface{}{"c": 3})},
+		"concat-3overlap":  {o(map[string]interface{}{"a": 1, "k": 0}), o(map[string]interface{}{"k": 2}), o(map[string]interface{}{"k": 9})}, // last wins
+		"concat-nonobj":    {o(map[string]interface{}{"a": 1}), c(5), o(map[string]interface{}{"b": 2})},
+		"concat-miss-null": {o(map[string]interface{}{"a": 1}), miss, c(5)}, // MISSING dominates NULL
+	}
+	remove := func(ops ...expression.Expression) expression.Function { return expression.NewObjectRemove(ops...) }
+	concat := func(ops ...expression.Expression) expression.Function { return expression.NewObjectConcat(ops...) }
+	for on, ops := range variadic {
+		var expr expression.Expression
+		if strings.HasPrefix(on, "remove") {
+			expr = remove(ops...)
+		} else {
+			expr = concat(ops...)
+		}
+		want := cbqEval(t, expr)
+		got, ok := nativeEval(t, expr)
+		if !ok {
+			t.Errorf("object-%s: did not optimize to native", on)
+			continue
+		}
+		if got != want {
+			t.Errorf("object-%s: native=%q, cbq=%q", on, got, want)
+		}
+	}
 }
 
 // TestObjectMutatorsZeroAlloc asserts the per-row native OBJECT mutating builds
@@ -1572,9 +1649,12 @@ func TestObjectMutatorsZeroAlloc(t *testing.T) {
 	cmp := base.NewValComparer()
 	o1 := base.Val([]byte(`{"gamma":1,"alpha":"x","beta":[1,2]}`))
 	o2 := base.Val([]byte(`{"beta":9,"delta":{"k":1}}`))
+	o3 := base.Val([]byte(`{"zeta":7}`))
 	key := base.Val([]byte(`"gamma"`))
 	nkey := base.Val([]byte(`"epsilon"`))
 	val := base.Val([]byte(`42`))
+	removeVals := base.Vals{o1, key, nkey} // obj, then keys
+	concatVals := base.Vals{o1, o2, o3}
 
 	for _, tc := range []struct {
 		name string
@@ -1583,8 +1663,8 @@ func TestObjectMutatorsZeroAlloc(t *testing.T) {
 		{"ObjectPut-overwrite", func(buf []byte) []byte { o, _, _ := base.ObjectPut(cmp, o1, key, val, buf); return o }},
 		{"ObjectPut-new", func(buf []byte) []byte { o, _, _ := base.ObjectPut(cmp, o1, nkey, val, buf); return o }},
 		{"ObjectAdd", func(buf []byte) []byte { o, _, _ := base.ObjectAdd(cmp, o1, nkey, val, buf); return o }},
-		{"ObjectRemove", func(buf []byte) []byte { o, _, _ := base.ObjectRemove(cmp, o1, key, buf); return o }},
-		{"ObjectConcat", func(buf []byte) []byte { o, _, _ := base.ObjectConcat(cmp, o1, o2, buf); return o }},
+		{"ObjectRemoveVals", func(buf []byte) []byte { o, _, _ := base.ObjectRemoveVals(cmp, removeVals, buf); return o }},
+		{"ObjectConcatVals", func(buf []byte) []byte { o, _, _ := base.ObjectConcatVals(cmp, concatVals, buf); return o }},
 	} {
 		buf := tc.run(nil) // warm up pool + buffer
 		n := testing.AllocsPerRun(2000, func() { buf = tc.run(buf) })

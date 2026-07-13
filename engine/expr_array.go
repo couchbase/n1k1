@@ -181,92 +181,111 @@ func ExprArrayPosition(lzVars *base.Vars, labels base.Labels,
 	return lzExprFunc
 }
 
-// ExprArrayAppend is ARRAY_APPEND(arr, val) (2-arg): binary, splices val onto the
-// end of arr into the reused buffer (or a MISSING/NULL sentinel) -- no boxing. See
-// base.ArrayAppend. (cbq's variadic >2-arg form falls back to boxed.)
+// ExprArrayAppend is ARRAY_APPEND(arr, val1, val2, ...) (variadic, MinArgs 2): splices
+// each value onto the end of arr into the reused buffer (or a MISSING/NULL sentinel) --
+// no boxing. Rides the eager-Vals harness (NaryCaptureChildren + a base reducer), like
+// ExprConcat: evaluate every operand into lzValsReduce, then base.ArrayAppendVals.
 func ExprArrayAppend(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	var lzBufPre []byte // <== varLift: lzBufPre by path
+	var lzBufPre []byte        // <== varLift: lzBufPre by path
+	var lzValsReduce base.Vals // <== varLift: lzValsReduce by path
 
-	biExprFunc := func(lzA, lzB base.ExprFunc, lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) { // !lz
-		if LzScope {
-			lzValArr := lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A", via: lzVal
+	lzChildren := NaryCaptureChildren(lzVars, labels, params, path) // !lz
 
-			lzValElem := lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B", via: lzVal
+	if LzScope {
+		lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
+			lzValsReduce = lzValsReduce[:0]
 
-			lzOut, lzSentinel, lzOk := base.ArrayAppend(lzValArr, lzValElem, lzBufPre)
+			for lzI := range lzChildren { // !lz
+				lzVal =
+					lzChildren[lzI](lzVals, lzYieldErr) // <== emitCaptured: path strconv.Itoa(lzI)
+
+				lzValsReduce = append(lzValsReduce, lzVal)
+			}
+
+			lzOut, lzSentinel, lzOk := base.ArrayAppendVals(lzValsReduce, lzBufPre)
 			if !lzOk {
 				lzVal = lzSentinel
 			} else {
 				lzBufPre = lzOut
 				lzVal = base.Val(lzOut)
 			}
+
+			return lzVal
 		}
-
-		return lzVal
 	}
-
-	lzExprFunc = MakeBiExprFunc(lzVars, labels, params, path, biExprFunc) // !lzRHS
 
 	return lzExprFunc
 }
 
-// ExprArrayPrepend is ARRAY_PREPEND(val, arr) (2-arg): binary, splices val onto the
-// FRONT of arr (val is the FIRST operand, arr the second) into the reused buffer (or
-// a MISSING/NULL sentinel) -- no boxing. See base.ArrayPrepend.
+// ExprArrayPrepend is ARRAY_PREPEND(val1, val2, ..., arr) (variadic, MinArgs 2): the
+// array is the LAST operand; splices each preceding value onto its front into the
+// reused buffer (or a MISSING/NULL sentinel) -- no boxing. See base.ArrayPrependVals.
 func ExprArrayPrepend(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	var lzBufPre []byte // <== varLift: lzBufPre by path
+	var lzBufPre []byte        // <== varLift: lzBufPre by path
+	var lzValsReduce base.Vals // <== varLift: lzValsReduce by path
 
-	biExprFunc := func(lzA, lzB base.ExprFunc, lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) { // !lz
-		if LzScope {
-			lzValElem := lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A", via: lzVal
+	lzChildren := NaryCaptureChildren(lzVars, labels, params, path) // !lz
 
-			lzValArr := lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B", via: lzVal
+	if LzScope {
+		lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
+			lzValsReduce = lzValsReduce[:0]
 
-			lzOut, lzSentinel, lzOk := base.ArrayPrepend(lzValElem, lzValArr, lzBufPre)
+			for lzI := range lzChildren { // !lz
+				lzVal =
+					lzChildren[lzI](lzVals, lzYieldErr) // <== emitCaptured: path strconv.Itoa(lzI)
+
+				lzValsReduce = append(lzValsReduce, lzVal)
+			}
+
+			lzOut, lzSentinel, lzOk := base.ArrayPrependVals(lzValsReduce, lzBufPre)
 			if !lzOk {
 				lzVal = lzSentinel
 			} else {
 				lzBufPre = lzOut
 				lzVal = base.Val(lzOut)
 			}
+
+			return lzVal
 		}
-
-		return lzVal
 	}
-
-	lzExprFunc = MakeBiExprFunc(lzVars, labels, params, path, biExprFunc) // !lzRHS
 
 	return lzExprFunc
 }
 
-// ExprArrayConcat is ARRAY_CONCAT(arr1, arr2) (2-arg): binary, joins the two arrays'
-// elements into the reused buffer (or a MISSING/NULL sentinel) -- no boxing. See
-// base.ArrayConcat.
+// ExprArrayConcat is ARRAY_CONCAT(arr1, arr2, ...) (variadic, MinArgs 2): joins all the
+// arrays' elements into the reused buffer (or a MISSING/NULL sentinel) -- no boxing.
+// See base.ArrayConcatVals.
 func ExprArrayConcat(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	var lzBufPre []byte // <== varLift: lzBufPre by path
+	var lzBufPre []byte        // <== varLift: lzBufPre by path
+	var lzValsReduce base.Vals // <== varLift: lzValsReduce by path
 
-	biExprFunc := func(lzA, lzB base.ExprFunc, lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) { // !lz
-		if LzScope {
-			lzValArr1 := lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A", via: lzVal
+	lzChildren := NaryCaptureChildren(lzVars, labels, params, path) // !lz
 
-			lzValArr2 := lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B", via: lzVal
+	if LzScope {
+		lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
+			lzValsReduce = lzValsReduce[:0]
 
-			lzOut, lzSentinel, lzOk := base.ArrayConcat(lzValArr1, lzValArr2, lzBufPre)
+			for lzI := range lzChildren { // !lz
+				lzVal =
+					lzChildren[lzI](lzVals, lzYieldErr) // <== emitCaptured: path strconv.Itoa(lzI)
+
+				lzValsReduce = append(lzValsReduce, lzVal)
+			}
+
+			lzOut, lzSentinel, lzOk := base.ArrayConcatVals(lzValsReduce, lzBufPre)
 			if !lzOk {
 				lzVal = lzSentinel
 			} else {
 				lzBufPre = lzOut
 				lzVal = base.Val(lzOut)
 			}
+
+			return lzVal
 		}
-
-		return lzVal
 	}
-
-	lzExprFunc = MakeBiExprFunc(lzVars, labels, params, path, biExprFunc) // !lzRHS
 
 	return lzExprFunc
 }

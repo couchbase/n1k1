@@ -29,9 +29,11 @@ shapes. The cbq boxed fallback remains as the correctness oracle for everything 
 - [ ] **Decompose boxed CTE / derived-table rows into native label columns at capture**,
   and a typed/parsed temp materialization (columnar territory, `DESIGN-col.md`).
 - [ ] **Port more boxed funcs off the fallback:** the date-STRING family
-  (`str_to_millis`/`millis_to_str`/`date_diff_*`/`date_trunc_*`), variadic >2-arg
-  array/object builders (bare-identifier object/array operands **done** — a bare field
-  operand like `OBJECT_LENGTH(details)` now lowers native via `lowerNativeFieldPath`),
+  (`str_to_millis`/`millis_to_str`/`date_diff_*`/`date_trunc_*`)
+  (bare-identifier object/array operands **done** — a bare field operand like
+  `OBJECT_LENGTH(details)` now lowers native via `lowerNativeFieldPath`; variadic >2-arg
+  array/object builders **done** — `array_append/prepend/concat`, `object_concat/remove`
+  now ride the eager-Vals reducers at any arity ≥2),
   array/object literals (`array_sort/reverse/flatten` done; `array_distinct` skipped —
   nondeterministic), comprehensions (ANY/EVERY/FIRST/ARRAY/OBJECT **done natively in
   BOTH lanes**: IN/WITHIN/named-k:v single-binding — the compiled lane emits a plain
@@ -202,11 +204,11 @@ place encoding "empty==MISSING, leading-n==null"), `CondUnknownKeep`/`NaryFirstK
 | `date_part_millis` `date_add_millis` | `engine/expr_date.go` + `base/datetime.go` | DATE_PART_MILLIS (2-arg component) / DATE_ADD_MILLIS (3-arg) — millis math in the process-local zone (ports of cbq `millisToTime`/`datePart`/`dateAdd`). 3-arg named-TZ and the date-STRING funcs fall back |
 | `to_boolean` `to_string` `to_number` | `engine/expr_type.go` + `base/type.go` | scalar type conversions |
 | `array_length` `array_count` `array_sum` `array_avg` `array_min` `array_max` `array_contains` `array_position` | `engine/expr_array.go` + `base/array.go` | reader array ops (no materialization) |
-| `array_append` `array_prepend` `array_concat` | `engine/expr_array.go` + `base/array.go` | array builders (2-arg): splice element bytes into a lifted buffer — the value operand is a complete Val, spliced verbatim. Variadic >2-arg falls back |
+| `array_append` `array_prepend` `array_concat` | `engine/expr_array.go` + `base/array.go` | array builders (**variadic**, MinArgs 2): splice element bytes into a lifted buffer — each value operand is a complete Val, spliced verbatim. Ride the eager-Vals reducers (`base.Array{Append,Prepend,Concat}Vals`) — evaluate all operands into a reused `Vals`, fold at any arity ≥2 |
 | `array_sort` `array_reverse` `array_flatten` | `engine/expr_array.go` + `base/array.go` | array reshaping builders. SORT/REVERSE (unary) reuse the pooled `KeyVals` to collect elements (no per-elem copy), then reshape into a lifted buffer — SORT is an allocation-free insertion sort by N1QL collation (`CompareWithType` at pool depth 1); byte-identical to cbq for canonical inputs. FLATTEN (2-arg) recursively splices nested arrays; depth 0 = shallow copy, negative depth = flatten fully, non-integer depth → NULL |
 | `object_length` `poly_length` | `engine/expr_object.go` + `base/object.go` | object/collection reader ops (unary; op-code dispatch; count via `jsonparser.ObjectEach`/`ArrayEach`, no materialization) |
 | `object_names` `object_values` `object_pairs` | `engine/expr_object.go` + `base/object.go` | name-sorted structure builders (field names / values / `{name,val}` pairs; pooled `KeyVals` + reused buffer). OBJECT_PAIRS 1-arg only (2-arg `types` option falls back) |
-| `object_add` `object_put` `object_remove` `object_concat` | `engine/expr_object.go` + `base/object.go` | object mutating builders — key-sorted re-emit (add-new / set (a MISSING value removes) / remove / merge). ADD/PUT ternary; REMOVE/CONCAT 2-arg (variadic >2 falls back) |
+| `object_add` `object_put` `object_remove` `object_concat` | `engine/expr_object.go` + `base/object.go` | object mutating builders — key-sorted re-emit (add-new / set (a MISSING value removes) / remove / merge). ADD/PUT ternary; REMOVE/CONCAT **variadic** (MinArgs 2) via the eager-Vals reducers `base.Object{Remove,Concat}Vals` — REMOVE drops each key, CONCAT merges left-to-right (later object wins) |
 | `exprStr` / `exprTree` | `glue/expr.go` | **the fallback** (parse / delegate to cbq) |
 
 Still **delegated:** `LIKE`, dynamic-pattern `REGEXP_*`, `slice` navigation,
@@ -707,11 +709,12 @@ byte/register/lz model.
   the object structure builders `object_names/values/pairs`, and the object mutators
   `object_add/put/remove/concat` are **done** (emit JSON into a lifted buffer; mutators
   and array sort/reverse re-emit via a pooled `KeyVals`; the splicing builders copy
-  element bytes verbatim). Remaining: `array_distinct` (**skip** — cbq's set order is
-  nondeterministic), array/object literals, and the variadic >2-arg forms of the
-  builders above (currently 2-arg only). `ValComparer`
-  scratch covers sort/dedup. Skip `array_distinct` — cbq's set-based order is
-  nondeterministic (no stable differential).
+  element bytes verbatim). The **variadic >2-arg forms are done too**:
+  `array_append/prepend/concat` and `object_remove/concat` ride the eager-Vals reducer
+  pattern (`NaryCaptureChildren` + `base.*Vals` — like `ExprConcat`), so they lower at
+  any arity ≥2 in both lanes; the recognizer no longer arity-gates them to exactly 2.
+  Remaining: `array_distinct` (**skip** — cbq's set order is nondeterministic) and
+  array/object literals. `ValComparer` scratch covers sort/dedup.
 - **Comprehensions** — `ANY`/`EVERY` (predicate), `FIRST`/`ARRAY` (mapping + optional
   `WHEN`), and `OBJECT` (name:value mapping + optional `WHEN`), single-binding, both
   `IN` and `WITHIN`, **and** the named `k:v IN` form (name = object field sorted / array

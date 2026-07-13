@@ -152,16 +152,20 @@ func ArrayTrimSpace(arr []byte) []byte {
 }
 
 // ArrayAppend builds ARRAY_APPEND(arr, val) -- arr with val appended as its last
-// element -- into the reused buffer bufPre. cbq ARRAY_APPEND (2-arg form): MISSING
-// arr OR MISSING val -> MISSING; a non-array arr -> NULL; else arr+[val]. val is a
-// complete Val (already valid JSON, e.g. `"x"` keeps its quotes) and is spliced
-// verbatim -- a NULL val IS appended (only MISSING short-circuits). See the
-// arrayElems canonical-input note.
-func ArrayAppend(arr, val Val, bufPre []byte) (out []byte, sentinel Val, ok bool) {
-	if len(arr) == 0 || len(val) == 0 {
-		return nil, ValMissing, false // MISSING arr or val -> MISSING (precedence over NULL).
+// ArrayAppendVals builds ARRAY_APPEND(arr, val1, val2, ...) -- arr with each valN
+// appended in order -- into the reused buffer bufPre. vals[0] is the array; vals[1:]
+// are the elements. cbq ARRAY_APPEND (variadic, MinArgs 2): a MISSING operand ->
+// MISSING (precedence over NULL); a non-array vals[0] -> NULL; else arr + the values.
+// Each value is a complete Val (already valid JSON, e.g. `"x"` keeps its quotes) and
+// is spliced verbatim -- a NULL value IS appended (only MISSING short-circuits). See
+// the arrayElems canonical-input note.
+func ArrayAppendVals(vals Vals, bufPre []byte) (out []byte, sentinel Val, ok bool) {
+	for _, v := range vals { // MISSING anywhere dominates.
+		if len(v) == 0 {
+			return nil, ValMissing, false
+		}
 	}
-	pv, pt := Parse(arr)
+	pv, pt := Parse(vals[0])
 	if ParseTypeToValType[pt] != ValTypeArray {
 		return nil, ValNull, false
 	}
@@ -169,31 +173,46 @@ func ArrayAppend(arr, val Val, bufPre []byte) (out []byte, sentinel Val, ok bool
 
 	out = append(bufPre[:0], '[')
 	out = append(out, elems...)
-	if len(elems) > 0 {
-		out = append(out, ',')
+	wrote := len(elems) > 0
+	for _, v := range vals[1:] {
+		if wrote {
+			out = append(out, ',')
+		}
+		out = append(out, v...)
+		wrote = true
 	}
-	out = append(out, val...)
 	out = append(out, ']')
 	return out, nil, true
 }
 
-// ArrayPrepend builds ARRAY_PREPEND(val, arr) -- arr with val inserted as its first
-// element -- into bufPre. cbq operand order puts val FIRST and the array LAST. cbq
-// ARRAY_PREPEND (2-arg form): MISSING val OR MISSING arr -> MISSING; a non-array arr
-// -> NULL; else [val]+arr. val is spliced verbatim (a NULL val IS prepended).
-func ArrayPrepend(val, arr Val, bufPre []byte) (out []byte, sentinel Val, ok bool) {
-	if len(val) == 0 || len(arr) == 0 {
-		return nil, ValMissing, false
+// ArrayPrependVals builds ARRAY_PREPEND(val1, val2, ..., arr) -- arr with each valN
+// inserted (in order) before its elements -- into bufPre. cbq operand order puts the
+// array LAST (vals[len-1]); vals[:len-1] are the prepended values. cbq ARRAY_PREPEND
+// (variadic, MinArgs 2): a MISSING operand -> MISSING; a non-array last operand ->
+// NULL; else the values ++ arr. Values are spliced verbatim (a NULL value IS prepended).
+func ArrayPrependVals(vals Vals, bufPre []byte) (out []byte, sentinel Val, ok bool) {
+	for _, v := range vals {
+		if len(v) == 0 {
+			return nil, ValMissing, false
+		}
 	}
-	pv, pt := Parse(arr)
+	n := len(vals) - 1 // the array is the LAST operand.
+	pv, pt := Parse(vals[n])
 	if ParseTypeToValType[pt] != ValTypeArray {
 		return nil, ValNull, false
 	}
 	elems := ArrayTrimSpace(pv)
 
 	out = append(bufPre[:0], '[')
-	out = append(out, val...)
-	if len(elems) > 0 {
+	wrote := false
+	for _, v := range vals[:n] {
+		if wrote {
+			out = append(out, ',')
+		}
+		out = append(out, v...)
+		wrote = true
+	}
+	if wrote && len(elems) > 0 {
 		out = append(out, ',')
 	}
 	out = append(out, elems...)
@@ -201,26 +220,35 @@ func ArrayPrepend(val, arr Val, bufPre []byte) (out []byte, sentinel Val, ok boo
 	return out, nil, true
 }
 
-// ArrayConcat builds ARRAY_CONCAT(arr1, arr2) -- the two arrays' elements joined --
-// into bufPre. cbq ARRAY_CONCAT (2-arg form): a MISSING operand -> MISSING; a
-// non-array operand -> NULL; else arr1 ++ arr2 (missing takes precedence over null).
-func ArrayConcat(arr1, arr2 Val, bufPre []byte) (out []byte, sentinel Val, ok bool) {
-	if len(arr1) == 0 || len(arr2) == 0 {
-		return nil, ValMissing, false
+// ArrayConcatVals builds ARRAY_CONCAT(arr1, arr2, ...) -- all the arrays' elements
+// joined in order -- into bufPre. cbq ARRAY_CONCAT (variadic, MinArgs 2): a MISSING
+// operand -> MISSING; ANY non-array operand -> NULL (missing takes precedence); else
+// the concatenation.
+func ArrayConcatVals(vals Vals, bufPre []byte) (out []byte, sentinel Val, ok bool) {
+	for _, v := range vals {
+		if len(v) == 0 {
+			return nil, ValMissing, false
+		}
 	}
-	p1, t1 := Parse(arr1)
-	p2, t2 := Parse(arr2)
-	if ParseTypeToValType[t1] != ValTypeArray || ParseTypeToValType[t2] != ValTypeArray {
-		return nil, ValNull, false
+	for _, v := range vals { // ANY non-array -> NULL.
+		if _, pt := Parse(v); ParseTypeToValType[pt] != ValTypeArray {
+			return nil, ValNull, false
+		}
 	}
-	e1, e2 := ArrayTrimSpace(p1), ArrayTrimSpace(p2)
 
 	out = append(bufPre[:0], '[')
-	out = append(out, e1...)
-	if len(e1) > 0 && len(e2) > 0 {
-		out = append(out, ',')
+	wrote := false
+	for _, v := range vals {
+		pv, _ := Parse(v)
+		elems := ArrayTrimSpace(pv)
+		if len(elems) > 0 {
+			if wrote {
+				out = append(out, ',')
+			}
+			out = append(out, elems...)
+			wrote = true
+		}
 	}
-	out = append(out, e2...)
 	out = append(out, ']')
 	return out, nil, true
 }

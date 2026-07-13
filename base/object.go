@@ -589,26 +589,32 @@ func ObjectAdd(c *ValComparer, obj, key, val Val, bufPre []byte) (out []byte, se
 	return out, nil, true
 }
 
-// ObjectRemove builds OBJECT_REMOVE(obj, key) (2-arg form) -- obj without field key
-// -- into bufPre, key-sorted. Mirrors cbq's ObjectRemove: obj OR key MISSING ->
-// MISSING; a NULL / non-object obj OR NULL / non-string key -> NULL; else obj with
-// key removed (a no-op when key is absent).
-func ObjectRemove(c *ValComparer, obj, key Val, bufPre []byte) (out []byte, sentinel Val, ok bool) {
-	if len(obj) == 0 || len(key) == 0 {
-		return nil, ValMissing, false
+// ObjectRemoveVals builds OBJECT_REMOVE(obj, key1, key2, ...) -- obj without each
+// named field -- into bufPre, key-sorted. vals[0] is the object; vals[1:] are the
+// string keys. Mirrors cbq's ObjectRemove (variadic, MinArgs 2): a MISSING operand ->
+// MISSING; a NULL / non-object obj OR any NULL / non-string key -> NULL; else obj with
+// those keys removed (a no-op for an absent key).
+func ObjectRemoveVals(c *ValComparer, vals Vals, bufPre []byte) (out []byte, sentinel Val, ok bool) {
+	for _, v := range vals { // MISSING anywhere dominates.
+		if len(v) == 0 {
+			return nil, ValMissing, false
+		}
 	}
-	keyDec, keySentinel, keyOk := StrDecode(key)
-	if !keyOk {
-		return nil, keySentinel, false
-	}
-	kvs, sentinel, ok := objectMutateStart(c, obj)
+	kvs, sentinel, ok := objectMutateStart(c, vals[0])
 	if !ok {
 		return nil, sentinel, false
 	}
 
-	if i := KeyValsFindKey(kvs, keyDec); i >= 0 {
-		copy(kvs[i:], kvs[i+1:])
-		kvs = kvs[:len(kvs)-1]
+	for _, key := range vals[1:] {
+		keyDec, keySentinel, keyOk := StrDecode(key)
+		if !keyOk {
+			c.KeyValsRelease(0, kvs)
+			return nil, keySentinel, false
+		}
+		if i := KeyValsFindKey(kvs, keyDec); i >= 0 {
+			copy(kvs[i:], kvs[i+1:])
+			kvs = kvs[:len(kvs)-1]
+		}
 	}
 
 	out = ObjectEmit(c, kvs, bufPre)
@@ -616,37 +622,42 @@ func ObjectRemove(c *ValComparer, obj, key Val, bufPre []byte) (out []byte, sent
 	return out, nil, true
 }
 
-// ObjectConcat builds OBJECT_CONCAT(obj1, obj2) (2-arg form) -- the two objects
-// merged, obj2's fields winning on a name clash -- into bufPre, key-sorted. Mirrors
-// cbq's ObjectConcat: a MISSING operand -> MISSING; a non-object operand -> NULL;
-// else the union with obj2 overwriting obj1.
-func ObjectConcat(c *ValComparer, obj1, obj2 Val, bufPre []byte) (out []byte, sentinel Val, ok bool) {
-	if len(obj1) == 0 || len(obj2) == 0 {
-		return nil, ValMissing, false
+// ObjectConcatVals builds OBJECT_CONCAT(obj1, obj2, ...) -- all the objects merged,
+// a later object's fields winning on a name clash -- into bufPre, key-sorted. Mirrors
+// cbq's ObjectConcat (variadic, MinArgs 2): a MISSING operand -> MISSING; any
+// non-object operand -> NULL; else the union with later objects overwriting earlier.
+func ObjectConcatVals(c *ValComparer, vals Vals, bufPre []byte) (out []byte, sentinel Val, ok bool) {
+	for _, v := range vals {
+		if len(v) == 0 {
+			return nil, ValMissing, false
+		}
 	}
-	inner2, pt2 := Parse(obj2)
-	if ParseTypeToValType[pt2] != ValTypeObject {
-		return nil, ValNull, false
-	}
-	kvs, sentinel, ok := objectMutateStart(c, obj1)
+	kvs, sentinel, ok := objectMutateStart(c, vals[0])
 	if !ok {
 		return nil, sentinel, false
 	}
 
-	// Merge obj2: overwrite a matching name in place, else append (obj2 wins).
-	mergeErr := jsonparser.ObjectEach(inner2,
-		func(k []byte, val []byte, dt jsonparser.ValueType, _ int) error {
-			if i := KeyValsFindKey(kvs, k); i >= 0 {
-				kvs[i].Val, kvs[i].ValType = val, int(dt)
-			} else {
-				kCopy := append(KeyValsReuseNextKey(kvs), k...)
-				kvs = append(kvs, KeyVal{Key: kCopy, Val: val, ValType: int(dt)})
-			}
-			return nil
-		})
-	if mergeErr != nil {
-		c.KeyValsRelease(0, kvs)
-		return nil, ValNull, false
+	for _, obj := range vals[1:] {
+		inner, pt := Parse(obj)
+		if ParseTypeToValType[pt] != ValTypeObject {
+			c.KeyValsRelease(0, kvs)
+			return nil, ValNull, false
+		}
+		// Merge: overwrite a matching name in place, else append (this obj wins).
+		mergeErr := jsonparser.ObjectEach(inner,
+			func(k []byte, val []byte, dt jsonparser.ValueType, _ int) error {
+				if i := KeyValsFindKey(kvs, k); i >= 0 {
+					kvs[i].Val, kvs[i].ValType = val, int(dt)
+				} else {
+					kCopy := append(KeyValsReuseNextKey(kvs), k...)
+					kvs = append(kvs, KeyVal{Key: kCopy, Val: val, ValType: int(dt)})
+				}
+				return nil
+			})
+		if mergeErr != nil {
+			c.KeyValsRelease(0, kvs)
+			return nil, ValNull, false
+		}
 	}
 
 	out = ObjectEmit(c, kvs, bufPre)

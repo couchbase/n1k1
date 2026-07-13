@@ -105,61 +105,75 @@ func ExprObjectPut(lzVars *base.Vars, labels base.Labels,
 	return lzExprFunc
 }
 
-// ExprObjectRemove is OBJECT_REMOVE(obj, key) (2-arg): binary, drops field key and
-// re-emits key-sorted into the reused buffer -- no boxing. See base.ObjectRemove.
+// ExprObjectRemove is OBJECT_REMOVE(obj, key1, key2, ...) (variadic, MinArgs 2): drops
+// each named field and re-emits key-sorted into the reused buffer -- no boxing. Rides
+// the eager-Vals harness (NaryCaptureChildren + a base reducer): evaluate every operand
+// into lzValsReduce, then base.ObjectRemoveVals.
 func ExprObjectRemove(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	var lzBufPre []byte // <== varLift: lzBufPre by path
+	var lzBufPre []byte        // <== varLift: lzBufPre by path
+	var lzValsReduce base.Vals // <== varLift: lzValsReduce by path
 
-	biExprFunc := func(lzA, lzB base.ExprFunc, lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) { // !lz
-		if LzScope {
-			lzValObj := lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A", via: lzVal
+	lzChildren := NaryCaptureChildren(lzVars, labels, params, path) // !lz
 
-			lzValKey := lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B", via: lzVal
+	if LzScope {
+		lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
+			lzValsReduce = lzValsReduce[:0]
 
-			lzOut, lzSentinel, lzOk := base.ObjectRemove(lzVars.Ctx.ValComparer, lzValObj, lzValKey, lzBufPre)
+			for lzI := range lzChildren { // !lz
+				lzVal =
+					lzChildren[lzI](lzVals, lzYieldErr) // <== emitCaptured: path strconv.Itoa(lzI)
+
+				lzValsReduce = append(lzValsReduce, lzVal)
+			}
+
+			lzOut, lzSentinel, lzOk := base.ObjectRemoveVals(lzVars.Ctx.ValComparer, lzValsReduce, lzBufPre)
 			if !lzOk {
 				lzVal = lzSentinel
 			} else {
 				lzBufPre = lzOut
 				lzVal = base.Val(lzOut)
 			}
+
+			return lzVal
 		}
-
-		return lzVal
 	}
-
-	lzExprFunc = MakeBiExprFunc(lzVars, labels, params, path, biExprFunc) // !lzRHS
 
 	return lzExprFunc
 }
 
-// ExprObjectConcat is OBJECT_CONCAT(obj1, obj2) (2-arg): binary, merges the two
-// objects (obj2 wins) and re-emits key-sorted into the reused buffer -- no boxing.
-// See base.ObjectConcat.
+// ExprObjectConcat is OBJECT_CONCAT(obj1, obj2, ...) (variadic, MinArgs 2): merges all
+// the objects (a later object wins on a name clash) and re-emits key-sorted into the
+// reused buffer -- no boxing. See base.ObjectConcatVals.
 func ExprObjectConcat(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
-	var lzBufPre []byte // <== varLift: lzBufPre by path
+	var lzBufPre []byte        // <== varLift: lzBufPre by path
+	var lzValsReduce base.Vals // <== varLift: lzValsReduce by path
 
-	biExprFunc := func(lzA, lzB base.ExprFunc, lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) { // !lz
-		if LzScope {
-			lzValObj1 := lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A", via: lzVal
+	lzChildren := NaryCaptureChildren(lzVars, labels, params, path) // !lz
 
-			lzValObj2 := lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B", via: lzVal
+	if LzScope {
+		lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
+			lzValsReduce = lzValsReduce[:0]
 
-			lzOut, lzSentinel, lzOk := base.ObjectConcat(lzVars.Ctx.ValComparer, lzValObj1, lzValObj2, lzBufPre)
+			for lzI := range lzChildren { // !lz
+				lzVal =
+					lzChildren[lzI](lzVals, lzYieldErr) // <== emitCaptured: path strconv.Itoa(lzI)
+
+				lzValsReduce = append(lzValsReduce, lzVal)
+			}
+
+			lzOut, lzSentinel, lzOk := base.ObjectConcatVals(lzVars.Ctx.ValComparer, lzValsReduce, lzBufPre)
 			if !lzOk {
 				lzVal = lzSentinel
 			} else {
 				lzBufPre = lzOut
 				lzVal = base.Val(lzOut)
 			}
+
+			return lzVal
 		}
-
-		return lzVal
 	}
-
-	lzExprFunc = MakeBiExprFunc(lzVars, labels, params, path, biExprFunc) // !lzRHS
 
 	return lzExprFunc
 }
