@@ -15,10 +15,10 @@ package main
 
 import "fmt"
 
-// cmdRulesHelp prints the self-contained .rules guide to c.out: the subcommand +
+// cmdRulesHelp prints the self-contained .multi guide to c.out: the subcommand +
 // flag one-liners, a sample collection directory layout, an annotated sample recipe (the
 // real front-matter / SQL / @fixture / @expect format), TRUTHFUL example outputs (the
-// exact shapes .rules list/run/lint/test produce over the shipped testdata collection),
+// exact shapes .multi list/run/lint/test produce over the shipped testdata collection),
 // and authoring tips for getting the best out of a collection. It goes to stdout (not
 // stderr) so it can be piped/paged like any other document.
 func (c *cli) cmdRulesHelp() {
@@ -29,24 +29,28 @@ func (c *cli) cmdRulesHelp() {
 
 // rulesHelpText avoids backticks so it can be one clean raw string literal; inline
 // code is shown quoted or as indented blocks.
-const rulesHelpText = `.rules -- run a collection of SQL++ queries over a dataset
+const rulesHelpText = `.multi -- run a multi-query pack of SQL++ queries over a dataset
 
-The queries are provided as a directory of *.sql++ files. Each *.sql++ file is a single
-SQL++ SELECT query plus optional "-- key: value" front-matter and an optional inline
-golden fixture. Runs queries over a dataset to get tagged findings; lint the queries
-for a report card; unit-test each query against its golden fixture (such as for CI).
+"multi" is short for multi-query: a pack of related SELECTs run together with SHARED
+execution (multi-query optimization -- one scan feeds many queries: broadcast, predicate
+index, common-subexpression sharing). The queries are provided as a directory of *.sql++
+files. Each *.sql++ file is a single SQL++ SELECT query plus optional "-- key: value"
+front-matter and an optional inline golden fixture. Run the pack over a dataset to get
+tagged findings; lint the queries for a report card; unit-test each query against its
+golden fixture (such as for CI). (Formerly ".rules" / RULE_MATCHES; both old names still
+work as undocumented aliases.)
 
 The same feature is also available directly in SQL++ as a composable FROM source --
-the RULE_MATCHES() table-valued function -- so that results can be further queried with
+the MULTI_MATCHES() table-valued function -- so that results can be further queried with
 WHERE / GROUP BY / ORDER BY / JOIN and PREPARE'd / EXECUTE'd, e.g.:
-  SELECT f.label, COUNT(*) AS hits FROM RULE_MATCHES('my-queries/') AS f GROUP BY f.label;
+  SELECT f.label, COUNT(*) AS hits FROM MULTI_MATCHES('my-queries/') AS f GROUP BY f.label;
 
 COMMANDS
-  .rules list --queries <dir>                      inventory the queries (metadata only: no dataset, no compile)
-  .rules run  --queries <dir> [--bind <manifest>]  compile & execute the queries over the open dataset
-  .rules lint --queries <dir> [--bind <manifest>]  authoring report card (compiles, does NOT run)
-  .rules test --queries <dir> [--update]           golden-fixture runner (CI): check @fixture vs @expect
-  .rules help                                      this guide
+  .multi list --queries <dir>                      inventory the queries (metadata only: no dataset, no compile)
+  .multi run  --queries <dir> [--bind <manifest>]  compile & execute the queries over the open dataset
+  .multi lint --queries <dir> [--bind <manifest>]  authoring report card (compiles, does NOT run)
+  .multi test --queries <dir> [--update]           golden-fixture runner (CI): check @fixture vs @expect
+  .multi help                                      this guide
 
 FLAGS
   --queries <dir>    directory of *.sql++ query files (required)
@@ -54,7 +58,7 @@ FLAGS
                      runs across differently-named datasets unchanged (run / lint). Manifest is either
                      "logical = glob" lines ('#' comments + blanks ignored), or a JSON object
                      {"logical":"glob", ...}. A logical keyspace matching 0 files is a hard error.
-  --update           .rules test only: (re-)record each fixture's produced findings as its @expect golden
+  --update           .multi test only: (re-)record each fixture's produced findings as its @expect golden
 
 QUERIES DIRECTORY LAYOUT
   my-queries/
@@ -82,13 +86,13 @@ The front-matter of a *.sql++ file has leading '-- key: value' lines...
   -- {"label":"ET-12345","result":{"msg":"disk full","ts":3}}
   -- {"label":"ET-12345","result":{"msg":"oom","ts":9}}
 
-EXAMPLE: .rules list --queries ./my-queries   (box at a TTY; jsonlines when piped)
+EXAMPLE: .multi list --queries ./my-queries   (box at a TTY; jsonlines when piped)
   {"label":"ET-12345","source":"logs","description":"disk-full errors","tags":"disk,io","fixture?":"yes","golden?":"yes","path":".../disk_full.sql++"}
   {"label":"ET-20001","source":"requests","description":"-","tags":"-","fixture?":"yes","golden?":"yes","path":".../slow_request.sql++"}
   {"label":"ET-30002","source":"logs","description":"-","tags":"-","fixture?":"no","golden?":"no","path":".../warn_no_fixture.sql++"}
-  3 query/queries in ./my-queries -- 2 with a fixture, 2 with a golden (run .rules lint for a health report)
+  3 query/queries in ./my-queries -- 2 with a fixture, 2 with a golden (run .multi lint for a health report)
 
-EXAMPLE: .rules run --queries ./my-queries   (over a dataset with a "logs" keyspace)
+EXAMPLE: .multi run --queries ./my-queries   (over a dataset with a "logs" keyspace)
   loaded: 3 query/queries -- 2 fused, 0 standalone, 1 rejected
     ET-20001: plan error: Keyspace not found requests
         not a runnable query: plan error: Keyspace not found requests. A query is a single SELECT, ...
@@ -96,18 +100,18 @@ EXAMPLE: .rules run --queries ./my-queries   (over a dataset with a "logs" keysp
   {"label":"ET-12345","result":{"sev":"ERROR","msg":"timeout","ts":5}}
   2 finding(s) from 3 query/queries
 
-EXAMPLE: .rules lint --queries ./my-queries   (a report-card row + the score line)
+EXAMPLE: .multi lint --queries ./my-queries   (a report-card row + the score line)
   {"query":"ET-12345","class":"fused","keyspace":"default:logs","lane":"native","index":"literal \"ERROR\"","reason":"-","advice":"-"}
   ...
   score: 66% fused (2/3), 100% native (2/2 converted), 100% index-pruned (2/2 fused)  [0 standalone, 1 rejected]
 
-EXAMPLE: .rules test --queries ./my-queries
+EXAMPLE: .multi test --queries ./my-queries
   ET-12345: PASS (2 finding(s))
   ET-20001: PASS (2 finding(s))
   ET-30002: no fixture
   2 passed / 0 failed / 1 no-fixture / 0 skipped
-  # A mismatch prints a per-finding diff plus: "re-record the golden: .rules test --update".
-  # A fixture with no @expect FAILs with: "Capture them: .rules test --update".
+  # A mismatch prints a per-finding diff plus: "re-record the golden: .multi test --update".
+  # A fixture with no @expect FAILs with: "Capture them: .multi test --update".
 
 TIPS (get the best out of a collection)
   - Lead a predicate with a DISCRIMINATING LITERAL as a top-level AND conjunct so the predicate
@@ -119,8 +123,8 @@ TIPS (get the best out of a collection)
     context LEAKS across rotated files.
   - Prefer NATIVE expressions over boxed ones: "msg LIKE '%x%'", CONTAINS or "regexp_contains(msg,'x')" instead of
     a multi-wildcard "msg LIKE '%a%b%'". A boxed expression falls back to cbq and caps the compile level.
-  - Give EVERY query *.sql a golden fixture (-- @fixture / -- @expect) so CI (.rules test) protects it
-    against a regression. Capture the first golden with ".rules test --update".
+  - Give EVERY query *.sql a golden fixture (-- @fixture / -- @expect) so CI (.multi test) protects it
+    against a regression. Capture the first golden with ".multi test --update".
   - Author against LOGICAL keyspaces + a --bind manifest, so ONE collection of *.sql++ queries can run
     across differently-named datasets (indexer.log vs indexer.0023.log) unchanged.
   - Data drift -- field-shape changes across source data releases are handled by evolving the
@@ -189,7 +193,7 @@ GATE (index-gate a standalone query) -- a fused filter+project query is pruned p
 row by the predicate index, but a STANDALONE query (window / GROUP BY / join -- anything
 with its own scan) is not. A "gate:" front-matter line gives it a cheap NECESSARY
 precondition: a boolean SQL++ expression over its "source" keyspace that MUST hold for any
-finding. Before running the (expensive) query, .rules run probes
+finding. Before running the (expensive) query, .multi run probes
 "SELECT 1 FROM <source> WHERE <gate> LIMIT 1"; if no row matches, the query is SKIPPED --
 its sort/window never touches a keyspace that cannot produce a finding. Example, gating the
 CONTEXT query above so it only sorts files that actually contain an ERROR:
@@ -202,5 +206,5 @@ a gate that errors runs the query anyway (safe). Gate literals are pushed to the
 scan, so a discriminating gate is itself index-pruned.
 
 Non-interactive (CI / agent):
-  n1k1 -c '.rules run --queries ./my-queries --bind ./manifest' <data-dir>
+  n1k1 -c '.multi run --queries ./my-queries --bind ./manifest' <data-dir>
 `

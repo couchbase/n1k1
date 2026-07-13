@@ -22,7 +22,7 @@ import (
 
 // cmdExtract dispatches the .extract command family: an authoring reference for
 // *.extract.js recipes (help) and an inventory of the loaded ones (list). It's the
-// extract-recipe analogue of .rules -- a single place documenting the ExtractSpec
+// extract-recipe analogue of .multi -- a single place documenting the ExtractSpec
 // surface so writing the first recipe doesn't require reading records/spec.go.
 func (c *cli) cmdExtract(arg string) {
 	sub, _ := splitFirst(arg)

@@ -75,21 +75,34 @@ import (
 // RuleMatchesFuncName is the SQL++ name RULE_MATCHES registers under (cbq
 // lower-cases function names, so this is the canonical spelling). It reads
 // naturally as a FROM source: `FROM rule_matches('detectors/') AS f`.
-const RuleMatchesFuncName = "rule_matches"
+// RuleMatchesFuncName is the user-facing TVF name: MULTI_MATCHES (cbq lower-cases
+// function names, so "multi_matches" is the canonical spelling). "multi" is short for
+// multi-query -- the batch of related SQL++ queries this runs with shared execution
+// (MQO). Renamed from RULE_MATCHES in 2026; the former name stays registered as a
+// back-compat alias (ruleMatchesFuncAlias). Reads naturally as a FROM source:
+// `FROM multi_matches('detectors/') AS f`.
+const RuleMatchesFuncName = "multi_matches"
 
-// registerRuleMatchesFunc wires RULE_MATCHES into the cbq parser so
-// `rule_matches(dir[,opts])` resolves as a scalar (array-returning) function
-// usable in a FROM clause. Called from ext.go's package init (always-on, like the
-// sparkline/histogram aggregates). A collision with a stock cbq builtin would be a
+// ruleMatchesFuncAlias is the pre-rename name, kept registered so existing corpora /
+// scripts using rule_matches(...) keep working. Undocumented (help/docs say
+// multi_matches).
+const ruleMatchesFuncAlias = "rule_matches"
+
+// registerRuleMatchesFunc wires MULTI_MATCHES (and its rule_matches alias) into the
+// cbq parser so `multi_matches(dir[,opts])` resolves as a scalar (array-returning)
+// function usable in a FROM clause. Called from ext.go's package init (always-on, like
+// the sparkline/histogram aggregates). A collision with a stock cbq builtin would be a
 // bug -- refuse rather than shadow.
 func registerRuleMatchesFunc() {
-	if _, ok := expression.GetFunction(RuleMatchesFuncName); ok {
-		// A cbq builtin already owns this name: do NOT shadow it (would corrupt the
-		// differential). This should never fire -- RULE_MATCHES is domain-specific.
-		return
+	for _, name := range []string{RuleMatchesFuncName, ruleMatchesFuncAlias} {
+		if _, ok := expression.GetFunction(name); ok {
+			// A cbq builtin already owns this name: do NOT shadow it (would corrupt the
+			// differential). This should never fire -- these names are domain-specific.
+			continue
+		}
+		expression.RegisterFunction(name, newRuleMatchesFunc(name))
+		extOurs[name] = true
 	}
-	expression.RegisterFunction(RuleMatchesFuncName, newRuleMatchesFunc(RuleMatchesFuncName))
-	extOurs[RuleMatchesFuncName] = true
 }
 
 // ruleMatchesFunc is the expression.Function the parser instantiates for a
@@ -136,7 +149,7 @@ func (this *ruleMatchesFunc) evalArgs(item value.Value, context expression.Conte
 		return "", ruleMatchesOpts{}, err
 	}
 	if dirV.Type() != value.STRING {
-		return "", ruleMatchesOpts{}, fmt.Errorf("RULE_MATCHES: first argument (corpus dir) must be a string, got %s", dirV.Type())
+		return "", ruleMatchesOpts{}, fmt.Errorf("MULTI_MATCHES: first argument (corpus dir) must be a string, got %s", dirV.Type())
 	}
 	dir, _ := dirV.Actual().(string)
 
@@ -191,7 +204,7 @@ func (this *ruleMatchesFunc) StreamRows(vars *base.Vars, gc *GlueContext,
 	rerr := cc.RunStream(func(f Finding) error {
 		jv, e := json.Marshal(ruleMatchRow{Label: f.Label, Result: f.Result})
 		if e != nil {
-			return fmt.Errorf("RULE_MATCHES: marshaling finding: %w", e)
+			return fmt.Errorf("MULTI_MATCHES: marshaling finding: %w", e)
 		}
 		if !emit(base.Val(jv)) {
 			stopped = true
@@ -255,7 +268,7 @@ func ruleMatchesCorpus(dir string, opts ruleMatchesOpts, warn func(string)) (*Co
 	// safety property as binding.go's empty-glob refusal).
 	recipes, err := LoadCorpus(dir)
 	if err != nil {
-		return nil, fmt.Errorf("RULE_MATCHES: %w", err)
+		return nil, fmt.Errorf("MULTI_MATCHES: %w", err)
 	}
 	dets := make([]CorpusDetector, 0, len(recipes))
 	for i := range recipes {
@@ -264,7 +277,7 @@ func ruleMatchesCorpus(dir string, opts ruleMatchesOpts, warn func(string)) (*Co
 
 	cc, err := sess.CorpusCompile(dets)
 	if err != nil {
-		return nil, fmt.Errorf("RULE_MATCHES: compiling corpus %q: %w", dir, err)
+		return nil, fmt.Errorf("MULTI_MATCHES: compiling corpus %q: %w", dir, err)
 	}
 	if err := reportCorpusRejects(cc, dir, opts, warn); err != nil {
 		return nil, err
@@ -301,11 +314,11 @@ func reportCorpusRejects(cc *CompiledCorpus, dir string, opts ruleMatchesOpts, w
 
 	// Runnable iff something will actually execute: a fused plan or any standalone.
 	if cc.Plan == nil && len(cc.Standalone) == 0 {
-		return fmt.Errorf("RULE_MATCHES: no query in %q compiled -- all %d rejected: %s%s",
+		return fmt.Errorf("MULTI_MATCHES: no query in %q compiled -- all %d rejected: %s%s",
 			dir, len(cc.Rejected), list, hint)
 	}
 	if warn != nil {
-		warn(fmt.Sprintf("RULE_MATCHES: %d query/queries in %q skipped (did not compile): %s%s",
+		warn(fmt.Sprintf("MULTI_MATCHES: %d query/queries in %q skipped (did not compile): %s%s",
 			len(cc.Rejected), dir, list, hint))
 	}
 	return nil
@@ -346,7 +359,7 @@ func runRuleMatches(dir string, opts ruleMatchesOpts, warn func(string)) (value.
 	}
 	findings, err := cc.Run()
 	if err != nil {
-		return nil, fmt.Errorf("RULE_MATCHES: running corpus %q: %w", dir, err)
+		return nil, fmt.Errorf("MULTI_MATCHES: running corpus %q: %w", dir, err)
 	}
 
 	// One materialized array of {label, result} objects. Result is the match's
@@ -370,21 +383,21 @@ func runRuleMatches(dir string, opts ruleMatchesOpts, warn func(string)) (value.
 // source. A nil global datastore (no active session) is a clear error.
 func ruleMatchesSession(opts ruleMatchesOpts, ds datastore.Datastore) (*Session, error) {
 	if ds == nil {
-		return nil, fmt.Errorf("RULE_MATCHES: no active datastore (open a data source first)")
+		return nil, fmt.Errorf("MULTI_MATCHES: no active datastore (open a data source first)")
 	}
 
 	if opts.bind != "" {
 		root := strings.TrimPrefix(ds.URL(), "file://")
 		if root == "" {
-			return nil, fmt.Errorf("RULE_MATCHES: bind requires a file datastore (got URL %q)", ds.URL())
+			return nil, fmt.Errorf("MULTI_MATCHES: bind requires a file datastore (got URL %q)", ds.URL())
 		}
 		b, err := loadRuleMatchesBinding(opts.bind)
 		if err != nil {
-			return nil, fmt.Errorf("RULE_MATCHES: %w", err)
+			return nil, fmt.Errorf("MULTI_MATCHES: %w", err)
 		}
 		sess, err := OpenSessionBound(root, "default", b)
 		if err != nil {
-			return nil, fmt.Errorf("RULE_MATCHES: opening bound session at %q: %w", root, err)
+			return nil, fmt.Errorf("MULTI_MATCHES: opening bound session at %q: %w", root, err)
 		}
 		return sess, nil
 	}

@@ -19,7 +19,7 @@ import (
 	"github.com/couchbase/n1k1/glue"
 )
 
-// rules_fix.go centralizes the AUTHOR-facing fix snippets used across the .rules
+// rules_fix.go centralizes the AUTHOR-facing fix snippets used across the .multi
 // command family. Every status an author sees -- a rejected / standalone / always-wake
 // / boxed detector, an unresolved logical keyspace, a fixture FAIL or a fixture with no
 // golden -- carries not just WHAT it means but HOW to fix it, with a one-line example,
@@ -65,9 +65,9 @@ func rulesFix(situation, detail string) string {
 		return "logical keyspace `" + detail + "` matched 0 files in this bundle -- a GAP, not a clean result. " +
 			"Check the manifest glob, e.g. `" + detail + " = **/" + detail + "*.log`."
 	case fixFixtureFail:
-		return "if this change is intended, re-record the golden: `.rules test --update`."
+		return "if this change is intended, re-record the golden: `.multi test --update`."
 	case fixNoGolden:
-		return "fixture has no expected findings recorded. Capture them: `.rules test --update`, then review + commit."
+		return "fixture has no expected findings recorded. Capture them: `.multi test --update`, then review + commit."
 	}
 	return ""
 }

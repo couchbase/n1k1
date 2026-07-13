@@ -29,7 +29,7 @@ import (
 )
 
 // helpTopic is one entry in the `.help` index. `alias`, when set, notes the
-// equivalent command-scoped help (e.g. `.help rules` == `.rules help`) -- those
+// equivalent command-scoped help (e.g. `.help multi` == `.multi help`) -- those
 // topics DELEGATE to the same guide, so there is one source of truth and two ways in.
 type helpTopic struct {
 	name, blurb, alias string
@@ -48,7 +48,7 @@ var helpTopics = []helpTopic{
 	{name: "extract", blurb: "authoring *.extract.js recipes that frame files into rows", alias: ".extract help"},
 	{name: "index", blurb: "secondary/FTS indexes: the catalog + .index commands", alias: ".index help"},
 	{name: "macro", blurb: "authoring *.macro.js macros that expand @name(...) into SQL++", alias: ".macro help"},
-	{name: "rules", blurb: "authoring & running a collection of SQL++ queries", alias: ".rules help"},
+	{name: "multi", blurb: "authoring & running a multi-query pack of SQL++ queries (shared execution)", alias: ".multi help"},
 }
 
 // cmdHelp implements `.help [<topic> [<arg>]]`.
@@ -83,8 +83,8 @@ func (c *cli) cmdHelp(arg string) {
 	case "temp-keyspaces", "temp-keyspace", "temp", "materialize":
 		c.helpTempKeyspaces()
 	// Command guides: delegate to the SAME help the command-scoped form prints, so
-	// `.help rules` and `.rules help` are one guide reached two ways.
-	case "rules":
+	// `.help multi` and `.multi help` are one guide reached two ways.
+	case "multi", "rules": // "rules" is the pre-rename alias
 		c.cmdRulesHelp()
 	case "extract":
 		c.cmdExtract("help")
@@ -177,7 +177,7 @@ func (c *cli) helpExtensions() {
 	c.hline("Inline examples ({in, out} in an `examples` array) self-document + golden-test:")
 	c.hline("  .extensions examples [name]  — print them;  .extensions test [name] — run + check")
 	c.hline("")
-	c.hline("See also: .help extract, .help macro, .help rules.")
+	c.hline("See also: .help extract, .help macro, .help multi.")
 }
 
 func (c *cli) helpQuoting() {

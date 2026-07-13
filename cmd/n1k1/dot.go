@@ -232,7 +232,7 @@ func (c *cli) dot(line string) bool {
 		}
 	case ".read":
 		c.readFile(arg)
-	case ".rules":
+	case ".multi", ".rules": // ".rules" is the pre-rename alias (undocumented)
 		c.cmdRules(arg)
 	case ".extensions", ".ext":
 		c.cmdExtensions(arg)
@@ -277,7 +277,7 @@ func (c *cli) printHelp() {
 		".verbose " + c.helpOpts(vcur, "off", "on", "debug", "n") + "  diagnostics level (n>1 provides more info; no arg shows current)",
 		".maxrows <n>          box: cap rows shown (0 = all; negative = last |n| rows)",
 		".maxwidth <n|auto>    box: cap column width (0 = uncapped; auto = fit terminal)",
-		".rules [list|run|lint|test|help] --queries <dir>  run a collection of tagged *.sql++ queries over the datastore (.rules help)",
+		".multi [list|run|lint|test|help] --queries <dir>  run a multi-query pack of tagged *.sql++ queries over the datastore, shared execution (.multi help)",
 		".extensions [list | load <dir>... | unload <name>... | examples | test]  extensions (*.js); test runs inline examples",
 		".extract [help|list]  author *.extract.js recipes that frame files into rows (.extract help for details)",
 		".macro [help|list|expand <stmt>]  pre-parse SQL++ macros: @name(...) -> generated SQL++ (.macro help for details)",

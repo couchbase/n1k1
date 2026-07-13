@@ -287,7 +287,7 @@ SELECT * FROM logs l WHERE l.sev = "ERROR"
 	if !strings.Contains(terr.String(), "fixture has no expected findings recorded") {
 		t.Errorf("test missing the no-golden fix snippet; stderr:\n%s", terr.String())
 	}
-	if !strings.Contains(terr.String(), ".rules test --update") {
+	if !strings.Contains(terr.String(), ".multi test --update") {
 		t.Errorf("no-golden snippet must point at --update; stderr:\n%s", terr.String())
 	}
 }
