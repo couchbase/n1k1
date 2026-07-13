@@ -29,8 +29,9 @@ shapes. The cbq boxed fallback remains as the correctness oracle for everything 
 - [ ] **Decompose boxed CTE / derived-table rows into native label columns at capture**,
   and a typed/parsed temp materialization (columnar territory, `DESIGN-col.md`).
 - [ ] **Port more boxed funcs off the fallback:** the date-STRING family
-  (`str_to_millis`/`millis_to_str`/`date_diff_*`/`date_trunc_*`), bare-identifier
-  object/array operands (`OBJECT_LENGTH(o)`), variadic >2-arg array/object builders,
+  (`str_to_millis`/`millis_to_str`/`date_diff_*`/`date_trunc_*`), variadic >2-arg
+  array/object builders (bare-identifier object/array operands **done** — a bare field
+  operand like `OBJECT_LENGTH(details)` now lowers native via `lowerNativeFieldPath`),
   array/object literals (`array_sort/reverse/flatten` done; `array_distinct` skipped —
   nondeterministic), comprehensions (ANY/EVERY/FIRST/ARRAY/OBJECT **done natively in
   BOTH lanes**: IN/WITHIN/named-k:v single-binding — the compiled lane emits a plain
@@ -39,8 +40,6 @@ shapes. The cbq boxed fallback remains as the correctness oracle for everything 
   and `slice` navigation (blocked on a cbq-fork accessor).
 - [ ] **`LIKE` / dynamic-pattern `REGEXP_*`** — need a hand-rolled zero-alloc byte glob
   matcher; they don't fit the byte-reuse model as `regexp` compiles.
-- [ ] **Compiled-path n-ary ops broken** (`ifnull`/`greatest`/`least`/`concat`/`case`) —
-  fold the foldable ones to right-nested binary; a capture-stack rework for CASE.
 - [ ] **Window perf tail:** sliding SUM/AVG over non-integer data still re-folds;
   general arbitrary-frame O(N log N) segment trees; decode operand once per partition row.
 
@@ -699,8 +698,11 @@ byte/register/lz model.
 - **Reader ops (no output build)** — `array_length/contains/position`,
   `array_min/max/sum/avg`, `object_length`, `poly_length` **done** (iterate via
   `jsonparser.ArrayEach`/`ObjectEach`, compute a scalar without materializing — good
-  ROI). Remaining: the bare-identifier / whole-row operand case (e.g. `OBJECT_LENGTH(o)`
-  still boxes because `o` isn't recognized as a native labelPath).
+  ROI), **including the bare-identifier / whole-row operand case** (`OBJECT_LENGTH(details)`,
+  `ARRAY_LENGTH(orderlines)`): a bare identifier as a function OPERAND now lowers through
+  the same `lowerNativeFieldPath` used by `o.field` (matched field label, else whole-row
+  navigation), since an operand is a value context — unlike the top-level identifier gate,
+  which stays strict-only to keep `SELECT o` star-projection boxed.
 - **Ops that DO build output** — `array_append/prepend/concat`, `array_sort/reverse/flatten`,
   the object structure builders `object_names/values/pairs`, and the object mutators
   `object_add/put/remove/concat` are **done** (emit JSON into a lifted buffer; mutators
@@ -713,27 +715,22 @@ byte/register/lz model.
 - **Comprehensions** — `ANY`/`EVERY` (predicate), `FIRST`/`ARRAY` (mapping + optional
   `WHEN`), and `OBJECT` (name:value mapping + optional `WHEN`), single-binding, both
   `IN` and `WITHIN`, **and** the named `k:v IN` form (name = object field sorted / array
-  index), are **done in the INTERPRETER** (`engine/expr_coll.go`): the bound variable(s)
-  become APPENDED register slot(s) labeled like a LET var (`.["<var>"]`, resolved by the
-  normal Field/Identifier matcher), fed per element via `base.CollYield` (value-only =
-  `ArrayYield`; named yields `[name, value]`) with a shadowed `lzVals` before the
-  captured child. `ANY`/`EVERY`/`FIRST` early-exit; `WHEN` is synthesized to a constant
-  `true` when absent; `OBJECT` accumulates last-wins key-sorted (string key required:
-  MISSING-name → MISSING, non-string → NULL); `WITHIN` wraps the operand in a
-  `descendants` transform (pre-order DFS, object fields sorted; cbq `value.Descendants`
-  order); nesting/correlation fall out of the register model. Differential-tested vs cbq.
+  index), are **done natively in BOTH lanes** (`engine/expr_coll.go`): the bound
+  variable(s) become APPENDED register slot(s) labeled like a LET var (`.["<var>"]`,
+  resolved by the normal Field/Identifier matcher). `ANY`/`EVERY`/`FIRST` early-exit;
+  `WHEN` is synthesized to a constant `true` when absent; `OBJECT` accumulates last-wins
+  key-sorted (string key required: MISSING-name → MISSING, non-string → NULL); `WITHIN`
+  wraps the operand in a `descendants` transform (pre-order DFS, object fields sorted;
+  cbq `value.Descendants` order); nesting/correlation fall out of the register model.
+  Differential-tested vs cbq.
 
-  ⚠️ **Compiled lane: BOXED (falls back to the interpreter).** The comprehension ops
-  iterate via a nested yield callback (`CollYield` + a shadowed `lzVals` + captured
-  children) — a shape the *expression* codegen (`emit.OpToLines`) does not emit
-  correctly, unlike the *op*-level `UNNEST` that uses the same runtime shape (op codegen
-  handles it). So all comprehension ops are in `compiledExprDenylist`: `ExprTreesOptimize`
-  keeps any comprehension-containing expr as an `exprStr` island, and `-prepare=full`
-  runs it on the interpreter. (An earlier "byte-identical in both lanes" claim was
-  mistaken — `-prepare=full` was silently falling back to the interpreter, and the emit
-  differential filters/boxes the corpus comprehension cases, so native comprehension
-  emit was never actually exercised.) Making the expr codegen emit callback iteration —
-  the way op codegen already does for `UNNEST` — is the follow-up that would unbox them.
+  The engine op materializes the binding's members up front via `base.CollElems` (stride
+  1 for value-only `x IN`, stride 2 for the named `k:v IN` form) and iterates with a
+  plain `for`-loop, so the captured children inline into the loop body. This is what let
+  the **compiled** lane unbox them: the *expression* codegen (`emit.OpToLines`) can't emit
+  a nested yield callback (the original `CollYield` shape), but a for-loop over a
+  materialized slice emits cleanly — `compiledExprDenylist` is now empty and the compiled
+  suites emit native `base.CollElems` loops (verified byte-identical to the interpreter).
 
   Remaining (fall back): multi-binding (`FOR x IN a, y IN b` — a zip) and `WITHIN k:v`
   (descendant pairs).

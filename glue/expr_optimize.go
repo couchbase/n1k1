@@ -212,6 +212,52 @@ func exprConstFold(e expression.Expression, buf *bytes.Buffer) (params []interfa
 	return []interface{}{"json", buf.String()}, true
 }
 
+// lowerNativeFieldPath lowers a STATIC field path -- ["a","b"] for `a.b`, or ["x"]
+// for a bare identifier `x` -- to a native ["labelPath", <label>, steps...] param.
+// It picks the longest label matching a path prefix, else the whole-row default
+// ("." normally, or the ".*" star-spread row from SELECT path.* whose stored val is
+// the object itself), and navigates the remaining steps within it.
+//
+// Under strict matching, a path that matched NO real label prefix (iBest < 0, so it
+// would navigate the whole-row default) is refused: under an active scope
+// (correlated subquery / WITH / recursive CTE) it may be a parent-scope reference
+// the native labelPath can't resolve, and silently navigating the local row would
+// yield MISSING.
+//
+// Shared by the *expression.Field case and the bare-identifier function-operand path
+// (see the operand loop below) so both resolve identically -- a bare `o` operand
+// lowers exactly like the first step of `o.field`.
+func lowerNativeFieldPath(labels base.Labels, fieldPath []string, strict bool) ([]interface{}, bool) {
+	labelBest := "."
+	if labels.IndexOf(".") < 0 && labels.IndexOf(".*") >= 0 {
+		labelBest = ".*"
+	}
+	iBest := -1
+OUTER:
+	for i := 0; i < len(fieldPath); i++ {
+		labelMaybe := "." + LabelSuffix(strings.Join(fieldPath[0:i+1], `","`))
+
+		for _, label := range labels {
+			if label == labelMaybe {
+				labelBest = label
+				iBest = i
+				continue OUTER
+			}
+		}
+	}
+
+	if strict && iBest < 0 {
+		return nil, false
+	}
+
+	params := []interface{}{"labelPath", labelBest}
+	for _, x := range fieldPath[iBest+1:] {
+		params = append(params, x)
+	}
+
+	return params, true
+}
+
 func exprTreeOptimizeNative(labels base.Labels, e expression.Expression,
 	buf *bytes.Buffer, strict bool) (params []interface{}, ok bool) {
 	if agg, ok := e.(algebra.Aggregate); ok {
@@ -266,43 +312,7 @@ func exprTreeOptimizeNative(labels base.Labels, e expression.Expression,
 			return nil, false
 		}
 
-		// Default to the whole-row label present in labels: "." normally, or
-		// the ".*" star-spread row (SELECT path.*), whose stored val is the
-		// object itself. A field with no more-specific path label match then
-		// resolves against that whole row rather than a missing "." label.
-		labelBest := "."
-		if labels.IndexOf(".") < 0 && labels.IndexOf(".*") >= 0 {
-			labelBest = ".*"
-		}
-		iBest := -1
-	OUTER:
-		for i := 0; i < len(fieldPath); i++ {
-			labelMaybe := "." + LabelSuffix(strings.Join(fieldPath[0:i+1], `","`))
-
-			for _, label := range labels {
-				if label == labelMaybe {
-					labelBest = label
-					iBest = i
-					continue OUTER
-				}
-			}
-		}
-
-		// Under an active scope, a field that matched no real label prefix
-		// (iBest < 0, so labelBest is the whole-row "." / ".*" default) may be a
-		// parent-scope identifier that the native labelPath can't resolve -- it
-		// would silently navigate the local row and yield MISSING. Refuse it so
-		// the caller keeps the (parent-aware) cbq fallback for this expression.
-		if strict && iBest < 0 {
-			return nil, false
-		}
-
-		params = []interface{}{"labelPath", labelBest}
-		for _, x := range fieldPath[iBest+1:] {
-			params = append(params, x)
-		}
-
-		return params, true
+		return lowerNativeFieldPath(labels, fieldPath, strict)
 	}
 
 	// A bare identifier: lower it ONLY under strict matching AND when it exactly
@@ -665,6 +675,20 @@ func exprTreeOptimizeNative(labels base.Labels, e expression.Expression,
 
 	for _, operand := range operands {
 		child, ok := ExprTreeOptimize(labels, operand, buf, strict)
+		if !ok {
+			// A bare identifier as a function OPERAND is a value context, not a
+			// top-level projection, so -- unlike the strict-gated top-level identifier
+			// case (which stays boxed to protect `SELECT o` star-projection) -- it can
+			// resolve to the whole row / a matched label via the same path lowering as
+			// `o.field`. This unblocks reader ops on a bare field/alias operand:
+			// OBJECT_LENGTH(details), ARRAY_LENGTH(orderlines), etc.
+			if ident, isIdent := operand.(*expression.Identifier); isIdent &&
+				!ident.CaseInsensitive() {
+				if fp, okfp := ExprFieldPath(operand); okfp {
+					child, ok = lowerNativeFieldPath(labels, fp, strict)
+				}
+			}
+		}
 		if !ok {
 			return nil, false
 		}

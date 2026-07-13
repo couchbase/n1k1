@@ -781,6 +781,91 @@ func TestObjectPolyLengthDifferentialVsCBQ(t *testing.T) {
 	}
 }
 
+// TestBareIdentifierReaderOperand proves a bare field/alias identifier as a reader
+// function's OPERAND lowers natively (OBJECT_LENGTH(details), ARRAY_LENGTH(orderlines),
+// …) -- resolving through the SAME path lowering as `o.field`'s first step: a matched
+// field label if present, else whole-row navigation. Previously the bare identifier
+// boxed the whole function (the top-level identifier gate is strict-only, to keep
+// `SELECT o` star-projection boxed -- which this must NOT disturb).
+func TestBareIdentifierReaderOperand(t *testing.T) {
+	parse := func(s string) expression.Expression {
+		e, err := parser.Parse(s)
+		if err != nil {
+			t.Fatalf("parse %q: %v", s, err)
+		}
+		return e
+	}
+	// eq compares a lowered param tree to an expected nested-slice shape.
+	var eq func(got interface{}, want []interface{}) bool
+	eq = func(got interface{}, want []interface{}) bool {
+		g, ok := got.([]interface{})
+		if !ok || len(g) != len(want) {
+			return false
+		}
+		for i := range want {
+			switch w := want[i].(type) {
+			case []interface{}:
+				if !eq(g[i], w) {
+					return false
+				}
+			default:
+				if g[i] != w {
+					return false
+				}
+			}
+		}
+		return true
+	}
+
+	// Whole-row present, no per-field label -> the operand navigates the field within
+	// the whole row, exactly like `details` as the first step of a `details.x` path.
+	whole := base.Labels{"."}
+	cases := []struct {
+		expr string
+		head string
+		want []interface{} // expected operand (params[1]) shape
+	}{
+		{`object_length(details)`, "object_length", []interface{}{"labelPath", ".", "details"}},
+		{`array_length(orderlines)`, "array_length", []interface{}{"labelPath", ".", "orderlines"}},
+		{`poly_length(items)`, "poly_length", []interface{}{"labelPath", ".", "items"}},
+		{`array_sum(prices)`, "array_sum", []interface{}{"labelPath", ".", "prices"}},
+	}
+	for _, tc := range cases {
+		var buf bytes.Buffer
+		params, ok := ExprTreeOptimize(whole, parse(tc.expr), &buf, false)
+		if !ok {
+			t.Errorf("%q: did not lower natively (still boxed)", tc.expr)
+			continue
+		}
+		if head, _ := params[0].(string); head != tc.head {
+			t.Errorf("%q: head=%v, want %q", tc.expr, params[0], tc.head)
+		}
+		if !eq(params[1], tc.want) {
+			t.Errorf("%q: operand=%v, want %v", tc.expr, params[1], tc.want)
+		}
+	}
+
+	// A matched per-field label resolves the operand to that label directly.
+	labeled := base.Labels{`.["details"]`}
+	var buf bytes.Buffer
+	params, ok := ExprTreeOptimize(labeled, parse(`object_length(details)`), &buf, false)
+	if !ok || !eq(params[1], []interface{}{"labelPath", `.["details"]`}) {
+		t.Errorf("labeled object_length(details): ok=%v operand=%v, want [labelPath .[\"details\"]]", ok, params[1])
+	}
+
+	// Guardrails (unchanged behavior):
+	// (1) A bare identifier as the TOP-LEVEL expr (not a function operand) must still
+	//     box in the non-strict path -- this is the `SELECT o` protection.
+	if _, ok := ExprTreeOptimize(whole, parse(`details`), &buf, false); ok {
+		t.Errorf("top-level bare `details` should stay boxed (SELECT o protection)")
+	}
+	// (2) Under strict matching (active scope) a bare-identifier operand that matches
+	//     no local label may be a parent-scope ref, so the function stays boxed.
+	if _, ok := ExprTreeOptimize(whole, parse(`object_length(details)`), &buf, true); ok {
+		t.Errorf("strict object_length(details) with no matching label should stay boxed")
+	}
+}
+
 // TestObjectNamesDifferentialVsCBQ proves OBJECT_NAMES native lowering: the sorted
 // JSON string-array of an object's field names is byte-identical to cbq, MISSING ->
 // MISSING, and any non-object -> NULL. The sort must match cbq's byte-order name
