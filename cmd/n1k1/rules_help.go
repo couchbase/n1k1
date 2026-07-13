@@ -37,8 +37,7 @@ index, common-subexpression sharing). The queries are provided as a directory of
 files. Each *.sql++ file is a single SQL++ SELECT query plus optional "-- key: value"
 front-matter and an optional inline golden fixture. Run the pack over a dataset to get
 tagged findings; lint the queries for a report card; unit-test each query against its
-golden fixture (such as for CI). (Formerly ".rules" / RULE_MATCHES; both old names still
-work as undocumented aliases.)
+golden fixture (such as for CI). (Renamed from ".rules" / RULE_MATCHES.)
 
 The same feature is also available directly in SQL++ as a composable FROM source --
 the MULTI_MATCHES() table-valued function -- so that results can be further queried with

@@ -126,19 +126,21 @@ func TestRulesHelp(t *testing.T) {
 	}
 }
 
-// TestRulesQueriesFlag: the directory flag is --queries; --corpus is still accepted as
-// a hidden back-compat alias (both set the same field).
+// TestRulesQueriesFlag: the directory flag is --queries. The former --corpus alias was
+// removed (hard cut) and now fails loudly as an unknown flag.
 func TestRulesQueriesFlag(t *testing.T) {
 	for _, tc := range []struct{ arg, want string }{
 		{"--queries ./x", "./x"},
 		{"--queries=./x", "./x"},
-		{"--corpus ./x", "./x"}, // hidden alias
-		{"--corpus=./x", "./x"},
 	} {
 		a, err := parseRulesArgs(tc.arg)
 		if err != nil || a.queries != tc.want {
 			t.Errorf("parseRulesArgs(%q) = {queries:%q} err %v; want queries=%q", tc.arg, a.queries, err, tc.want)
 		}
+	}
+	// The removed --corpus alias is now an unknown flag, not silently accepted.
+	if _, err := parseRulesArgs("--corpus ./x"); err == nil || !strings.Contains(err.Error(), "unknown flag") {
+		t.Errorf("--corpus should now be an unknown flag; got %v", err)
 	}
 	// The error message names the new flag, not the old one.
 	if _, err := parseRulesArgs("--bind m"); err == nil || !strings.Contains(err.Error(), "--queries") {

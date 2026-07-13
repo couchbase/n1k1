@@ -77,7 +77,7 @@ func findingSetKeys(t *testing.T, fs []Finding) []string {
 }
 
 // TestRuleMatchesFromSource is the headline: `SELECT f.label, f.result FROM
-// rule_matches('<corpus>') f` returns EXACTLY the same tagged matches as running
+// multi_matches('<corpus>') f` returns EXACTLY the same tagged matches as running
 // the corpus directly via CorpusCompile().Run() (compared as sorted sets).
 func TestRuleMatchesFromSource(t *testing.T) {
 	sess := corpusTestSession(t)
@@ -105,7 +105,7 @@ func TestRuleMatchesFromSource(t *testing.T) {
 	}
 
 	// Via the RULE_MATCHES FROM-source.
-	q := fmt.Sprintf("SELECT f.label, f.result FROM rule_matches(%q) AS f", corpus)
+	q := fmt.Sprintf("SELECT f.label, f.result FROM multi_matches(%q) AS f", corpus)
 	res, err := sess.Run(q)
 	if err != nil {
 		t.Fatalf("Run %q: %v", q, err)
@@ -115,7 +115,7 @@ func TestRuleMatchesFromSource(t *testing.T) {
 	gotKeys := findingSetKeys(t, got)
 	wantKeys := findingSetKeys(t, baseline)
 	if len(gotKeys) != len(wantKeys) {
-		t.Fatalf("match count via FROM rule_matches(): got %d want %d\n got=%v\n want=%v",
+		t.Fatalf("match count via FROM multi_matches(): got %d want %d\n got=%v\n want=%v",
 			len(gotKeys), len(wantKeys), gotKeys, wantKeys)
 	}
 	for i := range gotKeys {
@@ -123,10 +123,10 @@ func TestRuleMatchesFromSource(t *testing.T) {
 			t.Fatalf("match[%d] mismatch:\n got=%q\n want=%q", i, gotKeys[i], wantKeys[i])
 		}
 	}
-	t.Logf("FROM rule_matches() matched %d findings", len(gotKeys))
+	t.Logf("FROM multi_matches() matched %d findings", len(gotKeys))
 }
 
-// TestRuleMatchesStreamsViaStreamFnOp proves FROM rule_matches(...) converts to the
+// TestRuleMatchesStreamsViaStreamFnOp proves FROM multi_matches(...) converts to the
 // generic STREAMING stream-fn op (op_stream_fn.go), NOT the materializing expr-scan
 // -- so findings flow into the pipeline at bounded memory. It also checks LIMIT
 // composes over the streaming source.
@@ -134,27 +134,27 @@ func TestRuleMatchesStreamsViaStreamFnOp(t *testing.T) {
 	sess := corpusTestSession(t)
 	corpus := writeRuleMatchesCorpus(t)
 
-	q := fmt.Sprintf(`SELECT f.label FROM rule_matches(%q) AS f`, corpus)
+	q := fmt.Sprintf(`SELECT f.label FROM multi_matches(%q) AS f`, corpus)
 	res, err := sess.Run(q)
 	if err != nil {
 		t.Fatalf("Run %q: %v", q, err)
 	}
 	tree := FormatConvPlan(res.Plan)
 	if !strings.Contains(tree, "stream-fn") {
-		t.Fatalf("FROM rule_matches() should convert to a stream-fn op (streaming); plan:\n%s", tree)
+		t.Fatalf("FROM multi_matches() should convert to a stream-fn op (streaming); plan:\n%s", tree)
 	}
 	if strings.Contains(tree, "expr-scan") {
-		t.Fatalf("FROM rule_matches() must NOT materialize via expr-scan; plan:\n%s", tree)
+		t.Fatalf("FROM multi_matches() must NOT materialize via expr-scan; plan:\n%s", tree)
 	}
 
 	// LIMIT composes with the streaming source (yields exactly the limited rows).
-	q = fmt.Sprintf(`SELECT f.label FROM rule_matches(%q) AS f LIMIT 1`, corpus)
+	q = fmt.Sprintf(`SELECT f.label FROM multi_matches(%q) AS f LIMIT 1`, corpus)
 	res, err = sess.Run(q)
 	if err != nil {
 		t.Fatalf("Run LIMIT %q: %v", q, err)
 	}
 	if len(res.Rows) != 1 {
-		t.Fatalf("LIMIT 1 over rule_matches(): got %d rows, want 1", len(res.Rows))
+		t.Fatalf("LIMIT 1 over multi_matches(): got %d rows, want 1", len(res.Rows))
 	}
 }
 
@@ -165,7 +165,7 @@ func TestRuleMatchesComposable(t *testing.T) {
 	corpus := writeRuleMatchesCorpus(t)
 
 	// WHERE filter on the label: only the login detector's matches survive.
-	q := fmt.Sprintf(`SELECT f.label FROM rule_matches(%q) AS f WHERE f.label = "T5_login"`, corpus)
+	q := fmt.Sprintf(`SELECT f.label FROM multi_matches(%q) AS f WHERE f.label = "T5_login"`, corpus)
 	res, err := sess.Run(q)
 	if err != nil {
 		t.Fatalf("Run %q: %v", q, err)
@@ -186,7 +186,7 @@ func TestRuleMatchesComposable(t *testing.T) {
 	}
 
 	// GROUP BY label with COUNT(*): one row per detector that produced matches.
-	q = fmt.Sprintf(`SELECT f.label, COUNT(*) AS hits FROM rule_matches(%q) AS f `+
+	q = fmt.Sprintf(`SELECT f.label, COUNT(*) AS hits FROM multi_matches(%q) AS f `+
 		`GROUP BY f.label ORDER BY f.label`, corpus)
 	res, err = sess.Run(q)
 	if err != nil {
@@ -216,20 +216,20 @@ func TestRuleMatchesComposable(t *testing.T) {
 	}
 }
 
-// TestRuleMatchesPrepareExecute: because FROM rule_matches(...) is a plain SELECT,
+// TestRuleMatchesPrepareExecute: because FROM multi_matches(...) is a plain SELECT,
 // it PREPAREs and EXECUTEs for free, returning the same rows.
 func TestRuleMatchesPrepareExecute(t *testing.T) {
 	sess := corpusTestSession(t)
 	corpus := writeRuleMatchesCorpus(t)
 
-	direct := fmt.Sprintf(`SELECT f.label, f.result FROM rule_matches(%q) AS f`, corpus)
+	direct := fmt.Sprintf(`SELECT f.label, f.result FROM multi_matches(%q) AS f`, corpus)
 	dres, err := sess.Run(direct)
 	if err != nil {
 		t.Fatalf("direct Run: %v", err)
 	}
 	wantKeys := findingSetKeys(t, findingsFromRows(t, dres.Rows))
 
-	prep := fmt.Sprintf(`PREPARE fp AS SELECT f.label, f.result FROM rule_matches(%q) AS f`, corpus)
+	prep := fmt.Sprintf(`PREPARE fp AS SELECT f.label, f.result FROM multi_matches(%q) AS f`, corpus)
 	if _, err := sess.Run(prep); err != nil {
 		t.Fatalf("PREPARE: %v", err)
 	}
@@ -272,7 +272,7 @@ func TestRuleMatchesBindOpt(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	q := fmt.Sprintf(`SELECT f.label, f.result FROM rule_matches(%q, {"bind": %q}) AS f`, corpus, manifest)
+	q := fmt.Sprintf(`SELECT f.label, f.result FROM multi_matches(%q, {"bind": %q}) AS f`, corpus, manifest)
 	res, err := sess.Run(q)
 	if err != nil {
 		t.Fatalf("Run bound %q: %v", q, err)
@@ -295,14 +295,14 @@ func TestRuleMatchesEmptyCorpusErrors(t *testing.T) {
 
 	// A dir with no *.sql++ files.
 	empty := t.TempDir()
-	q := fmt.Sprintf(`SELECT f.label FROM rule_matches(%q) AS f`, empty)
+	q := fmt.Sprintf(`SELECT f.label FROM multi_matches(%q) AS f`, empty)
 	if _, err := sess.Run(q); err == nil {
 		t.Fatal("empty corpus dir: expected an error, got nil")
 	}
 
 	// A missing dir.
 	missing := filepath.Join(t.TempDir(), "does-not-exist")
-	q = fmt.Sprintf(`SELECT f.label FROM rule_matches(%q) AS f`, missing)
+	q = fmt.Sprintf(`SELECT f.label FROM multi_matches(%q) AS f`, missing)
 	if _, err := sess.Run(q); err == nil {
 		t.Fatal("missing corpus dir: expected an error, got nil")
 	}
@@ -319,7 +319,7 @@ func TestRuleMatchesAllRejectedErrors(t *testing.T) {
 		[]byte("-- label: T_BAD\nSELECT * FROM nosuch_ks x WHERE x.a = 1"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	q := fmt.Sprintf(`SELECT f.label FROM rule_matches(%q) AS f`, dir)
+	q := fmt.Sprintf(`SELECT f.label FROM multi_matches(%q) AS f`, dir)
 	_, err := sess.Run(q)
 	if err == nil {
 		t.Fatal("all-rejected corpus: expected an error, got nil (the silent-empty bug)")
@@ -345,7 +345,7 @@ func TestRuleMatchesPartialRejectWarns(t *testing.T) {
 	write("good.sql++", "-- label: T_GOOD\n"+`SELECT * FROM logs l WHERE l.sev = "ERROR"`)
 	write("bad.sql++", "-- label: T_BAD\n"+`SELECT * FROM nosuch_ks x WHERE x.a = 1`)
 
-	q := fmt.Sprintf(`SELECT f.label FROM rule_matches(%q) AS f`, dir)
+	q := fmt.Sprintf(`SELECT f.label FROM multi_matches(%q) AS f`, dir)
 	res, err := sess.Run(q)
 	if err != nil {
 		t.Fatalf("partial-reject corpus should still run the good detector: %v", err)
@@ -376,7 +376,7 @@ func dataRootOfSession(t *testing.T, sess *Session) string {
 	return url[len(p):]
 }
 
-// --- RULE_MATCHES manifest binding + option parsing (rule_matches.go) ---
+// --- RULE_MATCHES manifest binding + option parsing (multi_matches.go) ---
 // These pure/file-based helpers were the thinnest part of the TVF (loadRuleMatchesBinding
 // 32%, parseRuleMatchesOpts 43%): the happy paths run via the corpus tests above, but the
 // manifest formats and the many rejection branches were unexercised. Test them directly.

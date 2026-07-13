@@ -18,8 +18,8 @@ drives authoring + golden-fixture CI.
 
 > **Naming:** the external surface is `.multi` (CLI) / `MULTI_MATCHES()` (the in-SQL++
 > TVF) — "multi" for the multi-query pack it runs with shared execution (MQO). Renamed
-> from `.rules` / `RULE_MATCHES` (2026), which misread as a rules-engine; both old names
-> stay registered as undocumented back-compat aliases. n1k1 *internals* keep their names
+> from `.rules` / `RULE_MATCHES` (2026), which misread as a rules-engine — a **hard cut**
+> (the old names are gone, no back-compat aliases). n1k1 *internals* keep their names
 > (corpus, `CorpusCompile`, detector, `RejectedDetector`, …) — the rename is surface-only.
 
 **Remaining (headline TODOs):**

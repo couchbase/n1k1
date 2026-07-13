@@ -109,7 +109,7 @@ test-suite-all: test-glue
 # (cmd/n1k1/rules_test.go's TestRulesTest*). The command exits non-zero on any FAIL
 # (cli sawError -> exit 1), which fails this make target.
 rules-test: cli
-	./n1k1 -c '.multi test --corpus cmd/n1k1/testdata/detectors' cmd/n1k1/testdata/detectors
+	./n1k1 -c '.multi test --queries cmd/n1k1/testdata/detectors' cmd/n1k1/testdata/detectors
 
 # ------------------------------------------------------------------
 

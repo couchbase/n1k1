@@ -72,37 +72,26 @@ import (
 	"github.com/couchbase/query/value"
 )
 
-// RuleMatchesFuncName is the SQL++ name RULE_MATCHES registers under (cbq
-// lower-cases function names, so this is the canonical spelling). It reads
-// naturally as a FROM source: `FROM rule_matches('detectors/') AS f`.
 // RuleMatchesFuncName is the user-facing TVF name: MULTI_MATCHES (cbq lower-cases
 // function names, so "multi_matches" is the canonical spelling). "multi" is short for
 // multi-query -- the batch of related SQL++ queries this runs with shared execution
-// (MQO). Renamed from RULE_MATCHES in 2026; the former name stays registered as a
-// back-compat alias (ruleMatchesFuncAlias). Reads naturally as a FROM source:
-// `FROM multi_matches('detectors/') AS f`.
+// (MQO). Renamed from RULE_MATCHES in 2026 (a hard cut: no back-compat alias). Reads
+// naturally as a FROM source: `FROM multi_matches('detectors/') AS f`.
 const RuleMatchesFuncName = "multi_matches"
 
-// ruleMatchesFuncAlias is the pre-rename name, kept registered so existing corpora /
-// scripts using rule_matches(...) keep working. Undocumented (help/docs say
-// multi_matches).
-const ruleMatchesFuncAlias = "rule_matches"
-
-// registerRuleMatchesFunc wires MULTI_MATCHES (and its rule_matches alias) into the
-// cbq parser so `multi_matches(dir[,opts])` resolves as a scalar (array-returning)
-// function usable in a FROM clause. Called from ext.go's package init (always-on, like
-// the sparkline/histogram aggregates). A collision with a stock cbq builtin would be a
-// bug -- refuse rather than shadow.
+// registerRuleMatchesFunc wires MULTI_MATCHES into the cbq parser so
+// `multi_matches(dir[,opts])` resolves as a scalar (array-returning) function usable in a
+// FROM clause. Called from ext.go's package init (always-on, like the sparkline/histogram
+// aggregates). A collision with a stock cbq builtin would be a bug -- refuse rather than
+// shadow.
 func registerRuleMatchesFunc() {
-	for _, name := range []string{RuleMatchesFuncName, ruleMatchesFuncAlias} {
-		if _, ok := expression.GetFunction(name); ok {
-			// A cbq builtin already owns this name: do NOT shadow it (would corrupt the
-			// differential). This should never fire -- these names are domain-specific.
-			continue
-		}
-		expression.RegisterFunction(name, newRuleMatchesFunc(name))
-		extOurs[name] = true
+	if _, ok := expression.GetFunction(RuleMatchesFuncName); ok {
+		// A cbq builtin already owns this name: do NOT shadow it (would corrupt the
+		// differential). This should never fire -- MULTI_MATCHES is domain-specific.
+		return
 	}
+	expression.RegisterFunction(RuleMatchesFuncName, newRuleMatchesFunc(RuleMatchesFuncName))
+	extOurs[RuleMatchesFuncName] = true
 }
 
 // ruleMatchesFunc is the expression.Function the parser instantiates for a

@@ -232,7 +232,7 @@ func (c *cli) dot(line string) bool {
 		}
 	case ".read":
 		c.readFile(arg)
-	case ".multi", ".rules": // ".rules" is the pre-rename alias (undocumented)
+	case ".multi":
 		c.cmdRules(arg)
 	case ".extensions", ".ext":
 		c.cmdExtensions(arg)

@@ -91,10 +91,9 @@ type rulesArgs struct {
 }
 
 // parseRulesArgs parses `--queries <dir> [--bind <file>] [--update]` (also accepting
-// the bare/`=` forms `-queries=x`). `--corpus` is accepted as a hidden back-compat
-// alias for `--queries` (undocumented). Unknown tokens are an error so a typo fails
-// loudly rather than being silently ignored. --queries is validated by the caller
-// (required for run/lint; test errors on its absence too).
+// the bare/`=` forms `-queries=x`). Unknown tokens are an error so a typo fails loudly
+// rather than being silently ignored. --queries is validated by the caller (required
+// for run/lint; test errors on its absence too).
 func parseRulesArgs(arg string) (rulesArgs, error) {
 	var a rulesArgs
 	toks := strings.Fields(arg)
@@ -105,7 +104,7 @@ func parseRulesArgs(arg string) (rulesArgs, error) {
 			key, val, hasEq = t[:eq], t[eq+1:], true
 		}
 		switch strings.TrimLeft(key, "-") {
-		case "queries", "corpus": // --corpus is a hidden back-compat alias
+		case "queries":
 			if !hasEq {
 				i++
 				if i >= len(toks) {

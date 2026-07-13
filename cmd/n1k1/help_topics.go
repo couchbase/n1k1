@@ -84,7 +84,7 @@ func (c *cli) cmdHelp(arg string) {
 		c.helpTempKeyspaces()
 	// Command guides: delegate to the SAME help the command-scoped form prints, so
 	// `.help multi` and `.multi help` are one guide reached two ways.
-	case "multi", "rules": // "rules" is the pre-rename alias
+	case "multi":
 		c.cmdRulesHelp()
 	case "extract":
 		c.cmdExtract("help")

@@ -80,7 +80,7 @@ func TestHelpTopics(t *testing.T) {
 		"keyspaces":      "keyspace",
 		"meta":           "_meta",
 		"temp-keyspaces": "CREATE",
-		"rules":          ".rules",   // delegated command guide
+		"multi":          ".multi",   // delegated command guide
 		"extract":        ".extract", // delegated command guide
 		"index":          ".index",   // delegated command guide
 	}
@@ -112,7 +112,7 @@ func TestHelpDelegatesToCommandGuides(t *testing.T) {
 		return out.String() + errb.String()
 	}
 	for _, tc := range []struct{ topic, cmd, arg string }{
-		{"rules", ".rules", "help"},
+		{"multi", ".multi", "help"},
 		{"extract", ".extract", "help"},
 		{"index", ".index", "help"},
 	} {
