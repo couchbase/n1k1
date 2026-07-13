@@ -840,33 +840,64 @@ func DatastoreScanFTS(o *base.Op, vars *base.Vars,
 		hits = append(hits, ftsHit{id: entry.PrimaryKey, score: entry.MetaData})
 	}
 
-	// Fetch the hit documents from the keyspace (one batch; a CLI result set is small).
+	// Fetch each hit's document. An FTS hit id is the framing RECORD id: for a multi-
+	// record file that is a CONTAINER id (`<relpath>#<line>@<offset>`) which cbq's
+	// Keyspace.Fetch cannot resolve -- so read hits through n1k1's byte-path reader (the
+	// same container/native dispatch DatastoreFetch uses), with cbq's Fetch as the final
+	// fallback for a real cbq keyspace whose ids neither path handles. (Fetching via
+	// keyspace.Fetch alone silently returned ZERO rows on any multi-record keyspace,
+	// and made an FTS index hijack equality predicates into empty results -- IDEA-0030.)
 	keyspace := scan.Keyspace()
-	keys := make([]string, 0, len(hits))
-	for _, h := range hits {
-		keys = append(keys, h.id)
-	}
-	fetchMap := make(map[string]value.AnnotatedValue, len(keys))
-	if len(keys) > 0 {
-		errs := keyspace.Fetch(keys, fetchMap, datastore.NULL_QUERY_CONTEXT, nil, nil, false)
-		for _, e := range errs {
-			yieldErr(fmt.Errorf("DatastoreScanFTS, fetch: %v", e))
+	nativeDir, containerDir := "", ""
+	_, isFlat := keyspace.(interface{ RecordsDir() string })
+	_, isFile := keyspace.(interface{ RecordsFile() string })
+	if !isFlat && !isFile {
+		if dir, err := KeyspaceDir(keyspace); err == nil {
+			nativeDir, containerDir = dir, dir
 		}
+	} else {
+		containerDir = containerBaseDir(keyspace)
 	}
 
-	var docBuf, smBuf bytes.Buffer
+	var smBuf, cbqBuf bytes.Buffer
+	var readBuf []byte
 	var idBuf base.Val
 	row := make(base.Vals, 3)
 
-	for _, h := range hits {
-		v, ok := fetchMap[h.id]
-		if !ok || v == nil {
-			continue
+	// fetchDoc resolves one hit id to its raw doc JSON bytes (nil,false if missing).
+	// The returned bytes are valid until the next fetchDoc call (readBuf/cbqBuf are
+	// reused); the push model consumes each row synchronously before we loop.
+	fetchDoc := func(key string) ([]byte, bool) {
+		if containerDir != "" {
+			if _, _, isContainer := parseContainerKey(key); isContainer {
+				if b, ok, err := readContainerRecord(containerDir, key, &readBuf); err == nil && ok {
+					return b, true
+				}
+				return nil, false
+			}
 		}
-		docBuf.Reset()
-		if err := v.WriteJSON(nil, &docBuf, "", "", true); err != nil {
-			yieldErr(fmt.Errorf("DatastoreScanFTS, encode doc %q: %v", h.id, err))
-			return
+		if nativeDir != "" {
+			if p, ok := docPath(nativeDir, key); ok {
+				if b, ok2, err := readWholeFileInto(p, &readBuf); err == nil && ok2 {
+					return b, true
+				}
+			}
+		}
+		fm := map[string]value.AnnotatedValue{}
+		keyspace.Fetch([]string{key}, fm, datastore.NULL_QUERY_CONTEXT, nil, nil, false)
+		if v, ok := fm[key]; ok && v != nil {
+			cbqBuf.Reset()
+			if v.WriteJSON(nil, &cbqBuf, "", "", true) == nil {
+				return cbqBuf.Bytes(), true
+			}
+		}
+		return nil, false
+	}
+
+	for _, h := range hits {
+		doc, ok := fetchDoc(h.id)
+		if !ok || len(doc) == 0 {
+			continue
 		}
 		smBuf.Reset()
 		if err := writeSmetaJSON(&smBuf, outName, h.score, h.id); err != nil {
@@ -875,9 +906,9 @@ func DatastoreScanFTS(o *base.Op, vars *base.Vars,
 		}
 		idBuf = strconv.AppendQuote(idBuf[:0], h.id)
 
-		row[0] = base.Val(docBuf.Bytes()) // Label ".alias".
-		row[1] = base.Val(idBuf)          // Label "^id".
-		row[2] = base.Val(smBuf.Bytes())  // Label "^smeta".
+		row[0] = base.Val(doc)           // Label ".alias".
+		row[1] = base.Val(idBuf)         // Label "^id".
+		row[2] = base.Val(smBuf.Bytes()) // Label "^smeta".
 		yieldVals(row)
 	}
 

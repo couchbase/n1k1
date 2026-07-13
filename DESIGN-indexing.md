@@ -112,6 +112,13 @@ predicate — correct, occasionally a slightly wider walk.
 index (§7). Also shipped: `SEARCH_SCORE()`/`SEARCH_META()` surfacing, declared
 field mappings, and the `SargableFlex` implicit-predicate flex path.
 
+`DatastoreScanFTS` fetches each bleve hit through n1k1's byte-path reader (the same
+container/native dispatch as `datastore-fetch`), NOT cbq's `Keyspace.Fetch` — because
+an FTS hit id is a framing RECORD id, which for a multi-record file is a container id
+(`<relpath>#<line>@<offset>`) that cbq's Fetch can't resolve. Fetching via
+`Keyspace.Fetch` had silently returned zero rows on every multi-record keyspace (and
+made an FTS index turn flex-served equality predicates into empty results) — IDEA-0030.
+
 ### In-memory secondary-index backend (shipped)
 
 `glue/idx_mem.go` is a bbolt-free alternative backend: it reuses everything
