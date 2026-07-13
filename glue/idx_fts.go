@@ -376,7 +376,7 @@ func (fi *ftsIndex) Search(requestId string, si *datastore.FTSSearchInfo,
 	cons datastore.ScanConsistency, vector timestamp.Vector, conn *datastore.IndexConnection) {
 	defer conn.Sender().Close()
 
-	q, err := bleveQuery(si)
+	q, err := bleveQuery(si, fi.ks.Name())
 	if err != nil {
 		conn.Error(errors.NewError(err, "fts search query"))
 		return
@@ -406,8 +406,9 @@ func (fi *ftsIndex) Search(requestId string, si *datastore.FTSSearchInfo,
 
 // bleveQuery builds a bleve query from the SEARCH() info: a plain string becomes a
 // match query on the named field (or a query-string query over all fields when no
-// field is given); a JSON object is parsed as a raw bleve query.
-func bleveQuery(si *datastore.FTSSearchInfo) (query.Query, error) {
+// field is given); a JSON object is parsed as a raw bleve query. ksName is the search's
+// keyspace name (see the whole-keyspace note below).
+func bleveQuery(si *datastore.FTSSearchInfo, ksName string) (query.Query, error) {
 	field := ""
 	if si.Field != nil {
 		if s, ok := si.Field.Actual().(string); ok {
@@ -415,6 +416,16 @@ func bleveQuery(si *datastore.FTSSearchInfo) (query.Query, error) {
 			// strip the backticks to get bleve's field path (a.b).
 			field = strings.ReplaceAll(s, "`", "")
 		}
+	}
+	// `SEARCH(events, "q")` naming the KEYSPACE (rather than its FROM alias `e`, which
+	// gives field="") means "search the whole keyspace", but cbq hands it to us as
+	// field="events" -- a bleve field named after the keyspace, which no document has,
+	// so a match query would find NOTHING (IDEA-0033: COUNT still worked via a covered
+	// path, but row retrieval silently returned 0). Treat field==keyspace-name as the
+	// whole-keyspace search it means. (A document field literally named after its own
+	// keyspace is vanishingly rare; searching the whole doc is the right intent.)
+	if field != "" && field == ksName {
+		field = ""
 	}
 	if si.Query == nil {
 		return nil, fmt.Errorf("empty SEARCH query")

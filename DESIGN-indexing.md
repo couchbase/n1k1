@@ -119,6 +119,14 @@ an FTS hit id is a framing RECORD id, which for a multi-record file is a contain
 `Keyspace.Fetch` had silently returned zero rows on every multi-record keyspace (and
 made an FTS index turn flex-served equality predicates into empty results) — IDEA-0030.
 
+`SEARCH(<keyspace-name>, "q")` (naming the keyspace rather than its FROM alias, which cbq
+resolves to `field=""` = whole-doc) is handed to us as `field=<keyspace-name>` — a bleve
+field named after the keyspace, which no document has. `bleveQuery` treats `field ==
+<keyspace name>` as the whole-keyspace search it means; otherwise a match query found
+nothing, so row-emitting projections silently returned 0 while COUNT still worked — the
+"counts but can't fetch" split (IDEA-0033). A genuine field-scoped `SEARCH(alias.field,…)`
+is unaffected.
+
 ### In-memory secondary-index backend (shipped)
 
 `glue/idx_mem.go` is a bbolt-free alternative backend: it reuses everything

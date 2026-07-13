@@ -85,3 +85,47 @@ func TestFTSMultiRecordFetch(t *testing.T) {
 		})
 	}
 }
+
+// TestFTSSearchByKeyspaceName (IDEA-0033): SEARCH() naming the KEYSPACE -- as support
+// engineers naturally write it (`SEARCH(events, "q")`, vs the FROM alias `SEARCH(e,"q")`)
+// -- must RETRIEVE rows, not just COUNT them. cbq hands the keyspace name to the fts scan
+// as a bleve FIELD (field="events"); no document has such a field, so a match query found
+// nothing and every row-emitting projection silently returned 0, while COUNT(*) (a covered
+// path) still worked -- the confusing "counts but can't fetch" split. The keyspace-name
+// form must behave like the alias form (a whole-keyspace search); a genuinely field-scoped
+// SEARCH(alias.field) must still work (not be broadened).
+func TestFTSSearchByKeyspaceName(t *testing.T) {
+	lines := []string{
+		`{"id":"e1","etype":"seqnoWaitingStarted","node":"n1"}`,
+		`{"id":"e2","etype":"rebalanceStart","node":"n2"}`,
+		`{"id":"e3","etype":"seqnoWaitingStarted","node":"n3"}`,
+	}
+	catalog := `{"indexes":[{"name":"ft_events","keyspace":"events","kind":"fts"}]}`
+	root := writeJSONLKeyspace(t, "events", lines, catalog)
+
+	ids := func(stmt string) []string {
+		store, conv := flatRootConv(t, root, stmt)
+		if !hasKind(conv.TopOp, "datastore-scan-fts") {
+			t.Fatalf("%q: expected an FTS scan, got %v", stmt, opKinds(conv.TopOp))
+		}
+		got := idJSONs(flatRootRows(t, conv, testGlueExec(t, false, store, conv)))
+		sort.Strings(got)
+		return got
+	}
+	want := []string{`{"id":"e1"}`, `{"id":"e3"}`}
+
+	cases := []struct{ name, stmt string }{
+		{"by-keyspace-name", `SELECT e.id AS id FROM events e WHERE SEARCH(events,"seqnowaitingstarted")`},
+		{"by-alias", `SELECT e.id AS id FROM events e WHERE SEARCH(e,"seqnowaitingstarted")`},
+		{"by-keyspace-name-unaliased", `SELECT id FROM events WHERE SEARCH(events,"seqnowaitingstarted")`},
+		// A real field-scoped search must NOT be broadened to whole-doc by the fix.
+		{"field-scoped", `SELECT e.id AS id FROM events e WHERE SEARCH(e.etype,"seqnoWaitingStarted")`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ids(tc.stmt); !equalStrs(got, want) {
+				t.Errorf("%q: want %v, got %v", tc.stmt, want, got)
+			}
+		})
+	}
+}
