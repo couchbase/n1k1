@@ -127,6 +127,15 @@ nothing, so row-emitting projections silently returned 0 while COUNT still worke
 "counts but can't fetch" split (IDEA-0033). A genuine field-scoped `SEARCH(alias.field,…)`
 is unaffected.
 
+**Analyzer + wildcard/prefix/fuzzy (IDEA-0035).** The dynamic mapping uses bleve's default
+(standard) analyzer: each string value is one whole token, lowercased — so `SEARCH` matching
+is case-insensitive but NOT substring (`"seqnoWaitingStarted"` matches, `"waiting"` does not).
+Whole-doc `SEARCH(ks, "x*")` already routed through bleve's query-string parser (prefix `x*`,
+wildcard `a*b`/`a?b`, fuzzy `x~`/`x~2`). Field-scoped `SEARCH(ks.field, …)` used a match query
+(analyzed, no wildcards) → a field-scoped `x*` matched nothing; `fieldStringQuery` now detects
+those markers and builds the corresponding bleve term query (Prefix/Wildcard/Fuzzy), lowercased
+to match the case-insensitive index — bringing field-scoped SEARCH to parity with whole-doc.
+
 ### In-memory secondary-index backend (shipped)
 
 `glue/idx_mem.go` is a bbolt-free alternative backend: it reuses everything

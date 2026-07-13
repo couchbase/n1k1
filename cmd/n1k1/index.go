@@ -370,8 +370,16 @@ Index definitions live in <dataRoot>/.n1k1/catalog.json:
   }
 A gsi (default) index's keys are N1QL expressions -- a field ("country") or nested
 path ("personal_details.state"); list several for a composite index; optional
-"where" makes it partial. A "kind":"fts" index is full-text (bleve, dynamic: indexes
-every field), queried with SEARCH(keyspace, "text") or SEARCH(keyspace.field, "q").
+"where" makes it partial.
+
+A "kind":"fts" index is full-text (bleve, dynamic: indexes every field), queried with
+SEARCH(keyspace, "text") -- searches the whole document -- or SEARCH(keyspace.field, "q")
+for one field. SEARCH by the keyspace NAME or its FROM alias both search the whole doc.
+  Analyzer: each string value is ONE whole token, lowercased -- so matching is
+    CASE-INSENSITIVE but NOT substring: SEARCH(ks,"seqnoWaitingStarted") and
+    SEARCH(ks,"SEQNOWAITINGSTARTED") match, but "waiting" (a substring) does not.
+  Wildcards / fuzzy (think grep):  x*  = prefix,  a*b / a?b = wildcard,  x~ / x~2 = fuzzy
+    (edit distance).  e.g. SEARCH(ks,"rebalanc*"), SEARCH(ks.etype,"rebalanc*").
 After editing catalog.json, run '.index rebuild' (or just query -- lazy on first use).
 
 Startup flag -index picks whether/when these are used (builds are cached on disk):

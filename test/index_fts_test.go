@@ -129,3 +129,49 @@ func TestFTSSearchByKeyspaceName(t *testing.T) {
 		})
 	}
 }
+
+// TestFTSFieldWildcard (IDEA-0035): a FIELD-scoped SEARCH(alias.field, "term") supports
+// prefix (`x*`), wildcard (`r*e`), and fuzzy (`x~`) queries -- previously a field-scoped
+// wildcard used a match query (analyzed, no wildcard) and returned 0 rows, while whole-doc
+// SEARCH already got these via bleve's query-string parser. Term queries match indexed
+// terms verbatim, so the term is lowercased -> case-insensitive, matching the whole-token
+// analyzer. A plain field term must still be an ordinary (analyzed) match.
+func TestFTSFieldWildcard(t *testing.T) {
+	lines := []string{
+		`{"id":"e1","etype":"rebalanceStart"}`,
+		`{"id":"e2","etype":"rebalanceFinish"}`,
+		`{"id":"e3","etype":"seqnoWaitingStarted"}`,
+	}
+	catalog := `{"indexes":[{"name":"ft","keyspace":"events","kind":"fts"}]}`
+	root := writeJSONLKeyspace(t, "events", lines, catalog)
+
+	ids := func(stmt string) []string {
+		store, conv := flatRootConv(t, root, stmt)
+		if !hasKind(conv.TopOp, "datastore-scan-fts") {
+			t.Fatalf("%q: expected an FTS scan, got %v", stmt, opKinds(conv.TopOp))
+		}
+		got := idJSONs(flatRootRows(t, conv, testGlueExec(t, false, store, conv)))
+		sort.Strings(got)
+		return got
+	}
+	e12 := []string{`{"id":"e1"}`, `{"id":"e2"}`}
+	cases := []struct {
+		name, stmt string
+		want       []string
+	}{
+		{"field-prefix", `SELECT e.id AS id FROM events e WHERE SEARCH(e.etype,"rebalanc*")`, e12},
+		{"field-prefix-uppercase", `SELECT e.id AS id FROM events e WHERE SEARCH(e.etype,"REBALANCE*")`, e12},
+		{"field-interior-wildcard", `SELECT e.id AS id FROM events e WHERE SEARCH(e.etype,"reb*Start")`, []string{`{"id":"e1"}`}},
+		{"field-fuzzy-typo", `SELECT e.id AS id FROM events e WHERE SEARCH(e.etype,"rebalancestrt~")`, []string{`{"id":"e1"}`}},
+		{"field-prefix-whole-token", `SELECT e.id AS id FROM events e WHERE SEARCH(e.etype,"seqno*")`, []string{`{"id":"e3"}`}},
+		{"field-plain-match", `SELECT e.id AS id FROM events e WHERE SEARCH(e.etype,"seqnoWaitingStarted")`, []string{`{"id":"e3"}`}},
+		{"whole-doc-prefix", `SELECT e.id AS id FROM events e WHERE SEARCH(e,"rebalanc*")`, e12},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ids(tc.stmt); !equalStrs(got, tc.want) {
+				t.Errorf("%q: want %v, got %v", tc.stmt, tc.want, got)
+			}
+		})
+	}
+}

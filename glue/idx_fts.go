@@ -37,6 +37,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -433,9 +434,7 @@ func bleveQuery(si *datastore.FTSSearchInfo, ksName string) (query.Query, error)
 	switch qv := si.Query.Actual().(type) {
 	case string:
 		if field != "" {
-			mq := bleve.NewMatchQuery(qv)
-			mq.SetField(field)
-			return mq, nil
+			return fieldStringQuery(field, qv), nil
 		}
 		return bleve.NewQueryStringQuery(qv), nil
 	default:
@@ -448,6 +447,61 @@ func bleveQuery(si *datastore.FTSSearchInfo, ksName string) (query.Query, error)
 		}
 		return query.ParseQuery(raw)
 	}
+}
+
+// fieldStringQuery builds a FIELD-scoped bleve query from a SEARCH(alias.field, "term")
+// string. A plain term is a match query (analyzer-applied, so case-insensitive whole-
+// token). Wildcard / prefix / fuzzy markers -- which a match query can't express -- build
+// the corresponding TERM query instead: a trailing `*` is a prefix, any other `*`/`?` a
+// wildcard, and a trailing `~` / `~<n>` a fuzzy (edit-distance) search. Those term queries
+// match INDEXED terms verbatim (no analyzer), so the term is lowercased to stay consistent
+// with the case-insensitive index. (Whole-doc SEARCH already gets all of these via bleve's
+// query-string parser; this brings field-scoped SEARCH to parity -- IDEA-0035.)
+func fieldStringQuery(field, term string) query.Query {
+	// fuzzy: a trailing `~` (edit distance 1) or `~<n>` (bleve caps fuzziness at 2).
+	if i := strings.LastIndexByte(term, '~'); i >= 0 {
+		if n, ok := fuzzyDistance(term[i+1:]); ok {
+			fq := bleve.NewFuzzyQuery(strings.ToLower(term[:i])) // default fuzziness 1
+			if n > 0 {
+				if n > 2 {
+					n = 2
+				}
+				fq.SetFuzziness(n)
+			}
+			fq.SetField(field)
+			return fq
+		}
+	}
+	if strings.ContainsAny(term, "*?") {
+		low := strings.ToLower(term)
+		// A single trailing `*` (no other wildcard char) is a prefix -- cheaper than a
+		// general wildcard automaton.
+		if strings.HasSuffix(low, "*") && !strings.ContainsAny(low[:len(low)-1], "*?") {
+			pq := bleve.NewPrefixQuery(low[:len(low)-1])
+			pq.SetField(field)
+			return pq
+		}
+		wq := bleve.NewWildcardQuery(low)
+		wq.SetField(field)
+		return wq
+	}
+	mq := bleve.NewMatchQuery(term)
+	mq.SetField(field)
+	return mq
+}
+
+// fuzzyDistance parses the text after a `~`: "" (a bare `~`) yields (0, true) meaning
+// "default fuzziness"; a non-negative integer yields (n, true); anything else (a literal
+// `~` inside the term, e.g. "a~b") yields ok=false so the term is treated verbatim.
+func fuzzyDistance(s string) (int, bool) {
+	if s == "" {
+		return 0, true
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil || n < 0 {
+		return 0, false
+	}
+	return n, true
 }
 
 // ftsMapping builds the bleve index mapping for a def. With no declared keys it
