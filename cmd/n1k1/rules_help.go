@@ -48,6 +48,7 @@ COMMANDS
   .multi list --queries <dir>                      inventory the queries (metadata only: no dataset, no compile)
   .multi run  --queries <dir> [--bind <manifest>]  compile & execute the queries over the open dataset
   .multi lint --queries <dir> [--bind <manifest>]  authoring report card (compiles, does NOT run)
+  .multi explain --queries <dir> [--bind <manifest>]  show the fused shared-scan plan + fusion map (compiles, does NOT run)
   .multi test --queries <dir> [--update]           golden-fixture runner (CI): check @fixture vs @expect
   .multi help                                      this guide
 

@@ -375,6 +375,62 @@ func TestRulesLint(t *testing.T) {
 	}
 }
 
+// TestRulesExplain: `.multi explain` surfaces the fused shared-scan PLAN (the op tree
+// MULTI_MATCHES's stream-fn node hides) plus the fusion map -- which queries share the
+// scan and the index literal each is keyed on -- and lists the standalone/rejected ones
+// (IDEA-0036). It compiles but does NOT run (no findings printed).
+func TestRulesExplain(t *testing.T) {
+	root := newLogsBundle(t)
+	// A second keyspace, so the fused plan is a union-all over TWO shared scans.
+	evDir := filepath.Join(root, "default", "events")
+	if err := os.MkdirAll(evDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(evDir, "e0.json"), []byte(`{"act":"login","who":"ann"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	corpus := writeCorpus(t, map[string]string{
+		"errors":     `SELECT * FROM logs WHERE sev = "ERROR"`,           // fused, native, indexed on "ERROR"
+		"everything": `SELECT * FROM logs`,                               // fused, always-wake (no literal)
+		"logins":     `SELECT * FROM events WHERE act = "login"`,         // fused, a SECOND keyspace -> union-all
+		"grouped":    `SELECT sev, COUNT(*) AS n FROM logs GROUP BY sev`, // standalone
+		"broken_x":   `SELECT * FROM logs WHERE`,                         // rejected
+	})
+
+	var out, errb bytes.Buffer
+	c := &cli{prog: "n1k1", dir: root, mode: "jsonlines", out: &out, stderr: &errb}
+	c.cmdRules("explain --queries " + corpus)
+
+	got := out.String()
+	for _, want := range []string{
+		"fused across",           // the roll-up header
+		"FUSED PLAN",             // the op-tree section
+		"union-all",              // two keyspaces fused -> a union-all over both shared scans
+		"broadcast-indexed",      // the fused MQO shape (was hidden behind stream-fn)
+		"datastore-scan-records", // the shared scan leaf
+		"FUSION MAP",             // which queries share the scan
+		"shared scan:",           // per-keyspace group header
+		`literal "ERROR"`,        // the indexed detector's necessary literal
+		"always-wake",            // the no-literal detector
+		"STANDALONE",             // the grouped detector
+		"grouped",                //   ... named
+		"REJECTED",               // the broken detector
+		"broken_x",               //   ... named
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf(".multi explain missing %q; stdout:\n%s", want, got)
+		}
+	}
+	// explain compiles, it does NOT run -- no findings rows (a finding row is
+	// `{"label":"errors",...}`; the bare label token appears in the plan's schema).
+	if strings.Contains(got, `"label":"`) {
+		t.Errorf(".multi explain must not run the corpus (no findings); stdout:\n%s", got)
+	}
+	if c.failed {
+		t.Errorf("a rejected detector must not fail explain (c.failed=true); stderr:\n%s", errb.String())
+	}
+}
+
 // TestRulesTest: the golden-fixture runner in check mode over a corpus of a PASSING
 // recipe (fixture + correct expect), a FAILING recipe (fixture + deliberately wrong
 // expect -> reported with a diff), a NO-FIXTURE recipe (counted, not a hard fail), and a

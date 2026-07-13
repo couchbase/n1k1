@@ -62,7 +62,7 @@ import (
 	"github.com/couchbase/n1k1/glue"
 )
 
-// cmdRules dispatches the .multi command family (list | run | lint | test | help).
+// cmdRules dispatches the .multi command family (list | run | lint | explain | test | help).
 func (c *cli) cmdRules(arg string) {
 	sub, rest := splitFirst(arg)
 	switch strings.ToLower(sub) {
@@ -72,6 +72,8 @@ func (c *cli) cmdRules(arg string) {
 		c.cmdRulesRun(rest)
 	case "lint":
 		c.cmdRulesLint(rest)
+	case "explain":
+		c.cmdRulesExplain(rest)
 	case "test":
 		c.cmdRulesTest(rest)
 	case "", "help":
@@ -580,6 +582,160 @@ func (c *cli) cmdRulesLint(arg string) {
 		score.PctNative(), score.Native, score.Converted,
 		score.PctIndexPruned(), score.IndexPruned, score.FusedForIndex,
 		score.Standalone, score.Rejected)
+}
+
+// cmdRulesExplain implements `.multi explain`: it surfaces the fused MQO / shared-scan
+// PLAN that a `MULTI_MATCHES()` query otherwise hides behind one opaque `stream-fn` node
+// (IDEA-0036 -- the machinery `.multi` advertises was invisible in `.explain`). It
+// compiles (does NOT run) the corpus and prints three things:
+//
+//   - the fused op tree: the union-all(broadcast-indexed(cse(scan))) shape, ONE shared
+//     scan per keyspace, with per-expression native/boxed verdicts (via FormatConvPlan);
+//   - the fusion map: which queries share each keyspace scan, the Aho-Corasick predicate
+//     index literal each is keyed on (or "always-wake"), and its eval lane;
+//   - the standalone / rejected queries that fell out of fusion, with why.
+//
+// It is the observability companion to `.multi lint` (which gives the scores): here you
+// see the actual plan, so you can confirm CSE + the shared scan + which literal the index
+// picked. The per-query facts come from CorpusLint, whose classifier mirrors CorpusCompile
+// exactly, so the fusion map is faithful to the tree above.
+func (c *cli) cmdRulesExplain(arg string) {
+	args, err := parseRulesArgs(arg)
+	if err != nil {
+		fmt.Fprintf(c.stderr, "%s: .multi explain: %v\n", c.prog, err)
+		c.failed = true
+		return
+	}
+	dets, err := loadCorpus(args.queries)
+	if err != nil {
+		fmt.Fprintf(c.stderr, "%s: .multi explain: %v\n", c.prog, err)
+		c.failed = true
+		return
+	}
+	sess, binding, err := c.rulesSession(args.bind)
+	if err != nil {
+		fmt.Fprintf(c.stderr, "%s: .multi explain: %v\n", c.prog, err)
+		c.failed = true
+		return
+	}
+	// Compiling plans each detector, resolving keyspaces -- report the same fail-loud
+	// binding coverage as lint, advisory here (an unresolved keyspace shows up as a
+	// rejected query in the map below).
+	c.reportBindingCoverage(sess, binding)
+
+	cc, err := sess.CorpusCompile(dets)
+	if err != nil {
+		fmt.Fprintf(c.stderr, "%s: .multi explain: compile: %v\n", c.prog, err)
+		c.failed = true
+		return
+	}
+	report, score, err := sess.CorpusLint(dets)
+	if err != nil {
+		fmt.Fprintf(c.stderr, "%s: .multi explain: %v\n", c.prog, err)
+		c.failed = true
+		return
+	}
+	c.renderCorpusExplain(cc, report, score)
+}
+
+// renderCorpusExplain prints the fused plan, the per-keyspace fusion map, and the
+// standalone/rejected queries. Free-form text to c.out (like `.explain`): a plan tree
+// isn't tabular, so it is not routed through renderRows.
+func (c *cli) renderCorpusExplain(cc *glue.CompiledCorpus, report []glue.DetectorLint, score glue.CorpusScore) {
+	w := c.out
+
+	// Fused detectors grouped by their shared-scan keyspace, in first-seen order (so
+	// the map lists keyspaces in the order queries reference them). A fused detector
+	// always has a keyspace; guard defensively.
+	ksOrder := []string{}
+	byKS := map[string][]glue.DetectorLint{}
+	for _, d := range report {
+		if d.Class != glue.LintFused {
+			continue
+		}
+		ks := orEmptyDash(d.Keyspace)
+		if _, seen := byKS[ks]; !seen {
+			ksOrder = append(ksOrder, ks)
+		}
+		byKS[ks] = append(byKS[ks], d)
+	}
+
+	fmt.Fprintf(w, "%s%d query/queries → %d fused across %d shared scan(s), %d standalone, %d rejected\n",
+		c.icon("\U0001F4CB "), score.Total, score.Fused, len(ksOrder), score.Standalone, score.Rejected)
+
+	// The fused op tree -- the shape MULTI_MATCHES's stream-fn node hides. nil when
+	// nothing fused (each query runs its own scan; there is no shared-scan plan).
+	fmt.Fprintln(w)
+	if cc.Plan != nil {
+		fmt.Fprintln(w, c.style.Bold("FUSED PLAN (shared-scan MQO):"))
+		tree := glue.FormatConvPlan(cc.Plan)
+		fmt.Fprint(w, indentLines(tree, "  "))
+		if legend := glue.ConvPlanLegendFor(tree); legend != "" {
+			fmt.Fprint(w, "\n"+indentLines(legend, "  "))
+		}
+	} else {
+		fmt.Fprintf(w, "%s\n", c.style.Dim("FUSED PLAN: none -- no query fused (nothing shares a scan); each runs standalone below"))
+	}
+
+	// The fusion map: which queries share each keyspace scan, keyed on which literal.
+	if len(ksOrder) > 0 {
+		fmt.Fprintf(w, "\n%s\n", c.style.Bold("FUSION MAP (queries sharing each scan):"))
+		for _, ks := range ksOrder {
+			dls := byKS[ks]
+			fmt.Fprintf(w, "  %s  %s\n", c.style.Cyan("shared scan: "+ks),
+				c.style.Dim(fmt.Sprintf("(%d query/queries, one scan)", len(dls))))
+			for _, d := range dls {
+				fmt.Fprintf(w, "    %s %-24s %-14s %s\n",
+					c.icon("•"), d.Label, explainIndexCell(d), c.style.Dim("["+orEmptyDash(d.Lane)+"]"))
+			}
+		}
+	}
+
+	// Standalone: valid, still runs, just not fused (its own scan).
+	if score.Standalone > 0 {
+		fmt.Fprintf(w, "\n%s\n", c.style.Bold("STANDALONE (own scan, not fused):"))
+		for _, d := range report {
+			if d.Class == glue.LintStandalone {
+				fmt.Fprintf(w, "  %s %-24s %s\n", c.icon("•"), d.Label, c.style.Dim(orEmptyDash(d.Reason)))
+			}
+		}
+	}
+
+	// Rejected: never runs, so it can never fire -- surfaced, never silently dropped.
+	if score.Rejected > 0 {
+		fmt.Fprintf(w, "\n%s\n", c.style.Bold("REJECTED (never runs):"))
+		for _, d := range report {
+			if d.Class == glue.LintRejected {
+				fmt.Fprintf(w, "  %s %-24s %s\n", c.icon("✗"), d.Label, c.style.Yellow(orEmptyDash(d.Reason)))
+			}
+		}
+	}
+}
+
+// explainIndexCell renders a fused detector's predicate-index status: the necessary
+// literal the Aho-Corasick index keys on (so only rows carrying it wake the query), or
+// "always-wake" when no discriminating literal was found (the query is evaluated on
+// every scanned row -- the thing `.multi lint` advises adding a literal to fix).
+func explainIndexCell(d glue.DetectorLint) string {
+	if d.Indexed {
+		return fmt.Sprintf("literal %q", d.Literal)
+	}
+	return "always-wake"
+}
+
+// indentLines prefixes every non-empty line of s with pad (used to nest the op tree /
+// legend under their section headers). A trailing newline is preserved.
+func indentLines(s, pad string) string {
+	if s == "" {
+		return s
+	}
+	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
+	for i, ln := range lines {
+		if ln != "" {
+			lines[i] = pad + ln
+		}
+	}
+	return strings.Join(lines, "\n") + "\n"
 }
 
 // orEmptyDash renders an empty string as "-" so a blank cell reads clearly in the
