@@ -273,6 +273,37 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 		EmitPop(pathNext, "G") // !lz
 
+		// A no-GROUP-BY aggregate over an EMPTY input still yields ONE row in SQL -- the
+		// initial aggregates (COUNT=0, SUM/MIN/MAX=null). With no group keys, every input
+		// row folds into a single constant-key group; pre-seed that group here (Init'd,
+		// not yet Updated) BEFORE draining the child, so an empty child still leaves one
+		// group for the finalizer to yield. Non-empty input just Updates this same
+		// pre-Init'd group -- an identical result to Init-on-first-row. A GROUP BY
+		// (len(groupExprs) > 0) must yield nothing on empty input, so it is excluded;
+		// DISTINCT (no aggExprs) likewise.
+		if len(aggExprs) > 0 { // !lz
+			if len(groupExprs) == 0 { // !lz
+				lzGroupVal = lzGroupValReuse[:0]
+
+				for aggCalcI := range aggCalcs { // !lz
+					for aggNameI := range aggCalcs[aggCalcI].([]interface{}) { // !lz
+						aggIdx := lzAggIdxs[aggCalcI][aggNameI] // !lz
+						lzAgg = base.Aggs[aggIdx]
+
+						lzGroupVal = lzAgg.Init(lzVars, lzGroupVal)
+					} // !lz
+				} // !lz
+
+				lzGroupValReuse = lzGroupVal[:0]
+
+				lzGroupKey, lzErr = base.ValsEncodeCanonical(lzValsOut[:0],
+					lzGroupKey[:0], lzVars.Ctx.ValComparer)
+				if lzErr == nil {
+					lzSet.Set(lzGroupKey, lzGroupVal)
+				}
+			} // !lz
+		} // !lz
+
 		if lzErr == nil {
 			ExecOp(o.Children[0], lzVars, lzYieldVals, lzYieldErr, pathNext, "GO") // !lz
 		}

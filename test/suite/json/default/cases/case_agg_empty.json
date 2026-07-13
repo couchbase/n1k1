@@ -1,0 +1,28 @@
+[
+    {
+        "description": "no-GROUP-BY COUNT(*) over an empty (no-match) input yields one row {n:0}",
+        "statements": "SELECT COUNT(*) AS n FROM default:contacts WHERE name = \"zzz_nonexistent\"",
+        "results": [
+            { "n": 0 }
+        ]
+    },
+    {
+        "description": "no-GROUP-BY COUNT(field) over empty input yields 0",
+        "statements": "SELECT COUNT(x) AS c, COUNT(*) AS n FROM default:contacts WHERE name = \"zzz_nonexistent\"",
+        "results": [
+            { "c": 0, "n": 0 }
+        ]
+    },
+    {
+        "description": "no-GROUP-BY SUM/MIN/MAX/AVG over empty input yield null; COUNT yields 0",
+        "statements": "SELECT SUM(x) AS s, MIN(x) AS mn, MAX(x) AS mx, AVG(x) AS av, COUNT(*) AS n FROM default:contacts WHERE name = \"zzz_nonexistent\"",
+        "results": [
+            { "s": null, "mn": null, "mx": null, "av": null, "n": 0 }
+        ]
+    },
+    {
+        "description": "a GROUP BY over empty input yields NO rows (not one) -- the counterexample",
+        "statements": "SELECT name, COUNT(*) AS n FROM default:contacts WHERE name = \"zzz_nonexistent\" GROUP BY name",
+        "results": []
+    }
+]

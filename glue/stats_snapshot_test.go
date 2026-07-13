@@ -235,11 +235,13 @@ func TestStatsSnapshotLiveAggregates(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Gather the running-aggregate rows that actually carried aggregates (early checkpoints,
-	// before the first row is folded, have an empty group -> no aggs).
+	// Gather the running-aggregate rows that have folded >=1 row (numeric aggregates).
+	// A no-GROUP-BY aggregate pre-seeds its single group, so early checkpoints -- before
+	// any row folds -- show the INITIAL group (count 0; sum/min/max null); skip those and
+	// assert the numeric partials climb monotonically toward the final.
 	var withAggs []map[string]string
 	for _, sp := range snaps {
-		if len(sp.Aggs) == 1 {
+		if len(sp.Aggs) == 1 && sp.Aggs[0].Vals["sum"] != "null" {
 			withAggs = append(withAggs, sp.Aggs[0].Vals)
 		}
 	}
