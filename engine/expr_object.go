@@ -66,7 +66,7 @@ func ExprObjectAdd(lzVars *base.Vars, labels base.Labels,
 		}
 
 		return lzVal
-	} // !lz
+	}
 
 	lzExprFunc = MakeTriExprFunc(lzVars, labels, params, path, triExprFunc) // !lzRHS
 
@@ -98,7 +98,7 @@ func ExprObjectPut(lzVars *base.Vars, labels base.Labels,
 		}
 
 		return lzVal
-	} // !lz
+	}
 
 	lzExprFunc = MakeTriExprFunc(lzVars, labels, params, path, triExprFunc) // !lzRHS
 
@@ -127,7 +127,7 @@ func ExprObjectRemove(lzVars *base.Vars, labels base.Labels,
 		}
 
 		return lzVal
-	} // !lz
+	}
 
 	lzExprFunc = MakeBiExprFunc(lzVars, labels, params, path, biExprFunc) // !lzRHS
 
@@ -157,7 +157,7 @@ func ExprObjectConcat(lzVars *base.Vars, labels base.Labels,
 		}
 
 		return lzVal
-	} // !lz
+	}
 
 	lzExprFunc = MakeBiExprFunc(lzVars, labels, params, path, biExprFunc) // !lzRHS
 

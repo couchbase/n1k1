@@ -80,7 +80,7 @@ func MakeProjectFunc(lzVars *base.Vars, labels base.Labels,
 				// lzValsOut, so no need to deep copy lzVal yet.
 				lzValsOut = append(lzValsOut, lzVal)
 			}
-		} // !lz
+		}
 
 		return lzValsOut
 	}

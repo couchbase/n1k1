@@ -42,7 +42,7 @@ func ExprConcat(lzVars *base.Vars, labels base.Labels,
 					lzChildren[lzI](lzVals, lzYieldErr) // <== emitCaptured: path strconv.Itoa(lzI)
 
 				lzValsReduce = append(lzValsReduce, lzVal)
-			} // !lz
+			}
 
 			lzVal, lzBufPre = base.NaryConcatVals(lzValsReduce, lzBufPre)
 

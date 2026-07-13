@@ -58,7 +58,7 @@ func ExprCase(lzVars *base.Vars, labels base.Labels,
 						lzMatched = true
 					}
 				}
-			} // !lz
+			}
 
 			if len(lzChildren)%2 == 1 { // !lz
 				if !lzMatched {
@@ -67,7 +67,7 @@ func ExprCase(lzVars *base.Vars, labels base.Labels,
 
 					lzMatched = true
 				}
-			} // !lz
+			}
 
 			if !lzMatched {
 				lzVal = base.ValNull

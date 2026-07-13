@@ -93,7 +93,7 @@ func ExprBetween(lzVars *base.Vars, labels base.Labels,
 		}
 
 		return lzVal
-	} // !lz
+	}
 
 	lzExprFunc = MakeTriExprFunc(lzVars, labels, params, path, triExprFunc) // !lzRHS
 

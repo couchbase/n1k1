@@ -84,7 +84,7 @@ func ExprLabelPath(lzVars *base.Vars, labels base.Labels,
 				lzValPre = lzValOut
 			} else { // !lz
 				_, _ = lzValPath, lzValPre
-			} // !lz
+			}
 
 			return lzVal
 		}

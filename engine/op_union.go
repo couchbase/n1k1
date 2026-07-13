@@ -65,13 +65,13 @@ func OpUnionAll(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 									lzValsUnion[unionIdx] = lzVals[childIdx]
 									found = true // !lz
 									break        // !lz
-								} // !lz
-							} // !lz
+								}
+							}
 
 							if !found { // !lz
 								lzValsUnion[unionIdx] = base.ValMissing
-							} // !lz
-						} // !lz
+							}
+						}
 
 						lzYieldValsOrig(lzValsUnion)
 					}
@@ -84,7 +84,7 @@ func OpUnionAll(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 			}
 
 			EmitPop(pathNextU, strconv.Itoa(childi)) // !lz
-		} // !lz
+		}
 
 		lzStage.YieldResultsFromActors()
 

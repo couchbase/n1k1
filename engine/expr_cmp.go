@@ -139,11 +139,11 @@ func ExprCmpStatic(lzVars *base.Vars, labels base.Labels,
 											if staticF64 < lzF64 {
 												lzVal = lzCmpLT
 											}
-										} // !lz
+										}
 									}
 								}
 							}
-						} // !lz
+						}
 
 						if lzCmpNeeded {
 							lzCmp := lzVars.Ctx.ValComparer.CompareWithType(
@@ -156,11 +156,11 @@ func ExprCmpStatic(lzVars *base.Vars, labels base.Labels,
 									if lzCmp < 0 {
 										lzVal = lzCmpLT
 									}
-								} // !lz
+								}
 							}
 						}
 					}
-				} // !lz
+				}
 			}
 
 			return lzVal
@@ -204,14 +204,14 @@ func ExprCmpDynamic(lzVars *base.Vars, labels base.Labels,
 							if lzCmp < 0 {
 								lzVal = lzCmpLT
 							}
-						} // !lz
+						}
 					}
 				}
 			}
 		}
 
 		return lzVal
-	} // !lz
+	}
 
 	lzExprFunc = MakeBiExprFunc(lzVars, labels, params, path, biExprFunc) // !lzRHS
 

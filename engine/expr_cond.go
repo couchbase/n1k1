@@ -66,7 +66,7 @@ func ExprCondUnknown(lzVars *base.Vars, labels base.Labels,
 					lzChildren[lzI](lzVals, lzYieldErr) // <== emitCaptured: path strconv.Itoa(lzI)
 
 				lzValsReduce = append(lzValsReduce, lzVal)
-			} // !lz
+			}
 
 			if mode == base.CondIfNull { // !lz
 				lzVal = base.NaryFirstKeptVals(lzValsReduce, base.CondIfNull)
@@ -74,7 +74,7 @@ func ExprCondUnknown(lzVars *base.Vars, labels base.Labels,
 				lzVal = base.NaryFirstKeptVals(lzValsReduce, base.CondIfMissing)
 			} else { // !lz
 				lzVal = base.NaryFirstKeptVals(lzValsReduce, base.CondIfMissingOrNull)
-			} // !lz
+			}
 
 			return lzVal
 		}

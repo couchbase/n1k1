@@ -54,7 +54,7 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 		if len(aggExprs) > 0 { // !lz
 			aggProjectFunc =
 				MakeProjectFunc(lzVars, o.Children[0].Labels, aggExprs, pathNextG, "AP") // !lz
-		} // !lz
+		}
 
 		_, _ = groupProjectFunc, aggProjectFunc
 
@@ -91,9 +91,9 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 			var lzAggIdxRow []int                             // !lz
 			for _, aggName := range aggCalc.([]interface{}) { // !lz
 				lzAggIdxRow = append(lzAggIdxRow, base.AggCatalog[aggName.(string)]) // !lz
-			} // !lz
+			}
 			lzAggIdxs = append(lzAggIdxs, lzAggIdxRow) // !lz
-		} // !lz
+		}
 		_ = lzAggIdxs // !lz
 
 		lzStats := StatsFromVars(lzVars)                          // stats (live) // <== genCompiler:hide
@@ -166,8 +166,8 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 								lzAgg = base.Aggs[aggIdx]
 
 								lzGroupVal = lzAgg.Init(lzVars, lzGroupVal)
-							} // !lz
-						} // !lz
+							}
+						}
 
 						lzGroupValReuse = lzGroupVal[:0]
 					}
@@ -192,8 +192,8 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 								lzValsOut[aggCalcI], lzGroupValNew, lzGroupVal, lzVars.Ctx.ValComparer)
 
 							lzGroupValChanged = lzGroupValChanged || lzChanged
-						} // !lz
-					} // !lz
+						}
+					}
 
 					if lzGroupKeyFound {
 						if lzGroupValChanged {
@@ -216,7 +216,7 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 						// We fall thru to the below lzSet.Set().
 						lzGroupVal = lzGroupValNew
 					}
-				} // !lz
+				}
 
 				if !lzGroupKeyFound {
 					lzSet.Set(lzGroupKey, lzGroupVal)
@@ -250,13 +250,13 @@ func OpGroup(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 								lzValsOut = append(lzValsOut, lzVal)
 
 								lzValBytes += len(lzVal)
-							} // !lz
-						} // !lz
+							}
+						}
 
 						if cap(lzValOut) < lzValBytes {
 							lzValOut = make(base.Val, lzValBytes)
 						}
-					} // !lz
+					}
 
 					StatsCounterBump(lzStats, lzStatsBase+StatGroupGroupsOut) // stats: live // <== genCompiler:hide
 

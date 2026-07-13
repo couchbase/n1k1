@@ -136,7 +136,12 @@ Principles (from `DESIGN.md`):
 - **Positional "registers":** fields pre-resolved to `vals[idx]` slots.
 - **`lz` / lazy codegen:** exprs in the golang subset so `intermed_build` emits both
   interpreter and compiled paths (`varLift`, `// !lz`, `LzScope`). A native expr = a
-  setup func returning an `ExprFunc` closure; static work runs once.
+  setup func returning an `ExprFunc` closure; static work runs once. A build-time
+  control-flow block opens with `// !lz` (`if X { // !lz`, `for … { // !lz`); its
+  **closing `}` needs no marker** — `intermed_build` auto-classifies a bare `}` as
+  build-time when it sits at the same indentation as a still-open `// !lz` brace
+  (gofmt guarantees the alignment). `} // !lz` still works if you prefer it explicit;
+  `} else { // !lz` (a close-and-reopen) still takes the marker.
 - **Early-constant folding:** `sales < 1000` types `1000` once at setup (see
   `ExprCmp`'s static path), not per row.
 

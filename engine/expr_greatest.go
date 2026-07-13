@@ -39,7 +39,7 @@ func ExprGreatest(lzVars *base.Vars, labels base.Labels,
 					lzChildren[lzI](lzVals, lzYieldErr) // <== emitCaptured: path strconv.Itoa(lzI)
 
 				lzValsReduce = append(lzValsReduce, lzVal)
-			} // !lz
+			}
 
 			lzVal = base.GreatestLeastVals(lzVars.Ctx.ValComparer, lzValsReduce, true)
 
@@ -65,7 +65,7 @@ func ExprLeast(lzVars *base.Vars, labels base.Labels,
 					lzChildren[lzI](lzVals, lzYieldErr) // <== emitCaptured: path strconv.Itoa(lzI)
 
 				lzValsReduce = append(lzValsReduce, lzVal)
-			} // !lz
+			}
 
 			lzVal = base.GreatestLeastVals(lzVars.Ctx.ValComparer, lzValsReduce, false)
 

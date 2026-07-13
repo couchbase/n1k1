@@ -144,7 +144,7 @@ func ExprArrayContains(lzVars *base.Vars, labels base.Labels,
 		}
 
 		return lzVal
-	} // !lz
+	}
 
 	lzExprFunc = MakeBiExprFunc(lzVars, labels, params, path, biExprFunc) // !lzRHS
 
@@ -174,7 +174,7 @@ func ExprArrayPosition(lzVars *base.Vars, labels base.Labels,
 		}
 
 		return lzVal
-	} // !lz
+	}
 
 	lzExprFunc = MakeBiExprFunc(lzVars, labels, params, path, biExprFunc) // !lzRHS
 
@@ -204,7 +204,7 @@ func ExprArrayAppend(lzVars *base.Vars, labels base.Labels,
 		}
 
 		return lzVal
-	} // !lz
+	}
 
 	lzExprFunc = MakeBiExprFunc(lzVars, labels, params, path, biExprFunc) // !lzRHS
 
@@ -234,7 +234,7 @@ func ExprArrayPrepend(lzVars *base.Vars, labels base.Labels,
 		}
 
 		return lzVal
-	} // !lz
+	}
 
 	lzExprFunc = MakeBiExprFunc(lzVars, labels, params, path, biExprFunc) // !lzRHS
 
@@ -264,7 +264,7 @@ func ExprArrayConcat(lzVars *base.Vars, labels base.Labels,
 		}
 
 		return lzVal
-	} // !lz
+	}
 
 	lzExprFunc = MakeBiExprFunc(lzVars, labels, params, path, biExprFunc) // !lzRHS
 
@@ -294,7 +294,7 @@ func ExprArrayFlatten(lzVars *base.Vars, labels base.Labels,
 		}
 
 		return lzVal
-	} // !lz
+	}
 
 	lzExprFunc = MakeBiExprFunc(lzVars, labels, params, path, biExprFunc) // !lzRHS
 

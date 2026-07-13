@@ -130,7 +130,7 @@ func ExprRoundTrunc2(lzVars *base.Vars, labels base.Labels, params []interface{}
 		}
 
 		return lzVal
-	} // !lz
+	}
 
 	lzExprFunc = MakeBiExprFunc(lzVars, labels, params, path, biExprFunc) // !lzRHS
 
@@ -156,7 +156,7 @@ func ExprMathBi(lzVars *base.Vars, labels base.Labels, params []interface{},
 		}
 
 		return lzVal
-	} // !lz
+	}
 
 	lzExprFunc = MakeBiExprFunc(lzVars, labels, params, path, biExprFunc) // !lzRHS
 

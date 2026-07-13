@@ -51,7 +51,7 @@ func ExprNullMissingIf(lzVars *base.Vars, labels base.Labels, params []interface
 		}
 
 		return lzVal
-	} // !lz
+	}
 
 	lzExprFunc = MakeBiExprFunc(lzVars, labels, params, path, biExprFunc) // !lzRHS
 

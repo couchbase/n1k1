@@ -45,7 +45,7 @@ func NaryCaptureChildren(lzVars *base.Vars, labels base.Labels,
 		lzChild := MakeExprFunc(lzVars, labels, params[lzI].([]interface{}), path, strconv.Itoa(lzI)) // !lz
 
 		lzChildren = append(lzChildren, lzChild) // !lz
-	} // !lz
+	}
 
 	return lzChildren // !lz
 }

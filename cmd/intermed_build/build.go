@@ -58,6 +58,51 @@ type State struct {
 	ImportLines map[string]bool
 
 	Indent string
+
+	// LzOpenBraces is a stack of the indentation prefixes of build-time ("// !lz")
+	// control-flow braces that are currently open -- e.g. an `if X { // !lz` or
+	// `for ... { // !lz` line pushes its indent; the matching close brace pops it.
+	// It lets the matching `}` be auto-classified as build-time verbatim WITHOUT an
+	// explicit `} // !lz` (see EmitBlock): gofmt guarantees the `}` sits at the same
+	// indentation as the opening statement, and a build-time-open brace can never
+	// share an indentation level with an emitted-open brace while both are open (Go
+	// nesting strictly increases indentation), so the indent match is unambiguous.
+	LzOpenBraces []string
+}
+
+// LzBracePush records a build-time open brace at the given indentation.
+func (s *State) LzBracePush(indent string) {
+	s.LzOpenBraces = append(s.LzOpenBraces, indent)
+}
+
+// LzBracePop drops the innermost build-time open brace, if any.
+func (s *State) LzBracePop() {
+	if n := len(s.LzOpenBraces); n > 0 {
+		s.LzOpenBraces = s.LzOpenBraces[:n-1]
+	}
+}
+
+// LzBraceTopIs reports whether the innermost open build-time brace was opened at
+// the given indentation -- i.e. a `}` at that indent closes a build-time block.
+func (s *State) LzBraceTopIs(indent string) bool {
+	n := len(s.LzOpenBraces)
+	return n > 0 && s.LzOpenBraces[n-1] == indent
+}
+
+// LzBraceTrack updates the build-time brace stack from a verbatim "// !lz" line,
+// using its code portion (comment stripped): a leading `}` closes a block (pop),
+// a trailing `{` opens one (push). A `} else { // !lz` line does both, netting the
+// same indent -- exactly right for the continued block. Non-brace "// !lz" lines
+// (plain statements, composite literals like `T{}` that neither lead with `}` nor
+// end with `{`) leave the stack untouched.
+func (s *State) LzBraceTrack(line, code string) {
+	t := strings.TrimSpace(code)
+	if strings.HasPrefix(t, "}") {
+		s.LzBracePop()
+	}
+	if strings.HasSuffix(t, "{") {
+		s.LzBracePush(SpacePrefix(line))
+	}
 }
 
 func (s *State) Push(he *HandlerEntry) {
@@ -201,6 +246,10 @@ func HandlerScanTopLevelFuncBody(state *State, he *HandlerEntry,
 	if len(line) > 0 && line[0] == '}' {
 		state.Pop()
 
+		// A well-formed function balances its build-time braces; clear the stack
+		// defensively so a stray imbalance can't bleed into the next function.
+		state.LzOpenBraces = state.LzOpenBraces[:0]
+
 		return out, line
 	}
 
@@ -261,6 +310,10 @@ func EmitBlock(state *State, he *HandlerEntry, isLzBlock bool,
 	lineLeftRight := strings.Split(line, "// ")
 	if len(lineLeftRight) > 1 {
 		if lineLeftRight[1] == "!lz" {
+			// Explicit build-time line: track its brace(s) so a later close brace
+			// (explicit OR auto-detected) stays balanced with the stack.
+			state.LzBraceTrack(line, lineLeftRight[0])
+
 			return out, line
 		}
 
@@ -325,6 +378,19 @@ func EmitBlock(state *State, he *HandlerEntry, isLzBlock bool,
 				liveExprsIgnore[suffix] = true
 			}
 		}
+	}
+
+	// Auto-close a build-time ("// !lz") block: a bare `}` sitting at the same
+	// indentation as a still-open build-time brace closes that block, so it is
+	// emitted verbatim (as build-time Go) with NO explicit `} // !lz` needed. Without
+	// this, an isLzBlock `}` would be wrapped in Emit() -- a stray brace in the
+	// COMPILED output, and the intermed package's own verbatim `{` (from the open)
+	// would be left unclosed. `} // !lz` stays valid too (handled above); this just
+	// makes it optional. See the LzOpenBraces doc on State.
+	if strings.TrimSpace(line) == "}" && state.LzBraceTopIs(SpacePrefix(line)) {
+		state.LzBracePop()
+
+		return out, line
 	}
 
 	isLzLine := LzRE.MatchString(line)

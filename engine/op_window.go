@@ -97,7 +97,7 @@ func OpWindowPartition(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals
 		if len(partitionExprs) > 0 { // !lz
 			partitionExprsFunc =
 				MakeProjectFunc(lzVars, o.Children[0].Labels, partitionExprs, pathNextWP, "PF") // !lz
-		} // !lz
+		}
 
 		_ = partitionExprsFunc // !lz
 
@@ -110,7 +110,7 @@ func OpWindowPartition(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals
 		if appendOrderBy && !appendOrderByTuple && len(partitionExprs) > partitionPrefix { // !lz
 			orderByProjectFunc =
 				MakeProjectFunc(lzVars, o.Children[0].Labels, partitionExprs[partitionPrefix:], pathNextWP, "OF") // !lz
-		} // !lz
+		}
 
 		_ = orderByProjectFunc // !lz
 
@@ -143,7 +143,7 @@ func OpWindowPartition(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals
 					lzOrderNext, lzErr = base.ValsEncodeCanonical(
 						lzValsOut[partitionPrefix:], lzOrderNext[:0], lzVars.Ctx.ValComparer)
 				}
-			} // !lz
+			}
 
 			if lzErr == nil {
 				if !bytes.Equal(lzPartitionCurr, lzPartitionNext) {
@@ -180,13 +180,13 @@ func OpWindowPartition(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals
 
 						if trackRank { // !lz
 							lzRank = uint64(lzHeap.Len()) + 1
-						} // !lz
+						}
 
 						if trackDenseRank { // !lz
 							lzDenseRank++
-						} // !lz
+						}
 					}
-				} // !lz
+				}
 
 				// Augment the stored row with trailing columns: rank/denseRank (when
 				// tracking) and/or the ORDER BY value (when appendOrderBy). Rebuild from
@@ -199,26 +199,26 @@ func OpWindowPartition(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals
 					if trackRank { // !lz
 						binary.LittleEndian.PutUint64(lzBuf8Rank[:], lzRank)
 						lzValsOut = append(lzValsOut, base.Val(lzBuf8Rank[:]))
-					} // !lz
+					}
 
 					if trackDenseRank { // !lz
 						binary.LittleEndian.PutUint64(lzBuf8DenseRank[:], lzDenseRank)
 						lzValsOut = append(lzValsOut, base.Val(lzBuf8DenseRank[:]))
-					} // !lz
+					}
 
 					if appendOrderBy && !appendOrderByTuple { // !lz
 						lzValsOut = orderByProjectFunc(lzVals, lzValsOut, lzYieldErr) // <== emitCaptured: pathNextWP "OF"
-					} // !lz
+					}
 
 					if appendOrderByTuple { // !lz
 						// The canonical ORDER BY tuple (any number of columns) as ONE
 						// column -- peer detection is bytes.Equal on it. ValsEncode below
 						// copies, so referencing lzOrderNext is safe.
 						lzValsOut = append(lzValsOut, base.Val(lzOrderNext))
-					} // !lz
+					}
 
 					lzVals = lzValsOut
-				} // !lz
+				}
 
 				lzBytes = base.ValsEncode(lzVals, lzBytes[:0])
 
@@ -372,7 +372,7 @@ func OpWindowFrames(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 		} else if isRatioToReport { // !lz  -- fold SUM over the frame, divide the current row
 			lzAgg = base.Aggs[base.AggCatalog["sum"]]                                               // !lz
 			lzOperandFunc = MakeExprFunc(lzVars, o.Children[0].Labels, aggOperand, pathNext, "WFA") // !lz
-		} // !lz
+		}
 		_, _, _ = lzAgg, lzOperandFunc, lzOffDefaultFunc // !lz
 
 		// Reused accumulator ping-pong buffers + Result scratch + frame-row decode
@@ -488,7 +488,7 @@ func OpWindowFrames(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 				var lzRankVal base.Val
 				lzRankVal, lzRankBuf = lzFrame.WindowRankValue(lzRankKind, rankNtileN, lzRankBuf[:0])
 				lzVals = append(lzVals, lzRankVal)
-			} // !lz
+			}
 
 			if isOffset { // !lz
 				// Offset / navigation: StepToOffset (a base.WindowFrame method --
@@ -517,7 +517,7 @@ func OpWindowFrames(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 					lzOffDefVal := lzOffDefaultFunc(lzVals, lzYieldErr) // <== emitCaptured: pathNext "WFD"
 					lzVals = append(lzVals, lzOffDefVal)
 				}
-			} // !lz
+			}
 
 			if aggName != "" || isRatioToReport { // !lz
 				// Fold the native aggregate over frame 0's rows and append the Result
@@ -743,7 +743,7 @@ func OpWindowFrames(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 				}
 
 				lzVals = append(lzVals, lzResVal)
-			} // !lz
+			}
 
 			lzYieldValsOrig(lzVals)
 		}

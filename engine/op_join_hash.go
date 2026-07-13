@@ -131,7 +131,7 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 				lzProbeKey, lzErr = lzVars.Ctx.ValComparer.CanonicalJSON(lzProbeKey, lzValOut[:0])
 
 				lzValOut = lzProbeKey[:0]
-			} // !lz
+			}
 
 			// The probe key must be valued -- EXCEPT for joinHash-leftOuter, which
 			// must also keep a build(outer)-side row whose join key is NULL/MISSING.
@@ -142,7 +142,7 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 			lzKeyOK := base.ValHasValue(lzProbeKey)
 			if leftVals && yieldsUnjoined { // !lz
 				lzKeyOK = true
-			} // !lz
+			}
 			if lzErr == nil && lzKeyOK {
 				// Check if we have an entry for the probe key.
 				lzProbeVal, lzProbeKeyFound := lzMap.Get([]byte(lzProbeKey))
@@ -154,11 +154,11 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 					if joinCount { // !lz
 						// Alloc space for joinCount for later RHS probing.
 						lzProbeValNew = append(lzProbeValNew, lzZero16[:8]...)
-					} // !lz
+					}
 
 					if leftCount { // !lz
 						lzProbeValNew = base.BinaryAppendUint64(lzProbeValNew, 1)
-					} // !lz
+					}
 
 					if leftVals { // !lz
 						// End chain has offset/size of 0/0.
@@ -172,7 +172,7 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 						lzProbeValNew = base.BinaryAppendUint64(lzProbeValNew, lzOffset)
 						lzProbeValNew = base.BinaryAppendUint64(lzProbeValNew, lzSize)
-					} // !lz
+					}
 
 					lzMap.Set(store.Key(lzProbeKey), lzProbeValNew)
 				} else {
@@ -187,13 +187,13 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 						// Alloc space for joinCount for later RHS probing.
 						lzProbeValNew = append(lzProbeValNew, lzZero16[:8]...)
 						lzProbeValOld = lzProbeValOld[8:]
-					} // !lz
+					}
 
 					if leftCount { // !lz
 						lzLeftCount := binary.LittleEndian.Uint64(lzProbeValOld[:8]) + 1
 						lzProbeValNew = base.BinaryAppendUint64(lzProbeValNew, lzLeftCount)
 						lzProbeValOld = lzProbeValOld[8:]
-					} // !lz
+					}
 
 					if leftVals { // !lz
 						// Copy previous offset/size to extend the chain.
@@ -207,7 +207,7 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 						lzProbeValNew = base.BinaryAppendUint64(lzProbeValNew, lzOffset)
 						lzProbeValNew = base.BinaryAppendUint64(lzProbeValNew, lzSize)
-					} // !lz
+					}
 
 					// The updated probe val has the same size as the
 					// existing probe val, so optimize by in-place
@@ -255,7 +255,7 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 					lzProbeKey, lzErr = lzVars.Ctx.ValComparer.CanonicalJSON(lzProbeKey, lzValOut[:0])
 
 					lzValOut = lzProbeKey[:0]
-				} // !lz
+				}
 
 				// The probe key must be valued.
 				if lzErr == nil && base.ValHasValue(lzProbeKey) {
@@ -273,11 +273,11 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 									lzValsOut = base.ValsDecode(lzProbeKey, lzValsOut[:0])
 
 									lzYieldValsOrig(lzValsOut)
-								} // !lz
+								}
 							}
 
 							lzProbeVal = lzProbeVal[8:]
-						} // !lz
+						}
 
 						if leftCount { // !lz
 							if opIntersect { // !lz
@@ -288,10 +288,10 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 									lzYieldValsOrig(lzValsOut)
 								}
-							} // !lz
+							}
 
 							lzProbeVal = lzProbeVal[8:]
-						} // !lz
+						}
 
 						if leftVals { // !lz
 							// Ex: joinHash-inner, joinHash-leftOuter.
@@ -300,7 +300,7 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 							if lzErr != nil {
 								lzYieldErr(lzErr)
 							}
-						} // !lz
+						}
 					}
 				}
 			}
@@ -338,7 +338,7 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 								}
 
 								lzProbeVal = lzProbeVal[8:]
-							} // !lz
+							}
 
 							if leftVals { // !lz
 								// Ex: joinHash-leftOuter -- yield the UNJOINED (n==0)
@@ -350,7 +350,7 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 										lzYieldErrOrig(lzErr)
 									}
 								}
-							} // !lz
+							}
 
 							if !leftCount && !leftVals { // !lz
 								// Ex: except-distinct -- a key absent from the RHS
@@ -360,13 +360,13 @@ func OpJoinHash(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 									lzYieldValsOrig(lzValsOut)
 								}
-							} // !lz
+							}
 
 							return true
 						}
 
 						lzMap.Visit(lzMapVisitor)
-					} // !lz
+					}
 				}
 
 				lzYieldErrOrig(lzErrIn)

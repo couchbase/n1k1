@@ -63,7 +63,7 @@ func OpOrderOffsetLimit(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVal
 				MakeValsLessFunc(lzVars, directions, pathNextOOL) // !lz
 
 			lzHeap = base.CreateHeapValsProjected(lzVars.Ctx, lzValsLessFunc)
-		} // !lz
+		}
 
 		_, _, _ = lzProjectFunc, lzValsLessFunc, lzHeap
 
@@ -143,7 +143,7 @@ func OpOrderOffsetLimit(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVal
 
 				// TODO: No ORDER-BY, but OFFSET+LIMIT reached, so
 				// need to early exit via lzVars.Ctx.YieldStats?
-			} // !lz
+			}
 		}
 
 		lzYieldErrOrig := lzYieldErr
@@ -171,7 +171,7 @@ func OpOrderOffsetLimit(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVal
 								break
 							}
 							lzN++
-						} // !lz
+						}
 
 						lzItem, lzErr := lzHeap.Get(lzI)
 						if lzErr != nil {
@@ -187,7 +187,7 @@ func OpOrderOffsetLimit(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVal
 					}
 
 					// TODO: Recycle lzHeap into lzVars.Ctx?
-				} // !lz
+				}
 			}
 
 			lzYieldErrOrig(lzErrIn)
@@ -271,7 +271,7 @@ func MakeValsLessFunc(lzVars *base.Vars, directions []interface{},
 				if lzCmp > 0 {
 					return !lzAscs[idx]
 				}
-			} // !lz
+			}
 
 			return false
 		}

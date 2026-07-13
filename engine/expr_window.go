@@ -163,7 +163,7 @@ func ExprWindowFrameStepValue(lzVars *base.Vars, labels base.Labels,
 				lzPos = lzFrame.Pos
 			} else if initial == 1 { // !lz
 				lzPos = math.MaxInt64
-			} // !lz
+			}
 
 			for lzI := uint64(0); lzI < num && lzOk && lzErr == nil; lzI++ {
 				lzValsStep := lzValsPre[:0]

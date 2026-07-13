@@ -113,11 +113,11 @@ func OpJoinNestedLoop(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 			if isNest { // !lz
 				lzNestBytes = lzNestBytes[:0]
 				lzNestBytes = append(lzNestBytes, '[')
-			} // !lz
+			}
 
 			if isLeftOuter { // !lz
 				lzHadInner = false
-			} // !lz
+			}
 
 			var lzVal base.Val
 
@@ -138,12 +138,12 @@ func OpJoinNestedLoop(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 					lzVal = base.ValTrue
 				} else { // !lz
 					lzVal = exprFunc(lzVals, lzYieldErr) // <== emitCaptured: pathNext, "JF"
-				} // !lz
+				}
 
 				if base.ValTruthy(lzVal) {
 					if isLeftOuter { // !lz
 						lzHadInner = true
-					} // !lz
+					}
 
 					if isNest { // !lz
 						// Append right-side val into lzNestBytes, comma separated.
@@ -160,7 +160,7 @@ func OpJoinNestedLoop(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 						}
 					} else { // !lz
 						lzYieldValsOrig(lzVals) // <== emitCaptured: path ""
-					} // !lz
+					}
 				}
 			}
 
@@ -186,10 +186,10 @@ func OpJoinNestedLoop(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 					ExecOp(o.Children[1], lzVars, lzYieldVals, lzYieldErr, pathNext, "JNLI") // !lz
 
 					lzVars.Temps[o.Params[0].(int)] = nil
-				} // !lz
+				}
 			} else { // !lz
 				ExecOp(o.Children[1], lzVars, lzYieldVals, lzYieldErr, pathNext, "JNLI") // !lz
-			} // !lz
+			}
 
 			// Case of NEST, we've been collecting a JSON encoded array of
 			// right-side values, which we finally join to the left-side
@@ -203,7 +203,7 @@ func OpJoinNestedLoop(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 
 					lzYieldValsOrig(lzValsJoin)
 				}
-			} // !lz
+			}
 
 			// Case of leftOuter join when the right driver was empty.
 			if isLeftOuter { // !lz
@@ -215,12 +215,12 @@ func OpJoinNestedLoop(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 					} else { // !lz
 						for i := 0; i < lenLabelsB; i++ { // !lz
 							lzValsJoin = append(lzValsJoin, base.ValMissing)
-						} // !lz
-					} // !lz
+						}
+					}
 
 					lzYieldValsOrig(lzValsJoin)
 				}
-			} // !lz
+			}
 		}
 
 		// The left driver.

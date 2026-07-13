@@ -135,7 +135,7 @@ func ExprReplace(lzVars *base.Vars, labels base.Labels,
 		}
 
 		return lzVal
-	} // !lz
+	}
 
 	lzExprFunc = MakeTriExprFunc(lzVars, labels, params, path, triExprFunc) // !lzRHS
 
@@ -200,7 +200,7 @@ func ExprSubstr2(lzVars *base.Vars, labels base.Labels, params []interface{},
 		}
 
 		return lzVal
-	} // !lz
+	}
 
 	lzExprFunc = MakeBiExprFunc(lzVars, labels, params, path, biExprFunc) // !lzRHS
 
@@ -243,7 +243,7 @@ func ExprSubstr3(lzVars *base.Vars, labels base.Labels, params []interface{},
 		}
 
 		return lzVal
-	} // !lz
+	}
 
 	lzExprFunc = MakeTriExprFunc(lzVars, labels, params, path, triExprFunc) // !lzRHS
 
@@ -306,7 +306,7 @@ func ExprSplit2(lzVars *base.Vars, labels base.Labels,
 		}
 
 		return lzVal
-	} // !lz
+	}
 
 	lzExprFunc = MakeBiExprFunc(lzVars, labels, params, path, biExprFunc) // !lzRHS
 
@@ -366,7 +366,7 @@ func ExprPad2(lzVars *base.Vars, labels base.Labels, params []interface{},
 		}
 
 		return lzVal
-	} // !lz
+	}
 
 	lzExprFunc = MakeBiExprFunc(lzVars, labels, params, path, biExprFunc) // !lzRHS
 
@@ -404,7 +404,7 @@ func ExprPad3(lzVars *base.Vars, labels base.Labels, params []interface{},
 		}
 
 		return lzVal
-	} // !lz
+	}
 
 	lzExprFunc = MakeTriExprFunc(lzVars, labels, params, path, triExprFunc) // !lzRHS
 
@@ -444,7 +444,7 @@ func ExprContains(lzVars *base.Vars, labels base.Labels,
 		}
 
 		return lzVal
-	} // !lz
+	}
 
 	lzExprFunc = MakeBiExprFunc(lzVars, labels, params, path, biExprFunc) // !lzRHS
 
@@ -485,7 +485,7 @@ func ExprStrPosition(lzVars *base.Vars, labels base.Labels, params []interface{}
 		}
 
 		return lzVal
-	} // !lz
+	}
 
 	lzExprFunc = MakeBiExprFunc(lzVars, labels, params, path, biExprFunc) // !lzRHS
 
