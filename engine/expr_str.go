@@ -54,6 +54,13 @@ func init() {
 	ExprCatalog["lpad_3"] = ExprLPad3
 	ExprCatalog["rpad_2"] = ExprRPad2
 	ExprCatalog["rpad_3"] = ExprRPad3
+	// TRIM/LTRIM/RTRIM 2-arg (explicit cutset); the 1-arg whitespace forms use the
+	// unary transform harness. The optimizer arity-dispatches `trim` -> `trim_2` etc.
+	ExprCatalog["trim_2"] = ExprTrim2
+	ExprCatalog["ltrim_2"] = ExprLTrim2
+	ExprCatalog["rtrim_2"] = ExprRTrim2
+	// REPEAT(str, n): str repeated n times (2-arg).
+	ExprCatalog["repeat"] = ExprRepeat
 	ExprCatalog["length"] = ExprLength
 	ExprCatalog["contains"] = ExprContains
 	ExprCatalog["position0"] = ExprPosition0
@@ -407,6 +414,104 @@ func ExprPad3(lzVars *base.Vars, labels base.Labels, params []interface{},
 	}
 
 	lzExprFunc = MakeTriExprFunc(lzVars, labels, params, path, triExprFunc) // !lzRHS
+
+	return lzExprFunc
+}
+
+// TRIM/LTRIM/RTRIM 2-arg (explicit cutset) forms: (str, chars) -> str with each
+// leading/trailing (per mode) rune in chars stripped. cbq skeleton: MISSING if any
+// operand MISSING; NULL if any non-string; else rune-aware trim (base.StrTrimCutset)
+// re-encoded into the reused buffer. The 1-arg (whitespace) forms use the unary
+// transform harness; the optimizer arity-dispatches `trim`/`ltrim`/`rtrim` -> `_2`.
+
+func ExprTrim2(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string) base.ExprFunc {
+	return exprTrimCutset(lzVars, labels, params, path, base.StrTrimBoth)
+}
+
+func ExprLTrim2(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string) base.ExprFunc {
+	return exprTrimCutset(lzVars, labels, params, path, base.StrTrimLeft2)
+}
+
+func ExprRTrim2(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string) base.ExprFunc {
+	return exprTrimCutset(lzVars, labels, params, path, base.StrTrimRight2)
+}
+
+// exprTrimCutset is the shared 2-arg trim harness; mode selects both/left/right.
+func exprTrimCutset(lzVars *base.Vars, labels base.Labels, params []interface{},
+	path string, mode int) (lzExprFunc base.ExprFunc) {
+	var lzBufPre []byte // <== varLift: lzBufPre by path
+
+	biExprFunc := func(lzA, lzB base.ExprFunc, lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) { // !lz
+		if LzScope {
+			lzValStr := lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A", via: lzVal
+
+			lzValCut := lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B", via: lzVal
+
+			if base.ValKind(lzValStr) == base.ValKindMissing ||
+				base.ValKind(lzValCut) == base.ValKindMissing {
+				lzVal = base.ValMissing
+			} else {
+				lzStr, _, lzStrOk := base.StrDecode(lzValStr)
+				lzCut, _, lzCutOk := base.StrDecode(lzValCut)
+				if !lzStrOk || !lzCutOk {
+					lzVal = base.ValNull
+				} else {
+					lzBufPre = base.StrEncode(lzVars.Ctx.ValComparer, base.StrTrimCutset(lzStr, lzCut, mode), lzBufPre)
+					lzVal = base.Val(lzBufPre)
+				}
+			}
+		}
+
+		return lzVal
+	}
+
+	lzExprFunc = MakeBiExprFunc(lzVars, labels, params, path, biExprFunc) // !lzRHS
+
+	return lzExprFunc
+}
+
+// ExprRepeat handles REPEAT(str, n) -> str repeated n times. cbq skeleton: MISSING if
+// str or n MISSING; NULL if str non-string, n non-number, n negative, or n non-integer;
+// a RANGE / 20-MiB-size overflow is a runtime ERROR (base.ErrStrRepeat -- yielded, which
+// errors the query, matching cbq); else the repeated content re-encoded into the reused
+// buffer (built via a lifted scratch, then StrEncode).
+func ExprRepeat(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
+	var lzBufPre []byte  // <== varLift: lzBufPre by path
+	var lzScratch []byte // <== varLift: lzScratch by path
+
+	biExprFunc := func(lzA, lzB base.ExprFunc, lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) { // !lz
+		if LzScope {
+			lzValStr := lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A", via: lzVal
+
+			lzValN := lzB(lzVals, lzYieldErr) // <== emitCaptured: path "B", via: lzVal
+
+			if base.ValKind(lzValStr) == base.ValKindMissing ||
+				base.ValKind(lzValN) == base.ValKindMissing {
+				lzVal = base.ValMissing
+			} else {
+				lzStr, _, lzStrOk := base.StrDecode(lzValStr)
+				lzN, lzNOk := base.StrRepeatCount(lzValN)
+				if !lzStrOk || !lzNOk {
+					lzVal = base.ValNull
+				} else if base.StrRepeatTooBig(len(lzStr), lzN) {
+					lzYieldErr(base.ErrStrRepeat)
+					lzVal = base.ValMissing
+				} else {
+					lzScratch = base.StrRepeatInto(lzScratch, lzStr, lzN)
+					lzBufPre = base.StrEncode(lzVars.Ctx.ValComparer, lzScratch, lzBufPre)
+					lzVal = base.Val(lzBufPre)
+				}
+			}
+		}
+
+		return lzVal
+	}
+
+	lzExprFunc = MakeBiExprFunc(lzVars, labels, params, path, biExprFunc) // !lzRHS
 
 	return lzExprFunc
 }

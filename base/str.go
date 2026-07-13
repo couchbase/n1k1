@@ -13,6 +13,7 @@ package base
 
 import (
 	"bytes"
+	"errors"
 	"math"
 	"strconv"
 	"unicode"
@@ -60,6 +61,76 @@ var StrWhitespace = " \t\n\f\r"
 func StrTrim(decoded []byte) []byte      { return bytes.Trim(decoded, StrWhitespace) }
 func StrTrimLeft(decoded []byte) []byte  { return bytes.TrimLeft(decoded, StrWhitespace) }
 func StrTrimRight(decoded []byte) []byte { return bytes.TrimRight(decoded, StrWhitespace) }
+
+// StrTrim mode selectors for the 2-arg (explicit-cutset) forms.
+const (
+	StrTrimBoth   = iota // TRIM
+	StrTrimLeft2         // LTRIM
+	StrTrimRight2        // RTRIM
+)
+
+// StrTrimCutset is the 2-arg TRIM/LTRIM/RTRIM (explicit cutset): strip from the
+// decoded bytes every leading/trailing (per mode) UTF-8 code point contained in the
+// cutset. Mirrors cbq's strings.Trim/TrimLeft/TrimRight(s, chars) -- which is
+// rune-based, so bytes.Trim*Func (also rune-aware, ContainsRune over the cutset)
+// matches exactly for multi-byte cutset chars, and returns a subslice (no alloc; the
+// caller re-encodes into a reused buffer). An empty cutset trims nothing.
+func StrTrimCutset(decoded, cutset []byte, mode int) []byte {
+	f := func(r rune) bool { return bytes.ContainsRune(cutset, r) }
+	switch mode {
+	case StrTrimLeft2:
+		return bytes.TrimLeftFunc(decoded, f)
+	case StrTrimRight2:
+		return bytes.TrimRightFunc(decoded, f)
+	default:
+		return bytes.TrimFunc(decoded, f)
+	}
+}
+
+// StrRepeatMax mirrors cbq's expression.RANGE_LIMIT (math.MaxInt32); StrRepeatSizeMax
+// is cbq's default REPEAT/ARRAY_REPEAT result-size cap (20 MiB). Exceeding either is
+// a runtime error (ErrStrRepeat), matching cbq -- a REPEAT with a huge count errors
+// the query (the suite records that as an empty result), NOT a NULL.
+const (
+	StrRepeatMax     = math.MaxInt32
+	StrRepeatSizeMax = 20 * 1024 * 1024
+)
+
+// ErrStrRepeat is the runtime error yielded when REPEAT's count/size is out of range.
+var ErrStrRepeat = errors.New("REPEAT() count out of range")
+
+// StrRepeatCount parses REPEAT's count operand per cbq: it must be a NUMBER that is a
+// non-negative integer (5.0 is fine, 5.5 / -1 / a non-number are NULL). ok=false maps
+// to NULL; the returned int is the repeat count.
+func StrRepeatCount(v Val) (int, bool) {
+	if !ValIsNumber(v) {
+		return 0, false
+	}
+	f, err := ParseFloat64(v)
+	if err != nil || f < 0 || f != math.Trunc(f) {
+		return 0, false
+	}
+	return int(f), true
+}
+
+// StrRepeatTooBig reports whether repeating an elemLen-byte string n times exceeds
+// cbq's limits (count > RANGE_LIMIT, or result size > 20 MiB) -- a runtime error.
+func StrRepeatTooBig(elemLen, n int) bool {
+	if n > StrRepeatMax {
+		return true
+	}
+	return elemLen != 0 && n > StrRepeatSizeMax/elemLen
+}
+
+// StrRepeatInto appends s to dst[:0] n times (the decoded content, pre-encode),
+// reusing dst's backing -- no steady-state allocation.
+func StrRepeatInto(dst, s []byte, n int) []byte {
+	dst = dst[:0]
+	for i := 0; i < n; i++ {
+		dst = append(dst, s...)
+	}
+	return dst
+}
 
 // StrReverse reverses the decoded string, preserving combining-character
 // sequences (a base rune keeps its following Mn/Me/Mc marks in order) and quietly

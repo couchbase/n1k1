@@ -356,7 +356,7 @@ func compiledMain(body, provStamp string) string {
 		"\t\tif json.Unmarshal(in.Bytes(), &r) == nil {\n" +
 		"\t\t\tdata[r.A] = append(data[r.A], engine.MemRecord{ID: r.ID, Doc: r.Doc})\n" +
 		"\t\t}\n\t}\n" +
-		"\tvars := &base.Vars{Ctx: &base.Ctx{Pipe: &engine.MemPipe{Data: data}}}\n" +
+		"\tvars := &base.Vars{Ctx: &base.Ctx{Pipe: &engine.MemPipe{Data: data}, ValComparer: base.NewValComparer()}}\n" +
 		"\tout := bufio.NewWriter(os.Stdout)\n\tdefer out.Flush()\n" +
 		"\tRun(vars, func(vals base.Vals) {\n" +
 		"\t\tenc := base.ValsEncode(vals, nil)\n" +

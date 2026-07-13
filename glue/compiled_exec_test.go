@@ -140,17 +140,32 @@ func TestExecuteCompiledFull(t *testing.T) {
 		t.Error("ORDER BY should compile to a standalone child binary (needs container/heap import)")
 	}
 
-	// A genuinely per-row BOXED expr (non-native REPEAT over a field) can't be
+	// A genuinely per-row BOXED expr (non-native MB_LENGTH over a field) can't be
 	// cbq-free -> must NOT compile standalone -> falls back to the interpreter,
-	// still correct.
-	if _, err := s.Run(`PREPARE pbox AS SELECT REPEAT(b.name, 2) AS r FROM beers b WHERE b.i = 1`); err != nil {
+	// still correct. (MB_LENGTH("beer-001") == 8.)
+	if _, err := s.Run(`PREPARE pbox AS SELECT MB_LENGTH(b.name) AS r FROM beers b WHERE b.i = 1`); err != nil {
 		t.Fatal(err)
 	}
 	gotBox := rowsOf(`EXECUTE pbox`)
-	if len(gotBox) != 1 || gotBox[0] != `{"r":"beer-001beer-001"}` {
-		t.Errorf(`EXECUTE pbox = %v, want [{"r":"beer-001beer-001"}]`, gotBox)
+	if len(gotBox) != 1 || gotBox[0] != `{"r":8}` {
+		t.Errorf(`EXECUTE pbox = %v, want [{"r":8}]`, gotBox)
 	}
 	if s.prepareds["pbox"].compiledBin != "" {
 		t.Error("a boxed (per-row cbq) query must NOT compile standalone; expected interpreter fallback")
+	}
+
+	// A NATIVE string op (REPEAT here) re-encodes via base.StrEncode, which needs
+	// Ctx.ValComparer -- so it exercises that the standalone-compiled binary's Ctx
+	// initializes a ValComparer (regression guard: it previously did not, and any
+	// native string/object op crashed standalone with a nil ValComparer).
+	if _, err := s.Run(`PREPARE pnative AS SELECT REPEAT(b.name, 2) AS r FROM beers b WHERE b.i = 1`); err != nil {
+		t.Fatal(err)
+	}
+	gotNative := rowsOf(`EXECUTE pnative`)
+	if len(gotNative) != 1 || gotNative[0] != `{"r":"beer-001beer-001"}` {
+		t.Errorf(`EXECUTE pnative = %v, want [{"r":"beer-001beer-001"}]`, gotNative)
+	}
+	if s.prepareds["pnative"].compiledBin == "" {
+		t.Error("a native string query (REPEAT) should compile to a standalone binary")
 	}
 }

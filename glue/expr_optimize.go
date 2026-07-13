@@ -46,6 +46,7 @@ func init() {
 		"substr0", "substr1", // SUBSTR, arity-dispatched below (expr_str.go)
 		"split",        // SPLIT, arity-dispatched below (expr_str.go)
 		"lpad", "rpad", // LPAD/RPAD, arity-dispatched below (expr_str.go)
+		"repeat",         // REPEAT(str, n), 2-arg (expr_str.go)
 		"power", "atan2", // binary math (expr_math.go)
 		"round", "trunc", // ROUND/TRUNC, arity-dispatched below (expr_math.go)
 		"date_part_millis",                     // DATE_PART_MILLIS 2-arg (expr_date.go); 3-arg (tz) falls back
@@ -679,6 +680,19 @@ func exprTreeOptimizeNative(labels base.Labels, e expression.Expression,
 		}
 	}
 
+	// TRIM/LTRIM/RTRIM are 1-arg (default whitespace cutset; the unary transform
+	// harness, name kept) or 2-arg (explicit cutset -> the `_2` harness).
+	if name == "trim" || name == "ltrim" || name == "rtrim" {
+		switch len(operands) {
+		case 1:
+			// keep name (unary whitespace transform)
+		case 2:
+			name += "_2"
+		default:
+			return nil, false
+		}
+	}
+
 	// REGEXP_CONTAINS / REGEXP_LIKE: native only when the pattern (2nd operand) is
 	// a compile-time-constant string that COMPILES. A dynamic pattern would force a
 	// per-row recompile (allocating), and cbq raises a runtime ERROR on a bad
@@ -705,6 +719,7 @@ func exprTreeOptimizeNative(labels base.Labels, e expression.Expression,
 		"array_contains", "array_position",
 		"array_flatten",    // ARRAY_FLATTEN(arr, depth) is always 2-arg
 		"date_part_millis", // 2-arg form only; the 3-arg (timezone) form falls back
+		"repeat",           // REPEAT(str, n) is always 2-arg
 		"nullif", "missingif", "element":
 		// These native harnesses are two-operand; cbq's n-ary forms fall back.
 		// (ifnull/ifmissing/ifmissingornull/nvl and greatest/least are n-ary.)

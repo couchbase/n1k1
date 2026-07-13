@@ -2066,6 +2066,62 @@ func TestStrSplitDifferentialVsCBQ(t *testing.T) {
 	}
 }
 
+// TestStrTrimCutsetRepeatDifferentialVsCBQ proves the 2-arg TRIM/LTRIM/RTRIM
+// (explicit cutset) and REPEAT native lowering is byte-identical to cbq: rune-aware
+// cutset trimming (incl. multi-byte and empty cutset), REPEAT's repeated string, and
+// every MISSING/NULL/non-string(/non-integer) edge. (The 1-arg whitespace trim is the
+// unary harness; REPEAT's huge-count RANGE error is corpus-tested at case_func_str[48].)
+func TestStrTrimCutsetRepeatDifferentialVsCBQ(t *testing.T) {
+	c := func(v interface{}) expression.Expression { return expression.NewConstant(v) }
+	null := c(value.NULL_VALUE)
+	miss := c(value.MISSING_VALUE)
+
+	cases := []struct {
+		name string
+		expr expression.Expression
+	}{
+		// 2-arg cutset trims (cutset is a SET of runes).
+		{"trim-x", expression.NewTrim(c("xxfooxx"), c("x"))},       // "foo"
+		{"trim-set", expression.NewTrim(c("abcxyzcba"), c("abc"))}, // "xyz"
+		{"trim-mb", expression.NewTrim(c("★foo★"), c("★"))},        // multi-byte cutset rune
+		{"trim-empty-cut", expression.NewTrim(c("x.y"), c(""))},    // "x.y" (empty cutset)
+		{"trim-none", expression.NewTrim(c("abc"), c("."))},        // "abc" (no match)
+		{"ltrim-dot", expression.NewLTrim(c("...abc..."), c("."))}, // "abc..."
+		{"rtrim-dot", expression.NewRTrim(c("...abc..."), c("."))}, // "...abc"
+		{"trim-1arg-ws", expression.NewTrim(c("  hi  "))},          // unary whitespace form
+		{"trim-miss-str", expression.NewTrim(miss, c("x"))},        // MISSING
+		{"trim-miss-cut", expression.NewTrim(c("x"), miss)},        // MISSING
+		{"trim-null-str", expression.NewTrim(null, c("x"))},        // NULL
+		{"trim-num-str", expression.NewTrim(c(5), c("x"))},         // NULL (non-string)
+		{"trim-num-cut", expression.NewTrim(c("x"), c(5))},         // NULL (non-string cutset)
+		// REPEAT(str, n).
+		{"rep-3", expression.NewRepeat(c("ab"), c(3))},            // "ababab"
+		{"rep-1", expression.NewRepeat(c("N1QL"), c(1))},          // "N1QL"
+		{"rep-0", expression.NewRepeat(c("x"), c(0))},             // ""
+		{"rep-empty", expression.NewRepeat(c(""), c(5))},          // ""
+		{"rep-whole-float", expression.NewRepeat(c("x"), c(3.0))}, // "xxx" (whole float ok)
+		{"rep-neg", expression.NewRepeat(c("x"), c(-1))},          // NULL
+		{"rep-frac", expression.NewRepeat(c("x"), c(2.5))},        // NULL (non-integer)
+		{"rep-nonstr", expression.NewRepeat(c(5), c(3))},          // NULL (non-string)
+		{"rep-nonnum", expression.NewRepeat(c("x"), c("y"))},      // NULL (non-number)
+		{"rep-miss-str", expression.NewRepeat(miss, c(3))},        // MISSING
+		{"rep-miss-n", expression.NewRepeat(c("x"), miss)},        // MISSING
+		{"rep-null-str", expression.NewRepeat(null, c(3))},        // NULL
+	}
+
+	for _, tc := range cases {
+		want := cbqEval(t, tc.expr)
+		got, ok := nativeEval(t, tc.expr)
+		if !ok {
+			t.Errorf("%s: did not optimize to native", tc.name)
+			continue
+		}
+		if got != want {
+			t.Errorf("%s: native=%q, cbq=%q", tc.name, got, want)
+		}
+	}
+}
+
 func TestStrPadDifferentialVsCBQ(t *testing.T) {
 	c := func(v interface{}) expression.Expression { return expression.NewConstant(v) }
 	null := c(value.NULL_VALUE)

@@ -81,11 +81,10 @@ func TestPrepareBoxedFallsBackToInterp(t *testing.T) {
 		wantIn string // substring the reason should contain
 		want   string // the interpreter's expected first row
 	}{
-		// REPEAT is a non-native scalar fn (delegated to cbq -- see DESIGN-exprs.md).
-		// A FIELD arg keeps it per-row-boxed: a constant REPEAT("x",3) would instead
-		// const-fold to a native ["json",...] leaf (see exprConstFold). WHERE b.i=0
-		// pins a single deterministic row (name "beer-000").
-		{`SELECT REPEAT(b.name, 2) AS r FROM beers b WHERE b.i = 0`, "boxed expression", `{"r":"beer-000beer-000"}`},
+		// MB_LENGTH is a non-native scalar fn (delegated to cbq -- see DESIGN-exprs.md;
+		// multi-byte string funcs remain boxed). A FIELD arg keeps it per-row-boxed.
+		// WHERE b.i=0 pins a single deterministic row (name "beer-000", 8 chars).
+		{`SELECT MB_LENGTH(b.name) AS r FROM beers b WHERE b.i = 0`, "boxed expression", `{"r":8}`},
 		// LIKE is delegated too; likewise kept per-row with a field arg.
 		{`SELECT (b.name LIKE "beer%") AS m FROM beers b WHERE b.i = 0`, "boxed expression", `{"m":true}`},
 	}

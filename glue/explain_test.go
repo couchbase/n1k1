@@ -66,10 +66,10 @@ func TestExplainConvPlan(t *testing.T) {
 		},
 		{
 			// A non-optimizable scalar fn boxes; the sibling arithmetic stays native
-			// (unmarked). Exactly one boxed marker in the projection. (REPEAT is not
-			// ported -- its RANGE_LIMIT/size-limit error paths need request context.)
-			q:       `EXPLAIN SELECT REPEAT(o.custId,2) AS s, o.orderId*2 AS d FROM orders o`,
-			wantSub: []string{"repeat", boxedMarker},
+			// (unmarked). Exactly one boxed marker in the projection. (MB_LENGTH is not
+			// ported -- multi-byte string funcs remain delegated to cbq.)
+			q:       `EXPLAIN SELECT MB_LENGTH(o.custId) AS s, o.orderId*2 AS d FROM orders o`,
+			wantSub: []string{"mb_length", boxedMarker},
 		},
 	}
 	for _, c := range cases {

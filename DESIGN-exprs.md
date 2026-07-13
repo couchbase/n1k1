@@ -195,7 +195,9 @@ place encoding "empty==MISSING, leading-n==null"), `CondUnknownKeep`/`NaryFirstK
 | `between` | `engine/expr_between.go` | BETWEEN (ternary; collation-order bounds) |
 | `in` | `engine/expr_in.go` + `base.ValIn` | IN (array membership; 2-operand) |
 | `is_distinct_from` `is_not_distinct_from` | `engine/expr_distinct.go` + `base/distinct.go` | IS [NOT] DISTINCT FROM (binary null-safe (in)equality; MISSING/NULL-aware, then `ValComparer.Compare`) |
-| `upper` `lower` `title` `trim` `ltrim` `rtrim` `reverse` `length` `contains` `position0` `position1` | `engine/expr_str.go` + `base/str.go` | unary string transforms (shared `exprStrTransform`: decode → `func([]byte)[]byte` → re-encode). TRIM/LTRIM/RTRIM 2-arg (cutset) fall back |
+| `upper` `lower` `title` `trim` `ltrim` `rtrim` `reverse` `length` `contains` `position0` `position1` | `engine/expr_str.go` + `base/str.go` | unary string transforms (shared `exprStrTransform`: decode → `func([]byte)[]byte` → re-encode) |
+| `trim_2` `ltrim_2` `rtrim_2` | `engine/expr_str.go` + `base.StrTrimCutset` | TRIM/LTRIM/RTRIM 2-arg (explicit cutset), arity-dispatched from `trim`/`ltrim`/`rtrim`. Rune-aware `bytes.Trim*Func` (subslice, no alloc) → re-encode |
+| `repeat` | `engine/expr_str.go` + `base.StrRepeat*` | REPEAT(str, n) (2-arg): non-negative-integer count; a count > `MaxInt32` or result > 20 MiB is a runtime error (`base.ErrStrRepeat`, yielded — the first native expr to yield one). Built via a lifted scratch + `StrEncode` |
 | `replace` | `engine/expr_str.go` + `base.StrReplaceAll` | REPLACE 3-arg (ternary → buffer); 4-arg count form falls back |
 | `substr` (`substr0` `substr1`) | `engine/expr_str.go` + `base.StrSubstr` | SUBSTR (byte-based, `inRunes=false`), 2/3-arg, arity-dispatched to `substr{0,1}_{2,3}`. Rune-based `mb_substr*` fall back |
 | `split` | `engine/expr_str.go` + `base.StrSplit*` | SPLIT (1-arg whitespace / 2-arg sep), arity-dispatched. **First structure-building native expr** — emits a JSON array via `EncodeAsString` (appends, unlike `EncodeStr`) |
@@ -682,9 +684,11 @@ byte/register/lz model.
 
 ### Tier B — scalar but needs parse+format into a reused buffer
 - **String funcs** — upper/lower/title/trim/reverse/length/contains/position, plus
-  replace/substr/split/lpad/rpad and constant-pattern `regexp_contains`/`regexp_like`,
-  **done** (Go `strings.*`/`regexp` into a lifted buffer). Remaining: multi-byte (`mb_*`)
-  variants, the cutset/4-arg forms, `repeat`, `mask`, tokenizers.
+  replace/substr/split/lpad/rpad, the 2-arg cutset **trim/ltrim/rtrim** (rune-aware
+  `bytes.Trim*Func`), **repeat** (with cbq's RANGE / 20-MiB-size overflow yielded as a
+  runtime error), and constant-pattern `regexp_contains`/`regexp_like` — **done** (Go
+  `strings.*`/`bytes.*`/`regexp` into a lifted buffer). Remaining: multi-byte (`mb_*`)
+  variants, the 4-arg `replace` count form, `mask`, tokenizers.
 - **Numeric/math** (abs/ceil/floor/round/sqrt/pow/…) — **done** (`math.*` +
   `strconv.AppendFloat`).
 - **Date/time (non-volatile)** — the millis-only funcs `date_part_millis` /
