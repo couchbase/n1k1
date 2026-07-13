@@ -260,6 +260,55 @@ func exprTreeOptimizeNative(labels base.Labels, e expression.Expression,
 		return params, true
 	}
 
+	// A bare identifier: lower it ONLY under strict matching AND when it exactly
+	// matches a known label -- i.e. a bound variable (a comprehension's `x`,
+	// labeled `.["x"]`, lowered strict by exprOptimizeAny). The strict gate keeps
+	// this OUT of the non-strict projection path, where a bare FROM-alias identifier
+	// (e.g. the `o` in `SELECT o.*`) must stay boxed -- native path-star projection
+	// mishandles it (drops ORDER BY resolution). An identifier that matches no label
+	// (or non-strict) falls back (nil,false), preserving prior behavior; it never
+	// silently navigates the whole row.
+	if ident, ok := e.(*expression.Identifier); ok {
+		if !strict || ident.CaseInsensitive() {
+			return nil, false
+		}
+		labelMaybe := "." + LabelSuffix(ident.Identifier())
+		if labels.IndexOf(labelMaybe) >= 0 {
+			return []interface{}{"labelPath", labelMaybe}, true
+		}
+		return nil, false
+	}
+
+	// ANY <var> IN <arr> SATISFIES <pred> END (single-binding, plain IN form).
+	// Bind <var> as an appended register slot labeled like a LET var, lower <arr>
+	// against the parent labels and <pred> against parent+binding labels, and emit
+	// ["any", bindingLabel, arrParam, satParam] (engine.ExprAny). Other collection
+	// forms (multi-binding, name-variable object iteration, WITHIN/descend) fall back.
+	if anyExpr, ok := e.(*expression.Any); ok {
+		bindings := anyExpr.Bindings()
+		if len(bindings) != 1 {
+			return nil, false
+		}
+		b := bindings[0]
+		if b.NameVariable() != "" || b.Descend() {
+			return nil, false
+		}
+		arrParam, aok := ExprTreeOptimize(labels, b.Expression(), buf, strict)
+		if !aok {
+			return nil, false
+		}
+		bindingLabel := "." + LabelSuffix(b.Variable())
+		childLabels := append(append(base.Labels{}, labels...), bindingLabel)
+		// strict=true: every field in SATISFIES must resolve locally (to the binding
+		// slot or a parent register); an unresolvable ref stays boxed rather than
+		// mis-navigating.
+		satParam, sok := ExprTreeOptimize(childLabels, anyExpr.Satisfies(), buf, true)
+		if !sok {
+			return nil, false
+		}
+		return []interface{}{"any", bindingLabel, arrParam, satParam}, true
+	}
+
 	// CASE is not an expression.Function; lower both forms to a flat native
 	// "case" param list [cond, then, cond, then, ..., else?]. Children() gives:
 	//   SearchedCase: [when1, then1, ..., else?]
@@ -545,7 +594,19 @@ func fieldChainCaseInsensitive(e expression.Expression) bool {
 // exprs (concat, greatest/least, ifnull/coalesce) via the eager-Vals harness, and
 // the lazy CASE via a flat lzMatched-guarded short-circuit (see engine.ExprCase
 // and CaptureNaryChildren). Kept as the seam for the next emitter that needs it.
-var compiledExprDenylist = map[string]bool{}
+var compiledExprDenylist = map[string]bool{
+	// These emit-path (emit.OpToLines) emitters reference custom operand var names
+	// that the generated code never declares (lzValX/lzValArr for `in`, lzValItem/
+	// Low/High for `between`, lzValArr/Idx for `element`). They were dormant until
+	// bare-identifier lowering (comprehension binding vars) started resolving
+	// whole-row identifiers, which pulls these ops onto the native compiled path
+	// for cases like `d IN [...]`. Keep them BOXED in the compiled lane until their
+	// emitters are fixed. (Their intermed/-prepare=full path is fine; only the
+	// per-case emit path is broken.)
+	"in":      true,
+	"between": true,
+	"element": true,
+}
 
 // exprParamsHasDenylisted reports whether a native optimized param tree contains a
 // catalog op whose compiler emitter is denylisted (so the whole expr must stay

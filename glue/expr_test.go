@@ -20,6 +20,10 @@ package glue
 
 import (
 	"bytes"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -1054,6 +1058,108 @@ func TestArrayReshapersDifferentialVsCBQ(t *testing.T) {
 			t.Errorf("array_flatten(%s): native=%q, cbq=%q", on, got, want)
 		}
 	}
+}
+
+// TestAnyComprehensionDifferentialVsCBQ proves the native ANY predicate
+// (single-binding, IN form) is byte-identical to cbq over constant arrays: the
+// element predicate, the collation-based comparison, and every MISSING (-> "") /
+// NULL / non-array / empty edge.
+func TestAnyComprehensionDifferentialVsCBQ(t *testing.T) {
+	c := func(v interface{}) expression.Expression { return expression.NewConstant(v) }
+	arr := func(xs ...interface{}) expression.Expression {
+		if xs == nil {
+			xs = []interface{}{}
+		}
+		return expression.NewConstant(xs)
+	}
+	// ANY x IN <arrE> SATISFIES x > <k> END
+	anyGT := func(arrE expression.Expression, k interface{}) expression.Expression {
+		b := expression.NewSimpleBinding("x", arrE)
+		sat := expression.NewGT(expression.NewIdentifier("x"), c(k))
+		return expression.NewAny(expression.Bindings{b}, sat)
+	}
+
+	cases := map[string]expression.Expression{
+		"has-gt":         anyGT(arr(1, 2, 9), 5),                // true
+		"none-gt":        anyGT(arr(1, 2, 3), 5),                // false
+		"boundary":       anyGT(arr(5, 5), 5),                   // false (strict >)
+		"empty":          anyGT(arr(), 5),                       // false
+		"nonarr-num":     anyGT(c(42), 5),                       // null
+		"nonarr-str":     anyGT(c("hi"), 5),                     // null
+		"null-arr":       anyGT(c(value.NULL_VALUE), 5),         // null
+		"missing-arr":    anyGT(c(value.MISSING_VALUE), 5),      // missing -> ""
+		"null-elem-hit":  anyGT(arr(nil, 9), 5),                 // true (9>5; null skipped)
+		"null-elem-miss": anyGT(arr(nil, 1), 5),                 // false
+		"strings":        anyGT(arr("a", "zz"), "m"),            // true ("zz" > "m")
+		"strings-none":   anyGT(arr("a", "b"), "m"),             // false
+		"mixed-type":     anyGT(arr("a", 9), 5),                 // true (9>5; "a" vs num by collation)
+	}
+	for name, e := range cases {
+		want := cbqEval(t, e)
+		got, ok := nativeEval(t, e)
+		if !ok {
+			t.Errorf("ANY(%s): did not optimize to native", name)
+			continue
+		}
+		if got != want {
+			t.Errorf("ANY(%s): native=%q, cbq=%q", name, got, want)
+		}
+	}
+}
+
+// TestAnyComprehensionRowContext exercises the row-context cases the constant
+// differential can't reach: object-field navigation on the bound var, correlation
+// (predicate references the outer row), and nested ANY-in-ANY -- run through a real
+// session over JSONL data.
+func TestAnyComprehensionRowContext(t *testing.T) {
+	dir := t.TempDir()
+	d := filepath.Join(dir, "default", "t")
+	if err := os.MkdirAll(d, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"id":1,"nums":[1,2,9],"objs":[{"p":3},{"p":8}],"lim":5,"m":[[1,2],[8,9]]}` + "\n" +
+		`{"id":2,"nums":[1,2,3],"objs":[{"p":1}],"lim":5,"m":[[1],[2,3]]}` + "\n" +
+		`{"id":3,"nums":[],"lim":5}` + "\n" +
+		`{"id":4,"nums":"x","lim":5}` + "\n"
+	if err := os.WriteFile(filepath.Join(d, "d.jsonl"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sess, err := OpenSession(dir, "default")
+	if err != nil {
+		t.Fatalf("OpenSession: %v", err)
+	}
+
+	ids := func(t *testing.T, where string) []int {
+		t.Helper()
+		r, err := sess.Run("SELECT t.id FROM t WHERE " + where + " ORDER BY t.id")
+		if err != nil {
+			t.Fatalf("query %q: %v", where, err)
+		}
+		var got []int
+		for _, row := range r.Rows {
+			var m struct {
+				ID int `json:"id"`
+			}
+			if e := json.Unmarshal(row, &m); e != nil {
+				t.Fatalf("decode: %v", e)
+			}
+			got = append(got, m.ID)
+		}
+		return got
+	}
+	eq := func(t *testing.T, name string, got, want []int) {
+		t.Helper()
+		if fmt.Sprint(got) != fmt.Sprint(want) {
+			t.Errorf("%s: got %v, want %v", name, got, want)
+		}
+	}
+
+	// object-field on the bound var (o.p), correlation (x > t.lim), nesting.
+	eq(t, "field-nav", ids(t, `ANY o IN t.objs SATISFIES o.p > 5 END`), []int{1})
+	eq(t, "correlated", ids(t, `ANY x IN t.nums SATISFIES x > t.lim END`), []int{1})
+	eq(t, "nested", ids(t, `ANY r IN t.m SATISFIES (ANY v IN r SATISFIES v > 5 END) END`), []int{1})
+	// edges: empty array (id 3) and non-array (id 4) are never TRUE.
+	eq(t, "plain", ids(t, `ANY x IN t.nums SATISFIES x > 2 END`), []int{1, 2})
 }
 
 // TestArrayBuildersZeroAlloc asserts the per-row native array builds allocate
