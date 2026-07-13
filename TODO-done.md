@@ -26,7 +26,7 @@ Gist only -- details live in commit messages, README, and code comments.
 - MQO / corpus (PREPARE++): CorpusCompile fuses detectors into a shared
   broadcast scan (engine/op_broadcast*.go) -- Aho-Corasick sparse predicate
   index, CSE precompute, grep -A/-B/-C broadcast-context fan-out
-  (OpBroadcastContext). RULE_MATCHES table-function surfaces rejected
+  (OpBroadcastContext). MULTI_MATCHES table-function surfaces rejected
   detectors; per-detector scanned/woken/matched stats; fused SELECT
   projection honored on broadcast + broadcast-context (golden fidelity).
 - Session materialization: CREATE [OR REPLACE] TEMP KEYSPACE ... AS <select>
@@ -47,7 +47,7 @@ Gist only -- details live in commit messages, README, and code comments.
 - Extensions: goja JS scalar UDFs (glue/ext_goja.go) + native zero-garbage
   sparkline()/histogram() aggregates (base/agg_ext.go); streaming/table funcs.
 - CLI (cmd/n1k1): TEMP KEYSPACE; shell/backtick + reserved-word hints;
-  .rules/.extract/.tables/.schema dot-commands; output-mode synonyms
+  .multi/.extract/.tables/.schema dot-commands; output-mode synonyms
   (jsonl/ndjson); space-form -stats/-prepare flags; bundle-file hints.
 - WASM: SQL++ runs client-side in-browser (GOOS=js/wasm).
 

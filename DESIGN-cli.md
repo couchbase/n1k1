@@ -14,7 +14,7 @@ _Last reviewed: 2026-07-11._
 **Done:** The CLI ships as a single-binary REPL + one-shot/`-c`/`-f`/pipe
 front-end over `glue.Session`, with `box`/`box|pretty`/`jsonlines`/`json`/`csv`/
 `markdown`/`line`/`list` output modes and a rich dot-command set (`.tables`/
-`.keyspaces`, `.schema`, `.index`, `.rules`, `.extract`, `.extensions`, `.mode`/
+`.keyspaces`, `.schema`, `.index`, `.multi`, `.extract`, `.extensions`, `.mode`/
 `.meta`/`.formats`/`.timer`/`.stats`/`.explain`/`.prepare`/`.verbose`/`.maxrows`/
 `.maxwidth`/`.read`/`.output`/`.bail`/`.echo`/`.print`/`.open`/`.version`), a
 `~/.n1k1rc` init file, `peterh/liner` line editing, framing-tagged keyspace
@@ -194,7 +194,7 @@ value in `.help`):
 | `.verbose [off\|on\|debug\|<n>]` | Diagnostics level; routes `base.Logf` through the same knob. |
 | `.maxrows <n>` | box: cap rows. `>0` = head+tail with `·` elision; `<0` = last `|n|` rows; `0` = all. |
 | `.maxwidth <n\|auto>` | box: cap column width, truncate with `…`. `0` = uncapped; `auto` = fit box to terminal. |
-| `.rules [list\|run\|lint\|test\|help]` | Run/lint/test a corpus of tagged `*.sql++` detector recipes over the open bundle (`--queries <dir>`). DESIGN-prepare.md. |
+| `.multi [list\|run\|lint\|test\|help]` | Run/lint/test a corpus of tagged `*.sql++` detector recipes over the open bundle (`--queries <dir>`). DESIGN-prepare.md. |
 | `.extensions [list\|load <dir>…\|unload <name>…]` (`.ext`) | Manage loaded extensions (`.js` = JavaScript UDF). |
 | `.extract [help\|list]` | Authoring reference + inventory for `*.extract.js` framing recipes. |
 | `.read <file>` | Execute statements/dot-commands from a file. |

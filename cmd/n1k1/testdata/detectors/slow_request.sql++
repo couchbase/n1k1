@@ -3,7 +3,7 @@
 -- source: requests
 -- tags: ["latency"]
 -- A high-latency query over a different logical keyspace (requests), showing that
--- .rules test builds a per-recipe fixture keyspace named after `source`.
+-- .multi test builds a per-recipe fixture keyspace named after `source`.
 SELECT r.route, r.ms FROM requests r WHERE r.ms > 1000
 -- @fixture
 -- {"route":"/a","ms":250}

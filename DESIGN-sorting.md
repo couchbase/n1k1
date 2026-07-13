@@ -107,7 +107,7 @@ per-partition state instead of being pure per-row functions.
 
 ## Part A — window / context detectors (grep -A/-B/-C) <a name="part-a"></a>
 
-**Expressible + correct today** (verified end-to-end via `.rules`):
+**Expressible + correct today** (verified end-to-end via `.multi`):
 
 ```sql
 SELECT p, pos, line FROM (
@@ -228,7 +228,7 @@ grammar-free levers, in the spirit of how ASOF is already recognized — usable 
    authored (ideal for AI-generated recipes). *Con:* a second representation that can drift
    from the SQL; needs a "which wins / must agree" rule.
 3. **A blessed template** — the authoring guide standardizes ONE exact SQL skeleton (the
-   CONTEXT idiom already in `.rules help`), and the compiler matches *that skeleton*
+   CONTEXT idiom already in `.multi help`), and the compiler matches *that skeleton*
    structurally rather than reasoning about arbitrary windows. Middle ground: stock SQL++,
    but the recognizer only handles the blessed shape.
 
@@ -291,7 +291,7 @@ Each step is independently useful and benchmark-gated (like the DESIGN-col roadm
    the result is the whole matched/context row (MVP). Differential-tested against each
    detector's own SQL (`corpus_context_test.go`: same-signature detectors share ONE
    scan+sort+broadcast-context and match the standalone window result; different signatures
-   split; absence stays standalone). Verified end-to-end via `.rules run`.
+   split; absence stays standalone). Verified end-to-end via `.multi run`.
    **Sort-elision DONE (step 1) for the flagship shape:** a group partitioned by
    `_meta.`path`` and ordered by `_meta.pos` needs NO sort — the file datastore already
    yields records grouped per file (filepath.Walk + sort.Strings, one file fully before the
@@ -326,7 +326,7 @@ Each step is independently useful and benchmark-gated (like the DESIGN-col roadm
    from the parsed algebra (no plan/convert; independent of ASOF-lowerability) and returns
    the `(left, right, key, direction)` signature; `CorpusCompile` groups them into
    `CompiledCorpus.CorrelationGroups` (tested: two nearest-preceding errors→state-by-ts
-   detectors share a group, a following one splits) and `.rules run` surfaces the shareable
+   detectors share a group, a following one splits) and `.multi run` surfaces the shareable
    groups.
    **Execution-sharing DONE** (`glue/corpus_cache.go`): rather than rewrite each
    detector's plan to read a `temp-yield` (which would re-touch the ASOF lowering + need a
@@ -394,14 +394,14 @@ Each step is independently useful and benchmark-gated (like the DESIGN-col roadm
   residual-merge are genuinely new operators, not plumbing over the per-row tee — the biggest
   build here. Worth prototyping one consumer (context) before generalizing.
 - **Two ways to say the same thing.** A `context:` / `correlate:` directive alongside raw SQL
-  needs a precedence/agreement story (and `.rules lint` should flag a directive that doesn't
+  needs a precedence/agreement story (and `.multi lint` should flag a directive that doesn't
   match its SQL body).
 - **The normalized time key.** Cross-log correlation needs many timestamp formats/zones
   reduced to one sortable int64 key — the per-source extract/parse-spec layer
   (`DESIGN-data.md`), still the load-bearing prerequisite for Part B on real bundles (same
   open item ASOF already has).
 - **Soundness of directive-declared preconditions.** As with `gate:`, a directive asserts
-  semantics the compiler trusts; `.rules lint` / golden fixtures are the guardrail.
+  semantics the compiler trusts; `.multi lint` / golden fixtures are the guardrail.
 - **When NOT to fuse.** A lone detector, or one with a unique `(P, O)`, gains nothing from the
   shared substrate and should stay standalone — fusion is a corpus-scale optimization, not a
   single-query one (the crossover analysis in `DESIGN-prepare.md` §worth-it applies).

@@ -6,7 +6,7 @@ design are in DESIGN.md; build/test commands are in README.md.
 Status: a working pure-Go SQL++ engine (CGO_ENABLED=0, cross-compiles;
 also GOOS=js/wasm in-browser). Beyond core query it now has temporal ASOF
 correlation (streaming merge-join / merge-scan), multi-query corpus fusion
-(PREPARE++ CorpusCompile + RULE_MATCHES), session materialization (TEMP
+(PREPARE++ CorpusCompile + MULTI_MATCHES), session materialization (TEMP
 KEYSPACE, spills to disk), extract recipes + a Parquet queryable keyspace,
 goja JS UDFs + native sparkline()/histogram() aggregates, and a rich CLI
 (cmd/n1k1). Remaining work:

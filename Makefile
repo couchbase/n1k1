@@ -98,10 +98,10 @@ test-suite-all: test-glue
 	cd test/tmp && go fmt
 	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -tags n1ql ./test/tmp
 
-# rules-test runs the PREPARE++ phase-7 GOLDEN-FIXTURE runner (`.rules test`) over the
+# rules-test runs the PREPARE++ phase-7 GOLDEN-FIXTURE runner (`.multi test`) over the
 # example recipe corpus (cmd/n1k1/testdata/detectors), failing the build on ANY recipe
 # FAIL -- the CI pattern a real detector-recipe repo copies (it drives the built binary,
-# exactly as an ops pipeline would). `.rules test` is HERMETIC: it builds its own temp
+# exactly as an ops pipeline would). `.multi test` is HERMETIC: it builds its own temp
 # fixture keyspaces per recipe, so the datastore dir argument is unused (the corpus dir
 # is passed only to satisfy the CLI's startup open; it is never queried). Kept STANDALONE
 # rather than wired into test-all: test-all is a pure `go test` sweep, whereas this drives
@@ -109,7 +109,7 @@ test-suite-all: test-glue
 # (cmd/n1k1/rules_test.go's TestRulesTest*). The command exits non-zero on any FAIL
 # (cli sawError -> exit 1), which fails this make target.
 rules-test: cli
-	./n1k1 -c '.rules test --corpus cmd/n1k1/testdata/detectors' cmd/n1k1/testdata/detectors
+	./n1k1 -c '.multi test --corpus cmd/n1k1/testdata/detectors' cmd/n1k1/testdata/detectors
 
 # ------------------------------------------------------------------
 

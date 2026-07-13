@@ -45,7 +45,7 @@ fallback) and the correlated-argmax subquery → ASOF merge-join rewrite
 `[0]`/RAW forms, right-only content residuals, and near-sorted keyspaces. Merge
 runs streaming (single-child watermarked and a K-way pull-coordinator), spills the
 build/reorder buffer past budget, exposes per-request `base.MergeStats` surfaced in
-the `.rules` run summary, and scans multi-file keyspaces per-file (the cross-node
+the `.multi` run summary, and scans multi-file keyspaces per-file (the cross-node
 K-way enabler). Measured ~19× lower RSS vs. the correlated-subquery shape,
 speed-neutral.
 

@@ -704,7 +704,7 @@ files: `DatastoreScanRecords` serves its rows straight from the heap.
 
 ### `INSERT INTO` — user-driven materialization (landed)
 The **explicit, on-disk** counterpart: run a query *now* and write its rows to a
-keyspace file for later slicing & dicing. Drove by the PREPARE++ / `RULE_MATCHES()`
+keyspace file for later slicing & dicing. Drove by the PREPARE++ / `MULTI_MATCHES()`
 flow (`DESIGN-prepare.md`) — materialize a scan/rule-match result once, then run
 many cheap analytic queries over it.
 

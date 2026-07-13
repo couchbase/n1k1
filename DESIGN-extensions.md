@@ -4,7 +4,7 @@
 
 _Last reviewed: 2026-07-11._
 
-**Done:** The first extension slice is live and tested (interpreter + compiler): native zero-garbage aggregates `sparkline()`/`histogram()`, goja JavaScript scalar UDFs (opt-in dir/file/inline registry), JS aggregate UDFs (3-callback) and streaming table-valued sources (`emit` protocol, on one generic `stream-fn` op that `RULE_MATCHES` also rides), plus `*.extract.js` recipes whose `describe()` returns a declarative `ExtractSpec` applied on the native byte lane — all unlocked by two fork setters (`expression.RegisterFunction` / `algebra.RegisterAggregate`) that open the parser's builtin + aggregate registries without a grammar change. And `*.macro.js` **pre-parse SQL++ macros** (`@name(...)` → generated SQL++ before cbq's parser; gensym hygiene, `.macro expand`) — `grep_context` ships as the first, turning grep `-A`/`-B`/`-C` into a one-liner. **Inline golden examples** (`glue/ext_examples.go`): every JS extension file may declare an executable `examples` array of `{in, out}` pairs — self-documenting AND verifiable — captured at registration (each loader's throwaway runtime already runs the program) and executed through the real per-kind protocol by `.extensions test` (scalar call / agg init-update-final / stream emit / macro expand / extract describe+`SpecApply`); `.extensions examples` prints them without running. Numbers compare with float tolerance, macro SQL++ whitespace-insensitively; a failure sets a non-zero exit for CI. The SQL++ `*.sql++` recipe analog keeps its fixtures too, now written as SQL comments (`-- {...}`) so the whole file is valid SQL++.
+**Done:** The first extension slice is live and tested (interpreter + compiler): native zero-garbage aggregates `sparkline()`/`histogram()`, goja JavaScript scalar UDFs (opt-in dir/file/inline registry), JS aggregate UDFs (3-callback) and streaming table-valued sources (`emit` protocol, on one generic `stream-fn` op that `MULTI_MATCHES` also rides), plus `*.extract.js` recipes whose `describe()` returns a declarative `ExtractSpec` applied on the native byte lane — all unlocked by two fork setters (`expression.RegisterFunction` / `algebra.RegisterAggregate`) that open the parser's builtin + aggregate registries without a grammar change. And `*.macro.js` **pre-parse SQL++ macros** (`@name(...)` → generated SQL++ before cbq's parser; gensym hygiene, `.macro expand`) — `grep_context` ships as the first, turning grep `-A`/`-B`/`-C` into a one-liner. **Inline golden examples** (`glue/ext_examples.go`): every JS extension file may declare an executable `examples` array of `{in, out}` pairs — self-documenting AND verifiable — captured at registration (each loader's throwaway runtime already runs the program) and executed through the real per-kind protocol by `.extensions test` (scalar call / agg init-update-final / stream emit / macro expand / extract describe+`SpecApply`); `.extensions examples` prints them without running. Numbers compare with float tolerance, macro SQL++ whitespace-insensitively; a failure sets a non-zero exit for CI. The SQL++ `*.sql++` recipe analog keeps its fixtures too, now written as SQL comments (`-- {...}`) so the whole file is valid SQL++.
 
 **Remaining (headline TODOs):**
 - [ ] Extract recipes are `describe()`-only; the imperative `extract(file, meta, emit)` escape hatch for irregular formats is not yet wired.
@@ -115,7 +115,7 @@ Both reuse the same shim, so `NAME(expr)` works in GROUP BY and as a bare aggreg
    batch form). The producer lives in `glue/ext_jsvm_stream.go` and implements the
    generic `StreamSource` interface; `VisitExpressionScan` recognizes any such FROM
    expression and routes it to one shared `stream-fn` op (`glue/op_stream_fn.go`,
-   `StreamFnOp`) — the same op `RULE_MATCHES` rides — yielding as rows are produced,
+   `StreamFnOp`) — the same op `MULTI_MATCHES` rides — yielding as rows are produced,
    **no materialization, bounded memory**, composing with WHERE/GROUP BY/LIMIT. Ships
    `extensions/functions/js/series.stream.js`. Caveat (matches every n1k1 source): no
    per-producer early-exit yet, so `LIMIT k` drops extras downstream while the source
@@ -609,7 +609,7 @@ Three layers could host this; only one fits a *user-authored, `WINDOW`-emitting*
    layer the user named ("expanded before cbq's parser is applied"), and it is correct.
 
 **The whole feature is invisible downstream.** Expansion happens at the top of
-`ParseStatement` — the single choke point every `.rules` detector *and* every ad-hoc
+`ParseStatement` — the single choke point every `.multi` detector *and* every ad-hoc
 query flows through (`glue/stmt.go:52`, right before `n1ql.ParseStatement2`). After
 expansion the statement is ordinary SQL++, so the planner, CSE/fusion, MQO, ASOF
 lowering, and the standalone-analyzer codegen (`IDEA-0018`) all see hand-written-shaped
@@ -749,7 +749,7 @@ parse-time runtime, not the gen-compiler copy lane.
 Same posture as recipes and UDFs: JS runs in sandboxed goja, **opt-in** via `-ext`, no
 FS/network unless power-tier host functions are explicitly granted. The one thing to state
 plainly: a macro is a **code generator** — its output runs with full query authority. But
-this is not a *new* trust boundary, because the `.rules` detectors themselves are already
+this is not a *new* trust boundary, because the `.multi` detectors themselves are already
 trusted SQL++ authored by the same person who drops the macro in the extensions dir. A
 macro is exactly as trusted as the detector that calls it.
 
@@ -1174,7 +1174,7 @@ bounded, capability-free Wasm instance that streams JSON.
    today), CLI `-ext`/`.ext`; impl in `glue/ext_jsvm.go`.
 3. **DONE — Streaming source-function op** — a generic `stream-fn` op
    (`glue/op_stream_fn.go`, `StreamFnOp`) driven by any `StreamSource`; `*.stream.js`
-   JS sources and `RULE_MATCHES` both ride it. `FROM shred(...)`/loaders slot in via the
+   JS sources and `MULTI_MATCHES` both ride it. `FROM shred(...)`/loaders slot in via the
    same interface; pairs with DESIGN-data.md file-source work.
    - **3b. Extract functions (`*.extract.js`) — the PREPARE++ enabler.** A new
      extension class on the *file→extractor* axis (not the name seam): `match` +

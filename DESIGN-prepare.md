@@ -13,12 +13,18 @@ detectors fuse/standalone/reject and wires the MQO substrate (`broadcast` / sour
 CSE / Aho-Corasick predicate index), ASOF/temporal lowers to a K-way merge, the late-binding
 manifest (`OpenSessionBound` / `binding.go`) resolves logical keyspace names to per-bundle globs
 (fail-loud), the datastore-pipe seam (`base.DatastorePipe` / `engine.MemPipe`) lets an emitted
-plan read inline data, and the `.rules` dot-command family (`run`/`lint`/`test`/`list`/`help`)
+plan read inline data, and the `.multi` dot-command family (`run`/`lint`/`test`/`list`/`help`)
 drives authoring + golden-fixture CI.
 
+> **Naming:** the external surface is `.multi` (CLI) / `MULTI_MATCHES()` (the in-SQL++
+> TVF) — "multi" for the multi-query pack it runs with shared execution (MQO). Renamed
+> from `.rules` / `RULE_MATCHES` (2026), which misread as a rules-engine; both old names
+> stay registered as undocumented back-compat aliases. n1k1 *internals* keep their names
+> (corpus, `CorpusCompile`, detector, `RejectedDetector`, …) — the rename is surface-only.
+
 **Remaining (headline TODOs):**
-- [ ] A fully standalone, **fork-free analyzer binary** (`.rules build … -o analyzer` embedding a
-  minimal datastore runtime + baked plan + recipes). RULE_MATCHES codegens at
+- [ ] A fully standalone, **fork-free analyzer binary** (`.multi build … -o analyzer` embedding a
+  minimal datastore runtime + baked plan + recipes). MULTI_MATCHES codegens at
   `-prepare=full` but STILL imports glue (`glue.DatastoreOp` islands), so it is NOT yet fork-free.
 - [ ] embed-source **fat child** (direct datastore access, config/auth-only pipe) + the full
   multiplexed cursor pipe protocol with pushdowns; the WASM/wazero in-process alternative.
@@ -912,7 +918,7 @@ derived table filtered on the flag. The `PARTITION BY _meta.`path`` is load-bear
 multi-file (rotated-log) keyspace: `_meta.pos` restarts per file, so without it context
 **leaks across files** — a partition-less `ORDER BY _meta.pos` interleaves them and pulls
 unrelated lines into a match's neighborhood (wrong result). For a timeline that spans
-rotated files, order by an extract-recipe `time:` key instead. (`.rules help` carries the
+rotated files, order by an extract-recipe `time:` key instead. (`.multi help` carries the
 full idiom + the gotcha.)
 
 **Index-gating a standalone detector — the `gate:` precondition.** A fused filter+project
@@ -930,16 +936,16 @@ a skipped detector is reported (`gated: N skipped`), never silent, and a gate th
 runs the detector anyway. (`glue.CorpusDetector.{Source,Gate}` + `CompiledCorpus.GatedSkipped`;
 auto-deriving the gate from a window match-flag's inner predicate is a noted follow-up.)
 
-**Dev/ops / CI.** The `.rules` dot-command family is built: `run` (corpus→findings + coverage),
+**Dev/ops / CI.** The `.multi` dot-command family is built: `run` (corpus→findings + coverage),
 `lint` (the report card), `test` (golden fixtures, `--update` to record). Also built for the
-low-cognitive-load surface: **`.rules list`** (a metadata-only inventory — label/source/description/
+low-cognitive-load surface: **`.multi list`** (a metadata-only inventory — label/source/description/
 tags/has-fixture — that needs neither a compile nor a bundle, distinct from `lint`'s compiled
-health report), **`.rules help`** (embedded docs: a sample corpus directory layout, an annotated
+health report), **`.multi help`** (embedded docs: a sample corpus directory layout, an annotated
 recipe showing the front-matter + fixture, example `run`/`lint`/`test` output, and short "get the
 best out of it" tips), and **fix-carrying messages** — every reject/standalone/always-wake/boxed/
 unresolved-keyspace status ships a mini snippet of the fix (e.g. always-wake → "add a literal:
 `… WHERE msg LIKE '%panic%' AND …`"), so an author or agent doesn't have to reason it out.
-**Golden-fixture CI** runs `.rules test` over the corpus on every commit (`make rules-test`;
+**Golden-fixture CI** runs `.multi test` over the corpus on every commit (`make rules-test`;
 non-zero exit on FAIL) — mirroring n1k1's own differential-test discipline to bound false
 positives. Still ahead: a **corpus lint gate** (fail CI on `rejected` / missing fixture) and the
 [SHA-keyed build cache + provenance](#compile-corpus) so findings cite `detector@sha`.
@@ -986,19 +992,19 @@ positives. Still ahead: a **corpus lint gate** (fail CI on `rejected` / missing 
    the two big standalone classes (window/context detectors and temporal cross-keyspace
    correlation) onto a shared sorted-by-key stream substrate.
 7. **Recipe format + golden-fixture CI + agent ops** — **DONE (MVP)** + polish. The AI-authoring
-   flywheel and tech-support surface. Built: the **`.rules` dot-command** family (`cmd/n1k1/
+   flywheel and tech-support surface. Built: the **`.multi` dot-command** family (`cmd/n1k1/
    rules.go`) — `run` (corpus → coverage + tagged findings), `lint` (the report card: fuse/native/
    index/advice + corpus score), `test` (golden fixtures); the **recipe format** (single file:
    `-- key: value` front-matter + SQL++ + inline `-- @fixture` / `-- @expect`, backward-compatible
-   with a bare `.sql++`; `glue.LoadCorpus`/`Recipe`); **golden-fixture CI** (`.rules test`
+   with a bare `.sql++`; `glue.LoadCorpus`/`Recipe`); **golden-fixture CI** (`.multi test`
    [`--update` records the golden], non-zero exit on FAIL, `make rules-test`). The report-card
    signals are *surfaced* from what `CorpusCompile` / `ExprCoverage` / `engine.PrefilterLiteral`
-   already compute. Also built: a metadata-only **`.rules list`** inventory (no compile/
-   bundle needed), a **`.rules help`** with a sample layout + annotated recipe + example outputs +
+   already compute. Also built: a metadata-only **`.multi list`** inventory (no compile/
+   bundle needed), a **`.multi help`** with a sample layout + annotated recipe + example outputs +
    tips, and **fix-snippet-carrying error/advice messages**. Per-detector hit stats (the
-   `scanned / woken` count per fused detector) are surfaced in `.rules run`
+   `scanned / woken` count per fused detector) are surfaced in `.multi run`
    (`wokenByTag` / `RunReport`). Remaining tail: the **re-run delta** report, multi-keyspace
-   fixtures, and a `.rules bind` dry-run
+   fixtures, and a `.multi bind` dry-run
    (a `--bind <manifest>` flag already feeds the resolver).
 
 Each phase is independently useful, and the **core pipeline is now end-to-end**: logical-keyspace

@@ -7,7 +7,7 @@ and build/test instructions are in README.md.
 n1k1 is a working pure-Go SQL++ engine (CGO_ENABLED=0, cross-compiles; also
 GOOS=js/wasm in-browser). Beyond core query it has temporal ASOF correlation
 (streaming merge-join / merge-scan), multi-query corpus fusion (PREPARE++
-CorpusCompile + RULE_MATCHES), session materialization (TEMP KEYSPACE, spills to
+CorpusCompile + MULTI_MATCHES), session materialization (TEMP KEYSPACE, spills to
 disk), extract recipes + a Parquet queryable keyspace, goja JS UDFs + native
 custom aggregates, secondary/FTS indexes, and a rich CLI (cmd/n1k1).
 
