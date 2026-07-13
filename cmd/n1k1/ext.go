@@ -156,7 +156,7 @@ func (c *cli) extExamples(only string) {
 }
 
 // extTest runs every loaded extension's inline examples and checks each against its
-// expected output -- the JS analog of `.rules test`. A failure latches c.failed so a
+// expected output -- the JS analog of `.multi test`. A failure latches c.failed so a
 // non-interactive run exits non-zero (CI). `only` filters to one extension name.
 func (c *cli) extTest(only string) {
 	results := glue.RunExtensionExamples(only)
