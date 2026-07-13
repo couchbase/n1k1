@@ -1,0 +1,21 @@
+[
+    {
+        "description": "a constant-false predicate (WHERE 1=0) folds to an empty ValueScan; a no-GROUP-BY COUNT still yields {n:0}",
+        "statements": "SELECT COUNT(*) AS n FROM default:contacts WHERE 1=0",
+        "results": [
+            { "n": 0 }
+        ]
+    },
+    {
+        "description": "constant-false with SUM/COUNT: SUM over empty is null, COUNT is 0",
+        "statements": "SELECT SUM(1) AS s, COUNT(*) AS n FROM default:contacts WHERE 1=0",
+        "results": [
+            { "s": null, "n": 0 }
+        ]
+    },
+    {
+        "description": "constant-false, non-aggregate projection yields zero rows",
+        "statements": "SELECT c.name FROM default:contacts c WHERE 1=0",
+        "results": []
+    }
+]

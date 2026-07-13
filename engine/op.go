@@ -91,6 +91,13 @@ func ExecOp(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 		lzYieldVals(nil)
 		lzYieldErr(nil)
 
+	case "empty":
+		// A source of ZERO rows (vs "nil", which yields one empty row). Used for an
+		// empty plan.ValueScan -- cbq folds a provably-false predicate (e.g. WHERE 1=0)
+		// to one. Signals completion so a downstream group still emits its one
+		// no-GROUP-BY aggregate row (COUNT=0, ...).
+		lzYieldErr(nil)
+
 	default:
 		ExecOpEx(o, lzVars, lzYieldVals, lzYieldErr, path, pathNext) // !lz
 	}

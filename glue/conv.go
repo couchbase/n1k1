@@ -388,7 +388,20 @@ func (c *Conv) VisitKeyScan(o *plan.KeyScan) (interface{}, error) {
 	})
 }
 
-func (c *Conv) VisitValueScan(o *plan.ValueScan) (interface{}, error) { return NA(o) } // Used for mutations (VALUES clause).
+// VisitValueScan handles the planner's ValueScan. cbq folds a provably-FALSE predicate
+// (e.g. `WHERE 1=0`) to an EMPTY ValueScan as the query's source; convert that to an
+// "empty" op (zero rows) so the rest of the plan runs over no input -- e.g. a no-GROUP-BY
+// aggregate still emits its one row (COUNT=0). A NON-empty ValueScan is the INSERT ...
+// VALUES / mutation source, still deferred (NA).
+func (c *Conv) VisitValueScan(o *plan.ValueScan) (interface{}, error) {
+	if len(o.Values()) != 0 {
+		return NA(o) // mutation VALUES clause -- not yet supported.
+	}
+	return c.TopPush(o, &base.Op{
+		Kind:   "empty",
+		Labels: base.Labels{".", "^id"},
+	})
+}
 
 func (c *Conv) VisitDummyScan(o *plan.DummyScan) (interface{}, error) {
 	return c.TopPush(o, &base.Op{Kind: "nil"})
