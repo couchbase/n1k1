@@ -77,7 +77,11 @@ func VectorDistanceVFloat32(out []float64, col []float32, q []float64, rows, dim
 			for j := 0; j < dim; j++ {
 				s += float64(v[j]) * q[j]
 			}
-			out[r] = -s // cbq negates dot so ORDER BY ASC still means "closest"
+			s = -s // cbq negates dot so ORDER BY ASC still means "closest"
+			if s == 0 {
+				s = 0 // normalize IEEE -0.0 (orthogonal vectors) to cbq's "0"
+			}
+			out[r] = s
 		}
 	case "cosine":
 		var qn float64
