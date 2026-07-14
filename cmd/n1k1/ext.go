@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/couchbase/n1k1/glue"
@@ -83,9 +84,9 @@ func loadExtensions(paths []string) ([]string, error) {
 	return names, nil
 }
 
-// cmdExtensions implements the ".extensions [list | load <path...> | unload
-// <name...> | examples [name] | test [name]]" dot-command (alias ".ext"). No
-// argument (or "list") lists the currently-loaded extensions.
+// cmdExtensions implements the ".extensions [list | show <name> | load <path...> |
+// unload <name...> | examples [name] | test [name]]" dot-command (alias ".ext"). No
+// argument (or "list") lists all loaded extensions (every kind, incl. built-in macros).
 func (c *cli) cmdExtensions(arg string) {
 	fields := strings.Fields(strings.TrimSpace(arg))
 	sub := ""
@@ -95,6 +96,8 @@ func (c *cli) cmdExtensions(arg string) {
 	switch sub {
 	case "", "list":
 		c.extList()
+	case "show", "source", "cat":
+		c.extShow(strings.Join(fields[1:], " "))
 	case "load":
 		c.extLoad(fields[1:])
 	case "unload":
@@ -109,21 +112,96 @@ func (c *cli) cmdExtensions(arg string) {
 	}
 }
 
+// extEntry is one loaded extension of ANY kind (scalar UDF / aggregate / table source /
+// extract recipe / macro), unified for `.extensions list` and `.extensions show`.
+type extEntry struct {
+	name, kind, origin string // origin: file path, "(inline)", "(built-in)", or "(loaded)"
+	code               string // full source, or "" when not retrievable
+	nExamples          int
+}
+
+// gatherExtensions collects EVERY loaded extension across the kinds -- scalar/aggregate/
+// stream (glue.ListExtensions), extract recipes (ListExtractRecipes), and macros
+// (ListMacros, incl. the built-ins) -- so all are visible in one place. Source code is
+// the macro registry's stored JS for a macro, else the file at its origin path.
+func (c *cli) gatherExtensions() []extEntry {
+	readCode := func(origin string) string {
+		if origin == "" || strings.HasPrefix(origin, "(") { // (inline)/(built-in)/(loaded): no file
+			return ""
+		}
+		if b, err := os.ReadFile(origin); err == nil {
+			return string(b)
+		}
+		return ""
+	}
+	var out []extEntry
+	for _, e := range glue.ListExtensions() {
+		out = append(out, extEntry{e.Name, e.Kind, e.Source, readCode(e.Source),
+			len(glue.ExtExamplesFor(e.Kind, e.Name))})
+	}
+	for _, r := range glue.ListExtractRecipes() {
+		out = append(out, extEntry{r.Name, "extract", r.Source, readCode(r.Source),
+			len(glue.ExtExamplesFor("extract", r.Name))})
+	}
+	for _, m := range glue.ListMacros() {
+		origin := "(loaded)"
+		if builtinMacroNames[m.Name] {
+			origin = "(built-in)"
+		}
+		out = append(out, extEntry{"@" + m.Name, "macro", origin, m.Source,
+			len(glue.ExtExamplesFor("macro", m.Name))})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].kind != out[j].kind {
+			return out[i].kind < out[j].kind
+		}
+		return out[i].name < out[j].name
+	})
+	return out
+}
+
 func (c *cli) extList() {
-	exts := glue.ListExtensions()
+	exts := c.gatherExtensions()
 	if len(exts) == 0 {
 		fmt.Fprintln(c.stderr, "no extensions loaded")
 		return
 	}
-	fmt.Fprintf(c.stderr, "%d loaded extension function(s):\n", len(exts))
+	fmt.Fprintf(c.stderr, "%d loaded extension(s):  (.extensions show <name> for the source)\n", len(exts))
 	for _, e := range exts {
 		ex := ""
-		if n := len(glue.ExtExamplesFor(e.Kind, e.Name)); n > 0 {
-			ex = fmt.Sprintf("  (%d example%s)", n, plural(n))
+		if e.nExamples > 0 {
+			ex = fmt.Sprintf("  (%d example%s)", e.nExamples, plural(e.nExamples))
 		}
-		fmt.Fprintf(c.stderr, "  %-20s %-22s %s%s\n", e.Name, e.Kind, e.Source, ex)
+		fmt.Fprintf(c.stderr, "  %-22s %-22s %s%s\n", e.name, e.kind, e.origin, ex)
 	}
 	fmt.Fprintln(c.stderr, c.style.Dim("(.extensions examples [name] to see them; .extensions test [name] to run them)"))
+}
+
+// extShow prints one extension's header + full source code (source to stdout, pipeable;
+// header to stderr) -- the cross-kind sibling of `.macro show`.
+func (c *cli) extShow(name string) {
+	if name == "" {
+		fmt.Fprintln(c.stderr, "usage: .extensions show <name>")
+		return
+	}
+	q := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(name)), "@")
+	for _, e := range c.gatherExtensions() {
+		if strings.TrimPrefix(e.name, "@") == q {
+			fmt.Fprintf(c.stderr, "%s  [%s]  %s", e.name, e.kind, e.origin)
+			if e.nExamples > 0 {
+				fmt.Fprintf(c.stderr, "  (%d example%s)", e.nExamples, plural(e.nExamples))
+			}
+			fmt.Fprintln(c.stderr)
+			if e.code == "" {
+				fmt.Fprintln(c.stderr, c.style.Dim("  (source not available for an inline extension)"))
+				return
+			}
+			fmt.Fprintln(c.stderr, "\nsource:")
+			fmt.Fprintln(c.out, e.code)
+			return
+		}
+	}
+	fmt.Fprintf(c.stderr, "no extension %q -- try .extensions list\n", name)
 }
 
 // extExamples prints the inline examples declared in the loaded extension files --
