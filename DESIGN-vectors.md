@@ -126,12 +126,28 @@ The distance math is negligible (the 60ms ceiling, hidden under I/O); the new fl
 Parquet decode (~0.4s for a 163MB file), NOT the JSON parse. So columnar delivers the win
 and the bottleneck has moved to the reader.
 
-**Two hard facts for the reader/writer (learned the hard way):** (1) Parquet has NO
-fixed-size-list type — a `FixedSizeList<float32>[dim]` round-trips as a variable
-`List<float32>` (the child float32 values stay contiguous, offsets `0,dim,2dim,…`, so the
-zero-copy child-buffer borrow still works). (2) The list ELEMENT must be declared
-NON-nullable (`arrow.FixedSizeListOfNonNullable`), or the parquet def-level round-trip marks
-every child value NULL and the whole column reads back as nulls.
+**The vec column type + nullability (double-checked, TestVecParquetNullContract).** The
+column is a variable `List<float32>` with a NON-nullable element and a NULLABLE list field:
+- Parquet has NO fixed-size-list type — a `FixedSizeList` round-trips as a variable `List`
+  anyway, AND pqarrow can't even WRITE a `FixedSizeList` null ("lists with non-zero length
+  null components are not supported"). So the writer emits a variable `List<float32>`.
+- Nullability is TWO independent levels. The ELEMENT (each coord) is non-nullable — declaring
+  it nullable makes the def-level round-trip mark every coord NULL (the whole column reads
+  back null). The LIST FIELD is nullable — a ROW's vec is NULL when the source text is
+  MISSING or non-string (e.g. `INSERT INTO x.parquet SELECT VECTORIZE_BATCH(f.body,...)` where
+  `f.body` is absent). That row-level null is stored NATIVELY by arrow/parquet's validity
+  bitmap as a ZERO-LENGTH list — no sentinel vector, no wasted `dim` floats, and no fragile
+  bet that "no model emits all-zeros." Confirmed to round-trip: present rows keep their
+  floats; null rows come back `IsNull=true`, length 0.
+- Borrow implication: with null rows present, offsets go irregular (a null row doesn't
+  advance the offset), so the child buffer holds ONLY the present vectors, still one
+  contiguous zero-copy `[]float32`. The no-null case keeps regular offsets `0,dim,2dim,…`
+  (the tight `r*dim` fast-path kernel); the null case indexes each row via the list OFFSETS
+  (`child[offs[r]:offs[r+1]]`) and yields NULL for zero-length rows — the same validity-mask
+  discipline the existing scalar columnar path already uses.
+- The doc id IS a matching column: the writer emits `id` (the SELECT's KEY / `META().id`)
+  row-aligned with `vec` (and any other projected fields), so a top-K result maps back to
+  documents by reading `id` at the winning row indices. (The benchmark writes `{id, vec}`.)
 
 **Still to build (the query-integration push):** the current `NextColumns` yields fixed
 8-byte scalar columns; a vec column is `dim*4` bytes/row, so the reader needs a list-column

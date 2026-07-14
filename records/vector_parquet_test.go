@@ -46,14 +46,19 @@ import (
 // reproducibility). Returns the query vector = row 0's vector as a []float64.
 func writeVecParquet(t testing.TB, path string, n, dim int) []float64 {
 	mem := memory.NewGoAllocator()
+	// The vec column is a variable List<float32> (NOT FixedSizeList -- pqarrow can't
+	// write FixedSizeList nulls), element non-nullable (a coord is always a real
+	// float), list field nullable (a row's vec can be NULL when the source text is
+	// missing/non-string). All-present rows give regular offsets 0,dim,2dim,.. so the
+	// contiguous zero-copy borrow still holds; see TestVecParquetNullContract for nulls.
 	schema := arrow.NewSchema([]arrow.Field{
-		{Name: "id", Type: arrow.PrimitiveTypes.Int64},
-		{Name: "vec", Type: arrow.FixedSizeListOfNonNullable(int32(dim), arrow.PrimitiveTypes.Float32)},
+		{Name: "id", Type: arrow.PrimitiveTypes.Int64, Nullable: false},
+		{Name: "vec", Type: arrow.ListOfNonNullable(arrow.PrimitiveTypes.Float32), Nullable: true},
 	}, nil)
 	b := array.NewRecordBuilder(mem, schema)
 	defer b.Release()
 	idB := b.Field(0).(*array.Int64Builder)
-	vecB := b.Field(1).(*array.FixedSizeListBuilder)
+	vecB := b.Field(1).(*array.ListBuilder)
 	valB := vecB.ValueBuilder().(*array.Float32Builder)
 
 	seed := uint64(0x243f6a8885a308d3)
