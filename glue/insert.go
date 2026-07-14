@@ -111,7 +111,7 @@ func (s *Session) InsertRun(ins *algebra.Insert) (res *Result, err error) {
 		seedFrom = path
 	}
 
-	w, err := newJSONLWriter(path, seedFrom)
+	w, err := newInsertWriter(path, seedFrom, mode)
 	if err != nil {
 		return nil, err
 	}
@@ -175,7 +175,7 @@ func (s *Session) InsertRun(ins *algebra.Insert) (res *Result, err error) {
 			err = evalErr
 			return nil, err
 		}
-		if err = w.err; err != nil {
+		if err = w.writeErr(); err != nil {
 			return nil, err
 		}
 	} else {
@@ -194,7 +194,7 @@ func (s *Session) InsertRun(ins *algebra.Insert) (res *Result, err error) {
 				ret.emit(doc)
 			}
 		}
-		if err = w.err; err != nil {
+		if err = w.writeErr(); err != nil {
 			return nil, err
 		}
 	}
@@ -217,12 +217,12 @@ func (s *Session) InsertRun(ins *algebra.Insert) (res *Result, err error) {
 	}
 
 	// Otherwise report the mutation like a small result the CLI can render (or stream).
-	summary, _ := json.Marshal(map[string]interface{}{"inserted": w.n, "keyspace": ks, "mode": mode})
+	summary, _ := json.Marshal(map[string]interface{}{"inserted": w.rows(), "keyspace": ks, "mode": mode})
 	if s.OnRow != nil {
 		s.OnRow(summary)
-		return &Result{Count: w.n}, nil
+		return &Result{Count: w.rows()}, nil
 	}
-	return &Result{Rows: []json.RawMessage{summary}, Count: w.n}, nil
+	return &Result{Rows: []json.RawMessage{summary}, Count: w.rows()}, nil
 }
 
 // insertTargetPath resolves the INSERT target keyspace name to an on-disk file path
@@ -383,6 +383,18 @@ func (r *insertReturner) marshal(v value.Value) ([]byte, bool, error) {
 	return r.buf.Bytes(), true, nil
 }
 
+// insertWriter streams evaluated docs to the target keyspace file, committing
+// atomically on finish (write a temp sibling, then rename). jsonlWriter is the default;
+// a .parquet target uses parquetWriter (insert_writer.go, !js). write latches the first
+// error (queryable via writeErr); rows reports how many docs were written.
+type insertWriter interface {
+	write(doc value.Value)
+	finish() error
+	abort()
+	writeErr() error
+	rows() int
+}
+
 // jsonlWriter streams JSON documents, one compact line each, into a temp sibling
 // that is renamed over the target on finish() -- so a mid-stream failure never
 // leaves a partial keyspace file, and an "overwrite"/"append" rename replaces the
@@ -463,6 +475,9 @@ func (jw *jsonlWriter) setErr(e error) {
 		jw.err = e
 	}
 }
+
+func (jw *jsonlWriter) writeErr() error { return jw.err }
+func (jw *jsonlWriter) rows() int       { return jw.n }
 
 func (jw *jsonlWriter) write(doc value.Value) {
 	if jw.err != nil || doc == nil || doc.Type() == value.MISSING {

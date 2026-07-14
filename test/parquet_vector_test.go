@@ -23,6 +23,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -289,5 +290,146 @@ func TestVectorColumnarNoMisfire(t *testing.T) {
 	}
 	if len(rows) != 3 || rows[0] != `{"id":0,"d":100}` {
 		t.Errorf("unexpected rows: %v", rows)
+	}
+}
+
+// TestInsertParquetRoundTrip is the write-half headline: INSERT INTO `<name>.parquet`
+// SELECT ... materializes a real Parquet file with a list<float32> vec column, and a
+// fresh session reads it back -- including the columnar VECTOR_DISTANCE top-K path,
+// which only fires if the writer produced the right nested column shape. Ties the whole
+// vector story together (write -> read -> columnar query).
+func TestInsertParquetRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+
+	// Source keyspace `src`: JSONL of {id, vec} with exact-binary-fraction coords so the
+	// value survives jsonl -> float64 -> float32 losslessly.
+	srcDir := filepath.Join(dir, "default", "src")
+	if err := os.MkdirAll(srcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const n, dim = 30, 4
+	var b strings.Builder
+	for i := 0; i < n; i++ {
+		b.WriteString(`{"id":`)
+		b.WriteString(strconv.Itoa(i))
+		b.WriteString(`,"vec":[`)
+		for j := 0; j < dim; j++ {
+			if j > 0 {
+				b.WriteByte(',')
+			}
+			b.WriteString(strconv.FormatFloat(float64(i*dim+j+1)/256.0, 'g', -1, 64))
+		}
+		b.WriteString("]}\n")
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "data.jsonl"), []byte(b.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	sess, err := glue.OpenSession(dir, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := sess.Run("INSERT INTO `vecs/data.parquet` (KEY UUID(), VALUE self) " +
+		`SELECT s.id, s.vec FROM src s`)
+	if err != nil {
+		t.Fatalf("INSERT INTO parquet: %v", err)
+	}
+	if res.Count != n {
+		t.Errorf("inserted %d rows, want %d", res.Count, n)
+	}
+
+	// The file landed on disk as a real Parquet with a list<float32> vec column.
+	part := filepath.Join(dir, "default", "vecs", "data.parquet")
+	if fi, e := os.Stat(part); e != nil || fi.Size() == 0 {
+		t.Fatalf("expected a non-empty parquet at %q (err=%v)", part, e)
+	}
+	src, err := records.OpenFile(part, "")
+	if err != nil {
+		t.Fatalf("reopen inserted parquet: %v", err)
+	}
+	vss, ok := src.(records.VectorSchemaSource)
+	if !ok || !vss.VectorField("vec") || !vss.ScalarField("id") {
+		t.Errorf("inserted parquet columns not as expected: vec-is-vector=%v id-is-scalar=%v",
+			ok && vss.VectorField("vec"), ok && vss.ScalarField("id"))
+	}
+	src.Close()
+
+	// Round-trip via a fresh session: the columnar VECTOR_DISTANCE top-K over the
+	// INSERTed file must fire and match the row lane.
+	sess2, err := glue.OpenSession(dir, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := `SELECT t.id, VECTOR_DISTANCE(t.vec, [0.1, 0.2, 0.3, 0.4], "cosine") AS d FROM vecs t ORDER BY d ASC LIMIT 5`
+
+	glue.DisableColumnarOptimize = true
+	off := runVecRows(t, sess2, q)
+	glue.DisableColumnarOptimize = false
+	before := atomic.LoadInt64(&glue.VectorColumnarApplied)
+	on := runVecRows(t, sess2, q)
+	applied := atomic.LoadInt64(&glue.VectorColumnarApplied) - before
+
+	glue.DisableColumnarOptimize = false
+	if applied == 0 {
+		t.Errorf("columnar VECTOR_DISTANCE did not fire over the INSERTed parquet")
+	}
+	if len(on) != 5 {
+		t.Errorf("got %d rows, want 5: %v", len(on), on)
+	}
+	if !reflect.DeepEqual(off, on) {
+		t.Errorf("columnar != row lane over INSERTed parquet\n OFF: %v\n ON:  %v", off, on)
+	}
+}
+
+// TestInsertParquetNullVec: a source row whose vec is MISSING/NULL must write a NULL
+// (zero-length list) vec row -- the nullability contract -- not error or a sentinel.
+func TestInsertParquetNullVec(t *testing.T) {
+	dir := t.TempDir()
+	srcDir := filepath.Join(dir, "default", "src")
+	if err := os.MkdirAll(srcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Row 1 has no vec (its text was missing/non-string at vectorize time).
+	jsonl := `{"id":0,"vec":[0.5,0.25,0.125,0.0625]}` + "\n" +
+		`{"id":1}` + "\n" +
+		`{"id":2,"vec":[0.1,0.2,0.3,0.4]}` + "\n"
+	if err := os.WriteFile(filepath.Join(srcDir, "data.jsonl"), []byte(jsonl), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sess, err := glue.OpenSession(dir, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sess.Run("INSERT INTO `vecs/data.parquet` (KEY UUID(), VALUE self) SELECT s.id, s.vec FROM src s"); err != nil {
+		t.Fatalf("INSERT with a null vec: %v", err)
+	}
+
+	// The null-vec row's distance is NULL (MISSING vec), present rows are numbers.
+	sess2, _ := glue.OpenSession(dir, "default")
+	res, err := sess2.Run(`SELECT t.id, VECTOR_DISTANCE(t.vec, [0.1,0.2,0.3,0.4], "l2") AS d FROM vecs t ORDER BY t.id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Rows) != 3 {
+		t.Fatalf("got %d rows, want 3", len(res.Rows))
+	}
+	// A source MISSING vec is written as a NULL list (Parquet has no "missing"), so it
+	// reads back as JSON null and VECTOR_DISTANCE(null,..) -> null.
+	var mid map[string]json.RawMessage
+	if err := json.Unmarshal(res.Rows[1], &mid); err != nil {
+		t.Fatal(err)
+	}
+	if d, ok := mid["d"]; !ok || string(d) != "null" {
+		t.Errorf("row id=1 (null vec) should have a null distance, got %s", res.Rows[1])
+	}
+	// The present-vec rows have real numeric distances.
+	for _, i := range []int{0, 2} {
+		var m map[string]json.RawMessage
+		if err := json.Unmarshal(res.Rows[i], &m); err != nil {
+			t.Fatal(err)
+		}
+		if d := string(m["d"]); d == "" || d == "null" {
+			t.Errorf("row idx %d should have a numeric distance, got %s", i, res.Rows[i])
+		}
 	}
 }
