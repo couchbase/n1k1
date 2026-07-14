@@ -140,6 +140,27 @@ outputs would be mis-typed) — use the reported `dtype` or an explicit INSERT/m
 (A jsonl Phase-0 side-file is text JSON and can't hold compact types at all; native packing
 is inherently a Phase-1 columnar/Parquet concern.)
 
+**Who cracks the API response encoding — `VECTORIZE_BATCH`, always (the transport only).**
+Embedding APIs may return `encoding_format:"base64"` (raw dtype bytes, base64'd, to save
+bandwidth) or bit-packed integer arrays, with metadata (format/dtype/dim) saying how to
+decode. Base64/bit-packing is **transport, not a value type** — nobody downstream should see
+it, so `VECTORIZE_BATCH` decodes it, and the model-specific response shape lives in the
+endpoint-configured extension, in one place (swap models = swap the decoder). The *representation
+it decodes to* is phase-separated, and reconciles composability with raw-bytes efficiency:
+- **Phase 0:** decode → a plain SQL++ **numeric array**. Composable (chain more SQL; reuse the
+  free array-based `VECTOR_DISTANCE`); jsonl storage. The compact-bytes optimization isn't
+  lost, just not yet applicable.
+- **Phase 1:** decoding to a float64 array then re-packing for Parquet is a wasteful round-trip
+  through the float64-boxed value layer. Instead carry the vector as **raw typed bytes + dtype**
+  (a cbq `binaryValue`) end-to-end: `VECTORIZE_BATCH` emits typed bytes → the columnar/Parquet
+  writer memcpy-stores them (no re-encode) → the **native `VECTOR_DISTANCE` port** reads them
+  directly → a boxed consumer that chains more SQL gets a **lazy decode** to a float64 array on
+  demand. So the hot store+search path never boxes; only ad-hoc chaining pays the decode —
+  pro-SQL++ composability AND raw-bytes storage coexist. (Constraint: the free `VECTOR_DISTANCE`
+  wants an `ARRAY`, so the typed-bytes fast path rides the *same* native `VECTOR_DISTANCE`
+  columnar/SIMD port already planned for perf — it now also serves zero-round-trip storage.
+  For decode perf, do the HTTP+decode in a Go host helper so goja never crunches big byte arrays.)
+
 ## Storage & caching
 
 - **Side-file:** materialize vectors as a columnar/Parquet keyspace (fixed-width
