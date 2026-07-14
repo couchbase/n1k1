@@ -467,3 +467,52 @@ func TestInsertParquetSchemaStrict(t *testing.T) {
 		t.Errorf("a later row missing a field should be OK (NULL), got: %v", err)
 	}
 }
+
+// TestVectorTopKComputedQueryColumnar: a query vector computed ONCE at run time (a WITH
+// alias, or an inline VECTORIZE_BATCH) now takes the columnar fast path too -- the fused
+// op evaluates it once and runs the same float32 kernel. Results must match the row lane.
+// A genuinely per-row second operand (referencing the scanned doc) must NOT be hoisted.
+func TestVectorTopKComputedQueryColumnar(t *testing.T) {
+	dir := t.TempDir()
+	ks := filepath.Join(dir, "default", "vecs")
+	if err := os.MkdirAll(ks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeVecKS(t, filepath.Join(ks, "part-0.parquet"), 40, 4)
+	sess, err := glue.OpenSession(dir, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Row-independent, computed-once query vectors: a WITH alias and an inline call.
+	for _, q := range []struct{ name, sql string }{
+		{"with-alias", `WITH q AS (VECTORIZE_BATCH([{"t":"disk full"}],{"text":"t","dim":4})[0].vec) ` +
+			`SELECT v.id, VECTOR_DISTANCE(v.vec, q, "cosine") AS d FROM vecs v ORDER BY d ASC LIMIT 5`},
+		{"inline-vectorize", `SELECT v.id, VECTOR_DISTANCE(v.vec, VECTORIZE_BATCH([{"t":"disk full"}],{"text":"t","dim":4})[0].vec, "cosine") AS d ` +
+			`FROM vecs v ORDER BY d ASC LIMIT 5`},
+	} {
+		t.Run(q.name, func(t *testing.T) {
+			glue.DisableColumnarOptimize = true
+			off := runVecRows(t, sess, q.sql)
+			glue.DisableColumnarOptimize = false
+			before := atomic.LoadInt64(&glue.VectorColumnarApplied)
+			on := runVecRows(t, sess, q.sql)
+			fired := atomic.LoadInt64(&glue.VectorColumnarApplied) - before
+			glue.DisableColumnarOptimize = false
+
+			if fired == 0 {
+				t.Errorf("a computed-once query vector did NOT take the columnar path")
+			}
+			if len(on) != 5 {
+				t.Fatalf("got %d rows, want 5: %v", len(on), on)
+			}
+			if !reflect.DeepEqual(off, on) {
+				t.Errorf("columnar != row lane\n OFF: %v\n ON:  %v", off, on)
+			}
+		})
+	}
+
+	// (cbq itself requires the query vector to be static -- constant / $param / WITH alias
+	// -- so a genuinely per-row query vector is rejected at plan time and never reaches the
+	// hoist check; rowIndependent is just defensive insurance.)
+}

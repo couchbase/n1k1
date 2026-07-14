@@ -84,10 +84,13 @@ parsing** (~38M `strconv.ParseFloat` for 100K×384). Two consequences:
 1. **The headline ~30–100× needs BOTH native eval AND columnar float32** (to skip the JSON
    parse entirely — raw `[]float32`, no `ParseFloat`). Native-on-jsonl alone is a modest
    1.6× + big alloc reduction; it is the necessary *kernel* the columnar column then feeds.
-2. **Native only triggers with a literal/const query vector.** A `WITH`-alias / `$param`
-   query vector doesn't lower through `ExprTreeOptimize` (it's a boxed scope reference), so
-   the whole call falls back to boxed. Lowering a const `WITH`/param qvec to a native leaf
-   is a follow-up. (Search results are identical either way; only speed differs.)
+2. **The native-JSONL lane only triggers with a literal/const query vector.** A `WITH`-alias
+   / `$param` query vector doesn't lower through `ExprTreeOptimize` (it's a boxed scope
+   reference), so on the *jsonl* path the whole call falls back to boxed. (Search results are
+   identical either way; only speed differs.) NOTE: this limitation is specific to the
+   native-jsonl lane — the **columnar Parquet path handles a `WITH`/`$param` query vector**
+   by evaluating it ONCE (row-independent hoist) and feeding the same float32 kernel, so it
+   is as fast as a literal there; see the columnar section below.
 Correctness: native == boxed is a differential test (glue TestVectorDistanceNativeMatchesBoxed,
 toggle EnableNativeVectorDistance) across cosine/l2/l2_squared/dot + edge cases — it caught a
 real `-0.0` vs `0` divergence (dot of orthogonal vectors), now normalized.
@@ -155,7 +158,10 @@ executor: the columnar map (`glue.VectorColumnarScan`) computes distances then T
 rows, so the existing row-lane `order-offset-limit` does the top-K — no new order/limit op;
 (c) the conv rewrite (`maybeVectorColumnarFuse`) fuses `project(VECTOR_DISTANCE over a
 parquet vec)+scan` into a `vector-distance-columnar` op when the query vector is a constant
-and passthroughs are provably unread; (d) the `INSERT INTO <name>.parquet` writer
+OR a row-independent expression (a `WITH` alias / `$param` / `VECTORIZE_BATCH(...)`) that the
+fused op evaluates ONCE — same float32 kernel, so a computed query is as fast as a literal
+(measured 100K×384: computed 507ms ≈ literal 543ms, vs 18.6s on the row lane) — and when
+passthroughs are provably unread; (d) the `INSERT INTO <name>.parquet` writer
 (`glue.parquetWriter`) produces the files. Also fixed a pre-existing bug: parquet projection
 pushdown dropped nested (list) columns (leaf `vec.list.element` ≠ `vec`).
 

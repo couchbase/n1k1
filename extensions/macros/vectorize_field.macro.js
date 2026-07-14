@@ -11,12 +11,13 @@
 //   INSERT INTO `vecs/data.parquet` (KEY UUID(), VALUE self)
 //   SELECT r.id, r.vec FROM @vectorize_field(logs, field => line, id => id,
 //                                            batch => 256, opts => {"dim":8}) AS r;
-//   -- search: top-5 nearest. Over .parquet, a LITERAL query vector + a numeric id kept
-//   -- takes the columnar fast path (DESIGN-vectors.md); over .jsonl it's the row lane.
+//   -- search: top-5 nearest. Over .parquet with a numeric id kept, this takes the
+//   -- columnar fast path (DESIGN-vectors.md); over .jsonl it's the row lane.
 //   SELECT v.id, VECTOR_DISTANCE(v.vec, [/*8 floats*/], "cosine") AS d
 //     FROM vecs v ORDER BY d ASC LIMIT 5;
-//   -- search by TEXT: embed the query the SAME way, then compare (copy-pasteable; a
-//   -- computed query vector is the row lane, not the columnar fast path):
+//   -- search by TEXT: embed the query the SAME way, bind it as WITH q, then compare.
+//   -- The query vector is evaluated ONCE, so this ALSO takes the columnar fast path over
+//   -- .parquet -- just as fast as a literal vector:
 //   WITH q AS (VECTORIZE_BATCH([{"t":"disk full"}],{"text":"t","dim":8})[0].vec)
 //   SELECT v.id FROM vecs v ORDER BY VECTOR_DISTANCE(v.vec, q, "cosine") ASC LIMIT 5;
 //
