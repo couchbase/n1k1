@@ -92,6 +92,20 @@ Correctness: native == boxed is a differential test (glue TestVectorDistanceNati
 toggle EnableNativeVectorDistance) across cosine/l2/l2_squared/dot + edge cases — it caught a
 real `-0.0` vs `0` divergence (dot of orthogonal vectors), now normalized.
 
+**Columnar ceiling measured (the prize) — ~60ms.** A pure-Go micro-bench of cosine top-K over
+100K×384 *contiguous float32* (no JSON parse, no boxing — the best case columnar could hit):
+**60ms**, vs 6.8s native-jsonl (~113×) and 11.2s boxed (~187×). So JSON number parsing is
+~99% of the current time; the columnar float32 column is worth ~100×. Even adding Parquet
+read I/O (~150MB float32 vs 320MB jsonl, no parse) and a top-K heap, end-to-end should land
+well under a second — a ~15–50× real win. **Scope check (honest): the existing Parquet read
+does NOT feed this cheaply** — `records/parquet.go`'s row path materializes each row to JSON
+(`RecordToJSON`), and its columnar `NextColumns` handles only fixed-width 8-byte SCALARS
+("float32/int32 … come later"), not a `FixedSizeList<float32>` vec column. So the columnar
+core is real work: (a) read support for a float32 vec column as a raw contiguous buffer;
+(b) a columnar `VECTOR_DISTANCE` kernel wired into `glue/columnar.go` that consumes it (the
+native ExprVectorDistance kernel is the row-lane analog — the byte→float32 discipline
+carries over); (c) the `INSERT INTO parquet` writer to produce the files.
+
 **Boxing / "recycled box" (Phase 1, not Phase 0).** Phase 0 goes through cbq's *boxed*
 evaluator: each row parses its stored vector field into a `value.Value` array, and
 `vectorDistance` touches ~`dim` boxed `value.Value` elements per row (`.Index(i)` →
