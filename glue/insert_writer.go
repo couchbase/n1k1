@@ -23,10 +23,12 @@ package glue
 // INT64 (integral) or DOUBLE, string -> UTF8, bool -> BOOLEAN, and a numeric ARRAY ->
 // list<float32> (element non-nullable, list field nullable -- the vec-column contract,
 // so a missing/NULL vec row is a zero-length list, not a sentinel). Every column is
-// nullable: a doc missing a field appends NULL. First-row-defines-schema is the
-// contract -- a later doc's extra field is ignored, and a value whose type conflicts
-// with the inferred column (e.g. a fractional number into an INT64 column, a
-// non-numeric array element) is an error, not a silent coercion.
+// nullable: a doc missing a field appends NULL. First-row-defines-schema is a STRICT
+// contract -- the first row must carry every column; a later doc bearing a field the
+// first row lacked is an error (nowhere to put it in the fixed schema), as is a value
+// whose type conflicts with the inferred column (a fractional number into an INT64
+// column, a non-numeric array element). Faithful or refuse -- never a silent coercion
+// or drop.
 
 import (
 	"fmt"
@@ -65,6 +67,8 @@ type parquetWriter struct {
 	bld       *array.RecordBuilder
 	appenders []func(value.Value) error // one per schema field, positional
 	names     []string                  // schema field names (sorted)
+	nameSet   map[string]bool           // schema field names, for the extra-field check
+	nameBuf   []string                  // reused buffer for doc.FieldNames per row
 	batch     int                       // rows buffered in bld since the last flush
 	n         int
 	err       error
@@ -102,6 +106,19 @@ func (pw *parquetWriter) write(doc value.Value) {
 	if pw.bld == nil {
 		if e := pw.start(doc); e != nil {
 			pw.setErr(e)
+			return
+		}
+	}
+	// First-row-defines-schema is a strict contract: a later row carrying a field the
+	// first row didn't have has nowhere to go in the fixed Parquet schema, so refuse it
+	// rather than silently drop the value. (A field the schema HAS but this row lacks is
+	// fine -- it writes NULL.)
+	pw.nameBuf = doc.FieldNames(pw.nameBuf[:0])
+	for _, fn := range pw.nameBuf {
+		if !pw.nameSet[fn] {
+			pw.setErr(fmt.Errorf("INSERT: row %d has field %q, which is absent from the schema "+
+				"inferred from the first row %v (a .parquet target has a fixed schema; the first "+
+				"row must carry every column)", pw.n, fn, pw.names))
 			return
 		}
 	}
@@ -150,6 +167,10 @@ func (pw *parquetWriter) start(doc value.Value) error {
 	pw.fw = fw
 	pw.bld = bld
 	pw.names = names
+	pw.nameSet = make(map[string]bool, len(names))
+	for _, n := range names {
+		pw.nameSet[n] = true
+	}
 	pw.appenders = make([]func(value.Value) error, len(names))
 	for i, k := range kinds {
 		pw.appenders[i] = makeParquetAppender(k, bld.Field(i))

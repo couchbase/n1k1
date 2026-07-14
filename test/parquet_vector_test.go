@@ -433,3 +433,37 @@ func TestInsertParquetNullVec(t *testing.T) {
 		}
 	}
 }
+
+// TestInsertParquetSchemaStrict: first-row-defines-schema is strict. A later row with a
+// field the first row lacked is an error (not a silent drop); a later row MISSING a
+// schema field is fine (writes NULL).
+func TestInsertParquetSchemaStrict(t *testing.T) {
+	run := func(jsonl string) error {
+		dir := t.TempDir()
+		srcDir := filepath.Join(dir, "default", "src")
+		if err := os.MkdirAll(srcDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(srcDir, "d.jsonl"), []byte(jsonl), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		sess, err := glue.OpenSession(dir, "default")
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = sess.Run("INSERT INTO `out/d.parquet` (KEY UUID(), VALUE self) SELECT s.* FROM src s")
+		return err
+	}
+
+	// Extra field in a later row -> error (was a silent drop before).
+	if err := run(`{"id":1,"city":"LA"}` + "\n" + `{"id":2,"city":"SF","surprise":9}` + "\n"); err == nil {
+		t.Errorf("expected an error for a later row with an extra field, got nil")
+	} else if !strings.Contains(err.Error(), "surprise") {
+		t.Errorf("error should name the offending field, got: %v", err)
+	}
+
+	// A later row MISSING a schema field is fine -> writes NULL.
+	if err := run(`{"id":1,"city":"LA"}` + "\n" + `{"id":2}` + "\n"); err != nil {
+		t.Errorf("a later row missing a field should be OK (NULL), got: %v", err)
+	}
+}
