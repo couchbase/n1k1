@@ -731,32 +731,132 @@ func (c *cli) renderCorpusExplain(cc *glue.CompiledCorpus, report []glue.Detecto
 // noted future work in corpus_lint.go; this surfaces the provenance that already exists.)
 func (c *cli) renderCorpusExplainSQL(dets []glue.CorpusDetector, report []glue.DetectorLint, score glue.CorpusScore) {
 	w := c.out
-
 	byLabel := make(map[string]glue.DetectorLint, len(report))
-	nKS := 0
-	seenKS := map[string]bool{}
 	for _, d := range report {
 		byLabel[d.Label] = d
-		if d.Class == glue.LintFused && !seenKS[d.Keyspace] {
-			seenKS[d.Keyspace] = true
-			nKS++
-		}
 	}
 
-	fmt.Fprintf(w, "%s%d query/queries → %d fused across %d shared scan(s), %d standalone, %d rejected\n",
-		c.icon("\U0001F4CB "), score.Total, score.Fused, nKS, score.Standalone, score.Rejected)
-
+	// Partition by how MQO classified each query; group the FUSED ones by the shared scan
+	// (keyspace) they fuse into, so the SQL view SHOWS which queries share one pass -- the
+	// point the flat list missed. Preserve detector order within each group.
+	fusedByKS := map[string][]glue.CorpusDetector{}
+	var ksOrder []string
+	var standalone, rejected []glue.CorpusDetector
 	for _, det := range dets {
-		d := byLabel[det.Label]
-		fmt.Fprintln(w)
-		fmt.Fprintln(w, c.style.Cyan(explainProvenanceComment(d, det.Label)))
-		// Inline authoring hints, from the SAME centralized advice `.multi lint` shows
-		// (always-wake -> add a literal; boxed -> native alternative; standalone/rejected
-		// -> the shape fix). Rendered as `-- hint:` comments right above the query.
-		if adv := lintAdvice(d); adv != "" {
-			fmt.Fprintln(w, c.style.Dim("-- hint: "+adv))
+		switch byLabel[det.Label].Class {
+		case glue.LintFused:
+			ks := byLabel[det.Label].Keyspace
+			if _, seen := fusedByKS[ks]; !seen {
+				ksOrder = append(ksOrder, ks)
+			}
+			fusedByKS[ks] = append(fusedByKS[ks], det)
+		case glue.LintRejected:
+			rejected = append(rejected, det)
+		default:
+			standalone = append(standalone, det)
 		}
-		fmt.Fprintln(w, glue.PrettySQL(det.Stmt))
+	}
+	sort.Strings(ksOrder)
+
+	fmt.Fprintf(w, "%s%d query/queries → %d fused across %d shared scan(s), %d standalone, %d rejected\n",
+		c.icon("\U0001F4CB "), score.Total, score.Fused, len(ksOrder), score.Standalone, score.Rejected)
+
+	for _, ks := range ksOrder {
+		members := fusedByKS[ks]
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, c.style.Bold(fmt.Sprintf("═══ shared scan · %s · %d query/queries → ONE pass ═══",
+			orEmptyDash(ks), len(members))))
+		for _, ln := range sharedScanNotes(members, byLabel) {
+			fmt.Fprintln(w, c.style.Dim(ln))
+		}
+		for _, det := range members {
+			c.explainSQLOne(det, byLabel[det.Label])
+		}
+	}
+	if len(standalone) > 0 {
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, c.style.Bold("═══ standalone · own scan, not fused ═══"))
+		for _, det := range standalone {
+			c.explainSQLOne(det, byLabel[det.Label])
+		}
+	}
+	if len(rejected) > 0 {
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, c.style.Bold("═══ rejected · never runs ═══"))
+		for _, det := range rejected {
+			c.explainSQLOne(det, byLabel[det.Label])
+		}
+	}
+}
+
+// explainSQLOne prints one query's provenance comment, any lint hints, and its FINAL
+// SQL++ (macros expanded) re-laid-out by PrettySQL. When the query invoked macro(s), the
+// expanded SQL is bracketed by `-- BEGIN/END expansion of @macro` so the generated region
+// is obvious (and the original @call is shown first, so the before→after is legible).
+func (c *cli) explainSQLOne(det glue.CorpusDetector, d glue.DetectorLint) {
+	w := c.out
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, c.style.Cyan(explainProvenanceComment(d, det.Label)))
+	if adv := lintAdvice(d); adv != "" {
+		fmt.Fprintln(w, c.style.Dim("-- hint: "+adv))
+	}
+
+	used := macrosUsed(det.Stmt)
+	final := det.Stmt
+	if expanded, err := glue.ExpandMacros(det.Stmt); err == nil {
+		final = expanded
+	}
+	if len(used) == 0 {
+		fmt.Fprintln(w, glue.PrettySQL(final)) // no macro: the query IS its final SQL++
+		return
+	}
+	names := "@" + strings.Join(used, ", @")
+	fmt.Fprintln(w, c.style.Dim("-- as written (before expansion):"))
+	fmt.Fprintln(w, c.style.Dim(glue.PrettySQL(det.Stmt)))
+	fmt.Fprintln(w, c.style.Dim("-- BEGIN expansion of "+names))
+	fmt.Fprintln(w, glue.PrettySQL(final))
+	fmt.Fprintln(w, c.style.Dim("-- END expansion of "+names))
+}
+
+// macrosUsed returns the registered macro names a statement invokes ("@name(" call), in
+// load order -- so the --sql view can name + bracket the expanded region.
+func macrosUsed(stmt string) []string {
+	var out []string
+	for _, m := range glue.ListMacros() {
+		if strings.Contains(stmt, "@"+m.Name+"(") {
+			out = append(out, m.Name)
+		}
+	}
+	return out
+}
+
+// sharedScanNotes summarizes the ONE shared pass MQO built: the union of predicate-index
+// wake literals across the fused members (the shared gate that makes the single scan cheap),
+// or that it must wake every row when a member has no necessary literal.
+func sharedScanNotes(members []glue.CorpusDetector, byLabel map[string]glue.DetectorLint) []string {
+	seen := map[string]bool{}
+	var lits []string
+	always := false
+	for _, det := range members {
+		d := byLabel[det.Label]
+		if d.Indexed && d.Literal != "" {
+			if !seen[d.Literal] {
+				seen[d.Literal] = true
+				lits = append(lits, fmt.Sprintf("%q", d.Literal))
+			}
+		} else {
+			always = true
+		}
+	}
+	if always {
+		return []string{
+			"-- one pass over the keyspace; a query has no necessary literal, so the shared scan wakes EVERY row",
+			"-- each query below independently filters + projects the shared rows (the MQO / shared-scan win):",
+		}
+	}
+	return []string{
+		"-- one pass; the shared predicate index wakes only rows matching any of: " + strings.Join(lits, ", "),
+		"-- each query below independently filters + projects those shared rows (the MQO / shared-scan win):",
 	}
 }
 
