@@ -161,6 +161,22 @@ it decodes to* is phase-separated, and reconciles composability with raw-bytes e
   columnar/SIMD port already planned for perf — it now also serves zero-round-trip storage.
   For decode perf, do the HTTP+decode in a Go host helper so goja never crunches big byte arrays.)
 
+**Does `VECTORIZE_BATCH` need output flags? Model-request knobs YES; a representation flag NO.**
+Two things get conflated as "output format":
+- **Model-request options (YES, in `opts`):** knobs the model/endpoint accepts that shape what
+  it RETURNS — `dimensions` (MRL truncation), a quantization/output-dtype request, an
+  `input_type`/`task` prefix (query vs document; nomic-embed *requires* one), normalization.
+  `VECTORIZE_BATCH` forwards them and reports the resulting `dtype`/`dim` as metadata. The wire
+  `encoding_format` (float vs base64) is **internal** — it picks the most efficient the endpoint
+  supports and decodes it; not a user knob.
+- **n1k1 output REPRESENTATION (NO flag):** array vs typed-bytes is resolved by the *consumer*
+  (byte-lane↔boxed boundary: raw bytes on store+search, lazy-decode to array when boxed SQL
+  chains on it), NOT a caller flag — a flag would re-introduce the very tradeoff the lazy-box
+  dissolves. So the signature stays stable `VECTORIZE_BATCH(texts, opts)` across Phase 0→1;
+  only the under-the-hood value evolves. (Assumes the lazy-decode-at-boxing-boundary gets built;
+  if infeasible, the fallback is a flag / a `VECTORIZE_BATCH_PACKED` sibling — but transparent
+  is the goal.)
+
 ## Storage & caching
 
 - **Side-file:** materialize vectors as a columnar/Parquet keyspace (fixed-width
