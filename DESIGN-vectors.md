@@ -76,6 +76,15 @@ up-convert int8/float16 to float32), and run a native distance kernel over a bor
 per-row `value.Value`, SIMD-friendly). That is the DESIGN-col native port — the right home
 for the reuse instinct.
 
+> **When we build the native unboxed distance, take TWO vectors — drop cbq's operand
+> restrictions.** cbq's `VECTOR_DISTANCE` requires operand-0 to be a *field reference* and
+> the query vector to be *static* (constant/param/`WITH`) — those are planner / vector-index
+> eligibility constraints, meaningful only for the index-backed path we don't have. A native
+> n1k1 brute-force distance is pure compute, so it should accept **any two vector expressions**
+> (two fields, two params, two computed/typed-byte values), composing freely — more general
+> than the boxed builtin, not just faster. (Whether it reuses the `vector_distance` name or a
+> distinct native name is a naming call for that phase; behavior: 2 arbitrary vector operands.)
+
 ## Embedding — a batched callout at ingest, materialized once
 
 **Not** the extract hot-loop (native/cheap) and **not** a per-row scalar UDF with
@@ -146,8 +155,10 @@ is inherently a Phase-1 columnar/Parquet concern.)
 Embedding APIs may return `encoding_format:"base64"` (raw dtype bytes, base64'd, to save
 bandwidth) or bit-packed integer arrays, with metadata (format/dtype/dim) saying how to
 decode. Base64/bit-packing is **transport, not a value type** — nobody downstream should see
-it, so `VECTORIZE_BATCH` decodes it, and the model-specific response shape lives in the
-endpoint-configured extension, in one place (swap models = swap the decoder). The *representation
+it, so `VECTORIZE_BATCH` decodes it (IMPLEMENTED: it auto-detects a base64 string of
+little-endian float32 vs a JSON float array per embedding, and sends an `encoding` hint;
+bit-packed integer arrays ride the number path), and the model-specific response shape
+lives in the endpoint-configured extension, in one place (swap models = swap the decoder). The *representation
 it decodes to* is phase-separated, and reconciles composability with raw-bytes efficiency:
 - **Phase 0:** decode → a plain SQL++ **numeric array**. Composable (chain more SQL; reuse the
   free array-based `VECTOR_DISTANCE`); jsonl storage. The compact-bytes optimization isn't
@@ -192,9 +203,10 @@ Two things get conflated as "output format":
   runs the generated `INSERT` and treats "target file already exists" as a **cache hit**
   (or checks existence first). A macro can't touch the filesystem, but it doesn't need to —
   it just produces the deterministic destination name; the existing INSERT semantics do the
-  rest. For a stronger data-level address (catch "the source changed"), expose a
-  **`CONTENT_HASH(...)` scalar UDF** (surfaced in SQL, not trapped in a Go inner tier).
-  Config-address (source + model + version [+ mtime/size]) is cheap and adequate for dev.
+  rest. For a stronger data-level address (catch "the source changed"), cbq's existing
+  **`HASHBYTES(value, "sha256")`** is already available (verified — no new UDF needed), so a
+  user can content-address by actual bytes in SQL. Config-address (source + model + version
+  [+ mtime/size]) is cheap and adequate for dev.
 
 ## Progress / observability
 
@@ -232,9 +244,18 @@ first and covers dev/debug scale.
   `ORDER BY VECTOR_DISTANCE(v.vec, $q, "cosine") ASC LIMIT k` (query vector via a `WITH`
   alias / param, per the static-qvec rule). Vectors are plain SQL++ float64 arrays here;
   columnar packing is Phase 1. Tests: `glue/vectorize_test.go` (fake + a stub-HTTP endpoint).
-- **Phase 1:** real model via `http.post` (ollama/nomic-embed-text); columnar float32
-  vector column + native-lane distance; caching (config-address naming + skip-if-present);
-  `CONTENT_HASH()` UDF.
+- **Phase 1 (in progress):**
+  - **DONE:** real model via pure-Go `net/http` (Phase 0 already); **base64/bit-packed
+    response decode** (`VECTORIZE_BATCH` auto-detects a base64-float32 embedding + an
+    `encoding` request knob); content-addressed caching uses cbq's existing `HASHBYTES` +
+    `INSERT`-errors-if-exists (no `CONTENT_HASH` UDF needed).
+  - **The big remaining core:** a columnar/Parquet vector side-file storing the model's
+    **native element type** (float32/int8/…) + a **native, unboxed `VECTOR_DISTANCE` port**
+    over raw bytes (reused buffers, SIMD; two arbitrary vector operands — see the note in
+    Search). **Prerequisite:** an `INSERT INTO <parquet>` writer — today `INSERT` writes
+    **jsonl only** (`glue/insert.go`); the `pqarrow` write lib is available (used in
+    `records/parquet_col_test.go`) but not wired as a production output format. This is the
+    perf/scale piece and deserves its own focused push.
 - **Phase 2:** remote-source ingest (S3/Box/Drive/HF → local vector side-file); then the
   ANN-index cgo decision, only if N demands.
 

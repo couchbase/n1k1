@@ -14,6 +14,8 @@
 package glue
 
 import (
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"math"
 	"net/http"
@@ -108,5 +110,50 @@ func TestVectorizeBatchHTTP(t *testing.T) {
 	}
 	if v1[2].(float64) != 4 { // len("abcd") == 4
 		t.Errorf("http vec[1] = %v, want [...,4]", v1)
+	}
+}
+
+// TestVectorizeBatchBase64: the endpoint returns each embedding as a base64 string of
+// little-endian float32 bytes (OpenAI encoding_format:"base64"). VECTORIZE_BATCH must
+// decode it back to the float vector -- proving the transport-decode path.
+func TestVectorizeBatchBase64(t *testing.T) {
+	want := []float32{0.5, -0.25, 1.5}
+	b64 := func(fs []float32) string {
+		buf := make([]byte, 4*len(fs))
+		for i, f := range fs {
+			binary.LittleEndian.PutUint32(buf[i*4:], math.Float32bits(f))
+		}
+		return base64.StdEncoding.EncodeToString(buf)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Input          []string `json:"input"`
+			EncodingFormat string   `json:"encoding_format"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if req.EncodingFormat != "base64" {
+			t.Errorf("server expected encoding_format=base64, got %q", req.EncodingFormat)
+		}
+		embs := make([]string, len(req.Input))
+		for i := range req.Input {
+			embs[i] = b64(want)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"embeddings": embs})
+	}))
+	defer srv.Close()
+
+	sess, err := OpenSession(t.TempDir(), "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := `SELECT VECTORIZE_BATCH([{"text":"x"}], {"endpoint":"` + srv.URL + `","model":"m","encoding":"base64"})[0].vec AS v`
+	v := vecRow1(t, sess, q)["v"].([]interface{})
+	if len(v) != len(want) {
+		t.Fatalf("base64 vec len %d, want %d", len(v), len(want))
+	}
+	for i, w := range want {
+		if math.Abs(v[i].(float64)-float64(w)) > 1e-6 {
+			t.Errorf("base64 vec[%d] = %v, want %v", i, v[i], w)
+		}
 	}
 }

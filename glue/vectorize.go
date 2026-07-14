@@ -33,6 +33,8 @@ package glue
 
 import (
 	"bytes"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
@@ -98,6 +100,7 @@ type vectorizeOpts struct {
 	dim      int    // fake-vector dimension
 	endpoint string // embeddings API URL (ollama /api/embed shape)
 	model    string // model name sent to the endpoint
+	encoding string // request-side encoding_format hint (e.g. "base64"); "" = endpoint default
 }
 
 func parseVectorizeOpts(v value.Value) vectorizeOpts {
@@ -122,6 +125,9 @@ func parseVectorizeOpts(v value.Value) vectorizeOpts {
 	}
 	if x, ok := v.Field("model"); ok && x.Type() == value.STRING {
 		o.model, _ = x.Actual().(string)
+	}
+	if x, ok := v.Field("encoding"); ok && x.Type() == value.STRING {
+		o.encoding, _ = x.Actual().(string)
 	}
 	if o.dim < 1 {
 		o.dim = 8
@@ -177,7 +183,7 @@ func (this *vectorizeBatchFunc) Evaluate(item value.Value, context expression.Co
 			vecs[i] = fakeVector(t, opts.dim)
 		}
 	} else {
-		vecs, err = httpEmbedBatch(opts.endpoint, opts.model, texts)
+		vecs, err = httpEmbedBatch(opts.endpoint, opts.model, opts.encoding, texts)
 		if err != nil {
 			return nil, fmt.Errorf("VECTORIZE_BATCH: %w", err)
 		}
@@ -221,11 +227,19 @@ func fakeVector(text string, dim int) []interface{} {
 }
 
 // httpEmbedBatch POSTs texts to an embeddings endpoint (ollama /api/embed shape) over
-// pure-Go net/http (cgo-free) and returns one float vector per text. Phase 0 handles the
-// plain float-array response; base64 / bit-packed encodings + native dtype preservation
-// are Phase-1 (DESIGN-vectors.md "Who cracks the API response encoding").
-func httpEmbedBatch(endpoint, model string, texts []string) ([][]interface{}, error) {
-	reqBody, err := json.Marshal(map[string]interface{}{"model": model, "input": texts})
+// pure-Go net/http (cgo-free) and returns one float vector per text. It cracks the
+// TRANSPORT encoding of each embedding (DESIGN-vectors.md "Who cracks the API response
+// encoding"): the `embeddings` field's elements may be a plain JSON float array OR a
+// base64 string of little-endian float32 bytes (the OpenAI `encoding_format:"base64"`
+// bandwidth trick) -- auto-detected per element. Bit-packed integer arrays ride through
+// the float-array branch as numbers. `encoding` (if set) is sent as the request-side
+// encoding_format hint.
+func httpEmbedBatch(endpoint, model, encoding string, texts []string) ([][]interface{}, error) {
+	req := map[string]interface{}{"model": model, "input": texts}
+	if encoding != "" {
+		req["encoding_format"] = encoding
+	}
+	reqBody, err := json.Marshal(req)
 	if err != nil {
 		return nil, err
 	}
@@ -239,8 +253,9 @@ func httpEmbedBatch(endpoint, model string, texts []string) ([][]interface{}, er
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return nil, fmt.Errorf("embeddings endpoint %s: HTTP %d: %s", endpoint, resp.StatusCode, b)
 	}
+	// Decode elements lazily: each may be a float array or a base64 string.
 	var out struct {
-		Embeddings [][]float64 `json:"embeddings"`
+		Embeddings []json.RawMessage `json:"embeddings"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return nil, fmt.Errorf("decoding embeddings response: %w", err)
@@ -249,12 +264,45 @@ func httpEmbedBatch(endpoint, model string, texts []string) ([][]interface{}, er
 		return nil, fmt.Errorf("endpoint returned %d vectors for %d texts", len(out.Embeddings), len(texts))
 	}
 	vecs := make([][]interface{}, len(out.Embeddings))
-	for i, emb := range out.Embeddings {
-		v := make([]interface{}, len(emb))
-		for j, f := range emb {
-			v[j] = f
+	for i, raw := range out.Embeddings {
+		v, err := decodeEmbedding(raw)
+		if err != nil {
+			return nil, fmt.Errorf("embedding %d: %w", i, err)
 		}
 		vecs[i] = v
 	}
 	return vecs, nil
+}
+
+// decodeEmbedding turns one response embedding into a float vector. A leading '"' marks a
+// base64 string of little-endian float32 bytes; otherwise it is a JSON number array.
+func decodeEmbedding(raw json.RawMessage) ([]interface{}, error) {
+	r := bytes.TrimSpace(raw)
+	if len(r) > 0 && r[0] == '"' {
+		var s string
+		if err := json.Unmarshal(r, &s); err != nil {
+			return nil, err
+		}
+		b, err := base64.StdEncoding.DecodeString(s)
+		if err != nil {
+			return nil, fmt.Errorf("base64: %w", err)
+		}
+		if len(b)%4 != 0 {
+			return nil, fmt.Errorf("base64 float32 payload not a multiple of 4 bytes (%d)", len(b))
+		}
+		v := make([]interface{}, len(b)/4)
+		for j := range v {
+			v[j] = float64(math.Float32frombits(binary.LittleEndian.Uint32(b[j*4:])))
+		}
+		return v, nil
+	}
+	var fs []float64
+	if err := json.Unmarshal(r, &fs); err != nil {
+		return nil, err
+	}
+	v := make([]interface{}, len(fs))
+	for j, f := range fs {
+		v[j] = f
+	}
+	return v, nil
 }
