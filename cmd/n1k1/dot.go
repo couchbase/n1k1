@@ -43,7 +43,11 @@ func (c *cli) dot(line string) bool {
 	case ".open":
 		c.cmdOpen(arg)
 	case ".tables", ".keyspaces":
-		c.cmdKeyspaces()
+		if strings.EqualFold(strings.TrimSpace(arg), "help") {
+			c.helpKeyspaces() // `.keyspaces help` == `.help keyspaces`
+		} else {
+			c.cmdKeyspaces()
+		}
 	case ".index":
 		c.cmdIndex(arg)
 	case ".indexes": // alias for ".index list"
@@ -74,6 +78,8 @@ func (c *cli) dot(line string) bool {
 		switch a := strings.ToLower(strings.TrimSpace(arg)); a {
 		case "":
 			fmt.Fprintf(c.stderr, "meta %s\n", glue.ScanWalkOptions.Meta)
+		case "help":
+			c.helpMeta() // `.meta help` == `.help meta`
 		default:
 			mm, err := records.ParseMetaMode(a)
 			if err != nil {

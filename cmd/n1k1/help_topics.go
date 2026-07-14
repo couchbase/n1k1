@@ -39,12 +39,12 @@ type helpTopic struct {
 // command guides (also reachable as `.<command> help`). Each group is sorted A→Z so
 // the list is scannable.
 var helpTopics = []helpTopic{
-	{name: "extensions", blurb: "user functions (*.js UDFs/aggregates/sources) loaded via -ext"},
+	{name: "extensions", blurb: "user functions (*.js UDFs/aggregates/sources) loaded via -ext", alias: ".extensions help"},
 	{name: "extract", blurb: "*.extract.js extensions that frame files into rows", alias: ".extract help"},
 	{name: "index", blurb: "secondary/FTS indexes: the catalog + .index commands", alias: ".index help"},
-	{name: "keyspaces", blurb: "how files/dirs become keyspaces; dotted names"},
+	{name: "keyspaces", blurb: "how files/dirs become keyspaces; dotted names", alias: ".keyspaces help"},
 	{name: "macro", blurb: "*.macro.js macros that expand @name(...) into SQL++", alias: ".macro help"},
-	{name: "meta", blurb: "the _meta record fields + external follow-up"},
+	{name: "meta", blurb: "the _meta record fields + external follow-up", alias: ".meta help"},
 	{name: "multi", blurb: "authoring & running a multi-query pack of *.sql++ queries (shared execution)", alias: ".multi help"},
 	{name: "quoting", blurb: "backticks vs the shell vs dot-command args"},
 	{name: "reserved-words", blurb: "the SQL++ keywords you must backtick as identifiers (full list)"},

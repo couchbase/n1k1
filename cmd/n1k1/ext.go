@@ -84,9 +84,10 @@ func loadExtensions(paths []string) ([]string, error) {
 	return names, nil
 }
 
-// cmdExtensions implements the ".extensions [list | show <name> | load <path...> |
+// cmdExtensions implements the ".extensions [help | list | show <name> | load <path...> |
 // unload <name...> | examples [name] | test [name]]" dot-command (alias ".ext"). No
-// argument (or "list") lists all loaded extensions (every kind, incl. built-in macros).
+// argument (or "list") lists all loaded extensions (every kind, incl. built-in macros);
+// "help" prints the same guide as ".help extensions".
 func (c *cli) cmdExtensions(arg string) {
 	fields := strings.Fields(strings.TrimSpace(arg))
 	sub := ""
@@ -96,6 +97,8 @@ func (c *cli) cmdExtensions(arg string) {
 	switch sub {
 	case "", "list":
 		c.extList()
+	case "help":
+		c.helpExtensions() // `.extensions help` == `.help extensions`
 	case "show", "source", "cat":
 		c.extShow(strings.Join(fields[1:], " "))
 	case "load":
