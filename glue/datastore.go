@@ -74,6 +74,8 @@ func DatastoreDispatch(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 		DatastoreAggMetadata(o, vars, yieldVals, yieldErr)
 	case "agg-columnar":
 		DatastoreAggColumnar(o, vars, yieldVals, yieldErr)
+	case "vector-distance-columnar":
+		DatastoreVectorColumnar(o, vars, yieldVals, yieldErr)
 	}
 
 	// Live progress pulse: a scan invocation just finished. Each pass yields far

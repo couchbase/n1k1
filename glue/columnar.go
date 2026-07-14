@@ -78,6 +78,7 @@ func maybeColumnarOptimize(op *base.Op, temps []interface{}) {
 		return
 	}
 	maybeColumnarOptimizeChild(op, temps)
+	maybeVectorColumnarFuse(op, temps) // fuse a columnar VECTOR_DISTANCE top-K in place
 	for _, c := range op.Children {
 		maybeColumnarOptimize(c, temps)
 	}

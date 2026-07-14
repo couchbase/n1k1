@@ -23,6 +23,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
@@ -65,6 +66,68 @@ func (b *VectorBatch) RowVec(r int) []float32 {
 // field names are fixed on the first call. Buffers are borrowed until the next call.
 type VectorBatchSource interface {
 	NextVectorBatch(vecField string, scalarFields []string) (VectorBatch, bool, error)
+}
+
+// VectorSchemaSource reports, from the footer alone (no data pages), whether a named
+// top-level field is a list-of-float32 vec column -- the plan-time check that gates the
+// columnar VECTOR_DISTANCE rewrite (glue). scalarField reports whether a field is a
+// fixed 8-byte numeric scalar (INT64/DOUBLE), so the rewrite can confirm the id/side
+// columns are readable by NextVectorBatch.
+type VectorSchemaSource interface {
+	VectorField(field string) bool
+	ScalarField(field string) bool
+}
+
+// VectorField implements VectorSchemaSource: field is a vec column iff its leaf lives
+// under "field.list...." (a nested list) with a FLOAT (float32) physical type.
+func (s *parquetSource) VectorField(field string) bool {
+	sch := s.pf.MetaData().Schema
+	prefix := field + "."
+	for c := 0; c < sch.NumColumns(); c++ {
+		col := sch.Column(c)
+		if strings.HasPrefix(col.Path(), prefix) {
+			return col.PhysicalType().String() == "FLOAT"
+		}
+	}
+	return false
+}
+
+// ScalarField implements VectorSchemaSource: field is a top-level fixed 8-byte numeric
+// column (its leaf path == field, no nesting, INT64/DOUBLE physical type).
+func (s *parquetSource) ScalarField(field string) bool {
+	sch := s.pf.MetaData().Schema
+	for c := 0; c < sch.NumColumns(); c++ {
+		col := sch.Column(c)
+		if col.Path() == field {
+			t := col.PhysicalType().String()
+			return t == "INT64" || t == "DOUBLE"
+		}
+	}
+	return false
+}
+
+// VectorField / ScalarField for a multi-file keyspace: consult the first part's footer
+// (parts are homogeneous, the normal partitioned-export case).
+func (w *walkSource) VectorField(field string) bool { return w.firstVecSchema(field, true) }
+func (w *walkSource) ScalarField(field string) bool { return w.firstVecSchema(field, false) }
+
+func (w *walkSource) firstVecSchema(field string, vec bool) bool {
+	if len(w.files) == 0 {
+		return false
+	}
+	s, err := OpenFile(w.files[0], "")
+	if err != nil {
+		return false
+	}
+	defer s.Close()
+	vss, ok := s.(VectorSchemaSource)
+	if !ok {
+		return false
+	}
+	if vec {
+		return vss.VectorField(field)
+	}
+	return vss.ScalarField(field)
 }
 
 // NextVectorBatch implements VectorBatchSource for a single Parquet file. It reads all

@@ -21,7 +21,9 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
+	"sync/atomic"
 	"testing"
 
 	"github.com/apache/arrow-go/v18/arrow"
@@ -52,11 +54,12 @@ func writeVecKS(t testing.TB, path string, n, dim int) {
 		idB.Append(int64(i))
 		vecB.Append(true)
 		for j := 0; j < dim; j++ {
-			// Exact binary fractions (n/8) so the float32 storage, its float64 promotion,
+			// Exact binary fractions (k/256) so the float32 storage, its float64 promotion,
 			// and the JSON the row lane materializes are all the SAME value -- the columnar
-			// vs row-lane differential then isolates the math, not float formatting. +1 so
-			// no row is all-zero (which would make cosine NULL).
-			valB.Append(float32((i*3+j)%7+1) / 8.0)
+			// vs row-lane differential isolates the math, not float formatting. Distinct
+			// per row (magnitude + direction vary) so top-K distances don't tie, keeping
+			// the ORDER deterministic across both lanes.
+			valB.Append(float32(i*dim+j+1) / 256.0)
 		}
 	}
 	rec := b.NewRecord()
@@ -199,5 +202,92 @@ func TestVectorColumnarMatchesRowLane(t *testing.T) {
 		if seen != n {
 			t.Errorf("%s: columnar produced %d rows, want %d", metric, seen, n)
 		}
+	}
+}
+
+// runVecRows runs a query and returns its result rows as strings.
+func runVecRows(t *testing.T, sess *glue.Session, q string) []string {
+	t.Helper()
+	res, err := sess.Run(q)
+	if err != nil {
+		t.Fatalf("Run %q: %v", q, err)
+	}
+	out := make([]string, len(res.Rows))
+	for i, r := range res.Rows {
+		out[i] = string(r)
+	}
+	return out
+}
+
+// TestVectorTopKColumnarDifferential is the end-to-end proof of the query integration:
+// a real top-K vector query (ORDER BY VECTOR_DISTANCE(...) LIMIT k) must produce
+// IDENTICAL rows with the columnar rewrite ON vs OFF -- and the fused columnar op must
+// actually fire (VectorColumnarApplied increments). Distinct per-row vectors keep the
+// ordering unambiguous. Covers a single- and a multi-file keyspace, ASC/DESC, OFFSET.
+func TestVectorTopKColumnarDifferential(t *testing.T) {
+	dir := t.TempDir()
+	ks := filepath.Join(dir, "default", "vecs")
+	if err := os.MkdirAll(ks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const dim = 4
+	writeVecKS(t, filepath.Join(ks, "part-0.parquet"), 40, dim)
+	writeVecKS(t, filepath.Join(ks, "part-1.parquet"), 25, dim) // multi-file keyspace
+
+	sess, err := glue.OpenSession(dir, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const qlit = `[0.1, 0.2, 0.3, 0.4]`
+	queries := []struct{ name, q string }{
+		{"cosine-top5", `SELECT t.id, VECTOR_DISTANCE(t.vec, ` + qlit + `, "cosine") AS d FROM vecs t ORDER BY d ASC LIMIT 5`},
+		{"l2-top8", `SELECT t.id, VECTOR_DISTANCE(t.vec, ` + qlit + `, "l2") AS d FROM vecs t ORDER BY d ASC LIMIT 8`},
+		{"l2sq-offset", `SELECT t.id, VECTOR_DISTANCE(t.vec, ` + qlit + `, "l2_squared") AS d FROM vecs t ORDER BY d ASC LIMIT 5 OFFSET 4`},
+		{"dot-desc", `SELECT t.id, VECTOR_DISTANCE(t.vec, ` + qlit + `, "dot") AS d FROM vecs t ORDER BY d DESC LIMIT 6`},
+	}
+	for _, q := range queries {
+		t.Run(q.name, func(t *testing.T) {
+			glue.DisableColumnarOptimize = true
+			off := runVecRows(t, sess, q.q)
+			glue.DisableColumnarOptimize = false
+
+			before := atomic.LoadInt64(&glue.VectorColumnarApplied)
+			on := runVecRows(t, sess, q.q)
+			applied := atomic.LoadInt64(&glue.VectorColumnarApplied) - before
+
+			if applied == 0 {
+				t.Errorf("columnar VECTOR_DISTANCE op did not fire")
+			}
+			if !reflect.DeepEqual(off, on) {
+				t.Errorf("columnar != row lane\n OFF: %v\n ON:  %v", off, on)
+			}
+		})
+	}
+	glue.DisableColumnarOptimize = false
+}
+
+// TestVectorColumnarNoMisfire guards the rewrite: a top-K query over the same Parquet
+// keyspace that is NOT a VECTOR_DISTANCE map (a plain arithmetic projection) must run
+// correctly and must NOT trigger the columnar vector op.
+func TestVectorColumnarNoMisfire(t *testing.T) {
+	dir := t.TempDir()
+	ks := filepath.Join(dir, "default", "vecs")
+	if err := os.MkdirAll(ks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeVecKS(t, filepath.Join(ks, "part-0.parquet"), 20, 4)
+	sess, err := glue.OpenSession(dir, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	before := atomic.LoadInt64(&glue.VectorColumnarApplied)
+	rows := runVecRows(t, sess, `SELECT t.id, (t.id + 100) AS d FROM vecs t ORDER BY d ASC LIMIT 3`)
+	if atomic.LoadInt64(&glue.VectorColumnarApplied) != before {
+		t.Errorf("columnar vector op fired on a non-VECTOR_DISTANCE query")
+	}
+	if len(rows) != 3 || rows[0] != `{"id":0,"d":100}` {
+		t.Errorf("unexpected rows: %v", rows)
 	}
 }
