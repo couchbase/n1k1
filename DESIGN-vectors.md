@@ -95,10 +95,28 @@ SELECT u.id, u.vec FROM (
 ```
 - `ARRAY_AGG` of `{id,text}` **objects** (not two parallel arrays) keeps id/text/vec glued.
 - Page size (256) is a user-controlled literal. Last page = leftover rows.
-- **`@vectorize_column(ks, text => line, model => "…", batch => 256)`** macro sugars this wall.
+- **`@vectorize_field(ks, field => line, model => "…", batch => 256)`** macro sugars this wall.
 - **Load-bearing, verify first:** (a) `UNNEST` support (NEST is unsupported in n1k1, but
   UNNEST is separate — confirm, or wire it); (b) a stable row ordinal to page by
   (`_meta.pos`, else `ROW_NUMBER()`).
+
+## Vector element types (float32 / float64 / int8·int16 quantized / float16)
+
+Models emit different numeric types: float32 (typical), float64, or **quantized**
+int8/int16/float16 (some models quantize to shrink a vector ~4×). This is a **non-issue for
+Phase 0 correctness**: a vector is just a SQL++ array of *numbers*, and `VECTOR_DISTANCE`
+promotes every element to float64 for the math (embedding values always sit within float32
+range), so int8, float32, and float64 arrays all "just work" through the same boxed path,
+no special-casing.
+
+It matters only for **storage/perf (Phase 1 columnar)**: the vector side-file column
+carries an **element-type tag** — default `float32` (4 B/dim); `int8` (1 B/dim, a 4×-smaller
+quantized column); also `int16`/`float16` — recorded in the file metadata next to `dim`.
+The native distance kernel then either has a per-type variant (`int8·int8`, `f32·f32`) or
+dequantizes/promotes to a common precision (fp32 accumulation is standard). NOTE: a
+properly quantized model often ships a **scale/offset** (dequantization) or pre-normalizes;
+honoring that is a Phase-1+ nuance — raw-integer distance preserves nearest-neighbour
+*ranking* well enough for a first cut, so it doesn't block anything.
 
 ## Storage & caching
 
@@ -127,8 +145,8 @@ first and covers dev/debug scale.
 ## Phased plan
 
 - **Phase 0 (de-risk, cgo-free, no model):** `VECTORIZE_BATCH` with `{"fake":true}` + native
-  `http.post`; verify `UNNEST`; `@vectorize_column` macro; end-to-end
-  `INSERT INTO vecs SELECT @vectorize_column(ks, …)` then brute-force `VECTOR_DISTANCE` top-K.
+  `http.post`; verify `UNNEST`; `@vectorize_field` macro; end-to-end
+  `INSERT INTO vecs SELECT @vectorize_field(ks, …)` then brute-force `VECTOR_DISTANCE` top-K.
   Vectors as plain SQL++ float64 arrays first (correctness), separate from columnar packing.
 - **Phase 1:** real model via `http.post` (ollama/nomic-embed-text); columnar float32
   vector column + native-lane distance; caching (config-address naming + skip-if-present);
