@@ -46,8 +46,8 @@ cbcollect bundle: 10K–1M rows). Two distinct sub-problems with opposite constr
   side-file, skip on re-run. Essential for large/remote sources (S3/Box/Drive/HF).
 - **Model-agnostic.** No hardcoded ollama. An options object carries `endpoint` + `model`;
   swap freely (ollama, llama.cpp-server, OpenAI, local ONNX all speak HTTP/JSON).
-- **cgo-free at dev scale.** Brute-force distance over a columnar float32 column; defer
-  FAISS/ANN (and its cgo cost) to a later scale tier.
+- **cgo-free at dev scale.** Brute-force distance over a columnar vector column (stored in
+  the model's native element type); defer FAISS/ANN (and its cgo cost) to a later scale tier.
 - **Reuse existing lanes:** the vector functions above, GROUP BY / `ARRAY_AGG` / `UNNEST`,
   the columnar/SIMD lane, `INSERT INTO <file>`, the extension + macro registries.
 
@@ -68,10 +68,11 @@ evaluator: each row parses its stored vector field into a `value.Value` array, a
 backed by a reusable `[]float32`" is **not available** — cbq's value model has no native
 `[]float32` array (`value/doc.go`: float32 "not used"; arrays are `[]interface{}` of
 float64-boxed numbers). So the win is not *recycling a box* but **skipping the box**: store
-the vector column as raw `float32` bytes in the columnar side-file, and run a native
-distance kernel over a borrowed `[]byte`→`[]float32` view with a **reused** query-vector
-`[]float32` + scalar accumulators (no per-row `value.Value`, SIMD-friendly). That is the
-DESIGN-col native port — the right home for the reuse instinct.
+the vector column as raw bytes in the model's **native element type** (see below — do NOT
+up-convert int8/float16 to float32), and run a native distance kernel over a borrowed
+`[]byte`→typed-slice view with a **reused** query-vector buffer + scalar accumulators (no
+per-row `value.Value`, SIMD-friendly). That is the DESIGN-col native port — the right home
+for the reuse instinct.
 
 ## Embedding — a batched callout at ingest, materialized once
 
@@ -111,14 +112,19 @@ promotes every element to float64 for the math (embedding values always sit with
 range), so int8, float32, and float64 arrays all "just work" through the same boxed path,
 no special-casing.
 
-It matters only for **storage/perf (Phase 1 columnar)**: the vector side-file column
-carries an **element-type tag** — default `float32` (4 B/dim); `int8` (1 B/dim, a 4×-smaller
-quantized column); also `int16`/`float16` — recorded in the file metadata next to `dim`.
-The native distance kernel then either has a per-type variant (`int8·int8`, `f32·f32`) or
-dequantizes/promotes to a common precision (fp32 accumulation is standard). NOTE: a
-properly quantized model often ships a **scale/offset** (dequantization) or pre-normalizes;
-honoring that is a Phase-1+ nuance — raw-integer distance preserves nearest-neighbour
-*ranking* well enough for a first cut, so it doesn't block anything.
+It matters only for **storage/perf (Phase 1 columnar)**, and the rule there is: **store the
+model's emitted type as-is — do NOT up-convert to float32.** The Parquet/columnar side-file
+records an **element-type tag** next to `dim` and keeps the bytes the model returned:
+`float32` (4 B/dim, typical), `float16` (2 B/dim), `int16` (2 B/dim), `int8` (1 B/dim — a
+4×-smaller quantized column). Up-converting an int8 column to float32 would 4× the file and
+throw away the whole point of the model quantizing. The native distance kernel then either
+has a per-type variant (`int8·int8`, `f32·f32`) or dequantizes/promotes to a common
+precision at read (fp32 accumulation is standard) — the *stored* representation stays
+native. Parquet expresses these as a FIXED_SIZE_LIST/FIXED_LEN_BYTE_ARRAY of the right
+element type. NOTE: a properly quantized model often ships a **scale/offset**
+(dequantization) or pre-normalizes; carry that in the file metadata and honor it in the
+kernel — a Phase-1+ nuance (raw-integer distance preserves NN *ranking* well enough for a
+first cut, so it doesn't block anything).
 
 ## Storage & caching
 
@@ -136,6 +142,25 @@ honoring that is a Phase-1+ nuance — raw-integer distance preserves nearest-ne
   rest. For a stronger data-level address (catch "the source changed"), expose a
   **`CONTENT_HASH(...)` scalar UDF** (surfaced in SQL, not trapped in a Go inner tier).
   Config-address (source + model + version [+ mtime/size]) is cheap and adequate for dev.
+
+## Progress / observability
+
+Embedding is the slow step (ms/row), so a long `INSERT INTO vecs SELECT
+@vectorize_field(...)` wants progress feedback — and n1k1 already has the surface:
+**`.stats on`** draws a **live, in-place per-operator counter tree** (stderr) that updates
+*during* the run. The engine fires `Session.OnStats(*base.Stats)` at scan checkpoints
+(`YieldStats`, ~every 1024 rows, adaptively re-paced off wall-clock to a display-friendly
+rate; CLI redraws ≤10 Hz), including live in-flight `GROUP BY` aggregate partials. So the
+scan/group/project counters climb in real time; the final result reports the inserted row
+count. Custom-display hooks: `Session.OnStats` (paced) + `Session.OnRow` (per row,
+jsonlines). See DESIGN-stats.md.
+
+Caveats: (1) it's a **count/throughput readout, not a %-complete bar with ETA** — no total
+denominator is wired in. The pieces exist (a plan-time keyspace doc-count estimate; FTS
+`DocCount()`; columnar `Count`), so a real %+ETA via the `OnStats` hook is a small nicety,
+not built. (2) Progress advances **per checkpoint (between operator yields), not during an
+in-flight model call** — a `VECTORIZE_BATCH` HTTP round-trip that blocks stalls the footer
+for that batch, so smaller batches give smoother progress (more round-trips): a tuning knob.
 
 ## The cgo fork in the road (deferred)
 
