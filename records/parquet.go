@@ -63,6 +63,9 @@ type parquetSource struct {
 	done  bool
 
 	curBatch arrow.RecordBatch // held for the column-batch path; released on next NextColumns/Close
+
+	rrVec       pqarrow.RecordReader // vector-batch path (NextVectorBatch)
+	curBatchVec arrow.RecordBatch    // held for the vector-batch path; released on next call/Close
 }
 
 func newParquetSource(path, idPrefix string) (Source, error) {
@@ -287,6 +290,13 @@ func (s *parquetSource) Close() error {
 	}
 	if s.rr != nil {
 		s.rr.Release()
+	}
+	if s.curBatchVec != nil {
+		s.curBatchVec.Release()
+		s.curBatchVec = nil
+	}
+	if s.rrVec != nil {
+		s.rrVec.Release()
 	}
 	if s.pf != nil {
 		return s.pf.Close()

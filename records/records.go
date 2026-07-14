@@ -1328,6 +1328,11 @@ type walkSource struct {
 	curCB    ColumnBatchSource
 	curCBSrc Source
 	iCB      int
+
+	// vector-batch iteration state (parallel, used only via NextVectorBatch)
+	curVB    VectorBatchSource
+	curVBSrc Source
+	iVB      int
 }
 
 // Columns implements ColumnsSource for a multi-file keyspace by AGGREGATING each

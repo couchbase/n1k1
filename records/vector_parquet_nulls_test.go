@@ -26,6 +26,7 @@ package records
 
 import (
 	"context"
+	"encoding/binary"
 	"os"
 	"testing"
 
@@ -132,6 +133,41 @@ func TestVecParquetNullContract(t *testing.T) {
 			if v[j] != float32(r*10+j) {
 				t.Errorf("row %d elem %d = %v, want %v", r, j, v[j], float32(r*10+j))
 			}
+		}
+	}
+
+	// Read the SAME file back through the VectorBatchSource and confirm it surfaces
+	// the vec rows (present via offsets, null as zero-length) + the id scalar column.
+	src, err := OpenFile(path, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer src.Close()
+	vbs, ok := src.(VectorBatchSource)
+	if !ok {
+		t.Fatalf("parquet source is not a VectorBatchSource")
+	}
+	vb, ok, err := vbs.NextVectorBatch("vec", []string{"id"})
+	if err != nil || !ok {
+		t.Fatalf("NextVectorBatch ok=%v err=%v", ok, err)
+	}
+	if vb.Rows != nRows || vb.Dim != dim || vb.Regular {
+		t.Fatalf("batch rows=%d dim=%d regular=%v, want %d/%d/false(nulls present)", vb.Rows, vb.Dim, vb.Regular, nRows, dim)
+	}
+	ids := vb.Scalars[0]
+	for r := 0; r < nRows; r++ {
+		rv := vb.RowVec(r)
+		if null[r] {
+			if rv != nil {
+				t.Errorf("row %d: RowVec = %v, want nil (NULL)", r, rv)
+			}
+		} else {
+			if len(rv) != dim || rv[0] != float32(r*10) {
+				t.Errorf("row %d: RowVec = %v, want [%d..]", r, rv, r*10)
+			}
+		}
+		if gotID := int64(binary.LittleEndian.Uint64(ids[r*8:])); gotID != int64(r) {
+			t.Errorf("row %d: id = %d, want %d", r, gotID, r)
 		}
 	}
 }
