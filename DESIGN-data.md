@@ -1515,6 +1515,89 @@ as change-detection state **and** the `Fetch` seek index. For mutable files, pre
 natural key (2) or content-hash (5), and document that positional IDs may shift on
 edit.
 
+## §7 Table formats: Apache Iceberg (read-only) — design research
+
+A *table format* sits ABOVE the file formats of §1: Iceberg is a metadata layer over a
+pile of Parquet (or ORC/Avro) data files. A table is a chain — catalog → table metadata
+(JSON) → a *snapshot* → a manifest list (Avro) → manifests (Avro) → the data files
+(Parquet) + optional *delete files*. On top it adds: schema evolution (columns tracked by
+a stable **field-ID**, not name or position), hidden partitioning, per-file column stats
+for pruning, atomic snapshot commits (ACID + **time-travel**), and merge-on-read (MoR)
+deletes (positional + equality).
+
+### What DuckDB provides (reference)
+DuckDB's `iceberg` extension: resolve the table metadata, pick a snapshot (current, or by
+id / timestamp = time-travel), PRUNE data files using partition values + column zone-maps
+recorded in the manifests (skip a file without opening it), read the surviving Parquet
+files, apply MoR delete files, and expose it as a scannable table. Reads against a plain
+filesystem/object-store metadata path OR a catalog (REST/Glue). Long read-only; writes
+came later and stay limited. The shape to copy: **metadata → prune → read Parquet →
+apply deletes**, with predicate/column pushdown feeding the prune.
+
+### The big enabler — `apache/iceberg-go` (already a dep, cgo-free)
+n1k1 does NOT need to reimplement Iceberg's metadata/manifest/prune/delete/field-ID
+machinery. `github.com/apache/iceberg-go v0.4.0` is already an (indirect) dependency and
+**builds cgo-free** (verified: `CGO_ENABLED=0 go build` of its `table`/`catalog`
+packages) — its stack is pure-Go (arrow-go/v18, `hamba/avro` for manifests, aws-sdk-go-v2
+for S3/Glue). Its `table.Scan(filter, columns, snapshot)` → `ToArrowRecords()` yields
+Arrow `RecordBatch`es with file pruning, MoR deletes, and field-ID schema evolution
+ALREADY resolved. The cbq fork's `primitives/external/iceberg*.go` is a working reference
+(a `Reader` over `table.Scan`, `n1qlToIcebergExpr` converting a WHERE to an iceberg-go
+`BooleanExpression` for pushdown, a column filter) — but that's the boxed cbq lane; n1k1
+wants the pure-Go byte lane.
+
+### How it maps onto n1k1 (why it fits cleanly)
+An Iceberg table becomes a `records.Source` (hence a keyspace) whose Arrow batches come
+from an iceberg-go scan instead of a directory walk of Parquet files. n1k1 ALREADY turns
+Arrow `RecordBatch`es into rows — `records/parquet.go` renders each batch to NDJSON
+(`appendRecordsNDJSON`) for the row path and hands back raw column buffers via
+`NextColumns` for the columnar path. So an Iceberg source slots into the SAME transpose /
+columnar machinery; the only genuinely new code is "drive the scan, feed its batches to
+the existing renderer." (Refactor the batch→rows logic out of `parquetSource` so both
+share it.) Pushdown is the same discipline n1k1 already applies (`ColumnsProjector` /
+`extractColPredicate`), just DELEGATED: convert the projected columns + the WHERE into
+iceberg-go's column selection + `BooleanExpression` (mirror `n1qlToIcebergExpr`;
+partial-AND pushdown only widens the scan, so it's safe), and pruning happens from
+manifest stats *without opening files* — strictly better than our per-file footer
+zone-maps.
+
+### Easy vs hard
+- **Easy (mostly free):** scan the current snapshot as a keyspace; projection + predicate
+  + partition pruning; field-ID schema evolution; MoR deletes — all inside iceberg-go's
+  scan + our existing Arrow-batch machinery.
+- **Medium:** wiring an Iceberg table into keyspace/FROM resolution; the WHERE→iceberg-go
+  expression conversion; time-travel syntax (which snapshot: id / as-of timestamp); the
+  `NextColumns` columnar path for Iceberg batches (its list/vec columns need the same
+  handling as the Parquet path — see the vec-column work).
+- **Deferred:** catalogs beyond a filesystem/local metadata path (REST/Glue/SQL — iceberg-go
+  supports them, but they need config + creds); S3/object-store tables (deps are present);
+  verifying MoR-delete correctness against real tables.
+- **Non-goal:** Iceberg *writes* (committing snapshots) — a large lift needing a catalog +
+  concurrency control. n1k1's `INSERT INTO` stays plain Parquet/JSONL (§2); writing an
+  Iceberg snapshot is out of scope.
+
+### Scope & usefulness
+n1k1's core niche is local support-bundle / log / file analysis; Iceberg is for data-lake
+analytic tables on object stores — **adjacent, not core.** But it composes with the
+direction the columnar/Parquet/`INSERT INTO parquet`/vector work has been building: a tiny,
+cgo-free, single-binary engine that queries a lakehouse table (incl. Couchbase
+Analytics/Columnar exports) read-only with the full SQL++ + MQO + extensions surface — no
+Spark/JVM. That's a real differentiator IF the analytic direction is pursued. Given
+iceberg-go does the hard parts and the Arrow-batch reuse is nearly free, a read-only MVP is
+low-effort relative to its reach.
+
+### Recommendation & phasing
+- **Spike:** a `records.Source` that loads a table by filesystem metadata location, drives
+  an iceberg-go scan, and transposes its Arrow batches through the existing renderer so
+  `SELECT * FROM <iceberg-table>` works. Reuse the Parquet reader's batch→rows path.
+  Confirm cgo-free end-to-end + measure vs a plain Parquet directory.
+- **Then:** projection + predicate + partition pushdown (columns/WHERE → the scan);
+  time-travel (snapshot by id / as-of); the columnar `NextColumns` path for Iceberg batches.
+- **Later, if warranted:** REST/Glue catalogs; S3 tables; delete-file correctness suite.
+- **Verdict:** feasible, surprisingly low-effort for read-only (the heavy lifting is a
+  cgo-free dep we already carry), and useful for the analytic direction — worth the spike to
+  prove the Arrow-batch reuse and measure, before committing to catalogs/time-travel.
+
 ## Dependency licensing (permissive only)
 
 Policy: **MIT / Apache-2.0 / BSD** only — no GPL/AGPL/copyleft/viral.
@@ -1645,6 +1728,11 @@ Separable tracks:
 
 ## Open questions
 
+- **Iceberg read support (§7). (Design researched.)** Feasible + low-effort for read-only
+  via the already-present, cgo-free `apache/iceberg-go` + n1k1's existing Arrow-batch
+  transpose. **Open:** the keyspace/FROM surface for a table (metadata-path vs a catalog),
+  time-travel syntax (snapshot id / as-of timestamp), reusing the columnar `NextColumns`
+  path for Iceberg batches, and whether the analytic direction warrants building it.
 - **`RecordSource` signature & CSV reader choice (allocation). (Partly settled.)**
   Shipped decoders use `Next(rec *Record) (bool, error)`; CSV is on `encoding/csv`
   (correctness-first), which allocates field strings per row. **Open:** replace with a
