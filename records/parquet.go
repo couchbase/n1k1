@@ -31,6 +31,7 @@ import (
 	"io"
 	"math"
 	"strconv"
+	"strings"
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
@@ -94,10 +95,32 @@ func (s *parquetSource) ProjectColumns(names []string) error {
 		return fmt.Errorf("records: ProjectColumns must be called before Next")
 	}
 	sch := s.pf.MetaData().Schema
+	// Map each TOP-LEVEL field to its leaf column indices. A nested column (a
+	// list<float32> vec, a struct, ...) has leaves under "field.list.element" /
+	// "field.subfield", so ColumnIndexByName(topField) returns -1 -- projecting by
+	// leaf-name-only would silently DROP the whole nested column when a sibling
+	// scalar resolves (reading only the sibling). Grouping leaves by their first
+	// path element fixes that: requesting "vec" pulls in vec's element leaf.
+	leavesByField := map[string][]int{}
+	for c := 0; c < sch.NumColumns(); c++ {
+		p := sch.Column(c).Path() // "id" | "vec.list.element" | ...
+		top := p
+		if i := strings.IndexByte(p, '.'); i >= 0 {
+			top = p[:i]
+		}
+		leavesByField[top] = append(leavesByField[top], c)
+	}
+	// Preserve the requested field order (a field's leaves in schema order within it):
+	// the scalar columnar path (DatastoreAggColumnar) maps cols positionally to the
+	// projected-names order, so reordering here would fold the wrong column.
 	proj := make([]int, 0, len(names))
+	seen := map[int]bool{}
 	for _, n := range names {
-		if i := sch.ColumnIndexByName(n); i >= 0 {
-			proj = append(proj, i)
+		for _, c := range leavesByField[n] {
+			if !seen[c] {
+				proj = append(proj, c)
+				seen[c] = true
+			}
 		}
 	}
 	if len(proj) > 0 {
