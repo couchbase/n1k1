@@ -61,11 +61,13 @@ FLAGS
                      {"logical":"glob", ...}. A logical keyspace matching 0 files is a hard error.
   --update           .multi test only: (re-)record each fixture's produced findings as its @expect golden
   --sql              .multi explain only: render the queries as pretty SQL++ instead of the op tree.
-                     FUSED queries are grouped under their shared scan (with a synopsis of the shared
-                     wake-gate -- the MQO win made legible); standalone + rejected get their own
-                     sections. Each query carries a provenance comment (keyspace / lane / index literal)
-                     + inline '-- hint:' advice. A query that used a macro shows its FINAL expanded SQL++,
-                     bracketed by '-- BEGIN/END expansion of @macro'.
+                     When >=2 queries share a keyspace they FUSE: shown as the single UNION ALL they
+                     become (one scan of that keyspace feeding each branch), with a synopsis of the
+                     shared wake-gate. A fuse-eligible query alone on its keyspace, standalone queries,
+                     and rejected queries get their own sections (so it's honest when nothing fuses).
+                     Each query carries a provenance comment (keyspace / lane / index literal) + inline
+                     '-- hint:' advice; a macro query shows its FINAL expanded SQL++, bracketed by
+                     '-- BEGIN/END expansion of @macro'.
 
 QUERIES DIRECTORY LAYOUT
   my-queries/

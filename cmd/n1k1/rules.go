@@ -758,19 +758,61 @@ func (c *cli) renderCorpusExplainSQL(dets []glue.CorpusDetector, report []glue.D
 	}
 	sort.Strings(ksOrder)
 
-	fmt.Fprintf(w, "%s%d query/queries → %d fused across %d shared scan(s), %d standalone, %d rejected\n",
-		c.icon("\U0001F4CB "), score.Total, score.Fused, len(ksOrder), score.Standalone, score.Rejected)
-
+	// A shared scan is only a real FUSION when >=2 queries read the same keyspace. A
+	// keyspace with a single fuse-eligible query shares with no one -- report it honestly
+	// as "alone" rather than implying a shared pass.
+	var sharedKS, soloKS []string
+	sharedQ := 0
 	for _, ks := range ksOrder {
+		if len(fusedByKS[ks]) >= 2 {
+			sharedKS = append(sharedKS, ks)
+			sharedQ += len(fusedByKS[ks])
+		} else {
+			soloKS = append(soloKS, ks)
+		}
+	}
+
+	fmt.Fprintf(w, "%s%d query/queries → %d fuse-eligible (%d share %d scan(s); %d alone on their keyspace), %d standalone, %d rejected\n",
+		c.icon("\U0001F4CB "), score.Total, score.Fused, sharedQ, len(sharedKS), len(soloKS), score.Standalone, score.Rejected)
+	if len(sharedKS) == 0 && len(soloKS) > 0 {
+		fmt.Fprintln(w, c.style.Dim("-- no two queries share a keyspace, so nothing actually fuses; ≥2 single-source"))
+		fmt.Fprintln(w, c.style.Dim("-- filter+project queries over the SAME keyspace would collapse into one shared scan."))
+	}
+
+	// Real shared scans first (≥2 queries → one physical pass). Render the group as the
+	// UNION ALL it logically is (the fused plan is literally union-all(broadcast-indexed(
+	// scan))): one keyspace scan feeding N branches, each branch a member query. n1k1 runs
+	// it as ONE physical pass (rows broadcast to every branch), not N scans.
+	for _, ks := range sharedKS {
 		members := fusedByKS[ks]
 		fmt.Fprintln(w)
-		fmt.Fprintln(w, c.style.Bold(fmt.Sprintf("═══ shared scan · %s · %d query/queries → ONE pass ═══",
+		fmt.Fprintln(w, c.style.Bold(fmt.Sprintf("═══ SHARED SCAN · %s · %d queries fuse into ONE pass ═══",
 			orEmptyDash(ks), len(members))))
 		for _, ln := range sharedScanNotes(members, byLabel) {
 			fmt.Fprintln(w, c.style.Dim(ln))
 		}
-		for _, det := range members {
-			c.explainSQLOne(det, byLabel[det.Label])
+		fmt.Fprintln(w, c.style.Dim(fmt.Sprintf(
+			"-- the fused query — ONE scan of %s, the UNION ALL of these %d branches (each finding tagged with its query label at run time):",
+			orEmptyDash(ks), len(members))))
+		for i, det := range members {
+			d := byLabel[det.Label]
+			fmt.Fprintln(w)
+			if i > 0 {
+				fmt.Fprintln(w, c.style.Bold("UNION ALL"))
+			}
+			fmt.Fprintln(w, c.style.Cyan(explainProvenanceComment(d, det.Label)))
+			if adv := lintAdvice(d); adv != "" {
+				fmt.Fprintln(w, c.style.Dim("-- hint: "+adv))
+			}
+			fmt.Fprintln(w, glue.PrettySQL(finalStmt(det.Stmt)))
+		}
+	}
+	// Then the fuse-eligible-but-alone queries (each its own scan, no co-tenant yet).
+	if len(soloKS) > 0 {
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, c.style.Bold("═══ fuse-eligible · each the only query on its keyspace (nothing to share with) ═══"))
+		for _, ks := range soloKS {
+			c.explainSQLOne(fusedByKS[ks][0], byLabel[fusedByKS[ks][0].Label])
 		}
 	}
 	if len(standalone) > 0 {
@@ -802,10 +844,7 @@ func (c *cli) explainSQLOne(det glue.CorpusDetector, d glue.DetectorLint) {
 	}
 
 	used := macrosUsed(det.Stmt)
-	final := det.Stmt
-	if expanded, err := glue.ExpandMacros(det.Stmt); err == nil {
-		final = expanded
-	}
+	final := finalStmt(det.Stmt)
 	if len(used) == 0 {
 		fmt.Fprintln(w, glue.PrettySQL(final)) // no macro: the query IS its final SQL++
 		return
@@ -816,6 +855,16 @@ func (c *cli) explainSQLOne(det glue.CorpusDetector, d glue.DetectorLint) {
 	fmt.Fprintln(w, c.style.Dim("-- BEGIN expansion of "+names))
 	fmt.Fprintln(w, glue.PrettySQL(final))
 	fmt.Fprintln(w, c.style.Dim("-- END expansion of "+names))
+}
+
+// finalStmt returns the FINAL SQL++ a query becomes -- macros expanded (a @name(...) call
+// -> its generated SQL++), a no-op for a query with no macro. On an expand error the
+// original text is used, so the view degrades gracefully rather than dropping the query.
+func finalStmt(stmt string) string {
+	if expanded, err := glue.ExpandMacros(stmt); err == nil {
+		return expanded
+	}
+	return stmt
 }
 
 // macrosUsed returns the registered macro names a statement invokes ("@name(" call), in

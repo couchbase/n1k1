@@ -31,24 +31,29 @@ func TestExplainSQLGroupedAndExpanded(t *testing.T) {
 	dets := []glue.CorpusDetector{
 		{Label: "DISK", Stmt: `SELECT l.msg FROM logs l WHERE l.sev = "ERROR" AND l.msg LIKE "%disk%"`},
 		{Label: "OOM", Stmt: `SELECT l.msg FROM logs l WHERE l.sev = "ERROR" AND l.msg LIKE "%oom%"`},
+		{Label: "SOLO", Stmt: `SELECT r.id FROM reqs r WHERE r.ms > 1000`}, // fuse-eligible but alone
 		{Label: "CTX", Stmt: `SELECT g.msg FROM @grep_context(logs, when => sev = "ERROR", before => 1, after => 1, order => ts) AS g WHERE g.near = 1`},
 	}
 	report := []glue.DetectorLint{
 		{Label: "DISK", Class: glue.LintFused, Keyspace: "default:logs", Lane: "native", Literal: "ERROR", Indexed: true},
 		{Label: "OOM", Class: glue.LintFused, Keyspace: "default:logs", Lane: "native", Literal: "ERROR", Indexed: true},
+		{Label: "SOLO", Class: glue.LintFused, Keyspace: "default:reqs", Lane: "native", Indexed: false},
 		{Label: "CTX", Class: glue.LintStandalone, Lane: "boxed", Reason: "window function (OVER ...) -- runs standalone"},
 	}
-	score := glue.CorpusScore{Total: 3, Fused: 2, Standalone: 1}
+	score := glue.CorpusScore{Total: 4, Fused: 3, Standalone: 1}
 
 	var out bytes.Buffer
 	(&cli{prog: "n1k1", out: &out, stderr: &out, style: cmd.Style{}}).renderCorpusExplainSQL(dets, report, score)
 	s := out.String()
 
 	want := []string{
-		"shared scan · default:logs · 2",           // fused grouping header
-		`wakes only rows matching any of: "ERROR"`, // shared-gate synopsis
-		"standalone · own scan",                    // standalone section
-		"-- as written (before expansion):",        // macro before→after
+		"SHARED SCAN · default:logs · 2 queries fuse into ONE pass", // real fusion (>=2)
+		`wakes only rows matching any of: "ERROR"`,                  // shared-gate synopsis
+		"the UNION ALL of these 2 branches",                         // fused-query framing
+		"\nUNION ALL\n",                                             // the branch separator
+		"fuse-eligible · each the only query on its keyspace",       // the solo section
+		"standalone · own scan",                                     // standalone section
+		"-- as written (before expansion):",                         // macro before→after
 		"-- BEGIN expansion of @grep_context",
 		"-- END expansion of @grep_context",
 		"OVER(ORDER BY ts", // the expanded window SQL++
@@ -58,12 +63,11 @@ func TestExplainSQLGroupedAndExpanded(t *testing.T) {
 			t.Errorf("--sql output missing %q\n---\n%s", w, s)
 		}
 	}
-	// The fused group must precede the standalone section.
-	if i, j := strings.Index(s, "shared scan"), strings.Index(s, "standalone ·"); i < 0 || j < 0 || i > j {
-		t.Errorf("fused group should come before standalone (%d vs %d)", i, j)
-	}
-	// A non-macro query is shown once, with no BEGIN/END noise.
-	if strings.Contains(s, "BEGIN expansion of @grep_context, ") {
-		t.Errorf("unexpected multi-macro bracket")
+	// Section order: real shared scan, then fuse-eligible-alone, then standalone.
+	shared := strings.Index(s, "SHARED SCAN")
+	solo := strings.Index(s, "only query on its keyspace")
+	standalone := strings.Index(s, "standalone ·")
+	if !(shared >= 0 && shared < solo && solo < standalone) {
+		t.Errorf("section order wrong: shared=%d solo=%d standalone=%d", shared, solo, standalone)
 	}
 }
