@@ -20,6 +20,8 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -154,6 +156,64 @@ func TestVectorizeBatchBase64(t *testing.T) {
 	for i, w := range want {
 		if math.Abs(v[i].(float64)-float64(w)) > 1e-6 {
 			t.Errorf("base64 vec[%d] = %v, want %v", i, v[i], w)
+		}
+	}
+}
+
+// TestVectorDistanceNativeMatchesBoxed: the native byte-lane VECTOR_DISTANCE
+// (EnableNativeVectorDistance, default on) must produce BYTE-IDENTICAL rows to cbq's
+// boxed vectorDistance -- it's a drop-in replacement, so a differential over the same
+// query with the flag toggled is the correctness guarantee.
+func TestVectorDistanceNativeMatchesBoxed(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "default", "vd")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	docs := []string{
+		`{"id":1,"vec":[1,0,0]}`,
+		`{"id":2,"vec":[0,1,0]}`,
+		`{"id":3,"vec":[0.9,0.1,0]}`,
+		`{"id":4,"vec":[0,0,0]}`,   // zero vector -> cosine NULL
+		`{"id":5,"vec":[1,2]}`,     // wrong dim -> NULL
+		`{"id":6,"vec":"nope"}`,    // non-array -> NULL
+		`{"id":7}`,                 // missing vec -> MISSING
+	}
+	for i, d := range docs {
+		if err := os.WriteFile(filepath.Join(dir, "d"+string(rune('0'+i))+".json"), []byte(d), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	run := func(native bool, q string) []string {
+		prev := EnableNativeVectorDistance
+		EnableNativeVectorDistance = native
+		defer func() { EnableNativeVectorDistance = prev }()
+		sess, err := OpenSession(root, "default")
+		if err != nil {
+			t.Fatalf("OpenSession: %v", err)
+		}
+		res, err := sess.Run(q)
+		if err != nil {
+			t.Fatalf("Run (native=%v) %q: %v", native, q, err)
+		}
+		out := make([]string, len(res.Rows))
+		for i, r := range res.Rows {
+			out[i] = string(r)
+		}
+		return out
+	}
+
+	for _, metric := range []string{"cosine", "l2", "l2_squared", "dot"} {
+		q := `SELECT t.id, VECTOR_DISTANCE(t.vec, [1,0,0], "` + metric + `") AS d FROM vd t ORDER BY t.id`
+		native, boxed := run(true, q), run(false, q)
+		if len(native) != len(boxed) {
+			t.Fatalf("%s: native %d rows, boxed %d rows", metric, len(native), len(boxed))
+		}
+		for i := range native {
+			if native[i] != boxed[i] {
+				t.Errorf("%s row %d: native %s != boxed %s", metric, i, native[i], boxed[i])
+			}
 		}
 	}
 }

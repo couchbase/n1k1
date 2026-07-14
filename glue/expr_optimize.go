@@ -30,6 +30,11 @@ import (
 
 var OptimizableFuncs = map[string]string{}
 
+// EnableNativeVectorDistance routes VECTOR_DISTANCE to the native byte-lane handler
+// (engine.ExprVectorDistance) instead of cbq's boxed vectorDistance. Default on; a test
+// flips it off to run the boxed baseline for a native==boxed differential.
+var EnableNativeVectorDistance = true
+
 func init() {
 	// The common case: the cbq Function.Name() and the n1k1 ExprCatalog name are
 	// identical, so optSelf registers name -> name. Grouped by family; see the
@@ -71,6 +76,7 @@ func init() {
 		"greatest", "least", // (expr_greatest.go)
 		"element",                                                                  // array element `arr[idx]` (expr_nav.go)
 		"is_array", "is_number", "is_string", "is_boolean", "is_object", "is_atom", // type checks (expr_type.go)
+		"vector_distance", // VECTOR_DISTANCE(vecA, vecB, metric), byte-lane, no boxing (expr_vector.go)
 	)
 
 	// The unknown predicates (expr_pred.go): cbq Function.Name() is the
@@ -598,6 +604,13 @@ func exprTreeOptimizeNative(labels base.Labels, e expression.Expression,
 		return nil, false
 	}
 
+	// EnableNativeVectorDistance gates the native VECTOR_DISTANCE lowering (default on).
+	// Off -> fall back to cbq's boxed vectorDistance, so a differential test can assert
+	// native == boxed over the same query (DESIGN-vectors.md).
+	if name == "vector_distance" && !EnableNativeVectorDistance {
+		return nil, false
+	}
+
 	// The native arithmetic harness (engine/expr_arith.go) handles the binary
 	// operators and unary neg only. cbq's add/mult are n-ary; the >2-operand
 	// forms fall back to cbq rather than silently dropping operands.
@@ -747,6 +760,11 @@ func exprTreeOptimizeNative(labels base.Labels, e expression.Expression,
 		"is_missing", "is_not_missing", "is_valued", "is_not_valued",
 		"is_array", "is_number", "is_string", "is_boolean", "is_object", "is_atom":
 		if len(operands) != 1 {
+			return nil, false
+		}
+	case "vector_distance":
+		// VECTOR_DISTANCE(vecA, vecB, metric) is always exactly 3-arg.
+		if len(operands) != 3 {
 			return nil, false
 		}
 	case "between", "replace", "date_add_millis", "object_add", "object_put":

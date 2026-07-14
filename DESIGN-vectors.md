@@ -74,10 +74,23 @@ Brute-force top-K cosine over jsonl-stored 384-dim vectors, single query:
 - Storage: 320 MB jsonl for 100K×384 (~2× raw float32, ~8× int8).
 
 Verdict: jsonl+boxed is fine for **small** corpora (≤~10K rows, sub-second) but a real wall
-at upper dev scale (100K–1M rows, which cbcollect reaches). The native float32/int8 columnar
-port — raw `[]float32` kernel, no per-row boxing, no JSON parse — should cut the ~100µs/row
-distance to well under 1µs (a ~30–100× win) plus 2–8× smaller storage. So Phase 1's columnar
-core is justified by measurement.
+at upper dev scale (100K–1M rows, which cbcollect reaches).
+
+**Native VECTOR_DISTANCE built + measured (engine/expr_vector.go, base/vector.go) — the
+result refines the plan.** Native byte-lane eval (no `value.Value` boxing) at 100K, literal
+query vector: **6.8s (was 11.2s) — allocations 100M→2M (50×), but wall-clock only ~1.6×.**
+So the boxing was the *allocation/GC* killer, but the **residual is dominated by JSON number
+parsing** (~38M `strconv.ParseFloat` for 100K×384). Two consequences:
+1. **The headline ~30–100× needs BOTH native eval AND columnar float32** (to skip the JSON
+   parse entirely — raw `[]float32`, no `ParseFloat`). Native-on-jsonl alone is a modest
+   1.6× + big alloc reduction; it is the necessary *kernel* the columnar column then feeds.
+2. **Native only triggers with a literal/const query vector.** A `WITH`-alias / `$param`
+   query vector doesn't lower through `ExprTreeOptimize` (it's a boxed scope reference), so
+   the whole call falls back to boxed. Lowering a const `WITH`/param qvec to a native leaf
+   is a follow-up. (Search results are identical either way; only speed differs.)
+Correctness: native == boxed is a differential test (glue TestVectorDistanceNativeMatchesBoxed,
+toggle EnableNativeVectorDistance) across cosine/l2/l2_squared/dot + edge cases — it caught a
+real `-0.0` vs `0` divergence (dot of orthogonal vectors), now normalized.
 
 **Boxing / "recycled box" (Phase 1, not Phase 0).** Phase 0 goes through cbq's *boxed*
 evaluator: each row parses its stored vector field into a `value.Value` array, and
@@ -265,13 +278,17 @@ first and covers dev/debug scale.
     response decode** (`VECTORIZE_BATCH` auto-detects a base64-float32 embedding + an
     `encoding` request knob); content-addressed caching uses cbq's existing `HASHBYTES` +
     `INSERT`-errors-if-exists (no `CONTENT_HASH` UDF needed).
-  - **The big remaining core:** a columnar/Parquet vector side-file storing the model's
-    **native element type** (float32/int8/…) + a **native, unboxed `VECTOR_DISTANCE` port**
-    over raw bytes (reused buffers, SIMD; two arbitrary vector operands — see the note in
-    Search). **Prerequisite:** an `INSERT INTO <parquet>` writer — today `INSERT` writes
+  - **DONE — native, unboxed `VECTOR_DISTANCE`** (`engine/expr_vector.go` +
+    `base.VectorDistanceVals`): byte-lane eval, no per-row `value.Value` array boxing;
+    differential-verified equal to boxed. ~1.6× + 50× fewer allocs on jsonl (kernel for the
+    columnar win). Gaps noted above: JSON-parse residual (needs columnar), and `WITH`/param
+    qvec doesn't yet lower native (literal/const qvec triggers it).
+  - **The big remaining core:** the **columnar float32/native-type vector column** the native
+    kernel reads directly (no JSON parse) — this is what unlocks the headline speedup + 2–8×
+    storage. **Prerequisite:** an `INSERT INTO <parquet>` writer — today `INSERT` writes
     **jsonl only** (`glue/insert.go`); the `pqarrow` write lib is available (used in
-    `records/parquet_col_test.go`) but not wired as a production output format. This is the
-    perf/scale piece and deserves its own focused push.
+    `records/parquet_col_test.go`) but not wired as a production output format. Plus: lower a
+    const `WITH`/param qvec to a native leaf so the native path triggers for real queries.
 - **Phase 2:** remote-source ingest (S3/Box/Drive/HF → local vector side-file); then the
   ANN-index cgo decision, only if N demands.
 
