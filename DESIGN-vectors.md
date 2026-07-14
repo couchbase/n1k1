@@ -61,10 +61,22 @@ ORDER BY VECTOR_DISTANCE(t.v, $qvec, "cosine") ASC LIMIT 10;
 Perf later: port `vectorDistance` to the native columnar float32/SIMD lane (DESIGN-col).
 ANN index much later, only if N forces it (see cgo decision).
 
+**Boxing / "recycled box" (Phase 1, not Phase 0).** Phase 0 goes through cbq's *boxed*
+evaluator: each row parses its stored vector field into a `value.Value` array, and
+`vectorDistance` touches ~`dim` boxed `value.Value` elements per row (`.Index(i)` →
+`float64`). Fine for correctness, garbage-heavy at scale. But a "recycled cbq `Value`
+backed by a reusable `[]float32`" is **not available** — cbq's value model has no native
+`[]float32` array (`value/doc.go`: float32 "not used"; arrays are `[]interface{}` of
+float64-boxed numbers). So the win is not *recycling a box* but **skipping the box**: store
+the vector column as raw `float32` bytes in the columnar side-file, and run a native
+distance kernel over a borrowed `[]byte`→`[]float32` view with a **reused** query-vector
+`[]float32` + scalar accumulators (no per-row `value.Value`, SIMD-friendly). That is the
+DESIGN-col native port — the right home for the reuse instinct.
+
 ## Embedding — a batched callout at ingest, materialized once
 
 **Not** the extract hot-loop (native/cheap) and **not** a per-row scalar UDF with
-fork-per-row. Instead a scalar **`EMBED_BATCH(array, opts) → array`** (array of texts →
+fork-per-row. Instead a scalar **`VECTORIZE_BATCH(array, opts) → array`** (array of texts →
 parallel array of vectors): **one goja call + one model round-trip per batch**. Backed by
 a native pure-Go `http.post` (no curl subprocess) to `opts.endpoint`, e.g.
 `{"endpoint":"http://localhost:11434/api/embed","model":"nomic-embed-text"}`. A
@@ -76,14 +88,14 @@ pipeline is testable with **no model and no network** — the key de-risk.
 ```sql
 INSERT INTO vecs
 SELECT u.id, u.vec FROM (
-  SELECT EMBED_BATCH(g.batch, {"model":"…"}) AS vecs, g.batch
+  SELECT VECTORIZE_BATCH(g.batch, {"model":"…"}) AS vecs, g.batch
   FROM ( SELECT ARRAY_AGG({"id":t.id,"text":t.line}) AS batch, FLOOR(t.pos/256) AS page
          FROM ks t GROUP BY FLOOR(t.pos/256) ) g
 ) e UNNEST e.vecs AS u;
 ```
 - `ARRAY_AGG` of `{id,text}` **objects** (not two parallel arrays) keeps id/text/vec glued.
 - Page size (256) is a user-controlled literal. Last page = leftover rows.
-- **`@embed_column(ks, text => line, model => "…", batch => 256)`** macro sugars this wall.
+- **`@vectorize_column(ks, text => line, model => "…", batch => 256)`** macro sugars this wall.
 - **Load-bearing, verify first:** (a) `UNNEST` support (NEST is unsupported in n1k1, but
   UNNEST is separate — confirm, or wire it); (b) a stable row ordinal to page by
   (`_meta.pos`, else `ROW_NUMBER()`).
@@ -93,16 +105,16 @@ SELECT u.id, u.vec FROM (
 - **Side-file:** materialize vectors as a columnar/Parquet keyspace (fixed-width
   `float32[dim]`; `dim` in the file's metadata, discovered at write or declared). Reuses
   the Parquet-keyspace work. Vectors are usually far smaller than the source text.
-- **Caching = deterministic naming (macro/CLI) + skip-if-present (runtime).** A macro is
-  pure parse-time text with **no filesystem access**, so it cannot itself check "exists?".
-  Its role: **deterministically name the destination** from a *config-address* of its args
-  — `vecs/<source>.<model>.<recipe-version>.parquet` (a readable logical content-address it
-  *can* compute from `source`+`model`+`opts`). The **skip-if-present** decision is a
-  runtime check that lives in an `.embed`/`INSERT-into-file` layer (Go, filesystem): if the
-  named side-file exists, no-op; else run the generated INSERT. So the macro makes caching
-  *deterministic*; the runtime makes it *happen*. For a stronger data-level guarantee,
-  expose a **`CONTENT_HASH(...)` scalar UDF** (surfaced in SQL, not trapped in a Go inner
-  tier) so a user can address by actual source bytes when a config-address isn't enough.
+- **Caching mostly already exists.** `INSERT INTO <file>` default mode `"new"` opens with
+  `O_CREATE|O_EXCL` and **errors if the target already exists** (`glue/insert.go`). So the
+  cache check is free: the macro/CLI **names the destination by a config-address** of its
+  args — `vecs/<source>.<model>.<recipe-version>.jsonl` (computable at expand time from
+  `source`+`model`+`opts`) — and the INSERT's own error-if-exists *is* the skip: a wrapper
+  runs the generated `INSERT` and treats "target file already exists" as a **cache hit**
+  (or checks existence first). A macro can't touch the filesystem, but it doesn't need to —
+  it just produces the deterministic destination name; the existing INSERT semantics do the
+  rest. For a stronger data-level address (catch "the source changed"), expose a
+  **`CONTENT_HASH(...)` scalar UDF** (surfaced in SQL, not trapped in a Go inner tier).
   Config-address (source + model + version [+ mtime/size]) is cheap and adequate for dev.
 
 ## The cgo fork in the road (deferred)
@@ -114,9 +126,9 @@ first and covers dev/debug scale.
 
 ## Phased plan
 
-- **Phase 0 (de-risk, cgo-free, no model):** `EMBED_BATCH` with `{"fake":true}` + native
-  `http.post`; verify `UNNEST`; `@embed_column` macro; end-to-end
-  `INSERT INTO vecs SELECT @embed_column(ks, …)` then brute-force `VECTOR_DISTANCE` top-K.
+- **Phase 0 (de-risk, cgo-free, no model):** `VECTORIZE_BATCH` with `{"fake":true}` + native
+  `http.post`; verify `UNNEST`; `@vectorize_column` macro; end-to-end
+  `INSERT INTO vecs SELECT @vectorize_column(ks, …)` then brute-force `VECTOR_DISTANCE` top-K.
   Vectors as plain SQL++ float64 arrays first (correctness), separate from columnar packing.
 - **Phase 1:** real model via `http.post` (ollama/nomic-embed-text); columnar float32
   vector column + native-lane distance; caching (config-address naming + skip-if-present);
