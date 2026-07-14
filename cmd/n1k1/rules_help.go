@@ -208,7 +208,4 @@ possible without it) -- e.g. do NOT gate an ABSENCE query ("... HAVING COUNT(...
 on the thing it counts. A skipped query is reported ("gated: N skipped"), never silent;
 a gate that errors runs the query anyway (safe). Gate literals are pushed to the probe's
 scan, so a discriminating gate is itself index-pruned.
-
-Non-interactive (CI / agent):
-  n1k1 -c '.multi run --queries ./my-queries --bind ./manifest' <data-dir>
 `

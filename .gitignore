@@ -16,7 +16,7 @@ tmp
 # (data.bolt, bleve/, zone-maps, manifests) are regenerable -- ignore them at any
 # depth. catalog.json is the declared source of truth, so keep it trackable.
 **/.n1k1/*
-!**/.n1k1/catalog.json
+**/.sql++/*
 
 # n1k1 WebAssembly demo build outputs (regenerate with web/wasm/build.sh)
 /web/n1k1.wasm

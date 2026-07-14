@@ -150,7 +150,4 @@ ANNOTATED EXAMPLE (myapp.log lines: "<RFC3339> <LEVEL> <node> <msg>")
 
 Golden examples: an "examples" array ({in: "<sample file text>", out: [rows]}) both
 documents a recipe and golden-tests it -- run with  .extensions test [name].
-
-Non-interactive (CI / agent):
-  n1k1 -ext ./extractors -c "SELECT COUNT(*) FROM myapp" <data-dir>
 `

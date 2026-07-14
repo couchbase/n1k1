@@ -216,11 +216,11 @@ Example -- the whole of a "recent.macro.js" (keeps rows at/after a time):
   var macro = {
     name: "recent",
     params: [ { name: "src",   required: true },   // keyspace / subquery
-              { name: "ts",    default: "ts" },     // the time column
-              { name: "since", required: true } ]   // lower bound (raw SQL++)
+              { name: "ts",    default: "ts" },    // the time column
+              { name: "since", required: true } ]  // lower bound (raw SQL++)
   };
   function expand(args, ctx) {
-    var s = ctx.gensym("r");                        // unique alias (hygiene)
+    var s = ctx.gensym("r");                       // unique alias (hygiene)
     return "(SELECT " + s + ".* FROM " + args.src + " AS " + s +
            " WHERE " + s + "." + args.ts + " >= (" + args.since + "))";
   }

@@ -131,7 +131,7 @@ func ServiceRequestEx(p plan.Operator,
 	vars.Ctx.ExecOp(op, vars, yieldVals, yieldErr, "", "")
 
 	if debug {
-		fmt.Printf("  n1k1 err: %v\n", err)
+		fmt.Printf("  glue/ServiceRequestEx err: %v\n", err)
 	}
 
 	ctx.CloseResults()
