@@ -1,12 +1,20 @@
 // vectorize_field.macro.js — batch-embed a text field of a keyspace into per-row
-// {id, text, vec}, ready for `INSERT INTO vecs SELECT ...` and VECTOR_DISTANCE search
-// (DESIGN-vectors.md Phase 0). Sugars the explicit GROUP-BY-page batching wall:
+// {id, text, vec}, ready to materialize as a searchable vec keyspace (DESIGN-vectors.md).
+// Sugars the explicit GROUP-BY-page batching wall so you don't hand-write it:
 //
+//   -- ingest (JSON Lines): embed `line`, materialize a vec keyspace as .jsonl
 //   INSERT INTO `vecs/data.jsonl` (KEY UUID(), VALUE self)
 //   SELECT r.* FROM @vectorize_field(logs, field => line, id => META().id,
 //                                    batch => 256, opts => {"dim":8}) AS r;
-//   -- then: WITH q AS (VECTORIZE_BATCH([{"t":"disk full"}],{"text":"t","dim":8})[0].vec)
-//   --       SELECT v.id FROM vecs v ORDER BY VECTOR_DISTANCE(v.vec, q, "cosine") ASC LIMIT 5;
+//   -- ingest (COLUMNAR Parquet): same call, a .parquet target -> a list<float32>
+//   -- column the vectorized VECTOR_DISTANCE path reads (keep a numeric `id`)
+//   INSERT INTO `vecs/data.parquet` (KEY UUID(), VALUE self)
+//   SELECT r.id, r.vec FROM @vectorize_field(logs, field => line, id => id,
+//                                            batch => 256, opts => {"dim":8}) AS r;
+//   -- search: top-5 nearest. Over .parquet, a LITERAL query vector + a numeric id kept
+//   -- takes the columnar fast path (DESIGN-vectors.md); over .jsonl it's the row lane.
+//   SELECT v.id, VECTOR_DISTANCE(v.vec, [/*8 floats*/], "cosine") AS d
+//     FROM vecs v ORDER BY d ASC LIMIT 5;
 //
 // It pages rows via ROW_NUMBER (FLOOR((rn-1)/batch) -> 0-based pages), ARRAY_AGGs each
 // page's {id,text}, calls VECTORIZE_BATCH once per page (one model round-trip, never per
@@ -14,7 +22,11 @@
 // VECTORIZE_BATCH (dim/endpoint/model/fake); text/into are forced via OBJECT_PUT. No
 // model/network with the default (empty endpoint) -> deterministic fake vectors.
 //
-// Wrap the call in FROM with an alias (AS r), like any subquery. See `.macro help`.
+// The target file's extension picks the format: `.parquet` writes the columnar
+// list<float32> file the vectorized VECTOR_DISTANCE path reads (a numeric `id` stays a
+// numeric column, so keep the search's kept column numeric for the columnar fast path);
+// `.jsonl` writes JSON Lines. Wrap the call in FROM with an alias (AS r), like any
+// subquery. See `.macro help`.
 
 var macro = {
   name: "vectorize_field",
