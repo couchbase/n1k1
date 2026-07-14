@@ -148,8 +148,8 @@ ANNOTATED EXAMPLE (myapp.log lines: "<RFC3339> <LEVEL> <node> <msg>")
   }
   # then:  SELECT a.node, a.msg FROM myapp a WHERE a.` + "`level`" + ` = "ERROR" ORDER BY a.ts
 
-Shipped examples: extensions/extract_recipes/apache_access.extract.js (line + Go layout)
-and couchbase_log.extract.js (section framing). Struct source of truth: records/spec.go.
+Golden examples: an "examples" array ({in: "<sample file text>", out: [rows]}) both
+documents a recipe and golden-tests it -- run with  .extensions test [name].
 
 Non-interactive (CI / agent):
   n1k1 -ext ./extractors -c "SELECT COUNT(*) FROM myapp" <data-dir>
