@@ -7,11 +7,11 @@
 //   SELECT r.* FROM @vectorize_field(logs, field => line, id => META().id,
 //                                    batch => 256, opts => {"dim":8}) AS r;
 //   -- ingest (COLUMNAR Parquet): same call, a .parquet target -> a list<float32>
-//   -- column the vectorized VECTOR_DISTANCE path reads (keep a numeric `id`)
+//   -- column the vectorized VECTOR_DISTANCE path reads (keep a matching `id`)
 //   INSERT INTO `vecs/data.parquet` (KEY UUID(), VALUE self)
 //   SELECT r.id, r.vec FROM @vectorize_field(logs, field => line, id => id,
 //                                            batch => 256, opts => {"dim":8}) AS r;
-//   -- search: top-5 nearest. Over .parquet with a numeric id kept, this takes the
+//   -- search: top-5 nearest. Over .parquet with a matching doc id, this takes the
 //   -- columnar fast path (DESIGN-vectors.md); over .jsonl it's the row lane.
 //   SELECT v.id, VECTOR_DISTANCE(v.vec, [/*8 floats*/], "cosine") AS d
 //     FROM vecs v ORDER BY d ASC LIMIT 5;
@@ -28,9 +28,8 @@
 // model/network with the default (empty endpoint) -> deterministic fake vectors.
 //
 // The target file's extension picks the format: `.parquet` writes the columnar
-// list<float32> file the vectorized VECTOR_DISTANCE path reads (a numeric `id` stays a
-// numeric column, so keep the search's kept column numeric for the columnar fast path);
-// `.jsonl` writes JSON Lines. Wrap the call in FROM with an alias (AS r), like any
+// list<float32> file the vectorized VECTOR_DISTANCE path reads; `.jsonl` writes
+// JSON Lines. Wrap the call in FROM with an alias (AS r), like any
 // subquery. See `.macro help`.
 
 var macro = {
