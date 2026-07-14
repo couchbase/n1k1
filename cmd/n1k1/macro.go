@@ -20,10 +20,10 @@ import (
 	"github.com/couchbase/n1k1/glue"
 )
 
-// cmdMacro dispatches the ".macro [list | help [<name>] | expand <statement>]"
-// dot-command: pre-parse SQL++ macros (DESIGN-extensions.md "Macros"). Macros
-// themselves load via -ext / .extensions (a "*.macro.js" file). No argument (or
-// "list") lists the loaded macros.
+// cmdMacro dispatches ".macro [list | help [<name>] | show <name> | expand <statement>]":
+// pre-parse SQL++ macros. Some macros ship built-in (embedded in the binary, registered
+// at startup); more load from "*.macro.js" files via -ext / .extensions. No argument (or
+// "list") lists all loaded macros.
 func (c *cli) cmdMacro(arg string) {
 	arg = strings.TrimSpace(arg)
 	sub := arg
@@ -36,10 +36,12 @@ func (c *cli) cmdMacro(arg string) {
 		c.macroList()
 	case "help":
 		c.macroHelp(rest)
+	case "show", "source", "cat":
+		c.macroShow(rest)
 	case "expand":
 		c.macroExpand(rest)
 	default:
-		fmt.Fprintln(c.stderr, "usage: .macro [list | help [<name>] | expand <statement>]")
+		fmt.Fprintln(c.stderr, "usage: .macro [list | help [<name>] | show <name> | expand <statement>]")
 	}
 }
 
@@ -49,9 +51,37 @@ func (c *cli) macroList() {
 		fmt.Fprintln(c.stderr, "no macros loaded (load a *.macro.js via -ext or .extensions)")
 		return
 	}
-	fmt.Fprintf(c.stderr, "%d loaded macro(s):\n", len(macros))
+	fmt.Fprintf(c.stderr, "%d loaded macro(s):  (.macro show <name> for the source)\n", len(macros))
 	for _, m := range macros {
-		fmt.Fprintf(c.stderr, "  @%-18s %s\n", m.Name+"("+macroParamList(m.Params)+")", m.Source)
+		tag := ""
+		if builtinMacroNames[m.Name] {
+			tag = c.style.Dim("  [built-in]")
+		}
+		fmt.Fprintf(c.stderr, "  @%-24s %s%s\n", m.Name+"("+macroParamList(m.Params)+")", macroBlurb(m.Source), tag)
+	}
+}
+
+// macroInfoHeader prints the "@name(params) [built-in]" line, the one-line blurb, and
+// each parameter's required/optional + default -- shared by help and show.
+func (c *cli) macroInfoHeader(m glue.MacroInfo) {
+	tag := ""
+	if builtinMacroNames[m.Name] {
+		tag = "  [built-in]"
+	}
+	fmt.Fprintf(c.stderr, "@%s(%s)%s\n", m.Name, macroParamList(m.Params), tag)
+	if b := macroBlurb(m.Source); b != "" {
+		fmt.Fprintf(c.stderr, "  %s\n", b)
+	}
+	for _, p := range m.Params {
+		req := "optional"
+		if p.Required {
+			req = "required"
+		}
+		def := ""
+		if p.Default != nil {
+			def = fmt.Sprintf(", default %v", p.Default)
+		}
+		fmt.Fprintf(c.stderr, "  %-16s %s%s\n", p.Name, req, def)
 	}
 }
 
@@ -63,23 +93,63 @@ func (c *cli) macroHelp(name string) {
 	name = strings.TrimPrefix(strings.ToLower(strings.TrimSpace(name)), "@")
 	for _, m := range glue.ListMacros() {
 		if m.Name == name {
-			fmt.Fprintf(c.stderr, "@%s(%s)\n", m.Name, macroParamList(m.Params))
-			fmt.Fprintf(c.stderr, "  source: %s\n", m.Source)
-			for _, p := range m.Params {
-				req := "optional"
-				if p.Required {
-					req = "required"
-				}
-				def := ""
-				if p.Default != nil {
-					def = fmt.Sprintf(", default %v", p.Default)
-				}
-				fmt.Fprintf(c.stderr, "  %-16s %s%s\n", p.Name, req, def)
-			}
+			c.macroInfoHeader(m)
+			fmt.Fprintln(c.stderr, c.style.Dim("  (.macro show "+name+" for the full source)"))
 			return
 		}
 	}
 	fmt.Fprintf(c.stderr, "no such macro @%s -- try .macro list\n", name)
+}
+
+// macroShow prints a macro's header/params plus its full source code -- so a user can
+// read exactly what @name(...) does and adapt it. The source goes to stdout (pipeable);
+// the header to stderr.
+func (c *cli) macroShow(name string) {
+	if name == "" {
+		fmt.Fprintln(c.stderr, "usage: .macro show <name>")
+		return
+	}
+	name = strings.TrimPrefix(strings.ToLower(strings.TrimSpace(name)), "@")
+	for _, m := range glue.ListMacros() {
+		if m.Name == name {
+			c.macroInfoHeader(m)
+			fmt.Fprintln(c.stderr, "\nsource:")
+			fmt.Fprintln(c.out, m.Source)
+			return
+		}
+	}
+	fmt.Fprintf(c.stderr, "no such macro @%s -- try .macro list\n", name)
+}
+
+// macroBlurb extracts a macro's one-line description: the first line of its source
+// comment after the "<name>.macro.js — " prefix. "" if the source has no leading comment.
+func macroBlurb(source string) string {
+	for _, ln := range strings.Split(source, "\n") {
+		t := strings.TrimSpace(ln)
+		if t == "" {
+			continue
+		}
+		if !strings.HasPrefix(t, "//") {
+			break // first real code line -> no doc comment
+		}
+		t = strings.TrimSpace(strings.TrimPrefix(t, "//"))
+		for _, sep := range []string{" — ", " -- ", " - "} {
+			if i := strings.Index(t, sep); i >= 0 && strings.Contains(t[:i], ".macro.js") {
+				t = strings.TrimSpace(t[i+len(sep):])
+				break
+			}
+		}
+		return truncateRunes(t, 66)
+	}
+	return ""
+}
+
+func truncateRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n-1]) + "…"
 }
 
 func (c *cli) macroExpand(stmt string) {
@@ -116,13 +186,14 @@ func macroParamList(params []glue.MacroParam) string {
 const macroHelpText = `
 .macro -- pre-parse and transform SQL++
 
-A macro is user-authored JS (a "*.macro.js" file, loaded via -ext / .extensions)
-that turns a compact @name(...) call into generated SQL++, expanded BEFORE the
-SQL++ parser.
+A macro turns a compact @name(...) call into generated SQL++, expanded BEFORE the
+SQL++ parser. Some macros ship built-in with n1k1 (e.g. @vectorize_field); more load
+from your own "*.macro.js" files via -ext / .extensions.
 
-  .macro                       list loaded macros
+  .macro                       list loaded macros (built-in + your own)
   .macro list                  same
   .macro help [<name>]         this help, or one macro's parameters
+  .macro show <name>           print a macro's full source code (read/adapt it)
   .macro expand <statement>    print the fully-expanded SQL++ (debugging)
 
 Invocation syntax (in any SQL++ statement):

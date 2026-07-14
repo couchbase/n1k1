@@ -49,6 +49,7 @@ var helpTopics = []helpTopic{
 	{name: "quoting", blurb: "backticks vs the shell vs dot-command args"},
 	{name: "reserved-words", blurb: "the SQL++ keywords you must backtick as identifiers (full list)"},
 	{name: "temp-keyspaces", blurb: "CREATE TEMP KEYSPACE such as for staged analysis pipelines"},
+	{name: "vectors", blurb: "semantic / similarity search: embed text, store vectors, find nearest"},
 }
 
 // cmdHelp implements `.help [<topic> [<arg>]]`.
@@ -82,6 +83,8 @@ func (c *cli) cmdHelp(arg string) {
 		c.helpReserved(strings.TrimSpace(rest))
 	case "temp-keyspaces", "temp-keyspace", "temp", "materialize":
 		c.helpTempKeyspaces()
+	case "vectors", "vector", "embedding", "embeddings", "search":
+		c.helpVectors()
 	// Command guides: delegate to the SAME help the command-scoped form prints, so
 	// `.help multi` and `.multi help` are one guide reached two ways.
 	case "multi":
@@ -152,6 +155,59 @@ func (c *cli) printWordGrid(words []string) {
 			b.Reset()
 		}
 	}
+}
+
+func (c *cli) helpVectors() {
+	c.hline("vectors — semantic / similarity search over your data")
+	c.hline("")
+	c.hline("Turn text into embedding vectors, store them, and find the nearest matches to a")
+	c.hline("query. Three pieces:")
+	c.hline("")
+	c.hline("  VECTORIZE_BATCH(array, opts)   embed an array of {text} objects into vectors,")
+	c.hline("                                 one model call per batch. Offline deterministic")
+	c.hline("                                 \"fake\" vectors by default (no model); point opts")
+	c.hline("                                 at a real model to embed for real.")
+	c.hline("  VECTOR_DISTANCE(a, b, metric)  distance between two vectors -- metric is")
+	c.hline("                                 \"cosine\", \"l2\", \"l2_squared\", or \"dot\". Smaller =")
+	c.hline("                                 closer, so ORDER BY VECTOR_DISTANCE(...) ASC")
+	c.hline("                                 LIMIT k gives the k nearest.")
+	c.hline("  @vectorize_field(...)          built-in macro that embeds a text field of a")
+	c.hline("                                 keyspace in batches (.macro show vectorize_field).")
+	c.hline("")
+	c.hline("Quick try — rank a tiny corpus against a query; no model, no files:")
+	c.hline("")
+	c.hline("  WITH docs AS (VECTORIZE_BATCH([{\"id\":1,\"text\":\"the disk is full\"},")
+	c.hline("                                {\"id\":2,\"text\":\"sunny weather today\"},")
+	c.hline("                                {\"id\":3,\"text\":\"no space left on device\"}],")
+	c.hline("                               {\"text\":\"text\",\"dim\":16})),")
+	c.hline("       q AS (VECTORIZE_BATCH([{\"text\":\"out of disk space\"}],{\"text\":\"text\",\"dim\":16})[0].vec)")
+	c.hline("  SELECT d.id, d.text, ROUND(VECTOR_DISTANCE(d.vec, q, \"cosine\"), 3) AS dist")
+	c.hline("    FROM docs d ORDER BY dist ASC;")
+	c.hline("")
+	c.hline("  (fake vectors are deterministic but not meaningful; use a real model for true")
+	c.hline("  semantic matches -- same call, with an endpoint + model in opts:)")
+	c.hline("")
+	c.hline("  # once: install a local embedding server, e.g.  ollama pull nomic-embed-text")
+	c.hline("  {\"text\":\"text\",\"endpoint\":\"http://localhost:11434/api/embed\",\"model\":\"nomic-embed-text\"}")
+	c.hline("")
+	c.hline("Store once, search many — build a vector keyspace, then search it:")
+	c.hline("")
+	c.hline("  # ingest: embed a `line` field, write a Parquet vec keyspace (fast search)")
+	c.hline("  INSERT INTO `vecs/data.parquet` (KEY UUID(), VALUE self)")
+	c.hline("  SELECT r.id, r.vec FROM @vectorize_field(logs, field => line, id => id,")
+	c.hline("                         batch => 256, opts => {\"dim\":16}) AS r;")
+	c.hline("  # search: embed the query the SAME way -> the 5 nearest ids")
+	c.hline("  WITH q AS (VECTORIZE_BATCH([{\"text\":\"disk full\"}],{\"text\":\"text\",\"dim\":16})[0].vec)")
+	c.hline("  SELECT v.id, VECTOR_DISTANCE(v.vec, q, \"cosine\") AS dist")
+	c.hline("    FROM vecs v ORDER BY dist ASC LIMIT 5;")
+	c.hline("")
+	c.hline("Tips:")
+	c.hline("  - Embed the corpus and the query with the SAME model + opts, or the distances")
+	c.hline("    are meaningless.")
+	c.hline("  - Store as `.parquet` for fast search over large vector sets; `.jsonl` works too.")
+	c.hline("  - Keep a numeric id next to the vector so a search returns which rows matched,")
+	c.hline("    then fetch the full docs by id.")
+	c.hline("  - See  .macro show vectorize_field  for the ingest macro's full options.")
 }
 
 func (c *cli) helpExtensions() {

@@ -181,6 +181,12 @@ func main() {
 	scanOpts.Meta = mm
 	glue.ScanWalkOptions = scanOpts
 
+	// Built-in macros (shipped in the binary) register first so they're always available;
+	// a user -ext load of a same-named macro overrides them below.
+	for _, e := range registerBuiltinMacros() {
+		fmt.Fprintf(os.Stderr, "%s: built-in macro: %v\n", prog, e)
+	}
+
 	// Register extensions (JS UDFs + *.extract.js recipes) BEFORE opening the store:
 	// resolveSession -> FileStore decides which files become keyspaces, and a
 	// recipe-matched file is auto-exposed as a keyspace (glue/flat.go), so the recipes

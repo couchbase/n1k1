@@ -96,9 +96,11 @@ func RegisterJSMacro(name, source string) error {
 	recordExtExamples("macro", name, readJSExamples(rt, "macro")) // inline goldens (ext_examples.go).
 
 	params := meta.Params
+	// Keep the full JS source in the registry so `.macro show` can print it (and callers
+	// can inspect it); `.macro list`/`help` render a short blurb from it, not the raw text.
 	RegisterMacro(name, params, func(a *MacroArgs, c *MacroCtx) (string, error) {
 		return runJSMacroExpand(prog, name, params, a, c)
-	}, "(inline)", jsSourceHash(source))
+	}, source, jsSourceHash(source))
 	base.Logf(1, "glue/macro", "loaded JS macro, name: %s, params: %d", name, len(params))
 	return nil
 }
