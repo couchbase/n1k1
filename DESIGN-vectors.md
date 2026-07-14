@@ -106,6 +106,41 @@ core is real work: (a) read support for a float32 vec column as a raw contiguous
 native ExprVectorDistance kernel is the row-lane analog — the byte→float32 discipline
 carries over); (c) the `INSERT INTO parquet` writer to produce the files.
 
+**Columnar kernel + real-Parquet benchmark BUILT & MEASURED — prize confirmed ~15–29×.**
+`base.VectorDistanceVFloat32` (base/vector_v.go) is the vectorized byte-lane core — the
+`sum_v_float64` analog, mapping N packed float32 vectors + a query to N distances. It
+reads the column via `base.VecFloat32`, an `unsafe` zero-copy reinterpret of the borrowed
+little-endian arrow buffer as `[]float32` (no copy, aliases the page — the borrow the user
+asked for; LE host assumed). Storage is float32 (the win: no `strconv.ParseFloat`) but the
+accumulation promotes to float64, so results are BIT-IDENTICAL to the scalar/native float64
+path on the same values (TestVectorDistanceVFloat32MatchesVals). Measured over a REAL
+Parquet round-trip (records/vector_parquet_test.go, 100K × 384, cosine top-10):
+
+| path | time | vs |
+|---|---|---|
+| jsonl + boxed | 11.2s | — |
+| jsonl + native | 6.8s | 1.6× |
+| **columnar float32 / Parquet** | **~0.4–0.5s** | **~15–29×** |
+
+The distance math is negligible (the 60ms ceiling, hidden under I/O); the new floor is
+Parquet decode (~0.4s for a 163MB file), NOT the JSON parse. So columnar delivers the win
+and the bottleneck has moved to the reader.
+
+**Two hard facts for the reader/writer (learned the hard way):** (1) Parquet has NO
+fixed-size-list type — a `FixedSizeList<float32>[dim]` round-trips as a variable
+`List<float32>` (the child float32 values stay contiguous, offsets `0,dim,2dim,…`, so the
+zero-copy child-buffer borrow still works). (2) The list ELEMENT must be declared
+NON-nullable (`arrow.FixedSizeListOfNonNullable`), or the parquet def-level round-trip marks
+every child value NULL and the whole column reads back as nulls.
+
+**Still to build (the query-integration push):** the current `NextColumns` yields fixed
+8-byte scalar columns; a vec column is `dim*4` bytes/row, so the reader needs a list-column
+path that hands back the contiguous float32 child buffer + `dim`. And the executor: the
+`agg-columnar` path is a REDUCE (column→one row); a top-K `ORDER BY VECTOR_DISTANCE(...)
+LIMIT k` is a per-row MAP→order→limit — a new columnar op, the biggest remaining piece.
+The kernel (b) and the borrow are done and measured; (a) reader list-column support and the
+map/order/limit wiring, plus the `INSERT INTO parquet` writer (c), remain.
+
 **Boxing / "recycled box" (Phase 1, not Phase 0).** Phase 0 goes through cbq's *boxed*
 evaluator: each row parses its stored vector field into a `value.Value` array, and
 `vectorDistance` touches ~`dim` boxed `value.Value` elements per row (`.Index(i)` →

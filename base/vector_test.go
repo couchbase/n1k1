@@ -83,3 +83,90 @@ func TestVectorDistanceVals(t *testing.T) {
 	}
 }
 
+// TestVectorDistanceVFloat32MatchesVals is the correctness anchor for the columnar
+// float32 kernel: on the SAME float32-rounded values, VectorDistanceVFloat32 must
+// produce bit-identical distances to the scalar/native float64 core
+// (VectorDistanceVals) -- same float64 promotion, same op order. So the columnar path
+// is a drop-in whose only difference from the row path is float32 STORAGE (the win),
+// not the math. We round every input to float32 first so both sides compute over
+// identical values (the storage rounding is not a divergence, it's the point).
+func TestVectorDistanceVFloat32MatchesVals(t *testing.T) {
+	const dim, rows = 7, 40
+	// A small deterministic LCG -> reproducible pseudo-random float32s in [-1,1).
+	seed := uint64(0x9e3779b97f4a7c15)
+	nextF32 := func() float32 {
+		seed = seed*6364136223846793005 + 1442695040888963407
+		return float32(int64(seed>>11))/float32(1<<52)*2 - 1
+	}
+
+	col := make([]float32, rows*dim)
+	for i := range col {
+		col[i] = nextF32()
+	}
+	q := make([]float64, dim)
+	for i := range q {
+		q[i] = float64(nextF32()) // already a float32 value, so both paths agree
+	}
+
+	// f32arr renders a []float32 slice as a JSON number array for VectorDistanceVals;
+	// float64(float32) is exactly representable so it round-trips through strconv.
+	f32arr := func(v []float32) Val {
+		out := []byte{'['}
+		for i, x := range v {
+			if i > 0 {
+				out = append(out, ',')
+			}
+			out = strconv.AppendFloat(out, float64(x), 'g', -1, 64)
+		}
+		return Val(append(out, ']'))
+	}
+	qf32 := make([]float32, dim)
+	for i := range q {
+		qf32[i] = float32(q[i])
+	}
+	qArr := f32arr(qf32)
+
+	out := make([]float64, rows)
+	for _, metric := range []string{"l2", "euclidean", "l2_squared", "dot", "cosine"} {
+		VectorDistanceVFloat32(out, col, q, rows, dim, metric)
+		for r := 0; r < rows; r++ {
+			want := vdist(t, string(f32arr(col[r*dim:r*dim+dim])), string(qArr), metric)
+			var got Val
+			if math.IsNaN(out[r]) {
+				got = ValNull // NaN sentinel maps to N1QL NULL
+			} else {
+				got = Val(strconv.AppendFloat(nil, out[r], 'f', -1, 64))
+			}
+			if string(got) != string(want) {
+				t.Fatalf("%s row %d: columnar %q != scalar %q", metric, r, got, want)
+			}
+		}
+	}
+}
+
+// TestVecFloat32Borrow: the unsafe reinterpret is a zero-copy view -- it aliases the
+// backing bytes (mutating the bytes shows through, and cap tracks the byte length).
+func TestVecFloat32Borrow(t *testing.T) {
+	b := make([]byte, 3*4)
+	src := []float32{1.5, -2.25, 3.75}
+	for i, f := range src {
+		bits := math.Float32bits(f)
+		b[i*4], b[i*4+1], b[i*4+2], b[i*4+3] = byte(bits), byte(bits>>8), byte(bits>>16), byte(bits>>24)
+	}
+	v := VecFloat32(b)
+	if len(v) != 3 {
+		t.Fatalf("len = %d, want 3", len(v))
+	}
+	for i, f := range src {
+		if v[i] != f {
+			t.Errorf("v[%d] = %v, want %v", i, v[i], f)
+		}
+	}
+	// Prove the borrow: rewrite the first element's bytes, the view reflects it.
+	bits := math.Float32bits(9.0)
+	b[0], b[1], b[2], b[3] = byte(bits), byte(bits>>8), byte(bits>>16), byte(bits>>24)
+	if v[0] != 9.0 {
+		t.Errorf("borrow broken: v[0] = %v after byte rewrite, want 9", v[0])
+	}
+}
+
