@@ -227,6 +227,57 @@ SELECT u.id, u.vec FROM (
   or `_meta.pos` for extracted docs. So every existing-engine piece of this shape is
   proven — the only new code is `VECTORIZE_BATCH` itself.
 
+### Trying it with a real local model (ollama) — copy & paste
+
+Verified end-to-end 2026-07-14 against a real model (not in `make test-all` — no ollama
+dependency in CI; the `{"fake":true}` default covers the automated tests). One-time setup:
+
+```sh
+ollama pull nomic-embed-text     # a 274 MB embedding model; ollama serves on :11434
+```
+
+Self-contained semantic search — embed a tiny corpus + the query the SAME way, rank by
+cosine (no files needed; paste into `n1k1 -c '<sql>'` or the REPL):
+
+```sql
+WITH corpus AS (VECTORIZE_BATCH(
+       [{"id":1,"text":"the disk is full, free up space"},
+        {"id":2,"text":"the weather today is sunny and warm"},
+        {"id":3,"text":"error: no space left on device"}],
+       {"text":"text","endpoint":"http://localhost:11434/api/embed","model":"nomic-embed-text"})),
+     q AS (VECTORIZE_BATCH([{"text":"hard drive out of space"}],
+       {"text":"text","endpoint":"http://localhost:11434/api/embed","model":"nomic-embed-text"})[0].vec)
+SELECT c.id, c.text, ROUND(VECTOR_DISTANCE(c.vec, q, "cosine"), 4) AS dist
+  FROM corpus c ORDER BY dist ASC;
+```
+```
+{"id":1,"text":"the disk is full, free up space","dist":0.2656}      <- nearest
+{"id":3,"text":"error: no space left on device","dist":0.3497}
+{"id":2,"text":"the weather today is sunny and warm","dist":0.6201}  <- unrelated, farthest
+```
+nomic-embed-text returns **768-dim** vectors; the disk-space docs beat the weather doc,
+i.e. real semantic ranking, cgo-free (pure-Go `net/http`).
+
+Persistent + columnar: ingest a text keyspace into a Parquet vec file, then search it (the
+`@vectorize_field` macro sugars the batching wall; the `endpoint`/`model` flow through
+`opts`):
+
+```sql
+-- ingest: embed `line`, materialize a columnar Parquet vec keyspace (keep a numeric id)
+INSERT INTO `vecs/data.parquet` (KEY UUID(), VALUE self)
+SELECT r.id, r.vec
+  FROM @vectorize_field(logs, field => line, id => id, batch => 256,
+       opts => {"endpoint":"http://localhost:11434/api/embed","model":"nomic-embed-text"}) AS r;
+-- search: embed the query the same way -> top-5 (columnar fast path; query vec computed once)
+WITH q AS (VECTORIZE_BATCH([{"text":"disk full"}],
+       {"text":"text","endpoint":"http://localhost:11434/api/embed","model":"nomic-embed-text"})[0].vec)
+SELECT v.id, VECTOR_DISTANCE(v.vec, q, "cosine") AS d
+  FROM vecs v ORDER BY d ASC LIMIT 5;
+```
+(Over `.parquet`, keeping a numeric `id` + the once-computed `q` takes the columnar fast
+path; add `v.text` to the SELECT to see the matched text — that projects a string column, so
+it runs the row lane.)
+
 ## Vector element types (float32 / float64 / int8·int16 quantized / float16)
 
 Models emit different numeric types: float32 (typical), float64, or **quantized**
