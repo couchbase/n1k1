@@ -40,15 +40,15 @@ type helpTopic struct {
 // the list is scannable.
 var helpTopics = []helpTopic{
 	{name: "extensions", blurb: "user functions (*.js UDFs/aggregates/sources) loaded via -ext"},
+	{name: "extract", blurb: "*.extract.js extensions that frame files into rows", alias: ".extract help"},
+	{name: "index", blurb: "secondary/FTS indexes: the catalog + .index commands", alias: ".index help"},
 	{name: "keyspaces", blurb: "how files/dirs become keyspaces; dotted names"},
+	{name: "macro", blurb: "*.macro.js macros that expand @name(...) into SQL++", alias: ".macro help"},
 	{name: "meta", blurb: "the _meta record fields + external follow-up"},
+	{name: "multi", blurb: "authoring & running a multi-query pack of *.sql++ queries (shared execution)", alias: ".multi help"},
 	{name: "quoting", blurb: "backticks vs the shell vs dot-command args"},
 	{name: "reserved-words", blurb: "the SQL++ keywords you must backtick as identifiers (full list)"},
-	{name: "temp-keyspaces", blurb: "CREATE TEMP KEYSPACE staged pipelines"},
-	{name: "extract", blurb: "authoring *.extract.js recipes that frame files into rows", alias: ".extract help"},
-	{name: "index", blurb: "secondary/FTS indexes: the catalog + .index commands", alias: ".index help"},
-	{name: "macro", blurb: "authoring *.macro.js macros that expand @name(...) into SQL++", alias: ".macro help"},
-	{name: "multi", blurb: "authoring & running a multi-query pack of SQL++ queries (shared execution)", alias: ".multi help"},
+	{name: "temp-keyspaces", blurb: "CREATE TEMP KEYSPACE such as for staged analysis pipelines"},
 }
 
 // cmdHelp implements `.help [<topic> [<arg>]]`.
@@ -225,12 +225,12 @@ func (c *cli) helpMeta() {
 func (c *cli) helpTempKeyspaces() {
 	c.hline("temp-keyspaces — keep a query's results as a queryable keyspace for later statements")
 	c.hline("")
-	c.hline("  CREATE [OR REPLACE] TEMP KEYSPACE <name> AS <select>   -- session-scoped, in-memory")
+	c.hline("  CREATE [OR REPLACE] TEMP KEYSPACE <name> AS <select> -- session-scoped, in-memory")
 	c.hline("                                                          (spills to disk if large)")
 	c.hline("  DROP TEMP KEYSPACE [IF EXISTS] <name>")
 	c.hline("")
 	c.hline("Later statements SELECT ... FROM <name> — JOINable, aggregable, and chainable (a")
 	c.hline("temp keyspace built FROM other temp keyspaces). The staged-analysis pattern: scan")
-	c.hline("the big bundle once into small finding keyspaces, then correlate them, all in one")
-	c.hline("session and one dialect. (File-backed sibling: INSERT INTO `<name>/data.jsonl` ... SELECT.)")
+	c.hline("big files once into small finding keyspaces, then correlate them, all in one")
+	c.hline("session. (File-backed sibling: INSERT INTO `<name>/data.jsonl` ... SELECT.)")
 }
