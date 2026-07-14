@@ -96,9 +96,11 @@ SELECT u.id, u.vec FROM (
 - `ARRAY_AGG` of `{id,text}` **objects** (not two parallel arrays) keeps id/text/vec glued.
 - Page size (256) is a user-controlled literal. Last page = leftover rows.
 - **`@vectorize_field(ks, field => line, model => "…", batch => 256)`** macro sugars this wall.
-- **Load-bearing, verify first:** (a) `UNNEST` support (NEST is unsupported in n1k1, but
-  UNNEST is separate — confirm, or wire it); (b) a stable row ordinal to page by
-  (`_meta.pos`, else `ROW_NUMBER()`).
+- **Load-bearing plumbing — VERIFIED (2026):** `UNNEST` works over a *computed*
+  `ARRAY_AGG` array (not just a stored field); `GROUP BY page → ARRAY_AGG({id,…}) → UNNEST`
+  round-trips; paging via `ROW_NUMBER()` works (use `FLOOR((rn-1)/N)` for 0-based pages),
+  or `_meta.pos` for extracted docs. So every existing-engine piece of this shape is
+  proven — the only new code is `VECTORIZE_BATCH` itself.
 
 ## Vector element types (float32 / float64 / int8·int16 quantized / float16)
 
@@ -166,9 +168,12 @@ first and covers dev/debug scale.
 
 ## Open questions
 
-1. `UNNEST` support in n1k1 (load-bearing for batch-explode).
-2. Native-lane / columnar float32 port of `vectorDistance` (Phase 1 perf).
-3. Row-ordinal for paging (`_meta.pos` vs `ROW_NUMBER()`).
-4. `INSERT INTO <file>` content-addressed skip-if-present: `.embed` command vs an
-   INSERT-handler mode.
-5. Parquet fixed-size-list encoding of a vector column (DESIGN-col).
+1. ~~`UNNEST` support~~ — **VERIFIED** (works over computed `ARRAY_AGG` arrays).
+2. ~~Row-ordinal for paging~~ — **VERIFIED** (`ROW_NUMBER()` / `_meta.pos`).
+3. ~~`INSERT INTO` skip-if-present~~ — **RESOLVED**: mode `"new"` already errors-if-exists.
+4. `VECTORIZE_BATCH` extension: the goja↔native-`http.post` host binding + the `{"fake":true}`
+   mode (the one genuinely new piece).
+5. Native-lane / columnar float32 port of `vectorDistance`, with element-type variants
+   (Phase 1 perf).
+6. Parquet fixed-size-list encoding of a vector column, incl. the element-type tag
+   (float32/int8/…) (DESIGN-col).
