@@ -149,13 +149,26 @@ column is a variable `List<float32>` with a NON-nullable element and a NULLABLE 
   row-aligned with `vec` (and any other projected fields), so a top-K result maps back to
   documents by reading `id` at the winning row indices. (The benchmark writes `{id, vec}`.)
 
-**Still to build (the query-integration push):** the current `NextColumns` yields fixed
-8-byte scalar columns; a vec column is `dim*4` bytes/row, so the reader needs a list-column
-path that hands back the contiguous float32 child buffer + `dim`. And the executor: the
-`agg-columnar` path is a REDUCE (column→one row); a top-K `ORDER BY VECTOR_DISTANCE(...)
-LIMIT k` is a per-row MAP→order→limit — a new columnar op, the biggest remaining piece.
-The kernel (b) and the borrow are done and measured; (a) reader list-column support and the
-map/order/limit wiring, plus the `INSERT INTO parquet` writer (c), remain.
+**SHIPPED (read + query + write, all end-to-end).** (a) reader: `records.VectorBatchSource`
+borrows the vec list column's contiguous float32 child + offsets + scalar side cols; (b)
+executor: the columnar map (`glue.VectorColumnarScan`) computes distances then TRANSPOSES to
+rows, so the existing row-lane `order-offset-limit` does the top-K — no new order/limit op;
+(c) the conv rewrite (`maybeVectorColumnarFuse`) fuses `project(VECTOR_DISTANCE over a
+parquet vec)+scan` into a `vector-distance-columnar` op when the query vector is a constant
+and passthroughs are provably unread; (d) the `INSERT INTO <name>.parquet` writer
+(`glue.parquetWriter`) produces the files. Also fixed a pre-existing bug: parquet projection
+pushdown dropped nested (list) columns (leaf `vec.list.element` ≠ `vec`).
+
+**Writer scope (v1).** A vector-shaped writer, not general JSON→Parquet: flat scalars
+(number→INT64/DOUBLE, string→UTF8, bool→BOOLEAN) + a numeric array→`list<float32>`. Strings
+are first-class typed UTF8 columns (`{"city":"Los Angeles"}` writes, reads, and is
+`WHERE`/`GROUP BY`-queryable). First-row-defines-schema is STRICT: the first row must carry
+every column; a later row with an extra field, a conflicting type, or a non-numeric vec
+element ERRORS (never a silent coerce/drop); a later row missing a field writes NULL.
+Complex values (nested objects, non-numeric/nested arrays) error today. *Future options
+(deferred):* Parquet's **VARIANT** logical type (a self-describing column), or **stringify**
+the complex value into a UTF8 column (queried back via the JSON functions) — neither needed
+for the vector use case (flat scalars + a vec array).
 
 **Boxing / "recycled box" (Phase 1, not Phase 0).** Phase 0 goes through cbq's *boxed*
 evaluator: each row parses its stored vector field into a `value.Value` array, and

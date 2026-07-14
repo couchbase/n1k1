@@ -29,6 +29,12 @@ package glue
 // whose type conflicts with the inferred column (a fractional number into an INT64
 // column, a non-numeric array element). Faithful or refuse -- never a silent coercion
 // or drop.
+//
+// TODO(future): widen the accepted shapes. For complex values (nested objects,
+// non-numeric/nested arrays) that error today, two options: (1) Parquet's VARIANT
+// logical type (a self-describing column), or (2) stringify the complex value into a
+// UTF8 column (queried back via the JSON functions). Both deferred -- the vector use
+// case only needs flat scalars + a numeric vec array. See DESIGN-vectors.md.
 
 import (
 	"fmt"
