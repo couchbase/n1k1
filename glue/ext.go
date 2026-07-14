@@ -56,6 +56,12 @@ func init() {
 	// cbq resolves rule_matches(...) as a scalar function and VisitExpressionScan
 	// routes a FROM rule_matches(...) through the materializing expr-scan.
 	registerRuleMatchesFunc()
+
+	// VECTORIZE_BATCH(batch, opts): batched text->vector embedding (DESIGN-vectors.md
+	// Phase 0). Always-on, no grammar change; offline/deterministic by default (only
+	// reaches the network with an explicit endpoint opt). Search rides cbq's existing
+	// pure-Go VECTOR_DISTANCE -- no registration needed for that.
+	registerVectorizeBatchFunc()
 }
 
 // ExtensionInfo describes one currently-loaded extension function (for listing).

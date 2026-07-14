@@ -1,7 +1,9 @@
 # DESIGN-vectors.md — embeddings & vector search in n1k1
 
-_Status: design / not started. Companion to DESIGN-data.md (keyspaces, extract),
-DESIGN-extensions.md (UDFs, `*.stream.js`, macros), DESIGN-col.md (columnar/SIMD)._
+_Status: **Phase 0 SHIPPED** (VECTORIZE_BATCH builtin + @vectorize_field macro +
+brute-force VECTOR_DISTANCE search; fake + real-HTTP, cgo-free). Phases 1–2 not started.
+Companion to DESIGN-data.md (keyspaces, extract), DESIGN-extensions.md (UDFs,
+`*.stream.js`, macros), DESIGN-col.md (columnar/SIMD)._
 
 ## Intent
 
@@ -222,10 +224,14 @@ first and covers dev/debug scale.
 
 ## Phased plan
 
-- **Phase 0 (de-risk, cgo-free, no model):** `VECTORIZE_BATCH` with `{"fake":true}` + native
-  `http.post`; verify `UNNEST`; `@vectorize_field` macro; end-to-end
-  `INSERT INTO vecs SELECT @vectorize_field(ks, …)` then brute-force `VECTOR_DISTANCE` top-K.
-  Vectors as plain SQL++ float64 arrays first (correctness), separate from columnar packing.
+- **Phase 0 — DONE (de-risk, cgo-free).** `VECTORIZE_BATCH(batch, opts)` native builtin
+  (`glue/vectorize.go`): offline deterministic vectors by default, real embeddings via a
+  pure-Go `net/http` POST (ollama `/api/embed` shape) when given an `endpoint`. The
+  `@vectorize_field` macro sugars the GROUP-BY-page + `ARRAY_AGG` + `UNNEST` batching. End
+  to end verified: `INSERT INTO vecs SELECT @vectorize_field(ks, …)` then
+  `ORDER BY VECTOR_DISTANCE(v.vec, $q, "cosine") ASC LIMIT k` (query vector via a `WITH`
+  alias / param, per the static-qvec rule). Vectors are plain SQL++ float64 arrays here;
+  columnar packing is Phase 1. Tests: `glue/vectorize_test.go` (fake + a stub-HTTP endpoint).
 - **Phase 1:** real model via `http.post` (ollama/nomic-embed-text); columnar float32
   vector column + native-lane distance; caching (config-address naming + skip-if-present);
   `CONTENT_HASH()` UDF.
