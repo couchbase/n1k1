@@ -126,6 +126,20 @@ element type. NOTE: a properly quantized model often ships a **scale/offset**
 kernel — a Phase-1+ nuance (raw-integer distance preserves NN *ranking* well enough for a
 first cut, so it doesn't block anything).
 
+**How the type reaches the file (it travels as METADATA, not through the value layer).**
+SQL++/JSON has no int8/float16 — a vector rides the value layer as an array of
+*float64-boxed numbers*, so the element type cannot flow as a Go typed slice through the
+query. `VECTORIZE_BATCH` is the only component that saw the model's response, so it
+**reports `dtype` (+ `dim`, + `scale`/`offset` for quantized models) in its return
+envelope**; the columnar/Parquet writer reads that and packs the column in the declared
+type, down-casting the float64-boxed numbers at write (safe — the model already produced
+in-range values). To *preserve* quantization, `VECTORIZE_BATCH` must emit the **raw integer
+codes + scale/offset**, not dequantized floats, or the compact form is lost before the
+writer sees it. Do **not** infer the type from values (a float model with integer-valued
+outputs would be mis-typed) — use the reported `dtype` or an explicit INSERT/macro option.
+(A jsonl Phase-0 side-file is text JSON and can't hold compact types at all; native packing
+is inherently a Phase-1 columnar/Parquet concern.)
+
 ## Storage & caching
 
 - **Side-file:** materialize vectors as a columnar/Parquet keyspace (fixed-width
@@ -180,6 +194,31 @@ first and covers dev/debug scale.
   `CONTENT_HASH()` UDF.
 - **Phase 2:** remote-source ingest (S3/Box/Drive/HF → local vector side-file); then the
   ANN-index cgo decision, only if N demands.
+
+## Future: signal-preserving preprocessing (log templating / dedup)
+
+Raw log lines are dominated by boilerplate (timestamps, hosts, PIDs, constant prefixes) and
+are highly *templated* — only a few tokens vary per line. Embed the raw line and the cruft
+dominates the vector: everything clusters, the real signal is lost. The standard fixes all
+fit n1k1's existing seams:
+
+- **Extract the field first (cheapest, already here).** `*.extract.js` already frames a line
+  into typed fields — embed the `msg` field, not the whole raw line, so the timestamp/level
+  boilerplate is stripped *before* embedding. This alone is most of the win.
+- **Sample → learn → transform (mirrors extract's describe/apply split).** Reuse the index
+  advisor's sampling seam to sample the keyspace, then LEARN what's low-signal — token IDF
+  (down-weight tokens present in ~every line) and/or **log-template mining** (Drain/Spell-
+  style: separate the constant template from the variable params) — and derive a
+  normalization transform applied cheaply per row before `VECTORIZE_BATCH`. Sample-once to
+  build the spec, apply per-row: the exact shape of the extract phase.
+- **Dedup by template (a compute + storage win).** A repetitive log collapses to few
+  distinct normalized lines/templates. `SELECT DISTINCT normalize(line)` → embed only the
+  distinct set (e.g. 500 templates, not 1M lines) → join each row back to its template's
+  vector. Both a quality win (the template *is* the signal) and a large cost win (embed far
+  fewer texts), riding n1k1's existing GROUP BY / DISTINCT + the compute-once/cache
+  philosophy. Optionally keep a small per-line param delta for lines whose params matter.
+
+Later-phase direction, captured here — not Phase 0.
 
 ## Prior art
 
