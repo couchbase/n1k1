@@ -516,3 +516,59 @@ func TestVectorTopKComputedQueryColumnar(t *testing.T) {
 	// -- so a genuinely per-row query vector is rejected at plan time and never reaches the
 	// hoist check; rowIndependent is just defensive insurance.)
 }
+
+// TestVectorTopKStringIdColumnar: a STRING doc id (not numeric) is a first-class kept
+// column on the columnar fast path -- the fused op fires, the ids come back as JSON
+// strings, and results match the row lane (exact-binary-fraction vecs so float32 storage
+// doesn't perturb the comparison).
+func TestVectorTopKStringIdColumnar(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "default", "src")
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const n, dim = 24, 4
+	var b strings.Builder
+	for i := 0; i < n; i++ {
+		b.WriteString(`{"id":"doc-`)
+		b.WriteString(strconv.Itoa(i))
+		b.WriteString(`","vec":[`)
+		for j := 0; j < dim; j++ {
+			if j > 0 {
+				b.WriteByte(',')
+			}
+			b.WriteString(strconv.FormatFloat(float64(i*dim+j+1)/256.0, 'g', -1, 64))
+		}
+		b.WriteString("]}\n")
+	}
+	if err := os.WriteFile(filepath.Join(src, "d.jsonl"), []byte(b.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s0, _ := glue.OpenSession(dir, "default")
+	if _, err := s0.Run("INSERT INTO `vecs/d.parquet` (KEY UUID(), VALUE self) SELECT s.id, s.vec FROM src s"); err != nil {
+		t.Fatalf("INSERT string id: %v", err)
+	}
+	sess, _ := glue.OpenSession(dir, "default")
+	q := `SELECT t.id, VECTOR_DISTANCE(t.vec, [0.125, 0.25, 0.375, 0.5], "cosine") AS d FROM vecs t ORDER BY d ASC LIMIT 5`
+
+	glue.DisableColumnarOptimize = true
+	off := runVecRows(t, sess, q)
+	glue.DisableColumnarOptimize = false
+	before := atomic.LoadInt64(&glue.VectorColumnarApplied)
+	on := runVecRows(t, sess, q)
+	fired := atomic.LoadInt64(&glue.VectorColumnarApplied) - before
+	glue.DisableColumnarOptimize = false
+
+	if fired == 0 {
+		t.Errorf("a string doc id did NOT take the columnar fast path")
+	}
+	if len(on) != 5 {
+		t.Fatalf("got %d rows, want 5: %v", len(on), on)
+	}
+	if !strings.Contains(on[0], `"id":"doc-`) {
+		t.Errorf("string id not rendered as a JSON string: %v", on[0])
+	}
+	if !reflect.DeepEqual(off, on) {
+		t.Errorf("columnar != row lane (string id)\n OFF: %v\n ON:  %v", off, on)
+	}
+}

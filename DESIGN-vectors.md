@@ -263,7 +263,7 @@ Persistent + columnar: ingest a text keyspace into a Parquet vec file, then sear
 `opts`):
 
 ```sql
--- ingest: embed `line`, materialize a columnar Parquet vec keyspace (keep a numeric id)
+-- ingest: embed `line`, materialize a columnar Parquet vec keyspace (id can be a string or number)
 INSERT INTO `vecs/data.parquet` (KEY UUID(), VALUE self)
 SELECT r.id, r.vec
   FROM @vectorize_field(logs, field => line, id => id, batch => 256,
@@ -274,9 +274,9 @@ WITH q AS (VECTORIZE_BATCH([{"text":"disk full"}],
 SELECT v.id, VECTOR_DISTANCE(v.vec, q, "cosine") AS d
   FROM vecs v ORDER BY d ASC LIMIT 5;
 ```
-(Over `.parquet`, keeping a numeric `id` + the once-computed `q` takes the columnar fast
-path; add `v.text` to the SELECT to see the matched text — that projects a string column, so
-it runs the row lane.)
+(Over `.parquet`, the once-computed `q` + kept scalar columns take the columnar fast path.
+Kept columns may be numeric OR string — a string doc `id` (or `v.text`) rides the fast path
+too; only the vec itself is the list column.)
 
 ## Vector element types (float32 / float64 / int8·int16 quantized / float16)
 

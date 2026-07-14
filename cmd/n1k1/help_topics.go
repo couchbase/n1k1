@@ -212,8 +212,8 @@ func (c *cli) helpVectors() {
 	c.hline("  - Embed the corpus and the query with the SAME model + opts, or the distances")
 	c.hline("    are meaningless.")
 	c.hline("  - Store as `.parquet` for fast search over large vector sets; `.jsonl` works too.")
-	c.hline("  - Keep an id next to the vector so queries return which rows matched,")
-	c.hline("    then fetch the full docs by id.")
+	c.hline("  - Keep an id next to the vector (a string doc key or a number -- both are fine)")
+	c.hline("    so queries return which rows matched, then fetch the full docs by id.")
 	c.hline("  - See  .macro show vectorize_field  for the ingest macro's full options.")
 }
 

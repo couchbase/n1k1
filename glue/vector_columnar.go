@@ -28,6 +28,7 @@ package glue
 // top-K executor never has to exist.
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 	"strconv"
@@ -93,7 +94,7 @@ func VectorColumnarScan(src records.VectorBatchSource, vecField string, scalarFi
 		for r := 0; r < vb.Rows; r++ {
 			row := make(base.Vals, len(scalarFields)+1)
 			for c := range scalarFields {
-				row[c] = scalarValAt(vb.Scalars[c], vb.ScalarTypes[c], vb.ScalarValids[c], r)
+				row[c] = scalarValAt(&vb, c, r)
 			}
 			if math.IsNaN(dist[r]) {
 				row[len(scalarFields)] = base.ValNull
@@ -108,15 +109,23 @@ func VectorColumnarScan(src records.VectorBatchSource, vecField string, scalarFi
 	return nil
 }
 
-// scalarValAt formats a scalar column's row-r value as a JSON Val (owning its bytes),
-// honoring the validity bitmap (a null lane -> ValNull). Reuses formatStat (columnar.go)
-// so an INT64 id renders as an integer and a DOUBLE as cbq's 'g' float, matching the
-// row lane.
-func scalarValAt(buf []byte, typ string, valid []byte, r int) base.Val {
-	if valid != nil && buf != nil && valid[r>>3]&(1<<(uint(r)&7)) == 0 {
+// scalarValAt formats scalar column c's row-r value as a JSON Val (owning its bytes),
+// honoring the validity bitmap (a null lane -> ValNull). INT64 renders as an integer,
+// DOUBLE as cbq's 'g' float (formatStat), and UTF8 as a JSON string -- matching the row
+// lane. So a string doc id is a first-class kept column on the columnar fast path.
+func scalarValAt(vb *records.VectorBatch, c, r int) base.Val {
+	if v := vb.ScalarValids[c]; v != nil && v[r>>3]&(1<<(uint(r)&7)) == 0 {
 		return base.ValNull
 	}
-	return formatStat(typ, buf[r*8:r*8+8])
+	if vb.ScalarTypes[c] == "UTF8" {
+		b, err := json.Marshal(vb.ScalarStrings[c][r])
+		if err != nil {
+			return base.ValNull
+		}
+		return base.Val(b)
+	}
+	buf := vb.Scalars[c]
+	return formatStat(vb.ScalarTypes[c], buf[r*8:r*8+8])
 }
 
 // DatastoreVectorColumnar executes the fused columnar VECTOR_DISTANCE op: it opens the

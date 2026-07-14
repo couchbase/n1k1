@@ -45,15 +45,19 @@ func (s *parquetSource) VectorField(field string) bool {
 	return false
 }
 
-// ScalarField implements VectorSchemaSource: field is a top-level fixed 8-byte numeric
-// column (its leaf path == field, no nesting, INT64/DOUBLE physical type).
+// ScalarField implements VectorSchemaSource: field is a top-level scalar side column the
+// columnar reader can carry -- a fixed 8-byte numeric (INT64/DOUBLE) or a UTF8 string
+// (BYTE_ARRAY, e.g. a string doc id). Its leaf path must equal field (no nesting).
 func (s *parquetSource) ScalarField(field string) bool {
 	sch := s.pf.MetaData().Schema
 	for c := 0; c < sch.NumColumns(); c++ {
 		col := sch.Column(c)
 		if col.Path() == field {
-			t := col.PhysicalType().String()
-			return t == "INT64" || t == "DOUBLE"
+			switch col.PhysicalType().String() {
+			case "INT64", "DOUBLE", "BYTE_ARRAY":
+				return true
+			}
+			return false
 		}
 	}
 	return false
@@ -158,21 +162,33 @@ func arrowVectorBatch(batch arrow.RecordBatch, vecField string, scalarFields []s
 			return VectorBatch{}, false, fmt.Errorf("records: scalar field %q not found", name)
 		}
 		col := batch.Column(si[0])
-		b, err := arrowValueBytes(col)
-		if err != nil {
-			return VectorBatch{}, false, fmt.Errorf("records: scalar field %q: %v", name, err)
-		}
-		var typ string
 		switch col.DataType().ID() {
-		case arrow.INT64, arrow.UINT64:
-			typ = "INT64"
-		case arrow.FLOAT64:
-			typ = "DOUBLE"
+		case arrow.INT64, arrow.UINT64, arrow.FLOAT64:
+			b, err := arrowValueBytes(col)
+			if err != nil {
+				return VectorBatch{}, false, fmt.Errorf("records: scalar field %q: %v", name, err)
+			}
+			typ := "INT64"
+			if col.DataType().ID() == arrow.FLOAT64 {
+				typ = "DOUBLE"
+			}
+			vb.Scalars = append(vb.Scalars, b)
+			vb.ScalarStrings = append(vb.ScalarStrings, nil)
+			vb.ScalarTypes = append(vb.ScalarTypes, typ)
+		case arrow.STRING:
+			sa := col.(*array.String)
+			ss := make([]string, rows)
+			for r := 0; r < rows; r++ {
+				if sa.IsValid(r) {
+					ss[r] = sa.Value(r)
+				}
+			}
+			vb.Scalars = append(vb.Scalars, nil)
+			vb.ScalarStrings = append(vb.ScalarStrings, ss)
+			vb.ScalarTypes = append(vb.ScalarTypes, "UTF8")
 		default:
 			return VectorBatch{}, false, fmt.Errorf("records: scalar field %q type %s unsupported", name, col.DataType())
 		}
-		vb.Scalars = append(vb.Scalars, b)
-		vb.ScalarTypes = append(vb.ScalarTypes, typ)
 		vb.ScalarValids = append(vb.ScalarValids, arrowValidityBytes(col))
 	}
 	return vb, true, nil

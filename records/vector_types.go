@@ -20,17 +20,20 @@ package records
 // Close). When Regular (no null rows and every row has Dim elements) row r is
 // Vec[r*Dim:(r+1)*Dim] and Offsets is nil; otherwise a NULL vec is a zero-length row
 // and row r is Vec[Offsets[r]:Offsets[r+1]] (len Dim, or 0 == NULL). Scalars[i] is the
-// i-th requested scalar field's packed 8-byte values; ScalarTypes[i] is "INT64" or
-// "DOUBLE" (for formatting); ScalarValids[i] is its validity bitmap, or nil if no nulls.
+// i-th requested scalar field's values; ScalarTypes[i] is "INT64"/"DOUBLE" (packed
+// 8-byte in Scalars[i], ScalarStrings[i] nil) or "UTF8" (per-row strings in
+// ScalarStrings[i], Scalars[i] nil); ScalarValids[i] is its validity bitmap, or nil if
+// no nulls.
 type VectorBatch struct {
-	Rows         int
-	Dim          int
-	Vec          []float32
-	Offsets      []int32 // nil when Regular
-	Regular      bool
-	Scalars      [][]byte
-	ScalarTypes  []string
-	ScalarValids [][]byte
+	Rows          int
+	Dim           int
+	Vec           []float32
+	Offsets       []int32 // nil when Regular
+	Regular       bool
+	Scalars       [][]byte
+	ScalarStrings [][]string
+	ScalarTypes   []string
+	ScalarValids  [][]byte
 }
 
 // RowVec returns row r's vector slice (nil for a NULL/zero-length row).
