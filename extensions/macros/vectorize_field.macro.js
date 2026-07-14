@@ -15,6 +15,10 @@
 //   -- takes the columnar fast path (DESIGN-vectors.md); over .jsonl it's the row lane.
 //   SELECT v.id, VECTOR_DISTANCE(v.vec, [/*8 floats*/], "cosine") AS d
 //     FROM vecs v ORDER BY d ASC LIMIT 5;
+//   -- search by TEXT: embed the query the SAME way, then compare (copy-pasteable; a
+//   -- computed query vector is the row lane, not the columnar fast path):
+//   WITH q AS (VECTORIZE_BATCH([{"t":"disk full"}],{"text":"t","dim":8})[0].vec)
+//   SELECT v.id FROM vecs v ORDER BY VECTOR_DISTANCE(v.vec, q, "cosine") ASC LIMIT 5;
 //
 // It pages rows via ROW_NUMBER (FLOOR((rn-1)/batch) -> 0-based pages), ARRAY_AGGs each
 // page's {id,text}, calls VECTORIZE_BATCH once per page (one model round-trip, never per
