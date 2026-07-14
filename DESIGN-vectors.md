@@ -63,6 +63,22 @@ ORDER BY VECTOR_DISTANCE(t.v, $qvec, "cosine") ASC LIMIT 10;
 Perf later: port `vectorDistance` to the native columnar float32/SIMD lane (DESIGN-col).
 ANN index much later, only if N forces it (see cgo decision).
 
+**Benchmark (2026, M2 Pro, jsonl + boxed) — the native port is EARNED, not premature.**
+Brute-force top-K cosine over jsonl-stored 384-dim vectors, single query:
+- N=10K → **1.1s**; N=100K → **11.0s** (linear ~11s/100K → 1M ≈ ~110s).
+- `COUNT(*)` scan+parse baseline at 100K = **1.3s**, so the boxed `VECTOR_DISTANCE` is ~90%
+  of the time — and the SORT is negligible: distance-in-`WHERE` with no `ORDER BY` is the
+  same ~11s. The distance *eval* is the bottleneck.
+- Allocations: ~1000 allocs and ~132 KB churn **per row** (a 100K-row search = ~100M allocs,
+  13.2 GB allocated) — cbq re-boxes the 384-element array into `value.Value` every row.
+- Storage: 320 MB jsonl for 100K×384 (~2× raw float32, ~8× int8).
+
+Verdict: jsonl+boxed is fine for **small** corpora (≤~10K rows, sub-second) but a real wall
+at upper dev scale (100K–1M rows, which cbcollect reaches). The native float32/int8 columnar
+port — raw `[]float32` kernel, no per-row boxing, no JSON parse — should cut the ~100µs/row
+distance to well under 1µs (a ~30–100× win) plus 2–8× smaller storage. So Phase 1's columnar
+core is justified by measurement.
+
 **Boxing / "recycled box" (Phase 1, not Phase 0).** Phase 0 goes through cbq's *boxed*
 evaluator: each row parses its stored vector field into a `value.Value` array, and
 `vectorDistance` touches ~`dim` boxed `value.Value` elements per row (`.Index(i)` →
