@@ -1,411 +1,282 @@
-# Design (research): supporting the VARIANT type
+# Design: supporting the VARIANT type
 
-**Status: research / thinking-out-loud. Not a spec, not a commitment.** This is a
-starting outline + open questions for how n1k1 might support the Apache
-Parquet/Iceberg/Spark **VARIANT** type. It exists to collect ideas, map them onto
-n1k1's existing machinery, and flag what needs research before any code.
+**Status: design research, converging.** Chosen direction: a **single `V` sigil**
+carrying the value's tail as raw Apache VARIANT binary (the "3D" approach below), with
+a **read-as-JSON MVP** as the first shippable step. No engine code yet; the ingestion
+boundary and the library situation are validated end-to-end (see §2, §3).
 
 Companion to `DESIGN-data.md` §7 (Iceberg read support) and `DESIGN-exprs.md` (the
 byte-oriented `base.Val = []byte` model). VARIANT enters n1k1 through the Iceberg /
-Parquet reader, so it is really "phase N of the Iceberg story."
+Parquet reader — it is really "phase N of the Iceberg story."
 
 ---
 
-## 0. TL;DR / thesis
+## 0. Thesis
 
 VARIANT is **JSON's value model plus (a) extra *typed scalars* and (b) a compact
-self-describing *binary* encoding.** The extra scalars are: `date`, `timestamp`
-(µs/ns, with/without tz), `time`, exact `decimal` (up to 38 digits), `binary`,
-`uuid`, and *width/precision-distinguished* numerics (`int8/16/32/64`, `float` vs
-`double`). Everything else (null, bool, string, object, array) is just JSON.
+self-describing *binary* encoding.** The extra scalars: `date`, `timestamp` (µs/ns,
+±tz), `time`, exact `decimal` (≤38 digits), `binary`, `uuid`, and
+width/precision-distinguished numerics (`int8/16/32/64`, `float` vs `double`).
+Everything else (null, bool, string, object, array) is just JSON.
 
-Two observations shape the whole design:
+Two observations shape everything:
 
-1. **SQL++ / N1QL has no first-class date/decimal/binary/uuid type.** In N1QL those
-   are represented as JSON strings/numbers. So when a SQL++ *query* touches a VARIANT
-   value, the natural semantics is "behave as the JSON projection of that value"
-   (date → ISO string, decimal → number, binary → base64 string, uuid → string). That
-   is exactly what cbq does with such values today. **⇒ most of the engine needs no
-   changes to *query* VARIANT data** — if we hand it the JSON projection.
+1. **SQL++ / N1QL has no first-class date/decimal/binary/uuid type** — in N1QL those
+   are JSON strings/numbers. So a SQL++ *query* over a VARIANT value naturally
+   "behaves as the JSON projection of that value" (date → ISO string, decimal →
+   number, binary → base64 string), which is what cbq already does. **⇒ most of the
+   engine needs no change to *query* VARIANT** — hand it the JSON projection.
+2. The only *deltas* over "just decode to JSON" are **type fidelity** (round-trip /
+   write-back / VARIANT-native semantics) and **precision** (VARIANT `decimal` is
+   exact; JSON number is float64).
 
-2. The only real *deltas* over "just decode to JSON" are:
-   - **Type fidelity** — preserving the original VARIANT type so we can round-trip
-     (read VARIANT → query → **write** VARIANT) or expose VARIANT-native semantics.
-   - **Precision** — VARIANT `decimal` is exact; JSON number is float64 (lossy).
-
-n1k1 already carries values as **one `[]byte` of JSON, dispatched by first byte**
-(`base.Parse`/`ValKind`), and it already has a non-JSON slot: `base/compare.go` has
-`ValTypeUnknown // Ex: BINARY`. The central idea explored here is to **extend that
-tag space** with a leading *type sigil* so a value stays a single `[]byte`, most
-exprs stay untouched, and the type survives for output — rather than boxing VARIANT
-into a struct or duplicating the expr library.
+**The chosen approach (§3):** carry a VARIANT value as `V<metadata><value>` — a `V`
+sigil then the raw Apache Variant bytes — reusing VARIANT's own type tagging instead
+of inventing a parallel one, and lazily projecting to JSON only when a query actually
+inspects the value. It keeps n1k1's "one `[]byte`, no boxing" model, makes
+round-trip/write-back free (copy the bytes), and — crucially — the decode/navigate
+machinery is a **ready-made, zero-copy library** already in the dep tree (§2).
 
 ---
 
 ## 1. What VARIANT actually is (grounding)
 
-_Research item: pin every claim here against the current Parquet/Iceberg Variant
-spec — the primitive type-id numbering especially. Treat this section as
-"shape, roughly right," not authoritative._
-
-- **Two byte streams**: `metadata` + `value`. In Parquet the Variant logical type is
-  (today) a group of two binary columns. `metadata` is a **dictionary of field-name
-  strings** (deduplicated, optionally sorted) shared by all objects in the value;
-  `value` is the tagged payload tree.
+- **Two byte streams**: `metadata` + `value`. In Parquet the Variant logical type is a
+  group of two binary columns. `metadata` is a **dictionary of field-name strings**
+  (deduped, optionally sorted) shared across the value; `value` is the tagged tree.
 - **`value` tagging** — first byte: `basic_type = b & 0x03`, `type_info = b >> 2`.
-  - `0` primitive — `type_info` selects the primitive: null, bool(t/f), int8/16/32/64,
-    float, double, decimal4/8/16, date, timestamp(µs, tz/ntz), timestamp(ns, tz/ntz),
-    time, binary, (long) string, uuid.
-  - `1` short string — `type_info` is the length (0..63); inline UTF-8 bytes follow.
-  - `2` object — count + sorted field-id → offset table into `metadata` + child values.
+  - `0` primitive — `type_info` selects: null, bool(t/f), int8/16/32/64, float, double,
+    decimal4/8/16, date, timestamp(µs, tz/ntz), timestamp(ns, tz/ntz), time, binary,
+    (long) string, uuid.
+  - `1` short string — `type_info` is the length (0..63); inline UTF-8 follows.
+  - `2` object — count + field-id→offset table into `metadata` + child values.
   - `3` array — count + offset table + child values.
-- **Superset-of-JSON**: JSON null/bool/number/string/object/array all map in; the
-  extra scalars are the delta.
+- **Superset of JSON**: JSON null/bool/number/string/object/array all map in; the extra
+  scalars are the delta.
 - **Shredding** (Parquet): a Variant column may be *partially shredded* into typed
-  sub-columns (`typed_value` + residual `value`) so engines can push predicates /
-  projections down to a physical column. This is the columnar performance story and
-  ties directly into n1k1's existing Iceberg projection/predicate pushdown.
+  sub-columns (`typed_value` + residual `value`) so engines push predicates/projections
+  down to a physical column — the columnar performance story (§6).
 
-**Open questions (spec):**
-- Q1.1 Exact primitive type-id table + physical layouts (offset-size encoding, decimal
-  scale/precision, timestamp unit/tz flags). *(Enumerated in `parquet/variant` —
-  `primitiveTypeFromHeader` / `Value.Value()` — see §1.5.)*
+*(The exact primitive type-id numbering is enumerated in `arrow-go/v18 parquet/variant`
+— `primitiveTypeFromHeader` / `Value.Value()`.)*
 
-## 1.5 The Go library situation — `arrow-go/v18 parquet/variant`  *(researched; resolves Q1.2/Q1.3)*
+---
+
+## 2. The decode library — `arrow-go/v18 parquet/variant`  *(researched, validated)*
 
 n1k1 **already transitively depends on** `github.com/apache/arrow-go/v18 v18.4.1`,
-which ships a first-party `parquet/variant` package (`variant.go`, `builder.go`,
-`utils.go`). It is cgo-free and — crucially — built on the **same "views into a
-backing `[]byte`, no boxing" discipline as n1k1 itself.** (`iceberg-go v0.4.0` has no
-Variant support yet — the read path would go through `pqarrow`/`arrow-go`.)
+which ships a first-party, cgo-free `parquet/variant` package built on the **same
+"views into a backing `[]byte`, no boxing" discipline as n1k1 itself.** (`iceberg-go
+v0.4.0` has no Variant yet — the read path is through `pqarrow`/`arrow-go`.) This is
+the linchpin: n1k1 does **not** need to fork jsonparser or hand-roll a decoder.
 
-**It exposes BOTH an unboxed view API and an opt-in boxed API:**
+**Unboxed / zero-copy navigation (the path we use):**
+- `variant.Value` is a `{value []byte, meta Metadata}` **window**, not a materialized
+  tree; `New(meta, value)` / `NewWithMetadata` construct it from bytes.
+- `BasicType()` / `Type()` read the header byte; `Bytes()` / `Metadata().Bytes()` hand
+  back the raw slices.
+- Array/object navigation returns **child `Value`s that are subslices into the same
+  backing buffer** (`ArrayValue.Value(i)`, `ObjectValue.ValueByKey`/`FieldAt`/`Values`)
+  — zero alloc, zero copy, exactly like `base.Parse`/jsonparser subslicing.
+- Primitives read directly (`readExact[T]`); strings/dict-keys are `unsafe.String`
+  views; binary is a subslice. The **only** allocation in navigation is a one-time
+  `make([][]byte, dictSize)` when a `Metadata` is built (and those entries are
+  subslices into the metadata bytes — no key copies).
+- Opt-in materialization: `Value.Value() any` and `Value.MarshalJSON() []byte`. Even
+  these are restrained — timestamps stay `arrow.Timestamp` (int64), *not* `time.Time`;
+  dates `Date32`; small decimals as `DecimalValue` structs; only UUID truly allocates.
 
-- **Unboxed / zero-copy navigation (the default):**
-  - `variant.Value` is a **`{value []byte, meta Metadata}` window**, *not* a
-    materialized tree. `New(meta, value []byte)` / `NewWithMetadata`.
-  - `Value.BasicType()` / `Value.Type()` read the header byte; `Value.Bytes()` /
-    `Metadata.Bytes()` hand back the raw slices.
-  - Array/object navigation returns **child `Value`s that are subslices into the same
-    backing buffer** — e.g. `ArrayValue.Value(i)` → `Value{meta, value:
-    v.value[dataStart+offset:]}`; `ObjectValue.FieldAt`/`ValueByKey`/`Values()` the
-    same. **Zero alloc, zero copy** — identical to how `base.Parse`/jsonparser
-    subslice today.
-  - Primitives read directly (`readExact[T]`); **strings and dictionary keys are
-    `unsafe.String` views** into the bytes (no copy); binary is a subslice.
-  - The **only** allocation in the whole navigation path is a one-time
-    `make([][]byte, dictSize)` in `Metadata.loadDictionary` — and even those entries
-    are subslices into the metadata bytes (no per-key string copy). Amortizable across
-    a shared dictionary.
-- **Boxed / materializing (opt-in):** `Value.Value() any` → Go values, and
-  `Value.MarshalJSON() ([]byte, error)` → JSON bytes. Even the boxed path is
-  restrained: **timestamps stay `arrow.Timestamp` (int64), not `time.Time`**; dates
-  `arrow.Date32` (int32); decimals as small `DecimalValue` structs (only 128-bit uses
-  `decimal128`); strings/binary as views/subslices. UUID is the one true per-value
-  allocation. So even here there's no `time.Time` / `big.Int` churn — just the `any`
-  interface boxing per call.
-
-**Implications for the design:**
-- We do **not** need to fork jsonparser or hand-roll a Variant decoder — the unboxed
-  view API is a ready-made, zero-alloc, `[]byte`-native navigator, cgo-free, already
-  in the dep tree.
-- This **de-risks 3D's "catch #2"** (inspection needs VARIANT navigation): that
-  navigator exists and is allocation-free for the view path — a `V`-tagged value can
-  be walked with `variant.Value` exactly as a JSON value is walked with jsonparser.
-- It confirms **3D's "catch #1"**: `variant.Value` inherently pairs a `value []byte`
-  with a `Metadata` (the dict), so a self-contained n1k1 value must carry both — which
-  is exactly `NewWithMetadata(meta, value)`.
-- `MarshalJSON()` is the ready-made **3A** decode-to-JSON (and the JSON-output side of
-  3B/3D). It allocates the JSON — inherent to producing JSON output.
-- **Q1.3 — RESOLVED** by an end-to-end fixture (`records/variant_parquet_test.go`):
-  build a Parquet file with a VARIANT column, read it back via `pqarrow.ReadTable`, and
-  the column surfaces **directly as `*extensions.VariantArray`** — no manual sub-array
-  decomposition. `col := tbl.Column(0).Data().Chunk(0); va := col.(*extensions.VariantArray)`,
-  then `va.Value(i)` hands back a `variant.Value` view. Confirmed in that test:
-  - the `(metadata, value)` byte slices round-trip **intact**, and
-    `variant.New(meta, value)` rebuilds a working view from just those two `[]byte`
-    (the `V<meta><value>` carry-and-rebuild story);
-  - navigation is **zero-copy** — a nested field's bytes are a *subslice of the
-    parent's backing* (asserted via pointer-range aliasing), and this **holds at
-    depth**: a second test walks a 4-level `order → customer → address → geo → lat`
-    object chain plus an `orderlines` array-of-subobjects with a nested `tags` array,
-    round-trips it byte-identically, and confirms a 4-deep leaf still aliases the
-    top-level backing;
-  - `Type()` is preserved through the round-trip (fidelity) while `MarshalJSON()`
-    gives the JSON projection. Concrete projections observed:
-    **`date` (`Date32(20194)`) → `"2025-04-16"`** (ISO string) and
-    **`decimal16` (scale 2) → `12345678912345678.90`** (all digits, exact) —
-    i.e. the typed scalar keeps its VARIANT `Type` but renders to JSON losslessly here.
-    A typed date buried 3 levels deep (`orderlines[1].shipDate`) likewise keeps
-    `Type()==Date` and projects to `"2025-04-16"` — **fidelity survives nesting.**
-  Remaining plumbing (not blocking): a *shredded* Variant column surfaces with a
-  `typed_value` sub-field; and n1k1's `records/parquet.go appendArrowValueJSON` needs a
-  `case *extensions.VariantArray` to emit either `MarshalJSON` (Phase 0) or `V<...>`
-  (Phase 1/3D).
+**Validated end-to-end** by `records/variant_parquet_test.go` (two tests):
+- A VARIANT-column Parquet file, read back via `pqarrow.ReadTable`, surfaces the
+  column **directly as `*extensions.VariantArray`** — `col :=
+  tbl.Column(0).Data().Chunk(0)`, `va.Value(i)` → a `variant.Value` view. No manual
+  sub-array decomposition.
+- The `(metadata, value)` slices round-trip **intact**, and `variant.New(meta, value)`
+  rebuilds a working view from just those two `[]byte` — the `V<meta><value>`
+  carry-and-rebuild story, proven.
+- Navigation is **zero-copy, and holds at depth**: a 4-level
+  `order → customer → address → geo → lat` chain plus an `orderlines`
+  array-of-subobjects with a nested `tags` array round-trips byte-identically, and a
+  4-deep leaf's bytes still alias the top-level backing.
+- `Type()` is preserved through the round-trip (fidelity) while `MarshalJSON()` gives
+  the JSON projection. Observed: `date Date32(20194)` → `"2025-04-16"`; `decimal16`
+  scale 2 → `12345678912345678.90` (exact). A date buried 3 levels deep keeps
+  `Type()==Date` and projects to `"2025-04-16"` — **fidelity survives nesting.**
 
 ---
 
-## 2. Where VARIANT enters n1k1 (the boundary)
+## 3. Where VARIANT enters n1k1 (the boundary)
 
-Precisely one place, already mapped by the Iceberg work:
+Precisely one ingestion point, already mapped by the Iceberg work:
 
 - **`records/parquet.go` → `appendArrowValueJSON(dst, arr, i)`** — a type switch over
-  Arrow array types that appends each cell's JSON bytes into `dst`. Today it handles
-  bool / int{8..64} / uint / float{32,64} / string. `fastRenderable` gates the fast
-  path; other types fall to a `json.Marshal` slow path.
-- A VARIANT column is where a **`case` for the Variant (binary/struct) type** decodes
-  `(metadata, value)` → n1k1 bytes. **This is the entire ingestion surface.** What it
-  emits (plain JSON vs typed-JSON sigils) is the design choice in §3.
+  Arrow array types appending each cell's bytes into `dst` (bool/int/uint/float/string
+  today; `fastRenderable` gates it, others fall to a `json.Marshal` slow path). The
+  VARIANT column arrives here as `*extensions.VariantArray` (§2); a
+  **`case *extensions.VariantArray`** decodes `(metadata, value)` → n1k1 bytes. **This
+  is the entire ingestion surface.** What it emits — JSON (MVP) or `V<...>` — is the
+  §4 choice.
 
 Downstream, values flow as `base.Val = []byte`:
-- **`base.Parse` (base/compare.go)** is the *single* wrapper over `buger/jsonparser`
-  (`jsonparser.Get`) and the first-byte dispatch. One function to teach about sigils.
-- **`base.ValKind` / `ParseTypeToValType`** classify a value.
-- **Output**: `ValComparer.CanonicalJSON` / `CanonicalJSONWithType` / `WriteJSON`
-  (base/canonical.go) is the JSON emitter; a VARIANT *writer* would be a sibling.
+- **`base.Parse` (base/compare.go)** is the *single* wrapper over `buger/jsonparser` +
+  first-byte dispatch — the one seam that would learn the `V` sigil.
+- **`base.ValKind` / `ParseTypeToValType`** classify a value; `ValType` already
+  reserves `ValTypeUnknown // Ex: BINARY` — a non-JSON tag precedent.
+- **Output**: `ValComparer.CanonicalJSON` / `WriteJSON` (base/canonical.go) is the JSON
+  emitter; a VARIANT *writer* would be a sibling.
 
 ---
 
-## 3. Three candidate representations
+## 4. The chosen representation: a single `V` sigil
 
-### 3A. Decode VARIANT → plain JSON at the scan boundary  *(Phase 0)*
+Carry a VARIANT value as **`V<metadata><value>`** — the `V` sigil, then the raw Apache
+Variant `metadata` + `value` bytes (with a length delimiter). First-byte dispatch sees
+`V` and reads *VARIANT's own* first byte (`basic_type`/`type_info`) to classify —
+**reuse the type tagging "many smart folks already figured out"; don't build a parallel
+table.** Pair it with **lazy** projection: carry the bytes through untouched, and
+JSON-ify only when a query actually inspects the value.
 
-Emit the JSON projection (date→ISO string, decimal→number, binary→base64 string,
-uuid→string, typed ints→number) directly in `appendArrowValueJSON`.
+**Why this is the pick:**
+- **One `[]byte`, no boxing** — the founding constraint survives; a value is still a
+  single reused byte slice.
+- **Round-trip / write-back is free and lossless** — a pass-through
+  (`SELECT v FROM t WHERE <non-v-pred>` → write VARIANT) copies the bytes verbatim,
+  zero decode/encode. Fidelity is automatic (the value *is* the source bytes).
+- **The navigator already exists and is zero-copy** — §2's `variant.Value` view API
+  walks a `V` tail with the same subslice-into-backing discipline as jsonparser walks
+  JSON. This is what makes `V` viable rather than a "parallel machinery" burden.
+- **The projection is ready-made** — `variant.Value.MarshalJSON()` produces the JSON
+  form for output and for the read-as-JSON MVP.
 
-- **Cost**: a Variant→JSON decoder; **zero** engine change past the boundary.
-- **Semantics**: query as JSON, matches cbq's treatment of such scalars.
-- **Loss**: type identity + decimal precision; **cannot write VARIANT back** with
-  fidelity, cannot answer "IS this value a date vs a string".
-- **Verdict**: the obvious MVP. Delivers "query Iceberg VARIANT columns" immediately.
-  Everything else is fidelity on top.
+**The two catches, and how they resolve:**
 
-### 3B. Typed-JSON *sigils* — extend the tag space  *(the interesting idea; Phase 1+)*
+1. **Carry the metadata dictionary.** A Variant `value` references field names by ID
+   into a separate `metadata` dict (shared per column for compression). n1k1 rows are
+   independent `[]byte`, so a self-contained value must carry **both** streams —
+   `V<len><metadata><value>`. That re-inlines a row's field names (small, but real).
+   The library models exactly this (`NewWithMetadata(meta, value)`), and §2 proved the
+   two slices round-trip and rebuild. *Accepted cost.*
+2. **Inspection needs VARIANT navigation, not JSON navigation** — a `V` tail can't be
+   walked by jsonparser/`ValPathGet`/`ValComparer` directly. Resolved by
+   **lazy-decoding at the `base.Parse` seam**: teach `base.Parse`/`ValKind` to detect
+   `V` and hand back the projected JSON (via `MarshalJSON`, or a typed-JSON form). Most
+   exprs then "just work." Two residual costs to design around: (a) direct `v[0]` peek
+   sites (`ValIsString`, first-byte checks) must learn `V` (Q5.5); (b) `Parse` runs in
+   hot loops, so a value touched N times re-decodes N times — mitigated by decoding
+   eagerly at the scan boundary for inspection-heavy queries (the read-as-JSON MVP
+   already does exactly this).
 
-Represent a non-JSON-native scalar as **`<sigil><json-form>`**, a lossless annotation
-over its JSON projection. Sketch:
+**Consequence to keep in mind:** `V` tags *every* VARIANT-sourced value opaque —
+including a plain string/number/object that JSON represents perfectly — until it's
+inspected. That's the price of "VARIANT-native transit"; it's paid back by free
+pass-through and trivial write-back.
 
-| VARIANT type | internal sigil form | JSON projection (output) |
-|---|---|---|
-| date | `d"2026-01-30"` | `"2026-01-30"` |
-| timestamp | `t"2026-01-30T12:00:00Z"` | `"2026-01-30T12:00:00Z"` |
-| decimal (exact) | `x"123.4500"` | `123.45` (or the string, TBD) |
-| binary | `b"<base64>"` | `"<base64>"` |
-| uuid | `g"6f9…"` | `"6f9…"` |
-| int64-with-width | *(probably just a JSON number; carry width only if round-trip needs it)* | number |
+### Alternatives considered (condensed)
 
-The sigil is a single leading byte outside JSON's first-byte alphabet
-(`" { [ - 0-9 t f n`), chosen so first-byte dispatch stays O(1). The rest of the
-value is its ordinary JSON form, so **exprs that copy/compare bytes work on the
-json-form untouched**; only three places learn the sigils:
-
-1. **`base.Parse` / `ValKind`** — strip/recognize the sigil, then dispatch on the
-   json-form (a date reports as string, a decimal as number — N1QL semantics), OR map
-   the sigil to a dedicated `ValType`. One wrapper function; or a small
-   `buger/jsonparser` fork (n1k1 already runs a patched cbq fork — same playbook).
-2. **JSON output** (`CanonicalJSON`/`WriteJSON`) — strip the sigil (per §0 obs. 1).
-3. **VARIANT output** (new writer) — use sigil + json-form to re-encode Variant binary.
-
-- **Cost**: the sigil grammar, the `Parse`/`ValKind` seam, two output paths. Reuses
-  the **entire** expr library for the common case.
-- **Win**: single `[]byte`, no boxing, full round-trip fidelity, VARIANT-native
-  semantics available where wanted.
-- **The catch**: sigils *inside* nested structures (`{"born": d"…"}`) are not valid
-  JSON, so anything that *walks* a nested value (jsonparser object/array iteration,
-  `ValPathGet`) must tolerate sigils mid-structure — a deeper fork. See Q5.1: is the
-  sigil top-level-scalar-only (nested VARIANT stays lazy/opaque until navigated), or
-  understood everywhere?
-
-### 3C. Carry VARIANT binary opaque + a parallel expr set  *(rejected)*
-
-Keep the Variant binary as-is and add VARIANT-aware exprs beside the JSON ones.
-Duplicates the whole expr library and splits every code path in two. The user's
-instinct ("ugh, that doesn't sound great") is right. Only worth it if VARIANT-native
-performance (no decode) ever dominates — unlikely before shredding (§6) matters more.
-
-### 3D. A single `V` sigil — the value's tail *is* VARIANT binary  *(the sharp simplification)*
-
-Instead of a rich per-subtype sigil table (3B), use **one** sigil `V`: the byte after
-it is VARIANT's *own* first byte (its `basic_type`/`type_info`), so the tail is just a
-raw Variant `value` (plus its metadata dict — see catch #1). Don't reinvent a type
-table; reuse the one "many smart folks already figured out." Dispatch: n1k1 sees `V`,
-then reads byte[1] through VARIANT's rules and maps `basic_type` → n1k1 `ValType`.
-
-This is the elegant unification of 3B and 3C, and it separates **two orthogonal axes**
-that 3B/3C had conflated:
-
-- **Tag granularity** — rich per-subtype sigils (3B) *vs.* one opaque `V` (3D).
-- **When to decode** — eagerly at the scan boundary *vs.* lazily on first inspection.
-
-`V` pairs most naturally with **lazy** decode: carry the Variant bytes through
-untouched, and JSON-ify only when an expr actually inspects the value.
-
-- **Wins:**
-  - No parallel type table — the decoder *is* the type machinery, invoked once.
-  - **Round-trip is trivial and free** — a pass-through / write-back
-    (`SELECT v FROM t WHERE <non-v-pred>` → write VARIANT) copies the bytes verbatim,
-    zero decode/encode. This is where `V` decisively beats eager 3A/3B.
-  - Lossless by construction (the value *is* the source bytes).
-
-- **Catch #1 — the metadata dictionary.** A Variant `value` references object field
-  names by ID into a *separate* `metadata` dictionary (shared per column for
-  compression). n1k1 rows are independent `[]byte`, so a self-contained value must
-  carry **both** streams: `V<len><metadata><value>`. That re-inlines the dict per row
-  (small — just that row's field names — but real) and the decoder parses two streams.
-  3B sidesteps this entirely (field names inline as ordinary JSON keys).
-
-- **Catch #2 — inspection needs VARIANT navigation, not JSON navigation.** The moment
-  an expr must *compare / compute / navigate / output* a `V` value, it can't use
-  jsonparser / `ValPathGet` / `ValComparer` on the tail — those speak JSON, and the
-  tail is Variant binary. Two ways out:
-  - **Lazy-decode at the `base.Parse` seam** — teach `base.Parse`/`ValKind` to detect
-    `V` and return the decoded (typed-)JSON. If *all* inspection funneled through
-    `Parse`, most exprs "just work." But (a) some ops peek `v[0]` directly
-    (`ValIsString`, first-byte checks) and would need a `V` branch anyway, and (b)
-    Parse is called in hot loops, so a value touched N times **re-decodes N times**
-    (a filtered-then-projected value decodes twice; a sort key, many times). Eager
-    decode-at-scan pays once.
-  - **VARIANT-native navigation** — a second navigator beside jsonparser. That is the
-    "parallel machinery" cost 3C was rejected for, relocated into the value layer.
-
-- **The subtle asymmetry vs 3B.** 3D `V`-tags *every* VARIANT-sourced value — even a
-  plain string/number/object that is perfectly representable as JSON — so *every* such
-  value is opaque until decoded, and *every* direct `v[0]` peek site must learn `V`.
-  3B only prefixes the genuinely-non-JSON scalars (date/decimal/uuid/…); a VARIANT
-  string/number/object decodes to plain **unprefixed** JSON, so it flows through the
-  existing machinery with zero new branches. 3B = "JSON-native, annotate the
-  exceptions"; 3D = "VARIANT-native, decode on demand."
-
-**Where each wins:** `V` (3D) for **pass-through- and write-back-heavy** VARIANT
-workloads (copy bytes, never decode). Typed-JSON (3B) for **inspection-heavy** queries
-(decode once at scan, then ride the whole JSON engine). A hybrid is plausible:
-carry `V` as the lazy transit form, and `base.Parse` decodes to 3B's typed-JSON on
-first touch — VARIANT for transit, JSON for compute, each in its strong zone.
+- **Read-as-JSON (the MVP, retained as Phase 0).** Decode VARIANT → plain JSON right
+  in `appendArrowValueJSON` (`MarshalJSON`), lose type identity + decimal precision,
+  query as JSON. ~Zero engine change, read-only. Not an *alternative* to `V` so much
+  as its first step — ship this first; it may be enough for a long while (Q5.2).
+- **Per-subtype typed-JSON sigils** (`d"…"`, `x"…"`, …). Annotate only the non-JSON
+  scalars over their JSON form; JSON-native content stays unprefixed, so fewer peek
+  sites break, and it's best for *inspection-heavy* queries (decode once at scan).
+  **Subsumed:** its whole benefit is the JSON projection, which `V` + lazy-decode also
+  produces — without a parallel per-subtype table or a deeper jsonparser fork for
+  sigils-inside-nested-structures. If profiling later shows inspection-heavy VARIANT
+  workloads dominate, this is the natural specialization of the lazy step (decode `V`
+  → typed-JSON instead of plain JSON).
+- **Opaque binary + a parallel expr set.** Rejected — duplicates the whole expr
+  library and splits every code path in two.
 
 ---
 
-## 4. Why 3B maps cleanly onto n1k1 (the appeal)
+## 5. Open questions
 
-- **One `[]byte`, no boxing** — the founding constraint survives intact.
-- **First-byte dispatch already exists** — sigils just extend `base.Parse`'s table.
-- **Precedent**: `ValType` already reserves `ValTypeUnknown // Ex: BINARY` and the
-  `ValType` ordering is "intended to match N1QL's ordering" — a sigil'd type slots
-  into that scheme rather than inventing a parallel one.
-- **Exprs are byte-movers** — projection, comprehensions, array/object builders copy
-  element bytes verbatim; a sigil'd scalar rides through untouched (it only *matters*
-  at compare / arithmetic / output).
-- **Output already centralized** — one canonical emitter to teach "strip sigil"; the
-  VARIANT writer is its sibling.
-- **Consistent with house style** — n1k1 already forks/patches cbq (`n1k1-query`) and
-  keeps values as reused byte buffers; a small jsonparser fork + a sigil convention is
-  the same kind of move, not a new paradigm.
-
----
-
-## 5. The hard parts / open questions
-
-- **Q5.1 Nested sigils.** Top-level-scalar-only (simplest; nested VARIANT stays opaque
-  or is lazily JSON-ified on navigation) vs understood-everywhere (deep jsonparser
-  fork; `ValPathGet`, object/array iteration, `CollElems` all tolerate sigils). This is
-  the biggest fork in the road. Can most workloads live with "scalars keep type,
-  nested access degrades to JSON"?
-- **Q5.2 Collation.** N1QL order is null < bool < number < string < array < object.
-  Do sigil'd values collate on their **json-form** (date=string, decimal=number —
-  minimal change, matches cbq), or on a **VARIANT-native** ordering? Likely: json-form
-  for SQL++ queries; VARIANT ordering only if/when we expose VARIANT-native compares.
+- **Q5.1 Decode timing / eager-vs-lazy.** `V` favors lazy (free pass-through); but
+  inspection-heavy queries want a single eager decode at the scan boundary. Likely
+  both: `V` on the wire, and the scan `case` decodes eagerly to JSON for the MVP, lazily
+  to `V` once fidelity/write-back lands. Sketch the expected VARIANT workload
+  (pass-through/write-back vs inspection) before finalizing.
+- **Q5.2 Is fidelity even needed soon?** §7 Iceberg is **read-only**. If n1k1 never
+  *writes* VARIANT, the read-as-JSON MVP may suffice indefinitely; the `V` carrier
+  earns its cost only with write-back OR VARIANT-native predicates. **Gates whether we
+  go past Phase 0 at all.**
+- **Q5.3 Decimal precision.** Exact 128-bit vs float64. Arithmetic degrades to float64
+  (matches cbq/N1QL — document it); the `V` bytes preserve the exact value for
+  round-trip. "Lossy-in-arithmetic, lossless-in-transit" — the same bargain cbq makes.
+- **Q5.4 Collation.** N1QL order is null < bool < number < string < array < object.
+  A `V` value collates on its JSON projection (date=string, decimal=number — matches
+  cbq); VARIANT-native ordering only if we ever expose VARIANT-native compares.
   `ValComparer.CompareWithType` is the seam.
-- **Q5.3 Decimal precision.** Exact 128-bit vs float64. Proposal: arithmetic degrades
-  to float64 (matches cbq / N1QL — document it), but the sigil'd string form preserves
-  the exact value for **round-trip output**. Is "lossy-in-arithmetic, lossless-in-
-  transit" acceptable? (It's the same bargain cbq already makes.)
-- **Q5.4 Is fidelity even needed soon?** §7 Iceberg is **read-only**. If n1k1 never
-  *writes* VARIANT/Iceberg, Phase 0 (3A) may be all that's required for a long time.
-  Fidelity (3B) earns its cost only with write-back OR VARIANT-native predicates. →
-  gates whether Phase 1 happens at all.
-- **Q5.5 The decoder.** Library vs hand-roll (Q1.2). Metadata-dictionary handling
-  (shared field-name table) is the fiddly bit; a hand-rolled decoder is ~a few hundred
-  lines but must track the spec.
-- **Q5.6 Sigil grammar & safety.** Reserve a byte range disjoint from JSON's first
-  bytes; ensure sigil'd bytes survive `append`/copy/`bufPre[:0]` reuse unharmed
-  (they're just bytes — should be fine); define escaping so a sigil never appears
-  ambiguously inside a following string.
+- **Q5.5 Direct `v[0]` peek sites.** Enumerate the ops that read the first byte
+  directly (`ValIsString`, kind checks) rather than through `base.Parse` — each must
+  learn the `V` sigil. How many, how hot?
+- **Q5.6 `V` framing & safety.** `V` must sit outside JSON's first-byte alphabet
+  (`" { [ - 0-9 t f n`); a length delimiter separates `metadata` from `value`; ensure
+  the bytes survive `append` / `bufPre[:0]` reuse (they're just bytes).
 - **Q5.7 Type predicates / builders.** Does SQL++ grow `IS_DATE` / `TO_VARIANT` /
-  typed accessors, or is VARIANT fully transparent? cbq has no VARIANT, so this is
-  n1k1-native surface to design (or deliberately omit).
-- **Q5.8 `_meta` / schema.** How does a VARIANT column advertise itself in
-  `.keyspaces` / column metadata so users know a field is VARIANT vs plain JSON?
+  typed accessors, or is VARIANT fully transparent? cbq has none — n1k1-native surface
+  to design or deliberately omit.
+- **Q5.8 Schema advertising.** How does a VARIANT column show itself in `.keyspaces` /
+  column metadata so users know a field is VARIANT vs plain JSON?
 
 ---
 
-## 6. Shredded VARIANT & pushdown (later, but note the synergy)
+## 6. Shredded VARIANT & pushdown (later; note the synergy)
 
 Parquet shredding splits a Variant into typed sub-columns. n1k1's Iceberg path already
 does **projection + predicate + partition pushdown** into the scan (DESIGN-data §7 /
-the `records.ScanPredicate` sidecar). A predicate on a shredded VARIANT subfield
+the `records.ScanPredicate` sidecar). A predicate on a shredded subfield
 (`WHERE v.customer.tier = 'gold'`) could push to the shredded physical column exactly
-like a top-level column does today — reusing that machinery, not new machinery. This
-is the real performance payoff and argues for keeping the VARIANT design *inside* the
-Iceberg pushdown framework rather than bolting on beside it.
+like a top-level column does today — reusing that machinery, not new machinery. The
+real performance payoff, and a reason to keep VARIANT *inside* the Iceberg pushdown
+framework rather than beside it.
 
 ---
 
-## 7. Rough phasing
+## 7. Phasing
 
-- **Phase 0 — read as JSON.** Variant→JSON decoder in `appendArrowValueJSON`
-  (+ `fastRenderable`/slow-path). Read-only, lossy-to-JSON, ~zero engine change.
-  Unblocks querying Iceberg VARIANT columns. *Do this first; it may be enough.*
-- **Phase 1 — fidelity.** Only if write-back or type-fidelity is wanted. Choose along
-  the two axes (§3D): typed-JSON sigils (3B, best for inspection-heavy) vs the single
-  `V` opaque carrier (3D, best for pass-through/write-back), or the hybrid (`V` transit
-  + lazy decode-to-typed-JSON at `base.Parse`). Whichever: a `base.Parse`/`ValKind`
-  seam + strip/decode-on-JSON-output. Differential-test the json-form semantics against
-  cbq so "query behavior" is provably unchanged.
-- **Phase 2 — VARIANT writer + nested sigils + shredded pushdown.** Variant binary
-  encoder (round-trip), deep sigil-aware navigation, predicate/projection pushdown into
-  shredded subfields (§6).
+- **Phase 0 — read as JSON (MVP).** A `case *extensions.VariantArray` in
+  `appendArrowValueJSON` that emits `variant.Value.MarshalJSON()`. Read-only,
+  lossy-to-JSON, ~zero engine change downstream. Unblocks querying Iceberg VARIANT
+  columns. *Do this first; it may be enough (Q5.2).*
+- **Phase 1 — the `V` carrier (fidelity).** Only if write-back or type-fidelity is
+  wanted. Emit `V<metadata><value>` from the scan `case`; teach `base.Parse`/`ValKind`
+  to detect `V` and lazily project (and the peek sites of Q5.5); JSON output decodes
+  `V` → JSON. Differential-test the projection against cbq so query behavior is
+  provably unchanged.
+- **Phase 2 — VARIANT writer + shredded pushdown.** A Variant-binary encoder for
+  write-back (trivial for pass-through `V` values — copy the bytes), and
+  predicate/projection pushdown into shredded subfields (§6).
 
 ---
 
-## 8. Table of contents (living)
+## 8. Table of contents
 
-- [0. TL;DR / thesis](#0-tldr--thesis)
+- [0. Thesis](#0-thesis)
 - [1. What VARIANT actually is](#1-what-variant-actually-is-grounding)
-  - [1.5 The Go library situation (arrow-go parquet/variant)](#15-the-go-library-situation--arrow-gov18-parquetvariant--researched-resolves-q12q13)
-- [2. Where VARIANT enters n1k1 (the boundary)](#2-where-variant-enters-n1k1-the-boundary)
-- [3. Three candidate representations](#3-three-candidate-representations)
-  - [3A. Decode → plain JSON](#3a-decode-variant--plain-json-at-the-scan-boundary--phase-0)
-  - [3B. Typed-JSON sigils](#3b-typed-json-sigils--extend-the-tag-space--the-interesting-idea-phase-1)
-  - [3C. Opaque binary + parallel exprs (rejected)](#3c-carry-variant-binary-opaque--a-parallel-expr-set--rejected)
-  - [3D. Single `V` sigil — tail is VARIANT binary](#3d-a-single-v-sigil--the-values-tail-is-variant-binary--the-sharp-simplification)
-- [4. Why 3B maps cleanly onto n1k1](#4-why-3b-maps-cleanly-onto-n1k1-the-appeal)
-- [5. Hard parts / open questions](#5-the-hard-parts--open-questions)
-- [6. Shredded VARIANT & pushdown](#6-shredded-variant--pushdown-later-but-note-the-synergy)
-- [7. Rough phasing](#7-rough-phasing)
+- [2. The decode library (arrow-go parquet/variant)](#2-the-decode-library--arrow-gov18-parquetvariant--researched-validated)
+- [3. Where VARIANT enters n1k1](#3-where-variant-enters-n1k1-the-boundary)
+- [4. The chosen representation: a single `V` sigil](#4-the-chosen-representation-a-single-v-sigil)
+  - [Alternatives considered](#alternatives-considered-condensed)
+- [5. Open questions](#5-open-questions)
+- [6. Shredded VARIANT & pushdown](#6-shredded-variant--pushdown-later-note-the-synergy)
+- [7. Phasing](#7-phasing)
+- [9. Research backlog](#9-research-backlog)
 
-## 9. Research backlog (pull from §1/§5)
+## 9. Research backlog
 
-- [x] Confirm the Variant spec's primitive type-id table + physical encodings (Q1.1) —
-      enumerated in `arrow-go/v18 parquet/variant` (`primitiveTypeFromHeader`).
-- [x] Survey Go decoders (Q1.2) — `arrow-go/v18 parquet/variant` is a ready-made,
-      cgo-free, **unboxed/zero-copy** decoder, already a transitive dep (§1.5).
-- [x] Q1.3 — RESOLVED: `records/variant_parquet_test.go` builds a VARIANT-column
-      Parquet file and reads it back; the column surfaces as `*extensions.VariantArray`,
-      `.Value(i)` → a `variant.Value` view, bytes round-trip intact, navigation is
-      zero-copy, and JSON projections are concrete (date→ISO string, decimal→exact
-      number). See §1.5.
-- [ ] Next plumbing step: a `case *extensions.VariantArray` in
-      `records/parquet.go appendArrowValueJSON` (Phase 0 = emit `MarshalJSON`); plus the
-      shredded (`typed_value`) column shape.
-- [ ] Decide Phase-0 JSON projection rules per type (match cbq exactly; write a
-      differential fixture: a small Variant Parquet file → expected JSON).
-- [ ] Prototype the sigil grammar; measure whether `base.Parse` can absorb it with no
-      measurable hit on the pure-JSON hot path (Q5.6).
-- [ ] Nested-sigil decision (Q5.1) — the fork that most shapes the effort.
-- [ ] The two axes (§3D): tag granularity (per-subtype sigils vs single `V`) ×
-      decode timing (eager-at-scan vs lazy-at-`Parse`). Sketch the expected VARIANT
-      workload — pass-through/write-back-heavy (favors `V`) vs inspection-heavy
-      (favors eager typed-JSON) — before choosing.
-- [ ] Enumerate the direct `v[0]`-peek sites (`ValIsString`, first-byte checks) that a
-      leading prefix (any of 3B/3D) would have to learn — how many, how hot?
+- [x] Variant spec primitive type-ids + physical encodings — enumerated in
+      `arrow-go/v18 parquet/variant` (§1/§2).
+- [x] Survey Go decoders — `arrow-go/v18 parquet/variant` is a ready-made, cgo-free,
+      **unboxed/zero-copy** decoder, already a transitive dep (§2).
+- [x] End-to-end read: `records/variant_parquet_test.go` — column surfaces as
+      `*extensions.VariantArray`, zero-copy navigation (incl. deeply nested),
+      byte-intact round-trip + `variant.New` rebuild, concrete JSON projections (§2).
+- [ ] **Phase 0**: implement the `case *extensions.VariantArray` in
+      `appendArrowValueJSON` (emit `MarshalJSON`); handle the shredded `typed_value`
+      column shape. Add a fixture: Variant-Parquet keyspace → SQL++ query → expected JSON.
 - [ ] Decide whether write-back / VARIANT-native semantics is a real requirement
-      (Q5.4) — it gates Phase 1 entirely.
+      (Q5.2) — gates everything past Phase 0.
+- [ ] For Phase 1: enumerate the direct `v[0]`-peek sites (Q5.5); prototype the `V`
+      detection in `base.Parse` and measure the pure-JSON hot-path is unaffected (Q5.6).
