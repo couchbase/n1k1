@@ -68,11 +68,59 @@ spec — the primitive type-id numbering especially. Treat this section as
 
 **Open questions (spec):**
 - Q1.1 Exact primitive type-id table + physical layouts (offset-size encoding, decimal
-  scale/precision, timestamp unit/tz flags).
-- Q1.2 Is there a maintained Go decoder (in `apache/arrow-go` or `apache/iceberg-go`),
-  or do we hand-roll? (n1k1's Iceberg path is `iceberg-go`, cgo-free — see §7.)
-- Q1.3 How does `iceberg-go` / `pqarrow` currently *surface* a Variant column to us —
-  as two binary Arrow arrays? an extension type? nothing yet (unsupported)?
+  scale/precision, timestamp unit/tz flags). *(Enumerated in `parquet/variant` —
+  `primitiveTypeFromHeader` / `Value.Value()` — see §1.5.)*
+
+## 1.5 The Go library situation — `arrow-go/v18 parquet/variant`  *(researched; resolves Q1.2/Q1.3)*
+
+n1k1 **already transitively depends on** `github.com/apache/arrow-go/v18 v18.4.1`,
+which ships a first-party `parquet/variant` package (`variant.go`, `builder.go`,
+`utils.go`). It is cgo-free and — crucially — built on the **same "views into a
+backing `[]byte`, no boxing" discipline as n1k1 itself.** (`iceberg-go v0.4.0` has no
+Variant support yet — the read path would go through `pqarrow`/`arrow-go`.)
+
+**It exposes BOTH an unboxed view API and an opt-in boxed API:**
+
+- **Unboxed / zero-copy navigation (the default):**
+  - `variant.Value` is a **`{value []byte, meta Metadata}` window**, *not* a
+    materialized tree. `New(meta, value []byte)` / `NewWithMetadata`.
+  - `Value.BasicType()` / `Value.Type()` read the header byte; `Value.Bytes()` /
+    `Metadata.Bytes()` hand back the raw slices.
+  - Array/object navigation returns **child `Value`s that are subslices into the same
+    backing buffer** — e.g. `ArrayValue.Value(i)` → `Value{meta, value:
+    v.value[dataStart+offset:]}`; `ObjectValue.FieldAt`/`ValueByKey`/`Values()` the
+    same. **Zero alloc, zero copy** — identical to how `base.Parse`/jsonparser
+    subslice today.
+  - Primitives read directly (`readExact[T]`); **strings and dictionary keys are
+    `unsafe.String` views** into the bytes (no copy); binary is a subslice.
+  - The **only** allocation in the whole navigation path is a one-time
+    `make([][]byte, dictSize)` in `Metadata.loadDictionary` — and even those entries
+    are subslices into the metadata bytes (no per-key string copy). Amortizable across
+    a shared dictionary.
+- **Boxed / materializing (opt-in):** `Value.Value() any` → Go values, and
+  `Value.MarshalJSON() ([]byte, error)` → JSON bytes. Even the boxed path is
+  restrained: **timestamps stay `arrow.Timestamp` (int64), not `time.Time`**; dates
+  `arrow.Date32` (int32); decimals as small `DecimalValue` structs (only 128-bit uses
+  `decimal128`); strings/binary as views/subslices. UUID is the one true per-value
+  allocation. So even here there's no `time.Time` / `big.Int` churn — just the `any`
+  interface boxing per call.
+
+**Implications for the design:**
+- We do **not** need to fork jsonparser or hand-roll a Variant decoder — the unboxed
+  view API is a ready-made, zero-alloc, `[]byte`-native navigator, cgo-free, already
+  in the dep tree.
+- This **de-risks 3D's "catch #2"** (inspection needs VARIANT navigation): that
+  navigator exists and is allocation-free for the view path — a `V`-tagged value can
+  be walked with `variant.Value` exactly as a JSON value is walked with jsonparser.
+- It confirms **3D's "catch #1"**: `variant.Value` inherently pairs a `value []byte`
+  with a `Metadata` (the dict), so a self-contained n1k1 value must carry both — which
+  is exactly `NewWithMetadata(meta, value)`.
+- `MarshalJSON()` is the ready-made **3A** decode-to-JSON (and the JSON-output side of
+  3B/3D). It allocates the JSON — inherent to producing JSON output.
+- Residual open question **Q1.3**: does `pqarrow` surface a Parquet Variant *column*
+  as the two binary sub-arrays (`metadata`,`value`) we can hand to `variant.New`, or
+  is column-level plumbing still needed? (The `variant` package clearly handles a
+  single value given the two byte slices; the column reader is the open part.)
 
 ---
 
@@ -301,6 +349,7 @@ Iceberg pushdown framework rather than bolting on beside it.
 
 - [0. TL;DR / thesis](#0-tldr--thesis)
 - [1. What VARIANT actually is](#1-what-variant-actually-is-grounding)
+  - [1.5 The Go library situation (arrow-go parquet/variant)](#15-the-go-library-situation--arrow-gov18-parquetvariant--researched-resolves-q12q13)
 - [2. Where VARIANT enters n1k1 (the boundary)](#2-where-variant-enters-n1k1-the-boundary)
 - [3. Three candidate representations](#3-three-candidate-representations)
   - [3A. Decode → plain JSON](#3a-decode-variant--plain-json-at-the-scan-boundary--phase-0)
@@ -314,9 +363,13 @@ Iceberg pushdown framework rather than bolting on beside it.
 
 ## 9. Research backlog (pull from §1/§5)
 
-- [ ] Confirm the Variant spec's primitive type-id table + physical encodings (Q1.1).
-- [ ] Survey Go decoders: `arrow-go`, `iceberg-go` Variant status; how a Variant column
-      surfaces through `pqarrow` today (Q1.2, Q1.3).
+- [x] Confirm the Variant spec's primitive type-id table + physical encodings (Q1.1) —
+      enumerated in `arrow-go/v18 parquet/variant` (`primitiveTypeFromHeader`).
+- [x] Survey Go decoders (Q1.2) — `arrow-go/v18 parquet/variant` is a ready-made,
+      cgo-free, **unboxed/zero-copy** decoder, already a transitive dep (§1.5).
+- [ ] Q1.3 (still open): does `pqarrow` surface a Variant *column* as the two binary
+      sub-arrays (`metadata`,`value`) ready for `variant.New`, or is column plumbing
+      needed? Write a tiny Variant-Parquet fixture and read it end-to-end.
 - [ ] Decide Phase-0 JSON projection rules per type (match cbq exactly; write a
       differential fixture: a small Variant Parquet file → expected JSON).
 - [ ] Prototype the sigil grammar; measure whether `base.Parse` can absorb it with no
