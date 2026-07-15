@@ -31,8 +31,10 @@ package records
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"unsafe"
 
@@ -301,6 +303,107 @@ func TestVariantParquetDeepNesting(t *testing.T) {
 	if !aliases(lat.Bytes(), got.Bytes()) {
 		t.Errorf("deep leaf bytes are NOT a subslice of the top-level value (navigation copied)")
 	}
+}
+
+// TestParquetReaderRendersVariantColumn drives the REAL records reader
+// (newParquetSource → Next) over a Parquet file with a VARIANT column, confirming the
+// Phase-0 wiring: appendArrowValueJSON now renders a VARIANT cell via variant.AppendJSON,
+// so each emitted record Doc is a JSON object with the variant field projected to JSON.
+func TestParquetReaderRendersVariantColumn(t *testing.T) {
+	mem := memory.DefaultAllocator
+	vt := extensions.NewDefaultVariantType()
+
+	mk := func(s string) variant.Value {
+		v, err := variant.ParseJSON(s, false)
+		if err != nil {
+			t.Fatalf("ParseJSON(%q): %v", s, err)
+		}
+		return v
+	}
+	ids := []string{"o1", "o2"}
+	orders := []variant.Value{
+		mk(`{"customer":{"address":{"city":"London","geo":{"lat":51.5,"lon":-0.12}},"name":"Ada"},` +
+			`"orderlines":[{"price":9.99,"qty":2,"sku":"A1"}]}`),
+		mk(`{"amt":9.99,"n":42}`),
+	}
+
+	// A realistic row shape: an `id` string column + an `order` VARIANT column.
+	idB := array.NewStringBuilder(mem)
+	defer idB.Release()
+	for _, s := range ids {
+		idB.Append(s)
+	}
+	idArr := idB.NewArray()
+	defer idArr.Release()
+
+	vB := extensions.NewVariantBuilder(mem, vt)
+	defer vB.Release()
+	for _, v := range orders {
+		vB.Append(v)
+	}
+	vArr := vB.NewArray()
+	defer vArr.Release()
+
+	schema := arrow.NewSchema([]arrow.Field{
+		{Name: "id", Type: arrow.BinaryTypes.String, Nullable: false},
+		{Name: "order", Type: vt, Nullable: true},
+	}, nil)
+	rec := array.NewRecord(schema, []arrow.Array{idArr, vArr}, int64(len(ids)))
+	defer rec.Release()
+	tbl := array.NewTableFromRecords(schema, []arrow.Record{rec})
+	defer tbl.Release()
+
+	path := filepath.Join(t.TempDir(), "orders.parquet")
+	out, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pqarrow.WriteTable(tbl, out, max(1, tbl.NumRows()),
+		parquet.NewWriterProperties(parquet.WithDictionaryDefault(false), parquet.WithStats(false)),
+		pqarrow.DefaultWriterProps()); err != nil {
+		t.Fatalf("WriteTable: %v", err)
+	}
+	_ = out.Close()
+
+	// Drive the actual reader.
+	src, err := newParquetSource(path, "doc")
+	if err != nil {
+		t.Fatalf("newParquetSource: %v", err)
+	}
+	defer src.Close()
+
+	var docs [][]byte
+	for {
+		var r Record
+		ok, err := src.Next(&r)
+		if err != nil {
+			t.Fatalf("Next: %v", err)
+		}
+		if !ok {
+			break
+		}
+		docs = append(docs, append([]byte(nil), r.Doc...)) // Doc is borrowed; copy it
+	}
+	if len(docs) != len(ids) {
+		t.Fatalf("read %d docs, want %d", len(docs), len(ids))
+	}
+
+	for i, doc := range docs {
+		var m map[string]any
+		if err := json.Unmarshal(doc, &m); err != nil {
+			t.Fatalf("row %d: doc is not JSON: %q: %v", i, doc, err)
+		}
+		if m["id"] != ids[i] {
+			t.Errorf("row %d: id=%v, want %v", i, m["id"], ids[i])
+		}
+		var wantOrder any
+		wj, _ := orders[i].MarshalJSON()
+		_ = json.Unmarshal(wj, &wantOrder)
+		if !reflect.DeepEqual(m["order"], wantOrder) {
+			t.Errorf("row %d: order projection wrong\n got %v\nwant %v\n doc=%s", i, m["order"], wantOrder, doc)
+		}
+	}
+	t.Logf("record[0] via records reader: %s", docs[0])
 }
 
 // roundTripVariants writes vals as a one-column VARIANT Parquet file and reads it back,

@@ -324,13 +324,16 @@ framework rather than beside it.
 
 ## 7. Phasing
 
-- **Phase 0 — read as JSON (MVP).** A `case *extensions.VariantArray` in
-  `appendArrowValueJSON` that emits the JSON projection into the reused `dst` via
-  `variant.AppendJSON` (the `./variant/` package — §2; zero-garbage for the JSON-native
-  + decimal core today, `date`/`timestamp`/`uuid`/`binary` fall back to `MarshalJSON`
-  until their dst-formatters land). Read-only, lossy-to-JSON, ~zero engine change
-  downstream. Unblocks querying Iceberg VARIANT columns. *Do this first; it may be
-  enough (Q5.2).*
+- **Phase 0 — read as JSON (MVP). DONE.** `records/parquet.go` `appendArrowValueJSON`
+  now has a `case *extensions.VariantArray` that emits the JSON projection into the
+  reused `dst` via `variant.AppendJSON` (the `./variant/` package — §2), and
+  `*extensions.VariantArray` was added to `fastRenderable` so a VARIANT-column batch
+  stays on the zero-garbage fast path (importing `extensions` also registers the
+  `parquet.variant` type so pqarrow surfaces the column as `*extensions.VariantArray`).
+  Read-only, lossy-to-JSON, ~zero engine change downstream. Validated end-to-end by
+  `records.TestParquetReaderRendersVariantColumn` (a Parquet `{id string, order VARIANT}`
+  file → the `newParquetSource` reader → JSON records `{"id":…,"order":{…}}`). Still on
+  the `MarshalJSON` fallback: `date`/`timestamp`/`uuid`/`binary` (§7 next).
 - **Phase 1 — the `V` carrier (fidelity).** Only if write-back or type-fidelity is
   wanted. Emit `V<metadata><value>` from the scan `case`; teach `base.Parse`/`ValKind`
   to detect `V` and lazily project (and the peek sites of Q5.5); JSON output decodes
@@ -371,9 +374,13 @@ framework rather than beside it.
       object/array walk, no `v.Value()` box; 128-bit decimal formatter byte-identical to
       `decimal128.Num.ToString`). Unit-tested in `variant/json_test.go`; integration-
       tested on Parquet-read values in `records/variant_append_test.go`.
-- [ ] **Phase 0**: wire `variant.AppendJSON` into a `case *extensions.VariantArray` in
-      `records/parquet.go appendArrowValueJSON`. Handle the shredded `typed_value` shape.
-      Add a fixture: Variant-Parquet keyspace → SQL++ query → expected JSON.
+- [x] **Phase 0**: `variant.AppendJSON` wired into `records/parquet.go`
+      `appendArrowValueJSON` (+ `fastRenderable`); end-to-end test
+      `records.TestParquetReaderRendersVariantColumn` (Parquet VARIANT column →
+      `newParquetSource` → JSON records).
+- [ ] Next: exercise a VARIANT column through a full SQL++ query over a Parquet
+      *keyspace* (glue-level), not just the `records` reader; handle the shredded
+      `typed_value` column shape.
 - [ ] Finish the fallback types: `date`/`timestamp`/`time`/`uuid`/`binary` dst-formatters
       in `./variant/` (small; each removes a `MarshalJSON` fallback).
 - [ ] Decide whether write-back / VARIANT-native semantics is a real requirement

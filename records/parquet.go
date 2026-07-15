@@ -35,9 +35,12 @@ import (
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
+	"github.com/apache/arrow-go/v18/arrow/extensions"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/apache/arrow-go/v18/parquet/file"
 	"github.com/apache/arrow-go/v18/parquet/pqarrow"
+
+	"github.com/couchbase/n1k1/variant"
 )
 
 // DisableFastTranspose forces the allocating array.RecordToJSON fallback instead
@@ -327,7 +330,8 @@ func fastRenderable(rec arrow.RecordBatch) bool {
 			*array.Int8, *array.Int16, *array.Int32, *array.Int64,
 			*array.Uint8, *array.Uint16, *array.Uint32, *array.Uint64,
 			*array.Float32, *array.Float64,
-			*array.String, *array.LargeString:
+			*array.String, *array.LargeString,
+			*extensions.VariantArray: // VARIANT → JSON via variant.AppendJSON (DESIGN-variant §7)
 		default:
 			return false
 		}
@@ -409,6 +413,15 @@ func appendArrowValueJSON(dst []byte, arr arrow.Array, i int) []byte {
 		return appendJSONString(dst, a.Value(i))
 	case *array.LargeString:
 		return appendJSONString(dst, a.Value(i))
+	case *extensions.VariantArray:
+		// Phase-0 VARIANT read: project the Variant value to JSON, zero-alloc, into the
+		// reused dst (see DESIGN-variant.md §7 and the ./variant/ package). A decode error
+		// degrades to null rather than failing the whole scan.
+		v, err := a.Value(i)
+		if err != nil {
+			return append(dst, "null"...)
+		}
+		return variant.AppendJSON(dst, v)
 	}
 	return append(dst, "null"...) // unreachable when gated by fastRenderable
 }
