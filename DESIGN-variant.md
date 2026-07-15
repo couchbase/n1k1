@@ -429,18 +429,84 @@ captures every typed scalar.
   (`" { [ - 0-9 t f n`); a length delimiter separates `metadata` from `value`; ensure
   the bytes survive `append` / `bufPre[:0]` reuse (they're just bytes).
 - **Q5.7 Type predicates / builders / VARIANT-native accessors.** Does SQL++ grow
-  `IS_DATE` / `TO_VARIANT` / typed accessors, or is VARIANT fully transparent? cbq has
-  none — n1k1-native surface to design or deliberately omit. **Broader direction (and a
-  reason the carrier is worthwhile independent of write-back):** once a `V` value flows
-  through the layers with its *typed* bytes intact (Phase-1 steps 1–2, shipped), new
-  builtins can operate on that fidelity that JSON simply can't express — e.g. an
-  exact 128-bit `DECIMAL_COMPARE(a,b)` / `DECIMAL_ADD` that avoids the float64 collapse
-  (Q5.3), true `DATE`/`TIMESTAMP` accessors, `IS_DATE`/`IS_DECIMAL`, or unit-preserving
-  temporal math. These would dispatch on the `V` tag (`base.VariantValType`) and read the
-  typed leaf via the nav hook — the same seams already in place. So the read-side carrier
-  is a foundation for VARIANT-native computation, not only for lossless write-back.
+  `IS_DATE` / `TO_VARIANT` / typed accessors + exact ops, or is VARIANT fully
+  transparent? cbq has none. **This is a reason the carrier is worthwhile independent of
+  write-back:** once a `V` value flows through the layers with its *typed* bytes intact
+  (Phase-1 steps 1–2, shipped), builtins can compute on fidelity JSON can't express —
+  exact 128-bit decimal math, real date/timestamp math — dispatching on the `V` tag
+  (`base.VariantValType`) and reading the typed leaf via the nav hook (seams already in
+  place). Function-naming prior art + a recommendation is in **§5.1**.
 - **Q5.8 Schema advertising.** How does a VARIANT column show itself in `.keyspaces` /
   column metadata so users know a field is VARIANT vs plain JSON?
+- **Q5.9 VARIANT in the JS (goja) extensions.** JS UDFs (`ext_goja.go`, `*.macro.js`)
+  today receive JSON-unmarshalled data; JS can't natively hold exact 128-bit decimals or
+  ns-timestamps (its number is float64, its Date is ms). How does a `*.js` UDF see/return
+  a VARIANT with fidelity? Direction in **§5.2**.
+
+### 5.1 Function naming — prior art + recommendation
+
+n1k1 *is* N1QL underneath, so match cbq/N1QL conventions first and borrow the
+VARIANT-specific bits from the systems that have them (names verified against vendor
+docs, July 2026):
+
+| system | type predicate | typed extract / convert | hoist to variant | type-of |
+|---|---|---|---|---|
+| **Snowflake** (coined SQL VARIANT) | `IS_DECIMAL`, `IS_DATE`, `IS_INTEGER`… (`IS_*`) | `AS_DECIMAL`, `AS_INTEGER`… (`AS_*`, strict → NULL on mismatch) + `TO_DECIMAL`/`TO_DATE` | `TO_VARIANT` / `::VARIANT` | `TYPEOF` → type-name string |
+| **Spark/Databricks** | (via `schema_of_variant`) | `variant_get(v, path, 'decimal(10,2)')` — type as **argument**; `try_variant_get` | `parse_json`, `to_variant_object` | `schema_of_variant[_agg]` |
+| **BigQuery** (JSON) | — | type-name **is** the fn: `INT64(j)`,`FLOAT64(j)`,`STRING(j)`,`BOOL(j)`; `LAX_*`; `JSON_VALUE(j,path RETURNING …)` | `TO_JSON` | `JSON_TYPE` |
+| **MongoDB/BSON** (Decimal128 native) | `$isNumber`, `$type` | `$toDecimal`, `$toDate`, `$convert` | — | `$type` |
+| **N1QL / cbq** (our base) | `ISNUMBER`, `ISSTRING`… (no `_`) | `TONUMBER`, `TOSTRING`… + `DATE_ADD_*`, `DATE_DIFF_*` families | — | `TYPE(x)` → type-name string |
+
+The regularities: **`IS<type>` predicate**, **`TO<type>` / `AS_<type>` extract-convert**,
+**`TYPE()`/`TYPEOF` type-of**, and — for advanced per-type ops — **type-prefixed families**
+(`DATE_ADD`, `TIMESTAMP_DIFF`; N1QL already does `DATE_*`). A meta-point: fully-typed
+systems rarely need a `DECIMAL_ADD` — they `CAST`/hoist to `DECIMAL` once and plain `+`
+stays exact because the *type* carries exactness through operators. n1k1's language has no
+decimal type (numbers are float64), so we either (a) grow a typed layer (big — adds types
+to the language) or (b) offer explicit exact-op functions over the `V` carrier (smaller).
+
+**Recommendation (b, reusing N1QL conventions):**
+- **Predicates** — extend N1QL's no-underscore family: `ISDECIMAL`, `ISDATE`,
+  `ISTIMESTAMP` (Snowflake's `IS_DECIMAL` is the same idea; be uniform — match N1QL).
+- **Hoist / convert** — `TO_VARIANT` (Snowflake) + per-type `TODECIMAL`/`TODATE` rhyming
+  with N1QL `TONUMBER`; a bare `DECIMAL(x)` constructor to pin a literal exact.
+- **Advanced ops** — type-prefix families as deliberate siblings of N1QL's `DATE_*`:
+  `DECIMAL_ADD`/`DECIMAL_SUB`/`DECIMAL_MUL`/`DECIMAL_DIV`/`DECIMAL_CMP`. They **auto-hoist**
+  float/string args to exact decimal (ergonomic; e.g. `DECIMAL_ADD('0.1','0.2')` → exact
+  `0.3`) and return a `V` decimal, so they compose.
+- **Type-of** — extend `TYPE(x)` to report the VARIANT subtype (`"decimal"`,`"date"`…).
+
+Nothing invented — every piece has a cbq or Snowflake precedent.
+
+### 5.2 VARIANT in the JS (goja) extensions
+
+The shaping constraint: **JavaScript can't natively hold the exact types** — its `Number`
+is float64 (a 128-bit `V` decimal loses precision the instant it becomes a JS number) and
+its `Date` is ms-precision. So "VARIANT support in JS" can't mean "JS gets typed values as
+native JS values" — that silently re-loses fidelity *inside* the JS engine.
+
+The well-trodden fix is **MongoDB Extended JSON (EJSON)**: represent a typed scalar as a
+**tagged JSON object carrying the exact value as a string** — `{"$numberDecimal":"9.99"}`,
+`{"$date":{"$numberLong":"…"}}`, `{"$binary":{"base64":"…"}}`, `{"$uuid":"…"}`. JS reads
+the tag, passes it through untouched (fidelity preserved) or processes it precisely with a
+bigdecimal lib, and returns the same tagged form to round-trip back to a `V`. (This is the
+"typed-JSON sigils" alternative from §4, specialized to the JS boundary — and the same tag
+vocabulary could double as an optional typed-`TO_JSON` output for §5.1.)
+
+The two filename ideas are **orthogonal axes**, keep them distinct:
+- **`*.variant.js` — fidelity marshaling (the real VARIANT story).** Args arrive in the
+  EJSON-tagged form; a tagged return re-encodes to `V`. Delivers typed round-trip through
+  JS despite JS's limits. It is *more* boundary work, so opt-in per-UDF (the filename gives
+  that for free). **Recommended.**
+- **`*.raw.js` — a perf / opaque-passthrough lane (not fidelity).** JS receives the raw
+  n1k1 `Val` bytes (JSON, or an opaque `V` blob) and returns raw bytes, skipping the boxed
+  `value.Value` `Convert` that dominates UDF cost today (per the JS-UDF-perf profiling).
+  Great for
+  pass-through/throughput; JS sees `V` as opaque without a decoder. A separate concern.
+
+Lean: build `*.variant.js` (EJSON-tagged) as the VARIANT surface; treat `*.raw.js` as an
+optional perf lane. One typed-JSON dialect (the EJSON tags) then unifies `*.variant.js`
+I/O, a typed-`TO_JSON` mode, and the §5.1 accessors.
 
 ---
 
@@ -537,6 +603,8 @@ framework rather than beside it.
   - [4.3 Design-principle check (hot-path allocs, no boxing)](#43-design-principle-check-hot-path-allocs-no-boxing)
   - [4.4 First-byte safety](#44-first-byte-safety-q56-confirmed)
 - [5. Open questions](#5-open-questions)
+  - [5.1 Function naming — prior art + recommendation](#51-function-naming--prior-art--recommendation)
+  - [5.2 VARIANT in the JS (goja) extensions](#52-variant-in-the-js-goja-extensions)
 - [6. Shredded VARIANT & pushdown](#6-shredded-variant--pushdown-reads-done-pushdown-later)
 - [7. Phasing](#7-phasing)
 - [9. Research backlog](#9-research-backlog)
