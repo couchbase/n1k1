@@ -310,9 +310,27 @@ at the cost of a shared-dict lifetime to manage.
 
 ---
 
-## 6. Shredded VARIANT & pushdown (later; note the synergy)
+## 6. Shredded VARIANT & pushdown (reads DONE; pushdown later)
 
-Parquet shredding splits a Variant into typed sub-columns. n1k1's Iceberg path already
+Parquet shredding splits a Variant into typed sub-columns: the storage struct grows a
+`typed_value` field (a mirror of the shred schema) alongside the residual `value`, so a
+row's data is split across the shredded columns and the leftover binary.
+
+**Reading shredded VARIANT needs no n1k1 code — it already works.** arrow-go's pqarrow
+reader reconstructs a shredded Parquet file back into a single `*extensions.VariantArray`
+(verified against arrow-go's own `pqarrow/variant_test.go`), and `VariantArray.Value(i)`
+routes through a `shreddedVariantReader` that *coalesces* the `typed_value` sub-columns
+and the residual `value` bytes into one complete `variant.Value`. Phase-0's scan `case`
+(`a.Value(i)` → `variant.AppendJSON`) is therefore oblivious to the physical layout: a
+shredded column projects to exactly the same JSON as a non-shredded one, so the whole
+SQL++ path is unchanged. (The only lost property is zero-alloc pass-through — coalescing
+a shredded row reconstructs a fresh `variant.Value`; non-shredded rows stay zero-alloc.)
+Proven end-to-end by `glue.TestVariantParquetShreddedKeyspaceQuery`: a genuinely-shredded
+keyspace (asserted `IsShredded()`) answers queries that touch both the shredded subfields
+(`customer.name`, `customer.tier`) and the residual ones (`customer.address`, `total`,
+`orderlines`).
+
+**Pushdown is the remaining work (perf, not correctness).** n1k1's Iceberg path already
 does **projection + predicate + partition pushdown** into the scan (DESIGN-data §7 /
 the `records.ScanPredicate` sidecar). A predicate on a shredded subfield
 (`WHERE v.customer.tier = 'gold'`) could push to the shredded physical column exactly
@@ -341,7 +359,9 @@ framework rather than beside it.
   provably unchanged.
 - **Phase 2 — VARIANT writer + shredded pushdown.** A Variant-binary encoder for
   write-back (trivial for pass-through `V` values — copy the bytes), and
-  predicate/projection pushdown into shredded subfields (§6).
+  predicate/projection pushdown into shredded subfields (§6). Note: *reading* shredded
+  VARIANT already works with zero n1k1 code (arrow-go coalesces `typed_value` + residual
+  `value` in `VariantArray.Value`; §6); Phase 2 is only the pushdown perf win.
 
 ---
 
@@ -355,7 +375,7 @@ framework rather than beside it.
   - [Alternatives considered](#alternatives-considered-condensed)
   - [Worked example — where the VARIANT-awareness lives](#worked-example--where-the-variant-awareness-actually-lives)
 - [5. Open questions](#5-open-questions)
-- [6. Shredded VARIANT & pushdown](#6-shredded-variant--pushdown-later-note-the-synergy)
+- [6. Shredded VARIANT & pushdown](#6-shredded-variant--pushdown-reads-done-pushdown-later)
 - [7. Phasing](#7-phasing)
 - [9. Research backlog](#9-research-backlog)
 
@@ -378,9 +398,14 @@ framework rather than beside it.
       `appendArrowValueJSON` (+ `fastRenderable`); end-to-end test
       `records.TestParquetReaderRendersVariantColumn` (Parquet VARIANT column →
       `newParquetSource` → JSON records).
-- [ ] Next: exercise a VARIANT column through a full SQL++ query over a Parquet
-      *keyspace* (glue-level), not just the `records` reader; handle the shredded
-      `typed_value` column shape.
+- [x] Exercise a VARIANT column through a full SQL++ query over a Parquet *keyspace*
+      (glue-level), not just the `records` reader — `glue.TestVariantParquetKeyspaceQuery`
+      (nested projection, string/decimal filters, array-element nav).
+- [x] Handle the shredded `typed_value` column shape — turns out to need **zero n1k1
+      code**: pqarrow reads a shredded file back as one `*extensions.VariantArray` and
+      `.Value(i)` coalesces `typed_value` + residual `value`, so Phase-0 is oblivious
+      (§6). Proven by `glue.TestVariantParquetShreddedKeyspaceQuery` (genuinely shredded,
+      `IsShredded()` asserted; queries hit both shredded and residual subfields).
 - [ ] Finish the fallback types: `date`/`timestamp`/`time`/`uuid`/`binary` dst-formatters
       in `./variant/` (small; each removes a `MarshalJSON` fallback).
 - [ ] Decide whether write-back / VARIANT-native semantics is a real requirement

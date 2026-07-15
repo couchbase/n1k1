@@ -35,11 +35,20 @@ import (
 )
 
 // writeVariantParquet writes a Parquet file at path with an `id` string column and an
-// `order` VARIANT column (built from the ordersJSON strings).
+// `order` VARIANT column (built from the ordersJSON strings), using a non-shredded
+// (default) variant layout.
 func writeVariantParquet(t *testing.T, path string, ids, ordersJSON []string) {
 	t.Helper()
+	writeVariantParquetVT(t, path, ids, ordersJSON, extensions.NewDefaultVariantType(), false)
+}
+
+// writeVariantParquetVT is the general writer: it builds the `order` VARIANT column with
+// the given variant type `vt` (default or shredded). When wantShredded is true it asserts
+// the built array is genuinely shredded, so a "shredded" fixture can't silently degrade
+// to the plain layout.
+func writeVariantParquetVT(t *testing.T, path string, ids, ordersJSON []string, vt *extensions.VariantType, wantShredded bool) {
+	t.Helper()
 	mem := memory.DefaultAllocator
-	vt := extensions.NewDefaultVariantType()
 
 	idB := array.NewStringBuilder(mem)
 	defer idB.Release()
@@ -60,6 +69,10 @@ func writeVariantParquet(t *testing.T, path string, ids, ordersJSON []string) {
 	}
 	vArr := vB.NewArray()
 	defer vArr.Release()
+
+	if got := vArr.(*extensions.VariantArray).IsShredded(); got != wantShredded {
+		t.Fatalf("IsShredded() = %v, want %v", got, wantShredded)
+	}
 
 	schema := arrow.NewSchema([]arrow.Field{
 		{Name: "id", Type: arrow.BinaryTypes.String, Nullable: false},
@@ -134,20 +147,109 @@ func TestVariantParquetKeyspaceQuery(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := runRowsCanon(t, sess, c.stmt)
-			want := make([]string, len(c.want))
-			for i, w := range c.want {
-				want[i] = canonRow(w)
-			}
-			sort.Strings(want)
-			if len(got) != len(want) {
-				t.Fatalf("%s: got %d rows %v, want %d %v", c.stmt, len(got), got, len(want), want)
-			}
-			for i := range got {
-				if got[i] != want[i] {
-					t.Errorf("%s: row %d = %s, want %s", c.stmt, i, got[i], want[i])
-				}
-			}
+			assertVariantRows(t, sess, c.stmt, c.want)
+		})
+	}
+}
+
+// assertVariantRows runs stmt and asserts the (order-normalized, sorted) result rows
+// equal want.
+func assertVariantRows(t *testing.T, sess *Session, stmt string, want []string) {
+	t.Helper()
+	got := runRowsCanon(t, sess, stmt)
+	w := make([]string, len(want))
+	for i := range want {
+		w[i] = canonRow(want[i])
+	}
+	sort.Strings(w)
+	if len(got) != len(w) {
+		t.Fatalf("%s: got %d rows %v, want %d %v", stmt, len(got), got, len(w), w)
+	}
+	for i := range got {
+		if got[i] != w[i] {
+			t.Errorf("%s: row %d = %s, want %s", stmt, i, got[i], w[i])
+		}
+	}
+}
+
+// TestVariantParquetShreddedKeyspaceQuery is the same full-stack check as
+// TestVariantParquetKeyspaceQuery, but the VARIANT column is *shredded*: the
+// customer.name/customer.tier subfields are promoted to typed Parquet sub-columns
+// (`typed_value`), while everything else (customer.address, total, orderlines) stays in
+// the residual `value` column. pqarrow reads the shredded file back as a single
+// *extensions.VariantArray and `.Value(i)` coalesces the typed sub-columns + residual
+// bytes into one variant.Value, so Phase-0's variant.AppendJSON — and therefore the
+// whole SQL++ path — is oblivious to the shredded physical layout. This test proves
+// queries hit both the shredded fields and the residual fields correctly.
+func TestVariantParquetShreddedKeyspaceQuery(t *testing.T) {
+	dir := t.TempDir()
+	ksDir := filepath.Join(dir, "default", "orders")
+	if err := os.MkdirAll(ksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Shred customer.name and customer.tier into typed sub-columns. customer.address
+	// (not in the schema) and the other top-level fields fall through to residual.
+	shredType := extensions.NewShreddedVariantType(arrow.StructOf(
+		arrow.Field{Name: "customer", Type: arrow.StructOf(
+			arrow.Field{Name: "name", Type: arrow.BinaryTypes.String},
+			arrow.Field{Name: "tier", Type: arrow.BinaryTypes.String},
+		)},
+	))
+
+	writeVariantParquetVT(t, filepath.Join(ksDir, "orders.parquet"),
+		[]string{"o1", "o2"},
+		[]string{
+			`{"customer":{"name":"Ada","tier":"gold","address":{"city":"London"}},"total":9.99,"orderlines":[{"sku":"A1","qty":2}]}`,
+			`{"customer":{"name":"Bo","tier":"silver","address":{"city":"Paris"}},"total":19.5,"orderlines":[{"sku":"B2","qty":1}]}`,
+		}, shredType, true)
+
+	sess, err := OpenSession(dir, "default")
+	if err != nil {
+		t.Fatalf("OpenSession: %v", err)
+	}
+
+	cases := []struct {
+		name string
+		stmt string
+		want []string
+	}{
+		{
+			// Projection of a SHREDDED subfield.
+			"shredded-name",
+			`SELECT o.id, o.order.customer.name AS name FROM orders o`,
+			[]string{`{"id":"o1","name":"Ada"}`, `{"id":"o2","name":"Bo"}`},
+		},
+		{
+			// Filter on a SHREDDED subfield.
+			"shredded-tier-filter",
+			`SELECT o.id FROM orders o WHERE o.order.customer.tier = "gold"`,
+			[]string{`{"id":"o1"}`},
+		},
+		{
+			// Filter on a RESIDUAL nested subfield (customer.address was not shredded)
+			// — proves the residual value bytes are coalesced back in.
+			"residual-address-filter",
+			`SELECT o.id FROM orders o WHERE o.order.customer.address.city = "Paris"`,
+			[]string{`{"id":"o2"}`},
+		},
+		{
+			// RESIDUAL top-level Decimal16-derived number.
+			"residual-total",
+			`SELECT o.order.total AS total FROM orders o WHERE o.order.total > 10`,
+			[]string{`{"total":19.5}`},
+		},
+		{
+			// RESIDUAL array element.
+			"residual-array-elem",
+			`SELECT o.order.orderlines[0].sku AS sku FROM orders o WHERE o.id = "o2"`,
+			[]string{`{"sku":"B2"}`},
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			assertVariantRows(t, sess, c.stmt, c.want)
 		})
 	}
 }
