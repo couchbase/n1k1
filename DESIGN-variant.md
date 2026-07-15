@@ -101,28 +101,24 @@ the naive path: `Value.MarshalJSON` boxes via `v.Value()` then calls reflection-
 boxing + intermediate maps/slices + reflect-marshal, per row. There is **no**
 `AppendJSON(dst)` / `io.Writer` variant in the package.
 ⇒ For n1k1's zero-garbage scan boundary, **do not** call `MarshalJSON` per row.
-Instead hand-roll a small `appendVariantJSON(dst []byte, v variant.Value) []byte` over
-the **unboxed view API** (`BasicType`/`Type` switch → read the primitive from
-`v.Bytes()` → append into `dst`; recurse objects/arrays) — the same
-append-into-reused-buffer pattern `appendArrowValueJSON` and base's canonical emitters
-already use. `MarshalJSON` stays useful as a *correctness oracle* in tests.
 
-**This is validated by a prototype** (`records/variant_append_test.go`,
-`appendVariantJSON`), which also surfaced exactly where the real work is:
-- Scalars append **zero-alloc** — `null`/`bool`/`int8..64`/`string`/short-string, and
-  `Decimal4/8` (int-coefficient + a `.` spliced `scale` digits from the right):
-  measured **0 allocs/op** vs `MarshalJSON`'s 2–15. This is the filter hot path.
-- The one meaty formatter left is **`Decimal16` (128-bit)** — because
-  `variant.ParseJSON` encodes *every fractional JSON number* as an exact 128-bit
-  decimal (`3.14159`, `51.5`, `0.1` are all `Decimal16`, not `double`). Rendering it to
-  JSON zero-alloc needs a `big.Int`-free 128-bit→digits routine appending into `dst`
-  (bounded, ~standard). Until written it takes the `MarshalJSON` fallback — which is why
-  the prototype's deep-object number (61 allocs vs `MarshalJSON`'s 147) is *dominated by
-  that fallback for the 3 fractional fields*, NOT by container boxing (a probe showed
-  descent is ~1 box/container-node; field/scalar iteration is 0).
-- Also to write: `date`/`timestamp`/`time`/`uuid`/`binary` dst-formatters (small), and
-  reading container offset-tables from `v.Bytes()` to drop the per-node descent box to
-  zero. All bounded — `MarshalJSON`'s allocation is entirely avoidable.
+**This is implemented in a small, dependency-free `./variant/` package** (arrow-go +
+stdlib only — reusable as a standalone library): `variant.AppendJSON(dst []byte, v
+av.Value) []byte`, a recursive projector that reads straight from the Variant
+value/metadata bytes and appends into a reusable buffer. It walks objects/arrays via
+the offset tables in `v.Bytes()` directly (so *no* `v.Value()` per-node interface box
+either), resolves keys via the zero-copy `Metadata.KeyAt`, and formats scalars from
+bytes — including the **128-bit `Decimal16`** formatter (`variant.AppendDecimal128`,
+`big.Int`-free 128-bit /10 loop, byte-identical to `decimal128.Num.ToString`). This
+matters because `variant.ParseJSON` encodes *every fractional JSON number* as an exact
+`Decimal16` (`3.14159`, `51.5`, `0.1` are all `Decimal16`, not `double`).
+
+Measured (`variant/json_test.go`, `records/variant_append_test.go`): **0 allocs/op**
+for scalars *and* a deep nested object (objects 4-deep + array-of-subobjects, with
+`Decimal16` fields), vs `MarshalJSON`'s 2–147. `MarshalJSON` is kept only as a test
+oracle — and even there `AppendJSON` is *more* correct on one edge: an empty array is
+`[]` (arrow-go's `MarshalJSON` emits `null`). Remaining: `date`/`timestamp`/`time`/
+`uuid`/`binary` still take a `MarshalJSON` fallback (each a small future dst-formatter).
 
 **Validated end-to-end** by `records/variant_parquet_test.go` (two tests):
 - A VARIANT-column Parquet file, read back via `pqarrow.ReadTable`, surfaces the
@@ -329,11 +325,12 @@ framework rather than beside it.
 ## 7. Phasing
 
 - **Phase 0 — read as JSON (MVP).** A `case *extensions.VariantArray` in
-  `appendArrowValueJSON` that emits the JSON projection into the reused `dst` via a
-  hand-rolled `appendVariantJSON` over the view API (using `MarshalJSON` only as the
-  correctness oracle in tests — §2 caveat). Read-only, lossy-to-JSON, ~zero engine
-  change downstream, and zero-garbage. Unblocks querying Iceberg VARIANT columns.
-  *Do this first; it may be enough (Q5.2).*
+  `appendArrowValueJSON` that emits the JSON projection into the reused `dst` via
+  `variant.AppendJSON` (the `./variant/` package — §2; zero-garbage for the JSON-native
+  + decimal core today, `date`/`timestamp`/`uuid`/`binary` fall back to `MarshalJSON`
+  until their dst-formatters land). Read-only, lossy-to-JSON, ~zero engine change
+  downstream. Unblocks querying Iceberg VARIANT columns. *Do this first; it may be
+  enough (Q5.2).*
 - **Phase 1 — the `V` carrier (fidelity).** Only if write-back or type-fidelity is
   wanted. Emit `V<metadata><value>` from the scan `case`; teach `base.Parse`/`ValKind`
   to detect `V` and lazily project (and the peek sites of Q5.5); JSON output decodes
@@ -368,16 +365,17 @@ framework rather than beside it.
 - [x] End-to-end read: `records/variant_parquet_test.go` — column surfaces as
       `*extensions.VariantArray`, zero-copy navigation (incl. deeply nested),
       byte-intact round-trip + `variant.New` rebuild, concrete JSON projections (§2).
-- [x] Prototype the zero-alloc emitter — `records/variant_append_test.go`
-      (`appendVariantJSON`): scalars (incl. Decimal4/8) append at **0 allocs/op** vs
-      `MarshalJSON`'s 2–15; feasibility + correctness (semantic-equal) proven. Surfaced
-      that fractional JSON numbers are `Decimal16`.
-- [ ] **Phase 0**: promote `appendVariantJSON` into a `case *extensions.VariantArray` in
-      `appendArrowValueJSON` (NOT `MarshalJSON` per row). Remaining formatters for full
-      zero-alloc: **`Decimal16` (128-bit → dst, the important one)**, then
-      `date`/`timestamp`/`uuid`/`binary`, then direct container-header reads to drop the
-      per-node descent box. Handle the shredded `typed_value` shape. Add a fixture:
-      Variant-Parquet keyspace → SQL++ query → expected JSON.
+- [x] Build the zero-alloc emitter as a reusable package — `./variant/`
+      (`variant.AppendJSON` + `variant.AppendDecimal128`, arrow-go+stdlib only). **0
+      allocs/op** for scalars AND deep nested objects incl. `Decimal16` (byte-level
+      object/array walk, no `v.Value()` box; 128-bit decimal formatter byte-identical to
+      `decimal128.Num.ToString`). Unit-tested in `variant/json_test.go`; integration-
+      tested on Parquet-read values in `records/variant_append_test.go`.
+- [ ] **Phase 0**: wire `variant.AppendJSON` into a `case *extensions.VariantArray` in
+      `records/parquet.go appendArrowValueJSON`. Handle the shredded `typed_value` shape.
+      Add a fixture: Variant-Parquet keyspace → SQL++ query → expected JSON.
+- [ ] Finish the fallback types: `date`/`timestamp`/`time`/`uuid`/`binary` dst-formatters
+      in `./variant/` (small; each removes a `MarshalJSON` fallback).
 - [ ] Decide whether write-back / VARIANT-native semantics is a real requirement
       (Q5.2) — gates everything past Phase 0.
 - [ ] For Phase 1: enumerate the direct `v[0]`-peek sites (Q5.5); prototype the `V`
