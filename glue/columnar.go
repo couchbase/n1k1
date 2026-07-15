@@ -364,6 +364,18 @@ func aggMetadataSpecs(aggExprs, aggCalcs []interface{}, colByName map[string]rec
 		switch name, _ := calc[0].(string); name {
 		case "count":
 			if isStarOperand(aggExprs[i]) {
+				// count-star reads a flat column's metadata value-count as the row count
+				// (DatastoreAggMetadata), so it's only valid when that count is KNOWN.
+				// A source without a reliable row count (Iceberg reports Count -1) must
+				// fall through to a real scan rather than answer -1.
+				if len(colByName) == 0 {
+					return nil, false
+				}
+				for _, cm := range colByName {
+					if cm.Count < 0 {
+						return nil, false
+					}
+				}
 				specs = append(specs, []interface{}{"count-star", "", ""})
 				continue
 			}

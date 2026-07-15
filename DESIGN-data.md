@@ -1687,8 +1687,22 @@ low-effort relative to its reach.
   `WithSnapshotAsOf`. Proven by `glue.TestIcebergTimeTravel` (id → old row count; future as-of →
   latest; pre-history as-of → error). (An as-of / bad id with no matching snapshot surfaces
   iceberg-go's natural error, since time-travel is explicit — unlike a pushdown hint.)
-- **Then:** the columnar `NextColumns` path for Iceberg batches; snapshot-history discovery
-  (list snapshot ids/timestamps) so `@<id>` is easy to find.
+- **Columnar `NextColumns`: ✅ DONE.** The Iceberg source now implements `ColumnBatchSource`
+  (`NextColumns`) and `ColumnsSource` (`Columns`), so an ungrouped aggregate over an Iceberg
+  table takes the same vectorized path as Parquet -- its Arrow batches feed the masked reducers
+  directly (no JSON transpose), reusing `arrowValueBytes`/`arrowValidityBytes`. `NextColumns`
+  realigns the batch's columns to the `ProjectColumns` order by name (iceberg-go may return
+  `WithSelectedFields` in schema order). `Columns` reports each field's Parquet-style physical
+  type (only INT64/DOUBLE enable the path) with Count/NullCount −1 and no Min/Max, so the
+  metadata-only MIN/MAX/COUNT path stays off and the vectorized SCAN answers the aggregate.
+  Fixing this exposed a latent bug: `count-star` in `aggMetadataSpecs` read `cols[0].Count`
+  without checking it was known, so an Iceberg COUNT(*) returned −1 -- now guarded to require a
+  known row count (Parquet always has one; Iceberg's −1 falls through to a real scan). Proven by
+  `glue.TestIcebergColumnarAgg` (SUM/AVG/WHERE take the columnar path + row-path parity) and
+  `records.TestIcebergNextColumns` (raw LE buffers in projected order). Not yet: exposing
+  Iceberg row-count / column stats from manifests (would let COUNT(*)/MIN/MAX answer from
+  metadata); the list/vector columnar path.
+- **Then:** snapshot-history discovery (list snapshot ids/timestamps) so `@<id>` is easy to find.
 - **Later, if warranted:** REST/Glue catalogs; S3 tables; delete-file correctness suite.
 - **Test note:** iceberg-go v0.4.0's `partitionedFanoutWriter` has an internal data race in a
   PARTITIONED `AppendTable` (its own write goroutines), so the partitioned-fixture builders skip

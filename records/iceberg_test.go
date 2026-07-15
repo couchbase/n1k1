@@ -20,8 +20,10 @@ package records
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -355,6 +357,99 @@ func TestIcebergInPruning(t *testing.T) {
 	}
 	if len(pruned) != 2 {
 		t.Fatalf("region IN ['eu','ap'] planned %d files, want 2", len(pruned))
+	}
+}
+
+// writeIcebergNumeric builds an {id int64, amt double} table (one snapshot).
+func writeIcebergNumeric(t *testing.T, dir string, amts []float64) string {
+	t.Helper()
+	ctx := context.Background()
+	loc := filepath.Join(dir, "tbl")
+	if err := os.MkdirAll(filepath.Join(loc, "metadata"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	os.MkdirAll(filepath.Join(loc, "data"), 0o755)
+	sch := iceberg.NewSchema(0,
+		iceberg.NestedField{ID: 1, Name: "id", Type: iceberg.PrimitiveTypes.Int64, Required: true},
+		iceberg.NestedField{ID: 2, Name: "amt", Type: iceberg.PrimitiveTypes.Float64, Required: false},
+	)
+	meta0, err := itable.NewMetadata(sch, iceberg.UnpartitionedSpec, itable.UnsortedSortOrder, loc, nil)
+	if err != nil {
+		t.Fatal("NewMetadata:", err)
+	}
+	loc0 := filepath.Join(loc, "metadata", "00000.metadata.json")
+	b0, _ := json.Marshal(meta0)
+	if err := os.WriteFile(loc0, b0, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fsF := iceio.LoadFSFunc(nil, loc)
+	id := itable.Identifier{"default", "t"}
+	cat := &fsIcebergCat{loc: loc, fsF: fsF, id: id}
+	cat.tbl = itable.New(id, meta0, loc0, fsF, cat)
+	as, err := itable.SchemaToArrowSchema(sch, nil, true, false)
+	if err != nil {
+		t.Fatal("SchemaToArrowSchema:", err)
+	}
+	bld := array.NewRecordBuilder(memory.DefaultAllocator, as)
+	defer bld.Release()
+	amtB := bld.Field(1).(*array.Float64Builder)
+	for i, a := range amts {
+		bld.Field(0).(*array.Int64Builder).Append(int64(i))
+		amtB.Append(a)
+	}
+	rec := bld.NewRecord()
+	defer rec.Release()
+	atbl := array.NewTableFromRecords(as, []arrow.Record{rec})
+	defer atbl.Release()
+	if _, err := cat.tbl.AppendTable(ctx, atbl, 1024, nil); err != nil {
+		t.Fatal("AppendTable:", err)
+	}
+	return cat.tbl.MetadataLocation()
+}
+
+// TestIcebergNextColumns exercises the ColumnBatchSource / ColumnsSource directly: Columns()
+// reports the physical types the planner keys on, and NextColumns yields the raw LE column
+// buffers in the ProjectColumns order (here reversed: amt, id) -- no JSON transpose.
+func TestIcebergNextColumns(t *testing.T) {
+	dir := t.TempDir()
+	metaLoc := writeIcebergNumeric(t, dir, []float64{1.5, 2.5, 3.5})
+
+	src, err := OpenIcebergTable(metaLoc, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer src.Close()
+
+	cs, ok := src.(ColumnsSource)
+	if !ok {
+		t.Fatal("Iceberg source is not a ColumnsSource")
+	}
+	byName := map[string]string{}
+	for _, cm := range cs.Columns() {
+		byName[cm.Name] = cm.Type
+	}
+	if byName["id"] != "INT64" || byName["amt"] != "DOUBLE" {
+		t.Fatalf("Columns() types = %v, want id INT64 / amt DOUBLE", byName)
+	}
+
+	// Project in reversed order to prove NextColumns realigns to the requested order.
+	if err := src.(ColumnsProjector).ProjectColumns([]string{"amt", "id"}); err != nil {
+		t.Fatal(err)
+	}
+	cols, _, rows, ok, err := src.(ColumnBatchSource).NextColumns()
+	if err != nil || !ok {
+		t.Fatalf("NextColumns: ok=%v err=%v", ok, err)
+	}
+	if rows != 3 || len(cols) != 2 {
+		t.Fatalf("NextColumns rows=%d cols=%d, want 3 and 2", rows, len(cols))
+	}
+	// cols[0] == amt (float64), cols[1] == id (int64).
+	for i := 0; i < rows; i++ {
+		amt := math.Float64frombits(binary.LittleEndian.Uint64(cols[0][i*8:]))
+		id := int64(binary.LittleEndian.Uint64(cols[1][i*8:]))
+		if id != int64(i) || amt != float64(i)+1.5 {
+			t.Errorf("row %d = (amt %v, id %d), want (%v, %d)", i, amt, id, float64(i)+1.5, i)
+		}
 	}
 }
 

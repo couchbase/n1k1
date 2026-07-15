@@ -30,6 +30,7 @@ package records
 
 import (
 	"context"
+	"fmt"
 	"iter"
 	"math"
 	"sync/atomic"
@@ -321,33 +322,46 @@ func (s *icebergSource) start() error {
 	return nil
 }
 
-func (s *icebergSource) Next(rec *Record) (bool, error) {
+// pullBatch lazily starts the scan, releases the previous batch (its buffers were borrowed),
+// and pulls the next one into s.cur. ok=false marks end-of-stream. Shared by the row path
+// (Next) and the columnar path (NextColumns) -- a source is used in one mode, not both.
+func (s *icebergSource) pullBatch() (arrow.RecordBatch, bool, error) {
 	if !s.started {
 		if err := s.start(); err != nil {
 			s.done = true
-			return false, err
+			return nil, false, err
 		}
 	}
+	if s.done {
+		return nil, false, nil
+	}
+	if s.cur != nil {
+		s.cur.Release()
+		s.cur = nil
+	}
+	batch, err, ok := s.next()
+	if !ok {
+		s.done = true
+		return nil, false, nil
+	}
+	if err != nil {
+		s.done = true
+		return nil, false, err
+	}
+	s.cur = batch
+	return batch, true, nil
+}
+
+func (s *icebergSource) Next(rec *Record) (bool, error) {
 	for s.li >= len(s.lines) {
-		if s.done {
-			return false, nil
-		}
-		if s.cur != nil {
-			s.cur.Release()
-			s.cur = nil
-		}
-		batch, err, ok := s.next()
-		if !ok {
-			s.done = true
-			return false, nil
-		}
+		batch, ok, err := s.pullBatch()
 		if err != nil {
-			s.done = true
 			return false, err
 		}
-		s.cur = batch
-		s.buf, err = arrowBatchToNDJSON(s.buf, batch)
-		if err != nil {
+		if !ok {
+			return false, nil
+		}
+		if s.buf, err = arrowBatchToNDJSON(s.buf, batch); err != nil {
 			return false, err
 		}
 		s.lines = splitNDJSON(s.buf, s.lines[:0])
@@ -359,6 +373,100 @@ func (s *icebergSource) Next(rec *Record) (bool, error) {
 	s.li++
 	s.row++
 	return true, nil
+}
+
+// NextColumns implements ColumnBatchSource: pull one Arrow batch and hand back each PROJECTED
+// column's raw little-endian value buffer + validity bitmap (borrowed from the batch, valid
+// until the next call / Close), in the ProjectColumns order -- so the vectorized aggregates
+// consume the Iceberg data with no JSON transpose, exactly like the Parquet source. Only
+// fixed-width 8-byte numeric columns are supported; anything else errors and the caller
+// falls back to the row path.
+func (s *icebergSource) NextColumns() (cols, valids [][]byte, rows int, ok bool, err error) {
+	batch, ok, err := s.pullBatch()
+	if err != nil || !ok {
+		return nil, nil, 0, false, err
+	}
+	order, err := s.columnOrder(batch)
+	if err != nil {
+		return nil, nil, 0, false, err
+	}
+	rows = int(batch.NumRows())
+	for _, ci := range order {
+		c := batch.Column(ci)
+		b, e := arrowValueBytes(c)
+		if e != nil {
+			return nil, nil, 0, false, e
+		}
+		cols = append(cols, b)
+		valids = append(valids, arrowValidityBytes(c))
+	}
+	return cols, valids, rows, true, nil
+}
+
+// columnOrder maps the projected field names (ProjectColumns order) to this batch's column
+// indices -- iceberg-go may return WithSelectedFields columns in schema order, but the
+// vectorized aggregates map columns positionally to the projected-names order, so we realign
+// by name. No projection => all columns in batch order.
+func (s *icebergSource) columnOrder(batch arrow.RecordBatch) ([]int, error) {
+	n := int(batch.NumCols())
+	if len(s.selected) == 0 {
+		order := make([]int, n)
+		for i := range order {
+			order[i] = i
+		}
+		return order, nil
+	}
+	sch := batch.Schema()
+	byName := make(map[string]int, n)
+	for i := 0; i < n; i++ {
+		byName[sch.Field(i).Name] = i
+	}
+	order := make([]int, 0, len(s.selected))
+	for _, name := range s.selected {
+		ci, ok := byName[name]
+		if !ok {
+			return nil, fmt.Errorf("records: projected column %q missing from Iceberg batch", name)
+		}
+		order = append(order, ci)
+	}
+	return order, nil
+}
+
+// Columns implements ColumnsSource: describe the table's top-level columns (name + a
+// Parquet-style physical type) from the schema, no data read -- enough for the planner to
+// decide the vectorized-aggregate path (which only fires on INT64/DOUBLE columns). Per-column
+// stats aren't surfaced (Count/NullCount -1, Min/Max nil), so the metadata-only MIN/MAX/COUNT
+// path stays off; the vectorized scan path handles the aggregation.
+func (s *icebergSource) Columns() []ColumnMeta {
+	fields := s.tbl.Schema().Fields()
+	out := make([]ColumnMeta, 0, len(fields))
+	for _, f := range fields {
+		out = append(out, ColumnMeta{
+			Name: f.Name, Type: icebergPhysType(f.Type), Count: -1, NullCount: -1,
+		})
+	}
+	return out
+}
+
+// icebergPhysType maps an Iceberg primitive type to the Parquet-style physical-type name the
+// columnar planner keys on. Only "INT64"/"DOUBLE" enable the vectorized path; everything else
+// (incl. nested types) maps to a distinct name so it stays on the row path.
+func icebergPhysType(t iceberg.Type) string {
+	switch t.String() {
+	case "long":
+		return "INT64"
+	case "double":
+		return "DOUBLE"
+	case "int":
+		return "INT32"
+	case "float":
+		return "FLOAT"
+	case "boolean":
+		return "BOOLEAN"
+	case "string":
+		return "BYTE_ARRAY"
+	}
+	return t.String()
 }
 
 func (s *icebergSource) Close() error {

@@ -393,6 +393,90 @@ func TestIcebergTimeTravel(t *testing.T) {
 	}
 }
 
+// writeIcebergAmounts builds an {id int64, amt double} table (one snapshot).
+func writeIcebergAmounts(t *testing.T, dir, name string, amts []float64) {
+	t.Helper()
+	ctx := context.Background()
+	loc := filepath.Join(dir, name)
+	if err := os.MkdirAll(filepath.Join(loc, "metadata"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	os.MkdirAll(filepath.Join(loc, "data"), 0o755)
+
+	sch := iceberg.NewSchema(0,
+		iceberg.NestedField{ID: 1, Name: "id", Type: iceberg.PrimitiveTypes.Int64, Required: true},
+		iceberg.NestedField{ID: 2, Name: "amt", Type: iceberg.PrimitiveTypes.Float64, Required: false},
+	)
+	meta0, err := itable.NewMetadata(sch, iceberg.UnpartitionedSpec, itable.UnsortedSortOrder, loc, nil)
+	if err != nil {
+		t.Fatal("NewMetadata:", err)
+	}
+	loc0 := filepath.Join(loc, "metadata", "00000.metadata.json")
+	b0, _ := json.Marshal(meta0)
+	if err := os.WriteFile(loc0, b0, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fsF := iceio.LoadFSFunc(nil, loc)
+	cat := &fsIcebergCat{loc: loc}
+	cat.tbl = itable.New(itable.Identifier{"default", name}, meta0, loc0, fsF, cat)
+
+	arrowSchema, err := itable.SchemaToArrowSchema(sch, nil, true, false)
+	if err != nil {
+		t.Fatal("SchemaToArrowSchema:", err)
+	}
+	bld := array.NewRecordBuilder(memory.DefaultAllocator, arrowSchema)
+	defer bld.Release()
+	amtB := bld.Field(1).(*array.Float64Builder)
+	for i, a := range amts {
+		bld.Field(0).(*array.Int64Builder).Append(int64(i))
+		amtB.Append(a)
+	}
+	rec := bld.NewRecord()
+	defer rec.Release()
+	atbl := array.NewTableFromRecords(arrowSchema, []arrow.Record{rec})
+	defer atbl.Release()
+	if _, err := cat.tbl.AppendTable(ctx, atbl, 1024, nil); err != nil {
+		t.Fatal("AppendTable:", err)
+	}
+}
+
+// TestIcebergColumnarAgg: an ungrouped aggregation over an Iceberg table takes the vectorized
+// columnar path (NextColumns -- no JSON transpose), and its results match the row path.
+func TestIcebergColumnarAgg(t *testing.T) {
+	root := t.TempDir()
+	writeIcebergAmounts(t, root, "sales", []float64{10, 20, 30, 40}) // ids 0..3.
+	rowsOf, done := runIceberg(t, root)
+	defer done()
+
+	before := atomic.LoadInt64(&AggColumnarApplied)
+	if g := rowsOf("SELECT SUM(e.amt) AS s FROM sales AS e"); len(g) != 1 || g[0] != `{"s":100}` {
+		t.Errorf("SUM(amt) = %v, want {\"s\":100}", g)
+	}
+	if atomic.LoadInt64(&AggColumnarApplied) <= before {
+		t.Error("ungrouped SUM over Iceberg did not take the columnar (NextColumns) path")
+	}
+
+	// SUM over a WHERE (the vectorized masked-predicate path reads both columns via NextColumns).
+	if g := rowsOf("SELECT SUM(e.amt) AS s FROM sales AS e WHERE e.id >= 2"); len(g) != 1 ||
+		g[0] != `{"s":70}` {
+		t.Errorf("SUM(amt) WHERE id>=2 = %v, want {\"s\":70}", g)
+	}
+
+	// AVG + SUM(id) also columnar.
+	if g := rowsOf("SELECT AVG(e.amt) AS a, SUM(e.id) AS s FROM sales AS e"); len(g) != 1 ||
+		g[0] != `{"a":25,"s":6}` {
+		t.Errorf("AVG(amt),SUM(id) = %v, want {\"a\":25,\"s\":6}", g)
+	}
+
+	// Parity with the row path.
+	DisableColumnarOptimize = true
+	defer func() { DisableColumnarOptimize = false }()
+	if g := rowsOf("SELECT SUM(e.amt) AS s FROM sales AS e WHERE e.id >= 2"); len(g) != 1 ||
+		g[0] != `{"s":70}` {
+		t.Errorf("row-path SUM = %v, want {\"s\":70}", g)
+	}
+}
+
 // TestIcebergProjectionPushdown: a query reading a subset of columns pushes WithSelectedFields
 // into the iceberg-go scan (IcebergProjectionApplied bumps) and still returns correct rows.
 func TestIcebergProjectionPushdown(t *testing.T) {
