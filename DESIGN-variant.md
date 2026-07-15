@@ -493,20 +493,49 @@ bigdecimal lib, and returns the same tagged form to round-trip back to a `V`. (T
 "typed-JSON sigils" alternative from §4, specialized to the JS boundary — and the same tag
 vocabulary could double as an optional typed-`TO_JSON` output for §5.1.)
 
-The two filename ideas are **orthogonal axes**, keep them distinct:
-- **`*.variant.js` — fidelity marshaling (the real VARIANT story).** Args arrive in the
-  EJSON-tagged form; a tagged return re-encodes to `V`. Delivers typed round-trip through
-  JS despite JS's limits. It is *more* boundary work, so opt-in per-UDF (the filename gives
-  that for free). **Recommended.**
-- **`*.raw.js` — a perf / opaque-passthrough lane (not fidelity).** JS receives the raw
-  n1k1 `Val` bytes (JSON, or an opaque `V` blob) and returns raw bytes, skipping the boxed
-  `value.Value` `Convert` that dominates UDF cost today (per the JS-UDF-perf profiling).
-  Great for
-  pass-through/throughput; JS sees `V` as opaque without a decoder. A separate concern.
+**Don't encode marshaling in the filename.** The loader family already spends the
+filename's *one* good metadata slot on **kind** (`.agg.js`/`.stream.js`/`.extract.js`/
+`.macro.js` → which loader + module contract). Marshaling — how a value crosses the JS
+boundary — is an *orthogonal* axis with values `json` (default) | `variant` | `raw`, and
+stacking it as a second suffix (`count.agg.variant.js`) is combinatorial (kind × mode)
+and order-ambiguous. Note `variant` and `raw` are two *values of one axis*, not two axes —
+the tell they should never be sibling suffixes. And no `*.ejson.js` synonym: pick one
+canonical value (`variant`); EJSON is just the wire form that mode uses.
 
-Lean: build `*.variant.js` (EJSON-tagged) as the VARIANT surface; treat `*.raw.js` as an
-optional perf lane. One typed-JSON dialect (the EJSON tags) then unifies `*.variant.js`
-I/O, a typed-`TO_JSON` mode, and the §5.1 accessors.
+- **`marshal: "variant"`** — args arrive EJSON-tagged; a tagged return re-encodes to `V`.
+  The real fidelity story (typed round-trip through JS despite its float64/ms limits). It
+  is *more* boundary work, so opt-in.
+- **`marshal: "raw"`** — the UDF gets the raw n1k1 `Val` bytes (JSON, or an opaque `V`
+  blob) and returns raw bytes, skipping the boxed `value.Value` `Convert` that dominates
+  UDF cost today (the JS-UDF-perf profiling). A perf / opaque-passthrough lane, not
+  fidelity.
+
+**Where to declare it — and the bigger DX win: one file, many functions.** The current
+loaders are 1-file-1-function (the filename *stem* is the function name; the kind suffix
+picks the contract; multi-part protocols use magic name suffixes — `NAME_init`/`_update`/
+`_final`). For *families* (`DECIMAL_*`, `DATE_*`) that's a file explosion and it has
+nowhere clean to put `marshal`. Evolve the contract to an **explicit multi-export
+module**: the filename becomes a bundle/namespace (`decimal.js`), and the module exports a
+manifest of entries, each self-describing its `name`, `kind` (scalar/agg/stream), and
+`marshal` — e.g.
+
+```js
+exports.functions = [
+  { name: "DECIMAL_ADD", marshal: "variant", fn: (a, b) => /* exact */ },
+  { name: "DECIMAL_CMP", marshal: "variant", fn: (a, b) => /* exact */ },
+  { name: "DECIMAL_SUM", marshal: "variant", kind: "aggregate", init, update, final },
+];
+```
+
+This puts **both** orthogonal axes (kind, marshal) per-export in the manifest — so
+filenames carry no functional metadata, `decimal.js` holds the whole `DECIMAL_*` family,
+and new modes/kinds never spawn new filename combos. Keep the existing 1:1 stem+suffix
+convention working (back-compat) for simple single-function files; the manifest is the
+scalable form. Prefer this explicit manifest over magic `foo`/`foo_variant` entry-name
+pairs — mode × the protocol names (`foo_variant_init`…) would itself go combinatorial.
+
+One EJSON tag dialect then unifies the `variant` marshal mode's I/O, an optional
+typed-`TO_JSON` output, and the §5.1 accessors.
 
 ---
 
