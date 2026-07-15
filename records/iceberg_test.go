@@ -322,6 +322,35 @@ func TestIcebergDayPartitionPruning(t *testing.T) {
 	}
 }
 
+// TestIcebergInPruning: an IN-list predicate produced by our converter prunes to just the
+// matching partitions (region IN ['eu','ap'] on a 3-partition table -> 2 files).
+func TestIcebergInPruning(t *testing.T) {
+	dir := t.TempDir()
+	metaLoc := writePartitionedFixture(t, dir, []string{"us", "eu", "ap"})
+
+	ctx := context.Background()
+	fsF := iceio.LoadFSFunc(nil, metaLoc)
+	tbl, err := itable.NewFromLocation(ctx, itable.Identifier{"iceberg", "t"}, metaLoc, fsF, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &icebergSource{ctx: ctx, tbl: tbl}
+	expr, ok := s.predicateToIceberg(ScanPredicate{
+		Mode:    "and",
+		Clauses: []ScanClause{{Field: "region", Op: "in", Consts: []interface{}{"eu", "ap"}}},
+	})
+	if !ok {
+		t.Fatal("predicateToIceberg returned ok=false for an IN list")
+	}
+	pruned, err := tbl.Scan(itable.WithRowFilter(expr)).PlanFiles(ctx)
+	if err != nil {
+		t.Fatal("PlanFiles:", err)
+	}
+	if len(pruned) != 2 {
+		t.Fatalf("region IN ['eu','ap'] planned %d files, want 2", len(pruned))
+	}
+}
+
 // TestIcebergPartitionPruning proves that a predicate produced by our converter
 // (predicateToIceberg) prunes partitions: on a table with one data file per region, an
 // `region = 'eu'` filter makes iceberg-go plan FEWER files than an unfiltered scan.

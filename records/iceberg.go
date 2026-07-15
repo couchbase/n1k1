@@ -164,35 +164,33 @@ func (s *icebergSource) clauseToIceberg(cl ScanClause) (iceberg.BooleanExpressio
 		return nil, false
 	}
 	ref := iceberg.Reference(cl.Field)
+
+	// Null tests are type-independent.
+	switch cl.Op {
+	case "isnull":
+		return iceberg.IsNull(ref), true
+	case "notnull":
+		return iceberg.NotNull(ref), true
+	}
+
+	// Comparisons + membership are typed: match the literal's Go type to the column's
+	// Iceberg type so the expression binds cleanly.
 	switch nf.Type.String() {
-	case "int", "long":
-		f, ok := cl.Const.(float64)
-		if !ok || f != math.Trunc(f) || math.IsInf(f, 0) {
-			return nil, false
-		}
-		if nf.Type.String() == "int" {
-			return icebergCmp(ref, cl.Op, int32(f))
-		}
-		return icebergCmp(ref, cl.Op, int64(f))
+	case "int":
+		return icebergClause[int32](ref, cl, toIntN[int32])
+	case "long":
+		return icebergClause[int64](ref, cl, toIntN[int64])
 	case "float":
-		f, ok := cl.Const.(float64)
-		if !ok {
-			return nil, false
-		}
-		return icebergCmp(ref, cl.Op, float32(f))
+		return icebergClause[float32](ref, cl, func(x interface{}) (float32, bool) {
+			f, ok := x.(float64)
+			return float32(f), ok
+		})
 	case "double":
-		f, ok := cl.Const.(float64)
-		if !ok {
-			return nil, false
-		}
-		return icebergCmp(ref, cl.Op, f)
-	case "string":
-		v, ok := cl.Const.(string)
-		if !ok {
-			return nil, false
-		}
-		return icebergCmp(ref, cl.Op, v)
-	case "date", "time", "timestamp", "timestamptz", "uuid":
+		return icebergClause[float64](ref, cl, func(x interface{}) (float64, bool) {
+			f, ok := x.(float64)
+			return f, ok
+		})
+	case "string", "date", "time", "timestamp", "timestamptz", "uuid":
 		// Temporal / uuid columns are the common PARTITION keys (e.g. day(event_ts)).
 		// SQL++ has no native date literal, so the constant arrives as a string; build a
 		// string-literal predicate and let iceberg-go coerce it to the column type during
@@ -200,24 +198,59 @@ func (s *icebergSource) clauseToIceberg(cl ScanClause) (iceberg.BooleanExpressio
 		// RFC3339 for tz, and uuids). A malformed string fails BindExpr in SetRowFilter and
 		// is dropped -- so a range filter on the partition source column still prunes
 		// partitions (iceberg-go's inclusive projection), while a bad one is simply ignored.
-		v, ok := cl.Const.(string)
-		if !ok {
-			return nil, false
-		}
-		return icebergCmp(ref, cl.Op, v)
+		return icebergClause[string](ref, cl, func(x interface{}) (string, bool) {
+			s, ok := x.(string)
+			return s, ok
+		})
 	case "boolean":
-		v, ok := cl.Const.(bool)
-		if !ok || (cl.Op != "eq" && cl.Op != "ne") {
-			return nil, false
+		if cl.Op != "eq" && cl.Op != "ne" {
+			return nil, false // ordering / membership on a bool isn't pushed.
 		}
-		return icebergCmp(ref, cl.Op, v)
+		return icebergClause[bool](ref, cl, func(x interface{}) (bool, bool) {
+			b, ok := x.(bool)
+			return b, ok
+		})
 	}
 	return nil, false
 }
 
-// icebergCmp maps a neutral op to the iceberg-go typed predicate constructor.
-func icebergCmp[T iceberg.LiteralType](ref iceberg.UnboundTerm, op string, v T) (iceberg.BooleanExpression, bool) {
-	switch op {
+// toIntN converts a JSON number (float64) to an integer type, requiring it be integral so
+// the integer kernel is exact (a fractional constant on an int column isn't pushed).
+func toIntN[T int32 | int64](x interface{}) (T, bool) {
+	f, ok := x.(float64)
+	if !ok || f != math.Trunc(f) || math.IsInf(f, 0) {
+		return 0, false
+	}
+	return T(f), true
+}
+
+// icebergClause builds a typed comparison or membership predicate, converting the clause's
+// constant(s) to T via conv. A conversion failure (wrong Go type, non-integral int) -> false.
+func icebergClause[T iceberg.LiteralType](ref iceberg.UnboundTerm, cl ScanClause,
+	conv func(interface{}) (T, bool)) (iceberg.BooleanExpression, bool) {
+	switch cl.Op {
+	case "in", "notin":
+		if len(cl.Consts) == 0 {
+			return nil, false
+		}
+		vs := make([]T, 0, len(cl.Consts))
+		for _, c := range cl.Consts {
+			v, ok := conv(c)
+			if !ok {
+				return nil, false
+			}
+			vs = append(vs, v)
+		}
+		if cl.Op == "in" {
+			return iceberg.IsIn(ref, vs...), true
+		}
+		return iceberg.NotIn(ref, vs...), true
+	}
+	v, ok := conv(cl.Const)
+	if !ok {
+		return nil, false
+	}
+	switch cl.Op {
 	case "eq":
 		return iceberg.EqualTo(ref, v), true
 	case "ne":

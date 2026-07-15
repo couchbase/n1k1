@@ -341,6 +341,44 @@ func TestIcebergPredicatePushdown(t *testing.T) {
 	}
 }
 
+// TestIcebergRicherPredicates: IN / != / IS [NOT] NULL all return correct rows, and at least
+// one of these richer shapes is genuinely pushed into the scan.
+func TestIcebergRicherPredicates(t *testing.T) {
+	root := t.TempDir()
+	writeIcebergTable(t, root, "events", []string{"disk full", "", "oom killed"}) // row 1 msg is NULL.
+	rowsOf, done := runIceberg(t, root)
+	defer done()
+
+	before := atomic.LoadInt64(&records.IcebergRowFilterApplied)
+
+	if g := rowsOf("SELECT e.id FROM events AS e WHERE e.msg IN ['disk full', 'oom killed']"); len(g) != 2 ||
+		g[0] != `{"id":0}` || g[1] != `{"id":2}` {
+		t.Errorf("IN list = %v, want id 0 and 2", g)
+	}
+	if g := rowsOf("SELECT e.id FROM events AS e WHERE e.id != 1"); len(g) != 2 ||
+		g[0] != `{"id":0}` || g[1] != `{"id":2}` {
+		t.Errorf("!= = %v, want id 0 and 2", g)
+	}
+	if g := rowsOf("SELECT e.id FROM events AS e WHERE e.msg IS NULL"); len(g) != 1 ||
+		g[0] != `{"id":1}` {
+		t.Errorf("IS NULL = %v, want id 1", g)
+	}
+	if g := rowsOf("SELECT e.id FROM events AS e WHERE e.msg IS NOT NULL"); len(g) != 2 ||
+		g[0] != `{"id":0}` || g[1] != `{"id":2}` {
+		t.Errorf("IS NOT NULL = %v, want id 0 and 2", g)
+	}
+	// A pushable predicate mixed with an unpushable one (a UDF-ish expr) still pushes the
+	// pushable conjunct (AND drops the rest).
+	if g := rowsOf("SELECT e.id FROM events AS e WHERE e.id >= 1 AND UPPER(e.msg) = 'OOM KILLED'"); len(g) != 1 ||
+		g[0] != `{"id":2}` {
+		t.Errorf("mixed AND = %v, want id 2", g)
+	}
+
+	if atomic.LoadInt64(&records.IcebergRowFilterApplied) <= before {
+		t.Error("no richer predicate was pushed into the iceberg-go scan")
+	}
+}
+
 // TestIcebergPushdownParity: pushed results must equal unpushed results (pushdown is a pure
 // optimization; the engine's filter/projection still runs).
 func TestIcebergPushdownParity(t *testing.T) {
@@ -352,6 +390,12 @@ func TestIcebergPushdownParity(t *testing.T) {
 		"SELECT e.id FROM events AS e WHERE e.id >= 1 AND e.msg = 'oom killed'",
 		"SELECT e.msg FROM events AS e WHERE e.id = 0 OR e.id = 2",
 		"SELECT COUNT(*) AS n FROM events AS e WHERE e.id < 2",
+		"SELECT e.id FROM events AS e WHERE e.msg IN ['disk full', 'oom killed']",
+		"SELECT e.id FROM events AS e WHERE e.id != 1",
+		"SELECT e.id FROM events AS e WHERE e.msg IS NULL",
+		"SELECT e.id FROM events AS e WHERE e.msg IS NOT NULL",
+		"SELECT e.id FROM events AS e WHERE e.id NOT IN [0, 1]",
+		"SELECT e.id FROM events AS e WHERE e.id >= 1 AND UPPER(e.msg) = 'OOM KILLED'",
 	}
 	for _, stmt := range stmts {
 		rp, doneP := runIceberg(t, root)

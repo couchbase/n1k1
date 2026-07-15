@@ -21,16 +21,23 @@ package records
 // downstream, so a source that applies it partially, loosely (returns a superset), or
 // not at all is always correct. That's what lets pushdown stay opt-in and best-effort.
 
-// ScanClause is one pushable comparison `Field <Op> Const`.
+// ScanClause is one pushable predicate on a single field. Op selects the shape:
+//   - comparison ("eq"/"ne"/"lt"/"le"/"gt"/"ge"): uses Const.
+//   - membership ("in"/"notin"): uses Consts.
+//   - null test ("isnull"/"notnull"): uses neither.
 type ScanClause struct {
-	Field string
-	Op    string      // "eq" | "ne" | "lt" | "le" | "gt" | "ge"
-	Const interface{} // float64 | string | bool
+	Field  string
+	Op     string        // eq|ne|lt|le|gt|ge|in|notin|isnull|notnull
+	Const  interface{}   // float64 | string | bool (comparisons)
+	Consts []interface{} // membership list (in/notin)
 }
 
-// ScanPredicate is a flat conjunction or disjunction of clauses -- a single comparison
-// is Mode "and" with one clause. Nested/mixed boolean structure isn't represented (such
-// a WHERE simply isn't pushed; the engine's filter still handles it).
+// ScanPredicate is a flat conjunction or disjunction of clauses -- a single predicate is
+// Mode "and" with one clause. It stays flat by design: under an AND, an unpushable conjunct
+// is simply omitted (that only WIDENS the pruning filter, which is safe -- the engine still
+// applies the real WHERE), so a mixed `pushable AND weird(...)` still prunes on the pushable
+// part. An OR is all-or-nothing (dropping a branch would NARROW the filter and could prune
+// matching rows), and genuinely nested boolean isn't represented (it just isn't pushed).
 type ScanPredicate struct {
 	Mode    string // "and" | "or"
 	Clauses []ScanClause

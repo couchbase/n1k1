@@ -1647,8 +1647,15 @@ low-effort relative to its reach.
   dropped). Timestamps render as ISO-8601, so the engine's residual string compare is
   chronological too. Proven by `records/iceberg_test.go` (`TestIcebergPartitionPruning`: identity
   partition, 3 files → 1; `TestIcebergDayPartitionPruning`: `day(ts)` partition, 3 files → 2 on a
-  `ts >= <cutoff>` filter) + `glue.TestIcebergTemporalPushdown` (end-to-end range query). TODO:
-  IN / NOT / string-range predicates; nested boolean.
+  `ts >= <cutoff>` filter) + `glue.TestIcebergTemporalPushdown` (end-to-end range query).
+- **Richer predicates: ✅ DONE.** Beyond `field <op> const`, the extractor now handles `IN [...]`
+  (→ `IsIn`), `!=` (cbq's `NOT(=)` → `NotEqualTo`), `NOT IN` (→ `NotIn`), and `IS [NOT] NULL`
+  (→ `IsNull`/`NotNull`) -- each also as the negation `NOT(...)`. And an AND now DROPS its
+  unpushable conjuncts instead of refusing the whole predicate (widening the pruning filter is
+  safe), so `id >= 1 AND UPPER(msg) = '…'` still prunes on `id >= 1`; an OR stays all-or-nothing
+  (dropping a branch would narrow it). Proven by `glue.TestIcebergRicherPredicates` (+ parity over
+  all shapes) and `records.TestIcebergInPruning` (IN prunes 3 files → 2). TODO: genuinely nested
+  boolean (`(a AND b) OR c`); LIKE-prefix → `StartsWith`.
 - **Then:** time-travel (snapshot by id / as-of, via `WithSnapshotID`/`WithSnapshotAsOf`); the
   columnar `NextColumns` path for Iceberg batches.
 - **Later, if warranted:** REST/Glue catalogs; S3 tables; delete-file correctness suite.

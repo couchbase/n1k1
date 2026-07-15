@@ -43,7 +43,7 @@ func scanRowFilterSpec(cond expression.Expression) (interface{}, bool) {
 	}
 	rawCls := make([]interface{}, len(pred.Clauses))
 	for i, cl := range pred.Clauses {
-		rawCls[i] = []interface{}{cl.Field, cl.Op, cl.Const}
+		rawCls[i] = []interface{}{cl.Field, cl.Op, cl.Const, cl.Consts}
 	}
 	return []interface{}{"row-filter", []interface{}{pred.Mode, rawCls}}, true
 }
@@ -71,22 +71,24 @@ func scanRowFilter(o *base.Op) (records.ScanPredicate, bool) {
 		cls := make([]records.ScanClause, 0, len(rawCls))
 		for _, rc := range rawCls {
 			c, ok := rc.([]interface{})
-			if !ok || len(c) != 3 {
+			if !ok || len(c) != 4 {
 				return records.ScanPredicate{}, false
 			}
 			field, _ := c[0].(string)
 			op, _ := c[1].(string)
-			cls = append(cls, records.ScanClause{Field: field, Op: op, Const: c[2]})
+			consts, _ := c[3].([]interface{})
+			cls = append(cls, records.ScanClause{Field: field, Op: op, Const: c[2], Consts: consts})
 		}
 		return records.ScanPredicate{Mode: mode, Clauses: cls}, true
 	}
 	return records.ScanPredicate{}, false
 }
 
-// extractScanPredicate reduces a filter condition to a flat AND/OR of `field <op> const`
-// comparisons (a lone comparison is mode "and", one clause). A nested/mixed boolean or a
-// non-pushable leaf -> ok=false (all-or-nothing, mirroring the columnar path): correctness
-// beats a partial push, and the engine's filter covers whatever isn't pushed.
+// extractScanPredicate reduces a filter condition to a flat AND/OR of pushable clauses
+// (comparison / IN / IS [NOT] NULL, plus their negations). A lone clause is mode "and" with
+// one clause. Under an AND an unpushable conjunct is dropped (widening the pruning filter is
+// safe); an OR must be fully pushable (dropping a branch narrows it, which could prune
+// matching rows) -- so a not-fully-pushable OR yields ok=false and nothing is pushed.
 func extractScanPredicate(cond expression.Expression) (records.ScanPredicate, bool) {
 	switch cond.(type) {
 	case *expression.And:
@@ -102,7 +104,7 @@ func extractScanPredicate(cond expression.Expression) (records.ScanPredicate, bo
 		}
 		return records.ScanPredicate{Mode: "or", Clauses: cls}, true
 	default:
-		cl, ok := pushableComparison(cond)
+		cl, ok := pushableClause(cond)
 		if !ok {
 			return records.ScanPredicate{}, false
 		}
@@ -110,57 +112,90 @@ func extractScanPredicate(cond expression.Expression) (records.ScanPredicate, bo
 	}
 }
 
-// flattenScanClauses collects comparison clauses from a tree of same-mode boolean nodes
-// (cbq nests `a AND b AND c` as And(And(a,b),c)). A different-mode node or a non-pushable
-// leaf -> ok=false.
+// flattenScanClauses collects clauses from a tree of same-mode boolean nodes (cbq nests
+// `a AND b AND c` as And(And(a,b),c)). AND: recurse into nested ANDs, DROP any operand that
+// isn't pushable (a nested OR, a UDF, ...) -- ok as long as ≥1 clause survives. OR: every
+// operand must be a pushable clause or a nested OR (all-or-nothing); a nested AND or an
+// unpushable leaf -> ok=false.
 func flattenScanClauses(e expression.Expression, mode string) ([]records.ScanClause, bool) {
-	var ops expression.Expressions
 	switch n := e.(type) {
 	case *expression.And:
 		if mode != "and" {
-			return nil, false
+			return nil, false // a nested AND under an OR can't be pushed as a flat OR.
 		}
-		ops = n.Operands()
+		var out []records.ScanClause
+		for _, o := range n.Operands() {
+			if sub, ok := flattenScanClauses(o, "and"); ok {
+				out = append(out, sub...) // else DROP this conjunct (widen -- safe).
+			}
+		}
+		return out, len(out) > 0
 	case *expression.Or:
 		if mode != "or" {
-			return nil, false
+			return nil, false // signals the caller to DROP this OR conjunct under an AND.
 		}
-		ops = n.Operands()
+		var out []records.ScanClause
+		for _, o := range n.Operands() {
+			sub, ok := flattenScanClauses(o, "or")
+			if !ok {
+				return nil, false // OR is all-or-nothing.
+			}
+			out = append(out, sub...)
+		}
+		return out, true
 	default:
-		cl, ok := pushableComparison(e)
+		cl, ok := pushableClause(e)
 		if !ok {
 			return nil, false
 		}
 		return []records.ScanClause{cl}, true
 	}
-	var out []records.ScanClause
-	for _, o := range ops {
-		sub, ok := flattenScanClauses(o, mode)
-		if !ok {
-			return nil, false
-		}
-		out = append(out, sub...)
-	}
-	return out, true
 }
 
-// pushableComparison reduces one comparison to (field, op, const), orienting so the field is
-// on the left (a `c < field` becomes `field > c`). cbq normalizes `>`/`>=` to LT/LE with
-// swapped operands, so only Eq/LT/LE appear; the orientation below recovers gt/ge. One side
-// must be a bare keyspace field, the other a numeric/string/bool constant.
-func pushableComparison(cond expression.Expression) (records.ScanClause, bool) {
-	var a, b expression.Expression
-	var op string
-	switch e := cond.(type) {
+// pushableClause reduces one leaf expression to a ScanClause: a comparison, an IN list, an
+// IS [NOT] NULL, or a NOT of any of those (cbq expresses `!=` as NOT(=) and `NOT IN` as
+// NOT(IN)). ok=false for anything else.
+func pushableClause(e expression.Expression) (records.ScanClause, bool) {
+	switch n := e.(type) {
 	case *expression.Eq:
-		a, b, op = e.First(), e.Second(), "eq"
+		return orientComparison(n.First(), n.Second(), "eq")
 	case *expression.LT:
-		a, b, op = e.First(), e.Second(), "lt"
+		return orientComparison(n.First(), n.Second(), "lt")
 	case *expression.LE:
-		a, b, op = e.First(), e.Second(), "le"
-	default:
-		return records.ScanClause{}, false
+		return orientComparison(n.First(), n.Second(), "le")
+	case *expression.In:
+		field, ok := bareFieldOfExpr(n.First())
+		if !ok {
+			return records.ScanClause{}, false
+		}
+		consts, ok := constListOfExpr(n.Second())
+		if !ok {
+			return records.ScanClause{}, false
+		}
+		return records.ScanClause{Field: field, Op: "in", Consts: consts}, true
+	case *expression.IsNull:
+		if field, ok := bareFieldOfExpr(n.Operand()); ok {
+			return records.ScanClause{Field: field, Op: "isnull"}, true
+		}
+	case *expression.IsNotNull:
+		if field, ok := bareFieldOfExpr(n.Operand()); ok {
+			return records.ScanClause{Field: field, Op: "notnull"}, true
+		}
+	case *expression.Not:
+		if cl, ok := pushableClause(n.Operand()); ok {
+			if neg, ok := negateOp(cl.Op); ok {
+				cl.Op = neg
+				return cl, true
+			}
+		}
 	}
+	return records.ScanClause{}, false
+}
+
+// orientComparison builds a comparison clause with the field on the left, recovering gt/ge
+// when the field is the RIGHT operand (cbq normalizes `>`/`>=` to swapped LT/LE). One side
+// must be a bare keyspace field, the other a scalar constant.
+func orientComparison(a, b expression.Expression, op string) (records.ScanClause, bool) {
 	if field, ok := bareFieldOfExpr(a); ok {
 		if k, ok := constOfExpr(b); ok {
 			return records.ScanClause{Field: field, Op: op, Const: k}, true
@@ -172,6 +207,35 @@ func pushableComparison(cond expression.Expression) (records.ScanClause, bool) {
 		}
 	}
 	return records.ScanClause{}, false
+}
+
+// negateOp returns the op of NOT(clause). Ordering flips account for SQL three-valued logic
+// only as a pruning HINT (the engine applies the real predicate): for every row the real
+// NOT(x<c) keeps, x>=c holds, so pruning by x>=c is sound.
+func negateOp(op string) (string, bool) {
+	switch op {
+	case "eq":
+		return "ne", true
+	case "ne":
+		return "eq", true
+	case "lt":
+		return "ge", true
+	case "le":
+		return "gt", true
+	case "gt":
+		return "le", true
+	case "ge":
+		return "lt", true
+	case "in":
+		return "notin", true
+	case "notin":
+		return "in", true
+	case "isnull":
+		return "notnull", true
+	case "notnull":
+		return "isnull", true
+	}
+	return "", false
 }
 
 // flipOp reverses a comparison for when the field is the RIGHT operand (`c < field`).
@@ -215,4 +279,29 @@ func constOfExpr(e expression.Expression) (interface{}, bool) {
 		}
 	}
 	return nil, false
+}
+
+// constListOfExpr returns the scalar elements of a constant array expression (the RHS of an
+// `IN [...]`), or ok=false if it isn't a constant array of scalars. Works whether cbq folded
+// the list to a constant value or left it as an all-constant ArrayConstruct (Value() covers
+// both). A non-scalar element (nested array/object/null) makes the whole list unpushable.
+func constListOfExpr(e expression.Expression) ([]interface{}, bool) {
+	v := e.Value()
+	if v == nil || v.Type() != value.ARRAY {
+		return nil, false
+	}
+	arr, ok := v.Actual().([]interface{})
+	if !ok || len(arr) == 0 {
+		return nil, false
+	}
+	out := make([]interface{}, 0, len(arr))
+	for _, el := range arr {
+		switch el.(type) {
+		case float64, string, bool:
+			out = append(out, el)
+		default:
+			return nil, false
+		}
+	}
+	return out, true
 }
