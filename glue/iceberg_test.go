@@ -27,6 +27,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/apache/arrow-go/v18/arrow"
@@ -35,6 +36,8 @@ import (
 	iceberg "github.com/apache/iceberg-go"
 	iceio "github.com/apache/iceberg-go/io"
 	itable "github.com/apache/iceberg-go/table"
+
+	"github.com/couchbase/n1k1/records"
 )
 
 // fsIcebergCat is a minimal filesystem CatalogIO: a commit applies the updates to the base
@@ -175,6 +178,124 @@ func TestIcebergKeyspaceQuery(t *testing.T) {
 	// COUNT(*) over the table.
 	if g := rowsOf("SELECT COUNT(*) AS n FROM events"); len(g) != 1 || g[0] != `{"n":3}` {
 		t.Errorf(`COUNT(*) = %v, want [{"n":3}]`, g)
+	}
+}
+
+// runIceberg opens a session over root and returns a helper that runs a statement and
+// returns its rows sorted.
+func runIceberg(t *testing.T, root string) (func(string) []string, func()) {
+	t.Helper()
+	s, err := OpenSession(root, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rowsOf := func(stmt string) []string {
+		t.Helper()
+		res, err := s.Run(stmt)
+		if err != nil {
+			t.Fatalf("Run(%q): %v", stmt, err)
+		}
+		got := make([]string, len(res.Rows))
+		for i, r := range res.Rows {
+			got[i] = string(r)
+		}
+		sort.Strings(got)
+		return got
+	}
+	return rowsOf, func() { s.Close() }
+}
+
+// TestIcebergProjectionPushdown: a query reading a subset of columns pushes WithSelectedFields
+// into the iceberg-go scan (IcebergProjectionApplied bumps) and still returns correct rows.
+func TestIcebergProjectionPushdown(t *testing.T) {
+	root := t.TempDir()
+	writeIcebergTable(t, root, "events", []string{"disk full", "slow query", "oom killed"})
+	rowsOf, done := runIceberg(t, root)
+	defer done()
+
+	before := atomic.LoadInt64(&records.IcebergProjectionApplied)
+	got := rowsOf("SELECT e.id FROM events AS e") // reads only `id`, not `msg`.
+	want := []string{`{"id":0}`, `{"id":1}`, `{"id":2}`}
+	if len(got) != len(want) {
+		t.Fatalf("projected rows = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("row %d = %s, want %s", i, got[i], want[i])
+		}
+	}
+	if atomic.LoadInt64(&records.IcebergProjectionApplied) <= before {
+		t.Error("projection was not pushed into the iceberg-go scan")
+	}
+}
+
+// TestIcebergPredicatePushdown: numeric and string WHEREs push WithRowFilter into the scan
+// (IcebergRowFilterApplied bumps) and return the same rows as with pushdown disabled.
+func TestIcebergPredicatePushdown(t *testing.T) {
+	root := t.TempDir()
+	writeIcebergTable(t, root, "events", []string{"disk full", "slow query", "oom killed"})
+	rowsOf, done := runIceberg(t, root)
+	defer done()
+
+	// Numeric predicate.
+	before := atomic.LoadInt64(&records.IcebergRowFilterApplied)
+	if g := rowsOf("SELECT e.id FROM events AS e WHERE e.id = 2"); len(g) != 1 ||
+		g[0] != `{"id":2}` {
+		t.Errorf(`WHERE id=2 = %v, want [{"id":2}]`, g)
+	}
+	if atomic.LoadInt64(&records.IcebergRowFilterApplied) <= before {
+		t.Error("numeric predicate was not pushed into the iceberg-go scan")
+	}
+
+	// String equality predicate.
+	before = atomic.LoadInt64(&records.IcebergRowFilterApplied)
+	if g := rowsOf("SELECT e.id FROM events AS e WHERE e.msg = 'oom killed'"); len(g) != 1 ||
+		g[0] != `{"id":2}` {
+		t.Errorf(`WHERE msg='oom killed' = %v, want [{"id":2}]`, g)
+	}
+	if atomic.LoadInt64(&records.IcebergRowFilterApplied) <= before {
+		t.Error("string predicate was not pushed into the iceberg-go scan")
+	}
+
+	// Range predicate (cbq normalizes id >= 1 to a LT/LE-swapped form).
+	if g := rowsOf("SELECT e.id FROM events AS e WHERE e.id >= 1"); len(g) != 2 {
+		t.Errorf(`WHERE id>=1 = %v, want 2 rows`, g)
+	}
+}
+
+// TestIcebergPushdownParity: pushed results must equal unpushed results (pushdown is a pure
+// optimization; the engine's filter/projection still runs).
+func TestIcebergPushdownParity(t *testing.T) {
+	root := t.TempDir()
+	writeIcebergTable(t, root, "events", []string{"disk full", "slow query", "oom killed", ""})
+
+	stmts := []string{
+		"SELECT e.id, e.msg FROM events AS e WHERE e.id = 2",
+		"SELECT e.id FROM events AS e WHERE e.id >= 1 AND e.msg = 'oom killed'",
+		"SELECT e.msg FROM events AS e WHERE e.id = 0 OR e.id = 2",
+		"SELECT COUNT(*) AS n FROM events AS e WHERE e.id < 2",
+	}
+	for _, stmt := range stmts {
+		rp, doneP := runIceberg(t, root)
+		pushed := rp(stmt)
+		doneP()
+
+		DisableRowFilterPushdown = true
+		DisableColumnProjection = true
+		ru, doneU := runIceberg(t, root)
+		unpushed := ru(stmt)
+		doneU()
+		DisableRowFilterPushdown = false
+		DisableColumnProjection = false
+
+		if len(pushed) != len(unpushed) {
+			t.Fatalf("%q: pushed %v != unpushed %v", stmt, pushed, unpushed)
+		}
+		for i := range pushed {
+			if pushed[i] != unpushed[i] {
+				t.Errorf("%q row %d: pushed %s != unpushed %s", stmt, i, pushed[i], unpushed[i])
+			}
+		}
 	}
 }
 

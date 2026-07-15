@@ -981,6 +981,16 @@ func (c *Conv) VisitFilter(o *plan.Filter) (interface{}, error) {
 	if c.sawFTS {
 		cond = stripSearch(cond)
 	}
+	// Predicate pushdown (DESIGN-data.md §7): when this filter sits directly above a
+	// records scan, attach a pushable form of the WHERE to the scan op so a source that
+	// can prune (e.g. Iceberg, skipping whole data files by manifest stats) does less
+	// work. The filter op below is kept unchanged, so the engine still applies the real
+	// WHERE -- the pushdown is a pure optimization. See scan_pushdown.go.
+	if !DisableRowFilterPushdown && c.TopOp != nil && c.TopOp.Kind == "datastore-scan-records" {
+		if spec, ok := scanRowFilterSpec(cond); ok {
+			c.TopOp.Params = append(c.TopOp.Params, spec)
+		}
+	}
 	return c.TopPush(o, &base.Op{
 		Kind:   "filter",
 		Labels: c.TopOp.Labels,

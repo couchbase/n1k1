@@ -323,6 +323,10 @@ var DisableColumnProjection bool
 // a projection-capable source (test observability).
 var ColumnProjectionApplied int64
 
+// RowFilterPushdownApplied counts how many scans handed a predicate to a RowFilterer
+// source (test observability; the source may still drop an unconvertible predicate).
+var RowFilterPushdownApplied int64
+
 // scanProjectColumns returns the pushdown field set VisitFetch attached to a
 // datastore-scan-records op, or nil if none.
 func scanProjectColumns(o *base.Op) []string {
@@ -388,6 +392,18 @@ func DatastoreScanRecords(o *base.Op, vars *base.Vars,
 		if cp, ok := src.(records.ColumnsProjector); ok {
 			if err := cp.ProjectColumns(names); err == nil {
 				atomic.AddInt64(&ColumnProjectionApplied, 1)
+			}
+		}
+	}
+
+	// Predicate pushdown (DESIGN-data.md §7): if VisitFilter attached a pushable WHERE
+	// and the source can prune (e.g. Iceberg), hand it over. Best-effort -- a source that
+	// can't (or drops an unconvertible predicate) just reads more; the engine's filter op
+	// above still applies the real WHERE, so this is always safe.
+	if pred, ok := scanRowFilter(o); ok {
+		if rf, ok := src.(records.RowFilterer); ok {
+			if err := rf.SetRowFilter(pred); err == nil {
+				atomic.AddInt64(&RowFilterPushdownApplied, 1)
 			}
 		}
 	}

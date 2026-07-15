@@ -1542,8 +1542,9 @@ with an `IcebergMetadata()` accessor, which `KeyspaceRecordsOpen` routes to
 keyspace `iceberg` (a distinct `KeyspaceIceberg` framing) rather than mis-counting its
 metadata/data files. Detection is pure-Go (links in every build incl. wasm); the read path
 is `!js` with a wasm stub. Proven end-to-end by `glue/iceberg_test.go` (full-row + projected
-+ filtered + aggregate queries through a session). Still NO pushdown/time-travel/catalogs
-(the next steps below). LIMITATION: a single dir that mixes Iceberg tables AND loose flat
++ filtered + aggregate queries through a session). Projection + predicate pushdown now ALSO
+wired (see phasing below); still NO time-travel/catalogs (the next steps below). LIMITATION:
+a single dir that mixes Iceberg tables AND loose flat
 record files resolves the tables only (flat discovery is skipped once a table is found).
 
 A *table format* sits ABOVE the file formats of §1: Iceberg is a metadata layer over a
@@ -1623,8 +1624,21 @@ low-effort relative to its reach.
   `maybeIcebergTable` + a `KeyspaceRecordsOpen` route make an Iceberg table dir (or a dir of
   tables) a FROM-able keyspace, so `SELECT * FROM <iceberg-table>` runs; `.tables`/`.schema`
   tag it `iceberg`. Proven by `glue/iceberg_test.go`. Still TODO: measure vs a plain Parquet dir.
-- **Then:** projection + predicate + partition pushdown (columns/WHERE → the scan);
-  time-travel (snapshot by id / as-of); the columnar `NextColumns` path for Iceberg batches.
+- **Projection + predicate pushdown: ✅ DONE** — the Iceberg source builds its scan LAZILY, so
+  a projection (`ColumnsProjector`, from cbq's cover analysis / `EarlyProjection`) feeds
+  `WithSelectedFields` (read only the needed columns) and a WHERE feeds `WithRowFilter` (prune
+  whole data files by manifest column stats). A NEW neutral `records.ScanPredicate` +
+  `records.RowFilterer` sidecar carries the WHERE (glue extracts a flat AND/OR of
+  `field <op> const` in `VisitFilter` → `glue/scan_pushdown.go`, attaches it to the scan op;
+  `DatastoreScanRecords` delivers it). Pushdown is a pure HINT: the `filter` op is kept, so the
+  engine still applies the real WHERE — an absent/partial/loose push is always correct
+  (`icebergSource.SetRowFilter` drops any unconvertible clause; a partial OR drops the whole
+  predicate; the built expression is pre-`BindExpr`-validated so a bad filter can never fail
+  the scan). Counters `records.IcebergProjectionApplied` / `IcebergRowFilterApplied` +
+  `glue.RowFilterPushdownApplied`; parity proven by `glue/iceberg_test.go`. TODO: partition
+  pushdown (hidden-partition transforms); IN / NOT / string-range; nested boolean.
+- **Then:** time-travel (snapshot by id / as-of, via `WithSnapshotID`/`WithSnapshotAsOf`); the
+  columnar `NextColumns` path for Iceberg batches.
 - **Later, if warranted:** REST/Glue catalogs; S3 tables; delete-file correctness suite.
 - **Verdict:** feasible, surprisingly low-effort for read-only (the heavy lifting is a
   cgo-free dep we already carry), and useful for the analytic direction — worth the spike to
