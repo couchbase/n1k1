@@ -520,6 +520,43 @@ func TestIcebergNestedBoolean(t *testing.T) {
 	}
 }
 
+// TestIcebergLikePrefix: `field LIKE 'prefix%'` pushes as StartsWith and returns correct
+// rows; non-prefix LIKE (leading/interior wildcard, `_`) still returns correct rows (just
+// not pushed); NOT LIKE 'prefix%' works via De Morgan.
+func TestIcebergLikePrefix(t *testing.T) {
+	root := t.TempDir()
+	writeIcebergTable(t, root, "events", []string{"disk full", "disk slow", "oom killed"})
+	rowsOf, done := runIceberg(t, root)
+	defer done()
+
+	before := atomic.LoadInt64(&records.IcebergRowFilterApplied)
+
+	// Prefix LIKE -> StartsWith: "disk full", "disk slow".
+	if g := rowsOf("SELECT e.id FROM events AS e WHERE e.msg LIKE 'disk%'"); len(g) != 2 ||
+		g[0] != `{"id":0}` || g[1] != `{"id":1}` {
+		t.Errorf("LIKE 'disk%%' = %v, want id 0 and 1", g)
+	}
+	if atomic.LoadInt64(&records.IcebergRowFilterApplied) <= before {
+		t.Error("LIKE prefix was not pushed as StartsWith")
+	}
+
+	// NOT LIKE prefix -> NotStartsWith: only "oom killed".
+	if g := rowsOf("SELECT e.id FROM events AS e WHERE e.msg NOT LIKE 'disk%'"); len(g) != 1 ||
+		g[0] != `{"id":2}` {
+		t.Errorf("NOT LIKE 'disk%%' = %v, want id 2", g)
+	}
+
+	// Non-prefix patterns aren't pushed but must still be correct.
+	if g := rowsOf("SELECT e.id FROM events AS e WHERE e.msg LIKE '%killed'"); len(g) != 1 ||
+		g[0] != `{"id":2}` {
+		t.Errorf("LIKE '%%killed' = %v, want id 2", g)
+	}
+	if g := rowsOf("SELECT e.id FROM events AS e WHERE e.msg LIKE 'disk_full'"); len(g) != 1 ||
+		g[0] != `{"id":0}` {
+		t.Errorf("LIKE 'disk_full' = %v, want id 0", g)
+	}
+}
+
 // TestIcebergPushdownParity: pushed results must equal unpushed results (pushdown is a pure
 // optimization; the engine's filter/projection still runs).
 func TestIcebergPushdownParity(t *testing.T) {
@@ -540,6 +577,9 @@ func TestIcebergPushdownParity(t *testing.T) {
 		"SELECT e.id FROM events AS e WHERE (e.id >= 2 AND e.msg = 'oom killed') OR e.id = 0",
 		"SELECT e.id FROM events AS e WHERE NOT (e.id = 1 OR e.msg IS NULL)",
 		"SELECT e.id FROM events AS e WHERE (e.id = 0 AND UPPER(e.msg) = 'DISK FULL') OR e.id = 2",
+		"SELECT e.id FROM events AS e WHERE e.msg LIKE 'oom%'",
+		"SELECT e.id FROM events AS e WHERE e.msg NOT LIKE 'disk%'",
+		"SELECT e.id FROM events AS e WHERE e.msg LIKE '%killed' OR e.id = 0",
 	}
 	for _, stmt := range stmts {
 		rp, doneP := runIceberg(t, root)

@@ -358,6 +358,35 @@ func TestIcebergInPruning(t *testing.T) {
 	}
 }
 
+// TestIcebergLikeRangePruning: `region LIKE 'e%'` becomes the range `region >= 'e' AND
+// region < 'f'`, which prunes a region-partitioned table to just the "eu" file (1 of 3).
+func TestIcebergLikeRangePruning(t *testing.T) {
+	dir := t.TempDir()
+	metaLoc := writePartitionedFixture(t, dir, []string{"us", "eu", "ap"})
+
+	ctx := context.Background()
+	fsF := iceio.LoadFSFunc(nil, metaLoc)
+	tbl, err := itable.NewFromLocation(ctx, itable.Identifier{"iceberg", "t"}, metaLoc, fsF, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &icebergSource{ctx: ctx, tbl: tbl}
+	expr, ok := s.predicateToIceberg(ScanPredicate{Bool: "and", Children: []ScanPredicate{
+		{Clause: ScanClause{Field: "region", Op: "ge", Const: "e"}},
+		{Clause: ScanClause{Field: "region", Op: "lt", Const: "f"}},
+	}})
+	if !ok {
+		t.Fatal("predicateToIceberg returned ok=false for a string range")
+	}
+	pruned, err := tbl.Scan(itable.WithRowFilter(expr)).PlanFiles(ctx)
+	if err != nil {
+		t.Fatal("PlanFiles:", err)
+	}
+	if len(pruned) != 1 {
+		t.Fatalf("region LIKE 'e%%' range planned %d files, want 1", len(pruned))
+	}
+}
+
 // TestIcebergNestedPruning proves a genuinely nested boolean prunes: on a region-partitioned
 // table, `(region='eu' AND id>=0) OR region='ap'` projects onto the partition column to
 // `region='eu' OR region='ap'` and plans just those 2 of 3 files.

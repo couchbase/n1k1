@@ -1664,8 +1664,18 @@ low-effort relative to its reach.
   `NOT((a OR b) AND c)`, and `(a AND weird(...)) OR c` all push correctly. The tree is encoded
   recursively into the scan-op param and converted by a recursive `predicateToIceberg`. Proven
   by `glue.TestIcebergNestedBoolean` (+ parity) and `records.TestIcebergNestedPruning` (a nested
-  filter projects onto the partition column and prunes 3 files → 2). TODO: LIKE-prefix →
-  `StartsWith`.
+  filter projects onto the partition column and prunes 3 files → 2).
+- **LIKE-prefix: ✅ DONE (as a range, NOT StartsWith).** `field LIKE 'prefix%'` rewrites to the
+  string range `field >= 'prefix' AND field < successor(prefix)` (successor = the last non-0xff
+  byte incremented; `glue.likeToRange` / `prefixUpperBound`). This is deliberate: iceberg-go
+  v0.4.0 CAN prune with `StartsWith` (its manifest/metrics evaluators implement it) but CANNOT
+  read with it -- the residual row filter during `ToArrowRecords` runs `starts_with` through
+  arrow-compute, which doesn't implement it, so a pushed `StartsWith` errors the scan
+  ("not implemented: starts_with"). The range prunes identically via string zone-maps and reads
+  fine (ordinary comparisons are implemented). Only a pure prefix pushes (`%x`, `a_b`, `a%b`, a
+  non-constant pattern don't); `NOT LIKE 'prefix%'` → `field < prefix OR field >= successor`
+  (via De Morgan). Proven by `records.TestIcebergLikeRangePruning` (prunes 3 files → 1) +
+  `glue.TestIcebergLikePrefix`.
 - **Time-travel: ✅ DONE.** cbq's native `AT SNAPSHOT`/`AT TIMESTAMP` is welded to its
   external-collection plan path (`IsExternalCollection` → `ExternalScan`), which n1k1's
   records-scan bypasses — so instead time-travel rides a keyspace-name suffix that keeps the

@@ -22,6 +22,8 @@ package glue
 // (numeric / string / bool) is extracted; anything else simply isn't pushed.
 
 import (
+	"strings"
+
 	"github.com/couchbase/n1k1/base"
 	"github.com/couchbase/n1k1/records"
 
@@ -117,6 +119,8 @@ func buildScanExpr(e expression.Expression, negate bool) (records.ScanPredicate,
 		return buildBoolNode(n.Operands(), negate, false)
 	case *expression.Not:
 		return buildScanExpr(n.Operand(), !negate)
+	case *expression.Like:
+		return likeToRange(n, negate)
 	default:
 		cl, ok := pushableLeaf(e)
 		if !ok {
@@ -192,6 +196,109 @@ func pushableLeaf(e expression.Expression) (records.ScanClause, bool) {
 		}
 	}
 	return records.ScanClause{}, false
+}
+
+// likeToRange rewrites `field LIKE 'prefix%'` into a string RANGE -- `field >= prefix AND
+// field < successor(prefix)` -- when the pattern is a pure prefix. This is the classic
+// prefix-to-range trick: it prunes identically to StartsWith via string min/max zone-maps
+// AND reads correctly (iceberg-go v0.4.0's residual filter runs `starts_with` through
+// arrow-compute, which doesn't implement it -- ordinary range comparisons it does). Under
+// negation `NOT LIKE 'prefix%'` becomes `field < prefix OR field >= successor`. successor is
+// the prefix with its last non-0xff byte incremented; if the prefix is all 0xff there's no
+// finite upper bound, so only the `>=` (resp. `<`) half is emitted -- still a sound hint.
+func likeToRange(n *expression.Like, negate bool) (records.ScanPredicate, bool) {
+	field, ok := bareFieldOfExpr(n.First())
+	if !ok {
+		return records.ScanPredicate{}, false
+	}
+	pv := n.Second().Value()
+	if pv == nil || pv.Type() != value.STRING {
+		return records.ScanPredicate{}, false
+	}
+	pat, ok := pv.Actual().(string)
+	if !ok {
+		return records.ScanPredicate{}, false
+	}
+	esc := '\\' // LIKE's default escape.
+	if ev := n.Escape().Value(); ev != nil && ev.Type() == value.STRING {
+		r := []rune(ev.Actual().(string))
+		switch len(r) {
+		case 0:
+			esc = -1 // explicit empty ESCAPE: nothing is an escape char.
+		case 1:
+			esc = r[0]
+		default:
+			return records.ScanPredicate{}, false // multi-rune escape: bail.
+		}
+	}
+	prefix, ok := likePrefix(pat, esc)
+	if !ok {
+		return records.ScanPredicate{}, false
+	}
+	hi, hasHi := prefixUpperBound(prefix)
+
+	leaf := func(op, v string) records.ScanPredicate {
+		return records.ScanPredicate{Clause: records.ScanClause{Field: field, Op: op, Const: v}}
+	}
+	if !negate {
+		if !hasHi {
+			return leaf("ge", prefix), true
+		}
+		return records.ScanPredicate{Bool: "and",
+			Children: []records.ScanPredicate{leaf("ge", prefix), leaf("lt", hi)}}, true
+	}
+	// NOT LIKE 'prefix%'  ==  field < prefix OR field >= successor.
+	if !hasHi {
+		return leaf("lt", prefix), true
+	}
+	return records.ScanPredicate{Bool: "or",
+		Children: []records.ScanPredicate{leaf("lt", prefix), leaf("ge", hi)}}, true
+}
+
+// prefixUpperBound returns the smallest string strictly greater than every string with the
+// given prefix -- the prefix with its last non-0xff byte incremented and the tail dropped.
+// ok=false when the prefix is empty or all 0xff (no finite upper bound). Byte-wise, matching
+// UTF-8 / iceberg-go string ordering.
+func prefixUpperBound(p string) (string, bool) {
+	b := []byte(p)
+	for i := len(b) - 1; i >= 0; i-- {
+		if b[i] != 0xff {
+			out := append([]byte(nil), b[:i+1]...)
+			out[i]++
+			return string(out), true
+		}
+	}
+	return "", false
+}
+
+// likePrefix returns the literal prefix of a LIKE pattern that is exactly `<literal>%` -- a
+// non-empty escaped literal followed by a single trailing `%`, with no other `%`/`_`
+// wildcards. ok=false otherwise (e.g. `%x`, `a_b`, `a%b`, `abc` with no `%`, a dangling
+// escape), so only genuine StartsWith-equivalent patterns push.
+func likePrefix(pat string, esc rune) (string, bool) {
+	var b strings.Builder
+	rs := []rune(pat)
+	for i := 0; i < len(rs); i++ {
+		c := rs[i]
+		switch {
+		case c == esc:
+			if i+1 >= len(rs) {
+				return "", false // dangling escape.
+			}
+			b.WriteRune(rs[i+1])
+			i++
+		case c == '%':
+			if i == len(rs)-1 && b.Len() > 0 {
+				return b.String(), true // trailing `%` after a non-empty literal.
+			}
+			return "", false // leading/interior `%`, or empty prefix.
+		case c == '_':
+			return "", false // single-char wildcard can't be a prefix.
+		default:
+			b.WriteRune(c)
+		}
+	}
+	return "", false // no trailing `%` => an exact match, not a prefix (handled by `=`).
 }
 
 // orientComparison builds a comparison clause with the field on the left, recovering gt/ge
