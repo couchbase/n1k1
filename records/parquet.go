@@ -201,17 +201,7 @@ func (s *parquetSource) Next(rec *Record) (bool, error) {
 		if err != nil {
 			return false, err
 		}
-		if !DisableFastTranspose && fastRenderable(batch) {
-			// Hand-rolled, zero-alloc render: append typed column values straight
-			// into the reused buf; no interface{} boxing, no encoding/json.
-			s.buf = appendRecordsNDJSON(s.buf[:0], batch)
-		} else {
-			// Fallback for column types the fast path doesn't handle
-			// (timestamps, decimals, lists, structs, ...): correct but allocating.
-			bb := bytes.NewBuffer(s.buf[:0])
-			err = array.RecordToJSON(batch, bb)
-			s.buf = bb.Bytes()
-		}
+		s.buf, err = arrowBatchToNDJSON(s.buf, batch)
 		batch.Release()
 		if err != nil {
 			return false, err
@@ -343,6 +333,20 @@ func fastRenderable(rec arrow.RecordBatch) bool {
 		}
 	}
 	return true
+}
+
+// arrowBatchToNDJSON renders an Arrow batch to newline-delimited JSON into buf (reused):
+// the zero-alloc fast path when every column is fastRenderable, else the allocating
+// array.RecordToJSON fallback for exotic types (timestamps/decimals/lists/structs).
+// Shared by the Parquet source (Next) and the Iceberg source (iceberg.go), so both
+// transpose Arrow batches identically.
+func arrowBatchToNDJSON(buf []byte, batch arrow.RecordBatch) ([]byte, error) {
+	if !DisableFastTranspose && fastRenderable(batch) {
+		return appendRecordsNDJSON(buf[:0], batch), nil
+	}
+	bb := bytes.NewBuffer(buf[:0])
+	err := array.RecordToJSON(batch, bb)
+	return bb.Bytes(), err
 }
 
 // appendRecordsNDJSON renders every row of rec as a JSON object on its own line,

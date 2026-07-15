@@ -1517,6 +1517,19 @@ edit.
 
 ## §7 Table formats: Apache Iceberg (read-only) — design research
 
+**SPIKE DONE (the read path, cgo-free).** `records/iceberg.go`: `OpenIcebergTable(metadataLoc)`
+loads a table by its filesystem metadata location (no catalog server — `table.NewFromLocation`
++ `io.LocalFS`), scans the current snapshot (`Scan().ToArrowRecords()`), and transposes each
+Arrow batch to rows through the SAME renderer as the Parquet source (`arrowBatchToNDJSON`,
+extracted so both share it). Proven end-to-end under `CGO_ENABLED=0` by
+`records/iceberg_test.go`: it builds a real table (a ~30-line filesystem `CatalogIO` +
+iceberg-go's `AppendTable` writes the Parquet data file + Avro manifests + commits a snapshot
+— no sqlite/metastore, so the fixture is self-contained and portable), then reads it back
+(3 rows, correct values, a NULL string → JSON null). So the design claim held: iceberg-go
+does the heavy lifting and n1k1's existing Arrow-batch machinery reuses cleanly; the only new
+code is the ~90-line source. NOT yet wired as a FROM-able keyspace, and no pushdown/time-travel
+(the next steps below).
+
 A *table format* sits ABOVE the file formats of §1: Iceberg is a metadata layer over a
 pile of Parquet (or ORC/Avro) data files. A table is a chain — catalog → table metadata
 (JSON) → a *snapshot* → a manifest list (Avro) → manifests (Avro) → the data files
@@ -1587,10 +1600,10 @@ iceberg-go does the hard parts and the Arrow-batch reuse is nearly free, a read-
 low-effort relative to its reach.
 
 ### Recommendation & phasing
-- **Spike:** a `records.Source` that loads a table by filesystem metadata location, drives
-  an iceberg-go scan, and transposes its Arrow batches through the existing renderer so
-  `SELECT * FROM <iceberg-table>` works. Reuse the Parquet reader's batch→rows path.
-  Confirm cgo-free end-to-end + measure vs a plain Parquet directory.
+- **Spike: ✅ DONE** — `records/iceberg.go` `OpenIcebergTable` reads a table (no catalog) and
+  transposes its Arrow batches through the shared renderer; cgo-free, proven by
+  `records/iceberg_test.go`. Remaining from the original spike goal: wire it as a FROM-able
+  keyspace (glue) so `SELECT * FROM <iceberg-table>` runs, and measure vs a plain Parquet dir.
 - **Then:** projection + predicate + partition pushdown (columns/WHERE → the scan);
   time-travel (snapshot by id / as-of); the columnar `NextColumns` path for Iceberg batches.
 - **Later, if warranted:** REST/Glue catalogs; S3 tables; delete-file correctness suite.
