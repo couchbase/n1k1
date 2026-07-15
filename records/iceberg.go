@@ -294,16 +294,23 @@ func icebergClause[T iceberg.LiteralType](ref iceberg.UnboundTerm, cl ScanClause
 	return nil, false
 }
 
+// snapshotScanOpts returns the time-travel scan options (empty for the current snapshot),
+// shared by the data scan (start) and the metadata-stats peek (Columns).
+func (s *icebergSource) snapshotScanOpts() []itable.ScanOption {
+	switch s.snapshot.Mode {
+	case "id":
+		return []itable.ScanOption{itable.WithSnapshotID(s.snapshot.ID)}
+	case "asof":
+		return []itable.ScanOption{itable.WithSnapshotAsOf(s.snapshot.AsOfMs)}
+	}
+	return nil
+}
+
 // start builds the scan (once) with the accumulated projection + predicate pushdowns.
 func (s *icebergSource) start() error {
 	s.started = true
-	var opts []itable.ScanOption
-	switch s.snapshot.Mode {
-	case "id":
-		opts = append(opts, itable.WithSnapshotID(s.snapshot.ID))
-		atomic.AddInt64(&IcebergSnapshotApplied, 1)
-	case "asof":
-		opts = append(opts, itable.WithSnapshotAsOf(s.snapshot.AsOfMs))
+	opts := s.snapshotScanOpts()
+	if len(opts) > 0 {
 		atomic.AddInt64(&IcebergSnapshotApplied, 1)
 	}
 	if len(s.selected) > 0 {
@@ -433,19 +440,81 @@ func (s *icebergSource) columnOrder(batch arrow.RecordBatch) ([]int, error) {
 }
 
 // Columns implements ColumnsSource: describe the table's top-level columns (name + a
-// Parquet-style physical type) from the schema, no data read -- enough for the planner to
-// decide the vectorized-aggregate path (which only fires on INT64/DOUBLE columns). Per-column
-// stats aren't surfaced (Count/NullCount -1, Min/Max nil), so the metadata-only MIN/MAX/COUNT
-// path stays off; the vectorized scan path handles the aggregation.
+// Parquet-style physical type) plus, when cheaply available from the manifests, per-column
+// stats (row count, null count, min/max) -- so COUNT(*)/MIN/MAX can be answered from metadata
+// with NO data pages read (the agg-metadata path), exactly like the Parquet footer. Only
+// primitive INT64/DOUBLE columns enable the numeric paths. Stats come from the current
+// snapshot's data-file entries via PlanFiles (manifest reads only).
 func (s *icebergSource) Columns() []ColumnMeta {
 	fields := s.tbl.Schema().Fields()
-	out := make([]ColumnMeta, 0, len(fields))
-	for _, f := range fields {
-		out = append(out, ColumnMeta{
-			Name: f.Name, Type: icebergPhysType(f.Type), Count: -1, NullCount: -1,
-		})
+	out := make([]ColumnMeta, len(fields))
+	fid := make([]int, len(fields))
+	for i, f := range fields {
+		out[i] = ColumnMeta{Name: f.Name, Type: icebergPhysType(f.Type), Count: -1, NullCount: -1}
+		fid[i] = f.ID
 	}
+	s.addManifestStats(out, fid) // best-effort; leaves Count/NullCount -1 and Min/Max nil on any doubt.
 	return out
+}
+
+// addManifestStats aggregates per-column stats across the current snapshot's data files:
+// Count = sum of record counts, NullCount = sum of per-column null counts (only if every file
+// reports it), Min/Max = min-of-lower-bounds / max-of-upper-bounds (only if every file reports
+// an 8-byte bound -- i.e. INT64/DOUBLE). It BAILS entirely if the snapshot has any delete
+// files: merge-on-read deletes reduce the effective rows, so the raw record counts and bounds
+// would overcount / include tombstoned values. On any planning error it also bails, leaving
+// the base -1/nil metadata so the query falls through to a real scan.
+func (s *icebergSource) addManifestStats(out []ColumnMeta, fid []int) {
+	tasks, err := s.tbl.Scan(s.snapshotScanOpts()...).PlanFiles(s.ctx)
+	if err != nil {
+		return
+	}
+	nullKnown := make([]bool, len(out))
+	minMaxOK := make([]bool, len(out))
+	for i := range out {
+		nullKnown[i] = true          // until a file omits this column's null count
+		minMaxOK[i] = len(tasks) > 0 // until a file omits an 8-byte bound (or the table is empty)
+	}
+	var totalRecords int64
+	nullSum := make([]int64, len(out))
+	for _, task := range tasks {
+		if len(task.DeleteFiles) > 0 {
+			return // MoR deletes: metadata stats can't be trusted.
+		}
+		df := task.File
+		totalRecords += df.Count()
+		nvc, lb, ub := df.NullValueCounts(), df.LowerBoundValues(), df.UpperBoundValues()
+		for i := range out {
+			id := fid[i]
+			if n, ok := nvc[id]; ok {
+				nullSum[i] += n
+			} else {
+				nullKnown[i] = false
+			}
+			lo, loOK := lb[id]
+			hi, hiOK := ub[id]
+			if !loOK || !hiOK || len(lo) != 8 || len(hi) != 8 {
+				minMaxOK[i] = false
+				continue
+			}
+			if out[i].Min == nil {
+				out[i].Min = append([]byte(nil), lo...)
+				out[i].Max = append([]byte(nil), hi...)
+			} else {
+				out[i].Min = pickStat(out[i].Type, out[i].Min, lo, true)
+				out[i].Max = pickStat(out[i].Type, out[i].Max, hi, false)
+			}
+		}
+	}
+	for i := range out {
+		out[i].Count = totalRecords // every flat column's value count == the row count
+		if nullKnown[i] {
+			out[i].NullCount = nullSum[i]
+		}
+		if !minMaxOK[i] {
+			out[i].Min, out[i].Max = nil, nil
+		}
+	}
 }
 
 // icebergPhysType maps an Iceberg primitive type to the Parquet-style physical-type name the

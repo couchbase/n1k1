@@ -1699,9 +1699,20 @@ low-effort relative to its reach.
   without checking it was known, so an Iceberg COUNT(*) returned −1 -- now guarded to require a
   known row count (Parquet always has one; Iceberg's −1 falls through to a real scan). Proven by
   `glue.TestIcebergColumnarAgg` (SUM/AVG/WHERE take the columnar path + row-path parity) and
-  `records.TestIcebergNextColumns` (raw LE buffers in projected order). Not yet: exposing
-  Iceberg row-count / column stats from manifests (would let COUNT(*)/MIN/MAX answer from
-  metadata); the list/vector columnar path.
+  `records.TestIcebergNextColumns` (raw LE buffers in projected order).
+- **Metadata-only COUNT(*)/MIN/MAX: ✅ DONE.** `Columns()` now aggregates per-column stats from
+  the current snapshot's data-file entries (via `PlanFiles` -- manifest reads only, no data
+  pages), so COUNT(*), MIN and MAX answer from metadata alone (the agg-metadata path, same as
+  the Parquet footer). Count = Σ record counts, NullCount = Σ per-column null counts (only if
+  every file reports it), Min/Max = min-of-lower / max-of-upper bounds -- Iceberg's long/double
+  bounds are 8-byte little-endian, exactly the format `statLess`/`pickStat` expect (so only
+  INT64/DOUBLE get Min/Max; a truncated string bound is len != 8 and skipped). CRITICAL gate: if
+  the snapshot has ANY delete files, `addManifestStats` BAILS (leaves -1/nil) -- merge-on-read
+  deletes reduce the effective rows, so raw record counts/bounds would overcount, and the query
+  falls through to a real scan. A snapshot keyspace's stats are snapshot-specific
+  (`DatastoreAggMetadata` re-opens via `KeyspaceRecordsOpen`, which applies the selector, then
+  reads `Columns()`, whose `PlanFiles` uses the snapshot). Proven by `glue.TestIcebergMetadataAgg`
+  (COUNT/MIN/MAX from metadata + row-path parity). Not yet: the list/vector columnar path.
 - **Then:** snapshot-history discovery (list snapshot ids/timestamps) so `@<id>` is easy to find.
 - **Later, if warranted:** REST/Glue catalogs; S3 tables; delete-file correctness suite.
 - **Test note:** iceberg-go v0.4.0's `partitionedFanoutWriter` has an internal data race in a

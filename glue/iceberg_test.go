@@ -371,11 +371,18 @@ func TestIcebergTimeTravel(t *testing.T) {
 		t.Fatalf("current = %v (err %v), want 4", g, err)
 	}
 
-	// By snapshot id: only the first snapshot -> 2 rows.
-	before := atomic.LoadInt64(&records.IcebergSnapshotApplied)
+	// By snapshot id: only the first snapshot -> 2 rows. COUNT(*) is answered from the
+	// snapshot's manifest metadata (no data scan).
 	if g, err := count(fmt.Sprintf("SELECT COUNT(*) AS n FROM `events@%d`", snap1)); err != nil ||
 		g != `{"n":2}` {
 		t.Fatalf("@snapshot1 = %v (err %v), want 2", g, err)
+	}
+	// A row-returning query over the same snapshot exercises the data-scan path, so the
+	// snapshot selector reaches iceberg-go's ToArrowRecords (counter bumps).
+	before := atomic.LoadInt64(&records.IcebergSnapshotApplied)
+	if res, err := s.Run(fmt.Sprintf("SELECT e.id FROM `events@%d` AS e", snap1)); err != nil ||
+		len(res.Rows) != 2 {
+		t.Fatalf("@snapshot1 rows = %v (err %v), want 2", res.Rows, err)
 	}
 	if atomic.LoadInt64(&records.IcebergSnapshotApplied) <= before {
 		t.Error("snapshot selection was not applied to the iceberg-go scan")
@@ -474,6 +481,43 @@ func TestIcebergColumnarAgg(t *testing.T) {
 	if g := rowsOf("SELECT SUM(e.amt) AS s FROM sales AS e WHERE e.id >= 2"); len(g) != 1 ||
 		g[0] != `{"s":70}` {
 		t.Errorf("row-path SUM = %v, want {\"s\":70}", g)
+	}
+}
+
+// TestIcebergMetadataAgg: COUNT(*), MIN and MAX over a delete-free Iceberg table are answered
+// from the manifest stats alone (the agg-metadata path -- no data scan), and match the values
+// a real scan produces.
+func TestIcebergMetadataAgg(t *testing.T) {
+	root := t.TempDir()
+	writeIcebergAmounts(t, root, "sales", []float64{10, 20, 30, 40}) // ids 0..3.
+	rowsOf, done := runIceberg(t, root)
+	defer done()
+
+	before := atomic.LoadInt64(&AggMetadataApplied)
+	if g := rowsOf("SELECT COUNT(*) AS n FROM sales"); len(g) != 1 || g[0] != `{"n":4}` {
+		t.Errorf("COUNT(*) = %v, want 4", g)
+	}
+	if g := rowsOf("SELECT MIN(e.amt) AS lo, MAX(e.amt) AS hi FROM sales AS e"); len(g) != 1 ||
+		g[0] != `{"lo":10,"hi":40}` {
+		t.Errorf("MIN/MAX(amt) = %v, want lo 10 hi 40", g)
+	}
+	if g := rowsOf("SELECT MIN(e.id) AS lo, MAX(e.id) AS hi FROM sales AS e"); len(g) != 1 ||
+		g[0] != `{"lo":0,"hi":3}` {
+		t.Errorf("MIN/MAX(id) = %v, want lo 0 hi 3", g)
+	}
+	if atomic.LoadInt64(&AggMetadataApplied) <= before {
+		t.Error("COUNT/MIN/MAX over Iceberg did not take the metadata path")
+	}
+
+	// Parity: the same answers from a real scan.
+	DisableColumnarOptimize = true
+	defer func() { DisableColumnarOptimize = false }()
+	if g := rowsOf("SELECT COUNT(*) AS n FROM sales"); len(g) != 1 || g[0] != `{"n":4}` {
+		t.Errorf("row-path COUNT(*) = %v, want 4", g)
+	}
+	if g := rowsOf("SELECT MIN(e.amt) AS lo, MAX(e.amt) AS hi FROM sales AS e"); len(g) != 1 ||
+		g[0] != `{"lo":10,"hi":40}` {
+		t.Errorf("row-path MIN/MAX(amt) = %v, want lo 10 hi 40", g)
 	}
 }
 
