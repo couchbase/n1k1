@@ -156,6 +156,15 @@ func variantTagValType(tag byte) int {
 // wasm-safe). nil until registered.
 var VariantAppendJSON func(dst, meta, value []byte) []byte
 
+// VariantPathGet is the registered hook backing ValPathGet for a VARIANT-carrier Val:
+// it navigates `path` through the carried variant and returns the reached value. A
+// scalar leaf is projected to JSON into valOut (the reused buffer); a container leaf
+// (object/array) is returned as a self-contained `V` envelope (so further navigation or
+// a lossless write-back sees the carrier, not its JSON projection). A missing path or
+// unnavigable step returns ValMissing. nil until registered (ValPathGet then treats a
+// VARIANT as MISSING). Installed alongside VariantAppendJSON.
+var VariantPathGet func(val Val, path []string, valOut Val) (Val, Val)
+
 // VariantProjectJSON appends the JSON projection of the VARIANT-carrier Val v to dst.
 // Falls back to JSON null if v is malformed or no projector hook is registered.
 func VariantProjectJSON(dst []byte, v Val) []byte {

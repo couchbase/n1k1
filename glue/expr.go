@@ -255,6 +255,19 @@ func NewConvertVals(labels base.Labels) (*ConvertVals, error) {
 
 // --------------------------------------------------------
 
+// variantAwareParsed wraps a slot's bytes as a value.Value, first projecting a VARIANT
+// carrier (a value whose first byte is base.SigilVariant, from the fidelity scan mode)
+// to its JSON so downstream boxed consumers see ordinary JSON. Lossless write-back,
+// which needs the raw `V` bytes, is intercepted before this boundary (Phase-1 step 3).
+// This output/Convert boundary is off the query hot path, so the projection allocation
+// is acceptable.
+func variantAwareParsed(b base.Val) value.Value {
+	if base.IsVariant(b) {
+		return value.NewParsedValue(base.VariantProjectJSON(nil, b), true)
+	}
+	return value.NewParsedValue(b, true)
+}
+
 // Convert merges the base.Vals into a single value.Value, according
 // to the directives provided in ConvertVals.Labels.
 func (s *ConvertVals) Convert(vals base.Vals) (value.Value, error) {
@@ -289,7 +302,7 @@ OUTER:
 				}
 
 				if len(vals[i]) > 0 {
-					sv := value.NewParsedValue(vals[i], true)
+					sv := variantAwareParsed(vals[i])
 					if sv.Type() == value.OBJECT {
 						for fk, fv := range sv.Fields() {
 							if err := v.SetField(fk, fv); err != nil {
@@ -309,7 +322,7 @@ OUTER:
 
 				// TODO: Is vals[i] always JSON encoded so the skip
 				// validation is safe here?
-				v = value.NewParsedValue(vals[i], true)
+				v = variantAwareParsed(vals[i])
 
 				continue OUTER
 			}
@@ -341,7 +354,7 @@ OUTER:
 			if len(vals[i]) > 0 {
 				// TODO: Is vals[i] always JSON encoded so the skip
 				// validation is safe here?
-				vv := value.NewParsedValue(vals[i], true)
+				vv := variantAwareParsed(vals[i])
 
 				err := subObj.SetField(path[len(path)-1], vv)
 				if err != nil {
@@ -373,7 +386,7 @@ OUTER:
 			}
 			if len(vals[i]) > 0 {
 				// TODO: Is vals[i] always JSON encoded?
-				vv := value.NewParsedValue(vals[i], true)
+				vv := variantAwareParsed(vals[i])
 
 				if label[1:] == "id" && lastParent != nil {
 					// Attach the doc id to the preceding doc sub-value, so

@@ -27,6 +27,13 @@ func ValKind(v Val) int {
 	if len(v) == 0 {
 		return ValKindMissing
 	}
+	if v[0] == SigilVariant {
+		// A VARIANT carrier is a present value; only a VARIANT null classifies as NULL.
+		if VariantValType(v) == ValTypeNull {
+			return ValKindNull
+		}
+		return ValKindValue
+	}
 	if ValEqualNull(v) {
 		return ValKindNull
 	}

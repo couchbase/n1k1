@@ -130,6 +130,15 @@ func ValIsNumber(v Val) bool {
 // ["addresses", "work", "city"]. The valOut is an optional
 // preallocated output val.
 func ValPathGet(val Val, path []string, valOut Val) (Val, Val) {
+	if len(val) > 0 && val[0] == SigilVariant {
+		// A VARIANT-carrier value can't be walked by jsonparser; delegate to the
+		// registered variant navigator (see base/variant.go). Absent a hook, a VARIANT
+		// reads as MISSING rather than mis-parsing its bytes as JSON.
+		if VariantPathGet != nil {
+			return VariantPathGet(val, path, valOut)
+		}
+		return ValMissing, valOut
+	}
 	v, vType, _, err := jsonparser.Get(val, path...)
 	if err != nil {
 		return ValMissing, valOut

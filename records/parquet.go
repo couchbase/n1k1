@@ -52,6 +52,15 @@ var DisableFastTranspose bool
 // record batch at a time, renders it to newline-delimited JSON (one object per
 // row via array.RecordToJSON), and yields each line. Doc borrows the render
 // buffer and is valid only until the batch is exhausted and the next one loads.
+// VariantFidelity toggles the Phase-1 VARIANT fidelity scan mode (DESIGN-variant.md
+// §4.1): when true, a batch that carries a VARIANT column is emitted as whole-row
+// VARIANT `V`-carrier objects (base.SigilVariant), preserving typed-scalar fidelity,
+// instead of the Phase-0 JSON projection. Default false (Phase-0 read-as-JSON). A
+// process-wide dev/testing knob for comparative + differential testing and
+// benchmarking, intended to become the default once validated; not safe to toggle
+// while a scan is running.
+var VariantFidelity bool
+
 type parquetSource struct {
 	pf       *file.Reader
 	pr       *pqarrow.FileReader
@@ -60,11 +69,14 @@ type parquetSource struct {
 	idPrefix string
 	row      int
 
-	buf   []byte   // current batch rendered as NDJSON (reused across batches)
+	buf   []byte   // current batch rendered as NDJSON or V-rows (reused across batches)
 	lines [][]byte // per-row slices into buf
 	li    int      // next line index
 	idBuf []byte
 	done  bool
+
+	asm  variantRowAssembler // reused across batches on the VariantFidelity V-row path
+	offs []int               // reused per-row offset scratch for the V-row path
 
 	curBatch arrow.RecordBatch // held for the column-batch path; released on next NextColumns/Close
 
@@ -204,12 +216,24 @@ func (s *parquetSource) Next(rec *Record) (bool, error) {
 		if err != nil {
 			return false, err
 		}
-		s.buf, err = arrowBatchToNDJSON(s.buf, batch)
+		useV := false
+		if VariantFidelity {
+			if col, ok := batchHasVariant(batch); ok && col >= 0 {
+				useV = true // fidelity mode + a supported single-VARIANT-column shape
+			}
+		}
+		if useV {
+			s.buf, s.lines, s.offs, err = arrowBatchToVariantRows(s.buf, s.lines[:0], s.offs, batch, &s.asm)
+		} else {
+			s.buf, err = arrowBatchToNDJSON(s.buf, batch)
+			if err == nil {
+				s.lines = splitNDJSON(s.buf, s.lines[:0])
+			}
+		}
 		batch.Release()
 		if err != nil {
 			return false, err
 		}
-		s.lines = splitNDJSON(s.buf, s.lines[:0])
 		s.li = 0
 	}
 

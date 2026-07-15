@@ -46,7 +46,104 @@ import (
 	"github.com/apache/arrow-go/v18/parquet"
 	"github.com/apache/arrow-go/v18/parquet/pqarrow"
 	"github.com/apache/arrow-go/v18/parquet/variant"
+
+	"github.com/couchbase/n1k1/base"
 )
+
+// writeOrdersParquet writes an {id string, order VARIANT} Parquet file at path.
+func writeOrdersParquet(t *testing.T, mem memory.Allocator, path string, ids []string, orders []variant.Value) {
+	t.Helper()
+	vt := extensions.NewDefaultVariantType()
+	idB := array.NewStringBuilder(mem)
+	defer idB.Release()
+	for _, s := range ids {
+		idB.Append(s)
+	}
+	idArr := idB.NewArray()
+	defer idArr.Release()
+	vB := extensions.NewVariantBuilder(mem, vt)
+	defer vB.Release()
+	for _, v := range orders {
+		vB.Append(v)
+	}
+	vArr := vB.NewArray()
+	defer vArr.Release()
+	schema := arrow.NewSchema([]arrow.Field{
+		{Name: "id", Type: arrow.BinaryTypes.String, Nullable: false},
+		{Name: "order", Type: vt, Nullable: true},
+	}, nil)
+	rec := array.NewRecord(schema, []arrow.Array{idArr, vArr}, int64(len(ids)))
+	defer rec.Release()
+	tbl := array.NewTableFromRecords(schema, []arrow.Record{rec})
+	defer tbl.Release()
+	out, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pqarrow.WriteTable(tbl, out, max(1, tbl.NumRows()),
+		parquet.NewWriterProperties(parquet.WithDictionaryDefault(false), parquet.WithStats(false)),
+		pqarrow.DefaultWriterProps()); err != nil {
+		t.Fatalf("WriteTable: %v", err)
+	}
+	_ = out.Close()
+}
+
+// TestParquetReaderEmitsVariantCarrier proves the fidelity scan mode actually emits a
+// whole-row `V`-carrier (not a silent fallback to Phase-0 JSON): with VariantFidelity on,
+// each record Doc starts with base.SigilVariant, and projecting it back yields the same
+// JSON as the Phase-0 read. (Guards the glue differential test against a false pass.)
+func TestParquetReaderEmitsVariantCarrier(t *testing.T) {
+	mem := memory.DefaultAllocator
+	mk := func(s string) variant.Value {
+		v, err := variant.ParseJSON(s, false)
+		if err != nil {
+			t.Fatalf("ParseJSON(%q): %v", s, err)
+		}
+		return v
+	}
+	ids := []string{"o1", "o2"}
+	orders := []variant.Value{
+		mk(`{"customer":{"name":"Ada"},"total":9.99}`),
+		mk(`{"n":42}`),
+	}
+	path := filepath.Join(t.TempDir(), "orders.parquet")
+	writeOrdersParquet(t, mem, path, ids, orders)
+
+	defer func() { VariantFidelity = false }()
+	VariantFidelity = true
+
+	src, err := newParquetSource(path, "doc")
+	if err != nil {
+		t.Fatalf("newParquetSource: %v", err)
+	}
+	defer src.Close()
+
+	row := 0
+	for {
+		var r Record
+		ok, err := src.Next(&r)
+		if err != nil {
+			t.Fatalf("Next: %v", err)
+		}
+		if !ok {
+			break
+		}
+		if !base.IsVariant(r.Doc) {
+			t.Fatalf("row %d: Doc is not a V-carrier (first byte %q): %q", row, r.Doc[0], r.Doc)
+		}
+		// Projecting the carrier back must match the Phase-0 JSON of the same row.
+		got := string(base.VariantProjectJSON(nil, r.Doc))
+		wantOrder, _ := orders[row].MarshalJSON()
+		want := `{"id":"` + ids[row] + `","order":` + string(wantOrder) + `}`
+		if !jsonEqual(t, []byte(got), []byte(want)) {
+			t.Errorf("row %d: carrier projects to %s, want %s", row, got, want)
+		}
+		row++
+	}
+	if row != len(ids) {
+		t.Fatalf("read %d rows, want %d", row, len(ids))
+	}
+}
 
 func TestVariantParquetEndToEnd(t *testing.T) {
 	mem := memory.DefaultAllocator

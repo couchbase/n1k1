@@ -51,6 +51,28 @@ type variantRowAssembler struct {
 	fields  []av.FieldEntry
 }
 
+// arrowBatchToVariantRows renders each row of batch as a whole-row VARIANT `V`-carrier
+// object into buf (reset first), returning per-row slices in lines. offs is a reused
+// offset scratch: rows are all appended before any slice is taken, so a realloc of buf
+// mid-batch can't invalidate an earlier line. Mirrors arrowBatchToNDJSON's buffer
+// contract for the fidelity path.
+func arrowBatchToVariantRows(buf []byte, lines [][]byte, offs []int, batch arrow.RecordBatch, asm *variantRowAssembler) ([]byte, [][]byte, []int, error) {
+	buf = buf[:0]
+	offs = append(offs[:0], 0)
+	n := int(batch.NumRows())
+	for row := 0; row < n; row++ {
+		var err error
+		if buf, err = asm.appendRow(buf, batch, row); err != nil {
+			return buf, lines, offs, err
+		}
+		offs = append(offs, len(buf))
+	}
+	for i := 0; i < n; i++ {
+		lines = append(lines, buf[offs[i]:offs[i+1]])
+	}
+	return buf, lines, offs, nil
+}
+
 // batchHasVariant reports the index of the (single) VARIANT column in batch, or -1 if
 // none. It returns ok=false if the batch has more than one VARIANT column (unsupported).
 func batchHasVariant(batch arrow.RecordBatch) (col int, ok bool) {

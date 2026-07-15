@@ -53,7 +53,12 @@ func ValsSelfObject(keyTokens [][]byte, indices []int, vals Vals, out []byte) []
 		first = false
 
 		out = append(out, keyTokens[i]...)
-		out = append(out, v...)
+		if v[0] == SigilVariant {
+			// A VARIANT carrier can't be spliced as raw bytes into JSON; project it.
+			out = VariantProjectJSON(out, v)
+		} else {
+			out = append(out, v...)
+		}
 	}
 
 	out = append(out, '}')
