@@ -82,9 +82,26 @@ the linchpin: n1k1 does **not** need to fork jsonparser or hand-roll a decoder.
   views; binary is a subslice. The **only** allocation in navigation is a one-time
   `make([][]byte, dictSize)` when a `Metadata` is built (and those entries are
   subslices into the metadata bytes — no key copies).
-- Opt-in materialization: `Value.Value() any` and `Value.MarshalJSON() []byte`. Even
-  these are restrained — timestamps stay `arrow.Timestamp` (int64), *not* `time.Time`;
+- Opt-in materialization: `Value.Value() any` and `Value.MarshalJSON() []byte`. These
+  are the **allocating** paths (see the caveat below); `.Value()` boxing stays
+  restrained though — timestamps are `arrow.Timestamp` (int64), *not* `time.Time`;
   dates `Date32`; small decimals as `DecimalValue` structs; only UUID truly allocates.
+
+**Caveat — `MarshalJSON` is NOT a zero-alloc / append-style emitter.** It has the
+`json.Marshaler` signature `() ([]byte, error)`, so it returns a **fresh slice every
+call** — it cannot append into a caller-preallocated `[]byte`. Worse, internally it is
+the naive path: `Value.MarshalJSON` boxes via `v.Value()` then calls reflection-based
+`json.Marshal`; `ObjectValue.MarshalJSON` literally `make(map[string]Value)` +
+`json.Marshal(mapping)` (its own comment: "naive… not the most efficient… simplest");
+`ArrayValue.MarshalJSON` `slices.Collect` + `json.Marshal`. So a nested value is
+boxing + intermediate maps/slices + reflect-marshal, per row. There is **no**
+`AppendJSON(dst)` / `io.Writer` variant in the package.
+⇒ For n1k1's zero-garbage scan boundary, **do not** call `MarshalJSON` per row.
+Instead hand-roll a small `appendVariantJSON(dst []byte, v variant.Value) []byte` over
+the **unboxed view API** (`BasicType`/`Type` switch → `strconv.Append*` for scalars →
+recursive object/array walk, each subslice appended into `dst`) — the same
+append-into-reused-buffer pattern `appendArrowValueJSON` and base's canonical emitters
+already use. `MarshalJSON` is fine as a *correctness oracle* / first cut, not the hot path.
 
 **Validated end-to-end** by `records/variant_parquet_test.go` (two tests):
 - A VARIANT-column Parquet file, read back via `pqarrow.ReadTable`, surfaces the
@@ -145,8 +162,11 @@ JSON-ify only when a query actually inspects the value.
 - **The navigator already exists and is zero-copy** — §2's `variant.Value` view API
   walks a `V` tail with the same subslice-into-backing discipline as jsonparser walks
   JSON. This is what makes `V` viable rather than a "parallel machinery" burden.
-- **The projection is ready-made** — `variant.Value.MarshalJSON()` produces the JSON
-  form for output and for the read-as-JSON MVP.
+- **The projection logic is ready-made** — `variant.Value.MarshalJSON()` defines the
+  JSON form (and is a handy correctness oracle), but it allocates a fresh slice per
+  call (§2 caveat), so the zero-garbage hot path is a small hand-rolled
+  `appendVariantJSON(dst, v)` over the unboxed view API, appending into the reused
+  buffer — not `MarshalJSON` itself.
 
 **The two catches, and how they resolve:**
 
@@ -237,9 +257,11 @@ framework rather than beside it.
 ## 7. Phasing
 
 - **Phase 0 — read as JSON (MVP).** A `case *extensions.VariantArray` in
-  `appendArrowValueJSON` that emits `variant.Value.MarshalJSON()`. Read-only,
-  lossy-to-JSON, ~zero engine change downstream. Unblocks querying Iceberg VARIANT
-  columns. *Do this first; it may be enough (Q5.2).*
+  `appendArrowValueJSON` that emits the JSON projection into the reused `dst` via a
+  hand-rolled `appendVariantJSON` over the view API (using `MarshalJSON` only as the
+  correctness oracle in tests — §2 caveat). Read-only, lossy-to-JSON, ~zero engine
+  change downstream, and zero-garbage. Unblocks querying Iceberg VARIANT columns.
+  *Do this first; it may be enough (Q5.2).*
 - **Phase 1 — the `V` carrier (fidelity).** Only if write-back or type-fidelity is
   wanted. Emit `V<metadata><value>` from the scan `case`; teach `base.Parse`/`ValKind`
   to detect `V` and lazily project (and the peek sites of Q5.5); JSON output decodes
@@ -274,8 +296,10 @@ framework rather than beside it.
       `*extensions.VariantArray`, zero-copy navigation (incl. deeply nested),
       byte-intact round-trip + `variant.New` rebuild, concrete JSON projections (§2).
 - [ ] **Phase 0**: implement the `case *extensions.VariantArray` in
-      `appendArrowValueJSON` (emit `MarshalJSON`); handle the shredded `typed_value`
-      column shape. Add a fixture: Variant-Parquet keyspace → SQL++ query → expected JSON.
+      `appendArrowValueJSON` via a hand-rolled zero-alloc `appendVariantJSON(dst, v)`
+      over the view API (NOT `MarshalJSON` per row — §2 caveat; use it as the test
+      oracle); handle the shredded `typed_value` column shape. Add a fixture:
+      Variant-Parquet keyspace → SQL++ query → expected JSON.
 - [ ] Decide whether write-back / VARIANT-native semantics is a real requirement
       (Q5.2) — gates everything past Phase 0.
 - [ ] For Phase 1: enumerate the direct `v[0]`-peek sites (Q5.5); prototype the `V`
