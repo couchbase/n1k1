@@ -1656,9 +1656,23 @@ low-effort relative to its reach.
   (dropping a branch would narrow it). Proven by `glue.TestIcebergRicherPredicates` (+ parity over
   all shapes) and `records.TestIcebergInPruning` (IN prunes 3 files → 2). TODO: genuinely nested
   boolean (`(a AND b) OR c`); LIKE-prefix → `StartsWith`.
-- **Then:** time-travel (snapshot by id / as-of, via `WithSnapshotID`/`WithSnapshotAsOf`); the
-  columnar `NextColumns` path for Iceberg batches.
+- **Time-travel: ✅ DONE.** cbq's native `AT SNAPSHOT`/`AT TIMESTAMP` is welded to its
+  external-collection plan path (`IsExternalCollection` → `ExternalScan`), which n1k1's
+  records-scan bypasses — so instead time-travel rides a keyspace-name suffix that keeps the
+  normal scan: `` `events@<snapshot-id>` `` (all-digits) reads that snapshot, `` `events@<rfc3339>` ``
+  reads the snapshot current at that time. `glue/flat.go` `KeyspaceByName` resolves the suffix
+  on demand (parsing the selector, cloning the base Iceberg keyspace with a
+  `records.ScanSnapshot`, cached but NOT listed in `.tables`); `KeyspaceRecordsOpen` hands it to
+  the source's `SetSnapshot` (a new `records.Snapshotter`), which adds `WithSnapshotID` /
+  `WithSnapshotAsOf`. Proven by `glue.TestIcebergTimeTravel` (id → old row count; future as-of →
+  latest; pre-history as-of → error). (An as-of / bad id with no matching snapshot surfaces
+  iceberg-go's natural error, since time-travel is explicit — unlike a pushdown hint.)
+- **Then:** the columnar `NextColumns` path for Iceberg batches; snapshot-history discovery
+  (list snapshot ids/timestamps) so `@<id>` is easy to find.
 - **Later, if warranted:** REST/Glue catalogs; S3 tables; delete-file correctness suite.
+- **Test note:** iceberg-go v0.4.0's `partitionedFanoutWriter` has an internal data race in a
+  PARTITIONED `AppendTable` (its own write goroutines), so the partitioned-fixture builders skip
+  under `-race`; n1k1's read path is race-clean.
 - **Verdict:** feasible, surprisingly low-effort for read-only (the heavy lifting is a
   cgo-free dep we already carry), and useful for the analytic direction — worth the spike to
   prove the Arrow-batch reuse and measure, before committing to catalogs/time-travel.

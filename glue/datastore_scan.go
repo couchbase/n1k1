@@ -506,7 +506,24 @@ func KeyspaceRecordsOpen(ks datastore.Keyspace, opts records.WalkOptions, gctx *
 	// RecordsDir (the table dir). See records/iceberg.go.
 	if it, ok := ks.(interface{ IcebergMetadata() string }); ok {
 		if meta := it.IcebergMetadata(); meta != "" {
-			return records.OpenIcebergTable(meta, ks.Name())
+			src, err := records.OpenIcebergTable(meta, ks.Name())
+			if err != nil {
+				return nil, err
+			}
+			// Time-travel: a `<table>@<selector>` keyspace carries a snapshot selector.
+			if sk, ok := ks.(interface {
+				IcebergSnapshot() (records.ScanSnapshot, bool)
+			}); ok {
+				if sel, has := sk.IcebergSnapshot(); has {
+					if snap, ok := src.(records.Snapshotter); ok {
+						if err := snap.SetSnapshot(sel); err != nil {
+							src.Close()
+							return nil, err
+						}
+					}
+				}
+			}
+			return src, nil
 		}
 	}
 	// A glob keyspace (DESIGN-data.md Mode 2b) expands its pattern to just the

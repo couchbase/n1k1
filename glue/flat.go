@@ -27,7 +27,10 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/couchbase/query/auth"
 	"github.com/couchbase/query/datastore"
@@ -306,6 +309,12 @@ type flatNamespace struct {
 	datastore *flatDatastore
 	keyspaces map[string]*flatKeyspace
 	real      datastore.Namespace // optional real "default" to merge + delegate to
+
+	// snapshots caches synthesized Iceberg time-travel keyspaces (`<table>@<selector>`),
+	// resolved on demand by KeyspaceByName. Kept OUT of `keyspaces` so they don't appear in
+	// .tables listings -- they're addressable but not enumerated. Guarded by mu.
+	mu        sync.Mutex
+	snapshots map[string]*flatKeyspace
 }
 
 func (p *flatNamespace) Datastore() datastore.Datastore { return p.datastore }
@@ -345,10 +354,75 @@ func (p *flatNamespace) KeyspaceByName(name string) (datastore.Keyspace, errors.
 			return ks, nil
 		}
 	}
+	// Iceberg time-travel: `<table>@<snapshot-id>` or `<table>@<rfc3339-timestamp>` resolves
+	// to a synthetic keyspace reading that past snapshot. See icebergSnapshotKeyspace.
+	if ks, ok := p.icebergSnapshotKeyspace(name); ok {
+		return ks, nil
+	}
 	if p.real != nil {
 		return p.real.KeyspaceByName(name)
 	}
 	return nil, errors.NewError(nil, "flat: no keyspace "+name)
+}
+
+// icebergSnapshotKeyspace resolves a `<table>@<selector>` name to a time-travel keyspace: a
+// clone of the base Iceberg table keyspace carrying a snapshot selector (an all-digits
+// selector is a snapshot id; otherwise an RFC3339 / date string is an as-of timestamp).
+// Synthesized keyspaces are cached (addressable) but never listed in .tables. ok=false if
+// there's no `@`, the base isn't a known Iceberg table, or the selector doesn't parse.
+func (p *flatNamespace) icebergSnapshotKeyspace(name string) (datastore.Keyspace, bool) {
+	at := strings.IndexByte(name, '@')
+	if at <= 0 || at == len(name)-1 {
+		return nil, false
+	}
+	base, selStr := name[:at], name[at+1:]
+
+	var baseKS *flatKeyspace
+	for n, ks := range p.keyspaces {
+		if strings.EqualFold(n, base) && ks.IcebergMetadata() != "" {
+			baseKS = ks
+			break
+		}
+	}
+	if baseKS == nil {
+		return nil, false
+	}
+	sel, ok := parseSnapshotSelector(selStr)
+	if !ok {
+		return nil, false
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.snapshots == nil {
+		p.snapshots = map[string]*flatKeyspace{}
+	}
+	if ks, ok := p.snapshots[name]; ok {
+		return ks, true
+	}
+	ks := &flatKeyspace{dir: baseKS.dir, iceberg: baseKS.iceberg, snapshot: sel}
+	vks, verr := virtual.NewVirtualKeyspace(p, []string{flatRootNamespace, name})
+	if verr != nil {
+		return nil, false
+	}
+	ks.Keyspace = vks
+	ks.indexer = newFlatIndexer(ks)
+	p.snapshots[name] = ks
+	return ks, true
+}
+
+// parseSnapshotSelector interprets the part after `@`: all digits => a snapshot id; else an
+// RFC3339 timestamp / `YYYY-MM-DDTHH:MM:SS` / `YYYY-MM-DD` => an as-of Unix-ms timestamp.
+func parseSnapshotSelector(s string) (records.ScanSnapshot, bool) {
+	if id, err := strconv.ParseInt(s, 10, 64); err == nil {
+		return records.ScanSnapshot{Mode: "id", ID: id}, true
+	}
+	for _, layout := range []string{time.RFC3339, "2006-01-02T15:04:05", "2006-01-02"} {
+		if t, err := time.Parse(layout, s); err == nil {
+			return records.ScanSnapshot{Mode: "asof", AsOfMs: t.UTC().UnixMilli()}, true
+		}
+	}
+	return records.ScanSnapshot{}, false
 }
 
 func (p *flatNamespace) BucketIds() ([]string, errors.Error)   { return nil, nil }
@@ -387,8 +461,9 @@ type flatKeyspace struct {
 	//                 walk base for a glob keyspace
 	file    string // single file (scenario B2/B3): keyspace = this one file
 	glob    string // glob (Mode 2b): absolute doublestar pattern (base = dir)
-	iceberg string // Iceberg table: path of the CURRENT metadata.json (dir = table dir)
-	indexer datastore.Indexer
+	iceberg  string               // Iceberg table: path of the CURRENT metadata.json (dir = table dir)
+	snapshot records.ScanSnapshot // Iceberg time-travel selector (zero Mode => current)
+	indexer  datastore.Indexer
 }
 
 // IcebergMetadata, when non-empty, marks this keyspace as an Apache Iceberg table and
@@ -396,6 +471,12 @@ type flatKeyspace struct {
 // to records.OpenIcebergTable (via iceberg-go's snapshot/manifest/Parquet stack) INSTEAD
 // of walking dir as a tree of loose record files. See maybeIcebergTable + records/iceberg.go.
 func (k *flatKeyspace) IcebergMetadata() string { return k.iceberg }
+
+// IcebergSnapshot returns the time-travel selector for a `<table>@<selector>` keyspace, ok
+// false for the current snapshot. KeyspaceRecordsOpen applies it to the Iceberg source.
+func (k *flatKeyspace) IcebergSnapshot() (records.ScanSnapshot, bool) {
+	return k.snapshot, k.snapshot.Mode != ""
+}
 
 // RecordsDir is consulted by DatastoreScanRecords to locate the physical
 // directory: for a flat root the keyspace's data lives at the root itself, not

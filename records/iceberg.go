@@ -46,6 +46,7 @@ import (
 var (
 	IcebergProjectionApplied int64
 	IcebergRowFilterApplied  int64
+	IcebergSnapshotApplied   int64
 )
 
 // icebergSource streams an Iceberg table's current snapshot as JSON records, pulling one
@@ -59,6 +60,7 @@ type icebergSource struct {
 
 	selected  []string                  // WithSelectedFields; nil => all columns
 	rowFilter iceberg.BooleanExpression // WithRowFilter; nil => no pruning hint
+	snapshot  ScanSnapshot              // time-travel selector; zero Mode => current
 
 	started bool
 	next    func() (arrow.RecordBatch, error, bool) // pulled from the scan's iter.Seq2
@@ -120,6 +122,16 @@ func (s *icebergSource) SetRowFilter(pred ScanPredicate) error {
 		return nil
 	}
 	s.rowFilter = expr
+	return nil
+}
+
+// SetSnapshot implements Snapshotter: read a past snapshot (by id or as-of timestamp) rather
+// than the current one. A zero-Mode selector is a no-op. Must precede the first Next.
+func (s *icebergSource) SetSnapshot(sel ScanSnapshot) error {
+	if s.started {
+		return nil
+	}
+	s.snapshot = sel
 	return nil
 }
 
@@ -271,6 +283,14 @@ func icebergClause[T iceberg.LiteralType](ref iceberg.UnboundTerm, cl ScanClause
 func (s *icebergSource) start() error {
 	s.started = true
 	var opts []itable.ScanOption
+	switch s.snapshot.Mode {
+	case "id":
+		opts = append(opts, itable.WithSnapshotID(s.snapshot.ID))
+		atomic.AddInt64(&IcebergSnapshotApplied, 1)
+	case "asof":
+		opts = append(opts, itable.WithSnapshotAsOf(s.snapshot.AsOfMs))
+		atomic.AddInt64(&IcebergSnapshotApplied, 1)
+	}
 	if len(s.selected) > 0 {
 		opts = append(opts, itable.WithSelectedFields(s.selected...))
 		atomic.AddInt64(&IcebergProjectionApplied, 1)

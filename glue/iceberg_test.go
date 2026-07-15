@@ -40,12 +40,15 @@ import (
 	"github.com/couchbase/n1k1/records"
 )
 
-// fsIcebergCat is a minimal filesystem CatalogIO: a commit applies the updates to the base
-// metadata and writes the next metadata.json (no metastore/DB).
+// fsIcebergCat is a minimal filesystem CatalogIO: a commit applies the updates to the CURRENT
+// metadata and writes the next metadata.json (no metastore/DB). It refreshes its cached table
+// each commit so multiple AppendTable calls (successive snapshots) chain correctly.
 type fsIcebergCat struct {
 	tbl *itable.Table
 	loc string
 	ver int
+	fsF itable.FSysF
+	id  itable.Identifier
 }
 
 func (c *fsIcebergCat) LoadTable(ctx context.Context, id itable.Identifier) (*itable.Table, error) {
@@ -64,6 +67,9 @@ func (c *fsIcebergCat) CommitTable(ctx context.Context, id itable.Identifier, re
 	}
 	if err := os.WriteFile(strings.TrimPrefix(newLoc, "file://"), b, 0o644); err != nil {
 		return nil, "", err
+	}
+	if c.fsF != nil {
+		c.tbl = itable.New(c.id, newMeta, newLoc, c.fsF, c) // next append bases off this.
 	}
 	return newMeta, newLoc, nil
 }
@@ -280,6 +286,110 @@ func TestIcebergTemporalPushdown(t *testing.T) {
 	}
 	if atomic.LoadInt64(&records.IcebergRowFilterApplied) <= before {
 		t.Error("temporal predicate was not pushed into the iceberg-go scan")
+	}
+}
+
+// appendIcebergIDs commits one snapshot appending {id} rows for each id.
+func appendIcebergIDs(t *testing.T, ctx context.Context, cat *fsIcebergCat, as *arrow.Schema, ids []int64) {
+	t.Helper()
+	bld := array.NewRecordBuilder(memory.DefaultAllocator, as)
+	for _, id := range ids {
+		bld.Field(0).(*array.Int64Builder).Append(id)
+	}
+	rec := bld.NewRecord()
+	atbl := array.NewTableFromRecords(as, []arrow.Record{rec})
+	_, err := cat.tbl.AppendTable(ctx, atbl, 1024, nil)
+	atbl.Release()
+	rec.Release()
+	bld.Release()
+	if err != nil {
+		t.Fatal("AppendTable:", err)
+	}
+}
+
+// writeIcebergTwoSnapshots builds an {id int64} table with TWO snapshots (ids 0,1 then 2,3)
+// and returns the FIRST snapshot's id, so a time-travel query can read the older state.
+func writeIcebergTwoSnapshots(t *testing.T, dir, name string) int64 {
+	t.Helper()
+	ctx := context.Background()
+	loc := filepath.Join(dir, name)
+	if err := os.MkdirAll(filepath.Join(loc, "metadata"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	os.MkdirAll(filepath.Join(loc, "data"), 0o755)
+
+	sch := iceberg.NewSchema(0,
+		iceberg.NestedField{ID: 1, Name: "id", Type: iceberg.PrimitiveTypes.Int64, Required: true})
+	meta0, err := itable.NewMetadata(sch, iceberg.UnpartitionedSpec, itable.UnsortedSortOrder, loc, nil)
+	if err != nil {
+		t.Fatal("NewMetadata:", err)
+	}
+	loc0 := filepath.Join(loc, "metadata", "00000.metadata.json")
+	b0, _ := json.Marshal(meta0)
+	if err := os.WriteFile(loc0, b0, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fsF := iceio.LoadFSFunc(nil, loc)
+	id := itable.Identifier{"default", name}
+	cat := &fsIcebergCat{loc: loc, fsF: fsF, id: id}
+	cat.tbl = itable.New(id, meta0, loc0, fsF, cat)
+
+	arrowSchema, err := itable.SchemaToArrowSchema(sch, nil, true, false)
+	if err != nil {
+		t.Fatal("SchemaToArrowSchema:", err)
+	}
+	appendIcebergIDs(t, ctx, cat, arrowSchema, []int64{0, 1})
+	snap1 := cat.tbl.Metadata().CurrentSnapshot().SnapshotID
+	appendIcebergIDs(t, ctx, cat, arrowSchema, []int64{2, 3})
+	return snap1
+}
+
+// TestIcebergTimeTravel: a `<table>@<snapshot-id>` keyspace reads that past snapshot, and
+// `<table>@<timestamp>` reads the snapshot current at that time (far-future => latest).
+func TestIcebergTimeTravel(t *testing.T) {
+	root := t.TempDir()
+	snap1 := writeIcebergTwoSnapshots(t, root, "events")
+
+	s, err := OpenSession(root, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	count := func(stmt string) (string, error) {
+		res, err := s.Run(stmt)
+		if err != nil {
+			return "", err
+		}
+		if len(res.Rows) != 1 {
+			return "", fmt.Errorf("%q: %d rows, want 1", stmt, len(res.Rows))
+		}
+		return string(res.Rows[0]), nil
+	}
+
+	// Current: both snapshots -> 4 rows.
+	if g, err := count("SELECT COUNT(*) AS n FROM events"); err != nil || g != `{"n":4}` {
+		t.Fatalf("current = %v (err %v), want 4", g, err)
+	}
+
+	// By snapshot id: only the first snapshot -> 2 rows.
+	before := atomic.LoadInt64(&records.IcebergSnapshotApplied)
+	if g, err := count(fmt.Sprintf("SELECT COUNT(*) AS n FROM `events@%d`", snap1)); err != nil ||
+		g != `{"n":2}` {
+		t.Fatalf("@snapshot1 = %v (err %v), want 2", g, err)
+	}
+	if atomic.LoadInt64(&records.IcebergSnapshotApplied) <= before {
+		t.Error("snapshot selection was not applied to the iceberg-go scan")
+	}
+
+	// As-of a far-FUTURE timestamp -> latest snapshot -> 4 rows.
+	if g, err := count("SELECT COUNT(*) AS n FROM `events@2099-01-01T00:00:00Z`"); err != nil ||
+		g != `{"n":4}` {
+		t.Fatalf("@future = %v (err %v), want 4", g, err)
+	}
+
+	// As-of a far-PAST timestamp (before any snapshot) -> iceberg-go finds none -> error.
+	if _, err := count("SELECT COUNT(*) AS n FROM `events@2000-01-01T00:00:00Z`"); err == nil {
+		t.Error("@past should error (no snapshot that old), got success")
 	}
 }
 
