@@ -197,6 +197,162 @@ func TestVariantParquetEndToEnd(t *testing.T) {
 	}
 }
 
+// TestVariantParquetDeepNesting exercises the multi-level cases the flat test omits:
+// an `order` object → `customer` → `address` → `geo` (objects 4 deep), an `orderlines`
+// ARRAY of sub-objects (one carrying its own nested `tags` array), and a VARIANT-only
+// typed scalar (a date) buried at depth. It proves (a) deep structure round-trips
+// through Parquet byte-identically, (b) the unboxed view API navigates arbitrarily
+// deep (chained object-key / array-index → subslice views), (c) a typed scalar keeps
+// its VARIANT Type() at depth (fidelity), and (d) zero-copy holds AT DEPTH -- a
+// 4-levels-down leaf's bytes still alias the TOP-LEVEL value's backing.
+func TestVariantParquetDeepNesting(t *testing.T) {
+	mem := memory.DefaultAllocator
+
+	// One deeply-nested `order`, built (incl. a typed date at depth) via the
+	// map/slice-recursing Builder.Append.
+	order := map[string]any{
+		"id": "order-1001",
+		"customer": map[string]any{
+			"name": "Ada",
+			"address": map[string]any{
+				"city": "London",
+				"geo":  map[string]any{"lat": 51.5, "lon": -0.12},
+			},
+		},
+		"orderlines": []any{
+			map[string]any{"sku": "A1", "qty": int64(2), "price": 9.99},
+			map[string]any{"sku": "B2", "qty": int64(1),
+				"tags":     []any{"x", "y"},
+				"shipDate": arrow.Date32(20194)}, // typed scalar 3 levels down
+		},
+	}
+	var b variant.Builder
+	if err := b.Append(order); err != nil {
+		t.Fatalf("build order: %v", err)
+	}
+	orig, err := b.Build()
+	if err != nil {
+		t.Fatalf("Build order: %v", err)
+	}
+
+	va := roundTripVariants(t, mem, orig)
+	got, err := va.Value(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// (a) deep structure survives Parquet byte-identically.
+	origJSON, _ := orig.MarshalJSON()
+	gotJSON, _ := got.MarshalJSON()
+	if string(gotJSON) != string(origJSON) {
+		t.Errorf("deep round-trip JSON differs:\n got %s\nwant %s", gotJSON, origJSON)
+	}
+	t.Logf("round-tripped order: %s", gotJSON)
+
+	// (b) navigate arbitrarily deep through the view API.
+	key := func(v variant.Value, k string) variant.Value {
+		t.Helper()
+		ov, ok := v.Value().(variant.ObjectValue)
+		if !ok {
+			t.Fatalf("key(%q): value is %T, not object", k, v.Value())
+		}
+		f, err := ov.ValueByKey(k)
+		if err != nil {
+			t.Fatalf("key(%q): %v", k, err)
+		}
+		return f.Value
+	}
+	idx := func(v variant.Value, i uint32) variant.Value {
+		t.Helper()
+		av, ok := v.Value().(variant.ArrayValue)
+		if !ok {
+			t.Fatalf("idx(%d): value is %T, not array", i, v.Value())
+		}
+		e, err := av.Value(i)
+		if err != nil {
+			t.Fatalf("idx(%d): %v", i, err)
+		}
+		return e
+	}
+
+	// order.customer.address.geo.lat  (object nesting, 4 deep)
+	lat := key(key(key(key(got, "customer"), "address"), "geo"), "lat")
+	if lat.Value() != 51.5 {
+		t.Errorf("customer.address.geo.lat = %v, want 51.5", lat.Value())
+	}
+	// order.orderlines[1].tags[0]  (array → sub-object → nested array)
+	tag0 := idx(key(idx(key(got, "orderlines"), 1), "tags"), 0)
+	if tag0.Value() != "x" {
+		t.Errorf("orderlines[1].tags[0] = %v, want \"x\"", tag0.Value())
+	}
+
+	// (c) a typed scalar keeps its VARIANT type + projection at depth.
+	ship := key(idx(key(got, "orderlines"), 1), "shipDate")
+	shipJSON, _ := ship.MarshalJSON()
+	if string(shipJSON) != `"2025-04-16"` {
+		t.Errorf("orderlines[1].shipDate JSON = %s, want \"2025-04-16\"", shipJSON)
+	}
+	if ship.BasicType() != variant.BasicPrimitive || ship.Type() != variant.Date {
+		t.Errorf("orderlines[1].shipDate lost its VARIANT date type at depth: basic=%v type=%v",
+			ship.BasicType(), ship.Type())
+	}
+
+	// (d) zero-copy AT DEPTH: the 4-deep lat leaf aliases the TOP-LEVEL backing.
+	if !aliases(lat.Bytes(), got.Bytes()) {
+		t.Errorf("deep leaf bytes are NOT a subslice of the top-level value (navigation copied)")
+	}
+}
+
+// roundTripVariants writes vals as a one-column VARIANT Parquet file and reads it back,
+// returning the read-back *extensions.VariantArray. Shared by the fixture tests.
+func roundTripVariants(t *testing.T, mem memory.Allocator, vals ...variant.Value) *extensions.VariantArray {
+	t.Helper()
+	vt := extensions.NewDefaultVariantType()
+	bldr := extensions.NewVariantBuilder(mem, vt)
+	defer bldr.Release()
+	for _, v := range vals {
+		bldr.Append(v)
+	}
+	arr := bldr.NewArray()
+	defer arr.Release()
+
+	schema := arrow.NewSchema([]arrow.Field{{Name: "v", Type: vt, Nullable: true}}, nil)
+	rec := array.NewRecord(schema, []arrow.Array{arr}, int64(len(vals)))
+	defer rec.Release()
+	tbl := array.NewTableFromRecords(schema, []arrow.Record{rec})
+	defer tbl.Release()
+
+	path := filepath.Join(t.TempDir(), "variant.parquet")
+	out, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pqarrow.WriteTable(tbl, out, max(1, tbl.NumRows()),
+		parquet.NewWriterProperties(parquet.WithDictionaryDefault(false), parquet.WithStats(false)),
+		pqarrow.DefaultWriterProps()); err != nil {
+		t.Fatalf("WriteTable: %v", err)
+	}
+	_ = out.Close()
+
+	in, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { in.Close() })
+	tblIn, err := pqarrow.ReadTable(context.Background(), in, nil, pqarrow.ArrowReadProperties{}, mem)
+	if err != nil {
+		t.Fatalf("ReadTable: %v", err)
+	}
+	t.Cleanup(tblIn.Release)
+
+	col := tblIn.Column(0).Data().Chunk(0)
+	va, ok := col.(*extensions.VariantArray)
+	if !ok {
+		t.Fatalf("variant column read back as %T, want *extensions.VariantArray", col)
+	}
+	return va
+}
+
 // aliases reports whether child's backing storage lies within parent's -- i.e. child
 // is a subslice view into parent (zero-copy), not an independent allocation.
 func aliases(child, parent []byte) bool {

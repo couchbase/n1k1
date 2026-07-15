@@ -126,12 +126,18 @@ Variant support yet — the read path would go through `pqarrow`/`arrow-go`.)
     `variant.New(meta, value)` rebuilds a working view from just those two `[]byte`
     (the `V<meta><value>` carry-and-rebuild story);
   - navigation is **zero-copy** — a nested field's bytes are a *subslice of the
-    parent's backing* (asserted via pointer-range aliasing);
+    parent's backing* (asserted via pointer-range aliasing), and this **holds at
+    depth**: a second test walks a 4-level `order → customer → address → geo → lat`
+    object chain plus an `orderlines` array-of-subobjects with a nested `tags` array,
+    round-trips it byte-identically, and confirms a 4-deep leaf still aliases the
+    top-level backing;
   - `Type()` is preserved through the round-trip (fidelity) while `MarshalJSON()`
     gives the JSON projection. Concrete projections observed:
     **`date` (`Date32(20194)`) → `"2025-04-16"`** (ISO string) and
     **`decimal16` (scale 2) → `12345678912345678.90`** (all digits, exact) —
     i.e. the typed scalar keeps its VARIANT `Type` but renders to JSON losslessly here.
+    A typed date buried 3 levels deep (`orderlines[1].shipDate`) likewise keeps
+    `Type()==Date` and projects to `"2025-04-16"` — **fidelity survives nesting.**
   Remaining plumbing (not blocking): a *shredded* Variant column surfaces with a
   `typed_value` sub-field; and n1k1's `records/parquet.go appendArrowValueJSON` needs a
   `case *extensions.VariantArray` to emit either `MarshalJSON` (Phase 0) or `V<...>`
