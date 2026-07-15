@@ -1,12 +1,15 @@
 # Design: supporting the VARIANT type
 
-**Status: Phase 0 shipped; fidelity phases still design-only.** The read-as-JSON MVP
-is done and validated three ways — the Parquet reader (`records`), full SQL++ over a
-Parquet *keyspace* (`glue`), and *shredded* columns — all with **no changes to the query
-engine** (all new code lives in `records/` + the standalone `./variant/` package).
-Chosen direction for the fidelity phases: a **single `V` sigil** carrying the value's
-tail as raw Apache VARIANT binary (the "3D" approach, §4). Whether we build past Phase 0
-at all is gated by Q5.2 (is write-back ever needed).
+**Status: Phase 0 (read) shipped; write-back started; typed-scalar fidelity next.** The
+read-as-JSON MVP is done and validated three ways — the Parquet reader (`records`), full
+SQL++ over a Parquet *keyspace* (`glue`), and *shredded* columns. **Q5.2 is resolved: the
+users do want write-back**, so we are building past Phase 0. First write-back increment
+shipped: `INSERT INTO <x>.parquet SELECT …` now emits a Parquet **VARIANT column** for
+object-valued projections (`glue/insert_writer.go`), round-tripping with the read path.
+That write-back is *JSON-projection* fidelity (a VARIANT date/decimal read in comes back
+out as its JSON type); *typed-scalar* fidelity needs the **`V` sigil carrier** (§4, the
+"3D" approach) — Phase 1, the next step. Everything so far is still **no change to the
+query engine** (code in `records/`, `glue/`, and the standalone `./variant/` package).
 
 Companion to `DESIGN-data.md` §7 (Iceberg read support) and `DESIGN-exprs.md` (the
 byte-oriented `base.Val = []byte` model). VARIANT enters n1k1 through the Iceberg /
@@ -350,16 +353,29 @@ framework rather than beside it.
   (`glue.TestVariantParquetKeyspaceQuery`), and shredded columns (§6). All typed
   scalars (`date`/`timestamp`/`time`/`uuid`/`binary`) now project via native,
   byte-identical, zero-alloc dst-formatters — no `MarshalJSON` in the read path (§2).
-- **Phase 1 — the `V` carrier (fidelity).** Only if write-back or type-fidelity is
-  wanted. Emit `V<metadata><value>` from the scan `case`; teach `base.Parse`/`ValKind`
-  to detect `V` and lazily project (and the peek sites of Q5.5); JSON output decodes
-  `V` → JSON. Differential-test the projection against cbq so query behavior is
-  provably unchanged.
-- **Phase 2 — VARIANT writer + shredded pushdown.** A Variant-binary encoder for
-  write-back (trivial for pass-through `V` values — copy the bytes), and
-  predicate/projection pushdown into shredded subfields (§6). Note: *reading* shredded
-  VARIANT already works with zero n1k1 code (arrow-go coalesces `typed_value` + residual
-  `value` in `VariantArray.Value`; §6); Phase 2 is only the pushdown perf win.
+- **Phase 2a — JSON-projection write-back. DONE.** `INSERT INTO <x>.parquet SELECT …`
+  emits a Parquet VARIANT column when a projected field is an object
+  (`glue/insert_writer.go`: `inferParquetKind` OBJECT → `extensions.NewDefaultVariantType`,
+  a per-row appender that `WriteJSON`s the value into a reused buffer then
+  `av.ParseJSONBytes` → `VariantBuilder.Append`; a NULL/MISSING value → a Parquet-NULL
+  cell). arrow's `RecordBuilder` yields the `*extensions.VariantBuilder` for a
+  `VariantType` field automatically (`CustomExtensionBuilder`), and the streaming
+  `pqarrow.FileWriter` writes the extension column. Validated by
+  `glue.TestInsertVariantColumnRoundTrip` (INSERT objects → read back → nested nav /
+  deep filter / array elem / null row). It's an encode **boundary**, so not zero-alloc
+  (reuses the JSON buffer; per-row decode+build is inherent). Fidelity is the JSON
+  projection only — see Phase 1.
+- **Phase 1 — the `V` carrier (typed-scalar fidelity). NEXT.** Needed so a VARIANT
+  date/decimal/uuid read in round-trips OUT as the same typed scalar (Phase 2a loses that
+  — it re-encodes the JSON projection). Emit `V<metadata><value>` from the scan `case`;
+  teach `base.Parse`/`ValKind` to detect `V` and lazily project (and the peek sites of
+  Q5.5); JSON output decodes `V` → JSON; the writer copies the bytes for a pass-through
+  `V`. **Design constraint (found):** `base` must stay arrow-go-free so it keeps building
+  under `GOOS=js/wasm` — decode-of-`V` should be a registered hook, not a hard
+  `base → variant → arrow-go` import edge. Differential-test the projection against cbq.
+- **Phase 2b — shredded pushdown.** Predicate/projection pushdown into shredded
+  subfields (§6), reusing the Iceberg `ScanPredicate` sidecar. (Reading shredded VARIANT
+  already works with zero n1k1 code — §6; this is the pushdown perf win.)
 
 ---
 
@@ -409,7 +425,14 @@ framework rather than beside it.
       (`date`/`timestamp`/`time` via `time.Time.AppendFormat`; `uuid` hand-rolled hex;
       `binary` via `base64.AppendEncode`). `variant.TestAppendJSONTypedScalars` +
       zero-alloc coverage. Read path no longer calls `MarshalJSON` for any known type.
-- [ ] Decide whether write-back / VARIANT-native semantics is a real requirement
-      (Q5.2) — gates everything past Phase 0.
-- [ ] For Phase 1: enumerate the direct `v[0]`-peek sites (Q5.5); prototype the `V`
-      detection in `base.Parse` and measure the pure-JSON hot-path is unaffected (Q5.6).
+- [x] Decide whether write-back is a real requirement (Q5.2) — **YES, users confirmed.**
+      Building past Phase 0.
+- [x] **Phase 2a**: JSON-projection write-back — `INSERT INTO <x>.parquet SELECT …`
+      emits a Parquet VARIANT column for object-valued projections
+      (`glue/insert_writer.go`); `glue.TestInsertVariantColumnRoundTrip` proves the
+      write→read loop (nested nav, deep filter, array elem, null row).
+- [ ] **Phase 1 (NEXT)**: the `V` carrier for typed-scalar fidelity — emit `V<meta><value>`
+      at the scan; classify/project `V` at `base.Parse`/`ValKind` via a REGISTERED hook so
+      `base` stays arrow-go-free (wasm-safe); writer copies bytes for pass-through `V`.
+      Enumerate the direct `v[0]`-peek sites (Q5.5); measure the pure-JSON hot path is
+      unaffected (Q5.6).

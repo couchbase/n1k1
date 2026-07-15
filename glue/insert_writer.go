@@ -20,23 +20,32 @@ package glue
 // materialization), committing atomically (temp + rename) like the JSONL writer.
 //
 // Schema is inferred from the FIRST doc (fields sorted for determinism): number ->
-// INT64 (integral) or DOUBLE, string -> UTF8, bool -> BOOLEAN, and a numeric ARRAY ->
+// INT64 (integral) or DOUBLE, string -> UTF8, bool -> BOOLEAN, a numeric ARRAY ->
 // list<float32> (element non-nullable, list field nullable -- the vec-column contract,
-// so a missing/NULL vec row is a zero-length list, not a sentinel). Every column is
-// nullable: a doc missing a field appends NULL. First-row-defines-schema is a STRICT
-// contract -- the first row must carry every column; a later doc bearing a field the
-// first row lacked is an error (nowhere to put it in the fixed schema), as is a value
-// whose type conflicts with the inferred column (a fractional number into an INT64
-// column, a non-numeric array element). Faithful or refuse -- never a silent coercion
-// or drop.
+// so a missing/NULL vec row is a zero-length list, not a sentinel), and a nested OBJECT
+// -> a Parquet VARIANT column (self-describing; see below). Every column is nullable: a
+// doc missing a field appends NULL. First-row-defines-schema is a STRICT contract -- the
+// first row must carry every column; a later doc bearing a field the first row lacked is
+// an error (nowhere to put it in the fixed schema), as is a value whose type conflicts
+// with the inferred SCALAR column (a fractional number into an INT64 column, a
+// non-numeric array element). Faithful or refuse -- never a silent coercion or drop.
 //
-// TODO(future): widen the accepted shapes. For complex values (nested objects,
-// non-numeric/nested arrays) that error today, two options: (1) Parquet's VARIANT
-// logical type (a self-describing column), or (2) stringify the complex value into a
-// UTF8 column (queried back via the JSON functions). Both deferred -- the vector use
-// case only needs flat scalars + a numeric vec array. See DESIGN-vectors.md.
+// VARIANT columns (DESIGN-variant.md §7, write-back): an object-valued field infers a
+// Parquet VARIANT logical-type column. Unlike the scalar columns, a VARIANT column is
+// permissive per row -- once inferred it accepts ANY JSON shape (object/array/scalar/
+// null) without a type conflict, because a variant is self-describing. Each row's value
+// is encoded to the VARIANT binary form (its JSON projection -> arrow-go's ParseJSON);
+// reading the file back projects it to the same JSON (records/parquet.go). This is the
+// write half of the VARIANT read path.
+//
+// TODO(future): (1) typed-scalar FIDELITY on round-trip -- today write-back encodes the
+// JSON projection, so a VARIANT date/decimal read in comes back out as its JSON type,
+// not the original typed scalar; lossless round-trip needs the `V` carrier (Phase 1).
+// (2) Non-numeric / nested ARRAYS (which still error, inferred as a numeric vec) could
+// likewise route to VARIANT. See DESIGN-variant.md / DESIGN-vectors.md.
 
 import (
+	"bytes"
 	"fmt"
 	"math"
 	"os"
@@ -46,9 +55,11 @@ import (
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
+	"github.com/apache/arrow-go/v18/arrow/extensions"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/apache/arrow-go/v18/parquet"
 	"github.com/apache/arrow-go/v18/parquet/pqarrow"
+	av "github.com/apache/arrow-go/v18/parquet/variant"
 
 	"github.com/couchbase/query/value"
 )
@@ -248,6 +259,12 @@ func inferParquetKind(fv value.Value) (string, arrow.DataType, bool) {
 		return "string", arrow.BinaryTypes.String, true
 	case value.ARRAY:
 		return "vec", arrow.ListOfNonNullable(arrow.PrimitiveTypes.Float32), true
+	case value.OBJECT:
+		// A nested object -> a self-describing Parquet VARIANT column (DESIGN-variant.md
+		// §7 Phase 2, write-back). Unlike the scalar columns a VARIANT column is
+		// permissive per row: once a column is VARIANT, later rows may carry any JSON
+		// shape (object/array/scalar/null) for it without a schema conflict.
+		return "variant", extensions.NewDefaultVariantType(), true
 	}
 	return "", nil, false
 }
@@ -313,6 +330,34 @@ func makeParquetAppender(kind string, fb array.Builder) func(value.Value) error 
 				return fmt.Errorf("expected string, got %v", valType(v))
 			}
 			b.Append(s)
+			return nil
+		}
+	case "variant":
+		// Encode each row's value to the Apache VARIANT binary form and append it to the
+		// column. This is an encode BOUNDARY (the VARIANT bytes must be built), so unlike
+		// the read-side variant.AppendJSON it can't be zero-alloc; we at least reuse the
+		// JSON buffer across rows and let arrow-go accumulate the column's meta/value
+		// buffers. A NULL/MISSING value -> a Parquet-level NULL cell (the records reader's
+		// outer IsNull guard renders that back as JSON null, matching the scalar columns).
+		// Fidelity note: this encodes the value's JSON projection, so a value that was a
+		// VARIANT date/decimal on the way IN round-trips as its JSON type, not the original
+		// typed scalar -- lossless typed-scalar round-trip needs the `V` carrier (Phase 1).
+		vb := fb.(*extensions.VariantBuilder)
+		var buf bytes.Buffer
+		return func(v value.Value) error {
+			if pqIsNull(v) {
+				vb.AppendNull()
+				return nil
+			}
+			buf.Reset()
+			if e := v.WriteJSON(nil, &buf, "", "", true); e != nil {
+				return fmt.Errorf("serializing value for VARIANT column: %w", e)
+			}
+			vv, e := av.ParseJSONBytes(buf.Bytes(), false)
+			if e != nil {
+				return fmt.Errorf("encoding JSON to VARIANT: %w", e)
+			}
+			vb.Append(vv)
 			return nil
 		}
 	default: // "vec": list<float32>
