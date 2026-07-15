@@ -370,6 +370,7 @@ const (
 	KeyspaceRecipe                                // an extract recipe frames the files
 	KeyspaceMixed                                 // files of differing kinds
 	KeyspaceTemp                                  // session TEMP KEYSPACE (in-memory, spills to disk if large)
+	KeyspaceIceberg                               // an Apache Iceberg table (read via its current snapshot)
 )
 
 // KeyspaceFraming is a keyspace's record-framing summary for display.
@@ -397,6 +398,8 @@ func (f KeyspaceFraming) Label() string {
 		return "mixed"
 	case KeyspaceTemp:
 		return "temp · session" // in-memory, spills to disk if large
+	case KeyspaceIceberg:
+		return "iceberg" // Apache Iceberg table, current snapshot
 	default:
 		return "empty"
 	}
@@ -413,6 +416,12 @@ func KeyspaceFramingFor(ks datastore.Keyspace) (KeyspaceFraming, error) {
 	// memory -- so classify it directly rather than probing the filesystem.
 	if IsTempKeyspace(ks) {
 		return KeyspaceFraming{Kind: KeyspaceTemp}, nil
+	}
+	// An Iceberg table keyspace (flat.go maybeIcebergTable) reads its current snapshot
+	// through iceberg-go, not a walk of loose files -- classify it directly so the listing
+	// doesn't mis-count its metadata/ + data/ files as a grab-bag.
+	if it, ok := ks.(interface{ IcebergMetadata() string }); ok && it.IcebergMetadata() != "" {
+		return KeyspaceFraming{Kind: KeyspaceIceberg}, nil
 	}
 	files, err := keyspaceFiles(ks, nil)
 	if err != nil {

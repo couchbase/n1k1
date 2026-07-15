@@ -147,8 +147,8 @@ func (c *cli) printKeyspaces(w io.Writer) {
 		}
 		kf, ok := c.keyspaceFraming(ns, n)
 		if ok {
-			if kf.Kind == glue.KeyspaceTemp {
-				framing[i] = kf.Label() // in-memory: no file count
+			if kf.Kind == glue.KeyspaceTemp || kf.Kind == glue.KeyspaceIceberg {
+				framing[i] = kf.Label() // no meaningful loose-file count
 			} else {
 				unit := "files"
 				if kf.Files == 1 {

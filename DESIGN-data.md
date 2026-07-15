@@ -1527,8 +1527,24 @@ iceberg-go's `AppendTable` writes the Parquet data file + Avro manifests + commi
 — no sqlite/metastore, so the fixture is self-contained and portable), then reads it back
 (3 rows, correct values, a NULL string → JSON null). So the design claim held: iceberg-go
 does the heavy lifting and n1k1's existing Arrow-batch machinery reuses cleanly; the only new
-code is the ~90-line source. NOT yet wired as a FROM-able keyspace, and no pushdown/time-travel
-(the next steps below).
+code is the ~90-line source.
+
+**KEYSPACE WIRING DONE — an Iceberg table is now FROM-able.** Point the CLI/session at a
+table directory (or a directory of tables) and each table shows up as a keyspace by its
+basename, so `SELECT * FROM <table>` (plus WHERE / GROUP BY / COUNT(*) / ORDER BY) runs
+through the normal path. `records.IcebergTableMetadata(dir)` detects a table (a `metadata/`
+dir holding `*.metadata.json`) and resolves the CURRENT metadata — from
+`metadata/version-hint.text` if present, else the lexicographically-greatest
+`*.metadata.json` (Iceberg's zero-padded version prefix sorts to newest). `glue/flat.go`
+`maybeIcebergTable` exposes the table(s) as synthetic `default:<basename>` keyspaces marked
+with an `IcebergMetadata()` accessor, which `KeyspaceRecordsOpen` routes to
+`records.OpenIcebergTable` instead of a loose-file walk. `.tables`/`.schema` label such a
+keyspace `iceberg` (a distinct `KeyspaceIceberg` framing) rather than mis-counting its
+metadata/data files. Detection is pure-Go (links in every build incl. wasm); the read path
+is `!js` with a wasm stub. Proven end-to-end by `glue/iceberg_test.go` (full-row + projected
++ filtered + aggregate queries through a session). Still NO pushdown/time-travel/catalogs
+(the next steps below). LIMITATION: a single dir that mixes Iceberg tables AND loose flat
+record files resolves the tables only (flat discovery is skipped once a table is found).
 
 A *table format* sits ABOVE the file formats of §1: Iceberg is a metadata layer over a
 pile of Parquet (or ORC/Avro) data files. A table is a chain — catalog → table metadata
@@ -1602,8 +1618,11 @@ low-effort relative to its reach.
 ### Recommendation & phasing
 - **Spike: ✅ DONE** — `records/iceberg.go` `OpenIcebergTable` reads a table (no catalog) and
   transposes its Arrow batches through the shared renderer; cgo-free, proven by
-  `records/iceberg_test.go`. Remaining from the original spike goal: wire it as a FROM-able
-  keyspace (glue) so `SELECT * FROM <iceberg-table>` runs, and measure vs a plain Parquet dir.
+  `records/iceberg_test.go`.
+- **Keyspace wiring: ✅ DONE** — `records.IcebergTableMetadata` + `glue/flat.go`
+  `maybeIcebergTable` + a `KeyspaceRecordsOpen` route make an Iceberg table dir (or a dir of
+  tables) a FROM-able keyspace, so `SELECT * FROM <iceberg-table>` runs; `.tables`/`.schema`
+  tag it `iceberg`. Proven by `glue/iceberg_test.go`. Still TODO: measure vs a plain Parquet dir.
 - **Then:** projection + predicate + partition pushdown (columns/WHERE → the scan);
   time-travel (snapshot by id / as-of); the columnar `NextColumns` path for Iceberg batches.
 - **Later, if warranted:** REST/Glue catalogs; S3 tables; delete-file correctness suite.

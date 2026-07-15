@@ -484,6 +484,15 @@ func KeyspaceRecordsOpen(ks datastore.Keyspace, opts records.WalkOptions, gctx *
 	}); ok {
 		return ms.RecordsSource(opts)
 	}
+	// An Apache Iceberg table keyspace (flat.go maybeIcebergTable) reads its current
+	// snapshot through iceberg-go's manifest/Parquet stack rather than walking dir as
+	// loose files. Checked before the directory branches because it also advertises
+	// RecordsDir (the table dir). See records/iceberg.go.
+	if it, ok := ks.(interface{ IcebergMetadata() string }); ok {
+		if meta := it.IcebergMetadata(); meta != "" {
+			return records.OpenIcebergTable(meta, ks.Name())
+		}
+	}
 	// A glob keyspace (DESIGN-data.md Mode 2b) expands its pattern to just the
 	// matching files here, at scan time, so the -formats lockdown (opts) applies
 	// and freshly-added files are picked up. Checked before the directory walk

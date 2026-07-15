@@ -133,6 +133,60 @@ func maybeFlatFile(path string, ds datastore.Datastore) datastore.Datastore {
 	return wrapFlatKeyspaces(ds, map[string]*flatKeyspace{name: {file: abs}}, nil)
 }
 
+// maybeIcebergTable wraps ds so an Apache Iceberg table directory is queryable, covering
+// two shapes:
+//
+//   - path IS a table dir (has metadata/<version>.metadata.json): one keyspace named after
+//     the directory basename = the whole table.
+//   - path CONTAINS table subdirs: each such subdir becomes a keyspace by its basename, so
+//     `FROM <table>` reads that table. (A dir of Iceberg tables, catalog-free.)
+//
+// The scan is routed to records.OpenIcebergTable by KeyspaceRecordsOpen (which checks the
+// keyspace's IcebergMetadata()). Merges over a real "default" namespace so a classic
+// <ns>/<keyspace> layout alongside the tables still resolves. Returns ds unchanged when no
+// Iceberg table is found. See records.IcebergTableMetadata + records/iceberg.go.
+func maybeIcebergTable(path string, ds datastore.Datastore) datastore.Datastore {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return ds
+	}
+
+	keyspaces := map[string]*flatKeyspace{}
+	add := func(dir string) {
+		meta, ok := records.IcebergTableMetadata(dir)
+		if !ok {
+			return
+		}
+		base := filepath.Base(filepath.Clean(dir))
+		if base == "" || base == "." || base == string(filepath.Separator) {
+			return
+		}
+		if _, dup := keyspaces[base]; dup {
+			return
+		}
+		keyspaces[base] = &flatKeyspace{dir: dir, iceberg: meta}
+	}
+
+	if _, ok := records.IcebergTableMetadata(abs); ok {
+		add(abs) // path itself is a table.
+	} else if entries, derr := os.ReadDir(abs); derr == nil {
+		for _, e := range entries { // one keyspace per table subdir.
+			if e.IsDir() {
+				add(filepath.Join(abs, e.Name()))
+			}
+		}
+	}
+	if len(keyspaces) == 0 {
+		return ds
+	}
+
+	var real datastore.Namespace
+	if rd, rerr := ds.NamespaceByName(flatRootNamespace); rerr == nil {
+		real = rd
+	}
+	return wrapFlatKeyspaces(ds, keyspaces, real)
+}
+
 // wrapFlatKeyspaces builds a synthetic "default" namespace exposing keyspaces (each
 // given its own primary-index indexer), merged over an optional real "default"
 // namespace. Returns ds unchanged if no keyspace can be constructed.
@@ -333,8 +387,15 @@ type flatKeyspace struct {
 	//                 walk base for a glob keyspace
 	file    string // single file (scenario B2/B3): keyspace = this one file
 	glob    string // glob (Mode 2b): absolute doublestar pattern (base = dir)
+	iceberg string // Iceberg table: path of the CURRENT metadata.json (dir = table dir)
 	indexer datastore.Indexer
 }
+
+// IcebergMetadata, when non-empty, marks this keyspace as an Apache Iceberg table and
+// gives the path of its current metadata.json. KeyspaceRecordsOpen routes such a keyspace
+// to records.OpenIcebergTable (via iceberg-go's snapshot/manifest/Parquet stack) INSTEAD
+// of walking dir as a tree of loose record files. See maybeIcebergTable + records/iceberg.go.
+func (k *flatKeyspace) IcebergMetadata() string { return k.iceberg }
 
 // RecordsDir is consulted by DatastoreScanRecords to locate the physical
 // directory: for a flat root the keyspace's data lives at the root itself, not
@@ -359,6 +420,9 @@ func (k *flatKeyspace) RecordsGlob() (string, bool) { return k.glob, k.glob != "
 // glob or a bundle-layout dir whose subdirs are walked only at scan time -- the cache then
 // treats it as un-estimable and falls back to attempt-and-maybe-abandon. Advisory only.
 func (k *flatKeyspace) RawSizeHintBytes() int64 {
+	if k.iceberg != "" {
+		return -1 // Iceberg data files are enumerated only at scan time.
+	}
 	if k.file != "" { // single-file keyspace (absolute path).
 		if fi, err := os.Stat(k.file); err == nil && !fi.IsDir() {
 			return fi.Size()

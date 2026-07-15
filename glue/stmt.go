@@ -269,6 +269,12 @@ func FileStoreBound(path string, b Binding) (*Store, error) {
 	if flatFile != "" {
 		// Single file: fake a synthetic default:<stem> keyspace reading just it.
 		ds = maybeFlatFile(flatFile, ds)
+	} else if ice := maybeIcebergTable(path, ds); ice != ds {
+		// Iceberg table(s): the path is (or contains) Apache Iceberg table dir(s),
+		// each a synthetic default:<basename> keyspace read via iceberg-go. No loose
+		// record files at the top of a table dir, so this precedes flat discovery.
+		// See flat.go / records/iceberg.go.
+		ds = ice
 	} else {
 		// Flat discovery: fake synthetic default keyspaces for loose top-level
 		// record files -- union-by-basename for a pure flat root, or one keyspace
