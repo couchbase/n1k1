@@ -8,8 +8,14 @@ shipped: `INSERT INTO <x>.parquet SELECT …` now emits a Parquet **VARIANT colu
 object-valued projections (`glue/insert_writer.go`), round-tripping with the read path.
 That write-back is *JSON-projection* fidelity (a VARIANT date/decimal read in comes back
 out as its JSON type); *typed-scalar* fidelity needs the **`V` sigil carrier** (§4, the
-"3D" approach) — Phase 1, the next step. Everything so far is still **no change to the
-query engine** (code in `records/`, `glue/`, and the standalone `./variant/` package).
+"3D" approach) — Phase 1, in design. Phase-1 shape is decided (**Idea A**, §4.1): the scan
+emits a fidelity row as one whole-row **VARIANT object** in the `.`-body slot (register
+model), `base` owns cheap `V`→type classification with a registered decode/nav hook (so
+`base` stays arrow-go-free / wasm-safe), gated behind an opt-in scan mode and pinned by a
+differential test. A critical review of the full pathway (§4.2) found the load-bearing
+work is *beyond* the read seams — construction-propagation, the display-vs-write-back
+boundary, and canonicalization for compare/hash. Everything shipped so far is still **no
+change to the query engine** (code in `records/`, `glue/`, and `./variant/`).
 
 Companion to `DESIGN-data.md` §7 (Iceberg read support) and `DESIGN-exprs.md` (the
 byte-oriented `base.Val = []byte` model). VARIANT enters n1k1 through the Iceberg /
@@ -275,6 +281,103 @@ only materializing a self-contained `V<meta><value>` when a value *escapes* the 
 (spill, join build-side, output). That keeps the steady-state filter path allocation-free
 at the cost of a shared-dict lifetime to manage.
 
+### 4.1 Phase-1 chosen shape (Idea A): whole-row VARIANT object, opt-in
+
+The scan renders a *fidelity* row as **one `V`-object slot**, not a JSON-object slot.
+`records/parquet.go` `appendRecordsNDJSON` → **`appendRecordsVals`**: it emits the row
+body as JSON `{…}` for a JSON-only batch (the fast path, unchanged) or as
+`V<metadata><value>` for a batch carrying VARIANT columns. **One row = one `.`-body slot**,
+so n1k1's "a document is a single navigable value" contract is preserved — no
+per-column-slot explosion. (That explosion is *alternative B*: one slot per column, which
+makes a projected VARIANT column zero-copy / zero-re-encode but detonates the doc-is-one-value
+contract — kept only as a perf escape hatch if the per-row `V`-object build proves too
+costly.) `base` owns cheap `V` classification (a byte-tag → `ValType` table, **no
+arrow-go**); decode / navigate / project is a **registered hook** `variant/` installs,
+keeping `base` arrow-go-free and wasm-safe. `V`-emission is **opt-in** (a scan/session
+mode); default stays Phase-0 read-as-JSON. A **differential test** asserts a VARIANT query
+returns byte-identical result rows with the mode on vs off — pinning "query behavior
+provably unchanged."
+
+### 4.2 Critical review — does the whole pathway hold together?
+
+The read worked-example above implies VARIANT-awareness lives in ~3 seams. Tracing the
+headline *write-back* — `INSERT INTO out.parquet (VALUE self) SELECT s.order FROM src s`
+with fidelity on — shows that is the **easy half**; the full seam list is larger:
+
+| seam | `V` handling | free? |
+|---|---|---|
+| **transit** — register moves, JOIN, UNION, spill (`ValsEncode`/`Decode` is length-prefixed per slot, format-agnostic) | bytes ride through untouched | ✅ free (verify no path assumes JSON) |
+| **classify** — `base.Parse`/`ValKind` + direct `v[0]` peek sites (`ValTruthy`, `ValIsString`, kind checks, Q5.5) | byte-tag → `ValType` of the **JSON projection** (date/ts/uuid/binary→String; int/decimal/float→Number; object→Object…) so classify agrees with output & collation | needs a small table |
+| **navigate** — `ValPathGet`, array `ValElement` | variant view walk (**unboxed offset-table**, not `v.Value()`); scalar leaf → project into reused `valOut`; container leaf → reframe as self-contained `V<meta><subvalue>` | 1 hook |
+| **compare / hash** — `ValComparer.Compare`, GROUP/DISTINCT/JOIN hashing | **must project to CANONICAL JSON**, *not* hash raw `V` bytes | ⚠ correctness |
+| **construct** — object/array construction with a `V` member | `SELECT s.order` builds `{"order":<order>}` — a construction; must **propagate `V`** into a `V`-object or write-back goes lossy | ⚠ **the gap** |
+| **serialize** — row→bytes for output / INSERT `OnRow(rowBytes)` | must emit `V`-objects, else the writer never sees `V` | needs code |
+| **output vs write-back** — `ConvertVals.Convert` → `value.Value`; `WriteJSON` | same result row must **render JSON for a SELECT** yet **preserve `V` for the writer** | ⚠ tension |
+| **write** — parquet VARIANT-column appender | detect `V` → `variant.New(meta,value)` → `VariantBuilder.Append` (lossless), *not* Phase-2a `WriteJSON`→`ParseJSON` (lossy) | needs code |
+
+Three findings the original worked example missed:
+
+1. **Construction must propagate `V`.** A `SELECT` always wraps projections in a result
+   object, so even the "pure pass-through" write-back goes through object construction. If
+   construction projects `V`→JSON, write-back is lossy — so the object/array constructors
+   must build a `V`-object when a member is `V`. This is the biggest surface beyond reads.
+   (Corollary scope: an expr that *transforms* content — string ops, arithmetic,
+   `OBJECT_*` mutators — legitimately projects to JSON and is lossy; the value changed, so
+   typed-scalar identity is moot. Fidelity = pass-through **and** structural re-assembly,
+   not transformation.)
+2. **The display-vs-write-back tension.** The one `value.Value` boundary feeds *both* the
+   SELECT result (wants JSON) and the INSERT writer (wants raw `V`). So `Convert` can't
+   just project. Two resolutions to pick between before coding: **(a)** a boundary
+   `VariantValue` whose `MarshalJSON` projects but which the writer type-asserts to recover
+   raw bytes; **(b)** the INSERT path consumes engine `V`-slots *before* `value.Value`
+   conversion. (b) avoids a new boxed value type but reworks `InsertRun`'s source.
+3. **Compare/hash must canonicalize.** Two variants that project to equal JSON can differ
+   in bytes (metadata order, encoding choices). Hashing raw `V` bytes would split equal
+   GROUP BY / DISTINCT groups and misorder — a correctness bug. Compare/hash must run on
+   the canonical JSON projection. (Decimal compares on the float64 projection, matching
+   cbq — Q5.3.)
+
+**Verdict:** the pathway holds, but Phase 1 is materially bigger than "teach
+`Parse`/`ValPathGet` about `V`." Load-bearing additions: construction-propagation, the
+`value.Value` boundary decision, and canonicalization. The read-only inspection story is
+the small part.
+
+### 4.3 Design-principle check (hot-path allocs, no boxing)
+
+- **No boxing in the byte lane.** Navigation/projection use the offset-table byte walk
+  (same as `variant.AppendJSON`), never `v.Value()` (which boxes a container per node).
+  The only box is the `value.Value` at the `Convert` boundary — already boxed today, not
+  new hot-lane boxing. ✅
+- **Transit is alloc-free** (bytes copy through the reused slot/`valOut` buffers) and
+  **scalar-leaf projection is alloc-free after warmup** (into the reused `lzValPre`), as
+  today. ✅
+- **Two genuine alloc risks** (both opt-in, so plain queries pay nothing — but must be
+  measured, not hand-waved):
+  1. *Metadata parse per navigation* — `variant.New` does `make([][]byte, dictSize)` per
+     call, i.e. per row on a filter. Mitigation: parse the batch's shared column-name
+     `Metadata` once per batch, navigate each row's `value` against it (§4 wrinkle);
+     self-contained `V<meta><value>` only when a value escapes the batch. Needs a
+     batch-scoped meta scratch the byte-lane doesn't carry today.
+  2. *Building the row `V`-object at scan* — assembling columns into one VARIANT object per
+     row needs a `variant.Builder` + a metadata build per row. Mitigation: reuse one
+     `variant.Builder` across rows (verify arrow-go supports reset) and share the
+     column-name dict across the batch. Nested-variant cells complicate dict sharing (their
+     field names vary per row) — investigate. **Benchmark before optimizing.**
+
+Net: transit + scalar projection honor "no hot-path allocs"; the scan-build and
+per-navigation meta-parse are the risk points, each with a batch-sharing mitigation to
+validate with a benchmark.
+
+### 4.4 First-byte safety (Q5.6, confirmed)
+
+`V` (0x56) is outside JSON's value-start alphabet (`" { [ - digits t f n` + whitespace),
+so `v[0]=='V'` is an unambiguous non-JSON signal; a JSON string starting with "V" begins
+with `"`, no collision. The `metadata`/`value` split needs a length delimiter
+(`V<uvarint len(meta)><meta><value>`); the bytes survive `append` / `[:0]` reuse (they're
+just bytes). Non-VARIANT typed-scalar Parquet columns (a bare `date`/`decimal` column, no
+VARIANT) stay Phase-0 lossy for now; whole-row-`V` could later cover them too, since it
+captures every typed scalar.
+
 ---
 
 ## 5. Open questions
@@ -365,14 +468,19 @@ framework rather than beside it.
   deep filter / array elem / null row). It's an encode **boundary**, so not zero-alloc
   (reuses the JSON buffer; per-row decode+build is inherent). Fidelity is the JSON
   projection only — see Phase 1.
-- **Phase 1 — the `V` carrier (typed-scalar fidelity). NEXT.** Needed so a VARIANT
-  date/decimal/uuid read in round-trips OUT as the same typed scalar (Phase 2a loses that
-  — it re-encodes the JSON projection). Emit `V<metadata><value>` from the scan `case`;
-  teach `base.Parse`/`ValKind` to detect `V` and lazily project (and the peek sites of
-  Q5.5); JSON output decodes `V` → JSON; the writer copies the bytes for a pass-through
-  `V`. **Design constraint (found):** `base` must stay arrow-go-free so it keeps building
-  under `GOOS=js/wasm` — decode-of-`V` should be a registered hook, not a hard
-  `base → variant → arrow-go` import edge. Differential-test the projection against cbq.
+- **Phase 1 — the `V` carrier (typed-scalar fidelity). NEXT; shape decided (Idea A,
+  §4.1).** Needed so a VARIANT date/decimal/uuid read in round-trips OUT as the same typed
+  scalar (Phase 2a loses that — it re-encodes the JSON projection). The scan emits a
+  fidelity row as one whole-row `V`-object (`appendRecordsVals`); `base` classifies `V`
+  cheaply (byte-tag table) and delegates decode/nav to a registered hook (arrow-go-free /
+  wasm-safe); opt-in scan mode + differential test. **The full seam list, the three
+  load-bearing findings (construction-propagation, the display-vs-write-back `value.Value`
+  boundary, canonicalization for compare/hash), and the hot-path alloc risks are in §4.2–
+  §4.3.** Suggested build order: (1) `variant/` envelope (`AppendEnvelope`/`SplitEnvelope`/
+  `EnvelopeAppendJSON`) + `base` `V`-classification + hook, unit-tested, scan unchanged
+  (zero behavioral change); (2) flip `appendRecordsVals` behind the mode + wire
+  `ValPathGet`/output + differential test; (3) construction-propagation + writer copies
+  `V` bytes → end-to-end lossless write-back.
 - **Phase 2b — shredded pushdown.** Predicate/projection pushdown into shredded
   subfields (§6), reusing the Iceberg `ScanPredicate` sidecar. (Reading shredded VARIANT
   already works with zero n1k1 code — §6; this is the pushdown perf win.)
@@ -388,6 +496,10 @@ framework rather than beside it.
 - [4. The chosen representation: a single `V` sigil](#4-the-chosen-representation-a-single-v-sigil)
   - [Alternatives considered](#alternatives-considered-condensed)
   - [Worked example — where the VARIANT-awareness lives](#worked-example--where-the-variant-awareness-actually-lives)
+  - [4.1 Phase-1 chosen shape (Idea A)](#41-phase-1-chosen-shape-idea-a-whole-row-variant-object-opt-in)
+  - [4.2 Critical review — does the whole pathway hold together?](#42-critical-review--does-the-whole-pathway-hold-together)
+  - [4.3 Design-principle check (hot-path allocs, no boxing)](#43-design-principle-check-hot-path-allocs-no-boxing)
+  - [4.4 First-byte safety](#44-first-byte-safety-q56-confirmed)
 - [5. Open questions](#5-open-questions)
 - [6. Shredded VARIANT & pushdown](#6-shredded-variant--pushdown-reads-done-pushdown-later)
 - [7. Phasing](#7-phasing)
