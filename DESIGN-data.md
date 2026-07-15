@@ -1635,8 +1635,20 @@ low-effort relative to its reach.
   (`icebergSource.SetRowFilter` drops any unconvertible clause; a partial OR drops the whole
   predicate; the built expression is pre-`BindExpr`-validated so a bad filter can never fail
   the scan). Counters `records.IcebergProjectionApplied` / `IcebergRowFilterApplied` +
-  `glue.RowFilterPushdownApplied`; parity proven by `glue/iceberg_test.go`. TODO: partition
-  pushdown (hidden-partition transforms); IN / NOT / string-range; nested boolean.
+  `glue.RowFilterPushdownApplied`; parity proven by `glue/iceberg_test.go`.
+- **Partition pushdown: ✅ DONE (falls out of predicate pushdown).** iceberg-go's `WithRowFilter`
+  ALREADY prunes partitions — `PlanFiles` runs the filter through `newInclusiveProjection`, which
+  maps a predicate on a source column to the partition value even through a HIDDEN transform
+  (`day`/`month`/`bucket`/`truncate`) — so once a WHERE is pushed, partitions prune with no extra
+  wiring. The one gap was TEMPORAL columns (the dominant partition key, e.g. `day(ts)`): SQL++ has
+  no date literal, so the constant is a string; `clauseToIceberg` now builds a string-literal
+  predicate for `date`/`time`/`timestamp`/`timestamptz`/`uuid` columns and lets iceberg-go coerce
+  it via `StringLiteral.To(type)` on Bind (a malformed string fails the pre-`BindExpr` and is
+  dropped). Timestamps render as ISO-8601, so the engine's residual string compare is
+  chronological too. Proven by `records/iceberg_test.go` (`TestIcebergPartitionPruning`: identity
+  partition, 3 files → 1; `TestIcebergDayPartitionPruning`: `day(ts)` partition, 3 files → 2 on a
+  `ts >= <cutoff>` filter) + `glue.TestIcebergTemporalPushdown` (end-to-end range query). TODO:
+  IN / NOT / string-range predicates; nested boolean.
 - **Then:** time-travel (snapshot by id / as-of, via `WithSnapshotID`/`WithSnapshotAsOf`); the
   columnar `NextColumns` path for Iceberg batches.
 - **Later, if warranted:** REST/Glue catalogs; S3 tables; delete-file correctness suite.

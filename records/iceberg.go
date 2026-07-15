@@ -192,6 +192,19 @@ func (s *icebergSource) clauseToIceberg(cl ScanClause) (iceberg.BooleanExpressio
 			return nil, false
 		}
 		return icebergCmp(ref, cl.Op, v)
+	case "date", "time", "timestamp", "timestamptz", "uuid":
+		// Temporal / uuid columns are the common PARTITION keys (e.g. day(event_ts)).
+		// SQL++ has no native date literal, so the constant arrives as a string; build a
+		// string-literal predicate and let iceberg-go coerce it to the column type during
+		// Bind (StringLiteral.To parses "2006-01-02" dates, "...T15:04:05" timestamps,
+		// RFC3339 for tz, and uuids). A malformed string fails BindExpr in SetRowFilter and
+		// is dropped -- so a range filter on the partition source column still prunes
+		// partitions (iceberg-go's inclusive projection), while a bad one is simply ignored.
+		v, ok := cl.Const.(string)
+		if !ok {
+			return nil, false
+		}
+		return icebergCmp(ref, cl.Op, v)
 	case "boolean":
 		v, ok := cl.Const.(bool)
 		if !ok || (cl.Op != "eq" && cl.Op != "ne") {

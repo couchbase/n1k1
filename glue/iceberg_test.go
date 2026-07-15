@@ -205,6 +205,84 @@ func runIceberg(t *testing.T, root string) (func(string) []string, func()) {
 	return rowsOf, func() { s.Close() }
 }
 
+// writeIcebergTSTable builds a table {id int64, ts timestamp} with the given RFC3339 (no-tz)
+// timestamps, one row each.
+func writeIcebergTSTable(t *testing.T, dir, name string, stamps []string) {
+	t.Helper()
+	ctx := context.Background()
+	loc := filepath.Join(dir, name)
+	if err := os.MkdirAll(filepath.Join(loc, "metadata"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	os.MkdirAll(filepath.Join(loc, "data"), 0o755)
+
+	sch := iceberg.NewSchema(0,
+		iceberg.NestedField{ID: 1, Name: "id", Type: iceberg.PrimitiveTypes.Int64, Required: true},
+		iceberg.NestedField{ID: 2, Name: "ts", Type: iceberg.PrimitiveTypes.Timestamp, Required: false},
+	)
+	meta0, err := itable.NewMetadata(sch, iceberg.UnpartitionedSpec, itable.UnsortedSortOrder, loc, nil)
+	if err != nil {
+		t.Fatal("NewMetadata:", err)
+	}
+	loc0 := filepath.Join(loc, "metadata", "00000.metadata.json")
+	b0, _ := json.Marshal(meta0)
+	if err := os.WriteFile(loc0, b0, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fsF := iceio.LoadFSFunc(nil, loc)
+	cat := &fsIcebergCat{loc: loc}
+	cat.tbl = itable.New(itable.Identifier{"default", name}, meta0, loc0, fsF, cat)
+
+	arrowSchema, err := itable.SchemaToArrowSchema(sch, nil, true, false)
+	if err != nil {
+		t.Fatal("SchemaToArrowSchema:", err)
+	}
+	bld := array.NewRecordBuilder(memory.DefaultAllocator, arrowSchema)
+	defer bld.Release()
+	tsB := bld.Field(1).(*array.TimestampBuilder)
+	for i, sVal := range stamps {
+		bld.Field(0).(*array.Int64Builder).Append(int64(i))
+		ts, err := arrow.TimestampFromString(sVal, arrow.Microsecond)
+		if err != nil {
+			t.Fatalf("bad timestamp %q: %v", sVal, err)
+		}
+		tsB.Append(ts)
+	}
+	rec := bld.NewRecord()
+	defer rec.Release()
+	atbl := array.NewTableFromRecords(arrowSchema, []arrow.Record{rec})
+	defer atbl.Release()
+	if _, err := cat.tbl.AppendTable(ctx, atbl, 1024, nil); err != nil {
+		t.Fatal("AppendTable:", err)
+	}
+}
+
+// TestIcebergTemporalPushdown: a timestamp range WHERE is pushed into the scan (temporal
+// columns are the common partition key) and returns correct rows. Timestamps render as
+// ISO-8601, so the engine's string comparison is chronologically correct.
+func TestIcebergTemporalPushdown(t *testing.T) {
+	root := t.TempDir()
+	writeIcebergTSTable(t, root, "events",
+		[]string{"2024-06-01T00:00:00", "2024-06-15T00:00:00", "2024-07-01T00:00:00"})
+	rowsOf, done := runIceberg(t, root)
+	defer done()
+
+	before := atomic.LoadInt64(&records.IcebergRowFilterApplied)
+	got := rowsOf("SELECT e.id FROM events AS e WHERE e.ts >= '2024-06-10T00:00:00'")
+	want := []string{`{"id":1}`, `{"id":2}`}
+	if len(got) != len(want) {
+		t.Fatalf("temporal range rows = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("row %d = %s, want %s", i, got[i], want[i])
+		}
+	}
+	if atomic.LoadInt64(&records.IcebergRowFilterApplied) <= before {
+		t.Error("temporal predicate was not pushed into the iceberg-go scan")
+	}
+}
+
 // TestIcebergProjectionPushdown: a query reading a subset of columns pushes WithSelectedFields
 // into the iceberg-go scan (IcebergProjectionApplied bumps) and still returns correct rows.
 func TestIcebergProjectionPushdown(t *testing.T) {
