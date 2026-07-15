@@ -208,6 +208,56 @@ pass-through and trivial write-back.
 - **Opaque binary + a parallel expr set.** Rejected — duplicates the whole expr
   library and splits every code path in two.
 
+### Worked example — where the VARIANT-awareness actually lives
+
+Trace `WHERE order.customer.rating > 10`, with `order` a VARIANT value carried in its
+register as `V<meta><value>`. The question that motivates this: does every
+`ValIsNumber`/`ValIsString`/… need a `V` branch, or does something smarter absorb it?
+
+The happy answer is that n1k1's value inspection **funnels through a tiny set of
+`jsonparser`-wrapping seams**, so VARIANT-awareness plugs into *those*, not the hundreds
+of exprs:
+
+| seam | today | `V`-aware behavior |
+|---|---|---|
+| `base.ValPathGet(val, path, out)` | `jsonparser.Get(val, path…)` | if `val[0]=='V'`, walk the path via the zero-copy `variant.Value` view API; project the reached **scalar** leaf into `out` (the reused buffer) |
+| `base.Parse(v)` / `ValKind` | `jsonparser.Get(v)` + first-byte | if `v[0]=='V'`, classify from VARIANT's tag byte (`basic_type`→`ValType`) — **alloc-free, no decode** |
+| `ValComparer.Compare(a,b)` | `jsonparser.Get(a)`,`(b)` | if an operand is `V`, project it (rare: whole-value compare) |
+
+Step by step:
+
+1. **`ExprLabelPath`** reads `order` (`V<…>`) from its slot and calls
+   `base.ValPathGet(order, ["customer","rating"], lzValPre)`. `lzValPre` is already a
+   `// <== varLift` reused buffer, so any projection is **alloc-free after warmup**.
+2. **ValPathGet (the one hot-path seam)** sees the `V`, navigates `customer → rating`
+   through the view API (offset-table walk, **zero-copy subslices** — no dict-wide
+   decode), and projects just the `rating` **scalar** into `lzValPre`
+   (`strconv.AppendInt(lzValPre[:0], n, 10)` → `10`). It returns **plain JSON**.
+3. **`ExprCmp`** now compares plain JSON `10` to the constant `10` — ordinary number
+   compare, **no VARIANT code**. The `order` register value is **still `V<…>`,
+   untouched**, so a sibling `SELECT order` round-trips it verbatim.
+
+So the whole filter touches VARIANT in **exactly one place** (ValPathGet), and the
+result is unboxed, efficient, and round-trip-safe. Generalizing:
+
+- **`ValIsNumber(order.customer.rating)` needs no change** — the path leaf is already
+  projected to JSON by ValPathGet, so `ValIsNumber` sees `10`. And
+  `ValIsNumber(order)` on a *whole* `V` value works too, because it's built on
+  `base.Parse`, which classifies `V` from its tag byte. **Fix `Parse`, get the whole
+  Parse-based `is_*` family for free** (`ExprIsType` → `ValKind`+`Parse`+`ParseType`).
+- The exceptions are the few functions that peek `v[0]` **directly** instead of via
+  `Parse` — e.g. `ValIsString` (`v[0]=='"'`). Those are a small, enumerable set
+  (Q5.5): reroute through the classifier, or give them a one-line `V` branch.
+
+**The one honest wrinkle — the metadata dict.** Object navigation must resolve field
+names through the Variant `metadata` dictionary, and `variant.New` parses it with a
+`make([][]byte, dictSize)` — one small alloc per navigation, i.e. per row on a filter.
+Mitigation: in Parquet the dict is typically **shared per column batch**, so the scan
+can parse the `Metadata` **once per batch** and navigate each row's `value` against it,
+only materializing a self-contained `V<meta><value>` when a value *escapes* the batch
+(spill, join build-side, output). That keeps the steady-state filter path allocation-free
+at the cost of a shared-dict lifetime to manage.
+
 ---
 
 ## 5. Open questions
@@ -228,9 +278,10 @@ pass-through and trivial write-back.
   A `V` value collates on its JSON projection (date=string, decimal=number — matches
   cbq); VARIANT-native ordering only if we ever expose VARIANT-native compares.
   `ValComparer.CompareWithType` is the seam.
-- **Q5.5 Direct `v[0]` peek sites.** Enumerate the ops that read the first byte
-  directly (`ValIsString`, kind checks) rather than through `base.Parse` — each must
-  learn the `V` sigil. How many, how hot?
+- **Q5.5 Direct `v[0]` peek sites.** The Parse-based `is_*` family works for free once
+  `Parse` classifies `V` (see the §4 worked example); the residue is the few functions
+  that read the first byte *directly* (`ValIsString`, kind checks) — enumerate them,
+  reroute through the classifier or add a one-line `V` branch. How many, how hot?
 - **Q5.6 `V` framing & safety.** `V` must sit outside JSON's first-byte alphabet
   (`" { [ - 0-9 t f n`); a length delimiter separates `metadata` from `value`; ensure
   the bytes survive `append` / `bufPre[:0]` reuse (they're just bytes).
@@ -281,6 +332,7 @@ framework rather than beside it.
 - [3. Where VARIANT enters n1k1](#3-where-variant-enters-n1k1-the-boundary)
 - [4. The chosen representation: a single `V` sigil](#4-the-chosen-representation-a-single-v-sigil)
   - [Alternatives considered](#alternatives-considered-condensed)
+  - [Worked example — where the VARIANT-awareness lives](#worked-example--where-the-variant-awareness-actually-lives)
 - [5. Open questions](#5-open-questions)
 - [6. Shredded VARIANT & pushdown](#6-shredded-variant--pushdown-later-note-the-synergy)
 - [7. Phasing](#7-phasing)
