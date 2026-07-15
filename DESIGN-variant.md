@@ -154,6 +154,65 @@ Duplicates the whole expr library and splits every code path in two. The user's
 instinct ("ugh, that doesn't sound great") is right. Only worth it if VARIANT-native
 performance (no decode) ever dominates — unlikely before shredding (§6) matters more.
 
+### 3D. A single `V` sigil — the value's tail *is* VARIANT binary  *(the sharp simplification)*
+
+Instead of a rich per-subtype sigil table (3B), use **one** sigil `V`: the byte after
+it is VARIANT's *own* first byte (its `basic_type`/`type_info`), so the tail is just a
+raw Variant `value` (plus its metadata dict — see catch #1). Don't reinvent a type
+table; reuse the one "many smart folks already figured out." Dispatch: n1k1 sees `V`,
+then reads byte[1] through VARIANT's rules and maps `basic_type` → n1k1 `ValType`.
+
+This is the elegant unification of 3B and 3C, and it separates **two orthogonal axes**
+that 3B/3C had conflated:
+
+- **Tag granularity** — rich per-subtype sigils (3B) *vs.* one opaque `V` (3D).
+- **When to decode** — eagerly at the scan boundary *vs.* lazily on first inspection.
+
+`V` pairs most naturally with **lazy** decode: carry the Variant bytes through
+untouched, and JSON-ify only when an expr actually inspects the value.
+
+- **Wins:**
+  - No parallel type table — the decoder *is* the type machinery, invoked once.
+  - **Round-trip is trivial and free** — a pass-through / write-back
+    (`SELECT v FROM t WHERE <non-v-pred>` → write VARIANT) copies the bytes verbatim,
+    zero decode/encode. This is where `V` decisively beats eager 3A/3B.
+  - Lossless by construction (the value *is* the source bytes).
+
+- **Catch #1 — the metadata dictionary.** A Variant `value` references object field
+  names by ID into a *separate* `metadata` dictionary (shared per column for
+  compression). n1k1 rows are independent `[]byte`, so a self-contained value must
+  carry **both** streams: `V<len><metadata><value>`. That re-inlines the dict per row
+  (small — just that row's field names — but real) and the decoder parses two streams.
+  3B sidesteps this entirely (field names inline as ordinary JSON keys).
+
+- **Catch #2 — inspection needs VARIANT navigation, not JSON navigation.** The moment
+  an expr must *compare / compute / navigate / output* a `V` value, it can't use
+  jsonparser / `ValPathGet` / `ValComparer` on the tail — those speak JSON, and the
+  tail is Variant binary. Two ways out:
+  - **Lazy-decode at the `base.Parse` seam** — teach `base.Parse`/`ValKind` to detect
+    `V` and return the decoded (typed-)JSON. If *all* inspection funneled through
+    `Parse`, most exprs "just work." But (a) some ops peek `v[0]` directly
+    (`ValIsString`, first-byte checks) and would need a `V` branch anyway, and (b)
+    Parse is called in hot loops, so a value touched N times **re-decodes N times**
+    (a filtered-then-projected value decodes twice; a sort key, many times). Eager
+    decode-at-scan pays once.
+  - **VARIANT-native navigation** — a second navigator beside jsonparser. That is the
+    "parallel machinery" cost 3C was rejected for, relocated into the value layer.
+
+- **The subtle asymmetry vs 3B.** 3D `V`-tags *every* VARIANT-sourced value — even a
+  plain string/number/object that is perfectly representable as JSON — so *every* such
+  value is opaque until decoded, and *every* direct `v[0]` peek site must learn `V`.
+  3B only prefixes the genuinely-non-JSON scalars (date/decimal/uuid/…); a VARIANT
+  string/number/object decodes to plain **unprefixed** JSON, so it flows through the
+  existing machinery with zero new branches. 3B = "JSON-native, annotate the
+  exceptions"; 3D = "VARIANT-native, decode on demand."
+
+**Where each wins:** `V` (3D) for **pass-through- and write-back-heavy** VARIANT
+workloads (copy bytes, never decode). Typed-JSON (3B) for **inspection-heavy** queries
+(decode once at scan, then ride the whole JSON engine). A hybrid is plausible:
+carry `V` as the lazy transit form, and `base.Parse` decodes to 3B's typed-JSON on
+first touch — VARIANT for transit, JSON for compute, each in its strong zone.
+
 ---
 
 ## 4. Why 3B maps cleanly onto n1k1 (the appeal)
@@ -226,10 +285,12 @@ Iceberg pushdown framework rather than bolting on beside it.
 - **Phase 0 — read as JSON.** Variant→JSON decoder in `appendArrowValueJSON`
   (+ `fastRenderable`/slow-path). Read-only, lossy-to-JSON, ~zero engine change.
   Unblocks querying Iceberg VARIANT columns. *Do this first; it may be enough.*
-- **Phase 1 — typed-JSON sigils (scalars).** Only if write-back or type-fidelity is
-  wanted. Sigil grammar + `base.Parse`/`ValKind` seam + strip-on-JSON-output. Scalars
-  keep their type; nested access may degrade to JSON (Q5.1). Differential-test the
-  json-form semantics against cbq so "query behavior" is provably unchanged.
+- **Phase 1 — fidelity.** Only if write-back or type-fidelity is wanted. Choose along
+  the two axes (§3D): typed-JSON sigils (3B, best for inspection-heavy) vs the single
+  `V` opaque carrier (3D, best for pass-through/write-back), or the hybrid (`V` transit
+  + lazy decode-to-typed-JSON at `base.Parse`). Whichever: a `base.Parse`/`ValKind`
+  seam + strip/decode-on-JSON-output. Differential-test the json-form semantics against
+  cbq so "query behavior" is provably unchanged.
 - **Phase 2 — VARIANT writer + nested sigils + shredded pushdown.** Variant binary
   encoder (round-trip), deep sigil-aware navigation, predicate/projection pushdown into
   shredded subfields (§6).
@@ -245,6 +306,7 @@ Iceberg pushdown framework rather than bolting on beside it.
   - [3A. Decode → plain JSON](#3a-decode-variant--plain-json-at-the-scan-boundary--phase-0)
   - [3B. Typed-JSON sigils](#3b-typed-json-sigils--extend-the-tag-space--the-interesting-idea-phase-1)
   - [3C. Opaque binary + parallel exprs (rejected)](#3c-carry-variant-binary-opaque--a-parallel-expr-set--rejected)
+  - [3D. Single `V` sigil — tail is VARIANT binary](#3d-a-single-v-sigil--the-values-tail-is-variant-binary--the-sharp-simplification)
 - [4. Why 3B maps cleanly onto n1k1](#4-why-3b-maps-cleanly-onto-n1k1-the-appeal)
 - [5. Hard parts / open questions](#5-the-hard-parts--open-questions)
 - [6. Shredded VARIANT & pushdown](#6-shredded-variant--pushdown-later-but-note-the-synergy)
@@ -260,5 +322,11 @@ Iceberg pushdown framework rather than bolting on beside it.
 - [ ] Prototype the sigil grammar; measure whether `base.Parse` can absorb it with no
       measurable hit on the pure-JSON hot path (Q5.6).
 - [ ] Nested-sigil decision (Q5.1) — the fork that most shapes the effort.
+- [ ] The two axes (§3D): tag granularity (per-subtype sigils vs single `V`) ×
+      decode timing (eager-at-scan vs lazy-at-`Parse`). Sketch the expected VARIANT
+      workload — pass-through/write-back-heavy (favors `V`) vs inspection-heavy
+      (favors eager typed-JSON) — before choosing.
+- [ ] Enumerate the direct `v[0]`-peek sites (`ValIsString`, first-byte checks) that a
+      leading prefix (any of 3B/3D) would have to learn — how many, how hot?
 - [ ] Decide whether write-back / VARIANT-native semantics is a real requirement
       (Q5.4) — it gates Phase 1 entirely.
