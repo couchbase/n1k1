@@ -1654,8 +1654,18 @@ low-effort relative to its reach.
   unpushable conjuncts instead of refusing the whole predicate (widening the pruning filter is
   safe), so `id >= 1 AND UPPER(msg) = '…'` still prunes on `id >= 1`; an OR stays all-or-nothing
   (dropping a branch would narrow it). Proven by `glue.TestIcebergRicherPredicates` (+ parity over
-  all shapes) and `records.TestIcebergInPruning` (IN prunes 3 files → 2). TODO: genuinely nested
-  boolean (`(a AND b) OR c`); LIKE-prefix → `StartsWith`.
+  all shapes) and `records.TestIcebergInPruning` (IN prunes 3 files → 2).
+- **Nested boolean: ✅ DONE.** `records.ScanPredicate` is now a TREE (an AND/OR node or a leaf),
+  not a flat clause list. Extraction (`glue/scan_pushdown.go` `buildScanExpr`) puts it in
+  negation-normal form -- NOT is pushed into the leaves via De Morgan (`buildBoolNode` flips
+  AND↔OR under negation and negates each leaf op), so the tree is a pure monotone AND/OR of
+  (possibly negated) leaves. Monotonicity keeps partial pushdown sound at every level: an AND
+  drops any unpushable child (widen), an OR is all-or-nothing. So `(a AND b) OR c`,
+  `NOT((a OR b) AND c)`, and `(a AND weird(...)) OR c` all push correctly. The tree is encoded
+  recursively into the scan-op param and converted by a recursive `predicateToIceberg`. Proven
+  by `glue.TestIcebergNestedBoolean` (+ parity) and `records.TestIcebergNestedPruning` (a nested
+  filter projects onto the partition column and prunes 3 files → 2). TODO: LIKE-prefix →
+  `StartsWith`.
 - **Time-travel: ✅ DONE.** cbq's native `AT SNAPSHOT`/`AT TIMESTAMP` is welded to its
   external-collection plan path (`IsExternalCollection` → `ExternalScan`), which n1k1's
   records-scan bypasses — so instead time-travel rides a keyspace-name suffix that keeps the

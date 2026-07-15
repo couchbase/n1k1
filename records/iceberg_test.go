@@ -316,8 +316,7 @@ func TestIcebergDayPartitionPruning(t *testing.T) {
 
 	s := &icebergSource{ctx: ctx, tbl: tbl}
 	expr, ok := s.predicateToIceberg(ScanPredicate{
-		Mode:    "and",
-		Clauses: []ScanClause{{Field: "ts", Op: "ge", Const: "2024-06-10T00:00:00"}},
+		Clause: ScanClause{Field: "ts", Op: "ge", Const: "2024-06-10T00:00:00"},
 	})
 	if !ok {
 		t.Fatal("predicateToIceberg returned ok=false for a timestamp range")
@@ -345,8 +344,7 @@ func TestIcebergInPruning(t *testing.T) {
 	}
 	s := &icebergSource{ctx: ctx, tbl: tbl}
 	expr, ok := s.predicateToIceberg(ScanPredicate{
-		Mode:    "and",
-		Clauses: []ScanClause{{Field: "region", Op: "in", Consts: []interface{}{"eu", "ap"}}},
+		Clause: ScanClause{Field: "region", Op: "in", Consts: []interface{}{"eu", "ap"}},
 	})
 	if !ok {
 		t.Fatal("predicateToIceberg returned ok=false for an IN list")
@@ -357,6 +355,40 @@ func TestIcebergInPruning(t *testing.T) {
 	}
 	if len(pruned) != 2 {
 		t.Fatalf("region IN ['eu','ap'] planned %d files, want 2", len(pruned))
+	}
+}
+
+// TestIcebergNestedPruning proves a genuinely nested boolean prunes: on a region-partitioned
+// table, `(region='eu' AND id>=0) OR region='ap'` projects onto the partition column to
+// `region='eu' OR region='ap'` and plans just those 2 of 3 files.
+func TestIcebergNestedPruning(t *testing.T) {
+	dir := t.TempDir()
+	metaLoc := writePartitionedFixture(t, dir, []string{"us", "eu", "ap"})
+
+	ctx := context.Background()
+	fsF := iceio.LoadFSFunc(nil, metaLoc)
+	tbl, err := itable.NewFromLocation(ctx, itable.Identifier{"iceberg", "t"}, metaLoc, fsF, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &icebergSource{ctx: ctx, tbl: tbl}
+	pred := ScanPredicate{Bool: "or", Children: []ScanPredicate{
+		{Bool: "and", Children: []ScanPredicate{
+			{Clause: ScanClause{Field: "region", Op: "eq", Const: "eu"}},
+			{Clause: ScanClause{Field: "id", Op: "ge", Const: float64(0)}},
+		}},
+		{Clause: ScanClause{Field: "region", Op: "eq", Const: "ap"}},
+	}}
+	expr, ok := s.predicateToIceberg(pred)
+	if !ok {
+		t.Fatal("predicateToIceberg returned ok=false for a nested boolean")
+	}
+	pruned, err := tbl.Scan(itable.WithRowFilter(expr)).PlanFiles(ctx)
+	if err != nil {
+		t.Fatal("PlanFiles:", err)
+	}
+	if len(pruned) != 2 {
+		t.Fatalf("(region=eu AND id>=0) OR region=ap planned %d files, want 2", len(pruned))
 	}
 }
 
@@ -386,8 +418,7 @@ func TestIcebergPartitionPruning(t *testing.T) {
 	// The filter our source would build for `region = 'eu'`.
 	s := &icebergSource{ctx: ctx, tbl: tbl}
 	expr, ok := s.predicateToIceberg(ScanPredicate{
-		Mode:    "and",
-		Clauses: []ScanClause{{Field: "region", Op: "eq", Const: "eu"}},
+		Clause: ScanClause{Field: "region", Op: "eq", Const: "eu"},
 	})
 	if !ok {
 		t.Fatal("predicateToIceberg returned ok=false")
@@ -402,8 +433,7 @@ func TestIcebergPartitionPruning(t *testing.T) {
 
 	// And end-to-end through the source, the rows are exactly the eu partition.
 	if err := s.SetRowFilter(ScanPredicate{
-		Mode:    "and",
-		Clauses: []ScanClause{{Field: "region", Op: "eq", Const: "eu"}},
+		Clause: ScanClause{Field: "region", Op: "eq", Const: "eu"},
 	}); err != nil {
 		t.Fatal("SetRowFilter:", err)
 	}

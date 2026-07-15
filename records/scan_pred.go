@@ -21,7 +21,7 @@ package records
 // downstream, so a source that applies it partially, loosely (returns a superset), or
 // not at all is always correct. That's what lets pushdown stay opt-in and best-effort.
 
-// ScanClause is one pushable predicate on a single field. Op selects the shape:
+// ScanClause is one pushable predicate on a single field (a tree LEAF). Op selects the shape:
 //   - comparison ("eq"/"ne"/"lt"/"le"/"gt"/"ge"): uses Const.
 //   - membership ("in"/"notin"): uses Consts.
 //   - null test ("isnull"/"notnull"): uses neither.
@@ -32,15 +32,20 @@ type ScanClause struct {
 	Consts []interface{} // membership list (in/notin)
 }
 
-// ScanPredicate is a flat conjunction or disjunction of clauses -- a single predicate is
-// Mode "and" with one clause. It stays flat by design: under an AND, an unpushable conjunct
-// is simply omitted (that only WIDENS the pruning filter, which is safe -- the engine still
-// applies the real WHERE), so a mixed `pushable AND weird(...)` still prunes on the pushable
-// part. An OR is all-or-nothing (dropping a branch would NARROW the filter and could prune
-// matching rows), and genuinely nested boolean isn't represented (it just isn't pushed).
+// ScanPredicate is a node in a pushable predicate TREE, kept in negation-normal form: NOT is
+// pushed into the leaves during extraction (via De Morgan + op negation), so the tree is a
+// pure monotone AND/OR of (possibly negated) leaves -- no NOT nodes. Bool == "" marks a leaf
+// (Clause set); "and"/"or" mark a boolean node (Children set).
+//
+// Monotonicity is what makes partial pushdown safe: replacing any node with "true" only
+// WIDENS the filter, and `real => pushed` still holds. So an AND may DROP an unpushable child
+// (a UDF, an unsupported type) and still prune on the rest, while an OR is all-or-nothing
+// (dropping a disjunct would NARROW the filter and could prune matching rows). The engine
+// always applies the real WHERE, so any subset that survives is a correct pruning HINT.
 type ScanPredicate struct {
-	Mode    string // "and" | "or"
-	Clauses []ScanClause
+	Bool     string // "" (leaf) | "and" | "or"
+	Clause   ScanClause
+	Children []ScanPredicate
 }
 
 // RowFilterer is a Source that accepts a ScanPredicate as a best-effort pruning hint.

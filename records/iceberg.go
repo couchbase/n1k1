@@ -135,33 +135,47 @@ func (s *icebergSource) SetSnapshot(sel ScanSnapshot) error {
 	return nil
 }
 
-// predicateToIceberg converts a neutral ScanPredicate to an iceberg BooleanExpression.
-// Correctness of DROPPING an unconvertible clause depends on the mode: in an AND, dropping
-// a clause WEAKENS the filter (a superset survives -- safe); in an OR, dropping a clause
-// STRENGTHENS it (matching rows could be pruned -- UNSAFE), so any unconvertible OR clause
-// drops the WHOLE predicate. Returns ok=false to push nothing.
-func (s *icebergSource) predicateToIceberg(pred ScanPredicate) (iceberg.BooleanExpression, bool) {
-	if len(pred.Clauses) == 0 {
-		return nil, false
-	}
-	var built []iceberg.BooleanExpression
-	for _, cl := range pred.Clauses {
-		e, ok := s.clauseToIceberg(cl)
-		if !ok {
-			if pred.Mode == "or" {
+// predicateToIceberg converts a neutral ScanPredicate TREE to an iceberg BooleanExpression,
+// recursing over its AND/OR nodes. The tree is negation-normal (no NOT nodes), so it's
+// monotone: an AND DROPS any unconvertible child (dropping only widens the result -- safe),
+// while an OR is all-or-nothing (dropping a disjunct could prune matching rows). A child is
+// unconvertible when a leaf's type doesn't map or a nested node itself drops out entirely.
+func (s *icebergSource) predicateToIceberg(p ScanPredicate) (iceberg.BooleanExpression, bool) {
+	switch p.Bool {
+	case "":
+		return s.clauseToIceberg(p.Clause)
+	case "and":
+		var built []iceberg.BooleanExpression
+		for _, c := range p.Children {
+			if e, ok := s.predicateToIceberg(c); ok {
+				built = append(built, e) // else drop this conjunct (widen -- safe).
+			}
+		}
+		return combineIceberg(built, false)
+	case "or":
+		var built []iceberg.BooleanExpression
+		for _, c := range p.Children {
+			e, ok := s.predicateToIceberg(c)
+			if !ok {
 				return nil, false // can't push a partial OR soundly.
 			}
-			continue // AND: dropping a clause only widens the result.
+			built = append(built, e)
 		}
-		built = append(built, e)
+		return combineIceberg(built, true)
 	}
-	if len(built) == 0 {
+	return nil, false
+}
+
+// combineIceberg AND/ORs a slice of expressions: 0 -> not pushable, 1 -> that expression,
+// >=2 -> NewAnd/NewOr.
+func combineIceberg(built []iceberg.BooleanExpression, or bool) (iceberg.BooleanExpression, bool) {
+	switch len(built) {
+	case 0:
 		return nil, false
-	}
-	if len(built) == 1 {
+	case 1:
 		return built[0], true
 	}
-	if pred.Mode == "or" {
+	if or {
 		return iceberg.NewOr(built[0], built[1], built[2:]...), true
 	}
 	return iceberg.NewAnd(built[0], built[1], built[2:]...), true

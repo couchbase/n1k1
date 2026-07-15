@@ -489,6 +489,37 @@ func TestIcebergRicherPredicates(t *testing.T) {
 	}
 }
 
+// TestIcebergNestedBoolean: genuinely nested boolean -- `(a AND b) OR c` and a De-Morgan
+// `NOT((a OR b))` -- return correct rows and are pushed into the scan.
+func TestIcebergNestedBoolean(t *testing.T) {
+	root := t.TempDir()
+	writeIcebergTable(t, root, "events", []string{"disk full", "", "oom killed"}) // id1 msg NULL.
+	rowsOf, done := runIceberg(t, root)
+	defer done()
+
+	before := atomic.LoadInt64(&records.IcebergRowFilterApplied)
+
+	// (id >= 2 AND msg = 'oom killed') OR id = 0  ->  id 0 and 2.
+	if g := rowsOf("SELECT e.id FROM events AS e WHERE (e.id >= 2 AND e.msg = 'oom killed') OR e.id = 0"); len(g) != 2 ||
+		g[0] != `{"id":0}` || g[1] != `{"id":2}` {
+		t.Errorf("(a AND b) OR c = %v, want id 0 and 2", g)
+	}
+	// De Morgan: NOT(id = 1 OR msg IS NULL)  ==  id != 1 AND msg IS NOT NULL  ->  id 0 and 2.
+	if g := rowsOf("SELECT e.id FROM events AS e WHERE NOT (e.id = 1 OR e.msg IS NULL)"); len(g) != 2 ||
+		g[0] != `{"id":0}` || g[1] != `{"id":2}` {
+		t.Errorf("NOT(a OR b) = %v, want id 0 and 2", g)
+	}
+	// Nested with an unpushable leaf under an inner AND: the AND drops it, the OR still pushes.
+	if g := rowsOf("SELECT e.id FROM events AS e WHERE (e.id = 0 AND UPPER(e.msg) = 'DISK FULL') OR e.id = 2"); len(g) != 2 ||
+		g[0] != `{"id":0}` || g[1] != `{"id":2}` {
+		t.Errorf("(a AND weird) OR c = %v, want id 0 and 2", g)
+	}
+
+	if atomic.LoadInt64(&records.IcebergRowFilterApplied) <= before {
+		t.Error("no nested boolean was pushed into the iceberg-go scan")
+	}
+}
+
 // TestIcebergPushdownParity: pushed results must equal unpushed results (pushdown is a pure
 // optimization; the engine's filter/projection still runs).
 func TestIcebergPushdownParity(t *testing.T) {
@@ -506,6 +537,9 @@ func TestIcebergPushdownParity(t *testing.T) {
 		"SELECT e.id FROM events AS e WHERE e.msg IS NOT NULL",
 		"SELECT e.id FROM events AS e WHERE e.id NOT IN [0, 1]",
 		"SELECT e.id FROM events AS e WHERE e.id >= 1 AND UPPER(e.msg) = 'OOM KILLED'",
+		"SELECT e.id FROM events AS e WHERE (e.id >= 2 AND e.msg = 'oom killed') OR e.id = 0",
+		"SELECT e.id FROM events AS e WHERE NOT (e.id = 1 OR e.msg IS NULL)",
+		"SELECT e.id FROM events AS e WHERE (e.id = 0 AND UPPER(e.msg) = 'DISK FULL') OR e.id = 2",
 	}
 	for _, stmt := range stmts {
 		rp, doneP := runIceberg(t, root)

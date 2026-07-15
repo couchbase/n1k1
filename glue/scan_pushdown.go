@@ -33,23 +33,30 @@ import (
 // DisableColumnProjection) -- used by tests to compare pushed vs unpushed results.
 var DisableRowFilterPushdown bool
 
-// scanRowFilterSpec extracts a pushable predicate from a filter condition and encodes it as
-// a scan-op param (["row-filter", [mode, [[field, op, const], ...]]]) with JSON-friendly
-// leaf types (float64/string/bool), or ok=false to push nothing.
+// scanRowFilterSpec extracts a pushable predicate TREE from a filter condition and encodes
+// it as a scan-op param (["row-filter", <node>]), or ok=false to push nothing.
 func scanRowFilterSpec(cond expression.Expression) (interface{}, bool) {
-	pred, ok := extractScanPredicate(cond)
+	pred, ok := buildScanExpr(cond, false)
 	if !ok {
 		return nil, false
 	}
-	rawCls := make([]interface{}, len(pred.Clauses))
-	for i, cl := range pred.Clauses {
-		rawCls[i] = []interface{}{cl.Field, cl.Op, cl.Const, cl.Consts}
-	}
-	return []interface{}{"row-filter", []interface{}{pred.Mode, rawCls}}, true
+	return []interface{}{"row-filter", encodeScanPred(pred)}, true
 }
 
-// scanRowFilter decodes the "row-filter" param VisitFilter attached to a scan op, or
-// ok=false if none / malformed.
+// encodeScanPred serializes a predicate tree to JSON-friendly interface{} values. A leaf is
+// ["", field, op, const, consts]; a boolean node is ["and"|"or", [child, ...]].
+func encodeScanPred(p records.ScanPredicate) interface{} {
+	if p.Bool == "" {
+		return []interface{}{"", p.Clause.Field, p.Clause.Op, p.Clause.Const, p.Clause.Consts}
+	}
+	kids := make([]interface{}, len(p.Children))
+	for i, c := range p.Children {
+		kids[i] = encodeScanPred(c)
+	}
+	return []interface{}{p.Bool, kids}
+}
+
+// scanRowFilter decodes the "row-filter" param VisitFilter attached to a scan op.
 func scanRowFilter(o *base.Op) (records.ScanPredicate, bool) {
 	for _, p := range o.Params {
 		pp, ok := p.([]interface{})
@@ -59,103 +66,105 @@ func scanRowFilter(o *base.Op) (records.ScanPredicate, bool) {
 		if k, _ := pp[0].(string); k != "row-filter" {
 			continue
 		}
-		spec, ok := pp[1].([]interface{})
-		if !ok || len(spec) != 2 {
-			return records.ScanPredicate{}, false
-		}
-		mode, _ := spec[0].(string)
-		rawCls, ok := spec[1].([]interface{})
-		if !ok {
-			return records.ScanPredicate{}, false
-		}
-		cls := make([]records.ScanClause, 0, len(rawCls))
-		for _, rc := range rawCls {
-			c, ok := rc.([]interface{})
-			if !ok || len(c) != 4 {
-				return records.ScanPredicate{}, false
-			}
-			field, _ := c[0].(string)
-			op, _ := c[1].(string)
-			consts, _ := c[3].([]interface{})
-			cls = append(cls, records.ScanClause{Field: field, Op: op, Const: c[2], Consts: consts})
-		}
-		return records.ScanPredicate{Mode: mode, Clauses: cls}, true
+		return decodeScanPred(pp[1])
 	}
 	return records.ScanPredicate{}, false
 }
 
-// extractScanPredicate reduces a filter condition to a flat AND/OR of pushable clauses
-// (comparison / IN / IS [NOT] NULL, plus their negations). A lone clause is mode "and" with
-// one clause. Under an AND an unpushable conjunct is dropped (widening the pruning filter is
-// safe); an OR must be fully pushable (dropping a branch narrows it, which could prune
-// matching rows) -- so a not-fully-pushable OR yields ok=false and nothing is pushed.
-func extractScanPredicate(cond expression.Expression) (records.ScanPredicate, bool) {
-	switch cond.(type) {
-	case *expression.And:
-		cls, ok := flattenScanClauses(cond, "and")
-		if !ok || len(cls) == 0 {
+// decodeScanPred is the inverse of encodeScanPred.
+func decodeScanPred(v interface{}) (records.ScanPredicate, bool) {
+	a, ok := v.([]interface{})
+	if !ok || len(a) < 2 {
+		return records.ScanPredicate{}, false
+	}
+	b, _ := a[0].(string)
+	if b == "" {
+		if len(a) != 5 {
 			return records.ScanPredicate{}, false
 		}
-		return records.ScanPredicate{Mode: "and", Clauses: cls}, true
-	case *expression.Or:
-		cls, ok := flattenScanClauses(cond, "or")
-		if !ok || len(cls) < 2 {
-			return records.ScanPredicate{}, false
-		}
-		return records.ScanPredicate{Mode: "or", Clauses: cls}, true
-	default:
-		cl, ok := pushableClause(cond)
+		field, _ := a[1].(string)
+		op, _ := a[2].(string)
+		consts, _ := a[4].([]interface{})
+		return records.ScanPredicate{Clause: records.ScanClause{
+			Field: field, Op: op, Const: a[3], Consts: consts}}, true
+	}
+	kidsRaw, ok := a[1].([]interface{})
+	if !ok {
+		return records.ScanPredicate{}, false
+	}
+	kids := make([]records.ScanPredicate, 0, len(kidsRaw))
+	for _, kr := range kidsRaw {
+		k, ok := decodeScanPred(kr)
 		if !ok {
 			return records.ScanPredicate{}, false
 		}
-		return records.ScanPredicate{Mode: "and", Clauses: []records.ScanClause{cl}}, true
+		kids = append(kids, k)
 	}
+	return records.ScanPredicate{Bool: b, Children: kids}, true
 }
 
-// flattenScanClauses collects clauses from a tree of same-mode boolean nodes (cbq nests
-// `a AND b AND c` as And(And(a,b),c)). AND: recurse into nested ANDs, DROP any operand that
-// isn't pushable (a nested OR, a UDF, ...) -- ok as long as ≥1 clause survives. OR: every
-// operand must be a pushable clause or a nested OR (all-or-nothing); a nested AND or an
-// unpushable leaf -> ok=false.
-func flattenScanClauses(e expression.Expression, mode string) ([]records.ScanClause, bool) {
+// buildScanExpr converts a filter condition to a pushable predicate tree in negation-normal
+// form, tracking whether we're under an odd number of NOTs (negate). De Morgan flips the
+// operator under negation (AND<->OR) and negates each leaf's op, so the result is a pure
+// monotone AND/OR of leaves. An effective AND drops unpushable children (widen -- safe, needs
+// >=1); an effective OR is all-or-nothing. This handles genuinely nested boolean, e.g.
+// `(a AND b) OR c` or `NOT((a OR b) AND c)`.
+func buildScanExpr(e expression.Expression, negate bool) (records.ScanPredicate, bool) {
 	switch n := e.(type) {
 	case *expression.And:
-		if mode != "and" {
-			return nil, false // a nested AND under an OR can't be pushed as a flat OR.
-		}
-		var out []records.ScanClause
-		for _, o := range n.Operands() {
-			if sub, ok := flattenScanClauses(o, "and"); ok {
-				out = append(out, sub...) // else DROP this conjunct (widen -- safe).
-			}
-		}
-		return out, len(out) > 0
+		return buildBoolNode(n.Operands(), negate, true)
 	case *expression.Or:
-		if mode != "or" {
-			return nil, false // signals the caller to DROP this OR conjunct under an AND.
-		}
-		var out []records.ScanClause
-		for _, o := range n.Operands() {
-			sub, ok := flattenScanClauses(o, "or")
-			if !ok {
-				return nil, false // OR is all-or-nothing.
-			}
-			out = append(out, sub...)
-		}
-		return out, true
+		return buildBoolNode(n.Operands(), negate, false)
+	case *expression.Not:
+		return buildScanExpr(n.Operand(), !negate)
 	default:
-		cl, ok := pushableClause(e)
+		cl, ok := pushableLeaf(e)
 		if !ok {
-			return nil, false
+			return records.ScanPredicate{}, false
 		}
-		return []records.ScanClause{cl}, true
+		if negate {
+			neg, ok := negateOp(cl.Op)
+			if !ok {
+				return records.ScanPredicate{}, false
+			}
+			cl.Op = neg
+		}
+		return records.ScanPredicate{Clause: cl}, true
 	}
 }
 
-// pushableClause reduces one leaf expression to a ScanClause: a comparison, an IN list, an
-// IS [NOT] NULL, or a NOT of any of those (cbq expresses `!=` as NOT(=) and `NOT IN` as
-// NOT(IN)). ok=false for anything else.
-func pushableClause(e expression.Expression) (records.ScanClause, bool) {
+// buildBoolNode builds an AND/OR node from operands. isAnd is the SOURCE operator; under
+// negation it flips (De Morgan). The effective AND drops unconvertible children; the
+// effective OR requires all. A single surviving child collapses to itself.
+func buildBoolNode(ops expression.Expressions, negate, isAnd bool) (records.ScanPredicate, bool) {
+	effAnd := isAnd != negate // XOR: a NOT flips AND<->OR.
+	kids := make([]records.ScanPredicate, 0, len(ops))
+	for _, o := range ops {
+		child, ok := buildScanExpr(o, negate)
+		if !ok {
+			if !effAnd {
+				return records.ScanPredicate{}, false // OR: all-or-nothing.
+			}
+			continue // AND: drop the unconvertible child (widen -- safe).
+		}
+		kids = append(kids, child)
+	}
+	if len(kids) == 0 {
+		return records.ScanPredicate{}, false
+	}
+	if len(kids) == 1 {
+		return kids[0], true
+	}
+	bool := "or"
+	if effAnd {
+		bool = "and"
+	}
+	return records.ScanPredicate{Bool: bool, Children: kids}, true
+}
+
+// pushableLeaf reduces one leaf expression to a ScanClause: a comparison, an IN list, or an
+// IS [NOT] NULL. NOT is handled one level up (buildScanExpr), so it isn't a case here.
+func pushableLeaf(e expression.Expression) (records.ScanClause, bool) {
 	switch n := e.(type) {
 	case *expression.Eq:
 		return orientComparison(n.First(), n.Second(), "eq")
@@ -180,13 +189,6 @@ func pushableClause(e expression.Expression) (records.ScanClause, bool) {
 	case *expression.IsNotNull:
 		if field, ok := bareFieldOfExpr(n.Operand()); ok {
 			return records.ScanClause{Field: field, Op: "notnull"}, true
-		}
-	case *expression.Not:
-		if cl, ok := pushableClause(n.Operand()); ok {
-			if neg, ok := negateOp(cl.Op); ok {
-				cl.Op = neg
-				return cl, true
-			}
 		}
 	}
 	return records.ScanClause{}, false
