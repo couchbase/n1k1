@@ -1596,9 +1596,9 @@ zone-maps.
   + partition pruning; field-ID schema evolution; MoR deletes — all inside iceberg-go's
   scan + our existing Arrow-batch machinery.
 - **Medium:** wiring an Iceberg table into keyspace/FROM resolution; the WHERE→iceberg-go
-  expression conversion; time-travel syntax (which snapshot: id / as-of timestamp); the
-  `NextColumns` columnar path for Iceberg batches (its list/vec columns need the same
-  handling as the Parquet path — see the vec-column work).
+  expression conversion; time-travel (which snapshot: id / as-of timestamp); the scalar
+  `NextColumns` columnar path for Iceberg batches. (All DONE — see the phasing list below. The
+  remaining `list<float32>` VECTOR_DISTANCE columnar path is documented-future there.)
 - **Deferred:** catalogs beyond a filesystem/local metadata path (REST/Glue/SQL — iceberg-go
   supports them, but they need config + creds); S3/object-store tables (deps are present);
   verifying MoR-delete correctness against real tables.
@@ -1712,7 +1712,19 @@ low-effort relative to its reach.
   falls through to a real scan. A snapshot keyspace's stats are snapshot-specific
   (`DatastoreAggMetadata` re-opens via `KeyspaceRecordsOpen`, which applies the selector, then
   reads `Columns()`, whose `PlanFiles` uses the snapshot). Proven by `glue.TestIcebergMetadataAgg`
-  (COUNT/MIN/MAX from metadata + row-path parity). Not yet: the list/vector columnar path.
+  (COUNT/MIN/MAX from metadata + row-path parity).
+- **List/vector columnar path: ⬜ DOCUMENTED-FUTURE.** The scalar `NextColumns` path above serves
+  fixed-width 8-byte numerics. A SEPARATE, narrower path serves `VECTOR_DISTANCE` top-K search
+  over `list<float32>` embedding columns: `records.VectorBatchSource.NextVectorBatch` (yields the
+  vec list's borrowed contiguous float32 child buffer + scalar side columns, no JSON transpose --
+  see DESIGN-vectors.md) plus the plan-time gate `records.VectorSchemaSource`
+  (`VectorField`/`ScalarField`). Only `parquetSource`/`walkSource` implement these today; the
+  Iceberg TODO is to (1) add `VectorSchemaSource` on `icebergSource` (report a `list<float32|64>`
+  field as a vec column, id/side fields as 8-byte scalars) so the columnar `VECTOR_DISTANCE`
+  rewrite fires, and (2) add `NextVectorBatch` extracting the Arrow `*array.List`'s float32 child
+  + offsets + scalar columns into a `VectorBatch`. Deferred deliberately: it only pays off if
+  embeddings are stored IN Iceberg tables, and n1k1's vector search is brute-force pure-Go (no
+  ANN), so it's a real but narrow win.
 - **Then:** snapshot-history discovery (list snapshot ids/timestamps) so `@<id>` is easy to find.
 - **Later, if warranted:** REST/Glue catalogs; S3 tables; delete-file correctness suite.
 - **Test note:** iceberg-go v0.4.0's `partitionedFanoutWriter` has an internal data race in a
