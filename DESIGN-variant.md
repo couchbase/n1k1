@@ -111,8 +111,11 @@ exact `Decimal16`, not a `double`). Measured **0 allocs/op** for scalars *and* d
 nested objects with `Decimal16` fields, vs `MarshalJSON`'s 2–147 (`variant/json_test.go`,
 `records/variant_append_test.go`); `MarshalJSON` is kept only as a test oracle (and
 `AppendJSON` is even *more* correct on one edge — empty array → `[]`, not arrow-go's
-`null`). Remaining `MarshalJSON` fallbacks: `date`/`timestamp`/`time`/`uuid`/`binary`
-(each a small future dst-formatter).
+`null`). **All typed scalars are now native dst-formatters** —
+`date`/`timestamp`(µs/ns, tz/ntz)/`time` via `time.Time.AppendFormat`, `uuid` via a
+hand-rolled hex walk, `binary` via `base64.AppendEncode` — each **byte-identical** to
+`MarshalJSON` and **0 allocs/op** (`variant.TestAppendJSONTypedScalars`). The
+`MarshalJSON` fallback now only guards a genuinely unknown primitive tag.
 
 **Validated end-to-end** by `records/variant_parquet_test.go` (two tests):
 - A VARIANT-column Parquet file, read back via `pqarrow.ReadTable`, surfaces the
@@ -344,8 +347,9 @@ framework rather than beside it.
   pqarrow surfaces the column as `*extensions.VariantArray`). Read-only, lossy-to-JSON,
   ~zero engine change. Validated at three levels: the reader
   (`records.TestParquetReaderRendersVariantColumn`), full SQL++ over a keyspace
-  (`glue.TestVariantParquetKeyspaceQuery`), and shredded columns (§6). Still on the
-  `MarshalJSON` fallback: `date`/`timestamp`/`uuid`/`binary` (§9 backlog).
+  (`glue.TestVariantParquetKeyspaceQuery`), and shredded columns (§6). All typed
+  scalars (`date`/`timestamp`/`time`/`uuid`/`binary`) now project via native,
+  byte-identical, zero-alloc dst-formatters — no `MarshalJSON` in the read path (§2).
 - **Phase 1 — the `V` carrier (fidelity).** Only if write-back or type-fidelity is
   wanted. Emit `V<metadata><value>` from the scan `case`; teach `base.Parse`/`ValKind`
   to detect `V` and lazily project (and the peek sites of Q5.5); JSON output decodes
@@ -400,8 +404,11 @@ framework rather than beside it.
       `.Value(i)` coalesces `typed_value` + residual `value`, so Phase-0 is oblivious
       (§6). Proven by `glue.TestVariantParquetShreddedKeyspaceQuery` (genuinely shredded,
       `IsShredded()` asserted; queries hit both shredded and residual subfields).
-- [ ] Finish the fallback types: `date`/`timestamp`/`time`/`uuid`/`binary` dst-formatters
-      in `./variant/` (small; each removes a `MarshalJSON` fallback).
+- [x] Finish the fallback types: `date`/`timestamp`/`time`/`uuid`/`binary` dst-formatters
+      in `./variant/` — native, **byte-identical** to `MarshalJSON`, **0 allocs/op**
+      (`date`/`timestamp`/`time` via `time.Time.AppendFormat`; `uuid` hand-rolled hex;
+      `binary` via `base64.AppendEncode`). `variant.TestAppendJSONTypedScalars` +
+      zero-alloc coverage. Read path no longer calls `MarshalJSON` for any known type.
 - [ ] Decide whether write-back / VARIANT-native semantics is a real requirement
       (Q5.2) — gates everything past Phase 0.
 - [ ] For Phase 1: enumerate the direct `v[0]`-peek sites (Q5.5); prototype the `V`

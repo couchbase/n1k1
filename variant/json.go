@@ -18,19 +18,33 @@
 // a caller-supplied (reusable) buffer — the zero-garbage alternative to
 // variant.Value.MarshalJSON, which returns a fresh slice each call and internally
 // boxes + reflect-marshals + builds intermediate maps/slices. AppendJSON allocates
-// nothing for the JSON-native types (null/bool/int/string/object/array) and for
-// decimals (Decimal4/8/16, via AppendDecimal128); it falls back to MarshalJSON only for
-// the remaining typed scalars (date/timestamp/time/uuid/binary), each of which is a
-// small further dst-formatter.
+// nothing for the JSON-native types (null/bool/int/string/object/array), for decimals
+// (Decimal4/8/16, via AppendDecimal128), and for the typed scalars date/timestamp/time
+// (via time.Time.AppendFormat), uuid, and binary (via base64.AppendEncode). The
+// MarshalJSON fallback now only guards genuinely unrecognized primitive tags.
 package variant
 
 import (
+	"encoding/base64"
 	"encoding/binary"
 	"math"
 	"math/bits"
 	"strconv"
+	"time"
 
+	"github.com/apache/arrow-go/v18/arrow"
 	av "github.com/apache/arrow-go/v18/parquet/variant"
+)
+
+// Timestamp/time layouts — byte-identical to what av.Value.MarshalJSON formats each
+// type with (arrow-go parquet/variant/variant.go). Microsecond vs nanosecond precision
+// distinguishes the two timestamp widths; the "Z0700" element prints "Z" for UTC and
+// ±hhmm otherwise (so NTZ values, rendered in time.Local, carry the local offset).
+const (
+	tsMicrosLayout = "2006-01-02 15:04:05.999999Z0700"
+	tsNanosLayout  = "2006-01-02 15:04:05.999999999Z0700"
+	timeLayout     = "15:04:05.999999Z0700"
+	dateLayout     = "2006-01-02"
 )
 
 // AppendJSON appends v's canonical JSON projection to dst and returns the extended
@@ -86,10 +100,34 @@ func appendPrimitive(dst []byte, meta av.Metadata, val []byte) []byte {
 		lo := binary.LittleEndian.Uint64(val[2:10])
 		hi := int64(binary.LittleEndian.Uint64(val[10:18]))
 		return AppendDecimal128(dst, hi, lo, int(val[1]))
+	case av.PrimitiveDate:
+		d := arrow.Date32(int32(binary.LittleEndian.Uint32(val[1:5])))
+		return appendTimeStr(dst, d.ToTime(), dateLayout)
+	case av.PrimitiveTimestampMicros: // has tz → UTC
+		ts := arrow.Timestamp(binary.LittleEndian.Uint64(val[1:9]))
+		return appendTimeStr(dst, ts.ToTime(arrow.Microsecond), tsMicrosLayout)
+	case av.PrimitiveTimestampMicrosNTZ: // no tz → local
+		ts := arrow.Timestamp(binary.LittleEndian.Uint64(val[1:9]))
+		return appendTimeStr(dst, ts.ToTime(arrow.Microsecond).In(time.Local), tsMicrosLayout)
+	case av.PrimitiveTimestampNanos: // has tz → UTC
+		ts := arrow.Timestamp(binary.LittleEndian.Uint64(val[1:9]))
+		return appendTimeStr(dst, ts.ToTime(arrow.Nanosecond), tsNanosLayout)
+	case av.PrimitiveTimestampNanosNTZ: // no tz → local
+		ts := arrow.Timestamp(binary.LittleEndian.Uint64(val[1:9]))
+		return appendTimeStr(dst, ts.ToTime(arrow.Nanosecond).In(time.Local), tsNanosLayout)
+	case av.PrimitiveTimeMicrosNTZ:
+		tm := arrow.Time64(binary.LittleEndian.Uint64(val[1:9]))
+		return appendTimeStr(dst, tm.ToTime(arrow.Microsecond).In(time.Local), timeLayout)
+	case av.PrimitiveUUID:
+		return appendUUID(dst, val[1:17])
+	case av.PrimitiveBinary:
+		n := binary.LittleEndian.Uint32(val[1:5])
+		dst = append(dst, '"')
+		dst = base64.StdEncoding.AppendEncode(dst, val[5:5+n])
+		return append(dst, '"')
 	default:
-		// date / timestamp / time / uuid / binary: reconstruct + MarshalJSON (allocates;
-		// each is a small future dst-formatter). meta is already parsed, so this is cheap
-		// apart from the fresh JSON slice.
+		// Any genuinely unhandled primitive: fall back to MarshalJSON (allocates a fresh
+		// slice, but correct). meta is already parsed, so this is cheap apart from that.
 		if sub, err := av.NewWithMetadata(meta, val); err == nil {
 			if j, err := sub.MarshalJSON(); err == nil {
 				return append(dst, j...)
@@ -97,6 +135,29 @@ func appendPrimitive(dst []byte, meta av.Metadata, val []byte) []byte {
 		}
 		return append(dst, "null"...)
 	}
+}
+
+// appendTimeStr appends t formatted with layout as a JSON string. The layouts used here
+// (date/timestamp/time) only ever produce characters that need no JSON escaping, so the
+// value is quote-wrapped directly. AppendFormat writes into dst without allocating.
+func appendTimeStr(dst []byte, t time.Time, layout string) []byte {
+	dst = append(dst, '"')
+	dst = t.AppendFormat(dst, layout)
+	return append(dst, '"')
+}
+
+// appendUUID appends the 16-byte b as a JSON-quoted canonical UUID string
+// (8-4-4-4-12 lowercase hex) — byte-identical to json.Marshal(uuid.UUID{...}), which
+// goes through uuid.UUID.MarshalText.
+func appendUUID(dst, b []byte) []byte {
+	dst = append(dst, '"')
+	for i := 0; i < 16; i++ {
+		if i == 4 || i == 6 || i == 8 || i == 10 {
+			dst = append(dst, '-')
+		}
+		dst = append(dst, hexDigits[b[i]>>4], hexDigits[b[i]&0xf])
+	}
+	return append(dst, '"')
 }
 
 func appendObject(dst []byte, meta av.Metadata, val []byte) []byte {

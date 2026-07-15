@@ -16,10 +16,60 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/decimal"
 	"github.com/apache/arrow-go/v18/arrow/decimal128"
 	av "github.com/apache/arrow-go/v18/parquet/variant"
+	"github.com/google/uuid"
 )
+
+// typedScalars builds one variant.Value per VARIANT-only typed scalar (the types that
+// used to take the MarshalJSON fallback), including all four timestamp variants.
+func typedScalars(t *testing.T) map[string]av.Value {
+	t.Helper()
+	build := func(name string, fn func(b *av.Builder) error) av.Value {
+		var b av.Builder
+		if err := fn(&b); err != nil {
+			t.Fatalf("build %s: %v", name, err)
+		}
+		v, err := b.Build()
+		if err != nil {
+			t.Fatalf("Build %s: %v", name, err)
+		}
+		return v
+	}
+	// AppendTimestamp(v, useMicros, useUTC): useUTC=true → tz-aware (rendered UTC),
+	// useUTC=false → NTZ (rendered in time.Local).
+	ts := arrow.Timestamp(1713270896789123)
+	return map[string]av.Value{
+		"date":          build("date", func(b *av.Builder) error { return b.AppendDate(20194) }),
+		"time":          build("time", func(b *av.Builder) error { return b.AppendTimeMicro(arrow.Time64(45296789123)) }),
+		"ts-micros-utc": build("ts-micros-utc", func(b *av.Builder) error { return b.AppendTimestamp(ts, true, true) }),
+		"ts-micros-ntz": build("ts-micros-ntz", func(b *av.Builder) error { return b.AppendTimestamp(ts, true, false) }),
+		"ts-nanos-utc":  build("ts-nanos-utc", func(b *av.Builder) error { return b.AppendTimestamp(ts, false, true) }),
+		"ts-nanos-ntz":  build("ts-nanos-ntz", func(b *av.Builder) error { return b.AppendTimestamp(ts, false, false) }),
+		"uuid":          build("uuid", func(b *av.Builder) error { return b.AppendUUID(uuid.MustParse("12345678-90ab-cdef-1234-567890abcdef")) }),
+		"binary":        build("binary", func(b *av.Builder) error { return b.AppendBinary([]byte("hello\x00\xff world")) }),
+		"binary-empty":  build("binary-empty", func(b *av.Builder) error { return b.AppendBinary(nil) }),
+		"uuid-zero":     build("uuid-zero", func(b *av.Builder) error { return b.AppendUUID(uuid.UUID{}) }),
+	}
+}
+
+// TestAppendJSONTypedScalars asserts AppendJSON is BYTE-identical to MarshalJSON for the
+// VARIANT-only typed scalars (date/timestamp/time/uuid/binary) — the newly-added
+// dst-formatters must reproduce arrow-go's rendering exactly, not merely a semantic
+// equivalent.
+func TestAppendJSONTypedScalars(t *testing.T) {
+	for name, v := range typedScalars(t) {
+		want, err := v.MarshalJSON()
+		if err != nil {
+			t.Fatalf("%s: MarshalJSON: %v", name, err)
+		}
+		if got := AppendJSON(nil, v); string(got) != string(want) {
+			t.Errorf("%s: AppendJSON=%s, want (byte-identical) %s", name, got, want)
+		}
+	}
+}
 
 // TestAppendDecimal128 checks the 128-bit decimal formatter is byte-identical to
 // arrow-go's decimal128.Num.ToString(scale) (which is what variant's DecimalValue
@@ -94,7 +144,7 @@ func TestAppendJSON(t *testing.T) {
 			`{"qty":1,"sku":"B2","tags":["x","y"]}]}`),
 		"dec8": built("dec8", func(b *av.Builder) error { return b.AppendDecimal8(2, decimal.Decimal64(1234)) }),
 		"dec4": built("dec4", func(b *av.Builder) error { return b.AppendDecimal4(3, decimal.Decimal32(-45)) }),
-		"date": built("date", func(b *av.Builder) error { return b.AppendDate(20194) }), // fallback path
+		"date": built("date", func(b *av.Builder) error { return b.AppendDate(20194) }),
 	}
 
 	for name, v := range cases {
@@ -139,6 +189,11 @@ func TestAppendJSONZeroAlloc(t *testing.T) {
 		"deep": mk(`{"customer":{"address":{"city":"London","geo":{"lat":51.5,"lon":-0.12}},` +
 			`"name":"Ada"},"id":"order-1001","orderlines":[{"price":9.99,"qty":2,"sku":"A1"},` +
 			`{"qty":1,"sku":"B2","tags":["x","y"]}]}`),
+	}
+	// The typed scalars must be zero-alloc too (AppendFormat / AppendEncode / hand-rolled
+	// UUID all append into the reused buffer).
+	for name, v := range typedScalars(t) {
+		cases[name] = v
 	}
 	buf := make([]byte, 0, 512)
 	for name, v := range cases {
