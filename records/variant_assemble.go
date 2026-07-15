@@ -43,10 +43,15 @@ import (
 	"github.com/couchbase/n1k1/base"
 )
 
-// variantRowAssembler assembles whole-row VARIANT objects, reusing its builder and
-// scratch buffers across rows to hold per-row allocations down. Not concurrent-safe.
+// variantRowAssembler assembles whole-row VARIANT objects, reusing its scratch buffers
+// across rows to hold per-row allocations down. Not concurrent-safe.
+//
+// NOTE: it deliberately does NOT reuse an av.Builder across rows. arrow-go's
+// Builder.Reset clears the buffer/dictionary but NOT its internal totalDictSize
+// accumulator, so a reused builder's per-row Build() sizes metadata by the SUM of every
+// row's dictionary — an O(N^2) allocation blowup (measured 221MB / 256-row batch before
+// this fix). A fresh builder per row keeps it linear; buf/fields reuse is unaffected.
 type variantRowAssembler struct {
-	bld     av.Builder
 	jsonBuf []byte
 	fields  []av.FieldEntry
 }
@@ -96,7 +101,7 @@ func (a *variantRowAssembler) appendRow(dst []byte, batch arrow.RecordBatch, row
 		return dst, fmt.Errorf("appendRowVariant: multiple VARIANT columns unsupported")
 	}
 
-	a.bld.Reset()
+	var bld av.Builder // fresh per row — see the type doc (Reset leaks totalDictSize)
 
 	// Seed the row dict with the VARIANT cell's dict keys (in id order) so the cell's
 	// value bytes can be spliced with its field-ids intact.
@@ -116,22 +121,22 @@ func (a *variantRowAssembler) appendRow(dst []byte, batch arrow.RecordBatch, row
 				if err != nil {
 					return dst, err
 				}
-				a.bld.AddKey(k)
+				bld.AddKey(k)
 			}
 		}
 	}
 
 	schema := batch.Schema()
-	start := a.bld.Offset()
+	start := bld.Offset()
 	a.fields = a.fields[:0]
 	for c := 0; c < int(batch.NumCols()); c++ {
-		a.fields = append(a.fields, a.bld.NextField(start, schema.Field(c).Name))
+		a.fields = append(a.fields, bld.NextField(start, schema.Field(c).Name))
 		if c == variantCol {
 			if haveCell {
-				if err := a.bld.UnsafeAppendEncoded(cell.Bytes()); err != nil {
+				if err := bld.UnsafeAppendEncoded(cell.Bytes()); err != nil {
 					return dst, err
 				}
-			} else if err := a.bld.AppendNull(); err != nil { // a null VARIANT cell -> variant null
+			} else if err := bld.AppendNull(); err != nil { // a null VARIANT cell -> variant null
 				return dst, err
 			}
 			continue
@@ -146,17 +151,18 @@ func (a *variantRowAssembler) appendRow(dst []byte, batch arrow.RecordBatch, row
 			return dst, fmt.Errorf("appendRowVariant: column %q rendered to an object; unsupported",
 				schema.Field(c).Name)
 		}
-		if err := a.bld.UnsafeAppendEncoded(sv.Bytes()); err != nil {
+		if err := bld.UnsafeAppendEncoded(sv.Bytes()); err != nil {
 			return dst, err
 		}
 	}
-	if err := a.bld.FinishObject(start, a.fields); err != nil {
+	if err := bld.FinishObject(start, a.fields); err != nil {
 		return dst, err
 	}
-	v, err := a.bld.Build()
+	v, err := bld.Build()
 	if err != nil {
 		return dst, err
 	}
-	// Copy the built bytes into dst now, before the next Reset invalidates them.
+	// Copy the built bytes into dst (bld's Build() Value references bld's own buffer,
+	// which goes out of scope at return — we retain only the copy in dst).
 	return base.AppendVariantEnvelope(dst, v.Metadata().Bytes(), v.Bytes()), nil
 }

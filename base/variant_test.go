@@ -101,6 +101,27 @@ func TestVariantValType(t *testing.T) {
 	}
 }
 
+// BenchmarkVariantValType and BenchmarkSplitVariantEnvelope characterize the
+// arrow-go-free carrier primitives base runs on the hot path: classification and the
+// zero-copy split must be cheap and alloc-free.
+func BenchmarkVariantValType(b *testing.B) {
+	env := AppendVariantEnvelope(nil, []byte{0x01, 0x02, 0x03}, []byte{tag(variantBasicObject, 0), 9, 9})
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = VariantValType(env)
+	}
+}
+
+func BenchmarkSplitVariantEnvelope(b *testing.B) {
+	env := AppendVariantEnvelope(nil, []byte{0x01, 0x02, 0x03}, []byte{tag(variantBasicObject, 0), 9, 9})
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _, _ = SplitVariantEnvelope(env)
+	}
+}
+
 func TestVariantProjectJSONHook(t *testing.T) {
 	// No hook registered -> null (and never a panic).
 	saved := VariantAppendJSON

@@ -174,6 +174,38 @@ func TestAppendJSON(t *testing.T) {
 	}
 }
 
+const benchDeepJSON = `{"customer":{"name":"Ada","address":{"city":"London","geo":{"lat":51.5,"lon":-0.12}}},` +
+	`"orderlines":[{"sku":"A1","qty":2},{"sku":"B2","qty":1}],"total":9.99}`
+
+// BenchmarkAppendJSON vs BenchmarkMarshalJSON characterize the zero-alloc projector
+// against arrow-go's stdlib MarshalJSON on the same deep object.
+func BenchmarkAppendJSON(b *testing.B) {
+	v, err := av.ParseJSON(benchDeepJSON, false)
+	if err != nil {
+		b.Fatal(err)
+	}
+	buf := make([]byte, 0, 512)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		buf = AppendJSON(buf[:0], v)
+	}
+}
+
+func BenchmarkMarshalJSON(b *testing.B) {
+	v, err := av.ParseJSON(benchDeepJSON, false)
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := v.MarshalJSON(); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 // TestAppendJSONZeroAlloc asserts AppendJSON allocates nothing per call (after warmup)
 // for the JSON-native + decimal core — scalars and a deep object whose fractional
 // fields are Decimal16 — appending into a reused buffer.

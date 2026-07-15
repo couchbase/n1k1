@@ -351,22 +351,45 @@ the small part.
 - **Transit is alloc-free** (bytes copy through the reused slot/`valOut` buffers) and
   **scalar-leaf projection is alloc-free after warmup** (into the reused `lzValPre`), as
   today. ✅
-- **Two genuine alloc risks** (both opt-in, so plain queries pay nothing — but must be
-  measured, not hand-waved):
-  1. *Metadata parse per navigation* — `variant.New` does `make([][]byte, dictSize)` per
-     call, i.e. per row on a filter. Mitigation: parse the batch's shared column-name
-     `Metadata` once per batch, navigate each row's `value` against it (§4 wrinkle);
-     self-contained `V<meta><value>` only when a value escapes the batch. Needs a
-     batch-scoped meta scratch the byte-lane doesn't carry today.
-  2. *Building the row `V`-object at scan* — assembling columns into one VARIANT object per
-     row needs a `variant.Builder` + a metadata build per row. Mitigation: reuse one
-     `variant.Builder` across rows (verify arrow-go supports reset) and share the
-     column-name dict across the batch. Nested-variant cells complicate dict sharing (their
-     field names vary per row) — investigate. **Benchmark before optimizing.**
+**Measured (benchmarks, `benchmem`, arm64):**
 
-Net: transit + scalar projection honor "no hot-path allocs"; the scan-build and
-per-navigation meta-parse are the risk points, each with a batch-sharing mitigation to
-validate with a benchmark.
+| what | ns/op | B/op | allocs/op |
+|---|--:|--:|--:|
+| `base.SplitVariantEnvelope` (split) | 3.0 | 0 | 0 |
+| `base.VariantValType` (classify) | 3.8 | 0 | 0 |
+| `variant.AppendJSON` (deep obj) | 263 | 0 | 0 |
+| — vs arrow-go `MarshalJSON` | 11858 | 10259 | 131 |
+| `VariantPathGet` scalar leaf (3-deep) | 380 | 608 | 4 |
+| `VariantPathGet` container leaf (reframe) | 245 | 416 | 2 |
+| scan render, **Phase-0 JSON** (per 256-row batch) | 125µs | 74KB | 257 |
+| scan render, **fidelity `V`** (per 256-row batch) | 362µs | 651KB | 4708 |
+
+So the arrow-go-free carrier primitives are **free and zero-alloc**, the projector is
+**~45× faster than `MarshalJSON` and zero-alloc**, and the opt-in fidelity render costs
+**~2.9× time / ~9× memory** over Phase-0 (~1.4µs, ~2.5KB, ~18 allocs per row vs ~0.5µs,
+~289B, ~1 alloc). Reasonable for opt-in; not yet fit to be the always-on default.
+
+**A pathological O(N²) was found and fixed here:** reusing one `variant.Builder` across
+rows via `Reset()` blew up to **221MB / 256-row batch** because arrow-go's `Builder.Reset`
+clears the buffer/dictionary but *not* its internal `totalDictSize` accumulator, so each
+row's `Build()` sized metadata by the running SUM of every row's dictionary. A **fresh
+builder per row** makes it linear (the numbers above). (Lesson: don't reuse an arrow-go
+variant `Builder` across `Build()`s.)
+
+**Remaining alloc sources on the fidelity path** (the ~18 allocs/row, all opt-in — plain
+queries pay nothing; optimize only if fidelity goes default):
+1. *Per-row row-object build* — a fresh `variant.Builder` + metadata build per row.
+2. *Per-scalar-column re-encode* — `appendArrowValueJSON` → `av.ParseJSONBytes` allocates
+   a `Builder` + a `json.Decoder` per scalar column per row.
+3. *Metadata parse per navigation* — `variant.New`/`va.Value` does `make([][]byte,
+   dictSize)` per call, i.e. per row on a filter.
+   Candidate mitigations (deferred): share the batch's column-name `Metadata` across rows;
+   a scalar re-encoder that avoids the JSON round-trip; a reusable decoder. Nested-variant
+   cells complicate dict sharing (their field names vary per row).
+
+Net: transit + classification + scalar-leaf projection honor "no hot-path allocs"; the
+scan-build and per-navigation meta-parse are the measured cost centres, each with a
+mitigation to pursue *if* the fidelity mode becomes the default.
 
 ### 4.4 First-byte safety (Q5.6, confirmed)
 
@@ -405,9 +428,17 @@ captures every typed scalar.
 - **Q5.6 `V` framing & safety.** `V` must sit outside JSON's first-byte alphabet
   (`" { [ - 0-9 t f n`); a length delimiter separates `metadata` from `value`; ensure
   the bytes survive `append` / `bufPre[:0]` reuse (they're just bytes).
-- **Q5.7 Type predicates / builders.** Does SQL++ grow `IS_DATE` / `TO_VARIANT` /
-  typed accessors, or is VARIANT fully transparent? cbq has none — n1k1-native surface
-  to design or deliberately omit.
+- **Q5.7 Type predicates / builders / VARIANT-native accessors.** Does SQL++ grow
+  `IS_DATE` / `TO_VARIANT` / typed accessors, or is VARIANT fully transparent? cbq has
+  none — n1k1-native surface to design or deliberately omit. **Broader direction (and a
+  reason the carrier is worthwhile independent of write-back):** once a `V` value flows
+  through the layers with its *typed* bytes intact (Phase-1 steps 1–2, shipped), new
+  builtins can operate on that fidelity that JSON simply can't express — e.g. an
+  exact 128-bit `DECIMAL_COMPARE(a,b)` / `DECIMAL_ADD` that avoids the float64 collapse
+  (Q5.3), true `DATE`/`TIMESTAMP` accessors, `IS_DATE`/`IS_DECIMAL`, or unit-preserving
+  temporal math. These would dispatch on the `V` tag (`base.VariantValType`) and read the
+  typed leaf via the nav hook — the same seams already in place. So the read-side carrier
+  is a foundation for VARIANT-native computation, not only for lossless write-back.
 - **Q5.8 Schema advertising.** How does a VARIANT column show itself in `.keyspaces` /
   column metadata so users know a field is VARIANT vs plain JSON?
 
@@ -468,19 +499,24 @@ framework rather than beside it.
   deep filter / array elem / null row). It's an encode **boundary**, so not zero-alloc
   (reuses the JSON buffer; per-row decode+build is inherent). Fidelity is the JSON
   projection only — see Phase 1.
-- **Phase 1 — the `V` carrier (typed-scalar fidelity). NEXT; shape decided (Idea A,
-  §4.1).** Needed so a VARIANT date/decimal/uuid read in round-trips OUT as the same typed
-  scalar (Phase 2a loses that — it re-encodes the JSON projection). The scan emits a
-  fidelity row as one whole-row `V`-object (`appendRecordsVals`); `base` classifies `V`
-  cheaply (byte-tag table) and delegates decode/nav to a registered hook (arrow-go-free /
-  wasm-safe); opt-in scan mode + differential test. **The full seam list, the three
-  load-bearing findings (construction-propagation, the display-vs-write-back `value.Value`
-  boundary, canonicalization for compare/hash), and the hot-path alloc risks are in §4.2–
-  §4.3.** Suggested build order: (1) `variant/` envelope (`AppendEnvelope`/`SplitEnvelope`/
-  `EnvelopeAppendJSON`) + `base` `V`-classification + hook, unit-tested, scan unchanged
-  (zero behavioral change); (2) flip `appendRecordsVals` behind the mode + wire
-  `ValPathGet`/output + differential test; (3) construction-propagation + writer copies
-  `V` bytes → end-to-end lossless write-back.
+- **Phase 1 — the `V` carrier (typed-scalar fidelity). Read side SHIPPED (Idea A, §4.1).**
+  So a VARIANT date/decimal/uuid read in keeps its typed identity through the engine
+  (Phase-2a loses that — it re-encodes the JSON projection). Progress:
+  - **(1) DONE** — `base` carrier framing (`SigilVariant`, envelope), `V`→ValType
+    classification (arrow-go-free), and the projection/nav hooks; the `variant`-backed
+    hook bridge in `records`. Additive, zero behavioral change.
+  - **(2) DONE** — opt-in scan mode (`records.VariantFidelity`) emits whole-row `V`
+    objects; `ValPathGet`/`ValKind`/`ValsSelfObject` + `Convert` are `V`-aware; pinned by
+    a differential test (identical results on vs off) + a scan-emits-`V` engagement test.
+    Benchmarked (§4.3): opt-in fidelity render ≈ 2.9× time / 9× memory vs Phase-0 —
+    reasonable for opt-in, not yet default-worthy.
+  - **(3) NOT DONE — lossless write-back.** Analysis (§4.2) shows this is a large rework
+    (lossy projection at three pipeline points; `base` can't build `V`-objects), not a
+    clean increment — deferred pending a scope decision. Also deferred: compare/hash
+    canonicalization for GROUP/ORDER on whole-`V` values, and whole-`V` `Parse`-based type
+    predicates (`IS OBJECT` etc.; `ValKind`-based `IS VALUED`/`NULL`/`MISSING` work).
+  Note the read-side carrier already enables **VARIANT-native accessors** (exact-decimal
+  compare, typed date math) independent of write-back — see Q5.7.
 - **Phase 2b — shredded pushdown.** Predicate/projection pushdown into shredded
   subfields (§6), reusing the Iceberg `ScanPredicate` sidecar. (Reading shredded VARIANT
   already works with zero n1k1 code — §6; this is the pushdown perf win.)
