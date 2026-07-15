@@ -117,10 +117,25 @@ Variant support yet — the read path would go through `pqarrow`/`arrow-go`.)
   is exactly `NewWithMetadata(meta, value)`.
 - `MarshalJSON()` is the ready-made **3A** decode-to-JSON (and the JSON-output side of
   3B/3D). It allocates the JSON — inherent to producing JSON output.
-- Residual open question **Q1.3**: does `pqarrow` surface a Parquet Variant *column*
-  as the two binary sub-arrays (`metadata`,`value`) we can hand to `variant.New`, or
-  is column-level plumbing still needed? (The `variant` package clearly handles a
-  single value given the two byte slices; the column reader is the open part.)
+- **Q1.3 — RESOLVED** by an end-to-end fixture (`records/variant_parquet_test.go`):
+  build a Parquet file with a VARIANT column, read it back via `pqarrow.ReadTable`, and
+  the column surfaces **directly as `*extensions.VariantArray`** — no manual sub-array
+  decomposition. `col := tbl.Column(0).Data().Chunk(0); va := col.(*extensions.VariantArray)`,
+  then `va.Value(i)` hands back a `variant.Value` view. Confirmed in that test:
+  - the `(metadata, value)` byte slices round-trip **intact**, and
+    `variant.New(meta, value)` rebuilds a working view from just those two `[]byte`
+    (the `V<meta><value>` carry-and-rebuild story);
+  - navigation is **zero-copy** — a nested field's bytes are a *subslice of the
+    parent's backing* (asserted via pointer-range aliasing);
+  - `Type()` is preserved through the round-trip (fidelity) while `MarshalJSON()`
+    gives the JSON projection. Concrete projections observed:
+    **`date` (`Date32(20194)`) → `"2025-04-16"`** (ISO string) and
+    **`decimal16` (scale 2) → `12345678912345678.90`** (all digits, exact) —
+    i.e. the typed scalar keeps its VARIANT `Type` but renders to JSON losslessly here.
+  Remaining plumbing (not blocking): a *shredded* Variant column surfaces with a
+  `typed_value` sub-field; and n1k1's `records/parquet.go appendArrowValueJSON` needs a
+  `case *extensions.VariantArray` to emit either `MarshalJSON` (Phase 0) or `V<...>`
+  (Phase 1/3D).
 
 ---
 
@@ -367,9 +382,14 @@ Iceberg pushdown framework rather than bolting on beside it.
       enumerated in `arrow-go/v18 parquet/variant` (`primitiveTypeFromHeader`).
 - [x] Survey Go decoders (Q1.2) — `arrow-go/v18 parquet/variant` is a ready-made,
       cgo-free, **unboxed/zero-copy** decoder, already a transitive dep (§1.5).
-- [ ] Q1.3 (still open): does `pqarrow` surface a Variant *column* as the two binary
-      sub-arrays (`metadata`,`value`) ready for `variant.New`, or is column plumbing
-      needed? Write a tiny Variant-Parquet fixture and read it end-to-end.
+- [x] Q1.3 — RESOLVED: `records/variant_parquet_test.go` builds a VARIANT-column
+      Parquet file and reads it back; the column surfaces as `*extensions.VariantArray`,
+      `.Value(i)` → a `variant.Value` view, bytes round-trip intact, navigation is
+      zero-copy, and JSON projections are concrete (date→ISO string, decimal→exact
+      number). See §1.5.
+- [ ] Next plumbing step: a `case *extensions.VariantArray` in
+      `records/parquet.go appendArrowValueJSON` (Phase 0 = emit `MarshalJSON`); plus the
+      shredded (`typed_value`) column shape.
 - [ ] Decide Phase-0 JSON projection rules per type (match cbq exactly; write a
       differential fixture: a small Variant Parquet file → expected JSON).
 - [ ] Prototype the sigil grammar; measure whether `base.Parse` can absorb it with no
