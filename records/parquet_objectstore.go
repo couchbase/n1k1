@@ -29,6 +29,7 @@ import (
 	"fmt"
 
 	"github.com/apache/arrow-go/v18/arrow/memory"
+	"github.com/apache/arrow-go/v18/parquet"
 	"github.com/apache/arrow-go/v18/parquet/file"
 	"github.com/apache/arrow-go/v18/parquet/pqarrow"
 )
@@ -51,12 +52,18 @@ func OpenParquetSourceRemote(loc, idPrefix string) (Source, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open remote Parquet %q: %w", loc, err)
 	}
-	pf, err := file.NewParquetReader(f) // f satisfies parquet.ReaderAtSeeker
+	// Buffered streaming: read column-chunk data through an io.SectionReader (page by page)
+	// instead of pulling the ENTIRE chunk up front. Over the network that's the difference
+	// between fetching a few pages for a LIMIT and downloading the whole (possibly huge)
+	// column chunk -- e.g. SELECT * ... LIMIT 10 on a wide remote file.
+	rprops := parquet.NewReaderProperties(memory.DefaultAllocator)
+	rprops.BufferedStreamEnabled = true
+	pf, err := file.NewParquetReader(f, file.WithReadProps(rprops)) // f satisfies parquet.ReaderAtSeeker
 	if err != nil {
 		f.Close()
 		return nil, fmt.Errorf("open remote Parquet %q: %w", loc, err)
 	}
-	pr, err := pqarrow.NewFileReader(pf, pqarrow.ArrowReadProperties{}, memory.DefaultAllocator)
+	pr, err := pqarrow.NewFileReader(pf, arrowReadProps(), memory.DefaultAllocator)
 	if err != nil {
 		pf.Close() // closes f via arrow's Reader.Close (io.Closer)
 		return nil, err

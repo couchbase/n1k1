@@ -112,6 +112,51 @@ func TestParquetColumnBatchSource(t *testing.T) {
 	}
 }
 
+// TestParquetBatchSizeBounded: a row group larger than parquetBatchRows is read in bounded
+// batches, not all at once. This guards against the arrow default (BatchSize<=0 => whole row
+// group), which made SELECT * ... LIMIT over a big/remote row group decode millions of rows
+// (and blow up memory) just to return a handful.
+func TestParquetBatchSizeBounded(t *testing.T) {
+	const n = parquetBatchRows*2 + 100 // spans 3 batches
+	path := filepath.Join(t.TempDir(), "big.parquet")
+	writeColTestParquet(t, path, 0, n)
+
+	src, err := OpenFile(path, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer src.Close()
+	if err := src.(ColumnsProjector).ProjectColumns([]string{"price"}); err != nil {
+		t.Fatal(err)
+	}
+	cbs := src.(ColumnBatchSource)
+
+	firstRows, total, batches := -1, 0, 0
+	for {
+		_, _, rows, ok, nerr := cbs.NextColumns()
+		if nerr != nil {
+			t.Fatal(nerr)
+		}
+		if !ok {
+			break
+		}
+		if firstRows < 0 {
+			firstRows = rows
+		}
+		total += rows
+		batches++
+	}
+	if firstRows != parquetBatchRows {
+		t.Errorf("first batch = %d rows, want %d (bounded, not the whole row group)", firstRows, parquetBatchRows)
+	}
+	if total != n {
+		t.Errorf("total rows = %d, want %d", total, n)
+	}
+	if batches < 3 {
+		t.Errorf("got %d batch(es); a %d-row row group should yield multiple bounded batches", batches, n)
+	}
+}
+
 func TestWalkSourceColumnsAndBatches(t *testing.T) {
 	dir := t.TempDir()
 	p0 := filepath.Join(dir, "part-0.parquet")

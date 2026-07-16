@@ -1794,6 +1794,20 @@ valuable: a pruned data file is never even `GET`-ed. The real cost is latency (m
 range GETs are round-trip-bound); production readers coalesce adjacent ranges and prefetch
 in parallel — arrow-go exposes prebuffer/coalescing knobs to tune later.
 
+**Two arrow-go settings are load-bearing over the network** (both in `records/parquet.go`
+/`parquet_objectstore.go`), or an innocuous `SELECT * … LIMIT 10` becomes pathological:
+- **Bounded batch size** (`parquetBatchRows`, all sources). Arrow's default (`BatchSize<=0`)
+  decodes the ENTIRE row group as one batch — so a LIMIT over a big row group decodes
+  millions of rows across every projected column just to return a handful (measured on the
+  227 MB Ookla file: 12.9 GB allocated / 4.1 GB heap for `SELECT * LIMIT 10`). A bounded
+  batch caps peak memory and lets LIMIT stop after ~one batch (→ 256 MB).
+- **Buffered streaming** (`ReaderProperties.BufferedStreamEnabled`, remote sources only).
+  Off (the default), arrow reads each column chunk in FULL before decoding — over the
+  network that fetches the whole (possibly huge) chunk. On, it reads pages through an
+  `io.SectionReader`, so a LIMIT fetches only the pages it needs. Measured: the same
+  `SELECT * LIMIT 10` dropped 57 s → 4.5 s; `COUNT(*)` stays footer-only (~1 s). Kept off
+  locally (whole-chunk reads are cheap on a local file and preserve the tuned columnar path).
+
 **What DuckDB does (reference):** its `httpfs` extension reads Parquet over HTTPS/S3/GCS/
 R2/Azure purely via HTTP range requests — footer first, then only needed column chunks/row
 groups, with a footer cache, small-read coalescing, and parallel prefetch; the whole object

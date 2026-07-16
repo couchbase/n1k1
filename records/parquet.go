@@ -84,12 +84,26 @@ type parquetSource struct {
 	curBatchVec arrow.RecordBatch    // held for the vector-batch path; released on next call/Close
 }
 
+// parquetBatchRows bounds how many rows arrow-go decodes per Read() batch. Arrow's default
+// (BatchSize <= 0) reads the ENTIRE row group as one batch -- catastrophic for a big row
+// group under a LIMIT (it decodes millions of rows across all projected columns just to
+// return a handful) and unbounded in memory even locally. A bounded batch makes LIMIT read
+// ~one batch and caps peak memory, while staying large enough to amortize per-batch overhead
+// for full scans / vectorized aggregates. Batching is transparent -- row transpose and the
+// masked reducers accumulate across batches, so results are unchanged.
+const parquetBatchRows = 8192
+
+// arrowReadProps is the shared arrow read config for every Parquet source (local + remote).
+func arrowReadProps() pqarrow.ArrowReadProperties {
+	return pqarrow.ArrowReadProperties{BatchSize: parquetBatchRows}
+}
+
 func newParquetSource(path, idPrefix string) (Source, error) {
 	pf, err := file.OpenParquetFile(path, false)
 	if err != nil {
 		return nil, err
 	}
-	pr, err := pqarrow.NewFileReader(pf, pqarrow.ArrowReadProperties{}, memory.DefaultAllocator)
+	pr, err := pqarrow.NewFileReader(pf, arrowReadProps(), memory.DefaultAllocator)
 	if err != nil {
 		pf.Close()
 		return nil, err
