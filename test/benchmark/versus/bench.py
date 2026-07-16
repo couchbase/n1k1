@@ -29,10 +29,10 @@ import urllib.request
 import urllib.parse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-REPO = os.path.abspath(os.path.join(HERE, "..", ".."))
+REPO = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
 DATA = os.environ.get("DATA", os.path.join(HERE, "data"))
-NDOCS = int(os.environ.get("NDOCS", "5000"))
-REPS = int(os.environ.get("REPS", "15"))
+NDOCS = int(os.environ.get("NDOCS", "20000"))
+REPS = int(os.environ.get("REPS", "11"))
 WARMUP = min(5, REPS // 3)
 CBQ_URL = os.environ.get("CBQ_URL", "")
 CBQ_CREDS = os.environ.get("CBQ_CREDS", "")
@@ -51,6 +51,12 @@ QUERIES = [
                    "ORDER BY o.amount DESC LIMIT 10"),
     ("expr-heavy", "SELECT o.id, (o.amount * o.qty) + 1 AS t FROM orders o "
                    "WHERE o.amount * o.qty > 2000"),
+    ("join-count", "SELECT COUNT(*) c FROM orders o JOIN cust k ON KEYS o.custId"),
+    ("join+group", "SELECT k.tier, COUNT(*) c, SUM(o.amount) s FROM orders o "
+                   "JOIN cust k ON KEYS o.custId GROUP BY k.tier"),
+    ("unnest-count", "SELECT COUNT(*) c FROM orders o UNNEST o.items i WHERE i.qty > 2"),
+    ("unnest+project", "SELECT o.id, i.sku, i.qty FROM orders o UNNEST o.items i "
+                       "WHERE i.qty >= 4"),
 ]
 
 _DUR = re.compile(r"in ([0-9.]+)(ns|µs|ms|s)\b")
@@ -101,16 +107,15 @@ def run_n1k1(binary, query):
 
 def run_cbq_localbench(queries):
     """One localbench process over DATA; feed all queries on stdin, in order.
-    Returns {query_text: median_ms}. localbench does its own warm/median with REPS."""
+    Returns {query_text: (median_ms, median_MB)}; localbench does warm/median."""
     env = dict(os.environ, REPS=str(REPS))
     r = subprocess.run([CBQ_LOCALBENCH, DATA], input="\n".join(queries) + "\n",
                        env=env, capture_output=True, text=True)
-    meds = [float(ln.split("\t")[1]) for ln in r.stdout.splitlines()
-            if ln.startswith("RESULT\t")]
-    if len(meds) != len(queries):
+    rows = [ln.split("\t") for ln in r.stdout.splitlines() if ln.startswith("RESULT\t")]
+    if len(rows) != len(queries):
         die("localbench gave %d/%d RESULT lines\n%s"
-            % (len(meds), len(queries), r.stderr[-800:]))
-    return dict(zip(queries, meds))
+            % (len(rows), len(queries), r.stderr[-800:]))
+    return {q: (float(c[1]), float(c[2])) for q, c in zip(queries, rows)}
 
 
 def run_cbq_url(query):
@@ -141,8 +146,11 @@ def main():
     cbq_kind = "localbench" if CBQ_LOCALBENCH else ("url" if CBQ_URL else "")
     cbq_meds = run_cbq_localbench([q for _, q in QUERIES]) if cbq_kind == "localbench" else {}
 
-    def cbq_ms(q):
-        return cbq_meds[q] if cbq_kind == "localbench" else run_cbq_url(q)
+    def cbq_stat(q):
+        # returns (ms, MB-or-None)
+        if cbq_kind == "localbench":
+            return cbq_meds[q]
+        return (run_cbq_url(q), None)  # HTTP metrics don't expose per-query allocs
 
     print("\ncbq-vs-n1k1  |  %d docs  |  warm median of %d reps (%d warmup dropped)"
           % (NDOCS, REPS, WARMUP))
@@ -150,20 +158,23 @@ def main():
         print("cbq column: %s"
               % ("cbq real executor over the same dir: file datastore (filestore harness)"
                  if cbq_kind == "localbench" else "cbq /query/service " + CBQ_URL))
-    print("-" * 74)
+    print("-" * 78)
     if cbq_kind:
-        print("%-16s%11s%11s%11s%12s" % ("query", "n1k1 ms", "n1k1 MB", "cbq ms", "cbq/n1k1"))
+        print("%-16s%9s%9s%8s%10s%10s%8s"
+              % ("query", "n1k1 ms", "cbq ms", "x(t)", "n1k1 MB", "cbq MB", "x(m)"))
     else:
         print("%-16s%12s%14s" % ("query", "n1k1 ms", "n1k1 MB/q"))
-    print("-" * 74)
+    print("-" * 78)
     for name, q in QUERIES:
         nms, nmb = run_n1k1(binary, q)
         if cbq_kind:
-            cms = cbq_ms(q)
-            print("%-16s%11.2f%11.2f%11.2f%11.2fx" % (name, nms, nmb, cms, cms / nms))
+            cms, cmb = cbq_stat(q)
+            mbcols = ("%10.2f%10.2f%7.1fx" % (nmb, cmb, cmb / nmb if nmb else 0)
+                      if cmb is not None else "%10.2f%10s%8s" % (nmb, "-", "-"))
+            print("%-16s%9.2f%9.2f%7.2fx%s" % (name, nms, cms, cms / nms, mbcols))
         else:
             print("%-16s%12.3f%14.3f" % (name, nms, nmb))
-    print("-" * 74)
+    print("-" * 78)
     if not cbq_kind:
         print("cbq column: set CBQ_LOCALBENCH=<localbench binary> (real cbq over the same")
         print("            dir: datastore) or CBQ_URL=<.../query/service>. See README.md.")
