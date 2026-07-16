@@ -88,6 +88,21 @@ func TestObjectStorePropsRegionFallback(t *testing.T) {
 	}
 }
 
+// TestObjectStorePropsAddressing: real AWS (no endpoint) forces virtual-hosted addressing;
+// a custom endpoint (MinIO) keeps iceberg-go's path-style default.
+func TestObjectStorePropsAddressing(t *testing.T) {
+	t.Setenv("AWS_REGION", "us-west-2")
+	t.Setenv("AWS_ENDPOINT_URL", "")
+	t.Setenv("AWS_S3_ENDPOINT", "")
+	if p := ObjectStoreProps("s3://b/x"); p[propS3ForceVirtual] != "true" {
+		t.Errorf("real AWS should force virtual-hosted, got %q", p[propS3ForceVirtual])
+	}
+	t.Setenv("AWS_ENDPOINT_URL", "http://127.0.0.1:9000")
+	if p := ObjectStoreProps("s3://b/x"); p[propS3ForceVirtual] != "" {
+		t.Errorf("custom endpoint should keep path-style (no force-virtual), got %q", p[propS3ForceVirtual])
+	}
+}
+
 // TestSplitIcebergMetadataLocation: derive (tableDir, keyspace name) from a metadata
 // location of the conventional .../<table>/metadata/<file>.metadata.json shape.
 func TestSplitIcebergMetadataLocation(t *testing.T) {

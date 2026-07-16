@@ -29,9 +29,31 @@ import (
 	"strings"
 
 	iceio "github.com/apache/iceberg-go/io"
+	iceutils "github.com/apache/iceberg-go/utils"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
+
+// objectStoreFSFunc returns the iceberg-go FS-factory for a table location. It is
+// iceio.LoadFSFunc, except that for anonymous S3 access (AWS_NO_SIGN_REQUEST, no explicit
+// key) it injects an anonymous aws.Config into the context iceberg-go uses to build its S3
+// client (createS3Bucket consults utils.GetAwsConfig(ctx) first) -- so a public bucket's
+// data files read with no credentials, matching n1k1's own client. Addressing (virtual-hosted
+// on real AWS) rides the s3.force-virtual-addressing prop that ObjectStoreProps sets.
+func objectStoreFSFunc(loc string, props map[string]string) func(context.Context) (iceio.IO, error) {
+	base := iceio.LoadFSFunc(props, loc)
+	if !strings.HasPrefix(uriScheme(loc), "s3") || !awsNoSignRequest() || props[iceio.S3AccessKeyID] != "" {
+		return base
+	}
+	return func(ctx context.Context) (iceio.IO, error) {
+		cfg, err := iceio.ParseAWSConfig(ctx, props)
+		if err != nil {
+			return base(ctx) // ParseAWSConfig rarely fails; fall back to the default path
+		}
+		cfg.Credentials = aws.AnonymousCredentials{}
+		return base(iceutils.WithAwsConfig(ctx, cfg))
+	}
+}
 
 // ResolveObjectStoreIcebergMetadata resolves the CURRENT metadata JSON location for an
 // Iceberg table given a bare object-store table-dir URI (e.g.

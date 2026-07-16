@@ -36,6 +36,7 @@ const (
 	propS3SecretKey    = "s3.secret-access-key"
 	propS3SessionToken = "s3.session-token"
 	propS3Endpoint     = "s3.endpoint"
+	propS3ForceVirtual = "s3.force-virtual-addressing"
 )
 
 // objectStoreSchemes are the URI schemes routed to a remote object-store backend
@@ -90,6 +91,13 @@ func ObjectStoreProps(location string) map[string]string {
 	putEnv(props, propS3SecretKey, "AWS_SECRET_ACCESS_KEY")
 	putEnv(props, propS3SessionToken, "AWS_SESSION_TOKEN")
 	putEnv(props, propS3Endpoint, "AWS_ENDPOINT_URL", "AWS_S3_ENDPOINT")
+	// Real AWS (no custom endpoint): force virtual-hosted addressing, since path-style
+	// (iceberg-go's default) 301-redirects on a region mismatch and AWS is deprecating it.
+	// A custom endpoint (MinIO et al.) keeps iceberg-go's path-style default. This prop is
+	// honored by BOTH iceberg-go's own S3 client and n1k1's (s3UsePathStyle).
+	if props[propS3Endpoint] == "" {
+		props[propS3ForceVirtual] = "true"
+	}
 	return props
 }
 

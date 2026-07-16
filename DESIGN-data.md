@@ -1806,9 +1806,12 @@ applies (instance role, shared config). Per-source creds in `catalog.json` are a
 refinement, not v1.
 
 **Anonymous / public buckets.** `AWS_NO_SIGN_REQUEST=1` (mirrors the AWS CLI's
-`--no-sign-request`) uses anonymous credentials, so public datasets read with no keys.
-Applies to the client n1k1 builds (remote Parquet + metadata listing); Iceberg data-file
-reads through iceberg-go don't yet honor it (follow-up).
+`--no-sign-request`) uses anonymous credentials, so public datasets read with no keys — for
+BOTH n1k1's own client (remote Parquet + metadata listing) AND iceberg-go's data-file reads.
+The latter is wired by `objectStoreFSFunc`: it injects an anonymous `aws.Config` into the
+context iceberg-go builds its S3 client from (`createS3Bucket` consults
+`utils.GetAwsConfig(ctx)` first). Verified end-to-end against a public bucket (an anonymous
+GetObject returns a clean 404 NoSuchKey for a missing key — not a credentials error or a 301).
 
 **Addressing (`s3UsePathStyle`).** Path-style for a custom endpoint (MinIO et al. require
 it), virtual-hosted for real AWS (path-style there 301-redirects on a region mismatch and

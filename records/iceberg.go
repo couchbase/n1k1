@@ -37,7 +37,6 @@ import (
 
 	"github.com/apache/arrow-go/v18/arrow"
 	iceberg "github.com/apache/iceberg-go"
-	iceio "github.com/apache/iceberg-go/io"
 	itable "github.com/apache/iceberg-go/table"
 )
 
@@ -97,7 +96,7 @@ func OpenIcebergTableProps(metadataLocation, idPrefix string, props map[string]s
 		return nil, fmt.Errorf("records: malformed object-store location %q", metadataLocation)
 	}
 	ctx := context.Background()
-	fsF := iceio.LoadFSFunc(props, metadataLocation) // scheme-dispatched: LocalFS, S3, GCS, Azure
+	fsF := objectStoreFSFunc(metadataLocation, props) // scheme-dispatched + anonymous-S3 aware (§8)
 	tbl, err := itable.NewFromLocation(ctx, itable.Identifier{"iceberg", "table"}, metadataLocation, fsF, nil)
 	if err != nil {
 		return nil, err
