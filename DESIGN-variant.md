@@ -516,23 +516,26 @@ picks the contract; multi-part protocols use magic name suffixes — `NAME_init`
 `_final`). For *families* (`DECIMAL_*`, `DATE_*`) that's a file explosion and it has
 nowhere clean to put `marshal`. Evolve the contract to an **explicit multi-export
 module**: the filename becomes a bundle/namespace (`decimal.js`), and the module exports a
-manifest of entries, each self-describing its `name`, `kind` (scalar/agg/stream), and
-`marshal` — e.g.
+manifest of entries, each self-describing its `name`, `marshal`, and (later) `kind` — e.g.
 
 ```js
 exports.functions = [
   { name: "DECIMAL_ADD", marshal: "variant", fn: (a, b) => /* exact */ },
-  { name: "DECIMAL_CMP", marshal: "variant", fn: (a, b) => /* exact */ },
-  { name: "DECIMAL_SUM", marshal: "variant", kind: "aggregate", init, update, final },
+  { name: "DECIMAL_CMP", marshal: "json",    fn: (a, b) => /* -1|0|1 */ },
 ];
 ```
 
-This puts **both** orthogonal axes (kind, marshal) per-export in the manifest — so
-filenames carry no functional metadata, `decimal.js` holds the whole `DECIMAL_*` family,
-and new modes/kinds never spawn new filename combos. Keep the existing 1:1 stem+suffix
-convention working (back-compat) for simple single-function files; the manifest is the
-scalable form. Prefer this explicit manifest over magic `foo`/`foo_variant` entry-name
-pairs — mode × the protocol names (`foo_variant_init`…) would itself go combinatorial.
+This puts the `marshal` axis per-export in the manifest — so filenames carry no
+per-function metadata, `decimal.js` holds the whole `DECIMAL_*` family, and new modes
+never spawn new filename combos. Keep the existing 1:1 stem+suffix convention for simple
+single-function files; the manifest is the scalable form. Prefer this explicit manifest
+over magic `foo`/`foo_variant` entry-name pairs. **Status (shipped):** modules register
+**SCALAR** functions only; an entry with `kind: "aggregate"`/`"stream"` is rejected with a
+pointer to the per-file `*.agg.js` / `*.stream.js` forms. Folding aggregate/stream *kinds*
+into the manifest (hoisting an entry's `init`/`update`/`final` or `emit` and reusing the
+existing agg/stream registrars) is a natural follow-up, but a module aggregate's callbacks
+× the marshal axis is exactly where "magic name suffixes in one file" would go
+combinatorial — so the manifest (explicit per-entry `kind`) is the right shape for it.
 
 One EJSON tag dialect then unifies the `variant` marshal mode's I/O, an optional
 typed-`TO_JSON` output, and the §5.1 accessors.

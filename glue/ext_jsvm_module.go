@@ -188,6 +188,15 @@ func registerJSModule(bundle, source string) (names []string, err error) {
 		}
 		seen[name] = true
 
+		// Modules currently register SCALAR functions only. Reject a kind:aggregate/stream
+		// entry loudly (rather than the confusing "no callable fn" below) and point at the
+		// per-file alternatives.
+		if kind := strings.ToLower(strings.TrimSpace(asString(e["kind"]))); kind != "" && kind != "scalar" && kind != "function" {
+			return nil, fmt.Errorf("JS module %q: function %q has kind %q — a module registers SCALAR "+
+				"functions only; put an aggregate in a *.agg.js file and a streaming source in a "+
+				"*.stream.js file (see .help extensions)", bundle, name, kind)
+		}
+
 		marshal := "json"
 		if m := strings.ToLower(strings.TrimSpace(asString(e["marshal"]))); m != "" {
 			marshal = m

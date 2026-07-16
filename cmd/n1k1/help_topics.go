@@ -261,6 +261,8 @@ func (c *cli) helpExtensions() {
 	c.hline("  `marshal` is how values cross the JS boundary: \"json\" (default), \"variant\"")
 	c.hline("  (VARIANT-typed values as EJSON-tagged JSON, e.g. {\"$numberDecimal\":\"...\"}), or \"raw\".")
 	c.hline("  A .js file that does NOT set exports.functions stays a single scalar UDF (above).")
+	c.hline("  Module functions are SCALAR; keep AGGREGATES in *.agg.js and STREAMING sources in")
+	c.hline("  *.stream.js (one per file).")
 	c.hline("")
 	c.hline("Two more kinds have their own guides:")
 	c.hline("  foo.extract.js  frame a raw file into rows      — see .help extract")

@@ -546,3 +546,17 @@ func TestExtJSDecimalExamples(t *testing.T) {
 		t.Fatalf("ran %d decimal_* examples, want 9 (per-function capture broken?)", ran)
 	}
 }
+
+// TestExtJSModuleAggregateRejected: a module registers SCALAR functions only; a
+// kind:"aggregate" (or "stream") entry must fail loudly and point at the per-file form.
+func TestExtJSModuleAggregateRejected(t *testing.T) {
+	src := `exports.functions=[{name:"badmodagg", kind:"aggregate",` +
+		` init:function(){return 0;}, update:function(s,v){return s+v;}, final:function(s){return s;}}];`
+	err := glue.RegisterJSModule("badmod", src)
+	if err == nil {
+		t.Fatal("expected an error for a kind:aggregate module entry")
+	}
+	if !strings.Contains(err.Error(), ".agg.js") {
+		t.Errorf("kind:aggregate error should point at *.agg.js; got: %v", err)
+	}
+}
