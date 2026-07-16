@@ -167,8 +167,14 @@ func (c *cli) gatherExtensions() []extEntry {
 	for _, b := range modOrder {
 		m := mods[b]
 		sort.Strings(m.fns)
+		code := readCode(m.origin) // a file-loaded module reads from disk...
+		if code == "" {            // ...an inline/embedded-builtin module has its source stashed.
+			if s, ok := glue.ModuleSource(b); ok {
+				code = s
+			}
+		}
 		out = append(out, extEntry{name: b, kind: "javascript-module", origin: m.origin,
-			code: readCode(m.origin), nExamples: m.nEx, fns: m.fns})
+			code: code, nExamples: m.nEx, fns: m.fns})
 	}
 	for _, r := range glue.ListExtractRecipes() {
 		out = append(out, extEntry{name: r.Name, kind: "extract", origin: r.Source,

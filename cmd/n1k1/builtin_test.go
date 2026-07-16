@@ -62,6 +62,38 @@ func TestBuiltinMacrosShipped(t *testing.T) {
 	}
 }
 
+// TestBuiltinModulesShipped: the embedded builtin_*.js JS modules register at startup
+// (no -ext needed), appear in .extensions list as "(built-in)" javascript-module rows,
+// and .extensions show dumps a module's full source (addressed by a function name).
+func TestBuiltinModulesShipped(t *testing.T) {
+	if errs := registerBuiltinModules(); len(errs) != 0 {
+		t.Fatalf("registerBuiltinModules: %v", errs)
+	}
+	// The DECIMAL_* / EJSON_* functions are now registered without any -ext.
+	for _, fn := range []string{"decimal_add", "decimal_sum", "ejson_decode"} {
+		if glue.JSModuleOf(fn) == "" {
+			t.Errorf("builtin function %q not registered as a module function", fn)
+		}
+	}
+
+	// .extensions list: builtin_decimal / builtin_ejson as (built-in) module rows.
+	var lb bytes.Buffer
+	(&cli{prog: "n1k1", out: &lb, stderr: &lb, style: cmd.Style{}}).cmdExtensions("list")
+	ls := lb.String()
+	for _, want := range []string{"builtin_decimal", "builtin_ejson", "javascript-module", "(built-in)", "decimal_add", "ejson_decode"} {
+		if !strings.Contains(ls, want) {
+			t.Errorf(".extensions list missing %q:\n%s", want, ls)
+		}
+	}
+
+	// .extensions show <function>: dumps the (embedded) source of its module file.
+	var so, se bytes.Buffer
+	(&cli{prog: "n1k1", out: &so, stderr: &se, style: cmd.Style{}}).cmdExtensions("show ejson_decode")
+	if !strings.Contains(so.String(), "exports.functions") || !strings.Contains(so.String(), "EJSON_DECODE") {
+		t.Errorf(".extensions show ejson_decode did not dump the module source:\n%s", so.String())
+	}
+}
+
 // TestHelpVectorsTopic: the .help vectors topic renders, has the key functions + a
 // runnable example, and does NOT leak internal references (e.g. design-doc names).
 func TestHelpVectorsTopic(t *testing.T) {

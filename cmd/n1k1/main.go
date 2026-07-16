@@ -181,10 +181,13 @@ func main() {
 	scanOpts.Meta = mm
 	glue.ScanWalkOptions = scanOpts
 
-	// Built-in macros (shipped in the binary) register first so they're always available;
-	// a user -ext load of a same-named macro overrides them below.
+	// Built-in macros + JS modules (shipped in the binary) register first so they're
+	// always available with no -ext; a user -ext load of a same-named one overrides below.
 	for _, e := range registerBuiltinMacros() {
 		fmt.Fprintf(os.Stderr, "%s: built-in macro: %v\n", prog, e)
+	}
+	for _, e := range registerBuiltinModules() {
+		fmt.Fprintf(os.Stderr, "%s: built-in module: %v\n", prog, e)
 	}
 
 	// Register extensions (JS UDFs + *.extract.js recipes) BEFORE opening the store:

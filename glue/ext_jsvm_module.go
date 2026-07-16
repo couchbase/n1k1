@@ -152,11 +152,37 @@ func JSModuleOf(name string) string {
 	return ""
 }
 
+// moduleSource keeps each module's original source text (keyed by bundle) so
+// `.extensions show` can dump it even when it wasn't loaded from a readable file (an
+// inline or embedded-builtin module). See ModuleSource.
+var moduleSource = map[string]string{}
+
+// ModuleSource returns the source text of a loaded module, addressed by its bundle name
+// OR by any of its function names (resolved via JSModuleOf). Used by `.extensions show`.
+func ModuleSource(name string) (string, bool) {
+	name = strings.ToLower(name)
+	if s, ok := moduleSource[name]; ok {
+		return s, true
+	}
+	if b := JSModuleOf(name); b != "" {
+		s, ok := moduleSource[b]
+		return s, ok
+	}
+	return "", false
+}
+
 // RegisterJSModule loads a multi-export module named bundle from inline source (Source
 // recorded as "(inline)"). The file-backed loader (RegisterExtensionFile) calls
 // registerJSModule with the real path instead.
 func RegisterJSModule(bundle, source string) error {
 	_, err := registerJSModule(bundle, source, "(inline)")
+	return err
+}
+
+// RegisterBuiltinModule registers a shipped built-in module (its functions' Source shows
+// as "(built-in)"); the n1k1 binary calls this at startup for its embedded builtin_*.js.
+func RegisterBuiltinModule(bundle, source string) error {
+	_, err := registerJSModule(bundle, source, "(built-in)")
 	return err
 }
 
@@ -283,6 +309,7 @@ func registerJSModule(bundle, source, sourcePath string) (names []string, err er
 		names = append(names, r.name)
 	}
 	jsModuleFuncs[bundle] = names
+	moduleSource[bundle] = source // for `.extensions show` (esp. inline/embedded builtins)
 	return names, nil
 }
 

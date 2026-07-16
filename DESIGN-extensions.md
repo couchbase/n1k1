@@ -128,9 +128,14 @@ exports.functions = [
   `ejson.unwrap(x)` (peel one tag, reads through goja host-wrapping via a JSON round-trip),
   and `ejson.decode(x)` (recursively strip tags → plain JSON). SQL++ gets the same via the
   shipped `builtin_ejson` module: `EJSON_DECODE` / `EJSON_DECIMAL` / `EJSON_UNWRAP`.
-- **Shipped builtins are `builtin_*.js`** so an embedder can load them by naming
-  convention — `glue.RegisterExtensionGlob("<dir>/builtin_*.js")` (a filepath-glob sibling
-  of `RegisterExtensionDir`). `builtin_decimal.js` = exact fixed-point `DECIMAL_ADD` /
+- **Shipped builtins are `builtin_*.js`**, embedded in the n1k1 binary
+  (`extensions/functions/js` `go:embed`, package `builtinjs`) and **auto-registered at
+  startup** (`cmd/n1k1` `registerBuiltinModules` → `glue.RegisterBuiltinModule`, Source
+  "(built-in)") — so `DECIMAL_*`/`EJSON_*` are available with NO `-ext`, the JS-module
+  sibling of the built-in macros. The `builtin_` naming also lets an embedder glob them
+  itself — `glue.RegisterExtensionGlob("<dir>/builtin_*.js")` (a filepath-glob sibling of
+  `RegisterExtensionDir`). `.extensions show <name>` dumps the embedded source (stashed in
+  `glue`'s `moduleSource`, since there's no file at runtime). `builtin_decimal.js` = exact fixed-point `DECIMAL_ADD` /
   `_SUB` / `_MUL` / `_CMP` / `_SUM`(aggregate) via `BigInt` on a coefficient+scale, so
   `DECIMAL_ADD(0.1, 0.2)` is exactly `0.3` (a plain SQL `+` drifts to
   `0.30000000000000004`) and integer sums beyond `2^53` stay exact; inputs accept a
