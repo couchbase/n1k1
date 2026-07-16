@@ -369,27 +369,40 @@ Index definitions live in <dataRoot>/.n1k1/catalog.json:
       { "name": "ft_body", "keyspace": "docs", "kind": "fts", "keys": ["title","body"] }
     ]
   }
-A gsi (default) index's keys are N1QL expressions -- a field ("country") or nested
-path ("personal_details.state"); list several for a composite index; optional
-"where" makes it partial.
 
-A "kind":"fts" index is full-text (bleve, dynamic: indexes every field), queried with
+A secondary index (SI) index (the default kind) has keys that are N1QL expressions --
+a field ("country") or nested path ("personal_details.state"); list several
+for a composite index; optional "where" makes it partial.
+
+A "kind":"fts" index is for full-text (bleve, dynamic: indexes every field), queried with
 SEARCH(keyspace, "text") -- searches the whole document -- or SEARCH(keyspace.field, "q")
 for one field. SEARCH by the keyspace NAME or its FROM alias both search the whole doc.
   Scope: "keys":["title","body"] indexes only those fields (as text); omit for dynamic.
   Full control: instead of "keys", give a "mapping" holding a raw bleve index-mapping
     JSON (analyzers, per-field types, custom analyzers) -- e.g. the English stemming
     analyzer so SEARCH(ks.body,"run") also matches "running":
-      { "name":"ft_en", "keyspace":"docs", "kind":"fts", "mapping": {
-          "default_mapping": { "enabled":true, "dynamic":false, "properties": {
-            "body": { "fields":[{"name":"body","type":"text","analyzer":"en","index":true}] } } },
-          "index_dynamic": false } }
+      { "name":"ft_en",
+        "keyspace":"docs",
+        "kind":"fts",
+        "mapping": {
+          "default_mapping": {
+            "enabled":true,
+            "dynamic":false,
+            "properties": {
+              "body": { "fields": [
+                {"name":"body","type":"text","analyzer":"en","index":true}
+              ] }
+            }
+          },
+          "index_dynamic": false
+        }
+      }
     "mapping" and "keys" are mutually exclusive.
   Analyzer (default, no mapping): each string value is ONE whole token, lowercased -- so matching is
     CASE-INSENSITIVE but NOT substring: SEARCH(ks,"seqnoWaitingStarted") and
     SEARCH(ks,"SEQNOWAITINGSTARTED") match, but "waiting" (a substring) does not.
   Wildcards / fuzzy (think grep):  x*  = prefix,  a*b / a?b = wildcard,  x~ / x~2 = fuzzy
-    (edit distance).  e.g. SEARCH(ks,"rebalanc*"), SEARCH(ks.etype,"rebalanc*").
+    (edit distance).  e.g. SEARCH(ks,"john*"), SEARCH(ks.etype,"john*").
 
 Example FTS queries (against the "docs" indexes above):
   -- whole-document search (any field), then a single field:
@@ -402,7 +415,7 @@ Example FTS queries (against the "docs" indexes above):
     WHERE SEARCH(d.body, "fox") ORDER BY score DESC LIMIT 10;
   -- prefix / fuzzy, and combine an FTS predicate with an ordinary one:
   SELECT d.id FROM docs d WHERE SEARCH(d.body, "jump*");
-  SELECT d.id FROM docs d WHERE SEARCH(d.body, "quick") AND d.id = "d1";
+  SELECT d.id FROM docs d WHERE SEARCH(d.body, "quick") AND d.year > 1910;
 After editing catalog.json, run '.index rebuild' (or just query -- lazy on first use).
 
 Startup flag -index picks whether/when these are used (builds are cached on disk):
