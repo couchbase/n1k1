@@ -100,9 +100,10 @@ func TestExtensionsModuleSubcommands(t *testing.T) {
 		return b.String()
 	}
 
-	// list shows the FUNCTIONS (not a bare "mymod" bundle row), each with the file source.
+	// list collapses the module into ONE bundle row (name + "javascript-module" + file),
+	// with its functions summarized on the following line.
 	ls := run("list")
-	for _, want := range []string{"mymod_add", "mymod_mul", "mymod.js"} {
+	for _, want := range []string{"mymod", "javascript-module", "mymod.js", "mymod_add", "mymod_mul"} {
 		if !strings.Contains(ls, want) {
 			t.Errorf(".extensions list missing %q:\n%s", want, ls)
 		}

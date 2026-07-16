@@ -118,9 +118,10 @@ func (c *cli) cmdExtensions(arg string) {
 // extEntry is one loaded extension of ANY kind (scalar UDF / aggregate / table source /
 // extract recipe / macro), unified for `.extensions list` and `.extensions show`.
 type extEntry struct {
-	name, kind, origin string // origin: file path, "(inline)", "(built-in)", or "(loaded)"
-	code               string // full source, or "" when not retrievable
-	nExamples          int
+	name, kind, origin string   // origin: file path, "(inline)", "(built-in)", or "(loaded)"
+	code               string   // full source, or "" when not retrievable
+	nExamples          int      //
+	fns                []string // for a "javascript-module" row: the SQL functions it defines
 }
 
 // gatherExtensions collects EVERY loaded extension across the kinds -- scalar/aggregate/
@@ -138,21 +139,48 @@ func (c *cli) gatherExtensions() []extEntry {
 		return ""
 	}
 	var out []extEntry
+	// Collapse a multi-export module's functions into ONE bundle row (so a loaded
+	// builtin_decimal.js shows as `builtin_decimal [javascript-module]` with its
+	// functions listed, not as N scattered rows). A single-function UDF stays its own row.
+	type modAgg struct {
+		origin string
+		nEx    int
+		fns    []string
+	}
+	mods := map[string]*modAgg{}
+	var modOrder []string
 	for _, e := range glue.ListExtensions() {
-		out = append(out, extEntry{e.Name, e.Kind, e.Source, readCode(e.Source),
-			len(glue.ExtExamplesFor(e.Kind, e.Name))})
+		if b := glue.JSModuleOf(e.Name); b != "" {
+			m := mods[b]
+			if m == nil {
+				m = &modAgg{origin: e.Source}
+				mods[b] = m
+				modOrder = append(modOrder, b)
+			}
+			m.nEx += len(glue.ExtExamplesFor(e.Kind, e.Name))
+			m.fns = append(m.fns, e.Name)
+			continue
+		}
+		out = append(out, extEntry{name: e.Name, kind: e.Kind, origin: e.Source,
+			code: readCode(e.Source), nExamples: len(glue.ExtExamplesFor(e.Kind, e.Name))})
+	}
+	for _, b := range modOrder {
+		m := mods[b]
+		sort.Strings(m.fns)
+		out = append(out, extEntry{name: b, kind: "javascript-module", origin: m.origin,
+			code: readCode(m.origin), nExamples: m.nEx, fns: m.fns})
 	}
 	for _, r := range glue.ListExtractRecipes() {
-		out = append(out, extEntry{r.Name, "extract", r.Source, readCode(r.Source),
-			len(glue.ExtExamplesFor("extract", r.Name))})
+		out = append(out, extEntry{name: r.Name, kind: "extract", origin: r.Source,
+			code: readCode(r.Source), nExamples: len(glue.ExtExamplesFor("extract", r.Name))})
 	}
 	for _, m := range glue.ListMacros() {
 		origin := "(loaded)"
 		if builtinMacroNames[m.Name] {
 			origin = "(built-in)"
 		}
-		out = append(out, extEntry{"@" + m.Name, "macro", origin, m.Source,
-			len(glue.ExtExamplesFor("macro", m.Name))})
+		out = append(out, extEntry{name: "@" + m.Name, kind: "macro", origin: origin,
+			code: m.Source, nExamples: len(glue.ExtExamplesFor("macro", m.Name))})
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].kind != out[j].kind {
@@ -176,6 +204,9 @@ func (c *cli) extList() {
 			ex = fmt.Sprintf("  (%d example%s)", e.nExamples, plural(e.nExamples))
 		}
 		fmt.Fprintf(c.stderr, "  %-22s %-22s %s%s\n", e.name, e.kind, e.origin, ex)
+		if len(e.fns) > 0 { // a module: list the functions it defines
+			fmt.Fprintln(c.stderr, c.style.Dim("      fns: "+strings.Join(e.fns, ", ")))
+		}
 	}
 	fmt.Fprintln(c.stderr, c.style.Dim("(.extensions examples [name] to see them; .extensions test [name] to run them)"))
 }
@@ -204,10 +235,10 @@ func (c *cli) extShow(name string) {
 			return
 		}
 	}
-	// A module bundle name (e.g. "decimal") isn't itself an entry, but its functions
-	// share the file — show it via the first function.
-	if fns := glue.JSModuleFunctions(q); len(fns) > 0 {
-		c.extShow(fns[0])
+	// A module FUNCTION name (e.g. "decimal_add") is collapsed into its bundle row, so
+	// resolve it to the bundle and show that (the shared file).
+	if b := glue.JSModuleOf(q); b != "" {
+		c.extShow(b)
 		return
 	}
 	fmt.Fprintf(c.stderr, "no extension %q -- try .extensions list\n", name)

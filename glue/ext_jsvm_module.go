@@ -142,6 +142,16 @@ func JSModuleFunctions(bundle string) []string {
 	return append([]string(nil), fns...)
 }
 
+// JSModuleOf returns the module bundle a function belongs to (its filename stem), or ""
+// if name is not a module function. The inverse of JSModuleFunctions; lets `.extensions
+// list` collapse a module's functions into one bundle row.
+func JSModuleOf(name string) string {
+	if key := jsFuncProgramKey[strings.ToLower(name)]; strings.HasPrefix(key, "module:") {
+		return strings.TrimPrefix(key, "module:")
+	}
+	return ""
+}
+
 // RegisterJSModule loads a multi-export module named bundle from inline source (Source
 // recorded as "(inline)"). The file-backed loader (RegisterExtensionFile) calls
 // registerJSModule with the real path instead.
