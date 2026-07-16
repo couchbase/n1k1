@@ -35,11 +35,11 @@ SELECT` file-materialize (with `OPTIONS` write modes and `RETURNING`).
       already landed) + materialized views.
 - [ ] zstd decode (walker recognizes `.zst`; decode is still a stub) and `.zip`
       as a container.
-- [~] Object-store backend (S3/GCS/Azure): Iceberg-over-S3 reads land, incl. CLI wiring —
-      `n1k1 s3://…/table` (bare dir, current metadata auto-resolved by listing) or an explicit
-      `…/metadata/NNNNN.metadata.json` is a FROM-able keyspace (env-sourced creds;
-      `.tables`/`SELECT`/time-travel). Remaining: full mock-S3 read test (dep-blocked),
-      standalone remote-Parquet, generated/Glue catalogs (§8).
+- [~] Object-store backend (S3/GCS/Azure): S3 reads land — Iceberg tables (bare dir w/
+      current-metadata listing, or explicit metadata JSON) AND standalone `FROM s3://…/x.parquet`
+      are FROM-able keyspaces (env-sourced creds; `.tables`/`SELECT`/`COUNT`/time-travel), read
+      over ranged `GetObject`. Remaining: full mock-S3 read test for Iceberg (dep-blocked),
+      GCS/Azure parity, generated/Glue catalogs (§8).
 - [ ] Encryption-at-rest: transparent decrypt layer + encrypted sidecar artifacts.
 - [ ] Column-batch execution so Parquet/Arrow is a full perf win, not just
       correctness + footer-stats aggs (`DESIGN-col.md`).
@@ -1752,9 +1752,11 @@ wiring test (`records/iceberg_s3_test.go`) proves the real path (`ObjectStorePro
 iceberg-go S3 backend → path-style HTTP GET of the right bucket/key) reaches a recording
 endpoint. **CLI wiring also landed:** `n1k1 s3://…/table` (a bare table dir — current
 metadata auto-resolved by listing) OR `…/metadata/NNNNN.metadata.json` (explicit) makes that
-remote table a FROM-able keyspace (`.tables`, `SELECT`, time-travel). Still deferred: a full
-mock-S3 read of real object bytes (blocked on vendoring a mock — see Testing below), and
-standalone remote-Parquet (a `FROM s3://…/x.parquet`).
+remote table a FROM-able keyspace (`.tables`, `SELECT`, time-travel). **Standalone remote
+Parquet also landed:** `FROM s3://bucket/path/x.parquet` reads a single object through an
+S3-range-backed `io.ReaderAt` (streaming). Still deferred: a full mock-S3 read of an Iceberg
+table's real object bytes (blocked on vendoring a mock — see Testing below); GCS/Azure
+parity; catalogs.
 
 ### Why this is mostly plumbing, not new machinery
 The dependency weight was paid long ago (it's a chunk of the 150 MB binary — see the CLI
@@ -1769,11 +1771,12 @@ credential source.
   `OpenIcebergTable` detects an object-store URI and threads a properties map. iceberg-go's
   `File` is `io.ReadSeekCloser + io.ReaderAt` backed by AWS SDK v2 ranged `GetObject`, so a
   scan reads only the manifests + surviving data files' projected column chunks.
-- **Standalone Parquet** (`records/parquet.go`) is the one local-only spot:
-  `file.OpenParquetFile(path,…)` opens an OS file. Remote Parquet = construct
-  `file.NewParquetReader(readerAt,…)` over an `io.ReaderAt` doing S3 range GETs (via the
-  `aws-sdk-go-v2/service/s3` we already carry) — the projection/predicate/RecordReader code
-  above it is unchanged. Deferred to a follow-up slice.
+- **Standalone Parquet** (`records/parquet.go`) — the local path uses
+  `file.OpenParquetFile`. Remote Parquet (LANDED) is `records.OpenParquetSourceRemote`:
+  `file.NewParquetReader(readerAt,…)` over `s3ReaderAt`, an `io.ReaderAt`+`io.Seeker` doing
+  ranged `GetObject` (`aws-sdk-go-v2/service/s3`, already carried). Only the footer +
+  projected column chunks transfer; the projection/predicate/RecordReader code above it is
+  unchanged (`FROM s3://…/x.parquet`; keyspace named after the file stem).
 
 ### Streaming, not whole-file download (the load-bearing property)
 Parquet is a random-access format: the footer (schema + per-row-group/column-chunk byte
@@ -1849,8 +1852,16 @@ further option once remote-Parquet lands.
   list→pick→compose chain is proven against a stdlib httptest endpoint serving canned
   ListObjectsV2 XML (the AWS SDK parses it — no mock-S3 dep). S3-family only; a bare `gs://`/
   `abfs://` dir is rejected with guidance to pass an explicit metadata JSON.
-- **Full mock-S3 read: ⬜ NEXT (dep-blocked here)** — vendor `gofakes3` in the repo-sync
-  build and add the build-then-read-back fixture test (rows + pushdown).
+- **Standalone remote Parquet: ✅ DONE.** `FROM s3://bucket/path/x.parquet` reads a single
+  object via `records.OpenParquetSourceRemote` over `s3ReaderAt` (ranged `GetObject`), routed
+  by KeyspaceRecordsOpen's `ParquetURL()` check; keyspace named after the file stem. Proven
+  end-to-end against a range-honoring httptest endpoint serving a real parquet's bytes (no
+  mock-S3 dep) — rows/values correct and reads confirmed ranged (streaming), plus a glue
+  `SELECT … WHERE …`/`COUNT(*)` query test.
+- **Full mock-S3 read (Iceberg): ⬜ NEXT (dep-blocked here)** — vendor `gofakes3` in the
+  repo-sync build and add the build-then-read-back fixture test (rows + pushdown). (Remote
+  Parquet above already reads real bytes end-to-end via httptest; the Iceberg case needs a
+  WRITE-capable mock to build a fixture with `s3://` locations.)
 - **Standalone remote Parquet: ⬜ NEXT** — an `io.ReaderAt`-over-range-GETs provider feeding
   `file.NewParquetReader`, reusing the existing projection/predicate pushdown; then tune
   arrow-go range coalescing/prebuffer.

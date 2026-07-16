@@ -526,6 +526,14 @@ func KeyspaceRecordsOpen(ks datastore.Keyspace, opts records.WalkOptions, gctx *
 			return src, nil
 		}
 	}
+	// A standalone remote Parquet keyspace (`FROM s3://.../x.parquet`, flat.go) reads a
+	// single object over an S3-range-backed io.ReaderAt. Checked before the directory
+	// branches (it advertises no dir/file). See records/parquet_objectstore.go, §8.
+	if pq, ok := ks.(interface{ ParquetURL() string }); ok {
+		if u := pq.ParquetURL(); u != "" {
+			return records.OpenParquetSourceRemote(u, ks.Name())
+		}
+	}
 	// A glob keyspace (DESIGN-data.md Mode 2b) expands its pattern to just the
 	// matching files here, at scan time, so the -formats lockdown (opts) applies
 	// and freshly-added files are picked up. Checked before the directory walk

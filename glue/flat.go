@@ -459,11 +459,12 @@ type flatKeyspace struct {
 	datastore.Keyspace
 	dir string // flat root: keyspace = union of files under this dir; also the
 	//                 walk base for a glob keyspace
-	file    string // single file (scenario B2/B3): keyspace = this one file
-	glob    string // glob (Mode 2b): absolute doublestar pattern (base = dir)
-	iceberg  string               // Iceberg table: path of the CURRENT metadata.json (dir = table dir)
-	snapshot records.ScanSnapshot // Iceberg time-travel selector (zero Mode => current)
-	indexer  datastore.Indexer
+	file       string               // single file (scenario B2/B3): keyspace = this one file
+	glob       string               // glob (Mode 2b): absolute doublestar pattern (base = dir)
+	iceberg    string               // Iceberg table: path of the CURRENT metadata.json (dir = table dir)
+	snapshot   records.ScanSnapshot // Iceberg time-travel selector (zero Mode => current)
+	parquetURL string               // remote Parquet object: an s3://.../x.parquet location (§8)
+	indexer    datastore.Indexer
 }
 
 // IcebergMetadata, when non-empty, marks this keyspace as an Apache Iceberg table and
@@ -483,6 +484,10 @@ func (k *flatKeyspace) IcebergSnapshot() (records.ScanSnapshot, bool) {
 // at <root>/<ns>/<keyspace>. For a glob keyspace it is the walk base (the longest
 // metacharacter-free prefix), which makes synthetic IDs base-relative and lets the
 // native byte-path fetch read <base>/<relpath>. Empty in single-file mode.
+// ParquetURL is the remote Parquet object location for a `FROM s3://.../x.parquet`
+// keyspace, or "" for any other keyspace (routed by KeyspaceRecordsOpen). See §8.
+func (k *flatKeyspace) ParquetURL() string { return k.parquetURL }
+
 func (k *flatKeyspace) RecordsDir() string { return k.dir }
 
 // RecordsFile, when non-empty, points DatastoreScanRecords at a single record

@@ -15,6 +15,7 @@ package glue
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -227,7 +228,7 @@ func FileStoreBound(path string, b Binding) (*Store, error) {
 	// filesystem discovery below (os.Stat, file.NewDatastore, ReadDir) is local-only, so a
 	// remote URI branches off early into its own builder.
 	if records.IsObjectStoreURI(path) {
-		return objectStoreIcebergStore(path)
+		return objectStoreStore(path)
 	}
 
 	// Single-file arg (DESIGN-data.md scenario B2): `n1k1 events.jsonl`. The fork's
@@ -333,6 +334,50 @@ func inertBaseDatastore() (datastore.Datastore, error) {
 		inertBaseDS, inertBaseErr = file.NewDatastore(dir)
 	})
 	return inertBaseDS, inertBaseErr
+}
+
+// objectStoreStore builds a Store for an object-store data source (s3://, gs://, abfs://):
+// a single `*.parquet` object becomes a Parquet keyspace, anything else is treated as an
+// Iceberg table (a metadata JSON or a bare table dir). See §8.
+func objectStoreStore(loc string) (*Store, error) {
+	if strings.HasSuffix(strings.ToLower(loc), ".parquet") {
+		return objectStoreParquetStore(loc)
+	}
+	return objectStoreIcebergStore(loc)
+}
+
+// objectStoreParquetStore exposes a single remote Parquet object as a keyspace named after
+// the file (its stem), read via an S3-range-backed io.ReaderAt (records.OpenParquetSourceRemote,
+// routed by KeyspaceRecordsOpen's ParquetURL check). Like the Iceberg builder, an inert local
+// base datastore (real=nil) satisfies the planner; only the synthetic keyspace is ever queried.
+func objectStoreParquetStore(loc string) (*Store, error) {
+	u, err := url.Parse(loc)
+	if err != nil || u.Host == "" {
+		return nil, fmt.Errorf("malformed object-store location %q", loc)
+	}
+	name := records.Stem(u.Path)
+	if name == "" {
+		return nil, fmt.Errorf("cannot derive a keyspace name from %q", loc)
+	}
+	base, err := inertBaseDatastore()
+	if err != nil {
+		return nil, err
+	}
+	temp := newTempKeyspaces()
+	ds := wrapTempKeyspaces(base, temp)
+	wrapped := wrapFlatKeyspaces(ds, map[string]*flatKeyspace{
+		name: {parquetURL: loc},
+	}, nil)
+	if wrapped == ds {
+		return nil, fmt.Errorf("could not build a Parquet keyspace for %q", loc)
+	}
+	return &Store{
+		Datastore:       wrapped,
+		Systemstore:     nil,
+		IndexApiVersion: datastore.INDEX_API_MAX,
+		FeatureControls: util.DEF_N1QL_FEAT_CTRL,
+		Temp:            temp,
+	}, nil
 }
 
 // objectStoreIcebergStore builds a Store for an Iceberg table hosted in an object store

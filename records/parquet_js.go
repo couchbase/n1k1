@@ -21,3 +21,8 @@ import "fmt"
 func newParquetSource(path, idPrefix string) (Source, error) {
 	return nil, fmt.Errorf("records: parquet is not supported in the wasm/js build: %s", path)
 }
+
+// OpenParquetSourceRemote is unavailable in the wasm/js build (see newParquetSource).
+func OpenParquetSourceRemote(loc, idPrefix string) (Source, error) {
+	return nil, fmt.Errorf("records: remote parquet is not supported in the wasm/js build: %s", loc)
+}
