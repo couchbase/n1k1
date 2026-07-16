@@ -88,6 +88,32 @@ func TestObjectStorePropsRegionFallback(t *testing.T) {
 	}
 }
 
+// TestSplitIcebergMetadataLocation: derive (tableDir, keyspace name) from a metadata
+// location of the conventional .../<table>/metadata/<file>.metadata.json shape.
+func TestSplitIcebergMetadataLocation(t *testing.T) {
+	cases := []struct {
+		loc, wantDir, wantName string
+		wantOK                 bool
+	}{
+		{"s3://bucket/warehouse/db/orders/metadata/00003-a1b2.metadata.json",
+			"s3://bucket/warehouse/db/orders", "orders", true},
+		{"s3://bkt/t/metadata/v5.metadata.json", "s3://bkt/t", "t", true},
+		{"/local/warehouse/orders/metadata/00001.metadata.json",
+			"/local/warehouse/orders", "orders", true},
+		// No "/metadata/" segment -> not derivable.
+		{"s3://bucket/orders/00003.metadata.json", "", "", false},
+		// Table at bucket root -> name would be the "bucket" host garbage; reject.
+		{"s3://bucket/metadata/x.metadata.json", "", "", false},
+	}
+	for _, c := range cases {
+		dir, name, ok := SplitIcebergMetadataLocation(c.loc)
+		if ok != c.wantOK || dir != c.wantDir || name != c.wantName {
+			t.Errorf("Split(%q) = (%q,%q,%v), want (%q,%q,%v)",
+				c.loc, dir, name, ok, c.wantDir, c.wantName, c.wantOK)
+		}
+	}
+}
+
 // TestNormalizeObjectStoreLocation: a bucket-less object-store URI is rejected; a local
 // path and a well-formed URI pass through unchanged.
 func TestNormalizeObjectStoreLocation(t *testing.T) {

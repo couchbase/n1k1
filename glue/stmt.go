@@ -17,6 +17,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 
 	"github.com/couchbase/query/algebra"
 	"github.com/couchbase/query/datastore"
@@ -220,6 +222,14 @@ func FileStore(path string) (*Store, error) {
 // differently-named bundle by re-binding to its root (DESIGN-prepare.md late binding;
 // see binding.go). A nil/empty manifest is exactly FileStore (the wrapper is a no-op).
 func FileStoreBound(path string, b Binding) (*Store, error) {
+	// Object-store data source (DESIGN-data.md §8): `n1k1 s3://bucket/.../table/metadata/
+	// NNNNN-<uuid>.metadata.json` makes that remote Iceberg table a keyspace. The whole
+	// filesystem discovery below (os.Stat, file.NewDatastore, ReadDir) is local-only, so a
+	// remote URI branches off early into its own builder.
+	if records.IsObjectStoreURI(path) {
+		return objectStoreIcebergStore(path)
+	}
+
 	// Single-file arg (DESIGN-data.md scenario B2): `n1k1 events.jsonl`. The fork's
 	// file datastore ReadDir's its root, so it can't be a file -- build it against
 	// the file's parent dir and remember the file to wrap below.
@@ -296,6 +306,77 @@ func FileStoreBound(path string, b Binding) (*Store, error) {
 
 	return &Store{
 		Datastore:       ds,
+		Systemstore:     nil,
+		IndexApiVersion: datastore.INDEX_API_MAX,
+		FeatureControls: util.DEF_N1QL_FEAT_CTRL,
+		Temp:            temp,
+	}, nil
+}
+
+// inertBaseDatastore returns a process-wide file datastore over a fresh EMPTY temp dir,
+// created once. It's the inert base an object-store Store embeds only to satisfy cbq's
+// planner (the synthetic Iceberg keyspace is layered on top with real=nil, so this base is
+// never enumerated or scanned by any query).
+var (
+	inertBaseOnce sync.Once
+	inertBaseDS   datastore.Datastore
+	inertBaseErr  error
+)
+
+func inertBaseDatastore() (datastore.Datastore, error) {
+	inertBaseOnce.Do(func() {
+		dir, err := os.MkdirTemp("", "n1k1-objstore-base-")
+		if err != nil {
+			inertBaseErr = err
+			return
+		}
+		inertBaseDS, inertBaseErr = file.NewDatastore(dir)
+	})
+	return inertBaseDS, inertBaseErr
+}
+
+// objectStoreIcebergStore builds a Store for an Iceberg table hosted in an object store
+// (s3://, gs://, abfs://) from the table's CURRENT metadata JSON location, exposed as one
+// synthetic keyspace named after the table dir (DESIGN-data.md §8). The scan is routed to
+// records.OpenIcebergTable by KeyspaceRecordsOpen (which reads the keyspace's
+// IcebergMetadata()); credentials/endpoint come from the environment (records.ObjectStoreProps).
+//
+// v1 takes the metadata location DIRECTLY -- current-metadata auto-resolution over an object
+// store needs object listing (a follow-up); a bare table-dir URI is rejected with guidance. A
+// minimal inert LOCAL base datastore satisfies cbq's planner (it needs a datastore), but every
+// query hits only the synthetic keyspace: real=nil, so the base namespace is never enumerated
+// or scanned. Time-travel `<table>@<snapshot>` works too (KeyspaceByName clones this keyspace).
+func objectStoreIcebergStore(metadataLoc string) (*Store, error) {
+	if !strings.HasSuffix(metadataLoc, ".metadata.json") {
+		return nil, fmt.Errorf("object-store data source %q must be an Iceberg table metadata JSON "+
+			"(e.g. s3://bucket/warehouse/db/table/metadata/00003-<uuid>.metadata.json); "+
+			"current-metadata auto-resolution over object stores is not yet wired", metadataLoc)
+	}
+	tableDir, name, ok := records.SplitIcebergMetadataLocation(metadataLoc)
+	if !ok {
+		return nil, fmt.Errorf("cannot derive a keyspace name from %q "+
+			"(expected .../<table>/metadata/<file>.metadata.json)", metadataLoc)
+	}
+
+	// Inert local base (never queried: real=nil below). The fork's file datastore EAGERLY
+	// scans its root dir, so it must be a real, empty, readable directory -- os.TempDir()
+	// itself won't do (it holds unreadable OS entries). A single process-wide empty dir is
+	// created once and reused.
+	base, err := inertBaseDatastore()
+	if err != nil {
+		return nil, err
+	}
+	temp := newTempKeyspaces()
+	ds := wrapTempKeyspaces(base, temp)
+	wrapped := wrapFlatKeyspaces(ds, map[string]*flatKeyspace{
+		name: {dir: tableDir, iceberg: metadataLoc},
+	}, nil)
+	if wrapped == ds {
+		return nil, fmt.Errorf("could not build an Iceberg keyspace for %q", metadataLoc)
+	}
+
+	return &Store{
+		Datastore:       wrapped,
 		Systemstore:     nil,
 		IndexApiVersion: datastore.INDEX_API_MAX,
 		FeatureControls: util.DEF_N1QL_FEAT_CTRL,

@@ -102,6 +102,31 @@ func putEnv(props map[string]string, key string, envNames ...string) {
 	}
 }
 
+// SplitIcebergMetadataLocation splits an Iceberg table metadata location of the
+// conventional shape ".../<table>/metadata/<file>.metadata.json" into the table directory
+// (".../<table>") and a keyspace name (the table dir's last path segment). Works for any
+// URI or path (scheme-agnostic) since it operates on the "/metadata/" delimiter. ok is
+// false when there's no "/metadata/" segment or no derivable name -- the caller then errors
+// with guidance. Used to name the synthetic keyspace for an object-store Iceberg table
+// (DESIGN-data.md §8); the local path uses the directory basename instead.
+func SplitIcebergMetadataLocation(metadataLoc string) (tableDir, name string, ok bool) {
+	i := strings.LastIndex(metadataLoc, "/metadata/")
+	if i <= 0 {
+		return "", "", false
+	}
+	tableDir = metadataLoc[:i]
+	// For a URI, require a path segment beyond the host -- else "s3://bucket/metadata/x"
+	// would name the keyspace after the bucket host, not a table.
+	if s := strings.Index(tableDir, "://"); s >= 0 && !strings.Contains(tableDir[s+3:], "/") {
+		return "", "", false
+	}
+	name = tableDir[strings.LastIndex(tableDir, "/")+1:]
+	if name == "" {
+		return "", "", false
+	}
+	return tableDir, name, true
+}
+
 // normalizeObjectStoreLocation is a light validity check: an object-store URI must have
 // a host (bucket). It returns the input unchanged (callers pass it straight to
 // iceberg-go); the parse only guards against an obviously malformed URL early.
