@@ -78,12 +78,26 @@ type icebergSource struct {
 }
 
 // OpenIcebergTable opens an Iceberg table for read by its metadata-file location (e.g.
-// ".../metadata/00003.metadata.json"), via iceberg-go with a filesystem FileIO and NO
-// catalog. Records are the table's current snapshot; the scan is deferred to the first
-// Next so an optional projection/predicate pushdown can be applied first.
+// ".../metadata/00003.metadata.json" or "s3://bucket/table/metadata/00003.metadata.json"),
+// via iceberg-go with NO catalog. A local path uses the LocalFS FileIO; an object-store URI
+// (s3://, gs://, abfs://) uses the matching backend with credentials/endpoint sourced from
+// the environment (ObjectStoreProps -- DESIGN-data.md §8). Records are the table's current
+// snapshot; the scan is deferred to the first Next so an optional projection/predicate
+// pushdown can be applied first.
 func OpenIcebergTable(metadataLocation, idPrefix string) (Source, error) {
+	return OpenIcebergTableProps(metadataLocation, idPrefix, ObjectStoreProps(metadataLocation))
+}
+
+// OpenIcebergTableProps is OpenIcebergTable with an explicit iceberg-go io properties map
+// (credentials/endpoint/region), for callers that don't rely on the environment -- e.g. a
+// test pointing at an in-process mock S3. Nil props => the LocalFS path (a filesystem
+// location).
+func OpenIcebergTableProps(metadataLocation, idPrefix string, props map[string]string) (Source, error) {
+	if _, ok := normalizeObjectStoreLocation(metadataLocation); !ok {
+		return nil, fmt.Errorf("records: malformed object-store location %q", metadataLocation)
+	}
 	ctx := context.Background()
-	fsF := iceio.LoadFSFunc(nil, metadataLocation) // LocalFS for a filesystem path
+	fsF := iceio.LoadFSFunc(props, metadataLocation) // scheme-dispatched: LocalFS, S3, GCS, Azure
 	tbl, err := itable.NewFromLocation(ctx, itable.Identifier{"iceberg", "table"}, metadataLocation, fsF, nil)
 	if err != nil {
 		return nil, err

@@ -20,3 +20,8 @@ import "fmt"
 func OpenIcebergTable(metadataLocation, idPrefix string) (Source, error) {
 	return nil, fmt.Errorf("records: Iceberg tables are not supported in the wasm build")
 }
+
+// OpenIcebergTableProps mirrors OpenIcebergTable in the wasm build (unsupported).
+func OpenIcebergTableProps(metadataLocation, idPrefix string, props map[string]string) (Source, error) {
+	return nil, fmt.Errorf("records: Iceberg tables are not supported in the wasm build")
+}

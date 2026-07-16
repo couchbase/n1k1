@@ -35,7 +35,10 @@ SELECT` file-materialize (with `OPTIONS` write modes and `RETURNING`).
       already landed) + materialized views.
 - [ ] zstd decode (walker recognizes `.zst`; decode is still a stub) and `.zip`
       as a container.
-- [ ] Object-store backend (S3/GCS/Azure) + generated/Glue catalogs (separable track).
+- [~] Object-store backend (S3/GCS/Azure): Iceberg-over-S3 reads land at the records
+      layer (`OpenIcebergTable` on an `s3://` location + env-sourced creds, mock-S3 tested);
+      standalone remote-Parquet + the CLI `FROM s3://…` wiring + generated/Glue catalogs
+      remain (§8).
 - [ ] Encryption-at-rest: transparent decrypt layer + encrypted sidecar artifacts.
 - [ ] Column-batch execution so Parquet/Arrow is a full perf win, not just
       correctness + footer-stats aggs (`DESIGN-col.md`).
@@ -673,8 +676,9 @@ reading all history. (Views that *don't* union — a single reshaping `SELECT` �
 soon as catalog-view expansion lands.)
 
 ### S3 / object store: orthogonal, deps already here
-The VIEW idea is independent of *where* bytes live. That's a separable backend
-concern, and **dep-ready:** `go.mod` carries (indirect)
+See **§8** for the object-store scan design and what's landed (Iceberg-over-S3 at
+the records layer). The VIEW idea is independent of *where* bytes live. That's a
+separable backend concern, and **dep-ready:** `go.mod` carries (indirect)
 `aws-sdk-go-v2/service/s3` + `feature/s3/manager`, `aws-sdk-go-v2/service/glue`,
 and `gocloud.dev` (its `blob` abstracts S3/GCS/Azure). An object-store
 `RecordSource` backend slots under the same decoder/layout layers (catalog
@@ -1600,8 +1604,9 @@ zone-maps.
   `NextColumns` columnar path for Iceberg batches. (All DONE — see the phasing list below. The
   remaining `list<float32>` VECTOR_DISTANCE columnar path is documented-future there.)
 - **Deferred:** catalogs beyond a filesystem/local metadata path (REST/Glue/SQL — iceberg-go
-  supports them, but they need config + creds); S3/object-store tables (deps are present);
-  verifying MoR-delete correctness against real tables.
+  supports them, but they need config + creds); verifying MoR-delete correctness against real
+  tables. (S3/object-store tables — the records-layer read now works, §8; CLI `FROM` wiring
+  is the remaining piece.)
 - **Non-goal:** Iceberg *writes* (committing snapshots) — a large lift needing a catalog +
   concurrency control. n1k1's `INSERT INTO` stays plain Parquet/JSONL (§2); writing an
   Iceberg snapshot is out of scope.
@@ -1726,13 +1731,112 @@ low-effort relative to its reach.
   embeddings are stored IN Iceberg tables, and n1k1's vector search is brute-force pure-Go (no
   ANN), so it's a real but narrow win.
 - **Then:** snapshot-history discovery (list snapshot ids/timestamps) so `@<id>` is easy to find.
-- **Later, if warranted:** REST/Glue catalogs; S3 tables; delete-file correctness suite.
+- **Object-store (S3) reads: ✅ DONE at the records layer (§8)** — `OpenIcebergTable` reads a
+  table from an `s3://` metadata location (env-sourced creds, path-style default), mock-S3
+  tested. CLI `FROM s3://…` keyspace wiring is the remaining follow-up.
+- **Later, if warranted:** REST/Glue catalogs; GCS/Azure parity; delete-file correctness suite.
 - **Test note:** iceberg-go v0.4.0's `partitionedFanoutWriter` has an internal data race in a
   PARTITIONED `AppendTable` (its own write goroutines), so the partitioned-fixture builders skip
   under `-race`; n1k1's read path is race-clean.
 - **Verdict:** feasible, surprisingly low-effort for read-only (the heavy lifting is a
   cgo-free dep we already carry), and useful for the analytic direction — worth the spike to
   prove the Arrow-batch reuse and measure, before committing to catalogs/time-travel.
+
+## §8 Object-store scans (S3 / GCS / Azure) — read Parquet & Iceberg over the network
+
+**MVP LANDED (Iceberg over S3, records layer).** `records.OpenIcebergTable` now reads a
+table whose metadata/manifests/data files live in an object store, by an `s3://…` (or
+`gs://`, `abfs://`) metadata location — the credential/scheme seam is unit-tested, and a
+wiring test (`records/iceberg_s3_test.go`) proves the real path (`ObjectStoreProps` →
+iceberg-go S3 backend → path-style HTTP GET of the right bucket/key) reaches a recording
+endpoint. Still deferred: a full mock-S3 read of real object bytes (blocked on vendoring a
+mock — see Testing below), standalone remote-Parquet (a `FROM s3://…/x.parquet`), and the
+CLI/`FROM` directory-discovery wiring so a bare object-store URL is a keyspace (all below).
+
+### Why this is mostly plumbing, not new machinery
+The dependency weight was paid long ago (it's a chunk of the 150 MB binary — see the CLI
+size analysis): `apache/iceberg-go` bundles S3/GCS/Azure FileIO backends, and arrow-go's
+Parquet reader is already built on `io.ReaderAt`. Both readers sit on the exact abstraction
+object-store streaming needs; the only thing missing was a URI/scheme seam and a
+credential source.
+
+- **Iceberg** — `records/iceberg.go` calls `iceio.LoadFSFunc(props, location)`, and that
+  function ALREADY dispatches by URI scheme (`s3`/`s3a`/`s3n` → S3, `gs` → GCS, `abfs*` →
+  Azure, else LocalFS). We used to pass `props == nil` + a filesystem path; now
+  `OpenIcebergTable` detects an object-store URI and threads a properties map. iceberg-go's
+  `File` is `io.ReadSeekCloser + io.ReaderAt` backed by AWS SDK v2 ranged `GetObject`, so a
+  scan reads only the manifests + surviving data files' projected column chunks.
+- **Standalone Parquet** (`records/parquet.go`) is the one local-only spot:
+  `file.OpenParquetFile(path,…)` opens an OS file. Remote Parquet = construct
+  `file.NewParquetReader(readerAt,…)` over an `io.ReaderAt` doing S3 range GETs (via the
+  `aws-sdk-go-v2/service/s3` we already carry) — the projection/predicate/RecordReader code
+  above it is unchanged. Deferred to a follow-up slice.
+
+### Streaming, not whole-file download (the load-bearing property)
+Parquet is a random-access format: the footer (schema + per-row-group/column-chunk byte
+offsets + min/max stats) is at the END. A ranged reader fetches (1) a small tail read →
+footer length → the footer; (2) only the column chunks for *projected* columns; (3) only
+row groups surviving *stats/predicate* pruning. **The whole object is never downloaded** —
+which is exactly why n1k1's existing projection + predicate pushdown pays off over a
+network, and why Iceberg's manifest-level file pruning (already wired, §7) is doubly
+valuable: a pruned data file is never even `GET`-ed. The real cost is latency (many small
+range GETs are round-trip-bound); production readers coalesce adjacent ranges and prefetch
+in parallel — arrow-go exposes prebuffer/coalescing knobs to tune later.
+
+**What DuckDB does (reference):** its `httpfs` extension reads Parquet over HTTPS/S3/GCS/
+R2/Azure purely via HTTP range requests — footer first, then only needed column chunks/row
+groups, with a footer cache, small-read coalescing, and parallel prefetch; the whole object
+is fetched only if the query needs every byte. This is the industry-standard pattern
+(Arrow C++ `S3FileSystem`, Trino/Spark Hadoop `S3A`, ClickHouse). n1k1's `io.ReaderAt`
+stack is the same shape.
+
+### Credentials & endpoint (the props map)
+iceberg-go's S3 backend keys off `s3.region`, `s3.access-key-id`, `s3.secret-access-key`,
+`s3.endpoint`, `s3.force-virtual-addressing`; **path-style addressing defaults to true**
+(ideal for mock/self-hosted S3). v1 sources these from the environment
+(`records.ObjectStoreProps`): `AWS_ENDPOINT_URL`/`AWS_REGION`/`AWS_ACCESS_KEY_ID`/
+`AWS_SECRET_ACCESS_KEY` → the iceberg-go keys, so the standard AWS env conventions "just
+work" with zero new config schema. When creds are absent the AWS default chain still
+applies (instance role, shared config). Per-source creds in `catalog.json` are a later
+refinement, not v1.
+
+### Testing: wiring test now, full mock-S3 read next
+Two layers. **Now (landed, no new deps):** the pure helpers (`IsObjectStoreURI`,
+`ObjectStoreProps` env mapping, URI validation) are unit-tested, and a **wiring test**
+stands up a stdlib `httptest` endpoint that records requests and asserts
+`OpenIcebergTable("s3://…")` with props/creds dispatches to iceberg-go's S3 backend and
+issues a **path-style GET for the exact bucket/key** — proving the whole
+`ObjectStoreProps → LoadFSFunc → gocloud s3blob → AWS SDK → HTTP` chain up to the network
+boundary (it does NOT serve real object bytes, so the read then fails fast).
+
+**Next (full end-to-end):** Iceberg bakes ABSOLUTE data-file locations into its manifests,
+so a table built for local disk cannot be copied to S3 — the fixture must be *built* with
+`s3://` locations, which needs an S3 server that speaks PUT+GET+HEAD (the AWS SDK's checksum
+handling makes a hand-rolled mock fragile). The intended tool is **`gofakes3`** (BSD-3,
+pure-Go, in-process `httptest`): boot it, build a small unpartitioned table through
+iceberg-go's S3 FileIO, read it back through `OpenIcebergTable`, assert rows + pushdown — no
+Docker, deterministic, race-clean. **Blocker:** this standalone worktree's `go.mod` pins
+several couchbase sibling modules at an unresolvable zero pseudo-version (local-path
+replaced only in the repo-sync build), so `go get`/`go mod tidy` can't load the build list
+to add the dep. Adding `gofakes3` must happen in the repo-sync build (or by vendoring). A
+network-gated integration test against public HTTPS Parquet (NYC-taxi / Hugging Face) is a
+further option once remote-Parquet lands.
+
+### Phasing
+- **Iceberg over S3 (records layer): ✅ DONE** — `OpenIcebergTable`/`OpenIcebergTableProps` +
+  `ObjectStoreProps` + helper unit tests + the httptest wiring test.
+- **Full mock-S3 read: ⬜ NEXT (dep-blocked here)** — vendor `gofakes3` in the repo-sync
+  build and add the build-then-read-back fixture test (rows + pushdown).
+- **CLI / `FROM` wiring: ⬜ NEXT** — `glue/flat.go` discovery is filesystem-based
+  (`filepath.Abs`, `os.ReadDir`). Making a bare `s3://bucket/table` a FROM-able keyspace
+  needs object-store listing for table detection + keyspace naming; a smaller intermediate
+  step is an explicit "open this metadata URL as keyspace <name>" catalog entry that skips
+  directory discovery.
+- **Standalone remote Parquet: ⬜ NEXT** — an `io.ReaderAt`-over-range-GETs provider feeding
+  `file.NewParquetReader`, reusing the existing projection/predicate pushdown; then tune
+  arrow-go range coalescing/prebuffer.
+- **Later:** GCS/Azure parity (same seam, different scheme/props); REST/Glue catalogs (§7);
+  a footer/metadata cache; requester-pays + assume-role.
 
 ## Dependency licensing (permissive only)
 
