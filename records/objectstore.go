@@ -25,6 +25,7 @@ package records
 import (
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -90,6 +91,30 @@ func ObjectStoreProps(location string) map[string]string {
 	putEnv(props, propS3SessionToken, "AWS_SESSION_TOKEN")
 	putEnv(props, propS3Endpoint, "AWS_ENDPOINT_URL", "AWS_S3_ENDPOINT")
 	return props
+}
+
+// awsNoSignRequest reports whether AWS_NO_SIGN_REQUEST is set to a truthy value, requesting
+// anonymous/unsigned S3 access for public buckets (mirrors the AWS CLI's --no-sign-request).
+func awsNoSignRequest() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("AWS_NO_SIGN_REQUEST"))) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
+}
+
+// s3UsePathStyle decides S3 addressing: path-style for a custom endpoint (MinIO and other
+// S3-compatible servers require it), virtual-hosted for real AWS (path-style there
+// 301-redirects on a region mismatch and is being deprecated). The
+// s3.force-virtual-addressing property overrides either way ("true" => virtual-hosted).
+func s3UsePathStyle(endpoint, forceVirtual string) bool {
+	usePathStyle := endpoint != ""
+	if forceVirtual != "" {
+		if b, err := strconv.ParseBool(forceVirtual); err == nil {
+			usePathStyle = !b
+		}
+	}
+	return usePathStyle
 }
 
 // putEnv sets props[key] to the first non-empty environment variable among envNames.

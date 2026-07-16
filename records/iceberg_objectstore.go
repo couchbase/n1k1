@@ -26,7 +26,6 @@ import (
 	"fmt"
 	"io"
 	"net/url"
-	"strconv"
 	"strings"
 
 	iceio "github.com/apache/iceberg-go/io"
@@ -110,13 +109,14 @@ func newS3ClientForList(ctx context.Context, props map[string]string) (*s3.Clien
 	if err != nil {
 		return nil, err
 	}
-	endpoint := props[iceio.S3EndpointURL]
-	usePathStyle := true // iceberg-go's default; MinIO-style servers require it
-	if fv := props[iceio.S3ForceVirtualAddressing]; fv != "" {
-		if b, berr := strconv.ParseBool(fv); berr == nil {
-			usePathStyle = !b
-		}
+	// Anonymous/unsigned access for public buckets (AWS CLI's --no-sign-request): with no
+	// credentials the SDK would otherwise fail trying to resolve some. Honor AWS_NO_SIGN_REQUEST
+	// only when no explicit access key was provided.
+	if awsNoSignRequest() && props[iceio.S3AccessKeyID] == "" {
+		cfg.Credentials = aws.AnonymousCredentials{}
 	}
+	endpoint := props[iceio.S3EndpointURL]
+	usePathStyle := s3UsePathStyle(endpoint, props[iceio.S3ForceVirtualAddressing])
 	return s3.NewFromConfig(*cfg, func(o *s3.Options) {
 		if endpoint != "" {
 			o.BaseEndpoint = aws.String(endpoint)

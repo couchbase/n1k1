@@ -1798,13 +1798,31 @@ stack is the same shape.
 
 ### Credentials & endpoint (the props map)
 iceberg-go's S3 backend keys off `s3.region`, `s3.access-key-id`, `s3.secret-access-key`,
-`s3.endpoint`, `s3.force-virtual-addressing`; **path-style addressing defaults to true**
-(ideal for mock/self-hosted S3). v1 sources these from the environment
+`s3.endpoint`, `s3.force-virtual-addressing`. v1 sources these from the environment
 (`records.ObjectStoreProps`): `AWS_ENDPOINT_URL`/`AWS_REGION`/`AWS_ACCESS_KEY_ID`/
 `AWS_SECRET_ACCESS_KEY` → the iceberg-go keys, so the standard AWS env conventions "just
 work" with zero new config schema. When creds are absent the AWS default chain still
 applies (instance role, shared config). Per-source creds in `catalog.json` are a later
 refinement, not v1.
+
+**Anonymous / public buckets.** `AWS_NO_SIGN_REQUEST=1` (mirrors the AWS CLI's
+`--no-sign-request`) uses anonymous credentials, so public datasets read with no keys.
+Applies to the client n1k1 builds (remote Parquet + metadata listing); Iceberg data-file
+reads through iceberg-go don't yet honor it (follow-up).
+
+**Addressing (`s3UsePathStyle`).** Path-style for a custom endpoint (MinIO et al. require
+it), virtual-hosted for real AWS (path-style there 301-redirects on a region mismatch and
+AWS is deprecating it); `s3.force-virtual-addressing` overrides. The `AWS_REGION` must match
+the bucket's — AWS 301s otherwise (its *global* endpoint auto-redirects, but a region-scoped
+SDK client does not).
+
+### Sanity-checked against public data
+The remote-Parquet path was verified against a real public dataset (Ookla Open Data,
+`s3://ookla-open-data/…/*_performance_fixed_tiles.parquet`, us-west-2, ~227 MB) with
+`AWS_NO_SIGN_REQUEST=1`: `COUNT(*)` → 4,877,036 in ~1 s (footer-stats only, a few KB
+transferred), `MIN/MAX` from footer stats, a projected `LIMIT` returning real rows (only the
+projected columns' chunks fetched), and `.schema` introspection — confirming ranged/streaming
+reads end to end over the network.
 
 ### Testing: wiring test now, full mock-S3 read next
 Two layers. **Now (landed, no new deps):** the pure helpers (`IsObjectStoreURI`,

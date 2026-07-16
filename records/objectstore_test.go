@@ -140,6 +140,41 @@ func TestPickCurrentMetadataName(t *testing.T) {
 	}
 }
 
+// TestAwsNoSignRequest: AWS_NO_SIGN_REQUEST truthy values enable anonymous access.
+func TestAwsNoSignRequest(t *testing.T) {
+	for _, v := range []string{"1", "true", "TRUE", "yes", "on"} {
+		t.Setenv("AWS_NO_SIGN_REQUEST", v)
+		if !awsNoSignRequest() {
+			t.Errorf("AWS_NO_SIGN_REQUEST=%q should be truthy", v)
+		}
+	}
+	for _, v := range []string{"", "0", "false", "no"} {
+		t.Setenv("AWS_NO_SIGN_REQUEST", v)
+		if awsNoSignRequest() {
+			t.Errorf("AWS_NO_SIGN_REQUEST=%q should be falsy", v)
+		}
+	}
+}
+
+// TestS3UsePathStyle: path-style for a custom endpoint (MinIO), virtual-hosted for real AWS
+// (empty endpoint); s3.force-virtual-addressing overrides.
+func TestS3UsePathStyle(t *testing.T) {
+	cases := []struct {
+		endpoint, forceVirtual string
+		want                   bool
+	}{
+		{"", "", false},                          // real AWS -> virtual-hosted
+		{"http://127.0.0.1:9000", "", true},      // MinIO -> path-style
+		{"http://127.0.0.1:9000", "true", false}, // override: force virtual
+		{"", "false", true},                      // override: force path-style even on AWS
+	}
+	for _, c := range cases {
+		if got := s3UsePathStyle(c.endpoint, c.forceVirtual); got != c.want {
+			t.Errorf("s3UsePathStyle(%q,%q) = %v, want %v", c.endpoint, c.forceVirtual, got, c.want)
+		}
+	}
+}
+
 // TestNormalizeObjectStoreLocation: a bucket-less object-store URI is rejected; a local
 // path and a well-formed URI pass through unchanged.
 func TestNormalizeObjectStoreLocation(t *testing.T) {
