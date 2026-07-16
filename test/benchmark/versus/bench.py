@@ -8,7 +8,9 @@ Both columns are measured the SAME way: a tiny in-process runner does the FULL
 parse->plan->execute per query, warm (median of REPS reps, first few dropped), and
 reports median ms + median allocated MB (runtime.MemStats TotalAlloc delta):
 
-  n1k1 -- test/benchmark/versus/n1k1bench (glue.Session.Run); built here.
+  n1k1 -- the n1k1 CLI itself, driven over one warm REPL. Its footer reports
+          Result.RunElapsed (whole Session.Run: parse+plan+convert+execute) and
+          .stats reports allocated bytes/query -- both fair, no separate runner.
   cbq  -- the fork's cmd/localbench (test/filestore over the same dir:); build it
           from the n1k1-query local-benchmark branch and pass CBQ_LOCALBENCH=<bin>.
 
