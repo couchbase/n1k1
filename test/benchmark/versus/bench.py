@@ -1,48 +1,41 @@
 #!/usr/bin/env python3
 """Head-to-head benchmark: n1k1 vs cbq, apples-to-apples, over the SAME directory
-of *.json files (the classic cbq file datastore: <root>/<ns>/<keyspace>/<key>.json).
+of *.json files (the classic cbq file datastore). Both engines use cbq's
+parser+planner (identical plan); what differs is the execution engine -- n1k1's
+[]byte byte-engine vs cbq's boxed value.AnnotatedValue executor.
 
-Both engines use cbq's parser+planner, so the plan is identical; what differs is
-the execution engine.
+Both columns are measured the SAME way: a tiny in-process runner does the FULL
+parse->plan->execute per query, warm (median of REPS reps, first few dropped), and
+reports median ms + median allocated MB (runtime.MemStats TotalAlloc delta):
 
-Columns:
-  n1k1     -- always measured. n1k1's byte engine over DATA, warm median (ms) and
-              allocated MB per query (from `-stats`).
-  cbq      -- measured only if CBQ_URL points at a real cbq /query/service
-              endpoint loaded with the same data (median server-side
-              metrics.executionTime, ms). See README.md for how to bring one up
-              (a standalone cbq-engine over a bare dir: datastore does NOT start
-              its query service without cbauth on 7.6.x).
+  n1k1 -- test/benchmark/versus/n1k1bench (glue.Session.Run); built here.
+  cbq  -- the fork's cmd/localbench (test/filestore over the same dir:); build it
+          from the n1k1-query local-benchmark branch and pass CBQ_LOCALBENCH=<bin>.
 
-Metric: warm median over REPS runs (first WARMUP dropped). n1k1 is timed via the
-REPL's per-query footer inside one warm process; cbq via metrics.executionTime.
+Two scenarios:
+  files -- orders/cust one-doc-per-file: realistic but I/O-bound (a scan opens
+           every file, a cost both engines pay), so wall time is close.
+  bulk  -- a few docs holding large `items` arrays, driven by UNNEST: the volume
+           lives INSIDE documents, so file I/O is trivial and per-row execution
+           dominates -- this is where the engine/value-model gap shows.
 
-Env: N1K1=<binary>  DATA=<dir>  NDOCS=<n>  REPS=<n>  CBQ_URL=<url>  CBQ_CREDS=user:pass
+Env: N1K1BENCH=<bin>  DATA=<dir>  NDOCS=<n>  BULK_ITEMS=<n>  REPS=<n>
+     CBQ_LOCALBENCH=<bin>
 """
 import os
-import re
 import sys
-import json
-import statistics
 import subprocess
-import urllib.request
-import urllib.parse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
 DATA = os.environ.get("DATA", os.path.join(HERE, "data"))
 NDOCS = int(os.environ.get("NDOCS", "20000"))
+BULK_ITEMS = int(os.environ.get("BULK_ITEMS", "20000"))
+BULK_DOCS = int(os.environ.get("BULK_DOCS", "4"))
 REPS = int(os.environ.get("REPS", "11"))
-WARMUP = min(5, REPS // 3)
-CBQ_URL = os.environ.get("CBQ_URL", "")
-CBQ_CREDS = os.environ.get("CBQ_CREDS", "")
-# Preferred cbq column: a `localbench` binary built from the n1k1-query fork's
-# local-benchmark branch, which runs cbq's real executor over the SAME dir:
-# file datastore (see README.md). It reads queries on stdin and prints
-# "RESULT\t<median-ms>\t<rows>" per query.
 CBQ_LOCALBENCH = os.environ.get("CBQ_LOCALBENCH", "")
 
-QUERIES = [
+FILE_QUERIES = [
     ("count+filter", "SELECT COUNT(*) c FROM orders WHERE amount >= 0"),
     ("filter+project", "SELECT o.custId, o.amount FROM orders o WHERE o.amount > 500"),
     ("group+agg", "SELECT o.category, COUNT(*) c, SUM(o.amount) s, AVG(o.amount) a "
@@ -55,14 +48,20 @@ QUERIES = [
     ("join+group", "SELECT k.tier, COUNT(*) c, SUM(o.amount) s FROM orders o "
                    "JOIN cust k ON KEYS o.custId GROUP BY k.tier"),
     ("unnest-count", "SELECT COUNT(*) c FROM orders o UNNEST o.items i WHERE i.qty > 2"),
-    ("unnest+project", "SELECT o.id, i.sku, i.qty FROM orders o UNNEST o.items i "
-                       "WHERE i.qty >= 4"),
 ]
 
-_DUR = re.compile(r"in ([0-9.]+)(ns|µs|ms|s)\b")
-_ALLOC = re.compile(r"runtime: ([0-9.]+)([KMG]?B) allocated")
-_UNIT_MS = {"ns": 1e-6, "µs": 1e-3, "ms": 1.0, "s": 1000.0}
-_UNIT_MB = {"B": 1e-6, "KB": 1e-3, "MB": 1.0, "GB": 1000.0}
+# bulk scenario: UNNEST a few big in-document arrays -> I/O-trivial, compute-bound.
+BULK_QUERIES = [
+    ("unnest+group", "SELECT i.category, COUNT(*) c, SUM(i.amount) s, AVG(i.amount) a "
+                     "FROM bulk b UNNEST b.items i GROUP BY i.category"),
+    ("unnest+filter", "SELECT COUNT(*) c FROM bulk b UNNEST b.items i WHERE i.amount > 500"),
+    ("unnest+expr", "SELECT COUNT(*) c FROM bulk b UNNEST b.items i "
+                    "WHERE i.amount * i.qty > 2000"),
+    ("unnest+sort", "SELECT i.id, i.amount FROM bulk b UNNEST b.items i "
+                    "ORDER BY i.amount DESC LIMIT 10"),
+    ("unnest+join", "SELECT k.tier, COUNT(*) c, SUM(i.amount) s FROM bulk b "
+                    "UNNEST b.items i JOIN cust k ON KEYS i.custId GROUP BY k.tier"),
+]
 
 
 def die(m):
@@ -70,114 +69,73 @@ def die(m):
     sys.exit(1)
 
 
-def build_n1k1():
-    b = os.environ.get("N1K1")
+def build_n1k1bench():
+    b = os.environ.get("N1K1BENCH")
     if b and os.path.exists(b):
         return b
-    out = os.path.join(HERE, ".n1k1.bin")
-    print("building n1k1 CLI ...", file=sys.stderr)
+    out = os.path.join(HERE, ".n1k1bench.bin")
+    print("building n1k1bench ...", file=sys.stderr)
     subprocess.run(["make", "build-intermed"], cwd=REPO, check=True,
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    r = subprocess.run(["go", "build", "-tags", "n1ql", "-o", out, "./cmd/n1k1"],
+    r = subprocess.run(["go", "build", "-tags", "n1ql", "-o", out,
+                        "./test/benchmark/versus/n1k1bench"],
                        cwd=REPO, capture_output=True, text=True)
     if r.returncode != 0:
-        die("n1k1 build failed:\n" + r.stderr)
+        die("n1k1bench build failed:\n" + r.stderr)
     return out
 
 
-def run_n1k1(binary, query):
-    """REPS warm reps of query in one REPL; return (median ms, allocated MB per query)."""
-    stdin = ".mode jsonlines\n.stats final\n.timer on\n" + ("%s;\n" % query) * REPS
-    r = subprocess.run([binary, DATA], input=stdin, capture_output=True, text=True)
-    ms, mb = [], []
-    # n1k1 writes the timer ("row(s) in") and -stats ("runtime:") lines to stderr;
-    # query result rows go to stdout.
-    for line in r.stderr.splitlines():
-        d = _DUR.search(line)
-        if d and "row(s)" in line:
-            ms.append(float(d.group(1)) * _UNIT_MS[d.group(2)])
-        a = _ALLOC.search(line)
-        if a:
-            mb.append(float(a.group(1)) * _UNIT_MB[a.group(2)])
-    if len(ms) < REPS:
-        die("n1k1 gave %d/%d timings for %r\n%s" % (len(ms), REPS, query, r.stderr[-800:]))
-    med_mb = statistics.median(mb[WARMUP:]) if len(mb) >= REPS else float("nan")
-    return statistics.median(ms[WARMUP:]), med_mb
-
-
-def run_cbq_localbench(queries):
-    """One localbench process over DATA; feed all queries on stdin, in order.
-    Returns {query_text: (median_ms, median_MB)}; localbench does warm/median."""
+def run_engine(binary, queries):
+    """One process over DATA; feed all queries on stdin; {query: (median_ms, median_MB)}."""
     env = dict(os.environ, REPS=str(REPS))
-    r = subprocess.run([CBQ_LOCALBENCH, DATA], input="\n".join(queries) + "\n",
+    r = subprocess.run([binary, DATA], input="\n".join(queries) + "\n",
                        env=env, capture_output=True, text=True)
     rows = [ln.split("\t") for ln in r.stdout.splitlines() if ln.startswith("RESULT\t")]
     if len(rows) != len(queries):
-        die("localbench gave %d/%d RESULT lines\n%s"
-            % (len(rows), len(queries), r.stderr[-800:]))
+        die("%s gave %d/%d RESULT lines\n%s"
+            % (os.path.basename(binary), len(rows), len(queries), r.stderr[-1000:]))
     return {q: (float(c[1]), float(c[2])) for q, c in zip(queries, rows)}
 
 
-def run_cbq_url(query):
-    body = {"statement": query}
-    if CBQ_CREDS:
-        body["creds"] = json.dumps([{"user": CBQ_CREDS.split(":")[0],
-                                     "pass": CBQ_CREDS.split(":", 1)[1]}])
-    ms = []
-    for _ in range(REPS):
-        req = urllib.request.Request(CBQ_URL, data=urllib.parse.urlencode(body).encode())
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            d = json.load(resp)
-        et = d.get("metrics", {}).get("executionTime", "")
-        m = _DUR.search("in " + et) if et else None
-        if not m:
-            die("cbq: no metrics.executionTime: %s" % json.dumps(d)[:400])
-        ms.append(float(m.group(1)) * _UNIT_MS[m.group(2)])
-    return statistics.median(ms[WARMUP:])
-
-
-def main():
-    subprocess.run([sys.executable, os.path.join(HERE, "gen.py"), DATA, str(NDOCS)],
-                   check=True)
-    binary = build_n1k1()
-
-    # cbq column source: localbench (real executor over the same dir:) preferred,
-    # else a live cbq /query/service via CBQ_URL, else n1k1-only.
-    cbq_kind = "localbench" if CBQ_LOCALBENCH else ("url" if CBQ_URL else "")
-    cbq_meds = run_cbq_localbench([q for _, q in QUERIES]) if cbq_kind == "localbench" else {}
-
-    def cbq_stat(q):
-        # returns (ms, MB-or-None)
-        if cbq_kind == "localbench":
-            return cbq_meds[q]
-        return (run_cbq_url(q), None)  # HTTP metrics don't expose per-query allocs
-
-    print("\ncbq-vs-n1k1  |  %d docs  |  warm median of %d reps (%d warmup dropped)"
-          % (NDOCS, REPS, WARMUP))
-    if cbq_kind:
-        print("cbq column: %s"
-              % ("cbq real executor over the same dir: file datastore (filestore harness)"
-                 if cbq_kind == "localbench" else "cbq /query/service " + CBQ_URL))
+def table(title, queries, n1, cbq):
+    print("\n%s" % title)
     print("-" * 78)
-    if cbq_kind:
+    if cbq:
         print("%-16s%9s%9s%8s%10s%10s%8s"
               % ("query", "n1k1 ms", "cbq ms", "x(t)", "n1k1 MB", "cbq MB", "x(m)"))
     else:
         print("%-16s%12s%14s" % ("query", "n1k1 ms", "n1k1 MB/q"))
     print("-" * 78)
-    for name, q in QUERIES:
-        nms, nmb = run_n1k1(binary, q)
-        if cbq_kind:
-            cms, cmb = cbq_stat(q)
-            mbcols = ("%10.2f%10.2f%7.1fx" % (nmb, cmb, cmb / nmb if nmb else 0)
-                      if cmb is not None else "%10.2f%10s%8s" % (nmb, "-", "-"))
-            print("%-16s%9.2f%9.2f%7.2fx%s" % (name, nms, cms, cms / nms, mbcols))
+    for name, q in queries:
+        nms, nmb = n1[q]
+        if cbq:
+            cms, cmb = cbq[q]
+            print("%-16s%9.2f%9.2f%7.2fx%10.2f%10.2f%7.1fx"
+                  % (name, nms, cms, cms / nms if nms else 0,
+                     nmb, cmb, cmb / nmb if nmb else 0))
         else:
             print("%-16s%12.3f%14.3f" % (name, nms, nmb))
     print("-" * 78)
-    if not cbq_kind:
-        print("cbq column: set CBQ_LOCALBENCH=<localbench binary> (real cbq over the same")
-        print("            dir: datastore) or CBQ_URL=<.../query/service>. See README.md.")
+
+
+def main():
+    subprocess.run([sys.executable, os.path.join(HERE, "gen.py"), DATA, str(NDOCS),
+                    str(BULK_DOCS), str(BULK_ITEMS)], check=True)
+    n1bin = build_n1k1bench()
+
+    all_q = [q for _, q in FILE_QUERIES + BULK_QUERIES]
+    n1 = run_engine(n1bin, all_q)
+    cbq = run_engine(CBQ_LOCALBENCH, all_q) if CBQ_LOCALBENCH else {}
+
+    print("\ncbq-vs-n1k1  |  files: %d docs   bulk: %d docs x %d-elem arrays"
+          "  |  warm median of %d reps" % (NDOCS, BULK_DOCS, BULK_ITEMS, REPS))
+    print("both columns = full parse+plan+execute, in process; MB = TotalAlloc/query")
+    table("SCENARIO: files (one doc per file -- I/O-bound)", FILE_QUERIES, n1, cbq)
+    table("SCENARIO: bulk (few docs, big in-doc arrays via UNNEST -- compute-bound)",
+          BULK_QUERIES, n1, cbq)
+    if not cbq:
+        print("\ncbq column: build cmd/localbench from the n1k1-query local-benchmark")
+        print("branch and set CBQ_LOCALBENCH=<binary>. See README.md.")
 
 
 if __name__ == "__main__":
