@@ -80,6 +80,8 @@ func TestHelpKeyspacesObjectStore(t *testing.T) {
 	for _, want := range []string{
 		"Object stores", "s3://", "gs://", "abfs://",
 		"AWS_NO_SIGN_REQUEST", "GOOGLE_APPLICATION_CREDENTIALS", ".metadata.json",
+		// A concrete, copy-pasteable public dataset to kick the tires (no creds).
+		"s3://ookla-open-data/", "4877036",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf(".help keyspaces missing object-store detail %q; got:\n%s", want, s)
