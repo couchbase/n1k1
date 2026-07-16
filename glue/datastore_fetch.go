@@ -102,6 +102,36 @@ func (c *GlueContext) fetchCachePut(dir, key string, b []byte) []byte {
 	return cp
 }
 
+// keyspaceDirEntry is one memoized KeyspaceDir result (see keyspaceDirCache).
+type keyspaceDirEntry struct {
+	dir string
+	err error
+}
+
+// keyspaceDir memoizes KeyspaceDir per keyspace for this request. KeyspaceDir
+// resolves <root>/<ns>/<keyspace> from the datastore's file:// URL -- cheap in
+// isolation, but the native fetch op re-resolves it on every invocation (before the
+// doc cache is even consulted), and a nested-loop join re-drives that op once per
+// outer row, so the cbq file-store URL build + TrimPrefix + filepath.Join run O(N)
+// times over an invariant answer (a top allocator in the unnest+join profile:
+// file.(*store).URL). Keyed by the keyspace value, whose pointer is stable for the
+// op's lifetime; lives on the shared root like the other caches. See keyspaceDirCache.
+func (c *GlueContext) keyspaceDir(keyspace datastore.Keyspace) (string, error) {
+	c = c.getRoot() // the cache lives on the root, shared across UNION ALL clones
+	c.keyspaceDirMu.Lock()
+	defer c.keyspaceDirMu.Unlock()
+
+	if e, ok := c.keyspaceDirCache[keyspace]; ok {
+		return e.dir, e.err
+	}
+	dir, err := KeyspaceDir(keyspace)
+	if c.keyspaceDirCache == nil {
+		c.keyspaceDirCache = make(map[datastore.Keyspace]keyspaceDirEntry)
+	}
+	c.keyspaceDirCache[keyspace] = keyspaceDirEntry{dir, err}
+	return dir, err
+}
+
 type Keyspacer interface {
 	Keyspace() datastore.Keyspace
 }
@@ -177,7 +207,17 @@ func DatastoreFetch(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 		_, isFlat := keyspace.(interface{ RecordsDir() string })
 		_, isFile := keyspace.(interface{ RecordsFile() string })
 		if !isFlat && !isFile {
-			if dir, err := KeyspaceDir(keyspace); err == nil {
+			// Memoized per request when we have a context (keyspaceDir), so a
+			// nested-loop join's per-outer-row re-invocation of this op doesn't
+			// re-resolve the invariant dir; else resolve directly.
+			var dir string
+			var err error
+			if gctx != nil {
+				dir, err = gctx.keyspaceDir(keyspace)
+			} else {
+				dir, err = KeyspaceDir(keyspace)
+			}
+			if err == nil {
 				if len(subPaths) == 0 {
 					nativeDir = dir
 				}

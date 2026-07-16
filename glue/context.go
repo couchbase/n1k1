@@ -19,6 +19,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/couchbase/query/datastore"
 	"github.com/couchbase/query/encryption"
 	"github.com/couchbase/query/errors"
 	"github.com/couchbase/query/expression"
@@ -120,6 +121,19 @@ type GlueContext struct {
 	walkFileCache   map[string][]string
 	walkFileCacheN  int // total file paths cached (against the cap)
 	walkFileCacheMu sync.Mutex
+
+	// keyspaceDirCache memoizes KeyspaceDir (the <root>/<ns>/<keyspace> resolution)
+	// per keyspace for this request. KeyspaceDir is cheap once, but the native fetch
+	// op resolves it at the top of every invocation -- before the doc cache is even
+	// consulted -- and a nested-loop join re-drives that op per outer row (O(N)
+	// times) though the dir is request-invariant. Each call otherwise rebuilds the
+	// cbq file-store URL string, TrimPrefix, and filepath.Join, which the unnest+join
+	// profile showed as a top allocator (file.(*store).URL, ~188MB / ~6% of allocs,
+	// plus its filepath.Join). Keyed by the keyspace value (a stable pointer for the
+	// op's lifetime); lives on the shared root like the other caches, guarded by
+	// keyspaceDirMu. See keyspaceDir and datastore_fetch.go.
+	keyspaceDirCache map[datastore.Keyspace]keyspaceDirEntry
+	keyspaceDirMu    sync.Mutex
 
 	// root points at the request's original GlueContext when this one is a
 	// per-actor clone (see ChainClone), else nil. UNION ALL runs each branch as a
