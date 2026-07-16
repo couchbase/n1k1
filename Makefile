@@ -9,15 +9,23 @@ default: test
 VERSION := $(shell git describe --long --tags --always --dirty 2>/dev/null || echo dev)
 VERSION_LDFLAGS := -X main.version=$(VERSION)
 
+# CLI_LDFLAGS also strips the DWARF debug info (-w) and the symbol table (-s):
+# this cbq-fork-based binary is large (a lot of transitive cloud/columnar deps),
+# and stripping trims it ~30% (~153MB -> ~106MB) with no runtime effect. Go panics
+# still symbolicate (that's gopclntab, which -s/-w keep); only gdb/dlv symbols go.
+# -X main.version still applies (it sets a var, not debug info). Drop -s -w if you
+# need to debug the binary under a native debugger.
+CLI_LDFLAGS := -s -w $(VERSION_LDFLAGS)
+
 # cli builds the n1k1 command-line tool: a single pure-Go binary (CGO off) that
 # runs SQL++ queries over local files. See cmd/n1k1 and DESIGN-cli.md.
 cli: build-glue
-	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go build -tags n1ql -ldflags "$(VERSION_LDFLAGS)" -o n1k1 ./cmd/n1k1
+	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go build -tags n1ql -ldflags "$(CLI_LDFLAGS)" -o n1k1 ./cmd/n1k1
 	@echo 'built ./n1k1 -- try: ./n1k1 ./test/suite/json (or: ./n1k1 -c "SELECT 1+1" .)'
 
 # install-cli installs the n1k1 binary into $(GOBIN) (or $(GOPATH)/bin).
 install-cli:
-	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go install -tags n1ql -ldflags "$(VERSION_LDFLAGS)" ./cmd/n1k1
+	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go install -tags n1ql -ldflags "$(CLI_LDFLAGS)" ./cmd/n1k1
 
 # build builds the self-contained core packages. Regenerates intermed/ first:
 # intermed/*.go is gitignored and generated from engine/*.go, so `go build ./...`
