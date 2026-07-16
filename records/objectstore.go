@@ -25,7 +25,6 @@ package records
 import (
 	"net/url"
 	"os"
-	"strconv"
 	"strings"
 )
 
@@ -109,20 +108,6 @@ func awsNoSignRequest() bool {
 		return true
 	}
 	return false
-}
-
-// s3UsePathStyle decides S3 addressing: path-style for a custom endpoint (MinIO and other
-// S3-compatible servers require it), virtual-hosted for real AWS (path-style there
-// 301-redirects on a region mismatch and is being deprecated). The
-// s3.force-virtual-addressing property overrides either way ("true" => virtual-hosted).
-func s3UsePathStyle(endpoint, forceVirtual string) bool {
-	usePathStyle := endpoint != ""
-	if forceVirtual != "" {
-		if b, err := strconv.ParseBool(forceVirtual); err == nil {
-			usePathStyle = !b
-		}
-	}
-	return usePathStyle
 }
 
 // putEnv sets props[key] to the first non-empty environment variable among envNames.

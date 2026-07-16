@@ -40,8 +40,8 @@ SELECT` file-materialize (with `OPTIONS` write modes and `RETURNING`).
       metadata JSON on any backend) AND standalone `FROM {s3,gs,abfs}://…/x.parquet` are
       FROM-able keyspaces (env-sourced creds; anonymous S3 via `AWS_NO_SIGN_REQUEST`;
       `.tables`/`SELECT`/`COUNT`/time-travel), read over ranged GETs; S3 verified on real
-      public data. Remaining: full mock-S3 read test for Iceberg (dep-blocked), GCS/Azure
-      bare-dir current-metadata listing, generated/Glue catalogs (§8).
+      public data. Remaining: full mock-S3 read test for Iceberg (dep-blocked), generated/Glue
+      catalogs (§8).
 - [ ] Encryption-at-rest: transparent decrypt layer + encrypted sidecar artifacts.
 - [ ] Column-batch execution so Parquet/Arrow is a full perf win, not just
       correctness + footer-stats aggs (`DESIGN-col.md`).
@@ -1871,13 +1871,13 @@ further option once remote-Parquet lands.
   `s3://bucket/table` dir URI (no explicit `metadata.json`) resolves its current metadata by
   LISTING `…/metadata/` and picking `version-hint.text` / the greatest `*.metadata.json` (the
   object-store analog of the local `records.IcebergTableMetadata`) —
-  `records.ResolveObjectStoreIcebergMetadata`. iceberg-go's blob IO exposes no listing, so
-  this uses `aws-sdk-go-v2`'s S3 `ListObjectsV2` directly, configured via iceberg-go's own
-  `ParseAWSConfig` + the same endpoint/path-style rules (so creds/MinIO behave identically to
-  the read path). The pick logic (`pickCurrentMetadataName`) is pure/unit-tested; the
-  list→pick→compose chain is proven against a stdlib httptest endpoint serving canned
-  ListObjectsV2 XML (the AWS SDK parses it — no mock-S3 dep). S3-family only; a bare `gs://`/
-  `abfs://` dir is rejected with guidance to pass an explicit metadata JSON.
+  `records.ResolveObjectStoreIcebergMetadata`. iceberg-go's blob IO doesn't declare listing on
+  its interface, but its backend embeds a `*gocloud.dev/blob.Bucket`, so we reach `List`/
+  `ReadAll` through a structural assertion on the IO we already build (`objectStoreFSFunc`) —
+  using iceberg-go's own correctly-credentialed bucket, so ONE path lists S3, GCS, and Azure.
+  The pick logic (`pickCurrentMetadataName`) is pure/unit-tested; the list→pick→compose chain
+  is proven against a stdlib httptest endpoint serving canned ListObjectsV2 XML (gocloud/the
+  AWS SDK parses it — no mock-S3 dep).
 - **Standalone remote Parquet: ✅ DONE.** `FROM s3://bucket/path/x.parquet` reads a single
   object via `records.OpenParquetSourceRemote` over `s3ReaderAt` (ranged `GetObject`), routed
   by KeyspaceRecordsOpen's `ParquetURL()` check; keyspace named after the file stem. Proven
@@ -1888,16 +1888,15 @@ further option once remote-Parquet lands.
   repo-sync build and add the build-then-read-back fixture test (rows + pushdown). (Remote
   Parquet above already reads real bytes end-to-end via httptest; the Iceberg case needs a
   WRITE-capable mock to build a fixture with `s3://` locations.)
-- **GCS/Azure parity: ✅ DONE (reads), one gap.** Reading through iceberg-go's IO means
-  `gs://` and `abfs://` work with no S3-specific code: (a) Iceberg tables by an explicit
-  metadata JSON, and (b) standalone remote Parquet — both dispatch by scheme to iceberg-go's
-  GCS/Azure backends, with credentials from those backends' own default discovery (GCS ADC /
-  `GOOGLE_APPLICATION_CREDENTIALS`; Azure env/managed identity). S3 was re-validated on real
-  public data (Ookla) through this unified path. **Gap:** current-metadata *listing* for a
-  bare `gs://…/table` / `abfs://…/table` dir is still S3-only (`ListObjectsV2`); gs/abfs bare
-  dirs must pass an explicit metadata JSON (needs `gocloud.dev/blob.List`, a follow-up).
-- **Later:** GCS/Azure bare-dir listing; REST/Glue catalogs (§7); a footer/metadata cache;
-  requester-pays + assume-role.
+- **GCS/Azure parity: ✅ DONE (reads).** Everything reads through iceberg-go's IO / gocloud
+  bucket, so `gs://` and `abfs://` work with no S3-specific code: (a) Iceberg tables by an
+  explicit metadata JSON, (b) Iceberg tables by a bare table dir (current-metadata listing via
+  the gocloud bucket), and (c) standalone remote Parquet — all dispatch by scheme to
+  iceberg-go's GCS/Azure backends, with credentials from those backends' own default discovery
+  (GCS ADC / `GOOGLE_APPLICATION_CREDENTIALS`; Azure env/managed identity). S3 was re-validated
+  on real public data (Ookla). gs/abfs share the same code paths but weren't exercised against
+  a live bucket here (no GCS/Azure credentials in the offline test env).
+- **Later:** REST/Glue catalogs (§7); a footer/metadata cache; requester-pays + assume-role.
 
 ## Dependency licensing (permissive only)
 

@@ -80,16 +80,18 @@ func TestOpenIcebergTableS3Dispatch(t *testing.T) {
 }
 
 // TestResolveObjectStoreIcebergMetadata: ResolveObjectStoreIcebergMetadata lists a bare
-// table dir's metadata/ prefix over S3 and returns the current metadata location. A stdlib
-// httptest endpoint serves a canned ListObjectsV2 XML (no mock-S3 dep -- the AWS SDK parses
-// it), proving the list -> pick -> compose chain end to end. gs:// is rejected (S3-only v1).
+// table dir's metadata/ prefix and returns the current metadata location. Listing goes
+// through iceberg-go's own gocloud bucket (List/ReadAll), so a stdlib httptest endpoint
+// serving a canned ListObjectsV2 XML (no mock-S3 dep -- gocloud/the AWS SDK parses it) proves
+// the list -> pick -> compose chain end to end. gs://abfs:// use the same path (untested here
+// -- they need their backends' credentials).
 func TestResolveObjectStoreIcebergMetadata(t *testing.T) {
 	const listXML = `<?xml version="1.0" encoding="UTF-8"?>
 <ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
   <Name>bkt</Name><Prefix>warehouse/orders/metadata/</Prefix><KeyCount>2</KeyCount>
   <MaxKeys>1000</MaxKeys><IsTruncated>false</IsTruncated>
-  <Contents><Key>warehouse/orders/metadata/00001-a.metadata.json</Key><Size>10</Size><StorageClass>STANDARD</StorageClass></Contents>
-  <Contents><Key>warehouse/orders/metadata/00002-b.metadata.json</Key><Size>10</Size><StorageClass>STANDARD</StorageClass></Contents>
+  <Contents><Key>warehouse/orders/metadata/00001-a.metadata.json</Key><LastModified>2019-01-01T00:00:00.000Z</LastModified><Size>10</Size><StorageClass>STANDARD</StorageClass></Contents>
+  <Contents><Key>warehouse/orders/metadata/00002-b.metadata.json</Key><LastModified>2019-01-01T00:00:00.000Z</LastModified><Size>10</Size><StorageClass>STANDARD</StorageClass></Contents>
 </ListBucketResult>`
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("list-type") == "2" {
@@ -115,7 +117,8 @@ func TestResolveObjectStoreIcebergMetadata(t *testing.T) {
 		t.Errorf("resolved = %q, want %q", got, want)
 	}
 
-	if _, err := ResolveObjectStoreIcebergMetadata("gs://bkt/warehouse/orders"); err == nil {
-		t.Error("gs:// bare dir should be rejected (listing is S3-only in v1)")
+	// A non-object-store location is rejected outright.
+	if _, err := ResolveObjectStoreIcebergMetadata("/local/warehouse/orders"); err == nil {
+		t.Error("a local path should be rejected (not an object-store location)")
 	}
 }

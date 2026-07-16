@@ -14,15 +14,16 @@
 package records
 
 // Object-store current-metadata resolution (DESIGN-data.md §8): given a bare
-// s3://bucket/warehouse/db/table dir URI, LIST its metadata/ prefix and pick the current
-// *.metadata.json (the object-store analog of the local IcebergTableMetadata). iceberg-go's
-// blob IO exposes no listing, so this uses aws-sdk-go-v2's S3 client directly -- configured
-// via iceberg-go's own ParseAWSConfig + the same endpoint/path-style rules, so credentials
-// and MinIO-style endpoints behave identically to the read path. S3-family only in v1
-// (gs/abfs bare dirs must pass an explicit metadata JSON).
+// s3://bucket/db/table (or gs://, abfs://) dir URI, LIST its metadata/ prefix and pick the
+// current *.metadata.json (the object-store analog of the local IcebergTableMetadata).
+// iceberg-go's blob IO doesn't expose listing on its interface, but its concrete backend
+// embeds a *gocloud.dev/blob.Bucket -- so we reach List/ReadAll through a structural
+// assertion on the IO we already build (objectStoreFSFunc), using iceberg-go's own
+// correctly-credentialed bucket. One path serves S3, GCS, and Azure.
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -31,7 +32,7 @@ import (
 	iceio "github.com/apache/iceberg-go/io"
 	iceutils "github.com/apache/iceberg-go/utils"
 	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"gocloud.dev/blob"
 )
 
 // objectStoreFSFunc returns the iceberg-go FS-factory for a table location. It is
@@ -55,63 +56,75 @@ func objectStoreFSFunc(loc string, props map[string]string) func(context.Context
 	}
 }
 
+// blobLister is the subset of gocloud.dev/blob.Bucket's API needed to enumerate + read a
+// metadata/ prefix. iceberg-go's blob-backed IO embeds a *blob.Bucket, so its concrete type
+// satisfies this (promoted methods) even though the io.IO interface doesn't declare them.
+type blobLister interface {
+	List(*blob.ListOptions) *blob.ListIterator
+	ReadAll(context.Context, string) ([]byte, error)
+}
+
 // ResolveObjectStoreIcebergMetadata resolves the CURRENT metadata JSON location for an
-// Iceberg table given a bare object-store table-dir URI (e.g.
-// "s3://bucket/warehouse/db/orders"). It lists "<dir>/metadata/", reads version-hint.text
-// when present, and returns "<dir>/metadata/<current>.metadata.json". S3-family schemes
-// only; a gs:// / abfs:// dir returns an error guiding the caller to pass an explicit
-// metadata location. Credentials/endpoint come from the environment (ObjectStoreProps).
+// Iceberg table given a bare object-store table-dir URI (e.g. "s3://bucket/db/orders",
+// "gs://bucket/db/orders", "abfs://fs@acct.dfs.core.windows.net/db/orders"). It lists
+// "<dir>/metadata/", reads version-hint.text when present, and returns
+// "<dir>/metadata/<current>.metadata.json". Credentials/endpoint come from the environment
+// (ObjectStoreProps) + iceberg-go's backend defaults, identical to the read path.
 func ResolveObjectStoreIcebergMetadata(dirLoc string) (string, error) {
-	if scheme := uriScheme(dirLoc); !strings.HasPrefix(scheme, "s3") {
-		return "", fmt.Errorf("auto-resolving the current Iceberg metadata over %q is not supported; "+
-			"pass the explicit .../metadata/<file>.metadata.json location", scheme)
+	if !IsObjectStoreURI(dirLoc) {
+		return "", fmt.Errorf("not an object-store location: %q", dirLoc)
 	}
 	u, err := url.Parse(dirLoc)
 	if err != nil || u.Host == "" {
 		return "", fmt.Errorf("malformed object-store location %q", dirLoc)
 	}
-	bucket := u.Host
-	prefix := strings.Trim(u.Path, "/") // "warehouse/db/orders" (empty => table at bucket root)
+	// Bucket-relative key prefix (the gocloud bucket is already scoped to the bucket/container).
+	prefix := strings.Trim(u.Path, "/")
 	metaPrefix := "metadata/"
 	if prefix != "" {
 		metaPrefix = prefix + "/metadata/"
 	}
 
 	ctx := context.Background()
-	props := ObjectStoreProps(dirLoc)
-	client, err := newS3ClientForList(ctx, props)
+	fsio, err := objectStoreFSFunc(dirLoc, ObjectStoreProps(dirLoc))(ctx)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("open object store for %q: %w", dirLoc, err)
+	}
+	lister, ok := fsio.(blobLister)
+	if !ok {
+		return "", fmt.Errorf("current-metadata listing is not supported for %q "+
+			"(pass the explicit .../metadata/<file>.metadata.json location)", dirLoc)
 	}
 
 	var bases []string
 	hasVersionHint := false
-	pager := s3.NewListObjectsV2Paginator(client, &s3.ListObjectsV2Input{
-		Bucket: aws.String(bucket),
-		Prefix: aws.String(metaPrefix),
-	})
-	for pager.HasMorePages() {
-		page, perr := pager.NextPage(ctx)
-		if perr != nil {
-			return "", fmt.Errorf("listing %q: %w", dirLoc, perr)
+	it := lister.List(&blob.ListOptions{Prefix: metaPrefix})
+	for {
+		obj, lerr := it.Next(ctx)
+		if errors.Is(lerr, io.EOF) {
+			break
 		}
-		for _, obj := range page.Contents {
-			base := strings.TrimPrefix(aws.ToString(obj.Key), metaPrefix)
-			if base == "" || strings.Contains(base, "/") {
-				continue // the prefix "directory" marker, or a nested key
-			}
-			if base == "version-hint.text" {
-				hasVersionHint = true
-			}
-			if strings.HasSuffix(base, ".metadata.json") {
-				bases = append(bases, base)
-			}
+		if lerr != nil {
+			return "", fmt.Errorf("listing %q: %w", dirLoc, lerr)
+		}
+		if obj.IsDir {
+			continue
+		}
+		base := strings.TrimPrefix(obj.Key, metaPrefix)
+		if base == "" || strings.Contains(base, "/") {
+			continue // a nested key (shouldn't occur without a delimiter)
+		}
+		if base == "version-hint.text" {
+			hasVersionHint = true
+		}
+		if strings.HasSuffix(base, ".metadata.json") {
+			bases = append(bases, base)
 		}
 	}
 
 	versionHint := ""
 	if hasVersionHint {
-		if b, gerr := s3GetObject(ctx, client, bucket, metaPrefix+"version-hint.text"); gerr == nil {
+		if b, rerr := lister.ReadAll(ctx, metaPrefix+"version-hint.text"); rerr == nil {
 			versionHint = string(b)
 		}
 	}
@@ -121,37 +134,4 @@ func ResolveObjectStoreIcebergMetadata(dirLoc string) (string, error) {
 		return "", fmt.Errorf("no *.metadata.json found under %s/metadata/ (not an Iceberg table?)", strings.TrimRight(dirLoc, "/"))
 	}
 	return strings.TrimRight(dirLoc, "/") + "/metadata/" + name, nil
-}
-
-// newS3ClientForList builds an aws-sdk-go-v2 S3 client from iceberg-go's ParseAWSConfig plus
-// the same endpoint + path-style rules createS3Bucket uses, so listing sees the exact
-// credentials/endpoint the read path does.
-func newS3ClientForList(ctx context.Context, props map[string]string) (*s3.Client, error) {
-	cfg, err := iceio.ParseAWSConfig(ctx, props)
-	if err != nil {
-		return nil, err
-	}
-	// Anonymous/unsigned access for public buckets (AWS CLI's --no-sign-request): with no
-	// credentials the SDK would otherwise fail trying to resolve some. Honor AWS_NO_SIGN_REQUEST
-	// only when no explicit access key was provided.
-	if awsNoSignRequest() && props[iceio.S3AccessKeyID] == "" {
-		cfg.Credentials = aws.AnonymousCredentials{}
-	}
-	endpoint := props[iceio.S3EndpointURL]
-	usePathStyle := s3UsePathStyle(endpoint, props[iceio.S3ForceVirtualAddressing])
-	return s3.NewFromConfig(*cfg, func(o *s3.Options) {
-		if endpoint != "" {
-			o.BaseEndpoint = aws.String(endpoint)
-		}
-		o.UsePathStyle = usePathStyle
-	}), nil
-}
-
-func s3GetObject(ctx context.Context, client *s3.Client, bucket, key string) ([]byte, error) {
-	out, err := client.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(bucket), Key: aws.String(key)})
-	if err != nil {
-		return nil, err
-	}
-	defer out.Body.Close()
-	return io.ReadAll(out.Body)
 }

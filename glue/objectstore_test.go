@@ -115,8 +115,8 @@ func TestObjectStoreIcebergStoreBareDir(t *testing.T) {
 <ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
   <Name>bkt</Name><Prefix>warehouse/orders/metadata/</Prefix><KeyCount>2</KeyCount>
   <MaxKeys>1000</MaxKeys><IsTruncated>false</IsTruncated>
-  <Contents><Key>warehouse/orders/metadata/00001-a.metadata.json</Key><Size>10</Size><StorageClass>STANDARD</StorageClass></Contents>
-  <Contents><Key>warehouse/orders/metadata/00002-b.metadata.json</Key><Size>10</Size><StorageClass>STANDARD</StorageClass></Contents>
+  <Contents><Key>warehouse/orders/metadata/00001-a.metadata.json</Key><LastModified>2019-01-01T00:00:00.000Z</LastModified><Size>10</Size><StorageClass>STANDARD</StorageClass></Contents>
+  <Contents><Key>warehouse/orders/metadata/00002-b.metadata.json</Key><LastModified>2019-01-01T00:00:00.000Z</LastModified><Size>10</Size><StorageClass>STANDARD</StorageClass></Contents>
 </ListBucketResult>`
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("list-type") == "2" {
@@ -220,14 +220,11 @@ func TestObjectStoreParquetQuery(t *testing.T) {
 	}
 }
 
-func TestObjectStoreIcebergStoreRejectsUnlistable(t *testing.T) {
-	// Current-metadata auto-resolution by listing is S3-only in v1; a bare gs:// table dir
-	// (no explicit metadata.json) is rejected with guidance rather than silently failing.
-	_, err := FileStore("gs://my-bucket/warehouse/db/orders")
-	if err == nil {
-		t.Fatal("expected an error for a bare gs:// table dir, got nil")
-	}
-	if !strings.Contains(err.Error(), "explicit") {
-		t.Errorf("error should guide toward an explicit metadata location; got: %v", err)
+func TestObjectStoreIcebergStoreBareDirNoCreds(t *testing.T) {
+	// A bare gs:// table dir now DOES attempt current-metadata listing (GCS/Azure parity);
+	// without any GCS credentials in this offline test it fails cleanly rather than resolving.
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "")
+	if _, err := FileStore("gs://n1k1-nonexistent-bucket/warehouse/db/orders"); err == nil {
+		t.Fatal("expected an error for a bare gs:// table dir with no credentials, got nil")
 	}
 }
