@@ -127,6 +127,42 @@ func SplitIcebergMetadataLocation(metadataLoc string) (tableDir, name string, ok
 	return tableDir, name, true
 }
 
+// pickCurrentMetadataName chooses the current Iceberg metadata file from the base names
+// found under a table's metadata/ prefix, mirroring the local records.IcebergTableMetadata
+// logic: honor version-hint.text (a bare version number -> "v<n>.metadata.json" /
+// "<n>.metadata.json", or a full filename) when it names a present file, else take the
+// lexicographically-greatest "*.metadata.json" (Iceberg's zero-padded "NNNNN-<uuid>" / "vNNNNN"
+// naming sorts by version). ok is false when no "*.metadata.json" is present. Pure/testable;
+// the object-store listing lives in ResolveObjectStoreIcebergMetadata.
+func pickCurrentMetadataName(baseNames []string, versionHint string) (name string, ok bool) {
+	inSet := map[string]bool{}
+	best := ""
+	for _, f := range baseNames {
+		if strings.HasSuffix(f, ".metadata.json") {
+			inSet[f] = true
+			if f > best {
+				best = f
+			}
+		}
+	}
+	if vh := strings.TrimSpace(versionHint); vh != "" {
+		cands := []string{"v" + vh + ".metadata.json", vh + ".metadata.json"}
+		if strings.HasSuffix(vh, ".metadata.json") {
+			cands = append([]string{vh}, cands...)
+		}
+		for _, c := range cands {
+			if inSet[c] {
+				return c, true
+			}
+		}
+		// version-hint present but its file is missing: fall back to the greatest.
+	}
+	if best == "" {
+		return "", false
+	}
+	return best, true
+}
+
 // normalizeObjectStoreLocation is a light validity check: an object-store URI must have
 // a host (bucket). It returns the input unchanged (callers pass it straight to
 // iceberg-go); the parse only guards against an obviously malformed URL early.

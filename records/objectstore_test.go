@@ -114,6 +114,32 @@ func TestSplitIcebergMetadataLocation(t *testing.T) {
 	}
 }
 
+// TestPickCurrentMetadataName: current-metadata selection mirrors the local resolver --
+// version-hint.text (bare number or full filename) wins when its file is present, else the
+// lexicographically-greatest *.metadata.json; no metadata => not ok.
+func TestPickCurrentMetadataName(t *testing.T) {
+	newer := []string{"00001-aaa.metadata.json", "00003-ccc.metadata.json", "00002-bbb.metadata.json", "version-hint.text"}
+	hadoop := []string{"v1.metadata.json", "v2.metadata.json", "v3.metadata.json"}
+	cases := []struct {
+		files      []string
+		hint, want string
+		ok         bool
+	}{
+		{newer, "", "00003-ccc.metadata.json", true},               // greatest (zero-padded sorts by version)
+		{hadoop, "2", "v2.metadata.json", true},                    // version-hint bare number -> v2
+		{hadoop, "", "v3.metadata.json", true},                     // no hint -> greatest
+		{hadoop, "v2.metadata.json", "v2.metadata.json", true},     // full-filename hint
+		{newer, "7", "00003-ccc.metadata.json", true},              // hint file missing -> fall back to greatest
+		{[]string{"version-hint.text", "junk.txt"}, "", "", false}, // no *.metadata.json
+	}
+	for _, c := range cases {
+		got, ok := pickCurrentMetadataName(c.files, c.hint)
+		if ok != c.ok || got != c.want {
+			t.Errorf("pick(%v, %q) = (%q,%v), want (%q,%v)", c.files, c.hint, got, ok, c.want, c.ok)
+		}
+	}
+}
+
 // TestNormalizeObjectStoreLocation: a bucket-less object-store URI is rejected; a local
 // path and a well-formed URI pass through unchanged.
 func TestNormalizeObjectStoreLocation(t *testing.T) {

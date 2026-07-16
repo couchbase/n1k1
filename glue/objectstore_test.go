@@ -19,6 +19,8 @@ package glue
 // records/iceberg_s3_test.go); this covers the Store/keyspace construction + error paths.
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -60,14 +62,57 @@ func TestObjectStoreIcebergStore(t *testing.T) {
 	}
 }
 
-func TestObjectStoreIcebergStoreRejectsNonMetadata(t *testing.T) {
-	// A bare table-dir URI (no metadata.json) is rejected with guidance -- current-metadata
-	// auto-resolution over object stores (which needs listing) is a follow-up.
-	_, err := FileStore("s3://my-bucket/warehouse/db/orders")
-	if err == nil {
-		t.Fatal("expected an error for a bare object-store table dir, got nil")
+// TestObjectStoreIcebergStoreBareDir: pointing at a bare object-store table DIR (no explicit
+// metadata.json) resolves the current metadata by listing metadata/ and builds the keyspace.
+// A canned ListObjectsV2 endpoint stands in for S3 (no mock-S3 dep).
+func TestObjectStoreIcebergStoreBareDir(t *testing.T) {
+	const listXML = `<?xml version="1.0" encoding="UTF-8"?>
+<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+  <Name>bkt</Name><Prefix>warehouse/orders/metadata/</Prefix><KeyCount>2</KeyCount>
+  <MaxKeys>1000</MaxKeys><IsTruncated>false</IsTruncated>
+  <Contents><Key>warehouse/orders/metadata/00001-a.metadata.json</Key><Size>10</Size><StorageClass>STANDARD</StorageClass></Contents>
+  <Contents><Key>warehouse/orders/metadata/00002-b.metadata.json</Key><Size>10</Size><StorageClass>STANDARD</StorageClass></Contents>
+</ListBucketResult>`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("list-type") == "2" {
+			w.Header().Set("Content-Type", "application/xml")
+			_, _ = w.Write([]byte(listXML))
+			return
+		}
+		http.Error(w, "NoSuchKey", http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	t.Setenv("AWS_REGION", "us-east-1")
+	t.Setenv("AWS_ACCESS_KEY_ID", "test")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "test")
+	t.Setenv("AWS_ENDPOINT_URL", srv.URL)
+	t.Setenv("AWS_S3_ENDPOINT", "")
+
+	st, err := FileStore("s3://bkt/warehouse/orders") // bare dir, no metadata.json
+	if err != nil {
+		t.Fatalf("FileStore(bare dir): %v", err)
 	}
-	if !strings.Contains(err.Error(), "metadata JSON") {
-		t.Errorf("error should guide toward a metadata JSON location; got: %v", err)
+	ns, _ := st.Datastore.NamespaceByName("default")
+	ks, kerr := ns.KeyspaceByName("orders")
+	if kerr != nil {
+		t.Fatalf("KeyspaceByName(orders): %v", kerr)
+	}
+	it, ok := ks.(interface{ IcebergMetadata() string })
+	want := "s3://bkt/warehouse/orders/metadata/00002-b.metadata.json"
+	if !ok || it.IcebergMetadata() != want {
+		t.Fatalf("resolved metadata = %v (ok=%v), want %q", ks, ok, want)
+	}
+}
+
+func TestObjectStoreIcebergStoreRejectsUnlistable(t *testing.T) {
+	// Current-metadata auto-resolution by listing is S3-only in v1; a bare gs:// table dir
+	// (no explicit metadata.json) is rejected with guidance rather than silently failing.
+	_, err := FileStore("gs://my-bucket/warehouse/db/orders")
+	if err == nil {
+		t.Fatal("expected an error for a bare gs:// table dir, got nil")
+	}
+	if !strings.Contains(err.Error(), "explicit") {
+		t.Errorf("error should guide toward an explicit metadata location; got: %v", err)
 	}
 }

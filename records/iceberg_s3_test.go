@@ -78,3 +78,44 @@ func TestOpenIcebergTableS3Dispatch(t *testing.T) {
 		t.Errorf("no request for the expected path-style bucket/key; got %v", paths)
 	}
 }
+
+// TestResolveObjectStoreIcebergMetadata: ResolveObjectStoreIcebergMetadata lists a bare
+// table dir's metadata/ prefix over S3 and returns the current metadata location. A stdlib
+// httptest endpoint serves a canned ListObjectsV2 XML (no mock-S3 dep -- the AWS SDK parses
+// it), proving the list -> pick -> compose chain end to end. gs:// is rejected (S3-only v1).
+func TestResolveObjectStoreIcebergMetadata(t *testing.T) {
+	const listXML = `<?xml version="1.0" encoding="UTF-8"?>
+<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+  <Name>bkt</Name><Prefix>warehouse/orders/metadata/</Prefix><KeyCount>2</KeyCount>
+  <MaxKeys>1000</MaxKeys><IsTruncated>false</IsTruncated>
+  <Contents><Key>warehouse/orders/metadata/00001-a.metadata.json</Key><Size>10</Size><StorageClass>STANDARD</StorageClass></Contents>
+  <Contents><Key>warehouse/orders/metadata/00002-b.metadata.json</Key><Size>10</Size><StorageClass>STANDARD</StorageClass></Contents>
+</ListBucketResult>`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("list-type") == "2" {
+			w.Header().Set("Content-Type", "application/xml")
+			_, _ = w.Write([]byte(listXML))
+			return
+		}
+		http.Error(w, "NoSuchKey", http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	t.Setenv("AWS_REGION", "us-east-1")
+	t.Setenv("AWS_ACCESS_KEY_ID", "test")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "test")
+	t.Setenv("AWS_ENDPOINT_URL", srv.URL)
+	t.Setenv("AWS_S3_ENDPOINT", "")
+
+	got, err := ResolveObjectStoreIcebergMetadata("s3://bkt/warehouse/orders")
+	if err != nil {
+		t.Fatalf("ResolveObjectStoreIcebergMetadata: %v", err)
+	}
+	if want := "s3://bkt/warehouse/orders/metadata/00002-b.metadata.json"; got != want {
+		t.Errorf("resolved = %q, want %q", got, want)
+	}
+
+	if _, err := ResolveObjectStoreIcebergMetadata("gs://bkt/warehouse/orders"); err == nil {
+		t.Error("gs:// bare dir should be rejected (listing is S3-only in v1)")
+	}
+}

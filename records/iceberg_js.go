@@ -25,3 +25,8 @@ func OpenIcebergTable(metadataLocation, idPrefix string) (Source, error) {
 func OpenIcebergTableProps(metadataLocation, idPrefix string, props map[string]string) (Source, error) {
 	return nil, fmt.Errorf("records: Iceberg tables are not supported in the wasm build")
 }
+
+// ResolveObjectStoreIcebergMetadata is unavailable in the wasm build.
+func ResolveObjectStoreIcebergMetadata(dirLoc string) (string, error) {
+	return "", fmt.Errorf("records: object-store Iceberg tables are not supported in the wasm build")
+}

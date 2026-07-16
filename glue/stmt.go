@@ -341,16 +341,23 @@ func inertBaseDatastore() (datastore.Datastore, error) {
 // records.OpenIcebergTable by KeyspaceRecordsOpen (which reads the keyspace's
 // IcebergMetadata()); credentials/endpoint come from the environment (records.ObjectStoreProps).
 //
-// v1 takes the metadata location DIRECTLY -- current-metadata auto-resolution over an object
-// store needs object listing (a follow-up); a bare table-dir URI is rejected with guidance. A
-// minimal inert LOCAL base datastore satisfies cbq's planner (it needs a datastore), but every
-// query hits only the synthetic keyspace: real=nil, so the base namespace is never enumerated
-// or scanned. Time-travel `<table>@<snapshot>` works too (KeyspaceByName clones this keyspace).
-func objectStoreIcebergStore(metadataLoc string) (*Store, error) {
-	if !strings.HasSuffix(metadataLoc, ".metadata.json") {
-		return nil, fmt.Errorf("object-store data source %q must be an Iceberg table metadata JSON "+
-			"(e.g. s3://bucket/warehouse/db/table/metadata/00003-<uuid>.metadata.json); "+
-			"current-metadata auto-resolution over object stores is not yet wired", metadataLoc)
+// The location may be either an explicit CURRENT metadata JSON
+// (.../metadata/NNNNN-<uuid>.metadata.json, used directly) or a bare table-dir URI
+// (s3://bucket/warehouse/db/table), in which case the current metadata is resolved by
+// LISTING the table's metadata/ prefix (records.ResolveObjectStoreIcebergMetadata --
+// S3-family only). A minimal inert LOCAL base datastore satisfies cbq's planner (it needs a
+// datastore), but every query hits only the synthetic keyspace: real=nil, so the base
+// namespace is never enumerated or scanned. Time-travel `<table>@<snapshot>` works too
+// (KeyspaceByName clones this keyspace).
+func objectStoreIcebergStore(loc string) (*Store, error) {
+	metadataLoc := loc
+	if !strings.HasSuffix(loc, ".metadata.json") {
+		// A bare table-dir URI: resolve its current metadata by listing metadata/.
+		resolved, rerr := records.ResolveObjectStoreIcebergMetadata(loc)
+		if rerr != nil {
+			return nil, rerr
+		}
+		metadataLoc = resolved
 	}
 	tableDir, name, ok := records.SplitIcebergMetadataLocation(metadataLoc)
 	if !ok {
