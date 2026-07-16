@@ -1,4 +1,4 @@
-// decimal.js — exact fixed-point DECIMAL arithmetic, as a multi-export JS module.
+// builtin_decimal.js — exact fixed-point DECIMAL arithmetic, as a multi-export JS module.
 //
 // JS numbers (and SQL++ numbers) are float64, so `0.1 + 0.2 !== 0.3`. These functions do
 // EXACT base-10 math on a BigInt coefficient + scale, so DECIMAL_ADD("0.1","0.2") is
