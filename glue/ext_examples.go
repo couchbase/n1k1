@@ -295,7 +295,7 @@ func deepApproxEqual(a, b interface{}) bool {
 // ---- executors ------------------------------------------------------------
 
 func runJSScalarExample(name string, in json.RawMessage) (json.RawMessage, error) {
-	rt, err := freshJSProgramRuntime(jsPrograms[name], name)
+	rt, err := freshJSProgramRuntime(jsProgramForFunc(name), name)
 	if err != nil {
 		return nil, err
 	}

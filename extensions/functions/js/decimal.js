@@ -72,9 +72,36 @@ function sub(x, y) { var z = align(parseDec(x), parseDec(y)); return dec(z.a - z
 function mul(x, y) { var a = parseDec(x), b = parseDec(y); return dec(a.coeff * b.coeff, a.scale + b.scale); }
 function cmp(x, y) { var z = align(parseDec(x), parseDec(y)); return z.a < z.b ? -1 : (z.a > z.b ? 1 : 0); }
 
+// Each entry carries inline golden examples ({in: [args], out: expected}) — self-
+// documenting AND verified by `.extensions test` (per SQL name, like a single-file UDF).
 exports.functions = [
-  { name: "DECIMAL_ADD", marshal: "variant", fn: add },
-  { name: "DECIMAL_SUB", marshal: "variant", fn: sub },
-  { name: "DECIMAL_MUL", marshal: "variant", fn: mul },
-  { name: "DECIMAL_CMP", marshal: "json",    fn: cmp },
+  {
+    name: "DECIMAL_ADD", marshal: "variant", fn: add,
+    examples: [
+      { desc: "exact — a plain float + drifts to 0.30000000000000004",
+        in: ["0.1", "0.2"], out: { "$numberDecimal": "0.3" } },
+      { in: ["1", "2.50"], out: { "$numberDecimal": "3.5" } },
+      { desc: "exact beyond 2^53", in: ["123456789012345678", "1"],
+        out: { "$numberDecimal": "123456789012345679" } },
+    ],
+  },
+  {
+    name: "DECIMAL_SUB", marshal: "variant", fn: sub,
+    examples: [{ in: ["1", "0.9"], out: { "$numberDecimal": "0.1" } }],
+  },
+  {
+    name: "DECIMAL_MUL", marshal: "variant", fn: mul,
+    examples: [
+      { in: ["1.5", "1.5"], out: { "$numberDecimal": "2.25" } },
+      { in: ["0.1", "0.1"], out: { "$numberDecimal": "0.01" } },
+    ],
+  },
+  {
+    name: "DECIMAL_CMP", marshal: "json", fn: cmp,
+    examples: [
+      { desc: "0.10 equals 0.1", in: ["0.10", "0.1"], out: 0 },
+      { in: ["0.2", "0.1"], out: 1 },
+      { in: ["0.1", "0.2"], out: -1 },
+    ],
+  },
 ];

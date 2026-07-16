@@ -517,3 +517,32 @@ func TestExtJSDecimalModule(t *testing.T) {
 		}
 	}
 }
+
+// TestExtJSDecimalExamples proves the inline golden examples on a MULTI-EXPORT module
+// are captured PER FUNCTION and run through the scalar-UDF protocol by
+// RunExtensionExamples — the multi-function analogue of a single-file UDF's examples.
+func TestExtJSDecimalExamples(t *testing.T) {
+	src, err := os.ReadFile("../extensions/functions/js/decimal.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := glue.RegisterJSModule("decimal", string(src)); err != nil {
+		t.Fatalf("RegisterJSModule: %v", err)
+	}
+	ran := 0
+	for _, r := range glue.RunExtensionExamples("") {
+		if !strings.HasPrefix(r.Name, "decimal_") {
+			continue
+		}
+		ran++
+		if r.Err != "" {
+			t.Errorf("%s/%s errored: %s", r.Name, r.Label, r.Err)
+		}
+		if !r.Pass {
+			t.Errorf("%s/%s did not pass: got %s, want %s", r.Name, r.Label, r.Got, r.Want)
+		}
+	}
+	if ran != 9 { // ADD:3 + SUB:1 + MUL:2 + CMP:3
+		t.Fatalf("ran %d decimal_* examples, want 9 (per-function capture broken?)", ran)
+	}
+}

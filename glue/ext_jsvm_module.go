@@ -34,6 +34,7 @@ package glue
 // unchanged.
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -53,6 +54,25 @@ import (
 // EJSON-tagged JSON objects — exact and queryable, but riding as ordinary JSON. Wiring
 // EJSON<->`V` (so results become real VARIANT bytes) is the write-back-bridge follow-up.
 var jsFuncMarshal = map[string]string{}
+
+// jsFuncProgramKey maps a module function's SQL name to its shared jsPrograms key
+// ("module:<bundle>"), since a module's functions share ONE program rather than each
+// having jsPrograms[name]. Only set for module functions; a single-file UDF has
+// jsPrograms[name] directly. Used by the example runner to build a runtime with the
+// whole module loaded. See jsProgramForFunc.
+var jsFuncProgramKey = map[string]string{}
+
+// jsProgramForFunc returns the compiled program that defines function name: its own
+// jsPrograms entry for a single-file UDF, or its module's shared program otherwise.
+func jsProgramForFunc(name string) *goja.Program {
+	if p := jsPrograms[name]; p != nil {
+		return p
+	}
+	if key := jsFuncProgramKey[name]; key != "" {
+		return jsPrograms[key]
+	}
+	return nil
+}
 
 const jsModulePreamble = "var exports={},module={exports:exports};\n"
 
@@ -120,7 +140,10 @@ func RegisterJSModule(bundle, source string) error {
 		return fmt.Errorf("JS module %q: must set exports.functions to a non-empty array of {name, fn}", bundle)
 	}
 
-	type reg struct{ name, marshal string }
+	type reg struct {
+		name, marshal string
+		examples      []ExtExample
+	}
 	regs := make([]reg, 0, len(entries))
 	seen := map[string]bool{}
 	for _, e := range entries {
@@ -159,7 +182,7 @@ func RegisterJSModule(bundle, source string) error {
 				return fmt.Errorf("JS module %q: function %q collides with an aggregate function name", bundle, name)
 			}
 		}
-		regs = append(regs, reg{name, marshal})
+		regs = append(regs, reg{name, marshal, moduleEntryExamples(e["examples"])})
 	}
 
 	// Install the module program ONCE (shared by all its functions), then register each
@@ -170,9 +193,13 @@ func RegisterJSModule(bundle, source string) error {
 	}
 	jsPrograms[key] = prog
 	for _, r := range regs {
+		// Per-function golden examples (recorded per SQL name, so `.extensions test`
+		// runs each through the scalar-UDF protocol like a single-file UDF's examples).
+		recordExtExamples("javascript", r.name, r.examples)
 		expression.RegisterFunction(r.name, newJSFunc(r.name))
 		extOurs[r.name] = true
 		jsFuncMarshal[r.name] = r.marshal
+		jsFuncProgramKey[r.name] = key
 	}
 	return nil
 }
@@ -180,4 +207,23 @@ func RegisterJSModule(bundle, source string) error {
 func asString(v interface{}) string {
 	s, _ := v.(string)
 	return s
+}
+
+// moduleEntryExamples converts a module function entry's `examples` value (a JS array of
+// {in, out} objects, Export()ed to Go) into []ExtExample by round-tripping through JSON
+// (ExtExample's In/Out are json.RawMessage). Malformed examples are dropped — they are
+// advisory golden data, not a load-blocking error (matching readJSExamples).
+func moduleEntryExamples(v interface{}) []ExtExample {
+	if v == nil {
+		return nil
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return nil
+	}
+	var exs []ExtExample
+	if json.Unmarshal(b, &exs) != nil {
+		return nil
+	}
+	return exs
 }
