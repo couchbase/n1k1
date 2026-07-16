@@ -90,6 +90,12 @@ var extensionLoaders = map[string]struct {
 		if err != nil {
 			return err
 		}
+		// A `.js` file that sets exports.functions is a multi-export MODULE (a family
+		// like decimal.js); otherwise it's a legacy single-function UDF keyed off its
+		// filename stem. See ext_jsvm_module.go.
+		if looksLikeJSModule(string(src)) {
+			return RegisterJSModule(name, string(src))
+		}
 		return registerJSFunc(name, string(src)) // JavaScript scalar UDF.
 	}},
 }

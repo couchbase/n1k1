@@ -415,9 +415,10 @@ func TestExtShippedJSExamples(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RegisterExtensionDir(shipped): %v", err)
 	}
-	// Scalar UDFs (*.js), the geomean aggregate (*.agg.js), the series streaming
-	// source (*.stream.js), sorted.
-	want := []string{"add_two_numbers", "celsius_to_fahrenheit", "geomean", "series", "slugify"}
+	// Scalar UDFs (*.js), the decimal.js multi-export MODULE (a whole DECIMAL_* family
+	// in one file), the geomean aggregate (*.agg.js), the series streaming source
+	// (*.stream.js), sorted by filename stem.
+	want := []string{"add_two_numbers", "celsius_to_fahrenheit", "decimal", "geomean", "series", "slugify"}
 	if strings.Join(names, ",") != strings.Join(want, ",") {
 		t.Fatalf("shipped extension names = %v, want %v", names, want)
 	}
@@ -427,6 +428,8 @@ func TestExtShippedJSExamples(t *testing.T) {
 		{`SELECT RAW add_two_numbers(2, 5)`, `7`},
 		{`SELECT RAW celsius_to_fahrenheit(100)`, `212`},
 		{`SELECT RAW slugify("Hello, World!")`, `"hello-world"`},
+		// decimal.js multi-export module: exact decimal, loaded via the dir catalog.
+		{`SELECT RAW DECIMAL_ADD("0.1", "0.2")`, `{"$numberDecimal":"0.3"}`},
 		{`SELECT RAW ROUND(geomean(v), 4) FROM [1,2,4,8] AS v`, `2.8284`}, // 64^(1/4)
 		{`SELECT RAW SUM(x.n) FROM series(1, 5) AS x`, `15`},              // streaming source
 	}
@@ -473,5 +476,44 @@ func TestExtJSStream(t *testing.T) {
 	// Misuse outside FROM -> clear error, not a crash.
 	if _, err := sess.Run(`SELECT streamgen(3)`); err == nil || !strings.Contains(err.Error(), "FROM clause") {
 		t.Fatalf("streamgen() outside FROM: want a 'FROM clause' error, got %v", err)
+	}
+}
+
+// TestExtJSDecimalModule exercises a multi-export JS MODULE (DESIGN-extensions.md "JS
+// modules"): one decimal.js file exports the whole DECIMAL_* family, and the functions
+// do EXACT base-10 arithmetic (via BigInt) that float64 can't — DECIMAL_ADD(0.1, 0.2) is
+// exactly 0.3, not 0.30000000000000004. Loads the shipped extensions/functions/js/
+// decimal.js so the test also proves the module auto-detection + loader routing.
+func TestExtJSDecimalModule(t *testing.T) {
+	src, err := os.ReadFile("../extensions/functions/js/decimal.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := glue.RegisterJSModule("decimal", string(src)); err != nil {
+		t.Fatalf("RegisterJSModule: %v", err)
+	}
+	sess := extSession(t)
+
+	cases := []struct{ stmt, want string }{
+		// Exact — a plain SQL `0.1 + 0.2` would drift to 0.30000000000000004.
+		{`SELECT RAW DECIMAL_ADD("0.1", "0.2")`, `{"$numberDecimal":"0.3"}`},
+		{`SELECT RAW DECIMAL_ADD(0.1, 0.2)`, `{"$numberDecimal":"0.3"}`}, // number args stringify cleanly
+		{`SELECT RAW DECIMAL_SUB("1", "0.9")`, `{"$numberDecimal":"0.1"}`},
+		{`SELECT RAW DECIMAL_MUL("1.5", "1.5")`, `{"$numberDecimal":"2.25"}`},
+		{`SELECT RAW DECIMAL_MUL("0.1", "0.1")`, `{"$numberDecimal":"0.01"}`},
+		// Exact beyond float64's 2^53 integer precision.
+		{`SELECT RAW DECIMAL_ADD("123456789012345678", "1")`, `{"$numberDecimal":"123456789012345679"}`},
+		// Nesting round-trips through the EJSON-tagged form.
+		{`SELECT RAW DECIMAL_ADD(DECIMAL_MUL("0.1","0.1"), "0.99")`, `{"$numberDecimal":"1"}`},
+		// Comparison returns a plain -1/0/1 (marshal:"json"). 0.10 == 0.1.
+		{`SELECT RAW DECIMAL_CMP("0.10", "0.1")`, `0`},
+		{`SELECT RAW DECIMAL_CMP("0.2", "0.1")`, `1`},
+		{`SELECT RAW DECIMAL_CMP("0.1", "0.2")`, `-1`},
+	}
+	for _, c := range cases {
+		got := extRawRows(t, sess, c.stmt)
+		if len(got) != 1 || got[0] != c.want {
+			t.Fatalf("%s => %v, want [%s]", c.stmt, got, c.want)
+		}
 	}
 }
