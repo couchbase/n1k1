@@ -92,6 +92,7 @@ type jsSharedRuntime struct {
 func newJSSharedRuntime() *jsSharedRuntime {
 	rt := goja.New()
 	installJSConsole(rt)
+	installJSEjson(rt)
 	for _, name := range jsProgramOrder {
 		_, _ = rt.RunProgram(jsPrograms[name])
 	}
@@ -189,6 +190,43 @@ func installJSConsole(rt *goja.Runtime) {
 		_ = console.Set(m, logFn)
 	}
 	_ = rt.Set("console", console)
+}
+
+// ejsonSetupJS defines the `ejson` helper available to every UDF/module: it wraps and
+// unwraps VARIANT-typed values in the EJSON-tagged form ({"$numberDecimal":"…"} etc.),
+// so authors needn't hand-roll the tags. Operations that read an argument first
+// JSON-round-trip it, so a host-wrapped engine value (goja's wrapper) becomes a plain JS
+// object. See DESIGN-extensions.md / DESIGN-variant.md §5.2.
+const ejsonSetupJS = `globalThis.ejson = {
+  decimal: function(x){ return {"$numberDecimal": String(x)}; },
+  wrap: function(tag, x){ var t = String(tag); if (t.charAt(0) !== "$") t = "$" + t; var o = {}; o[t] = String(x); return o; },
+  isTagged: function(x){ if (x === null || typeof x !== "object") return false; var ks = Object.keys(x); return ks.length === 1 && ks[0].charAt(0) === "$"; },
+  unwrap: function(x){
+    if (x !== null && typeof x === "object"){ var m = JSON.parse(JSON.stringify(x)); for (var k in m){ if (k.charAt(0) === "$") return m[k]; } }
+    return x;
+  },
+  decode: function(x){
+    if (x === null || typeof x !== "object") return x;
+    return (function walk(y){
+      if (y === null || typeof y !== "object") return y;
+      if (Array.isArray(y)) return y.map(walk);
+      var ks = Object.keys(y);
+      if (ks.length === 1 && ks[0].charAt(0) === "$"){
+        var t = ks[0], v = y[t];
+        return (t === "$numberDecimal" || t === "$numberDouble" || t === "$numberInt" || t === "$numberLong") ? Number(v) : v;
+      }
+      var out = {}; for (var k in y) out[k] = walk(y[k]); return out;
+    })(JSON.parse(JSON.stringify(x)));
+  }
+};`
+
+var ejsonProg = goja.MustCompile("ejson.js", ejsonSetupJS, true)
+
+// installJSEjson defines the `ejson` helper on rt (see ejsonSetupJS). Installed on every
+// runtime that EXECUTES UDF/module code, so a function body can call ejson.* (the
+// registration-time "check" runtime doesn't run function bodies, so it needn't have it).
+func installJSEjson(rt *goja.Runtime) {
+	_, _ = rt.RunProgram(ejsonProg)
 }
 
 // runJSUDF resolves the per-query/per-actor shared runtime from the eval context

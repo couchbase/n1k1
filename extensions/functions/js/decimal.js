@@ -18,15 +18,7 @@ function pow10(n) {
 
 // parseDec -> { coeff: BigInt, scale: int } for a decimal that equals coeff / 10^scale.
 function parseDec(x) {
-  if (x !== null && typeof x === "object") {
-    // Unwrap an EJSON-tagged decimal (so calls nest). Round-trip through JSON first so a
-    // host-wrapped object (goja's wrapper over the engine value) becomes a plain JS
-    // object with primitive fields.
-    var m = JSON.parse(JSON.stringify(x));
-    if (m !== null && typeof m === "object" && typeof m["$numberDecimal"] === "string") {
-      x = m["$numberDecimal"];
-    }
-  }
+  x = ejson.unwrap(x); // an EJSON-tagged decimal -> its string (so calls nest); else unchanged
   var s = String(x).trim();
   var neg = false;
   if (s.charAt(0) === "+") s = s.slice(1);
@@ -65,7 +57,7 @@ function format(coeff, scale) {
   return (neg ? "-" : "") + d;
 }
 
-function dec(coeff, scale) { return { "$numberDecimal": format(coeff, scale) }; }
+function dec(coeff, scale) { return ejson.decimal(format(coeff, scale)); } // host EJSON helper
 
 function add(x, y) { var z = align(parseDec(x), parseDec(y)); return dec(z.a + z.b, z.scale); }
 function sub(x, y) { var z = align(parseDec(x), parseDec(y)); return dec(z.a - z.b, z.scale); }
@@ -110,8 +102,8 @@ exports.functions = [
   {
     name: "DECIMAL_SUM", kind: "aggregate", marshal: "variant",
     init: function () { return "0"; },
-    update: function (s, v) { return add(s, v)["$numberDecimal"]; },
-    final: function (s) { return { "$numberDecimal": s }; },
+    update: function (s, v) { return ejson.unwrap(add(s, v)); },
+    final: function (s) { return ejson.decimal(s); },
     examples: [
       { desc: "exact — float sum would drift", in: ["0.1", "0.2", "0.3"], out: { "$numberDecimal": "0.6" } },
     ],

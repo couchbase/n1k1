@@ -594,3 +594,25 @@ func TestExtJSModuleAggregateAndStream(t *testing.T) {
 		t.Fatalf("mymod_range(3) = %v, want [1,2,3]", got)
 	}
 }
+
+// TestExtJSEjsonHelper: the host `ejson` helper is available in every UDF — wrap a value
+// into an EJSON tag, and recursively decode (strip) tags back to plain JSON.
+func TestExtJSEjsonHelper(t *testing.T) {
+	if err := glue.RegisterJSFunc("ej_wrap", `function ej_wrap(x){ return ejson.decimal(x); }`); err != nil {
+		t.Fatal(err)
+	}
+	if err := glue.RegisterJSFunc("ej_decode", `function ej_decode(x){ return ejson.decode(x); }`); err != nil {
+		t.Fatal(err)
+	}
+	sess := extSession(t)
+	cases := []struct{ stmt, want string }{
+		{`SELECT RAW ej_wrap("0.3")`, `{"$numberDecimal":"0.3"}`},
+		{`SELECT RAW ej_decode({"$numberDecimal":"0.3"})`, `0.3`},                         // tag -> number
+		{`SELECT RAW ej_decode({"a":{"$numberDecimal":"1.5"},"b":2})`, `{"a":1.5,"b":2}`}, // recursive strip
+	}
+	for _, c := range cases {
+		if got := extRawRows(t, sess, c.stmt); len(got) != 1 || got[0] != c.want {
+			t.Fatalf("%s => %v, want [%s]", c.stmt, got, c.want)
+		}
+	}
+}

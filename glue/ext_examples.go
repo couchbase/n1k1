@@ -396,6 +396,7 @@ func freshJSProgramRuntime(prog *goja.Program, name string) (*goja.Runtime, erro
 	}
 	rt := goja.New()
 	installJSConsole(rt)
+	installJSEjson(rt)
 	if _, err := rt.RunProgram(prog); err != nil {
 		return nil, err
 	}
