@@ -390,6 +390,19 @@ for one field. SEARCH by the keyspace NAME or its FROM alias both search the who
     SEARCH(ks,"SEQNOWAITINGSTARTED") match, but "waiting" (a substring) does not.
   Wildcards / fuzzy (think grep):  x*  = prefix,  a*b / a?b = wildcard,  x~ / x~2 = fuzzy
     (edit distance).  e.g. SEARCH(ks,"rebalanc*"), SEARCH(ks.etype,"rebalanc*").
+
+Example FTS queries (against the "docs" indexes above):
+  -- whole-document search (any field), then a single field:
+  SELECT d.id FROM docs d WHERE SEARCH(d, "quick");
+  SELECT d.id FROM docs d WHERE SEARCH(d.title, "world");
+  -- stemming from the "ft_en" custom mapping: "run" also matches "running"/"ran":
+  SELECT d.id, d.body FROM docs d WHERE SEARCH(d.body, "run");
+  -- rank by relevance -- SEARCH_SCORE()/SEARCH_META() surface the bleve hit score:
+  SELECT d.id, SEARCH_SCORE(d) AS score FROM docs d
+    WHERE SEARCH(d.body, "fox") ORDER BY score DESC LIMIT 10;
+  -- prefix / fuzzy, and combine an FTS predicate with an ordinary one:
+  SELECT d.id FROM docs d WHERE SEARCH(d.body, "jump*");
+  SELECT d.id FROM docs d WHERE SEARCH(d.body, "quick") AND d.id = "d1";
 After editing catalog.json, run '.index rebuild' (or just query -- lazy on first use).
 
 Startup flag -index picks whether/when these are used (builds are cached on disk):
