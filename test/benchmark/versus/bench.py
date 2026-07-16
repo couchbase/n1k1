@@ -38,6 +38,7 @@ BULK_ITEMS = int(os.environ.get("BULK_ITEMS", "20000"))
 BULK_DOCS = int(os.environ.get("BULK_DOCS", "4"))
 REPS = int(os.environ.get("REPS", "11"))
 CBQ_LOCALBENCH = os.environ.get("CBQ_LOCALBENCH", "")
+COMPILED = os.environ.get("COMPILED", "") not in ("", "0", "false")
 
 FILE_QUERIES = [
     ("count+filter", "SELECT COUNT(*) c FROM orders WHERE amount >= 0"),
@@ -127,6 +128,46 @@ def run_n1k1(binary, queries):
     return out
 
 
+def run_n1k1_compiled(binary, queries):
+    """Drive the n1k1 CLI at the -prepare=full ceiling: each query is PREPAREd once
+    (which go-builds a standalone cbq-free child binary) then EXECUTEd REPS times.
+    Returns {query: median_warm_ms or None}. None means the query did NOT compile to
+    a standalone child (it errored or fell back) -- e.g. a JOIN ... ON KEYS, whose
+    per-row datastore-fetch the thin child's MemPipe can't serve.
+
+    Only TIME is reported: the compiled compute runs in a CHILD process, so the
+    parent's .stats heap-alloc counter (the MB column) can't see it -- an
+    apples-to-apples memory number would need child RSS, out of scope here. The first
+    EXECUTE includes the one-time `go build`; warm-dropping the first reps excludes it.
+
+    Requires the `go` toolchain and N1K1_SRC (the n1k1 checkout) to build the child."""
+    lines = [".prepare full", ".timer on", ".mode jsonlines"]
+    for i, q in enumerate(queries):
+        lines.append("PREPARE cp%d AS %s;" % (i, q))
+        lines += ["EXECUTE cp%d;" % i] * REPS
+    env = dict(os.environ, N1K1_SRC=REPO)
+    r = subprocess.run([binary, DATA], input="\n".join(lines) + "\n",
+                       env=env, capture_output=True, text=True)
+    # Each EXECUTE that ran (compiled or interpreted-fallback) prints one
+    # "... row(s) in <dur>" footer; a query whose child failed prints an Error and no
+    # footer. Group footers back to their query by the fixed REPS-per-query cadence,
+    # but since failures drop footers we instead tag each query's block by scanning
+    # sequentially. Simpler + robust: split stderr on the PREPARE confirmations.
+    blocks = re.split(r'prepared "cp\d+"', r.stderr)[1:]  # block i = EXECUTEs of cp{i}
+    out = {}
+    warm = min(5, REPS // 3)
+    for q, block in zip(queries, blocks):
+        durs = [float(m.group(1)) * _UMS[m.group(2)]
+                for line in block.splitlines() if "row(s)" in line
+                for m in [_DUR.search(line)] if m]
+        # A standalone-compiled query yields REPS footers; anything fewer means it
+        # errored/fell back -> report n/a rather than a misleading interpreted time.
+        out[q] = median(durs[warm:]) if len(durs) >= REPS else None
+    for q in queries:
+        out.setdefault(q, None)
+    return out
+
+
 def run_cbq(binary, queries):
     """The fork's cmd/localbench: one process over DATA, RESULT<TAB>ms<TAB>MB<TAB>rows."""
     env = dict(os.environ, REPS=str(REPS))
@@ -139,25 +180,27 @@ def run_cbq(binary, queries):
     return {q: (float(c[1]), float(c[2])) for q, c in zip(queries, rows)}
 
 
-def table(title, queries, n1, cbq):
+def table(title, queries, n1, comp, cbq):
+    """Columns: interpreted n1k1 ms | compiled-standalone n1k1 ms (+ speedup vs
+    interpreted) | cbq ms | interpreted n1k1 MB | cbq MB. Compiled has no MB (child
+    process). 'n/a' in the comp column = the query did not compile standalone."""
     print("\n%s" % title)
-    print("-" * 78)
-    if cbq:
-        print("%-16s%9s%9s%8s%10s%10s%8s"
-              % ("query", "n1k1 ms", "cbq ms", "x(t)", "n1k1 MB", "cbq MB", "x(m)"))
-    else:
-        print("%-16s%12s%14s" % ("query", "n1k1 ms", "n1k1 MB/q"))
-    print("-" * 78)
+    print("-" * 92)
+    print("%-16s%9s%9s%8s%9s%10s%10s"
+          % ("query", "interp", "comp", "c:i", "cbq ms", "interp MB", "cbq MB"))
+    print("%-16s%9s%9s%8s%9s%10s%10s"
+          % ("", "ms", "ms", "", "", "", ""))
+    print("-" * 92)
     for name, q in queries:
         nms, nmb = n1[q]
-        if cbq:
-            cms, cmb = cbq[q]
-            print("%-16s%9.2f%9.2f%7.2fx%10.2f%10.2f%7.1fx"
-                  % (name, nms, cms, cms / nms if nms else 0,
-                     nmb, cmb, cmb / nmb if nmb else 0))
-        else:
-            print("%-16s%12.3f%14.3f" % (name, nms, nmb))
-    print("-" * 78)
+        cms = comp.get(q) if comp else None
+        comp_s = "%.2f" % cms if cms else "n/a"
+        ratio_s = "%.2fx" % (cms / nms) if (cms and nms) else "-"
+        cbq_ms = "%.2f" % cbq[q][0] if cbq else "-"
+        cbq_mb = "%.2f" % cbq[q][1] if cbq else "-"
+        print("%-16s%9.2f%9s%8s%9s%10.2f%10s"
+              % (name, nms, comp_s, ratio_s, cbq_ms, nmb, cbq_mb))
+    print("-" * 92)
 
 
 def main():
@@ -167,16 +210,28 @@ def main():
 
     all_q = [q for _, q in FILE_QUERIES + BULK_QUERIES]
     n1 = run_n1k1(n1bin, all_q)
+    comp = run_n1k1_compiled(n1bin, all_q) if COMPILED else {}
     cbq = run_cbq(CBQ_LOCALBENCH, all_q) if CBQ_LOCALBENCH else {}
 
     print("\ncbq-vs-n1k1  |  files: %d docs   bulk: %d docs x %d-elem arrays"
           "  |  warm median of %d reps" % (NDOCS, BULK_DOCS, BULK_ITEMS, REPS))
-    print("both columns = full parse+plan+execute; MB = allocated/query")
-    table("SCENARIO: files (one doc per file -- I/O-bound)", FILE_QUERIES, n1, cbq)
+    print("interp/comp/cbq ms = full parse+plan+execute; c:i = compiled/interpreted;"
+          " MB = allocated/query")
+    table("SCENARIO: files (one doc per file -- I/O-bound)", FILE_QUERIES, n1, comp, cbq)
     table("SCENARIO: bulk (few docs, big in-doc arrays via UNNEST -- compute-bound)",
-          BULK_QUERIES, n1, cbq)
+          BULK_QUERIES, n1, comp, cbq)
+    if COMPILED:
+        print("\ncomp = n1k1 -prepare=full standalone-compiled EXECUTE (go-built child,"
+              " build cost excluded via warm-drop).")
+        print("  'n/a' = did not compile standalone (e.g. JOIN ... ON KEYS: the thin"
+              " child can't do a per-row datastore fetch).")
+        print("  no compiled MB: the compute runs in a child process, invisible to the"
+              " parent's heap-alloc counter.")
+    else:
+        print("\ncompiled column OFF; set COMPILED=1 (needs the `go` toolchain) to add"
+              " the n1k1 standalone-compiled column.")
     if not cbq:
-        print("\ncbq column: build cmd/localbench from the n1k1-query local-benchmark")
+        print("cbq column: build cmd/localbench from the n1k1-query local-benchmark")
         print("branch and set CBQ_LOCALBENCH=<binary>. See README.md.")
 
 

@@ -31,10 +31,46 @@ mislead on a large inline literal. `Result.RunElapsed` fixes that at the source.
   The volume lives *inside* documents, so file I/O is trivial and per-row execution
   dominates — this is where the engine/value-model gap shows in both time and memory.
 
+## A third contender: n1k1 compiled codegen
+
+`COMPILED=1` adds a **comp** column — n1k1's `-prepare=full` **standalone-compiled
+EXECUTE**: each query is `PREPARE`d once (which emits cbq-free Go and `go build`s a
+child binary) then `EXECUTE`d, warm (the one-time build is dropped). Needs the `go`
+toolchain; `N1K1_SRC` is set automatically to this checkout.
+
+    COMPILED=1 python3 bench.py                          # + compiled column
+    COMPILED=1 CBQ_LOCALBENCH=/tmp/localbench python3 bench.py   # all three
+
+How the compiled lane works matters for reading the numbers: it's a **thin child** —
+the *parent* still scans the files and then JSON-serializes every scanned record over
+a pipe to the child; the *child* runs only the compiled compute and pipes result rows
+back. So:
+
+- **Compiled reports TIME only.** The compute runs in a child process, invisible to
+  the parent's heap-alloc counter, so there's no compiled MB column.
+- **`n/a`** = the query didn't compile standalone. Today that's any `JOIN ... ON KEYS`
+  (`join-count`, `join+group`, `unnest+join`): the thin child's `MemPipe` can't serve
+  a per-row datastore fetch of the second keyspace.
+
+**Result: compiled is currently _slower_ than the interpreter here** (c:i ≈ 1.2–3.0×),
+because the thin-child IPC — JSON-marshalling the scanned inputs to the child and
+piping rows back — costs more than the compute it accelerates. It's worst on the bulk
+scenario, where the parent must serialize the big in-document arrays to stdin. The
+compiled lane isn't a single-query accelerator; it targets the standalone / fork-free
+analyzer & multi-query (MQO) deployment scenario (see `DESIGN-prepare.md`), where the
+child runs detached and the parent-side serialization isn't on the critical path.
+
+(Two codegen bugs were fixed to make this column even runnable: a `lzValOut
+redeclared` build failure on a binary op over two nested-field operands like
+`a.amount * a.qty`, and a child nil-panic on every aggregate because the standalone
+child's `base.Ctx` lacked the spill-allocator pools — now shared with the interpreter
+via `rt.NewSpillCtx`. Guarded by `glue.TestExecuteCompiledAggAndArith`.)
+
 ## Run
 
     CBQ_LOCALBENCH=/tmp/localbench python3 bench.py     # both engines
     python3 bench.py                                    # n1k1 only
+    COMPILED=1 python3 bench.py                         # + compiled column
     NDOCS=50000 BULK_ITEMS=50000 REPS=15 python3 bench.py
 
 Build the cbq runner once (in the fork worktree on branch `local-benchmark`):
