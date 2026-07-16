@@ -238,12 +238,14 @@ func TestVectorDistanceParquetCeiling(t *testing.T) {
 	tFull := time.Since(fStart)
 
 	fi, _ := os.Stat(path)
-	t.Logf("columnar VECTOR_DISTANCE over Parquet: rows=%d dim=%d metric=%s", rows, dim, metric)
-	t.Logf("  file=%.1f MB  write=%v", float64(fi.Size())/1e6, tWrite.Round(time.Millisecond))
-	t.Logf("  read-only (decode vec column)   = %v", tRead.Round(time.Millisecond))
-	t.Logf("  full (read + kernel + top-%d)    = %v", k, tFull.Round(time.Millisecond))
-	t.Logf("  compute alone (full - read)     ~ %v", (tFull - tRead).Round(time.Millisecond))
-	t.Logf("  vs jsonl+native 6.8s, jsonl+boxed 11.2s (100K x 384)")
+	if (false) {
+		t.Logf("columnar VECTOR_DISTANCE over Parquet: rows=%d dim=%d metric=%s", rows, dim, metric)
+		t.Logf("  file=%.1f MB  write=%v", float64(fi.Size())/1e6, tWrite.Round(time.Millisecond))
+		t.Logf("  read-only (decode vec column)   = %v", tRead.Round(time.Millisecond))
+		t.Logf("  full (read + kernel + top-%d)    = %v", k, tFull.Round(time.Millisecond))
+		t.Logf("  compute alone (full - read)     ~ %v", (tFull - tRead).Round(time.Millisecond))
+		t.Logf("  vs jsonl+native 6.8s, jsonl+boxed 11.2s (100K x 384)")
+	}
 	// Row 0 is the query itself -> cosine distance 0 -> must be the top hit.
 	if len(best) == 0 || best[0].id != 0 {
 		t.Fatalf("top hit = %+v, want id 0 (the query row, distance 0)", best)

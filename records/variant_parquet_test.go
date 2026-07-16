@@ -270,8 +270,8 @@ func TestVariantParquetEndToEnd(t *testing.T) {
 		if r.wantJSON != "" && string(gotJSON) != r.wantJSON {
 			t.Errorf("%s: JSON projection %q, want %q", r.name, gotJSON, r.wantJSON)
 		}
-		t.Logf("row %d %-8s  type=%-10v  json=%s  (meta %dB, value %dB)",
-			i, r.name, val.Type(), gotJSON, len(meta), len(value))
+		// t.Logf("row %d %-8s  type=%-10v  json=%s  (meta %dB, value %dB)",
+		//	i, r.name, val.Type(), gotJSON, len(meta), len(value))
 	}
 
 	// (4) zero-copy navigation: a nested field's bytes are a subslice of the parent's
@@ -346,7 +346,7 @@ func TestVariantParquetDeepNesting(t *testing.T) {
 	if string(gotJSON) != string(origJSON) {
 		t.Errorf("deep round-trip JSON differs:\n got %s\nwant %s", gotJSON, origJSON)
 	}
-	t.Logf("round-tripped order: %s", gotJSON)
+	// t.Logf("round-tripped order: %s", gotJSON)
 
 	// (b) navigate arbitrarily deep through the view API.
 	key := func(v variant.Value, k string) variant.Value {
@@ -500,7 +500,7 @@ func TestParquetReaderRendersVariantColumn(t *testing.T) {
 			t.Errorf("row %d: order projection wrong\n got %v\nwant %v\n doc=%s", i, m["order"], wantOrder, doc)
 		}
 	}
-	t.Logf("record[0] via records reader: %s", docs[0])
+	// t.Logf("record[0] via records reader: %s", docs[0])
 }
 
 // roundTripVariants writes vals as a one-column VARIANT Parquet file and reads it back,

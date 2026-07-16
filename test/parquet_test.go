@@ -148,11 +148,13 @@ func TestParquetReport(t *testing.T) {
 	defer pf.Close()
 	md := pf.MetaData()
 
-	t.Logf("file: %d rows, %d cols, %d row groups, %.1f MB on disk",
-		md.NumRows, md.Schema.NumColumns(), md.NumRowGroups(), float64(fi.Size())/1e6)
+	if (false) {
+		t.Logf("file: %d rows, %d cols, %d row groups, %.1f MB on disk",
+			md.NumRows, md.Schema.NumColumns(), md.NumRowGroups(), float64(fi.Size())/1e6)
+	}
 
 	// (2) Schema + per-column stats straight from the footer -- "metadata up" is free.
-	t.Log("--- footer metadata (no data pages read) ---")
+	// t.Log("--- footer metadata (no data pages read) ---")
 	var priceBytes, totalBytes int64
 	for c := 0; c < md.Schema.NumColumns(); c++ {
 		cc, _ := md.RowGroup(0).ColumnChunk(c)
@@ -170,9 +172,9 @@ func TestParquetReport(t *testing.T) {
 				line += fmt.Sprintf(" min=%.1f max=%.1f", fst.Min(), fst.Max())
 			}
 		}
-		t.Log(line)
+		// t.Log(line)
 	}
-	t.Log("  => price null_count=0 => NO validity bitmap => unmasked kernel")
+	// t.Log("  => price null_count=0 => NO validity bitmap => unmasked kernel")
 
 	// (1) Projection pushdown: read only price vs all columns.
 	pr, err := pqarrow.NewFileReader(pf, pqarrow.ArrowReadProperties{}, memory.DefaultAllocator)
@@ -198,13 +200,15 @@ func TestParquetReport(t *testing.T) {
 	allDur := time.Since(t0)
 	defer allTbl.Release()
 
-	t.Log("--- projection pushdown (read+decode) ---")
-	t.Logf("  price only : %6.2f ms,  ~%.2f MB of column-chunk bytes",
-		float64(projDur.Microseconds())/1000, float64(priceBytes)/1e6)
-	t.Logf("  all %2d cols: %6.2f ms,  ~%.2f MB of column-chunk bytes",
-		md.Schema.NumColumns(), float64(allDur.Microseconds())/1000, float64(totalBytes)/1e6)
-	t.Logf("  => projection reads %.1f%% of the bytes, %.0fx faster to materialize",
-		100*float64(priceBytes)/float64(totalBytes), float64(allDur)/float64(projDur))
+	if (false) {
+		t.Log("--- projection pushdown (read+decode) ---")
+		t.Logf("  price only : %6.2f ms,  ~%.2f MB of column-chunk bytes",
+			float64(projDur.Microseconds())/1000, float64(priceBytes)/1e6)
+		t.Logf("  all %2d cols: %6.2f ms,  ~%.2f MB of column-chunk bytes",
+			md.Schema.NumColumns(), float64(allDur.Microseconds())/1000, float64(totalBytes)/1e6)
+		t.Logf("  => projection reads %.1f%% of the bytes, %.0fx faster to materialize",
+			100*float64(priceBytes)/float64(totalBytes), float64(allDur)/float64(projDur))
+	}
 
 	if got := pqSumColumn(projTbl); got == 0 {
 		t.Fatal("unexpected zero sum")

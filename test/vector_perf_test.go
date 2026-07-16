@@ -53,7 +53,7 @@ func TestVectorEndToEndPerf(t *testing.T) {
 		seed = seed*6364136223846793005 + 1442695040888963407
 		return float64(seed>>40) / float64(1<<24) // in [0,1)
 	}
-	genStart := time.Now()
+	// genStart := time.Now()
 	sf, err := os.Create(filepath.Join(srcDir, "data.jsonl"))
 	if err != nil {
 		t.Fatal(err)
@@ -78,7 +78,7 @@ func TestVectorEndToEndPerf(t *testing.T) {
 	}
 	bw.Flush()
 	sf.Close()
-	tGen := time.Since(genStart)
+	// tGen := time.Since(genStart)
 
 	// Query vector literal from row 0's vec.
 	var ql []byte
@@ -110,34 +110,39 @@ func TestVectorEndToEndPerf(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", label, err)
 		}
-		fired := atomic.LoadInt64(&glue.VectorColumnarApplied) - before
-		t.Logf("  %-28s %8v  (rows=%d, columnar-fired=%d)", label, el.Round(time.Millisecond), len(res.Rows), fired)
+		// fired := atomic.LoadInt64(&glue.VectorColumnarApplied) - before
+		// t.Logf("  %-28s %8v  (rows=%d, columnar-fired=%d)", label, el.Round(time.Millisecond), len(res.Rows), fired)
+		_ = before
+		_ = res
 		return el
 	}
 
-	t.Logf("end-to-end vector perf: rows=%d dim=%d k=%d  (source jsonl gen %v)", rows, dim, k, tGen.Round(time.Millisecond))
+	// t.Logf("end-to-end vector perf: rows=%d dim=%d k=%d  (source jsonl gen %v)", rows, dim, k, tGen.Round(time.Millisecond))
 
 	// 1) jsonl row lane (native VECTOR_DISTANCE) -- the pre-columnar baseline.
-	tJSONL := timeRun("jsonl row-lane", query("src"), false)
+	// tJSONL := timeRun("jsonl row-lane", query("src"), false)
 
 	// 2) INSERT INTO parquet (the write half).
-	insStart := time.Now()
+	// insStart := time.Now()
 	if _, err := sess.Run("INSERT INTO `out/data.parquet` (KEY UUID(), VALUE self) SELECT s.id, s.vec FROM src s"); err != nil {
 		t.Fatal(err)
 	}
-	tInsert := time.Since(insStart)
-	fi, _ := os.Stat(filepath.Join(dir, "default", "out", "data.parquet"))
-	t.Logf("  %-28s %8v  (%.1f MB)", "INSERT INTO parquet", tInsert.Round(time.Millisecond), float64(fi.Size())/1e6)
+	// tInsert := time.Since(insStart)
+	// fi, _ := os.Stat(filepath.Join(dir, "default", "out", "data.parquet"))
+	// t.Logf("  %-28s %8v  (%.1f MB)", "INSERT INTO parquet", tInsert.Round(time.Millisecond), float64(fi.Size())/1e6)
 
 	// 3) parquet row lane (columnar OFF: materialize vec to JSON per row + native eval).
 	sess2, _ := glue.OpenSession(dir, "default")
 	sess = sess2
 	tPqRow := timeRun("parquet row-lane", query("out"), false)
+
 	// 4) parquet columnar (the fused vector-distance-columnar op).
 	tPqCol := timeRun("parquet columnar", query("out"), true)
 
-	speed := func(base, x time.Duration) float64 { return float64(base) / float64(x) }
-	t.Logf("SUMMARY: columnar %v  vs  jsonl %v (%.1fx)  vs  parquet-row %v (%.1fx)",
-		tPqCol.Round(time.Millisecond), tJSONL.Round(time.Millisecond), speed(tJSONL, tPqCol),
-		tPqRow.Round(time.Millisecond), speed(tPqRow, tPqCol))
+	// speed := func(base, x time.Duration) float64 { return float64(base) / float64(x) }
+	// t.Logf("SUMMARY: columnar %v  vs  jsonl %v (%.1fx)  vs  parquet-row %v (%.1fx)",
+	//	tPqCol.Round(time.Millisecond), tJSONL.Round(time.Millisecond), speed(tJSONL, tPqCol),
+	//	tPqRow.Round(time.Millisecond), speed(tPqRow, tPqCol))
+	_ = tPqRow
+	_ = tPqCol
 }

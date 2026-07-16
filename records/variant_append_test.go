@@ -73,5 +73,5 @@ func TestVariantAppendJSONFromParquet(t *testing.T) {
 	if n := testing.AllocsPerRun(2000, func() { buf = nvariant.AppendJSON(buf[:0], ov) }); n != 0 {
 		t.Errorf("AppendJSON(deep order): %v allocs/op, want 0", n)
 	}
-	t.Logf("Parquet-read order via variant.AppendJSON: %s", buf)
+	// t.Logf("Parquet-read order via variant.AppendJSON: %s", buf)
 }

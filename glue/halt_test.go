@@ -62,7 +62,7 @@ func TestInterruptHaltsScan(t *testing.T) {
 	if seen >= total {
 		t.Errorf("scan did not halt early: saw all %d rows", seen)
 	}
-	t.Logf("halted after %d of %d rows", seen, total)
+	// t.Logf("halted after %d of %d rows", seen, total)
 
 	// The session is reusable: the next Run clears the stale interrupt.
 	res, rerr := sess.Run("SELECT 1+1 AS s")
