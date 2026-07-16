@@ -365,7 +365,8 @@ Index definitions live in <dataRoot>/.n1k1/catalog.json:
     "indexes": [
       { "name": "ix_country", "keyspace": "customer", "keys": ["country"] },
       { "name": "ix_adult", "keyspace": "customer", "keys": ["age"], "where": "age >= 18" },
-      { "name": "ft_docs", "keyspace": "docs", "kind": "fts" }
+      { "name": "ft_docs", "keyspace": "docs", "kind": "fts" },
+      { "name": "ft_body", "keyspace": "docs", "kind": "fts", "keys": ["title","body"] }
     ]
   }
 A gsi (default) index's keys are N1QL expressions -- a field ("country") or nested
@@ -375,7 +376,16 @@ path ("personal_details.state"); list several for a composite index; optional
 A "kind":"fts" index is full-text (bleve, dynamic: indexes every field), queried with
 SEARCH(keyspace, "text") -- searches the whole document -- or SEARCH(keyspace.field, "q")
 for one field. SEARCH by the keyspace NAME or its FROM alias both search the whole doc.
-  Analyzer: each string value is ONE whole token, lowercased -- so matching is
+  Scope: "keys":["title","body"] indexes only those fields (as text); omit for dynamic.
+  Full control: instead of "keys", give a "mapping" holding a raw bleve index-mapping
+    JSON (analyzers, per-field types, custom analyzers) -- e.g. the English stemming
+    analyzer so SEARCH(ks.body,"run") also matches "running":
+      { "name":"ft_en", "keyspace":"docs", "kind":"fts", "mapping": {
+          "default_mapping": { "enabled":true, "dynamic":false, "properties": {
+            "body": { "fields":[{"name":"body","type":"text","analyzer":"en","index":true}] } } },
+          "index_dynamic": false } }
+    "mapping" and "keys" are mutually exclusive.
+  Analyzer (default, no mapping): each string value is ONE whole token, lowercased -- so matching is
     CASE-INSENSITIVE but NOT substring: SEARCH(ks,"seqnoWaitingStarted") and
     SEARCH(ks,"SEQNOWAITINGSTARTED") match, but "waiting" (a substring) does not.
   Wildcards / fuzzy (think grep):  x*  = prefix,  a*b / a?b = wildcard,  x~ / x~2 = fuzzy
@@ -435,7 +445,9 @@ func (c *cli) cmdIndexList() {
 			status = "not built"
 		}
 		keys := strings.Join(ix.Keys, ", ")
-		if ix.Kind == "fts" && keys == "" {
+		if ix.Kind == "fts" && ix.Mapping != "" {
+			keys = "(custom mapping)"
+		} else if ix.Kind == "fts" && keys == "" {
 			keys = "(all fields)"
 		}
 		rows = append(rows, orderedJSONRow(
@@ -463,7 +475,9 @@ func (c *cli) cmdIndexShow(name string) {
 			continue
 		}
 		keys := strings.Join(ix.Keys, ", ")
-		if ix.Kind == "fts" && keys == "" {
+		if ix.Kind == "fts" && ix.Mapping != "" {
+			keys = "(custom mapping)"
+		} else if ix.Kind == "fts" && keys == "" {
 			keys = "(all fields)"
 		}
 		pairs := [][2]string{
@@ -474,6 +488,9 @@ func (c *cli) cmdIndexShow(name string) {
 		}
 		if ix.Where != "" {
 			pairs = append(pairs, [2]string{"where", ix.Where})
+		}
+		if ix.Mapping != "" {
+			pairs = append(pairs, [2]string{"mapping", ix.Mapping})
 		}
 		if ix.Built {
 			pairs = append(pairs,

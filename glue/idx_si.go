@@ -109,6 +109,7 @@ type IndexInfo struct {
 	Kind      string // "gsi" | "fts"
 	Keys      []string
 	Where     string
+	Mapping   string // fts: the raw bleve index-mapping JSON, when the def carries one
 	Built     bool   // false if the artifact couldn't be opened/built (see Err)
 	Entries   int    // indexed doc/entry count, when Built
 	SizeBytes int64  // artifact size (gsi: data.bolt), when Built
@@ -297,6 +298,7 @@ func SecondaryIndexInfos(ds datastore.Datastore) []IndexInfo {
 		info := IndexInfo{
 			Name: def.Name, Namespace: def.Namespace, Keyspace: def.Keyspace,
 			Kind: def.Kind, Keys: def.Keys, Where: def.Where,
+			Mapping: string(def.Mapping),
 		}
 		ks, err := sds.wrappedKeyspace(def.Namespace, def.Keyspace)
 		if err != nil {

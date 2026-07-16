@@ -20,6 +20,7 @@ package glue
 // breaking this reader (single-writer, declared-intent file).
 
 import (
+	"bytes"
 	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
@@ -114,17 +115,33 @@ func CatalogSetFormats(dataRoot, formats string) error {
 // (default) is the bbolt range secondary index (idx_si.go); "fts" is the bleve
 // full-text index (idx_fts.go), where Keys are the fields to index (empty = dynamic,
 // index every field) and Where is not used.
+//
+// For an fts def, Mapping optionally carries a raw bleve index-mapping JSON (the
+// same shape bleve.NewIndexMapping() marshals: analyzers, per-field types, custom
+// analyzers, etc.) -- the full-fidelity escape hatch when Keys' "map these fields
+// as text" is too coarse. Mapping and Keys are mutually exclusive; Mapping wins the
+// build (idx_fts.go ftsMapping) and drives field-indexedness for the flex path.
 type indexDef struct {
-	Name      string   `json:"name"`
-	Namespace string   `json:"namespace"` // defaults to "default"
-	Keyspace  string   `json:"keyspace"`
-	Kind      string   `json:"kind,omitempty"`  // "gsi" (default) | "fts"
-	Keys      []string `json:"keys"`            // gsi: key exprs (leading drives sargability); fts: field names
-	Where     string   `json:"where,omitempty"` // gsi: optional partial-index condition
+	Name      string          `json:"name"`
+	Namespace string          `json:"namespace"` // defaults to "default"
+	Keyspace  string          `json:"keyspace"`
+	Kind      string          `json:"kind,omitempty"`    // "gsi" (default) | "fts"
+	Keys      []string        `json:"keys"`              // gsi: key exprs (leading drives sargability); fts: field names
+	Where     string          `json:"where,omitempty"`   // gsi: optional partial-index condition
+	Mapping   json.RawMessage `json:"mapping,omitempty"` // fts: raw bleve index-mapping JSON (overrides Keys)
 
 	// Parsed forms (filled by parse(); gsi only).
 	rangeKey  expression.Expressions
 	condition expression.Expression
+
+	// Derived from Mapping by parse() (fts custom-mapping only; filled via the
+	// ftsMappingAnalyze hook so this WASM-included file needs no bleve import).
+	// mappingDynamic is true when the mapping indexes unknown fields dynamically;
+	// mappingFields is the set of explicitly-mapped dotted field paths. Together
+	// they drive fieldIndexed (idx_fts.go) -- conservatively, since a false
+	// positive on the flex path would drop valid rows.
+	mappingDynamic bool
+	mappingFields  map[string]bool
 
 	// keyPaths[i] is the doc field path of rangeKey[i] when that key is a plain
 	// field reference (e.g. "region" -> ["region"], "address.city" ->
@@ -137,6 +154,12 @@ type indexDef struct {
 
 // isFTS reports whether this is a full-text (bleve) index.
 func (d *indexDef) isFTS() bool { return d.Kind == "fts" }
+
+// ftsMappingAnalyze validates a raw bleve index-mapping JSON and reports whether it
+// indexes unknown fields dynamically plus the set of explicitly-mapped dotted field
+// paths. It is set by idx_fts.go's init (non-wasm) so this WASM-included catalog
+// file needs no bleve import; nil means the build has no FTS support.
+var ftsMappingAnalyze func(raw []byte) (dynamic bool, fields map[string]bool, err error)
 
 // loadCatalog reads and parses <dataRoot>/.n1k1/catalog.json. It returns
 // (nil, nil) when no sidecar exists -- the common "no metadata, behave as today"
@@ -175,8 +198,28 @@ func (d *indexDef) parse() error {
 	if d.Name == "" || d.Keyspace == "" {
 		return fmt.Errorf("index def needs name and keyspace")
 	}
+	if len(d.Mapping) > 0 && !d.isFTS() {
+		return fmt.Errorf("%q index cannot carry a bleve \"mapping\" (fts only)", d.Kind)
+	}
 	if d.isFTS() {
-		return nil // fts: keys are field names (empty = index all); no expr/where
+		// fts: keys are field names (empty = index all); no expr/where. An optional
+		// raw bleve "mapping" JSON overrides keys -- validate + analyze it now so a
+		// bad mapping fails at load/create, not deep in the build.
+		if len(d.Mapping) > 0 {
+			if len(d.Keys) > 0 {
+				return fmt.Errorf("fts index %q: set either \"keys\" or \"mapping\", not both", d.Name)
+			}
+			if ftsMappingAnalyze == nil {
+				return fmt.Errorf("fts \"mapping\" is unsupported in this build")
+			}
+			dynamic, fields, err := ftsMappingAnalyze(d.Mapping)
+			if err != nil {
+				return fmt.Errorf("fts index %q mapping: %w", d.Name, err)
+			}
+			d.mappingDynamic = dynamic
+			d.mappingFields = fields
+		}
+		return nil
 	}
 	if len(d.Keys) == 0 {
 		return fmt.Errorf("gsi index def needs at least one key")
@@ -260,6 +303,17 @@ func (d *indexDef) defHash() string {
 	}
 	h.Write([]byte("|where|"))
 	h.Write([]byte(d.Where))
+	// A changed fts mapping must yield a new dir (rebuild). Compact first so
+	// insignificant whitespace/formatting doesn't churn the hash.
+	if len(d.Mapping) > 0 {
+		h.Write([]byte("|mapping|"))
+		var compact bytes.Buffer
+		if json.Compact(&compact, d.Mapping) == nil {
+			h.Write(compact.Bytes())
+		} else {
+			h.Write(d.Mapping)
+		}
+	}
 	return hex.EncodeToString(h.Sum(nil))[:12]
 }
 
@@ -267,12 +321,13 @@ func (d *indexDef) defHash() string {
 // parsed/internal state) -- used to read an `.index create` fragment and to
 // (re)write catalog.json.
 type catalogIndexJSON struct {
-	Name      string   `json:"name"`
-	Namespace string   `json:"namespace,omitempty"`
-	Keyspace  string   `json:"keyspace"`
-	Kind      string   `json:"kind,omitempty"`
-	Keys      []string `json:"keys,omitempty"`
-	Where     string   `json:"where,omitempty"`
+	Name      string          `json:"name"`
+	Namespace string          `json:"namespace,omitempty"`
+	Keyspace  string          `json:"keyspace"`
+	Kind      string          `json:"kind,omitempty"`
+	Keys      []string        `json:"keys,omitempty"`
+	Where     string          `json:"where,omitempty"`
+	Mapping   json.RawMessage `json:"mapping,omitempty"`
 }
 
 // CatalogAddIndexes validates the index definitions in fragmentJSON (either a
@@ -306,7 +361,7 @@ func CatalogAddIndexes(dataRoot string, fragmentJSON []byte) ([]string, error) {
 			kind = "gsi"
 		}
 		d := &indexDef{Name: a.Name, Namespace: a.Namespace, Keyspace: a.Keyspace,
-			Kind: kind, Keys: a.Keys, Where: a.Where}
+			Kind: kind, Keys: a.Keys, Where: a.Where, Mapping: a.Mapping}
 		if err := d.parse(); err != nil {
 			return nil, fmt.Errorf("index %q: %w", a.Name, err)
 		}

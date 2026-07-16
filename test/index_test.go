@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 
@@ -806,6 +807,64 @@ func TestFTSFlexIndex(t *testing.T) {
 		if got := idJSONs(rows); !equalStrs(got, wantIDJSONs(tc.want)) {
 			t.Errorf("%q: want %v, got %v", tc.stmt, tc.want, got)
 		}
+	}
+}
+
+// TestFTSCustomMapping: a kind:fts def can carry a raw bleve index-mapping JSON
+// (the "mapping" field) for full control over analyzers/field types -- exercised
+// here with the English analyzer, whose stemming ("running" -> "run") is behavior a
+// plain declared-keys (standard-analyzer text) mapping cannot produce. The mapping
+// also scopes indexing to "body", so a SEARCH on an unmapped field finds nothing.
+func TestFTSCustomMapping(t *testing.T) {
+	docs := map[string]string{
+		"d1": `{"id":"d1","body":"the dogs were running quickly","tag":"alpha"}`,
+		"d2": `{"id":"d2","body":"a cat sleeps","tag":"running"}`,
+	}
+	// bleve index mapping: index only body, with the English (stemming) analyzer.
+	catalog := `{"indexes":[{"name":"ft_en","keyspace":"docs","kind":"fts","mapping":{
+	  "default_mapping": {
+	    "enabled": true, "dynamic": false,
+	    "properties": {
+	      "body": {"enabled": true, "dynamic": false,
+	        "fields": [{"name": "body", "type": "text", "analyzer": "en", "index": true}]}
+	    }
+	  },
+	  "default_analyzer": "standard",
+	  "index_dynamic": false
+	}}]}`
+	root := writeKeyspaceDocs(t, "docs", docs, catalog)
+
+	cases := []struct {
+		stmt string
+		want []string
+	}{
+		// Stemming: the query "run" matches d1's "running" only through the English
+		// analyzer -- the whole point of the custom mapping.
+		{`SELECT d.id AS id FROM docs d WHERE SEARCH(d.body, "run")`, []string{"d1"}},
+		// "tag" is not in the mapping, so d2's tag "running" is not searchable here.
+		{`SELECT d.id AS id FROM docs d WHERE SEARCH(d.tag, "running")`, nil},
+	}
+	for _, tc := range cases {
+		store, conv := flatRootConv(t, root, tc.stmt)
+		if !hasKind(conv.TopOp, "datastore-scan-fts") {
+			t.Errorf("%q: expected an FTS scan, got %v", tc.stmt, opKinds(conv.TopOp))
+		}
+		rows := flatRootRows(t, conv, testGlueExec(t, false, store, conv))
+		if got := idJSONs(rows); !equalStrs(got, wantIDJSONs(tc.want)) {
+			t.Errorf("%q: want %v, got %v", tc.stmt, tc.want, got)
+		}
+	}
+
+	// The def surfaces its raw mapping in IndexInfo (so .index show can print it).
+	infoStore, _ := flatRootConv(t, root, `SELECT 1`)
+	var sawMapping bool
+	for _, ix := range glue.SecondaryIndexInfos(infoStore.Datastore) {
+		if ix.Name == "ft_en" && strings.Contains(ix.Mapping, `"analyzer"`) {
+			sawMapping = true
+		}
+	}
+	if !sawMapping {
+		t.Error("IndexInfo did not surface the custom bleve mapping JSON")
 	}
 }
 

@@ -323,12 +323,12 @@ func TestSIEncodeContainers(t *testing.T) {
 // panics (defensive decoding), including the string-escape error branches.
 func TestSIDecodeMalformed(t *testing.T) {
 	for _, b := range [][]byte{
-		{},                            // empty
-		{0x7f},                        // unknown type tag
-		{tagNumber, 1, 2, 3},          // number needs 8 payload bytes
-		{tagString, 0x00},             // 0x00 at end, no follow byte
-		{tagString, 'a', 0x00, 0x42},  // bad escape (0x00 then neither 0x00 nor 0xFF)
-		{tagString, 'a'},              // unterminated string (no 0x00 0x00)
+		{},                           // empty
+		{0x7f},                       // unknown type tag
+		{tagNumber, 1, 2, 3},         // number needs 8 payload bytes
+		{tagString, 0x00},            // 0x00 at end, no follow byte
+		{tagString, 'a', 0x00, 0x42}, // bad escape (0x00 then neither 0x00 nor 0xFF)
+		{tagString, 'a'},             // unterminated string (no 0x00 0x00)
 	} {
 		if _, _, ok := decodeValue(b); ok {
 			t.Errorf("decodeValue(%x) ok=true, want false", b)
@@ -349,5 +349,57 @@ func TestSIToFloat64(t *testing.T) {
 	}
 	if got := toFloat64(value.NewValue("not-a-number")); got != 0 {
 		t.Errorf("non-number -> %v, want 0", got)
+	}
+}
+
+// TestFTSMappingParse: an fts def's optional raw bleve "mapping" JSON is validated
+// and analyzed at parse() time (the ftsMappingAnalyze hook, registered by
+// idx_fts.go's init in a non-wasm build); a changed mapping yields a fresh defHash
+// so the built index rebuilds. The mapping is mutually exclusive with keys and is
+// rejected on a non-fts def.
+func TestFTSMappingParse(t *testing.T) {
+	goodMapping := `{"default_mapping":{"enabled":true,"dynamic":false,` +
+		`"properties":{"title":{"enabled":true,"dynamic":false,` +
+		`"fields":[{"name":"title","type":"text","analyzer":"en","index":true}]}}},` +
+		`"index_dynamic":false}`
+
+	// Valid: parses, derives the explicitly-mapped field set, not dynamic.
+	d := &indexDef{Name: "ft", Keyspace: "docs", Kind: "fts", Mapping: []byte(goodMapping)}
+	if err := d.parse(); err != nil {
+		t.Fatalf("valid mapping: %v", err)
+	}
+	if d.mappingDynamic {
+		t.Error("index_dynamic:false mapping reported as dynamic")
+	}
+	if !d.mappingFields["title"] {
+		t.Errorf("mappingFields missing title: %v", d.mappingFields)
+	}
+
+	// A different mapping => a different defHash (forces a rebuild dir).
+	d2 := &indexDef{Name: "ft", Keyspace: "docs", Kind: "fts",
+		Mapping: []byte(`{"index_dynamic":true}`)}
+	if err := d2.parse(); err != nil {
+		t.Fatalf("second mapping: %v", err)
+	}
+	if d.defHash() == d2.defHash() {
+		t.Error("distinct mappings hashed to the same defHash")
+	}
+
+	// Error cases.
+	errCases := []struct {
+		name string
+		def  *indexDef
+	}{
+		{"mapping+keys", &indexDef{Name: "x", Keyspace: "docs", Kind: "fts",
+			Keys: []string{"title"}, Mapping: []byte(`{"index_dynamic":true}`)}},
+		{"mapping-on-gsi", &indexDef{Name: "x", Keyspace: "docs", Kind: "gsi",
+			Keys: []string{"a"}, Mapping: []byte(`{"index_dynamic":true}`)}},
+		{"bad-json", &indexDef{Name: "x", Keyspace: "docs", Kind: "fts",
+			Mapping: []byte(`{not json`)}},
+	}
+	for _, tc := range errCases {
+		if err := tc.def.parse(); err == nil {
+			t.Errorf("%s: parse() succeeded, want an error", tc.name)
+		}
 	}
 }

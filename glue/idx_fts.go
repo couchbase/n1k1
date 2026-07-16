@@ -359,6 +359,11 @@ func bleveClause(field string, cv value.Value, op string, fieldFirst bool) map[s
 // themselves (e.g. "title", "addr.city") -- the same form as the bleve field path
 // -- so compare directly (an fts def parses no key expressions; see si_catalog).
 func (fi *ftsIndex) fieldIndexed(field string) bool {
+	if len(fi.def.Mapping) > 0 {
+		// Custom bleve mapping: a field is indexed if it's explicitly mapped, or the
+		// mapping indexes unknown fields dynamically (both computed by parse()).
+		return fi.def.mappingFields[field] || fi.def.mappingDynamic
+	}
 	if len(fi.def.Keys) == 0 {
 		return true
 	}
@@ -504,14 +509,84 @@ func fuzzyDistance(s string) (int, bool) {
 	return n, true
 }
 
-// ftsMapping builds the bleve index mapping for a def. With no declared keys it
-// returns the default dynamic mapping (index every field). With declared field
-// keys it returns a non-dynamic mapping that indexes exactly those fields (nested
-// dotted paths like "addr.city" become sub-document mappings) as text -- so the
-// index is scoped to the declared fields and a SEARCH() on any other field matches
-// nothing, honoring the catalog definition. (Per-field analyzers/types are a
-// future item; v1 maps every declared field as text.)
+// init registers the bleve-mapping validator/analyzer used by idx_si_catalog.go
+// (which is WASM-included and must not import bleve). Runs only in the non-wasm
+// build where FTS exists.
+func init() { ftsMappingAnalyze = analyzeFTSMapping }
+
+// parseBleveMapping unmarshals a raw bleve index-mapping JSON into a live
+// bleve.IndexMapping and validates it (analyzers referenced must exist, etc.). The
+// JSON shape is exactly what bleve.NewIndexMapping() marshals.
+func parseBleveMapping(raw []byte) (mapping.IndexMapping, error) {
+	im := bleve.NewIndexMapping()
+	if err := json.Unmarshal(raw, im); err != nil {
+		return nil, fmt.Errorf("parsing bleve index mapping: %w", err)
+	}
+	if err := im.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid bleve index mapping: %w", err)
+	}
+	return im, nil
+}
+
+// analyzeFTSMapping (the ftsMappingAnalyze hook) validates raw and reports whether
+// the mapping indexes unknown fields dynamically, plus the set of explicitly-mapped
+// dotted field paths -- the inputs fieldIndexed needs for the flex path.
+func analyzeFTSMapping(raw []byte) (dynamic bool, fields map[string]bool, err error) {
+	im, err := parseBleveMapping(raw)
+	if err != nil {
+		return false, nil, err
+	}
+	impl, ok := im.(*mapping.IndexMappingImpl)
+	if !ok {
+		return false, nil, fmt.Errorf("unexpected bleve index-mapping type %T", im)
+	}
+	fields = map[string]bool{}
+	dm := impl.DefaultMapping
+	if dm != nil {
+		collectMappedFields(dm, "", fields)
+		// Unknown fields are indexed only when both the index and the default
+		// document mapping opt into dynamic indexing.
+		dynamic = impl.IndexDynamic && dm.Enabled && dm.Dynamic
+	}
+	return dynamic, fields, nil
+}
+
+// collectMappedFields walks a document mapping and records every explicitly-mapped
+// leaf field's dotted path (e.g. "title", "addr.city") into out. It keys on the
+// property path, not a FieldMapping's custom Name -- SEARCH() addresses fields by
+// their document path.
+func collectMappedFields(dm *mapping.DocumentMapping, prefix string, out map[string]bool) {
+	for name, sub := range dm.Properties {
+		if sub == nil {
+			continue
+		}
+		path := name
+		if prefix != "" {
+			path = prefix + "." + name
+		}
+		if len(sub.Fields) > 0 {
+			out[path] = true
+		}
+		collectMappedFields(sub, path, out)
+	}
+}
+
+// ftsMapping builds the bleve index mapping for a def. A raw bleve "mapping" JSON,
+// when present, is used verbatim (full control over analyzers/field types). Else,
+// with no declared keys it returns the default dynamic mapping (index every field);
+// with declared field keys it returns a non-dynamic mapping that indexes exactly
+// those fields (nested dotted paths like "addr.city" become sub-document mappings)
+// as text -- so the index is scoped to the declared fields and a SEARCH() on any
+// other field matches nothing, honoring the catalog definition.
 func ftsMapping(def *indexDef) mapping.IndexMapping {
+	if len(def.Mapping) > 0 {
+		// parse() already validated this at load/create; the error path here is
+		// defensive (fall back to a safe dynamic mapping rather than panic).
+		if im, err := parseBleveMapping(def.Mapping); err == nil {
+			return im
+		}
+		return bleve.NewIndexMapping()
+	}
 	im := bleve.NewIndexMapping()
 	if len(def.Keys) == 0 {
 		return im // dynamic: index every field

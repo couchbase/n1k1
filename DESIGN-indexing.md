@@ -24,8 +24,11 @@ the `.index` dot-command family.
   create` refuses a flat datastore).
 - [ ] Eager wildcard GSI + adaptive auto-index (`.index auto`) — need fork-side
   planner work / workload logging (research items, §9).
-- [ ] Per-field FTS analyzers/types not configurable (all declared fields
-  mapped as text).
+- [x] Per-field FTS analyzers/types — a `kind:fts` def can now carry a raw bleve
+  index-mapping JSON (`"mapping"`) for full control (analyzers, per-field types,
+  custom analyzers). The `"keys"` shorthand (map these fields as text) remains for
+  the common case. *Remaining:* a `.index create` DSL for mappings (JSON only for
+  now) and analyzer-aware flex translation.
 - [ ] `CREATE`/`DROP INDEX` DDL unwired — define/edit via `catalog.json`.
 - [ ] Fingerprint / zone-map manifest + O(1) `COUNT` from `doc_count` metadata.
 
@@ -458,6 +461,19 @@ Landed in `glue/idx_fts.go`:
 - **Declared mappings (shipped):** empty `keys` = dynamic (index every field,
   default); listed field keys build a non-dynamic mapping (nested dotted paths →
   sub-document mappings), so `SEARCH()` on other fields matches nothing.
+- **Raw bleve mapping (shipped):** a `kind:fts` def may instead carry a
+  `"mapping"` field holding a **raw bleve index-mapping JSON** — the exact shape
+  `bleve.NewIndexMapping()` marshals — for full control over analyzers (e.g. the
+  English stemming analyzer `"en"`), per-field types, and custom analyzers, beyond
+  the text-only `"keys"` shorthand. `"mapping"` and `"keys"` are mutually
+  exclusive; `"mapping"` is fts-only. The catalog file (`idx_si_catalog.go`) stays
+  bleve-free (WASM-included): it holds the raw bytes and validates/analyzes them
+  through the `ftsMappingAnalyze` hook that `idx_fts.go` (non-wasm) registers —
+  which also derives the explicitly-mapped field set + dynamic flag that
+  `fieldIndexed` needs for the flex path (conservative: a false positive would drop
+  valid rows). The mapping bytes fold into `defHash`, so editing the mapping
+  triggers a rebuild. `.index show` prints the mapping; `.index list` shows keys as
+  `(custom mapping)`.
 - **Flex / implicit predicates (shipped):** `SargableFlex` lets a plain `WHERE`
   predicate (no explicit `SEARCH()`) be served by bleve. It translates the
   sargable part (`Eq`/`LT`/`LE`, `AND`/`OR`; `>`/`>=` → swapped `LT`/`LE`) over
@@ -469,8 +485,10 @@ Landed in `glue/idx_fts.go`:
   conjunct (still a superset); an `OR` bails if any disjunct is untranslatable; a
   wholly untranslatable predicate falls back to a records scan.
 
-**Remaining follow-up:** declared fields are all mapped as text (per-field
-analyzers/types not yet configurable).
+**Remaining follow-up:** the `"keys"` shorthand still maps its fields as text
+(per-field analyzers need the raw `"mapping"` escape hatch above); a `.index
+create` DSL for mappings (JSON fragment only for now); analyzer-aware flex
+translation (the flex path lowercases terms for the default analyzer).
 
 ---
 
