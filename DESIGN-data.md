@@ -35,11 +35,13 @@ SELECT` file-materialize (with `OPTIONS` write modes and `RETURNING`).
       already landed) + materialized views.
 - [ ] zstd decode (walker recognizes `.zst`; decode is still a stub) and `.zip`
       as a container.
-- [~] Object-store backend (S3/GCS/Azure): S3 reads land — Iceberg tables (bare dir w/
-      current-metadata listing, or explicit metadata JSON) AND standalone `FROM s3://…/x.parquet`
-      are FROM-able keyspaces (env-sourced creds; `.tables`/`SELECT`/`COUNT`/time-travel), read
-      over ranged `GetObject`. Remaining: full mock-S3 read test for Iceberg (dep-blocked),
-      GCS/Azure parity, generated/Glue catalogs (§8).
+- [~] Object-store backend (S3/GCS/Azure): reads land over S3, GCS, and Azure (via
+      iceberg-go's IO) — Iceberg tables (S3 bare dir w/ current-metadata listing, or explicit
+      metadata JSON on any backend) AND standalone `FROM {s3,gs,abfs}://…/x.parquet` are
+      FROM-able keyspaces (env-sourced creds; anonymous S3 via `AWS_NO_SIGN_REQUEST`;
+      `.tables`/`SELECT`/`COUNT`/time-travel), read over ranged GETs; S3 verified on real
+      public data. Remaining: full mock-S3 read test for Iceberg (dep-blocked), GCS/Azure
+      bare-dir current-metadata listing, generated/Glue catalogs (§8).
 - [ ] Encryption-at-rest: transparent decrypt layer + encrypted sidecar artifacts.
 - [ ] Column-batch execution so Parquet/Arrow is a full perf win, not just
       correctness + footer-stats aggs (`DESIGN-col.md`).
@@ -1735,7 +1737,8 @@ low-effort relative to its reach.
 - **Object-store (S3) reads: ✅ DONE at the records layer (§8)** — `OpenIcebergTable` reads a
   table from an `s3://` metadata location (env-sourced creds, path-style default), mock-S3
   tested. CLI `FROM s3://…` keyspace wiring is the remaining follow-up.
-- **Later, if warranted:** REST/Glue catalogs; GCS/Azure parity; delete-file correctness suite.
+- **Later, if warranted:** REST/Glue catalogs; delete-file correctness suite. (GCS/Azure
+  reads landed via the object-store scan path — §8.)
 - **Test note:** iceberg-go v0.4.0's `partitionedFanoutWriter` has an internal data race in a
   PARTITIONED `AppendTable` (its own write goroutines), so the partitioned-fixture builders skip
   under `-race`; n1k1's read path is race-clean.
@@ -1773,10 +1776,12 @@ credential source.
   scan reads only the manifests + surviving data files' projected column chunks.
 - **Standalone Parquet** (`records/parquet.go`) — the local path uses
   `file.OpenParquetFile`. Remote Parquet (LANDED) is `records.OpenParquetSourceRemote`:
-  `file.NewParquetReader(readerAt,…)` over `s3ReaderAt`, an `io.ReaderAt`+`io.Seeker` doing
-  ranged `GetObject` (`aws-sdk-go-v2/service/s3`, already carried). Only the footer +
-  projected column chunks transfer; the projection/predicate/RecordReader code above it is
-  unchanged (`FROM s3://…/x.parquet`; keyspace named after the file stem).
+  `file.NewParquetReader(f,…)` where `f` is iceberg-go's own object-store `File` (a
+  `ReaderAt`+`Seeker` whose `ReadAt` issues a ranged GET) — so **S3, GCS, and Azure all work
+  through one path**, reusing every credential/endpoint/addressing/anonymous rule already
+  wired for Iceberg (`objectStoreFSFunc`). Only the footer + projected column chunks
+  transfer; the projection/predicate/RecordReader code above it is unchanged (`FROM
+  s3://…/x.parquet`, `gs://…`, `abfs://…`; keyspace named after the file stem).
 
 ### Streaming, not whole-file download (the load-bearing property)
 Parquet is a random-access format: the footer (schema + per-row-group/column-chunk byte
@@ -1883,11 +1888,16 @@ further option once remote-Parquet lands.
   repo-sync build and add the build-then-read-back fixture test (rows + pushdown). (Remote
   Parquet above already reads real bytes end-to-end via httptest; the Iceberg case needs a
   WRITE-capable mock to build a fixture with `s3://` locations.)
-- **Standalone remote Parquet: ⬜ NEXT** — an `io.ReaderAt`-over-range-GETs provider feeding
-  `file.NewParquetReader`, reusing the existing projection/predicate pushdown; then tune
-  arrow-go range coalescing/prebuffer.
-- **Later:** GCS/Azure parity (same seam, different scheme/props); REST/Glue catalogs (§7);
-  a footer/metadata cache; requester-pays + assume-role.
+- **GCS/Azure parity: ✅ DONE (reads), one gap.** Reading through iceberg-go's IO means
+  `gs://` and `abfs://` work with no S3-specific code: (a) Iceberg tables by an explicit
+  metadata JSON, and (b) standalone remote Parquet — both dispatch by scheme to iceberg-go's
+  GCS/Azure backends, with credentials from those backends' own default discovery (GCS ADC /
+  `GOOGLE_APPLICATION_CREDENTIALS`; Azure env/managed identity). S3 was re-validated on real
+  public data (Ookla) through this unified path. **Gap:** current-metadata *listing* for a
+  bare `gs://…/table` / `abfs://…/table` dir is still S3-only (`ListObjectsV2`); gs/abfs bare
+  dirs must pass an explicit metadata JSON (needs `gocloud.dev/blob.List`, a follow-up).
+- **Later:** GCS/Azure bare-dir listing; REST/Glue catalogs (§7); a footer/metadata cache;
+  requester-pays + assume-role.
 
 ## Dependency licensing (permissive only)
 

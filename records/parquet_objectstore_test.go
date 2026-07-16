@@ -125,9 +125,14 @@ func TestOpenParquetSourceRemote(t *testing.T) {
 	}
 }
 
-// TestOpenParquetSourceRemoteRejectsNonS3: gs:// / local paths aren't the S3 remote path.
-func TestOpenParquetSourceRemoteRejectsNonS3(t *testing.T) {
-	if _, err := OpenParquetSourceRemote("gs://bkt/x.parquet", ""); err == nil {
-		t.Error("gs:// remote parquet should be rejected (S3-only)")
+// TestOpenParquetSourceRemoteRejectsNonObjectStore: a non-object-store location (local path,
+// file://, bare name) is rejected -- remote Parquet needs an s3://, gs://, or abfs:// URI.
+// (gs:// / abfs:// ARE supported now; they just need their backends' credentials, which this
+// offline test can't provide, so they're not asserted here.)
+func TestOpenParquetSourceRemoteRejectsNonObjectStore(t *testing.T) {
+	for _, loc := range []string{"/local/x.parquet", "file:///x.parquet", "x.parquet"} {
+		if _, err := OpenParquetSourceRemote(loc, ""); err == nil {
+			t.Errorf("%q is not an object-store URI; should be rejected", loc)
+		}
 	}
 }
