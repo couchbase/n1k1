@@ -90,13 +90,10 @@ var extensionLoaders = map[string]struct {
 		if err != nil {
 			return err
 		}
-		// A `.js` file that sets exports.functions is a multi-export MODULE (a family
-		// like decimal.js); otherwise it's a legacy single-function UDF keyed off its
-		// filename stem. See ext_jsvm_module.go.
-		if looksLikeJSModule(string(src)) {
-			return RegisterJSModule(name, string(src))
-		}
-		return registerJSFunc(name, string(src)) // JavaScript scalar UDF.
+		// Single-function scalar UDF keyed off the filename stem. A multi-export MODULE
+		// (a file that sets exports.functions) is handled explicitly in
+		// RegisterExtensionFile so each function is recorded individually.
+		return registerJSFunc(name, string(src))
 	}},
 }
 
@@ -174,6 +171,28 @@ func RegisterExtensionFile(path string) (string, error) {
 		}
 		extLoaded[name] = ExtensionInfo{Name: name, Kind: "javascript-aggregate", Source: path}
 		return name, nil
+	}
+
+	// A generic "<name>.js" that sets exports.functions is a MULTI-EXPORT MODULE: register
+	// its whole family and record EACH function individually (so `.extensions
+	// list/show/examples/test/unload` work per function, all sharing this file as source).
+	// A plain single-function .js falls through to the generic loader below.
+	if lower := strings.ToLower(base); strings.HasSuffix(lower, ".js") {
+		src, err := os.ReadFile(path)
+		if err != nil {
+			return "", err
+		}
+		if looksLikeJSModule(string(src)) {
+			name := strings.TrimSuffix(lower, ".js")
+			fns, err := registerJSModule(name, string(src))
+			if err != nil {
+				return "", err
+			}
+			for _, fn := range fns {
+				extLoaded[fn] = ExtensionInfo{Name: fn, Kind: "javascript", Source: path}
+			}
+			return name, nil
+		}
 	}
 
 	ext := strings.ToLower(filepath.Ext(path))

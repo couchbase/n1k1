@@ -204,17 +204,40 @@ func (c *cli) extShow(name string) {
 			return
 		}
 	}
+	// A module bundle name (e.g. "decimal") isn't itself an entry, but its functions
+	// share the file — show it via the first function.
+	if fns := glue.JSModuleFunctions(q); len(fns) > 0 {
+		c.extShow(fns[0])
+		return
+	}
 	fmt.Fprintf(c.stderr, "no extension %q -- try .extensions list\n", name)
 }
 
 // extExamples prints the inline examples declared in the loaded extension files --
 // self-documenting: what each UDF / aggregate / stream source / macro / extract recipe
 // DOES, read straight from the file without running it. `only` filters to one name.
+// extResolveNames maps a `.extensions <cmd> <name>` argument to the set of extension
+// names it targets: nil for "" (means all), otherwise the name itself PLUS — if it names
+// a loaded multi-export JS module bundle (a file stem like "decimal") — that bundle's
+// function names. So `.extensions examples decimal` / `test decimal` cover DECIMAL_ADD,
+// DECIMAL_CMP, … even though those are the actual registered names.
+func extResolveNames(only string) map[string]bool {
+	if only == "" {
+		return nil
+	}
+	set := map[string]bool{strings.ToLower(only): true}
+	for _, fn := range glue.JSModuleFunctions(only) {
+		set[strings.ToLower(fn)] = true
+	}
+	return set
+}
+
 func (c *cli) extExamples(only string) {
 	sets := glue.ListExtExampleSets()
+	want := extResolveNames(only)
 	shown := 0
 	for _, s := range sets {
-		if only != "" && !strings.EqualFold(only, s.Name) {
+		if want != nil && !want[strings.ToLower(s.Name)] {
 			continue
 		}
 		shown++
@@ -240,7 +263,16 @@ func (c *cli) extExamples(only string) {
 // expected output -- the JS analog of `.multi test`. A failure latches c.failed so a
 // non-interactive run exits non-zero (CI). `only` filters to one extension name.
 func (c *cli) extTest(only string) {
-	results := glue.RunExtensionExamples(only)
+	var results []glue.ExampleResult
+	if fns := glue.JSModuleFunctions(only); len(fns) > 0 {
+		// A module bundle: run every function's examples (RunExtensionExamples filters by
+		// a single extension name, and the functions are the registered names).
+		for _, fn := range fns {
+			results = append(results, glue.RunExtensionExamples(fn)...)
+		}
+	} else {
+		results = glue.RunExtensionExamples(only)
+	}
 	if len(results) == 0 {
 		if only != "" {
 			fmt.Fprintf(c.stderr, "no examples for %q to test\n", only)

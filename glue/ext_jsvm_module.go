@@ -120,24 +120,56 @@ func jsModuleEntries(rt *goja.Runtime) []map[string]interface{} {
 	return out
 }
 
-// RegisterJSModule loads a multi-export module named bundle from source: it registers
-// each `exports.functions` entry as a scalar JS UDF sharing one program.
+// jsModuleFuncs maps a module bundle name (its filename stem) to the SQL function names
+// it registered — so `.extensions` sub-commands can expand a bundle (e.g. "decimal")
+// into its functions (DECIMAL_ADD, DECIMAL_CMP, …). See JSModuleFunctions.
+var jsModuleFuncs = map[string][]string{}
+
+// JSModuleFunctions returns the SQL function names a loaded module bundle registered
+// (nil if the name is not a loaded module). The functions are the things actually
+// callable / listable / testable; the bundle is just the file they share.
+func JSModuleFunctions(bundle string) []string {
+	fns := jsModuleFuncs[strings.ToLower(bundle)]
+	if len(fns) == 0 {
+		return nil
+	}
+	return append([]string(nil), fns...)
+}
+
+// RegisterJSModule loads a multi-export module named bundle from inline source and
+// records each of its functions in the loaded-extension set (Source "(inline)"). The
+// file-backed loader (RegisterExtensionFile) uses registerJSModule directly so it can
+// record the real path per function.
 func RegisterJSModule(bundle, source string) error {
+	names, err := registerJSModule(bundle, source)
+	if err != nil {
+		return err
+	}
+	for _, n := range names {
+		extLoaded[n] = ExtensionInfo{Name: n, Kind: "javascript", Source: "(inline)"}
+	}
+	return nil
+}
+
+// registerJSModule registers each `exports.functions` entry of a multi-export module as
+// a scalar JS UDF sharing one program, and returns the registered SQL function names. It
+// does NOT touch extLoaded — the caller records that (with the right Source).
+func registerJSModule(bundle, source string) (names []string, err error) {
 	bundle = strings.ToLower(bundle)
 
 	prog, err := goja.Compile(bundle+".js", jsModulePreamble+source+jsModuleHoist, true)
 	if err != nil {
-		return fmt.Errorf("goja compile of JS module %q: %w", bundle, err)
+		return nil, fmt.Errorf("goja compile of JS module %q: %w", bundle, err)
 	}
 
 	check := goja.New()
 	installJSConsole(check)
 	if _, err := check.RunProgram(prog); err != nil {
-		return fmt.Errorf("JS module %q: %w", bundle, err)
+		return nil, fmt.Errorf("JS module %q: %w", bundle, err)
 	}
 	entries := jsModuleEntries(check)
 	if len(entries) == 0 {
-		return fmt.Errorf("JS module %q: must set exports.functions to a non-empty array of {name, fn}", bundle)
+		return nil, fmt.Errorf("JS module %q: must set exports.functions to a non-empty array of {name, fn}", bundle)
 	}
 
 	type reg struct {
@@ -149,10 +181,10 @@ func RegisterJSModule(bundle, source string) error {
 	for _, e := range entries {
 		name := strings.ToLower(strings.TrimSpace(asString(e["name"])))
 		if name == "" {
-			return fmt.Errorf("JS module %q: a function entry is missing its %q", bundle, "name")
+			return nil, fmt.Errorf("JS module %q: a function entry is missing its %q", bundle, "name")
 		}
 		if seen[name] {
-			return fmt.Errorf("JS module %q: duplicate function name %q", bundle, name)
+			return nil, fmt.Errorf("JS module %q: duplicate function name %q", bundle, name)
 		}
 		seen[name] = true
 
@@ -163,23 +195,23 @@ func RegisterJSModule(bundle, source string) error {
 		switch marshal {
 		case "json", "variant", "raw":
 		default:
-			return fmt.Errorf("JS module %q: function %q has unknown marshal %q (want json|variant|raw)",
+			return nil, fmt.Errorf("JS module %q: function %q has unknown marshal %q (want json|variant|raw)",
 				bundle, name, marshal)
 		}
 
 		// The hoist shim must have bound a callable global under this name.
 		if _, ok := goja.AssertFunction(check.Get(name)); !ok {
-			return fmt.Errorf("JS module %q: function %q has no callable \"fn\"", bundle, name)
+			return nil, fmt.Errorf("JS module %q: function %q has no callable \"fn\"", bundle, name)
 		}
 
 		// Collision guard (mirrors registerJSFunc): don't shadow a stock builtin/aggregate
 		// on first registration; a reload of a name we own is fine.
 		if !extOurs[name] {
 			if _, ok := expression.GetFunction(name); ok {
-				return fmt.Errorf("JS module %q: function %q collides with a builtin function name", bundle, name)
+				return nil, fmt.Errorf("JS module %q: function %q collides with a builtin function name", bundle, name)
 			}
 			if _, ok := algebra.GetAggregate(name, false, false, false); ok {
-				return fmt.Errorf("JS module %q: function %q collides with an aggregate function name", bundle, name)
+				return nil, fmt.Errorf("JS module %q: function %q collides with an aggregate function name", bundle, name)
 			}
 		}
 		regs = append(regs, reg{name, marshal, moduleEntryExamples(e["examples"])})
@@ -192,6 +224,7 @@ func RegisterJSModule(bundle, source string) error {
 		jsProgramOrder = append(jsProgramOrder, key)
 	}
 	jsPrograms[key] = prog
+	names = make([]string, 0, len(regs))
 	for _, r := range regs {
 		// Per-function golden examples (recorded per SQL name, so `.extensions test`
 		// runs each through the scalar-UDF protocol like a single-file UDF's examples).
@@ -200,8 +233,10 @@ func RegisterJSModule(bundle, source string) error {
 		extOurs[r.name] = true
 		jsFuncMarshal[r.name] = r.marshal
 		jsFuncProgramKey[r.name] = key
+		names = append(names, r.name)
 	}
-	return nil
+	jsModuleFuncs[bundle] = names
+	return names, nil
 }
 
 func asString(v interface{}) string {

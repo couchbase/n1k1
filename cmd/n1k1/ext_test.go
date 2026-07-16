@@ -74,3 +74,60 @@ func TestExtensionsShowUnified(t *testing.T) {
 		t.Errorf(".extensions show nope: want a 'no extension' note, got out=%q err=%q", xo.String(), xe.String())
 	}
 }
+
+// TestExtensionsModuleSubcommands: a multi-export JS module (exports.functions) shows
+// its FUNCTIONS individually in `.extensions list` (all sharing the file), and
+// examples/test/show accept EITHER a function name OR the bundle (file stem), which
+// expands to the whole family. Regression for the earlier gap where the bundle was
+// listed but its functions/examples were unreachable.
+func TestExtensionsModuleSubcommands(t *testing.T) {
+	dir := t.TempDir()
+	mod := filepath.Join(dir, "mymod.js")
+	src := "function madd(a,b){return a+b;}\nfunction mmul(a,b){return a*b;}\n" +
+		"exports.functions=[" +
+		"{name:\"mymod_add\",fn:madd,examples:[{in:[2,3],out:5}]}," +
+		"{name:\"mymod_mul\",fn:mmul,examples:[{in:[2,3],out:6}]}];\n"
+	if err := os.WriteFile(mod, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := glue.RegisterExtensionFile(mod); err != nil {
+		t.Fatalf("RegisterExtensionFile: %v", err)
+	}
+
+	run := func(arg string) string {
+		var b bytes.Buffer
+		(&cli{prog: "n1k1", out: &b, stderr: &b, style: cmd.Style{}}).cmdExtensions(arg)
+		return b.String()
+	}
+
+	// list shows the FUNCTIONS (not a bare "mymod" bundle row), each with the file source.
+	ls := run("list")
+	for _, want := range []string{"mymod_add", "mymod_mul", "mymod.js"} {
+		if !strings.Contains(ls, want) {
+			t.Errorf(".extensions list missing %q:\n%s", want, ls)
+		}
+	}
+
+	// examples <bundle> expands to every function in the module.
+	ex := run("examples mymod")
+	if !strings.Contains(ex, "mymod_add") || !strings.Contains(ex, "mymod_mul") {
+		t.Errorf(".extensions examples mymod did not expand to the family:\n%s", ex)
+	}
+
+	// examples <function> also works directly.
+	if exf := run("examples mymod_add"); !strings.Contains(exf, "mymod_add") {
+		t.Errorf(".extensions examples mymod_add missing:\n%s", exf)
+	}
+
+	// test <bundle> runs every function's examples; both pass, none fail.
+	ts := run("test mymod")
+	if strings.Contains(ts, "✗") || !strings.Contains(ts, "passed") {
+		t.Errorf(".extensions test mymod: want all-pass, got:\n%s", ts)
+	}
+
+	// show <bundle> prints the shared source file.
+	sh := run("show mymod")
+	if !strings.Contains(sh, "exports.functions") {
+		t.Errorf(".extensions show mymod did not print the module source:\n%s", sh)
+	}
+}
