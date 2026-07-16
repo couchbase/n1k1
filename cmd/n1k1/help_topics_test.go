@@ -79,6 +79,8 @@ func TestHelpTopics(t *testing.T) {
 		"quoting":        "single-quote",
 		"keyspaces":      "keyspace",
 		"meta":           "_meta",
+		"extensions":     "exports.functions", // the multi-export JS module guide
+
 		"temp-keyspaces": "CREATE",
 		"multi":          ".multi",   // delegated command guide
 		"extract":        ".extract", // delegated command guide

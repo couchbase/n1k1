@@ -39,7 +39,7 @@ type helpTopic struct {
 // command guides (also reachable as `.<command> help`). Each group is sorted A→Z so
 // the list is scannable.
 var helpTopics = []helpTopic{
-	{name: "extensions", blurb: "user functions (*.js UDFs/aggregates/sources) loaded via -ext", alias: ".extensions help"},
+	{name: "extensions", blurb: "user functions (*.js UDFs/aggregates/sources/modules) loaded via -ext", alias: ".extensions help"},
 	{name: "extract", blurb: "*.extract.js extensions that frame files into rows", alias: ".extract help"},
 	{name: "index", blurb: "secondary/FTS indexes: the catalog + .index commands", alias: ".index help"},
 	{name: "keyspaces", blurb: "how files/dirs become keyspaces; dotted names", alias: ".keyspaces help"},
@@ -246,13 +246,29 @@ func (c *cli) helpExtensions() {
 	c.hline("")
 	c.hline("  SELECT x.i, x.sq FROM ints(5) AS x WHERE x.i > 2;")
 	c.hline("")
+	c.hline("MODULE  (one file, many functions) — a whole family in one namespace file. Set")
+	c.hline("exports.functions to an array of {name, fn, marshal?, examples?} entries; the filename")
+	c.hline("is just a bundle, each entry names its own SQL function. File  decimal.js :")
+	c.hline("  function add(a, b) { /* ...exact base-10 via BigInt... */ }")
+	c.hline("  exports.functions = [")
+	c.hline("    { name: \"DECIMAL_ADD\", marshal: \"variant\", fn: add,")
+	c.hline("      examples: [ { in: [\"0.1\", \"0.2\"], out: { \"$numberDecimal\": \"0.3\" } } ] },")
+	c.hline("    { name: \"DECIMAL_CMP\", marshal: \"json\", fn: cmp },")
+	c.hline("  ];")
+	c.hline("")
+	c.hline("  SELECT DECIMAL_ADD(\"0.1\", \"0.2\");  -- exact 0.3  (a plain + drifts to 0.30000000000000004)")
+	c.hline("")
+	c.hline("  `marshal` is how values cross the JS boundary: \"json\" (default), \"variant\"")
+	c.hline("  (VARIANT-typed values as EJSON-tagged JSON, e.g. {\"$numberDecimal\":\"...\"}), or \"raw\".")
+	c.hline("  A .js file that does NOT set exports.functions stays a single scalar UDF (above).")
+	c.hline("")
 	c.hline("Two more kinds have their own guides:")
 	c.hline("  foo.extract.js  frame a raw file into rows      — see .help extract")
 	c.hline("  foo.macro.js    expand @foo(...) into SQL++     — see .help macro")
 	c.hline("")
 	c.hline("GOLDEN EXAMPLES — every kind (scalar, aggregate, source, extract recipe, macro) can")
 	c.hline("carry an `examples` array of {in, out} for self-documentation of the function AND")
-	c.hline("for quick sanity tests.")
+	c.hline("for quick sanity tests; a MODULE declares them per entry (examples: [...] on each).")
 	c.hline(fmt.Sprintf("  %s -ext ./my-udfs -c 'SELECT initials(\"Grace Hopper\")'   # load + run", prog))
 	c.hline("  .extensions list             # all loaded, every kind (incl. built-in macros)")
 	c.hline("  .extensions show [name]      # print one extension's full source")
