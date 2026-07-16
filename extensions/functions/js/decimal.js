@@ -104,4 +104,16 @@ exports.functions = [
       { in: ["0.1", "0.2"], out: -1 },
     ],
   },
+  // An AGGREGATE (kind:"aggregate") in the same module — exact running sum. State is the
+  // decimal string; init/update/final fold it (update returns a plain string, threaded as
+  // JSON between rows; final wraps it EJSON-tagged like the scalar decimals).
+  {
+    name: "DECIMAL_SUM", kind: "aggregate", marshal: "variant",
+    init: function () { return "0"; },
+    update: function (s, v) { return add(s, v)["$numberDecimal"]; },
+    final: function (s) { return { "$numberDecimal": s }; },
+    examples: [
+      { desc: "exact — float sum would drift", in: ["0.1", "0.2", "0.3"], out: { "$numberDecimal": "0.6" } },
+    ],
+  },
 ];

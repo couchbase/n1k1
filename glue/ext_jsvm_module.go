@@ -76,9 +76,15 @@ func jsProgramForFunc(name string) *goja.Program {
 
 const jsModulePreamble = "var exports={},module={exports:exports};\n"
 
-// jsModuleHoist binds each exported function to a global under its lowercased SQL name.
+// jsModuleHoist binds each exported entry to the global(s) the per-kind call path
+// resolves: a scalar/stream entry's `fn` as NAME, and an aggregate entry's
+// `init`/`update`/`final` as NAME_init/NAME_update/NAME_final (the 3-callback protocol
+// the base.Agg bridge looks up).
 const jsModuleHoist = "\n;(function(){var fs=(exports&&exports.functions)||[];" +
-	"for(var i=0;i<fs.length;i++){globalThis[String(fs[i].name).toLowerCase()]=fs[i].fn;}})();\n"
+	"for(var i=0;i<fs.length;i++){var f=fs[i],n=String(f.name).toLowerCase()," +
+	"k=String(f.kind||'').toLowerCase();" +
+	"if(k==='aggregate'||k==='agg'){globalThis[n+'_init']=f.init;globalThis[n+'_update']=f.update;globalThis[n+'_final']=f.final;}" +
+	"else{globalThis[n]=f.fn;}}})();\n"
 
 // looksLikeJSModule reports whether source is a multi-export module (it sets
 // exports.functions to a non-empty array) rather than a legacy single-function file. A
@@ -136,25 +142,35 @@ func JSModuleFunctions(bundle string) []string {
 	return append([]string(nil), fns...)
 }
 
-// RegisterJSModule loads a multi-export module named bundle from inline source and
-// records each of its functions in the loaded-extension set (Source "(inline)"). The
-// file-backed loader (RegisterExtensionFile) uses registerJSModule directly so it can
-// record the real path per function.
+// RegisterJSModule loads a multi-export module named bundle from inline source (Source
+// recorded as "(inline)"). The file-backed loader (RegisterExtensionFile) calls
+// registerJSModule with the real path instead.
 func RegisterJSModule(bundle, source string) error {
-	names, err := registerJSModule(bundle, source)
-	if err != nil {
-		return err
-	}
-	for _, n := range names {
-		extLoaded[n] = ExtensionInfo{Name: n, Kind: "javascript", Source: "(inline)"}
-	}
-	return nil
+	_, err := registerJSModule(bundle, source, "(inline)")
+	return err
 }
 
-// registerJSModule registers each `exports.functions` entry of a multi-export module as
-// a scalar JS UDF sharing one program, and returns the registered SQL function names. It
-// does NOT touch extLoaded — the caller records that (with the right Source).
-func registerJSModule(bundle, source string) (names []string, err error) {
+// moduleExtKind maps an entry's declared kind to its ExtensionInfo/examples kind and the
+// normalized internal kind. Scalar (the default), aggregate, and stream(ing source) are
+// supported; anything else is an error.
+func moduleExtKind(kind string) (norm, extKind string, ok bool) {
+	switch kind {
+	case "", "scalar", "function":
+		return "scalar", "javascript", true
+	case "aggregate", "agg":
+		return "aggregate", "javascript-aggregate", true
+	case "stream", "source", "table":
+		return "stream", "javascript-stream", true
+	default:
+		return "", "", false
+	}
+}
+
+// registerJSModule registers each `exports.functions` entry of a multi-export module —
+// a scalar UDF, an aggregate (3-callback), or a streaming source — all sharing ONE
+// program, records each in the loaded-extension set (Source sourcePath), and returns the
+// registered SQL function names.
+func registerJSModule(bundle, source, sourcePath string) (names []string, err error) {
 	bundle = strings.ToLower(bundle)
 
 	prog, err := goja.Compile(bundle+".js", jsModulePreamble+source+jsModuleHoist, true)
@@ -173,8 +189,8 @@ func registerJSModule(bundle, source string) (names []string, err error) {
 	}
 
 	type reg struct {
-		name, marshal string
-		examples      []ExtExample
+		name, kind, extKind, marshal string
+		examples                     []ExtExample
 	}
 	regs := make([]reg, 0, len(entries))
 	seen := map[string]bool{}
@@ -188,13 +204,10 @@ func registerJSModule(bundle, source string) (names []string, err error) {
 		}
 		seen[name] = true
 
-		// Modules currently register SCALAR functions only. Reject a kind:aggregate/stream
-		// entry loudly (rather than the confusing "no callable fn" below) and point at the
-		// per-file alternatives.
-		if kind := strings.ToLower(strings.TrimSpace(asString(e["kind"]))); kind != "" && kind != "scalar" && kind != "function" {
-			return nil, fmt.Errorf("JS module %q: function %q has kind %q — a module registers SCALAR "+
-				"functions only; put an aggregate in a *.agg.js file and a streaming source in a "+
-				"*.stream.js file (see .help extensions)", bundle, name, kind)
+		kind, extKind, ok := moduleExtKind(strings.ToLower(strings.TrimSpace(asString(e["kind"]))))
+		if !ok {
+			return nil, fmt.Errorf("JS module %q: function %q has unknown kind %q (want scalar|aggregate|stream)",
+				bundle, name, asString(e["kind"]))
 		}
 
 		marshal := "json"
@@ -208,8 +221,14 @@ func registerJSModule(bundle, source string) (names []string, err error) {
 				bundle, name, marshal)
 		}
 
-		// The hoist shim must have bound a callable global under this name.
-		if _, ok := goja.AssertFunction(check.Get(name)); !ok {
+		// The hoist shim must have bound the callable(s) the kind's call path resolves.
+		if kind == "aggregate" {
+			for _, suf := range []string{"_init", "_update", "_final"} {
+				if _, ok := goja.AssertFunction(check.Get(name + suf)); !ok {
+					return nil, fmt.Errorf("JS module %q: aggregate %q must define callable %q", bundle, name, "init/update/final")
+				}
+			}
+		} else if _, ok := goja.AssertFunction(check.Get(name)); !ok {
 			return nil, fmt.Errorf("JS module %q: function %q has no callable \"fn\"", bundle, name)
 		}
 
@@ -223,11 +242,11 @@ func registerJSModule(bundle, source string) (names []string, err error) {
 				return nil, fmt.Errorf("JS module %q: function %q collides with an aggregate function name", bundle, name)
 			}
 		}
-		regs = append(regs, reg{name, marshal, moduleEntryExamples(e["examples"])})
+		regs = append(regs, reg{name, kind, extKind, marshal, moduleEntryExamples(e["examples"])})
 	}
 
 	// Install the module program ONCE (shared by all its functions), then register each
-	// SQL function name against it.
+	// SQL function per its kind against it.
 	key := "module:" + bundle
 	if _, exists := jsPrograms[key]; !exists {
 		jsProgramOrder = append(jsProgramOrder, key)
@@ -235,13 +254,22 @@ func registerJSModule(bundle, source string) (names []string, err error) {
 	jsPrograms[key] = prog
 	names = make([]string, 0, len(regs))
 	for _, r := range regs {
-		// Per-function golden examples (recorded per SQL name, so `.extensions test`
-		// runs each through the scalar-UDF protocol like a single-file UDF's examples).
-		recordExtExamples("javascript", r.name, r.examples)
-		expression.RegisterFunction(r.name, newJSFunc(r.name))
+		// Per-function golden examples, recorded per SQL name + kind so `.extensions test`
+		// runs each through the right protocol (scalar call / agg init-update-final / stream emit).
+		recordExtExamples(r.extKind, r.name, r.examples)
+		switch r.kind {
+		case "aggregate":
+			installJSAggregate(r.name)
+		case "stream":
+			expression.RegisterFunction(r.name, newJSStreamFunc(r.name))
+			jsStreamNames[r.name] = true
+		default: // scalar
+			expression.RegisterFunction(r.name, newJSFunc(r.name))
+			jsFuncMarshal[r.name] = r.marshal
+		}
 		extOurs[r.name] = true
-		jsFuncMarshal[r.name] = r.marshal
 		jsFuncProgramKey[r.name] = key
+		extLoaded[r.name] = ExtensionInfo{Name: r.name, Kind: r.extKind, Source: sourcePath}
 		names = append(names, r.name)
 	}
 	jsModuleFuncs[bundle] = names

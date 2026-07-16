@@ -315,7 +315,7 @@ func runJSScalarExample(name string, in json.RawMessage) (json.RawMessage, error
 }
 
 func runJSAggExample(name string, in json.RawMessage) (json.RawMessage, error) {
-	rt, err := freshJSProgramRuntime(jsPrograms["aggregate:"+name], name)
+	rt, err := freshJSProgramRuntime(jsProgramForFunc(name), name)
 	if err != nil {
 		return nil, err
 	}
@@ -347,7 +347,7 @@ func runJSAggExample(name string, in json.RawMessage) (json.RawMessage, error) {
 }
 
 func runJSStreamExample(name string, in json.RawMessage) (json.RawMessage, error) {
-	rt, err := freshJSProgramRuntime(jsPrograms["stream:"+name], name)
+	rt, err := freshJSProgramRuntime(jsProgramForFunc(name), name)
 	if err != nil {
 		return nil, err
 	}

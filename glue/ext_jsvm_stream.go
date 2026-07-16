@@ -84,6 +84,7 @@ func RegisterJSStream(name, source string) error {
 		jsProgramOrder = append(jsProgramOrder, key)
 	}
 	jsPrograms[key] = prog
+	jsFuncProgramKey[name] = key // so the example runner finds this program
 	expression.RegisterFunction(name, newJSStreamFunc(name))
 	extOurs[name] = true
 	jsStreamNames[name] = true

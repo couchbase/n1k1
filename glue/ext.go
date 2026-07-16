@@ -184,12 +184,8 @@ func RegisterExtensionFile(path string) (string, error) {
 		}
 		if looksLikeJSModule(string(src)) {
 			name := strings.TrimSuffix(lower, ".js")
-			fns, err := registerJSModule(name, string(src))
-			if err != nil {
+			if _, err := registerJSModule(name, string(src), path); err != nil {
 				return "", err
-			}
-			for _, fn := range fns {
-				extLoaded[fn] = ExtensionInfo{Name: fn, Kind: "javascript", Source: path}
 			}
 			return name, nil
 		}

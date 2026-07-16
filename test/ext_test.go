@@ -509,6 +509,8 @@ func TestExtJSDecimalModule(t *testing.T) {
 		{`SELECT RAW DECIMAL_CMP("0.10", "0.1")`, `0`},
 		{`SELECT RAW DECIMAL_CMP("0.2", "0.1")`, `1`},
 		{`SELECT RAW DECIMAL_CMP("0.1", "0.2")`, `-1`},
+		// DECIMAL_SUM aggregate in the same module — exact running sum over a FROM-array.
+		{`SELECT RAW DECIMAL_SUM(v) FROM ["0.1","0.2","0.3"] AS v`, `{"$numberDecimal":"0.6"}`},
 	}
 	for _, c := range cases {
 		got := extRawRows(t, sess, c.stmt)
@@ -542,21 +544,53 @@ func TestExtJSDecimalExamples(t *testing.T) {
 			t.Errorf("%s/%s did not pass: got %s, want %s", r.Name, r.Label, r.Got, r.Want)
 		}
 	}
-	if ran != 9 { // ADD:3 + SUB:1 + MUL:2 + CMP:3
-		t.Fatalf("ran %d decimal_* examples, want 9 (per-function capture broken?)", ran)
+	if ran != 10 { // ADD:3 + SUB:1 + MUL:2 + CMP:3 + SUM:1
+		t.Fatalf("ran %d decimal_* examples, want 10 (per-function capture broken?)", ran)
 	}
 }
 
-// TestExtJSModuleAggregateRejected: a module registers SCALAR functions only; a
-// kind:"aggregate" (or "stream") entry must fail loudly and point at the per-file form.
-func TestExtJSModuleAggregateRejected(t *testing.T) {
-	src := `exports.functions=[{name:"badmodagg", kind:"aggregate",` +
-		` init:function(){return 0;}, update:function(s,v){return s+v;}, final:function(s){return s;}}];`
-	err := glue.RegisterJSModule("badmod", src)
+// TestExtJSModuleUnknownKindRejected: a module entry's kind must be scalar|aggregate|
+// stream; anything else is a clean error.
+func TestExtJSModuleUnknownKindRejected(t *testing.T) {
+	src := `exports.functions=[{name:"badkindfn", kind:"teapot", fn:function(x){return x;}}];`
+	err := glue.RegisterJSModule("badkind", src)
 	if err == nil {
-		t.Fatal("expected an error for a kind:aggregate module entry")
+		t.Fatal("expected an error for an unknown module entry kind")
 	}
-	if !strings.Contains(err.Error(), ".agg.js") {
-		t.Errorf("kind:aggregate error should point at *.agg.js; got: %v", err)
+	if !strings.Contains(err.Error(), "kind") {
+		t.Errorf("unknown-kind error should mention kind; got: %v", err)
+	}
+}
+
+// TestExtJSModuleAggregateAndStream: an aggregate (3-callback) AND a streaming source can
+// live in one module alongside scalar functions, sharing one program, and both run
+// end-to-end via SQL — the DECIMAL_SUM-style feature.
+func TestExtJSModuleAggregateAndStream(t *testing.T) {
+	src := `
+	function mysum_init(){ return 0; }
+	function mysum_update(s,v){ return s + v; }
+	function mysum_final(s){ return s; }
+	function myrange(emit, n){ for (var i=1;i<=n;i++) emit({ i: i }); }
+	exports.functions = [
+	  { name: "mymod_sum",   kind: "aggregate", init: mysum_init, update: mysum_update, final: mysum_final },
+	  { name: "mymod_range", kind: "stream",    fn: myrange },
+	];`
+	if err := glue.RegisterJSModule("mymodas", src); err != nil {
+		t.Fatalf("RegisterJSModule: %v", err)
+	}
+	sess := extSession(t)
+
+	// Aggregate over a FROM-array.
+	if got := extRawRows(t, sess, `SELECT RAW mymod_sum(v) FROM [1,2,3,4] AS v`); len(got) != 1 || got[0] != `10` {
+		t.Fatalf("mymod_sum(1..4) = %v, want [10]", got)
+	}
+	// GROUP BY, exercising the aggregate shim.
+	gb := extRawRows(t, sess, `SELECT x.g AS g, mymod_sum(x.v) AS s FROM [{"g":"a","v":1},{"g":"a","v":2},{"g":"b","v":5}] AS x GROUP BY x.g ORDER BY g`)
+	if len(gb) != 2 || gb[0] != `{"g":"a","s":3}` || gb[1] != `{"g":"b","s":5}` {
+		t.Fatalf("GROUP BY mymod_sum = %v, want [{a,3},{b,5}]", gb)
+	}
+	// Streaming source in FROM.
+	if got := extRawRows(t, sess, `SELECT RAW x.i FROM mymod_range(3) AS x`); len(got) != 3 || got[0] != `1` || got[2] != `3` {
+		t.Fatalf("mymod_range(3) = %v, want [1,2,3]", got)
 	}
 }

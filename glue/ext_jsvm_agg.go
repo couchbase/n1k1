@@ -82,9 +82,19 @@ func RegisterJSAggregate(name, source string) error {
 		jsProgramOrder = append(jsProgramOrder, key)
 	}
 	jsPrograms[key] = prog
+	jsFuncProgramKey[name] = key // so the example runner finds this program
 
-	// Register the engine-side base.Agg handler (bridging to the JS callbacks) and
-	// the cbq parse/plan shim, exactly like the native sparkline/histogram aggs.
+	installJSAggregate(name)
+	extLoaded[name] = ExtensionInfo{Name: name, Kind: "javascript-aggregate", Source: "(inline)"}
+	return nil
+}
+
+// installJSAggregate registers the engine-side base.Agg handler (bridging to the JS
+// NAME_init/_update/_final callbacks, which must already be defined in the shared
+// runtime) and the cbq parse/plan shim, exactly like the native sparkline/histogram
+// aggs. It does NOT compile/install a program — a single-file *.agg.js and a multi-export
+// module both call it after their program is installed and callbacks hoisted.
+func installJSAggregate(name string) {
 	agg := makeJSAgg(name)
 	if idx, ok := base.AggCatalog[name]; ok && jsAggNames[name] {
 		base.Aggs[idx] = agg // reload in place
@@ -93,10 +103,7 @@ func RegisterJSAggregate(name, source string) error {
 		base.Aggs = append(base.Aggs, agg)
 	}
 	registerExtAggregate(name, algebra.AGGREGATE_ALLOWS_REGULAR)
-
 	jsAggNames[name] = true
-	extLoaded[name] = ExtensionInfo{Name: name, Kind: "javascript-aggregate", Source: "(inline)"}
-	return nil
 }
 
 // makeJSAgg builds a base.Agg whose Init/Update/Result drive the JS callbacks,
