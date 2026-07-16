@@ -415,10 +415,10 @@ func TestExtShippedJSExamples(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RegisterExtensionDir(shipped): %v", err)
 	}
-	// Scalar UDFs (*.js), the decimal.js multi-export MODULE (a whole DECIMAL_* family
-	// in one file), the geomean aggregate (*.agg.js), the series streaming source
-	// (*.stream.js), sorted by filename stem.
-	want := []string{"add_two_numbers", "celsius_to_fahrenheit", "decimal", "geomean", "series", "slugify"}
+	// Scalar UDF demos (*.js), the builtin_decimal / builtin_ejson multi-export MODULES
+	// (a whole family per file), the geomean aggregate (*.agg.js), and the series
+	// streaming source (*.stream.js), sorted by filename stem.
+	want := []string{"add_two_numbers", "builtin_decimal", "builtin_ejson", "celsius_to_fahrenheit", "geomean", "series", "slugify"}
 	if strings.Join(names, ",") != strings.Join(want, ",") {
 		t.Fatalf("shipped extension names = %v, want %v", names, want)
 	}
@@ -428,8 +428,11 @@ func TestExtShippedJSExamples(t *testing.T) {
 		{`SELECT RAW add_two_numbers(2, 5)`, `7`},
 		{`SELECT RAW celsius_to_fahrenheit(100)`, `212`},
 		{`SELECT RAW slugify("Hello, World!")`, `"hello-world"`},
-		// decimal.js multi-export module: exact decimal, loaded via the dir catalog.
+		// builtin_decimal module: exact decimal (scalar + the DECIMAL_SUM aggregate).
 		{`SELECT RAW DECIMAL_ADD("0.1", "0.2")`, `{"$numberDecimal":"0.3"}`},
+		{`SELECT RAW DECIMAL_SUM(v) FROM ["0.1","0.2","0.3"] AS v`, `{"$numberDecimal":"0.6"}`},
+		// builtin_ejson module: strip the tag back to plain JSON.
+		{`SELECT RAW EJSON_DECODE(DECIMAL_ADD("0.1", "0.2"))`, `0.3`},
 		{`SELECT RAW ROUND(geomean(v), 4) FROM [1,2,4,8] AS v`, `2.8284`}, // 64^(1/4)
 		{`SELECT RAW SUM(x.n) FROM series(1, 5) AS x`, `15`},              // streaming source
 	}
@@ -485,7 +488,7 @@ func TestExtJSStream(t *testing.T) {
 // exactly 0.3, not 0.30000000000000004. Loads the shipped extensions/functions/js/
 // decimal.js so the test also proves the module auto-detection + loader routing.
 func TestExtJSDecimalModule(t *testing.T) {
-	src, err := os.ReadFile("../extensions/functions/js/decimal.js")
+	src, err := os.ReadFile("../extensions/functions/js/builtin_decimal.js")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -524,7 +527,7 @@ func TestExtJSDecimalModule(t *testing.T) {
 // are captured PER FUNCTION and run through the scalar-UDF protocol by
 // RunExtensionExamples — the multi-function analogue of a single-file UDF's examples.
 func TestExtJSDecimalExamples(t *testing.T) {
-	src, err := os.ReadFile("../extensions/functions/js/decimal.js")
+	src, err := os.ReadFile("../extensions/functions/js/builtin_decimal.js")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -614,5 +617,23 @@ func TestExtJSEjsonHelper(t *testing.T) {
 		if got := extRawRows(t, sess, c.stmt); len(got) != 1 || got[0] != c.want {
 			t.Fatalf("%s => %v, want [%s]", c.stmt, got, c.want)
 		}
+	}
+}
+
+// TestExtRegisterExtensionGlob loads only the shipped builtin_*.js modules by naming
+// convention (the embedder-glob path), and confirms both modules' functions run —
+// including chaining the builtin_ejson EJSON_DECODE over a builtin_decimal result.
+func TestExtRegisterExtensionGlob(t *testing.T) {
+	names, err := glue.RegisterExtensionGlob("../extensions/functions/js/builtin_*.js")
+	if err != nil {
+		t.Fatalf("RegisterExtensionGlob: %v", err)
+	}
+	if strings.Join(names, ",") != "builtin_decimal,builtin_ejson" {
+		t.Fatalf("glob names = %v, want [builtin_decimal builtin_ejson]", names)
+	}
+	sess := extSession(t)
+	// EJSON_DECODE (builtin_ejson) strips the tag off a DECIMAL_ADD (builtin_decimal) result.
+	if got := extRawRows(t, sess, `SELECT RAW EJSON_DECODE(DECIMAL_ADD("1.5", "1.5"))`); len(got) != 1 || got[0] != `3` {
+		t.Fatalf(`EJSON_DECODE(DECIMAL_ADD("1.5","1.5")) = %v, want [3]`, got)
 	}
 }

@@ -90,15 +90,16 @@ slot into `extensionLoaders` later):
 ### JS modules (multi-export) & the `marshal` field
 
 A single `.js` file can export a whole **family** of functions instead of the
-one-function-per-file convention — so all `DECIMAL_*` live in one `decimal.js`
+one-function-per-file convention — so all `DECIMAL_*` live in one `builtin_decimal.js`
 namespace. The file sets an `exports.functions` manifest whose entries each self-describe
-their SQL `name`, an optional `kind` (scalar today), and an optional `marshal` mode
+their SQL `name`, a `kind` (scalar / aggregate / stream), and a `marshal` mode
 (`glue/ext_jsvm_module.go`, `glue.RegisterJSModule`):
 
 ```js
 exports.functions = [
   { name: "DECIMAL_ADD", marshal: "variant", fn: (a, b) => /* exact */ },
   { name: "DECIMAL_CMP", marshal: "json",    fn: (a, b) => /* -1|0|1 */ },
+  { name: "DECIMAL_SUM", kind: "aggregate",  init, update, final },  // 3-callback
 ];
 ```
 
@@ -107,8 +108,13 @@ exports.functions = [
   filename is just a bundle/namespace — kind and marshal are declared *per entry*, not as
   chained `.variant.js`/`.raw.js` filename suffixes (those would be combinatorial; see
   `DESIGN-variant.md` §5.2 for the naming rationale). The module shares one goja program
-  (its functions can call each other); a hoist shim binds each entry to a global under its
-  lowercased SQL name, so the existing call path resolves it unchanged.
+  (its functions can call each other); a hoist shim binds a scalar/stream entry's `fn` as
+  `NAME` and an aggregate's `init`/`update`/`final` as `NAME_init`/`_update`/`_final`, so
+  the existing call paths (`makeJSAgg`, `newJSStreamFunc`) resolve them unchanged.
+- **`kind`** — `scalar` (default), `aggregate` (the entry carries `init`/`update`/`final`;
+  registered via the reused `installJSAggregate`), or `stream` (a source `fn` using `emit`,
+  via `newJSStreamFunc`). One module mixes all three. Each function's golden `examples`
+  run through the right protocol (scalar call / agg init-update-final / stream emit).
 - **`marshal`** — how values cross the goja boundary: `json` (default), `variant`
   (VARIANT-typed values exchanged as EJSON-tagged JSON, e.g. `{"$numberDecimal":"9.99"}`,
   MongoDB-EJSON style, since JS can't natively hold exact decimals / ns-timestamps), or
@@ -116,13 +122,21 @@ exports.functions = [
   does not yet flow through the cbq `value.Value` layer JS UDFs live in, so a `variant` fn
   today exchanges typed values as EJSON-tagged JSON — exact and queryable, riding as
   ordinary JSON; wiring EJSON↔`V` (results as real VARIANT bytes) is the write-back-bridge
-  follow-up. The mode is recorded per function (`jsFuncMarshal`) and documented for authors.
-- **Ships `extensions/functions/js/decimal.js`** — exact fixed-point `DECIMAL_ADD` /
-  `DECIMAL_SUB` / `DECIMAL_MUL` / `DECIMAL_CMP` via `BigInt` on a coefficient+scale, so
+  follow-up. The mode is recorded per function (`jsFuncMarshal`).
+- **EJSON helpers.** Every UDF runtime gets a host `ejson` helper (`glue/ext_jsvm.go`,
+  installed alongside `console`): `ejson.decimal(x)` / `ejson.wrap(tag, x)` (wrap),
+  `ejson.unwrap(x)` (peel one tag, reads through goja host-wrapping via a JSON round-trip),
+  and `ejson.decode(x)` (recursively strip tags → plain JSON). SQL++ gets the same via the
+  shipped `builtin_ejson` module: `EJSON_DECODE` / `EJSON_DECIMAL` / `EJSON_UNWRAP`.
+- **Shipped builtins are `builtin_*.js`** so an embedder can load them by naming
+  convention — `glue.RegisterExtensionGlob("<dir>/builtin_*.js")` (a filepath-glob sibling
+  of `RegisterExtensionDir`). `builtin_decimal.js` = exact fixed-point `DECIMAL_ADD` /
+  `_SUB` / `_MUL` / `_CMP` / `_SUM`(aggregate) via `BigInt` on a coefficient+scale, so
   `DECIMAL_ADD(0.1, 0.2)` is exactly `0.3` (a plain SQL `+` drifts to
-  `0.30000000000000004`) and integer sums beyond `2^53` stay exact. Inputs accept a
-  string, a number, or an EJSON-tagged decimal (so calls nest); results are EJSON-tagged.
-  This is the two-birds demo: a VARIANT-handling JS extension *and* the `DECIMAL_*` family.
+  `0.30000000000000004`) and integer sums beyond `2^53` stay exact; inputs accept a
+  string / number / EJSON-tagged decimal (so calls nest), results EJSON-tagged.
+  `builtin_ejson.js` = the SQL++ EJSON converters above. (The one-function demo files —
+  `add_two_numbers.js`, `slugify.js`, … — stay plain examples, not `builtin_`.)
 
 ### Extension aggregates
 

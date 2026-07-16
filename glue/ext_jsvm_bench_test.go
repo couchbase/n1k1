@@ -55,7 +55,7 @@ func benchJSCall(b *testing.B, fnName string, args ...value.Value) {
 
 func loadDecimalModuleForBench(b *testing.B) {
 	b.Helper()
-	src, err := os.ReadFile("../extensions/functions/js/decimal.js")
+	src, err := os.ReadFile("../extensions/functions/js/builtin_decimal.js")
 	if err != nil {
 		b.Fatal(err)
 	}

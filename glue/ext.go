@@ -216,6 +216,32 @@ func RegisterExtensionFile(path string) (string, error) {
 // deterministic collision control: when two files define the same top-level
 // name, the alphabetically-later file wins (last definition wins in JS), so a
 // `zz_overrides.js` reliably shadows an earlier `base.js`.
+// RegisterExtensionGlob registers every recognized extension file matching a filepath
+// glob, in sorted order (like RegisterExtensionDir, but pattern-based). It lets an
+// embedder pull in the shipped builtin modules by naming convention, e.g.
+// RegisterExtensionGlob("extensions/functions/js/builtin_*.js"). A non-extension match
+// is skipped. Returns the registered names (per file; a module returns its bundle stem).
+func RegisterExtensionGlob(pattern string) ([]string, error) {
+	matches, err := filepath.Glob(pattern)
+	if err != nil {
+		return nil, fmt.Errorf("RegisterExtensionGlob %q: %w", pattern, err)
+	}
+	sort.Strings(matches) // deterministic load order -> later file wins on name clash
+	var names []string
+	for _, m := range matches {
+		if _, ok := extensionLoaders[strings.ToLower(filepath.Ext(m))]; !ok {
+			continue // not a recognized extension file
+		}
+		name, err := RegisterExtensionFile(m)
+		if err != nil {
+			return names, err
+		}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names, nil
+}
+
 func RegisterExtensionDir(dir string) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
