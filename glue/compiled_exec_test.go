@@ -14,6 +14,8 @@
 package glue
 
 import (
+	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"testing"
@@ -167,5 +169,87 @@ func TestExecuteCompiledFull(t *testing.T) {
 	}
 	if s.prepareds["pnative"].compiledBin == "" {
 		t.Error("a native string query (REPEAT) should compile to a standalone binary")
+	}
+}
+
+// TestExecuteCompiledAggAndArith guards two compiled-standalone regressions that
+// the intermed differential (make test-compiler) could not catch, because that
+// differential runs the emitted BODY under the test harness's own full Ctx, never
+// under compiledMain's hand-rolled child Ctx:
+//
+//   - Aggregates (COUNT/SUM/GROUP BY) nil-panicked in the child: compiledMain built
+//     a Ctx without the spill-backed AllocMap/AllocHeap/... pools GROUP BY needs.
+//     Fixed by sharing rt.NewSpillCtx between MakeVars and the child. (Same class as
+//     the earlier nil-ValComparer crash guarded in TestExecuteCompiledFull.)
+//   - A binary op over TWO nested-field operands (`b.x * b.y`) failed to BUILD with
+//     "lzValOut redeclared": the ExprLabelPath emit declared a bare (non-varLift'd)
+//     lzValOut, so two path-accesses inlined into one block collided. `b.x * 2`
+//     (one field + a literal) did not trip it, which is why it slipped through.
+//
+// Each shape must (a) compile to a standalone child binary and (b) return rows
+// identical to the interpreter.
+func TestExecuteCompiledAggAndArith(t *testing.T) {
+	if !GoToolchainDetect().Available {
+		t.Skip("no go toolchain: compiled EXECUTE degrades to the interpreter")
+	}
+	repo, err := filepath.Abs("..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("N1K1_SRC", repo)
+
+	root := t.TempDir()
+	d := filepath.Join(root, "default", "bkt")
+	if err := os.MkdirAll(d, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 6; i++ {
+		doc := fmt.Sprintf(`{"i":%d,"g":%d,"amount":%d,"qty":2}`, i, i%2, i*10)
+		if err := os.WriteFile(filepath.Join(d, fmt.Sprintf("b%03d.json", i)), []byte(doc), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s, err := OpenSession(root, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	rowsSorted := func(res *Result) []string {
+		out := make([]string, len(res.Rows))
+		for i, r := range res.Rows {
+			out[i] = string(r)
+		}
+		sort.Strings(out)
+		return out
+	}
+
+	queries := []string{
+		`SELECT COUNT(*) c FROM bkt b`,                                        // aggregate: AllocMap
+		`SELECT b.g AS g, COUNT(*) c, SUM(b.amount) s FROM bkt b GROUP BY b.g`, // GROUP BY: AllocMap
+		`SELECT b.amount * b.qty AS p FROM bkt b WHERE b.amount * b.qty > 40`,  // two-field arith: lzValOut
+	}
+	for i, q := range queries {
+		s.PrepareLevel = PrepareInterpreted
+		interp, err := s.Run(q)
+		if err != nil {
+			t.Fatalf("interpreted %q: %v", q, err)
+		}
+
+		name := fmt.Sprintf("pc%d", i)
+		s.PrepareLevel = PrepareCompiledFull
+		if _, err := s.Run(`PREPARE ` + name + ` AS ` + q); err != nil {
+			t.Fatalf("prepare %q: %v", q, err)
+		}
+		comp, err := s.Run(`EXECUTE ` + name)
+		if err != nil {
+			t.Fatalf("compiled EXECUTE %q: %v", q, err)
+		}
+		if s.prepareds[name].compiledBin == "" {
+			t.Errorf("query did not compile to a standalone child (fell back to interpreter): %q", q)
+		}
+		if iw, cw := rowsSorted(interp), rowsSorted(comp); fmt.Sprint(iw) != fmt.Sprint(cw) {
+			t.Errorf("compiled != interpreted for %q:\n  interp=%v\n  compiled=%v", q, iw, cw)
+		}
 	}
 }

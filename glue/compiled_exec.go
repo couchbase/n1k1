@@ -328,7 +328,7 @@ func compiledMainImports(body string) string {
 			b.WriteString("\t\"" + oi.Path + "\"\n")
 		}
 	}
-	b.WriteString("\n\t\"github.com/couchbase/n1k1/base\"\n\t\"github.com/couchbase/n1k1/engine\"\n)\n\n")
+	b.WriteString("\n\t\"github.com/couchbase/n1k1/base\"\n\t\"github.com/couchbase/n1k1/engine\"\n\t\"github.com/couchbase/n1k1/rt\"\n)\n\n")
 	return b.String()
 }
 
@@ -356,7 +356,10 @@ func compiledMain(body, provStamp string) string {
 		"\t\tif json.Unmarshal(in.Bytes(), &r) == nil {\n" +
 		"\t\t\tdata[r.A] = append(data[r.A], engine.MemRecord{ID: r.ID, Doc: r.Doc})\n" +
 		"\t\t}\n\t}\n" +
-		"\tvars := &base.Vars{Ctx: &base.Ctx{Pipe: &engine.MemPipe{Data: data}, ValComparer: base.NewValComparer()}}\n" +
+		"\ttmpDir, _ := os.MkdirTemp(\"\", \"n1k1compiledrun\")\n" +
+		"\tdefer os.RemoveAll(tmpDir)\n" +
+		"\tvars := &base.Vars{Temps: make([]interface{}, 16), Ctx: rt.NewSpillCtx(tmpDir)}\n" +
+		"\tvars.Ctx.Pipe = &engine.MemPipe{Data: data}\n" +
 		"\tout := bufio.NewWriter(os.Stdout)\n\tdefer out.Flush()\n" +
 		"\tRun(vars, func(vals base.Vals) {\n" +
 		"\t\tenc := base.ValsEncode(vals, nil)\n" +

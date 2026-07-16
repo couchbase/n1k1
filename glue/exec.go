@@ -14,20 +14,15 @@
 package glue
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"os"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"time"
 
-	"github.com/couchbase/rhmap/store"
-
 	"github.com/couchbase/n1k1/base"
-	"github.com/couchbase/n1k1/engine"
+	"github.com/couchbase/n1k1/rt"
 
 	"github.com/couchbase/query/plan"
 	"github.com/couchbase/query/value"
@@ -140,177 +135,16 @@ func ServiceRequestEx(p plan.Operator,
 }
 
 func MakeVars(dir, prefix string) (string, *base.Vars) {
-	// TODO: Use os.MkdirTemp()?
 	// TODO: Need err propagation & cleanup of temp dir?
 	tmpDir, _ := ioutil.TempDir(dir, prefix)
 
-	var counter uint64
-
-	var mm sync.Mutex
-
-	var recycledMap *store.RHStore
-	var recycledHeap *store.Heap
-	var recycledChunks *store.Chunks
-
-	// Request-scoped batch pool (see base.Ctx.AllocBatch): a bounded free-list of
-	// []Vals, so the many throwaway Stages a nested-loop join creates per inner
-	// re-scan reuse batch/Val buffers instead of re-allocating. Own mutex to keep
-	// the hot per-batch path off mm (which guards the rarer map/heap/chunk pools).
-	var bm sync.Mutex
-	var recycledBatches [][]base.Vals
-	const maxRecycledBatches = 256 // cap retention; drop extras for GC
-
+	// The Ctx -- ValComparer + the spill-backed allocator pools GROUP/ORDER/join
+	// hang off -- is built by rt.NewSpillCtx, the SAME cbq-free constructor the
+	// compiled standalone EXECUTE child uses (see glue/compiled_exec.go). Sharing it
+	// is deliberate: a hand-rolled child Ctx once omitted these pools, nil-panicking
+	// every aggregate in the compiled lane while the interpreter was fine.
 	return tmpDir, &base.Vars{
 		Temps: make([]interface{}, 16),
-		Ctx: &base.Ctx{
-			ValComparer: base.NewValComparer(),
-			ExprCatalog: engine.ExprCatalog,
-			YieldStats:  func(stats *base.Stats) base.YieldStatsControl { return base.YieldStatsControl{} },
-			TempDir:     tmpDir,
-			ExecOp:      engine.ExecOp,
-			AllocMap: func() (*store.RHStore, error) {
-				mm.Lock()
-				defer mm.Unlock()
-
-				if recycledMap != nil {
-					rv := recycledMap
-					recycledMap = nil
-					return rv, nil
-				}
-
-				options := store.DefaultRHStoreFileOptions
-
-				counterMine := atomic.AddUint64(&counter, 1)
-
-				pathPrefix := fmt.Sprintf("%s/%d", tmpDir, counterMine)
-
-				sf, err := store.CreateRHStoreFile(pathPrefix, options)
-				if err != nil {
-					return nil, err
-				}
-
-				return &sf.RHStore, nil
-			},
-			RecycleMap: func(m *store.RHStore) {
-				mm.Lock()
-				defer mm.Unlock()
-
-				if m != nil {
-					if recycledMap == nil {
-						recycledMap = m
-						recycledMap.Reset()
-						return
-					}
-
-					m.Close()
-				}
-			},
-			AllocHeap: func() (*store.Heap, error) {
-				mm.Lock()
-				defer mm.Unlock()
-
-				if recycledHeap != nil {
-					rv := recycledHeap
-					recycledHeap = nil
-					return rv, nil
-				}
-
-				counterMine := atomic.AddUint64(&counter, 1)
-
-				pathPrefix := fmt.Sprintf("%s/%d", tmpDir, counterMine)
-
-				heapChunkSizeBytes := 1024 * 1024      // TODO: Config.
-				dataChunkSizeBytes := 16 * 1024 * 1024 // TODO: Config.
-
-				return &store.Heap{
-					LessFunc: func(a, b []byte) bool {
-						// TODO: Is this the right default heap less-func?
-						return bytes.Compare(a, b) < 0
-					},
-					Heap: &store.Chunks{
-						PathPrefix:     pathPrefix,
-						FileSuffix:     ".heap",
-						ChunkSizeBytes: heapChunkSizeBytes,
-					},
-					Data: &store.Chunks{
-						PathPrefix:     pathPrefix,
-						FileSuffix:     ".data",
-						ChunkSizeBytes: dataChunkSizeBytes,
-					},
-				}, nil
-			},
-			RecycleHeap: func(m *store.Heap) {
-				mm.Lock()
-				defer mm.Unlock()
-
-				if m != nil {
-					if recycledHeap == nil {
-						recycledHeap = m
-						recycledHeap.Reset()
-						return
-					}
-
-					m.Close()
-				}
-			},
-			AllocChunks: func() (*store.Chunks, error) {
-				mm.Lock()
-				defer mm.Unlock()
-
-				if recycledChunks != nil {
-					rv := recycledChunks
-					recycledChunks = nil
-					return rv, nil
-				}
-
-				options := store.DefaultRHStoreFileOptions
-
-				counterMine := atomic.AddUint64(&counter, 1)
-
-				pathPrefix := fmt.Sprintf("%s/%d", tmpDir, counterMine)
-
-				return &store.Chunks{
-					PathPrefix:     pathPrefix,
-					FileSuffix:     ".rhchunk,",
-					ChunkSizeBytes: options.ChunkSizeBytes,
-				}, nil
-			},
-			RecycleChunks: func(c *store.Chunks) {
-				mm.Lock()
-				defer mm.Unlock()
-
-				if c != nil {
-					if recycledChunks == nil {
-						recycledChunks = c
-						recycledChunks.BytesTruncate(0)
-						return
-					}
-
-					c.Close()
-				}
-			},
-			AllocBatch: func() []base.Vals {
-				bm.Lock()
-				defer bm.Unlock()
-
-				if n := len(recycledBatches); n > 0 {
-					rv := recycledBatches[n-1]
-					recycledBatches[n-1] = nil
-					recycledBatches = recycledBatches[:n-1]
-					return rv
-				}
-				return nil
-			},
-			RecycleBatch: func(batch []base.Vals) {
-				if batch == nil {
-					return
-				}
-				bm.Lock()
-				if len(recycledBatches) < maxRecycledBatches {
-					recycledBatches = append(recycledBatches, batch)
-				}
-				bm.Unlock()
-			},
-		},
+		Ctx:   rt.NewSpillCtx(tmpDir),
 	}
 }

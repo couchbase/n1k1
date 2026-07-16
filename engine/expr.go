@@ -77,11 +77,14 @@ func ExprLabelPath(lzVars *base.Vars, labels base.Labels,
 			lzVal = lzVals[idx]
 
 			if len(params) > 1 { // !lz
-				var lzValOut base.Val
-
-				lzVal, lzValOut = base.ValPathGet(lzVal, lzValPath, lzValPre)
-
-				lzValPre = lzValOut
+				// Assign the reusable out-buffer straight back into lzValPre. An
+				// earlier `var lzValOut` temp here was redundant AND -- because it is
+				// not a varLift'd (per-path-suffixed) name -- collided as "lzValOut
+				// redeclared" when two path-accesses inline into one block (e.g. both
+				// operands of `a.x * a.y`), breaking the compiled/emitted lane. The
+				// intermed (per-op-func) lane hid it: each body was its own function
+				// scope. See DESIGN-prepare.md.
+				lzVal, lzValPre = base.ValPathGet(lzVal, lzValPath, lzValPre)
 			} else { // !lz
 				_, _ = lzValPath, lzValPre
 			}
