@@ -384,6 +384,12 @@ usage: %[1]s [flags] [datastore-dir | file]
   %[1]s ./test/suite/json
   %[1]s -c "SELECT * FROM invoices WHERE total > 5" path/to/biz-datastore-dir
 
+  # object stores (S3 / GCS / Azure) -- Iceberg tables & Parquet, read over ranged
+  # GETs (creds from AWS_*/GOOGLE_APPLICATION_CREDENTIALS/AZURE_*; see .help keyspaces):
+  %[1]s -c "SELECT COUNT(*) FROM orders" s3://bucket/warehouse/db/orders
+  %[1]s -c "SELECT AVG(t.price) FROM t"  gs://bucket/data/t.parquet
+  AWS_NO_SIGN_REQUEST=1 AWS_REGION=us-west-2 %[1]s -c "SELECT * FROM t LIMIT 3" s3://public-bucket/t.parquet
+
   # statements from -c, a file, or stdin:
   %[1]s -c "SELECT 1+1"
   %[1]s -f script.sql++ path/to/datastore-dir

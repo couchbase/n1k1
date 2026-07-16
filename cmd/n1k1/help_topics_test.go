@@ -70,6 +70,23 @@ func TestHelpReservedWordsList(t *testing.T) {
 	}
 }
 
+// TestHelpKeyspacesObjectStore: the keyspaces topic documents S3/GCS/Azure access with
+// runnable examples and the anonymous-public-bucket recipe.
+func TestHelpKeyspacesObjectStore(t *testing.T) {
+	var out, errb bytes.Buffer
+	c := &cli{prog: "n1k1", mode: "jsonlines", out: &out, stderr: &errb}
+	c.cmdHelp("keyspaces")
+	s := errb.String()
+	for _, want := range []string{
+		"Object stores", "s3://", "gs://", "abfs://",
+		"AWS_NO_SIGN_REQUEST", "GOOGLE_APPLICATION_CREDENTIALS", ".metadata.json",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf(".help keyspaces missing object-store detail %q; got:\n%s", want, s)
+		}
+	}
+}
+
 // TestHelpTopics: each topic prints (no panic) recognizable content -- concept
 // deep-dives AND the delegated command guides (rules/extract/index) -- and an unknown
 // topic is reported.
