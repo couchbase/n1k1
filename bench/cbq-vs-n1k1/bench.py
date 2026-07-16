@@ -36,6 +36,11 @@ REPS = int(os.environ.get("REPS", "15"))
 WARMUP = min(5, REPS // 3)
 CBQ_URL = os.environ.get("CBQ_URL", "")
 CBQ_CREDS = os.environ.get("CBQ_CREDS", "")
+# Preferred cbq column: a `localbench` binary built from the n1k1-query fork's
+# local-benchmark branch, which runs cbq's real executor over the SAME dir:
+# file datastore (see README.md). It reads queries on stdin and prints
+# "RESULT\t<median-ms>\t<rows>" per query.
+CBQ_LOCALBENCH = os.environ.get("CBQ_LOCALBENCH", "")
 
 QUERIES = [
     ("count+filter", "SELECT COUNT(*) c FROM orders WHERE amount >= 0"),
@@ -94,6 +99,20 @@ def run_n1k1(binary, query):
     return statistics.median(ms[WARMUP:]), med_mb
 
 
+def run_cbq_localbench(queries):
+    """One localbench process over DATA; feed all queries on stdin, in order.
+    Returns {query_text: median_ms}. localbench does its own warm/median with REPS."""
+    env = dict(os.environ, REPS=str(REPS))
+    r = subprocess.run([CBQ_LOCALBENCH, DATA], input="\n".join(queries) + "\n",
+                       env=env, capture_output=True, text=True)
+    meds = [float(ln.split("\t")[1]) for ln in r.stdout.splitlines()
+            if ln.startswith("RESULT\t")]
+    if len(meds) != len(queries):
+        die("localbench gave %d/%d RESULT lines\n%s"
+            % (len(meds), len(queries), r.stderr[-800:]))
+    return dict(zip(queries, meds))
+
+
 def run_cbq_url(query):
     body = {"statement": query}
     if CBQ_CREDS:
@@ -117,25 +136,37 @@ def main():
                    check=True)
     binary = build_n1k1()
 
+    # cbq column source: localbench (real executor over the same dir:) preferred,
+    # else a live cbq /query/service via CBQ_URL, else n1k1-only.
+    cbq_kind = "localbench" if CBQ_LOCALBENCH else ("url" if CBQ_URL else "")
+    cbq_meds = run_cbq_localbench([q for _, q in QUERIES]) if cbq_kind == "localbench" else {}
+
+    def cbq_ms(q):
+        return cbq_meds[q] if cbq_kind == "localbench" else run_cbq_url(q)
+
     print("\ncbq-vs-n1k1  |  %d docs  |  warm median of %d reps (%d warmup dropped)"
           % (NDOCS, REPS, WARMUP))
+    if cbq_kind:
+        print("cbq column: %s"
+              % ("cbq real executor over the same dir: file datastore (filestore harness)"
+                 if cbq_kind == "localbench" else "cbq /query/service " + CBQ_URL))
     print("-" * 74)
-    if CBQ_URL:
-        print("%-16s%12s%12s%12s%11s" % ("query", "n1k1 ms", "n1k1 MB", "cbq ms", "cbq/n1k1"))
+    if cbq_kind:
+        print("%-16s%11s%11s%11s%12s" % ("query", "n1k1 ms", "n1k1 MB", "cbq ms", "cbq/n1k1"))
     else:
         print("%-16s%12s%14s" % ("query", "n1k1 ms", "n1k1 MB/q"))
     print("-" * 74)
     for name, q in QUERIES:
         nms, nmb = run_n1k1(binary, q)
-        if CBQ_URL:
-            cms = run_cbq_url(q)
-            print("%-16s%12.3f%12.3f%14.3f%9.2fx" % (name, nms, nmb, cms, cms / nms))
+        if cbq_kind:
+            cms = cbq_ms(q)
+            print("%-16s%11.2f%11.2f%11.2f%11.2fx" % (name, nms, nmb, cms, cms / nms))
         else:
             print("%-16s%12.3f%14.3f" % (name, nms, nmb))
     print("-" * 74)
-    if not CBQ_URL:
-        print("cbq column: set CBQ_URL=http://host:port/query/service (+ CBQ_CREDS=user:pass)")
-        print("            to a real cbq loaded with the same data. See README.md.")
+    if not cbq_kind:
+        print("cbq column: set CBQ_LOCALBENCH=<localbench binary> (real cbq over the same")
+        print("            dir: datastore) or CBQ_URL=<.../query/service>. See README.md.")
 
 
 if __name__ == "__main__":
