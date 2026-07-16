@@ -23,7 +23,9 @@ Env: N1K1BENCH=<bin>  DATA=<dir>  NDOCS=<n>  BULK_ITEMS=<n>  REPS=<n>
      CBQ_LOCALBENCH=<bin>
 """
 import os
+import re
 import sys
+import statistics
 import subprocess
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -69,31 +71,69 @@ def die(m):
     sys.exit(1)
 
 
-def build_n1k1bench():
-    b = os.environ.get("N1K1BENCH")
+def build_n1k1():
+    b = os.environ.get("N1K1")
     if b and os.path.exists(b):
         return b
-    out = os.path.join(HERE, ".n1k1bench.bin")
-    print("building n1k1bench ...", file=sys.stderr)
+    out = os.path.join(HERE, ".n1k1.bin")
+    print("building n1k1 CLI ...", file=sys.stderr)
     subprocess.run(["make", "build-intermed"], cwd=REPO, check=True,
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    r = subprocess.run(["go", "build", "-tags", "n1ql", "-o", out,
-                        "./test/benchmark/versus/n1k1bench"],
+    r = subprocess.run(["go", "build", "-tags", "n1ql", "-o", out, "./cmd/n1k1"],
                        cwd=REPO, capture_output=True, text=True)
     if r.returncode != 0:
-        die("n1k1bench build failed:\n" + r.stderr)
+        die("n1k1 build failed:\n" + r.stderr)
     return out
 
 
-def run_engine(binary, queries):
-    """One process over DATA; feed all queries on stdin; {query: (median_ms, median_MB)}."""
+_DUR = re.compile(r"in ([0-9.]+)(ns|µs|ms|s)\b")
+_ALLOC = re.compile(r"runtime: ([0-9.]+)([KMG]?B) allocated")
+_UMS = {"ns": 1e-6, "µs": 1e-3, "ms": 1.0, "s": 1000.0}
+_UMB = {"B": 1e-6, "KB": 1e-3, "MB": 1.0, "GB": 1000.0}
+
+
+def median(xs):
+    return statistics.median(xs) if xs else 0.0
+
+
+def run_n1k1(binary, queries):
+    """Drive the n1k1 CLI (one warm REPL session over DATA); {query: (median_ms, median_MB)}.
+    Since RunElapsed lands in the footer, the CLI reports the SAME full parse+plan+
+    execute time + allocated-MB as the cbq runner -- no separate n1k1 runner needed."""
+    lines = [".mode jsonlines", ".stats final", ".timer on"]
+    for q in queries:
+        lines += ["%s;" % q] * REPS  # REPS warm reps per query, grouped
+    r = subprocess.run([binary, DATA], input="\n".join(lines) + "\n",
+                       capture_output=True, text=True)
+    ms, mb = [], []
+    for line in r.stderr.splitlines():  # timer + -stats go to stderr
+        d = _DUR.search(line)
+        if d and "row(s)" in line:
+            ms.append(float(d.group(1)) * _UMS[d.group(2)])
+        a = _ALLOC.search(line)
+        if a:
+            mb.append(float(a.group(1)) * _UMB[a.group(2)])
+    need = len(queries) * REPS
+    if len(ms) < need or len(mb) < need:
+        die("n1k1 CLI gave %d ms / %d MB lines, need %d each\n%s"
+            % (len(ms), len(mb), need, r.stderr[-1000:]))
+    warm = min(5, REPS // 3)
+    out = {}
+    for i, q in enumerate(queries):
+        seg = slice(i * REPS + warm, (i + 1) * REPS)
+        out[q] = (median(ms[seg]), median(mb[seg]))
+    return out
+
+
+def run_cbq(binary, queries):
+    """The fork's cmd/localbench: one process over DATA, RESULT<TAB>ms<TAB>MB<TAB>rows."""
     env = dict(os.environ, REPS=str(REPS))
     r = subprocess.run([binary, DATA], input="\n".join(queries) + "\n",
                        env=env, capture_output=True, text=True)
     rows = [ln.split("\t") for ln in r.stdout.splitlines() if ln.startswith("RESULT\t")]
     if len(rows) != len(queries):
-        die("%s gave %d/%d RESULT lines\n%s"
-            % (os.path.basename(binary), len(rows), len(queries), r.stderr[-1000:]))
+        die("localbench gave %d/%d RESULT lines\n%s"
+            % (len(rows), len(queries), r.stderr[-1000:]))
     return {q: (float(c[1]), float(c[2])) for q, c in zip(queries, rows)}
 
 
@@ -121,15 +161,15 @@ def table(title, queries, n1, cbq):
 def main():
     subprocess.run([sys.executable, os.path.join(HERE, "gen.py"), DATA, str(NDOCS),
                     str(BULK_DOCS), str(BULK_ITEMS)], check=True)
-    n1bin = build_n1k1bench()
+    n1bin = build_n1k1()
 
     all_q = [q for _, q in FILE_QUERIES + BULK_QUERIES]
-    n1 = run_engine(n1bin, all_q)
-    cbq = run_engine(CBQ_LOCALBENCH, all_q) if CBQ_LOCALBENCH else {}
+    n1 = run_n1k1(n1bin, all_q)
+    cbq = run_cbq(CBQ_LOCALBENCH, all_q) if CBQ_LOCALBENCH else {}
 
     print("\ncbq-vs-n1k1  |  files: %d docs   bulk: %d docs x %d-elem arrays"
           "  |  warm median of %d reps" % (NDOCS, BULK_DOCS, BULK_ITEMS, REPS))
-    print("both columns = full parse+plan+execute, in process; MB = TotalAlloc/query")
+    print("both columns = full parse+plan+execute; MB = allocated/query")
     table("SCENARIO: files (one doc per file -- I/O-bound)", FILE_QUERIES, n1, cbq)
     table("SCENARIO: bulk (few docs, big in-doc arrays via UNNEST -- compute-bound)",
           BULK_QUERIES, n1, cbq)

@@ -182,7 +182,7 @@ func (c *cli) exec(stmt string) {
 }
 
 func (c *cli) renderResult(res *glue.Result) {
-	c.renderRows(res.Rows, res.Elapsed.String(), c.wantFooter())
+	c.renderRows(res.Rows, res.RunElapsed.String(), c.wantFooter())
 }
 
 // wantFooter reports whether to show the row-count/elapsed footer: when .timer is
@@ -198,7 +198,7 @@ func (c *cli) wantFooter() bool {
 // still writable when stdout's consumer -- `... | head` -- has gone away).
 func (c *cli) renderStreamFooter(res *glue.Result) {
 	if c.wantFooter() && c.outErr == nil {
-		fmt.Fprintf(c.stderr, "%s%d row(s) in %s\n", c.icon("⏱ "), res.Count, res.Elapsed)
+		fmt.Fprintf(c.stderr, "%s%d row(s) in %s\n", c.icon("⏱ "), res.Count, res.RunElapsed)
 	}
 	if c.outErr != nil {
 		fmt.Fprintf(c.stderr, "%s%s\n", c.icon("⚠️  "),

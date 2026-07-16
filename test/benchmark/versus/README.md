@@ -6,18 +6,21 @@ classic cbq file-datastore layout `<root>/<namespace>/<keyspace>/<key>.json` tha
 is the execution engine: n1k1's `[]byte` byte-engine vs cbq's boxed
 `value.AnnotatedValue` executor.
 
-**Both columns are measured the same way** — a tiny in-process runner does the FULL
-`parse→plan→execute` per query, warm (median of REPS, first few dropped), reporting
-median **ms** and median **allocated MB** (`runtime.MemStats` TotalAlloc delta):
+**Both columns are measured the same way** — the FULL `parse→plan→execute` per query,
+warm (median of REPS, first few dropped), reporting median **ms** and median
+**allocated MB**:
 
-- `n1k1` — `n1k1bench/` (`glue.Session.Run`); built by `bench.py`.
+- `n1k1` — the `n1k1` CLI itself, driven over one warm REPL session. Its footer
+  reports `Result.RunElapsed` (the whole `Session.Run`: parse+plan+convert+execute),
+  and `.stats` reports allocated bytes/query (`/gc/heap/allocs` delta over the run) —
+  so the CLI already emits the fair, apples-to-apples numbers; no separate runner.
 - `cbq`  — the fork's `cmd/localbench` (`test/filestore` over the same `dir:`
-  datastore); build from the `n1k1-query` **`local-benchmark`** branch and pass
-  `CBQ_LOCALBENCH=<binary>`.
+  datastore, timing `filestore.Run` + `runtime.MemStats` TotalAlloc); build from the
+  `n1k1-query` **`local-benchmark`** branch and pass `CBQ_LOCALBENCH=<binary>`.
 
-(Measuring full-run on both matters: n1k1's CLI footer times ExecOp only, and for
-tiny SQL that's fine, but it would unfairly exclude parse+plan — which dominates for
-a large inline literal. `n1k1bench` makes the phases symmetric with `localbench`.)
+(Measuring full-run matters: the CLI footer used to time only ExecOp, which for tiny
+SQL is fine but excludes parse+plan — negligible for these file queries, but it would
+mislead on a large inline literal. `Result.RunElapsed` fixes that at the source.)
 
 ## Two scenarios
 
@@ -50,7 +53,7 @@ big-array docs). Defaults `NDOCS=20000`, `BULK_ITEMS=20000`, `REPS=11`.
     group+agg        481     486    1.01x     3.7    15.4    4.2x
     sort+limit       481     498    1.04x     3.6    17.9    5.0x
     join+group       470     497    1.06x     5.9    16.6    2.8x
-    unnest-count     100     469    4.70x     4.1    25.9    6.4x
+    unnest-count     486     505    1.04x     4.1    25.9    6.2x
 
     bulk: 4 docs x 20000-elem arrays (UNNEST -- compute-bound)
     query           n1k1 ms  cbq ms  x(t)   n1k1 MB  cbq MB   x(m)
@@ -86,5 +89,4 @@ engines read their native way and n1k1's byte path wins decisively.
 ## Files
 
 - `gen.py`       — deterministic dataset generator (orders + cust + bulk).
-- `bench.py`     — the driver (builds & runs `n1k1bench`; cbq via `CBQ_LOCALBENCH`).
-- `n1k1bench/`   — in-process n1k1 full-run timer (mirrors the fork's `cmd/localbench`).
+- `bench.py`     — the driver (builds & drives the `n1k1` CLI; cbq via `CBQ_LOCALBENCH`).

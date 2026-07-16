@@ -146,7 +146,11 @@ type Result struct {
 	Labels   base.Labels       // the converted op tree's top labels (internal syntax)
 	Rows     []json.RawMessage // one canonical-JSON value per result row
 	Warnings []errors.Error    // non-fatal advisories recorded during execution
-	Elapsed  time.Duration     // wall-clock of the ExecOp run
+	Elapsed  time.Duration     // wall-clock of just the ExecOp run
+	// RunElapsed is the wall-clock of the WHOLE Run: parse + plan + convert +
+	// execute -- the honest end-to-end query time (what a caller experiences). For
+	// tiny statements it's ~= Elapsed; for a large inline literal, parse dominates.
+	RunElapsed time.Duration
 	Plan     *base.Op          // the converted n1k1 op tree (for .explain / -v)
 	Stats    *base.Stats       // per-operator counters when CollectStats was on, else nil
 	Count    int               // number of result rows (len(Rows), or the streamed count when OnRow was set)
@@ -264,6 +268,16 @@ func (s *Session) Run(stmt string) (res *Result, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			res, err = nil, &ErrUnsupported{Reason: fmt.Sprintf("panic: %v", r)}
+		}
+	}()
+
+	// RunElapsed is the whole-Run wall (parse+plan+convert+execute). Set via a defer
+	// on the named return so every path (StatementRun, PrepareRun, EXPLAIN, ...) gets
+	// it; PlanExec, which builds the Result, only knows the ExecOp slice (Elapsed).
+	runStart := time.Now()
+	defer func() {
+		if res != nil {
+			res.RunElapsed = time.Since(runStart)
 		}
 	}()
 
