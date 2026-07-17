@@ -154,8 +154,9 @@ type Result struct {
 
 	// CompiledChildElapsed is the standalone-compiled EXECUTE child's OWN report of
 	// its compute wall -- from after it has read + parsed the parent's piped input
-	// payload to when its Run() returns. It isolates the "meat" (the specialized,
-	// Futamura-projected query code running over in-memory records) from the
+	// payload to when its Run() returns. It isolates the core compute (non-I/O) --
+	// the specialized, Futamura-projected query code running over in-memory records --
+	// from the
 	// parent<->child IPC (file scan, JSON-serializing inputs to stdin, piping rows
 	// back) that dominates RunElapsed for compiled EXECUTE. 0 for the interpreter and
 	// for any query that didn't compile standalone. See compiledMain / runCompiledChild.

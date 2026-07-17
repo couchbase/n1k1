@@ -48,12 +48,13 @@ back. So the table splits compiled into two numbers:
 
 - **`comp`** — the whole round-trip (parent scan + pipe inputs in + child compute +
   pipe rows back). This is what a caller waiting on one `EXECUTE` experiences.
-- **`meat`** — the child's OWN report of its compute wall (it prints `N1K1_MEAT_NS`
-  once it has parsed the piped payload): the specialized, **Futamura-projected** query
-  code running over the in-memory records, with the parent↔child IPC excluded.
-- **`m:i` = meat / interp.** On the **bulk** rows the interpreter is ~all compute too
-  (I/O is 4 tiny files), so `m:i < 1.0×` means the compiled code is genuinely faster
-  at the actual work.
+- **`core`** — the child's OWN report of its **core compute (non-I/O)** (it prints
+  `N1K1_CORE_NS` once it has parsed the piped payload): the specialized,
+  **Futamura-projected** query code running over the in-memory records, with the
+  parent↔child IPC excluded.
+- **`core:i` = core / interp.** On the **bulk** rows the interpreter is ~all compute
+  too (I/O is 4 tiny files), so `core:i < 1.0×` means the compiled code is genuinely
+  faster at the actual work.
 
 **Two findings, and they point in opposite directions:**
 
@@ -62,13 +63,13 @@ back. So the table splits compiled into two numbers:
    more than the compute it accelerates, worst on bulk where the parent serializes the
    big in-document arrays to stdin.
 2. **But the specialization itself DOES pay off** — on the compute-bound bulk rows the
-   `meat` runs **~1.3–1.6× faster than the interpreter** (`m:i` ≈ 0.64–0.77×). The
-   Futamura projection is a real win; it's just buried under the IPC in this thin-child
-   deployment.
+   `core` compute runs **~1.3–1.6× faster than the interpreter** (`core:i` ≈ 0.64–0.77×).
+   The Futamura projection is a real win; it's just buried under the IPC in this
+   thin-child deployment.
 
-    unnest+group   interp 55.6ms   comp 128ms   meat 40.8ms   m:i 0.73x
-    unnest+filter  interp 38.9ms   comp 109ms   meat 24.8ms   m:i 0.64x
-    unnest+sort    interp 97.5ms   comp 163ms   meat 75.5ms   m:i 0.77x
+    unnest+group   interp 55.6ms   comp 128ms   core 40.8ms   core:i 0.73x
+    unnest+filter  interp 38.9ms   comp 109ms   core 24.8ms   core:i 0.64x
+    unnest+sort    interp 97.5ms   comp 163ms   core 75.5ms   core:i 0.77x
 
 So the compiled lane isn't a single-`EXECUTE` accelerator over a pipe; it targets the
 standalone / fork-free analyzer & multi-query (MQO) deployment (see `DESIGN-prepare.md`),
@@ -79,8 +80,8 @@ Notes on the columns:
 
 - **No compiled MB.** The compute runs in a child process, invisible to the parent's
   heap-alloc counter (an apples-to-apples number would need child RSS — out of scope).
-- **`meat` on the I/O-bound `files` rows is not a compute win** (`m:i` ≈ 0.01×): the
-  child gets its data piped in-memory, so its meat excludes the file I/O the
+- **`core` on the I/O-bound `files` rows is not a compute win** (`core:i` ≈ 0.01×): the
+  child gets its data piped in-memory, so its core compute excludes the file I/O the
   interpreter pays. Only the bulk rows are a clean compute-vs-compute comparison.
 - **`n/a`** = the query didn't compile standalone — today any `JOIN ... ON KEYS`
   (`join-count`, `join+group`, `unnest+join`): the thin child's `MemPipe` can't serve

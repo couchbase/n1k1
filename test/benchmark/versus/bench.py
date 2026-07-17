@@ -128,21 +128,21 @@ def run_n1k1(binary, queries):
     return out
 
 
-_MEAT = re.compile(r"compiled child compute: ([0-9.]+)(ns|µs|ms|s)\b")
+_CORE = re.compile(r"compiled core compute \(non-I/O\): ([0-9.]+)(ns|µs|ms|s)\b")
 
 
 def run_n1k1_compiled(binary, queries):
     """Drive the n1k1 CLI at the -prepare=full ceiling: each query is PREPAREd once
     (which go-builds a standalone cbq-free child binary) then EXECUTEd REPS times.
-    Returns {query: (full_ms, meat_ms)}, each None when unavailable.
+    Returns {query: (full_ms, core_ms)}, each None when unavailable.
 
       full_ms -- the whole compiled round-trip: the parent scans the files, JSON-pipes
                  every input record to the child, the child computes, and pipes rows
                  back. None means the query did NOT compile standalone (errored / fell
                  back) -- e.g. JOIN ... ON KEYS, whose per-row datastore-fetch the thin
                  child's MemPipe can't serve.
-      meat_ms -- the child's OWN report of its compute wall (the "N1K1_MEAT_NS" it
-                 prints once it has parsed the piped payload): the specialized,
+      core_ms -- the child's OWN report of its core compute (non-I/O), the "N1K1_CORE_NS"
+                 it prints once it has parsed the piped payload: the specialized,
                  Futamura-projected query code running over the in-memory records,
                  EXCLUDING the parent<->child IPC. This is the number to compare
                  against the interpreter to see if compilation helps -- cleanest on the
@@ -164,19 +164,19 @@ def run_n1k1_compiled(binary, queries):
     out = {}
     warm = min(5, REPS // 3)
     for q, block in zip(queries, blocks):
-        full, meat = [], []
+        full, core = [], []
         for line in block.splitlines():
             if "row(s)" in line:
                 m = _DUR.search(line)
                 if m:
                     full.append(float(m.group(1)) * _UMS[m.group(2)])
-            m = _MEAT.search(line)
+            m = _CORE.search(line)
             if m:
-                meat.append(float(m.group(1)) * _UMS[m.group(2)])
+                core.append(float(m.group(1)) * _UMS[m.group(2)])
         # A standalone-compiled query yields REPS footers; fewer => errored/fell back.
         f = median(full[warm:]) if len(full) >= REPS else None
-        mt = median(meat[warm:]) if len(meat) >= REPS else None
-        out[q] = (f, mt)
+        c = median(core[warm:]) if len(core) >= REPS else None
+        out[q] = (f, c)
     for q in queries:
         out.setdefault(q, (None, None))
     return out
@@ -195,27 +195,27 @@ def run_cbq(binary, queries):
 
 
 def table(title, queries, n1, comp, cbq):
-    """Columns: interp ms | comp ms (whole compiled round-trip) | meat ms (child's own
-    compute, IPC excluded) | m:i (meat/interp -- <1.0x = the Futamura-projected code is
-    faster at the actual compute) | cbq ms | interp MB | cbq MB. Compiled has no MB
-    (child process). 'n/a' = the query did not compile standalone."""
+    """Columns: interp ms | comp ms (whole compiled round-trip) | core ms (the child's
+    core compute, non-I/O, IPC excluded) | core:i (core/interp -- <1.0x = the
+    Futamura-projected code is faster at the actual compute) | cbq ms | interp MB |
+    cbq MB. Compiled has no MB (child process). 'n/a' = did not compile standalone."""
     print("\n%s" % title)
     print("-" * 100)
     print("%-16s%9s%9s%9s%8s%9s%10s%10s"
-          % ("query", "interp", "comp", "meat", "m:i", "cbq ms", "interp MB", "cbq MB"))
+          % ("query", "interp", "comp", "core", "core:i", "cbq ms", "interp MB", "cbq MB"))
     print("%-16s%9s%9s%9s%8s%9s%10s%10s"
           % ("", "ms", "ms", "ms", "", "", "", ""))
     print("-" * 100)
     for name, q in queries:
         nms, nmb = n1[q]
-        cms, meat = comp.get(q, (None, None)) if comp else (None, None)
+        cms, core = comp.get(q, (None, None)) if comp else (None, None)
         comp_s = "%.2f" % cms if cms else "n/a"
-        meat_s = "%.2f" % meat if meat else "n/a"
-        mi_s = "%.2fx" % (meat / nms) if (meat and nms) else "-"
+        core_s = "%.2f" % core if core else "n/a"
+        ci_s = "%.2fx" % (core / nms) if (core and nms) else "-"
         cbq_ms = "%.2f" % cbq[q][0] if cbq else "-"
         cbq_mb = "%.2f" % cbq[q][1] if cbq else "-"
         print("%-16s%9.2f%9s%9s%8s%9s%10.2f%10s"
-              % (name, nms, comp_s, meat_s, mi_s, cbq_ms, nmb, cbq_mb))
+              % (name, nms, comp_s, core_s, ci_s, cbq_ms, nmb, cbq_mb))
     print("-" * 100)
 
 
@@ -231,8 +231,8 @@ def main():
 
     print("\ncbq-vs-n1k1  |  files: %d docs   bulk: %d docs x %d-elem arrays"
           "  |  warm median of %d reps" % (NDOCS, BULK_DOCS, BULK_ITEMS, REPS))
-    print("interp/comp/cbq ms = full parse+plan+execute; meat = compiled child's own"
-          " compute (IPC excluded); m:i = meat/interp; MB = allocated/query")
+    print("interp/comp/cbq ms = full parse+plan+execute; core = compiled child's core"
+          " compute (non-I/O, IPC excluded); core:i = core/interp; MB = allocated/query")
     table("SCENARIO: files (one doc per file -- I/O-bound)", FILE_QUERIES, n1, comp, cbq)
     table("SCENARIO: bulk (few docs, big in-doc arrays via UNNEST -- compute-bound)",
           BULK_QUERIES, n1, comp, cbq)
@@ -240,10 +240,10 @@ def main():
         print("\ncomp  = n1k1 -prepare=full standalone-compiled EXECUTE, whole round-trip"
               " (parent scan + JSON-pipe inputs + child compute + pipe rows back);")
         print("        go-build cost excluded via warm-drop.")
-        print("meat  = the child's OWN compute wall (the Futamura-projected query code"
-              " over in-memory records), IPC excluded. m:i = meat/interp.")
+        print("core  = the child's core compute (non-I/O): the Futamura-projected query"
+              " code over in-memory records, IPC excluded. core:i = core/interp.")
         print("        On the bulk (near-zero-I/O) rows interp is ~all compute too, so"
-              " m:i < 1.0x means the compiled code is genuinely faster -- the payoff the")
+              " core:i < 1.0x means the compiled code is genuinely faster -- the payoff the")
         print("        IPC in `comp` hides. 'n/a' = did not compile standalone (JOIN ON"
               " KEYS: the thin child can't do a per-row datastore fetch).")
     else:

@@ -81,7 +81,7 @@ func (s *Session) executeCompiled(ps *preparedStmt) (*Result, bool, error) {
 	// ConvertVals path the interpreter uses -- so multi-column / nested projections
 	// come back correctly, not just SELECT *. (Row assembly is glue's job, so the
 	// child stays thin: engine+base compute only.)
-	valsList, childMeat, err := runCompiledChild(ps.compiledBin, inputs)
+	valsList, childCore, err := runCompiledChild(ps.compiledBin, inputs)
 	if err != nil {
 		return nil, false, err
 	}
@@ -115,7 +115,7 @@ func (s *Session) executeCompiled(ps *preparedStmt) (*Result, bool, error) {
 		Labels:               ps.compiled.topOp.Labels,
 		Rows:                 rows,
 		Count:                len(rows),
-		CompiledChildElapsed: childMeat,
+		CompiledChildElapsed: childCore,
 	}, true, nil
 }
 
@@ -282,10 +282,10 @@ func runCompiledChild(bin string, inputs []compiledInput) ([]base.Vals, time.Dur
 		return nil, 0, fmt.Errorf("compiled EXECUTE: child failed: %v\n%s", err, stderr.String())
 	}
 
-	// The child prints "N1K1_MEAT_NS <n>" on stderr: its compute wall, measured from
+	// The child prints "N1K1_CORE_NS <n>" on stderr: its compute wall, measured from
 	// after it parsed the piped input payload to when Run() returned. Isolates the
 	// specialized query code from the parent<->child IPC. Absent (0) is non-fatal.
-	meat := parseMeatNS(stderr.Bytes())
+	core := parseCoreNS(stderr.Bytes())
 
 	// stdout is a stable buffer, so ValsDecode's Val slices (into each frame) stay
 	// valid without copying.
@@ -300,13 +300,13 @@ func runCompiledChild(bin string, inputs []compiledInput) ([]base.Vals, time.Dur
 		rows = append(rows, base.ValsDecode(b[:n], nil))
 		b = b[n:]
 	}
-	return rows, meat, nil
+	return rows, core, nil
 }
 
-// parseMeatNS extracts the child's "N1K1_MEAT_NS <n>" self-report from its stderr.
-func parseMeatNS(stderr []byte) time.Duration {
+// parseCoreNS extracts the child's "N1K1_CORE_NS <n>" self-report from its stderr.
+func parseCoreNS(stderr []byte) time.Duration {
 	for _, line := range strings.Split(string(stderr), "\n") {
-		if v, ok := strings.CutPrefix(line, "N1K1_MEAT_NS "); ok {
+		if v, ok := strings.CutPrefix(line, "N1K1_CORE_NS "); ok {
 			if ns, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64); err == nil {
 				return time.Duration(ns)
 			}
@@ -384,9 +384,10 @@ func compiledMain(body, provStamp string) string {
 		"\tvars.Ctx.Pipe = &engine.MemPipe{Data: data}\n" +
 		"\tout := bufio.NewWriter(os.Stdout)\n\tdefer out.Flush()\n" +
 		// t0 is stamped AFTER stdin is fully read+unmarshalled into `data`, so the
-		// reported wall is the "meat" -- the specialized query code running over the
-		// in-memory records -- NOT the cost of parsing the parent's piped payload. The
-		// parent reads N1K1_MEAT_NS off stderr (see runCompiledChild) to isolate the
+		// reported wall is the core compute (non-I/O) -- the specialized query code
+		// running over the in-memory records -- NOT the cost of parsing the parent's
+		// piped payload. The
+		// parent reads N1K1_CORE_NS off stderr (see runCompiledChild) to isolate the
 		// Futamura-projection payoff from the parent<->child IPC.
 		"\tt0 := time.Now()\n" +
 		"\tRun(vars, func(vals base.Vals) {\n" +
@@ -396,5 +397,5 @@ func compiledMain(body, provStamp string) string {
 		"\t}, func(err error) {\n" +
 		"\t\tif err != nil { fmt.Fprintln(os.Stderr, err); os.Exit(1) }\n" +
 		"\t})\n" +
-		"\tfmt.Fprintf(os.Stderr, \"N1K1_MEAT_NS %d\\n\", time.Since(t0).Nanoseconds())\n}\n"
+		"\tfmt.Fprintf(os.Stderr, \"N1K1_CORE_NS %d\\n\", time.Since(t0).Nanoseconds())\n}\n"
 }
