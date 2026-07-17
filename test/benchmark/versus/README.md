@@ -38,9 +38,10 @@ mislead on a large inline literal. `Result.RunElapsed` fixes that at the source.
   magnitude faster (see DESIGN-benchmark.md "file-layout lesson": 20K docs = ~13ms as
   one `.jsonl` vs ~3.2s as 20K files). Bump `NDOCS_JSONL` far higher (e.g. 500000) for
   well-resolved container-file times — n1k1 is fast enough that 20K docs in one file is
-  too quick to measure cleanly. **n1k1-only:** cbq's file datastore is one-doc-per-`.json`
-  only, so there's no cbq column here yet (a `jsonl:` in-memory datastore in the
-  `n1k1-query` fork would fix that — see below).
+  too quick to measure cleanly. **cbq now has a column here too** — via the fork's
+  `jsonl:` in-memory datastore (see below) — making this a clean *engine-vs-engine*
+  comparison with the per-file-`open` cost removed (`ON KEYS` join queries stay n1k1-only,
+  since `cust` isn't a `.jsonl` keyspace).
 
 ## A third contender: n1k1 compiled codegen
 
@@ -122,18 +123,34 @@ big-array docs; and `orders_jsonl/data.jsonl`, the same order docs packed into o
 container file). Defaults `NDOCS=20000`, `BULK_ITEMS=20000`, `NDOCS_JSONL=NDOCS`,
 `REPS=11`.
 
-### A cbq column for the packed scenario (future)
+### The cbq packed column (`jsonl:` datastore)
 
 cbq's file datastore is strictly one-doc-per-`.json` (keyspace = dir, key = filename,
-doc = whole file), so it can't read a `.jsonl` container. The cheapest fix for an
-apples-to-apples packed comparison is **not** to teach the file datastore JSONL
-(medium effort — single-file keyspace + synthetic line keys, and Scan/Fetch are
-decoupled so Fetch needs a line-offset index), but to adapt the fork's existing
-in-memory **mock datastore** (`datastore/mock`, which already uses integer synthetic
-keys and a `genItem(i)`): load the `.jsonl` once into `[]value.Value` and return
-`docs[i]`, behind a `jsonl:` datastore URI (one prefix branch in
-`datastore/resolver`). ~<100 lines, touches nothing in `datastore/file`, and loads
-outside the timed region. Deferred.
+doc = whole file), so it can't read a `.jsonl` container. Rather than teach the file
+datastore JSONL (medium effort — single-file keyspace + synthetic line keys, and
+Scan/Fetch are decoupled so Fetch needs a line-offset index), the fork's
+`local-benchmark` branch adds a small **`datastore/jsonl`** — a thin adaptation of the
+in-memory `datastore/mock` (already integer-keyed): it loads `<root>/default/<name>/*.jsonl`
+into memory once (a keyspace per subdir), `value.NewValue`s each line lazily at fetch,
+and is selected by a `jsonl:` URI (one branch in `datastore/resolver`). `bench.py`
+drives it by setting `SITE=jsonl:` on `localbench` for the packed queries; the docs load
+outside the timed region, so it cleanly times cbq's *executor* over the container. The
+`ON KEYS` join queries stay n1k1-only (the `jsonl:` store exposes only `orders_jsonl`;
+`cust` has no `.jsonl`). Rebuild `localbench` from the branch after pulling to pick it up.
+
+Representative packed numbers (200K-doc `.jsonl`, this machine) — the container-file
+comparison with the file-open cost removed:
+
+    query           n1k1 ms   cbq ms   x(t)   n1k1 MB   cbq MB     x(m)
+    count+filter        67      528    ~8x       0.22      339    ~1500x
+    filter+project     149      988    ~7x       10.9      575      ~53x
+    group+agg          108     1143   ~11x       0.18      627    ~3500x
+    sort+limit         101     1163   ~12x       0.13      792
+    unnest-count       182     1800   ~10x       26.3     1323      ~50x
+
+**On a container file n1k1 is ~5–12× faster and uses ~50–3500× less memory** — the
+clean engine-vs-engine gap the I/O-bound `files` scenario masked. cbq boxes every doc
+into `value.AnnotatedValue` + go_json; n1k1 stays on `[]byte`.
 
 ## Results (representative, this machine)
 

@@ -194,15 +194,17 @@ def run_n1k1_compiled(binary, queries):
     return out
 
 
-def run_cbq(binary, queries):
-    """The fork's cmd/localbench: one process over DATA, RESULT<TAB>ms<TAB>MB<TAB>rows."""
-    env = dict(os.environ, REPS=str(REPS))
+def run_cbq(binary, queries, site="dir:"):
+    """The fork's cmd/localbench over DATA: RESULT<TAB>ms<TAB>MB<TAB>rows. `site` picks
+    the datastore -- "dir:" (one-doc-per-.json) or "jsonl:" (in-memory .jsonl container
+    keyspaces, for the packed scenario)."""
+    env = dict(os.environ, REPS=str(REPS), SITE=site)
     r = subprocess.run([binary, DATA], input="\n".join(queries) + "\n",
                        env=env, capture_output=True, text=True)
     rows = [ln.split("\t") for ln in r.stdout.splitlines() if ln.startswith("RESULT\t")]
     if len(rows) != len(queries):
-        die("localbench gave %d/%d RESULT lines\n%s"
-            % (len(rows), len(queries), r.stderr[-1000:]))
+        die("localbench (%s) gave %d/%d RESULT lines\n%s"
+            % (site, len(rows), len(queries), r.stderr[-1000:]))
     return {q: (float(c[1]), float(c[2])) for q, c in zip(queries, rows)}
 
 
@@ -224,8 +226,9 @@ def table(title, queries, n1, comp, cbq):
         comp_s = "%.2f" % cms if cms else "n/a"
         core_s = "%.2f" % core if core else "n/a"
         ci_s = "%.2fx" % (core / nms) if (core and nms) else "-"
-        cbq_ms = "%.2f" % cbq[q][0] if cbq else "-"
-        cbq_mb = "%.2f" % cbq[q][1] if cbq else "-"
+        cq = cbq.get(q) if cbq else None
+        cbq_ms = "%.2f" % cq[0] if cq else "-"
+        cbq_mb = "%.2f" % cq[1] if cq else "-"
         print("%-16s%9.2f%9s%9s%8s%9s%10.2f%10s"
               % (name, nms, comp_s, core_s, ci_s, cbq_ms, nmb, cbq_mb))
     print("-" * 100)
@@ -244,6 +247,11 @@ def main():
     packed_q = [q for _, q in PACKED_QUERIES]
     n1p = run_n1k1(n1bin, packed_q)
     compp = run_n1k1_compiled(n1bin, packed_q) if COMPILED else {}
+    # cbq packed: the jsonl: datastore exposes only orders_jsonl (cust has no .jsonl),
+    # so the ON KEYS join queries can't run there -- skip them for the cbq column.
+    cbqp = run_cbq(CBQ_LOCALBENCH,
+                   [q for name, q in PACKED_QUERIES if "join" not in name],
+                   site="jsonl:") if CBQ_LOCALBENCH else {}
 
     print("\ncbq-vs-n1k1  |  files: %d docs   bulk: %d docs x %d-elem arrays"
           "   packed: %d-doc .jsonl  |  warm median of %d reps"
@@ -253,9 +261,9 @@ def main():
     table("SCENARIO: files (one doc per file -- I/O-bound)", FILE_QUERIES, n1, comp, cbq)
     table("SCENARIO: bulk (few docs, big in-doc arrays via UNNEST -- compute-bound)",
           BULK_QUERIES, n1, comp, cbq)
-    table("SCENARIO: packed (same order docs in ONE .jsonl container -- n1k1-only; "
-          "cf. files at same NDOCS_JSONL to see the per-file-open cost)",
-          PACKED_QUERIES, n1p, compp, {})
+    table("SCENARIO: packed (same order docs in ONE .jsonl container; cbq via jsonl: "
+          "in-mem datastore -- joins n/a, cust has no .jsonl)",
+          PACKED_QUERIES, n1p, compp, cbqp)
     if COMPILED:
         print("\ncomp  = n1k1 -prepare=full standalone-compiled EXECUTE, whole round-trip"
               " (parent scan + JSON-pipe inputs + child compute + pipe rows back);")
