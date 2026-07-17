@@ -275,6 +275,23 @@ compare storage formats with the per-file-`open` cost removed:
   plain typed columns for column-selective queries**; whole-doc-as-one-VARIANT just adds
   format overhead. (Generators: `test/benchmark/versus/gen_variant.go`, `gen.py`.)
 
+  **Where the memory goes (pprof) + Phase-1/shredded A/B.** The alloc is ~93% *arrow-go*,
+  not n1k1: ~60% arrow copies the VARIANT byte-array column into `BinaryBuilder` buffers
+  (no zero-copy chunk reference via the `pqarrow` table API), ~18% `variant.Metadata.loadDictionary`
+  re-parses each row's embedded metadata dict on every `VariantArray.Value(i)`, ~16% per-chunk
+  read streams; n1k1's own `variant.AppendJSON` + record buffer is only ~3–4%. So the
+  "zero-copy/no-boxing" property holds for n1k1's engine lane — the cost is the arrow-go read
+  boundary, which jsonl sidesteps (n1k1's own zero-alloc reader). CPU splits ~40% GC churn
+  (from those allocs) + ~40% Phase-0 rendering the *whole* doc to JSON per row even for a
+  one-field query. Measured A/B (50K docs, in-process, `records.VariantFidelity` toggle):
+  unshredded Phase-0 37 ms / 53 MB; **Phase-1 fidelity 59 ms / 110 MB** (~2× — assembles a
+  whole-row `V`-carrier per row instead of rendering JSON; buys typed-scalar fidelity, not
+  speed); **shredded Phase-0 103 ms / 154 MB** (~2.9× — the OPPOSITE of the hoped win:
+  n1k1 has no projection/predicate *pushdown into shredded sub-columns* yet, so arrow-go reads
+  all sub-columns + residual and *coalesces* them back into a full variant per row). So the
+  columnar VARIANT win is **blocked on shredded-column pushdown** (variant-design §6 Phase 2,
+  unshipped); until then unshredded Phase-0 is the cheapest VARIANT path, still far above jsonl.
+
 ## I/O-bound scan & the file-layout lesson (2026-07)
 
 The `versus` **files** scenario prompted the question "is n1k1 just waiting on I/O, and
