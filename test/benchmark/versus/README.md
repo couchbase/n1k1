@@ -22,7 +22,7 @@ warm (median of REPS, first few dropped), reporting median **ms** and median
 SQL is fine but excludes parse+plan — negligible for these file queries, but it would
 mislead on a large inline literal. `Result.RunElapsed` fixes that at the source.)
 
-## Three scenarios
+## Scenarios
 
 - **files** — `orders`/`cust`, one JSON doc per file. Realistic, but **I/O-bound**:
   a filtered scan opens *every* file (the `os.Open` cost both engines pay), so wall
@@ -42,6 +42,17 @@ mislead on a large inline literal. `Result.RunElapsed` fixes that at the source.
   `jsonl:` in-memory datastore (see below) — making this a clean *engine-vs-engine*
   comparison with the per-file-`open` cost removed (`ON KEYS` join queries stay n1k1-only,
   since `cust` isn't a `.jsonl` keyspace).
+- **parquet+VARIANT** (`VARIANT=1`) — the same order docs re-encoded (from the jsonl, so
+  byte-identical) into a Parquet file whose `order` column is an Apache **VARIANT** value
+  (arrow-go's native VARIANT extension type), read natively by n1k1's `records/parquet.go`
+  (Phase-0: the VARIANT projects to JSON at the scan boundary, so `o.order.<field>` "just
+  works" — no CLI flag). Generated in Go (`go run gen_variant.go`, needs the toolchain).
+  **n1k1-only** — iceberg-go (cbq's only parquet path) has no VARIANT type.
+  **Finding: whole-doc VARIANT *loses* to jsonl here** (~1.5–2.4× slower, far more memory):
+  an unshredded VARIANT is one column read + decoded whole per row (parquet/arrow
+  materialization + VARIANT→JSON), with none of the columnar sub-field projection that
+  would justify the format. VARIANT's payoff needs **shredding** (typed sub-columns) or
+  plain typed columns for column-selective queries — a future scenario.
 
 ## A third contender: n1k1 compiled codegen
 
@@ -111,6 +122,7 @@ via `rt.NewSpillCtx`. Guarded by `glue.TestExecuteCompiledAggAndArith`.)
     python3 bench.py                                    # n1k1 only
     COMPILED=1 python3 bench.py                         # + compiled column
     NDOCS_JSONL=500000 python3 bench.py                 # big container file for the packed table
+    VARIANT=1 python3 bench.py                          # + parquet+VARIANT scenario (n1k1-only)
     NDOCS=50000 BULK_ITEMS=50000 REPS=15 python3 bench.py
 
 Build the cbq runner once (in the fork worktree on branch `local-benchmark`):

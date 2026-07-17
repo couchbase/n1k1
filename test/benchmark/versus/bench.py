@@ -43,6 +43,11 @@ NDOCS_JSONL = int(os.environ.get("NDOCS_JSONL", str(NDOCS)))
 REPS = int(os.environ.get("REPS", "11"))
 CBQ_LOCALBENCH = os.environ.get("CBQ_LOCALBENCH", "")
 COMPILED = os.environ.get("COMPILED", "") not in ("", "0", "false")
+# VARIANT=1 adds a parquet+VARIANT scenario: the SAME docs as orders_jsonl re-encoded
+# into a Parquet file with an Apache VARIANT `order` column (via go run gen_variant.go),
+# read natively by n1k1. Off by default (needs the go toolchain to build the writer;
+# n1k1-only -- cbq's iceberg-go has no VARIANT).
+VARIANT = os.environ.get("VARIANT", "") not in ("", "0", "false")
 
 FILE_QUERIES = [
     ("count+filter", "SELECT COUNT(*) c FROM orders WHERE amount >= 0"),
@@ -79,6 +84,23 @@ BULK_QUERIES = [
 # datastore is one-doc-per-.json only, so this scenario is n1k1-only for now.
 PACKED_QUERIES = [(name, q.replace("orders", "orders_jsonl"))
                   for name, q in FILE_QUERIES]
+
+# parquet+VARIANT scenario: same docs, but each order is an Apache Parquet VARIANT
+# value under the `order` column (so fields are o.order.<f>), read natively by n1k1's
+# records/parquet.go. Non-join subset (cust isn't a VARIANT keyspace); n1k1-only.
+VARIANT_QUERIES = [
+    ("count+filter", "SELECT COUNT(*) c FROM orders_variant o WHERE o.order.amount >= 0"),
+    ("filter+project", "SELECT o.order.custId, o.order.amount FROM orders_variant o "
+                       "WHERE o.order.amount > 500"),
+    ("group+agg", "SELECT o.order.category, COUNT(*) c, SUM(o.order.amount) s, "
+                  "AVG(o.order.amount) a FROM orders_variant o GROUP BY o.order.category"),
+    ("sort+limit", "SELECT o.order.custId, o.order.amount FROM orders_variant o "
+                   "WHERE o.order.amount >= 0 ORDER BY o.order.amount DESC LIMIT 10"),
+    ("expr-heavy", "SELECT o.order.id, (o.order.amount * o.order.qty) + 1 AS t "
+                   "FROM orders_variant o WHERE o.order.amount * o.order.qty > 2000"),
+    ("unnest-count", "SELECT COUNT(*) c FROM orders_variant o UNNEST o.order.items i "
+                     "WHERE i.qty > 2"),
+]
 
 
 def die(m):
@@ -253,6 +275,16 @@ def main():
                    [q for name, q in PACKED_QUERIES if "join" not in name],
                    site="jsonl:") if CBQ_LOCALBENCH else {}
 
+    n1v = {}
+    if VARIANT:
+        # Re-encode orders_jsonl into a parquet VARIANT column (docs stay identical).
+        pq = os.path.join(DATA, "default", "orders_variant", "orders.parquet")
+        os.makedirs(os.path.dirname(pq), exist_ok=True)
+        subprocess.run(["go", "run", os.path.join(HERE, "gen_variant.go"),
+                        os.path.join(DATA, "default", "orders_jsonl", "data.jsonl"), pq],
+                       cwd=REPO, check=True)
+        n1v = run_n1k1(n1bin, [q for _, q in VARIANT_QUERIES])
+
     print("\ncbq-vs-n1k1  |  files: %d docs   bulk: %d docs x %d-elem arrays"
           "   packed: %d-doc .jsonl  |  warm median of %d reps"
           % (NDOCS, BULK_DOCS, BULK_ITEMS, NDOCS_JSONL, REPS))
@@ -264,6 +296,10 @@ def main():
     table("SCENARIO: packed (same order docs in ONE .jsonl container; cbq via jsonl: "
           "in-mem datastore -- joins n/a, cust has no .jsonl)",
           PACKED_QUERIES, n1p, compp, cbqp)
+    if VARIANT:
+        table("SCENARIO: parquet+VARIANT (same docs as an Apache VARIANT `order` column, "
+              "read natively by n1k1; cbq n/a -- iceberg-go has no VARIANT)",
+              VARIANT_QUERIES, n1v, {}, {})
     if COMPILED:
         print("\ncomp  = n1k1 -prepare=full standalone-compiled EXECUTE, whole round-trip"
               " (parent scan + JSON-pipe inputs + child compute + pipe rows back);")

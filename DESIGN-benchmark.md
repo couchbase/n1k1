@@ -249,6 +249,32 @@ standalone (today any `JOIN ... ON KEYS`: the thin child can't do a per-row data
 fetch). Two codegen bugs had to be fixed to make aggregates + two-field arithmetic even
 compile — see `glue.TestExecuteCompiledAggAndArith`.
 
+### Container-format scenarios: packed `.jsonl` and parquet+VARIANT
+
+Two more `versus` scenarios put the *same* order docs in a single container file, to
+compare storage formats with the per-file-`open` cost removed:
+
+- **packed `.jsonl`** (`orders_jsonl`, own `NDOCS_JSONL` knob). cbq gets a real column
+  here via the fork's new **`jsonl:` in-memory datastore** (`local-benchmark` branch,
+  `datastore/jsonl` — a thin `datastore/mock` adaptation loading `<root>/default/<ks>/*.jsonl`;
+  `bench.py` sets `SITE=jsonl:`; `ON KEYS` joins stay n1k1-only since `cust` has no
+  `.jsonl`). **Result (200K-doc `.jsonl`, engine-vs-engine): n1k1 ~5–12× faster and
+  ~50–3500× less memory than cbq** (e.g. group+agg 108 ms / 0.18 MB vs 1143 ms / 627 MB) —
+  the clean byte-engine-vs-boxed gap the I/O-bound `files` scenario masked.
+- **parquet+VARIANT** (`VARIANT=1`, `orders_variant`; the jsonl re-encoded so docs are
+  identical). arrow-go v18 has a native Parquet VARIANT extension type; n1k1's
+  `records/parquet.go` reads it (Phase-0 projects the VARIANT to JSON at the scan
+  boundary — no CLI flag; `VariantFidelity` Phase-1 is a package global with no CLI
+  setter, only needed for typed-scalar fidelity our plain-JSON orders lack). cbq is n/a
+  (iceberg-go v0.4.0 has no VARIANT). **Result (n1k1, 200K docs): whole-doc VARIANT is
+  ~1.5–2.4× SLOWER and far more memory-hungry than the same docs as `.jsonl`** (count+filter
+  154 ms / 181 MB vs 65 ms / 0.21 MB). An *unshredded* VARIANT is one column read + decoded
+  whole per row (parquet/arrow batch materialization + VARIANT→JSON), with none of the
+  columnar sub-field projection that would justify the format — n1k1's `.jsonl` path is
+  near-alloc-free by contrast. **VARIANT's payoff needs shredding (typed sub-columns) or
+  plain typed columns for column-selective queries**; whole-doc-as-one-VARIANT just adds
+  format overhead. (Generators: `test/benchmark/versus/gen_variant.go`, `gen.py`.)
+
 ## I/O-bound scan & the file-layout lesson (2026-07)
 
 The `versus` **files** scenario prompted the question "is n1k1 just waiting on I/O, and
