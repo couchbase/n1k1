@@ -2,25 +2,32 @@
 
 ## Status & remaining TODOs
 
-_Last reviewed: 2026-07-11._
+_Last reviewed: 2026-07-16._
 
 **Done:** Phase 1 (intrinsic pure-Go microbenchmarks) and Phase 2 (interpreted vs
 compiled) are built and run under `make bench` / `bench-spill` / `bench-compiler`
 over `test/benchmark/`, with recorded findings (flat allocs/op at 1M rows,
 ~4000-key GROUP BY spill onset with graceful degradation, fusion cutting ~40% of
-allocs). Phase 3 (absolute baseline vs couchbase/query) stays blocked in a stock
-dev env; the blockers and a future-run recipe are recorded below.
+allocs). **Phase 3 is now REALIZED** — not the from-source cbq-engine route (still
+blocked, below), but a leaner one: `test/benchmark/versus` races n1k1 vs a real cbq
+executor over the *same* local `*.json` dir, via the `n1k1-query` fork's
+`local-benchmark` branch (`cmd/localbench` over `test/filestore`). See
+[Phase 3 realized](#phase-3-realized--n1k1-vs-cbq-over-local-files).
 
 **Remaining (headline TODOs):**
-- [ ] Phase 3 (vs couchbase/query, absolute baseline) — needs a buildable server
-  source tree; the one-line patch and run recipe are recorded, but no stock env
-  can build it.
+- [ ] Phase 3 *product-numbers* variant (from-source cbq-engine over `dir:`) — still
+  needs a buildable server source tree; the one-line patch and recipe are recorded
+  below. The `versus` harness covers the executor-vs-executor comparison already.
 - [ ] Fold the newer perf levers into this harness — streaming merge-scan,
   fixed-width columnar, window incremental-fold — currently measured ad hoc
   (`glue/window_bench_test.go`, `test/col_test.go`), not under `make bench`.
 - [ ] Attack boxed-value / JSON alloc churn: the scan/filter/project
   path is parse-bound (Phase 2), so a native-lane ASOF/subquery projection is the
   next perf lever.
+- [ ] Consider a **packed-layout column** in `versus` (same data as one `.jsonl`):
+  the I/O-bound file scenario is dominated by per-file-open syscall overhead, and
+  packing beats it ~245× — the layout effect dwarfs the engine gap. See
+  [I/O-bound scan & the file-layout lesson](#io-bound-scan--the-file-layout-lesson-2026-07).
 
 ## Overview
 
@@ -39,9 +46,12 @@ stock env) would compare against couchbase/query as a baseline.
 4. [Harness, data & layout](#harness-data--layout)
 5. [Phase 1 findings (current)](#phase-1-findings-current)
 6. [Phase 2 — compiled-query benchmarking + findings](#phase-2--compiled-query-benchmarking--findings)
-7. [What already exists](#what-already-exists)
-8. [Open decisions](#open-decisions)
-9. [Phase 3 feasibility — findings (2026-06)](#phase-3-feasibility--findings-2026-06)
+7. [Phase 3 realized — n1k1 vs cbq over local files](#phase-3-realized--n1k1-vs-cbq-over-local-files)
+8. [I/O-bound scan & the file-layout lesson](#io-bound-scan--the-file-layout-lesson-2026-07)
+9. [Measurement gotchas (hard-won)](#measurement-gotchas-hard-won)
+10. [What already exists](#what-already-exists)
+11. [Open decisions](#open-decisions)
+12. [Phase 3 feasibility — product-numbers variant (2026-06)](#phase-3-feasibility--product-numbers-variant-2026-06)
 
 ## Claims → benchmarks
 
@@ -170,6 +180,150 @@ Findings, stable across repeats (30M rows/op, `-benchtime=30s`):
   overhead is marginal there (even slightly slower). Signal: for
   scan/filter/project, optimize parsing; fusion pays most for call-heavy ops.
 
+## Phase 3 realized — n1k1 vs cbq over local files
+
+The Phase 3 goal — time the **same** queries over the **same** data through
+couchbase/query's real executor — is achieved by `test/benchmark/versus`, sidestepping
+the blocked from-source cbq-engine route ([below](#phase-3-feasibility--product-numbers-variant-2026-06)).
+
+**How it's apples-to-apples.** Both engines read the *classic cbq file-datastore
+layout* `<root>/<namespace>/<keyspace>/<key>.json` (one JSON doc per file). Both use
+cbq's parser+planner (identical plan); what differs is the **execution engine** —
+n1k1's `[]byte` byte-engine vs cbq's boxed `value.AnnotatedValue` executor. The cbq
+side runs via the `n1k1-query` fork's **`local-benchmark`** branch: `cmd/localbench`
+drives `test/filestore` over the same `dir:` datastore, timing `filestore.Run` +
+`runtime.MemStats`. Build once: `CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go
+build -o /tmp/localbench ./cmd/localbench`, then `CBQ_LOCALBENCH=/tmp/localbench`.
+
+**Fairness — both columns are the FULL `parse→plan→execute`**, warm (median of REPS,
+first few dropped), reporting median ms + median allocated MB. On the n1k1 side the CLI
+reports `Result.RunElapsed` (the whole `Session.Run`), *not* just `ExecOp` — see the
+[gotchas](#measurement-gotchas-hard-won); measuring ExecOp-only once showed a bogus
+~40× "win". Run: `[COMPILED=1] [CBQ_LOCALBENCH=...] python3 test/benchmark/versus/bench.py`.
+
+**Two scenarios, chosen to separate I/O from execution:**
+- **files** — `orders`/`cust`, one doc per file. Realistic but **I/O-bound**: a scan
+  opens *every* file, a cost both engines pay, so wall time is close.
+- **bulk** — a few docs each holding a large `items[]` array, driven by **UNNEST**.
+  Volume lives *inside* documents → file I/O is trivial and per-row execution dominates.
+
+**Findings (indicative, apple-silicon, warm):**
+
+| scenario | time (n1k1 vs cbq) | memory (n1k1 vs cbq) |
+|---|---|---|
+| files (I/O-bound) | ~1.0–1.1× (tie) | **2–6× less** |
+| bulk (compute-bound) | **5–8× faster** | **5–26× less** |
+
+The bulk gap is the thesis in one number: cbq boxes every unnested array element into a
+`value.Value` (`SimpleUnmarshal` + map); n1k1 UNNESTs and evaluates on raw `[]byte`.
+The files tie is expected (both pay `os.Open` per doc) — but see the layout lesson: that
+tie is an artifact of the one-doc-per-file layout, not the engines.
+
+**n1k1 stays native (no boxed fallback).** `EXPLAIN` on every `versus` query shows zero
+`⟨boxed⟩` markers — all project/filter/join/UNNEST run on the byte path, so the wins are
+genuine native-vs-boxed, not measurement artifacts.
+
+### Compiled-codegen column (`COMPILED=1`) — the Futamura payoff, isolated
+
+`COMPILED=1` adds n1k1's `-prepare=full` **standalone-compiled EXECUTE**: each query is
+`PREPARE`d once (emitting cbq-free Go, `go build`ing a child binary — needs the `go`
+toolchain + `N1K1_SRC`), then `EXECUTE`d warm (build cost dropped). The lane is a **thin
+child**: the *parent* scans + JSON-pipes each input record to the child; the *child*
+runs only the compiled compute and pipes rows back. So the table splits it:
+
+- **`comp`** — whole round-trip (parent scan + pipe in + child compute + pipe out).
+- **`core`** — the child's *own* reported compute wall (`N1K1_CORE_NS`), i.e. the
+  specialized, Futamura-projected query code over in-memory records, IPC excluded.
+- **`core:i` = core / interp** — on the bulk rows (interp ≈ all compute) `<1.0×` means
+  the compiled code is genuinely faster.
+
+**Finding — two opposing truths:** end-to-end, `comp` is ~1.2–3.0× *slower* than the
+interpreter (the thin-child IPC — JSON-marshalling inputs, piping rows — costs more than
+the compute it accelerates). **But the specialization itself pays off**: `core` runs
+**~1.3–1.6× faster than the interpreter** on the compute-bound bulk rows (`core:i`
+≈ 0.64–0.77×). The Futamura projection is a real win, just buried under IPC in this
+thin-child deployment (which targets the standalone/MQO scenario, not single-`EXECUTE`
+over a pipe; see `DESIGN-prepare.md`). No compiled MB column — the compute runs in a
+child process, invisible to the parent's heap-alloc counter. `n/a` = didn't compile
+standalone (today any `JOIN ... ON KEYS`: the thin child can't do a per-row datastore
+fetch). Two codegen bugs had to be fixed to make aggregates + two-field arithmetic even
+compile — see `glue.TestExecuteCompiledAggAndArith`.
+
+## I/O-bound scan & the file-layout lesson (2026-07)
+
+The `versus` **files** scenario prompted the question "is n1k1 just waiting on I/O, and
+would concurrency help?" The answer reframed the whole problem, so it's recorded here.
+*(All exploration below lives as env-gated throwaway hacks in an experimental worktree,
+not landed — `N1K1_PSCAN`, `N1K1_STAGE`, `Stage.NoCopy`. The findings are the deliverable.)*
+
+**It IS I/O-blocked.** A filtered scan over 20 000 one-doc `.json` files is **~78%
+off-CPU** (20 reps: 66.8s wall vs 14.7s on-CPU) — serial per-file `open/stat/read/close`
+syscalls, one at a time in one goroutine.
+
+**Parallel scan helps ~3.9×, but it's a band-aid.** Fanning the file list across N
+`base.Stage` supplier goroutines (each `WalkPrelisted` over a partition) gives ~3.9× on
+real filter/group/project queries — **but only at ~128 actors** (the actors are
+I/O-*blocked*, so you need ~10× oversubscription vs cores; ≤16 does nothing, 32→1.8×,
+64→3.3×, 128→3.9× peak, 256 regresses). Profiling at 128 actors: ~359% on-CPU, 97.6% in
+`syscall.syscall` under the actors — the ceiling is the **OS/FS capping concurrent read
+syscalls to ~3.7 effective cores** (a containerized/overlay FS, ~160µs kernel per file);
+the consumer (parse/filter/group) + dir walk are ~37ms each, **negligible**. So batch
+size and in-flight depth are **noise**, a zero-copy handoff is **unneeded** (the per-row
+`ValsDeepCopy` isn't the bottleneck), and parallel *compute* would be **pointless**.
+
+**The punchline — packing beats parallelizing opens by two orders of magnitude:**
+
+| layout (20 000 docs, filter+group) | time |
+|---|---|
+| 20 000 `.json` files, serial | 3194 ms |
+| 20 000 `.json` files, parallel (128 actors) | 703 ms (4.5×) |
+| **1 `.jsonl` file, serial** | **13 ms** |
+
+The actual compute (parse+filter+group over 20 000 docs) is **~13 ms** — free. The whole
+3.2s was per-file open/read/close syscall overhead × 20 000, nothing to do with the data.
+Packing the same docs into one `.jsonl` (which n1k1 already reads) is **~245× faster than
+serial, ~54× faster than the parallel hack**. So: the one-doc-per-file layout (the classic
+cbq file-datastore shape) is pathologically syscall-heavy; the real fix is a **container
+format** (`.jsonl`/parquet), not parallel scanning. Parallel scan is a genuine
+consolation prize only when you're *stuck* with a directory of many files (Couchbase
+exports, log dirs, cbcollect bundles).
+
+**Read-ahead *decoupling* (as opposed to parallelism) was a dead end.** A single-supplier
+`base.Stage` that overlaps the child's I/O with the consumer's compute (built as a
+one-child `OpStage` + a flag-gated plan-rewrite) gave **no** win (one supplier can't
+parallelize the serial opens; the consumer is too small to overlap) and was **3× WORSE**
+on the hot, re-executed inner of a nested-loop join (a fresh `Stage` goroutine+channel per
+outer row — ~80 000 spawns on `bulk unnest+join`).
+
+**Caveats.** Warm page cache; a containerized FS (expensive per-file syscalls, ~3.7×
+concurrency cap). On bare metal / a real disk the ratios shift (cheaper opens shrink the
+packing win toward ~10–15×; cold-cache disk latency may let parallelism hide more). The
+*direction* is universal: fewer syscalls always wins; parallelism only hides them.
+
+## Measurement gotchas (hard-won)
+
+Mistakes that produced confidently-wrong numbers before being caught — encode these into
+any new harness:
+
+- **Time the FULL request, not just `ExecOp`.** The n1k1 CLI footer originally timed only
+  `ExecOp` (`Result.Elapsed`); against cbq's full request that showed a bogus ~40× "win".
+  Fixed by `Result.RunElapsed` (parse+plan+convert+execute). For tiny SQL it ≈ `Elapsed`;
+  for a large inline literal, parse dominates — so always measure end-to-end.
+- **Compiled memory isn't visible to the parent.** A standalone-compiled EXECUTE runs in a
+  *child process*, so the parent's `.stats`/heap-alloc counter can't see its allocations —
+  the compiled column is **time-only** (an apples-to-apples MB would need child RSS).
+- **Validate row COUNTS when hacking the scan, not just speedup.** The parallel-scan
+  prototype had two silent bugs: (1) an over-conservative dispatch guard
+  (`scanProjectColumns==nil && !hasFilter`) quietly kept every *filtered/projected* query
+  on the serial path → a false "payload queries don't parallelize" result; those pushdown
+  hints are no-ops on JSON dirs anyway (the filter/project ops above the scan do the real
+  work). (2) actors didn't send the done-signal (`yieldErr(nil)`), so `base.Stage` never
+  flushed each actor's final partial batch → **~18% of rows silently dropped**
+  (20 000→16 384 = 256×64). Both invisible unless you check counts.
+- **Float SUM is non-deterministic under reordering.** Parallel actors (or partial
+  aggregation) sum in a different order, so `SUM` differs in the last 1–2 ULPs — expected
+  float non-associativity, not a correctness bug (but it will trip an exact-diff oracle).
+
 ## What already exists
 
 Build on these, don't duplicate:
@@ -190,7 +344,13 @@ Build on these, don't duplicate:
 3. **Phase 3 trigger** — deferred; revisit HTTP-over-the-wire vs a fork-patched
    in-process timing hook when a buildable server tree exists.
 
-## Phase 3 feasibility — findings (2026-06)
+## Phase 3 feasibility — product-numbers variant (2026-06)
+
+_Superseded for the executor-vs-executor comparison by
+[Phase 3 realized](#phase-3-realized--n1k1-vs-cbq-over-local-files) (the `versus`
+harness + `n1k1-query` `local-benchmark` fork). This section remains the recipe for the
+heavier **product-numbers** run — a full from-source cbq-engine over a `dir:` datastore —
+which is still blocked in a stock env._
 
 Goal: time the **same** queries over the **same** data through
 couchbase/query's executor. **Blocked in a stock dev env** (Couchbase Server.app
