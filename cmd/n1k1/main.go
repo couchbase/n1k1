@@ -78,6 +78,9 @@ func main() {
 		indexFlag   = flag.String("index", "lazy", "use catalog (secondary/FTS) indexes: "+
 			"lazy (default; build each on first use) | eager (build all up front)"+
 			" | off (ignore the catalog; always full-scan)")
+		variantFidelity = flag.Bool("variant-fidelity", false,
+			"Parquet VARIANT scan carries typed-scalar fidelity (V-carrier) instead of the "+
+				"Phase-0 JSON projection; a lone VARIANT column reads via the zero-copy borrow path")
 	)
 	// -ext / -extensions (synonyms): load extensions at startup. Repeatable
 	// and comma-separated (a dir or a file each); kind auto-detected by file
@@ -110,6 +113,11 @@ func main() {
 	flag.Usage = usage
 
 	flag.CommandLine.Parse(normalizeArgs(os.Args[1:]))
+
+	// Parquet VARIANT fidelity scan mode (a process-global; set once here before any
+	// scan). A lone VARIANT column then reads via the zero-copy borrow path. See
+	// records.VariantFidelity / DESIGN-variant.md.
+	records.VariantFidelity = *variantFidelity
 
 	// A closed output pipe (`n1k1 -c ... | head`) should stop the query, not crash the
 	// process: ignore SIGPIPE so a broken-pipe write returns EPIPE (the row-writer then

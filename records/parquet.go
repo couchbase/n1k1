@@ -65,9 +65,10 @@ type parquetSource struct {
 	pf       *file.Reader
 	pr       *pqarrow.FileReader
 	rr       pqarrow.RecordReader
-	proj     []int // leaf column indices to read; nil => all columns
-	idPrefix string
-	row      int
+	proj        []int // leaf column indices to read; nil => all columns
+	idPrefix    string
+	loneVariant bool // file schema is exactly one VARIANT column -> unwrapped rows
+	row         int
 
 	buf   []byte   // current batch rendered as NDJSON or V-rows (reused across batches)
 	lines [][]byte // per-row slices into buf
@@ -108,9 +109,18 @@ func newParquetSource(path, idPrefix string) (Source, error) {
 		pf.Close()
 		return nil, err
 	}
+	// loneVariant: the FILE's schema is exactly one VARIANT column -> the variant value
+	// IS the document, read UNWRAPPED. Decided from the file schema, NOT the per-batch
+	// column count, because projection pushdown can reduce a multi-column file to a
+	// single (variant) column at read time -- which must still read wrapped (o.col.x).
+	loneVariant := false
+	if sch, serr := pr.Schema(); serr == nil && sch.NumFields() == 1 {
+		_, loneVariant = sch.Field(0).Type.(*extensions.VariantType)
+	}
+
 	// The RecordReader is created lazily on the first Next so an optional
 	// ProjectColumns (which must precede iteration) can restrict its columns.
-	return &parquetSource{pf: pf, pr: pr, idPrefix: idPrefix}, nil
+	return &parquetSource{pf: pf, pr: pr, idPrefix: idPrefix, loneVariant: loneVariant}, nil
 }
 
 // ProjectColumns implements ColumnsProjector: read only the named columns. Must
@@ -230,18 +240,30 @@ func (s *parquetSource) Next(rec *Record) (bool, error) {
 		if err != nil {
 			return false, err
 		}
-		useV := false
-		if VariantFidelity {
-			if col, ok := batchHasVariant(batch); ok && col >= 0 {
-				useV = true // fidelity mode + a supported single-VARIANT-column shape
-			}
-		}
-		if useV {
-			s.buf, s.lines, s.offs, err = arrowBatchToVariantRows(s.buf, s.lines[:0], s.offs, batch, &s.asm)
-		} else {
-			s.buf, err = arrowBatchToNDJSON(s.buf, batch)
-			if err == nil {
+		if va, isLone := s.loneVariantCol(batch); isLone {
+			// A lone VARIANT column (file schema): the variant value IS the document,
+			// carried/rendered UNWRAPPED (no {colname: ...}). Fidelity BORROWS the bytes
+			// (V-carrier); Phase-0 renders the variant's JSON directly -- same row shape.
+			if VariantFidelity {
+				s.buf, s.lines, s.offs = borrowVariantRows(s.buf, s.lines[:0], s.offs, va)
+			} else {
+				s.buf = loneVariantNDJSON(s.buf, va)
 				s.lines = splitNDJSON(s.buf, s.lines[:0])
+			}
+		} else {
+			useV := false
+			if VariantFidelity {
+				if col, ok := batchHasVariant(batch); ok && col >= 0 {
+					useV = true // fidelity mode + a supported (multi-col) VARIANT shape
+				}
+			}
+			if useV {
+				s.buf, s.lines, s.offs, err = arrowBatchToVariantRows(s.buf, s.lines[:0], s.offs, batch, &s.asm)
+			} else {
+				s.buf, err = arrowBatchToNDJSON(s.buf, batch)
+				if err == nil {
+					s.lines = splitNDJSON(s.buf, s.lines[:0])
+				}
 			}
 		}
 		batch.Release()
@@ -389,6 +411,20 @@ func arrowBatchToNDJSON(buf []byte, batch arrow.RecordBatch) ([]byte, error) {
 	bb := bytes.NewBuffer(buf[:0])
 	err := array.RecordToJSON(batch, bb)
 	return bb.Bytes(), err
+}
+
+// loneVariantNDJSON renders a lone-VARIANT-column batch as one JSON doc per row -- the
+// variant value itself, UNWRAPPED (no {colname: ...}; see loneVariantArray) -- newline-
+// framed for splitNDJSON. The Phase-0 counterpart to borrowVariantRows, so a lone-variant
+// keyspace reads identically (o.<field>) whether VariantFidelity is on or off.
+func loneVariantNDJSON(buf []byte, va *extensions.VariantArray) []byte {
+	buf = buf[:0]
+	n := va.Len()
+	for i := 0; i < n; i++ {
+		buf = appendArrowValueJSON(buf, va, i) // the variant's JSON object (or "null")
+		buf = append(buf, '\n')
+	}
+	return buf
 }
 
 // appendRecordsNDJSON renders every row of rec as a JSON object on its own line,

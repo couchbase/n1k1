@@ -43,6 +43,47 @@ import (
 	"github.com/couchbase/n1k1/base"
 )
 
+// loneVariantCol returns the batch's VARIANT array when this source's FILE schema is a
+// single VARIANT column (s.loneVariant) -- the shape where the variant value IS the
+// document, so the scan carries/renders it UNWRAPPED (no {colname: ...} object) and the
+// fidelity path can BORROW its bytes rather than rebuild a row object. Keyed off the file
+// schema, NOT batch.NumCols(): projection pushdown can shrink a multi-column file to one
+// column at read time, which must still read wrapped (o.col.x).
+func (s *parquetSource) loneVariantCol(batch arrow.RecordBatch) (*extensions.VariantArray, bool) {
+	if !s.loneVariant || batch.NumCols() != 1 {
+		return nil, false
+	}
+	va, ok := batch.Column(0).(*extensions.VariantArray)
+	return va, ok
+}
+
+// borrowVariantRows is the fidelity fast path for a lone VARIANT column: it frames each
+// row's base `V`-carrier directly from arrow's metadata/value child Binary arrays
+// (Metadata()/UntypedValues(), whose Value(i) is a zero-copy substring), skipping
+// VariantArray.Value(i)'s per-row loadDictionary AND the per-row av.Builder the merge
+// path (appendRow) needs. The one remaining copy is framing V<len><meta><value>
+// contiguous (base.Val is a single []byte; arrow stores metadata/value separately). The
+// row is the variant itself (unwrapped) -- see loneVariantArray. Offsets frame the rows
+// because V bytes can contain 0x0A.
+func borrowVariantRows(buf []byte, lines [][]byte, offs []int, va *extensions.VariantArray) ([]byte, [][]byte, []int) {
+	buf = buf[:0]
+	offs = append(offs[:0], 0)
+	metaArr, valArr := va.Metadata(), va.UntypedValues()
+	n := va.Len()
+	for row := 0; row < n; row++ {
+		if va.IsNull(row) {
+			buf = append(buf, 'n', 'u', 'l', 'l')
+		} else {
+			buf = base.AppendVariantEnvelope(buf, metaArr.Value(row), valArr.Value(row))
+		}
+		offs = append(offs, len(buf))
+	}
+	for i := 0; i < n; i++ {
+		lines = append(lines, buf[offs[i]:offs[i+1]])
+	}
+	return buf, lines, offs
+}
+
 // variantRowAssembler assembles whole-row VARIANT objects, reusing its scratch buffers
 // across rows to hold per-row allocations down. Not concurrent-safe.
 //
