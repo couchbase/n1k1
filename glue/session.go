@@ -151,6 +151,16 @@ type Result struct {
 	// execute -- the honest end-to-end query time (what a caller experiences). For
 	// tiny statements it's ~= Elapsed; for a large inline literal, parse dominates.
 	RunElapsed time.Duration
+
+	// CompiledChildElapsed is the standalone-compiled EXECUTE child's OWN report of
+	// its compute wall -- from after it has read + parsed the parent's piped input
+	// payload to when its Run() returns. It isolates the "meat" (the specialized,
+	// Futamura-projected query code running over in-memory records) from the
+	// parent<->child IPC (file scan, JSON-serializing inputs to stdin, piping rows
+	// back) that dominates RunElapsed for compiled EXECUTE. 0 for the interpreter and
+	// for any query that didn't compile standalone. See compiledMain / runCompiledChild.
+	CompiledChildElapsed time.Duration
+
 	Plan     *base.Op          // the converted n1k1 op tree (for .explain / -v)
 	Stats    *base.Stats       // per-operator counters when CollectStats was on, else nil
 	Count    int               // number of result rows (len(Rows), or the streamed count when OnRow was set)

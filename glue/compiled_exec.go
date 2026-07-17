@@ -81,7 +81,7 @@ func (s *Session) executeCompiled(ps *preparedStmt) (*Result, bool, error) {
 	// ConvertVals path the interpreter uses -- so multi-column / nested projections
 	// come back correctly, not just SELECT *. (Row assembly is glue's job, so the
 	// child stays thin: engine+base compute only.)
-	valsList, err := runCompiledChild(ps.compiledBin, inputs)
+	valsList, childMeat, err := runCompiledChild(ps.compiledBin, inputs)
 	if err != nil {
 		return nil, false, err
 	}
@@ -111,7 +111,12 @@ func (s *Session) executeCompiled(ps *preparedStmt) (*Result, bool, error) {
 		}
 	}
 
-	return &Result{Labels: ps.compiled.topOp.Labels, Rows: rows, Count: len(rows)}, true, nil
+	return &Result{
+		Labels:               ps.compiled.topOp.Labels,
+		Rows:                 rows,
+		Count:                len(rows),
+		CompiledChildElapsed: childMeat,
+	}, true, nil
 }
 
 // buildCompiled emits + go-builds the standalone child binary for a prepared
@@ -262,7 +267,7 @@ func scanRecordLeaves(o *base.Op) []*base.Op {
 // length followed by that many ValsEncode bytes (the same Vals framing the pipe
 // protocol uses; see DESIGN-prepare.md). Returns the decoded positional Vals; the
 // caller assembles them into JSON rows.
-func runCompiledChild(bin string, inputs []compiledInput) ([]base.Vals, error) {
+func runCompiledChild(bin string, inputs []compiledInput) ([]base.Vals, time.Duration, error) {
 	cmd := exec.Command(bin)
 	var stdin bytes.Buffer
 	for i := range inputs {
@@ -274,8 +279,13 @@ func runCompiledChild(bin string, inputs []compiledInput) ([]base.Vals, error) {
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("compiled EXECUTE: child failed: %v\n%s", err, stderr.String())
+		return nil, 0, fmt.Errorf("compiled EXECUTE: child failed: %v\n%s", err, stderr.String())
 	}
+
+	// The child prints "N1K1_MEAT_NS <n>" on stderr: its compute wall, measured from
+	// after it parsed the piped input payload to when Run() returned. Isolates the
+	// specialized query code from the parent<->child IPC. Absent (0) is non-fatal.
+	meat := parseMeatNS(stderr.Bytes())
 
 	// stdout is a stable buffer, so ValsDecode's Val slices (into each frame) stay
 	// valid without copying.
@@ -285,12 +295,24 @@ func runCompiledChild(bin string, inputs []compiledInput) ([]base.Vals, error) {
 		n := binary.LittleEndian.Uint64(b[:8])
 		b = b[8:]
 		if uint64(len(b)) < n {
-			return nil, fmt.Errorf("compiled EXECUTE: truncated result frame (want %d, have %d)", n, len(b))
+			return nil, 0, fmt.Errorf("compiled EXECUTE: truncated result frame (want %d, have %d)", n, len(b))
 		}
 		rows = append(rows, base.ValsDecode(b[:n], nil))
 		b = b[n:]
 	}
-	return rows, nil
+	return rows, meat, nil
+}
+
+// parseMeatNS extracts the child's "N1K1_MEAT_NS <n>" self-report from its stderr.
+func parseMeatNS(stderr []byte) time.Duration {
+	for _, line := range strings.Split(string(stderr), "\n") {
+		if v, ok := strings.CutPrefix(line, "N1K1_MEAT_NS "); ok {
+			if ns, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64); err == nil {
+				return time.Duration(ns)
+			}
+		}
+	}
+	return 0
 }
 
 // compiledGoMod is the child module's go.mod: a throwaway module that resolves
@@ -318,10 +340,10 @@ func compiledGoMod(srcDir string) string {
 // Contains(qualifier)` heuristic matches that path exactly (an optional import
 // is added only when its qualifier appears, so no unused-import errors).
 func compiledMainImports(body string) string {
-	have := map[string]bool{"bufio": true, "encoding/json": true, "fmt": true, "os": true}
+	have := map[string]bool{"bufio": true, "encoding/json": true, "fmt": true, "os": true, "time": true}
 
 	var b strings.Builder
-	b.WriteString("import (\n\t\"bufio\"\n\t\"encoding/json\"\n\t\"fmt\"\n\t\"os\"\n")
+	b.WriteString("import (\n\t\"bufio\"\n\t\"encoding/json\"\n\t\"fmt\"\n\t\"os\"\n\t\"time\"\n")
 	for _, oi := range emit.OptionalImports {
 		if !have[oi.Path] && strings.Contains(body, oi.Qualifier) {
 			have[oi.Path] = true
@@ -361,11 +383,18 @@ func compiledMain(body, provStamp string) string {
 		"\tvars := &base.Vars{Temps: make([]interface{}, 16), Ctx: rt.NewSpillCtx(tmpDir)}\n" +
 		"\tvars.Ctx.Pipe = &engine.MemPipe{Data: data}\n" +
 		"\tout := bufio.NewWriter(os.Stdout)\n\tdefer out.Flush()\n" +
+		// t0 is stamped AFTER stdin is fully read+unmarshalled into `data`, so the
+		// reported wall is the "meat" -- the specialized query code running over the
+		// in-memory records -- NOT the cost of parsing the parent's piped payload. The
+		// parent reads N1K1_MEAT_NS off stderr (see runCompiledChild) to isolate the
+		// Futamura-projection payoff from the parent<->child IPC.
+		"\tt0 := time.Now()\n" +
 		"\tRun(vars, func(vals base.Vals) {\n" +
 		"\t\tenc := base.ValsEncode(vals, nil)\n" +
 		"\t\tout.Write(base.BinaryAppendUint64(nil, uint64(len(enc))))\n" +
 		"\t\tout.Write(enc)\n" +
 		"\t}, func(err error) {\n" +
 		"\t\tif err != nil { fmt.Fprintln(os.Stderr, err); os.Exit(1) }\n" +
-		"\t})\n}\n"
+		"\t})\n" +
+		"\tfmt.Fprintf(os.Stderr, \"N1K1_MEAT_NS %d\\n\", time.Since(t0).Nanoseconds())\n}\n"
 }

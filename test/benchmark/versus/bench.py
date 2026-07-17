@@ -128,19 +128,29 @@ def run_n1k1(binary, queries):
     return out
 
 
+_MEAT = re.compile(r"compiled child compute: ([0-9.]+)(ns|µs|ms|s)\b")
+
+
 def run_n1k1_compiled(binary, queries):
     """Drive the n1k1 CLI at the -prepare=full ceiling: each query is PREPAREd once
     (which go-builds a standalone cbq-free child binary) then EXECUTEd REPS times.
-    Returns {query: median_warm_ms or None}. None means the query did NOT compile to
-    a standalone child (it errored or fell back) -- e.g. a JOIN ... ON KEYS, whose
-    per-row datastore-fetch the thin child's MemPipe can't serve.
+    Returns {query: (full_ms, meat_ms)}, each None when unavailable.
 
-    Only TIME is reported: the compiled compute runs in a CHILD process, so the
-    parent's .stats heap-alloc counter (the MB column) can't see it -- an
-    apples-to-apples memory number would need child RSS, out of scope here. The first
-    EXECUTE includes the one-time `go build`; warm-dropping the first reps excludes it.
+      full_ms -- the whole compiled round-trip: the parent scans the files, JSON-pipes
+                 every input record to the child, the child computes, and pipes rows
+                 back. None means the query did NOT compile standalone (errored / fell
+                 back) -- e.g. JOIN ... ON KEYS, whose per-row datastore-fetch the thin
+                 child's MemPipe can't serve.
+      meat_ms -- the child's OWN report of its compute wall (the "N1K1_MEAT_NS" it
+                 prints once it has parsed the piped payload): the specialized,
+                 Futamura-projected query code running over the in-memory records,
+                 EXCLUDING the parent<->child IPC. This is the number to compare
+                 against the interpreter to see if compilation helps -- cleanest on the
+                 bulk (near-zero-I/O) scenario, where interp is ~all compute too.
 
-    Requires the `go` toolchain and N1K1_SRC (the n1k1 checkout) to build the child."""
+    No compiled MB: the compute runs in a child process, invisible to the parent's
+    heap-alloc counter. The first EXECUTE includes the one-time `go build`; warm-
+    dropping the first reps excludes it. Needs the `go` toolchain + N1K1_SRC."""
     lines = [".prepare full", ".timer on", ".mode jsonlines"]
     for i, q in enumerate(queries):
         lines.append("PREPARE cp%d AS %s;" % (i, q))
@@ -148,23 +158,27 @@ def run_n1k1_compiled(binary, queries):
     env = dict(os.environ, N1K1_SRC=REPO)
     r = subprocess.run([binary, DATA], input="\n".join(lines) + "\n",
                        env=env, capture_output=True, text=True)
-    # Each EXECUTE that ran (compiled or interpreted-fallback) prints one
-    # "... row(s) in <dur>" footer; a query whose child failed prints an Error and no
-    # footer. Group footers back to their query by the fixed REPS-per-query cadence,
-    # but since failures drop footers we instead tag each query's block by scanning
-    # sequentially. Simpler + robust: split stderr on the PREPARE confirmations.
-    blocks = re.split(r'prepared "cp\d+"', r.stderr)[1:]  # block i = EXECUTEs of cp{i}
+    # Split stderr on the PREPARE confirmations so block i holds cp{i}'s EXECUTEs
+    # (robust to queries that drop footers by erroring).
+    blocks = re.split(r'prepared "cp\d+"', r.stderr)[1:]
     out = {}
     warm = min(5, REPS // 3)
     for q, block in zip(queries, blocks):
-        durs = [float(m.group(1)) * _UMS[m.group(2)]
-                for line in block.splitlines() if "row(s)" in line
-                for m in [_DUR.search(line)] if m]
-        # A standalone-compiled query yields REPS footers; anything fewer means it
-        # errored/fell back -> report n/a rather than a misleading interpreted time.
-        out[q] = median(durs[warm:]) if len(durs) >= REPS else None
+        full, meat = [], []
+        for line in block.splitlines():
+            if "row(s)" in line:
+                m = _DUR.search(line)
+                if m:
+                    full.append(float(m.group(1)) * _UMS[m.group(2)])
+            m = _MEAT.search(line)
+            if m:
+                meat.append(float(m.group(1)) * _UMS[m.group(2)])
+        # A standalone-compiled query yields REPS footers; fewer => errored/fell back.
+        f = median(full[warm:]) if len(full) >= REPS else None
+        mt = median(meat[warm:]) if len(meat) >= REPS else None
+        out[q] = (f, mt)
     for q in queries:
-        out.setdefault(q, None)
+        out.setdefault(q, (None, None))
     return out
 
 
@@ -181,26 +195,28 @@ def run_cbq(binary, queries):
 
 
 def table(title, queries, n1, comp, cbq):
-    """Columns: interpreted n1k1 ms | compiled-standalone n1k1 ms (+ speedup vs
-    interpreted) | cbq ms | interpreted n1k1 MB | cbq MB. Compiled has no MB (child
-    process). 'n/a' in the comp column = the query did not compile standalone."""
+    """Columns: interp ms | comp ms (whole compiled round-trip) | meat ms (child's own
+    compute, IPC excluded) | m:i (meat/interp -- <1.0x = the Futamura-projected code is
+    faster at the actual compute) | cbq ms | interp MB | cbq MB. Compiled has no MB
+    (child process). 'n/a' = the query did not compile standalone."""
     print("\n%s" % title)
-    print("-" * 92)
-    print("%-16s%9s%9s%8s%9s%10s%10s"
-          % ("query", "interp", "comp", "c:i", "cbq ms", "interp MB", "cbq MB"))
-    print("%-16s%9s%9s%8s%9s%10s%10s"
-          % ("", "ms", "ms", "", "", "", ""))
-    print("-" * 92)
+    print("-" * 100)
+    print("%-16s%9s%9s%9s%8s%9s%10s%10s"
+          % ("query", "interp", "comp", "meat", "m:i", "cbq ms", "interp MB", "cbq MB"))
+    print("%-16s%9s%9s%9s%8s%9s%10s%10s"
+          % ("", "ms", "ms", "ms", "", "", "", ""))
+    print("-" * 100)
     for name, q in queries:
         nms, nmb = n1[q]
-        cms = comp.get(q) if comp else None
+        cms, meat = comp.get(q, (None, None)) if comp else (None, None)
         comp_s = "%.2f" % cms if cms else "n/a"
-        ratio_s = "%.2fx" % (cms / nms) if (cms and nms) else "-"
+        meat_s = "%.2f" % meat if meat else "n/a"
+        mi_s = "%.2fx" % (meat / nms) if (meat and nms) else "-"
         cbq_ms = "%.2f" % cbq[q][0] if cbq else "-"
         cbq_mb = "%.2f" % cbq[q][1] if cbq else "-"
-        print("%-16s%9.2f%9s%8s%9s%10.2f%10s"
-              % (name, nms, comp_s, ratio_s, cbq_ms, nmb, cbq_mb))
-    print("-" * 92)
+        print("%-16s%9.2f%9s%9s%8s%9s%10.2f%10s"
+              % (name, nms, comp_s, meat_s, mi_s, cbq_ms, nmb, cbq_mb))
+    print("-" * 100)
 
 
 def main():
@@ -215,18 +231,21 @@ def main():
 
     print("\ncbq-vs-n1k1  |  files: %d docs   bulk: %d docs x %d-elem arrays"
           "  |  warm median of %d reps" % (NDOCS, BULK_DOCS, BULK_ITEMS, REPS))
-    print("interp/comp/cbq ms = full parse+plan+execute; c:i = compiled/interpreted;"
-          " MB = allocated/query")
+    print("interp/comp/cbq ms = full parse+plan+execute; meat = compiled child's own"
+          " compute (IPC excluded); m:i = meat/interp; MB = allocated/query")
     table("SCENARIO: files (one doc per file -- I/O-bound)", FILE_QUERIES, n1, comp, cbq)
     table("SCENARIO: bulk (few docs, big in-doc arrays via UNNEST -- compute-bound)",
           BULK_QUERIES, n1, comp, cbq)
     if COMPILED:
-        print("\ncomp = n1k1 -prepare=full standalone-compiled EXECUTE (go-built child,"
-              " build cost excluded via warm-drop).")
-        print("  'n/a' = did not compile standalone (e.g. JOIN ... ON KEYS: the thin"
-              " child can't do a per-row datastore fetch).")
-        print("  no compiled MB: the compute runs in a child process, invisible to the"
-              " parent's heap-alloc counter.")
+        print("\ncomp  = n1k1 -prepare=full standalone-compiled EXECUTE, whole round-trip"
+              " (parent scan + JSON-pipe inputs + child compute + pipe rows back);")
+        print("        go-build cost excluded via warm-drop.")
+        print("meat  = the child's OWN compute wall (the Futamura-projected query code"
+              " over in-memory records), IPC excluded. m:i = meat/interp.")
+        print("        On the bulk (near-zero-I/O) rows interp is ~all compute too, so"
+              " m:i < 1.0x means the compiled code is genuinely faster -- the payoff the")
+        print("        IPC in `comp` hides. 'n/a' = did not compile standalone (JOIN ON"
+              " KEYS: the thin child can't do a per-row datastore fetch).")
     else:
         print("\ncompiled column OFF; set COMPILED=1 (needs the `go` toolchain) to add"
               " the n1k1 standalone-compiled column.")

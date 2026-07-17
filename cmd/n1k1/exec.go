@@ -183,6 +183,20 @@ func (c *cli) exec(stmt string) {
 
 func (c *cli) renderResult(res *glue.Result) {
 	c.renderRows(res.Rows, res.RunElapsed.String(), c.wantFooter())
+	c.renderCompiledMeat(res)
+}
+
+// renderCompiledMeat prints the standalone-compiled EXECUTE child's self-reported
+// compute wall (the "meat": specialized query code over in-memory records, excluding
+// the parent<->child IPC that dominates RunElapsed). Only for a compiled EXECUTE
+// (CompiledChildElapsed > 0), and only when the footer is wanted. Lets a caller (and
+// the versus benchmark) see whether the Futamura-projected code itself is faster than
+// the interpreter, separate from the piping overhead.
+func (c *cli) renderCompiledMeat(res *glue.Result) {
+	if res.CompiledChildElapsed > 0 && c.wantFooter() {
+		fmt.Fprintf(c.stderr, "%scompiled child compute: %s\n",
+			c.icon("⏱ "), res.CompiledChildElapsed)
+	}
 }
 
 // wantFooter reports whether to show the row-count/elapsed footer: when .timer is
@@ -200,6 +214,7 @@ func (c *cli) renderStreamFooter(res *glue.Result) {
 	if c.wantFooter() && c.outErr == nil {
 		fmt.Fprintf(c.stderr, "%s%d row(s) in %s\n", c.icon("⏱ "), res.Count, res.RunElapsed)
 	}
+	c.renderCompiledMeat(res)
 	if c.outErr != nil {
 		fmt.Fprintf(c.stderr, "%s%s\n", c.icon("⚠️  "),
 			c.style.Yellow("output write failed (consumer closed?): "+tidyMsg(c.outErr.Error())))

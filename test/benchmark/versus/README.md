@@ -44,21 +44,47 @@ toolchain; `N1K1_SRC` is set automatically to this checkout.
 How the compiled lane works matters for reading the numbers: it's a **thin child** —
 the *parent* still scans the files and then JSON-serializes every scanned record over
 a pipe to the child; the *child* runs only the compiled compute and pipes result rows
-back. So:
+back. So the table splits compiled into two numbers:
 
-- **Compiled reports TIME only.** The compute runs in a child process, invisible to
-  the parent's heap-alloc counter, so there's no compiled MB column.
-- **`n/a`** = the query didn't compile standalone. Today that's any `JOIN ... ON KEYS`
+- **`comp`** — the whole round-trip (parent scan + pipe inputs in + child compute +
+  pipe rows back). This is what a caller waiting on one `EXECUTE` experiences.
+- **`meat`** — the child's OWN report of its compute wall (it prints `N1K1_MEAT_NS`
+  once it has parsed the piped payload): the specialized, **Futamura-projected** query
+  code running over the in-memory records, with the parent↔child IPC excluded.
+- **`m:i` = meat / interp.** On the **bulk** rows the interpreter is ~all compute too
+  (I/O is 4 tiny files), so `m:i < 1.0×` means the compiled code is genuinely faster
+  at the actual work.
+
+**Two findings, and they point in opposite directions:**
+
+1. **End-to-end (`comp`), compiled is _slower_ than the interpreter** (≈ 1.2–3.0×) —
+   the thin-child IPC (JSON-marshalling inputs to the child, piping rows back) costs
+   more than the compute it accelerates, worst on bulk where the parent serializes the
+   big in-document arrays to stdin.
+2. **But the specialization itself DOES pay off** — on the compute-bound bulk rows the
+   `meat` runs **~1.3–1.6× faster than the interpreter** (`m:i` ≈ 0.64–0.77×). The
+   Futamura projection is a real win; it's just buried under the IPC in this thin-child
+   deployment.
+
+    unnest+group   interp 55.6ms   comp 128ms   meat 40.8ms   m:i 0.73x
+    unnest+filter  interp 38.9ms   comp 109ms   meat 24.8ms   m:i 0.64x
+    unnest+sort    interp 97.5ms   comp 163ms   meat 75.5ms   m:i 0.77x
+
+So the compiled lane isn't a single-`EXECUTE` accelerator over a pipe; it targets the
+standalone / fork-free analyzer & multi-query (MQO) deployment (see `DESIGN-prepare.md`),
+where the child runs detached and the parent-side serialization isn't on the critical
+path — and there the ~1.3–1.6× specialized-compute speedup is the part that counts.
+
+Notes on the columns:
+
+- **No compiled MB.** The compute runs in a child process, invisible to the parent's
+  heap-alloc counter (an apples-to-apples number would need child RSS — out of scope).
+- **`meat` on the I/O-bound `files` rows is not a compute win** (`m:i` ≈ 0.01×): the
+  child gets its data piped in-memory, so its meat excludes the file I/O the
+  interpreter pays. Only the bulk rows are a clean compute-vs-compute comparison.
+- **`n/a`** = the query didn't compile standalone — today any `JOIN ... ON KEYS`
   (`join-count`, `join+group`, `unnest+join`): the thin child's `MemPipe` can't serve
   a per-row datastore fetch of the second keyspace.
-
-**Result: compiled is currently _slower_ than the interpreter here** (c:i ≈ 1.2–3.0×),
-because the thin-child IPC — JSON-marshalling the scanned inputs to the child and
-piping rows back — costs more than the compute it accelerates. It's worst on the bulk
-scenario, where the parent must serialize the big in-document arrays to stdin. The
-compiled lane isn't a single-query accelerator; it targets the standalone / fork-free
-analyzer & multi-query (MQO) deployment scenario (see `DESIGN-prepare.md`), where the
-child runs detached and the parent-side serialization isn't on the critical path.
 
 (Two codegen bugs were fixed to make this column even runnable: a `lzValOut
 redeclared` build failure on a binary op over two nested-field operands like
