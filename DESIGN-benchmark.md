@@ -292,6 +292,21 @@ compare storage formats with the per-file-`open` cost removed:
   columnar VARIANT win is **blocked on shredded-column pushdown** (variant-design §6 Phase 2,
   unshipped); until then unshredded Phase-0 is the cheapest VARIANT path, still far above jsonl.
 
+  **This is a layout limit, not an arrow-API misuse.** n1k1 *does* have a zero-copy columnar
+  lane — `records/parquet.go` `NextColumns()` borrows each column's raw little-endian buffer
+  (even `String.Value` is a zero-copy substring), and `glue/columnar.go` adds a metadata-only
+  path (COUNT/MIN/MAX from footer stats, zero data reads) + a vectorized `agg-columnar` op
+  (ungrouped SUM/AVG/COUNT over a numeric column, optional fused WHERE). It just can't apply
+  to a *whole-doc VARIANT*: the queried fields (`amount`, `category`) live *inside* the VARIANT
+  binary, so they aren't parquet columns to borrow — you must materialize + decode the variant.
+  Proven with a TYPED-column parquet (amount/category as real columns) vs the SAME docs as one
+  VARIANT column (50K docs): `SUM(amount)` **TYPED 1.2 ms / 2.44 MB vs VARIANT 29 ms / 37 MB**
+  (~24× faster, ~15× less — the vectorized zero-copy borrow), `COUNT(*) WHERE amount>500`
+  13.7 / 3.9 vs 27 / 37, `GROUP BY category` 13 / 4.5 vs 29 / 37. So the lever is **layout**
+  (typed columns, or shredded VARIANT once pushdown lands), not a different arrow API. (Even
+  typed-column parquet still allocs ~2.4 MB — arrow column materialization — vs jsonl's ~0-alloc
+  reader: jsonl wins memory, typed-parquet wins *time* on vectorizable numeric aggregates.)
+
 ## I/O-bound scan & the file-layout lesson (2026-07)
 
 The `versus` **files** scenario prompted the question "is n1k1 just waiting on I/O, and
