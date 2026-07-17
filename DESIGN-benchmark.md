@@ -358,6 +358,40 @@ concurrency cap). On bare metal / a real disk the ratios shift (cheaper opens sh
 packing win toward ~10–15×; cold-cache disk latency may let parallelism hide more). The
 *direction* is universal: fewer syscalls always wins; parallelism only hides them.
 
+## Attacking the arrow record-batch read floor (2026-07)
+
+After the zero-alloc VARIANT navigator (see DESIGN-variant.md) pushed the query hot path to
+zero allocations, a lone-VARIANT parquet scan (`glue.BenchmarkVariantLoneScan`, 50 K docs,
+`COUNT(*)` + a nested-field filter) still sat at ~36 MB/op. A mem-profile showed ~93 % of it
+is **arrow-go's own record-batch read machinery**, not n1k1 code. Two safe, independent
+levers took it down ~⅓ with no time cost (fidelity-borrow 36.2 MB/18.9 ms → **24.7 MB/17.3
+ms**; Phase-0 34.8 MB → **23.4 MB**):
+
+- **Pool the pqarrow *output* arrays** (`records/parquet_alloc.go`, `poolAllocator`): a
+  size-classed `sync.Pool` `memory.Allocator` recycles the batch buffers arrow frees on
+  `batch.Release()` into the next `Read()`. `GoAllocator` (arrow's default) just `make()`s and
+  GCs, so a multi-batch scan re-allocates the full decode buffers every batch. Saves ~5 MB/op
+  on top of streaming. GC-cooperative → retention stays bounded (≈ one batch's live buffers).
+- **`BufferedStreamEnabled` on the local reader**: `ReaderProperties.GetStream` otherwise
+  `make([]byte, nbytes)`-slurps the *entire* column chunk (the single largest scan alloc);
+  buffered streaming reads it page-by-page through an `io.SectionReader`. Saves ~6 MB/op, no
+  slowdown (the file is in the OS page cache). The remote object-store reader already did this.
+
+**Gotchas the pooling exposed (both load-bearing):**
+- **arrow relies on `Allocate` returning zeroed memory** — validity bitmaps only write their
+  set bits, assuming the rest are 0. Recycled buffers carry stale bytes → `clear()` on reuse
+  (a memclr, still far cheaper than `make`+GC). Symptom without it: `order:null`, garbage
+  floats, zero-byte string columns.
+- **Only pool the *output* allocator, never the parquet *decode* allocator.** pqarrow's
+  string/binary output arrays alias the decode buffers zero-copy, and arrow frees+reuses decode
+  scratch *within* one batch build → recycling it hands back a buffer a live output column still
+  points at. Symptom: corrupted/zeroed string columns *mid-scan*. The decode side stays on
+  `GoAllocator`; it is the genuine remaining floor (arrow's own decode, not poolable safely).
+
+The residual ~24 MB is arrow's unavoidable decode scratch + n1k1's V-carrier framing copy
+(`base.AppendVariantEnvelope`, inherent to a single-`[]byte` `base.Val`). Going below it needs
+a lower-level zero-copy page reader — a much larger project, deferred.
+
 ## Measurement gotchas (hard-won)
 
 Mistakes that produced confidently-wrong numbers before being caught — encode these into

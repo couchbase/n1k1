@@ -63,7 +63,9 @@ func OpenParquetSourceRemote(loc, idPrefix string) (Source, error) {
 		f.Close()
 		return nil, fmt.Errorf("open remote Parquet %q: %w", loc, err)
 	}
-	pr, err := pqarrow.NewFileReader(pf, arrowReadProps(), memory.DefaultAllocator)
+	// Pool only the pqarrow output arrays; the decode allocator stays default -- string/binary
+	// output aliases decode buffers zero-copy, so recycling them would corrupt live columns.
+	pr, err := pqarrow.NewFileReader(pf, arrowReadProps(), arrowAlloc)
 	if err != nil {
 		pf.Close() // closes f via arrow's Reader.Close (io.Closer)
 		return nil, err

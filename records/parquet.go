@@ -37,6 +37,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/extensions"
 	"github.com/apache/arrow-go/v18/arrow/memory"
+	"github.com/apache/arrow-go/v18/parquet"
 	"github.com/apache/arrow-go/v18/parquet/file"
 	"github.com/apache/arrow-go/v18/parquet/pqarrow"
 
@@ -100,11 +101,22 @@ func arrowReadProps() pqarrow.ArrowReadProperties {
 }
 
 func newParquetSource(path, idPrefix string) (Source, error) {
-	pf, err := file.OpenParquetFile(path, false)
+	// Buffered streaming: read each column chunk through an io.SectionReader (page by page)
+	// instead of make()'ing a buffer for the ENTIRE chunk up front (ReaderProperties.GetStream
+	// otherwise slurps the whole chunk -- measured as the single largest scan allocation). The
+	// local file is memory-mapped by the OS page cache, so streaming reads stay cheap.
+	rprops := parquet.NewReaderProperties(memory.DefaultAllocator)
+	rprops.BufferedStreamEnabled = true
+	pf, err := file.OpenParquetFile(path, false, file.WithReadProps(rprops))
 	if err != nil {
 		return nil, err
 	}
-	pr, err := pqarrow.NewFileReader(pf, arrowReadProps(), memory.DefaultAllocator)
+	// Pool ONLY the pqarrow output record-batch arrays (arrowAlloc): those are the buffers
+	// freed on batch.Release() and recycled into the next batch's Read(). The parquet-side
+	// decode allocator is deliberately left on the default -- pqarrow's string/binary output
+	// arrays alias the decode buffers zero-copy, so recycling them would free memory still
+	// referenced by a live output array (observed as zeroed/garbled string columns).
+	pr, err := pqarrow.NewFileReader(pf, arrowReadProps(), arrowAlloc)
 	if err != nil {
 		pf.Close()
 		return nil, err
