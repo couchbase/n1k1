@@ -2,7 +2,7 @@
 
 ## Status & remaining TODOs
 
-_Last reviewed: 2026-07-16._
+_Last reviewed: 2026-07-17._
 
 **Done:** Phase 1 (intrinsic pure-Go microbenchmarks) and Phase 2 (interpreted vs
 compiled) are built and run under `make bench` / `bench-spill` / `bench-compiler`
@@ -24,10 +24,14 @@ executor over the *same* local `*.json` dir, via the `n1k1-query` fork's
 - [ ] Attack boxed-value / JSON alloc churn: the scan/filter/project
   path is parse-bound (Phase 2), so a native-lane ASOF/subquery projection is the
   next perf lever.
-- [ ] Consider a **packed-layout column** in `versus` (same data as one `.jsonl`):
-  the I/O-bound file scenario is dominated by per-file-open syscall overhead, and
-  packing beats it ~245× — the layout effect dwarfs the engine gap. See
+- [x] **Packed-layout column** in `versus` (same data as one `.jsonl`) — DONE, plus a
+  real cbq `jsonl:` column: the layout effect dwarfs the engine gap. See
   [I/O-bound scan & the file-layout lesson](#io-bound-scan--the-file-layout-lesson-2026-07).
+- [x] **Attack the arrow parquet read floor** — DONE (zero-alloc VARIANT navigator +
+  output-buffer pooling + buffered streaming): see
+  [Attacking the arrow record-batch read floor](#attacking-the-arrow-record-batch-read-floor-2026-07).
+  Remaining: a lower-level zero-copy parquet *page* reader, and columnar pushdown into
+  *shredded* VARIANT sub-columns (the unshipped lever for a columnar VARIANT win).
 
 ## Overview
 
@@ -48,10 +52,11 @@ stock env) would compare against couchbase/query as a baseline.
 6. [Phase 2 — compiled-query benchmarking + findings](#phase-2--compiled-query-benchmarking--findings)
 7. [Phase 3 realized — n1k1 vs cbq over local files](#phase-3-realized--n1k1-vs-cbq-over-local-files)
 8. [I/O-bound scan & the file-layout lesson](#io-bound-scan--the-file-layout-lesson-2026-07)
-9. [Measurement gotchas (hard-won)](#measurement-gotchas-hard-won)
-10. [What already exists](#what-already-exists)
-11. [Open decisions](#open-decisions)
-12. [Phase 3 feasibility — product-numbers variant (2026-06)](#phase-3-feasibility--product-numbers-variant-2026-06)
+9. [Attacking the arrow record-batch read floor](#attacking-the-arrow-record-batch-read-floor-2026-07)
+10. [Measurement gotchas (hard-won)](#measurement-gotchas-hard-won)
+11. [What already exists](#what-already-exists)
+12. [Open decisions](#open-decisions)
+13. [Phase 3 feasibility — product-numbers variant (2026-06)](#phase-3-feasibility--product-numbers-variant-2026-06)
 
 ## Claims → benchmarks
 
@@ -207,14 +212,16 @@ reports `Result.RunElapsed` (the whole `Session.Run`), *not* just `ExecOp` — s
 - **bulk** — a few docs each holding a large `items[]` array, driven by **UNNEST**.
   Volume lives *inside* documents → file I/O is trivial and per-row execution dominates.
 
-**Findings (indicative, apple-silicon, warm):**
+**Findings (indicative, apple-silicon, warm; reconfirmed 2026-07-17 at NDOCS=20 K):**
 
 | scenario | time (n1k1 vs cbq) | memory (n1k1 vs cbq) |
 |---|---|---|
 | files (I/O-bound) | ~1.0–1.1× (tie) | **2–6× less** |
-| bulk (compute-bound) | **5–8× faster** | **5–26× less** |
+| bulk (compute-bound) | **~6–9× faster** | **~6–26× less** |
 
-The bulk gap is the thesis in one number: cbq boxes every unnested array element into a
+Representative bulk (20 K-elem arrays): `unnest+group` 59 ms / 17.8 MB vs cbq 531 ms /
+469 MB (~9× / ~26×); `unnest+filter` 42 ms vs 329 ms (~8×). The bulk gap is the thesis in
+one number: cbq boxes every unnested array element into a
 `value.Value` (`SimpleUnmarshal` + map); n1k1 UNNESTs and evaluates on raw `[]byte`.
 The files tie is expected (both pay `os.Open` per doc) — but see the layout lesson: that
 tie is an artifact of the one-doc-per-file layout, not the engines.
@@ -268,10 +275,11 @@ compare storage formats with the per-file-`open` cost removed:
   setter, only needed for typed-scalar fidelity our plain-JSON orders lack). cbq is n/a
   (iceberg-go v0.4.0 has no VARIANT). **Result (n1k1, 200K docs): whole-doc VARIANT is
   ~1.5–2.4× SLOWER and far more memory-hungry than the same docs as `.jsonl`** (count+filter
-  154 ms / 181 MB vs 65 ms / 0.21 MB). An *unshredded* VARIANT is one column read + decoded
-  whole per row (parquet/arrow batch materialization + VARIANT→JSON), with none of the
-  columnar sub-field projection that would justify the format — n1k1's `.jsonl` path is
-  near-alloc-free by contrast. **VARIANT's payoff needs shredding (typed sub-columns) or
+  167 ms / 120 MB vs 67 ms / 0.21 MB, 2026-07-17 — the 120 MB is *down from ~181 MB* after
+  the arrow read-floor work below; it was 154 ms / 181 MB before). An *unshredded* VARIANT is
+  one column read + decoded whole per row (parquet/arrow batch materialization + VARIANT→JSON),
+  with none of the columnar sub-field projection that would justify the format — n1k1's `.jsonl`
+  path is near-alloc-free by contrast. **VARIANT's payoff needs shredding (typed sub-columns) or
   plain typed columns for column-selective queries**; whole-doc-as-one-VARIANT just adds
   format overhead. (Generators: `test/benchmark/versus/gen_variant.go`, `gen.py`.)
 
@@ -291,6 +299,10 @@ compare storage formats with the per-file-`open` cost removed:
   all sub-columns + residual and *coalesces* them back into a full variant per row). So the
   columnar VARIANT win is **blocked on shredded-column pushdown** (variant-design §6 Phase 2,
   unshipped); until then unshredded Phase-0 is the cheapest VARIANT path, still far above jsonl.
+  *(Note: the absolute MB here predate the arrow read-floor work below, which since cut the ~60%
+  BinaryBuilder-copy + ~16% GetStream-slurp portions — the 200K count+filter headline dropped
+  ~181→120 MB. The relative ordering — Phase-0 < Phase-1 < shredded, all ≫ jsonl — is unchanged;
+  the pushdown-into-shredded gap remains the real fix.)*
 
   **This is a layout limit, not an arrow-API misuse.** n1k1 *does* have a zero-copy columnar
   lane — `records/parquet.go` `NextColumns()` borrows each column's raw little-endian buffer
@@ -318,11 +330,16 @@ not landed — `N1K1_PSCAN`, `N1K1_STAGE`, `Stage.NoCopy`. The findings are the 
 off-CPU** (20 reps: 66.8s wall vs 14.7s on-CPU) — serial per-file `open/stat/read/close`
 syscalls, one at a time in one goroutine.
 
-**Parallel scan helps ~3.9×, but it's a band-aid.** Fanning the file list across N
-`base.Stage` supplier goroutines (each `WalkPrelisted` over a partition) gives ~3.9× on
+**Parallel scan helps ~4×, but it's a band-aid.** Fanning the file list across N
+`base.Stage` supplier goroutines (each `WalkPrelisted` over a partition) gives ~4× on
 real filter/group/project queries — **but only at ~128 actors** (the actors are
-I/O-*blocked*, so you need ~10× oversubscription vs cores; ≤16 does nothing, 32→1.8×,
-64→3.3×, 128→3.9× peak, 256 regresses). Profiling at 128 actors: ~359% on-CPU, 97.6% in
+I/O-*blocked*, so you need ~10× oversubscription vs cores). **The count is everything, and
+`auto`=NumCPU is a trap** — reconfirmed 2026-07-17 on the rebased branch (count+filter,
+20 000 files): serial 3.27 s, `auto` (=12 cores) **~3.2 s = NO gain**, 48→0.95 s (3.3×),
+128→0.73 s (4.3×), 128+NOCOPY 0.85 s (no gain). At only NumCPU actors the speedup is ~0,
+so a naïve "use NumCPU" default makes parallel scan *look dead*; you must vastly oversubscribe.
+(Earlier sandbox sweep, same shape: ≤16 nothing, 32→1.8×, 64→3.3×, 128→3.9× peak, 256 regresses.)
+Profiling at 128 actors: ~359% on-CPU, 97.6% in
 `syscall.syscall` under the actors — the ceiling is the **OS/FS capping concurrent read
 syscalls to ~3.7 effective cores** (a containerized/overlay FS, ~160µs kernel per file);
 the consumer (parse/filter/group) + dir walk are ~37ms each, **negligible**. So batch
@@ -392,6 +409,16 @@ The residual ~24 MB is arrow's unavoidable decode scratch + n1k1's V-carrier fra
 (`base.AppendVariantEnvelope`, inherent to a single-`[]byte` `base.Val`). Going below it needs
 a lower-level zero-copy page reader — a much larger project, deferred.
 
+**Confirmed in the `versus` VARIANT scenario, not just the microbench.** The streaming +
+pooling levers apply to *every* parquet read (they're below the VARIANT layer), so the
+whole-doc `orders_variant` count+filter at 200K docs dropped **~181 → 120 MB**. Two levers had
+been identified to get below the arrow floor: **(1) a zero-alloc `VariantPathGet`** — DONE
+(byte-level offset walk, no per-node boxing / no per-nav metadata dict build; fidelity-borrow
+now *beats* Phase-0), and **(2) attacking the arrow read floor itself** — this section
+(output-buffer pooling + buffered streaming). The still-deferred remainder is a lower-level
+zero-copy parquet *page* reader (below the pqarrow table API) and columnar pushdown into
+*shredded* VARIANT sub-columns — the unshipped lever for a genuinely columnar VARIANT win.
+
 ## Measurement gotchas (hard-won)
 
 Mistakes that produced confidently-wrong numbers before being caught — encode these into
@@ -415,6 +442,21 @@ any new harness:
 - **Float SUM is non-deterministic under reordering.** Parallel actors (or partial
   aggregation) sum in a different order, so `SUM` differs in the last 1–2 ULPs — expected
   float non-associativity, not a correctness bug (but it will trip an exact-diff oracle).
+- **The cbq `jsonl:` packed column is unreliable at large `NDOCS_JSONL`.** At 200K docs the
+  fork's in-memory `jsonl:` mock reported 0.27–0.97 ms/query — ~1000× faster than its own
+  README figures and *faster than the same query on 20K docs* (8.6 ms), which is impossible.
+  The mock almost certainly fails to load the big container and counts ~0 docs. Trust the
+  cbq packed column only at modest sizes (and sanity-check its row counts); n1k1's packed
+  numbers are solid and README-consistent. cbq's *files* and *bulk* columns are fine.
+- **`bench.py` regenerates (and can shrink) the shared data dir.** `NDOCS_JSONL` defaults to
+  `NDOCS`, so a run that omits it rewrites `orders_jsonl`/`orders_variant` at the smaller size,
+  clobbering a prior big-`NDOCS_JSONL` dataset. When comparing two runs (e.g. baseline vs an
+  env-gated toggle) either pin `NDOCS_JSONL` in both or use separate `DATA` dirs — and note
+  the `packed`/`VARIANT` tables are only comparable across runs at the *same* `NDOCS_JSONL`.
+- **`N1K1_PSCAN=auto` (=NumCPU) shows no speedup — don't conclude "parallel scan is dead."**
+  The file scan is syscall-*latency*-bound, so hiding it needs ~10× more blocked goroutines
+  than cores (see the file-layout lesson). Sweep the actor count explicitly (48/128), never
+  trust a NumCPU-sized default, before judging an I/O-parallelism experiment.
 
 ## What already exists
 
