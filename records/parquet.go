@@ -419,9 +419,18 @@ func arrowBatchToNDJSON(buf []byte, batch arrow.RecordBatch) ([]byte, error) {
 // keyspace reads identically (o.<field>) whether VariantFidelity is on or off.
 func loneVariantNDJSON(buf []byte, va *extensions.VariantArray) []byte {
 	buf = buf[:0]
+	// Render each row straight from its metadata/value bytes (Metadata()/UntypedValues(),
+	// whose Value(i) is a zero-copy substring) via the byte-level projector -- skipping
+	// VariantArray.Value(i)'s per-row loadDictionary AND av.New's per-row metadata build,
+	// so this is allocation-free per row (same borrow as borrowVariantRows).
+	metaArr, valArr := va.Metadata(), va.UntypedValues()
 	n := va.Len()
 	for i := 0; i < n; i++ {
-		buf = appendArrowValueJSON(buf, va, i) // the variant's JSON object (or "null")
+		if va.IsNull(i) {
+			buf = append(buf, 'n', 'u', 'l', 'l')
+		} else {
+			buf = variant.AppendJSONBytes(buf, metaArr.Value(i), valArr.Value(i))
+		}
 		buf = append(buf, '\n')
 	}
 	return buf

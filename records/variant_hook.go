@@ -22,8 +22,6 @@ package records
 // value only ever originates from the Parquet scan, which is itself `!js`.
 
 import (
-	"strconv"
-
 	av "github.com/apache/arrow-go/v18/parquet/variant"
 
 	"github.com/couchbase/n1k1/base"
@@ -31,13 +29,9 @@ import (
 )
 
 func init() {
-	base.VariantAppendJSON = func(dst, meta, value []byte) []byte {
-		v, err := av.New(meta, value)
-		if err != nil {
-			return append(dst, "null"...)
-		}
-		return variant.AppendJSON(dst, v)
-	}
+	// Both hooks go straight to the byte-level variant walkers -- no av.New, so no
+	// per-call av.NewMetadata make([][]byte, dictSize) dictionary build.
+	base.VariantAppendJSON = variant.AppendJSONBytes
 
 	base.VariantPathGet = variantPathGet
 }
@@ -45,49 +39,26 @@ func init() {
 // variantPathGet navigates `path` through the VARIANT-carrier val and returns the
 // reached value: a scalar leaf projected to JSON into valOut, or a container leaf as a
 // self-contained `V` envelope in valOut (its bytes carry the shared metadata, so the
-// child's field-ids stay valid — a zero-re-encode reframe). Uses the arrow-go view API;
-// obtaining a container from a Value boxes one struct per descended node (acceptable on
-// the opt-in fidelity path — an unboxed offset walk is a later optimization).
+// child's field-ids stay valid — a zero-re-encode reframe).
+//
+// It is allocation-free on the hot path: variant.PathGet walks the value bytes by offset
+// (no av.Value boxing per node, no av.New metadata-dictionary build), returning a
+// zero-copy sub-slice of the carrier; the leaf is then either re-enveloped (a byte copy
+// into the reused valOut buffer) or rendered by variant.AppendJSONBytes (also byte-level).
 func variantPathGet(val base.Val, path []string, valOut base.Val) (base.Val, base.Val) {
 	meta, value, ok := base.SplitVariantEnvelope(val)
 	if !ok {
 		return base.ValMissing, valOut
 	}
-	cur, err := av.New(meta, value)
-	if err != nil {
+	child, ok := variant.PathGet(meta, value, path)
+	if !ok {
 		return base.ValMissing, valOut
 	}
-	for _, p := range path {
-		switch cur.BasicType() {
-		case av.BasicObject:
-			f, err := cur.Value().(av.ObjectValue).ValueByKey(p)
-			if err != nil {
-				return base.ValMissing, valOut
-			}
-			cur = f.Value
-		case av.BasicArray:
-			idx, err := strconv.Atoi(p)
-			if err != nil {
-				return base.ValMissing, valOut
-			}
-			arr := cur.Value().(av.ArrayValue)
-			if idx < 0 || uint32(idx) >= arr.Len() {
-				return base.ValMissing, valOut
-			}
-			e, err := arr.Value(uint32(idx))
-			if err != nil {
-				return base.ValMissing, valOut
-			}
-			cur = e
-		default:
-			return base.ValMissing, valOut // can't navigate into a scalar
-		}
-	}
-	switch cur.BasicType() {
+	switch av.BasicType(child[0] & 0x03) {
 	case av.BasicObject, av.BasicArray:
-		valOut = base.AppendVariantEnvelope(valOut[:0], cur.Metadata().Bytes(), cur.Bytes())
+		valOut = base.AppendVariantEnvelope(valOut[:0], meta, child)
 	default:
-		valOut = variant.AppendJSON(valOut[:0], cur)
+		valOut = variant.AppendJSONBytes(valOut[:0], meta, child)
 	}
 	return valOut, valOut
 }

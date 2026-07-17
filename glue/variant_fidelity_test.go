@@ -24,6 +24,7 @@ package glue
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"github.com/apache/arrow-go/v18/arrow"
@@ -95,7 +96,7 @@ func TestVariantFidelityDifferential(t *testing.T) {
 // writeLoneVariantParquet writes a Parquet file whose ONLY column is a VARIANT ("doc"):
 // the variant value is the whole document, so n1k1 reads it UNWRAPPED (rows are the
 // variant itself, navigated as o.<field>, not o.doc.<field>). See records.loneVariantCol.
-func writeLoneVariantParquet(t *testing.T, path string, docsJSON []string) {
+func writeLoneVariantParquet(t testing.TB, path string, docsJSON []string) {
 	t.Helper()
 	mem := memory.DefaultAllocator
 	vt := extensions.NewDefaultVariantType()
@@ -187,4 +188,54 @@ func TestVariantLoneColumnUnwrap(t *testing.T) {
 	if len(got) != 1 || got[0] != `{"total":19.5}` {
 		t.Errorf(`decimal unwrap nav: got %v, want [{"total":19.5}]`, got)
 	}
+}
+
+// BenchmarkVariantLoneScan measures a count+filter over a lone-VARIANT-column parquet in
+// both the Phase-0 (unwrap-to-JSON) and Phase-1 fidelity (borrow the V-carrier + byte-level
+// nav) read paths -- the A/B that motivated the zero-alloc VariantPathGet. Run with:
+//
+//	go test -tags n1ql -run '^$' -bench BenchmarkVariantLoneScan -benchmem ./glue/
+//
+// The filter (o.total > 100) drives ValPathGet into the variant navigator on every row, so
+// per-op bytes reflect the nav+render allocation, not just the columnar scan.
+func BenchmarkVariantLoneScan(b *testing.B) {
+	const nDocs = 50000
+	docs := make([]string, nDocs)
+	for i := range docs {
+		// A realistically-nested doc so the navigated field lives a couple levels deep.
+		docs[i] = `{"customer":{"name":"c","address":{"city":"X"}},` +
+			`"orderlines":[{"sku":"A1","qty":2}],"total":` + strconv.Itoa(i%1000) + `.5}`
+	}
+	dir := b.TempDir()
+	ksDir := filepath.Join(dir, "default", "docs")
+	if err := os.MkdirAll(ksDir, 0o755); err != nil {
+		b.Fatal(err)
+	}
+	writeLoneVariantParquet(b, filepath.Join(ksDir, "docs.parquet"), docs)
+
+	const q = `SELECT COUNT(*) c FROM docs o WHERE o.total > 100`
+	defer func() { records.VariantFidelity = false }()
+
+	run := func(b *testing.B) {
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			sess, err := OpenSession(dir, "default")
+			if err != nil {
+				b.Fatal(err)
+			}
+			if _, err := sess.Run(q); err != nil {
+				b.Fatal(err)
+			}
+		}
+	}
+
+	b.Run("phase0", func(b *testing.B) {
+		records.VariantFidelity = false
+		run(b)
+	})
+	b.Run("fidelity-borrow", func(b *testing.B) {
+		records.VariantFidelity = true
+		run(b)
+	})
 }

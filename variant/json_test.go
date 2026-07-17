@@ -236,3 +236,99 @@ func TestAppendJSONZeroAlloc(t *testing.T) {
 		}
 	}
 }
+
+// TestPathGet exercises the zero-alloc byte-level navigator: object descent, array
+// indexing, scalar/container leaves, and misses, checked against the JSON rendering of
+// the reached value.
+func TestPathGet(t *testing.T) {
+	v, err := av.ParseJSON(benchDeepJSON, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta, val := v.Metadata().Bytes(), v.Bytes()
+
+	cases := []struct {
+		path []string
+		want string // "" means expect a miss
+	}{
+		{[]string{"total"}, `9.99`},
+		{[]string{"customer", "name"}, `"Ada"`},
+		{[]string{"customer", "address", "city"}, `"London"`},
+		{[]string{"customer", "address", "geo", "lat"}, `51.5`},
+		{[]string{"customer", "address"}, `{"city":"London","geo":{"lat":51.5,"lon":-0.12}}`},
+		{[]string{"orderlines", "0", "sku"}, `"A1"`},
+		{[]string{"orderlines", "1", "qty"}, `1`},
+		{[]string{"orderlines", "1"}, `{"qty":1,"sku":"B2"}`}, // ParseJSON sorts keys
+		{[]string{"missing"}, ``},
+		{[]string{"customer", "nope"}, ``},
+		{[]string{"orderlines", "9"}, ``},   // index out of range
+		{[]string{"total", "x"}, ``},        // descend into a scalar
+		{[]string{"orderlines", "notnum"}, ``}, // non-numeric array index
+	}
+	var buf []byte
+	for _, tc := range cases {
+		child, ok := PathGet(meta, val, tc.path)
+		if tc.want == "" {
+			if ok {
+				t.Errorf("PathGet(%v): expected miss, got %s", tc.path, AppendJSONBytes(nil, meta, child))
+			}
+			continue
+		}
+		if !ok {
+			t.Errorf("PathGet(%v): unexpected miss", tc.path)
+			continue
+		}
+		buf = AppendJSONBytes(buf[:0], meta, child)
+		if string(buf) != tc.want {
+			t.Errorf("PathGet(%v) = %s, want %s", tc.path, buf, tc.want)
+		}
+	}
+}
+
+// TestPathGetZeroAlloc asserts the navigator + leaf rendering allocates nothing per call
+// (after warmup) — the whole point of the byte-level rewrite of the VARIANT nav hook.
+func TestPathGetZeroAlloc(t *testing.T) {
+	v, err := av.ParseJSON(benchDeepJSON, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta, val := v.Metadata().Bytes(), v.Bytes()
+
+	scalar := []string{"customer", "address", "geo", "lat"} // scalar leaf → AppendJSONBytes
+	nav := func() {
+		if _, ok := PathGet(meta, val, scalar); !ok {
+			t.Fatal("miss")
+		}
+	}
+	nav() // warm
+	if n := testing.AllocsPerRun(2000, nav); n != 0 {
+		t.Errorf("PathGet(scalar leaf): %v allocs/op, want 0", n)
+	}
+
+	buf := make([]byte, 0, 256)
+	render := func() {
+		child, _ := PathGet(meta, val, scalar)
+		buf = AppendJSONBytes(buf[:0], meta, child)
+	}
+	render() // warm
+	if n := testing.AllocsPerRun(2000, render); n != 0 {
+		t.Errorf("PathGet+AppendJSONBytes: %v allocs/op, want 0", n)
+	}
+}
+
+// BenchmarkPathGet characterizes the byte-level navigator against a 4-deep scalar path.
+func BenchmarkPathGet(b *testing.B) {
+	v, err := av.ParseJSON(benchDeepJSON, false)
+	if err != nil {
+		b.Fatal(err)
+	}
+	meta, val := v.Metadata().Bytes(), v.Bytes()
+	path := []string{"customer", "address", "geo", "lat"}
+	buf := make([]byte, 0, 64)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		child, _ := PathGet(meta, val, path)
+		buf = AppendJSONBytes(buf[:0], meta, child)
+	}
+}

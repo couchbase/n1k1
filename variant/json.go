@@ -50,12 +50,20 @@ const (
 // AppendJSON appends v's canonical JSON projection to dst and returns the extended
 // slice. See the package doc for the allocation contract.
 func AppendJSON(dst []byte, v av.Value) []byte {
-	return appendValue(dst, v.Metadata(), v.Bytes())
+	return appendValue(dst, v.Metadata().Bytes(), v.Bytes())
+}
+
+// AppendJSONBytes appends the JSON of a Variant whose metadata and value bytes are given
+// directly (as carried by n1k1's V-envelope). Unlike AppendJSON it never constructs an
+// av.Value / av.Metadata, so it does not pay av.NewMetadata's make([][]byte, dictSize)
+// dictionary-build cost -- object keys resolve through metaKeyAt, a zero-alloc byte walk.
+func AppendJSONBytes(dst []byte, meta, val []byte) []byte {
+	return appendValue(dst, meta, val)
 }
 
 // appendValue appends the JSON of the Variant value bytes `val` (whose object field
-// names resolve through `meta`) to dst.
-func appendValue(dst []byte, meta av.Metadata, val []byte) []byte {
+// names resolve through the raw metadata bytes `meta`) to dst.
+func appendValue(dst []byte, meta []byte, val []byte) []byte {
 	switch av.BasicType(val[0] & 0x03) {
 	case av.BasicShortString:
 		n := int(val[0] >> 2)
@@ -69,7 +77,7 @@ func appendValue(dst []byte, meta av.Metadata, val []byte) []byte {
 	}
 }
 
-func appendPrimitive(dst []byte, meta av.Metadata, val []byte) []byte {
+func appendPrimitive(dst []byte, meta []byte, val []byte) []byte {
 	switch av.PrimitiveType((val[0] >> 2) & 0x3F) {
 	case av.PrimitiveNull:
 		return append(dst, "null"...)
@@ -127,8 +135,8 @@ func appendPrimitive(dst []byte, meta av.Metadata, val []byte) []byte {
 		return append(dst, '"')
 	default:
 		// Any genuinely unhandled primitive: fall back to MarshalJSON (allocates a fresh
-		// slice, but correct). meta is already parsed, so this is cheap apart from that.
-		if sub, err := av.NewWithMetadata(meta, val); err == nil {
+		// slice + parses meta, but correct). Only exotic scalar types reach here.
+		if sub, err := av.New(meta, val); err == nil {
 			if j, err := sub.MarshalJSON(); err == nil {
 				return append(dst, j...)
 			}
@@ -160,7 +168,7 @@ func appendUUID(dst, b []byte) []byte {
 	return append(dst, '"')
 }
 
-func appendObject(dst []byte, meta av.Metadata, val []byte) []byte {
+func appendObject(dst []byte, meta []byte, val []byte) []byte {
 	vh := val[0] >> 2
 	offSz := int((vh & 0b11) + 1)
 	idSz := int(((vh >> 2) & 0b11) + 1)
@@ -180,15 +188,14 @@ func appendObject(dst []byte, meta av.Metadata, val []byte) []byte {
 		}
 		id := readLE(val[idStart+i*idSz : idStart+i*idSz+idSz])
 		off := int(readLE(val[offStart+i*offSz : offStart+i*offSz+offSz]))
-		key, _ := meta.KeyAt(id)
-		dst = appendJSONStr(dst, key)
+		dst = appendJSONBytes(dst, metaKeyAt(meta, id))
 		dst = append(dst, ':')
 		dst = appendValue(dst, meta, val[dataStart+off:])
 	}
 	return append(dst, '}')
 }
 
-func appendArray(dst []byte, meta av.Metadata, val []byte) []byte {
+func appendArray(dst []byte, meta []byte, val []byte) []byte {
 	vh := val[0] >> 2
 	offSz := int((vh & 0b11) + 1)
 	var n, offStart int
@@ -287,6 +294,105 @@ func readLE(b []byte) uint32 {
 		v |= uint32(b[i]) << (8 * i)
 	}
 	return v
+}
+
+// metaKeyAt returns the id-th dictionary key of the Variant metadata `meta` as a
+// zero-copy sub-slice, replicating av.Metadata.KeyAt without av.NewMetadata's
+// make([][]byte, dictSize) dictionary build. The metadata layout (arrow-go builder.go):
+//
+//	meta[0]  = version | ((offsetSize-1) << 6)
+//	meta[1 : 1+offSz]                       = dictSize (LE)
+//	offsets: (dictSize+1) x offSz starting at 1+offSz
+//	keys:    concatenated bytes starting at 1 + (dictSize+2)*offSz
+func metaKeyAt(meta []byte, id uint32) []byte {
+	offSz := int((meta[0]>>6)&0b11) + 1
+	dictSize := int(readLE(meta[1 : 1+offSz]))
+	offStart := 1 + offSz
+	keyStart := 1 + (dictSize+2)*offSz
+	i := int(id)
+	o0 := int(readLE(meta[offStart+i*offSz : offStart+i*offSz+offSz]))
+	o1 := int(readLE(meta[offStart+(i+1)*offSz : offStart+(i+1)*offSz+offSz]))
+	return meta[keyStart+o0 : keyStart+o1]
+}
+
+// PathGet navigates the Variant value bytes `val` (metadata `meta`) down `path` and
+// returns the reached value's bytes as a zero-copy sub-slice of `val` (a valid Variant
+// value under the same `meta`), or ok=false if any step is missing / not navigable.
+// It never boxes a node (no av.Value) nor builds the metadata dictionary (no av.New) --
+// object steps compare against metaKeyAt, array steps index the offset table directly.
+func PathGet(meta, val []byte, path []string) ([]byte, bool) {
+	for _, p := range path {
+		if len(val) == 0 {
+			return nil, false
+		}
+		switch av.BasicType(val[0] & 0x03) {
+		case av.BasicObject:
+			child, ok := objectField(meta, val, p)
+			if !ok {
+				return nil, false
+			}
+			val = child
+		case av.BasicArray:
+			idx, err := strconv.Atoi(p)
+			if err != nil {
+				return nil, false
+			}
+			child, ok := arrayElem(val, idx)
+			if !ok {
+				return nil, false
+			}
+			val = child
+		default:
+			return nil, false // A scalar leaf: nothing left to descend into.
+		}
+	}
+	return val, true
+}
+
+// objectField returns the value bytes of the field named `key` in the Variant object
+// `val` (mirrors appendObject's header walk), or ok=false if absent. The returned slice
+// starts at the child value and runs to the end of `val`; the child is self-delimiting.
+func objectField(meta, val []byte, key string) ([]byte, bool) {
+	vh := val[0] >> 2
+	offSz := int((vh & 0b11) + 1)
+	idSz := int(((vh >> 2) & 0b11) + 1)
+	nSz := 1
+	if (vh>>4)&0b1 == 1 { // isLarge
+		nSz = 4
+	}
+	n := int(readLE(val[1 : 1+nSz]))
+	idStart := 1 + nSz
+	offStart := idStart + n*idSz
+	dataStart := offStart + (n+1)*offSz
+
+	for i := 0; i < n; i++ {
+		id := readLE(val[idStart+i*idSz : idStart+i*idSz+idSz])
+		// string(metaKeyAt(...)) == key is compiled to an alloc-free byte compare.
+		if string(metaKeyAt(meta, id)) == key {
+			off := int(readLE(val[offStart+i*offSz : offStart+i*offSz+offSz]))
+			return val[dataStart+off:], true
+		}
+	}
+	return nil, false
+}
+
+// arrayElem returns the idx-th element's value bytes of the Variant array `val`
+// (mirrors appendArray's header walk), or ok=false if idx is out of range.
+func arrayElem(val []byte, idx int) ([]byte, bool) {
+	vh := val[0] >> 2
+	offSz := int((vh & 0b11) + 1)
+	var n, offStart int
+	if vh&0b1 == 1 { // isLarge
+		n, offStart = int(binary.LittleEndian.Uint32(val[1:5])), 5
+	} else {
+		n, offStart = int(val[1]), 2
+	}
+	if idx < 0 || idx >= n {
+		return nil, false
+	}
+	dataStart := offStart + (n+1)*offSz
+	off := int(readLE(val[offStart+idx*offSz : offStart+idx*offSz+offSz]))
+	return val[dataStart+off:], true
 }
 
 const hexDigits = "0123456789abcdef"
