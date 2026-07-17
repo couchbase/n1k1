@@ -22,7 +22,7 @@ warm (median of REPS, first few dropped), reporting median **ms** and median
 SQL is fine but excludes parse+plan — negligible for these file queries, but it would
 mislead on a large inline literal. `Result.RunElapsed` fixes that at the source.)
 
-## Two scenarios
+## Three scenarios
 
 - **files** — `orders`/`cust`, one JSON doc per file. Realistic, but **I/O-bound**:
   a filtered scan opens *every* file (the `os.Open` cost both engines pay), so wall
@@ -30,6 +30,17 @@ mislead on a large inline literal. `Result.RunElapsed` fixes that at the source.
 - **bulk** — a few docs each holding a large `items[]` array, driven by **UNNEST**.
   The volume lives *inside* documents, so file I/O is trivial and per-row execution
   dominates — this is where the engine/value-model gap shows in both time and memory.
+- **packed** — the *same order docs* as `files`, but all in ONE `.jsonl` container
+  file (`orders_jsonl/data.jsonl`, one JSON per line, read natively by n1k1). Its doc
+  count is `NDOCS_JSONL` (default = `NDOCS`). This exists to expose the **file-layout
+  cost**: at `NDOCS_JSONL == NDOCS` the `packed` times vs the `files` times isolate the
+  per-file-`open` syscall overhead — packing the same data into one file is ~orders of
+  magnitude faster (see DESIGN-benchmark.md "file-layout lesson": 20K docs = ~13ms as
+  one `.jsonl` vs ~3.2s as 20K files). Bump `NDOCS_JSONL` far higher (e.g. 500000) for
+  well-resolved container-file times — n1k1 is fast enough that 20K docs in one file is
+  too quick to measure cleanly. **n1k1-only:** cbq's file datastore is one-doc-per-`.json`
+  only, so there's no cbq column here yet (a `jsonl:` in-memory datastore in the
+  `n1k1-query` fork would fix that — see below).
 
 ## A third contender: n1k1 compiled codegen
 
@@ -98,6 +109,7 @@ via `rt.NewSpillCtx`. Guarded by `glue.TestExecuteCompiledAggAndArith`.)
     CBQ_LOCALBENCH=/tmp/localbench python3 bench.py     # both engines
     python3 bench.py                                    # n1k1 only
     COMPILED=1 python3 bench.py                         # + compiled column
+    NDOCS_JSONL=500000 python3 bench.py                 # big container file for the packed table
     NDOCS=50000 BULK_ITEMS=50000 REPS=15 python3 bench.py
 
 Build the cbq runner once (in the fork worktree on branch `local-benchmark`):
@@ -106,7 +118,22 @@ Build the cbq runner once (in the fork worktree on branch `local-benchmark`):
 
 `gen.py` writes a deterministic dataset (orders one-per-file with `items` + `custId`;
 a `cust` keyspace keyed by custId for `JOIN ... ON KEYS`; a `bulk` keyspace of a few
-big-array docs). Defaults `NDOCS=20000`, `BULK_ITEMS=20000`, `REPS=11`.
+big-array docs; and `orders_jsonl/data.jsonl`, the same order docs packed into one
+container file). Defaults `NDOCS=20000`, `BULK_ITEMS=20000`, `NDOCS_JSONL=NDOCS`,
+`REPS=11`.
+
+### A cbq column for the packed scenario (future)
+
+cbq's file datastore is strictly one-doc-per-`.json` (keyspace = dir, key = filename,
+doc = whole file), so it can't read a `.jsonl` container. The cheapest fix for an
+apples-to-apples packed comparison is **not** to teach the file datastore JSONL
+(medium effort — single-file keyspace + synthetic line keys, and Scan/Fetch are
+decoupled so Fetch needs a line-offset index), but to adapt the fork's existing
+in-memory **mock datastore** (`datastore/mock`, which already uses integer synthetic
+keys and a `genItem(i)`): load the `.jsonl` once into `[]value.Value` and return
+`docs[i]`, behind a `jsonl:` datastore URI (one prefix branch in
+`datastore/resolver`). ~<100 lines, touches nothing in `datastore/file`, and loads
+outside the timed region. Deferred.
 
 ## Results (representative, this machine)
 

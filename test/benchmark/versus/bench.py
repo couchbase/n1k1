@@ -36,6 +36,10 @@ DATA = os.environ.get("DATA", os.path.join(HERE, "data"))
 NDOCS = int(os.environ.get("NDOCS", "20000"))
 BULK_ITEMS = int(os.environ.get("BULK_ITEMS", "20000"))
 BULK_DOCS = int(os.environ.get("BULK_DOCS", "4"))
+# packed (.jsonl container) scenario doc count; defaults to NDOCS so the packed
+# table is directly comparable to the files table at the same doc count -- bump it
+# far higher (e.g. 500000) to get well-resolved times (a container file is fast).
+NDOCS_JSONL = int(os.environ.get("NDOCS_JSONL", str(NDOCS)))
 REPS = int(os.environ.get("REPS", "11"))
 CBQ_LOCALBENCH = os.environ.get("CBQ_LOCALBENCH", "")
 COMPILED = os.environ.get("COMPILED", "") not in ("", "0", "false")
@@ -67,6 +71,14 @@ BULK_QUERIES = [
     ("unnest+join", "SELECT k.tier, COUNT(*) c, SUM(i.amount) s FROM bulk b "
                     "UNNEST b.items i JOIN cust k ON KEYS i.custId GROUP BY k.tier"),
 ]
+
+# packed scenario: the SAME logical file-scenario queries, but the outer keyspace is
+# the one-container orders_jsonl instead of a directory of NDOCS one-doc files. Same
+# docs, different on-disk layout -> isolates the per-file-open syscall overhead (see
+# DESIGN-benchmark.md "file-layout lesson"). n1k1 reads .jsonl natively; cbq's file
+# datastore is one-doc-per-.json only, so this scenario is n1k1-only for now.
+PACKED_QUERIES = [(name, q.replace("orders", "orders_jsonl"))
+                  for name, q in FILE_QUERIES]
 
 
 def die(m):
@@ -221,7 +233,7 @@ def table(title, queries, n1, comp, cbq):
 
 def main():
     subprocess.run([sys.executable, os.path.join(HERE, "gen.py"), DATA, str(NDOCS),
-                    str(BULK_DOCS), str(BULK_ITEMS)], check=True)
+                    str(BULK_DOCS), str(BULK_ITEMS), str(NDOCS_JSONL)], check=True)
     n1bin = build_n1k1()
 
     all_q = [q for _, q in FILE_QUERIES + BULK_QUERIES]
@@ -229,13 +241,21 @@ def main():
     comp = run_n1k1_compiled(n1bin, all_q) if COMPILED else {}
     cbq = run_cbq(CBQ_LOCALBENCH, all_q) if CBQ_LOCALBENCH else {}
 
+    packed_q = [q for _, q in PACKED_QUERIES]
+    n1p = run_n1k1(n1bin, packed_q)
+    compp = run_n1k1_compiled(n1bin, packed_q) if COMPILED else {}
+
     print("\ncbq-vs-n1k1  |  files: %d docs   bulk: %d docs x %d-elem arrays"
-          "  |  warm median of %d reps" % (NDOCS, BULK_DOCS, BULK_ITEMS, REPS))
+          "   packed: %d-doc .jsonl  |  warm median of %d reps"
+          % (NDOCS, BULK_DOCS, BULK_ITEMS, NDOCS_JSONL, REPS))
     print("interp/comp/cbq ms = full parse+plan+execute; core = compiled child's core"
           " compute (non-I/O, IPC excluded); core:i = core/interp; MB = allocated/query")
     table("SCENARIO: files (one doc per file -- I/O-bound)", FILE_QUERIES, n1, comp, cbq)
     table("SCENARIO: bulk (few docs, big in-doc arrays via UNNEST -- compute-bound)",
           BULK_QUERIES, n1, comp, cbq)
+    table("SCENARIO: packed (same order docs in ONE .jsonl container -- n1k1-only; "
+          "cf. files at same NDOCS_JSONL to see the per-file-open cost)",
+          PACKED_QUERIES, n1p, compp, {})
     if COMPILED:
         print("\ncomp  = n1k1 -prepare=full standalone-compiled EXECUTE, whole round-trip"
               " (parent scan + JSON-pipe inputs + child compute + pipe rows back);")
