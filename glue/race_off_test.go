@@ -19,3 +19,6 @@ import "testing"
 // assertions run normally. See the race twin (racehelp_race_test.go) for why
 // they're skipped under -race.
 func skipZeroAllocUnderRace(t *testing.T) {}
+
+// raceEnabled reports whether the binary was built with -race.
+const raceEnabled = false

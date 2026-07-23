@@ -24,3 +24,6 @@ func skipZeroAllocUnderRace(t *testing.T) {
 	t.Helper()
 	t.Skip("testing.AllocsPerRun zero-alloc assertion doesn't hold under -race instrumentation")
 }
+
+// raceEnabled reports whether the binary was built with -race.
+const raceEnabled = true
