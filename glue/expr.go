@@ -41,6 +41,14 @@ import (
 func init() {
 	engine.ExprCatalog["exprStr"] = ExprStr
 	engine.ExprCatalog["exprTree"] = ExprTree
+
+	// engine.ExecOpEx is the IoC hook ExecOp calls for datastore leaf ops (the engine can't
+	// import glue). It is ALWAYS glue.DatastoreOp -- per-request source variation (an inline
+	// MemPipe, etc.) is handled INSIDE DatastoreOp via Ctx.Pipe, so one global handler serves
+	// every request. Set it ONCE here instead of swapping it per Run: the old swap+defer wrote
+	// the same value on every query and RACED under concurrent Runs (blocker 1). Now the
+	// interpreter path only READS it during serving -> race-free. See DESIGN-concurrency.md.
+	engine.ExecOpEx = DatastoreOp
 }
 
 // ExprStr parses and evaluates a N1QL expression string using the

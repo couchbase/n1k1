@@ -928,9 +928,8 @@ func (cc *CompiledCorpus) runStream(onFinding func(Finding) error, stats *base.S
 		vars.Temps = append(vars.Temps, nil)
 	}
 
-	origExecOpEx := engine.ExecOpEx
-	defer func() { engine.ExecOpEx = origExecOpEx }()
-	engine.ExecOpEx = DatastoreOp
+	// engine.ExecOpEx is set once to DatastoreOp in this package's init() (expr.go), not
+	// swapped here -- the swap raced under concurrent Runs (blocker 1, DESIGN-concurrency.md).
 
 	var execErr error
 

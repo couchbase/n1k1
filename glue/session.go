@@ -516,9 +516,9 @@ func (s *Session) PlanExec(pp *PreparedPlan,
 		}
 	}
 
-	origExecOpEx := engine.ExecOpEx
-	defer func() { engine.ExecOpEx = origExecOpEx }()
-	engine.ExecOpEx = DatastoreOp
+	// engine.ExecOpEx is set once to DatastoreOp in this package's init() (expr.go), NOT
+	// swapped per Run -- the per-Run swap raced under concurrent Runs (blocker 1). Per-request
+	// source variation rides Ctx.Pipe, set below.
 
 	var rows []json.RawMessage
 	var rowCount int

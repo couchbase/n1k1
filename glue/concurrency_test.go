@@ -17,15 +17,18 @@ package glue
 // ONE shared Store (the cbq datastore is a global singleton, so a server serves one data
 // root), and N goroutines each with its OWN Session running a mix of queries in a loop.
 //
-// FINDING: functionally this returns correct results under heavy contention (these tests
-// pass). Blockers 2 & 3 are now FIXED -- engine.ExprCatalog is registered once in init()
-// (no concurrent map-write panic) and datastore.SetDatastore is guarded by ensureDatastore
-// (no write during serving). The REMAINING barrier is blocker 1: the engine.ExecOpEx IoC
-// hook is a package-global func var swapped to DatastoreOp per Run and read on the op-exec
-// hot path, so concurrent Runs still race on it (plus a blocker-4 cbq-planner audit). So
-// these tests SKIP under -race until blocker 1 lands; making it race-clean is a real engine
-// refactor. See DESIGN-concurrency.md. A Session is single-query-at-a-time (halt resets per
-// Run); the concurrency here is ACROSS sessions sharing the store + the global engine hooks.
+// The three per-query PROCESS-GLOBAL mutations n1k1 made are all FIXED now: engine.ExprCatalog
+// registered once in init() (blocker 2), datastore.SetDatastore guarded by ensureDatastore
+// (blocker 3), and engine.ExecOpEx set once to DatastoreOp in init() rather than swapped per
+// Run (blocker 1; per-request source variation rides Ctx.Pipe, which is per-Vars). With those
+// gone the n1k1 engine path is race-clean under contention.
+//
+// These tests still SKIP under -race, though, for a DEEPER reason outside n1k1: the cbq FORK's
+// planner uses process-GLOBAL object pools (e.g. _COVERING_ENTRY_POOL via util.FastPool) that
+// race during concurrent buildCoveringScan -- a fork-level bug (blocker 4, same class as the
+// previously-patched LocklessPool) that needs a fork patch, not an n1k1 change. Functionally
+// the tests PASS non-race (correct results + liveness under contention). See
+// DESIGN-concurrency.md. A Session is single-query-at-a-time; concurrency is ACROSS sessions.
 
 import (
 	"fmt"
@@ -66,9 +69,9 @@ type concQuery struct {
 func hammer(t *testing.T, store *Store, queries []concQuery, g, n int) {
 	t.Helper()
 	if raceEnabled {
-		t.Skip("blocker 1 open: engine.ExecOpEx is a global func var swapped per Run + read on " +
-			"the op-exec hot path, so concurrent Run() still races under -race (blockers 2-3, " +
-			"ExprCatalog + SetDatastore, are now fixed). See DESIGN-concurrency.md.")
+		t.Skip("n1k1's per-query globals are fixed (blockers 1-3), but the cbq FORK planner's " +
+			"global object pools (e.g. _COVERING_ENTRY_POOL / util.FastPool) still race under " +
+			"concurrent buildCoveringScan -- a fork patch (blocker 4). See DESIGN-concurrency.md.")
 	}
 	var wg sync.WaitGroup
 	var fails int64

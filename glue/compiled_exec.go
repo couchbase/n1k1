@@ -218,9 +218,7 @@ func (s *Session) scanCompiledInputs(pp *PreparedPlan) ([]compiledInput, error) 
 		vars.Temps = append(vars.Temps, nil)
 	}
 
-	orig := engine.ExecOpEx
-	defer func() { engine.ExecOpEx = orig }()
-	engine.ExecOpEx = DatastoreOp
+	// engine.ExecOpEx is DatastoreOp (set once in init(), expr.go) -- no per-call swap.
 
 	var inputs []compiledInput
 	var scanErr error
