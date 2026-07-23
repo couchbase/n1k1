@@ -44,25 +44,28 @@ All in the hot `Session.Run` -> `PlanExec` path. Each is a real `-race` finding.
 
 | # | Global | Where | Severity | Consequence under load |
 |---|--------|-------|----------|------------------------|
-| 1 | `engine.ExecOpEx` (IoC hook) | swapped `glue/session.go:526`, read `engine/op.go:102` | **HARD** | The engine reads this global on EVERY datastore op. `Run` swaps it to `DatastoreOp` and restores via `defer`. Concurrent runs can restore a stale/nil value mid-flight in another goroutine -> ops routed to the wrong handler or a nil call. |
-| 2 | `engine.ExprCatalog` (map) | lazy init `glue/session.go:427` | EASY | Check-then-set on a shared map from many goroutines -> concurrent map write, which the Go runtime PANICS on (not just a race). |
-| 3 | `datastore.SetDatastore` | `glue/session.go:304` (every Run) | MEDIUM | Write-write race on the global datastore. Benign in *value* when all sessions share one store (same pointer written), but still a race, and it's the wrong shape. |
-| 4 | assorted process-global caches | `glue/idx_si.go:75,734`, `glue/datastore_scan.go` (`ScanWalkOptions`, scan caches) | AUDIT | The code comments already flag these as "process-global … fine for the single-process CLI"; each needs an is-it-read-only-during-serving audit or a mutex/per-Store move. |
+| 1 | `engine.ExecOpEx` (IoC hook) | swapped `glue/session.go`, read `engine/op.go:102` | **HARD — open** | The engine reads this global on EVERY datastore op. `Run` swaps it to `DatastoreOp` and restores via `defer`. Concurrent runs can restore a stale/nil value mid-flight in another goroutine -> ops routed to the wrong handler or a nil call. Confirmed still the sole `PlanExec`/`ExecOp` race after fixing 2-3. |
+| 2 | `engine.ExprCatalog` (map) | was lazy init in `Run`/`PlanExec`/corpus | ✅ **FIXED** | Was a check-then-set on a shared map from many goroutines -> concurrent map write (a runtime PANIC). Now registered ONCE in `glue` `init()` (`expr.go`); read-only during serving. |
+| 3 | `datastore.SetDatastore` | was every `Run` (`session.go`) + corpus | ✅ **FIXED** | Was a write-write race on the global datastore. Now `ensureDatastore` (`stmt.go`) writes only when the global isn't already this store's datastore -- so in the one-store model (set once at `InitParser`) every concurrent `Run` just READS it. Race-free confirmed. |
+| 4 | assorted process-global caches | `glue/idx_si.go:75,734`, `glue/datastore_scan.go` (`ScanWalkOptions`, scan caches); cbq planner internals seen in `PlanStatementQP`/`planner.Build` | AUDIT | Comments already flag these "process-global … fine for the single-process CLI"; each needs a read-only-during-serving audit or a mutex/per-Store move. A concurrent-plan-build race in the cbq fork may also live here. |
 
 The design *knows* this: `datastore_scan.go:301` and `idx_si.go:75` literally say "process-global
 … fine for the single-process CLI; a [server would need more]".
+
+**Status:** blockers 2 & 3 are FIXED (commit trailer below); the goroutine-per-client stress test
+now shows only blocker 1 (`ExecOpEx`) and the blocker-4 planner globals under `-race`.
 
 ## Path to a concurrent server
 
 Roughly in increasing effort:
 
-1. **`ExprCatalog` (blocker 2):** register `exprStr`/`exprTree` once in an `init()` (or
-   `sync.Once`) instead of lazily per `Run`. Trivial, removes a panic risk.
-2. **`SetDatastore` (blocker 3):** set the global once at `InitParser` and make `Run` a no-op
-   when `GetDatastore()` already is this store's datastore — in the shared-store model no write
-   ever happens during serving, so concurrent reads are race-free. (Cross-store concurrency stays
-   unsupported by construction.)
-3. **`ExecOpEx` (blocker 1) — the real work:** stop swapping a global. The per-`Ctx` seam already
+1. ✅ **`ExprCatalog` (blocker 2) — DONE:** `exprStr`/`exprTree` are registered once in `glue`
+   `init()` (`expr.go`) instead of lazily per `Run`; the shared map is read-only during serving.
+2. ✅ **`SetDatastore` (blocker 3) — DONE:** `ensureDatastore` (`stmt.go`) sets the global only
+   when it isn't already this store's datastore — in the shared-store model (set once at
+   `InitParser`) no write happens during serving, so concurrent reads are race-free.
+   (Cross-store concurrency stays unsupported by construction.)
+3. **`ExecOpEx` (blocker 1) — the real work, OPEN:** stop swapping a global. The per-`Ctx` seam already
    half-exists: `base.DatastorePipe` + `vars.Ctx.Pipe` route the data *source* per query. Extend
    that so `engine.ExecOp` dispatches the "extra op kinds" through a per-`Vars`/`Ctx` handler
    rather than the `engine.ExecOpEx` package var — then each run carries its own `DatastoreOp`
@@ -78,9 +81,10 @@ process per query) — a natural fit for its Futamura-projection compile path.
 
 ## Verdict
 
-n1k1 is **not** goroutine-per-client safe today, by deliberate single-process design — it won't
-silently corrupt in the CLI (one query at a time), but a naive concurrent server would hit data
-races and eventually a concurrent-map-write panic. The gap is a *small, enumerated* set of
-process globals, not a pervasive thread-unsafety; blockers 2–3 are quick, blocker 1 (`ExecOpEx`)
-is the one architectural change. Reproducer + guardrail: `glue/concurrency_test.go` (passes
-functionally under contention; skips under `-race` with a pointer here).
+n1k1 is **not yet** goroutine-per-client safe, by deliberate single-process design — it won't
+silently corrupt in the CLI (one query at a time). The gap is a *small, enumerated* set of
+process globals, not a pervasive thread-unsafety. Blockers 2 & 3 are now FIXED (`ExprCatalog`
+panic risk and the `SetDatastore` race are gone); the remaining barrier to a concurrent server
+is blocker 1 (`ExecOpEx`, the one architectural change) plus the blocker-4 audit (incl. any
+cbq-planner concurrent-build race). Reproducer + guardrail: `glue/concurrency_test.go` (passes
+functionally under contention; skips under `-race` until blocker 1 lands).

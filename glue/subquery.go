@@ -228,15 +228,9 @@ func (c *GlueContext) EvaluateSubquery(query *algebra.Select, parent value.Value
 		}
 	}
 
-	// Expr constructors are global on the engine; ensure they're wired (the
-	// outer Session.Run sets these + ExecOpEx before it runs, which is when a
-	// subquery-bearing expression gets evaluated).
-	if engine.ExprCatalog["exprStr"] == nil {
-		engine.ExprCatalog["exprStr"] = ExprStr
-	}
-	if engine.ExprCatalog["exprTree"] == nil {
-		engine.ExprCatalog["exprTree"] = ExprTree
-	}
+	// Expr constructors (exprStr/exprTree) are registered once in this package's init()
+	// (expr.go), not lazily here -- lazy check-then-set races the shared map under concurrent
+	// Runs. See DESIGN-concurrency.md.
 
 	tmpDir, vars := MakeVars("", "n1k1subq")
 	defer os.RemoveAll(tmpDir)

@@ -32,6 +32,17 @@ import (
 	"github.com/couchbase/query/value"
 )
 
+// init registers glue's boxed-expression lanes ("exprStr"/"exprTree") into the engine's
+// shared expr catalog ONCE at startup. Previously each Run/PlanExec/corpus path lazily
+// check-then-set these entries, which is a concurrent MAP WRITE (a runtime panic) when many
+// goroutines Run at once -- see DESIGN-concurrency.md blocker 2. The map is only READ during
+// serving after this. (engine.ExprCatalog is a non-nil composite-literal map; engine's own
+// init()s populate it first, in dependency order, before this glue init runs.)
+func init() {
+	engine.ExprCatalog["exprStr"] = ExprStr
+	engine.ExprCatalog["exprTree"] = ExprTree
+}
+
 // ExprStr parses and evaluates a N1QL expression string using the
 // query/expression/parser package, providing backwards compatibility
 // at the cost of performance from data conversions.

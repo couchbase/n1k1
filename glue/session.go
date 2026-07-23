@@ -22,7 +22,6 @@ import (
 	"time"
 
 	"github.com/couchbase/query/algebra"
-	"github.com/couchbase/query/datastore"
 	"github.com/couchbase/query/errors"
 	"github.com/couchbase/query/expression"
 	"github.com/couchbase/query/plan"
@@ -162,9 +161,9 @@ type Result struct {
 	// for any query that didn't compile standalone. See compiledMain / runCompiledChild.
 	CompiledChildElapsed time.Duration
 
-	Plan     *base.Op          // the converted n1k1 op tree (for .explain / -v)
-	Stats    *base.Stats       // per-operator counters when CollectStats was on, else nil
-	Count    int               // number of result rows (len(Rows), or the streamed count when OnRow was set)
+	Plan  *base.Op    // the converted n1k1 op tree (for .explain / -v)
+	Stats *base.Stats // per-operator counters when CollectStats was on, else nil
+	Count int         // number of result rows (len(Rows), or the streamed count when OnRow was set)
 
 	// BoxedEvals is the number of per-row expressions that fell back to the boxed
 	// cbq lane during execution (the GC-heavy Convert->Evaluate->WriteJSON path);
@@ -300,8 +299,8 @@ func (s *Session) Run(stmt string) (res *Result, err error) {
 	// earlier Session). OpenSession points the global at this store via InitParser,
 	// but Run is also invoked on directly-constructed Sessions (the test harness,
 	// embedders), so ensure it here too. Cheap idempotent global assignment.
-	if s.Store != nil && s.Store.Datastore != nil {
-		datastore.SetDatastore(s.Store.Datastore)
+	if s.Store != nil {
+		ensureDatastore(s.Store.Datastore) // no-op (read-only) when already set -- see stmt.go.
 	}
 
 	// CREATE / DROP TEMP KEYSPACE (IDEA-0027) has no fork grammar, so recognize it at
@@ -424,12 +423,8 @@ func PlanConvert(qp *plan.QueryPlan) (*PreparedPlan, error) {
 // plan) and EXECUTE (a cached one). Panics propagate to Run's deferred recover.
 func (s *Session) PlanExec(pp *PreparedPlan,
 	namedArgs map[string]value.Value, positionalArgs value.Values) (*Result, error) {
-	if engine.ExprCatalog["exprStr"] == nil {
-		engine.ExprCatalog["exprStr"] = ExprStr
-	}
-	if engine.ExprCatalog["exprTree"] == nil {
-		engine.ExprCatalog["exprTree"] = ExprTree
-	}
+	// exprStr/exprTree are registered once in this package's init() (not lazily here) so the
+	// concurrent Run path never writes the shared engine.ExprCatalog map. See expr.go.
 
 	tmpDir, vars := MakeVars("", "n1k1")
 	defer os.RemoveAll(tmpDir)

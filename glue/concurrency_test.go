@@ -18,15 +18,14 @@ package glue
 // root), and N goroutines each with its OWN Session running a mix of queries in a loop.
 //
 // FINDING: functionally this returns correct results under heavy contention (these tests
-// pass), BUT n1k1 is today a single-process CLI engine -- Run mutates PROCESS-GLOBAL state
-// per query: the engine.ExecOpEx IoC hook (swapped to DatastoreOp + restored via defer),
-// engine.ExprCatalog (lazy map init), and datastore.SetDatastore (the planner's global
-// datastore singleton). Under `go test -race` those globals trip the detector, and under
-// real load they could misroute an op, panic on a concurrent map write, or read a torn
-// pointer. So these tests SKIP under -race (the races are known + documented, not a
-// regression to hunt); making them race-clean is a real refactor. See DESIGN-concurrency.md.
-// A Session is single-query-at-a-time (halt resets per Run); the concurrency here is ACROSS
-// sessions sharing the store + the global planner/engine hooks.
+// pass). Blockers 2 & 3 are now FIXED -- engine.ExprCatalog is registered once in init()
+// (no concurrent map-write panic) and datastore.SetDatastore is guarded by ensureDatastore
+// (no write during serving). The REMAINING barrier is blocker 1: the engine.ExecOpEx IoC
+// hook is a package-global func var swapped to DatastoreOp per Run and read on the op-exec
+// hot path, so concurrent Runs still race on it (plus a blocker-4 cbq-planner audit). So
+// these tests SKIP under -race until blocker 1 lands; making it race-clean is a real engine
+// refactor. See DESIGN-concurrency.md. A Session is single-query-at-a-time (halt resets per
+// Run); the concurrency here is ACROSS sessions sharing the store + the global engine hooks.
 
 import (
 	"fmt"
@@ -67,9 +66,9 @@ type concQuery struct {
 func hammer(t *testing.T, store *Store, queries []concQuery, g, n int) {
 	t.Helper()
 	if raceEnabled {
-		t.Skip("n1k1 mutates process-global state per query (engine.ExecOpEx swap, " +
-			"engine.ExprCatalog lazy init, datastore.SetDatastore) -- concurrent Run() races " +
-			"under -race by design (single-process CLI engine). See DESIGN-concurrency.md.")
+		t.Skip("blocker 1 open: engine.ExecOpEx is a global func var swapped per Run + read on " +
+			"the op-exec hot path, so concurrent Run() still races under -race (blockers 2-3, " +
+			"ExprCatalog + SetDatastore, are now fixed). See DESIGN-concurrency.md.")
 	}
 	var wg sync.WaitGroup
 	var fails int64

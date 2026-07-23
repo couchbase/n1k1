@@ -33,8 +33,6 @@ package glue
 import (
 	"fmt"
 
-	"github.com/couchbase/query/datastore"
-
 	"github.com/couchbase/n1k1/base"
 	"github.com/couchbase/n1k1/engine"
 )
@@ -99,8 +97,8 @@ func pct(n, d int) int {
 // per-detector failure never fails the call -- it becomes a LintRejected row; err is
 // non-nil only for a setup-level problem (currently none, reserved).
 func (s *Session) CorpusLint(dets []CorpusDetector) ([]DetectorLint, CorpusScore, error) {
-	if s.Store != nil && s.Store.Datastore != nil {
-		datastore.SetDatastore(s.Store.Datastore)
+	if s.Store != nil {
+		ensureDatastore(s.Store.Datastore)
 	}
 
 	out := make([]DetectorLint, 0, len(dets))

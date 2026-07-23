@@ -131,6 +131,19 @@ func (g *Store) InitParser() error {
 	return nil
 }
 
+// ensureDatastore points the process-global datastore -- which the cbq planner resolves
+// keyspaces through (datastore.GetDatastore) -- at ds, but ONLY when it isn't already ds.
+// InitParser sets it once up front, so in the one-store server model (one data root -> one
+// Store -> many Sessions) every concurrent Run/CorpusLint then just READS the global here and
+// skips the write, avoiding the write-write data race an unconditional per-Run SetDatastore
+// causes. See DESIGN-concurrency.md blocker 3. Distinct stores concurrently remain
+// unsupported by construction (the global can only name one datastore).
+func ensureDatastore(ds datastore.Datastore) {
+	if ds != nil && datastore.GetDatastore() != ds {
+		datastore.SetDatastore(ds)
+	}
+}
+
 // ------------------------------------------------------------------
 
 // PlanStatement returns a plan.Operator tree for a statement.

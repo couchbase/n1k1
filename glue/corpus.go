@@ -123,7 +123,6 @@ import (
 	"sort"
 	"time"
 
-	"github.com/couchbase/query/datastore"
 	"github.com/couchbase/query/errors"
 	"github.com/couchbase/query/expression"
 	"github.com/couchbase/query/value"
@@ -246,8 +245,8 @@ func (s *Session) CorpusCompile(dets []CorpusDetector) (*CompiledCorpus, error) 
 	// Correlated/keyspace resolution in the planner reads the process-global
 	// datastore; point it at this session's store (idempotent), exactly as
 	// Session.Run does before planning.
-	if s.Store != nil && s.Store.Datastore != nil {
-		datastore.SetDatastore(s.Store.Datastore)
+	if s.Store != nil {
+		ensureDatastore(s.Store.Datastore)
 	}
 
 	findingsLabels := corpusFindingsLabels()
@@ -903,18 +902,11 @@ func (cc *CompiledCorpus) runStream(onFinding func(Finding) error, stats *base.S
 		return nil // standalone-only (or empty) corpus.
 	}
 
-	if s.Store != nil && s.Store.Datastore != nil {
-		datastore.SetDatastore(s.Store.Datastore)
+	if s.Store != nil {
+		ensureDatastore(s.Store.Datastore)
 	}
-
-	// Wire the boxed expr lanes into the engine's expr catalog (as PlanExec does),
-	// so a boxed ["exprTree", ...] predicate resolves.
-	if engine.ExprCatalog["exprStr"] == nil {
-		engine.ExprCatalog["exprStr"] = ExprStr
-	}
-	if engine.ExprCatalog["exprTree"] == nil {
-		engine.ExprCatalog["exprTree"] = ExprTree
-	}
+	// exprStr/exprTree are registered once in this package's init() (expr.go), not lazily
+	// here -- lazy check-then-set races the shared map under concurrent Runs.
 
 	tmpDir, vars := MakeVars("", "n1k1corpus")
 	defer os.RemoveAll(tmpDir)
