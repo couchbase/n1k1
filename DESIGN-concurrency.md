@@ -76,16 +76,30 @@ PREPARE/EXECUTE is a constant-factor win, not a scaling one: a single immutable 
 skips parse+plan (~½ the allocs), but its scaling curve matches ad-hoc — because the ceiling is the
 scan, not the plan.
 
-**Secondary per-query costs** (visible once the file-scan is removed): `MakeVars` eagerly creates a
-temp dir (`mkdir`/`rmdir`) on every `PlanExec` even for a query that can't spill; and GROUP BY /
-ORDER / hash-join / window eagerly allocate the rhmap store's `StartSize`(=5303)-slot slots buffer at
-op init, before any row (an in-memory ~tens-of-KB heap alloc — a real mmap'd *file* appears only on
-grow/spill past ~4000 keys, so the mmap is lazy; the eager cost is the buffer + GC).
+**Secondary per-query costs, now optimized.** Two eager per-`PlanExec` costs showed up once the
+file-scan was removed, and both are fixed:
 
-**Levers to lift the ceiling** (none is the planner): a syscall-light layout — single-file / columnar
-Parquet, one open per scan (cf. the `parallel-scan-experiment` memo: file-per-doc packed to one file
-was ~245× faster); a lazily-created `MakeVars` temp dir (only when a query actually spills); a
-smaller or lazily-grown group/order store for small aggregations.
+- `MakeVars` used to create a temp dir (`mkdir`/`rmdir`) on every `PlanExec` even for a query that
+  can't spill. Now the dir is **lazy** — `rt.SpillState.ensureDir` creates it only when an
+  allocator (GROUP/ORDER/hash-join) actually needs to spill a file, so every scan/filter/project
+  pays zero mkdir.
+- GROUP BY / ORDER / hash-join / window eagerly allocate the rhmap store's `StartSize`(=5303)-slot
+  buffer at op init (an in-memory ~tens-of-KB heap alloc; the mmap'd *file* is already lazy — only
+  on grow past ~4000 keys). A **Session now holds one `rt.SpillState`** (allocator pools + temp
+  dir) reused across all its `PlanExec`s, so that buffer + the batch buffers recycle across a
+  connection's queries and the temp dir is created at most once (freed by `Session.Close`). Only
+  the pools are shared; the `Ctx` is fresh per query (so `RunningAggJobs`/`Stats` never leak), and
+  the pooled pieces are cleared not just parked — `RHStore.Reset` zeroes every hash slot,
+  `Heap.Reset` truncates, batches are `AcquireBatch()[:0]`'d — so there's no cross-query data leak
+  (guarded by `TestSessionSpillReuseNoLeak`).
+
+Measured effect (12-core M2 Pro): the single-file mix rose g08 ~8585 → ~12336 (lazy dir) → ~19715
+queries/s (+ Session reuse) — **~2.3× the pre-optimization baseline**; group-query bytes/query
+−20–40%.
+
+**Remaining lever** (none is the planner): a syscall-light data layout — single-file / columnar
+Parquet, one open per scan (cf. the `parallel-scan-experiment` memo: file-per-doc packed to one
+file was ~245× faster). That's the big one; the two above are done.
 
 Reproduce: `go test -tags n1ql -run=^$ -bench BenchmarkConcurrent -benchtime=500ms ./test/benchmark`
 (add `-cpuprofile`/`-memprofile`/`-mutexprofile` for the profiles; run WITHOUT `-race` — the fork
