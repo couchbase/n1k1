@@ -1,9 +1,12 @@
 # DESIGN-vectors.md — embeddings & vector search in n1k1
 
 _Status: **Phase 0 SHIPPED** (VECTORIZE_BATCH builtin + @vectorize_field macro +
-brute-force VECTOR_DISTANCE search; fake + real-HTTP, cgo-free). Phases 1–2 not started.
-Companion to DESIGN-data.md (keyspaces, extract), DESIGN-extensions.md (UDFs,
-`*.stream.js`, macros), DESIGN-col.md (columnar/SIMD)._
+brute-force VECTOR_DISTANCE search; fake + real-HTTP, cgo-free). **Phase 1 largely
+SHIPPED** — native byte-lane `VECTOR_DISTANCE`, a columnar float32 kernel over an Arrow
+`List<float32>` column, an `INSERT INTO <name>.parquet` vector-column writer, and
+computed-qvec lowering to the columnar fast path. Phase 2 (remote-source ingest, ANN-index
+cgo decision) not started. Companion to DESIGN-data.md (keyspaces, extract),
+DESIGN-extensions.md (UDFs, `*.stream.js`, macros), DESIGN-col.md (columnar/SIMD)._
 
 ## Intent
 
@@ -189,8 +192,8 @@ up-convert int8/float16 to float32), and run a native distance kernel over a bor
 per-row `value.Value`, SIMD-friendly). That is the DESIGN-col native port — the right home
 for the reuse instinct.
 
-> **When we build the native unboxed distance, take TWO vectors — drop cbq's operand
-> restrictions.** cbq's `VECTOR_DISTANCE` requires operand-0 to be a *field reference* and
+> **The native unboxed distance (now built, `base.VectorDistanceVals`) should take TWO
+> vectors — drop cbq's operand restrictions.** cbq's `VECTOR_DISTANCE` requires operand-0 to be a *field reference* and
 > the query vector to be *static* (constant/param/`WITH`) — those are planner / vector-index
 > eligibility constraints, meaningful only for the index-backed path we don't have. A native
 > n1k1 brute-force distance is pure compute, so it should accept **any two vector expressions**
@@ -416,14 +419,16 @@ first and covers dev/debug scale.
   - **DONE — native, unboxed `VECTOR_DISTANCE`** (`engine/expr_vector.go` +
     `base.VectorDistanceVals`): byte-lane eval, no per-row `value.Value` array boxing;
     differential-verified equal to boxed. ~1.6× + 50× fewer allocs on jsonl (kernel for the
-    columnar win). Gaps noted above: JSON-parse residual (needs columnar), and `WITH`/param
-    qvec doesn't yet lower native (literal/const qvec triggers it).
-  - **The big remaining core:** the **columnar float32/native-type vector column** the native
-    kernel reads directly (no JSON parse) — this is what unlocks the headline speedup + 2–8×
-    storage. **Prerequisite:** an `INSERT INTO <parquet>` writer — today `INSERT` writes
-    **jsonl only** (`glue/insert.go`); the `pqarrow` write lib is available (used in
-    `records/parquet_col_test.go`) but not wired as a production output format. Plus: lower a
-    const `WITH`/param qvec to a native leaf so the native path triggers for real queries.
+    columnar win).
+  - **DONE — the columnar float32 vector column + kernel** (was "the big remaining core").
+    A columnar float32 `VECTOR_DISTANCE` kernel (`base.VectorDistanceVFloat32` / `VecFloat32`)
+    reads an Arrow `List<float32>` column directly — no JSON parse — via `VectorColumnarScan`
+    / `maybeVectorColumnarFuse` (`glue/vector.go`) over a `VectorBatchSource`
+    (`records/vector_source.go`); measured ~15–100×. Its prerequisite also shipped: an
+    `INSERT INTO <name>.parquet` writer (`glue.parquetWriter`), so a vector column can be
+    materialized once and re-queried. And a computed `WITH` / `$param` qvec now lowers to the
+    columnar fast path too (≈ a literal qvec), so real queries — not just literal-qvec ones —
+    take it.
 - **Phase 2:** remote-source ingest (S3/Box/Drive/HF → local vector side-file); then the
   ANN-index cgo decision, only if N demands.
 
@@ -467,9 +472,10 @@ Later-phase direction, captured here — not Phase 0.
 1. ~~`UNNEST` support~~ — **VERIFIED** (works over computed `ARRAY_AGG` arrays).
 2. ~~Row-ordinal for paging~~ — **VERIFIED** (`ROW_NUMBER()` / `_meta.pos`).
 3. ~~`INSERT INTO` skip-if-present~~ — **RESOLVED**: mode `"new"` already errors-if-exists.
-4. `VECTORIZE_BATCH` extension: the goja↔native-`http.post` host binding + the `{"fake":true}`
-   mode (the one genuinely new piece).
-5. Native-lane / columnar float32 port of `vectorDistance`, with element-type variants
-   (Phase 1 perf).
-6. Parquet fixed-size-list encoding of a vector column, incl. the element-type tag
-   (float32/int8/…) (DESIGN-col).
+4. ~~`VECTORIZE_BATCH` extension: goja↔native-`http.post` host binding + `{"fake":true}`
+   mode~~ — **DONE** (Phase 0).
+5. ~~Native-lane / columnar float32 port of `vectorDistance`~~ — **DONE** (native
+   `base.VectorDistanceVals` + columnar `VectorDistanceVFloat32`; Phase 1 perf).
+6. ~~Parquet encoding of a vector column~~ — **DONE**, shipped as a variable-length
+   Arrow `List<float32>` (not the originally-envisioned `FixedSizeList`); the columnar
+   kernel reads it directly (DESIGN-col).

@@ -2,6 +2,42 @@
 
 Gist only -- details live in commit messages, README, and code comments.
 
+## 2026/07 (mid-late) -- data formats, remote stores, vectors, concurrency, JS modules
+
+- Apache Iceberg read (cgo-free, via iceberg-go): FROM-able keyspaces; projection
+  / predicate / partition pushdown; time-travel (`table@<snapshot-or-timestamp>`);
+  metadata-only COUNT/MIN/MAX from manifest data-file stats; columnar reads
+  (NextColumns) so ungrouped aggregates vectorize like Parquet. records/iceberg*.go.
+  DESIGN-data.md §7.
+- Remote object stores: S3 / GCS / Azure reads, including `FROM s3://…` Iceberg
+  tables. records/objectstore.go, iceberg_objectstore.go; bounded batch + buffered
+  streaming. DESIGN-data.md §8.
+- Parquet VARIANT: JSON + typed-scalar carrier; Phase-0 read -> Phase-1 `V`-carrier
+  fidelity -> shredded reads -> INSERT write-back (emits a Parquet VARIANT column
+  for objects); zero-alloc byte-level nav + projection; `variant/` package;
+  `-variant-fidelity` CLI flag. DESIGN-variant.md.
+- Vector search: `VECTOR_DISTANCE` native byte-lane + a columnar float32 kernel
+  (~15-100x); `VECTORIZE_BATCH` embeddings (fake + net/http ollama) + a
+  `@vectorize_field` macro; `INSERT INTO <name>.parquet` vector-column writer;
+  computed WITH/$param qvec lowers to the columnar fast path. DESIGN-vectors.md.
+- Concurrency / goroutine-per-client: process-global mutation audit; blockers fixed
+  (ExprCatalog + ExecOpEx set once in init, SetDatastore guarded); engine now
+  `-race`-clean; scaling benchmarks (`make bench-concurrency`); Session-scoped spill
+  reuse + lazy spill temp dir. DESIGN-concurrency.md.
+- JS extension modules: multi-export `*.js` modules with a glob loader; builtin
+  modules (builtin_decimal, builtin_ejson); per-export scalar / aggregate / stream
+  kinds. extensions/functions/js/. DESIGN-extensions.md.
+- `versus` benchmark harness: head-to-head vs cbq (test/benchmark/versus/), with a
+  compiled-codegen column. DESIGN-benchmark.md.
+- Compiled standalone EXECUTE lane: fork-free child (links base+engine+rt, no cbq),
+  go-built once + cached; now runs aggregates + two-field arithmetic, not just
+  field-access/nary projections. glue/compiled_exec.go. DESIGN-prepare.md.
+- FTS: container-aware SEARCH self-fetch; whole-keyspace SEARCH; field-scoped
+  prefix / wildcard / fuzzy; raw bleve index-mapping JSON. DESIGN-indexing.md.
+- Native exprs: comprehensions (ANY/EVERY/FIRST/ARRAY/OBJECT/WITHIN), array/object
+  literals, variadic builders, string trim/REPEAT, bare-identifier reader operands
+  -- all compile in both lanes (compiledExprDenylist now empty). DESIGN-exprs.md.
+
 ## 2026/07 -- temporal, MQO/corpus, materialization, records, columnar
 - ASOF native projection (perf): `(SELECT RAW r.f … LIMIT 1)[0]` lowers with the
   matched value carried as a native labelPath into the build-side `.["r"]` doc
@@ -37,14 +73,16 @@ Gist only -- details live in commit messages, README, and code comments.
   (fields.types); leading-banner drop; _meta carries
   original-source byte_offset/byte_len/line_start/line_end;
   Parquet queryable keyspace.
-- Columnar (DESIGN-col.md): steps 1-4 DONE -- fixed-width spike, Parquet
-  keyspace, column-projection pushdown reusing plan.Fetch.EarlyProjection.
-  Step 5 (@col in-op vectorized aggregation) is next, partially started.
+- Columnar (DESIGN-col.md): steps 1-5 DONE -- fixed-width spike, Parquet
+  keyspace, column-projection pushdown reusing plan.Fetch.EarlyProjection,
+  @col in-op vectorized aggregation over Parquet AND Iceberg columnar sources
+  + a columnar float32 VECTOR_DISTANCE kernel. Step 6 (dictionary GROUP BY,
+  more kernels, optional SIMD leaf) is next.
 - Window: broadly native -- multi-column RANGE (not just ASC), ORDER BY NULLS
   FIRST/LAST, ranking + LAG/LEAD/FIRST/LAST/NTH_VALUE + named windows;
   incremental O(N) frame fold; invertible sliding COUNT/SUM/AVG + MIN/MAX
   deque; monotone frame-edge cursors.
-- Extensions: goja JS scalar UDFs (glue/ext_goja.go) + native zero-garbage
+- Extensions: goja JS scalar UDFs (glue/ext_jsvm.go) + native zero-garbage
   sparkline()/histogram() aggregates (base/agg_ext.go); streaming/table funcs.
 - CLI (cmd/n1k1): TEMP KEYSPACE; shell/backtick + reserved-word hints;
   .multi/.extract/.tables/.schema dot-commands; output-mode synonyms

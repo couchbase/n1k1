@@ -438,7 +438,7 @@ captures every typed scalar.
   place). Function-naming prior art + a recommendation is in **§5.1**.
 - **Q5.8 Schema advertising.** How does a VARIANT column show itself in `.keyspaces` /
   column metadata so users know a field is VARIANT vs plain JSON?
-- **Q5.9 VARIANT in the JS (goja) extensions.** JS UDFs (`ext_goja.go`, `*.macro.js`)
+- **Q5.9 VARIANT in the JS (goja) extensions.** JS UDFs (`ext_jsvm.go`, `*.macro.js`)
   today receive JSON-unmarshalled data; JS can't natively hold exact 128-bit decimals or
   ns-timestamps (its number is float64, its Date is ms). How does a `*.js` UDF see/return
   a VARIANT with fidelity? Direction in **§5.2**.

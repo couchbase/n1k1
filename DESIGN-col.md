@@ -2,7 +2,7 @@
 
 ## Status & remaining TODOs
 
-_Last reviewed: 2026-07-11._
+_Last reviewed: 2026-07-23._
 
 **Done:** Steps 1–5 have landed — the workload characterization, the ceiling spike
 (40–730× measured), the Parquet source, projection pushdown, and the first vectorized
@@ -25,8 +25,9 @@ Step roadmap:
 
 **Remaining (headline TODOs):**
 - [ ] Dictionary GROUP BY over low-cardinality string columns (integer key codes).
-- [ ] String / dictionary column encoding layout (numeric is settled; lean
-      Arrow-compatible offsets+payload).
+- [~] String / dictionary column encoding layout — string *scalar* (doc-id) columns
+      now flow the columnar fast path (Arrow STRING borrowed via `Value`, rendered as
+      a JSON string); dictionary-code encoding for GROUP BY is still open.
 - [ ] Division / richer aggregate-operand expressions (nested, unary, n-ary).
 - [ ] Index-list selection vectors for very low selectivity.
 - [ ] Row/predicate pushdown at the Arrow level (`RowGroupPruner` sidecar, cf. cbq's
@@ -175,11 +176,18 @@ arrow-free), summing **in scan order** ⇒ bit-exact vs the row fold. `int64` �
 `float64(v)`, matching the row path's `ParseFloat64`. Borrow valid until
 `batch.Release()`; Update-then-Release, one call per batch.
 
-### Shape carried as `[]ColKind`, no label sigils
+### Shape carried by `ColumnMeta` + a typed catalog key, no label sigils
 
-A parallel `[]ColKind` aligned with `Labels` (StatsBase-style), not a `@col.f64:`
-label prefix (which would force every `IndexOf` to strip it). Label sigils deferred to
-5.4 when columns flow *between* ops.
+The type does NOT ride a `@col.f64:` label prefix (which would force every `IndexOf`
+to strip it). It also did not need the once-envisioned parallel `[]ColKind` slice
+aligned with `Labels`: the fused `agg-columnar` / `agg-metadata` op is a SINGLE op
+(the group + its Parquet/Iceberg source collapse into one), so no column batch flows
+*between* ops and there is no inter-op shape to carry. Instead the post-conv rewrite
+(`glue/columnar.go`) consults the source's `records.ColumnMeta` (`Columns()`) at plan
+time and bakes the physical type into the agg **catalog key** — `sum` over a float64
+column becomes `sum_v_float64` (`aggCatalogKeyForColumnar` / `parseAggOperandSpec`).
+A future multi-op columnar lane (Step 6) that DID pass batches between ops would
+revisit an explicit `[]ColKind`-style shape; today it is unbuilt, not settled.
 
 ### Traps to pre-empt
 
@@ -255,7 +263,9 @@ When present the executor ANDs it into the selection and calls a **masked reduce
 no-WHERE lane takes plain `Agg.Update`.
 
 **Alternatives rejected:** *sentinel-fill* (AVG's count still needs the validity
-popcount); *companion-slot* validity via `[]ColKind` (generic row-plumbing, deferred).
+popcount); a *companion validity slot* threaded via a generic inter-op column shape
+(the once-envisioned `[]ColKind`; unbuilt — the single-op fused lane needs no such
+plumbing).
 
 -------------------------------------------------------
 ## Step 5.4 — selection-vector `WHERE` (DONE)
@@ -355,9 +365,10 @@ long-term validity-as-companion-slot generic row-plumbing.
 -------------------------------------------------------
 ## Still-open questions
 
-- **String/dictionary encoding layout.** Numeric settled (Arrow's LE buffer). Strings:
-  Arrow-compatible offsets+payload vs n1k1-native? Lean Arrow-compatible (near-free
-  interop).
+- **Dictionary encoding layout (for GROUP BY).** Numeric settled (Arrow's LE buffer);
+  string *scalar* columns already borrow Arrow STRING via `Value` (shipped). Still
+  open: low-cardinality dictionary-code encoding for a vectorized GROUP BY — Arrow
+  dictionary codes vs n1k1-native? Lean Arrow-compatible (near-free interop).
 - **How much columnar to ship to WASM?** No `archsimd`/`simdjson`/asm there; the
   in-browser win is *batching* (fewer JS-boundary crossings), not vector width.
 - **Operate on encoded data?** Computing on Parquet's RLE/dict pages *without*

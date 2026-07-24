@@ -7,15 +7,17 @@ Status: a working pure-Go SQL++ engine (CGO_ENABLED=0, cross-compiles;
 also GOOS=js/wasm in-browser). Beyond core query it now has temporal ASOF
 correlation (streaming merge-join / merge-scan), multi-query corpus fusion
 (PREPARE++ CorpusCompile + MULTI_MATCHES), session materialization (TEMP
-KEYSPACE, spills to disk), extract recipes + a Parquet queryable keyspace,
-goja JS UDFs + native sparkline()/histogram() aggregates, and a rich CLI
-(cmd/n1k1). Remaining work:
+KEYSPACE, spills to disk), extract recipes, columnar Parquet + Apache Iceberg
+queryable keyspaces (projection/predicate/partition pushdown + time-travel),
+Parquet VARIANT, vector search (VECTOR_DISTANCE + VECTORIZE_BATCH embeddings),
+remote object-store reads (S3/GCS/Azure), goja JS UDFs + native
+sparkline()/histogram() aggregates, and a rich CLI (cmd/n1k1). Remaining work:
 
 ## Headline priorities
 
-_Last reviewed: 2026-07-11._
+_Last reviewed: 2026-07-23._
 
-- [ ] Fork-free standalone analyzer binary -- glue still doesn't codegen to fork-free *.go.
+- [ ] Fork-free standalone analyzer binary -- the compiled EXECUTE child already codegens to fork-free *.go (base+engine+rt, no cbq); the open item is a `.multi build -o analyzer` embedding a minimal datastore runtime + baked plan.
 - [ ] Native-lane ASOF / subquery projection -- kill boxed-value/JSON alloc churn (top perf lever).
 - [ ] Columnar step 6: dictionary GROUP BY + more vectorized kernels + optional SIMD leaf (DESIGN-col.md; steps 1-5 done).
 - [ ] Raise the SQL++ conformance (TestSuiteCases) pass rate.
@@ -35,8 +37,8 @@ in glue/patches/README.md.
 ## More features
 
 - command-line program (cmd/n1k1): v1 DONE (see TODO-done.md). Remaining CLI
-  niceties (DESIGN-cli.md §7): tab completion, FROM 'file.csv' table-functions,
-  mid-query cancel.
+  niceties (DESIGN-cli.md §7): tab completion, FROM 'file.csv' table-functions.
+  (mid-query cancel: DONE -- Ctrl-C / closed pipe halts a running query.)
 
 - UI / terminal and/or web-based?
 
@@ -117,7 +119,10 @@ in glue/patches/README.md.
     slot, which the child or subquery's ExecOp may be able to refer to
     with variables?
 
-- compiled expr support?
+- compiled expr support? -- largely DONE: the compiled-lane denylist
+  (compiledExprDenylist) is now empty; native comprehensions (ANY/EVERY/FIRST/
+  ARRAY/OBJECT/WITHIN), array/object literals, variadic builders, and string
+  funcs all codegen in both lanes. See DESIGN-exprs.md.
 
 - expr MISSING or NULL patterns?
   - many expressions check for MISSING or NULL and propagate those,
@@ -235,10 +240,12 @@ in glue/patches/README.md.
     - but, we don't want to race too far ahead?
 
 - SIMD optimizations possible? see: SIMD-json articles / DESIGN-col.md?
-  - UNDERWAY, see DESIGN-col.md: steps 1-4 DONE (fixed-width spike; Parquet
+  - UNDERWAY, see DESIGN-col.md: steps 1-5 DONE (fixed-width spike; Parquet
     queryable keyspace; column-projection pushdown reusing plan.Fetch.
-    EarlyProjection). Step 5 (@col in-op vectorized aggregation) is the next
-    lever, partially started -- see headline priorities.
+    EarlyProjection; @col in-op vectorized aggregation over Parquet AND Iceberg
+    columnar sources + a columnar float32 VECTOR_DISTANCE kernel). Step 6
+    (dictionary GROUP BY, more kernels, optional SIMD leaf) is the next lever
+    -- see headline priorities.
 
 - col versus row optimizations? see: DESIGN-col.md.
   - UNDERWAY (steps 1-4 DONE; see above + DESIGN-col.md).
