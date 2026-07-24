@@ -19,7 +19,8 @@ secondary/FTS indexes, and a rich CLI (cmd/n1k1).
 
 | doc | scope |
 |-----|-------|
-| [DESIGN-benchmark.md](DESIGN-benchmark.md#status--remaining-todos) | benchmarking approach + recorded numbers || [DESIGN-col.md](DESIGN-col.md#status--remaining-todos) | columnar / SIMD roadmap: Parquet + Iceberg columnar sources, projection pushdown, vectorized aggregation + vector-distance kernels |
+| [DESIGN-benchmark.md](DESIGN-benchmark.md#status--remaining-todos) | benchmarking approach + recorded numbers |
+| [DESIGN-col.md](DESIGN-col.md#status--remaining-todos) | columnar / SIMD roadmap: Parquet + Iceberg columnar sources, projection pushdown, vectorized aggregation + vector-distance kernels |
 | [DESIGN-concurrency.md](DESIGN-concurrency.md) | goroutine-per-client model: process-global mutation audit, `-race` findings, scaling benchmarks |
 | [DESIGN-cli.md](DESIGN-cli.md#status--remaining-todos) | the cmd/n1k1 CLI + REPL: dot-commands, output modes, flags, help |
 | [DESIGN-data.md](DESIGN-data.md#status--remaining-todos) | data / extract / framing: file datastore, discovery, `*.extract.js` recipes, `_meta`, sorted-source metadata, Parquet + Apache Iceberg, remote object stores (S3/GCS/Azure), INSERT writers, TEMP KEYSPACE materialization |
