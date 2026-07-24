@@ -150,9 +150,9 @@ func (s *Session) buildCompiled(ps *preparedStmt) (bin string, cleanup func(), e
 	}
 	// Lower each exprTree to its NATIVE inline form where possible (the same
 	// optimizer the Preparable gate uses via exprIsNative), boxing to an exprStr
-	// island otherwise. So field-access / arithmetic / nary / const-folded
-	// projections compile cbq-free -- not just SELECT *; only a genuinely boxed
-	// (per-row cbq) expr trips the interpreter fallback below.
+	// island otherwise. So field-access / arithmetic / nary / aggregate /
+	// const-folded projections compile cbq-free -- not just SELECT *; only a
+	// genuinely boxed (per-row cbq) expr trips the interpreter fallback below.
 	ExprTreesOptimize(pp.topOp)
 
 	emit.PipeMode = true
