@@ -103,17 +103,31 @@ single-threaded**, then plateau and erode as G grows past the peak — e.g. one 
 `295 → 446 → 624 → 660 → 485 → 550` (≈2.5× peak). Either way it's far short of the ~12×
 a contention-free CPU-bound workload would give on 12 cores, and it *declines* past the peak.
 
-That ceiling holds even with a tiny keyspace, so it is **not** scan I/O — it's contention on
-shared parse/plan state:
-the cbq planner's process-global object pools (mutex-serialized), the global n1ql parser
-namespace, and GC pressure from the boxed plan path (~2000 allocs/query). n1k1's OWN per-query
-globals are already fixed (blockers 1–3, `DESIGN-concurrency.md`); this benchmark tracks the
-remaining concurrency ceiling and will show the win when the cbq-fork planner pools go
-per-request (blocker 4a).
+### Where the ceiling is (PREPARE/EXECUTE locates it)
 
-**Caveat — no `-race`.** Functionally correct under contention (the guardrail is
-`glue/concurrency_test.go`), but the cbq fork planner's global pools still race under `-race`
-(blocker 4a, a pending fork patch), so these benchmarks are throughput-only.
+`bench_concurrency_prepared_test.go` re-runs the ramp with prepared queries, which skip
+parse+plan:
+
+- `BenchmarkConcurrentPreparedShared` — ONE immutable `*glue.PreparedPlan` (built once via
+  `PlanConvert`) reused by every goroutine through its own Session's `PlanExec`. A single shared
+  prepared plan **is** concurrent-safe (per-run state is in fresh Vars; verified race-clean by
+  `TestConcurrentSharedPreparedPlanRace`). Nothing calls the planner in the loop.
+- `BenchmarkConcurrentPreparedPerClient` — each client runs `PREPARE p AS …` once, then loops
+  `EXECUTE p` (the realistic per-connection model; first EXECUTE caches that Session's plan).
+
+Result: prepared runs faster in ABSOLUTE terms (~½ the allocs, ~10–30% higher throughput) but its
+scaling curve is the **same** — peak ~2× at G=4, then decline. So the ceiling is **not** the
+planner or the parser (removing them via PREPARE doesn't lift it), and it's not the tiny keyspace's
+scan bytes. It's the shared **execution substrate**: GC pressure from per-query allocations and
+per-query datastore-scan file I/O (syscalls), both shared across goroutines. Lifting it means
+cutting per-query allocs (GC) and the per-request file-walk/open cost — not the planner. blocker 4a
+(the cbq fork planner-pool race, `DESIGN-concurrency.md`) stays a `-race` correctness item + a
+constant-factor cost, not the throughput ceiling. n1k1's own per-query globals are already fixed
+(blockers 1–3).
+
+**Caveat — no `-race`.** Functionally correct under contention (guardrails: `glue/concurrency_test.go`
++ `TestConcurrentSharedPreparedPlanRace`), but the cbq fork planner's global pools still race under
+`-race` (blocker 4a, a pending fork patch), so these throughput benchmarks run without it.
 
 ## Not here yet
 

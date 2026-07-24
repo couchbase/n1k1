@@ -64,29 +64,29 @@ var concStmts = []string{
 // benchConcStore writes nDocs JSON docs to a classic <root>/default/events/ layout and
 // returns a shared, InitParser'd Store plus a cleanup. The docs are small so per-query cost
 // is parse+plan+light-exec, not I/O.
-func benchConcStore(b *testing.B, nDocs int) (*glue.Store, func()) {
-	b.Helper()
+func benchConcStore(tb testing.TB, nDocs int) (*glue.Store, func()) {
+	tb.Helper()
 	root, err := os.MkdirTemp("", "n1k1conc")
 	if err != nil {
-		b.Fatal(err)
+		tb.Fatal(err)
 	}
 	dir := filepath.Join(root, "default", "events")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		b.Fatal(err)
+		tb.Fatal(err)
 	}
 	for i := 0; i < nDocs; i++ {
 		cat := []string{"a", "b", "c"}[i%3]
 		doc := fmt.Sprintf(`{"id":%d,"cat":%q,"n":%d}`, i, cat, i%200)
 		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("d%05d.json", i)), []byte(doc), 0o644); err != nil {
-			b.Fatal(err)
+			tb.Fatal(err)
 		}
 	}
 	store, err := glue.FileStore(root)
 	if err != nil {
-		b.Fatal(err)
+		tb.Fatal(err)
 	}
 	if err := store.InitParser(); err != nil {
-		b.Fatal(err)
+		tb.Fatal(err)
 	}
 	return store, func() { os.RemoveAll(root) }
 }

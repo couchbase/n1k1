@@ -93,13 +93,21 @@ plan-building (blocker 4a) — a fork patch. Until then a server could serialize
 (execution is safe) or go process-per-request. Reproducer + guardrail: `glue/concurrency_test.go`
 (passes functionally under contention; skips under `-race` until the fork planner pools are fixed).
 
-## Throughput scaling (why blocker 4a matters in numbers)
+## Throughput scaling (measured)
 
 `test/benchmark/bench_concurrency_test.go` (`make bench-concurrency`) ramps concurrent clients
-over one shared Store and reports queries/s. The curve is the quantitative face of blocker 4a:
-throughput rises from G=1 but **peaks around G=4–8 at only ~2–2.5× single-threaded, then plateaus
-and erodes** — nowhere near the ~12× a contention-free CPU-bound workload would give on 12 cores.
-It holds with a tiny keyspace (so it's not scan I/O): the bottleneck is contention on shared
-parse/plan state (the fork planner's mutex-serialized global pools, the global n1ql parser, and
-GC from the boxed plan path). So the fork planner-pool fix isn't just a `-race` cleanliness item —
-it's what unlocks concurrent throughput. Run without `-race` (throughput-only; see the test README).
+over one shared Store and reports queries/s. Throughput rises from G=1 but **peaks around G=4 at
+only ~2–2.5× single-threaded, then plateaus and erodes** — nowhere near the ~12× a contention-free
+CPU-bound workload would give on 12 cores.
+
+The PREPARE/EXECUTE variants (`bench_concurrency_prepared_test.go`) locate the ceiling. A prepared
+workload skips parse+plan entirely (a single immutable `*PreparedPlan`, built once, is safely
+shared across goroutines via `PlanExec` — verified race-clean by `TestConcurrentSharedPreparedPlanRace`).
+It runs faster in absolute terms (~½ the allocs, ~10–30% higher throughput) — but its scaling curve
+is the SAME: peak ~2× at G=4, then decline. So the ceiling is NOT the planner (blocker 4a) or the
+parser: removing them doesn't lift it. It's the shared EXECUTION substrate — GC pressure from
+per-query allocations and per-query datastore-scan file I/O (syscalls), both shared across
+goroutines. blocker 4a stays a `-race` correctness item + a constant-factor cost, NOT the main
+throughput ceiling. Lifting the ceiling means cutting per-query allocations (GC) and the
+per-request file-walk/open cost (e.g. a cached dir listing or a columnar single-file source).
+Run without `-race` (throughput-only; the prepared warm-up still touches blocker 4a).
