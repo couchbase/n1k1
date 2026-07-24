@@ -2,7 +2,7 @@
 
 ## Status & remaining TODOs
 
-_Last reviewed: 2026-07-11._
+_Last reviewed: 2026-07-23._
 
 **Done:** The recorded-cbq conformance oracle is live in both interpreter and compiler modes — `TestSuiteCases`/`TestGsiSuiteCases` (multiset `rowsMatch`, `passFloor` regression backstop; defaults floor 1045, gsi floor 833), fed by the constant-expression and data-backed gsi slices imported from the n1k1-query fork; the two-phase compiler-differential sweep (generate into `test/tmp/`, then compile+run) is wired through `make test-compiler`/`test-suite`/`test-suite-all`, `TestNoPanicRegress` guards hand-coded fuzz repros, `-race` is a periodic gate, and the fresh-worktree EE-stub bootstrap recipe below is verified.
 
@@ -12,7 +12,7 @@ _Last reviewed: 2026-07-11._
 - [ ] Investigate `results-differ` non-passes for real fixes vs. tie-broken-LIMIT noise.
 - [ ] Add a guard test enumerating `OptimizableFuncs`, failing on any entry with no compiled-mode case.
 - [ ] Land a committed `make bootstrap` / `go.work` to automate fresh-worktree setup.
-- [ ] Fix `EXTRACTDDL(...)` panicking rather than erroring cleanly.
+- [x] Fix `EXTRACTDDL(...)` panicking rather than erroring cleanly — DONE (`ad41ccc5`: `GlueContext.EvaluateStatement` returns a clean error; guarded by `TestNoPanicRegress`).
 
 ## Overview
 
@@ -91,8 +91,10 @@ comparison 4, meta 3, nav 3, arith 1, integers 1, select 1.
 - **Skip DDL-text / UDF categories** (`sanitize_statement_function`,
   `extractddl`, `udf`) — not expression tests.
 
-> **Robustness bug (separate):** `EXTRACTDDL(...)` *panics* the engine rather
-> than erroring cleanly. The engine should never panic on an unsupported function.
+> **Robustness bug (separate) — FIXED (`ad41ccc5`):** `EXTRACTDDL(...)` used to
+> *panic* the engine rather than erroring cleanly. `GlueContext.EvaluateStatement`
+> now returns a clean error (guarded by `TestNoPanicRegress`); the engine no longer
+> panics on this unsupported function.
 
 ## Imported: data-backed categories (isolated gsi corpus)
 
@@ -255,7 +257,8 @@ fails on any entry with no compiled-mode case.
 
 ## Concurrency testing under `-race`
 
-Go's race detector earns its keep as a periodic check.
+Go's race detector earns its keep as a periodic check. (For the goroutine-per-client
+model and its remaining blockers, see `DESIGN-concurrency.md`.)
 
 ### What it guards
 
@@ -312,4 +315,4 @@ CGO_ENABLED=1 go test -race -tags n1ql -count=1 ./engine/ ./base/ ./glue/ ./test
 - Guard test enumerating `OptimizableFuncs`, failing on entries with no
   compiled-mode case.
 - Committed `make bootstrap` / `go.work` for fresh-worktree setup.
-- Fix `EXTRACTDDL(...)` panicking rather than erroring cleanly.
+- ~~Fix `EXTRACTDDL(...)` panicking rather than erroring cleanly.~~ DONE (`ad41ccc5`).

@@ -6,7 +6,7 @@ functions this builds on). (Formerly `DESIGN-mqo-sorted.md`.)
 
 ## Status & remaining TODOs
 
-_Last reviewed: 2026-07-11._
+_Last reviewed: 2026-07-23._
 
 **Done:** The shared sorted substrate exists and its first stateful consumer — the
 grep -A/-B/-C **context extractor** — ships: K context detectors sharing a

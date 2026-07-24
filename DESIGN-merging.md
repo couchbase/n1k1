@@ -32,7 +32,7 @@ already accepts — recognized at conversion or plan-rewrite time and lowered to
 
 ## Status & remaining TODOs
 
-_Last reviewed: 2026-07-11._
+_Last reviewed: 2026-07-23._
 
 **Done:** The K-way sorted merge SCAN (all three regimes — concatenate, strict
 min-heap, watermarked-near with disorder-bound validation) and the sorted merge

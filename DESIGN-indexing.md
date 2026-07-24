@@ -2,7 +2,7 @@
 
 ## Status & remaining TODOs
 
-_Last reviewed: 2026-07-11._
+_Last reviewed: 2026-07-23._
 
 **Done:** GSI-like **secondary indexes** (bbolt-backed, plus an in-memory backend
 for the WASM/opt-in build), **covering scans**, and **FTS via embedded bleve**
@@ -701,13 +701,14 @@ convert the resulting operators yet.
 
 ### Current state
 - **Whole-keyspace `COUNT(*)` done** (item 1): `conv.go:VisitCountScan`
-  de-optimizes to a records scan + `count(*)` group-aggregate (correct for every
-  format; O(1) count is the manifest item below).
+  de-optimizes to a records scan only (like a primary scan); the `count(*)`
+  group-aggregate rides the surrounding plan ops (correct for every format; O(1)
+  count is the manifest item below).
 - The predicated/index count visitors return `NA()`, but that `NA()` is currently
   **unreachable** — the planner won't emit them without exact spans / `Index2`
   (item 2), so it's not a gap.
-- **Datastore side partly done:** `keyspace.Count()` (returns `len(ReadDir)`) and
-  `Size()` exist (`file.go:467`). Whole-keyspace `COUNT(*)` is mostly a conv +
+- **Datastore side partly done:** `keyspace.Count()` (returns `len(ReadDir)`,
+  `file.go:467`) and `Size()` (`file.go:475`) exist. Whole-keyspace `COUNT(*)` is mostly a conv +
   execution wiring job.
 
 ### Implementation (lowest-friction first)
@@ -796,7 +797,7 @@ and only scan boundary partitions.
 **n1k1 (all real logic — `glue`):**
 - `glue/idx_si.go`, `idx_si_encode.go`, `idx_si_catalog.go`, `idx_si_suggest.go`,
   `idx_mem.go`, `idx_wasm.go`, `idx_fts.go` — `secondaryIndex` (`datastore.Index`
-  incl. `Scan()`/`CountIndex`), the bbolt-free in-memory backend (WASM + opt-in),
+  incl. `Scan()`), the bbolt-free in-memory backend (WASM + opt-in),
   bleve-backed FTS `Indexer` + `FTSIndex`, catalog reader, build routine,
   hook/wrapping registration.
 - `glue/datastore_scan.go` — `DatastoreScanIndex`, `reconstructCoverDoc`

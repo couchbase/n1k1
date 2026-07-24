@@ -2,7 +2,7 @@
 
 ## Status & remaining TODOs
 
-_Last reviewed: 2026-07-11._
+_Last reviewed: 2026-07-23._
 
 **Done:** The opt-in per-operator counter core is live — a flat `[]int64` keyed by op id (`base/stats.go`: `StatsDescs`/`DefStat`/`LayoutStats`/`Op.StatsBase`/`Ctx.Stats`), instrumented across scan/filter/group/distinct/order-offset-limit/join-nest-unnest plus the glue datastore scans, exposed by the CLI in three modes (`off`/`on`/`final`) with a throttled ~10 Hz columnar live footer, a process `runtime:` line, and a `YieldPacer` (`glue/stats.go`) pacing the redraw; live running-aggregate partials (COUNT/SUM/AVG/MIN/MAX and their `_v` forms) climb race-safe across concurrent `UNION ALL` actors with zero per-row/per-snapshot alloc (`base/stats_running.go`, `glue/stats_running.go`, `glue/stats_snapshot.go`); and the corpus `RunReport` reports per-keyspace scanned rows + per-detector woken counts (`glue/corpus.go`). All of the above is **interpreter-only** (the compiled path is `genCompiler:hide`).
 
@@ -66,7 +66,7 @@ implemented (see [Implementation status](#implementation-status)):
 - **`type YieldStats func(*Stats) error`** (`base/base.go`) — the callback an op
   invokes occasionally to yield stats; documented concurrent-safe, and its
   **error return doubles as early-exit / abort** (`LIMIT`, cancellation).
-- **`Ctx.YieldStats`** (`base/vars.go:82`) — set per request; may be invoked
+- **`Ctx.YieldStats`** (`base/vars.go:141`) — set per request; may be invoked
   concurrently by multiple goroutines.
 - **Throttling present:** `engine/op_scan.go` calls `YieldStats` **every
   `ScanYieldStatsEvery` (=1024) rows**; `op_order.go`/`op_window.go` have TODOs
@@ -133,7 +133,7 @@ the whole array; the receiver uses the map to attribute counters back to operato
 It reuses n1k1's existing seams:
 
 - **The op id already exists.** `ExecOp` threads `path`/`pathItem` through every op
-  via `EmitPush` (`engine/op.go:27,126`), producing a unique string like `_0_1_2`.
+  via `EmitPush` (`engine/op.go:27,159`), producing a unique string like `_0_1_2`.
   That **is** the `opId`, and it survives into the compiled path (codegen mints
   unique variable names from it), so one key works in both builds.
 - **Layout computed once, at convert time.** Each op kind declares its stat names
@@ -143,14 +143,14 @@ It reuses n1k1's existing seams:
   Non-`lz` setup work, never on the hot path.
 - **The shared array lives on `Ctx`.** `base.Ctx` is per-request, immutable for the
   request lifetime, concurrent-safe, already shared across every actor's cloned
-  `Vars` (`ChainExtend` → `Ctx.Clone`, `base/vars.go:41,124`) — the natural home
+  `Vars` (`ChainExtend` → `Ctx.Clone`, `base/vars.go:83,218`) — the natural home
   for the `[]int64` and index map.
 
 ### Keep the per-row path free — flush at the checkpoint
 
 Per-row work is a **local** `++`. At the **already-present 1024-row `YieldStats`
 checkpoint** — which runs synchronously on the actor's own goroutine
-(`engine/op_scan.go:139`) — the actor **flushes its local deltas** into its section
+(`engine/op_scan.go:158`) — the actor **flushes its local deltas** into its section
 of the shared `[]int64`. The only concurrent reader is the ~10 Hz reporter, for
 which monotonic per-field skew is acceptable (no seqlock — see
 [Open questions](#open-questions)).
@@ -583,10 +583,10 @@ checkpoint.
 **1. Decode partials at the synchronous checkpoint, reusing `Agg.Result`.** The
 finalized aggregate that a normal query yields is exactly `Agg.Result(vars, aggBytes,
 buf)` decoded into the `^aggregates|<agg.String()>` label (DESIGN-exprs.md lever #6;
-`glue/conv.go:931`, read natively by `glue/expr_optimize.go`). A live partial is the
+`glue/conv.go:1063`, read natively by `glue/expr_optimize.go`). A live partial is the
 **same `Result` call against the *current* accumulator bytes** — run early. Because
 `OpScan`/`countingYield` fire `Ctx.YieldStats` on the exec goroutine *between* row
-yields (`engine/op_scan.go:146`, `glue/stats.go`), at that instant no `Agg.Update` is
+yields (`engine/op_scan.go:158`, `glue/stats.go`), at that instant no `Agg.Update` is
 mid-flight and the group value bytes are coherent — the same free-lunch snapshot point
 the [In-flight results](#in-flight--partial-results-the-spinning-numbers) section
 relies on. No hot-path lock, O(sampled groups × aggs) work at ~10 Hz.

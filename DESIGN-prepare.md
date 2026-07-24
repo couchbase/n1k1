@@ -2,7 +2,7 @@
 
 ## Status & remaining TODOs
 
-_Last reviewed: 2026-07-11._
+_Last reviewed: 2026-07-23._
 
 **Done:** PREPARE/EXECUTE work in-session (parse+cache, re-plan+run with bound args) under a
 `-prepare=<level>` ceiling (`interpreted`|`data`|`full`); at `full` a fully-native prepared
@@ -566,6 +566,10 @@ break-even. Measured on this machine:
   **~9–11 ns/row** saving. n1k1's interpreter is *already* fast (byte-oriented, native
   exprs, push-based closures), so codegen mostly just inlines the closure calls; the
   boxing/allocation wins were already banked by the native lane, which both paths share.
+  *(For the standalone compiled `EXECUTE` lane the per-row figure is read net of
+  parent↔child IPC because the child self-reports its own compute wall — env
+  `N1K1_CORE_NS` on stderr → `Result.CompiledChildElapsed` → the CLI's "compiled child
+  compute:" line; commits bb8ec888/1b092c2d.)*
 
 Crossover for a **one-shot** query ≈ `0.1 s / 10 ns ≈ 10 million rows` (and ~100M–1B if it
 triggers the cold first build). So `SELECT 1+1` (one row) is ~7 orders of magnitude short
@@ -597,8 +601,8 @@ and always fine on an explicit `.prepare` (inspection, like `EXPLAIN`); it's **c
    statements (named artifact cache) and the ceiling knob (default `interpreted`;
    `data`/`full` opt into `go build`) are landed, and compiled `EXECUTE` runs end-to-end via
    the thin child + data-over-pipe model (below): `glue.executeCompiled` lowers exprs
-   natively (`ExprTreesOptimize`, so field-access / arithmetic / nary / const-folded
-   projections compile, not just `SELECT *`), `go build`s a cbq-free child (engine+base),
+   natively (`ExprTreesOptimize`, so field-access / arithmetic / nary / aggregates /
+   const-folded projections compile, not just `SELECT *`), `go build`s a cbq-free child (engine+base),
    ships the scanned records over its stdin, and the child streams **positional `base.Vals`**
    back (`ValsEncode` frames); the parent assembles each into the row JSON with its existing
    `ConvertVals`, so multi-column / nested projections come back correctly. A genuinely
