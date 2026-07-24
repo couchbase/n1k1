@@ -35,12 +35,58 @@ package benchmark
 
 import (
 	"fmt"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 
 	"github.com/couchbase/n1k1/glue"
 )
+
+// constUnnestStmt is a SQL++ query that touches NO files: a literal array of one object holding
+// an n-element nested `items` array, UNNEST'd and aggregated. cbq folds the literal to a value
+// scan, so the concurrency curve here reflects the PURE ENGINE (unnest + aggregate), with zero
+// datastore-scan syscalls -- the control for "is the file-per-doc scan I/O the ceiling?".
+func constUnnestStmt(n int) string {
+	var b strings.Builder
+	b.WriteString(`SELECT COUNT(*) AS c, SUM(i) AS s FROM [{"items":[`)
+	for k := 0; k < n; k++ {
+		if k > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(strconv.Itoa(k))
+	}
+	b.WriteString(`]}] AS d UNNEST d.items AS i WHERE i >= 0`)
+	return b.String()
+}
+
+// BenchmarkConcurrentUnnestConst -- ad-hoc, file-less (literal UNNEST). Per-query cost is
+// parse+plan+exec with no scan syscalls. Compare its ramp to BenchmarkConcurrentQueries (which
+// is syscall-bound): if THIS scales better, file I/O was the ceiling.
+func BenchmarkConcurrentUnnestConst(b *testing.B) {
+	store, cleanup := benchConcStore(b, 1) // store for the planner; the query reads no file.
+	defer cleanup()
+	stmt := constUnnestStmt(500)
+	for _, g := range concLevels {
+		b.Run(fmt.Sprintf("g%02d", g), func(b *testing.B) {
+			runConcurrent(b, store, []string{stmt}, g)
+		})
+	}
+}
+
+// BenchmarkConcurrentUnnestConstPrepared -- the same file-less query, PREPARE'd (a shared plan):
+// no parse, no plan, no files in the loop -- the purest measure of engine EXECUTE concurrency.
+func BenchmarkConcurrentUnnestConstPrepared(b *testing.B) {
+	store, cleanup := benchConcStore(b, 1)
+	defer cleanup()
+	pps := buildSharedPlans(b, store, []string{constUnnestStmt(500)})
+	for _, g := range concLevels {
+		b.Run(fmt.Sprintf("g%02d", g), func(b *testing.B) {
+			runConcurrentShared(b, store, pps, g)
+		})
+	}
+}
 
 // buildSharedPlans converts each stmt to a reusable *glue.PreparedPlan ONCE (no args baked
 // in), the public PREPARE-once reuse path: parse -> PlanStatementQP -> PlanConvert.

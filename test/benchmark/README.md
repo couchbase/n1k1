@@ -117,13 +117,33 @@ parse+plan:
 
 Result: prepared runs faster in ABSOLUTE terms (~½ the allocs, ~10–30% higher throughput) but its
 scaling curve is the **same** — peak ~2× at G=4, then decline. So the ceiling is **not** the
-planner or the parser (removing them via PREPARE doesn't lift it), and it's not the tiny keyspace's
-scan bytes. It's the shared **execution substrate**: GC pressure from per-query allocations and
-per-query datastore-scan file I/O (syscalls), both shared across goroutines. Lifting it means
-cutting per-query allocs (GC) and the per-request file-walk/open cost — not the planner. blocker 4a
-(the cbq fork planner-pool race, `DESIGN-concurrency.md`) stays a `-race` correctness item + a
-constant-factor cost, not the throughput ceiling. n1k1's own per-query globals are already fixed
-(blockers 1–3).
+planner or the parser (removing them via PREPARE doesn't lift it).
+
+**pprof pins it to SYSCALLS, not GC** (`-cpuprofile`/`-memprofile`/`-mutexprofile` on the g16
+sub-benchmark):
+
+- CPU is **~94–97% `syscall.syscall`** in both ad-hoc and prepared, all in the scan path
+  (`DatastoreScanRecords → walkSource.Next → OpenFile`): the file-per-doc keyspace opens/reads/
+  closes/`lstat`s a file per document + walks the dir on EVERY query.
+- The planner is ~4% of ad-hoc CPU, 0% of prepared. **GC is negligible** (no `mallocgc`/GC worker
+  in the top). Top *alloc* is `rhmap/store.CreateRHStoreFile` (~38%) — GROUP BY/ORDER build a
+  per-query mmap temp store; the mutex profile is ~98% `runtime.unlock` (kernel/runtime locks
+  around the syscall + mmap flood), which is what caps scaling at ~G=4 and erodes past it.
+- Shrinking to 4 docs raises absolute q/s (~3600 vs ~250) but keeps the 94% syscall share and the
+  same curve — it's the per-query syscall PATTERN, not data volume.
+
+**Control — `BenchmarkConcurrentUnnestConst` (file-less):** a literal `[{"items":[…]}]` array
+UNNEST'd + aggregated, which cbq folds to a value scan (zero datastore syscalls). It scales
+*strongly* — ad-hoc **~6.6× at G=32**, prepared **~2.9× at G=8** — vs the file-backed ~1.6–2×
+plateau, and its pprof drops syscalls ~97%→~38% (residue: per-query `MakeVars` temp-dir + GC). So
+the **engine is not the concurrency bottleneck — the file-per-doc scan is.**
+
+**Lever:** cut per-query syscalls — a syscall-light layout (single JSONL / columnar Parquet = one
+open, no per-doc walk; cf. `parallel-scan-experiment`, ~245× from packing file-per-doc into one
+file), an in-memory temp store for small GROUP BY/ORDER, and skipping the `MakeVars` temp dir for
+non-spilling queries. blocker 4a (the cbq fork planner-pool race, `DESIGN-concurrency.md`) stays a
+`-race` correctness item + a small constant-factor cost, not the throughput ceiling. n1k1's own
+per-query globals are already fixed (blockers 1–3).
 
 **Caveat — no `-race`.** Functionally correct under contention (guardrails: `glue/concurrency_test.go`
 + `TestConcurrentSharedPreparedPlanRace`), but the cbq fork planner's global pools still race under

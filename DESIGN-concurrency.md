@@ -100,14 +100,43 @@ over one shared Store and reports queries/s. Throughput rises from G=1 but **pea
 only ~2–2.5× single-threaded, then plateaus and erodes** — nowhere near the ~12× a contention-free
 CPU-bound workload would give on 12 cores.
 
-The PREPARE/EXECUTE variants (`bench_concurrency_prepared_test.go`) locate the ceiling. A prepared
-workload skips parse+plan entirely (a single immutable `*PreparedPlan`, built once, is safely
-shared across goroutines via `PlanExec` — verified race-clean by `TestConcurrentSharedPreparedPlanRace`).
-It runs faster in absolute terms (~½ the allocs, ~10–30% higher throughput) — but its scaling curve
-is the SAME: peak ~2× at G=4, then decline. So the ceiling is NOT the planner (blocker 4a) or the
-parser: removing them doesn't lift it. It's the shared EXECUTION substrate — GC pressure from
-per-query allocations and per-query datastore-scan file I/O (syscalls), both shared across
-goroutines. blocker 4a stays a `-race` correctness item + a constant-factor cost, NOT the main
-throughput ceiling. Lifting the ceiling means cutting per-query allocations (GC) and the
-per-request file-walk/open cost (e.g. a cached dir listing or a columnar single-file source).
-Run without `-race` (throughput-only; the prepared warm-up still touches blocker 4a).
+The PREPARE/EXECUTE variants (`bench_concurrency_prepared_test.go`) plus **pprof** locate the
+ceiling — and it is NOT what the plan-time race (blocker 4a) suggested. A prepared workload skips
+parse+plan entirely (a single immutable `*PreparedPlan`, built once, is safely shared across
+goroutines via `PlanExec` — verified race-clean by `TestConcurrentSharedPreparedPlanRace`). It runs
+faster in absolute terms (~½ the allocs, ~10–30% higher throughput), but its scaling curve is the
+SAME: peak ~2× at G=4, then decline.
+
+**pprof of the concurrency benchmarks says the ceiling is SYSCALLS, not GC or the planner:**
+
+- CPU is **~94–97% `syscall.syscall`** in BOTH ad-hoc and prepared, all in the scan path
+  (`DatastoreScanRecords → walkSource.Next → OpenFile`): the file-per-doc keyspace layout opens +
+  reads + closes + `lstat`s a file per document, plus a dir walk, on EVERY query.
+- The planner is only **~4%** of ad-hoc CPU (`planner.VisitSelect`/`algebra.Accept`) and **0%** of
+  prepared — so blocker 4a is a minor constant-factor cost + a `-race` correctness item, NOT the
+  throughput ceiling. That's why PREPARE doesn't lift it.
+- **GC is negligible** (no `mallocgc`/`gcBgMarkWorker` in the CPU top). The earlier "GC pressure"
+  guess was wrong.
+- The top *allocation* is `rhmap/store.CreateRHStoreFile → CreateFileAsMMapRef` (~38%): GROUP BY /
+  ORDER build a per-query **mmap-backed temp store**, adding mmap/munmap syscalls. The mutex profile
+  is ~98% `runtime.unlock` — kernel/runtime locks around that syscall + mmap flood, which is what
+  caps scaling at ~G=4 and erodes past it. Shrinking the keyspace to 4 docs raises absolute q/s
+  (~3600 vs ~250) but keeps the 94% syscall share and the same curve — confirming it's the
+  per-query syscall PATTERN (dir walk + opens + temp-store mmap), not data volume.
+
+**Control experiment — remove the files, and the engine scales.** `BenchmarkConcurrentUnnestConst`
+runs a file-LESS query (a literal `[{"items":[…]}]` array UNNEST'd + aggregated — cbq folds it to a
+value scan, zero datastore syscalls). It scales *strongly*: ad-hoc **~6.6× at G=32** (293 → 1931
+q/s), prepared **~2.9× at G=8** (2395 → 6934) — versus the file-backed ~1.6–2× plateau. Its pprof
+drops syscalls from ~97% to ~38% (the residue is per-query `MakeVars` temp-dir mkdir/rmdir + GC
+`madvise`, not keyspace files), and GC finally appears (`scanobject`/`madvise`). So the ENGINE is
+not the concurrency bottleneck — the file-per-doc scan is. (Prepared's milder G=8 peak is ordinary
+core saturation + GC at ~4500 allocs/query and high throughput.)
+
+**Lever:** cut per-query syscalls — a syscall-light data layout (single JSONL / a columnar Parquet
+source = one open, no per-doc walk; cf. the "parallel scan experiment" memo: file-per-doc packed to
+one file was ~245× faster), an in-memory temp store for small GROUP BY/ORDER (skip the mmap file),
+and avoiding the per-query `MakeVars` temp dir when a query can't spill. Neither is the planner;
+blocker 4a is orthogonal to throughput.
+Reproduce: `go test -tags n1ql -run=^$ -bench BenchmarkConcurrentPreparedShared/g16 -benchtime=3s
+-cpuprofile cpu.out -memprofile mem.out -mutexprofile mutex.out ./test/benchmark` (no `-race`).
