@@ -22,6 +22,7 @@ package rt
 import (
 	"bytes"
 	"fmt"
+	"os"
 	"sync"
 	"sync/atomic"
 
@@ -38,6 +39,22 @@ import (
 // interpreter and the compiled child route through it so they can never diverge.
 func NewSpillCtx(tmpDir string) *base.Ctx {
 	var counter uint64
+
+	// ensureDir lazily creates tmpDir the first time an allocator actually needs to put a
+	// file there. MakeVars no longer pre-creates it, so a query that never spills (every
+	// scan/filter/project, and any GROUP/ORDER that stays within the in-memory StartSize)
+	// pays no mkdir/rmdir syscalls -- which pprof showed as per-query overhead once the
+	// file-scan cost is removed. See DESIGN-concurrency.md.
+	var dirOnce sync.Once
+	var dirErr error
+	ensureDir := func() error {
+		dirOnce.Do(func() {
+			if tmpDir != "" {
+				dirErr = os.MkdirAll(tmpDir, 0o755)
+			}
+		})
+		return dirErr
+	}
 
 	var mm sync.Mutex
 
@@ -67,6 +84,10 @@ func NewSpillCtx(tmpDir string) *base.Ctx {
 				rv := recycledMap
 				recycledMap = nil
 				return rv, nil
+			}
+
+			if err := ensureDir(); err != nil {
+				return nil, err
 			}
 
 			options := store.DefaultRHStoreFileOptions
@@ -104,6 +125,10 @@ func NewSpillCtx(tmpDir string) *base.Ctx {
 				rv := recycledHeap
 				recycledHeap = nil
 				return rv, nil
+			}
+
+			if err := ensureDir(); err != nil {
+				return nil, err
 			}
 
 			counterMine := atomic.AddUint64(&counter, 1)
@@ -152,6 +177,10 @@ func NewSpillCtx(tmpDir string) *base.Ctx {
 				rv := recycledChunks
 				recycledChunks = nil
 				return rv, nil
+			}
+
+			if err := ensureDir(); err != nil {
+				return nil, err
 			}
 
 			options := store.DefaultRHStoreFileOptions

@@ -16,9 +16,10 @@ package glue
 import (
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"os"
+	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/couchbase/n1k1/base"
@@ -27,6 +28,9 @@ import (
 	"github.com/couchbase/query/plan"
 	"github.com/couchbase/query/value"
 )
+
+// makeVarsCounter uniquifies lazily-created spill temp-dir paths within this process.
+var makeVarsCounter uint64
 
 // ServiceRequestEx runs a planned statement through n1k1's own operators.
 // (Formerly took a query/server.Request as its first arg -- dropped as part of
@@ -135,8 +139,15 @@ func ServiceRequestEx(p plan.Operator,
 }
 
 func MakeVars(dir, prefix string) (string, *base.Vars) {
-	// TODO: Need err propagation & cleanup of temp dir?
-	tmpDir, _ := ioutil.TempDir(dir, prefix)
+	// Compute a unique temp-dir PATH without creating it: rt.NewSpillCtx creates it lazily on
+	// first spill (most queries never spill -> no mkdir/rmdir). os.RemoveAll on a path that was
+	// never created is a harmless no-op, so callers' `defer os.RemoveAll(tmpDir)` still works.
+	parent := dir
+	if parent == "" {
+		parent = os.TempDir()
+	}
+	tmpDir := filepath.Join(parent,
+		fmt.Sprintf("%s%d-%d", prefix, os.Getpid(), atomic.AddUint64(&makeVarsCounter, 1)))
 
 	// The Ctx -- ValComparer + the spill-backed allocator pools GROUP/ORDER/join
 	// hang off -- is built by rt.NewSpillCtx, the SAME cbq-free constructor the
