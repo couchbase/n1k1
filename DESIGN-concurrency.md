@@ -92,3 +92,14 @@ global object pools (`_COVERING_ENTRY_POOL` via `util.FastPool`) race during con
 plan-building (blocker 4a) — a fork patch. Until then a server could serialize just the plan step
 (execution is safe) or go process-per-request. Reproducer + guardrail: `glue/concurrency_test.go`
 (passes functionally under contention; skips under `-race` until the fork planner pools are fixed).
+
+## Throughput scaling (why blocker 4a matters in numbers)
+
+`test/benchmark/bench_concurrency_test.go` (`make bench-concurrency`) ramps concurrent clients
+over one shared Store and reports queries/s. The curve is the quantitative face of blocker 4a:
+throughput rises from G=1 but **peaks around G=4–8 at only ~2–2.5× single-threaded, then plateaus
+and erodes** — nowhere near the ~12× a contention-free CPU-bound workload would give on 12 cores.
+It holds with a tiny keyspace (so it's not scan I/O): the bottleneck is contention on shared
+parse/plan state (the fork planner's mutex-serialized global pools, the global n1ql parser, and
+GC from the boxed plan path). So the fork planner-pool fix isn't just a `-race` cleanliness item —
+it's what unlocks concurrent throughput. Run without `-race` (throughput-only; see the test README).

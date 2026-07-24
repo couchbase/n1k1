@@ -150,6 +150,12 @@ bench: build-glue
 bench-spill: build-glue
 	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -tags n1ql -run TestSpillPoint -v ./test/benchmark
 
+# bench-concurrency characterizes throughput as concurrent clients ramp up
+# (goroutine-per-client over one shared Store). Read the queries/s metric across
+# the gNN levels. Run without -race (see test/benchmark/README.md "Concurrency").
+bench-concurrency: build-glue
+	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go test -tags n1ql -run=xxx -bench=BenchmarkConcurrent -benchmem -benchtime=500ms ./test/benchmark
+
 # bench-compiler compares interpreted vs compiled. TestGenerateBenchmarks
 # emits paired BenchmarkInterp_X / BenchmarkCompiled_X funcs into test/tmp.
 bench-compiler: build-glue

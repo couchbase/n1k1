@@ -78,6 +78,43 @@ stable across repeats:
   call overhead is marginal there (even slightly slower). Useful signal: for
   scan/filter/project, optimize parsing; fusion pays most for call-heavy ops.
 
+## Concurrency: how does throughput scale with clients?
+
+`bench_concurrency_test.go` characterizes n1k1 under a "goroutine per client" server model:
+ONE shared `Store` (the cbq datastore is a process-global singleton, so a server serves one
+data root), N goroutines each with its OWN `Session`, all driving the FULL request path
+(`Session.Run`: parse → plan → convert → execute). Run **without `-race`** (see the caveat
+below).
+
+    # the client ramp (queries/s at G = 1,2,4,8,16,32):
+    go test -tags n1ql -run=xxx -bench=BenchmarkConcurrentQueries -benchtime=500ms ./test/benchmark
+    go test -tags n1ql -run=xxx -bench=BenchmarkConcurrent -benchtime=500ms ./test/benchmark
+
+- `BenchmarkConcurrentQueries/gNN` — a query mix at each concurrency level; read the
+  **queries/s** metric across the ramp.
+- `BenchmarkConcurrentByShape` — each query shape at a fixed G=8, to attribute a change.
+- `BenchmarkConcurrentRunParallel` — the idiomatic peak-parallel-throughput number.
+
+**Finding (Apple M2 Pro, 12 cores, 100-doc keyspace; the SHAPE is the point — absolute q/s
+swings ±25% run-to-run at `-benchtime=500ms`).** Throughput does **not** scale near-linearly
+with cores. The curve is consistently: rise from G=1, **peak around G=4–8 at only ~2–2.5×
+single-threaded**, then plateau and erode as G grows past the peak — e.g. one run
+`252 → 348 → 443 → 444 → 440 → 410 q/s` for G = 1,2,4,8,16,32 (≈1.8× peak); another
+`295 → 446 → 624 → 660 → 485 → 550` (≈2.5× peak). Either way it's far short of the ~12×
+a contention-free CPU-bound workload would give on 12 cores, and it *declines* past the peak.
+
+That ceiling holds even with a tiny keyspace, so it is **not** scan I/O — it's contention on
+shared parse/plan state:
+the cbq planner's process-global object pools (mutex-serialized), the global n1ql parser
+namespace, and GC pressure from the boxed plan path (~2000 allocs/query). n1k1's OWN per-query
+globals are already fixed (blockers 1–3, `DESIGN-concurrency.md`); this benchmark tracks the
+remaining concurrency ceiling and will show the win when the cbq-fork planner pools go
+per-request (blocker 4a).
+
+**Caveat — no `-race`.** Functionally correct under contention (the guardrail is
+`glue/concurrency_test.go`), but the cbq fork planner's global pools still race under `-race`
+(blocker 4a, a pending fork patch), so these benchmarks are throughput-only.
+
 ## Not here yet
 
 - **vs couchbase/query** — Phase 3 is **blocked in a stock dev env** (no
