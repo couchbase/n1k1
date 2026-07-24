@@ -55,6 +55,12 @@ Remaining `-race` failures — NOT in n1k1:
 `test/benchmark/bench_concurrency*_test.go` (`make bench-concurrency`) ramps concurrent clients over
 one shared Store and reports queries/s. On a 12-core M2 Pro (trends matter, ±25% run-to-run):
 
+> **Notation.** `G` is the number of concurrent client goroutines, each with its own `Session`
+> hammering the one shared Store. It appears in Go sub-benchmark names as a zero-padded `gNN`
+> suffix — so `g01` = one client (single-threaded baseline), `g04` = four, `g08` = eight, `g16`,
+> `g32`. "Peak" below is the best queries/s across the `G` sweep, and "N×" is that peak over the
+> `g01` baseline (the concurrency speedup).
+
 | workload | G=1 | peak | shape |
 |---|---|---|---|
 | file-per-doc keyspace (100 one-doc files) | ~250 q/s | ~450 (~1.9×) | plateau by G=4 |
@@ -93,9 +99,27 @@ file-scan was removed, and both are fixed:
   `Heap.Reset` truncates, batches are `AcquireBatch()[:0]`'d — so there's no cross-query data leak
   (guarded by `TestSessionSpillReuseNoLeak`).
 
-Measured effect (12-core M2 Pro): the single-file mix rose g08 ~8585 → ~12336 (lazy dir) → ~19715
-queries/s (+ Session reuse) — **~2.3× the pre-optimization baseline**; group-query bytes/query
-−20–40%.
+Measured effect (12-core M2 Pro): the single-file mix at **g08** (8 concurrent clients) rose ~8585 →
+~12336 (lazy dir) → ~19715 queries/s (+ Session reuse) — **~2.3× the pre-optimization baseline**;
+group-query bytes/query −20–40%. These wins concentrate exactly where the fixed overhead dominates:
+*small, repeated* queries over a warm Session (tiny keyspaces), i.e. the concurrent-server regime.
+
+**Do these optimizations touch the older / versus benchmarks? No regressions; near-zero effect.**
+
+- **Older non-concurrent engine benchmarks — unchanged.** `BenchmarkScan` (6 allocs/op, ~510M
+  rows/s), `BenchmarkGroupBy` (42 allocs/op, ~4.6M rows/s), `ArithAddNative` (30 ns, 0 alloc), etc.
+  are byte-identical before/after. They call `engine.ExecOp` with a `vars` built once and reused
+  across `b.N`, so they never touch the per-query `Session.Run → PlanExec → MakeVars` path the
+  optimizations live on.
+- **`versus/` n1k1 side — flat allocations, small ms win on light queries.** An A/B of the same
+  warm-REPL versus run (baseline vs optimized binary, NDOCS=2000 / BULK_ITEMS=20000 / REPS=5) shows
+  the heavy *bulk* queries (17–90 MB working sets from 20 000-item UNNESTs) unchanged in MB — the
+  reused ~tens-of-KB `StartSize` buffer is a rounding error against that working set. The small
+  *packed* queries got ~10–20% faster in ms (e.g. filter+project 2.05 → 1.65, expr-heavy 2.82 →
+  2.43), which is the lazy-dir win: dropping a per-query `mkdir`+`rmdir` is a measurable fraction of
+  a 1–2 ms in-memory query. Net: a strict Pareto improvement — small wins on light queries, neutral
+  on heavy ones, the big ~2.3× win on the concurrent-small-query path — with no regressions, so the
+  committed versus numbers don't need a refresh.
 
 **Remaining lever** (none is the planner): a syscall-light data layout — single-file / columnar
 Parquet, one open per scan (cf. the `parallel-scan-experiment` memo: file-per-doc packed to one
