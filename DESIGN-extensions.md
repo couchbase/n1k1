@@ -2,7 +2,7 @@
 
 ## Status & remaining TODOs
 
-_Last reviewed: 2026-07-11._
+_Last reviewed: 2026-07-23._
 
 **Done:** The first extension slice is live and tested (interpreter + compiler): native zero-garbage aggregates `sparkline()`/`histogram()`, goja JavaScript scalar UDFs (opt-in dir/file/inline registry), JS aggregate UDFs (3-callback) and streaming table-valued sources (`emit` protocol, on one generic `stream-fn` op that `MULTI_MATCHES` also rides), plus `*.extract.js` recipes whose `describe()` returns a declarative `ExtractSpec` applied on the native byte lane — all unlocked by two fork setters (`expression.RegisterFunction` / `algebra.RegisterAggregate`) that open the parser's builtin + aggregate registries without a grammar change. And `*.macro.js` **pre-parse SQL++ macros** (`@name(...)` → generated SQL++ before cbq's parser; gensym hygiene, `.macro expand`) — `grep_context` ships as the first, turning grep `-A`/`-B`/`-C` into a one-liner. **Inline golden examples** (`glue/ext_examples.go`): every JS extension file may declare an executable `examples` array of `{in, out}` pairs — self-documenting AND verifiable — captured at registration (each loader's throwaway runtime already runs the program) and executed through the real per-kind protocol by `.extensions test` (scalar call / agg init-update-final / stream emit / macro expand / extract describe+`SpecApply`); `.extensions examples` prints them without running. Numbers compare with float tolerance, macro SQL++ whitespace-insensitively; a failure sets a non-zero exit for CI. The SQL++ `*.sql++` recipe analog keeps its fixtures too, now written as SQL comments (`-- {...}`) so the whole file is valid SQL++.
 
@@ -170,7 +170,7 @@ Both reuse the same shim, so `NAME(expr)` works in GROUP BY and as a bare aggreg
    `function NAME(emit, ...args)` pushes rows via `emit(row)` (one row per argument = a
    batch form). The producer lives in `glue/ext_jsvm_stream.go` and implements the
    generic `StreamSource` interface; `VisitExpressionScan` recognizes any such FROM
-   expression and routes it to one shared `stream-fn` op (`glue/op_stream_fn.go`,
+   expression and routes it to one shared `stream-fn` op (`glue/stream.go`,
    `StreamFnOp`) — the same op `MULTI_MATCHES` rides — yielding as rows are produced,
    **no materialization, bounded memory**, composing with WHERE/GROUP BY/LIMIT. Ships
    `extensions/functions/js/series.stream.js`. Caveat (matches every n1k1 source): no
@@ -433,7 +433,7 @@ a host-provided lazy iterator instead of a counter.)
 **Implemented (v1, `*.stream.js`).** The per-row `emit(row)` form ships:
 `glue.RegisterJSStream` / a `NAME.stream.js` file registers a `jsStreamFunc` (its
 producer in `glue/ext_jsvm_stream.go` implements `StreamSource`), the converter routes
-`FROM NAME(...)` to the generic `stream-fn` op (`glue/op_stream_fn.go`), and rows flow
+`FROM NAME(...)` to the generic `stream-fn` op (`glue/stream.go`), and rows flow
 one at a time — bounded memory — composing with WHERE/GROUP BY/aggregates.
 `emit(a, b, …)` yields one row per argument.
 
@@ -1229,7 +1229,7 @@ bounded, capability-free Wasm instance that streams JSON.
    `glue.RegisterExtensionDir`/`RegisterExtensionFile` dispatch by extension (`.js`
    today), CLI `-ext`/`.ext`; impl in `glue/ext_jsvm.go`.
 3. **DONE — Streaming source-function op** — a generic `stream-fn` op
-   (`glue/op_stream_fn.go`, `StreamFnOp`) driven by any `StreamSource`; `*.stream.js`
+   (`glue/stream.go`, `StreamFnOp`) driven by any `StreamSource`; `*.stream.js`
    JS sources and `MULTI_MATCHES` both ride it. `FROM shred(...)`/loaders slot in via the
    same interface; pairs with DESIGN-data.md file-source work.
    - **3b. Extract functions (`*.extract.js`) — the PREPARE++ enabler.** A new

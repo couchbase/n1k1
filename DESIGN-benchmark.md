@@ -2,7 +2,7 @@
 
 ## Status & remaining TODOs
 
-_Last reviewed: 2026-07-17._
+_Last reviewed: 2026-07-23._
 
 **Done:** Phase 1 (intrinsic pure-Go microbenchmarks) and Phase 2 (interpreted vs
 compiled) are built and run under `make bench` / `bench-spill` / `bench-compiler`
@@ -21,6 +21,12 @@ executor over the *same* local `*.json` dir, via the `n1k1-query` fork's
 - [ ] Fold the newer perf levers into this harness — streaming merge-scan,
   fixed-width columnar, window incremental-fold — currently measured ad hoc
   (`glue/window_bench_test.go`, `test/col_test.go`), not under `make bench`.
+- [x] **Per-query fixed-cost levers — DONE & measured** (surfaced by the concurrency
+  scaling work, DESIGN-concurrency.md): a **Session-scoped `rt.SpillState`** recycles the
+  GROUP/ORDER store buffer across a connection's queries (no per-query alloc, no data leak —
+  `RHStore.Reset` zeroes slots; guard `TestSessionSpillReuseNoLeak`), and a **lazy spill temp
+  dir** drops the per-query `mkdir`/`rmdir` unless a query actually spills. Together they took
+  the single-file query mix to ~2.3× baseline throughput.
 - [ ] Attack boxed-value / JSON alloc churn: the scan/filter/project
   path is parse-bound (Phase 2), so a native-lane ASOF/subquery projection is the
   next perf lever.
@@ -132,13 +138,16 @@ bench_expr_arith_test.go  static-param vs interp expr
 bench_spill_test.go       GROUP BY spill onset (TestSpillPoint)
 bench_self_test.go        self-timed engine micro-runs
 bench_compiler_test.go    Phase 2 interp-vs-compiled generator
+bench_concurrency_test.go          throughput as concurrent clients ramp (see DESIGN-concurrency.md)
+bench_concurrency_prepared_test.go same, sharing one prepared plan across goroutines
 compare_test.go           value-compare micro
 boxing_test.go            interface-boxing / alloc micro
 README.md                 claim→bench map, how to run, findings, benchstat tips
 ```
 
 Make targets: `make bench` (all, `-benchmem`), `make bench-spill` (spill onset),
-`make bench-compiler` (Phase 2, `-benchtime=30s`), `make benchmark-expr-eq`
+`make bench-compiler` (Phase 2, `-benchtime=30s`), `make bench-concurrency`
+(scaling as clients ramp — findings in DESIGN-concurrency.md), `make benchmark-expr-eq`
 (static-param expr eq). Canonical-JSON / parse micro-benchmarks stay in `base/`.
 
 ## Phase 1 findings (current)
@@ -271,8 +280,9 @@ compare storage formats with the per-file-`open` cost removed:
 - **parquet+VARIANT** (`VARIANT=1`, `orders_variant`; the jsonl re-encoded so docs are
   identical). arrow-go v18 has a native Parquet VARIANT extension type; n1k1's
   `records/parquet.go` reads it (Phase-0 projects the VARIANT to JSON at the scan
-  boundary — no CLI flag; `VariantFidelity` Phase-1 is a package global with no CLI
-  setter, only needed for typed-scalar fidelity our plain-JSON orders lack). cbq is n/a
+  boundary by default; the `-variant-fidelity` CLI flag (`cmd/n1k1/main.go`, wired to
+  `records.VariantFidelity`) opts into the Phase-1 `V`-carrier, only needed for
+  typed-scalar fidelity our plain-JSON orders lack). cbq is n/a
   (iceberg-go v0.4.0 has no VARIANT). **Result (n1k1, 200K docs): whole-doc VARIANT is
   ~1.5–2.4× SLOWER and far more memory-hungry than the same docs as `.jsonl`** (count+filter
   167 ms / 120 MB vs 67 ms / 0.21 MB, 2026-07-17 — the 120 MB is *down from ~181 MB* after

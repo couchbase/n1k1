@@ -8,7 +8,7 @@ history.
 
 ## Status & remaining TODOs
 
-_Last reviewed: 2026-07-11._
+_Last reviewed: 2026-07-23._
 
 **Done:** The data/extract/framing layer is functional end to end and needed ZERO
 `n1k1-query` (cbq) fork changes. Landed: multi-file/flat-root/single-file/grab-bag
@@ -112,13 +112,18 @@ artifacts, each independently pluggable) and *allocation discipline*
 
 **The data-source work needed ZERO changes to the `n1k1-query` fork (cbq).** The
 design predicted this ("fake it" for plan-time metadata; execution in n1k1 glue
-ops) and it held. The fork's only n1k1-specific commits are build-plumbing, none
-touching datasources: `semantics/semchecker_ce.go` (EE SQL++ semantics in the
-community build), `system/systemStats.go` (pure-Go sigar-cgo stub), and a
-committed goyacc-generated `parser/n1ql/y.go`. No `datastore/file`,
-`datastore/virtual`, `algebra/`, or planner edits; no `DiscoverKeyspaces` seam.
+ops) and it held: **no `datastore/file`, `datastore/virtual`, `algebra/`, or
+planner edits for datasources, and no `DiscoverKeyspaces` seam.** The fork's
+datasource-facing commits are build-plumbing only: `semantics/semchecker_ce.go`
+(EE SQL++ semantics in the community build), `system/systemStats.go` (pure-Go
+sigar-cgo stub), and a committed goyacc-generated `parser/n1ql/y.go`. (The fork
+*does* carry a few small non-datasource patches unrelated to this work —
+planner live `optDocCount` for the correlated-subquery guard
+(`planner/optutil_ce.go`, patch-04), the `expression`/`algebra` registry hooks
+for UDFs/custom aggregates (`func_registry.go`/`agg_registry.go`, patch-05/06),
+and a lockless-pool race fix (`util`, patch-03) — see `glue/patches/`.)
 Plan-time flat-root discovery was done n1k1-side by *wrapping* the fork's
-datastore with `datastore/virtual` building blocks (`glue/flatroot.go`).
+datastore with `datastore/virtual` building blocks (`glue/flat.go`).
 
 Landed n1k1-side (all `records/` + `glue/`, `//go:build n1ql`):
 
@@ -154,7 +159,7 @@ Landed n1k1-side (all `records/` + `glue/`, `//go:build n1ql`):
 - **Fetch-by-key into `.jsonl` and `---` YAML containers** via byte offsets baked
   into the doc-ID (§1, §6).
 - **Compiler-differential + decoder-golden tests** — flat-root diff, decoder
-  interp-vs-compiler proof, a 443-interp/439-compiler data-backed GSI suite.
+  interp-vs-compiler proof, and the data-backed GSI suite (results-pass floor 833).
 - **The two-phase `describe`/`extract` provider** — pluggable JS extractors
   (`*.extract.js`) matched by ext + name-regexp with priority, native declarative
   execution of framing/`fields`/`time`, sidecar-memoized describe (§4, E1–E5).
@@ -196,7 +201,7 @@ Where they touch:
 1. **Fork = plan-time metadata only; execution in n1k1 — fork untouched.** Both
    keep the fork thin via the `engine.ExecOpEx` IoC pattern. Here a keyspace's
    existence is faked by **wrapping** the fork's datastore with `datastore/virtual`
-   building blocks (`glue/flatroot.go`), not the once-anticipated
+   building blocks (`glue/flat.go`), not the once-anticipated
    `DiscoverKeyspaces` seam. All execution runs in n1k1 glue ops over `[]byte`.
 2. **The `.n1k1/` sidecar is shared.** The indexing doc owns the *canonical* tree;
    this doc owns `catalog.json`'s source/layout half and `manifest.json` (§5).
@@ -270,7 +275,7 @@ expression evaluation is reused as a fallback for complex expressions.)
   to advertise a *synthetic* namespace + keyspace (planner-facing metadata, no
   physical dir), reusing the fork's importable `datastore/virtual`
   (`virtual.NewVirtualKeyspace` + `NewVirtualIndex(isPrimary)`) so it emits a
-  `PrimaryScan`. Implemented for flat roots in `glue/flatroot.go`; the synthetic
+  `PrimaryScan`. Implemented for flat roots in `glue/flat.go`; the synthetic
   keyspace's `RecordsDir()` points records-scan at the root. Extends to
   catalog-defined names later.
 - **(A2) Execution-time scan/fetch — already n1k1's, no fork seam.** `conv` lowers
@@ -292,7 +297,8 @@ Get right: **(1)** the synthetic keyspace is *minimal* — primary index only,
 `Count()` may be lazy/0 (safe while `useCBO=false`). **(2)** it traffics in
 `datastore.Keyspace`/`errors` (glue already imports them). **(3)** prefer hanging
 the hook off the store/namespace instance; `ExecOpEx` is a process global (fine
-for a one-process CLI).
+for a one-process CLI, and now **set once in `init`** rather than swapped
+per-`Run` — per-request variation rides `Ctx.Pipe` inside it — commit 19c2fbfa).
 
 ### Compiler compatibility (don't break the Futamura path)
 
@@ -387,6 +393,10 @@ columns via `ColumnsProjector`/`ColumnsSource` sidecars, reusing cbq's
 SUM/AVG over nullable columns from Parquet metadata, zero data-page reads). Full
 column-batch execution is the remaining perf follow-up. (Parquet is also the one
 format that genuinely forces real labels rather than the opaque-document path — §2.)
+**VARIANT columns** are supported end to end — read, write-back, and zero-alloc
+byte-level navigation of the encoded value — with the whole story (typed-JSON
+fidelity, shredded reads, the boundary in `records/parquet.go`) in
+`DESIGN-variant.md`.
 
 ## §1 Allocation model & the read/fetch path
 
@@ -421,7 +431,9 @@ file. Allocation behavior is a **selection criterion on par with correctness**.
 - **Arrow / Parquet:** values live in pooled contiguous buffers, and
   `array.String/Binary.Value(i)` returns a **borrowed** sub-slice — use those,
   `Release()` each batch, reuse the allocator. Crossing into n1k1's row world
-  still costs the transpose/copy.
+  still costs the transpose/copy, but that copy now recycles its batch buffer
+  and streams the Parquet reader buffered rather than reallocating per batch
+  (commit 1d17b6b2).
 - **Make it measurable.** Treat **allocations/op** (`go test -benchmem`, the
   `benchmark/` harness) as an acceptance metric per decoder — "allocs per row"
   near-constant regardless of file size.
@@ -456,7 +468,8 @@ All landed **inside n1k1** (no fork change):
   cbq `Fetch`): a `.json` key with a `SubPaths` projection pushed down, or a
   synthetic keyspace whose records aren't byte-seekable. Dispatch by key form: a
   container id `<relpath>#<line>@<offset>` seeks into the multi-doc file; a plain
-  key reads `<dir>/<key>.json`.
+  key reads `<dir>/<key>.json`. The keyspace→dir resolution is memoized so a
+  fetch-heavy query doesn't recompute `KeyspaceDir` per doc (commit eca78a38).
 - **Per-request doc cache.** The residual ~377 MB was per-key file-open churn from
   the join re-opening the same files. `fetchCache` memoizes doc bytes per request,
   two-level (dir → key → owned immutable copy); after the first pass every fetch is
@@ -706,7 +719,10 @@ grammar for it, so `Session.Run` recognizes the statement at the statement level
 (`parseTempKeyspaceStmt` → `TempKeyspaceRun`, like PREPARE/EXECUTE and INSERT) —
 zero fork changes. Rows live in an rhmap `store.Heap` that **spills to disk when
 large**, so a big materialization doesn't blow memory
-(`glue/temp_keyspace.go`, `glue/temp_stmt.go`). A TEMP KEYSPACE has no backing
+(`glue/temp_keyspace.go`, `glue/temp_stmt.go`). The spill temp dir is created
+lazily (only if a query actually spills, 82750a7f) and the spill-store buffer is
+reused across a Session's queries (c8684bfb, `RHStore.Reset` zeroes slots so no
+data leaks between queries). A TEMP KEYSPACE has no backing
 files: `DatastoreScanRecords` serves its rows straight from the heap.
 
 ### `INSERT INTO` — user-driven materialization (landed)
@@ -754,6 +770,14 @@ SELECT sev, COUNT(1) FROM analysis GROUP BY sev;
   eval failure aborts the whole insert (the temp file is discarded, nothing lands).
   *Limitation:* `META().id` in RETURNING is not meaningful (ids are positional, not
   content keys), and the doc carries no annotated metadata.
+- **`.parquet` output target (landed)** — the writer picks its format by target
+  extension: a `.parquet` target routes to `parquetWriter` (Arrow row-group builder,
+  `glue/insert_writer.go`) instead of the JSONL writer, so `` INSERT INTO `vecs.parquet`
+  SELECT … `` materializes a columnar file the Parquet read path (`records/parquet.go`)
+  queries back. Drives the vector write story (`DESIGN-vectors.md`). **VARIANT
+  write-back** rides this: an inserted object column can be written as a Parquet
+  VARIANT and round-trips to the same JSON on read (`glue/insert_variant_test.go`,
+  `DESIGN-variant.md`).
 - **Scope** — `KEY` is accepted but record ids stay positional (flat-keyspace rule);
   every write goes via a `.tmp` sibling renamed into place, so a mid-stream failure
   never leaves a partial keyspace file. Still unsupported: the faithful cbq
@@ -1094,7 +1118,7 @@ shop/default/orders/  order-001.json  order-002.json
 sales/  2026-01.json  2026-02.json  2026-03.json
 ```
 `FROM sales` on `sales sales` → no ns/keyspace subdirs, so auto-detect treats the
-whole dir as one flat keyspace. **RESOLVED:** `glue/flatroot.go` names it after the
+whole dir as one flat keyspace. **RESOLVED:** `glue/flat.go` names it after the
 root basename under a synthetic `default` namespace (`default:sales`).
 
 **B2. Single file as a keyspace — no directory ✅**
@@ -1742,9 +1766,10 @@ low-effort relative to its reach.
 - **Test note:** iceberg-go v0.4.0's `partitionedFanoutWriter` has an internal data race in a
   PARTITIONED `AppendTable` (its own write goroutines), so the partitioned-fixture builders skip
   under `-race`; n1k1's read path is race-clean.
-- **Verdict:** feasible, surprisingly low-effort for read-only (the heavy lifting is a
-  cgo-free dep we already carry), and useful for the analytic direction — worth the spike to
-  prove the Arrow-batch reuse and measure, before committing to catalogs/time-travel.
+- **Verdict:** SHIPPED for read-only — surprisingly low-effort (the heavy lifting is a
+  cgo-free dep we already carry), useful for the analytic direction, and the Arrow-batch
+  reuse proved out. Projection/predicate/partition pushdown and time-travel
+  (`table@<snapshot-id-or-timestamp>`) all landed; catalogs remain the open follow-up.
 
 ## §8 Object-store scans (S3 / GCS / Azure) — read Parquet & Iceberg over the network
 
@@ -1950,8 +1975,8 @@ UniDoc/unipdf (AGPL/commercial); `sajari/docconv` (shells out to GPL `wv`/
 - **Interpreter/compiler differential.** Every new format/layout needs a case in the
   queryCases harness (`test/cases.go` + `test/query_compiler_test.go`) so the compiled
   path is proven to match the interpreted path. **Done:** flat-root + the decoders each
-  have interp-vs-compiler cases, plus a data-backed GSI suite (443 interp / 439
-  compiler). Parquet will want one.
+  have interp-vs-compiler cases, plus a data-backed GSI suite (results-pass floor
+  833, `test/suite_gsi_test.go`). Parquet will want one.
 - **Golden fixtures for decoders.** Small input fixtures with an expected row set
   (`records/records_test.go`), table-driven. The CSV reader on `encoding/csv` handles
   quoting/escaping/embedded-newlines via stdlib.
@@ -1973,7 +1998,7 @@ All new logic lands in **n1k1** — scan/fetch/decode in the glue
 `datastore-scan`/`datastore-fetch` ops (compile for free), via
 `engine.ExecOpEx = glue.DatastoreOp`. **The fork needed no changes** — plan-time
 discovery was done by wrapping the fork's datastore with `datastore/virtual`
-(`glue/flatroot.go`), so `DiscoverKeyspaces` was never built.
+(`glue/flat.go`), so `DiscoverKeyspaces` was never built.
 
 1. ✅ Relax the file datastore: directory = keyspace = union of *all* supported files;
    recurse; keep `<ns>/<keyspace>` + flat-root auto-detect. Opaque-document path.
@@ -2042,11 +2067,11 @@ Separable tracks:
 
 ## Open questions
 
-- **Iceberg read support (§7). (Design researched.)** Feasible + low-effort for read-only
-  via the already-present, cgo-free `apache/iceberg-go` + n1k1's existing Arrow-batch
-  transpose. **Open:** the keyspace/FROM surface for a table (metadata-path vs a catalog),
-  time-travel syntax (snapshot id / as-of timestamp), reusing the columnar `NextColumns`
-  path for Iceberg batches, and whether the analytic direction warrants building it.
+- **Iceberg read support (§7). (SHIPPED.)** Read-only via the already-present, cgo-free
+  `apache/iceberg-go` + n1k1's existing Arrow-batch transpose. The keyspace/FROM surface
+  (metadata-path), time-travel (`table@<snapshot-id-or-timestamp>`), projection/predicate/
+  partition pushdown, and the columnar `NextColumns` path for Iceberg batches all landed.
+  **Open:** catalogs (REST/Glue), snapshot discovery, and vector-columnar reads.
 - **`RecordSource` signature & CSV reader choice (allocation). (Partly settled.)**
   Shipped decoders use `Next(rec *Record) (bool, error)`; CSV is on `encoding/csv`
   (correctness-first), which allocates field strings per row. **Open:** replace with a

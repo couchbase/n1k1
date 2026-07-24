@@ -8,7 +8,7 @@ correctness backstop.
 
 ## Status & remaining TODOs
 
-_Last reviewed: 2026-07-11._
+_Last reviewed: 2026-07-23._
 
 **Done:** A large native byte-lane (zero steady-state garbage) covers arithmetic,
 comparisons, three-valued logical AND/OR, predicates/type-checks, CASE and
@@ -279,7 +279,7 @@ numeric column.
 <a name="window-what-works"></a>
 ### What works
 
-Validated by the ORDER-sensitive oracle `glue/window_test.go` + `glue/order_nulls_test.go`
+Validated by the ORDER-sensitive oracle `glue/window_test.go` + `glue/op_order_test.go`
 (the default suite had zero `OVER (` cases, which is how the whole subsystem stayed
 broken unnoticed), and by the data-backed gsi window corpus (below).
 

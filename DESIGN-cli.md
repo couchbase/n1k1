@@ -9,7 +9,7 @@ front-end.
 
 ## Status & remaining TODOs
 
-_Last reviewed: 2026-07-11._
+_Last reviewed: 2026-07-23._
 
 **Done:** The CLI ships as a single-binary REPL + one-shot/`-c`/`-f`/pipe
 front-end over `glue.Session`, with `box`/`box|pretty`/`jsonlines`/`json`/`csv`/
@@ -138,6 +138,10 @@ flags:
   -stats <mode>   per-op counters: on (live) | off | final
   -prepare <lvl>  max compile level: interpreted | data | full (DESIGN-prepare.md)
   -ext <path>     load extension(s) (dir/file, repeatable; .js = JS UDF)
+  -extensions <path>   alias for -ext
+  -variant-fidelity    Parquet VARIANT scan carries typed-scalar fidelity
+                  (V-carrier) instead of the Phase-0 JSON projection
+                  (records.VariantFidelity; DESIGN-variant.md)
   -version        print version + build info and exit
   -profile-cpu / -profile-mem <file>   pprof profiles
 ```
@@ -151,6 +155,10 @@ Namespace isn't a flag — n1k1's file datastore only uses `default`, so it's th
 
 **Default mode:** TTY → `box|pretty`; pipe/`-c` → `jsonlines` (compact) unless
 `-mode` overrides.
+
+**Remote sources:** the datastore-dir / `FROM` target may now be an object-store URL
+(`s3://…`, `gs://…`, `abfs://…`) — a bare Parquet object, or an Iceberg/Parquet table dir
+becomes a FROM-able keyspace. See DESIGN-data.md §8.
 
 ------------------------------------------------------------------------
 ## 4. The REPL
@@ -197,6 +205,7 @@ value in `.help`):
 | `.multi [list\|run\|lint\|test\|help]` | Run/lint/test a corpus of tagged `*.sql++` detector recipes over the open bundle (`--queries <dir>`). DESIGN-prepare.md. |
 | `.extensions [list\|load <dir>…\|unload <name>…]` (`.ext`) | Manage loaded extensions (`.js` = JavaScript UDF). |
 | `.extract [help\|list]` | Authoring reference + inventory for `*.extract.js` framing recipes. |
+| `.macro [help\|list\|expand <stmt>]` (`.macros`) | Pre-parse SQL++ macros: `@name(...)` → generated SQL++; `expand` shows the rewrite (`*.macro.js` recipes). |
 | `.read <file>` | Execute statements/dot-commands from a file. |
 | `.output [<file>]` | Redirect results to a file, or back to stdout. |
 | `.bail [on\|off]` | Stop the input loop on the first statement error (scripts). |
