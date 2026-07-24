@@ -32,6 +32,21 @@ import (
 // makeVarsCounter uniquifies lazily-created spill temp-dir paths within this process.
 var makeVarsCounter uint64
 
+// NewSessionSpillState makes a Session-scoped rt.SpillState with a unique, lazily-created temp
+// dir, so a Session can reuse its spill pools (rhmap store + batch buffers) across PlanExecs and
+// create its temp dir at most once per connection. Cleaned by SpillState.Cleanup at Session.Close.
+func NewSessionSpillState() *rt.SpillState {
+	tmpDir := filepath.Join(os.TempDir(),
+		fmt.Sprintf("n1k1sess%d-%d", os.Getpid(), atomic.AddUint64(&makeVarsCounter, 1)))
+	return rt.NewSpillState(tmpDir)
+}
+
+// MakeVarsFor builds a *base.Vars over a given (shared) SpillState: fresh Vars/Ctx per query, but
+// the spill allocator pools recycle across the state's queries. Used by Session.PlanExec.
+func MakeVarsFor(st *rt.SpillState) *base.Vars {
+	return &base.Vars{Temps: make([]interface{}, 16), Ctx: rt.NewSpillCtxState(st)}
+}
+
 // ServiceRequestEx runs a planned statement through n1k1's own operators.
 // (Formerly took a query/server.Request as its first arg -- dropped as part of
 // decoupling n1k1 from query/server, which pulled in cgo deps. The arg was

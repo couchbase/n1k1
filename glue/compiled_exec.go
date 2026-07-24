@@ -45,6 +45,10 @@ func (s *Session) Close() {
 	if s.Store != nil {
 		s.Store.Temp.Close() // Temp.Close nil-guards its receiver
 	}
+	if s.spill != nil {
+		s.spill.Cleanup() // remove the reused spill temp dir + close recycled stores
+		s.spill = nil
+	}
 }
 
 // executeCompiled runs a prepared statement as a COMPILED standalone program (the

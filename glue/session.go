@@ -16,7 +16,6 @@ package glue
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -29,6 +28,7 @@ import (
 
 	"github.com/couchbase/n1k1/base"
 	"github.com/couchbase/n1k1/engine"
+	"github.com/couchbase/n1k1/rt"
 )
 
 // Session is a reusable end-to-end driver: parse -> plan -> convert -> execute a
@@ -104,6 +104,13 @@ type Session struct {
 	// at the start of every Run, so a stale interrupt never cancels the next query.
 	// Accessed with sync/atomic (the interrupter runs on another goroutine).
 	halt int32
+
+	// spill is this Session's reusable spill-backed allocator state (temp dir + rhmap store /
+	// batch recycle pools), created lazily on the first PlanExec and reused across every later
+	// one -- so a connection's queries recycle the group/order store buffer and create the temp
+	// dir at most once. Freed by Close. Safe because a Session runs one query at a time. See
+	// rt.SpillState / MakeVarsFor and DESIGN-concurrency.md.
+	spill *rt.SpillState
 }
 
 // Interrupt requests the current Run halt as soon as it reaches its next cooperative
@@ -426,8 +433,13 @@ func (s *Session) PlanExec(pp *PreparedPlan,
 	// exprStr/exprTree are registered once in this package's init() (not lazily here) so the
 	// concurrent Run path never writes the shared engine.ExprCatalog map. See expr.go.
 
-	tmpDir, vars := MakeVars("", "n1k1")
-	defer os.RemoveAll(tmpDir)
+	// Reuse this Session's spill state across PlanExecs (recycles the group/order rhmap store +
+	// batch buffers; temp dir created at most once per connection, lazily on first spill, and
+	// removed by Close). Fresh Vars/Ctx per query, so per-query Ctx state never leaks.
+	if s.spill == nil {
+		s.spill = NewSessionSpillState()
+	}
+	vars := MakeVarsFor(s.spill)
 
 	// A per-session DatastorePipe overrides where datastore leaves read from (e.g.
 	// inline in-memory data instead of files); nil keeps the file datastore. See

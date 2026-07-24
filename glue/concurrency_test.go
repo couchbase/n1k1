@@ -34,6 +34,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -99,6 +100,64 @@ func hammer(t *testing.T, store *Store, queries []concQuery, g, n int) {
 	wg.Wait()
 	if fails > 0 {
 		t.Fatalf("%d concurrent query failures", fails)
+	}
+}
+
+// TestSessionSpillReuseNoLeak guards the Session-scoped SpillState reuse: one Session runs a
+// sequence of GROUP BY / ORDER shapes (different group sets, different key layouts) repeatedly,
+// reusing the same recycled rhmap store + order heap across all of them. If a recycle left stale
+// entries (a data leak across queries), round 2+ would return wrong counts/values -- so exact
+// value assertions across rounds are the guard. (RHStore.Reset zeroes slots; Heap.Reset truncates;
+// batches are AcquireBatch()[:0]'d -- see DESIGN-concurrency.md.)
+func TestSessionSpillReuseNoLeak(t *testing.T) {
+	root := t.TempDir()
+	writeJSONKeyspace(t, root, "events", 60) // id 0..59, cat a(even)/b(odd), amt=i*10.
+	store, err := FileStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.InitParser(); err != nil {
+		t.Fatal(err)
+	}
+	sess := &Session{Store: store, Namespace: "default"}
+	rowsOf := func(stmt string) []string {
+		res, err := sess.Run(stmt)
+		if err != nil {
+			t.Fatalf("Run(%q): %v", stmt, err)
+		}
+		got := make([]string, len(res.Rows))
+		for i, r := range res.Rows {
+			got[i] = string(r)
+		}
+		sort.Strings(got)
+		return got
+	}
+	eq := func(label string, got, want []string) {
+		if len(got) != len(want) {
+			t.Fatalf("%s: %v, want %v", label, got, want)
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Errorf("%s row %d: %s, want %s", label, i, got[i], want[i])
+			}
+		}
+	}
+	for round := 0; round < 3; round++ {
+		// GROUP BY cat: two groups, 30 each. (reuses the store)
+		eq("group-cat", rowsOf("SELECT e.cat AS c, COUNT(*) AS k FROM events AS e GROUP BY e.cat"),
+			[]string{`{"c":"a","k":30}`, `{"c":"b","k":30}`})
+		// GROUP BY amt: 60 distinct keys, count 1 each -- a totally different group set + key
+		// layout than GROUP BY cat; a leak would show extra/contaminated groups.
+		if g := rowsOf("SELECT COUNT(*) AS n FROM (SELECT e.amt FROM events AS e GROUP BY e.amt) AS d"); len(g) != 1 || g[0] != `{"n":60}` {
+			t.Errorf("round %d group-amt distinct = %v, want 60", round, g)
+		}
+		// ORDER BY amt DESC LIMIT 3 (reuses the heap): top ids 59,58,57.
+		eq("order-limit", rowsOf("SELECT e.id FROM events AS e ORDER BY e.amt DESC LIMIT 3"),
+			[]string{`{"id":57}`, `{"id":58}`, `{"id":59}`})
+		// Ungrouped SUM: 0+10+...+590 = 17700.
+		if g := rowsOf("SELECT SUM(e.amt) AS s FROM events AS e"); len(g) != 1 || g[0] != `{"s":17700}` {
+			t.Errorf("round %d SUM = %v, want 17700", round, g)
+		}
 	}
 }
 
