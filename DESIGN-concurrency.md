@@ -125,6 +125,34 @@ group-query bytes/query −20–40%. These wins concentrate exactly where the fi
 Parquet, one open per scan (cf. the `parallel-scan-experiment` memo: file-per-doc packed to one
 file was ~245× faster). That's the big one; the two above are done.
 
+### The trivial-query floor (`SELECT 0`) — where the non-scan ceiling actually is
+
+To crank on *everything but* the scan, `BenchmarkConcurrentTrivial` / `…TrivialPrepared` run the
+most minimal query there is — `SELECT 0` (no `FROM`, no scan, no fetch) — raw and PREPARE-shared.
+It exposes two things the scan-bound curves hid (12-core M2 Pro, queries/s):
+
+| workload | g01 | peak | shape | per-query |
+|---|---|---|---|---|
+| `SELECT 0` raw (parse+plan+convert+exec) | 35.8K | ~113K (~3.2×) | plateau by g04 | 27.9 µs · 177 alloc · 58 KB |
+| `SELECT 0` prepared (exec + Session only) | 607K | ~1.55M (~2.5×) | peak g08, declines | 1.6 µs · 49 alloc · 2.9 KB |
+
+1. **Parse+plan is ~94% of a trivial query's cost.** Raw `SELECT 0` is 27.9 µs; the *same* query
+   prepared once is 1.6 µs — so cbq's n1ql parse + planner + n1k1 convert is ~26 µs and **128 of the
+   177 allocs / 55 of the 58 KB**, for literally `SELECT 0`. That boxed front-end is the dominant
+   per-query *latency*, dwarfing execution of a small query.
+2. **A ~2.5–3× concurrency ceiling remains with zero scan AND zero planner.** Prepared `SELECT 0`
+   touches no file and no planner (immutable shared plan) — pure `Session`/`PlanExec`/convert
+   plumbing — yet it still peaks ~2.5× at g08 and *declines* past it. So a second ceiling lives in
+   the per-query execute+Session path, independent of the known scan and planner-globals limits.
+3. **That ceiling is allocation-rate-bound, not pure GC.** A `GOGC=off` A/B on prepared `SELECT 0`
+   *raised* mid-range throughput (g04 1.34M → 1.84M, +37%) but *collapsed* at high concurrency
+   (g32 1.43M → 519K — heap bloat hits the memory-bandwidth/allocator wall). So GC is a real
+   mid-range tax, but the wall is the allocation *rate* itself; the lever is **fewer allocations per
+   query** (even prepared `SELECT 0` does 49), not GC tuning. The one workload that scaled well
+   (file-less `UNNEST`, ~6.6×) is the one whose genuine per-query *compute* dwarfs this shared
+   per-query overhead — confirming the engine's compute path parallelizes; the fixed per-query
+   overhead (parse/plan + allocation) is what doesn't.
+
 Reproduce: `go test -tags n1ql -run=^$ -bench BenchmarkConcurrent -benchtime=500ms ./test/benchmark`
 (add `-cpuprofile`/`-memprofile`/`-mutexprofile` for the profiles; run WITHOUT `-race` — the fork
 planner pool (4a) still trips it).

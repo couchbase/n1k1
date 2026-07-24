@@ -180,6 +180,22 @@ func runConcurrentPerClient(b *testing.B, store *glue.Store, stmts []string, g i
 	}
 }
 
+// BenchmarkConcurrentTrivialPrepared -- the trivial no-FROM query (SELECT 0) PREPARE'd once and
+// shared: no parse, no plan, no files in the loop, and essentially no execution work -- so this
+// is the purest measure of how the Session/PlanExec plumbing itself scales under concurrency.
+// If BenchmarkConcurrentTrivial (raw) flat-lines but THIS scales, the ceiling is parse+plan (the
+// cbq planner globals); if THIS also flat-lines, it's Session setup / convert-run state / GC.
+func BenchmarkConcurrentTrivialPrepared(b *testing.B) {
+	store, cleanup := benchConcStore(b, 1)
+	defer cleanup()
+	pps := buildSharedPlans(b, store, []string{concStmtTrivial})
+	for _, g := range concLevels {
+		b.Run(fmt.Sprintf("g%02d", g), func(b *testing.B) {
+			runConcurrentShared(b, store, pps, g)
+		})
+	}
+}
+
 // BenchmarkConcurrentPreparedShared -- one shared plan set reused by all clients (PlanExec,
 // no planner in the loop). Compare its queries/s ramp to BenchmarkConcurrentQueries (ad-hoc).
 func BenchmarkConcurrentPreparedShared(b *testing.B) {

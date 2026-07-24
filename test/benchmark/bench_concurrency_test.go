@@ -62,6 +62,14 @@ var concStmts = []string{
 	"SELECT e.id FROM events AS e ORDER BY e.n DESC LIMIT 10",
 }
 
+// concStmtTrivial is the absolute floor: a constant-expression query with NO FROM, so it
+// touches no datastore, no scan, no fetch -- yet Session.Run still parses (cbq n1ql parser),
+// plans (cbq planner), converts (n1k1), and executes one value-scan row. It cranks purely on
+// the shared per-query machinery, so its concurrency curve isolates contention THERE (parser
+// namespace, the cbq planner's process-global object pools, Session setup, GC) from anything
+// to do with reading files.
+const concStmtTrivial = "SELECT 0"
+
 // benchConcStore writes nDocs JSON docs to a classic <root>/default/events/ layout and
 // returns a shared, InitParser'd Store plus a cleanup. The docs are small so per-query cost
 // is parse+plan+light-exec, not I/O.
@@ -176,6 +184,21 @@ func BenchmarkConcurrentSingleFile(b *testing.B) {
 	for _, g := range concLevels {
 		b.Run(fmt.Sprintf("g%02d", g), func(b *testing.B) {
 			runConcurrent(b, store, concStmts, g)
+		})
+	}
+}
+
+// BenchmarkConcurrentTrivial ramps the concurrent-client count over the trivial no-FROM query
+// (SELECT 0) -- no scan, no fetch. Compare its queries/s ramp to BenchmarkConcurrentQueries: if
+// even THIS flat-lines/declines as G grows, the ceiling is the shared parse/plan/Session
+// machinery, not the datastore. (Pair with BenchmarkConcurrentTrivialPrepared, which drops
+// parse+plan, to attribute the ceiling to parse/plan vs. execute+Session.)
+func BenchmarkConcurrentTrivial(b *testing.B) {
+	store, cleanup := benchConcStore(b, 1) // store for a well-formed Session; the query reads no file.
+	defer cleanup()
+	for _, g := range concLevels {
+		b.Run(fmt.Sprintf("g%02d", g), func(b *testing.B) {
+			runConcurrent(b, store, []string{concStmtTrivial}, g)
 		})
 	}
 }
