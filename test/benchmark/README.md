@@ -90,8 +90,10 @@ below).
     go test -tags n1ql -run=xxx -bench=BenchmarkConcurrentQueries -benchtime=500ms ./test/benchmark
     go test -tags n1ql -run=xxx -bench=BenchmarkConcurrent -benchtime=500ms ./test/benchmark
 
-- `BenchmarkConcurrentQueries/gNN` — a query mix at each concurrency level; read the
-  **queries/s** metric across the ramp.
+- `BenchmarkConcurrentQueries/gNN` — a query mix at each concurrency level (file-per-doc
+  keyspace); read the **queries/s** metric across the ramp.
+- `BenchmarkConcurrentSingleFile/gNN` — the SAME mix over a single `.jsonl` keyspace (one open
+  per scan); the syscall-light comparison.
 - `BenchmarkConcurrentByShape` — each query shape at a fixed G=8, to attribute a change.
 - `BenchmarkConcurrentRunParallel` — the idiomatic peak-parallel-throughput number.
 
@@ -132,11 +134,13 @@ sub-benchmark):
 - Shrinking to 4 docs raises absolute q/s (~3600 vs ~250) but keeps the 94% syscall share and the
   same curve — it's the per-query syscall PATTERN, not data volume.
 
-**Control — `BenchmarkConcurrentUnnestConst` (file-less):** a literal `[{"items":[…]}]` array
-UNNEST'd + aggregated, which cbq folds to a value scan (zero datastore syscalls). It scales
-*strongly* — ad-hoc **~6.6× at G=32**, prepared **~2.9× at G=8** — vs the file-backed ~1.6–2×
-plateau, and its pprof drops syscalls ~97%→~38% (residue: per-query `MakeVars` temp-dir + GC). So
-the **engine is not the concurrency bottleneck — the file-per-doc scan is.**
+**Controls prove the engine scales; the file-per-doc layout is the ceiling.**
+`BenchmarkConcurrentSingleFile` runs the SAME mix over one `.jsonl` keyspace (one open per scan):
+~10× faster single-threaded (~2500 vs ~250 q/s), ~3.5× scaling, and **~20× the peak concurrent
+throughput** (~8900 vs ~450). `BenchmarkConcurrentUnnestConst` runs a file-LESS literal-array UNNEST
+(cbq folds it to a value scan — zero datastore syscalls): scales ad-hoc **~6.6× at G=32**, prepared
+**~2.9× at G=8**, and its pprof syscall share drops ~97%→~38% (residue: per-query `MakeVars` temp-dir
++ GC). So the **engine is not the concurrency bottleneck — the file-per-doc scan is.**
 
 **Lever:** cut per-query syscalls — a syscall-light layout (single JSONL / columnar Parquet = one
 open, no per-doc walk; cf. `parallel-scan-experiment`, ~245× from packing file-per-doc into one

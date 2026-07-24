@@ -37,6 +37,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -91,6 +92,34 @@ func benchConcStore(tb testing.TB, nDocs int) (*glue.Store, func()) {
 	return store, func() { os.RemoveAll(root) }
 }
 
+// benchConcStoreSingleFile is the syscall-LIGHT counterpart to benchConcStore: the same nDocs
+// live in ONE events.jsonl file, so each scan is a single file open (no per-doc opens, no dir
+// walk) -- isolating how much of the concurrency ceiling was the file-per-doc layout.
+func benchConcStoreSingleFile(tb testing.TB, nDocs int) (*glue.Store, func()) {
+	tb.Helper()
+	root, err := os.MkdirTemp("", "n1k1sf")
+	if err != nil {
+		tb.Fatal(err)
+	}
+	var b strings.Builder
+	for i := 0; i < nDocs; i++ {
+		cat := []string{"a", "b", "c"}[i%3]
+		fmt.Fprintf(&b, `{"id":%d,"cat":%q,"n":%d}`+"\n", i, cat, i%200)
+	}
+	f := filepath.Join(root, "events.jsonl")
+	if err := os.WriteFile(f, []byte(b.String()), 0o644); err != nil {
+		tb.Fatal(err)
+	}
+	store, err := glue.FileStore(f) // single-file arg -> keyspace "events" (one open per scan).
+	if err != nil {
+		tb.Fatal(err)
+	}
+	if err := store.InitParser(); err != nil {
+		tb.Fatal(err)
+	}
+	return store, func() { os.RemoveAll(root) }
+}
+
 // runConcurrent spreads b.N Session.Run calls across g goroutines (each its own Session) and
 // reports throughput. queries/s = total queries / wall-clock; ns/op is the wall-clock per
 // query amortized across all goroutines (so it drops as G scales, if it scales).
@@ -130,6 +159,19 @@ func runConcurrent(b *testing.B, store *glue.Store, stmts []string, g int) {
 // level, over a shared store -- the goroutine-per-client scaling curve.
 func BenchmarkConcurrentQueries(b *testing.B) {
 	store, cleanup := benchConcStore(b, concDocs)
+	defer cleanup()
+	for _, g := range concLevels {
+		b.Run(fmt.Sprintf("g%02d", g), func(b *testing.B) {
+			runConcurrent(b, store, concStmts, g)
+		})
+	}
+}
+
+// BenchmarkConcurrentSingleFile is the syscall-light variant of BenchmarkConcurrentQueries: the
+// SAME query mix over a single-file keyspace (one open per scan). Compare its queries/s ramp to
+// the file-per-doc one to quantify how much headroom the data layout costs under concurrency.
+func BenchmarkConcurrentSingleFile(b *testing.B) {
+	store, cleanup := benchConcStoreSingleFile(b, concDocs)
 	defer cleanup()
 	for _, g := range concLevels {
 		b.Run(fmt.Sprintf("g%02d", g), func(b *testing.B) {
