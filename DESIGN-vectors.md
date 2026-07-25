@@ -1,481 +1,270 @@
 # DESIGN-vectors.md — embeddings & vector search in n1k1
 
-_Status: **Phase 0 SHIPPED** (VECTORIZE_BATCH builtin + @vectorize_field macro +
-brute-force VECTOR_DISTANCE search; fake + real-HTTP, cgo-free). **Phase 1 largely
-SHIPPED** — native byte-lane `VECTOR_DISTANCE`, a columnar float32 kernel over an Arrow
-`List<float32>` column, an `INSERT INTO <name>.parquet` vector-column writer, and
-computed-qvec lowering to the columnar fast path. Phase 2 (remote-source ingest, ANN-index
-cgo decision) not started. Companion to DESIGN-data.md (keyspaces, extract),
-DESIGN-extensions.md (UDFs, `*.stream.js`, macros), DESIGN-col.md (columnar/SIMD)._
+_Last reviewed: 2026-07-25._
+
+**Status: Phase 0 SHIPPED + Phase 1 largely SHIPPED.** Phase 0 = `VECTORIZE_BATCH` builtin +
+`@vectorize_field` macro + brute-force `VECTOR_DISTANCE` search (fake + real-HTTP, cgo-free).
+Phase 1 = native byte-lane `VECTOR_DISTANCE`, a columnar float32 kernel over an Arrow
+`List<float32>` column, an `INSERT INTO <name>.parquet` vector-column writer, and computed-qvec
+lowering to the columnar fast path. Phase 2 (remote-source ingest, ANN-index cgo decision) not
+started. Companion to DESIGN-data.md (keyspaces, extract), DESIGN-extensions.md (UDFs, macros),
+DESIGN-col.md (columnar/SIMD).
 
 ## Intent
 
-Let a user turn records (log lines, doc fields, …) into vectors with a **local,
-swappable** embedding model, store them, and run **semantic / nearest-neighbour
-search** — all in n1k1's pure-Go, `CGO_ENABLED=0` world, at dev/debug scale (a
-cbcollect bundle: 10K–1M rows). Two distinct sub-problems with opposite constraints:
+Turn records (log lines, doc fields) into vectors with a **local, swappable** embedding model,
+store them, and run **semantic / nearest-neighbour search** — all cgo-free (`CGO_ENABLED=0`) at
+dev/debug scale (a cbcollect bundle, 10K–1M rows). Two sub-problems with opposite constraints:
 
-1. **Embedding** (text → `float32[dim]`): heavy (~1–10 ms/item, best batched), external
-   (model lives in ollama/llama.cpp/ONNX/OpenAI), deterministic in `(text, model)`. A
-   **cold, throughput-bound ETL transform** — the opposite of n1k1's ~1 µs/row byte lane.
-2. **Search** (distance + top-K): either brute-force or an ANN index.
+1. **Embedding** (text → `float32[dim]`): heavy (~1–10 ms/item, best batched), external (model in
+   ollama/llama.cpp/ONNX/OpenAI), deterministic in `(text, model)`. A cold, throughput-bound ETL
+   transform — the opposite of n1k1's ~1 µs/row byte lane.
+2. **Search** (distance + top-K): brute-force or an ANN index.
 
-## Grounding facts (verified 2026)
+## Grounding facts
 
-- **Distance is already solved, pure-Go, no new code.** cbq's `VECTOR_DISTANCE(field,
-  query, metric)` and `APPROX_VECTOR_DISTANCE(...)` both evaluate through one pure-Go
-  helper (`expression/func_vector.go` `vectorDistance()`): array iteration + float64 math,
-  metrics `l2`/`l2_squared`/`cosine` (returns `1 − cosine_sim`, **lower = closer**)/`dot`.
-  n1k1's boxed evaluator runs it out of the box:
-  `SELECT t.id FROM ks t ORDER BY VECTOR_DISTANCE(t.v, [1,0,0], "cosine") ASC LIMIT 5`
-  works **today** (verified: a=0, near=0.006, orthogonal=1). So there is **no COSINE_SIM
-  to build** — reuse the grammar's function.
-  - Quirk: the **first** operand must be a *field reference*, not an array literal
-    (a planner/index-eligibility check); the query vector is the 2nd operand. That matches
-    the real shape (stored vec field vs query vec).
-  - `VECTOR_DISTANCE` = exact; `APPROX_VECTOR_DISTANCE` = the index-backed name (identical
-    math today, since we have no ANN index). Phase 0 uses **VECTOR_DISTANCE** (honest:
-    exact, full scan); `APPROX_` is the forward name for a future ANN tier.
-- **FAISS is dark under `CGO_ENABLED=0`.** `go-faiss` is in the module graph (via bleve
-  v2.6.1) but is cgo/C++; n1k1's cgo-free build gets bleve *text* FTS, **not** the FAISS
-  vector index. This is the central constraint: **no ANN index without a cgo decision.**
+- **Distance is already solved, pure-Go, no new code.** cbq's `VECTOR_DISTANCE(field, query,
+  metric)` / `APPROX_VECTOR_DISTANCE` evaluate through one pure-Go helper
+  (`expression/func_vector.go vectorDistance()`): array iteration + float64 math, metrics
+  `l2`/`l2_squared`/`cosine` (returns `1 − cosine_sim`, **lower = closer**)/`dot`. So there is **no
+  COSINE_SIM to build** — reuse the grammar's function. `VECTOR_DISTANCE` = exact (Phase 0 uses
+  it: honest full scan); `APPROX_VECTOR_DISTANCE` = the forward name for a future ANN tier
+  (identical math today, no index).
+  - ⚠ **Quirk:** the **first** operand must be a *field reference*, not an array literal (a
+    planner/index-eligibility check); the query vector is the 2nd operand.
+- ⚠ **FAISS is dark under `CGO_ENABLED=0`.** `go-faiss` is in the module graph (via bleve v2.6.1)
+  but is cgo/C++; the cgo-free build gets bleve *text* FTS, **not** the FAISS vector index. The
+  central constraint: **no ANN index without a cgo decision** (deferred, below).
 
 ## Principles
 
-- **No grammar changes** (can't touch cbq's parser). Vectors are ordinary SQL++ arrays;
-  `dim` is never in the SQL type — `VECTOR_DISTANCE` infers it from array length; the
-  columnar side-file records the fixed width in its own metadata.
-- **No optimizer magic.** Batching is expressed *explicitly* in SQL (GROUP-BY pages), not
-  hidden in an operator. A macro sugars it; `.macro expand` shows the honest SQL.
+- **No grammar changes** (can't touch cbq's parser). Vectors are ordinary SQL++ arrays; `dim` is
+  never in the SQL type (`VECTOR_DISTANCE` infers it from array length; the columnar side-file
+  records the fixed width in its own metadata).
+- **No optimizer magic.** Batching is expressed *explicitly* in SQL (GROUP-BY pages), sugared by a
+  macro; `.macro expand` shows the honest SQL.
 - **Compute-once, materialize.** Embeddings are deterministic → compute once, persist to a
-  side-file, skip on re-run. Essential for large/remote sources (S3/Box/Drive/HF).
-- **Model-agnostic.** No hardcoded ollama. An options object carries `endpoint` + `model`;
-  swap freely (ollama, llama.cpp-server, OpenAI, local ONNX all speak HTTP/JSON).
-- **cgo-free at dev scale.** Brute-force distance over a columnar vector column (stored in
-  the model's native element type); defer FAISS/ANN (and its cgo cost) to a later scale tier.
-- **Reuse existing lanes:** the vector functions above, GROUP BY / `ARRAY_AGG` / `UNNEST`,
-  the columnar/SIMD lane, `INSERT INTO <file>`, the extension + macro registries.
+  side-file, skip on re-run.
+- **Model-agnostic.** An options object carries `endpoint` + `model` (ollama, llama.cpp-server,
+  OpenAI, local ONNX all speak HTTP/JSON).
+- **cgo-free at dev scale.** Brute-force distance over a columnar vector column (stored in the
+  model's native element type); defer FAISS/ANN + its cgo cost to a later scale tier.
 
-## Search (Phase 0 — free)
+## Search performance — the measured story
 
-Brute-force top-K via the existing function; no index, no cgo, tens of ms at bundle scale:
-```sql
-SELECT t.id, t.line FROM ks t
-ORDER BY VECTOR_DISTANCE(t.v, $qvec, "cosine") ASC LIMIT 10;
-```
-Perf later: port `vectorDistance` to the native columnar float32/SIMD lane (DESIGN-col).
-ANN index much later, only if N forces it (see cgo decision).
+Brute-force top-K via the existing function; no index, no cgo. The journey (M2 Pro, 100K × 384,
+cosine top-10) settled the plan and confirmed the prize:
 
-**Benchmark (2026, M2 Pro, jsonl + boxed) — the native port is EARNED, not premature.**
-Brute-force top-K cosine over jsonl-stored 384-dim vectors, single query:
-- N=10K → **1.1s**; N=100K → **11.0s** (linear ~11s/100K → 1M ≈ ~110s).
-- `COUNT(*)` scan+parse baseline at 100K = **1.3s**, so the boxed `VECTOR_DISTANCE` is ~90%
-  of the time — and the SORT is negligible: distance-in-`WHERE` with no `ORDER BY` is the
-  same ~11s. The distance *eval* is the bottleneck.
-- Allocations: ~1000 allocs and ~132 KB churn **per row** (a 100K-row search = ~100M allocs,
-  13.2 GB allocated) — cbq re-boxes the 384-element array into `value.Value` every row.
-- Storage: 320 MB jsonl for 100K×384 (~2× raw float32, ~8× int8).
-
-Verdict: jsonl+boxed is fine for **small** corpora (≤~10K rows, sub-second) but a real wall
-at upper dev scale (100K–1M rows, which cbcollect reaches).
-
-**Native VECTOR_DISTANCE built + measured (engine/expr_vector.go, base/vector.go) — the
-result refines the plan.** Native byte-lane eval (no `value.Value` boxing) at 100K, literal
-query vector: **6.8s (was 11.2s) — allocations 100M→2M (50×), but wall-clock only ~1.6×.**
-So the boxing was the *allocation/GC* killer, but the **residual is dominated by JSON number
-parsing** (~38M `strconv.ParseFloat` for 100K×384). Two consequences:
-1. **The headline ~30–100× needs BOTH native eval AND columnar float32** (to skip the JSON
-   parse entirely — raw `[]float32`, no `ParseFloat`). Native-on-jsonl alone is a modest
-   1.6× + big alloc reduction; it is the necessary *kernel* the columnar column then feeds.
-2. **The native-JSONL lane only triggers with a literal/const query vector.** A `WITH`-alias
-   / `$param` query vector doesn't lower through `ExprTreeOptimize` (it's a boxed scope
-   reference), so on the *jsonl* path the whole call falls back to boxed. (Search results are
-   identical either way; only speed differs.) NOTE: this limitation is specific to the
-   native-jsonl lane — the **columnar Parquet path handles a `WITH`/`$param` query vector**
-   by evaluating it ONCE (row-independent hoist) and feeding the same float32 kernel, so it
-   is as fast as a literal there; see the columnar section below.
-Correctness: native == boxed is a differential test (glue TestVectorDistanceNativeMatchesBoxed,
-toggle EnableNativeVectorDistance) across cosine/l2/l2_squared/dot + edge cases — it caught a
-real `-0.0` vs `0` divergence (dot of orthogonal vectors), now normalized.
-
-**Columnar ceiling measured (the prize) — ~60ms.** A pure-Go micro-bench of cosine top-K over
-100K×384 *contiguous float32* (no JSON parse, no boxing — the best case columnar could hit):
-**60ms**, vs 6.8s native-jsonl (~113×) and 11.2s boxed (~187×). So JSON number parsing is
-~99% of the current time; the columnar float32 column is worth ~100×. Even adding Parquet
-read I/O (~150MB float32 vs 320MB jsonl, no parse) and a top-K heap, end-to-end should land
-well under a second — a ~15–50× real win. **Scope check (honest): the existing Parquet read
-does NOT feed this cheaply** — `records/parquet.go`'s row path materializes each row to JSON
-(`RecordToJSON`), and its columnar `NextColumns` handles only fixed-width 8-byte SCALARS
-("float32/int32 … come later"), not a `FixedSizeList<float32>` vec column. So the columnar
-core is real work: (a) read support for a float32 vec column as a raw contiguous buffer;
-(b) a columnar `VECTOR_DISTANCE` kernel wired into `glue/columnar.go` that consumes it (the
-native ExprVectorDistance kernel is the row-lane analog — the byte→float32 discipline
-carries over); (c) the `INSERT INTO parquet` writer to produce the files.
-
-**Columnar kernel + real-Parquet benchmark BUILT & MEASURED — prize confirmed ~15–29×.**
-`base.VectorDistanceVFloat32` (base/vector_v.go) is the vectorized byte-lane core — the
-`sum_v_float64` analog, mapping N packed float32 vectors + a query to N distances. It
-reads the column via `base.VecFloat32`, an `unsafe` zero-copy reinterpret of the borrowed
-little-endian arrow buffer as `[]float32` (no copy, aliases the page — the borrow the user
-asked for; LE host assumed). Storage is float32 (the win: no `strconv.ParseFloat`) but the
-accumulation promotes to float64, so results are BIT-IDENTICAL to the scalar/native float64
-path on the same values (TestVectorDistanceVFloat32MatchesVals). Measured over a REAL
-Parquet round-trip (records/vector_parquet_test.go, 100K × 384, cosine top-10):
-
-| path | time | vs |
+| path | time | vs boxed |
 |---|---|---|
-| jsonl + boxed | 11.2s | — |
-| jsonl + native | 6.8s | 1.6× |
-| **columnar float32 / Parquet** | **~0.4–0.5s** | **~15–29×** |
+| jsonl + boxed (cbq re-boxes the 384-elem array into `value.Value` per row) | 11.2s | — |
+| jsonl + native byte-lane (`engine/expr_vector.go`, `base.VectorDistanceVals`) | 6.8s | 1.6× |
+| **columnar float32 / Parquet** (`base.VectorDistanceVFloat32`) | **~0.4–0.5s** | **~15–29×** |
 
-The distance math is negligible (the 60ms ceiling, hidden under I/O); the new floor is
-Parquet decode (~0.4s for a 163MB file), NOT the JSON parse. So columnar delivers the win
-and the bottleneck has moved to the reader.
+Findings that shaped the design:
+- **Boxing was the *allocation/GC* killer** (native eval cut allocs 100M→2M, ~50×) **but only
+  ~1.6× wall-clock** — the residual on jsonl is dominated by **JSON number parsing** (~38M
+  `strconv.ParseFloat` for 100K×384). So the headline win needs BOTH native eval AND columnar
+  float32 (raw `[]float32`, no `ParseFloat`). Native-on-jsonl alone is the necessary *kernel* the
+  columnar column then feeds.
+- A pure-Go micro-bench of cosine over 100K×384 *contiguous float32* is **60ms** — the distance
+  math is negligible; the new columnar floor is **Parquet decode** (~0.4s for a 163MB file), not
+  JSON parse. The bottleneck moved to the reader (attacked separately — DESIGN-benchmark.md arrow
+  read-floor).
+- ⚠ **The native-JSONL lane only triggers with a literal/const query vector.** A `WITH`-alias /
+  `$param` qvec doesn't lower through `ExprTreeOptimize` (boxed scope reference), so on the *jsonl*
+  path the whole call falls back to boxed. (Results identical either way; only speed differs.) The
+  **columnar Parquet path handles a `WITH`/`$param` qvec** by evaluating it ONCE (row-independent
+  hoist) and feeding the same float32 kernel — as fast as a literal there (computed 507ms ≈ literal
+  543ms vs 18.6s on the row lane).
+- Correctness: native == boxed via a differential test (`glue.TestVectorDistanceNativeMatchesBoxed`,
+  toggle `EnableNativeVectorDistance`) across all metrics + edge cases — it caught a real `-0.0` vs
+  `0` divergence (dot of orthogonal vectors), now normalized.
 
-**The vec column type + nullability (double-checked, TestVecParquetNullContract).** The
-column is a variable `List<float32>` with a NON-nullable element and a NULLABLE list field:
-- Parquet has NO fixed-size-list type — a `FixedSizeList` round-trips as a variable `List`
-  anyway, AND pqarrow can't even WRITE a `FixedSizeList` null ("lists with non-zero length
-  null components are not supported"). So the writer emits a variable `List<float32>`.
-- Nullability is TWO independent levels. The ELEMENT (each coord) is non-nullable — declaring
-  it nullable makes the def-level round-trip mark every coord NULL (the whole column reads
-  back null). The LIST FIELD is nullable — a ROW's vec is NULL when the source text is
-  MISSING or non-string (e.g. `INSERT INTO x.parquet SELECT VECTORIZE_BATCH(f.body,...)` where
-  `f.body` is absent). That row-level null is stored NATIVELY by arrow/parquet's validity
-  bitmap as a ZERO-LENGTH list — no sentinel vector, no wasted `dim` floats, and no fragile
-  bet that "no model emits all-zeros." Confirmed to round-trip: present rows keep their
-  floats; null rows come back `IsNull=true`, length 0.
-- Borrow implication: with null rows present, offsets go irregular (a null row doesn't
-  advance the offset), so the child buffer holds ONLY the present vectors, still one
-  contiguous zero-copy `[]float32`. The no-null case keeps regular offsets `0,dim,2dim,…`
-  (the tight `r*dim` fast-path kernel); the null case indexes each row via the list OFFSETS
-  (`child[offs[r]:offs[r+1]]`) and yields NULL for zero-length rows — the same validity-mask
-  discipline the existing scalar columnar path already uses.
+## Columnar vector column — mechanism (SHIPPED)
+
+`base.VectorDistanceVFloat32` (base/vector_v.go) is the vectorized byte-lane core (the
+`sum_v_float64` analog): maps N packed float32 vectors + a query → N distances. It reads the column
+via `base.VecFloat32`, an **`unsafe` zero-copy reinterpret of the borrowed little-endian arrow
+buffer as `[]float32`** (no copy, aliases the page — ⚠ **LE host assumed**). Storage is float32 (no
+`ParseFloat`) but accumulation promotes to float64, so results are **bit-identical** to the scalar
+path (`TestVectorDistanceVFloat32MatchesVals`).
+
+End-to-end pieces: (a) reader `records.VectorBatchSource` borrows the vec list column's contiguous
+float32 child + offsets + scalar side cols; (b) executor `glue.VectorColumnarScan` computes
+distances then TRANSPOSES to rows so the existing row-lane `order-offset-limit` does the top-K (no
+new order/limit op); (c) the conv rewrite `maybeVectorColumnarFuse` fuses
+`project(VECTOR_DISTANCE over a parquet vec)+scan` into a `vector-distance-columnar` op when the
+qvec is a constant OR a row-independent expression (`WITH` alias / `$param` / `VECTORIZE_BATCH(...)`,
+evaluated ONCE) and passthroughs are provably unread; (d) the `INSERT INTO <name>.parquet` writer
+`glue.parquetWriter`. Also fixed a pre-existing bug: parquet projection pushdown dropped nested
+(list) columns (leaf `vec.list.element` ≠ `vec`).
+
+> **The native unboxed distance (`base.VectorDistanceVals`) takes TWO arbitrary vectors — drop
+> cbq's operand restrictions.** cbq requires operand-0 = field ref and the qvec = static: those are
+> vector-index eligibility constraints, meaningless for the brute-force path we have. A native n1k1
+> distance is pure compute → accept **any two vector expressions** (two fields, two params, two
+> computed values), composing more freely than the boxed builtin.
+
+### The vec column type + nullability (⚠ subtle — `TestVecParquetNullContract`)
+
+The column is a variable `List<float32>` with a **NON-nullable element** and a **NULLABLE list
+field**:
+- ⚠ Parquet has **NO fixed-size-list type** — a `FixedSizeList` round-trips as a variable `List`
+  anyway, and pqarrow can't even WRITE a `FixedSizeList` null. So the writer emits a variable
+  `List<float32>`.
+- ⚠ **Nullability is two independent levels.** The ELEMENT (each coord) must be non-nullable —
+  declaring it nullable makes the def-level round-trip mark **every coord NULL** (whole column reads
+  back null). The LIST FIELD is nullable — a row's vec is NULL when the source text is
+  MISSING/non-string. That row-null is stored natively by the validity bitmap as a **zero-length
+  list** — no sentinel vector, no wasted `dim` floats, no fragile "no model emits all-zeros" bet.
+- ⚠ **Borrow implication with nulls:** null rows don't advance the offset, so the child buffer holds
+  ONLY present vectors (still one contiguous zero-copy `[]float32`). No-null case keeps regular
+  offsets `0,dim,2dim,…` (tight `r*dim` fast path); the null case indexes each row via list OFFSETS
+  (`child[offs[r]:offs[r+1]]`), yielding NULL for zero-length rows.
 - The doc id IS a matching column: the writer emits `id` (the SELECT's KEY / `META().id`)
-  row-aligned with `vec` (and any other projected fields), so a top-K result maps back to
-  documents by reading `id` at the winning row indices. (The benchmark writes `{id, vec}`.)
+  row-aligned with `vec`, so a top-K result maps back to documents by reading `id` at the winning
+  row indices.
 
-**SHIPPED (read + query + write, all end-to-end).** (a) reader: `records.VectorBatchSource`
-borrows the vec list column's contiguous float32 child + offsets + scalar side cols; (b)
-executor: the columnar map (`glue.VectorColumnarScan`) computes distances then TRANSPOSES to
-rows, so the existing row-lane `order-offset-limit` does the top-K — no new order/limit op;
-(c) the conv rewrite (`maybeVectorColumnarFuse`) fuses `project(VECTOR_DISTANCE over a
-parquet vec)+scan` into a `vector-distance-columnar` op when the query vector is a constant
-OR a row-independent expression (a `WITH` alias / `$param` / `VECTORIZE_BATCH(...)`) that the
-fused op evaluates ONCE — same float32 kernel, so a computed query is as fast as a literal
-(measured 100K×384: computed 507ms ≈ literal 543ms, vs 18.6s on the row lane) — and when
-passthroughs are provably unread; (d) the `INSERT INTO <name>.parquet` writer
-(`glue.parquetWriter`) produces the files. Also fixed a pre-existing bug: parquet projection
-pushdown dropped nested (list) columns (leaf `vec.list.element` ≠ `vec`).
+### Writer scope (v1)
 
-**Writer scope (v1).** A vector-shaped writer, not general JSON→Parquet: flat scalars
-(number→INT64/DOUBLE, string→UTF8, bool→BOOLEAN) + a numeric array→`list<float32>`. Strings
-are first-class typed UTF8 columns (`{"city":"Los Angeles"}` writes, reads, and is
-`WHERE`/`GROUP BY`-queryable). First-row-defines-schema is STRICT: the first row must carry
-every column; a later row with an extra field, a conflicting type, or a non-numeric vec
-element ERRORS (never a silent coerce/drop); a later row missing a field writes NULL.
-Complex values (nested objects, non-numeric/nested arrays) error today. *Future options
-(deferred):* Parquet's **VARIANT** logical type (a self-describing column), or **stringify**
-the complex value into a UTF8 column (queried back via the JSON functions) — neither needed
-for the vector use case (flat scalars + a vec array).
-
-**Boxing / "recycled box" (Phase 1, not Phase 0).** Phase 0 goes through cbq's *boxed*
-evaluator: each row parses its stored vector field into a `value.Value` array, and
-`vectorDistance` touches ~`dim` boxed `value.Value` elements per row (`.Index(i)` →
-`float64`). Fine for correctness, garbage-heavy at scale. But a "recycled cbq `Value`
-backed by a reusable `[]float32`" is **not available** — cbq's value model has no native
-`[]float32` array (`value/doc.go`: float32 "not used"; arrays are `[]interface{}` of
-float64-boxed numbers). So the win is not *recycling a box* but **skipping the box**: store
-the vector column as raw bytes in the model's **native element type** (see below — do NOT
-up-convert int8/float16 to float32), and run a native distance kernel over a borrowed
-`[]byte`→typed-slice view with a **reused** query-vector buffer + scalar accumulators (no
-per-row `value.Value`, SIMD-friendly). That is the DESIGN-col native port — the right home
-for the reuse instinct.
-
-> **The native unboxed distance (now built, `base.VectorDistanceVals`) should take TWO
-> vectors — drop cbq's operand restrictions.** cbq's `VECTOR_DISTANCE` requires operand-0 to be a *field reference* and
-> the query vector to be *static* (constant/param/`WITH`) — those are planner / vector-index
-> eligibility constraints, meaningful only for the index-backed path we don't have. A native
-> n1k1 brute-force distance is pure compute, so it should accept **any two vector expressions**
-> (two fields, two params, two computed/typed-byte values), composing freely — more general
-> than the boxed builtin, not just faster. (Whether it reuses the `vector_distance` name or a
-> distinct native name is a naming call for that phase; behavior: 2 arbitrary vector operands.)
+A vector-shaped writer, not general JSON→Parquet: flat scalars (number→INT64/DOUBLE, string→UTF8,
+bool→BOOLEAN) + a numeric array→`list<float32>`. Strings are first-class typed UTF8 columns
+(`WHERE`/`GROUP BY`-queryable). ⚠ **First-row-defines-schema is STRICT:** the first row must carry
+every column; a later row with an extra field, conflicting type, or non-numeric vec element ERRORS
+(never a silent coerce/drop); a later row missing a field writes NULL. Complex values (nested
+objects, non-numeric/nested arrays) error today. *Deferred:* Parquet VARIANT, or stringify-to-UTF8
+— neither needed for the vector use case.
 
 ## Embedding — a batched callout at ingest, materialized once
 
-**Not** the extract hot-loop (native/cheap) and **not** a per-row scalar UDF with
-fork-per-row. Instead a scalar **`VECTORIZE_BATCH(array, opts) → array`** (array of texts →
-parallel array of vectors): **one goja call + one model round-trip per batch**. Backed by
-a native pure-Go `http.post` (no curl subprocess) to `opts.endpoint`, e.g.
-`{"endpoint":"http://localhost:11434/api/embed","model":"nomic-embed-text"}`. A
-`{"fake":true}` mode returns deterministic pseudo-vectors (hash → unit vector) so the whole
-pipeline is testable with **no model and no network** — the key de-risk.
+**Not** the extract hot-loop and **not** a per-row scalar UDF with fork-per-row. Instead a scalar
+**`VECTORIZE_BATCH(array, opts) → array`** (array of texts → parallel array of vectors): **one goja
+call + one model round-trip per batch**, backed by a native pure-Go `http.post` to `opts.endpoint`
+(`{"endpoint":"http://localhost:11434/api/embed","model":"nomic-embed-text"}`). A `{"fake":true}`
+mode returns deterministic pseudo-vectors (hash → unit vector) so the whole pipeline is testable
+with **no model and no network** — the key de-risk (and the CI default, since `make test-all` has no
+ollama dependency).
 
-### Batching without magic (explicit GROUP-BY pages)
+**Batching without magic (explicit GROUP-BY pages):** `ARRAY_AGG` of `{id,text}` **objects** (not
+two parallel arrays) keeps id/text/vec glued; page size is a user literal (`FLOOR(t.pos/256)`); the
+**`@vectorize_field(ks, field => line, batch => 256, opts => {…})`** macro sugars the wall. The
+load-bearing plumbing is VERIFIED: `UNNEST` works over a *computed* `ARRAY_AGG` array, the
+`GROUP BY page → ARRAY_AGG({id,…}) → UNNEST` round-trips, and paging via `ROW_NUMBER()`
+(`FLOOR((rn-1)/N)` for 0-based) or `_meta.pos` works — so the only new code was `VECTORIZE_BATCH`.
 
-```sql
-INSERT INTO vecs
-SELECT u.id, u.vec FROM (
-  SELECT VECTORIZE_BATCH(g.batch, {"model":"…"}) AS vecs, g.batch
-  FROM ( SELECT ARRAY_AGG({"id":t.id,"text":t.line}) AS batch, FLOOR(t.pos/256) AS page
-         FROM ks t GROUP BY FLOOR(t.pos/256) ) g
-) e UNNEST e.vecs AS u;
-```
-- `ARRAY_AGG` of `{id,text}` **objects** (not two parallel arrays) keeps id/text/vec glued.
-- Page size (256) is a user-controlled literal. Last page = leftover rows.
-- **`@vectorize_field(ks, field => line, model => "…", batch => 256)`** macro sugars this wall.
-- **Load-bearing plumbing — VERIFIED (2026):** `UNNEST` works over a *computed*
-  `ARRAY_AGG` array (not just a stored field); `GROUP BY page → ARRAY_AGG({id,…}) → UNNEST`
-  round-trips; paging via `ROW_NUMBER()` works (use `FLOOR((rn-1)/N)` for 0-based pages),
-  or `_meta.pos` for extracted docs. So every existing-engine piece of this shape is
-  proven — the only new code is `VECTORIZE_BATCH` itself.
-
-### Trying it with a real local model (ollama) — copy & paste
-
-Verified end-to-end 2026-07-14 against a real model (not in `make test-all` — no ollama
-dependency in CI; the `{"fake":true}` default covers the automated tests). One-time setup:
-
-```sh
-ollama pull nomic-embed-text     # a 274 MB embedding model; ollama serves on :11434
-```
-
-Self-contained semantic search — embed a tiny corpus + the query the SAME way, rank by
-cosine (no files needed; paste into `n1k1 -c '<sql>'` or the REPL):
+Worked example — ingest a text keyspace into a columnar Parquet vec file, then search it (`ollama
+pull nomic-embed-text` first; verified end-to-end against a real model, 768-dim, real semantic
+ranking):
 
 ```sql
-WITH corpus AS (VECTORIZE_BATCH(
-       [{"id":1,"text":"the disk is full, free up space"},
-        {"id":2,"text":"the weather today is sunny and warm"},
-        {"id":3,"text":"error: no space left on device"}],
-       {"text":"text","endpoint":"http://localhost:11434/api/embed","model":"nomic-embed-text"})),
-     q AS (VECTORIZE_BATCH([{"text":"hard drive out of space"}],
-       {"text":"text","endpoint":"http://localhost:11434/api/embed","model":"nomic-embed-text"})[0].vec)
-SELECT c.id, c.text, ROUND(VECTOR_DISTANCE(c.vec, q, "cosine"), 4) AS dist
-  FROM corpus c ORDER BY dist ASC;
-```
-```
-{"id":1,"text":"the disk is full, free up space","dist":0.2656}      <- nearest
-{"id":3,"text":"error: no space left on device","dist":0.3497}
-{"id":2,"text":"the weather today is sunny and warm","dist":0.6201}  <- unrelated, farthest
-```
-nomic-embed-text returns **768-dim** vectors; the disk-space docs beat the weather doc,
-i.e. real semantic ranking, cgo-free (pure-Go `net/http`).
-
-Persistent + columnar: ingest a text keyspace into a Parquet vec file, then search it (the
-`@vectorize_field` macro sugars the batching wall; the `endpoint`/`model` flow through
-`opts`):
-
-```sql
--- ingest: embed `line`, materialize a columnar Parquet vec keyspace (id can be a string or number)
+-- ingest: embed `line`, materialize a columnar Parquet vec keyspace
 INSERT INTO `vecs/data.parquet` (KEY UUID(), VALUE self)
 SELECT r.id, r.vec
   FROM @vectorize_field(logs, field => line, id => id, batch => 256,
        opts => {"endpoint":"http://localhost:11434/api/embed","model":"nomic-embed-text"}) AS r;
--- search: embed the query the same way -> top-5 (columnar fast path; query vec computed once)
+-- search: embed the query the same way -> top-5 (columnar fast path; qvec computed once)
 WITH q AS (VECTORIZE_BATCH([{"text":"disk full"}],
        {"text":"text","endpoint":"http://localhost:11434/api/embed","model":"nomic-embed-text"})[0].vec)
 SELECT v.id, VECTOR_DISTANCE(v.vec, q, "cosine") AS d
   FROM vecs v ORDER BY d ASC LIMIT 5;
 ```
-(Over `.parquet`, the once-computed `q` + kept scalar columns take the columnar fast path.
-Kept columns may be numeric OR string — a string doc `id` (or `v.text`) rides the fast path
-too; only the vec itself is the list column.)
+Over `.parquet` the once-computed `q` + kept scalar columns (numeric OR string) take the columnar
+fast path; only the vec itself is the list column.
 
-## Vector element types (float32 / float64 / int8·int16 quantized / float16)
+## Vector element types (float32 / float64 / int8·int16 / float16 quantized)
 
-Models emit different numeric types: float32 (typical), float64, or **quantized**
-int8/int16/float16 (some models quantize to shrink a vector ~4×). This is a **non-issue for
-Phase 0 correctness**: a vector is just a SQL++ array of *numbers*, and `VECTOR_DISTANCE`
-promotes every element to float64 for the math (embedding values always sit within float32
-range), so int8, float32, and float64 arrays all "just work" through the same boxed path,
-no special-casing.
+Models emit different numeric types; some **quantize** to int8/int16/float16 to shrink ~4×.
+**Non-issue for Phase 0 correctness** — a vector is just a SQL++ array of numbers, and
+`VECTOR_DISTANCE` promotes every element to float64, so int8/float32/float64 arrays all "just work"
+through the boxed path.
 
-It matters only for **storage/perf (Phase 1 columnar)**, and the rule there is: **store the
-model's emitted type as-is — do NOT up-convert to float32.** The Parquet/columnar side-file
-records an **element-type tag** next to `dim` and keeps the bytes the model returned:
-`float32` (4 B/dim, typical), `float16` (2 B/dim), `int16` (2 B/dim), `int8` (1 B/dim — a
-4×-smaller quantized column). Up-converting an int8 column to float32 would 4× the file and
-throw away the whole point of the model quantizing. The native distance kernel then either
-has a per-type variant (`int8·int8`, `f32·f32`) or dequantizes/promotes to a common
-precision at read (fp32 accumulation is standard) — the *stored* representation stays
-native. Parquet expresses these as a FIXED_SIZE_LIST/FIXED_LEN_BYTE_ARRAY of the right
-element type. NOTE: a properly quantized model often ships a **scale/offset**
-(dequantization) or pre-normalizes; carry that in the file metadata and honor it in the
-kernel — a Phase-1+ nuance (raw-integer distance preserves NN *ranking* well enough for a
-first cut, so it doesn't block anything).
+It matters for **storage/perf (Phase 1 columnar)**: ⚠ **store the model's emitted type as-is — do
+NOT up-convert to float32.** Up-converting an int8 column would 4× the file and throw away the whole
+point of quantizing. The side-file records an element-type tag next to `dim`; the native kernel has
+per-type variants or dequantizes/promotes at read (fp32 accumulation standard). ⚠ A properly
+quantized model often ships a **scale/offset** (dequantization) — carry it in file metadata and
+honor it in the kernel (a Phase-1+ nuance; raw-integer distance preserves NN *ranking* well enough
+for a first cut, so it doesn't block anything).
 
-**How the type reaches the file (it travels as METADATA, not through the value layer).**
-SQL++/JSON has no int8/float16 — a vector rides the value layer as an array of
-*float64-boxed numbers*, so the element type cannot flow as a Go typed slice through the
-query. `VECTORIZE_BATCH` is the only component that saw the model's response, so it
-**reports `dtype` (+ `dim`, + `scale`/`offset` for quantized models) in its return
-envelope**; the columnar/Parquet writer reads that and packs the column in the declared
-type, down-casting the float64-boxed numbers at write (safe — the model already produced
-in-range values). To *preserve* quantization, `VECTORIZE_BATCH` must emit the **raw integer
-codes + scale/offset**, not dequantized floats, or the compact form is lost before the
-writer sees it. Do **not** infer the type from values (a float model with integer-valued
-outputs would be mis-typed) — use the reported `dtype` or an explicit INSERT/macro option.
-(A jsonl Phase-0 side-file is text JSON and can't hold compact types at all; native packing
-is inherently a Phase-1 columnar/Parquet concern.)
+⚠ **The type travels as METADATA, not through the value layer.** SQL++/JSON has no int8/float16 — a
+vector rides the value layer as float64-boxed numbers, so the element type can't flow as a Go typed
+slice. `VECTORIZE_BATCH` is the only component that saw the model's response, so it **reports
+`dtype` (+ `dim`, + `scale`/`offset`)** in its return envelope; the writer packs the column in the
+declared type, down-casting at write. ⚠ To *preserve* quantization, `VECTORIZE_BATCH` must emit the
+**raw integer codes + scale/offset**, not dequantized floats. ⚠ **Do not infer the type from
+values** (a float model with integer-valued outputs would be mis-typed) — use the reported `dtype`
+or an explicit option.
 
-**Who cracks the API response encoding — `VECTORIZE_BATCH`, always (the transport only).**
-Embedding APIs may return `encoding_format:"base64"` (raw dtype bytes, base64'd, to save
-bandwidth) or bit-packed integer arrays, with metadata (format/dtype/dim) saying how to
-decode. Base64/bit-packing is **transport, not a value type** — nobody downstream should see
-it, so `VECTORIZE_BATCH` decodes it (IMPLEMENTED: it auto-detects a base64 string of
-little-endian float32 vs a JSON float array per embedding, and sends an `encoding` hint;
-bit-packed integer arrays ride the number path), and the model-specific response shape
-lives in the endpoint-configured extension, in one place (swap models = swap the decoder). The *representation
-it decodes to* is phase-separated, and reconciles composability with raw-bytes efficiency:
-- **Phase 0:** decode → a plain SQL++ **numeric array**. Composable (chain more SQL; reuse the
-  free array-based `VECTOR_DISTANCE`); jsonl storage. The compact-bytes optimization isn't
-  lost, just not yet applicable.
-- **Phase 1:** decoding to a float64 array then re-packing for Parquet is a wasteful round-trip
-  through the float64-boxed value layer. Instead carry the vector as **raw typed bytes + dtype**
-  (a cbq `binaryValue`) end-to-end: `VECTORIZE_BATCH` emits typed bytes → the columnar/Parquet
-  writer memcpy-stores them (no re-encode) → the **native `VECTOR_DISTANCE` port** reads them
-  directly → a boxed consumer that chains more SQL gets a **lazy decode** to a float64 array on
-  demand. So the hot store+search path never boxes; only ad-hoc chaining pays the decode —
-  pro-SQL++ composability AND raw-bytes storage coexist. (Constraint: the free `VECTOR_DISTANCE`
-  wants an `ARRAY`, so the typed-bytes fast path rides the *same* native `VECTOR_DISTANCE`
-  columnar/SIMD port already planned for perf — it now also serves zero-round-trip storage.
-  For decode perf, do the HTTP+decode in a Go host helper so goja never crunches big byte arrays.)
+**Who cracks the API response encoding — `VECTORIZE_BATCH`, always (it's transport, not a value
+type).** Embedding APIs may return `encoding_format:"base64"` (raw dtype bytes, base64'd) or
+bit-packed integer arrays. `VECTORIZE_BATCH` decodes it (IMPLEMENTED: auto-detects base64-LE-float32
+vs a JSON float array per embedding, sends an `encoding` hint; bit-packed integers ride the number
+path), so nobody downstream sees it. The representation it decodes to is phase-separated: **Phase
+0** decodes → a plain SQL++ numeric array (composable, jsonl storage); **Phase 1** carries raw typed
+bytes + dtype end-to-end (a cbq `binaryValue`): `VECTORIZE_BATCH` emits typed bytes → the writer
+memcpy-stores them (no re-encode) → the native kernel reads them directly → a boxed consumer that
+chains more SQL gets a **lazy decode** to a float64 array on demand. Hot store+search never boxes;
+only ad-hoc chaining pays the decode.
 
-**Does `VECTORIZE_BATCH` need output flags? Model-request knobs YES; a representation flag NO.**
-Two things get conflated as "output format":
-- **Model-request options (YES, in `opts`):** knobs the model/endpoint accepts that shape what
-  it RETURNS — `dimensions` (MRL truncation), a quantization/output-dtype request, an
-  `input_type`/`task` prefix (query vs document; nomic-embed *requires* one), normalization.
-  `VECTORIZE_BATCH` forwards them and reports the resulting `dtype`/`dim` as metadata. The wire
-  `encoding_format` (float vs base64) is **internal** — it picks the most efficient the endpoint
-  supports and decodes it; not a user knob.
-- **n1k1 output REPRESENTATION (NO flag):** array vs typed-bytes is resolved by the *consumer*
-  (byte-lane↔boxed boundary: raw bytes on store+search, lazy-decode to array when boxed SQL
-  chains on it), NOT a caller flag — a flag would re-introduce the very tradeoff the lazy-box
-  dissolves. So the signature stays stable `VECTORIZE_BATCH(texts, opts)` across Phase 0→1;
-  only the under-the-hood value evolves. (Assumes the lazy-decode-at-boxing-boundary gets built;
-  if infeasible, the fallback is a flag / a `VECTORIZE_BATCH_PACKED` sibling — but transparent
-  is the goal.)
+**No representation flag on `VECTORIZE_BATCH`.** Model-request knobs go in `opts` (YES): `dimensions`
+(MRL truncation), an output-dtype request, an `input_type`/`task` prefix (nomic-embed *requires*
+one), normalization — forwarded, with the resulting `dtype`/`dim` reported back; the wire
+`encoding_format` is internal. But the n1k1 output *representation* (array vs typed-bytes) is
+resolved by the *consumer* (byte-lane↔boxed boundary), NOT a caller flag — so the signature stays
+stable `VECTORIZE_BATCH(texts, opts)` across Phase 0→1; only the under-the-hood value evolves.
 
-## Storage & caching
+## Storage, caching, observability
 
-- **Side-file:** materialize vectors as a columnar/Parquet keyspace (fixed-width
-  `float32[dim]`; `dim` in the file's metadata, discovered at write or declared). Reuses
-  the Parquet-keyspace work. Vectors are usually far smaller than the source text.
-- **Caching mostly already exists.** `INSERT INTO <file>` default mode `"new"` opens with
-  `O_CREATE|O_EXCL` and **errors if the target already exists** (`glue/insert.go`). So the
-  cache check is free: the macro/CLI **names the destination by a config-address** of its
-  args — `vecs/<source>.<model>.<recipe-version>.jsonl` (computable at expand time from
-  `source`+`model`+`opts`) — and the INSERT's own error-if-exists *is* the skip: a wrapper
-  runs the generated `INSERT` and treats "target file already exists" as a **cache hit**
-  (or checks existence first). A macro can't touch the filesystem, but it doesn't need to —
-  it just produces the deterministic destination name; the existing INSERT semantics do the
-  rest. For a stronger data-level address (catch "the source changed"), cbq's existing
-  **`HASHBYTES(value, "sha256")`** is already available (verified — no new UDF needed), so a
-  user can content-address by actual bytes in SQL. Config-address (source + model + version
-  [+ mtime/size]) is cheap and adequate for dev.
-
-## Progress / observability
-
-Embedding is the slow step (ms/row), so a long `INSERT INTO vecs SELECT
-@vectorize_field(...)` wants progress feedback — and n1k1 already has the surface:
-**`.stats on`** draws a **live, in-place per-operator counter tree** (stderr) that updates
-*during* the run. The engine fires `Session.OnStats(*base.Stats)` at scan checkpoints
-(`YieldStats`, ~every 1024 rows, adaptively re-paced off wall-clock to a display-friendly
-rate; CLI redraws ≤10 Hz), including live in-flight `GROUP BY` aggregate partials. So the
-scan/group/project counters climb in real time; the final result reports the inserted row
-count. Custom-display hooks: `Session.OnStats` (paced) + `Session.OnRow` (per row,
-jsonlines). See DESIGN-stats.md.
-
-Caveats: (1) it's a **count/throughput readout, not a %-complete bar with ETA** — no total
-denominator is wired in. The pieces exist (a plan-time keyspace doc-count estimate; FTS
-`DocCount()`; columnar `Count`), so a real %+ETA via the `OnStats` hook is a small nicety,
-not built. (2) Progress advances **per checkpoint (between operator yields), not during an
-in-flight model call** — a `VECTORIZE_BATCH` HTTP round-trip that blocks stalls the footer
-for that batch, so smaller batches give smoother progress (more round-trips): a tuning knob.
+- **Side-file:** a columnar/Parquet vec keyspace (`dim` in the file metadata); reuses the
+  Parquet-keyspace work. Vectors are usually far smaller than the source text.
+- **Caching mostly already exists.** `INSERT INTO <file>` default mode `"new"` opens
+  `O_CREATE|O_EXCL` and **errors if the target exists** (`glue/insert.go`), so the cache check is
+  free: the macro/CLI names the destination by a **config-address** of its args
+  (`vecs/<source>.<model>.<version>.jsonl`, computable at expand time), and INSERT's own
+  error-if-exists *is* the skip. A macro can't touch the FS but doesn't need to. For a data-level
+  address ("the source changed"), cbq's existing `HASHBYTES(value,"sha256")` is available (no new
+  UDF).
+- **Progress:** embedding is the slow step (ms/row), so `.stats on` draws a live per-operator counter
+  tree (stderr, updates during the run via `Session.OnStats` at scan checkpoints; see
+  DESIGN-stats.md). Caveats: (1) it's a count/throughput readout, **not a %-complete bar** (no total
+  denominator wired, though the pieces exist); (2) progress advances **per checkpoint, not during an
+  in-flight model call** — a blocking `VECTORIZE_BATCH` HTTP round-trip stalls the footer for that
+  batch, so smaller batches give smoother progress (a tuning knob).
 
 ## The cgo fork in the road (deferred)
 
-An ANN index at ~10M+ vectors needs one of: (a) an opt-in `CGO_ENABLED=1` FAISS build
-variant (breaks the single pure-Go binary), (b) a **pure-Go HNSW** library (cgo-free,
-slower index build), or (c) a sidecar index process. **Decide later** — brute-force ships
-first and covers dev/debug scale.
+An ANN index at ~10M+ vectors needs one of: (a) an opt-in `CGO_ENABLED=1` FAISS build variant
+(breaks the single pure-Go binary), (b) a **pure-Go HNSW** library (cgo-free, slower build), or (c)
+a sidecar index process. **Decide later** — brute-force ships first and covers dev/debug scale.
 
 ## Phased plan
 
-- **Phase 0 — DONE (de-risk, cgo-free).** `VECTORIZE_BATCH(batch, opts)` native builtin
-  (`glue/vectorize.go`): offline deterministic vectors by default, real embeddings via a
-  pure-Go `net/http` POST (ollama `/api/embed` shape) when given an `endpoint`. The
-  `@vectorize_field` macro sugars the GROUP-BY-page + `ARRAY_AGG` + `UNNEST` batching. End
-  to end verified: `INSERT INTO vecs SELECT @vectorize_field(ks, …)` then
-  `ORDER BY VECTOR_DISTANCE(v.vec, $q, "cosine") ASC LIMIT k` (query vector via a `WITH`
-  alias / param, per the static-qvec rule). Vectors are plain SQL++ float64 arrays here;
-  columnar packing is Phase 1. Tests: `glue/vectorize_test.go` (fake + a stub-HTTP endpoint).
-- **Phase 1 (in progress):**
-  - **DONE:** real model via pure-Go `net/http` (Phase 0 already); **base64/bit-packed
-    response decode** (`VECTORIZE_BATCH` auto-detects a base64-float32 embedding + an
-    `encoding` request knob); content-addressed caching uses cbq's existing `HASHBYTES` +
-    `INSERT`-errors-if-exists (no `CONTENT_HASH` UDF needed).
-  - **DONE — native, unboxed `VECTOR_DISTANCE`** (`engine/expr_vector.go` +
-    `base.VectorDistanceVals`): byte-lane eval, no per-row `value.Value` array boxing;
-    differential-verified equal to boxed. ~1.6× + 50× fewer allocs on jsonl (kernel for the
-    columnar win).
-  - **DONE — the columnar float32 vector column + kernel** (was "the big remaining core").
-    A columnar float32 `VECTOR_DISTANCE` kernel (`base.VectorDistanceVFloat32` / `VecFloat32`)
-    reads an Arrow `List<float32>` column directly — no JSON parse — via `VectorColumnarScan`
-    / `maybeVectorColumnarFuse` (`glue/vector.go`) over a `VectorBatchSource`
-    (`records/vector_source.go`); measured ~15–100×. Its prerequisite also shipped: an
-    `INSERT INTO <name>.parquet` writer (`glue.parquetWriter`), so a vector column can be
-    materialized once and re-queried. And a computed `WITH` / `$param` qvec now lowers to the
-    columnar fast path too (≈ a literal qvec), so real queries — not just literal-qvec ones —
-    take it.
-- **Phase 2:** remote-source ingest (S3/Box/Drive/HF → local vector side-file); then the
-  ANN-index cgo decision, only if N demands.
+- **Phase 0 — DONE.** `VECTORIZE_BATCH(batch, opts)` (`glue/vectorize.go`: offline deterministic by
+  default, real embeddings via pure-Go `net/http` POST to an `endpoint`) + the `@vectorize_field`
+  macro (GROUP-BY-page + `ARRAY_AGG` + `UNNEST`). Vectors are plain float64 arrays here. Tests
+  `glue/vectorize_test.go` (fake + stub-HTTP).
+- **Phase 1 — largely DONE.** base64/bit-packed response decode; content-addressed caching via
+  `HASHBYTES` + INSERT-errors-if-exists; native unboxed `VECTOR_DISTANCE` (`base.VectorDistanceVals`,
+  differential-verified); the columnar float32 column + kernel (`base.VectorDistanceVFloat32` /
+  `VecFloat32` over `VectorBatchSource`, via `VectorColumnarScan` / `maybeVectorColumnarFuse`,
+  `glue/vector.go`), its prerequisite `INSERT INTO <name>.parquet` writer, and computed-qvec lowering
+  to the columnar fast path.
+- **Phase 2 — not started.** Remote-source ingest (S3/Box/Drive/HF → local vec side-file), then the
+  ANN-index cgo decision only if N demands.
 
 ## Future: signal-preserving preprocessing (log templating / dedup)
 
-Raw log lines are dominated by boilerplate (timestamps, hosts, PIDs, constant prefixes) and
-are highly *templated* — only a few tokens vary per line. Embed the raw line and the cruft
-dominates the vector: everything clusters, the real signal is lost. The standard fixes all
-fit n1k1's existing seams:
+Raw log lines are dominated by boilerplate (timestamps, hosts, PIDs) and are highly templated —
+embed the raw line and the cruft dominates the vector. Later-phase direction, riding existing seams:
+extract the `msg` field first (`*.extract.js`, strips boilerplate before embedding — most of the
+win); sample→learn→transform (reuse the index advisor's sampling seam to learn low-signal tokens via
+IDF / Drain-style template mining, then normalize per row — extract's describe/apply split); and
+**dedup by template** (`SELECT DISTINCT normalize(line)` → embed only the distinct set → join each
+row back to its template's vector — a quality *and* cost win, riding GROUP BY / DISTINCT +
+compute-once/cache).
 
-- **Extract the field first (cheapest, already here).** `*.extract.js` already frames a line
-  into typed fields — embed the `msg` field, not the whole raw line, so the timestamp/level
-  boilerplate is stripped *before* embedding. This alone is most of the win.
-- **Sample → learn → transform (mirrors extract's describe/apply split).** Reuse the index
-  advisor's sampling seam to sample the keyspace, then LEARN what's low-signal — token IDF
-  (down-weight tokens present in ~every line) and/or **log-template mining** (Drain/Spell-
-  style: separate the constant template from the variable params) — and derive a
-  normalization transform applied cheaply per row before `VECTORIZE_BATCH`. Sample-once to
-  build the spec, apply per-row: the exact shape of the extract phase.
-- **Dedup by template (a compute + storage win).** A repetitive log collapses to few
-  distinct normalized lines/templates. `SELECT DISTINCT normalize(line)` → embed only the
-  distinct set (e.g. 500 templates, not 1M lines) → join each row back to its template's
-  vector. Both a quality win (the template *is* the signal) and a large cost win (embed far
-  fewer texts), riding n1k1's existing GROUP BY / DISTINCT + the compute-once/cache
-  philosophy. Optionally keep a small per-line param delta for lines whose params matter.
-
-Later-phase direction, captured here — not Phase 0.
-
-## Prior art
-
-- **cbq/Couchbase:** provides the vector *index + search* (bleve + FAISS); embedding is
-  **BYO** — you store precomputed vectors. n1k1 inherits the functions, not the embedder.
-- **DuckDB:** `FLOAT[N]` + `array_cosine_similarity` (brute-force, fast) + `vss` HNSW for
-  scale; embedding via extension/UDF callout.
-- **pgvector:** `vector` type + ivfflat/hnsw; embedding via BYO / `pgai` callout.
-- **LanceDB:** columnar file + an **embedding-function registry** applied at write,
-  materialized into the file — the closest model to what we want, doable cgo-free.
-
-## Open questions
-
-1. ~~`UNNEST` support~~ — **VERIFIED** (works over computed `ARRAY_AGG` arrays).
-2. ~~Row-ordinal for paging~~ — **VERIFIED** (`ROW_NUMBER()` / `_meta.pos`).
-3. ~~`INSERT INTO` skip-if-present~~ — **RESOLVED**: mode `"new"` already errors-if-exists.
-4. ~~`VECTORIZE_BATCH` extension: goja↔native-`http.post` host binding + `{"fake":true}`
-   mode~~ — **DONE** (Phase 0).
-5. ~~Native-lane / columnar float32 port of `vectorDistance`~~ — **DONE** (native
-   `base.VectorDistanceVals` + columnar `VectorDistanceVFloat32`; Phase 1 perf).
-6. ~~Parquet encoding of a vector column~~ — **DONE**, shipped as a variable-length
-   Arrow `List<float32>` (not the originally-envisioned `FixedSizeList`); the columnar
-   kernel reads it directly (DESIGN-col).
+Prior art: cbq/Couchbase provides the vector *index+search* (bleve+FAISS), embedding is BYO;
+DuckDB `FLOAT[N]` + `array_cosine_similarity` + `vss` HNSW; pgvector + ivfflat/hnsw; **LanceDB**
+(columnar file + an embedding-function registry applied at write) is the closest model, doable
+cgo-free.
