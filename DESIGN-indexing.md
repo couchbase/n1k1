@@ -2,822 +2,269 @@
 
 ## Status & remaining TODOs
 
-_Last reviewed: 2026-07-23._
+_Last reviewed: 2026-07-25._
 
-**Done:** GSI-like **secondary indexes** (bbolt-backed, plus an in-memory backend
-for the WASM/opt-in build), **covering scans**, and **FTS via embedded bleve**
-(`SEARCH()`, score/meta, declared mappings, flex path) all ship — declared in
-`.n1k1/catalog.json`, advertised to cbq's planner by **wrapping** the file
-datastore (zero fork edits), controlled by the `-index=lazy|eager|off` flag and
-the `.index` dot-command family.
+GSI-like **secondary indexes** (bbolt-backed + an in-memory backend for WASM/opt-in),
+**covering scans**, and **FTS via embedded bleve** (`SEARCH()`, score/meta, declared
+mappings, flex path) all ship — declared in `.n1k1/catalog.json`, advertised to cbq's
+planner by **wrapping** the file datastore (zero fork edits), controlled by
+`-index=lazy|eager|off|mem` and the `.index` dot-command family. No dependency on cbft,
+cbgt, n1fty, or cbauth. Companion: `DESIGN-data.md`.
 
 **Remaining (headline TODOs):**
-- [ ] Incremental index maintenance (insert/update/delete) — v1 is
-  rebuild-on-open, gated by a coarse file-count + newest-mtime freshness
-  signature (`.index rebuild` forces it).
-- [ ] Predicated `COUNT(*)` / `CountIndex` pushdown — blocked on exact-spans;
-  `Index2` proved necessary but not sufficient (two prototypes reverted).
-- [ ] Array/object index shapes (`ARRAY … FOR … END`, `ANY`/`UNNEST`) — not
-  supported; the advisor skips any path crossing an array.
-- [ ] Secondary indexes require the classic `<ns>/<keyspace>` directory layout;
-  flat / single-file / glob layouts advertise no secondary index (`.index
-  create` refuses a flat datastore).
-- [ ] Eager wildcard GSI + adaptive auto-index (`.index auto`) — need fork-side
-  planner work / workload logging (research items, §9).
-- [x] Per-field FTS analyzers/types — a `kind:fts` def can now carry a raw bleve
-  index-mapping JSON (`"mapping"`) for full control (analyzers, per-field types,
-  custom analyzers). The `"keys"` shorthand (map these fields as text) remains for
-  the common case. *Remaining:* a `.index create` DSL for mappings (JSON only for
-  now) and analyzer-aware flex translation.
-- [ ] `CREATE`/`DROP INDEX` DDL unwired — define/edit via `catalog.json`.
+- [ ] Incremental index maintenance (insert/update/delete) — v1 is rebuild-on-open, gated by
+  a coarse (file-count + newest-mtime) freshness signature (`.index rebuild` forces it).
+- [ ] Predicated `COUNT(*)` / `CountIndex` pushdown — **blocked on exact-spans** (`Index2`
+  proved necessary but not sufficient; two prototypes reverted — see §COUNT).
+- [ ] Array/object index shapes (`ARRAY … FOR … END`, `ANY`/`UNNEST`) — unsupported; the
+  advisor skips any path crossing an array.
+- [ ] Secondary indexes require the classic `<ns>/<keyspace>` directory layout; flat/
+  single-file/glob layouts advertise none (`.index create` refuses a flat datastore).
+- [ ] Eager wildcard GSI + adaptive auto-index (`.index auto`) — need fork-side planner work /
+  workload logging (research, §"index everything").
+- [ ] `CREATE`/`DROP INDEX` DDL unwired (`VisitCreateIndex` = `NA()`) — define via `catalog.json`.
 - [ ] Fingerprint / zone-map manifest + O(1) `COUNT` from `doc_count` metadata.
+- [x] Per-field FTS analyzers/types — a `kind:fts` def can carry a raw bleve index-mapping JSON
+  (`"mapping"`); the `"keys"` shorthand (map these fields as text) stays for the common case.
+  *Remaining:* a `.index create` DSL for mappings (JSON only) + analyzer-aware flex translation.
 
-Companion: `DESIGN-data.md`.
+## Core mechanism
 
-## Overview
-
-Adds index support to n1k1's standalone SQL++ CLI (`cmd/n1k1`): a GSI-like
-**secondary index** (bbolt-backed) and a **full-text index** via embedded
-**bleve** — with no dependency on cbft, cbgt, n1fty, or cbauth.
-
-Core mechanism (state ONCE): n1k1 takes cbq's *plan* but owns *execution*.
-cbq's planner selects indexes purely from **what the datastore advertises**, so
-n1k1 advertises n1k1-built index objects by **wrapping** the file datastore and
-runs their scans over its own `[]byte` engine — needing **zero fork edits**.
-
-## Contents
-
-1. Implementation status
-2. Motivation
-3. Background: how index selection works
-4. Where the code lives (thin hook seams)
-5. CLI control (build timing & introspection)
-6. Phase 1 — GSI-like secondary index
-7. Phase 2 — FTS via embedded bleve
-8. Sidecar layout (`.n1k1/`)
-9. "Index everything": dynamic / wildcard / automatic indexes
-10. COUNT(*) / count-scan pushdown
-11. Verification
-12. Risks & open questions
-13. Affected files
-14. Dependency licensing
-
----
-
-## 1. Implementation status
-
-### Phase 1 — GSI-like secondary index (shipped)
-
-**Zero changes to the `n1k1-query` fork.** The cbq planner collects candidate
-indexes by iterating every indexer from `keyspace.Indexers()`
-(`planner/build_scan.go:allIndexes`), so n1k1 advertises a secondary index by
-**wrapping** the file datastore's keyspaces to append an extra indexer. The
-fork-seam design in §4 is superseded for Phase 1 — kept only as an alternative.
-
-Naming: a **local secondary index** ("si"), not Couchbase Server's GSI service.
-Code uses the `si` prefix (`glue/idx_si.go`, `idx_si_encode.go`,
-`idx_si_catalog.go`, type `secondaryIndex`, sidecar `<name>__si__<defhash>`); it
-advertises `Type() == datastore.GSI` (cbq's enum for an ordered range secondary
-index, which drives sargability) — distinct from the GSI *service*.
-
-Landed n1k1-side (all `//go:build n1ql`):
-
-- **`glue/idx_si_encode.go`** — order-preserving, self-delimiting key encoding of
-  `value.Value` scalars (type-tag + payload). Numbers use the IEEE-754
-  order-preserving transform; strings/containers use `0x00`-escaped bytes. bbolt
-  byte order == N1QL collation order, so a real `Cursor.Seek` prunes range scans.
-- **`glue/idx_si_catalog.go`** — reads `.n1k1/catalog.json`
-  `{ "indexes": [ { name, namespace?, keyspace, keys[], where? } ] }`, parsing
-  key/where strings via `n1ql.ParseExpression`. Missing sidecar ⇒ no indexes.
-  `defHash` = short hash of the normalized def.
-- **`glue/idx_si.go`** — the `secondaryIndex` (`datastore.Index`) + read-only
-  `siIndexer` (`datastore.GSI`), advertised by wrapping the datastore
-  (`maybeSecondaryIndexes`, wired in `FileStore`). bbolt-backed; rebuild-on-open
-  validated by a **source signature** (file count + newest mtime). A
-  process-global cache keyed by bbolt path opens/builds each index once (bbolt
-  takes an exclusive file lock, so re-opening per Store would deadlock). Build
-  scans the keyspace via `records.Walk`, evals key/where exprs per doc, inserts
-  `encode(keyValues)+docID`.
-- **Read path reused as-is.** `conv.go:VisitIndexScan` → `datastore-scan-index`
-  → `DatastoreScanIndex` → `secondaryIndex.Scan` yields docIDs; the following
-  Fetch reads docs via the keyspace's `Fetch` (`test/secondary_index_test.go`).
-
-**Composite (multi-key) indexes work** (`keys: ["region","product"]`): the
-self-delimiting encoding makes prefix matching correct, so leading-key-only,
-full-key, leading+range, and IN predicates all use the index
-(`TestSecondaryIndexComposite`). Per-component boundary exactness is
-approximate, but the always-present residual `Filter` enforces the exact
-predicate — correct, occasionally a slightly wider walk.
-
-### Phase 2 — FTS via embedded bleve (shipped)
-
-`SELECT … WHERE SEARCH(ks, "query")` runs locally against a `kind: fts` bleve
-index (§7). Also shipped: `SEARCH_SCORE()`/`SEARCH_META()` surfacing, declared
-field mappings, and the `SargableFlex` implicit-predicate flex path.
-
-`DatastoreScanFTS` fetches each bleve hit through n1k1's byte-path reader (the same
-container/native dispatch as `datastore-fetch`), NOT cbq's `Keyspace.Fetch` — because
-an FTS hit id is a framing RECORD id, which for a multi-record file is a container id
-(`<relpath>#<line>@<offset>`) that cbq's Fetch can't resolve. Fetching via
-`Keyspace.Fetch` had silently returned zero rows on every multi-record keyspace (and
-made an FTS index turn flex-served equality predicates into empty results) — IDEA-0030.
-
-`SEARCH(<keyspace-name>, "q")` (naming the keyspace rather than its FROM alias, which cbq
-resolves to `field=""` = whole-doc) is handed to us as `field=<keyspace-name>` — a bleve
-field named after the keyspace, which no document has. `bleveQuery` treats `field ==
-<keyspace name>` as the whole-keyspace search it means; otherwise a match query found
-nothing, so row-emitting projections silently returned 0 while COUNT still worked — the
-"counts but can't fetch" split (IDEA-0033). A genuine field-scoped `SEARCH(alias.field,…)`
-is unaffected.
-
-**Analyzer + wildcard/prefix/fuzzy (IDEA-0035).** The dynamic mapping uses bleve's default
-(standard) analyzer: each string value is one whole token, lowercased — so `SEARCH` matching
-is case-insensitive but NOT substring (`"seqnoWaitingStarted"` matches, `"waiting"` does not).
-Whole-doc `SEARCH(ks, "x*")` already routed through bleve's query-string parser (prefix `x*`,
-wildcard `a*b`/`a?b`, fuzzy `x~`/`x~2`). Field-scoped `SEARCH(ks.field, …)` used a match query
-(analyzed, no wildcards) → a field-scoped `x*` matched nothing; `fieldStringQuery` now detects
-those markers and builds the corresponding bleve term query (Prefix/Wildcard/Fuzzy), lowercased
-to match the case-insensitive index — bringing field-scoped SEARCH to parity with whole-doc.
-
-### In-memory secondary-index backend (shipped)
-
-`glue/idx_mem.go` is a bbolt-free alternative backend: it reuses everything
-storage-independent from the bbolt path (catalog defs, the order-preserving key
-encoding, the span-scan comparison, the engine dispatch interface) and swaps the
-B+tree for a sorted `[]entry` built by one keyspace scan and binary-searched per
-span. It is the **only** secondary-index path in the WASM/browser build (which
-excludes bbolt — `glue/idx_wasm.go`) and an opt-in native path via
-`SecondaryIndexMode = "mem"`. Same freshness model, process-wide cache
-(`TestMemIndex*`).
-
-### Learnings that changed the plan
-
-- **Covering scans (biggest surprise).** cbq turns a query whose
-  projected/filtered fields are all index keys + `META().id` into a covering
-  `IndexScan` with no Fetch, rewriting field refs into `expression.Cover` nodes
-  that read a per-value cover slot n1k1 never fills → every field came back
-  MISSING. Covering is on by default and can't be disabled without a fork edit.
-  Fixes, entirely n1k1-side: `glue/expr.go:stripCovers` peels every
-  `expression.Cover` to its underlying expression before eval. **True covering
-  execution is shipped**: when the index is *coverable* (`indexDef.coverable` —
-  every key a plain field ref, no filter-covers), `VisitIndexScan` emits a
-  **`datastore-scan-index-cover`** op that reconstructs the projected doc from
-  the decoded index-key values (`si.go` sets `IndexEntry.EntryKey`;
-  `datastore_scan.go:reconstructCoverDoc` rebuilds `{field: value}`, nested paths
-  included) — **no fetch**. A non-coverable covering scan (expression key like
-  `LOWER(name)`, partial index, or non-n1k1 index) falls back to scan+fetch:
-  `VisitIndexScan` synthesizes a `datastore-fetch` when `len(Covers())>0`. n1k1
-  has no cover slots on its `[]byte` rows, so doc-reconstruction (not cbq's
-  `SetCover`) realizes covering (`TestSecondaryIndexCovering`).
-- **Multi-span sender close.** `DatastoreScanIndex` ran a goroutine per span,
-  each `Close`-ing the shared sender — so an IN-list / same-field-OR /
-  `DistinctScan` had the first span truncate the drain. Now all spans run in one
-  goroutine sharing the sender, closed once, deduping docIDs
-  (`secondaryIndex.scanSpan`).
-- **Intersect/Union/Distinct scans.** A predicate over two indexed fields makes
-  the planner emit `IntersectScan` (AND), `UnionScan` (OR), or `DistinctScan`
-  (same-field OR / IN). Handled in `conv.go`: `IntersectScan`/
-  `OrderedIntersectScan` → convert the **first** child, residual Filter enforces
-  the rest (a superset the Filter narrows); `UnionScan` → fall back to a full
-  records scan + Filter (can't drop an OR branch); `DistinctScan` → convert the
-  inner scan (spans disjoint).
-- **Build/scan number-encoding must agree.** A JSON number reaches build vs
-  predicate-bound paths as different Go types (`float64` vs `int64`); `toFloat64`
-  must handle both, or numeric scans return nothing.
-
-### Not yet built (proposal below)
-
-- Incremental index maintenance (insert/update/delete).
-- A fingerprint / zone-map manifest.
-- Predicated `CountIndex` pushdown (blocked on exact-spans — §10).
-
-### Known v1 limitations
-
-- Freshness is a coarse (file count, newest-mtime) signature; a change keeping
-  both identical won't trigger a rebuild — run `.index rebuild`.
-- Array/object index *values* sort by byte order, not collation (fine —
-  predicates range over scalars).
-
----
-
-## 2. Motivation
-
-Today every n1k1 query over the file datastore is a full primary scan + residual
-filter. We want the planner to use an index when one applies — in-process, no FTS
-cluster or GSI service — so selective queries don't read the whole keyspace.
-
----
-
-## 3. Background: how index selection works
-
-> **n1k1 takes cbq's *plan*, not its runtime.** `glue/stmt.go:PlanStatement`
-> calls cbq's real `planner.Build()`, so index selection is decided entirely by
-> cbq's planner, driven by what the datastore advertises through the
-> `Keyspace → Indexer → Index` / `FTSIndex` interface tree
-> (`datastore/index.go`). n1k1 **replaces cbq's execution runtime** with its own
-> `base.Op` engine over `base.Val = []byte`. The fork is a source of *plans* +
-> index metadata; n1k1 owns execution.
-
-Pipeline (`glue/session.go:Run`):
-
+n1k1 takes cbq's **plan**, not its runtime: `PlanStatement` calls the real `planner.Build()`,
+so index selection is decided entirely by cbq's planner from **what the datastore advertises**
+(`Keyspace → Indexer → Index`/`FTSIndex`). n1k1 advertises n1k1-built index objects by
+**wrapping** the file datastore's keyspaces (appending an extra indexer) and runs their scans
+over its own `[]byte` engine — **zero fork edits**. (A `datastore/file/file.go` `var`-hook seam
+was the original design; it's superseded by wrapping and kept only as a fallback.) Pipeline:
 ```
-SQL++ → ParseStatement → algebra.Statement
-      → PlanStatement (cbq planner.Build) → plan.Operator tree
-      → conv.go (plan.Visitor) → base.Op tree
-      → engine.ExecOp → glue datastore-scan/fetch ops → rows
+SQL++ → ParseStatement → PlanStatement (cbq planner.Build) → plan.Operator tree
+      → conv.go (plan.Visitor) → base.Op tree → engine.ExecOp → glue scan/fetch ops → rows
 ```
+Plan-op selection is by interface assertion (`planner/spans_term.go:CreateScan`): an index
+implementing only base `datastore.Index` forces `plan.IndexScan`, which `conv.go:VisitIndexScan`
+already converts (`IndexApiVersion` is irrelevant — the interface gates the choice). GSI
+sargability is core-planner (`RangeKey()` expressions); FTS sargability is externalized in
+`datastore.FTSIndex` (a small in-process shim replaces n1fty's remote-cbft executor with
+`bleve.Index.Search()`).
 
-Giving the planner an index is a matter of the datastore advertising one:
+## Secondary index (`si`)
 
-- `planner/build_scan_secondary.go:sargableIndexes()` reads each
-  `index.RangeKey()` and calls `SargableFor(pred, …)`: DNF-normalizes `WHERE`,
-  matches it against the index's key expressions (honoring the partial-index
-  `Condition()`), builds `datastore.Span`s, emits `IndexScan` + `Fetch` +
-  residual `Filter`.
-- **GSI sargability is built into the core planner** — only the index's
-  `RangeKey()` expressions are needed.
-- **FTS sargability is externalized** into `datastore.FTSIndex` (`Sargable` /
-  `SargableFlex` / `Pageable`); a small in-process shim suffices.
+A **local** secondary index (`glue/idx_si*.go`, type `secondaryIndex`), advertising
+`Type()==datastore.GSI` (cbq's ordered-range enum that drives sargability) — distinct from the
+GSI *service*.
 
-### Why n1fty is not required
+- **Key encoding** (`idx_si_encode.go`) — order-preserving, self-delimiting: each bbolt key is
+  `encode(keyValue) + 0x00 + docID` (numbers via the IEEE-754 order-preserving transform;
+  strings/containers `0x00`-escaped). **bbolt byte order == N1QL collation order, so a real
+  `Cursor.Seek` prunes range scans.** ⚠ **Collation correctness is the highest-risk area** — the
+  always-present residual `Filter` enforces the exact predicate, so boundary imprecision is a
+  slightly-wider walk, never a wrong answer.
+- **Catalog** (`idx_si_catalog.go`) — `.n1k1/catalog.json` `{indexes:[{name, keyspace, keys[],
+  where?}]}`, parsed via `n1ql.ParseExpression`; `defHash` = short hash of the normalized def.
+  Missing sidecar ⇒ no indexes.
+- **Storage: bbolt** (`go.etcd.io/bbolt`, MIT) — B+tree, persistent, `Cursor.Seek`/`Next` give
+  the ordered iteration `Scan()` needs, one file per index. (rhmap rejected — `Visit` is
+  hash-bucket order, no range scans. Columnar formats are for *coarse* pruning [zone maps,
+  `DESIGN-data.md §5`], not an ordered secondary index.)
+- **In-memory backend** (`idx_mem.go`) — bbolt-free: reuses the catalog/encoding/span-scan/
+  dispatch, swaps the B+tree for a sorted `[]entry` binary-searched per span. The **only** path
+  in the WASM build (`idx_wasm.go`) and opt-in natively (`SecondaryIndexMode="mem"`).
+- **Build = rebuild-on-open (v1):** a full `records.Walk` scan evals key/where exprs per doc and
+  inserts `encode(keyValues)+docID`, validated by a **source signature** (file count + newest
+  mtime). ⚠ Freshness is coarse — a change keeping both identical won't rebuild; `.index
+  rebuild` forces it. A **process-global cache keyed by bbolt path** opens/builds each index
+  once (bbolt takes an exclusive file lock, so re-opening per Store would deadlock).
+- **`Scan()` contract:** `defer conn.Sender().Close()`; `Seek` to `span.Range.Low`; iterate
+  ascending; decode key, stop at `High`, honor `Inclusion` via `Collate`; `SendEntry(&IndexEntry{
+  PrimaryKey: docID})`; respect `limit`. `EntryKey` is filled only for a covering scan.
+- **Composite (multi-key) indexes work** — the self-delimiting encoding makes prefix matching
+  correct, so leading-key-only / full-key / leading+range / IN predicates all use the index.
 
-n1fty bundles (1) planner-facing sargability/metadata (`datastore.FTSIndex`) and
-(2) a runtime executor shipping requests to a remote **cbft** cluster. Only the
-*shape* of (1) is needed; (2) is replaced by in-process `bleve.Index.Search()`.
-So cbft, cbgt, n1fty, and cbauth drop out.
+⚠ **Hard-won footguns (learnings that changed the plan):**
+- **Covering scans (the biggest surprise).** cbq turns a query whose projected/filtered fields
+  are all index keys + `META().id` into a **covering `IndexScan` with no Fetch**, rewriting
+  field refs into `expression.Cover` nodes that read a per-value cover slot n1k1 never fills →
+  **every field came back MISSING**. Covering is on by default, undisableable without a fork
+  edit. Fixes, n1k1-side: `glue/expr.go:stripCovers` peels every `Cover` to its underlying
+  expr before eval; and **true covering execution ships** — when the index is *coverable*
+  (`indexDef.coverable` — every key a plain field ref, no filter-covers), `VisitIndexScan` emits
+  a **`datastore-scan-index-cover`** op that reconstructs the projected doc from the decoded
+  index-key values (`reconstructCoverDoc`), **no fetch**. A non-coverable covering scan
+  (expression key like `LOWER(name)`, partial index, non-n1k1 index) falls back to scan+fetch
+  (`VisitIndexScan` synthesizes a `datastore-fetch` when `len(Covers())>0`).
+- **Multi-span sender close.** `DatastoreScanIndex` used to run a goroutine per span, each
+  `Close`-ing the shared sender → an IN-list / same-field-OR / `DistinctScan` had the first span
+  truncate the drain. Now all spans run in **one goroutine** sharing the sender, closed once,
+  deduping docIDs (`secondaryIndex.scanSpan`).
+- **Build/scan number-encoding must agree.** A JSON number reaches build vs predicate-bound
+  paths as different Go types (`float64` vs `int64`); `toFloat64` must handle both, or numeric
+  scans return nothing.
+- **Intersect/Union/Distinct scans.** A predicate over two indexed fields makes the planner emit
+  `IntersectScan` (AND) / `UnionScan` (OR) / `DistinctScan` (same-field OR/IN). In `conv.go`:
+  Intersect → convert the **first** child, residual `Filter` enforces the rest (a superset the
+  Filter narrows); Union → fall back to a full records scan + Filter (can't drop an OR branch);
+  Distinct → convert the inner scan (spans disjoint).
 
-### What already exists
+## FTS via embedded bleve (`idx_fts.go`)
 
-- **Execution glue.** `glue/datastore.go` routes `"datastore-scan-index"` →
-  `glue/datastore_scan.go:DatastoreScanIndex`, which evaluates `plan.Span`s,
-  calls `scan.Index().Scan(...)`, drains `conn.Sender().GetEntry()`, and yields
-  `entry.PrimaryKey` to `datastore-fetch`. No read-path changes needed.
-- **Plan-op selection is by interface assertion.** `planner/spans_term.go:
-  CreateScan` emits `plan.IndexScan3` only for a `datastore.Index3`, `IndexScan2`
-  only for `Index2`, else base `plan.IndexScan`. So an index implementing only
-  base `datastore.Index` forces `plan.IndexScan` — which `conv.go:VisitIndexScan`
-  already converts. `IndexApiVersion` stays `INDEX_API_MAX` (irrelevant; the
-  interface gates the choice).
-- **The file datastore lives in an editable fork.** `github.com/couchbase/query`
-  is `replace`d with `github.com/couchbase/n1k1-query` at `../n1k1-query`. The
-  file datastore is `datastore/file/file.go`; its `fileIndexer` owns
-  `indexes map[string]datastore.Index` and a `primaryIndex` to model from.
-  `fileIndexer.Indexes()` originally returned only `fi.primary`.
-- **CREATE INDEX DDL is not wired** (`conv.go:VisitCreateIndex` returns `NA()`);
-  v1 defines indexes via the sidecar catalog.
+`SELECT … WHERE SEARCH(ks, "q")` runs against an embedded `bleve.Index` (built from a full scan
+on open, same freshness check) — no cbft/n1fty, zero fork edits (set `useFts=true` in `stmt.go`,
+provide the `datastore.FTSIndex` shim). `Sargable` returns `exact=true` so the planner drops the
+residual predicate; `Search` pushes `IndexEntry{PrimaryKey: hit.ID, MetaData: hit.Score}`.
+`VisitIndexFtsSearch` emits one `datastore-scan-fts`.
 
----
+⚠ **`DatastoreScanFTS` fetches the matching docs ITSELF** (not via a following `plan.Fetch`),
+for two reasons, each a shipped fix:
+- **The hit score is only available at the scan** and would be lost across a separate fetch — so
+  `VisitFetch` passes through after an FTS scan. Score/meta ride the `^smeta` label (bound under
+  `value.ATT_SMETA` by `ConvertVals`) so `SEARCH_SCORE`/`SEARCH_META` read it.
+- **An FTS hit id is a framing RECORD id** — for a multi-record file a container id
+  (`<relpath>#<line>@<offset>`) that cbq's `Keyspace.Fetch` **can't resolve**. Fetching via
+  `Keyspace.Fetch` silently returned zero rows on every multi-record keyspace (and made an FTS
+  index turn flex-served equality predicates into empty results) — **IDEA-0030**; the fix uses
+  n1k1's byte-path reader (same container/native dispatch as `datastore-fetch`).
 
-## 4. Where the code lives (fork-seam alternative — superseded)
+Two more shipped gotchas: **`SEARCH(<keyspace-name>, "q")`** (naming the keyspace, not its FROM
+alias) is handed to us as `field=<keyspace-name>`, a field no doc has → row-emitting projections
+silently returned 0 while COUNT worked ("counts but can't fetch", **IDEA-0033**); `bleveQuery`
+now treats `field == <keyspace name>` as the whole-keyspace search it means. And **field-scoped
+wildcard/prefix/fuzzy** (`SEARCH(ks.field, "x*")`, **IDEA-0035**): the dynamic mapping's default
+(standard) analyzer makes each string one whole lowercased token (case-insensitive but not
+substring); whole-doc `x*` already routed through bleve's query-string parser, but field-scoped
+used a match query (no wildcards) → matched nothing; `fieldStringQuery` now detects the markers
+and builds the Prefix/Wildcard/Fuzzy term query, lowercased to match.
 
-**Superseded by datastore wrapping (§1), which needs zero fork edits.** The
-original proposal instead added two `var` hook seams in the fork's
-`datastore/file/file.go`: `var SecondaryIndexes func(datastore.Keyspace)
-[]datastore.Index` (merged into `fileIndexer.Indexes()`/`IndexBy*`) and `var
-ExtraIndexers func(datastore.Keyspace) []datastore.Indexer` (appended in
-`keyspace.Indexers()` for FTS). Since `datastore.Index`/`Indexer`/`FTSIndex` are
-structural Go interfaces `glue` implements, all real logic still lived in n1k1;
-the seams only advertised them. Kept as a fallback if wrapping ever proves
-insufficient.
+**Mappings:** empty `keys` = dynamic (index every field); listed `keys` build a non-dynamic
+mapping (nested dotted paths → sub-documents). A def may instead carry a **`"mapping"`** field
+= raw bleve index-mapping JSON (full analyzer/per-field-type control; mutually exclusive with
+`keys`, fts-only). The catalog file stays bleve-free (WASM-included) — it holds the raw bytes and
+validates them through the `ftsMappingAnalyze` hook `idx_fts.go` registers (which also derives
+the mapped-field set + dynamic flag `fieldIndexed` needs for flex; conservative — a false
+positive drops valid rows). Mapping bytes fold into `defHash` (editing triggers a rebuild).
 
----
+**Flex / implicit predicates:** `SargableFlex` lets a plain `WHERE` (no explicit `SEARCH()`) be
+served by bleve — it translates the sargable part (`Eq`/`LT`/`LE`, `AND`/`OR`; `>`/`>=`→swapped)
+into a bleve query DSL, wrapped as synthetic `SEARCH(ks, <query>)`. ⚠ **Correctness is
+independent of translation precision:** we never set `FTS_FLEXINDEX_EXACT`, so the planner keeps
+the original predicate in the residual `Filter` (which n1k1 re-evaluates) — the bleve query need
+only be a *superset*. An `AND` may drop an untranslatable conjunct (still a superset); an `OR`
+bails if any disjunct is untranslatable; a wholly untranslatable predicate → records scan.
 
-## 5. CLI control (build timing & introspection)
+## CLI control
 
-Index lifecycle is build-on-first-use, so the CLI exposes controls. All live in
-n1k1 (`cmd/n1k1`, `glue/idx_si.go`); the fork is untouched.
+`-index=lazy|eager|off|mem` (process-global `glue.SecondaryIndexMode`, re-read per
+`maybeSecondaryIndexes`; all give identical *results*, differing in build *timing*): **`lazy`**
+(default — build each on first use); **`eager`** (build every catalog index up front, concurrent
+one-worker-per-CPU via a per-path `indexSlot` — a `once` opens the OS-lock-contended bbolt file,
+a per-slot mutex serializes rebuilds; streams `IndexBuildEvent`s to a live per-index TTY bar);
+**`off`** (unwrap the datastore — the A/B baseline + escape hatch); **`mem`** (the in-memory
+backend; not on the flag, set programmatically / forced by WASM).
 
-### `-index=eager|lazy|off` — *when* catalog indexes build
+`.index` family: `list` (one line per index, builds any not-yet-built for live stats), `show
+<name>`, `rebuild [<name>]` (force past the freshness signature), `suggest [<keyspace>]` (the
+advisor — samples docs, prints an editable `catalog.json` fragment; a `gsi` def for selective
+scalar fields, a `kind:fts` def for text fields, each tagged with a `why` the loader ignores),
+`create …` (DSL or JSON fragment — appends to `catalog.json` and builds; explicit user intent,
+so writing the catalog is fine — the single-writer rule bars only *background* rewriting),
+`help`. Per-index knobs (collation, value-size cap, `defer`, CBO stats) belong in `catalog.json`
+(properties of a def), not flags.
 
-Via process-global `glue.SecondaryIndexMode` (re-read on every
-`maybeSecondaryIndexes`). All three give identical *results* (builds cached +
-freshness-validated); they trade off build *timing*:
+## Sidecar layout (`.n1k1/`)
 
-- **`lazy`** (default) — advertise indexes; each builds on first use. Normal use.
-- **`eager`** — `EagerBuildSecondaryIndexes` builds *every* catalog index up
-  front (clean `-timer` benchmarks; surfaces build errors early). Builds run
-  **concurrently** (one worker per CPU, capped at index count) — each index is an
-  independent bbolt file. The open/build cache is a per-path `indexSlot` (a `once`
-  opens the OS-lock-contended bbolt file; a per-slot mutex serializes that index's
-  rebuilds), so different indexes build in parallel and the same index never
-  double-opens. Progress streams as `IndexBuildEvent`s to an optional reporter;
-  the CLI renders a live per-index bar on a TTY (`cmd/n1k1/indexprogress.go`), or
-  one line per finished index when piped. Bar denominator is the source **file
-  count** (exact for one-doc-per-file; a lower bound otherwise).
-- **`off`** — `maybeSecondaryIndexes` returns the datastore unwrapped; no index
-  advertised, planner always primary/records-scans. The A/B baseline + escape
-  hatch.
-- **`mem`** — same results as `lazy`, but backed by the in-memory index
-  (`idx_mem.go`) instead of bbolt. Not exposed via the `-index` flag; set
-  programmatically (the WASM build forces it; opt-in natively via
-  `glue.SecondaryIndexMode = "mem"`).
-
-### `.index` command family
-
-- **`.index list`** (bare `.index`; `.indexes` alias) — one line per index:
-  `ns:keyspace.name (keys…) [WHERE …] [N entries, SIZE]`, opening/building any
-  not-yet-built index for live bbolt stats (`Bucket.Stats().KeyN`, `os.Stat`).
-  "disabled" under `-index=off`. Doubles as "build now".
-- **`.index show <name>`** — full detail of one index (keyspace, keys, WHERE,
-  entries, size, on-disk path).
-- **`.index rebuild [<name>]`** — force-rebuild regardless of freshness signature
-  (`glue.RebuildSecondaryIndexes` → `buildIndexesConcurrent(force=true)`). Escape
-  hatch for the coarse freshness check without deleting the `.n1k1` artifact.
-- **`.index help`** (alias `example`) — subcommand syntax + a copy-pasteable
-  `catalog.json` example.
-- **`.index suggest [<keyspace>]`** — the advisor (§9): samples docs, prints an
-  editable `catalog.json` fragment (each def carries a `why` the loader ignores).
-  Advises **both types by query shape**: a `gsi` index for selective scalar
-  (`nested-no-array`) fields, a `kind:fts` index for text fields (multi-word/long
-  strings, poor b-tree keys). A field fitting both yields both suggestions, each
-  tagged. With ≥2 text fields, also suggests a whole-keyspace dynamic FTS. Dedup
-  is per-kind (`glue.SuggestIndexes`, `idx_si_suggest.go`).
-- **`.index create ...`** — add def(s) to `catalog.json` and build. Two forms: a
-  DSL `.index create <name> on <keyspace> (<expr>[, <expr>]) [where <expr>]`, or
-  a JSON fragment `.index create {"indexes":[…]}` (pastes back `.index suggest`
-  output; `why` accepted and dropped on write). Validates, merges (dup names
-  rejected; won't clobber other sections), re-opens, builds
-  (`glue.CatalogAddIndexes`). Explicit user intent, so writing the catalog is
-  fine (single-writer rule bars only *background* rewriting).
-
-### Design stance on scope
-
-Per-index knobs (collation, value-size cap + truncation marker, `defer`, CBO
-stats) belong in `catalog.json` — properties of a definition, the single-writer
-source of truth (§8). Flags/dot-commands are reserved for process-wide
-timing/introspection/lifecycle. DDL (`CREATE/DROP INDEX`) stays unwired in v1.
-
----
-
-## 6. Phase 1 — GSI-like secondary index
-
-Phase 1 code lives in **n1k1** (`secondaryIndex` type, build, sidecar loading),
-wired by wrapping the datastore (§1). `bbolt` becomes a direct n1k1 require.
-
-### Storage backing: `go.etcd.io/bbolt`
-
-- **rhmap — rejected.** `RHStore.Visit` iterates in hash-bucket order, not key
-  order → no range scans.
-- **bbolt — chosen.** B+tree, persistent; `Cursor.Seek`/`Next` give the ordered
-  range iteration `Scan()` needs; one file per index; already in the module graph
-  (`v1.4.0`, promoted to direct). moss is a viable but heavier (LSM/compaction)
-  alternative not needed for a read-mostly index.
-
-**Key encoding** (self-delimiting, stated once): each bbolt key is
-`encode(keyValue) + 0x00 + docID` — the `0x00`-delimited docID suffix
-disambiguates duplicate secondary values and is always recoverable; value is
-empty. The shipped `idx_si_encode.go` is order-preserving, so bbolt byte order
-matches collation order and `Cursor.Seek` prunes directly. **Collation
-correctness is the highest-risk area.**
-
-### Why not Parquet/Iceberg/Delta as the index store?
-
-Use them for **coarse pruning**, not the fine-grained ordered index:
-
-- **Clustered / data-skipping** (coarse, format-native): Parquet/ORC footer
-  min/max, page/column index, bloom filters; Iceberg/Delta manifests + Puffin.
-  This is the "index-everything-lite" tier (§9) / the manifest zone-maps in
-  `DESIGN-data.md §5` — no cbq planner changes (pruning is a scan-layer concern).
-- **Secondary, non-clustered, ordered index** (GSI/b-tree): a compact
-  `key → docID` map with O(log n) seek to an arbitrary key. Columnar formats are
-  **not** a substitute — pruning granularity is row-group/page/file, files are
-  immutable, no columnar spec has an ordered-secondary-index. **bbolt is the right
-  tool.** (Avro is row-oriented — for logs/manifests, not indexes.)
-
-Use columnar libraries to *help build* bbolt: (1) Arrow projection pushdown reads
-only the key column + row locator; (2) Iceberg manifests/Puffin as change-detection
-+ zone-map layer; (3) for columnar sources the docID is `file#row_position`.
-
-### Index definition & build (sidecar)
-
-- **Definition:** `.n1k1/catalog.json` (canonical),
-  `[{ "name", "keys": ["expr", …], "where"? }]` — §8 for the full `.n1k1/` scheme.
-- **Load:** parse each key/where string with the n1ql parser, return
-  `secondaryIndex` objects, opening/creating each bbolt file at
-  `.n1k1/<ns>/<ks>/idx/<name>__si__<defhash>/data.bolt`. Cached per keyspace.
-- **Build (v1 = rebuild-on-open):** full keyspace scan (`records.Walk`) → eval key
-  exprs + `where` per doc → insert `(encodedKey → docID)`. Gated behind sidecar
-  presence.
-
-### The `secondaryIndex` type (base `datastore.Index` only)
-
-Holds a `*bbolt.DB` + bucket name + parsed `rangeKeys`/`where`. Used
-polymorphically.
-
-| Method | Implementation |
-|---|---|
-| `KeyspaceId`/`Id`/`Name`/`Indexer` | trivial accessors |
-| `Type()` | `datastore.GSI` |
-| `IsPrimary()` | `false` |
-| `SeekKey()` | `nil` |
-| `RangeKey()` | parsed key expressions — **drives sargability** |
-| `Condition()` | partial-index `where` expr, or `nil` |
-| `State()` | `(datastore.ONLINE, "", nil)` |
-| `Statistics()` | `(nil, nil)` — safe while `useCBO=false` |
-| `Drop()` | drop from registry + trash the bbolt file |
-| `Scan(reqId, span, distinct, limit, cons, vector, conn)` | core — below |
-
-**`Scan()` contract:** `defer conn.Sender().Close()`; `Seek` to `span.Range.Low`
-(or first if unbounded); iterate ascending; decode key, stop at
-`span.Range.High`, honor `span.Range.Inclusion & datastore.LOW/HIGH` via
-`Collate`; for each match `SendEntry(&datastore.IndexEntry{PrimaryKey: docID})`;
-respect `limit`. `EntryKey` is filled only for a covering scan (carries decoded
-key values for `reconstructCoverDoc`); the default drain reads only `PrimaryKey`.
-
----
-
-## 7. Phase 2 — FTS via embedded bleve ✅ SHIPPED
-
-`SELECT … WHERE SEARCH(ks, "query")` runs locally against an embedded
-`bleve.Index` — no cbft, no n1fty, zero fork edits. The planner hook existed
-(`planner/build_scan_search.go` + `SargableFlex`); we set `useFts=true` in
-`glue/stmt.go` and provide the `datastore.FTSIndex` in-process (a small shim).
-Landed in `glue/idx_fts.go`:
-
-- **`ftsIndexer` + `ftsIndex`** — an `Indexer` (`Name()==datastore.FTS`) and an
-  `FTSIndex`, advertised by appending to `keyspace.Indexers()` (distinct
-  `IndexType` — clean append). Backed by an embedded `bleve.Index`:
-  - `Sargable(field, query, options, mappings)` returns `exact=true` so the
-    planner drops the residual predicate; `SargableFlex` stubbed and `Pageable`
-    `false` in v1 (flex later shipped).
-  - `Search(...)` runs `bleveIndex.Search()` (`req.Size=DocCount`) and pushes
-    `datastore.IndexEntry{PrimaryKey: hit.ID, MetaData: hit.Score}` into
-    `conn.Sender()`.
-- **conv.go / DatastoreScanFTS:** `VisitIndexFtsSearch` emits one
-  `datastore-scan-fts` op. `DatastoreScanFTS` runs the bleve search and
-  **fetches the matching docs itself** (not via a following `plan.Fetch`, because
-  the hit score is only available at the scan and would be lost across a separate
-  fetch — so `VisitFetch` passes through after an FTS scan). The residual
-  `SEARCH()` the planner leaves in the `Filter` (which n1k1 can't re-evaluate) is
-  rewritten to `TRUE` by `stripSearch` (`glue/expr.go`), gated on a `sawFTS` flag
-  so a genuine co-predicate (`… AND d.id = "d1"`) is preserved.
-- **Score/meta surfacing (shipped):** `SEARCH_SCORE(alias)` / `SEARCH_META(alias)`
-  return the bleve score/meta. The score rides the `^smeta` label as
-  `{outname: {score, id}}`, which `ConvertVals` binds under `value.ATT_SMETA` —
-  where the `search` package's `SearchMeta`/`SearchScore` read it.
-- **Catalog/build:** `kind: fts` in `catalog.json`; bleve index built into
-  `.n1k1/<ns>/<ks>/idx/<name>__fts__<defhash>/bleve/` from a full scan on open,
-  with the Phase 1 source-signature freshness check.
-- **Declared mappings (shipped):** empty `keys` = dynamic (index every field,
-  default); listed field keys build a non-dynamic mapping (nested dotted paths →
-  sub-document mappings), so `SEARCH()` on other fields matches nothing.
-- **Raw bleve mapping (shipped):** a `kind:fts` def may instead carry a
-  `"mapping"` field holding a **raw bleve index-mapping JSON** — the exact shape
-  `bleve.NewIndexMapping()` marshals — for full control over analyzers (e.g. the
-  English stemming analyzer `"en"`), per-field types, and custom analyzers, beyond
-  the text-only `"keys"` shorthand. `"mapping"` and `"keys"` are mutually
-  exclusive; `"mapping"` is fts-only. The catalog file (`idx_si_catalog.go`) stays
-  bleve-free (WASM-included): it holds the raw bytes and validates/analyzes them
-  through the `ftsMappingAnalyze` hook that `idx_fts.go` (non-wasm) registers —
-  which also derives the explicitly-mapped field set + dynamic flag that
-  `fieldIndexed` needs for the flex path (conservative: a false positive would drop
-  valid rows). The mapping bytes fold into `defHash`, so editing the mapping
-  triggers a rebuild. `.index show` prints the mapping; `.index list` shows keys as
-  `(custom mapping)`.
-- **Flex / implicit predicates (shipped):** `SargableFlex` lets a plain `WHERE`
-  predicate (no explicit `SEARCH()`) be served by bleve. It translates the
-  sargable part (`Eq`/`LT`/`LE`, `AND`/`OR`; `>`/`>=` → swapped `LT`/`LE`) over
-  indexed fields into a bleve query DSL; the planner wraps it as synthetic
-  `SEARCH(ks, <query>)` → `plan.IndexFtsSearch`. **Correctness is independent of
-  translation precision:** we never set `FTS_FLEXINDEX_EXACT`, so the planner
-  keeps the original predicate in the residual `Filter`, which n1k1 re-evaluates —
-  the bleve query need only be a superset. An `AND` may drop an untranslatable
-  conjunct (still a superset); an `OR` bails if any disjunct is untranslatable; a
-  wholly untranslatable predicate falls back to a records scan.
-
-**Remaining follow-up:** the `"keys"` shorthand still maps its fields as text
-(per-field analyzers need the raw `"mapping"` escape hatch above); a `.index
-create` DSL for mappings (JSON fragment only for now); analyzer-aware flex
-translation (the flex path lowercases terms for the default analyzer).
-
----
-
-## 8. Sidecar layout (`.n1k1/`)
-
-A dataset accumulates many independent derived artifacts (several GSI indexes,
-FTS/bleve indexes, zone-maps/bloom, count caches, change manifests) across
-keyspaces, each with its own definition, format version, and rebuild lifecycle.
-`.n1k1/` must let these coexist, build/drop/GC independently, swap atomically, and
-match back to the exact definition + source state.
-
-### Directory tree
+A dataset accumulates many independent derived artifacts (GSI + FTS indexes, zone-maps, count
+caches) that must coexist, build/drop/GC independently, swap atomically, and match back to the
+exact def + source state.
 ```
 <dataRoot>/.n1k1/
-  LAYOUT                       # sidecar layout format version
-  catalog.json                # source of truth: all defs + config fingerprint
-  <namespace>/<keyspace>/
-      manifest.json           # source fingerprints + zone-maps (DESIGN-data §5)
-      idx/
-        <name>__<kind>__<defhash>/    # one dir per built index instance
-          meta.json                   # def, kind, key exprs, format_version, built_from, state, stats
-          data.bolt                   # kind=gsi   : bbolt B+tree
-          bleve/                      # kind=fts   : bleve index directory
-          zonemap.cbor | bloom.bin    # kind=zonemap | bloom
-          count.json                  # kind=count : cached COUNT(*)
-      tmp/<name>__<kind>__<defhash>.<gen>/   # in-progress build; atomically renamed
-      trash/                                 # dropped/orphaned, awaiting lazy delete
+  catalog.json                       # source of truth: all defs + config fingerprint
+  <ns>/<keyspace>/
+    manifest.json                    # source fingerprints + zone-maps (DESIGN-data §5)
+    idx/<name>__<kind>__<defhash>/    # one dir per built instance
+      meta.json                      # def, kind, key exprs, format_version, built_from, state, stats
+      data.bolt | bleve/ | zonemap.cbor | count.json   # payload per kind
+    tmp/…<gen>/                       # in-progress build; atomically renamed in
+    trash/                           # dropped/orphaned, lazily deleted
 ```
+`kind` = `gsi|fts|zonemap|bloom|wildcard|count` (lets schemes coexist on the same keyspace/key).
+**`defhash`** (short hash of the normalized def — key exprs + WHERE + options + collation/format
+version) is the workhorse: a changed def ⇒ new dir (old orphaned + GC'd, no in-place corruption);
+"is there a built index for this def?" is a dir-existence check; `catalog.json` is
+reconstructable by scanning `idx/`. Build into `tmp/…<gen>/` then **atomic rename** so readers
+never see a half-built index. ⚠ **Single-writer rule:** `catalog.json` comingles source mappings
++ index defs safely *only because it stays single-writer* — declared intent (human/generator-
+authored). Everything machine-managed (build-state, stats, adaptive/auto indexes) lives in
+self-describing per-instance `meta.json`, **never written back into `catalog.json`** (an adaptive
+index that rewrote it would break the property). With encryption-at-rest (`DESIGN-data §6`),
+artifact payloads are encrypted with the dataset DEK; `meta.json` records the wrapping key id.
 
-### Instance name: `<name>__<kind>__<defhash>`
-- **`name`** — user-facing name, filesystem-sanitized (true name in `meta.json`).
-- **`kind`** — `gsi` | `fts` | `zonemap` | `bloom` | `wildcard` | `count`. Lets
-  schemes coexist on the same keyspace, even the same key.
-- **`defhash`** — short hex hash of the normalized definition (key exprs + `WHERE`
-  + options + collation/format version). The workhorse:
-  - **Redefinition safety:** a changed def yields a new `defhash` ⇒ new directory;
-    the old is orphaned and GC'd — no in-place corruption or stale reads.
-  - **Planner matching:** "is there a built index for this def?" = a
-    directory-existence check; only instances whose `built_from` matches the
-    current source manifest are advertised.
-  - **Self-describing:** `catalog.json` reconstructable by scanning `idx/`.
+## COUNT(*) / count-scan pushdown
 
-### Atomic build, versioning, lifecycle
-- Build into `tmp/….<gen>/`, then **atomic rename** into `idx/…/` (POSIX dir
-  rename, same filesystem) so readers never see a half-built index. Concurrent
-  readers during rebuild: `<gen>` suffix + `CURRENT` pointer; simplest v1 = single
-  instance + rename swap.
-- Rebuild triggered by: `format_version` bump, changed `defhash`, or `built_from`
-  ≠ current source manifest / `catalog.config_fingerprint`.
-- **GC:** on open, reconcile `idx/` against `catalog.json` + source manifest;
-  orphans/stale instances move to `trash/`, deleted lazily. Drop removes the
-  catalog entry and trashes the instance dir.
+- **Whole-keyspace `COUNT(*)` done** — `VisitCountScan` de-optimizes to a records scan (like a
+  primary scan); the `count(*)` group-aggregate rides the surrounding plan ops. `keyspace.Count()`
+  (`len(ReadDir)`, `file.go:467`) and `Size()` (`:475`) exist. (O(1) count from a `doc_count`
+  manifest is the future item below.)
+- ⚠ **Predicated `COUNT(*)` via secondary index — BLOCKED on exact-spans (both prototypes
+  reverted).** Count pushdown lives in the *covering* path (`build_scan_covering.go` →
+  `build_scan_pushdowns.go`), gated on **`_PUSHDOWN_EXACTSPANS`**; a base (API1) index's spans
+  are never marked exact (also why every base-`IndexScan` carries a residual `Filter`), so
+  `plan.IndexCountScan` is never emitted. A second prototype implementing `datastore.Index2`
+  (`RangeKey2`/`Scan2` + `VisitIndexScan2`) *did* make the planner emit `plan.IndexScan2` but
+  still didn't drop the residual `Filter` or mark spans exact — so **`Index2` is necessary but
+  not sufficient**. The predicated count visitors return `NA()` but that's currently
+  **unreachable** (the planner won't emit them without exact spans), so it's not a live gap.
+  Filter-elimination + count pushdown remain open pending a deeper trace (likely probes:
+  `useCBO=true`, the `filterCovers`/`coveringScan` retention path, `Index3`/`IndexScan3`).
+- **Manifest synergy** (`DESIGN-data.md §5`): once the manifest tracks per-file/partition
+  `doc_count`, whole-keyspace/partition `COUNT(*)` is O(1) from metadata; predicated counts sum
+  precomputed counts for fully-covered partitions and scan only boundary partitions.
 
-### Encryption & definition home
-- With encryption-at-rest (DESIGN-data §6), artifact payloads (`data.bolt`,
-  `bleve/`, `zonemap`, manifests) are encrypted with the dataset DEK; `meta.json`
-  records the wrapping key id. The whole `.n1k1/` tree is in scope.
-- **Single-writer rule.** `catalog.json` comingles source mappings + index defs
-  safely *only because it stays single-writer*: it holds **declared intent**
-  (human/generator-authored, slow-changing). Everything machine-managed and
-  dynamic — build-state, stats, and adaptive/auto-created indexes — lives in
-  self-describing per-instance dirs (`idx/<…>/meta.json`), never written back into
-  `catalog.json`. So indexers of any `kind` build/rebuild/drop concurrently in
-  **different dirs** with no shared-file contention. Adaptive indexes that rewrote
-  `catalog.json` would break the single-writer property — don't.
+## "Index everything": dynamic / wildcard / automatic (mostly research)
 
----
+n1k1's full "index everything" posture = **bleve dynamic (text, free)** + **zone-maps/bloom
+(cheap scalar pruning)** + **adaptive auto-index (hot scalar fields)** — no giant always-on
+wildcard structure. Three tiers:
+- **Tier 1 — always-on zone maps + optional per-file bloom** at the scan layer. Cheap,
+  needs **no cbq planner changes** (pruning is a datastore concern). The manifest zone maps in
+  `DESIGN-data.md §5`; the pragmatic default.
+- **Tier 2 — adaptive auto-index** (RavenDB/Oracle-style): log the predicates the planner
+  produces, auto-create an ordered index for hot field(s), GC unused. The created index is a
+  **normal `RangeKey` index the planner already understands** (Phase-1 machinery, no
+  wildcard-planner work) — the realistic medium-term path. ⚠ Signal: the b-tree auto-index win is
+  **HIGH cardinality (÷ doc count) ∧ queried**, not low — a low-card field (`status`) matches a
+  large fraction and barely beats a primary scan (it's for zone-maps/composite-leading-key
+  instead). Eligibility: **scalar leaf, no array crossed** (a path crossing an array needs cbq's
+  array index — a separate, harder class, flagged not auto-created). Sampling proposes
+  candidates; the workload confirms which are queried. These estimates are what a future
+  `Index.Statistics()` should return to feed cbq's CBO instead of `nil`. CLI ladder: `.index
+  suggest` (advisor, shipped) → `.index create` (explicit, shipped) → `.index auto` (autonomous,
+  later — writes a **separate machine-managed auto-catalog**, never the human one).
+- **Tier 3 — eager wildcard GSI** (Cosmos/Mongo-style): a bbolt store keyed
+  `encode(pathPrefix)+encode(value)+docID` (a dictionary maps field-path → short fixed-width
+  prefix; the encoder must cap oversized values with a "truncated" marker since bbolt keys are
+  bounded ~32 KB). Feasible to build; the hard part is **planner integration** — cbq's
+  `sargableIndexes` matches a *fixed* `RangeKey()`, with no concept of a wildcard over arbitrary
+  paths → needs fork-side planner work + inherits Mongo's caveats. Research item.
 
-## 9. "Index everything": dynamic / wildcard / automatic indexes
+(Prior art surveyed: Cosmos DB auto-indexing, Mongo `$**` wildcard, ES/Lucene type-routed dynamic
+mapping, Postgres GIN/BRIN, Parquet bloom, Oracle/Azure/RavenDB adaptive, SQLite transient
+indexes, database cracking. Lesson: "index everything" should **route by inferred type** — bbolt
+for scalars, bleve for text/geo.)
 
-bleve's **dynamic mapping** = "index every field, structure by type." The
-question: what's the **B-tree / GSI equivalent** — "index every scalar path with
-an ordered/range structure"? Strong prior art in three families.
+## Reference
 
-### Prior art
+**Affected files** (all real logic in n1k1; the fork carries only the tiny superseded seam):
+`glue/idx_si*.go` + `idx_mem.go` + `idx_wasm.go` + `idx_fts.go` (index types, backends, catalog,
+build, wrapping); `glue/datastore_scan.go` (`DatastoreScanIndex`, `reconstructCoverDoc`,
+`DatastoreScanFTS`); `glue/conv.go` (`VisitIndexScan` + `-index-cover`, Intersect/Union/Distinct,
+`VisitIndexFtsSearch`, `VisitCreateIndex` future); `glue/expr.go` (`stripCovers`, `stripSearch`);
+`glue/stmt.go` (`IndexApiVersion`, `useFts=true`, wrapping registration); `cmd/n1k1` (`-index` +
+`.index`, `indexprogress.go`); `go.mod` (direct `go.etcd.io/bbolt` MIT + `blevesearch/bleve/v2`
+Apache-2.0). **Interface-drift now lands in n1k1** (a feature): a cbq rebase changing
+`Index`/`Indexer`/`FTSIndex` signatures is a compile error in n1k1 (its natural owner), not
+silent fork drift.
 
-**Eager "index everything up front":**
-- **Azure Cosmos DB** — the closest analog, and the default. Automatically
-  indexes every property, no schema; the default policy enforces a **range index**
-  on every string/number path. An inverted index (JSON path → items), three kinds:
-  Range, Composite, Spatial. Opt-out via `excludedPaths`/`includedPaths` + `/*`.
-  The design to emulate for "everything indexed by default."
-- **MongoDB wildcard index `{"$**": 1}`** — eager index of every field path;
-  include/exclude via `wildcardProjection`. Caveats: planner uses it for only one
-  predicate field per query, no equality on whole objects/arrays, subtle arrays,
-  slower than a targeted index. Opt-in.
-- **Elasticsearch / Lucene dynamic mapping** — auto-detect type, pick structure
-  per type: numeric/date/geo → BKD tree (points), keyword → doc-values, text →
-  inverted. Lesson: "index everything" should **route by inferred type**.
-- **PostgreSQL GIN on `jsonb`** — one inverted index over all key/value pairs
-  (containment `@>`, existence `?`, equality); weak for ranges.
-
-**Cheap always-on approximate (prune, don't seek):**
-- **BRIN / min-max / zone maps** (Postgres BRIN, Oracle zone maps, ORC/Parquet
-  stats, MonetDB) — summarize each block by min/max; tiny; prune blocks/files.
-- **Parquet column bloom filters** — per-column-chunk bloom for equality on
-  high-cardinality columns (IDs/UUIDs). "Index every column for equality," cheaply.
-
-**Adaptive / workload-driven ("index what's queried"):**
-- **Oracle Automatic Indexing (19c)** — background task creates candidates
-  invisible, verifies, then makes visible; drops unhelpful ones.
-- **Azure SQL automatic tuning** — auto create/drop from workload.
-- **RavenDB auto-indexes** — auto-creates on an unmatched query, merges/GCs.
-- **SQLite transient indexes** — throwaway B-tree for one query.
-- **Database cracking** (Idreos, MonetDB) — the index self-organizes as a side
-  effect of query processing.
-
-### Recommendation — three tiers
-
-**Tier 1 — "index-everything-lite": always-on zone maps + optional per-file
-bloom** at the scan/datastore layer. Cheap, always-on, and **needs no cbq planner
-changes** (pruning is a datastore/scan concern, not index-selection). Already the
-manifest zone maps in `DESIGN-data.md §5`. The pragmatic default.
-
-**Tier 2 — Adaptive auto-index (RavenDB/Oracle-style)** as the self-managing GSI:
-log the predicates the planner produces, auto-`createSecondaryIndex` an ordered
-index for hot field(s), GC unused. The created index is a **normal `RangeKey`
-index the cbq planner already understands** (Phase 1 machinery) — no
-wildcard-planner work. The realistic medium-term path.
-
-*Seeding candidates by sampling (proactive cold-start).* Sample N docs, per
-top-level scalar path estimate cardinality, presence, type stability, value size.
-The **b-tree auto-index signal is HIGH cardinality (÷ doc count) + queried**, not
-low: a high-cardinality field prunes hard; a low-cardinality field (`status`,
-`country`) matches a large fraction and barely beats a primary scan. Low-card
-fields are still valuable — for zone-maps/partition pruning (tier 1), bitmaps, or
-a composite leading key. Best policy: sampling proposes candidates, the
-**workload confirms** which are queried — auto-create where `queried ∧ selective`.
-These estimates are what a future `Index.Statistics()` should return to feed cbq's
-CBO instead of `nil`.
-
-*Which fields are eligible (path walk during sampling):*
-- **Scalar leaf, no array crossed** — the b-tree candidates. A top-level scalar
-  or pure-object nested path (`personal_details.state`) resolves to one scalar per
-  doc; the key expression is the dotted path.
-- **Any array segment** (or the value is an array) — **skip for the scalar tier.**
-  Multi-valued per doc needs cbq's **array index** (`(DISTINCT) ARRAY … FOR … END`,
-  sargable via `ANY`/`UNNEST`) — a separate, harder class (flag, don't
-  auto-create in v1).
-- **Type-unstable / synthetic `_meta` / oversized values** — skip or mark
-  low-confidence.
-
-*CLI ladder: advise → human edits → create/build* (output format == input format;
-the advisor emits a `catalog.json` fragment):
-- **`.index suggest`** *(advisor, read-only)* — **SHIPPED.** Samples docs, scores
-  selective scalar / nested-no-array fields, prints a `{"indexes":[…]}` fragment
-  with a per-suggestion `why` (loader ignores it, so it pastes back verbatim).
-- **`.index create ...`** *(explicit apply)* — **SHIPPED.** DSL or JSON fragment;
-  append def(s) to `catalog.json` and build. Explicit user intent, so writing is
-  fine.
-- **`.index auto`** *(autonomous, later)* — sampling + workload confirmation + GC,
-  writing a **separate machine-managed auto-catalog**, never the human catalog.
-
-**Tier 3 — Eager wildcard GSI (Cosmos/Mongo-style)** — a bbolt store keyed
-`encode(path) + encode(value) + docID` so any single-path equality/range is
-contiguous.
-
-*Key layout constraints.* Don't use a bucket/collection per field-path (thousands
-of paths; KV stores cap/slow with many containers). Encode the field-path into the
-key: `<fieldPathShortPrefix> : <encodedValue> : <docID>`. Keep the prefix
-fixed-width via a **dictionary mapping field-path → short byte prefix** (monotonic
-id per path, stored in its own bucket). `WHERE a.b.c = v` → look up prefix, then
-`Seek(prefix + encode(v))`. Reuses Phase 1's order-preserving `encodeValue` for
-`<encodedValue>`.
-- **Value size limits.** bbolt keys are bounded (~32 KB, and large keys wreck
-  B+tree fan-out well before that). The encoder must **cap the encoded value**:
-  truncate long strings/blobs to a prefix and set a "truncated" marker bit so the
-  scan knows the residual predicate must be re-checked (it always is). Over-cap
-  values become a *prefix probe*.
-
-Feasible to build; the hard part is **planner integration** — cbq's
-`sargableIndexes` matches predicates against a *fixed* `index.RangeKey()`, with no
-concept of a wildcard index over arbitrary paths. A true wildcard GSI needs
-fork-side planner work and inherits Mongo's caveats. Research item, not Phase 1.
-
-**Symmetry with FTS:** bleve dynamic mapping gives "index all text" for free. So
-n1k1's full "index everything" posture = **bleve dynamic (text)** +
-**zone-maps/bloom (cheap scalar pruning)** + **adaptive auto-index (hot scalar
-fields)** — no giant always-on wildcard structure. If we ever build the eager
-wildcard GSI, **route by inferred type** (bbolt for scalars, bleve for text/geo).
-
-### Prior-art links
-- Cosmos DB: https://learn.microsoft.com/en-us/azure/cosmos-db/index-overview ,
-  /index-policy
-- MongoDB wildcard: https://www.mongodb.com/docs/manual/core/indexes/index-types/index-wildcard/
-- Elasticsearch dynamic mapping: https://www.elastic.co/docs/manage-data/data-store/mapping/dynamic-field-mapping
-- Postgres GIN: https://www.postgresql.org/docs/current/gin.html ; BRIN:
-  https://www.postgresql.org/docs/current/brin.html
-- Parquet bloom filters: https://parquet.apache.org/docs/file-format/bloomfilter/
-- Oracle Automatic Indexing: https://oracle-base.com/articles/19c/automatic-indexing-19c
-- Azure SQL automatic tuning: https://learn.microsoft.com/en-us/azure/azure-sql/database/automatic-tuning-overview
-- RavenDB auto-indexes: https://ravendb.net/features/indexes/intelligent-auto-indexes
-- SQLite automatic indexes: https://sqlite.org/optoverview.html
-- Database cracking: https://www.vldb.org/pvldb/vol4/p586-idreos.pdf
-
----
-
-## 10. COUNT(*) / count-scan pushdown
-
-`SELECT COUNT(*)` should never enumerate/fetch docs when the count can be pushed
-to the datastore or an index. cbq's planner already knows how; n1k1 just doesn't
-convert the resulting operators yet.
-
-### How the planner expresses it
-- **`plan.CountScan`** — whole-keyspace count; calls `keyspace.Count(context)`.
-- **`plan.IndexCountScan` / `IndexCountScan2`** — count with a sargable predicate,
-  pushed to a `datastore.CountIndex` (`Count(span, …) int64`) / `CountIndex2`.
-- **`plan.IndexCountDistinctScan2`** — `COUNT(DISTINCT …)` (`CountDistinct`).
-- **`plan.IndexCountProject`** — projects the pushed-down scalar into the column.
-
-### Current state
-- **Whole-keyspace `COUNT(*)` done** (item 1): `conv.go:VisitCountScan`
-  de-optimizes to a records scan only (like a primary scan); the `count(*)`
-  group-aggregate rides the surrounding plan ops (correct for every format; O(1)
-  count is the manifest item below).
-- The predicated/index count visitors return `NA()`, but that `NA()` is currently
-  **unreachable** — the planner won't emit them without exact spans / `Index2`
-  (item 2), so it's not a gap.
-- **Datastore side partly done:** `keyspace.Count()` (returns `len(ReadDir)`,
-  `file.go:467`) and `Size()` (`file.go:475`) exist. Whole-keyspace `COUNT(*)` is mostly a conv +
-  execution wiring job.
-
-### Implementation (lowest-friction first)
-1. **Whole-keyspace `COUNT(*)`.** `conv.go:VisitCountScan` → emit a
-   `"datastore-count"` op carrying the keyspace; a glue op calls
-   `keyspace.Count(context)` and yields a single row / one int64. Implement
-   `VisitIndexCountProject` to shape the column. No datastore changes. Do first.
-2. **Predicated `COUNT(*)` via secondary index — BLOCKED on exact-spans (both
-   prototypes reverted).** Count pushdown lives in the *covering* path
-   (`build_scan_covering.go` → `build_scan_pushdowns.go`), gated on
-   **`_PUSHDOWN_EXACTSPANS`**; a base (API1) index's spans are never marked exact
-   (which is also why every base-`IndexScan` carries a residual `Filter`), so
-   `plan.IndexCountScan` is never emitted. A second prototype implementing
-   `datastore.Index2` (`RangeKey2`/`Scan2` + `conv.go:VisitIndexScan2`) *did* make
-   the planner emit `plan.IndexScan2` but still did not drop the residual `Filter`
-   or mark spans exact — so `Index2` is necessary but not sufficient. Both
-   prototypes (bbolt cursor tally `Count(span)`, `VisitIndexCountScan`,
-   `VisitIndexCountProject`) reverted; filter-elimination + count pushdown remain
-   open pending a deeper trace (likely probes: `useCBO=true`, the
-   `filterCovers`/`coveringScan` retention path, `Index3`/`IndexScan3`).
-3. **`COUNT(DISTINCT …)`.** Needs `CountIndex2.CountDistinct`; defer — the planner
-   otherwise falls back to distinct+aggregate (works, slower).
-
-### Manifest synergy (`DESIGN-data.md §5`)
-Once the manifest tracks per-file/per-partition **`doc_count`**, `COUNT(*)` over a
-whole keyspace/partition is answered **O(1) from metadata** — no `ReadDir`, no
-scan. For predicated counts, sum precomputed counts for fully-covered partitions
-and only scan boundary partitions.
-
----
-
-## 11. Verification
-
-- **Phase 1:** define an index over a field, run a query whose `WHERE` matches the
-  leading key, confirm via `Result.Plan` it is an **`IndexScan`, not
-  `PrimaryScan`**, and results match the no-index run. `go test -tags n1ql
-  ./glue/...` + the `test/` conformance harness.
-- **Covering (done):** project only index-key fields (`SELECT s.region, s.product
-  FROM s WHERE s.region="US"` over `keys:["region","product"]`); confirm the plan
-  is **`datastore-scan-index-cover`** with **no `datastore-fetch`** and no records
-  scan, yet results match (scalar, numeric, nested-path keys —
-  `TestSecondaryIndexCovering`).
-- **Phase 2 (done):** `SELECT … WHERE SEARCH(ks, "…")` returns expected docs, no
-  cbft/network. Plan uses `datastore-scan-fts` (`TestFTSSearch`); results match
-  whole-doc and field forms (`SEARCH(d,"quick")` → `d1,d2`; `SEARCH(d.title,
-  "world")` → `d2`). `SEARCH_SCORE`/`SEARCH_META` return score/meta
-  (`TestFTSScoreMeta`); `kind:fts` `keys` scope matches (`TestFTSDeclaredMapping`);
-  a plain `WHERE` is served via the flex path, falling back to records scan for
-  untranslatable predicates (`TestFTSFlexIndex`).
-
----
-
-## 12. Risks & open questions
-
-- **Collation correctness (highest).** bbolt byte-order vs N1QL `Collate`. The v1
-  mitigation was decode-and-`Collate` boundary checks; the shipped
-  order-preserving encoder makes bbolt byte order match collation directly.
-- **Plan-op assertion assumption.** Relies on `spans_term.go:CreateScan` choosing
-  base `IndexScan` for a base-only index (verified). A cbq rebase changing this
-  would require implementing `conv.go:VisitIndexScan2/3`.
-- **Index freshness.** File datastore mutations have no index-maintenance hooks.
-  v1 = rebuild-on-open; incremental maintenance is v2.
-- **Composite indexes — DONE.** Multi-key indexes work (`EvalSpan` /
-  `DatastoreScanIndex` handle multi-column `Range.Low/High`; self-delimiting
-  composite key encoding makes prefix matching correct;
-  `TestSecondaryIndexComposite`); residual `Filter` covers boundary imprecision.
-- **CBO.** `Statistics()` returning nil is safe while `useCBO=false`.
-- **Interface-drift now lands in n1k1 (a feature).** The `datastore.Index`/
-  `Indexer`/`FTSIndex` implementations live in n1k1, so a cbq rebase changing
-  those signatures is a compile error in n1k1 (its natural owner — `conv.go`,
-  `datastore_scan.go` already track them) rather than silent fork drift. The fork
-  carries only the tiny seam declarations.
-
----
-
-## 13. Affected files
-
-**Fork (thin seams only; superseded by wrapping for Phase 1):**
-- `../n1k1-query/datastore/file/file.go` — the seam alternative adds
-  `var SecondaryIndexes func(...) []datastore.Index` (consulted in
-  `fileIndexer.Indexes()`/`IndexByName`/`IndexById`/`IndexNames`) and
-  `var ExtraIndexers func(...) []datastore.Indexer` (appended in
-  `keyspace.Indexers()`, Phase 2). Both default to today's behavior. **No index
-  types, build, or sidecar code here.**
-
-**n1k1 (all real logic — `glue`):**
-- `glue/idx_si.go`, `idx_si_encode.go`, `idx_si_catalog.go`, `idx_si_suggest.go`,
-  `idx_mem.go`, `idx_wasm.go`, `idx_fts.go` — `secondaryIndex` (`datastore.Index`
-  incl. `Scan()`), the bbolt-free in-memory backend (WASM + opt-in),
-  bleve-backed FTS `Indexer` + `FTSIndex`, catalog reader, build routine,
-  hook/wrapping registration.
-- `glue/datastore_scan.go` — `DatastoreScanIndex`, `reconstructCoverDoc`
-  (covering), `DatastoreScanFTS`.
-- `glue/conv.go` — `VisitIndexScan` (+ `datastore-scan-index-cover`),
-  Intersect/Union/Distinct handling, `VisitIndexFtsSearch`; `VisitCreateIndex` a
-  future DDL hook.
-- `glue/expr.go` — `stripCovers`, `stripSearch`.
-- `glue/stmt.go` — `IndexApiVersion` (Phase 1); `useFts=true` (Phase 2); register
-  wrapping/hooks near `engine.ExecOpEx = glue.DatastoreOp`.
-- `cmd/n1k1` — the `-index` flag and `.index` dot-command family
-  (`indexprogress.go`).
-- `go.mod` — direct `go.etcd.io/bbolt` (Phase 1) and `blevesearch/bleve/v2`
-  (Phase 2).
-
----
-
-## 14. Dependency licensing
-
-Policy: permissive only — **no GPL / AGPL**. New deps are compliant:
-`go.etcd.io/bbolt` (**MIT**), `blevesearch/bleve/v2` (**Apache-2.0**); alternatives
-considered `couchbase/moss` / `couchbase/rhmap` (Apache-2.0). Full table in
-`DESIGN-data.md`.
+**Verification:** Phase 1 — confirm via `Result.Plan` an `IndexScan` (not `PrimaryScan`) and
+results match the no-index run (`TestSecondaryIndex*`); covering — plan is
+`datastore-scan-index-cover` with no `datastore-fetch`, results still match
+(`TestSecondaryIndexCovering`); FTS — plan uses `datastore-scan-fts`, whole-doc/field/score/meta/
+declared-mapping/flex all match with no cbft (`TestFTS*`).
