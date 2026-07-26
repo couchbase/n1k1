@@ -181,8 +181,8 @@ ORDER BY revenue DESC
 
 | | |
 |---|---|
-| **SQL (Postgres)** | `SELECT status, COUNT(*) AS n, ROUND(SUM(total),2) AS revenue FROM orders GROUP BY status ORDER BY 3 DESC` |
-| **SQL (DuckDB)** | `SELECT status, COUNT(*) AS n, ROUND(SUM(total),2) AS revenue FROM orders GROUP BY status ORDER BY 3 DESC` |
+| **SQL (Postgres)** | `SELECT status, COUNT(*) AS n, ROUND(SUM(total),2) AS revenue FROM orders GROUP BY status ORDER BY revenue DESC` |
+| **SQL (DuckDB)** | `SELECT status, COUNT(*) AS n, ROUND(SUM(total),2) AS revenue FROM orders GROUP BY status ORDER BY revenue DESC` |
 | **JavaScript** | `Object.groupBy(orders, o => o.status)   // then reduce each bucket` |
 | **Python** | `df.groupby("status").total.agg(["count", "sum"])   # pandas` |
 | **MongoDB** | `db.orders.aggregate([
@@ -281,12 +281,12 @@ FROM doc
 
 | | |
 |---|---|
-| **SQL (Postgres)** | `SELECT doc->'nums'->0 AS "first", doc->'nums'->-1 AS "last" FROM doc -- jsonb: 0-based, -1 = last` |
-| **SQL (DuckDB)** | `SELECT doc.nums[1] AS first, doc.nums[-1] AS last FROM doc -- ⚠ 1-based` |
-| **JavaScript** | `doc.nums[0]; doc.nums.at(-1)` |
-| **Python** | `doc["nums"][0]; doc["nums"][-1]` |
-| **MongoDB** | `{$arrayElemAt: ["$nums", -1]}` |
-| **jq** | `.nums[0], .nums[-1]` |
+| **SQL (Postgres)** | `SELECT doc->'nums'->0 AS "first", doc->'nums'->-1 AS "last", doc->'nums'->-2 AS penult FROM doc -- jsonb: 0-based, -1 = last` |
+| **SQL (DuckDB)** | `SELECT doc.nums[1] AS first, doc.nums[-1] AS last, doc.nums[-2] AS penult FROM doc -- ⚠ 1-based` |
+| **JavaScript** | `doc.nums[0]; doc.nums.at(-1); doc.nums.at(-2)` |
+| **Python** | `doc["nums"][0]; doc["nums"][-1]; doc["nums"][-2]` |
+| **MongoDB** | `{first: {$arrayElemAt: ["$nums", 0]}, last: {$arrayElemAt: ["$nums", -1]}, penult: {$arrayElemAt: ["$nums", -2]}}` |
+| **jq** | `.nums[0], .nums[-1], .nums[-2]` |
 
 </details>
 

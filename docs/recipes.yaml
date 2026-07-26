@@ -291,20 +291,22 @@
     FROM doc
   sql: |-
     SELECT doc->'nums'->0  AS "first",
-           doc->'nums'->-1 AS "last"
+           doc->'nums'->-1 AS "last",
+           doc->'nums'->-2 AS penult
     FROM doc   -- jsonb: 0-based, -1 = last
   duckdb: |-
     SELECT doc.nums[1]  AS first,
-           doc.nums[-1] AS last
+           doc.nums[-1] AS last,
+           doc.nums[-2] AS penult
     FROM doc   -- ⚠ 1-based
   js: |-
-    doc.nums[0]; doc.nums.at(-1)
+    doc.nums[0]; doc.nums.at(-1); doc.nums.at(-2)
   python: |-
-    doc["nums"][0]; doc["nums"][-1]
+    doc["nums"][0]; doc["nums"][-1]; doc["nums"][-2]
   mongo: |-
-    {$arrayElemAt: ["$nums", -1]}
+    {first: {$arrayElemAt: ["$nums", 0]}, last: {$arrayElemAt: ["$nums", -1]}, penult: {$arrayElemAt: ["$nums", -2]}}
   jq: |-
-    .nums[0], .nums[-1]
+    .nums[0], .nums[-1], .nums[-2]
 - section: '2. Reaching into a value'
   section_color: '#0d9488'
   title: 'Slice a range'
