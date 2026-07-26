@@ -34,10 +34,10 @@ SRC = os.path.join(HERE, "recipes.yaml")
 DIALECTS = [
     {"id": "sqlpp", "label": "SQL++", "primary": True},
     {"id": "sql", "label": "SQL (Postgres)"},
-    {"id": "duckdb", "label": "DuckDB", "hidden_default": True},
-    {"id": "js", "label": "JavaScript", "hidden_default": True},
-    {"id": "python", "label": "Python", "hidden_default": True},
-    {"id": "mongo", "label": "MongoDB", "hidden_default": True},
+    {"id": "duckdb", "label": "DuckDB"},
+    {"id": "js", "label": "JavaScript"},
+    {"id": "python", "label": "Python"},
+    {"id": "mongo", "label": "MongoDB"},
     {"id": "jq", "label": "jq"},
 ]
 
