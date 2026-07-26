@@ -319,7 +319,9 @@ CSS = """
   --bg:#fcfcfd;--fg:#1c2024;--muted:#626772;--faint:#8b909a;
   --line:#e7e9ee;--line2:#eef0f3;--sticky:#fcfcfd;--band:#f3f4f8;--desc:#f7f8fb;
   --accent:#4f46e5;--sqlpp:#eef0ff;--sqlpp-edge:#c9ccff;--focus:#4f46e5;--tb:52px;
-  --gutter:16px;   /* shared left edge: TOC toggle, TOC text, and the SQL++ column */
+  --gutter:16px;   /* shared left edge: TOC toggle, TOC text, and the recipe titles */
+  --nudge:10px;    /* outline indent: a recipe's content (query, data, output) sits this far
+                      right of its title, so children read as nested under the recipe */
 }
 @media(prefers-color-scheme:dark){:root{
   --bg:#0f1216;--fg:#dfe3ea;--muted:#8a919e;--faint:#5c636e;
@@ -397,10 +399,11 @@ h1{margin:0 0 8px;font-size:24px;font-weight:680;letter-spacing:-.015em;text-wra
 /* the table scroller: fills the space beside the TOC, scrolls both axes */
 .wrap{flex:1;min-height:0;overflow:auto}
 tr.desc{scroll-margin-top:44px}
-/* SQL++ column sits a step RIGHT of the recipe title (which is at --gutter), so the
-   query reads as a child of the recipe in the outline (child X >= parent X). The
-   higher-specificity `.code td.c-sqlpp` is needed to beat `.code td`'s padding shorthand. */
-th.c-sqlpp,.code td.c-sqlpp{padding-left:calc(var(--gutter) + 10px)}
+/* SQL++ column: the query content sits a nudge RIGHT of the recipe title (child X >=
+   parent X); the "SQL++" column header sits back at the gutter, LEFT of its own content
+   (header X <= content X). Higher-specificity selectors beat `.code td` / `thead th`. */
+.code td.c-sqlpp{padding-left:calc(var(--gutter) + var(--nudge))}
+thead th.c-sqlpp{padding-left:var(--gutter)}
 /* "full command line" toggle: swap each runnable cell for its CLI invocation */
 .cli-pill{--d:var(--accent)}
 pre.cell-cli{display:none}
@@ -451,7 +454,7 @@ thead .c-sqlpp{z-index:31;background:var(--sqlpp);border-right-color:var(--sqlpp
 .src summary::-webkit-details-marker{display:none}
 .src summary::before{content:"▸";font-size:9px;transition:transform .12s}
 .src[open] summary::before{transform:rotate(90deg)}
-.src pre{margin:6px 0 2px;font-size:11.5px;color:var(--muted);background:var(--band);
+.src pre{margin:6px 0 2px var(--nudge);font-size:11.5px;color:var(--muted);background:var(--band);
   border:1px solid var(--line);border-radius:6px;padding:8px 11px;max-width:min(90vw,640px)}
 tbody tr.code:hover td:not(.c-sqlpp){background:var(--line2)}
 /* code cells wrap: cap line length so columns stay narrow (more fits horizontally) */
@@ -462,7 +465,7 @@ pre{margin:0;font-family:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,
 /* output row — a full-width line below the dialects; text pinned left, may wrap/multi-line */
 .outrow td{padding:0;border-right:none;background:var(--bg)}
 .outbox{position:sticky;left:0;display:flex;gap:8px;align-items:flex-start;
-  padding:5px var(--gutter) 12px;max-width:min(94vw,760px)}
+  padding:5px var(--gutter) 12px calc(var(--gutter) + var(--nudge));max-width:min(94vw,760px)}
 .out-arrow{color:var(--faint);font-family:ui-monospace,monospace;font-size:12px;line-height:1.5;flex:none}
 .outpre{margin:0;font-family:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
   font-size:12px;line-height:1.5;color:var(--muted);white-space:pre-wrap;overflow-wrap:anywhere}
