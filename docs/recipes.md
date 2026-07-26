@@ -376,6 +376,8 @@ WITH doc AS ({"nums":[1,5,3,0,7]})
 SELECT ARRAY v
          FOR v IN doc.nums
          WHEN v >= 2
+         END AS r
+FROM doc
 -- → {"r":[5,3,7]}
 ```
 <details><summary>other dialects</summary>
@@ -1112,6 +1114,8 @@ doc = {"tree": {"a": 0, "b": [1]}}
 WITH doc AS ({"tree":{"a":0,"b":[1]}})
 SELECT ARRAY v
          FOR v WITHIN doc.tree
+         END AS descendants
+FROM doc
 -- → {"descendants":[0,[1],1]}
 ```
 <details><summary>other dialects</summary>
@@ -1157,6 +1161,9 @@ doc = {"tree": {"a": {"id": "x"}, "b": [{"id": "y"}]}}
 WITH doc AS ({"tree":{"a":{"id":"x"},"b":[{"id":"y"}]}})
 SELECT ARRAY v
          FOR v WITHIN doc.tree
+         WHEN v.id = "y"
+         END AS hits
+FROM doc
 -- → {"hits":[{"id":"y"}]}
 ```
 <details><summary>other dialects</summary>
@@ -1236,6 +1243,8 @@ doc = {"team": [{"n": "a"}], "formerly": [{"n": "b"}]}
 WITH doc AS ({"team":[{"n":"a"}],"formerly":[{"n":"b"}]})
 SELECT ARRAY_CONCAT(doc.team,
                     ARRAY OBJECT_ADD(m, "formerly", true)
+                      FOR m IN doc.formerly END) AS everyone
+FROM doc
 -- → {"everyone":[{"n":"a"},{"formerly":true,"n":"b"}]}
 ```
 <details><summary>other dialects</summary>

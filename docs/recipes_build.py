@@ -243,6 +243,15 @@ def short_title(t):
     return t.split(" — ")[0].split(" (")[0].strip()
 
 
+def slugify(t):
+    """A short, URL-safe anchor slug for a recipe — the head of the title, kebab-cased
+    (e.g. 'map — transform every element' → 'map'). A recipe may override it with an
+    explicit `slug:` field. Callers dedupe collisions."""
+    base = short_title(t).split(",")[0]
+    base = re.sub(r"[^a-z0-9]+", "-", base.lower()).strip("-")
+    return base or "recipe"
+
+
 # dialects with a one-liner CLI: (prefix, suffix) wrapped around the collapsed snippet.
 CLI = {
     "sqlpp": ("n1k1 -c '", "'"),
@@ -419,6 +428,16 @@ thead .c-sqlpp{z-index:31;background:var(--sqlpp);border-right-color:var(--sqlpp
 .sec .stick{font-size:11px;font-weight:680;letter-spacing:.05em;text-transform:uppercase;color:var(--muted)}
 .rhead{display:inline-flex;align-items:baseline;gap:9px;flex-wrap:wrap}
 .rtitle{font-weight:640;font-size:13.5px;color:var(--fg);letter-spacing:-.01em}
+/* per-recipe permalink — a subtle "#" that appears on hover; click copies the recipe URL */
+.permalink{margin-left:-3px;color:var(--faint);text-decoration:none;font-weight:700;font-size:12.5px;
+  line-height:1;opacity:0;transition:opacity .12s,color .12s}
+.rhead:hover .permalink,.permalink:focus-visible{opacity:.85}
+.permalink:hover{color:var(--accent)}
+@media(hover:none){.permalink{opacity:.5}}   /* touch: no hover, so keep it visible */
+.toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(8px);
+  background:var(--fg);color:var(--bg);font-size:12.5px;font-weight:500;padding:7px 14px;
+  border-radius:8px;opacity:0;pointer-events:none;transition:opacity .18s,transform .18s;z-index:50}
+.toast.show{opacity:.95;transform:translateX(-50%) translateY(0)}
 .rnote{color:var(--muted);font-size:12px;line-height:1.45;font-weight:400}
 .rline{display:inline-flex;flex-wrap:wrap;align-items:baseline;gap:8px}  /* note + example-data chip */
 .rneeds{font-size:10.5px;color:var(--muted);border:1px solid var(--line);border-radius:10px;
@@ -484,10 +503,19 @@ function scrollWrapTo(to,dur){
   (function step(now){const p=Math.min(1,(now-t0)/dur);
     wrap.scrollTop=s+d*ease(p);if(p<1)requestAnimationFrame(step);})(performance.now());
 }
+function offsetOf(el){return wrap.scrollTop+(el.getBoundingClientRect().top-wrap.getBoundingClientRect().top)-head()-6;}
+function scrollToId(id,dur){const el=document.getElementById(id);if(el)scrollWrapTo(offsetOf(el),dur);return !!el;}
+function setHash(h){try{history.replaceState(null,'','#'+h);}catch(_){try{location.hash=h;}catch(e2){}}}
+let toastEl;
+function toast(msg){
+  if(!toastEl){toastEl=document.createElement('div');toastEl.className='toast';document.body.appendChild(toastEl);}
+  toastEl.textContent=msg;toastEl.classList.add('show');
+  clearTimeout(toast._t);toast._t=setTimeout(()=>toastEl.classList.remove('show'),1300);
+}
 items.forEach((el,i)=>el.addEventListener('click',e=>{
   e.preventDefault();const row=rows[i];if(!row)return;
-  const to=wrap.scrollTop+(row.getBoundingClientRect().top-wrap.getBoundingClientRect().top)-head()-6;
-  scrollWrapTo(to,220);   // snappy
+  scrollWrapTo(offsetOf(row),220);   // snappy
+  const s=el.dataset.spy;if(s&&!s.startsWith('sec-'))setHash(s);   // reflect the recipe in the URL
 }));
 let ticking=false;
 function spy(){
@@ -500,6 +528,21 @@ function spy(){
 }
 wrap.addEventListener('scroll',()=>{if(!ticking){ticking=true;requestAnimationFrame(spy);}});
 spy();
+
+// per-recipe permalinks: click copies the recipe's URL and deep-links via the hash
+document.querySelectorAll('a.permalink').forEach(a=>a.addEventListener('click',e=>{
+  e.preventDefault();
+  const id=a.getAttribute('href').slice(1);
+  setHash(id);scrollToId(id,220);
+  const url=location.href;
+  if(navigator.clipboard&&navigator.clipboard.writeText)
+    navigator.clipboard.writeText(url).then(()=>toast('Link copied'),()=>toast('Link is in the address bar'));
+  else toast('Link is in the address bar');
+}));
+// deep-link: jump to the recipe named in the URL hash, on load and on later hash changes
+function goToHash(dur){const h=decodeURIComponent(location.hash.slice(1));if(h)scrollToId(h,dur);}
+addEventListener('hashchange',()=>goToHash(220));
+requestAnimationFrame(()=>requestAnimationFrame(()=>goToHash(0)));   // after layout settles
 """
 
 
@@ -539,13 +582,19 @@ def render_html_body():
     sec = secondary()
     ncols = 1 + len(sec)
 
-    # number every recipe once so the TOC and the table agree on scroll-target ids
-    numbered, rid = [], 0
+    # number every recipe once, and give each a unique slug — the shareable anchor id
+    # the TOC, the permalink, and hash deep-linking all agree on.
+    numbered, rid, seen = [], 0, set()
     for title, recipes in load():
         lst = []
         for r in recipes:
             rid += 1
-            lst.append((rid, r))
+            base = r.get("slug") or slugify(r["title"])
+            slug, k = base, 2
+            while slug in seen:
+                slug, k = f"{base}-{k}", k + 1
+            seen.add(slug)
+            lst.append((rid, slug, r))
         numbered.append((title, lst))
 
     T = [f"<style>{CSS}{dot_css()}</style>", '<div class="app">']
@@ -567,11 +616,11 @@ def render_html_body():
     # left: table of contents — scrollspy-tracked, click scrolls the table
     T.append('<nav class="toc"><div class="toc-head">Contents</div><ul>')
     for si, (title, lst) in enumerate(numbered):
-        sc = lst[0][1].get("section_color", "")
+        sc = lst[0][2].get("section_color", "")
         scstyle = f' style="--sc:{sc}"' if sc else ""
         T.append(f'<li class="toc-sec" data-spy="sec-{si}"{scstyle}>{html.escape(title)}</li>')
-        for i, r in lst:
-            T.append(f'<li><a data-spy="rec-{i}" href="#rec-{i}" '
+        for rid, slug, r in lst:
+            T.append(f'<li><a data-spy="{slug}" href="#{slug}" '
                      f'title="{html.escape(r["title"])}">{html.escape(short_title(r["title"]))}</a></li>')
     T.append('</ul></nav>')
 
@@ -589,11 +638,11 @@ def render_html_body():
     T.append("</tr></thead><tbody>")
 
     for si, (title, lst) in enumerate(numbered):
-        sc = lst[0][1].get("section_color", "")
+        sc = lst[0][2].get("section_color", "")
         scstyle = f' style="--sc:{sc}"' if sc else ""
         T.append(f'<tr class="sec" id="sec-{si}"{scstyle}><td colspan="{ncols}"><span class="stick">'
                  f'{html.escape(title)}</span></td></tr>')
-        for rid, r in lst:
+        for rid, slug, r in lst:
             # description row (colspan) — text stays pinned left; id is the scroll target.
             # the "example data" chip rides inline on the note line (or the title line) to
             # save a row when collapsed, expanding below when opened.
@@ -603,10 +652,12 @@ def render_html_body():
             src = r["data"].strip() if r.get("data") else ""
             chip = (f'<details class="src"><summary>example data</summary>'
                     f'<pre>{html.escape(src)}</pre></details>') if src else ""
-            head = (f'<span class="rhead"><span class="rtitle">{title}</span>{needs}'
+            plink = (f'<a class="permalink" href="#{slug}" title="Copy link to this recipe" '
+                     f'aria-label="Copy link to this recipe">#</a>')
+            head = (f'<span class="rhead"><span class="rtitle">{title}</span>{plink}{needs}'
                     f'{"" if note else chip}</span>')
             line2 = f'<span class="rline"><span class="rnote">{note}</span>{chip}</span>' if note else ""
-            T.append(f'<tr class="desc" id="rec-{rid}" data-r="{rid}"><td colspan="{ncols}">'
+            T.append(f'<tr class="desc" id="{slug}" data-r="{rid}"><td colspan="{ncols}">'
                      f'<span class="stick">{head}{line2}</span></td></tr>')
             # dialect row — SQL++ (frozen) then each secondary dialect. The cell shows the
             # concise query (the WITH binding stays hidden); its FROM references the bound

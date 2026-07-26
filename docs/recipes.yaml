@@ -397,7 +397,7 @@
     SELECT ARRAY v
              FOR v IN doc.nums
              WHEN v >= 2
-	     END AS r
+             END AS r
     FROM doc
   sql: |-
     SELECT JSONB_AGG(v) AS r
@@ -542,7 +542,7 @@
     SELECT ARRAY_APPEND(ARRAY[1,2], 3) AS rng,
            ARRAY[1] || ARRAY[2]        AS app,
            GENERATE_SERIES(2, 3)       AS cat
-           -- (no array reverse builtin)           	   
+           -- (no array reverse builtin)
   duckdb: |-
     SELECT LIST_REVERSE(a)  AS rev,
            RANGE(2,4)       AS rng,
@@ -1241,7 +1241,7 @@
   sqlpp: |-
     SELECT ARRAY v
              FOR v WITHIN doc.tree
-	     END AS descendants
+             END AS descendants
     FROM doc
   sql: |-
     SELECT JSONB_PATH_QUERY_ARRAY(doc->'tree', '$..*') AS descendants
@@ -1294,8 +1294,8 @@
   sqlpp: |-
     SELECT ARRAY v
              FOR v WITHIN doc.tree
-	     WHEN v.id = "y"
-	     END AS hits
+             WHEN v.id = "y"
+             END AS hits
     FROM doc
   sql: |-
     SELECT JSONB_PATH_QUERY_ARRAY(doc->'tree', '$..* ? (@.id == "y")') AS hits
@@ -1386,7 +1386,7 @@
   sqlpp: |-
     SELECT ARRAY_CONCAT(doc.team,
                         ARRAY OBJECT_ADD(m, "formerly", true)
-	                  FOR m IN doc.formerly END) AS everyone
+                          FOR m IN doc.formerly END) AS everyone
     FROM doc
   sql: |-
     SELECT (doc->'team') || (SELECT JSONB_AGG(m || '{"formerly":true}')
