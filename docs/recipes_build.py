@@ -251,6 +251,35 @@ def source_data(r):
     return "\n".join(parts)
 
 
+def short_title(t):
+    """A compact label for the table of contents (drop the ' — …' / ' (…)' tail)."""
+    return t.split(" — ")[0].split(" (")[0].strip()
+
+
+# dialects with a one-liner CLI: (prefix, suffix) wrapped around the collapsed snippet.
+CLI = {
+    "sqlpp": ("n1k1 -c '", "'"),
+    "sql": ('psql -c "', '"'),
+    "duckdb": ('duckdb -c "', '"'),
+    "mongo": ("mongosh --eval '", "'"),
+    "jq": ("jq '", "'"),
+}
+
+
+def cli_text(did, code, r):
+    """The 'full command line' form of a cell, or None if this dialect has no CLI."""
+    if did not in CLI:
+        return None
+    snippet = full_sqlpp(r) if did == "sqlpp" else code
+    if not snippet or snippet.strip() == "—":
+        return None
+    pre, suf = CLI[did]
+    cmd = pre + " ".join(snippet.split()) + suf
+    if did == "sqlpp" and r.get("needs") == "shop":
+        cmd += " examples/shop"
+    return cmd
+
+
 # ---------------------------------------------------------------- Markdown ----
 
 def render_md():
@@ -339,11 +368,35 @@ h1{margin:0 0 8px;font-size:24px;font-weight:680;letter-spacing:-.015em;text-wra
 .dot{width:8px;height:8px;border-radius:50%;background:var(--d);flex:none;
   box-shadow:0 0 0 3px color-mix(in srgb,var(--d) 16%,transparent)}
 .pill:not(:has(input:checked)) .dot{background:var(--faint);box-shadow:none}
-#q{margin-left:auto;padding:6px 11px;border:1px solid var(--line);border-radius:8px;
-  background:var(--bg);color:var(--fg);font-size:13px;min-width:190px}
-#q:focus-visible{outline:2px solid var(--focus);outline-offset:1px;border-color:transparent}
-/* the table scroller: fills the viewport under the top bar, scrolls both axes */
+.toolbar .lead{font-size:13px;font-weight:600;color:var(--fg);margin-right:2px}
+.toc-toggle{order:-1;flex:none;border:1px solid var(--line);background:transparent;color:var(--muted);
+  border-radius:7px;padding:4px 9px;cursor:pointer;font-size:14px;line-height:1}
+.toc-toggle:hover{border-color:var(--faint);color:var(--fg)}
+.toc-toggle:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+/* body = the TOC sidebar + the table scroller */
+.body{flex:1;display:flex;min-height:0}
+.toc{flex:none;width:238px;overflow:auto;border-right:1px solid var(--line);
+  background:var(--bg);padding:6px 0 24px}
+.app.toc-off .toc{display:none}
+.toc-head{font-size:10px;font-weight:680;text-transform:uppercase;letter-spacing:.09em;
+  color:var(--faint);padding:10px 16px 4px}
+.toc ul{list-style:none;margin:0;padding:0}
+.toc-sec{font-size:10px;font-weight:680;letter-spacing:.04em;text-transform:uppercase;
+  color:var(--muted);padding:13px 16px 3px}
+.toc a{display:block;padding:4px 14px 4px 16px;font-size:12.5px;color:var(--muted);
+  text-decoration:none;border-left:2px solid transparent;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.toc a:hover{color:var(--fg);background:var(--line2)}
+.toc a.active{color:var(--fg);font-weight:550;border-left-color:var(--accent);
+  background:color-mix(in srgb, var(--accent) 10%, transparent)}
+/* the table scroller: fills the space beside the TOC, scrolls both axes */
 .wrap{flex:1;min-height:0;overflow:auto}
+tr.desc{scroll-margin-top:44px}
+/* "full command line" toggle: swap each runnable cell for its CLI invocation */
+.cli-pill{--d:var(--accent)}
+pre.cell-cli{display:none}
+.app.cli-on td.has-cli pre.cell-plain{display:none}
+.app.cli-on td.has-cli pre.cell-cli{display:block;color:var(--fg)}
 table{border-collapse:separate;border-spacing:0;width:max-content;min-width:100%;font-size:13px}
 td,th{border-bottom:1px solid var(--line);vertical-align:top;text-align:left}
 /* column headers — pinned to the top of the scroller */
@@ -384,6 +437,13 @@ pre{margin:0;font-family:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,
   font-size:12.5px;line-height:1.5;white-space:pre-wrap;overflow-wrap:anywhere;
   font-variant-numeric:tabular-nums;max-width:46ch}
 .out{color:var(--faint)}
+/* output row — a full-width line below the dialects; text pinned left, may wrap/multi-line */
+.outrow td{padding:0;border-right:none;background:var(--bg)}
+.outbox{position:sticky;left:0;display:flex;gap:8px;align-items:flex-start;
+  padding:5px 16px 12px;max-width:min(94vw,760px)}
+.out-arrow{color:var(--faint);font-family:ui-monospace,monospace;font-size:12px;line-height:1.5;flex:none}
+.outpre{margin:0;font-family:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
+  font-size:12px;line-height:1.5;color:var(--muted);white-space:pre-wrap;overflow-wrap:anywhere}
 col.hidden,td.hidden,th.hidden{display:none}
 footer{position:sticky;left:0;max-width:min(96vw,900px);padding:18px 26px;
   color:var(--muted);font-size:12.5px;line-height:1.6;border-top:1px solid var(--line)}
@@ -391,18 +451,53 @@ footer{position:sticky;left:0;max-width:min(96vw,900px);padding:18px 26px;
 """
 
 JS = """
+// dialect column show/hide
 const boxes=[...document.querySelectorAll('.toolbar input[data-col]')];
 function apply(){for(const b of boxes){
   document.querySelectorAll('.col-'+b.dataset.col).forEach(el=>el.classList.toggle('hidden',!b.checked));}}
 boxes.forEach(b=>b.addEventListener('change',apply));
-const groups={};
-document.querySelectorAll('tr[data-r]').forEach(tr=>{(groups[tr.dataset.r]??=[]).push(tr);});
-const q=document.getElementById('q');
-q.addEventListener('input',()=>{const t=q.value.toLowerCase();
-  for(const k in groups){const rows=groups[k];
-    const hit=!t||rows.some(r=>r.textContent.toLowerCase().includes(t));
-    rows.forEach(r=>r.style.display=hit?'':'none');}});
 apply();
+
+// collapse / expand the table of contents
+const app=document.querySelector('.app');
+const tt=document.querySelector('.toc-toggle');
+if(tt)tt.addEventListener('click',()=>app.classList.toggle('toc-off'));
+
+// "full command line" — swap runnable cells for their CLI invocation
+const cliBox=document.querySelector('#cli-toggle');
+if(cliBox)cliBox.addEventListener('change',()=>app.classList.toggle('cli-on',cliBox.checked));
+
+// TOC ↔ table: click to scroll (snappy), scroll to highlight (scrollspy)
+const wrap=document.querySelector('.wrap');
+const thead=document.querySelector('thead');
+const links=[...document.querySelectorAll('.toc a[data-toc]')];
+const rows=links.map(a=>document.getElementById('rec-'+a.dataset.toc));
+const reduce=matchMedia('(prefers-reduced-motion: reduce)').matches;
+const head=()=>thead?thead.offsetHeight:0;
+const ease=t=>1-Math.pow(1-t,3);
+function scrollWrapTo(to,dur){
+  to=Math.max(0,to);
+  if(reduce||!dur){wrap.scrollTop=to;return;}
+  const s=wrap.scrollTop,d=to-s,t0=performance.now();
+  (function step(now){const p=Math.min(1,(now-t0)/dur);
+    wrap.scrollTop=s+d*ease(p);if(p<1)requestAnimationFrame(step);})(performance.now());
+}
+links.forEach((a,i)=>a.addEventListener('click',e=>{
+  e.preventDefault();const el=rows[i];if(!el)return;
+  const to=wrap.scrollTop+(el.getBoundingClientRect().top-wrap.getBoundingClientRect().top)-head()-6;
+  scrollWrapTo(to,220);   // snappy
+}));
+let ticking=false;
+function spy(){
+  ticking=false;
+  const cut=wrap.getBoundingClientRect().top+head()+8;
+  let act=0;
+  for(let i=0;i<rows.length;i++){if(rows[i]&&rows[i].getBoundingClientRect().top<=cut)act=i;else break;}
+  links.forEach((a,i)=>a.classList.toggle('active',i===act));
+  if(links[act])links[act].scrollIntoView({block:'nearest'});
+}
+wrap.addEventListener('scroll',()=>{if(!ticking){ticking=true;requestAnimationFrame(spy);}});
+spy();
 """
 
 
@@ -421,10 +516,19 @@ def dot_css():
     return "".join(css)
 
 
-def code_td(code, kind):
+def cell(kind, plain_html, clitext):
+    """A code <td>. When the dialect has a CLI form, carry both — the 'full command
+    line' toggle swaps them via a body class (no re-render)."""
+    if clitext:
+        return (f'<td class="{kind} has-cli"><pre class="cell-plain">{plain_html}</pre>'
+                f'<pre class="cell-cli">{html.escape(clitext)}</pre></td>')
+    return f'<td class="{kind}"><pre>{plain_html}</pre></td>'
+
+
+def code_td(did, code, r, kind):
     if not code or code.strip() == "—":
         return f'<td class="empty {kind}">—</td>'
-    return f'<td class="{kind}"><pre>{html.escape(code.strip())}</pre></td>'
+    return cell(kind, html.escape(code.strip()), cli_text(did, code, r))
 
 
 def render_html_body():
@@ -432,17 +536,41 @@ def render_html_body():
     sec = secondary()
     ncols = 1 + len(sec)
 
+    # number every recipe once so the TOC and the table agree on scroll-target ids
+    numbered, rid = [], 0
+    for title, recipes in load():
+        lst = []
+        for r in recipes:
+            rid += 1
+            lst.append((rid, r))
+        numbered.append((title, lst))
+
     T = [f"<style>{CSS}{dot_css()}</style>", '<div class="app">']
 
-    # toolbar = dialect switcher + filter — a fixed top bar (never scrolls)
-    T.append('<div class="toolbar"><span class="lbl">dialects</span>')
+    # top bar: contents toggle · "SQL++ compared to" · dialect switcher · CLI toggle
+    T.append('<div class="toolbar">')
+    T.append('<button class="toc-toggle" title="Toggle contents" aria-label="Toggle contents">☰</button>')
+    T.append('<span class="lead">SQL++ compared to</span>')
     for d in sec:
         chk = "" if d.get("hidden_default") else "checked"
         T.append(f'<label class="pill d-{d["id"]}"><input type="checkbox" data-col="{d["id"]}" {chk}>'
                  f'<span class="dot"></span>{html.escape(d["label"])}</label>')
-    T.append('<input id="q" type="search" placeholder="filter recipes…" aria-label="filter recipes"></div>')
+    T.append('<label class="pill cli-pill"><input type="checkbox" id="cli-toggle">'
+             '<span class="dot"></span>full command line</label>')
+    T.append('</div>')
 
-    # the scroller: header scrolls away; thead + SQL++ column stay pinned within it.
+    T.append('<div class="body">')
+
+    # left: table of contents — scrollspy-tracked, click scrolls the table
+    T.append('<nav class="toc"><div class="toc-head">Contents</div><ul>')
+    for title, lst in numbered:
+        T.append(f'<li class="toc-sec">{html.escape(title)}</li>')
+        for i, r in lst:
+            T.append(f'<li><a data-toc="{i}" href="#rec-{i}" '
+                     f'title="{html.escape(r["title"])}">{html.escape(short_title(r["title"]))}</a></li>')
+    T.append('</ul></nav>')
+
+    # right: the scroller. header scrolls away; thead + SQL++ column stay pinned within it.
     # .inner is table-wide so the header's sticky-left content pins across the whole scroll.
     T.append('<div class="wrap"><div class="inner">')
     T.append(f'<header><div class="hin"><h1>{html.escape(HTML_TITLE)}</h1>'
@@ -455,31 +583,34 @@ def render_html_body():
         T.append(f'<th class="col-{d["id"]}"><span class="dot d-{d["id"]}"></span>{html.escape(d["label"])}</th>')
     T.append("</tr></thead><tbody>")
 
-    rid = 0
-    for title, recipes in load():
+    for title, lst in numbered:
         T.append(f'<tr class="sec"><td colspan="{ncols}"><span class="stick">{html.escape(title)}</span></td></tr>')
-        for r in recipes:
-            rid += 1
-            # description row (colspan) — its text stays pinned left
+        for rid, r in lst:
+            # description row (colspan) — text stays pinned left; id is the scroll target
             note = f'<span class="rnote">{html.escape(r["note"].strip())}</span>' if r.get("note") else ""
             needs = '<span class="rneeds">shop dataset</span>' if r.get("needs") else ""
             src = source_data(r)
             srcx = (f'<details class="src"><summary>source data</summary>'
                     f'<pre>{html.escape(src)}</pre></details>') if src else ""
-            T.append(f'<tr class="desc" data-r="{rid}"><td colspan="{ncols}"><span class="stick">'
+            T.append(f'<tr class="desc" id="rec-{rid}" data-r="{rid}"><td colspan="{ncols}"><span class="stick">'
                      f'<span class="rhead"><span class="rtitle">{html.escape(r["title"])}</span>{needs}</span>'
                      f'{note}{srcx}</span></td></tr>')
-            # dialect row
+            # dialect row — SQL++ (frozen) then each secondary dialect
             T.append(f'<tr class="code" data-r="{rid}">')
             sqlpp = (r.get("sqlpp") or "").strip()
-            outc = f'\n<span class="out"># → {html.escape(r["out"].strip())}</span>' if r.get("out") else ""
-            T.append(f'<td class="c-sqlpp"><pre>{html.escape(sqlpp)}{outc}</pre></td>')
+            T.append(cell("c-sqlpp", html.escape(sqlpp), cli_text("sqlpp", sqlpp, r)))
             for d in sec:
-                T.append(code_td(r.get(d["id"], ""), "col-" + d["id"]))
+                T.append(code_td(d["id"], r.get(d["id"], ""), r, "col-" + d["id"]))
             T.append("</tr>")
+            # output row — its own full-width line (can be multi-line), text pinned left
+            if r.get("out"):
+                T.append(f'<tr class="outrow" data-r="{rid}"><td colspan="{ncols}">'
+                         f'<div class="outbox"><span class="out-arrow">→</span>'
+                         f'<pre class="outpre">{html.escape(r["out"].strip())}</pre></div></td></tr>')
     T.append("</tbody></table>")
     T.append(f"<footer>{html.escape(HTML_FOOTER)}</footer>")
-    T.append("</div></div></div>")  # close .inner, .wrap, .app
+    T.append("</div></div>")   # close .inner, .wrap
+    T.append("</div></div>")   # close .body, .app
     T.append(f"<script>{JS}</script>")
     return "".join(T)
 
