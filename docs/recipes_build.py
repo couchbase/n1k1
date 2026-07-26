@@ -321,6 +321,7 @@ CSS = """
   --bg:#fcfcfd;--fg:#1c2024;--muted:#626772;--faint:#8b909a;
   --line:#e7e9ee;--line2:#eef0f3;--sticky:#fcfcfd;--band:#f3f4f8;--desc:#f7f8fb;
   --accent:#4f46e5;--sqlpp:#eef0ff;--sqlpp-edge:#c9ccff;--focus:#4f46e5;--tb:52px;
+  --gutter:16px;   /* shared left edge: TOC toggle, TOC text, and the SQL++ column */
 }
 @media(prefers-color-scheme:dark){:root{
   --bg:#0f1216;--fg:#dfe3ea;--muted:#8a919e;--faint:#5c636e;
@@ -350,12 +351,12 @@ a{color:var(--accent);text-underline-offset:2px}
 /* header — inside the scroller: scrolls away vertically, but its text stays pinned
    left (sticky left:0) so it doesn't drift when the table scrolls horizontally */
 header{width:100%;border-bottom:1px solid var(--line);background:var(--bg)}
-.hin{position:sticky;left:0;max-width:min(96vw,900px);padding:22px 26px 18px}
+.hin{position:sticky;left:0;max-width:min(96vw,900px);padding:22px var(--gutter) 18px}
 h1{margin:0 0 8px;font-size:24px;font-weight:680;letter-spacing:-.015em;text-wrap:balance;max-width:30ch}
 .sub{color:var(--muted);font-size:13.5px;line-height:1.5;max-width:82ch}
 /* toolbar — a fixed top bar (dialect switcher + filter); never scrolls */
 .toolbar{flex:none;position:relative;z-index:5;background:var(--sticky);
-  border-bottom:1px solid var(--line);padding:10px 26px;min-height:var(--tb);
+  border-bottom:1px solid var(--line);padding:10px var(--gutter);min-height:var(--tb);
   display:flex;flex-wrap:wrap;gap:8px 9px;align-items:center}
 .toolbar .lbl{font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:var(--faint);margin-right:2px}
 .pill{font-size:12.5px;display:inline-flex;gap:6px;align-items:center;cursor:pointer;
@@ -379,11 +380,11 @@ h1{margin:0 0 8px;font-size:24px;font-weight:680;letter-spacing:-.015em;text-wra
   background:var(--bg);padding:6px 0 24px}
 .app.toc-off .toc{display:none}
 .toc-head{font-size:10px;font-weight:680;text-transform:uppercase;letter-spacing:.09em;
-  color:var(--faint);padding:10px 16px 4px}
+  color:var(--faint);padding:10px var(--gutter) 4px}
 .toc ul{list-style:none;margin:0;padding:0}
 .toc-sec{font-size:10px;font-weight:680;letter-spacing:.04em;text-transform:uppercase;
-  color:var(--muted);padding:13px 16px 3px}
-.toc a{display:block;padding:4px 14px 4px 16px;font-size:12.5px;color:var(--muted);
+  color:var(--muted);padding:13px var(--gutter) 3px}
+.toc a{display:block;padding:4px 14px 4px var(--gutter);font-size:12.5px;color:var(--muted);
   text-decoration:none;border-left:2px solid transparent;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .toc a:hover{color:var(--fg);background:var(--line2)}
@@ -392,6 +393,8 @@ h1{margin:0 0 8px;font-size:24px;font-weight:680;letter-spacing:-.015em;text-wra
 /* the table scroller: fills the space beside the TOC, scrolls both axes */
 .wrap{flex:1;min-height:0;overflow:auto}
 tr.desc{scroll-margin-top:44px}
+/* SQL++ column content aligns to the shared gutter (a touch right of other cells) */
+td.c-sqlpp,th.c-sqlpp{padding-left:var(--gutter)}
 /* "full command line" toggle: swap each runnable cell for its CLI invocation */
 .cli-pill{--d:var(--accent)}
 pre.cell-cli{display:none}
@@ -415,7 +418,7 @@ thead .c-sqlpp{z-index:31;background:var(--sqlpp);border-right-color:var(--sqlpp
 .sec td{background:var(--band)}
 .desc td{background:var(--desc)}
 .stick{position:sticky;left:0;display:inline-flex;flex-direction:column;align-items:flex-start;
-  gap:4px;padding:10px 16px;max-width:min(94vw,760px)}
+  gap:4px;padding:10px var(--gutter);max-width:min(94vw,760px)}
 .sec .stick{font-size:11px;font-weight:680;letter-spacing:.05em;text-transform:uppercase;color:var(--muted)}
 .rhead{display:inline-flex;align-items:baseline;gap:9px;flex-wrap:wrap}
 .rtitle{font-weight:640;font-size:13.5px;color:var(--fg);letter-spacing:-.01em}
@@ -440,7 +443,7 @@ pre{margin:0;font-family:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,
 /* output row — a full-width line below the dialects; text pinned left, may wrap/multi-line */
 .outrow td{padding:0;border-right:none;background:var(--bg)}
 .outbox{position:sticky;left:0;display:flex;gap:8px;align-items:flex-start;
-  padding:5px 16px 12px;max-width:min(94vw,760px)}
+  padding:5px var(--gutter) 12px;max-width:min(94vw,760px)}
 .out-arrow{color:var(--faint);font-family:ui-monospace,monospace;font-size:12px;line-height:1.5;flex:none}
 .outpre{margin:0;font-family:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
   font-size:12px;line-height:1.5;color:var(--muted);white-space:pre-wrap;overflow-wrap:anywhere}
