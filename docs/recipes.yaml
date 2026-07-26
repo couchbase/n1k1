@@ -172,14 +172,14 @@
            ROUND(SUM(total),2) AS revenue
     FROM orders
     GROUP BY status
-    ORDER BY 3 DESC
+    ORDER BY revenue DESC
   duckdb: |-
     SELECT status,
            COUNT(*) AS n,
            ROUND(SUM(total),2) AS revenue
     FROM orders
     GROUP BY status
-    ORDER BY 3 DESC
+    ORDER BY revenue DESC
   js: |-
     Object.groupBy(orders, o => o.status)   // then reduce each bucket
   python: |-
