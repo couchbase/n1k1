@@ -291,8 +291,10 @@ a{color:var(--accent);text-underline-offset:2px}
    the table's own thead reliably sticky (a real bounded scroll ancestor) even when
    embedded in an auto-height iframe. */
 .app{height:100dvh;display:flex;flex-direction:column;overflow:hidden}
-/* header — inside the scroller, so it scrolls away to free vertical space */
-header{padding:22px 26px 18px;border-bottom:1px solid var(--line)}
+/* header — inside the scroller: scrolls away vertically, but its text stays pinned
+   left (sticky left:0) so it doesn't drift when the table scrolls horizontally */
+header{border-bottom:1px solid var(--line);background:var(--bg)}
+.hin{position:sticky;left:0;max-width:min(96vw,900px);padding:22px 26px 18px}
 h1{margin:0 0 8px;font-size:24px;font-weight:680;letter-spacing:-.015em;text-wrap:balance;max-width:30ch}
 .sub{color:var(--muted);font-size:13.5px;line-height:1.5;max-width:82ch}
 /* toolbar — a fixed top bar (dialect switcher + filter); never scrolls */
@@ -405,8 +407,8 @@ def render_html_body():
 
     # the scroller: header scrolls away; thead + SQL++ column stay pinned within it
     T.append('<div class="wrap">')
-    T.append(f'<header><h1>{html.escape(HTML_TITLE)}</h1>'
-             f'<div class="sub">{html.escape(HTML_SUB)}</div></header>')
+    T.append(f'<header><div class="hin"><h1>{html.escape(HTML_TITLE)}</h1>'
+             f'<div class="sub">{html.escape(HTML_SUB)}</div></div></header>')
     T.append("<table>")
     T.append("<colgroup><col class='c-sqlpp'>" + "".join(f"<col class='col-{d['id']}'>" for d in sec) + "</colgroup>")
     T.append("<thead><tr>")
