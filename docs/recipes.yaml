@@ -281,57 +281,58 @@
   section_color: '#0d9488'
   title: 'Array index — 0-based, negatives from the end'
   data: |-
-    nums = [10, 20, 30]
+    doc = {"nums": [10, 20, 30]}
   bind: |-
-    nums AS ([10,20,30])
+    doc AS ({"nums":[10,20,30]})
   out: |-
     {"first":10,"last":30,"penult":20}
   sqlpp: |-
-    SELECT nums[0]  AS `first`,
-           nums[-1] AS `last`,
-           nums[-2] AS penult
+    SELECT doc.nums[0]  AS `first`,
+           doc.nums[-1] AS `last`,
+           doc.nums[-2] AS penult
+    FROM doc
   sql: |-
-    SELECT nums->0,
-           nums->-1
-           -- jsonb: 0-based, -1 = last
-    FROM nums
+    SELECT doc->'nums'->0  AS "first",
+           doc->'nums'->-1 AS "last"
+    FROM doc   -- jsonb: 0-based, -1 = last
   duckdb: |-
-    SELECT nums[1],
-           nums[-1]   -- ⚠ DuckDB lists are 1-based
+    SELECT doc.nums[1]  AS first,
+           doc.nums[-1] AS last
+    FROM doc   -- ⚠ 1-based
   js: |-
-    nums[0]; nums.at(-1)
+    doc.nums[0]; doc.nums.at(-1)
   python: |-
-    nums[0]; nums[-1]
+    doc["nums"][0]; doc["nums"][-1]
   mongo: |-
     {$arrayElemAt: ["$nums", -1]}
   jq: |-
-    .[0], .[-1]
-
+    .nums[0], .nums[-1]
 - section: '2. Reaching into a value'
   section_color: '#0d9488'
   title: 'Slice a range'
   data: |-
-    letters = ["a", "b", "c", "d", "e"]
+    doc = {"letters": ["a", "b", "c", "d", "e"]}
   bind: |-
-    letters AS (["a","b","c","d","e"])
+    doc AS ({"letters":["a","b","c","d","e"]})
   out: |-
     {"s":["c","d"]}
   sqlpp: |-
-    SELECT letters[2:4] AS s
+    SELECT doc.letters[2:4] AS s
+    FROM doc
   sql: |-
-    SELECT JSONB_PATH_QUERY(letters, '$[2 to 3]') AS s
-    FROM letters
+    SELECT JSONB_PATH_QUERY_ARRAY(doc->'letters', '$[2 to 3]') AS s
+    FROM doc
   duckdb: |-
-    SELECT letters[3:4] AS s   -- ⚠ 1-based, inclusive
+    SELECT doc.letters[3:4] AS s
+    FROM doc   -- ⚠ 1-based, inclusive
   js: |-
-    letters.slice(2, 4)
+    doc.letters.slice(2, 4)
   python: |-
-    letters[2:4]
+    doc["letters"][2:4]
   mongo: |-
     {$slice: ["$letters", 2, 2]}
   jq: |-
-    .[2:4]
-
+    .letters[2:4]
 # ============================================================ 3. arrays
 - section: '3. Transforming arrays'
   section_color: '#d97706'
@@ -340,167 +341,168 @@
     SQL++ has two forms: a scan (SELECT … FROM nums) or the inline array comprehension
     ARRAY … FOR … END that returns one array value.
   data: |-
-    nums = [1, 2, 3]
+    doc = {"nums": [1, 2, 3]}
   bind: |-
-    nums AS ([1,2,3])
+    doc AS ({"nums":[1,2,3]})
   out: |-
     {"r":[2,3,4]}
   sqlpp: |-
-    SELECT ARRAY_AGG(v + 1) AS r
-    FROM nums AS v
+    SELECT ARRAY v + 1 FOR v IN doc.nums END AS r
+    FROM doc
   sql: |-
-    SELECT JSONB_AGG(value::int + 1) AS r
-    FROM JSONB_ARRAY_ELEMENTS(nums)
+    SELECT JSONB_AGG(v::int + 1) AS r
+    FROM doc, JSONB_ARRAY_ELEMENTS(doc->'nums') AS v
   duckdb: |-
-    SELECT [x + 1 for x in nums] AS r
+    SELECT [x + 1 for x in doc.nums] AS r
+    FROM doc
   js: |-
-    nums.map(x => x + 1)
+    doc.nums.map(x => x + 1)
   python: |-
-    [x + 1 for x in nums]
+    [x + 1 for x in doc["nums"]]
   mongo: |-
     {$map: {input: "$nums", as: "v", in: {$add: ["$$v", 1]}}}
   jq: |-
-    map(. + 1)
-
+    .nums | map(. + 1)
 - section: '3. Transforming arrays'
   section_color: '#d97706'
   title: 'filter — keep matching elements'
   data: |-
-    nums = [1, 5, 3, 0, 7]
+    doc = {"nums": [1, 5, 3, 0, 7]}
   bind: |-
-    nums AS ([1,5,3,0,7])
+    doc AS ({"nums":[1,5,3,0,7]})
   out: |-
-    5, 3, 7
+    {"r":[5,3,7]}
   sqlpp: |-
-    SELECT RAW v
-    FROM nums AS v
-    WHERE v >= 2
+    SELECT ARRAY v FOR v IN doc.nums WHEN v >= 2 END AS r
+    FROM doc
   sql: |-
-    SELECT value
-    FROM JSONB_ARRAY_ELEMENTS(nums)
-    WHERE value::int >= 2
+    SELECT JSONB_AGG(v) AS r
+    FROM doc, JSONB_ARRAY_ELEMENTS(doc->'nums') AS v
+    WHERE v::int >= 2
   duckdb: |-
-    SELECT [x for x in nums if x >= 2]
+    SELECT [x for x in doc.nums if x >= 2] AS r
+    FROM doc
   js: |-
-    nums.filter(x => x >= 2)
+    doc.nums.filter(x => x >= 2)
   python: |-
-    [x for x in nums if x >= 2]
+    [x for x in doc["nums"] if x >= 2]
   mongo: |-
     {$filter: {input: "$nums", cond: {$gte: ["$$this", 2]}}}
   jq: |-
-    map(select(. >= 2))
-
+    .nums | map(select(. >= 2))
 - section: '3. Transforming arrays'
   section_color: '#d97706'
   title: 'Sum, min, max, average'
   data: |-
-    nums = [1, 2, 3]
+    doc = {"nums": [1, 2, 3]}
   bind: |-
-    nums AS ([1,2,3])
+    doc AS ({"nums":[1,2,3]})
   out: |-
     {"s":6,"mx":3,"a":2}
   sqlpp: |-
-    SELECT SUM(v) AS s,
-           MAX(v) AS mx,
-           AVG(v) AS a
-    FROM nums AS v
+    SELECT ARRAY_SUM(doc.nums) AS s,
+           ARRAY_MAX(doc.nums) AS mx,
+           ARRAY_AVG(doc.nums) AS a
+    FROM doc
   sql: |-
-    SELECT SUM(value::int) AS s,
-           MAX(value::int) AS mx,
-           AVG(value::int) AS a
-    FROM JSONB_ARRAY_ELEMENTS(nums)
+    SELECT SUM(v::int) AS s,
+           MAX(v::int) AS mx,
+           AVG(v::int) AS a
+    FROM doc, JSONB_ARRAY_ELEMENTS(doc->'nums') AS v
   duckdb: |-
-    SELECT LIST_SUM(nums) AS s,
-           LIST_MAX(nums) AS mx,
-           LIST_AVG(nums) AS a
+    SELECT LIST_SUM(doc.nums) AS s,
+           LIST_MAX(doc.nums) AS mx,
+           LIST_AVG(doc.nums) AS a
+    FROM doc
   js: |-
-    nums.reduce((a, b) => a + b, 0); Math.max(...nums)
+    doc.nums.reduce((a, b) => a + b, 0); Math.max(...doc.nums)
   python: |-
-    sum(nums); max(nums); statistics.mean(nums)
+    sum(doc["nums"]); max(doc["nums"]); statistics.mean(doc["nums"])
   mongo: |-
     {$sum: "$nums"}; {$max: "$nums"}; {$avg: "$nums"}
   jq: |-
-    add; max; (add / length)
-
+    .nums | add; .nums | max; (.nums | add / length)
 - section: '3. Transforming arrays'
   section_color: '#d97706'
   title: 'Length / count of elements'
   data: |-
-    nums = [1, 2, 3]
+    doc = {"nums": [1, 2, 3]}
   bind: |-
-    nums AS ([1,2,3])
+    doc AS ({"nums":[1,2,3]})
   out: |-
     {"n":3}
   sqlpp: |-
-    SELECT ARRAY_LENGTH(nums) AS n
+    SELECT ARRAY_LENGTH(doc.nums) AS n
+    FROM doc
   sql: |-
-    SELECT JSONB_ARRAY_LENGTH(nums) AS n
-    FROM nums
+    SELECT JSONB_ARRAY_LENGTH(doc->'nums') AS n
+    FROM doc
   duckdb: |-
-    SELECT LEN(nums) AS n
+    SELECT LEN(doc.nums) AS n
+    FROM doc
   js: |-
-    nums.length
+    doc.nums.length
   python: |-
-    len(nums)
+    len(doc["nums"])
   mongo: |-
     {$size: "$nums"}
   jq: |-
-    length
-
+    .nums | length
 - section: '3. Transforming arrays'
   section_color: '#d97706'
   title: 'Unique / dedup'
   note: |-
     ARRAY_DISTINCT keeps first-seen order; wrap in ARRAY_SORT for jq's sorted result.
   data: |-
-    nums = [1, 2, 5, 3, 5, 3, 1]
+    doc = {"nums": [1, 2, 5, 3, 5, 3, 1]}
   bind: |-
-    nums AS ([1,2,5,3,5,3,1])
+    doc AS ({"nums":[1,2,5,3,5,3,1]})
   out: |-
     {"u":[1,2,5,3]}
   sqlpp: |-
-    SELECT ARRAY_AGG(DISTINCT v) AS u
-    FROM nums AS v
+    SELECT ARRAY_DISTINCT(doc.nums) AS u
+    FROM doc
   sql: |-
-    SELECT DISTINCT value AS u
-    FROM JSONB_ARRAY_ELEMENTS(nums)
+    SELECT JSONB_AGG(DISTINCT v) AS u
+    FROM doc, JSONB_ARRAY_ELEMENTS(doc->'nums') AS v
   duckdb: |-
-    SELECT LIST_DISTINCT(nums) AS u
+    SELECT LIST_DISTINCT(doc.nums) AS u
+    FROM doc
   js: |-
-    [...new Set(nums)]
+    [...new Set(doc.nums)]
   python: |-
-    list(dict.fromkeys(nums))
+    list(dict.fromkeys(doc["nums"]))
   mongo: |-
     {$setUnion: ["$nums", []]}   // unordered
   jq: |-
-    unique   # sorted
-
+    .nums | unique   # sorted
 - section: '3. Transforming arrays'
   section_color: '#d97706'
   title: 'Flatten nested arrays'
   note: |-
     ⚠ SQL++ ARRAY_FLATTEN needs an explicit depth; jq flattens fully.
   data: |-
-    nested = [1, [2], [[3]]]
+    doc = {"nested": [1, [2], [[3]]]}
   bind: |-
-    nested AS ([1,[2],[[3]]])
+    doc AS ({"nested":[1,[2],[[3]]]})
   out: |-
     {"f":[1,2,3]}
   sqlpp: |-
-    SELECT ARRAY_FLATTEN(nested, 2) AS f
+    SELECT ARRAY_FLATTEN(doc.nested, 2) AS f
+    FROM doc
   sql: |-
     -- recursive unnest; no single builtin
   duckdb: |-
-    SELECT FLATTEN(nested) AS f   -- one level
+    SELECT FLATTEN(doc.nested) AS f
+    FROM doc   -- one level
   js: |-
-    nested.flat(2)
+    doc.nested.flat(2)
   python: |-
     # no deep builtin; recurse
   mongo: |-
     {$reduce: {input: "$nested", initialValue: [], in: {$concatArrays: ["$$value", "$$this"]}}}  // one level
   jq: |-
-    flatten
-
+    .nested | flatten
 - section: '3. Transforming arrays'
   section_color: '#d97706'
   title: 'reverse · range · append · concat'
@@ -535,29 +537,30 @@
   note: |-
     Index by a stepped range (OBJECT_PAIRS works on objects only, not arrays).
   data: |-
-    letters = ["a", "b", "c", "d"]
+    doc = {"letters": ["a", "b", "c", "d"]}
   bind: |-
-    letters AS (["a","b","c","d"])
+    doc AS ({"letters":["a","b","c","d"]})
   out: |-
     {"evens":["a","c"]}
   sqlpp: |-
-    SELECT ARRAY letters[i]
-           FOR i IN ARRAY_RANGE(0, ARRAY_LENGTH(letters), 2) END AS evens
+    SELECT ARRAY doc.letters[i]
+           FOR i IN ARRAY_RANGE(0, ARRAY_LENGTH(doc.letters), 2) END AS evens
+    FROM doc
   sql: |-
-    SELECT v AS evens
-    FROM JSONB_ARRAY_ELEMENTS(letters) WITH ORDINALITY t(v, i)
+    SELECT JSONB_AGG(v) AS evens
+    FROM doc, JSONB_ARRAY_ELEMENTS(doc->'letters') WITH ORDINALITY t(v, i)
     WHERE i % 2 = 1
   duckdb: |-
-    SELECT LIST_SLICE(letters, 1, 4, 2) AS evens   -- 1-based, step 2
+    SELECT LIST_SLICE(doc.letters, 1, 4, 2) AS evens
+    FROM doc   -- 1-based, step 2
   js: |-
-    letters.filter((_, i) => i % 2 === 0)
+    doc.letters.filter((_, i) => i % 2 === 0)
   python: |-
-    letters[::2]
+    doc["letters"][::2]
   mongo: |-
     {$map: {input: {$range: [0, {$size: "$letters"}, 2]}, in: {$arrayElemAt: ["$letters", "$$this"]}}}
   jq: |-
-    [range(0; length; 2) as $i | .[$i]]
-
+    .letters | [range(0; length; 2) as $i | .[$i]]
 - section: '3. Transforming arrays'
   section_color: '#d97706'
   title: 'Chunk into fixed-size groups'
@@ -565,82 +568,83 @@
     ⚠ Clamp the slice end with LEAST(…, ARRAY_LENGTH(a)) — a slice past the end is MISSING
     and would drop the last short chunk.
   data: |-
-    nums = [1, 2, 3, 4, 5]
+    doc = {"nums": [1, 2, 3, 4, 5]}
   bind: |-
-    nums AS ([1,2,3,4,5])
+    doc AS ({"nums":[1,2,3,4,5]})
   out: |-
     {"chunks":[[1,2],[3,4],[5]]}
   sqlpp: |-
-    SELECT ARRAY nums[i:LEAST(i + 2, ARRAY_LENGTH(nums))]
-           FOR i IN ARRAY_RANGE(0, ARRAY_LENGTH(nums), 2) END AS chunks
+    SELECT ARRAY doc.nums[i:LEAST(i + 2, ARRAY_LENGTH(doc.nums))]
+           FOR i IN ARRAY_RANGE(0, ARRAY_LENGTH(doc.nums), 2) END AS chunks
+    FROM doc
   sql: |-
     -- window / ntile, or generate_series with slicing
   duckdb: |-
-    SELECT [nums[i+1 : i+2] for i in RANGE(0, LEN(nums), 2)] AS chunks
+    SELECT [doc.nums[i+1 : i+2] for i in RANGE(0, LEN(doc.nums), 2)] AS chunks
+    FROM doc
   js: |-
-    Array.from({length: Math.ceil(nums.length/2)}, (_, i) => nums.slice(i*2, i*2+2))
+    Array.from({length: Math.ceil(doc.nums.length/2)}, (_, i) => doc.nums.slice(i*2, i*2+2))
   python: |-
-    [nums[i:i+2] for i in range(0, len(nums), 2)]
+    [doc["nums"][i:i+2] for i in range(0, len(doc["nums"]), 2)]
   mongo: |-
     —
   jq: |-
-    [range(0; length; 2) as $i | .[$i:$i+2]]
-
+    .nums | [range(0; length; 2) as $i | .[$i:$i+2]]
 # ============================================================ 4. iterate/collect
 - section: '4. Iterating & collecting'
   section_color: '#0284c7'
   title: 'Visit each element'
   data: |-
-    people = [{"name": "JSON"}, {"name": "XML"}]
+    doc = {"people": [{"name": "JSON"}, {"name": "XML"}]}
   bind: |-
-    people AS ([{"name":"JSON"},{"name":"XML"}])
+    doc AS ({"people":[{"name":"JSON"},{"name":"XML"}]})
   out: |-
     {"name":"JSON"} then {"name":"XML"}
   sqlpp: |-
     SELECT p.*
-    FROM people AS p
+    FROM doc
+    UNNEST doc.people AS p
   sql: |-
-    SELECT value
-    FROM JSONB_ARRAY_ELEMENTS(people)
+    SELECT p
+    FROM doc, JSONB_ARRAY_ELEMENTS(doc->'people') AS p
   duckdb: |-
-    SELECT
-    UNNEST(people, recursive := false)
+    SELECT UNNEST(doc.people)
+    FROM doc
   js: |-
-    for (const p of people) { … }
+    for (const p of doc.people) { … }
   python: |-
-    for p in people: ...
+    for p in doc["people"]: ...
   mongo: |-
     db.people.find()
   jq: |-
-    .[]
-
+    .people[]
 - section: '4. Iterating & collecting'
   section_color: '#0284c7'
   title: 'One field from each element'
   data: |-
-    people = [{"name": "JSON"}, {"name": "XML"}]
+    doc = {"people": [{"name": "JSON"}, {"name": "XML"}]}
   bind: |-
-    people AS ([{"name":"JSON"},{"name":"XML"}])
+    doc AS ({"people":[{"name":"JSON"},{"name":"XML"}]})
   out: |-
     "JSON", "XML"
   sqlpp: |-
     SELECT RAW p.name
-    FROM people AS p
+    FROM doc
+    UNNEST doc.people AS p
   sql: |-
-    SELECT e->>'name'
-    FROM JSONB_ARRAY_ELEMENTS(people) e
+    SELECT p->>'name'
+    FROM doc, JSONB_ARRAY_ELEMENTS(doc->'people') AS p
   duckdb: |-
     SELECT p.name
-    FROM (SELECT UNNEST(people) p)
+    FROM doc, UNNEST(doc.people) AS t(p)
   js: |-
-    people.map(p => p.name)
+    doc.people.map(p => p.name)
   python: |-
-    [p["name"] for p in people]
+    [p["name"] for p in doc["people"]]
   mongo: |-
     db.people.find({}, {name: 1, _id: 0})
   jq: |-
-    .[] | .name
-
+    .people[] | .name
 - section: '4. Iterating & collecting'
   section_color: '#0284c7'
   title: 'Collect values into one array'
@@ -658,6 +662,7 @@
     FROM doc
   duckdb: |-
     SELECT LIST_PREPEND(doc.user, doc.projects) AS r
+    FROM doc
   js: |-
     [doc.user, ...doc.projects]
   python: |-
@@ -687,6 +692,7 @@
     FROM doc
   duckdb: |-
     SELECT {'user': doc.user, 'title': doc.title} AS o   -- a STRUCT
+    FROM doc
   js: |-
     ({user: doc.user, title: doc.title})
   python: |-
@@ -700,241 +706,244 @@
   section_color: '#7c3aed'
   title: "List an object's keys"
   data: |-
-    obj = {"b": 2, "a": 1}
+    doc = {"obj": {"b": 2, "a": 1}}
   bind: |-
-    obj AS ({"b":2,"a":1})
+    doc AS ({"obj":{"b":2,"a":1}})
   out: |-
     {"k":["a","b"]}
   sqlpp: |-
-    SELECT OBJECT_NAMES(obj) AS k
-    FROM obj
+    SELECT OBJECT_NAMES(doc.obj) AS k
+    FROM doc
   sql: |-
-    SELECT JSONB_OBJECT_KEYS(obj) AS k
-    FROM obj
+    SELECT JSONB_OBJECT_KEYS(doc->'obj') AS k
+    FROM doc
   duckdb: |-
-    SELECT JSON_KEYS(obj) AS k
+    SELECT JSON_KEYS(doc.obj) AS k
+    FROM doc
   js: |-
-    Object.keys(obj)
+    Object.keys(doc.obj)
   python: |-
-    list(obj.keys())
+    list(doc["obj"].keys())
   mongo: |-
     {$map: {input: {$objectToArray: "$obj"}, in: "$$this.k"}}
   jq: |-
-    keys   # sorted
-
+    .obj | keys   # sorted
 - section: '5. Building & reshaping objects'
   section_color: '#7c3aed'
   title: 'Object → array of pairs'
   note: |-
     ⚠ SQL++ OBJECT_PAIRS yields {name, val}; jq yields {key, value}.
   data: |-
-    obj = {"a": 1, "b": 2}
+    doc = {"obj": {"a": 1, "b": 2}}
   bind: |-
-    obj AS ({"a":1,"b":2})
+    doc AS ({"obj":{"a":1,"b":2}})
   out: |-
     {"p":[{"name":"a","val":1},{"name":"b","val":2}]}
   sqlpp: |-
-    SELECT OBJECT_PAIRS(obj) AS p
-    FROM obj
+    SELECT OBJECT_PAIRS(doc.obj) AS p
+    FROM doc
   sql: |-
-    SELECT JSONB_EACH(obj) AS p
-    FROM obj
+    SELECT JSONB_EACH(doc->'obj') AS p
+    FROM doc
   duckdb: |-
-    SELECT MAP_ENTRIES(obj) AS p
+    SELECT MAP_ENTRIES(doc.obj) AS p
+    FROM doc
   js: |-
-    Object.entries(obj)   // [["a",1],["b",2]]
+    Object.entries(doc.obj)   // [["a",1],["b",2]]
   python: |-
-    list(obj.items())
+    list(doc["obj"].items())
   mongo: |-
     {$objectToArray: "$obj"}   // [{k,v}]
   jq: |-
-    to_entries   # [{key,value}]
-
+    .obj | to_entries   # [{key,value}]
 - section: '5. Building & reshaping objects'
   section_color: '#7c3aed'
   title: 'Pairs → object'
   data: |-
-    pairs = [{"name": "a", "val": 1}]
+    doc = {"pairs": [{"name": "a", "val": 1}]}
   bind: |-
-    pairs AS ([{"name":"a","val":1}])
+    doc AS ({"pairs":[{"name":"a","val":1}]})
   out: |-
     {"o":{"a":1}}
   sqlpp: |-
-    SELECT OBJECT p.name : p.val FOR p IN pairs END AS o
+    SELECT OBJECT p.name : p.val FOR p IN doc.pairs END AS o
+    FROM doc
   sql: |-
-    SELECT JSONB_OBJECT_AGG(e->>'key', e->'value') AS o
-    FROM JSONB_ARRAY_ELEMENTS(pairs) e
+    SELECT JSONB_OBJECT_AGG(p->>'name', p->'val') AS o
+    FROM doc, JSONB_ARRAY_ELEMENTS(doc->'pairs') AS p
   duckdb: |-
-    SELECT MAP_FROM_ENTRIES(pairs) AS o
+    SELECT MAP_FROM_ENTRIES(doc.pairs) AS o
+    FROM doc
   js: |-
-    Object.fromEntries(pairs.map(p => [p.name, p.val]))
+    Object.fromEntries(doc.pairs.map(p => [p.name, p.val]))
   python: |-
-    {p["name"]: p["val"] for p in pairs}
+    {p["name"]: p["val"] for p in doc["pairs"]}
   mongo: |-
     {$arrayToObject: "$pairs"}
   jq: |-
-    from_entries
-
+    .pairs | from_entries
 - section: '5. Building & reshaping objects'
   section_color: '#7c3aed'
   title: 'Object with a key from the data'
   note: |-
     ⚠ Keys must be strings; `value` is a reserved word (back-quoted).
   data: |-
-    recs = [{"label": "a", "value": 1}]
+    doc = {"recs": [{"label": "a", "value": 1}]}
   bind: |-
-    recs AS ([{"label":"a","value":1}])
+    doc AS ({"recs":[{"label":"a","value":1}]})
   out: |-
     {"o":{"a":1}}
   sqlpp: |-
-    SELECT OBJECT r.label : r.`value` FOR r IN recs END AS o
+    SELECT OBJECT r.label : r.`value` FOR r IN doc.recs END AS o
+    FROM doc
   sql: |-
-    SELECT JSONB_OBJECT_AGG(e->>'label', e->'value') AS o
-    FROM JSONB_ARRAY_ELEMENTS(recs) e
+    SELECT JSONB_OBJECT_AGG(r->>'label', r->'value') AS o
+    FROM doc, JSONB_ARRAY_ELEMENTS(doc->'recs') AS r
   duckdb: |-
-    SELECT MAP_FROM_ENTRIES([{'k': r.label, 'v': r.value} for r in recs]) AS o
+    SELECT MAP_FROM_ENTRIES([{'k': r.label, 'v': r.value} for r in doc.recs]) AS o
+    FROM doc
   js: |-
-    Object.fromEntries(recs.map(r => [r.label, r.value]))
+    Object.fromEntries(doc.recs.map(r => [r.label, r.value]))
   python: |-
-    {r["label"]: r["value"] for r in recs}
+    {r["label"]: r["value"] for r in doc["recs"]}
   mongo: |-
     {$arrayToObject: {$map: {input: "$recs", in: {k: "$$this.label", v: "$$this.value"}}}}
   jq: |-
-    map({(.label): .value}) | add
-
+    .recs | map({(.label): .value}) | add
 - section: '5. Building & reshaping objects'
   section_color: '#7c3aed'
   title: 'Transform every value, keep keys'
   data: |-
-    obj = {"a": 1, "b": 2}
+    doc = {"obj": {"a": 1, "b": 2}}
   bind: |-
-    obj AS ({"a":1,"b":2})
+    doc AS ({"obj":{"a":1,"b":2}})
   out: |-
     {"o":{"a":2,"b":3}}
   sqlpp: |-
-    SELECT OBJECT p.name : p.val + 1 FOR p IN OBJECT_PAIRS(obj) END AS o
-    FROM obj
+    SELECT OBJECT p.name : p.val + 1 FOR p IN OBJECT_PAIRS(doc.obj) END AS o
+    FROM doc
   sql: |-
     SELECT JSONB_OBJECT_AGG(k, (v::int)+1) AS o
-    FROM JSONB_EACH(obj) e(k,v)
+    FROM doc, JSONB_EACH(doc->'obj') AS e(k, v)
   duckdb: |-
-    SELECT MAP_FROM_ENTRIES([{'k': e.key, 'v': e.value + 1} for e in MAP_ENTRIES(obj)]) AS o
+    SELECT MAP_FROM_ENTRIES([{'k': e.key, 'v': e.value + 1} for e in MAP_ENTRIES(doc.obj)]) AS o
+    FROM doc
   js: |-
-    Object.fromEntries(Object.entries(obj).map(([k, v]) => [k, v + 1]))
+    Object.fromEntries(Object.entries(doc.obj).map(([k, v]) => [k, v + 1]))
   python: |-
-    {k: v + 1 for k, v in obj.items()}
+    {k: v + 1 for k, v in doc["obj"].items()}
   mongo: |-
     {$arrayToObject: {$map: {input: {$objectToArray: "$obj"}, in: {k: "$$this.k", v: {$add: ["$$this.v", 1]}}}}}
   jq: |-
-    map_values(. + 1)
-
+    .obj | map_values(. + 1)
 - section: '5. Building & reshaping objects'
   section_color: '#7c3aed'
   title: 'Swap keys and values'
   data: |-
-    obj = {"a": 1, "b": 2}
+    doc = {"obj": {"a": 1, "b": 2}}
   bind: |-
-    obj AS ({"a":1,"b":2})
+    doc AS ({"obj":{"a":1,"b":2}})
   out: |-
     {"o":{"1":"a","2":"b"}}
   sqlpp: |-
-    SELECT OBJECT TO_STRING(p.val) : p.name FOR p IN OBJECT_PAIRS(obj) END AS o
-    FROM obj
+    SELECT OBJECT TO_STRING(p.val) : p.name FOR p IN OBJECT_PAIRS(doc.obj) END AS o
+    FROM doc
   sql: |-
     SELECT JSONB_OBJECT_AGG(v#>>'{}', k) AS o
-    FROM JSONB_EACH(obj) e(k,v)
+    FROM doc, JSONB_EACH(doc->'obj') AS e(k, v)
   duckdb: |-
-    SELECT MAP_FROM_ENTRIES([{'k': e.value::VARCHAR, 'v': e.key} for e in MAP_ENTRIES(obj)]) AS o
+    SELECT MAP_FROM_ENTRIES([{'k': e.value::VARCHAR, 'v': e.key} for e in MAP_ENTRIES(doc.obj)]) AS o
+    FROM doc
   js: |-
-    Object.fromEntries(Object.entries(obj).map(([k, v]) => [v, k]))
+    Object.fromEntries(Object.entries(doc.obj).map(([k, v]) => [v, k]))
   python: |-
-    {str(v): k for k, v in obj.items()}
+    {str(v): k for k, v in doc["obj"].items()}
   mongo: |-
     {$arrayToObject: {$map: {input: {$objectToArray: "$obj"}, in: {k: {$toString: "$$this.v"}, v: "$$this.k"}}}}
   jq: |-
-    to_entries | map({(.value): .key}) | add
-
+    .obj | to_entries | map({(.value|tostring): .key}) | add
 - section: '5. Building & reshaping objects'
   section_color: '#7c3aed'
   title: 'Add / remove a field'
   data: |-
-    obj = {"title": "x", "a": 1}
+    doc = {"obj": {"title": "x", "a": 1}}
   bind: |-
-    obj AS ({"title":"x","a":1})
+    doc AS ({"obj":{"title":"x","a":1}})
   out: |-
     {"added":{"a":1,"draft":true,"title":"x"},"removed":{"a":1}}
   sqlpp: |-
-    SELECT OBJECT_ADD(obj, "draft", true) AS added,
-           OBJECT_REMOVE(obj, "title")    AS removed
-    FROM obj
+    SELECT OBJECT_ADD(doc.obj, "draft", true) AS added,
+           OBJECT_REMOVE(doc.obj, "title")    AS removed
+    FROM doc
   sql: |-
-    SELECT obj || '{"draft":true}' AS added,
-           obj - 'title'        AS removed
-    FROM obj
+    SELECT doc->'obj' || '{"draft":true}' AS added,
+           doc->'obj' - 'title'        AS removed
+    FROM doc
   duckdb: |-
-    SELECT STRUCT_INSERT(obj, draft := true) AS added,
-           obj.* EXCLUDE (title) AS removed
+    SELECT STRUCT_INSERT(doc.obj, draft := true) AS added,
+           doc.obj.* EXCLUDE (title)   AS removed
+    FROM doc
   js: |-
-    ({...obj, draft: true})   |   (({title, ...rest}) => rest)(obj)
+    ({...doc.obj, draft: true})   |   (({title, ...rest}) => rest)(doc.obj)
   python: |-
-    {**obj, "draft": True}   |   {k: v for k, v in obj.items() if k != "title"}
+    {**doc["obj"], "draft": True}   |   {k: v for k, v in doc["obj"].items() if k != "title"}
   mongo: |-
     {$mergeObjects: ["$$ROOT", {draft: true}]}   |   {$unset: "title"}
   jq: |-
-    . + {draft: true}   |   del(.title)
-
+    .obj + {draft: true}   |   (.obj | del(.title))
 - section: '5. Building & reshaping objects'
   section_color: '#7c3aed'
   title: 'Object → array of objects (key becomes a field)'
   data: |-
-    obj = {"x": {"n": 1}}
+    doc = {"obj": {"x": {"n": 1}}}
   bind: |-
-    obj AS ({"x":{"n":1}})
+    doc AS ({"obj":{"x":{"n":1}}})
   out: |-
     {"a":[{"n":1,"slug":"x"}]}
   sqlpp: |-
     SELECT ARRAY OBJECT_ADD(p.val, "slug", p.name)
-           FOR p IN OBJECT_PAIRS(obj) END AS a
-    FROM obj
+           FOR p IN OBJECT_PAIRS(doc.obj) END AS a
+    FROM doc
   sql: |-
     SELECT JSONB_AGG(v || JSONB_BUILD_OBJECT('slug', k)) AS a
-    FROM JSONB_EACH(obj) e(k, v)
+    FROM doc, JSONB_EACH(doc->'obj') AS e(k, v)
   duckdb: |-
-    SELECT [STRUCT_INSERT(e.value, slug := e.key) for e in MAP_ENTRIES(obj)] AS a
+    SELECT [STRUCT_INSERT(e.value, slug := e.key) for e in MAP_ENTRIES(doc.obj)] AS a
+    FROM doc
   js: |-
-    Object.entries(obj).map(([k, v]) => ({...v, slug: k}))
+    Object.entries(doc.obj).map(([k, v]) => ({...v, slug: k}))
   python: |-
-    [{**v, "slug": k} for k, v in obj.items()]
+    [{**v, "slug": k} for k, v in doc["obj"].items()]
   mongo: |-
     {$map: {input: {$objectToArray: "$obj"}, in: {$mergeObjects: ["$$this.v", {slug: "$$this.k"}]}}}
   jq: |-
-    to_entries | map(.value + {slug: .key})
-
+    .obj | to_entries | map(.value + {slug: .key})
 - section: '5. Building & reshaping objects'
   section_color: '#7c3aed'
   title: 'Array of objects → object keyed by a field'
   data: |-
-    recs = [{"slug": "x", "n": 1}]
+    doc = {"recs": [{"slug": "x", "n": 1}]}
   bind: |-
-    recs AS ([{"slug":"x","n":1}])
+    doc AS ({"recs":[{"slug":"x","n":1}]})
   out: |-
     {"o":{"x":{"n":1,"slug":"x"}}}
   sqlpp: |-
-    SELECT OBJECT r.slug : r FOR r IN recs END AS o
+    SELECT OBJECT r.slug : r FOR r IN doc.recs END AS o
+    FROM doc
   sql: |-
-    SELECT JSONB_OBJECT_AGG(e->>'slug', e) AS o
-    FROM JSONB_ARRAY_ELEMENTS(recs) e
+    SELECT JSONB_OBJECT_AGG(r->>'slug', r) AS o
+    FROM doc, JSONB_ARRAY_ELEMENTS(doc->'recs') AS r
   duckdb: |-
-    SELECT MAP_FROM_ENTRIES([{'k': r.slug, 'v': r} for r in recs]) AS o
+    SELECT MAP_FROM_ENTRIES([{'k': r.slug, 'v': r} for r in doc.recs]) AS o
+    FROM doc
   js: |-
-    Object.fromEntries(recs.map(r => [r.slug, r]))
+    Object.fromEntries(doc.recs.map(r => [r.slug, r]))
   python: |-
-    {r["slug"]: r for r in recs}
+    {r["slug"]: r for r in doc["recs"]}
   mongo: |-
     {$arrayToObject: {$map: {input: "$recs", in: {k: "$$this.slug", v: "$$this"}}}}
   jq: |-
-    map({(.slug): .}) | add
-
+    .recs | map({(.slug): .}) | add
 # ============================================================ 6. aggregate deeper
 - section: '6. Aggregating a collection'
   section_color: '#db2777'
@@ -967,32 +976,32 @@
   section_color: '#db2777'
   title: 'Count occurrences (histogram)'
   data: |-
-    tags = ["a", "b", "a"]
+    doc = {"tags": ["a", "b", "a"]}
   bind: |-
-    tags AS (["a","b","a"])
+    doc AS ({"tags":["a","b","a"]})
   out: |-
     {"value":"a","n":2}, {"value":"b","n":1}
   sqlpp: |-
     SELECT v AS `value`, COUNT(*) AS n
-    FROM tags AS v
+    FROM doc
+    UNNEST doc.tags AS v
     GROUP BY v
   sql: |-
-    SELECT value, COUNT(*) AS n
-    FROM JSONB_ARRAY_ELEMENTS_TEXT(tags)
-    GROUP BY value
+    SELECT v AS value, COUNT(*) AS n
+    FROM doc, JSONB_ARRAY_ELEMENTS_TEXT(doc->'tags') AS v
+    GROUP BY v
   duckdb: |-
     SELECT v AS value, COUNT(*) AS n
-    FROM (SELECT UNNEST(tags) v)
+    FROM doc, UNNEST(doc.tags) AS t(v)
     GROUP BY v
   js: |-
-    tags.reduce((m, x) => (m[x] = (m[x] || 0) + 1, m), {})
+    doc.tags.reduce((m, x) => (m[x] = (m[x] || 0) + 1, m), {})
   python: |-
-    collections.Counter(tags)
+    collections.Counter(doc["tags"])
   mongo: |-
     [{$unwind: "$tags"}, {$group: {_id: "$tags", n: {$sum: 1}}}]
   jq: |-
-    reduce .[] as $x ({}; .[$x] += 1)
-
+    .tags | reduce .[] as $x ({}; .[$x] += 1)
 - section: '6. Aggregating a collection'
   section_color: '#db2777'
   title: 'Find duplicates by key'
@@ -1149,27 +1158,28 @@
   note: |-
     ⚠ SQL++ TYPE() is lowercase and distinguishes "missing" from "null".
   data: |-
-    vals = [0, false, [], {}, null, "x"]
+    doc = {"vals": [0, false, [], {}, null, "x"]}
   bind: |-
-    vals AS ([0,false,[],{},null,"x"])
+    doc AS ({"vals":[0,false,[],{},null,"x"]})
   out: |-
     {"t":["number","boolean","array","object","null","string"]}
   sqlpp: |-
-    SELECT ARRAY TYPE(v) FOR v IN vals END AS t
+    SELECT ARRAY TYPE(v) FOR v IN doc.vals END AS t
+    FROM doc
   sql: |-
-    SELECT JSONB_TYPEOF(value) AS t
-    FROM JSONB_ARRAY_ELEMENTS(vals) value
+    SELECT JSONB_AGG(JSONB_TYPEOF(v)) AS t
+    FROM doc, JSONB_ARRAY_ELEMENTS(doc->'vals') AS v
   duckdb: |-
-    SELECT LIST_TRANSFORM(vals, x -> TYPEOF(x)) AS t
+    SELECT LIST_TRANSFORM(doc.vals, x -> TYPEOF(x)) AS t
+    FROM doc
   js: |-
-    typeof x; Array.isArray(x)
+    doc.vals.map(x => Array.isArray(x) ? "array" : typeof x)
   python: |-
-    type(x).__name__
+    [type(x).__name__ for x in doc["vals"]]
   mongo: |-
     {$type: "$x"}
   jq: |-
-    type   # (jq has no "missing")
-
+    .vals | map(type)
 # ============================================================ 8. recursion
 - section: '8. Recursion & deep search'
   section_color: '#ea580c'
@@ -1178,16 +1188,17 @@
     SQL++'s answer to jq's .. is the WITHIN operator (descend into any nested value).
     Postgres uses jsonpath ($..); DuckDB/JS/Python/Mongo have no one-liner — you recurse.
   data: |-
-    tree = {"a": 0, "b": [1]}
+    doc = {"tree": {"a": 0, "b": [1]}}
   bind: |-
-    tree AS ({"a":0,"b":[1]})
+    doc AS ({"tree":{"a":0,"b":[1]}})
   out: |-
     {"descendants":[0,[1],1]}
   sqlpp: |-
-    SELECT ARRAY v FOR v WITHIN tree END AS descendants
+    SELECT ARRAY v FOR v WITHIN doc.tree END AS descendants
+    FROM doc
   sql: |-
-    SELECT JSONB_PATH_QUERY(tree, '$..*') AS descendants
-    FROM tree
+    SELECT JSONB_PATH_QUERY_ARRAY(doc->'tree', '$..*') AS descendants
+    FROM doc
   duckdb: |-
     —
   js: |-
@@ -1197,58 +1208,57 @@
   mongo: |-
     —
   jq: |-
-    ..
-
+    [.tree | ..]
 - section: '8. Recursion & deep search'
   section_color: '#ea580c'
   title: 'Does a value appear anywhere in the tree?'
   data: |-
-    tree = {"a": {"b": 5}}
+    doc = {"tree": {"a": {"b": 5}}}
   bind: |-
-    tree AS ({"a":{"b":5}})
+    doc AS ({"tree":{"a":{"b":5}}})
   out: |-
     {"found":true}
   sqlpp: |-
-    SELECT ANY v WITHIN tree SATISFIES v = 5 END AS found
+    SELECT ANY v WITHIN doc.tree SATISFIES v = 5 END AS found
+    FROM doc
   sql: |-
-    SELECT JSONB_PATH_EXISTS(tree, '$..* ? (@ == 5)') AS found
-    FROM tree
+    SELECT JSONB_PATH_EXISTS(doc->'tree', '$..* ? (@ == 5)') AS found
+    FROM doc
   duckdb: |-
     —
   js: |-
-    [...walk(tree)].includes(5)
+    [...walk(doc.tree)].includes(5)
   python: |-
-    any(v == 5 for v in walk(tree))
+    any(v == 5 for v in walk(doc["tree"]))
   mongo: |-
     —
   jq: |-
-    [.. | select(. == 5)] | length > 0
-
+    [.tree | .. | select(. == 5)] | length > 0
 - section: '8. Recursion & deep search'
   section_color: '#ea580c'
   title: 'Find every object with a given id, at any depth'
   data: |-
-    tree = {"a": {"id": "x"}, "b": [{"id": "y"}]}
+    doc = {"tree": {"a": {"id": "x"}, "b": [{"id": "y"}]}}
   bind: |-
-    tree AS ({"a":{"id":"x"},"b":[{"id":"y"}]})
+    doc AS ({"tree":{"a":{"id":"x"},"b":[{"id":"y"}]}})
   out: |-
     {"hits":[{"id":"y"}]}
   sqlpp: |-
-    SELECT ARRAY v FOR v WITHIN tree WHEN v.id = "y" END AS hits
+    SELECT ARRAY v FOR v WITHIN doc.tree WHEN v.id = "y" END AS hits
+    FROM doc
   sql: |-
-    SELECT JSONB_PATH_QUERY(tree, '$..* ? (@.id == "y")') AS hits
-    FROM tree
+    SELECT JSONB_PATH_QUERY_ARRAY(doc->'tree', '$..* ? (@.id == "y")') AS hits
+    FROM doc
   duckdb: |-
     —
   js: |-
-    [...walk(tree)].filter(v => v && v.id === "y")
+    [...walk(doc.tree)].filter(v => v && v.id === "y")
   python: |-
-    [v for v in walk(tree) if isinstance(v, dict) and v.get("id") == "y"]
+    [v for v in walk(doc["tree"]) if isinstance(v, dict) and v.get("id") == "y"]
   mongo: |-
     —
   jq: |-
-    [.. | objects | select(.id == "y")]
-
+    [.tree | .. | objects | select(.id == "y")]
 # ============================================================ 9. reshaping
 - section: '9. Reshaping records'
   section_color: '#0891b2'
@@ -1257,62 +1267,61 @@
     The workhorse for line-items, tags, events. SQL++ UNNEST pairs each element with its
     parent's fields.
   data: |-
-    docs = [{"id": 1, "tags": ["a", "b"]}]
+    doc = {"docs": [{"id": 1, "tags": ["a", "b"]}]}
   bind: |-
-    docs AS ([{"id":1,"tags":["a","b"]}])
+    doc AS ({"docs":[{"id":1,"tags":["a","b"]}]})
   out: |-
     {"id":1,"tag":"a"} then {"id":1,"tag":"b"}
   sqlpp: |-
     SELECT o.id, t AS tag
-    FROM docs AS o
+    FROM doc
+    UNNEST doc.docs AS o
     UNNEST o.tags AS t
   sql: |-
     SELECT o->>'id', t AS tag
-    FROM JSONB_ARRAY_ELEMENTS(docs) o, JSONB_ARRAY_ELEMENTS_TEXT(o->'tags') t
+    FROM doc, JSONB_ARRAY_ELEMENTS(doc->'docs') AS o, JSONB_ARRAY_ELEMENTS_TEXT(o->'tags') AS t
   duckdb: |-
-    SELECT id,
-           UNNEST(tags) AS tag
-    FROM docs
+    SELECT o.id, UNNEST(o.tags) AS tag
+    FROM doc, UNNEST(doc.docs) AS s(o)
   js: |-
-    docs.flatMap(o => o.tags.map(t => ({id: o.id, tag: t})))
+    doc.docs.flatMap(o => o.tags.map(t => ({id: o.id, tag: t})))
   python: |-
-    [{"id": o["id"], "tag": t} for o in docs for t in o["tags"]]
+    [{"id": o["id"], "tag": t} for o in doc["docs"] for t in o["tags"]]
   mongo: |-
     [{$unwind: "$tags"}, {$project: {id: 1, tag: "$tags"}}]
   jq: |-
-    .[] | {id, tag: .tags[]}
-
+    .docs[] | {id, tag: .tags[]}
 - section: '9. Reshaping records'
   section_color: '#0891b2'
   title: 'Reshape + rename + sort'
   data: |-
-    dms = [{"text": "hi", "sender": {"screen_name": "amy"}, "ts": 2},
-           {"text": "yo", "sender": {"screen_name": "bo"},  "ts": 1}]
+    doc = {"dms": [{"text": "hi", "sender": {"screen_name": "amy"}, "ts": 2},
+                   {"text": "yo", "sender": {"screen_name": "bo"},  "ts": 1}]}
   bind: |-
-    dms AS ([{"text":"hi","sender":{"screen_name":"amy"},"ts":2},{"text":"yo","sender":{"screen_name":"bo"},"ts":1}])
+    doc AS ({"dms":[{"text":"hi","sender":{"screen_name":"amy"},"ts":2},{"text":"yo","sender":{"screen_name":"bo"},"ts":1}]})
   out: |-
     {"text":"yo","from_name":"bo"} then {"text":"hi","from_name":"amy"}
   sqlpp: |-
     SELECT d.text, d.sender.screen_name AS from_name
-    FROM dms AS d
+    FROM doc
+    UNNEST doc.dms AS d
     ORDER BY d.ts
   sql: |-
-    SELECT dms->>'text', dms#>>'{sender,screen_name}' AS from_name
-    FROM dms
-    ORDER BY dms->>'ts'
+    SELECT d->>'text', d#>>'{sender,screen_name}' AS from_name
+    FROM doc, JSONB_ARRAY_ELEMENTS(doc->'dms') AS d
+    ORDER BY d->>'ts'
   duckdb: |-
-    SELECT text, sender.screen_name AS from_name
-    FROM dms
-    ORDER BY ts
+    SELECT d.text, d.sender.screen_name AS from_name
+    FROM doc, UNNEST(doc.dms) AS s(d)
+    ORDER BY d.ts
   js: |-
-    dms.map(d => ({text: d.text, from: d.sender.screen_name})).sort((a,b)=>a.ts-b.ts)
+    doc.dms.map(d => ({text: d.text, from: d.sender.screen_name})).sort((a,b)=>a.ts-b.ts)
   python: |-
-    sorted(({"text": d["text"], "from": d["sender"]["screen_name"]} for d in dms), key=…)
+    sorted(({"text": d["text"], "from": d["sender"]["screen_name"]} for d in doc["dms"]), key=…)
   mongo: |-
     [{$project: {text: 1, from: "$sender.screen_name"}}, {$sort: {ts: 1}}]
   jq: |-
-    [.[] | {text, from: .sender.screen_name}] | sort_by(.ts)
-
+    [.dms[] | {text, from: .sender.screen_name}] | sort_by(.ts)
 - section: '9. Reshaping records'
   section_color: '#0891b2'
   title: 'Merge two arrays, flagging one'
@@ -1333,6 +1342,7 @@
   duckdb: |-
     SELECT LIST_CONCAT(doc.team,
            [STRUCT_INSERT(m, formerly := true) for m in doc.formerly]) AS everyone
+    FROM doc
   js: |-
     [...doc.team, ...doc.formerly.map(m => ({...m, formerly: true}))]
   python: |-
@@ -1383,6 +1393,7 @@
     FROM doc
   duckdb: |-
     SELECT COALESCE(doc.foo, 'default') AS v
+    FROM doc
   js: |-
     doc.foo ?? "default"
   python: |-
@@ -1399,23 +1410,23 @@
     jq guards type errors with try/catch; SQL++ has no type errors — a bad op yields
     NULL/MISSING — so guard with CASE.
   data: |-
-    vals = [{"a": 1}, "str"]
+    doc = {"vals": [{"a": 1}, "str"]}
   bind: |-
-    vals AS ([{"a":1},"str"])
+    doc AS ({"vals":[{"a":1},"str"]})
   out: |-
-    {"a":1} then {}   (the string has no .a → MISSING)
+    {"a":[1,null]}   (the string has no .a → null)
   sqlpp: |-
-    SELECT CASE WHEN TYPE(x) = "object" THEN x.a END AS a
-    FROM vals AS x
+    SELECT ARRAY (CASE WHEN TYPE(x) = "object" THEN x.a END) FOR x IN doc.vals END AS a
+    FROM doc
   sql: |-
     —
   duckdb: |-
     —
   js: |-
-    try { x.a } catch { null }
+    doc.vals.map(x => (x && typeof x === "object" && !Array.isArray(x)) ? x.a : null)
   python: |-
-    x.get("a") if isinstance(x, dict) else None
+    [x.get("a") if isinstance(x, dict) else None for x in doc["vals"]]
   mongo: |-
     {$cond: [{$eq: [{$type: "$x"}, "object"]}, "$x.a", null]}
   jq: |-
-    try .a catch null
+    .vals | map(try .a catch null)
