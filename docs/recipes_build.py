@@ -265,12 +265,7 @@ def cli_text(did, code, r):
     """The 'full command line' form of a cell, or None if this dialect has no CLI."""
     if did not in CLI:
         return None
-    if did == "sqlpp":
-        snippet = full_sqlpp(r)
-    elif did in ("sql", "duckdb"):
-        snippet = sql_display(code)
-    else:
-        snippet = code
+    snippet = full_sqlpp(r) if did == "sqlpp" else code
     if not snippet or snippet.strip() == "—":
         return None
     pre, suf = CLI[did]
@@ -305,7 +300,7 @@ def render_md():
             for d in secondary():
                 code = (r.get(d["id"]) or "").strip()
                 if d["id"] in ("sql", "duckdb"):
-                    code = sql_display(code)
+                    code = " ".join(code.split())   # one line for the fold's table cell
                 if code and code != "—":
                     rows.append(f"| **{d['label']}** | `{code.replace(chr(124), chr(92)+chr(124))}` |")
             if rows:
@@ -395,6 +390,9 @@ h1{margin:0 0 8px;font-size:24px;font-weight:680;letter-spacing:-.015em;text-wra
 .toc a:hover{color:var(--fg);background:var(--line2)}
 .toc a.active{color:var(--fg);font-weight:550;border-left-color:var(--accent);
   background:color-mix(in srgb, var(--accent) 10%, transparent)}
+.toc-sec{cursor:pointer}
+.toc-sec.active{color:var(--fg);border-left-color:var(--sc, var(--accent));
+  background:color-mix(in srgb, var(--sc, var(--accent)) 24%, var(--bg))}
 /* the table scroller: fills the space beside the TOC, scrolls both axes */
 .wrap{flex:1;min-height:0;overflow:auto}
 tr.desc{scroll-margin-top:44px}
@@ -480,8 +478,9 @@ if(cliBox)cliBox.addEventListener('change',()=>app.classList.toggle('cli-on',cli
 // TOC ↔ table: click to scroll (snappy), scroll to highlight (scrollspy)
 const wrap=document.querySelector('.wrap');
 const thead=document.querySelector('thead');
-const links=[...document.querySelectorAll('.toc a[data-toc]')];
-const rows=links.map(a=>document.getElementById('rec-'+a.dataset.toc));
+// items = section titles AND recipe links, flat & in document order
+const items=[...document.querySelectorAll('.toc [data-spy]')];
+const rows=items.map(el=>document.getElementById(el.dataset.spy));
 const reduce=matchMedia('(prefers-reduced-motion: reduce)').matches;
 const head=()=>thead?thead.offsetHeight:0;
 const ease=t=>1-Math.pow(1-t,3);
@@ -492,9 +491,9 @@ function scrollWrapTo(to,dur){
   (function step(now){const p=Math.min(1,(now-t0)/dur);
     wrap.scrollTop=s+d*ease(p);if(p<1)requestAnimationFrame(step);})(performance.now());
 }
-links.forEach((a,i)=>a.addEventListener('click',e=>{
-  e.preventDefault();const el=rows[i];if(!el)return;
-  const to=wrap.scrollTop+(el.getBoundingClientRect().top-wrap.getBoundingClientRect().top)-head()-6;
+items.forEach((el,i)=>el.addEventListener('click',e=>{
+  e.preventDefault();const row=rows[i];if(!row)return;
+  const to=wrap.scrollTop+(row.getBoundingClientRect().top-wrap.getBoundingClientRect().top)-head()-6;
   scrollWrapTo(to,220);   // snappy
 }));
 let ticking=false;
@@ -503,8 +502,8 @@ function spy(){
   const cut=wrap.getBoundingClientRect().top+head()+8;
   let act=0;
   for(let i=0;i<rows.length;i++){if(rows[i]&&rows[i].getBoundingClientRect().top<=cut)act=i;else break;}
-  links.forEach((a,i)=>a.classList.toggle('active',i===act));
-  if(links[act])links[act].scrollIntoView({block:'nearest'});
+  items.forEach((el,i)=>el.classList.toggle('active',i===act));
+  if(items[act])items[act].scrollIntoView({block:'nearest'});
 }
 wrap.addEventListener('scroll',()=>{if(!ticking){ticking=true;requestAnimationFrame(spy);}});
 spy();
@@ -526,115 +525,6 @@ def dot_css():
     return "".join(css)
 
 
-_SQL_KW = ["UNION ALL", "UNION", "GROUP BY", "ORDER BY", "LETTING", "HAVING",
-           "UNNEST", "FROM", "WHERE", "LIMIT"]
-
-
-def reflow(s):
-    """Break a SQL-family one-liner before each top-level clause keyword, matching how
-    the SQL++ examples are formatted. No-op on short expressions (no clause keywords)."""
-    s = s.strip()
-    out, i, n, depth, q = [], 0, len(s), 0, None
-    while i < n:
-        c = s[i]
-        if q:
-            out.append(c)
-            if c == q:
-                q = None
-            i += 1
-            continue
-        if c in "\"'":
-            q = c
-            out.append(c)
-            i += 1
-            continue
-        if c in "([{":
-            depth += 1
-            out.append(c)
-            i += 1
-            continue
-        if c in ")]}":
-            depth -= 1
-            out.append(c)
-            i += 1
-            continue
-        if depth == 0 and c in " \n":
-            j = i
-            while j < n and s[j] in " \n":
-                j += 1
-            hit = next((kw for kw in _SQL_KW if s[j:j + len(kw)] == kw
-                        and (j + len(kw) >= n or not (s[j + len(kw)].isalnum() or s[j + len(kw)] == "_"))), None)
-            if hit and "".join(out).strip():
-                out.append("\n")
-                i = j
-                continue
-            out.append(c)
-            i += 1
-            continue
-        out.append(c)
-        i += 1
-    return "\n".join(l.rstrip() for l in "".join(out).split("\n"))
-
-
-def sqlify(code):
-    """Make a SQL-family cell a complete statement: prepend SELECT to a bare expression,
-    and fold a ';'-separated list of function references into one SELECT projection.
-    Leaves anything already a statement (SELECT/WITH), a comment, or a two-op 'A | B'
-    cheat cell (those are hand-formatted in the YAML)."""
-    c = (code or "").strip()
-    if not c or c == "—":
-        return c
-    if c.upper().startswith(("SELECT", "WITH")) or c.startswith(("--", "//", "#", "…", "—")):
-        return c
-    if " | " in c:
-        return c
-    return "SELECT " + ", ".join(p.strip() for p in c.split(";") if p.strip())
-
-
-_FUNC_RE = re.compile(r"\b([a-z_][a-zA-Z0-9_]+)(?=\s*\()")
-
-
-def upcase_sql(code):
-    """Uppercase SQL-family function-call names (foo( → FOO() to match SQL++'s style,
-    skipping string literals and -- comments. Only names of 2+ chars, so single-letter
-    table aliases like t(v,i) are left alone."""
-    res, buf, i, n, q = [], [], 0, len(code), None
-
-    def flush():
-        s = _FUNC_RE.sub(lambda m: m.group(1).upper(), "".join(buf))
-        buf.clear()
-        return s
-
-    while i < n:
-        ch = code[i]
-        if q:
-            res.append(ch)
-            if ch == q:
-                q = None
-            i += 1
-        elif ch == "-" and i + 1 < n and code[i + 1] == "-":   # line comment
-            res.append(flush())
-            j = code.find("\n", i)
-            j = n if j == -1 else j
-            res.append(code[i:j])
-            i = j
-        elif ch in "'\"":
-            res.append(flush())
-            res.append(ch)
-            q = ch
-            i += 1
-        else:
-            buf.append(ch)
-            i += 1
-    res.append(flush())
-    return "".join(res)
-
-
-def sql_display(code):
-    """A SQL-family cell as shown: a complete statement with SQL++-style caps."""
-    return upcase_sql(sqlify(code))
-
-
 def cell(kind, plain_html, clitext):
     """A code <td>. When the dialect has a CLI form, carry both — the 'full command
     line' toggle swaps them via a body class (no re-render)."""
@@ -647,9 +537,8 @@ def cell(kind, plain_html, clitext):
 def code_td(did, code, r, kind):
     if not code or code.strip() == "—":
         return f'<td class="empty {kind}">—</td>'
-    # SQL family: complete the statement + SQL++-style caps, then clause-per-line breaks
-    disp = reflow(sql_display(code)) if did in ("sql", "duckdb") else code.strip()
-    return cell(kind, html.escape(disp), cli_text(did, code, r))
+    # every dialect (incl. the SQL family) is authored fully-formatted in the YAML
+    return cell(kind, html.escape(code.strip()), cli_text(did, code, r))
 
 
 def render_html_body():
@@ -684,12 +573,12 @@ def render_html_body():
 
     # left: table of contents — scrollspy-tracked, click scrolls the table
     T.append('<nav class="toc"><div class="toc-head">Contents</div><ul>')
-    for title, lst in numbered:
+    for si, (title, lst) in enumerate(numbered):
         sc = lst[0][1].get("section_color", "")
         scstyle = f' style="--sc:{sc}"' if sc else ""
-        T.append(f'<li class="toc-sec"{scstyle}>{html.escape(title)}</li>')
+        T.append(f'<li class="toc-sec" data-spy="sec-{si}"{scstyle}>{html.escape(title)}</li>')
         for i, r in lst:
-            T.append(f'<li><a data-toc="{i}" href="#rec-{i}" '
+            T.append(f'<li><a data-spy="rec-{i}" href="#rec-{i}" '
                      f'title="{html.escape(r["title"])}">{html.escape(short_title(r["title"]))}</a></li>')
     T.append('</ul></nav>')
 
@@ -706,10 +595,10 @@ def render_html_body():
         T.append(f'<th class="col-{d["id"]}"><span class="dot d-{d["id"]}"></span>{html.escape(d["label"])}</th>')
     T.append("</tr></thead><tbody>")
 
-    for title, lst in numbered:
+    for si, (title, lst) in enumerate(numbered):
         sc = lst[0][1].get("section_color", "")
         scstyle = f' style="--sc:{sc}"' if sc else ""
-        T.append(f'<tr class="sec"{scstyle}><td colspan="{ncols}"><span class="stick">'
+        T.append(f'<tr class="sec" id="sec-{si}"{scstyle}><td colspan="{ncols}"><span class="stick">'
                  f'{html.escape(title)}</span></td></tr>')
         for rid, r in lst:
             # description row (colspan) — text stays pinned left; id is the scroll target

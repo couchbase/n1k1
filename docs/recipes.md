@@ -180,10 +180,8 @@ ORDER BY revenue DESC
 
 | | |
 |---|---|
-| **SQL (Postgres)** | `SELECT status, COUNT(*), ROUND(SUM(total),2)
-FROM orders GROUP BY status ORDER BY 3 DESC` |
-| **DuckDB** | `SELECT status, COUNT(*), ROUND(SUM(total),2)
-FROM orders GROUP BY status ORDER BY 3 DESC` |
+| **SQL (Postgres)** | `SELECT status, COUNT(*), ROUND(SUM(total),2) FROM orders GROUP BY status ORDER BY 3 DESC` |
+| **DuckDB** | `SELECT status, COUNT(*), ROUND(SUM(total),2) FROM orders GROUP BY status ORDER BY 3 DESC` |
 | **JavaScript** | `Object.groupBy(orders, o => o.status)   // then reduce each bucket` |
 | **Python** | `df.groupby("status").total.agg(["count", "sum"])   # pandas` |
 | **MongoDB** | `db.orders.aggregate([
@@ -206,7 +204,7 @@ FROM orders
 
 | | |
 |---|---|
-| **SQL (Postgres)** | `SELECT customer FROM orders     -- a single-column result set` |
+| **SQL (Postgres)** | `SELECT customer FROM orders -- a single-column result set` |
 | **DuckDB** | `SELECT customer FROM orders` |
 | **JavaScript** | `orders.map(o => o.customer)` |
 | **Python** | `[o["customer"] for o in orders]` |
@@ -231,7 +229,7 @@ SELECT doc.customer.city
 
 | | |
 |---|---|
-| **SQL (Postgres)** | `SELECT col->'customer'->>'city'       -- ->> text, -> jsonb` |
+| **SQL (Postgres)** | `SELECT col->'customer'->>'city' -- ->> text, -> jsonb` |
 | **DuckDB** | `SELECT doc->'$.customer.city'` |
 | **JavaScript** | `doc.customer.city` |
 | **Python** | `doc["customer"]["city"]` |
@@ -256,7 +254,7 @@ SELECT doc.foo
 
 | | |
 |---|---|
-| **SQL (Postgres)** | `SELECT col->'foo'      -- NULL if absent` |
+| **SQL (Postgres)** | `SELECT col->'foo' -- NULL if absent` |
 | **DuckDB** | `SELECT doc->'$.foo'` |
 | **JavaScript** | `doc.foo               // undefined` |
 | **Python** | `doc.get("foo")        # None` |
@@ -281,8 +279,8 @@ SELECT nums[0]  AS `first`,
 
 | | |
 |---|---|
-| **SQL (Postgres)** | `SELECT col->0, col->-1        -- jsonb: 0-based, -1 = last` |
-| **DuckDB** | `SELECT nums[1], nums[-1]      -- ⚠ DuckDB lists are 1-based` |
+| **SQL (Postgres)** | `SELECT col->0, col->-1 -- jsonb: 0-based, -1 = last` |
+| **DuckDB** | `SELECT nums[1], nums[-1] -- ⚠ DuckDB lists are 1-based` |
 | **JavaScript** | `nums[0]; nums.at(-1)` |
 | **Python** | `nums[0]; nums[-1]` |
 | **MongoDB** | `{$arrayElemAt: ["$nums", -1]}` |
@@ -304,8 +302,8 @@ SELECT letters[2:4] AS s
 
 | | |
 |---|---|
-| **SQL (Postgres)** | `SELECT JSONB_PATH_QUERY(col, '$[2 to 3]')     -- SQLite has no slice` |
-| **DuckDB** | `SELECT letters[3:4]           -- ⚠ 1-based, inclusive` |
+| **SQL (Postgres)** | `SELECT JSONB_PATH_QUERY(col, '$[2 to 3]') -- SQLite has no slice` |
+| **DuckDB** | `SELECT letters[3:4] -- ⚠ 1-based, inclusive` |
 | **JavaScript** | `letters.slice(2, 4)` |
 | **Python** | `letters[2:4]` |
 | **MongoDB** | `{$slice: ["$letters", 2, 2]}` |
@@ -453,7 +451,7 @@ SELECT ARRAY_FLATTEN(nested, 2) AS f
 | | |
 |---|---|
 | **SQL (Postgres)** | `-- recursive unnest; no single builtin` |
-| **DuckDB** | `SELECT FLATTEN(nested)        -- one level` |
+| **DuckDB** | `SELECT FLATTEN(nested) -- one level` |
 | **JavaScript** | `nested.flat(2)` |
 | **Python** | `# no deep builtin; recurse` |
 | **MongoDB** | `{$reduce: {input: "$nested", initialValue: [], in: {$concatArrays: ["$$value", "$$this"]}}}  // one level` |
@@ -473,7 +471,7 @@ SELECT ARRAY_REVERSE([1,2,3]) AS rev,
 
 | | |
 |---|---|
-| **SQL (Postgres)** | `SELECT ARRAY_APPEND(ARRAY[1,2], 3), ARRAY[1] \|\| ARRAY[2], GENERATE_SERIES(2, 3)  -- (no array reverse builtin)` |
+| **SQL (Postgres)** | `SELECT ARRAY_APPEND(ARRAY[1,2], 3), ARRAY[1] \|\| ARRAY[2], GENERATE_SERIES(2, 3) -- (no array reverse builtin)` |
 | **DuckDB** | `SELECT LIST_REVERSE(a), RANGE(2,4), LIST_APPEND(a,x), LIST_CONCAT(a,b)` |
 | **JavaScript** | `a.toReversed(); [...Array(2).keys()].map(i=>i+2); [...a, x]; a.concat(b)` |
 | **Python** | `a[::-1]; list(range(2,4)); a + [x]; a + b` |
@@ -499,7 +497,7 @@ SELECT ARRAY letters[i]
 | | |
 |---|---|
 | **SQL (Postgres)** | `SELECT v FROM JSONB_ARRAY_ELEMENTS(col) WITH ORDINALITY t(v, i) WHERE i % 2 = 1` |
-| **DuckDB** | `SELECT LIST_SLICE(letters, 1, 4, 2)   -- 1-based, step 2` |
+| **DuckDB** | `SELECT LIST_SLICE(letters, 1, 4, 2) -- 1-based, step 2` |
 | **JavaScript** | `letters.filter((_, i) => i % 2 === 0)` |
 | **Python** | `letters[::2]` |
 | **MongoDB** | `{$map: {input: {$range: [0, {$size: "$letters"}, 2]}, in: {$arrayElemAt: ["$letters", "$$this"]}}}` |
@@ -596,7 +594,7 @@ SELECT ARRAY_PREPEND(doc.user, doc.projects) AS r
 
 | | |
 |---|---|
-| **SQL (Postgres)** | `SELECT col->'user' \|\| col->'projects'    -- jsonb \|\| concatenates` |
+| **SQL (Postgres)** | `SELECT col->'user' \|\| col->'projects' -- jsonb \|\| concatenates` |
 | **DuckDB** | `SELECT LIST_PREPEND(doc.user, doc.projects)` |
 | **JavaScript** | `[doc.user, ...doc.projects]` |
 | **Python** | `[doc["user"], *doc["projects"]]` |
@@ -623,7 +621,7 @@ SELECT {"user": doc.user, "title": doc.title} AS o
 | | |
 |---|---|
 | **SQL (Postgres)** | `SELECT JSONB_BUILD_OBJECT('user', col->'user', 'title', col->'title')` |
-| **DuckDB** | `SELECT {'user': doc.user, 'title': doc.title}   -- a STRUCT` |
+| **DuckDB** | `SELECT {'user': doc.user, 'title': doc.title} -- a STRUCT` |
 | **JavaScript** | `({user: doc.user, title: doc.title})` |
 | **Python** | `{"user": doc["user"], "title": doc["title"]}` |
 | **MongoDB** | `{$project: {user: 1, title: 1, _id: 0}}` |
@@ -645,7 +643,7 @@ SELECT OBJECT_NAMES(obj) AS k
 
 | | |
 |---|---|
-| **SQL (Postgres)** | `SELECT JSONB_OBJECT_KEYS(col)   -- one row per key` |
+| **SQL (Postgres)** | `SELECT JSONB_OBJECT_KEYS(col) -- one row per key` |
 | **DuckDB** | `SELECT JSON_KEYS(obj)` |
 | **JavaScript** | `Object.keys(obj)` |
 | **Python** | `list(obj.keys())` |
@@ -669,7 +667,7 @@ SELECT OBJECT_PAIRS(obj) AS p
 
 | | |
 |---|---|
-| **SQL (Postgres)** | `SELECT JSONB_EACH(col)   -- rows (key, value)` |
+| **SQL (Postgres)** | `SELECT JSONB_EACH(col) -- rows (key, value)` |
 | **DuckDB** | `SELECT MAP_ENTRIES(obj)` |
 | **JavaScript** | `Object.entries(obj)   // [["a",1],["b",2]]` |
 | **Python** | `list(obj.items())` |
