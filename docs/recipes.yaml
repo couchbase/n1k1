@@ -135,14 +135,14 @@
            ROUND(AVG(total), 2) AS avg
     FROM orders
   sql: |-
-    SELECT COUNT(*) AS n,
-           ROUND(SUM(total),2) AS revenue,
-           ROUND(AVG(total),2) AS avg
+    SELECT COUNT(*)             AS n,
+           ROUND(SUM(total), 2) AS revenue,
+           ROUND(AVG(total), 2) AS avg
     FROM orders
   duckdb: |-
-    SELECT COUNT(*) AS n,
-           ROUND(SUM(total),2) AS revenue,
-           ROUND(AVG(total),2) AS avg
+    SELECT COUNT(*)             AS n,
+           ROUND(SUM(total), 2) AS revenue,
+           ROUND(AVG(total), 2) AS avg
     FROM orders
   js: |-
     ({n: orders.length, revenue: orders.reduce((s, o) => s + o.total, 0)})
@@ -160,7 +160,8 @@
   out: |-
     {"status":"shipped","n":16,"revenue":1758.73}, {"status":"pending",…}, {"status":"cancelled",…}
   sqlpp: |-
-    SELECT status, COUNT(*) AS n,
+    SELECT status,
+           COUNT(*) AS n,
            ROUND(SUM(total), 2) AS revenue
     FROM orders
     GROUP BY status
@@ -231,9 +232,12 @@
     SELECT doc.customer.city
     FROM doc
   sql: |-
-    SELECT col->'customer'->>'city'       -- ->> text, -> jsonb
+    SELECT doc->'customer'->>'city'
+    FROM doc
+    -- ->> text, -> jsonb
   duckdb: |-
     SELECT doc->'$.customer.city'
+    FROM doc
   js: |-
     doc.customer.city
   python: |-
@@ -259,9 +263,11 @@
     SELECT doc.foo
     FROM doc
   sql: |-
-    SELECT col->'foo'      -- NULL if absent
+    SELECT doc->'foo' -- NULL if absent
+    FROM doc
   duckdb: |-
     SELECT doc->'$.foo'
+    FROM doc
   js: |-
     doc.foo               // undefined
   python: |-
@@ -284,12 +290,17 @@
     SELECT nums[0]  AS `first`,
            nums[-1] AS `last`,
            nums[-2] AS penult
+    FROM nums
   sql: |-
-    SELECT col->0,
-           col->-1        -- jsonb: 0-based, -1 = last
+    SELECT nums->0,
+           nums->-1
+           -- jsonb: 0-based, -1 = last
+    FROM nums
   duckdb: |-
     SELECT nums[1],
-           nums[-1]      -- ⚠ DuckDB lists are 1-based
+           nums[-1]
+           -- ⚠ DuckDB lists are 1-based
+    FROM nums
   js: |-
     nums[0]; nums.at(-1)
   python: |-
@@ -338,11 +349,13 @@
     {"r":[2,3,4]}
   sqlpp: |-
     SELECT ARRAY v + 1 FOR v IN nums END AS r
+    FROM doc
   sql: |-
     SELECT JSONB_AGG(value::int + 1) AS r
-    FROM JSONB_ARRAY_ELEMENTS(col)
+    FROM JSONB_ARRAY_ELEMENTS(doc)
   duckdb: |-
     SELECT [x + 1 for x in nums] AS r
+    FROM doc
   js: |-
     nums.map(x => x + 1)
   python: |-
@@ -367,10 +380,11 @@
     WHERE v >= 2
   sql: |-
     SELECT value
-    FROM JSONB_ARRAY_ELEMENTS(col)
+    FROM JSONB_ARRAY_ELEMENTS(doc)
     WHERE value::int >= 2
   duckdb: |-
     SELECT [x for x in nums if x >= 2]
+    FROM doc
   js: |-
     nums.filter(x => x >= 2)
   python: |-
@@ -398,11 +412,12 @@
     SELECT SUM(value::int) AS s,
            MAX(value::int) AS mx,
            AVG(value::int) AS a
-    FROM JSONB_ARRAY_ELEMENTS(col)
+    FROM JSONB_ARRAY_ELEMENTS(doc)
   duckdb: |-
     SELECT LIST_SUM(nums) AS s,
            LIST_MAX(nums) AS mx,
            LIST_AVG(nums) AS a
+    FROM doc
   js: |-
     nums.reduce((a, b) => a + b, 0); Math.max(...nums)
   python: |-
@@ -423,10 +438,13 @@
     {"n":3}
   sqlpp: |-
     SELECT ARRAY_LENGTH(nums) AS n
+    FROM doc
   sql: |-
-    SELECT JSONB_ARRAY_LENGTH(col) AS n
+    SELECT JSONB_ARRAY_LENGTH(nums) AS n
+    FROM doc
   duckdb: |-
     SELECT LEN(nums) AS n
+    FROM doc
   js: |-
     nums.length
   python: |-
@@ -448,13 +466,14 @@
   out: |-
     {"u":[1,2,5,3]}
   sqlpp: |-
-    SELECT ARRAY_AGG(DISTINCT v) AS u
-    FROM nums AS v
+    SELECT ARRAY_AGG(DISTINCT doc.nums) AS u
+    FROM doc
   sql: |-
     SELECT DISTINCT value AS u
-    FROM JSONB_ARRAY_ELEMENTS(col)
+    FROM JSONB_ARRAY_ELEMENTS(doc)
   duckdb: |-
     SELECT LIST_DISTINCT(nums) AS u
+    FROM doc
   js: |-
     [...new Set(nums)]
   python: |-
@@ -480,7 +499,7 @@
   sql: |-
     -- recursive unnest; no single builtin
   duckdb: |-
-    SELECT FLATTEN(nested)        -- one level AS f
+    SELECT FLATTEN(nested) -- one level AS f
   js: |-
     nested.flat(2)
   python: |-

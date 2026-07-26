@@ -157,8 +157,8 @@ FROM orders
 
 | | |
 |---|---|
-| **SQL (Postgres)** | `SELECT COUNT(*) AS n, ROUND(SUM(total),2) AS revenue, ROUND(AVG(total),2) AS avg FROM orders` |
-| **SQL (DuckDB)** | `SELECT COUNT(*) AS n, ROUND(SUM(total),2) AS revenue, ROUND(AVG(total),2) AS avg FROM orders` |
+| **SQL (Postgres)** | `SELECT COUNT(*) AS n, ROUND(SUM(total), 2) AS revenue, ROUND(AVG(total), 2) AS avg FROM orders` |
+| **SQL (DuckDB)** | `SELECT COUNT(*) AS n, ROUND(SUM(total), 2) AS revenue, ROUND(AVG(total), 2) AS avg FROM orders` |
 | **JavaScript** | `({n: orders.length, revenue: orders.reduce((s, o) => s + o.total, 0)})` |
 | **Python** | `{"n": len(orders), "revenue": sum(o["total"] for o in orders)}` |
 | **MongoDB** | `db.orders.aggregate([{$group: {_id: null, n: {$sum: 1}, revenue: {$sum: "$total"}, avg: {$avg: "$total"}}}])` |
@@ -169,7 +169,8 @@ FROM orders
 ### Group, then aggregate each group
 _Over the shop `orders` / `customers` keyspaces._
 ```sql
-SELECT status, COUNT(*) AS n,
+SELECT status,
+       COUNT(*) AS n,
        ROUND(SUM(total), 2) AS revenue
 FROM orders
 GROUP BY status
@@ -230,8 +231,8 @@ FROM doc
 
 | | |
 |---|---|
-| **SQL (Postgres)** | `SELECT col->'customer'->>'city' -- ->> text, -> jsonb` |
-| **SQL (DuckDB)** | `SELECT doc->'$.customer.city'` |
+| **SQL (Postgres)** | `SELECT doc->'customer'->>'city' FROM doc -- ->> text, -> jsonb` |
+| **SQL (DuckDB)** | `SELECT doc->'$.customer.city' FROM doc` |
 | **JavaScript** | `doc.customer.city` |
 | **Python** | `doc["customer"]["city"]` |
 | **MongoDB** | `db.c.find({}, {"customer.city": 1})` |
@@ -256,8 +257,8 @@ FROM doc
 
 | | |
 |---|---|
-| **SQL (Postgres)** | `SELECT col->'foo' -- NULL if absent` |
-| **SQL (DuckDB)** | `SELECT doc->'$.foo'` |
+| **SQL (Postgres)** | `SELECT doc->'foo' -- NULL if absent FROM doc` |
+| **SQL (DuckDB)** | `SELECT doc->'$.foo' FROM doc` |
 | **JavaScript** | `doc.foo               // undefined` |
 | **Python** | `doc.get("foo")        # None` |
 | **MongoDB** | `// a missing field is simply absent from the result` |
@@ -275,14 +276,15 @@ WITH nums AS ([10,20,30])
 SELECT nums[0]  AS `first`,
        nums[-1] AS `last`,
        nums[-2] AS penult
+FROM nums
 -- → {"first":10,"last":30,"penult":20}
 ```
 <details><summary>other dialects</summary>
 
 | | |
 |---|---|
-| **SQL (Postgres)** | `SELECT col->0, col->-1 -- jsonb: 0-based, -1 = last` |
-| **SQL (DuckDB)** | `SELECT nums[1], nums[-1] -- ⚠ DuckDB lists are 1-based` |
+| **SQL (Postgres)** | `SELECT nums->0, nums->-1 -- jsonb: 0-based, -1 = last FROM nums` |
+| **SQL (DuckDB)** | `SELECT nums[1], nums[-1] -- ⚠ DuckDB lists are 1-based FROM nums` |
 | **JavaScript** | `nums[0]; nums.at(-1)` |
 | **Python** | `nums[0]; nums[-1]` |
 | **MongoDB** | `{$arrayElemAt: ["$nums", -1]}` |
@@ -325,14 +327,15 @@ nums = [1, 2, 3]
 ```sql
 WITH nums AS ([1,2,3])
 SELECT ARRAY v + 1 FOR v IN nums END AS r
+FROM doc
 -- → {"r":[2,3,4]}
 ```
 <details><summary>other dialects</summary>
 
 | | |
 |---|---|
-| **SQL (Postgres)** | `SELECT JSONB_AGG(value::int + 1) AS r FROM JSONB_ARRAY_ELEMENTS(col)` |
-| **SQL (DuckDB)** | `SELECT [x + 1 for x in nums] AS r` |
+| **SQL (Postgres)** | `SELECT JSONB_AGG(value::int + 1) AS r FROM JSONB_ARRAY_ELEMENTS(doc)` |
+| **SQL (DuckDB)** | `SELECT [x + 1 for x in nums] AS r FROM doc` |
 | **JavaScript** | `nums.map(x => x + 1)` |
 | **Python** | `[x + 1 for x in nums]` |
 | **MongoDB** | `{$map: {input: "$nums", as: "v", in: {$add: ["$$v", 1]}}}` |
@@ -356,8 +359,8 @@ WHERE v >= 2
 
 | | |
 |---|---|
-| **SQL (Postgres)** | `SELECT value FROM JSONB_ARRAY_ELEMENTS(col) WHERE value::int >= 2` |
-| **SQL (DuckDB)** | `SELECT [x for x in nums if x >= 2]` |
+| **SQL (Postgres)** | `SELECT value FROM JSONB_ARRAY_ELEMENTS(doc) WHERE value::int >= 2` |
+| **SQL (DuckDB)** | `SELECT [x for x in nums if x >= 2] FROM doc` |
 | **JavaScript** | `nums.filter(x => x >= 2)` |
 | **Python** | `[x for x in nums if x >= 2]` |
 | **MongoDB** | `{$filter: {input: "$nums", cond: {$gte: ["$$this", 2]}}}` |
@@ -382,8 +385,8 @@ FROM nums AS v
 
 | | |
 |---|---|
-| **SQL (Postgres)** | `SELECT SUM(value::int) AS s, MAX(value::int) AS mx, AVG(value::int) AS a FROM JSONB_ARRAY_ELEMENTS(col)` |
-| **SQL (DuckDB)** | `SELECT LIST_SUM(nums) AS s, LIST_MAX(nums) AS mx, LIST_AVG(nums) AS a` |
+| **SQL (Postgres)** | `SELECT SUM(value::int) AS s, MAX(value::int) AS mx, AVG(value::int) AS a FROM JSONB_ARRAY_ELEMENTS(doc)` |
+| **SQL (DuckDB)** | `SELECT LIST_SUM(nums) AS s, LIST_MAX(nums) AS mx, LIST_AVG(nums) AS a FROM doc` |
 | **JavaScript** | `nums.reduce((a, b) => a + b, 0); Math.max(...nums)` |
 | **Python** | `sum(nums); max(nums); statistics.mean(nums)` |
 | **MongoDB** | `{$sum: "$nums"}; {$max: "$nums"}; {$avg: "$nums"}` |
@@ -399,14 +402,15 @@ nums = [1, 2, 3]
 ```sql
 WITH nums AS ([1,2,3])
 SELECT ARRAY_LENGTH(nums) AS n
+FROM doc
 -- → {"n":3}
 ```
 <details><summary>other dialects</summary>
 
 | | |
 |---|---|
-| **SQL (Postgres)** | `SELECT JSONB_ARRAY_LENGTH(col) AS n` |
-| **SQL (DuckDB)** | `SELECT LEN(nums) AS n` |
+| **SQL (Postgres)** | `SELECT JSONB_ARRAY_LENGTH(nums) AS n FROM doc` |
+| **SQL (DuckDB)** | `SELECT LEN(nums) AS n FROM doc` |
 | **JavaScript** | `nums.length` |
 | **Python** | `len(nums)` |
 | **MongoDB** | `{$size: "$nums"}` |
@@ -422,16 +426,16 @@ nums = [1, 2, 5, 3, 5, 3, 1]
 ```
 ```sql
 WITH nums AS ([1,2,5,3,5,3,1])
-SELECT ARRAY_AGG(DISTINCT v) AS u
-FROM nums AS v
+SELECT ARRAY_AGG(DISTINCT doc.nums) AS u
+FROM doc
 -- → {"u":[1,2,5,3]}
 ```
 <details><summary>other dialects</summary>
 
 | | |
 |---|---|
-| **SQL (Postgres)** | `SELECT DISTINCT value AS u FROM JSONB_ARRAY_ELEMENTS(col)` |
-| **SQL (DuckDB)** | `SELECT LIST_DISTINCT(nums) AS u` |
+| **SQL (Postgres)** | `SELECT DISTINCT value AS u FROM JSONB_ARRAY_ELEMENTS(doc)` |
+| **SQL (DuckDB)** | `SELECT LIST_DISTINCT(nums) AS u FROM doc` |
 | **JavaScript** | `[...new Set(nums)]` |
 | **Python** | `list(dict.fromkeys(nums))` |
 | **MongoDB** | `{$setUnion: ["$nums", []]}   // unordered` |

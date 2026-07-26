@@ -65,12 +65,9 @@ SECTION_INTROS = {
         "DuckDB/JS/Python/Mongo have no clean one-liner — you recurse.",
 }
 
-HTML_TITLE = "SQL++ recipes — a JSON slice-and-dice Rosetta stone"
-HTML_SUB = ("The same JSON maneuver in SQL++, SQL, DuckDB, JavaScript, Python, MongoDB, "
-            "and jq. SQL++ (frozen, left) is the runnable column — each example ran against "
-            "n1k1. Toggle the other dialects on; scroll the table; filter with the search box.")
-HTML_FOOTER = ("Generated from docs/recipes.yaml by docs/recipes_build.py — which n1k1 can "
-               "itself query. Sources: the jq manual (jqlang.org/manual) and Remy Sharp's jq recipes.")
+HTML_TITLE = "SQL++ recipes"
+HTML_SUB = ("The same JSON maneuver in SQL++, SQL (Postgres & DuckDB), JavaScript, Python, MongoDB, and jq.")
+HTML_FOOTER = ("Generated from docs/recipes.yaml by docs/recipes_build.py")
 
 PREAMBLE = """# SQL++ recipes — a SQL++ / SQL / jq Rosetta stone
 
