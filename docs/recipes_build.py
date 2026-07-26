@@ -397,8 +397,10 @@ h1{margin:0 0 8px;font-size:24px;font-weight:680;letter-spacing:-.015em;text-wra
 /* the table scroller: fills the space beside the TOC, scrolls both axes */
 .wrap{flex:1;min-height:0;overflow:auto}
 tr.desc{scroll-margin-top:44px}
-/* SQL++ column content aligns to the shared gutter (a touch right of other cells) */
-td.c-sqlpp,th.c-sqlpp{padding-left:var(--gutter)}
+/* SQL++ column sits a step RIGHT of the recipe title (which is at --gutter), so the
+   query reads as a child of the recipe in the outline (child X >= parent X). The
+   higher-specificity `.code td.c-sqlpp` is needed to beat `.code td`'s padding shorthand. */
+th.c-sqlpp,.code td.c-sqlpp{padding-left:calc(var(--gutter) + 10px)}
 /* "full command line" toggle: swap each runnable cell for its CLI invocation */
 .cli-pill{--d:var(--accent)}
 pre.cell-cli{display:none}
