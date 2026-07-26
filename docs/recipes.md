@@ -340,7 +340,7 @@ FROM doc
 
 ## 3. Transforming arrays
 
-### map — transform every element
+### Map — transform every element
 SQL++ has two forms: a scan (SELECT … FROM nums) or the inline array comprehension
 ARRAY … FOR … END that returns one array value.
 _Source data:_
@@ -366,15 +366,16 @@ FROM doc
 
 </details>
 
-### filter — keep matching elements
+### Filter — keep matching elements
 _Source data:_
 ```
 doc = {"nums": [1, 5, 3, 0, 7]}
 ```
 ```sql
 WITH doc AS ({"nums":[1,5,3,0,7]})
-SELECT ARRAY v FOR v IN doc.nums WHEN v >= 2 END AS r
-FROM doc
+SELECT ARRAY v
+         FOR v IN doc.nums
+         WHEN v >= 2
 -- → {"r":[5,3,7]}
 ```
 <details><summary>other dialects</summary>
@@ -490,7 +491,7 @@ FROM doc
 
 </details>
 
-### reverse · range · append · concat
+### Reverse · range · append · concat
 ```sql
 SELECT ARRAY_REVERSE([1,2,3]) AS rev,
        ARRAY_RANGE(2, 4)      AS rng,
@@ -502,7 +503,7 @@ SELECT ARRAY_REVERSE([1,2,3]) AS rev,
 
 | | |
 |---|---|
-| **SQL (Postgres)** | `SELECT ARRAY_APPEND(ARRAY[1,2], 3), ARRAY[1] \|\| ARRAY[2], GENERATE_SERIES(2, 3) -- (no array reverse builtin)` |
+| **SQL (Postgres)** | `SELECT ARRAY_APPEND(ARRAY[1,2], 3) AS rng, ARRAY[1] \|\| ARRAY[2] AS app, GENERATE_SERIES(2, 3) AS cat -- (no array reverse builtin)` |
 | **SQL (DuckDB)** | `SELECT LIST_REVERSE(a) AS rev, RANGE(2,4) AS rng, LIST_APPEND(a,x) AS app, LIST_CONCAT(a,b) AS cat` |
 | **JavaScript** | `a.toReversed(); [...Array(2).keys()].map(i=>i+2); [...a, x]; a.concat(b)` |
 | **Python** | `a[::-1]; list(range(2,4)); a + [x]; a + b` |
@@ -520,7 +521,8 @@ doc = {"letters": ["a", "b", "c", "d"]}
 ```sql
 WITH doc AS ({"letters":["a","b","c","d"]})
 SELECT ARRAY doc.letters[i]
-       FOR i IN ARRAY_RANGE(0, ARRAY_LENGTH(doc.letters), 2) END AS evens
+       FOR i IN ARRAY_RANGE(0, ARRAY_LENGTH(doc.letters), 2)
+           END AS evens
 FROM doc
 -- → {"evens":["a","c"]}
 ```
@@ -547,7 +549,8 @@ doc = {"nums": [1, 2, 3, 4, 5]}
 ```sql
 WITH doc AS ({"nums":[1,2,3,4,5]})
 SELECT ARRAY doc.nums[i:LEAST(i + 2, ARRAY_LENGTH(doc.nums))]
-       FOR i IN ARRAY_RANGE(0, ARRAY_LENGTH(doc.nums), 2) END AS chunks
+       FOR i IN ARRAY_RANGE(0, ARRAY_LENGTH(doc.nums), 2)
+           END AS chunks
 FROM doc
 -- → {"chunks":[[1,2],[3,4],[5]]}
 ```
@@ -658,7 +661,7 @@ FROM doc
 | | |
 |---|---|
 | **SQL (Postgres)** | `SELECT JSONB_BUILD_OBJECT('user', doc->'user', 'title', doc->'title') AS o FROM doc` |
-| **SQL (DuckDB)** | `SELECT {'user': doc.user, 'title': doc.title} AS o -- a STRUCT FROM doc` |
+| **SQL (DuckDB)** | `SELECT {'user': doc.user, 'title': doc.title} AS o FROM doc` |
 | **JavaScript** | `({user: doc.user, title: doc.title})` |
 | **Python** | `{"user": doc["user"], "title": doc["title"]}` |
 | **MongoDB** | `{$project: {user: 1, title: 1, _id: 0}}` |
@@ -722,7 +725,8 @@ doc = {"pairs": [{"name": "a", "val": 1}]}
 ```
 ```sql
 WITH doc AS ({"pairs":[{"name":"a","val":1}]})
-SELECT OBJECT p.name : p.val FOR p IN doc.pairs END AS o
+SELECT OBJECT p.name : p.val
+         FOR p IN doc.pairs END AS o
 FROM doc
 -- → {"o":{"a":1}}
 ```
@@ -771,7 +775,8 @@ doc = {"obj": {"a": 1, "b": 2}}
 ```
 ```sql
 WITH doc AS ({"obj":{"a":1,"b":2}})
-SELECT OBJECT p.name : p.val + 1 FOR p IN OBJECT_PAIRS(doc.obj) END AS o
+SELECT OBJECT p.name : p.val + 1
+         FOR p IN OBJECT_PAIRS(doc.obj) END AS o
 FROM doc
 -- → {"o":{"a":2,"b":3}}
 ```
@@ -795,7 +800,8 @@ doc = {"obj": {"a": 1, "b": 2}}
 ```
 ```sql
 WITH doc AS ({"obj":{"a":1,"b":2}})
-SELECT OBJECT TO_STRING(p.val) : p.name FOR p IN OBJECT_PAIRS(doc.obj) END AS o
+SELECT OBJECT TO_STRING(p.val) : p.name
+         FOR p IN OBJECT_PAIRS(doc.obj) END AS o
 FROM doc
 -- → {"o":{"1":"a","2":"b"}}
 ```
@@ -845,7 +851,7 @@ doc = {"obj": {"x": {"n": 1}}}
 ```sql
 WITH doc AS ({"obj":{"x":{"n":1}}})
 SELECT ARRAY OBJECT_ADD(p.val, "slug", p.name)
-       FOR p IN OBJECT_PAIRS(doc.obj) END AS a
+         FOR p IN OBJECT_PAIRS(doc.obj) END AS a
 FROM doc
 -- → {"a":[{"n":1,"slug":"x"}]}
 ```
@@ -869,7 +875,8 @@ doc = {"recs": [{"slug": "x", "n": 1}]}
 ```
 ```sql
 WITH doc AS ({"recs":[{"slug":"x","n":1}]})
-SELECT OBJECT r.slug : r FOR r IN doc.recs END AS o
+SELECT OBJECT r.slug : r
+         FOR r IN doc.recs END AS o
 FROM doc
 -- → {"o":{"x":{"n":1,"slug":"x"}}}
 ```
@@ -967,7 +974,7 @@ HAVING COUNT(*) > 1
 
 ## 7. Strings & numbers
 
-### split / join
+### Split / join
 ```sql
 SELECT SPLIT("a,b,c", ",")         AS parts,
        CONCAT2("-", ["a","b","c"]) AS joined
@@ -986,7 +993,7 @@ SELECT SPLIT("a,b,c", ",")         AS parts,
 
 </details>
 
-### upcase / trim-prefix / titlecase
+### Upcase / trim-prefix / titlecase
 ```sql
 SELECT UPPER("abc")           AS up,
        LTRIM("foobar", "foo") AS trimmed,
@@ -998,7 +1005,7 @@ SELECT UPPER("abc")           AS up,
 | | |
 |---|---|
 | **SQL (Postgres)** | `SELECT UPPER(s) AS up, LTRIM(s, 'foo') AS trimmed, INITCAP(s) AS titled` |
-| **SQL (DuckDB)** | `SELECT UPPER(s), LTRIM(s, 'foo')` |
+| **SQL (DuckDB)** | `SELECT UPPER(s), AS up, LTRIM(s, 'foo') AS trimmed` |
 | **JavaScript** | `s.toUpperCase(); s.replace(/^foo/, "")` |
 | **Python** | `s.upper(); s.removeprefix("foo"); s.title()` |
 | **MongoDB** | `{$toUpper: "$s"}; {$ltrim: {input: "$s", chars: "foo"}}` |
@@ -1043,7 +1050,7 @@ SELECT POSITION("a, b", ", ") AS i
 
 </details>
 
-### floor / round / sqrt / integer-divide
+### Floor / round / sqrt / integer-divide
 ```sql
 SELECT FLOOR(3.7)        AS fl,
        ROUND(3.14159, 2) AS rnd,
@@ -1072,7 +1079,8 @@ doc = {"vals": [0, false, [], {}, null, "x"]}
 ```
 ```sql
 WITH doc AS ({"vals":[0,false,[],{},null,"x"]})
-SELECT ARRAY TYPE(v) FOR v IN doc.vals END AS t
+SELECT ARRAY TYPE(v)
+         FOR v IN doc.vals END AS t
 FROM doc
 -- → {"t":["number","boolean","array","object","null","string"]}
 ```
@@ -1102,8 +1110,8 @@ doc = {"tree": {"a": 0, "b": [1]}}
 ```
 ```sql
 WITH doc AS ({"tree":{"a":0,"b":[1]}})
-SELECT ARRAY v FOR v WITHIN doc.tree END AS descendants
-FROM doc
+SELECT ARRAY v
+         FOR v WITHIN doc.tree
 -- → {"descendants":[0,[1],1]}
 ```
 <details><summary>other dialects</summary>
@@ -1124,7 +1132,8 @@ doc = {"tree": {"a": {"b": 5}}}
 ```
 ```sql
 WITH doc AS ({"tree":{"a":{"b":5}}})
-SELECT ANY v WITHIN doc.tree SATISFIES v = 5 END AS found
+SELECT ANY v WITHIN doc.tree
+             SATISFIES v = 5 END AS found
 FROM doc
 -- → {"found":true}
 ```
@@ -1146,8 +1155,8 @@ doc = {"tree": {"a": {"id": "x"}, "b": [{"id": "y"}]}}
 ```
 ```sql
 WITH doc AS ({"tree":{"a":{"id":"x"},"b":[{"id":"y"}]}})
-SELECT ARRAY v FOR v WITHIN doc.tree WHEN v.id = "y" END AS hits
-FROM doc
+SELECT ARRAY v
+         FOR v WITHIN doc.tree
 -- → {"hits":[{"id":"y"}]}
 ```
 <details><summary>other dialects</summary>
@@ -1226,8 +1235,7 @@ doc = {"team": [{"n": "a"}], "formerly": [{"n": "b"}]}
 ```sql
 WITH doc AS ({"team":[{"n":"a"}],"formerly":[{"n":"b"}]})
 SELECT ARRAY_CONCAT(doc.team,
-       ARRAY OBJECT_ADD(m, "formerly", true) FOR m IN doc.formerly END) AS everyone
-FROM doc
+                    ARRAY OBJECT_ADD(m, "formerly", true)
 -- → {"everyone":[{"n":"a"},{"formerly":true,"n":"b"}]}
 ```
 <details><summary>other dialects</summary>
@@ -1245,7 +1253,7 @@ FROM doc
 
 ## 10. Conditionals & defaults
 
-### if / then / else
+### Conditionals: if / then / else
 ```sql
 SELECT CASE WHEN 5 > 3 THEN "big" ELSE "small" END AS c
 -- → {"c":"big"}
@@ -1298,7 +1306,10 @@ doc = {"vals": [{"a": 1}, "str"]}
 ```
 ```sql
 WITH doc AS ({"vals":[{"a":1},"str"]})
-SELECT ARRAY (CASE WHEN TYPE(x) = "object" THEN x.a END) FOR x IN doc.vals END AS a
+SELECT ARRAY (CASE WHEN TYPE(x) = "object"
+                   THEN x.a
+              END)
+         FOR x IN doc.vals END AS a
 FROM doc
 -- → {"a":[1,null]}   (the string has no .a → null)
 ```

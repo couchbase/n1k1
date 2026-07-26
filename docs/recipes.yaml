@@ -311,12 +311,14 @@
     SELECT doc->'nums'->0  AS "first",
            doc->'nums'->-1 AS "last",
            doc->'nums'->-2 AS penult
-    FROM doc   -- jsonb: 0-based, -1 = last
+    FROM doc
+    -- jsonb: 0-based, -1 = last
   duckdb: |-
     SELECT doc.nums[1]  AS first,
            doc.nums[-1] AS last,
            doc.nums[-2] AS penult
-    FROM doc   -- ⚠ 1-based
+    FROM doc
+    -- ⚠ 1-based
   js: |-
     doc.nums[0]; doc.nums.at(-1); doc.nums.at(-2)
   python: |-
@@ -342,7 +344,8 @@
     FROM doc
   duckdb: |-
     SELECT doc.letters[3:4] AS s
-    FROM doc   -- ⚠ 1-based, inclusive
+    FROM doc
+    -- ⚠ 1-based, inclusive
   js: |-
     doc.letters.slice(2, 4)
   python: |-
@@ -354,7 +357,7 @@
 # ============================================================ 3. arrays
 - section: '3. Transforming arrays'
   section_color: '#d97706'
-  title: 'map — transform every element'
+  title: 'Map — transform every element'
   note: |-
     SQL++ has two forms: a scan (SELECT … FROM nums) or the inline array comprehension
     ARRAY … FOR … END that returns one array value.
@@ -383,7 +386,7 @@
     .nums | map(. + 1)
 - section: '3. Transforming arrays'
   section_color: '#d97706'
-  title: 'filter — keep matching elements'
+  title: 'Filter — keep matching elements'
   data: |-
     doc = {"nums": [1, 5, 3, 0, 7]}
   bind: |-
@@ -391,7 +394,10 @@
   out: |-
     {"r":[5,3,7]}
   sqlpp: |-
-    SELECT ARRAY v FOR v IN doc.nums WHEN v >= 2 END AS r
+    SELECT ARRAY v
+             FOR v IN doc.nums
+             WHEN v >= 2
+	     END AS r
     FROM doc
   sql: |-
     SELECT JSONB_AGG(v) AS r
@@ -512,7 +518,8 @@
     -- recursive unnest; no single builtin
   duckdb: |-
     SELECT FLATTEN(doc.nested) AS f
-    FROM doc   -- one level
+    FROM doc
+    -- one level
   js: |-
     doc.nested.flat(2)
   python: |-
@@ -523,7 +530,7 @@
     .nested | flatten
 - section: '3. Transforming arrays'
   section_color: '#d97706'
-  title: 'reverse · range · append · concat'
+  title: 'Reverse · range · append · concat'
   out: |-
     {"rev":[3,2,1],"rng":[2,3],"app":[1,2,3],"cat":[1,2]}
   sqlpp: |-
@@ -532,12 +539,13 @@
            ARRAY_APPEND([1,2], 3) AS app,
            ARRAY_CONCAT([1], [2]) AS cat
   sql: |-
-    SELECT ARRAY_APPEND(ARRAY[1,2], 3),
-           ARRAY[1] || ARRAY[2],
-           GENERATE_SERIES(2, 3)  -- (no array reverse builtin)
+    SELECT ARRAY_APPEND(ARRAY[1,2], 3) AS rng,
+           ARRAY[1] || ARRAY[2]        AS app,
+           GENERATE_SERIES(2, 3)       AS cat
+           -- (no array reverse builtin)           	   
   duckdb: |-
-    SELECT LIST_REVERSE(a) AS rev,
-           RANGE(2,4) AS rng,
+    SELECT LIST_REVERSE(a)  AS rev,
+           RANGE(2,4)       AS rng,
            LIST_APPEND(a,x) AS app,
            LIST_CONCAT(a,b) AS cat
   js: |-
@@ -562,15 +570,18 @@
     {"evens":["a","c"]}
   sqlpp: |-
     SELECT ARRAY doc.letters[i]
-           FOR i IN ARRAY_RANGE(0, ARRAY_LENGTH(doc.letters), 2) END AS evens
+           FOR i IN ARRAY_RANGE(0, ARRAY_LENGTH(doc.letters), 2)
+               END AS evens
     FROM doc
   sql: |-
     SELECT JSONB_AGG(v) AS evens
-    FROM doc, JSONB_ARRAY_ELEMENTS(doc->'letters') WITH ORDINALITY t(v, i)
+    FROM doc,
+         JSONB_ARRAY_ELEMENTS(doc->'letters') WITH ORDINALITY t(v, i)
     WHERE i % 2 = 1
   duckdb: |-
     SELECT LIST_SLICE(doc.letters, 1, 4, 2) AS evens
-    FROM doc   -- 1-based, step 2
+    FROM doc
+    -- 1-based, step 2
   js: |-
     doc.letters.filter((_, i) => i % 2 === 0)
   python: |-
@@ -593,7 +604,8 @@
     {"chunks":[[1,2],[3,4],[5]]}
   sqlpp: |-
     SELECT ARRAY doc.nums[i:LEAST(i + 2, ARRAY_LENGTH(doc.nums))]
-           FOR i IN ARRAY_RANGE(0, ARRAY_LENGTH(doc.nums), 2) END AS chunks
+           FOR i IN ARRAY_RANGE(0, ARRAY_LENGTH(doc.nums), 2)
+               END AS chunks
     FROM doc
   sql: |-
     -- window / ntile, or generate_series with slicing
@@ -709,7 +721,7 @@
     SELECT JSONB_BUILD_OBJECT('user', doc->'user', 'title', doc->'title') AS o
     FROM doc
   duckdb: |-
-    SELECT {'user': doc.user, 'title': doc.title} AS o   -- a STRUCT
+    SELECT {'user': doc.user, 'title': doc.title} AS o
     FROM doc
   js: |-
     ({user: doc.user, title: doc.title})
@@ -784,7 +796,8 @@
   out: |-
     {"o":{"a":1}}
   sqlpp: |-
-    SELECT OBJECT p.name : p.val FOR p IN doc.pairs END AS o
+    SELECT OBJECT p.name : p.val
+             FOR p IN doc.pairs END AS o
     FROM doc
   sql: |-
     SELECT JSONB_OBJECT_AGG(p->>'name', p->'val') AS o
@@ -838,13 +851,15 @@
   out: |-
     {"o":{"a":2,"b":3}}
   sqlpp: |-
-    SELECT OBJECT p.name : p.val + 1 FOR p IN OBJECT_PAIRS(doc.obj) END AS o
+    SELECT OBJECT p.name : p.val + 1
+             FOR p IN OBJECT_PAIRS(doc.obj) END AS o
     FROM doc
   sql: |-
     SELECT JSONB_OBJECT_AGG(k, (v::int)+1) AS o
     FROM doc, JSONB_EACH(doc->'obj') AS e(k, v)
   duckdb: |-
-    SELECT MAP_FROM_ENTRIES([{'k': e.key, 'v': e.value + 1} for e in MAP_ENTRIES(doc.obj)]) AS o
+    SELECT MAP_FROM_ENTRIES([{'k': e.key, 'v': e.value + 1}
+                             for e in MAP_ENTRIES(doc.obj)]) AS o
     FROM doc
   js: |-
     Object.fromEntries(Object.entries(doc.obj).map(([k, v]) => [k, v + 1]))
@@ -864,13 +879,15 @@
   out: |-
     {"o":{"1":"a","2":"b"}}
   sqlpp: |-
-    SELECT OBJECT TO_STRING(p.val) : p.name FOR p IN OBJECT_PAIRS(doc.obj) END AS o
+    SELECT OBJECT TO_STRING(p.val) : p.name
+             FOR p IN OBJECT_PAIRS(doc.obj) END AS o
     FROM doc
   sql: |-
     SELECT JSONB_OBJECT_AGG(v#>>'{}', k) AS o
     FROM doc, JSONB_EACH(doc->'obj') AS e(k, v)
   duckdb: |-
-    SELECT MAP_FROM_ENTRIES([{'k': e.value::VARCHAR, 'v': e.key} for e in MAP_ENTRIES(doc.obj)]) AS o
+    SELECT MAP_FROM_ENTRIES([{'k': e.value::VARCHAR, 'v': e.key}
+                             for e in MAP_ENTRIES(doc.obj)]) AS o
     FROM doc
   js: |-
     Object.fromEntries(Object.entries(doc.obj).map(([k, v]) => [v, k]))
@@ -895,11 +912,11 @@
     FROM doc
   sql: |-
     SELECT doc->'obj' || '{"draft":true}' AS added,
-           doc->'obj' - 'title'        AS removed
+           doc->'obj' - 'title'           AS removed
     FROM doc
   duckdb: |-
     SELECT STRUCT_INSERT(doc.obj, draft := true) AS added,
-           doc.obj.* EXCLUDE (title)   AS removed
+           doc.obj.* EXCLUDE (title)             AS removed
     FROM doc
   js: |-
     ({...doc.obj, draft: true})   |   (({title, ...rest}) => rest)(doc.obj)
@@ -920,13 +937,14 @@
     {"a":[{"n":1,"slug":"x"}]}
   sqlpp: |-
     SELECT ARRAY OBJECT_ADD(p.val, "slug", p.name)
-           FOR p IN OBJECT_PAIRS(doc.obj) END AS a
+             FOR p IN OBJECT_PAIRS(doc.obj) END AS a
     FROM doc
   sql: |-
     SELECT JSONB_AGG(v || JSONB_BUILD_OBJECT('slug', k)) AS a
     FROM doc, JSONB_EACH(doc->'obj') AS e(k, v)
   duckdb: |-
-    SELECT [STRUCT_INSERT(e.value, slug := e.key) for e in MAP_ENTRIES(doc.obj)] AS a
+    SELECT [STRUCT_INSERT(e.value, slug := e.key)
+            for e in MAP_ENTRIES(doc.obj)] AS a
     FROM doc
   js: |-
     Object.entries(doc.obj).map(([k, v]) => ({...v, slug: k}))
@@ -946,13 +964,15 @@
   out: |-
     {"o":{"x":{"n":1,"slug":"x"}}}
   sqlpp: |-
-    SELECT OBJECT r.slug : r FOR r IN doc.recs END AS o
+    SELECT OBJECT r.slug : r
+             FOR r IN doc.recs END AS o
     FROM doc
   sql: |-
     SELECT JSONB_OBJECT_AGG(r->>'slug', r) AS o
     FROM doc, JSONB_ARRAY_ELEMENTS(doc->'recs') AS r
   duckdb: |-
-    SELECT MAP_FROM_ENTRIES([{'k': r.slug, 'v': r} for r in doc.recs]) AS o
+    SELECT MAP_FROM_ENTRIES([{'k': r.slug, 'v': r}
+                             for r in doc.recs]) AS o
     FROM doc
   js: |-
     Object.fromEntries(doc.recs.map(r => [r.slug, r]))
@@ -1059,7 +1079,7 @@
 # ============================================================ 7. strings & numbers
 - section: '7. Strings & numbers'
   section_color: '#16a34a'
-  title: 'split / join'
+  title: 'Split / join'
   out: |-
     {"parts":["a","b","c"],"joined":"a-b-c"}
   sqlpp: |-
@@ -1067,9 +1087,9 @@
            CONCAT2("-", ["a","b","c"]) AS joined
   sql: |-
     SELECT STRING_TO_ARRAY('a,b,c', ',') AS parts,
-           ARRAY_TO_STRING(a, '-') AS joined
+           ARRAY_TO_STRING(a, '-')       AS joined
   duckdb: |-
-    SELECT STRING_SPLIT('a,b,c', ',') AS parts,
+    SELECT STRING_SPLIT('a,b,c', ',')          AS parts,
            ARRAY_TO_STRING(['a','b','c'], '-') AS joined
   js: |-
     "a,b,c".split(","); ["a","b","c"].join("-")
@@ -1082,7 +1102,7 @@
 
 - section: '7. Strings & numbers'
   section_color: '#16a34a'
-  title: 'upcase / trim-prefix / titlecase'
+  title: 'Upcase / trim-prefix / titlecase'
   out: |-
     {"up":"ABC","trimmed":"bar","titled":"Hi There"}
   sqlpp: |-
@@ -1090,12 +1110,12 @@
            LTRIM("foobar", "foo") AS trimmed,
            TITLE("hi there")      AS titled
   sql: |-
-    SELECT UPPER(s) AS up,
+    SELECT UPPER(s)        AS up,
            LTRIM(s, 'foo') AS trimmed,
-           INITCAP(s) AS titled
+           INITCAP(s)      AS titled
   duckdb: |-
-    SELECT UPPER(s),
-           LTRIM(s, 'foo')
+    SELECT UPPER(s),       AS up,
+           LTRIM(s, 'foo') AS trimmed
   js: |-
     s.toUpperCase(); s.replace(/^foo/, "")
   python: |-
@@ -1149,7 +1169,7 @@
 
 - section: '7. Strings & numbers'
   section_color: '#16a34a'
-  title: 'floor / round / sqrt / integer-divide'
+  title: 'Floor / round / sqrt / integer-divide'
   out: |-
     {"fl":3,"rnd":3.14,"sq":3,"idiv":3}
   sqlpp: |-
@@ -1158,15 +1178,15 @@
            SQRT(9)           AS sq,
            IDIV(7, 2)        AS idiv
   sql: |-
-    SELECT FLOOR(x) AS fl,
+    SELECT FLOOR(x)    AS fl,
            ROUND(x, 2) AS rnd,
-           SQRT(x) AS sq,
-           DIV(7, 2) AS idiv
+           SQRT(x)     AS sq,
+           DIV(7, 2)   AS idiv
   duckdb: |-
-    SELECT FLOOR(x) AS fl,
+    SELECT FLOOR(x)    AS fl,
            ROUND(x, 2) AS rnd,
-           SQRT(x) AS sq,
-           7 // 2 AS idiv
+           SQRT(x)     AS sq,
+           7 // 2      AS idiv
   js: |-
     Math.floor(x); +x.toFixed(2); Math.sqrt(x); Math.trunc(7/2)
   python: |-
@@ -1188,7 +1208,8 @@
   out: |-
     {"t":["number","boolean","array","object","null","string"]}
   sqlpp: |-
-    SELECT ARRAY TYPE(v) FOR v IN doc.vals END AS t
+    SELECT ARRAY TYPE(v)
+             FOR v IN doc.vals END AS t
     FROM doc
   sql: |-
     SELECT JSONB_AGG(JSONB_TYPEOF(v)) AS t
@@ -1218,7 +1239,9 @@
   out: |-
     {"descendants":[0,[1],1]}
   sqlpp: |-
-    SELECT ARRAY v FOR v WITHIN doc.tree END AS descendants
+    SELECT ARRAY v
+             FOR v WITHIN doc.tree
+	     END AS descendants
     FROM doc
   sql: |-
     SELECT JSONB_PATH_QUERY_ARRAY(doc->'tree', '$..*') AS descendants
@@ -1243,7 +1266,8 @@
   out: |-
     {"found":true}
   sqlpp: |-
-    SELECT ANY v WITHIN doc.tree SATISFIES v = 5 END AS found
+    SELECT ANY v WITHIN doc.tree
+                 SATISFIES v = 5 END AS found
     FROM doc
   sql: |-
     SELECT JSONB_PATH_EXISTS(doc->'tree', '$..* ? (@ == 5)') AS found
@@ -1268,7 +1292,10 @@
   out: |-
     {"hits":[{"id":"y"}]}
   sqlpp: |-
-    SELECT ARRAY v FOR v WITHIN doc.tree WHEN v.id = "y" END AS hits
+    SELECT ARRAY v
+             FOR v WITHIN doc.tree
+	     WHEN v.id = "y"
+	     END AS hits
     FROM doc
   sql: |-
     SELECT JSONB_PATH_QUERY_ARRAY(doc->'tree', '$..* ? (@.id == "y")') AS hits
@@ -1303,7 +1330,8 @@
     UNNEST o.tags AS t
   sql: |-
     SELECT o->>'id', t AS tag
-    FROM doc, JSONB_ARRAY_ELEMENTS(doc->'docs') AS o, JSONB_ARRAY_ELEMENTS_TEXT(o->'tags') AS t
+    FROM doc, JSONB_ARRAY_ELEMENTS(doc->'docs') AS o,
+              JSONB_ARRAY_ELEMENTS_TEXT(o->'tags') AS t
   duckdb: |-
     SELECT o.id, UNNEST(o.tags) AS tag
     FROM doc, UNNEST(doc.docs) AS s(o)
@@ -1357,7 +1385,8 @@
     {"everyone":[{"n":"a"},{"formerly":true,"n":"b"}]}
   sqlpp: |-
     SELECT ARRAY_CONCAT(doc.team,
-           ARRAY OBJECT_ADD(m, "formerly", true) FOR m IN doc.formerly END) AS everyone
+                        ARRAY OBJECT_ADD(m, "formerly", true)
+	                  FOR m IN doc.formerly END) AS everyone
     FROM doc
   sql: |-
     SELECT (doc->'team') || (SELECT JSONB_AGG(m || '{"formerly":true}')
@@ -1365,7 +1394,8 @@
     FROM doc
   duckdb: |-
     SELECT LIST_CONCAT(doc.team,
-           [STRUCT_INSERT(m, formerly := true) for m in doc.formerly]) AS everyone
+           [STRUCT_INSERT(m, formerly := true)
+            for m in doc.formerly]) AS everyone
     FROM doc
   js: |-
     [...doc.team, ...doc.formerly.map(m => ({...m, formerly: true}))]
@@ -1379,7 +1409,7 @@
 # ============================================================ 10. conditionals
 - section: '10. Conditionals & defaults'
   section_color: '#64748b'
-  title: 'if / then / else'
+  title: 'Conditionals: if / then / else'
   out: |-
     {"c":"big"}
   sqlpp: |-
@@ -1440,7 +1470,10 @@
   out: |-
     {"a":[1,null]}   (the string has no .a → null)
   sqlpp: |-
-    SELECT ARRAY (CASE WHEN TYPE(x) = "object" THEN x.a END) FOR x IN doc.vals END AS a
+    SELECT ARRAY (CASE WHEN TYPE(x) = "object"
+                       THEN x.a
+                  END)
+             FOR x IN doc.vals END AS a
     FROM doc
   sql: |-
     —
