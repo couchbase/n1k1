@@ -19,7 +19,7 @@ Two roles, one source:
    late-bound) subset of Go with comment directives, so `cmd/intermed_build`
    can translate them into the generated `intermed/` package, which the n1k1
    compiler then uses to emit Go for a specific query (a Futamura projection).
-   See `../DESIGN.md`.
+   See `docs/design/DESIGN.md`.
 
 Extension points keep the engine decoupled from SQL++ and storage:
 - `ExprCatalog` — expression constructors (`glue/` registers SQL++ expressions).

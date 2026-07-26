@@ -1,7 +1,7 @@
 # test/benchmark/ — do DESIGN.md's perf techniques work?
 
-Phase 1 of `../../DESIGN-benchmark.md`: in-process, pure-Go benchmarks over
-synthetic local data that measure the claims in `../../DESIGN.md`. Each runs the
+Phase 1 of `docs/design/DESIGN-benchmark.md`: in-process, pure-Go benchmarks over
+synthetic local data that measure the claims in `docs/design/DESIGN.md`. Each runs the
 engine with a **no-op yield** (count rows, discard bytes), so the number is the
 engine, not output formatting.
 

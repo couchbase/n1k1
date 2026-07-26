@@ -326,7 +326,7 @@ $ ./n1k1 -stats=final -c "SELECT id FROM orders WHERE REGEXP_CONTAINS(customer, 
 ```
 
 The cbq fallback stays forever as a correctness backstop; the native library
-grows underneath it (see [DESIGN-exprs.md](DESIGN-exprs.md)).
+grows underneath it (see [docs/design/DESIGN-exprs.md](docs/design/DESIGN-exprs.md)).
 
 **Push-based operators.** Data flows scan → filter → project as plain function
 calls (`yield`), not channel sends or `HasNext()` polling — shorter codepaths,
@@ -339,7 +339,7 @@ inlinable, no per-row iterator overhead.
 and the `lz`-marked lines become `printf`s that **emit Go source** — a
 **compiler** for the query plan, specialized per query, from the identical
 logic. No second implementation to keep in sync. (See
-[DESIGN.md](DESIGN.md), "The way the n1k1 compiler works".)
+[docs/design/DESIGN.md](docs/design/DESIGN.md), "The way the n1k1 compiler works".)
 
 `.prepare <query>` makes it visible — like `EXPLAIN`, but it prints the generated
 Go for that plan instead of running it:
@@ -361,7 +361,7 @@ compile (default `interpreted`; `-prepare=full` emits Go at PREPARE time). A que
 that needs a datastore reports its preparability instead of emitting — n1k1 keeps
 the interpreter as the always-available fallback. (Codegen is a research path:
 n1k1's interpreter is already fast, so compiling mainly pays off for hot, repeated
-queries — see [DESIGN-prepare.md](DESIGN-prepare.md).)
+queries — see [docs/design/DESIGN-prepare.md](docs/design/DESIGN-prepare.md).)
 
 **Spill to disk.** Joins, `DISTINCT`, `GROUP BY` (hashmaps), and `ORDER BY`
 (max-heaps) spill from memory to temporary files when a working set gets too
