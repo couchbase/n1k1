@@ -282,17 +282,21 @@ CSS = """
   --line:#232a33;--line2:#1a1f27;--sticky:#0f1216;--band:#161b22;--desc:#141922;
   --accent:#8b93ff;--sqlpp:#161a2e;--sqlpp-edge:#2b3168;--focus:#8b93ff;}
 *{box-sizing:border-box}
-html,body{margin:0}
+html,body{margin:0;height:100%;overflow:hidden}
 body{color:var(--fg);background:var(--bg);
   font:15px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
   text-rendering:optimizeLegibility}
 a{color:var(--accent);text-underline-offset:2px}
-/* header — scrolls away */
-header{padding:26px 26px 20px;border-bottom:1px solid var(--line)}
-h1{margin:0 0 8px;font-size:25px;font-weight:680;letter-spacing:-.015em;text-wrap:balance;max-width:30ch}
+/* app = a full-viewport column: a fixed top bar over a single scroller. This makes
+   the table's own thead reliably sticky (a real bounded scroll ancestor) even when
+   embedded in an auto-height iframe. */
+.app{height:100dvh;display:flex;flex-direction:column;overflow:hidden}
+/* header — inside the scroller, so it scrolls away to free vertical space */
+header{padding:22px 26px 18px;border-bottom:1px solid var(--line)}
+h1{margin:0 0 8px;font-size:24px;font-weight:680;letter-spacing:-.015em;text-wrap:balance;max-width:30ch}
 .sub{color:var(--muted);font-size:13.5px;line-height:1.5;max-width:82ch}
-/* toolbar — the only chrome that stays pinned, alongside the table headers */
-.toolbar{position:sticky;top:0;z-index:50;background:var(--sticky);
+/* toolbar — a fixed top bar (dialect switcher + filter); never scrolls */
+.toolbar{flex:none;position:relative;z-index:5;background:var(--sticky);
   border-bottom:1px solid var(--line);padding:10px 26px;min-height:var(--tb);
   display:flex;flex-wrap:wrap;gap:8px 9px;align-items:center}
 .toolbar .lbl{font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:var(--faint);margin-right:2px}
@@ -309,8 +313,8 @@ h1{margin:0 0 8px;font-size:25px;font-weight:680;letter-spacing:-.015em;text-wra
 #q{margin-left:auto;padding:6px 11px;border:1px solid var(--line);border-radius:8px;
   background:var(--bg);color:var(--fg);font-size:13px;min-width:190px}
 #q:focus-visible{outline:2px solid var(--focus);outline-offset:1px;border-color:transparent}
-/* the table scroller: fills the viewport under the pinned toolbar, scrolls both axes */
-.wrap{overflow:auto;height:calc(100dvh - var(--tb))}
+/* the table scroller: fills the viewport under the top bar, scrolls both axes */
+.wrap{flex:1;min-height:0;overflow:auto}
 table{border-collapse:separate;border-spacing:0;width:max-content;min-width:100%;font-size:13px}
 td,th{border-bottom:1px solid var(--line);vertical-align:top;text-align:left}
 /* column headers — pinned to the top of the scroller */
@@ -389,11 +393,9 @@ def render_html_body():
     sec = secondary()
     ncols = 1 + len(sec)
 
-    T = [f"<style>{CSS}{dot_css()}</style>"]
-    T.append(f'<header><h1>{html.escape(HTML_TITLE)}</h1>'
-             f'<div class="sub">{html.escape(HTML_SUB)}</div></header>')
+    T = [f"<style>{CSS}{dot_css()}</style>", '<div class="app">']
 
-    # toolbar = dialect switcher + filter (stays pinned)
+    # toolbar = dialect switcher + filter — a fixed top bar (never scrolls)
     T.append('<div class="toolbar"><span class="lbl">dialects</span>')
     for d in sec:
         chk = "" if d.get("hidden_default") else "checked"
@@ -401,7 +403,11 @@ def render_html_body():
                  f'<span class="dot"></span>{html.escape(d["label"])}</label>')
     T.append('<input id="q" type="search" placeholder="filter recipes…" aria-label="filter recipes"></div>')
 
-    T.append('<div class="wrap"><table>')
+    # the scroller: header scrolls away; thead + SQL++ column stay pinned within it
+    T.append('<div class="wrap">')
+    T.append(f'<header><h1>{html.escape(HTML_TITLE)}</h1>'
+             f'<div class="sub">{html.escape(HTML_SUB)}</div></header>')
+    T.append("<table>")
     T.append("<colgroup><col class='c-sqlpp'>" + "".join(f"<col class='col-{d['id']}'>" for d in sec) + "</colgroup>")
     T.append("<thead><tr>")
     T.append(f'<th class="c-sqlpp"><span class="dot d-{prim["id"]}"></span>{html.escape(prim["label"])}</th>')
@@ -428,8 +434,9 @@ def render_html_body():
             for d in sec:
                 T.append(code_td(r.get(d["id"], ""), "col-" + d["id"]))
             T.append("</tr>")
-    T.append("</tbody></table></div>")
+    T.append("</tbody></table>")
     T.append(f"<footer>{html.escape(HTML_FOOTER)}</footer>")
+    T.append("</div></div>")  # close .wrap, .app
     T.append(f"<script>{JS}</script>")
     return "".join(T)
 
