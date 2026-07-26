@@ -291,9 +291,13 @@ a{color:var(--accent);text-underline-offset:2px}
    the table's own thead reliably sticky (a real bounded scroll ancestor) even when
    embedded in an auto-height iframe. */
 .app{height:100dvh;display:flex;flex-direction:column;overflow:hidden}
+/* .inner spans the full scroll width (= the table's), so a sticky-left child stays
+   pinned across the ENTIRE horizontal scroll — a sticky element only sticks within
+   its containing block, and a plain block child of .wrap is only viewport-wide */
+.inner{width:max-content;min-width:100%}
 /* header — inside the scroller: scrolls away vertically, but its text stays pinned
    left (sticky left:0) so it doesn't drift when the table scrolls horizontally */
-header{border-bottom:1px solid var(--line);background:var(--bg)}
+header{width:100%;border-bottom:1px solid var(--line);background:var(--bg)}
 .hin{position:sticky;left:0;max-width:min(96vw,900px);padding:22px 26px 18px}
 h1{margin:0 0 8px;font-size:24px;font-weight:680;letter-spacing:-.015em;text-wrap:balance;max-width:30ch}
 .sub{color:var(--muted);font-size:13.5px;line-height:1.5;max-width:82ch}
@@ -349,7 +353,8 @@ pre{margin:0;font-family:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,
   font-variant-numeric:tabular-nums;max-width:46ch}
 .out{color:var(--faint)}
 col.hidden,td.hidden,th.hidden{display:none}
-footer{padding:18px 26px;color:var(--muted);font-size:12.5px;line-height:1.6;border-top:1px solid var(--line)}
+footer{position:sticky;left:0;max-width:min(96vw,900px);padding:18px 26px;
+  color:var(--muted);font-size:12.5px;line-height:1.6;border-top:1px solid var(--line)}
 @media(prefers-reduced-motion:reduce){*{transition:none!important}}
 """
 
@@ -405,8 +410,9 @@ def render_html_body():
                  f'<span class="dot"></span>{html.escape(d["label"])}</label>')
     T.append('<input id="q" type="search" placeholder="filter recipes…" aria-label="filter recipes"></div>')
 
-    # the scroller: header scrolls away; thead + SQL++ column stay pinned within it
-    T.append('<div class="wrap">')
+    # the scroller: header scrolls away; thead + SQL++ column stay pinned within it.
+    # .inner is table-wide so the header's sticky-left content pins across the whole scroll.
+    T.append('<div class="wrap"><div class="inner">')
     T.append(f'<header><div class="hin"><h1>{html.escape(HTML_TITLE)}</h1>'
              f'<div class="sub">{html.escape(HTML_SUB)}</div></div></header>')
     T.append("<table>")
@@ -438,7 +444,7 @@ def render_html_body():
             T.append("</tr>")
     T.append("</tbody></table>")
     T.append(f"<footer>{html.escape(HTML_FOOTER)}</footer>")
-    T.append("</div></div>")  # close .wrap, .app
+    T.append("</div></div></div>")  # close .inner, .wrap, .app
     T.append(f"<script>{JS}</script>")
     return "".join(T)
 
