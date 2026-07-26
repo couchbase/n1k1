@@ -10,6 +10,7 @@
 
 # ============================================================ 1. collection
 - section: '1. Querying a collection'
+  section_color: '#4f46e5'
   title: 'Pick fields from each record'
   needs: 'shop'
   data: |-
@@ -34,6 +35,7 @@
     .[] | {id, status, total}
 
 - section: '1. Querying a collection'
+  section_color: '#4f46e5'
   title: 'Keep matching records'
   needs: 'shop'
   out: |-
@@ -56,6 +58,7 @@
     map(select(.total > 100))
 
 - section: '1. Querying a collection'
+  section_color: '#4f46e5'
   title: 'Sort, then take the top N'
   needs: 'shop'
   out: |-
@@ -79,6 +82,7 @@
     sort_by(.total) | reverse | .[:3]
 
 - section: '1. Querying a collection'
+  section_color: '#4f46e5'
   title: 'The single largest record'
   note: |-
     jq's max_by returns the whole record with the largest key; in SQL it's ORDER BY … LIMIT 1.
@@ -104,6 +108,7 @@
     max_by(.total)
 
 - section: '1. Querying a collection'
+  section_color: '#4f46e5'
   title: 'Count and total a collection'
   needs: 'shop'
   out: |-
@@ -127,6 +132,7 @@
     {n: length, revenue: (map(.total) | add)}
 
 - section: '1. Querying a collection'
+  section_color: '#4f46e5'
   title: 'Group, then aggregate each group'
   needs: 'shop'
   out: |-
@@ -155,6 +161,7 @@
     group_by(.status)   # → array of arrays
 
 - section: '1. Querying a collection'
+  section_color: '#4f46e5'
   title: 'RAW — one bare value per row (not an object)'
   note: |-
     A normal SELECT yields objects; SELECT RAW (jq's .[] | .field) yields the bare value —
@@ -180,6 +187,7 @@
 
 # ============================================================ 2. reach in
 - section: '2. Reaching into a value'
+  section_color: '#0d9488'
   title: 'Field access, including nested'
   data: |-
     doc = {"id": "o1", "customer": {"name": "Dave", "city": "Austin"}}
@@ -203,6 +211,7 @@
     .customer.city
 
 - section: '2. Reaching into a value'
+  section_color: '#0d9488'
   title: 'A missing field is MISSING (not an error)'
   note: |-
     jq's ? suppresses errors on non-objects; SQL++ has no error — a missing path is MISSING
@@ -229,6 +238,7 @@
     .foo?                 # no error even on a non-object
 
 - section: '2. Reaching into a value'
+  section_color: '#0d9488'
   title: 'Array index — 0-based, negatives from the end'
   data: |-
     nums = [10, 20, 30]
@@ -254,6 +264,7 @@
     .[0], .[-1]
 
 - section: '2. Reaching into a value'
+  section_color: '#0d9488'
   title: 'Slice a range'
   data: |-
     letters = ["a", "b", "c", "d", "e"]
@@ -278,6 +289,7 @@
 
 # ============================================================ 3. arrays
 - section: '3. Transforming arrays'
+  section_color: '#d97706'
   title: 'map — transform every element'
   note: |-
     SQL++ has two forms: a scan (SELECT … FROM nums) or the inline array comprehension
@@ -304,6 +316,7 @@
     map(. + 1)
 
 - section: '3. Transforming arrays'
+  section_color: '#d97706'
   title: 'filter — keep matching elements'
   data: |-
     nums = [1, 5, 3, 0, 7]
@@ -329,6 +342,7 @@
     map(select(. >= 2))
 
 - section: '3. Transforming arrays'
+  section_color: '#d97706'
   title: 'Sum, min, max, average'
   data: |-
     nums = [1, 2, 3]
@@ -354,6 +368,7 @@
     add; max; (add / length)
 
 - section: '3. Transforming arrays'
+  section_color: '#d97706'
   title: 'Length / count of elements'
   data: |-
     nums = [1, 2, 3]
@@ -377,6 +392,7 @@
     length
 
 - section: '3. Transforming arrays'
+  section_color: '#d97706'
   title: 'Unique / dedup'
   note: |-
     ARRAY_DISTINCT keeps first-seen order; wrap in ARRAY_SORT for jq's sorted result.
@@ -402,6 +418,7 @@
     unique   # sorted
 
 - section: '3. Transforming arrays'
+  section_color: '#d97706'
   title: 'Flatten nested arrays'
   note: |-
     ⚠ SQL++ ARRAY_FLATTEN needs an explicit depth; jq flattens fully.
@@ -427,6 +444,7 @@
     flatten
 
 - section: '3. Transforming arrays'
+  section_color: '#d97706'
   title: 'reverse · range · append · concat'
   out: |-
     {"rev":[3,2,1],"rng":[2,3],"app":[1,2,3],"cat":[1,2]}
@@ -449,6 +467,7 @@
     reverse; [range(2;4)]; . + [x]; .a + .b
 
 - section: '3. Transforming arrays'
+  section_color: '#d97706'
   title: 'Every other element'
   note: |-
     Index by a stepped range (OBJECT_PAIRS works on objects only, not arrays).
@@ -475,6 +494,7 @@
     [range(0; length; 2) as $i | .[$i]]
 
 - section: '3. Transforming arrays'
+  section_color: '#d97706'
   title: 'Chunk into fixed-size groups'
   note: |-
     ⚠ Clamp the slice end with LEAST(…, ARRAY_LENGTH(a)) — a slice past the end is MISSING
@@ -503,6 +523,7 @@
 
 # ============================================================ 4. iterate/collect
 - section: '4. Iterating & collecting'
+  section_color: '#0284c7'
   title: 'Visit each element'
   data: |-
     people = [{"name": "JSON"}, {"name": "XML"}]
@@ -527,6 +548,7 @@
     .[]
 
 - section: '4. Iterating & collecting'
+  section_color: '#0284c7'
   title: 'One field from each element'
   data: |-
     people = [{"name": "JSON"}, {"name": "XML"}]
@@ -551,6 +573,7 @@
     .[] | .name
 
 - section: '4. Iterating & collecting'
+  section_color: '#0284c7'
   title: 'Collect values into one array'
   data: |-
     doc = {"user": "s", "projects": ["jq", "wf"]}
@@ -575,6 +598,7 @@
 
 # ============================================================ 5. objects
 - section: '5. Building & reshaping objects'
+  section_color: '#7c3aed'
   title: 'Build an object'
   note: |-
     Keys inside a constructed object render sorted (canonical JSON): title before user.
@@ -600,6 +624,7 @@
     {user, title}
 
 - section: '5. Building & reshaping objects'
+  section_color: '#7c3aed'
   title: "List an object's keys"
   data: |-
     obj = {"b": 2, "a": 1}
@@ -623,6 +648,7 @@
     keys   # sorted
 
 - section: '5. Building & reshaping objects'
+  section_color: '#7c3aed'
   title: 'Object → array of pairs'
   note: |-
     ⚠ SQL++ OBJECT_PAIRS yields {name, val}; jq yields {key, value}.
@@ -648,6 +674,7 @@
     to_entries   # [{key,value}]
 
 - section: '5. Building & reshaping objects'
+  section_color: '#7c3aed'
   title: 'Pairs → object'
   data: |-
     pairs = [{"name": "a", "val": 1}]
@@ -671,6 +698,7 @@
     from_entries
 
 - section: '5. Building & reshaping objects'
+  section_color: '#7c3aed'
   title: 'Object with a key from the data'
   note: |-
     ⚠ Keys must be strings; `value` is a reserved word (back-quoted).
@@ -696,6 +724,7 @@
     map({(.label): .value}) | add
 
 - section: '5. Building & reshaping objects'
+  section_color: '#7c3aed'
   title: 'Transform every value, keep keys'
   data: |-
     obj = {"a": 1, "b": 2}
@@ -719,6 +748,7 @@
     map_values(. + 1)
 
 - section: '5. Building & reshaping objects'
+  section_color: '#7c3aed'
   title: 'Swap keys and values'
   data: |-
     obj = {"a": 1, "b": 2}
@@ -742,6 +772,7 @@
     to_entries | map({(.value): .key}) | add
 
 - section: '5. Building & reshaping objects'
+  section_color: '#7c3aed'
   title: 'Add / remove a field'
   data: |-
     obj = {"title": "x", "a": 1}
@@ -766,6 +797,7 @@
     . + {draft: true}   |   del(.title)
 
 - section: '5. Building & reshaping objects'
+  section_color: '#7c3aed'
   title: 'Object → array of objects (key becomes a field)'
   data: |-
     obj = {"x": {"n": 1}}
@@ -790,6 +822,7 @@
     to_entries | map(.value + {slug: .key})
 
 - section: '5. Building & reshaping objects'
+  section_color: '#7c3aed'
   title: 'Array of objects → object keyed by a field'
   data: |-
     recs = [{"slug": "x", "n": 1}]
@@ -814,6 +847,7 @@
 
 # ============================================================ 6. aggregate deeper
 - section: '6. Aggregating a collection'
+  section_color: '#db2777'
   title: "Collect each group's members"
   needs: 'shop'
   out: |-
@@ -836,6 +870,7 @@
     group_by(.customer) | map({customer: .[0].customer, ids: map(.id)})
 
 - section: '6. Aggregating a collection'
+  section_color: '#db2777'
   title: 'Count occurrences (histogram)'
   data: |-
     tags = ["a", "b", "a"]
@@ -861,6 +896,7 @@
     reduce .[] as $x ({}; .[$x] += 1)
 
 - section: '6. Aggregating a collection'
+  section_color: '#db2777'
   title: 'Find duplicates by key'
   needs: 'shop'
   out: |-
@@ -885,6 +921,7 @@
 
 # ============================================================ 7. strings & numbers
 - section: '7. Strings & numbers'
+  section_color: '#16a34a'
   title: 'split / join'
   out: |-
     {"parts":["a","b","c"],"joined":"a-b-c"}
@@ -905,6 +942,7 @@
     split(","); join("-")
 
 - section: '7. Strings & numbers'
+  section_color: '#16a34a'
   title: 'upcase / trim-prefix / titlecase'
   out: |-
     {"up":"ABC","trimmed":"bar","titled":"Hi There"}
@@ -926,6 +964,7 @@
     ascii_upcase; ltrimstr("foo")
 
 - section: '7. Strings & numbers'
+  section_color: '#16a34a'
   title: 'String interpolation'
   out: |-
     {"msg":"total is 3"}
@@ -945,6 +984,7 @@
     "total is \(. + 1)"
 
 - section: '7. Strings & numbers'
+  section_color: '#16a34a'
   title: 'Index of a substring'
   note: |-
     ⚠ SQL++ POSITION is 0-based; Postgres/DuckDB are 1-based.
@@ -966,6 +1006,7 @@
     index(", ")
 
 - section: '7. Strings & numbers'
+  section_color: '#16a34a'
   title: 'floor / round / sqrt / integer-divide'
   out: |-
     {"fl":3,"rnd":3.14,"sq":3,"idiv":3}
@@ -988,6 +1029,7 @@
     floor; sqrt; (7 / 2 | floor)
 
 - section: '7. Strings & numbers'
+  section_color: '#16a34a'
   title: 'Name the JSON type'
   note: |-
     ⚠ SQL++ TYPE() is lowercase and distinguishes "missing" from "null".
@@ -1014,6 +1056,7 @@
 
 # ============================================================ 8. recursion
 - section: '8. Recursion & deep search'
+  section_color: '#ea580c'
   title: 'Recurse into every descendant'
   note: |-
     SQL++'s answer to jq's .. is the WITHIN operator (descend into any nested value).
@@ -1040,6 +1083,7 @@
     ..
 
 - section: '8. Recursion & deep search'
+  section_color: '#ea580c'
   title: 'Does a value appear anywhere in the tree?'
   data: |-
     tree = {"a": {"b": 5}}
@@ -1063,6 +1107,7 @@
     [.. | select(. == 5)] | length > 0
 
 - section: '8. Recursion & deep search'
+  section_color: '#ea580c'
   title: 'Find every object with a given id, at any depth'
   data: |-
     tree = {"a": {"id": "x"}, "b": [{"id": "y"}]}
@@ -1087,6 +1132,7 @@
 
 # ============================================================ 9. reshaping
 - section: '9. Reshaping records'
+  section_color: '#0891b2'
   title: 'UNNEST — explode a nested array into rows'
   note: |-
     The workhorse for line-items, tags, events. SQL++ UNNEST pairs each element with its
@@ -1115,6 +1161,7 @@
     .[] | {id, tag: .tags[]}
 
 - section: '9. Reshaping records'
+  section_color: '#0891b2'
   title: 'Reshape + rename + sort'
   data: |-
     dms = [{"text": "hi", "sender": {"screen_name": "amy"}, "ts": 2},
@@ -1141,6 +1188,7 @@
     [.[] | {text, from: .sender.screen_name}] | sort_by(.ts)
 
 - section: '9. Reshaping records'
+  section_color: '#0891b2'
   title: 'Merge two arrays, flagging one'
   data: |-
     doc = {"team": [{"n": "a"}], "formerly": [{"n": "b"}]}
@@ -1166,6 +1214,7 @@
 
 # ============================================================ 10. conditionals
 - section: '10. Conditionals & defaults'
+  section_color: '#64748b'
   title: 'if / then / else'
   out: |-
     {"c":"big"}
@@ -1185,6 +1234,7 @@
     if . > 3 then "big" else "small" end
 
 - section: '10. Conditionals & defaults'
+  section_color: '#64748b'
   title: 'Default for a missing/null value'
   note: |-
     SQL++ splits what COALESCE and jq's // blur: IFMISSING / IFNULL / IFMISSINGORNULL treat
@@ -1211,6 +1261,7 @@
     .foo // "default"
 
 - section: '10. Conditionals & defaults'
+  section_color: '#64748b'
   title: "Type guard (jq's try/catch)"
   note: |-
     jq guards type errors with try/catch; SQL++ has no type errors — a bad op yields

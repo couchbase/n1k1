@@ -370,7 +370,8 @@ h1{margin:0 0 8px;font-size:24px;font-weight:680;letter-spacing:-.015em;text-wra
   box-shadow:0 0 0 3px color-mix(in srgb,var(--d) 16%,transparent)}
 .pill:not(:has(input:checked)) .dot{background:var(--faint);box-shadow:none}
 .toolbar .lead{font-size:13px;font-weight:600;color:var(--fg);margin-right:2px}
-.toc-toggle{order:-1;flex:none;border:1px solid var(--line);background:transparent;color:var(--muted);
+.toc-toggle{order:-1;flex:none;margin-left:-8px;margin-right:8px;   /* the primary top-left anchor */
+  border:1px solid var(--line);background:transparent;color:var(--muted);
   border-radius:7px;padding:4px 9px;cursor:pointer;font-size:14px;line-height:1}
 .toc-toggle:hover{border-color:var(--faint);color:var(--fg)}
 .toc-toggle:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
@@ -383,7 +384,9 @@ h1{margin:0 0 8px;font-size:24px;font-weight:680;letter-spacing:-.015em;text-wra
   color:var(--faint);padding:10px var(--gutter) 4px}
 .toc ul{list-style:none;margin:0;padding:0}
 .toc-sec{font-size:10px;font-weight:680;letter-spacing:.04em;text-transform:uppercase;
-  color:var(--muted);padding:13px var(--gutter) 3px}
+  color:var(--muted);padding:13px var(--gutter) 3px;margin-top:6px;
+  border-left:3px solid var(--sc, transparent);padding-left:calc(var(--gutter) - 3px);
+  background:color-mix(in srgb, var(--sc, transparent) 13%, var(--bg))}
 .toc a{display:block;padding:4px 14px 4px var(--gutter);font-size:12.5px;color:var(--muted);
   text-decoration:none;border-left:2px solid transparent;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -415,7 +418,9 @@ thead .c-sqlpp{z-index:31;background:var(--sqlpp);border-right-color:var(--sqlpp
 .code td.empty{color:var(--line);text-align:center;font-family:ui-monospace,monospace}
 /* section banner + recipe description rows: full width, text stays pinned left */
 .sec td,.desc td{padding:0;border-right:none}
-.sec td{background:var(--band)}
+/* per-section tint (--sc set per row from the YAML) grounds where you are while scrolling */
+.sec td{background:color-mix(in srgb, var(--sc, transparent) 16%, var(--band))}
+.sec .stick{border-left:3px solid var(--sc, var(--line));padding-left:calc(var(--gutter) - 3px)}
 .desc td{background:var(--desc)}
 .stick{position:sticky;left:0;display:inline-flex;flex-direction:column;align-items:flex-start;
   gap:4px;padding:10px var(--gutter);max-width:min(94vw,760px)}
@@ -519,6 +524,56 @@ def dot_css():
     return "".join(css)
 
 
+_SQL_KW = ["UNION ALL", "UNION", "GROUP BY", "ORDER BY", "LETTING", "HAVING",
+           "UNNEST", "FROM", "WHERE", "LIMIT"]
+
+
+def reflow(s):
+    """Break a SQL-family one-liner before each top-level clause keyword, matching how
+    the SQL++ examples are formatted. No-op on short expressions (no clause keywords)."""
+    s = s.strip()
+    out, i, n, depth, q = [], 0, len(s), 0, None
+    while i < n:
+        c = s[i]
+        if q:
+            out.append(c)
+            if c == q:
+                q = None
+            i += 1
+            continue
+        if c in "\"'":
+            q = c
+            out.append(c)
+            i += 1
+            continue
+        if c in "([{":
+            depth += 1
+            out.append(c)
+            i += 1
+            continue
+        if c in ")]}":
+            depth -= 1
+            out.append(c)
+            i += 1
+            continue
+        if depth == 0 and c in " \n":
+            j = i
+            while j < n and s[j] in " \n":
+                j += 1
+            hit = next((kw for kw in _SQL_KW if s[j:j + len(kw)] == kw
+                        and (j + len(kw) >= n or not (s[j + len(kw)].isalnum() or s[j + len(kw)] == "_"))), None)
+            if hit and "".join(out).strip():
+                out.append("\n")
+                i = j
+                continue
+            out.append(c)
+            i += 1
+            continue
+        out.append(c)
+        i += 1
+    return "\n".join(l.rstrip() for l in "".join(out).split("\n"))
+
+
 def cell(kind, plain_html, clitext):
     """A code <td>. When the dialect has a CLI form, carry both — the 'full command
     line' toggle swaps them via a body class (no re-render)."""
@@ -531,7 +586,9 @@ def cell(kind, plain_html, clitext):
 def code_td(did, code, r, kind):
     if not code or code.strip() == "—":
         return f'<td class="empty {kind}">—</td>'
-    return cell(kind, html.escape(code.strip()), cli_text(did, code, r))
+    # the SQL family mirrors SQL++'s clause-per-line breaks
+    disp = reflow(code) if did in ("sql", "duckdb") else code.strip()
+    return cell(kind, html.escape(disp), cli_text(did, code, r))
 
 
 def render_html_body():
@@ -567,7 +624,9 @@ def render_html_body():
     # left: table of contents — scrollspy-tracked, click scrolls the table
     T.append('<nav class="toc"><div class="toc-head">Contents</div><ul>')
     for title, lst in numbered:
-        T.append(f'<li class="toc-sec">{html.escape(title)}</li>')
+        sc = lst[0][1].get("section_color", "")
+        scstyle = f' style="--sc:{sc}"' if sc else ""
+        T.append(f'<li class="toc-sec"{scstyle}>{html.escape(title)}</li>')
         for i, r in lst:
             T.append(f'<li><a data-toc="{i}" href="#rec-{i}" '
                      f'title="{html.escape(r["title"])}">{html.escape(short_title(r["title"]))}</a></li>')
@@ -587,7 +646,10 @@ def render_html_body():
     T.append("</tr></thead><tbody>")
 
     for title, lst in numbered:
-        T.append(f'<tr class="sec"><td colspan="{ncols}"><span class="stick">{html.escape(title)}</span></td></tr>')
+        sc = lst[0][1].get("section_color", "")
+        scstyle = f' style="--sc:{sc}"' if sc else ""
+        T.append(f'<tr class="sec"{scstyle}><td colspan="{ncols}"><span class="stick">'
+                 f'{html.escape(title)}</span></td></tr>')
         for rid, r in lst:
             # description row (colspan) — text stays pinned left; id is the scroll target
             note = f'<span class="rnote">{html.escape(r["note"].strip())}</span>' if r.get("note") else ""
