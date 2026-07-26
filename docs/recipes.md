@@ -2,9 +2,14 @@
 
 _Slicing and dicing JSON: the same maneuver across seven tools._
 
-> **This file is generated** from `docs/recipes.toml` by `docs/build_recipes.py`.
-> Edit the `.toml`, not this `.md`. An interactive HTML version with toggleable
-> dialect columns lives at `docs/recipes.html`.
+> **This file is generated** from `docs/recipes.yaml` by `docs/recipes_build.py`.
+> Edit the `.yaml`, not this `.md`. An interactive HTML version with toggleable
+> dialect columns lives at `docs/recipes.html`. And because the source is a plain
+> YAML sequence of records, **n1k1 can query it directly**:
+>
+> ```sh
+> n1k1 -c 'SELECT r.section, COUNT(*) AS n FROM recipes r GROUP BY r.section' docs/recipes.yaml
+> ```
 
 This guide is about doing JSON surgery in **SQL++** (the N1QL dialect n1k1 runs),
 cross-translated so you can lean on what you already know. Each recipe shows SQL++
@@ -27,8 +32,6 @@ data root:
 ```sh
 n1k1 -c 'SELECT * FROM orders LIMIT 1' examples/shop
 # {"type":"order","id":"1005","customer":"dave","total":22.0,"items":1,"status":"shipped","ts":"2026-01-06"}
-n1k1 -c 'SELECT * FROM customers LIMIT 1' examples/shop
-# {"type":"customer","id":"dave","name":"Dave Kim","city":"Austin","since":2020}
 ```
 
 ## The three mental models
@@ -39,14 +42,12 @@ n1k1 -c 'SELECT * FROM customers LIMIT 1' examples/shop
 | **JSON is** | the native value type | a `json`/`jsonb` column | the whole world |
 | **"for each element"** | `FROM arr AS x` / `UNNEST` | `jsonb_array_elements(col)` | `.[]` |
 | **transform each** | `SELECT f …` / `ARRAY f FOR x IN … END` | `SELECT f FROM …` | `map(f)` |
-| **keep some** | `WHERE cond` | `WHERE cond` | `select(cond)` |
 | **build an object** | `{"a": x}` | `jsonb_build_object('a', x)` | `{a: .x}` |
 | **object ↔ pairs** | `OBJECT_PAIRS` / `OBJECT … FOR … END` | `jsonb_each` / `jsonb_object_agg` | `to_entries`/`from_entries` |
 
 **SQL++ and SQL treat every task as a query over a collection; jq treats it as a
-stream rewrite.** DuckDB, JavaScript, Python, and MongoDB each land somewhere on
-that spectrum — DuckDB is SQL with list comprehensions, JS/Python are imperative
-map/filter, MongoDB is a document pipeline (its twin of jq's pipe *and* SQL's
+stream rewrite.** DuckDB is SQL with list comprehensions; JS/Python are imperative
+map/filter; MongoDB is a document pipeline (its twin of jq's pipe *and* SQL's
 `GROUP BY`). What makes SQL++ special is that it has jq's JSON-surgery verbs
 (`ARRAY … FOR`, `OBJECT … FOR`, `WITHIN`, `UNNEST`, `OBJECT_PAIRS`) *inside* a set
 query — so you rarely have to choose.
@@ -55,7 +56,8 @@ query — so you rarely have to choose.
 
 ### Field access — .foo, .foo.bar
 ```sql
-SELECT RAW o.customer FROM orders o
+SELECT RAW o.customer
+FROM orders o
 -- → "dave", "alice", … (one per order)
 ```
 <details><summary>other dialects</summary>
@@ -74,7 +76,8 @@ SELECT RAW o.customer FROM orders o
 ### Optional / missing field
 jq's ? suppresses errors on non-objects; SQL++ has no error — a missing path is MISSING and just drops out.
 ```sql
-SELECT x.foo FROM [{"bar":1}] AS x
+SELECT x.foo
+FROM [{"bar":1}] AS x
 -- → {}   (foo is MISSING, so the key is omitted)
 ```
 <details><summary>other dialects</summary>
@@ -134,7 +137,8 @@ The pivot between the models: SQL++/SQL/DuckDB scan a collection, JS/Python loop
 
 ### Iterate — one output per element
 ```sql
-SELECT RAW x FROM [{"name":"JSON"},{"name":"XML"}] AS x
+SELECT RAW x
+FROM [{"name":"JSON"},{"name":"XML"}] AS x
 -- → {"name":"JSON"} then {"name":"XML"}
 ```
 <details><summary>other dialects</summary>
@@ -152,7 +156,8 @@ SELECT RAW x FROM [{"name":"JSON"},{"name":"XML"}] AS x
 
 ### Project a field from each element
 ```sql
-SELECT RAW x.name FROM [{"name":"JSON"},{"name":"XML"}] AS x
+SELECT RAW x.name
+FROM [{"name":"JSON"},{"name":"XML"}] AS x
 -- → "JSON", "XML"
 ```
 <details><summary>other dialects</summary>
@@ -249,7 +254,9 @@ SELECT OBJECT r.label : r.`value` FOR r IN [{"label":"a","value":1}] END AS o
 
 ### Keep elements matching a condition
 ```sql
-SELECT RAW v FROM [1,5,3,0,7] AS v WHERE v >= 2
+SELECT RAW v
+FROM [1,5,3,0,7] AS v
+WHERE v >= 2
 -- → 5, 3, 7
 ```
 <details><summary>other dialects</summary>
@@ -267,7 +274,8 @@ SELECT RAW v FROM [1,5,3,0,7] AS v WHERE v >= 2
 
 ### has / missing a key
 ```sql
-SELECT x.endpoint IS NOT MISSING AS has FROM [{"endpoint":1},{}] AS x
+SELECT x.endpoint IS NOT MISSING AS has
+FROM [{"endpoint":1},{}] AS x
 -- → {"has":true} then {"has":false}
 ```
 <details><summary>other dialects</summary>
@@ -529,7 +537,9 @@ FROM orders o
 ### group_by — cluster, then aggregate
 ```sql
 SELECT o.status, COUNT(*) AS n, ROUND(SUM(o.total),2) AS revenue
-FROM orders o GROUP BY o.status ORDER BY revenue DESC
+FROM orders o
+GROUP BY o.status
+ORDER BY revenue DESC
 -- → {"status":"shipped","n":16,"revenue":1758.73}, {"status":"pending",…}, {"status":"cancelled",…}
 ```
 <details><summary>other dialects</summary>
@@ -547,7 +557,9 @@ FROM orders o GROUP BY o.status ORDER BY revenue DESC
 
 ### Collect each group's members
 ```sql
-SELECT o.customer, ARRAY_AGG(o.id) AS order_ids FROM orders o GROUP BY o.customer
+SELECT o.customer, ARRAY_AGG(o.id) AS order_ids
+FROM orders o
+GROUP BY o.customer
 -- → one row per customer, e.g. {"customer":"dave","order_ids":["1005","1009","1013","1017"]}
 ```
 <details><summary>other dialects</summary>
@@ -584,7 +596,10 @@ SELECT ARRAY_DISTINCT([1,2,5,3,5,3,1]) AS u
 
 ### sort_by
 ```sql
-SELECT o.id, o.total FROM orders o ORDER BY o.total DESC LIMIT 3
+SELECT o.id, o.total
+FROM orders o
+ORDER BY o.total DESC
+LIMIT 3
 -- → {"id":"1020","total":389.99}, {"id":"1019","total":245.0}, {"id":"1003","total":210.00}
 ```
 <details><summary>other dialects</summary>
@@ -602,7 +617,10 @@ SELECT o.id, o.total FROM orders o ORDER BY o.total DESC LIMIT 3
 
 ### min_by / max_by — the extreme record
 ```sql
-SELECT o.* FROM orders o ORDER BY o.total DESC LIMIT 1
+SELECT o.*
+FROM orders o
+ORDER BY o.total DESC
+LIMIT 1
 -- → the single priciest order (whole row)
 ```
 <details><summary>other dialects</summary>
@@ -620,7 +638,9 @@ SELECT o.* FROM orders o ORDER BY o.total DESC LIMIT 1
 
 ### Count occurrences / histogram
 ```sql
-SELECT v AS `value`, COUNT(*) AS n FROM ["a","b","a"] AS v GROUP BY v
+SELECT v AS `value`, COUNT(*) AS n
+FROM ["a","b","a"] AS v
+GROUP BY v
 -- → {"value":"a","n":2}, {"value":"b","n":1}
 ```
 <details><summary>other dialects</summary>
@@ -638,7 +658,10 @@ SELECT v AS `value`, COUNT(*) AS n FROM ["a","b","a"] AS v GROUP BY v
 
 ### Find duplicates by key
 ```sql
-SELECT o.id, COUNT(*) AS n FROM orders o GROUP BY o.id HAVING COUNT(*) > 1
+SELECT o.id, COUNT(*) AS n
+FROM orders o
+GROUP BY o.id
+HAVING COUNT(*) > 1
 -- → (empty for shop — ids are unique)
 ```
 <details><summary>other dialects</summary>
@@ -903,7 +926,9 @@ SELECT ARRAY v FOR v WITHIN {"a":{"id":"x"},"b":[{"id":"y"}]} WHEN v.id = "y" EN
 ### UNNEST — explode a nested array into rows
 The workhorse for line-items, tags, events. SQL++ UNNEST pairs each element with its parent's fields.
 ```sql
-SELECT o.id, t AS tag FROM [{"id":1,"tags":["a","b"]}] AS o UNNEST o.tags AS t
+SELECT o.id, t AS tag
+FROM [{"id":1,"tags":["a","b"]}] AS o
+UNNEST o.tags AS t
 -- → {"id":1,"tag":"a"} then {"id":1,"tag":"b"}
 ```
 <details><summary>other dialects</summary>
@@ -1002,7 +1027,8 @@ SELECT CASE WHEN 5 > 3 THEN "big" ELSE "small" END AS c
 ### Default for a missing/null value
 SQL++ splits what COALESCE and jq's // blur: IFMISSING / IFNULL / IFMISSINGORNULL treat absent and present-but-null differently.
 ```sql
-SELECT IFMISSINGORNULL(x.foo, "default") AS v FROM [{}] AS x
+SELECT IFMISSINGORNULL(x.foo, "default") AS v
+FROM [{}] AS x
 -- → {"v":"default"}
 ```
 <details><summary>other dialects</summary>
@@ -1021,7 +1047,8 @@ SELECT IFMISSINGORNULL(x.foo, "default") AS v FROM [{}] AS x
 ### Type guard (jq's try/catch)
 jq guards type errors with try/catch; SQL++ has no type errors — a bad op yields NULL/MISSING — so guard with CASE.
 ```sql
-SELECT CASE WHEN TYPE(x) = "object" THEN x.a END AS a FROM [{"a":1}, "str"] AS x
+SELECT CASE WHEN TYPE(x) = "object" THEN x.a END AS a
+FROM [{"a":1}, "str"] AS x
 -- → {"a":1} then {}   (the string has no .a → MISSING)
 ```
 <details><summary>other dialects</summary>
@@ -1035,6 +1062,7 @@ SELECT CASE WHEN TYPE(x) = "object" THEN x.a END AS a FROM [{"a":1}, "str"] AS x
 
 </details>
 
+
 ## Gotchas worth pinning
 
 - **0-based `SUBSTR`/`POSITION`** — `SUBSTR("hello",1,3)` → `"ell"`. (SQL's are 1-based; DuckDB lists/strings are 1-based too.)
@@ -1046,7 +1074,6 @@ SELECT CASE WHEN TYPE(x) = "object" THEN x.a END AS a FROM [{"a":1}, "str"] AS x
 - **`ARRAY_FLATTEN` needs an explicit depth** (jq flattens fully).
 - **Reserved words need backticks** — `` `value` ``, `` `last` ``, `` `type` `` as identifiers.
 - **`UNION`/`UNION ALL` align by field name**, not position — alias every column.
-- **A subquery returns an array** — scalarize with `(SELECT RAW … )[0]`.
 
 ## MISSING vs NULL — the SQL++ superpower
 
@@ -1061,6 +1088,5 @@ builders skip `MISSING` — which is why jq's `.foo?` needs no translation.
 
 - The jq manual (`jqlang.org/manual`) and Remy Sharp's jq recipes (`remysharp.com/drafts/jq-recipes`).
 - `examples/queries/*.sql++` — runnable SQL++ showpieces (Conway's Life, Mandelbrot, unicode charts).
-- `examples/README.md` — the shop/logs/metrics datasets.
 - Couchbase N1QL function reference — n1k1 speaks the same dialect.
 

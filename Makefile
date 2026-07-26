@@ -188,11 +188,11 @@ run-intermed-build:
 # recipes regenerates the SQL++ recipes doc (Markdown + interactive HTML)
 # from its single source of truth, docs/recipes.toml.
 recipes:
-	python3 docs/build_recipes.py --all
+	python3 docs/recipes_build.py --all
 
 # recipes-check runs EVERY SQL++ example in docs/recipes.toml against the
 # built ./n1k1 binary (over examples/shop where needed), failing on any error.
 # It's the automated test for the recipes doc; build ./n1k1 first.
 recipes-check:
-	python3 docs/build_recipes.py --check
+	python3 docs/recipes_build.py --check
 
