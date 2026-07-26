@@ -23,3 +23,7 @@ tmp
 /web/wasm_exec.js
 # local patched dependency copies for the wasm build (host-specific)
 /.wasm-mods/
+
+# Python bytecode
+__pycache__/
+*.pyc

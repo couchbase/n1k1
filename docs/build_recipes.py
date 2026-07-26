@@ -86,48 +86,96 @@ def render_md(doc):
 
 # -------------------------------------------------------------------- HTML ----
 
+# Per-dialect identity hue (light, dark) — color encodes *which dialect*.
+DIALECT_HUE = {
+    "sqlpp": ("#4f46e5", "#8b93ff"),   # indigo — the hero
+    "sql": ("#2f6fb3", "#6fa8dc"),     # postgres blue
+    "duckdb": ("#c2892a", "#e3b341"),  # duck amber
+    "js": ("#c2410c", "#e0965a"),      # burnt orange
+    "python": ("#356a9a", "#6fa8d6"),  # steel blue
+    "mongo": ("#128a4a", "#3ddc84"),   # leaf green
+    "jq": ("#6b7280", "#9aa1ad"),      # slate
+}
+
 CSS = """
-:root{--bg:#fff;--fg:#1a1a1a;--muted:#6a737d;--line:#e1e4e8;--accent:#0b5fff;
---sqlpp:#eef4ff;--head:#f6f8fa;--code:#f6f8fa;--sticky:#fff;}
-@media(prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--muted:#8b949e;
---line:#30363d;--accent:#589bff;--sqlpp:#12233f;--head:#161b22;--code:#161b22;--sticky:#0d1117;}}
+:root{
+  --bg:#fcfcfd;--fg:#1c2024;--muted:#626772;--faint:#8b909a;
+  --line:#e7e9ee;--line2:#eef0f3;--sticky:#fcfcfd;--band:#f3f4f8;
+  --accent:#4f46e5;--sqlpp:#eef0ff;--sqlpp-edge:#c9ccff;--focus:#4f46e5;
+}
+@media(prefers-color-scheme:dark){:root{
+  --bg:#0f1216;--fg:#dfe3ea;--muted:#8a919e;--faint:#5c636e;
+  --line:#232a33;--line2:#1a1f27;--sticky:#0f1216;--band:#151a20;
+  --accent:#8b93ff;--sqlpp:#161a2e;--sqlpp-edge:#2b3168;--focus:#8b93ff;
+}}
+:root[data-theme=light]{
+  --bg:#fcfcfd;--fg:#1c2024;--muted:#626772;--faint:#8b909a;
+  --line:#e7e9ee;--line2:#eef0f3;--sticky:#fcfcfd;--band:#f3f4f8;
+  --accent:#4f46e5;--sqlpp:#eef0ff;--sqlpp-edge:#c9ccff;--focus:#4f46e5;
+}
+:root[data-theme=dark]{
+  --bg:#0f1216;--fg:#dfe3ea;--muted:#8a919e;--faint:#5c636e;
+  --line:#232a33;--line2:#1a1f27;--sticky:#0f1216;--band:#151a20;
+  --accent:#8b93ff;--sqlpp:#161a2e;--sqlpp-edge:#2b3168;--focus:#8b93ff;
+}
 *{box-sizing:border-box}
-body{margin:0;font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
-color:var(--fg);background:var(--bg)}
-header{padding:20px 24px;border-bottom:1px solid var(--line)}
-h1{margin:0 0 6px;font-size:22px}
-.sub{color:var(--muted);font-size:14px;max-width:70ch}
-.toolbar{position:sticky;top:0;z-index:30;background:var(--sticky);border-bottom:1px solid var(--line);
-padding:10px 24px;display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center}
-.toolbar b{font-size:13px;color:var(--muted);margin-right:4px}
-.toolbar label{font-size:13px;display:inline-flex;gap:5px;align-items:center;cursor:pointer;
-padding:3px 9px;border:1px solid var(--line);border-radius:14px;user-select:none}
-.toolbar input{accent-color:var(--accent)}
-#q{margin-left:auto;padding:5px 10px;border:1px solid var(--line);border-radius:6px;
-background:var(--bg);color:var(--fg);font-size:13px;min-width:180px}
-.wrap{overflow:auto;max-height:calc(100vh - 120px)}
-table{border-collapse:separate;border-spacing:0;width:max-content;min-width:100%}
-th,td{border-bottom:1px solid var(--line);border-right:1px solid var(--line);
-vertical-align:top;padding:10px 12px;text-align:left}
-thead th{position:sticky;top:0;z-index:20;background:var(--head);font-size:12px;
-text-transform:uppercase;letter-spacing:.04em;color:var(--muted);white-space:nowrap}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;color:var(--fg);background:var(--bg);
+  font:15px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  font-feature-settings:"kern";text-rendering:optimizeLegibility}
+.mono{font-family:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace}
+a{color:var(--accent);text-underline-offset:2px}
+header{padding:26px 26px 20px;border-bottom:1px solid var(--line)}
+h1{margin:0 0 8px;font-size:25px;font-weight:680;letter-spacing:-.015em;text-wrap:balance;max-width:30ch}
+.sub{color:var(--muted);font-size:13.5px;line-height:1.5;max-width:82ch}
+.sub code{font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:.92em;color:var(--fg)}
+/* toolbar = dialect switcher */
+.toolbar{position:sticky;top:0;z-index:40;background:var(--sticky);
+  border-bottom:1px solid var(--line);padding:11px 26px;
+  display:flex;flex-wrap:wrap;gap:8px 9px;align-items:center}
+.toolbar .lbl{font-size:11px;letter-spacing:.09em;text-transform:uppercase;
+  color:var(--faint);margin-right:2px}
+.pill{font-size:12.5px;display:inline-flex;gap:6px;align-items:center;cursor:pointer;
+  padding:4px 11px 4px 9px;border:1px solid var(--line);border-radius:999px;
+  user-select:none;color:var(--muted);background:transparent;transition:border-color .12s,color .12s}
+.pill:hover{border-color:var(--faint)}
+.pill:has(input:checked){color:var(--fg);border-color:color-mix(in srgb,var(--d) 55%,var(--line))}
+.pill input{position:absolute;opacity:0;width:0;height:0}
+.pill:focus-within{outline:2px solid var(--focus);outline-offset:2px}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--d);flex:none;
+  box-shadow:0 0 0 3px color-mix(in srgb,var(--d) 16%,transparent)}
+.pill:not(:has(input:checked)) .dot{background:var(--faint);box-shadow:none}
+#q{margin-left:auto;padding:6px 11px;border:1px solid var(--line);border-radius:8px;
+  background:var(--bg);color:var(--fg);font-size:13px;min-width:190px}
+#q:focus-visible{outline:2px solid var(--focus);outline-offset:1px;border-color:transparent}
+.wrap{overflow:auto;max-height:calc(100vh - 128px)}
+table{border-collapse:separate;border-spacing:0;width:max-content;min-width:100%;font-size:13px}
+th,td{border-bottom:1px solid var(--line);border-right:1px solid var(--line2);
+  vertical-align:top;padding:11px 14px;text-align:left}
+thead th{position:sticky;top:0;z-index:20;background:var(--band);white-space:nowrap;
+  font-size:10.5px;font-weight:650;text-transform:uppercase;letter-spacing:.07em;color:var(--muted)}
+thead th .dot{display:inline-block;margin-right:6px;vertical-align:middle}
 /* frozen left columns: recipe + SQL++ */
-.c-recipe{position:sticky;left:0;z-index:10;background:var(--sticky);min-width:230px;max-width:280px}
-.c-sqlpp{position:sticky;left:230px;z-index:10;background:var(--sqlpp);min-width:340px}
-thead .c-recipe{z-index:25}thead .c-sqlpp{z-index:25;background:var(--sqlpp)}
-.sec td{position:sticky;left:0;background:var(--head);font-weight:600;font-size:13px;
-z-index:15;border-right:none}
-.rtitle{font-weight:600;font-size:13px;margin-bottom:3px}
-.rnote{color:var(--muted);font-size:12px}
-.rneeds{display:inline-block;margin-top:5px;font-size:11px;color:var(--muted);
-border:1px solid var(--line);border-radius:10px;padding:0 6px}
-pre{margin:0;font:12.5px/1.45 "SF Mono",ui-monospace,Menlo,Consolas,monospace;
-white-space:pre-wrap;word-break:break-word}
-.out{color:var(--muted)}
-td.empty{color:var(--line);text-align:center}
+.c-recipe{position:sticky;left:0;z-index:10;background:var(--sticky);min-width:236px;max-width:280px}
+.c-sqlpp{position:sticky;left:236px;z-index:10;background:var(--sqlpp);min-width:340px;
+  border-right:1px solid var(--sqlpp-edge)}
+thead .c-recipe{z-index:26}thead .c-sqlpp{z-index:26;background:var(--sqlpp);border-right-color:var(--sqlpp-edge)}
+tbody tr:hover td:not(.c-sqlpp){background:var(--line2)}
+tbody tr:hover .c-recipe{background:var(--band)}
+.sec td{position:sticky;left:0;background:var(--band);z-index:16;border-right:none;
+  font-size:11px;font-weight:680;letter-spacing:.05em;text-transform:uppercase;color:var(--muted)}
+.rtitle{font-weight:640;font-size:13px;margin-bottom:3px;color:var(--fg);letter-spacing:-.01em}
+.rnote{color:var(--muted);font-size:11.5px;line-height:1.45}
+.rneeds{display:inline-block;margin-top:6px;font-size:10.5px;color:var(--muted);
+  border:1px solid var(--line);border-radius:10px;padding:1px 7px;font-family:ui-monospace,monospace}
+pre{margin:0;font-family:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
+  font-size:12.5px;line-height:1.5;white-space:pre-wrap;word-break:break-word;
+  font-variant-numeric:tabular-nums}
+.out{color:var(--faint)}
+td.empty{color:var(--line);text-align:center;font-family:ui-monospace,monospace}
 col.hidden,th.hidden,td.hidden{display:none}
-footer{padding:16px 24px;color:var(--muted);font-size:13px;border-top:1px solid var(--line)}
-a{color:var(--accent)}
+footer{padding:18px 26px;color:var(--muted);font-size:12.5px;line-height:1.6;border-top:1px solid var(--line)}
+@media(prefers-reduced-motion:reduce){*{transition:none!important}}
 """
 
 JS = """
@@ -156,51 +204,62 @@ def code_cell(code, kind=""):
     return f'<td class="{kind}"><pre>{html.escape(code.strip())}</pre></td>'
 
 
-def render_html(doc):
+def dot_css(dl):
+    """Per-dialect identity-hue tokens, theme-aware."""
+    light = "".join(f".d-{d['id']}{{--d:{DIALECT_HUE[d['id']][0]}}}" for d in dl if d["id"] in DIALECT_HUE)
+    dark = "".join(f".d-{d['id']}{{--d:{DIALECT_HUE[d['id']][1]}}}" for d in dl if d["id"] in DIALECT_HUE)
+    return (light
+            + "@media(prefers-color-scheme:dark){" + dark + "}"
+            + ":root[data-theme=light]{}" + "".join(
+                f":root[data-theme=light] .d-{d['id']}{{--d:{DIALECT_HUE[d['id']][0]}}}"
+                for d in dl if d["id"] in DIALECT_HUE)
+            + "".join(
+                f":root[data-theme=dark] .d-{d['id']}{{--d:{DIALECT_HUE[d['id']][1]}}}"
+                for d in dl if d["id"] in DIALECT_HUE))
+
+
+def render_html_body(doc):
+    """Body content only (style + markup + script) — no doctype/head/body wrapper."""
     m = doc["meta"]
     dl = dialects(doc)
     prim = next(d for d in dl if d.get("primary"))
     secondary = [d for d in dl if not d.get("primary")]
     ncols = 2 + len(secondary)
 
-    T = []
+    T = [f"<style>{CSS}{dot_css(dl)}</style>"]
     T.append("<header>")
     T.append(f"<h1>{html.escape(m['html_title'])}</h1>")
     T.append(f'<div class="sub">{html.escape(m["html_sub"])}</div>')
     T.append("</header>")
 
-    # toolbar: toggle secondary dialect columns + search
-    T.append('<div class="toolbar"><b>show:</b>')
+    # toolbar = dialect switcher (toggle secondary columns) + filter
+    T.append('<div class="toolbar"><span class="lbl">dialects</span>')
     for d in secondary:
         checked = "" if d.get("hidden_default") else "checked"
-        T.append(f'<label><input type="checkbox" data-col="{d["id"]}" {checked}>'
-                 f'{html.escape(d["label"])}</label>')
-    T.append('<input id="q" type="search" placeholder="filter recipes…"></div>')
+        T.append(f'<label class="pill d-{d["id"]}"><input type="checkbox" data-col="{d["id"]}" {checked}>'
+                 f'<span class="dot"></span>{html.escape(d["label"])}</label>')
+    T.append('<input id="q" type="search" placeholder="filter recipes…" aria-label="filter recipes"></div>')
 
     T.append('<div class="wrap"><table>')
-    # colgroup for hide/show
     T.append("<colgroup>")
     T.append('<col class="c-recipe"><col class="c-sqlpp">')
     for d in secondary:
         T.append(f'<col class="col-{d["id"]}">')
     T.append("</colgroup>")
-    # head
     T.append("<thead><tr>")
     T.append('<th class="c-recipe">Recipe</th>')
-    T.append(f'<th class="c-sqlpp">{html.escape(prim["label"])}</th>')
+    T.append(f'<th class="c-sqlpp"><span class="dot d-{prim["id"]}"></span>{html.escape(prim["label"])}</th>')
     for d in secondary:
-        T.append(f'<th class="col-{d["id"]}">{html.escape(d["label"])}</th>')
+        T.append(f'<th class="col-{d["id"]}"><span class="dot d-{d["id"]}"></span>{html.escape(d["label"])}</th>')
     T.append("</tr></thead><tbody>")
 
     for sec in doc["section"]:
         T.append(f'<tr class="sec"><td colspan="{ncols}">{html.escape(sec["title"])}</td></tr>')
         for r in sec.get("recipe", []):
-            T.append('<tr data-recipe>')
-            # recipe cell
+            T.append("<tr data-recipe>")
             note = f'<div class="rnote">{html.escape(r["note"].strip())}</div>' if r.get("note") else ""
             needs = '<span class="rneeds">needs examples/shop</span>' if r.get("needs") else ""
             T.append(f'<td class="c-recipe"><div class="rtitle">{html.escape(r["title"])}</div>{note}{needs}</td>')
-            # sql++ cell (+ expected output)
             sqlpp = (r.get("sqlpp") or "").strip()
             outc = f'\n<span class="out"># → {html.escape(r["out"].strip())}</span>' if r.get("out") else ""
             T.append(f'<td class="c-sqlpp"><pre>{html.escape(sqlpp)}{outc}</pre></td>')
@@ -208,13 +267,17 @@ def render_html(doc):
                 T.append(code_cell(r.get(d["id"], ""), "col-" + d["id"]))
             T.append("</tr>")
     T.append("</tbody></table></div>")
-    T.append(f"<footer>{m['html_footer']}</footer>")
+    T.append(f"<footer>{html.escape(m['html_footer'])}</footer>")
+    T.append(f"<script>{JS}</script>")
+    return "".join(T)
 
-    page = ("<!doctype html><html lang=en><head><meta charset=utf-8>"
+
+def render_html(doc):
+    m = doc["meta"]
+    return ("<!doctype html><html lang=en><head><meta charset=utf-8>"
             "<meta name=viewport content='width=device-width,initial-scale=1'>"
-            f"<title>{html.escape(m['html_title'])}</title><style>{CSS}</style></head>"
-            f"<body>{''.join(T)}<script>{JS}</script></body></html>")
-    return page
+            f"<title>{html.escape(m['html_title'])}</title></head>"
+            f"<body>{render_html_body(doc)}</body></html>")
 
 
 # ------------------------------------------------------------------- check ----

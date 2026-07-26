@@ -1,46 +1,83 @@
-<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>SQL++ recipes — a JSON slice-and-dice Rosetta stone</title><style>
-:root{--bg:#fff;--fg:#1a1a1a;--muted:#6a737d;--line:#e1e4e8;--accent:#0b5fff;
---sqlpp:#eef4ff;--head:#f6f8fa;--code:#f6f8fa;--sticky:#fff;}
-@media(prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--muted:#8b949e;
---line:#30363d;--accent:#589bff;--sqlpp:#12233f;--head:#161b22;--code:#161b22;--sticky:#0d1117;}}
+<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>SQL++ recipes — a JSON slice-and-dice Rosetta stone</title></head><body><style>
+:root{
+  --bg:#fcfcfd;--fg:#1c2024;--muted:#626772;--faint:#8b909a;
+  --line:#e7e9ee;--line2:#eef0f3;--sticky:#fcfcfd;--band:#f3f4f8;
+  --accent:#4f46e5;--sqlpp:#eef0ff;--sqlpp-edge:#c9ccff;--focus:#4f46e5;
+}
+@media(prefers-color-scheme:dark){:root{
+  --bg:#0f1216;--fg:#dfe3ea;--muted:#8a919e;--faint:#5c636e;
+  --line:#232a33;--line2:#1a1f27;--sticky:#0f1216;--band:#151a20;
+  --accent:#8b93ff;--sqlpp:#161a2e;--sqlpp-edge:#2b3168;--focus:#8b93ff;
+}}
+:root[data-theme=light]{
+  --bg:#fcfcfd;--fg:#1c2024;--muted:#626772;--faint:#8b909a;
+  --line:#e7e9ee;--line2:#eef0f3;--sticky:#fcfcfd;--band:#f3f4f8;
+  --accent:#4f46e5;--sqlpp:#eef0ff;--sqlpp-edge:#c9ccff;--focus:#4f46e5;
+}
+:root[data-theme=dark]{
+  --bg:#0f1216;--fg:#dfe3ea;--muted:#8a919e;--faint:#5c636e;
+  --line:#232a33;--line2:#1a1f27;--sticky:#0f1216;--band:#151a20;
+  --accent:#8b93ff;--sqlpp:#161a2e;--sqlpp-edge:#2b3168;--focus:#8b93ff;
+}
 *{box-sizing:border-box}
-body{margin:0;font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
-color:var(--fg);background:var(--bg)}
-header{padding:20px 24px;border-bottom:1px solid var(--line)}
-h1{margin:0 0 6px;font-size:22px}
-.sub{color:var(--muted);font-size:14px;max-width:70ch}
-.toolbar{position:sticky;top:0;z-index:30;background:var(--sticky);border-bottom:1px solid var(--line);
-padding:10px 24px;display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center}
-.toolbar b{font-size:13px;color:var(--muted);margin-right:4px}
-.toolbar label{font-size:13px;display:inline-flex;gap:5px;align-items:center;cursor:pointer;
-padding:3px 9px;border:1px solid var(--line);border-radius:14px;user-select:none}
-.toolbar input{accent-color:var(--accent)}
-#q{margin-left:auto;padding:5px 10px;border:1px solid var(--line);border-radius:6px;
-background:var(--bg);color:var(--fg);font-size:13px;min-width:180px}
-.wrap{overflow:auto;max-height:calc(100vh - 120px)}
-table{border-collapse:separate;border-spacing:0;width:max-content;min-width:100%}
-th,td{border-bottom:1px solid var(--line);border-right:1px solid var(--line);
-vertical-align:top;padding:10px 12px;text-align:left}
-thead th{position:sticky;top:0;z-index:20;background:var(--head);font-size:12px;
-text-transform:uppercase;letter-spacing:.04em;color:var(--muted);white-space:nowrap}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;color:var(--fg);background:var(--bg);
+  font:15px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  font-feature-settings:"kern";text-rendering:optimizeLegibility}
+.mono{font-family:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace}
+a{color:var(--accent);text-underline-offset:2px}
+header{padding:26px 26px 20px;border-bottom:1px solid var(--line)}
+h1{margin:0 0 8px;font-size:25px;font-weight:680;letter-spacing:-.015em;text-wrap:balance;max-width:30ch}
+.sub{color:var(--muted);font-size:13.5px;line-height:1.5;max-width:82ch}
+.sub code{font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:.92em;color:var(--fg)}
+/* toolbar = dialect switcher */
+.toolbar{position:sticky;top:0;z-index:40;background:var(--sticky);
+  border-bottom:1px solid var(--line);padding:11px 26px;
+  display:flex;flex-wrap:wrap;gap:8px 9px;align-items:center}
+.toolbar .lbl{font-size:11px;letter-spacing:.09em;text-transform:uppercase;
+  color:var(--faint);margin-right:2px}
+.pill{font-size:12.5px;display:inline-flex;gap:6px;align-items:center;cursor:pointer;
+  padding:4px 11px 4px 9px;border:1px solid var(--line);border-radius:999px;
+  user-select:none;color:var(--muted);background:transparent;transition:border-color .12s,color .12s}
+.pill:hover{border-color:var(--faint)}
+.pill:has(input:checked){color:var(--fg);border-color:color-mix(in srgb,var(--d) 55%,var(--line))}
+.pill input{position:absolute;opacity:0;width:0;height:0}
+.pill:focus-within{outline:2px solid var(--focus);outline-offset:2px}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--d);flex:none;
+  box-shadow:0 0 0 3px color-mix(in srgb,var(--d) 16%,transparent)}
+.pill:not(:has(input:checked)) .dot{background:var(--faint);box-shadow:none}
+#q{margin-left:auto;padding:6px 11px;border:1px solid var(--line);border-radius:8px;
+  background:var(--bg);color:var(--fg);font-size:13px;min-width:190px}
+#q:focus-visible{outline:2px solid var(--focus);outline-offset:1px;border-color:transparent}
+.wrap{overflow:auto;max-height:calc(100vh - 128px)}
+table{border-collapse:separate;border-spacing:0;width:max-content;min-width:100%;font-size:13px}
+th,td{border-bottom:1px solid var(--line);border-right:1px solid var(--line2);
+  vertical-align:top;padding:11px 14px;text-align:left}
+thead th{position:sticky;top:0;z-index:20;background:var(--band);white-space:nowrap;
+  font-size:10.5px;font-weight:650;text-transform:uppercase;letter-spacing:.07em;color:var(--muted)}
+thead th .dot{display:inline-block;margin-right:6px;vertical-align:middle}
 /* frozen left columns: recipe + SQL++ */
-.c-recipe{position:sticky;left:0;z-index:10;background:var(--sticky);min-width:230px;max-width:280px}
-.c-sqlpp{position:sticky;left:230px;z-index:10;background:var(--sqlpp);min-width:340px}
-thead .c-recipe{z-index:25}thead .c-sqlpp{z-index:25;background:var(--sqlpp)}
-.sec td{position:sticky;left:0;background:var(--head);font-weight:600;font-size:13px;
-z-index:15;border-right:none}
-.rtitle{font-weight:600;font-size:13px;margin-bottom:3px}
-.rnote{color:var(--muted);font-size:12px}
-.rneeds{display:inline-block;margin-top:5px;font-size:11px;color:var(--muted);
-border:1px solid var(--line);border-radius:10px;padding:0 6px}
-pre{margin:0;font:12.5px/1.45 "SF Mono",ui-monospace,Menlo,Consolas,monospace;
-white-space:pre-wrap;word-break:break-word}
-.out{color:var(--muted)}
-td.empty{color:var(--line);text-align:center}
+.c-recipe{position:sticky;left:0;z-index:10;background:var(--sticky);min-width:236px;max-width:280px}
+.c-sqlpp{position:sticky;left:236px;z-index:10;background:var(--sqlpp);min-width:340px;
+  border-right:1px solid var(--sqlpp-edge)}
+thead .c-recipe{z-index:26}thead .c-sqlpp{z-index:26;background:var(--sqlpp);border-right-color:var(--sqlpp-edge)}
+tbody tr:hover td:not(.c-sqlpp){background:var(--line2)}
+tbody tr:hover .c-recipe{background:var(--band)}
+.sec td{position:sticky;left:0;background:var(--band);z-index:16;border-right:none;
+  font-size:11px;font-weight:680;letter-spacing:.05em;text-transform:uppercase;color:var(--muted)}
+.rtitle{font-weight:640;font-size:13px;margin-bottom:3px;color:var(--fg);letter-spacing:-.01em}
+.rnote{color:var(--muted);font-size:11.5px;line-height:1.45}
+.rneeds{display:inline-block;margin-top:6px;font-size:10.5px;color:var(--muted);
+  border:1px solid var(--line);border-radius:10px;padding:1px 7px;font-family:ui-monospace,monospace}
+pre{margin:0;font-family:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
+  font-size:12.5px;line-height:1.5;white-space:pre-wrap;word-break:break-word;
+  font-variant-numeric:tabular-nums}
+.out{color:var(--faint)}
+td.empty{color:var(--line);text-align:center;font-family:ui-monospace,monospace}
 col.hidden,th.hidden,td.hidden{display:none}
-footer{padding:16px 24px;color:var(--muted);font-size:13px;border-top:1px solid var(--line)}
-a{color:var(--accent)}
-</style></head><body><header><h1>SQL++ recipes — a JSON slice-and-dice Rosetta stone</h1><div class="sub">The same JSON maneuver in SQL++, SQL, DuckDB, JavaScript, Python, MongoDB, and jq. SQL++ (frozen, left) is the runnable column — each example ran against n1k1. Toggle the other dialects on; scroll horizontally; filter with the search box.</div></header><div class="toolbar"><b>show:</b><label><input type="checkbox" data-col="sql" checked>SQL (Postgres)</label><label><input type="checkbox" data-col="duckdb" >DuckDB</label><label><input type="checkbox" data-col="js" >JavaScript</label><label><input type="checkbox" data-col="python" >Python</label><label><input type="checkbox" data-col="mongo" >MongoDB</label><label><input type="checkbox" data-col="jq" checked>jq</label><input id="q" type="search" placeholder="filter recipes…"></div><div class="wrap"><table><colgroup><col class="c-recipe"><col class="c-sqlpp"><col class="col-sql"><col class="col-duckdb"><col class="col-js"><col class="col-python"><col class="col-mongo"><col class="col-jq"></colgroup><thead><tr><th class="c-recipe">Recipe</th><th class="c-sqlpp">SQL++</th><th class="col-sql">SQL (Postgres)</th><th class="col-duckdb">DuckDB</th><th class="col-js">JavaScript</th><th class="col-python">Python</th><th class="col-mongo">MongoDB</th><th class="col-jq">jq</th></tr></thead><tbody><tr class="sec"><td colspan="8">1. Access &amp; navigation</td></tr><tr data-recipe><td class="c-recipe"><div class="rtitle">Field access — .foo, .foo.bar</div><span class="rneeds">needs examples/shop</span></td><td class="c-sqlpp"><pre>SELECT RAW o.customer FROM orders o
+footer{padding:18px 26px;color:var(--muted);font-size:12.5px;line-height:1.6;border-top:1px solid var(--line)}
+@media(prefers-reduced-motion:reduce){*{transition:none!important}}
+.d-sqlpp{--d:#4f46e5}.d-sql{--d:#2f6fb3}.d-duckdb{--d:#c2892a}.d-js{--d:#c2410c}.d-python{--d:#356a9a}.d-mongo{--d:#128a4a}.d-jq{--d:#6b7280}@media(prefers-color-scheme:dark){.d-sqlpp{--d:#8b93ff}.d-sql{--d:#6fa8dc}.d-duckdb{--d:#e3b341}.d-js{--d:#e0965a}.d-python{--d:#6fa8d6}.d-mongo{--d:#3ddc84}.d-jq{--d:#9aa1ad}}:root[data-theme=light]{}:root[data-theme=light] .d-sqlpp{--d:#4f46e5}:root[data-theme=light] .d-sql{--d:#2f6fb3}:root[data-theme=light] .d-duckdb{--d:#c2892a}:root[data-theme=light] .d-js{--d:#c2410c}:root[data-theme=light] .d-python{--d:#356a9a}:root[data-theme=light] .d-mongo{--d:#128a4a}:root[data-theme=light] .d-jq{--d:#6b7280}:root[data-theme=dark] .d-sqlpp{--d:#8b93ff}:root[data-theme=dark] .d-sql{--d:#6fa8dc}:root[data-theme=dark] .d-duckdb{--d:#e3b341}:root[data-theme=dark] .d-js{--d:#e0965a}:root[data-theme=dark] .d-python{--d:#6fa8d6}:root[data-theme=dark] .d-mongo{--d:#3ddc84}:root[data-theme=dark] .d-jq{--d:#9aa1ad}</style><header><h1>SQL++ recipes — a JSON slice-and-dice Rosetta stone</h1><div class="sub">The same JSON maneuver in SQL++, SQL, DuckDB, JavaScript, Python, MongoDB, and jq. SQL++ (frozen, left) is the runnable column — each example ran against n1k1. Toggle the other dialects on; scroll horizontally; filter with the search box.</div></header><div class="toolbar"><span class="lbl">dialects</span><label class="pill d-sql"><input type="checkbox" data-col="sql" checked><span class="dot"></span>SQL (Postgres)</label><label class="pill d-duckdb"><input type="checkbox" data-col="duckdb" ><span class="dot"></span>DuckDB</label><label class="pill d-js"><input type="checkbox" data-col="js" ><span class="dot"></span>JavaScript</label><label class="pill d-python"><input type="checkbox" data-col="python" ><span class="dot"></span>Python</label><label class="pill d-mongo"><input type="checkbox" data-col="mongo" ><span class="dot"></span>MongoDB</label><label class="pill d-jq"><input type="checkbox" data-col="jq" checked><span class="dot"></span>jq</label><input id="q" type="search" placeholder="filter recipes…" aria-label="filter recipes"></div><div class="wrap"><table><colgroup><col class="c-recipe"><col class="c-sqlpp"><col class="col-sql"><col class="col-duckdb"><col class="col-js"><col class="col-python"><col class="col-mongo"><col class="col-jq"></colgroup><thead><tr><th class="c-recipe">Recipe</th><th class="c-sqlpp"><span class="dot d-sqlpp"></span>SQL++</th><th class="col-sql"><span class="dot d-sql"></span>SQL (Postgres)</th><th class="col-duckdb"><span class="dot d-duckdb"></span>DuckDB</th><th class="col-js"><span class="dot d-js"></span>JavaScript</th><th class="col-python"><span class="dot d-python"></span>Python</th><th class="col-mongo"><span class="dot d-mongo"></span>MongoDB</th><th class="col-jq"><span class="dot d-jq"></span>jq</th></tr></thead><tbody><tr class="sec"><td colspan="8">1. Access &amp; navigation</td></tr><tr data-recipe><td class="c-recipe"><div class="rtitle">Field access — .foo, .foo.bar</div><span class="rneeds">needs examples/shop</span></td><td class="c-sqlpp"><pre>SELECT RAW o.customer FROM orders o
 <span class="out"># → &quot;dave&quot;, &quot;alice&quot;, … (one per order)</span></pre></td><td class="col-sql"><pre>SELECT col-&gt;&gt;&#x27;customer&#x27; FROM orders</pre></td><td class="col-duckdb"><pre>SELECT customer FROM orders</pre></td><td class="col-js"><pre>orders.map(o =&gt; o.customer)</pre></td><td class="col-python"><pre>[o[&quot;customer&quot;] for o in orders]</pre></td><td class="col-mongo"><pre>db.orders.find({}, {customer: 1, _id: 0})</pre></td><td class="col-jq"><pre>.customer</pre></td></tr><tr data-recipe><td class="c-recipe"><div class="rtitle">Optional / missing field</div><div class="rnote">jq&#x27;s ? suppresses errors on non-objects; SQL++ has no error — a missing path is MISSING and just drops out.</div></td><td class="c-sqlpp"><pre>SELECT x.foo FROM [{&quot;bar&quot;:1}] AS x
 <span class="out"># → {}   (foo is MISSING, so the key is omitted)</span></pre></td><td class="col-sql"><pre>SELECT col-&gt;&#x27;foo&#x27;      -- NULL if absent</pre></td><td class="col-duckdb"><pre>SELECT col-&gt;&#x27;$.foo&#x27;  -- NULL if absent</pre></td><td class="col-js"><pre>[{bar:1}].map(x =&gt; x.foo)      // [undefined]</pre></td><td class="col-python"><pre>[x.get(&quot;foo&quot;) for x in [{&quot;bar&quot;:1}]]   # [None]</pre></td><td class="col-mongo"><pre>// a missing field is simply absent from the result</pre></td><td class="col-jq"><pre>.foo      # → null   (.foo? to suppress errors on non-objects)</pre></td></tr><tr data-recipe><td class="c-recipe"><div class="rtitle">Array index — 0-based, negatives from the end</div></td><td class="c-sqlpp"><pre>SELECT [10,20,30][0]  AS `first`,
        [10,20,30][-1] AS `last`,
@@ -109,7 +146,7 @@ FROM [{&quot;team&quot;:[{&quot;n&quot;:&quot;a&quot;}],&quot;formerly&quot;:[{&
 <span class="out"># → {&quot;everyone&quot;:[{&quot;n&quot;:&quot;a&quot;},{&quot;formerly&quot;:true,&quot;n&quot;:&quot;b&quot;}]}</span></pre></td><td class="col-sql"><pre>(col-&gt;&#x27;team&#x27;) || (SELECT jsonb_agg(m || &#x27;{&quot;formerly&quot;:true}&#x27;) FROM jsonb_array_elements(col-&gt;&#x27;formerly&#x27;) m)</pre></td><td class="col-duckdb"><pre>list_concat(team, [struct_insert(m, formerly := true) for m in formerly])</pre></td><td class="col-js"><pre>[...d.team, ...d.formerly.map(m =&gt; ({...m, formerly:true}))]</pre></td><td class="col-python"><pre>d[&quot;team&quot;] + [{**m, &quot;formerly&quot;:True} for m in d[&quot;formerly&quot;]]</pre></td><td class="col-mongo"><pre>{$concatArrays:[&quot;$team&quot;, {$map:{input:&quot;$formerly&quot;, in:{$mergeObjects:[&quot;$$this&quot;,{formerly:true}]}}}]}</pre></td><td class="col-jq"><pre>[.team, (.formerly | map(.+{formerly:true}))] | flatten</pre></td></tr><tr class="sec"><td colspan="8">10. Conditionals &amp; defaults</td></tr><tr data-recipe><td class="c-recipe"><div class="rtitle">if / then / else</div></td><td class="c-sqlpp"><pre>SELECT CASE WHEN 5 &gt; 3 THEN &quot;big&quot; ELSE &quot;small&quot; END AS c
 <span class="out"># → {&quot;c&quot;:&quot;big&quot;}</span></pre></td><td class="col-sql"><pre>CASE WHEN 5 &gt; 3 THEN &#x27;big&#x27; ELSE &#x27;small&#x27; END</pre></td><td class="col-duckdb"><pre>if(5 &gt; 3, &#x27;big&#x27;, &#x27;small&#x27;)</pre></td><td class="col-js"><pre>5 &gt; 3 ? &quot;big&quot; : &quot;small&quot;</pre></td><td class="col-python"><pre>&quot;big&quot; if 5 &gt; 3 else &quot;small&quot;</pre></td><td class="col-mongo"><pre>{$cond: [{$gt:[5,3]}, &quot;big&quot;, &quot;small&quot;]}</pre></td><td class="col-jq"><pre>if . &gt; 3 then &quot;big&quot; else &quot;small&quot; end</pre></td></tr><tr data-recipe><td class="c-recipe"><div class="rtitle">Default for a missing/null value</div><div class="rnote">SQL++ splits what COALESCE and jq&#x27;s // blur: IFMISSING / IFNULL / IFMISSINGORNULL treat absent and present-but-null differently.</div></td><td class="c-sqlpp"><pre>SELECT IFMISSINGORNULL(x.foo, &quot;default&quot;) AS v FROM [{}] AS x
 <span class="out"># → {&quot;v&quot;:&quot;default&quot;}</span></pre></td><td class="col-sql"><pre>COALESCE(col-&gt;&gt;&#x27;foo&#x27;, &#x27;default&#x27;)</pre></td><td class="col-duckdb"><pre>COALESCE(x.foo, &#x27;default&#x27;)</pre></td><td class="col-js"><pre>x.foo ?? &quot;default&quot;</pre></td><td class="col-python"><pre>x.get(&quot;foo&quot;, &quot;default&quot;)</pre></td><td class="col-mongo"><pre>{$ifNull: [&quot;$foo&quot;, &quot;default&quot;]}</pre></td><td class="col-jq"><pre>.foo // &quot;default&quot;</pre></td></tr><tr data-recipe><td class="c-recipe"><div class="rtitle">Type guard (jq&#x27;s try/catch)</div><div class="rnote">jq guards type errors with try/catch; SQL++ has no type errors — a bad op yields NULL/MISSING — so guard with CASE.</div></td><td class="c-sqlpp"><pre>SELECT CASE WHEN TYPE(x) = &quot;object&quot; THEN x.a END AS a FROM [{&quot;a&quot;:1}, &quot;str&quot;] AS x
-<span class="out"># → {&quot;a&quot;:1} then {}   (the string has no .a → MISSING)</span></pre></td><td class="empty col-sql">—</td><td class="empty col-duckdb">—</td><td class="col-js"><pre>try { x.a } catch { null }</pre></td><td class="col-python"><pre>x.get(&quot;a&quot;) if isinstance(x, dict) else None</pre></td><td class="col-mongo"><pre>{$cond:[{$eq:[{$type:&quot;$x&quot;},&quot;object&quot;]}, &quot;$x.a&quot;, null]}</pre></td><td class="col-jq"><pre>try .a catch null</pre></td></tr></tbody></table></div><footer>Generated from docs/recipes.toml by docs/build_recipes.py. Sources: the jq manual (jqlang.org/manual) and Remy Sharp's jq recipes. SQL++ = n1k1's N1QL dialect.</footer><script>
+<span class="out"># → {&quot;a&quot;:1} then {}   (the string has no .a → MISSING)</span></pre></td><td class="empty col-sql">—</td><td class="empty col-duckdb">—</td><td class="col-js"><pre>try { x.a } catch { null }</pre></td><td class="col-python"><pre>x.get(&quot;a&quot;) if isinstance(x, dict) else None</pre></td><td class="col-mongo"><pre>{$cond:[{$eq:[{$type:&quot;$x&quot;},&quot;object&quot;]}, &quot;$x.a&quot;, null]}</pre></td><td class="col-jq"><pre>try .a catch null</pre></td></tr></tbody></table></div><footer>Generated from docs/recipes.toml by docs/build_recipes.py. Sources: the jq manual (jqlang.org/manual) and Remy Sharp&#x27;s jq recipes. SQL++ = n1k1&#x27;s N1QL dialect.</footer><script>
 const boxes=[...document.querySelectorAll('.toolbar input[data-col]')];
 function apply(){
   for(const b of boxes){
