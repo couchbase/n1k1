@@ -23,7 +23,7 @@ the same file with its full YAML decoder. (Adding TOML support to n1k1 would let
 source be TOML too; for now YAML is the format n1k1 can slice and dice.)
 """
 
-import sys, os, html, subprocess
+import sys, os, re, html, subprocess
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -268,7 +268,7 @@ def cli_text(did, code, r):
     if did == "sqlpp":
         snippet = full_sqlpp(r)
     elif did in ("sql", "duckdb"):
-        snippet = sqlify(code)
+        snippet = sql_display(code)
     else:
         snippet = code
     if not snippet or snippet.strip() == "—":
@@ -305,7 +305,7 @@ def render_md():
             for d in secondary():
                 code = (r.get(d["id"]) or "").strip()
                 if d["id"] in ("sql", "duckdb"):
-                    code = sqlify(code)
+                    code = sql_display(code)
                 if code and code != "—":
                     rows.append(f"| **{d['label']}** | `{code.replace(chr(124), chr(92)+chr(124))}` |")
             if rows:
@@ -591,6 +591,50 @@ def sqlify(code):
     return "SELECT " + ", ".join(p.strip() for p in c.split(";") if p.strip())
 
 
+_FUNC_RE = re.compile(r"\b([a-z_][a-zA-Z0-9_]+)(?=\s*\()")
+
+
+def upcase_sql(code):
+    """Uppercase SQL-family function-call names (foo( → FOO() to match SQL++'s style,
+    skipping string literals and -- comments. Only names of 2+ chars, so single-letter
+    table aliases like t(v,i) are left alone."""
+    res, buf, i, n, q = [], [], 0, len(code), None
+
+    def flush():
+        s = _FUNC_RE.sub(lambda m: m.group(1).upper(), "".join(buf))
+        buf.clear()
+        return s
+
+    while i < n:
+        ch = code[i]
+        if q:
+            res.append(ch)
+            if ch == q:
+                q = None
+            i += 1
+        elif ch == "-" and i + 1 < n and code[i + 1] == "-":   # line comment
+            res.append(flush())
+            j = code.find("\n", i)
+            j = n if j == -1 else j
+            res.append(code[i:j])
+            i = j
+        elif ch in "'\"":
+            res.append(flush())
+            res.append(ch)
+            q = ch
+            i += 1
+        else:
+            buf.append(ch)
+            i += 1
+    res.append(flush())
+    return "".join(res)
+
+
+def sql_display(code):
+    """A SQL-family cell as shown: a complete statement with SQL++-style caps."""
+    return upcase_sql(sqlify(code))
+
+
 def cell(kind, plain_html, clitext):
     """A code <td>. When the dialect has a CLI form, carry both — the 'full command
     line' toggle swaps them via a body class (no re-render)."""
@@ -603,8 +647,8 @@ def cell(kind, plain_html, clitext):
 def code_td(did, code, r, kind):
     if not code or code.strip() == "—":
         return f'<td class="empty {kind}">—</td>'
-    # SQL family: complete the statement, then mirror SQL++'s clause-per-line breaks
-    disp = reflow(sqlify(code)) if did in ("sql", "duckdb") else code.strip()
+    # SQL family: complete the statement + SQL++-style caps, then clause-per-line breaks
+    disp = reflow(sql_display(code)) if did in ("sql", "duckdb") else code.strip()
     return cell(kind, html.escape(disp), cli_text(did, code, r))
 
 

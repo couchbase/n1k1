@@ -19,8 +19,8 @@
   out: |-
     {"id":"1005","status":"shipped","total":22.0}, … (one per order)
   sqlpp: |-
-    SELECT o.id, o.status, o.total
-    FROM orders o
+    SELECT id, status, total
+    FROM orders
   sql: |-
     SELECT id, status, total FROM orders
   duckdb: |-
@@ -41,9 +41,9 @@
   out: |-
     the orders with total over 100
   sqlpp: |-
-    SELECT o.id, o.total
-    FROM orders o
-    WHERE o.total > 100
+    SELECT id, total
+    FROM orders
+    WHERE total > 100
   sql: |-
     SELECT id, total FROM orders WHERE total > 100
   duckdb: |-
@@ -64,9 +64,9 @@
   out: |-
     {"id":"1020","total":389.99}, {"id":"1019","total":245.0}, {"id":"1003","total":210.00}
   sqlpp: |-
-    SELECT o.id, o.total
-    FROM orders o
-    ORDER BY o.total DESC
+    SELECT id, total
+    FROM orders
+    ORDER BY total DESC
     LIMIT 3
   sql: |-
     SELECT id, total FROM orders ORDER BY total DESC LIMIT 3
@@ -90,9 +90,9 @@
   out: |-
     the priciest order (the whole row)
   sqlpp: |-
-    SELECT o.*
-    FROM orders o
-    ORDER BY o.total DESC
+    SELECT orders.*
+    FROM orders
+    ORDER BY total DESC
     LIMIT 1
   sql: |-
     SELECT * FROM orders ORDER BY total DESC LIMIT 1
@@ -114,10 +114,10 @@
   out: |-
     {"n":20,"revenue":1949.36,"avg":97.47}
   sqlpp: |-
-    SELECT COUNT(*)               AS n,
-           ROUND(SUM(o.total), 2) AS revenue,
-           ROUND(AVG(o.total), 2) AS avg
-    FROM orders o
+    SELECT COUNT(*)             AS n,
+           ROUND(SUM(total), 2) AS revenue,
+           ROUND(AVG(total), 2) AS avg
+    FROM orders
   sql: |-
     SELECT count(*), round(sum(total),2), round(avg(total),2) FROM orders
   duckdb: |-
@@ -138,10 +138,10 @@
   out: |-
     {"status":"shipped","n":16,"revenue":1758.73}, {"status":"pending",…}, {"status":"cancelled",…}
   sqlpp: |-
-    SELECT o.status, COUNT(*) AS n,
-           ROUND(SUM(o.total), 2) AS revenue
-    FROM orders o
-    GROUP BY o.status
+    SELECT status, COUNT(*) AS n,
+           ROUND(SUM(total), 2) AS revenue
+    FROM orders
+    GROUP BY status
     ORDER BY revenue DESC
   sql: |-
     SELECT status, count(*), round(sum(total),2)
@@ -170,8 +170,8 @@
   out: |-
     "dave", "alice", …  (bare strings, not {"customer":…})
   sqlpp: |-
-    SELECT RAW o.customer
-    FROM orders o
+    SELECT RAW customer
+    FROM orders
   sql: |-
     SELECT customer FROM orders     -- a single-column result set
   duckdb: |-
@@ -853,9 +853,9 @@
   out: |-
     one row per customer, e.g. {"customer":"dave","order_ids":["1005","1009","1013","1017"]}
   sqlpp: |-
-    SELECT o.customer, ARRAY_AGG(o.id) AS order_ids
-    FROM orders o
-    GROUP BY o.customer
+    SELECT customer, ARRAY_AGG(id) AS order_ids
+    FROM orders
+    GROUP BY customer
   sql: |-
     SELECT customer, jsonb_agg(id) FROM orders GROUP BY customer
   duckdb: |-
@@ -902,9 +902,9 @@
   out: |-
     (empty for shop — order ids are unique)
   sqlpp: |-
-    SELECT o.id, COUNT(*) AS n
-    FROM orders o
-    GROUP BY o.id
+    SELECT id, COUNT(*) AS n
+    FROM orders
+    GROUP BY id
     HAVING COUNT(*) > 1
   sql: |-
     SELECT id, count(*) FROM orders GROUP BY id HAVING count(*) > 1
