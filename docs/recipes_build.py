@@ -328,17 +328,19 @@ thead .c-sqlpp{z-index:31;background:var(--sqlpp);border-right-color:var(--sqlpp
 .sec td,.desc td{padding:0;border-right:none}
 .sec td{background:var(--band)}
 .desc td{background:var(--desc)}
-.stick{position:sticky;left:0;display:inline-flex;align-items:baseline;gap:9px;
-  padding:9px 16px;max-width:min(94vw,720px)}
+.stick{position:sticky;left:0;display:inline-flex;flex-direction:column;align-items:flex-start;
+  gap:4px;padding:10px 16px;max-width:min(94vw,760px)}
 .sec .stick{font-size:11px;font-weight:680;letter-spacing:.05em;text-transform:uppercase;color:var(--muted)}
+.rhead{display:inline-flex;align-items:baseline;gap:9px;flex-wrap:wrap}
 .rtitle{font-weight:640;font-size:13.5px;color:var(--fg);letter-spacing:-.01em}
-.rnote{color:var(--muted);font-size:12px;line-height:1.45;font-weight:400}
+.rnote{color:var(--muted);font-size:12px;line-height:1.45;font-weight:400}  /* on its own line below the title */
 .rneeds{font-size:10.5px;color:var(--muted);border:1px solid var(--line);border-radius:10px;
   padding:1px 7px;font-family:ui-monospace,monospace;white-space:nowrap}
 tbody tr.code:hover td:not(.c-sqlpp){background:var(--line2)}
+/* code cells wrap: cap line length so columns stay narrow (more fits horizontally) */
 pre{margin:0;font-family:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
-  font-size:12.5px;line-height:1.5;white-space:pre-wrap;word-break:break-word;
-  font-variant-numeric:tabular-nums}
+  font-size:12.5px;line-height:1.5;white-space:pre-wrap;overflow-wrap:anywhere;
+  font-variant-numeric:tabular-nums;max-width:46ch}
 .out{color:var(--faint)}
 col.hidden,td.hidden,th.hidden{display:none}
 footer{padding:18px 26px;color:var(--muted);font-size:12.5px;line-height:1.6;border-top:1px solid var(--line)}
@@ -416,7 +418,8 @@ def render_html_body():
             note = f'<span class="rnote">{html.escape(r["note"].strip())}</span>' if r.get("note") else ""
             needs = '<span class="rneeds">needs examples/shop</span>' if r.get("needs") else ""
             T.append(f'<tr class="desc" data-r="{rid}"><td colspan="{ncols}"><span class="stick">'
-                     f'<span class="rtitle">{html.escape(r["title"])}</span>{note}{needs}</span></td></tr>')
+                     f'<span class="rhead"><span class="rtitle">{html.escape(r["title"])}</span>{needs}</span>'
+                     f'{note}</span></td></tr>')
             # dialect row
             T.append(f'<tr class="code" data-r="{rid}">')
             sqlpp = (r.get("sqlpp") or "").strip()
