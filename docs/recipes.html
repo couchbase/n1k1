@@ -61,8 +61,9 @@ h1{margin:0 0 8px;font-size:24px;font-weight:680;letter-spacing:-.015em;text-wra
 .toc-toggle:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
 /* body = the TOC sidebar + the table scroller */
 .body{flex:1;display:flex;min-height:0}
-.toc{flex:none;width:238px;overflow:auto;border-right:1px solid var(--line);
-  background:var(--bg);padding:6px 0 24px}
+/* width is user-resizable (drag the right edge) so long entries needn't stay clipped */
+.toc{flex:none;width:238px;min-width:150px;max-width:60vw;resize:horizontal;
+  overflow:auto;border-right:1px solid var(--line);background:var(--bg);padding:6px 0 24px}
 .app.toc-off .toc{display:none}
 .toc-head{font-size:10px;font-weight:680;text-transform:uppercase;letter-spacing:.09em;
   color:var(--faint);padding:10px var(--gutter) 4px}
