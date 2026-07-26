@@ -34,7 +34,7 @@ SRC = os.path.join(HERE, "recipes.yaml")
 DIALECTS = [
     {"id": "sqlpp", "label": "SQL++", "primary": True},
     {"id": "sql", "label": "SQL (Postgres)"},
-    {"id": "duckdb", "label": "DuckDB"},
+    {"id": "duckdb", "label": "SQL (DuckDB)"},
     {"id": "js", "label": "JavaScript"},
     {"id": "python", "label": "Python"},
     {"id": "mongo", "label": "MongoDB"},
@@ -241,11 +241,6 @@ def full_sqlpp(r):
     return f"WITH {b}\n{s}" if b else s
 
 
-def source_data(r):
-    """Text for the 'source data' expando: the shared input every dialect references."""
-    return r["data"].strip() if r.get("data") else ""
-
-
 def short_title(t):
     """A compact label for the table of contents (drop the ' — …' / ' (…)' tail)."""
     return t.split(" — ")[0].split(" (")[0].strip()
@@ -427,12 +422,13 @@ thead .c-sqlpp{z-index:31;background:var(--sqlpp);border-right-color:var(--sqlpp
 .sec .stick{font-size:11px;font-weight:680;letter-spacing:.05em;text-transform:uppercase;color:var(--muted)}
 .rhead{display:inline-flex;align-items:baseline;gap:9px;flex-wrap:wrap}
 .rtitle{font-weight:640;font-size:13.5px;color:var(--fg);letter-spacing:-.01em}
-.rnote{color:var(--muted);font-size:12px;line-height:1.45;font-weight:400}  /* on its own line below the title */
+.rnote{color:var(--muted);font-size:12px;line-height:1.45;font-weight:400}
+.rline{display:inline-flex;flex-wrap:wrap;align-items:baseline;gap:8px}  /* note + example-data chip */
 .rneeds{font-size:10.5px;color:var(--muted);border:1px solid var(--line);border-radius:10px;
   padding:1px 7px;font-family:ui-monospace,monospace;white-space:nowrap}
-/* source-data expando in the description row */
-.src{margin-top:2px;width:100%}
-.src summary{cursor:pointer;list-style:none;display:inline-flex;align-items:center;gap:5px;
+/* "example data" expando — chip inline on the title/note line, body drops below when open */
+.src{display:inline-block;vertical-align:baseline}
+.src summary{cursor:pointer;list-style:none;display:inline-flex;align-items:center;gap:4px;
   font-size:11px;color:var(--accent);font-weight:500}
 .src summary::-webkit-details-marker{display:none}
 .src summary::before{content:"▸";font-size:9px;transition:transform .12s}
@@ -601,19 +597,26 @@ def render_html_body():
         T.append(f'<tr class="sec" id="sec-{si}"{scstyle}><td colspan="{ncols}"><span class="stick">'
                  f'{html.escape(title)}</span></td></tr>')
         for rid, r in lst:
-            # description row (colspan) — text stays pinned left; id is the scroll target
-            note = f'<span class="rnote">{html.escape(r["note"].strip())}</span>' if r.get("note") else ""
+            # description row (colspan) — text stays pinned left; id is the scroll target.
+            # the "example data" chip rides inline on the note line (or the title line) to
+            # save a row when collapsed, expanding below when opened.
+            title = html.escape(r["title"])
+            note = html.escape(r["note"].strip()) if r.get("note") else ""
             needs = '<span class="rneeds">shop dataset</span>' if r.get("needs") else ""
-            src = source_data(r)
-            srcx = (f'<details class="src"><summary>source data</summary>'
+            src = r["data"].strip() if r.get("data") else ""
+            chip = (f'<details class="src"><summary>example data</summary>'
                     f'<pre>{html.escape(src)}</pre></details>') if src else ""
-            T.append(f'<tr class="desc" id="rec-{rid}" data-r="{rid}"><td colspan="{ncols}"><span class="stick">'
-                     f'<span class="rhead"><span class="rtitle">{html.escape(r["title"])}</span>{needs}</span>'
-                     f'{note}{srcx}</span></td></tr>')
-            # dialect row — SQL++ (frozen) then each secondary dialect
+            head = (f'<span class="rhead"><span class="rtitle">{title}</span>{needs}'
+                    f'{"" if note else chip}</span>')
+            line2 = f'<span class="rline"><span class="rnote">{note}</span>{chip}</span>' if note else ""
+            T.append(f'<tr class="desc" id="rec-{rid}" data-r="{rid}"><td colspan="{ncols}">'
+                     f'<span class="stick">{head}{line2}</span></td></tr>')
+            # dialect row — SQL++ (frozen) then each secondary dialect. SQL++ shows the full
+            # WITH-bound query so the data source is explicit (no dangling names / no FROM-less
+            # look from the once-hidden WITH).
             T.append(f'<tr class="code" data-r="{rid}">')
             sqlpp = (r.get("sqlpp") or "").strip()
-            T.append(cell("c-sqlpp", html.escape(sqlpp), cli_text("sqlpp", sqlpp, r)))
+            T.append(cell("c-sqlpp", html.escape(full_sqlpp(r)), cli_text("sqlpp", sqlpp, r)))
             for d in sec:
                 T.append(code_td(d["id"], r.get(d["id"], ""), r, "col-" + d["id"]))
             T.append("</tr>")
