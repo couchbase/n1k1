@@ -40,6 +40,9 @@
   section_color: '#4f46e5'
   title: 'Keep matching records'
   needs: 'shop'
+  data: |-
+    orders — the shop keyspace (20 docs), e.g.
+    {"id":"1005","customer":"dave","total":22.0,"status":"shipped","ts":"2026-01-06"}
   out: |-
     the orders with total over 100
   sqlpp: |-
@@ -67,6 +70,9 @@
   section_color: '#4f46e5'
   title: 'Sort, then take the top N'
   needs: 'shop'
+  data: |-
+    orders — the shop keyspace (20 docs), e.g.
+    {"id":"1005","customer":"dave","total":22.0,"status":"shipped","ts":"2026-01-06"}
   out: |-
     {"id":"1020","total":389.99}, {"id":"1019","total":245.0}, {"id":"1003","total":210.00}
   sqlpp: |-
@@ -99,6 +105,9 @@
   note: |-
     jq's max_by returns the whole record with the largest key; in SQL it's ORDER BY … LIMIT 1.
   needs: 'shop'
+  data: |-
+    orders — the shop keyspace (20 docs), e.g.
+    {"id":"1005","customer":"dave","total":22.0,"status":"shipped","ts":"2026-01-06"}
   out: |-
     the priciest order (the whole row)
   sqlpp: |-
@@ -127,6 +136,9 @@
   section_color: '#4f46e5'
   title: 'Count and total a collection'
   needs: 'shop'
+  data: |-
+    orders — the shop keyspace (20 docs), e.g.
+    {"id":"1005","customer":"dave","total":22.0,"status":"shipped","ts":"2026-01-06"}
   out: |-
     {"n":20,"revenue":1949.36,"avg":97.47}
   sqlpp: |-
@@ -157,6 +169,9 @@
   section_color: '#4f46e5'
   title: 'Group, then aggregate each group'
   needs: 'shop'
+  data: |-
+    orders — the shop keyspace (20 docs), e.g.
+    {"id":"1005","customer":"dave","total":22.0,"status":"shipped","ts":"2026-01-06"}
   out: |-
     {"status":"shipped","n":16,"revenue":1758.73}, {"status":"pending",…}, {"status":"cancelled",…}
   sqlpp: |-
@@ -198,6 +213,9 @@
     A normal SELECT yields objects; SELECT RAW (jq's .[] | .field) yields the bare value —
     handy for one column, an IN-list, or feeding another query.
   needs: 'shop'
+  data: |-
+    orders — the shop keyspace (20 docs), e.g.
+    {"id":"1005","customer":"dave","total":22.0,"status":"shipped","ts":"2026-01-06"}
   out: |-
     "dave", "alice", …  (bare strings, not {"customer":…})
   sqlpp: |-
@@ -949,6 +967,9 @@
   section_color: '#db2777'
   title: "Collect each group's members"
   needs: 'shop'
+  data: |-
+    orders — the shop keyspace (20 docs), e.g.
+    {"id":"1005","customer":"dave","total":22.0,"status":"shipped","ts":"2026-01-06"}
   out: |-
     one row per customer, e.g. {"customer":"dave","order_ids":["1005","1009","1013","1017"]}
   sqlpp: |-
@@ -1006,6 +1027,9 @@
   section_color: '#db2777'
   title: 'Find duplicates by key'
   needs: 'shop'
+  data: |-
+    orders — the shop keyspace (20 docs), e.g.
+    {"id":"1005","customer":"dave","total":22.0,"status":"shipped","ts":"2026-01-06"}
   out: |-
     (empty for shop — order ids are unique)
   sqlpp: |-

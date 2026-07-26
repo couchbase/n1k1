@@ -79,7 +79,11 @@ FROM orders
 </details>
 
 ### Keep matching records
-_Over the shop `orders` / `customers` keyspaces._
+_Source data:_
+```
+orders — the shop keyspace (20 docs), e.g.
+{"id":"1005","customer":"dave","total":22.0,"status":"shipped","ts":"2026-01-06"}
+```
 ```sql
 SELECT id, total
 FROM orders
@@ -100,7 +104,11 @@ WHERE total > 100
 </details>
 
 ### Sort, then take the top N
-_Over the shop `orders` / `customers` keyspaces._
+_Source data:_
+```
+orders — the shop keyspace (20 docs), e.g.
+{"id":"1005","customer":"dave","total":22.0,"status":"shipped","ts":"2026-01-06"}
+```
 ```sql
 SELECT id, total
 FROM orders
@@ -123,7 +131,11 @@ LIMIT 3
 
 ### The single largest record
 jq's max_by returns the whole record with the largest key; in SQL it's ORDER BY … LIMIT 1.
-_Over the shop `orders` / `customers` keyspaces._
+_Source data:_
+```
+orders — the shop keyspace (20 docs), e.g.
+{"id":"1005","customer":"dave","total":22.0,"status":"shipped","ts":"2026-01-06"}
+```
 ```sql
 SELECT orders.*
 FROM orders
@@ -145,7 +157,11 @@ LIMIT 1
 </details>
 
 ### Count and total a collection
-_Over the shop `orders` / `customers` keyspaces._
+_Source data:_
+```
+orders — the shop keyspace (20 docs), e.g.
+{"id":"1005","customer":"dave","total":22.0,"status":"shipped","ts":"2026-01-06"}
+```
 ```sql
 SELECT COUNT(*)             AS n,
        ROUND(SUM(total), 2) AS revenue,
@@ -167,7 +183,11 @@ FROM orders
 </details>
 
 ### Group, then aggregate each group
-_Over the shop `orders` / `customers` keyspaces._
+_Source data:_
+```
+orders — the shop keyspace (20 docs), e.g.
+{"id":"1005","customer":"dave","total":22.0,"status":"shipped","ts":"2026-01-06"}
+```
 ```sql
 SELECT status,
        COUNT(*) AS n,
@@ -195,7 +215,11 @@ ORDER BY revenue DESC
 ### RAW — one bare value per row (not an object)
 A normal SELECT yields objects; SELECT RAW (jq's .[] | .field) yields the bare value —
 handy for one column, an IN-list, or feeding another query.
-_Over the shop `orders` / `customers` keyspaces._
+_Source data:_
+```
+orders — the shop keyspace (20 docs), e.g.
+{"id":"1005","customer":"dave","total":22.0,"status":"shipped","ts":"2026-01-06"}
+```
 ```sql
 SELECT RAW customer
 FROM orders
@@ -865,7 +889,11 @@ FROM doc
 ## 6. Aggregating a collection
 
 ### "Collect each group's members"
-_Over the shop `orders` / `customers` keyspaces._
+_Source data:_
+```
+orders — the shop keyspace (20 docs), e.g.
+{"id":"1005","customer":"dave","total":22.0,"status":"shipped","ts":"2026-01-06"}
+```
 ```sql
 SELECT customer, ARRAY_AGG(id) AS order_ids
 FROM orders
@@ -912,7 +940,11 @@ GROUP BY v
 </details>
 
 ### Find duplicates by key
-_Over the shop `orders` / `customers` keyspaces._
+_Source data:_
+```
+orders — the shop keyspace (20 docs), e.g.
+{"id":"1005","customer":"dave","total":22.0,"status":"shipped","ts":"2026-01-06"}
+```
 ```sql
 SELECT id, COUNT(*) AS n
 FROM orders
