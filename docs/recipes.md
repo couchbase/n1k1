@@ -276,7 +276,6 @@ WITH nums AS ([10,20,30])
 SELECT nums[0]  AS `first`,
        nums[-1] AS `last`,
        nums[-2] AS penult
-FROM nums
 -- → {"first":10,"last":30,"penult":20}
 ```
 <details><summary>other dialects</summary>
@@ -284,7 +283,7 @@ FROM nums
 | | |
 |---|---|
 | **SQL (Postgres)** | `SELECT nums->0, nums->-1 -- jsonb: 0-based, -1 = last FROM nums` |
-| **SQL (DuckDB)** | `SELECT nums[1], nums[-1] -- ⚠ DuckDB lists are 1-based FROM nums` |
+| **SQL (DuckDB)** | `SELECT nums[1], nums[-1] -- ⚠ DuckDB lists are 1-based` |
 | **JavaScript** | `nums[0]; nums.at(-1)` |
 | **Python** | `nums[0]; nums[-1]` |
 | **MongoDB** | `{$arrayElemAt: ["$nums", -1]}` |
@@ -306,8 +305,8 @@ SELECT letters[2:4] AS s
 
 | | |
 |---|---|
-| **SQL (Postgres)** | `SELECT JSONB_PATH_QUERY(col, '$[2 to 3]') -- SQLite has no slice AS s` |
-| **SQL (DuckDB)** | `SELECT letters[3:4] -- ⚠ 1-based, inclusive AS s` |
+| **SQL (Postgres)** | `SELECT JSONB_PATH_QUERY(letters, '$[2 to 3]') AS s FROM letters` |
+| **SQL (DuckDB)** | `SELECT letters[3:4] AS s -- ⚠ 1-based, inclusive` |
 | **JavaScript** | `letters.slice(2, 4)` |
 | **Python** | `letters[2:4]` |
 | **MongoDB** | `{$slice: ["$letters", 2, 2]}` |
@@ -326,16 +325,16 @@ nums = [1, 2, 3]
 ```
 ```sql
 WITH nums AS ([1,2,3])
-SELECT ARRAY v + 1 FOR v IN nums END AS r
-FROM doc
+SELECT ARRAY_AGG(v + 1) AS r
+FROM nums AS v
 -- → {"r":[2,3,4]}
 ```
 <details><summary>other dialects</summary>
 
 | | |
 |---|---|
-| **SQL (Postgres)** | `SELECT JSONB_AGG(value::int + 1) AS r FROM JSONB_ARRAY_ELEMENTS(doc)` |
-| **SQL (DuckDB)** | `SELECT [x + 1 for x in nums] AS r FROM doc` |
+| **SQL (Postgres)** | `SELECT JSONB_AGG(value::int + 1) AS r FROM JSONB_ARRAY_ELEMENTS(nums)` |
+| **SQL (DuckDB)** | `SELECT [x + 1 for x in nums] AS r` |
 | **JavaScript** | `nums.map(x => x + 1)` |
 | **Python** | `[x + 1 for x in nums]` |
 | **MongoDB** | `{$map: {input: "$nums", as: "v", in: {$add: ["$$v", 1]}}}` |
@@ -359,8 +358,8 @@ WHERE v >= 2
 
 | | |
 |---|---|
-| **SQL (Postgres)** | `SELECT value FROM JSONB_ARRAY_ELEMENTS(doc) WHERE value::int >= 2` |
-| **SQL (DuckDB)** | `SELECT [x for x in nums if x >= 2] FROM doc` |
+| **SQL (Postgres)** | `SELECT value FROM JSONB_ARRAY_ELEMENTS(nums) WHERE value::int >= 2` |
+| **SQL (DuckDB)** | `SELECT [x for x in nums if x >= 2]` |
 | **JavaScript** | `nums.filter(x => x >= 2)` |
 | **Python** | `[x for x in nums if x >= 2]` |
 | **MongoDB** | `{$filter: {input: "$nums", cond: {$gte: ["$$this", 2]}}}` |
@@ -385,8 +384,8 @@ FROM nums AS v
 
 | | |
 |---|---|
-| **SQL (Postgres)** | `SELECT SUM(value::int) AS s, MAX(value::int) AS mx, AVG(value::int) AS a FROM JSONB_ARRAY_ELEMENTS(doc)` |
-| **SQL (DuckDB)** | `SELECT LIST_SUM(nums) AS s, LIST_MAX(nums) AS mx, LIST_AVG(nums) AS a FROM doc` |
+| **SQL (Postgres)** | `SELECT SUM(value::int) AS s, MAX(value::int) AS mx, AVG(value::int) AS a FROM JSONB_ARRAY_ELEMENTS(nums)` |
+| **SQL (DuckDB)** | `SELECT LIST_SUM(nums) AS s, LIST_MAX(nums) AS mx, LIST_AVG(nums) AS a` |
 | **JavaScript** | `nums.reduce((a, b) => a + b, 0); Math.max(...nums)` |
 | **Python** | `sum(nums); max(nums); statistics.mean(nums)` |
 | **MongoDB** | `{$sum: "$nums"}; {$max: "$nums"}; {$avg: "$nums"}` |
@@ -402,15 +401,14 @@ nums = [1, 2, 3]
 ```sql
 WITH nums AS ([1,2,3])
 SELECT ARRAY_LENGTH(nums) AS n
-FROM doc
 -- → {"n":3}
 ```
 <details><summary>other dialects</summary>
 
 | | |
 |---|---|
-| **SQL (Postgres)** | `SELECT JSONB_ARRAY_LENGTH(nums) AS n FROM doc` |
-| **SQL (DuckDB)** | `SELECT LEN(nums) AS n FROM doc` |
+| **SQL (Postgres)** | `SELECT JSONB_ARRAY_LENGTH(nums) AS n FROM nums` |
+| **SQL (DuckDB)** | `SELECT LEN(nums) AS n` |
 | **JavaScript** | `nums.length` |
 | **Python** | `len(nums)` |
 | **MongoDB** | `{$size: "$nums"}` |
@@ -426,16 +424,16 @@ nums = [1, 2, 5, 3, 5, 3, 1]
 ```
 ```sql
 WITH nums AS ([1,2,5,3,5,3,1])
-SELECT ARRAY_AGG(DISTINCT doc.nums) AS u
-FROM doc
+SELECT ARRAY_AGG(DISTINCT v) AS u
+FROM nums AS v
 -- → {"u":[1,2,5,3]}
 ```
 <details><summary>other dialects</summary>
 
 | | |
 |---|---|
-| **SQL (Postgres)** | `SELECT DISTINCT value AS u FROM JSONB_ARRAY_ELEMENTS(doc)` |
-| **SQL (DuckDB)** | `SELECT LIST_DISTINCT(nums) AS u FROM doc` |
+| **SQL (Postgres)** | `SELECT DISTINCT value AS u FROM JSONB_ARRAY_ELEMENTS(nums)` |
+| **SQL (DuckDB)** | `SELECT LIST_DISTINCT(nums) AS u` |
 | **JavaScript** | `[...new Set(nums)]` |
 | **Python** | `list(dict.fromkeys(nums))` |
 | **MongoDB** | `{$setUnion: ["$nums", []]}   // unordered` |
@@ -459,7 +457,7 @@ SELECT ARRAY_FLATTEN(nested, 2) AS f
 | | |
 |---|---|
 | **SQL (Postgres)** | `-- recursive unnest; no single builtin` |
-| **SQL (DuckDB)** | `SELECT FLATTEN(nested) -- one level AS f` |
+| **SQL (DuckDB)** | `SELECT FLATTEN(nested) AS f -- one level` |
 | **JavaScript** | `nested.flat(2)` |
 | **Python** | `# no deep builtin; recurse` |
 | **MongoDB** | `{$reduce: {input: "$nested", initialValue: [], in: {$concatArrays: ["$$value", "$$this"]}}}  // one level` |
@@ -504,8 +502,8 @@ SELECT ARRAY letters[i]
 
 | | |
 |---|---|
-| **SQL (Postgres)** | `SELECT v AS evens FROM JSONB_ARRAY_ELEMENTS(col) WITH ORDINALITY t(v, i) WHERE i % 2 = 1` |
-| **SQL (DuckDB)** | `SELECT LIST_SLICE(letters, 1, 4, 2) -- 1-based, step 2 AS evens` |
+| **SQL (Postgres)** | `SELECT v AS evens FROM JSONB_ARRAY_ELEMENTS(letters) WITH ORDINALITY t(v, i) WHERE i % 2 = 1` |
+| **SQL (DuckDB)** | `SELECT LIST_SLICE(letters, 1, 4, 2) AS evens -- 1-based, step 2` |
 | **JavaScript** | `letters.filter((_, i) => i % 2 === 0)` |
 | **Python** | `letters[::2]` |
 | **MongoDB** | `{$map: {input: {$range: [0, {$size: "$letters"}, 2]}, in: {$arrayElemAt: ["$letters", "$$this"]}}}` |
@@ -555,7 +553,7 @@ FROM people AS p
 
 | | |
 |---|---|
-| **SQL (Postgres)** | `SELECT value FROM JSONB_ARRAY_ELEMENTS(col)` |
+| **SQL (Postgres)** | `SELECT value FROM JSONB_ARRAY_ELEMENTS(people)` |
 | **SQL (DuckDB)** | `SELECT UNNEST(people, recursive := false)` |
 | **JavaScript** | `for (const p of people) { … }` |
 | **Python** | `for p in people: ...` |
@@ -579,7 +577,7 @@ FROM people AS p
 
 | | |
 |---|---|
-| **SQL (Postgres)** | `SELECT e->>'name' FROM JSONB_ARRAY_ELEMENTS(col) e` |
+| **SQL (Postgres)** | `SELECT e->>'name' FROM JSONB_ARRAY_ELEMENTS(people) e` |
 | **SQL (DuckDB)** | `SELECT p.name FROM (SELECT UNNEST(people) p)` |
 | **JavaScript** | `people.map(p => p.name)` |
 | **Python** | `[p["name"] for p in people]` |
@@ -603,7 +601,7 @@ FROM doc
 
 | | |
 |---|---|
-| **SQL (Postgres)** | `SELECT col->'user' \|\| col->'projects' -- jsonb \|\| concatenates AS r` |
+| **SQL (Postgres)** | `SELECT doc->'user' \|\| doc->'projects' AS r FROM doc` |
 | **SQL (DuckDB)** | `SELECT LIST_PREPEND(doc.user, doc.projects) AS r` |
 | **JavaScript** | `[doc.user, ...doc.projects]` |
 | **Python** | `[doc["user"], *doc["projects"]]` |
@@ -630,8 +628,8 @@ FROM doc
 
 | | |
 |---|---|
-| **SQL (Postgres)** | `SELECT JSONB_BUILD_OBJECT('user', col->'user', 'title', col->'title') AS o` |
-| **SQL (DuckDB)** | `SELECT {'user': doc.user, 'title': doc.title} -- a STRUCT AS o` |
+| **SQL (Postgres)** | `SELECT JSONB_BUILD_OBJECT('user', doc->'user', 'title', doc->'title') AS o FROM doc` |
+| **SQL (DuckDB)** | `SELECT {'user': doc.user, 'title': doc.title} AS o -- a STRUCT` |
 | **JavaScript** | `({user: doc.user, title: doc.title})` |
 | **Python** | `{"user": doc["user"], "title": doc["title"]}` |
 | **MongoDB** | `{$project: {user: 1, title: 1, _id: 0}}` |
@@ -654,7 +652,7 @@ FROM obj
 
 | | |
 |---|---|
-| **SQL (Postgres)** | `SELECT JSONB_OBJECT_KEYS(col) -- one row per key AS k` |
+| **SQL (Postgres)** | `SELECT JSONB_OBJECT_KEYS(obj) AS k FROM obj` |
 | **SQL (DuckDB)** | `SELECT JSON_KEYS(obj) AS k` |
 | **JavaScript** | `Object.keys(obj)` |
 | **Python** | `list(obj.keys())` |
@@ -679,7 +677,7 @@ FROM obj
 
 | | |
 |---|---|
-| **SQL (Postgres)** | `SELECT JSONB_EACH(col) -- rows (key, value) AS p` |
+| **SQL (Postgres)** | `SELECT JSONB_EACH(obj) AS p FROM obj` |
 | **SQL (DuckDB)** | `SELECT MAP_ENTRIES(obj) AS p` |
 | **JavaScript** | `Object.entries(obj)   // [["a",1],["b",2]]` |
 | **Python** | `list(obj.items())` |
@@ -702,7 +700,7 @@ SELECT OBJECT p.name : p.val FOR p IN pairs END AS o
 
 | | |
 |---|---|
-| **SQL (Postgres)** | `SELECT JSONB_OBJECT_AGG(e->>'key', e->'value') AS o` |
+| **SQL (Postgres)** | `SELECT JSONB_OBJECT_AGG(e->>'key', e->'value') AS o FROM JSONB_ARRAY_ELEMENTS(pairs) e` |
 | **SQL (DuckDB)** | `SELECT MAP_FROM_ENTRIES(pairs) AS o` |
 | **JavaScript** | `Object.fromEntries(pairs.map(p => [p.name, p.val]))` |
 | **Python** | `{p["name"]: p["val"] for p in pairs}` |
@@ -726,7 +724,7 @@ SELECT OBJECT r.label : r.`value` FOR r IN recs END AS o
 
 | | |
 |---|---|
-| **SQL (Postgres)** | `SELECT JSONB_OBJECT_AGG(e->>'label', e->'value') AS o` |
+| **SQL (Postgres)** | `SELECT JSONB_OBJECT_AGG(e->>'label', e->'value') AS o FROM JSONB_ARRAY_ELEMENTS(recs) e` |
 | **SQL (DuckDB)** | `SELECT MAP_FROM_ENTRIES([{'k': r.label, 'v': r.value} for r in recs]) AS o` |
 | **JavaScript** | `Object.fromEntries(recs.map(r => [r.label, r.value]))` |
 | **Python** | `{r["label"]: r["value"] for r in recs}` |
@@ -799,7 +797,7 @@ FROM obj
 
 | | |
 |---|---|
-| **SQL (Postgres)** | `SELECT col \|\| '{"draft":true}' AS added, col - 'title' AS removed` |
+| **SQL (Postgres)** | `SELECT obj \|\| '{"draft":true}' AS added, obj - 'title' AS removed FROM obj` |
 | **SQL (DuckDB)** | `SELECT STRUCT_INSERT(obj, draft := true) AS added, obj.* EXCLUDE (title) AS removed` |
 | **JavaScript** | `({...obj, draft: true})   \|   (({title, ...rest}) => rest)(obj)` |
 | **Python** | `{**obj, "draft": True}   \|   {k: v for k, v in obj.items() if k != "title"}` |
@@ -824,7 +822,7 @@ FROM obj
 
 | | |
 |---|---|
-| **SQL (Postgres)** | `SELECT JSONB_AGG(v \|\| JSONB_BUILD_OBJECT('slug', k)) AS a` |
+| **SQL (Postgres)** | `SELECT JSONB_AGG(v \|\| JSONB_BUILD_OBJECT('slug', k)) AS a FROM JSONB_EACH(obj) e(k, v)` |
 | **SQL (DuckDB)** | `SELECT [STRUCT_INSERT(e.value, slug := e.key) for e in MAP_ENTRIES(obj)] AS a` |
 | **JavaScript** | `Object.entries(obj).map(([k, v]) => ({...v, slug: k}))` |
 | **Python** | `[{**v, "slug": k} for k, v in obj.items()]` |
@@ -847,7 +845,7 @@ SELECT OBJECT r.slug : r FOR r IN recs END AS o
 
 | | |
 |---|---|
-| **SQL (Postgres)** | `SELECT JSONB_OBJECT_AGG(e->>'slug', e) AS o` |
+| **SQL (Postgres)** | `SELECT JSONB_OBJECT_AGG(e->>'slug', e) AS o FROM JSONB_ARRAY_ELEMENTS(recs) e` |
 | **SQL (DuckDB)** | `SELECT MAP_FROM_ENTRIES([{'k': r.slug, 'v': r} for r in recs]) AS o` |
 | **JavaScript** | `Object.fromEntries(recs.map(r => [r.slug, r]))` |
 | **Python** | `{r["slug"]: r for r in recs}` |
@@ -895,7 +893,7 @@ GROUP BY v
 
 | | |
 |---|---|
-| **SQL (Postgres)** | `SELECT value, COUNT(*) AS n FROM JSONB_ARRAY_ELEMENTS_TEXT(col) GROUP BY value` |
+| **SQL (Postgres)** | `SELECT value, COUNT(*) AS n FROM JSONB_ARRAY_ELEMENTS_TEXT(tags) GROUP BY value` |
 | **SQL (DuckDB)** | `SELECT v AS value, COUNT(*) AS n FROM (SELECT UNNEST(tags) v) GROUP BY v` |
 | **JavaScript** | `tags.reduce((m, x) => (m[x] = (m[x] \|\| 0) + 1, m), {})` |
 | **Python** | `collections.Counter(tags)` |
@@ -1040,8 +1038,8 @@ SELECT ARRAY TYPE(v) FOR v IN vals END AS t
 
 | | |
 |---|---|
-| **SQL (Postgres)** | `SELECT JSONB_TYPEOF(value) AS t` |
-| **SQL (DuckDB)** | `SELECT TYPEOF(v), JSON_TYPE(j)` |
+| **SQL (Postgres)** | `SELECT JSONB_TYPEOF(value) AS t FROM JSONB_ARRAY_ELEMENTS(vals) value` |
+| **SQL (DuckDB)** | `SELECT LIST_TRANSFORM(vals, x -> TYPEOF(x)) AS t` |
 | **JavaScript** | `typeof x; Array.isArray(x)` |
 | **Python** | `type(x).__name__` |
 | **MongoDB** | `{$type: "$x"}` |
@@ -1069,7 +1067,7 @@ SELECT ARRAY v FOR v WITHIN tree END AS descendants
 
 | | |
 |---|---|
-| **SQL (Postgres)** | `SELECT JSONB_PATH_QUERY(col, '$..*') AS descendants` |
+| **SQL (Postgres)** | `SELECT JSONB_PATH_QUERY(tree, '$..*') AS descendants FROM tree` |
 | **JavaScript** | `function* walk(x){ yield x; if (x && typeof x=="object") for (const v of Object.values(x)) yield* walk(v) }` |
 | **Python** | `# recursive generator over dict/list values` |
 | **jq** | `..` |
@@ -1090,7 +1088,7 @@ SELECT ANY v WITHIN tree SATISFIES v = 5 END AS found
 
 | | |
 |---|---|
-| **SQL (Postgres)** | `SELECT JSONB_PATH_EXISTS(col, '$..* ? (@ == 5)') AS found` |
+| **SQL (Postgres)** | `SELECT JSONB_PATH_EXISTS(tree, '$..* ? (@ == 5)') AS found FROM tree` |
 | **JavaScript** | `[...walk(tree)].includes(5)` |
 | **Python** | `any(v == 5 for v in walk(tree))` |
 | **jq** | `[.. \| select(. == 5)] \| length > 0` |
@@ -1111,7 +1109,7 @@ SELECT ARRAY v FOR v WITHIN tree WHEN v.id = "y" END AS hits
 
 | | |
 |---|---|
-| **SQL (Postgres)** | `SELECT JSONB_PATH_QUERY(col, '$..* ? (@.id == "y")') AS hits` |
+| **SQL (Postgres)** | `SELECT JSONB_PATH_QUERY(tree, '$..* ? (@.id == "y")') AS hits FROM tree` |
 | **JavaScript** | `[...walk(tree)].filter(v => v && v.id === "y")` |
 | **Python** | `[v for v in walk(tree) if isinstance(v, dict) and v.get("id") == "y"]` |
 | **jq** | `[.. \| objects \| select(.id == "y")]` |
@@ -1138,7 +1136,7 @@ UNNEST o.tags AS t
 
 | | |
 |---|---|
-| **SQL (Postgres)** | `SELECT o->>'id', t AS tag FROM JSONB_ARRAY_ELEMENTS(col) o, JSONB_ARRAY_ELEMENTS_TEXT(o->'tags') t` |
+| **SQL (Postgres)** | `SELECT o->>'id', t AS tag FROM JSONB_ARRAY_ELEMENTS(docs) o, JSONB_ARRAY_ELEMENTS_TEXT(o->'tags') t` |
 | **SQL (DuckDB)** | `SELECT id, UNNEST(tags) AS tag FROM docs` |
 | **JavaScript** | `docs.flatMap(o => o.tags.map(t => ({id: o.id, tag: t})))` |
 | **Python** | `[{"id": o["id"], "tag": t} for o in docs for t in o["tags"]]` |
@@ -1164,7 +1162,7 @@ ORDER BY d.ts
 
 | | |
 |---|---|
-| **SQL (Postgres)** | `SELECT col->>'text', col#>>'{sender,screen_name}' AS from_name FROM dms ORDER BY col->>'ts'` |
+| **SQL (Postgres)** | `SELECT dms->>'text', dms#>>'{sender,screen_name}' AS from_name FROM dms ORDER BY dms->>'ts'` |
 | **SQL (DuckDB)** | `SELECT text, sender.screen_name AS from_name FROM dms ORDER BY ts` |
 | **JavaScript** | `dms.map(d => ({text: d.text, from: d.sender.screen_name})).sort((a,b)=>a.ts-b.ts)` |
 | **Python** | `sorted(({"text": d["text"], "from": d["sender"]["screen_name"]} for d in dms), key=…)` |
@@ -1189,8 +1187,8 @@ FROM doc
 
 | | |
 |---|---|
-| **SQL (Postgres)** | `SELECT (col->'team') \|\| (SELECT JSONB_AGG(m \|\| '{"formerly":true}') FROM JSONB_ARRAY_ELEMENTS(col->'formerly') m) AS everyone` |
-| **SQL (DuckDB)** | `SELECT LIST_CONCAT(team, [STRUCT_INSERT(m, formerly := true) for m in formerly]) AS everyone` |
+| **SQL (Postgres)** | `SELECT (doc->'team') \|\| (SELECT JSONB_AGG(m \|\| '{"formerly":true}') FROM JSONB_ARRAY_ELEMENTS(doc->'formerly') m) AS everyone FROM doc` |
+| **SQL (DuckDB)** | `SELECT LIST_CONCAT(doc.team, [STRUCT_INSERT(m, formerly := true) for m in doc.formerly]) AS everyone` |
 | **JavaScript** | `[...doc.team, ...doc.formerly.map(m => ({...m, formerly: true}))]` |
 | **Python** | `doc["team"] + [{**m, "formerly": True} for m in doc["formerly"]]` |
 | **MongoDB** | `{$concatArrays: ["$team", {$map: {input: "$formerly", in: {$mergeObjects: ["$$this", {formerly: true}]}}}]}` |
@@ -1235,7 +1233,7 @@ FROM doc
 
 | | |
 |---|---|
-| **SQL (Postgres)** | `SELECT COALESCE(col->>'foo', 'default') AS v` |
+| **SQL (Postgres)** | `SELECT COALESCE(doc->>'foo', 'default') AS v FROM doc` |
 | **SQL (DuckDB)** | `SELECT COALESCE(doc.foo, 'default') AS v` |
 | **JavaScript** | `doc.foo ?? "default"` |
 | **Python** | `doc.get("foo", "default")` |

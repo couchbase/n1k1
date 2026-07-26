@@ -290,7 +290,6 @@
     SELECT nums[0]  AS `first`,
            nums[-1] AS `last`,
            nums[-2] AS penult
-    FROM nums
   sql: |-
     SELECT nums->0,
            nums->-1
@@ -298,9 +297,7 @@
     FROM nums
   duckdb: |-
     SELECT nums[1],
-           nums[-1]
-           -- ⚠ DuckDB lists are 1-based
-    FROM nums
+           nums[-1]   -- ⚠ DuckDB lists are 1-based
   js: |-
     nums[0]; nums.at(-1)
   python: |-
@@ -322,9 +319,10 @@
   sqlpp: |-
     SELECT letters[2:4] AS s
   sql: |-
-    SELECT JSONB_PATH_QUERY(col, '$[2 to 3]')     -- SQLite has no slice AS s
+    SELECT JSONB_PATH_QUERY(letters, '$[2 to 3]') AS s
+    FROM letters
   duckdb: |-
-    SELECT letters[3:4]           -- ⚠ 1-based, inclusive AS s
+    SELECT letters[3:4] AS s   -- ⚠ 1-based, inclusive
   js: |-
     letters.slice(2, 4)
   python: |-
@@ -348,14 +346,13 @@
   out: |-
     {"r":[2,3,4]}
   sqlpp: |-
-    SELECT ARRAY v + 1 FOR v IN nums END AS r
-    FROM doc
+    SELECT ARRAY_AGG(v + 1) AS r
+    FROM nums AS v
   sql: |-
     SELECT JSONB_AGG(value::int + 1) AS r
-    FROM JSONB_ARRAY_ELEMENTS(doc)
+    FROM JSONB_ARRAY_ELEMENTS(nums)
   duckdb: |-
     SELECT [x + 1 for x in nums] AS r
-    FROM doc
   js: |-
     nums.map(x => x + 1)
   python: |-
@@ -380,11 +377,10 @@
     WHERE v >= 2
   sql: |-
     SELECT value
-    FROM JSONB_ARRAY_ELEMENTS(doc)
+    FROM JSONB_ARRAY_ELEMENTS(nums)
     WHERE value::int >= 2
   duckdb: |-
     SELECT [x for x in nums if x >= 2]
-    FROM doc
   js: |-
     nums.filter(x => x >= 2)
   python: |-
@@ -412,12 +408,11 @@
     SELECT SUM(value::int) AS s,
            MAX(value::int) AS mx,
            AVG(value::int) AS a
-    FROM JSONB_ARRAY_ELEMENTS(doc)
+    FROM JSONB_ARRAY_ELEMENTS(nums)
   duckdb: |-
     SELECT LIST_SUM(nums) AS s,
            LIST_MAX(nums) AS mx,
            LIST_AVG(nums) AS a
-    FROM doc
   js: |-
     nums.reduce((a, b) => a + b, 0); Math.max(...nums)
   python: |-
@@ -438,13 +433,11 @@
     {"n":3}
   sqlpp: |-
     SELECT ARRAY_LENGTH(nums) AS n
-    FROM doc
   sql: |-
     SELECT JSONB_ARRAY_LENGTH(nums) AS n
-    FROM doc
+    FROM nums
   duckdb: |-
     SELECT LEN(nums) AS n
-    FROM doc
   js: |-
     nums.length
   python: |-
@@ -466,14 +459,13 @@
   out: |-
     {"u":[1,2,5,3]}
   sqlpp: |-
-    SELECT ARRAY_AGG(DISTINCT doc.nums) AS u
-    FROM doc
+    SELECT ARRAY_AGG(DISTINCT v) AS u
+    FROM nums AS v
   sql: |-
     SELECT DISTINCT value AS u
-    FROM JSONB_ARRAY_ELEMENTS(doc)
+    FROM JSONB_ARRAY_ELEMENTS(nums)
   duckdb: |-
     SELECT LIST_DISTINCT(nums) AS u
-    FROM doc
   js: |-
     [...new Set(nums)]
   python: |-
@@ -499,7 +491,7 @@
   sql: |-
     -- recursive unnest; no single builtin
   duckdb: |-
-    SELECT FLATTEN(nested) -- one level AS f
+    SELECT FLATTEN(nested) AS f   -- one level
   js: |-
     nested.flat(2)
   python: |-
@@ -553,10 +545,10 @@
            FOR i IN ARRAY_RANGE(0, ARRAY_LENGTH(letters), 2) END AS evens
   sql: |-
     SELECT v AS evens
-    FROM JSONB_ARRAY_ELEMENTS(col) WITH ORDINALITY t(v, i)
+    FROM JSONB_ARRAY_ELEMENTS(letters) WITH ORDINALITY t(v, i)
     WHERE i % 2 = 1
   duckdb: |-
-    SELECT LIST_SLICE(letters, 1, 4, 2)   -- 1-based, step 2 AS evens
+    SELECT LIST_SLICE(letters, 1, 4, 2) AS evens   -- 1-based, step 2
   js: |-
     letters.filter((_, i) => i % 2 === 0)
   python: |-
@@ -609,7 +601,7 @@
     FROM people AS p
   sql: |-
     SELECT value
-    FROM JSONB_ARRAY_ELEMENTS(col)
+    FROM JSONB_ARRAY_ELEMENTS(people)
   duckdb: |-
     SELECT
     UNNEST(people, recursive := false)
@@ -636,7 +628,7 @@
     FROM people AS p
   sql: |-
     SELECT e->>'name'
-    FROM JSONB_ARRAY_ELEMENTS(col) e
+    FROM JSONB_ARRAY_ELEMENTS(people) e
   duckdb: |-
     SELECT p.name
     FROM (SELECT UNNEST(people) p)
@@ -662,7 +654,8 @@
     SELECT ARRAY_PREPEND(doc.user, doc.projects) AS r
     FROM doc
   sql: |-
-    SELECT col->'user' || col->'projects'    -- jsonb || concatenates AS r
+    SELECT doc->'user' || doc->'projects' AS r
+    FROM doc
   duckdb: |-
     SELECT LIST_PREPEND(doc.user, doc.projects) AS r
   js: |-
@@ -690,9 +683,10 @@
     SELECT {"user": doc.user, "title": doc.title} AS o
     FROM doc
   sql: |-
-    SELECT JSONB_BUILD_OBJECT('user', col->'user', 'title', col->'title') AS o
+    SELECT JSONB_BUILD_OBJECT('user', doc->'user', 'title', doc->'title') AS o
+    FROM doc
   duckdb: |-
-    SELECT {'user': doc.user, 'title': doc.title}   -- a STRUCT AS o
+    SELECT {'user': doc.user, 'title': doc.title} AS o   -- a STRUCT
   js: |-
     ({user: doc.user, title: doc.title})
   python: |-
@@ -715,7 +709,8 @@
     SELECT OBJECT_NAMES(obj) AS k
     FROM obj
   sql: |-
-    SELECT JSONB_OBJECT_KEYS(col)   -- one row per key AS k
+    SELECT JSONB_OBJECT_KEYS(obj) AS k
+    FROM obj
   duckdb: |-
     SELECT JSON_KEYS(obj) AS k
   js: |-
@@ -742,7 +737,8 @@
     SELECT OBJECT_PAIRS(obj) AS p
     FROM obj
   sql: |-
-    SELECT JSONB_EACH(col)   -- rows (key, value) AS p
+    SELECT JSONB_EACH(obj) AS p
+    FROM obj
   duckdb: |-
     SELECT MAP_ENTRIES(obj) AS p
   js: |-
@@ -767,6 +763,7 @@
     SELECT OBJECT p.name : p.val FOR p IN pairs END AS o
   sql: |-
     SELECT JSONB_OBJECT_AGG(e->>'key', e->'value') AS o
+    FROM JSONB_ARRAY_ELEMENTS(pairs) e
   duckdb: |-
     SELECT MAP_FROM_ENTRIES(pairs) AS o
   js: |-
@@ -793,6 +790,7 @@
     SELECT OBJECT r.label : r.`value` FOR r IN recs END AS o
   sql: |-
     SELECT JSONB_OBJECT_AGG(e->>'label', e->'value') AS o
+    FROM JSONB_ARRAY_ELEMENTS(recs) e
   duckdb: |-
     SELECT MAP_FROM_ENTRIES([{'k': r.label, 'v': r.value} for r in recs]) AS o
   js: |-
@@ -870,8 +868,9 @@
            OBJECT_REMOVE(obj, "title")    AS removed
     FROM obj
   sql: |-
-    SELECT col || '{"draft":true}' AS added,
-           col - 'title' AS removed
+    SELECT obj || '{"draft":true}' AS added,
+           obj - 'title'        AS removed
+    FROM obj
   duckdb: |-
     SELECT STRUCT_INSERT(obj, draft := true) AS added,
            obj.* EXCLUDE (title) AS removed
@@ -899,6 +898,7 @@
     FROM obj
   sql: |-
     SELECT JSONB_AGG(v || JSONB_BUILD_OBJECT('slug', k)) AS a
+    FROM JSONB_EACH(obj) e(k, v)
   duckdb: |-
     SELECT [STRUCT_INSERT(e.value, slug := e.key) for e in MAP_ENTRIES(obj)] AS a
   js: |-
@@ -923,6 +923,7 @@
     SELECT OBJECT r.slug : r FOR r IN recs END AS o
   sql: |-
     SELECT JSONB_OBJECT_AGG(e->>'slug', e) AS o
+    FROM JSONB_ARRAY_ELEMENTS(recs) e
   duckdb: |-
     SELECT MAP_FROM_ENTRIES([{'k': r.slug, 'v': r} for r in recs]) AS o
   js: |-
@@ -977,7 +978,7 @@
     GROUP BY v
   sql: |-
     SELECT value, COUNT(*) AS n
-    FROM JSONB_ARRAY_ELEMENTS_TEXT(col)
+    FROM JSONB_ARRAY_ELEMENTS_TEXT(tags)
     GROUP BY value
   duckdb: |-
     SELECT v AS value, COUNT(*) AS n
@@ -1157,8 +1158,9 @@
     SELECT ARRAY TYPE(v) FOR v IN vals END AS t
   sql: |-
     SELECT JSONB_TYPEOF(value) AS t
+    FROM JSONB_ARRAY_ELEMENTS(vals) value
   duckdb: |-
-    SELECT TYPEOF(v), JSON_TYPE(j)
+    SELECT LIST_TRANSFORM(vals, x -> TYPEOF(x)) AS t
   js: |-
     typeof x; Array.isArray(x)
   python: |-
@@ -1184,7 +1186,8 @@
   sqlpp: |-
     SELECT ARRAY v FOR v WITHIN tree END AS descendants
   sql: |-
-    SELECT JSONB_PATH_QUERY(col, '$..*') AS descendants
+    SELECT JSONB_PATH_QUERY(tree, '$..*') AS descendants
+    FROM tree
   duckdb: |-
     —
   js: |-
@@ -1208,7 +1211,8 @@
   sqlpp: |-
     SELECT ANY v WITHIN tree SATISFIES v = 5 END AS found
   sql: |-
-    SELECT JSONB_PATH_EXISTS(col, '$..* ? (@ == 5)') AS found
+    SELECT JSONB_PATH_EXISTS(tree, '$..* ? (@ == 5)') AS found
+    FROM tree
   duckdb: |-
     —
   js: |-
@@ -1232,7 +1236,8 @@
   sqlpp: |-
     SELECT ARRAY v FOR v WITHIN tree WHEN v.id = "y" END AS hits
   sql: |-
-    SELECT JSONB_PATH_QUERY(col, '$..* ? (@.id == "y")') AS hits
+    SELECT JSONB_PATH_QUERY(tree, '$..* ? (@.id == "y")') AS hits
+    FROM tree
   duckdb: |-
     —
   js: |-
@@ -1263,7 +1268,7 @@
     UNNEST o.tags AS t
   sql: |-
     SELECT o->>'id', t AS tag
-    FROM JSONB_ARRAY_ELEMENTS(col) o, JSONB_ARRAY_ELEMENTS_TEXT(o->'tags') t
+    FROM JSONB_ARRAY_ELEMENTS(docs) o, JSONB_ARRAY_ELEMENTS_TEXT(o->'tags') t
   duckdb: |-
     SELECT id,
            UNNEST(tags) AS tag
@@ -1292,9 +1297,9 @@
     FROM dms AS d
     ORDER BY d.ts
   sql: |-
-    SELECT col->>'text', col#>>'{sender,screen_name}' AS from_name
+    SELECT dms->>'text', dms#>>'{sender,screen_name}' AS from_name
     FROM dms
-    ORDER BY col->>'ts'
+    ORDER BY dms->>'ts'
   duckdb: |-
     SELECT text, sender.screen_name AS from_name
     FROM dms
@@ -1322,9 +1327,12 @@
            ARRAY OBJECT_ADD(m, "formerly", true) FOR m IN doc.formerly END) AS everyone
     FROM doc
   sql: |-
-    SELECT (col->'team') || (SELECT JSONB_AGG(m || '{"formerly":true}') FROM JSONB_ARRAY_ELEMENTS(col->'formerly') m) AS everyone
+    SELECT (doc->'team') || (SELECT JSONB_AGG(m || '{"formerly":true}')
+           FROM JSONB_ARRAY_ELEMENTS(doc->'formerly') m) AS everyone
+    FROM doc
   duckdb: |-
-    SELECT LIST_CONCAT(team, [STRUCT_INSERT(m, formerly := true) for m in formerly]) AS everyone
+    SELECT LIST_CONCAT(doc.team,
+           [STRUCT_INSERT(m, formerly := true) for m in doc.formerly]) AS everyone
   js: |-
     [...doc.team, ...doc.formerly.map(m => ({...m, formerly: true}))]
   python: |-
@@ -1371,7 +1379,8 @@
     SELECT IFMISSINGORNULL(doc.foo, "default") AS v
     FROM doc
   sql: |-
-    SELECT COALESCE(col->>'foo', 'default') AS v
+    SELECT COALESCE(doc->>'foo', 'default') AS v
+    FROM doc
   duckdb: |-
     SELECT COALESCE(doc.foo, 'default') AS v
   js: |-
