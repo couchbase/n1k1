@@ -2,16 +2,171 @@
 # n1k1 itself can query this:  n1k1 -c 'SELECT title, sqlpp FROM recipes' docs/recipes.yaml
 # Rendered to recipes.md / recipes.html by docs/recipes_build.py; run it after editing.
 # `python3 docs/recipes_build.py --check` runs every sqlpp against ./n1k1.
-- section: '1. Access & navigation'
-  title: 'Field access — .foo, .foo.bar'
+#
+# Fields: section, title, note?, needs?(=shop), data?/bind?, out?, and one per dialect
+# (sqlpp, sql, duckdb, js, python, mongo, jq). Source data is shown ONCE per recipe
+# (data/bind) so every dialect just references a shared name — a fair comparison. For
+# self-contained recipes, `bind` is the SQL++ `WITH <bind>` that binds that data.
+
+# ============================================================ 1. collection
+- section: '1. Querying a collection'
+  title: 'Pick fields from each record'
+  needs: 'shop'
+  data: |-
+    orders — the shop keyspace (20 docs), e.g.
+    {"id":"1005","customer":"dave","total":22.0,"status":"shipped","ts":"2026-01-06"}
+  out: |-
+    {"id":"1005","status":"shipped","total":22.0}, … (one per order)
+  sqlpp: |-
+    SELECT o.id, o.status, o.total
+    FROM orders o
+  sql: |-
+    SELECT id, status, total FROM orders
+  duckdb: |-
+    SELECT id, status, total FROM orders
+  js: |-
+    orders.map(o => ({id: o.id, status: o.status, total: o.total}))
+  python: |-
+    [{"id": o["id"], "status": o["status"], "total": o["total"]} for o in orders]
+  mongo: |-
+    db.orders.find({}, {id: 1, status: 1, total: 1, _id: 0})
+  jq: |-
+    .[] | {id, status, total}
+
+- section: '1. Querying a collection'
+  title: 'Keep matching records'
   needs: 'shop'
   out: |-
-    "dave", "alice", … (one per order)
+    the orders with total over 100
+  sqlpp: |-
+    SELECT o.id, o.total
+    FROM orders o
+    WHERE o.total > 100
+  sql: |-
+    SELECT id, total FROM orders WHERE total > 100
+  duckdb: |-
+    SELECT id, total FROM orders WHERE total > 100
+  js: |-
+    orders.filter(o => o.total > 100)
+  python: |-
+    [o for o in orders if o["total"] > 100]
+  mongo: |-
+    db.orders.find({total: {$gt: 100}})
+  jq: |-
+    map(select(.total > 100))
+
+- section: '1. Querying a collection'
+  title: 'Sort, then take the top N'
+  needs: 'shop'
+  out: |-
+    {"id":"1020","total":389.99}, {"id":"1019","total":245.0}, {"id":"1003","total":210.00}
+  sqlpp: |-
+    SELECT o.id, o.total
+    FROM orders o
+    ORDER BY o.total DESC
+    LIMIT 3
+  sql: |-
+    SELECT id, total FROM orders ORDER BY total DESC LIMIT 3
+  duckdb: |-
+    SELECT id, total FROM orders ORDER BY total DESC LIMIT 3
+  js: |-
+    orders.toSorted((a, b) => b.total - a.total).slice(0, 3)
+  python: |-
+    sorted(orders, key=lambda o: -o["total"])[:3]
+  mongo: |-
+    db.orders.find().sort({total: -1}).limit(3)
+  jq: |-
+    sort_by(.total) | reverse | .[:3]
+
+- section: '1. Querying a collection'
+  title: 'The single largest record'
+  note: |-
+    jq's max_by returns the whole record with the largest key; in SQL it's ORDER BY … LIMIT 1.
+  needs: 'shop'
+  out: |-
+    the priciest order (the whole row)
+  sqlpp: |-
+    SELECT o.*
+    FROM orders o
+    ORDER BY o.total DESC
+    LIMIT 1
+  sql: |-
+    SELECT * FROM orders ORDER BY total DESC LIMIT 1
+  duckdb: |-
+    SELECT max_by(orders, total) FROM orders
+  js: |-
+    orders.reduce((m, o) => o.total > m.total ? o : m)
+  python: |-
+    max(orders, key=lambda o: o["total"])
+  mongo: |-
+    db.orders.find().sort({total: -1}).limit(1)
+  jq: |-
+    max_by(.total)
+
+- section: '1. Querying a collection'
+  title: 'Count and total a collection'
+  needs: 'shop'
+  out: |-
+    {"n":20,"revenue":1949.36,"avg":97.47}
+  sqlpp: |-
+    SELECT COUNT(*)               AS n,
+           ROUND(SUM(o.total), 2) AS revenue,
+           ROUND(AVG(o.total), 2) AS avg
+    FROM orders o
+  sql: |-
+    SELECT count(*), round(sum(total),2), round(avg(total),2) FROM orders
+  duckdb: |-
+    SELECT count(*), round(sum(total),2), round(avg(total),2) FROM orders
+  js: |-
+    ({n: orders.length, revenue: orders.reduce((s, o) => s + o.total, 0)})
+  python: |-
+    {"n": len(orders), "revenue": sum(o["total"] for o in orders)}
+  mongo: |-
+    db.orders.aggregate([{$group: {_id: null, n: {$sum: 1}, revenue: {$sum: "$total"}, avg: {$avg: "$total"}}}])
+  jq: |-
+    {n: length, revenue: (map(.total) | add)}
+
+- section: '1. Querying a collection'
+  title: 'Group, then aggregate each group'
+  needs: 'shop'
+  out: |-
+    {"status":"shipped","n":16,"revenue":1758.73}, {"status":"pending",…}, {"status":"cancelled",…}
+  sqlpp: |-
+    SELECT o.status, COUNT(*) AS n,
+           ROUND(SUM(o.total), 2) AS revenue
+    FROM orders o
+    GROUP BY o.status
+    ORDER BY revenue DESC
+  sql: |-
+    SELECT status, count(*), round(sum(total),2)
+    FROM orders GROUP BY status ORDER BY 3 DESC
+  duckdb: |-
+    SELECT status, count(*), round(sum(total),2)
+    FROM orders GROUP BY status ORDER BY 3 DESC
+  js: |-
+    Object.groupBy(orders, o => o.status)   // then reduce each bucket
+  python: |-
+    df.groupby("status").total.agg(["count", "sum"])   # pandas
+  mongo: |-
+    db.orders.aggregate([
+      {$group: {_id: "$status", n: {$sum: 1}, revenue: {$sum: "$total"}}},
+      {$sort: {revenue: -1}}])
+  jq: |-
+    group_by(.status)   # → array of arrays
+
+- section: '1. Querying a collection'
+  title: 'RAW — one bare value per row (not an object)'
+  note: |-
+    A normal SELECT yields objects; SELECT RAW (jq's .[] | .field) yields the bare value —
+    handy for one column, an IN-list, or feeding another query.
+  needs: 'shop'
+  out: |-
+    "dave", "alice", …  (bare strings, not {"customer":…})
   sqlpp: |-
     SELECT RAW o.customer
     FROM orders o
   sql: |-
-    SELECT col->>'customer' FROM orders
+    SELECT customer FROM orders     -- a single-column result set
   duckdb: |-
     SELECT customer FROM orders
   js: |-
@@ -19,488 +174,647 @@
   python: |-
     [o["customer"] for o in orders]
   mongo: |-
-    db.orders.find({}, {customer: 1, _id: 0})
+    db.orders.distinct("customer")  // bare values (also dedups)
   jq: |-
-    .customer
-- section: '1. Access & navigation'
-  title: 'Optional / missing field'
-  note: |-
-    jq's ? suppresses errors on non-objects; SQL++ has no error — a missing path is MISSING and just drops out.
+    .[] | .customer
+
+# ============================================================ 2. reach in
+- section: '2. Reaching into a value'
+  title: 'Field access, including nested'
+  data: |-
+    doc = {"id": "o1", "customer": {"name": "Dave", "city": "Austin"}}
+  bind: |-
+    doc AS ({"id":"o1","customer":{"name":"Dave","city":"Austin"}})
   out: |-
-    {}   (foo is MISSING, so the key is omitted)
+    {"city":"Austin"}
   sqlpp: |-
-    SELECT x.foo
-    FROM [{"bar":1}] AS x
+    SELECT doc.customer.city
+  sql: |-
+    SELECT col->'customer'->>'city'       -- ->> text, -> jsonb
+  duckdb: |-
+    SELECT doc->'$.customer.city'
+  js: |-
+    doc.customer.city
+  python: |-
+    doc["customer"]["city"]
+  mongo: |-
+    db.c.find({}, {"customer.city": 1})
+  jq: |-
+    .customer.city
+
+- section: '2. Reaching into a value'
+  title: 'A missing field is MISSING (not an error)'
+  note: |-
+    jq's ? suppresses errors on non-objects; SQL++ has no error — a missing path is MISSING
+    and simply drops out of the result (see "MISSING vs NULL" at the end).
+  data: |-
+    doc = {"bar": 1}
+  bind: |-
+    doc AS ({"bar":1})
+  out: |-
+    {}   (foo is MISSING → the key is omitted)
+  sqlpp: |-
+    SELECT doc.foo
   sql: |-
     SELECT col->'foo'      -- NULL if absent
   duckdb: |-
-    SELECT col->'$.foo'  -- NULL if absent
+    SELECT doc->'$.foo'
   js: |-
-    [{bar:1}].map(x => x.foo)      // [undefined]
+    doc.foo               // undefined
   python: |-
-    [x.get("foo") for x in [{"bar":1}]]   # [None]
+    doc.get("foo")        # None
   mongo: |-
     // a missing field is simply absent from the result
   jq: |-
-    .foo      # → null   (.foo? to suppress errors on non-objects)
-- section: '1. Access & navigation'
+    .foo?                 # no error even on a non-object
+
+- section: '2. Reaching into a value'
   title: 'Array index — 0-based, negatives from the end'
+  data: |-
+    nums = [10, 20, 30]
+  bind: |-
+    nums AS ([10,20,30])
   out: |-
     {"first":10,"last":30,"penult":20}
   sqlpp: |-
-    SELECT [10,20,30][0]  AS `first`,
-           [10,20,30][-1] AS `last`,
-           [10,20,30][-2] AS penult
+    SELECT nums[0]  AS `first`,
+           nums[-1] AS `last`,
+           nums[-2] AS penult
   sql: |-
     col->0, col->-1        -- jsonb: 0-based, -1 = last
   duckdb: |-
-    [10,20,30][1], [10,20,30][-1]   -- ⚠ DuckDB lists are 1-based
+    nums[1], nums[-1]      -- ⚠ DuckDB lists are 1-based
   js: |-
-    a[0]; a.at(-1)
+    nums[0]; nums.at(-1)
   python: |-
-    a[0]; a[-1]
+    nums[0]; nums[-1]
   mongo: |-
-    {$arrayElemAt: ["$a", 0]}, {$arrayElemAt: ["$a", -1]}
+    {$arrayElemAt: ["$nums", -1]}
   jq: |-
     .[0], .[-1]
-- section: '1. Access & navigation'
-  title: 'Slice — arr[2:4]'
+
+- section: '2. Reaching into a value'
+  title: 'Slice a range'
+  data: |-
+    letters = ["a", "b", "c", "d", "e"]
+  bind: |-
+    letters AS (["a","b","c","d","e"])
   out: |-
     {"s":["c","d"]}
   sqlpp: |-
-    SELECT ["a","b","c","d","e"][2:4] AS s
+    SELECT letters[2:4] AS s
   sql: |-
-    jsonb_path_query(col, '$[2 to 3]')   -- SQLite has no slice
+    jsonb_path_query(col, '$[2 to 3]')     -- SQLite has no slice
   duckdb: |-
-    ['a','b','c','d','e'][3:4]   -- ⚠ 1-based, inclusive → ['c','d']
+    letters[3:4]           -- ⚠ 1-based, inclusive
   js: |-
-    a.slice(2, 4)
+    letters.slice(2, 4)
   python: |-
-    a[2:4]
+    letters[2:4]
   mongo: |-
-    {$slice: ["$a", 2, 2]}
+    {$slice: ["$letters", 2, 2]}
   jq: |-
     .[2:4]
-- section: '2. Iterating & projecting'
-  title: 'Iterate — one output per element'
-  out: |-
-    {"name":"JSON"} then {"name":"XML"}
-  sqlpp: |-
-    SELECT RAW x
-    FROM [{"name":"JSON"},{"name":"XML"}] AS x
-  sql: |-
-    SELECT value FROM jsonb_array_elements(col)
-  duckdb: |-
-    SELECT unnest([{'name':'JSON'},{'name':'XML'}], recursive := false)
-  js: |-
-    for (const x of arr) { … }
-  python: |-
-    for x in arr: ...
-  mongo: |-
-    db.c.find()      // each document
-  jq: |-
-    .[]
-- section: '2. Iterating & projecting'
-  title: 'Project a field from each element'
-  out: |-
-    "JSON", "XML"
-  sqlpp: |-
-    SELECT RAW x.name
-    FROM [{"name":"JSON"},{"name":"XML"}] AS x
-  sql: |-
-    SELECT e->>'name' FROM jsonb_array_elements(col) e
-  duckdb: |-
-    SELECT x.name FROM (SELECT unnest(arr) x)
-  js: |-
-    arr.map(x => x.name)
-  python: |-
-    [x["name"] for x in arr]
-  mongo: |-
-    db.c.find({}, {name: 1, _id: 0})
-  jq: |-
-    .[] | .name
-- section: '2. Iterating & projecting'
-  title: 'map — transform each element into an array'
+
+# ============================================================ 3. arrays
+- section: '3. Transforming arrays'
+  title: 'map — transform every element'
   note: |-
-    SQL++ array comprehension ARRAY f FOR x IN arr END returns one array value; a SELECT scans instead.
+    SQL++ has two forms: a scan (SELECT … FROM nums) or the inline array comprehension
+    ARRAY … FOR … END that returns one array value.
+  data: |-
+    nums = [1, 2, 3]
+  bind: |-
+    nums AS ([1,2,3])
   out: |-
     {"r":[2,3,4]}
   sqlpp: |-
-    SELECT ARRAY v+1 FOR v IN [1,2,3] END AS r
+    SELECT ARRAY v + 1 FOR v IN nums END AS r
   sql: |-
-    jsonb_agg(value::int + 1) FROM jsonb_array_elements('[1,2,3]')
+    SELECT jsonb_agg(value::int + 1) FROM jsonb_array_elements(col)
   duckdb: |-
-    [x + 1 for x in [1,2,3]]      -- list comprehension
+    SELECT [x + 1 for x in nums]
   js: |-
-    [1,2,3].map(x => x + 1)
+    nums.map(x => x + 1)
   python: |-
-    [x + 1 for x in [1,2,3]]
+    [x + 1 for x in nums]
   mongo: |-
-    {$map: {input: [1,2,3], as: "v", in: {$add: ["$$v", 1]}}}
+    {$map: {input: "$nums", as: "v", in: {$add: ["$$v", 1]}}}
   jq: |-
-    map(.+1)
-- section: '2. Iterating & projecting'
-  title: 'Collect elements into an array — [ … ]'
-  out: |-
-    {"r":["s","jq","wf"]}
-  sqlpp: |-
-    SELECT ARRAY_PREPEND(o.user, o.projects) AS r
-    FROM [{"user":"s","projects":["jq","wf"]}] AS o
-  sql: |-
-    col->'user' || col->'projects'    -- jsonb || concatenates
-  duckdb: |-
-    list_prepend(user, projects)
-  js: |-
-    [o.user, ...o.projects]
-  python: |-
-    [o["user"], *o["projects"]]
-  mongo: |-
-    {$concatArrays: [["$user"], "$projects"]}
-  jq: |-
-    [.user, .projects[]]
-- section: '2. Iterating & projecting'
-  title: 'Object construction — { }'
-  note: |-
-    Keys inside a constructed object render sorted (canonical JSON): title before user.
-  out: |-
-    {"doc":{"title":"JQ","user":"s"}}
-  sqlpp: |-
-    SELECT {"user": o.user, "title": o.title} AS doc
-    FROM [{"user":"s","title":"JQ"}] AS o
-  sql: |-
-    jsonb_build_object('user', col->'user', 'title', col->'title')
-  duckdb: |-
-    {'user': o.user, 'title': o.title}      -- a STRUCT
-  js: |-
-    ({ user: o.user, title: o.title })
-  python: |-
-    {"user": o["user"], "title": o["title"]}
-  mongo: |-
-    {$project: {user: 1, title: 1, _id: 0}}
-  jq: |-
-    {user, title}
-- section: '2. Iterating & projecting'
-  title: 'Dynamic keys — key comes from the data'
-  note: |-
-    Object comprehension with a dynamic key expression. ⚠ Keys must be strings; `value` is a reserved word (back-quoted).
-  out: |-
-    {"o":{"a":1}}
-  sqlpp: |-
-    SELECT OBJECT r.label : r.`value` FOR r IN [{"label":"a","value":1}] END AS o
-  sql: |-
-    jsonb_object_agg(e->>'label', e->'value')
-  duckdb: |-
-    map_from_entries([{'k': r.label, 'v': r.value}])
-  js: |-
-    Object.fromEntries(arr.map(r => [r.label, r.value]))
-  python: |-
-    {r["label"]: r["value"] for r in arr}
-  mongo: |-
-    {$arrayToObject: [[{k: "$label", v: "$value"}]]}
-  jq: |-
-    map({(.label): .value}) | add
-- section: '3. Filtering & selecting'
-  title: 'Keep elements matching a condition'
+    map(. + 1)
+
+- section: '3. Transforming arrays'
+  title: 'filter — keep matching elements'
+  data: |-
+    nums = [1, 5, 3, 0, 7]
+  bind: |-
+    nums AS ([1,5,3,0,7])
   out: |-
     5, 3, 7
   sqlpp: |-
     SELECT RAW v
-    FROM [1,5,3,0,7] AS v
+    FROM nums AS v
     WHERE v >= 2
   sql: |-
-    SELECT value FROM jsonb_array_elements('[1,5,3,0,7]') WHERE value::int >= 2
+    SELECT value FROM jsonb_array_elements(col) WHERE value::int >= 2
   duckdb: |-
-    [x for x in [1,5,3,0,7] if x >= 2]
+    SELECT [x for x in nums if x >= 2]
   js: |-
-    [1,5,3,0,7].filter(x => x >= 2)
+    nums.filter(x => x >= 2)
   python: |-
-    [x for x in [1,5,3,0,7] if x >= 2]
+    [x for x in nums if x >= 2]
   mongo: |-
-    {$filter: {input: [1,5,3,0,7], cond: {$gte: ["$$this", 2]}}}
+    {$filter: {input: "$nums", cond: {$gte: ["$$this", 2]}}}
   jq: |-
     map(select(. >= 2))
-- section: '3. Filtering & selecting'
-  title: 'has / missing a key'
-  out: |-
-    {"has":true} then {"has":false}
-  sqlpp: |-
-    SELECT x.endpoint IS NOT MISSING AS has
-    FROM [{"endpoint":1},{}] AS x
-  sql: |-
-    col ? 'endpoint'          -- jsonb key-exists
-  duckdb: |-
-    json_exists(col, '$.endpoint')
-  js: |-
-    "endpoint" in x
-  python: |-
-    "endpoint" in x
-  mongo: |-
-    {endpoint: {$exists: true}}
-  jq: |-
-    has("endpoint")
-- section: '3. Filtering & selecting'
-  title: 'contains / startswith — substring & prefix'
-  out: |-
-    {"r":[false,true,true]}
-  sqlpp: |-
-    SELECT ARRAY s LIKE "foo%" FOR s IN ["fo","foo","foobar"] END AS r
-  sql: |-
-    value LIKE 'foo%'
-  duckdb: |-
-    starts_with(s, 'foo')
-  js: |-
-    s.startsWith("foo")
-  python: |-
-    s.startswith("foo")
-  mongo: |-
-    {$regexMatch: {input: "$s", regex: "^foo"}}
-  jq: |-
-    startswith("foo")
-- section: '3. Filtering & selecting'
-  title: 'regex match'
-  out: |-
-    {"m":true}
-  sqlpp: |-
-    SELECT REGEXP_CONTAINS("foo123", "[0-9]+") AS m
-  sql: |-
-    'foo123' ~ '[0-9]+'
-  duckdb: |-
-    regexp_matches('foo123', '[0-9]+')
-  js: |-
-    /[0-9]+/.test("foo123")
-  python: |-
-    bool(re.search(r"[0-9]+", "foo123"))
-  mongo: |-
-    {$regexMatch: {input: "foo123", regex: "[0-9]+"}}
-  jq: |-
-    test("[0-9]+")
-- section: '4. Objects ↔ entries (keys, pairs, pivots)'
-  title: 'keys — list an object''s field names'
-  out: |-
-    {"k":["a","b"]}
-  sqlpp: |-
-    SELECT OBJECT_NAMES({"b":2,"a":1}) AS k
-  sql: |-
-    jsonb_object_keys(col)      -- one row per key
-  duckdb: |-
-    json_keys('{"b":2,"a":1}')
-  js: |-
-    Object.keys({b:2, a:1})
-  python: |-
-    list({"b":2,"a":1}.keys())
-  mongo: |-
-    {$map: {input: {$objectToArray: "$obj"}, in: "$$this.k"}}
-  jq: |-
-    keys      # sorted
-- section: '4. Objects ↔ entries (keys, pairs, pivots)'
-  title: 'to_entries — object → array of pairs'
-  note: |-
-    ⚠ SQL++ OBJECT_PAIRS yields {name, val}; jq yields {key, value}.
-  out: |-
-    {"p":[{"name":"a","val":1},{"name":"b","val":2}]}
-  sqlpp: |-
-    SELECT OBJECT_PAIRS({"a":1,"b":2}) AS p
-  sql: |-
-    jsonb_each(col)      -- rows (key, value)
-  duckdb: |-
-    map_entries(MAP {'a':1, 'b':2})   -- [{key,value}]
-  js: |-
-    Object.entries({a:1, b:2})      // [["a",1],["b",2]]
-  python: |-
-    list({"a":1,"b":2}.items())
-  mongo: |-
-    {$objectToArray: "$obj"}      // [{k,v}]
-  jq: |-
-    to_entries      # [{key,value}]
-- section: '4. Objects ↔ entries (keys, pairs, pivots)'
-  title: 'from_entries — pairs → object'
-  out: |-
-    {"o":{"a":1}}
-  sqlpp: |-
-    SELECT OBJECT p.name : p.val FOR p IN [{"name":"a","val":1}] END AS o
-  sql: |-
-    jsonb_object_agg(e->>'key', e->'value')
-  duckdb: |-
-    map_from_entries([{'k':'a', 'v':1}])
-  js: |-
-    Object.fromEntries([["a", 1]])
-  python: |-
-    dict([("a", 1)])
-  mongo: |-
-    {$arrayToObject: [[{k: "a", v: 1}]]}
-  jq: |-
-    from_entries
-- section: '4. Objects ↔ entries (keys, pairs, pivots)'
-  title: 'Swap keys and values'
-  out: |-
-    {"o":{"1":"a","2":"b"}}
-  sqlpp: |-
-    SELECT OBJECT TO_STRING(p.val) : p.name FOR p IN OBJECT_PAIRS({"a":1,"b":2}) END AS o
-  sql: |-
-    jsonb_object_agg(v#>>'{}', k) FROM jsonb_each(obj) e(k,v)
-  duckdb: |-
-    map_from_entries([{'k': e.value::VARCHAR, 'v': e.key} for e in map_entries(m)])
-  js: |-
-    Object.fromEntries(Object.entries(o).map(([k,v]) => [v, k]))
-  python: |-
-    {str(v): k for k, v in o.items()}
-  mongo: |-
-    {$arrayToObject: {$map: {input: {$objectToArray:"$o"}, in: {k: {$toString:"$$this.v"}, v: "$$this.k"}}}}
-  jq: |-
-    to_entries | map({(.value): .key}) | add
-- section: '4. Objects ↔ entries (keys, pairs, pivots)'
-  title: 'map_values — transform every value, keep keys'
-  out: |-
-    {"o":{"a":2,"b":3}}
-  sqlpp: |-
-    SELECT OBJECT p.name : p.val+1 FOR p IN OBJECT_PAIRS({"a":1,"b":2}) END AS o
-  sql: |-
-    jsonb_object_agg(k, (v::int)+1) FROM jsonb_each(obj) e(k,v)
-  duckdb: |-
-    map_from_entries([{'k': e.key, 'v': e.value + 1} for e in map_entries(m)])
-  js: |-
-    Object.fromEntries(Object.entries(o).map(([k,v]) => [k, v+1]))
-  python: |-
-    {k: v + 1 for k, v in o.items()}
-  mongo: |-
-    {$arrayToObject: {$map: {input: {$objectToArray:"$o"}, in: {k: "$$this.k", v: {$add:["$$this.v",1]}}}}}
-  jq: |-
-    map_values(.+1)
-- section: '4. Objects ↔ entries (keys, pairs, pivots)'
-  title: 'Add / remove a field'
-  out: |-
-    {"added":{"a":1,"draft":true},"removed":{"a":1}}
-  sqlpp: |-
-    SELECT OBJECT_ADD({"a":1}, "draft", true)          AS added,
-           OBJECT_REMOVE({"title":"x","a":1}, "title")   AS removed
-  sql: |-
-    col || '{"draft":true}'   |   col - 'title'
-  duckdb: |-
-    struct_insert(s, draft := true)   |   s.* EXCLUDE (title)
-  js: |-
-    ({...o, draft:true})   |   (({title, ...rest}) => rest)(o)
-  python: |-
-    {**o, "draft":True}   |   {k:v for k,v in o.items() if k != "title"}
-  mongo: |-
-    {$mergeObjects:["$$ROOT",{draft:true}]}   |   {$unset:"title"}
-  jq: |-
-    . + {draft:true}   |   del(.title)
-- section: '4. Objects ↔ entries (keys, pairs, pivots)'
-  title: 'Pivot: object → array of objects (key becomes a field)'
-  out: |-
-    {"a":[{"n":1,"slug":"x"}]}
-  sqlpp: |-
-    SELECT ARRAY OBJECT_ADD(p.val, "slug", p.name) FOR p IN OBJECT_PAIRS({"x":{"n":1}}) END AS a
-  sql: |-
-    jsonb_agg(v || jsonb_build_object('slug', k))
-  duckdb: |-
-    [struct_insert(e.value, slug := e.key) for e in map_entries(m)]
-  js: |-
-    Object.entries(o).map(([k,v]) => ({...v, slug:k}))
-  python: |-
-    [{**v, "slug":k} for k, v in o.items()]
-  mongo: |-
-    {$map: {input: {$objectToArray:"$o"}, in: {$mergeObjects:["$$this.v",{slug:"$$this.k"}]}}}
-  jq: |-
-    to_entries | map(.value + {slug:.key})
-- section: '4. Objects ↔ entries (keys, pairs, pivots)'
-  title: 'Pivot: array of objects → object keyed by a field'
-  out: |-
-    {"o":{"x":{"slug":"x","n":1}}}
-  sqlpp: |-
-    SELECT OBJECT r.slug : r FOR r IN [{"slug":"x","n":1}] END AS o
-  sql: |-
-    jsonb_object_agg(e->>'slug', e)
-  duckdb: |-
-    map_from_entries([{'k': r.slug, 'v': r} for r in arr])
-  js: |-
-    Object.fromEntries(arr.map(r => [r.slug, r]))
-  python: |-
-    {r["slug"]: r for r in arr}
-  mongo: |-
-    {$arrayToObject: {$map: {input:"$arr", in: {k:"$$this.slug", v:"$$this"}}}}
-  jq: |-
-    map({(.slug): .}) | add
-- section: '5. Aggregating & grouping'
-  title: 'length / count'
-  out: |-
-    {"arr":3,"str":3,"obj":1}
-  sqlpp: |-
-    SELECT ARRAY_LENGTH([1,2,3]) AS arr, LENGTH("abc") AS str, OBJECT_LENGTH({"a":1}) AS obj
-  sql: |-
-    jsonb_array_length('[1,2,3]')
-  duckdb: |-
-    len([1,2,3]); length('abc')
-  js: |-
-    [1,2,3].length; "abc".length; Object.keys(o).length
-  python: |-
-    len([1,2,3]); len("abc"); len(o)
-  mongo: |-
-    {$size:"$arr"}; {$strLenCP:"$s"}
-  jq: |-
-    length
-- section: '5. Aggregating & grouping'
-  title: 'add / sum / min / max / avg over an array'
+
+- section: '3. Transforming arrays'
+  title: 'Sum, min, max, average'
+  data: |-
+    nums = [1, 2, 3]
+  bind: |-
+    nums AS ([1,2,3])
   out: |-
     {"s":6,"mx":3,"a":2}
   sqlpp: |-
-    SELECT ARRAY_SUM([1,2,3]) AS s, ARRAY_MAX([1,2,3]) AS mx, ARRAY_AVG([1,2,3]) AS a
+    SELECT ARRAY_SUM(nums) AS s,
+           ARRAY_MAX(nums) AS mx,
+           ARRAY_AVG(nums) AS a
   sql: |-
-    sum(value::int) FROM jsonb_array_elements('[1,2,3]')
+    sum(value::int) FROM jsonb_array_elements(col)
   duckdb: |-
-    list_sum([1,2,3]); list_max([1,2,3]); list_avg([1,2,3])
+    list_sum(nums); list_max(nums); list_avg(nums)
   js: |-
-    arr.reduce((a,b) => a+b, 0); Math.max(...arr)
+    nums.reduce((a, b) => a + b, 0); Math.max(...nums)
   python: |-
-    sum(arr); max(arr); statistics.mean(arr)
+    sum(nums); max(nums); statistics.mean(nums)
   mongo: |-
-    {$sum:"$a"}; {$max:"$a"}; {$avg:"$a"}
+    {$sum: "$nums"}; {$max: "$nums"}; {$avg: "$nums"}
   jq: |-
-    add; max; (add/length)
-- section: '5. Aggregating & grouping'
-  title: 'Aggregate over a collection'
-  needs: 'shop'
+    add; max; (add / length)
+
+- section: '3. Transforming arrays'
+  title: 'Length / count of elements'
+  data: |-
+    nums = [1, 2, 3]
+  bind: |-
+    nums AS ([1,2,3])
   out: |-
-    {"n":20,"revenue":1949.36,"avg":97.47}
+    {"n":3}
   sqlpp: |-
-    SELECT COUNT(*) AS n, ROUND(SUM(o.total),2) AS revenue, ROUND(AVG(o.total),2) AS avg
-    FROM orders o
+    SELECT ARRAY_LENGTH(nums) AS n
   sql: |-
-    SELECT count(*), sum(total), avg(total) FROM orders
+    jsonb_array_length(col)
   duckdb: |-
-    SELECT count(*), sum(total), avg(total) FROM orders
+    len(nums)
   js: |-
-    orders.reduce((a,o) => a + o.total, 0)
+    nums.length
   python: |-
-    sum(o["total"] for o in orders)
+    len(nums)
   mongo: |-
-    db.orders.aggregate([{$group:{_id:null, n:{$sum:1}, revenue:{$sum:"$total"}, avg:{$avg:"$total"}}}])
+    {$size: "$nums"}
   jq: |-
-    [.[].total] | add
-- section: '5. Aggregating & grouping'
-  title: 'group_by — cluster, then aggregate'
-  needs: 'shop'
+    length
+
+- section: '3. Transforming arrays'
+  title: 'Unique / dedup'
+  note: |-
+    ARRAY_DISTINCT keeps first-seen order; wrap in ARRAY_SORT for jq's sorted result.
+  data: |-
+    nums = [1, 2, 5, 3, 5, 3, 1]
+  bind: |-
+    nums AS ([1,2,5,3,5,3,1])
   out: |-
-    {"status":"shipped","n":16,"revenue":1758.73}, {"status":"pending",…}, {"status":"cancelled",…}
+    {"u":[1,2,5,3]}
   sqlpp: |-
-    SELECT o.status, COUNT(*) AS n, ROUND(SUM(o.total),2) AS revenue
-    FROM orders o
-    GROUP BY o.status
-    ORDER BY revenue DESC
+    SELECT ARRAY_DISTINCT(nums) AS u
   sql: |-
-    SELECT status, count(*), sum(total) FROM orders GROUP BY status ORDER BY 3 DESC
+    SELECT DISTINCT value FROM jsonb_array_elements(col)
   duckdb: |-
-    SELECT status, count(*), sum(total) FROM orders GROUP BY status ORDER BY 3 DESC
+    list_distinct(nums)
   js: |-
-    Object.groupBy(orders, o => o.status)      // then reduce each bucket
+    [...new Set(nums)]
   python: |-
-    df.groupby("status").total.agg(["count","sum"])      # pandas
+    list(dict.fromkeys(nums))
   mongo: |-
-    db.orders.aggregate([{$group:{_id:"$status", n:{$sum:1}, revenue:{$sum:"$total"}}}, {$sort:{revenue:-1}}])
+    {$setUnion: ["$nums", []]}   // unordered
   jq: |-
-    group_by(.status)      # → array of arrays
-- section: '5. Aggregating & grouping'
-  title: 'Collect each group''s members'
+    unique   # sorted
+
+- section: '3. Transforming arrays'
+  title: 'Flatten nested arrays'
+  note: |-
+    ⚠ SQL++ ARRAY_FLATTEN needs an explicit depth; jq flattens fully.
+  data: |-
+    nested = [1, [2], [[3]]]
+  bind: |-
+    nested AS ([1,[2],[[3]]])
+  out: |-
+    {"f":[1,2,3]}
+  sqlpp: |-
+    SELECT ARRAY_FLATTEN(nested, 2) AS f
+  sql: |-
+    -- recursive unnest; no single builtin
+  duckdb: |-
+    flatten(nested)        -- one level
+  js: |-
+    nested.flat(2)
+  python: |-
+    # no deep builtin; recurse
+  mongo: |-
+    {$reduce: {input: "$nested", initialValue: [], in: {$concatArrays: ["$$value", "$$this"]}}}  // one level
+  jq: |-
+    flatten
+
+- section: '3. Transforming arrays'
+  title: 'reverse · range · append · concat'
+  out: |-
+    {"rev":[3,2,1],"rng":[2,3],"app":[1,2,3],"cat":[1,2]}
+  sqlpp: |-
+    SELECT ARRAY_REVERSE([1,2,3]) AS rev,
+           ARRAY_RANGE(2, 4)      AS rng,
+           ARRAY_APPEND([1,2], 3) AS app,
+           ARRAY_CONCAT([1], [2]) AS cat
+  sql: |-
+    a || b ; generate_series(2, 3)
+  duckdb: |-
+    list_reverse(a); range(2,4); list_append(a,x); list_concat(a,b)
+  js: |-
+    a.toReversed(); [...Array(2).keys()].map(i=>i+2); [...a, x]; a.concat(b)
+  python: |-
+    a[::-1]; list(range(2,4)); a + [x]; a + b
+  mongo: |-
+    {$reverseArray}; {$range:[2,4]}; {$concatArrays}
+  jq: |-
+    reverse; [range(2;4)]; . + [x]; .a + .b
+
+- section: '3. Transforming arrays'
+  title: 'Every other element'
+  note: |-
+    Index by a stepped range (OBJECT_PAIRS works on objects only, not arrays).
+  data: |-
+    letters = ["a", "b", "c", "d"]
+  bind: |-
+    letters AS (["a","b","c","d"])
+  out: |-
+    {"evens":["a","c"]}
+  sqlpp: |-
+    SELECT ARRAY letters[i]
+           FOR i IN ARRAY_RANGE(0, ARRAY_LENGTH(letters), 2) END AS evens
+  sql: |-
+    … WITH ORDINALITY t(v, i) WHERE i % 2 = 1
+  duckdb: |-
+    list_slice(letters, 1, 4, 2)   -- 1-based, step 2
+  js: |-
+    letters.filter((_, i) => i % 2 === 0)
+  python: |-
+    letters[::2]
+  mongo: |-
+    {$map: {input: {$range: [0, {$size: "$letters"}, 2]}, in: {$arrayElemAt: ["$letters", "$$this"]}}}
+  jq: |-
+    [range(0; length; 2) as $i | .[$i]]
+
+- section: '3. Transforming arrays'
+  title: 'Chunk into fixed-size groups'
+  note: |-
+    ⚠ Clamp the slice end with LEAST(…, ARRAY_LENGTH(a)) — a slice past the end is MISSING
+    and would drop the last short chunk.
+  data: |-
+    nums = [1, 2, 3, 4, 5]
+  bind: |-
+    nums AS ([1,2,3,4,5])
+  out: |-
+    {"chunks":[[1,2],[3,4],[5]]}
+  sqlpp: |-
+    SELECT ARRAY nums[i:LEAST(i + 2, ARRAY_LENGTH(nums))]
+           FOR i IN ARRAY_RANGE(0, ARRAY_LENGTH(nums), 2) END AS chunks
+  sql: |-
+    -- window / ntile, or generate_series with slicing
+  duckdb: |-
+    [nums[i+1 : i+2] for i in range(0, len(nums), 2)]
+  js: |-
+    Array.from({length: Math.ceil(nums.length/2)}, (_, i) => nums.slice(i*2, i*2+2))
+  python: |-
+    [nums[i:i+2] for i in range(0, len(nums), 2)]
+  mongo: |-
+    —
+  jq: |-
+    [range(0; length; 2) as $i | .[$i:$i+2]]
+
+# ============================================================ 4. iterate/collect
+- section: '4. Iterating & collecting'
+  title: 'Visit each element'
+  data: |-
+    people = [{"name": "JSON"}, {"name": "XML"}]
+  bind: |-
+    people AS ([{"name":"JSON"},{"name":"XML"}])
+  out: |-
+    {"name":"JSON"} then {"name":"XML"}
+  sqlpp: |-
+    SELECT p.*
+    FROM people AS p
+  sql: |-
+    SELECT value FROM jsonb_array_elements(col)
+  duckdb: |-
+    SELECT unnest(people, recursive := false)
+  js: |-
+    for (const p of people) { … }
+  python: |-
+    for p in people: ...
+  mongo: |-
+    db.people.find()
+  jq: |-
+    .[]
+
+- section: '4. Iterating & collecting'
+  title: 'One field from each element'
+  data: |-
+    people = [{"name": "JSON"}, {"name": "XML"}]
+  bind: |-
+    people AS ([{"name":"JSON"},{"name":"XML"}])
+  out: |-
+    "JSON", "XML"
+  sqlpp: |-
+    SELECT RAW p.name
+    FROM people AS p
+  sql: |-
+    SELECT e->>'name' FROM jsonb_array_elements(col) e
+  duckdb: |-
+    SELECT p.name FROM (SELECT unnest(people) p)
+  js: |-
+    people.map(p => p.name)
+  python: |-
+    [p["name"] for p in people]
+  mongo: |-
+    db.people.find({}, {name: 1, _id: 0})
+  jq: |-
+    .[] | .name
+
+- section: '4. Iterating & collecting'
+  title: 'Collect values into one array'
+  data: |-
+    doc = {"user": "s", "projects": ["jq", "wf"]}
+  bind: |-
+    doc AS ({"user":"s","projects":["jq","wf"]})
+  out: |-
+    {"r":["s","jq","wf"]}
+  sqlpp: |-
+    SELECT ARRAY_PREPEND(doc.user, doc.projects) AS r
+  sql: |-
+    col->'user' || col->'projects'    -- jsonb || concatenates
+  duckdb: |-
+    list_prepend(doc.user, doc.projects)
+  js: |-
+    [doc.user, ...doc.projects]
+  python: |-
+    [doc["user"], *doc["projects"]]
+  mongo: |-
+    {$concatArrays: [["$user"], "$projects"]}
+  jq: |-
+    [.user, .projects[]]
+
+# ============================================================ 5. objects
+- section: '5. Building & reshaping objects'
+  title: 'Build an object'
+  note: |-
+    Keys inside a constructed object render sorted (canonical JSON): title before user.
+  data: |-
+    doc = {"user": "s", "title": "JQ"}
+  bind: |-
+    doc AS ({"user":"s","title":"JQ"})
+  out: |-
+    {"o":{"title":"JQ","user":"s"}}
+  sqlpp: |-
+    SELECT {"user": doc.user, "title": doc.title} AS o
+  sql: |-
+    jsonb_build_object('user', col->'user', 'title', col->'title')
+  duckdb: |-
+    {'user': doc.user, 'title': doc.title}   -- a STRUCT
+  js: |-
+    ({user: doc.user, title: doc.title})
+  python: |-
+    {"user": doc["user"], "title": doc["title"]}
+  mongo: |-
+    {$project: {user: 1, title: 1, _id: 0}}
+  jq: |-
+    {user, title}
+
+- section: '5. Building & reshaping objects'
+  title: "List an object's keys"
+  data: |-
+    obj = {"b": 2, "a": 1}
+  bind: |-
+    obj AS ({"b":2,"a":1})
+  out: |-
+    {"k":["a","b"]}
+  sqlpp: |-
+    SELECT OBJECT_NAMES(obj) AS k
+  sql: |-
+    jsonb_object_keys(col)   -- one row per key
+  duckdb: |-
+    json_keys(obj)
+  js: |-
+    Object.keys(obj)
+  python: |-
+    list(obj.keys())
+  mongo: |-
+    {$map: {input: {$objectToArray: "$obj"}, in: "$$this.k"}}
+  jq: |-
+    keys   # sorted
+
+- section: '5. Building & reshaping objects'
+  title: 'Object → array of pairs'
+  note: |-
+    ⚠ SQL++ OBJECT_PAIRS yields {name, val}; jq yields {key, value}.
+  data: |-
+    obj = {"a": 1, "b": 2}
+  bind: |-
+    obj AS ({"a":1,"b":2})
+  out: |-
+    {"p":[{"name":"a","val":1},{"name":"b","val":2}]}
+  sqlpp: |-
+    SELECT OBJECT_PAIRS(obj) AS p
+  sql: |-
+    jsonb_each(col)   -- rows (key, value)
+  duckdb: |-
+    map_entries(obj)
+  js: |-
+    Object.entries(obj)   // [["a",1],["b",2]]
+  python: |-
+    list(obj.items())
+  mongo: |-
+    {$objectToArray: "$obj"}   // [{k,v}]
+  jq: |-
+    to_entries   # [{key,value}]
+
+- section: '5. Building & reshaping objects'
+  title: 'Pairs → object'
+  data: |-
+    pairs = [{"name": "a", "val": 1}]
+  bind: |-
+    pairs AS ([{"name":"a","val":1}])
+  out: |-
+    {"o":{"a":1}}
+  sqlpp: |-
+    SELECT OBJECT p.name : p.val FOR p IN pairs END AS o
+  sql: |-
+    jsonb_object_agg(e->>'key', e->'value')
+  duckdb: |-
+    map_from_entries(pairs)
+  js: |-
+    Object.fromEntries(pairs.map(p => [p.name, p.val]))
+  python: |-
+    {p["name"]: p["val"] for p in pairs}
+  mongo: |-
+    {$arrayToObject: "$pairs"}
+  jq: |-
+    from_entries
+
+- section: '5. Building & reshaping objects'
+  title: 'Object with a key from the data'
+  note: |-
+    ⚠ Keys must be strings; `value` is a reserved word (back-quoted).
+  data: |-
+    recs = [{"label": "a", "value": 1}]
+  bind: |-
+    recs AS ([{"label":"a","value":1}])
+  out: |-
+    {"o":{"a":1}}
+  sqlpp: |-
+    SELECT OBJECT r.label : r.`value` FOR r IN recs END AS o
+  sql: |-
+    jsonb_object_agg(e->>'label', e->'value')
+  duckdb: |-
+    map_from_entries([{'k': r.label, 'v': r.value} for r in recs])
+  js: |-
+    Object.fromEntries(recs.map(r => [r.label, r.value]))
+  python: |-
+    {r["label"]: r["value"] for r in recs}
+  mongo: |-
+    {$arrayToObject: {$map: {input: "$recs", in: {k: "$$this.label", v: "$$this.value"}}}}
+  jq: |-
+    map({(.label): .value}) | add
+
+- section: '5. Building & reshaping objects'
+  title: 'Transform every value, keep keys'
+  data: |-
+    obj = {"a": 1, "b": 2}
+  bind: |-
+    obj AS ({"a":1,"b":2})
+  out: |-
+    {"o":{"a":2,"b":3}}
+  sqlpp: |-
+    SELECT OBJECT p.name : p.val + 1 FOR p IN OBJECT_PAIRS(obj) END AS o
+  sql: |-
+    jsonb_object_agg(k, (v::int)+1) FROM jsonb_each(obj) e(k,v)
+  duckdb: |-
+    map_from_entries([{'k': e.key, 'v': e.value + 1} for e in map_entries(obj)])
+  js: |-
+    Object.fromEntries(Object.entries(obj).map(([k, v]) => [k, v + 1]))
+  python: |-
+    {k: v + 1 for k, v in obj.items()}
+  mongo: |-
+    {$arrayToObject: {$map: {input: {$objectToArray: "$obj"}, in: {k: "$$this.k", v: {$add: ["$$this.v", 1]}}}}}
+  jq: |-
+    map_values(. + 1)
+
+- section: '5. Building & reshaping objects'
+  title: 'Swap keys and values'
+  data: |-
+    obj = {"a": 1, "b": 2}
+  bind: |-
+    obj AS ({"a":1,"b":2})
+  out: |-
+    {"o":{"1":"a","2":"b"}}
+  sqlpp: |-
+    SELECT OBJECT TO_STRING(p.val) : p.name FOR p IN OBJECT_PAIRS(obj) END AS o
+  sql: |-
+    jsonb_object_agg(v#>>'{}', k) FROM jsonb_each(obj) e(k,v)
+  duckdb: |-
+    map_from_entries([{'k': e.value::VARCHAR, 'v': e.key} for e in map_entries(obj)])
+  js: |-
+    Object.fromEntries(Object.entries(obj).map(([k, v]) => [v, k]))
+  python: |-
+    {str(v): k for k, v in obj.items()}
+  mongo: |-
+    {$arrayToObject: {$map: {input: {$objectToArray: "$obj"}, in: {k: {$toString: "$$this.v"}, v: "$$this.k"}}}}
+  jq: |-
+    to_entries | map({(.value): .key}) | add
+
+- section: '5. Building & reshaping objects'
+  title: 'Add / remove a field'
+  data: |-
+    obj = {"title": "x", "a": 1}
+  bind: |-
+    obj AS ({"title":"x","a":1})
+  out: |-
+    {"added":{"a":1,"draft":true,"title":"x"},"removed":{"a":1}}
+  sqlpp: |-
+    SELECT OBJECT_ADD(obj, "draft", true) AS added,
+           OBJECT_REMOVE(obj, "title")    AS removed
+  sql: |-
+    col || '{"draft":true}'   |   col - 'title'
+  duckdb: |-
+    struct_insert(obj, draft := true)   |   obj.* EXCLUDE (title)
+  js: |-
+    ({...obj, draft: true})   |   (({title, ...rest}) => rest)(obj)
+  python: |-
+    {**obj, "draft": True}   |   {k: v for k, v in obj.items() if k != "title"}
+  mongo: |-
+    {$mergeObjects: ["$$ROOT", {draft: true}]}   |   {$unset: "title"}
+  jq: |-
+    . + {draft: true}   |   del(.title)
+
+- section: '5. Building & reshaping objects'
+  title: 'Object → array of objects (key becomes a field)'
+  data: |-
+    obj = {"x": {"n": 1}}
+  bind: |-
+    obj AS ({"x":{"n":1}})
+  out: |-
+    {"a":[{"n":1,"slug":"x"}]}
+  sqlpp: |-
+    SELECT ARRAY OBJECT_ADD(p.val, "slug", p.name)
+           FOR p IN OBJECT_PAIRS(obj) END AS a
+  sql: |-
+    jsonb_agg(v || jsonb_build_object('slug', k))
+  duckdb: |-
+    [struct_insert(e.value, slug := e.key) for e in map_entries(obj)]
+  js: |-
+    Object.entries(obj).map(([k, v]) => ({...v, slug: k}))
+  python: |-
+    [{**v, "slug": k} for k, v in obj.items()]
+  mongo: |-
+    {$map: {input: {$objectToArray: "$obj"}, in: {$mergeObjects: ["$$this.v", {slug: "$$this.k"}]}}}
+  jq: |-
+    to_entries | map(.value + {slug: .key})
+
+- section: '5. Building & reshaping objects'
+  title: 'Array of objects → object keyed by a field'
+  data: |-
+    recs = [{"slug": "x", "n": 1}]
+  bind: |-
+    recs AS ([{"slug":"x","n":1}])
+  out: |-
+    {"o":{"x":{"n":1,"slug":"x"}}}
+  sqlpp: |-
+    SELECT OBJECT r.slug : r FOR r IN recs END AS o
+  sql: |-
+    jsonb_object_agg(e->>'slug', e)
+  duckdb: |-
+    map_from_entries([{'k': r.slug, 'v': r} for r in recs])
+  js: |-
+    Object.fromEntries(recs.map(r => [r.slug, r]))
+  python: |-
+    {r["slug"]: r for r in recs}
+  mongo: |-
+    {$arrayToObject: {$map: {input: "$recs", in: {k: "$$this.slug", v: "$$this"}}}}
+  jq: |-
+    map({(.slug): .}) | add
+
+# ============================================================ 6. aggregate deeper
+- section: '6. Aggregating a collection'
+  title: "Collect each group's members"
   needs: 'shop'
   out: |-
     one row per customer, e.g. {"customer":"dave","order_ids":["1005","1009","1013","1017"]}
@@ -513,102 +827,44 @@
   duckdb: |-
     SELECT customer, list(id) FROM orders GROUP BY customer
   js: |-
-    Object.groupBy(orders, o => o.customer)      // then map ids
+    Object.groupBy(orders, o => o.customer)   // then map ids
   python: |-
-    {c: [o["id"] for o in g] for c, g in groupby(sorted(orders,key=k), k)}
+    {c: [o["id"] for o in g] for c, g in groupby(sorted(orders, key=k), k)}
   mongo: |-
-    db.orders.aggregate([{$group:{_id:"$customer", order_ids:{$push:"$id"}}}])
+    db.orders.aggregate([{$group: {_id: "$customer", order_ids: {$push: "$id"}}}])
   jq: |-
-    group_by(.customer) | map({customer:.[0].customer, ids:map(.id)})
-- section: '5. Aggregating & grouping'
-  title: 'unique / dedup'
-  note: |-
-    ARRAY_DISTINCT keeps first-seen order; wrap in ARRAY_SORT for jq's sorted result.
-  out: |-
-    {"u":[1,2,5,3]}
-  sqlpp: |-
-    SELECT ARRAY_DISTINCT([1,2,5,3,5,3,1]) AS u
-  sql: |-
-    SELECT DISTINCT value FROM jsonb_array_elements('[…]')
-  duckdb: |-
-    list_distinct([1,2,5,3,5,3,1])
-  js: |-
-    [...new Set([1,2,5,3,5,3,1])]
-  python: |-
-    list(dict.fromkeys([1,2,5,3,5,3,1]))
-  mongo: |-
-    {$setUnion: ["$a", []]}      // unordered
-  jq: |-
-    unique      # sorted
-- section: '5. Aggregating & grouping'
-  title: 'sort_by'
-  needs: 'shop'
-  out: |-
-    {"id":"1020","total":389.99}, {"id":"1019","total":245.0}, {"id":"1003","total":210.00}
-  sqlpp: |-
-    SELECT o.id, o.total
-    FROM orders o
-    ORDER BY o.total DESC
-    LIMIT 3
-  sql: |-
-    SELECT id, total FROM orders ORDER BY total DESC
-  duckdb: |-
-    SELECT id, total FROM orders ORDER BY total DESC
-  js: |-
-    orders.toSorted((a,b) => b.total - a.total)
-  python: |-
-    sorted(orders, key=lambda o: -o["total"])
-  mongo: |-
-    db.orders.aggregate([{$sort:{total:-1}}])
-  jq: |-
-    sort_by(.total)
-- section: '5. Aggregating & grouping'
-  title: 'min_by / max_by — the extreme record'
-  needs: 'shop'
-  out: |-
-    the single priciest order (whole row)
-  sqlpp: |-
-    SELECT o.*
-    FROM orders o
-    ORDER BY o.total DESC
-    LIMIT 1
-  sql: |-
-    SELECT * FROM orders ORDER BY total DESC LIMIT 1
-  duckdb: |-
-    SELECT max_by(orders, total) FROM orders
-  js: |-
-    orders.reduce((m,o) => o.total > m.total ? o : m)
-  python: |-
-    max(orders, key=lambda o: o["total"])
-  mongo: |-
-    db.orders.aggregate([{$sort:{total:-1}}, {$limit:1}])
-  jq: |-
-    max_by(.total)
-- section: '5. Aggregating & grouping'
-  title: 'Count occurrences / histogram'
+    group_by(.customer) | map({customer: .[0].customer, ids: map(.id)})
+
+- section: '6. Aggregating a collection'
+  title: 'Count occurrences (histogram)'
+  data: |-
+    tags = ["a", "b", "a"]
+  bind: |-
+    tags AS (["a","b","a"])
   out: |-
     {"value":"a","n":2}, {"value":"b","n":1}
   sqlpp: |-
     SELECT v AS `value`, COUNT(*) AS n
-    FROM ["a","b","a"] AS v
+    FROM tags AS v
     GROUP BY v
   sql: |-
-    SELECT value, count(*) FROM jsonb_array_elements_text('["a","b","a"]') GROUP BY value
+    SELECT value, count(*) FROM jsonb_array_elements_text(col) GROUP BY value
   duckdb: |-
-    SELECT v, count(*) FROM (SELECT unnest(['a','b','a']) v) GROUP BY v
+    SELECT v, count(*) FROM (SELECT unnest(tags) v) GROUP BY v
   js: |-
-    arr.reduce((m,x) => (m[x]=(m[x]||0)+1, m), {})
+    tags.reduce((m, x) => (m[x] = (m[x] || 0) + 1, m), {})
   python: |-
-    collections.Counter(["a","b","a"])
+    collections.Counter(tags)
   mongo: |-
-    db.c.aggregate([{$unwind:"$v"}, {$group:{_id:"$v", n:{$sum:1}}}])
+    [{$unwind: "$tags"}, {$group: {_id: "$tags", n: {$sum: 1}}}]
   jq: |-
     reduce .[] as $x ({}; .[$x] += 1)
-- section: '5. Aggregating & grouping'
+
+- section: '6. Aggregating a collection'
   title: 'Find duplicates by key'
   needs: 'shop'
   out: |-
-    (empty for shop — ids are unique)
+    (empty for shop — order ids are unique)
   sqlpp: |-
     SELECT o.id, COUNT(*) AS n
     FROM orders o
@@ -623,97 +879,18 @@
   python: |-
     [k for k, c in Counter(o["id"] for o in orders).items() if c > 1]
   mongo: |-
-    db.orders.aggregate([{$group:{_id:"$id", n:{$sum:1}}}, {$match:{n:{$gt:1}}}])
+    [{$group: {_id: "$id", n: {$sum: 1}}}, {$match: {n: {$gt: 1}}}]
   jq: |-
-    reduce .[].id as $x ({}; .[$x]+=1) | to_entries[] | select(.value>1)
-- section: '6. Arrays'
-  title: 'flatten'
-  note: |-
-    ⚠ SQL++ ARRAY_FLATTEN(arr, depth) needs an explicit depth; jq flattens fully.
-  out: |-
-    {"f":[1,2,3]}
-  sqlpp: |-
-    SELECT ARRAY_FLATTEN([1,[2],[[3]]], 2) AS f
-  sql: |-
-    -- recursive unnest; no single builtin
-  duckdb: |-
-    flatten([[1],[2],[3]])      -- one level only
-  js: |-
-    [1,[2],[[3]]].flat(2)
-  python: |-
-    # no deep builtin; recurse, or itertools.chain for one level
-  mongo: |-
-    {$reduce:{input:"$a", initialValue:[], in:{$concatArrays:["$$value","$$this"]}}}   // one level
-  jq: |-
-    flatten
-- section: '6. Arrays'
-  title: 'reverse / range / append / concat'
-  out: |-
-    {"rev":[3,2,1],"rng":[2,3],"app":[1,2,3],"cat":[1,2]}
-  sqlpp: |-
-    SELECT ARRAY_REVERSE([1,2,3]) AS rev, ARRAY_RANGE(2,4) AS rng,
-           ARRAY_APPEND([1,2],3) AS app, ARRAY_CONCAT([1],[2]) AS cat
-  sql: |-
-    a || b; generate_series(2,3)
-  duckdb: |-
-    list_reverse(a); range(2,4); list_append(a,x); list_concat(a,b)
-  js: |-
-    a.toReversed(); [...Array(2).keys()].map(i=>i+2); [...a,x]; a.concat(b)
-  python: |-
-    a[::-1]; list(range(2,4)); a+[x]; a+b
-  mongo: |-
-    {$reverseArray:"$a"}; {$range:[2,4]}; {$concatArrays:["$a",[x]]}
-  jq: |-
-    reverse; [range(2;4)]; . + [x]; .a + .b
-- section: '6. Arrays'
-  title: 'Every other element (even indices)'
-  note: |-
-    Index by a stepped range — OBJECT_PAIRS works only on objects, not arrays.
-  out: |-
-    {"evens":["a","c"]}
-  sqlpp: |-
-    SELECT ARRAY a[i] FOR i IN ARRAY_RANGE(0, ARRAY_LENGTH(a), 2) END AS evens
-    FROM [["a","b","c","d"]] AS a
-  sql: |-
-    jsonb_agg(value) … WITH ORDINALITY t(value,i) WHERE i%2 = 1
-  duckdb: |-
-    list_slice(['a','b','c','d'], 1, 4, 2)      -- 1-based, step 2
-  js: |-
-    arr.filter((_, i) => i % 2 === 0)
-  python: |-
-    arr[::2]
-  mongo: |-
-    {$map:{input:{$range:[0,{$size:"$a"},2]}, in:{$arrayElemAt:["$a","$$this"]}}}
-  jq: |-
-    [range(0; length; 2) as $i | .[$i]]
-- section: '6. Arrays'
-  title: 'Chunk into fixed-size groups'
-  note: |-
-    ⚠ Clamp the slice end with LEAST(…, ARRAY_LENGTH(a)) — a slice past the end is MISSING, dropping the final short chunk.
-  out: |-
-    {"chunks":[[1,2],[3,4],[5]]}
-  sqlpp: |-
-    SELECT ARRAY a[i:LEAST(i+2, ARRAY_LENGTH(a))]
-           FOR i IN ARRAY_RANGE(0, ARRAY_LENGTH(a), 2) END AS chunks
-    FROM [[1,2,3,4,5]] AS a
-  sql: |-
-    -- window / ntile, or generate_series with slicing
-  duckdb: |-
-    [a[i+1 : i+2] for i in range(0, len(a), 2)]
-  js: |-
-    Array.from({length: Math.ceil(a.length/2)}, (_,i) => a.slice(i*2, i*2+2))
-  python: |-
-    [a[i:i+2] for i in range(0, len(a), 2)]
-  mongo: |-
-    —
-  jq: |-
-    [range(0; length; 2) as $i | .[$i:$i+2]]
+    reduce .[].id as $x ({}; .[$x] += 1) | to_entries[] | select(.value > 1)
+
+# ============================================================ 7. strings & numbers
 - section: '7. Strings & numbers'
   title: 'split / join'
   out: |-
     {"parts":["a","b","c"],"joined":"a-b-c"}
   sqlpp: |-
-    SELECT SPLIT("a,b,c", ",") AS parts, CONCAT2("-", ["a","b","c"]) AS joined
+    SELECT SPLIT("a,b,c", ",")         AS parts,
+           CONCAT2("-", ["a","b","c"]) AS joined
   sql: |-
     string_to_array('a,b,c', ','); array_to_string(a, '-')
   duckdb: |-
@@ -723,15 +900,18 @@
   python: |-
     "a,b,c".split(","); "-".join(["a","b","c"])
   mongo: |-
-    {$split:["a,b,c", ","]}; {$reduce:…}   // no direct join
+    {$split: ["a,b,c", ","]}; {$reduce: …}   // no direct join
   jq: |-
     split(","); join("-")
+
 - section: '7. Strings & numbers'
   title: 'upcase / trim-prefix / titlecase'
   out: |-
     {"up":"ABC","trimmed":"bar","titled":"Hi There"}
   sqlpp: |-
-    SELECT UPPER("abc") AS up, LTRIM("foobar","foo") AS trimmed, TITLE("hi there") AS titled
+    SELECT UPPER("abc")           AS up,
+           LTRIM("foobar", "foo") AS trimmed,
+           TITLE("hi there")      AS titled
   sql: |-
     upper(s); ltrim(s, 'foo'); initcap(s)
   duckdb: |-
@@ -741,29 +921,31 @@
   python: |-
     s.upper(); s.removeprefix("foo"); s.title()
   mongo: |-
-    {$toUpper:"$s"}; {$ltrim:{input:"$s", chars:"foo"}}
+    {$toUpper: "$s"}; {$ltrim: {input: "$s", chars: "foo"}}
   jq: |-
     ascii_upcase; ltrimstr("foo")
+
 - section: '7. Strings & numbers'
   title: 'String interpolation'
   out: |-
     {"msg":"total is 3"}
   sqlpp: |-
-    SELECT "total is " || TO_STRING(1+2) AS msg
+    SELECT "total is " || TO_STRING(1 + 2) AS msg
   sql: |-
-    'total is ' || (1+2)::text
+    'total is ' || (1 + 2)::text
   duckdb: |-
-    printf('total is %d', 1+2)
+    printf('total is %d', 1 + 2)
   js: |-
-    `total is ${1+2}`
+    `total is ${1 + 2}`
   python: |-
-    f"total is {1+2}"
+    f"total is {1 + 2}"
   mongo: |-
-    {$concat:["total is ", {$toString:{$add:[1,2]}}]}
+    {$concat: ["total is ", {$toString: {$add: [1, 2]}}]}
   jq: |-
-    "total is \(.+1)"
+    "total is \(. + 1)"
+
 - section: '7. Strings & numbers'
-  title: 'index of a substring'
+  title: 'Index of a substring'
   note: |-
     ⚠ SQL++ POSITION is 0-based; Postgres/DuckDB are 1-based.
   out: |-
@@ -779,35 +961,44 @@
   python: |-
     "a, b".find(", ")
   mongo: |-
-    {$indexOfCP:["a, b", ", "]}
+    {$indexOfCP: ["a, b", ", "]}
   jq: |-
     index(", ")
+
 - section: '7. Strings & numbers'
-  title: 'Numeric — floor / round / sqrt / integer-divide'
+  title: 'floor / round / sqrt / integer-divide'
   out: |-
     {"fl":3,"rnd":3.14,"sq":3,"idiv":3}
   sqlpp: |-
-    SELECT FLOOR(3.7) AS fl, ROUND(3.14159,2) AS rnd, SQRT(9) AS sq, IDIV(7,2) AS idiv
+    SELECT FLOOR(3.7)        AS fl,
+           ROUND(3.14159, 2) AS rnd,
+           SQRT(9)           AS sq,
+           IDIV(7, 2)        AS idiv
   sql: |-
-    floor(x); round(x,2); sqrt(x); div(7,2)
+    floor(x); round(x, 2); sqrt(x); div(7, 2)
   duckdb: |-
-    floor(x); round(x,2); sqrt(x); 7 // 2
+    floor(x); round(x, 2); sqrt(x); 7 // 2
   js: |-
     Math.floor(x); +x.toFixed(2); Math.sqrt(x); Math.trunc(7/2)
   python: |-
-    math.floor(x); round(x,2); math.sqrt(x); 7 // 2
+    math.floor(x); round(x, 2); math.sqrt(x); 7 // 2
   mongo: |-
-    {$floor:"$x"}; {$round:["$x",2]}; {$sqrt:"$x"}; {$trunc:{$divide:[7,2]}}
+    {$floor}; {$round: [x, 2]}; {$sqrt}; {$trunc: {$divide: [7, 2]}}
   jq: |-
-    floor; sqrt; (7/2 | floor)
+    floor; sqrt; (7 / 2 | floor)
+
 - section: '7. Strings & numbers'
-  title: 'type — name the JSON type'
+  title: 'Name the JSON type'
   note: |-
     ⚠ SQL++ TYPE() is lowercase and distinguishes "missing" from "null".
+  data: |-
+    vals = [0, false, [], {}, null, "x"]
+  bind: |-
+    vals AS ([0,false,[],{},null,"x"])
   out: |-
     {"t":["number","boolean","array","object","null","string"]}
   sqlpp: |-
-    SELECT ARRAY TYPE(v) FOR v IN [0,false,[],{},null,"x"] END AS t
+    SELECT ARRAY TYPE(v) FOR v IN vals END AS t
   sql: |-
     jsonb_typeof(value)
   duckdb: |-
@@ -817,15 +1008,24 @@
   python: |-
     type(x).__name__
   mongo: |-
-    {$type:"$x"}
+    {$type: "$x"}
   jq: |-
-    type      # (jq has no "missing")
+    type   # (jq has no "missing")
+
+# ============================================================ 8. recursion
 - section: '8. Recursion & deep search'
-  title: 'Recurse into every descendant — ..'
+  title: 'Recurse into every descendant'
+  note: |-
+    SQL++'s answer to jq's .. is the WITHIN operator (descend into any nested value).
+    Postgres uses jsonpath ($..); DuckDB/JS/Python/Mongo have no one-liner — you recurse.
+  data: |-
+    tree = {"a": 0, "b": [1]}
+  bind: |-
+    tree AS ({"a":0,"b":[1]})
   out: |-
     {"descendants":[0,[1],1]}
   sqlpp: |-
-    SELECT ARRAY v FOR v WITHIN {"a":0,"b":[1]} END AS descendants
+    SELECT ARRAY v FOR v WITHIN tree END AS descendants
   sql: |-
     jsonb_path_query(col, '$..*')
   duckdb: |-
@@ -838,124 +1038,133 @@
     —
   jq: |-
     ..
+
 - section: '8. Recursion & deep search'
-  title: 'Does value X appear anywhere in the tree?'
+  title: 'Does a value appear anywhere in the tree?'
+  data: |-
+    tree = {"a": {"b": 5}}
+  bind: |-
+    tree AS ({"a":{"b":5}})
   out: |-
     {"found":true}
   sqlpp: |-
-    SELECT ANY v WITHIN {"a":{"b":5}} SATISFIES v = 5 END AS found
+    SELECT ANY v WITHIN tree SATISFIES v = 5 END AS found
   sql: |-
     jsonb_path_exists(col, '$..* ? (@ == 5)')
   duckdb: |-
     —
   js: |-
-    [...walk(o)].includes(5)
+    [...walk(tree)].includes(5)
   python: |-
-    any(v == 5 for v in walk(o))
+    any(v == 5 for v in walk(tree))
   mongo: |-
     —
   jq: |-
     [.. | select(. == 5)] | length > 0
+
 - section: '8. Recursion & deep search'
   title: 'Find every object with a given id, at any depth'
+  data: |-
+    tree = {"a": {"id": "x"}, "b": [{"id": "y"}]}
+  bind: |-
+    tree AS ({"a":{"id":"x"},"b":[{"id":"y"}]})
   out: |-
     {"hits":[{"id":"y"}]}
   sqlpp: |-
-    SELECT ARRAY v FOR v WITHIN {"a":{"id":"x"},"b":[{"id":"y"}]} WHEN v.id = "y" END AS hits
+    SELECT ARRAY v FOR v WITHIN tree WHEN v.id = "y" END AS hits
   sql: |-
     jsonb_path_query(col, '$..* ? (@.id == "y")')
   duckdb: |-
     —
   js: |-
-    [...walk(o)].filter(v => v && v.id === "y")
+    [...walk(tree)].filter(v => v && v.id === "y")
   python: |-
-    [v for v in walk(o) if isinstance(v, dict) and v.get("id") == "y"]
+    [v for v in walk(tree) if isinstance(v, dict) and v.get("id") == "y"]
   mongo: |-
     —
   jq: |-
     [.. | objects | select(.id == "y")]
+
+# ============================================================ 9. reshaping
 - section: '9. Reshaping records'
   title: 'UNNEST — explode a nested array into rows'
   note: |-
-    The workhorse for line-items, tags, events. SQL++ UNNEST pairs each element with its parent's fields.
+    The workhorse for line-items, tags, events. SQL++ UNNEST pairs each element with its
+    parent's fields.
+  data: |-
+    docs = [{"id": 1, "tags": ["a", "b"]}]
+  bind: |-
+    docs AS ([{"id":1,"tags":["a","b"]}])
   out: |-
     {"id":1,"tag":"a"} then {"id":1,"tag":"b"}
   sqlpp: |-
     SELECT o.id, t AS tag
-    FROM [{"id":1,"tags":["a","b"]}] AS o
+    FROM docs AS o
     UNNEST o.tags AS t
   sql: |-
-    … , jsonb_array_elements_text(o->'tags') t      -- lateral cross join
+    … , jsonb_array_elements_text(o->'tags') t   -- lateral cross join
   duckdb: |-
-    SELECT id, unnest(tags) AS tag FROM t
+    SELECT id, unnest(tags) AS tag FROM docs
   js: |-
-    arr.flatMap(o => o.tags.map(t => ({id: o.id, tag: t})))
+    docs.flatMap(o => o.tags.map(t => ({id: o.id, tag: t})))
   python: |-
-    [{"id":o["id"], "tag":t} for o in arr for t in o["tags"]]
+    [{"id": o["id"], "tag": t} for o in docs for t in o["tags"]]
   mongo: |-
-    db.c.aggregate([{$unwind:"$tags"}, {$project:{id:1, tag:"$tags"}}])
+    [{$unwind: "$tags"}, {$project: {id: 1, tag: "$tags"}}]
   jq: |-
     .[] | {id, tag: .tags[]}
-- section: '9. Reshaping records'
-  title: 'Array-of-rows (CSV-ish) → objects'
-  out: |-
-    {"name":"n","url":"u","category":3}
-  sqlpp: |-
-    SELECT r[0] AS name, r[1] AS url, TO_NUMBER(r[2]) AS category
-    FROM [["hdr","hdr","hdr"],["n","u","3"]][1:] AS r
-  sql: |-
-    (r->>2)::int FROM jsonb_array_elements(col) WITH ORDINALITY t(r,i) WHERE i > 1
-  duckdb: |-
-    SELECT r[1] AS name, r[2] AS url, r[3]::int AS category FROM rows[2:]
-  js: |-
-    rows.slice(1).map(r => ({name:r[0], url:r[1], category:+r[2]}))
-  python: |-
-    [{"name":r[0], "url":r[1], "category":int(r[2])} for r in rows[1:]]
-  mongo: |-
-    —      // load via a driver / mongoimport
-  jq: |-
-    .[1:] | map({name:.[0], url:.[1], category:(.[2]|tonumber)})
+
 - section: '9. Reshaping records'
   title: 'Reshape + rename + sort'
+  data: |-
+    dms = [{"text": "hi", "sender": {"screen_name": "amy"}, "ts": 2},
+           {"text": "yo", "sender": {"screen_name": "bo"},  "ts": 1}]
+  bind: |-
+    dms AS ([{"text":"hi","sender":{"screen_name":"amy"},"ts":2},{"text":"yo","sender":{"screen_name":"bo"},"ts":1}])
   out: |-
     {"text":"yo","from_name":"bo"} then {"text":"hi","from_name":"amy"}
   sqlpp: |-
     SELECT d.text, d.sender.screen_name AS from_name
-    FROM [{"text":"hi","sender":{"screen_name":"amy"},"ts":2},
-          {"text":"yo","sender":{"screen_name":"bo"},"ts":1}] AS d
+    FROM dms AS d
     ORDER BY d.ts
   sql: |-
     SELECT col->>'text', col#>>'{sender,screen_name}' FROM dms ORDER BY col->>'ts'
   duckdb: |-
     SELECT text, sender.screen_name AS from_name FROM dms ORDER BY ts
   js: |-
-    dms.map(d => ({text:d.text, from:d.sender.screen_name})).sort((a,b)=>a.ts-b.ts)
+    dms.map(d => ({text: d.text, from: d.sender.screen_name})).sort((a,b)=>a.ts-b.ts)
   python: |-
-    sorted(({"text":d["text"], "from":d["sender"]["screen_name"]} for d in dms), key=…)
+    sorted(({"text": d["text"], "from": d["sender"]["screen_name"]} for d in dms), key=…)
   mongo: |-
-    db.dms.aggregate([{$project:{text:1, from:"$sender.screen_name"}}, {$sort:{ts:1}}])
+    [{$project: {text: 1, from: "$sender.screen_name"}}, {$sort: {ts: 1}}]
   jq: |-
-    [.[] | {text, from:.sender.screen_name}] | sort_by(.date)
+    [.[] | {text, from: .sender.screen_name}] | sort_by(.ts)
+
 - section: '9. Reshaping records'
   title: 'Merge two arrays, flagging one'
+  data: |-
+    doc = {"team": [{"n": "a"}], "formerly": [{"n": "b"}]}
+  bind: |-
+    doc AS ({"team":[{"n":"a"}],"formerly":[{"n":"b"}]})
   out: |-
     {"everyone":[{"n":"a"},{"formerly":true,"n":"b"}]}
   sqlpp: |-
-    SELECT ARRAY_CONCAT(d.team,
-           ARRAY OBJECT_ADD(m,"formerly",true) FOR m IN d.formerly END) AS everyone
-    FROM [{"team":[{"n":"a"}],"formerly":[{"n":"b"}]}] AS d
+    SELECT ARRAY_CONCAT(doc.team,
+           ARRAY OBJECT_ADD(m, "formerly", true) FOR m IN doc.formerly END) AS everyone
   sql: |-
     (col->'team') || (SELECT jsonb_agg(m || '{"formerly":true}') FROM jsonb_array_elements(col->'formerly') m)
   duckdb: |-
     list_concat(team, [struct_insert(m, formerly := true) for m in formerly])
   js: |-
-    [...d.team, ...d.formerly.map(m => ({...m, formerly:true}))]
+    [...doc.team, ...doc.formerly.map(m => ({...m, formerly: true}))]
   python: |-
-    d["team"] + [{**m, "formerly":True} for m in d["formerly"]]
+    doc["team"] + [{**m, "formerly": True} for m in doc["formerly"]]
   mongo: |-
-    {$concatArrays:["$team", {$map:{input:"$formerly", in:{$mergeObjects:["$$this",{formerly:true}]}}}]}
+    {$concatArrays: ["$team", {$map: {input: "$formerly", in: {$mergeObjects: ["$$this", {formerly: true}]}}}]}
   jq: |-
-    [.team, (.formerly | map(.+{formerly:true}))] | flatten
+    [.team, (.formerly | map(. + {formerly: true}))] | flatten
+
+# ============================================================ 10. conditionals
 - section: '10. Conditionals & defaults'
   title: 'if / then / else'
   out: |-
@@ -971,39 +1180,50 @@
   python: |-
     "big" if 5 > 3 else "small"
   mongo: |-
-    {$cond: [{$gt:[5,3]}, "big", "small"]}
+    {$cond: [{$gt: [5, 3]}, "big", "small"]}
   jq: |-
     if . > 3 then "big" else "small" end
+
 - section: '10. Conditionals & defaults'
   title: 'Default for a missing/null value'
   note: |-
-    SQL++ splits what COALESCE and jq's // blur: IFMISSING / IFNULL / IFMISSINGORNULL treat absent and present-but-null differently.
+    SQL++ splits what COALESCE and jq's // blur: IFMISSING / IFNULL / IFMISSINGORNULL treat
+    absent and present-but-null differently.
+  data: |-
+    doc = {}
+  bind: |-
+    doc AS ({})
   out: |-
     {"v":"default"}
   sqlpp: |-
-    SELECT IFMISSINGORNULL(x.foo, "default") AS v
-    FROM [{}] AS x
+    SELECT IFMISSINGORNULL(doc.foo, "default") AS v
   sql: |-
     COALESCE(col->>'foo', 'default')
   duckdb: |-
-    COALESCE(x.foo, 'default')
+    COALESCE(doc.foo, 'default')
   js: |-
-    x.foo ?? "default"
+    doc.foo ?? "default"
   python: |-
-    x.get("foo", "default")
+    doc.get("foo", "default")
   mongo: |-
     {$ifNull: ["$foo", "default"]}
   jq: |-
     .foo // "default"
+
 - section: '10. Conditionals & defaults'
-  title: 'Type guard (jq''s try/catch)'
+  title: "Type guard (jq's try/catch)"
   note: |-
-    jq guards type errors with try/catch; SQL++ has no type errors — a bad op yields NULL/MISSING — so guard with CASE.
+    jq guards type errors with try/catch; SQL++ has no type errors — a bad op yields
+    NULL/MISSING — so guard with CASE.
+  data: |-
+    vals = [{"a": 1}, "str"]
+  bind: |-
+    vals AS ([{"a":1},"str"])
   out: |-
     {"a":1} then {}   (the string has no .a → MISSING)
   sqlpp: |-
     SELECT CASE WHEN TYPE(x) = "object" THEN x.a END AS a
-    FROM [{"a":1}, "str"] AS x
+    FROM vals AS x
   sql: |-
     —
   duckdb: |-
@@ -1013,6 +1233,6 @@
   python: |-
     x.get("a") if isinstance(x, dict) else None
   mongo: |-
-    {$cond:[{$eq:[{$type:"$x"},"object"]}, "$x.a", null]}
+    {$cond: [{$eq: [{$type: "$x"}, "object"]}, "$x.a", null]}
   jq: |-
     try .a catch null

@@ -232,6 +232,25 @@ def secondary():
     return [d for d in DIALECTS if not d.get("primary")]
 
 
+def full_sqlpp(r):
+    """The runnable SQL++: the concise query the table shows, prefixed with a
+    `WITH <bind>` that binds the recipe's source data to a name (so the query — like
+    the other dialects — just references that name instead of inlining a literal)."""
+    s = (r.get("sqlpp") or "").strip()
+    b = (r.get("bind") or "").strip()
+    return f"WITH {b}\n{s}" if b else s
+
+
+def source_data(r):
+    """Text for the 'source data' expando: the shared input every dialect references."""
+    parts = []
+    if r.get("data"):
+        parts.append(r["data"].strip())
+    if r.get("bind"):
+        parts.append("SQL++ binds it with:  WITH " + " ".join(r["bind"].split()))
+    return "\n".join(parts)
+
+
 # ---------------------------------------------------------------- Markdown ----
 
 def render_md():
@@ -245,7 +264,11 @@ def render_md():
             out.append(f"### {r['title']}")
             if r.get("note"):
                 out.append(r["note"].strip())
-            sqlpp = (r.get("sqlpp") or "").strip()
+            if r.get("data"):
+                out.append("_Source data:_\n```\n" + r["data"].strip() + "\n```")
+            elif r.get("needs") == "shop":
+                out.append("_Over the shop `orders` / `customers` keyspaces._")
+            sqlpp = full_sqlpp(r)
             if sqlpp:
                 block = sqlpp + (f"\n-- → {r['out'].strip()}" if r.get("out") else "")
                 out.append("```sql\n" + block + "\n```")
@@ -346,6 +369,15 @@ thead .c-sqlpp{z-index:31;background:var(--sqlpp);border-right-color:var(--sqlpp
 .rnote{color:var(--muted);font-size:12px;line-height:1.45;font-weight:400}  /* on its own line below the title */
 .rneeds{font-size:10.5px;color:var(--muted);border:1px solid var(--line);border-radius:10px;
   padding:1px 7px;font-family:ui-monospace,monospace;white-space:nowrap}
+/* source-data expando in the description row */
+.src{margin-top:2px;width:100%}
+.src summary{cursor:pointer;list-style:none;display:inline-flex;align-items:center;gap:5px;
+  font-size:11px;color:var(--accent);font-weight:500}
+.src summary::-webkit-details-marker{display:none}
+.src summary::before{content:"▸";font-size:9px;transition:transform .12s}
+.src[open] summary::before{transform:rotate(90deg)}
+.src pre{margin:6px 0 2px;font-size:11.5px;color:var(--muted);background:var(--band);
+  border:1px solid var(--line);border-radius:6px;padding:8px 11px;max-width:min(90vw,640px)}
 tbody tr.code:hover td:not(.c-sqlpp){background:var(--line2)}
 /* code cells wrap: cap line length so columns stay narrow (more fits horizontally) */
 pre{margin:0;font-family:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
@@ -430,10 +462,13 @@ def render_html_body():
             rid += 1
             # description row (colspan) — its text stays pinned left
             note = f'<span class="rnote">{html.escape(r["note"].strip())}</span>' if r.get("note") else ""
-            needs = '<span class="rneeds">needs examples/shop</span>' if r.get("needs") else ""
+            needs = '<span class="rneeds">shop dataset</span>' if r.get("needs") else ""
+            src = source_data(r)
+            srcx = (f'<details class="src"><summary>source data</summary>'
+                    f'<pre>{html.escape(src)}</pre></details>') if src else ""
             T.append(f'<tr class="desc" data-r="{rid}"><td colspan="{ncols}"><span class="stick">'
                      f'<span class="rhead"><span class="rtitle">{html.escape(r["title"])}</span>{needs}</span>'
-                     f'{note}</span></td></tr>')
+                     f'{note}{srcx}</span></td></tr>')
             # dialect row
             T.append(f'<tr class="code" data-r="{rid}">')
             sqlpp = (r.get("sqlpp") or "").strip()
@@ -467,7 +502,7 @@ def check():
     n = fails = 0
     for title, recipes in load():
         for r in recipes:
-            sqlpp = (r.get("sqlpp") or "").strip()
+            sqlpp = full_sqlpp(r)
             if not sqlpp:
                 continue
             n += 1
