@@ -204,11 +204,9 @@
     SELECT RAW customer
     FROM orders
   sql: |-
-    SELECT customer
-    FROM orders     -- a single-column result set
+    —
   duckdb: |-
-    SELECT customer
-    FROM orders
+    —
   js: |-
     orders.map(o => o.customer)
   python: |-

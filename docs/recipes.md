@@ -205,8 +205,6 @@ FROM orders
 
 | | |
 |---|---|
-| **SQL (Postgres)** | `SELECT customer FROM orders -- a single-column result set` |
-| **SQL (DuckDB)** | `SELECT customer FROM orders` |
 | **JavaScript** | `orders.map(o => o.customer)` |
 | **Python** | `[o["customer"] for o in orders]` |
 | **MongoDB** | `db.orders.distinct("customer")  // bare values (also dedups)` |
