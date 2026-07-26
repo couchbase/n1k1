@@ -204,11 +204,11 @@ ORDER BY revenue DESC
 | **SQL (Postgres)** | `SELECT status, COUNT(*) AS n, ROUND(SUM(total),2) AS revenue FROM orders GROUP BY status ORDER BY revenue DESC` |
 | **SQL (DuckDB)** | `SELECT status, COUNT(*) AS n, ROUND(SUM(total),2) AS revenue FROM orders GROUP BY status ORDER BY revenue DESC` |
 | **JavaScript** | `Object.groupBy(orders, o => o.status)   // then reduce each bucket` |
-| **Python** | `df.groupby("status").total.agg(["count", "sum"])   # pandas` |
+| **Python** | `df.groupby("status").total.agg(["count", "sum"])  # pandas` |
 | **MongoDB** | `db.orders.aggregate([
   {$group: {_id: "$status", n: {$sum: 1}, revenue: {$sum: "$total"}}},
   {$sort: {revenue: -1}}])` |
-| **jq** | `group_by(.status)   # → array of arrays` |
+| **jq** | `group_by(.status)  # → array of arrays` |
 
 </details>
 
@@ -282,9 +282,9 @@ FROM doc
 | **SQL (Postgres)** | `SELECT doc->'foo' -- NULL if absent FROM doc` |
 | **SQL (DuckDB)** | `SELECT doc->'$.foo' FROM doc` |
 | **JavaScript** | `doc.foo               // undefined` |
-| **Python** | `doc.get("foo")        # None` |
+| **Python** | `doc.get("foo")  # None` |
 | **MongoDB** | `// a missing field is simply absent from the result` |
-| **jq** | `.foo?                 # no error even on a non-object` |
+| **jq** | `.foo?  # no error even on a non-object` |
 
 </details>
 
@@ -464,7 +464,7 @@ FROM doc
 | **JavaScript** | `[...new Set(doc.nums)]` |
 | **Python** | `list(dict.fromkeys(doc["nums"]))` |
 | **MongoDB** | `{$setUnion: ["$nums", []]}   // unordered` |
-| **jq** | `.nums \| unique   # sorted` |
+| **jq** | `.nums \| unique  # sorted` |
 
 </details>
 
@@ -691,7 +691,7 @@ FROM doc
 | **JavaScript** | `Object.keys(doc.obj)` |
 | **Python** | `list(doc["obj"].keys())` |
 | **MongoDB** | `{$map: {input: {$objectToArray: "$obj"}, in: "$$this.k"}}` |
-| **jq** | `.obj \| keys   # sorted` |
+| **jq** | `.obj \| keys  # sorted` |
 
 </details>
 
@@ -716,7 +716,7 @@ FROM doc
 | **JavaScript** | `Object.entries(doc.obj)   // [["a",1],["b",2]]` |
 | **Python** | `list(doc["obj"].items())` |
 | **MongoDB** | `{$objectToArray: "$obj"}   // [{k,v}]` |
-| **jq** | `.obj \| to_entries   # [{key,value}]` |
+| **jq** | `.obj \| to_entries  # [{key,value}]` |
 
 </details>
 

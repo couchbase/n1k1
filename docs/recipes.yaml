@@ -198,13 +198,13 @@
   js: |-
     Object.groupBy(orders, o => o.status)   // then reduce each bucket
   python: |-
-    df.groupby("status").total.agg(["count", "sum"])   # pandas
+    df.groupby("status").total.agg(["count", "sum"])  # pandas
   mongo: |-
     db.orders.aggregate([
       {$group: {_id: "$status", n: {$sum: 1}, revenue: {$sum: "$total"}}},
       {$sort: {revenue: -1}}])
   jq: |-
-    group_by(.status)   # → array of arrays
+    group_by(.status)  # → array of arrays
 
 - section: '1. Querying a collection'
   section_color: '#4f46e5'
@@ -287,11 +287,11 @@
   js: |-
     doc.foo               // undefined
   python: |-
-    doc.get("foo")        # None
+    doc.get("foo")  # None
   mongo: |-
     // a missing field is simply absent from the result
   jq: |-
-    .foo?                 # no error even on a non-object
+    .foo?  # no error even on a non-object
 
 - section: '2. Reaching into a value'
   section_color: '#0d9488'
@@ -499,7 +499,7 @@
   mongo: |-
     {$setUnion: ["$nums", []]}   // unordered
   jq: |-
-    .nums | unique   # sorted
+    .nums | unique  # sorted
 - section: '3. Transforming arrays'
   section_color: '#d97706'
   title: 'Flatten nested arrays'
@@ -757,7 +757,7 @@
   mongo: |-
     {$map: {input: {$objectToArray: "$obj"}, in: "$$this.k"}}
   jq: |-
-    .obj | keys   # sorted
+    .obj | keys  # sorted
 - section: '5. Building & reshaping objects'
   section_color: '#7c3aed'
   title: 'Object → array of pairs'
@@ -785,7 +785,7 @@
   mongo: |-
     {$objectToArray: "$obj"}   // [{k,v}]
   jq: |-
-    .obj | to_entries   # [{key,value}]
+    .obj | to_entries  # [{key,value}]
 - section: '5. Building & reshaping objects'
   section_color: '#7c3aed'
   title: 'Pairs → object'
