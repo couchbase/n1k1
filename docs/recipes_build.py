@@ -243,12 +243,7 @@ def full_sqlpp(r):
 
 def source_data(r):
     """Text for the 'source data' expando: the shared input every dialect references."""
-    parts = []
-    if r.get("data"):
-        parts.append(r["data"].strip())
-    if r.get("bind"):
-        parts.append("SQL++ binds it with:  WITH " + " ".join(r["bind"].split()))
-    return "\n".join(parts)
+    return r["data"].strip() if r.get("data") else ""
 
 
 def short_title(t):
@@ -270,7 +265,12 @@ def cli_text(did, code, r):
     """The 'full command line' form of a cell, or None if this dialect has no CLI."""
     if did not in CLI:
         return None
-    snippet = full_sqlpp(r) if did == "sqlpp" else code
+    if did == "sqlpp":
+        snippet = full_sqlpp(r)
+    elif did in ("sql", "duckdb"):
+        snippet = sqlify(code)
+    else:
+        snippet = code
     if not snippet or snippet.strip() == "—":
         return None
     pre, suf = CLI[did]
@@ -304,6 +304,8 @@ def render_md():
             rows = []
             for d in secondary():
                 code = (r.get(d["id"]) or "").strip()
+                if d["id"] in ("sql", "duckdb"):
+                    code = sqlify(code)
                 if code and code != "—":
                     rows.append(f"| **{d['label']}** | `{code.replace(chr(124), chr(92)+chr(124))}` |")
             if rows:
@@ -384,7 +386,7 @@ h1{margin:0 0 8px;font-size:24px;font-weight:680;letter-spacing:-.015em;text-wra
   color:var(--faint);padding:10px var(--gutter) 4px}
 .toc ul{list-style:none;margin:0;padding:0}
 .toc-sec{font-size:10px;font-weight:680;letter-spacing:.04em;text-transform:uppercase;
-  color:var(--muted);padding:13px var(--gutter) 3px;margin-top:6px;
+  color:var(--muted);padding:7px var(--gutter);margin-top:6px;line-height:1.35;
   border-left:3px solid var(--sc, transparent);padding-left:calc(var(--gutter) - 3px);
   background:color-mix(in srgb, var(--sc, transparent) 13%, var(--bg))}
 .toc a{display:block;padding:4px 14px 4px var(--gutter);font-size:12.5px;color:var(--muted);
@@ -574,6 +576,21 @@ def reflow(s):
     return "\n".join(l.rstrip() for l in "".join(out).split("\n"))
 
 
+def sqlify(code):
+    """Make a SQL-family cell a complete statement: prepend SELECT to a bare expression,
+    and fold a ';'-separated list of function references into one SELECT projection.
+    Leaves anything already a statement (SELECT/WITH), a comment, or a two-op 'A | B'
+    cheat cell (those are hand-formatted in the YAML)."""
+    c = (code or "").strip()
+    if not c or c == "—":
+        return c
+    if c.upper().startswith(("SELECT", "WITH")) or c.startswith(("--", "//", "#", "…", "—")):
+        return c
+    if " | " in c:
+        return c
+    return "SELECT " + ", ".join(p.strip() for p in c.split(";") if p.strip())
+
+
 def cell(kind, plain_html, clitext):
     """A code <td>. When the dialect has a CLI form, carry both — the 'full command
     line' toggle swaps them via a body class (no re-render)."""
@@ -586,8 +603,8 @@ def cell(kind, plain_html, clitext):
 def code_td(did, code, r, kind):
     if not code or code.strip() == "—":
         return f'<td class="empty {kind}">—</td>'
-    # the SQL family mirrors SQL++'s clause-per-line breaks
-    disp = reflow(code) if did in ("sql", "duckdb") else code.strip()
+    # SQL family: complete the statement, then mirror SQL++'s clause-per-line breaks
+    disp = reflow(sqlify(code)) if did in ("sql", "duckdb") else code.strip()
     return cell(kind, html.escape(disp), cli_text(did, code, r))
 
 

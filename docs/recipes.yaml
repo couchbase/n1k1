@@ -355,7 +355,7 @@
            ARRAY_MAX(nums) AS mx,
            ARRAY_AVG(nums) AS a
   sql: |-
-    sum(value::int) FROM jsonb_array_elements(col)
+    SELECT sum(value::int), max(value::int), avg(value::int) FROM jsonb_array_elements(col)
   duckdb: |-
     list_sum(nums); list_max(nums); list_avg(nums)
   js: |-
@@ -454,7 +454,7 @@
            ARRAY_APPEND([1,2], 3) AS app,
            ARRAY_CONCAT([1], [2]) AS cat
   sql: |-
-    a || b ; generate_series(2, 3)
+    SELECT array_append(ARRAY[1,2], 3), ARRAY[1] || ARRAY[2], generate_series(2, 3)  -- (no array reverse builtin)
   duckdb: |-
     list_reverse(a); range(2,4); list_append(a,x); list_concat(a,b)
   js: |-
@@ -481,7 +481,7 @@
     SELECT ARRAY letters[i]
            FOR i IN ARRAY_RANGE(0, ARRAY_LENGTH(letters), 2) END AS evens
   sql: |-
-    … WITH ORDINALITY t(v, i) WHERE i % 2 = 1
+    SELECT v FROM jsonb_array_elements(col) WITH ORDINALITY t(v, i) WHERE i % 2 = 1
   duckdb: |-
     list_slice(letters, 1, 4, 2)   -- 1-based, step 2
   js: |-
@@ -784,9 +784,9 @@
     SELECT OBJECT_ADD(obj, "draft", true) AS added,
            OBJECT_REMOVE(obj, "title")    AS removed
   sql: |-
-    col || '{"draft":true}'   |   col - 'title'
+    SELECT col || '{"draft":true}' AS added, col - 'title' AS removed
   duckdb: |-
-    struct_insert(obj, draft := true)   |   obj.* EXCLUDE (title)
+    SELECT struct_insert(obj, draft := true) AS added, obj.* EXCLUDE (title)
   js: |-
     ({...obj, draft: true})   |   (({title, ...rest}) => rest)(obj)
   python: |-
@@ -1148,7 +1148,7 @@
     FROM docs AS o
     UNNEST o.tags AS t
   sql: |-
-    … , jsonb_array_elements_text(o->'tags') t   -- lateral cross join
+    SELECT o->>'id', t FROM jsonb_array_elements(col) o, jsonb_array_elements_text(o->'tags') t
   duckdb: |-
     SELECT id, unnest(tags) AS tag FROM docs
   js: |-
