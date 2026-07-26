@@ -611,12 +611,12 @@ def render_html_body():
             line2 = f'<span class="rline"><span class="rnote">{note}</span>{chip}</span>' if note else ""
             T.append(f'<tr class="desc" id="rec-{rid}" data-r="{rid}"><td colspan="{ncols}">'
                      f'<span class="stick">{head}{line2}</span></td></tr>')
-            # dialect row — SQL++ (frozen) then each secondary dialect. SQL++ shows the full
-            # WITH-bound query so the data source is explicit (no dangling names / no FROM-less
-            # look from the once-hidden WITH).
+            # dialect row — SQL++ (frozen) then each secondary dialect. The cell shows the
+            # concise query (the WITH binding stays hidden); its FROM references the bound
+            # name, and the "example data" chip shows the actual data.
             T.append(f'<tr class="code" data-r="{rid}">')
             sqlpp = (r.get("sqlpp") or "").strip()
-            T.append(cell("c-sqlpp", html.escape(full_sqlpp(r)), cli_text("sqlpp", sqlpp, r)))
+            T.append(cell("c-sqlpp", html.escape(sqlpp), cli_text("sqlpp", sqlpp, r)))
             for d in sec:
                 T.append(code_td(d["id"], r.get(d["id"], ""), r, "col-" + d["id"]))
             T.append("</tr>")

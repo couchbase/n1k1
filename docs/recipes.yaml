@@ -229,6 +229,7 @@
     {"city":"Austin"}
   sqlpp: |-
     SELECT doc.customer.city
+    FROM doc
   sql: |-
     SELECT col->'customer'->>'city'       -- ->> text, -> jsonb
   duckdb: |-
@@ -256,6 +257,7 @@
     {}   (foo is MISSING → the key is omitted)
   sqlpp: |-
     SELECT doc.foo
+    FROM doc
   sql: |-
     SELECT col->'foo'      -- NULL if absent
   duckdb: |-
@@ -388,9 +390,10 @@
   out: |-
     {"s":6,"mx":3,"a":2}
   sqlpp: |-
-    SELECT ARRAY_SUM(nums) AS s,
-           ARRAY_MAX(nums) AS mx,
-           ARRAY_AVG(nums) AS a
+    SELECT SUM(v) AS s,
+           MAX(v) AS mx,
+           AVG(v) AS a
+    FROM nums AS v
   sql: |-
     SELECT SUM(value::int) AS s,
            MAX(value::int) AS mx,
@@ -445,7 +448,8 @@
   out: |-
     {"u":[1,2,5,3]}
   sqlpp: |-
-    SELECT ARRAY_DISTINCT(nums) AS u
+    SELECT ARRAY_AGG(DISTINCT v) AS u
+    FROM nums AS v
   sql: |-
     SELECT DISTINCT value AS u
     FROM JSONB_ARRAY_ELEMENTS(col)
@@ -637,6 +641,7 @@
     {"r":["s","jq","wf"]}
   sqlpp: |-
     SELECT ARRAY_PREPEND(doc.user, doc.projects) AS r
+    FROM doc
   sql: |-
     SELECT col->'user' || col->'projects'    -- jsonb || concatenates AS r
   duckdb: |-
@@ -664,6 +669,7 @@
     {"o":{"title":"JQ","user":"s"}}
   sqlpp: |-
     SELECT {"user": doc.user, "title": doc.title} AS o
+    FROM doc
   sql: |-
     SELECT JSONB_BUILD_OBJECT('user', col->'user', 'title', col->'title') AS o
   duckdb: |-
@@ -688,6 +694,7 @@
     {"k":["a","b"]}
   sqlpp: |-
     SELECT OBJECT_NAMES(obj) AS k
+    FROM obj
   sql: |-
     SELECT JSONB_OBJECT_KEYS(col)   -- one row per key AS k
   duckdb: |-
@@ -714,6 +721,7 @@
     {"p":[{"name":"a","val":1},{"name":"b","val":2}]}
   sqlpp: |-
     SELECT OBJECT_PAIRS(obj) AS p
+    FROM obj
   sql: |-
     SELECT JSONB_EACH(col)   -- rows (key, value) AS p
   duckdb: |-
@@ -788,6 +796,7 @@
     {"o":{"a":2,"b":3}}
   sqlpp: |-
     SELECT OBJECT p.name : p.val + 1 FOR p IN OBJECT_PAIRS(obj) END AS o
+    FROM obj
   sql: |-
     SELECT JSONB_OBJECT_AGG(k, (v::int)+1) AS o
     FROM JSONB_EACH(obj) e(k,v)
@@ -813,6 +822,7 @@
     {"o":{"1":"a","2":"b"}}
   sqlpp: |-
     SELECT OBJECT TO_STRING(p.val) : p.name FOR p IN OBJECT_PAIRS(obj) END AS o
+    FROM obj
   sql: |-
     SELECT JSONB_OBJECT_AGG(v#>>'{}', k) AS o
     FROM JSONB_EACH(obj) e(k,v)
@@ -839,6 +849,7 @@
   sqlpp: |-
     SELECT OBJECT_ADD(obj, "draft", true) AS added,
            OBJECT_REMOVE(obj, "title")    AS removed
+    FROM obj
   sql: |-
     SELECT col || '{"draft":true}' AS added,
            col - 'title' AS removed
@@ -866,6 +877,7 @@
   sqlpp: |-
     SELECT ARRAY OBJECT_ADD(p.val, "slug", p.name)
            FOR p IN OBJECT_PAIRS(obj) END AS a
+    FROM obj
   sql: |-
     SELECT JSONB_AGG(v || JSONB_BUILD_OBJECT('slug', k)) AS a
   duckdb: |-
@@ -1289,6 +1301,7 @@
   sqlpp: |-
     SELECT ARRAY_CONCAT(doc.team,
            ARRAY OBJECT_ADD(m, "formerly", true) FOR m IN doc.formerly END) AS everyone
+    FROM doc
   sql: |-
     SELECT (col->'team') || (SELECT JSONB_AGG(m || '{"formerly":true}') FROM JSONB_ARRAY_ELEMENTS(col->'formerly') m) AS everyone
   duckdb: |-
@@ -1337,6 +1350,7 @@
     {"v":"default"}
   sqlpp: |-
     SELECT IFMISSINGORNULL(doc.foo, "default") AS v
+    FROM doc
   sql: |-
     SELECT COALESCE(col->>'foo', 'default') AS v
   duckdb: |-

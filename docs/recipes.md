@@ -223,6 +223,7 @@ doc = {"id": "o1", "customer": {"name": "Dave", "city": "Austin"}}
 ```sql
 WITH doc AS ({"id":"o1","customer":{"name":"Dave","city":"Austin"}})
 SELECT doc.customer.city
+FROM doc
 -- → {"city":"Austin"}
 ```
 <details><summary>other dialects</summary>
@@ -248,6 +249,7 @@ doc = {"bar": 1}
 ```sql
 WITH doc AS ({"bar":1})
 SELECT doc.foo
+FROM doc
 -- → {}   (foo is MISSING → the key is omitted)
 ```
 <details><summary>other dialects</summary>
@@ -370,9 +372,10 @@ nums = [1, 2, 3]
 ```
 ```sql
 WITH nums AS ([1,2,3])
-SELECT ARRAY_SUM(nums) AS s,
-       ARRAY_MAX(nums) AS mx,
-       ARRAY_AVG(nums) AS a
+SELECT SUM(v) AS s,
+       MAX(v) AS mx,
+       AVG(v) AS a
+FROM nums AS v
 -- → {"s":6,"mx":3,"a":2}
 ```
 <details><summary>other dialects</summary>
@@ -419,7 +422,8 @@ nums = [1, 2, 5, 3, 5, 3, 1]
 ```
 ```sql
 WITH nums AS ([1,2,5,3,5,3,1])
-SELECT ARRAY_DISTINCT(nums) AS u
+SELECT ARRAY_AGG(DISTINCT v) AS u
+FROM nums AS v
 -- → {"u":[1,2,5,3]}
 ```
 <details><summary>other dialects</summary>
@@ -588,6 +592,7 @@ doc = {"user": "s", "projects": ["jq", "wf"]}
 ```sql
 WITH doc AS ({"user":"s","projects":["jq","wf"]})
 SELECT ARRAY_PREPEND(doc.user, doc.projects) AS r
+FROM doc
 -- → {"r":["s","jq","wf"]}
 ```
 <details><summary>other dialects</summary>
@@ -614,6 +619,7 @@ doc = {"user": "s", "title": "JQ"}
 ```sql
 WITH doc AS ({"user":"s","title":"JQ"})
 SELECT {"user": doc.user, "title": doc.title} AS o
+FROM doc
 -- → {"o":{"title":"JQ","user":"s"}}
 ```
 <details><summary>other dialects</summary>
@@ -637,6 +643,7 @@ obj = {"b": 2, "a": 1}
 ```sql
 WITH obj AS ({"b":2,"a":1})
 SELECT OBJECT_NAMES(obj) AS k
+FROM obj
 -- → {"k":["a","b"]}
 ```
 <details><summary>other dialects</summary>
@@ -661,6 +668,7 @@ obj = {"a": 1, "b": 2}
 ```sql
 WITH obj AS ({"a":1,"b":2})
 SELECT OBJECT_PAIRS(obj) AS p
+FROM obj
 -- → {"p":[{"name":"a","val":1},{"name":"b","val":2}]}
 ```
 <details><summary>other dialects</summary>
@@ -731,6 +739,7 @@ obj = {"a": 1, "b": 2}
 ```sql
 WITH obj AS ({"a":1,"b":2})
 SELECT OBJECT p.name : p.val + 1 FOR p IN OBJECT_PAIRS(obj) END AS o
+FROM obj
 -- → {"o":{"a":2,"b":3}}
 ```
 <details><summary>other dialects</summary>
@@ -754,6 +763,7 @@ obj = {"a": 1, "b": 2}
 ```sql
 WITH obj AS ({"a":1,"b":2})
 SELECT OBJECT TO_STRING(p.val) : p.name FOR p IN OBJECT_PAIRS(obj) END AS o
+FROM obj
 -- → {"o":{"1":"a","2":"b"}}
 ```
 <details><summary>other dialects</summary>
@@ -778,6 +788,7 @@ obj = {"title": "x", "a": 1}
 WITH obj AS ({"title":"x","a":1})
 SELECT OBJECT_ADD(obj, "draft", true) AS added,
        OBJECT_REMOVE(obj, "title")    AS removed
+FROM obj
 -- → {"added":{"a":1,"draft":true,"title":"x"},"removed":{"a":1}}
 ```
 <details><summary>other dialects</summary>
@@ -802,6 +813,7 @@ obj = {"x": {"n": 1}}
 WITH obj AS ({"x":{"n":1}})
 SELECT ARRAY OBJECT_ADD(p.val, "slug", p.name)
        FOR p IN OBJECT_PAIRS(obj) END AS a
+FROM obj
 -- → {"a":[{"n":1,"slug":"x"}]}
 ```
 <details><summary>other dialects</summary>
@@ -1166,6 +1178,7 @@ doc = {"team": [{"n": "a"}], "formerly": [{"n": "b"}]}
 WITH doc AS ({"team":[{"n":"a"}],"formerly":[{"n":"b"}]})
 SELECT ARRAY_CONCAT(doc.team,
        ARRAY OBJECT_ADD(m, "formerly", true) FOR m IN doc.formerly END) AS everyone
+FROM doc
 -- → {"everyone":[{"n":"a"},{"formerly":true,"n":"b"}]}
 ```
 <details><summary>other dialects</summary>
@@ -1211,6 +1224,7 @@ doc = {}
 ```sql
 WITH doc AS ({})
 SELECT IFMISSINGORNULL(doc.foo, "default") AS v
+FROM doc
 -- → {"v":"default"}
 ```
 <details><summary>other dialects</summary>
