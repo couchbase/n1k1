@@ -196,15 +196,15 @@
     GROUP BY status
     ORDER BY revenue DESC
   js: |-
-    Object.groupBy(orders, o => o.status)   // then reduce each bucket
+    Object.groupBy(orders, o => o.status) // then reduce each bucket
   python: |-
-    df.groupby("status").total.agg(["count", "sum"])  # pandas
+    df.groupby("status").total.agg(["count", "sum"]) # pandas
   mongo: |-
     db.orders.aggregate([
       {$group: {_id: "$status", n: {$sum: 1}, revenue: {$sum: "$total"}}},
       {$sort: {revenue: -1}}])
   jq: |-
-    group_by(.status)  # → array of arrays
+    group_by(.status) # → array of arrays
 
 - section: '1. Querying a collection'
   section_color: '#4f46e5'
@@ -230,7 +230,7 @@
   python: |-
     [o["customer"] for o in orders]
   mongo: |-
-    db.orders.distinct("customer")  // bare values (also dedups)
+    db.orders.distinct("customer") // bare values (also dedups)
   jq: |-
     .[] | .customer
 
@@ -285,13 +285,13 @@
     SELECT doc->'$.foo'
     FROM doc
   js: |-
-    doc.foo               // undefined
+    doc.foo // undefined
   python: |-
-    doc.get("foo")  # None
+    doc.get("foo") # None
   mongo: |-
     // a missing field is simply absent from the result
   jq: |-
-    .foo?  # no error even on a non-object
+    .foo? # no error even on a non-object
 
 - section: '2. Reaching into a value'
   section_color: '#0d9488'
@@ -501,9 +501,9 @@
   python: |-
     list(dict.fromkeys(doc["nums"]))
   mongo: |-
-    {$setUnion: ["$nums", []]}   // unordered
+    {$setUnion: ["$nums", []]} // unordered
   jq: |-
-    .nums | unique  # sorted
+    .nums | unique # sorted
 - section: '3. Transforming arrays'
   section_color: '#d97706'
   title: 'Flatten nested arrays'
@@ -529,7 +529,7 @@
   python: |-
     # no deep builtin; recurse
   mongo: |-
-    {$reduce: {input: "$nested", initialValue: [], in: {$concatArrays: ["$$value", "$$this"]}}}  // one level
+    {$reduce: {input: "$nested", initialValue: [], in: {$concatArrays: ["$$value", "$$this"]}}} // one level
   jq: |-
     .nested | flatten
 - section: '3. Transforming arrays'
@@ -765,7 +765,7 @@
   mongo: |-
     {$map: {input: {$objectToArray: "$obj"}, in: "$$this.k"}}
   jq: |-
-    .obj | keys  # sorted
+    .obj | keys # sorted
 - section: '5. Building & reshaping objects'
   section_color: '#7c3aed'
   title: 'Object → array of pairs'
@@ -787,13 +787,13 @@
     SELECT MAP_ENTRIES(doc.obj) AS p
     FROM doc
   js: |-
-    Object.entries(doc.obj)   // [["a",1],["b",2]]
+    Object.entries(doc.obj) // [["a",1],["b",2]]
   python: |-
     list(doc["obj"].items())
   mongo: |-
-    {$objectToArray: "$obj"}   // [{k,v}]
+    {$objectToArray: "$obj"} // [{k,v}]
   jq: |-
-    .obj | to_entries  # [{key,value}]
+    .obj | to_entries # [{key,value}]
 - section: '5. Building & reshaping objects'
   section_color: '#7c3aed'
   title: 'Pairs → object'
@@ -1017,7 +1017,7 @@
     FROM orders
     GROUP BY customer
   js: |-
-    Object.groupBy(orders, o => o.customer)   // then map ids
+    Object.groupBy(orders, o => o.customer) // then map ids
   python: |-
     {c: [o["id"] for o in g] for c, g in groupby(sorted(orders, key=k), k)}
   mongo: |-
@@ -1110,7 +1110,7 @@
   python: |-
     "a,b,c".split(","); "-".join(["a","b","c"])
   mongo: |-
-    {$split: ["a,b,c", ","]}; {$reduce: …}   // no direct join
+    {$split: ["a,b,c", ","]}; {$reduce: …} // no direct join
   jq: |-
     split(","); join("-")
 

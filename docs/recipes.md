@@ -203,12 +203,12 @@ ORDER BY revenue DESC
 |---|---|
 | **SQL (Postgres)** | `SELECT status, COUNT(*) AS n, ROUND(SUM(total),2) AS revenue FROM orders GROUP BY status ORDER BY revenue DESC` |
 | **SQL (DuckDB)** | `SELECT status, COUNT(*) AS n, ROUND(SUM(total),2) AS revenue FROM orders GROUP BY status ORDER BY revenue DESC` |
-| **JavaScript** | `Object.groupBy(orders, o => o.status)   // then reduce each bucket` |
-| **Python** | `df.groupby("status").total.agg(["count", "sum"])  # pandas` |
+| **JavaScript** | `Object.groupBy(orders, o => o.status) // then reduce each bucket` |
+| **Python** | `df.groupby("status").total.agg(["count", "sum"]) # pandas` |
 | **MongoDB** | `db.orders.aggregate([
   {$group: {_id: "$status", n: {$sum: 1}, revenue: {$sum: "$total"}}},
   {$sort: {revenue: -1}}])` |
-| **jq** | `group_by(.status)  # → array of arrays` |
+| **jq** | `group_by(.status) # → array of arrays` |
 
 </details>
 
@@ -231,7 +231,7 @@ FROM orders
 |---|---|
 | **JavaScript** | `orders.map(o => o.customer)` |
 | **Python** | `[o["customer"] for o in orders]` |
-| **MongoDB** | `db.orders.distinct("customer")  // bare values (also dedups)` |
+| **MongoDB** | `db.orders.distinct("customer") // bare values (also dedups)` |
 | **jq** | `.[] \| .customer` |
 
 </details>
@@ -281,10 +281,10 @@ FROM doc
 |---|---|
 | **SQL (Postgres)** | `SELECT doc->'foo' -- NULL if absent FROM doc` |
 | **SQL (DuckDB)** | `SELECT doc->'$.foo' FROM doc` |
-| **JavaScript** | `doc.foo               // undefined` |
-| **Python** | `doc.get("foo")  # None` |
+| **JavaScript** | `doc.foo // undefined` |
+| **Python** | `doc.get("foo") # None` |
 | **MongoDB** | `// a missing field is simply absent from the result` |
-| **jq** | `.foo?  # no error even on a non-object` |
+| **jq** | `.foo? # no error even on a non-object` |
 
 </details>
 
@@ -463,8 +463,8 @@ FROM doc
 | **SQL (DuckDB)** | `SELECT LIST_DISTINCT(doc.nums) AS u FROM doc` |
 | **JavaScript** | `[...new Set(doc.nums)]` |
 | **Python** | `list(dict.fromkeys(doc["nums"]))` |
-| **MongoDB** | `{$setUnion: ["$nums", []]}   // unordered` |
-| **jq** | `.nums \| unique  # sorted` |
+| **MongoDB** | `{$setUnion: ["$nums", []]} // unordered` |
+| **jq** | `.nums \| unique # sorted` |
 
 </details>
 
@@ -488,7 +488,7 @@ FROM doc
 | **SQL (DuckDB)** | `SELECT FLATTEN(doc.nested) AS f FROM doc -- one level` |
 | **JavaScript** | `doc.nested.flat(2)` |
 | **Python** | `# no deep builtin; recurse` |
-| **MongoDB** | `{$reduce: {input: "$nested", initialValue: [], in: {$concatArrays: ["$$value", "$$this"]}}}  // one level` |
+| **MongoDB** | `{$reduce: {input: "$nested", initialValue: [], in: {$concatArrays: ["$$value", "$$this"]}}} // one level` |
 | **jq** | `.nested \| flatten` |
 
 </details>
@@ -691,7 +691,7 @@ FROM doc
 | **JavaScript** | `Object.keys(doc.obj)` |
 | **Python** | `list(doc["obj"].keys())` |
 | **MongoDB** | `{$map: {input: {$objectToArray: "$obj"}, in: "$$this.k"}}` |
-| **jq** | `.obj \| keys  # sorted` |
+| **jq** | `.obj \| keys # sorted` |
 
 </details>
 
@@ -713,10 +713,10 @@ FROM doc
 |---|---|
 | **SQL (Postgres)** | `SELECT JSONB_EACH(doc->'obj') AS p FROM doc` |
 | **SQL (DuckDB)** | `SELECT MAP_ENTRIES(doc.obj) AS p FROM doc` |
-| **JavaScript** | `Object.entries(doc.obj)   // [["a",1],["b",2]]` |
+| **JavaScript** | `Object.entries(doc.obj) // [["a",1],["b",2]]` |
 | **Python** | `list(doc["obj"].items())` |
-| **MongoDB** | `{$objectToArray: "$obj"}   // [{k,v}]` |
-| **jq** | `.obj \| to_entries  # [{key,value}]` |
+| **MongoDB** | `{$objectToArray: "$obj"} // [{k,v}]` |
+| **jq** | `.obj \| to_entries # [{key,value}]` |
 
 </details>
 
@@ -916,7 +916,7 @@ GROUP BY customer
 |---|---|
 | **SQL (Postgres)** | `SELECT customer, JSONB_AGG(id) AS order_ids FROM orders GROUP BY customer` |
 | **SQL (DuckDB)** | `SELECT customer, LIST(id) AS order_ids FROM orders GROUP BY customer` |
-| **JavaScript** | `Object.groupBy(orders, o => o.customer)   // then map ids` |
+| **JavaScript** | `Object.groupBy(orders, o => o.customer) // then map ids` |
 | **Python** | `{c: [o["id"] for o in g] for c, g in groupby(sorted(orders, key=k), k)}` |
 | **MongoDB** | `db.orders.aggregate([{$group: {_id: "$customer", order_ids: {$push: "$id"}}}])` |
 | **jq** | `group_by(.customer) \| map({customer: .[0].customer, ids: map(.id)})` |
@@ -991,7 +991,7 @@ SELECT SPLIT("a,b,c", ",")         AS parts,
 | **SQL (DuckDB)** | `SELECT STRING_SPLIT('a,b,c', ',') AS parts, ARRAY_TO_STRING(['a','b','c'], '-') AS joined` |
 | **JavaScript** | `"a,b,c".split(","); ["a","b","c"].join("-")` |
 | **Python** | `"a,b,c".split(","); "-".join(["a","b","c"])` |
-| **MongoDB** | `{$split: ["a,b,c", ","]}; {$reduce: …}   // no direct join` |
+| **MongoDB** | `{$split: ["a,b,c", ","]}; {$reduce: …} // no direct join` |
 | **jq** | `split(","); join("-")` |
 
 </details>
