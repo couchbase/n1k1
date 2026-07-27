@@ -483,7 +483,7 @@ func TestWalkOptionsSpec(t *testing.T) {
 
 func TestIsStructuredFile(t *testing.T) {
 	// Structured data files (auto-exposed as grab-bag keyspaces)...
-	for _, p := range []string{"a.json", "a.jsons", "a.jsonl", "a.ndjson", "a.csv", "a.tsv", "a.yaml", "a.yml", "a.jsonl.gz", "a.yaml.gz"} {
+	for _, p := range []string{"a.json", "a.jsons", "a.jsonl", "a.ndjson", "a.csv", "a.tsv", "a.yaml", "a.yml", "a.toml", "a.jsonl.gz", "a.yaml.gz", "a.toml.gz"} {
 		if !IsStructuredFile(p) {
 			t.Errorf("IsStructuredFile(%q) = false, want true", p)
 		}
@@ -626,6 +626,77 @@ func TestYAMLDecode(t *testing.T) {
 	}
 	if ids[0] != "hosts.yaml#0" || docs[0] != `{"name":"a"}` {
 		t.Errorf("list first = %q / %s, want hosts.yaml#0 / {\"name\":\"a\"}", ids[0], docs[0])
+	}
+}
+
+func TestTOMLDecode(t *testing.T) {
+	dir := t.TempDir()
+
+	// A TOML file is always one document (its top level is a table) -> one record
+	// keyed by the file stem, mixed scalar types converted to JSON (sorted keys via
+	// json.Marshal).
+	single := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(single, []byte("service = \"api\"\nreplicas = 3\nratio = 10.5\nenabled = true\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s, err := OpenFile(single, "config.toml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids, docs := collect(t, s)
+	if len(docs) != 1 {
+		t.Fatalf("single: want 1 doc, got %d: %v", len(docs), docs)
+	}
+	if ids[0] != "config" {
+		t.Errorf("single id = %q, want config", ids[0])
+	}
+	if docs[0] != `{"enabled":true,"ratio":10.5,"replicas":3,"service":"api"}` {
+		t.Errorf("single doc = %s", docs[0])
+	}
+
+	// A richer document: a nested table ([owner]), an array-of-tables ([[items]] ->
+	// a JSON array of objects), and an offset datetime (-> an RFC3339 JSON string).
+	// Still ONE record (the whole table), keyed by the stem.
+	rich := filepath.Join(dir, "order.toml")
+	body := "name = \"alpha\"\n" +
+		"created = 2020-01-02T03:04:05Z\n\n" +
+		"[owner]\n" +
+		"name = \"sam\"\n" +
+		"level = 5\n\n" +
+		"[[items]]\n" +
+		"sku = \"a\"\n" +
+		"qty = 2\n\n" +
+		"[[items]]\n" +
+		"sku = \"b\"\n" +
+		"qty = 7\n"
+	if err := os.WriteFile(rich, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s, err = OpenFile(rich, "order.toml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids, docs = collect(t, s)
+	if len(docs) != 1 {
+		t.Fatalf("rich: want 1 doc, got %d: %v", len(docs), docs)
+	}
+	if ids[0] != "order" {
+		t.Errorf("rich id = %q, want order", ids[0])
+	}
+	want := `{"created":"2020-01-02T03:04:05Z",` +
+		`"items":[{"qty":2,"sku":"a"},{"qty":7,"sku":"b"}],` +
+		`"name":"alpha","owner":{"level":5,"name":"sam"}}`
+	if docs[0] != want {
+		t.Errorf("rich doc =\n  %s\nwant\n  %s", docs[0], want)
+	}
+
+	// Malformed TOML surfaces as an error, not a silent empty record.
+	bad := filepath.Join(dir, "bad.toml")
+	if err := os.WriteFile(bad, []byte("this is not = = toml\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenFile(bad, "bad.toml"); err == nil {
+		t.Errorf("malformed .toml: want an error, got nil")
 	}
 }
 

@@ -1,6 +1,6 @@
 # n1k1 demo
 
-You have a pile of JSON files on your drive — maybe some CSV, YAML, logs,
+You have a pile of JSON files on your drive — maybe some CSV, YAML, TOML, logs,
 gzipped stuff, and/or some office PDF/XLSX/PPT/DOCX files. How do you slice
 and dice them? `jq` incantations? Load a database?
 

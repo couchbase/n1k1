@@ -70,7 +70,7 @@ func main() {
 		timerFlag   = flag.Bool("timer", false, "print row count + elapsed after each statement")
 		echoFlag    = flag.Bool("echo", false, "echo each input line (SQL++ / dot-commands) as it's read; like .echo on (handy with -f)")
 		initFlag    = flag.String("init", "", "startup file of dot-commands/SQL++ (default ~/."+prog+"rc; use \"\", \"-\" or \"none\" to skip)")
-		formatsFlag = flag.String("formats", "", "restrict files scanned to a comma-separated set (all|json|jsonl|csv|tsv|extract|doc|text|image|video|gzip|recurse); empty or 'all' = everything")
+		formatsFlag = flag.String("formats", "", "restrict files scanned to a comma-separated set (all|json|jsonl|csv|tsv|yaml|toml|extract|doc|text|image|video|gzip|recurse); empty or 'all' = everything")
 		metaFlag    = flag.String("meta", "auto", "add a _meta sub-object (path/name/ext/size/mtime) to records: on|off|auto (auto = extracted docs only)")
 		verFlag     = flag.Bool("version", false, "print version + build info (incl. dependency SHAs) and exit")
 		cpuProfile  = flag.String("profile-cpu", "", "write a CPU profile to this file (go tool pprof)")
@@ -379,7 +379,7 @@ func resolveSession(dir string, explicit bool) (sess *glue.Session, effDir strin
 }
 
 func usage() {
-	fmt.Fprintf(os.Stderr, `%[1]s -- SQL++ for local files (json, jsonl, csv, yaml, gz, and more)
+	fmt.Fprintf(os.Stderr, `%[1]s -- SQL++ for local files (json, jsonl, csv, yaml, toml, gz, and more)
 
 usage: %[1]s [flags] [datastore-dir | file]
 

@@ -39,6 +39,7 @@ import (
 	"strings"
 	"sync"
 
+	toml "github.com/pelletier/go-toml"
 	"gopkg.in/yaml.v3"
 )
 
@@ -179,11 +180,13 @@ type ColumnBatchSource interface {
 // jsonl/ndjson are line-delimited (streaming); json/jsons are a value stream or
 // a top-level array; csv/tsv are header + delimited rows decoded into JSON
 // objects; yaml/yml are one-or-more (`---`-separated) documents, each converted
-// to a JSON value.
+// to a JSON value; toml is a single document (its top level is always a table),
+// so one file is one record, converted to a JSON object.
 var recordExts = map[string]bool{
 	".json": true, ".jsons": true, ".jsonl": true, ".ndjson": true,
 	".csv": true, ".tsv": true,
 	".yaml": true, ".yml": true,
+	".toml":    true,
 	".parquet": true,
 }
 
@@ -337,6 +340,13 @@ func OpenFile(path, idPrefix string) (Source, error) {
 		return s, nil
 	case ".yaml", ".yml":
 		s, err := newYAMLSource(r, closers, idPrefix, stem(path), seekable)
+		if err != nil {
+			closeAll(closers)
+			return nil, err
+		}
+		return s, nil
+	case ".toml":
+		s, err := newTOMLSource(r, closers, stem(path))
 		if err != nil {
 			closeAll(closers)
 			return nil, err
@@ -884,6 +894,55 @@ func yamlToJSONValue(v interface{}) interface{} {
 	}
 }
 
+// -------------------------------------------------------------- TOML source
+
+// tomlSource yields the single record decoded from a TOML file: its id (the file
+// stem, per the one-doc-per-file META().id convention, like a single-object .json
+// file) and the document's JSON bytes (borrowed until the next Next, per the Source
+// contract). Built by newTOMLSource. A TOML document's top level is always a table,
+// so -- unlike YAML -- there is no multi-document stream or top-level array to expand,
+// and no byte-offset (`@<offset>`) id: one file is exactly one record.
+type tomlSource struct {
+	id      []byte
+	doc     []byte
+	done    bool
+	closers []io.Closer
+}
+
+func (s *tomlSource) Next(rec *Record) (bool, error) {
+	if s.done {
+		return false, nil
+	}
+	rec.ID, rec.Doc = s.id, s.doc
+	s.done = true
+	return true, nil
+}
+
+func (s *tomlSource) Close() error { return closeAll(s.closers) }
+
+// newTOMLSource handles .toml. A TOML file is one document -- its top level is always
+// a table -- so it maps to exactly one record, the whole table, keyed by the file
+// stem. The table is decoded and re-marshaled to a JSON object, so the rest of the
+// pipeline sees the same JSON bytes it gets for a .json record; TOML datetimes decode
+// to time.Time and thus marshal to RFC3339 JSON strings, and TOML keys are always
+// strings (no yamlToJSONValue-style key coercion is needed). The whole file is read
+// up front (a TOML document isn't a byte-seekable stream of independent records).
+func newTOMLSource(r io.Reader, closers []io.Closer, stem string) (Source, error) {
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return nil, err
+	}
+	tree, err := toml.LoadBytes(data)
+	if err != nil {
+		return nil, err
+	}
+	jb, err := json.Marshal(tree.ToMap())
+	if err != nil {
+		return nil, err
+	}
+	return &tomlSource{id: []byte(stem), doc: jb, closers: closers}, nil
+}
+
 // appendRecordID builds "<prefix>#<n>" into dst (reused).
 func appendRecordID(dst []byte, prefix string, n int) []byte {
 	dst = append(dst, prefix...)
@@ -1078,6 +1137,7 @@ func AllModes() WalkOptions {
 //	all       → everything (flexible, the default)
 //	json      → .json/.jsons        jsonl → .jsonl/.ndjson
 //	csv       → .csv                 tsv   → .tsv
+//	yaml      → .yaml/.yml           toml  → .toml
 //	extract   → every extract format (all of the below groups)
 //	doc       → .pdf/.docx/.xlsx/.pptx    text → .txt/.log/.md/.markdown/.rtf
 //	image     → .png/.jpg/.jpeg           video → .mp4/.mov
@@ -1123,6 +1183,9 @@ func ParseModes(csv string) (WalkOptions, error) {
 		case "yaml", "yml":
 			opts.Formats[".yaml"], opts.Formats[".yml"] = true, true
 			add("yaml")
+		case "toml":
+			opts.Formats[".toml"] = true
+			add("toml")
 		case "extract":
 			for ext := range extractors { // every registered extract format
 				opts.Formats[ext] = true

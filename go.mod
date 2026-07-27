@@ -7,6 +7,7 @@ require (
 	github.com/buger/jsonparser v1.1.2
 	github.com/couchbase/query v0.0.0-20260627002010-d19d17173f34
 	github.com/couchbase/rhmap v0.0.0-20200512125128-60fa597d6dd1
+	github.com/pelletier/go-toml v1.9.5 // .toml data-file format; see records/records.go
 	go.etcd.io/bbolt v1.4.0 // secondary-index (GSI-like) storage; see DESIGN-indexing.md
 )
 
