@@ -89,25 +89,30 @@ RECIPE SHAPE (module scope)
   // head is a decompressed head sample (use it to sniff a format/timezone; describe
   // runs once per file, so this is a cold path -- reading head is fine).
   function describe(file) {
-    return { format: "my_log", framing: {...}, fields: {...}, time: {...}, order: {...} };
+    return { format: "my_log",
+             framing: {...},
+             fields: {...},
+             time: {...},
+             order: {...}
+           };
   }
 
 FRAMING (how a file's bytes split into records) -- framing.kind is one of:
-  line        one record per line.                         { kind: "line" }
-  multiline   a lead line + continuation lines; a line is  { kind: "multiline",
-              a lead iff it matches fields.pattern (robust    continuation: "^\\s|^\\[" }
-              even when a continuation starts with '[').
-  json        JSONL: one JSON object per line; time field  { kind: "json" }
-              is normalized in place to the int64 sort key.
-  section     ====-banner blocks -> one {title,text} record { kind: "section",
-              per section (cbcollect couchbase.log). title    section: "^={10,}$" }
-              is the command between banner rules.
-  whole       one record for the whole file (office/PDF     { kind: "whole" }
-              baseline; text under "text").
-  opaque      intentionally UNframable (a binary profile,    { kind: "opaque",
-              a compressed blob): ONE {kind:"opaque",note}     note: "binary CPU profile" }
-              row, no content read. Keeps the file out of
-              .tables' "add a recipe" nudge + documents it.
+  line       one record per line.                          { kind: "line" }
+  multiline  a lead line + continuation lines; a line is   { kind: "multiline",
+             a lead iff it matches fields.pattern (robust    continuation: "^\\s|^\\[" }
+             even when a continuation starts with '[').
+  json       JSONL: one JSON object per line; time field   { kind: "json" }
+             is normalized in place to the int64 sort key.
+  section    ====-banner blocks -> one {title,text} record { kind: "section",
+             per section (cbcollect couchbase.log). title    section: "^={10,}$" }
+             is the command between banner rules.
+  whole      one record for the whole file (office/PDF     { kind: "whole" }
+             baseline; text under "text").
+  opaque     intentionally UNframable (a binary profile,   { kind: "opaque",
+             a compressed blob): ONE {kind:"opaque",note}    note: "binary CPU profile" }
+             row, no content read. Keeps the file out of
+             .tables' "add a recipe" nudge + documents it.
 
 An OPTIONAL framing.banner regexp (line/multiline) drops a non-data separator line
 (cbbrowse_logs' "==== couchbase logs ====" header) so it doesn't inflate COUNT(*)/.schema.
@@ -137,6 +142,7 @@ PROVENANCE (optional): provenance:{k:v,...} constants lifted once, riding every 
 
 ANNOTATED EXAMPLE (myapp.log lines: "<RFC3339> <LEVEL> <node> <msg>")
   var match = { exts: [".log"], names: ["myapp\\..*\\.log$"], priority: 20 };
+
   function describe(file) {
     return {
       format:  "myapp_log",
@@ -146,7 +152,7 @@ ANNOTATED EXAMPLE (myapp.log lines: "<RFC3339> <LEVEL> <node> <msg>")
       order:   { by: "ts", sorted: "near" }
     };
   }
-  # then:  SELECT a.node, a.msg FROM myapp a WHERE a.` + "`level`" + ` = "ERROR" ORDER BY a.ts
+  # then: SELECT a.node, a.msg FROM myapp a WHERE a.` + "`level`" + ` = "ERROR" ORDER BY a.ts
 
 Golden examples: an "examples" array ({in: "<sample file text>", out: [rows]}) both
 documents a recipe and golden-tests it -- run with  .extensions test [name].
