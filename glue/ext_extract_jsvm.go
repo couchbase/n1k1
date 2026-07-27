@@ -32,37 +32,54 @@ import (
 
 // ext_extract_jsvm.go loads a "*.extract.js" JS-authored EXTRACT RECIPE into the
 // pure-Go records recipe registry (DESIGN-data.md §4, DESIGN-extensions.md
-// "Extract functions"). A JS recipe supplies only describe() -- the cheap,
-// once-per-file planning pass -- while the per-row extract stays on the native
-// records.SpecApply byte lane. That split is the whole point:
+// "Extract functions"). A recipe supplies EITHER (or both) of two functions, on two
+// very different cadences:
 //
-//   - describe(file) runs in goja ONCE per matched file (planning phase, a cold
-//     path -- garbage is fine here) and RETURNS a declarative records.ExtractSpec.
-//   - records.SpecApply then executes that spec natively for every record (the hot
-//     loop): byte-oriented framing + regex + int64-nanos time parse, NO per-row JS,
-//     honoring the borrowed-slice contract. So a JS recipe costs one JS call per
-//     file, never one per row.
+//   - describe(file) -- the cheap, once-per-file PLANNING pass. Runs in goja ONCE
+//     per matched file (a cold path -- garbage is fine here) and RETURNS a
+//     declarative records.ExtractSpec; records.SpecApply then frames every record
+//     natively (byte-oriented framing + regex + int64-nanos time parse, NO per-row
+//     JS). So a describe-only recipe costs one JS call per file, never one per row.
+//     This is the preferred path for line/multiline/section-framed text.
 //
-// This keeps the goja dependency in glue (records stays pure-Go, goja-free): the JS
-// runs here, produces the neutral ExtractSpec/ExtractMatch structs (JSON-shaped per
-// records/spec.go), and registers a records.Recipe whose Describe closes over the
-// compiled program. It reuses ext_jsvm.go's goja lifetime/timeout/console patterns.
+//   - extract(file, emit) -- the IMPERATIVE escape hatch. JS receives the WHOLE
+//     decompressed file and EMITS records itself, so it owns framing AND parsing.
+//     For self-contained or irregular formats a declarative spec can't frame -- e.g.
+//     a full TOML document (see extensions/extract_recipes/toml2.extract.js). It
+//     pays the JS boundary once per file (not per row, since it buffers), and wires
+//     the records.Recipe.Extract seam that DESIGN-extensions.md sketched. A recipe
+//     with extract but no describe is purely imperative (records.OpenFile skips the
+//     spec/native-framer entirely).
+//
+// Either way the goja dependency stays in glue (records is pure-Go, goja-free): the
+// JS runs here, produces the neutral ExtractSpec/ExtractMatch structs (JSON-shaped
+// per records/spec.go) or JSON docs, and registers a records.Recipe whose Describe/
+// Extract close over the compiled program. Reuses ext_jsvm.go's goja lifetime/
+// timeout/console patterns and ext_jsvm_stream.go's emit marshaling.
 //
 // The JS module contract (see extensions/extract_recipes/*.extract.js):
 //
 //	// `match` (module scope): which files this recipe claims. Shape ==
 //	// records.ExtractMatch's json: {exts:[".log"], names:["re",...], priority:N}.
+//	// A recipe may claim a BRAND-NEW extension (e.g. ".toml2"); the claim makes its
+//	// files records (records.IsRecordFile honors registered recipes).
 //	var match = { exts: [".log"], names: ["ns_server\\..*\\.log$"], priority: 20 };
 //
 //	// describe(file) -> ExtractSpec object (shape == records.ExtractSpec's json).
 //	// file = { path, name, ext, head } where head is a decompressed head sample
-//	// for content-sniffing. Runs once per file.
+//	// for content-sniffing. Runs once per file. (Optional if extract is defined.)
 //	function describe(file) {
 //	  return { format:"...", framing:{kind:"multiline",continuation:"..."},
 //	           fields:{pattern:"...(?P<ts>...)..."},
 //	           time:{field:"ts",layout:"RFC3339",tz_default:"+02:00"},
 //	           order:{by:"ts",sorted:"near"}, provenance:{...} };
 //	}
+//
+//	// extract(file, emit) -- imperative alternative. file = { path, name, ext, stem,
+//	// text } where text is the WHOLE decompressed file. Call emit(doc[, id]) per
+//	// record; doc is any JSON-able value, the optional id overrides the default
+//	// (stem for a single record, else "<prefix>#<n>"). (Optional if describe is set.)
+//	function extract(file, emit) { emit(JSON.parse(file.text), file.stem); }
 
 // extractHeadSampleBytes caps the decompressed head passed to a JS describe() for
 // content-sniffing. Generous (describe is once-per-file, not a hot loop) but bounded
@@ -109,27 +126,37 @@ func RegisterJSExtractRecipe(name, source string) error {
 	if _, err := rt.RunProgram(prog); err != nil {
 		return fmt.Errorf("extract recipe %q: %w", name, err)
 	}
-	if _, ok := goja.AssertFunction(rt.Get("describe")); !ok {
-		return fmt.Errorf("extract recipe %q: source defines no describe(file) function", name)
+	_, hasDescribe := goja.AssertFunction(rt.Get("describe"))
+	_, hasExtract := goja.AssertFunction(rt.Get("extract"))
+	if !hasDescribe && !hasExtract {
+		return fmt.Errorf("extract recipe %q: source defines neither a describe(file) nor an extract(file, emit) function", name)
 	}
 	match, err := jsExtractMatch(rt)
 	if err != nil {
 		return fmt.Errorf("extract recipe %q: %w", name, err)
 	}
 
-	describe := func(path string) (records.ExtractSpec, records.SortedSourceMeta, error) {
-		return runJSDescribe(prog, name, path)
-	}
-
-	records.RecipeRegister(&records.Recipe{
-		Name:     name,
-		Match:    match,
-		Describe: describe,
-		// Extract nil: SpecApply runs the JS-produced spec natively (no per-row JS).
-		// Fingerprint from the source hash: an edited *.extract.js changes describe's
-		// output, so it must invalidate any memoized describe result (extract_cache.go).
+	// Fingerprint from the source hash: an edited *.extract.js changes describe's
+	// output (or extract's), so it must invalidate any memoized describe result
+	// (extract_cache.go).
+	recipe := &records.Recipe{
+		Name:        name,
+		Match:       match,
 		Fingerprint: name + "@" + jsSourceHash(source),
-	})
+	}
+	if hasDescribe {
+		// Declarative: SpecApply runs the JS-produced spec natively (no per-row JS).
+		recipe.Describe = func(path string) (records.ExtractSpec, records.SortedSourceMeta, error) {
+			return runJSDescribe(prog, name, path)
+		}
+	}
+	if hasExtract {
+		// Imperative: JS frames + parses the whole file and emits records itself.
+		recipe.Extract = func(path, idPrefix string, _ records.ExtractSpec) (records.Source, error) {
+			return runJSExtract(prog, name, path, idPrefix)
+		}
+	}
+	records.RecipeRegister(recipe)
 	base.Logf(1, "glue/recipe", "loaded JS extract recipe, name: %s, exts: %v, names: %v, priority: %d",
 		name, match.Exts, match.Names, match.Priority)
 	extractRecipesLoaded = append(extractRecipesLoaded, ExtractRecipeInfo{
@@ -146,8 +173,16 @@ func RegisterJSExtractRecipe(name, source string) error {
 	if len(match.Exts) > 0 {
 		sampleExt = match.Exts[0]
 	}
-	extractExamplers[name] = func(sample string) (json.RawMessage, error) {
-		return frameExtractSample(name, prog, sampleExt, sample)
+	if hasDescribe {
+		// Native framing path: describe -> records.SpecApply, exactly as a real file.
+		extractExamplers[name] = func(sample string) (json.RawMessage, error) {
+			return frameExtractSample(name, prog, sampleExt, sample)
+		}
+	} else {
+		// Purely imperative: run the JS extract over the sample and collect its rows.
+		extractExamplers[name] = func(sample string) (json.RawMessage, error) {
+			return frameExtractSampleImperative(name, prog, sampleExt, sample)
+		}
 	}
 	return nil
 }
@@ -195,6 +230,184 @@ func frameExtractSample(name string, prog *goja.Program, ext, sample string) (js
 		rows = append(rows, append([]byte(nil), rec.Doc...))
 	}
 	return jsonArray(rows), nil
+}
+
+// frameExtractSampleImperative is frameExtractSample's imperative sibling (for an
+// extract-only recipe): it writes `sample` to a temp file named with the recipe's
+// primary extension, runs the JS extract() over it, and returns the emitted rows as
+// one JSON array. Used by the inline extract examples for imperative recipes.
+func frameExtractSampleImperative(name string, prog *goja.Program, ext, sample string) (json.RawMessage, error) {
+	f, err := os.CreateTemp("", "n1k1-extract-example-*"+ext)
+	if err != nil {
+		return nil, err
+	}
+	path := f.Name()
+	defer os.Remove(path)
+	if _, werr := f.WriteString(sample); werr != nil {
+		f.Close()
+		return nil, werr
+	}
+	if cerr := f.Close(); cerr != nil {
+		return nil, cerr
+	}
+
+	src, err := runJSExtract(prog, name, path, "")
+	if err != nil {
+		return nil, err
+	}
+	defer src.Close()
+
+	var rows [][]byte
+	for {
+		var rec records.Record
+		ok, nerr := src.Next(&rec)
+		if nerr != nil {
+			return nil, nerr
+		}
+		if !ok {
+			break
+		}
+		rows = append(rows, append([]byte(nil), rec.Doc...))
+	}
+	return jsonArray(rows), nil
+}
+
+// jsExtractRec is one buffered record a JS imperative extract emitted (id + JSON doc).
+type jsExtractRec struct {
+	id  string
+	doc []byte
+}
+
+// jsExtractSource is a records.Source over the records a JS imperative extract emitted.
+// All rows are buffered up front (imperative extract isn't streaming), and each row's
+// bytes are owned for the source's lifetime -- so the borrowed-until-next-Next Source
+// contract holds trivially.
+type jsExtractSource struct {
+	recs []jsExtractRec
+	i    int
+}
+
+func (s *jsExtractSource) Next(rec *records.Record) (bool, error) {
+	if s.i >= len(s.recs) {
+		return false, nil
+	}
+	rec.ID = []byte(s.recs[s.i].id)
+	rec.Doc = s.recs[s.i].doc
+	s.i++
+	return true, nil
+}
+
+func (s *jsExtractSource) Close() error { return nil }
+
+// runJSExtract is a recipe's per-file IMPERATIVE extract pass (the records.Recipe.Extract
+// seam). Unlike describe -- which only returns a declarative spec for the native framer
+// -- extract OWNS framing and parsing: it receives the whole decompressed file plus an
+// emit(doc[, id]) callback and pushes out each record itself. It is the escape hatch for
+// self-contained/irregular formats a declarative ExtractSpec can't frame (e.g. a full
+// TOML document). A fresh goja runtime per call (goja isn't goroutine-safe, and OpenFile
+// can run concurrently across scans), with panic/timeout contained so a bad recipe can't
+// crash the engine. Records are buffered into a jsExtractSource.
+func runJSExtract(prog *goja.Program, name, path, idPrefix string) (src records.Source, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("extract recipe %q extract(%s) panicked: %v", name, path, r)
+			src = nil
+		}
+	}()
+
+	// An imperative parser (e.g. TOML) needs the WHOLE document, not a head sample.
+	data, rerr := records.ReadWholeDecompressed(path)
+	if rerr != nil {
+		return nil, rerr
+	}
+
+	rt := goja.New()
+	installJSConsole(rt)
+	if _, e := rt.RunProgram(prog); e != nil {
+		return nil, e
+	}
+	fn, ok := goja.AssertFunction(rt.Get("extract"))
+	if !ok {
+		return nil, fmt.Errorf("extract recipe %q: extract not callable", name)
+	}
+
+	// The file arg: path/name/ext/stem plus the whole decompressed text.
+	fileObj := rt.NewObject()
+	_ = fileObj.Set("path", path)
+	_ = fileObj.Set("name", filepath.Base(path))
+	_ = fileObj.Set("ext", strings.ToLower(filepath.Ext(path)))
+	_ = fileObj.Set("stem", records.Stem(path))
+	_ = fileObj.Set("text", string(data))
+
+	var recs []jsExtractRec
+	var emitErr error
+
+	// emit(doc[, id]) buffers one record. doc is JSON-marshaled (the same Go<->JS
+	// boundary the streaming js sources use, so Go's json.Marshal canonicalizes it --
+	// sorted keys, integer-valued floats without a trailing ".0"). The optional id
+	// overrides the default id assigned below.
+	emit := func(call goja.FunctionCall) goja.Value {
+		if emitErr != nil {
+			return rt.ToValue(false)
+		}
+		if len(call.Arguments) == 0 {
+			emitErr = fmt.Errorf("extract recipe %q: emit() needs a doc argument", name)
+			return rt.ToValue(false)
+		}
+		jb, e := json.Marshal(call.Arguments[0].Export())
+		if e != nil {
+			emitErr = fmt.Errorf("extract recipe %q: cannot marshal emitted doc: %w", name, e)
+			return rt.ToValue(false)
+		}
+		id := ""
+		if len(call.Arguments) >= 2 {
+			if a := call.Arguments[1]; a != nil && !goja.IsUndefined(a) && !goja.IsNull(a) {
+				id = a.String()
+			}
+		}
+		recs = append(recs, jsExtractRec{id: id, doc: jb})
+		return rt.ToValue(true)
+	}
+
+	// Bound a runaway extract (a whole-file parse; a pathological script shouldn't hang
+	// the scan). Reuses ext_jsvm.go's JSCallTimeout/interrupt pattern.
+	var timedOut int32
+	if JSCallTimeout > 0 {
+		timer := time.AfterFunc(JSCallTimeout, func() {
+			atomic.StoreInt32(&timedOut, 1)
+			rt.Interrupt("n1k1: JS extract time limit exceeded")
+		})
+		defer func() {
+			timer.Stop()
+			rt.ClearInterrupt()
+		}()
+	}
+
+	_, callErr := fn(goja.Undefined(), fileObj, rt.ToValue(emit))
+	if atomic.LoadInt32(&timedOut) == 1 {
+		return nil, fmt.Errorf("extract recipe %q extract exceeded the %s time limit", name, JSCallTimeout)
+	}
+	if callErr != nil {
+		return nil, fmt.Errorf("extract recipe %q extract(%s): %w", name, path, callErr)
+	}
+	if emitErr != nil {
+		return nil, emitErr
+	}
+
+	// Default ids (an explicit emit(doc, id) always wins): a single record keys by the
+	// file stem (the one-doc-per-file META().id convention, like a single-object .json);
+	// multiple records key by "<idPrefix>#<n>" (matching the native json/yaml sources).
+	stem := records.Stem(path)
+	for i := range recs {
+		if recs[i].id == "" {
+			if len(recs) == 1 {
+				recs[i].id = stem
+			} else {
+				recs[i].id = fmt.Sprintf("%s#%d", idPrefix, i)
+			}
+		}
+	}
+	return &jsExtractSource{recs: recs}, nil
 }
 
 // jsSourceHash returns a short hex digest of a recipe's JS source, used as the

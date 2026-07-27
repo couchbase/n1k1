@@ -383,6 +383,150 @@ func TestRegisterExtractRecipeFile(t *testing.T) {
 	}
 }
 
+// tomlParitySample exercises a comment, scalars (string/int/float/bool), an array, a
+// nested [table], an [[array of tables]], and an RFC3339 datetime -- enough that the
+// JS parser and the native pelletier reader must agree on non-trivial structure.
+const tomlParitySample = `# service config
+name = "alpha"
+replicas = 3
+ratio = 10.5
+enabled = true
+tags = ["web", "prod"]
+created = 2020-01-02T03:04:05Z
+
+[owner]
+name = "sam"
+level = 5
+
+[[items]]
+sku = "a"
+qty = 2
+
+[[items]]
+sku = "b"
+qty = 7
+`
+
+// tomlParityWant is the canonical JSON both readers must produce (json.Marshal sorts
+// keys; the datetime is an RFC3339 string; integer-valued floats have no ".0").
+const tomlParityWant = `{"created":"2020-01-02T03:04:05Z","enabled":true,` +
+	`"items":[{"qty":2,"sku":"a"},{"qty":7,"sku":"b"}],` +
+	`"name":"alpha","owner":{"level":5,"name":"sam"},` +
+	`"ratio":10.5,"replicas":3,"tags":["web","prod"]}`
+
+// collectOneRecord opens path via records.OpenFile and returns the single record's
+// id and doc, asserting there is exactly one.
+func collectOneRecord(t *testing.T, path, idPrefix string) (id, doc string) {
+	t.Helper()
+	src, err := records.OpenFile(path, idPrefix)
+	if err != nil {
+		t.Fatalf("OpenFile(%s): %v", path, err)
+	}
+	defer src.Close()
+	var rec records.Record
+	ok, err := src.Next(&rec)
+	if err != nil || !ok {
+		t.Fatalf("OpenFile(%s): first Next ok=%v err=%v", path, ok, err)
+	}
+	id, doc = string(rec.ID), string(rec.Doc)
+	if ok, _ := src.Next(&rec); ok {
+		t.Fatalf("OpenFile(%s): expected exactly one record", path)
+	}
+	return id, doc
+}
+
+func registerTOML2Recipe(t *testing.T) {
+	t.Helper()
+	repo, err := filepath.Abs("..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	recipe := filepath.Join(repo, "extensions", "extract_recipes", "toml2.extract.js")
+	if _, err := os.Stat(recipe); err != nil {
+		t.Skipf("toml2 recipe not present: %v", err)
+	}
+	if _, err := RegisterExtensionFile(recipe); err != nil {
+		t.Fatalf("RegisterExtensionFile(%s): %v", recipe, err)
+	}
+}
+
+// TestJSExtractTOML2MatchesNativeTOML is the proof that a user-supplied JS IMPERATIVE
+// extract recipe can own framing + parsing end-to-end and match a native Go format:
+// the SAME bytes, read as native ".toml" (Go pelletier) and as ".toml2" (the shipped
+// toml2.extract.js), yield byte-identical records -- same id (the file stem) and the
+// same canonical JSON doc. This exercises the records.Recipe.Extract seam (previously
+// "designed, not yet wired") plus recipe-claimed extension recognition (".toml2" is
+// unknown to records except through the recipe). Native ".toml" support is untouched.
+func TestJSExtractTOML2MatchesNativeTOML(t *testing.T) {
+	registerTOML2Recipe(t)
+	if rp := records.RecipeFor("sample.toml2"); rp == nil || rp.Name != "toml2" {
+		t.Fatalf("RecipeFor(sample.toml2) = %v, want the toml2 recipe", rp)
+	}
+	// A brand-new extension is a record file ONLY because a recipe claims it.
+	if !records.IsRecordFile("sample.toml2") {
+		t.Fatal("a recipe-claimed .toml2 should be a record file")
+	}
+	if records.IsRecordFile("sample.nope") {
+		t.Fatal(".nope is claimed by nothing and must not be a record file")
+	}
+
+	dir := t.TempDir()
+	nativePath := filepath.Join(dir, "sample.toml")
+	jsPath := filepath.Join(dir, "sample.toml2")
+	for _, p := range []string{nativePath, jsPath} {
+		if err := os.WriteFile(p, []byte(tomlParitySample), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	nID, nDoc := collectOneRecord(t, nativePath, "sample.toml")
+	jID, jDoc := collectOneRecord(t, jsPath, "sample.toml2")
+
+	if nID != "sample" || jID != "sample" {
+		t.Errorf("ids: native=%q js=%q, want both \"sample\"", nID, jID)
+	}
+	if nDoc != jDoc {
+		t.Fatalf("JS .toml2 doc != native .toml doc:\n native=%s\n js    =%s", nDoc, jDoc)
+	}
+	if nDoc != tomlParityWant {
+		t.Errorf("doc = %s\nwant %s", nDoc, tomlParityWant)
+	}
+}
+
+// TestJSExtractTOML2QueryEndToEnd proves the JS-parsed .toml2 flows through a real SQL
+// FROM scan: scalars, a nested-table field, and an array element all project as the JS
+// recipe parsed them.
+func TestJSExtractTOML2QueryEndToEnd(t *testing.T) {
+	registerTOML2Recipe(t)
+
+	dir := t.TempDir()
+	ks := filepath.Join(dir, "default", "conf")
+	if err := os.MkdirAll(ks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ks, "svc.toml2"), []byte(tomlParitySample), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sess, err := OpenSession(dir, "default")
+	if err != nil {
+		t.Fatalf("OpenSession: %v", err)
+	}
+	defer sess.Close()
+
+	got := runRows(t, sess,
+		"SELECT c.name, c.replicas, c.enabled, c.owner.name AS owner, c.items[1].sku AS second_sku FROM conf c")
+	want := []string{`{"name":"alpha","replicas":3,"enabled":true,"owner":"sam","second_sku":"b"}`}
+	if len(got) != 1 || got[0] != want[0] {
+		t.Fatalf("rows = %v, want %v", got, want)
+	}
+
+	// META().id is the file stem, like a single-object .json/.toml.
+	ids := runRows(t, sess, "SELECT META(c).id AS id FROM conf c")
+	if len(ids) != 1 || ids[0] != `{"id":"svc"}` {
+		t.Errorf("ids = %v, want [{\"id\":\"svc\"}]", ids)
+	}
+}
+
 func writeAppLog(t *testing.T) string {
 	t.Helper()
 	p := filepath.Join(t.TempDir(), "myapp.debug.log")

@@ -71,9 +71,15 @@ log, a command dump, an app-specific format) into RECORDS you can SELECT over. D
 "<name>.extract.js" file in a dir and pass it with "-ext <dir>"; it's picked up before
 the datastore opens, so a matched file becomes a keyspace (see .tables).
 
-A recipe supplies ONE function, describe(file), run ONCE per matched file (cold path)
-in JavaScript; it returns a DECLARATIVE spec that n1k1 then applies NATIVELY per record
--- no per-row JS, so a 400 MB log frames at full speed.
+A recipe supplies describe(file) and/or extract(file, emit):
+  - describe(file), run ONCE per matched file (cold path), returns a DECLARATIVE spec
+    n1k1 then applies NATIVELY per record -- no per-row JS, so a 400 MB log frames at
+    full speed. This is the preferred path for line/multiline/section-framed text.
+  - extract(file, emit) is the imperative escape hatch: JS gets the WHOLE file and
+    emits records itself, so it owns framing AND parsing -- for a self-contained or
+    irregular format a declarative spec can't frame (see IMPERATIVE EXTRACT below).
+A recipe's match may claim a BRAND-NEW extension (e.g. ".toml2"); the claim is what
+makes such files records at all.
 
 COMMANDS
   .extract help            this guide
@@ -139,6 +145,20 @@ time.field; order.sorted is "strict" | "near" | "none"; order.disorder bounds a 
 source. describe MEASURES the real sortedness from the head sample, refining this.
 
 PROVENANCE (optional): provenance:{k:v,...} constants lifted once, riding every record.
+
+IMPERATIVE EXTRACT (extract(file, emit)) -- for a self-contained/irregular format a
+declarative spec can't frame (a whole document like TOML, a stateful multiline, a blob
+you crack yourself). Define extract INSTEAD OF (or alongside) describe:
+  file  = { path, name, ext, stem, text }  -- text is the WHOLE decompressed file.
+  emit(doc [, id])  -- push one record. doc is any JSON-able value; the optional id
+                       overrides the default (the file stem for a single record, else
+                       "<prefix>#<n>"). The host JSON-canonicalizes doc (sorted keys).
+  // Parse a whole document yourself and emit it as one record keyed by the stem:
+  var match = { exts: [".toml2"], priority: 10 };
+  function extract(file, emit) { emit(parseTOML(file.text), file.stem); }
+extract buffers its records, paying the JS boundary once per file (not per row). See
+extensions/extract_recipes/toml2.extract.js for a full TOML parser that matches n1k1's
+native .toml reader.
 
 ANNOTATED EXAMPLE (myapp.log lines: "<RFC3339> <LEVEL> <node> <msg>")
   var match = { exts: [".log"], names: ["myapp\\..*\\.log$"], priority: 20 };

@@ -30,8 +30,12 @@ tiny fork setters — `expression.RegisterFunction` (patch-05) and `algebra.Regi
   exit on failure for CI).
 
 **Remaining (headline TODOs):**
-- [ ] Extract recipes are `describe()`-only; the imperative `extract(file, meta, emit)`
-  escape hatch for irregular formats is not wired.
+- [x] ~~Extract recipes are `describe()`-only; the imperative `extract(file, emit)`
+  escape hatch for irregular formats is not wired.~~ **DONE** — `extract(file, emit)` is
+  wired to the `records.Recipe.Extract` seam (JS owns framing + parsing, buffered into a
+  `records.Source`), and a recipe's claim now makes even a brand-new extension a record
+  file (`records.IsRecordFile` honors the registry). Proof: `toml2.extract.js` re-parses
+  TOML in JS under `.toml2` and matches the native Go `.toml` reader byte-for-byte.
 - [ ] Streaming sources don't early-terminate on `LIMIT` (the `YieldStats` LIMIT hook is
   inert) — an **unbounded source hangs under `LIMIT`**; needs engine-wide producer early-exit.
 - [ ] JS aggregate/streaming UDFs are v1: state round-trips through JSON per Update (not
@@ -146,11 +150,18 @@ knowledge lives in a git-cloned recipe repo. A `*.extract.js` exports up to thre
 - **`describe(file) → ExtractSpec`** — CHEAP, runs **once per file** (may sample via
   `file.head/tail/slice`), memoized in the `.n1k1` sidecar by file fingerprint. Returns a
   DECLARATIVE spec (`framing`/`fields`/`time`/`order`/`provenance`) that n1k1 executes
-  **natively** (`records.SpecApply`), so no JS runs on the GB-scale per-record path. **v1
-  ships exactly this describe()-only path** (`glue/ext_extract_jsvm.go`, `Extract` nil).
-- **`extract(file, meta, emit)`** — the imperative fallback for irregular formats (`meta` is
-  this file's cached `describe` result), riding the `stream-fn` op but paying the ~1µs/row JS
-  boundary. **Designed, not yet wired.**
+  **natively** (`records.SpecApply`), so no JS runs on the GB-scale per-record path. This
+  is the preferred path for line/multiline/section-framed text.
+- **`extract(file, emit)`** — the imperative escape hatch for self-contained or irregular
+  formats a declarative spec can't frame. JS receives the WHOLE decompressed file
+  (`file.text`, plus `path`/`name`/`ext`/`stem`) and calls `emit(doc[, id])` per record, so
+  it owns framing AND parsing; records are buffered into a `records.Source`, paying the JS
+  boundary once per file (not per row). **WIRED** (`glue/ext_extract_jsvm.go` →
+  `records.Recipe.Extract`); a recipe may define `describe`, `extract`, or both, and its
+  `match` may claim a brand-new extension (`records.IsRecordFile` honors the registry). The
+  flagship demo, `extensions/extract_recipes/toml2.extract.js`, parses TOML in JS under
+  `.toml2` and reproduces the native Go `.toml` reader's records exactly. A future streaming
+  form (per-row `emit` riding the `stream-fn` op, no whole-file buffer) is the next step.
 
 The `file` host object has authority over **exactly one read-only file** (no network/exec) —
 the ideal Wasm shape later. The registry is a git repo matched by file (`RegisterExtractDir`,

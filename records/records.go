@@ -192,10 +192,14 @@ var recordExts = map[string]bool{
 
 // IsRecordFile reports whether path (by extension, ignoring a .gz/.zst suffix)
 // is a data file this package can decode (structured JSON/CSV, or a document/
-// media file the extract provider handles -- see the extractors table).
+// media file the extract provider handles -- see the extractors table), OR a file
+// a registered recipe claims. The recipe clause is what lets an extension recipe
+// (e.g. a *.extract.js with an imperative extract) introduce a BRAND-NEW data
+// format under an otherwise-unknown extension -- without it, OpenFile would reject
+// the file before the recipe dispatch ever ran.
 func IsRecordFile(path string) bool {
 	ext := innerExt(path)
-	return recordExts[ext] || isExtractExt(ext)
+	return recordExts[ext] || isExtractExt(ext) || RecipeFor(path) != nil
 }
 
 // IsStructuredFile reports whether path is a *structured* data file (JSON family
@@ -272,6 +276,18 @@ func openDecompressed(path string) (io.Reader, []io.Closer, error) {
 	}
 }
 
+// ReadWholeDecompressed reads path fully, transparently decompressing a .gz suffix.
+// It is for whole-file consumers -- e.g. a recipe's imperative Extract that parses an
+// entire self-contained document (like TOML) rather than framing a record stream.
+func ReadWholeDecompressed(path string) ([]byte, error) {
+	r, closers, err := openDecompressed(path)
+	if err != nil {
+		return nil, err
+	}
+	defer closeAll(closers)
+	return io.ReadAll(r)
+}
+
 // OpenFile returns a Source over one file, choosing the decoder by the inner
 // extension and transparently decompressing. idPrefix is prepended to synthetic
 // record IDs (typically the file's keyspace-relative path); for a single-record
@@ -296,9 +312,17 @@ func OpenFile(path, idPrefix string) (Source, error) {
 		matchPath = filepath.Base(path)
 	}
 	if rp := RecipeFor(matchPath); rp != nil {
-		spec, _, err := runDescribe(rp, path)
-		if err != nil {
-			return nil, err
+		// Describe is the declarative planning pass; it is OPTIONAL for a purely
+		// imperative recipe (Extract-only), which frames/parses the file itself and
+		// never consults the spec. When present, its spec is handed to Extract (or run
+		// natively by SpecApply).
+		var spec ExtractSpec
+		if rp.Describe != nil {
+			s, _, err := runDescribe(rp, path)
+			if err != nil {
+				return nil, err
+			}
+			spec = s
 		}
 		if rp.Extract != nil {
 			return rp.Extract(path, idPrefix, spec)

@@ -313,8 +313,12 @@ with priority), streaming, metadata-rich. Only auto-cloning the recipe repo from
 **Declarative spec (fast) vs imperative extract (flexible).** Most log formats are regular, so the
 preferred contract is **`describe` returns a declarative `ExtractSpec` and n1k1 applies it natively**
 (byte-oriented, zero JS on the hot path). Only formats too irregular (crack a binary blob, stateful
-multiline) fall back to imperative `extract(file, meta, emit)` in the runtime (JS today), paying the
-boundary cost. `ExtractSpec`:
+multiline, a self-contained document like TOML) fall back to imperative `extract(file, emit)` in the
+runtime (JS today), paying the boundary cost. **This imperative path is now wired** (a JS
+`*.extract.js` may define `describe`, `extract`, or both; `extract` gets the whole file text and
+`emit`s records itself, and its `match` may claim a brand-new extension); the demo
+`toml2.extract.js` re-parses TOML in JS under `.toml2` and matches the native Go `.toml` reader
+byte-for-byte. `ExtractSpec`:
 - **`framing`** — `line` / `multiline` (a lead line + continuation regex) / `json` (JSONL) /
   `section` (one record per `====`-banner block — `couchbase.log` is 302 concatenated command
   outputs) / `whole` (the office/PDF baseline).

@@ -68,7 +68,7 @@ type ExtractFunc func(path, idPrefix string, spec ExtractSpec) (Source, error)
 type Recipe struct {
 	Name     string       // recipe/format tag, e.g. "ns_server_log"
 	Match    ExtractMatch // extension AND/OR path-regexp claim (priority-resolved)
-	Describe DescribeFunc // required: sample -> ExtractSpec + SortedSourceMeta
+	Describe DescribeFunc // sample -> ExtractSpec + SortedSourceMeta; optional iff Extract is set
 	Extract  ExtractFunc  // optional: nil => SpecApply runs the spec natively
 
 	// Fingerprint identifies this recipe's describe LOGIC for cache invalidation: a
@@ -91,7 +91,12 @@ var recipes []*Recipe
 
 // RecipeRegister adds a recipe to the registry. Later registrations do NOT displace
 // an equal-priority earlier one at match time (RecipeFor keeps load order on ties).
+// A recipe must supply Describe (declarative, native framing) and/or Extract
+// (imperative, self-framing); a recipe with neither can produce no records.
 func RecipeRegister(r *Recipe) {
+	if r.Describe == nil && r.Extract == nil {
+		panic("records: RecipeRegister requires a Describe and/or an Extract: " + r.Name)
+	}
 	if r.Fingerprint == "" {
 		r.Fingerprint = r.Name // built-in recipes version with the engine; Name identifies them.
 	}
@@ -396,7 +401,7 @@ func (s *specSource) Next(rec *Record) (bool, error) {
 	}
 	if s.opaque {
 		s.done = true
-		s.locHas = false // content unread -- no meaningful byte span
+		s.locHas = false        // content unread -- no meaningful byte span
 		return s.emit(rec, nil) // buildDoc emits the {kind:"opaque",note} record
 	}
 	if s.section {
