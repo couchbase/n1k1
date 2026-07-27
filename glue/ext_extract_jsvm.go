@@ -92,11 +92,12 @@ import (
 //
 //	// extractStream(file, emit) -- STREAMING imperative alternative for a large
 //	// multi-record file. file = { path, name, ext, stem, readLine(), readAll(),
-//	// readBytes(n) }. readBytes(n) returns up to n RAW bytes as an ArrayBuffer (JS:
-//	// new Uint8Array(buf) / new DataView(buf)) or null at EOF -- the general primitive
-//	// for binary/custom framing; readLine/readAll are the text conveniences. Read
-//	// incrementally; emit(doc[, id]) returns false once the consumer stops, so the loop
-//	// can break. ids default to "<prefix>#<n>".
+//	// readBytes(n), readInto(view) }. readBytes(n) returns up to n RAW bytes as an
+//	// ArrayBuffer (JS: new Uint8Array(buf) / new DataView(buf)) or null at EOF -- the
+//	// general primitive for binary/custom framing; readInto(u8) is its zero-alloc BYOB
+//	// form (fill a REUSED Uint8Array, returns bytes read / 0 at EOF); readLine/readAll
+//	// are the text conveniences. Read incrementally; emit(doc[, id]) returns false once
+//	// the consumer stops, so the loop can break. ids default to "<prefix>#<n>".
 //	function extractStream(file, emit) {
 //	  var line; while ((line = file.readLine()) !== null) { emit(parseLine(line)); }
 //	}
@@ -508,9 +509,10 @@ func (s *jsExtractStreamSource) Close() error {
 }
 
 // runJSExtractStream is runJSExtract's STREAMING sibling: JS reads the file
-// incrementally (file.readLine / file.readAll / file.readBytes -- readBytes(n) returns
-// raw bytes as an ArrayBuffer, the most general primitive for binary/custom framing) and
-// emits records that flow out one at a time with backpressure, so a large/irregular
+// incrementally (file.readLine / file.readAll / file.readBytes(n) -> raw bytes as an
+// ArrayBuffer, the general binary primitive / file.readInto(view) -> its zero-alloc BYOB
+// form filling a reused Uint8Array) and emits records that flow out one at a time with
+// backpressure, so a large/irregular
 // multi-record file frames at bounded memory (no whole-file buffer, no buffering of all
 // records). The JS module defines
 // extractStream(file, emit); emit(doc[, id]) returns false once the consumer has
@@ -622,6 +624,27 @@ func runJSExtractStream(prog *goja.Program, name, path, idPrefix string) (record
 			}
 			return rt.ToValue(rt.NewArrayBuffer(b))
 		})
+		// readInto(view): fill a caller-provided Uint8Array (REUSED across calls -> zero
+		// per-call allocation), returning the number of bytes read (0 == EOF). This is the
+		// BYOB ("bring your own buffer") form -- cf. Web Streams reader.read(view), Node
+		// fs.read(buffer), TextEncoder.encodeInto -- for a hot binary loop where a fresh
+		// readBytes buffer per record would churn the GC. goja exports a Uint8Array as its
+		// LIVE backing []byte, so Go reads straight into the JS buffer.
+		_ = fileObj.Set("readInto", func(call goja.FunctionCall) goja.Value {
+			b, ok := call.Argument(0).Export().([]byte)
+			if !ok {
+				readErr = fmt.Errorf("extract recipe %q: readInto(view) needs a Uint8Array", name)
+				return rt.ToValue(0)
+			}
+			if len(b) == 0 {
+				return rt.ToValue(0)
+			}
+			m, e := readFull(br, b)
+			if e != nil {
+				readErr = e
+			}
+			return rt.ToValue(m) // 0 == EOF.
+		})
 
 		// emit(doc[, id]): hand one record across `recs` with backpressure. Returns
 		// false once Close has fired, so the JS loop stops.
@@ -705,6 +728,23 @@ func readUpTo(r io.Reader, want int) ([]byte, error) {
 		}
 	}
 	return buf, nil
+}
+
+// readFull reads up to len(b) bytes from r straight into b (no allocation), returning
+// the count -- fewer than len(b) only at EOF (0 == EOF). Backs file.readInto(view).
+func readFull(r io.Reader, b []byte) (int, error) {
+	total := 0
+	for total < len(b) {
+		m, err := r.Read(b[total:])
+		total += m
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return total, err
+		}
+	}
+	return total, nil
 }
 
 // jsSourceHash returns a short hex digest of a recipe's JS source, used as the

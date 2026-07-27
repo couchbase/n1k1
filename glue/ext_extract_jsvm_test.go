@@ -755,6 +755,74 @@ func TestJSExtractStreamReadBytes(t *testing.T) {
 	}
 }
 
+// jsFixedWidthRecipe frames a fixed-width BINARY format (8 bytes/record: 4-byte BE id +
+// 4-byte BE value) using ONE reused Uint8Array via file.readInto -- the zero-allocation
+// (BYOB) read loop. Go reads straight into the JS buffer's live backing store.
+const jsFixedWidthRecipe = `
+var match = { exts: [".fw"], priority: 10 };
+function extractStream(file, emit) {
+  var buf = new Uint8Array(8);          // REUSED across every record (no per-record alloc).
+  var dv = new DataView(buf.buffer);
+  for (;;) {
+    var n = file.readInto(buf);
+    if (n === 0) { return; }             // EOF.
+    if (n < 8) { throw "short record: " + n + " bytes"; }
+    emit({ id: dv.getUint32(0), value: dv.getUint32(4) });   // big-endian.
+  }
+}
+`
+
+// TestJSExtractStreamReadInto proves the BYOB readInto(view) primitive: a fixed-width
+// binary file is framed with a single reused Uint8Array, Go filling the JS buffer's live
+// backing store each call.
+func TestJSExtractStreamReadInto(t *testing.T) {
+	if err := RegisterJSExtractRecipe("fw", jsFixedWidthRecipe); err != nil {
+		t.Fatalf("RegisterJSExtractRecipe: %v", err)
+	}
+	dir := t.TempDir()
+	p := filepath.Join(dir, "data.fw")
+	type row struct{ id, value uint32 }
+	rows := []row{{1, 100}, {2, 200}, {3, 300}}
+	var buf bytes.Buffer
+	for _, r := range rows {
+		var rec [8]byte
+		binary.BigEndian.PutUint32(rec[0:4], r.id)
+		binary.BigEndian.PutUint32(rec[4:8], r.value)
+		buf.Write(rec[:])
+	}
+	if err := os.WriteFile(p, buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	src, err := records.OpenFile(p, "data.fw")
+	if err != nil {
+		t.Fatalf("OpenFile: %v", err)
+	}
+	defer src.Close()
+
+	var got []string
+	for {
+		var rec records.Record
+		ok, e := src.Next(&rec)
+		if e != nil {
+			t.Fatalf("Next: %v", e)
+		}
+		if !ok {
+			break
+		}
+		got = append(got, string(rec.Doc))
+	}
+	want := []string{`{"id":1,"value":100}`, `{"id":2,"value":200}`, `{"id":3,"value":300}`}
+	if len(got) != len(want) {
+		t.Fatalf("got %d records %v, want %d", len(got), got, len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("record %d = %s, want %s", i, got[i], want[i])
+		}
+	}
+}
+
 func writeAppLog(t *testing.T) string {
 	t.Helper()
 	p := filepath.Join(t.TempDir(), "myapp.debug.log")

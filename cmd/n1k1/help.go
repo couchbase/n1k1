@@ -172,6 +172,9 @@ buffered. Instead of file.text, read incrementally:
                           GENERAL primitive: frame any binary/length-prefixed/fixed-width
                           format. Wrap it in JS: new Uint8Array(buf) / new DataView(buf).
                           (readLine/readAll are the text conveniences built on this idea.)
+  file.readInto(view)  -- fill a REUSED Uint8Array (returns bytes read, 0 at EOF) -- the
+                          zero-allocation form for a hot binary loop (BYOB, cf. Web
+                          Streams reader.read(view) / Node fs.read(buffer)).
 Emitted records flow out one at a time with BACKPRESSURE (bounded memory, any file size);
 emit(doc[, id]) returns FALSE once the consumer stops (a LIMIT is met, the query is
 cancelled), so your loop can break. ids default to "<prefix>#<n>". Example (blank-line-
