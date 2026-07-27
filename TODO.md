@@ -34,16 +34,20 @@ _Last reviewed: 2026-07-23._
       TestSubqueryEmptyArray + TestJoinLateral; the ASOF differential suite. Residual: a
       truly bare correlated-subquery FROM with no driving outer is still NA, but that
       shape doesn't arise in valid SQL (a correlation needs an outer).
-- [ ] Windows: `go test ./records` fails (found by CI, 2026-07-27; the Windows CI leg is
-      `continue-on-error` until fixed -- builds + vet are clean, and the release still
-      ships windows/amd64 + windows/arm64 binaries).
-      (a) REAL BUG: `records/glob.go` `globMatch` splits on `filepath.Separator`, so on
-      Windows a `/`-separated pattern/path never splits into segments and `filepath.Match`
-      lets `*` cross `/` -- `globMatch("/a/*", "/a/b/c")` returns true, and `**` misses the
-      zero-segment case. Fix = normalize to `/` and match with `path.Match` semantics.
-      (b) The 7 `TestIceberg*` cases: upstream iceberg-go resolves a table location as a
-      URI, so a native `C:\...` temp dir gives "IO for file ... not implemented". Either
-      hand it a `file://` URI or skip on Windows.
+- [ ] Iceberg on Windows: upstream iceberg-go resolves a table location as a URI, so a
+      native `C:\...` path fails with "IO for file ... not implemented" -- the fixture
+      WRITERS in `records/iceberg_test.go` therefore `skipIcebergOnWindows`. n1k1's own
+      Iceberg read path is platform-neutral; to actually support it, hand iceberg-go a
+      `file://` URI (`filepath.ToSlash`) instead of a native path. (Found by CI 2026-07-27.)
+- [x] ~~Windows `globMatch` bug.~~ DONE. `records/glob.go` split on `filepath.Separator`,
+      so on Windows a `/`-separated pattern never split into segments and `filepath.Match`
+      let `*` cross `/` (`globMatch("/a/*","/a/b/c")` was true) and `**` missed the
+      zero-segment case. Now splits on EITHER separator and matches with `path.Match`
+      slash semantics; `GlobBase` got the same treatment (it sliced the original string so
+      the caller's separator style -- which `GlobFiles` re-anchors on by `TrimPrefix` -- is
+      preserved), verified behaviour-identical against the old implementation. Guarded by
+      `filepath.Join`-built and mixed-separator cases in `TestGlobMatchAndFiles`, and the
+      Windows CI leg is blocking again.
 - [ ] IndexScan2/3 pushdowns: indexProjection / indexOrder / indexGroupAggs.
 - [ ] JOIN types: FULL OUTER (cbq-fork grammar does not support FULL).
 - [ ] GROUP BY ROLLUP / CUBE / GROUPING SETS (cbq-fork grammar does not support).

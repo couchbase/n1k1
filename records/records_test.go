@@ -1463,6 +1463,18 @@ func TestGlobMatchAndFiles(t *testing.T) {
 		{"/a/**/*.json", "/a/b/x.csv", false},
 		{"/a/**", "/a/b/c", true}, // trailing ** matches the rest
 		{"/a/*", "/a/b/c", false},
+
+		// Separator-agnostic. filepath.Join yields NATIVE separators, so on Windows
+		// these exercise `\` (and the mixed cases a `/` pattern against a `\` path --
+		// exactly how a walked path meets an inline glob there); on Unix they are the
+		// plain `/` cases above. Regression guard: globMatch used to split on
+		// filepath.Separator, so on Windows nothing split and `*` crossed `/`.
+		{filepath.Join("/a", "**", "*.json"), filepath.Join("/a", "b", "x.json"), true},
+		{filepath.Join("/a", "*.json"), filepath.Join("/a", "b", "x.json"), false},
+		{filepath.Join("/a", "*"), filepath.Join("/a", "b", "c"), false},
+		{"/a/**/*.json", filepath.Join("/a", "b", "x.json"), true},
+		{"/a/*.json", filepath.Join("/a", "b", "x.json"), false},
+		{"/a/*", filepath.Join("/a", "b", "c"), false},
 	} {
 		if got := globMatch(c.pat, c.path); got != c.want {
 			t.Errorf("globMatch(%q, %q) = %v, want %v", c.pat, c.path, got, c.want)

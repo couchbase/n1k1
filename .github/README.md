@@ -59,11 +59,10 @@ make recipes-check   # run every SQL++ example in the doc (needs ./n1k1)
   engine is race-clean. See `docs/design/DESIGN-concurrency.md`.
 - **The conformance suite does not gate PRs** (it takes many minutes). It runs on
   `master`, nightly, and on demand.
-- **Windows is currently non-blocking.** It builds and vets clean, but `go test ./...`
-  has two known pre-existing `./records` failures (a real `globMatch` separator bug and
-  the Iceberg tests hitting an upstream Windows-path limitation) — see the "Windows"
-  entry in [`TODO.md`](../TODO.md). Release still ships Windows binaries. Remove the
-  `continue-on-error` on that matrix leg once they are fixed.
+- **All three OS legs are blocking.** Windows was briefly non-blocking after CI found
+  two pre-existing `./records` failures; the real one (a `globMatch` separator bug) is
+  fixed, and the Iceberg fixture writers now skip on Windows because upstream iceberg-go
+  cannot resolve a native `C:\…` path as a table-location URI — see [`TODO.md`](../TODO.md).
 - **Step order in the suite job is load-bearing:** the generators emit Go source into
   `test/tmp/`, which is then compiled and run as the compiled-mode differential.
   Reordering would test a stale generated package.

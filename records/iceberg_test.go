@@ -26,6 +26,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -72,8 +73,21 @@ func (c *fsIcebergCat) CommitTable(ctx context.Context, id itable.Identifier, re
 
 // writeIcebergFixture builds an Iceberg table of {id int64, msg string} with `msgs` rows
 // (msgs[i]=="" -> a NULL msg) and returns its committed metadata location.
+// skipIcebergOnWindows skips a fixture-writing Iceberg test on Windows. iceberg-go
+// resolves a table location as a URI, so a native `C:\...` path is read as an unknown
+// scheme and AppendTable fails with "IO for file 'C:\...' not implemented". Iceberg
+// keyspaces are therefore unsupported on Windows; see TODO.md. (The n1k1 READ path
+// under test is platform-neutral -- it is the fixture writer that cannot run.)
+func skipIcebergOnWindows(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("iceberg-go cannot resolve a native Windows path as a table-location URI")
+	}
+}
+
 func writeIcebergFixture(t *testing.T, dir string, msgs []string) string {
 	t.Helper()
+	skipIcebergOnWindows(t)
 	ctx := context.Background()
 	loc := filepath.Join(dir, "tbl")
 	if err := os.MkdirAll(filepath.Join(loc, "metadata"), 0o755); err != nil {
@@ -179,6 +193,7 @@ func TestIcebergSourceReadsRows(t *testing.T) {
 // single region). Returns the metadata location.
 func writePartitionedFixture(t *testing.T, dir string, regions []string) string {
 	t.Helper()
+	skipIcebergOnWindows(t)
 	if raceEnabled {
 		// iceberg-go v0.4.0's partitionedFanoutWriter races internally during a partitioned
 		// AppendTable (its own write-path goroutines, not n1k1); the READ path we exercise is
@@ -242,6 +257,7 @@ func writePartitionedFixture(t *testing.T, dir string, regions []string) string 
 // one data file per timestamp (a separate AppendTable each, so each file is a single day).
 func writeDayPartitionedFixture(t *testing.T, dir string, stamps []string) string {
 	t.Helper()
+	skipIcebergOnWindows(t)
 	if raceEnabled {
 		t.Skip("iceberg-go partitioned AppendTable has an internal data race under -race")
 	}
@@ -363,6 +379,7 @@ func TestIcebergInPruning(t *testing.T) {
 // writeIcebergNumeric builds an {id int64, amt double} table (one snapshot).
 func writeIcebergNumeric(t *testing.T, dir string, amts []float64) string {
 	t.Helper()
+	skipIcebergOnWindows(t)
 	ctx := context.Background()
 	loc := filepath.Join(dir, "tbl")
 	if err := os.MkdirAll(filepath.Join(loc, "metadata"), 0o755); err != nil {

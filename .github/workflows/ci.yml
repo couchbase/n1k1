@@ -38,20 +38,10 @@ jobs:
           fi
           echo "generated docs match docs/recipes.yaml"
 
-  # Build + test on all three OSes.
-  #
-  # Windows is NON-BLOCKING for now: it builds and vets clean, but `go test ./...`
-  # has two known pre-existing failures in ./records (see TODO.md "Windows"):
-  #   1. records/glob.go globMatch splits on filepath.Separator, so on Windows a
-  #      '/'-separated path never splits and '*' wrongly crosses '/'.  <- real bug
-  #   2. the 7 Iceberg tests -- upstream iceberg-go resolves a table location as a
-  #      URI, and a native 'C:\...' path yields "IO for file ... not implemented".
-  # Flip continue-on-error off once those are addressed, so Windows regressions
-  # gate again. Linux and macOS remain blocking.
+  # Build + test on all three OSes -- all of them BLOCKING.
   go:
     name: go / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
-    continue-on-error: ${{ matrix.os == 'windows-latest' }}
     strategy:
       fail-fast: false
       matrix:

@@ -20,10 +20,32 @@ package records
 
 import (
 	"os"
+	slashpath "path"
 	"path/filepath"
 	"sort"
 	"strings"
 )
+
+// sepChars is the set of bytes that separate path segments here: always `/` (how
+// inline globs are written -- `FROM './data/**/*.json'`), plus the OS separator on
+// platforms where it differs (Windows `\`, how real walked paths arrive). On Unix
+// `\` is a legal filename byte, so it is deliberately NOT a separator there.
+func sepChars() string {
+	if filepath.Separator != '/' {
+		return "/" + string(filepath.Separator)
+	}
+	return "/"
+}
+
+// toSlashSegments splits a pattern or path into segments on either separator, so
+// matching is separator-agnostic: on Windows a pattern written with `/` must line
+// up with a walked path that uses `\`.
+func toSlashSegments(s string) []string {
+	if filepath.Separator != '/' {
+		s = strings.ReplaceAll(s, string(filepath.Separator), "/")
+	}
+	return strings.Split(s, "/")
+}
 
 // HasGlobMeta reports whether s contains glob metacharacters (`*`, `?`, `[`), so
 // a keyspace name should be treated as a glob pattern rather than a literal name.
@@ -72,28 +94,45 @@ func GlobFiles(absGlob string, opts WalkOptions) (base string, files []string, e
 // GlobBase returns the longest leading run of pattern's path segments that contain
 // no glob metacharacter -- the directory to walk. Pattern is absolute, so the first
 // segment is empty (the leading separator) and is preserved.
+//
+// Segments are cut on either separator (see sepChars), and the result is a SLICE of
+// the original string rather than re-joined segments, so the base keeps the caller's
+// exact separator style: GlobFiles re-anchors the pattern on it with TrimPrefix, and
+// callers compare it against native paths.
 func GlobBase(pattern string) string {
-	sep := string(filepath.Separator)
-	var kept []string
-	for _, seg := range strings.Split(pattern, sep) {
-		if HasGlobMeta(seg) {
+	seps := sepChars()
+	cut := -1
+	for i, start := 0, 0; i <= len(pattern); i++ {
+		if i < len(pattern) && strings.IndexByte(seps, pattern[i]) < 0 {
+			continue
+		}
+		if HasGlobMeta(pattern[start:i]) {
+			cut = start
 			break
 		}
-		kept = append(kept, seg)
+		start = i + 1
 	}
-	base := strings.Join(kept, sep)
+	base := pattern // no metacharacter anywhere -- the whole pattern is the base
+	if cut >= 0 {
+		base = strings.TrimRight(pattern[:cut], seps)
+	}
 	if base == "" {
-		base = sep
+		base = string(filepath.Separator) // e.g. "/*.json" -> the root
 	}
 	return base
 }
 
 // globMatch reports whether an absolute path matches an absolute doublestar
-// pattern. Both are split on the separator and matched segment-by-segment; a `**`
-// segment matches zero or more whole segments, everything else uses filepath.Match.
-func globMatch(pattern, path string) bool {
-	sep := string(filepath.Separator)
-	return matchSegments(strings.Split(pattern, sep), strings.Split(path, sep))
+// pattern. Both are split on either separator and matched segment-by-segment; a
+// `**` segment matches zero or more whole segments, everything else uses
+// slash-semantics Match.
+//
+// Splitting must NOT use filepath.Separator alone: on Windows that is `\`, so a
+// `/`-separated pattern never split at all and the whole string became one
+// segment, letting `*` cross `/` (globMatch("/a/*", "/a/b/c") was true) and
+// breaking `**`'s zero-segment case.
+func globMatch(pattern, name string) bool {
+	return matchSegments(toSlashSegments(pattern), toSlashSegments(name))
 }
 
 func matchSegments(pat, name []string) bool {
@@ -113,7 +152,10 @@ func matchSegments(pat, name []string) bool {
 		if len(name) == 0 {
 			return false
 		}
-		ok, err := filepath.Match(pat[0], name[0])
+		// slashpath.Match, not filepath.Match: segments are already separator-free,
+		// and this keeps `*`/`?`/`[...]`/escaping semantics identical on every OS
+		// (filepath.Match disables `\` escaping on Windows).
+		ok, err := slashpath.Match(pat[0], name[0])
 		if err != nil || !ok {
 			return false
 		}
