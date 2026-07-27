@@ -91,9 +91,12 @@ import (
 //	function extract(file, emit) { emit(JSON.parse(file.text), file.stem); }
 //
 //	// extractStream(file, emit) -- STREAMING imperative alternative for a large
-//	// multi-record file. file = { path, name, ext, stem, readLine(), readAll() }.
-//	// Read incrementally; emit(doc[, id]) returns false once the consumer stops, so
-//	// the loop can break. ids default to "<prefix>#<n>".
+//	// multi-record file. file = { path, name, ext, stem, readLine(), readAll(),
+//	// readBytes(n) }. readBytes(n) returns up to n RAW bytes as an ArrayBuffer (JS:
+//	// new Uint8Array(buf) / new DataView(buf)) or null at EOF -- the general primitive
+//	// for binary/custom framing; readLine/readAll are the text conveniences. Read
+//	// incrementally; emit(doc[, id]) returns false once the consumer stops, so the loop
+//	// can break. ids default to "<prefix>#<n>".
 //	function extractStream(file, emit) {
 //	  var line; while ((line = file.readLine()) !== null) { emit(parseLine(line)); }
 //	}
@@ -505,9 +508,11 @@ func (s *jsExtractStreamSource) Close() error {
 }
 
 // runJSExtractStream is runJSExtract's STREAMING sibling: JS reads the file
-// incrementally (file.readLine / file.readAll) and emits records that flow out one at a
-// time with backpressure, so a large/irregular multi-record file frames at bounded
-// memory (no whole-file buffer, no buffering of all records). The JS module defines
+// incrementally (file.readLine / file.readAll / file.readBytes -- readBytes(n) returns
+// raw bytes as an ArrayBuffer, the most general primitive for binary/custom framing) and
+// emits records that flow out one at a time with backpressure, so a large/irregular
+// multi-record file frames at bounded memory (no whole-file buffer, no buffering of all
+// records). The JS module defines
 // extractStream(file, emit); emit(doc[, id]) returns false once the consumer has
 // stopped (a LIMIT satisfied, the query cancelled), so the JS loop can break -- the same
 // stop protocol as a *.stream.js source. ids default to "<idPrefix>#<n>" (streaming is
@@ -594,6 +599,29 @@ func runJSExtractStream(prog *goja.Program, name, path, idPrefix string) (record
 			}
 			return rt.ToValue(string(b))
 		})
+		// readBytes(n): up to n RAW bytes as an ArrayBuffer (JS wraps it:
+		// `new Uint8Array(buf)` / `new DataView(buf)`), or null at EOF. This is the most
+		// general primitive -- it lets a recipe frame ANY format (binary, length-prefixed,
+		// fixed-width, a custom delimiter), where readLine/readAll are the text-convenience
+		// cases. Bytes (not a Go string) so arbitrary binary survives the JS boundary
+		// intact; a short final read near EOF returns what's there. Allocation grows to the
+		// bytes ACTUALLY read, so a large n on a small file doesn't over-allocate.
+		_ = fileObj.Set("readBytes", func(call goja.FunctionCall) goja.Value {
+			want := int(call.Argument(0).ToInteger())
+			if want <= 0 {
+				readErr = fmt.Errorf("extract recipe %q: readBytes(n) needs n > 0, got %d", name, want)
+				return goja.Null()
+			}
+			b, e := readUpTo(br, want)
+			if e != nil {
+				readErr = e
+				return goja.Null()
+			}
+			if len(b) == 0 {
+				return goja.Null() // EOF.
+			}
+			return rt.ToValue(rt.NewArrayBuffer(b))
+		})
 
 		// emit(doc[, id]): hand one record across `recs` with backpressure. Returns
 		// false once Close has fired, so the JS loop stops.
@@ -651,6 +679,33 @@ func runJSExtractStream(prog *goja.Program, name, path, idPrefix string) (record
 
 // jb2rec builds a jsExtractRec (kept tiny so the emit hot path reads cleanly).
 func jb2rec(id string, doc []byte) jsExtractRec { return jsExtractRec{id: id, doc: doc} }
+
+// readUpTo reads up to want bytes from r, growing the buffer only to the bytes actually
+// read -- so a large want on a nearly-empty reader doesn't allocate want up front. It
+// returns fewer than want bytes only at EOF (an empty result means EOF); a non-EOF read
+// error is returned as-is. Backs the streaming file.readBytes(n).
+func readUpTo(r io.Reader, want int) ([]byte, error) {
+	const chunk = 64 * 1024
+	buf := make([]byte, 0, min(want, chunk))
+	tmp := make([]byte, min(want, chunk))
+	for len(buf) < want {
+		nb := want - len(buf)
+		if nb > len(tmp) {
+			nb = len(tmp)
+		}
+		m, err := r.Read(tmp[:nb])
+		if m > 0 {
+			buf = append(buf, tmp[:m]...)
+		}
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return buf, err
+		}
+	}
+	return buf, nil
+}
 
 // jsSourceHash returns a short hex digest of a recipe's JS source, used as the
 // recipe Fingerprint (extract_cache.go) so editing an *.extract.js re-describes its

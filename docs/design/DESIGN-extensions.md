@@ -162,9 +162,12 @@ knowledge lives in a git-cloned recipe repo. A `*.extract.js` exports up to thre
   parses TOML in JS under `.toml2` and reproduces the native Go `.toml` reader's records
   exactly.
 - **`extractStream(file, emit)`** — the STREAMING sibling, for a large/irregular
-  MULTI-record file that shouldn't be buffered. JS reads incrementally (`file.readLine()` /
-  `file.readAll()`) and `emit(doc[, id])`s records that flow out **one at a time with
-  backpressure**, so memory stays bounded however large the file or record count. Mechanics:
+  MULTI-record file that shouldn't be buffered. JS reads incrementally — `file.readLine()` /
+  `file.readAll()` for text, or **`file.readBytes(n)`** (up to `n` raw bytes as an
+  `ArrayBuffer`, or `null` at EOF) as the GENERAL primitive for binary / length-prefixed /
+  fixed-width / custom framing — and `emit(doc[, id])`s records that flow out **one at a time
+  with backpressure**, so memory stays bounded however large the file or record count.
+  Mechanics:
   goja is single-threaded and calls `emit` synchronously, but `records.Source.Next` is
   pull-based — so the JS runs on its own goroutine and `emit` hands each record across an
   UNBOUNDED-loop-safe **unbuffered channel** (JS blocks until `Next` consumes). `emit`

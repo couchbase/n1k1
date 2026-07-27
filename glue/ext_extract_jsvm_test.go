@@ -14,6 +14,8 @@
 package glue
 
 import (
+	"bytes"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -673,6 +675,83 @@ func TestJSExtractStreamBackpressure(t *testing.T) {
 	case <-time.After(15 * time.Second):
 		t.Fatal("streaming source hung: reading 3 records + Close did not complete " +
 			"(backpressure or early-stop broken -- an infinite JS loop was not suspended)")
+	}
+}
+
+// jsLenPrefixRecipe is a streaming recipe that frames a BINARY length-prefixed format
+// entirely from file.readBytes(n): each record is a 4-byte big-endian length followed by
+// that many bytes of JSON. It uses DataView (for the BE length) and Uint8Array (for the
+// body) over the ArrayBuffer readBytes returns -- the general primitive readLine can't
+// serve (binary, no line structure).
+const jsLenPrefixRecipe = `
+var match = { exts: [".lpj"], priority: 10 };
+function extractStream(file, emit) {
+  for (;;) {
+    var hdr = file.readBytes(4);
+    if (hdr === null) { return; }                    // clean EOF between records.
+    if (hdr.byteLength < 4) { throw "truncated length header"; }
+    var n = new DataView(hdr).getUint32(0);          // big-endian (DataView default).
+    var body = file.readBytes(n);
+    if (body === null || body.byteLength < n) { throw "truncated record body"; }
+    var u8 = new Uint8Array(body), s = "";
+    for (var i = 0; i < u8.length; i++) { s += String.fromCharCode(u8[i]); }
+    if (!emit(JSON.parse(s))) { return; }
+  }
+}
+`
+
+// writeLPJ writes docs to path in the length-prefixed binary format above.
+func writeLPJ(t *testing.T, path string, docs []string) {
+	t.Helper()
+	var buf bytes.Buffer
+	for _, d := range docs {
+		var hdr [4]byte
+		binary.BigEndian.PutUint32(hdr[:], uint32(len(d)))
+		buf.Write(hdr[:])
+		buf.WriteString(d)
+	}
+	if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestJSExtractStreamReadBytes proves the general binary primitive: a streaming recipe
+// frames a length-prefixed BINARY file purely via file.readBytes(n) (ArrayBuffer ->
+// DataView/Uint8Array), something readLine cannot express.
+func TestJSExtractStreamReadBytes(t *testing.T) {
+	if err := RegisterJSExtractRecipe("lpj", jsLenPrefixRecipe); err != nil {
+		t.Fatalf("RegisterJSExtractRecipe: %v", err)
+	}
+	dir := t.TempDir()
+	p := filepath.Join(dir, "data.lpj")
+	docs := []string{`{"id":1,"name":"a"}`, `{"id":2,"name":"b"}`, `{"id":3,"name":"c"}`}
+	writeLPJ(t, p, docs)
+
+	src, err := records.OpenFile(p, "data.lpj")
+	if err != nil {
+		t.Fatalf("OpenFile: %v", err)
+	}
+	defer src.Close()
+
+	var got []string
+	for {
+		var rec records.Record
+		ok, e := src.Next(&rec)
+		if e != nil {
+			t.Fatalf("Next: %v", e)
+		}
+		if !ok {
+			break
+		}
+		got = append(got, string(rec.Doc))
+	}
+	if len(got) != len(docs) {
+		t.Fatalf("got %d records %v, want %d", len(got), got, len(docs))
+	}
+	for i := range docs {
+		if got[i] != docs[i] { // host json.Marshal re-canonicalizes; these inputs are already canonical.
+			t.Errorf("record %d = %s, want %s", i, got[i], docs[i])
+		}
 	}
 }
 

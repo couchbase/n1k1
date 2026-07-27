@@ -165,9 +165,13 @@ native .toml reader.
 
 STREAMING (extractStream(file, emit)) -- for a LARGE multi-record file that shouldn't be
 buffered. Instead of file.text, read incrementally:
-  file.readLine()   -- the next line (without newline), or null at EOF; "" for a blank
-                       line (use it as a record boundary).
-  file.readAll()    -- the rest of the file as one string.
+  file.readLine()      -- the next line (without newline), or null at EOF; "" for a blank
+                          line (use it as a record boundary).
+  file.readAll()       -- the rest of the file as one string.
+  file.readBytes(n)    -- up to n RAW bytes as an ArrayBuffer (or null at EOF) -- the
+                          GENERAL primitive: frame any binary/length-prefixed/fixed-width
+                          format. Wrap it in JS: new Uint8Array(buf) / new DataView(buf).
+                          (readLine/readAll are the text conveniences built on this idea.)
 Emitted records flow out one at a time with BACKPRESSURE (bounded memory, any file size);
 emit(doc[, id]) returns FALSE once the consumer stops (a LIMIT is met, the query is
 cancelled), so your loop can break. ids default to "<prefix>#<n>". Example (blank-line-
