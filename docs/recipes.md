@@ -532,7 +532,7 @@ FROM doc
 
 | | |
 |---|---|
-| **SQL (Postgres)** | `SELECT JSONB_AGG(v) AS evens FROM doc, JSONB_ARRAY_ELEMENTS(doc->'letters') WITH ORDINALITY t(v, i) WHERE i % 2 = 1` |
+| **SQL (Postgres)** | `SELECT JSONB_AGG(v) AS evens FROM doc, JSONB_ARRAY_ELEMENTS(doc->'letters')` |
 | **SQL (DuckDB)** | `SELECT LIST_SLICE(doc.letters, 1, 4, 2) AS evens FROM doc -- 1-based, step 2` |
 | **JavaScript** | `doc.letters.filter((_, i) => i % 2 === 0)` |
 | **Python** | `doc["letters"][::2]` |
@@ -579,7 +579,7 @@ doc = {"people": [{"name": "JSON"}, {"name": "XML"}]}
 WITH doc AS ({"people":[{"name":"JSON"},{"name":"XML"}]})
 SELECT p.*
 FROM doc
-UNNEST doc.people AS p
+     UNNEST doc.people AS p
 -- → {"name":"JSON"} then {"name":"XML"}
 ```
 <details><summary>other dialects</summary>
@@ -604,7 +604,7 @@ doc = {"people": [{"name": "JSON"}, {"name": "XML"}]}
 WITH doc AS ({"people":[{"name":"JSON"},{"name":"XML"}]})
 SELECT RAW p.name
 FROM doc
-UNNEST doc.people AS p
+     UNNEST doc.people AS p
 -- → "JSON", "XML"
 ```
 <details><summary>other dialects</summary>
@@ -753,7 +753,8 @@ doc = {"recs": [{"label": "a", "value": 1}]}
 ```
 ```sql
 WITH doc AS ({"recs":[{"label":"a","value":1}]})
-SELECT OBJECT r.label : r.`value` FOR r IN doc.recs END AS o
+SELECT OBJECT r.label : r.`value`
+         FOR r IN doc.recs END AS o
 FROM doc
 -- → {"o":{"a":1}}
 ```
@@ -931,7 +932,7 @@ doc = {"tags": ["a", "b", "a"]}
 WITH doc AS ({"tags":["a","b","a"]})
 SELECT v AS `value`, COUNT(*) AS n
 FROM doc
-UNNEST doc.tags AS v
+     UNNEST doc.tags AS v
 GROUP BY v
 -- → {"value":"a","n":2}, {"value":"b","n":1}
 ```
@@ -1190,8 +1191,8 @@ doc = {"docs": [{"id": 1, "tags": ["a", "b"]}]}
 WITH doc AS ({"docs":[{"id":1,"tags":["a","b"]}]})
 SELECT o.id, t AS tag
 FROM doc
-UNNEST doc.docs AS o
-UNNEST o.tags AS t
+     UNNEST doc.docs AS o
+     UNNEST o.tags AS t
 -- → {"id":1,"tag":"a"} then {"id":1,"tag":"b"}
 ```
 <details><summary>other dialects</summary>
@@ -1217,7 +1218,7 @@ doc = {"dms": [{"text": "hi", "sender": {"screen_name": "amy"}, "ts": 2},
 WITH doc AS ({"dms":[{"text":"hi","sender":{"screen_name":"amy"},"ts":2},{"text":"yo","sender":{"screen_name":"bo"},"ts":1}]})
 SELECT d.text, d.sender.screen_name AS from_name
 FROM doc
-UNNEST doc.dms AS d
+     UNNEST doc.dms AS d
 ORDER BY d.ts
 -- → {"text":"yo","from_name":"bo"} then {"text":"hi","from_name":"amy"}
 ```
@@ -1315,9 +1316,7 @@ doc = {"vals": [{"a": 1}, "str"]}
 ```
 ```sql
 WITH doc AS ({"vals":[{"a":1},"str"]})
-SELECT ARRAY (CASE WHEN TYPE(x) = "object"
-                   THEN x.a
-              END)
+SELECT ARRAY (CASE WHEN TYPE(x) = "object" THEN x.a END)
          FOR x IN doc.vals END AS a
 FROM doc
 -- → {"a":[1,null]}   (the string has no .a → null)
