@@ -27,11 +27,8 @@ _Last reviewed: 2026-07-23._
       a BARE correlated-subquery FROM-expr with no driving outer, and correlated
       CTE-as-datasource (WITH RECURSIVE roadmap) -- still NA at VisitExpressionScan.
 - [ ] IndexScan2/3 pushdowns: indexProjection / indexOrder / indexGroupAggs.
-- [ ] JOIN types: FULL OUTER (cbq-fork grammar has no FULL production + n1k1 engine has
-      no full-outer op). LATERAL DONE (glue join-lateral op, interpreter-lane); RIGHT
-      OUTER already worked (the fork rewrites `A RIGHT OUTER JOIN B` -> `B LEFT OUTER
-      JOIN A`).
-- [ ] GROUP BY ROLLUP / GROUPING SETS.
+- [ ] JOIN types: FULL OUTER (cbq-fork grammar does not support FULL).
+- [ ] GROUP BY ROLLUP / CUBE / GROUPING SETS (cbq-fork grammar does not support).
 
 ## Conformance (SQL++ suite corpus)
 - [ ] Raise the TestSuiteCases pass rate.
