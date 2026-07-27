@@ -22,6 +22,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -319,9 +320,11 @@ func frameExtractSampleWith(ext, sample string, build func(path string) (records
 	return jsonArray(rows), nil
 }
 
-// jsExtractRec is one buffered record a JS imperative extract emitted (id + JSON doc).
+// jsExtractRec is one record a JS imperative extract emitted: id + JSON doc, both owned
+// []byte so Next hands them to records.Record with no per-record conversion. id is nil
+// until a default is assigned (an explicit emit(doc, id) sets it up front).
 type jsExtractRec struct {
-	id  string
+	id  []byte
 	doc []byte
 }
 
@@ -338,7 +341,7 @@ func (s *jsExtractSource) Next(rec *records.Record) (bool, error) {
 	if s.i >= len(s.recs) {
 		return false, nil
 	}
-	rec.ID = []byte(s.recs[s.i].id)
+	rec.ID = s.recs[s.i].id
 	rec.Doc = s.recs[s.i].doc
 	s.i++
 	return true, nil
@@ -459,11 +462,11 @@ func runJSExtract(prog *goja.Program, name, path, idPrefix string) (src records.
 	// multiple records key by "<idPrefix>#<n>" (matching the native json/yaml sources).
 	stem := records.Stem(path)
 	for i := range recs {
-		if recs[i].id == "" {
+		if recs[i].id == nil {
 			if len(recs) == 1 {
-				recs[i].id = stem
+				recs[i].id = []byte(stem)
 			} else {
-				recs[i].id = fmt.Sprintf("%s#%d", idPrefix, i)
+				recs[i].id = appendStreamID(nil, idPrefix, i)
 			}
 		}
 	}
@@ -508,7 +511,7 @@ func (s *jsExtractStreamSource) Next(rec *records.Record) (bool, error) {
 	}
 	// r.doc is a distinct, owned slice per record, so it satisfies the borrowed-until-
 	// next-Next contract trivially (it stays valid).
-	rec.ID = []byte(r.id)
+	rec.ID = r.id
 	rec.Doc = r.doc
 	return true, nil
 }
@@ -587,6 +590,7 @@ func runJSExtractStream(prog *goja.Program, name, path, idPrefix string) (record
 		br := bufio.NewReader(rc)
 		var readErr, emitErr error
 		n := 0
+		var idScratch []byte // reused across records to format default ids without fmt.
 
 		fileObj := rt.NewObject()
 		_ = fileObj.Set("path", path)
@@ -664,22 +668,24 @@ func runJSExtractStream(prog *goja.Program, name, path, idPrefix string) (record
 			return rt.ToValue(m) // 0 == EOF.
 		})
 
-		// send hands one already-built record across `recs` with backpressure, defaulting
-		// its id to "<idPrefix>#<n>". Returns the goja true/false emit result: false once
-		// Close has fired (a leading non-blocking done check, then the blocking send races
-		// done), so the JS loop stops instead of spinning. Shared by emit and emitBuffer.
-		send := func(id string, doc []byte) goja.Value {
+		// send hands one already-built record across `recs` with backpressure, defaulting a
+		// nil id to "<idPrefix>#<n>" (built via a reused scratch, no fmt.Sprintf, then copied
+		// once into the record's owned id). Returns the goja true/false emit result: false
+		// once Close has fired (a leading non-blocking done check, then the blocking send
+		// races done), so the JS loop stops instead of spinning. Shared by emit/emitBuffer.
+		send := func(id, doc []byte) goja.Value {
 			select { // fast path: already stopped (don't even queue).
 			case <-s.done:
 				return rt.ToValue(false)
 			default:
 			}
-			if id == "" {
-				id = fmt.Sprintf("%s#%d", idPrefix, n)
+			if id == nil {
+				idScratch = appendStreamID(idScratch[:0], idPrefix, n)
+				id = append([]byte(nil), idScratch...) // owned copy: the record outlives idScratch.
 			}
 			n++
 			select {
-			case s.recs <- jb2rec(id, doc):
+			case s.recs <- jsExtractRec{id: id, doc: doc}:
 				return rt.ToValue(true)
 			case <-s.done:
 				return rt.ToValue(false)
@@ -735,18 +741,25 @@ func runJSExtractStream(prog *goja.Program, name, path, idPrefix string) (record
 	return s, nil
 }
 
-// jb2rec builds a jsExtractRec (kept tiny so the emit hot path reads cleanly).
-func jb2rec(id string, doc []byte) jsExtractRec { return jsExtractRec{id: id, doc: doc} }
+// appendStreamID appends "<prefix>#<n>" to dst (allocation-free vs fmt.Sprintf: no arg
+// boxing, no format parse). The default record id for a multi-record imperative extract.
+func appendStreamID(dst []byte, prefix string, n int) []byte {
+	dst = append(dst, prefix...)
+	dst = append(dst, '#')
+	return strconv.AppendInt(dst, int64(n), 10)
+}
 
-// emitCallID reads the optional id argument (position 1) of an emit/emitBuffer call, or
-// "" when absent -- so the caller assigns the default id.
-func emitCallID(call goja.FunctionCall) string {
+// emitCallID returns the optional explicit id (arg position 1) of an emit/emitBuffer call
+// as owned bytes, or nil when absent (or empty) -- so the caller assigns the default id.
+func emitCallID(call goja.FunctionCall) []byte {
 	if len(call.Arguments) >= 2 {
 		if a := call.Arguments[1]; a != nil && !goja.IsUndefined(a) && !goja.IsNull(a) {
-			return a.String()
+			if s := a.String(); s != "" {
+				return []byte(s)
+			}
 		}
 	}
-	return ""
+	return nil
 }
 
 // extractDocBytes turns an emitBuffer(doc) argument into owned JSON bytes for a record's

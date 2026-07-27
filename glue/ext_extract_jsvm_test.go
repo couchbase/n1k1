@@ -701,7 +701,7 @@ function extractStream(file, emit) {
 `
 
 // writeLPJ writes docs to path in the length-prefixed binary format above.
-func writeLPJ(t *testing.T, path string, docs []string) {
+func writeLPJ(t testing.TB, path string, docs []string) {
 	t.Helper()
 	var buf bytes.Buffer
 	for _, d := range docs {
