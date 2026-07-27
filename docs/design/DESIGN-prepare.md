@@ -329,3 +329,8 @@ corpus-SHA — the killer feature for re-runs).
   near-identical per-version detectors.
 - **Log time model** — normalize wildly different log timestamp formats/zones into one sortable
   key for the ASOF merge: per-source parse spec, or inferred?
+
+**See also** [DESIGN-cep.md](DESIGN-cep.md): the MQO/`.multi` shared-scan stack described here is
+the *hard half* of a complex-event-processing engine (many standing rules over one flow); that note
+sketches the other half (unbounded source + continuous emit + incremental state), the agentic
+"corpus authored by an AI agent" angle, and the market landscape.
