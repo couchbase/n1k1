@@ -21,9 +21,16 @@ _Last reviewed: 2026-07-23._
 - [ ] Native-lane ASOF / subquery projection -- kill boxed-value/JSON alloc churn (top perf lever).
 - [ ] Columnar step 6: dictionary GROUP BY + more vectorized kernels + optional SIMD leaf (DESIGN-col.md; steps 1-5 done).
 - [ ] Raise the SQL++ conformance (TestSuiteCases) pass rate.
-- [ ] Correlated FROM-clause subqueries / CTE-as-datasource edge cases.
+- [ ] Correlated FROM-clause subqueries / CTE-as-datasource edge cases. The LATERAL /
+      correlated-comma-join form (a correlated-subquery plan.ExpressionScan driven by a
+      nested-loop JOIN) is DONE -- glue/conv.go VisitNLJoin + JoinLateralOp. Remaining:
+      a BARE correlated-subquery FROM-expr with no driving outer, and correlated
+      CTE-as-datasource (WITH RECURSIVE roadmap) -- still NA at VisitExpressionScan.
 - [ ] IndexScan2/3 pushdowns: indexProjection / indexOrder / indexGroupAggs.
-- [ ] JOIN types: FULL / RIGHT OUTER / LATERAL.
+- [ ] JOIN types: FULL OUTER (cbq-fork grammar has no FULL production + n1k1 engine has
+      no full-outer op). LATERAL DONE (glue join-lateral op, interpreter-lane); RIGHT
+      OUTER already worked (the fork rewrites `A RIGHT OUTER JOIN B` -> `B LEFT OUTER
+      JOIN A`).
 - [ ] GROUP BY ROLLUP / GROUPING SETS.
 
 ## Conformance (SQL++ suite corpus)
@@ -63,11 +70,13 @@ in glue/patches/README.md.
     (glue/conv.go VisitIndexScan + coverableIndexScan; see DESIGN-indexing.md).
   - scan tracks "setBit()" for intersect scan support? Not needed anymore?
   - scan related bit filters in cbq need revisit?
-  - scan expression (ExpressionScan, i.e. FROM (subquery)/FROM cte) only handles
-    non-correlated right now. (Expression subqueries -- IN (SELECT), scalar,
-    etc. -- DO handle correlation now in the interpreter; see above. This item is
-    the separate FROM-clause/datasource case, tied to CTE-as-datasource in the
-    WITH RECURSIVE roadmap below.)
+  - scan expression (ExpressionScan, i.e. FROM (subquery)/FROM cte): a NON-correlated
+    subquery/CTE runs via expr-scan; a correlated subquery driven by a nested-loop JOIN
+    (LATERAL / correlated comma-join) runs via the glue join-lateral op (VisitNLJoin +
+    JoinLateralOp -- DONE). Still NA: a BARE correlated-subquery FROM-expr with no
+    driving outer, and correlated CTE-as-datasource (WITH RECURSIVE roadmap below).
+    (Expression subqueries -- IN (SELECT), scalar, etc. -- handle correlation in the
+    interpreter; see above.)
   - implement parallel operator one day?
     - stage already provides some concurrency between producer & consumer.
   - classic N1QL engine uses recover() -- revisit this?
@@ -136,8 +145,27 @@ in glue/patches/README.md.
     value.NUMBER during every Evaluate()?
     - see the ExprCmp() implementation to see one kind of approach on this.
 
-- JOIN types: FULL, RIGHT OUTER, LATERAL. (CROSS / comma-join DONE: a nil ON
-  clause converts to a constant-TRUE nested-loop join -- glue/conv.go VisitNLJoin.)
+- JOIN types (analyzed 2026-07) -- three DIFFERENT root causes:
+  - RIGHT OUTER: WORKS already. The cbq fork grammar (parser/n1ql/n1ql.y:1547) rewrites
+    `A RIGHT OUTER JOIN B` to `B LEFT OUTER JOIN A` at parse time
+    (algebra.NewAnsiRightJoin swaps operands + sets outer=true), so n1k1's existing
+    left-outer VisitNLJoin handles it -- verified end-to-end.
+  - FULL OUTER: cbq FORK PARSER limitation -- no FULL token / no full-join grammar
+    production (upstream N1QL lacks it too), so it never reaches a plan; AND n1k1's
+    nested-loop op only null-extends the LEFT side, so a new full-outer engine op would
+    be needed as well.
+  - LATERAL: DONE (glue join-lateral op). The fork parses + plans it -> a correlated
+    plan.ExpressionScan {correlated, nested_loop, subqPlan}; VisitNLJoin now detects that
+    inner (lateralSubquery) and emits a glue "joinLateral-{inner,leftOuter}" op instead
+    of the generic nested-loop. JoinLateralOp drives the left, boxes each outer row into
+    the correlated parent (ConvertVals), runs the subquery per row via
+    GlueContext.EvaluateSubquery (which owns corrParent + the in-context sub-plan), and
+    joins its rows under the alias with the ON clause + left-outer NULL-extension. It's
+    interpreter-lane (like all subquery/expr-scan features -- EvaluateSubquery needs cbq,
+    so it's not in the fork-free compiled child). A bare correlated-subquery FROM-expr
+    with no driving outer is still NA. Guard: glue TestJoinLateral.
+  (CROSS / comma-join DONE: a nil ON clause converts to a constant-TRUE nested-loop
+  join -- glue/conv.go VisitNLJoin.)
 
 - NEST via hash-join?
 - NEST via index scan?

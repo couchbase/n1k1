@@ -103,3 +103,85 @@ func TestJoinBandPredicateNotDropped(t *testing.T) {
 		}
 	}
 }
+
+// TestJoinLateral exercises LATERAL joins (and a comma-join whose right is a correlated
+// subquery): the inner subquery references the outer row, so it runs per outer row with
+// that row in scope via the glue join-lateral op (VisitNLJoin -> JoinLateralOp). Covers
+// INNER, LEFT OUTER (NULL-extension), a multi-row inner + an outer ON filter, and a
+// correlated aggregate. Before this, the planner produced a correlated plan.ExpressionScan
+// that VisitExpressionScan NA'd ("unsupported"). See TODO.md / DESIGN-data.md.
+func TestJoinLateral(t *testing.T) {
+	dir := t.TempDir()
+	write := func(ks string, docs ...string) {
+		d := filepath.Join(dir, "default", ks)
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		for i, doc := range docs {
+			if err := os.WriteFile(filepath.Join(d, fmt.Sprintf("r%d.json", i)), []byte(doc), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	write("a", `{"k":1}`, `{"k":2}`)
+	write("b", `{"k":2,"bv":"b2"}`, `{"k":3,"bv":"b3"}`)
+
+	sess, err := OpenSession(dir, "default")
+	if err != nil {
+		t.Fatalf("OpenSession: %v", err)
+	}
+	defer sess.Close()
+
+	// rowsOf runs q and returns each row as canonical JSON (sorted keys), sorted -- so
+	// assertions don't depend on row or field order.
+	rowsOf := func(q string) []string {
+		res, err := sess.Run(q)
+		if err != nil {
+			t.Fatalf("Run %q: %v", q, err)
+		}
+		var out []string
+		for _, row := range res.Rows {
+			var v interface{}
+			if err := json.Unmarshal(row, &v); err != nil {
+				t.Fatalf("decode %q from %q: %v", row, q, err)
+			}
+			b, _ := json.Marshal(v)
+			out = append(out, string(b))
+		}
+		sort.Strings(out)
+		return out
+	}
+
+	cases := []struct {
+		name string
+		q    string
+		want []string
+	}{
+		{"inner-comma",
+			`SELECT x.k AS xk, y.bk AS ybk FROM a AS x, ` +
+				`LATERAL (SELECT b.k AS bk FROM b WHERE b.k = x.k) AS y`,
+			[]string{`{"xk":2,"ybk":2}`}},
+		{"inner-join-on-true",
+			`SELECT x.k AS xk, y.bk AS ybk FROM a AS x ` +
+				`JOIN LATERAL (SELECT b.k AS bk FROM b WHERE b.k = x.k) AS y ON TRUE`,
+			[]string{`{"xk":2,"ybk":2}`}},
+		{"left-outer-null-extends",
+			`SELECT x.k AS xk, y.bk AS ybk FROM a AS x ` +
+				`LEFT JOIN LATERAL (SELECT b.k AS bk FROM b WHERE b.k = x.k) AS y ON TRUE`,
+			[]string{`{"xk":1}`, `{"xk":2,"ybk":2}`}}, // x=1 has no match -> ybk MISSING (omitted).
+		{"multi-row-plus-on-filter",
+			`SELECT x.k AS xk, y.bk AS ybk FROM a AS x ` +
+				`JOIN LATERAL (SELECT b.k AS bk FROM b WHERE b.k >= x.k) AS y ON y.bk = 2`,
+			[]string{`{"xk":1,"ybk":2}`, `{"xk":2,"ybk":2}`}},
+		{"correlated-aggregate",
+			`SELECT x.k AS xk, y.n AS n FROM a AS x, ` +
+				`LATERAL (SELECT COUNT(*) AS n FROM b WHERE b.k >= x.k) AS y`,
+			[]string{`{"n":2,"xk":1}`, `{"n":2,"xk":2}`}},
+	}
+	for _, c := range cases {
+		got := rowsOf(c.q)
+		if !reflect.DeepEqual(got, c.want) {
+			t.Errorf("%s:\n  got  %v\n  want %v\n  %s", c.name, got, c.want, c.q)
+		}
+	}
+}

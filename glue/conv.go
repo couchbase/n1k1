@@ -484,6 +484,12 @@ func (c *Conv) VisitExpressionScan(o *plan.ExpressionScan) (interface{}, error) 
 	// would need nested subquery evaluation and isn't supported yet.
 	if o.IsCorrelated() {
 		if _, isSubq := o.FromExpr().(expression.Subquery); isSubq {
+			// A correlated subquery FROM-expr needs the outer row in scope
+			// (corrParent). When it's the inner of a nested-loop JOIN (LATERAL / a
+			// comma-join with a correlated subquery), VisitNLJoin drives it per outer
+			// row via the glue join-lateral op (which sets corrParent before running
+			// the subquery). A bare correlated-subquery FROM-expr with no driving
+			// outer isn't supported.
 			return NA(o)
 		}
 	}
@@ -726,11 +732,89 @@ func (c *Conv) VisitUnnest(o *plan.Unnest) (interface{}, error) {
 	return c.TopOp, nil
 }
 
+// lateralSubquery detects the LATERAL / correlated-comma-join shape: the join's
+// inner branch is (a Sequence wrapping) a single correlated ExpressionScan whose
+// FROM-expr is a subquery -- i.e. a subquery that references the outer row. Returns
+// the subquery SELECT + its alias when matched, so VisitNLJoin can drive it per outer
+// row via the glue join-lateral op (which boxes each outer row into corrParent, then
+// runs the subquery). Only the clean single-ExpressionScan shape is handled; any other
+// shape returns ok=false and NAs at VisitExpressionScan (unsupported).
+func lateralSubquery(inner plan.Operator) (*algebra.Select, string, bool) {
+	// Flatten a Sequence to its children (else the single op). The correlated
+	// ExpressionScan is the source (first); the ON clause is applied by JoinLateralOp
+	// from o.Onclause(), but the planner ALSO re-pushes it as a Filter inside the
+	// inner branch -- so any ops AFTER the ExpressionScan must be predicate-only
+	// (Filter / Parallel / Sequence wrapping them), which are then redundant and
+	// safely ignored. Bail (-> NA) on anything else, so no real work is dropped.
+	ops := []plan.Operator{inner}
+	if seq, ok := inner.(*plan.Sequence); ok {
+		ops = seq.Children()
+	}
+	if len(ops) == 0 {
+		return nil, "", false
+	}
+	es, ok := ops[0].(*plan.ExpressionScan)
+	if !ok || es == nil || !es.IsCorrelated() {
+		return nil, "", false
+	}
+	for _, op := range ops[1:] {
+		if !isPredicateOnlyOp(op) {
+			return nil, "", false
+		}
+	}
+	subq, ok := es.FromExpr().(*algebra.Subquery)
+	if !ok {
+		return nil, "", false
+	}
+	return subq.Select(), es.Alias(), true
+}
+
+// isPredicateOnlyOp reports whether op only re-applies predicates (a Filter, or a
+// Parallel/Sequence wrapping only such ops) -- i.e. it carries no work beyond the join
+// ON clause JoinLateralOp already applies. Used to decide a LATERAL inner branch is
+// safe to reduce to its ExpressionScan.
+func isPredicateOnlyOp(op plan.Operator) bool {
+	switch t := op.(type) {
+	case *plan.Filter:
+		return true
+	case *plan.Parallel:
+		return isPredicateOnlyOp(t.Child())
+	case *plan.Sequence:
+		for _, ch := range t.Children() {
+			if !isPredicateOnlyOp(ch) {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
 // VisitNLJoin converts an ANSI nested-loop JOIN. The left input is the current
 // TopOp; the right (inner) side is o.Child(), a self-contained sub-plan we
 // convert as a fresh branch. OpJoinNestedLoop re-drives the right branch for
 // each left row and applies the ON clause to the joined left+right vals.
 func (c *Conv) VisitNLJoin(o *plan.NLJoin) (interface{}, error) {
+	// LATERAL (and a comma-join whose right is a correlated subquery): the inner is a
+	// subquery that references the outer row, so it must run per outer row with that
+	// row in scope. The generic nested-loop op re-drives its inner branch but sets no
+	// correlated scope, so route this to the glue join-lateral op, which boxes each
+	// outer row into corrParent and runs the subquery (EvaluateSubquery) against it.
+	if sub, alias, ok := lateralSubquery(o.Child()); ok {
+		onclause := o.Onclause()
+		if onclause == nil {
+			onclause = expression.TRUE_EXPR
+		}
+		c.TopSet(o, c.ansiLateralOp(o.Outer(), sub, alias, onclause, c.TopOp))
+		if f := o.Filter(); f != nil {
+			return c.TopPush(o, &base.Op{
+				Kind:   "filter",
+				Labels: c.TopOp.Labels,
+				Params: []interface{}{"exprTree", f},
+			})
+		}
+		return c.TopOp, nil
+	}
 	// A nil ON clause is a comma/cross join (FROM a, b): every left row pairs
 	// with every right row. The nested-loop op needs a predicate to evaluate, so
 	// stand in a constant TRUE -- a cross product is a nested-loop join whose
@@ -899,6 +983,31 @@ func (c *Conv) ansiJoinOp(kind string, outer bool, onclause expression.Expressio
 			right.Labels...),
 		Params:   []interface{}{"exprTree", onclause},
 		Children: []*base.Op{left, right},
+	}
+}
+
+// ansiLateralOp builds a glue join-lateral op (kind "joinLateral-inner" /
+// "joinLateral-leftOuter") for a LATERAL / correlated-subquery inner. It carries the
+// subquery SELECT (in a vars.Temps slot) and the ON clause; at runtime JoinLateralOp
+// drives the left, boxes each left row into corrParent, runs the subquery, and joins
+// its rows under the alias label -- see glue/datastore.go. Unlike the generic
+// nested-loop join, the right is NOT a converted branch: the subquery runs through the
+// engine per outer row via EvaluateSubquery (which owns the correlated scope).
+func (c *Conv) ansiLateralOp(outer bool, sub *algebra.Select, alias string,
+	onclause expression.Expression, left *base.Op) *base.Op {
+	kind := "joinLateral-inner"
+	if outer {
+		kind = "joinLateral-leftOuter"
+	}
+	return &base.Op{
+		Kind: kind,
+		Labels: append(append(base.Labels{}, left.Labels...),
+			"."+LabelSuffix(alias)),
+		Params: []interface{}{
+			c.AddTemp(sub),                      // [0] the *algebra.Select subquery.
+			[]interface{}{"exprTree", onclause}, // [1] the ON clause, over joined labels.
+		},
+		Children: []*base.Op{left},
 	}
 }
 

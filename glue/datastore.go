@@ -16,11 +16,14 @@ package glue
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
+	"github.com/couchbase/query/algebra"
 	"github.com/couchbase/query/expression"
 	"github.com/couchbase/query/value"
 
 	"github.com/couchbase/n1k1/base"
+	"github.com/couchbase/n1k1/engine"
 )
 
 func DatastoreOp(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
@@ -64,6 +67,8 @@ func DatastoreDispatch(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 		DatastoreFetch(o, vars, yieldVals, yieldErr, path, pathNext)
 	case "expr-scan":
 		ExprScanOp(o, vars, yieldVals, yieldErr)
+	case "joinLateral-inner", "joinLateral-leftOuter":
+		JoinLateralOp(o, vars, yieldVals, yieldErr, path, pathNext)
 	case "stream-fn":
 		StreamFnOp(o, vars, yieldVals, yieldErr)
 	case "with-recursive":
@@ -208,5 +213,106 @@ func ExprScanOp(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 
 	// Signal a clean end-of-stream: buffering parents (e.g. ORDER BY, which drains
 	// its heap on yieldErr(nil)) need it, as scans/temp-yield-var do.
+	yieldErr(nil)
+}
+
+// JoinLateralOp implements a LATERAL join (and a comma-join whose right is a correlated
+// subquery): FROM <left> [JOIN] LATERAL (SELECT ... <left>.x ...) AS alias [ON <pred>].
+// The inner subquery references the outer row, so unlike a plain nested-loop join it
+// must run once PER outer row with that row in scope. For each left row this: (1) boxes
+// the left vals into a value (Convert) to serve as the correlated parent, (2) runs the
+// subquery via GlueContext.EvaluateSubquery (which sets corrParent = that parent and
+// uses the in-context sub-plan), and (3) joins each result row under the alias label,
+// applying the ON clause to the concatenated left+right vals -- NULL-extending the left
+// row when the subquery is empty for a leftOuter join. Interpreter-lane (glue) op: the
+// subquery runs through EvaluateSubquery, not the engine's codegen'd join. Not streaming
+// -- each outer row's subquery result is materialized (LATERAL isn't a hot path).
+func JoinLateralOp(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
+	yieldErr base.YieldErr, path, pathNext string) {
+	gc, ok := vars.Temps[0].(*GlueContext)
+	if !ok {
+		yieldErr(fmt.Errorf("joinLateral: expected a GlueContext at Temps[0]"))
+		return
+	}
+	subSlot, ok := o.Params[0].(int)
+	if !ok {
+		yieldErr(fmt.Errorf("joinLateral: expected an int subquery Temps index, got %T", o.Params[0]))
+		return
+	}
+	sub, ok := vars.Temps[subSlot].(*algebra.Select)
+	if !ok {
+		yieldErr(fmt.Errorf("joinLateral: no subquery SELECT at Temps[%d]", subSlot))
+		return
+	}
+
+	leftLabels := o.Children[0].Labels
+	lenA := len(leftLabels)
+	cv, err := NewConvertVals(leftLabels) // boxes each left row -> the correlated parent.
+	if err != nil {
+		yieldErr(err)
+		return
+	}
+	// The ON clause, evaluated on the concatenated left+right vals (o.Labels). Built
+	// once; a nil ON was converted to TRUE by VisitNLJoin (a comma/cross lateral).
+	onFunc := engine.MakeExprFunc(vars, o.Labels, o.Params[1].([]interface{}), path, "JLF")
+	isOuter := strings.HasSuffix(o.Kind, "leftOuter")
+
+	var opErr error
+	joined := make(base.Vals, 0, len(o.Labels))
+
+	// The left driver: one invocation of the inner subquery per left row.
+	leftYield := func(leftVals base.Vals) {
+		if opErr != nil {
+			return
+		}
+		parent, err := cv.Convert(leftVals)
+		if err != nil {
+			opErr = err
+			return
+		}
+		res, err := gc.EvaluateSubquery(sub, parent) // sets corrParent = parent for the run.
+		if err != nil {
+			opErr = err
+			return
+		}
+
+		hadInner := false
+		emitRight := func(rightVals base.Vals) {
+			if opErr != nil {
+				return
+			}
+			joined = append(joined[:0], leftVals...)
+			joined = append(joined, rightVals...)
+			if base.ValTruthy(onFunc(joined, yieldErr)) {
+				hadInner = true
+				yieldVals(joined)
+			}
+		}
+
+		// The subquery result is an array of rows; iterate its elements as right rows
+		// (a MISSING/empty result yields none). ArrayYield hands each element as a
+		// one-column Vals under the alias label.
+		if res != nil && res.Type() != value.MISSING {
+			jv, err := res.MarshalJSON()
+			if err != nil {
+				opErr = err
+				return
+			}
+			base.ArrayYield(base.Val(jv), emitRight, nil)
+		}
+
+		if isOuter && !hadInner {
+			joined = append(joined[:0], leftVals...)
+			for i := lenA; i < len(o.Labels); i++ {
+				joined = append(joined, base.ValMissing)
+			}
+			yieldVals(joined)
+		}
+	}
+
+	vars.Ctx.ExecOp(o.Children[0], vars, leftYield, yieldErr, path, pathNext)
+	if opErr != nil {
+		yieldErr(opErr)
+	}
 	yieldErr(nil)
 }
