@@ -34,11 +34,20 @@ _Last reviewed: 2026-07-23._
       TestSubqueryEmptyArray + TestJoinLateral; the ASOF differential suite. Residual: a
       truly bare correlated-subquery FROM with no driving outer is still NA, but that
       shape doesn't arise in valid SQL (a correlation needs an outer).
-- [ ] Iceberg on Windows: upstream iceberg-go resolves a table location as a URI, so a
-      native `C:\...` path fails with "IO for file ... not implemented" -- the fixture
-      WRITERS in `records/iceberg_test.go` therefore `skipIcebergOnWindows`. n1k1's own
-      Iceberg read path is platform-neutral; to actually support it, hand iceberg-go a
-      `file://` URI (`filepath.ToSlash`) instead of a native path. (Found by CI 2026-07-27.)
+- [ ] Windows port of the `./glue` + `./cmd/n1k1` test suites (22 failures; found by CI
+      2026-07-27). Windows currently gates on bootstrap, vet, the core build, the core
+      tests, and that glue/test/cmd COMPILE -- only these two test steps are
+      `continue-on-error` there. Four independent causes:
+      (a) 13 `TestIceberg*` -- upstream iceberg-go resolves a table location as a URI, so
+      a native `C:\...` path gives "IO for file ... not implemented" (`records`' fixture
+      writers already `skipIcebergOnWindows`). Fix = hand it a `file://` URI via
+      `filepath.ToSlash`, which would also make Iceberg keyspaces usable on Windows.
+      (b) `TestGlobKeyspace` -- the TEST interpolates a native `C:\...` path into a SQL++
+      backquoted identifier, where `\` is an escape ("invalid escape sequence"). Use
+      `filepath.ToSlash` in the query text; globMatch itself now handles either separator.
+      (c) `TestExecuteCompiled*` + `TestExtractRecipeNativeDifferential` -- the
+      compiled-execution generators (they shell out to the Go toolchain over `test/tmp`).
+      (d) 5 `TestStats*` snapshot/race cases -- timing-sensitive on a slower runner.
 - [x] ~~Windows `globMatch` bug.~~ DONE. `records/glob.go` split on `filepath.Separator`,
       so on Windows a `/`-separated pattern never split into segments and `filepath.Match`
       let `*` cross `/` (`globMatch("/a/*","/a/b/c")` was true) and `**` missed the
