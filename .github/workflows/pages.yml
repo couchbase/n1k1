@@ -1,0 +1,70 @@
+name: Pages (SQL++ recipes)
+
+# Publishes the generated SQL++ recipes doc to GitHub Pages. This job needs NO Go
+# toolchain and no private modules -- docs/recipes_build.py is pure Python stdlib --
+# so it works on a stock public runner with no secrets.
+#
+# One-time repo setup: Settings -> Pages -> "Build and deployment" -> Source =
+# "GitHub Actions". See .github/README.md.
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - docs/recipes.yaml
+      - docs/recipes_build.py
+      - .github/workflows/pages.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never cancel an in-flight deploy: a half-applied Pages deployment is worse than
+# a slightly stale one.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build site
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      # Regenerate rather than trusting the committed HTML, so the published page
+      # always reflects docs/recipes.yaml (CI's `docs` job enforces they match).
+      - name: Generate the recipes doc
+        run: python3 docs/recipes_build.py --all
+
+      - name: Assemble the site
+        run: |
+          set -euo pipefail
+          mkdir -p _site
+          # recipes.html is fully self-contained (inlined CSS/JS, no external
+          # requests), so it stands alone as the site root.
+          cp docs/recipes.html _site/index.html
+          cp docs/recipes.md   _site/recipes.md
+          touch _site/.nojekyll   # serve files verbatim; skip Jekyll processing
+          ls -lh _site
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    name: deploy to Pages
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4

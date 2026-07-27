@@ -27,3 +27,7 @@ tmp
 # Python bytecode
 __pycache__/
 *.pyc
+
+# Empty stub modules for go.mod's placeholder EE requires, created by
+# scripts/bootstrap.sh (whose `replace` lines are likewise never committed).
+/.ee-stubs/

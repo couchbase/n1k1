@@ -1,0 +1,157 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 9 * * *'   # nightly full conformance sweep (09:17 UTC)
+
+# A newer push to the same ref supersedes an in-flight run.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------- tier 1 ----
+  # No Go, no secrets, no private modules -- so this runs for EVERY contributor,
+  # including pull requests from forks (which never receive repo secrets).
+  docs:
+    name: docs (recipes generator)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      # docs/recipes.{md,html} are GENERATED from docs/recipes.yaml. Regenerate and
+      # fail if the committed copies differ, so the published doc can never drift
+      # from its source of truth. (The generator is pure stdlib -- no pip install.)
+      - name: recipes.md / recipes.html are up to date
+        run: |
+          python3 docs/recipes_build.py --all
+          if ! git diff --quiet -- docs/recipes.md docs/recipes.html; then
+            echo "::error::docs/recipes.{md,html} are stale -- run 'make recipes' and commit the result"
+            git diff -- docs/recipes.md docs/recipes.html
+            exit 1
+          fi
+          echo "generated docs match docs/recipes.yaml"
+
+  # -------------------------------------------------------------- preflight ----
+  # The `secrets` context is NOT available in a job-level `if:`, so probe it in a
+  # step and surface the answer as a job output the Go jobs can gate on.
+  preflight:
+    name: preflight (private fork access)
+    runs-on: ubuntu-latest
+    outputs:
+      has-fork-access: ${{ steps.probe.outputs.has-fork-access }}
+    steps:
+      - id: probe
+        env:
+          FORK_TOKEN: ${{ secrets.CBQ_FORK_TOKEN }}
+        run: |
+          if [ -n "${FORK_TOKEN}" ]; then
+            echo "has-fork-access=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has-fork-access=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Go jobs skipped::CBQ_FORK_TOKEN is unavailable (fork PR, or the secret is not set)."
+            echo "::notice::go.mod replaces github.com/couchbase/query with the PRIVATE github.com/couchbase/n1k1-query fork, so the module graph cannot be loaded without a credential. See .github/README.md."
+          fi
+
+  # ---------------------------------------------------------------- tier 2 ----
+  # Build + test on all three OSes. Requires the private-fork credential.
+  go:
+    name: go / ${{ matrix.os }}
+    needs: preflight
+    if: needs.preflight.outputs.has-fork-access == 'true'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    env:
+      CGO_ENABLED: '0'   # n1k1 is pure Go; keeps FAISS/cgo paths dark
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/bootstrap-go
+        with:
+          fork-token: ${{ secrets.CBQ_FORK_TOKEN }}
+
+      # The self-contained core: no n1ql tag, no cbq engine.
+      - name: vet + build (core)
+        run: |
+          go vet ./...
+          go build ./...
+      - name: test (core)
+        run: go test ./...
+
+      # The cbq-engine integration layer + the CLI.
+      - name: build (n1ql glue, test harness, CLI)
+        run: go build -tags n1ql ./glue/... ./test/... ./cmd/n1k1
+      - name: test (glue)
+        run: go test -tags n1ql ./glue
+      # Every cmd/n1k1 file is //go:build n1ql, so the untagged `go test ./...`
+      # above silently skips the package -- run it explicitly with the tag.
+      - name: test (CLI)
+        run: go test -tags n1ql ./cmd/n1k1
+
+  # ------------------------------------------------------------------------ ----
+  # Every SQL++ example in docs/recipes.yaml, executed against a freshly built
+  # CLI. This is the automated test for the recipes doc. Linux only: the checker
+  # looks for ./n1k1 at the repo root (n1k1.exe on Windows would be skipped).
+  recipes-check:
+    name: recipes (run every SQL++ example)
+    needs: preflight
+    if: needs.preflight.outputs.has-fork-access == 'true'
+    runs-on: ubuntu-latest
+    env:
+      CGO_ENABLED: '0'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/bootstrap-go
+        with:
+          fork-token: ${{ secrets.CBQ_FORK_TOKEN }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: build the CLI
+        run: go build -tags n1ql -o n1k1 ./cmd/n1k1
+      - name: run every recipe
+        run: python3 docs/recipes_build.py --check
+      # The detector-recipe golden-fixture runner (hermetic: it builds its own
+      # temp keyspaces, so the datastore argument is never queried).
+      - name: .multi golden fixtures
+        run: ./n1k1 -c '.multi test --queries cmd/n1k1/testdata/detectors' cmd/n1k1/testdata/detectors
+
+  # ---------------------------------------------------------------- tier 3 ----
+  # The SQL++ conformance suites are long (many minutes), so they do not gate
+  # every PR -- they run on master, nightly, and on demand.
+  suite:
+    name: conformance suite
+    needs: preflight
+    if: >-
+      needs.preflight.outputs.has-fork-access == 'true' &&
+      github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CGO_ENABLED: '0'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/bootstrap-go
+        with:
+          fork-token: ${{ secrets.CBQ_FORK_TOKEN }}
+      # Ordered exactly as the Makefile's test-suite-all: the generators emit Go
+      # source into test/tmp/, which is then compiled and run as the compiled-mode
+      # differential. The steps MUST stay in this order so test/tmp is never stale.
+      - name: suite (interpreted + generators)
+        run: go test -tags n1ql ./test
+      - name: suite (compiled differential)
+        run: |
+          (cd test/tmp && go fmt ./... >/dev/null)
+          go test -tags n1ql ./test/tmp

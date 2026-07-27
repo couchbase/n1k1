@@ -1,0 +1,136 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:   # build the artifacts without publishing a release
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # n1k1's CLI is pure Go with CGO_ENABLED=0, so every target cross-compiles from
+  # a single Linux runner -- cheaper and faster than a 3-OS matrix, and it keeps
+  # all artifacts bit-reproducible from one toolchain. (All six targets verified.)
+  build:
+    name: ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: linux,   goarch: amd64 }
+          - { goos: linux,   goarch: arm64 }
+          - { goos: darwin,  goarch: amd64 }   # macOS Intel
+          - { goos: darwin,  goarch: arm64 }   # macOS Apple silicon
+          - { goos: windows, goarch: amd64 }
+          - { goos: windows, goarch: arm64 }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # `git describe` needs full history + tags
+
+      # Resolve the version BEFORE bootstrapping: bootstrap appends local replace
+      # directives to go.mod, which would otherwise make `git describe` report -dirty.
+      - name: Resolve version
+        id: v
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_REF_TYPE}" = tag ]; then
+            version="${GITHUB_REF_NAME}"
+          else
+            version="$(git describe --long --tags --always 2>/dev/null || echo dev)"
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "Building n1k1 ${version}"
+
+      - uses: ./.github/actions/bootstrap-go
+        with:
+          fork-token: ${{ secrets.CBQ_FORK_TOKEN }}
+
+      - name: Build
+        env:
+          CGO_ENABLED: '0'
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          set -euo pipefail
+          bin=n1k1
+          [ "${GOOS}" = windows ] && bin=n1k1.exe
+          # -s -w strips DWARF + the symbol table: this cbq-fork-based binary is
+          # large (~110MB) and stripping trims ~30%. Go panics still symbolicate.
+          go build -tags n1ql -trimpath \
+            -ldflags "-s -w -X main.version=${VERSION}" \
+            -o "dist/${bin}" ./cmd/n1k1
+          ls -lh "dist/${bin}"
+
+      - name: Package
+        id: pkg
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          set -euo pipefail
+          stem="n1k1_${VERSION}_${GOOS}_${GOARCH}"
+          cp LICENSE.txt README.md dist/
+          cd dist
+          if [ "${GOOS}" = windows ]; then
+            archive="${stem}.zip"
+            zip -q9 "${archive}" n1k1.exe LICENSE.txt README.md
+          else
+            archive="${stem}.tar.gz"
+            tar czf "${archive}" n1k1 LICENSE.txt README.md
+          fi
+          sha256sum "${archive}" > "${archive}.sha256"
+          echo "archive=${archive}" >> "$GITHUB_OUTPUT"
+          ls -lh "${archive}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: n1k1-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: |
+            dist/${{ steps.pkg.outputs.archive }}
+            dist/${{ steps.pkg.outputs.archive }}.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+  # Publish a GitHub Release with every archive attached. Tag pushes only.
+  release:
+    name: publish release
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # create the release + upload assets
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Collect checksums
+        run: |
+          set -euo pipefail
+          cd artifacts
+          cat ./*.sha256 | sort -k2 > SHA256SUMS
+          rm -f ./*.sha256
+          echo "--- assets ---"; ls -lh; echo "--- SHA256SUMS ---"; cat SHA256SUMS
+
+      # Uses the built-in gh CLI + GITHUB_TOKEN: no third-party release action in
+      # the supply chain. --verify-tag ensures the tag really exists upstream.
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "n1k1 ${GITHUB_REF_NAME}" \
+            --generate-notes \
+            --verify-tag \
+            artifacts/*

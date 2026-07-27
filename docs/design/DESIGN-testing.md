@@ -98,28 +98,22 @@ repo-sync tree. None are imported in the CE build, but the graph loader still de
 Bootstrap = point each at an empty local stub module via an **uncommitted** `replace`, regenerate
 gitignored `intermed/`, and create gitignored `test/tmp/`.
 
-Recipe (verified 2026-07; run from the NEW worktree's repo root):
+**This is now automated** — run from the NEW worktree's repo root:
 
 ```sh
-# Modules to stub = go.mod's placeholder requires. As of 2026-07, SEVEN:
-EE="cbgt query-ee regulator eventing-ee gocbcrypto hebrew n1fty"
-#   grep -E '00010101000000-000000000000' go.mod | awk '{print $1}'   # list fresh
-
-# Create empty stub modules somewhere persistent, then replace-point go.mod at them.
-STUBS="$PWD/../ee-stubs"           # or $CLAUDE_JOB_DIR/tmp/ee-stubs for an agent
-GOVER=$(grep -E '^go [0-9]' go.mod | awk '{print $2}')
-for m in $EE; do
-  mkdir -p "$STUBS/$m"
-  printf 'module github.com/couchbase/%s\n\ngo %s\n' "$m" "$GOVER" > "$STUBS/$m/go.mod"
-done
-# Uncommitted local-path replaces:
-for m in $EE; do echo "replace github.com/couchbase/$m => $STUBS/$m"; done >> go.mod
-
-# Regenerate intermed/, make test/tmp/ (both gitignored), then verify the build.
-mkdir -p test/tmp
-go build ./cmd/intermed_build/ && ./intermed_build
+make bootstrap     # = scripts/bootstrap.sh
 CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go build -tags n1ql ./glue/... ./test/...
 ```
+
+`scripts/bootstrap.sh` discovers the placeholder requires itself
+(`grep -E '00010101000000-000000000000' go.mod` — SEVEN as of 2026-07: cbgt, query-ee,
+regulator, eventing-ee, gocbcrypto, hebrew, n1fty), writes an empty stub module per
+entry under the gitignored `.ee-stubs/`, appends a **relative** `replace` for each,
+creates `test/tmp/`, and regenerates `intermed/`. It is idempotent, and the same
+script backs CI (`.github/actions/bootstrap-go`), so there is exactly one recipe.
+
+Relative replace paths (`./.ee-stubs/…`) are deliberate: an absolute `$RUNNER_TEMP`
+path is a bash-style path that the Windows `go.exe` rejects.
 
 ⚠ **Gotchas:**
 - **Base the worktree on LOCAL master, not origin.** `git worktree add <path> -b <branch> master`
@@ -129,7 +123,11 @@ CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go build -tags n1ql ./glue/... 
 - `test/tmp/` is shared + gitignored; **concurrent worktrees running the compiler generators clobber
   it.** `mkdir -p test/tmp` before regenerating; don't trust it across a context switch.
 - The `replace` lines stay **uncommitted** (they point at machine-local stub paths).
-- TODO: a committed `make bootstrap` / `go.work` to automate this.
+  `make bootstrap` appends them; run `git checkout go.mod` before committing or rebasing.
+- **CI needs a credential, not just stubs.** `go.mod` replaces `github.com/couchbase/query`
+  — a *direct* require — with the **private** `couchbase/n1k1-query` fork, which
+  `proxy.golang.org` cannot serve. Every Go command therefore needs read access to that
+  repo; GitHub Actions takes it from the `CBQ_FORK_TOKEN` secret. See `.github/README.md`.
 
 ## Guidance
 

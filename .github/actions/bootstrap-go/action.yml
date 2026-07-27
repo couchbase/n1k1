@@ -1,0 +1,46 @@
+name: Bootstrap n1k1 Go build
+description: >-
+  Prepares a runner to build n1k1: the Go toolchain (version from go.mod), a
+  credential for the PRIVATE cbq fork that go.mod replaces couchbase/query with,
+  stub modules for go.mod's placeholder EE requires, and the generated intermed/.
+
+inputs:
+  fork-token:
+    description: >-
+      Token with read access to github.com/couchbase/n1k1-query -- the PRIVATE
+      fork that go.mod replaces github.com/couchbase/query with. Without it the
+      module graph cannot even be loaded (couchbase/query is a direct require,
+      and proxy.golang.org cannot serve a private module).
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version-file: go.mod
+        cache-dependency-path: go.sum
+
+    - name: Authenticate module fetches for the private cbq fork
+      shell: bash
+      env:
+        FORK_TOKEN: ${{ inputs.fork-token }}
+      run: |
+        set -euo pipefail
+        if [ -z "${FORK_TOKEN}" ]; then
+          echo "::error::fork-token is empty -- cannot fetch the private couchbase/n1k1-query fork"
+          exit 1
+        fi
+        # Rewrite https://github.com/couchbase/* fetches to carry the token. Scoped
+        # to the couchbase org so no other host/org fetch is affected.
+        git config --global \
+          url."https://x-access-token:${FORK_TOKEN}@github.com/couchbase/".insteadOf \
+          "https://github.com/couchbase/"
+        # GOPRIVATE keeps these modules off proxy.golang.org + sum.golang.org
+        # (which cannot serve or verify a private module) -- go fetches direct.
+        echo "GOPRIVATE=github.com/couchbase/*" >> "$GITHUB_ENV"
+
+    - name: Bootstrap (EE stubs, intermed/, test/tmp)
+      shell: bash
+      run: ./scripts/bootstrap.sh

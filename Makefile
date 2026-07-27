@@ -1,6 +1,16 @@
 default: test
 
-.PHONY: test test-all test-core test-glue test-compiler test-suite test-suite-all rules-test cli install-cli build build-glue build-intermed run-intermed-build
+.PHONY: bootstrap test test-all test-core test-glue test-compiler test-suite test-suite-all rules-test cli install-cli build build-glue build-intermed run-intermed-build
+
+# bootstrap prepares a FRESH checkout / worktree / CI runner: it stubs go.mod's
+# placeholder EE requires (whose go.mod files live only in Couchbase's internal
+# repo-sync tree), regenerates the gitignored intermed/, and creates test/tmp/.
+# Needed once before the n1ql-tagged packages (glue/, test/, cmd/n1k1) will build
+# -- see docs/design/DESIGN-testing.md. The `replace` lines it appends to go.mod
+# are machine-local: run `git checkout go.mod` before committing or rebasing.
+# The same script backs CI (.github/actions/bootstrap-go), so there is one recipe.
+bootstrap:
+	./scripts/bootstrap.sh
 
 # VERSION is `git describe` of the source tree at build time, injected into the
 # CLI via -ldflags so `n1k1 -version` reports it. Falls back to "dev" outside a
