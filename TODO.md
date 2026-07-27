@@ -172,8 +172,14 @@ in glue/patches/README.md.
   (CROSS / comma-join DONE: a nil ON clause converts to a constant-TRUE nested-loop
   join -- glue/conv.go VisitNLJoin.)
 
-- NEST via hash-join?
-- NEST via index scan?
+- NEST: DONE for ANSI (`NEST ... ON`) and lookup (`NEST ... ON KEYS`), inner + LEFT
+  OUTER -- glue/conv.go VisitNLNest / VisitNest + VisitHashNest, over the engine's
+  existing OpJoinNestedLoop isNest path (nestNL / nestKeys). Matches cbq
+  execution/nest_nl.go (inner drops a no-match left row; leftOuter keeps it with []).
+  Guard: glue TestJoinNest. Remaining: VisitIndexNest (index-driven nest) still NA;
+  VisitHashNest currently falls back to the nested-loop nest (correct, not a true
+  hash-nest) -- a real hash-nest runtime is the optimization.
+- NEST via index scan? (VisitIndexNest -- still NA)
 
 - NEST should spill out to disk when it gets too big?
   - or, perhaps not -- as it ultimately puts array into result,

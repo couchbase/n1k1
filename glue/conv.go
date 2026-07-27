@@ -684,7 +684,44 @@ func (c *Conv) VisitJoin(o *plan.Join) (interface{}, error) {
 }
 
 func (c *Conv) VisitIndexJoin(o *plan.IndexJoin) (interface{}, error) { return NA(o) }
-func (c *Conv) VisitNest(o *plan.Nest) (interface{}, error)           { return NA(o) }
+
+// VisitNest converts a lookup NEST (`lhs NEST rhs ON KEYS <expr>`): the ON KEYS expr
+// evaluates to the rhs keys, the rhs docs are fetched, and the matching docs are
+// collected into an array under the rhs alias. Mirrors VisitJoin (the lookup JOIN),
+// but emits nestKeys-* and reduces the fetched right to just the doc column (the engine
+// nests the right child's LAST column). Inner drops a keyless/no-match left row;
+// leftOuter keeps it with an empty array [].
+func (c *Conv) VisitNest(o *plan.Nest) (interface{}, error) {
+	if o.Term().JoinKeys() == nil {
+		return NA(o) // an ANSI NEST (no ON KEYS) is VisitNLNest.
+	}
+	varsTempsSlot := c.AddTemp(nil)
+	docLabel := "." + LabelSuffix(o.Term().Alias())
+	fetch := &base.Op{
+		Kind:   "datastore-fetch",
+		Labels: base.Labels{docLabel, "^id"},
+		Params: []interface{}{c.AddTemp(o)},
+		Children: []*base.Op{&base.Op{
+			Kind:   "temp-yield-var",
+			Labels: base.Labels{"^id"},
+			Params: []interface{}{varsTempsSlot},
+		}},
+	}
+	kind := "nestKeys-inner"
+	if o.Outer() {
+		kind = "nestKeys-leftOuter"
+	}
+	rv := &base.Op{
+		Kind:   kind,
+		Labels: append(append(base.Labels{}, c.TopOp.Labels...), docLabel),
+		Params: []interface{}{
+			varsTempsSlot,
+			[]interface{}{"exprTree", o.Term().JoinKeys()},
+		},
+		Children: []*base.Op{c.TopOp, c.projectDocOnly(fetch, docLabel)},
+	}
+	return c.TopSet(o, rv)
+}
 func (c *Conv) VisitIndexNest(o *plan.IndexNest) (interface{}, error) { return NA(o) }
 
 func (c *Conv) VisitUnnest(o *plan.Unnest) (interface{}, error) {
@@ -845,8 +882,49 @@ func (c *Conv) VisitNLJoin(o *plan.NLJoin) (interface{}, error) {
 	return c.TopOp, nil
 }
 
-func (c *Conv) VisitNLNest(o *plan.NLNest) (interface{}, error)     { return NA(o) }
-func (c *Conv) VisitHashNest(o *plan.HashNest) (interface{}, error) { return NA(o) }
+// VisitNLNest converts an ANSI nested-loop NEST (`lhs NEST rhs ON pred`).
+func (c *Conv) VisitNLNest(o *plan.NLNest) (interface{}, error) {
+	return c.convertNLNest(o, o.Outer(), o.Alias(), o.Onclause(), o.Filter(), o.Child())
+}
+
+// VisitHashNest converts a HASH NEST. n1k1 has no hash-nest runtime; a hash NEST is
+// semantically a nested-loop NEST over the same ON clause (the planner picks hash for
+// an equi key), so fall back to the NL nest -- correct, if slower -- mirroring
+// VisitHashJoin. BuildAlias is the nested (rhs) alias.
+func (c *Conv) VisitHashNest(o *plan.HashNest) (interface{}, error) {
+	return c.convertNLNest(o, o.Outer(), o.BuildAlias(), o.Onclause(), o.Filter(), o.Child())
+}
+
+// convertNLNest builds a nested-loop NEST: for each left row the matching right rows
+// are collected into an ARRAY under the rhs alias (matching cbq execution/nest_nl.go
+// processAnsiNest -- inner drops a left row with no matches, leftOuter keeps it with an
+// empty array []). Mirrors the join Visits. The engine nest path (OpJoinNestedLoop
+// isNest) collects the right child's LAST column per match and appends exactly ONE
+// array column, so the right branch is reduced to just the rhs doc (projectDocOnly):
+// that makes the doc the nested value AND gives the op one right label (the array
+// column's name). A correlated-subquery (NEST LATERAL) inner NAs via VisitExpressionScan.
+func (c *Conv) convertNLNest(o plan.Operator, outer bool, alias string,
+	onclause, filter expression.Expression, child plan.Operator) (interface{}, error) {
+	right, err := c.convertBranch(child)
+	if err != nil {
+		return nil, err
+	}
+	docLabel := "." + LabelSuffix(alias)
+	rightDoc := c.projectDocOnly(right, docLabel)
+	if onclause == nil {
+		onclause = expression.TRUE_EXPR
+	}
+	c.TopSet(o, c.ansiNestOp(outer, docLabel, onclause, c.TopOp, rightDoc))
+	// A pushed residual (like VisitNLJoin) applies to the nest output.
+	if filter != nil {
+		return c.TopPush(o, &base.Op{
+			Kind:   "filter",
+			Labels: c.TopOp.Labels,
+			Params: []interface{}{"exprTree", filter},
+		})
+	}
+	return c.TopOp, nil
+}
 
 // VisitHashJoin converts an ANSI HASH JOIN. n1k1 has no hash-join runtime wired
 // through the glue layer yet, but the join is semantically a nested-loop join
@@ -983,6 +1061,40 @@ func (c *Conv) ansiJoinOp(kind string, outer bool, onclause expression.Expressio
 			right.Labels...),
 		Params:   []interface{}{"exprTree", onclause},
 		Children: []*base.Op{left, right},
+	}
+}
+
+// ansiNestOp builds an ANSI NEST base.Op ("nestNL-inner"/"nestNL-leftOuter"). Like
+// ansiJoinOp, but the output is the left labels plus exactly ONE column (docLabel),
+// which OpJoinNestedLoop's isNest path fills with the array of matching right docs
+// (collected from the right child's last column). onclause is evaluated over the joined
+// left+right(doc) labels.
+func (c *Conv) ansiNestOp(outer bool, docLabel string, onclause expression.Expression,
+	left, rightDoc *base.Op) *base.Op {
+	kind := "nestNL-inner"
+	if outer {
+		kind = "nestNL-leftOuter"
+	}
+	return &base.Op{
+		Kind:     kind,
+		Labels:   append(append(base.Labels{}, left.Labels...), docLabel),
+		Params:   []interface{}{"exprTree", onclause},
+		Children: []*base.Op{left, rightDoc},
+	}
+}
+
+// projectDocOnly wraps a right-side branch in a project that yields ONLY its doc column
+// (docLabel). A NEST collects the right child's LAST column into its array, and a
+// keyspace branch yields [".alias","^id"] (doc first) -- so reducing to just the doc
+// both makes the doc the nested value and gives the nest op a single right label (its
+// array-column name). docLabel resolves the whole doc, so a NEST ON predicate over it
+// still sees every rhs field.
+func (c *Conv) projectDocOnly(right *base.Op, docLabel string) *base.Op {
+	return &base.Op{
+		Kind:     "project",
+		Labels:   base.Labels{docLabel},
+		Params:   []interface{}{[]interface{}{"labelPath", docLabel}},
+		Children: []*base.Op{right},
 	}
 }
 
