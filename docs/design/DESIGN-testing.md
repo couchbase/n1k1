@@ -124,10 +124,13 @@ path is a bash-style path that the Windows `go.exe` rejects.
   it.** `mkdir -p test/tmp` before regenerating; don't trust it across a context switch.
 - The `replace` lines stay **uncommitted** (they point at machine-local stub paths).
   `make bootstrap` appends them; run `git checkout go.mod` before committing or rebasing.
-- **CI needs a credential, not just stubs.** `go.mod` replaces `github.com/couchbase/query`
-  — a *direct* require — with the **private** `couchbase/n1k1-query` fork, which
-  `proxy.golang.org` cannot serve. Every Go command therefore needs read access to that
-  repo; GitHub Actions takes it from the `CBQ_FORK_TOKEN` secret. See `.github/README.md`.
+- **CI needs no credential** (since 2026-07-27, when the `couchbase/n1k1-query` fork that
+  `go.mod` replaces `github.com/couchbase/query` with was made **public** —
+  `proxy.golang.org` now serves it). One private module remains, `couchbase/cbftx`, but it
+  is *indirect* and nothing the build reaches imports it, so module-graph pruning never
+  loads its `go.mod` — verified with `cbftx` removed from the module cache under
+  `GOPROXY=off`. Corollary: **keep `go mod tidy` / `go list -m all` out of CI**, as those
+  load the full graph and would demand it. See `.github/README.md`.
 
 ## Guidance
 

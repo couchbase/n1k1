@@ -49,8 +49,6 @@ jobs:
           echo "Building n1k1 ${version}"
 
       - uses: ./.github/actions/bootstrap-go
-        with:
-          fork-token: ${{ secrets.CBQ_FORK_TOKEN }}
 
       - name: Build
         env:
