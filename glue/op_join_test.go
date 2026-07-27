@@ -185,3 +185,65 @@ func TestJoinLateral(t *testing.T) {
 		}
 	}
 }
+
+// TestSubqueryEmptyArray pins the N1QL rule that a subquery evaluates to an ARRAY, so
+// an EMPTY subquery is the empty array [] -- NOT null (EvaluateSubquery). Regression for
+// a CTE-as-datasource bug: `FROM <empty cte>` used to yield one spurious {} row because
+// the empty subquery came back as NULL and a FROM expr-scan can't iterate a non-array,
+// so it fell back to emitting the value as a single row. Also checks the array-valued
+// contexts (ARRAY_LENGTH / IN) the same NULL-vs-[] bug affected.
+func TestSubqueryEmptyArray(t *testing.T) {
+	dir := t.TempDir()
+	d := filepath.Join(dir, "default", "b")
+	if err := os.MkdirAll(d, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for i, doc := range []string{`{"k":2}`, `{"k":3}`} {
+		if err := os.WriteFile(filepath.Join(d, fmt.Sprintf("r%d.json", i)), []byte(doc), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sess, err := OpenSession(dir, "default")
+	if err != nil {
+		t.Fatalf("OpenSession: %v", err)
+	}
+	defer sess.Close()
+
+	rows := func(q string) []string {
+		res, err := sess.Run(q)
+		if err != nil {
+			t.Fatalf("Run %q: %v", q, err)
+		}
+		var out []string // nil when there are no rows (matches a nil `want`).
+		for _, r := range res.Rows {
+			out = append(out, string(r))
+		}
+		sort.Strings(out)
+		return out
+	}
+	eq := func(name string, got, want []string) {
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("%s:\n  got  %v\n  want %v", name, got, want)
+		}
+	}
+
+	// The bug: an empty CTE used as a datasource must yield ZERO rows, not one {} row.
+	eq("empty-cte-from",
+		rows(`WITH c AS (SELECT b.k FROM b WHERE b.k = 99) SELECT c.k FROM c`),
+		nil)
+	// A non-empty CTE datasource is unaffected.
+	eq("nonempty-cte-from",
+		rows(`WITH c AS (SELECT b.k FROM b WHERE b.k = 2) SELECT c.k FROM c`),
+		[]string{`{"k":2}`})
+	// An empty subquery is [] (length 0), and a non-empty one its real length.
+	eq("array-length-empty",
+		rows(`SELECT ARRAY_LENGTH((SELECT b.k FROM b WHERE b.k = 99)) AS n`),
+		[]string{`{"n":0}`})
+	eq("array-length-nonempty",
+		rows(`SELECT ARRAY_LENGTH((SELECT b.k FROM b)) AS n`),
+		[]string{`{"n":2}`})
+	// x IN (empty subquery) is false, so the WHERE keeps no rows.
+	eq("in-empty-subquery",
+		rows(`SELECT b.k FROM b WHERE b.k IN (SELECT RAW b2.k FROM b b2 WHERE b2.k = 99)`),
+		nil)
+}

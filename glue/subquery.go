@@ -270,6 +270,16 @@ func (c *GlueContext) EvaluateSubquery(query *algebra.Select, parent value.Value
 		return nil, execErr
 	}
 
+	// A subquery evaluates to an ARRAY of its result rows -- an empty subquery is the
+	// empty array [], NOT NULL. Without this, `out` (a nil slice) becomes value NULL,
+	// which (a) diverges from N1QL (`ARRAY_LENGTH((SELECT ...))` should be 0, `x IN
+	// (SELECT ...)` should be false, ...) and (b) makes a FROM-clause expr-scan over an
+	// empty CTE/subquery yield one spurious row (ExprScanOp can't iterate a non-array,
+	// so it falls back to emitting the value as a single row). See glue TestSubqueryEmptyArray.
+	if out == nil {
+		out = []interface{}{}
+	}
+
 	return value.NewValue(out), nil
 }
 

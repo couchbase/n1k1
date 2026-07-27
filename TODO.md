@@ -21,11 +21,19 @@ _Last reviewed: 2026-07-23._
 - [ ] Native-lane ASOF / subquery projection -- kill boxed-value/JSON alloc churn (top perf lever).
 - [ ] Columnar step 6: dictionary GROUP BY + more vectorized kernels + optional SIMD leaf (DESIGN-col.md; steps 1-5 done).
 - [ ] Raise the SQL++ conformance (TestSuiteCases) pass rate.
-- [ ] Correlated FROM-clause subqueries / CTE-as-datasource edge cases. The LATERAL /
-      correlated-comma-join form (a correlated-subquery plan.ExpressionScan driven by a
-      nested-loop JOIN) is DONE -- glue/conv.go VisitNLJoin + JoinLateralOp. Remaining:
-      a BARE correlated-subquery FROM-expr with no driving outer, and correlated
-      CTE-as-datasource (WITH RECURSIVE roadmap) -- still NA at VisitExpressionScan.
+- [x] ~~Correlated FROM-clause subqueries / CTE-as-datasource edge cases.~~ DONE. The
+      LATERAL / correlated-comma-join form lowers via VisitNLJoin + JoinLateralOp; simple
+      correlated derived tables are flattened by the planner (no ExpressionScan); and
+      non-flattenable ones (agg/DISTINCT/LIMIT) run within the enclosing correlated
+      subquery -- so a correlated subquery ExpressionScan now only arises for LATERAL,
+      which is handled (the VisitExpressionScan NA is unreachable for valid queries).
+      Also FIXED a CTE-as-datasource bug found here: an EMPTY subquery returned NULL not
+      the empty array [] (EvaluateSubquery), so `FROM <empty cte>` yielded a spurious {}
+      row (and ARRAY_LENGTH/IN diverged); the ASOF argmax->merge lowering's no-match
+      default was aligned to [] to match (optimize_temporal.go). Guards: glue
+      TestSubqueryEmptyArray + TestJoinLateral; the ASOF differential suite. Residual: a
+      truly bare correlated-subquery FROM with no driving outer is still NA, but that
+      shape doesn't arise in valid SQL (a correlation needs an outer).
 - [ ] IndexScan2/3 pushdowns: indexProjection / indexOrder / indexGroupAggs.
 - [ ] JOIN types: FULL OUTER (cbq-fork grammar does not support FULL).
 - [ ] GROUP BY ROLLUP / CUBE / GROUPING SETS (cbq-fork grammar does not support).

@@ -325,13 +325,13 @@ func TestASOFLoweringDifferential(t *testing.T) {
 	if !fired {
 		t.Fatalf("expected the ASOF lowering to FIRE (proven keyspaces); it did not")
 	}
-	// Spot-check the shape: 3 rows, first has no preceding R row (null), later rows
+	// Spot-check the shape: 3 rows, first has no preceding R row ([]), later rows
 	// carry the array-wrapped nearest-preceding projection.
 	if len(off) != 3 {
 		t.Fatalf("want 3 rows, got %d: %v", len(off), off)
 	}
-	if off[0] != `{"ts":1779024971100000000,"state_at":null}` {
-		t.Fatalf("row0 (no preceding -> null) unexpected: %s", off[0])
+	if off[0] != `{"ts":1779024971100000000,"state_at":[]}` {
+		t.Fatalf("row0 (no preceding -> [] (empty)) unexpected: %s", off[0])
 	}
 	if off[1] != `{"ts":1779024973300000000,"state_at":[{"msg":"r-200"}]}` {
 		t.Fatalf("row1 (nearest preceding) unexpected: %s", off[1])
@@ -417,7 +417,7 @@ func TestASOFLoweringOuterFilterDifferential(t *testing.T) {
 	// E carries a mix of msgs; the outer WHERE keeps only the "boom" rows (mirrors a
 	// detector's `regexp_contains(e.msg, ...)` correlate-only-matching-rows filter).
 	asofWriteKS(t, root, "elog", "ns_server.error.log",
-		nsLine("2026-05-17T15:36:11.100+02:00", "n1", "boom-100")+ // kept; no preceding R -> null
+		nsLine("2026-05-17T15:36:11.100+02:00", "n1", "boom-100")+ // kept; no preceding R -> [] (empty)
 			nsLine("2026-05-17T15:36:12.500+02:00", "n1", "noise-250")+ // dropped by filter
 			nsLine("2026-05-17T15:36:13.300+02:00", "n1", "boom-300")) // kept; nearest R@12.200
 	asofWriteKS(t, root, "rlog", "ns_server.rebalance.log",
@@ -442,8 +442,8 @@ func TestASOFLoweringOuterFilterDifferential(t *testing.T) {
 	if len(off) != 2 {
 		t.Fatalf("want 2 filtered rows, got %d: %v", len(off), off)
 	}
-	if off[0] != `{"ts":1779024971100000000,"state_at":null}` {
-		t.Fatalf("row0 (kept, no preceding -> null) unexpected: %s", off[0])
+	if off[0] != `{"ts":1779024971100000000,"state_at":[]}` {
+		t.Fatalf("row0 (kept, no preceding -> [] (empty)) unexpected: %s", off[0])
 	}
 	if off[1] != `{"ts":1779024973300000000,"state_at":[{"msg":"r-200"}]}` {
 		t.Fatalf("row1 (kept, nearest preceding R@12.200) unexpected: %s", off[1])
@@ -483,11 +483,11 @@ func TestASOFLoweringRightResidualDifferential(t *testing.T) {
 		t.Fatalf("want 3 rows, got %d: %v", len(off), off)
 	}
 	// Only r-400 (@14.400) survives the residual. e@11.100 and e@13.300 have no PRECEDING
-	// r-4* (r-400 is at 14.400) -> null; e@15.500 -> r-400.
-	if off[0] != `{"ts":1779024971100000000,"state_at":null}` {
+	// r-4* (r-400 is at 14.400) -> [] (empty); e@15.500 -> r-400.
+	if off[0] != `{"ts":1779024971100000000,"state_at":[]}` {
 		t.Fatalf("row0 (no preceding r-4*) unexpected: %s", off[0])
 	}
-	if off[1] != `{"ts":1779024973300000000,"state_at":null}` {
+	if off[1] != `{"ts":1779024973300000000,"state_at":[]}` {
 		t.Fatalf("row1 (r-400 is after, not preceding) unexpected: %s", off[1])
 	}
 	if off[2] != `{"ts":1779024975500000000,"state_at":[{"msg":"r-400"}]}` {
@@ -522,14 +522,14 @@ func TestASOFLoweringFollowingDifferential(t *testing.T) {
 		t.Fatalf("expected nearest-following to lower to a merge; it did not")
 	}
 	// e@11.100 -> first r at/after = r-200@12.200; e@13.300 -> r-400@14.400;
-	// e@15.500 -> no following r -> null.
+	// e@15.500 -> no following r -> [] (empty).
 	if off[0] != `{"ts":1779024971100000000,"nx":[{"msg":"r-200"}]}` {
 		t.Fatalf("row0 unexpected: %s", off[0])
 	}
 	if off[1] != `{"ts":1779024973300000000,"nx":[{"msg":"r-400"}]}` {
 		t.Fatalf("row1 unexpected: %s", off[1])
 	}
-	if off[2] != `{"ts":1779024975500000000,"nx":null}` {
+	if off[2] != `{"ts":1779024975500000000,"nx":[]}` {
 		t.Fatalf("row2 unexpected: %s", off[2])
 	}
 }
@@ -569,7 +569,7 @@ func TestASOFLoweringFollowingResidualDifferential(t *testing.T) {
 	if off[1] != `{"ts":1779024973300000000,"next_state":[{"msg":"r-400"}]}` {
 		t.Fatalf("row1 unexpected: %s", off[1])
 	}
-	if off[2] != `{"ts":1779024975500000000,"next_state":null}` {
+	if off[2] != `{"ts":1779024975500000000,"next_state":[]}` {
 		t.Fatalf("row2 unexpected: %s", off[2])
 	}
 }
@@ -583,8 +583,8 @@ func TestASOFLoweringFollowingSoftDifferential(t *testing.T) {
 	root := t.TempDir()
 	asofWriteKS(t, root, "elog", "ns_server.error.log",
 		nsLine("2026-05-17T15:36:11.100+02:00", "n1", "e-100")+ // nearest r-200@12.200 (1.1s) <= 1.5s -> match
-			nsLine("2026-05-17T15:36:12.500+02:00", "n1", "e-250")+ // nearest r-400@14.400 (1.9s) > 1.5s -> null
-			nsLine("2026-05-17T15:36:15.500+02:00", "n1", "e-500")) // no following r -> null
+			nsLine("2026-05-17T15:36:12.500+02:00", "n1", "e-250")+ // nearest r-400@14.400 (1.9s) > 1.5s -> [] (empty)
+			nsLine("2026-05-17T15:36:15.500+02:00", "n1", "e-500")) // no following r -> [] (empty)
 	asofWriteKS(t, root, "rlog", "ns_server.rebalance.log",
 		nsLine("2026-05-17T15:36:12.200+02:00", "n1", "r-200")+
 			nsLine("2026-05-17T15:36:14.400+02:00", "n1", "r-400"))
@@ -606,10 +606,10 @@ func TestASOFLoweringFollowingSoftDifferential(t *testing.T) {
 	if off[0] != `{"ts":1779024971100000000,"nx":[{"msg":"r-200"}]}` {
 		t.Fatalf("row0 (within 1.5s) unexpected: %s", off[0])
 	}
-	if off[1] != `{"ts":1779024972500000000,"nx":null}` {
-		t.Fatalf("row1 (nearest following beyond 1.5s -> null) unexpected: %s", off[1])
+	if off[1] != `{"ts":1779024972500000000,"nx":[]}` {
+		t.Fatalf("row1 (nearest following beyond 1.5s -> [] (empty)) unexpected: %s", off[1])
 	}
-	if off[2] != `{"ts":1779024975500000000,"nx":null}` {
+	if off[2] != `{"ts":1779024975500000000,"nx":[]}` {
 		t.Fatalf("row2 (no following) unexpected: %s", off[2])
 	}
 }
@@ -642,7 +642,7 @@ func TestASOFLoweringFollowingPartitionedDifferential(t *testing.T) {
 		t.Fatalf("expected following + partition to lower; it did not")
 	}
 	// e-n1@11.0 -> nearest following n1 = r-n1@13.0; e-n2@11.5 -> nearest following n2 =
-	// r-n2@12.0; e-n1-late@16.0 -> no following n1 -> null.
+	// r-n2@12.0; e-n1-late@16.0 -> no following n1 -> [] (empty).
 	if len(off) != 3 {
 		t.Fatalf("want 3 rows, got %d: %v", len(off), off)
 	}
@@ -652,7 +652,7 @@ func TestASOFLoweringFollowingPartitionedDifferential(t *testing.T) {
 	if off[1] != `{"node":"n2","ts":1779024971500000000,"nx":[{"msg":"r-n2"}]}` {
 		t.Fatalf("row1 (n2 -> r-n2) unexpected: %s", off[1])
 	}
-	if off[2] != `{"node":"n1","ts":1779024976000000000,"nx":null}` {
+	if off[2] != `{"node":"n1","ts":1779024976000000000,"nx":[]}` {
 		t.Fatalf("row2 (n1 late -> no following) unexpected: %s", off[2])
 	}
 }
@@ -674,7 +674,7 @@ func TestASOFLoweringSingleFileKeyspace(t *testing.T) {
 		}
 	}
 	writeTop("ns_server.error.log",
-		nsLine("2026-05-17T15:36:11.100+02:00", "n1", "e-100")+ // no preceding R -> null
+		nsLine("2026-05-17T15:36:11.100+02:00", "n1", "e-100")+ // no preceding R -> [] (empty)
 			nsLine("2026-05-17T15:36:13.300+02:00", "n1", "e-300")) // nearest R@12.200
 	writeTop("ns_server.rebalance.log",
 		nsLine("2026-05-17T15:36:12.200+02:00", "n1", "r-200"))
@@ -702,8 +702,8 @@ func TestASOFLoweringSingleFileKeyspace(t *testing.T) {
 	if len(off) != 2 {
 		t.Fatalf("want 2 rows, got %d: %v", len(off), off)
 	}
-	if off[0] != `{"ts":1779024971100000000,"state_at":null}` {
-		t.Fatalf("row0 (no preceding -> null) unexpected: %s", off[0])
+	if off[0] != `{"ts":1779024971100000000,"state_at":[]}` {
+		t.Fatalf("row0 (no preceding -> [] (empty)) unexpected: %s", off[0])
 	}
 	if off[1] != `{"ts":1779024973300000000,"state_at":[{"msg":"r-200"}]}` {
 		t.Fatalf("row1 (nearest preceding R@12.200) unexpected: %s", off[1])
@@ -718,7 +718,7 @@ func TestASOFLoweringSingleFileKeyspace(t *testing.T) {
 func TestASOFLoweringScalarForms(t *testing.T) {
 	root := t.TempDir()
 	asofWriteKS(t, root, "elog", "ns_server.error.log",
-		nsLine("2026-05-17T15:36:11.100+02:00", "n1", "e-100")+ // no preceding R -> null
+		nsLine("2026-05-17T15:36:11.100+02:00", "n1", "e-100")+ // no preceding R -> [] (empty)
 			nsLine("2026-05-17T15:36:13.300+02:00", "n1", "e-300")) // nearest R@12.200 = r-200
 	asofWriteKS(t, root, "rlog", "ns_server.rebalance.log",
 		nsLine("2026-05-17T15:36:12.200+02:00", "n1", "r-200"))
@@ -792,9 +792,9 @@ func TestASOFLoweringSoftDifferential(t *testing.T) {
 		t.Fatalf("expected the SOFT ASOF lowering to FIRE; it did not")
 	}
 	// The last row's nearest-preceding R (@14.400) is ~5.6s back, beyond Δt=2s, so
-	// the soft guard drops it -> null (both baseline and lowered must agree here).
-	if off[2] != `{"ts":1779024980000000000,"state_at":null}` {
-		t.Fatalf("soft row2 should be null (out of tolerance), got: %s", off[2])
+	// the soft guard drops it -> [] (empty) (both baseline and lowered must agree here).
+	if off[2] != `{"ts":1779024980000000000,"state_at":[]}` {
+		t.Fatalf("soft row2 should be [] (out of tolerance), got: %s", off[2])
 	}
 
 	// Sanity: PLAIN ASOF (no look-back) over the same data would NOT drop that far
@@ -842,10 +842,10 @@ func TestASOFLoweringPartitionedDifferential(t *testing.T) {
 		t.Fatalf("expected the partitioned ASOF lowering to FIRE; it did not")
 	}
 	// e2@13.5 (node n2): nearest preceding R of node n2 with ts<=13.5 is NONE
-	// (r2-14 is later) -> null, even though r1-12 is nearer by ts. Verifies the
+	// (r2-14 is later) -> [] (empty), even though r1-12 is nearer by ts. Verifies the
 	// partition is respected.
-	if on[1] != `{"ts":1779024973500000000,"node":"n2","state_at":null}` {
-		t.Fatalf("partitioned row1 should be null (no same-node preceding), got: %s", on[1])
+	if on[1] != `{"ts":1779024973500000000,"node":"n2","state_at":[]}` {
+		t.Fatalf("partitioned row1 should be [] (no same-node preceding), got: %s", on[1])
 	}
 }
 
@@ -894,7 +894,7 @@ func TestASOFLoweringCrossNodeDifferential(t *testing.T) {
 	// e@11.1 -> no preceding R (null); e@13.3 -> nearest preceding is R@13.0 (r-b);
 	// e@15.5 -> nearest preceding is R@15.0 (r-d). runBoth already asserted ON==OFF.
 	want := []string{
-		`{"ts":1779024971100000000,"state_at":null}`,
+		`{"ts":1779024971100000000,"state_at":[]}`,
 		`{"ts":1779024973300000000,"state_at":[{"msg":"r-b"}]}`,
 		`{"ts":1779024975500000000,"state_at":[{"msg":"r-d"}]}`,
 	}
@@ -919,7 +919,7 @@ func TestASOFLoweringCrossNodeDifferential(t *testing.T) {
 func TestASOFLoweringNearSortedR(t *testing.T) {
 	root := t.TempDir()
 	asofWriteKS(t, root, "elog", "ns_server.error.log",
-		nsLine("2026-05-17T15:36:11.000+02:00", "n1", "e-1100")+ // no preceding R -> null
+		nsLine("2026-05-17T15:36:11.000+02:00", "n1", "e-1100")+ // no preceding R -> [] (empty)
 			nsLine("2026-05-17T15:36:12.500+02:00", "n1", "e-2500")+ // nearest <=12.5 is R@12.4 (r-400)
 			nsLine("2026-05-17T15:36:12.700+02:00", "n1", "e-2700")+ // nearest is R@12.6 (r-600)
 			nsLine("2026-05-17T15:36:13.500+02:00", "n1", "e-3500")) // nearest is R@13.0 (r-1000)
@@ -955,7 +955,7 @@ func TestASOFLoweringNearSortedR(t *testing.T) {
 	// watermark reordered R correctly (a raw near stream would either trip the
 	// build-side tripwire or mismatch here). runBoth already asserted ON == OFF.
 	want := []string{
-		`{"ts":1779024971000000000,"state_at":null}`,
+		`{"ts":1779024971000000000,"state_at":[]}`,
 		`{"ts":1779024972500000000,"state_at":[{"msg":"r-400"}]}`,
 		`{"ts":1779024972700000000,"state_at":[{"msg":"r-600"}]}`,
 		`{"ts":1779024973500000000,"state_at":[{"msg":"r-1000"}]}`,
@@ -1020,7 +1020,7 @@ func TestASOFLoweringNonProvenDoesNotFire(t *testing.T) {
 	}
 	got := rowsAsStrings(res.Rows)
 	want := []string{
-		`{"ts":100,"state_at":null}`,
+		`{"ts":100,"state_at":[]}`, // empty subquery = empty ARRAY [] (like the non-empty row), not null; was n1k1's old empty->NULL bug
 		`{"ts":300,"state_at":[{"msg":"r-200"}]}`,
 	}
 	if len(got) != len(want) {

@@ -1243,7 +1243,7 @@ func mergeScanParamsMulti(keyIdx int, sortedness, minKeys, maxKeys, bounds []int
 //
 // into:
 //
-//	project[ .ts=e.ts, .state_at=IFMISSING(asofresult, null), .e ]
+//	project[ .ts=e.ts, .state_at=IFMISSING(asofresult, []), .e ]
 //	  merge-join asof/soft [leftKey=E.key, rightKey=R.key, left, tol, partIdxs]
 //	    merge-scan(E)   over  project[ .e, ^ekey=e.key, <ePart...> ] over scan(E)
 //	    merge-scan(R)   over  project[ ^rkey=r.key,
@@ -1255,8 +1255,9 @@ func mergeScanParamsMulti(keyIdx int, sortedness, minKeys, maxKeys, bounds []int
 // wrap of the single nearest-preceding R row's projection. Precomputing that value
 // per R row means the ASOF-selected right row's column IS the subquery result --
 // byte-for-byte -- so the lowered output matches the correlated baseline. A no-
-// preceding-row outer (left-outer -> MISSING right) maps to null via IFMISSING,
-// matching the empty subquery's value.NewValue(nil) -> NULL.
+// preceding-row outer (left-outer -> MISSING right) maps to the empty array [] via
+// IFMISSING, matching an empty subquery's [] (EvaluateSubquery); a `(subq)[0]` term's
+// trailing [0] then turns that [] into MISSING, exactly as on the subquery side.
 //
 // GATING (the safety net, identical in spirit to WireTemporalMergeMeta): fire ONLY
 // when BOTH E and R are recipe-matched with SortedSourceMeta.SortKeyLabel ==
@@ -1637,7 +1638,7 @@ func tryLowerASOFProject(p *base.Op, conv *Conv, byKey map[string]plan.Operator)
 	}
 
 	// --- rewire the project: child = merge-join; the argmax term now reads the joined
-	// right asofresult column, mapping MISSING (no preceding row) -> null. This stands
+	// right asofresult column, mapping MISSING (no preceding row) -> []. This stands
 	// in for the subquery's own value (asofResultExpr reproduces its 1-element array).
 	// If the original term was (subq)[0], re-apply that [0] over the reconstructed
 	// value, so the lowered term yields the same scalar the correlated form did.
@@ -1647,8 +1648,13 @@ func tryLowerASOFProject(p *base.Op, conv *Conv, byKey map[string]plan.Operator)
 		// read it as a plain native labelPath (see the nativeResult note above).
 		p.Params[termIdx] = []interface{}{"labelPath", asofResultLabel}
 	} else {
+		// A no-preceding-row outer left-outer-joins to a MISSING asofresult; default it
+		// to the empty ARRAY [] (NOT null) -- an empty subquery is [] (EvaluateSubquery),
+		// so this keeps the lowered lane byte-identical to the correlated baseline. For a
+		// bare `(subq)` term that yields []; for a `(subq)[0]` term the [0] below turns []
+		// into MISSING, exactly as `[][0]` does on the subquery side.
 		var repl expression.Expression = expression.NewIfMissing(
-			fieldRef("", asofResultField), expression.NewConstant(nil))
+			fieldRef("", asofResultField), expression.NewConstant([]interface{}{}))
 		if elem0 {
 			repl = expression.NewElement(repl, expression.NewConstant(0.0))
 		}
