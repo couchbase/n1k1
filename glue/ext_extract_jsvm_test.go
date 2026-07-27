@@ -15,6 +15,7 @@ package glue
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -524,6 +525,154 @@ func TestJSExtractTOML2QueryEndToEnd(t *testing.T) {
 	ids := runRows(t, sess, "SELECT META(c).id AS id FROM conf c")
 	if len(ids) != 1 || ids[0] != `{"id":"svc"}` {
 		t.Errorf("ids = %v, want [{\"id\":\"svc\"}]", ids)
+	}
+}
+
+// stanzaFixture is a blank-line-delimited "stanza" file (see stanza.extract.js): three
+// records, each key:value lines, with `weight` present on two of them.
+const stanzaFixture = `name: alpha
+role: web
+weight: 3
+
+name: beta
+role: db
+
+name: gamma
+role: cache
+weight: 5
+`
+
+// TestJSExtractStreamStanzaEndToEnd proves the STREAMING imperative path
+// (extractStream) end-to-end: the shipped stanza.extract.js reads a .stanza file
+// incrementally (file.readLine), frames blank-line-delimited records itself, and streams
+// them through a real SQL FROM -- including numeric coercion flowing through a WHERE.
+func TestJSExtractStreamStanzaEndToEnd(t *testing.T) {
+	repo, err := filepath.Abs("..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	recipe := filepath.Join(repo, "extensions", "extract_recipes", "stanza.extract.js")
+	if _, err := os.Stat(recipe); err != nil {
+		t.Skipf("stanza recipe not present: %v", err)
+	}
+	if _, err := RegisterExtensionFile(recipe); err != nil {
+		t.Fatalf("RegisterExtensionFile(%s): %v", recipe, err)
+	}
+	if rp := records.RecipeFor("x.stanza"); rp == nil || rp.Name != "stanza" {
+		t.Fatalf("RecipeFor(x.stanza) = %v, want the stanza recipe", rp)
+	}
+
+	dir := t.TempDir()
+	ks := filepath.Join(dir, "default", "reg")
+	if err := os.MkdirAll(ks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ks, "people.stanza"), []byte(stanzaFixture), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sess, err := OpenSession(dir, "default")
+	if err != nil {
+		t.Fatalf("OpenSession: %v", err)
+	}
+	defer sess.Close()
+
+	got := runRows(t, sess, "SELECT s.name, s.`role` FROM reg s")
+	want := []string{
+		`{"name":"alpha","role":"web"}`,
+		`{"name":"beta","role":"db"}`,
+		`{"name":"gamma","role":"cache"}`,
+	}
+	sort.Strings(want)
+	if len(got) != len(want) {
+		t.Fatalf("rows = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("row %d = %s, want %s", i, got[i], want[i])
+		}
+	}
+
+	// `weight` was coerced to a JSON number, so a numeric WHERE prunes correctly:
+	// gamma (5) in, alpha (3) out, beta (no weight -> MISSING) out.
+	heavy := runRows(t, sess, "SELECT s.name FROM reg s WHERE s.weight >= 5")
+	if len(heavy) != 1 || heavy[0] != `{"name":"gamma"}` {
+		t.Errorf(`WHERE weight>=5 = %v, want [{"name":"gamma"}]`, heavy)
+	}
+}
+
+// jsInfiniteStreamRecipe emits records FOREVER until emit() returns false -- the
+// canonical unbounded source. A buffered/whole-file extract would run this to
+// completion (hang / OOM); the streaming path suspends the JS on backpressure and stops
+// it at Close. It ignores the file, isolating the OUTPUT (emit) side of streaming.
+const jsInfiniteStreamRecipe = `
+var match = { exts: [".inf"], priority: 10 };
+function extractStream(file, emit) {
+  for (var i = 0; ; i++) {
+    if (!emit({ n: i })) { return; }
+  }
+}
+`
+
+// TestJSExtractStreamBackpressure is the streaming PROOF: an unbounded (infinite) JS
+// source is opened, three records are pulled, and the source is Closed -- all under a
+// deadline. Because emit hands records across an unbounded loop with backpressure, only
+// a few iterations run before the consumer stops; Close then unblocks the parked emit
+// (returns false) and interrupts as a backstop, so the goroutine exits promptly. A
+// non-streaming (buffered) implementation would run the infinite loop to completion and
+// never return -- so completing at all is the proof.
+func TestJSExtractStreamBackpressure(t *testing.T) {
+	if err := RegisterJSExtractRecipe("infstream", jsInfiniteStreamRecipe); err != nil {
+		t.Fatalf("RegisterJSExtractRecipe: %v", err)
+	}
+	dir := t.TempDir()
+	p := filepath.Join(dir, "x.inf")
+	if err := os.WriteFile(p, []byte("ignored"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	doneCh := make(chan error, 1)
+	go func() {
+		src, err := records.OpenFile(p, "x.inf")
+		if err != nil {
+			doneCh <- err
+			return
+		}
+		var got []string
+		for i := 0; i < 3; i++ {
+			var rec records.Record
+			ok, e := src.Next(&rec)
+			if e != nil {
+				doneCh <- e
+				return
+			}
+			if !ok {
+				doneCh <- fmt.Errorf("unexpected EOF at record %d of an infinite source", i)
+				return
+			}
+			got = append(got, string(rec.ID)+"="+string(rec.Doc))
+		}
+		if e := src.Close(); e != nil { // must return promptly (backpressure + interrupt).
+			doneCh <- e
+			return
+		}
+		want := []string{`x.inf#0={"n":0}`, `x.inf#1={"n":1}`, `x.inf#2={"n":2}`}
+		for i := range want {
+			if got[i] != want[i] {
+				doneCh <- fmt.Errorf("record %d = %s, want %s", i, got[i], want[i])
+				return
+			}
+		}
+		doneCh <- nil
+	}()
+
+	select {
+	case err := <-doneCh:
+		if err != nil {
+			t.Fatalf("streaming read/close: %v", err)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("streaming source hung: reading 3 records + Close did not complete " +
+			"(backpressure or early-stop broken -- an infinite JS loop was not suspended)")
 	}
 }
 

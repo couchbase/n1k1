@@ -314,11 +314,13 @@ with priority), streaming, metadata-rich. Only auto-cloning the recipe repo from
 preferred contract is **`describe` returns a declarative `ExtractSpec` and n1k1 applies it natively**
 (byte-oriented, zero JS on the hot path). Only formats too irregular (crack a binary blob, stateful
 multiline, a self-contained document like TOML) fall back to imperative `extract(file, emit)` in the
-runtime (JS today), paying the boundary cost. **This imperative path is now wired** (a JS
-`*.extract.js` may define `describe`, `extract`, or both; `extract` gets the whole file text and
-`emit`s records itself, and its `match` may claim a brand-new extension); the demo
-`toml2.extract.js` re-parses TOML in JS under `.toml2` and matches the native Go `.toml` reader
-byte-for-byte. `ExtractSpec`:
+runtime (JS today), paying the boundary cost. **This imperative path is now wired**, in two
+forms: a BUFFERED `extract(file, emit)` (JS gets the whole file text and `emit`s records — demo
+`toml2.extract.js` re-parses TOML under `.toml2` matching the native Go `.toml` reader
+byte-for-byte) and a STREAMING `extractStream(file, emit)` (JS reads incrementally via
+`file.readLine()` and `emit`s records that flow out one at a time with backpressure, at bounded
+memory — demo `stanza.extract.js`). A recipe may define `describe`, `extract`, or `extractStream`,
+and its `match` may claim a brand-new extension. `ExtractSpec`:
 - **`framing`** — `line` / `multiline` (a lead line + continuation regex) / `json` (JSONL) /
   `section` (one record per `====`-banner block — `couchbase.log` is 302 concatenated command
   outputs) / `whole` (the office/PDF baseline).

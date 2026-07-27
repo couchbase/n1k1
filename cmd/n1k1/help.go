@@ -71,13 +71,16 @@ log, a command dump, an app-specific format) into RECORDS you can SELECT over. D
 "<name>.extract.js" file in a dir and pass it with "-ext <dir>"; it's picked up before
 the datastore opens, so a matched file becomes a keyspace (see .tables).
 
-A recipe supplies describe(file) and/or extract(file, emit):
+A recipe supplies describe(file), extract(file, emit), or extractStream(file, emit):
   - describe(file), run ONCE per matched file (cold path), returns a DECLARATIVE spec
     n1k1 then applies NATIVELY per record -- no per-row JS, so a 400 MB log frames at
     full speed. This is the preferred path for line/multiline/section-framed text.
   - extract(file, emit) is the imperative escape hatch: JS gets the WHOLE file and
     emits records itself, so it owns framing AND parsing -- for a self-contained or
     irregular format a declarative spec can't frame (see IMPERATIVE EXTRACT below).
+  - extractStream(file, emit) is the STREAMING form: JS reads incrementally
+    (file.readLine) and emits records that flow out one at a time with backpressure,
+    so a large multi-record file frames at bounded memory (see IMPERATIVE EXTRACT).
 A recipe's match may claim a BRAND-NEW extension (e.g. ".toml2"); the claim is what
 makes such files records at all.
 
@@ -159,6 +162,28 @@ you crack yourself). Define extract INSTEAD OF (or alongside) describe:
 extract buffers its records, paying the JS boundary once per file (not per row). See
 extensions/extract_recipes/toml2.extract.js for a full TOML parser that matches n1k1's
 native .toml reader.
+
+STREAMING (extractStream(file, emit)) -- for a LARGE multi-record file that shouldn't be
+buffered. Instead of file.text, read incrementally:
+  file.readLine()   -- the next line (without newline), or null at EOF; "" for a blank
+                       line (use it as a record boundary).
+  file.readAll()    -- the rest of the file as one string.
+Emitted records flow out one at a time with BACKPRESSURE (bounded memory, any file size);
+emit(doc[, id]) returns FALSE once the consumer stops (a LIMIT is met, the query is
+cancelled), so your loop can break. ids default to "<prefix>#<n>". Example (blank-line-
+delimited "key: value" stanzas):
+  var match = { exts: [".stanza"], priority: 10 };
+  function extractStream(file, emit) {
+    var rec = null, line;
+    while ((line = file.readLine()) !== null) {
+      if (line.trim() === "") { if (rec && !emit(rec)) return; rec = null; continue; }
+      var i = line.indexOf(":"); if (i < 0) continue;
+      (rec = rec || {})[line.slice(0,i).trim()] = line.slice(i+1).trim();
+    }
+    if (rec) emit(rec);
+  }
+Define describe, extract, OR extractStream (extract and extractStream are mutually
+exclusive). See extensions/extract_recipes/stanza.extract.js.
 
 ANNOTATED EXAMPLE (myapp.log lines: "<RFC3339> <LEVEL> <node> <msg>")
   var match = { exts: [".log"], names: ["myapp\\..*\\.log$"], priority: 20 };

@@ -30,12 +30,13 @@ tiny fork setters — `expression.RegisterFunction` (patch-05) and `algebra.Regi
   exit on failure for CI).
 
 **Remaining (headline TODOs):**
-- [x] ~~Extract recipes are `describe()`-only; the imperative `extract(file, emit)`
-  escape hatch for irregular formats is not wired.~~ **DONE** — `extract(file, emit)` is
-  wired to the `records.Recipe.Extract` seam (JS owns framing + parsing, buffered into a
-  `records.Source`), and a recipe's claim now makes even a brand-new extension a record
-  file (`records.IsRecordFile` honors the registry). Proof: `toml2.extract.js` re-parses
-  TOML in JS under `.toml2` and matches the native Go `.toml` reader byte-for-byte.
+- [x] ~~Extract recipes are `describe()`-only; the imperative `extract(file, meta, emit)`
+  escape hatch for irregular formats is not wired.~~ **DONE** — both a BUFFERED
+  `extract(file, emit)` (whole-file, `toml2.extract.js` matches native `.toml` byte-for-byte)
+  and a STREAMING `extractStream(file, emit)` (incremental `readLine`, backpressured per-row
+  emit at bounded memory, race-clean, `stanza.extract.js`) are wired to the
+  `records.Recipe.Extract` seam. A recipe's claim now makes even a brand-new extension a
+  record file (`records.IsRecordFile` honors the registry).
 - [ ] Streaming sources don't early-terminate on `LIMIT` (the `YieldStats` LIMIT hook is
   inert) — an **unbounded source hangs under `LIMIT`**; needs engine-wide producer early-exit.
 - [ ] JS aggregate/streaming UDFs are v1: state round-trips through JSON per Update (not
@@ -157,11 +158,24 @@ knowledge lives in a git-cloned recipe repo. A `*.extract.js` exports up to thre
   (`file.text`, plus `path`/`name`/`ext`/`stem`) and calls `emit(doc[, id])` per record, so
   it owns framing AND parsing; records are buffered into a `records.Source`, paying the JS
   boundary once per file (not per row). **WIRED** (`glue/ext_extract_jsvm.go` →
-  `records.Recipe.Extract`); a recipe may define `describe`, `extract`, or both, and its
-  `match` may claim a brand-new extension (`records.IsRecordFile` honors the registry). The
-  flagship demo, `extensions/extract_recipes/toml2.extract.js`, parses TOML in JS under
-  `.toml2` and reproduces the native Go `.toml` reader's records exactly. A future streaming
-  form (per-row `emit` riding the `stream-fn` op, no whole-file buffer) is the next step.
+  `records.Recipe.Extract`). The flagship demo, `extensions/extract_recipes/toml2.extract.js`,
+  parses TOML in JS under `.toml2` and reproduces the native Go `.toml` reader's records
+  exactly.
+- **`extractStream(file, emit)`** — the STREAMING sibling, for a large/irregular
+  MULTI-record file that shouldn't be buffered. JS reads incrementally (`file.readLine()` /
+  `file.readAll()`) and `emit(doc[, id])`s records that flow out **one at a time with
+  backpressure**, so memory stays bounded however large the file or record count. Mechanics:
+  goja is single-threaded and calls `emit` synchronously, but `records.Source.Next` is
+  pull-based — so the JS runs on its own goroutine and `emit` hands each record across an
+  UNBOUNDED-loop-safe **unbuffered channel** (JS blocks until `Next` consumes). `emit`
+  returns `false` once the consumer stops (`Source.Close` — a satisfied LIMIT, a cancel), so
+  the JS loop can break (the same stop protocol as a `*.stream.js` source); `Close` also
+  interrupts the runtime as a backstop and waits for the goroutine before releasing the file
+  (no leak, no early-Close race). **WIRED + race-clean.** Demo:
+  `extensions/extract_recipes/stanza.extract.js` (blank-line-delimited stanzas). A recipe
+  defines `describe`, `extract`, or `extractStream` (extract/extractStream are mutually
+  exclusive); any of them may `match` a brand-new extension (`records.IsRecordFile` honors
+  the registry).
 
 The `file` host object has authority over **exactly one read-only file** (no network/exec) —
 the ideal Wasm shape later. The registry is a git repo matched by file (`RegisterExtractDir`,

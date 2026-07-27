@@ -14,13 +14,16 @@
 package glue
 
 import (
+	"bufio"
 	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -32,8 +35,8 @@ import (
 
 // ext_extract_jsvm.go loads a "*.extract.js" JS-authored EXTRACT RECIPE into the
 // pure-Go records recipe registry (DESIGN-data.md §4, DESIGN-extensions.md
-// "Extract functions"). A recipe supplies EITHER (or both) of two functions, on two
-// very different cadences:
+// "Extract functions"). A recipe supplies describe and/or one of extract/extractStream,
+// on very different cadences:
 //
 //   - describe(file) -- the cheap, once-per-file PLANNING pass. Runs in goja ONCE
 //     per matched file (a cold path -- garbage is fine here) and RETURNS a
@@ -50,6 +53,12 @@ import (
 //     the records.Recipe.Extract seam that DESIGN-extensions.md sketched. A recipe
 //     with extract but no describe is purely imperative (records.OpenFile skips the
 //     spec/native-framer entirely).
+//
+//   - extractStream(file, emit) -- the STREAMING imperative form. JS reads the file
+//     incrementally (file.readLine/readAll) and emits records that flow out one at a
+//     time with BACKPRESSURE, so a large multi-record file frames at bounded memory
+//     (see runJSExtractStream / stanza.extract.js). extract and extractStream are
+//     mutually exclusive; both wire records.Recipe.Extract.
 //
 // Either way the goja dependency stays in glue (records is pure-Go, goja-free): the
 // JS runs here, produces the neutral ExtractSpec/ExtractMatch structs (JSON-shaped
@@ -80,6 +89,14 @@ import (
 //	// record; doc is any JSON-able value, the optional id overrides the default
 //	// (stem for a single record, else "<prefix>#<n>"). (Optional if describe is set.)
 //	function extract(file, emit) { emit(JSON.parse(file.text), file.stem); }
+//
+//	// extractStream(file, emit) -- STREAMING imperative alternative for a large
+//	// multi-record file. file = { path, name, ext, stem, readLine(), readAll() }.
+//	// Read incrementally; emit(doc[, id]) returns false once the consumer stops, so
+//	// the loop can break. ids default to "<prefix>#<n>".
+//	function extractStream(file, emit) {
+//	  var line; while ((line = file.readLine()) !== null) { emit(parseLine(line)); }
+//	}
 
 // extractHeadSampleBytes caps the decompressed head passed to a JS describe() for
 // content-sniffing. Generous (describe is once-per-file, not a hot loop) but bounded
@@ -128,8 +145,12 @@ func RegisterJSExtractRecipe(name, source string) error {
 	}
 	_, hasDescribe := goja.AssertFunction(rt.Get("describe"))
 	_, hasExtract := goja.AssertFunction(rt.Get("extract"))
-	if !hasDescribe && !hasExtract {
-		return fmt.Errorf("extract recipe %q: source defines neither a describe(file) nor an extract(file, emit) function", name)
+	_, hasExtractStream := goja.AssertFunction(rt.Get("extractStream"))
+	if !hasDescribe && !hasExtract && !hasExtractStream {
+		return fmt.Errorf("extract recipe %q: source defines none of describe(file), extract(file, emit), or extractStream(file, emit)", name)
+	}
+	if hasExtract && hasExtractStream {
+		return fmt.Errorf("extract recipe %q: define extract OR extractStream, not both", name)
 	}
 	match, err := jsExtractMatch(rt)
 	if err != nil {
@@ -150,8 +171,15 @@ func RegisterJSExtractRecipe(name, source string) error {
 			return runJSDescribe(prog, name, path)
 		}
 	}
-	if hasExtract {
-		// Imperative: JS frames + parses the whole file and emits records itself.
+	switch {
+	case hasExtractStream:
+		// Imperative + STREAMING: JS reads the file incrementally (file.readLine) and
+		// emits records that flow out one at a time with backpressure (bounded memory).
+		recipe.Extract = func(path, idPrefix string, _ records.ExtractSpec) (records.Source, error) {
+			return runJSExtractStream(prog, name, path, idPrefix)
+		}
+	case hasExtract:
+		// Imperative + BUFFERED: JS parses the whole file and emits records itself.
 		recipe.Extract = func(path, idPrefix string, _ records.ExtractSpec) (records.Source, error) {
 			return runJSExtract(prog, name, path, idPrefix)
 		}
@@ -173,15 +201,25 @@ func RegisterJSExtractRecipe(name, source string) error {
 	if len(match.Exts) > 0 {
 		sampleExt = match.Exts[0]
 	}
-	if hasDescribe {
+	switch {
+	case hasDescribe:
 		// Native framing path: describe -> records.SpecApply, exactly as a real file.
 		extractExamplers[name] = func(sample string) (json.RawMessage, error) {
 			return frameExtractSample(name, prog, sampleExt, sample)
 		}
-	} else {
-		// Purely imperative: run the JS extract over the sample and collect its rows.
+	case hasExtractStream:
+		// Purely imperative + streaming: drive the streaming Source over the sample.
 		extractExamplers[name] = func(sample string) (json.RawMessage, error) {
-			return frameExtractSampleImperative(name, prog, sampleExt, sample)
+			return frameExtractSampleWith(sampleExt, sample, func(path string) (records.Source, error) {
+				return runJSExtractStream(prog, name, path, "")
+			})
+		}
+	default: // hasExtract
+		// Purely imperative + buffered: run the JS extract over the sample.
+		extractExamplers[name] = func(sample string) (json.RawMessage, error) {
+			return frameExtractSampleWith(sampleExt, sample, func(path string) (records.Source, error) {
+				return runJSExtract(prog, name, path, "")
+			})
 		}
 	}
 	return nil
@@ -232,11 +270,12 @@ func frameExtractSample(name string, prog *goja.Program, ext, sample string) (js
 	return jsonArray(rows), nil
 }
 
-// frameExtractSampleImperative is frameExtractSample's imperative sibling (for an
-// extract-only recipe): it writes `sample` to a temp file named with the recipe's
-// primary extension, runs the JS extract() over it, and returns the emitted rows as
-// one JSON array. Used by the inline extract examples for imperative recipes.
-func frameExtractSampleImperative(name string, prog *goja.Program, ext, sample string) (json.RawMessage, error) {
+// frameExtractSampleWith is frameExtractSample's imperative sibling (for an extract-
+// or extractStream-only recipe): it writes `sample` to a temp file named with the
+// recipe's primary extension, builds a records.Source over it via `build` (the JS
+// buffered or streaming extract), and returns the emitted rows as one JSON array.
+// Used by the inline extract examples for imperative recipes.
+func frameExtractSampleWith(ext, sample string, build func(path string) (records.Source, error)) (json.RawMessage, error) {
 	f, err := os.CreateTemp("", "n1k1-extract-example-*"+ext)
 	if err != nil {
 		return nil, err
@@ -251,7 +290,7 @@ func frameExtractSampleImperative(name string, prog *goja.Program, ext, sample s
 		return nil, cerr
 	}
 
-	src, err := runJSExtract(prog, name, path, "")
+	src, err := build(path)
 	if err != nil {
 		return nil, err
 	}
@@ -409,6 +448,209 @@ func runJSExtract(prog *goja.Program, name, path, idPrefix string) (src records.
 	}
 	return &jsExtractSource{recs: recs}, nil
 }
+
+// jsExtractStreamSource is a records.Source over a STREAMING JS imperative extract. A
+// goja runtime is single-threaded and calls emit synchronously during one extract()
+// call, but records.Source.Next is pull-based -- so the JS runs on its own goroutine
+// and emit hands each record across `recs` with backpressure: an UNBUFFERED channel, so
+// JS blocks in emit until Next consumes, keeping only one record in flight (bounded
+// memory, however large the file or record count). Close signals `done` (a blocked emit
+// then returns false so the JS loop can stop), interrupts the runtime as a backstop,
+// and waits for the goroutine to exit before releasing the file -- no goroutine/fd leak
+// and no early-Close read/close race.
+type jsExtractStreamSource struct {
+	recs     chan jsExtractRec
+	errc     chan error    // buffered(1): the goroutine's terminal error, set before recs closes.
+	done     chan struct{} // closed by Close: tells emit (and the JS loop) to stop.
+	finished chan struct{} // closed by the goroutine on exit.
+	rc       io.ReadCloser
+	rt       *goja.Runtime // interrupted by Close as a backstop (goja.Interrupt is goroutine-safe).
+
+	eof       bool
+	err       error
+	closeOnce sync.Once
+}
+
+func (s *jsExtractStreamSource) Next(rec *records.Record) (bool, error) {
+	if s.eof {
+		return false, s.err
+	}
+	r, ok := <-s.recs
+	if !ok { // goroutine finished; pick up any terminal error it recorded first.
+		s.eof = true
+		select {
+		case e := <-s.errc:
+			s.err = e
+		default:
+		}
+		return false, s.err
+	}
+	// r.doc is a distinct, owned slice per record, so it satisfies the borrowed-until-
+	// next-Next contract trivially (it stays valid).
+	rec.ID = []byte(r.id)
+	rec.Doc = r.doc
+	return true, nil
+}
+
+func (s *jsExtractStreamSource) Close() error {
+	s.closeOnce.Do(func() {
+		close(s.done) // a blocked emit unblocks via the done case and returns false.
+		if s.rt != nil {
+			s.rt.Interrupt("n1k1: JS extract stream closed") // backstop for a loop that ignores emit's false.
+		}
+		<-s.finished // reads have stopped -> safe to close the file.
+		s.rc.Close()
+	})
+	return nil
+}
+
+// runJSExtractStream is runJSExtract's STREAMING sibling: JS reads the file
+// incrementally (file.readLine / file.readAll) and emits records that flow out one at a
+// time with backpressure, so a large/irregular multi-record file frames at bounded
+// memory (no whole-file buffer, no buffering of all records). The JS module defines
+// extractStream(file, emit); emit(doc[, id]) returns false once the consumer has
+// stopped (a LIMIT satisfied, the query cancelled), so the JS loop can break -- the same
+// stop protocol as a *.stream.js source. ids default to "<idPrefix>#<n>" (streaming is
+// inherently multi-record); an explicit emit(doc, id) wins.
+func runJSExtractStream(prog *goja.Program, name, path, idPrefix string) (records.Source, error) {
+	rc, err := records.OpenReadCloser(path) // streaming (never whole-file); Source.Close releases it.
+	if err != nil {
+		return nil, err
+	}
+
+	// The runtime is built here (parent) and used ONLY by the goroutine below; Close
+	// touches it solely via Interrupt (goroutine-safe). Build fails close the file.
+	rt := goja.New()
+	installJSConsole(rt)
+	if _, e := rt.RunProgram(prog); e != nil {
+		rc.Close()
+		return nil, e
+	}
+	fn, ok := goja.AssertFunction(rt.Get("extractStream"))
+	if !ok {
+		rc.Close()
+		return nil, fmt.Errorf("extract recipe %q: extractStream not callable", name)
+	}
+
+	s := &jsExtractStreamSource{
+		recs:     make(chan jsExtractRec), // unbuffered: strict backpressure, one record in flight.
+		errc:     make(chan error, 1),
+		done:     make(chan struct{}),
+		finished: make(chan struct{}),
+		rc:       rc,
+		rt:       rt,
+	}
+
+	go func() {
+		var gerr error
+		// Order matters: this recover/error send runs BEFORE close(recs) (defers are
+		// LIFO), so a Next that sees recs closed already finds the error on errc.
+		defer close(s.finished)
+		defer close(s.recs)
+		defer func() {
+			if r := recover(); r != nil {
+				gerr = fmt.Errorf("extract recipe %q extractStream(%s) panicked: %v", name, path, r)
+			}
+			if gerr != nil {
+				select {
+				case s.errc <- gerr:
+				default:
+				}
+			}
+		}()
+
+		br := bufio.NewReader(rc)
+		var readErr, emitErr error
+		n := 0
+
+		fileObj := rt.NewObject()
+		_ = fileObj.Set("path", path)
+		_ = fileObj.Set("name", filepath.Base(path))
+		_ = fileObj.Set("ext", strings.ToLower(filepath.Ext(path)))
+		_ = fileObj.Set("stem", records.Stem(path))
+		// readLine(): the next line WITHOUT its trailing newline, or null at EOF. A blank
+		// line returns "" (not null), so a recipe can use it as a record boundary.
+		_ = fileObj.Set("readLine", func(goja.FunctionCall) goja.Value {
+			line, e := br.ReadString('\n')
+			if len(line) > 0 {
+				return rt.ToValue(strings.TrimRight(line, "\r\n"))
+			}
+			if e == io.EOF {
+				return goja.Null()
+			}
+			if e != nil {
+				readErr = e
+				return goja.Null()
+			}
+			return rt.ToValue("")
+		})
+		// readAll(): the rest of the file as one string (for a recipe that wants the
+		// whole document but still streams its output).
+		_ = fileObj.Set("readAll", func(goja.FunctionCall) goja.Value {
+			b, e := io.ReadAll(br)
+			if e != nil {
+				readErr = e
+				return rt.ToValue("")
+			}
+			return rt.ToValue(string(b))
+		})
+
+		// emit(doc[, id]): hand one record across `recs` with backpressure. Returns
+		// false once Close has fired, so the JS loop stops.
+		emit := func(call goja.FunctionCall) goja.Value {
+			select { // fast path: already stopped.
+			case <-s.done:
+				return rt.ToValue(false)
+			default:
+			}
+			if len(call.Arguments) == 0 {
+				emitErr = fmt.Errorf("extract recipe %q: emit() needs a doc argument", name)
+				return rt.ToValue(false)
+			}
+			jb, e := json.Marshal(call.Arguments[0].Export())
+			if e != nil {
+				emitErr = fmt.Errorf("extract recipe %q: cannot marshal emitted doc: %w", name, e)
+				return rt.ToValue(false)
+			}
+			id := ""
+			if len(call.Arguments) >= 2 {
+				if a := call.Arguments[1]; a != nil && !goja.IsUndefined(a) && !goja.IsNull(a) {
+					id = a.String()
+				}
+			}
+			if id == "" {
+				id = fmt.Sprintf("%s#%d", idPrefix, n)
+			}
+			n++
+			select {
+			case s.recs <- jb2rec(id, jb):
+				return rt.ToValue(true)
+			case <-s.done:
+				return rt.ToValue(false)
+			}
+		}
+
+		_, callErr := fn(goja.Undefined(), fileObj, rt.ToValue(emit))
+		switch {
+		case emitErr != nil:
+			gerr = emitErr
+		case readErr != nil:
+			gerr = readErr
+		case callErr != nil:
+			// An interrupt from Close is expected teardown, not a recipe error.
+			select {
+			case <-s.done:
+			default:
+				gerr = fmt.Errorf("extract recipe %q extractStream(%s): %w", name, path, callErr)
+			}
+		}
+	}()
+
+	return s, nil
+}
+
+// jb2rec builds a jsExtractRec (kept tiny so the emit hot path reads cleanly).
+func jb2rec(id string, doc []byte) jsExtractRec { return jsExtractRec{id: id, doc: doc} }
 
 // jsSourceHash returns a short hex digest of a recipe's JS source, used as the
 // recipe Fingerprint (extract_cache.go) so editing an *.extract.js re-describes its

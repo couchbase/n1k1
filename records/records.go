@@ -288,6 +288,28 @@ func ReadWholeDecompressed(path string) ([]byte, error) {
 	return io.ReadAll(r)
 }
 
+// OpenReadCloser opens path for STREAMING reads, transparently decompressing a .gz
+// suffix; its Close releases every underlying resource. Unlike ReadWholeDecompressed
+// it never buffers the whole file, so a recipe's streaming imperative extract can read
+// incrementally (e.g. line by line) at bounded memory. The reader is NOT goroutine-safe
+// (read it from one goroutine); Close may be called from another goroutine only after
+// reads have stopped.
+func OpenReadCloser(path string) (io.ReadCloser, error) {
+	r, closers, err := openDecompressed(path)
+	if err != nil {
+		return nil, err
+	}
+	return &multiReadCloser{r: r, closers: closers}, nil
+}
+
+type multiReadCloser struct {
+	r       io.Reader
+	closers []io.Closer
+}
+
+func (m *multiReadCloser) Read(p []byte) (int, error) { return m.r.Read(p) }
+func (m *multiReadCloser) Close() error               { return closeAll(m.closers) }
+
 // OpenFile returns a Source over one file, choosing the decoder by the inner
 // extension and transparently decompressing. idPrefix is prepended to synthetic
 // record IDs (typically the file's keyspace-relative path); for a single-record
