@@ -34,6 +34,16 @@ _Last reviewed: 2026-07-23._
       TestSubqueryEmptyArray + TestJoinLateral; the ASOF differential suite. Residual: a
       truly bare correlated-subquery FROM with no driving outer is still NA, but that
       shape doesn't arise in valid SQL (a correlation needs an outer).
+- [ ] Windows: `go test ./records` fails (found by CI, 2026-07-27; the Windows CI leg is
+      `continue-on-error` until fixed -- builds + vet are clean, and the release still
+      ships windows/amd64 + windows/arm64 binaries).
+      (a) REAL BUG: `records/glob.go` `globMatch` splits on `filepath.Separator`, so on
+      Windows a `/`-separated pattern/path never splits into segments and `filepath.Match`
+      lets `*` cross `/` -- `globMatch("/a/*", "/a/b/c")` returns true, and `**` misses the
+      zero-segment case. Fix = normalize to `/` and match with `path.Match` semantics.
+      (b) The 7 `TestIceberg*` cases: upstream iceberg-go resolves a table location as a
+      URI, so a native `C:\...` temp dir gives "IO for file ... not implemented". Either
+      hand it a `file://` URI or skip on Windows.
 - [ ] IndexScan2/3 pushdowns: indexProjection / indexOrder / indexGroupAggs.
 - [ ] JOIN types: FULL OUTER (cbq-fork grammar does not support FULL).
 - [ ] GROUP BY ROLLUP / CUBE / GROUPING SETS (cbq-fork grammar does not support).

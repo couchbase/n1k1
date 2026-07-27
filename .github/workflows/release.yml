@@ -30,7 +30,7 @@ jobs:
           - { goos: windows, goarch: amd64 }
           - { goos: windows, goarch: arm64 }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0   # `git describe` needs full history + tags
 
@@ -89,7 +89,7 @@ jobs:
           echo "archive=${archive}" >> "$GITHUB_OUTPUT"
           ls -lh "${archive}"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: n1k1-${{ matrix.goos }}-${{ matrix.goarch }}
           path: |
@@ -107,8 +107,8 @@ jobs:
     permissions:
       contents: write   # create the release + upload assets
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           path: artifacts
           merge-multiple: true
