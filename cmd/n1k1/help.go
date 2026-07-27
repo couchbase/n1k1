@@ -149,13 +149,17 @@ source. describe MEASURES the real sortedness from the head sample, refining thi
 
 PROVENANCE (optional): provenance:{k:v,...} constants lifted once, riding every record.
 
-IMPERATIVE EXTRACT (extract(file, emit)) -- for a self-contained/irregular format a
-declarative spec can't frame (a whole document like TOML, a stateful multiline, a blob
-you crack yourself). Define extract INSTEAD OF (or alongside) describe:
+IMPERATIVE EXTRACT (extract(file, emit, emitBuffer)) -- for a self-contained/irregular
+format a declarative spec can't frame (a whole document like TOML, a stateful multiline, a
+blob you crack yourself). Define extract INSTEAD OF (or alongside) describe:
   file  = { path, name, ext, stem, text }  -- text is the WHOLE decompressed file.
-  emit(doc [, id])  -- push one record. doc is any JSON-able value; the optional id
-                       overrides the default (the file stem for a single record, else
-                       "<prefix>#<n>"). The host JSON-canonicalizes doc (sorted keys).
+  emit(doc [, id])        -- push one record. doc is any JSON-able value; the host
+                             JSON-canonicalizes it (sorted keys). The optional id overrides
+                             the default (file stem for a single record, else "<prefix>#<n>").
+  emitBuffer(bytes [, id]) -- push one record from RAW JSON bytes (an ArrayBuffer /
+                             Uint8Array / string), passed through with NO marshal (validated
+                             as JSON). Use it when you already hold JSON bytes -- it skips
+                             the parse+marshal hop, and preserves the bytes verbatim.
   // Parse a whole document yourself and emit it as one record keyed by the stem:
   var match = { exts: [".toml2"], priority: 10 };
   function extract(file, emit) { emit(parseTOML(file.text), file.stem); }
@@ -175,10 +179,12 @@ buffered. Instead of file.text, read incrementally:
   file.readInto(view)  -- fill a REUSED Uint8Array (returns bytes read, 0 at EOF) -- the
                           zero-allocation form for a hot binary loop (BYOB, cf. Web
                           Streams reader.read(view) / Node fs.read(buffer)).
-Emitted records flow out one at a time with BACKPRESSURE (bounded memory, any file size);
-emit(doc[, id]) returns FALSE once the consumer stops (a LIMIT is met, the query is
-cancelled), so your loop can break. ids default to "<prefix>#<n>". Example (blank-line-
-delimited "key: value" stanzas):
+Emitted records flow out one at a time with BACKPRESSURE (bounded memory, any file size).
+emit(doc[, id]) marshals a JS value; emitBuffer(bytes[, id]) passes raw JSON bytes through
+with no marshal (pair it with readBytes/readInto for a zero-hop binary/JSON recipe). Both
+return FALSE once the consumer stops (a LIMIT is met, the query is cancelled), so your loop
+can break. ids default to "<prefix>#<n>". Example (blank-line-delimited "key: value"
+stanzas):
   var match = { exts: [".stanza"], priority: 10 };
   function extractStream(file, emit) {
     var rec = null, line;

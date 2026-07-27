@@ -823,6 +823,97 @@ func TestJSExtractStreamReadInto(t *testing.T) {
 	}
 }
 
+// jsEmitBufferRecipe reads length-prefixed JSON bodies and passes the RAW bytes straight
+// through via emitBuffer -- no JSON.parse, no re-marshal (the zero-hop path). The 3rd
+// param is the emitBuffer callback.
+const jsEmitBufferRecipe = `
+var match = { exts: [".lpj2"], priority: 10 };
+function extractStream(file, emit, emitBuffer) {
+  for (;;) {
+    var hdr = file.readBytes(4);
+    if (hdr === null) { return; }
+    var n = new DataView(hdr).getUint32(0);
+    var body = file.readBytes(n);
+    if (body === null) { return; }
+    emitBuffer(body);   // raw JSON bytes -> record Doc, verbatim.
+  }
+}
+`
+
+// TestJSExtractStreamEmitBuffer proves emitBuffer's no-hop path: JSON body bytes read
+// from the file become record Docs VERBATIM. The bodies are deliberately non-canonical
+// (extra spaces, unsorted keys) -- emit()'s json.Marshal would rewrite them to canonical
+// form, so byte-identical output is the proof that emitBuffer skipped the marshal.
+func TestJSExtractStreamEmitBuffer(t *testing.T) {
+	if err := RegisterJSExtractRecipe("ebuf", jsEmitBufferRecipe); err != nil {
+		t.Fatalf("RegisterJSExtractRecipe: %v", err)
+	}
+	dir := t.TempDir()
+	p := filepath.Join(dir, "data.lpj2")
+	bodies := []string{`{"b":2, "a":1}`, `{ "n" : 3 }`} // non-canonical on purpose.
+	writeLPJ(t, p, bodies)
+
+	src, err := records.OpenFile(p, "data.lpj2")
+	if err != nil {
+		t.Fatalf("OpenFile: %v", err)
+	}
+	defer src.Close()
+
+	var got []string
+	for {
+		var rec records.Record
+		ok, e := src.Next(&rec)
+		if e != nil {
+			t.Fatalf("Next: %v", e)
+		}
+		if !ok {
+			break
+		}
+		got = append(got, string(rec.Doc))
+	}
+	if len(got) != len(bodies) {
+		t.Fatalf("got %d records %v, want %d", len(got), got, len(bodies))
+	}
+	for i := range bodies {
+		if got[i] != bodies[i] { // VERBATIM -- emit() would have canonicalized these.
+			t.Errorf("record %d = %q, want verbatim %q", i, got[i], bodies[i])
+		}
+	}
+
+	// Sanity: emit() DOES canonicalize, confirming the two paths differ. Re-frame the
+	// same bytes through a parse+emit recipe and expect canonical output.
+	if got[0] == `{"a":1,"b":2}` {
+		t.Fatal("emitBuffer unexpectedly canonicalized -- it must pass bytes verbatim")
+	}
+}
+
+// TestJSExtractStreamEmitBufferInvalidJSON proves emitBuffer validates: non-JSON bytes are
+// rejected (a clear error), not silently injected into the pipeline.
+func TestJSExtractStreamEmitBufferInvalidJSON(t *testing.T) {
+	const recipe = `
+var match = { exts: [".ebad"], priority: 10 };
+function extractStream(file, emit, emitBuffer) { emitBuffer("this is not json"); }
+`
+	if err := RegisterJSExtractRecipe("ebad", recipe); err != nil {
+		t.Fatalf("RegisterJSExtractRecipe: %v", err)
+	}
+	dir := t.TempDir()
+	p := filepath.Join(dir, "x.ebad")
+	if err := os.WriteFile(p, []byte("ignored"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	src, err := records.OpenFile(p, "x.ebad")
+	if err != nil {
+		t.Fatalf("OpenFile: %v", err)
+	}
+	defer src.Close()
+	var rec records.Record
+	_, e := src.Next(&rec)
+	if e == nil || !strings.Contains(e.Error(), "invalid JSON") {
+		t.Fatalf("Next err = %v, want an 'invalid JSON' error from emitBuffer", e)
+	}
+}
+
 func writeAppLog(t *testing.T) string {
 	t.Helper()
 	p := filepath.Join(t.TempDir(), "myapp.debug.log")

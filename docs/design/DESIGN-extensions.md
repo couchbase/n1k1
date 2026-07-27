@@ -153,23 +153,26 @@ knowledge lives in a git-cloned recipe repo. A `*.extract.js` exports up to thre
   DECLARATIVE spec (`framing`/`fields`/`time`/`order`/`provenance`) that n1k1 executes
   **natively** (`records.SpecApply`), so no JS runs on the GB-scale per-record path. This
   is the preferred path for line/multiline/section-framed text.
-- **`extract(file, emit)`** — the imperative escape hatch for self-contained or irregular
-  formats a declarative spec can't frame. JS receives the WHOLE decompressed file
+- **`extract(file, emit, emitBuffer)`** — the imperative escape hatch for self-contained or
+  irregular formats a declarative spec can't frame. JS receives the WHOLE decompressed file
   (`file.text`, plus `path`/`name`/`ext`/`stem`) and calls `emit(doc[, id])` per record, so
   it owns framing AND parsing; records are buffered into a `records.Source`, paying the JS
   boundary once per file (not per row). **WIRED** (`glue/ext_extract_jsvm.go` →
   `records.Recipe.Extract`). The flagship demo, `extensions/extract_recipes/toml2.extract.js`,
   parses TOML in JS under `.toml2` and reproduces the native Go `.toml` reader's records
   exactly.
-- **`extractStream(file, emit)`** — the STREAMING sibling, for a large/irregular
+- **`extractStream(file, emit, emitBuffer)`** — the STREAMING sibling, for a large/irregular
   MULTI-record file that shouldn't be buffered. JS reads incrementally — `file.readLine()` /
   `file.readAll()` for text, **`file.readBytes(n)`** (up to `n` raw bytes as an `ArrayBuffer`,
   `null` at EOF) as the GENERAL primitive for binary / length-prefixed / fixed-width / custom
   framing, or **`file.readInto(view)`** its zero-alloc BYOB form (fill a REUSED `Uint8Array`,
   returns bytes read — cf. Web Streams `reader.read(view)` / Node `fs.read(buffer)`; goja
   exports a `Uint8Array` as its live backing `[]byte`, so Go reads straight into it) — and
-  `emit(doc[, id])`s records that flow out **one at a time with backpressure**, so memory
-  stays bounded however large the file or record count. Mechanics:
+  emits: `emit(doc[, id])` marshals a JS value, or **`emitBuffer(bytes[, id])`** passes RAW
+  JSON bytes straight through with NO marshal (n1k1 records are JSON `[]byte`; validated but
+  not re-serialized — pair it with `readBytes`/`readInto` for a zero-hop binary/JSON recipe).
+  Records flow out **one at a time with backpressure**, so memory stays bounded however large
+  the file or record count. Mechanics:
   goja is single-threaded and calls `emit` synchronously, but `records.Source.Next` is
   pull-based — so the JS runs on its own goroutine and `emit` hands each record across an
   UNBOUNDED-loop-safe **unbuffered channel** (JS blocks until `Next` consumes). `emit`

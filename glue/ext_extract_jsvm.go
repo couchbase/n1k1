@@ -84,22 +84,26 @@ import (
 //	           order:{by:"ts",sorted:"near"}, provenance:{...} };
 //	}
 //
-//	// extract(file, emit) -- imperative alternative. file = { path, name, ext, stem,
-//	// text } where text is the WHOLE decompressed file. Call emit(doc[, id]) per
-//	// record; doc is any JSON-able value, the optional id overrides the default
-//	// (stem for a single record, else "<prefix>#<n>"). (Optional if describe is set.)
+//	// extract(file, emit, emitBuffer) -- imperative alternative. file = { path, name,
+//	// ext, stem, text } where text is the WHOLE decompressed file. emit(doc[, id]) takes
+//	// any JSON-able value (marshaled); emitBuffer(bytes[, id]) takes RAW JSON bytes (an
+//	// ArrayBuffer/Uint8Array/string) passed through with no marshal, for a recipe that
+//	// already holds JSON bytes. The optional id overrides the default (stem for a single
+//	// record, else "<prefix>#<n>"). (Optional if describe is set.)
 //	function extract(file, emit) { emit(JSON.parse(file.text), file.stem); }
 //
-//	// extractStream(file, emit) -- STREAMING imperative alternative for a large
-//	// multi-record file. file = { path, name, ext, stem, readLine(), readAll(),
+//	// extractStream(file, emit, emitBuffer) -- STREAMING imperative alternative for a
+//	// large multi-record file. file = { path, name, ext, stem, readLine(), readAll(),
 //	// readBytes(n), readInto(view) }. readBytes(n) returns up to n RAW bytes as an
 //	// ArrayBuffer (JS: new Uint8Array(buf) / new DataView(buf)) or null at EOF -- the
 //	// general primitive for binary/custom framing; readInto(u8) is its zero-alloc BYOB
 //	// form (fill a REUSED Uint8Array, returns bytes read / 0 at EOF); readLine/readAll
-//	// are the text conveniences. Read incrementally; emit(doc[, id]) returns false once
-//	// the consumer stops, so the loop can break. ids default to "<prefix>#<n>".
-//	function extractStream(file, emit) {
-//	  var line; while ((line = file.readLine()) !== null) { emit(parseLine(line)); }
+//	// are the text conveniences. emit(doc[, id]) marshals a JS value; emitBuffer(bytes[,
+//	// id]) passes RAW JSON bytes through with NO marshal (pair it with readBytes/readInto
+//	// for a zero-hop binary/JSON recipe). Both return false once the consumer stops, so
+//	// the loop can break. ids default to "<prefix>#<n>".
+//	function extractStream(file, emit, emitBuffer) {
+//	  for (;;) { var b = file.readBytes(recLen()); if (!b) return; emitBuffer(b); }
 //	}
 
 // extractHeadSampleBytes caps the decompressed head passed to a JS describe() for
@@ -402,13 +406,26 @@ func runJSExtract(prog *goja.Program, name, path, idPrefix string) (src records.
 			emitErr = fmt.Errorf("extract recipe %q: cannot marshal emitted doc: %w", name, e)
 			return rt.ToValue(false)
 		}
-		id := ""
-		if len(call.Arguments) >= 2 {
-			if a := call.Arguments[1]; a != nil && !goja.IsUndefined(a) && !goja.IsNull(a) {
-				id = a.String()
-			}
+		recs = append(recs, jsExtractRec{id: emitCallID(call), doc: jb})
+		return rt.ToValue(true)
+	}
+
+	// emitBuffer(doc[, id]) is emit's no-hop sibling: doc is raw JSON bytes (an
+	// ArrayBuffer/Uint8Array/string) passed straight through, skipping the marshal.
+	emitBuffer := func(call goja.FunctionCall) goja.Value {
+		if emitErr != nil {
+			return rt.ToValue(false)
 		}
-		recs = append(recs, jsExtractRec{id: id, doc: jb})
+		if len(call.Arguments) == 0 {
+			emitErr = fmt.Errorf("extract recipe %q: emitBuffer() needs a doc argument", name)
+			return rt.ToValue(false)
+		}
+		doc, e := extractDocBytes(name, call.Arguments[0])
+		if e != nil {
+			emitErr = e
+			return rt.ToValue(false)
+		}
+		recs = append(recs, jsExtractRec{id: emitCallID(call), doc: doc})
 		return rt.ToValue(true)
 	}
 
@@ -426,7 +443,7 @@ func runJSExtract(prog *goja.Program, name, path, idPrefix string) (src records.
 		}()
 	}
 
-	_, callErr := fn(goja.Undefined(), fileObj, rt.ToValue(emit))
+	_, callErr := fn(goja.Undefined(), fileObj, rt.ToValue(emit), rt.ToValue(emitBuffer))
 	if atomic.LoadInt32(&timedOut) == 1 {
 		return nil, fmt.Errorf("extract recipe %q extract exceeded the %s time limit", name, JSCallTimeout)
 	}
@@ -514,11 +531,12 @@ func (s *jsExtractStreamSource) Close() error {
 // form filling a reused Uint8Array) and emits records that flow out one at a time with
 // backpressure, so a large/irregular
 // multi-record file frames at bounded memory (no whole-file buffer, no buffering of all
-// records). The JS module defines
-// extractStream(file, emit); emit(doc[, id]) returns false once the consumer has
-// stopped (a LIMIT satisfied, the query cancelled), so the JS loop can break -- the same
-// stop protocol as a *.stream.js source. ids default to "<idPrefix>#<n>" (streaming is
-// inherently multi-record); an explicit emit(doc, id) wins.
+// records). The JS module defines extractStream(file, emit, emitBuffer); emit(doc[, id])
+// marshals a JS value while emitBuffer(bytes[, id]) passes raw JSON bytes through with no
+// marshal -- both return false once the consumer has stopped (a LIMIT satisfied, the query
+// cancelled), so the JS loop can break (the same stop protocol as a *.stream.js source).
+// ids default to "<idPrefix>#<n>" (streaming is inherently multi-record); an explicit id
+// arg wins.
 func runJSExtractStream(prog *goja.Program, name, path, idPrefix string) (records.Source, error) {
 	rc, err := records.OpenReadCloser(path) // streaming (never whole-file); Source.Close releases it.
 	if err != nil {
@@ -646,14 +664,30 @@ func runJSExtractStream(prog *goja.Program, name, path, idPrefix string) (record
 			return rt.ToValue(m) // 0 == EOF.
 		})
 
-		// emit(doc[, id]): hand one record across `recs` with backpressure. Returns
-		// false once Close has fired, so the JS loop stops.
-		emit := func(call goja.FunctionCall) goja.Value {
-			select { // fast path: already stopped.
+		// send hands one already-built record across `recs` with backpressure, defaulting
+		// its id to "<idPrefix>#<n>". Returns the goja true/false emit result: false once
+		// Close has fired (a leading non-blocking done check, then the blocking send races
+		// done), so the JS loop stops instead of spinning. Shared by emit and emitBuffer.
+		send := func(id string, doc []byte) goja.Value {
+			select { // fast path: already stopped (don't even queue).
 			case <-s.done:
 				return rt.ToValue(false)
 			default:
 			}
+			if id == "" {
+				id = fmt.Sprintf("%s#%d", idPrefix, n)
+			}
+			n++
+			select {
+			case s.recs <- jb2rec(id, doc):
+				return rt.ToValue(true)
+			case <-s.done:
+				return rt.ToValue(false)
+			}
+		}
+
+		// emit(doc[, id]): marshal a JS value to JSON bytes, then stream it.
+		emit := func(call goja.FunctionCall) goja.Value {
 			if len(call.Arguments) == 0 {
 				emitErr = fmt.Errorf("extract recipe %q: emit() needs a doc argument", name)
 				return rt.ToValue(false)
@@ -663,25 +697,26 @@ func runJSExtractStream(prog *goja.Program, name, path, idPrefix string) (record
 				emitErr = fmt.Errorf("extract recipe %q: cannot marshal emitted doc: %w", name, e)
 				return rt.ToValue(false)
 			}
-			id := ""
-			if len(call.Arguments) >= 2 {
-				if a := call.Arguments[1]; a != nil && !goja.IsUndefined(a) && !goja.IsNull(a) {
-					id = a.String()
-				}
-			}
-			if id == "" {
-				id = fmt.Sprintf("%s#%d", idPrefix, n)
-			}
-			n++
-			select {
-			case s.recs <- jb2rec(id, jb):
-				return rt.ToValue(true)
-			case <-s.done:
-				return rt.ToValue(false)
-			}
+			return send(emitCallID(call), jb)
 		}
 
-		_, callErr := fn(goja.Undefined(), fileObj, rt.ToValue(emit))
+		// emitBuffer(doc[, id]): emit's no-hop sibling -- doc is raw JSON bytes (an
+		// ArrayBuffer/Uint8Array/string) passed straight through, skipping the marshal (the
+		// point of readBytes/readInto -> emitBuffer for a binary/JSON-bytes recipe).
+		emitBuffer := func(call goja.FunctionCall) goja.Value {
+			if len(call.Arguments) == 0 {
+				emitErr = fmt.Errorf("extract recipe %q: emitBuffer() needs a doc argument", name)
+				return rt.ToValue(false)
+			}
+			doc, e := extractDocBytes(name, call.Arguments[0])
+			if e != nil {
+				emitErr = e
+				return rt.ToValue(false)
+			}
+			return send(emitCallID(call), doc)
+		}
+
+		_, callErr := fn(goja.Undefined(), fileObj, rt.ToValue(emit), rt.ToValue(emitBuffer))
 		switch {
 		case emitErr != nil:
 			gerr = emitErr
@@ -702,6 +737,43 @@ func runJSExtractStream(prog *goja.Program, name, path, idPrefix string) (record
 
 // jb2rec builds a jsExtractRec (kept tiny so the emit hot path reads cleanly).
 func jb2rec(id string, doc []byte) jsExtractRec { return jsExtractRec{id: id, doc: doc} }
+
+// emitCallID reads the optional id argument (position 1) of an emit/emitBuffer call, or
+// "" when absent -- so the caller assigns the default id.
+func emitCallID(call goja.FunctionCall) string {
+	if len(call.Arguments) >= 2 {
+		if a := call.Arguments[1]; a != nil && !goja.IsUndefined(a) && !goja.IsNull(a) {
+			return a.String()
+		}
+	}
+	return ""
+}
+
+// extractDocBytes turns an emitBuffer(doc) argument into owned JSON bytes for a record's
+// Doc WITHOUT the emit() marshal hop: n1k1 records ARE JSON []byte, so a recipe that
+// already holds JSON bytes (e.g. a length-prefixed body read via readBytes/readInto)
+// passes them straight through -- no JSON.parse, no re-Marshal. Accepts an ArrayBuffer, a
+// Uint8Array (goja exports it as []byte), or a JSON string. The bytes are validated as
+// JSON (a cheap single-pass scan -- far less work than the parse+marshal it replaces) so a
+// buggy recipe can't inject non-JSON into the pipeline, and COPIED (they may alias a
+// reused readInto buffer, and the record outlives this call).
+func extractDocBytes(name string, arg goja.Value) ([]byte, error) {
+	var raw []byte
+	switch v := arg.Export().(type) {
+	case goja.ArrayBuffer:
+		raw = v.Bytes()
+	case []byte:
+		raw = v
+	case string:
+		raw = []byte(v)
+	default:
+		return nil, fmt.Errorf("extract recipe %q: emitBuffer(doc) needs an ArrayBuffer, a Uint8Array, or a JSON string", name)
+	}
+	if !json.Valid(raw) {
+		return nil, fmt.Errorf("extract recipe %q: emitBuffer(doc) got invalid JSON bytes", name)
+	}
+	return append([]byte(nil), raw...), nil
+}
 
 // readUpTo reads up to want bytes from r, growing the buffer only to the bytes actually
 // read -- so a large want on a nearly-empty reader doesn't allocate want up front. It
