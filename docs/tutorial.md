@@ -1,4 +1,4 @@
-# n1k1 demo
+# n1k1 tutorial
 
 You have a pile of JSON files on your drive — maybe some CSV, YAML, TOML, logs,
 gzipped stuff, and/or some office PDF/XLSX/PPT/DOCX files. How do you slice
