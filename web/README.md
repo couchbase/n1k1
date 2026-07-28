@@ -125,6 +125,22 @@ node --test "web/wasm/*.test.mjs"      # or: sh web/wasm/test.sh
   `n1k1OpenDir`, and the drag-drop ingestion path). **Skips** if `n1k1.wasm` isn't built,
   so build first (`sh web/wasm/build.sh`) to include it.
 
+### Headless-browser tests (Playwright)
+
+The node tests above cover the engine/fs/ingest modules, but not the actual page — the DOM,
+the Web Worker, and the "Try It Now" URL-hash flow (`#sql=…&title=…&data=…`). Those need a
+real browser (jsdom has no Web Worker / WebAssembly), so `browser.test.mjs` drives the built
+page with Playwright's headless chromium:
+
+```sh
+sh web/wasm/browser-test.sh        # builds wasm if missing, npm ci, installs chromium, runs
+```
+
+It's the regression guard for the shared-query-vs-sample ordering bug (a `#sql=` link must
+win over the boot sample and auto-run) and asserts a shared `&data=` dataset mounts under
+`FROM`. CI runs it in the `wasm` job. Tests run serially (`--test-concurrency=1`): three
+chromium pages each compiling the ~70 MB wasm at once starves the cold first load.
+
 ## Customizing the data
 
 Edit `samples.js`: add keys to `DATASETS.default` (each keyspace is

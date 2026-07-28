@@ -23,6 +23,9 @@ tmp
 /web/wasm_exec.js
 # local patched dependency copies for the wasm build (host-specific)
 /.wasm-mods/
+# node deps for the playground's headless-browser tests (web/browser.test.mjs);
+# package.json + package-lock.json are committed, node_modules is not
+/web/node_modules/
 
 # Python bytecode
 __pycache__/

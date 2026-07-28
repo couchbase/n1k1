@@ -1,0 +1,12 @@
+{
+  "name": "n1k1-web",
+  "private": true,
+  "description": "Headless-browser tests for the n1k1 SQL++ playground (web/index.html). See web/README.md.",
+  "type": "module",
+  "scripts": {
+    "test": "node --test --test-concurrency=1 browser.test.mjs"
+  },
+  "devDependencies": {
+    "playwright": "^1.40.0"
+  }
+}

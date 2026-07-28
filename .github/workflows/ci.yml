@@ -112,6 +112,20 @@ jobs:
           test -f web/wasm_exec.js
           ls -lh web/n1k1.wasm web/wasm_exec.js
 
+      # Drive the actual playground (DOM + Web Worker + wasm + the "Try It Now" URL-hash
+      # flow) in a real headless browser -- the layer jsdom can't reach and where the
+      # shared-query-vs-sample ordering bug lived. Reuses the wasm just built above.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: browser tests (playground DOM + Web Worker + wasm)
+        run: |
+          set -euo pipefail
+          cd web
+          npm ci --no-audit --no-fund
+          npx playwright install --with-deps chromium
+          npm test
+
   # Every SQL++ example in docs/recipes.yaml, executed against a freshly built CLI.
   # This is the automated test for the recipes doc. Linux only: the checker looks for
   # ./n1k1 at the repo root (n1k1.exe on Windows would simply be skipped).
