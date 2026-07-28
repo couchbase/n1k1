@@ -144,14 +144,63 @@ requires an agent to persist a cursor across wakes:
   n1k1 is then a pure function of `(recipe, cursor-store, source)`. Keep the cursor an **opaque,
   serializable, comparable value** so the *same* code works when the backend later becomes a served
   KV or a distributed object store.
-- **Optional within-tick ack** for must-not-miss agents: `poll` returns findings + a *candidate*
-  next-cursor **without** advancing; an `ack(NAME, cursor)` commits. Crash before ack ⇒ re-poll
-  re-delivers (at-least-once). So the only "cookie" is a *within-tick* one the agent holds in
-  working context and discards — never across wakes. Default is auto-advance-on-success.
+- **Within-tick ack** (see Delivery & crash-safety below): `poll` returns findings + a *candidate*
+  next-cursor **without** advancing; an `ack(NAME, tick-id)` commits. The only "cookie" is a
+  *within-tick* one the agent holds in working context and discards — never across wakes. Because
+  agents crash, **ack-required is the safe default**; `--ack=auto` (advance-on-emit) is the
+  fire-and-forget opt-in.
 - **Action idempotency is separate:** the cursor stops n1k1 *re-emitting*; it doesn't stop the agent
   *acting twice*. Each finding carries a **fingerprint** = hash of `(detector-sha, source-id,
   matched-key)` (the Alertmanager/PagerDuty `dedup_key`) so the agent dedupes side effects
   independently of cursor advance.
+
+### Delivery & crash-safety — the tick journal (n1k1 owns durability, not the agent)
+
+The failure auto-advance invites: the agent runs `--cursor=NAME`, n1k1 emits to stdout and advances,
+the agent crashes *before* durably acting → those findings are lost, never re-delivered (Kafka's
+`enable.auto.commit` foot-gun). The commit point decides the guarantee: advance-before-emit =
+at-most-once; advance-on-emit-success (stdout flushed, exit 0) catches a *broken pipe* (dead reader)
+but **not** "agent read it all, then crashed while acting" — still at-most-once from the agent's
+side; **advance-only-on-ack** = at-least-once.
+
+Since the agent is the unreliable party, durability belongs on the reliable side — n1k1 — so the
+agent needn't `tee` its own `.out`. Make a **tick** a durable, replayable unit n1k1 owns:
+
+- A `poll`/`run --cursor` **opens a tick**: n1k1 journals `{tick-id, from→to cursor, findings,
+  started-at}` under `.n1k1/ticks/<NAME>/` and returns it, but leaves the *committed* cursor at
+  `from`.
+- The agent processes, then `.cursor ack <NAME> <tick-id>` → commits `to`, closes the tick.
+- **Crash before ack → the next `poll` re-delivers the open tick verbatim from the journal** (exact
+  same rows, no re-scan) instead of advancing. At-least-once with exact-content replay. Finding
+  fingerprints make re-delivery safe (idempotent consumer) → exactly-once *effect*.
+
+This one journal unifies the obvious remedies: it *is* "n1k1 records the `.out` in `.n1k1/`", its
+open-tick re-delivery *is* the crash safety net, and keeping the last K closed ticks *is* "a few
+rounds of previous cursor states" — a **reflog**: `.cursor log <NAME>` (history) + `.cursor reset
+<NAME> --back N` (rewind/replay). Bounded ring (GC old ticks); journal full findings when small,
+else positions + fingerprints + count and replay by re-running from `from` (idempotent via
+fingerprints). Prior art: git `reflog`, ZFS snapshots, Kafka seek-back, the transactional outbox.
+
+### Composition — a DAG of packs (one pack's findings feed the next)
+
+Findings are just rows, so a pack's findings are themselves a keyspace another pack can `FROM` —
+which makes a **hierarchy of `.multi` packs a DAG**: primitive detections feeding
+correlation/aggregation packs. Prior art: **Prometheus recording rules → alerting rules**, SIEM
+base-detections → correlation-rules, **dbt** models `ref()`-ing models into a topologically-ordered
+DAG, cascading materialized views.
+
+- Pack A `FROM indexer_log` → findings `pack:A`. Pack B `FROM pack:A GROUP BY … HAVING count>N` →
+  higher-level "incident" findings. n1k1 topologically orders the DAG (reject cycles, like dbt).
+- **Synergy with the tick journal:** A's journaled tick output *is* the materialized intermediate B
+  reads — one mechanism (the durable findings outbox) serves both crash-safety *and* inter-pack
+  dataflow. Each pack keeps its **own cursor** over its (derived) source, so incremental poll
+  composes down the DAG: A's fresh findings this tick are B's new input rows.
+- **Lineage composes:** a B-finding carries the `detector@sha` chain + the fingerprints of the
+  A-findings (and their source rows) that produced it, so an agent can answer *"why did this
+  incident fire?"* by walking the lineage.
+- ⚠ **Fully-incremental-across-layers is the hard part** (the Materialize/DBSP problem). MVP keeps
+  it simple: materialize A's findings as a keyspace and let B re-poll it with its own cursor, rather
+  than true cross-layer delta propagation.
 
 ### GitOps — declarative reconcile (the preferred agent workflow)
 
@@ -201,11 +250,13 @@ Each phase is independently shippable and useful. Phases 1–3 need **no daemon,
 engine work, and no grammar change** — pure cursor + delta + reconcile plumbing over the existing
 scan + corpus machinery.
 
-**Phase 1 — Named cursors + `poll` (MVP).** *Build on:* push-based scan, `records.Source` over
-jsonl/dir, `.multi run`, `_meta.pos/offset`, the recipe loader. *New:* a cursor store
-(`.n1k1-state/cursors/<NAME>`, atomic write-temp-rename), the `--cursor=NAME` modifier (since-filter
-+ advance-on-success), **append** delta only, and `.multi cursors` / `.cursor show|reset|rm`. →
-Delivers the whole run-and-done "what's new" loop for append sources.
+**Phase 1 — Named cursors + `poll` + the tick journal (MVP).** *Build on:* push-based scan,
+`records.Source` over jsonl/dir, `.multi run`, `_meta.pos/offset`, the recipe loader. *New:* a
+cursor store (`.n1k1-state/cursors/<NAME>`, atomic write-temp-rename); the `--cursor=NAME` modifier
+(since-filter + advance); **append** delta only; the **tick journal** (`.n1k1/ticks/<NAME>/`,
+bounded ring) giving at-least-once open-tick re-delivery, `ack`, and a reflog; and `.multi cursors`
+/ `.cursor show|reset|rm|log|ack`. → The whole crash-safe run-and-done "what's new" loop for append
+sources.
 
 **Phase 2 — `diff`/snapshot delta.** *Build on:* the spillable rhmap store, doc-id extraction.
 *New:* `mode: diff` — persist a prior snapshot keyed by id under the cursor, diff on run, emit the
@@ -215,16 +266,22 @@ Debezium envelope, replace snapshot. → "what changed" on mutable / current-sta
 recipes), `.multi lint`. *New:* treat a recipe dir as desired-state; `plan` (diff + lint) and
 `apply --prune` (reconcile, preserve unchanged cursors); labels/annotations in front-matter.
 
-**Phase 4 — `n1k1 serve` + MCP (scheduled monitors).** *New:* a long-running process holding the
+**Phase 4 — Composition (pack DAG).** *Build on:* temp-tables / CTEs / sequence op (exist), and the
+Phase-1 tick journal as the materialized intermediate. *New:* a `pack:<name>` findings keyspace a
+downstream pack can `FROM`; topological ordering (reject cycles); per-pack cursors so incremental
+poll composes; lineage on findings. MVP re-polls A's materialized findings from B (not true
+cross-layer delta). → correlation/incident packs over primitive detections.
+
+**Phase 5 — `n1k1 serve` + MCP (scheduled monitors).** *New:* a long-running process holding the
 cursor store; the `monitor` object (cursor + query + schedule + status); server-driven scheduled
 `poll`; the MCP resource/tool/subscribe surface + long-poll HTTP. No unbounded source yet
 (scheduled-poll reuses Phase 1). → self-running monitors, agent-subscribable.
 
-**Phase 5 — true `follow` / continuous.** The heavy engine work (see next section): unbounded
-source, continuous/watermark emit, incremental standing state, event-time, two-phase `ack`, and a
-distributed cursor-store backend.
+**Phase 6 — true `follow` / continuous.** The heavy engine work (see next section): unbounded
+source, continuous/watermark emit, incremental standing state, event-time, and a distributed
+cursor-store backend.
 
-## The engine gap for `follow` (Phase 5)
+## The engine gap for `follow` (Phase 6)
 
 Continuous operation is real work, but each piece has a seed in the codebase:
 
@@ -337,12 +394,12 @@ Sources: [RisingWave — streaming DB landscape 2026](https://risingwave.com/blo
 
 - **Don't chase distributed exactly-once** — own the embedded / at-least-once / restart-from-offset
   edge lane; n1k1 is not Flink.
-- **Continuous operation (Phase 5) is real engine work** — weeks, not days — even with good seeds.
+- **Continuous operation (Phase 6) is real engine work** — weeks, not days — even with good seeds.
 - **Crowded, consolidating market** — the wedge must be the combination nobody else has, not a
   me-too processor.
 - **Grammar stays frozen** — no `EMIT`/`STREAM`/TVF syntax; cadence/liveness ride config + the
   binding; a `.macro.js` can sugar rate/burst/absence patterns into stock SQL++.
-- **State durability across restarts** unsettled for Phase 5 windows/aggregates (spill files? an
+- **State durability across restarts** unsettled for Phase 6 windows/aggregates (spill files? an
   offset+snapshot?), and how it reconciles with source replay.
 - **Delta-report synergy** — PREPARE++'s re-run delta report (keyed by fingerprint + corpus SHA) is
   the batch analog of "emit only on change"; the two should share a design.
