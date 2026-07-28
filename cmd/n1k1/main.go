@@ -462,6 +462,12 @@ type cli struct {
 	style    cmd.Style // ANSI styling for the box renderer
 
 	buf strings.Builder // REPL/batch statement accumulator
+
+	// Plugin dot-commands (e.g. a loaded *.cmd.js) register here at runtime; they
+	// dispatch and appear in .help exactly like the built-ins (see cmd_registry.go).
+	// Built-ins live in a package-level table, so a bare &cli{} still dispatches them.
+	cmds     map[string]Cmd // name -> plugin command (shadows a built-in of the same name)
+	cmdExtra []Cmd          // plugin commands in registration order (for .help)
 }
 
 // icon returns the given emoji marker only in interactive (fancy) mode, so
