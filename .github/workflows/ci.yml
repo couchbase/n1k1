@@ -63,6 +63,17 @@ jobs:
       # The cbq-engine integration layer + the CLI.
       - name: build (n1ql glue, test harness, CLI)
         run: go build -tags n1ql ./glue/... ./test/... ./cmd/n1k1
+      # n1k1-trim: the smaller variant (~41MB vs ~102MB) that drops Parquet/Iceberg/
+      # object-store via the `trim` tag (see DESIGN-cli.md). Build it on every OS to catch
+      # build-tag rot -- a stub that drifts out of sync, or a new arrow/iceberg/aws import
+      # leaking into the always-compiled path. Then run the trim unit suite (non-Windows;
+      # the glue/CLI tests are quarantined there): it exercises the `!trim` tag on every
+      # test file too, and confirms core behavior under the exclusions.
+      - name: build (n1k1-trim variant)
+        run: go build -tags "n1ql trim" -o n1k1-trim ./cmd/n1k1
+      - name: test (n1k1-trim)
+        if: matrix.os != 'windows-latest'
+        run: go test -tags "n1ql trim" ./records/ ./cmd/n1k1
       # The glue/CLI test suites are not ported to Windows yet (22 failures across
       # several unrelated subsystems -- upstream iceberg-go's URI-based IO, tests that
       # embed a native `C:\...` path inside a SQL++ backquoted identifier where `\` is

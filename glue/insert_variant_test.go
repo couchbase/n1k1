@@ -1,4 +1,4 @@
-//go:build n1ql && !js
+//go:build n1ql && !js && !trim
 
 //  Copyright (c) 2026 Couchbase, Inc.
 //  Licensed under the Apache License, Version 2.0 (the "License");

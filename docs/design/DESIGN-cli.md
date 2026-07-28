@@ -72,9 +72,13 @@ existing wasm exclusions — the `!js` arrow files become `!js && !trim` and the
 Parquet/Iceberg/`s3://` source in a trim binary errors gracefully ("not supported in this
 build"). The irreducible floor (~40 MB) is the cbq fork's language surface (parser + 279
 built-in expression functions + planner) plus the Go runtime, not any single dependency.
-*Follow-up:* `go test -tags trim` doesn't yet pass (feature-test helpers like
-`writeColTestParquet` are shared into non-feature tests); the trim variant is build- +
-smoke-verified, and CI would build+smoke it rather than run the full tagged unit suite.
+Both variants are built + tested in CI (`.github/workflows/ci.yml` builds n1k1-trim on
+every OS and runs `go test -tags "n1ql trim"`, catching tag-rot), and the release matrix
+(`release.yml`) ships both per platform. Any test that exercises an excluded feature is
+`!trim`-tagged; a feature test's fixture helper (e.g. `writeColTestParquet`,
+`writeIcebergAmounts`) must live in a `!trim` file, so a core test that needs it moves next
+to it (e.g. `TestConcurrentSessionsIceberg` lives in `iceberg_test.go`, reusing
+`hammer`/`concQuery` from the always-compiled `concurrency_test.go`).
 
 ```
 n1k1 [flags] [datastore-dir]

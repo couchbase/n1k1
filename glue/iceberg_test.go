@@ -1,4 +1,4 @@
-//go:build n1ql
+//go:build n1ql && !trim
 
 //  Copyright (c) 2026 Couchbase, Inc.
 //  Licensed under the Apache License, Version 2.0 (the "License");
@@ -752,4 +752,28 @@ func TestIcebergTableDirIsKeyspace(t *testing.T) {
 	if len(res.Rows) != 1 || string(res.Rows[0]) != `{"n":2}` {
 		t.Errorf("COUNT(*) = %v, want [{\"n\":2}]", res.Rows)
 	}
+}
+
+// TestConcurrentSessionsIceberg: goroutine-per-client over a shared Iceberg table, hammering
+// the row scan, the columnar/vectorized aggregate path, and the metadata (COUNT/MIN/MAX) path
+// concurrently -- each query opens its own iceberg-go scan. (Here, not concurrency_test.go,
+// because it needs the arrow-backed writeIcebergAmounts fixture; hammer/concQuery are shared
+// from concurrency_test.go, which stays in every build.)
+func TestConcurrentSessionsIceberg(t *testing.T) {
+	root := t.TempDir()
+	writeIcebergAmounts(t, root, "sales", []float64{10, 20, 30, 40, 50})
+	store, err := FileStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.InitParser(); err != nil {
+		t.Fatal(err)
+	}
+	hammer(t, store, []concQuery{
+		{"SELECT e.id FROM sales AS e", 5},
+		{"SELECT e.id FROM sales AS e WHERE e.amt >= 30", 3},
+		{"SELECT SUM(e.amt) AS s FROM sales AS e", 1},
+		{"SELECT COUNT(*) AS n FROM sales", 1},
+		{"SELECT MIN(e.amt) AS lo, MAX(e.amt) AS hi FROM sales AS e", 1},
+	}, 16, 30)
 }

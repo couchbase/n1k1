@@ -15,14 +15,19 @@ permissions:
 jobs:
   # n1k1's CLI is pure Go with CGO_ENABLED=0, so every target cross-compiles from
   # a single Linux runner -- cheaper and faster than a 3-OS matrix, and it keeps
-  # all artifacts bit-reproducible from one toolchain. (All six targets verified.)
+  # all artifacts bit-reproducible from one toolchain. Two variants x six targets:
+  #   full (-tags n1ql, ~102MB)  -- everything, incl. Parquet/Iceberg/object-store.
+  #   trim (-tags "n1ql trim", ~41MB) -- drops the columnar/lakehouse tier + its heavy
+  #        arrow/iceberg/aws/grpc deps; keeps SQL++, local formats, GSI+FTS, macros,
+  #        extensions. See DESIGN-cli.md. (All 12 targets verified.)
   build:
-    name: ${{ matrix.goos }}/${{ matrix.goarch }}
+    name: ${{ matrix.variant }} ${{ matrix.target.goos }}/${{ matrix.target.goarch }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        include:
+        variant: [full, trim]
+        target:
           - { goos: linux,   goarch: amd64 }
           - { goos: linux,   goarch: arm64 }
           - { goos: darwin,  goarch: amd64 }   # macOS Intel
@@ -53,16 +58,19 @@ jobs:
       - name: Build
         env:
           CGO_ENABLED: '0'
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
+          GOOS: ${{ matrix.target.goos }}
+          GOARCH: ${{ matrix.target.goarch }}
           VERSION: ${{ steps.v.outputs.version }}
+          # full => -tags n1ql, binary n1k1 ; trim => -tags "n1ql trim", binary n1k1-trim.
+          TAGS: ${{ matrix.variant == 'trim' && 'n1ql trim' || 'n1ql' }}
+          NAME: ${{ matrix.variant == 'trim' && 'n1k1-trim' || 'n1k1' }}
         run: |
           set -euo pipefail
-          bin=n1k1
-          [ "${GOOS}" = windows ] && bin=n1k1.exe
+          bin="${NAME}"
+          [ "${GOOS}" = windows ] && bin="${NAME}.exe"
           # -s -w strips DWARF + the symbol table: this cbq-fork-based binary is
-          # large (~110MB) and stripping trims ~30%. Go panics still symbolicate.
-          go build -tags n1ql -trimpath \
+          # large and stripping trims ~30%. Go panics still symbolicate.
+          go build -tags "${TAGS}" -trimpath \
             -ldflags "-s -w -X main.version=${VERSION}" \
             -o "dist/${bin}" ./cmd/n1k1
           ls -lh "dist/${bin}"
@@ -70,20 +78,21 @@ jobs:
       - name: Package
         id: pkg
         env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
+          GOOS: ${{ matrix.target.goos }}
+          GOARCH: ${{ matrix.target.goarch }}
           VERSION: ${{ steps.v.outputs.version }}
+          NAME: ${{ matrix.variant == 'trim' && 'n1k1-trim' || 'n1k1' }}
         run: |
           set -euo pipefail
-          stem="n1k1_${VERSION}_${GOOS}_${GOARCH}"
+          stem="${NAME}_${VERSION}_${GOOS}_${GOARCH}"
           cp LICENSE.txt README.md dist/
           cd dist
           if [ "${GOOS}" = windows ]; then
             archive="${stem}.zip"
-            zip -q9 "${archive}" n1k1.exe LICENSE.txt README.md
+            zip -q9 "${archive}" "${NAME}.exe" LICENSE.txt README.md
           else
             archive="${stem}.tar.gz"
-            tar czf "${archive}" n1k1 LICENSE.txt README.md
+            tar czf "${archive}" "${NAME}" LICENSE.txt README.md
           fi
           sha256sum "${archive}" > "${archive}.sha256"
           echo "archive=${archive}" >> "$GITHUB_OUTPUT"
@@ -91,7 +100,7 @@ jobs:
 
       - uses: actions/upload-artifact@v7
         with:
-          name: n1k1-${{ matrix.goos }}-${{ matrix.goarch }}
+          name: n1k1-${{ matrix.variant }}-${{ matrix.target.goos }}-${{ matrix.target.goarch }}
           path: |
             dist/${{ steps.pkg.outputs.archive }}
             dist/${{ steps.pkg.outputs.archive }}.sha256
