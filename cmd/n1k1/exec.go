@@ -121,7 +121,7 @@ func (c *cli) exec(stmt string) {
 			// Point a caret at the offending column when the parser gives one.
 			fmt.Fprint(c.stderr, errorCaret(stmt, err.Error(), c.style))
 			// Add a backtick hint when the offender is a reserved word (e.g. the
-			// recipe-emitted `level` field).
+			// plugin-emitted `level` field).
 			fmt.Fprint(c.stderr, reservedWordHint(err.Error(), c.style))
 			// Add a hint when an unquoted DOTTED keyspace (`ns_server.error`, the norm
 			// in a bundle) parsed as a field path -- and note the shell-quoting so the

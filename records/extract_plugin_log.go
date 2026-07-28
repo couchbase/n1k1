@@ -11,7 +11,7 @@
 
 package records
 
-// The built-in "ns_server_log" recipe: a generic timestamped multiline log, modeled
+// The built-in "ns_server_log" plugin: a generic timestamped multiline log, modeled
 // on ns_server-style Couchbase lines (DESIGN-data.md §4, DESIGN-extensions.md
 // "Extract functions"). Each record is a lead line
 //
@@ -24,7 +24,7 @@ package records
 // time, near-sorted order with a measured disorder bound) and the measured
 // SortedSourceMeta; SpecApply executes that spec natively (no per-row JS).
 //
-// This is the pure-Go analogue of a cb_ns_server.extract.js recipe -- the JS loader
+// This is the pure-Go analogue of a cb_ns_server.extract.js plugin -- the JS loader
 // that PRODUCES such a spec from a *.extract.js file is the deferred second step.
 
 // nsLogFields is the record-lead / field-capture pattern. Anchored at '^' so it also
@@ -53,7 +53,7 @@ func nsLogSpec() ExtractSpec {
 	}
 }
 
-// NSLogDescribe is the ns_server_log recipe's describe pass: it returns the constant
+// NSLogDescribe is the ns_server_log plugin's describe pass: it returns the constant
 // declarative spec and MEASURES the sorted-source metadata (min/max epoch-nanos key,
 // sortedness, disorder bound, record count) by sampling the file's head. The measured
 // disorder bound replaces the spec's declared default so the merge sees this file's
@@ -72,11 +72,11 @@ func NSLogDescribe(path string) (ExtractSpec, SortedSourceMeta, error) {
 }
 
 func init() {
-	RecipeRegister(&Recipe{
+	ExtractPluginRegister(&ExtractPlugin{
 		Name: "ns_server_log",
 		// Claim .log files whose (dataset-relative) name is an ns_server-family log
 		// -- specific enough to leave generic .log files to the whole-file text
-		// extractor. Higher priority than a would-be generic `\.log$` recipe.
+		// extractor. Higher priority than a would-be generic `\.log$` plugin.
 		Match: ExtractMatch{
 			Exts:     []string{".log"},
 			Names:    []string{`ns_server\..*\.log$`, `(^|/)diag\.log$`, `(^|/)info\.log$`},

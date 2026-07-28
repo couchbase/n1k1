@@ -13,18 +13,18 @@
 
 package glue
 
-// extract_cache.go memoizes an extractor recipe's per-file describe() result in the
+// extract_cache.go memoizes an extractor plugin's per-file describe() result in the
 // .n1k1 sidecar, so the expensive, format-specific describe pass (regex/time sniffing
 // + a head-sample measurement of sortedness, min/max key, disorder bound) runs ONCE
 // per file across all queries and processes -- "describe once, reuse forever"
 // (DESIGN-data.md §4). The memoized {ExtractSpec, SortedSourceMeta} is persisted as
 // JSON under <root>/<sidecar>/extract/, keyed by the file fingerprint (relpath, size,
-// mtime) (DESIGN-data.md §5 "Per-file fingerprint"). On a scan opening a recipe-
+// mtime) (DESIGN-data.md §5 "Per-file fingerprint"). On a scan opening a plugin-
 // matched file, a matching fingerprint skips describe() entirely; a mismatch (a
 // changed file) re-describes that one file and atomically rewrites its cache.
 //
-// The wiring: records exposes a pure-Go DescribeMemo seam (records/recipe.go) that
-// OpenFile calls per recipe-matched open; this file installs describeMemoized into
+// The wiring: records exposes a pure-Go DescribeMemo seam (records/plugin.go) that
+// OpenFile calls per plugin-matched open; this file installs describeMemoized into
 // it in init(). records stays sidecar-unaware -- all the .n1k1 knowledge (root
 // resolution, fingerprint, atomic write) lives here in glue, beside the other
 // sidecar readers/writers (idx_si_catalog.go's catalog, idx_mem.go's index blobs).
@@ -61,7 +61,7 @@ const extractSidecarSub = "extract"
 // produces for a JSONL file). It is folded into every cache entry's producer
 // fingerprint, so an engine upgrade that changes extraction re-describes rather than
 // serving a result shaped by the old logic (DESIGN-data.md §5 "producer_version").
-// The recipe's own Fingerprint is folded in alongside it, so a changed recipe
+// The plugin's own Fingerprint is folded in alongside it, so a changed plugin
 // invalidates too -- see producerFingerprint. Bump this on any such logic change.
 const extractCacheVersion = 2 // bumped: describe now floors sortedness at the declaration.
 
@@ -76,7 +76,7 @@ var (
 
 func init() {
 	// Install the sidecar-backed memoization into the records describe seam. Set once
-	// at package init (before any query), so every recipe-matched open goes through
+	// at package init (before any query), so every plugin-matched open goes through
 	// the cache. records defaults the seam to nil (uncached) for a bare import.
 	records.DescribeMemo = describeMemoized
 }
@@ -159,28 +159,28 @@ type extractCacheEntry struct {
 	Relpath    string                   `json:"relpath"`
 	Size       int64                    `json:"size"`
 	MtimeNanos int64                    `json:"mtime_nanos"`
-	Producer   string                   `json:"producer"` // engine version + recipe fingerprint
+	Producer   string                   `json:"producer"` // engine version + plugin fingerprint
 	Spec       records.ExtractSpec      `json:"spec"`
 	Meta       records.SortedSourceMeta `json:"meta"`
 }
 
 // producerFingerprint folds the engine's extract producer version and the claiming
-// recipe's Fingerprint into one string stored in (and checked against) each cache
-// entry. A mismatch on read -- a bumped engine version OR a changed/swapped recipe --
+// plugin's Fingerprint into one string stored in (and checked against) each cache
+// entry. A mismatch on read -- a bumped engine version OR a changed/swapped plugin --
 // is treated as a miss, so the file re-describes instead of serving a stale spec
 // (DESIGN-data.md §5 "config_fingerprint"). Pre-invalidation entries (no producer
 // field) decode to "" and never match, so an upgrade naturally re-describes them.
-func producerFingerprint(recipeFP string) string {
-	return "v" + strconv.Itoa(extractCacheVersion) + "|" + recipeFP
+func producerFingerprint(extractPluginFP string) string {
+	return "v" + strconv.Itoa(extractCacheVersion) + "|" + extractPluginFP
 }
 
-// describeMemoized is the records.DescribeMemo seam: it wraps a recipe's describe()
+// describeMemoized is the records.DescribeMemo seam: it wraps a plugin's describe()
 // with the .n1k1 sidecar cache. On a fingerprint hit it returns the cached spec+meta
 // (describe skipped); on a miss or a changed file it runs describe() and atomically
 // writes the cache. A reader tolerates a concurrently-updating sidecar -- a missing,
 // truncated, unparseable, or fingerprint-mismatched cache file is simply a miss, never
 // fatal (DESIGN-data.md §5 "readers must tolerate a concurrently-updating sidecar").
-func describeMemoized(path string, describe records.DescribeFunc, recipeFP string) (records.ExtractSpec, records.SortedSourceMeta, error) {
+func describeMemoized(path string, describe records.DescribeFunc, extractPluginFP string) (records.ExtractSpec, records.SortedSourceMeta, error) {
 	abs := resolveAbs(path)
 	root := dataRootFor(abs)
 	fi, statErr := os.Stat(abs)
@@ -198,7 +198,7 @@ func describeMemoized(path string, describe records.DescribeFunc, recipeFP strin
 		rel = filepath.Base(abs)
 	}
 	size, mtime := fi.Size(), fi.ModTime().UnixNano()
-	producer := producerFingerprint(recipeFP)
+	producer := producerFingerprint(extractPluginFP)
 	cachePath := extractCachePath(root, rel)
 
 	if blob, e := os.ReadFile(cachePath); e == nil {
@@ -212,7 +212,7 @@ func describeMemoized(path string, describe records.DescribeFunc, recipeFP strin
 		}
 	}
 
-	// Miss, changed file, or a stale producer (bumped engine version / changed recipe):
+	// Miss, changed file, or a stale producer (bumped engine version / changed plugin):
 	// describe, then persist for the next query/process.
 	atomic.AddInt64(&ExtractDescribeRuns, 1)
 	spec, meta, derr := describe(path)
@@ -227,8 +227,8 @@ func describeMemoized(path string, describe records.DescribeFunc, recipeFP strin
 }
 
 // logDescribe emits a per-file extract-describe diagnostic (base.Logf, level 1) --
-// which recipe/format claimed the file and the sorted-source metadata describe()
-// produced (or cache hit/miss) -- the main handle for debugging extract recipes.
+// which plugin/format claimed the file and the sorted-source metadata describe()
+// produced (or cache hit/miss) -- the main handle for debugging extract plugins.
 // Cold path (once per file at plan time), so the string work is fine.
 func logDescribe(how, path string, spec records.ExtractSpec, meta records.SortedSourceMeta, err error) {
 	if !base.LogEnabled(1) {
@@ -296,13 +296,13 @@ func writeExtractCache(cachePath string, ent extractCacheEntry) {
 // path -- the per-file seam the Track-B merge optimizer / a later A->B wiring step
 // reads at plan time to decide concat-vs-heap merge and time-range pruning
 // (DESIGN-merging.md; DESIGN-data.md §5 "Extract/sorted-source fields"). It resolves
-// the file's extractor recipe, then runs describe() through the sidecar cache (a hit
-// skips describe). ok is false when no recipe claims the file (a plain JSON/CSV
+// the file's extractor plugin, then runs describe() through the sidecar cache (a hit
+// skips describe). ok is false when no plugin claims the file (a plain JSON/CSV
 // keyspace has no sorted-source contract). Cold path (planning); safe to call before
 // or independently of a scan.
 func SortedSourceMetaFor(path string) (meta records.SortedSourceMeta, ok bool, err error) {
 	abs := resolveAbs(path)
-	rp := records.RecipeFor(recipeMatchPath(abs))
+	rp := records.ExtractPluginFor(extractPluginMatchPath(abs))
 	if rp == nil {
 		return records.SortedSourceMeta{}, false, nil
 	}
@@ -317,10 +317,10 @@ type FileSortedSourceMeta struct {
 	Meta    records.SortedSourceMeta // memoized describe measurement
 }
 
-// SortedSourceMetasForKeyspace returns the memoized SortedSourceMeta for every recipe-
+// SortedSourceMetasForKeyspace returns the memoized SortedSourceMeta for every plugin-
 // matched file in a keyspace, in walk order -- the input a K-way merge over a multi-
 // file keyspace consumes (per-input sortedness + min/max key -> disjoint ranges concat
-// vs heap merge). Non-recipe files (plain JSON/CSV, which have no sorted-source
+// vs heap merge). Non-plugin files (plain JSON/CSV, which have no sorted-source
 // contract) are skipped. Cold path (planning); describe results come from the sidecar
 // cache. gctx (optional) supplies the per-request walk-file cache; nil walks fresh.
 func SortedSourceMetasForKeyspace(ks datastore.Keyspace, gctx *GlueContext) ([]FileSortedSourceMeta, error) {
@@ -329,7 +329,7 @@ func SortedSourceMetasForKeyspace(ks datastore.Keyspace, gctx *GlueContext) ([]F
 	// cbcollect bundle's top-level cbcollect_info.log / ns_server.error.log, exposed
 	// per-file) has no RecordsDir, so KeyspaceDir would point at a non-existent
 	// <root>/<ns>/<keyspace> dir and walk up EMPTY -- which is why the ASOF sort-key
-	// gate saw "no sorted-source metadata" over real recipe keyspaces (IDEA-0016).
+	// gate saw "no sorted-source metadata" over real plugin keyspaces (IDEA-0016).
 	files, err := keyspaceFiles(ks, gctx)
 	if err != nil {
 		return nil, err
@@ -338,7 +338,7 @@ func SortedSourceMetasForKeyspace(ks datastore.Keyspace, gctx *GlueContext) ([]F
 	var out []FileSortedSourceMeta
 	for _, f := range files {
 		abs := resolveAbs(f)
-		rp := records.RecipeFor(recipeMatchPath(abs))
+		rp := records.ExtractPluginFor(extractPluginMatchPath(abs))
 		if rp == nil {
 			continue // a plain structured file: no sorted-source contract.
 		}
@@ -359,34 +359,34 @@ func SortedSourceMetasForKeyspace(ks datastore.Keyspace, gctx *GlueContext) ([]F
 
 // KeyspaceFramingKind classifies how a keyspace's files turn into records, for the
 // .tables/.schema listing (IDEA-0007): a whole-file text blob vs an inherently
-// multi-record structured format vs recipe-framed rows. Derived cheaply from the file
-// listing plus content-free recipe/extension matching -- no file content is read.
+// multi-record structured format vs plugin-framed rows. Derived cheaply from the file
+// listing plus content-free plugin/extension matching -- no file content is read.
 type KeyspaceFramingKind int
 
 const (
-	KeyspaceEmpty      KeyspaceFramingKind = iota // no eligible record files
-	KeyspaceBlob                                  // whole-file: one record per file
-	KeyspaceStructured                            // jsonl/csv/json/...: multi-record
-	KeyspaceRecipe                                // an extract recipe frames the files
-	KeyspaceMixed                                 // files of differing kinds
-	KeyspaceTemp                                  // session TEMP KEYSPACE (in-memory, spills to disk if large)
-	KeyspaceIceberg                               // an Apache Iceberg table (read via its current snapshot)
+	KeyspaceEmpty         KeyspaceFramingKind = iota // no eligible record files
+	KeyspaceBlob                                     // whole-file: one record per file
+	KeyspaceStructured                               // jsonl/csv/json/...: multi-record
+	KeyspaceExtractPlugin                            // an extract plugin frames the files
+	KeyspaceMixed                                    // files of differing kinds
+	KeyspaceTemp                                     // session TEMP KEYSPACE (in-memory, spills to disk if large)
+	KeyspaceIceberg                                  // an Apache Iceberg table (read via its current snapshot)
 )
 
 // KeyspaceFraming is a keyspace's record-framing summary for display.
 type KeyspaceFraming struct {
-	Kind   KeyspaceFramingKind
-	Recipe string // recipe name, when Kind==KeyspaceRecipe
-	Format string // inner-ext, e.g. "jsonl"/"csv", when Kind==KeyspaceStructured
-	Files  int    // eligible record-file count
+	Kind          KeyspaceFramingKind
+	ExtractPlugin string // plugin name, when Kind==KeyspaceExtractPlugin
+	Format        string // inner-ext, e.g. "jsonl"/"csv", when Kind==KeyspaceStructured
+	Files         int    // eligible record-file count
 }
 
-// Label is a short human tag: "recipe=<name>", a structured format ("jsonl"),
+// Label is a short human tag: "plugin=<name>", a structured format ("jsonl"),
 // "whole-file" (a one-row-per-file blob), "mixed", or "empty".
 func (f KeyspaceFraming) Label() string {
 	switch f.Kind {
-	case KeyspaceRecipe:
-		return "recipe=" + f.Recipe
+	case KeyspaceExtractPlugin:
+		return "plugin=" + f.ExtractPlugin
 	case KeyspaceStructured:
 		if f.Format != "" {
 			return f.Format
@@ -408,7 +408,7 @@ func (f KeyspaceFraming) Label() string {
 // KeyspaceFramingFor classifies a keyspace's record framing (IDEA-0007) so a listing
 // can tell a query-ready multi-record keyspace from a whole-file text blob. It lists
 // the keyspace's files (a directory read / glob expand, mirroring KeyspaceRecordsOpen's
-// resolution) and classifies each by the content-free recipe registry (RecipeFor) and
+// resolution) and classifies each by the content-free plugin registry (ExtractPluginFor) and
 // structured-extension test (IsStructuredFile). No file content is read -- safe on the
 // interactive listing path even over a huge (e.g. 240 MB log) keyspace.
 func KeyspaceFramingFor(ks datastore.Keyspace) (KeyspaceFraming, error) {
@@ -428,13 +428,13 @@ func KeyspaceFramingFor(ks datastore.Keyspace) (KeyspaceFraming, error) {
 		return KeyspaceFraming{}, err
 	}
 	kf := KeyspaceFraming{Files: len(files)}
-	recipes := map[string]bool{}
+	plugins := map[string]bool{}
 	formats := map[string]bool{}
 	blobs := 0
 	for _, f := range files {
 		abs := resolveAbs(f)
-		if rp := records.RecipeFor(recipeMatchPath(abs)); rp != nil {
-			recipes[rp.Name] = true
+		if rp := records.ExtractPluginFor(extractPluginMatchPath(abs)); rp != nil {
+			plugins[rp.Name] = true
 		} else if records.IsStructuredFile(abs) {
 			formats[formatExt(abs)] = true
 		} else {
@@ -444,17 +444,17 @@ func KeyspaceFramingFor(ks datastore.Keyspace) (KeyspaceFraming, error) {
 	switch {
 	case len(files) == 0:
 		kf.Kind = KeyspaceEmpty
-	case len(recipes) == 1 && len(formats) == 0 && blobs == 0:
-		kf.Kind = KeyspaceRecipe
-		for n := range recipes {
-			kf.Recipe = n
+	case len(plugins) == 1 && len(formats) == 0 && blobs == 0:
+		kf.Kind = KeyspaceExtractPlugin
+		for n := range plugins {
+			kf.ExtractPlugin = n
 		}
-	case len(recipes) == 0 && len(formats) == 1 && blobs == 0:
+	case len(plugins) == 0 && len(formats) == 1 && blobs == 0:
 		kf.Kind = KeyspaceStructured
 		for f := range formats {
 			kf.Format = f
 		}
-	case len(recipes) == 0 && len(formats) == 0 && blobs > 0:
+	case len(plugins) == 0 && len(formats) == 0 && blobs > 0:
 		kf.Kind = KeyspaceBlob
 	default:
 		kf.Kind = KeyspaceMixed
@@ -501,10 +501,10 @@ func formatExt(path string) string {
 	return strings.TrimPrefix(filepath.Ext(name), ".")
 }
 
-// recipeMatchPath returns the path RecipeFor should match against: the dataset-root-
-// relative path when the file sits under a known store root (so path-anchored recipe
+// extractPluginMatchPath returns the path ExtractPluginFor should match against: the dataset-root-
+// relative path when the file sits under a known store root (so path-anchored plugin
 // regexps like `(^|/)diag\.log$` behave), else the bare absolute path.
-func recipeMatchPath(absPath string) string {
+func extractPluginMatchPath(absPath string) string {
 	if root := dataRootFor(absPath); root != "" {
 		if rel, err := filepath.Rel(root, absPath); err == nil {
 			return rel

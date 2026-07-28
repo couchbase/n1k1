@@ -25,12 +25,12 @@ package records
 //     epoch-nanos, timezone-normalized) and yields one typed JSON Record per framed
 //     record. NO per-row JS: the spec is applied by native Go on the byte lane.
 //
-// A Recipe binds the two behind an ExtractMatch (extension AND/OR regexp over the
+// A ExtractPlugin binds the two behind an ExtractMatch (extension AND/OR regexp over the
 // dataset-relative path, priority-resolved). This coexists with the extension-keyed
 // `extractors` table in extract.go: the office/PDF/media extractors remain the
-// built-in {framing: whole} baseline, while a Recipe describes/extracts a *regular*
-// format (a timestamped multiline log) declaratively. RecipeRegister adds one;
-// RecipeFor(relPath) resolves the highest-priority claimant.
+// built-in {framing: whole} baseline, while a ExtractPlugin describes/extracts a *regular*
+// format (a timestamped multiline log) declaratively. ExtractPluginRegister adds one;
+// ExtractPluginFor(relPath) resolves the highest-priority claimant.
 //
 // Allocation model (see records.go): SpecApply's Source honors the borrowed-slice
 // contract -- each Next(*Record) fills rec.ID/rec.Doc from internal buffers that are
@@ -52,64 +52,64 @@ import (
 	"github.com/buger/jsonparser"
 )
 
-// DescribeFunc is a recipe's cheap once-per-file pass: it samples path and returns
+// DescribeFunc is a plugin's cheap once-per-file pass: it samples path and returns
 // the declarative ExtractSpec plus the measured SortedSourceMeta (DESIGN-data.md §4).
 type DescribeFunc func(path string) (ExtractSpec, SortedSourceMeta, error)
 
-// ExtractFunc is a recipe's OPTIONAL imperative escape hatch for formats too
+// ExtractFunc is a plugin's OPTIONAL imperative escape hatch for formats too
 // irregular for a declarative spec (DESIGN-data.md "Declarative spec vs imperative
 // extract"). When nil, SpecApply runs the spec natively -- the preferred path. It is
 // handed this file's earlier describe() spec (`meta`) rather than re-sniffing.
 type ExtractFunc func(path, idPrefix string, spec ExtractSpec) (Source, error)
 
-// Recipe is one extractor recipe: which files it claims (Match), how to describe a
+// ExtractPlugin is one extractor plugin: which files it claims (Match), how to describe a
 // matched file, and (optionally) an imperative extract. The declarative core is
 // {Match, Describe}; Extract is the irregular-format fallback.
-type Recipe struct {
-	Name     string       // recipe/format tag, e.g. "ns_server_log"
+type ExtractPlugin struct {
+	Name     string       // plugin/format tag, e.g. "ns_server_log"
 	Match    ExtractMatch // extension AND/OR path-regexp claim (priority-resolved)
 	Describe DescribeFunc // sample -> ExtractSpec + SortedSourceMeta; optional iff Extract is set
 	Extract  ExtractFunc  // optional: nil => SpecApply runs the spec natively
 
-	// Fingerprint identifies this recipe's describe LOGIC for cache invalidation: a
+	// Fingerprint identifies this plugin's describe LOGIC for cache invalidation: a
 	// memoized describe result (the .n1k1 sidecar) is keyed partly by it, so swapping
-	// in a recipe with a different Fingerprint re-describes rather than serving a stale
-	// spec (DESIGN-data.md §5 "config_fingerprint"). Built-in Go recipes leave it ""
-	// (RecipeRegister defaults it to Name -- their logic versions with the engine's
-	// producer version); a JS recipe sets it to a hash of its source so an edited
+	// in a plugin with a different Fingerprint re-describes rather than serving a stale
+	// spec (DESIGN-data.md §5 "config_fingerprint"). Built-in Go plugins leave it ""
+	// (ExtractPluginRegister defaults it to Name -- their logic versions with the engine's
+	// producer version); a JS plugin sets it to a hash of its source so an edited
 	// *.extract.js invalidates. Empty is fine for an uncached (bare-import) path.
 	Fingerprint string
 }
 
-// recipes is the open, priority-resolved recipe registry -- the regexp-capable
+// plugins is the open, priority-resolved plugin registry -- the regexp-capable
 // sibling of extract.go's extension-keyed `extractors` table. Entries are consulted
 // in registration order, with a strictly-higher Priority winning on overlap (so a
 // specific `ns_server\..*\.log` beats a generic `\.log$`, and equal priorities keep
-// load order). Populated by RecipeRegister; the built-in log recipe registers in
+// load order). Populated by ExtractPluginRegister; the built-in log plugin registers in
 // init() below.
-var recipes []*Recipe
+var plugins []*ExtractPlugin
 
-// RecipeRegister adds a recipe to the registry. Later registrations do NOT displace
-// an equal-priority earlier one at match time (RecipeFor keeps load order on ties).
-// A recipe must supply Describe (declarative, native framing) and/or Extract
-// (imperative, self-framing); a recipe with neither can produce no records.
-func RecipeRegister(r *Recipe) {
+// ExtractPluginRegister adds a plugin to the registry. Later registrations do NOT displace
+// an equal-priority earlier one at match time (ExtractPluginFor keeps load order on ties).
+// A plugin must supply Describe (declarative, native framing) and/or Extract
+// (imperative, self-framing); a plugin with neither can produce no records.
+func ExtractPluginRegister(r *ExtractPlugin) {
 	if r.Describe == nil && r.Extract == nil {
-		panic("records: RecipeRegister requires a Describe and/or an Extract: " + r.Name)
+		panic("records: ExtractPluginRegister requires a Describe and/or an Extract: " + r.Name)
 	}
 	if r.Fingerprint == "" {
-		r.Fingerprint = r.Name // built-in recipes version with the engine; Name identifies them.
+		r.Fingerprint = r.Name // built-in plugins version with the engine; Name identifies them.
 	}
-	recipes = append(recipes, r)
+	plugins = append(plugins, r)
 }
 
-// RecipeFor returns the highest-priority recipe claiming relPath (its dataset-
+// ExtractPluginFor returns the highest-priority plugin claiming relPath (its dataset-
 // relative path), or nil when none match. Extension and path-regexp are ANDed within
 // a single ExtractMatch (an empty dimension is a wildcard; a match with neither Exts
 // nor Names claims nothing). See ExtractMatch (records/spec.go).
-func RecipeFor(relPath string) *Recipe {
-	var best *Recipe
-	for _, r := range recipes {
+func ExtractPluginFor(relPath string) *ExtractPlugin {
+	var best *ExtractPlugin
+	for _, r := range plugins {
 		if !matchClaims(r.Match, relPath) {
 			continue
 		}
@@ -122,7 +122,7 @@ func RecipeFor(relPath string) *Recipe {
 
 // matchClaims reports whether m claims relPath: (Exts empty || inner-ext in Exts)
 // AND (Names empty || some Names regexp matches relPath). A match with neither Exts
-// nor Names claims nothing (an all-wildcard recipe would shadow every file).
+// nor Names claims nothing (an all-wildcard plugin would shadow every file).
 func matchClaims(m ExtractMatch, relPath string) bool {
 	if len(m.Exts) == 0 && len(m.Names) == 0 {
 		return false
@@ -155,7 +155,7 @@ func matchClaims(m ExtractMatch, relPath string) bool {
 	return true
 }
 
-// DescribeMemo, when non-nil, wraps a recipe's per-file describe() pass with a
+// DescribeMemo, when non-nil, wraps a plugin's per-file describe() pass with a
 // caller-supplied memoization layer. glue installs one backed by the .n1k1 sidecar
 // (DESIGN-data.md §4 "Describe once, reuse forever"; §5 per-file fingerprint), so a
 // second open of an UNCHANGED file skips the expensive describe() and reads the
@@ -164,16 +164,16 @@ func matchClaims(m ExtractMatch, relPath string) bool {
 // through this seam when set, else runs describe() directly (the default for a bare
 // `records` import or a records-package test). A changed file (fingerprint mismatch)
 // re-describes only that file; that logic lives entirely on the glue side.
-// recipeFP is the claiming recipe's Fingerprint, folded into the cache key so a
-// changed recipe (or a bumped engine producer version) invalidates a stale entry.
-var DescribeMemo func(path string, describe DescribeFunc, recipeFP string) (ExtractSpec, SortedSourceMeta, error)
+// extractPluginFP is the claiming plugin's Fingerprint, folded into the cache key so a
+// changed plugin (or a bumped engine producer version) invalidates a stale entry.
+var DescribeMemo func(path string, describe DescribeFunc, extractPluginFP string) (ExtractSpec, SortedSourceMeta, error)
 
-// runDescribe applies a recipe's describe() to path, routing through DescribeMemo
+// runDescribe applies a plugin's describe() to path, routing through DescribeMemo
 // when a memoization layer is installed (the sidecar cache), else calling describe()
 // directly. It returns the declarative spec (the scan path's input to SpecApply) and
 // the measured SortedSourceMeta. This is the single seam OpenFile uses so the cache
-// covers every recipe-matched open.
-func runDescribe(rp *Recipe, path string) (ExtractSpec, SortedSourceMeta, error) {
+// covers every plugin-matched open.
+func runDescribe(rp *ExtractPlugin, path string) (ExtractSpec, SortedSourceMeta, error) {
 	if DescribeMemo != nil {
 		return DescribeMemo(path, rp.Describe, rp.Fingerprint)
 	}
@@ -183,17 +183,17 @@ func runDescribe(rp *Recipe, path string) (ExtractSpec, SortedSourceMeta, error)
 // MeasureSortedSource samples path through spec's native framing/time path and
 // returns the SortedSourceMeta the K-way merge consumes (min/max epoch-nanos key,
 // record count, sortedness + disorder bound). It is the exported wrapper around the
-// same describeMeasure the built-in recipes use, so a NON-Go recipe author -- e.g.
+// same describeMeasure the built-in plugins use, so a NON-Go plugin author -- e.g.
 // glue's *.extract.js loader, whose describe() runs in goja -- can reuse the exact
 // native measurement rather than reimplementing it in JS. Cheap: it samples the
 // file's head, not a full scan. Keeping this on the native side is what lets a JS
-// recipe stay JS-only for describe() while per-row extract stays on the byte lane.
+// plugin stay JS-only for describe() while per-row extract stays on the byte lane.
 func MeasureSortedSource(spec ExtractSpec, path string) (SortedSourceMeta, error) {
 	return describeMeasure(spec, path)
 }
 
 // HeadSample returns up to max bytes of path's DECOMPRESSED head as a string, for a
-// describe() that content-sniffs (e.g. a *.extract.js recipe choosing a pattern by
+// describe() that content-sniffs (e.g. a *.extract.js plugin choosing a pattern by
 // peeking at the first lines). It reuses SpecApply's transparent decompression so a
 // .gz/.zst log samples its real text, not compressed bytes. Cheap and once-per-file
 // (planning phase), so a string copy here is fine -- NOT the per-row hot path.
@@ -423,7 +423,7 @@ func (s *specSource) Next(rec *Record) (bool, error) {
 		}
 	}
 	// line / multiline / json framing. Skip any framed record whose lead line matches
-	// the recipe's banner regexp (a cbbrowse_logs `==== ... ====` separator), so it
+	// the plugin's banner regexp (a cbbrowse_logs `==== ... ====` separator), so it
 	// never reaches the output as a banner-only {text} row (IDEA-0011).
 	for {
 		rb, ok, err := s.frameNext()

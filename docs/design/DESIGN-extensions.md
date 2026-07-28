@@ -1,4 +1,4 @@
-# Extending n1k1 — functions, aggregates, streaming sources, extract recipes, macros
+# Extending n1k1 — functions, aggregates, streaming sources, extract plugins, macros
 
 ## Status & remaining TODOs
 
@@ -6,7 +6,7 @@ _Last reviewed: 2026-07-23._
 
 n1k1 runs SQL++ via cbq's parser+planner; this doc grows the engine's *surface* —
 builtins, drop-in user functions (JS or Go), table-valued/streaming sources, file-matched
-extract recipes, and pre-parse macros. One hard constraint frames everything: **n1k1 builds
+extract plugins, and pre-parse macros. One hard constraint frames everything: **n1k1 builds
 `CGO_ENABLED=0`** (pure-Go static binary), which rules out anything needing cgo (notably
 Go's `plugin`/`.so`).
 
@@ -20,7 +20,7 @@ tiny fork setters — `expression.RegisterFunction` (patch-05) and `algebra.Regi
   JS 3-callback (`init`/`update`/`final`).
 - **Streaming table-valued sources** (`*.stream.js`, `emit` protocol) on one generic
   `stream-fn` op (which `MULTI_MATCHES` also rides).
-- **`*.extract.js` recipes** — `describe()` returns a declarative `ExtractSpec` applied on
+- **`*.extract.js` plugins** — `describe()` returns a declarative `ExtractSpec` applied on
   the native byte lane (JS off the per-record hot path).
 - **`*.macro.js` pre-parse SQL++ macros** — `@name(...)` → generated SQL++ before cbq's
   parser (gensym hygiene, `.macro expand`); starter library `grep_context`/`sessionize`/
@@ -30,12 +30,12 @@ tiny fork setters — `expression.RegisterFunction` (patch-05) and `algebra.Regi
   exit on failure for CI).
 
 **Remaining (headline TODOs):**
-- [x] ~~Extract recipes are `describe()`-only; the imperative `extract(file, meta, emit)`
+- [x] ~~Extract plugins are `describe()`-only; the imperative `extract(file, meta, emit)`
   escape hatch for irregular formats is not wired.~~ **DONE** — both a BUFFERED
   `extract(file, emit)` (whole-file, `toml2.extract.js` matches native `.toml` byte-for-byte)
   and a STREAMING `extractStream(file, emit)` (incremental `readLine`, backpressured per-row
   emit at bounded memory, race-clean, `stanza.extract.js`) are wired to the
-  `records.Recipe.Extract` seam. A recipe's claim now makes even a brand-new extension a
+  `records.ExtractPlugin.Extract` seam. A plugin's claim now makes even a brand-new extension a
   record file (`records.IsRecordFile` honors the registry).
 - [ ] Streaming sources don't early-terminate on `LIMIT` (the `YieldStats` LIMIT hook is
   inert) — an **unbounded source hangs under `LIMIT`**; needs engine-wide producer early-exit.
@@ -55,7 +55,7 @@ At parse time `NAME(args)` resolves in order (`parser/n1ql/n1ql.y`): (1)
 extension points — the builtin registry (1) and the UDF resolver (4) — are open. **The full
 UDF bridge is not wired** (`glue/conv.go`'s `VisitExecuteFunction` returns `NA()`), so
 unknown/UDF names error at parse today; the two patch-05/06 setters sidestep it by
-registering into (1)/(3) directly. **Extract recipes are off this seam entirely**: matched
+registering into (1)/(3) directly. **Extract plugins are off this seam entirely**: matched
 to *files* (by extension/regexp), not invoked by name, they register into a separate
 scan-layer extract registry (`DESIGN-data.md` §4). Keep the two axes distinct: name→function
 vs file→extractor.
@@ -144,7 +144,7 @@ row buffer, valid only within the callback — most functions just marshal and p
 A *different class* on a different axis: **implicit, matched to files** and run by the
 scan/extract layer (`DESIGN-data.md` §4) to turn messy inputs into typed rows + the
 file-level metadata the engine prunes/merges by. n1k1 core is domain-agnostic — all file
-knowledge lives in a git-cloned recipe repo. A `*.extract.js` exports up to three things:
+knowledge lives in a git-cloned plugin repo. A `*.extract.js` exports up to three things:
 
 - **`match`** — which files it claims (`exts`/`names` regexps, `priority`); also the
   source-routing key for `DESIGN-prepare.md`'s MQO.
@@ -158,7 +158,7 @@ knowledge lives in a git-cloned recipe repo. A `*.extract.js` exports up to thre
   (`file.text`, plus `path`/`name`/`ext`/`stem`) and calls `emit(doc[, id])` per record, so
   it owns framing AND parsing; records are buffered into a `records.Source`, paying the JS
   boundary once per file (not per row). **WIRED** (`glue/ext_extract_jsvm.go` →
-  `records.Recipe.Extract`). The flagship demo, `extensions/extract_recipes/toml2.extract.js`,
+  `records.ExtractPlugin.Extract`). The flagship demo, `extensions/extract_plugins/toml2.extract.js`,
   parses TOML in JS under `.toml2` and reproduces the native Go `.toml` reader's records
   exactly.
 - **`extractStream(file, emit, emitBuffer)`** — the STREAMING sibling, for a large/irregular
@@ -170,7 +170,7 @@ knowledge lives in a git-cloned recipe repo. A `*.extract.js` exports up to thre
   exports a `Uint8Array` as its live backing `[]byte`, so Go reads straight into it) — and
   emits: `emit(doc[, id])` marshals a JS value, or **`emitBuffer(bytes[, id])`** passes RAW
   JSON bytes straight through with NO marshal (n1k1 records are JSON `[]byte`; validated but
-  not re-serialized — pair it with `readBytes`/`readInto` for a zero-hop binary/JSON recipe).
+  not re-serialized — pair it with `readBytes`/`readInto` for a zero-hop binary/JSON plugin).
   Records flow out **one at a time with backpressure**, so memory stays bounded however large
   the file or record count. Mechanics:
   goja is single-threaded and calls `emit` synchronously, but `records.Source.Next` is
@@ -180,7 +180,7 @@ knowledge lives in a git-cloned recipe repo. A `*.extract.js` exports up to thre
   the JS loop can break (the same stop protocol as a `*.stream.js` source); `Close` also
   interrupts the runtime as a backstop and waits for the goroutine before releasing the file
   (no leak, no early-Close race). **WIRED + race-clean.** Demo:
-  `extensions/extract_recipes/stanza.extract.js` (blank-line-delimited stanzas). A recipe
+  `extensions/extract_plugins/stanza.extract.js` (blank-line-delimited stanzas). A plugin
   defines `describe`, `extract`, or `extractStream` (extract/extractStream are mutually
   exclusive); any of them may `match` a brand-new extension (`records.IsRecordFile` honors
   the registry).
@@ -190,7 +190,7 @@ the ideal Wasm shape later. The registry is a git repo matched by file (`Registe
 `priority` then load-order on overlap); built-in office/PDF extractors are `{framing: whole}`
 specs under the same seam. ⚠ The `describe` `time`+`order` metadata is precisely the
 [sorted-source contract](DESIGN-data.md) the K-way near-sorted merge-join and ASOF consume —
-a wrong `disorder_bound` is a silent merge-corruption risk, so each recipe ships a golden
+a wrong `disorder_bound` is a silent merge-corruption risk, so each plugin ships a golden
 fixture (tiny fragment → expected spec + first-N records) run in CI.
 
 ## Macros (`*.macro.js`) — pre-parse SQL++ generators

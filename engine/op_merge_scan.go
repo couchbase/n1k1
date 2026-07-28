@@ -20,7 +20,7 @@ import (
 	"github.com/couchbase/n1k1/base"
 )
 
-// Merge SCAN/JOIN rows dropped for a missing int64 sort key (real recipe-framed log
+// Merge SCAN/JOIN rows dropped for a missing int64 sort key (real plugin-framed log
 // keyspaces interleave ts-keyed data with keyless lines -- cbcollect `====` banners,
 // multiline continuations -- which are not time-orderable, so the merge skips them
 // rather than aborting the ASOF) are counted in base.MergeStats.NoKeySkipped, a

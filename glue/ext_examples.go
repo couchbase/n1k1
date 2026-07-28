@@ -70,9 +70,9 @@ type extExampleSet struct {
 // extension registries -- so no lock.
 var extExampleRegistry = map[string]extExampleSet{}
 
-// extractExamplers lets an extract recipe supply its own executor closure (kind
+// extractExamplers lets an extract plugin supply its own executor closure (kind
 // "extract" runs describe()+SpecApply, which is records-package logic that lives in
-// ext_extract_jsvm.go rather than here). Keyed by recipe name.
+// ext_extract_jsvm.go rather than here). Keyed by plugin name.
 var extractExamplers = map[string]func(sample string) (json.RawMessage, error){}
 
 func exKey(kind, name string) string { return kind + "\x00" + name }
@@ -225,7 +225,7 @@ func execExample(kind, name string, in json.RawMessage) (json.RawMessage, error)
 	case "extract":
 		exec := extractExamplers[name]
 		if exec == nil {
-			return nil, fmt.Errorf("extract recipe %q: no example executor", name)
+			return nil, fmt.Errorf("extract plugin %q: no example executor", name)
 		}
 		sample, err := jsonString(in)
 		if err != nil {

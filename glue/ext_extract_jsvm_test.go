@@ -30,26 +30,26 @@ import (
 )
 
 // nsLogKeyspaceFixture is a small ns_server-style multiline log (lead line +
-// continuation lines), claimed by the BUILT-IN records ns_server_log recipe.
+// continuation lines), claimed by the BUILT-IN records ns_server_log plugin.
 const nsLogKeyspaceFixture = `[ns_server:info,2026-05-17T15:36:11.198+02:00,n1@host:normal]started rebalance
   moving vbucket 42 to node n2@host
 [stats:warn,2026-05-17T15:36:12.500+02:00,n2@host:normal]slow operation detected
 [couch_log:error,2026-05-17T15:36:10.000+02:00,n1@host:default]connection failure
 `
 
-// TestExtractRecipeNativeDifferential proves recipes are wired into the real FROM
+// TestExtractPluginNativeDifferential proves plugins are wired into the real FROM
 // scan path end-to-end AND that the result is identical through the interpreter and
 // the standalone compiled child (interp == compiler). A keyspace whose only file is
-// an ns_server-style .log is scanned via the built-in native recipe: describe() once
+// an ns_server-style .log is scanned via the built-in native plugin: describe() once
 // per file, then records.SpecApply per record -- yielding typed ts/level/node/msg
 // rows with the timestamp normalized to int64 epoch-nanos.
-func TestExtractRecipeNativeDifferential(t *testing.T) {
+func TestExtractPluginNativeDifferential(t *testing.T) {
 	dir := t.TempDir()
 	ks := filepath.Join(dir, "default", "logs")
 	if err := os.MkdirAll(ks, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// The name matches the built-in recipe's `ns_server\..*\.log$` claim.
+	// The name matches the built-in plugin's `ns_server\..*\.log$` claim.
 	if err := os.WriteFile(filepath.Join(ks, "ns_server.debug.log"),
 		[]byte(nsLogKeyspaceFixture), 0o644); err != nil {
 		t.Fatal(err)
@@ -61,7 +61,7 @@ func TestExtractRecipeNativeDifferential(t *testing.T) {
 	}
 	defer sess.Close()
 
-	// The proof query: typed columns off the recipe-extracted records. No ORDER BY --
+	// The proof query: typed columns off the plugin-extracted records. No ORDER BY --
 	// runRows sorts the row strings for comparison, and the ORDER-BY (heap) op has an
 	// unrelated compiled-child codegen gap (Track C), which this data-layer test must
 	// not depend on. The normalized int64 ts is still exercised as a projected column.
@@ -107,23 +107,23 @@ func TestExtractRecipeNativeDifferential(t *testing.T) {
 		}
 	}
 	if sess.prepareds["plogs"].compiledBin == "" {
-		t.Error("recipe scan of SELECT ... FROM logs should have compiled to a standalone child")
+		t.Error("plugin scan of SELECT ... FROM logs should have compiled to a standalone child")
 	}
 }
 
-// appLogFixture is a simple single-line-per-record app log the JS extract recipe
+// appLogFixture is a simple single-line-per-record app log the JS extract plugin
 // below parses. Distinct from ns_server format so the JS-produced spec is what does
-// the work (the built-in recipe does not claim these files).
+// the work (the built-in plugin does not claim these files).
 const appLogFixture = `2026-05-17T15:36:11.198Z INFO node-a starting up
 2026-05-17T15:36:12.500Z WARN node-b slow query
 2026-05-17T15:36:10.000Z ERROR node-a disk full
 `
 
-// jsAppLogRecipe is an inline *.extract.js recipe: module-scope `match` claims
+// jsAppLogPlugin is an inline *.extract.js plugin: module-scope `match` claims
 // `myapp.*.log` files, and describe(file) returns a line-framed ExtractSpec with
 // named-capture fields and an RFC3339 timestamp. describe runs once per file in
 // goja; per-row extraction runs natively via records.SpecApply.
-const jsAppLogRecipe = `
+const jsAppLogPlugin = `
 var match = { exts: [".log"], names: ["myapp\\..*\\.log$"], priority: 20 };
 
 function describe(file) {
@@ -141,23 +141,23 @@ function describe(file) {
 }
 `
 
-// TestJSExtractRecipeEndToEnd registers a JS *.extract.js recipe and proves that a
+// TestJSExtractPluginEndToEnd registers a JS *.extract.js plugin and proves that a
 // real SQL FROM over a matching log keyspace returns typed rows produced by the
-// JS-authored describe() + native SpecApply. (The JS recipe lives in the parent's
+// JS-authored describe() + native SpecApply. (The JS plugin lives in the parent's
 // records registry, so this is the interpreter path; the standalone compiled child
-// is a separate process without it -- see the native-recipe differential above.)
-func TestJSExtractRecipeEndToEnd(t *testing.T) {
-	if err := RegisterJSExtractRecipe("myapp_log", jsAppLogRecipe); err != nil {
-		t.Fatalf("RegisterJSExtractRecipe: %v", err)
+// is a separate process without it -- see the native-plugin differential above.)
+func TestJSExtractPluginEndToEnd(t *testing.T) {
+	if err := RegisterJSExtractPlugin("myapp_log", jsAppLogPlugin); err != nil {
+		t.Fatalf("RegisterJSExtractPlugin: %v", err)
 	}
 
-	// The recipe is registered in the records registry and claims myapp.*.log files.
-	rp := records.RecipeFor("myapp.debug.log")
+	// The plugin is registered in the records registry and claims myapp.*.log files.
+	rp := records.ExtractPluginFor("myapp.debug.log")
 	if rp == nil || rp.Name != "myapp_log" {
-		t.Fatalf("RecipeFor(myapp.debug.log) = %v, want the myapp_log recipe", rp)
+		t.Fatalf("ExtractPluginFor(myapp.debug.log) = %v, want the myapp_log plugin", rp)
 	}
-	if records.RecipeFor("server.log") != nil {
-		t.Errorf("myapp_log recipe should not claim a bare server.log")
+	if records.ExtractPluginFor("server.log") != nil {
+		t.Errorf("myapp_log plugin should not claim a bare server.log")
 	}
 
 	// describe() (run in JS) produces the expected declarative spec + measured meta.
@@ -173,7 +173,7 @@ func TestJSExtractRecipeEndToEnd(t *testing.T) {
 		t.Errorf("measured meta = %+v, want 3 records sorted by ts", meta)
 	}
 
-	// End-to-end: a keyspace whose file is claimed by the JS recipe.
+	// End-to-end: a keyspace whose file is claimed by the JS plugin.
 	dir := t.TempDir()
 	ks := filepath.Join(dir, "default", "app")
 	if err := os.MkdirAll(ks, 0o755); err != nil {
@@ -225,13 +225,13 @@ func TestJSExtractRecipeEndToEnd(t *testing.T) {
 		t.Errorf(`WHERE level='ERROR' = %v, want [{"node":"node-a"}]`, one)
 	}
 
-	// A recipe with a `match` that claims nothing is rejected at registration.
-	if err := RegisterJSExtractRecipe("bad", `var match = {}; function describe(f){return {};}`); err == nil {
-		t.Error("expected an error registering a recipe whose match claims nothing")
+	// A plugin with a `match` that claims nothing is rejected at registration.
+	if err := RegisterJSExtractPlugin("bad", `var match = {}; function describe(f){return {};}`); err == nil {
+		t.Error("expected an error registering a plugin whose match claims nothing")
 	}
-	// A recipe with no describe() is rejected.
-	if err := RegisterJSExtractRecipe("nodesc", `var match = {exts:[".zq"]};`); err == nil {
-		t.Error("expected an error registering a recipe with no describe()")
+	// A plugin with no describe() is rejected.
+	if err := RegisterJSExtractPlugin("nodesc", `var match = {exts:[".zq"]};`); err == nil {
+		t.Error("expected an error registering a plugin with no describe()")
 	}
 }
 
@@ -249,24 +249,24 @@ ntpq -p
 *ntp1.example    10.0.0.1         2
 `
 
-// TestJSExtractRecipeSectionEndToEnd registers the SHIPPED couchbase_log.extract.js
+// TestJSExtractPluginSectionEndToEnd registers the SHIPPED couchbase_log.extract.js
 // example (section framing, IDEA-0006) and proves a SQL FROM over a couchbase.log
 // keyspace returns one {title,text} row per ====-delimited command dump -- the
 // flagship case that previously errored with "unsupported framing".
-func TestJSExtractRecipeSectionEndToEnd(t *testing.T) {
+func TestJSExtractPluginSectionEndToEnd(t *testing.T) {
 	repo, err := filepath.Abs("..")
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(repo, "extensions", "extract_recipes", "couchbase_log.extract.js")
+	path := filepath.Join(repo, "extensions", "extract_plugins", "couchbase_log.extract.js")
 	if _, err := os.Stat(path); err != nil {
-		t.Skipf("example recipe not present: %v", err)
+		t.Skipf("example plugin not present: %v", err)
 	}
 	if _, err := RegisterExtensionFile(path); err != nil {
 		t.Fatalf("RegisterExtensionFile(%s): %v", path, err)
 	}
-	if rp := records.RecipeFor("couchbase.log"); rp == nil {
-		t.Fatal("couchbase_log recipe did not claim couchbase.log")
+	if rp := records.ExtractPluginFor("couchbase.log"); rp == nil {
+		t.Fatal("couchbase_log plugin did not claim couchbase.log")
 	}
 
 	dir := t.TempDir()
@@ -304,24 +304,24 @@ func TestJSExtractRecipeSectionEndToEnd(t *testing.T) {
 	}
 }
 
-// TestJSExtractRecipeOpaqueEndToEnd registers the shipped cpu_profile.extract.js
+// TestJSExtractPluginOpaqueEndToEnd registers the shipped cpu_profile.extract.js
 // (opaque framing, IDEA-0020) and proves a binary CPU-profile log becomes a keyspace
 // yielding a single {kind:"opaque",note} row -- WITHOUT parsing its bytes -- so it's
 // documented, not a mystery "unframed" file.
-func TestJSExtractRecipeOpaqueEndToEnd(t *testing.T) {
+func TestJSExtractPluginOpaqueEndToEnd(t *testing.T) {
 	repo, err := filepath.Abs("..")
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(repo, "extensions", "extract_recipes", "cpu_profile.extract.js")
+	path := filepath.Join(repo, "extensions", "extract_plugins", "cpu_profile.extract.js")
 	if _, err := os.Stat(path); err != nil {
-		t.Skipf("example recipe not present: %v", err)
+		t.Skipf("example plugin not present: %v", err)
 	}
 	if _, err := RegisterExtensionFile(path); err != nil {
 		t.Fatalf("RegisterExtensionFile(%s): %v", path, err)
 	}
-	if rp := records.RecipeFor("goxdcr_cprof.log"); rp == nil {
-		t.Fatal("cpu_profile recipe did not claim goxdcr_cprof.log")
+	if rp := records.ExtractPluginFor("goxdcr_cprof.log"); rp == nil {
+		t.Fatal("cpu_profile plugin did not claim goxdcr_cprof.log")
 	}
 
 	dir := t.TempDir()
@@ -352,17 +352,17 @@ func TestJSExtractRecipeOpaqueEndToEnd(t *testing.T) {
 	}
 }
 
-// TestRegisterExtractRecipeFile proves the ext.go file-loader branch: a "*.extract.js"
-// file is routed to RegisterJSExtractRecipe (not the generic scalar-UDF loader) and
-// registers a records.Recipe. It loads the shipped example so the example stays valid.
-func TestRegisterExtractRecipeFile(t *testing.T) {
+// TestRegisterExtractPluginFile proves the ext.go file-loader branch: a "*.extract.js"
+// file is routed to RegisterJSExtractPlugin (not the generic scalar-UDF loader) and
+// registers a records.ExtractPlugin. It loads the shipped example so the example stays valid.
+func TestRegisterExtractPluginFile(t *testing.T) {
 	repo, err := filepath.Abs("..")
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(repo, "extensions", "extract_recipes", "apache_access.extract.js")
+	path := filepath.Join(repo, "extensions", "extract_plugins", "apache_access.extract.js")
 	if _, err := os.Stat(path); err != nil {
-		t.Skipf("example recipe not present: %v", err)
+		t.Skipf("example plugin not present: %v", err)
 	}
 	name, err := RegisterExtensionFile(path)
 	if err != nil {
@@ -371,18 +371,18 @@ func TestRegisterExtractRecipeFile(t *testing.T) {
 	if name != "apache_access" {
 		t.Errorf("registered name = %q, want apache_access", name)
 	}
-	// It went to the extract-recipe registry, not the SQL-function registry.
+	// It went to the extract-plugin registry, not the SQL-function registry.
 	found := false
-	for _, r := range ListExtractRecipes() {
+	for _, r := range ListExtractPlugins() {
 		if r.Name == "apache_access" && r.Source == path {
 			found = true
 		}
 	}
 	if !found {
-		t.Errorf("apache_access not in ListExtractRecipes(): %+v", ListExtractRecipes())
+		t.Errorf("apache_access not in ListExtractPlugins(): %+v", ListExtractPlugins())
 	}
-	if records.RecipeFor("access.log") == nil {
-		t.Errorf("apache_access recipe should claim access.log")
+	if records.ExtractPluginFor("access.log") == nil {
+		t.Errorf("apache_access plugin should claim access.log")
 	}
 }
 
@@ -438,36 +438,36 @@ func collectOneRecord(t *testing.T, path, idPrefix string) (id, doc string) {
 	return id, doc
 }
 
-func registerTOML2Recipe(t *testing.T) {
+func registerTOML2Plugin(t *testing.T) {
 	t.Helper()
 	repo, err := filepath.Abs("..")
 	if err != nil {
 		t.Fatal(err)
 	}
-	recipe := filepath.Join(repo, "extensions", "extract_recipes", "toml2.extract.js")
-	if _, err := os.Stat(recipe); err != nil {
-		t.Skipf("toml2 recipe not present: %v", err)
+	plugin := filepath.Join(repo, "extensions", "extract_plugins", "toml2.extract.js")
+	if _, err := os.Stat(plugin); err != nil {
+		t.Skipf("toml2 plugin not present: %v", err)
 	}
-	if _, err := RegisterExtensionFile(recipe); err != nil {
-		t.Fatalf("RegisterExtensionFile(%s): %v", recipe, err)
+	if _, err := RegisterExtensionFile(plugin); err != nil {
+		t.Fatalf("RegisterExtensionFile(%s): %v", plugin, err)
 	}
 }
 
 // TestJSExtractTOML2MatchesNativeTOML is the proof that a user-supplied JS IMPERATIVE
-// extract recipe can own framing + parsing end-to-end and match a native Go format:
+// extract plugin can own framing + parsing end-to-end and match a native Go format:
 // the SAME bytes, read as native ".toml" (Go pelletier) and as ".toml2" (the shipped
 // toml2.extract.js), yield byte-identical records -- same id (the file stem) and the
-// same canonical JSON doc. This exercises the records.Recipe.Extract seam (previously
-// "designed, not yet wired") plus recipe-claimed extension recognition (".toml2" is
-// unknown to records except through the recipe). Native ".toml" support is untouched.
+// same canonical JSON doc. This exercises the records.ExtractPlugin.Extract seam (previously
+// "designed, not yet wired") plus plugin-claimed extension recognition (".toml2" is
+// unknown to records except through the plugin). Native ".toml" support is untouched.
 func TestJSExtractTOML2MatchesNativeTOML(t *testing.T) {
-	registerTOML2Recipe(t)
-	if rp := records.RecipeFor("sample.toml2"); rp == nil || rp.Name != "toml2" {
-		t.Fatalf("RecipeFor(sample.toml2) = %v, want the toml2 recipe", rp)
+	registerTOML2Plugin(t)
+	if rp := records.ExtractPluginFor("sample.toml2"); rp == nil || rp.Name != "toml2" {
+		t.Fatalf("ExtractPluginFor(sample.toml2) = %v, want the toml2 plugin", rp)
 	}
-	// A brand-new extension is a record file ONLY because a recipe claims it.
+	// A brand-new extension is a record file ONLY because a plugin claims it.
 	if !records.IsRecordFile("sample.toml2") {
-		t.Fatal("a recipe-claimed .toml2 should be a record file")
+		t.Fatal("a plugin-claimed .toml2 should be a record file")
 	}
 	if records.IsRecordFile("sample.nope") {
 		t.Fatal(".nope is claimed by nothing and must not be a record file")
@@ -498,9 +498,9 @@ func TestJSExtractTOML2MatchesNativeTOML(t *testing.T) {
 
 // TestJSExtractTOML2QueryEndToEnd proves the JS-parsed .toml2 flows through a real SQL
 // FROM scan: scalars, a nested-table field, and an array element all project as the JS
-// recipe parsed them.
+// plugin parsed them.
 func TestJSExtractTOML2QueryEndToEnd(t *testing.T) {
-	registerTOML2Recipe(t)
+	registerTOML2Plugin(t)
 
 	dir := t.TempDir()
 	ks := filepath.Join(dir, "default", "conf")
@@ -553,15 +553,15 @@ func TestJSExtractStreamStanzaEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	recipe := filepath.Join(repo, "extensions", "extract_recipes", "stanza.extract.js")
-	if _, err := os.Stat(recipe); err != nil {
-		t.Skipf("stanza recipe not present: %v", err)
+	plugin := filepath.Join(repo, "extensions", "extract_plugins", "stanza.extract.js")
+	if _, err := os.Stat(plugin); err != nil {
+		t.Skipf("stanza plugin not present: %v", err)
 	}
-	if _, err := RegisterExtensionFile(recipe); err != nil {
-		t.Fatalf("RegisterExtensionFile(%s): %v", recipe, err)
+	if _, err := RegisterExtensionFile(plugin); err != nil {
+		t.Fatalf("RegisterExtensionFile(%s): %v", plugin, err)
 	}
-	if rp := records.RecipeFor("x.stanza"); rp == nil || rp.Name != "stanza" {
-		t.Fatalf("RecipeFor(x.stanza) = %v, want the stanza recipe", rp)
+	if rp := records.ExtractPluginFor("x.stanza"); rp == nil || rp.Name != "stanza" {
+		t.Fatalf("ExtractPluginFor(x.stanza) = %v, want the stanza plugin", rp)
 	}
 
 	dir := t.TempDir()
@@ -602,11 +602,11 @@ func TestJSExtractStreamStanzaEndToEnd(t *testing.T) {
 	}
 }
 
-// jsInfiniteStreamRecipe emits records FOREVER until emit() returns false -- the
+// jsInfiniteStreamPlugin emits records FOREVER until emit() returns false -- the
 // canonical unbounded source. A buffered/whole-file extract would run this to
 // completion (hang / OOM); the streaming path suspends the JS on backpressure and stops
 // it at Close. It ignores the file, isolating the OUTPUT (emit) side of streaming.
-const jsInfiniteStreamRecipe = `
+const jsInfiniteStreamPlugin = `
 var match = { exts: [".inf"], priority: 10 };
 function extractStream(file, emit) {
   for (var i = 0; ; i++) {
@@ -623,8 +623,8 @@ function extractStream(file, emit) {
 // non-streaming (buffered) implementation would run the infinite loop to completion and
 // never return -- so completing at all is the proof.
 func TestJSExtractStreamBackpressure(t *testing.T) {
-	if err := RegisterJSExtractRecipe("infstream", jsInfiniteStreamRecipe); err != nil {
-		t.Fatalf("RegisterJSExtractRecipe: %v", err)
+	if err := RegisterJSExtractPlugin("infstream", jsInfiniteStreamPlugin); err != nil {
+		t.Fatalf("RegisterJSExtractPlugin: %v", err)
 	}
 	dir := t.TempDir()
 	p := filepath.Join(dir, "x.inf")
@@ -678,12 +678,12 @@ func TestJSExtractStreamBackpressure(t *testing.T) {
 	}
 }
 
-// jsLenPrefixRecipe is a streaming recipe that frames a BINARY length-prefixed format
+// jsLenPrefixPlugin is a streaming plugin that frames a BINARY length-prefixed format
 // entirely from file.readBytes(n): each record is a 4-byte big-endian length followed by
 // that many bytes of JSON. It uses DataView (for the BE length) and Uint8Array (for the
 // body) over the ArrayBuffer readBytes returns -- the general primitive readLine can't
 // serve (binary, no line structure).
-const jsLenPrefixRecipe = `
+const jsLenPrefixPlugin = `
 var match = { exts: [".lpj"], priority: 10 };
 function extractStream(file, emit) {
   for (;;) {
@@ -715,12 +715,12 @@ func writeLPJ(t testing.TB, path string, docs []string) {
 	}
 }
 
-// TestJSExtractStreamReadBytes proves the general binary primitive: a streaming recipe
+// TestJSExtractStreamReadBytes proves the general binary primitive: a streaming plugin
 // frames a length-prefixed BINARY file purely via file.readBytes(n) (ArrayBuffer ->
 // DataView/Uint8Array), something readLine cannot express.
 func TestJSExtractStreamReadBytes(t *testing.T) {
-	if err := RegisterJSExtractRecipe("lpj", jsLenPrefixRecipe); err != nil {
-		t.Fatalf("RegisterJSExtractRecipe: %v", err)
+	if err := RegisterJSExtractPlugin("lpj", jsLenPrefixPlugin); err != nil {
+		t.Fatalf("RegisterJSExtractPlugin: %v", err)
 	}
 	dir := t.TempDir()
 	p := filepath.Join(dir, "data.lpj")
@@ -755,10 +755,10 @@ func TestJSExtractStreamReadBytes(t *testing.T) {
 	}
 }
 
-// jsFixedWidthRecipe frames a fixed-width BINARY format (8 bytes/record: 4-byte BE id +
+// jsFixedWidthPlugin frames a fixed-width BINARY format (8 bytes/record: 4-byte BE id +
 // 4-byte BE value) using ONE reused Uint8Array via file.readInto -- the zero-allocation
 // (BYOB) read loop. Go reads straight into the JS buffer's live backing store.
-const jsFixedWidthRecipe = `
+const jsFixedWidthPlugin = `
 var match = { exts: [".fw"], priority: 10 };
 function extractStream(file, emit) {
   var buf = new Uint8Array(8);          // REUSED across every record (no per-record alloc).
@@ -776,8 +776,8 @@ function extractStream(file, emit) {
 // binary file is framed with a single reused Uint8Array, Go filling the JS buffer's live
 // backing store each call.
 func TestJSExtractStreamReadInto(t *testing.T) {
-	if err := RegisterJSExtractRecipe("fw", jsFixedWidthRecipe); err != nil {
-		t.Fatalf("RegisterJSExtractRecipe: %v", err)
+	if err := RegisterJSExtractPlugin("fw", jsFixedWidthPlugin); err != nil {
+		t.Fatalf("RegisterJSExtractPlugin: %v", err)
 	}
 	dir := t.TempDir()
 	p := filepath.Join(dir, "data.fw")
@@ -823,10 +823,10 @@ func TestJSExtractStreamReadInto(t *testing.T) {
 	}
 }
 
-// jsEmitBufferRecipe reads length-prefixed JSON bodies and passes the RAW bytes straight
+// jsEmitBufferPlugin reads length-prefixed JSON bodies and passes the RAW bytes straight
 // through via emitBuffer -- no JSON.parse, no re-marshal (the zero-hop path). The 3rd
 // param is the emitBuffer callback.
-const jsEmitBufferRecipe = `
+const jsEmitBufferPlugin = `
 var match = { exts: [".lpj2"], priority: 10 };
 function extractStream(file, emit, emitBuffer) {
   for (;;) {
@@ -845,8 +845,8 @@ function extractStream(file, emit, emitBuffer) {
 // (extra spaces, unsorted keys) -- emit()'s json.Marshal would rewrite them to canonical
 // form, so byte-identical output is the proof that emitBuffer skipped the marshal.
 func TestJSExtractStreamEmitBuffer(t *testing.T) {
-	if err := RegisterJSExtractRecipe("ebuf", jsEmitBufferRecipe); err != nil {
-		t.Fatalf("RegisterJSExtractRecipe: %v", err)
+	if err := RegisterJSExtractPlugin("ebuf", jsEmitBufferPlugin); err != nil {
+		t.Fatalf("RegisterJSExtractPlugin: %v", err)
 	}
 	dir := t.TempDir()
 	p := filepath.Join(dir, "data.lpj2")
@@ -881,7 +881,7 @@ func TestJSExtractStreamEmitBuffer(t *testing.T) {
 	}
 
 	// Sanity: emit() DOES canonicalize, confirming the two paths differ. Re-frame the
-	// same bytes through a parse+emit recipe and expect canonical output.
+	// same bytes through a parse+emit plugin and expect canonical output.
 	if got[0] == `{"a":1,"b":2}` {
 		t.Fatal("emitBuffer unexpectedly canonicalized -- it must pass bytes verbatim")
 	}
@@ -890,12 +890,12 @@ func TestJSExtractStreamEmitBuffer(t *testing.T) {
 // TestJSExtractStreamEmitBufferInvalidJSON proves emitBuffer validates: non-JSON bytes are
 // rejected (a clear error), not silently injected into the pipeline.
 func TestJSExtractStreamEmitBufferInvalidJSON(t *testing.T) {
-	const recipe = `
+	const plugin = `
 var match = { exts: [".ebad"], priority: 10 };
 function extractStream(file, emit, emitBuffer) { emitBuffer("this is not json"); }
 `
-	if err := RegisterJSExtractRecipe("ebad", recipe); err != nil {
-		t.Fatalf("RegisterJSExtractRecipe: %v", err)
+	if err := RegisterJSExtractPlugin("ebad", plugin); err != nil {
+		t.Fatalf("RegisterJSExtractPlugin: %v", err)
 	}
 	dir := t.TempDir()
 	p := filepath.Join(dir, "x.ebad")
@@ -933,7 +933,7 @@ const (
 )
 
 // writeNSLogKeyspace lays out a datastore root with one ns_server-style .log keyspace
-// (default/logs) claimed by the built-in records recipe, and registers the root so
+// (default/logs) claimed by the built-in records plugin, and registers the root so
 // describe results memoize under <root>/.n1k1/. Returns the root and the log path.
 func writeNSLogKeyspace(t *testing.T) (root, logPath string) {
 	t.Helper()
@@ -1052,8 +1052,8 @@ func TestExtractCacheMemoizesDescribe(t *testing.T) {
 }
 
 // TestExtractCacheInvalidatesOnProducerChange proves the config_fingerprint guard
-// (DESIGN-data.md §5): an UNCHANGED file (same size/mtime) whose CLAIMING RECIPE
-// changed -- a different recipe fingerprint, or equivalently a bumped engine producer
+// (DESIGN-data.md §5): an UNCHANGED file (same size/mtime) whose CLAIMING PLUGIN
+// changed -- a different plugin fingerprint, or equivalently a bumped engine producer
 // version -- re-describes rather than serving the stale spec. This is what caught the
 // framing:json staleness: identical (relpath,size,mtime) but describe now produces a
 // different spec, so the fingerprint alone must not be trusted.
@@ -1067,7 +1067,7 @@ func TestExtractCacheInvalidatesOnProducerChange(t *testing.T) {
 	}
 	cacheFile := extractCacheFile(t, root, logPath)
 
-	// First open with recipe fingerprint "fp-old": describe runs, cache written with
+	// First open with plugin fingerprint "fp-old": describe runs, cache written with
 	// its producer fingerprint.
 	if _, _, err := describeMemoized(logPath, counting, "fp-old"); err != nil {
 		t.Fatalf("describeMemoized #1: %v", err)
@@ -1080,14 +1080,14 @@ func TestExtractCacheInvalidatesOnProducerChange(t *testing.T) {
 		t.Errorf("cached producer = %q, want %q", ent1.Producer, producerFingerprint("fp-old"))
 	}
 
-	// Re-open the UNCHANGED file but with a DIFFERENT recipe fingerprint (a recipe
+	// Re-open the UNCHANGED file but with a DIFFERENT plugin fingerprint (a plugin
 	// edit): the fingerprint (relpath,size,mtime) still matches, but the producer does
 	// not -> re-describe, and the cache is rewritten with the new producer.
 	if _, _, err := describeMemoized(logPath, counting, "fp-new"); err != nil {
-		t.Fatalf("describeMemoized #2 (changed recipe): %v", err)
+		t.Fatalf("describeMemoized #2 (changed plugin): %v", err)
 	}
 	if got := atomic.LoadInt32(&calls); got != 2 {
-		t.Fatalf("changed recipe fingerprint should re-describe; calls = %d, want 2", got)
+		t.Fatalf("changed plugin fingerprint should re-describe; calls = %d, want 2", got)
 	}
 	ent2 := readExtractCacheEntry(t, cacheFile)
 	if ent2.Producer != producerFingerprint("fp-new") {
@@ -1099,7 +1099,7 @@ func TestExtractCacheInvalidatesOnProducerChange(t *testing.T) {
 		t.Fatalf("describeMemoized #3: %v", err)
 	}
 	if got := atomic.LoadInt32(&calls); got != 2 {
-		t.Fatalf("stable recipe fingerprint should hit the cache; calls = %d, want still 2", got)
+		t.Fatalf("stable plugin fingerprint should hit the cache; calls = %d, want still 2", got)
 	}
 
 	// A pre-invalidation entry (no producer field) must not be trusted: simulate one by
@@ -1116,9 +1116,9 @@ func TestExtractCacheInvalidatesOnProducerChange(t *testing.T) {
 }
 
 // TestSortedSourceMetaFor proves the Track-B lookup seam returns the normalized
-// sorted-source contract for a recipe-matched file: the int64 epoch-nanos min/max key
+// sorted-source contract for a plugin-matched file: the int64 epoch-nanos min/max key
 // zone map, the sort-key label, and the measured near-sorted classification. It also
-// checks the keyspace-level helper and that a non-recipe file yields ok=false.
+// checks the keyspace-level helper and that a non-plugin file yields ok=false.
 func TestSortedSourceMetaFor(t *testing.T) {
 	root, logPath := writeNSLogKeyspace(t)
 
@@ -1127,7 +1127,7 @@ func TestSortedSourceMetaFor(t *testing.T) {
 		t.Fatalf("SortedSourceMetaFor: %v", err)
 	}
 	if !ok {
-		t.Fatal("SortedSourceMetaFor: recipe-matched .log reported ok=false")
+		t.Fatal("SortedSourceMetaFor: plugin-matched .log reported ok=false")
 	}
 	if meta.SortKeyLabel != "ts" {
 		t.Errorf("SortKeyLabel = %q, want ts", meta.SortKeyLabel)
@@ -1149,7 +1149,7 @@ func TestSortedSourceMetaFor(t *testing.T) {
 			meta.Disorder.WindowNanos, nsMaxKeyNanos-nsMinKeyNanos)
 	}
 
-	// A file no recipe claims (plain JSON) has no sorted-source contract.
+	// A file no plugin claims (plain JSON) has no sorted-source contract.
 	plain := filepath.Join(filepath.Dir(logPath), "plain.json")
 	if err := os.WriteFile(plain, []byte(`{"a":1}`), 0o644); err != nil {
 		t.Fatal(err)
@@ -1189,11 +1189,11 @@ func TestSortedSourceMetaFor(t *testing.T) {
 }
 
 // TestBoundKeyspaceFramesLikeAuto is the regression for IDEA-0001: a late-bound
-// (--bind) single-file keyspace must frame through the SAME extract recipe as the
+// (--bind) single-file keyspace must frame through the SAME extract plugin as the
 // auto keyspace over that file -- binding changes WHICH files, never HOW they
 // frame. Before the fix the bound-glob scan framed each file relative to the glob
-// base (a single-file glob's base IS the file, so the recipe match-path collapsed
-// to "."), bypassing RecipeFor -> a whole-file blob -> 0 framed records.
+// base (a single-file glob's base IS the file, so the plugin match-path collapsed
+// to "."), bypassing ExtractPluginFor -> a whole-file blob -> 0 framed records.
 func TestBoundKeyspaceFramesLikeAuto(t *testing.T) {
 	dir := t.TempDir()
 	ks := filepath.Join(dir, "default", "logs")
@@ -1206,7 +1206,7 @@ func TestBoundKeyspaceFramesLikeAuto(t *testing.T) {
 	}
 	const proj = "SELECT l.node, l.`level`, l.msg FROM %s l"
 
-	// AUTO keyspace: framed by the built-in ns_server recipe (3 typed records).
+	// AUTO keyspace: framed by the built-in ns_server plugin (3 typed records).
 	autoSess, err := OpenSession(dir, "default")
 	if err != nil {
 		t.Fatalf("OpenSession: %v", err)
@@ -1227,6 +1227,6 @@ func TestBoundKeyspaceFramesLikeAuto(t *testing.T) {
 	bound := runRows(t, boundSess, "SELECT l.node, l.`level`, l.msg FROM mylog l")
 
 	if strings.Join(bound, "|") != strings.Join(auto, "|") {
-		t.Fatalf("bound keyspace framed differently from auto (recipe bypassed?):\n auto  = %v\n bound = %v", auto, bound)
+		t.Fatalf("bound keyspace framed differently from auto (plugin bypassed?):\n auto  = %v\n bound = %v", auto, bound)
 	}
 }

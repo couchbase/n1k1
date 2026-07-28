@@ -245,8 +245,8 @@ func asofWriteKS(t *testing.T, root, ks, name, body string) {
 }
 
 // nsLine formats one ns_server_log lead line at the given RFC3339 timestamp, node,
-// and message -- the format the built-in "ns_server_log" recipe recognizes (so the
-// file is a recipe-matched, normalized-int64-ts sorted source).
+// and message -- the format the built-in "ns_server_log" plugin recognizes (so the
+// file is a plugin-matched, normalized-int64-ts sorted source).
 func nsLine(ts, node, msg string) string {
 	return "[ns_server:info," + ts + "," + node + ":x]" + msg + "\n"
 }
@@ -297,12 +297,12 @@ func rowsAsStrings[T ~[]byte](rows []T) []string {
 }
 
 // TestASOFLoweringDifferential is the core differential: a nearest-preceding
-// argmax subquery over two recipe-matched keyspaces lowers to a merge-join whose
+// argmax subquery over two plugin-matched keyspaces lowers to a merge-join whose
 // output is byte-identical to the correlated-subquery baseline.
 func TestASOFLoweringDifferential(t *testing.T) {
 	root := t.TempDir()
 	// E = errors log (outer); R = rebalance/state log (subquery keyspace). Both are
-	// recipe-matched ns_server_log files with a normalized int64 `ts` sort key.
+	// plugin-matched ns_server_log files with a normalized int64 `ts` sort key.
 	asofWriteKS(t, root, "elog", "ns_server.error.log",
 		nsLine("2026-05-17T15:36:11.100+02:00", "n1", "e-100")+
 			nsLine("2026-05-17T15:36:13.300+02:00", "n1", "e-300")+
@@ -658,7 +658,7 @@ func TestASOFLoweringFollowingPartitionedDifferential(t *testing.T) {
 }
 
 // TestASOFLoweringSingleFileKeyspace is the IDEA-0016 gate: ASOF must lower over
-// flat SINGLE-FILE recipe keyspaces (a cbcollect bundle exposes ns_server.error /
+// flat SINGLE-FILE plugin keyspaces (a cbcollect bundle exposes ns_server.error /
 // cbcollect_info as one top-level file each, not a <ns>/<keyspace>/ dir). The sort-key
 // gate resolves metadata via KeyspaceDir, which has no dir for a single-file keyspace
 // -> it saw "no sorted-source metadata" and bailed to the O(n^2) correlated path, even
@@ -666,7 +666,7 @@ func TestASOFLoweringFollowingPartitionedDifferential(t *testing.T) {
 // directly, so the gate sees the metadata and the rewrite fires.
 func TestASOFLoweringSingleFileKeyspace(t *testing.T) {
 	root := t.TempDir()
-	// Flat bundle layout: recipe log files at the TOP LEVEL (each its own single-file
+	// Flat bundle layout: plugin log files at the TOP LEVEL (each its own single-file
 	// keyspace by stem) plus a subdir, which is what makes it the per-file (B3) layout.
 	writeTop := func(name, body string) {
 		if err := os.WriteFile(filepath.Join(root, name), []byte(body), 0o644); err != nil {
@@ -697,7 +697,7 @@ func TestASOFLoweringSingleFileKeyspace(t *testing.T) {
 
 	off, _, fired := runBoth(t, s, stmt)
 	if !fired {
-		t.Fatalf("expected ASOF to FIRE over single-file recipe keyspaces (IDEA-0016); it did not")
+		t.Fatalf("expected ASOF to FIRE over single-file plugin keyspaces (IDEA-0016); it did not")
 	}
 	if len(off) != 2 {
 		t.Fatalf("want 2 rows, got %d: %v", len(off), off)
@@ -851,7 +851,7 @@ func TestASOFLoweringPartitionedDifferential(t *testing.T) {
 
 // TestASOFLoweringCrossNodeDifferential is the cross-node ASOF net (DESIGN-merging.md
 // "Multi-bundle / cross-node clusters"): the argmax state keyspace R resolves to TWO
-// recipe files (two nodes) whose ts ranges INTERLEAVE. The default single concatenated
+// plugin files (two nodes) whose ts ranges INTERLEAVE. The default single concatenated
 // R scan is not globally ts-ordered, so the merge-join's build side would trip its
 // monotonicity tripwire; per-file expansion turns R into two ordered cursors the ASOF
 // merge consumes. ON (lowered, per-file R) must be BYTE-IDENTICAL to the correlated
@@ -971,12 +971,12 @@ func TestASOFLoweringNearSortedR(t *testing.T) {
 }
 
 // TestASOFLoweringNonProvenDoesNotFire proves the safety gate: over a plain
-// (non-recipe) keyspace with no sorted-source contract, the lowering must NOT fire,
+// (non-plugin) keyspace with no sorted-source contract, the lowering must NOT fire,
 // and the correlated subquery still returns correct rows.
 func TestASOFLoweringNonProvenDoesNotFire(t *testing.T) {
 	root := t.TempDir()
 	// Plain JSON doc keyspaces (a directory of <key>.json files): no extractor
-	// recipe claims them, so SortedSourceMeta is absent and the gate must block.
+	// plugin claims them, so SortedSourceMeta is absent and the gate must block.
 	writeDoc := func(ks, key, body string) {
 		dir := filepath.Join(root, "default", ks)
 		if err := os.MkdirAll(dir, 0o755); err != nil {

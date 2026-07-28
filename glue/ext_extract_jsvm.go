@@ -34,24 +34,24 @@ import (
 	"github.com/couchbase/n1k1/records"
 )
 
-// ext_extract_jsvm.go loads a "*.extract.js" JS-authored EXTRACT RECIPE into the
-// pure-Go records recipe registry (DESIGN-data.md §4, DESIGN-extensions.md
-// "Extract functions"). A recipe supplies describe and/or one of extract/extractStream,
+// ext_extract_jsvm.go loads a "*.extract.js" JS-authored EXTRACT PLUGIN into the
+// pure-Go records plugin registry (DESIGN-data.md §4, DESIGN-extensions.md
+// "Extract functions"). A plugin supplies describe and/or one of extract/extractStream,
 // on very different cadences:
 //
 //   - describe(file) -- the cheap, once-per-file PLANNING pass. Runs in goja ONCE
 //     per matched file (a cold path -- garbage is fine here) and RETURNS a
 //     declarative records.ExtractSpec; records.SpecApply then frames every record
 //     natively (byte-oriented framing + regex + int64-nanos time parse, NO per-row
-//     JS). So a describe-only recipe costs one JS call per file, never one per row.
+//     JS). So a describe-only plugin costs one JS call per file, never one per row.
 //     This is the preferred path for line/multiline/section-framed text.
 //
 //   - extract(file, emit) -- the IMPERATIVE escape hatch. JS receives the WHOLE
 //     decompressed file and EMITS records itself, so it owns framing AND parsing.
 //     For self-contained or irregular formats a declarative spec can't frame -- e.g.
-//     a full TOML document (see extensions/extract_recipes/toml2.extract.js). It
+//     a full TOML document (see extensions/extract_plugins/toml2.extract.js). It
 //     pays the JS boundary once per file (not per row, since it buffers), and wires
-//     the records.Recipe.Extract seam that DESIGN-extensions.md sketched. A recipe
+//     the records.ExtractPlugin.Extract seam that DESIGN-extensions.md sketched. A plugin
 //     with extract but no describe is purely imperative (records.OpenFile skips the
 //     spec/native-framer entirely).
 //
@@ -59,20 +59,20 @@ import (
 //     incrementally (file.readLine/readAll) and emits records that flow out one at a
 //     time with BACKPRESSURE, so a large multi-record file frames at bounded memory
 //     (see runJSExtractStream / stanza.extract.js). extract and extractStream are
-//     mutually exclusive; both wire records.Recipe.Extract.
+//     mutually exclusive; both wire records.ExtractPlugin.Extract.
 //
 // Either way the goja dependency stays in glue (records is pure-Go, goja-free): the
 // JS runs here, produces the neutral ExtractSpec/ExtractMatch structs (JSON-shaped
-// per records/spec.go) or JSON docs, and registers a records.Recipe whose Describe/
+// per records/spec.go) or JSON docs, and registers a records.ExtractPlugin whose Describe/
 // Extract close over the compiled program. Reuses ext_jsvm.go's goja lifetime/
 // timeout/console patterns and ext_jsvm_stream.go's emit marshaling.
 //
-// The JS module contract (see extensions/extract_recipes/*.extract.js):
+// The JS module contract (see extensions/extract_plugins/*.extract.js):
 //
-//	// `match` (module scope): which files this recipe claims. Shape ==
+//	// `match` (module scope): which files this plugin claims. Shape ==
 //	// records.ExtractMatch's json: {exts:[".log"], names:["re",...], priority:N}.
-//	// A recipe may claim a BRAND-NEW extension (e.g. ".toml2"); the claim makes its
-//	// files records (records.IsRecordFile honors registered recipes).
+//	// A plugin may claim a BRAND-NEW extension (e.g. ".toml2"); the claim makes its
+//	// files records (records.IsRecordFile honors registered plugins).
 //	var match = { exts: [".log"], names: ["ns_server\\..*\\.log$"], priority: 20 };
 //
 //	// describe(file) -> ExtractSpec object (shape == records.ExtractSpec's json).
@@ -88,7 +88,7 @@ import (
 //	// extract(file, emit, emitBuffer) -- imperative alternative. file = { path, name,
 //	// ext, stem, text } where text is the WHOLE decompressed file. emit(doc[, id]) takes
 //	// any JSON-able value (marshaled); emitBuffer(bytes[, id]) takes RAW JSON bytes (an
-//	// ArrayBuffer/Uint8Array/string) passed through with no marshal, for a recipe that
+//	// ArrayBuffer/Uint8Array/string) passed through with no marshal, for a plugin that
 //	// already holds JSON bytes. The optional id overrides the default (stem for a single
 //	// record, else "<prefix>#<n>"). (Optional if describe is set.)
 //	function extract(file, emit) { emit(JSON.parse(file.text), file.stem); }
@@ -101,7 +101,7 @@ import (
 //	// form (fill a REUSED Uint8Array, returns bytes read / 0 at EOF); readLine/readAll
 //	// are the text conveniences. emit(doc[, id]) marshals a JS value; emitBuffer(bytes[,
 //	// id]) passes RAW JSON bytes through with NO marshal (pair it with readBytes/readInto
-//	// for a zero-hop binary/JSON recipe). Both return false once the consumer stops, so
+//	// for a zero-hop binary/JSON plugin). Both return false once the consumer stops, so
 //	// the loop can break. ids default to "<prefix>#<n>".
 //	function extractStream(file, emit, emitBuffer) {
 //	  for (;;) { var b = file.readBytes(recLen()); if (!b) return; emitBuffer(b); }
@@ -113,71 +113,71 @@ import (
 // embedder can tune the sampling cap.
 var ExtractHeadSampleBytes = 64 * 1024
 
-// ExtractRecipeInfo describes one loaded JS extract recipe (for listing). Kept
+// ExtractPluginInfo describes one loaded JS extract plugin (for listing). Kept
 // separate from ext.go's extLoaded (scalar/agg/stream FUNCTIONS, unloadable via the
-// cbq function registry): a recipe lives in the records registry, which has no
-// delete, so recipes are load-only.
-type ExtractRecipeInfo struct {
-	Name     string   // recipe/format label (the file's "<name>.extract.js" stem)
+// cbq function registry): a plugin lives in the records registry, which has no
+// delete, so plugins are load-only.
+type ExtractPluginInfo struct {
+	Name     string   // plugin/format label (the file's "<name>.extract.js" stem)
 	Source   string   // originating file path, or "(inline)"
-	Exts     []string // file extensions the recipe claims (its match.exts)
-	Names    []string // path/name regexps the recipe claims (its match.names)
+	Exts     []string // file extensions the plugin claims (its match.exts)
+	Names    []string // path/name regexps the plugin claims (its match.names)
 	Priority int      // match priority (higher wins on overlap)
 }
 
-// extractRecipesLoaded tracks loaded JS extract recipes for ListExtractRecipes.
-// Mutated only by RegisterJSExtractRecipe (startup / between queries, never
+// extractPluginsLoaded tracks loaded JS extract plugins for ListExtractPlugins.
+// Mutated only by RegisterJSExtractPlugin (startup / between queries, never
 // concurrently with parsing/execution), so no lock -- matching ext_jsvm.go.
-var extractRecipesLoaded []ExtractRecipeInfo
+var extractPluginsLoaded []ExtractPluginInfo
 
-// RegisterJSExtractRecipe compiles a *.extract.js source and registers it as a
-// records.Recipe. name is the recipe/format label. The source must define a
+// RegisterJSExtractPlugin compiles a *.extract.js source and registers it as a
+// records.ExtractPlugin. name is the plugin/format label. The source must define a
 // module-scope `match` object (which files it claims) and a describe(file) function
 // returning an ExtractSpec object. describe is NOT run here (it needs a file); it is
-// compiled once and invoked per-file from the returned recipe's Describe closure.
+// compiled once and invoked per-file from the returned plugin's Describe closure.
 // Safe at startup before parsing; not safe concurrently with query parsing.
-func RegisterJSExtractRecipe(name, source string) error {
+func RegisterJSExtractPlugin(name, source string) error {
 	name = strings.ToLower(name)
 
 	prog, err := goja.Compile(name+".extract.js", source, true)
 	if err != nil {
-		return fmt.Errorf("goja compile of extract recipe %q: %w", name, err)
+		return fmt.Errorf("goja compile of extract plugin %q: %w", name, err)
 	}
 
 	// Run the program once at registration to (a) surface top-level JS errors early
-	// and (b) read the module-scope `match` -- RecipeFor needs the claim up front,
+	// and (b) read the module-scope `match` -- ExtractPluginFor needs the claim up front,
 	// before any file is seen. A throwaway runtime: the per-file describe builds its
 	// own (goja runtimes aren't goroutine-safe; see runJSDescribe).
 	rt := goja.New()
 	installJSConsole(rt)
 	if _, err := rt.RunProgram(prog); err != nil {
-		return fmt.Errorf("extract recipe %q: %w", name, err)
+		return fmt.Errorf("extract plugin %q: %w", name, err)
 	}
 	_, hasDescribe := goja.AssertFunction(rt.Get("describe"))
 	_, hasExtract := goja.AssertFunction(rt.Get("extract"))
 	_, hasExtractStream := goja.AssertFunction(rt.Get("extractStream"))
 	if !hasDescribe && !hasExtract && !hasExtractStream {
-		return fmt.Errorf("extract recipe %q: source defines none of describe(file), extract(file, emit), or extractStream(file, emit)", name)
+		return fmt.Errorf("extract plugin %q: source defines none of describe(file), extract(file, emit), or extractStream(file, emit)", name)
 	}
 	if hasExtract && hasExtractStream {
-		return fmt.Errorf("extract recipe %q: define extract OR extractStream, not both", name)
+		return fmt.Errorf("extract plugin %q: define extract OR extractStream, not both", name)
 	}
 	match, err := jsExtractMatch(rt)
 	if err != nil {
-		return fmt.Errorf("extract recipe %q: %w", name, err)
+		return fmt.Errorf("extract plugin %q: %w", name, err)
 	}
 
 	// Fingerprint from the source hash: an edited *.extract.js changes describe's
 	// output (or extract's), so it must invalidate any memoized describe result
 	// (extract_cache.go).
-	recipe := &records.Recipe{
+	plugin := &records.ExtractPlugin{
 		Name:        name,
 		Match:       match,
 		Fingerprint: name + "@" + jsSourceHash(source),
 	}
 	if hasDescribe {
 		// Declarative: SpecApply runs the JS-produced spec natively (no per-row JS).
-		recipe.Describe = func(path string) (records.ExtractSpec, records.SortedSourceMeta, error) {
+		plugin.Describe = func(path string) (records.ExtractSpec, records.SortedSourceMeta, error) {
 			return runJSDescribe(prog, name, path)
 		}
 	}
@@ -185,26 +185,26 @@ func RegisterJSExtractRecipe(name, source string) error {
 	case hasExtractStream:
 		// Imperative + STREAMING: JS reads the file incrementally (file.readLine) and
 		// emits records that flow out one at a time with backpressure (bounded memory).
-		recipe.Extract = func(path, idPrefix string, _ records.ExtractSpec) (records.Source, error) {
+		plugin.Extract = func(path, idPrefix string, _ records.ExtractSpec) (records.Source, error) {
 			return runJSExtractStream(prog, name, path, idPrefix)
 		}
 	case hasExtract:
 		// Imperative + BUFFERED: JS parses the whole file and emits records itself.
-		recipe.Extract = func(path, idPrefix string, _ records.ExtractSpec) (records.Source, error) {
+		plugin.Extract = func(path, idPrefix string, _ records.ExtractSpec) (records.Source, error) {
 			return runJSExtract(prog, name, path, idPrefix)
 		}
 	}
-	records.RecipeRegister(recipe)
-	base.Logf(1, "glue/recipe", "loaded JS extract recipe, name: %s, exts: %v, names: %v, priority: %d",
+	records.ExtractPluginRegister(plugin)
+	base.Logf(1, "glue/plugin", "loaded JS extract plugin, name: %s, exts: %v, names: %v, priority: %d",
 		name, match.Exts, match.Names, match.Priority)
-	extractRecipesLoaded = append(extractRecipesLoaded, ExtractRecipeInfo{
+	extractPluginsLoaded = append(extractPluginsLoaded, ExtractPluginInfo{
 		Name: name, Source: "(inline)",
 		Exts: match.Exts, Names: match.Names, Priority: match.Priority,
 	})
 
 	// Inline goldens (ext_examples.go): an extract example is {in:<sample text>, out:
 	// [<rows>]}. We capture the `examples` array from the registration runtime, and
-	// register an executor that FRAMES the sample through this recipe (describe ->
+	// register an executor that FRAMES the sample through this plugin (describe ->
 	// records.SpecApply) exactly as a real file would be framed.
 	recordExtExamples("extract", name, readJSExamples(rt))
 	sampleExt := ".log"
@@ -235,7 +235,7 @@ func RegisterJSExtractRecipe(name, source string) error {
 	return nil
 }
 
-// frameExtractSample writes `sample` to a temp file (named with the recipe's primary
+// frameExtractSample writes `sample` to a temp file (named with the plugin's primary
 // extension, so describe's ext/name sniffing behaves as it would for a real file),
 // runs describe() to obtain the ExtractSpec, then frames the file natively via
 // records.SpecApply -- the exact path a real bundle file takes -- and returns the
@@ -281,10 +281,10 @@ func frameExtractSample(name string, prog *goja.Program, ext, sample string) (js
 }
 
 // frameExtractSampleWith is frameExtractSample's imperative sibling (for an extract-
-// or extractStream-only recipe): it writes `sample` to a temp file named with the
-// recipe's primary extension, builds a records.Source over it via `build` (the JS
+// or extractStream-only plugin): it writes `sample` to a temp file named with the
+// plugin's primary extension, builds a records.Source over it via `build` (the JS
 // buffered or streaming extract), and returns the emitted rows as one JSON array.
-// Used by the inline extract examples for imperative recipes.
+// Used by the inline extract examples for imperative plugins.
 func frameExtractSampleWith(ext, sample string, build func(path string) (records.Source, error)) (json.RawMessage, error) {
 	f, err := os.CreateTemp("", "n1k1-extract-example-*"+ext)
 	if err != nil {
@@ -350,18 +350,18 @@ func (s *jsExtractSource) Next(rec *records.Record) (bool, error) {
 
 func (s *jsExtractSource) Close() error { return nil }
 
-// runJSExtract is a recipe's per-file IMPERATIVE extract pass (the records.Recipe.Extract
+// runJSExtract is a plugin's per-file IMPERATIVE extract pass (the records.ExtractPlugin.Extract
 // seam). Unlike describe -- which only returns a declarative spec for the native framer
 // -- extract OWNS framing and parsing: it receives the whole decompressed file plus an
 // emit(doc[, id]) callback and pushes out each record itself. It is the escape hatch for
 // self-contained/irregular formats a declarative ExtractSpec can't frame (e.g. a full
 // TOML document). A fresh goja runtime per call (goja isn't goroutine-safe, and OpenFile
-// can run concurrently across scans), with panic/timeout contained so a bad recipe can't
+// can run concurrently across scans), with panic/timeout contained so a bad plugin can't
 // crash the engine. Records are buffered into a jsExtractSource.
 func runJSExtract(prog *goja.Program, name, path, idPrefix string) (src records.Source, err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			err = fmt.Errorf("extract recipe %q extract(%s) panicked: %v", name, path, r)
+			err = fmt.Errorf("extract plugin %q extract(%s) panicked: %v", name, path, r)
 			src = nil
 		}
 	}()
@@ -379,7 +379,7 @@ func runJSExtract(prog *goja.Program, name, path, idPrefix string) (src records.
 	}
 	fn, ok := goja.AssertFunction(rt.Get("extract"))
 	if !ok {
-		return nil, fmt.Errorf("extract recipe %q: extract not callable", name)
+		return nil, fmt.Errorf("extract plugin %q: extract not callable", name)
 	}
 
 	// The file arg: path/name/ext/stem plus the whole decompressed text.
@@ -402,12 +402,12 @@ func runJSExtract(prog *goja.Program, name, path, idPrefix string) (src records.
 			return rt.ToValue(false)
 		}
 		if len(call.Arguments) == 0 {
-			emitErr = fmt.Errorf("extract recipe %q: emit() needs a doc argument", name)
+			emitErr = fmt.Errorf("extract plugin %q: emit() needs a doc argument", name)
 			return rt.ToValue(false)
 		}
 		jb, e := json.Marshal(call.Arguments[0].Export())
 		if e != nil {
-			emitErr = fmt.Errorf("extract recipe %q: cannot marshal emitted doc: %w", name, e)
+			emitErr = fmt.Errorf("extract plugin %q: cannot marshal emitted doc: %w", name, e)
 			return rt.ToValue(false)
 		}
 		recs = append(recs, jsExtractRec{id: emitCallID(call), doc: jb})
@@ -421,7 +421,7 @@ func runJSExtract(prog *goja.Program, name, path, idPrefix string) (src records.
 			return rt.ToValue(false)
 		}
 		if len(call.Arguments) == 0 {
-			emitErr = fmt.Errorf("extract recipe %q: emitBuffer() needs a doc argument", name)
+			emitErr = fmt.Errorf("extract plugin %q: emitBuffer() needs a doc argument", name)
 			return rt.ToValue(false)
 		}
 		doc, e := extractDocBytes(name, call.Arguments[0])
@@ -449,10 +449,10 @@ func runJSExtract(prog *goja.Program, name, path, idPrefix string) (src records.
 
 	_, callErr := fn(goja.Undefined(), fileObj, rt.ToValue(emit), rt.ToValue(emitBuffer))
 	if atomic.LoadInt32(&timedOut) == 1 {
-		return nil, fmt.Errorf("extract recipe %q extract exceeded the %s time limit", name, JSCallTimeout)
+		return nil, fmt.Errorf("extract plugin %q extract exceeded the %s time limit", name, JSCallTimeout)
 	}
 	if callErr != nil {
-		return nil, fmt.Errorf("extract recipe %q extract(%s): %w", name, path, callErr)
+		return nil, fmt.Errorf("extract plugin %q extract(%s): %w", name, path, callErr)
 	}
 	if emitErr != nil {
 		return nil, emitErr
@@ -558,7 +558,7 @@ func runJSExtractStream(prog *goja.Program, name, path, idPrefix string) (record
 	fn, ok := goja.AssertFunction(rt.Get("extractStream"))
 	if !ok {
 		rc.Close()
-		return nil, fmt.Errorf("extract recipe %q: extractStream not callable", name)
+		return nil, fmt.Errorf("extract plugin %q: extractStream not callable", name)
 	}
 
 	s := &jsExtractStreamSource{
@@ -578,7 +578,7 @@ func runJSExtractStream(prog *goja.Program, name, path, idPrefix string) (record
 		defer close(s.recs)
 		defer func() {
 			if r := recover(); r != nil {
-				gerr = fmt.Errorf("extract recipe %q extractStream(%s) panicked: %v", name, path, r)
+				gerr = fmt.Errorf("extract plugin %q extractStream(%s) panicked: %v", name, path, r)
 			}
 			if gerr != nil {
 				select {
@@ -599,7 +599,7 @@ func runJSExtractStream(prog *goja.Program, name, path, idPrefix string) (record
 		_ = fileObj.Set("ext", strings.ToLower(filepath.Ext(path)))
 		_ = fileObj.Set("stem", records.Stem(path))
 		// readLine(): the next line WITHOUT its trailing newline, or null at EOF. A blank
-		// line returns "" (not null), so a recipe can use it as a record boundary.
+		// line returns "" (not null), so a plugin can use it as a record boundary.
 		_ = fileObj.Set("readLine", func(goja.FunctionCall) goja.Value {
 			line, e := br.ReadString('\n')
 			if len(line) > 0 {
@@ -614,7 +614,7 @@ func runJSExtractStream(prog *goja.Program, name, path, idPrefix string) (record
 			}
 			return rt.ToValue("")
 		})
-		// readAll(): the rest of the file as one string (for a recipe that wants the
+		// readAll(): the rest of the file as one string (for a plugin that wants the
 		// whole document but still streams its output).
 		_ = fileObj.Set("readAll", func(goja.FunctionCall) goja.Value {
 			b, e := io.ReadAll(br)
@@ -626,7 +626,7 @@ func runJSExtractStream(prog *goja.Program, name, path, idPrefix string) (record
 		})
 		// readBytes(n): up to n RAW bytes as an ArrayBuffer (JS wraps it:
 		// `new Uint8Array(buf)` / `new DataView(buf)`), or null at EOF. This is the most
-		// general primitive -- it lets a recipe frame ANY format (binary, length-prefixed,
+		// general primitive -- it lets a plugin frame ANY format (binary, length-prefixed,
 		// fixed-width, a custom delimiter), where readLine/readAll are the text-convenience
 		// cases. Bytes (not a Go string) so arbitrary binary survives the JS boundary
 		// intact; a short final read near EOF returns what's there. Allocation grows to the
@@ -634,7 +634,7 @@ func runJSExtractStream(prog *goja.Program, name, path, idPrefix string) (record
 		_ = fileObj.Set("readBytes", func(call goja.FunctionCall) goja.Value {
 			want := int(call.Argument(0).ToInteger())
 			if want <= 0 {
-				readErr = fmt.Errorf("extract recipe %q: readBytes(n) needs n > 0, got %d", name, want)
+				readErr = fmt.Errorf("extract plugin %q: readBytes(n) needs n > 0, got %d", name, want)
 				return goja.Null()
 			}
 			b, e := readUpTo(br, want)
@@ -656,7 +656,7 @@ func runJSExtractStream(prog *goja.Program, name, path, idPrefix string) (record
 		_ = fileObj.Set("readInto", func(call goja.FunctionCall) goja.Value {
 			b, ok := call.Argument(0).Export().([]byte)
 			if !ok {
-				readErr = fmt.Errorf("extract recipe %q: readInto(view) needs a Uint8Array", name)
+				readErr = fmt.Errorf("extract plugin %q: readInto(view) needs a Uint8Array", name)
 				return rt.ToValue(0)
 			}
 			if len(b) == 0 {
@@ -696,12 +696,12 @@ func runJSExtractStream(prog *goja.Program, name, path, idPrefix string) (record
 		// emit(doc[, id]): marshal a JS value to JSON bytes, then stream it.
 		emit := func(call goja.FunctionCall) goja.Value {
 			if len(call.Arguments) == 0 {
-				emitErr = fmt.Errorf("extract recipe %q: emit() needs a doc argument", name)
+				emitErr = fmt.Errorf("extract plugin %q: emit() needs a doc argument", name)
 				return rt.ToValue(false)
 			}
 			jb, e := json.Marshal(call.Arguments[0].Export())
 			if e != nil {
-				emitErr = fmt.Errorf("extract recipe %q: cannot marshal emitted doc: %w", name, e)
+				emitErr = fmt.Errorf("extract plugin %q: cannot marshal emitted doc: %w", name, e)
 				return rt.ToValue(false)
 			}
 			return send(emitCallID(call), jb)
@@ -709,10 +709,10 @@ func runJSExtractStream(prog *goja.Program, name, path, idPrefix string) (record
 
 		// emitBuffer(doc[, id]): emit's no-hop sibling -- doc is raw JSON bytes (an
 		// ArrayBuffer/Uint8Array/string) passed straight through, skipping the marshal (the
-		// point of readBytes/readInto -> emitBuffer for a binary/JSON-bytes recipe).
+		// point of readBytes/readInto -> emitBuffer for a binary/JSON-bytes plugin).
 		emitBuffer := func(call goja.FunctionCall) goja.Value {
 			if len(call.Arguments) == 0 {
-				emitErr = fmt.Errorf("extract recipe %q: emitBuffer() needs a doc argument", name)
+				emitErr = fmt.Errorf("extract plugin %q: emitBuffer() needs a doc argument", name)
 				return rt.ToValue(false)
 			}
 			doc, e := extractDocBytes(name, call.Arguments[0])
@@ -730,11 +730,11 @@ func runJSExtractStream(prog *goja.Program, name, path, idPrefix string) (record
 		case readErr != nil:
 			gerr = readErr
 		case callErr != nil:
-			// An interrupt from Close is expected teardown, not a recipe error.
+			// An interrupt from Close is expected teardown, not a plugin error.
 			select {
 			case <-s.done:
 			default:
-				gerr = fmt.Errorf("extract recipe %q extractStream(%s): %w", name, path, callErr)
+				gerr = fmt.Errorf("extract plugin %q extractStream(%s): %w", name, path, callErr)
 			}
 		}
 	}()
@@ -764,12 +764,12 @@ func emitCallID(call goja.FunctionCall) []byte {
 }
 
 // extractDocBytes turns an emitBuffer(doc) argument into owned JSON bytes for a record's
-// Doc WITHOUT the emit() marshal hop: n1k1 records ARE JSON []byte, so a recipe that
+// Doc WITHOUT the emit() marshal hop: n1k1 records ARE JSON []byte, so a plugin that
 // already holds JSON bytes (e.g. a length-prefixed body read via readBytes/readInto)
 // passes them straight through -- no JSON.parse, no re-Marshal. Accepts an ArrayBuffer, a
 // Uint8Array (goja exports it as []byte), or a JSON string. The bytes are validated as
 // JSON (a cheap single-pass scan -- far less work than the parse+marshal it replaces) so a
-// buggy recipe can't inject non-JSON into the pipeline, and COPIED (they may alias a
+// buggy plugin can't inject non-JSON into the pipeline, and COPIED (they may alias a
 // reused readInto buffer, and the record outlives this call).
 func extractDocBytes(name string, arg goja.Value) ([]byte, error) {
 	var raw []byte
@@ -781,10 +781,10 @@ func extractDocBytes(name string, arg goja.Value) ([]byte, error) {
 	case string:
 		raw = []byte(v)
 	default:
-		return nil, fmt.Errorf("extract recipe %q: emitBuffer(doc) needs an ArrayBuffer, a Uint8Array, or a JSON string", name)
+		return nil, fmt.Errorf("extract plugin %q: emitBuffer(doc) needs an ArrayBuffer, a Uint8Array, or a JSON string", name)
 	}
 	if !json.Valid(raw) {
-		return nil, fmt.Errorf("extract recipe %q: emitBuffer(doc) got invalid JSON bytes", name)
+		return nil, fmt.Errorf("extract plugin %q: emitBuffer(doc) got invalid JSON bytes", name)
 	}
 	return append([]byte(nil), raw...), nil
 }
@@ -833,8 +833,8 @@ func readFull(r io.Reader, b []byte) (int, error) {
 	return total, nil
 }
 
-// jsSourceHash returns a short hex digest of a recipe's JS source, used as the
-// recipe Fingerprint (extract_cache.go) so editing an *.extract.js re-describes its
+// jsSourceHash returns a short hex digest of a plugin's JS source, used as the
+// plugin Fingerprint (extract_cache.go) so editing an *.extract.js re-describes its
 // files instead of serving a spec shaped by the old source. 12 hex chars (48 bits) is
 // ample to distinguish edits; this runs once at registration, never in a hot loop.
 func jsSourceHash(source string) string {
@@ -842,17 +842,17 @@ func jsSourceHash(source string) string {
 	return hex.EncodeToString(sum[:])[:12]
 }
 
-// ListExtractRecipes returns the loaded JS extract recipes in load order.
-func ListExtractRecipes() []ExtractRecipeInfo {
-	out := make([]ExtractRecipeInfo, len(extractRecipesLoaded))
-	copy(out, extractRecipesLoaded)
+// ListExtractPlugins returns the loaded JS extract plugins in load order.
+func ListExtractPlugins() []ExtractPluginInfo {
+	out := make([]ExtractPluginInfo, len(extractPluginsLoaded))
+	copy(out, extractPluginsLoaded)
 	return out
 }
 
 // jsExtractMatch reads the module-scope `match` object into a records.ExtractMatch
 // via a JSON round-trip (records.ExtractMatch's json tags == the JS field names:
 // exts/names/priority). A match that claims nothing (no exts AND no names) is
-// rejected -- an all-wildcard recipe would shadow every file.
+// rejected -- an all-wildcard plugin would shadow every file.
 func jsExtractMatch(rt *goja.Runtime) (records.ExtractMatch, error) {
 	var m records.ExtractMatch
 	v := rt.Get("match")
@@ -868,18 +868,18 @@ func jsExtractMatch(rt *goja.Runtime) (records.ExtractMatch, error) {
 	return m, nil
 }
 
-// runJSDescribe is a recipe's per-file describe pass: it builds a fresh goja runtime
+// runJSDescribe is a plugin's per-file describe pass: it builds a fresh goja runtime
 // (one goja.Runtime is not goroutine-safe, and describe can run concurrently across
 // queries/keyspaces -- isolation beats sharing on this cold, once-per-file path),
 // runs the compiled program, calls describe(file) with a {path,name,ext,head} arg,
 // marshals the returned object into a records.ExtractSpec, then MEASURES the
 // SortedSourceMeta natively (records.MeasureSortedSource) and reflects the measured
-// order back into the spec. A panic/timeout is contained so a bad recipe can't crash
+// order back into the spec. A panic/timeout is contained so a bad plugin can't crash
 // the engine.
 func runJSDescribe(prog *goja.Program, name, path string) (spec records.ExtractSpec, meta records.SortedSourceMeta, err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			err = fmt.Errorf("extract recipe %q describe(%s) panicked: %v", name, path, r)
+			err = fmt.Errorf("extract plugin %q describe(%s) panicked: %v", name, path, r)
 		}
 	}()
 
@@ -890,7 +890,7 @@ func runJSDescribe(prog *goja.Program, name, path string) (spec records.ExtractS
 	}
 	fn, ok := goja.AssertFunction(rt.Get("describe"))
 	if !ok {
-		return spec, meta, fmt.Errorf("extract recipe %q: describe not callable", name)
+		return spec, meta, fmt.Errorf("extract plugin %q: describe not callable", name)
 	}
 
 	// The file arg: path/name/ext plus a decompressed head sample for sniffing.
@@ -917,25 +917,25 @@ func runJSDescribe(prog *goja.Program, name, path string) (spec records.ExtractS
 
 	res, callErr := fn(goja.Undefined(), fileObj)
 	if atomic.LoadInt32(&timedOut) == 1 {
-		return spec, meta, fmt.Errorf("extract recipe %q describe exceeded the %s time limit", name, JSCallTimeout)
+		return spec, meta, fmt.Errorf("extract plugin %q describe exceeded the %s time limit", name, JSCallTimeout)
 	}
 	if callErr != nil {
-		return spec, meta, fmt.Errorf("extract recipe %q describe(%s): %w", name, path, callErr)
+		return spec, meta, fmt.Errorf("extract plugin %q describe(%s): %w", name, path, callErr)
 	}
 	if res == nil || goja.IsUndefined(res) || goja.IsNull(res) {
-		return spec, meta, fmt.Errorf("extract recipe %q: describe(%s) returned no spec", name, path)
+		return spec, meta, fmt.Errorf("extract plugin %q: describe(%s) returned no spec", name, path)
 	}
 	if e := jsExportInto(res, &spec); e != nil {
-		return spec, meta, fmt.Errorf("extract recipe %q: bad spec from describe(%s): %w", name, path, e)
+		return spec, meta, fmt.Errorf("extract plugin %q: bad spec from describe(%s): %w", name, path, e)
 	}
 	if spec.Format == "" {
-		spec.Format = name // Default the format tag to the recipe name.
+		spec.Format = name // Default the format tag to the plugin name.
 	}
 
 	// Measure the sorted-source metadata natively (the same pass the built-in
-	// recipes use) and reflect it back into the spec, so a spec-only consumer sees
+	// plugins use) and reflect it back into the spec, so a spec-only consumer sees
 	// this file's real sortedness/disorder bound.
-	declaredSorted := spec.Order.Sorted     // the recipe author's declaration.
+	declaredSorted := spec.Order.Sorted     // the plugin author's declaration.
 	declaredDisorder := spec.Order.Disorder //   (before measurement overwrites it).
 	meta, err = records.MeasureSortedSource(spec, path)
 	if err != nil {
@@ -956,7 +956,7 @@ func runJSDescribe(prog *goja.Program, name, path string) (spec records.ExtractS
 	// the watermarked merge degenerates to strict and aborts on the first deep inversion.
 	// Default to a conservative window (clock skew / concurrent-writer disorder in real
 	// logs is sub-second); the reorder buffer holds only rows within it, so RAM stays
-	// bounded. A recipe can declare a tighter/looser order.disorder to override.
+	// bounded. A plugin can declare a tighter/looser order.disorder to override.
 	if meta.Sortedness == records.SortedNear && meta.Disorder.WindowNanos == 0 {
 		meta.Disorder = records.DisorderBound{WindowNanos: DefaultNearDisorderNanos}
 	}

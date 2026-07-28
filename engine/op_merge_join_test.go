@@ -526,7 +526,7 @@ func mjChildRaw(jsonl string) *base.Op {
 	}
 }
 
-// TestMergeJoinSkipsKeylessRows: real recipe-framed log keyspaces interleave ts-keyed
+// TestMergeJoinSkipsKeylessRows: real plugin-framed log keyspaces interleave ts-keyed
 // data rows with keyless lines (cbcollect `====` banners, multiline continuations). The
 // merge-join must SKIP those (they're not time-orderable) rather than abort the ASOF.
 // Here both sides lead with a keyless row; the join proceeds over the keyed rows and the

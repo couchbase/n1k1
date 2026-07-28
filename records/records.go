@@ -193,13 +193,13 @@ var recordExts = map[string]bool{
 // IsRecordFile reports whether path (by extension, ignoring a .gz/.zst suffix)
 // is a data file this package can decode (structured JSON/CSV, or a document/
 // media file the extract provider handles -- see the extractors table), OR a file
-// a registered recipe claims. The recipe clause is what lets an extension recipe
+// a registered plugin claims. The plugin clause is what lets an extension plugin
 // (e.g. a *.extract.js with an imperative extract) introduce a BRAND-NEW data
 // format under an otherwise-unknown extension -- without it, OpenFile would reject
-// the file before the recipe dispatch ever ran.
+// the file before the plugin dispatch ever ran.
 func IsRecordFile(path string) bool {
 	ext := innerExt(path)
-	return recordExts[ext] || isExtractExt(ext) || RecipeFor(path) != nil
+	return recordExts[ext] || isExtractExt(ext) || ExtractPluginFor(path) != nil
 }
 
 // IsStructuredFile reports whether path is a *structured* data file (JSON family
@@ -277,7 +277,7 @@ func openDecompressed(path string) (io.Reader, []io.Closer, error) {
 }
 
 // ReadWholeDecompressed reads path fully, transparently decompressing a .gz suffix.
-// It is for whole-file consumers -- e.g. a recipe's imperative Extract that parses an
+// It is for whole-file consumers -- e.g. a plugin's imperative Extract that parses an
 // entire self-contained document (like TOML) rather than framing a record stream.
 func ReadWholeDecompressed(path string) ([]byte, error) {
 	r, closers, err := openDecompressed(path)
@@ -290,7 +290,7 @@ func ReadWholeDecompressed(path string) ([]byte, error) {
 
 // OpenReadCloser opens path for STREAMING reads, transparently decompressing a .gz
 // suffix; its Close releases every underlying resource. Unlike ReadWholeDecompressed
-// it never buffers the whole file, so a recipe's streaming imperative extract can read
+// it never buffers the whole file, so a plugin's streaming imperative extract can read
 // incrementally (e.g. line by line) at bounded memory. The reader is NOT goroutine-safe
 // (read it from one goroutine); Close may be called from another goroutine only after
 // reads have stopped.
@@ -319,23 +319,23 @@ func OpenFile(path, idPrefix string) (Source, error) {
 	if !IsRecordFile(path) {
 		return nil, fmt.Errorf("records: unsupported file: %s", path)
 	}
-	// An open extractor recipe (regexp+ext matched, priority-resolved) claims some
+	// An open extractor plugin (regexp+ext matched, priority-resolved) claims some
 	// files ahead of the extension-keyed extractors -- e.g. a specific ns_server
-	// multiline log recipe beats the generic whole-file .log text extractor. When one
+	// multiline log plugin beats the generic whole-file .log text extractor. When one
 	// matches, describe() (cheap, sampled) yields the declarative ExtractSpec and
-	// SpecApply runs it natively (or the recipe's imperative Extract, if any). The
+	// SpecApply runs it natively (or the plugin's imperative Extract, if any). The
 	// describe result (spec + measured SortedSourceMeta) is memoized in the .n1k1
-	// sidecar by glue via the DescribeMemo seam (see runDescribe / recipe.go), so an
+	// sidecar by glue via the DescribeMemo seam (see runDescribe / plugin.go), so an
 	// unchanged file's describe() runs once across queries and processes; a bare
 	// records import (no seam installed) just runs describe() every open. See
-	// recipe.go / DESIGN-data.md §4-§5.
+	// plugin.go / DESIGN-data.md §4-§5.
 	matchPath := idPrefix
 	if matchPath == "" {
 		matchPath = filepath.Base(path)
 	}
-	if rp := RecipeFor(matchPath); rp != nil {
+	if rp := ExtractPluginFor(matchPath); rp != nil {
 		// Describe is the declarative planning pass; it is OPTIONAL for a purely
-		// imperative recipe (Extract-only), which frames/parses the file itself and
+		// imperative plugin (Extract-only), which frames/parses the file itself and
 		// never consults the spec. When present, its spec is handed to Extract (or run
 		// natively by SpecApply).
 		var spec ExtractSpec

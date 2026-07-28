@@ -49,8 +49,8 @@ func TestExtInlineExamples(t *testing.T) {
 		function expand(args) { return "SELECT * FROM " + args.src; }
 		macro.examples = [ { in: "@exq_wrap(logs)", out: "(SELECT * FROM logs)" } ];`))
 
-	// Extract recipe: a sample file frames (section) into {title,text} rows.
-	mustReg(t, RegisterJSExtractRecipe("exq_sect", `
+	// Extract plugin: a sample file frames (section) into {title,text} rows.
+	mustReg(t, RegisterJSExtractPlugin("exq_sect", `
 		var match = { names: ["exq_sect"] };
 		function describe(file) {
 			return { format: "exq_sect", framing: { kind: "section", section: "^={3,}$" } };

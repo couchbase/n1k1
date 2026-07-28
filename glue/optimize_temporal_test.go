@@ -40,11 +40,11 @@ func mustKeyspace(t *testing.T, s *Session, ks string) datastore.Keyspace {
 }
 
 // TestWireTemporalMergeMetaE2E proves the A->B integration end-to-end: a
-// `... UNION ALL ... ORDER BY ts` over two recipe-matched (ns_server_log)
+// `... UNION ALL ... ORDER BY ts` over two plugin-matched (ns_server_log)
 // keyspaces fires the metadata-driven merge rewrite (WireTemporalMergeMeta reads
 // Track A's SortedSourceMeta, sees `ts` is a proven normalized int64 sort key,
 // and lowers order(union-all) -> merge-scan) and returns globally time-ordered
-// rows. A plain (non-recipe) keyspace must NOT fire (no sorted-source contract).
+// rows. A plain (non-plugin) keyspace must NOT fire (no sorted-source contract).
 func TestWireTemporalMergeMetaE2E(t *testing.T) {
 	root := t.TempDir()
 	writeKS := func(ks, name, body string) {
@@ -120,7 +120,7 @@ func mustRows(t *testing.T, s *Session, stmt string) []json.RawMessage {
 
 // TestPerFileMergeOverlapping is the per-file correctness net for the UNION-ALL
 // merge (DESIGN-merging.md "Multi-bundle / cross-node clusters"). A union branch
-// keyspace resolves to TWO recipe files (two nodes) whose ts ranges OVERLAP, so the
+// keyspace resolves to TWO plugin files (two nodes) whose ts ranges OVERLAP, so the
 // default single concatenated scan is NOT globally ts-ordered. Per-file expansion
 // turns that branch into two ordered cursors the K-way merge interleaves.
 //

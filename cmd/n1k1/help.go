@@ -21,9 +21,9 @@ import (
 )
 
 // cmdExtract dispatches the .extract command family: an authoring reference for
-// *.extract.js recipes (help) and an inventory of the loaded ones (list). It's the
-// extract-recipe analogue of .multi -- a single place documenting the ExtractSpec
-// surface so writing the first recipe doesn't require reading records/spec.go.
+// *.extract.js plugins (help) and an inventory of the loaded ones (list). It's the
+// extract-plugin analogue of .multi -- a single place documenting the ExtractSpec
+// surface so writing the first plugin doesn't require reading records/spec.go.
 func (c *cli) cmdExtract(arg string) {
 	sub, _ := splitFirst(arg)
 	switch strings.ToLower(sub) {
@@ -36,18 +36,18 @@ func (c *cli) cmdExtract(arg string) {
 	}
 }
 
-// extractList inventories the loaded *.extract.js recipes: each recipe's name, what it
+// extractList inventories the loaded *.extract.js plugins: each plugin's name, what it
 // claims (exts / name-regexps / priority), and where it came from. Goes to stderr so
-// it interleaves with other diagnostics. A recipe frames the files it claims into rows
-// (see .extract help); a file no recipe claims stays a whole-file blob.
+// it interleaves with other diagnostics. A plugin frames the files it claims into rows
+// (see .extract help); a file no plugin claims stays a whole-file blob.
 func (c *cli) extractList() {
-	recipes := glue.ListExtractRecipes()
-	if len(recipes) == 0 {
-		fmt.Fprintln(c.stderr, "no *.extract.js recipes loaded (load one with -ext <dir>, or see .extract help)")
+	plugins := glue.ListExtractPlugins()
+	if len(plugins) == 0 {
+		fmt.Fprintln(c.stderr, "no *.extract.js plugins loaded (load one with -ext <dir>, or see .extract help)")
 		return
 	}
-	fmt.Fprintf(c.stderr, "%d extract recipe(s) loaded:\n", len(recipes))
-	for _, r := range recipes {
+	fmt.Fprintf(c.stderr, "%d extract plugin(s) loaded:\n", len(plugins))
+	for _, r := range plugins {
 		claims := ""
 		if len(r.Exts) > 0 {
 			claims += "exts=" + strings.Join(r.Exts, ",")
@@ -64,14 +64,14 @@ func (c *cli) extractList() {
 
 // extractHelpText is the self-contained *.extract.js authoring reference (DOC-1). No
 // backticks so it stays one clean raw string; inline code is quoted or indented.
-const extractHelpText = `.extract -- author *.extract.js recipes that frame files into queryable rows
+const extractHelpText = `.extract -- author *.extract.js plugins that frame files into queryable rows
 
-An EXTRACT RECIPE teaches n1k1 how to turn a file the built-ins don't understand (a
+An EXTRACT PLUGIN teaches n1k1 how to turn a file the built-ins don't understand (a
 log, a command dump, an app-specific format) into RECORDS you can SELECT over. Drop a
 "<name>.extract.js" file in a dir and pass it with "-ext <dir>"; it's picked up before
 the datastore opens, so a matched file becomes a keyspace (see .tables).
 
-A recipe supplies describe(file), extract(file, emit), or extractStream(file, emit):
+A plugin supplies describe(file), extract(file, emit), or extractStream(file, emit):
   - describe(file), run ONCE per matched file (cold path), returns a DECLARATIVE spec
     n1k1 then applies NATIVELY per record -- no per-row JS, so a 400 MB log frames at
     full speed. This is the preferred path for line/multiline/section-framed text.
@@ -81,15 +81,15 @@ A recipe supplies describe(file), extract(file, emit), or extractStream(file, em
   - extractStream(file, emit) is the STREAMING form: JS reads incrementally
     (file.readLine) and emits records that flow out one at a time with backpressure,
     so a large multi-record file frames at bounded memory (see IMPERATIVE EXTRACT).
-A recipe's match may claim a BRAND-NEW extension (e.g. ".toml2"); the claim is what
+A plugin's match may claim a BRAND-NEW extension (e.g. ".toml2"); the claim is what
 makes such files records at all.
 
 COMMANDS
   .extract help            this guide
-  .extract list            the loaded recipes: what each claims (exts/names) + source
+  .extract list            the loaded plugins: what each claims (exts/names) + source
 
-RECIPE SHAPE (module scope)
-  // WHICH files this recipe claims (records.ExtractMatch). Highest priority wins on
+PLUGIN SHAPE (module scope)
+  // WHICH files this plugin claims (records.ExtractMatch). Highest priority wins on
   // overlap; a file matches if its ext is in exts (when given) AND some names regexp
   // matches its dataset-relative path (when given).
   var match = { exts: [".log"], names: ["ns_server\\..*\\.log$"], priority: 20 };
@@ -121,7 +121,7 @@ FRAMING (how a file's bytes split into records) -- framing.kind is one of:
   opaque     intentionally UNframable (a binary profile,   { kind: "opaque",
              a compressed blob): ONE {kind:"opaque",note}    note: "binary CPU profile" }
              row, no content read. Keeps the file out of
-             .tables' "add a recipe" nudge + documents it.
+             .tables' "add a plugin" nudge + documents it.
 
 An OPTIONAL framing.banner regexp (line/multiline) drops a non-data separator line
 (cbbrowse_logs' "==== couchbase logs ====" header) so it doesn't inflate COUNT(*)/.schema.
@@ -164,7 +164,7 @@ blob you crack yourself). Define extract INSTEAD OF (or alongside) describe:
   var match = { exts: [".toml2"], priority: 10 };
   function extract(file, emit) { emit(parseTOML(file.text), file.stem); }
 extract buffers its records, paying the JS boundary once per file (not per row). See
-extensions/extract_recipes/toml2.extract.js for a full TOML parser that matches n1k1's
+extensions/extract_plugins/toml2.extract.js for a full TOML parser that matches n1k1's
 native .toml reader.
 
 STREAMING (extractStream(file, emit)) -- for a LARGE multi-record file that shouldn't be
@@ -181,7 +181,7 @@ buffered. Instead of file.text, read incrementally:
                           Streams reader.read(view) / Node fs.read(buffer)).
 Emitted records flow out one at a time with BACKPRESSURE (bounded memory, any file size).
 emit(doc[, id]) marshals a JS value; emitBuffer(bytes[, id]) passes raw JSON bytes through
-with no marshal (pair it with readBytes/readInto for a zero-hop binary/JSON recipe). Both
+with no marshal (pair it with readBytes/readInto for a zero-hop binary/JSON plugin). Both
 return FALSE once the consumer stops (a LIMIT is met, the query is cancelled), so your loop
 can break. ids default to "<prefix>#<n>". Example (blank-line-delimited "key: value"
 stanzas):
@@ -196,7 +196,7 @@ stanzas):
     if (rec) emit(rec);
   }
 Define describe, extract, OR extractStream (extract and extractStream are mutually
-exclusive). See extensions/extract_recipes/stanza.extract.js.
+exclusive). See extensions/extract_plugins/stanza.extract.js.
 
 ANNOTATED EXAMPLE (myapp.log lines: "<RFC3339> <LEVEL> <node> <msg>")
   var match = { exts: [".log"], names: ["myapp\\..*\\.log$"], priority: 20 };
@@ -213,5 +213,5 @@ ANNOTATED EXAMPLE (myapp.log lines: "<RFC3339> <LEVEL> <node> <msg>")
   # then: SELECT a.node, a.msg FROM myapp a WHERE a.` + "`level`" + ` = "ERROR" ORDER BY a.ts
 
 Golden examples: an "examples" array ({in: "<sample file text>", out: [rows]}) both
-documents a recipe and golden-tests it -- run with  .extensions test [name].
+documents a plugin and golden-tests it -- run with  .extensions test [name].
 `

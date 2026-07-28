@@ -899,7 +899,7 @@ func wireTemporalMetaWalk(op *base.Op, conv *Conv, gctx *GlueContext) {
 // disorder-bound and zone-map Params. Returns nil (no rewrite) otherwise.
 //
 // Per-file expansion (DESIGN-merging.md "Multi-bundle / cross-node clusters"): a
-// branch that is a single project(scan) over a keyspace resolving to K recipe files
+// branch that is a single project(scan) over a keyspace resolving to K plugin files
 // is expanded into K per-file merge children -- the branch's projection cloned over
 // each single-file scan -- so the merge sees each file as its own globally-ordered
 // cursor instead of one CONCATENATED (and thus non-monotonic, tripwire-tripping)
@@ -1075,7 +1075,7 @@ func aggregateBranchMeta(metas []FileSortedSourceMeta, keyName string) (
 // -------------------------------------------------------------------
 // Per-file child scans (DESIGN-merging.md "Multi-bundle / cross-node clusters").
 //
-// A merge/ASOF input keyspace that resolves to MULTIPLE recipe files (a **/*.log
+// A merge/ASOF input keyspace that resolves to MULTIPLE plugin files (a **/*.log
 // glob, a classic keyspace of many files, or K per-node cbcollect bundles with
 // OVERLAPPING time ranges) is scanned by default as ONE CONCATENATED stream (records
 // walks + unions the files into a single cursor). Concatenated overlapping files are
@@ -1096,7 +1096,7 @@ var EnablePerFileMergeScans = true
 // per-file merge children (test observability, mirroring MergeMetaRewriteApplied).
 var PerFileMergeApplied int64
 
-// perFileScans expands a multi-file, recipe-matched keyspace into K per-file
+// perFileScans expands a multi-file, plugin-matched keyspace into K per-file
 // datastore-scan-records leaf ops (each backed by a single-file flatKeyspace) plus
 // the per-child merge-scan Params (sortedness/minKeys/maxKeys/bounds) derived from
 // each file's memoized SortedSourceMeta. metas is the keyspace's per-file metadata
@@ -1106,7 +1106,7 @@ var PerFileMergeApplied int64
 // single-file keyspacer into the SAME Temps the execution reads.
 //
 // ok=false (the caller keeps its single whole-keyspace child) when: the feature is
-// gated off, there are < 2 recipe files, or any file is unsorted / not keyed by
+// gated off, there are < 2 plugin files, or any file is unsorted / not keyed by
 // keyName. When EVERY file carries a zone map (RecordCount > 0) the children are
 // returned sorted by MinKey (aligned arrays) so the engine's "auto" regime can prove
 // disjoint files concatenate; if any file lacks a zone the zone map is dropped
@@ -1260,7 +1260,7 @@ func mergeScanParamsMulti(keyIdx int, sortedness, minKeys, maxKeys, bounds []int
 // trailing [0] then turns that [] into MISSING, exactly as on the subquery side.
 //
 // GATING (the safety net, identical in spirit to WireTemporalMergeMeta): fire ONLY
-// when BOTH E and R are recipe-matched with SortedSourceMeta.SortKeyLabel ==
+// when BOTH E and R are plugin-matched with SortedSourceMeta.SortKeyLabel ==
 // AsofMatch.KeyField (a proven normalized int64 sort key). Otherwise the correlated
 // subquery is left UNTOUCHED (the correct, if slower, fallback). Every merge-scan /
 // merge-join also validates ascending order at runtime (policy "error"), so an
@@ -1423,7 +1423,7 @@ func tryLowerASOFProject(p *base.Op, conv *Conv, byKey map[string]plan.Operator)
 	}
 	eMetas, err := SortedSourceMetasForKeyspace(eKS, nil)
 	if err != nil || len(eMetas) == 0 {
-		skip("the outer keyspace has no sorted-source metadata -- its recipe must frame a sorted time key")
+		skip("the outer keyspace has no sorted-source metadata -- its plugin must frame a sorted time key")
 		return
 	}
 	eSorted, eMin, eMax, eBound, eZone, eOK := aggregateBranchMeta(eMetas, match.KeyField)
@@ -1451,7 +1451,7 @@ func tryLowerASOFProject(p *base.Op, conv *Conv, byKey map[string]plan.Operator)
 	}
 	rMetas, rerr := SortedSourceMetasForKeyspace(rKS, nil)
 	if rerr != nil || len(rMetas) == 0 {
-		skip("the subquery keyspace has no sorted-source metadata -- its recipe must frame a sorted time key")
+		skip("the subquery keyspace has no sorted-source metadata -- its plugin must frame a sorted time key")
 		return
 	}
 	rSorted, rMin, rMax, rBound, rZone, rOK := aggregateBranchMeta(rMetas, match.KeyField)

@@ -18,7 +18,7 @@ package records
 // This file pins the *data contract* three parallel work-tracks agree on, so
 // they can proceed without stepping on each other:
 //
-//   - Track A (extract & JS recipes): PRODUCES an ExtractSpec from describe(file),
+//   - Track A (extract & JS plugins): PRODUCES an ExtractSpec from describe(file),
 //     applies it to yield records, and derives SortedSourceMeta by sampling.
 //   - Track B (merge & ASOF): CONSUMES SortedSourceMeta. The engine merge op does
 //     NOT import this package -- glue translates the neutral scalar fields below
@@ -38,7 +38,7 @@ package records
 // NOTE: these are the agreed shapes, not yet wired to a live sidecar or decoder;
 // the parallel tracks flesh out the producers/consumers against them.
 
-// ExtractMatch declares which files an extractor recipe claims. Matching is by
+// ExtractMatch declares which files an extractor plugin claims. Matching is by
 // file extension AND/OR regexp over the (dataset-relative) path; the
 // highest-Priority match wins on overlap (DESIGN-data.md §4 "Matching a file to
 // an extractor"). This same matcher is DESIGN-prepare.md's source-routing /
@@ -69,7 +69,7 @@ type Framing struct {
 
 	// Section (Kind==section): a regexp matching the start of a new section block
 	// (e.g. `^={10,}$` for cbcollect banners). The command/title within a section
-	// is lifted into per-record provenance by the recipe.
+	// is lifted into per-record provenance by the plugin.
 	Section string `json:"section,omitempty"`
 
 	// Banner (line/multiline framing): a regexp matching a NON-data separator line
@@ -103,7 +103,7 @@ type Fields struct {
 	Types map[string]string `json:"types,omitempty"`
 }
 
-// Time-layout tags for TimeSpec.Layout. A recipe maps its source's timestamp
+// Time-layout tags for TimeSpec.Layout. A plugin maps its source's timestamp
 // representation to one of these; the extract layer normalizes each record's
 // timestamp into a single sortable int64 epoch-NANOS key (DESIGN-data.md
 // "The normalized sort key"), timezone-normalized so streams from different
@@ -115,7 +115,7 @@ const (
 	TimeLayoutEpochUs = "epoch_us" // microseconds since epoch
 	TimeLayoutEpochNs = "epoch_ns" // nanoseconds since epoch
 	// Any other value is treated as a Go reference-time layout ("2006-01-02...")
-	// or strftime spec, per the recipe.
+	// or strftime spec, per the plugin.
 )
 
 // TimeSpec is the sort-key contract: which field carries the timestamp, how to
@@ -148,19 +148,19 @@ type DisorderBound struct {
 }
 
 // OrderSpec is the sortedness half of the sort-key contract, as declared by a
-// describe() recipe.
+// describe() plugin.
 type OrderSpec struct {
 	By       string        `json:"by,omitempty"`       // the sort field (usually TimeSpec.Field)
 	Sorted   string        `json:"sorted"`             // one of Sorted* constants
 	Disorder DisorderBound `json:"disorder,omitempty"` // when Sorted==near
 }
 
-// ExtractSpec is what describe(file) returns: the declarative recipe n1k1 applies
+// ExtractSpec is what describe(file) returns: the declarative plugin n1k1 applies
 // natively to produce records, keeping per-row work off the JS/boxed lane
 // (DESIGN-data.md §4 "Declarative spec vs imperative extract"). It is memoized in
 // the .n1k1 sidecar and handed back to extract(file, meta, emit).
 type ExtractSpec struct {
-	Format  string    `json:"format,omitempty"` // recipe-chosen format tag, e.g. "ns_server_log"
+	Format  string    `json:"format,omitempty"` // plugin-chosen format tag, e.g. "ns_server_log"
 	Framing Framing   `json:"framing"`
 	Fields  Fields    `json:"fields,omitempty"`
 	Time    *TimeSpec `json:"time,omitempty"`  // nil for non-temporal sources
@@ -168,7 +168,7 @@ type ExtractSpec struct {
 
 	// Provenance: constants lifted from the file once (e.g. a banner command, a
 	// node id parsed from content) that ride every record's _meta. Generic /
-	// domain-agnostic -- keys are recipe-defined, n1k1 core ascribes no meaning.
+	// domain-agnostic -- keys are plugin-defined, n1k1 core ascribes no meaning.
 	Provenance map[string]string `json:"provenance,omitempty"`
 }
 

@@ -45,7 +45,7 @@ func benchLPJDocs(n int) []string {
 	return docs
 }
 
-const benchRecipeReadBytesEmit = `
+const benchPluginReadBytesEmit = `
 var match = { exts: [".lpjb1"], priority: 10 };
 function extractStream(file, emit, emitBuffer) {
   for (;;) {
@@ -61,7 +61,7 @@ function extractStream(file, emit, emitBuffer) {
 }
 `
 
-const benchRecipeReadBytesEmitBuffer = `
+const benchPluginReadBytesEmitBuffer = `
 var match = { exts: [".lpjb2"], priority: 10 };
 function extractStream(file, emit, emitBuffer) {
   for (;;) {
@@ -75,7 +75,7 @@ function extractStream(file, emit, emitBuffer) {
 }
 `
 
-const benchRecipeReadIntoEmitBuffer = `
+const benchPluginReadIntoEmitBuffer = `
 var match = { exts: [".lpjb3"], priority: 10 };
 function extractStream(file, emit, emitBuffer) {
   var hdr = new Uint8Array(4);                 // REUSED across records.
@@ -92,9 +92,9 @@ function extractStream(file, emit, emitBuffer) {
 `
 
 func benchExtractStream(b *testing.B, name, src, ext string) {
-	if records.RecipeFor("x."+ext) == nil {
-		if err := RegisterJSExtractRecipe(name, src); err != nil {
-			b.Fatalf("RegisterJSExtractRecipe: %v", err)
+	if records.ExtractPluginFor("x."+ext) == nil {
+		if err := RegisterJSExtractPlugin(name, src); err != nil {
+			b.Fatalf("RegisterJSExtractPlugin: %v", err)
 		}
 	}
 	dir := b.TempDir()
@@ -130,7 +130,7 @@ func benchExtractStream(b *testing.B, name, src, ext string) {
 // --- Fixed-width read comparison: readBytes vs readInto with NO subarray (the whole
 // reused buffer IS one record), same emit -- isolating the read primitive's alloc cost.
 
-const benchRecipeFixedReadBytes = `
+const benchPluginFixedReadBytes = `
 var match = { exts: [".fwb1"], priority: 10 };
 function extractStream(file, emit, emitBuffer) {
   for (;;) {
@@ -142,7 +142,7 @@ function extractStream(file, emit, emitBuffer) {
 }
 `
 
-const benchRecipeFixedReadInto = `
+const benchPluginFixedReadInto = `
 var match = { exts: [".fwb2"], priority: 10 };
 function extractStream(file, emit, emitBuffer) {
   var buf = new Uint8Array(8);                  // REUSED whole (no subarray).
@@ -155,9 +155,9 @@ function extractStream(file, emit, emitBuffer) {
 `
 
 func benchExtractStreamFixed(b *testing.B, name, src, ext string) {
-	if records.RecipeFor("x."+ext) == nil {
-		if err := RegisterJSExtractRecipe(name, src); err != nil {
-			b.Fatalf("RegisterJSExtractRecipe: %v", err)
+	if records.ExtractPluginFor("x."+ext) == nil {
+		if err := RegisterJSExtractPlugin(name, src); err != nil {
+			b.Fatalf("RegisterJSExtractPlugin: %v", err)
 		}
 	}
 	dir := b.TempDir()
@@ -192,18 +192,18 @@ func benchExtractStreamFixed(b *testing.B, name, src, ext string) {
 }
 
 func BenchmarkExtractStreamFixedReadBytes(b *testing.B) {
-	benchExtractStreamFixed(b, "fwb1", benchRecipeFixedReadBytes, "fwb1")
+	benchExtractStreamFixed(b, "fwb1", benchPluginFixedReadBytes, "fwb1")
 }
 func BenchmarkExtractStreamFixedReadInto(b *testing.B) {
-	benchExtractStreamFixed(b, "fwb2", benchRecipeFixedReadInto, "fwb2")
+	benchExtractStreamFixed(b, "fwb2", benchPluginFixedReadInto, "fwb2")
 }
 
 func BenchmarkExtractStreamReadBytesEmit(b *testing.B) {
-	benchExtractStream(b, "lpjb1", benchRecipeReadBytesEmit, "lpjb1")
+	benchExtractStream(b, "lpjb1", benchPluginReadBytesEmit, "lpjb1")
 }
 func BenchmarkExtractStreamReadBytesEmitBuffer(b *testing.B) {
-	benchExtractStream(b, "lpjb2", benchRecipeReadBytesEmitBuffer, "lpjb2")
+	benchExtractStream(b, "lpjb2", benchPluginReadBytesEmitBuffer, "lpjb2")
 }
 func BenchmarkExtractStreamReadIntoEmitBuffer(b *testing.B) {
-	benchExtractStream(b, "lpjb3", benchRecipeReadIntoEmitBuffer, "lpjb3")
+	benchExtractStream(b, "lpjb3", benchPluginReadIntoEmitBuffer, "lpjb3")
 }

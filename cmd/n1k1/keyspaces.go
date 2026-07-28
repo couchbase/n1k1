@@ -128,7 +128,7 @@ func (c *cli) printKeyspaces(w io.Writer) {
 	// Display names backticked when SQL++ needs it (e.g. "2026-01"), so the
 	// listed keyspace matches how it must be typed; pad on the displayed form.
 	// Alongside each, a FRAMING tag (IDEA-0007) says how the keyspace's files become
-	// rows -- a recipe / structured format (query-ready multi-record) vs a whole-file
+	// rows -- a plugin / structured format (query-ready multi-record) vs a whole-file
 	// blob (one row per file) -- so a user can tell them apart without probing.
 	disp := make([]string, len(names))
 	framing := make([]string, len(names))
@@ -177,7 +177,7 @@ func (c *cli) printKeyspaces(w io.Writer) {
 	}
 	if anyBlob {
 		fmt.Fprintf(w, "  %s\n", c.style.Dim(
-			"whole-file = one row per file (a text blob); frame it into rows with a *.extract.js recipe."))
+			"whole-file = one row per file (a text blob); frame it into rows with a *.extract.js plugin."))
 	}
 	// IDEA-0010: a backticked name (dotted keyspaces are the norm in a bundle) fights
 	// the shell -- backticks are command-substitution inside "double quotes". So a
@@ -188,7 +188,7 @@ func (c *cli) printKeyspaces(w io.Writer) {
 				"command-substitution in \"double quotes\"), or use -f <file>. In this REPL, paste as-is."))
 	}
 	// IDEA-0012: a bundle dir hides its big raw logs (memcached.log, couchbase.log,
-	// ...) -- they're present but no recipe frames them, so they're not keyspaces and
+	// ...) -- they're present but no plugin frames them, so they're not keyspaces and
 	// otherwise leave no trace. Surface them so the user knows the data is there.
 	if unexposed := glue.UnexposedRecordFiles(c.dir); len(unexposed) > 0 {
 		shown, extra := unexposed, 0
@@ -204,14 +204,14 @@ func (c *cli) printKeyspaces(w io.Writer) {
 			noun = "file"
 		}
 		fmt.Fprintf(w, "  %s\n", c.style.Dim(fmt.Sprintf(
-			"%d more %s here aren't keyspaces (no recipe frames them): %s", len(unexposed), noun, list)))
+			"%d more %s here aren't keyspaces (no plugin frames them): %s", len(unexposed), noun, list)))
 		fmt.Fprintf(w, "  %s\n", c.style.Dim(
-			"→ query one directly (n1k1 <dir>/"+shown[0]+"), or add a *.extract.js recipe to frame it into rows."))
+			"→ query one directly (n1k1 <dir>/"+shown[0]+"), or add a *.extract.js plugin to frame it into rows."))
 	}
 }
 
 // keyspaceFraming resolves a keyspace's record-framing summary (IDEA-0007) for the
-// listing: how its files turn into rows (a recipe, a structured format, or a
+// listing: how its files turn into rows (a plugin, a structured format, or a
 // whole-file blob). Content-free (a file listing + registry match), so it's safe to
 // call per keyspace on startup / .tables even over a huge log. ok is false when the
 // keyspace can't be resolved (reported as a blank framing cell, never fatal).

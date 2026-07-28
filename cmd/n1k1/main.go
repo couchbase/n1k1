@@ -198,9 +198,9 @@ func main() {
 		fmt.Fprintf(os.Stderr, "%s: built-in module: %v\n", prog, e)
 	}
 
-	// Register extensions (JS UDFs + *.extract.js recipes) BEFORE opening the store:
+	// Register extensions (JS UDFs + *.extract.js plugins) BEFORE opening the store:
 	// resolveSession -> FileStore decides which files become keyspaces, and a
-	// recipe-matched file is auto-exposed as a keyspace (glue/flat.go), so the recipes
+	// plugin-matched file is auto-exposed as a keyspace (glue/flat.go), so the plugins
 	// must be registered first.
 	if len(extPaths) > 0 {
 		if _, lerr := loadExtensions(extPaths); lerr != nil {

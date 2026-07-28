@@ -164,7 +164,7 @@ func hasType(fs *glue.FieldStat, want string) bool {
 }
 
 // TestKeyspacesFramingTags: .tables tags each keyspace with how its files become
-// rows (IDEA-0007) -- a structured format, a whole-file blob, or a recipe -- and
+// rows (IDEA-0007) -- a structured format, a whole-file blob, or a plugin -- and
 // prints the whole-file hint when a blob is present.
 func TestKeyspacesFramingTags(t *testing.T) {
 	root := t.TempDir()
@@ -179,7 +179,7 @@ func TestKeyspacesFramingTags(t *testing.T) {
 	}
 	write("events", "e.jsonl", `{"a":1}`+"\n"+`{"a":2}`+"\n") // structured (jsonl)
 	write("notes", "readme.log", "line one\nline two\n")      // whole-file blob
-	// A .log the built-in ns_server_log recipe claims -> recipe-framed.
+	// A .log the built-in ns_server_log plugin claims -> plugin-framed.
 	write("nsl", "ns_server.error.log",
 		"[ns_server:error,2026-07-10T12:00:01.000Z,n1@h:<0.2>] boom\n")
 
@@ -195,7 +195,7 @@ func TestKeyspacesFramingTags(t *testing.T) {
 	for _, want := range []string{
 		"events", "jsonl",
 		"notes", "whole-file",
-		"nsl", "recipe=ns_server_log",
+		"nsl", "plugin=ns_server_log",
 		"whole-file = one row per file", // the blob hint
 	} {
 		if !strings.Contains(out, want) {
@@ -237,7 +237,7 @@ func TestKeyspacesUnexposedFilesHint(t *testing.T) {
 		"data",             // the structured keyspace is listed
 		"aren't keyspaces", // the unframed-files hint fired
 		"memcached.log", "couchbase.log",
-		"add a *.extract.js recipe",
+		"add a *.extract.js plugin",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf(".tables output missing %q; got:\n%s", want, out)

@@ -116,7 +116,7 @@ func (c *cli) cmdExtensions(arg string) {
 }
 
 // extEntry is one loaded extension of ANY kind (scalar UDF / aggregate / table source /
-// extract recipe / macro), unified for `.extensions list` and `.extensions show`.
+// extract plugin / macro), unified for `.extensions list` and `.extensions show`.
 type extEntry struct {
 	name, kind, origin string   // origin: file path, "(inline)", "(built-in)", or "(loaded)"
 	code               string   // full source, or "" when not retrievable
@@ -125,7 +125,7 @@ type extEntry struct {
 }
 
 // gatherExtensions collects EVERY loaded extension across the kinds -- scalar/aggregate/
-// stream (glue.ListExtensions), extract recipes (ListExtractRecipes), and macros
+// stream (glue.ListExtensions), extract plugins (ListExtractPlugins), and macros
 // (ListMacros, incl. the built-ins) -- so all are visible in one place. Source code is
 // the macro registry's stored JS for a macro, else the file at its origin path.
 func (c *cli) gatherExtensions() []extEntry {
@@ -176,7 +176,7 @@ func (c *cli) gatherExtensions() []extEntry {
 		out = append(out, extEntry{name: b, kind: "javascript-module", origin: m.origin,
 			code: code, nExamples: m.nEx, fns: m.fns})
 	}
-	for _, r := range glue.ListExtractRecipes() {
+	for _, r := range glue.ListExtractPlugins() {
 		out = append(out, extEntry{name: r.Name, kind: "extract", origin: r.Source,
 			code: readCode(r.Source), nExamples: len(glue.ExtExamplesFor("extract", r.Name))})
 	}
@@ -251,7 +251,7 @@ func (c *cli) extShow(name string) {
 }
 
 // extExamples prints the inline examples declared in the loaded extension files --
-// self-documenting: what each UDF / aggregate / stream source / macro / extract recipe
+// self-documenting: what each UDF / aggregate / stream source / macro / extract plugin
 // DOES, read straight from the file without running it. `only` filters to one name.
 // extResolveNames maps a `.extensions <cmd> <name>` argument to the set of extension
 // names it targets: nil for "" (means all), otherwise the name itself PLUS — if it names

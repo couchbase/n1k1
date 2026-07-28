@@ -87,7 +87,7 @@ func errorCaret(stmt, errText string, st cmd.Style) string {
 //
 //	syntax error - line 1, column 21, near '...', at: level (reserved word)
 //
-// This bites naturally: n1k1's built-in log recipe emits a `level` field, but
+// This bites naturally: n1k1's built-in log plugin emits a `level` field, but
 // `level` is reserved (ISOLATION LEVEL), so `WHERE l.level = "error"` fails to
 // parse -- the fix is to backtick it. Returns "" when the error isn't a
 // reserved-word case. Coloring follows st (no-op when st.On is false).

@@ -24,10 +24,10 @@ import (
 //     0 = quiet (default); >0 = info; >1 = more detail. (No separate log flag --
 //     logging rides the existing verbosity knob.)
 //   - `tag` is a STABLE component label naming where the line comes from, e.g.
-//     "records/describe", "glue/recipe", "merge-scan" -- grep the tag to the source
+//     "records/describe", "glue/plugin", "merge-scan" -- grep the tag to the source
 //     (cheaper + more stable than runtime.Caller).
 //   - format emitted values as "key: val" pairs, e.g.
-//       Logf(1, "records/describe", "matched recipe, file: %s, format: %s, records: %d",
+//       Logf(1, "records/describe", "matched plugin, file: %s, format: %s, records: %d",
 //            name, format, n)
 //
 // NEVER call Logf on a per-row hot loop -- it is for planning/describe/setup (cold).

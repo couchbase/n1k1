@@ -267,7 +267,7 @@ func FileStoreBound(path string, b Binding) (*Store, error) {
 		return nil, err
 	}
 
-	// Remember this datastore's root so a recipe describe of a file under it can find
+	// Remember this datastore's root so a plugin describe of a file under it can find
 	// its .n1k1 sidecar to memoize the ExtractSpec/SortedSourceMeta (extract_cache.go).
 	registerDataRoot(dsPath)
 

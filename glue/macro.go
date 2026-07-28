@@ -29,7 +29,7 @@ package glue
 //
 // This file owns the SCANNER + REGISTRY + argument semantics (pure Go, no goja);
 // ext_macro_jsvm.go owns the JS `expand(args, ctx)` binding. The split mirrors
-// extract recipes (macro.go : ext_macro_jsvm.go :: records recipe : ext_extract_jsvm.go).
+// extract plugins (macro.go : ext_macro_jsvm.go :: records plugin : ext_extract_jsvm.go).
 
 import (
 	"fmt"

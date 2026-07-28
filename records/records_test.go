@@ -144,7 +144,7 @@ func TestWalkSkipsHiddenDirs(t *testing.T) {
 // TestSpecApplyDropsBanner: a framing.banner regexp drops a leading separator record
 // (cbbrowse_logs' `==== couchbase logs ====`) so it doesn't inflate COUNT(*) or skew
 // .schema with its banner-only {text} shape (IDEA-0011). Uses the built-in
-// ns_server_log recipe, which declares the banner.
+// ns_server_log plugin, which declares the banner.
 func TestSpecApplyDropsBanner(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "ns_server.error.log")
@@ -1633,7 +1633,7 @@ func TestSpecApplyFramingSection(t *testing.T) {
 }
 
 // TestSpecApplyFramingSectionErrors: section framing requires a boundary regexp, and
-// rejects an uncompilable one -- a mis-authored recipe fails loud at SpecApply, not
+// rejects an uncompilable one -- a mis-authored plugin fails loud at SpecApply, not
 // with silent zero records.
 func TestSpecApplyFramingSectionErrors(t *testing.T) {
 	dir := t.TempDir()
@@ -1709,10 +1709,10 @@ func TestExtractSpecRoundTrip(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------- recipe / describe / extract
+// ---------------------------------------------------------------- plugin / describe / extract
 //
-// The two-phase describe/extract seam (records/recipe.go), driven natively by the
-// Phase-0 ExtractSpec, over the built-in ns_server_log multiline recipe.
+// The two-phase describe/extract seam (records/plugin.go), driven natively by the
+// Phase-0 ExtractSpec, over the built-in ns_server_log multiline plugin.
 
 // nsLogFixture is a small ns_server-style multiline log: each record is a
 // [module:level,RFC3339ts,node:...]msg lead line plus continuation lines (an indented
@@ -1766,30 +1766,30 @@ func docInt64(t *testing.T, m map[string]interface{}, key string) int64 {
 	return n
 }
 
-// TestRecipeFor pins the priority-resolved, ext+regexp matcher: the built-in
-// ns_server_log recipe claims ns_server-family logs but leaves generic .log / .json
+// TestExtractPluginFor pins the priority-resolved, ext+regexp matcher: the built-in
+// ns_server_log plugin claims ns_server-family logs but leaves generic .log / .json
 // files to the extension-keyed extractors, and a strictly-higher priority wins overlap.
-func TestRecipeFor(t *testing.T) {
-	if r := RecipeFor("ns_server.info.log"); r == nil || r.Name != "ns_server_log" {
-		t.Errorf("ns_server.info.log should match ns_server_log recipe, got %v", r)
+func TestExtractPluginFor(t *testing.T) {
+	if r := ExtractPluginFor("ns_server.info.log"); r == nil || r.Name != "ns_server_log" {
+		t.Errorf("ns_server.info.log should match ns_server_log plugin, got %v", r)
 	}
-	if r := RecipeFor("babysitter/diag.log"); r == nil || r.Name != "ns_server_log" {
-		t.Errorf("diag.log should match ns_server_log recipe, got %v", r)
+	if r := ExtractPluginFor("babysitter/diag.log"); r == nil || r.Name != "ns_server_log" {
+		t.Errorf("diag.log should match ns_server_log plugin, got %v", r)
 	}
-	if r := RecipeFor("server.log"); r != nil {
-		t.Errorf("generic server.log should NOT match a recipe (falls to text extractor), got %q", r.Name)
+	if r := ExtractPluginFor("server.log"); r != nil {
+		t.Errorf("generic server.log should NOT match a plugin (falls to text extractor), got %q", r.Name)
 	}
-	if r := RecipeFor("orders/order.json"); r != nil {
-		t.Errorf(".json should not match a log recipe, got %q", r.Name)
+	if r := ExtractPluginFor("orders/order.json"); r != nil {
+		t.Errorf(".json should not match a log plugin, got %q", r.Name)
 	}
 
 	// Priority resolution over a private ext, so this doesn't perturb other tests.
-	lo := &Recipe{Name: "lo", Match: ExtractMatch{Exts: []string{".zzzx"}, Priority: 1}, Describe: NSLogDescribe}
-	hi := &Recipe{Name: "hi", Match: ExtractMatch{Exts: []string{".zzzx"}, Priority: 5}, Describe: NSLogDescribe}
-	RecipeRegister(lo)
-	RecipeRegister(hi)
-	if r := RecipeFor("x.zzzx"); r == nil || r.Name != "hi" {
-		t.Errorf("higher-priority recipe should win, got %v", r)
+	lo := &ExtractPlugin{Name: "lo", Match: ExtractMatch{Exts: []string{".zzzx"}, Priority: 1}, Describe: NSLogDescribe}
+	hi := &ExtractPlugin{Name: "hi", Match: ExtractMatch{Exts: []string{".zzzx"}, Priority: 5}, Describe: NSLogDescribe}
+	ExtractPluginRegister(lo)
+	ExtractPluginRegister(hi)
+	if r := ExtractPluginFor("x.zzzx"); r == nil || r.Name != "hi" {
+		t.Errorf("higher-priority plugin should win, got %v", r)
 	}
 }
 
@@ -1847,7 +1847,7 @@ func TestNSLogDescribe(t *testing.T) {
 	}
 }
 
-// TestNSLogExtract checks native spec execution end-to-end through OpenFile (recipe
+// TestNSLogExtract checks native spec execution end-to-end through OpenFile (plugin
 // matched by name): correct multiline grouping, named-capture fields, and the
 // timestamp normalized to int64 epoch-nanos, timezone-normalized.
 func TestNSLogExtract(t *testing.T) {
@@ -1900,7 +1900,7 @@ func TestNSLogExtract(t *testing.T) {
 }
 
 // TestSpecApplyDirect exercises SpecApply on an arbitrary spec (line framing, no
-// timestamp) so the native executor is covered independent of the built-in recipe,
+// timestamp) so the native executor is covered independent of the built-in plugin,
 // and does a borrowed-slice / allocation sanity check.
 func TestSpecApplyDirect(t *testing.T) {
 	path := writeFile(t, filepath.Join(t.TempDir(), "app.log"),
@@ -1956,9 +1956,9 @@ func TestSpecApplyDirect(t *testing.T) {
 	}
 }
 
-// TestMeasureSortedSource exercises the exported measurement helper a non-Go recipe
+// TestMeasureSortedSource exercises the exported measurement helper a non-Go plugin
 // (glue's *.extract.js loader) reuses: given a describe-produced spec, it samples the
-// file and reports the same SortedSourceMeta the built-in ns_server_log recipe does.
+// file and reports the same SortedSourceMeta the built-in ns_server_log plugin does.
 func TestMeasureSortedSource(t *testing.T) {
 	path := writeFile(t, filepath.Join(t.TempDir(), "ns_server.info.log"), []byte(nsLogFixture))
 

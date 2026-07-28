@@ -25,7 +25,7 @@ import (
 // The gap is the (K-1) scans broadcast removes; because the per-detector predicate
 // work is O(K x rows) in BOTH, broadcast's own cost still grows linearly in K --
 // the evidence for whether a predicate index (Phase 4) is the next lever. Narrow
-// rows here are the CHEAPEST scan (worst case for the win); a real recipe-extracted
+// rows here are the CHEAPEST scan (worst case for the win); a real plugin-extracted
 // keyspace (gzip + multiline SpecApply) has a far heavier per-row scan, so the win
 // there is larger -- a glue-level follow-up would quantify it.
 func BenchmarkBroadcastScaling(b *testing.B) {

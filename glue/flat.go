@@ -87,14 +87,14 @@ func maybeFlat(path string, ds datastore.Datastore) datastore.Datastore {
 	} else {
 		// Scenario B3: one keyspace per top-level file, by stem (first-seen wins on a
 		// stem collision, e.g. a.json + a.csv). Exposed: *structured* files (JSON/CSV),
-		// AND any file an extract recipe claims (records.RecipeFor -- e.g. a memcached/
-		// ns_server log once its recipe is loaded via -ext, so it shows up in .tables
+		// AND any file an extract plugin claims (records.ExtractPluginFor -- e.g. a memcached/
+		// ns_server log once its plugin is loaded via -ext, so it shows up in .tables
 		// and `FROM memcached` works). Plain extracted documents (PDF/DOCX with no
-		// recipe) are still skipped so a folder of docs doesn't flood the list -- query
-		// one explicitly with `n1k1 <file.pdf>`. (Recipes must be registered before
+		// plugin) are still skipped so a folder of docs doesn't flood the list -- query
+		// one explicitly with `n1k1 <file.pdf>`. (ExtractPlugins must be registered before
 		// FileStore runs; the CLI loads -ext extensions first -- see cmd/n1k1/main.go.)
 		for _, name := range files {
-			if !records.IsStructuredFile(name) && records.RecipeFor(name) == nil {
+			if !records.IsStructuredFile(name) && records.ExtractPluginFor(name) == nil {
 				continue
 			}
 			ks := records.Stem(name)
@@ -241,10 +241,10 @@ func topLevelRecordFiles(dir string) (files []string, hasSubdir bool) {
 }
 
 // UnexposedRecordFiles returns the top-level record-like files under dir that did NOT
-// become keyspaces: plain .log/.txt/document files that no extract recipe frames and
+// become keyspaces: plain .log/.txt/document files that no extract plugin frames and
 // that aren't a structured format (the exact files topLevelRecordFiles' B3 branch
 // skips). On a cbcollect bundle these are the big raw logs (memcached.log,
-// couchbase.log, ...) -- present but query-hidden until a recipe frames them. The CLI
+// couchbase.log, ...) -- present but query-hidden until a plugin frames them. The CLI
 // surfaces them as a .tables hint (IDEA-0012) so a user knows the data is there. Empty
 // unless dir is a bundle-style layout (top-level files alongside subdirs); a flat dir
 // with no subdirs unions all its files into one keyspace, so nothing is unexposed.
@@ -255,8 +255,8 @@ func UnexposedRecordFiles(dir string) []string {
 	}
 	var out []string
 	for _, name := range files {
-		if records.IsStructuredFile(name) || records.RecipeFor(name) != nil {
-			continue // exposed as a keyspace already (structured or recipe-framed).
+		if records.IsStructuredFile(name) || records.ExtractPluginFor(name) != nil {
+			continue // exposed as a keyspace already (structured or plugin-framed).
 		}
 		out = append(out, name)
 	}
