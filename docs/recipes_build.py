@@ -23,7 +23,8 @@ the same file with its full YAML decoder. (Adding TOML support to n1k1 would let
 source be TOML too; for now YAML is the format n1k1 can slice and dice.)
 """
 
-import sys, os, re, html, subprocess
+import sys, os, re, html, subprocess, json
+from urllib.parse import quote
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -238,6 +239,41 @@ def full_sqlpp(r):
     return f"WITH {b}\n{s}" if b else s
 
 
+_SHOP_DATA = None
+
+
+def shop_data_param():
+    """The examples/shop dataset as a {keyspace: {"<key>.json": jsonText}} JSON string --
+    the tree the playground mounts under the `default` namespace for a `needs: shop` recipe's
+    'Try It Now' link (self-contained recipes carry their data inline via `WITH`, so they need
+    none). Computed once; tiny (~2.5KB)."""
+    global _SHOP_DATA
+    if _SHOP_DATA is None:
+        base = os.path.join(ROOT, "examples", "shop", "default")
+        tree = {}
+        for ks in sorted(os.listdir(base)):
+            ksdir = os.path.join(base, ks)
+            if not os.path.isdir(ksdir):
+                continue
+            tree[ks] = {fn: open(os.path.join(ksdir, fn)).read().strip()
+                        for fn in sorted(os.listdir(ksdir)) if fn.endswith(".json")}
+        _SHOP_DATA = json.dumps(tree, separators=(",", ":"))
+    return _SHOP_DATA
+
+
+def try_it_url(r):
+    """The browser-playground 'Try It Now' URL for a recipe: /play/#sql=<enc>&title=<enc>
+    [&data=<enc>]. A static host can't take a POST, so the query (+ optional dataset + title)
+    travels in the URL hash and the playground applies it client-side (see web/index.html
+    parseSharedLink). `data` is only attached for `needs: shop` recipes."""
+    parts = [f"sql={quote(full_sqlpp(r))}"]
+    if r.get("title"):
+        parts.append(f"title={quote(r['title'])}")
+    if r.get("needs") == "shop":
+        parts.append(f"data={quote(shop_data_param())}")
+    return "play/#" + "&".join(parts)
+
+
 def short_title(t):
     """A compact label for the table of contents (drop the ' — …' / ' (…)' tail)."""
     return t.split(" — ")[0].split(" (")[0].strip()
@@ -440,6 +476,10 @@ thead .c-sqlpp{z-index:31;background:var(--sqlpp);border-right-color:var(--sqlpp
 .rhead:hover .permalink,.permalink:focus-visible{opacity:.85}
 .permalink:hover{color:var(--accent)}
 @media(hover:none){.permalink{opacity:.5}}   /* touch: no hover, so keep it visible */
+.tryit{margin-left:8px;font-size:11px;font-weight:600;text-decoration:none;white-space:nowrap;
+  color:var(--accent);border:1px solid var(--accent);border-radius:10px;padding:1px 8px;
+  opacity:.85;transition:opacity .12s,background .12s,color .12s}
+.tryit:hover{opacity:1;background:var(--accent);color:var(--bg)}
 .toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(8px);
   background:var(--fg);color:var(--bg);font-size:12.5px;font-weight:500;padding:7px 14px;
   border-radius:8px;opacity:0;pointer-events:none;transition:opacity .18s,transform .18s;z-index:50}
@@ -659,7 +699,10 @@ def render_html_body():
                     f'<pre>{html.escape(src)}</pre></details>') if src else ""
             plink = (f'<a class="permalink" href="#{slug}" title="Copy link to this recipe" '
                      f'aria-label="Copy link to this recipe">#</a>')
-            head = (f'<span class="rhead"><span class="rtitle">{title}</span>{plink}{needs}'
+            tryit = (f'<a class="tryit" href="{html.escape(try_it_url(r))}" target="_blank" '
+                     f'rel="noopener" title="Run this SQL++ live in your browser (no install)">'
+                     f'Try&nbsp;it&nbsp;&#9654;</a>')
+            head = (f'<span class="rhead"><span class="rtitle">{title}</span>{plink}{tryit}{needs}'
                     f'{"" if note else chip}</span>')
             line2 = f'<span class="rline"><span class="rnote">{note}</span>{chip}</span>' if note else ""
             T.append(f'<tr class="desc" id="{slug}" data-r="{rid}"><td colspan="{ncols}">'

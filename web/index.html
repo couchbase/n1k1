@@ -138,6 +138,10 @@
         Source: <span id="sourceName" class="mono">built-in sample</span>
         <button id="resetSource" title="Forget the saved dataset and load the built-in sample" style="display:none;font-size:11.5px;padding:2px 8px;margin-left:8px">&#8635; Use built-in sample</button>
       </div>
+      <!-- Populated when the page is opened from a shared/"Try It Now" link (#sql=...&data=...&title=...). -->
+      <div id="sharedBanner" style="display:none;font-size:13px;background:rgba(79,70,229,.09);border:1px solid rgba(79,70,229,.35);border-radius:6px;padding:7px 10px;margin-bottom:8px">
+        &#127793; <span id="sharedTitle"></span>
+      </div>
       <textarea id="sql" spellcheck="false" placeholder="Loading engine&hellip;"></textarea>
 
       <div id="status"><span class="spin">Starting the WebAssembly engine in a worker&hellip;</span></div>
@@ -670,10 +674,47 @@
       () => engine.openBuiltin());
   }
 
+  // A "Try It Now" / shareable link carries the query (and optional dataset + title) in
+  // the URL hash -- e.g. #sql=<enc>&data=<enc-json>&title=<enc>. Since Pages is a static
+  // host, there is no POST: everything travels in the hash and is applied client-side.
+  // `data`, when present, is a {keyspace:{"<key>.json":jsonText}} map mounted under the
+  // "default" namespace (same shape as the folder picker); absent => the built-in sample,
+  // which is all a self-contained `WITH ... SELECT` recipe needs.
+  function parseSharedLink() {
+    const raw = location.hash.replace(/^#/, "");
+    if (!raw) return null;
+    const p = new URLSearchParams(raw);
+    const sql = p.get("sql");
+    const dataStr = p.get("data");
+    if (!sql && !dataStr) return null;
+    let data = null;
+    if (dataStr) { try { data = JSON.parse(dataStr); } catch (_) { data = null; } }
+    return { sql: sql || "", data, title: p.get("title") || "" };
+  }
+
   engine.ready.then(async () => {
     ready = true;
     runBtn.disabled = false;
     sqlEl.placeholder = "";
+
+    // A shared/"Try It Now" link wins over the restored/sample source.
+    const shared = parseSharedLink();
+    if (shared) {
+      if (shared.title) {
+        $("sharedTitle").textContent = shared.title;
+        $("sharedBanner").style.display = "";
+      }
+      if (shared.sql) sqlEl.value = shared.sql;
+      if (shared.data) {
+        const reopen = () => engine.openTree("/recipe", { default: shared.data }, shared.title || "recipe");
+        await activateFromOpen(await reopen(), (shared.title || "shared recipe"), null, reopen);
+      } else {
+        await openBuiltinSource();
+      }
+      if (shared.sql) run(); // auto-run the shared query
+      return;
+    }
+
     // Restore the last user dataset from OPFS if one was saved; else the sample.
     const m = await engine.restoreSource();
     const r = m && m.ok && m.result;
