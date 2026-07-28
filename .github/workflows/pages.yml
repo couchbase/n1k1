@@ -39,6 +39,16 @@ jobs:
       CGO_ENABLED: '0'
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0   # `git describe` needs full history + tags
+
+      # Stamp the deployed page + wasm with the version -- BEFORE bootstrap (which dirties
+      # go.mod). N1K1_VERSION is read by recipes_build.py (footer) and build.sh (-X main.version).
+      # NOT committed -- CI's drift check regenerates without it, so the committed files stay
+      # stable (git describe --long changes every commit).
+      - name: Resolve version
+        run: echo "N1K1_VERSION=$(git describe --long --tags --always 2>/dev/null || echo dev)" >> "$GITHUB_ENV"
+
       - uses: actions/setup-python@v7
         with:
           python-version: '3.x'

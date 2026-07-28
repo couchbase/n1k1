@@ -71,9 +71,13 @@ fi
 go mod edit -replace "github.com/couchbase/query=$QUERY_DST"
 
 # --- 4. Build the wasm binary + ship wasm_exec.js ------------------------------
-echo ">> building web/n1k1.wasm"
+# Stamp the version into the binary (-X main.version): $N1K1_VERSION if the caller set
+# it (the Pages workflow does), else `git describe --long`. Exposed to the page as
+# globalThis.n1k1Version -> the playground footer (main_wasm.go).
+VERSION=${N1K1_VERSION:-$(git describe --long --tags --always --dirty 2>/dev/null || echo dev)}
+echo ">> building web/n1k1.wasm ($VERSION)"
 GOOS=js GOARCH=wasm CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' \
-  go build -tags n1ql -ldflags="-s -w" -o "$ROOT/web/n1k1.wasm" ./web/wasm/
+  go build -tags n1ql -ldflags="-s -w -X main.version=$VERSION" -o "$ROOT/web/n1k1.wasm" ./web/wasm/
 
 rm -f "$ROOT/web/wasm_exec.js"
 cp "$(go env GOROOT)/lib/wasm/wasm_exec.js" "$ROOT/web/wasm_exec.js"

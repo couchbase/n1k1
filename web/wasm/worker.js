@@ -36,7 +36,7 @@ WebAssembly.instantiateStreaming(fetch("../n1k1.wasm"), go.importObject)
   .then((res) => {
     go.run(res.instance); // blocks in Go on select{}; sets globals as it runs
     (function waitReady() {
-      if (self.n1k1Ready) self.postMessage({ type: "ready" });
+      if (self.n1k1Ready) self.postMessage({ type: "ready", version: self.n1k1Version });
       else if (self.n1k1InitError) self.postMessage({ type: "initError", error: self.n1k1InitError });
       else setTimeout(waitReady, 20);
     })();

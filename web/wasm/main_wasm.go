@@ -37,6 +37,11 @@ import (
 // under. It must match the mount path in web/index.html.
 const dataRoot = "/n1k1data"
 
+// version is stamped at build time via -ldflags "-X main.version=..." (web/wasm/build.sh
+// passes `git describe --long`); "dev" for a plain `go build`. Exposed to the page as
+// globalThis.n1k1Version so the playground footer can show exactly which build it is running.
+var version = "dev"
+
 // namespace is the only namespace the file datastore uses (see cmd/n1k1).
 const namespace = "default"
 
@@ -59,6 +64,7 @@ func main() {
 	js.Global().Set("n1k1RunQuery", js.FuncOf(runQuery))
 	js.Global().Set("n1k1OpenDir", js.FuncOf(openDirJS))
 	js.Global().Set("n1k1TakeIndexBlobs", js.FuncOf(takeIndexBlobs))
+	js.Global().Set("n1k1Version", js.ValueOf(version))
 	js.Global().Set("n1k1Ready", js.ValueOf(true))
 	fmt.Println("n1k1 wasm ready; datasets mounted at", dataRoot)
 

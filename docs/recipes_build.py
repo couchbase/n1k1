@@ -70,6 +70,15 @@ HTML_TITLE = "SQL++ recipes"
 HTML_SUB = ("The same JSON maneuver in SQL++, SQL (Postgres & DuckDB), JavaScript, Python, MongoDB, and jq.")
 HTML_FOOTER = ("Generated from docs/recipes.yaml by docs/recipes_build.py")
 
+
+def build_version():
+    """A DEPLOY-TIME version string for the page footer -- read from $N1K1_VERSION (the Pages
+    workflow sets it to `git describe --long`), else "". It is deliberately NOT derived from
+    git here: `git describe --long` changes on every commit, so baking it into the committed
+    recipes.{md,html} would make CI's drift check (regenerate + `git diff`) fail forever. The
+    committed files are generated with no env (stable); only the deployed page carries a version."""
+    return os.environ.get("N1K1_VERSION", "").strip()
+
 PREAMBLE = """# SQL++ recipes — a SQL++ / SQL / jq Rosetta stone
 
 _Slicing and dicing JSON: the same maneuver across seven tools._
@@ -345,6 +354,9 @@ def render_md():
                 out += ["| | |", "|---|---|"] + rows + ["\n</details>"]
             out.append("")
     out.append(OUTRO.rstrip() + "\n")
+    ver = build_version()
+    if ver:
+        out.append(f"_n1k1 `{ver}`_\n")
     return "\n".join(out)
 
 
@@ -722,7 +734,11 @@ def render_html_body():
                          f'<div class="outbox"><span class="out-arrow">→</span>'
                          f'<pre class="outpre">{html.escape(r["out"].strip())}</pre></div></td></tr>')
     T.append("</tbody></table>")
-    T.append(f"<footer>{html.escape(HTML_FOOTER)}</footer>")
+    foot = html.escape(HTML_FOOTER)
+    ver = build_version()
+    if ver:
+        foot += f' &middot; <code>{html.escape(ver)}</code>'
+    T.append(f"<footer>{foot}</footer>")
     T.append("</div></div>")   # close .inner, .wrap
     T.append("</div></div>")   # close .body, .app
     T.append(f"<script>{JS}</script>")

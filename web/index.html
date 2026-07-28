@@ -171,7 +171,7 @@
     Powered by <code>n1k1.wasm</code> (~12&nbsp;MB gzipped). Reads a
     <code>&lt;namespace&gt;/&lt;keyspace&gt;/&lt;key&gt;.json</code> document tree
     from an in-memory filesystem. Try your own SQL++ &mdash; joins, <code>GROUP BY</code>,
-    <code>UNNEST</code>, subqueries, and <code>EXPLAIN</code> all work.
+    <code>UNNEST</code>, subqueries, and <code>EXPLAIN</code> all work.<code id="engineVersion" style="background:none;padding:0"></code>
   </footer>
 </div>
 
@@ -613,7 +613,10 @@
     const readyP = new Promise((res, rej) => { readyResolve = res; readyReject = rej; });
     worker.onmessage = (e) => {
       const msg = e.data || {};
-      if (msg.type === "ready") { readyResolve(); return; }
+      if (msg.type === "ready") {
+        if (msg.version) { const ev = document.getElementById("engineVersion"); if (ev) ev.textContent = " · build " + msg.version; }
+        readyResolve(); return;
+      }
       if (msg.type === "initError") { readyReject(new Error(msg.error)); return; }
       if (msg.type === "stats") { renderStats(msg.snapshot, false); return; }
       if (msg.type === "rows") { // a streamed batch (JSON array string) of row values
