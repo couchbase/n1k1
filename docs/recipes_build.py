@@ -68,7 +68,7 @@ SECTION_INTROS = {
 
 HTML_TITLE = "SQL++ recipes"
 HTML_SUB = ("The same JSON maneuver in SQL++, SQL (Postgres & DuckDB), JavaScript, Python, MongoDB, and jq.")
-HTML_FOOTER = ("Generated from docs/recipes.yaml by docs/recipes_build.py")
+HTML_FOOTER = ("Generated from docs/recipes.yaml - https://github.com/couchbase/n1k1")
 
 
 def build_version():
