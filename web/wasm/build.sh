@@ -47,19 +47,28 @@ if [ ! -d "$QUERY_DST" ]; then
   cp "$OVERLAY/util_cpu_js.go"   "$QUERY_DST/util/cpu_times_js.go"
 fi
 
-# --- 2. Local patched copy of edsrzf/mmap-go (add a js implementation) ---------
+# --- 2. edsrzf/mmap-go: add a js implementation, ONLY for versions that lack a
+#        native one. v1.1.0 defined mmap()/flush()/... per-OS (unix/windows), so
+#        GOOS=js matched neither and the package wouldn't link -- hence the
+#        overlay stub. v1.2.0+ ships its own mmap_wasm.go, so patching in a
+#        second definition would collide ("mmap redeclared"). Detect by the
+#        module's own mmap_wasm.go and skip the copy+replace entirely when present.
 MMAP_SRC=$(go list -m -f '{{.Dir}}' github.com/edsrzf/mmap-go)
-MMAP_DST="$SCRATCH/mmap-go"
-if [ ! -d "$MMAP_DST" ]; then
-  echo ">> copying $MMAP_SRC -> $MMAP_DST"
-  cp -R "$MMAP_SRC" "$MMAP_DST"
-  chmod -R u+w "$MMAP_DST"
-  cp "$OVERLAY/mmap_js.go" "$MMAP_DST/mmap_js.go"
+if [ -f "$MMAP_SRC/mmap_wasm.go" ]; then
+  echo ">> edsrzf/mmap-go has native wasm support; no patch/replace needed"
+else
+  MMAP_DST="$SCRATCH/mmap-go"
+  if [ ! -d "$MMAP_DST" ]; then
+    echo ">> copying $MMAP_SRC -> $MMAP_DST (adding js stub)"
+    cp -R "$MMAP_SRC" "$MMAP_DST"
+    chmod -R u+w "$MMAP_DST"
+    cp "$OVERLAY/mmap_js.go" "$MMAP_DST/mmap_js.go"
+  fi
+  go mod edit -replace "github.com/edsrzf/mmap-go=$MMAP_DST"
 fi
 
-# --- 3. Point go.mod replaces at the local copies (uncommitted) ----------------
+# --- 3. Point the go.mod replace at the local query copy (uncommitted) ---------
 go mod edit -replace "github.com/couchbase/query=$QUERY_DST"
-go mod edit -replace "github.com/edsrzf/mmap-go=$MMAP_DST"
 
 # --- 4. Build the wasm binary + ship wasm_exec.js ------------------------------
 echo ">> building web/n1k1.wasm"
