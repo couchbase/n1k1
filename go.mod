@@ -6,7 +6,7 @@ require (
 	github.com/blevesearch/bleve/v2 v2.6.1-0.20260626122409-a519f25e260c // full-text index (FTS Phase 2); see DESIGN-indexing.md
 	github.com/buger/jsonparser v1.1.2
 	github.com/couchbase/query v0.0.0-20260627002010-d19d17173f34
-	github.com/couchbase/rhmap v0.0.0-20200512125128-60fa597d6dd1
+	github.com/couchbase/rhmap v0.0.0-20260727204225-382c58dcc131
 	github.com/pelletier/go-toml v1.9.5 // .toml data-file format; see records/records.go
 	go.etcd.io/bbolt v1.4.0 // secondary-index (GSI-like) storage; see DESIGN-indexing.md
 )
@@ -132,7 +132,7 @@ require (
 	github.com/dsnet/compress v0.0.2-0.20210315054119-f66993602bf5 // indirect
 	github.com/dustin/go-jsonpointer v0.0.0-20140810065344-75939f54b39e // indirect
 	github.com/dustin/gojson v0.0.0-20150115165335-af16e0e771e2 // indirect
-	github.com/edsrzf/mmap-go v1.1.0 // indirect
+	github.com/edsrzf/mmap-go v1.2.0 // indirect
 	github.com/elazarl/go-bindata-assetfs v1.0.1 // indirect
 	github.com/envoyproxy/go-control-plane/envoy v1.36.0 // indirect
 	github.com/envoyproxy/protoc-gen-validate v1.3.0 // indirect

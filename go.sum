@@ -4016,6 +4016,8 @@ github.com/couchbase/regulator v0.0.0-20260227193052-7fe2b3883943 h1:m6MetFm6jMb
 github.com/couchbase/regulator v0.0.0-20260227193052-7fe2b3883943/go.mod h1:4Yh4FcUkFvJVn5yPr2jx+KZfn9+OcgHrlGCihelAc+Y=
 github.com/couchbase/rhmap v0.0.0-20200512125128-60fa597d6dd1 h1:GOIlQB7EkB7tfq+WgrOwxqBp8zyZRYnqUUzFWuj5MeA=
 github.com/couchbase/rhmap v0.0.0-20200512125128-60fa597d6dd1/go.mod h1:6WbBIySR4c7+F/8hhvPOx5ys6Y7eQGf4wdJOi3QEIMM=
+github.com/couchbase/rhmap v0.0.0-20260727204225-382c58dcc131 h1:UD2UVUWNt7l5mArQG3wyb3GnIRJYLXUSvBMGZnz9dW4=
+github.com/couchbase/rhmap v0.0.0-20260727204225-382c58dcc131/go.mod h1:K+8Ljbhi67mDRC3Dr0ANaSP8UH6Gr3eRBc5CdEDnf0U=
 github.com/couchbase/tools-common/auth/v2 v2.1.0/go.mod h1:VVoRvfTZYqDd+WNiaON0BvAituh39yLV07Rpv78qQWs=
 github.com/couchbase/tools-common/cloud/v8 v8.1.3/go.mod h1:5wEMtM4rX92Zl9ylQKEJFgmYNUyFVoWzXCvo31YNO+U=
 github.com/couchbase/tools-common/cloud/v8 v8.1.4 h1:+TzKykVvCtXNOiPZKwvWcVas4bBSbTGQwVLu8GerR5w=
@@ -4204,6 +4206,8 @@ github.com/ebitengine/purego v0.8.4/go.mod h1:iIjxzd6CiRiOG0UyXP+V1+jWqUXVjPKLAI
 github.com/edsrzf/mmap-go v1.0.0/go.mod h1:YO35OhQPt3KJa3ryjFM5Bs14WD66h8eGKpfaBNrHW5M=
 github.com/edsrzf/mmap-go v1.1.0 h1:6EUwBLQ/Mcr1EYLE4Tn1VdW1A4ckqCQWZBw8Hr0kjpQ=
 github.com/edsrzf/mmap-go v1.1.0/go.mod h1:19H/e8pUPLicwkyNgOykDXkJ9F0MHE+Z52B8EIth78Q=
+github.com/edsrzf/mmap-go v1.2.0 h1:hXLYlkbaPzt1SaQk+anYwKSRNhufIDCchSPkUD6dD84=
+github.com/edsrzf/mmap-go v1.2.0/go.mod h1:19H/e8pUPLicwkyNgOykDXkJ9F0MHE+Z52B8EIth78Q=
 github.com/eiannone/keyboard v0.0.0-20220611211555-0d226195f203 h1:XBBHcIb256gUJtLmY22n99HaZTz+r2Z51xUPi01m3wg=
 github.com/eiannone/keyboard v0.0.0-20220611211555-0d226195f203/go.mod h1:E1jcSv8FaEny+OP/5k9UxZVw9YFWGj7eI4KR/iOBqCg=
 github.com/elazarl/go-bindata-assetfs v1.0.0/go.mod h1:v+YaWX3bdea5J/mo8dSETolEo7R71Vk1u8bnjau5yw4=
