@@ -48,10 +48,11 @@ and where did I leave off?" from nothing.
 
 The key distinction (and the answer to "does *monitor* fit the run-and-done CLI?" — it doesn't):
 
-- **cursor** — a small **named, durable high-water position** (`NAME → {source → offset}`). This is
-  the *only* thing that persists in lightweight poll mode; nothing is "monitoring." A `.multi run
-  --cursor=NAME` reads-since it and advances it on success, then the process exits. **The poll-mode
-  primitive.**
+- **cursor** — a small **named, durable high-water position** (`NAME → {source → offset}`), **bound
+  to the query-pack it polls** (a cursor without a query is meaningless, so its record also holds the
+  `(pack, binding)` identity — see Command taxonomy). This is the *only* thing that persists in
+  lightweight poll mode; nothing is "monitoring." A `.multi run <pack> --cursor=NAME` reads-since it
+  and advances it on success, then the process exits. **The poll-mode primitive.**
 - **detector** — the SQL++ rule (existing n1k1 term); **finding** — an emitted result row (existing).
 - **monitor** — the **serve-mode** live entity: *a cursor that also carries its query + schedule and
   runs itself* — a cursor with a heartbeat. Only exists inside `n1k1 serve`.
@@ -106,17 +107,35 @@ The canonical mechanism is a **run modifier**, not a monitor object and not SQL 
   as sugar. (Why not a `FROM tail(…)`/streaming TVF: n1k1's extensions are scalar-only and a TVF
   needs the forbidden fork-grammar change — [DESIGN-prepare.md](DESIGN-prepare.md), "the one gap".)
 
-### Named-cursor management (the run-and-done CRUD)
+### Command taxonomy — cursors live under `.multi` (a cursor is meaningless without a query)
 
-Because named cursors are the only durable thing in poll mode, they get a small management surface
-(no "monitor" needed yet):
+A cursor is the persisted state of *polling a particular query-pack*, so it has no meaning on its
+own — which settles where it lives: **under `.multi`**, never as a separate top-level `.cursor`.
+The first `.multi run <pack> --cursor=NAME` **binds** NAME to that pack's identity (`query+binding
+SHA`) alongside its positions; thereafter the cursor record knows its own query (`.multi cursor
+show NAME` reveals the bound pack), so `.multi poll NAME` re-runs it without re-naming the pack, and
+pointing NAME at a *different* pack is an **error, not a silent meaningless reuse**.
+
+Taxonomy choice: keep the **pack verbs flat** (`run`/`lint`/`explain`/`test`/`list`) — they *are*
+what `.multi` operates on — and give ancillary state its own **sub-noun** `.multi cursor <verb>`
+(and later `.multi monitor <verb>`). This is the **git model**: core verbs flat (`git commit`,
+`git log`), ancillary areas grouped (`git remote …`, `git stash …`) — rather than nesting everything
+under `.multi query <verb>` (which doubles "query" and churns every existing call). The one honest
+counter-argument is Docker's migration from flat `docker ps`/`docker images` → grouped `docker
+container ls`/`docker image ls` once its surface sprawled; if `.multi` grows many noun-areas, full
+`.multi <noun> <verb>` symmetry becomes defensible. For now, flat-core + `.multi cursor`. (This
+replaces the earlier muddle of a top-level `.cursor` + a bare `.multi cursors`.)
 
 ```
-.multi cursors                 # list — NAME, sources, offset, last-run, count, lag
-.cursor show   <NAME>          # the stored high-water + last-run summary
-.cursor reset  <NAME> [--to …] # seek/rewind (Kafka seek / --from-beginning) — replay/backfill
-.cursor rm     <NAME>          # forget it (next run starts fresh)
-.cursor export/import <NAME>   # opaque token for handoff/backfill to another box (opt-in)
+.multi run <pack> --cursor=NAME      # first run BINDS NAME→(pack,binding)+positions, then polls
+.multi poll <NAME>                   # re-run the bound pack from the cursor (opens a tick — see Delivery)
+.multi cursor list                   # NAME, bound pack, sources, offset, last-run, count, lag
+.multi cursor show   <NAME>          # positions + bound pack/binding + last-run summary
+.multi cursor ack    <NAME> <tick>   # commit an open tick (at-least-once — see Delivery)
+.multi cursor log    <NAME>          # tick reflog (history)
+.multi cursor reset  <NAME> [--to … | --back N]   # seek/rewind — replay/backfill
+.multi cursor rm     <NAME>          # forget it (next bind starts fresh)
+.multi cursor export/import <NAME>   # opaque token for handoff/backfill to another box (opt-in)
 ```
 
 ### Delta strategies — what "new" means
@@ -169,15 +188,15 @@ agent needn't `tee` its own `.out`. Make a **tick** a durable, replayable unit n
 - A `poll`/`run --cursor` **opens a tick**: n1k1 journals `{tick-id, from→to cursor, findings,
   started-at}` under `.n1k1/ticks/<NAME>/` and returns it, but leaves the *committed* cursor at
   `from`.
-- The agent processes, then `.cursor ack <NAME> <tick-id>` → commits `to`, closes the tick.
+- The agent processes, then `.multi cursor ack <NAME> <tick-id>` → commits `to`, closes the tick.
 - **Crash before ack → the next `poll` re-delivers the open tick verbatim from the journal** (exact
   same rows, no re-scan) instead of advancing. At-least-once with exact-content replay. Finding
   fingerprints make re-delivery safe (idempotent consumer) → exactly-once *effect*.
 
 This one journal unifies the obvious remedies: it *is* "n1k1 records the `.out` in `.n1k1/`", its
 open-tick re-delivery *is* the crash safety net, and keeping the last K closed ticks *is* "a few
-rounds of previous cursor states" — a **reflog**: `.cursor log <NAME>` (history) + `.cursor reset
-<NAME> --back N` (rewind/replay). Bounded ring (GC old ticks); journal full findings when small,
+rounds of previous cursor states" — a **reflog**: `.multi cursor log <NAME>` (history) + `.multi
+cursor reset <NAME> --back N` (rewind/replay). Bounded ring (GC old ticks); journal full findings when small,
 else positions + fingerprints + count and replay by re-running from `from` (idempotent via
 fingerprints). Prior art: git `reflog`, ZFS snapshots, Kafka seek-back, the transactional outbox.
 
@@ -217,8 +236,8 @@ must remember they ran. The Terraform model maps 1:1:
 Blessed workflow: agent commits `monitors/*.sql` → `n1k1 .multi apply monitors/`. Idempotent
 (re-apply = no-op), PR-reviewable, auto-apply-on-merge for free. The **definition is the agent's
 durable memory (the file); the cursor is n1k1's job** (keyed by the file's name). ⚠ Declarative
-`apply` is blessed; imperative `.cursor`/`create` are subordinate exploratory tools (they can drift
-like `kubectl edit` vs GitOps).
+`apply` is blessed; imperative `.multi cursor`/`create` are subordinate exploratory tools (they can
+drift like `kubectl edit` vs GitOps).
 
 ### Monitors & the wire API (serve mode)
 
@@ -254,9 +273,9 @@ scan + corpus machinery.
 `records.Source` over jsonl/dir, `.multi run`, `_meta.pos/offset`, the recipe loader. *New:* a
 cursor store (`.n1k1-state/cursors/<NAME>`, atomic write-temp-rename); the `--cursor=NAME` modifier
 (since-filter + advance); **append** delta only; the **tick journal** (`.n1k1/ticks/<NAME>/`,
-bounded ring) giving at-least-once open-tick re-delivery, `ack`, and a reflog; and `.multi cursors`
-/ `.cursor show|reset|rm|log|ack`. → The whole crash-safe run-and-done "what's new" loop for append
-sources.
+bounded ring) giving at-least-once open-tick re-delivery, `ack`, and a reflog; and `.multi poll` +
+`.multi cursor {list,show,reset,rm,log,ack}`. → The whole crash-safe run-and-done "what's new" loop
+for append sources.
 
 **Phase 2 — `diff`/snapshot delta.** *Build on:* the spillable rhmap store, doc-id extraction.
 *New:* `mode: diff` — persist a prior snapshot keyed by id under the cursor, diff on run, emit the
