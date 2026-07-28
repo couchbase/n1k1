@@ -204,7 +204,7 @@ func HeadSample(path string, max int) (string, error) {
 	}
 	defer closeAll(closers)
 	if max <= 0 {
-		max = describeSampleBytes
+		max = DescribeSampleBytes
 	}
 	buf := make([]byte, max)
 	n, err := io.ReadFull(r, buf)
@@ -921,13 +921,13 @@ func tzLocation(tz string) *time.Location {
 
 // -------------------------------------------------------------- sample measurement
 
-// describeSampleBytes caps how much of a file's head describe reads to measure the
+// DescribeSampleBytes caps how much of a file's head describe reads to measure the
 // sorted-source metadata -- keeping describe cheap (DESIGN-data.md §4 "cheap, once-
 // per-file"); the measured disorder bound is a conservative claim the merge operator
-// still validates (DESIGN-merging.md).
-const describeSampleBytes = 256 * 1024
+// still validates (DESIGN-merging.md). Exported as a var so an embedder can tune it.
+var DescribeSampleBytes = 256 * 1024
 
-// describeMeasure samples path (its head, up to describeSampleBytes) through the same
+// describeMeasure samples path (its head, up to DescribeSampleBytes) through the same
 // native framing+time path SpecApply uses, and measures the SortedSourceMeta the
 // merge join consumes: min/max epoch-nanos key, record count, sortedness, and (for
 // near-sorted) a disorder bound.
@@ -942,14 +942,14 @@ func describeMeasure(spec ExtractSpec, path string) (SortedSourceMeta, error) {
 	}
 	defer f.Close()
 
-	sample := make([]byte, describeSampleBytes)
+	sample := make([]byte, DescribeSampleBytes)
 	n, err := io.ReadFull(f, sample)
 	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
 		return meta, err
 	}
 	sample = sample[:n]
 	// Drop a trailing partial line so a truncated sample doesn't misframe a record.
-	if n == describeSampleBytes {
+	if n == DescribeSampleBytes {
 		if nl := lastIndexByte(sample, '\n'); nl > 0 {
 			sample = sample[:nl]
 		}

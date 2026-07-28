@@ -37,12 +37,12 @@ import (
 	"strings"
 )
 
-// maxMacroExpansions caps the total number of `@name(...)` substitutions in one
+// MaxMacroExpansions caps the total number of `@name(...)` substitutions in one
 // statement. Argument-nesting strictly shrinks the `@` count so it can't loop;
 // only a macro whose BODY re-emits a macro can grow it, so this bound turns a
 // recursive/runaway macro into a clean error instead of a hang. Far above any
-// real statement's macro count.
-const maxMacroExpansions = 1000
+// real statement's macro count. Exported as a var so an embedder can tune it.
+var MaxMacroExpansions = 1000
 
 // MacroParam is one declared parameter of a macro (its optional `macro.params`
 // signature): enables positional->named mapping, defaults, arity/keyword checks,
@@ -163,9 +163,9 @@ func ExpandMacros(stmt string) (string, error) {
 		if !ok {
 			return s, nil
 		}
-		if n >= maxMacroExpansions {
+		if n >= MaxMacroExpansions {
 			return "", fmt.Errorf("macro expansion did not terminate after %d expansions "+
-				"(recursive macro @%s?)", maxMacroExpansions, call.name)
+				"(recursive macro @%s?)", MaxMacroExpansions, call.name)
 		}
 		entry := macroRegistry[strings.ToLower(call.name)]
 		if entry == nil {

@@ -32,7 +32,10 @@ import (
 	"github.com/couchbase/n1k1/engine"
 )
 
-const maxRecycledBatches = 256 // cap batch retention; drop extras for GC.
+// MaxRecycledBatches caps how many spill batch buffers a SpillState retains for reuse
+// (extras are dropped for GC). Exported as a var so an embedder can tune the recycle
+// pool for its memory profile.
+var MaxRecycledBatches = 256
 
 // SpillState holds a request's spill-backed allocator pools (map / heap / chunks / batch) and
 // the temp dir they put files under. The temp dir is created LAZILY (ensureDir) on first spill,
@@ -237,7 +240,7 @@ func (st *SpillState) recycleBatch(batch []base.Vals) {
 		return
 	}
 	st.bm.Lock()
-	if len(st.recycledBatches) < maxRecycledBatches {
+	if len(st.recycledBatches) < MaxRecycledBatches {
 		st.recycledBatches = append(st.recycledBatches, batch)
 	}
 	st.bm.Unlock()

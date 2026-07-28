@@ -107,10 +107,11 @@ import (
 //	  for (;;) { var b = file.readBytes(recLen()); if (!b) return; emitBuffer(b); }
 //	}
 
-// extractHeadSampleBytes caps the decompressed head passed to a JS describe() for
+// ExtractHeadSampleBytes caps the decompressed head passed to a JS describe() for
 // content-sniffing. Generous (describe is once-per-file, not a hot loop) but bounded
-// so a huge file doesn't balloon the planning-phase string.
-const extractHeadSampleBytes = 64 * 1024
+// so a huge file doesn't balloon the planning-phase string. Exported as a var so an
+// embedder can tune the sampling cap.
+var ExtractHeadSampleBytes = 64 * 1024
 
 // ExtractRecipeInfo describes one loaded JS extract recipe (for listing). Kept
 // separate from ext.go's extLoaded (scalar/agg/stream FUNCTIONS, unloadable via the
@@ -893,7 +894,7 @@ func runJSDescribe(prog *goja.Program, name, path string) (spec records.ExtractS
 	}
 
 	// The file arg: path/name/ext plus a decompressed head sample for sniffing.
-	head, _ := records.HeadSample(path, extractHeadSampleBytes) // best-effort.
+	head, _ := records.HeadSample(path, ExtractHeadSampleBytes) // best-effort.
 	fileObj := rt.NewObject()
 	_ = fileObj.Set("path", path)
 	_ = fileObj.Set("name", filepath.Base(path))
@@ -957,7 +958,7 @@ func runJSDescribe(prog *goja.Program, name, path string) (spec records.ExtractS
 	// logs is sub-second); the reorder buffer holds only rows within it, so RAM stays
 	// bounded. A recipe can declare a tighter/looser order.disorder to override.
 	if meta.Sortedness == records.SortedNear && meta.Disorder.WindowNanos == 0 {
-		meta.Disorder = records.DisorderBound{WindowNanos: defaultNearDisorderNanos}
+		meta.Disorder = records.DisorderBound{WindowNanos: DefaultNearDisorderNanos}
 	}
 
 	spec.Order.Sorted = meta.Sortedness
@@ -965,10 +966,11 @@ func runJSDescribe(prog *goja.Program, name, path string) (spec records.ExtractS
 	return spec, meta, nil
 }
 
-// defaultNearDisorderNanos is the reorder window assumed for a "near" source that
+// DefaultNearDisorderNanos is the reorder window assumed for a "near" source that
 // declares no explicit order.disorder and whose head sample measured no inversion. 5s
 // comfortably covers real-log clock-skew / concurrent-writer timestamp disorder.
-const defaultNearDisorderNanos = int64(5 * 1e9)
+// Exported as a var so an embedder can widen/tighten the default ASOF reorder window.
+var DefaultNearDisorderNanos = int64(5 * 1e9)
 
 // moreDisordered returns whichever of two sortedness labels is LESS ordered
 // (strict < near < none), so a measurement can raise disorder but never lower a
