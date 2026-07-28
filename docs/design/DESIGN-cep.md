@@ -194,14 +194,48 @@ verbs deliberately borrowed from tools devs & agents already know — see Prior 
 Same verbs over the wire (daemon mode): `GET/POST /monitors`, `POST /monitors/{name}/poll`,
 `DELETE /monitors/{name}`, `GET /monitors/{name}/findings?since=…`.
 
-### State layout — split definition (git) from cursor (local)
+### Where the cursor lives — and why the agent holds only a *name*, not a cookie
 
-Monitors live under `<dir>/.n1k1/monitors/<name>/` (alongside the existing index catalog at
-`<dir>/.n1k1/catalog.json`). ⚠ **Split the git-committed definition from the per-deployment cursor
-state** — the same split as Terraform config vs `tfstate`, or dbt models vs `target/`: the detector
-recipe + binding + policy are shareable and versioned (they're just the corpus); the **cursor +
-tick log are local and gitignored** (they mean nothing on another machine / another data root). A
-monitor's identity for caching/delta is `(recipe SHA, binding, source-fingerprint)`.
+The sharpest question: for a polling client like an AI agent, where does the high-water mark live,
+and does the caller get an opaque idempotency token? The reality that decides it: **AI agents are
+bad at durably holding state** — my context resets between cron wakes; "put this cookie somewhere
+and give it back next time" has no good home. So the design must not require the agent to persist a
+cursor across wakes. Resolution, in three layers:
+
+1. **The durable cursor lives server-/store-side, keyed by the monitor NAME.** The agent's only
+   cross-wake handle is a stable string it keeps in its own config/memory: `monitor poll
+   new-issues`. n1k1 holds the high-water mark. This is the Snowflake `STREAM` model (the stream
+   advances on consumption), the Kafka consumer-**group** model (the coordinator holds the committed
+   offset keyed by `group.id`), and the Dagster-sensor model (the framework persists the cursor). The
+   agent stores *nothing* but a name.
+2. **An opaque `cursor` token is returned in the poll response, but the agent only needs it
+   *within* a single tick — never across wakes.** Default is auto-advance (n1k1 commits the new
+   high-water when `poll` returns). For must-not-miss agents, a two-phase mode: `poll` returns
+   findings + a *candidate* `next_cursor` **without** advancing; the agent processes, then calls
+   `ack(name, next_cursor)` to commit. If it crashes before `ack`, n1k1 hasn't advanced, so re-poll
+   re-delivers (at-least-once). The token thus lives in the agent's *working context for the
+   duration of one tick* and is discarded — which is the one place an agent *can* reliably hold it.
+   So: **cookie, yes — but a within-tick cookie, not a persist-across-wakes cookie.**
+3. **Embedded / no-server: the cursor is a `tfstate`-style local state dir.** `n1k1 monitor poll
+   --state ./.n1k1-state/ …` makes n1k1 a pure function of `(definitions, state-dir, source)` — the
+   state dir is the only mutable thing, gitignored, on a volume the harness persists. Same opaque-
+   cursor abstraction as the served store; only the *backend* differs (local dir → served KV →
+   distributed object store). Designing the cursor as an **opaque, comparable, serializable value
+   from day one** is the discipline that keeps embedded and server modes one codebase.
+
+⚠ **Keep the git-committed definition split from the per-deployment cursor** (Terraform config vs
+`tfstate`; dbt models vs `target/`): the recipe + binding + policy are shareable/versioned; the
+cursor + tick-log are local + gitignored (they mean nothing on another machine / data root).
+Monitors live under `<dir>/.n1k1/monitors/<name>/`. A monitor's identity for caching/delta is
+`(recipe SHA, binding, source-fingerprint)`. For the rare handoff/backfill (resume *exactly here* on
+another box), a cursor is **exportable** as a token (`monitor export/import`) — but that's opt-in,
+not the default.
+
+**Separate concern — action idempotency.** The cursor stops n1k1 *re-emitting* a finding; it does
+not stop the *agent* from acting twice (creating the same Jira ticket) if it retries. So each
+finding carries a stable **fingerprint** = hash of `(detector-sha, source-id, matched-key)` — the
+Alertmanager/PagerDuty `dedup_key` pattern — so the agent (or an action sink) can dedupe side
+effects independently of cursor advance.
 
 ### Two delta strategies (this is what makes "what changed" real)
 
@@ -255,6 +289,68 @@ The agent supplies no cursor and manages no state — it names a monitor and get
 structured, token-sized delta** (change-type + provenance: `source_file`, `line_range`, `sha`).
 Re-polling after a crash is safe. This is the whole ask, and it needs only the cursor + `append`/
 `diff` delta — *not* the daemon.
+
+### GitOps: declarative monitors, the Terraform model (the preferred agent workflow)
+
+Yes — the API should be **git-first and declarative**, because that is exactly how an AI agent (and
+a human team) works best: *edit a file, commit it, tell the tool to reconcile*. Agents are excellent
+at authoring/regenerating declarative files and terrible at long imperative CRUD sequences they must
+remember they already ran. The Terraform mental model maps almost 1:1:
+
+| Terraform | n1k1 monitors |
+|---|---|
+| `.tf` config (git-committed) | **monitor definitions** — a dir of recipe files (the existing `.multi` recipe format: front-matter + SQL++), each = detector + binding + policy |
+| `tfstate` (a backend, not the app repo) | **cursors + tick logs** — local/served state, gitignored |
+| `terraform plan` | **`.monitor plan <dir>`** — diff declared-vs-live: which monitors would be created / updated / destroyed, no changes applied (fold in `.multi lint` so the plan also reports fuse/index/cost) |
+| `terraform apply` | **`.monitor apply <dir>` [`--prune`]** — reconcile: create new, update changed, (optionally) delete removed; **cursors of unchanged monitors are preserved** |
+
+So the blessed workflow is: agent maintains `monitors/*.sql` in git → `n1k1 monitor apply monitors/`
+→ n1k1 reconciles the live set to match. It's **idempotent** (re-applying the same dir is a no-op,
+so the agent needn't remember what it already created), **PR-reviewable**, and CI/Flux/Argo-style
+auto-apply-on-merge falls out for free. This also cleanly resolves the state question above: the
+**definition is the agent's durable memory (the committed file)**; the **cursor is n1k1's job**
+(keyed by the name in the file) — the agent still never holds a persistent cookie.
+
+⚠ **Declarative and imperative can drift** (`kubectl edit` vs GitOps). Rule: `apply` is the blessed
+path; `.monitor create/delete` are for interactive/exploratory use and are subordinate — `apply`
+can detect drift and optionally self-heal (Argo-style). Don't let an agent mix both on the same
+monitor set.
+
+### Deployment modes & the future "n1k1 server" — same API, three backends
+
+Correct that the monitor API is designed to *grow into* a server — and the discipline that makes
+that free is the opaque, serializable cursor + the name-keyed store. The **same** `.monitor` /
+MCP / HTTP surface runs in three modes, differing only in the cursor-store backend:
+
+1. **Embedded, no server** (ship first) — cursors in a local `.n1k1-state/` dir; poll from cron; no
+   daemon. The whole "what changed since I last looked" loop works here.
+2. **Single `n1k1 serve`** — same store, now also `follow` (long-running) + the MCP/HTTP wire API +
+   multiple concurrent clients. One box.
+3. **Distributed n1k1 server** (future) — the cursor store moves to a shared/replicated backend
+   (object store or KV). Name-keyed cursors + client-carryable tokens make polls horizontally
+   scalable (any replica serves any poll). No API change — only the backend swaps.
+
+The monitor abstraction is the seam; keep the cursor opaque and the store pluggable and mode 3 is a
+backend, not a rewrite.
+
+### MVP — the first slice to attack
+
+Smallest genuinely-useful cut that validates the cursor abstraction and delivers the cron-agent
+loop, in order:
+
+1. **`append`-mode cursor + `.monitor poll` + minimal CRUD (`list` / `show` / `delete`)**, cursor in
+   a local state dir, over a growing file / directory source (n1k1 already reads jsonl/dir — add a
+   since-offset filter at the scan). No daemon, no MCP, no diff, no follow. *This alone is the whole
+   append use case: new issues / tickets / emails / log lines.*
+2. **`snapshot`/`diff` delta** (the Debezium envelope) — unlocks "what *changed*" on mutable / REST
+   sources.
+3. **GitOps `plan` / `apply`** over a recipe dir (small, on top of the existing corpus loader).
+4. **`n1k1 serve` + MCP** (follow + subscribe).
+5. Later: unbounded `follow` source, two-phase `ack`, distributed cursor store.
+
+Steps 1–3 need **no** daemon, **no** unbounded-source engine work, and **no** grammar change — they
+are cursor + delta + reconcile plumbing over the existing scan + corpus machinery. That is the
+high-leverage beachhead.
 
 ### The AI-agent's-eye view (why this matters for "future me")
 
