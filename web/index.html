@@ -704,14 +704,15 @@
         $("sharedTitle").textContent = shared.title;
         $("sharedBanner").style.display = "";
       }
-      if (shared.sql) sqlEl.value = shared.sql;
       if (shared.data) {
         const reopen = () => engine.openTree("/recipe", { default: shared.data }, shared.title || "recipe");
         await activateFromOpen(await reopen(), (shared.title || "shared recipe"), null, reopen);
       } else {
         await openBuiltinSource();
       }
-      if (shared.sql) run(); // auto-run the shared query
+      // Set the shared query + run it AFTER activation: activateSource() seeds the editor
+      // with a sample and runs it, so applying the shared SQL earlier would be clobbered.
+      if (shared.sql) { sqlEl.value = shared.sql; run(); }
       return;
     }
 
