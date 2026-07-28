@@ -38,18 +38,17 @@ func (c *cli) cmdKeyspaces() {
 // the listing reflects n1k1's flattening (e.g. a synthetic flat-root keyspace,
 // or later catalog-defined keyspaces), not just literal subdirectories.
 func (c *cli) keyspaceNames() ([]string, error) {
-	ns, nerr := c.sess.Store.Datastore.NamespaceByName(defaultNamespace)
-	if nerr != nil {
-		// Namespace missing usually just means an empty datastore -- report it as
-		// "no keyspaces" (empty list) rather than an error, so the caller can show
-		// a friendly hint instead of a scary message.
-		return nil, nil
+	// glue.Session.Keyspaces is the public listing API (sorted; a missing namespace ->
+	// empty, not an error). The CLI just wants the names here; printKeyspaces looks up
+	// each one's framing separately for the padded display.
+	infos, err := c.sess.Keyspaces()
+	if err != nil {
+		return nil, err
 	}
-	names, kerr := ns.KeyspaceNames()
-	if kerr != nil {
-		return nil, fmt.Errorf("listing keyspaces: %v", kerr)
+	names := make([]string, len(infos))
+	for i, ki := range infos {
+		names[i] = ki.Name
 	}
-	sort.Strings(names)
 	return names, nil
 }
 
@@ -282,7 +281,7 @@ func (c *cli) cmdSchema(keyspace string) {
 	fmt.Fprintf(c.out, "%sdatastore: %s\n", c.icon("📂 "), c.dataLoc())
 	ns, _ := c.sess.Store.Datastore.NamespaceByName(defaultNamespace)
 	for _, ks := range kss {
-		stats, n, err := c.sampleSchema(ks, 50)
+		ss, err := c.sess.SampleSchema(ks, 50) // glue's public schema-inference API.
 		if err != nil {
 			fmt.Fprintf(c.stderr, "%s%s\n", c.icon("✗ "), c.style.Red("Error: "+tidyMsg(err.Error())))
 			continue
@@ -293,29 +292,24 @@ func (c *cli) cmdSchema(keyspace string) {
 		if kf, ok := c.keyspaceFraming(ns, ks); ok {
 			tag = " [" + kf.Label() + "]"
 		}
-		fmt.Fprintf(c.out, "%s%s  (sampled %d docs):\n", ks, tag, n)
+		fmt.Fprintf(c.out, "%s%s  (sampled %d docs):\n", ks, tag, ss.Rows)
 
-		fields := make([]string, 0, len(stats))
-		for f := range stats {
+		fields := make([]string, 0, len(ss.Fields))
+		for f := range ss.Fields {
 			fields = append(fields, f)
 		}
 		sort.Strings(fields)
 
 		rows := make([]json.RawMessage, 0, len(fields))
 		for _, f := range fields {
-			fs := stats[f]
-			types := make([]string, 0, len(fs.types))
-			for t := range fs.types {
-				types = append(types, t)
-			}
-			sort.Strings(types)
-			distinct := strconv.Itoa(len(fs.values))
-			if fs.capped {
+			fs := ss.Fields[f]
+			distinct := strconv.Itoa(len(fs.Values))
+			if fs.Capped {
 				distinct += "+"
 			}
 			rows = append(rows, orderedJSONRow(
 				[2]interface{}{"field", f},
-				[2]interface{}{"types", strings.Join(types, "|")},
+				[2]interface{}{"types", strings.Join(fs.Types, "|")}, // glue sorts Types
 				[2]interface{}{"distinct", distinct},
 				[2]interface{}{"example", schemaExample(ks, f, fs)},
 			))
@@ -338,122 +332,33 @@ func (c *cli) renderSchemaBox(rows []json.RawMessage) {
 	cmd.RenderBox(c.out, rows, c.maxWidth, c.maxRows, termWidth, "", c.style, true /* pretty */)
 }
 
-// Bounds for the distinct values .schema keeps per field: maxSchemaValues caps how
-// many distinct scalar values are retained; maxSchemaIn is how many it will list in
-// an IN [...] example before falling back to a single `= <value>`.
-const (
-	maxSchemaValues = 16
-	maxSchemaIn     = 5
-)
+// maxSchemaIn is how many distinct values .schema lists in an IN [...] example before
+// falling back to a single `= <value>`. The per-field value-retention cap now lives in
+// glue.SchemaSampleMaxValues (a public tunable); the sampling itself is glue.Session.
+// SampleSchema (schema inference is a public library API -- see glue/introspect.go).
+const maxSchemaIn = 5
 
-// fieldStat accumulates, over the .schema sample, one top-level field's observed
-// JSON types plus a bounded set of distinct scalar values used to synthesize a
-// WHERE example.
-type fieldStat struct {
-	types     map[string]bool
-	values    []json.RawMessage // distinct non-null scalar values, first-seen order
-	seen      map[string]bool   // dedup by the value's canonical JSON text
-	capped    bool              // more distinct scalar values than maxSchemaValues
-	nonScalar bool              // saw an object/array value (no useful = literal)
-}
-
-// observe records one occurrence of a field's value (v = decoded, raw = its JSON).
-func (fs *fieldStat) observe(v interface{}, raw json.RawMessage) {
-	if fs.types == nil {
-		fs.types = map[string]bool{}
-		fs.seen = map[string]bool{}
-	}
-	t := jsonType(v)
-	fs.types[t] = true
-	switch t {
-	case "object", "array":
-		fs.nonScalar = true
-	case "null":
-		// null isn't a useful equality literal (`= null` is never true); skip it.
-	default: // string, number, bool -- candidate WHERE literals
-		key := string(raw)
-		if fs.seen[key] {
-			return
-		}
-		if len(fs.values) >= maxSchemaValues {
-			fs.capped = true
-			return
-		}
-		fs.seen[key] = true
-		fs.values = append(fs.values, raw)
-	}
-}
-
-// schemaExample builds a copy-pasteable SQL++ query filtering on one field, using
-// the distinct values sampled: `= v` for a single value, `IN [...]` for a few, a
-// representative `= v` when there are many, and `IS NOT MISSING` for a field with
+// schemaExample builds a copy-pasteable SQL++ query filtering on one field, using the
+// distinct values sampled (glue.FieldStat): `= v` for a single value, `IN [...]` for a
+// few, a representative `= v` when there are many, and `IS NOT MISSING` for a field with
 // no scalar values (object/array-valued, or only ever null).
-func schemaExample(ks, field string, fs *fieldStat) string {
+func schemaExample(ks, field string, fs *glue.FieldStat) string {
 	qks, qf := quoteIdent(ks), quoteIdent(field)
 	switch {
-	case len(fs.values) == 0:
+	case len(fs.Values) == 0:
 		return fmt.Sprintf("SELECT * FROM %s WHERE %s IS NOT MISSING;", qks, qf)
-	case len(fs.values) == 1:
-		return fmt.Sprintf("SELECT * FROM %s WHERE %s = %s;", qks, qf, fs.values[0])
-	case len(fs.values) <= maxSchemaIn && !fs.capped:
-		parts := make([]string, len(fs.values))
-		for i, v := range fs.values {
+	case len(fs.Values) == 1:
+		return fmt.Sprintf("SELECT * FROM %s WHERE %s = %s;", qks, qf, fs.Values[0])
+	case len(fs.Values) <= maxSchemaIn && !fs.Capped:
+		parts := make([]string, len(fs.Values))
+		for i, v := range fs.Values {
 			parts[i] = string(v)
 		}
 		return fmt.Sprintf("SELECT * FROM %s WHERE %s IN [%s];", qks, qf, strings.Join(parts, ", "))
 	default:
-		return fmt.Sprintf("SELECT * FROM %s WHERE %s = %s;", qks, qf, fs.values[0])
+		return fmt.Sprintf("SELECT * FROM %s WHERE %s = %s;", qks, qf, fs.Values[0])
 	}
 }
 
-// sampleSchema samples a keyspace by running `SELECT <alias>.* FROM <ks> LIMIT n`
-// through the session -- the same resolution + decoding path real queries take, so
-// .schema stays in lockstep with what queries actually see (flat roots, single-file
-// keyspaces, multi-record JSONL/CSV, gzip -- not just one-doc-per-file *.json). It
-// returns per-field stats (types + distinct values), the docs sampled, and any
-// query error.
-func (c *cli) sampleSchema(ks string, limit int) (map[string]*fieldStat, int, error) {
-	// quoteIdent so keyspaces like "2026-01" parse; alias x so `x.*` projects the
-	// document's fields unwrapped (SELECT * would nest them under the keyspace).
-	stmt := fmt.Sprintf("SELECT x.* FROM %s AS x LIMIT %d", quoteIdent(ks), limit)
-	res, err := c.sess.Run(stmt)
-	if err != nil {
-		return nil, 0, err
-	}
-	stats := map[string]*fieldStat{}
-	for _, row := range res.Rows {
-		var m map[string]interface{}
-		if json.Unmarshal(row, &m) != nil {
-			continue // a non-object row (e.g. a bare scalar) contributes no fields
-		}
-		for k, v := range m {
-			fs := stats[k]
-			if fs == nil {
-				fs = &fieldStat{}
-				stats[k] = fs
-			}
-			raw, _ := json.Marshal(v)
-			fs.observe(v, raw)
-		}
-	}
-	return stats, len(res.Rows), nil
-}
-
-func jsonType(v interface{}) string {
-	switch v.(type) {
-	case nil:
-		return "null"
-	case bool:
-		return "bool"
-	case float64:
-		return "number"
-	case string:
-		return "string"
-	case []interface{}:
-		return "array"
-	case map[string]interface{}:
-		return "object"
-	default:
-		return "unknown"
-	}
-}
+// (Schema sampling -- sampleSchema/fieldStat/jsonType -- moved to the public
+// glue.Session.SampleSchema / glue.FieldStat; see glue/introspect.go.)

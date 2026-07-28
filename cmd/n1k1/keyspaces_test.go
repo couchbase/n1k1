@@ -119,25 +119,6 @@ func TestDataLoc(t *testing.T) {
 
 // TestJsonType covers the type-name mapping .schema uses to describe fields
 // (the value shapes come from encoding/json's decode of a JSON document).
-func TestJsonType(t *testing.T) {
-	cases := []struct {
-		v    interface{}
-		want string
-	}{
-		{nil, "null"},
-		{true, "bool"},
-		{float64(3), "number"},
-		{"s", "string"},
-		{[]interface{}{1, 2}, "array"},
-		{map[string]interface{}{"a": 1}, "object"},
-	}
-	for _, tc := range cases {
-		if got := jsonType(tc.v); got != tc.want {
-			t.Errorf("jsonType(%T) = %q, want %q", tc.v, got, tc.want)
-		}
-	}
-}
-
 func TestSchemaSamplesMultiRecordSingleFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "events.jsonl") // single file, many records
@@ -152,24 +133,34 @@ func TestSchemaSamplesMultiRecordSingleFile(t *testing.T) {
 	}
 	c := &cli{sess: sess}
 
-	stats, n, err := c.sampleSchema("events", 50)
+	ss, err := c.sess.SampleSchema("events", 50)
 	if err != nil {
-		t.Fatalf("sampleSchema: %v", err)
+		t.Fatalf("SampleSchema: %v", err)
 	}
-	if n != 2 {
-		t.Fatalf("sampled %d docs, want 2 (the multi-record file's rows)", n)
+	if ss.Rows != 2 {
+		t.Fatalf("sampled %d docs, want 2 (the multi-record file's rows)", ss.Rows)
 	}
 	for _, k := range []string{"type", "n", "tags"} {
-		if stats[k] == nil {
-			t.Errorf("missing field %q in stats %v", k, stats)
+		if ss.Fields[k] == nil {
+			t.Errorf("missing field %q in fields %v", k, ss.Fields)
 		}
 	}
-	if fs := stats["n"]; fs == nil || len(fs.types) != 1 || !fs.types["number"] {
-		t.Errorf("n types = %v, want {number}", stats["n"])
+	if fs := ss.Fields["n"]; fs == nil || len(fs.Types) != 1 || fs.Types[0] != "number" {
+		t.Errorf("n types = %v, want [number]", ss.Fields["n"])
 	}
-	if fs := stats["tags"]; fs == nil || !fs.types["array"] || !fs.nonScalar {
-		t.Errorf("tags should be a non-scalar array field, got %v", stats["tags"])
+	if fs := ss.Fields["tags"]; fs == nil || !hasType(fs, "array") || !fs.NonScalar {
+		t.Errorf("tags should be a non-scalar array field, got %v", ss.Fields["tags"])
 	}
+}
+
+// hasType reports whether a sampled field observed the given JSON type.
+func hasType(fs *glue.FieldStat, want string) bool {
+	for _, t := range fs.Types {
+		if t == want {
+			return true
+		}
+	}
+	return false
 }
 
 // TestKeyspacesFramingTags: .tables tags each keyspace with how its files become
@@ -319,15 +310,15 @@ func TestSchemaFlatRootUnion(t *testing.T) {
 	}
 	c := &cli{sess: sess}
 
-	stats, n, err := c.sampleSchema(base, 50)
+	ss, err := c.sess.SampleSchema(base, 50)
 	if err != nil {
-		t.Fatalf("sampleSchema: %v", err)
+		t.Fatalf("SampleSchema: %v", err)
 	}
-	if n != 3 {
-		t.Fatalf("sampled %d docs, want 3", n)
+	if ss.Rows != 3 {
+		t.Fatalf("sampled %d docs, want 3", ss.Rows)
 	}
-	if stats["m"] == nil || stats["z"] == nil {
-		t.Errorf("expected union of m+z across files, got %v", stats)
+	if ss.Fields["m"] == nil || ss.Fields["z"] == nil {
+		t.Errorf("expected union of m+z across files, got %v", ss.Fields)
 	}
 }
 
@@ -349,21 +340,21 @@ func TestSchemaDistinctAndExample(t *testing.T) {
 	}
 	c := &cli{sess: sess}
 
-	stats, _, err := c.sampleSchema("txns", 50)
+	ss, err := c.sess.SampleSchema("txns", 50)
 	if err != nil {
-		t.Fatalf("sampleSchema: %v", err)
+		t.Fatalf("SampleSchema: %v", err)
 	}
 
 	// cur: two distinct values (deduped), first-seen order -> IN.
-	if got := schemaExample("txns", "cur", stats["cur"]); got != `SELECT * FROM txns WHERE cur IN ["USD", "EUR"];` {
+	if got := schemaExample("txns", "cur", ss.Fields["cur"]); got != `SELECT * FROM txns WHERE cur IN ["USD", "EUR"];` {
 		t.Errorf("cur example = %q", got)
 	}
 	// kind: one distinct value -> =.
-	if got := schemaExample("txns", "kind", stats["kind"]); got != `SELECT * FROM txns WHERE kind = "sale";` {
+	if got := schemaExample("txns", "kind", ss.Fields["kind"]); got != `SELECT * FROM txns WHERE kind = "sale";` {
 		t.Errorf("kind example = %q", got)
 	}
 	// tags: array-valued -> no scalar literal, IS NOT MISSING.
-	if got := schemaExample("txns", "tags", stats["tags"]); got != `SELECT * FROM txns WHERE tags IS NOT MISSING;` {
+	if got := schemaExample("txns", "tags", ss.Fields["tags"]); got != `SELECT * FROM txns WHERE tags IS NOT MISSING;` {
 		t.Errorf("tags example = %q", got)
 	}
 }
@@ -409,47 +400,26 @@ func TestSchemaExample(t *testing.T) {
 		name  string
 		ks    string
 		field string
-		fs    *fieldStat
+		fs    *glue.FieldStat
 		want  string
 	}{
-		{"single", "orders", "status", &fieldStat{values: raws(`"open"`)},
+		{"single", "orders", "status", &glue.FieldStat{Values: raws(`"open"`)},
 			`SELECT * FROM orders WHERE status = "open";`},
-		{"few-in", "orders", "cur", &fieldStat{values: raws(`"USD"`, `"EUR"`, `"GBP"`)},
+		{"few-in", "orders", "cur", &glue.FieldStat{Values: raws(`"USD"`, `"EUR"`, `"GBP"`)},
 			`SELECT * FROM orders WHERE cur IN ["USD", "EUR", "GBP"];`},
-		{"numbers-in", "orders", "qty", &fieldStat{values: raws(`1`, `2`)},
+		{"numbers-in", "orders", "qty", &glue.FieldStat{Values: raws(`1`, `2`)},
 			`SELECT * FROM orders WHERE qty IN [1, 2];`},
-		{"none", "orders", "meta", &fieldStat{nonScalar: true},
+		{"none", "orders", "meta", &glue.FieldStat{NonScalar: true},
 			`SELECT * FROM orders WHERE meta IS NOT MISSING;`},
 		{"capped-falls-back-to-eq", "orders", "id",
-			&fieldStat{values: raws(`"a"`, `"b"`), capped: true},
+			&glue.FieldStat{Values: raws(`"a"`, `"b"`), Capped: true},
 			`SELECT * FROM orders WHERE id = "a";`},
-		{"backticked", "2026-01", "my-field", &fieldStat{values: raws(`"x"`)},
+		{"backticked", "2026-01", "my-field", &glue.FieldStat{Values: raws(`"x"`)},
 			"SELECT * FROM `2026-01` WHERE `my-field` = \"x\";"},
 	}
 	for _, tc := range cases {
 		if got := schemaExample(tc.ks, tc.field, tc.fs); got != tc.want {
 			t.Errorf("%s: schemaExample = %q, want %q", tc.name, got, tc.want)
 		}
-	}
-}
-
-// TestFieldStatObserveCaps: distinct scalar values are capped and marked; null is
-// not collected as a value.
-func TestFieldStatObserveCaps(t *testing.T) {
-	fs := &fieldStat{}
-	for i := 0; i < maxSchemaValues+5; i++ {
-		raw, _ := json.Marshal(i)
-		fs.observe(float64(i), raw)
-	}
-	if len(fs.values) != maxSchemaValues || !fs.capped {
-		t.Errorf("expected %d values + capped, got %d capped=%v", maxSchemaValues, len(fs.values), fs.capped)
-	}
-	// A duplicate isn't re-added; null is never a value.
-	fs2 := &fieldStat{}
-	fs2.observe("x", json.RawMessage(`"x"`))
-	fs2.observe("x", json.RawMessage(`"x"`))
-	fs2.observe(nil, json.RawMessage(`null`))
-	if len(fs2.values) != 1 || !fs2.types["null"] {
-		t.Errorf("dedup/null handling off: values=%v types=%v", fs2.values, fs2.types)
 	}
 }
