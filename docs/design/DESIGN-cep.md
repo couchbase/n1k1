@@ -194,6 +194,40 @@ verbs deliberately borrowed from tools devs & agents already know — see Prior 
 Same verbs over the wire (daemon mode): `GET/POST /monitors`, `POST /monitors/{name}/poll`,
 `DELETE /monitors/{name}`, `GET /monitors/{name}/findings?since=…`.
 
+### Monitor metadata — a NAME is the handle, not the whole story
+
+A bare NAME is enough to *address* a monitor (it is the cursor key and the gitops reconcile key),
+but not enough for the primary use case: if the monitor store is an episodic agent's **externalized
+standing memory**, it has to carry the *why*, not just the *what*. `new-github-issues` tells a
+future-me nothing about the intent that spawned it. So a monitor carries an open metadata bag,
+borrowing the well-worn **Kubernetes labels-vs-annotations** split (also Prometheus rules'
+`labels:`/`annotations:`, Datadog's `tags` + `message`):
+
+- **`name`** — the stable identity/handle, and *only* that. It is the cursor key + the reconcile
+  key, so it must stay **stable**: renaming = delete+recreate = lose the cursor. Keep human-friendly,
+  changeable meaning *out* of the name.
+- **`description`** — a first-class free-text line (one paragraph: what it watches and why).
+- **`labels`** — small string `key=value` pairs, **indexed / selectable**: `team=support`,
+  `env=prod`, `severity=high`. Drive `monitor list --selector team=support`, bulk ops, and routing.
+- **`annotations`** — an arbitrary, client-owned JSON blob n1k1 **stores and returns verbatim, never
+  interprets** (size-bounded, à la k8s' 256 KB cap). This is where the agent puts "whatever it
+  wants": the natural-language ask that generated the detector, reference URLs (the issue / ticket /
+  PR that motivated it), a runbook link, notes-to-future-self, arbitrary tags.
+
+The field that most earns its keep for agents is **provenance** — e.g.
+`annotations.provenance = {authored_by, model, at, prompt, source_ref}` — so a *future* me (or a
+human) can reconstruct why a monitor exists and decide to trust, edit, or prune it. That is exactly
+what turns the store from a list of opaque names into usable standing memory.
+
+⚠ **Metadata edits must not reset the cursor.** Split "what it computes" (the SQL++ + binding —
+changing *that* may invalidate the high-water) from "metadata about it" (description / labels /
+annotations — free to edit, cursor untouched). The delta-identity stays `(query+binding SHA,
+source-fingerprint)`, so a retag or a reworded description is a no-op for state — otherwise a gitops
+`apply` would silently rewind a monitor just because someone relabeled it.
+
+All of this rides the **existing recipe front-matter** (`-- key: value` + SQL++), so it is
+git-committed, PR-reviewable, and reconciled by `apply` for free — no new storage, no new format.
+
 ### Where the cursor lives — and why the agent holds only a *name*, not a cookie
 
 The sharpest question: for a polling client like an AI agent, where does the high-water mark live,
