@@ -11,6 +11,13 @@ scan layer that treats a directory tree of mixed file formats as queryable table
 
 ## Try it
 
+**In your browser, with nothing installed:** the engine also compiles to WebAssembly, so
+**[the SQL++ playground](https://couchbase.github.io/n1k1/play/)** runs the real thing
+client-side — load a sample dataset or drop in your own files, and query them. Nothing is
+uploaded anywhere.
+
+Locally:
+
 ```sh
 make cli      # builds ./n1k1 (pure Go, CGO-free; make install-cli to install)
 ```
@@ -69,7 +76,8 @@ recursive descent, array and object comprehensions, …).
 
 **[The SQL++ recipes doc](https://couchbase.github.io/n1k1/)** is the fastest way to judge
 whether the language suits you: ~50 common JSON slice-and-dice tasks, each shown in SQL++
-side by side with Postgres, DuckDB, JavaScript, Python, MongoDB, and jq.
+side by side with Postgres, DuckDB, JavaScript, Python, MongoDB, and jq — and each with a
+**Try It Now** link that opens it in the browser playground, data preloaded.
 
 ## What it reads
 
@@ -107,7 +115,8 @@ scanned.
   lazily on first use — `.index suggest` proposes candidates from a doc sample (`.index`).
 - **A query compiler.** Besides interpreting plans, n1k1 can generate Go source for a query
   and run that (`-prepare`, `.prepare`) — the origin of the project.
-- **Runs in a browser.** The engine also compiles to `GOOS=js/wasm`; see `web/`.
+- **Runs in a browser.** `GOOS=js/wasm` builds the whole engine into the
+  [playground](https://couchbase.github.io/n1k1/play/); see `web/`.
 
 ## Scope
 
@@ -127,6 +136,8 @@ Windows on amd64 and arm64.
 
 ```sh
 make cli          # ./n1k1
+make cli-trim     # ./n1k1-trim -- ~41MB instead of ~102MB, dropping Parquet/Iceberg
+                  #                and object-store reads; everything else stays
 make              # regenerate intermed/ + run the core tests
 make test         # core + the SQL++ conformance suite
 make test-all     # the full sweep (adds the glue/CLI tests + the data-backed corpus)
